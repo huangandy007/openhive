@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 64" width="340" height="64">
+  <defs>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+  </defs>
+  <polygon points="32.000,8.000 52.785,20.000 52.785,44.000 32.000,56.000 11.215,44.000 11.215,20.000" fill="none" stroke="#D97706" stroke-width="5" stroke-linejoin="round"/>
+  <polygon points="32.000,23.000 39.794,27.500 39.794,36.500 32.000,41.000 24.206,36.500 24.206,27.500" fill="url(#g2)"/>
+  <text x="70" y="32" dominant-baseline="central" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="24" font-weight="700" fill="#1C1A18">OpenHive</text>
+  <rect x="197.5" y="21" width="44" height="22" rx="6" fill="#F59E0B" opacity="0.12"/>
+  <text x="219.5" y="32" dominant-baseline="central" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="13" font-weight="600" fill="#D97706">蜂巢</text>
+</svg>
