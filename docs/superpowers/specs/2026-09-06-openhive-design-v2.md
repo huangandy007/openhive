@@ -491,6 +491,55 @@ opencode 前端结构（源码级）：
 - **介绍页**（业务语言写，民警看得懂）：是什么 / 适用场景 / 怎么用 / 示例 / 注意事项 / 版本记录。**其中「注意事项」必须是显式的「不确定性标注」**——明确写「AI 可能在哪些地方不准、必须人工复核什么」，不能给新人一个「一键出正确结论」的幻觉。
 - **纠错通道**：skill 的「权威性」是挣来的，不是发布时就有。发布后若发现会误导，要能快速下线、标记、迭代；使用数据（出错率、被纠错次数、低分反馈）反过来决定 skill 的存废。
 
+### 11.6 治理动作 ↔ opencode 物理机制（落地映射）
+
+> 本节把 §11 的「审核/发布/上下架」翻译成 opencode 能执行的物理操作，消除「业务语言」与「skill = 文件夹 + 放位置」之间的断层。详论见 `../discussions/资产治理/2026-09-08-AI资产治理落地机制-skill存放与审核发布.md`。
+
+**两个角色分工**：
+
+| 角色 | 是谁 | 干什么 |
+|---|---|---|
+| opencode 内核 | 官方、不动 | 只**被动扫描** skill 目录加载 `SKILL.md`，不建目录、不复制、不懂「待审/发布」 |
+| openhive 资产服务 | 自研 | 执行「上传→待审→发布→下线」全动作：建目录、复制文件、维护元数据状态机 |
+
+**物理存放约定**（资产根默认 `/assets`，资产服务负责建目录，`mkdir -p` 幂等）：
+
+```
+/assets/
+  ├── pending/{name}/               ← 待审区（提交审核后落这里）
+  ├── global/skills/{name}/         ← 已发布·全局
+  ├── dept/{deptId}/skills/{name}/  ← 已发布·部门
+  └── archive/{name}/               ← 已下线/归档
+/workspaces/{authorId}/{project}/   ← 作者沙箱（草稿/制作中，只有作者可见）
+```
+
+**治理动作 → 物理操作**：
+
+| 治理动作 | 物理操作 |
+|---|---|
+| 提交审核 | 复制 skill 文件夹到 `/assets/pending/{name}/`，元数据登记「待审核」 |
+| 审核 | 业务专家在治理后台打开待审区 skill，看内容、试跑、评可泛化性，通过/驳回 |
+| 发布 | 复制到 `/assets/{global,dept/{deptId}}/skills/{name}/`，让目标用户 `skills.paths` 挂上该目录 |
+| 授权/启用 | 用 opencode 已有 `Permission.evaluate("skill", name, …)` 控制「扫到但未授权」也不可用 |
+| 下线 | 把文件夹移出发布目录（或从 paths 摘除），扫不到即失效 |
+
+**发现渠道 → 资产层级**（全局/部门统一走 `skills.paths`，个人走原生项目目录）：
+
+| 资产层级 | 物理位置 | opencode 怎么扫到 |
+|---|---|---|
+| 全局 | `/assets/global/skills/{name}/` | 所有用户 `skills.paths` 含该目录 |
+| 部门 | `/assets/dept/{deptId}/skills/{name}/` | 该部门用户 `skills.paths` 含该目录 |
+| 个人 | 用户沙箱项目 `.opencode/skill/` | opencode 原生项目目录扫描，无需配置 |
+
+- **`skills.paths` 在 openhive 里不用管理员手填**：登录/下发 config 时，系统按「用户所属部门 + 是否有全局」自动拼好写入该用户的 opencode.json。
+- **不用 `OPENCODE_CONFIG_DIR` 指全局**：它同时改变 `opencode.json` 的读取位置，副作用太大，统一用 `skills.paths` 更纯净。
+
+**前端只配「范围」，系统算「路径」**：治理后台「发布」动作唯一要选的是「全局 / 部门（选具体部门）」，路径由系统按约定 + `deptId`/`name` 自动拼出；不把路径暴露给界面。换存储位置走部署层（环境变量/服务配置），不是前端。
+
+**「提交审核/发布」用 MCP 工具驱动，不用 skill**：opencode 天生只会改文件，不知道「提交审核」是什么。自研「资产治理 MCP server」暴露 `submit_skill_for_review(skill_name)`、`publish_skill(name, scope)` 等工具——民警说「提交 XXX skill 审核」→ 模型按工具 description 调用 → 工具代码定死执行（定位沙箱源目录 → 复制 → 调资产服务 API 登记元数据）。动作确定性（不靠模型猜）、鉴权靠 capability（§14.1，民警只签发「提交」、管理员才签发「发布」）。skill 负责「生成 skill」，工具负责「提交/发布 skill」，两者不混。
+
+**内网 docker 部署**：`/assets` 是「共享资产层」，独立于用户隔离沙箱 `/workspaces`，单独挂**共享卷**，资产服务 rw + opencode ro 挂同一卷；`/workspaces`、`/data` 为持久卷；config 用 ConfigMap/下发。
+
 ---
 
 ## 12. 数据接入框架
