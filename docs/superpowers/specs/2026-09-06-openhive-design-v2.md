@@ -151,18 +151,26 @@ user (
 - **敏感字段**：身份证号、联系电话**明文存储、明文展示**——它们本就是研判对象，屏蔽或加密会给研判分析带来不便。合规边界由 RBAC 权限控制（谁能看、看什么），而非对数据本身做脱敏或加密。
 - **opencode 边界**：关闭自身 Basic Auth（不设 `OPENCODE_SERVER_PASSWORD`），只认网关注入的 `X-User-ID`，不碰密码逻辑。
 
-### 4.2 治理后台（从「账号 CRUD」扩为四块）
+### 4.2 治理后台（管理功能统一入口）
 
-仅 `is_admin = 1` 可见，入口在顶栏用户下拉「用户管理」。独立全屏视图。**早期只做了账号 CRUD，竞品对标后扩为「账号 + 组织 + 用量 + 审计」四块**：
+仅管理员可见，入口在顶栏用户下拉「用户管理」。独立全屏视图，与民警三栏工作台是「一个系统的两个视图」，**不是独立的后台管理系统**（复用同一套登录 + `is_admin` + RBAC，不单独部署）。
 
-| 块 | 内容 |
-|---|---|
-| 账号管理 | 用户列表、录入 8 字段、重置密码、停用/启用 |
-| 组织架构 | 组织树（org/dept/section 三级），替换早期平铺列表 |
-| 用量/成本 | 谁调了多少模型、token 数、各单位成本分摊（§5.4 分析库 → 管理员看板） |
-| 审计 | §12.1 埋的审计日志，管理员检索界面 |
+**治理后台完整清单（八大类）**：
+
+| 块 | 内容 | 谁用 | 出处 |
+|---|---|---|---|
+| 账号管理 | 用户列表、录入 8 字段、重置密码、停用/启用、僵尸账户清理 | 系统管理员 | §4.1/§4.3 |
+| 组织架构 | 组织树（org/dept/section 三级） | 系统管理员 | §4.2 |
+| 用量/成本 | 谁调了多少模型、token 数、各单位成本分摊 | 管理员 | §5.4 |
+| 审计 | 审计日志检索 | 管理员 | §14.5 |
+| **AI 资产治理** | Skill 审核/发布/上下架、MCP 配置/授权、知识库管理 | 业务专家 + 系统管理员 | §11 |
+| **模板库** | 报告模板、图谱样式、报表口径配置 | 业务管理员 | §9.3 |
+| **数据源配置** | 数据源注册、connector 配置 | 系统管理员 | §12.2 |
+| **数据项目权限** | 资金项目/话单项目的成员与归档管理（owner 自主拉人，管理员兜底撤销/归档） | owner + 管理员 | §9.6 |
 
 - 用户列表支持按警号/姓名/部门搜索；顶部统计注册总数与启用数。
+- **两类管理员分权**：系统管理员（科信/IT）管账号/组织/运维/技术合规；业务专家（法制/骨干）管 skill 内容审核、模板口径、数据项目授权。两者分离（§11.3）。
+- **这是「管理功能」的统一承载**：治理后台不承载民警的日常分析（那是三栏工作台），只承载「配置 + 审核 + 查看」类管理动作。
 
 ### 4.3 僵尸账户识别与停用
 
@@ -413,10 +421,11 @@ opencode 前端结构（源码级）：
 **资金专属数据表**（业务 PG，全局实体库见 §12.1）：
 
 ```sql
-fund_project (id, name)                              -- 资金项目（数据轴一级单元）
-fund_project_member (fund_project_id, user_id, role) -- 数据权限（独立于工作空间）
-fund_node (id, fund_project_id, name, parent_id)     -- 节点，多级自关联 ≤10 级
-fund_account (id, fund_node_id, account_no, account_number, account_type,
+fund_project (id, name, archived, last_accessed_at)  -- 资金项目（数据轴一级单元）+ 归档标记
+fund_project_member (fund_project_id, user_id, role, inviter, invite_time, status)
+    -- 数据权限（独立于工作空间）：role=owner/member，inviter=介绍人，status=0有效/1撤销
+fund_node (id, fund_project_id, name, parent_id, sort_order)  -- 节点，多级自关联 ≤10 级；sort_order 同级排序
+fund_account (id, fund_node_id, account_no, account_number, account_type, sort_order,
               holder_name, id_card, reg_phone, wechat_id, wechat_account,
               login_phone, status, earliest_date, earliest_time)
 fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
@@ -424,11 +433,26 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
   PARTITION BY RANGE (trade_time)                    -- 大表按月分区
 ```
 
+**资金项目权限（微信群模型）**：谁建项目谁是 owner（群主），建项目时同步写一条 `inviter=自己, status=0`；owner 和 member 都能邀请他人（记 inviter=邀请人），被邀者 role=member；只有 owner 能撤销某人（status=1），owner 永远 status=0；不做级联撤销、不做群主转让；可重新邀请（status 改回 0 并更新 inviter）；member 可自己退群（删自己），owner 不能退群。**这是数据轴的自主拉人授权，不需要管理员逐条配**（区别于 §4.2 治理后台的管理员兜底）。
+
+**资金项目归档（按项目，冷热分离）**：`last_accessed_at` 超 1 年未访问 → 进入待归档列表，owner 或管理员确认归档；owner 也可主动归档（不达 1 年）。归档 = `archived=1` + 从项目树隐藏 + **数据保留不删**；归档后 member 失权、owner 保留查看+恢复权；恢复 = `archived` 改回 0。owner 调离时由管理员兜底归档。粒度按项目，不做节点级。
+
+**资金项目树 + 拖拽**：树用「邻接表」模式（`parent_id` 自关联，≤10 级，节点量小，递归 CTE 查询足够，不需要路径枚举/闭包表）。**节点和账户允许混合**（一个节点下既能挂账户又能建子节点，`fund_account.fund_node_id` 和 `fund_node.parent_id` 两条独立引用天然支持）。**拖拽规则**：
+- 节点拖拽 = 改 `parent_id` + `sort_order`；账户拖拽 = 改 `fund_node_id` + `sort_order`。
+- **不允许跨项目拖拽**（`fund_project_id` 不可改）。
+- **节点与账户分开排序**（各自维护 `sort_order`）。
+- **环检测**：拖节点 X 到父节点 P 下，须检查 P 是否为 X 的子孙（从 P 往上走 parent_id 查祖先，遇 X 即拒），防成环；≤10 级，循环最多 10 次。
+- `sort_order` 用**大间隔序号**（1000/2000/3000…），插入取中间值，避免每次拖拽重排整层；间隔耗尽才重排。
+
+**资金项目树右键操作（增删改）**：节点/叶子支持右键「新增子节点 / 新增账户 / 重命名 / 删除」。**权限分级**：新增、重命名、拖拽等「改结构」操作 owner 和 member 都能做；**删除仅 owner**（破坏性操作收紧）。**删除保护**：禁止删除非空节点（须先清空其子节点/账户）、禁止删除有交易流水的账户（须先清空流水）——资金流水是涉案数据，级联删除是数据灾难，用「禁止删非空」兜底。
+
 **规模**：1600 人、资金流水高峰每日 200 万条（约 7.3 亿条/年）。流水表必须**按月分区 + 批量 COPY 导入**（不可逐条 insert）。
 
 **账号→人身份映射**：对方账号（六要素「网」虚拟身份）→ `account_identity.account_no` → `person_id`（六要素「人」）。明细回显时 `fund_transaction.对方账号 → join account_identity → join person → 回显姓名/职业`，原始流水表只存账号不存人名。`fund_account.holder_name`（开户名）≠ 研判查明的实际持有人，回显优先展示 `person`。
 
 **数据/语义分离原则**：交易事实存 `fund_transaction`（干净）；身份映射走 `account_identity`/`person`；涉案关系走全局 `relation`（§12.1，只存提取后）；分析判断走分析记录（沙箱 Markdown）。语义与判断都不往流水表堆字段。
+
+**原始数据不落地到工作空间（重要）**：原始业务数据（资金流水等）**一律留在 PG（数据轴）**，不复制到用户工作空间的 SQLite。理由：① openhive 把「算」和「数据」都放服务端，无 C/S 架构的「跨网络搬数据才能算」问题，网络开销不存在；② 落到 SQLite 会造成千倍级数据复制（200 万条/日 × 1600 人）、数据过期、脱离 RLS 保护、违背「两条轴」。AI 反复查同一批数据的开销，用**查询结果缓存**（MCP 层）解决，而非落地数据。**落地到工作空间的只有「提取后的涉案关系」（入全局 `relation`）和「分析产物」（报告/图谱/分析记录），永不落地原始流水。**
 
 **按钮降级映射**（AI 优先的核心）：
 
