@@ -558,7 +558,7 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 ## 11. AI 资产治理（Skill / MCP / 知识库）
 
-> 前端展示（左栏导航/中栏详情/收藏）、生命周期、权限（授权组/三层拦截）、Skill 制作、MCP 授权差异等深化设计见 `2026-09-12-AI资产-design.md`。
+> 前端展示（左栏纯导航 + 中栏网格浏览与全局搜索 + 收藏）、生命周期、权限（授权组/三层拦截）、Skill 制作、MCP 授权差异等深化设计见 `2026-09-12-AI资产-design.md`。
 
 ### 11.1 统一抽象：三类资产，一套治理
 
