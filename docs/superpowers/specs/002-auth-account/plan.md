@@ -96,6 +96,39 @@ flowchart LR
 - **复用 F1 三栏**：登录成功进入 F1 的三栏主界面；首次改密弹窗挂载在三栏之上。
 - **复用前端 spec 002-openhive-frontend-ui**：登录页视觉（浅色专业风、深色背景图 + 白色卡片）。
 
+## 前端换皮区（登录页 + 首次改密弹窗）
+
+> 本 feature 主体是 Auth 后端（用户表 / 凭证 / 僵尸识别），前端仅两处 UI：**登录页** + **首次改密弹窗**。视觉真理来源 `../openhive-DESIGN.md`。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 现状 | openhive 改造 | 类型 |
+|---|---|---|
+| opencode 原生无警号登录页（仅 Basic Auth 弹窗） | 登录页：警号 + 密码 + 登录按钮 + 错误提示 | 新增 |
+| opencode 原生无改密弹窗 | 首次强制改密弹窗（全屏遮罩锁死，挂载三栏之上） | 新增 |
+
+### ② 语义 token（登录页 / 弹窗，DESIGN.md §1/§6）
+
+| 用途 | openhive 值 |
+|---|---|
+| 登录页背景 | 深色 `#0F172A` + 六边形网格 + 金色光晕（§6.1） |
+| 登录卡片 / 输入框 | 白底 + 16px 圆角 + 柔和阴影 |
+| CTA 按钮 | 暖黑 `#1C1A18` 底 + 白字，10px 圆角，600 字重 |
+| 品牌 / 高亮 | 蜂蜜金 `#D97706`；logo 用 `logo-dark.svg`（深色底） |
+| 字号 | 默认 14px（§2.2）；**不启用暗色**（登录页深色是门面，非 dark 模式） |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`（`logo-dark.svg` 用于登录页深色背景）
+- front 组件：`LoginView`（登录页）/ `ForcePasswordModal`（改密弹窗）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 新增 | 登录页、首次改密弹窗（opencode 原生无这两处 UI） |
+| 换皮 | 无（Auth 后端不涉及前端换皮；登录页/弹窗视觉走 DESIGN.md token） |
+
 ## 风险点清单（要素⑤）
 
 | ID | 风险 | 缓解 |

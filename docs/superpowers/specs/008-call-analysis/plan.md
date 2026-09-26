@@ -74,6 +74,42 @@ skill/
 
 **Structure Decision**: 复用 F6 的 `fund/`、`mcp/fund-query/`、`app/fund/` 同构结构；`call-relation-view` 是唯一新增视图，`call-analysis` skill 是唯一新增 skill 能力集。
 
+## 前端换皮区（话单四视图 + 通话关系图）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 与 F6 资金分析**同构**，前端复用 F6 三视图，唯一新增「通话关系图」。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| F1 的 data-view 挂载点 | 四视图挂注册表（同 F6） | 复用 |
+| F6 的明细 / 聚合 / 关注清单视图 | 复用同构（数据对象换号码 + 通话记录） | 复用 F6 |
+| opencode / F6 无通话关系图 | 通话关系图（号码级关系网络，AntV G6 + 钻取） | 新增 |
+| F6 的项目树 / 加载面板 / 图谱画布 | 复用同构（话单适配） | 复用 F6 |
+
+### ② 语义 token（同 F6，DESIGN.md §1/§3）
+
+| 用途 | openhive 值 |
+|---|---|
+| 主叫 / 被叫 | 中性色；高频呼叫 / 异常标记红 / 紫 |
+| 高频呼叫 / 异常 | 红 `red-100/red-700`、紫 `purple-100/purple-700` |
+| 关注 / 完成 | 绿 `emerald-100/emerald-800` |
+| 中栏视图容器 | 白底卡片 + 柔和阴影，16px 圆角 |
+| 高亮 / 选中 | 蜂蜜金 `#D97706`、浅金 `#FEF3C7` |
+| 字号 | 默认 14px（§2.2）；等宽显示号码 / 时长（§2.1） |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`CenterWorkspace`（中栏四视图；话单第 4 视图为通话关系图）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 复用 F6 | 项目树、加载面板、明细 / 聚合 / 关注清单、图谱画布 |
+| 新增 | 通话关系图（替代桑基图） |
+
 ## 数据流向（要素②）
 
 ```mermaid

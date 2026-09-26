@@ -65,6 +65,41 @@ packages/opencode/src/
 
 **Structure Decision**: 治理后台独立全屏视图（`app/governance/`），复用登录 + is_admin + RBAC，不单独部署；分析库复用 opencode event 表增量抽取。
 
+## 前端换皮区（治理后台全屏视图）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 前后端混合，前端是「治理后台全屏视图 + 8 大管理界面」，复用 F1 视觉规范（一个系统两个视图，不单独部署）。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| opencode 无治理后台 | 治理后台全屏视图（顶栏入口，管理员进入） | 新增 |
+| opencode 无 8 大管理界面 | 账号 / 组织 / 用量成本 / 审计 / 资产治理 / 模板库 / 数据源 / 数据项目权限 | 新增 |
+| 复用 F2 账号 / F9 资产治理 / F6-F7 数据项目 | 后台承载对应管理动作 | 复用（后端机制） |
+
+### ② 语义 token（治理后台，DESIGN.md §1/§3）
+
+| 用途 | openhive 值 |
+|---|---|
+| 后台底色 | 暖白 `#FCFCFC`，白底卡片 + 柔和阴影 + 16px 圆角 |
+| 表格 | 紧凑、sticky 表头，等宽显示账号 / 编号 |
+| 高亮 / 选中 | 蜂蜜金 `#D97706`、浅金 `#FEF3C7` |
+| 危险操作 | 红 `red-100/red-700`（停用 / 撤销 / 归档） |
+| CTA | 暖黑 `#1C1A18` 底 + 白字，10px 圆角 |
+| 字号 | 默认 14px（§2.2）；**不启用暗色** |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`AdminUserManagement`（治理后台 / 用户管理）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 无（治理后台是 openhive 全新功能，全新增） |
+| 新增 | 治理后台全屏视图 + 8 大管理界面 |
+
 ## 数据流向（要素②）
 
 ```mermaid

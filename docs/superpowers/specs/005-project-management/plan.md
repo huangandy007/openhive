@@ -64,6 +64,41 @@ packages/opencode/src/
 
 **Structure Decision**: 前端 `app/project/` 承载左栏交互，后端 `opencode/project/` 承载数据模型与归档逻辑；`project` 表加字段、`project_member` 新增，全部「加」的方式。
 
+## 前端换皮区（左栏项目 / 文件树 / MinIO 双树）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 前后端混合，前端集中在左栏交互。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| 原生文件树（SolidJS） | 复用 + 换皮（token）+ 补工具栏 / 右键菜单 | 换皮 + 新增能力 |
+| opencode 无项目锚点 / 面板 | 项目锚点行 + 项目面板（新建 / 最近 / 全部 / 已归档） | 新增 |
+| opencode 无成员面板 | 成员面板（👥 侧滑：邀请 / 移除 / 退群） | 新增 |
+| opencode 无 MinIO 双树 | 文件 ↔ MinIO 上下双树拖拽（已备份标 ✓） | 新增 |
+
+### ② 语义 token（左栏 / 文件树，DESIGN.md §1/§2/§3）
+
+| 用途 | openhive 值 |
+|---|---|
+| 左栏底色 / 文件树 | 暖白 `#FCFCFC` 底、14px 小字（§2.2） |
+| 选中态 | 浅金 `#FEF3C7`（≈ `#F59E0B` 低透明度） |
+| 高亮 / 链接 | 蜂蜜金 `#D97706` |
+| 项目图标 | 六边形轮廓包裹（§5.3） |
+| 圆角 | 面板 / 卡片 12~16px，按钮 8~10px |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`LeftSidebar`（左栏文件树 / 项目列表 / MinIO 双树）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 原生文件树（token）、左栏样式 |
+| 新增 | 项目锚点 / 面板、成员面板、MinIO 双树拖拽 |
+
 ## 数据流向（要素②）
 
 ```mermaid

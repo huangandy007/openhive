@@ -69,6 +69,42 @@ packages/app/src/
 
 **Structure Decision**: 资产服务独立（负责建目录/复制/状态机），opencode 内核只被动扫描 skill 目录加载；前端 `app/ai-assets/` 承载浏览。
 
+## 前端换皮区（资产浏览：左栏导航 + 中栏卡片网格）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 前后端混合，前端是「左栏纯导航 + 中栏浏览」（薄界面 + 厚 skill，界面只浏览不承载分析）。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| opencode 无资产浏览界面 | 左栏纯导航（空间筛选 + 三 Tab + 分类折叠） | 新增 |
+| opencode 无资产卡片网格 | 中栏卡片网格（虚拟滚动）+ 全局搜索 | 新增 |
+| opencode 无资产详情页 | 详情 tab（介绍 / 注意事项 / 评价 / 版本） | 新增 |
+| F6 右栏 AI 对话 | Skill 制作入口（自然语言生成 skill 落沙箱） | 复用右栏 + 新增入口 |
+
+### ② 语义 token（资产浏览，DESIGN.md §1/§3）
+
+| 用途 | openhive 值 |
+|---|---|
+| 资产卡片 | 白底卡片 + 柔和阴影 + 16px 圆角 |
+| 选中态 / 高亮 | 蜂蜜金 `#D97706`、浅金 `#FEF3C7` |
+| 资产图标 | 六边形轮廓包裹（§5.3） |
+| 分类 / Tab | 14px 小字，弱化 |
+| CTA | 暖黑 `#1C1A18` 底 + 白字，10px 圆角 |
+| 字号 | 默认 14px（§2.2）；**不启用暗色** |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`ResourceMarketplace`（资源市场：卡片网格 / 详情 / 搜索）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 无（前端以「浏览资产」为主，全为新增） |
+| 新增 | 左栏导航、卡片网格、全局搜索、详情 tab、Skill 制作入口 |
+
 ## 数据流向（要素②）
 
 ```mermaid

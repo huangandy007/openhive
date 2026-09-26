@@ -70,6 +70,46 @@ packages/app/src/
 
 **Structure Decision**: 单包内新增组件目录（`rail/`、`center/`、`topbar/`），改造落在 opencode 前端既有结构之上；核心 tab 状态（`tab-store`）与视图注册表（`view-registry`）独立成文件，避免侵入 session 状态管理。
 
+## 前端换皮区（opencode 组件 → openhive token 换皮映射）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css` 语义变量。**换皮** = 改 opencode 已有组件的 token（颜色/字体/圆角/logo/品牌名）；**新增** = opencode 没有的 openhive 组件。
+
+### ① opencode 原生组件 → openhive 改造（三栏靶子）
+
+| opencode 组件 | 位置 | openhive 改造 | 类型 |
+|---|---|---|---|
+| sidebar-rail（项目图标竖条 + settings/help） | `pages/layout/sidebar-shell.tsx` | 图标栏五入口（项目/AI 资产/AI 会话/话单/资金）+ 系统设置，入口读 capability | 换皮 + 新增入口 |
+| LegacyLayout（rail + 项目侧栏 + main + 右栏） | `pages/layout.tsx` | 三栏重定义：左导航 / 中浏览 / 右 AI 会话 | 换皮 |
+| SessionSidePanel（右栏） | `pages/session/session-side-panel.tsx` | 右栏 AI 会话（对话优先 Hero 输入） | 换皮 |
+| 顶栏 / 品牌名 | 散在 `app.tsx` / `command-palette.ts` 等 | 品牌 Logo / 站内信 / 全屏 / 用户下拉 | 换皮（品牌）+ 新增（站内信） |
+| 共享中栏 tab 容器 + 视图注册表 | opencode 无 | 跨模块 tab 累积 + 扩展名→视图注册 | 新增 |
+
+### ② 语义 token 映射（theme.css）
+
+| opencode 语义变量 | 现在值 | openhive 值（DESIGN.md §1） |
+|---|---|---|
+| `--background-base` | `#f8f8f8` | `#FCFCFC` 暖白 |
+| `--text-strong` | `#171717` | `#1C1A18` 暖黑 |
+| `--surface-brand-base`（品牌色） | `#dcde8d` 黄绿 | 蜂蜜金 `#D97706` |
+| `--text-interactive-base` / `--border-selected` | `#034cff` 蓝 | 蜂蜜金/琥珀（去蓝） |
+| `--font-family-sans` | system-ui | PingFang SC / Microsoft YaHei 系统栈 |
+
+- 字号默认 **14px**（DESIGN.md §2.2）；圆角卡片/输入框 12~16px、按钮 8~10px（§3.1）。
+- **不启用暗色**：只改 theme.css 的 light 一套（DESIGN.md §6.2）。
+- `colors.css` 是 `script/tailwind.ts` 自动生成，**只改 theme.css**。
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`（logo-mark/light/dark.svg、tokens.css）
+- front 组件对应：`LeftIconBar`（五入口）/ `LeftSidebar`（左栏）/ `Header`（顶栏）/ `CenterWorkspace`（中栏）/ `RightAIChat`（右栏）
+
+### ④ 换皮 vs 新增汇总
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 三栏骨架、右栏 AI 会话、顶栏品牌、theme.css token |
+| 新增 | 图标栏五入口、共享中栏 tab 容器、视图注册表、站内信 |
+
 ## 数据流向（要素②）
 
 中栏 tab 的内容有两条来源轴，汇聚到「内容视图注册表 → 中栏渲染」：

@@ -59,6 +59,41 @@ skill/
 
 **Structure Decision**: 指令卡机制集中在 `app/ai-session/`，复用 opencode 原生右栏会话；skill 能力清单声明接口是框架与各模块 skill 的契约。
 
+## 前端换皮区（右栏会话 + 指令卡）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 纯前端，复用 opencode 原生右栏会话 + 新增指令卡机制。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| SessionSidePanel（右栏会话） | 复用 + 换皮（token）+ 顶部挂指令卡，不改内部 | 换皮 |
+| opencode 无指令卡机制 | 指令卡通用框架（投影 skill 能力清单） | 新增 |
+| opencode 无「更多 skill」抽屉 | 更多 skill 抽屉（分组 + 最近 + 收藏加权） | 新增 |
+| opencode 的 command-palette（功能命令） | `/` 命令面板（模糊匹配有权 skill，语义不同） | 新增 |
+
+### ② 语义 token（右栏，DESIGN.md §1/§4）
+
+| 用途 | openhive 值 |
+|---|---|
+| 右栏输入框（Hero 输入） | 白底 + 16px 大圆角 + 柔和阴影（对话优先视觉中心） |
+| 指令卡 | 白底卡片 + 柔和阴影 + 蜂蜜金高亮 |
+| 选中态 / 链接 | 蜂蜜金 `#D97706`；浅金 `#FEF3C7` 选中底 |
+| CTA | 暖黑 `#1C1A18` 底 + 白字，10px 圆角 |
+| 字号 | 默认 14px（§2.2）；**不启用暗色** |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`RightAIChat`（右栏 AI 会话 / 指令卡 / 输入框）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 右栏会话（SessionSidePanel token） |
+| 新增 | 指令卡框架、常用操作、上下文指令、更多抽屉、`/` 命令面板 |
+
 ## 数据流向（要素②）
 
 ```mermaid

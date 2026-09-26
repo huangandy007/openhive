@@ -72,6 +72,42 @@ skill/
 
 **Structure Decision**: 后端 `fund/` + `mcp/`，前端 `app/fund/`，skill 独立目录；全部「加」的方式挂到 opencode 既有架构上。
 
+## 前端换皮区（资金四视图 + 图谱画布）
+
+> 视觉真理来源：`../openhive-DESIGN.md` + opencode `theme.css`。本 feature 前后端混合，前端集中在左栏资金树 + 中栏四视图 + 图谱画布。
+
+### ① opencode 原生组件 → openhive 改造
+
+| opencode 组件 | openhive 改造 | 类型 |
+|---|---|---|
+| F1 的 data-view 挂载点（内容视图注册表） | 四视图（明细 / 聚合 / 关注清单 / 桑基图）挂到注册表 | 复用（换皮挂载） |
+| opencode 无资金项目树 | 左栏资金项目树（邻接表 + 拖拽 + 环检测） | 新增 |
+| opencode 无数据加载面板 | 数据加载面板（时间跨度 + 全部 / 指定时间段） | 新增 |
+| opencode 无图谱研判画布 | 图谱画布（.graph 思路层 + 拖入账户 / 手画节点） | 新增 |
+
+### ② 语义 token（四视图 / 图谱，DESIGN.md §1/§3）
+
+| 用途 | openhive 值 |
+|---|---|
+| 进账 / 出账 | 进账浅蓝底 `blue-50` + 蓝字；出账白底（§1.3） |
+| 风险标记 | 高危红 `red-100/red-700`、极危紫 `purple-100/purple-700` |
+| 已导入 / 完成 | 绿 `emerald-100/emerald-800` |
+| 中栏视图容器 | 白底卡片 + 柔和阴影，16px 圆角 |
+| 高亮 / 选中 | 蜂蜜金 `#D97706`、浅金 `#FEF3C7` |
+| 字号 | 默认 14px（§2.2）；等宽显示账号 / 金额（§2.1） |
+
+### ③ 视觉参考样本
+
+- `../design-reference/figma-export/`
+- front 组件：`CenterWorkspace`（中栏四视图：明细 / 聚合 / 关注清单 / 桑基图）
+
+### ④ 换皮 vs 新增
+
+| 类型 | 本 feature 具体 |
+|---|---|
+| 换皮 | 中栏四视图挂载点（复用 F1 data-view 注册表） |
+| 新增 | 资金项目树、数据加载面板、四视图、图谱画布 |
+
 ## 数据流向（要素②）
 
 ```mermaid
