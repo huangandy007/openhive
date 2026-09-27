@@ -1,7 +1,4 @@
 import { createViewRegistry, type ViewRegistry } from "@/center/view-registry"
-import { DocumentView } from "./document-view"
-import { PdfView } from "./pdf-view"
-import { SheetView } from "./sheet-view"
 
 /**
  * 应用级视图注册表实例（FR-007 / FR-008 的落点）。
@@ -18,6 +15,20 @@ export const viewRegistry: ViewRegistry = createViewRegistry()
 // FR-007「日常办公常见的 10 类文件」——001（T012–T014）认领其中几类：
 // ① 文档 .doc/.docx（T012） ② 表格 .xls/.xlsx/.csv（T013） ④ PDF（T012）
 // ③ 演示 .ppt/.pptx、⑤ 图片、⑥ 图文、⑦ 思维导图（T014）
-viewRegistry.register({ extensions: [".doc", ".docx"], component: DocumentView })
-viewRegistry.register({ extensions: [".xls", ".xlsx", ".csv"], component: SheetView })
-viewRegistry.register({ extensions: [".pdf"], component: PdfView })
+//
+// 一律注册成**动态** import 的 loader（`load:` 而不是组件本身）：三个预览库实测合计 976 kB
+// （gzip 306 kB），静态引进来就等于让民警「点开第一个文件之前」先把 Word、PDF、表格三套渲染器
+// 全下载完。写成 loader 后它们各自成 chunk（174 / 366 / 436 kB），只有真的打开那一类文件才会去拉。
+// ⚠️ 别在这里改回静态 import —— `index.test.tsx` 里有一条守卫盯着这件事（它读本文件源码）。
+viewRegistry.register({
+  extensions: [".doc", ".docx"],
+  load: async () => (await import("./document-view")).DocumentView,
+})
+viewRegistry.register({
+  extensions: [".xls", ".xlsx", ".csv"],
+  load: async () => (await import("./sheet-view")).SheetView,
+})
+viewRegistry.register({
+  extensions: [".pdf"],
+  load: async () => (await import("./pdf-view")).PdfView,
+})

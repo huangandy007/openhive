@@ -17,6 +17,11 @@
 > - **最终 10 类待逐项确认**（T012 启动前定）；候选提案见 `state.md` 待决项。
 > - 上述三类的路由归属与 T011/T016 的数据轴待决项**是同一个问题**，一并解决。
 
+> **修订记录 2026-09-27c（T014 范围裁定 + 视图懒加载，用户确认）**：T014 启动前侦察发现两件事，均经用户裁定。
+> - **T014 由 4 个视图缩为 3 个**（`mindmap-view` / `richtext-view` / `image-view`），**PPT 拆出为 T018**——理由见 T018 条：design-v2 §9.5 把 PPT 预览定为**服务端** LibreOffice 转换，与 T014 的 `[FE·新增]` 标签相冲，方案须先由人定。
+> - **`.xmind` 归思维导图**（design-v2 待决策点 #5 的落定：它同时把 `.md` 列给「图文混排」，而一个扩展名只能有一个归属）；**`.md`/`.txt` 归图文视图**；**`.rtf` 本轮不做**（回落到 T015 的未知扩展名降级）。
+> - **注册表契约改为懒加载**（`component` → `load: () => Promise<组件>`）：三个预览库实测合计 976 kB（gzip 306 kB）本会全部进首屏，与「薄界面」相悖。该改造按宪法 §四**单独提交**，先于 T014 的视图代码（实测：三者各自成 chunk 174 / 366 / 436 kB，入口包对三者零命中）。
+
 ## 任务格式约定
 
 - `[P]` = 可并行（不同文件、无依赖）
@@ -181,7 +186,9 @@
       TDD 诚实标注：8 条 `sheet-view` 里 **2 条真 RED**（① 模块缺失的标准形态 ② 中文乱码真行为）、**1 条验证过有牙但非 RED 驱动**（行宽补齐）、5 条守卫/集成断言；`views/index` 注册表 2 条真 RED；`center-content` 的 2 条由上述 bug 真 RED 驱动。无「先写实现后补测试」。
       门禁：`test:unit` **773 pass / 0 fail**（与 T012 末一致）/ `test:components` **88 pass / 0 fail**（T012 末 77 + 8 sheet-view + 2 center-content + 1 注册表）/ `test:browser` **41 pass / 0 fail**（与基线一致）/ `turbo typecheck` **30-30** / `bunx oxlint packages/app/src/center packages/app/src/workspace` **0 命中**。⚠️ **lint 首轮 3 条 + 我第一版修法自引入 2 条**（`no-base-to-string` 1 / `no-unsafe-type-assertion` 2，随后同一误报换语法反复：`no-unnecessary-type-conversion` → `no-unnecessary-template-expression`）。**根因是我的错**：`sheet_to_json<T>` 的 `T` 是**行**类型，`header: 1` 下行本身是数组，我漏了外层 `[]`（写成 `string | number | boolean | null` 而非 `(…)[]`），于是 oxlint 把单元格看成 `string` 而连报「转换多余」；补上外层 `[]` 后全部收口，`String(cell)` 回归。⚠️ 全仓 `bun run lint` 仍 exit 1：**4902 warnings + 1 error**（既有上游 `session-ui/…prompt-input/index.tsx:163` 的 `content-['\200B']`，已决策「不在本项目内私改，上报上游」；与 T012 末**逐字一致**，T013 文件 0 命中）。
       ⚠️ **待决项新增**：三个视图库（`docx-preview` / `pdfjs-dist` / `xlsx`）**均随 `views/index.ts` 静态 import**，**包体积与懒加载策略未评估**——单是 xlsx 就 2.4 MB，全部塞进首屏对「薄界面」目标不利。
-- [ ] T014 [P] [US3] [FE·新增] 实现 `slide-view`/`mindmap-view`/`richtext-view`/`image-view`（演示/导图/图文/图片）[FR-007] [T004] [出参：对应类型文件渲染]
+- [ ] T014 [P] [US3] [FE·新增] 实现 `mindmap-view`/`richtext-view`/`image-view`（导图/图文/图片）[FR-007] [T004] [出参：对应类型文件渲染]
+      ⚠️ **已缩为 3 个视图**：`slide-view`（演示）**拆出为 T018**（2026-09-27c 裁定，理由见该条）。扩展名归属：`.xmind` → 导图；`.md`/`.txt` → 图文（`.rtf` 本轮不做，回落 T015）。
+      ✅ **前置已落地（2026-09-27）**：注册表契约改懒加载（`load: () => Promise<组件>`），三个既有预览库不再进首屏——按宪法 §四**单独提交**，不含在 T014 内。
       ⚠️ **T012–T014 三任务共同前置**：FR-007 的「10 类」= **日常办公常见的 10 类文件**（修订记录 2026-09-27b），原列的「数据明细 / 可视化图表 / 分析记录」**不计入**。最终 10 类须在 T012 启动前逐项确认（候选提案见 `state.md` 待决项）。
 - [ ] T015 [US3] [FE·新增] 实现未知扩展名降级呈现（不白屏、可提示）[FR-007] [T004] [出参：未知类型文件点开有降级提示]
 
@@ -190,6 +197,11 @@
 - [ ] T016 [US4] [FE·换皮] 将代码编辑器降级为「少数技术用户可选工作区」（非默认视图）[FR-009] [T004] [出参：默认不进入代码编辑器，可手动开启]
 - [ ] T017 [P] [FE·换皮] 品牌化走配置（Logo/名称从配置读取，不硬编码）[宪法 II] [T007] [出参：改配置即可换 Logo/名称]
       → 含 v2 语义 token 换皮（`--v2-*` → DESIGN.md 蜂蜜金/暖白/暖黑）。⚠️ v2 浅色值**同时在 `:root` 与 `[data-color-scheme="light"]` 两处**，只改前者会被 ThemeProvider 覆盖，须两处同改；**绝不手改 `v2/styles/colors.css` 原语色阶**。
+- [ ] T018 [US3] PPT 预览（`.ppt`/`.pptx`）——**方案未定，先决后做**（自 T014 拆出，2026-09-27c 裁定）[FR-007] [T004] [出参：PPT 点开可预览]
+      **拆出理由**：design-v2 §9.5 把 PPT 预览定为「**LibreOffice headless** 转图片/PDF」——那是**服务端**方案，而 T014 的标签是 `[FE·新增]`（本 feature「纯前端，无 `[BE]`」）。两者不能混在一条里蒙混过去。
+      客户端确有现成库（`pptxviewjs@1.1.9`、`@petepetepete/pptxviewjs@1.3.0`、`@takemynotes/slideframe`），但**都是 canvas 渲染**，而本仓库组件测试用的 happy-dom **无 canvas 引擎** → 渲染正确性在 T017 之前**无法自动验证**（与 T012/T013 记的 L2 缺口同类，但更彻底：连 DOM 结构都验不到）。
+      **先决两条（须人定）**：① 走**服务端转换**（要后端 + 部署改动，超出 001 范围，需另立 feature 或扩 001 的边界）还是走**客户端 canvas**（测试面变窄，须 T017 人工逐页核对）；② 若走服务端，转换产物（图片 / PDF）怎么进中栏——现有 `loadFile` 注入缝是否够用。
+      **不是「不做」，是「方案未定前不按猜测实现」**。
 
 ---
 
@@ -201,5 +213,6 @@
 - **Phase 4**：T009 / T010 / T011（依赖 T005）
 - **Phase 5**：T012 ∥ T013 ∥ T014 ∥ T015（依赖 T004）
 - **Phase 6**：T016（依赖 T004）∥ T017（依赖 T007）
+- **待定**：T018（PPT 预览）——**方案定下后**才排阶段；它可能落在 Phase 5（若走客户端），也可能落到 001 之外（若走服务端 LibreOffice）。
 
-共 17 条任务（T001–T017），符合 12–18 条范围。
+共 18 条任务（T001–T018），其中 **T018 为 2026-09-27c 新增**（自 T014 拆出，方案待定）。

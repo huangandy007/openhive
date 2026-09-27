@@ -5,7 +5,7 @@ import type { LoadFileContent } from "./file-content"
 import { CenterContent } from "./center-content"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
 import { contentTabKey, type ContentTab } from "./tab-store"
-import { createViewRegistry, type ViewComponent, type ViewRegistry } from "./view-registry"
+import { createViewRegistry, type ViewComponent, type ViewLoader, type ViewRegistry } from "./view-registry"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -20,15 +20,34 @@ const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
  * 一张「会说话」的假视图：把拿到的入参画在 DOM 上。
  * 用假视图而不是真的 Word/PDF 视图，是因为这里要验的是**中栏的路由**——
  * 路由选错了视图，用真视图是看不出来的（两者长得一样）。
+ * `名字` 用于分辨「屏幕上这张是谁」：切 tab 时旧视图会**多停留一瞬**（见下方懒加载那组），
+ * 没有名字就分不清屏幕上的是新是旧。
  */
-const 假视图: ViewComponent = (props) => (
-  <div data-slot="视图" data-path={props.path} data-has-load={String(Boolean(props.load))} />
+const 命名视图 = (名字: string): ViewComponent => (props) => (
+  <div data-slot="视图" data-name={名字} data-path={props.path} data-has-load={String(Boolean(props.load))} />
 )
+
+const 假视图 = 命名视图("假视图")
 
 const 注册 = (...extensions: string[]) => {
   const registry = createViewRegistry()
-  registry.register({ extensions, component: 假视图 })
+  registry.register({ extensions, load: async () => 假视图 })
   return registry
+}
+
+/**
+ * 一个「什么时候加载完由测试说了算」的 loader：把异步加载的那一瞬钉住，
+ * 好在上面断言「此刻屏幕上是什么」。`放行` / `拒绝` 只能在 loader 被调用之后使。
+ */
+function 可放行() {
+  let 放行!: (view: ViewComponent) => void
+  let 拒绝!: (error: unknown) => void
+  const load: ViewLoader = () =>
+    new Promise((resolve, reject) => {
+      放行 = resolve
+      拒绝 = reject
+    })
+  return { load, 放行: (view: ViewComponent) => 放行(view), 拒绝: (error: unknown) => 拒绝(error) }
 }
 
 /**
@@ -63,6 +82,7 @@ function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent; 页�
 
 const 专案: ContentTab = { module: "project", title: "立项书.docx", path: "/p/立项书.docx" }
 const 台账: ContentTab = { module: "project", title: "台账.xlsx", path: "/p/台账.xlsx" }
+const 卷宗: ContentTab = { module: "project", title: "卷宗.pdf", path: "/p/卷宗.pdf" }
 
 describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 渲染（FR-007）", () => {
   test("激活的 tab 按扩展名路由到对应视图，并拿到它的 path", async () => {
@@ -168,5 +188,71 @@ describe("内容区不夺走调用方的页面：常驻而非重挂", () => {
     center.close(contentTabKey(专案))
     await 落定()
     expect(页面层()?.style.display).toBe("contents")
+  })
+})
+
+/**
+ * 视图是**懒加载**的（注册表存的是 `load: () => Promise<组件>`），于是「中栏拿到视图」不再是一瞬的事，
+ * 多出一个「上一个视图已退场、下一个还没加载完」的空档。这组把空档里该发生什么钉死——
+ * 空档只有一次 chunk 拉取那么长，但**用户感觉得到**：闪一下调用方的路由页会像是「点错了」。
+ */
+describe("视图按需加载：空档期不闪页面、失败要收手、迟到的不能盖新的", () => {
+  const 页面层 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='center-page']")
+
+  test("新视图还在加载时：旧视图留在原位，调用方的页面不会被翻出来闪一下", async () => {
+    const 慢 = 可放行()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => 命名视图("第一张") })
+    registry.register({ extensions: [".pdf"], load: 慢.load })
+    const { host, 视图, 开 } = setUp({ registry })
+
+    await 开(专案)
+    expect(视图()?.getAttribute("data-name")).toBe("第一张")
+
+    await 开(卷宗) // .pdf 的库还悬着没加载完
+
+    expect(视图()?.getAttribute("data-name")).toBe("第一张")
+    expect(页面层(host)?.style.display).toBe("none") // 页面**始终**藏着：空档期不能把它翻出来
+
+    慢.放行(命名视图("第二张"))
+    await 落定()
+
+    expect(视图()?.getAttribute("data-name")).toBe("第二张")
+  })
+
+  test("新视图加载失败：不能拿旧文件冒充新 tab 的内容，要收手落回降级", async () => {
+    const 坏的 = 可放行()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => 命名视图("第一张") })
+    registry.register({ extensions: [".pdf"], load: 坏的.load })
+    const { 视图, 降级, 开 } = setUp({ registry })
+
+    await 开(专案)
+    await 开(卷宗)
+    expect(视图()?.getAttribute("data-name")).toBe("第一张") // 还悬着，此刻留旧的是对的（上一条）
+
+    坏的.拒绝(new Error("chunk 拉不下来"))
+    await 落定()
+
+    // 但**加载不出来**时就不能再留着旧文件了：那会让民警对着「卷宗.pdf」这个标题看立项书的内容。
+    expect(视图()).toBeNull()
+    expect(降级()).not.toBeNull()
+  })
+
+  test("迟到的加载结果不能盖掉后选中的文件", async () => {
+    const 慢 = 可放行()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: 慢.load })
+    registry.register({ extensions: [".pdf"], load: async () => 命名视图("卷宗") })
+    const { 视图, 开 } = setUp({ registry })
+
+    await 开(专案) // .docx 的库悬着（还没加载完）
+    await 开(卷宗) // 用户等不及切走了；.pdf 的库先加载完
+    expect(视图()?.getAttribute("data-name")).toBe("卷宗")
+
+    慢.放行(命名视图("立项书")) // .docx 这时才迟到地加载完
+    await 落定()
+
+    expect(视图()?.getAttribute("data-name")).toBe("卷宗")
   })
 })

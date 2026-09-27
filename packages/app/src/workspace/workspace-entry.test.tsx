@@ -227,8 +227,19 @@ describe("模块动作开出的特有 tab（FR-010 出参）", () => {
   })
 })
 
-/** 让「load → decode → render」整条异步链跑完。 */
-const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
+/**
+ * 等到 `条件` 成立（最多等约 1 秒）。
+ *
+ * 加载链现在**以动态 import 起头**——视图是懒加载的，第一个 chunk 要读盘 + 编译，耗时看机器，
+ * 固定「睡一个 0ms」等不到（这正是原来那句 `await 落定()` 的假设）。轮询只负责给足时间，
+ * **断言仍由调用方自己下**：等不到就是断言失败，不会静默放过。
+ */
+async function 等到(条件: () => boolean) {
+  for (let i = 0; i < 100; i++) {
+    if (条件()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
 
 const 立项书: ModuleAction = { title: "立项书.docx", content: "/p/立项书.docx" }
 
@@ -246,7 +257,7 @@ describe("中栏内容区接进工作台（FR-007 出参）", () => {
     ))
 
     触发(host, 立项书)
-    await 落定()
+    await 等到(() => host.querySelector("[data-component='document-view']") !== null)
 
     expect(host.querySelector("[data-component='document-view']")).not.toBeNull()
   })
@@ -276,7 +287,7 @@ describe("中栏内容区接进工作台（FR-007 出参）", () => {
     ))
 
     触发(host, 立项书)
-    await 落定()
+    await 等到(() => 取过的.length > 0)
 
     expect(取过的).toEqual(["/p/立项书.docx"])
   })

@@ -1,7 +1,11 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T013 已完成。**T014 待启动**（等用户说「next」）。
+T013 已完成。**T014 进行中**：范围已裁定（3 个视图，PPT 拆出为 T018），前置改造（注册表改懒加载）已完成并单独提交；**3 个视图本身待做**。
+
+✅ **T014 前置（2026-09-27）：视图注册表契约改懒加载 —— 已完成，按宪法 §四单独提交**。三个预览库实测合计 **976 kB（gzip 306 kB）** 本会随 `views/index.ts` 的静态 import 全部进首屏；改 `component` → `load: () => Promise<组件>` 后，三者**各自成 chunk**（174 / 366 / 436 kB），**入口包对三者零命中**——由真实 `bun run build` 核对（不只是那句源码守卫）。用户裁定原话：「现在改成异步工厂」。
+⏭️ **T014 主体待做**：`image-view`（`.png/.jpg/.jpeg/.gif/.bmp/.webp`）/ `richtext-view`（`.md`/`.txt`）/ `mindmap-view`（`.xmind`）。**PPT 拆出为 T018**——design-v2 §9.5 把 PPT 预览定为**服务端** LibreOffice 转换，与 T014 的 `[FE·新增]` 标签相冲，方案须先由人定（见 `tasks.md` T018 与「待决项」）。
+
 ✅ T013 交付了 FR-007 的第三类真实视图（表格 `.xls/.xlsx/.csv`，SheetJS），并**顺手修掉 T012 埋下的一个真缺陷**：`CenterContent` 原用 `<Show fallback={props.children}>`，而 `Show` 的分支互换会**卸载重挂** `props.children`——它在生产里是上游路由页面，**点一张有视图的 tab 就丢掉整页状态**。已改为「页面常驻，只藏不卸」。
 🔴 **T013 新发现、须 T017 处置**（见「待决项」）：**SheetJS 对特定输入会死循环**（`XLSX.read` 永不返回，同步 CPU 死循环，`try/catch`/超时/`AbortController` 全拦不住）——一个损坏的表格文件能把民警的浏览器标签页永久卡死。
 🔴 **T012 的落差仍待复核**（见「待决项」）：裁定要求「补一条最小的『打开文件』路径」，**通路补了**，但**生产侧没有合法的 loader 供给方**——`loadFile` 目前只是注入点，不假装能点开文件。
@@ -158,22 +162,42 @@ T013 已完成。**T014 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T013 末）
-> 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
+## 质量门禁（懒加载重构后 2026-09-27）
+> 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。上一列括号内为 **T013 末**的值。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **773 pass / 0 fail**（113 files / 3106 expect） | 干净（与 T012 末**一致**——本任务未动 `.ts` 单测） |
-| `packages/app` `bun run test:components` | ✅ **88 pass / 0 fail**（172 expect） | 干净（T012 末 77 + 11：`sheet-view` 8 / `center-content` 新增 2 / `views/index` 新增 1） |
+| `packages/app` `bun run test:unit` | ✅ **774 pass / 0 fail**（113 files / 3110 expect） | 干净（T013 末 773，**+1** = 注册表新增「解析出的是 loader 而不是组件：不调用它就不加载」） |
+| `packages/app` `bun run test:components` | ✅ **92 pass / 0 fail**（183 expect） | 干净（T013 末 88，**+4** = `center-content` 懒加载空档 3 条 + `views/index` 首屏守卫 1 条） |
 | `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail**（100 expect） | 干净（与基线**一致**） |
 | `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（首轮即过） |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下。计数与 T012 末**逐字一致** |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下。计数与 T013 末**逐字一致**（中途一度 4903，是我自己留下的孤儿变量，已清） |
+| `bun run build`（`packages/app`，**本次新增的核对手段**） | ✅ 成功（31.5 s） | 分块结果见下「懒加载实测」 |
 
-**T013 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 命中**（33 files）。首轮 3 条 + 我第一版修法自引入 2 条，见下。
+**本次触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 命中**（33 files）。中途我自己的改动留下 1 个孤儿 `落定` 变量（+1 warning），已按「清掉自己的改动造成的孤儿」删掉。
+
+### 懒加载实测（本次改造的**唯一理由**，故实测而非推断）
+`bun run build` 产物（`packages/app/dist/assets/`）：
+
+| chunk | 大小 | gzip |
+|---|---|---|
+| `document-view-*.js` | 174.31 kB | 51.48 kB |
+| `sheet-view-*.js` | 366.22 kB | 123.98 kB |
+| `pdf-view-*.js` | 436.06 kB | 130.56 kB |
+| `index-*.js`（入口） | 2756.15 kB | 822.82 kB |
+
+**证伪方向也验了**：用 `SheetJS\|docx-preview\|PDFDocumentProxy\|pdfjs-dist` 去 grep 入口 chunk → **0 命中**；同一 pattern 在三个视图 chunk 里分别 6 / 1 / 1 命中。即**三个库确实不在入口包里**（改契约前它们随 `views/index.ts` 静态 import 必然在入口里）。
+> ⚠️ 该 grep 只是**旁证**：它证明库不在入口，不证明入口因此小了多少——**未做「改动前 vs 改动后」的入口体积对账**（那要回退代码再构建一次，未做），故 state.md 只记「三者各自成 chunk + 入口零命中」，**不声称节省了 976 kB**。
 
 > 🔴 **T013 的教训（最该记住的一条）**：**跟着 lint 换语法是治标，先怀疑自己写的类型**。`sheet_to_json<T>` 的 `T` 是**行**类型，`header: 1` 下行本身是数组，我漏写了外层 `[]`；oxlint 于是把单元格推断成 `string`，接着连报两条「转换多余」（`no-unnecessary-type-conversion` → 我把 `String(cell)` 换成模板串 → `no-unnecessary-template-expression`）。**换了两轮语法都没用**——因为错的是我写的类型注解，不是那行代码。补上 `(…)[]` 后两条同时消失，`String(cell)` 原样回归。
 
 > 🔴 **T013 的另一条**：**`Show` 的分支互换会卸载重挂该分支内容**。`<Show when={x} fallback={children}>` 里，`children` 在 `x` 真假翻转时被**卸掉再挂回**。若 `children` 是上游路由页面，用户点一张有视图的 tab 就丢掉整页状态。**判断「有没有视图」时，「藏起来」与「从树上摘掉」是两回事**——要保挂载就用 `display: none`，要保布局就用 `display: contents`。这条在 T012 完全看不出来（当时 `Show` 从不切换），是 T013 注册新扩展名才踩响的。
+
+> 🔴 **懒加载重构的教训一：异步链的「起点」变了，固定睡一个 tick 的等待写法就失效**。`workspace-entry.test.tsx` 原用 `await 落定()`（`setTimeout 0`）等「动作 → 视图」。视图改成懒加载后，这条链**以动态 import 起头**（读盘 + 编译，耗时看机器），一个 tick 远远不够 → 两条集成测试变红。**改法是「等到条件成立」（有上限的轮询），不是「多睡几个 tick」**——后者只是把脆弱性藏起来，机器一慢又红。**推论：任何「睡 N 个 tick 就断言」的测试，都在假设链路的异步结构不变。**
+
+> 🔴 **懒加载重构的教训二：有些要求没有 DOM 可观测面，只能守源码——但要诚实标注它的性质**。「首屏不带三个预览库」在单元测试里**无法**用 DOM 断言（测的是打包结果，不是运行时行为），故 `views/index.test.tsx` 直接读 `index.ts` 源码，禁止静态 import 视图模块 + 要求出现 `import(...)`。它是**回归守卫**而非行为测试：能抓住「有人改回静态 import」，但**不能证明包真的变小**（后者只能靠 `bun run build` 实测，见「懒加载实测」）。**TDD 允许这种测试，前提是不把它当行为证据用。**
+
+> 🔴 **懒加载重构的教训三：「加载中」是个必须表态的状态，且两条岔路必须分开表态**。空档期里我选**留住旧视图**（不闪调用方的路由页——用户明确说过「不能让用户感觉到慢」）；但**加载失败**时必须**清空**，否则民警会对着「卷宗.pdf」这个标题看立项书的内容。**「还没好」与「好不了」是两回事，不能用同一个分支处理**——三条测试分别钉住：留旧、失败收手、迟到的结果不覆盖新的（竞态令牌 `alive` + `onCleanup`）。
 
 > 🔴 **T010 的教训（仍在生效）**：那条「宽度未知先全显示」的测试**第一版是假绿**——用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值，而 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 1000，测试什么都没测（立刻通过）。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`）。**测试一写就绿要当红灯看**。
 
@@ -207,7 +231,9 @@ T013 已完成。**T014 待启动**（等用户说「next」）。
 - 🆕 `.tsx` 测试的 glob 坑：带引号的 `"./src/**/*.test.tsx"` 会被 bun 当**过滤器**（"Test filter had no matches"）；必须**不加引号**写成 `./src/**/*.test.tsx`，由 shell 展开 globstar 才能匹配任意深度（已用探针文件实测）。
 - ✅ **已解决（原「T006 前须定：能力位 / `is_admin` 契约口径」）**：用户 2026-09-27 裁定**「001 只出接口，门禁留给 010」**。T006 已按此落 `visibleEntries` 过滤接口（不接签发方）；同源问题（FR-003「用户管理」管理员专属 vs 001 无 admin 门禁）同样留待 010。**归属更正**：原记录写成「T006 前须定」有误——该项实属 FR-003 → **T007（顶栏下拉）**，非 FR-002 → T006（图标栏）；T006 只需出过滤接口，已具备。**T007 已按此落地**：`menu.ts` 的 `visibleUserMenuItems(entries, isAdmin)` 只做界面收敛（`TopbarUser.isAdmin` 控制「用户管理」显隐），并在源码注释里写死「这不是鉴权，授权在执行层」（宪法 IV）。
 - 🔴🔴 **待决项（T013 新增，T017 必须处置，否则可致命）**：**SheetJS 对特定输入死循环**。10 字节 `PK\x03\x04\x14\x00\x00\x00\x08\x00` 使 `XLSX.read` **永不返回**（探针用 Worker + `terminate()` 确证：10 秒到点，Worker 仍在跑 → 强杀）。这是**同步 CPU 死循环**，故 `try/catch`、Promise 超时、`AbortController` **全部无效**——损坏或**被人为构造**的表格文件能让民警的浏览器标签页**永久卡死**（连"关闭/刷新"都要靠浏览器强杀）。缓解方向（把解析放进 Worker + 超时 `terminate()`）**探针已验证可行**，但它是 Vite 构建期配置，**本环境无法验证**，猜错会破坏构建 → 不在 T013 写。**T017（真实浏览器核对）必须一并处置**，可选：① Worker 化 + 超时兜底；② 换一个不做同步全量解析的库；③ 至少在 spec 里显式记为已知风险并由产品决定接受。**注意**：本条与 T012 记的「pdfjs worker 未配」是**两件不同的事**——那条是性能（退回主线程会卡界面），这条是**可用性/安全**（永不返回）。
-- 🆕 **待决项（T013 新增，非 T017 阻断）**：**三个视图库均随 `views/index.ts` 静态 import，包体积与懒加载策略未评估**。`docx-preview` + `pdfjs-dist` + `xlsx`（**单是 xlsx 就 2.4 MB**）全部进首屏，与「薄界面」目标相悖；`view-registry.ts` 的机制按扩展名映射到**组件本身**，不是「按需 import 工厂」，故懒加载要改注册表契约（`component` → `load: () => Promise<...>`）。**改契约会波及 T012/T013/T014 的注册调用**，宜在 T014 落地前一并定，避免 T014 再按旧契约写一遍。**当前未做任何优化，如实记为未评估**。
+- ✅ **已解决（原「T013 待决项：三个视图库静态 import、包体积未评估」）**：**2026-09-27 用户裁定「现在改成异步工厂」，已落地并单独提交**。注册表契约 `component: ViewComponent` → `load: ViewLoader = () => Promise<ViewComponent>`；`views/index.ts` 三条注册全改 `async () => (await import("./xxx-view")).XxxView`；`CenterContent` 随之改异步解析（含空档期/失败/竞态三种处理，见「教训三」）。**实测**：三者各自成 chunk（174 / 366 / 436 kB），入口包零命中。**新增守卫**：`views/index.test.tsx` 读源码禁止静态 import 回潮。**T014 的新视图须沿用 `load:` 契约**。
+  - **原文留档（已过时，勿据此行动）**：**三个视图库均随 `views/index.ts` 静态 import，包体积与懒加载策略未评估**。`docx-preview` + `pdfjs-dist` + `xlsx`（**单是 xlsx 就 2.4 MB**）全部进首屏，与「薄界面」目标相悖；`view-registry.ts` 的机制按扩展名映射到**组件本身**，不是「按需 import 工厂」，故懒加载要改注册表契约（`component` → `load: () => Promise<...>`）。**改契约会波及 T012/T013/T014 的注册调用**，宜在 T014 落地前一并定，避免 T014 再按旧契约写一遍。**当前未做任何优化，如实记为未评估**。（⚠️ 该原文里的「单是 xlsx 就 2.4 MB」是**包的体积**，不是它进构建产物的量——实测该 chunk 是 366.22 kB / gzip 123.98 kB。留档不作更正，但引用时别把这两个数当一回事。）
+- 🔴 **待决项（T018 前须定，2026-09-27c 新增）**：**PPT 预览走服务端还是客户端**。design-v2 §9.5 明写「PPT 预览 | **LibreOffice headless** 转图片/PDF」——那是**服务端**方案，而本 feature 声明「纯前端，无 `[BE]`」。客户端有现成库（`pptxviewjs*` / `@takemynotes/slideframe`），**但都是 canvas 渲染**，而 happy-dom **无 canvas 引擎** → 渲染正确性连 DOM 结构都验不到，只能靠 T017 人工逐页核对。**须人定**：① 服务端转换（要后端 + 部署改动，需另立 feature 或扩 001 边界）；② 客户端 canvas（自动测试面进一步变窄）。**若走服务端，还须定转换产物怎么进中栏**（现有 `loadFile` 注入缝是否够）。**在定下之前不按猜测实现**（这正是把 PPT 从 T014 拆出的原因）。
 - 🔴 **待决项（T017 前须定 / T017 阻断项，T007 后已扩为两条）**：
   1. **选中底色的品牌色 token 不存在**。DESIGN §1.3/§4.1 要求选中底 = 浅金 `#FEF3C7`，但 v2 的 overlay 语义 token 只有中性黑/白 alpha，**无品牌色 overlay token**；T006 暂用 `--v2-overlay-simple-overlay-pressed`（中性灰，仓库既有「选中面」token）。**T017 须二选一**：① 全局重定 `overlay-pressed` 为品牌色；② 新增语义选中面 token（并**同改 `:root` 与 `[data-color-scheme="light"]` 两处**）。否则正式违反 DESIGN §4.1。
   2. 🆕 **品牌金 token 不存在（T007 新增）**。`topbar/BrandMark` 的描边/渐变取 `--v2-icon-icon-accent` / `--v2-icon-icon-accent-hover`，而这两个 token 今天**都是蓝色**（`--v2-blue-600` / `--v2-blue-700`），**整个 v2 色板无任何金色 token**。按宪法 §八不能硬编码 `#F59E0B`/`#B45309`，故 **logo 现在是蓝的**，DESIGN §5.1 的蜂蜜金要等 T017 换皮生效（换皮后组件无需改动）。
@@ -230,6 +256,8 @@ T013 已完成。**T014 待启动**（等用户说「next」）。
 - 🆕 **待决项（T011 新增，数据轴落地时收口）**：`ContentTab.path` **命名遗留**。FR-010 的动作 tab 里，数据轴（F6/F7）的内容标识是数据视图键（`detail:acct-4419`）而非文件路径，`path` 这个字段名届时名不副实。T011 的动作层已用中性的 `ModuleAction.content` 表达该键，**但 `ContentTab` 与 `contentTabKey` 仍是 T005 的 `path`**——改名波及 `tab-store.ts` / `tab-bar.tsx` 及 T005/T009/T010 三个测试文件，故**未在本任务顺手改**（Surgical Changes），待数据轴真正落地时与「注册表键通道」一并收口。
 
 ## 最后更新
+2026-09-27（**T014 前置：视图注册表改懒加载 —— 按宪法 §四单独提交，不含 T014 的视图代码**。契约 `component: ViewComponent` → `load: ViewLoader = () => Promise<ViewComponent>`（`resolve()` 交回的是「怎么拿到组件」而非组件本身）；`views/index.ts` 三条注册改 `async () => (await import("./xxx-view")).XxxView`；`CenterContent` 随之**改异步解析**——`createEffect` 里算 loader，用 `alive` 标志 + `onCleanup` 丢弃迟到结果。🔴 **空档期（chunk 还没到）取「留住旧视图」而非清空**：清空会因页面层随 `view()` 真假翻转而把调用方的路由页**翻出来闪一下**（用户已明确「不能让用户感觉到慢」）；但**加载失败必须收手清空**，否则民警会对着「卷宗.pdf」这个标题看立项书的内容——**「还没好」与「好不了」是两回事**，三条新测试分别钉住留旧 / 失败收手 / 迟到不覆盖。🔴 **实测（新增核对手段 `bun run build`）**：三个预览库各自成 chunk `document-view` 174.31 kB / `sheet-view` 366.22 kB / `pdf-view` 436.06 kB（gzip 51 / 124 / 131），入口 chunk **对三者零命中**（同一 pattern 在三个视图 chunk 里 6 / 1 / 1 命中）。**未做「改前 vs 改后」入口体积对账**，故**不声称节省了 976 kB**，只记「各自成 chunk + 入口零命中」。🔴 **一处测试写法被迫升级**：`workspace-entry.test.tsx` 原用 `await 落定()`（睡一个 0ms）等「动作 → 视图」，而懒加载让这条链**以动态 import 起头**（读盘 + 编译），一个 tick 等不到 → 两条集成测试变红；改**有上限的轮询等待 `等到(条件)`**（断言仍由调用方下，等不到就是失败）。⚠️ **一条非行为测试、已诚实标注**：`views/index.test.tsx` **读源码**禁止静态 import 回潮——「首屏体积」在单元测试里没有 DOM 可观测面，它只是回归守卫，不能证明包变小。⚠️ 门禁：test:unit **774 pass**（773 + 1）、test:components **92 pass**（88 + 4）、test:browser **41 pass**（与基线一致）、typecheck **30/30**、定向 oxlint **0 命中**（中途自留 1 个孤儿变量 `落定` 已清）；全仓 lint 仍 exit 1 / **4902 warnings + 1 error**（既有上游 `\200B`，与 T013 末逐字一致）。📌 **T014 范围同时裁定并记入 `tasks.md` 修订记录 2026-09-27c**：4 个视图缩为 3 个（`image-view` / `richtext-view` / `mindmap-view`），**PPT 拆出为新增的 T018**（design-v2 §9.5 的服务端 LibreOffice 方案与 `[FE]` 标签相冲，方案未定前不实现）；`.xmind` 归导图、`.md`/`.txt` 归图文、`.rtf` 本轮不做。）
+
 2026-09-27（T013 完成：**表格视图（FR-007 的第三类，`.xls/.xlsx/.csv`，SheetJS）**——新增 `center/views/sheet-view.{tsx,test.tsx}`（`renderSheet` 字节→表格 + 接进 `BinaryView` 壳的 `SheetView`，8 条测试，夹具是 SheetJS 自造的真 xlsx 字节）；改 `center/views/index.ts`（注册三类扩展名）+ `index.test.tsx` + `packages/app/package.json` + `bun.lock`（**净 +3 行、零 churn**）。**依赖按用户裁定走 SheetJS 官方 CDN**（npm 版 0.18.5 的两个 CVE 无 fixed 版本且只在读特制文件时触发，正是本产品用法）。🔴 **探针发现 SheetJS 对特定 10 字节输入死循环、`XLSX.read` 永不返回**——同步 CPU 死循环，`try/catch`/超时/`AbortController` 全无效，**留 T017 处置**（Worker+超时已验证可行但属构建期配置）。⚠️ 中文 CSV 默认按 Latin-1 解会乱码，`codepage: 65001` 修好（不修则 `.csv` 整类废掉）；**SheetJS 对多数垃圾字节不抛错而是当 CSV「成功」解析**，故「坏文件→error」必须用 PK 头输入才能测。🔴 **顺手修掉 T012 埋的真缺陷**：`CenterContent` 用 `<Show fallback={props.children}>`，`Show` 的分支互换会**卸载重挂** `props.children`——它在生产里是上游路由页面，**点一张有视图的 tab 就丢掉整页状态**；T013 一注册新扩展名就踩响（`workspace-entry` 的 tab 激活测试 pass→fail，A/B 确证）。改为**页面常驻、只藏不卸**（`display: contents` ↔ `none`），先写 RED 钉住。⚠️ **一处假绿**：第一版「只挂载一次」测试传了已求值的 `<页面 />` 元素 → 通过但什么都没测；改传组件函数 + `<Dynamic>` 后立刻真 RED。⚠️ **lint 首轮 3 条 + 我修法自引入 2 条，根因是我把 `sheet_to_json<T>` 的 `T`（行类型）漏了外层 `[]`**，跟着 lint 换了两轮语法都没用，补对类型后同时消失。门禁：test:unit **773 pass**（与 T012 末一致）、test:components **88 pass**（77 + 11）、test:browser **41 pass**（与基线一致）、typecheck **30/30**（首轮即过）、定向 oxlint **0 命中**；全仓 lint 仍 exit 1 / **4902 warnings + 1 error**（既有上游 `\200B`，与 T012 末逐字一致）。新待决项：**SheetJS 死循环（T017 阻断）** + **三个视图库静态 import、包体积未评估（宜在 T014 前定契约）**。）
 
 2026-09-27（T012 完成：**文档与 PDF 视图（FR-007 的头两类）+ 中栏内容区路由**——新增 `center/file-content.ts`（取数接缝 + base64→字节）、`center/views/binary-view.tsx`（字节型视图公共壳）、`center/views/document-view.tsx`（docx-preview）、`center/views/pdf-view.tsx`（pdfjs-dist）、`center/views/index.ts`（**应用级注册表单例，解掉 T004/T009 记的待决项**）、`center/center-content.tsx`（激活 tab → 扩展名 → 注册表 → 视图）；改 `view-registry.ts`（`ViewProps` 加宽为 `{ path, load? }`）、`workspace-entry.tsx`（加 `loadFile` prop + 挂 `CenterContent`）、`packages/app/package.json`（+2 显式版本依赖，**不进根 catalog**）、`bun.lock`（**净 +55/−5**，其余为 bun 传递依赖重提升）。**6 个新文件 + 1 个文件新增，共 28 条测试**。test:unit **773** pass（769 + 4）、test:components **77** pass（53 + 24）、test:browser 41 pass、typecheck 30/30（首轮真报错 1 处已修）、本任务目录 oxlint 首轮 1 条 `consistent-return` 已修。🔴 **一处与裁定 #3 有落差，请复核**：通路已补且有集成测试证明 `loadFile` 一路走到视图，但**生产侧没有合法的 loader 供给方**（directory-scoped SDK client 只在路由页内部，`WorkspaceEntry` 在其上层）→ `loadFile` 留作注入点，**不假装已能点开文件**。⚠️ **一处非 RED 驱动**：`BinaryView` 的竞态令牌是先写的，已补测试 + 临时把守卫改成恒真验证它有牙（立刻 RED）后恢复，如实记录。⚠️ **L2 缺口**：Word/PDF **画面是否真的渲染出来**在 happy-dom 下验不了（无 CSS/Canvas 引擎），留 T017；**pdfjs worker 也未配**（退回主线程）。（T011 完成：**模块动作打开特有 tab（FR-010）**——新增 `center/module-actions.ts`（`ModuleAction { title, content }` + `useModuleAction()`）。**来源模块由 hook 取当前模块**（不手填，FR-005 着色的来源就不会传错）；当前模块未定时**不响应**（不开假来源 tab）；**动作是特有 tab 的唯一来源**，进门时中栏零 tab（非预置常驻）。`content` 是**不可解释的内容键**（001 = 路径；数据轴 F6/F7 = 数据视图键），故**不必先解开「注册表只认扩展名」那个结**。🔴 **真 RED 一次**：无守卫实现先绿 → 补「当前模块未定」测试立刻 RED（收到 `{ module: undefined, … }`）→ 加守卫转绿，**边界是测试逼出来的**。test:components **53** pass（47 + 5 + 1 集成守卫）、test:unit **769** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中。⚠️ 全仓 lint 仍 exit 1 / **4901** warnings + 1 error（既有上游；计数较 T010 末少 1，属已记录的 ±1 抖动，**不代表修好了什么**）。⚠️ **两处范围裁量待复核**：① T011 边界止于「动作层」，未含「动作 → 视图渲染」；② `ContentTab.path` 命名遗留未顺手改。）

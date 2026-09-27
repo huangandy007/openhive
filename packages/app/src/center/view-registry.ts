@@ -17,25 +17,37 @@ export interface ViewProps {
 /** 中栏内容视图组件。 */
 export type ViewComponent = Component<ViewProps>
 
+/**
+ * 「怎么拿到视图组件」——**懒加载**，不是组件本身。
+ *
+ * 为什么不直接存组件：视图各自的预览库（docx-preview / pdfjs / xlsx …）都跟着组件静态 import，
+ * 于是**点开第一个文件之前**它们就已经在首屏包里了。存 loader 才谈得上按需加载——
+ * 实测（`bun run build`，2026-09-27）：改 loader 后三者各自成 chunk，分别为 174 / 366 / 436 kB
+ * （gzip 51 / 124 / 131），入口包对三个库的标志串**零命中**。
+ * 具体形态交给注册方决定（生产里是 `() => import("./xxx-view").then((m) => m.XxxView)`）。
+ */
+export type ViewLoader = () => Promise<ViewComponent>
+
 /** 一次视图注册：认领若干扩展名，交给同一个视图组件渲染。 */
 export interface ViewRegistration {
   /** 认领的扩展名，带点，如 [".doc", ".docx"]。 */
   extensions: readonly string[]
-  component: ViewComponent
+  load: ViewLoader
 }
 
 export interface ViewRegistry {
   register(registration: ViewRegistration): void
-  resolve(extension: string): ViewComponent | undefined
+  /** 查扩展名对应的 loader；**调用它**才真正加载组件。 */
+  resolve(extension: string): ViewLoader | undefined
 }
 
 /**
- * 中栏「内容类型（扩展名）→ 视图组件」注册表（FR-007 / FR-008）。
+ * 中栏「内容类型（扩展名）→ 视图」注册表（FR-007 / FR-008）。
  *
  * 注册式扩展：新增一种格式支持只需 `register()`，框架零改动（SC-003）。
  */
 export function createViewRegistry(): ViewRegistry {
-  const views = new Map<string, ViewComponent>()
+  const views = new Map<string, ViewLoader>()
 
   return {
     register(registration) {
@@ -44,7 +56,7 @@ export function createViewRegistry(): ViewRegistry {
       for (const key of keys) {
         if (views.has(key)) throw new Error(`视图注册冲突：扩展名 ${key} 已有归属视图`)
       }
-      for (const key of keys) views.set(key, registration.component)
+      for (const key of keys) views.set(key, registration.load)
     },
     resolve(extension) {
       return views.get(extension.toLowerCase())

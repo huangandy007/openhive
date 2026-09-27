@@ -1,56 +1,83 @@
 import { describe, expect, test } from "bun:test"
-import { createViewRegistry, extensionOf } from "./view-registry"
+import { createViewRegistry, extensionOf, type ViewComponent, type ViewLoader } from "./view-registry"
+
+/** 注册表的契约是**懒加载**：注册的是「怎么拿到组件」，不是组件本身。 */
+const 懒加载 = (view: ViewComponent): ViewLoader => async () => view
 
 describe("中栏内容视图注册表（FR-007 / FR-008）", () => {
-  test("注册一个视图后，可按其扩展名查找到它", () => {
+  test("注册一个视图后，可按其扩展名查找到它", async () => {
     const registry = createViewRegistry()
     const view = () => null
 
-    registry.register({ extensions: [".docx"], component: view })
+    registry.register({ extensions: [".docx"], load: 懒加载(view) })
 
-    expect(registry.resolve(".docx")).toBe(view)
+    expect(await registry.resolve(".docx")!()).toBe(view)
   })
 
-  test("一个视图可认领多个扩展名，都查到同一个组件（文档类 = .doc + .docx）", () => {
+  /**
+   * 这条是本次改造的**理由本身**：docx-preview / pdfjs / xlsx 三个预览库都随视图组件静态 import
+   * 的话，用户点开第一个文件之前它们就已经进了首屏。契约存 loader 不存组件，才谈得上按需加载。
+   */
+  test("解析出的是 loader 而不是组件：不调用它就不加载", async () => {
     const registry = createViewRegistry()
     const view = () => null
+    let 加载次数 = 0
 
-    registry.register({ extensions: [".doc", ".docx"], component: view })
+    registry.register({
+      extensions: [".docx"],
+      load: async () => {
+        加载次数++
+        return view
+      },
+    })
 
-    expect(registry.resolve(".doc")).toBe(view)
-    expect(registry.resolve(".docx")).toBe(view)
+    expect(registry.resolve(".docx")).toBeInstanceOf(Function)
+    expect(加载次数).toBe(0)
+
+    expect(await registry.resolve(".docx")!()).toBe(view)
+    expect(加载次数).toBe(1)
   })
 
-  test("查找不区分大小写：用户的 .DOCX 文件也要命中 .docx 的视图", () => {
+  test("一个视图可认领多个扩展名，都查到同一个组件（文档类 = .doc + .docx）", async () => {
     const registry = createViewRegistry()
     const view = () => null
 
-    registry.register({ extensions: [".docx"], component: view })
+    registry.register({ extensions: [".doc", ".docx"], load: 懒加载(view) })
 
-    expect(registry.resolve(".DOCX")).toBe(view)
+    expect(await registry.resolve(".doc")!()).toBe(view)
+    expect(await registry.resolve(".docx")!()).toBe(view)
   })
 
-  test("注册时扩展名写大写也等价", () => {
+  test("查找不区分大小写：用户的 .DOCX 文件也要命中 .docx 的视图", async () => {
     const registry = createViewRegistry()
     const view = () => null
 
-    registry.register({ extensions: [".DOCX"], component: view })
+    registry.register({ extensions: [".docx"], load: 懒加载(view) })
 
-    expect(registry.resolve(".docx")).toBe(view)
+    expect(await registry.resolve(".DOCX")!()).toBe(view)
+  })
+
+  test("注册时扩展名写大写也等价", async () => {
+    const registry = createViewRegistry()
+    const view = () => null
+
+    registry.register({ extensions: [".DOCX"], load: 懒加载(view) })
+
+    expect(await registry.resolve(".docx")!()).toBe(view)
   })
 
   test("同一扩展名被两个视图认领时抛错，不静默覆盖", () => {
     const registry = createViewRegistry()
-    registry.register({ extensions: [".pdf"], component: () => null })
+    registry.register({ extensions: [".pdf"], load: async () => () => null })
 
-    expect(() => registry.register({ extensions: [".pdf"], component: () => null })).toThrow(".pdf")
+    expect(() => registry.register({ extensions: [".pdf"], load: async () => () => null })).toThrow(".pdf")
   })
 
   test("同批注册中途冲突时整批不生效，不留半注册状态", () => {
     const registry = createViewRegistry()
-    registry.register({ extensions: [".zip"], component: () => null })
+    registry.register({ extensions: [".zip"], load: async () => () => null })
 
-    expect(() => registry.register({ extensions: [".tar", ".zip"], component: () => null })).toThrow()
+    expect(() => registry.register({ extensions: [".tar", ".zip"], load: async () => () => null })).toThrow()
 
     expect(registry.resolve(".tar")).toBeUndefined()
   })

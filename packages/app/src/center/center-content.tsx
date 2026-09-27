@@ -1,58 +1,71 @@
-import { createMemo, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show, type ParentProps } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import type { LoadFileContent } from "./file-content"
 import { useCenterTabs } from "./tab-context"
 import { contentTabKey } from "./tab-store"
-import { extensionOf, type ViewRegistry } from "./view-registry"
+import { extensionOf, type ViewComponent, type ViewRegistry } from "./view-registry"
 
 export interface CenterContentProps {
-  /** 扩展名 → 视图的注册表。**注入**而非 import 应用单例：测试各用各的，互不串味。 */
   registry: ViewRegistry
-  /** 取内容的接缝，原样交给视图（视图不自行取数）。 */
   load?: LoadFileContent
 }
 
-/**
- * 中栏内容区（FR-007）：把**当前激活的** tab 按扩展名路由到它的视图。
- *
- * 这一层只做路由，不碰内容——内容怎么来由注入的 `load` 决定，怎么画由视图决定。
- *
- * 路由不到就落回 `children`：不替调用方猜「未知类型长什么样」（那是 T015 的降级呈现），
- * 也不留白屏。`keyed` 是必需的——两张 document tab 之间切换时组件是同一个，
- * 不重挂则视图不会按新 path 重新取数。
- */
+/** 屏幕上正在渲染的视图：组件 + 它认领的文件。 */
+interface 当前视图 {
+  Component: ViewComponent
+  path: string
+}
+
 export function CenterContent(props: ParentProps<CenterContentProps>) {
   const center = useCenterTabs()
+  const [view, setView] = createSignal<当前视图 | undefined>(undefined)
 
-  const current = createMemo(() => {
+  createEffect(() => {
     const key = center.active()
-    if (!key) return undefined
-    const tab = center.tabs().find((candidate) => contentTabKey(candidate) === key)
-    if (!tab) return undefined
-    const extension = extensionOf(tab.path)
-    if (!extension) return undefined
-    const Component = props.registry.resolve(extension)
-    if (!Component) return undefined
-    return { Component, path: tab.path }
+    const tab = key ? center.tabs().find((candidate) => contentTabKey(candidate) === key) : undefined
+    const extension = tab ? extensionOf(tab.path) : undefined
+    const load = extension ? props.registry.resolve(extension) : undefined
+
+    if (!tab || !load) {
+      setView(undefined)
+      return
+    }
+
+    // 视图是**懒加载**的（注册表存的是 `load: () => Promise<组件>`），拿到它要等一个 chunk。
+    // 结果可能**迟到**：用户等不及已经切走了。`alive` 在 effect 重跑 / 组件卸载时被 Solid 置否，
+    // 迟到的结果就此丢弃——否则上一个文件的组件会盖掉后选中的文件。
+    let alive = true
+    onCleanup(() => {
+      alive = false
+    })
+
+    // 加载期间**不清空**旧视图：一清空，下面那层就会把调用方的路由页翻出来闪一下。这个空档只有
+    // 一次 chunk 拉取那么长（同一类格式还只在首次进入时拉），但闪一下的观感像是「点错了」。
+    // 视图组件自己管「内容读取中」那一档（`BinaryView` 的 pending 态），这里只管 chunk 这一小段。
+    void load().then(
+      (Component) => {
+        if (alive) setView({ Component, path: tab.path })
+      },
+      // 但 chunk **加载不出来**时（断网 / 构建产物缺失）必须收手清空：留着旧文件会让民警
+      // 对着「卷宗.pdf」这个标题看立项书的内容。
+      () => {
+        if (alive) setView(undefined)
+      },
+    )
   })
 
   return (
     <>
       {/*
         页面**常驻**，有视图时只把它藏起来（`display:none`），而不是从树上摘掉。
-        这是 T013 修掉的一个真缺陷：原先写成 `<Show ... fallback={props.children}>`，
-        `children` 在视图出现/消失时被卸载重挂——而它在生产里是**上游路由页面**，
-        于是点一下 tab 就丢掉整页状态（滚动位置、已取的数据、填了一半的表单），点回来重新挂载。
-        T012 当时看不出来：那时 `.docx/.pdf` 之外没有视图，`Show` 从不切换，这条分支永远走不到。
-
-        可见时用 `display: contents` 而不是 `block`：这层包裹**不产生盒子**，页面仍像以前一样
-        直接做中栏（`flex flex-col items-start`）的子项，不改变既有布局。
+        生产里 `children` 是上游路由页面，卸载重挂会丢掉整页状态（滚动位置、已取的数据、表单填写）。
+        可见时用 `contents` 而非 `block`：不引入多余盒，页面仍是中栏原本的 flex 子项。
       */}
-      <div data-slot="center-page" style={{ display: current() ? "none" : "contents" }}>
+      <div data-slot="center-page" style={{ display: view() ? "none" : "contents" }}>
         {props.children}
       </div>
-      <Show when={current()} keyed>
-        {(view) => <Dynamic component={view.Component} path={view.path} load={props.load} />}
+      <Show when={view()} keyed>
+        {(current) => <Dynamic component={current.Component} path={current.path} load={props.load} />}
       </Show>
     </>
   )
