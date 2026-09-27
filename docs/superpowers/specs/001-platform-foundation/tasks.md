@@ -31,7 +31,10 @@
 
 ## Phase 2: Foundational（阻塞所有用户故事的底座）
 
-- [ ] T003 [FE·新增] 实现三栏布局容器 `workspace/three-pane.tsx`（左/中/右骨架 + 折叠/拖拽），并以最小挂载接入 new 布局 `layout-new.tsx:41` 的 `<main>`（**新增，非重定义 LegacyLayout**——legacy 已退休不改造）[FR-001] [T001] [出参：登录后渲染三栏骨架]
+- [x] T003 [FE·新增] 实现三栏布局容器 `workspace/three-pane.tsx`（左/中/右骨架 + 折叠/拖拽），并以最小挂载接入 new 布局 `layout-new.tsx:41` 的 `<main>`（**新增，非重定义 LegacyLayout**——legacy 已退休不改造）[FR-001] [T001] [出参：登录后渲染三栏骨架]
+      → 产出 `packages/app/src/workspace/three-pane.tsx`（槽位式：`left` / `children` / `right` + `leftCollapsed` / `rightCollapsed`，宽度 280 / 360px 按 DESIGN.md §4.1，复用上游 `@opencode-ai/ui/resize-handle`，夹取 160px~视口50% 与 240px~视口2/3）+ 6 个组件测试 `three-pane.test.tsx`（全绿，19 expect）。挂载点 `layout-new.tsx:43`。
+      ✅ 出参**结构性满足、视觉上未显现**：容器已进入 `layout-new.tsx` 渲染树，但左右槽位暂为空（左栏由 T006、右栏由 T007/T009 供给），故此刻**看不到三栏**——这是任务切分的预期中间态，非缺陷。中栏原样复刻 `<main>` 的 flex 上下文（`flex flex-col items-start`），既有路由布局**零变化**：`test:unit` 725 pass（与 T002 末一致）、`test:browser` 41 pass。
+      🔧 **本 task 附带补齐了前端组件测试地基**：`packages/app` 此前 **0 个 `.test.tsx`、无组件测试能力**（`tsconfig` 为 `"jsx": "preserve"` → Bun 退化成 `React.createElement`）。按仓库既有范式（`packages/tui` 的 `@opentui/solid/preload`）新增本包自有 preload `packages/app/solid-jsx.ts`（`babel-preset-solid` generate:"dom" + `@babel/preset-typescript`），并加 `test:components` 脚本；3 个 devDep 均已存在于 `bun.lock`，**无新增下载**。T004–T017 可直接复用。
 - [ ] T004 [P] [FE·新增] 实现 `center/view-registry.ts`（扩展名→视图组件 的注册式接口 + 查找）[FR-007][FR-008] [T002] [出参：注册一个测试视图可被查找到]
 - [ ] T005 [P] [FE·新增] 实现 `center/tab-store.ts`（跨模块 tab 累积、切模块不清空的状态）[FR-004][FR-006] [T002] [出参：单测验证跨模块切 tab 状态保留]
 
