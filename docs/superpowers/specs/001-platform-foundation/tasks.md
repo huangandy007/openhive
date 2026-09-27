@@ -16,7 +16,8 @@
 
 ## Phase 1: Setup（定位 + 建目录）
 
-- [ ] T001 [P] [FE·换皮] 定位 opencode 前端三栏真实组件（sidebar-rail / session 主内容区 / SessionSidePanel），产出「改造落点清单」[FR-001] [无依赖] [出参：三栏真实组件路径 + 可改造点说明]
+- [x] T001 [P] [FE·换皮] 定位 opencode 前端三栏真实组件（sidebar-rail / session 主内容区 / SessionSidePanel），产出「改造落点清单」[FR-001] [无依赖] [出参：三栏真实组件路径 + 可改造点说明]
+      → 产出 `refactor-targets.md`（行号已逐条核取）。**阻断性发现：三栏靶子（rail / 左栏）全在 legacy 布局，而 legacy 已被上游退休**（`oldInterfaceSunset = 2026-09-14` 已过 → `settings.tsx:251` `oldInterfaceRetired = true` → `:129` `resolveNewLayoutDesigns` 无条件返回 `true`），当前运行时 `newLayoutDesigns()` 恒为 true，走 `layout-new.tsx`（仅 49 行：Titlebar + 单个 `<main>`，**无 rail、无左栏**）。右栏 `SessionSidePanel` 存活但职责是「文件树 + review」而非 AI 会话。token 靶子须由 legacy `--xxx` 换为 `--v2-*`（且 v2 浅色值同时在 `:root` 与 `[data-color-scheme="light"]`，只改前者会被覆盖）。**需一次方向决策（建在 new 布局 vs 改回 legacy），见 `refactor-targets.md` §6。**
 - [ ] T002 [P] [FE·新增] 在 `packages/app/src/` 下建 `rail/`、`center/`、`topbar/`、`workspace/` 目录骨架 [FR-001] [无依赖] [出参：目录结构就位，typecheck 通过]
 
 ## Phase 2: Foundational（阻塞所有用户故事的底座）
