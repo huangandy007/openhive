@@ -3,6 +3,9 @@ interface ImportMetaEnv {
   readonly VITE_OPENCODE_SERVER_PORT: string
   readonly VITE_OPENCODE_CHANNEL?: "dev" | "beta" | "prod"
 
+  /** 顶栏品牌名；未注入时用源码兜底默认值（宪法 II：品牌化走配置）。 */
+  readonly VITE_OPENHIVE_BRAND_NAME?: string
+
   readonly VITE_SENTRY_DSN?: string
   readonly VITE_SENTRY_ENVIRONMENT?: string
   readonly VITE_SENTRY_RELEASE?: string

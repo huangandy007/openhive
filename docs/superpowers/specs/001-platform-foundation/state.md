@@ -1,7 +1,8 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T006 已完成。**T007 待启动**（等用户说「next」）。
+T007 已完成。**T008 待启动**（等用户说「next」）。
+⚠️ 启动 T008 前请留意：T007 的 `Topbar` **尚未接线**，挂载与用户身份已移交 T008（理由见下）。
 
 ## 已完成
 - **T001** [FE·换皮] 定位三栏真实组件 → 产出 `refactor-targets.md`
@@ -58,6 +59,19 @@ T006 已完成。**T007 待启动**（等用户说「next」）。
   - ⚠️ **上游遗留观察（未本地修）**：`packages/ui/src/components/icon.css` 给图标自身设 `color: var(--icon-base)`，理论上会盖住父级 `text-v2-icon-icon-muted`。沿用仓库先例（`dialog-connect-provider.tsx:135` 在父按钮放 `text-v2-*`），未改上游 CSS。T017 须确认图标颜色是否真生效；若被覆盖属上游问题 → 上报
   - TDD 诚实标注：① `entries.test.ts` 第 1 条（五入口清单）非 RED 驱动，是需求守卫断言（测试内已注释）② 循环 2 的 filter 分支与第 1 条写在同一次 Write（提前落地）→ **回退为最小直通**确认真 RED（得 5、期望 2）后恢复，且刻意只写「需要能力位的才过滤」把 `!entry.capability` 留给循环 3 ③ 循环 3/4 同样提前写进同一 Write → 各自回退、各自确认 RED（6 labels / `Received ""`）后恢复 ④ 循环 5 真 RED（`not.toBeNull()` Received `null`）⑤ 循环 6 是 GREEN 后发现 `SETTINGS_ENTRY` 未接线**才补写的独立测试**，先真 RED 再接线
 
+
+- **T007** [P] [FE·换皮+新增] 顶栏 `packages/app/src/topbar/`：`brand.ts` + `fullscreen.ts` + `menu.ts` + `topbar.tsx` + 20 个测试（29 expect）
+  - **品牌名走配置**（宪法 II）：`resolveBrandName(import.meta.env.VITE_OPENHIVE_BRAND_NAME)`，源码只留兜底默认值；空串/纯空白也回落（CI 的 `VITE_X=` 场景）。**T017 只需补配置注入 + Logo 资源，不用动组件**
+  - **挂载点复核（推翻了子代理结论，以实测为准）**：`titlebar.tsx` 的 `<Switch>` 中 **v2 分支 = `:192-437`、legacy 分支 = `:438-589`**。`#opencode-titlebar-left`（`:562`）/ `#opencode-titlebar-center`（`:571`）**都只在 legacy 分支**；v2 唯一注入点是 `TitlebarV2Right`（`:608`）里的 `#opencode-titlebar-right`（`:614`）。v2 顶栏高 **36px**（`:43-44`），非 front 的 52px
+  - **DESIGN.md 新增 §4.4 顶栏**：宪法 §八要求「未覆盖的，先在 DESIGN.md 补充再引用」，而 DESIGN 原本**无顶栏章节**。§4.4 记四要素 + 「高度沿用原生 36px」+「颜色只引用 token，不新增 hex」+「品牌名走配置」
+  - 5 条组件循环（品牌位 / 站内信含未读数 / 全屏 / 用户区 / 下拉 4 条）+ 3 条纯函数循环（`fullscreen` / `brand` / `menu`）。REFACTOR 把用户区抽成 `UserMenu`（自带展开态）后重跑全绿
+  - 🔴 **未接线（本任务最大偏离）**：`Topbar` **没有**挂进 `layout-new.tsx`。FR-003 的用户区需真实身份，而 001 当前**无任何登录态来源**（登录是 T008/FR-001）；塞假用户等于往 DOM 里放谎。挂载仅 3 行（上游 `useTitlebarRightMount()` + `<Portal mount>` 惯用法，先例 `new-session-view.tsx:77-93`）→ **已移交 T008**（tasks.md T008 条目下已写明）
+  - ⚠️ **图标选型（与 T006 同源问题）**：原生图标集**无 `bell`/`user`/`lock`/`logout`**；宪法 I 不许往上游 `icon.tsx` 加图标 → 站内信取 `comment`（避开 rail 的 `speech-bubble`）、全屏取 `expand`
+  - ⚠️ **全屏按钮不随状态切图标**：只用单一 `expand`，接 `fullscreenchange` 做两态**刻意没做**（Simplicity First；FR-003 只要求「全屏」）
+  - ⚠️ **站内信红点做成「数字胶囊」**：v2 无「纯色红填充」语义 token（`--v2-avatar-bg-red` 语义是头像色），改用 danger 三件套 `bg/fg/border-v2-state-*-danger`；同时满足 §4.3「不只靠颜色」
+  - ⚠️ **视觉类零断言（L2 缺口）**：同 T006。**T017 新增待核对项**——`BrandMark` 渐变用 `stop-color="var(--v2-…)"`（同上游 `logo.tsx` 的 `fill="var(--icon-base)"` 写法），需确认 Chromium 下 SVG `stop-color` 真吃 CSS 变量
+  - TDD 诚实标注：① `menu.test.ts` 第 1 条（下拉项清单）非 RED 驱动，是需求守卫断言（测试内注释声明，同 T006）② 三条纯函数循环以「模块不存在」起步（本仓新文件的标准 RED 形态）③ 组件 RED 分 5 次拿到，每条都先真 RED（`Expected ["enter"] / Received []`、`Received: undefined`、helper 抛错）④ 去掉 `as unknown as Document` 断言后 typecheck 报 TS2345 ×2 → **修的是测试假对象**，生产参数反而从 `Document` 收窄为结构类型 `FullscreenHost`（更强约束）
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -73,21 +87,21 @@ T006 已完成。**T007 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T006 末）
+## 质量门禁（T007 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **748 pass / 0 fail**（107 files） | 干净（T005 末 744 + T006 新增 4） |
-| `packages/app` `bun run test:components` | ✅ **12 pass / 0 fail**（30 expect） | 干净（T005 末 6 + T006 新增 6） |
+| `packages/app` `bun run test:unit` | ✅ **758 pass / 0 fail**（110 files） | 干净（T006 末 748 + T007 新增 10） |
+| `packages/app` `bun run test:components` | ✅ **22 pass / 0 fail**（48 expect） | 干净（T006 末 12 + T007 新增 10） |
 | `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 曾真实报错 1 处，已修（见下） |
 | `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T006 触碰文件 lint 自查**（`bunx oxlint packages/app/src/rail`）：**0 warning / 0 error**（4 files）。全仓那 **1 个 error 仍是既有上游**那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义），跨平台真实存在、与基点逐字节相同。
+**T007 触碰文件 lint 自查**（`bunx oxlint packages/app/src/topbar`）：**0 warning / 0 error**（8 files）。初次有 2 条 warning（`no-unsafe-type-assertion` + `unbound-method`，均在测试内）→ 已修（生产侧参数改结构类型 `FullscreenHost`、测试侧改用属性描述符保存/还原），复查 0 命中。全仓那 **1 个 error 仍是既有上游**那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx` 八进制转义），已单独复核该文件自带 13 warnings + 那 1 error，跨平台真实存在、与基点逐字节相同。
 
 > ⚠️ **typecheck 修了什么**：`entries.test.ts:20` 的 `expect(visibleEntries(RAIL_ENTRIES)).toEqual(RAIL_ENTRIES)` 报 `TS2769`（`readonly RailEntry[]` 不可赋给可变形参）。**改的是断言** → `[...RAIL_ENTRIES]`（`toEqual` 走深比较，断言强度不变），**没改生产类型**——`visibleEntries` 返回可变数组是刻意的（给调用方留排序余地）。
 
-> ⚠️ **warning 计数诚实标注**：T005 末记 4901，本次 **4902**（+1）。T005 已记录过同一抖动现象（oxlint 12 线程输出计数不稳定）。本任务 4 个文件在 lint 输出中 **0 命中**，故**只主张「我引入 0 命中」，不主张「4902 = 我引入」**，也不主张「4902 是既有噪声」——两轮读数差 1 而代码面无从属关系，**归因不明**，如实记为「未解释的 ±1 抖动」。
+> ⚠️ **warning 计数诚实标注**：T005 末记 4901，T006 末与 **T007 末均为 4902**（本次未变）。T005 已记录过同一抖动现象（oxlint 12 线程输出计数不稳定）。本任务 8 个文件在 lint 输出中 **0 命中**，故**只主张「我引入 0 命中」，不主张「4902 与我无关」**——总计数曾出现 ±1 抖动而代码面无从属关系，**归因不明**，如实记为「未解释的抖动」。
 
 ### 唯一仍在红的门禁：lint 的 1 个 error（已知，待上报上游）
 上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 的 `content-['\200B']`（Tailwind 类里的八进制转义）。该文件与基点**逐字节相同**，跨平台真实存在（非 Windows 特有）。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**决策：不在本项目内私改，记为已知红，上报上游**。本次新增文件在 lint 输出中 **0 命中**；warning 明细全部落在既有文件上（本任务 4 文件 0 命中），但**总计数有 ±1 抖动、归因不明**，见上。
@@ -111,14 +125,18 @@ T006 已完成。**T007 待启动**（等用户说「next」）。
 - ⚠️ **本机 `bun install` 会污染 `bun.lock`**：它把每个包的空 registry 字段改写成本机 `https://registry.npmmirror.com/...` 显式地址（纯 churn，3201 行）。**每次 `bun install` 后须 `git checkout -- bun.lock` 回退**，否则会把本机镜像源配置提交进仓库
 - 🆕 **前端组件测试入口**（T003 起）：`packages/app/solid-jsx.ts`（本包自有 Solid JSX preload）+ `package.json` 脚本 `test:components`。改任何 `packages/app` 的 `.tsx` 组件/测试后，跑 **`bun run test:components`**；`.tsx` 测试**不能**并进 `test:unit`（`--conditions=solid` 下会报 React 未定义）。
 - 🆕 `.tsx` 测试的 glob 坑：带引号的 `"./src/**/*.test.tsx"` 会被 bun 当**过滤器**（"Test filter had no matches"）；必须**不加引号**写成 `./src/**/*.test.tsx`，由 shell 展开 globstar 才能匹配任意深度（已用探针文件实测）。
-- ✅ **已解决（原「T006 前须定：能力位 / `is_admin` 契约口径」）**：用户 2026-09-27 裁定**「001 只出接口，门禁留给 010」**。T006 已按此落 `visibleEntries` 过滤接口（不接签发方）；同源问题（FR-003「用户管理」管理员专属 vs 001 无 admin 门禁）同样留待 010。**归属更正**：原记录写成「T006 前须定」有误——该项实属 FR-003 → **T007（顶栏下拉）**，非 FR-002 → T006（图标栏）；T006 只需出过滤接口，已具备。
-- 🔴 **待决项（T017 前须定 / T017 阻断项）**：**选中底色的品牌色 token 不存在**。DESIGN §1.3/§4.1 要求选中底 = 浅金 `#FEF3C7`，但 v2 的 overlay 语义 token 只有中性黑/白 alpha，**无品牌色 overlay token**；T006 暂用 `--v2-overlay-simple-overlay-pressed`（中性灰，仓库既有「选中面」token）。按宪法 §八不能硬编码 `#FEF3C7`，按宪法 I `theme.css` 归 T017。**T017 须二选一**：① 全局重定 `overlay-pressed` 为品牌色；② 新增语义选中面 token（并**同改 `:root` 与 `[data-color-scheme="light"]` 两处**）。否则正式违反 DESIGN §4.1。
-- 🆕 **待决项（T007 前须定）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`，但 plan.md:61-62 只列了 `entries.ts`。**须回改 plan.md 文件结构**（补上组件文件），或明确声明为计划外新增。同类偏差可能还会在 T007/T009 出现，宜一次性回改。
-- 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标，T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证）。
+- ✅ **已解决（原「T006 前须定：能力位 / `is_admin` 契约口径」）**：用户 2026-09-27 裁定**「001 只出接口，门禁留给 010」**。T006 已按此落 `visibleEntries` 过滤接口（不接签发方）；同源问题（FR-003「用户管理」管理员专属 vs 001 无 admin 门禁）同样留待 010。**归属更正**：原记录写成「T006 前须定」有误——该项实属 FR-003 → **T007（顶栏下拉）**，非 FR-002 → T006（图标栏）；T006 只需出过滤接口，已具备。**T007 已按此落地**：`menu.ts` 的 `visibleUserMenuItems(entries, isAdmin)` 只做界面收敛（`TopbarUser.isAdmin` 控制「用户管理」显隐），并在源码注释里写死「这不是鉴权，授权在执行层」（宪法 IV）。
+- 🔴 **待决项（T017 前须定 / T017 阻断项，T007 后已扩为两条）**：
+  1. **选中底色的品牌色 token 不存在**。DESIGN §1.3/§4.1 要求选中底 = 浅金 `#FEF3C7`，但 v2 的 overlay 语义 token 只有中性黑/白 alpha，**无品牌色 overlay token**；T006 暂用 `--v2-overlay-simple-overlay-pressed`（中性灰，仓库既有「选中面」token）。**T017 须二选一**：① 全局重定 `overlay-pressed` 为品牌色；② 新增语义选中面 token（并**同改 `:root` 与 `[data-color-scheme="light"]` 两处**）。否则正式违反 DESIGN §4.1。
+  2. 🆕 **品牌金 token 不存在（T007 新增）**。`topbar/BrandMark` 的描边/渐变取 `--v2-icon-icon-accent` / `--v2-icon-icon-accent-hover`，而这两个 token 今天**都是蓝色**（`--v2-blue-600` / `--v2-blue-700`），**整个 v2 色板无任何金色 token**。按宪法 §八不能硬编码 `#F59E0B`/`#B45309`，故 **logo 现在是蓝的**，DESIGN §5.1 的蜂蜜金要等 T017 换皮生效（换皮后组件无需改动）。
+- 🆕 **待决项（T008 前须定）**：**T007 的 `Topbar` 未接线**。组件与测试齐备但**没有挂进 `layout-new.tsx`**——FR-003 用户区需真实身份，而 001 当前无登录态来源（登录是 T008/FR-001）。挂载仅 3 行 + 用户身份喂参，**已明确移交 T008**（tasks.md T008 条目下写了）。若你希望「现在就挂上、先给个占位身份」，请说一声。
+- 🆕 **待决项（T007 前须定，现已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`，但 plan.md:61-62 只列了 `entries.ts`；T007 又新增 `topbar/` 下 4 个源文件（plan 只写了「实现顶栏 `topbar/`」，未列文件）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标——T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`；T007 又自选 `comment`（站内信，因原生集**无 `bell`**）、`expand`（全屏）。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证；宪法 I 禁止往上游 `icon.tsx` 加图标）。
+- 🆕 **待决项（可延后，设计侧复核）**：**DESIGN.md 新增的 §4.4 顶栏章节的措辞是我拟的**。因宪法 §八要求「未覆盖的先在 DESIGN.md 补充再引用」，而 DESIGN 原本完全没有顶栏章节，T007 先补了 §4.4（四要素表 + 高度沿用原生 36px + 只引用 token + 品牌名走配置）。**内容与措辞需设计侧过一眼**。
 - 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。**（用户已确认此发现成立）**
 - 🆕 **待决项（T012 前须定）**：**FR-007 的「10 类」逐项枚举**。用户已确认口径 = **日常办公常见的 10 类文件**，原列的「数据明细 / 可视化图表 / 分析记录」**不计入**（它们与上一条数据轴待决项是同一个问题）。已落修订记录 2026-09-27b 于 `spec.md` / `tasks.md`。
   **候选提案（我拟，未获确认，仅作 T012 的起步锚点）**：① 文档 `.doc/.docx` ② 表格 `.xls/.xlsx/.csv` ③ 演示 `.ppt/.pptx` ④ PDF `.pdf` ⑤ 图片 `.png/.jpg/.jpeg/.gif/.bmp/.webp` ⑥ 文本/图文混排 `.txt/.md/.rtf` ⑦ 思维导图 `.xmind`（或 `.mm`）⑧ 压缩包 `.zip/.rar/.7z` ⑨ 音视频 `.mp3/.mp4/.wav` ⑩ 代码/配置 `.json/.xml/.yaml`。**待用户裁定后再动 T012**；⑧⑨ 是否要"预览"还是只"下载"也需一并定。
 - 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
 
 ## 最后更新
-2026-09-27（T006 完成：图标栏 `rail/`（五入口 + 系统设置 + capability 过滤接口）+ 10 个测试；test:unit 748 pass、test:components 12 pass、typecheck 30/30 曾真实报错 1 处已修、lint 本任务 4 文件 0 命中。**新增 T017 阻断项（选中底色无品牌色 token）**、**新增 plan.md 文件结构回改待办**；原「T006 前须定：能力位口径」已由用户裁定解决并更正归属到 T007）
+2026-09-27（T007 完成：顶栏 `topbar/`（品牌 Logo / 站内信 / 全屏 / 用户下拉）+ 20 个测试；test:unit 758 pass、test:components 22 pass、typecheck 30/30 曾真实报错 1 处已修、lint 本任务 8 文件 0 命中。**DESIGN.md 新增 §4.4 顶栏**。**两处红旗**：① `Topbar` **未接线**（无登录态来源，已移交 T008）；② 🔴 T017 阻断项由 1 条扩为 2 条——除选中底色外，**品牌金 token 也不存在**（`--v2-icon-icon-accent` 今天是蓝色，logo 因此暂时是蓝的）。另：复核推翻了「`#opencode-titlebar-left` 可用」的结论——它只在 legacy 分支）
