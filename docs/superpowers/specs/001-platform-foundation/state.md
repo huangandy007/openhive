@@ -1,7 +1,7 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T001 已完成，**等待方向决策**（见「阻塞项」）。T002 起未开始。
+T001 已完成，方向决策已定（**建在 new 布局**），plan/spec/tasks 落点修订已完成。**T002 待启动**（等用户说「next」）。
 
 ## 已完成
 - **T001** [FE·换皮] 定位三栏真实组件 → 产出 `refactor-targets.md`
@@ -13,17 +13,19 @@ T001 已完成，**等待方向决策**（见「阻塞项」）。T002 起未开
   - 换皮靶子须由 legacy `--xxx` 改为 `--v2-*`（`packages/ui/src/v2/styles/theme.css`）
 
 ## 阻塞项
-**需一次方向决策：openhive 三栏工作台建在哪套布局上？**
+**无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
-| 方案 | 说明 | 建议 |
+| 方案 | 说明 | 结果 |
 |---|---|---|
-| **A. 建在 new 布局** | 在 `layout-new.tsx:41` 的 `<main>` 上下游新增三栏骨架；换皮对 `--v2-*` | ⭐ **推荐**（合宪法 I/V） |
+| **A. 建在 new 布局** | 在 `layout-new.tsx:41` 的 `<main>` 上下游新增三栏骨架；换皮对 `--v2-*` | ✅ **已采纳**（合宪法 I/V） |
 | B. 改回 legacy 布局 | 改 `newLayoutDesigns` 判定逻辑，换皮 legacy 三栏 | ⛔ 违反宪法 I/V，且 legacy 将被上游删除 |
 | C. 双轨 | 两套都做 | ⛔ 不推荐 |
 
-详细论证与「若采纳 A 需同步修订的 4 项」见 `refactor-targets.md` §6。
-
-**注意**：`session.md` 锁定「plan 已定稿，禁止重新规划」，故 `plan.md` / `spec.md` **尚未按发现修订**，等决策后一并处理。
+决策后已按宪法 §六完成**同步修订**（`refactor-targets.md` §6 清单 1–4 全部 ✅）：
+- `plan.md`：修订记录 + Summary + 文件结构 + 换皮区 ①② 表 + ④ 汇总 + R4/R5/R6 + 宪法 Check V
+- `spec.md`：修订记录 + FR-001…010 承载物标注 + Assumptions
+- `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
+- `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
 ## 质量门禁（当前基线）
 - `packages/app` `bun run test:unit`：**724 pass / 0 fail**（103 files）
@@ -36,4 +38,4 @@ T001 已完成，**等待方向决策**（见「阻塞项」）。T002 起未开
 - ⚠️ **本机 `bun install` 会污染 `bun.lock`**：它把每个包的空 registry 字段改写成本机 `https://registry.npmmirror.com/...` 显式地址（纯 churn，3201 行）。**每次 `bun install` 后须 `git checkout -- bun.lock` 回退**，否则会把本机镜像源配置提交进仓库
 
 ## 最后更新
-2026-09-27（T001 完成）
+2026-09-27（T001 完成 + 落点决策 + plan/spec/tasks 同步修订）
