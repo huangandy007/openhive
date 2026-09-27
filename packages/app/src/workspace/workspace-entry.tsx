@@ -1,5 +1,7 @@
-import { createSignal, Show, type ParentProps } from "solid-js"
+import { Show, type ParentProps } from "solid-js"
 import { Portal } from "solid-js/web"
+import { TabBar } from "@/center/tab-bar"
+import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { Topbar } from "@/topbar/topbar"
@@ -23,14 +25,24 @@ export interface WorkspaceEntryProps {
  * 没接）。本组件是它们的**唯一接线处**：应用入口只认这一个组件，两个子组件都不必知道
  * 自己落在 `layout-new.tsx` 里。
  *
- * 职责边界：
- * - 当前停留的模块（图标栏高亮）由本组件持有；**切模块与中栏 tab 的联动不在这里**
- *   ——那是 T010（FR-006）。
- * - capability 省略即不过滤，故 001 下五入口恒可见；真正的鉴权在下游执行层（宪法 IV）。
+ * 中栏 tab 状态（`CenterTabsProvider`）也在这里落地：图标栏的当前模块与中栏 tab 是
+ * **同一份状态**（FR-006 的联动正来自这一点——切模块走 `switchModule`，它按定义不动 tabs），
+ * 而模块动作（T011）与视图（T012+）都在 provider 之内，就近取用即可。
+ *
+ * capability 省略即不过滤，故 001 下五入口恒可见；真正的鉴权在下游执行层（宪法 IV）。
  */
 export function WorkspaceEntry(props: ParentProps<WorkspaceEntryProps>) {
   // 默认停在图标栏第一个入口（FR-002 声明的顺序即优先级）：进门就看得见「我在哪」。
-  const [activeModule, setActiveModule] = createSignal(RAIL_ENTRIES[0]?.id)
+  return (
+    <CenterTabsProvider initialModule={RAIL_ENTRIES[0]?.id}>
+      <WorkspaceBody {...props} />
+    </CenterTabsProvider>
+  )
+}
+
+/** provider 之内的那一层——context 只能由 provider **下面**的组件消费。 */
+function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
+  const center = useCenterTabs()
 
   return (
     <>
@@ -39,11 +51,20 @@ export function WorkspaceEntry(props: ParentProps<WorkspaceEntryProps>) {
           挂载点 `<main>`（layout-new.tsx）是 `flex-col`，直接并列两个子元素会变成上下堆叠。 */}
       <div data-component="workspace-entry" class="flex-1 min-h-0 min-w-0 w-full flex">
         <Rail
-          active={activeModule()}
-          onSelect={(id) => setActiveModule(id)}
+          active={center.module()}
+          onSelect={(id) => center.switchModule(id)}
           capabilities={props.capabilities}
         />
-        <ThreePane>{props.children}</ThreePane>
+        <ThreePane>
+          {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
+          <TabBar
+            tabs={center.tabs()}
+            active={center.active()}
+            onActivate={(key) => center.activate(key)}
+            onClose={(key) => center.close(key)}
+          />
+          {props.children}
+        </ThreePane>
       </div>
       <Show when={props.titlebarRight?.()} keyed>
         {(mount) => (

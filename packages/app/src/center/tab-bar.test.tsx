@@ -20,9 +20,25 @@ const TABS: ContentTab[] = [
 const slots = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLElement>(`[data-slot='${name}']`)]
 const titles = (host: HTMLElement) => slots(host, "tab").map((el) => el.querySelector("[data-slot='tab-title']")?.textContent)
 
-/** 渲染一个可用宽度充裕的 tab 栏（溢出另用 `availableWidth` 收窄）。 */
-function mountBar(props: Partial<Parameters<typeof TabBar>[0]> = {}) {
-  return mount(() => <TabBar tabs={TABS} availableWidth={1000} onActivate={() => {}} onClose={() => {}} {...props} />)
+type BarProps = Partial<Parameters<typeof TabBar>[0]>
+
+/**
+ * 渲染一个可用宽度充裕的 tab 栏（溢出另用 `availableWidth` 收窄）。
+ *
+ * 逐个字段显式传，**不用展开覆盖**：Solid 的 spread 会跳过值为 `undefined` 的键，
+ * `{...{ availableWidth: undefined }}` 覆盖不掉前面的 1000，测试就成了空转
+ * （实测过：这个写法让「不传宽度」那条测试假绿）。要「不传」就写 `"availableWidth" in props`。
+ */
+function mountBar(props: BarProps = {}) {
+  return mount(() => (
+    <TabBar
+      tabs={props.tabs ?? TABS}
+      active={props.active}
+      availableWidth={"availableWidth" in props ? props.availableWidth : 1000}
+      onActivate={props.onActivate ?? (() => {})}
+      onClose={props.onClose ?? (() => {})}
+    />
+  ))
 }
 
 describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
@@ -105,5 +121,12 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
 
     expect(slots(host, "tab-overflow")).toHaveLength(0)
     expect(titles(host)).toEqual(["专案A", "话单.csv", "流水.xlsx"])
+  })
+
+  test("还没量到可用宽度（首帧 / 无 CSS 引擎）时先全显示：不凭空把 tab 藏进「⋯」", () => {
+    const host = mountBar({ availableWidth: undefined })
+
+    expect(titles(host)).toEqual(["专案A", "话单.csv", "流水.xlsx"])
+    expect(slots(host, "tab-overflow")).toHaveLength(0)
   })
 })

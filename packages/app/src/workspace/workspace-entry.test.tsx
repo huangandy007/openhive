@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { type JSX } from "solid-js"
+import { onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
+import { useCenterTabs } from "@/center/tab-context"
+import { type ContentTab } from "@/center/tab-store"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -98,5 +100,82 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
 
     expect(text(slot, "topbar-user-name")).toBe("张三")
     expect(text(slot, "topbar-user-police-id")).toBe("警号: 012345")
+  })
+})
+
+const 专案: ContentTab = { module: "project", title: "专案A", path: "/p/a.intent" }
+const 话单: ContentTab = { module: "cdr-analysis", title: "话单.csv", path: "/p/cdr.csv" }
+
+/**
+ * 中栏里替模块开 tab 的消费者——写法与 T011 的「模块动作」同构（`useCenterTabs().open`），
+ * 不是测试专用后门。001 尚无模块动作，故这条通路由测试直接驱动。
+ */
+function OpenTabs(props: { tabs: ContentTab[] }) {
+  const center = useCenterTabs()
+  onMount(() => props.tabs.forEach((tab) => center.open(tab)))
+  return null
+}
+
+const tabTitles = (host: HTMLElement) => [
+  ...host.querySelectorAll<HTMLElement>("[data-slot='tab-title']"),
+].map((el) => el.textContent)
+
+describe("中栏 tab 与左栏模块切换的联动（FR-006）", () => {
+  test("中栏顶部挂着 tab 栏，模块开的 tab 显示在里面", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案, 话单]} />
+      </WorkspaceEntry>
+    ))
+
+    const bar = host.querySelector("[data-component='tab-bar']")
+    expect(bar).not.toBeNull()
+    expect(bar?.closest("[data-slot='three-pane-center']")).not.toBeNull()
+    expect(tabTitles(host)).toEqual(["专案A", "话单.csv"])
+  })
+
+  test("左栏切模块后，中栏已有 tab 仍在、激活态不变（FR-006 出参）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案, 话单]} />
+      </WorkspaceEntry>
+    ))
+    const 激活 = () =>
+      host.querySelector<HTMLElement>("[data-slot='tab'][aria-selected='true']")?.getAttribute("data-module")
+
+    入口(host, "资金分析").click()
+
+    expect(currentModule(host)).toBe("资金分析")
+    expect(tabTitles(host)).toEqual(["专案A", "话单.csv"])
+    expect(激活()).toBe("cdr-analysis")
+  })
+
+  test("点 tab 栏上的关闭：这张 tab 真的从状态里消失（挂载不是摆设）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案, 话单]} />
+      </WorkspaceEntry>
+    ))
+
+    host.querySelector<HTMLElement>("[data-slot='tab'] [data-slot='tab-close']")?.click()
+
+    expect(tabTitles(host)).toEqual(["话单.csv"])
+  })
+
+  test("点非激活的 tab：切过去（激活态跟着走）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案, 话单]} />
+      </WorkspaceEntry>
+    ))
+    const 激活模块 = () =>
+      host.querySelector<HTMLElement>("[data-slot='tab'][aria-selected='true']")?.getAttribute("data-module")
+
+    // 后打开的那张是激活的（打开即切过去），随后点第一张应当把激活态挪过去
+    expect(激活模块()).toBe("cdr-analysis")
+
+    host.querySelectorAll<HTMLElement>("[data-slot='tab']")[0]?.click()
+
+    expect(激活模块()).toBe("project")
   })
 })

@@ -1,8 +1,8 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T009 已完成。**T010 待启动**（等用户说「next」）。
-✅ T009 交付 `center/tab-bar.tsx` + `center/module-color.ts` + `center/tab-overflow.ts`。**未挂载**——挂进三栏 + tab-store 响应式化 + 模块切换联动（FR-006）留给 T010。
+T010 已完成。**T011 待启动**（等用户说「next」）。
+✅ T010 把中栏 tab 真正接进了工作台：`center/tab-context.tsx`（响应式状态层）+ `WorkspaceEntry` 接线 + `tab-bar.tsx` 挂载修正。**FR-006 的联动已成立**——图标栏当前模块与中栏 tab 是同一份状态，切模块走 `switchModule()`，结构上不可能清空 tabs。
 📌 T008 遗留的**计划缺口仍在**（非任何任务引入）：**右栏（AI 会话）没有任何任务供给**——详见「待决项」。
 
 ## 已完成
@@ -99,6 +99,16 @@ T009 已完成。**T010 待启动**（等用户说「next」）。
   - ⚠️ **首轮 typecheck 失败 1 处（已修）**：`Icon` 的 `name` 是枚举联合而非 `string` → 改用 `IconProps["name"]` 收口（同 `RailEntry.icon` 的既有做法）。**未放宽上游类型**
   - ⚠️ **首轮 oxlint 4 条（已修）**：全是 `tab-bar.test.tsx` 的 `TABS[n]!`（`no-unnecessary-type-assertion`）——本仓 `tsconfig` 未开 `noUncheckedIndexedAccess`，故 `!` 多余，已删
 
+- **T010** [US2] [FE·新增] 中栏 tab 的响应式状态与模块切换联动 `packages/app/src/center/tab-context.tsx` + `workspace/workspace-entry.tsx` 接线 + `tab-bar.tsx` 挂载修正（5 单测 / 4 集成测试）
+  - **交付**：新增 `CenterTabsProvider({ initialModule? })` + `useCenterTabs()`（`module()` / `tabs()` / `active()` / `open` / `activate` / `close` / `switchModule`）；`WorkspaceEntry` 拆成「provider 外层 + `WorkspaceBody` 消费层」，图标栏与中栏 tab 共用同一份状态，`<TabBar>` 挂进 `ThreePane` 中栏顶部
+  - **FR-006 的联动机制**：T008 那个组件内 `activeModule` signal **上移**进 `CenterTabState.module`，切模块走 `switchModule()`——它按定义只换 module、不动 tabs，故「切模块不清空 tab」**不是靠额外判断，而是结构上不可能发生**（单测 + 集成测试各证一次）
+  - **为何用 context 而非模块级单例**（对比 T008 `current-user.ts` 的写法）：T011 模块动作 / T012+ 视图散在树深处，逐层传 prop 会把中栏状态焊进每一层；作用域随 provider 走 → 组件测试天然互不串味，**不需要全局复位钩子**
+  - 🔴 **TDD 抓到的一次假绿（最有价值的记录）**：为「宽度未知先全显示」写的测试用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值 → **测试立刻通过**。实因 **Solid 的 spread 跳过值为 `undefined` 的键**，`availableWidth` 仍是 `1000`，该测试什么都没测。改 `"availableWidth" in props` 后立刻真 RED（received `[]`），再实现才转绿。**教训：一写就绿不是省事，是空转；Solid 里「不传 prop」不能用 `undefined` 覆盖表达**
+  - ⚠️ **`tab-bar.tsx` 的两处挂载修正**：① 根元素补 `w-full`（中栏容器是 `flex flex-col items-start`，缺它会缩到内容宽度；**happy-dom 量不出布局，只有人看浏览器才发现**）② `measured()` 为 0 改判为「还没量到」而非「宽度为零」，作不限宽先全显示
+  - ⚠️ **视觉类零断言（L2 缺口，同前）**：`w-full` 的实际铺满效果、空 tab 栏的观感都属 T017 浏览器核对
+  - ⚠️ **未接线的数据（不编造）**：`capabilities` 仍不传（001 无签发方）；tab 的**打开**通路虽已通（`open()`），但**没有任何模块动作去调它**——那是 T011（FR-010）。（本任务的集成测试用与 T011 同构的消费者驱动这条通路，非测试专用后门）
+  - TDD 诚实标注：① RED 形态 = `Cannot find module './tab-context'` + 4 条集成测试报 `useCenterTabs 必须在 <CenterTabsProvider> 之内使用`（功能缺失）② 三个循环：`tab-context` 5 条 → 宽度未知 1 条（先假绿、修测试后真 RED、再实现）③ 4 条集成测试整批先失败后全绿，未逐个制造 4 次 RED ④ 无「先写实现后补测试」
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -114,18 +124,20 @@ T009 已完成。**T010 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T009 末）
+## 质量门禁（T010 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **769 pass / 0 fail**（112 files / 3102 expect） | 干净（T008 末 758 + 11 = `module-color` 4 + `tab-overflow` 7） |
-| `packages/app` `bun run test:components` | ✅ **37 pass / 0 fail**（81 expect） | 干净（T008 末 29 + 8） |
-| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail** | 干净（与 T003 基线**一致**；本任务未动渲染树，复跑确认零回归） |
-| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 首轮**真实报错 1 处已修**（`Icon` 的 `name` 是枚举联合 → 改用 `IconProps["name"]`） |
+| `packages/app` `bun run test:unit` | ✅ **769 pass / 0 fail**（112 files / 3102 expect） | 干净（与 T009 末**完全一致**——本任务未动任何 `.ts` 单测） |
+| `packages/app` `bun run test:components` | ✅ **47 pass / 0 fail**（101 expect） | 干净（T009 末 37 + 5 `tab-context` + 1 宽度未知 + 4 集成） |
+| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail** | 干净（与基线**一致**） |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（本轮无报错） |
 | `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T009 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/rail` → **0 warning / 0 error**（14 files）。首轮曾报 **4 条** `no-unnecessary-type-assertion`，全在 `tab-bar.test.tsx` 的 `TABS[n]!`——本仓 `tsconfig` **未开** `noUncheckedIndexedAccess`，故 `!` 属多余，已删。改的是**测试里的多余断言**，未动生产类型。
+**T010 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 warning / 0 error**（17 files）。首轮 1 条 `no-unused-vars`（`contentTabKey` 随一条被删的错误断言一起失用，已删）。
+
+> 🔴 **本任务最该记住的一条**：那条「宽度未知先全显示」的测试**第一版是假绿**——用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值，而 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 1000，测试什么都没测（立刻通过）。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`）。**测试一写就绿要当红灯看**。
 
 > ⚠️ **typecheck 修了什么**：`tab-bar.tsx` 的 `MODULE_ICONS: Record<string, string>` 把图标名喂给 `<Icon name>` 报 `TS2322`（`string` 不可赋给 97 个名字的联合）。**改的是新代码自己的类型** → `Record<string, IconProps["name"]>`（同 `RailEntry.icon` 的既有做法），**没放宽上游 `Icon` 的类型**（放宽会掩盖「编出不存在的图标」这类真错）。
 
@@ -160,7 +172,8 @@ T009 已完成。**T010 待启动**（等用户说「next」）。
 - ✅ **已解决（原「T008 前须定：T007 的 `Topbar` 未接线」）**：T008 已把 `Topbar` 挂进 `#opencode-titlebar-right`（经 `pages/layout-new.tsx` 的 `useTitlebarRightMount()` 注入 + `<Portal>`），并建立身份接入缝 `workspace/current-user.ts`。**身份未就位时顶栏不渲染用户区**（宁缺勿假，未采纳「塞占位身份」方案）；F2 落地时**只改 `current-user.ts` 一个文件**。
 - 🔴 **待决项（须尽快定，建议补任务）**：**右栏（AI 会话）无任务供给**（T008 发现）。FR-001 要求「右栏 AI 会话」，但 T001–T017 里没有任何任务把 AI 会话放进 `ThreePane` 的右槽（plan.md ① 把它列为「换皮 + 重定职责」却未派生 task；T003 备注「右栏由 T007/T009 供给」**是错记**——T007 顶栏、T009 中栏 tab 栏）。**建议补一个任务**（把 `pages/session/session-side-panel.tsx` 换皮 + 重定职责后填入右槽，或在 001 明确记为「右栏内容归 F8」并据此降低 FR-001 的验收口径）。在此之前，FR-001 的右栏仍只是「位置已定义、内容空缺」。
 - 🆕 **待决项（T009 起须留意）**：**`#opencode-titlebar-right` 是共享注入点**。上游 `new-session-view.tsx:77-93`（`NewSessionStatus`）与 `session-header.tsx:285` 都往同一元素 Portal；T008 挂上的 openhive 顶栏会与它们**并列出现在顶栏右侧**。T017 浏览器核对时须定归属/顺序（可能与 T009「顶栏 session tab 条 vs 中栏 tab 容器」的分工是同一类问题）。
-- 🆕 **待决项（T007 前须定，T009 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；**T009 又新增 `center/module-color.ts` + `center/tab-overflow.ts`**（plan.md:70 的 `center/` 只列了 `tab-bar.tsx`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- 🆕 **待决项（T007 前须定，T010 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；T009 新增 `center/module-color.ts` + `center/tab-overflow.ts`；**T010 又新增 `center/tab-context.tsx`**（plan.md:69-70 的 `center/` 只列了 `tab-bar.tsx` + `tab-store.ts`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- 🆕 **待决项（T010 新增，T017 视觉核对前定）**：**中栏 tab 栏「一个 tab 都没有」时怎么呈现**。首屏就是这个状态（FR-010：tab 由模块动作打开，非预置常驻），现在渲染的是一条 **40px 空条**。**DESIGN §4.5 没定**空态，我没擅自加「空则不渲染」——须设计侧定后改（改动只在 `workspace-entry.tsx` 一个 `<Show>` 或 `tab-bar.tsx` 一处）。
 - 🆕 **待决项（T009 新增，可延后，设计侧复核）**：**DESIGN.md §4.5 的两项裁量**——① 「模块 → 实体身份色」的**取值**（仅「话单=蓝」有 §1.3 既有依据，其余五个按色相可区分性挑）；② **用「模块图标」取代 front 参考件的「文件类型图标」** 这一选择。改色只动 §4.5 表 + `center/module-color.ts` 一处映射，组件不受影响；改图标选型同 T006/T007 的图标评审一并看。
 - 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标——T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`；T007 又自选 `comment`（站内信，因原生集**无 `bell`**）、`expand`（全屏）；**T009 的溢出按钮「⋯」直接用字面字形 U+22EF**（原生 97 个图标名里**无** `ellipsis` / `more-horizontal` / `dots`，已核）。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证；宪法 I 禁止往上游 `icon.tsx` 加图标）。
 - ✅ **已解决（原「T006 遗留：`icon.css` 会不会盖住父级 `text-v2-icon-*`」）**：T009 查实——`packages/ui/src/components/icon.css:8` 给 `[data-component="icon"]` 显式 `color: var(--icon-base)`，而 legacy `theme.css:243` 在 `:root` 全局定义了 `--icon-base: #8f8f8f`。**结论：父级 `text-v2-icon-*` 确实不会给 `Icon` 上色**，必须由**祖先元素提供 `--icon-base`**（自定义属性继承）。T009 的 tab 模块色即按此实现（wrapper 提供 inline `--icon-base`）。**T017 视觉核对与后续任何 Icon 着色都适用此条**；仍按宪法 I 不改上游 CSS。
@@ -171,6 +184,8 @@ T009 已完成。**T010 待启动**（等用户说「next」）。
 - 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
 
 ## 最后更新
+2026-09-27（T010 完成：**中栏 tab 接线 + FR-006 联动**——新增 `center/tab-context.tsx`（`CenterTabsProvider` + `useCenterTabs`），`WorkspaceEntry` 拆为「provider 外层 + `WorkspaceBody` 消费层」，图标栏当前模块与中栏 tab **共用同一份状态**（T008 的组件内 signal 上移进 `CenterTabState.module`），`<TabBar>` 挂进 `ThreePane` 中栏顶部。**切模块不清空 tab 因此是结构性的，不靠额外判断**。`tab-bar.tsx` 补 `w-full`（中栏是 `flex-col items-start`，缺它会缩到内容宽度）+ 「量不到宽度先全显示」。🔴 **抓到一次假绿**：测试用 `{...{availableWidth: undefined}}` 覆盖默认值，而 Solid 的 spread 跳过 `undefined` 键 → 测试空转立刻通过；改 `"availableWidth" in props` 后立刻真 RED。test:unit **769** pass、test:components **47** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中（首轮 1 条 unused import 已删）。⚠️ 全仓 lint 仍 exit 1 / 4902 warnings + 1 error（既有上游，与 T009 末逐字一致）。）
+
 2026-09-27（T009 完成：**中栏 tab 栏**——新增 `center/tab-bar.tsx` + `center/module-color.ts`（模块→身份色变量名）+ `center/tab-overflow.ts`（溢出判定纯函数）+ 3 个测试文件（11 单测 / 8 组件测试）。**未挂载**，留给 T010。🔴 裁定了一个 MUST 级冲突（FR-005「按模块着色」vs DESIGN §4.2「无模块徽章」）→ **着色≠徽章**，依宪法 §八**先补 `openhive-DESIGN.md` §4.5** 再写码，并改掉 §1.3 自相矛盾的「话单模块徽章」行。**不新增任何 hex/token**（复用 `--v2-avatar-bg-*`；激活态取既有 `--v2-background-bg-accent`，不写 `#D97706`）。💡 **回答了 T006 遗留疑问**：`Icon` 的色来自 `--icon-base`，父级 `text-v2-icon-*` 无效，须由祖先元素提供。test:unit **769** pass、test:components **37** pass、test:browser 41 pass、typecheck 30/30（首轮真报错 1 处已修）、本任务目录 oxlint 0 命中（首轮 4 条已修）。⚠️ 全仓 lint 仍 exit 1 / 4902 warnings + 1 error（与 T008 末逐字一致）。）
 
 2026-09-27（T008 完成：**入口接线**——新增 `workspace/workspace-entry.tsx`（图标栏 → 三栏 + 顶栏挂上游注入点）+ `workspace/current-user.ts`（身份接入缝）+ 7 个组件测试；改 3 个既有文件共 3 行 + `topbar.tsx` 的 `user` 改可选。T007 移交的两件事均已落地。**`layout-new.tsx` 只动 3 行**。test:unit 758 pass（与 T007 末一致）、test:components **29** pass、test:browser 41 pass（主动复跑）、typecheck 30/30、本任务目录 oxlint 0 命中。🔴 发现**计划缺口：右栏（AI 会话）无任务供给**，建议补任务。⚠️ `#opencode-titlebar-right` 是共享注入点，会与上游会话状态并列）

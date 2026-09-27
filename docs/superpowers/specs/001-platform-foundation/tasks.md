@@ -131,7 +131,17 @@
       门禁：`test:unit` **769 pass / 0 fail**（T008 末 758 + 11 = `module-color` 4 + `tab-overflow` 7）/ `test:components` **37 pass / 0 fail**（T008 末 29 + 8）/ `test:browser` **41 pass / 0 fail**（与 T003 基线一致）/ `turbo typecheck` **30-30**（首轮失败 1 处：`Icon` 的 `name` 是枚举联合而非 `string`，已改用 `IconProps["name"]` 收口）/ `bunx oxlint packages/app/src/center packages/app/src/rail` **0 命中**（14 files；首轮 4 条 `no-unnecessary-type-assertion` 全在 `tab-bar.test.tsx` 的 `TABS[n]!`——本仓 `tsconfig` 未开 `noUncheckedIndexedAccess`，故 `!` 多余，已删）。
       ⚠️ 全仓 `bun run lint` 仍 **exit 1 / 4902 warnings + 1 error**（与 T008 末**逐字一致**）。那 1 个 error 仍是既有上游那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义），按既定决策上报上游、不本地改。
       📌 交接 T010：① 把 `TabBar` 挂进 `ThreePane` 中栏顶部；② `tab-store`（纯 reducer）升级为响应式（provider / signal）；③ 模块切换联动（FR-006）。
-- [ ] T010 [US2] [FE·新增] 实现左栏切换模块时不清空中栏 tab 的联动 [FR-006] [T005] [出参：切模块后中栏 tab 仍在]
+- [x] T010 [US2] [FE·新增] 实现左栏切换模块时不清空中栏 tab 的联动 [FR-006] [T005] [出参：切模块后中栏 tab 仍在]
+      ✅ 交付 `center/tab-context.tsx`（新增）+ 改 `workspace/workspace-entry.tsx`（接线）+ 改 `center/tab-bar.tsx`（挂载所需 2 处）。**FR-006 的联动机制 = 图标栏的当前模块与中栏 tab 是同一份状态**：`activeModule` 从 T008 的组件内 signal 上移进 `CenterTabState.module`，切模块走 `switchModule()`——它按定义只换 module、不动 tabs，于是「不清空」不是靠额外判断，而是**结构上不可能发生**。
+      **API**：`CenterTabsProvider({ initialModule? })` + `useCenterTabs(): CenterTabs`（`module()` / `tabs()` / `active()` / `open(tab)` / `activate(key)` / `close(key)` / `switchModule(id)`）。reducer 仍归 T005 的 `tab-store.ts`（**纯函数契约未动**），本层只做 signal + 转交。
+      **为何用 context 而非模块级单例**（同 T008 `current-user.ts` 那种写法）：T011 的「模块动作」与 T012+ 的视图散在树深处，逐层传 prop 会把中栏状态焊进每一层；且作用域随 provider 走 → 组件测试天然互不串味，**不必写全局复位钩子**（T008 的 `beforeEach(() => setCurrentUser(undefined))` 那种补丁在这里不需要）。
+      ⚠️ **`WorkspaceEntry` 拆成两层**：context 只能由 provider **下面**的组件消费，故外层 `WorkspaceEntry` 只做 provider，内层私有 `WorkspaceBody` 消费它。`props.children` 经 `mergeProps` 透传，仍落在 provider 之内——T011 的模块动作因此天然拿得到 context。
+      ⚠️ **`tab-bar.tsx` 的两处改动**：① 根元素补 `w-full`——中栏容器是 `flex flex-col items-start`（复刻挂载点 `<main>` 的上下文），缺了它会缩到内容宽度而非铺满中栏（**happy-dom 量不出布局，这条只有人看浏览器才发现**）；② `measured()` 为 0 改判为「**还没量到**」而非「宽度为零」，作不限宽先全显示——否则首帧/happy-dom 下全部 tab 被一股脑塞进「⋯」。
+      🔴 **TDD 抓到的一次假绿（本任务最有价值的记录）**：为上面 ② 写的第一版测试用了 `{...{ availableWidth: undefined }}` 覆盖助手函数的默认值——**测试立刻通过**，看着像「已实现」。实因 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 `1000`，该测试**什么都没测**。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`，全部被藏进「⋯」），再实现 ②才转绿。**教训**：测试「一写就绿」不是省事，是空转；Solid 里「不传某 prop」不能用 `undefined` 覆盖来表达。
+      TDD 诚实标注：① RED 形态 = `Cannot find module './tab-context'`（新文件标准形态）+ 4 条集成测试的 `useCenterTabs 必须在 <CenterTabsProvider> 之内使用`（功能缺失，非拼写）② 三个循环：`tab-context` 5 条 → 宽度未知 1 条（**先假绿、修测试后真 RED、再实现**）③ 4 条 FR-006 集成测试同处一文件、整批先失败后全绿，未逐个制造 4 次 RED ④ 无「先写实现后补测试」。
+      门禁：`test:unit` **769 pass / 0 fail**（与 T009 末一致——本任务未动 `.ts` 单测）/ `test:components` **47 pass / 0 fail**（T009 末 37 + 5 + 1 + 4）/ `test:browser` **41 pass / 0 fail**（与基线一致）/ `turbo typecheck` **30-30**（本轮无报错）/ `bunx oxlint packages/app/src/center packages/app/src/workspace` **0 命中**（17 files；首轮 1 条 `no-unused-vars`——`contentTabKey` 随上面那条被删的错误断言一起失用，已删）。⚠️ 全仓 `bun run lint` 仍 exit 1 / 4902 warnings + 1 error（既有上游，与 T009 末逐字一致）。
+      ⚠️ **留给 T017 的视觉核对项（新增）**：中栏 tab 栏在**一个 tab 都没有**时（首屏常态——FR-010 的 tab 由动作打开，非预置常驻）是一条 40px 空条。**要不要隐藏空条，DESIGN §4.5 未定**，我没擅自加「空则不渲染」。须设计侧定后再改。
+      📌 交接 T011：「模块动作打开 tab」现在只需在 provider 之内调 `useCenterTabs().open(tab)`——通路已通，且有测试证明。
 - [ ] T011 [US2] [FE·新增] 实现「特有 tab 由模块动作打开」的机制（非预置常驻）[FR-010] [T005] [出参：模块动作能打开新 tab 并累积]
 
 ## Phase 5: US3 中栏多形态内容区（P1）

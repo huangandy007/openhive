@@ -85,7 +85,8 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
  * 两者不共享状态、不互相搬运。
  *
  * 只负责「显示哪些、点了通知谁」——tab 的增删改与激活态由 `tab-store.ts` 持有，
- * 挂载到三栏由 T010 做。
+ * T010 起挂在中栏顶部（`ThreePane` 的 center 槽）。根元素带 `w-full` 是必需的：中栏容器是
+ * `flex flex-col items-start`（复刻挂载点 `<main>` 的 flex 上下文），缺了它这条栏会缩到内容宽度。
  */
 export function TabBar(props: TabBarProps) {
   let strip: HTMLDivElement | undefined
@@ -99,7 +100,9 @@ export function TabBar(props: TabBarProps) {
     onCleanup(() => observer.disconnect())
   })
 
-  const available = () => props.availableWidth ?? measured()
+  // `measured()` 为 0 = **还没量到**（首帧，或 happy-dom 这类无 CSS 引擎的环境），不是「宽度为零」。
+  // 判成 0 会把全部 tab 一股脑塞进「⋯」——凭空隐藏比暂时多显示更糟，故当作「不限宽」先全显示。
+  const available = () => props.availableWidth ?? (measured() || Number.POSITIVE_INFINITY)
   const split = () => splitTabOverflow(props.tabs.length, available(), { tabWidth: TAB_WIDTH, overflowWidth: OVERFLOW_WIDTH })
   const visible = () => props.tabs.slice(0, split().visibleCount)
   const hidden = () => props.tabs.slice(split().visibleCount)
@@ -114,7 +117,7 @@ export function TabBar(props: TabBarProps) {
       ref={strip}
       data-component="tab-bar"
       style={{ height: `${TAB_HEIGHT}px` }}
-      class="flex shrink-0 items-stretch gap-0.5 border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-1"
+      class="flex w-full shrink-0 items-stretch gap-0.5 border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-1"
     >
       <For each={visible()}>
         {(tab) => (
