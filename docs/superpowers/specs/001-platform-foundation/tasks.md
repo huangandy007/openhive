@@ -66,7 +66,22 @@
 
 ## Phase 3: US1 三栏框架（P1）
 
-- [ ] T006 [P] [US1] [FE·新增] 实现图标栏 `rail/`：五入口 + 系统设置，入口可见性读 capability（**新增，非换皮**——new 布局无图标栏）[FR-002] [T003] [出参：五入口可点、无权限入口隐藏]
+- [x] T006 [P] [US1] [FE·新增] 实现图标栏 `rail/`：五入口 + 系统设置，入口可见性读 capability（**新增，非换皮**——new 布局无图标栏）[FR-002] [T003] [出参：五入口可点、无权限入口隐藏]
+      → 产出 `packages/app/src/rail/entries.ts`（清单 + 过滤）+ `rail.tsx`（组件）+ 单测 `entries.test.ts`（4 条，走 `test:unit`）+ 组件测 `rail.test.tsx`（6 条，走 `test:components`），共 10 条 / 15 expect。
+      ✅ 出参已满足：①「五入口可点」——点击回调带出的是入口 **id**（`fund-analysis`）而非显示名，另有断言钉住五入口文案与顺序恰为 FR-002 所列 + 系统设置吸底；②「无权限入口隐藏」——`capabilities={new Set(["project"])}` 时只渲染 `项目管理` + `系统设置`。另断言图标栏宽 56px（DESIGN §4.1）、当前入口带左侧竖条与 `aria-current="page"` 而其余入口都没有（§4.1 + §4.3 不只靠颜色）。
+      **capability 契约（用户决策：001 只出接口，不接签发方）**：入口声明自己需要的 `capability`；`visibleEntries(entries, capabilities?)` 里 `capabilities` **省略 = 尚未接签发方 → 不过滤**，**传入（哪怕空集）= 已由签发方定夺 → 只留有能力的那些**；无 `capability` 的入口（系统设置）恒留。`Rail` 对应 `capabilities?` prop。真正的鉴权仍在下游执行层（宪法 IV，前端隐藏不替代校验）。
+      **API（纯数据 + 无状态组件）**：`RailEntry` / `RAIL_ENTRIES` / `SETTINGS_ENTRY` / `visibleEntries` / `Rail` / `RAIL_WIDTH`。`Rail` 不持有选中态，`active` 由外部传入（选择态归 T010 的模块切换）。
+      ⚠️ **`rail.tsx` 超出 plan.md「文件结构」清单**——plan.md:61-62 只列了 `rail/entries.ts`，未列组件文件。理由是「清单 + 过滤」没有视觉承载物就满足不了 FR-002 的「图标栏」。**须回改 plan.md 文件结构**（或明确声明为计划外新增），已记入 `state.md` 待办。
+      ⚠️ **图标选型是我的裁量，需设计评审**：DESIGN §4.2 只说「单色线性图标」，未点名。实取 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`（末位沿用仓库先例）。取值为 `IconProps["name"]`（= `keyof typeof icons`），故编不出不存在的图标；但**语义对不对要人看**。`Icon` 默认 `size="normal"` = 20px，与参考件 `w-5 h-5` 一致，无需显式传。
+      **视觉来源**：`front/src/components/LeftIconBar.tsx`（**仅视觉参考，未移植一行 React**，按 [FE] 规则重建为 SolidJS）+ DESIGN.md §4.1/§4.3。落点：容器白底 + 右侧分隔线、40px 方形图标按钮、选中态浅金底 + 左侧金色竖条、设置项以细分隔线隔开并吸底。
+      🔴 **DESIGN 与 token 的真实冲突（T017 阻断项）**：DESIGN §1.3 / §4.1 要求选中底 = **浅金 `#FEF3C7`**，但 v2 的 overlay 语义 token **只有中性黑/白 alpha**（`--v2-alpha-dark-*` / `light-*`），**不存在品牌色 overlay token**（已核 `v2/styles/theme.css` + `v2/styles/colors.css` 全部 overlay / alpha 定义）。本任务取仓库既有的「选中面」token `--v2-overlay-simple-overlay-pressed`（先例：`v2/components/file-tree-v2.css:38-41` 的 `[data-selected]`）——语义正确，但**值是中性灰，不等于 DESIGN 要求的浅金**。按宪法 §八「绝不硬编码新 hex」不能就地写 `#FEF3C7`；按宪法 I，`theme.css` 归 T017。→ **T017 必须二选一**：全局重定 `overlay-pressed` 为品牌色，或新增一个语义选中面 token（并同改 `:root` 与 `[data-color-scheme="light"]` 两处），否则正式违反 DESIGN §4.1。另：选中态的**金色身份**目前由竖条 `bg-v2-background-bg-accent` + 图标 `text-v2-icon-icon-accent` 承载，这两者 T017 会重定为蜂蜜金，故 T017 后选中态 = 金条 + 金图标 + 中性底。
+      ⚠️ **视觉类无测试断言（L2 缺口）**：happy-dom 无 CSS 引擎，`classList` / `text-v2-*` 全部断言不到，测试只覆盖了 DOM 结构（`data-slot` / `aria-*` / 内联 `style.width`）。颜色/间距/圆角的正确性须在 T017 用真实浏览器核对。已与 `test-routing-advisor` 判定的「单前端 L2 视觉回归」缺口对齐。
+      ⚠️ **上游遗留观察（未本地修，宪法 I）**：`packages/ui/src/components/icon.css` 给图标元素自身设了 `color: var(--icon-base)`，理论上会盖住父级下的 `text-v2-icon-icon-muted`。本任务沿用仓库既有先例（`packages/app/src/components/dialog-connect-provider.tsx:135` 在父按钮上放 `text-v2-*` 给内部 `Icon` 上色），未改上游 CSS。**T017 视觉核对时须确认图标颜色是否真的生效**；若确被 `--icon-base` 覆盖，那是上游问题 → 上报，不本地改。
+      ⚠️ **系统设置也能是当前入口**：参考件里设置是「打开设置对话框」而非「切模块」，故 T010 接线后 `active="settings"` 大概率永不被传。仍按**统一实现**（谁 id 命中谁高亮）而非给设置开特例——更简单、且不预设 T010 的结论。
+      TDD 诚实标注：① `entries.test.ts` 第 1 条（五入口清单）**非 RED 驱动**，是「数据 ↔ 需求」守卫断言，已在测试内注释声明。② 循环 2 的 GREEN 与第 1 条写在同一次 Write 里（`visibleEntries` 的 filter 分支提前落地）→ 按 Iron Law **回退为最小直通**（`void capabilities; return [...entries]`），确认真 RED（得 5、期望 2）后再恢复，且**刻意只写「需要能力位的才过滤」**，把 `!entry.capability` 留给循环 3 驱动。③ 循环 3（组件按能力位过滤）与循环 4（56px 宽）同样因提前写进同一 Write 而先绿 → 各自回退、各自确认 RED（6 labels / `Received ""`）后恢复。④ 循环 5（竖条 + `aria-current`）真 RED（`not.toBeNull()` Received `null`）。⑤ 循环 6（设置项也能是当前入口）是 GREEN 之后**发现 `SETTINGS_ENTRY` 未接线**才补写的独立测试，先真 RED（设置项无竖条）再接线——非事后贴测试。
+      门禁：`test:unit` **748 pass / 0 fail**（T005 末 744 + 4）/ `test:components` **12 pass / 0 fail**（T005 末 6 + 6）/ `turbo typecheck` **30-30** / `bunx oxlint packages/app/src/rail` **0 命中**（4 files）。
+      ⚠️ typecheck 曾**真实报错**：`entries.test.ts:20` 的 `toEqual(RAIL_ENTRIES)` 让 `readonly RailEntry[]` 撞上可变形参（TS2769）。**改的是断言**（`[...RAIL_ENTRIES]`，`toEqual` 深比较故强度不变），**没改生产类型**——`visibleEntries` 返回可变数组是刻意的（保留调用方排序余地）。
+      ⚠️ 全仓 warning 总数 4901 → 4902：T005 已记录过同一现象（oxlint 12 线程输出不稳定）。本任务 4 个文件 0 命中，故**不主张**「4902 是我引入的」，只主张「我引入 0 命中」。全仓那 **1 个 error 仍是既有上游**那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义），按既定决策上报上游、不本地改。
 - [ ] T007 [P] [US1] [FE·换皮+新增] 实现顶栏 `topbar/`（品牌 Logo/站内信/全屏/用户下拉）：品牌部分换皮 opencode `titlebar.tsx`（v2 分支挂在 `titlebar.tsx:614` 的 `#opencode-titlebar-right` 注入点，**不改 Titlebar 主体**），站内信为新增 [FR-003] [T003] [出参：顶栏四要素渲染]
 - [ ] T008 [US1] [INT] 接入登录后进入三栏工作台的入口流程 [FR-001] [T003] [出参：登录后默认落在三栏工作台]
 
