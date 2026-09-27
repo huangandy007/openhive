@@ -60,7 +60,11 @@ export interface TopbarUser {
 }
 
 export interface TopbarProps {
-  user: TopbarUser
+  /**
+   * 已登录用户；省略 = 身份未就位（001 的常态，F2 落地前无来源），此时不渲染用户区。
+   * 品牌/站内信/全屏与身份无关，照常渲染。
+   */
+  user?: TopbarUser
   /** 站内信未读数；省略 / 0 = 没有未读，不渲染红点。 */
   unreadCount?: number
   /** 用户下拉选中项；带出 `UserMenuItem.id`（不是显示名）。 */
@@ -134,7 +138,9 @@ export function Topbar(props: TopbarProps) {
         icon="expand"
         onClick={() => void toggleFullscreen()}
       />
-      <UserMenu user={props.user} onSelect={props.onSelect} />
+      <Show when={props.user} keyed>
+        {(user) => <UserMenu user={user} onSelect={props.onSelect} />}
+      </Show>
     </div>
   )
 }

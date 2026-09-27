@@ -1,8 +1,9 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T007 已完成。**T008 待启动**（等用户说「next」）。
-⚠️ 启动 T008 前请留意：T007 的 `Topbar` **尚未接线**，挂载与用户身份已移交 T008（理由见下）。
+T008 已完成。**T009 待启动**（等用户说「next」）。
+✅ T007 移交的两件事均已落地：`Topbar` 已挂进 `#opencode-titlebar-right`；身份接入缝 `workspace/current-user.ts` 已建立（F2 只改这一个文件）。
+🔴 本任务发现一个**计划缺口**（非我引入）：**右栏（AI 会话）没有任何任务供给**——详见「待决项」。
 
 ## 已完成
 - **T001** [FE·换皮] 定位三栏真实组件 → 产出 `refactor-targets.md`
@@ -72,6 +73,19 @@ T007 已完成。**T008 待启动**（等用户说「next」）。
   - ⚠️ **视觉类零断言（L2 缺口）**：同 T006。**T017 新增待核对项**——`BrandMark` 渐变用 `stop-color="var(--v2-…)"`（同上游 `logo.tsx` 的 `fill="var(--icon-base)"` 写法），需确认 Chromium 下 SVG `stop-color` 真吃 CSS 变量
   - TDD 诚实标注：① `menu.test.ts` 第 1 条（下拉项清单）非 RED 驱动，是需求守卫断言（测试内注释声明，同 T006）② 三条纯函数循环以「模块不存在」起步（本仓新文件的标准 RED 形态）③ 组件 RED 分 5 次拿到，每条都先真 RED（`Expected ["enter"] / Received []`、`Received: undefined`、helper 抛错）④ 去掉 `as unknown as Document` 断言后 typecheck 报 TS2345 ×2 → **修的是测试假对象**，生产参数反而从 `Document` 收窄为结构类型 `FullscreenHost`（更强约束）
 
+- **T008** [INT] 入口接线 `packages/app/src/workspace/workspace-entry.tsx` + `current-user.ts` + 7 个组件测试（13 expect）
+  - **产出**：新增 `workspace/workspace-entry.tsx`（入口组件：图标栏 → 三栏，顶栏另挂注入点）+ `workspace/current-user.ts`（身份接入缝）+ `workspace-entry.test.tsx`；改 3 个既有文件——`topbar/topbar.tsx`（`user` 改可选 + `<Show>` 包住用户区）、`pages/layout-new.tsx`（**3 行**：import ×2 + `const titlebarRight = useTitlebarRightMount()` + `<ThreePane>` → `<WorkspaceEntry titlebarRight={titlebarRight}>`）
+  - **出参拆解**：「**落在三栏工作台**」= 实质达成（入口把图标栏 + 三栏 + 顶栏一起接线，默认停在图标栏第一个入口「项目管理」）；「**登录后**」= **001 无登录**（属 F2/002-auth-account：网关验签注入 `X-User-ID`），本任务**不改这一点**，改为建立身份接入缝
+  - **新增布局事实**：new 布局本就是默认（`settings.tsx:61` `newLayoutDesignsDefault = true`，且 `oldInterfaceSunset` 已过 → `oldInterfaceRetired` 恒真）→ 「默认落在」在路由层面**无需改动**，缺的只是接线
+  - **身份接入缝**：`current-user.ts` 导出 `[currentUser, setCurrentUser]`；身份未就位时顶栏**不渲染用户区**（品牌/站内信/全屏与身份无关，照常渲染）。**宁缺勿假**：塞占位用户 = 把假身份放进 DOM，F2 接真身份时没人分得清
+  - **三个设计决策**：① **图标栏是三栏之外的独立一列**（DESIGN §4.1：图标栏 56px → 左项目侧栏 280px → 中 → 右），**不进 `ThreePane.left`**（那是左项目侧栏，归 T010）→ 需外层行容器（挂载点 `<main>` 是 `flex-col items-start`，直接并列会上下堆叠）。② **当前停留模块的状态由本组件持有**（T006 记的「选择态归 T010」需修正为「T008 落地、T010 在其上加联动」——T008 是第一个真正挂上图标栏的任务，状态必须落在某处；T010 别再另起一套）。③ **顶栏挂载点由调用方注入**（`titlebarRight` 访问器）而非组件内调 `useTitlebarRightMount()`：后者要 `useLanguage()` 上下文，会把组件测试拖进 provider 组装；注入后测试可造假挂载点，**完整验证 Portal 落点**
+  - 🔴 **计划缺口（本任务发现，非我引入）**：**右栏（AI 会话）没有任何任务供给**。FR-001 要求「右栏 AI 会话」，T003 备注写「右栏由 T007/T009 供给」——**实为错记**：T007 是顶栏、T009 是中栏 tab 栏，两者都不填右栏；T001–T017 无「把 `SessionSidePanel` 换皮搬进右栏」的任务（plan.md ① 把它列为「换皮 + 重定职责」却未派生 task）。**建议补一个任务**，否则收尾时 FR-001 仍只是「结构性满足、看不到右栏」
+  - ⚠️ **`#opencode-titlebar-right` 是共享注入点**：上游已有 `new-session-view.tsx:77-93`（`NewSessionStatus`）与 `session-header.tsx:285` 往同一元素 Portal。挂上后 openhive 顶栏与上游会话状态**并列出现在同一顶栏右侧**——T017 浏览器核对须看是否拥挤/重叠，必要时定归属与顺序
+  - ⚠️ **未接线的数据（不编造）**：`capabilities` 不传（001 无 capability 签发方）→ 五入口恒可见；`unreadCount` / `onSelect` / `onOpenMessages` 均无数据源，故未接
+  - ⚠️ **系统设置入口按统一实现**（点它也会高亮为当前模块）；是否改为「打开设置对话框」由 T010 定（T006 已记同一项）
+  - ⚠️ **视觉类零断言（L2 缺口，同 T006/T007）**：happy-dom 无 CSS 引擎，断言只到 DOM 结构（`data-component` / `aria-current` / DOM 顺序）。**新增两条待浏览器核对**：① 外层行容器与 `ThreePane`（`flex-1 … w-full flex`）的嵌套；② 图标栏 `h-full` 在 `<main>`（`flex-col items-start`）下的实际高度
+  - TDD 诚实标注：① RED 形态 = `Cannot find module './current-user'`（本仓新文件的标准形态，失败因功能缺失而非拼写）② 7 条测试在同一文件，整文件因模块缺失先失败，GREEN 后全绿（未逐个制造 7 次 RED——本任务的一体性使然，如实记录）③ **`TopbarProps.user` 改为可选是测试驱动出来的**（第 6 条「身份未就位不给用户区」逼出类型放宽），非为宽松而放宽；T007 的 10 条组件测试**未改一行仍全绿**（它们都传 `user`），佐证放宽向后兼容 ④ 无「先写实现后补测试」
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -87,17 +101,18 @@ T007 已完成。**T008 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T007 末）
+## 质量门禁（T008 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **758 pass / 0 fail**（110 files） | 干净（T006 末 748 + T007 新增 10） |
-| `packages/app` `bun run test:components` | ✅ **22 pass / 0 fail**（48 expect） | 干净（T006 末 12 + T007 新增 10） |
-| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 曾真实报错 1 处，已修（见下） |
+| `packages/app` `bun run test:unit` | ✅ **758 pass / 0 fail**（110 files） | 干净（与 T007 末**完全一致**——本任务未动任何 `.ts` 单测） |
+| `packages/app` `bun run test:components` | ✅ **29 pass / 0 fail**（61 expect） | 干净（T007 末 22 + T008 新增 7） |
+| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail** | 干净（与 T003 基线**一致**；因本任务改了渲染树根，主动复跑确认零回归） |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（本轮无报错） |
 | `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T007 触碰文件 lint 自查**（`bunx oxlint packages/app/src/topbar`）：**0 warning / 0 error**（8 files）。初次有 2 条 warning（`no-unsafe-type-assertion` + `unbound-method`，均在测试内）→ 已修（生产侧参数改结构类型 `FullscreenHost`、测试侧改用属性描述符保存/还原），复查 0 命中。全仓那 **1 个 error 仍是既有上游**那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx` 八进制转义），已单独复核该文件自带 13 warnings + 那 1 error，跨平台真实存在、与基点逐字节相同。
+**T008 触碰文件 lint 自查**：`bunx oxlint packages/app/src/workspace packages/app/src/topbar` → **0 warning / 0 error**（13 files）。另单独 lint `pages/layout-new.tsx` 得 **1 warning**（`consistent-return`，位于 `:21` 的 `version()` 回调）——**该行不属我的改动**（`git diff` 证明本任务对该文件只动 3 行：两处 import、一行 `const titlebarRight`、一处 JSX 标签互换），且全仓总计数与 T007 末**逐字一致（4902）**，说明它是**既有的上游 warning**，按宪法 I 不本地改（与那 1 个 error 同一处置：上报上游）。全仓那 **1 个 error 仍是既有上游**那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义，已复核路径与行号未变）。
 
 > ⚠️ **typecheck 修了什么**：`entries.test.ts:20` 的 `expect(visibleEntries(RAIL_ENTRIES)).toEqual(RAIL_ENTRIES)` 报 `TS2769`（`readonly RailEntry[]` 不可赋给可变形参）。**改的是断言** → `[...RAIL_ENTRIES]`（`toEqual` 走深比较，断言强度不变），**没改生产类型**——`visibleEntries` 返回可变数组是刻意的（给调用方留排序余地）。
 
@@ -129,8 +144,10 @@ T007 已完成。**T008 待启动**（等用户说「next」）。
 - 🔴 **待决项（T017 前须定 / T017 阻断项，T007 后已扩为两条）**：
   1. **选中底色的品牌色 token 不存在**。DESIGN §1.3/§4.1 要求选中底 = 浅金 `#FEF3C7`，但 v2 的 overlay 语义 token 只有中性黑/白 alpha，**无品牌色 overlay token**；T006 暂用 `--v2-overlay-simple-overlay-pressed`（中性灰，仓库既有「选中面」token）。**T017 须二选一**：① 全局重定 `overlay-pressed` 为品牌色；② 新增语义选中面 token（并**同改 `:root` 与 `[data-color-scheme="light"]` 两处**）。否则正式违反 DESIGN §4.1。
   2. 🆕 **品牌金 token 不存在（T007 新增）**。`topbar/BrandMark` 的描边/渐变取 `--v2-icon-icon-accent` / `--v2-icon-icon-accent-hover`，而这两个 token 今天**都是蓝色**（`--v2-blue-600` / `--v2-blue-700`），**整个 v2 色板无任何金色 token**。按宪法 §八不能硬编码 `#F59E0B`/`#B45309`，故 **logo 现在是蓝的**，DESIGN §5.1 的蜂蜜金要等 T017 换皮生效（换皮后组件无需改动）。
-- 🆕 **待决项（T008 前须定）**：**T007 的 `Topbar` 未接线**。组件与测试齐备但**没有挂进 `layout-new.tsx`**——FR-003 用户区需真实身份，而 001 当前无登录态来源（登录是 T008/FR-001）。挂载仅 3 行 + 用户身份喂参，**已明确移交 T008**（tasks.md T008 条目下写了）。若你希望「现在就挂上、先给个占位身份」，请说一声。
-- 🆕 **待决项（T007 前须定，现已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`，但 plan.md:61-62 只列了 `entries.ts`；T007 又新增 `topbar/` 下 4 个源文件（plan 只写了「实现顶栏 `topbar/`」，未列文件）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- ✅ **已解决（原「T008 前须定：T007 的 `Topbar` 未接线」）**：T008 已把 `Topbar` 挂进 `#opencode-titlebar-right`（经 `pages/layout-new.tsx` 的 `useTitlebarRightMount()` 注入 + `<Portal>`），并建立身份接入缝 `workspace/current-user.ts`。**身份未就位时顶栏不渲染用户区**（宁缺勿假，未采纳「塞占位身份」方案）；F2 落地时**只改 `current-user.ts` 一个文件**。
+- 🔴 **待决项（须尽快定，建议补任务）**：**右栏（AI 会话）无任务供给**（T008 发现）。FR-001 要求「右栏 AI 会话」，但 T001–T017 里没有任何任务把 AI 会话放进 `ThreePane` 的右槽（plan.md ① 把它列为「换皮 + 重定职责」却未派生 task；T003 备注「右栏由 T007/T009 供给」**是错记**——T007 顶栏、T009 中栏 tab 栏）。**建议补一个任务**（把 `pages/session/session-side-panel.tsx` 换皮 + 重定职责后填入右槽，或在 001 明确记为「右栏内容归 F8」并据此降低 FR-001 的验收口径）。在此之前，FR-001 的右栏仍只是「位置已定义、内容空缺」。
+- 🆕 **待决项（T009 起须留意）**：**`#opencode-titlebar-right` 是共享注入点**。上游 `new-session-view.tsx:77-93`（`NewSessionStatus`）与 `session-header.tsx:285` 都往同一元素 Portal；T008 挂上的 openhive 顶栏会与它们**并列出现在顶栏右侧**。T017 浏览器核对时须定归属/顺序（可能与 T009「顶栏 session tab 条 vs 中栏 tab 容器」的分工是同一类问题）。
+- 🆕 **待决项（T007 前须定，T008 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；**T008 又新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`**（plan 的 `workspace/` 只列了 `three-pane.tsx`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
 - 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标——T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`；T007 又自选 `comment`（站内信，因原生集**无 `bell`**）、`expand`（全屏）。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证；宪法 I 禁止往上游 `icon.tsx` 加图标）。
 - 🆕 **待决项（可延后，设计侧复核）**：**DESIGN.md 新增的 §4.4 顶栏章节的措辞是我拟的**。因宪法 §八要求「未覆盖的先在 DESIGN.md 补充再引用」，而 DESIGN 原本完全没有顶栏章节，T007 先补了 §4.4（四要素表 + 高度沿用原生 36px + 只引用 token + 品牌名走配置）。**内容与措辞需设计侧过一眼**。
 - 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。**（用户已确认此发现成立）**
@@ -139,4 +156,6 @@ T007 已完成。**T008 待启动**（等用户说「next」）。
 - 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
 
 ## 最后更新
+2026-09-27（T008 完成：**入口接线**——新增 `workspace/workspace-entry.tsx`（图标栏 → 三栏 + 顶栏挂上游注入点）+ `workspace/current-user.ts`（身份接入缝）+ 7 个组件测试；改 3 个既有文件共 3 行 + `topbar.tsx` 的 `user` 改可选。T007 移交的两件事均已落地。**`layout-new.tsx` 只动 3 行**。test:unit 758 pass（与 T007 末一致）、test:components **29** pass、test:browser 41 pass（主动复跑）、typecheck 30/30、本任务目录 oxlint 0 命中。🔴 发现**计划缺口：右栏（AI 会话）无任务供给**，建议补任务。⚠️ `#opencode-titlebar-right` 是共享注入点，会与上游会话状态并列）
+
 2026-09-27（T007 完成：顶栏 `topbar/`（品牌 Logo / 站内信 / 全屏 / 用户下拉）+ 20 个测试；test:unit 758 pass、test:components 22 pass、typecheck 30/30 曾真实报错 1 处已修、lint 本任务 8 文件 0 命中。**DESIGN.md 新增 §4.4 顶栏**。**两处红旗**：① `Topbar` **未接线**（无登录态来源，已移交 T008）；② 🔴 T017 阻断项由 1 条扩为 2 条——除选中底色外，**品牌金 token 也不存在**（`--v2-icon-icon-accent` 今天是蓝色，logo 因此暂时是蓝的）。另：复核推翻了「`#opencode-titlebar-left` 可用」的结论——它只在 legacy 分支）
