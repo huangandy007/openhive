@@ -1,8 +1,13 @@
-import { createEffect, createSignal, onCleanup } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import { decodeBytes, type LoadFileContent } from "@/center/file-content"
+import { DegradedView, type DegradedReason } from "@/center/degraded-view"
 
-/** 视图的呈现状态。`empty` / `error` 的**用户可见**降级呈现归 T015，这里只保证状态可观测。 */
+/** 视图的呈现状态。`empty` / `error` 另配用户可见的降级提示（见文件末尾的返回）。 */
 export type BinaryViewState = "pending" | "ready" | "empty" | "error"
+
+/** 只有这两种状态要画降级提示：`pending` 是「还没好」，`ready` 是「好了」。 */
+const 降级原因 = (state: BinaryViewState): DegradedReason | undefined =>
+  state === "empty" || state === "error" ? state : undefined
 
 /** 归还渲染时占用的资源（如图片的 object URL）。 */
 export type RenderCleanup = () => void
@@ -72,16 +77,27 @@ export function BinaryView(props: BinaryViewProps) {
     const 容器 = container
     if (!容器) return
 
+    /**
+     * 把容器收干净，连同上一份占的资源。
+     *
+     * 渲染器是往容器里**就地**写 DOM 的，故**每次换内容都得先收**——包括换成「看不了」。
+     * 少收一次，屏幕上就会留着上一个文件的画面：民警点开「无.docx」却看着上一份卷宗，
+     * 比白屏更糟（白屏至少说明「这里没有东西」）。
+     */
+    const 清空 = () => {
+      归还()
+      容器.replaceChildren()
+    }
+
     setState("pending")
     void (async () => {
       const bytes = decodeBytes(load ? await load(path) : undefined)
       if (!还在()) return
+      清空() // 无论这一份有没有内容，都先把上一份收干净
       if (!bytes) {
         setState("empty")
         return
       }
-      归还() // 上一份的资源先还掉，再铺新的
-      容器.replaceChildren()
       const 本次 = await render(bytes, 容器)
       if (!还在()) {
         // 迟到的那一份（或卸载后才到点的）：它自己占的资源立刻还掉。
@@ -92,9 +108,20 @@ export function BinaryView(props: BinaryViewProps) {
       待归还 = 本次 ?? undefined // 渲染器不持资源时它回 `void`，别把 `void` 塞进「待归还」
       setState("ready")
     })().catch(() => {
-      if (还在()) setState("error")
+      if (!还在()) return
+      // 渲染器可能已经写了一半才抛（取内容失败时容器里则还留着上一个文件的画面）：
+      // 残片不跟提示同屏，一并收掉。
+      清空()
+      setState("error")
     })
   })
 
-  return <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto" ref={container} />
+  return (
+    <>
+      <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto" ref={container} />
+      {/* 看不了的时候内容区得说话（FR-007 / US3 AC3）。提示与渲染结果**各占各的位置**：
+          渲染器往容器里就地写 DOM，容器仍是那个容器、`data-state` 仍可观测，提示紧跟其后。 */}
+      <Show when={降级原因(state())}>{(reason) => <DegradedView reason={reason()} name={props.path} />}</Show>
+    </>
+  )
 }

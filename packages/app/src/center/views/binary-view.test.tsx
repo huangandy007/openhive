@@ -31,6 +31,8 @@ const 内容 = (bytes: number[]): FileContent => ({
 const 视图 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-component='probe']") ?? undefined
 
+const 降级 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-component='degraded-view']")
+
 describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
   test("拿到字节就交给渲染器，渲染完标记 ready", async () => {
     const 收到: number[][] = []
@@ -43,6 +45,7 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
 
     expect(收到).toEqual([[1, 2, 3]])
     expect(视图(host)?.getAttribute("data-state")).toBe("ready")
+    expect(降级(host)).toBeNull() // 渲染出来了就没有「看不了」这回事
   })
 
   test("渲染器拿到的容器就是这个视图的元素（不是别处挂的一个游离节点）", async () => {
@@ -61,7 +64,7 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
     expect(收到容器).toBe(视图(host))
   })
 
-  test("读不到内容：不调渲染器，标记 empty（降级呈现由 T015 负责）", async () => {
+  test("读不到内容：不调渲染器，标记 empty 并给出降级提示（T015）", async () => {
     let 调了 = 0
     const host = mount(() => (
       <BinaryView name="probe" path="/p/无.docx" load={async () => undefined} render={async () => void 调了++} />
@@ -71,6 +74,8 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
 
     expect(调了).toBe(0)
     expect(视图(host)?.getAttribute("data-state")).toBe("empty")
+    expect(降级(host)?.getAttribute("data-reason")).toBe("empty")
+    expect(降级(host)?.textContent).toContain("/p/无.docx") // 说得出是哪个文件
   })
 
   test("渲染器失败：标记 error，不把异常抛给中栏（一个坏文件不该掀掉整个工作台）", async () => {
@@ -88,6 +93,7 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
     await 落定()
 
     expect(视图(host)?.getAttribute("data-state")).toBe("error")
+    expect(降级(host)?.getAttribute("data-reason")).toBe("error")
   })
 
   test("path 变了：按新 path 重取重渲（否则两张 document tab 会显示同一份文件）", async () => {
@@ -138,6 +144,54 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
 })
 
 /**
+ * 「看不了」的两种状态（`empty` / `error`）都要**先把容器收干净**再画提示。
+ * 渲染器是往容器里**就地**写 DOM 的，若转换状态时不清，屏幕上会留着**上一个文件**的内容——
+ * 民警点开「无.docx」却看着上一份卷宗，是比白屏更糟的那种错。
+ */
+describe("转到看不了的状态：先收干净容器，再画降级提示", () => {
+  test("换成读不到内容的文件：上一个文件的内容不能留在屏幕上", async () => {
+    const [path, setPath] = createSignal("/p/a.docx")
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path={path()}
+        load={async (p) => (p === "/p/a.docx" ? 内容([1]) : undefined)}
+        render={async (_bytes, container) => void (container.textContent = "上一份的内容")}
+      />
+    ))
+    await 落定()
+    expect(视图(host)?.textContent).toBe("上一份的内容")
+
+    setPath("/p/无.docx")
+    await 落定()
+
+    expect(视图(host)?.getAttribute("data-state")).toBe("empty")
+    expect(视图(host)?.textContent).toBe("")
+    expect(降级(host)).not.toBeNull()
+  })
+
+  test("渲染器抛错：它写了一半的残片也要清掉，不跟提示同屏", async () => {
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path="/p/坏.docx"
+        load={async () => 内容([0])}
+        render={async (_bytes, container) => {
+          container.textContent = "写了一半"
+          throw new Error("不是该格式的字节")
+        }}
+      />
+    ))
+
+    await 落定()
+
+    expect(视图(host)?.getAttribute("data-state")).toBe("error")
+    expect(视图(host)?.textContent).toBe("")
+    expect(降级(host)).not.toBeNull()
+  })
+})
+
+/**
  * 有些渲染器**持有需要归还的资源**——图片用 object URL（`URL.createObjectURL`）指向字节，
  * 不 `revokeObjectURL` 就整份占着内存直到页面关闭。民警一晚上翻几十张扫描件，这个漏是攒出来的。
  * 故渲染器可返回清理函数，由壳负责在**换内容前**与**卸载时**调用它。
@@ -158,6 +212,29 @@ describe("渲染器持有资源时：壳负责归还", () => {
     await 落定()
 
     expect(归还过的).toEqual([1]) // 第一份已还，第二份还拿着
+  })
+
+  test("换成读不到内容的文件也算「换内容」：上一份的资源照样还掉", async () => {
+    const [path, setPath] = createSignal("/p/a.png")
+    const 归还过的: number[] = []
+    let 第几次 = 0
+    mount(() => (
+      <BinaryView
+        name="probe"
+        path={path()}
+        load={async (p) => (p === "/p/a.png" ? 内容([1]) : undefined)}
+        render={async () => {
+          const 序号 = ++第几次
+          return () => void 归还过的.push(序号)
+        }}
+      />
+    ))
+    await 落定()
+
+    setPath("/p/无.png")
+    await 落定()
+
+    expect(归还过的).toEqual([1]) // 内容换成「看不了」，那份 object URL 没有理由继续拿着
   })
 
   test("视图卸下时归还当前那份（不能只靠「换下一份时顺手还」）", async () => {

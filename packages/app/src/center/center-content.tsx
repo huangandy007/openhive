@@ -1,5 +1,6 @@
 import { createEffect, createSignal, onCleanup, Show, type ParentProps } from "solid-js"
 import { Dynamic } from "solid-js/web"
+import { DegradedView, type DegradedReason } from "./degraded-view"
 import type { LoadFileContent } from "./file-content"
 import { useCenterTabs } from "./tab-context"
 import { contentTabKey } from "./tab-store"
@@ -10,24 +11,40 @@ export interface CenterContentProps {
   load?: LoadFileContent
 }
 
-/** 屏幕上正在渲染的视图：组件 + 它认领的文件。 */
-interface 当前视图 {
-  Component: ViewComponent
-  path: string
-}
+/**
+ * 内容区此刻该显示什么，三选一：
+ * - `view`：解析到了视图，且它已经到场
+ * - `degraded`：tab 开着，但这份内容**看不了**（没人认领的格式 / 预览组件没加载出来）
+ * - `undefined`：没有激活的 tab —— 内容区交还调用方（生产里是上游路由页面）
+ *
+ * 「tab 开着」与「tab 没开」必须分开：前者内容区归 tab，哪怕看不了也得**由内容区说话**；
+ * 后者才轮到调用方的页面（T015 之前这两种都落到 `undefined`，于是点开一个未知格式的文件
+ * 会翻回路由页 —— 屏幕上看着像「点错了」，而不是「这个文件看不了」）。
+ */
+type 中栏内容 =
+  | { kind: "view"; Component: ViewComponent; path: string }
+  | { kind: "degraded"; reason: DegradedReason; name: string }
 
 export function CenterContent(props: ParentProps<CenterContentProps>) {
   const center = useCenterTabs()
-  const [view, setView] = createSignal<当前视图 | undefined>(undefined)
+  const [内容, set内容] = createSignal<中栏内容 | undefined>(undefined)
 
   createEffect(() => {
     const key = center.active()
     const tab = key ? center.tabs().find((candidate) => contentTabKey(candidate) === key) : undefined
-    const extension = tab ? extensionOf(tab.path) : undefined
+
+    if (!tab) {
+      set内容(undefined)
+      return
+    }
+
+    const extension = extensionOf(tab.path)
     const load = extension ? props.registry.resolve(extension) : undefined
 
-    if (!tab || !load) {
-      setView(undefined)
+    if (!load) {
+      // 没人认领这个格式（未知扩展名，或者干脆没有扩展名）。**不白屏**：内容区当场给出
+      // 降级提示，且说得出是哪个文件——这一步没有 chunk 要等，同步给（T015 / FR-007）。
+      set内容({ kind: "degraded", reason: "unsupported", name: tab.title })
       return
     }
 
@@ -44,12 +61,13 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
     // 视图组件自己管「内容读取中」那一档（`BinaryView` 的 pending 态），这里只管 chunk 这一小段。
     void load().then(
       (Component) => {
-        if (alive) setView({ Component, path: tab.path })
+        if (alive) set内容({ kind: "view", Component, path: tab.path })
       },
       // 但 chunk **加载不出来**时（断网 / 构建产物缺失）必须收手清空：留着旧文件会让民警
-      // 对着「卷宗.pdf」这个标题看立项书的内容。
+      // 对着「卷宗.pdf」这个标题看立项书的内容。**只是收手还不够**——tab 还开着，内容区得
+      // 说清这一回是「预览组件没到位」，与「这个文件坏了」分开说（两者对民警是两件事）。
       () => {
-        if (alive) setView(undefined)
+        if (alive) set内容({ kind: "degraded", reason: "load-failed", name: tab.title })
       },
     )
   })
@@ -57,15 +75,22 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
   return (
     <>
       {/*
-        页面**常驻**，有视图时只把它藏起来（`display:none`），而不是从树上摘掉。
+        页面**常驻**，有内容时只把它藏起来（`display:none`），而不是从树上摘掉。
         生产里 `children` 是上游路由页面，卸载重挂会丢掉整页状态（滚动位置、已取的数据、表单填写）。
         可见时用 `contents` 而非 `block`：不引入多余盒，页面仍是中栏原本的 flex 子项。
+        「有内容」含降级提示——tab 开着就轮不到页面（否则未知格式看起来像「点错了」）。
       */}
-      <div data-slot="center-page" style={{ display: view() ? "none" : "contents" }}>
+      <div data-slot="center-page" style={{ display: 内容() ? "none" : "contents" }}>
         {props.children}
       </div>
-      <Show when={view()} keyed>
-        {(current) => <Dynamic component={current.Component} path={current.path} load={props.load} />}
+      <Show when={内容()} keyed>
+        {(current) =>
+          current.kind === "view" ? (
+            <Dynamic component={current.Component} path={current.path} load={props.load} />
+          ) : (
+            <DegradedView reason={current.reason} name={current.name} />
+          )
+        }
       </Show>
     </>
   )

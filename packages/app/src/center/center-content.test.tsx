@@ -3,6 +3,7 @@ import { onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent } from "./file-content"
 import { CenterContent } from "./center-content"
+import type { DegradedReason } from "./degraded-view"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
 import { contentTabKey, type ContentTab } from "./tab-store"
 import { createViewRegistry, type ViewComponent, type ViewLoader, type ViewRegistry } from "./view-registry"
@@ -15,6 +16,12 @@ function mount(element: () => JSX.Element) {
 }
 
 const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 调用方页面（生产里是上游路由页面）所在的那一层。
+ * 它**常驻在树上**、靠 `display` 让位（T013 的教训：摘掉再挂回会丢整页状态），故只能读样式。
+ */
+const 页面层 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='center-page']")
 
 /**
  * 一张「会说话」的假视图：把拿到的入参画在 DOM 上。
@@ -72,12 +79,16 @@ function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent; 页�
     </CenterTabsProvider>
   ))
   const 视图 = () => host.querySelector<HTMLElement>("[data-slot='视图']")
-  const 降级 = () => host.querySelector<HTMLElement>("[data-slot='fallback']")
+  /** 调用方给的页面——**没有激活 tab 时**才该在屏幕上。 */
+  const 页面 = () => host.querySelector<HTMLElement>("[data-slot='fallback']")
+  /** T015 的降级呈现；给了 `reason` 就只认这一种原因。 */
+  const 降级 = (reason?: DegradedReason) =>
+    host.querySelector<HTMLElement>(`[data-component='degraded-view']${reason ? `[data-reason='${reason}']` : ""}`)
   const 开 = async (tab: ContentTab) => {
     center.open(tab)
     await 落定()
   }
-  return { host, center, 视图, 降级, 开 }
+  return { host, center, 视图, 页面, 降级, 开 }
 }
 
 const 专案: ContentTab = { module: "project", title: "立项书.docx", path: "/p/立项书.docx" }
@@ -101,22 +112,24 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
     expect(视图()?.getAttribute("data-has-load")).toBe("true")
   })
 
-  test("扩展名没有归属：不渲染视图，落回调用方给的内容（降级提示归 T015）", async () => {
-    const { 视图, 降级, 开 } = setUp()
+  test("扩展名没有归属：不渲染视图，改成给一条说得出原因的降级提示（T015）", async () => {
+    const { host, 视图, 降级, 开 } = setUp()
 
     await 开(台账)
 
     expect(视图()).toBeNull()
-    expect(降级()).not.toBeNull()
+    expect(降级("unsupported")?.textContent ?? "").toContain("台账.xlsx") // 说得出是哪个文件看不了
+    expect(页面层(host)?.style.display).toBe("none") // 内容区归降级提示，页面让位（这正是「不白屏」的前提）
   })
 
-  test("一张 tab 都没有时不渲染任何视图", async () => {
-    const { 视图, 降级 } = setUp()
+  test("一张 tab 都没有时不渲染任何视图，内容区仍是调用方给的页面", async () => {
+    const { 视图, 页面, 降级 } = setUp()
 
     await 落定()
 
     expect(视图()).toBeNull()
-    expect(降级()).not.toBeNull()
+    expect(降级()).toBeNull() // 没有 tab 就谈不上「降级」——降级说的是「这张 tab 的内容看不了」
+    expect(页面()).not.toBeNull()
   })
 
   test("切到另一张 tab：视图跟着换（不是停在第一张上）", async () => {
@@ -129,15 +142,16 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
     expect(center.active()).toBe(contentTabKey({ module: "project", title: "卷宗.pdf", path: "/p/卷宗.pdf" }))
   })
 
-  test("关掉当前激活的 tab：视图退场，落回降级内容", async () => {
-    const { 视图, 降级, 开, center } = setUp()
+  test("关掉当前激活的 tab：视图退场，内容区交还调用方的页面", async () => {
+    const { 视图, 页面, 降级, 开, center } = setUp()
 
     await 开(专案)
     center.close(contentTabKey(专案))
     await 落定()
 
     expect(视图()).toBeNull()
-    expect(降级()).not.toBeNull()
+    expect(降级()).toBeNull()
+    expect(页面()).not.toBeNull()
   })
 
   test("关掉的是别的 tab：当前视图不动", async () => {
@@ -197,8 +211,6 @@ describe("内容区不夺走调用方的页面：常驻而非重挂", () => {
  * 空档只有一次 chunk 拉取那么长，但**用户感觉得到**：闪一下调用方的路由页会像是「点错了」。
  */
 describe("视图按需加载：空档期不闪页面、失败要收手、迟到的不能盖新的", () => {
-  const 页面层 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='center-page']")
-
   test("新视图还在加载时：旧视图留在原位，调用方的页面不会被翻出来闪一下", async () => {
     const 慢 = 可放行()
     const registry = createViewRegistry()
@@ -220,12 +232,12 @@ describe("视图按需加载：空档期不闪页面、失败要收手、迟到�
     expect(视图()?.getAttribute("data-name")).toBe("第二张")
   })
 
-  test("新视图加载失败：不能拿旧文件冒充新 tab 的内容，要收手落回降级", async () => {
+  test("新视图加载失败：不能拿旧文件冒充新 tab 的内容，要收手说清是预览组件没加载出来", async () => {
     const 坏的 = 可放行()
     const registry = createViewRegistry()
     registry.register({ extensions: [".docx"], load: async () => 命名视图("第一张") })
     registry.register({ extensions: [".pdf"], load: 坏的.load })
-    const { 视图, 降级, 开 } = setUp({ registry })
+    const { host, 视图, 降级, 开 } = setUp({ registry })
 
     await 开(专案)
     await 开(卷宗)
@@ -236,7 +248,9 @@ describe("视图按需加载：空档期不闪页面、失败要收手、迟到�
 
     // 但**加载不出来**时就不能再留着旧文件了：那会让民警对着「卷宗.pdf」这个标题看立项书的内容。
     expect(视图()).toBeNull()
-    expect(降级()).not.toBeNull()
+    // 并说清是哪一种「看不了」：chunk 挂了是**预览组件**没到位，不是这个 PDF 坏了（两者说法必须不同）
+    expect(降级("load-failed")?.textContent ?? "").toContain("卷宗.pdf")
+    expect(页面层(host)?.style.display).toBe("none") // 也不能翻回调用方的页面——tab 还开着，内容区得说话
   })
 
   test("迟到的加载结果不能盖掉后选中的文件", async () => {
