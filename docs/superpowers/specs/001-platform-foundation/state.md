@@ -31,24 +31,35 @@ T002 已完成。**T003 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T002 实测，2026-09-27）
-> 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。**三项门禁中两项在基点即为红，均与 001 的改动无关。**
+## 质量门禁（T002 末，符号链接修复后）
+> 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
 | `packages/app` `bun run test:unit` | ✅ **725 pass / 0 fail**（104 files） | 干净（基线 724 + T002 新增 4 expect） |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / 1 error | **既有上游**：唯一 error 在 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（Tailwind 类里的 `'\200B'` 八进制转义）；该文件与基点逐字节相同；本次新增文件在 lint 输出中 **0 命中** |
-| `bun run typecheck`（turbo） | ❌ **exit 1** | **既有环境问题**：`@opencode-ai/enterprise` / `@opencode-ai/app` 因 `src/custom-elements.d.ts` 报 TS1128 |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 修符号链接后转绿 |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-### 门禁红的两处根因（已定位，均非本次改动引入）
-1. **lint error（跨平台真实存在）**：上游 `prompt-input/index.tsx:163` 的 `content-['\200B']`。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**建议上报上游 / 暂记为已知红**，不在本项目内私改。
-2. **typecheck error（Windows 检出产物，Linux 不会有）**：`git ls-files -s` 显示 `packages/app/src/custom-elements.d.ts` 与 `packages/enterprise/src/custom-elements.d.ts` 的 git mode 为 **120000（符号链接）**，内容是指向 `../../ui/src/custom-elements.d.ts` 的**路径文本**；本机 `core.symlinks=false`（Windows 默认）故被检出为纯文本 → tsgo 解析报 TS1128。**主仓库同样如此**。仓库共 60 个 symlink 条目（含 `packages/app/public/favicon*.svg` 等，与 T017 品牌化相关）。**待用户决策**：开 Windows 开发者模式 + `git config core.symlinks true` 重新检出，或接受 typecheck 门禁本机不可用（依赖 CI）。
+### 唯一仍在红的门禁：lint 的 1 个 error（已知，待上报上游）
+上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 的 `content-['\200B']`（Tailwind 类里的八进制转义）。该文件与基点**逐字节相同**，跨平台真实存在（非 Windows 特有）。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**决策：不在本项目内私改，记为已知红，上报上游**。本次新增文件在 lint 输出中 **0 命中**；4902 条 warning 亦为既有噪声。
+
+### 已解决：typecheck 门禁（Windows 符号链接检出问题）
+**根因**：`git ls-files -s` 显示仓库有 **60 个 symlink 条目（mode 120000）**；本机 `core.symlinks=false`（Windows 默认）→ git 把它们检出为**内容为路径文本的普通文件**。其中 `packages/app/src/custom-elements.d.ts` 与 `packages/enterprise/src/custom-elements.d.ts` 被 tsgo 当 TS 解析 → `TS1128`。**主仓库同样如此**（非 worktree 造成）。
+
+**修复**（用户已授权，2026-09-27）：
+1. `git config core.symlinks true`（**仓库本地配置，不进版本库**；worktree 与主 checkout 共享此配置）
+2. 删除这 60 个伪符号链接文件 → `git checkout -- .` 重新物化 → 全部变为真 symlink（`lrwxrwxrwx`），工作区回到 clean（60 个 `T` typechange 全部消除）
+3. 验证：`packages/app` typecheck 通过 → 全量 typecheck 30/30 → 测试仍 725 pass / 0 fail
+
+> ⚠️ 本机**新建的 worktree / 新克隆**仍需各自 `git config core.symlinks true` 后重新检出，否则同一问题复现。
+> 📌 附带收益：`packages/app/public/favicon.svg`、`favicon-v3.svg`、`favicon.ico` 等**品牌资产**（symlink → `packages/ui/src/assets/favicon/`）现已可正常读取——**这是 T017 换 Logo 的落点**。
 
 ## 环境备忘
 - worktree：`.claude/worktrees/feat-001-platform-foundation`，分支 `worktree-feat-001-platform-foundation`
+- ⚠️ **本机需 `git config core.symlinks true`**（已设）：仓库含 60 个 symlink 资产，Windows 默认 false 会检出成路径文本。新克隆/worktree 须重设并重新检出（详见「质量门禁」）。
 - ⚠️ worktree 创建时默认基点取的是 `origin/dev` 尖端（v1.18.18），**已 `git reset --hard multi-tenant` 对齐**；后续重建 worktree 需注意 `worktree.baseRef` 未设（默认 `fresh`），应显式从 `multi-tenant` 切出
 - `bun install` 后 `tree-sitter-powershell` 原生构建失败（node-gyp），**主仓库同样如此，属既有问题**，不影响 `packages/app` 测试与 typecheck
 - ⚠️ **本机 `bun install` 会污染 `bun.lock`**：它把每个包的空 registry 字段改写成本机 `https://registry.npmmirror.com/...` 显式地址（纯 churn，3201 行）。**每次 `bun install` 后须 `git checkout -- bun.lock` 回退**，否则会把本机镜像源配置提交进仓库
 
 ## 最后更新
-2026-09-27（T002 完成；质量门禁实测发现 lint / typecheck 在基点即红，待决策）
+2026-09-27（T002 完成；修 Windows 符号链接检出问题 → typecheck 门禁转绿；lint 唯一 error 记为已知红待上报上游）

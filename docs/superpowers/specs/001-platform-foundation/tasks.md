@@ -26,7 +26,8 @@
       → 产出 `refactor-targets.md`（行号已逐条核取）。**阻断性发现：三栏靶子（rail / 左栏）全在 legacy 布局，而 legacy 已被上游退休**（`oldInterfaceSunset = 2026-09-14` 已过 → `settings.tsx:251` `oldInterfaceRetired = true` → `:129` `resolveNewLayoutDesigns` 无条件返回 `true`），当前运行时 `newLayoutDesigns()` 恒为 true，走 `layout-new.tsx`（仅 49 行：Titlebar + 单个 `<main>`，**无 rail、无左栏**）。右栏 `SessionSidePanel` 存活但职责是「文件树 + review」而非 AI 会话。token 靶子须由 legacy `--xxx` 换为 `--v2-*`（且 v2 浅色值同时在 `:root` 与 `[data-color-scheme="light"]`，只改前者会被覆盖）。**决策已定：建在 new 布局**（合宪法 I/V：加不是改）。论证见 `refactor-targets.md` §6。T002 起按此执行。
 - [x] T002 [P] [FE·新增] 在 `packages/app/src/` 下建 `rail/`、`center/`、`topbar/`、`workspace/` 目录骨架 [FR-001] [无依赖] [出参：目录结构就位，typecheck 通过]
       → 4 目录已建（各含空 `.gitkeep`——git 不跟踪空目录）+ 不变量测试 `src/openhive-module-dirs.test.ts`（RED→GREEN，4 expect；下游 002–010 按这些路径 import，误删/改名为静默破坏）。`bun run test:unit` 725 pass / 0 fail。
-      ⚠️ 出参中「typecheck 通过」**本机无法验证**：`bun run typecheck` 在 `packages/app` / `packages/enterprise` 上因 2 个 `.d.ts` 符号链接被 Windows（`core.symlinks=false`）检出为纯文本而报 TS1128，属**既有环境问题**（主仓库同样如此），与本改动无关。详见 `state.md`「质量门禁」。
+      ✅ 出参「typecheck 通过」已验证：首跑因本机 `core.symlinks=false` 把 2 个 `.d.ts` 符号链接检出为纯文本而报 TS1128（既有环境问题，主仓库同样如此）→ 已按决策修 `core.symlinks` 并重新物化 60 个 symlink → **`bun run typecheck` 30/30 通过**。详见 `state.md`「质量门禁」。
+      ⚠️ 唯一仍红的门禁是 `bun run lint` 的 1 个 error（上游 `prompt-input/index.tsx:163`），已决策记为已知红、上报上游，不在本项目内私改（宪法 I）。
 
 ## Phase 2: Foundational（阻塞所有用户故事的底座）
 
