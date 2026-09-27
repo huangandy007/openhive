@@ -118,7 +118,19 @@
 
 ## Phase 4: US2 共享中栏跨模块累积（P1）
 
-- [ ] T009 [US2] [FE·新增] 实现 `center/tab-bar.tsx`（跨模块 tab 栏 + 模块着色 + 溢出收「⋯」）；**需同时厘清与顶栏 session tab 条的分工**（`titlebar.tsx:398` `TitlebarTabStrip` 已在顶栏；约定：顶栏只管 session tab，本容器只管「内容视图 tab」）[FR-005] [T005] [出参：多模块 tab 着色显示，溢出收⋯]
+- [x] T009 [US2] [FE·新增] 实现 `center/tab-bar.tsx`（跨模块 tab 栏 + 模块着色 + 溢出收「⋯」）；**需同时厘清与顶栏 session tab 条的分工**（`titlebar.tsx:398` `TitlebarTabStrip` 已在顶栏；约定：顶栏只管 session tab，本容器只管「内容视图 tab」）[FR-005] [T005] [出参：多模块 tab 着色显示，溢出收⋯]
+      ✅ 交付 3 个新文件 + 3 个测试文件：`center/module-color.ts`（模块 → 身份色变量名）、`center/tab-overflow.ts`（溢出判定纯函数）、`center/tab-bar.tsx`（组件）。**未挂载**——挂进三栏中栏顶部 + tab-store 升级为响应式 + 模块切换联动（FR-006）都留给 T010，本任务只交付组件与纯函数。
+      **API**：`TabBar({ tabs, active?, onActivate(key), onClose(key), availableWidth? })` + 导出 `TAB_HEIGHT = 40`（DESIGN §3.2）。`moduleColorVar(moduleId)` 返回**变量名**（非色值），组件用 `var(...)` 引用，换皮只改 token 值。`splitTabOverflow(count, available, { tabWidth, overflowWidth }) → { visibleCount, hiddenCount }`。
+      🔴 **MUST 级冲突的裁定（本任务核心）**：FR-005「中栏 tab MUST 按来源模块着色标识」vs DESIGN §4.2 + 附录#3「**无模块徽章**」「徽章应去掉」。依宪法 §八「视觉以 DESIGN.md 为唯一真理来源；**未覆盖的，先在 DESIGN.md 补充再引用**」——两处并**不真冲突**：「着色」≠「徽章」。裁定为**不做文字胶囊（合 §4.2）**，把模块身份落在 tab 的**模块图标**上（形状 + 颜色双通道，合 §4.3）。据此**先补 `openhive-DESIGN.md` §4.5**（新节：与顶栏 session tab 条的分工表 + tab 规范表 + 模块 → 色表），并改掉 §1.3 自相矛盾的「话单**模块徽章**」行为「话单**模块色**」指向 §4.5。**代码是在 §4.5 落地之后才写的**，不是事后补文档。
+      ⚠️ **设计系统里没有「模块色板」**：Tailwind 只映射 51 个 `--color-v2-*`，无 avatar；唯一多色相族 `state-*` 语义是「状态」非「实体身份」。故复用 **`--v2-avatar-bg-*`**（`ProjectAvatar` 同源的「每个实体一个稳定色」轮转）+ `ProjectAvatar` 的默认档灰作兜底，**不新增任何 hex/token**（宪法 §八）。⚠️ **取值属待设计侧复核项**：只有「话单 = 蓝」有 §1.3 既有依据，其余五个是按色相可区分性裁量；改色只动 §4.5 表 + `module-color.ts` 一处映射，组件不受影响。
+      ⚠️ **激活态故意不写 `#D97706`**：品牌金 token 至今不存在（`state.md` 待决项，T017 前须定），故顶边条取既有的 `bg-v2-background-bg-accent`（T006 图标栏选中竖条同一取值），T017 换皮 `--v2-*accent` 即自动变金。**不自造 hex**。
+      💡 **顺手回答了 T006 的遗留疑问（`Icon` 着色机理）**：`icon.css:8` 给 `[data-component="icon"]` 显式 `color: var(--icon-base)`，而 legacy `theme.css:243` 又在 `:root` 全局定义 `--icon-base` —— 故父级 `text-v2-icon-*` **不会**给 `Icon` 上色，**必须由祖先元素提供 `--icon-base`**（自定义属性继承）。故 tab 的身份色由 `data-slot="tab-icon"` 这层 wrapper 以 inline `--icon-base: var(--v2-avatar-bg-*)` 提供。**T017 视觉核对与任何后续 Icon 着色都适用此条。**
+      ⚠️ **溢出判定不照抄上游写法**：上游 `titlebar-tab-strip.tsx` 用 `scrollWidth > clientWidth` 量 DOM，而 happy-dom 无 CSS 引擎、两者恒为 0（量出来永远「放得下」）。故把「算几张」抽成纯函数 `splitTabOverflow`（可单测），组件以 `availableWidth?` 作测试注入缝（沿用 T008 给顶栏留 `titlebarRight` 的同一范式），省略时才自量（guarded `ResizeObserver`）。
+      ⚠️ **「⋯」用字面字形 U+22EF**：原生图标集 97 个名字里**无** `ellipsis` / `more-horizontal` / `dots`（已核）。⚠️ **图标选型需设计评审**（T006 六个 + T007 的 `comment`/`expand` 之外新增本条）。
+      TDD 诚实标注：① RED 形态 = `Cannot find module './module-color'` / `'./tab-overflow'` / `'./tab-bar'`（本仓新文件的标准形态，失败因功能缺失而非拼写）。② `module-color.ts` 走了**两个真循环**：循环 1 的 GREEN 里**刻意不写兜底**（`return MODULE_COLOR_VARS[moduleId]`），循环 2 的「未知模块兜底灰」才拿到真 RED（received `undefined`）。③ `module-color.test.ts` 末 2 条（话单 = 蓝、色值形态一律 `--v2-avatar-bg-*`）**在测试内声明为非 RED 驱动**的守卫断言（先有映射后有测试，沿用 T006/T007 对同类守卫的处理），**不谎称它们抓过 bug**。④ 8 条组件测试同处一个文件，整文件先因模块缺失失败、GREEN 后全绿——**未逐个制造 8 次 RED**，如实记录。⑤ 无「先写实现后补测试」。
+      门禁：`test:unit` **769 pass / 0 fail**（T008 末 758 + 11 = `module-color` 4 + `tab-overflow` 7）/ `test:components` **37 pass / 0 fail**（T008 末 29 + 8）/ `test:browser` **41 pass / 0 fail**（与 T003 基线一致）/ `turbo typecheck` **30-30**（首轮失败 1 处：`Icon` 的 `name` 是枚举联合而非 `string`，已改用 `IconProps["name"]` 收口）/ `bunx oxlint packages/app/src/center packages/app/src/rail` **0 命中**（14 files；首轮 4 条 `no-unnecessary-type-assertion` 全在 `tab-bar.test.tsx` 的 `TABS[n]!`——本仓 `tsconfig` 未开 `noUncheckedIndexedAccess`，故 `!` 多余，已删）。
+      ⚠️ 全仓 `bun run lint` 仍 **exit 1 / 4902 warnings + 1 error**（与 T008 末**逐字一致**）。那 1 个 error 仍是既有上游那条（`packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义），按既定决策上报上游、不本地改。
+      📌 交接 T010：① 把 `TabBar` 挂进 `ThreePane` 中栏顶部；② `tab-store`（纯 reducer）升级为响应式（provider / signal）；③ 模块切换联动（FR-006）。
 - [ ] T010 [US2] [FE·新增] 实现左栏切换模块时不清空中栏 tab 的联动 [FR-006] [T005] [出参：切模块后中栏 tab 仍在]
 - [ ] T011 [US2] [FE·新增] 实现「特有 tab 由模块动作打开」的机制（非预置常驻）[FR-010] [T005] [出参：模块动作能打开新 tab 并累积]
 
