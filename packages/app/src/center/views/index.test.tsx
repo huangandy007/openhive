@@ -13,7 +13,7 @@ async function 解出(extension: string) {
   return load()
 }
 
-describe("应用级视图注册表（FR-007 的 10 类里 001 认领的三类）", () => {
+describe("应用级视图注册表（FR-007 的 10 类里 001 认领的几类）", () => {
   test(".doc / .docx 归 Word 预览", async () => {
     const { DocumentView } = await import("./document-view")
     expect(await 解出(".doc")).toBe(DocumentView)
@@ -33,22 +33,43 @@ describe("应用级视图注册表（FR-007 的 10 类里 001 认领的三类）
     expect(await 解出(".csv")).toBe(SheetView)
   })
 
+  test(".png / .jpg / .jpeg / .gif / .bmp / .webp 归图片预览", async () => {
+    const { ImageView } = await import("./image-view")
+    for (const 名 of [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]) {
+      expect(await 解出(名)).toBe(ImageView)
+    }
+  })
+
+  test(".md / .txt 归图文视图（`.rtf` 本轮不做，回落 T015 的未知扩展名降级）", async () => {
+    const { RichtextView } = await import("./richtext-view")
+    expect(await 解出(".md")).toBe(RichtextView)
+    expect(await 解出(".txt")).toBe(RichtextView)
+    expect(viewRegistry.resolve(".rtf")).toBeUndefined()
+  })
+
+  test(".xmind 归思维导图（design-v2 待决策点 #5 的落定，2026-09-27c）", async () => {
+    const { MindmapView } = await import("./mindmap-view")
+    expect(await 解出(".xmind")).toBe(MindmapView)
+  })
+
   test("扩展名大小写不敏感（民警的文件名常是 .DOCX）", async () => {
-    const [{ DocumentView }, { PdfView }, { SheetView }] = await Promise.all([
+    const [{ DocumentView }, { PdfView }, { SheetView }, { ImageView }] = await Promise.all([
       import("./document-view"),
       import("./pdf-view"),
       import("./sheet-view"),
+      import("./image-view"),
     ])
     expect(await 解出(".DOCX")).toBe(DocumentView)
     expect(await 解出(".Pdf")).toBe(PdfView)
     expect(await 解出(".XLSX")).toBe(SheetView)
+    expect(await 解出(".JPEG")).toBe(ImageView)
   })
 
   /** 守卫：未认领的扩展名**不兜底**——降级呈现是 T015 的显式职责，不是注册表静默塞个默认视图。 */
-  test("没认领的扩展名解析不到（T014/T015 的格式此刻都不该有归属）", () => {
-    expect(viewRegistry.resolve(".png")).toBeUndefined()
+  test("没认领的扩展名解析不到（T018 的 .pptx 与源码 / 压缩包此刻都不该有归属）", () => {
     expect(viewRegistry.resolve(".pptx")).toBeUndefined()
     expect(viewRegistry.resolve(".dat")).toBeUndefined()
+    expect(viewRegistry.resolve(".zip")).toBeUndefined()
   })
 
   /**

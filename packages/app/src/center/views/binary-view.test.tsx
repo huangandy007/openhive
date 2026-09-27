@@ -14,6 +14,14 @@ function mount(element: () => JSX.Element) {
 /** 让「load → decode → render」整条异步链跑完。 */
 const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+/** 同 `mount`，另把 `dispose` 交出来——卸下视图才能验「卸载时归还资源」。 */
+function mountDisposable(element: () => JSX.Element) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  const dispose = render(element, host)
+  return { host, dispose }
+}
+
 const 内容 = (bytes: number[]): FileContent => ({
   type: "binary",
   content: btoa(String.fromCharCode(...bytes)),
@@ -126,5 +134,102 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
     await 落定()
 
     expect(渲过的).toEqual([[222]])
+  })
+})
+
+/**
+ * 有些渲染器**持有需要归还的资源**——图片用 object URL（`URL.createObjectURL`）指向字节，
+ * 不 `revokeObjectURL` 就整份占着内存直到页面关闭。民警一晚上翻几十张扫描件，这个漏是攒出来的。
+ * 故渲染器可返回清理函数，由壳负责在**换内容前**与**卸载时**调用它。
+ */
+describe("渲染器持有资源时：壳负责归还", () => {
+  test("换内容前先归还上一份的资源", async () => {
+    const [path, setPath] = createSignal("/p/a.png")
+    const 归还过的: number[] = []
+    let 第几次 = 0
+    const render: BytesRenderer = async () => {
+      const 序号 = ++第几次
+      return () => void 归还过的.push(序号)
+    }
+    mount(() => <BinaryView name="probe" path={path()} load={async () => 内容([1])} render={render} />)
+    await 落定()
+
+    setPath("/p/b.png")
+    await 落定()
+
+    expect(归还过的).toEqual([1]) // 第一份已还，第二份还拿着
+  })
+
+  test("视图卸下时归还当前那份（不能只靠「换下一份时顺手还」）", async () => {
+    const 归还过的: number[] = []
+    const { dispose } = mountDisposable(() => (
+      <BinaryView
+        name="probe"
+        path="/p/a.png"
+        load={async () => 内容([1])}
+        render={async () => () => void 归还过的.push(1)}
+      />
+    ))
+    await 落定()
+
+    dispose()
+
+    expect(归还过的).toEqual([1])
+  })
+
+  test("迟到的渲染：归还它自己的资源，但不夺走当前那份", async () => {
+    const [path, setPath] = createSignal("/p/慢.png")
+    let 放行慢的!: () => void
+    const 慢的 = new Promise<void>((resolve) => (放行慢的 = resolve))
+    const 归还过的: string[] = []
+    const render: BytesRenderer = async (bytes) => {
+      if (bytes[0] === 111) {
+        await 慢的
+        return () => void 归还过的.push("慢")
+      }
+      return () => void 归还过的.push("快")
+    }
+    const { dispose } = mountDisposable(() => (
+      <BinaryView
+        name="probe"
+        path={path()}
+        load={async (p) => 内容(p === "/p/慢.png" ? [111] : [222])}
+        render={render}
+      />
+    ))
+    await 落定()
+
+    setPath("/p/快.png")
+    await 落定()
+    放行慢的()
+    await 落定()
+
+    expect(归还过的).toEqual(["慢"]) // 迟到者自己还掉，没有把「快」的那份挤掉
+    dispose()
+    expect(归还过的).toEqual(["慢", "快"]) // 卸载时还的是当前那份
+  })
+
+  test("卸载后才到点的渲染：自己还掉，别挂上一个再也没机会归还的资源", async () => {
+    let 放行!: () => void
+    const 卡住的 = new Promise<void>((resolve) => (放行 = resolve))
+    const 归还过的: string[] = []
+    const { dispose } = mountDisposable(() => (
+      <BinaryView
+        name="probe"
+        path="/p/a.png"
+        load={async () => 内容([1])}
+        render={async () => {
+          await 卡住的
+          return () => void 归还过的.push("迟")
+        }}
+      />
+    ))
+    await 落定()
+
+    dispose()
+    放行()
+    await 落定()
+
+    expect(归还过的).toEqual(["迟"])
   })
 })

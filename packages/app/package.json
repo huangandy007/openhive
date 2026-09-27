@@ -86,6 +86,7 @@
     "@thisbeyond/solid-dnd": "0.7.5",
     "diff": "catalog:",
     "docx-preview": "0.4.1",
+    "dompurify": "3.3.1",
     "effect": "catalog:",
     "fuzzysort": "catalog:",
     "ghostty-web": "github:anomalyco/ghostty-web#83c0a07b8628b748aed073b232cb4b52a6ca11c1",

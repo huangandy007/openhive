@@ -29,8 +29,13 @@ export type LoadFileContent = (path: string) => Promise<FileContent | undefined>
  * 才不会漏掉这种落网之鱼。
  *
  * 解不出来的内容（损坏的 base64）一律当「没有字节」：视图层不接异常，降级由调用方与 T015 负责。
+ *
+ * 返回类型写成 `Uint8Array<ArrayBuffer>` 而不是裸 `Uint8Array`（后者等价于
+ * `Uint8Array<ArrayBufferLike>`）：**这里的字节一定是自己刚分配的一整块**，不是别人大缓冲上的切片。
+ * 这个事实下游要用——`new Blob([bytes])` 的形状要求的就是 `ArrayBufferView<ArrayBuffer>`，
+ * 声明成裸 `Uint8Array` 会让每个渲染器各自去转一道（断言或白拷一次）。
  */
-export function decodeBytes(content: FileContent | undefined): Uint8Array | undefined {
+export function decodeBytes(content: FileContent | undefined): Uint8Array<ArrayBuffer> | undefined {
   if (!content) return undefined
   if (content.type === "binary" || content.encoding === "base64") {
     try {
@@ -42,7 +47,7 @@ export function decodeBytes(content: FileContent | undefined): Uint8Array | unde
   return new TextEncoder().encode(content.content)
 }
 
-function fromBase64(base64: string): Uint8Array {
+function fromBase64(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)

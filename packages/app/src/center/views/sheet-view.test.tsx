@@ -12,7 +12,7 @@ import { renderSheet, SheetView } from "./sheet-view"
  * 声明就是 `any`（`types/index.d.ts:34`，无 `type: "array"` 的可用重载），断言只是把 `any`
  * 换个说法，还会招 lint 的 `no-unsafe-type-assertion`。构造器本就收 ArrayBufferLike，`any` 直接过。
  */
-function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array {
+function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuffer> {
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(表), 名)
   return new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" }))

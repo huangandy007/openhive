@@ -14,7 +14,7 @@ export const viewRegistry: ViewRegistry = createViewRegistry()
 
 // FR-007「日常办公常见的 10 类文件」——001（T012–T014）认领其中几类：
 // ① 文档 .doc/.docx（T012） ② 表格 .xls/.xlsx/.csv（T013） ④ PDF（T012）
-// ③ 演示 .ppt/.pptx、⑤ 图片、⑥ 图文、⑦ 思维导图（T014）
+// ⑤ 图片、⑥ 图文 .md/.txt、⑦ 思维导图 .xmind（T014）；③ 演示 .ppt/.pptx 为 T018（方案未定）
 //
 // 一律注册成**动态** import 的 loader（`load:` 而不是组件本身）：三个预览库实测合计 976 kB
 // （gzip 306 kB），静态引进来就等于让民警「点开第一个文件之前」先把 Word、PDF、表格三套渲染器
@@ -31,4 +31,16 @@ viewRegistry.register({
 viewRegistry.register({
   extensions: [".pdf"],
   load: async () => (await import("./pdf-view")).PdfView,
+})
+viewRegistry.register({
+  extensions: [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"],
+  load: async () => (await import("./image-view")).ImageView,
+})
+viewRegistry.register({
+  extensions: [".md", ".txt"],
+  load: async () => (await import("./richtext-view")).RichtextView,
+})
+viewRegistry.register({
+  extensions: [".xmind"],
+  load: async () => (await import("./mindmap-view")).MindmapView,
 })
