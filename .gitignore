@@ -4,6 +4,8 @@ node_modules
 .sst
 .env
 .env.local
+.env.development
+.credentials.yaml
 .idea
 .vscode
 .codex
