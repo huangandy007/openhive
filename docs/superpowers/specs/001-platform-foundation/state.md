@@ -1,7 +1,7 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T004 已完成。**T005 待启动**（等用户说「next」）。
+T005 已完成。**T006 待启动**（等用户说「next」）。
 
 ## 已完成
 - **T001** [FE·换皮] 定位三栏真实组件 → 产出 `refactor-targets.md`
@@ -38,6 +38,14 @@ T004 已完成。**T005 待启动**（等用户说「next」）。
   - TDD 诚实标注：循环 1 提前写了多扩展名 for 循环（无失败测试）→ 已删除并由循环 2 驱动回来
   - 8 条循环：① 注册后可查 ② 一视图认领多扩展名 ③ 查找不区分大小写 ④ 注册侧大小写等价 ⑤ 重复注册抛错 ⑥ 中途冲突整批不生效 ⑦ 路径取扩展名 ⑧ 取不到（dotfile / 结尾点 / 空串）
 
+- **T005** [P] [FE·新增] 中栏共享 tab 状态 `packages/app/src/center/tab-store.ts` + 11 个单测（22 expect）
+  - API（**纯 reducer，照 `context/layout-tabs.ts` 范式**——不引入 Solid store/signal；响应式 provider 留 T009/T011，同 T004 的「此刻无消费者」理由）：`openContentTab` / `activateContentTab` / `closeContentTab` / `switchModule` + `contentTabKey`
+  - **tab 身份 = 来源模块 + `\n` + 路径**：来源模块是身份的一部分，故同一文件在两个模块里打开算两张 tab（FR-005 按模块着色，否则同内容两色冲突）。分隔符取 `\n` 不是 `:`——路径里含 `:`（`C:\…`）
+  - 关闭语义沿用 `layout-tabs.ts`：关激活项 → 优先左邻居，无左邻居取右邻居；关最后一张 → `active` 清空。关**非**激活项 → 激活态不动
+  - ⚠️ **`ContentTab.module`（tab 的*来源*模块）与 `CenterTabState.module`（当前*停留*的模块）同名而义不同**——已在这两处类型注释里拉开对比，是 T009/T010 最易踩的坑
+  - TDD 诚实标注：循环 7 的 GREEN 里顺手写了「关非激活项不动激活态」的守卫（当时无失败测试）→ **已按 Iron Law 删除**，由循环 9 驱动回来。另循环 6「跨模块累积」非 RED 驱动，是强度断言（测试内已注释声明）
+  - 11 条循环：① 打开追加并激活 ② 重复打开不增张只激活 ③ 同文件异模块算两张 ④ 切模块 100% 保留 tab 与激活态 ⑤ 打开不动工作上下文 ⑥ 跨模块累积（强度断言）⑦ 关激活项退左邻居 ⑧ 关第一张退右邻居 ⑨ 关非激活项激活态不动 ⑩ 关最后一张激活态清空 ⑪ 点击已有 tab 切过去且不重排
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -53,17 +61,19 @@ T004 已完成。**T005 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T004 末）
+## 质量门禁（T005 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **733 pass / 0 fail**（105 files） | 干净（T003 末 725 + T004 新增 8） |
-| `packages/app` `bun run test:components` | ✅ **6 pass / 0 fail**（19 expect） | 干净（T003 新增门禁） |
+| `packages/app` `bun run test:unit` | ✅ **744 pass / 0 fail**（106 files） | 干净（T004 末 733 + T005 新增 11） |
+| `packages/app` `bun run test:components` | ✅ **6 pass / 0 fail**（19 expect） | 干净（T003 新增门禁，本 task 未动 `.tsx`） |
 | `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 持续绿（`@opencode-ai/app` 本次实跑非缓存，覆盖新文件） |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4901 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T004 触碰文件 lint 自查**（`bunx oxlint packages/app/src/center`）：**0 warning / 0 error**。全仓 lint 文件数 3288（T003 时 3286，+2 = T004 两个新文件），**未新增任何诊断**。
+**T005 触碰文件 lint 自查**（`bunx oxlint packages/app/src/center`）：**0 warning / 0 error**。全仓 lint 文件数 3290（T004 时 3288，+2 = T005 两个新文件），**未新增任何诊断**（`grep "center/"` 于 lint 输出 0 命中）。
+
+> ⚠️ **warning 计数诚实标注**：T004 末记的是 4902，本次是 **4901**（−1）。已用 `git status --short` 证实工作区**只有** T005 那 2 个新增文件、无任何既有文件改动，且我的文件在 lint 输出中 0 命中——故这 −1 **不可能由本次改动产生**（oxlint 多线程扫描的输出计数在不同轮次间有抖动，或 T004 末那次读数为个别诊断的重复计数）。**不宣称「因为 4902→4901 所以没新增」**，真正的依据是上面那句 0 命中。T004 末的 4902 如需修正，以本次 4901 为最新观测值。
 
 ### 唯一仍在红的门禁：lint 的 1 个 error（已知，待上报上游）
 上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 的 `content-['\200B']`（Tailwind 类里的八进制转义）。该文件与基点**逐字节相同**，跨平台真实存在（非 Windows 特有）。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**决策：不在本项目内私改，记为已知红，上报上游**。本次新增文件在 lint 输出中 **0 命中**；4902 条 warning 亦为既有噪声。
@@ -88,8 +98,10 @@ T004 已完成。**T005 待启动**（等用户说「next」）。
 - 🆕 **前端组件测试入口**（T003 起）：`packages/app/solid-jsx.ts`（本包自有 Solid JSX preload）+ `package.json` 脚本 `test:components`。改任何 `packages/app` 的 `.tsx` 组件/测试后，跑 **`bun run test:components`**；`.tsx` 测试**不能**并进 `test:unit`（`--conditions=solid` 下会报 React 未定义）。
 - 🆕 `.tsx` 测试的 glob 坑：带引号的 `"./src/**/*.test.tsx"` 会被 bun 当**过滤器**（"Test filter had no matches"）；必须**不加引号**写成 `./src/**/*.test.tsx`，由 shell 展开 globstar 才能匹配任意深度（已用探针文件实测）。
 - 🆕 **待决项（T006 前须定）**：能力位 / `is_admin` 契约口径。001 的 FR-003 把「用户管理」列为固定下拉项，但 `010/spec.md:121` FR-001 要求它是**管理员专属**，而 001 内**零 admin 门禁**。两者需在 T006 读 capability 之前对齐。
-- 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。
+- 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。**（用户已确认此发现成立）**
+- 🆕 **待决项（T012 前须定）**：**FR-007 的「10 类」逐项枚举**。用户已确认口径 = **日常办公常见的 10 类文件**，原列的「数据明细 / 可视化图表 / 分析记录」**不计入**（它们与上一条数据轴待决项是同一个问题）。已落修订记录 2026-09-27b 于 `spec.md` / `tasks.md`。
+  **候选提案（我拟，未获确认，仅作 T012 的起步锚点）**：① 文档 `.doc/.docx` ② 表格 `.xls/.xlsx/.csv` ③ 演示 `.ppt/.pptx` ④ PDF `.pdf` ⑤ 图片 `.png/.jpg/.jpeg/.gif/.bmp/.webp` ⑥ 文本/图文混排 `.txt/.md/.rtf` ⑦ 思维导图 `.xmind`（或 `.mm`）⑧ 压缩包 `.zip/.rar/.7z` ⑨ 音视频 `.mp3/.mp4/.wav` ⑩ 代码/配置 `.json/.xml/.yaml`。**待用户裁定后再动 T012**；⑧⑨ 是否要"预览"还是只"下载"也需一并定。
 - 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
 
 ## 最后更新
-2026-09-27（T004 完成：视图注册表 + 8 个单测；test:unit 733 pass 零回归、typecheck 30/30、lint 唯 1 个既有上游 error 已知红；遗留 3 项待决已记录）
+2026-09-27（T005 完成：中栏共享 tab 状态 + 11 个单测；test:unit 744 pass 零回归、typecheck 30/30、lint 唯 1 个既有上游 error 已知红。**FR-007「10 类」口径已按用户确认更正为「日常办公常见的 10 类」**，已落修订记录 2026-09-27b 于 spec.md / tasks.md；待决项增至 4 项，其中「T012 前须定：10 类逐项枚举」附带候选提案）
