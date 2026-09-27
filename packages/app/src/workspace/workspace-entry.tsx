@@ -1,7 +1,10 @@
 import { Show, type ParentProps } from "solid-js"
 import { Portal } from "solid-js/web"
+import { CenterContent } from "@/center/center-content"
+import type { LoadFileContent } from "@/center/file-content"
 import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
+import { viewRegistry } from "@/center/views"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { Topbar } from "@/topbar/topbar"
@@ -16,6 +19,14 @@ export interface WorkspaceEntryProps {
   titlebarRight?: () => HTMLElement | null
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
   capabilities?: ReadonlySet<string>
+  /**
+   * 取文件内容的接缝，供中栏视图渲染。
+   *
+   * 由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组），**不在这里 `useFile()`**：
+   * `useFile` 要六层 provider 才活得下来，会把工作台的组件测试整个拖进去。
+   * 省略 = 视图拿不到内容（停在空态），但路由与 tab 照常。
+   */
+  loadFile?: LoadFileContent
 }
 
 /**
@@ -63,7 +74,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             onActivate={(key) => center.activate(key)}
             onClose={(key) => center.close(key)}
           />
-          {props.children}
+          {/* tab 栏下面就是内容区（FR-007 / DESIGN §4.5 的「中栏承载内容视图」）。
+              没有可解析的激活 tab 时原样落回 `children`——即上游路由自己的页面，
+              故 001 下（尚无模块动作）行为与本组件引入前完全一致。 */}
+          <CenterContent registry={viewRegistry} load={props.loadFile}>
+            {props.children}
+          </CenterContent>
         </ThreePane>
       </div>
       <Show when={props.titlebarRight?.()} keyed>

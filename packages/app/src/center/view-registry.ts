@@ -1,8 +1,17 @@
 import type { Component } from "solid-js"
+import type { LoadFileContent } from "./file-content"
 
-/** 视图组件的入参：要渲染的是哪个文件；内容由视图自行按需读取。 */
+/**
+ * 视图组件的入参：要渲染的是哪个文件、内容从哪取。
+ *
+ * 内容**由中栏注入**（`load`）而不是视图自行去 `useFile()`：视图要能被单独挂起来测，
+ * 不该被拖进整个应用 provider 组装。T004 预留的「内容自行读取」到此收口。
+ */
 export interface ViewProps {
+  /** 要渲染的内容标识。**不可解释**——001 是文件路径，数据轴（F6/F7）是数据视图键。 */
   path: string
+  /** 取内容；省略 = 没有内容来源（数据轴视图自带内容时不需要它）。 */
+  load?: LoadFileContent
 }
 
 /** 中栏内容视图组件。 */

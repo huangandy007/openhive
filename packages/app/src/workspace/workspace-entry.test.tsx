@@ -226,3 +226,58 @@ describe("模块动作开出的特有 tab（FR-010 出参）", () => {
     expect(currentModule(host)).toBe("资金分析")
   })
 })
+
+/** 让「load → decode → render」整条异步链跑完。 */
+const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+const 立项书: ModuleAction = { title: "立项书.docx", content: "/p/立项书.docx" }
+
+/**
+ * 集成守卫（非 RED 驱动，通路就绪后补）：T012 的注册表 / 渲染器已由各自单测证明，
+ * 本条只证它们**真的挂进了工作台**——不是又一堆「组件齐备、没接进应用」的文件
+ * （T006/T007 就栽在这上面，见 `workspace-entry.tsx` 头注）。
+ */
+describe("中栏内容区接进工作台（FR-007 出参）", () => {
+  test("模块动作打开的 .docx tab：中栏长出 Word 预览视图", async () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <动作面板 actions={[立项书]} />
+      </WorkspaceEntry>
+    ))
+
+    触发(host, 立项书)
+    await 落定()
+
+    expect(host.querySelector("[data-component='document-view']")).not.toBeNull()
+  })
+
+  test("一张 tab 都没有时，中栏仍是应用自己的页面内容（内容区不夺位）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <div data-slot="page">页面内容</div>
+      </WorkspaceEntry>
+    ))
+
+    expect(host.querySelector("[data-component='document-view']")).toBeNull()
+    expect(text(host, "page")).toBe("页面内容")
+  })
+
+  test("应用入口注入的取数接缝一路走到视图（load 不是断在中间）", async () => {
+    const 取过的: string[] = []
+    const host = mount(() => (
+      <WorkspaceEntry
+        loadFile={async (path) => {
+          取过的.push(path)
+          return undefined
+        }}
+      >
+        <动作面板 actions={[立项书]} />
+      </WorkspaceEntry>
+    ))
+
+    触发(host, 立项书)
+    await 落定()
+
+    expect(取过的).toEqual(["/p/立项书.docx"])
+  })
+})

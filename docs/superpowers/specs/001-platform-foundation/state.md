@@ -1,9 +1,10 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T011 已完成。**T012 待启动**（等用户说「next」）。
-✅ T011 落地了 FR-010 的机制：`center/module-actions.ts`（`ModuleAction` + `useModuleAction()`）——模块动作是**特有 tab 的唯一来源**，来源模块由 hook 取当前模块、不手填，进门时中栏一张 tab 都没有（非预置常驻）。
-⚠️ **T011 的范围裁量请复核**（见「待决项」末条）：我把边界定在「动作层」，未交付「动作 → 视图渲染」的中栏路由（那会与 T012 的首个真实视图合并考虑）。
+T012 已完成。**T013 待启动**（等用户说「next」）。
+✅ T012 交付了 FR-007 的头两个真实视图（Word / PDF）+ 中栏内容区路由（`CenterContent`），并落了应用级注册表单例（`center/views/index.ts`）——**解掉 T004/T009 记的「共享注册表实例放哪」待决项**。
+🔴 **但有一处与用户裁定的落差，请复核**（见「待决项」）：裁定要求「补一条最小的『打开文件』路径」，**通路补了**（集成测试证明 `loadFile` 一路走到视图），但**生产侧没有合法的 loader 供给方**——`loadFile` 目前只是注入点，不假装能点开文件。
+⚠️ **T011 的范围裁量仍待复核**（见「待决项」）：边界止于「动作层」；T012 已在该边界之外补上「激活 tab → 注册表 → 渲染」的中栏路由。
 📌 T008 遗留的**计划缺口仍在**（非任何任务引入）：**右栏（AI 会话）没有任何任务供给**——详见「待决项」。
 
 ## 已完成
@@ -119,6 +120,17 @@ T011 已完成。**T012 待启动**（等用户说「next」）。
   - ⚠️ **视觉类零断言（L2 缺口，同前）**：本任务不新增视觉元素（tab 由 T009 的 `tab-bar.tsx` 渲染），无新视觉核对项
   - TDD 诚实标注：① RED 形态 = `Cannot find module './module-actions'` ② 两个真循环（见上）③ 另 3 条（初始零 tab / 重复触发不重复开 / 跨模块累积）是**测试内声明为非 RED 驱动**的需求守卫，行为由既有 `openContentTab` 语义保证 ④ `workspace-entry.test.tsx` 新增的集成守卫同为非 RED（两段通路各自已绿），已注释声明 ⑤ 无「先写实现后补测试」
 
+- **T012** [US3] [FE·新增] 文档与 PDF 视图 + 中栏内容区路由 `packages/app/src/center/`：`file-content.ts` + `views/{binary-view,document-view,pdf-view,index}.{tsx,ts}` + `center-content.tsx` + 4 个新测试文件 + 1 个文件新增测试（**6 个新文件 + 1 个文件新增，共 28 条**）
+  - **交付**：`FileContent` / `LoadFileContent` / `decodeBytes`（取数接缝 + base64→字节）+ `BinaryView`（字节型视图公共壳：取字节 → 交渲染器 → `pending/ready/empty/error`）+ `renderDocx`/`DocumentView`（docx-preview）+ `renderPdf`/`PdfView`（pdfjs-dist）+ `viewRegistry`（应用级单例，认领 `.doc/.docx` 与 `.pdf`）+ `CenterContent`（激活 tab → 扩展名 → 注册表 → 视图）
+  - **出参分两层兑现**：①「能预览 Word / PDF」= **机制已通**（渲染器真吃了字节，垃圾字节必落到 `error` 已被测试证明；`getDocument` 真跑到了 `InvalidPDFException`）②「画面真的出来」= **L2 缺口**，留 T017 真实浏览器核对（happy-dom 无 CSS/Canvas 引擎，**不谎称已验**）
+  - **依赖处理**：`docx-preview@0.4.1` + `pdfjs-dist@6.3.289` **刻意写显式版本、不进根 catalog**（进 catalog 要动上游高频的根 `package.json`）；`bun.lock` 净改动 **+55 / −5**（其余为 bun 的传递依赖重提升，非降级）——773 条既有单测全绿反证对既有包无影响
+  - **三处关键设计**：① **`CenterContent` 无解析结果时落回 `children`**（`Show ... fallback={props.children}`）→ 001 下行为与本组件引入前**完全一致**（有测试证明），且 `keyed` 保证两张 document tab 间切换时组件重挂、视图按新 path 重新取数 ② **注册表由调用方注入**（`registry` prop）而非中栏 import 单例 → 测试各用各的、互不串味（沿用 T010 用 context 而非模块级单例的同一理由）③ **`ViewProps` 加宽为 `{ path, load? }`**（T004 预告过）：`path` 保持**不可解释**（001 = 文件路径，数据轴 F6/F7 = 数据视图键），取内容改由 `load` 注入
+  - ⚠️ **两处弃「猜」从「记」**：① view 层**不自己 `useFile()`**——那要六层 provider 才活得下来，会把工作台组件测试整个拖进去，故取数做成注入缝 ② 不猜「未知扩展名长什么样」——路由不到就落回上游路由页面，**降级呈现归 T015**
+  - 🔴 **与用户裁定 #3 有落差的发现（请复核）**：裁定要求「补一条最小的『打开文件』路径」。**通路补了**（含集成测试证明 `loadFile` 一路走到视图），但**生产侧没有合法的 loader 供给方**：directory-scoped 的 SDK client 只在**路由页内部**可得（`pages/directory-layout.tsx:117`、`pages/session.tsx:273`），而 `WorkspaceEntry` 所在的 `NewLayout` 在**其上层**（`app.tsx:371-379`）；退而用 `serverSDK().client` 会**丢 directory 作用域**（多项目下读错文件），从 `layout.route()` 反推目录则要猜上游路由内部结构（违宪法 I）。且 001 无需求方（FR-010 的 tab 由模块动作打开，模块属 F2+）。故 `loadFile` 留作**注入点**，**不假装生产侧已能点开文件**。候选解法（留给 F2 裁量）：① 文件源上提到工作台层；② 改 context 注册制（与 T010 记的「不用模块级单例、避免全局复位钩子」相冲突，需权衡）
+  - ⚠️ **pdfjs worker 未配**：`GlobalWorkerOptions.workerSrc` 未设 → 退回主线程渲染。Vite 构建期配置，本环境无从验证，**留待 T017**
+  - ⚠️ **视觉类零断言（L2 缺口，同前）**：happy-dom 无 CSS 引擎。**T017 新增待核对**：① Word/PDF 真实文件的画面渲染；② PDF canvas 尺寸与滚动容器；③ `data-state` 的视觉表现（空态/错误态由 T015 补画）
+  - TDD 诚实标注：① RED 形态 = `Cannot find module './xxx'`（**5 次**）② **2 次真行为 RED**：探针先行证明「垃圾字节必落 `error`」对两个渲染器都成立（`Can't find end of central directory : is this a zip file ?` / `InvalidPDFException Invalid PDF structure.`）③ **唯一一处非 RED 驱动**：`binary-view.tsx` 的**竞态令牌**是先写下的、没有失败测试逼出来 → 补测试并**临时把守卫改成 `mine === token || true` 验证它有牙**（立刻 RED，收到 `[111]` 说明旧文件盖掉了新的），恢复后 GREEN，**已在 tasks.md 如实标注** ④ 无「先写实现后补测试」的其余部分
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -134,18 +146,18 @@ T011 已完成。**T012 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T011 末）
+## 质量门禁（T012 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **769 pass / 0 fail**（112 files / 3102 expect） | 干净（与 T009/T010 末**完全一致**——本任务未动任何 `.ts` 单测） |
-| `packages/app` `bun run test:components` | ✅ **53 pass / 0 fail**（111 expect） | 干净（T010 末 47 + 5 `module-actions` + 1 `workspace-entry` 集成守卫） |
+| `packages/app` `bun run test:unit` | ✅ **773 pass / 0 fail**（112 files / 3123 expect） | 干净（T011 末 769 + 4 `file-content`） |
+| `packages/app` `bun run test:components` | ✅ **77 pass / 0 fail**（180 expect） | 干净（T011 末 53 + 24：`binary-view` 6 / `document-view` 2 / `pdf-view` 2 / `views/index` 4 / `center-content` 7 / `workspace-entry` 新增 3） |
 | `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail**（100 expect） | 干净（与基线**一致**） |
-| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（本轮无报错、无需改类型） |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4901 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 首轮真报错 1 处（`binary-view.test.tsx:52` TS2769，`HTMLElement \| null` vs `undefined`）→ 改测试助手 `?? undefined` 后转绿 |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T011 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 warning / 0 error**（19 files，首轮即干净）。
+**T012 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → 首轮 1 条（`center-content.tsx` 的 `consistent-return`：`createMemo` 里混用裸 `return` 与 `return value`），全改 `return undefined` 后 **本任务文件 0 命中**。
 
 > 🔴 **T010 的教训（仍在生效）**：那条「宽度未知先全显示」的测试**第一版是假绿**——用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值，而 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 1000，测试什么都没测（立刻通过）。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`）。**测试一写就绿要当红灯看**。
 
@@ -184,7 +196,7 @@ T011 已完成。**T012 待启动**（等用户说「next」）。
 - ✅ **已解决（原「T008 前须定：T007 的 `Topbar` 未接线」）**：T008 已把 `Topbar` 挂进 `#opencode-titlebar-right`（经 `pages/layout-new.tsx` 的 `useTitlebarRightMount()` 注入 + `<Portal>`），并建立身份接入缝 `workspace/current-user.ts`。**身份未就位时顶栏不渲染用户区**（宁缺勿假，未采纳「塞占位身份」方案）；F2 落地时**只改 `current-user.ts` 一个文件**。
 - 🔴 **待决项（须尽快定，建议补任务）**：**右栏（AI 会话）无任务供给**（T008 发现）。FR-001 要求「右栏 AI 会话」，但 T001–T017 里没有任何任务把 AI 会话放进 `ThreePane` 的右槽（plan.md ① 把它列为「换皮 + 重定职责」却未派生 task；T003 备注「右栏由 T007/T009 供给」**是错记**——T007 顶栏、T009 中栏 tab 栏）。**建议补一个任务**（把 `pages/session/session-side-panel.tsx` 换皮 + 重定职责后填入右槽，或在 001 明确记为「右栏内容归 F8」并据此降低 FR-001 的验收口径）。在此之前，FR-001 的右栏仍只是「位置已定义、内容空缺」。
 - 🆕 **待决项（T009 起须留意）**：**`#opencode-titlebar-right` 是共享注入点**。上游 `new-session-view.tsx:77-93`（`NewSessionStatus`）与 `session-header.tsx:285` 都往同一元素 Portal；T008 挂上的 openhive 顶栏会与它们**并列出现在顶栏右侧**。T017 浏览器核对时须定归属/顺序（可能与 T009「顶栏 session tab 条 vs 中栏 tab 容器」的分工是同一类问题）。
-- 🆕 **待决项（T007 前须定，T010 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；T009 新增 `center/module-color.ts` + `center/tab-overflow.ts`；**T010 新增 `center/tab-context.tsx`**；**T011 新增 `center/module-actions.ts`**（plan.md:69-70 的 `center/` 只列了 `tab-bar.tsx` + `tab-store.ts` + `view-registry.ts` + `views/`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- 🆕 **待决项（T007 前须定，T010 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；T009 新增 `center/module-color.ts` + `center/tab-overflow.ts`；**T010 新增 `center/tab-context.tsx`**；**T011 新增 `center/module-actions.ts`**；**T012 新增 `center/file-content.ts` + `center/center-content.tsx` + `center/views/index.ts` + `center/views/binary-view.tsx`**（plan.md:69-70 的 `center/` 只列了 `tab-bar.tsx` + `tab-store.ts` + `view-registry.ts` + `views/`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
 - 🆕 **待决项（T010 新增，T017 视觉核对前定）**：**中栏 tab 栏「一个 tab 都没有」时怎么呈现**。首屏就是这个状态（FR-010：tab 由模块动作打开，非预置常驻），现在渲染的是一条 **40px 空条**。**DESIGN §4.5 没定**空态，我没擅自加「空则不渲染」——须设计侧定后改（改动只在 `workspace-entry.tsx` 一个 `<Show>` 或 `tab-bar.tsx` 一处）。
 - 🆕 **待决项（T009 新增，可延后，设计侧复核）**：**DESIGN.md §4.5 的两项裁量**——① 「模块 → 实体身份色」的**取值**（仅「话单=蓝」有 §1.3 既有依据，其余五个按色相可区分性挑）；② **用「模块图标」取代 front 参考件的「文件类型图标」** 这一选择。改色只动 §4.5 表 + `center/module-color.ts` 一处映射，组件不受影响；改图标选型同 T006/T007 的图标评审一并看。
 - 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标——T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`；T007 又自选 `comment`（站内信，因原生集**无 `bell`**）、`expand`（全屏）；**T009 的溢出按钮「⋯」直接用字面字形 U+22EF**（原生 97 个图标名里**无** `ellipsis` / `more-horizontal` / `dots`，已核）。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证；宪法 I 禁止往上游 `icon.tsx` 加图标）。
@@ -193,12 +205,14 @@ T011 已完成。**T012 待启动**（等用户说「next」）。
 - 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。**（用户已确认此发现成立）**
 - 🆕 **待决项（T012 前须定）**：**FR-007 的「10 类」逐项枚举**。用户已确认口径 = **日常办公常见的 10 类文件**，原列的「数据明细 / 可视化图表 / 分析记录」**不计入**（它们与上一条数据轴待决项是同一个问题）。已落修订记录 2026-09-27b 于 `spec.md` / `tasks.md`。
   **候选提案（我拟，未获确认，仅作 T012 的起步锚点）**：① 文档 `.doc/.docx` ② 表格 `.xls/.xlsx/.csv` ③ 演示 `.ppt/.pptx` ④ PDF `.pdf` ⑤ 图片 `.png/.jpg/.jpeg/.gif/.bmp/.webp` ⑥ 文本/图文混排 `.txt/.md/.rtf` ⑦ 思维导图 `.xmind`（或 `.mm`）⑧ 压缩包 `.zip/.rar/.7z` ⑨ 音视频 `.mp3/.mp4/.wav` ⑩ 代码/配置 `.json/.xml/.yaml`。**待用户裁定后再动 T012**；⑧⑨ 是否要"预览"还是只"下载"也需一并定。
-- 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
+- ✅ **已解决（原「T009/T012 前须定：应用级共享注册表实例放哪」）**：T012 已落——**机制**归 `center/view-registry.ts`（`createViewRegistry()` 工厂，保持不变），**注册了哪些**归 `center/views/index.ts`（导出 `viewRegistry` 单例 + 两条 `register`）；**归属分离**使得「单例」与「视图清单」各改各的。由 `WorkspaceEntry` **注入**给 `CenterContent`（`registry` prop）而非被中栏 import——组件测试得以各用各的注册表，不需要全局复位钩子（与 T010 弃模块级单例的理由一致）。
+- 🔴 **待决项（T012 新增，请复核）**：**中栏视图的生产侧 loader 供给方不存在**。`CenterContent` / 视图的取数走注入的 `loadFile`，通路与集成测试都齐了，但**应用入口拿不到合法的 directory-scoped 文件源**：`useSDK()` 只在路由页内部可用（`pages/directory-layout.tsx:117`、`pages/session.tsx:273`），而 `WorkspaceEntry` 所在的 `NewLayout` 在其上层（`app.tsx:371-379`）。候选解法：① 把文件源上提到工作台层（要动上游 provider 层级，须评估宪法 I 的冲突面）；② 改 context 注册制（路由页把 client 注册进一个 context，工作台层消费——**与 T010 记的「不用模块级单例、避免全局复位钩子」相冲突，需权衡**）；③ 若 F2 的模块 UI 本就自带文件源，则此缝可由模块侧供给。**在定下之前，`.docx` / `.pdf` 视图在生产链路上取不到内容（停在空态），001 不因此假装已能「点开文件」。**
+- 🆕 **待决项（T012 新增，T017 前定）**：**pdfjs 的 `GlobalWorkerOptions.workerSrc` 未配置** → 当前退回主线程渲染（功能可用但大文件会卡主线程）。属 **Vite 构建期**配置（`new Worker(new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url), {type:"module"})` 或 `?url` 导入），**本环境（bun test / happy-dom）无从验证**，须在 T017 真实浏览器中配置并核对。
 - 🔴 **待决项（T011 新增，请复核）：T011 的范围裁量**。T011 原文「实现『特有 tab 由模块动作打开』的机制」在本 feature 里**没有可供它服务的模块 UI**（001 只有框架）。我把边界定在**动作层**：模块如何声明/触发动作、来源模块如何确定、初始零 tab——并**刻意不造**「动作清单渲染」「动作 → 视图渲染的中栏路由」这类此刻无消费者的抽象（Simplicity First），也**未动** `view-registry.ts`。**若认为 T011 应一并交付「动作 → 视图渲染」，请指出**——那会与 T012 的首个真实视图合并考虑（且需先定上面「共享注册表实例」与「数据轴键通道」两条）。
 - 🆕 **待决项（T011 新增，数据轴落地时收口）**：`ContentTab.path` **命名遗留**。FR-010 的动作 tab 里，数据轴（F6/F7）的内容标识是数据视图键（`detail:acct-4419`）而非文件路径，`path` 这个字段名届时名不副实。T011 的动作层已用中性的 `ModuleAction.content` 表达该键，**但 `ContentTab` 与 `contentTabKey` 仍是 T005 的 `path`**——改名波及 `tab-store.ts` / `tab-bar.tsx` 及 T005/T009/T010 三个测试文件，故**未在本任务顺手改**（Surgical Changes），待数据轴真正落地时与「注册表键通道」一并收口。
 
 ## 最后更新
-2026-09-27（T011 完成：**模块动作打开特有 tab（FR-010）**——新增 `center/module-actions.ts`（`ModuleAction { title, content }` + `useModuleAction()`）。**来源模块由 hook 取当前模块**（不手填，FR-005 着色的来源就不会传错）；当前模块未定时**不响应**（不开假来源 tab）；**动作是特有 tab 的唯一来源**，进门时中栏零 tab（非预置常驻）。`content` 是**不可解释的内容键**（001 = 路径；数据轴 F6/F7 = 数据视图键），故**不必先解开「注册表只认扩展名」那个结**。🔴 **真 RED 一次**：无守卫实现先绿 → 补「当前模块未定」测试立刻 RED（收到 `{ module: undefined, … }`）→ 加守卫转绿，**边界是测试逼出来的**。test:components **53** pass（47 + 5 + 1 集成守卫）、test:unit **769** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中。⚠️ 全仓 lint 仍 exit 1 / **4901** warnings + 1 error（既有上游；计数较 T010 末少 1，属已记录的 ±1 抖动，**不代表修好了什么**）。⚠️ **两处范围裁量待复核**：① T011 边界止于「动作层」，未含「动作 → 视图渲染」；② `ContentTab.path` 命名遗留未顺手改。）
+2026-09-27（T012 完成：**文档与 PDF 视图（FR-007 的头两类）+ 中栏内容区路由**——新增 `center/file-content.ts`（取数接缝 + base64→字节）、`center/views/binary-view.tsx`（字节型视图公共壳）、`center/views/document-view.tsx`（docx-preview）、`center/views/pdf-view.tsx`（pdfjs-dist）、`center/views/index.ts`（**应用级注册表单例，解掉 T004/T009 记的待决项**）、`center/center-content.tsx`（激活 tab → 扩展名 → 注册表 → 视图）；改 `view-registry.ts`（`ViewProps` 加宽为 `{ path, load? }`）、`workspace-entry.tsx`（加 `loadFile` prop + 挂 `CenterContent`）、`packages/app/package.json`（+2 显式版本依赖，**不进根 catalog**）、`bun.lock`（**净 +55/−5**，其余为 bun 传递依赖重提升）。**6 个新文件 + 1 个文件新增，共 28 条测试**。test:unit **773** pass（769 + 4）、test:components **77** pass（53 + 24）、test:browser 41 pass、typecheck 30/30（首轮真报错 1 处已修）、本任务目录 oxlint 首轮 1 条 `consistent-return` 已修。🔴 **一处与裁定 #3 有落差，请复核**：通路已补且有集成测试证明 `loadFile` 一路走到视图，但**生产侧没有合法的 loader 供给方**（directory-scoped SDK client 只在路由页内部，`WorkspaceEntry` 在其上层）→ `loadFile` 留作注入点，**不假装已能点开文件**。⚠️ **一处非 RED 驱动**：`BinaryView` 的竞态令牌是先写的，已补测试 + 临时把守卫改成恒真验证它有牙（立刻 RED）后恢复，如实记录。⚠️ **L2 缺口**：Word/PDF **画面是否真的渲染出来**在 happy-dom 下验不了（无 CSS/Canvas 引擎），留 T017；**pdfjs worker 也未配**（退回主线程）。（T011 完成：**模块动作打开特有 tab（FR-010）**——新增 `center/module-actions.ts`（`ModuleAction { title, content }` + `useModuleAction()`）。**来源模块由 hook 取当前模块**（不手填，FR-005 着色的来源就不会传错）；当前模块未定时**不响应**（不开假来源 tab）；**动作是特有 tab 的唯一来源**，进门时中栏零 tab（非预置常驻）。`content` 是**不可解释的内容键**（001 = 路径；数据轴 F6/F7 = 数据视图键），故**不必先解开「注册表只认扩展名」那个结**。🔴 **真 RED 一次**：无守卫实现先绿 → 补「当前模块未定」测试立刻 RED（收到 `{ module: undefined, … }`）→ 加守卫转绿，**边界是测试逼出来的**。test:components **53** pass（47 + 5 + 1 集成守卫）、test:unit **769** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中。⚠️ 全仓 lint 仍 exit 1 / **4901** warnings + 1 error（既有上游；计数较 T010 末少 1，属已记录的 ±1 抖动，**不代表修好了什么**）。⚠️ **两处范围裁量待复核**：① T011 边界止于「动作层」，未含「动作 → 视图渲染」；② `ContentTab.path` 命名遗留未顺手改。）
 
 2026-09-27（T010 完成：**中栏 tab 接线 + FR-006 联动**——新增 `center/tab-context.tsx`（`CenterTabsProvider` + `useCenterTabs`），`WorkspaceEntry` 拆为「provider 外层 + `WorkspaceBody` 消费层」，图标栏当前模块与中栏 tab **共用同一份状态**（T008 的组件内 signal 上移进 `CenterTabState.module`），`<TabBar>` 挂进 `ThreePane` 中栏顶部。**切模块不清空 tab 因此是结构性的，不靠额外判断**。`tab-bar.tsx` 补 `w-full`（中栏是 `flex-col items-start`，缺它会缩到内容宽度）+ 「量不到宽度先全显示」。🔴 **抓到一次假绿**：测试用 `{...{availableWidth: undefined}}` 覆盖默认值，而 Solid 的 spread 跳过 `undefined` 键 → 测试空转立刻通过；改 `"availableWidth" in props` 后立刻真 RED。test:unit **769** pass、test:components **47** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中（首轮 1 条 unused import 已删）。⚠️ 全仓 lint 仍 exit 1 / 4902 warnings + 1 error（既有上游，与 T009 末逐字一致）。）
 

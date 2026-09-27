@@ -44,13 +44,13 @@
       → 产出 `packages/app/src/center/view-registry.ts`：`createViewRegistry()`（`register` / `resolve`）+ `extensionOf(path)`；8 个单测 `view-registry.test.ts`（17 expect，`.ts` 无 JSX，走 `test:unit`）。
       ✅ 出参已满足：`register({extensions:[".docx"]})` 后 `resolve(".docx")` 取回同一组件（测试 1）。
       **自定的契约（plan/spec 未定义，T012–T015 将依赖）**：
-      - `ViewProps = { path: string }`——视图只接一个文件路径，内容自行读取。**故意留到最小**，T012+ 需要再加（加宽向后兼容）。
+      - `ViewProps = { path: string }`——视图只接一个文件路径，内容自行读取。**故意留到最小**，T012+ 需要再加（加宽向后兼容）。→ **T012 已加宽为 `{ path, load? }`**：「内容自行读取」那句已作废，改为**由中栏注入取数接缝**（视图要能被单独挂起来测，不该被拖进应用 provider 组装）。
       - `register` 说**扩展名**（带点，如 `[".doc",".docx"]`），`resolve` 也按扩展名查；`extensionOf(path)` 单独负责「路径 → 扩展名」，调用方组合 `resolve(extensionOf(p))`。两侧各司其职、无歧义。
       - `extensionOf` 语义对齐 `path.extname`：纯 dotfile（`.gitignore`，含 `a/b/.gitignore`）无扩展名；`/` 与 `\` 都当分隔符（`node:path` 不能进浏览器包，手写 4 行）。
       **两个我做的行为决策（未经指示，请复核）**：
       1. **同一扩展名重复注册 → 抛错**（非静默覆盖）。理由：FR-008 面向插件作者，静默覆盖会让后注册者无声打掉前者的视图；真要覆盖可日后加显式 `override` 选项。
       2. **同批注册中途冲突 → 整批不生效**（先全量校验再落库），不留半注册状态。
-      ⚠️ **未导出应用级单例**（Simplicity First：此刻无消费者）。T009/T012 落首个真实视图时需决定共享实例放哪。
+      ⚠️ **未导出应用级单例**（Simplicity First：此刻无消费者）。→ **T012 已落**：单例在 `center/views/index.ts`（机制归 `view-registry.ts`，注册了哪些归 `views/index.ts`），**注入**给中栏而非被中栏 import，测试各用各的注册表。
       ⚠️ **待决（T011/T016 前须定）**：plan.md「数据流向」mermaid 把**两条轴都汇入内容视图注册表**，但本注册表按**扩展名**索引，而 FR-007 的「数据明细 / 可视化图表 / 分析记录」三类**没有文件扩展名**（数据轴来自业务 PG）。这两类现在无法经本注册表路由，需在 T011/T016 前厘清。
       ⚠️ FR-007 列了 10 类内容类型，注册表**没有「内容类型」概念**，只有扩展名——刻意的：暂无消费者需要它（FR-005 按**来源模块**着色，不是按内容类型）。10 类 → 扩展名的映射留待 T012–T015 声明。
       TDD 诚实标注：循环 1 我提前写了「多扩展名 for 循环」（类型是复数，顺手就 loop 了），属无失败测试的生产代码 → **已按 Iron Law 删除**，由循环 2 的测试驱动回来。门禁：`test:unit` 733 pass（725 + 8）/ `test:components` 6 pass / typecheck 30-30 / 本目录 lint 0 命中。
@@ -157,7 +157,18 @@
 
 ## Phase 5: US3 中栏多形态内容区（P1）
 
-- [ ] T012 [P] [US3] [FE·新增] 实现 `document-view`（Word/PDF 预览，docx-preview）[FR-007] [T004] [出参：.docx/.pdf 点开渲染预览]
+- [x] T012 [P] [US3] [FE·新增] 实现 `document-view`（Word/PDF 预览，docx-preview）[FR-007] [T004] [出参：.docx/.pdf 点开渲染预览]
+      → 产出 **5 个新文件 + 3 处改动**：`center/file-content.ts`（内容→字节）/ `center/views/binary-view.tsx`（字节型视图公共壳）/ `center/views/document-view.tsx`（docx-preview）/ `center/views/pdf-view.tsx`（pdfjs）/ `center/views/index.ts`（应用级注册表实例 + 注册 `.doc/.docx/.pdf`）；改 `center/view-registry.ts`（`ViewProps` 加宽）、`workspace/workspace-entry.tsx`（挂中栏内容区 + `loadFile` 注入点）、`packages/app/package.json` + `bun.lock`（新依赖）。测试 **6 个新文件 + 1 个文件新增**，共 **28 条**（`file-content` 4 + `binary-view` 6 + `document-view` 2 + `pdf-view` 2 + `views/index` 4 + `center-content` 7 + `workspace-entry` 新增 3）。
+      ✅ **出参分两层兑现，不合并声称**：① **通路**：`激活 tab → 扩展名 → viewRegistry.resolve → 视图渲染` 已端到端可测，且**真的挂进了工作台**（`workspace-entry.test.tsx` 集成测试：模块动作打开 `.docx` → 中栏长出 `[data-component='document-view']`），不是「组件齐备、没接进应用」（T006/T007 的坑）；② **真渲染**：`.docx/.pdf` 交给 docx-preview / pdfjs 且**字节真的进到了它们里面**——用「喂垃圾字节必落到 `error`」证明（若只是画空壳或吞掉失败，一条坏文件会显示成「加载成功但空白」，与「文件本来就是空的」无从区分）。**未证「成功渲染出画面」**：happy-dom 无文档渲染，须 T017 真实浏览器核对（L2 缺口，已记 state.md）。
+      **依赖（用户裁定「允许新增三方依赖」）**：`docx-preview@0.4.1` + `pdfjs-dist@6.3.289`，**写显式版本进 `packages/app/package.json`、不进根 catalog**——根 `package.json` 是上游高频文件，进 catalog 会抬高每次同步的冲突面（宪法原则 I）。`bun install` 会把本机镜像源 tarball URL 写进 `bun.lock`（3225 处 churn），已用一次性脚本还原为仓库原有的空串写法，`bun.lock` 净改动收敛到 **+55/−5**；其中 5 处是 bun 的**传递依赖重提升**（`isarray` 默认条目 2.0.5→1.0.0、`pako` 0.2.9→1.0.11，并为仍需旧版的消费者补了替代条目）——**不是降级**：需要 `isarray@2.0.5` 的四个消费者与 `unicode-trie` 的 `pako@0.2.9` 都拿到了替代条目。已由 `test:unit` **773 pass / 0 fail** 反证既有包未受影响。
+      **三处关键设计**：
+      - **取数由中栏注入，不叫视图自己去 `useFile()`**：`useFile` 要 `useSDK`/`useSync`/`useParams`/`useServerSDK`/`useLanguage`/`useLayout` 六层 provider 才活得下来，视图一旦自取数就没法单独挂起来测。故 `ViewProps` 加 `load?`，`CenterContent` 转交，`WorkspaceEntry` 以 `loadFile` prop 收注入（沿用 T008 给顶栏留 `titlebarRight` 的同一范式）。
+      - **壳与格式分离**：`binary-view.tsx` 只做「按 path 取内容 → 解成字节 → 交给格式自己的渲染器 → 把结果标在容器上」，**格式差异全在 `render` 一个函数里**。故 T014 的图片预览只需再写一个 `render`，竞态/失败/降级处理不必重写。
+      - **竞态令牌**：`path` 一变即作废上一次异步链。**没有它，快速连点两张 document tab 时先发起的那次可能后完成，把内容盖回旧的**——这条有专门测试（慢的旧请求晚回来），且我**验证过它有牙**（把守卫改成恒真后该测试立刻 RED，收到 `[111]`）。
+      `⚠️ 两处弃「猜」从「记」`：① **pdfjs 的 `GlobalWorkerOptions.workerSrc` 未配** → 退回主线程渲染（大文件会卡界面）。这是 Vite 构建期配置，**本环境无法验证**，猜错会破坏构建，故不写；留待 T017 真实浏览器核对时定夺。② **生产侧没有 loader 供给方**——见下条。
+      🔴 **一个与裁定有落差的发现（请复核）**：裁定要求「补一条最小的『打开文件』路径，让出参能真正兑现」。**通路补了**（含集成测试），但**生产侧没有合法的 loader 供给方**：`loadFile` 需要 directory-scoped 的 SDK client，而 `SDKProvider` 挂在**路由页内部**（`pages/directory-layout.tsx:117` / `pages/session.tsx:273`），`WorkspaceEntry` 所在的 `NewLayout` 层**在其之上**；退而用 `serverSDK().client` 会丢掉 directory 作用域 → 多项目下读错文件；从 `layout.route()` 反推目录则要猜上游路由内部结构（违宪法原则 I）。**001 也没有需求方**：FR-010 规定 tab 由模块动作打开，而模块属 F2+，此刻无人驱动。故我把 `loadFile` 留作**注入点**（集成测试已证它能一路走到视图），**不假装生产侧已能点开文件**。可能的解法（留给 F2 裁量）：① 把文件源上提到工作台层（需该层拿到目录）；② 改成 context 注册制（让树深处的文件树反向注册 loader）——后者与我 T010 记下的「不用模块级单例、避免全局复位钩子」相冲突，需一并权衡。
+      TDD 诚实标注：① RED 形态 = 本仓新文件的标准形态 `Cannot find module './xxx'`（5 次），另加 **2 次真行为 RED**（`workspace-entry` 的「视图没长出来」`received null`、「loader 没被调」`received []`）② **6 个循环**：`file-content`(4) → `binary-view`(5) → `document-view`/`pdf-view`(各 2) → `views/index`(4) → `center-content`(7) → 接线(3) ③ **一处非 RED 驱动**：`binary-view` 的竞态守卫测试是**实现已写好后**补的，非测试逼出来——故**额外验证它有牙**（临时把守卫改恒真 → 该条 RED → 恢复），如实标注 ④ `center-content` 的 2 条（「关掉别的 tab 当前视图不动」）与 `views/index` 的 4 条同属需求守卫 ⑤ 无「先写实现后补测试」（竞态守卫那条是唯一例外，已单独声明）。
+      门禁：`test:unit` **773 pass / 0 fail**（T011 末 769 + 4）/ `test:components` **77 pass / 0 fail**（T011 末 53 + 24）/ `test:browser` **41 pass / 0 fail**（与基线一致）/ `turbo typecheck` **30-30**（首轮 1 处失败：`expect().toBe()` 收 `HTMLElement | null` 与 `HTMLElement | undefined` 不兼容，改助手返回 `?? undefined` 收口）/ `bunx oxlint packages/app/src/center packages/app/src/workspace` **0 命中**（首轮 1 条 `consistent-return` 在 `center-content.tsx:36`，裸 `return` 改 `return undefined` 收口）。⚠️ 全仓 `bun run lint` 仍 exit 1：**4902 warnings + 1 error**（既有上游；本任务文件 0 命中，warning 数在既往任务间本就 ±1 抖动）。⚠️ 测试输出有**第三方 stderr 噪声**（pdfjs 的 `Please use the legacy build in Node.js environments` / `Indexing all PDF objects`），非本仓代码所致，未抑制。
 - [ ] T013 [P] [US3] [FE·新增] 实现 `sheet-view`（Excel 表格，SheetJS）[FR-007] [T004] [出参：.xlsx 点开渲染表格]
 - [ ] T014 [P] [US3] [FE·新增] 实现 `slide-view`/`mindmap-view`/`richtext-view`/`image-view`（演示/导图/图文/图片）[FR-007] [T004] [出参：对应类型文件渲染]
       ⚠️ **T012–T014 三任务共同前置**：FR-007 的「10 类」= **日常办公常见的 10 类文件**（修订记录 2026-09-27b），原列的「数据明细 / 可视化图表 / 分析记录」**不计入**。最终 10 类须在 T012 启动前逐项确认（候选提案见 `state.md` 待决项）。
