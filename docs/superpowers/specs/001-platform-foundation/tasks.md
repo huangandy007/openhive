@@ -142,7 +142,18 @@
       门禁：`test:unit` **769 pass / 0 fail**（与 T009 末一致——本任务未动 `.ts` 单测）/ `test:components` **47 pass / 0 fail**（T009 末 37 + 5 + 1 + 4）/ `test:browser` **41 pass / 0 fail**（与基线一致）/ `turbo typecheck` **30-30**（本轮无报错）/ `bunx oxlint packages/app/src/center packages/app/src/workspace` **0 命中**（17 files；首轮 1 条 `no-unused-vars`——`contentTabKey` 随上面那条被删的错误断言一起失用，已删）。⚠️ 全仓 `bun run lint` 仍 exit 1 / 4902 warnings + 1 error（既有上游，与 T009 末逐字一致）。
       ⚠️ **留给 T017 的视觉核对项（新增）**：中栏 tab 栏在**一个 tab 都没有**时（首屏常态——FR-010 的 tab 由动作打开，非预置常驻）是一条 40px 空条。**要不要隐藏空条，DESIGN §4.5 未定**，我没擅自加「空则不渲染」。须设计侧定后再改。
       📌 交接 T011：「模块动作打开 tab」现在只需在 provider 之内调 `useCenterTabs().open(tab)`——通路已通，且有测试证明。
-- [ ] T011 [US2] [FE·新增] 实现「特有 tab 由模块动作打开」的机制（非预置常驻）[FR-010] [T005] [出参：模块动作能打开新 tab 并累积]
+- [x] T011 [US2] [FE·新增] 实现「特有 tab 由模块动作打开」的机制（非预置常驻）[FR-010] [T005] [出参：模块动作能打开新 tab 并累积]
+      → 产出 `packages/app/src/center/module-actions.ts`：`ModuleAction`（`{ title, content }`）+ `useModuleAction()`（返回一个「触发动作」的函数）。5 个测试 `module-actions.test.tsx`（8 expect，走 `test:components`）+ `workspace-entry.test.tsx` 新增 1 条集成守卫（连通「动作 → tab 栏 DOM」）。
+      ✅ 出参已满足：动作面板里点两个动作（中间切了模块）→ 中栏状态累积两张 tab、各带**触发时**的来源模块；T011 单测证「动作 → 状态」，T010 已证「状态 → tab 栏」，新增的集成守卫把两段接起来（tab 标题按序出现在 `[data-slot='tab-title']`）。
+      **机制的三处要点**：
+      - **来源模块由 `useModuleAction()` 取当前模块**，不由调用方手填——模块 UI 长在模块自己身上，不该知道自己属于哪个模块；FR-005 按来源模块着色的前提即「来源不靠人手传，就不会传错」。**当前模块未定时直接不响应**（不开一张 `module: undefined` 的假来源 tab）。
+      - **动作是特有 tab 的唯一来源**：`CenterTabsProvider` 初始为空，动作按钮先在、tab 不在 → FR-010 的「非预置常驻」。对照参考件 `front/src/components/CenterWorkspace.tsx:145`（它把「研判笔记」预置进 `financialTabs` 初值，正是 FR-010 要禁掉的做法）。
+      - **`content` 是不可解释的内容键**，不是文件路径：001 只走工作空间轴（值为路径），数据轴（F6/F7）的明细 / 图谱 / 分析记录携带各自的数据视图键即可（`detail:acct-4419`）——**故本任务不需要先解开「注册表只认扩展名」那个结**（见 `state.md` 待决项）。
+      ⚠️ **未接线的数据（不编造）**：001 尚无模块 UI，故 `useModuleAction()` 目前**没有真实调用方**（F2+ 各模块的动作按钮才是）。本任务的测试用面板探针驱动，探针即该 hook 的既定用法（同 T010 的 `OpenTabs`，非测试专用后门）。
+      ⚠️ **命名遗留（记入待决项）**：`ContentTab.path` 这个字段名在数据轴 tab 上会名不副实（存的是 `detail:acct-4419` 这类键，不是路径）。本任务**未动 T005 的字段名**（改名会波及 `tab-store.ts` / `tab-bar.tsx` 及 T005/T009/T010 的测试）；待数据轴真正落地时一并收口。
+      TDD 诚实标注：① RED 形态 = `Cannot find module './module-actions'`（本仓新文件的标准形态）② **两个真循环**——循环 1「点动作开 tab」（先写无守卫实现即绿）→ 循环 2「当前模块未定时不凭空开 tab」拿到**真 RED**：`received [{ module: undefined, path: "detail:acct-4419", … }]`，正是预测的假来源 tab，加守卫后转绿 ③ 另 3 条（初始零 tab / 重复触发不重复开 / 跨模块累积）是**在测试内声明为非 RED 驱动**的需求守卫，其行为由既有 `openContentTab` 语义保证，**不谎称它们抓过 bug** ④ `workspace-entry.test.tsx` 新增的集成守卫同为非 RED（两段通路各自已绿），已在测试内注释声明 ⑤ 无「先写实现后补测试」。
+      🔴 **一个范围裁量（请复核）**：T011 原文的「机制」在本 feature 里没有可供它服务的模块 UI，故我把边界定在「**动作层**」——即模块如何声明/触发动作、来源模块如何确定；**不预先造「动作清单渲染」这类无消费者的抽象**（Simplicity First），也不动 `view-registry.ts`（数据轴的解析归属留待 F6/F7）。**若你认为 T011 应一并交付「动作 → 视图渲染」的中栏路由，请指出**——那会与 T012 的首个真实视图合并考虑。
+      门禁：`test:unit` **769 pass / 0 fail**（与 T010 末一致——本任务未动 `.ts` 单测）/ `test:components` **53 pass / 0 fail**（T010 末 47 + 5 单测 + 1 集成守卫，111 expect）/ `test:browser` **41 pass / 0 fail**（与基线一致）/ `turbo typecheck` **30-30** / `bunx oxlint packages/app/src/center packages/app/src/workspace` **0 命中**（19 files）。⚠️ 全仓 `bun run lint` 仍 exit 1：**4901 warnings + 1 error**（既有上游；warning 计数较 T010 末 4902 少 1，属已记录的 ±1 抖动，本任务文件 0 命中）。
 
 ## Phase 5: US3 中栏多形态内容区（P1）
 

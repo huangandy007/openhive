@@ -1,8 +1,9 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T010 已完成。**T011 待启动**（等用户说「next」）。
-✅ T010 把中栏 tab 真正接进了工作台：`center/tab-context.tsx`（响应式状态层）+ `WorkspaceEntry` 接线 + `tab-bar.tsx` 挂载修正。**FR-006 的联动已成立**——图标栏当前模块与中栏 tab 是同一份状态，切模块走 `switchModule()`，结构上不可能清空 tabs。
+T011 已完成。**T012 待启动**（等用户说「next」）。
+✅ T011 落地了 FR-010 的机制：`center/module-actions.ts`（`ModuleAction` + `useModuleAction()`）——模块动作是**特有 tab 的唯一来源**，来源模块由 hook 取当前模块、不手填，进门时中栏一张 tab 都没有（非预置常驻）。
+⚠️ **T011 的范围裁量请复核**（见「待决项」末条）：我把边界定在「动作层」，未交付「动作 → 视图渲染」的中栏路由（那会与 T012 的首个真实视图合并考虑）。
 📌 T008 遗留的**计划缺口仍在**（非任何任务引入）：**右栏（AI 会话）没有任何任务供给**——详见「待决项」。
 
 ## 已完成
@@ -109,6 +110,15 @@ T010 已完成。**T011 待启动**（等用户说「next」）。
   - ⚠️ **未接线的数据（不编造）**：`capabilities` 仍不传（001 无签发方）；tab 的**打开**通路虽已通（`open()`），但**没有任何模块动作去调它**——那是 T011（FR-010）。（本任务的集成测试用与 T011 同构的消费者驱动这条通路，非测试专用后门）
   - TDD 诚实标注：① RED 形态 = `Cannot find module './tab-context'` + 4 条集成测试报 `useCenterTabs 必须在 <CenterTabsProvider> 之内使用`（功能缺失）② 三个循环：`tab-context` 5 条 → 宽度未知 1 条（先假绿、修测试后真 RED、再实现）③ 4 条集成测试整批先失败后全绿，未逐个制造 4 次 RED ④ 无「先写实现后补测试」
 
+- **T011** [US2] [FE·新增] 模块动作打开特有 tab `packages/app/src/center/module-actions.ts` + 5 个测试 + 1 条集成守卫
+  - **交付**：`ModuleAction { title, content }` + `useModuleAction(): (action) => void`。**不导出全局单例、不起注册表**（Simplicity First：001 无模块 UI，没有第二个消费者）
+  - **机制三要点**：① 来源模块由 hook 取 `center.module()`，不由调用方手填——FR-005 着色的来源不靠人手传就不会传错；**当前模块未定时不响应** ② 动作是特有 tab 的**唯一来源**，`CenterTabsProvider` 初始为空（FR-010「非预置常驻」；对照参考件 `CenterWorkspace.tsx:145` 把「研判笔记」预置进初值，正是要禁掉的做法）③ `content` 是**不可解释的内容键**（001 = 文件路径；数据轴 F6/F7 = 数据视图键），故两条轴都能走这里
+  - ⚠️ **未接线的数据（不编造）**：`useModuleAction()` 目前**没有真实调用方**（F2+ 各模块的动作按钮才是）；测试用面板探针驱动，探针即该 hook 的既定用法（同 T010 `OpenTabs`）
+  - 🔴 **TDD 抓到第二个真 RED**：循环 1「点动作开 tab」先写无守卫实现即绿；循环 2「当前模块未定时不凭空开 tab」**真 RED**——收到 `{ module: undefined, path: "detail:acct-4419" }`，正是预测的假来源 tab（其 key 会是 `undefined\n…`，着色落兜底灰），加守卫后转绿。**这条守卫是测试逼出来的，不是先见之明**
+  - ⚠️ **命名遗留（新待决项）**：`ContentTab.path` 在数据轴 tab 上名不副实（存 `detail:acct-4419` 这类键）。**未动 T005 字段名**（改名波及 `tab-store.ts` / `tab-bar.tsx` + T005/T009/T010 三个测试文件），待数据轴落地时一并收口
+  - ⚠️ **视觉类零断言（L2 缺口，同前）**：本任务不新增视觉元素（tab 由 T009 的 `tab-bar.tsx` 渲染），无新视觉核对项
+  - TDD 诚实标注：① RED 形态 = `Cannot find module './module-actions'` ② 两个真循环（见上）③ 另 3 条（初始零 tab / 重复触发不重复开 / 跨模块累积）是**测试内声明为非 RED 驱动**的需求守卫，行为由既有 `openContentTab` 语义保证 ④ `workspace-entry.test.tsx` 新增的集成守卫同为非 RED（两段通路各自已绿），已注释声明 ⑤ 无「先写实现后补测试」
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -124,24 +134,26 @@ T010 已完成。**T011 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T010 末）
+## 质量门禁（T011 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **769 pass / 0 fail**（112 files / 3102 expect） | 干净（与 T009 末**完全一致**——本任务未动任何 `.ts` 单测） |
-| `packages/app` `bun run test:components` | ✅ **47 pass / 0 fail**（101 expect） | 干净（T009 末 37 + 5 `tab-context` + 1 宽度未知 + 4 集成） |
-| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail** | 干净（与基线**一致**） |
-| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（本轮无报错） |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
+| `packages/app` `bun run test:unit` | ✅ **769 pass / 0 fail**（112 files / 3102 expect） | 干净（与 T009/T010 末**完全一致**——本任务未动任何 `.ts` 单测） |
+| `packages/app` `bun run test:components` | ✅ **53 pass / 0 fail**（111 expect） | 干净（T010 末 47 + 5 `module-actions` + 1 `workspace-entry` 集成守卫） |
+| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail**（100 expect） | 干净（与基线**一致**） |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 干净（本轮无报错、无需改类型） |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4901 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T010 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 warning / 0 error**（17 files）。首轮 1 条 `no-unused-vars`（`contentTabKey` 随一条被删的错误断言一起失用，已删）。
+**T011 触碰文件 lint 自查**：`bunx oxlint packages/app/src/center packages/app/src/workspace` → **0 warning / 0 error**（19 files，首轮即干净）。
 
-> 🔴 **本任务最该记住的一条**：那条「宽度未知先全显示」的测试**第一版是假绿**——用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值，而 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 1000，测试什么都没测（立刻通过）。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`）。**测试一写就绿要当红灯看**。
+> 🔴 **T010 的教训（仍在生效）**：那条「宽度未知先全显示」的测试**第一版是假绿**——用了 `{...{ availableWidth: undefined }}` 覆盖助手默认值，而 **Solid 的 spread 会跳过值为 `undefined` 的键**，`availableWidth` 其实仍是 1000，测试什么都没测（立刻通过）。改成 `"availableWidth" in props` 判定后，同一测试立刻真 RED（received `[]`）。**测试一写就绿要当红灯看**。
+
+> 🔴 **T011 最该记住的一条**：守卫（「当前模块未定时不凭空开 tab」）是**测试逼出来的**——无守卫的实现先绿，补上这条测试立刻真 RED（`{ module: undefined, path: "detail:acct-4419" }`）。**先写一版不做边界处理的实现，再让测试指出边界在哪**，比一开始就凭想象加一堆 if 更可靠。
 
 > ⚠️ **typecheck 修了什么**：`tab-bar.tsx` 的 `MODULE_ICONS: Record<string, string>` 把图标名喂给 `<Icon name>` 报 `TS2322`（`string` 不可赋给 97 个名字的联合）。**改的是新代码自己的类型** → `Record<string, IconProps["name"]>`（同 `RailEntry.icon` 的既有做法），**没放宽上游 `Icon` 的类型**（放宽会掩盖「编出不存在的图标」这类真错）。
 
-> ⚠️ **warning 计数诚实标注**：T005 末记 4901，T006/T007/**T008/T009 末均为 4902**（本次未变）。T005 已记录过同一抖动现象（oxlint 12 线程输出计数不稳定）。本任务 6 个文件在 lint 输出中 **0 命中**，故**只主张「我引入 0 命中」，不主张「4902 与我无关」**——该总计数曾出现 ±1 抖动而代码面无从属关系，**归因不明**，如实记为「未解释的抖动」。
+> ⚠️ **warning 计数诚实标注**：T005 末记 4901，T006/T007/T008/T009/T010 末均为 4902，**T011 末为 4901**（不是 4903）。本任务新增 2 个文件在 lint 输出中 **0 命中**，故**只主张「我引入 0 命中」，不主张「4901 与我无关」**——该总计数在 4901/4902 间抖动而代码面无从属关系（T005 已记录同一现象：oxlint 12 线程输出计数不稳定），**归因不明**，如实记为「未解释的抖动」。**计数下降不代表修好了什么**。
 
 ### 唯一仍在红的门禁：lint 的 1 个 error（已知，待上报上游）
 上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 的 `content-['\200B']`（Tailwind 类里的八进制转义）。该文件与基点**逐字节相同**，跨平台真实存在（非 Windows 特有）。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**决策：不在本项目内私改，记为已知红，上报上游**。本次新增文件在 lint 输出中 **0 命中**；warning 明细全部落在既有文件上（本任务 4 文件 0 命中），但**总计数有 ±1 抖动、归因不明**，见上。
@@ -172,7 +184,7 @@ T010 已完成。**T011 待启动**（等用户说「next」）。
 - ✅ **已解决（原「T008 前须定：T007 的 `Topbar` 未接线」）**：T008 已把 `Topbar` 挂进 `#opencode-titlebar-right`（经 `pages/layout-new.tsx` 的 `useTitlebarRightMount()` 注入 + `<Portal>`），并建立身份接入缝 `workspace/current-user.ts`。**身份未就位时顶栏不渲染用户区**（宁缺勿假，未采纳「塞占位身份」方案）；F2 落地时**只改 `current-user.ts` 一个文件**。
 - 🔴 **待决项（须尽快定，建议补任务）**：**右栏（AI 会话）无任务供给**（T008 发现）。FR-001 要求「右栏 AI 会话」，但 T001–T017 里没有任何任务把 AI 会话放进 `ThreePane` 的右槽（plan.md ① 把它列为「换皮 + 重定职责」却未派生 task；T003 备注「右栏由 T007/T009 供给」**是错记**——T007 顶栏、T009 中栏 tab 栏）。**建议补一个任务**（把 `pages/session/session-side-panel.tsx` 换皮 + 重定职责后填入右槽，或在 001 明确记为「右栏内容归 F8」并据此降低 FR-001 的验收口径）。在此之前，FR-001 的右栏仍只是「位置已定义、内容空缺」。
 - 🆕 **待决项（T009 起须留意）**：**`#opencode-titlebar-right` 是共享注入点**。上游 `new-session-view.tsx:77-93`（`NewSessionStatus`）与 `session-header.tsx:285` 都往同一元素 Portal；T008 挂上的 openhive 顶栏会与它们**并列出现在顶栏右侧**。T017 浏览器核对时须定归属/顺序（可能与 T009「顶栏 session tab 条 vs 中栏 tab 容器」的分工是同一类问题）。
-- 🆕 **待决项（T007 前须定，T010 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；T009 新增 `center/module-color.ts` + `center/tab-overflow.ts`；**T010 又新增 `center/tab-context.tsx`**（plan.md:69-70 的 `center/` 只列了 `tab-bar.tsx` + `tab-store.ts`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
+- 🆕 **待决项（T007 前须定，T010 后已累计）**：**plan.md 文件结构与实际产出的偏差**。T006 交付了 `rail/entries.ts` **和** `rail.tsx`（plan.md:61-62 只列了 `entries.ts`）；T007 新增 `topbar/` 下 4 个源文件；T008 新增 `workspace/workspace-entry.tsx` + `workspace/current-user.ts`（plan 的 `workspace/` 只列了 `three-pane.tsx`）；T009 新增 `center/module-color.ts` + `center/tab-overflow.ts`；**T010 新增 `center/tab-context.tsx`**；**T011 新增 `center/module-actions.ts`**（plan.md:69-70 的 `center/` 只列了 `tab-bar.tsx` + `tab-store.ts` + `view-registry.ts` + `views/`）。**须一次性回改 plan.md 文件结构**，或明确声明为计划外新增。
 - 🆕 **待决项（T010 新增，T017 视觉核对前定）**：**中栏 tab 栏「一个 tab 都没有」时怎么呈现**。首屏就是这个状态（FR-010：tab 由模块动作打开，非预置常驻），现在渲染的是一条 **40px 空条**。**DESIGN §4.5 没定**空态，我没擅自加「空则不渲染」——须设计侧定后改（改动只在 `workspace-entry.tsx` 一个 `<Show>` 或 `tab-bar.tsx` 一处）。
 - 🆕 **待决项（T009 新增，可延后，设计侧复核）**：**DESIGN.md §4.5 的两项裁量**——① 「模块 → 实体身份色」的**取值**（仅「话单=蓝」有 §1.3 既有依据，其余五个按色相可区分性挑）；② **用「模块图标」取代 front 参考件的「文件类型图标」** 这一选择。改色只动 §4.5 表 + `center/module-color.ts` 一处映射，组件不受影响；改图标选型同 T006/T007 的图标评审一并看。
 - 🆕 **待决项（可延后，T017 视觉核对时定）**：**图标选型需设计评审**。DESIGN §4.2 未点名具体图标——T006 自选 `folder` / `archive` / `speech-bubble` / `bullet-list` / `branch` / `settings-gear`；T007 又自选 `comment`（站内信，因原生集**无 `bell`**）、`expand`（全屏）；**T009 的溢出按钮「⋯」直接用字面字形 U+22EF**（原生 97 个图标名里**无** `ellipsis` / `more-horizontal` / `dots`，已核）。语义是否贴合需人看（类型安全已由 `IconProps["name"]` 保证；宪法 I 禁止往上游 `icon.tsx` 加图标）。
@@ -182,8 +194,12 @@ T010 已完成。**T011 待启动**（等用户说「next」）。
 - 🆕 **待决项（T012 前须定）**：**FR-007 的「10 类」逐项枚举**。用户已确认口径 = **日常办公常见的 10 类文件**，原列的「数据明细 / 可视化图表 / 分析记录」**不计入**（它们与上一条数据轴待决项是同一个问题）。已落修订记录 2026-09-27b 于 `spec.md` / `tasks.md`。
   **候选提案（我拟，未获确认，仅作 T012 的起步锚点）**：① 文档 `.doc/.docx` ② 表格 `.xls/.xlsx/.csv` ③ 演示 `.ppt/.pptx` ④ PDF `.pdf` ⑤ 图片 `.png/.jpg/.jpeg/.gif/.bmp/.webp` ⑥ 文本/图文混排 `.txt/.md/.rtf` ⑦ 思维导图 `.xmind`（或 `.mm`）⑧ 压缩包 `.zip/.rar/.7z` ⑨ 音视频 `.mp3/.mp4/.wav` ⑩ 代码/配置 `.json/.xml/.yaml`。**待用户裁定后再动 T012**；⑧⑨ 是否要"预览"还是只"下载"也需一并定。
 - 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
+- 🔴 **待决项（T011 新增，请复核）：T011 的范围裁量**。T011 原文「实现『特有 tab 由模块动作打开』的机制」在本 feature 里**没有可供它服务的模块 UI**（001 只有框架）。我把边界定在**动作层**：模块如何声明/触发动作、来源模块如何确定、初始零 tab——并**刻意不造**「动作清单渲染」「动作 → 视图渲染的中栏路由」这类此刻无消费者的抽象（Simplicity First），也**未动** `view-registry.ts`。**若认为 T011 应一并交付「动作 → 视图渲染」，请指出**——那会与 T012 的首个真实视图合并考虑（且需先定上面「共享注册表实例」与「数据轴键通道」两条）。
+- 🆕 **待决项（T011 新增，数据轴落地时收口）**：`ContentTab.path` **命名遗留**。FR-010 的动作 tab 里，数据轴（F6/F7）的内容标识是数据视图键（`detail:acct-4419`）而非文件路径，`path` 这个字段名届时名不副实。T011 的动作层已用中性的 `ModuleAction.content` 表达该键，**但 `ContentTab` 与 `contentTabKey` 仍是 T005 的 `path`**——改名波及 `tab-store.ts` / `tab-bar.tsx` 及 T005/T009/T010 三个测试文件，故**未在本任务顺手改**（Surgical Changes），待数据轴真正落地时与「注册表键通道」一并收口。
 
 ## 最后更新
+2026-09-27（T011 完成：**模块动作打开特有 tab（FR-010）**——新增 `center/module-actions.ts`（`ModuleAction { title, content }` + `useModuleAction()`）。**来源模块由 hook 取当前模块**（不手填，FR-005 着色的来源就不会传错）；当前模块未定时**不响应**（不开假来源 tab）；**动作是特有 tab 的唯一来源**，进门时中栏零 tab（非预置常驻）。`content` 是**不可解释的内容键**（001 = 路径；数据轴 F6/F7 = 数据视图键），故**不必先解开「注册表只认扩展名」那个结**。🔴 **真 RED 一次**：无守卫实现先绿 → 补「当前模块未定」测试立刻 RED（收到 `{ module: undefined, … }`）→ 加守卫转绿，**边界是测试逼出来的**。test:components **53** pass（47 + 5 + 1 集成守卫）、test:unit **769** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中。⚠️ 全仓 lint 仍 exit 1 / **4901** warnings + 1 error（既有上游；计数较 T010 末少 1，属已记录的 ±1 抖动，**不代表修好了什么**）。⚠️ **两处范围裁量待复核**：① T011 边界止于「动作层」，未含「动作 → 视图渲染」；② `ContentTab.path` 命名遗留未顺手改。）
+
 2026-09-27（T010 完成：**中栏 tab 接线 + FR-006 联动**——新增 `center/tab-context.tsx`（`CenterTabsProvider` + `useCenterTabs`），`WorkspaceEntry` 拆为「provider 外层 + `WorkspaceBody` 消费层」，图标栏当前模块与中栏 tab **共用同一份状态**（T008 的组件内 signal 上移进 `CenterTabState.module`），`<TabBar>` 挂进 `ThreePane` 中栏顶部。**切模块不清空 tab 因此是结构性的，不靠额外判断**。`tab-bar.tsx` 补 `w-full`（中栏是 `flex-col items-start`，缺它会缩到内容宽度）+ 「量不到宽度先全显示」。🔴 **抓到一次假绿**：测试用 `{...{availableWidth: undefined}}` 覆盖默认值，而 Solid 的 spread 跳过 `undefined` 键 → 测试空转立刻通过；改 `"availableWidth" in props` 后立刻真 RED。test:unit **769** pass、test:components **47** pass、test:browser 41 pass、typecheck 30/30、本任务目录 oxlint 0 命中（首轮 1 条 unused import 已删）。⚠️ 全仓 lint 仍 exit 1 / 4902 warnings + 1 error（既有上游，与 T009 末逐字一致）。）
 
 2026-09-27（T009 完成：**中栏 tab 栏**——新增 `center/tab-bar.tsx` + `center/module-color.ts`（模块→身份色变量名）+ `center/tab-overflow.ts`（溢出判定纯函数）+ 3 个测试文件（11 单测 / 8 组件测试）。**未挂载**，留给 T010。🔴 裁定了一个 MUST 级冲突（FR-005「按模块着色」vs DESIGN §4.2「无模块徽章」）→ **着色≠徽章**，依宪法 §八**先补 `openhive-DESIGN.md` §4.5** 再写码，并改掉 §1.3 自相矛盾的「话单模块徽章」行。**不新增任何 hex/token**（复用 `--v2-avatar-bg-*`；激活态取既有 `--v2-background-bg-accent`，不写 `#D97706`）。💡 **回答了 T006 遗留疑问**：`Icon` 的色来自 `--icon-base`，父级 `text-v2-icon-*` 无效，须由祖先元素提供。test:unit **769** pass、test:components **37** pass、test:browser 41 pass、typecheck 30/30（首轮真报错 1 处已修）、本任务目录 oxlint 0 命中（首轮 4 条已修）。⚠️ 全仓 lint 仍 exit 1 / 4902 warnings + 1 error（与 T008 末逐字一致）。）

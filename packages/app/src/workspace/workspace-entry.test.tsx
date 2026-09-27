@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { onMount, type JSX } from "solid-js"
+import { For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
+import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentUser } from "./current-user"
@@ -177,5 +178,51 @@ describe("中栏 tab 与左栏模块切换的联动（FR-006）", () => {
     host.querySelectorAll<HTMLElement>("[data-slot='tab']")[0]?.click()
 
     expect(激活模块()).toBe("project")
+  })
+})
+
+const 明细动作: ModuleAction = { title: "明细 - 广州××公司", content: "detail:acct-4419" }
+const 图谱动作: ModuleAction = { title: "资金流转图谱", content: "graph:acct-4419" }
+
+/** 中栏里的模块 UI：按钮即模块动作（`useModuleAction()` 的既定用法，见 T011）。 */
+function 动作面板(props: { actions: ModuleAction[] }) {
+  const run = useModuleAction()
+  return (
+    <For each={props.actions}>
+      {(action) => (
+        <button type="button" data-slot="module-action" onClick={() => run(action)}>
+          {action.title}
+        </button>
+      )}
+    </For>
+  )
+}
+
+const 触发 = (host: HTMLElement, action: ModuleAction) => {
+  const button = [...host.querySelectorAll<HTMLElement>("[data-slot='module-action']")].find(
+    (el) => el.textContent === action.title,
+  )
+  if (!button) throw new Error(`面板里没有动作「${action.title}」`)
+  button.click()
+}
+
+/**
+ * 集成守卫（非 RED 驱动，实现已就绪后补）：T011 的单测已证「动作 → 中栏状态」、
+ * T010 已证「状态 → tab 栏」，本条只是把两段接起来，在**看得见的层面**兑一遍 FR-010 的出参。
+ */
+describe("模块动作开出的特有 tab（FR-010 出参）", () => {
+  test("模块动作开出的 tab 显示在中栏 tab 栏里，跨模块累积", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <动作面板 actions={[明细动作, 图谱动作]} />
+      </WorkspaceEntry>
+    ))
+
+    触发(host, 明细动作) // 进门停在第一个入口「项目管理」
+    入口(host, "资金分析").click()
+    触发(host, 图谱动作)
+
+    expect(tabTitles(host)).toEqual(["明细 - 广州××公司", "资金流转图谱"])
+    expect(currentModule(host)).toBe("资金分析")
   })
 })
