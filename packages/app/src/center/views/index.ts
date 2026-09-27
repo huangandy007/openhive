@@ -1,6 +1,7 @@
 import { createViewRegistry, type ViewRegistry } from "@/center/view-registry"
 import { DocumentView } from "./document-view"
 import { PdfView } from "./pdf-view"
+import { SheetView } from "./sheet-view"
 
 /**
  * 应用级视图注册表实例（FR-007 / FR-008 的落点）。
@@ -14,8 +15,9 @@ import { PdfView } from "./pdf-view"
  */
 export const viewRegistry: ViewRegistry = createViewRegistry()
 
-// FR-007「日常办公常见的 10 类文件」——001（T012–T014）只认领前两类：
-// ① 文档 .doc/.docx（本文件） ④ PDF（本文件）
-// ② 表格 .xlsx（T013）、③ 演示 .ppt/.pptx、⑤ 图片、⑥ 图文、⑦ 思维导图（T014）
+// FR-007「日常办公常见的 10 类文件」——001（T012–T014）认领其中几类：
+// ① 文档 .doc/.docx（T012） ② 表格 .xls/.xlsx/.csv（T013） ④ PDF（T012）
+// ③ 演示 .ppt/.pptx、⑤ 图片、⑥ 图文、⑦ 思维导图（T014）
 viewRegistry.register({ extensions: [".doc", ".docx"], component: DocumentView })
+viewRegistry.register({ extensions: [".xls", ".xlsx", ".csv"], component: SheetView })
 viewRegistry.register({ extensions: [".pdf"], component: PdfView })

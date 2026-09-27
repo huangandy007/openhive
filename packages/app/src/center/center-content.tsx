@@ -37,8 +37,23 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
   })
 
   return (
-    <Show when={current()} keyed fallback={props.children}>
-      {(view) => <Dynamic component={view.Component} path={view.path} load={props.load} />}
-    </Show>
+    <>
+      {/*
+        页面**常驻**，有视图时只把它藏起来（`display:none`），而不是从树上摘掉。
+        这是 T013 修掉的一个真缺陷：原先写成 `<Show ... fallback={props.children}>`，
+        `children` 在视图出现/消失时被卸载重挂——而它在生产里是**上游路由页面**，
+        于是点一下 tab 就丢掉整页状态（滚动位置、已取的数据、填了一半的表单），点回来重新挂载。
+        T012 当时看不出来：那时 `.docx/.pdf` 之外没有视图，`Show` 从不切换，这条分支永远走不到。
+
+        可见时用 `display: contents` 而不是 `block`：这层包裹**不产生盒子**，页面仍像以前一样
+        直接做中栏（`flex flex-col items-start`）的子项，不改变既有布局。
+      */}
+      <div data-slot="center-page" style={{ display: current() ? "none" : "contents" }}>
+        {props.children}
+      </div>
+      <Show when={current()} keyed>
+        {(view) => <Dynamic component={view.Component} path={view.path} load={props.load} />}
+      </Show>
+    </>
   )
 }

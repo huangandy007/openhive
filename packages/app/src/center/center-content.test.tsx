@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { type JSX } from "solid-js"
-import { render } from "solid-js/web"
+import { onMount, Show, type Component, type JSX } from "solid-js"
+import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent } from "./file-content"
 import { CenterContent } from "./center-content"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
@@ -31,7 +31,12 @@ const 注册 = (...extensions: string[]) => {
   return registry
 }
 
-function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent } = {}) {
+/**
+ * `页面组件` 以**组件**形式传入、经 `<Dynamic>` 渲染，而不是传一个现成的 JSX 元素——
+ * 后者在 `setUp()` 时就被求值成固定 DOM 节点了，反复插入不会重跑组件体，
+ * 于是「重挂」永远测不出来（这条本身踩过一次假绿，见测试内注释）。
+ */
+function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent; 页面组件?: Component } = {}) {
   let center!: CenterTabs
   function Probe() {
     center = useCenterTabs()
@@ -41,7 +46,9 @@ function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent } = {}
     <CenterTabsProvider initialModule="project">
       <Probe />
       <CenterContent registry={options.registry ?? 注册(".docx")} load={options.load}>
-        <div data-slot="fallback">没有内容视图</div>
+        <Show when={options.页面组件} fallback={<div data-slot="fallback">没有内容视图</div>} keyed>
+          {(component) => <Dynamic component={component} />}
+        </Show>
       </CenterContent>
     </CenterTabsProvider>
   ))
@@ -122,5 +129,44 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
     await 落定()
 
     expect(视图()?.getAttribute("data-path")).toBe("/p/卷宗.pdf")
+  })
+})
+
+/**
+ * `children` 在生产里是**上游路由页面**，不是一块静态占位。
+ * 若视图的出现/消失会把它卸载重挂，用户点一下 tab 就丢掉整页状态（滚动位置、已取的数据、
+ * 表单填写），再点回来重新挂载一次。这两条把「页面常驻、只藏不卸」钉死。
+ */
+describe("内容区不夺走调用方的页面：常驻而非重挂", () => {
+  test("视图来来去去，children 只挂载一次", async () => {
+    let 挂载次数 = 0
+    function 页面() {
+      onMount(() => 挂载次数++)
+      return <div data-slot="页面">路由页</div>
+    }
+    const { 开, center } = setUp({ 页面组件: 页面 })
+
+    await 开(专案) // 视图出现
+    center.close(contentTabKey(专案)) // 视图退场
+    await 落定()
+    await 开(台账) // 仍是未注册扩展名，再加一轮来回
+    center.close(contentTabKey(台账))
+    await 落定()
+
+    expect(挂载次数).toBe(1)
+  })
+
+  test("视图在场时页面被藏起来（藏 ≠ 卸），视图退场后重新可见", async () => {
+    const { host, 开, center } = setUp()
+    const 页面层 = () => host.querySelector<HTMLElement>("[data-slot='center-page']")
+
+    expect(页面层()?.style.display).toBe("contents") // 可见时用 contents：不引入多余盒，页面仍是原来的 flex 子项
+
+    await 开(专案)
+    expect(页面层()?.style.display).toBe("none")
+
+    center.close(contentTabKey(专案))
+    await 落定()
+    expect(页面层()?.style.display).toBe("contents")
   })
 })
