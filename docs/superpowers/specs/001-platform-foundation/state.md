@@ -1,7 +1,7 @@
 # 实施进度 · 平台底座（三栏工作台）
 
 ## 当前任务
-T003 已完成。**T004 待启动**（等用户说「next」）。
+T004 已完成。**T005 待启动**（等用户说「next」）。
 
 ## 已完成
 - **T001** [FE·换皮] 定位三栏真实组件 → 产出 `refactor-targets.md`
@@ -28,6 +28,16 @@ T003 已完成。**T004 待启动**（等用户说「next」）。
   - 新增脚本 `test:components`；3 个 devDep（`@babel/core` / `@babel/preset-typescript` / `babel-preset-solid`）**均已在 `bun.lock` 中，无新增下载**；`bun.lock` 仅手加 3 行
   - ⚠️ **`test:unit` 必须加 `--path-ignore-patterns="**/*.test.tsx"`**：否则会扫进 `.tsx` 测试且在 `--conditions=solid` 下报 React 未定义（实测 6 fail）。`--conditions=browser` 也不能并进 `test:unit`——`src/context/server-session.test.ts` 等 3 条依赖 `solid` 条件的 store 代理语义
 
+- **T004** [FE·新增] 视图注册表 `packages/app/src/center/view-registry.ts` + 8 个单测（17 expect）
+  - API：`createViewRegistry()` → `{ register, resolve }`；外加 `extensionOf(path)`。`register`/`resolve` 说**扩展名**，`extensionOf` 说**路径**，调用方组合，两侧无歧义
+  - **自定契约**：`ViewProps = { path: string }`（plan/spec 未定义视图入参，T012–T015 依赖此类型；故意留最小，加宽向后兼容）
+  - `extensionOf` 对齐 `path.extname` 语义（纯 dotfile 无扩展名；`/` 与 `\` 都当分隔符）。**不用 `node:path`**——`packages/app` 是浏览器包，出厂代码从无 node 内建先例；仓库前端惯用法是纯字符串切分（`packages/web/src/components/share/part.tsx:329`）
+  - **两个行为决策（未经指示）**：① 重复注册同一扩展名 → **抛错**（非静默覆盖；FR-008 面向插件作者，静默覆盖是无声破坏）；② 同批注册中途冲突 → **整批不生效**（先全量校验再落库）
+  - ⚠️ **未导出应用级单例**（Simplicity First，此刻无消费者）→ T009/T012 落首个真实视图时须决定共享实例归属
+  - ⚠️ **待决（T011/T016 前）**：plan.md「数据流向」把两条轴都汇入注册表，但本表按扩展名索引，而「数据明细 / 可视化图表 / 分析记录」无扩展名 → 数据轴无法经此路由
+  - TDD 诚实标注：循环 1 提前写了多扩展名 for 循环（无失败测试）→ 已删除并由循环 2 驱动回来
+  - 8 条循环：① 注册后可查 ② 一视图认领多扩展名 ③ 查找不区分大小写 ④ 注册侧大小写等价 ⑤ 重复注册抛错 ⑥ 中途冲突整批不生效 ⑦ 路径取扩展名 ⑧ 取不到（dotfile / 结尾点 / 空串）
+
 ## 阻塞项
 **无。** 原阻塞（「三栏建在哪套布局」）已决策：
 
@@ -43,18 +53,17 @@ T003 已完成。**T004 待启动**（等用户说「next」）。
 - `tasks.md`：修订记录 + T003/T006 换皮→新增 + T007/T009/T017 落点
 - `refactor-targets.md` §4 标注不适用、§6 标注已决策
 
-## 质量门禁（T003 末）
+## 质量门禁（T004 末）
 > 工作基点：`multi-tenant` @ `028d019ef1`（`packages/app` v1.18.29）。
 
 | 门禁 | 结果 | 归因 |
 |---|---|---|
-| `packages/app` `bun run test:unit` | ✅ **725 pass / 0 fail**（104 files） | 干净（与 T002 末持平；T003 新增的 `.tsx` 测试已由 `--path-ignore-patterns` 排除） |
-| `packages/app` `bun run test:components` | ✅ **6 pass / 0 fail**（19 expect） | T003 新增门禁（本包首个组件测试入口） |
-| `packages/app` `bun run test:browser` | ✅ **41 pass / 0 fail**（14 files） | 干净（未受影响） |
-| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 持续绿 |
-| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4903 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
+| `packages/app` `bun run test:unit` | ✅ **733 pass / 0 fail**（105 files） | 干净（T003 末 725 + T004 新增 8） |
+| `packages/app` `bun run test:components` | ✅ **6 pass / 0 fail**（19 expect） | 干净（T003 新增门禁） |
+| `bun run typecheck`（turbo，根目录） | ✅ **30 successful / 30 total** | 持续绿（`@opencode-ai/app` 本次实跑非缓存，覆盖新文件） |
+| `bun run lint`（oxlint，根目录） | ❌ **exit 1**：4902 warnings / **1 error** | **既有上游、已决策记为「已知红」**，见下 |
 
-**T003 触碰文件 lint 自查**（`bunx oxlint <4 个文件>`）：**0 error / 1 warning**，且该 warning 位于 `layout-new.tsx:20:7`（`consistent-return`）——**在我未触碰的第 19–20 行**，属既有噪声。我自己的新文件（`three-pane.tsx` / `three-pane.test.tsx` / `solid-jsx.ts`）**0 命中**（首轮 `three-pane.test.tsx:8:10` 的 `no-unsafe-type-assertion` 系我引入，已把 `mount(element: () => unknown)` 改为 `() => JSX.Element` 消除）。
+**T004 触碰文件 lint 自查**（`bunx oxlint packages/app/src/center`）：**0 warning / 0 error**。全仓 lint 文件数 3288（T003 时 3286，+2 = T004 两个新文件），**未新增任何诊断**。
 
 ### 唯一仍在红的门禁：lint 的 1 个 error（已知，待上报上游）
 上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 的 `content-['\200B']`（Tailwind 类里的八进制转义）。该文件与基点**逐字节相同**，跨平台真实存在（非 Windows 特有）。修它需改上游文件 → 违反宪法 I（最小化合并冲突），**决策：不在本项目内私改，记为已知红，上报上游**。本次新增文件在 lint 输出中 **0 命中**；4902 条 warning 亦为既有噪声。
@@ -79,6 +88,8 @@ T003 已完成。**T004 待启动**（等用户说「next」）。
 - 🆕 **前端组件测试入口**（T003 起）：`packages/app/solid-jsx.ts`（本包自有 Solid JSX preload）+ `package.json` 脚本 `test:components`。改任何 `packages/app` 的 `.tsx` 组件/测试后，跑 **`bun run test:components`**；`.tsx` 测试**不能**并进 `test:unit`（`--conditions=solid` 下会报 React 未定义）。
 - 🆕 `.tsx` 测试的 glob 坑：带引号的 `"./src/**/*.test.tsx"` 会被 bun 当**过滤器**（"Test filter had no matches"）；必须**不加引号**写成 `./src/**/*.test.tsx`，由 shell 展开 globstar 才能匹配任意深度（已用探针文件实测）。
 - 🆕 **待决项（T006 前须定）**：能力位 / `is_admin` 契约口径。001 的 FR-003 把「用户管理」列为固定下拉项，但 `010/spec.md:121` FR-001 要求它是**管理员专属**，而 001 内**零 admin 门禁**。两者需在 T006 读 capability 之前对齐。
+- 🆕 **待决项（T011/T016 前须定）**：注册表只认**扩展名**，但 plan.md「数据流向」要求数据轴也汇入注册表，而「数据明细 / 可视化图表 / 分析记录」无扩展名。要么给注册表加一条非扩展名的键通道，要么让数据轴绕过注册表（动作直接携带组件）。
+- 🆕 **待决项（T009/T012 前须定）**：应用级共享注册表实例放哪（T004 只给了 `createViewRegistry()` 工厂，刻意的）。
 
 ## 最后更新
-2026-09-27（T003 完成：三栏容器 + 最小挂载 + 前端组件测试地基；test:unit 无回归、组件测试 6 绿、typecheck 30/30；lint 仍唯 1 个既有上游 error 已知红）
+2026-09-27（T004 完成：视图注册表 + 8 个单测；test:unit 733 pass 零回归、typecheck 30/30、lint 唯 1 个既有上游 error 已知红；遗留 3 项待决已记录）

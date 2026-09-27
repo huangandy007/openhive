@@ -35,7 +35,20 @@
       → 产出 `packages/app/src/workspace/three-pane.tsx`（槽位式：`left` / `children` / `right` + `leftCollapsed` / `rightCollapsed`，宽度 280 / 360px 按 DESIGN.md §4.1，复用上游 `@opencode-ai/ui/resize-handle`，夹取 160px~视口50% 与 240px~视口2/3）+ 6 个组件测试 `three-pane.test.tsx`（全绿，19 expect）。挂载点 `layout-new.tsx:43`。
       ✅ 出参**结构性满足、视觉上未显现**：容器已进入 `layout-new.tsx` 渲染树，但左右槽位暂为空（左栏由 T006、右栏由 T007/T009 供给），故此刻**看不到三栏**——这是任务切分的预期中间态，非缺陷。中栏原样复刻 `<main>` 的 flex 上下文（`flex flex-col items-start`），既有路由布局**零变化**：`test:unit` 725 pass（与 T002 末一致）、`test:browser` 41 pass。
       🔧 **本 task 附带补齐了前端组件测试地基**：`packages/app` 此前 **0 个 `.test.tsx`、无组件测试能力**（`tsconfig` 为 `"jsx": "preserve"` → Bun 退化成 `React.createElement`）。按仓库既有范式（`packages/tui` 的 `@opentui/solid/preload`）新增本包自有 preload `packages/app/solid-jsx.ts`（`babel-preset-solid` generate:"dom" + `@babel/preset-typescript`），并加 `test:components` 脚本；3 个 devDep 均已存在于 `bun.lock`，**无新增下载**。T004–T017 可直接复用。
-- [ ] T004 [P] [FE·新增] 实现 `center/view-registry.ts`（扩展名→视图组件 的注册式接口 + 查找）[FR-007][FR-008] [T002] [出参：注册一个测试视图可被查找到]
+- [x] T004 [P] [FE·新增] 实现 `center/view-registry.ts`（扩展名→视图组件 的注册式接口 + 查找）[FR-007][FR-008] [T002] [出参：注册一个测试视图可被查找到]
+      → 产出 `packages/app/src/center/view-registry.ts`：`createViewRegistry()`（`register` / `resolve`）+ `extensionOf(path)`；8 个单测 `view-registry.test.ts`（17 expect，`.ts` 无 JSX，走 `test:unit`）。
+      ✅ 出参已满足：`register({extensions:[".docx"]})` 后 `resolve(".docx")` 取回同一组件（测试 1）。
+      **自定的契约（plan/spec 未定义，T012–T015 将依赖）**：
+      - `ViewProps = { path: string }`——视图只接一个文件路径，内容自行读取。**故意留到最小**，T012+ 需要再加（加宽向后兼容）。
+      - `register` 说**扩展名**（带点，如 `[".doc",".docx"]`），`resolve` 也按扩展名查；`extensionOf(path)` 单独负责「路径 → 扩展名」，调用方组合 `resolve(extensionOf(p))`。两侧各司其职、无歧义。
+      - `extensionOf` 语义对齐 `path.extname`：纯 dotfile（`.gitignore`，含 `a/b/.gitignore`）无扩展名；`/` 与 `\` 都当分隔符（`node:path` 不能进浏览器包，手写 4 行）。
+      **两个我做的行为决策（未经指示，请复核）**：
+      1. **同一扩展名重复注册 → 抛错**（非静默覆盖）。理由：FR-008 面向插件作者，静默覆盖会让后注册者无声打掉前者的视图；真要覆盖可日后加显式 `override` 选项。
+      2. **同批注册中途冲突 → 整批不生效**（先全量校验再落库），不留半注册状态。
+      ⚠️ **未导出应用级单例**（Simplicity First：此刻无消费者）。T009/T012 落首个真实视图时需决定共享实例放哪。
+      ⚠️ **待决（T011/T016 前须定）**：plan.md「数据流向」mermaid 把**两条轴都汇入内容视图注册表**，但本注册表按**扩展名**索引，而 FR-007 的「数据明细 / 可视化图表 / 分析记录」三类**没有文件扩展名**（数据轴来自业务 PG）。这两类现在无法经本注册表路由，需在 T011/T016 前厘清。
+      ⚠️ FR-007 列了 10 类内容类型，注册表**没有「内容类型」概念**，只有扩展名——刻意的：暂无消费者需要它（FR-005 按**来源模块**着色，不是按内容类型）。10 类 → 扩展名的映射留待 T012–T015 声明。
+      TDD 诚实标注：循环 1 我提前写了「多扩展名 for 循环」（类型是复数，顺手就 loop 了），属无失败测试的生产代码 → **已按 Iron Law 删除**，由循环 2 的测试驱动回来。门禁：`test:unit` 733 pass（725 + 8）/ `test:components` 6 pass / typecheck 30-30 / 本目录 lint 0 命中。
 - [ ] T005 [P] [FE·新增] 实现 `center/tab-store.ts`（跨模块 tab 累积、切模块不清空的状态）[FR-004][FR-006] [T002] [出参：单测验证跨模块切 tab 状态保留]
 
 ## Phase 3: US1 三栏框架（P1）
