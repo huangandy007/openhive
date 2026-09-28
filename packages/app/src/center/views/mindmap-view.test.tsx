@@ -102,8 +102,11 @@ describe("content.json → 画布与主题树", () => {
  * Tailwind 将来新加一族，名单不会自动跟上，且**不会报错、只会静默漏判**：
  * **升级 Tailwind 时必须人工复查这一维**。
  *
- * 怎么枚举的（可复现）：用 Tailwind 自己的编译器（`__unstable__loadDesignSystem`）+ 一个自造的
- * `@theme { --color-marker: … }`，把类清单里每个名字**逐段拆成前缀**，凡 `${前缀}-marker` 能编出
+ * 怎么枚举的（可复现，两个参数别漏）：用 Tailwind 自己的编译器（`__unstable__loadDesignSystem`）
+ * + 一个自造的 `@theme { --*: initial; --color-marker: … }`（**开头那句全重置是必需的**——不重置会把
+ * 默认主题与本仓主题的全部工具一起算进来，类清单 3146 → 18938，数就不是下面的数了），把类清单里
+ * 每个名字**逐段拆成前缀**（**深度上限 4 段**：取到 5~8 段候选 3518 → 3522，命中的仍是同一套 47 族，
+ * 最长族名 `mask-radial-from` 只有 3 段），凡 `${前缀}-marker` 能编出
  * `var(--color-marker)` 的即为该族 → 得 **47 个**，就是下面这些。`border-{x,y,s,e,t,r,b,l}`
  * （边框**方向**色）在列；`placeholder-` / `ring-offset-` / `drop-shadow-` 与
  * `mask-{b,l,r,t,x,y,conic,linear,radial}-{from,to}` 也在列——它们**不常见**，但确实消费 `--color-*`。
@@ -141,8 +144,12 @@ const 颜色工具类前缀 = [
  * 两处**必须**抠掉，否则名单本身就是错的：
  * - 以 `v2-` 开头的色名：v2 色板与 v1 挤在同一个生成物里（`--color-v2-text-text-base` 会派生出
  *   `text-v2-text-text-base`）——不抠，「本 feature 一律用 v2」这条口径会被自己的 v2 类判红。
- * - `text-base`：`--color-base` 与 Tailwind 自带的**字号** `text-base` 撞名，字号不是色。
- *   （抠掉它是**放弃**了 `--color-base` 在 `text-` 这一族上的覆盖——两者同名，分不开，只好不判。）
+ * - `text-base`：⚠️ **不是「与字号撞名、分不开」**（曾经这么写，实测是反的）——本仓
+ *   `--color-base` 真的存在，所以产物里 `.text-base` 编出的是 **`color: var(--color-base)`**、
+ *   **一条字号规则都没有**（`dist/assets/index-*.css` 实测）。也就是说它**是一个真实的 v1 色类**，
+ *   抠掉它＝**主动放弃这一条判据、代价是这一类会静默漏判**（取舍，不是「分不开」）。取「放弃」的
+ *   理由：`text-base` 在 Tailwind 的原生语义里是字号，**上游随时可能真按字号意图写它**，那时这条判据
+ *   会把一段正经字号判红。真要收紧，就把这行 `delete` 去掉、并接受那个假阳性。
  *
  * （`--color-*: initial` 那行不必特殊处理：正则只收 `[a-z0-9-]+`，`*` 匹配不上。）
  */
@@ -154,7 +161,7 @@ async function 读v1色类(): Promise<Set<string>> {
     if (色.startsWith("v2-")) continue
     for (const 用处 of 颜色工具类前缀) 名单.add(`${用处}-${色}`)
   }
-  名单.delete("text-base") // 同上：与 Tailwind 的字号类撞名
+  名单.delete("text-base") // 同上的取舍：它在本仓**确实**是 v1 色类，放弃它是为了不误伤字号意图
   return 名单
 }
 
@@ -237,7 +244,8 @@ describe("导图画成嵌套列表", () => {
     expect(V1.has("outline-border-focus")).toBe(true)
     // v2 色板与 v1 住在同一个生成物里：混进来会把「一律用 v2」判成违规
     expect([...V1].some((名) => 名.includes("v2-"))).toBe(false)
-    // `--color-base` 与 Tailwind 自带的**字号** `text-base` 撞名——它是字号，不是色
+    // `text-base` 被**主动放弃**（不是「与字号撞名分不开」——本仓它真的是 v1 色类，见 `读v1色类`
+    // 那条注释）。这条断言钉住的是「取舍仍然生效」：哪天有人去掉那行 `delete`，它会红。
     expect(V1.has("text-base")).toBe(false)
     expect(V1.has("bg-base")).toBe(true)
   })
