@@ -14,7 +14,7 @@
 
 **Primary Dependencies**: JWT（短期凭证）、argon2id（密码哈希）、httpOnly Cookie（凭证下发）
 
-**Storage**: 用户表存于 Auth 服务自有存储（第三种数据——账号数据，独立于 opencode 每用户 SQLite 与业务 PG）；每用户沙箱目录 `/workspaces/{userId}/`
+**Storage**: 用户表存于业务 PG（`.env` 的 `PG_*`）的**独立 `auth` schema**（`auth.user`）——与 core 数据（每用户 SQLite）、业务数据表（`public` schema）物理分开，但与 `user_role` / `fund_project_member` 同库可 join；访问层用 `drizzle-orm/bun-sql`（零新增驱动依赖），测试用 PGlite 内嵌 PG。每用户沙箱目录 `/workspaces/{userId}/`
 
 **Testing**: oxlint（lint）+ turbo typecheck + 受影响 package 的 bun test
 
@@ -45,8 +45,10 @@
 ## 项目文件结构（要素①）
 
 ```text
-auth/                          # 新增 Auth 服务（独立于 opencode core）
+packages/auth/                 # 新增 Auth 服务（workspace 成员，独立于 opencode core）
 ├── src/
+│   ├── db.ts                  # PG 连接（drizzle-orm/bun-sql）+ auth schema 绑定
+│   ├── migrations/            # auth schema 迁移（含回滚脚本）
 │   ├── user.ts                # 用户表模型 + 迁移（8 业务字段 + 系统字段）
 │   ├── login.ts               # 登录：校验密码 → 签发短期凭证
 │   ├── password.ts            # 改密 / 重置（must_change_pw 状态流转）
@@ -57,7 +59,9 @@ auth/                          # 新增 Auth 服务（独立于 opencode core）
 
 > 用户表字段模型见 design-v2 §4.1（`police_no` / `name` / `id_card` / `phone` / `org` / `dept` / `section` / `status` + `password_hash` / `is_admin` / `must_change_pw` / `last_login_at` / `last_active_at` / `created_at`）。
 
-**Structure Decision**: Auth 服务作为独立服务（新增模块），用户表存 Auth 服务自有存储；opencode 侧零表结构改动。
+**Structure Decision**: Auth 服务落 `packages/auth/`（workspace 成员，满足 R3「模块内嵌、不新增独立部署单元」）；用户表存业务 PG 的独立 `auth` schema；opencode 侧零表结构改动。
+
+> **目录定义修订（2026-09-28）**：原计划写顶层 `auth/`，但根 `package.json` 的 workspaces 是 `packages/*`——顶层 `auth/` 不是 workspace 成员，turbo typecheck 与 `bun test` 都覆盖不到，会架空宪法 §五 的质量门禁。改落 `packages/auth/`，符合宪法 §三「包在 `packages/*`」，且不动上游 `package.json`（宪法 §一）。
 
 ## 数据流向（要素②）
 
@@ -136,4 +140,4 @@ flowchart LR
 | R1 | 关闭 Basic Auth 后，`X-User-ID` 注入链路若不可靠，会致全站无法访问或身份错乱 | 网关注入 + 中间件校验双层兜底，注入缺失即拒绝请求 |
 | R2 | 僵尸账户「保留 30 天再删除」窗口期内的数据恢复与归档策略 | 明确保留期状态机，30 天内可恢复、逾期归档，纳入 F3 隔离测试 |
 | R3 | Auth 服务的部署边界（独立服务 vs 网关模块）影响架构与合并冲突面 | 优先「网关模块内嵌 + 独立用户表」，避免新增独立部署单元 |
-| R4 | 用户表存储选型（Auth 自有 SQLite 还是并入某 PG）未定 | 实现时按「1600 用户、单写者、无跨用户聚合」评估，倾向独立轻量存储 |
+| R4 | ~~用户表存储选型未定~~ → **已裁定 2026-09-28：并入业务 PG，落独立 `auth` schema** | 采纳理由：`user_role`（§14.3）= `user_id, role_id`、`fund_project_member`（§14.1）= `fund_project_id, user_id, ...` 均在业务 PG，且 §14.1 要求运行时 join「数据项目 ↔ 用户」——账号表若另立存储会从 F4/F10 起持续制造跨存储 join。驱动 `drizzle-orm/bun-sql`（零新增驱动依赖）；测试用 PGlite 内嵌 PG（离线可跑）。 |
