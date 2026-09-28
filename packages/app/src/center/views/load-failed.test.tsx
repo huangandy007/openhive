@@ -9,13 +9,19 @@ import { 是哪种看不了 } from "./unsupported-format"
  * （工厂抛错会让 `await import(...)` reject——含 `?url` 这种带查询串的 specifier，实测过。）
  *
  * ⚠️ **别想着再加第二个 mock**。Bun 在同一进程内**跨文件共享**模块注册表，而模块**已经加载过**
- * 时，工厂是在 `mock.module()` **调用当场**被同步执行、结果被缓存的——抛错的工厂于是会炸在
+ * 时，工厂是在 `mock.module()` **调用当场**就被同步执行的——抛错的工厂于是会炸在
  * **注册那一行**（`# Unhandled error between tests`），跟用例怎么写无关。`xlsx` 已被
- * `document-view.test.tsx`（经 `__fixtures__/office.ts`）先加载，必炸。两条绕法都试过、都不成立：
- * 「注册时返回真模块 + 用例里拨开关」（工厂只被调一次，之后的 import 不再调它）、「异步工厂」
- * （照样在注册期被 await 并抛）。**所以 `document-view.tsx` 里那条同性质的分支当前没有测试钉着**
- * ——那边的注释写了它靠什么兜底。唯一的解法是给 `test:components` 加 `--isolate`（实测
- * 182 pass / 0 fail，但 3.66s → 14.02s，≈3.8×），代价远大于收益、还要改上游的 `package.json`。
+ * `document-view.test.tsx`（经 `__fixtures__/office.ts`）先加载，必炸。
+ *
+ * ⚠️ 顺带更正一个容易顺手写错的说法：**工厂的返回值对「已加载过」的模块不生效**——它照样在注册
+ * 当场被调用，但返回的模块被**丢弃**，之后的 `await import(spec)` 拿到的仍是**真模块**；只有对
+ * **尚未加载**的模块，返回值才会被缓存并生效。两条绕法都试过、都不成立：「注册时返回真模块 +
+ * 用例里拨开关」（工厂全程只被调一次，之后的 import 不再调它）、「异步工厂」（照样在注册期被
+ * await 并抛）。**所以 `document-view.tsx` 里那条同性质的分支当前没有测试钉着**——那边的注释写了
+ * 它靠什么兜底。**在不改生产代码的前提下**，唯一的解法是给 `test:components` 加 `--isolate`
+ * （实测 181 pass / 0 fail，但 3.66s → 14.02s，≈3.8×），代价远大于收益、还要改上游的
+ * `package.json`。（审查员另提过一条更便宜的思路：给渲染器注入可替换的加载器接缝——那要动生产
+ * 代码，已记入 state.md 待决项，本批不引入。）
  *
  * ⚠️ 这一条目前安全，是因为 `pdfjs-dist/build/pdf.worker.min.mjs?url` 在本套件里**没有别的消费者**
  * （`pdf-view.test.tsx` 走不到它，被 `配好worker脚本` 开头那句 early-return 挡着）。**将来若有

@@ -95,16 +95,22 @@ describe("content.json → 画布与主题树", () => {
 })
 
 /**
- * 吃 `--color-*` 命名空间的工具类前缀（Tailwind v4）。
+ * 吃 `--color-*` 命名空间的工具类前缀——**穷举**出来的 47 个族（`tailwindcss@4.1.11`）。
  *
- * ⚠️ 这一维**不是**从生成物派生的——这是它与色名那一维的**性质差别**，别混着看：色名是读
- * `colors.css` 派生的（完备，见下），前缀是照 Tailwind 的颜色工具类命名空间**列**的。Tailwind
- * 将来新加一族、或这里漏了一族，名单就跟不上，而且**不会报错、只会静默漏判**。
+ * ⚠️ 这一维**不是**从生成物派生的，这是它与色名那一维的**性质差别**，别混着看：色名是读
+ * `colors.css` 派生的（完备，见下），前缀是**枚举**出来的——而枚举只在枚举那一刻成立。
+ * Tailwind 将来新加一族，名单不会自动跟上，且**不会报错、只会静默漏判**：
+ * **升级 Tailwind 时必须人工复查这一维**。
  *
- * `outline-` 正是这么漏掉的：本仓 `components/debug-bar.tsx:134` 真在用
+ * 怎么枚举的（可复现）：用 Tailwind 自己的编译器（`__unstable__loadDesignSystem`）+ 一个自造的
+ * `@theme { --color-marker: … }`，把类清单里每个名字**逐段拆成前缀**，凡 `${前缀}-marker` 能编出
+ * `var(--color-marker)` 的即为该族 → 得 **47 个**，就是下面这些。`border-{x,y,s,e,t,r,b,l}`
+ * （边框**方向**色）在列；`placeholder-` / `ring-offset-` / `drop-shadow-` 与
+ * `mask-{b,l,r,t,x,y,conic,linear,radial}-{from,to}` 也在列——它们**不常见**，但确实消费 `--color-*`。
+ *
+ * `outline-` 正是被漏过的那一族：本仓 `components/debug-bar.tsx:134` 真在用
  * `focus-visible:outline-border-focus`，产物 CSS 里也真生成了 `outline-color:var(--color-border-focus)`
- * ——而只列 text/bg/border 的名单对它一声不吭。（`border-{x,y,s,e,t,r,b,l}` 是边框**方向**色，
- * `border-t-<色>` 是合法写法。）
+ * ——而只列 text/bg/border 的名单对它一声不吭。
  *
  * 所以：**「本 guard 没报」≠「没用 v1 色」**，它只盖下面这些前缀。任意值写法
  * （`bg-[color:var(--color-text-weak)]`）也不在覆盖内——本 feature 没用这种写法，故不为此加码。
@@ -113,11 +119,15 @@ const 颜色工具类前缀 = [
   "text", "bg",
   "border", "border-x", "border-y", "border-s", "border-e",
   "border-t", "border-r", "border-b", "border-l",
-  "outline", "ring", "inset-ring",
-  "divide", "decoration", "accent", "caret",
+  "outline", "ring", "inset-ring", "ring-offset",
+  "divide", "decoration", "accent", "caret", "placeholder",
   "fill", "stroke",
-  "shadow", "inset-shadow", "text-shadow",
+  "shadow", "inset-shadow", "text-shadow", "drop-shadow",
   "from", "via", "to",
+  "mask-b-from", "mask-b-to", "mask-l-from", "mask-l-to", "mask-r-from", "mask-r-to",
+  "mask-t-from", "mask-t-to", "mask-x-from", "mask-x-to", "mask-y-from", "mask-y-to",
+  "mask-conic-from", "mask-conic-to", "mask-linear-from", "mask-linear-to",
+  "mask-radial-from", "mask-radial-to",
 ] as const
 
 /**
@@ -213,10 +223,14 @@ describe("导图画成嵌套列表", () => {
     expect(V1.has("text-text-base")).toBe(true)
     expect(V1.has("border-border-weak-base")).toBe(true)
     expect(V1.has("bg-surface-base")).toBe(true)
-    // 前缀那一维：**逐个前缀都钉一遍**。这一维要是漏一族，后果是静默漏判而不是报错，
-    // 所以不能只抽查——每个前缀都必须真的产出一个类名（`surface-base` 是 v1 色名且在
-    // 下面没被抠掉，拿它当尺子）。少了哪族、或往 `颜色工具类前缀` 里加了前缀却忘了生效，
-    // 都会在这里红。
+    // 前缀那一维：**逐个前缀都钉一遍**，不只抽查（`surface-base` 是 v1 色名且在下面没被抠掉，
+    // 拿它当尺子）。
+    //
+    // ⚠️ 但**别把这条读成「前缀那一维已被钉死」**——它守不了那个。循环遍历的是常量自身，所以它
+    // 只能证明「**常量里**的每个前缀都真的进了名单」（加了前缀却忘了生效才会红）；**常量本身是
+    // 不是全集，它管不着**：漏掉一族根本不在循环的输入里，它照样全绿。全集那条闸在别处——
+    // `颜色工具类前缀` 是按 `tailwindcss@4.1.11` **穷举**的 47 族，Tailwind 升级时人工复查
+    // （见那边的注释）。**同一件事在别处已经错过一次，别再给这条断言安它给不了的保证。**
     for (const 前缀 of 颜色工具类前缀) expect(V1.has(`${前缀}-surface-base`)).toBe(true)
     // 实测漏过的那一个：本仓 `components/debug-bar.tsx:134` 真在用（产物 CSS 里也真生成了
     // `outline-color:var(--color-border-focus)`）。当时只列 text/bg/border，它一声不吭。
