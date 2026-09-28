@@ -75,8 +75,15 @@ describe("应用级视图注册表（FR-007 的 10 类里 001 认领的几类）
     expect(await 解出(".Yaml")).toBe(CodeView)
   })
 
-  /** 守卫：未认领的扩展名**不兜底**——降级呈现是 T015 的显式职责，不是注册表静默塞个默认视图。 */
-  test("没认领的扩展名解析不到（T018 的 .pptx 与压缩包此刻都不该有归属）", () => {
+  /**
+   * 守卫：未认领的扩展名**不兜底**——降级呈现是 T015 的显式职责，不是注册表静默塞个默认视图。
+   *
+   * `.pptx` 留在这一组是**裁定后的长期状态**（2026-09-28）：PPT 的幻灯片预览要走**服务端**
+   * LibreOffice 转换，已移出 001（见 `tasks.md` T018 与 `spec.md` 修订记录 2026-09-28），
+   * 001 内该格式由 T015 的 `unsupported` 降级承接。将来那个 feature 落地时，本断言应当被
+   * **改成「`.pptx` 归 PPT 视图」**——改动这条即代表该 feature 动工。
+   */
+  test("没认领的扩展名解析不到（`.pptx` 归服务端转换新 feature，001 内不该有归属）", () => {
     expect(viewRegistry.resolve(".pptx")).toBeUndefined()
     expect(viewRegistry.resolve(".dat")).toBeUndefined()
     expect(viewRegistry.resolve(".zip")).toBeUndefined()

@@ -248,11 +248,19 @@
       **T012–T016 累积的「L2 视觉缺口」本任务部分兑现**：颜色**落到了真实构建产物**——`packages/app/dist/assets/index-*.css` 里 `--v2-brand-gold-light:#f59e0b` ×2、`--v2-brand-gold:#d97706` ×2、`--v2-background-bg-accent-soft:#fef3c7` ×2（`:root` + light 块各一份），且任意值类真的被 Tailwind 扫描并编译成规则 `background-color:var(--v2-background-bg-accent-soft)`（证明 `rail.tsx` 写在 `classList` 字符串里的类名没有落空）。**仍未兑现的**：观感（图标是否真被 `--icon-base` 盖住、顶栏与上游会话状态是否拥挤）须真实浏览器核对，见 `state.md` 待决项。
       **新发现待决项（已记 `state.md`）**：`v2/mapping.ts` / `foreground.ts` 未换皮 → ThemeProvider 主题选择器里 `oc-2` 之外的另外 ~35 个主题**仍是蓝色**，民警若切主题会丢品牌色。001 是否锁定/移除主题选择器待定。
       门禁：`packages/app test:unit` **784 pass / 0 fail**（末 779）/ `test:components` **146 pass**（末 142）/ `test:browser` **41 pass** / `packages/ui bun test src` **44 pass / 0 fail across 5 files**（原 4 文件）/ `turbo typecheck` **30-30 successful** / 定向 `oxlint` 六个改动文件 **0 error 0 warning**（全仓 `bun run lint` 仍 exit 1，仅剩上游既有 1 error，逐条确认仍是 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`，HEAD 上即有）/ ✅ **`bun run build` 实跑**：`packages/app` ✓ built in 30.38s，入口 `dist/assets/index-Bt5jMbQz.js` 2,760.45 kB（gzip 824.10）——较 T016 的 2,758.95 kB **+1.5 kB 来自新增 CSS 与换皮 token**，无新依赖、无 chunk 结构变化。
-- [ ] T018 [US3] PPT 预览（`.ppt`/`.pptx`）——**方案未定，先决后做**（自 T014 拆出，2026-09-27c 裁定）[FR-007] [T004] [出参：PPT 点开可预览]
-      **拆出理由**：design-v2 §9.5 把 PPT 预览定为「**LibreOffice headless** 转图片/PDF」——那是**服务端**方案，而 T014 的标签是 `[FE·新增]`（本 feature「纯前端，无 `[BE]`」）。两者不能混在一条里蒙混过去。
-      客户端确有现成库（`pptxviewjs@1.1.9`、`@petepetepete/pptxviewjs@1.3.0`、`@takemynotes/slideframe`），但**都是 canvas 渲染**，而本仓库组件测试用的 happy-dom **无 canvas 引擎** → 渲染正确性在 T017 之前**无法自动验证**（与 T012/T013 记的 L2 缺口同类，但更彻底：连 DOM 结构都验不到）。
-      **先决两条（须人定）**：① 走**服务端转换**（要后端 + 部署改动，超出 001 范围，需另立 feature 或扩 001 的边界）还是走**客户端 canvas**（测试面变窄，须 T017 人工逐页核对）；② 若走服务端，转换产物（图片 / PDF）怎么进中栏——现有 `loadFile` 注入缝是否够用。
-      **不是「不做」，是「方案未定前不按猜测实现」**。
+- [x] T018 [US3] PPT 预览（`.ppt`/`.pptx`）——**裁决：移出 001，本次不实现**（方案已定，2026-09-28；自 T014 拆出，2026-09-27c）[FR-007] [T004] [出参：PPT 点开可预览]
+      **拆出理由（2026-09-27c）**：design-v2 §9.5 把 PPT 预览定为「**LibreOffice headless** 转图片/PDF」——那是**服务端**方案，而 T014 的标签是 `[FE·新增]`（本 feature「纯前端，无 `[BE]`」）。两者不能混在一条里蒙混过去。**当时已预裁定**：「也可能落到 001 之外（若走服务端 LibreOffice）」。
+      **决策（2026-09-28 用户拍板）**：走**服务端转换** —— LibreOffice headless → **PDF 字节** → **复用已测的 `renderPdf` / `PdfView`**（`pdf-view.tsx` 已把 `renderPdf` 作为独立 `BytesRenderer` 导出，`PdfView` 只是它的薄壳；故「PPT 视图」在客户端上将只是「换了取数源的 PDF 视图」，**渲染零新增**）。**001 边界不扩**（本 feature 声明「纯前端，无 `[BE]`」+ 宪法 §四「一个 PR 不混新功能」）→ 依上述预裁定，**幻灯片预览另立 feature**。
+      🔴 **001 内零代码是正确结果，不是偷懒**：`.ppt`/`.pptx` **今天已经走 T015 的通用降级**（`center-content.tsx:44-48`：`registry.resolve()` 取不到 loader → `reason:"unsupported"`，且说得出是哪个文件），且 `views/index.test.tsx:79-83` 有一条**守卫测试**钉着「`.pptx` 此刻不该有归属」。为一个格式再写一个「PPT 专属降级视图」= **重复 T015 已有能力**（Simplicity First / Surgical Changes），故**刻意不加**。
+      🔴 **两条查证后新增的硬 blocker（新 feature 必须先解决，否则无从落地）**：
+      ① **本机无 `soffice`**（`which soffice` / `soffice.exe` 与两个 `Program Files` 路径**全空**）→ 转换路径在当前环境**无法端到端验证**。能测的只有「探测不到 → 能力不可用 → 降级」、argv 构造、路径授权；**不能声称「已能转出 PDF」**。
+      ② **openhive 的部署镜像根本不存在**。仓库里唯一的 `packages/opencode/Dockerfile` 是**上游发布流水线的运行时镜像**（`alpine` base + `apk add libgcc libstdc++ ripgrep` + 只 `COPY dist/opencode-linux-*-musl/bin/opencode` + `ENTRYPOINT ["opencode"]`）——既不是我们的部署镜像，又是**上游高频文件**（宪法 I 禁区）→「往镜像里装 LibreOffice + 中文字体」**没有可改的文件**，那是一块要**新建**的基础设施（新镜像 + CJK 字体 + locale + fontconfig 别名 + 端点的鉴权与并发）。
+      **新 feature 的落地形状（已与用户对齐，启动时引用）**：① 照 `packages/opencode/src/format/formatter.ts` 的模式新建转换模块——`which("soffice")` 探测，**探测不到即视为该能力不存在**（该文件有 20+ 个 `which()` 外部工具，全是这个形状，故**上游零新范式**；ripgrep / git / LSP 是另三条先例）；② 照 `/file/content` 的模式**返回字节**（base64 + `mimeType`）——**不落盘**（服务端**无**生产用临时目录机制，`mkdtemp` 只出现在测试与构建脚本里；不落盘同时把新增越权面压到「只读一次输入文件」）；③ 授权落到**宪法 §IV 三层**，**绝不做「接受任意 path 的裸转换器」**（`handlers/file.ts:99` 的 `FSUtil.contains` 越界防护是既有先例）；④ 客户端写 `PptView` 薄壳指过去（`FileContent` 已能带任意字节、`BinaryView` 只关心字节+容器 → **`ViewProps` 无需改动**；语义上「取原字节」变成「取派生产物」，宜启用至今零消费者的 `mimeType` 区分，或另加 `convert?` 缝）；⑤ 转换是**秒级慢操作**，现有 `BinaryView` 只有 `pending/ready/empty/error`、T015/T016 **刻意没做加载态** → 需补「转换中」，**且要先补进 `openhive-DESIGN.md`**（宪法 §八）；⑥ 公文字体（仿宋/黑体）的版式一致性是**买不到**的：开源替代（思源/文泉驿）能保证「不乱码」，但字形与 PowerPoint 不同，而 Windows 自带字体**版权不允许分发**。
+      ⚠️ **成本清单（诚实计入，勿低估）**：镜像 +LibreOffice（数百 MB）+ `fonts-noto-cjk`（~100 MB）+ `fc-cache -fv` + `LANG/LC_ALL=zh_CN.UTF-8` + fontconfig 别名映射；新增服务端端点在本仓库是 **5~6 个触点**（group 定义 → handler → 路由注册 → `packages/httpapi-codegen` 生成 → SDK 暴露 → 前端调用）；共享容器里用 LibreOffice 解析**不可信文件**是**新的攻击面**（该解析器有历史 CVE，爆炸半径是整台服务器，不是一个人的标签页）。另注：仓库里**已有 Electron 桌面壳**（`packages/desktop`，其 sidecar 在本机跑同一个 server，且 app 可指向远端 server URL）→ 「服务端」在 Web / 桌面两种形态下是两种东西（共享容器 vs 民警本机进程），**转换能力宜做成「可选能力」**（探测不到即降级），同一份前端在两种形态下都能活。
+      ⚠️ **曾评估并否决：客户端 canvas 路线**（`pptxviewjs@1.1.9` / `@petepetepete/pptxviewjs@1.3.0` / `@takemynotes/slideframe`）。三条硬伤：① 据其 README，字体 **默认从 jsDelivr 公网 CDN 拉**（`Carlito`，Calibri 的公制兼容替代）——与宪法 §一「内网私有部署、MUST NOT 暴露公网」直接冲突；② 只认 OOXML `.pptx` ——**`.ppt`（OLE2 二进制）客户端 JS 生态基本无人处理**（`.xls` 有 SheetJS 自实现 BIFF 是**特例**，PPT 无对应特例），而本任务要求两种格式；③ happy-dom **无 canvas 引擎** → 渲染正确性连 DOM 结构都验不到，全部测试只能依赖真实浏览器（本机 playwright 与已装浏览器版本不匹配已在 T014 记录）。另：**依赖要过举证关**——本仓有「`.xmind` 手写 zip 读取器、不引新依赖」（宪法 I）与「`dompurify` 须专门辩护」两条先例，而这条路要拖进「canvas 库 + JSZip + 一套字体资产」。**同类保真度硬伤**：图表布局近似、SmartArt 保真度不定、3D 图表与嵌入 Office 3D 模型不支持。
+      ⚠️ **曾评估的零依赖降级增强（未做，留给新 feature 裁量）**：用既有的 `zip-entry.ts` 解 `ppt/slides/*.xml` 排成**文字大纲**（⚠️ 页面顺序须读 `ppt/_rels/presentation.xml.rels` + `sldIdLst`，**文件名序号不保证等于放映顺序**）。**它诚实（明说「非版式预览」）且零新依赖、happy-dom 可测，但不满足验收口径「幻灯片预览」**，故不在 001 里发明它。
+      **落点归属（如实记账）**：`design-v2.md:337`（`.pptx` | **幻灯片预览** | 在线预览 + 拖拽到本地编辑）这**一格在 001 未兑现**，已记入 `state.md`；`design-v2:408` 的服务端方案仍标注在「§9.5 技术选型（**实现时验证**）」下——该表**已有两条被证伪**（TipTap 不在本仓库、markmap 未引入），故它**既不是约束、也不是「001 漏做」的依据**。
+      **不是「不做」，是「不在本 feature 里做」——方案已定，落点已移出。**
 
 ---
 
@@ -264,6 +272,6 @@
 - **Phase 4**：T009 / T010 / T011（依赖 T005）
 - **Phase 5**：T012 ∥ T013 ∥ T014 ∥ T015（依赖 T004）
 - **Phase 6**：T016（依赖 T004）∥ T017（依赖 T007）
-- **待定**：T018（PPT 预览）——**方案定下后**才排阶段；它可能落在 Phase 5（若走客户端），也可能落到 001 之外（若走服务端 LibreOffice）。
+- **T018（PPT 预览）已于 2026-09-28 裁定移出 001**（走服务端 LibreOffice → PDF；本 feature 边界不扩）→ **Phase 1–6 全部结案，001 无剩余任务**；幻灯片预览另立 feature。
 
-共 18 条任务（T001–T018），其中 **T018 为 2026-09-27c 新增**（自 T014 拆出，方案待定）。
+共 18 条任务（T001–T018），其中 **T018 为 2026-09-27c 新增**（自 T014 拆出）；**2026-09-28 裁定移出 001**（走服务端转换，本 feature 边界不扩）→ **001 内实现任务 T001–T017 共 17 条，全部完成**。
