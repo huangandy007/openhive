@@ -25,6 +25,15 @@ declare module "*.mp4" {
   export default src
 }
 
+/**
+ * Vite 的 `?url` 后缀导入：拿到该资源的**产物 URL**（而不是模块本身）。
+ * 目前唯一用处是 pdfjs 的 worker 脚本（`views/pdf-view.tsx`）。
+ */
+declare module "*?url" {
+  const src: string
+  export default src
+}
+
 export declare module "solid-js" {
   namespace JSX {
     interface Directives {

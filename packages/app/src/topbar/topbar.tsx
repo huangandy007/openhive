@@ -103,9 +103,16 @@ function TopbarIconButton(props: {
       data-slot={props.slot}
       aria-label={props.label}
       onClick={() => props.onClick?.()}
-      class="relative flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-v2-icon-icon-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
+      class="group relative flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-v2-overlay-simple-overlay-hover"
     >
-      <Icon name={props.icon} size="small" />
+      {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`（写在按钮上的 `text-*` 到不了图标，
+          原因见 `rail.tsx` 同一处注释）。未选中的档位靠类、hover 提亮才有空间。 */}
+      <span
+        data-slot="topbar-icon"
+        class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+      >
+        <Icon name={props.icon} size="small" />
+      </span>
       {props.children}
     </button>
   )

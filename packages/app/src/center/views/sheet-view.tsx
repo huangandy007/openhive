@@ -3,6 +3,20 @@ import type { ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
 
 /**
+ * 铺进 DOM 的行 / 列上界。
+ *
+ * 表格是**一格一个 DOM 节点**铺的（`<td>`），所以「表有多大」直接等于「页面上有多少节点」。
+ * 公安那边的表动辄十万行话单，不看上界地铺下去就是把标签页卡死。超出的部分**明说截断**，
+ * 不静默少给（静默少给＝民警拿着前 1000 行当整份数据用，比卡死更危险）。
+ *
+ * 数值是权衡后的取舍：1000 × 64 = 6.4 万个格子，是浏览器铺表还能交互的量级；列 64 覆盖得住
+ * 话单/资金表常见的三四十列。**整份解析**（含超大表）是另一个量级的活儿，已登记在 state.md
+ * 的承接任务里（移进 Worker + 超时 terminate），不在本轮。
+ */
+export const 行上界 = 1000
+export const 列上界 = 64
+
+/**
  * 把工作簿的第一张工作表铺成 HTML 表格。
  *
  * `codepage: 65001` 不可省：`.csv` 这类**没有 zip 头**的文本，SheetJS 默认按 Latin-1 解，
@@ -17,6 +31,19 @@ export const renderSheet: BytesRenderer = async (bytes, container) => {
   // `Workbook is empty`），而读垃圾字节也总会得到 `SheetNames: ["Sheet1"]` —— 那是条死代码。
   const sheet = book.Sheets[book.SheetNames[0]]
 
+  // 表本身的尺寸从 `!ref`（形如 `A1:BL99999`）读，**在铺之前**读——铺完再数行数就晚了。
+  const 全范围 = XLSX.utils.decode_range(sheet["!ref"] ?? "A1")
+  const 总行 = 全范围.e.r - 全范围.s.r + 1
+  const 总列 = 全范围.e.c - 全范围.s.c + 1
+  const 截了行 = 总行 > 行上界
+  const 截了列 = 总列 > 列上界
+  // `range` 交回 SheetJS 去裁：只喂前 上界 行/列，而不是全铺完再在 DOM 这边丢——
+  // 后者照样要把整张表物化成 JS 数组，白花一次大表的内存。
+  const 范围 = {
+    s: { r: 全范围.s.r, c: 全范围.s.c },
+    e: { r: Math.min(全范围.e.r, 全范围.s.r + 行上界 - 1), c: Math.min(全范围.e.c, 全范围.s.c + 列上界 - 1) },
+  }
+
   // `defval` + `blankrows` 一起保证**行宽对齐**：真实表格大量是残缺行（某行少几列、或有整行空），
   // 不补齐的话每行格数不一，列会串位。已用「临时摘掉这两个选项」验证过下方测试确实抓得住（收到 [3,2]）。
   // 行类型显式写成「单元格联合的数组」而非 `unknown[]`：默认 `raw: true` 下 SheetJS 交回的单元格
@@ -27,7 +54,16 @@ export const renderSheet: BytesRenderer = async (bytes, container) => {
     header: 1,
     defval: null,
     blankrows: true,
+    range: 范围,
   })
+
+  if (截了行 || 截了列) {
+    const 砍掉 = [截了行 ? `前 ${行上界} 行` : undefined, 截了列 ? `前 ${列上界} 列` : undefined]
+    const 提示 = document.createElement("p")
+    提示.className = "mb-2 text-12-regular text-text-weak"
+    提示.textContent = `表太大，这里只显示${砍掉.filter(Boolean).join(" × ")}（原表共 ${总行} 行 × ${总列} 列）。`
+    container.appendChild(提示)
+  }
 
   const table = document.createElement("table")
   for (const row of rows) {

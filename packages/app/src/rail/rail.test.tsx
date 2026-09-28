@@ -69,6 +69,30 @@ describe("Rail 图标栏", () => {
     expect(其余.every((el) => !(el.className ?? "").includes("accent-soft"))).toBe(true)
   })
 
+  /**
+   * 图标颜色**只能**靠祖先注入 `--icon-base`，父级按钮上的 `text-v2-icon-*` 到不了图标：
+   * `packages/ui/src/components/icon.css` 给图标自身写了 `color: var(--icon-base)`，直接盖过继承来的色。
+   * 不注入的后果不是报错，是**静默恒灰**——`--icon-base` 在主题里的兜底是上游硬编码的一档灰，
+   * 于是默认 / 悬停 / 选中三档一并失效，选中入口的图标根本不显浅金（DESIGN §1.3 的违规）。
+   * 同一坑 T009 在 `tab-bar` 踩过一次，做法照抄（`tab-bar.tsx:52-56`）。
+   */
+  test("图标颜色由祖先注入 --icon-base：选中档浅金、其余走 muted（DESIGN §1.3 / §4.1）", () => {
+    const host = mount(() => <Rail active="fund-analysis" onSelect={() => {}} />)
+    const entries = [...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']")]
+    const 当前 = entries.find((el) => el.getAttribute("aria-label") === "资金分析")
+    const 其余 = entries.filter((el) => el.getAttribute("aria-label") !== "资金分析")
+    const 图标层 = (el: HTMLElement | undefined) =>
+      el?.querySelector<HTMLElement>("[data-slot='rail-icon']") ?? undefined
+
+    // happy-dom 没有 CSS 引擎，解析不了 var()——能断言的正是「注入的是不是一个 token」
+    expect(图标层(当前)?.style.getPropertyValue("--icon-base")).toBe("var(--v2-icon-icon-accent)")
+    // 未选中的那档写在类名里、不走内联：内联会压过 hover 的提亮（选中档才需要压过 hover）
+    expect(图标层(其余[0])?.className ?? "").toContain("[--icon-base:var(--v2-icon-icon-muted)]")
+    expect(其余.every((el) => 图标层(el)?.style.getPropertyValue("--icon-base") !== "var(--v2-icon-icon-accent)")).toBe(
+      true,
+    )
+  })
+
   test("系统设置同样能是当前入口：停在设置上时竖条落在底部那一项，五个业务入口都不带", () => {
     const host = mount(() => <Rail active="settings" onSelect={() => {}} />)
     const entries = [...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']")]

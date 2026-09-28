@@ -63,6 +63,20 @@ describe("Topbar 顶栏", () => {
     expect(图形标?.querySelector("polygon")?.getAttribute("stroke")).toBe("var(--v2-brand-gold)")
   })
 
+  /**
+   * 同 `rail`：图标颜色**只能**靠祖先注入 `--icon-base`（`icon.css` 给图标自身写了
+   * `color: var(--icon-base)`，按钮上的 `text-v2-icon-*` 到不了它），不注入就是静默恒灰。
+   */
+  test("顶栏图标颜色由祖先注入 --icon-base：默认 muted（同 rail / tab-bar 的做法）", () => {
+    const host = mount(() => <Topbar user={张三} />)
+    const 图标层 = (slot: string) =>
+      host.querySelector<HTMLElement>(`[data-slot='${slot}'] [data-slot='topbar-icon']`) ?? undefined
+
+    expect(图标层("topbar-messages")?.className ?? "").toContain("[--icon-base:var(--v2-icon-icon-muted)]")
+    expect(图标层("topbar-messages")?.querySelector("svg")).not.toBeNull() // 包里确实是那个图标
+    expect(图标层("topbar-fullscreen")?.className ?? "").toContain("[--icon-base:var(--v2-icon-icon-muted)]")
+  })
+
   test("要素二：没有未读时，站内信按钮不带红点", () => {
     const host = mount(() => <Topbar user={张三} />)
 

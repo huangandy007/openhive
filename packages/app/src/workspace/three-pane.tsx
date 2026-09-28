@@ -38,7 +38,12 @@ export function ThreePane(props: ParentProps<ThreePaneProps>) {
   const rightMax = () => Math.round((viewport() * 2) / 3)
 
   return (
-    <div data-component="three-pane" class="flex-1 min-h-0 min-w-0 w-full flex">
+    // `relative` 是给两个拖拽手柄当定位祖先用的，不是排版需要：`resize-handle.css` 给手柄写死
+    // 了 `position: absolute`（上游 5 个调用点无一例外都自带定位祖先）。少了它，手柄会沿定位链
+    // 一直上溯到 `<main>`（`layout-new.tsx` 带 `contain: strict`，本身即包含块）——左侧手柄跑到
+    // 窗口最右边、右侧手柄压到图标栏上。happy-dom 没有 CSS 引擎，测不出几何，故只能靠这行与
+    // 浏览器核对兜住。
+    <div data-component="three-pane" class="relative flex-1 min-h-0 min-w-0 w-full flex">
       <Show when={props.left !== undefined && !props.leftCollapsed}>
         <aside
           data-slot="three-pane-left"

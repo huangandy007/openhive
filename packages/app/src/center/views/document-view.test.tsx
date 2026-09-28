@@ -45,4 +45,20 @@ describe("Word 预览（FR-007 的 .doc/.docx）", () => {
 
     expect(视图(host)?.getAttribute("data-state")).toBe("empty")
   })
+
+  /**
+   * 真 `.doc`（Word 97–2003）是 OLE2 容器，而 docx-preview 只认 OOXML——这条路由**必失败**。
+   * 失败归因因此必须落在「这种格式暂时看不了」上：说成「可能已经损坏」是**冤枉文件**，
+   * 那份卷宗好好的，是这种老格式我们没接。
+   */
+  test("老 .doc（OLE2 容器）：落 unsupported，不说文件坏了", async () => {
+    const host = mount(() => (
+      <DocumentView path="/p/老卷宗.doc" load={async () => 字节([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])} />
+    ))
+
+    await 落定()
+
+    expect(视图(host)?.getAttribute("data-state")).toBe("unsupported")
+    expect(host.querySelector("[data-component='degraded-view']")?.getAttribute("data-reason")).toBe("unsupported")
+  })
 })

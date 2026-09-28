@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, vi } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { FileContent, LoadFileContent } from "@/center/file-content"
-import { BinaryView, type BytesRenderer } from "./binary-view"
+import { BinaryView, type BytesRenderer, 格式不支持 } from "./binary-view"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -79,21 +79,83 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
   })
 
   test("渲染器失败：标记 error，不把异常抛给中栏（一个坏文件不该掀掉整个工作台）", async () => {
-    const host = mount(() => (
-      <BinaryView
-        name="probe"
-        path="/p/坏.docx"
-        load={async () => 内容([0])}
-        render={async () => {
-          throw new Error("不是该格式的字节")
-        }}
-      />
-    ))
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const host = mount(() => (
+        <BinaryView
+          name="probe"
+          path="/p/坏.docx"
+          load={async () => 内容([0])}
+          render={async () => {
+            throw new Error("不是该格式的字节")
+          }}
+        />
+      ))
 
-    await 落定()
+      await 落定()
 
-    expect(视图(host)?.getAttribute("data-state")).toBe("error")
-    expect(降级(host)?.getAttribute("data-reason")).toBe("error")
+      expect(视图(host)?.getAttribute("data-state")).toBe("error")
+      expect(降级(host)?.getAttribute("data-reason")).toBe("error")
+    } finally {
+      警告.mockRestore()
+    }
+  })
+
+  /**
+   * 「坏文件在界面上只变成一句降级提示」是**最难查**的那类故障：说得出话的是界面，查得着的只剩控制台。
+   * 故渲染失败除了落 `error`，还要在控制台留一条，且带上是**哪个文件**——
+   * 一份卷宗打不开时，民警截图给运维的信息里往往没有控制台，但开发/排障的那一头要有。
+   */
+  test("渲染失败：控制台留一条带文件名的记录（静默失败最难查）", async () => {
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      mount(() => (
+        <BinaryView
+          name="probe"
+          path="/p/坏卷宗.pdf"
+          load={async () => 内容([0])}
+          render={async () => {
+            throw new Error("不是该格式的字节")
+          }}
+        />
+      ))
+      await 落定()
+
+      expect(警告).toHaveBeenCalled()
+      expect(警告.mock.calls.map((参数) => 参数.join(" ")).join("\n")).toContain("/p/坏卷宗.pdf")
+    } finally {
+      警告.mockRestore()
+    }
+  })
+
+  /**
+   * 渲染器**认得出**「这不是我能渲染的写法」时（如 docx-preview 拿到 OLE2 的老 `.doc`），
+   * 要落 `unsupported` 而不是 `error`。两者对民警是两件事：前者「换工具打开」，后者「怀疑
+   * 文件坏了」——把「我们没接这种格式」说成「你的卷宗坏了」，归因是反的。
+   */
+  test("渲染器说「这种格式我不认」：落 unsupported，不冤枉文件", async () => {
+    // 已知边界不是故障：控制台**不该**为此喊一声（喊了就会把真故障淹掉）
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const host = mount(() => (
+        <BinaryView
+          name="probe"
+          path="/p/老卷宗.doc"
+          load={async () => 内容([0])}
+          render={async () => {
+            throw 格式不支持("这是 OLE2 二进制格式")
+          }}
+        />
+      ))
+
+      await 落定()
+
+      expect(视图(host)?.getAttribute("data-state")).toBe("unsupported")
+      expect(降级(host)?.getAttribute("data-reason")).toBe("unsupported")
+      expect(警告).not.toHaveBeenCalled()
+    } finally {
+      警告.mockRestore()
+    }
   })
 
   test("path 变了：按新 path 重取重渲（否则两张 document tab 会显示同一份文件）", async () => {
@@ -171,23 +233,28 @@ describe("转到看不了的状态：先收干净容器，再画降级提示", (
   })
 
   test("渲染器抛错：它写了一半的残片也要清掉，不跟提示同屏", async () => {
-    const host = mount(() => (
-      <BinaryView
-        name="probe"
-        path="/p/坏.docx"
-        load={async () => 内容([0])}
-        render={async (_bytes, container) => {
-          container.textContent = "写了一半"
-          throw new Error("不是该格式的字节")
-        }}
-      />
-    ))
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {}) // 本条会走「真故障」那一支，控制台有话要说
+    try {
+      const host = mount(() => (
+        <BinaryView
+          name="probe"
+          path="/p/坏.docx"
+          load={async () => 内容([0])}
+          render={async (_bytes, container) => {
+            container.textContent = "写了一半"
+            throw new Error("不是该格式的字节")
+          }}
+        />
+      ))
 
-    await 落定()
+      await 落定()
 
-    expect(视图(host)?.getAttribute("data-state")).toBe("error")
-    expect(视图(host)?.textContent).toBe("")
-    expect(降级(host)).not.toBeNull()
+      expect(视图(host)?.getAttribute("data-state")).toBe("error")
+      expect(视图(host)?.textContent).toBe("")
+      expect(降级(host)).not.toBeNull()
+    } finally {
+      警告.mockRestore()
+    }
   })
 })
 
@@ -284,6 +351,43 @@ describe("渲染器持有资源时：壳负责归还", () => {
     expect(归还过的).toEqual(["慢"]) // 迟到者自己还掉，没有把「快」的那份挤掉
     dispose()
     expect(归还过的).toEqual(["慢", "快"]) // 卸载时还的是当前那份
+  })
+
+  /**
+   * 清理函数是**渲染器给的三方代码**，它抛错不该把「换内容」这件事本身搞砸。
+   * 当前实现里 `归还()` 一旦抛出，异常会穿到取数那条 async 链的 `.catch` 上——
+   * 于是「换了一份文件」被记成「这份文件渲染失败」，视图落 error：
+   * 归因反了不说，真正的故障（清理函数）还被顶替掉了。
+   */
+  test("清理函数抛错：不影响换内容本身（不许把它记成新文件渲染失败）", async () => {
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const [path, setPath] = createSignal("/p/a.png")
+      const host = mount(() => (
+        <BinaryView
+          name="probe"
+          path={path()}
+          load={async () => 内容([1])}
+          render={async (bytes) => {
+            if (bytes[0] === 1) {
+              return () => {
+                throw new Error("清理失败")
+              }
+            }
+            return undefined
+          }}
+        />
+      ))
+      await 落定()
+
+      setPath("/p/b.png")
+      await 落定()
+
+      expect(视图(host)?.getAttribute("data-state")).toBe("ready")
+      expect(降级(host)).toBeNull()
+    } finally {
+      警告.mockRestore()
+    }
   })
 
   test("卸载后才到点的渲染：自己还掉，别挂上一个再也没机会归还的资源", async () => {

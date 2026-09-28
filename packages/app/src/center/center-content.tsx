@@ -12,6 +12,19 @@ export interface CenterContentProps {
 }
 
 /**
+ * 等一个视图 chunk 的上界。
+ *
+ * 为什么非要有个上界：`load()` 若**悬着不 settle**（网关把请求吃掉、网络卡在半路），
+ * 上面那条「加载期间留着旧视图」的规矩就变成最糟的结果——民警对着「卷宗.pdf」的标题看立项书
+ * 的内容，而且**永远等不到头**。失败至少还有个说法，悬挂连说法都没有。
+ *
+ * 上界只决定「什么时候不再干等」，不取消那次加载：chunk 若在到点后回来了，内容照常补上
+ * （见测试「悬着的 chunk 到点后才回来」）。15 秒是「本地/内网拉一个 chunk」的极宽上限——
+ * 正常是几十毫秒，超过这个数只可能是真出事了。
+ */
+export const 加载上界 = 15_000
+
+/**
  * 内容区此刻该显示什么，三选一：
  * - `view`：解析到了视图，且它已经到场
  * - `degraded`：tab 开着，但这份内容**看不了**（没人认领的格式 / 预览组件没加载出来）
@@ -72,22 +85,38 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
     // 结果可能**迟到**：用户等不及已经切走了。`alive` 在 effect 重跑 / 组件卸载时被 Solid 置否，
     // 迟到的结果就此丢弃——否则上一个文件的组件会盖掉后选中的文件。
     let alive = true
+    let 计时器: ReturnType<typeof setTimeout> | undefined
     onCleanup(() => {
       alive = false
+      clearTimeout(计时器)
     })
+
+    /**
+     * 没等到 chunk 就收手（失败到点 / 干脆悬着不回来都走这条）。
+     *
+     * 收手清空是不能省的：留着旧文件会让民警对着「卷宗.pdf」这个标题看立项书的内容。
+     * 但**只是收手还不够**——tab 还开着，内容区得说清这一回是「预览组件没到位」，
+     * 与「这个文件坏了」分开说（两者对民警是两件事）。
+     */
+    const 收手 = () => {
+      if (alive) set内容({ kind: "degraded", reason: "load-failed", name: tab.title })
+    }
+    计时器 = setTimeout(收手, 加载上界)
 
     // 加载期间**不清空**旧视图：一清空，下面那层就会把调用方的路由页翻出来闪一下。这个空档只有
     // 一次 chunk 拉取那么长（同一类格式还只在首次进入时拉），但闪一下的观感像是「点错了」。
     // 视图组件自己管「内容读取中」那一档（`BinaryView` 的 pending 态），这里只管 chunk 这一小段。
     void load().then(
       (Component) => {
+        clearTimeout(计时器)
+        // 到点收过手之后 chunk 才回来：照样把内容补上——那个提示说的是「不再干等」，
+        // 不是「这次一定看不了」。晚到的比永远不到强。
         if (alive) set内容({ kind: "view", Component, path: tab.path })
       },
-      // 但 chunk **加载不出来**时（断网 / 构建产物缺失）必须收手清空：留着旧文件会让民警
-      // 对着「卷宗.pdf」这个标题看立项书的内容。**只是收手还不够**——tab 还开着，内容区得
-      // 说清这一回是「预览组件没到位」，与「这个文件坏了」分开说（两者对民警是两件事）。
       () => {
-        if (alive) set内容({ kind: "degraded", reason: "load-failed", name: tab.title })
+        // 失败与悬挂在这里合流：对民警是同一件事——**预览组件没到位**，说法也只该有一种。
+        clearTimeout(计时器)
+        收手()
       },
     )
   })

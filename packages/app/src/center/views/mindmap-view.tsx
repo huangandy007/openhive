@@ -86,7 +86,10 @@ function 画主题(主题: 主题, 列表: HTMLElement): void {
 
   if (主题.子.length > 0) {
     const 子列表 = document.createElement("ul")
-    子列表.className = "list-none pl-5 border-l border-border-weak"
+    // 是 `-base` 那一档：color 色板里只有 `--color-border-weak-base`（及 -hover/-active/…），
+    // **没有** `--color-border-weak`——写错的后果不是报错，是这条类根本不生成规则、边框色静默
+    // 落回 `currentColor`（细线画成正文色）。
+    子列表.className = "list-none pl-5 border-l border-border-weak-base"
     for (const 子 of 主题.子) 画主题(子, 子列表)
     项.appendChild(子列表)
   }
@@ -97,8 +100,10 @@ function 画主题(主题: 主题, 列表: HTMLElement): void {
 /** 导图渲染器：`.xmind` 是 zip，主题树在包里的 `content.json`。导出仅供测试直接驱动。 */
 export const renderMindmap: BytesRenderer = async (bytes, container) => {
   const json = await readZipEntry(bytes, "content.json")
+  // 走到这里只剩「包是好的、但没有这一条」——「压根不是 zip / 结构损坏」在 `readZipEntry`
+  // 里就抛了，各自带着自己的说法，不必在这里猜。
   if (!json) {
-    throw new Error("认不出这份导图：压缩包里没有 content.json（XMind 8 的老格式 content.xml 本轮不支持）")
+    throw new Error("这份导图里没有 content.json（XMind 8 的老格式存在 content.xml 里，本轮不支持）")
   }
   drawMindmap(parseMindmap(new TextDecoder().decode(json)), container)
 }

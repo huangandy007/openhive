@@ -3,7 +3,7 @@ import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import * as XLSX from "xlsx"
 import type { FileContent } from "@/center/file-content"
-import { renderSheet, SheetView } from "./sheet-view"
+import { 列上界, 行上界, renderSheet, SheetView } from "./sheet-view"
 
 /**
  * 用 SheetJS 自己造一份**真 xlsx 字节**当夹具——不是手搓的假数据，走的是完整 zip/OOXML 往返。
@@ -89,6 +89,37 @@ describe("表格视图：字节 → 表格", () => {
 
     expect(host.querySelector("img")).toBeNull()
     expect(host.textContent).toContain("<img src=x onerror=alert(1)>")
+  })
+
+  test("超长表：只铺前 行上界 行，并明说是截断（不许悄悄少给）", async () => {
+    const 表 = Array.from({ length: 行上界 + 5 }, (_, i) => [`第${i}行`])
+    const host = 容器()
+
+    await renderSheet(工作簿字节(表), host)
+
+    expect(host.querySelectorAll("tr").length).toBe(行上界)
+    expect(host.textContent).toContain(`第${行上界 - 1}行`) // 最后一条该在的
+    expect(host.textContent).not.toContain(`第${行上界}行`) // 第一条该被砍的
+    expect(host.textContent).toContain("只显示前")
+  })
+
+  test("超宽表：只铺前 列上界 列，并明说是截断", async () => {
+    const 表 = [Array.from({ length: 列上界 + 3 }, (_, i) => `列${i}`)]
+    const host = 容器()
+
+    await renderSheet(工作簿字节(表), host)
+
+    expect([...host.querySelectorAll("tr")].map((tr) => tr.querySelectorAll("td").length)).toEqual([列上界])
+    expect(host.textContent).not.toContain(`列${列上界}`)
+    expect(host.textContent).toContain("只显示前")
+  })
+
+  test("刚好到上界不算截断：不出提示（提示一旦泛滥就等于没有）", async () => {
+    const host = 容器()
+
+    await renderSheet(工作簿字节([Array.from({ length: 列上界 }, (_, i) => `列${i}`)]), host)
+
+    expect(host.textContent).not.toContain("只显示前")
   })
 
   test("多张工作表：铺第一张（表格视图不给工作表切换，见源码注释）", async () => {

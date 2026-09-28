@@ -21,11 +21,11 @@ function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (
       aria-label={props.entry.label}
       aria-current={props.active ? "page" : undefined}
       onClick={() => props.onSelect(props.entry.id)}
-      class="relative flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-v2-icon-icon-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
+      class="group relative flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl transition-colors hover:bg-v2-overlay-simple-overlay-hover"
       // 选中底走浅金语义 token（DESIGN §1.3「图标栏选中底 = 浅金」）。走任意值写法是**有意**的：
       // 这个 token 没有 Tailwind 桥接类，加一条要动生成物 `tailwind/colors.css`（上游文件），
       // 为一行底色不值得。T006 当时暂用中性灰 overlay，T017 换成品牌浅金。
-      classList={{ "bg-[var(--v2-background-bg-accent-soft)] text-v2-icon-icon-accent": props.active }}
+      classList={{ "bg-[var(--v2-background-bg-accent-soft)]": props.active }}
     >
       <Show when={props.active}>
         {/* 选中态的左侧竖条：除了底色，还用「形状」表达选中（DESIGN §4.1 / §4.3） */}
@@ -34,7 +34,20 @@ function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (
           class="absolute top-2 bottom-2 left-0 w-1 rounded-r-full bg-v2-background-bg-accent"
         />
       </Show>
-      <Icon name={props.entry.icon} />
+      {/*
+        图标颜色**必须由这层 wrapper 注入 `--icon-base`**，写在按钮上的 `text-v2-icon-*` 到不了图标：
+        `packages/ui/src/components/icon.css` 给图标自身写了 `color: var(--icon-base)`，直接盖过继承来的色。
+        不注入不会报错，只会**静默恒灰**——`--icon-base` 的兜底是上游硬编码的一档灰，于是默认/悬停/选中
+        三档一并失效，选中入口的图标根本不显浅金。T009 在 `tab-bar` 踩过同一个坑，做法照抄（含
+        「内联压过类」的分工：选中档用内联，未选中档靠类，这样 hover 才提得亮）。
+      */}
+      <span
+        data-slot="rail-icon"
+        class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+        style={props.active ? { "--icon-base": "var(--v2-icon-icon-accent)" } : undefined}
+      >
+        <Icon name={props.entry.icon} />
+      </span>
     </button>
   )
 }

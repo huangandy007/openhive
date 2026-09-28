@@ -62,6 +62,10 @@ const 代码扩展名 = [
   // 脚本
   ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
   // 配置
+  // ⚠️ `.env` 这一项认的是 `xxx.env` 这种**带主名**的文件。名字就叫 `.env` 的那些（点开头）
+  //    在 `extensionOf` 眼里**没有扩展名**（点的左边没有名字），落 T015 的降级——
+  //    **别把这一项读成「.env 文件已支持」**。（代码审查曾把这一项判成「永不命中」，
+  //    复核后不成立：`点在首位`才算无扩展名，`点在中间`照常切出后缀。）
   ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env", ".properties",
   ".xml", ".html", ".htm", ".css", ".scss", ".less",
 ] as const

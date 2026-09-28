@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { FileContent } from "@/center/file-content"
+import { 造包 } from "./__fixtures__/zip"
 import { drawMindmap, MindmapView, parseMindmap, renderMindmap } from "./mindmap-view"
 
 /** 与 `zip-entry.test.ts` 共用同一份样本：.NET 造的**真 zip**（本轮手上没有真实的 XMind 导出文件）。 */
@@ -151,13 +152,25 @@ describe("导图视图：从字节一路走到画面", () => {
   })
 
   /**
+   * 「压根不是 zip」与「包里没这一条」是两回事，报错必须分开（`zip-entry.ts` 的返回值语义）。
+   * 拿乱字节来验后者的话，命中的其实是前者——测不到想看的那句话。
+   */
+  test("压根不是 zip 的字节：抛错说清是压缩包不对，不赖到 content.json 头上", async () => {
+    await expect(
+      renderMindmap(new TextEncoder().encode("这不是压缩包"), document.createElement("div")),
+    ).rejects.toThrow(/不是一个 zip 压缩包/)
+  })
+
+  /**
    * ⚠️ 本条钉的是一个**已知的不支持面**：XMind 8 的老格式（`content.xml`）本轮不做，
    * 报错信息里要说清是哪一种，别让民警对着「加载失败」猜。
+   *
+   * 故喂的必须是一个**结构完好的 zip**（只是里面装着 `content.xml`），而不是乱字节。
    */
-  test("包里没有 content.json：抛错，且说得出是什么情况", async () => {
-    await expect(renderMindmap(new TextEncoder().encode("这不是压缩包"), document.createElement("div"))).rejects.toThrow(
-      /content\.json/,
-    )
+  test("包是好的、但没有 content.json：抛错，且说得出是哪一种不支持", async () => {
+    const 老格式包 = 造包([{ name: "content.xml", 数据: "<xmap-content/>", 方式: 0 }])
+
+    await expect(renderMindmap(老格式包, document.createElement("div"))).rejects.toThrow(/content\.json/)
   })
 
   test("视图挂起来：整条链（取内容 → 解 zip → 画树）走通", async () => {

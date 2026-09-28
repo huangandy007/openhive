@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, vi } from "bun:test"
 import { onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent } from "./file-content"
-import { CenterContent } from "./center-content"
+import { 加载上界, CenterContent } from "./center-content"
 import type { DegradedReason } from "./degraded-view"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
 import { contentTabKey, type ContentTab } from "./tab-store"
@@ -268,6 +268,75 @@ describe("视图按需加载：空档期不闪页面、失败要收手、迟到�
     await 落定()
 
     expect(视图()?.getAttribute("data-name")).toBe("卷宗")
+  })
+})
+
+/**
+ * 「一直加载不出来」与「加载失败」对民警是同一件事：**内容区不说话**。
+ *
+ * `load()` 悬着不 settle（网络卡在半路、请求被网关吃掉）时，上面那条「留着旧视图」的规矩
+ * 会变成最糟的结果——民警对着「卷宗.pdf」的标题看立项书的内容，**而且永远等不到头**：
+ * 失败至少还有个说法，悬挂连说法都没有。到点就得按「预览组件没到位」收手。
+ *
+ * 假时钟：`加载上界` 是秒级的，真等一遍没有意义。故这里一切都得手动推——`落定` 本身就是
+ * `setTimeout`，假时钟下永远不走，所以连 `开()`（内含 `落定`）都不能用，改成直接 `center.open`
+ * 再手动跑微任务。
+ */
+describe("视图 chunk 悬着不回来：到点必须收手（挂起比失败更糟）", () => {
+  /** 假时钟下把微任务队列跑干净——Solid 的 effect 与 loader 都在微任务里推进。 */
+  const 跑微任务 = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+  }
+
+  test("chunk 悬过加载上界：落 load-failed，收掉旧视图，不让内容区无限停在旧画面上", async () => {
+    const 悬挂: ViewLoader = () => new Promise(() => {}) // 永不 settle
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => 命名视图("第一张") })
+    registry.register({ extensions: [".pdf"], load: 悬挂 })
+
+    vi.useFakeTimers()
+    try {
+      const { 视图, 降级, center } = setUp({ registry })
+
+      center.open(专案)
+      await 跑微任务()
+      center.open(卷宗)
+      await 跑微任务()
+      expect(视图()?.getAttribute("data-name")).toBe("第一张") // 还没到点，此刻留旧的是对的
+
+      vi.advanceTimersByTime(加载上界)
+      await 跑微任务()
+
+      expect(视图()).toBeNull() // 到点收手：旧文件不能再冒充「卷宗.pdf」的内容
+      expect(降级("load-failed")?.textContent ?? "").toContain("卷宗.pdf") // 且说得出是哪个文件
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test("悬着的 chunk 到点后才回来：内容照常补上（提示不是终点，只是不让它无限等）", async () => {
+    const 慢 = 可放行()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".pdf"], load: 慢.load })
+
+    vi.useFakeTimers()
+    try {
+      const { 视图, 降级, center } = setUp({ registry })
+
+      center.open(卷宗)
+      await 跑微任务()
+      vi.advanceTimersByTime(加载上界)
+      await 跑微任务()
+      expect(降级("load-failed")).not.toBeNull()
+
+      慢.放行(命名视图("卷宗"))
+      await 跑微任务()
+
+      expect(视图()?.getAttribute("data-name")).toBe("卷宗")
+      expect(降级()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { readZipEntry } from "./zip-entry"
+import { 改了条数, 弄坏, 造包 } from "./__fixtures__/zip"
+import { 解压上界, readZipEntry } from "./zip-entry"
 
 /**
  * `sample.xmind` 是**真 zip**——由 PowerShell 的 `Compress-Archive`（.NET 的
@@ -9,70 +10,6 @@ import { readZipEntry } from "./zip-entry"
  * 拿另一份实现造出来的容器，至少能证明读取器认的是 zip 规范、不是我们脑补的格式。
  */
 const 样本包 = () => new Uint8Array(readFileSync(`${import.meta.dir}/__fixtures__/sample.xmind`))
-
-/**
- * 手搓的最小 zip：只有局部头 + 中央目录 + EOCD，够读取器走完全程。
- * 用途是覆盖真样本覆盖不到的两条路——「存储」方式与「不认识的压缩方式」。
- * （CRC 一律写 0：读取器不校验它，这里也不打算假装校验过。）
- */
-function 造包(条目: { name: string; 数据: string; 方式: number }[]): Uint8Array<ArrayBuffer> {
-  const 编码 = new TextEncoder()
-  const 前段: Uint8Array[] = []
-  const 中央: { name: Uint8Array; 大小: number; 方式: number; 偏移: number }[] = []
-  let 偏移 = 0
-
-  for (const 条 of 条目) {
-    const 名 = 编码.encode(条.name)
-    const 数据 = 编码.encode(条.数据)
-    const 头 = new Uint8Array(30)
-    const 视 = new DataView(头.buffer)
-    视.setUint32(0, 0x04034b50, true)
-    视.setUint16(4, 20, true)
-    视.setUint16(8, 条.方式, true)
-    视.setUint32(18, 数据.length, true)
-    视.setUint32(22, 数据.length, true)
-    视.setUint16(26, 名.length, true)
-    前段.push(头, 名, 数据)
-    中央.push({ name: 名, 大小: 数据.length, 方式: 条.方式, 偏移 })
-    偏移 += 头.length + 名.length + 数据.length
-  }
-
-  const 中段: Uint8Array[] = []
-  let 中央大小 = 0
-  for (const 条 of 中央) {
-    const 头 = new Uint8Array(46)
-    const 视 = new DataView(头.buffer)
-    视.setUint32(0, 0x02014b50, true)
-    视.setUint16(10, 条.方式, true)
-    视.setUint32(20, 条.大小, true)
-    视.setUint32(24, 条.大小, true)
-    视.setUint16(28, 条.name.length, true)
-    视.setUint32(42, 条.偏移, true)
-    中段.push(头, 条.name)
-    中央大小 += 头.length + 条.name.length
-  }
-
-  const 尾 = new Uint8Array(22)
-  const 尾视 = new DataView(尾.buffer)
-  尾视.setUint32(0, 0x06054b50, true)
-  尾视.setUint16(8, 中央.length, true)
-  尾视.setUint16(10, 中央.length, true)
-  尾视.setUint32(12, 中央大小, true)
-  尾视.setUint32(16, 偏移, true)
-
-  return 拼([...前段, ...中段, 尾])
-}
-
-function 拼(段: Uint8Array[]): Uint8Array<ArrayBuffer> {
-  const 总长 = 段.reduce((n, x) => n + x.length, 0)
-  const 结果 = new Uint8Array(总长)
-  let 游标 = 0
-  for (const x of 段) {
-    结果.set(x, 游标)
-    游标 += x.length
-  }
-  return 结果
-}
 
 describe("zip 容器：取出一个条目的字节", () => {
   test("真 zip（.NET 造的、deflate 压缩）里的 content.json 解得出来", async () => {
@@ -96,9 +33,37 @@ describe("zip 容器：取出一个条目的字节", () => {
     expect(await readZipEntry(样本包(), "content.xml")).toBeUndefined()
   })
 
-  test("压根不是 zip 的字节：也返回 undefined，不抛错（.dat 被塞进来时不该炸）", async () => {
-    expect(await readZipEntry(new TextEncoder().encode("这不是压缩包"), "content.json")).toBeUndefined()
-    expect(await readZipEntry(new Uint8Array(0), "content.json")).toBeUndefined()
+  // 「包里没这条」与「这压根不是/不是一个完整的包」是两回事：前者调用方还得照常往下走，
+  // 后者是真出了事。混成一个 `undefined` 的话，`renderMindmap` 会把一份彻底坏掉的文件
+  // 说成「压缩包里没有 content.json」——归因是反的。
+  test("压根不是 zip 的字节：抛错（不能跟「没这一条」混为一谈）", async () => {
+    await expect(readZipEntry(new TextEncoder().encode("这不是压缩包"), "content.json")).rejects.toThrow(
+      /不是一个 zip 压缩包/,
+    )
+    await expect(readZipEntry(new Uint8Array(0), "content.json")).rejects.toThrow()
+  })
+
+  test("结构损坏（中央目录条数对不上实际内容）：抛错，不假装「没这一条」", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "{}", 方式: 0 }])
+    改了条数(包, 9) // 实际只有 1 条
+
+    await expect(readZipEntry(包, "没有这个条目")).rejects.toThrow(/损坏/)
+  })
+
+  test("结构损坏（条目数据被截断）：抛错，不静默交回半截字节", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: `{"好":1}`, 方式: 0 }])
+    弄坏(包, 20, 0x00ffff00) // 中央目录声明的压缩大小远大于文件里真有的字节
+
+    await expect(readZipEntry(包, "content.json")).rejects.toThrow(/截断/)
+  })
+
+  // deflate 能到 1000:1，几百 KB 的包解出几十 GB 就是 zip bomb。上界靠中央目录里**声明**的
+  // 解压后大小挡——所以这条用例喂的是一份解不开的假数据：只有「解压之前就拦下」才可能
+  // 命中 /太大/，若实现是解完再量，这里会先炸在 DecompressionStream 上。
+  test("zip bomb：声明解压后超过上界就直接抛错，不去解那一次", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "解不开的假数据", 方式: 8, 声明解压大小: 解压上界 + 1 }])
+
+    await expect(readZipEntry(包, "content.json")).rejects.toThrow(/太大/)
   })
 
   test("不认识的压缩方式：抛错——读不出来就说读不出来，别交回一堆乱码", async () => {
