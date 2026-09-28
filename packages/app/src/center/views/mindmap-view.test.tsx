@@ -133,22 +133,28 @@ describe("导图画成嵌套列表", () => {
   })
 
   /**
-   * 本 feature 自己的视图一律走 **v2 语义 token**（v1 的 `text-text-*` 是上游遗留口径——
-   * `degraded-view` / `code-view` / `sheet-view` 都是 v2，这里钉住最后一个漏网的）。
+   * v1 与 v2 的色板在**前缀**上分家：v2 是在词根前插了 `v2-`（`text-v2-text-text-base` vs
+   * `text-text-base`、`border-v2-border-border-muted` vs `border-border-weak-base`）。
+   * 所以只能逐个比**前缀**，不能比子串——`text-v2-text-text-base` 里本身就含 `text-text-`。
+   *
+   * 只列本 feature 真会用到的五族：前四族是颜色（文字 / 边框 / 两种底），第五族是图标色。
+   * 不写成「凡 `-` 后半段不以 `v2-` 开头就算 v1」——`text-14-regular` 那种字号字重类会被误伤。
    *
    * 断言取**整棵渲染树**而不是某两个元素：漏一处就等于「本 feature 不用 v1」这条口径是句口号。
-   * 按**类名逐个**比而不是 `not.toContain("text-text-base")`——`text-v2-text-text-base` 里
-   * 本身就含这个子串，子串比会自相矛盾地红（v2 与 v1 的区分在**前缀**上：`text-v2-text-text-*`
-   * vs `text-text-*`）。
+   * （`border-border-*` 这一族是后来补进来的：原先只查 `text-text-*`，
+   * `画主题` 里那行缩进线的 v1 边框色就这么从断言底下漏了过去。）
    */
-  test("画出来的类名里没有 v1 的 text-text-*：层级靠字重与缩进线，不靠 v1 色板", () => {
+  test("画出来的类名里没有 v1 色类：层级靠字重与缩进线，不靠 v1 色板", () => {
+    const V1色类前缀 = ["text-text-", "border-border-", "bg-background-", "bg-overlay-", "text-icon-"]
     const 容器 = document.createElement("div")
     drawMindmap(parseMindmap(表([{ title: "资金流向", rootTopic: 根() }])), 容器)
 
     const 类名 = [...容器.querySelectorAll<HTMLElement>("*")].flatMap((元素) => [...元素.classList])
 
-    expect(类名.filter((名) => 名.startsWith("text-text-"))).toEqual([])
+    expect(类名.filter((名) => V1色类前缀.some((前缀) => 名.startsWith(前缀)))).toEqual([])
+    // 正例：v2 的两族都在场（文字与缩进线的边框），否则上面那条可能只是「什么都没画」而假绿
     expect(类名).toContain("text-v2-text-text-base")
+    expect(类名).toContain("border-v2-border-border-muted")
   })
 
   /** 主题标题来自文件，是**不可信输入**——所以走 `textContent`，压根不给它当 HTML 使的机会。 */

@@ -10,28 +10,37 @@
  * 都要用「一个结构完好的包、里面装着别的条目」这种输入，两份造包器迟早会写出两种理解。
  */
 
-/** 手搓的最小 zip：只有局部头 + 中央目录 + EOCD，够读取器走完全程。（CRC 一律写 0：读取器不校验它。） */
+/**
+ * 手搓的最小 zip：只有局部头 + 中央目录 + EOCD，够读取器走完全程。（CRC 一律写 0：读取器不校验它。）
+ *
+ * `标志` 是「通用标志位」（局部头 +6 / 中央目录 +8）——它跟压缩方式是**两个字段**，
+ * 加密与否记在它身上（bit 0），不记在方式上。造包器给这个口子，是因为「存储(0) + 加密」
+ * 这种组合真存在（ZipCrypto 就是），而只有方式口子的话造不出来。
+ */
 export function 造包(
-  条目: { name: string; 数据: string; 方式: number; 声明解压大小?: number }[],
+  条目: { name: string; 数据: string; 方式: number; 标志?: number; 声明解压大小?: number }[],
 ): Uint8Array<ArrayBuffer> {
   const 编码 = new TextEncoder()
   const 前段: Uint8Array[] = []
-  const 中央: { name: Uint8Array; 大小: number; 方式: number; 偏移: number; 声明解压大小?: number }[] = []
+  const 中央: { name: Uint8Array; 大小: number; 方式: number; 标志: number; 偏移: number; 声明解压大小?: number }[] =
+    []
   let 偏移 = 0
 
   for (const 条 of 条目) {
+    const 标志 = 条.标志 ?? 0
     const 名 = 编码.encode(条.name)
     const 数据 = 编码.encode(条.数据)
     const 头 = new Uint8Array(30)
     const 视 = new DataView(头.buffer)
     视.setUint32(0, 0x04034b50, true)
     视.setUint16(4, 20, true)
+    视.setUint16(6, 标志, true)
     视.setUint16(8, 条.方式, true)
     视.setUint32(18, 数据.length, true)
     视.setUint32(22, 数据.length, true)
     视.setUint16(26, 名.length, true)
     前段.push(头, 名, 数据)
-    中央.push({ name: 名, 大小: 数据.length, 方式: 条.方式, 偏移, 声明解压大小: 条.声明解压大小 })
+    中央.push({ name: 名, 大小: 数据.length, 方式: 条.方式, 标志, 偏移, 声明解压大小: 条.声明解压大小 })
     偏移 += 头.length + 名.length + 数据.length
   }
 
@@ -41,6 +50,7 @@ export function 造包(
     const 头 = new Uint8Array(46)
     const 视 = new DataView(头.buffer)
     视.setUint32(0, 0x02014b50, true)
+    视.setUint16(8, 条.标志, true)
     视.setUint16(10, 条.方式, true)
     视.setUint32(20, 条.大小, true)
     视.setUint32(24, 条.声明解压大小 ?? 条.大小, true)

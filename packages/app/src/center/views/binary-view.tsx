@@ -1,14 +1,18 @@
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import { decodeBytes, type LoadFileContent } from "@/center/file-content"
 import { DegradedView, type DegradedReason } from "@/center/degraded-view"
-import { 是不支持 } from "./unsupported-format"
+import { 是哪种看不了 } from "./unsupported-format"
 
-/** 视图的呈现状态。`empty` / `unsupported` / `error` 另配用户可见的降级提示（见文件末尾的返回）。 */
-export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "error"
+/** 视图的呈现状态。`empty` / `unsupported` / `encrypted` / `error` 另配用户可见的降级提示（见文件末尾的返回）。 */
+export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "encrypted" | "error"
 
-/** 只有这几种状态要画降级提示：`pending` 是「还没好」，`ready` 是「好了」。 */
+/**
+ * 只有 `pending` 与 `ready` 不画降级提示——其余每个状态都**必须**是 `DegradedReason` 里的一档
+ * （写成「排除法」而不是「枚举可画的」：后者多加一个状态时编译得过、界面上却会静默什么都不说，
+ * `state` 的联合类型在这里替我们兜住了这件事）。
+ */
 const 降级原因 = (state: BinaryViewState): DegradedReason | undefined =>
-  state === "empty" || state === "unsupported" || state === "error" ? state : undefined
+  state === "pending" || state === "ready" ? undefined : state
 
 // 「认得出但不支持」的**机制**在 `unsupported-format.ts`（壳只负责按结果分支）。
 // 它当初长在这里，后来搬走：抛它的不只有渲染器，`zip-entry.ts`（一个跟视图无关的字节工具）
@@ -22,7 +26,8 @@ export type RenderCleanup = () => void
  *
  * 失败以 rejection 传出——壳据此标 `error`，**渲染器自己不许静默吞掉**：
  * 一个坏文件在界面上「什么都没发生」是最难查的那类故障。
- * 认得出「这不是我能渲染的写法」时改抛 `格式不支持(...)`，壳落 `unsupported`（见 `unsupported-format.ts`）。
+ * 认得出「这不是我能渲染的写法」时改抛分类标记错——`格式不支持(...)` 落 `unsupported`、
+ * `需要密码(...)` 落 `encrypted`（见 `unsupported-format.ts`）。
  *
  * 可以返回一个清理函数：持有需要归还的资源的渲染器用它（图片的 `URL.createObjectURL`
  * 不 `revokeObjectURL` 就整份占着内存），壳会在**换内容前**与**卸载时**调用它。
@@ -130,12 +135,12 @@ export function BinaryView(props: BinaryViewProps) {
       // 渲染器可能已经写了一半才抛（取内容失败时容器里则还留着上一个文件的画面）：
       // 残片不跟提示同屏，一并收掉。
       清空()
-      const 认得的不支持 = 是不支持(原因)
-      // 「这种格式我不认」是**已知边界**、不是故障：民警换个工具打开就行，控制台不必喊。
-      // 要留痕的是「本该渲染得出来却炸了」——那种在界面上只变成一句降级提示，最难查；
-      // 带上是哪个文件：民警截图求助时不会有控制台，排障的那一头要有。
-      if (!认得的不支持) console.warn(`[openhive] ${props.name} 渲染失败（${path}）`, 原因)
-      setState(认得的不支持 ? "unsupported" : "error")
+      const 看不了 = 是哪种看不了(原因)
+      // 「这种格式我不认」「这份文件是加密的」都是**已知边界**、不是故障：前者换个工具打开就行，
+      // 后者去要密码就行——控制台不必替民警喊。要留痕的是「本该渲染得出来却炸了」——那种在界面上
+      // 只变成一句降级提示，最难查；带上是哪个文件：民警截图求助时不会有控制台，排障的那一头要有。
+      if (!看不了) console.warn(`[openhive] ${props.name} 渲染失败（${path}）`, 原因)
+      setState(看不了 ?? "error")
     })
   })
 

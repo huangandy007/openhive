@@ -6,17 +6,20 @@
  * 解压本身则交给浏览器自带的 `DecompressionStream("deflate-raw")`。
  *
  * 支持的：普通 zip（EOCD + 中央目录 + 局部头）、`存储`(0) 与 `deflate`(8) 两种方式。
- * **不支持的**：zip64（>4GB 或 >65535 条目）、加密、data descriptor——这些在 .xmind 里不出现。
+ * **认得出但没接**（抛 `格式不支持`，落「这种格式暂时看不了」）：zip64——32 位字段放不下时
+ * 写的 `0xFFFFFFFF` / `0xFFFF` 哨兵（真值挪在 zip64 扩展记录里）；以及不在支持集里的压缩方式。
+ * 加密的条目抛 `需要密码`（落「这个文件是加密的」）：文件一点没坏，只是锁着。
  *
  * 三种结局，且**刻意不合并**（前两种是 `zip-entry.ts` 自己的语义，第三种交给 `format` 那条路）：
  * - `undefined` = 包是好的，只是**没有这一条**。调用方照常往下走（`.xmind` 可能就是老格式）。
  * - 抛普通 `Error` = 这压根不是 zip / 结构损坏 / 读不动 / 超过安全上界。**读不出来就说读不出来**，
  *   不假装「没这条」——把一份彻底坏掉的文件说成「压缩包里没有 content.json」，归因是反的。
- * - 抛 `格式不支持` = 包**本身一点毛病没有**（上面每一道校验都过了），只是压缩方式我们没接。
- *   这是「我们没接」不是「你的文件坏了」，故**不能**混进上面那一档（见 `unsupported-format.ts`）。
+ * - 抛**标记错** = 包**本身一点毛病没有**（上面每一道校验都过了），只是这条路没接（`格式不支持`）
+ *   或这份文件锁着（`需要密码`）。归因反了的两种都**不能**混进上面那一档
+ *   （见 `unsupported-format.ts`）。
  */
 
-import { 格式不支持 } from "./unsupported-format"
+import { 格式不支持, 需要密码 } from "./unsupported-format"
 
 const 读16 = (b: Uint8Array, 处: number) => b[处]! | (b[处 + 1]! << 8)
 const 读32 = (b: Uint8Array, 处: number) =>
@@ -33,8 +36,13 @@ const 读32 = (b: Uint8Array, 处: number) =>
  */
 export const 解压上界 = 32 * 1024 * 1024
 
+/** zip64 的哨兵：32 位字段放不下时写它，真值挪进 zip64 扩展记录（本轮没接，见文件头）。 */
+const ZIP64哨兵 = 0xffffffff
+
 /** 中央目录条目（只需要这几个字段）。 */
 interface 条目 {
+  /** 通用标志位（中央目录 +8）。bit 0 = 这条数据是加密的，bit 3 = 大小写在数据后面的描述符里。 */
+  标志: number
   方式: number
   压缩大小: number
   解压大小: number
@@ -59,6 +67,9 @@ function 找条目(bytes: Uint8Array, name: string): 条目 | undefined {
   if (尾 === undefined) throw new Error("这不是一个 zip 压缩包")
 
   const 条数 = 读16(bytes, 尾 + 10)
+  // EOCD 里的条目数也是 16 位的，`0xFFFF` 是 zip64 哨兵（真值在 zip64 尾记录里）。
+  // 不认它的话会把它当 65535 条去遍历中央目录 → 撞上「结构损坏」——一份好包被说成坏包。
+  if (条数 === 0xffff) throw 格式不支持("zip64：条目数超过 65535，真值记在 zip64 尾记录里")
   let 处 = 读32(bytes, 尾 + 16)
   for (let i = 0; i < 条数; i++) {
     if (处 + 46 > bytes.length || 读32(bytes, 处) !== 0x02014b50) {
@@ -70,12 +81,20 @@ function 找条目(bytes: Uint8Array, name: string): 条目 | undefined {
     const 名 = new TextDecoder().decode(bytes.subarray(处 + 46, 处 + 46 + 名长))
 
     if (名 === name) {
-      return {
+      const 条: 条目 = {
+        标志: 读16(bytes, 处 + 8),
         方式: 读16(bytes, 处 + 10),
         压缩大小: 读32(bytes, 处 + 20),
         解压大小: 读32(bytes, 处 + 24),
         局部头偏移: 读32(bytes, 处 + 42),
       }
+      // 大小为哨兵 = zip64。**认在名字匹配之后**：包里的**别的**条目是 zip64 不影响取这一条。
+      // 不认的话，`0xFFFFFFFF` 会被拿去当局部头偏移（越界）→ 报「结构损坏」，又是一次
+      // 把好文件说成坏文件（同下面那条加密条目）。
+      if (条.压缩大小 === ZIP64哨兵 || 条.解压大小 === ZIP64哨兵 || 条.局部头偏移 === ZIP64哨兵) {
+        throw 格式不支持("zip64：32 位字段放不下，真值记在 zip64 扩展记录里")
+      }
+      return 条
     }
     处 += 46 + 名长 + 附加长 + 注释长
   }
@@ -92,6 +111,14 @@ export async function readZipEntry(
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
   const 条 = 找条目(bytes, name)
   if (!条) return undefined
+
+  // 加密的条目（**通用标志位** bit 0）：包里那一条是**密文**。原样交回去，下游会拿到一堆乱码
+  // （`.xmind` 解析失败 → 壳落 `error` → 「这个文件打不开 · 可能已经损坏」），而文件一点没坏、
+  // 只是锁着——民警该做的是去要密码（归因反了，同 `.doc` / XMind 8 那两处）。
+  //
+  // 必须**先于**方式判定：ZipCrypto 用的就是 `存储`(0) 或 `deflate`(8)，光看方式看不出任何异常
+  // ——这正是它此前能从「只读方式」的实现底下溜过去、把密文当内容交回的原因。
+  if (条.标志 & 0x1) throw 需要密码(`zip 条目是加密的：${name}`)
 
   // 上界先看声明的解压后大小。`存储`(0) 方式没有「解压」这一步，它的体积本来就被手上这份
   // 文件限死了，不设上界。

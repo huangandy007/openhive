@@ -84,7 +84,7 @@ export function drawMindmap(画布们: 画布[], container: HTMLElement): void {
 function 画主题(主题: 主题, 列表: HTMLElement): void {
   const 项 = document.createElement("li")
   const 标题 = document.createElement("div")
-  // 主题标题是**内容本身**（不是次要说明），故与画布标题同为 `text-text-base`，
+  // 主题标题是**内容本身**（不是次要说明），故与画布标题同为 `text-v2-text-text-base`，
   // 差别只在字重（regular vs medium）——不要为「看起来有层次」去动颜色，
   // 那会把「哪一层是重点」变成只有颜色在说（DESIGN §4.3）。
   标题.className = "text-14-regular text-v2-text-text-base"
@@ -93,10 +93,14 @@ function 画主题(主题: 主题, 列表: HTMLElement): void {
 
   if (主题.子.length > 0) {
     const 子列表 = document.createElement("ul")
-    // 是 `-base` 那一档：color 色板里只有 `--color-border-weak-base`（及 -hover/-active/…），
-    // **没有** `--color-border-weak`——写错的后果不是报错，是这条类根本不生成规则、边框色静默
-    // 落回 `currentColor`（细线画成正文色）。
-    子列表.className = "list-none pl-5 border-l border-border-weak-base"
+    // 缩进线走 **v2 语义 token**：本 feature 自己的视图一律 v2，v1 的 `border-border-weak-base`
+    // 是上游遗留口径（同 `text-text-base` 那一族）。v2 的边框色是
+    // `--color-v2-border-border-muted`（`tab-bar.tsx` 的分隔线用的也是它）。
+    //
+    // ⚠️ 类名写错的后果**不是报错**，是这条类根本不生成规则、边框色静默落回 `currentColor`
+    // （细线画成正文色）——所以只靠肉眼看是看不出来的，靠 `mindmap-view.test.tsx` 里
+    // 「没有 v1 色类」那条按前缀逐个比来钉。
+    子列表.className = "list-none pl-5 border-l border-v2-border-border-muted"
     for (const 子 of 主题.子) 画主题(子, 子列表)
     项.appendChild(子列表)
   }

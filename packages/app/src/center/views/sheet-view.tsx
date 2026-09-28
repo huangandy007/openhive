@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx"
 import type { ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 需要密码 } from "./unsupported-format"
 
 /**
  * 铺进 DOM 的行 / 列上界。
@@ -26,7 +27,25 @@ export const 列上界 = 64
  * 没随包发布，UTF-8 这条路径不依赖它，结果正确。
  */
 export const renderSheet: BytesRenderer = async (bytes, container) => {
-  const book = XLSX.read(bytes, { type: "array", codepage: 65001 })
+  let book: XLSX.WorkBook
+  try {
+    book = XLSX.read(bytes, { type: "array", codepage: 65001 })
+  } catch (原因) {
+    // 加密的工作簿**单独认出来**：真加密的 Office 文件不是 zip，而是 OLE2 容器
+    // （头 `D0 CF 11 E0`）+ 一条 `/encryption` 流，此时 SheetJS 抛
+    // `Error("File is password-protected")`。它认得出是加密，但没有自己的错误类型，
+    // 只能按消息认（`password-protected` 是它几个抛出点共有的那段词）。
+    // 落 `error` 会显示「这个文件打不开 · 可能已经损坏」——文件一点没坏、只是锁着，
+    // 民警该做的是去要密码（机制见 `unsupported-format.ts`）。
+    //
+    // ⚠️ **不要**改用「见到 OLE2 魔数就拒收」来偷懒：老 `.doc`（BIFF）同样是 OLE2，
+    // 但 SheetJS 读得了它、那边是另一个档（`document-view` 的「不支持的格式」，不是加密）。
+    // 两类分得开，靠的是 SheetJS 自己交回的说法，不是魔数。
+    if (原因 instanceof Error && /password-protected/i.test(原因.message)) {
+      throw 需要密码("工作簿是加密的，SheetJS 报 password-protected")
+    }
+    throw 原因
+  }
   // 不做「有没有工作表」的判空：探针查实零工作表的工作簿造不出来（SheetJS 写出时自己抛
   // `Workbook is empty`），而读垃圾字节也总会得到 `SheetNames: ["Sheet1"]` —— 那是条死代码。
   const sheet = book.Sheets[book.SheetNames[0]]

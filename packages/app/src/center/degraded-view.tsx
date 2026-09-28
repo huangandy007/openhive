@@ -2,13 +2,16 @@ import { Icon, type IconProps } from "@opencode-ai/ui/icon"
 import type { Component } from "solid-js"
 
 /**
- * 「看不了」的原因——**四种必须分开说**。
+ * 「看不了」的原因——**五种必须分开说**。
  *
  * 「这种格式没有预览」与「这个文件打不开」对民警是两件事：前者要换个工具打开，后者要怀疑文件本身；
- * 而「预览功能没加载出来」是**我们**这边的问题，更不该赖到文件头上。用一句「出错了」糊过去
- * 等于什么都没说（US3 AC3 要的是「可提示」，不是「有个提示」）。
+ * 「文件是加密的」又是第三件——文件好好的，缺的只是密码，动作是去要密码；而「预览功能没加载出来」
+ * 是**我们**这边的问题，更不该赖到文件头上。用一句「出错了」糊过去等于什么都没说
+ * （US3 AC3 要的是「可提示」，不是「有个提示」）。
+ *
+ * 取值的视觉规范见 `openhive-DESIGN.md` §4.6（图标 / 标题 / 说明模板）。
  */
-export type DegradedReason = "unsupported" | "empty" | "error" | "load-failed"
+export type DegradedReason = "unsupported" | "empty" | "encrypted" | "error" | "load-failed"
 
 interface 降级说法 {
   icon: IconProps["name"]
@@ -27,6 +30,12 @@ const 说法: Record<DegradedReason, 降级说法> = {
     icon: "dash",
     title: "没有取到这个文件的内容",
     detail: (name) => `没有取到「${name}」的内容。`,
+  },
+  encrypted: {
+    // 原生图标集里没有 lock/key 一档，`shield` 是同一风险语义里最贴的一个。
+    icon: "shield",
+    title: "这个文件是加密的",
+    detail: (name) => `「${name}」需要密码才能预览。`,
   },
   error: {
     icon: "warning",

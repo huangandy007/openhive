@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { 改了条数, 弄坏, 造包 } from "./__fixtures__/zip"
-import { 是不支持 } from "./unsupported-format"
+import { 是哪种看不了 } from "./unsupported-format"
 import { 解压上界, readZipEntry } from "./zip-entry"
 
 /**
@@ -84,6 +84,64 @@ describe("zip 容器：取出一个条目的字节", () => {
       () => undefined,
       (抛出的: unknown) => 抛出的,
     )
-    expect(是不支持(原因)).toBe(true)
+    expect(是哪种看不了(原因)).toBe("unsupported")
+  })
+
+  /**
+   * 加密的条目：**必须拦下**——把密文当成内容交回去是最坏的一种错。
+   *
+   * 「这条数据是加密的」记在**通用标志位**（局部头 +6 / 中央目录 +8）的 bit 0 上，
+   * 跟压缩方式是**两个字段**（方式在 +10）。老实现只读方式、从不读标志位，于是
+   * 「存储(0) + ZipCrypto」这种完全合法的加密包被原样放行：下游拿到一堆密文，
+   * `.xmind` 解析失败 → 壳落 `error` → 民警看到「这个文件打不开 · 可能已经损坏」，
+   * 而文件一点没坏，只是锁着。
+   */
+  test("加密的条目（通用标志位 bit 0）：抛错，不把密文当内容交回", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "其实是密文", 方式: 0, 标志: 0x1 }])
+
+    await expect(readZipEntry(包, "content.json")).rejects.toThrow(/加密/)
+  })
+
+  /** 而且要落在 `encrypted` 那一档上——落回 `error` 就又变成「可能已经损坏」了。 */
+  test("加密的条目：抛的是「需要密码」标记错，不是普通 Error", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "其实是密文", 方式: 0, 标志: 0x1 }])
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+
+    expect(是哪种看不了(原因)).toBe("encrypted")
+  })
+
+  /**
+   * zip64：**这条路没接**，但不是「你的包坏了」。
+   *
+   * zip 的偏移与大小都是 32 位，放不下就写 `0xFFFFFFFF` 当哨兵、把真值挪进 zip64 扩展记录
+   * ——`zip-entry.ts` 顶上的「不支持」清单里本就写着 zip64。老实现不认哨兵，拿它去当局部头
+   * 偏移（越界）→ 报「压缩包结构损坏：局部头读不出来」，一份**完全合法**的大包被说成坏包。
+   */
+  test("zip64 哨兵（局部头偏移 0xFFFFFFFF）：落「这种格式暂时看不了」，不说包坏了", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "{}", 方式: 0 }])
+    弄坏(包, 42, 0xffffffff) // 中央目录 +42 = 局部头偏移
+
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+
+    expect(是哪种看不了(原因)).toBe("unsupported")
+  })
+
+  /** 同一条规矩的另一处：条目数放不下时也是 zip64（EOCD 里的 `0xFFFF` 哨兵）。 */
+  test("zip64 哨兵（EOCD 记的条目数 0xFFFF）：同上，不说包坏了", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "{}", 方式: 0 }])
+    改了条数(包, 0xffff)
+
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+
+    expect(是哪种看不了(原因)).toBe("unsupported")
   })
 })

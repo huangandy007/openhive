@@ -1,6 +1,7 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist"
+import { getDocument, GlobalWorkerOptions, PasswordException } from "pdfjs-dist"
 import type { ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 需要密码 } from "./unsupported-format"
 
 /**
  * 把 pdfjs 的 worker 脚本地址配好（配一次就够）。
@@ -38,6 +39,8 @@ async function 配好worker脚本(): Promise<void> {
  * 渲染完立刻 `destroy()` 装载任务：不销毁会把整份文档连同 worker 留在内存里，
  * 而 001 的预览是一次性的（换 tab 即整体重渲）。
  *
+ * **加密的 PDF 单独认出来**（见下方 catch）：文件没坏，只是锁着。
+ *
  * 导出仅供测试直接驱动——生产路径是 `PdfView`。
  */
 export const renderPdf: BytesRenderer = async (bytes, container) => {
@@ -55,6 +58,18 @@ export const renderPdf: BytesRenderer = async (bytes, container) => {
       container.appendChild(canvas)
       await page.render({ canvas, viewport }).promise
     }
+  } catch (原因) {
+    // 加密的 PDF：我们没给 `onPassword`，pdfjs 拿空密码去试、试不过就抛 `PasswordException`
+    // （`PasswordResponses.NEED_PASSWORD`）。**必须单独认出来**——它此前会一路被兜成 `error`
+    // →「这个文件打不开 · 可能已经损坏」，而文件一点没坏、只是锁着：民警该做的是去要密码，
+    // 不是把文件退回去重新取证。同 `.doc` / XMind 8 / 压缩方式那几处误归因
+    // （机制见 `unsupported-format.ts`）。
+    //
+    // 按**类型**认而不是按 message 文本：文本是 pdfjs 的内部措辞，它改一个词这里就静默失效
+    // （又悄悄退回「可能已经损坏」）。这个类与 `getDocument` 来自同一个模块实例，
+    // 不存在「自己造的类跨 chunk 有两份」那个坑——那两处标记错的理由不适用这里。
+    if (原因 instanceof PasswordException) throw 需要密码("PDF 是加密的，pdfjs 报 PasswordException")
+    throw 原因
   } finally {
     await task.destroy()
   }

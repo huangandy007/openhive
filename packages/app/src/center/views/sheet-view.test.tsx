@@ -18,6 +18,20 @@ function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuff
   return new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" }))
 }
 
+/**
+ * 造一份**加密**的工作簿：真加密的 Office 文件不是 zip，而是 OLE2 复合文档（头 `D0 CF 11 E0`），
+ * 里面存着一条 `/encryption` 流。这里用 SheetJS 自己的 CFB 写出这个容器——与 `工作簿字节()`
+ * 同为「真库造的真字节」，不是手搓的假数据。
+ *
+ * ⚠️ 那条流的内容是假的（我们不真造一个能解密的容器）：SheetJS 只要看见这条流就抛
+ * `File is password-protected`，而这正是要考的那一步。
+ */
+function 加密工作簿(): Uint8Array<ArrayBuffer> {
+  const cfb = XLSX.CFB.utils.cfb_new()
+  XLSX.CFB.utils.cfb_add(cfb, "/encryption", new TextEncoder().encode("假的加密信息"))
+  return new Uint8Array(XLSX.CFB.write(cfb, { type: "array" }))
+}
+
 /** 逐字节拼串再 btoa——真 xlsx 有一万多字节，`String.fromCharCode(...bytes)` 会爆栈。 */
 function 二进制内容(bytes: Uint8Array): FileContent {
   let 串 = ""
@@ -128,6 +142,21 @@ describe("表格视图：字节 → 表格", () => {
     expect(host.textContent).not.toContain("只显示前")
   })
 
+  /**
+   * 加密的工作簿：SheetJS **认得出**（它自己抛 `File is password-protected`），
+   * 故由渲染器分类成「需要密码」那一档，别在这里静默吞掉。
+   *
+   * 注意**不能**用「见到 OLE2 魔数就当加密」来偷懒：老 `.doc` 也是 OLE2，
+   * 而它是「不支持的格式」不是加密（`document-view.tsx` 那条）。两类分开，靠的是
+   * SheetJS 自己交回的说法，不是魔数。
+   */
+  test("加密的工作簿：渲染器抛错，由壳落「需要密码」（不静默吞掉）", async () => {
+    const host = 容器()
+
+    await expect(renderSheet(加密工作簿(), host)).rejects.toThrow(/加密/)
+    expect(host.querySelector("table")).toBeNull()
+  })
+
   test("多张工作表：铺第一张（表格视图不给工作表切换，见源码注释）", async () => {
     const book = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["第一张的格子"]]), "第一张")
@@ -163,5 +192,22 @@ describe("表格视图接进通用壳（FR-007 的 .xls/.xlsx/.csv）", () => {
     expect(视图(host)?.getAttribute("data-state")).toBe("ready")
     expect(host.querySelector("[data-component='sheet-view'] table")).not.toBeNull()
     expect(视图(host)?.textContent).toContain("张三")
+  })
+
+  /**
+   * 加密的 .xlsx/.xls 落 `encrypted`，**不能落 `error`**——理由同 `.doc` / XMind 8 / 压缩方式：
+   * 文件一点没坏，说成「这个文件打不开 · 可能已经损坏」就是让民警去怀疑一份好文件。
+   */
+  test("加密的工作簿：落「需要密码」，不说文件损坏", async () => {
+    const host = mount(() => <SheetView path="/p/账册.xlsx" load={async () => 二进制内容(加密工作簿())} />)
+
+    await 落定()
+
+    expect(视图(host)?.getAttribute("data-state")).toBe("encrypted")
+    const 降级 = host.querySelector("[data-component='degraded-view']")
+    expect(降级?.getAttribute("data-reason")).toBe("encrypted")
+    expect(降级?.textContent).toContain("密码")
+    // 「损坏」是 error 那一档的说法——一份锁着的文件不该被说成这样
+    expect(降级?.textContent).not.toContain("损坏")
   })
 })
