@@ -1,6 +1,7 @@
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import { decodeBytes, type LoadFileContent } from "@/center/file-content"
 import { DegradedView, type DegradedReason } from "@/center/degraded-view"
+import { 是不支持 } from "./unsupported-format"
 
 /** 视图的呈现状态。`empty` / `unsupported` / `error` 另配用户可见的降级提示（见文件末尾的返回）。 */
 export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "error"
@@ -9,27 +10,9 @@ export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "e
 const 降级原因 = (state: BinaryViewState): DegradedReason | undefined =>
   state === "empty" || state === "unsupported" || state === "error" ? state : undefined
 
-/**
- * 认得出的「这不是我能渲染的写法」——渲染器抛它，壳据此落 `unsupported`。
- *
- * 为什么非分不可：`unsupported`（「这种格式暂时看不了」）与 `error`（「这个文件打不开」）
- * 对民警是两件事——前者换个工具打开就行，后者要怀疑文件本身。渲染器**明明认出来了**
- * （docx-preview 拿到 OLE2 的老 `.doc`，见 `document-view.tsx`）却只能落 `error`，
- * 就是在把「我们没接这种格式」说成「你的卷宗坏了」。
- *
- * 用**标记属性**而不是 `instanceof` 自定义类：渲染器是懒加载的独立 chunk，
- * 真跨了 chunk 边界的话同一个类会有两份，`instanceof` 会判 false，而这个坑要在
- * 生产里才炸得出来。字符串键不受模块实例影响。
- */
-const 不支持标记 = "@@openhive/格式不支持"
-
-/** 造一个「这种格式我不认」的错。渲染器抛它，壳会落 `unsupported`。 */
-export function 格式不支持(说明: string): Error {
-  return Object.assign(new Error(说明), { [不支持标记]: true })
-}
-
-const 是不支持 = (原因: unknown): boolean =>
-  typeof 原因 === "object" && 原因 !== null && 不支持标记 in 原因
+// 「认得出但不支持」的**机制**在 `unsupported-format.ts`（壳只负责按结果分支）。
+// 它当初长在这里，后来搬走：抛它的不只有渲染器，`zip-entry.ts`（一个跟视图无关的字节工具）
+// 也要抛——让「读 zip 的工具」反向依赖「视图壳」是把依赖方向弄反了，且标记串会有两份。
 
 /** 归还渲染时占用的资源（如图片的 object URL）。 */
 export type RenderCleanup = () => void
@@ -39,7 +22,7 @@ export type RenderCleanup = () => void
  *
  * 失败以 rejection 传出——壳据此标 `error`，**渲染器自己不许静默吞掉**：
  * 一个坏文件在界面上「什么都没发生」是最难查的那类故障。
- * 认得出「这不是我能渲染的写法」时改抛 `格式不支持(...)`，壳落 `unsupported`（见那里的说明）。
+ * 认得出「这不是我能渲染的写法」时改抛 `格式不支持(...)`，壳落 `unsupported`（见 `unsupported-format.ts`）。
  *
  * 可以返回一个清理函数：持有需要归还的资源的渲染器用它（图片的 `URL.createObjectURL`
  * 不 `revokeObjectURL` 就整份占着内存），壳会在**换内容前**与**卸载时**调用它。

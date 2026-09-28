@@ -1,6 +1,7 @@
 import { renderAsync } from "docx-preview"
 import type { ViewComponent } from "@/center/view-registry"
-import { BinaryView, type BytesRenderer, 格式不支持 } from "./binary-view"
+import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 格式不支持 } from "./unsupported-format"
 
 /**
  * OLE2 复合文档的魔数。Word 97–2003 的真 `.doc` 是它，**加密过的** `.docx`/`.xlsx` 也是它

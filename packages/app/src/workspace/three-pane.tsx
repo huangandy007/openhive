@@ -44,8 +44,15 @@ export function ThreePane(props: ParentProps<ThreePaneProps>) {
     // ——它自己**不按 `size` 做偏移**（`size` 只参与拖拽算数）。所以手柄落在哪条缝上完全由
     // 定位祖先决定：若把手柄直接挂到下面这具容器上，容器横跨三栏，左栏手柄就跑到容器**最右边**、
     // 右栏手柄跑到**最左边**（压住图标栏），手柄与它要拖的那条缝分家，在缝上按下去拖不动。
-    // 包裹的边界 == 那一栏的边界，手柄才落在缝上。上游 5 个调用点都是这个做法（窗格 div 自带
-    // `relative` 且手柄在其内部，或一个 `w-0 overflow-visible` 的零宽包裹层）。
+    // 一句话的不变量：**包裹的边界 == 那一栏的边界**，手柄才落在缝上。
+    //
+    // ⚠️ 这层包裹**不许加 `overflow-hidden`**（准确说：不许换成任何会裁掉溢出内容的盒子）。
+    // 手柄是 `width: 8px` + `translateX(±50%)`——**有一半探在包裹外面**去压那条缝，裁了就只剩 4px
+    // （`resize-handle.css:20-27`）。也**不能把 `<ResizeHandle>` 挪进 `aside`**：`aside` 自己有
+    // `overflow-hidden`，同样裁一半。上游各调用点形状不一、**别照抄**：干净的例子是 `layout.tsx`
+    // 那个 `w-0 overflow-visible` 的零宽层；另有把手柄放进带 `overflow:hidden` 的窗格里、再靠
+    // `-top-1` 之类的负偏移把它挪出来的写法（`terminal-panel-v2.tsx`）——那是另一种补偿，
+    // 照搬形状只会把手柄裁掉一半。
     // happy-dom 没有 CSS 引擎、量不出几何，故由 `three-pane.test.tsx` 里那条结构不变量钉住。
     <div data-component="three-pane" class="flex-1 min-h-0 min-w-0 w-full flex">
       <Show when={props.left !== undefined && !props.leftCollapsed}>

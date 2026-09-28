@@ -8,11 +8,15 @@
  * 支持的：普通 zip（EOCD + 中央目录 + 局部头）、`存储`(0) 与 `deflate`(8) 两种方式。
  * **不支持的**：zip64（>4GB 或 >65535 条目）、加密、data descriptor——这些在 .xmind 里不出现。
  *
- * 返回值的语义只有两种，且**刻意不合并**：
+ * 三种结局，且**刻意不合并**（前两种是 `zip-entry.ts` 自己的语义，第三种交给 `format` 那条路）：
  * - `undefined` = 包是好的，只是**没有这一条**。调用方照常往下走（`.xmind` 可能就是老格式）。
- * - 抛错 = 这压根不是 zip / 结构损坏 / 读不动。**读不出来就说读不出来**，不假装「没这条」——
- *   把一份彻底坏掉的文件说成「压缩包里没有 content.json」，归因是反的。
+ * - 抛普通 `Error` = 这压根不是 zip / 结构损坏 / 读不动 / 超过安全上界。**读不出来就说读不出来**，
+ *   不假装「没这条」——把一份彻底坏掉的文件说成「压缩包里没有 content.json」，归因是反的。
+ * - 抛 `格式不支持` = 包**本身一点毛病没有**（上面每一道校验都过了），只是压缩方式我们没接。
+ *   这是「我们没接」不是「你的文件坏了」，故**不能**混进上面那一档（见 `unsupported-format.ts`）。
  */
+
+import { 格式不支持 } from "./unsupported-format"
 
 const 读16 = (b: Uint8Array, 处: number) => b[处]! | (b[处 + 1]! << 8)
 const 读32 = (b: Uint8Array, 处: number) =>
@@ -107,7 +111,11 @@ export async function readZipEntry(
   const 压缩数据 = bytes.subarray(数据起, 数据起 + 条.压缩大小)
 
   if (条.方式 === 0) return 压缩数据
-  if (条.方式 !== 8) throw new Error(`不支持的压缩方式：${条.方式}`)
+  // 抛 `格式不支持` 而不是普通 `Error`：走到这里**包本身验过了**（尾记录、中央目录条数、
+  // 条目名、局部头、大小与实际字节全都对得上），只是这种压缩方式没接（7-Zip 的 bzip2 = 12、
+  // 条目级 AES = 99 之类）。抛普通 Error 会落 `error` →「这个文件打不开 · 可能已经损坏」，
+  // 又是把「我们没接」说成「你的文件坏了」——同 `.doc` 与 XMind 8 那两处（见 `unsupported-format.ts`）。
+  if (条.方式 !== 8) throw 格式不支持(`不支持的压缩方式：${条.方式}`)
 
   const 流 = new Blob([压缩数据]).stream().pipeThrough(new DecompressionStream("deflate-raw"))
   const 解压 = new Uint8Array(await new Response(流).arrayBuffer())

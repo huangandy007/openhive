@@ -1,5 +1,6 @@
 import type { ViewComponent } from "@/center/view-registry"
-import { BinaryView, 格式不支持, type BytesRenderer } from "./binary-view"
+import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 格式不支持 } from "./unsupported-format"
 import { readZipEntry } from "./zip-entry"
 
 export interface 主题 {
@@ -64,7 +65,10 @@ export function drawMindmap(画布们: 画布[], container: HTMLElement): void {
 
     if (画布.title) {
       const 标题 = document.createElement("h2")
-      标题.className = "mb-2 text-14-medium text-text-strong"
+      // 配色走 v2 语义 token（`text-14-medium` 只是字号/字重那一档的既有工具类，不带颜色）。
+      // v2 **没有** `strong` 一档，层级靠**字重 + 缩进线**表达，不靠颜色深浅——正合 DESIGN §4.3
+      // 「不只靠颜色」（同 `degraded-view` 的标题 / `code-view` 的标题）。
+      标题.className = "mb-2 text-14-medium text-v2-text-text-base"
       标题.textContent = 画布.title
       段.appendChild(标题)
     }
@@ -80,7 +84,10 @@ export function drawMindmap(画布们: 画布[], container: HTMLElement): void {
 function 画主题(主题: 主题, 列表: HTMLElement): void {
   const 项 = document.createElement("li")
   const 标题 = document.createElement("div")
-  标题.className = "text-14-regular text-text-base"
+  // 主题标题是**内容本身**（不是次要说明），故与画布标题同为 `text-text-base`，
+  // 差别只在字重（regular vs medium）——不要为「看起来有层次」去动颜色，
+  // 那会把「哪一层是重点」变成只有颜色在说（DESIGN §4.3）。
+  标题.className = "text-14-regular text-v2-text-text-base"
   标题.textContent = 主题.title
   项.appendChild(标题)
 
@@ -106,7 +113,7 @@ export const renderMindmap: BytesRenderer = async (bytes, container) => {
   // 抛 `格式不支持` 而不是普通 `Error`：这里**认得出**是哪种不支持（XMind 8 把主题放在
   // `content.xml`，不是 `content.json`），文件本身**一点毛病没有**。抛普通 Error 会被壳落成
   // `error` →「这个文件打不开 · 可能已经损坏」，让民警去怀疑一份好文件——正是 `document-view`
-  // 认老 `.doc` 时修掉的那类误归因（见 `binary-view.tsx` 的 `格式不支持`）。两者是同一件事。
+  // 认老 `.doc` 时修掉的那类误归因（见 `unsupported-format.ts`）。两者是同一件事。
   // （说明文字进不了界面：`DegradedView` 只收「哪种看不了」+ 文件名。民警看到的是
   // 「这种格式暂时看不了」——换个工具打开就行，这对他们才是可行动的。）
   if (!json) {

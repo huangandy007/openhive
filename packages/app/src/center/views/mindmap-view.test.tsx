@@ -132,6 +132,25 @@ describe("导图画成嵌套列表", () => {
     expect(容器.textContent).toContain("资金流向")
   })
 
+  /**
+   * 本 feature 自己的视图一律走 **v2 语义 token**（v1 的 `text-text-*` 是上游遗留口径——
+   * `degraded-view` / `code-view` / `sheet-view` 都是 v2，这里钉住最后一个漏网的）。
+   *
+   * 断言取**整棵渲染树**而不是某两个元素：漏一处就等于「本 feature 不用 v1」这条口径是句口号。
+   * 按**类名逐个**比而不是 `not.toContain("text-text-base")`——`text-v2-text-text-base` 里
+   * 本身就含这个子串，子串比会自相矛盾地红（v2 与 v1 的区分在**前缀**上：`text-v2-text-text-*`
+   * vs `text-text-*`）。
+   */
+  test("画出来的类名里没有 v1 的 text-text-*：层级靠字重与缩进线，不靠 v1 色板", () => {
+    const 容器 = document.createElement("div")
+    drawMindmap(parseMindmap(表([{ title: "资金流向", rootTopic: 根() }])), 容器)
+
+    const 类名 = [...容器.querySelectorAll<HTMLElement>("*")].flatMap((元素) => [...元素.classList])
+
+    expect(类名.filter((名) => 名.startsWith("text-text-"))).toEqual([])
+    expect(类名).toContain("text-v2-text-text-base")
+  })
+
   /** 主题标题来自文件，是**不可信输入**——所以走 `textContent`，压根不给它当 HTML 使的机会。 */
   test("标题里写 <script> 也只是文字，不是元素", () => {
     const 容器 = document.createElement("div")
@@ -208,6 +227,35 @@ describe("导图视图：从字节一路走到画面", () => {
       expect(降级()?.getAttribute("data-reason")).toBe("unsupported")
       expect(降级()?.textContent).toContain("暂时看不了")
       // 「损坏」是 error 那一档的说法——一份好文件不该被说成这样
+      expect(降级()?.textContent).not.toContain("损坏")
+    } finally {
+      警告.mockRestore()
+    }
+  })
+
+  /**
+   * 与上一条**同一个坑的第三处**：压缩方式不认（如 7-Zip 的 bzip2 = 12、条目级 AES = 99）。
+   *
+   * 走到抛错那一刻，读取器**已经验过**：EOCD 找到了、中央目录条数对得上、条目名匹配、
+   * 局部头读得出、压缩/解压大小与实际字节自洽（`zip-entry.ts` 逐道过）——**包本身一点毛病没有**，
+   * 只是那种压缩方式我们没接。抛普通 `Error` 就落 `error`（「这个文件打不开 · 可能已经损坏」），
+   * 又是一次把「我们没接」说成「你的文件坏了」。
+   *
+   * ⚠️ 只改这一处：同一文件其余几条 throw 是**真·损坏或安全上界**，就该落 `error`。
+   */
+  test("结构完好但用了不支持的压缩方式：落「这种格式暂时看不了」，不说文件损坏", async () => {
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const 怪方式包 = 造包([{ name: "content.json", 数据: "[]", 方式: 12 }])
+      const host = mount(() => (
+        <MindmapView path="/p/怪导图.xmind" load={async () => 内容(怪方式包)} />
+      ))
+      const 视图 = () => host.querySelector("[data-component='mindmap-view']")
+      const 降级 = () => host.querySelector("[data-component='degraded-view']")
+      await 等到(() => 视图()?.getAttribute("data-state") !== "pending")
+
+      expect(视图()?.getAttribute("data-state")).toBe("unsupported")
+      expect(降级()?.textContent).toContain("暂时看不了")
       expect(降级()?.textContent).not.toContain("损坏")
     } finally {
       警告.mockRestore()

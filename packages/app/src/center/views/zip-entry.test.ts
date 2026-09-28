@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { 改了条数, 弄坏, 造包 } from "./__fixtures__/zip"
+import { 是不支持 } from "./unsupported-format"
 import { 解压上界, readZipEntry } from "./zip-entry"
 
 /**
@@ -66,9 +67,23 @@ describe("zip 容器：取出一个条目的字节", () => {
     await expect(readZipEntry(包, "content.json")).rejects.toThrow(/太大/)
   })
 
-  test("不认识的压缩方式：抛错——读不出来就说读不出来，别交回一堆乱码", async () => {
+  /**
+   * 不认识的压缩方式：抛错，且**抛的是「格式不支持」而不是普通 Error**（别交回一堆乱码，
+   * 也别把「我们没接这种压缩」说成「你的文件坏了」）。
+   *
+   * 走到这一步时包**本身是好的**——EOCD、中央目录条数、条目名、局部头、压缩/解压大小
+   * 与实际字节全都对得上（上面各条用例一道道验过），只是 `方式` 不在支持集里。
+   * 落 `error` 就会显示「这个文件打不开 · 可能已经损坏」，归因反了（同 `.doc` / XMind 8 那两处）。
+   */
+  test("不认识的压缩方式：抛「格式不支持」（包本身没毛病，只是这条路没接）", async () => {
     const 包 = 造包([{ name: "content.json", 数据: "假装是 bzip2", 方式: 12 }])
 
-    await expect(readZipEntry(包, "content.json")).rejects.toThrow()
+    await expect(readZipEntry(包, "content.json")).rejects.toThrow(/不支持的压缩方式/)
+    // 抛的必须是**标记错**（壳据此落 `unsupported`），不是普通 Error（会落 `error`）。
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+    expect(是不支持(原因)).toBe(true)
   })
 })

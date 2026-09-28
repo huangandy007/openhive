@@ -74,7 +74,11 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
         {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`：写在按钮上的 `text-v2-icon-*`
             到不了图标（`icon.css` 给图标自身写了 `color: var(--icon-base)`），不注入就静默恒灰、
             连悬停提亮一起失效——与本文件的模块图标、rail、topbar 是同一套做法。
-            未选中档走类、`group-hover:` 才有提亮的空间（选中档才用内联）。 */}
+
+            这里写**类**而不是内联 style：关闭按钮只有「默认 / 悬停」两档**固定**色，走类才有
+            `group-hover:` 提亮的余地。上面那个模块图标反过来用内联——因为它的色是
+            `moduleColorVar()` **运行时算出来**的身份色，拼不出类名。两处取舍不同是**这个区别**
+            造成的（算得出来的只能内联，固定档位才轮到类），不是漏了一处。 */}
         <span
           data-slot="tab-close-icon"
           class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"

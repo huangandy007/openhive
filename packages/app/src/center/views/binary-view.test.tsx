@@ -2,7 +2,8 @@ import { describe, expect, test, vi } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { FileContent, LoadFileContent } from "@/center/file-content"
-import { BinaryView, type BytesRenderer, 格式不支持 } from "./binary-view"
+import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 格式不支持 } from "./unsupported-format"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
