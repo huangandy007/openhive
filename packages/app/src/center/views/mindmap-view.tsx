@@ -99,7 +99,7 @@ function 画主题(主题: 主题, 列表: HTMLElement): void {
     //
     // ⚠️ 类名写错的后果**不是报错**，是这条类根本不生成规则、边框色静默落回 `currentColor`
     // （细线画成正文色）——所以只靠肉眼看是看不出来的，靠 `mindmap-view.test.tsx` 里
-    // 「没有 v1 色类」那条按前缀逐个比来钉。
+    // 「没有 v1 色类」那条来钉（名单从 `packages/ui/.../tailwind/colors.css` 生成物派生）。
     子列表.className = "list-none pl-5 border-l border-v2-border-border-muted"
     for (const 子 of 主题.子) 画主题(子, 子列表)
     项.appendChild(子列表)

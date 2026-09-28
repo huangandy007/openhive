@@ -59,12 +59,35 @@ describe("Word 预览（FR-007 的 .doc/.docx）", () => {
    * 失败归因因此必须落在「这种格式暂时看不了」上：说成「可能已经损坏」是**冤枉文件**，
    * 那份卷宗好好的，是这种老格式我们没接。
    *
-   * 喂的只有 8 字节魔数（连容器都算不上）：这同时钉住了「**认不出**加密流就回落 `unsupported`」
-   * ——解析不动的容器不该反过来被判成「这个文件是加密的」。
+   * 喂的只有 8 字节魔数（连容器都算不上，`CFB.read` 在它上面直接抛）：钉的是**前半段**——
+   * 光凭魔数就得落 `unsupported`，且**解析不动的容器不许反过来被判成「这个文件是加密的」**。
+   * 容器**开得动**的那条路（真老 `.doc` 的形状）在下一条。
    */
-  test("老 .doc（OLE2 容器）：落 unsupported，不说文件坏了", async () => {
+  test("老 .doc 的魔数：落 unsupported，不说文件坏了", async () => {
     const host = mount(() => (
       <DocumentView path="/p/老卷宗.doc" load={async () => 字节([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])} />
+    ))
+
+    await 落定()
+
+    expect(视图(host)?.getAttribute("data-state")).toBe("unsupported")
+    expect(host.querySelector("[data-component='degraded-view']")?.getAttribute("data-reason")).toBe("unsupported")
+  })
+
+  /**
+   * 真老 `.doc` 的**实际形状**：OLE2 容器**开得动**，里面是 `/WordDocument` 等流、**没有**加密流。
+   * 与上一条的区别不是措辞而是路径——那条走的是 `CFB.read` 抛错的兜底分支，这条才走
+   * 「容器看懂了、确认里面没锁」这条正路。少了它，「认加密流」那一步只在加密容器上被验过，
+   * 而**不加密**的那半边（最容易写成「凡 OLE2 都当加密」）没人钉。
+   *
+   * 「这份容器确实开得动」由**上面那条加密用例**背书：它走的是同一个造包器，能落 `encrypted`
+   * 就说明 `CFB.read` 在这个形状的字节上是成功的（读不动就只能落 `unsupported`）。
+   *
+   * ⚠️ 本条是**回归**测试，不是 TDD 出来的：写下来时实现已经是对的，它防的是以后改坏。
+   */
+  test("老 .doc 的真形状（容器开得动、无加密流）：仍落 unsupported，不被误判成加密", async () => {
+    const host = mount(() => (
+      <DocumentView path="/p/老卷宗.doc" load={async () => 二进制内容(加密的Office容器(["/WordDocument"]))} />
     ))
 
     await 落定()

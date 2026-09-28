@@ -1,7 +1,7 @@
 import { getDocument, GlobalWorkerOptions, PasswordException } from "pdfjs-dist"
 import type { ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
-import { 需要密码 } from "./unsupported-format"
+import { 加载失败, 需要密码 } from "./unsupported-format"
 
 /**
  * 把 pdfjs 的 worker 脚本地址配好（配一次就够）。
@@ -25,10 +25,16 @@ import { 需要密码 } from "./unsupported-format"
  * - ⚠️ **还不能证明浏览器里真跑得起来**：组件测试与 `bun run dev` 走的都是 Node 分支，根本
  *   不读这个值（见上一段）。真正算数的是**在浏览器里看到 PDF 画面**——这是浏览器核对清单的
  *   第一条（见 state.md）。`pdf-view.test.tsx` 顶部有同样的注记。
+ *
+ * 那块 worker 脚本**没到**同样是我们这边的问题：抛 `加载失败` 落 `load-failed`（动作：重开这张
+ * 标签），而不是让 rejection 一路兜成 `error`（「可能已经损坏」）——后者让民警去怀疑一份好卷宗。
+ * ⚠️ 本环境验不了这条分支（Bun 里它总成功），同 `document-view.tsx` 认加密流那块的注记。
  */
 async function 配好worker脚本(): Promise<void> {
   if (GlobalWorkerOptions.workerSrc) return
-  const 模块 = await import("pdfjs-dist/build/pdf.worker.min.mjs?url")
+  const 模块 = await import("pdfjs-dist/build/pdf.worker.min.mjs?url").catch((原因: unknown) => {
+    throw 加载失败(`PDF 的 worker 脚本没加载出来（${原因 instanceof Error ? 原因.message : "原因不明"}）`)
+  })
   if (模块.default) GlobalWorkerOptions.workerSrc = 模块.default
 }
 

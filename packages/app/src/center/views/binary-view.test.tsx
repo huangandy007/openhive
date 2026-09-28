@@ -3,7 +3,7 @@ import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { FileContent, LoadFileContent } from "@/center/file-content"
 import { BinaryView, type BytesRenderer } from "./binary-view"
-import { 格式不支持 } from "./unsupported-format"
+import { 加载失败, 格式不支持 } from "./unsupported-format"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -175,6 +175,41 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
 
       expect(视图(host)?.getAttribute("data-state")).toBe("unsupported")
       expect(降级(host)?.getAttribute("data-reason")).toBe("unsupported")
+      expect(警告).not.toHaveBeenCalled()
+    } finally {
+      警告.mockRestore()
+    }
+  })
+
+  /**
+   * **渲染器自己的懒加载块没到**（如文档视图要在容器里认加密流时才去下 xlsx），也是「我们这边」的问题：
+   * 落 `load-failed`（动作：重开这张标签）而不是 `error`（动作：怀疑文件、把卷宗退回去重新取证）——
+   * 后者对一份**一点没坏**的文件是反的归因，正是本 feature 反复收口的那一类。
+   *
+   * 由**渲染器**抛标记错而不是壳去猜：壳分不出「chunk 没到」与「渲染时抛了 TypeError」——浏览器之间
+   * 只有消息文本不同（Chrome / Firefox / Safari 三套措辞），按文本认就是本项目已判定为脆弱的那类判定
+   * （见 `pdf-view.tsx` 认加密 PDF 时专门记的那一笔）。谁知道自己在下东西，谁来说这句话。
+   */
+  test("渲染器说「我们这边的东西没加载出来」：落 load-failed，不冤枉文件", async () => {
+    // 已知边界不是故障（重开一次就好），控制台不必替民警喊
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const host = mount(() => (
+        <BinaryView
+          name="probe"
+          path="/p/卷宗.pdf"
+          load={async () => 内容([0])}
+          render={async () => {
+            throw 加载失败("xlsx chunk 没到，容器里认不出加密流")
+          }}
+        />
+      ))
+
+      await 落定()
+
+      expect(视图(host)?.getAttribute("data-state")).toBe("load-failed")
+      expect(降级(host)?.getAttribute("data-reason")).toBe("load-failed")
+      expect(降级(host)?.textContent).toContain("重新打开这张标签") // 指向民警的动作，不是「文件损坏」
       expect(警告).not.toHaveBeenCalled()
     } finally {
       警告.mockRestore()

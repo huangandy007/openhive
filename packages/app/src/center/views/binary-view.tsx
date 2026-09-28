@@ -3,8 +3,11 @@ import { decodeBytes, type LoadFileContent } from "@/center/file-content"
 import { DegradedView, type DegradedReason } from "@/center/degraded-view"
 import { 是哪种看不了 } from "./unsupported-format"
 
-/** 视图的呈现状态。`empty` / `unsupported` / `encrypted` / `error` 另配用户可见的降级提示（见文件末尾的返回）。 */
-export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "encrypted" | "error"
+/**
+ * 视图的呈现状态。`empty` / `unsupported` / `encrypted` / `load-failed` / `error`
+ * 另配用户可见的降级提示（见文件末尾的返回）。
+ */
+export type BinaryViewState = "pending" | "ready" | "empty" | "unsupported" | "encrypted" | "load-failed" | "error"
 
 /**
  * 只有 `pending` 与 `ready` 不画降级提示——其余每个状态都**必须**是 `DegradedReason` 里的一档

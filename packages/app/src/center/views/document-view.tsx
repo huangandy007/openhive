@@ -1,7 +1,7 @@
 import { renderAsync } from "docx-preview"
 import type { ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
-import { 格式不支持, 需要密码 } from "./unsupported-format"
+import { 加载失败, 格式不支持, 需要密码 } from "./unsupported-format"
 
 /**
  * OLE2 复合文档的魔数。Word 97–2003 的真 `.doc` 是它，**加密过的** `.docx`/`.xlsx` 也是它
@@ -36,9 +36,18 @@ const 加密流 = ["/EncryptionInfo", "/EncryptedPackage", "/encryption"] as con
  *
  * 动态 `import`：只有真拿到 OLE2 容器时才用得上它。静态引进来会让**每一份普通 `.docx`**
  * 都白白多下一个 xlsx chunk（那是表格视图的依赖，不该记在 Word 预览的账上）。
+ *
+ * 这块 chunk 没到（断网 / 部署后旧标签取的旧地址）是**我们这边**的问题，故抛 `加载失败` 落
+ * `load-failed`（动作：重开这张标签），而不是让它变成一句普通的 rejection → `error`
+ * （「可能已经损坏」，动作：把卷宗退回去重新取证）——后者对一份一点没坏的文件是反的归因。
+ * ⚠️ 这条分支**本环境验不了**（happy-dom + Bun 里动态导入总成功，造不出 chunk 加载失败），
+ * 与 `pdf-view.tsx` 的 worker 那条同性质：断言在**壳**那一侧（`binary-view.test.tsx` 用假渲染器
+ * 抛标记错钉住落 `load-failed`），这几行只保证「真失败了就往那条路上抛」。
  */
 async function 看容器锁没锁(bytes: Uint8Array<ArrayBuffer>): Promise<boolean> {
-  const { CFB } = await import("xlsx")
+  const { CFB } = await import("xlsx").catch((原因: unknown) => {
+    throw 加载失败(`认加密流要用的 xlsx 没加载出来（${原因 instanceof Error ? 原因.message : "原因不明"}）`)
+  })
   try {
     const 容器 = CFB.read(bytes, { type: "array" })
     return 加密流.some((名) => Boolean(CFB.find(容器, 名)))

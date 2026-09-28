@@ -3,14 +3,16 @@
  * （`binary-view.tsx`）据此落对应的降级档，而不是一律落 `error`。
  *
  * **为什么非分不可**：`unsupported`（「这种格式暂时看不了」，换个工具打开就行）、
- * `encrypted`（「这个文件是加密的」，去要密码）与 `error`（「这个文件打不开 · 可能已经损坏」，
- * 要怀疑文件本身）对民警是**三件事**。一份**完全合法**的文件被说成「可能已经损坏」，
- * 就是让民警去怀疑一份好文件——归因是反的。
+ * `encrypted`（「这个文件是加密的」，去要密码）、`load-failed`（「这次没能打开预览」，
+ * 重开这张标签）与 `error`（「这个文件打不开 · 可能已经损坏」，要怀疑文件本身）
+ * 对民警是**四件事**——每一档指向的下一个动作不同（换工具 / 要密码 / 重开标签 / 重新取证）。
+ * 一份**完全合法**的文件被说成「可能已经损坏」，就是让民警去怀疑一份好文件——归因是反的。
  * 今天已知的抛出点：Word 97–2003 的 OLE2（`document-view.tsx`）、XMind 8 的老格式
  * （`mindmap-view.tsx`）、没接的压缩方式与 zip64 的三处哨兵（`zip-entry.ts`）落 `unsupported`；
  * 加密 PDF（`pdf-view.tsx`）、加密的 Office 容器（`document-view.tsx`，进容器认加密流名）、
  * 加密工作簿（`sheet-view.tsx`，靠 SheetJS 的说法）、加密的 zip 条目（`zip-entry.ts`）
- * 落 `encrypted`。
+ * 落 `encrypted`；**渲染器自己的懒加载块没到**（`document-view.tsx` 认加密流要的 xlsx、
+ * `pdf-view.tsx` 的 worker 脚本）落 `load-failed`。
  *
  * ⚠️ 新增一档时别只加一处：同一个文件**按扩展名走不同视图**就会走不同的判定（加密的 `.xlsx`
  * 走 `sheet-view`、加密的 `.docx` 走 `document-view`）——只改一边的后果是同一个文件按扩展名
@@ -26,23 +28,33 @@
  * 方向弄反了；分开之后标记串也只有一份。
  *
  * ⚠️ 依赖方向如今还剩**一条类型上的**：下面 `import type { DegradedReason }`（只为 `Extract` 出
- * `可抛的档`）。它是 `import type`，编译期就擦掉、运行期零依赖——与「字节层不该认识视图层」
- * 不冲突，真要在运行期用它也做不到。之所以不把那两档的联合抄一份在这儿：那就有了**第二份**
- * 真源，`degraded-view.tsx` 加档时这里会静默漏掉（`Record<DegradedReason, …>` 的穷尽性检查
- * 正是为了咬住这种漏）。缺档时优先信类型，不优先信「抄一份更干净」。
+ * `可抛的档`）。它是 `import type`，编译期就擦掉、运行期零依赖——被反对的那件事（字节层在
+ * **运行期**依赖视图层）并不存在，所以这里也拿不到「顺手用了视图层的东西」的机会。
+ *
+ * 也可以把 `DegradedReason` 整个搬到这个模块来，让那条边彻底消失（审查提过）。权衡后没做：
+ * 搬完那条边只是**换了方向**——`degraded-view.tsx` 反过来 import 这里，而「有哪几档」本来就是
+ * 那个视图在定义的东西（档位与它的说法 `说法: Record<DegradedReason, 降级说法>` 摆在一起，
+ * 穷尽性检查才咬得住「加了档却忘了写文案」）。收益是把一条编译期箭头的朝向摆正，代价是动两个
+ * 文件加各自的测试——在一个「每次改动都是上游合并面」的 fork 里不划算（宪法 §二）。
  */
 import type { DegradedReason } from "@/center/degraded-view"
 
 const 降级标记 = "@@openhive/降级档"
 
 /**
- * 会被**抛出来**的那两档。
+ * 会被**抛出来**的那三档。
  *
- * 收窄到两档不是为了好看：`empty` / `error` / `load-failed` 是壳自己判的，没有对应的标记错，
- * 若这里交回整个 `DegradedReason`，调用点 `setState(看不了 ?? "error")` 就会被 TS 拦下
- * （`load-failed` 不是字节视图的状态）——这个错拦得对，它说明「标记错只走这两档」。
+ * 收窄不是为了好看：`empty` / `error` 是**壳**自己判的（读不到内容、渲染时炸了），没有也不该有
+ * 对应的标记错——若这里交回整个 `DegradedReason`，一个手写的属性能把「真故障」伪装成「已知边界」，
+ * 且调用点 `setState(看不了 ?? "error")` 会被 TS 拦下（`empty` 不是字节视图的抛出结果）。
+ *
+ * `load-failed` 后来**加进来**（它原本只由壳判）：渲染器**自己**知道它在下载我们这边的代码
+ * （认加密流要的 xlsx、配 worker 脚本），块没到就该由它说这句话——而不是让壳去猜。壳猜不准：
+ * 「chunk 没到」与「渲染时抛了 TypeError」在浏览器之间只有**消息文本**不同（Chrome / Firefox /
+ * Safari 三套措辞），按文本认是本项目已判定为脆弱的那类判定（见 `pdf-view.tsx` 认加密 PDF 时
+ * 专门记的那一笔）。谁知道自己在下东西，谁来说；判断权留在知道的那一层。
  */
-export type 可抛的档 = Extract<DegradedReason, "unsupported" | "encrypted">
+export type 可抛的档 = Extract<DegradedReason, "unsupported" | "encrypted" | "load-failed">
 
 /**
  * 造一个带档位的标记错。
@@ -67,14 +79,25 @@ export function 需要密码(说明: string): Error {
 }
 
 /**
+ * 造一个「我们这边的东西没加载出来」的错——**文件与格式都没问题**，是我们自己要用的那块代码没到
+ * （懒加载的 chunk 下载失败、worker 脚本取不到）。动作是**重开这张标签**，不是怀疑文件。
+ *
+ * 没有它的话这类失败会被兜成 `error`（「可能已经损坏」）：把「我们的代码没到」说成「你的卷宗坏了」，
+ * 归因是反的。
+ */
+export function 加载失败(说明: string): Error {
+  return 标记错(说明, "load-failed")
+}
+
+/**
  * 读抛出来的东西带着哪一档标记；**没带就是 `undefined`**（＝真故障，壳落 `error`）。
  *
- * 只认会被抛出来的那两档：`empty` / `error` / `load-failed` 由壳自己判，没有对应的标记错，
+ * 只认会被抛出来的那三档：`empty` / `error` 由壳自己判，没有也不该有对应的标记错，
  * 外部就算硬塞进来也不认（否则一个手写的属性能把「真故障」伪装成「已知边界」）。
  */
 export function 是哪种看不了(原因: unknown): 可抛的档 | undefined {
   if (typeof 原因 !== "object" || 原因 === null) return undefined
   const 档: unknown = Reflect.get(原因, 降级标记)
-  if (档 === "unsupported" || 档 === "encrypted") return 档
+  if (档 === "unsupported" || 档 === "encrypted" || 档 === "load-failed") return 档
   return undefined
 }
