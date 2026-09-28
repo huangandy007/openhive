@@ -16,6 +16,9 @@ export const viewRegistry: ViewRegistry = createViewRegistry()
 // ① 文档 .doc/.docx（T012） ② 表格 .xls/.xlsx/.csv（T013） ④ PDF（T012）
 // ⑤ 图片、⑥ 图文 .md/.txt、⑦ 思维导图 .xmind（T014）；③ 演示 .ppt/.pptx 为 T018（方案未定）
 //
+// 另有第 11 行「代码」——design-v2 §9.1 的内容类型表把它单列，且 FR-009 明确要求它
+// **降级为可选工作区**：故它不是一个「预览视图」，而是 T016 的代码视图（默认不打开编辑器）。
+//
 // 一律注册成**动态** import 的 loader（`load:` 而不是组件本身）：三个预览库实测合计 976 kB
 // （gzip 306 kB），静态引进来就等于让民警「点开第一个文件之前」先把 Word、PDF、表格三套渲染器
 // 全下载完。写成 loader 后它们各自成 chunk（174 / 366 / 436 kB），只有真的打开那一类文件才会去拉。
@@ -43,4 +46,27 @@ viewRegistry.register({
 viewRegistry.register({
   extensions: [".xmind"],
   load: async () => (await import("./mindmap-view")).MindmapView,
+})
+
+/**
+ * 代码类扩展名（T016）：源码 + 脚本 + 配置三类文本格式。
+ *
+ * `.md` / `.txt`（图文）与 `.csv`（表格）已有归属，故不在此列——**重复认领会抛错**
+ * （`view-registry` 的 `register`），本文件在导入时即会炸，不会静默抢走别人的归属。
+ */
+const 代码扩展名 = [
+  // 源码
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+  ".py", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".cs", ".swift", ".scala", ".lua", ".r", ".pl", ".m",
+  ".c", ".h", ".cc", ".cpp", ".hpp",
+  // 脚本
+  ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
+  // 配置
+  ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env", ".properties",
+  ".xml", ".html", ".htm", ".css", ".scss", ".less",
+] as const
+
+viewRegistry.register({
+  extensions: 代码扩展名,
+  load: async () => (await import("./code-view")).CodeView,
 })

@@ -65,8 +65,18 @@ describe("应用级视图注册表（FR-007 的 10 类里 001 认领的几类）
     expect(await 解出(".JPEG")).toBe(ImageView)
   })
 
+  /** 代码不是「预览视图」而是 FR-009 的**可选工作区**：认领它只为给出「要看时才打开」的入口。 */
+  test(".ts / .json 这类代码文件归代码视图（T016）", async () => {
+    const { CodeView } = await import("./code-view")
+    expect(await 解出(".ts")).toBe(CodeView)
+    expect(await 解出(".json")).toBe(CodeView)
+    // 认领的是一整类（源码 / 脚本 / 配置），不只样例这两个；大小写同样不敏感
+    expect(await 解出(".SQL")).toBe(CodeView)
+    expect(await 解出(".Yaml")).toBe(CodeView)
+  })
+
   /** 守卫：未认领的扩展名**不兜底**——降级呈现是 T015 的显式职责，不是注册表静默塞个默认视图。 */
-  test("没认领的扩展名解析不到（T018 的 .pptx 与源码 / 压缩包此刻都不该有归属）", () => {
+  test("没认领的扩展名解析不到（T018 的 .pptx 与压缩包此刻都不该有归属）", () => {
     expect(viewRegistry.resolve(".pptx")).toBeUndefined()
     expect(viewRegistry.resolve(".dat")).toBeUndefined()
     expect(viewRegistry.resolve(".zip")).toBeUndefined()
