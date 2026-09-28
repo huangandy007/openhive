@@ -76,7 +76,29 @@ describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
     expect(调了).toBe(0)
     expect(视图(host)?.getAttribute("data-state")).toBe("empty")
     expect(降级(host)?.getAttribute("data-reason")).toBe("empty")
-    expect(降级(host)?.textContent).toContain("/p/无.docx") // 说得出是哪个文件
+    expect(降级(host)?.textContent).toContain("无.docx") // 说得出是哪个文件
+    // 但**不带路径**：说明模板只顾着让人认出「是哪个文件」（DESIGN §4.6），
+    // 一整条路径塞进那句话只让人更看不出它说的是哪份。
+    expect(降级(host)?.textContent).not.toContain("/p/")
+  })
+
+  /**
+   * 路径可能来自 Windows（反斜杠）——公安那台机器上这是常态，只按 `/` 切就等于没切。
+   */
+  test("降级提示里的文件名：Windows 反斜杠路径也只留末段", async () => {
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path="D:\\案件\\2026-0912\\卷宗.pdf"
+        load={async () => undefined}
+        render={async () => {}}
+      />
+    ))
+
+    await 落定()
+
+    expect(降级(host)?.textContent).toContain("卷宗.pdf")
+    expect(降级(host)?.textContent).not.toContain("2026-0912")
   })
 
   test("渲染器失败：标记 error，不把异常抛给中栏（一个坏文件不该掀掉整个工作台）", async () => {

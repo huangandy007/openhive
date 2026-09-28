@@ -13,6 +13,10 @@ function mount(element: () => JSX.Element) {
 const 文案 = (host: HTMLElement, slot: string) =>
   host.querySelector<HTMLElement>(`[data-slot='${slot}']`)?.textContent ?? ""
 
+/** 画出来的**是哪一枚**图标：`Icon` 渲染成 `<use href="#opencode-icon-<名字>">`（见 `icon.tsx`）。 */
+const 图标 = (host: HTMLElement) =>
+  host.querySelector("[data-slot='degraded-icon'] use")?.getAttribute("href") ?? ""
+
 /** 五种原因**都**是「看不了」，但不是同一个「看不了」——下面逐个点名。 */
 const 全部原因: DegradedReason[] = ["unsupported", "empty", "encrypted", "error", "load-failed"]
 
@@ -55,6 +59,25 @@ describe("降级呈现：内容区认不出 / 读不出时，必须说得出话�
     expect(host.querySelector("[data-slot='degraded-icon'] [data-slot='icon-svg']")).not.toBeNull()
     expect(文案(host, "degraded-title")).not.toBe("")
     expect(文案(host, "degraded-detail")).not.toBe("")
+  })
+
+  /**
+   * 图标是**哪一枚**也要钉住，不只是「有个图标」——DESIGN §4.6 给每一档点了名。
+   *
+   * 加密这一档用 `shield`：原生图标集里**没有** `lock`/`key`（`icon.tsx` 的图标表里查过），
+   * `shield` 是同一风险语义（东西没坏、但不该随便动）里最贴的一枚。
+   *
+   * 这条盯的是「别哪天顺手把它改成 `warning`」：`error` 与 `load-failed` 已经共用 `warning` 了，
+   * 加密再并进去，「文件锁着」与「文件坏了」在视觉上就再也分不开——只剩文字在说，而民警是先看
+   * 图标才读字的（DESIGN §4.3「状态提示配图标，不只靠颜色」）。
+   */
+  test("加密那一档的图标是 shield，不与 error 共用 warning", () => {
+    const 加密 = mount(() => <DegradedView reason="encrypted" name="卷宗.pdf" />)
+    const 坏了 = mount(() => <DegradedView reason="error" name="卷宗.pdf" />)
+
+    expect(图标(加密)).toBe("#opencode-icon-shield")
+    expect(图标(坏了)).toBe("#opencode-icon-warning")
+    expect(图标(加密)).not.toBe(图标(坏了))
   })
 
   test("文件名是不可信输入：原样当文字，不当 HTML", () => {

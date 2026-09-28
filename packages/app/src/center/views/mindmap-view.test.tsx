@@ -137,15 +137,18 @@ describe("导图画成嵌套列表", () => {
    * `text-text-base`、`border-v2-border-border-muted` vs `border-border-weak-base`）。
    * 所以只能逐个比**前缀**，不能比子串——`text-v2-text-text-base` 里本身就含 `text-text-`。
    *
-   * 只列本 feature 真会用到的五族：前四族是颜色（文字 / 边框 / 两种底），第五族是图标色。
+   * 前缀是**推**出来的（用处 × 色族），不是手挑的名单：手挑漏过两次了——先是只查
+   * `text-text-*`（`画主题` 那行缩进线的边框色从底下过去），后来补的名单里又漏掉
+   * `bg-surface-*` / `bg-input-*`（`app.tsx` 里 `bg-surface-base` 是**实际在用**的写法）。
+   * 色族取自 `packages/ui/src/styles/theme.css` 的语义变量词根（文字 / 边框 / 底 / 输入 / 图标）。
+   *
    * 不写成「凡 `-` 后半段不以 `v2-` 开头就算 v1」——`text-14-regular` 那种字号字重类会被误伤。
    *
    * 断言取**整棵渲染树**而不是某两个元素：漏一处就等于「本 feature 不用 v1」这条口径是句口号。
-   * （`border-border-*` 这一族是后来补进来的：原先只查 `text-text-*`，
-   * `画主题` 里那行缩进线的 v1 边框色就这么从断言底下漏了过去。）
    */
   test("画出来的类名里没有 v1 色类：层级靠字重与缩进线，不靠 v1 色板", () => {
-    const V1色类前缀 = ["text-text-", "border-border-", "bg-background-", "bg-overlay-", "text-icon-"]
+    const v1色族 = ["text", "border", "background", "surface", "input", "icon"]
+    const V1色类前缀 = ["text-", "bg-", "border-"].flatMap((用处) => v1色族.map((族) => `${用处}${族}-`))
     const 容器 = document.createElement("div")
     drawMindmap(parseMindmap(表([{ title: "资金流向", rootTopic: 根() }])), 容器)
 

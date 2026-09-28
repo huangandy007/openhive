@@ -22,6 +22,17 @@ const 降级原因 = (state: BinaryViewState): DegradedReason | undefined =>
 export type RenderCleanup = () => void
 
 /**
+ * 降级提示里只放**文件名**，不放整条路径。
+ *
+ * `D:\案件\2026-0912\卷宗.pdf` 那种前缀对民警是噪音：那句话要回答的是「是哪个文件看不了」，
+ * 塞进一整条路径反而更难一眼认出。中栏那条路给的是 tab 标题（本来就是文件名），字节型视图
+ * 这一路对齐成同一形状（DESIGN §4.6 的说明模板只写文件名）。
+ *
+ * 两种分隔符都切——公安那台机器上跑的是 Windows；切不出分隔符时原样交回。
+ */
+const 文件名 = (path: string) => path.split(/[/\\]/).pop() || path
+
+/**
  * 把一份文件的字节渲染进容器。
  *
  * 失败以 rejection 传出——壳据此标 `error`，**渲染器自己不许静默吞掉**：
@@ -149,7 +160,7 @@ export function BinaryView(props: BinaryViewProps) {
       <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto" ref={container} />
       {/* 看不了的时候内容区得说话（FR-007 / US3 AC3）。提示与渲染结果**各占各的位置**：
           渲染器往容器里就地写 DOM，容器仍是那个容器、`data-state` 仍可观测，提示紧跟其后。 */}
-      <Show when={降级原因(state())}>{(reason) => <DegradedView reason={reason()} name={props.path} />}</Show>
+      <Show when={降级原因(state())}>{(reason) => <DegradedView reason={reason()} name={文件名(props.path)} />}</Show>
     </>
   )
 }

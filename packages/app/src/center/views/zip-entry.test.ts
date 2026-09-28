@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { 改了条数, 弄坏, 造包 } from "./__fixtures__/zip"
+import { 改了条数, 改了目录偏移, 弄坏, 造包 } from "./__fixtures__/zip"
 import { 是哪种看不了 } from "./unsupported-format"
 import { 解压上界, readZipEntry } from "./zip-entry"
 
@@ -143,5 +143,60 @@ describe("zip 容器：取出一个条目的字节", () => {
     )
 
     expect(是哪种看不了(原因)).toBe("unsupported")
+  })
+
+  /**
+   * 同一条规矩的**第三处**（前两处认了、这处漏着）：EOCD 里记的**中央目录起点偏移**也是 32 位，
+   * 放不下时同样写 `0xFFFFFFFF`。
+   *
+   * 漏认的后果不是「结构损坏」那种显眼的坏：`0xFFFFFFFF` 会被当成一个合法的偏移，去那里读
+   * 「中央目录」——读到的签名当然不是 `PK\x01\x02`，于是报「压缩包结构损坏」，一份**完全合法**的
+   * 大包被说成坏包（同前两处）。探针另查实：这种包 Python 的 `zipfile` 读得好好的。
+   */
+  test("zip64 哨兵（EOCD 记的中央目录偏移 0xFFFFFFFF）：同上，不说包坏了", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "{}", 方式: 0 }])
+    改了目录偏移(包, 0xffffffff)
+
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+
+    expect(是哪种看不了(原因)).toBe("unsupported")
+  })
+
+  /**
+   * 哨兵认在**名字匹配之后**——包里的**别的**条目是 zip64，不影响取这一条。
+   *
+   * 反过来做（一进中央目录就查所有条目）会把「取得到的那条」也一起判掉：一份包里几个大文件
+   * 用了 zip64、`.xmind` 要读的那条没有，就会白说一句「这种格式暂时看不了」。
+   */
+  test("别的条目是 zip64：要取的那一条照常取得出来", async () => {
+    const 包 = 造包([
+      { name: "大附件.bin", 数据: "假装超过 4GB", 方式: 0 },
+      { name: "content.json", 数据: `{"好":1}`, 方式: 0 },
+    ])
+    弄坏(包, 42, 0xffffffff) // `弄坏` 改的是**首个**中央目录条目 = 大附件.bin 的局部头偏移
+
+    const 字节 = await readZipEntry(包, "content.json")
+
+    expect(new TextDecoder().decode(字节!)).toBe(`{"好":1}`)
+  })
+
+  /**
+   * 加密判定的**位置**也是行为的一部分：标志位要在**方式判定之前**查。
+   *
+   * ZipCrypto 恰恰用的是 `存储`(0) 或 `deflate`(8)，光看方式看不出任何异常——先判方式的话，
+   * 「deflate + 加密」会一路走到解压（把密文当压缩流解），「存储 + 加密」则直接当内容交回。
+   * 上面已有的两条用例喂的是 `方式=0`，这条补上 `方式=8` 那一半。
+   */
+  test("deflate(8) 的条目也可能是加密的：照样落 encrypted，不去解那份密文", async () => {
+    const 包 = 造包([{ name: "content.json", 数据: "其实是密文", 方式: 8, 标志: 0x1 }])
+    const 原因 = await readZipEntry(包, "content.json").then(
+      () => undefined,
+      (抛出的: unknown) => 抛出的,
+    )
+
+    expect(是哪种看不了(原因)).toBe("encrypted")
   })
 })

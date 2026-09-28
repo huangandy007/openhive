@@ -3,7 +3,8 @@ import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import * as XLSX from "xlsx"
 import type { FileContent } from "@/center/file-content"
-import { 列上界, 行上界, renderSheet, SheetView } from "./sheet-view"
+import { 加密的Office容器 } from "./__fixtures__/office"
+import { 列上界, 行上界, 是加密工作簿, renderSheet, SheetView } from "./sheet-view"
 
 /**
  * 用 SheetJS 自己造一份**真 xlsx 字节**当夹具——不是手搓的假数据，走的是完整 zip/OOXML 往返。
@@ -19,18 +20,14 @@ function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuff
 }
 
 /**
- * 造一份**加密**的工作簿：真加密的 Office 文件不是 zip，而是 OLE2 复合文档（头 `D0 CF 11 E0`），
- * 里面存着一条 `/encryption` 流。这里用 SheetJS 自己的 CFB 写出这个容器——与 `工作簿字节()`
- * 同为「真库造的真字节」，不是手搓的假数据。
+ * 造一份**加密**的工作簿：OLE2 复合文档 + `/encryption` 流。
  *
- * ⚠️ 那条流的内容是假的（我们不真造一个能解密的容器）：SheetJS 只要看见这条流就抛
- * `File is password-protected`，而这正是要考的那一步。
+ * 用**老一代**那条流名（`/encryption`）而不是现代 OOXML 的 `/EncryptionInfo`+`/EncryptedPackage`：
+ * 这条是本视图走得到的那条路——SheetJS 看见它就抛 `File is password-protected`
+ * （`xlsx.mjs:20501`），而本视图正是靠它的说法判加密的。夹具形状与 `__fixtures__/office.ts`
+ * 同一份实现，两处不各造一个（现代那条流名由 `document-view` 的用例覆盖）。
  */
-function 加密工作簿(): Uint8Array<ArrayBuffer> {
-  const cfb = XLSX.CFB.utils.cfb_new()
-  XLSX.CFB.utils.cfb_add(cfb, "/encryption", new TextEncoder().encode("假的加密信息"))
-  return new Uint8Array(XLSX.CFB.write(cfb, { type: "array" }))
-}
+const 加密工作簿 = () => 加密的Office容器(["/encryption"])
 
 /** 逐字节拼串再 btoa——真 xlsx 有一万多字节，`String.fromCharCode(...bytes)` 会爆栈。 */
 function 二进制内容(bytes: Uint8Array): FileContent {
@@ -146,9 +143,9 @@ describe("表格视图：字节 → 表格", () => {
    * 加密的工作簿：SheetJS **认得出**（它自己抛 `File is password-protected`），
    * 故由渲染器分类成「需要密码」那一档，别在这里静默吞掉。
    *
-   * 注意**不能**用「见到 OLE2 魔数就当加密」来偷懒：老 `.doc` 也是 OLE2，
-   * 而它是「不支持的格式」不是加密（`document-view.tsx` 那条）。两类分开，靠的是
-   * SheetJS 自己交回的说法，不是魔数。
+   * 注意**不能**用「见到 OLE2 魔数就当加密」来偷懒：加密的工作簿与老 `.doc`/老 `.xls`
+   * **都是** OLE2，魔数分不开（`document-view.tsx` 分得开是因为它进容器认**流名**，路子不同）。
+   * 这里分得开，靠的是 SheetJS 自己交回的说法。
    */
   test("加密的工作簿：渲染器抛错，由壳落「需要密码」（不静默吞掉）", async () => {
     const host = 容器()
@@ -209,5 +206,37 @@ describe("表格视图接进通用壳（FR-007 的 .xls/.xlsx/.csv）", () => {
     expect(降级?.textContent).toContain("密码")
     // 「损坏」是 error 那一档的说法——一份锁着的文件不该被说成这样
     expect(降级?.textContent).not.toContain("损坏")
+  })
+})
+
+/**
+ * 直接考「哪句说法算加密」这条判定——**不靠夹具**。
+ *
+ * 为什么单独考它：加密的工作簿从字节上造得出夹具（上面那条），但 SheetJS 的**说法**有好几条，
+ * 而其中几条（Numbers 走的是 IWA，不是 CFB）在本环境造不出真文件来。判定写成纯函数之后，
+ * 「哪句算、哪句不算」就有了被测的清单，而不是埋在 `catch` 里口口相传。
+ */
+describe("认「加密的工作簿」的说法", () => {
+  test("SheetJS 那几条「要密码」的说法都认（含不叫 password-protected 的那条）", () => {
+    // `xlsx.mjs` 的四个抛出点：:20062（BIFF 的 FilePass）/ :20501（`/encryption` 流）
+    // / :26832（ECMA-376 加密包）/ :10754（Extensible 加密）。
+    expect(是加密工作簿(new Error("File is password-protected"))).toBe(true)
+    expect(是加密工作簿(new Error("File is password-protected: ECMA-376 Extensible"))).toBe(true)
+    // Numbers（`:25472`）说的是 "Unsupported password protection"——**不含** `password-protected`，
+    // 只认那段词就会把它漏过去，落 `error`（「这个文件打不开 · 可能已经损坏」），文件却好好的。
+    expect(是加密工作簿(new Error("Unsupported password protection"))).toBe(true)
+    // 这条要 `opts.password` 才抛得出，我们永不传密码；认它只为「宁可知乎是加密」。
+    expect(是加密工作簿(new Error("Password is incorrect"))).toBe(true)
+  })
+
+  test("别的失败不认：认错了就是把「我们读不动」说成「你的文件锁着」", () => {
+    // 老 `.doc`（WordDocument 流）走的就是这条——它是「格式没接」，不是加密
+    expect(是加密工作簿(new Error("Cannot find Workbook stream"))).toBe(false)
+    expect(是加密工作簿(new Error("Unsupported ZIP file"))).toBe(false)
+    expect(是加密工作簿(new Error("Corrupted zip : missing 4 bytes"))).toBe(false)
+    // 抛出来的不一定是 Error（渲染器可能交回任何东西），非 Error 一律不算
+    expect(是加密工作簿("File is password-protected")).toBe(false)
+    expect(是加密工作簿(undefined)).toBe(false)
+    expect(是加密工作簿(null)).toBe(false)
   })
 })

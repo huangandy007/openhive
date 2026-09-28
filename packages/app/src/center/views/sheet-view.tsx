@@ -26,23 +26,41 @@ export const 列上界 = 64
  * 副作用：SheetJS 会往 stderr 打一行「Codepage tables are not loaded」——那是它的可选码页表
  * 没随包发布，UTF-8 这条路径不依赖它，结果正确。
  */
+/**
+ * SheetJS 交回的这个失败，是不是在说「这份工作簿锁着」。
+ *
+ * **为什么按消息认**：SheetJS 认得出加密，却没有自己的错误类型（全是一句话的 `Error`），
+ * 调用方只能按词认。放宽到 `password` 而不是只认 `password-protected`，是因为它的抛出点
+ * 不止一个说法：`File is password-protected`（`:20062` BIFF 的 FilePass / `:20501` `/encryption` 流
+ * / `:26832` ECMA-376 加密包）、`File is password-protected: ECMA-376 Extensible`（`:10754`）、
+ * 以及 Numbers 的 `Unsupported password protection`（`:25472`，**不含** `password-protected`
+ * 那段词，只认它就漏过去了）。
+ *
+ * 认错的代价是不对称的：漏认 → 落 `error`「这个文件打不开 · 可能已经损坏」，让民警去怀疑一份
+ * 好文件；多认 → 得先有一句带 `password` 的非加密失败才谈得上（SheetJS 里没有这种说法）。
+ *
+ * ⚠️ **不要**改用「见到 OLE2 魔数（`D0 CF 11 E0`）就当加密」来偷懒：加密的 Office 与老 `.doc`、
+ * 老 `.xls` **都是** OLE2，魔数根本分不开这两类（`document-view` 那边分得开是因为它进容器认
+ * **流名**；这里分得开是靠 SheetJS 自己交回的说法）。⚠️ 也别拿「SheetJS 读得了老 `.doc`」当
+ * 理由——实测（探针）读不了：它只找 `Workbook`/`Book` 流，喂 WordDocument 抛
+ * `Cannot find Workbook stream`。理由错了的注释比没有更坏，它会被后来人当依据去改代码。
+ */
+export function 是加密工作簿(原因: unknown): boolean {
+  return 原因 instanceof Error && /password/i.test(原因.message)
+}
+
 export const renderSheet: BytesRenderer = async (bytes, container) => {
   let book: XLSX.WorkBook
   try {
     book = XLSX.read(bytes, { type: "array", codepage: 65001 })
   } catch (原因) {
-    // 加密的工作簿**单独认出来**：真加密的 Office 文件不是 zip，而是 OLE2 容器
-    // （头 `D0 CF 11 E0`）+ 一条 `/encryption` 流，此时 SheetJS 抛
-    // `Error("File is password-protected")`。它认得出是加密，但没有自己的错误类型，
-    // 只能按消息认（`password-protected` 是它几个抛出点共有的那段词）。
+    // 加密的工作簿**单独认出来**：真加密的 Office 文件不是 zip，而是 OLE2 复合文档
+    // （头 `D0 CF 11 E0`）——加密信息是容器里的**流**（老一代 `/encryption`，现代 ECMA-376 是
+    // `/EncryptionInfo` + `/EncryptedPackage`），SheetJS 见到就抛（见 `是加密工作簿`）。
     // 落 `error` 会显示「这个文件打不开 · 可能已经损坏」——文件一点没坏、只是锁着，
     // 民警该做的是去要密码（机制见 `unsupported-format.ts`）。
-    //
-    // ⚠️ **不要**改用「见到 OLE2 魔数就拒收」来偷懒：老 `.doc`（BIFF）同样是 OLE2，
-    // 但 SheetJS 读得了它、那边是另一个档（`document-view` 的「不支持的格式」，不是加密）。
-    // 两类分得开，靠的是 SheetJS 自己交回的说法，不是魔数。
-    if (原因 instanceof Error && /password-protected/i.test(原因.message)) {
-      throw 需要密码("工作簿是加密的，SheetJS 报 password-protected")
+    if (是加密工作簿(原因)) {
+      throw 需要密码("工作簿是加密的，SheetJS 报 password 一类的话")
     }
     throw 原因
   }

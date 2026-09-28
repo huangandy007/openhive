@@ -98,3 +98,8 @@ export function 弄坏(包: Uint8Array, 字段偏移: number, 值: number): void
 export function 改了条数(包: Uint8Array, 值: number): void {
   new DataView(包.buffer, 包.byteOffset, 包.byteLength).setUint16(包.length - 22 + 10, 值, true)
 }
+
+/** 改 EOCD 里记的「中央目录从哪儿开始」（4 字节小端）。 */
+export function 改了目录偏移(包: Uint8Array, 值: number): void {
+  new DataView(包.buffer, 包.byteOffset, 包.byteLength).setUint32(包.length - 22 + 16, 值, true)
+}

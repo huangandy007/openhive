@@ -6,10 +6,15 @@
  * `encrypted`（「这个文件是加密的」，去要密码）与 `error`（「这个文件打不开 · 可能已经损坏」，
  * 要怀疑文件本身）对民警是**三件事**。一份**完全合法**的文件被说成「可能已经损坏」，
  * 就是让民警去怀疑一份好文件——归因是反的。
- * 今天已知的抛出点：老 `.doc` 的 OLE2（`document-view.tsx`）、XMind 8 的老格式
- * （`mindmap-view.tsx`）、没接的压缩方式与 zip64（`zip-entry.ts`）落 `unsupported`；
- * 加密 PDF（`pdf-view.tsx`）、加密工作簿（`sheet-view.tsx`）、加密的 zip 条目
- * （`zip-entry.ts`）落 `encrypted`。
+ * 今天已知的抛出点：Word 97–2003 的 OLE2（`document-view.tsx`）、XMind 8 的老格式
+ * （`mindmap-view.tsx`）、没接的压缩方式与 zip64 的三处哨兵（`zip-entry.ts`）落 `unsupported`；
+ * 加密 PDF（`pdf-view.tsx`）、加密的 Office 容器（`document-view.tsx`，进容器认加密流名）、
+ * 加密工作簿（`sheet-view.tsx`，靠 SheetJS 的说法）、加密的 zip 条目（`zip-entry.ts`）
+ * 落 `encrypted`。
+ *
+ * ⚠️ 新增一档时别只加一处：同一个文件**按扩展名走不同视图**就会走不同的判定（加密的 `.xlsx`
+ * 走 `sheet-view`、加密的 `.docx` 走 `document-view`）——只改一边的后果是同一个文件按扩展名
+ * 给出两种说法。这正是加密的 Office 文档当初漏掉的那一处。
  *
  * **为什么用标记属性而不是 `instanceof` 自定义类**：渲染器是懒加载的独立 chunk，真跨了
  * chunk 边界的话同一个类会有两份，`instanceof` 会判 false——而这个坑要在生产里才炸得出来。
@@ -19,6 +24,12 @@
  * **为什么单独一个模块，而不是留在 `binary-view.tsx` 里**：抛它的不只有渲染器，
  * `zip-entry.ts`（一个跟视图无关的字节工具）也要抛。让「读 zip」反向依赖「视图壳」是把依赖
  * 方向弄反了；分开之后标记串也只有一份。
+ *
+ * ⚠️ 依赖方向如今还剩**一条类型上的**：下面 `import type { DegradedReason }`（只为 `Extract` 出
+ * `可抛的档`）。它是 `import type`，编译期就擦掉、运行期零依赖——与「字节层不该认识视图层」
+ * 不冲突，真要在运行期用它也做不到。之所以不把那两档的联合抄一份在这儿：那就有了**第二份**
+ * 真源，`degraded-view.tsx` 加档时这里会静默漏掉（`Record<DegradedReason, …>` 的穷尽性检查
+ * 正是为了咬住这种漏）。缺档时优先信类型，不优先信「抄一份更干净」。
  */
 import type { DegradedReason } from "@/center/degraded-view"
 

@@ -52,8 +52,10 @@ const 说法: Record<DegradedReason, 降级说法> = {
 export interface DegradedViewProps {
   reason: DegradedReason
   /**
-   * 调用方手上认得出这份内容的那个标识——**不是路径、也不是内容键**，只为让人认出「是哪个文件」。
-   * 中栏的调用点给 tab 标题（通常就是文件名），字节型视图给它拿到的 `path`。
+   * 调用方手上认得出这份内容的那个标识——**只为让人认出「是哪个文件」**。
+   * 两个调用点给的都是**末段文件名**：中栏给 tab 标题（本来就是文件名），
+   * 字节型视图把自己拿到的 `path` 切出末段（`binary-view.tsx` 的 `文件名()`）——
+   * 一整条路径塞进那句话只让人更看不出它说的是哪份。
    */
   name: string
 }
