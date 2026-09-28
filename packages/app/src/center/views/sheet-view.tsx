@@ -60,7 +60,10 @@ export const renderSheet: BytesRenderer = async (bytes, container) => {
   if (截了行 || 截了列) {
     const 砍掉 = [截了行 ? `前 ${行上界} 行` : undefined, 截了列 ? `前 ${列上界} 列` : undefined]
     const 提示 = document.createElement("p")
-    提示.className = "mb-2 text-12-regular text-text-weak"
+    // 配色走 v2 语义 token（`text-12-regular` 只是字号/字重那一档的既有工具类，不带颜色）。
+    // 本 feature 自己的文案一律不用 v1 的 `text-text-weak`——那是上游遗留口径。
+    提示.dataset.slot = "sheet-truncated"
+    提示.className = "mb-2 text-12-regular text-v2-text-text-muted"
     提示.textContent = `表太大，这里只显示${砍掉.filter(Boolean).join(" × ")}（原表共 ${总行} 行 × ${总列} 列）。`
     container.appendChild(提示)
   }

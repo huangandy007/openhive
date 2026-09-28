@@ -110,4 +110,46 @@ describe("ThreePane 三栏骨架", () => {
     expect(host.querySelector('[data-slot="three-pane-right"]')).not.toBeNull()
     expect(host.querySelector('[data-slot="three-pane-center"]')).not.toBeNull()
   })
+
+  /**
+   * 手柄的定位祖先**只能是它拖的那一栏**，不能是整个三栏容器。
+   *
+   * `resize-handle.css` 给手柄写死 `position: absolute`，而且只用**包含块的边缘**定位
+   * （`inset-inline-end: 0`；`[data-edge="start"]` 时换成 `inset-inline-start: 0`）——
+   * 手柄自己**不按 `size` 做偏移**（`size` 只参与拖拽算数，见 `resize-handle.tsx`）。
+   * 所以「手柄落在哪条线上」完全由包含块决定：包含块若是整具三栏容器，左栏手柄会跑到容器
+   * **最右边**、右栏手柄跑到**最左边**（压住图标栏）——手柄与它要拖的那条缝分家，
+   * 用户在缝上按下去拖不动。
+   *
+   * 上游 5 个调用点无一例外都把定位祖先做成「恰好是那一栏」的盒子（窗格 div 自带
+   * `relative` 且手柄在其内部，或一个 `w-0 overflow-visible` 的零宽包裹层）。
+   *
+   * happy-dom 没有 CSS 引擎、量不到几何，故只能钉住这条**结构不变量**：手柄与它拖的那一栏
+   * **共处一个带定位的包裹**，且那个包裹里**没有别栏**——于是包裹的边界就是那一栏的边界。
+   */
+  test("拖拽手柄的定位祖先只能是它拖的那一栏，不能是整个三栏容器", () => {
+    const host = mount(() => (
+      <ThreePane left={<div>左栏</div>} right={<div>右栏</div>}>
+        <div>中栏</div>
+      </ThreePane>
+    ))
+    const 左栏 = host.querySelector('[data-slot="three-pane-left"]')!
+    const 右栏 = host.querySelector('[data-slot="three-pane-right"]')!
+    const 手柄 = [...host.querySelectorAll<HTMLElement>('[data-component="resize-handle"]')]
+    const 左柄 = 手柄.find((柄) => 柄.getAttribute("data-edge") === "end")!
+    const 右柄 = 手柄.find((柄) => 柄.getAttribute("data-edge") === "start")!
+    const 包裹 = (栏: Element) => 栏.parentElement!
+
+    // ① 手柄与它拖的那一栏同处一个包裹（手柄是绝对定位的，不是 flex 子项，不影响包裹宽度）
+    expect(左柄.parentElement === 包裹(左栏)).toBe(true)
+    expect(右柄.parentElement === 包裹(右栏)).toBe(true)
+    // ② 包裹必须是定位祖先，否则绝对定位的手柄会继续上溯到更外层的包含块
+    expect(包裹(左栏).className).toContain("relative")
+    expect(包裹(右栏).className).toContain("relative")
+    // ③ 包裹里只有这一栏——掺进中栏，包裹的边界就不再是那一栏的边界了
+    expect(包裹(左栏).querySelector('[data-slot="three-pane-center"]') != null).toBe(false)
+    expect(包裹(右栏).querySelector('[data-slot="three-pane-center"]') != null).toBe(false)
+    // ④ 两栏各用各的包裹；共用一个就等于又回到了「整具容器当祖先」
+    expect(包裹(左栏) !== 包裹(右栏)).toBe(true)
+  })
 })

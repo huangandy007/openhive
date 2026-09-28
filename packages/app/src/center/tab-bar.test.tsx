@@ -94,6 +94,22 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
     )
   })
 
+  /**
+   * 关闭按钮里的图标也走同一条规矩：`icon.css` 给图标自身写了 `color: var(--icon-base)`，
+   * **写在按钮上的 `text-v2-icon-*` 到不了它**——不注入就静默恒灰（兜底是上游硬编码的一档灰），
+   * 连 `hover:text-v2-icon-icon-base` 也一并失效。上面那条只钉了模块图标，这一条补上关闭按钮。
+   *
+   * 未选中档走 class、`group-hover:` 才有提亮的空间，故这里断言的是类名而不是内联值。
+   */
+  test("关闭按钮的图标颜色也由祖先注入 --icon-base：默认 muted、悬停提亮到 base", () => {
+    const host = mountBar()
+    const 图标层 = slots(host, "tab")[0]?.querySelector<HTMLElement>("[data-slot='tab-close-icon']")
+
+    expect(图标层?.className ?? "").toContain("[--icon-base:var(--v2-icon-icon-muted)]")
+    expect(图标层?.className ?? "").toContain("group-hover:[--icon-base:var(--v2-icon-icon-base)]")
+    expect(图标层?.querySelector("svg") != null).toBe(true)
+  })
+
   test("放不下：尾部 tab 不渲染，行末出现「⋯」（FR-005）", () => {
     const host = mountBar({ availableWidth: 400 })
 

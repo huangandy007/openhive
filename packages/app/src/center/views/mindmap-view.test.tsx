@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, vi } from "bun:test"
 import { readFileSync } from "node:fs"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
@@ -180,5 +180,37 @@ describe("导图视图：从字节一路走到画面", () => {
 
     expect(视图()?.getAttribute("data-state")).toBe("ready")
     expect(视图()?.textContent).toContain("张三 资金案")
+  })
+
+  /**
+   * **认得出的不支持**要落 `unsupported`，不能落 `error`——两者对民警是两件事。
+   *
+   * 这里是**归因反了**：一份完全合法的 XMind 8 文件（结构完好的 zip，主题在 `content.xml` 里）
+   * 会被说成「这个文件打不开 · 可能已经损坏」，让民警去怀疑一份好文件。
+   * 这与 `.doc` 走 OLE2 魔数认出老格式是**同一件事**（I-6）——只修 `document-view`
+   * 而漏掉这里，等于同一类误归因还留着一处。
+   *
+   * 断言落在**界面上**而不是抛错消息上：民警看到的是降级面板那句话，不是控制台。
+   * （控制台静音是因为当前走的是「真故障」那一支、会喊一声；改对之后它不再喊。）
+   */
+  test("合法的 XMind 8 老格式（content.xml）：落「这种格式暂时看不了」，不说文件损坏", async () => {
+    const 警告 = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const 老格式包 = 造包([{ name: "content.xml", 数据: "<xmap-content/>", 方式: 0 }])
+      const host = mount(() => (
+        <MindmapView path="/p/老导图.xmind" load={async () => 内容(老格式包)} />
+      ))
+      const 视图 = () => host.querySelector("[data-component='mindmap-view']")
+      const 降级 = () => host.querySelector("[data-component='degraded-view']")
+      await 等到(() => 视图()?.getAttribute("data-state") !== "pending")
+
+      expect(视图()?.getAttribute("data-state")).toBe("unsupported")
+      expect(降级()?.getAttribute("data-reason")).toBe("unsupported")
+      expect(降级()?.textContent).toContain("暂时看不了")
+      // 「损坏」是 error 那一档的说法——一份好文件不该被说成这样
+      expect(降级()?.textContent).not.toContain("损坏")
+    } finally {
+      警告.mockRestore()
+    }
   })
 })

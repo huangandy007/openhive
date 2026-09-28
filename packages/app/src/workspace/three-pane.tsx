@@ -38,28 +38,34 @@ export function ThreePane(props: ParentProps<ThreePaneProps>) {
   const rightMax = () => Math.round((viewport() * 2) / 3)
 
   return (
-    // `relative` 是给两个拖拽手柄当定位祖先用的，不是排版需要：`resize-handle.css` 给手柄写死
-    // 了 `position: absolute`（上游 5 个调用点无一例外都自带定位祖先）。少了它，手柄会沿定位链
-    // 一直上溯到 `<main>`（`layout-new.tsx` 带 `contain: strict`，本身即包含块）——左侧手柄跑到
-    // 窗口最右边、右侧手柄压到图标栏上。happy-dom 没有 CSS 引擎，测不出几何，故只能靠这行与
-    // 浏览器核对兜住。
-    <div data-component="three-pane" class="relative flex-1 min-h-0 min-w-0 w-full flex">
+    // 每一栏各包一层 `relative` 的包裹，**手柄放进自己那一栏的包裹里**——这不是排版需要，
+    // 是给手柄当定位祖先。`resize-handle.css` 给手柄写死了 `position: absolute`，且只用
+    // **包含块的边缘**定位（`inset-inline-end: 0`；`edge="start"` 时换成 `inset-inline-start: 0`）
+    // ——它自己**不按 `size` 做偏移**（`size` 只参与拖拽算数）。所以手柄落在哪条缝上完全由
+    // 定位祖先决定：若把手柄直接挂到下面这具容器上，容器横跨三栏，左栏手柄就跑到容器**最右边**、
+    // 右栏手柄跑到**最左边**（压住图标栏），手柄与它要拖的那条缝分家，在缝上按下去拖不动。
+    // 包裹的边界 == 那一栏的边界，手柄才落在缝上。上游 5 个调用点都是这个做法（窗格 div 自带
+    // `relative` 且手柄在其内部，或一个 `w-0 overflow-visible` 的零宽包裹层）。
+    // happy-dom 没有 CSS 引擎、量不出几何，故由 `three-pane.test.tsx` 里那条结构不变量钉住。
+    <div data-component="three-pane" class="flex-1 min-h-0 min-w-0 w-full flex">
       <Show when={props.left !== undefined && !props.leftCollapsed}>
-        <aside
-          data-slot="three-pane-left"
-          class="shrink-0 min-h-0 overflow-hidden"
-          style={{ width: `${leftWidth()}px` }}
-        >
-          {props.left}
-        </aside>
-        <ResizeHandle
-          direction="horizontal"
-          edge="end"
-          size={leftWidth()}
-          min={LEFT_PANE_MIN}
-          max={leftMax()}
-          onResize={setLeftWidth}
-        />
+        <div data-slot="three-pane-left-group" class="relative flex shrink-0 min-h-0">
+          <aside
+            data-slot="three-pane-left"
+            class="shrink-0 min-h-0 overflow-hidden"
+            style={{ width: `${leftWidth()}px` }}
+          >
+            {props.left}
+          </aside>
+          <ResizeHandle
+            direction="horizontal"
+            edge="end"
+            size={leftWidth()}
+            min={LEFT_PANE_MIN}
+            max={leftMax()}
+            onResize={setLeftWidth}
+          />
+        </div>
       </Show>
       {/* 中栏原样复刻挂载点 `<main>`（layout-new.tsx）的 flex 上下文：子路由此前直接挂在
           它下面，若这里换了 `items-start` / `flex-col`，既有页面的布局会静默改变。 */}
@@ -67,21 +73,23 @@ export function ThreePane(props: ParentProps<ThreePaneProps>) {
         {props.children}
       </div>
       <Show when={props.right !== undefined && !props.rightCollapsed}>
-        <ResizeHandle
-          direction="horizontal"
-          edge="start"
-          size={rightWidth()}
-          min={RIGHT_PANE_MIN}
-          max={rightMax()}
-          onResize={setRightWidth}
-        />
-        <aside
-          data-slot="three-pane-right"
-          class="shrink-0 min-h-0 overflow-hidden"
-          style={{ width: `${rightWidth()}px` }}
-        >
-          {props.right}
-        </aside>
+        <div data-slot="three-pane-right-group" class="relative flex shrink-0 min-h-0">
+          <ResizeHandle
+            direction="horizontal"
+            edge="start"
+            size={rightWidth()}
+            min={RIGHT_PANE_MIN}
+            max={rightMax()}
+            onResize={setRightWidth}
+          />
+          <aside
+            data-slot="three-pane-right"
+            class="shrink-0 min-h-0 overflow-hidden"
+            style={{ width: `${rightWidth()}px` }}
+          >
+            {props.right}
+          </aside>
+        </div>
       </Show>
     </div>
   )

@@ -1,5 +1,5 @@
 import type { ViewComponent } from "@/center/view-registry"
-import { BinaryView, type BytesRenderer } from "./binary-view"
+import { BinaryView, 格式不支持, type BytesRenderer } from "./binary-view"
 import { readZipEntry } from "./zip-entry"
 
 export interface 主题 {
@@ -102,8 +102,15 @@ export const renderMindmap: BytesRenderer = async (bytes, container) => {
   const json = await readZipEntry(bytes, "content.json")
   // 走到这里只剩「包是好的、但没有这一条」——「压根不是 zip / 结构损坏」在 `readZipEntry`
   // 里就抛了，各自带着自己的说法，不必在这里猜。
+  //
+  // 抛 `格式不支持` 而不是普通 `Error`：这里**认得出**是哪种不支持（XMind 8 把主题放在
+  // `content.xml`，不是 `content.json`），文件本身**一点毛病没有**。抛普通 Error 会被壳落成
+  // `error` →「这个文件打不开 · 可能已经损坏」，让民警去怀疑一份好文件——正是 `document-view`
+  // 认老 `.doc` 时修掉的那类误归因（见 `binary-view.tsx` 的 `格式不支持`）。两者是同一件事。
+  // （说明文字进不了界面：`DegradedView` 只收「哪种看不了」+ 文件名。民警看到的是
+  // 「这种格式暂时看不了」——换个工具打开就行，这对他们才是可行动的。）
   if (!json) {
-    throw new Error("这份导图里没有 content.json（XMind 8 的老格式存在 content.xml 里，本轮不支持）")
+    throw 格式不支持("这份导图里没有 content.json（XMind 8 的老格式存在 content.xml 里，本轮不支持）")
   }
   drawMindmap(parseMindmap(new TextDecoder().decode(json)), container)
 }

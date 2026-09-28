@@ -101,6 +101,12 @@ describe("表格视图：字节 → 表格", () => {
     expect(host.textContent).toContain(`第${行上界 - 1}行`) // 最后一条该在的
     expect(host.textContent).not.toContain(`第${行上界}行`) // 第一条该被砍的
     expect(host.textContent).toContain("只显示前")
+
+    // 提示是**我们自己的**文案（不是文件里的内容），配色走 v2 语义 token——与 T015 的降级面板、
+    // T016 的代码视图同一套。v1 的 `text-text-weak` 是上游遗留口径，本 feature 的视图不用它。
+    const 提示 = host.querySelector<HTMLElement>('[data-slot="sheet-truncated"]')
+    expect(提示?.className ?? "").toContain("text-v2-text-text-muted")
+    expect(提示?.className ?? "").not.toContain("text-text-weak")
   })
 
   test("超宽表：只铺前 列上界 列，并明说是截断", async () => {
