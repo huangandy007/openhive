@@ -21,7 +21,12 @@
   - 实测出参：`bun run typecheck` turbo 任务数 **30 → 31**（证明 `packages/auth` 真进图，没被静默跳过）；包内 `bun test` 4 pass；`bun run lint` 命中数与 001 基线逐字相同（新增文件 0 命中）
   - 含 PG 连接层 `src/db.ts`（`resolveDatabaseUrl`，TDD）+ PGlite 工具链冒烟；`connect()` 留待 T003 与迁移一并落地（避免先写无测试的生产代码）
   - 新增依赖：`drizzle-orm`（catalog）、`@electric-sql/pglite@0.5.8`（devDep，测试用）
-- [ ] T002 [P] [BE] 锁定默认密码取值 + 密码哈希方案（argon2id）+ 凭证有效期 [FR-003][FR-004] [无依赖] [出参：方案记录在案，纳入测试样例]
+- [x] T002 [P] [BE] 锁定默认密码取值 + 密码哈希方案（argon2id）+ 凭证有效期 [FR-003][FR-004] [无依赖] [出参：方案记录在案，纳入测试样例]
+  - 默认密码 `admin@123456` —— design-v2 §4.1（`:147`）**已定，沿用未改**（用户确认）
+  - 哈希 argon2id —— `Bun.password` 内建（实测产出 `$argon2id$v=19$m=65536,t=2,p=1$`），**零新增依赖**
+  - 凭证有效期 2 小时 —— spec.md FR-004
+  - JWT 库定 `hono/jwt`（实测 `Bun.jwt` **不存在**已排除；`hono` 4.10.7 已在 catalog）→ 依赖落 T005
+  - 落点 `src/policy.ts`（常量）+ `src/policy.test.ts`（5 条，含「同密码两次哈希不同」的盐随机性断言）
 
 ## Phase 2: Foundational（账号实体 + 密码 + 凭证）
 

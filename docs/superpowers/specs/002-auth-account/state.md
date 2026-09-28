@@ -1,9 +1,23 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T002 [P] [BE] 锁定默认密码取值 + 密码哈希方案（argon2id）+ 凭证有效期
+T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）—— 含 PG 连接 `connect()` + `auth` schema 迁移与回滚
 
 ## 已完成
+
+### T002 [P] [BE] 锁定认证策略 ✅（2026-09-28）
+方案记录在案（可执行版落在 `packages/auth/src/policy.ts`）：
+
+| 项 | 锁定值 | 来源 |
+|---|---|---|
+| 默认密码 | `admin@123456` | design-v2 §4.1（`2026-09-06-openhive-design-v2.md:147`）**已定，沿用未改**（用户确认） |
+| 哈希算法 | `argon2id` | plan.md 依赖清单；用 **`Bun.password` 内建**实现（实测产出 `$argon2id$v=19$m=65536,t=2,p=1$`，verify 正确/错误均正确）→ **零新增依赖** |
+| 凭证有效期 | 7200 秒（2 小时） | spec.md FR-004 / Assumptions |
+| JWT 库 | `hono/jwt` | 用户裁定。实测 **`Bun.jwt` 不存在**（已排除）；`hono` 4.10.7 已在 catalog → 依赖在 T005 落 |
+
+- **测试样例**：`src/policy.test.ts`（5 条）——常量契约 2 条 + argon2id 安全属性 3 条（哈希不含明文、**同一密码两次哈希不同**/盐随机、verify 往返）。
+- **诚实标注**：argon2id 那 3 条**不是本模块的行为测试**，它们断言的是 `Bun.password` 的行为；价值在于**锁定方案**——若有人日后换成固定盐或换掉算法，这几条会红。真正的行为测试从 T004（哈希函数）起。
+- 验收：包内 `bun test` **9 pass / 0 fail**；`bun run typecheck` **31/31**；`bunx oxlint packages/auth` 0/0。
 
 ### T001 [P] [BE] 新建 Auth 服务模块目录与构建配置 ✅（2026-09-28）
 - **落点** `packages/auth/`：`package.json`（`@opencode-ai/auth`，scripts `test`/`typecheck` 照 `packages/effect-drizzle-sqlite` 约定）、`tsconfig.json`（extends `@tsconfig/bun`）、`src/db.ts`、`src/db.test.ts`。
@@ -52,4 +66,4 @@ T002 [P] [BE] 锁定默认密码取值 + 密码哈希方案（argon2id）+ 凭�
 （无）
 
 ## 最后更新
-2026-09-28（T001 完成并全门禁验证通过；等待「next」进 T002）
+2026-09-28（T002 完成并全门禁验证通过；等待「next」进 T003）
