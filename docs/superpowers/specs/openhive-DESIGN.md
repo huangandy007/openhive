@@ -34,6 +34,11 @@
 | 品牌主金 | `#D97706` | logo 外六边形描边（浅色版）、高亮、链接、图标、选中态、tab 激活顶边 |
 | 品牌深金 | `#B45309` | 蜂窝渐变终点、hover 加深 |
 
+> **落到的 v2 语义变量**（T017 换皮）：三档金在 `packages/ui/src/v2/styles/theme.css` 的品牌块里
+> **只定义一次**——`--v2-brand-gold-light` / `--v2-brand-gold` / `--v2-brand-gold-deep`；其余槽位一律引用它，
+> 不重复 hex：`--v2-background-bg-accent`、`--v2-text-text-accent(-hover)`、`--v2-icon-icon-accent(-hover)`、
+> `--v2-border-border-focus`（琥珀焦点环）。品牌图形标用三档金本身（描边主金、蜂窝浅金→深金）。
+
 ### 1.2 中性色（暖色调）
 
 | Token 语义 | 色值 | 用途 |
@@ -51,7 +56,7 @@
 | 高危 | 红 `red-100/red-700` | 风险标记「高危」 |
 | 极危 | 紫 `purple-100/purple-700` | 风险标记「极危」 |
 | 已导入/完成 | 绿 `emerald-100/emerald-800` | 关注清单「已导入」状态 |
-| 选中态 | 浅金 `#FEF3C7`（≈ `#F59E0B` 低透明度） | 图标栏/列表选中底色 |
+| 选中态 | 浅金 `#FEF3C7`（≈ `#F59E0B` 低透明度） | 图标栏/列表选中底色（v2：`--v2-background-bg-accent-soft`） |
 | 话单模块色 | 蓝 `--v2-avatar-bg-blue` | 话单 tab 的模块图标色（按模块着色的取值见 §4.5；**不是**文字徽章） |
 
 ---

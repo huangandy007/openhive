@@ -22,7 +22,10 @@ function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (
       aria-current={props.active ? "page" : undefined}
       onClick={() => props.onSelect(props.entry.id)}
       class="relative flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-v2-icon-icon-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
-      classList={{ "bg-v2-overlay-simple-overlay-pressed text-v2-icon-icon-accent": props.active }}
+      // 选中底走浅金语义 token（DESIGN §1.3「图标栏选中底 = 浅金」）。走任意值写法是**有意**的：
+      // 这个 token 没有 Tailwind 桥接类，加一条要动生成物 `tailwind/colors.css`（上游文件），
+      // 为一行底色不值得。T006 当时暂用中性灰 overlay，T017 换成品牌浅金。
+      classList={{ "bg-[var(--v2-background-bg-accent-soft)] text-v2-icon-icon-accent": props.active }}
     >
       <Show when={props.active}>
         {/* 选中态的左侧竖条：除了底色，还用「形状」表达选中（DESIGN §4.1 / §4.3） */}

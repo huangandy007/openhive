@@ -36,6 +36,33 @@ describe("Topbar 顶栏", () => {
     expect(text(host, "topbar-brand-badge")).toBe("蜂巢")
   })
 
+  test("没配 Logo 时：品牌位是**内置的六边形图形标**，不是一个 src 空的破图（T017）", () => {
+    const host = mount(() => <Topbar user={张三} />)
+
+    const 图形标 = host.querySelector("[data-slot='topbar-brand-mark']")
+    expect(图形标?.tagName.toLowerCase()).toBe("svg")
+    expect(host.querySelector("img[data-slot='topbar-brand-mark']") != null).toBe(false)
+  })
+
+  test("配了 Logo：品牌位换成配置的那张图（T017 出参：改配置即可换 Logo，不动组件）", () => {
+    const host = mount(() => <Topbar user={张三} logo="/brand/某市局.svg" />)
+
+    const 图形标 = host.querySelector<HTMLImageElement>("[data-slot='topbar-brand-mark']")
+    expect(图形标?.tagName.toLowerCase()).toBe("img")
+    expect(图形标?.getAttribute("src")).toBe("/brand/某市局.svg")
+  })
+
+  test("内置图形标的金色走品牌 token，不写 hex（换皮后自动变金，无需再动组件）", () => {
+    const host = mount(() => <Topbar user={张三} />)
+    const 图形标 = host.querySelector("[data-slot='topbar-brand-mark']")
+
+    // happy-dom 没有 CSS 引擎，解析不了 var()——能断言的正是「属性里写的是不是一个 token」
+    expect(图形标?.querySelector("linearGradient stop")?.getAttribute("stop-color")).toBe(
+      "var(--v2-brand-gold-light)",
+    )
+    expect(图形标?.querySelector("polygon")?.getAttribute("stroke")).toBe("var(--v2-brand-gold)")
+  })
+
   test("要素二：没有未读时，站内信按钮不带红点", () => {
     const host = mount(() => <Topbar user={张三} />)
 

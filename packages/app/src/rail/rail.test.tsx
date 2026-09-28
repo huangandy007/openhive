@@ -57,6 +57,18 @@ describe("Rail 图标栏", () => {
     expect(其余.some((el) => el.getAttribute("aria-current") !== null)).toBe(false)
   })
 
+  test("选中底是浅金 token，不再是中性灰（DESIGN §1.3 / T017 换皮）", () => {
+    const host = mount(() => <Rail active="fund-analysis" onSelect={() => {}} />)
+    const entries = [...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']")]
+    const 当前 = entries.find((el) => el.getAttribute("aria-label") === "资金分析")
+    const 其余 = entries.filter((el) => el.getAttribute("aria-label") !== "资金分析")
+
+    // happy-dom 没有 CSS 引擎，能断言的只有「用的哪个 token」——正是换皮要守住的那一点
+    expect(当前?.className ?? "").toContain("bg-[var(--v2-background-bg-accent-soft)]")
+    expect(当前?.className ?? "").not.toContain("overlay-simple-overlay-pressed")
+    expect(其余.every((el) => !(el.className ?? "").includes("accent-soft"))).toBe(true)
+  })
+
   test("系统设置同样能是当前入口：停在设置上时竖条落在底部那一项，五个业务入口都不带", () => {
     const host = mount(() => <Rail active="settings" onSelect={() => {}} />)
     const entries = [...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']")]

@@ -1,6 +1,6 @@
 import { Icon, type IconProps } from "@opencode-ai/ui/icon"
 import { createSignal, createUniqueId, For, Show, type JSX } from "solid-js"
-import { BRAND_BADGE, BRAND_NAME } from "./brand"
+import { BRAND_BADGE, BRAND_LOGO, BRAND_NAME } from "./brand"
 import { toggleFullscreen } from "./fullscreen"
 import { USER_MENU_ITEMS, visibleUserMenuItems } from "./menu"
 
@@ -20,10 +20,11 @@ const OUTER_RADIUS = 50
 const INNER_RADIUS = 25
 
 /**
- * 品牌图形标：外等边六边形描边 + 中心实心渐变蜂窝（DESIGN §5.1）。
+ * 内置六边形图形标：外等边六边形描边 + 中心实心渐变蜂窝（DESIGN §5.1）。
  *
- * 颜色全部走 `theme.css` 语义变量，不写 hex——品牌金由 T017 的 v2 token 换皮生效
- * （宪法 §八：不硬编码新 hex；宪法 I：`theme.css` 归 T017）。
+ * 用**品牌三档金**（`theme.css` 的品牌块）而不是 accent 槽位，好让 logo 与
+ * `design-reference/logo-mark.svg` 逐色对应：描边主金、蜂窝浅金→深金。颜色一律写 token，
+ * 不写 hex（宪法 §八）。
  */
 function BrandMark() {
   const gradientId = `openhive-brand-${createUniqueId()}`
@@ -38,17 +39,27 @@ function BrandMark() {
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="var(--v2-icon-icon-accent)" />
-          <stop offset="1" stop-color="var(--v2-icon-icon-accent-hover)" />
+          <stop offset="0" stop-color="var(--v2-brand-gold-light)" />
+          <stop offset="1" stop-color="var(--v2-brand-gold-deep)" />
         </linearGradient>
       </defs>
-      <polygon
-        points={hexPoints(CENTER, OUTER_RADIUS)}
-        stroke="var(--v2-icon-icon-accent)"
-        stroke-width={9}
-      />
+      <polygon points={hexPoints(CENTER, OUTER_RADIUS)} stroke="var(--v2-brand-gold)" stroke-width={9} />
       <polygon points={hexPoints(CENTER, INNER_RADIUS)} fill={`url(#${gradientId})`} />
     </svg>
+  )
+}
+
+/**
+ * 品牌图形标：配了图就显示那张图，没配才用内置六边形（宪法 II：换 Logo 不动组件）。
+ *
+ * 「没配」走的是内置件的**兜底**，不是 `<img src="">`——后者会去请求当前页面地址、
+ * 渲染出一个破图；`resolveBrandLogo` 用 `undefined` 把「没配」标出来正是为了这个分岔。
+ */
+function BrandLogo(props: { logo?: string }) {
+  return (
+    <Show when={props.logo} fallback={<BrandMark />}>
+      {(地址) => <img data-slot="topbar-brand-mark" src={地址()} width={24} height={28} alt="" />}
+    </Show>
   )
 }
 
@@ -71,6 +82,12 @@ export interface TopbarProps {
   onSelect?: (id: string) => void
   /** 点站内信图标；站内信本体是新增功能，由调用方决定打开什么。 */
   onOpenMessages?: () => void
+  /**
+   * 品牌图形标地址；省略 = 读构建期配置 `VITE_OPENHIVE_BRAND_LOGO`（宪法 II）。
+   * 两者都没有时用内置六边形。留这个入参是为了让「换 Logo」这条出参可测——
+   * 生产侧走配置，不必传。
+   */
+  logo?: string
 }
 
 function TopbarIconButton(props: {
@@ -104,7 +121,7 @@ export function Topbar(props: TopbarProps) {
   return (
     <div data-component="topbar" class="flex shrink-0 items-center justify-end gap-1">
       <span class="flex items-center gap-1.5 pl-1">
-        <BrandMark />
+        <BrandLogo logo={props.logo ?? BRAND_LOGO} />
         <span data-slot="topbar-brand-name" class="text-v2-text-text-base text-sm font-bold">
           {BRAND_NAME}
         </span>
