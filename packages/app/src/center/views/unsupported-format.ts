@@ -45,8 +45,11 @@ const 降级标记 = "@@openhive/降级档"
  * 会被**抛出来**的那三档。
  *
  * 收窄不是为了好看：`empty` / `error` 是**壳**自己判的（读不到内容、渲染时炸了），没有也不该有
- * 对应的标记错——若这里交回整个 `DegradedReason`，一个手写的属性能把「真故障」伪装成「已知边界」，
- * 且调用点 `setState(看不了 ?? "error")` 会被 TS 拦下（`empty` 不是字节视图的抛出结果）。
+ * 对应的标记错——若这里交回整个 `DegradedReason`，一个手写的属性能把「真故障」伪装成「已知边界」。
+ *
+ * ⚠️ 别拿「TS 会拦下调用点」当理由：类型上 `DegradedReason ⊂ BinaryViewState`，`setState(看不了)`
+ * 两种写法**都编得过**（实测过）。真正咬住的是下面 `是哪种看不了` 里那份**字面量白名单**——
+ * 它才是运行期那道闸，类型只负责让两边不走散。
  *
  * `load-failed` 后来**加进来**（它原本只由壳判）：渲染器**自己**知道它在下载我们这边的代码
  * （认加密流要的 xlsx、配 worker 脚本），块没到就该由它说这句话——而不是让壳去猜。壳猜不准：
@@ -61,8 +64,8 @@ export type 可抛的档 = Extract<DegradedReason, "unsupported" | "encrypted" |
  *
  * `说明` 是给**排障的人**看的（进 `Error.message`）：它到不了界面——界面上的措辞在
  * `degraded-view.tsx` 的 `说法` 里（DESIGN §4.6）。⚠️ 而且它多半连控制台都到不了：
- * 视图壳只在**没带标记**（真故障）时才 `console.warn`，带标记的两档是「预期内的边界」、不喊
- * （见 `binary-view.tsx` 那条 catch）。日常能读到它的地方是测试。
+ * 视图壳只在**没带标记**（真故障）时才 `console.warn`，带标记的**三档**都是「预期内的边界」、
+ * 不喊（见 `binary-view.tsx` 那条 catch）。日常能读到它的地方是测试。
  */
 function 标记错(说明: string, 档: 可抛的档): Error {
   return Object.assign(new Error(说明), { [降级标记]: 档 })

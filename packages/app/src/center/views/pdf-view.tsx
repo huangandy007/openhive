@@ -28,7 +28,12 @@ import { 加载失败, 需要密码 } from "./unsupported-format"
  *
  * 那块 worker 脚本**没到**同样是我们这边的问题：抛 `加载失败` 落 `load-failed`（动作：重开这张
  * 标签），而不是让 rejection 一路兜成 `error`（「可能已经损坏」）——后者让民警去怀疑一份好卷宗。
- * ⚠️ 本环境验不了这条分支（Bun 里它总成功），同 `document-view.tsx` 认加密流那块的注记。
+ *
+ * ✅ 这条分支有测试钉着（`load-failed.test.tsx`），但**测法有个前提**：得先把 `workerSrc` 清回
+ * 空串。Bun 里 pdfjs 的 Node 分支在模块加载时就把它兜成了 `"./pdf.worker.mjs"`，于是上面那句
+ * `if (GlobalWorkerOptions.workerSrc) return` 会提前返回、这条 `import` 在本环境根本执行不到
+ * （与 `document-view.tsx` 认加密流那块不同——那边没有这道前置 return，直接就可达）。
+ * 清空不是造状态，是把值摆回它在**浏览器里的初值**：那才正是这条分支在生产里每次首访必经的原因。
  */
 async function 配好worker脚本(): Promise<void> {
   if (GlobalWorkerOptions.workerSrc) return

@@ -40,9 +40,12 @@ const 加密流 = ["/EncryptionInfo", "/EncryptedPackage", "/encryption"] as con
  * 这块 chunk 没到（断网 / 部署后旧标签取的旧地址）是**我们这边**的问题，故抛 `加载失败` 落
  * `load-failed`（动作：重开这张标签），而不是让它变成一句普通的 rejection → `error`
  * （「可能已经损坏」，动作：把卷宗退回去重新取证）——后者对一份一点没坏的文件是反的归因。
- * ⚠️ 这条分支**本环境验不了**（happy-dom + Bun 里动态导入总成功，造不出 chunk 加载失败），
- * 与 `pdf-view.tsx` 的 worker 那条同性质：断言在**壳**那一侧（`binary-view.test.tsx` 用假渲染器
- * 抛标记错钉住落 `load-failed`），这几行只保证「真失败了就往那条路上抛」。
+ * ⚠️ 这条分支**当前没有测试钉着**——不是不想，是本套件里做不到：`load-failed.test.tsx` 的注释
+ * 写了实测经过（Bun 跨文件共享模块注册表，xlsx 已被别的测试先加载，抛错的 mock 工厂会炸在注册
+ * 那一行；要解得给 `test:components` 加 `--isolate`，实测代价 3.66s → 14.02s）。所以别拿
+ * 「有测试钉着」来推这条 `.catch` 删不得——它现在是**没人管**的。
+ * 兜底只有间接的两层，都不碰这里：`binary-view.test.tsx` 钉住壳对**带标记错**的处置（用户看
+ * 到的那一档不会错），`zip-entry.test.ts` 从渲染器那一侧钉住 `是哪种看不了` 认得哪几档。
  */
 async function 看容器锁没锁(bytes: Uint8Array<ArrayBuffer>): Promise<boolean> {
   const { CFB } = await import("xlsx").catch((原因: unknown) => {
