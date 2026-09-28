@@ -160,4 +160,4 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ##  LEARNINGS 自动加载
 @LEARNINGS.md
 每次会话开始,先吸收下方教训沉淀;实现新 feature 时若命中相关 type /
-应用范围,主动避坑并明示"本次绕开 LEARNINGS 第 N 条"。
+应用范围,主动避坑并明示"本次绕开 LEARNINGS #001-04"（`#001-04` = 条目号，见各条标题）。
