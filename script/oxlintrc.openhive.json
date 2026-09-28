@@ -1,0 +1,54 @@
+// openhive 的**视觉契约门**（`bun run lint:openhive`）。
+//
+// **为什么另起一份配置，而不是往根 `.oxlintrc.json` 里加**：根配置是**上游文件**，本 fork 的第一
+// 号工程约束是最小化与官方的合并冲突（宪法 §一 NON-NEGOTIABLE）。把定制规则塞进根配置，等于给
+// 每次同步都埋一处冲突点；另起一份配置 + 一个脚本则**只加不改**（宪法 §五）——上游改它的，我们加我们的。
+//
+// 门的**范围**只覆盖 openhive 自有目录（见根 `package.json` 的 `lint:openhive`）。不覆盖全仓：
+// 上游代码里本就存在写死的色值（那是它的既成事实，不是本项目的债），扫全仓只会满屏告警、
+// 把真阳性淹掉。**这条边界是故意的**：本门守的是「我们自己新写的代码不引入新裸色值」。
+{
+  // 继承上游根配置——不复制它的规则。
+  //
+  // ⚠️ 继承**不是可选的**：根配置里有一批**为 SolidJS 口径专门关掉**的规则（`no-unassigned-vars`
+  // 等，理由见那边注释：Solid 用 `let ref: T | undefined` 接 JSX ref）。不继承，这些规则会以默认
+  // 级别复活，在 `tab-bar.tsx` 这类文件上产出假阳性——一个满屏噪音的门等于没有门。
+  "extends": ["../.oxlintrc.json"],
+
+  // 本项目的本地插件（设计 token 守卫）。路径相对**本配置文件**。
+  "jsPlugins": ["./oxlint-openhive-plugin.cjs"],
+
+  // 开 jsx-a11y：交互元素的可访问性在**静态**就有一半可判（键盘可达、可访问名称、aria 角色用法）。
+  // 这一半不需要浏览器、不需要渲染，所以归 lint 门，不写测试也不起 Playwright。
+  // ⚠️ 它只覆盖「静态可判」的那一半；真实渲染下的对比度/焦点顺序/屏幕阅读器行为不在这里，
+  // 那部分需要 axe + 真浏览器（本轮未做，见报告）。
+  //
+  // 🔴 **`plugins` 是「整份清单」，不是「追加」**——这是实测踩出来的坑，别删那三个：
+  // 只写 `["jsx-a11y"]` 时，oxlint 把**默认插件集整体换掉**，`typescript` / `unicorn` 命名空间的
+  // 规则**全部消失**（实测启用规则数 130 → 90，静默丢掉 **67 条**，其中含根配置显式开启的
+  // `no-floating-promises` / `no-misused-spread` / `no-base-to-string`）。**门不会报错、不会变红，
+  // 只是从此少查一大片**——比规则报错危险得多。
+  // 验法（规则面而非文件面）：`bunx oxlint -c script/oxlintrc.openhive.json --rules` 数启用条数，
+  // 应当 = 根配置的基线 + jsx-a11y 的条数（当前 **160 = 130 + 30**）。少一条就说明这里被换过了。
+  "plugins": ["jsx-a11y", "typescript", "unicorn", "oxc"],
+
+  "rules": {
+    // 颜色只能走 token（宪法 §八）。级别刻意是 `warn` 不是 `error`：
+    // 它落进的是「收尾补测新增的门」，**首跑时门内已有存量告警**（见下），此时升 error 会让门
+    // 一进来就是红的——那是"先污染后治理"，不是门禁。**升 error 的前提是存量清零**。
+    "openhive/no-raw-color": "warn"
+  }
+
+  // 📌 **首次开启的存量基线（2026-09-28 实测，`packages/app/src/{rail,center,topbar,workspace}` 62 文件）**：
+  // **23 warnings / 0 errors**（⇢ 退出码 0，门当前是「通过但带告警」）。构成：
+  //   17 `no-unnecessary-type-assertion` + 2 `unbound-method` + 1 `no-unsafe-type-assertion`
+  //   + 1 `no-misused-spread` + 1 `no-new-array` —— 都是**风格/冗余**，落在 T001–T017 已合并代码里
+  //   （14 条在 `*.test.tsx/test.ts`，9 条在产品码），**不是本次引入**；
+  //   **1 条 `click-events-have-key-events` @ `center/tab-bar.tsx:39-47` 是真缺陷**（键盘用户无法
+  //   聚焦并激活 tab，WCAG 2.1.1），已按护栏 **HALT、只记录、不改产品码**。
+  // ⚠️ 这 23 条**本轮刻意不清**：清它们要改一堆与本任务无关的文件，而宪法 §四禁止一个 PR 混
+  // 「重构」与「新功能」。**它们是这道门要还的债，不是这道门的假阳性**——本门对「我们自己新写的
+  // 代码」零假阳性（`openhive/no-raw-color` 在 62 文件上 0 命中 = 当前自有代码无裸色值）。
+  // ⚠️ 另注：oxlint 12 线程下**总计数有 ±1 抖动**（state.md T005 已记同一现象）——判「有没有变坏」
+  // 要看**规则名 + 文件行**，不要只看总数。
+}
