@@ -270,3 +270,73 @@ describe("视图按需加载：空档期不闪页面、失败要收手、迟到�
     expect(视图()?.getAttribute("data-name")).toBe("卷宗")
   })
 })
+
+/**
+ * FR-006 的验收场景是「切到项目管理 → 中栏已有 tab 不清空、**不打扰**」，SC-002 更是点名了
+ * 「选中状态与**内容**不丢失」。tab 列表与激活态由 `tab-store.ts` 保住了（见上一组「关掉的是别的
+ * tab」），但那两条**只断言了 `data-path`**——没有一条盯着视图组件自己会不会被重建。
+ *
+ * 重建的代价不是「多跑一次渲染」：`BinaryView` 的取数 effect 以 `props.path` 为依赖，重挂 = 文件字节
+ * **重新从服务端拉一遍** + `pending` 闪一下 + 渲染器重跑（pdfjs 重解析、docx 重排版），`code-view` 的
+ * 编辑器状态、PDF 的滚动位置一并归零。这些全都**静默**发生，测试看得见、民警只是觉得「卡了一下」。
+ *
+ * 触发源很隐蔽：`CenterTabsProvider` 每个动作都 `setState` 一个**新对象**，于是 `center-content.tsx`
+ * 里那个读了 `center.tabs()` 的 effect 会为**任何**动作重跑，而 effect 里的 `set内容({...})` 写的是
+ * 新字面量、`<Show keyed>` 又按引用比较 → 卸载重挂。下面三条按三种触发源分别钉住「内容没变就不许重建」。
+ */
+describe("内容没变就不重建视图：切模块 / 关别的 tab / 重激活都打断不了它（FR-006 / SC-002）", () => {
+  /** 一个会计数的假视图：`onMount` 每次挂载都跑，重挂必然现形。 */
+  const 计数视图 = () => {
+    const 计数 = { n: 0 }
+    const View: ViewComponent = () => {
+      onMount(() => 计数.n++)
+      return <div data-slot="视图" />
+    }
+    return { View, 计数 }
+  }
+
+  test("切模块：tab 没被清，当前视图也不许重建", async () => {
+    const { View, 计数 } = 计数视图()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => View })
+    const { 开, center } = setUp({ registry })
+
+    await 开(专案)
+    expect(计数.n).toBe(1)
+
+    center.switchModule("cdr-analysis")
+    await 落定()
+
+    expect(center.tabs()).toHaveLength(1) // FR-006：切模块不动已有 tab
+    expect(计数.n).toBe(1) // 且当前视图不该被打断——内容一字未变，没有任何理由重挂
+  })
+
+  test("关掉别的 tab：当前视图不许重建", async () => {
+    const { View, 计数 } = 计数视图()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx", ".pdf"], load: async () => View })
+    const { 开, center } = setUp({ registry })
+
+    await 开(专案)
+    await 开(卷宗)
+    expect(计数.n).toBe(2) // 换了文件时重建是**对的**：视图要按新 path 重新取数（上一组的 keyed 语义）
+
+    center.close(contentTabKey(专案))
+    await 落定()
+
+    expect(计数.n).toBe(2) // 但关的既然不是当前那张，视图就不该重建
+  })
+
+  test("再点一次当前 tab：重激活同一个 key 不是「换内容」", async () => {
+    const { View, 计数 } = 计数视图()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => View })
+    const { 开, center } = setUp({ registry })
+
+    await 开(专案)
+    center.activate(contentTabKey(专案))
+    await 落定()
+
+    expect(计数.n).toBe(1)
+  })
+})

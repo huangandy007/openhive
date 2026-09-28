@@ -25,9 +25,29 @@ type 中栏内容 =
   | { kind: "view"; Component: ViewComponent; path: string }
   | { kind: "degraded"; reason: DegradedReason; name: string }
 
+/**
+ * 「还是同一份内容吗」。**这不是省渲染的优化，是正确性的一部分。**
+ *
+ * 上游 `CenterTabsProvider` 每个动作都 `setState` 一个**新对象**，所以下面那个读了 `center.tabs()`
+ * 的 effect 会为「关掉别的 tab」「切模块」这类**内容一字未变**的操作重跑。若 `内容` 用默认的 `===`
+ * 比较，effect 里写入的新字面量永远算「变了」，`<Show keyed>` 就会把当前视图**卸载重挂**——文件字节
+ * 重新拉一遍、渲染器重跑（pdfjs 重解析 / docx 重排版）、代码编辑器与 PDF 阅读位置归零。全静默发生，
+ * 却正好踩碎 FR-006 的「不打扰」与 SC-002 的「内容不丢失」。
+ *
+ * 但「换了文件」必须**照旧**重建：两张同类型 tab 之间切换时组件是同一个，不重建它就不会按新 path
+ * 重新取数。所以这里逐字段比，而不是一刀切「什么都不重建」。
+ */
+function 还是同一份(a: 中栏内容 | undefined, b: 中栏内容 | undefined) {
+  if (a === b) return true
+  if (!a || !b) return false
+  if (a.kind === "view" && b.kind === "view") return a.Component === b.Component && a.path === b.path
+  if (a.kind === "degraded" && b.kind === "degraded") return a.reason === b.reason && a.name === b.name
+  return false
+}
+
 export function CenterContent(props: ParentProps<CenterContentProps>) {
   const center = useCenterTabs()
-  const [内容, set内容] = createSignal<中栏内容 | undefined>(undefined)
+  const [内容, set内容] = createSignal<中栏内容 | undefined>(undefined, { equals: 还是同一份 })
 
   createEffect(() => {
     const key = center.active()
