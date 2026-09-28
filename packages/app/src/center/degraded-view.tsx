@@ -9,6 +9,11 @@ import type { Component } from "solid-js"
  * 是**我们**这边的问题，更不该赖到文件头上。用一句「出错了」糊过去等于什么都没说
  * （US3 AC3 要的是「可提示」，不是「有个提示」）。
  *
+ * ⚠️ **上面这几句只点了 4 档**（另加 `load-failed`），漏掉的那一档是 `empty`——「没取到内容」，
+ * 动作是**补内容/换个来源**，与「格式没接」「文件坏了」「缺密码」都不是一回事，也得分着说。
+ * 这条注释的数字与列举项此前对不上（第十轮 M-10-4）；**以 `DegradedReason` 的 5 个取值为准，
+ * 别数这里的句子**。
+ *
  * 取值的视觉规范见 `openhive-DESIGN.md` §4.6（图标 / 标题 / 说明模板）。
  */
 export type DegradedReason = "unsupported" | "empty" | "encrypted" | "error" | "load-failed"
