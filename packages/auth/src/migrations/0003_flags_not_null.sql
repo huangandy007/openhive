@@ -10,7 +10,11 @@
 -- 多要一次改密，好过放过一个没改过密的账号。
 --
 -- 本文件 4 条语句**全部幂等**（两条 UPDATE 幂等、两条 SET NOT NULL 幂等），
--- 因此即使运行器逐条执行、中途失败（见 migrate.ts 的已知缺口），重试也能自愈。
+-- 因此即使运行器逐条执行、中途失败也能自愈。原因写在这里、不指向别处：
+-- 运行器**没有事务**——`runFile` 逐条 `execute`（无 BEGIN/COMMIT），而 `_migration` 的记账
+-- insert 排在 `runFile` **之后**，所以一个文件中途失败会留下「改了库、没记账」，
+-- 重试时**从文件头重跑**。这就是每个迁移文件都必须自幂等的原因（收口见 003 的 T021）。
+-- 并发同理：两个 runner 会各自读到同一份 `applied` 后都去应用。
 
 UPDATE auth.user SET is_admin = 0 WHERE is_admin IS NULL;
 --> statement-breakpoint

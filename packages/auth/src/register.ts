@@ -117,9 +117,17 @@ export async function registerUser(db: UserInsertTarget, input: RegisterInput): 
  *
  * **靠捕获 23505，不做前置 SELECT 预检**：预检有 TOCTOU 竞态——两个管理员同时录同一个警号，
  * 双方都通过预检，仍会有一个撞上 UNIQUE。既然省不掉捕获，预检就只是多一次查询。
- * 其余错误（42P01 之类）原样抛出，绝不误判成「警号重复」。
+ *
+ * 非 23505 的错误一律换成**不带参数**的 `AccountWriteError`（带出 SQLSTATE），
+ * **绝不原样抛、也绝不误判成「警号重复」**——原样抛会把这条 insert 的参数
+ * （含 `password_hash` / `id_card` / `phone`）随 drizzle 错误的 message 一起带出去。
  */
 async function insertUser(db: UserInsertTarget, input: RegisterInput, id: string): Promise<void> {
+  // 哈希在 try **之外**算（同 `password.ts` 的两处）：否则 `Bun.password.hash` 自己抛的错
+  // 也会被下面的 catch 收走、包成 `AccountWriteError(undefined)`——没有 SQLSTATE，
+  // 看不出「是哈希失败」还是「是库失败」。
+  const passwordHash = await hashPassword(DEFAULT_PASSWORD)
+
   try {
     await db.insert(user).values({
       id,
@@ -131,7 +139,7 @@ async function insertUser(db: UserInsertTarget, input: RegisterInput, id: string
       dept: input.dept,
       section: input.section,
       status: input.status,
-      passwordHash: await hashPassword(DEFAULT_PASSWORD),
+      passwordHash,
       // 下面两个不靠列默认值：它们是**要求**，写在调用点才看得见。
       // `isAdmin: 0` 尤其重要——8 个业务字段里没有「是否管理员」，所以录入出来的账号一律不是管理员，
       // 提权必须是另一条独立路径（否则管理员录入界面就成了提权入口）。

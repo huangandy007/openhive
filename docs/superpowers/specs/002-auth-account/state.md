@@ -326,9 +326,14 @@ tasks.md 原文写「校验密码 → 签发凭证 → **进入主界面**」，
 预检有 **TOCTOU 竞态**——两个管理员同时录同一个警号，双方都通过预检，仍会有一个撞上 UNIQUE。
 既然捕获省不掉，预检就只是多一次查询、一个额外的失败点，并不减少任何一类错误。故只保留捕获这一条权威路径。
 
-**只翻译 23505，其余原样抛**：有一条测试专门钉这个——先把 `auth.user` 表 `drop` 掉制造 `42P01`，
+**只翻译 23505，其余不原样抛、也不误判**：有一条测试专门钉这个——先把 `auth.user` 表 `drop` 掉制造 `42P01`，
 断言它**不是** `DuplicatePoliceNoError`。否则「表不存在」会变成「警号重复」，运维会被彻底带偏。
-原错误挂在 `cause` 上，不丢排查线索。
+
+> ⚠️ **本节已被 I2 修订（2026-09-29，见下方「收尾评审发现与处置」）**。「其余**原样抛**」是 T008 当时的
+> 实现；收尾复审发现 `DrizzleQueryError.message` **内联了查询参数**，而这条 insert 的参数里有
+> `password_hash` / `id_card` / `phone` —— 原样抛等于把三样一起交出去。现改为非 23505 一律换成
+> **不带参数**的 `AccountWriteError`（SQLSTATE 单独带出）。**排查线索没丢**（SQLSTATE 仍可取），
+> 但「原错误挂在 `cause` 上」这句已不成立——读本节时请以 I2 的口径为准。
 
 **`src/pg-errors.ts` 的来历（重构披露）**：`pgErrorCode` 原本长在 T003 的 `migrate.test.ts` 里。
 T008 起生产也要用它，于是抽成生产模块，`migrate.test.ts` 改为 import——两处共用一份，
@@ -584,7 +589,7 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
 ### 🔑 待补环境变量（部署前必须，T005 引入）
 | 变量 | 状态 | 用途 |
 |---|---|---|
-| `AUTH_JWT_SECRET` | ❌ **`.env` 中尚无**，需部署方生成随机串写入 | `src/token.ts` 签发/校验 JWT 的 HS256 密钥 |
+| `AUTH_JWT_SECRET` | ❌ **`.env` 中尚无**，需部署方生成随机串写入。**必须 ≥ 32 字符**（I7 加的地板，依据 RFC 7518 §3.2；短了抛 `WeakJwtSecretError`） | `src/token.ts` 签发/校验 JWT 的 HS256 密钥 |
 | `OPENHIVE_WORKSPACE_ROOT` | ⚠️ **可选**，未配置时用 `/workspaces` | 每用户沙箱目录的根（`src/workspace.ts`） |
 
 代码侧**不提供默认值**：`jwtSecret()` 缺值时点名报错（`缺少环境变量 AUTH_JWT_SECRET`）。理由见 T005 节。
@@ -808,7 +813,7 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 | 编号 | 文件:行 | 缺陷 | 处置 |
 |---|---|---|---|
 | C1 | `password.ts:60,69` | 改密可把新密码设成**系统默认密码**或纯空白。默认密码是写在 design-v2 正文里的公开值，而 `must_change_pw` 随后被清成 0：账号停在人尽皆知的口令上，且与「正常改过密」**完全同形**，测试与运维视图都看不出区别 | 已修：三条「地板」检查（非空白 / 非默认密码 / 非当前密码）。顺序上「非当前密码」**必须**排在验密之后，否则退化成猜密码的预言机 |
-| C2 | `bun.lock` | 锁文件被写入 3260 行 `registry.npmmirror.com` URL（本机 `~/.npmrc` 指向镜像，bun 认它），给全体开发者与 CI 定死下载源，且**每次同步上游都在这 3260 行上冲突** | 已修（commit `6267ef68d3`）：还原为上游写法（该列留空串）。diff vs 基线只剩 35 行插入，全是有意新增 |
+| C2 | `bun.lock` | 锁文件被写入 `registry.npmmirror.com` URL（本机 `~/.npmrc` 指向镜像，bun 认它），给全体开发者与 CI 定死下载源，且**每次同步上游都在这些行上冲突**。实测行数：基线 `d9fefaf329` **0** → 首次污染 `85eca3a020` **3226** → 峰值 `ff7f7ec544` **3234**（此处更正先前写的「3260」，那是**未实测**的数字，同 `#001-01` 的坑；commit `6267ef68d3` 的 message 里也留了这个错数，不改写历史、以本行为准） | 已修（commit `6267ef68d3`）：还原为上游写法（该列留空串）。`HEAD` 实测 **0** 行；diff vs 基线只剩 35 行插入，全是有意新增 |
 | C3 | `migrate.ts:111-114` | `rollback` 可回滚**任意**已应用版本 → 账与 schema 永久背离，`migrate()` 再也修不回来；该守卫**同时**是路径穿越的闸门（版本号会拼进文件名） | 已修：只允许回滚最后一个已应用版本 |
 
 ### Important：10 条（6 已修 / 4 移交）
@@ -836,6 +841,29 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 > 已经把 Important 写进了接收方的表，Minor 却只停在会话里。下次评审收尾时，
 > 无论优先级高低，发现一律**先落盘、再处置**。
 
+### 第二轮复审（复审那轮修复本身）：0 Critical / 5 Important / 9 Minor
+
+按 Step 4「有缺陷 → 回到 task 修，重走 review，直到 0 缺陷」，对修复提交
+（`ff7f7ec544..6267ef68d3`）再评一轮。**5 条 Important 全部已修**——它们有一个共同的形状：
+**修复本身是对的，但没有任何测试/文档在它被改坏时出声**。
+
+| 编号 | 复审发现 | 处置 |
+|---|---|---|
+| R1 | `register.ts:120` 的函数 docstring 仍写「其余错误**原样抛出**」，与 `:150-152` 的实现（包成 `AccountWriteError`）**相反**。下一个实现者若照这句「还原」，I2 关掉的泄露就静默重开 | 已改为与实现一致，并点明为什么不能原样抛 |
+| R2 | C1 里那条被代码自己标为 `⚠️ 必须` 的**顺序性质**无测试守着。把「新密码 = 当前密码」检查移到验密**之前**，18 条测试**全绿**——即改密退化成猜当前密码的预言机而无人察觉 | 已补 RED-式守卫测试（当前密码**错**且与新密码相同 → 必须 `InvalidCurrentPasswordError`）。变异验证：把顺序调反 → **恰好 1 条红**，恢复即绿 |
+| R3 | I6 的 `typeof value !== "string"` 分支无测试。删掉它，56 条全绿——而它一删，「少填一个字段」就从可识别的领域错误变成 `TypeError` → 500 | 已补 3 条（`null` / `undefined` / 数字·布尔·数组）。变异验证：删掉 `typeof` → **恰好 3 条红** |
+| R4 | `textReachableFrom` **无正向对照**：四条脱敏断言全是 `not.toContain`，walker 若退化成恒返回 `""`，它们**全部空转**。这与本轮 3 条「首跑即绿」的假绿是同一失败模式，只隔一次重构 | 已补 4 条正向对照（register / password 各 2：`message` 与嵌套 `cause`）。变异验证：让 walker 返回 `""` → **恰好 4 条红** |
+| R5 | ≥32 字符密钥地板**没写进接收方的表**。`token.ts` 的注释称「这是进程启动路径上的一次性检查」，但**全仓库无任何生产代码调用 `jwtSecret`**（调用者只有 `token.test.ts`）——注释描述的是一个尚未发生的调用 | 注释改为「调用方**应当**如此」并点名执行点；地板写进 **003 T014** 与本节上方「待补环境变量」表 |
+
+**顺带修掉的 5 条 Minor**（都是「说了假话」型，代价低）：
+R6 录入侧哈希在 `try` 内（失败会被包成无 SQLSTATE 的「账号写入失败」，同 `password.ts:89` 的立场，I2 那类只修了 2/3 处）→ 提到 `try` 外；
+R9 `0003` 引用「`migrate.ts` 的已知缺口」而该缺口根本不存在 → 改为自足表述；
+R10 `token.ts:23` 称「按字节理解也成立」，而 `String.length` 数的是 UTF-16 码元 → 改为「对 ASCII 成立、非 ASCII 偏保守」；
+R12 T008 节仍写「原错误挂在 `cause` 上，不丢排查线索」（已被 I2 推翻）→ 加修订注；
+R14 `bun.lock` 行数「3260」未实测 → 实测量准为 3234（见 C2 行）。
+
+**未修的 4 条 Minor（登记理由，不静默丢弃）**：R7 `AccountWriteError` 在非 PG 失败时丢原始错误（要改错误契约，须与网关的错误呈现一并定）；R8 `DuplicatePoliceNoError` 靠 `cause.code` 让 `pgErrorCode` 取到 SQLSTATE，与 `AccountWriteError` 的 `sqlState` 字段两套机制（同 R7，一并定）；R11 `rollback` 的 `head` 只由磁盘文件推导，账上有版本而文件被删时守卫会退化（低概率，待 T021 加锁时一并处理）；R13 测试助手在 4 个文件里逐字重复 ~50 行（属重构，与「一个 PR 不混合重构与新功能」冲突，单开）。
+
 ## 最后更新
 2026-09-29（T018 完成、002 全部 16 条任务落地；收尾补测：`backend-testing` 六步走完步骤 0–4，
 新增回归 `002-BF-01`–`06`，抓到并修掉 `pgErrorCode` 的生产驱动 bug；**越权 P0 待用户裁定 A/B**）
@@ -843,6 +871,12 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 2026-09-29 续（**收尾评审**）：三视角评审判定 3 Critical + 10 Important + 16 Minor，
 经用户裁定修完 C1/C2/C3 + I2/I6/I7/I9①/I10（commit `c0c342421a` + `6267ef68d3`），
 其余 4 条 Important（I3/I4/I5/I8）与 I1、I9② 移交 003（T019–T024）。
+
+2026-09-29 再续（**第二轮复审 + 收口**）：复审判定 **0 Critical / 5 Important / 9 Minor**；
+5 条 Important（R1–R5）全部修完并逐条变异验证，另修 5 条「说了假话」型 Minor，4 条登记不修。
+修完门禁实测：`packages/auth` **149 pass / 0 fail**（13 文件）、`bun run typecheck` **31/31**
+（`@opencode-ai/auth` 真跑非缓存）、`bunx oxlint -c script/oxlintrc.openhive.json packages/auth/src`
+**0 warnings / 0 errors**、`bun.lock` 镜像 URL **0 行**。
 门禁实测：`packages/auth` **141 pass / 0 fail**；`bun run typecheck` **31/31**；
 `oxlint -c script/oxlintrc.openhive.json packages/auth/src` **0 warning 0 error**；
 `bun.lock` vs 基线 **35 行插入 / 0 删除**（`--frozen-lockfile` 通过）。

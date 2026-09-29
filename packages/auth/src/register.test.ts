@@ -15,6 +15,7 @@ import {
   MissingFieldError,
   provisionUser,
   registerUser,
+  type RegisterInput,
 } from "./register"
 import { user } from "./user"
 
@@ -104,6 +105,19 @@ async function errorOfType<T extends Error>(
   return thrown
 }
 
+// 正向对照。没有它，上面那几条 `not.toContain(...)` **全部可能空转**——
+// 一个恒返回 `""` 的 walker 能让任何「不含哈希」的断言通过。本 feature 已经有 3 条
+// 首跑即绿的假绿（state.md 记着），失败模式同源：断言方向单一，没人验它真的看得见东西。
+describe("脱敏断言的工具本身可信（正向对照）", () => {
+  test("挂在 message 上的文本能被收集到——message 是不可枚举的，正是本函数要够到的东西", () => {
+    expect(textReachableFrom(new Error("marker-in-message"))).toContain("marker-in-message")
+  })
+
+  test("挂在嵌套 cause 上的文本也能被收集到", () => {
+    expect(textReachableFrom(new Error("外层", { cause: { deep: "marker-in-cause" } }))).toContain("marker-in-cause")
+  })
+})
+
 async function rowOf(policeNo: string) {
   const [row] = await db.select().from(user).where(eq(user.policeNo, policeNo))
   if (!row) throw new Error(`未找到警号 ${policeNo} 的账号`)
@@ -189,6 +203,44 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
 
   test("空串同样拒绝——它不是「留空」，是「没填」", async () => {
     expect(await failureOf(registerUser(db, { ...INPUT, name: "" }))).toBeInstanceOf(MissingFieldError)
+  })
+
+  // 上面那条参数化循环覆盖不到 `validate` 里 `typeof value !== "string"` 这半边：
+  // `"   "` 是字符串，走的是 `.trim()` 那一半。而这一半不是多余的（见 register.ts 的注释）——
+  // 网关交进来的是 `JSON.parse` 的产物，`null` / 缺键在 `RegisterInput` 类型上不存在、运行时会到。
+  // 把它删掉，`.trim()` 撞上 undefined 抛 TypeError，一次「少填一个字段」就变成 500。
+  describe("字段不是字符串（网关给的 JSON 里合法，类型上不存在）", () => {
+    /**
+     * 造一个「网关那一侧」的输入：在合法的 8 字段上覆写其中一个。
+     *
+     * 用 `Object.assign` 而不是 `JSON.parse(...) as RegisterInput`：后者要一次 `as`，
+     * 而 oxlint 的 `no-unsafe-type-assertion` 会拦（从 `any` 收窄、从 `unknown` 收窄都拦），
+     * 本项目的门禁判据又是「本次改动文件 **0 命中**」。`Object.assign` 的返回类型是
+     * `RegisterInput & Record<string, unknown>`，**不需要断言**就能赋给 `RegisterInput`，
+     * 而运行时那个字段确实已被换成 `null` / `undefined` / 数字——正是网关解析 JSON 后
+     * 可能交过来的东西。断言省了，被模拟的那条边界一个没少。
+     */
+    function fromGateway(patch: Record<string, unknown>): RegisterInput {
+      return Object.assign({}, INPUT, patch)
+    }
+
+    test("字段是 null 时拒绝", async () => {
+      expect(await failureOf(registerUser(db, fromGateway({ phone: null })))).toBeInstanceOf(MissingFieldError)
+      expect(await db.select().from(user)).toEqual([])
+    })
+
+    test("字段是 undefined 时拒绝——`.trim()` 撞上它会抛 TypeError，把「少填一个」变成 500", async () => {
+      const thrown = await errorOfType(registerUser(db, fromGateway({ phone: undefined })), MissingFieldError)
+
+      expect(thrown.field).toBe("phone")
+      expect(await db.select().from(user)).toEqual([])
+    })
+
+    test("数字、布尔、数组同样拒绝——它们也不是「填了」", async () => {
+      for (const value of [123, true, [], {}]) {
+        expect(await failureOf(registerUser(db, fromGateway({ name: value })))).toBeInstanceOf(MissingFieldError)
+      }
+    })
   })
 
   test("报出是哪个字段：后台要能把提示落到对应输入框上", async () => {

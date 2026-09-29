@@ -229,6 +229,34 @@ describe("改密（FR-006）", () => {
     expect(thrown).toBeInstanceOf(WeakNewPasswordError)
     expect(await storedHashOf(db, userId)).toBe(before)
   })
+
+  // 上面那条**守不住顺序**：它传的 currentPassword 是对的，所以「相同」这个判断
+  // 放在验密之前还是之后，它都绿。真正钉住顺序的是这一条——当前密码**错**、
+  // 且与 newPassword 相同：只有「先验密」的实现才报 InvalidCurrentPassword。
+  //
+  // 反过来（先比相同）这条会拿到 WeakNewPasswordError，于是攻击者能用候选密码当
+  // newPassword 传进来：猜中得 Weak、猜错得 InvalidCurrent，**一次一比特**，
+  // 无需登录即可把当前密码试出来（枚举的代价从「试图登录」降到「一次改密请求」）。
+  test("当前密码错误时，即便新密码与它相同也报「当前密码不正确」——顺序是这条的性质", async () => {
+    const thrown = await errorOf(
+      changePassword(db, { userId, currentPassword: "guessed-wrong", newPassword: "guessed-wrong" }),
+    )
+
+    expect(thrown).toBeInstanceOf(InvalidCurrentPasswordError)
+    expect(thrown).not.toBeInstanceOf(WeakNewPasswordError)
+  })
+})
+
+// 正向对照。没有它，上面那几条 `not.toContain(...)` **全部可能空转**——
+// 一个恒返回 `""` 的 walker 能让任何「不含哈希」的断言通过（同 register.test.ts）。
+describe("脱敏断言的工具本身可信（正向对照）", () => {
+  test("挂在 message 上的文本能被收集到——message 是不可枚举的，正是本函数要够到的东西", () => {
+    expect(textReachableFrom(new Error("marker-in-message"))).toContain("marker-in-message")
+  })
+
+  test("挂在嵌套 cause 上的文本也能被收集到", () => {
+    expect(textReachableFrom(new Error("外层", { cause: { deep: "marker-in-cause" } }))).toContain("marker-in-cause")
+  })
 })
 
 /**
