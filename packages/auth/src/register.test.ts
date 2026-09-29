@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { migrate } from "./migrate"
 import { verifyPassword } from "./password"
 import { DEFAULT_PASSWORD } from "./policy"
-import { provisionUser, registerUser } from "./register"
+import { DuplicatePoliceNoError, provisionUser, registerUser } from "./register"
 import { user } from "./user"
 
 /** FR-003 的 8 个业务字段。警号即登录用户名。 */
@@ -45,6 +45,13 @@ async function failureOf(action: Promise<unknown>): Promise<unknown> {
   } catch (cause) {
     return cause
   }
+}
+
+/** 跑一次应当失败的操作，要求它抛的是 Error 并交回来——省掉调用点的 as 断言。 */
+async function errorOf(action: Promise<unknown>): Promise<Error> {
+  const thrown = await failureOf(action)
+  if (!(thrown instanceof Error)) throw new Error(`期望抛出 Error，实际拿到：${String(thrown)}`)
+  return thrown
 }
 
 async function rowOf(policeNo: string) {
@@ -111,6 +118,43 @@ describe("管理员录入账号", () => {
     expect(first.id).not.toBe("")
     expect(first.id).not.toBe(second.id)
     expect((await rowOf(INPUT.policeNo)).id).toBe(first.id)
+  })
+})
+
+describe("警号唯一性（FR-001）", () => {
+  test("重复警号被拒，抛可识别的领域错误", async () => {
+    await registerUser(db, INPUT)
+
+    expect(await failureOf(registerUser(db, INPUT))).toBeInstanceOf(DuplicatePoliceNoError)
+  })
+
+  test("错误信息带上警号，后台可直接转成提示语", async () => {
+    await registerUser(db, INPUT)
+
+    const thrown = await errorOf(registerUser(db, INPUT))
+    expect(thrown.message).toContain(INPUT.policeNo)
+  })
+
+  test("原始 PG 错误保留在 cause 上，不丢排查线索", async () => {
+    await registerUser(db, INPUT)
+
+    expect((await errorOf(registerUser(db, INPUT))).cause).toBeInstanceOf(Error)
+  })
+
+  test("非唯一冲突的错误原样抛出，不被误判成重复警号", async () => {
+    // 把表删掉，制造一个 42P01（undefined_table）——它和 23505 一样是 PG 错误，
+    // 但含义完全不同，绝不能被翻译成「警号重复」。
+    await db.execute(sql`drop table auth.user`)
+
+    const thrown = await failureOf(registerUser(db, INPUT))
+    expect(thrown).toBeInstanceOf(Error)
+    expect(thrown).not.toBeInstanceOf(DuplicatePoliceNoError)
+  })
+
+  test("换一个警号仍可录入", async () => {
+    await registerUser(db, INPUT)
+
+    expect((await registerUser(db, { ...INPUT, policeNo: "000124" })).id).not.toBe("")
   })
 })
 

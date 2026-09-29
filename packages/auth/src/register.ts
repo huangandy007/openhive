@@ -1,4 +1,5 @@
 import { hashPassword } from "./password"
+import { pgErrorCode } from "./pg-errors"
 import { DEFAULT_PASSWORD } from "./policy"
 import { nowSeconds } from "./time"
 import { user } from "./user"
@@ -36,30 +37,59 @@ export interface RegisterInput {
   status: number
 }
 
+/** 警号已存在（FR-001：警号唯一）。供后台把拒绝转成「该警号已录入」这类提示。 */
+export class DuplicatePoliceNoError extends Error {
+  constructor(policeNo: string, options?: ErrorOptions) {
+    super(`警号已存在：${policeNo}`, options)
+    this.name = "DuplicatePoliceNoError"
+  }
+}
+
+/** PG 的 unique_violation 错误码。 */
+const UNIQUE_VIOLATION = "23505"
+
 /** 录入成功后返回新账号的 id——T007 用它建沙箱目录 `/workspaces/{id}/`。 */
 export async function registerUser(db: UserInsertTarget, input: RegisterInput): Promise<{ id: string }> {
   const id = crypto.randomUUID()
 
-  await db.insert(user).values({
-    id,
-    policeNo: input.policeNo,
-    name: input.name,
-    idCard: input.idCard,
-    phone: input.phone,
-    org: input.org,
-    dept: input.dept,
-    section: input.section,
-    status: input.status,
-    passwordHash: await hashPassword(DEFAULT_PASSWORD),
-    // 下面两个不靠列默认值：它们是**要求**，写在调用点才看得见。
-    // `isAdmin: 0` 尤其重要——8 个业务字段里没有「是否管理员」，所以录入出来的账号一律不是管理员，
-    // 提权必须是另一条独立路径（否则管理员录入界面就成了提权入口）。
-    isAdmin: 0,
-    mustChangePw: 1,
-    createdAt: nowSeconds(),
-  })
+  await insertUser(db, input, id)
 
   return { id }
+}
+
+/**
+ * 落库，并把「警号重复」翻译成领域错误。
+ *
+ * **靠捕获 23505，不做前置 SELECT 预检**：预检有 TOCTOU 竞态——两个管理员同时录同一个警号，
+ * 双方都通过预检，仍会有一个撞上 UNIQUE。既然省不掉捕获，预检就只是多一次查询。
+ * 其余错误（42P01 之类）原样抛出，绝不误判成「警号重复」。
+ */
+async function insertUser(db: UserInsertTarget, input: RegisterInput, id: string): Promise<void> {
+  try {
+    await db.insert(user).values({
+      id,
+      policeNo: input.policeNo,
+      name: input.name,
+      idCard: input.idCard,
+      phone: input.phone,
+      org: input.org,
+      dept: input.dept,
+      section: input.section,
+      status: input.status,
+      passwordHash: await hashPassword(DEFAULT_PASSWORD),
+      // 下面两个不靠列默认值：它们是**要求**，写在调用点才看得见。
+      // `isAdmin: 0` 尤其重要——8 个业务字段里没有「是否管理员」，所以录入出来的账号一律不是管理员，
+      // 提权必须是另一条独立路径（否则管理员录入界面就成了提权入口）。
+      isAdmin: 0,
+      mustChangePw: 1,
+      createdAt: nowSeconds(),
+    })
+  } catch (cause) {
+    if (pgErrorCode(cause) === UNIQUE_VIOLATION) {
+      throw new DuplicatePoliceNoError(input.policeNo, { cause })
+    }
+    throw cause
+  }
 }
 
 /** 一次录入的完整产物：账号 id，以及它的沙箱目录路径。 */

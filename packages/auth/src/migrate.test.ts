@@ -3,6 +3,7 @@ import { PGlite } from "@electric-sql/pglite"
 import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate, rollback, rowsOf } from "./migrate"
+import { pgErrorCode } from "./pg-errors"
 
 /** 跑一条查询并把它抛出的错原样交回来（drizzle 的 `execute()` 是懒 thenable，需 await 才真执行）。 */
 async function failureOf(query: PromiseLike<unknown>): Promise<unknown> {
@@ -12,20 +13,6 @@ async function failureOf(query: PromiseLike<unknown>): Promise<unknown> {
   } catch (cause) {
     return cause
   }
-}
-
-/**
- * 取错误链上的 PG errcode。
- *
- * drizzle 把驱动错误包成 DrizzleQueryError，PG 的 errcode 挂在其 `cause` 上——
- * 所以要往里钻一层。用 `Reflect.get` 而不是 `as` 断言：错误对象的形状是运行时事实，
- * 断言只会把类型系统的警报掐掉。
- */
-function pgErrorCode(thrown: unknown): string | undefined {
-  const cause = typeof thrown === "object" && thrown !== null ? Reflect.get(thrown, "cause") : undefined
-  if (typeof cause !== "object" || cause === null) return undefined
-  const code: unknown = Reflect.get(cause, "code")
-  return typeof code === "string" ? code : undefined
 }
 
 function freshDb() {

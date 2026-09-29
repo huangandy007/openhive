@@ -71,7 +71,15 @@
   - 实测出参：包内 `bun test` **55 pass / 0 fail**（+10：workspace 6、录入流程 4）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
   - 有牙验证：① 把顺序倒置成「先建目录」→ **2 条红**（含那条顺序钉）；② 拆掉路径穿越守卫 → 对应 1 条红。两次均恢复干净
   - ⚠️ **未接生产**：`workspaceRoot(env)` 目前没有生产调用方（HTTP 层在 T009/T018），env 变量名按约定先定下来
-- [ ] T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）[FR-001] [T003] [出参：重复警号录入被拒]
+- [x] T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）[FR-001] [T003] [出参：重复警号录入被拒]
+  - 落点 `src/register.ts`：`DuplicatePoliceNoError` + `insertUser()` 把 PG `23505` 翻译成领域错误；`registerUser` 拆出私有 `insertUser` 以便挂捕获
+  - **靠捕获 23505，不做前置 SELECT 预检**：预检有 TOCTOU 竞态——两个管理员同时录同一警号，双方都过预检，仍有一个撞 UNIQUE；既然省不掉捕获，预检只是多一次查询
+  - **只翻译 23505**：42P01 之类原样抛出，绝不误判成「警号重复」。有一条测试专门钉这个（先 `drop table` 再造错）
+  - 原错误保留在 `cause` 上，不丢排查线索
+  - 新增 `src/pg-errors.ts`：`pgErrorCode()` 从 drizzle 包装错误的 `cause` 上取 SQLSTATE。**这是 T003 测试里那段逻辑的抽取**（生产 T008 起也要用），`migrate.test.ts` 改为 import，两边共用一份——顺带消除重复
+  - 实测出参：包内 `bun test` **62 pass / 0 fail**（+7：唯一性 5、pgErrorCode 2）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
+  - 有牙验证：把「只翻译 23505」放宽成「翻译所有错误」→ 那条防误判测试变红
+  - ⚠️ **重构披露**：改动了 T003 的 `migrate.test.ts`（删掉其局部 `pgErrorCode`，改为 import）。这是消除本次抽取产生的重复，非顺手改无关代码
 
 ## Phase 4: US2 警号登录（P1）
 

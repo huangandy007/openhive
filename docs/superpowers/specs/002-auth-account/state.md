@@ -1,9 +1,35 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）
+T009 [US2] [INT] 实现登录流程（校验密码 → 签发凭证 → 进入主界面）
 
 ## 已完成
+
+### T008 [US1] [BE] 警号唯一性校验 ✅（2026-09-29）
+**交付物**：`register.ts` 增 `DuplicatePoliceNoError` + 私有 `insertUser()`（挂捕获）+ `register.test.ts` 增 5 条；
+新增 `src/pg-errors.ts`（`pgErrorCode`）+ `pg-errors.test.ts` 2 条。
+
+**检查放在哪——捕获 23505，不做前置 SELECT 预检**：
+预检有 **TOCTOU 竞态**——两个管理员同时录同一个警号，双方都通过预检，仍会有一个撞上 UNIQUE。
+既然捕获省不掉，预检就只是多一次查询、一个额外的失败点，并不减少任何一类错误。故只保留捕获这一条权威路径。
+
+**只翻译 23505，其余原样抛**：有一条测试专门钉这个——先把 `auth.user` 表 `drop` 掉制造 `42P01`，
+断言它**不是** `DuplicatePoliceNoError`。否则「表不存在」会变成「警号重复」，运维会被彻底带偏。
+原错误挂在 `cause` 上，不丢排查线索。
+
+**`src/pg-errors.ts` 的来历（重构披露）**：`pgErrorCode` 原本长在 T003 的 `migrate.test.ts` 里。
+T008 起生产也要用它，于是抽成生产模块，`migrate.test.ts` 改为 import——两处共用一份，
+避免「drizzle 改了包装方式、只有一边跟着改」这种漂移。**本次改动了 T003 的测试文件**，特此记录。
+
+**TDD 过程**：RED「Export named 'DuplicatePoliceNoError' not found」；`pg-errors.test.ts` 另起一轮 RED → GREEN。
+**有牙验证**：把 `if (pgErrorCode(cause) === UNIQUE_VIOLATION)` 放宽成 `if (true)` → 那条防误判测试变红，其余 15 条不受影响。
+
+**验收证据（真跑）**：包内 `bun test` **62 pass / 0 fail**（10 文件）；`bun run typecheck` **31/31**；
+`bun run lint` 文件数 3366→**3368**、命中数 **4924 warnings / 1 error**（与基线逐字相同，1 error 仍是上游 session-ui 那条）→ **`packages/auth` 0 命中**；
+`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
+
+> 🔧 过程中 `register.test.ts` 出现 2 条 `no-unsafe-type-assertion`（`thrown as Error`）。
+> 按 `#001-05` 所在文件的既定做法，用类型守卫（新增 `errorOf()` 助手）消掉，**没有加 disable 注释**。
 
 ### T007 [US1] [BE] 录入时创建沙箱目录 ✅（2026-09-29）
 **交付物**：`src/workspace.ts`（`workspaceRoot` / `createWorkspace` / `WORKSPACE_ROOT_ENV`）+ `workspace.test.ts`（6 条）；
@@ -256,4 +282,4 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
 （无）
 
 ## 最后更新
-2026-09-29（T007 完成并全门禁验证通过；等待「next」进 T008）
+2026-09-29（T008 完成并全门禁验证通过；等待「next」进 T009）
