@@ -10,7 +10,8 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "drizzle-orm": "catalog:"
+    "drizzle-orm": "catalog:",
+    "hono": "catalog:"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",

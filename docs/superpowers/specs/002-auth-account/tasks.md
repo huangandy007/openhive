@@ -43,7 +43,14 @@
   - 实测出参：包内 `bun test` **24 pass / 0 fail**（5 条新测试）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bunx oxlint packages/auth` 0/0
   - 有牙验证：把 `policy.ts` 的算法临时改成 bcrypt → 只有「算法锁定」那条变红，证明接线是真的
   - ⚠️ **交接 T009**：实测 `Bun.password.verify` 对**空 hash** 返回 `false`，对**垃圾 hash 抛** `UnsupportedAlgorithm`。登录路径需决定是否兜住——见 state.md「交接项」
-- [ ] T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）[FR-004] [T001] [出参：签发凭证可被校验解析出 userId]
+- [x] T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）[FR-004] [T001] [出参：签发凭证可被校验解析出 userId]
+  - 落点 `src/token.ts`：`jwtSecret()` / `signToken()` / `verifyToken()` / `sessionCookie()`；库用 `hono/jwt`（用户裁定），算法 HS256
+  - 载荷字段**逐字对齐 design-v2 §4.1 线格式**：`{ sub, police_no, name, is_admin, exp }`，有专门一条测试断言 `Object.keys` 而非只看 `id`——防「内部映射对了、线上字段名错了」
+  - `verifyToken` 校验全部 4 个 claim 后才返回；`is_admin` 必须是 `boolean`（非 truthy 判断）——返回类型承诺了完整 `TokenSubject`，校验是让承诺不说谎
+  - Cookie：`httpOnly` + `sameSite=lax` + `path=/`，`maxAge` 取自 `TOKEN_TTL_SECONDS`。**`secure` 默认关**（内网多为 HTTP，置 true 浏览器会静默丢弃 Cookie，症状是「登录成功立刻又未登录」）
+  - 新增环境变量 **`AUTH_JWT_SECRET`**：`jwtSecret()` 缺值时**点名报错、不兜默认值**（宪法 §二·II 品牌化/配置不硬编码；默认密钥入库等于给所有人发万能钥匙）→ **部署方需在 `.env` 补这一项**，见 state.md
+  - 实测出参：包内 `bun test` **34 pass / 0 fail**（10 条新测试）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
+  - 有牙验证：临时停掉载荷校验 → 只有「载荷缺字段被拒」那条变红，其余 9 条不受影响
 
 ## Phase 3: US1 管理员录入（P1）
 

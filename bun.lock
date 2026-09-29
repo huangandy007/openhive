@@ -106,6 +106,7 @@
       "version": "1.18.29",
       "dependencies": {
         "drizzle-orm": "catalog:",
+        "hono": "catalog:",
       },
       "devDependencies": {
         "@electric-sql/pglite": "0.5.8",

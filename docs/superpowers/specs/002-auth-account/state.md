@@ -1,9 +1,39 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）
+T006 [US1] [BE] 实现管理员录入账号（8 字段 + 默认密码 + must_change_pw=1）
 
 ## 已完成
+
+### T005 [P] [BE] 登录凭证签发与下发（JWT + httpOnly Cookie）✅（2026-09-29）
+**交付物**：`src/token.ts`（`jwtSecret` / `signToken` / `verifyToken` / `sessionCookie`）+ `src/token.test.ts`（10 条）；
+`policy.ts` 补 `SESSION_COOKIE_NAME = "openhive_session"`、`JWT_SECRET_ENV = "AUTH_JWT_SECRET"`；
+`package.json` 加 `hono: catalog:`（实测解析到 4.10.7，`bun.lock` 仅 +1 行）。
+
+**线格式契约**：载荷是 `{ sub, police_no, name, is_admin, exp }`，与 design-v2 §4.1（`2026-09-06-openhive-design-v2.md:150`）逐字对齐。
+专门写了一条**不验签、直接 base64 解载荷**的测试断言 `Object.keys`——只断言 `verifyToken().id === "u1"` 挡不住「内部映射对了、线上字段名写错」，
+而字段名是跨服务契约，错了要到前端或网关才炸。
+
+**`verifyToken` 的载荷校验**：4 个 claim 全类型正确才返回。这不是「防御不可能的输入」——函数签名承诺返回完整 `TokenSubject`，
+不校验就会让调用方拿到 `undefined` 却被类型告知是 `string`。`is_admin` 要求 `boolean` 而非 truthy，避免 `"false"` 这类字符串被判为真。
+
+**Cookie 设计**：`httpOnly` + `sameSite=lax` + `path=/`，`maxAge` 取 `TOKEN_TTL_SECONDS`。
+**`secure` 默认关**（可选参数开）——内网部署多为 HTTP，置 true 浏览器会**静默丢弃** Cookie，症状是「登录成功但立刻又未登录」，极难归因；网关前挂 HTTPS 时再由调用方开。
+
+**🔑 运维动作（需用户执行）**：新增环境变量 **`AUTH_JWT_SECRET`**，`.env` 目前**没有**这一项（现有仅 `PG_*` / `DEEPSEEK_*` / `MINIO_*` / `RABBITMQ_*` / `RAGFLOW_*`）。
+`jwtSecret()` 缺值**点名报错、不兜默认值**——仓库里放默认密钥等于给所有人发万能钥匙。部署前需生成一个随机串写入 `.env`。
+
+**TDD 过程**：RED「Cannot find module './token'」→ GREEN 4 个函数。
+**有牙验证**：临时停掉 `verifyToken` 的载荷校验 → **只有**「签名合法但载荷缺字段的凭证被拒」变红，其余 9 条不受影响 → 证明该断言咬的是真实逻辑。
+**自纠**：token.test.ts 首版有 4 处 `await expect(...).rejects.toThrow()` 触发 `await-thenable` 告警（Bun 把 `rejects.toThrow()` 类型标为非 Promise）——
+改为 `failureOf()` 显式 catch 助手，既消警又让「抛没抛」成为可断言的返回值。
+
+**验收证据（真跑）**：包内 `bun test` **34 pass / 0 fail**（6 文件）；`bun run typecheck` **31/31**；
+`bun run lint` 文件数 3358→**3360**、命中数 **4924 warnings / 1 error**（与基线逐字相同，1 error 仍是上游 session-ui 那条）→ **`packages/auth` 0 命中**；
+`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
+
+> ⚠️ 过程记录：本 task 首次全量 lint 读出 **4923**（比基线少 1）。未按「大概是抖动」放过，而是**同代码连跑两次复核**——两次均 **4924**，
+> 与基线一致，且 `packages/auth` 0 命中、唯一 error 位置未变。故判定为 `#001-01` 记录的 oxlint 12 线程计数抖动，非回归。
 
 ### T004 [P] [BE] 密码哈希与校验函数 ✅（2026-09-29）
 **交付物**：`src/password.ts` —— `hashPassword(plain)` / `verifyPassword(plain, hash)`。
@@ -130,8 +160,15 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
 - 另有 `DEEPSEEK_*` / `MINIO_*` / `RABBITMQ_*` / `RAGFLOW_*`（本 feature 不用）
 - 全仓库 `*.ts/tsx/json/md/toml/yaml/yml` 内 **`PG_` 零命中** → PG 访问层（连接 + 迁移 + 回滚）需本 feature 从零建
 
+### 🔑 待补环境变量（部署前必须，T005 引入）
+| 变量 | 状态 | 用途 |
+|---|---|---|
+| `AUTH_JWT_SECRET` | ❌ **`.env` 中尚无**，需部署方生成随机串写入 | `src/token.ts` 签发/校验 JWT 的 HS256 密钥 |
+
+代码侧**不提供默认值**：`jwtSecret()` 缺值时点名报错（`缺少环境变量 AUTH_JWT_SECRET`）。理由见 T005 节。
+
 ## 阻塞项
 （无）
 
 ## 最后更新
-2026-09-29（T004 完成并全门禁验证通过；等待「next」进 T005）
+2026-09-29（T005 完成并全门禁验证通过；等待「next」进 T006）

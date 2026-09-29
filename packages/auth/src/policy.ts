@@ -15,3 +15,9 @@ export const PASSWORD_HASH_ALGORITHM = "argon2id" as const
 
 /** 登录凭证有效期（秒）。2 小时。 */
 export const TOKEN_TTL_SECONDS = 2 * 60 * 60
+
+/** 承载登录凭证的 Cookie 名。 */
+export const SESSION_COOKIE_NAME = "openhive_session"
+
+/** 签发凭证所需的密钥环境变量。取值由部署方生成，MUST NOT 在仓库里放默认值。 */
+export const JWT_SECRET_ENV = "AUTH_JWT_SECRET"
