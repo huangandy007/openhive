@@ -36,3 +36,6 @@ logs/
 tsconfig.tsbuildinfo
 
 .superpowers/
+
+# Claude Code worktree 工作台 —— 每个都是整仓库的副本（GB 级），误提交会污染历史
+.claude/worktrees/
