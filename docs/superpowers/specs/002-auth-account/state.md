@@ -1,7 +1,8 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T017（Phase 6 最后一条：密码重置）。
+**Phase 6 已完成**（T015/T016/T017 三条全绿）。**002 只剩 T018**（Phase 7：关闭 opencode Basic Auth +
+网关注入校验 `X-User-ID`，[T005]，是唯一一条要动 opencode 边界的任务）。
 
 ## 补提交记录（2026-09-29，用户裁定「逐条补提交」）
 
@@ -19,6 +20,39 @@ T009 态 17 pass、T011 态 11 pass、T013 态 9 pass、T014 态 12 pass，全�
 下次在 worktree 里做多任务时，**完成一条就先提交一条**，别攒。
 
 ## 已完成
+
+### T017 [P] [US5] [BE] 密码重置 ✅（2026-09-29）
+**交付物**：`password.ts` 加 `resetPassword`；`password.test.ts` 增 4 条（重置 describe）；
+`password.ts` 的 policy import 加 `DEFAULT_PASSWORD`。
+
+**与 `changePassword` 的三处刻意不同**（都写进了代码注释）：
+1. **不校验当前密码**——管理员不知道也不该知道民警的密码，「不知道旧密码也能换掉」正是重置的用途。
+   ⚠️ **本函数自己不做鉴权**：它是一条**能力**，谁能拿到由网关（管理员后台 + `is_admin`）决定。
+   这是有意的分层，不是遗漏——在服务层再判一次会给人一种「这里安全」的错觉，而真正的门禁在别处。
+2. **不收新密码参数**，固定回 `DEFAULT_PASSWORD`。让管理员自选新密码是**另一个产品行为**
+   （等于让管理员知道民警的密码），design-v2 没写，不擅自加。
+3. **`must_change_pw` 置 1**。默认密码是写在 `policy.ts` 与设计文档里的**公开值**，
+   重置完不强制改密 = 把账号留在一个谁都能进的状态，正好是 FR-006 要防的事。
+
+**账号不存在时报错、不静默成功**：静默的话管理员会转告民警「用默认密码登录」，
+而民警登不进来、**两边都不知道为什么**。`changePassword` 出于需要读行顺带也有这条，
+这里显式读一次是为了对齐——多一次 SELECT 换一个看得见的失败。
+
+**⚠️ 又踩了同一类 lint 坑**：我在测试里写了 `(thrown as Error).message`，撞上
+`typescript-eslint(no-unsafe-type-assertion)`——与 T013 那条**同一规则**。
+处理沿用既有做法：加 `errorOf` 类型守卫（与 `login.test.ts` 的同名 helper 一致），**不加 disable 注释**。
+**教训：`failureOf` 返回 `unknown`，要读它的字段就必须走守卫；`login.test.ts` 早就有现成的 `errorOf` 可抄。**
+
+**验收证据（真跑）**：RED 确认为 `Export named 'resetPassword' not found`；
+包内 `bun test` **104 pass / 0 fail**（12 文件，+4）；`bunx oxlint packages/auth` **0/0**；
+`bun run typecheck` **31/31**；`bun run lint` **4924 warnings / 1 error / 3372 文件**（与基线逐字相同）→ `packages/auth` 0 命中。
+
+**有牙验证（逐个变异，真跑）**：
+| 变异 | 结果 |
+|---|---|
+| `mustChangePw: 1` 改 `0` | **1 条红**（强制改密那条） |
+| 不换哈希（只置标记） | **3 条红** |
+| 去掉「账号不存在」检查 | **1 条红** |
 
 ### T016 [P] [US4] [BE] 停用后保留 30 天（账号侧闭环）✅（2026-09-29，用户裁定方案 A）
 **交付物**：迁移 `0002_deactivated_at`（up/down）；`user.ts` 模型加 `deactivatedAt`；
@@ -594,4 +628,4 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 > ①②③ 都是**有意识的不作为**，不是漏做。每条都写明了代价与补法，避免后来者重新推导一遍。
 
 ## 最后更新
-2026-09-29（T016 完成，账号侧闭环；Phase 6 只剩 T017）
+2026-09-29（T017 完成，Phase 6 收官；002 只剩 T018）

@@ -153,7 +153,18 @@
     ① 加 `deactivated_at INTEGER` 列（迁移 `0002`）② `restoreAccount`（保留期内恢复）
     ③ 逾期清单筛选（供 F3 定时任务用）。**文件系统部分（沙箱归档/恢复/删除）移出 002，留给 F3**
   - ⚠️ **加列是平台级改动**：要同步改 `user.ts` 模型、`user.test.ts` 的防漂移断言、以及 design-v2 §4.1 的表
-- [ ] T017 [P] [US5] [BE] 实现密码重置（回默认密码 + must_change_pw=1）[FR-007] [T003][T004] [出参：重置后默认密码可登录且强制改密]
+- [x] T017 [P] [US5] [BE] 实现密码重置（回默认密码 + must_change_pw=1）[FR-007] [T003][T004] [出参：重置后默认密码可登录且强制改密]
+  - ✅ **2026-09-29 完成**。`password.ts` 加 `resetPassword`（固定回 `DEFAULT_PASSWORD`，不收新密码参数）；
+    `password.test.ts` 增 4 条
+  - 与 `changePassword` 的三处刻意不同：**不校验当前密码**（管理员本就不知道旧密码，这正是重置的用途；
+    门禁在调用方——本函数不做鉴权）、**不收新密码参数**（让管理员自选等于让他知道民警密码，design-v2 没写）、
+    **`must_change_pw` 置 1**（默认密码是文档里的公开值）
+  - 账号不存在时**报错不静默成功**：静默的话管理员会转告「用默认密码登录」而民警登不进来，两边都不知道为什么
+  - ⚠️ 过程撞到 1 条 `no-unsafe-type-assertion`（我写的 `(thrown as Error).message`），
+    **用类型守卫消掉、未加 disable 注释**（同 T008/T013 做法）
+  - 变异验证：`mustChangePw` 改 0 → 1 红；不换哈希 → 3 红；去掉不存在检查 → 1 红
+  - 实测出参：包内 `bun test` **104 pass / 0 fail**（12 文件）；`bunx oxlint packages/auth` **0/0**；
+    `bun run typecheck` **31/31**；`bun run lint` **4924w/1e / 3372 文件**（与基线逐字相同）→ `packages/auth` 0 命中
 
 ## Phase 7: opencode 边界（P1）
 
