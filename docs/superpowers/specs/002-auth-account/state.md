@@ -1,9 +1,40 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）—— 含 PG 连接 `connect()` + `auth` schema 迁移与回滚
+T004 [P] [BE] 实现密码哈希与校验函数（argon2id）
 
 ## 已完成
+
+### T003 [BE] 实现用户表模型与迁移 + PG 连接 ✅（2026-09-29）
+**交付物**（`packages/auth/src/`）：
+
+| 文件 | 职责 |
+|---|---|
+| `migrations/0001_init.sql` | `auth.user` 建表（15 列，design-v2 §4.1 逐字） |
+| `migrations/0001_init.down.sql` | `DROP TABLE auth.user` |
+| `migrate.ts` | `migrate()` / `rollback()` / `rowsOf()` |
+| `user.ts` | drizzle pg-core 模型（**只做类型安全查询**） |
+| `db.ts` | 补 `connect()`（`drizzle-orm/bun-sql`） |
+
+**迁移机制（用户裁定：手写 up/down）**：
+- 运行器**自动执行**，PG 里不需要人工敲任何 SQL（这是用户此前问清的点）。
+- 记账表 `auth._migration (version, applied_at)` 让 `migrate()` 幂等——部署可无脑重复调。
+- `auth` schema 由运行器 bootstrap（`create schema if not exists`），不写在 0001 里。
+- 语句按 `--> statement-breakpoint` 切分逐条执行（drizzle-kit 同款约定）：多语句一次下发在各驱动上不可移植。
+
+**TDD 过程**（RED→GREEN，逐条看过失败）：
+1. RED「Cannot find module './migrate'」→ GREEN 建表 + 唯一约束
+2. RED「relation "user" already exists」（重复执行）→ GREEN 加记账表
+3. RED「rollback is not defined」→ GREEN 加 down 脚本与 `rollback()`
+4. RED「Cannot find module './migrate'」（db.test）→ GREEN 加 `connect()`
+5. 补 `rowsOf` 三态单测后**做了「拆掉实现看是否变红」的有牙验证**——只数组那条红，另两条不受影响
+
+**诚实标注**：
+- 「警号唯一约束」与「建表」共用同一份 DDL、同一次 GREEN，**无独立 RED**（DDL 是先写下的断言、再照它写 SQL，不是事后补测）。
+- 防漂移测试里 `DESIGN_V2_COLUMNS` 是我从 design-v2 §4.1 的**人工转录**，不是机器解析。它保证「SQL ↔ drizzle 模型」不漂移，但**挡不住两侧同时抄错**。要做成机器校验需解析设计文档，超出本 task。
+- 迁移文件是**运行时从磁盘读**的（`import.meta.dir`），不参与打包。若日后改成 bundle 部署，需确认 `.sql` 被打进产物。
+
+**验收证据（真跑）**：包内 `bun test` **19 pass / 0 fail**；`bun run typecheck` **31/31**；`bun run lint` 文件数 3350→**3356**、命中数 **4924 warnings / 1 error**（与 001 基线逐字相同，那 1 error 仍是登记在案的上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`）→ 新增文件 0 命中；`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
 
 ### T002 [P] [BE] 锁定认证策略 ✅（2026-09-28）
 方案记录在案（可执行版落在 `packages/auth/src/policy.ts`）：
@@ -45,6 +76,15 @@ T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）—�
 - 访问层：`drizzle-orm` + `drizzle-orm/bun-sql`（走 Bun 内建 SQL 客户端，**零新增驱动依赖**；drizzle-orm 1.0.0-rc.2 已含该 dialect）。
 - 测试：`@electric-sql/pglite`（WASM 内嵌 PG，进程内跑，离线可跑、真 PG 语义如 UNIQUE 约束可验）。`drizzle-orm/pglite` dialect 已存在；`@electric-sql/pglite` 当前**不在依赖树**，需新增（devDependency 性质）。
 
+### ④ 两个 PG 驱动的 `execute()` 行结构不同（T003 实测，类型系统当场抓到）
+- `drizzle-orm/pglite` → 结果形如 `{ rows: [...] }`；`drizzle-orm/bun-sql` → **直接就是行数组** `[...]`。
+- **发现方式**：`db.test.ts` 里写了 `const target: MigrationTarget = connect(env)`，tsgo 报 TS2322 当场暴露。
+  若无此断言，这坑会潜伏到部署连真 PG 时才炸（且症状是 `undefined.map`，不好归因）。
+- **应对**：`MigrationTarget` 的 `execute()` 返回值收成 `unknown`，由 `rowsOf()` 显式抹平两种形态；
+  两种都不像时报错而非静默返回空。**不能用 `PgAsyncDatabase<any, any>`「抹平」**——实测它确实能让两个驱动都编译通过，
+  但那只是把类型警报掐掉：运行时 `result.rows` 在 bun-sql 上仍是 `undefined`。
+- 附带：`drizzle-kit` **没有 down/回滚能力**（只有 generate/migrate/push…），这也是「手写 up/down」更稳的一条实证。
+
 ## 环境基线（真跑所得，非推断）
 
 ### Step 0 验证（2026-09-28）
@@ -66,4 +106,4 @@ T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）—�
 （无）
 
 ## 最后更新
-2026-09-28（T002 完成并全门禁验证通过；等待「next」进 T003）
+2026-09-29（T003 完成并全门禁验证通过；等待「next」进 T004）

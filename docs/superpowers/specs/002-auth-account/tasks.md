@@ -30,7 +30,13 @@
 
 ## Phase 2: Foundational（账号实体 + 密码 + 凭证）
 
-- [ ] T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）[FR-001] [T001] [出参：表结构建出，警号唯一约束生效]
+- [x] T003 [BE] 实现用户表模型与迁移（8 业务字段 + 系统字段）[FR-001] [T001] [出参：表结构建出，警号唯一约束生效]
+  - 迁移机制定为**手写 up/down**（用户裁定）：`src/migrations/0001_init.sql` + `0001_init.down.sql` 成对
+  - `src/migrate.ts`：`migrate()`（记账表 `auth._migration`，幂等可重复执行）+ `rollback(db, version)`
+  - `src/user.ts`：drizzle pg-core 模型，**只负责类型安全查询**；表真相来源是 SQL 文件
+  - `src/db.ts` 补 `connect()`（`drizzle-orm/bun-sql`，零新增驱动依赖；连接惰性）
+  - 实测出参：包内 `bun test` **19 pass / 0 fail**；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bunx oxlint packages/auth` 0/0
+  - ⚠️ 类型断言「生产驱动满足 MigrationTarget」**当场抓到** bun-sql 与 PGlite 的 `execute()` 行结构不同（数组 vs `{rows}`）——见 state.md 裁定 ④
 - [ ] T004 [P] [BE] 实现密码哈希与校验函数（argon2id）[FR-004] [T001] [出参：哈希/校验往返单测通过]
 - [ ] T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）[FR-004] [T001] [出参：签发凭证可被校验解析出 userId]
 
