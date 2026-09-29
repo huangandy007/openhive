@@ -1,9 +1,11 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-⏸️ **T004 落点重新回到未决**：用户 2026-09-30 裁定的【甲】，其前提被**消费侧实测推翻**
-（真实请求读写的是**主树**那份 Database，而在 location map 里替换碰不到主树）。
-见下「消费侧实测结果」§D。**已带实测事实回来请用户重裁，未自行改方案。**
+⏸️ **T004 落点仍未决，但第二轮实测已把选项收敛**：用户 2026-09-30 裁定的【甲】被消费侧实测推翻
+（真实请求读写的是**主树**那份 Database，在 location map 里替换碰不到主树）；随后按用户裁定①
+补做的**取连接点探针**证明「acquirer 里拿得到请求的 `User`」**成立**（见下「第三轮实测」）。
+但同一次探针暴露出**单靠它不够**：Location 层按目录缓存、后台 fiber 会**陈旧身份捕获**。
+**已带事实回来请用户重裁，未自行改方案。**
 （T003 已完成；其余候选：T006 沙箱锚定 / T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 D2–D6。）
 
 ## 已完成
@@ -195,6 +197,74 @@ per-location 树共同引用 ⇒ **两者共用一份**。这也解释了为什�
 **旁证**：`handlers/pty.ts` / `handlers/file.ts` 的 handler 走 v1 `Session`
 （`packages/opencode/src/session/session.ts`）；`packages/server` 的 handler 走 v2 `SessionV2`。
 两条路都存在（见 `state.md` 上方 R1/R2 的静态结论）。
+
+### ✅ 第三轮实测：acquirer 能不能看到请求的 `User`（2026-09-30 · **生死点，已验**）
+
+甲被推翻后，候选落点收敛到「**在取连接的那一刻路由**」——`packages/core/src/database/sqlite.bun.ts`
+里的 `acquirer`。它成立与否，只取决于一个问题：**acquirer 跑起来时，当前 fiber 的 context 里有没有
+请求的 `User.Service`**。
+
+> **类型上的死路与绕法（先记下，省得下一个人再撞）**：`Connection.Acquirer` 的类型是
+> `Effect<Connection, SqlError, Scope>` —— **`R` 通道写死**，所以「在 acquirer 上声明依赖 `User`」
+> 编译不过。绕法是 `Effect.withFiber((fiber) => ...)`（`R = never`，直接摸 `fiber.context`）——
+> 同文件的 `run()` 早就这么取 `Client.SafeIntegers` 了。**缝一直在，只是不在类型上。**
+
+**实验一（核心层最小复现，层只 build 一次模拟启动，随后在 provide 了 `User` 的 fiber 里跑真查询）**：
+
+| 问题 | 结果 |
+|---|---|
+| provide `User` 时账本记什么 | **`acq:alice`** |
+| 不 provide 时记什么（对照，证明账本有效） | `acq:NONE` |
+| 事务路径（`transactionAcquirer`） | `tx:alice`，同样看得见 |
+| `Layer.build` 在谁的 context 里执行 | **调用方的**——build 期查询 provide 了 User 就记 `alice`，没 provide 就记 `NONE` |
+
+**实验二（HTTP 真请求，生产路由树 `HttpApiApp.routes` + `HttpRouter.toWebHandler`，身份门真开着）**：
+
+门确实开着（无凭证 / 坏凭证都 401，**没有绕过门当成功**）：
+
+```
+NO-TOKEN  /session -> 401
+BAD-TOKEN /session -> 401
+```
+
+| 问题 | 结果 |
+|---|---|
+| **普通请求期间 `NONE` 出现几次** | **0 次**。`GET/POST/PATCH/DELETE /session`、`/session/:id/message` 全部 `acq:alice`（事务路径 `tx:alice`） |
+| 有没有请求**同时**出现 userId 与 `NONE` | 没有 |
+| 空闲 2000ms 账本新增 | **0 条**（本窗口内无周期性后台查询） |
+| 启动期（`DatabaseMigration.apply`） | **`NONE`**——`Database` 层构造不在请求 fiber 里，走建层 fiber |
+
+⇒ **落点成立**：取连接那一刻，身份是拿得到的，且**每次查询看的是发起查询那个 fiber 的身份**
+（不是「首个请求」的）。
+
+### 🔴 但它带回来一个方案没预料到的反向风险：**陈旧身份捕获**（不是「无身份」）
+
+`ProjectCopy.refresh` 在账本里记的是 **`acq:alice` / `tx:alice`**，**不是 `NONE`**。
+它跑在一个由 `Effect.forkScoped` 派生、经 `InstanceStore.load` 的 `Effect.forkIn` 从**请求 fiber**
+分叉出去的**后台 fiber** 里——**该 fiber 继承了发起首个请求的那个用户的身份**。
+
+而 Location 服务树是按 **`Location.Ref`（目录）** 缓存的（`LayerMap`，TTL 60 分钟），
+**不按用户分键**。两件事合起来：
+
+> 留驻在按目录缓存的 Location 层里的**后台工作**，会写进**第一个碰该目录的用户**的 db。
+
+危害的**机制**是证据链支撑的（实验一的 `Layer.build 继承调用方 context` + 实验二账本里
+`COPY_REFRESH` 段记到 `alice`）；但**危害本身没有直接实测到**——跨用户那组只跑了 3 个请求、
+1 个目录对，且 **bob 的两个请求压根没产生 DB 查询（账本 0 条）**，所以严格说：
+**没有观察到泄漏，但也没有压到会泄漏的那条路径。**
+
+⇒ **落点成立 ≠ 落点充分**：这一条是「取连接点路由」单独用不够的证据，
+它指向 **Location 层的缓存键必须按用户分**（或由 T006 沙箱锚定天然达成——见下）。
+
+### 本轮未覆盖（按 `LEARNINGS #002-02`：缺口写成缺口，不写成覆盖）
+
+1. 只跑了一个进程、一个 `:memory:` 库——**没验证真实文件路径下**的行为（多文件、WAL、目录权限）。
+2. **没测长连接**：SSE `/event`、WebSocket `/pty`、`/tui`——它们跨多个用户生命周期，是明显的下一个疑点。
+3. **没测 `SessionPrompt`（发消息跑 agent）**——最长的一条链路（工具调用、后台 job、LLM 流），
+   `BackgroundJob` / `SessionProcessor` 里的 fork 极可能重现上面的「陈旧身份」同类问题。
+4. **没有并发请求**（任务要求串行），「两个用户同时打同一目录、Location 层正在构造」的竞争没测。
+5. 跨用户那组样本极小且**没压到目标路径**（见上）。
+6. 未验证方案本身（一 client 服务多库、`Semaphore.make(1)` 的全局串行化、事务语义）——只验了前提。
 
 ## T003 结论（2026-09-30 · 验签门已落地）
 

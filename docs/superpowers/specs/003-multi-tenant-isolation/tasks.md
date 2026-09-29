@@ -35,15 +35,22 @@
     ② ⚠️ **路径不能由「当前请求的 `User`」决定**——location 层按 key 缓存（TTL 60 分钟），
     请求身份每变一次，缓存里会留**第一个**用户的库 ⇒ **串库**。路径必须由 key（`Location.Ref`）
     派生，或把 userId 并进 key。
-    ⇒ ✅ **落点已裁定（2026-09-30 · 用户裁定【甲】）**：在 server 根处把 `LocationServiceMap.node`
-    换成我们自己的 map，其中把 `Database.node` 替换成「指向该 location 对应文件」的层。
+    ⇒ ~~✅ **落点已裁定（2026-09-30 · 用户裁定【甲】）**：在 server 根处把 `LocationServiceMap.node`
+    换成我们自己的 map，其中把 `Database.node` 替换成「指向该 location 对应文件」的层。~~
+    🔴 **2026-09-30 稍后：该裁定被消费侧实测推翻**——真实 HTTP 请求读写的是**主树**那份 `Database`，
+    在 location map 里替换**碰不到它**。当前落点候选见 `state.md` 的「第三轮实测」。
   - ⚠️ **成本更正（我给用户的估计被实测推翻）**：甲**不是**「零改上游文件」——
     接线点 **4 处**：`packages/server/src/routes.ts`、`packages/opencode/.../httpapi/server.ts`、
     `.../handlers/pty.ts`、`.../handlers/file.ts`。漏改一处 = 那条路径**静默用回公共库**，
     故必须配**兜底测试**。
-  - ⚠️ **未决（消费侧实测进行中）**：静态实测出主树有「不经过 location map」的 `Database` 路径
-    （R1 的 600 条路径中含 location map 一跳 = 0）。**「被构建」≠「被消费」**，
-    若主树那份真被取用，甲要扩成混合方案。详见 `state.md` 的「T004 落点裁定」。
+  - ✅ **第二轮实测（消费侧，HTTP 真请求）已做**：主树那份被真实请求消费，甲不成立。
+    见 `state.md`「消费侧实测结果」。
+  - ✅ **第三轮实测（取连接点，生死点）已做**：`sqlite.bun.ts` 的 `acquirer` 里
+    **拿得到请求的 `User`**（`acq:alice`）；普通请求期间 `NONE` 出现 **0 次**；启动期迁移是 `NONE`。
+    **但同一次探针暴露出「陈旧身份捕获」**：Location 层按目录缓存（不按用户分键），
+    后台 fiber 会继承首个请求者的身份。⇒ **取连接点路由单独用不够**。
+    见 `state.md`「第三轮实测」。
+  - ⏸️ **仍未决**：最终落点由用户在「取连接点路由 + Location 缓存键按用户分」这个组合上重裁。
 - [x] T002 [P] 确定 `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案 [FR-001][FR-005] [无依赖] [出参：目录/权限方案记录在案]
   - ✅ **完成 2026-09-30**，产出 `isolation-scheme.md`（本目录）。三条要点：
     ① `/workspaces` 侧 **002 已交**（`packages/auth/src/workspace.ts` 的 `WORKSPACE_ROOT_ENV` /
