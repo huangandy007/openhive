@@ -12,7 +12,7 @@
 
 **Language/Version**: TypeScript（Bun monorepo，核心 `packages/opencode`）
 
-**Primary Dependencies**: opencode 原生 `Database`（`makeGlobalNode` 单例）、`LayerNode.unbound`（仿 `Location` 的 per-request 模式）、Linux OS 权限 / quota / docker volume
+**Primary Dependencies**: opencode 原生 `Database`（`makeGlobalNode` 单例）、`LayerNode.unbound` + `LayerMap`（**模式 B**，用于 `Database` 的按用户替换 —— T004/T005；⚠️ T003 的 `User` 上下文**不用**模式 A，见 `refactor-targets.md` §5）、Linux OS 权限 / quota / docker volume
 
 **Storage**: SQLite 每用户独立文件 `/data/{userId}/opencode.db`（不换 PG）
 
@@ -38,16 +38,20 @@
 | II. 品牌化走配置（NON-NEGOTIABLE） | F3 不涉及品牌 | ✅ 不适用 |
 | III. 物理隔离优先 | 本 feature 即物理隔离落地：**每用户 db（连接级物理分离）** + 沙箱目录应用层锚定 + OS 权限容器外防护。⚠️ **不靠应用层 `if` 过滤这一条成立的关键是「每用户 db」**——它是连接级分离，不是判断；沙箱侧的锚定是应用层，但它不是隔离的唯一承担者（2026-09-30 裁定乙） | ✅ 符合 |
 | IV. 权限下沉执行层 | F3 是数据层强制（db 路由 + OS 权限），配合 F4 的工具执行守卫构成三层拦截 | ✅ 无冲突 |
-| V. 侵入是「加」不是「改」 | 新增 per-request User 上下文 + `Map<userId, 连接>`，仿 `Location` 的 `LayerNode.unbound` 模式；不改 core 既有模块 | ✅ 无冲突 |
+| V. 侵入是「加」不是「改」 | 新增 per-request User 上下文（`Context.Service`，T003 已落地）+ `Map<userId, 连接>`（T004，仿 `Location` 的 `unbound`/`boundNode` + `LayerMap`）；不改 core 既有模块——**新增文件，零改动既有模块** | ✅ 无冲突 |
 
 **结论**: 无 MUST 级原则违规。本 feature 是 constitution 原则 III（物理隔离优先）的正面落地。
 
 ## 项目文件结构（要素①）
 
 ```text
+packages/core/src/
+└── user.ts                     # per-request User 上下文（Context.Service；中间件**验签后**填入）
+                                # ⚠️ 放 core 不放在 opencode/src/user/：T005 要 core 的 Database 读得到它
+
 packages/opencode/src/
-├── user/
-│   └── context.ts              # per-request User 上下文（仿 Location 的 LayerNode.unbound，中间件填 X-User-ID）
+├── server/routes/instance/httpapi/middleware/
+│   └── user-identity.ts        # 身份门（验签取 userId，认不出即 401）——取代 002 的「读头即放行」
 ├── database/
 │   └── router.ts               # Database 维护 Map<userId, 连接>，惰性打开 + 复用 + 各自 PRAGMA
 ├── middleware/
@@ -86,7 +90,7 @@ flowchart LR
 | 依赖 | 用途 | 说明 |
 |---|---|---|
 | Bun（monorepo） | 构建 / 运行 | opencode 既有工程 |
-| opencode `Database` / `LayerNode` | 改造基座 | 复用原生能力，仿 `Location.unbound` |
+| opencode `Database` / `LayerNode` | 改造基座 | 复用原生能力；`Database` 的按用户替换仿 `Location` 的 `unbound`/`boundNode`（T004/T005），per-request 上下文用 `Context.Service`（T003，已落地） |
 | Linux quota / docker volume | 磁盘配额 | 沙箱磁盘限制 |
 | OS 受限用户 + 文件权限 | **容器外防护**（**不承担用户间隔离**——2026-09-30 裁定乙） | 容器非 root；`/workspaces/{userId}/` `0700`，挡同主机其他容器/系统用户 |
 
@@ -95,7 +99,7 @@ flowchart LR
 ## 与现有系统集成点（要素④）
 
 - **三处必改边界的前两处**：① 用户中间件——F2 交的是**门**（「关 Basic Auth + 读 `X-User-ID` 即拒」）与 **JWT 机制**（签发 / 验签 / 密钥地板），**注入器与验签在 F3 落地**（T014 网关注入 + 透传，T003 内核验签）；② Database 按用户路由（F3 落地）。第三处「工具执行守卫」在 F4。
-- **复用 opencode 原生**：project 概念（唯一隔离边界 + git 仓库）、`session.project_id`（逻辑隔离）、`LayerNode.unbound`（per-request 上下文模式）。
+- **复用 opencode 原生**：project 概念（唯一隔离边界 + git 仓库）、`session.project_id`（逻辑隔离）、`LayerNode.unbound` + `LayerMap`（**按 key 构造并缓存服务树**的模式——T004/T005 拿它替换 `Database`，不是 T003 的 per-request 上下文）。
 - **隔离测试**：对接 constitution §五质量门禁——「用户 A 访问用户 B 的目录/db 必须被拒，失败即阻断合并」。
 
 ## 风险点清单（要素⑤）

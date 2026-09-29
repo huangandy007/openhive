@@ -50,7 +50,14 @@
 
 ## Phase 2: Foundational（用户上下文 + db 路由）
 
-- [ ] T003 实现 per-request User 上下文（仿 Location 的 LayerNode.unbound，**中间件验签后**填 userId）[FR-002][FR-003] [T001] [出参：请求内可读到**经密码学验证**的 userId；无令牌 / 令牌被篡改或过期 / 与 `X-User-ID` 不一致 → 一律拒绝（fail-closed）]
+- [x] T003 实现 per-request User 上下文（**中间件验签后**填 userId）[FR-002][FR-003] [T001] [出参：请求内可读到**经密码学验证**的 userId；无令牌 / 令牌被篡改或过期 / 与 `X-User-ID` 不一致 → 一律拒绝（fail-closed）]
+  - ✅ **已落地（2026-09-30）**。落点两处：`packages/core/src/user.ts`（`User.Service` = `Context.Service`）；
+    中间件 `packages/opencode/src/server/routes/instance/httpapi/middleware/user-identity.ts`
+    （验签 → `Effect.provideService` 填 `User`）。测试在 `packages/opencode/test/server/user-identity.test.ts`。
+  - ⚠️ **有意偏离 plan 的「模式 A」（`LayerNode.unbound`）**——理由见 `refactor-targets.md` §5 的 T003 条：
+    模式 A 造的是「按 key 构造 / 缓存的服务树」占位，而用户身份是**每请求的纯数据**，没有可缓存的东西；
+    「未填即失败」这层保证由 `Context.Service` 的消费者要求（`R`）承担，且运行时兜底更硬（认不出就 401）。
+    **模式 A 的真归宿是 T004/T005 的 `Database` 按用户替换**，不是这里。
   - ⚠️ **本 task 必须一并处置 002 留下的那道具名门**：`packages/opencode/src/server/user-identity.ts`
     （读 `X-User-ID` → 有则放行；由 `OPENHIVE_REQUIRE_USER_ID` 控制，**默认关**）及其测试
     `packages/opencode/test/server/user-identity.test.ts`（4 条）。
@@ -138,7 +145,7 @@
     ② **内核端口只对网关可达**（回环绑定 / 网络策略），并写进部署文档；
     ③ **网关必须把会话 JWT 一并透传给内核**（Cookie 天然随请求流动；或显式走独立头——
       载体在 T003 落地时定），内核据此验签。
-  - 🔗 **验签本身落在 T003**（`user/context.ts` 的中间件），不在本 task——
+  - 🔗 **验签本身落在 T003**（**已落地**：`src/server/routes/instance/httpapi/middleware/user-identity.ts` 的中间件），不在本 task——
     本 task 管「注入 + 透传」，T003 管「验签后才认」。两者是同一条链的两端：
     T003 用**自造的合法 / 非法令牌**就能独立测（不必等网关）；
     真链路端到端验收在 T014 之后，作为 T016 的前置。

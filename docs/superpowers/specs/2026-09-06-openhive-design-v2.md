@@ -214,7 +214,15 @@ user (
 
 - 现状：`database.ts` 的 Database 是 `makeGlobalNode`（进程级单例，固定一个 `opencode.db`）。
 - 改造三步：
-  1. 仿照 `Location` 的 `LayerNode.unbound` 模式，新增 per-request 的 `User` 上下文（由中间件**验签取 userId** 填入，见 §3）。
+  1. 新增 per-request 的 `User` 上下文（由中间件**验签取 userId** 填入，见 §3）。
+     ⚠️ **勘误（2026-09-30，T003 落地时）**：原文写「仿照 `Location` 的 `LayerNode.unbound` 模式」——
+     **落地时没用它**，理由：`unbound`/`boundNode` 解决的是「**按 key 构造并缓存一棵服务树**」
+     （`Location` 有 `LayerMap` + `Layer.fresh` + TTL 才有意义），且替换物**由 key 算出来**；
+     而用户身份是**每请求从凭证验出的纯数据**——没有要构造的东西、没有要缓存的树、没有「由 key 算替换物」。
+     实际落地 = `packages/core/src/user.ts` 的 `Context.Service`（放 core：下一步 `Database` 在 core，要读得到）
+     + 中间件 `Effect.provideService`；「未填即失败」由消费者把 `User.Service` 写进 `R` 保证（编译期），
+     运行时兜底是 **401**（比抛异常更贴 T003 的验收口径）。
+     ⇒ `unbound`/`boundNode` 留给**下一步的 `Database` 替换**，那里才是真·按用户构造连接。
   2. Database 内部维护 `Map<userId, 连接>`，每连接指向 `/data/{userId}/opencode.db`（惰性打开 + 复用 + 各自 PRAGMA）。
   3. db 查询从 User 上下文取 userId → 路由到对应连接。
 - **零表结构改动**：物理隔离后 `session` 表无需加 `user_id` 列，不碰 `sql.ts`。

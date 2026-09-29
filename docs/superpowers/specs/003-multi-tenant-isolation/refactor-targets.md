@@ -179,7 +179,7 @@ LayerMap.make((ref) => {
 | 该文件最近改动 | 全为上游 PR，最新 `472d0f376e refactor(core): remove infrastructure layer exports (#34624)` |
 | `sql.ts` 里有 `user_id` 吗 | **无**（`grep -rn 'user_id' --include=sql.ts packages/core/src/` 零命中） |
 | `session` 表结构 | `project_id: text()` + `index("session_project_idx").on(table.project_id)`；**无 `user_id`** |
-| `packages/opencode/src/{user,database,middleware,quota}/` | **均不存在**，需新建（plan.md 已定落点） |
+| `packages/opencode/src/{user,database,middleware,quota}/` | **均不存在**，需新建（plan.md 已定落点）。⚠️ 2026-09-30 更新：T003 的 `User` 上下文**没落在 `src/user/`，落在了 `packages/core/src/user.ts`**——T005 要 `core` 的 `Database` 读得到它，tag 就必须在 core（与 `Location` 同侧） |
 
 ⇒ **零表结构改动的基线成立**（T009 的验收前提），**`database.ts` 保持零改动**是 T004 的硬约束。
 
@@ -187,7 +187,17 @@ LayerMap.make((ref) => {
 
 ## 5. 对后续 task 的输入
 
-- **T003**（User 上下文）：用**模式 A**（`LayerNode.unbound` + `boundNode`）拿到「未填即构建失败」的编译期保证。
+- **T003**（User 上下文）：⚠️ **落地时没用模式 A**（2026-09-30 改判，原文写的是「用模式 A」）。
+  实际落地 = `packages/core/src/user.ts` 的 `Context.Service` + 中间件每请求 `Effect.provideService`。
+  **为什么模式 A 在这里是错的**：`unbound`/`boundNode` 的用武之地是「**按 key 构造并缓存一棵服务树**」
+  （`Location` 有 `LayerMap` + `Layer.fresh` + `idleTimeToLive` 才需要它）——占位节点在 `compile`
+  时才被替换，替换物**由 key 算出来**。而用户身份是**每请求从凭证里验出来的纯数据**：
+  没有要构造的东西、没有要缓存的树，也没有「由 key 算出替换物」这回事。为它建层树 = 每请求重建一棵树。
+  它要的「未填即失败」有两层，`Context.Service` 都给了：编译期（消费者把 `User.Service` 写进 `R`，
+  没人提供就过不去）+ 运行时（验不出身份直接 401，**比抛异常更贴 T003 的验收口径**）。
+  ⇒ **模式 A 留给 T004/T005**：那里要替换的是 `Database.node`（真·按用户构造的连接），才是它该在的位置。
+  落点文件：`packages/core/src/user.ts`（**core 不是 opencode**——T005 要 core 的 `Database` 读得到它）、
+  `packages/opencode/src/server/routes/instance/httpapi/middleware/user-identity.ts`。
 - **T004**（`Map<userId, 连接>`）：**复用 `layerFromPath(filename)`** 拿到 PRAGMA + 迁移；
   落点选择见 §3（**三选一，未定**）；参考**模式 B** 的 `Layer.fresh` 与 `idleTimeToLive`。
 - **T005**（查询路由）：模式 B 的 `LayerMap` 是现成的「按 key 取服务」实现，可参照。
