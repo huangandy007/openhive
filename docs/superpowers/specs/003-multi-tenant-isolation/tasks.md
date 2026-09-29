@@ -18,7 +18,15 @@
 
 ## Phase 1: Setup（定位现状 + 方案锁定）
 
-- [ ] T001 [P] 定位 `database.ts` 现状（`makeGlobalNode` 单例 / `path()` 固定落 db）与 `Location` 的 `LayerNode.unbound` 模式，产出改造落点 [FR-001] [无依赖] [出参：单例现状 + 可仿模式清单]
+- [x] T001 [P] 定位 `database.ts` 现状（`makeGlobalNode` 单例 / `path()` 固定落 db）与 `Location` 的 `LayerNode.unbound` 模式，产出改造落点 [FR-001] [无依赖] [出参：单例现状 + 可仿模式清单]
+  - ✅ **完成 2026-09-30**，产出 `refactor-targets.md`（本目录）。四条要点：
+    ① `layerFromPath(filename)` **已是公开导出**——`database.ts` 的「加」的缝现成，per-user 连接可零改动复用 PRAGMA + 迁移；
+    ② `packages/core/src/database/` 经实测**我们零提交**，R1「从未碰过它」成立；
+    ③ 可仿模式 = `Location` 的 `unbound`/`boundNode`（模式 A）+ `buildLocationServiceMap` 的
+       `LayerMap` + `hoist` + `Layer.fresh` + `idleTimeToLive`（模式 B，**现成的 R2 连接回收机制**）；
+    ④ ⚠️ **结构性发现**：`Database.node` 是 **global tag**，其消费者 9/10 是 global 节点，
+       而 `locationServices` 组**不含**它们 → **不能照抄 Location 的替换点**。
+       T004 落点三选一（见 `refactor-targets.md` §3），**开工前若未定需停下来问**。
 - [ ] T002 [P] 确定 `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案 [FR-001][FR-005] [无依赖] [出参：目录/权限方案记录在案]
 
 ## Phase 2: Foundational（用户上下文 + db 路由）
