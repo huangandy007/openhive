@@ -9,6 +9,7 @@ import {
   InvalidCurrentPasswordError,
   changePassword,
   hashPassword,
+  resetPassword,
   verifyPassword,
 } from "./password"
 import { DEFAULT_PASSWORD } from "./policy"
@@ -83,6 +84,13 @@ async function failureOf(action: Promise<unknown>): Promise<unknown> {
   }
 }
 
+/** 同上，但要求抛的是 Error 并交回来——省掉调用点的 `as Error` 断言（同 login.test.ts）。 */
+async function errorOf(action: Promise<unknown>): Promise<Error> {
+  const thrown = await failureOf(action)
+  if (!(thrown instanceof Error)) throw new Error(`期望抛出 Error，实际拿到：${String(thrown)}`)
+  return thrown
+}
+
 describe("改密（FR-006）", () => {
   let db: Db
   let userId: string
@@ -135,5 +143,56 @@ describe("改密（FR-006）", () => {
     expect(await storedHashOf(db, userId)).toBe(before)
     const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
     expect(after.mustChangePw).toBe(true)
+  })
+})
+
+describe("重置（FR-007）", () => {
+  let db: Db
+  let userId: string
+
+  beforeEach(async () => {
+    db = await freshDb()
+    const created = await registerUser(db, ACCOUNT)
+    userId = created.id
+  })
+
+  test("重置回默认密码，且强制改密重新竖起——即使用户此前已改过密", async () => {
+    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    const before = await login(db, { policeNo: ACCOUNT.policeNo, password: NEW_PASSWORD }, SECRET)
+    // 前提：用户自己改过密，标记已解除。没有这一步，测试就分不清「重置竖起了标记」
+    // 和「标记本来就一直竖着」——后者是个漏了实现的假通过。
+    expect(before.mustChangePw).toBe(false)
+
+    await resetPassword(db, userId)
+
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
+    expect(after.mustChangePw).toBe(true)
+    expect(after.subject.id).toBe(userId)
+  })
+
+  test("重置后用户自己设的密码失效——否则「重置」没真的把该账号挡在门外", async () => {
+    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+
+    await resetPassword(db, userId)
+
+    const hash = await storedHashOf(db, userId)
+    expect(await verifyPassword(NEW_PASSWORD, hash)).toBe(false)
+    expect(await verifyPassword(DEFAULT_PASSWORD, hash)).toBe(true)
+  })
+
+  test("重置后落库的是新哈希，不是把原哈希原样留下", async () => {
+    const before = await storedHashOf(db, userId)
+
+    await resetPassword(db, userId)
+
+    expect(await storedHashOf(db, userId)).not.toBe(before)
+  })
+
+  // 刻意不静默成功：管理员在后台点「重置」却没重置到任何人，他会转告民警「用默认密码登录」，
+  // 而民警登不进来、两边都不知道为什么。宁可当场报错。
+  test("重置不存在的账号 → 报错，不静默成功", async () => {
+    const thrown = await errorOf(resetPassword(db, "not-a-real-id"))
+
+    expect(thrown.message).toContain("账号不存在")
   })
 })

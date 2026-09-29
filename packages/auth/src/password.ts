@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm"
-import { PASSWORD_HASH_ALGORITHM } from "./policy"
+import { DEFAULT_PASSWORD, PASSWORD_HASH_ALGORITHM } from "./policy"
 import { type UserAccountTarget, user } from "./user"
 
 /**
@@ -68,4 +68,31 @@ export async function changePassword(db: UserAccountTarget, input: PasswordChang
     .update(user)
     .set({ passwordHash: await hashPassword(input.newPassword), mustChangePw: 0 })
     .where(eq(user.id, input.userId))
+}
+
+/**
+ * 管理员重置密码回默认值，并重新竖起强制改密（FR-007，design-v2 §4.1 `:148`）。
+ *
+ * 与 `changePassword` 的三处**刻意不同**：
+ *
+ * 1. **不校验当前密码**。管理员不知道也不该知道民警的密码——「不知道旧密码也能换掉」正是重置的用途。
+ *    真正的门禁在调用方：这条只能由管理员后台（已鉴权 + 已判 is_admin）触发。**本函数自己不做鉴权**，
+ *    它是一条能力，谁能拿到由网关决定。
+ * 2. **不收新密码参数**，固定回 `DEFAULT_PASSWORD`。让管理员自选新密码是另一个产品行为
+ *    （等于让他知道民警的密码），design-v2 没写，不擅自加。
+ * 3. **`must_change_pw` 置 1**。默认密码是写在文档里的公开值（`policy.ts`），重置完不强制改密
+ *    等于把账号留在一个谁都能进的状态——那正好是 FR-006 要防的事。
+ *
+ * 账号不存在时**报错而不静默成功**：静默的话，管理员会转告民警「用默认密码登录」，
+ * 而民警登不进来、两边都不知道为什么。`changePassword` 出于需要读行顺带也有这条，
+ * 这里显式读一次是为了对齐——多一次 SELECT 换一个看得见的失败。
+ */
+export async function resetPassword(db: UserAccountTarget, userId: string): Promise<void> {
+  const [record] = await db.select().from(user).where(eq(user.id, userId))
+  if (!record) throw new Error(`账号不存在：${userId}`)
+
+  await db
+    .update(user)
+    .set({ passwordHash: await hashPassword(DEFAULT_PASSWORD), mustChangePw: 1 })
+    .where(eq(user.id, userId))
 }
