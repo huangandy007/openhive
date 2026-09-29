@@ -88,6 +88,22 @@ export async function findZombieAccounts(db: UserAccountTarget, now: number = no
  * 事后无法区分「刚停用」和「三年前就停了」，只能一律不敢归档。
  *
  * 空名单不必特判：`inArray(x, [])` 生成恒假条件，一行也动不了（`zombie.test.ts` 钉住了这条）。
+ *
+ * ### 为什么 `where` 里多一个 `status = 1`（幂等）
+ *
+ * 只按 id 更新的话，**已经停用的账号再停一次会把 `deactivated_at` 改写成当下**
+ * （T016 起这列有了第二个消费方，这个洞才开始有后果）。那不是「刷新了一下数据」——
+ * 停用日期是**事实**，而 FR-010 的 30 天保留期是从它起算的。被改写意味着保留期从头再来：
+ * 前端拿着一张翻页前的旧名单又点了一次批量停用，就能把「明天该归档」推成「再等 30 天」，
+ * 而**一直有人点就一直不归档**——沙箱和账号数据无限期留在系统里。
+ *
+ * 多余的一次改写还会毁掉第三种状态：`NULL + status=0` 是 design-v2 §4.1 明写的
+ * 「停用但时刻未知」（002 之前的历史数据）。给它补一个 `now` 不是「补全了数据」，
+ * 而是**声称我们知道它是刚停的**——那批数据此后 30 天就会被当成逾期对象归档掉，
+ * 正是 FR-010「避免误删」要防的事。限制成「只动启用中的行」后，它原样留着。
+ *
+ * 于是 `disableAccounts` 变成幂等的：对已停用的 id 是一次 no-op，不是一次改写。
+ * 代价是这列不再能回答「最后一次点停用是什么时候」——那本来也不是它该回答的问题。
  */
 export async function disableAccounts(
   db: UserAccountTarget,
@@ -97,7 +113,9 @@ export async function disableAccounts(
   await db
     .update(user)
     .set({ status: DISABLED, deactivatedAt: now })
-    .where(inArray(user.id, ids))
+    // 条件写成一条 `sql` 模板而不是 `and(...)`：`and()` 的返回类型是 `SQL | undefined`，
+    // 而窄接口 `UserAccountTarget.where` 只收 `SQL`（同 `findZombieAccounts` 的处理）。
+    .where(sql`${inArray(user.id, ids)} and ${user.status} = ${ENABLED}`)
 }
 
 /**

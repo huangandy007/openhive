@@ -135,8 +135,8 @@ user (
   section        TEXT NOT NULL,          -- 科室
   status         INTEGER NOT NULL,       -- 状态（1 启用 / 0 停用）
   password_hash  TEXT NOT NULL,          -- argon2id
-  is_admin       INTEGER DEFAULT 0,      -- 管理员
-  must_change_pw INTEGER DEFAULT 1,      -- 首次登录需改密
+  is_admin       INTEGER NOT NULL DEFAULT 0,  -- 管理员（NOT NULL 由 0003 追加）
+  must_change_pw INTEGER NOT NULL DEFAULT 1,  -- 首次登录需改密（NOT NULL 由 0003 追加）
   last_login_at  INTEGER,                -- 最后登录时间（登录时更新）
   last_active_at INTEGER,                -- 最后活跃时间（请求时更新，比登录更准）
   created_at     INTEGER NOT NULL,

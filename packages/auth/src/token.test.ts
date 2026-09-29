@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { sign } from "hono/jwt"
 import { JWT_SECRET_ENV, SESSION_COOKIE_NAME, TOKEN_TTL_SECONDS } from "./policy"
-import { jwtSecret, sessionCookie, signToken, verifyToken } from "./token"
+import { WeakJwtSecretError, jwtSecret, sessionCookie, signToken, verifyToken } from "./token"
 
 const SECRET = "test-secret"
 const SUBJECT = { id: "u1", policeNo: "000001", name: "张三", isAdmin: false }
@@ -85,6 +85,30 @@ describe("校验拒绝伪造与过期", () => {
 describe("jwtSecret", () => {
   test("缺 AUTH_JWT_SECRET 时点名报错，不用默认密钥兜底", () => {
     expect(() => jwtSecret({})).toThrow(JWT_SECRET_ENV)
+  })
+
+  // HS256 的安全性**整个押在这个串上**：签名与验签用同一把钥匙，猜中它就能伪造任意身份的
+  // 凭证——`is_admin: true` 只差一个字段。而短密钥可以离线枚举，本机几秒就试完；
+  // RFC 7518 §3.2 对 HS256 的原文是「密钥长度 MUST ≥ 哈希输出长度」，即 256 bit。
+  test("密钥短于 32 字符时拒绝——短密钥可离线枚举，而这里没有第二次机会", () => {
+    expect(() => jwtSecret({ [JWT_SECRET_ENV]: "prod-secret" })).toThrow(WeakJwtSecretError)
+  })
+
+  test("报错点名环境变量与现有长度——运维要能直接照做", () => {
+    expect(() => jwtSecret({ [JWT_SECRET_ENV]: "abc" })).toThrow(JWT_SECRET_ENV)
+    expect(() => jwtSecret({ [JWT_SECRET_ENV]: "abc" })).toThrow("3")
+  })
+
+  test("32 字符及以上放行——32 是下限，不是要求恰好 32", () => {
+    const secret = "x".repeat(32)
+    expect(jwtSecret({ [JWT_SECRET_ENV]: secret })).toBe(secret)
+    expect(jwtSecret({ [JWT_SECRET_ENV]: "y".repeat(64) })).toBe("y".repeat(64))
+  })
+
+  // 边界钉在「≥32 放行」上，而不是「<32 拒绝」——两条合起来才算把边界说死，
+  // 只写一条时把 `<` 误写成 `<=` 不会有任何测试变红。
+  test("恰好 31 字符仍拒绝——边界不多不少", () => {
+    expect(() => jwtSecret({ [JWT_SECRET_ENV]: "z".repeat(31) })).toThrow(WeakJwtSecretError)
   })
 })
 

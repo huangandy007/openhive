@@ -36,3 +36,27 @@ export function pgErrorCode(thrown: unknown): string | undefined {
   const errno: unknown = Reflect.get(cause, "errno")
   return typeof errno === "string" && SQLSTATE.test(errno) ? errno : undefined
 }
+
+/**
+ * 写账号库失败（非「警号重复」）。**刻意不携带原始错误对象**。
+ *
+ * 为什么不带：drizzle 包出来的是 `DrizzleQueryError`，而它的 `message` 就是
+ * `` `Failed query: ${query}\nparams: ${params}` ``——**查询参数被内联进了消息**。
+ * 本项目里带敏感数据的写语句不止一处：录入的 insert 参数含 `password_hash` / `id_card` /
+ * `phone`，改密与重置的 update 参数含 `password_hash`。所以「把原始错误挂到 `cause` 上」
+ * 或「原样抛出」都会把这些一并交给调用方——而调用方（F3 的网关）拿到错误后多半会记日志，
+ * 于是脱敏在**呈现层**做已经来不及：日志里已经有一份了。
+ *
+ * 保留 SQLSTATE 就够了——那才是排查真正要用的那一半，且不含任何数据。
+ * 想追原始堆栈时请**在抛出点**读，不要让它跟着错误对象走。
+ */
+export class AccountWriteError extends Error {
+  /** PG 的 SQLSTATE（取不到则为 `undefined`）。 */
+  readonly sqlState: string | undefined
+
+  constructor(sqlState: string | undefined) {
+    super(sqlState ? `账号写入失败（SQLSTATE ${sqlState}）` : "账号写入失败")
+    this.name = "AccountWriteError"
+    this.sqlState = sqlState
+  }
+}

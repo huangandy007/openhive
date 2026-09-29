@@ -106,9 +106,34 @@ export async function migrate(db: MigrationTarget): Promise<string[]> {
 /**
  * 回滚指定版本：执行它的 down 脚本并摘掉记账，让它重新变成「待应用」。
  *
- * 前提是该版本已应用过（账上有记录）；不提供回滚未应用的版本。
+ * **只允许回滚当前最后一个已应用的版本（head）**，其余一律拒绝。这不是洁癖，是两条后果：
+ *
+ * 1. 越过 head 回滚会让**账与 schema 永久背离**，且不可自愈。实测（PGlite）：
+ *    `migrate()` 应用 0001+0002 之后回滚 `0001_init`，`0002_deactivated_at` 的记账**还在**，
+ *    于是 `migrate()` 永远跳过它；而 `deactivated_at` 列已被 0001 的 down 带走。
+ *    此后任何碰该列的查询（`disableAccounts` / `restoreAccount` / `findArchivableAccounts`）
+ *    都报 42703，而运行器每次仍报「无待应用迁移」——**一路成功着的失败**，只能人工进库改。
+ * 2. 一个版本的 down 脚本本来就假定「排在它之后的版本已经撤掉了」。
+ *
+ * 顺带把另外两种输入一并挡在门外：未应用的版本（原来只在注释里承诺「不提供」），
+ * 以及带路径的版本号——`version` 会拼进 `runFile` 的文件名，`../../x` 读到的文件内容
+ * 会直接交给 `sql.raw` 执行。`applied` 只可能含 `migrations/` 下的版本号，所以
+ * 上面那道「必须在账上」的检查同时也是路径校验。
  */
 export async function rollback(db: MigrationTarget, version: string): Promise<void> {
+  const applied = await appliedVersions(db)
+  if (!applied.has(version)) throw new Error(`迁移未应用，无法回滚：${version}`)
+
+  // 取「已应用版本里按文件名排在最后的那一个」。用文件序而不是简单的 `applied` 大小，
+  // 是为了正确处理「新迁移已写进仓库但还没应用」：那时 head 仍是上一个已应用的版本。
+  const appliedInOrder = upFiles(await readdir(MIGRATIONS_DIR))
+    .map(versionOf)
+    .filter((candidate) => applied.has(candidate))
+  const head = appliedInOrder.at(-1)
+  if (version !== head) {
+    throw new Error(`只能回滚最后一个已应用的版本（当前为 ${head}），不能回滚 ${version}`)
+  }
+
   await runFile(db, `${version}.down.sql`)
   await db.execute(sql`delete from auth._migration where version = ${version}`)
 }

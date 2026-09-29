@@ -7,11 +7,13 @@ import { migrate } from "./migrate"
 import {
   EmptyNewPasswordError,
   InvalidCurrentPasswordError,
+  WeakNewPasswordError,
   changePassword,
   hashPassword,
   resetPassword,
   verifyPassword,
 } from "./password"
+import { AccountWriteError } from "./pg-errors"
 import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser } from "./register"
 
@@ -91,6 +93,47 @@ async function errorOf(action: Promise<unknown>): Promise<Error> {
   return thrown
 }
 
+/**
+ * 收集一个错误**可达**的全部文本（自有属性递归 + `message` / `stack`）。
+ *
+ * 不能只 `JSON.stringify(error)`：`Error` 的 `message` / `stack` 不可枚举，
+ * 那样得到的是 `"{}"`——一条什么都测不到的假绿断言（同 register.test.ts 的用法）。
+ */
+function textReachableFrom(value: unknown, seen = new Set<unknown>()): string {
+  // 原语逐个点名，而不是 `String(value)` 兜底：后者在函数 / symbol 上会走「对象的默认字符串化」，
+  // 拿回 `[object Object]` 之类的噪声——真漏了哈希也会被这段噪声糊过去（oxlint no-base-to-string）。
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value)
+  // 剩下的是 null / undefined / 函数 / symbol：取不到有意义的文本。
+  if (typeof value !== "object" || value === null) return ""
+  if (seen.has(value)) return ""
+  seen.add(value)
+
+  const parts: string[] = []
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (descriptor && "value" in descriptor) parts.push(textReachableFrom(descriptor.value, seen))
+  }
+  return parts.join("\n")
+}
+
+/**
+ * 同 `errorOf`，但要求抛的正是 `type`，交回**窄化后**的实例。
+ *
+ * 为什么要它：`errorOf` 交回 `Error`，想读子类字段就得 `thrown as AccountWriteError`——
+ * 那是一次 `no-unsafe-type-assertion`（断言把类型系统的警报掐掉，而错误对象的形状是运行时事实）。
+ * 在测试里还好，但本项目的门禁判据是「**本次改动文件 0 命中**」，于是断言必须先过 lint 这一关。
+ * `instanceof` 是运行时真检查，说错了会当场报出来，比断言诚实。
+ */
+async function errorOfType<T extends Error>(
+  action: Promise<unknown>,
+  type: new (...args: never[]) => T,
+): Promise<T> {
+  const thrown = await errorOf(action)
+  if (!(thrown instanceof type)) throw new Error(`期望 ${type.name}，实际拿到 ${thrown.name}：${thrown.message}`)
+  return thrown
+}
+
 describe("改密（FR-006）", () => {
   let db: Db
   let userId: string
@@ -143,6 +186,89 @@ describe("改密（FR-006）", () => {
     expect(await storedHashOf(db, userId)).toBe(before)
     const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
     expect(after.mustChangePw).toBe(true)
+  })
+
+  // 与上一条是**同一个洞的两种填法**：空串挡住的只是「什么都没有」，挡不住「填一个已知口令」。
+  // 默认密码是写在文档里的公开值，把它填回来等于账号停在人尽皆知的状态，而 must_change_pw
+  // 已被清成 0——与「正常改过密」完全同形，测试、运维视图都看不出区别。
+  test("新密码 = 系统默认密码时拒绝——它不是「改过密」，只是把公开口令又填了一遍", async () => {
+    const before = await storedHashOf(db, userId)
+
+    const thrown = await failureOf(
+      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: DEFAULT_PASSWORD }),
+    )
+
+    expect(thrown).toBeInstanceOf(WeakNewPasswordError)
+    expect(await storedHashOf(db, userId)).toBe(before)
+    // 仍是「默认密码可登 + 仍要求改密」——用行为断言，不看列。
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
+    expect(after.mustChangePw).toBe(true)
+  })
+
+  test("新密码全是空白时拒绝——`length === 0` 挡不住 \"   \"", async () => {
+    const before = await storedHashOf(db, userId)
+
+    const thrown = await failureOf(
+      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: "   " }),
+    )
+
+    expect(thrown).toBeInstanceOf(EmptyNewPasswordError)
+    expect(await storedHashOf(db, userId)).toBe(before)
+  })
+
+  // 覆盖的是「改密」这个动作本身应当**改变**什么。与上一条不同：这里当前密码不是默认密码
+  // （先真改过一次），所以规则 2 拦不住它——但它同样会无条件清掉 must_change_pw。
+  test("新密码与当前密码相同时拒绝——那不是改密，却会清掉强制改密标记", async () => {
+    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    const before = await storedHashOf(db, userId)
+
+    const thrown = await failureOf(
+      changePassword(db, { userId, currentPassword: NEW_PASSWORD, newPassword: NEW_PASSWORD }),
+    )
+
+    expect(thrown).toBeInstanceOf(WeakNewPasswordError)
+    expect(await storedHashOf(db, userId)).toBe(before)
+  })
+})
+
+/**
+ * 改密/重置的 UPDATE 参数里也有 `password_hash`，和录入的 insert 是同一类问题
+ * （LEARNINGS #002-01：踩到一个「随某维度而变」的东西就把它当**类**问题清一遍）。
+ *
+ * 构造手法：加一条 CHECK，让 `select` 能过、`update` 必失败——否则测不到写库那条路径。
+ */
+describe("写库失败时不把密码哈希带出去", () => {
+  let db: Db
+  let userId: string
+
+  beforeEach(async () => {
+    db = await freshDb()
+    userId = (await registerUser(db, ACCOUNT)).id
+  })
+
+  test("改密失败：错误可达图里没有哈希，且换成了不带参数的 AccountWriteError", async () => {
+    await db.execute(sql`alter table auth.user add constraint keep_changing check (must_change_pw = 1)`)
+
+    const thrown = await errorOfType(
+      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }),
+      AccountWriteError,
+    )
+
+    expect(textReachableFrom(thrown)).not.toContain("$argon2")
+    // SQLSTATE 留下，排查线索不丢。
+    expect(thrown.sqlState).toBe("23514")
+  })
+
+  test("重置失败：同上", async () => {
+    // 先把标记落成 0，**否则 CHECK 加不上**：约束要求「当前」这一行就满足，
+    // 而录入出来的账号 `must_change_pw` 是 1（重置要把它抬回 1，只能从 0 起才制造得出冲突）。
+    await db.execute(sql`update auth.user set must_change_pw = 0`)
+    await db.execute(sql`alter table auth.user add constraint stay_changed check (must_change_pw = 0)`)
+
+    const thrown = await errorOf(resetPassword(db, userId))
+
+    expect(thrown).toBeInstanceOf(AccountWriteError)
+    expect(textReachableFrom(thrown)).not.toContain("$argon2")
   })
 })
 

@@ -1,5 +1,5 @@
 import { hashPassword } from "./password"
-import { pgErrorCode } from "./pg-errors"
+import { AccountWriteError, pgErrorCode } from "./pg-errors"
 import { DEFAULT_PASSWORD } from "./policy"
 import { nowSeconds } from "./time"
 import { user } from "./user"
@@ -45,11 +45,66 @@ export class DuplicatePoliceNoError extends Error {
   }
 }
 
+/**
+ * 录入时某个必填字段没填（**纯空白也算没填**）。
+ *
+ * FR-003 写的是「MUST 填写 8 个业务字段」——8 列全是 NOT NULL，所以「填了个空白」
+ * 是唯一能绕开 NOT NULL、造出一个「有行但没有姓名」的账号的路径。
+ * `field` 带出来，后台好把提示落到对应输入框上。
+ */
+export class MissingFieldError extends Error {
+  /** 出问题的字段名（`RegisterInput` 的键）。 */
+  readonly field: string
+
+  constructor(field: string) {
+    super(`必填字段为空：${field}`)
+    this.name = "MissingFieldError"
+    this.field = field
+  }
+}
+
+/**
+ * `status` 越界。
+ *
+ * 定义就在 design-v2 §4.1 的列注释里：`status INTEGER NOT NULL -- 状态（1 启用 / 0 停用）`。
+ * 越界的值不会「表现成某种状态」——僵尸扫描按 `= 1`、归档按 `= 0`，两个都匹配不上，
+ * 账号于是**从两边视野里同时消失**：既不提醒也不归档，还不报错。
+ */
+export class InvalidStatusError extends Error {
+  constructor(status: number) {
+    super(`状态取值非法：${status}（只允许 1 启用 / 0 停用）`)
+    this.name = "InvalidStatusError"
+  }
+}
+
 /** PG 的 unique_violation 错误码。 */
 const UNIQUE_VIOLATION = "23505"
 
+/** 8 个业务字段里除 `status` 之外的 7 个文本字段。 */
+const TEXT_FIELDS = ["policeNo", "name", "idCard", "phone", "org", "dept", "section"] as const
+
+/**
+ * 录入前校验（FR-003「MUST 填写 8 个业务字段」）。
+ *
+ * **刻意只拦「填了等于没填」，不trim后入库**：`" 000123 "` 里的空格是管理员真敲进去的，
+ * 悄悄改掉比报错更难排查（他复制粘贴带了个尾随空格，此后按 `000123` 永远登不进来，
+ * 而库里那一行看起来完全正常）。要不要归一化是另一个决定，spec 没写，不擅自定。
+ */
+function validate(input: RegisterInput): void {
+  for (const field of TEXT_FIELDS) {
+    // `typeof` 那一半不是多余的：交进来的是网关解析出的 JSON，`null` / 缺键在类型上不存在、
+    // 运行时会到——`.trim()` 撞上 undefined 是 TypeError，会把「少填一个字段」变成 500。
+    const value: unknown = input[field]
+    if (typeof value !== "string" || value.trim().length === 0) throw new MissingFieldError(field)
+  }
+
+  if (input.status !== 0 && input.status !== 1) throw new InvalidStatusError(input.status)
+}
+
 /** 录入成功后返回新账号的 id——T007 用它建沙箱目录 `/workspaces/{id}/`。 */
 export async function registerUser(db: UserInsertTarget, input: RegisterInput): Promise<{ id: string }> {
+  validate(input)
+
   const id = crypto.randomUUID()
 
   await insertUser(db, input, id)
@@ -85,10 +140,16 @@ async function insertUser(db: UserInsertTarget, input: RegisterInput, id: string
       createdAt: nowSeconds(),
     })
   } catch (cause) {
-    if (pgErrorCode(cause) === UNIQUE_VIOLATION) {
-      throw new DuplicatePoliceNoError(input.policeNo, { cause })
+    const sqlState = pgErrorCode(cause)
+    if (sqlState === UNIQUE_VIOLATION) {
+      // ⚠️ **不要把 `cause` 原样挂上去**：`DrizzleQueryError.message` 内联了查询参数，
+      // 而这条 insert 的参数里同时有 `password_hash` / `id_card` / `phone`。
+      // 只带 SQLSTATE 出门——它仍让 `pgErrorCode(本错误)` 取到 `23505`，排查线索没丢。
+      throw new DuplicatePoliceNoError(input.policeNo, { cause: { code: sqlState } })
     }
-    throw cause
+    // 同理：其余 PG 错误（42P01 之类）也**不能原样抛出**（这条 insert 的参数里有同样的东西）。
+    // 换成不带参数的 `AccountWriteError`，SQLSTATE 单独带出去。
+    throw new AccountWriteError(sqlState)
   }
 }
 

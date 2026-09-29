@@ -103,7 +103,7 @@ describe("生产驱动 (bun-sql) × 真库", () => {
   // 「无法从查询结果中取出行」，migrate 的第二次调用就过不去。
   test("migrate 在生产驱动上跑通，且第二次幂等", async () => {
     await withProductionDb(async (db) => {
-      expect(await migrate(db)).toEqual(["0001_init", "0002_deactivated_at"])
+      expect(await migrate(db)).toEqual(["0001_init", "0002_deactivated_at", "0003_flags_not_null"])
       expect(await migrate(db)).toEqual([])
     })
   })
@@ -119,8 +119,11 @@ describe("生产驱动 (bun-sql) × 真库", () => {
       const thrown = await failureOf(() => registerUser(db, input("000001")))
 
       expect(thrown).toBeInstanceOf(DuplicatePoliceNoError)
-      // 原始 SQLSTATE 仍可达，排查线索没丢（与 register.test.ts 的 cause 断言同义）。
-      expect(pgErrorCode(thrown instanceof Error ? thrown.cause : undefined)).toBe("23505")
+      // 原始 SQLSTATE 仍可达，排查线索没丢（与 register.test.ts 的同名断言同义）。
+      // 注意探的是 `thrown` 自己、不是 `thrown.cause`：I2 之后 `cause` 已换成
+      // `{ code: "23505" }` 这个**纯数据**替身，原始 drizzle 错误不再挂在错误对象上
+      // （它的 message 内联了 insert 的查询参数——含 password_hash / id_card / phone）。
+      expect(pgErrorCode(thrown)).toBe("23505")
     })
   })
 
@@ -138,9 +141,14 @@ describe("生产驱动 (bun-sql) × 真库", () => {
     })
   })
 
-  test("rollback 在生产驱动上可逆", async () => {
+  // 以前这里只回滚 `0001_init` 一把删表——那是**越过 head 回滚**，现在被 rollback 的守卫拒绝
+  // （见 migrate.ts：会让账与 schema 永久背离）。改成按逆序回滚到空库：语义相同（可逆），
+  // 而且顺带在生产驱动上把**三个** down 脚本都跑了一遍。
+  test("rollback 在生产驱动上可逆（按逆序回滚到空库）", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
+      await rollback(db, "0003_flags_not_null")
+      await rollback(db, "0002_deactivated_at")
       await rollback(db, "0001_init")
 
       const result = await db.execute(sql`

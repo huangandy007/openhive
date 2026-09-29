@@ -199,6 +199,47 @@ describe("一键批量停用（FR-009）", () => {
   })
 })
 
+// 停用是**幂等**的：已经停用的账号再被停用一次，不该有任何变化。
+// 会真的出事的场景不是「手滑点两次」，而是**前端拿着一张翻页前的旧名单**又点了一次批量停用
+// （或脚本按 id 列表重放）——那一刻 `deactivated_at` 被改写成 now，30 天保留期**从头起算**。
+// 停用日期是事实，不是「最后一次点停用的时间」。
+describe("重复停用不改写停用时刻（FR-010 的起算点必须稳定）", () => {
+  test("已停用 20 天，再停一次，时刻仍是 20 天前", async () => {
+    const id = await account("000025", { createdDaysAgo: 200 })
+    await disableAccounts(db, [id])
+    await setDeactivatedDaysAgo(id, 20)
+
+    await disableAccounts(db, [id])
+
+    expect(Number(await deactivatedAtOf(id))).toBe(NOW - 20 * DAY)
+  })
+
+  // 数据不变式之外，再看它造成的**后果**：起算点被重置，账号就被从归档里救回来了——
+  // 而「一直有人点」意味着它**永远不会**被归档，沙箱与账号数据无限期留在系统里。
+  test("已停用 31 天（够归档了）的账号，被重复停用后仍算逾期", async () => {
+    const id = await account("000026", { createdDaysAgo: 400, status: 0 })
+    await setDeactivatedDaysAgo(id, 31)
+
+    // 必须显式传 NOW：默认的 nowSeconds() 是**真实当前时刻**，落在 NOW 之前，
+    // 于是「时钟被重置」这件事在 `findArchivableAccounts(db, NOW)` 眼里看不出来——
+    // 上次跑这条就是这么蒙混过去的（假绿）。
+    await disableAccounts(db, [id], NOW)
+
+    expect(await policeNosOfArchivable()).toEqual(["000026"])
+  })
+
+  // `NULL + status=0` 是 design-v2 §4.1 明写的第三态：「停用但时刻未知」（002 之前的历史数据）。
+  // 给它补一个 `now` 不等于「补全了数据」，而是**声称我们知道它是刚停的**——它在库里待了多久
+  // 就白待了，30 天后会被当成逾期对象归档掉。宁可漏，不可误删。
+  test("重复停用不会给「时刻未知」的老数据补一个假时刻", async () => {
+    const id = await account("000027", { createdDaysAgo: 400, status: 0 })
+
+    await disableAccounts(db, [id])
+
+    expect(await deactivatedAtOf(id)).toBeNull()
+  })
+})
+
 describe("停用后保留 30 天（FR-010 / T016）", () => {
   test("停用时记下停用时刻——没有它，「是否已满 30 天」无从判定", async () => {
     const id = await account("000031", { createdDaysAgo: 200 })

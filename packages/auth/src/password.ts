@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm"
+import { AccountWriteError, pgErrorCode } from "./pg-errors"
 import { DEFAULT_PASSWORD, PASSWORD_HASH_ALGORITHM } from "./policy"
 import { type UserAccountTarget, user } from "./user"
 
@@ -38,6 +39,14 @@ export class EmptyNewPasswordError extends Error {
   }
 }
 
+/** 新密码满足「非空」，但仍不能要——它等于默认密码或当前密码。 */
+export class WeakNewPasswordError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "WeakNewPasswordError"
+  }
+}
+
 export interface PasswordChangeInput {
   /** 改谁的密码。调用方从**已验签的凭证**里取，不从前端传。 */
   userId: string
@@ -55,19 +64,37 @@ export interface PasswordChangeInput {
  * 为什么**拒绝空密码**（不是「策略」，是地板）：空密码的账号，任何人输空串都能登进去——
  * 这是本功能自己就能制造出来的坏状态，一行挡住。**注意：真正的密码强度策略没有实现**——
  * design-v2 只画了「强度条」，没写规则，故不擅自定一套（见 state.md 待裁定）。
+ *
+ * **本节全部是「地板」，不是「强度策略」**：下面三条都只拦「填了等于没填」的输入，不需要先定
+ * 长度/字符类规则，所以不受上面那条待裁定事项的阻塞。尤其是「新密码 = 默认密码」——
+ * 默认密码是写在文档里的公开值，放行它等于账号停在人尽皆知的口令上，而 `must_change_pw`
+ * 已被清成 0：此后它与「正常改过密」完全同形，任何测试和运维视图都看不出区别（FR-006 的全部
+ * 价值就建立在「默认密码公开、不改等于人人可冒用」之上）。
  */
 export async function changePassword(db: UserAccountTarget, input: PasswordChangeInput): Promise<void> {
-  if (input.newPassword.length === 0) throw new EmptyNewPasswordError()
+  // 空白串要按「空」处理：`length === 0` 挡不住 "   "，而 "   " 正是可登录的密码。
+  if (input.newPassword.trim().length === 0) throw new EmptyNewPasswordError()
+  if (input.newPassword === DEFAULT_PASSWORD) throw new WeakNewPasswordError("新密码不能是系统默认密码")
 
   const [record] = await db.select().from(user).where(eq(user.id, input.userId))
   if (!record) throw new Error(`账号不存在：${input.userId}`)
 
   if (!(await verifyPassword(input.currentPassword, record.passwordHash))) throw new InvalidCurrentPasswordError()
 
-  await db
-    .update(user)
-    .set({ passwordHash: await hashPassword(input.newPassword), mustChangePw: 0 })
-    .where(eq(user.id, input.userId))
+  // ⚠️ 这条**必须**排在验密之后。放在前面会变成「猜当前密码」的预言机：
+  // 攻击者拿候选密码当 newPassword 传进来，猜中得 Weak、猜错得 InvalidCurrent，一次一比特。
+  if (input.newPassword === input.currentPassword) throw new WeakNewPasswordError("新密码不能与当前密码相同")
+
+  // 哈希在 try **之外**算：否则 `Bun.password.hash` 自己抛的错也会被包成「写库失败」。
+  const passwordHash = await hashPassword(input.newPassword)
+
+  try {
+    await db.update(user).set({ passwordHash, mustChangePw: 0 }).where(eq(user.id, input.userId))
+  } catch (cause) {
+    // 这条 update 的参数里带 `password_hash`，原始 drizzle 错误会把参数内联进 message——
+    // 不能让它跟着错误对象走（见 `AccountWriteError`）。
+    throw new AccountWriteError(pgErrorCode(cause))
+  }
 }
 
 /**
@@ -91,8 +118,11 @@ export async function resetPassword(db: UserAccountTarget, userId: string): Prom
   const [record] = await db.select().from(user).where(eq(user.id, userId))
   if (!record) throw new Error(`账号不存在：${userId}`)
 
-  await db
-    .update(user)
-    .set({ passwordHash: await hashPassword(DEFAULT_PASSWORD), mustChangePw: 1 })
-    .where(eq(user.id, userId))
+  const passwordHash = await hashPassword(DEFAULT_PASSWORD)
+
+  try {
+    await db.update(user).set({ passwordHash, mustChangePw: 1 }).where(eq(user.id, userId))
+  } catch (cause) {
+    throw new AccountWriteError(pgErrorCode(cause))
+  }
 }

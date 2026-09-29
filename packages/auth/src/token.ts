@@ -16,10 +16,38 @@ export interface TokenSubject {
   isAdmin: boolean
 }
 
-/** 从环境变量取签名密钥。 */
+/**
+ * HS256 密钥的下限：**32 字符**。
+ *
+ * 依据是 RFC 7518 §3.2——HMAC 的密钥长度 MUST ≥ 哈希输出长度，HS256 即 256 bit（32 字节）。
+ * 按字节理解也成立：本项目的期望输入是随机 hex / base64 串，那种串上「1 字符 = 1 字节」。
+ *
+ * 这是**地板，不是强度计**：它只拦「一眼就看得出顶不住枚举」的密钥（`prod-secret`、占位符、
+ * 从别处抄来的短口令），不做熵估算、不查弱口令表。与 `changePassword` 里那组检查同一个立场
+ * （见 `password.ts`）——拦得住「填了等于没填」，拦不住「填了一个自以为很妙的口令」。
+ */
+const MIN_SECRET_LENGTH = 32
+
+/** 签名密钥太短——HS256 的安全性整个押在它上面，短密钥可离线枚举。 */
+export class WeakJwtSecretError extends Error {
+  constructor(length: number) {
+    super(`${JWT_SECRET_ENV} 太短（${length} 字符），至少需要 ${MIN_SECRET_LENGTH} 字符`)
+    this.name = "WeakJwtSecretError"
+  }
+}
+
+/**
+ * 从环境变量取签名密钥。
+ *
+ * 为什么在**取的时候**就判强度、而不是等签发时：这是进程启动路径上的一次性检查，失败即
+ * 「起不来」，运维当场就看见并去改环境变量；拖到签发时才抛，症状是「能登录、但登录接口 500」，
+ * 排查要多绕好几层。宁可起不来，不可带着弱密钥跑起来——它跑起来的每一天，全系统的凭证
+ * 都处于可伪造状态。
+ */
 export function jwtSecret(env: Record<string, string | undefined>): string {
   const secret = env[JWT_SECRET_ENV]
   if (!secret) throw new Error(`缺少环境变量 ${JWT_SECRET_ENV}`)
+  if (secret.length < MIN_SECRET_LENGTH) throw new WeakJwtSecretError(secret.length)
   return secret
 }
 

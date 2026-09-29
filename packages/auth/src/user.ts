@@ -28,8 +28,10 @@ export const user = authSchema.table("user", {
   section: text("section").notNull(),
   status: integer("status").notNull(),
   passwordHash: text("password_hash").notNull(),
-  isAdmin: integer("is_admin").default(0),
-  mustChangePw: integer("must_change_pw").default(1),
+  // 两列的 NOT NULL 由 **0003 迁移**追加（0001 建表时是可空的）。
+  // 可空时 `must_change_pw = NULL` 会被 login 的 `=== 1` 读成「不需改密」——fail-open。
+  isAdmin: integer("is_admin").notNull().default(0),
+  mustChangePw: integer("must_change_pw").notNull().default(1),
   lastLoginAt: integer("last_login_at"),
   lastActiveAt: integer("last_active_at"),
   createdAt: integer("created_at").notNull(),
