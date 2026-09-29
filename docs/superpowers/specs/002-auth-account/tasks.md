@@ -168,7 +168,34 @@
 
 ## Phase 7: opencode 边界（P1）
 
-- [ ] T018 [BE] 关闭 opencode Basic Auth（不设 `OPENCODE_SERVER_PASSWORD`），网关注入并校验 `X-User-ID` [FR-011][FR-012] [T005] [出参：opencode 只认 X-User-ID，无该头即拒绝]
+- [x] T018 [BE] 关闭 opencode Basic Auth（不设 `OPENCODE_SERVER_PASSWORD`），网关注入并校验 `X-User-ID` [FR-011][FR-012] [T005] [出参：opencode 只认 X-User-ID，无该头即拒绝]
+  - **三条范围裁定（2026-09-29，用户裁定，全取推荐项）**——本任务原文标「属范围决策，须先由人定」，故先问后做：
+    ① **门走配置开关、默认关**（新增 `OPENHIVE_REQUIRE_USER_ID`）；② **中间件落 `packages/opencode`**；
+    ③ **per-request 用户上下文归 003**（其 `plan.md:94` / `tasks.md:22` T003 已认领），002 只做「读头 → 无头即拒」。
+  - 裁定 ① 的**硬依据**：「无该头即拒绝」若无条件生效，`bun run dev:web` / desktop / CLI attach / 内置 web UI
+    **全部立刻 401**——全仓库 grep `X-User-ID` 在 `packages/` 下**零命中**，没有任何现存客户端发这个头，
+    而网关（F3）还不存在、没人补头。等于把产品在本机锁死到 F3。
+  - **「关闭 Basic Auth」这半是零代码**：`server/auth.ts` 的 `required()` 在没设 `OPENCODE_SERVER_PASSWORD` 时
+    返回 false，`middleware/authorization.ts` 的三处中间件（`:104` / `:122` / `:138`）**全部退化成直通**。
+    故「关闭」= 不设这个环境变量，无需改任何源码——正好落在「品牌化/环境值走配置，不硬编码进核心」上。
+  - ⚠️ **`X-User-ID` 不是凭证，是网关与内核之间的内部约定**（已写进 `src/server/user-identity.ts` 顶部）：
+    它是明文头，谁够得着端口谁就能填成任意 id（含管理员）。这道门拦的是**注入链路的缺失**（网关没跑、
+    头被剥掉、反代漏配），**不是伪造**。真边界是「只有网关够得着这个端口」（回环绑定 / 网络策略，F3）。
+    把这道门当鉴权读，等于把门牌号当门锁。
+  - **两处刻意放行规则**：**空白按没有处理**（网关注入坏掉时送空串，放行等于给下游一个空身份，
+    而空身份在 F3 会被当成合法路由键）；**公共 UI 资源豁免**（同 Basic Auth，`shared/public-ui.ts`，
+    拦了会让 PWA 装不上，上游 #25698）。拒绝时**不发** `www-authenticate`（那是给浏览器弹 Basic 框的）。
+  - ⚠️ 过程撞到 1 条冗余：`?.trim()` **变异 0 红** → 实测 `"   "` → `""`、`" u_1 "` → `"u_1"`
+    （HTTP 层按 RFC 9110 已去首尾空白），`.trim()` 在任何输入下都不改变结果，**删掉**（同 T016 的空名单守卫）。
+  - 变异验证：拆接线 → 1 红；不拒绝无头 → 3 红；开关关了也拦 → 2 红；不豁免公共 UI → 1 红；
+    默认改开 → 2 红；`!userId` 改 `=== undefined` → 1 红（且恰好只这一条红，证明空白用例有独立牙）。
+  - 实测出参：T018 测试 **10 pass / 0 fail**；带上游 `httpapi-ui.test.ts` 共 **22 pass / 0 fail**
+    （12 条上游 Basic Auth 用例全绿 = 没破坏既有认证）；`bunx oxlint` 四个文件 **0/0**；
+    `bun run typecheck` **31/31**；`bun run lint` **4924w/1e / 3375 文件**（w/e 与基线逐字相同，
+    文件数 +3 = 本任务 3 个新文件；单条 error 仍是上游 `prompt-input/index.tsx:163`）。
+  - ⚠️ **`packages/opencode/test/server/` 整目录跑不是可靠的门**：同一条命令三次跑出 4 / 6 / 3 条失败，
+    名单各不相同，全是整齐的 5000ms 超时；**取 HEAD 基线（完全移除本任务改动）同样 3 条超时**。
+    结论：该套件受负载抖动、失败集不稳定，**判据要看单文件 + 具体用例名，不要看整目录总数**。
 
 ---
 

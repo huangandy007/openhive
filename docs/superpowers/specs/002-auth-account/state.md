@@ -1,8 +1,9 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-**Phase 6 已完成**（T015/T016/T017 三条全绿）。**002 只剩 T018**（Phase 7：关闭 opencode Basic Auth +
-网关注入校验 `X-User-ID`，[T005]，是唯一一条要动 opencode 边界的任务）。
+**T018 已完成 —— 002 的 16 条任务全部落地**（T001–T018，T010/T012 已裁定移出）。
+剩余收尾：① 本任务提交（T018 是 002 唯一动 opencode 边界的任务，单独一条 commit）；
+② **feature 收尾时按 CLAUDE.md 追加 1–5 条 LEARNINGS（`#002-01` 起）**；③ 评审 / 合入 `multi-tenant`。
 
 ## 补提交记录（2026-09-29，用户裁定「逐条补提交」）
 
@@ -20,6 +21,63 @@ T009 态 17 pass、T011 态 11 pass、T013 态 9 pass、T014 态 12 pass，全�
 下次在 worktree 里做多任务时，**完成一条就先提交一条**，别攒。
 
 ## 已完成
+
+### T018 [BE] opencode 身份门 ✅（2026-09-29）
+**交付物**：新增 `packages/opencode/src/server/user-identity.ts`（开关 Config）、
+`.../httpapi/middleware/user-identity.ts`（全局中间件）、`test/server/user-identity.test.ts`（10 条）；
+`.../httpapi/server.ts` 接线 **+5 行**（2 行 import + 3 行）。**opencode 上游文件只动了这一处、只加了 5 行。**
+
+**为什么先问后做**：tasks.md 在本任务旁标着「属范围决策，须先由人定，不能由实现者顺手夹带」。
+摸排后发现三条必须由人定的岔路，都用 AskUserQuestion 提了，用户全取推荐项：
+
+| 岔路 | 若按字面做的后果 | 裁定 |
+|---|---|---|
+| 门无条件生效？ | dev:web / desktop / CLI / 内置 web UI **全部立刻 401** | 配置开关，**默认关** |
+| 中间件落哪个包 | 002 `plan.md:57` 写 `packages/auth/`，但那样 auth 要反向依赖 opencode 内部 | 落 `packages/opencode` |
+| per-request 上下文归谁 | 002 `plan.md:98` 与 003 `plan.md:94`**都认领了同一件事** | 归 003，002 只做「读头 → 无头即拒」 |
+
+**关键发现一：「关闭 Basic Auth」这半是零代码。** `server/auth.ts` 的 `required()` 在没设
+`OPENCODE_SERVER_PASSWORD` 时返回 false，`middleware/authorization.ts` 的三处中间件
+（`:104` / `:122` / `:138`）全部退化成直通。所以「关闭」= **不设环境变量**，一行源码都不用改——
+正好落在「品牌化/环境值走配置，不硬编码进核心源码」上。
+
+**关键发现二（安全，已写进代码顶部注释）：`X-User-ID` 不是凭证。** 它明文、可自填，谁够得着端口
+谁就能填成任意 id 含管理员。这道门拦的是**注入链路的缺失**（网关没跑、头被剥掉、反代漏配），
+**不是伪造**——真边界是「只有网关够得着这个端口」（回环绑定 / 网络策略，F3）。
+它比「不设密码跑裸奔」严格，但它**不是鉴权**；后来者若按「无该头即拒绝」的字面理解去信任它，
+就等于把门牌号当门锁。这条不确定下来，这个 feature 会出厂一个**看起来安全**的门。
+
+**关键发现三：整目录跑测试不是可靠的门。** `packages/opencode/test/server/` 同一条命令三次跑出
+**4 / 6 / 3** 条失败，名单各不相同，全是整齐的 5000ms 超时。取 **HEAD 基线（把本任务三个文件全部移走、
+`server.ts` 还原）同样 3 条超时**。即：该套件受负载抖动，**失败集不稳定**。
+判据因此定为「单文件 + 具体用例名」，不看整目录总数。
+
+**两处刻意放行规则**：① **空白按没有处理**——网关注入坏掉时送的是空串/空白而非「没有这个头」，
+放行等于给下游一个**空身份**，而空身份在 F3 会被当成合法的路由键；② **公共 UI 资源豁免**——
+同 Basic Auth（`shared/public-ui.ts`），拦了会让 PWA 装不上（上游 #25698）。拒绝时**不发**
+`www-authenticate`：那是给浏览器弹 Basic 框用的，这里没有 Basic，发了只会弹一个永远填不对的框。
+
+**变异验证（全部真跑）**：
+
+| 变异 | 红 |
+|---|---|
+| 拆掉 `createRoutes` 里的接线 | **1**（真应用那条） |
+| 不拒绝无头请求 | **3** |
+| 开关关了也照样拦 | **2** |
+| 不豁免公共 UI 资源 | **1** |
+| 默认值 false → true | **2** |
+| `!userId` → `userId === undefined` | **1**（且恰好只这一条，证明空白用例有独立牙） |
+| 去掉 `?.trim()` | **0** → 冗余，已删 |
+
+最后一条的处理同 T016 的空名单守卫：变异 0 红 → 实测 `"   "` → `""`、`" u_1 "` → `"u_1"`
+（HTTP 层按 RFC 9110 已去首尾空白），`.trim()` **在任何输入下都不改变结果**，删掉；
+测试注释改为陈述真实机制，并注明「变异成 `=== undefined` 会让本条红」。
+
+**实测出参**：T018 测试 **10 pass / 0 fail**；带上游 `httpapi-ui.test.ts` 共 **22 pass / 0 fail**
+（12 条上游 Basic Auth 用例全绿 = 没破坏既有认证）；`bunx oxlint` 四个文件 **0/0**；
+`bun run typecheck` **31/31**（`opencode` / `auth` 均真跑非缓存）；`bun run lint`
+**4924w / 1e / 3375 文件**——w/e 与基线逐字相同，文件数 +3（本任务 3 个新文件），
+单条 error 仍是上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`。
 
 ### T017 [P] [US5] [BE] 密码重置 ✅（2026-09-29）
 **交付物**：`password.ts` 加 `resetPassword`；`password.test.ts` 增 4 条（重置 describe）；
