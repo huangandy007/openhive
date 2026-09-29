@@ -1,7 +1,7 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-⏸️ **卡在 T004 的落点裁定上**（见下「T004 前置实测」）。三条路各有代价，需要你拍板，我没有自行选。
+🔄 **T004 进行中**（落点**已裁定【甲】**；第一轮实测已出、**消费侧实测进行中**——见下「T004 落点裁定」）。
 （T003 已完成；其余候选：T006 沙箱锚定 / T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 D2–D6。）
 
 ## 已完成
@@ -46,7 +46,7 @@ MUST NOT 仅靠应用层 `if` 判断过滤。」
      `X-User-ID` 是明文头，作不了信任通道；甲下它**降级为路由提示**，验签发生在**内核**这一侧。
   > 教训写在这次的修正动作里：上一轮我把「五处必须同改」当成范围，**范围划小了就等于没扫**。
 
-## T004 前置实测（2026-09-30 · 实测已做，**落点未裁定，卡在这里**）
+## T004 前置实测（2026-09-30 · 实测已做；落点**已裁定【甲】**，见下）
 
 T001 留了一句「T004 必须实测」。**测了**（探针用完即删，未入库；完整数据见 `refactor-targets.md` §3）：
 
@@ -67,6 +67,71 @@ T001 留了一句「T004 必须实测」。**测了**（探针用完即删，未
 | 甲 · 换掉 `Database.node` 指向 | 新增一个「按 location 上下文派生 db 路径」的层，作为 replacement 传入 | 零改上游文件；但路径只能由 **key** 派生（不能看请求身份），且需 T006 锚定「一个 location ↔ 一个用户」 |
 | 乙 · `Database` 自持 `Map<userId, 连接>`（节点仍 global） | plan.md 原案 | 实测显示 `{db}` 句柄在 7 个引用点各有一份 ⇒ 要么改所有消费者取用方式（侵入大），要么做 drizzle 代理（脆弱） |
 | 丙 · userId 并进 location map 的键 | 复用现成 LayerMap + TTL | 要动 `Location.Ref` 的语义（上游类型）⇒ 侵入面偏大 |
+
+### ✅ 落点裁定（2026-09-30 · 用户裁定【甲】）
+
+**甲 = 在 server 根处把 `LocationServiceMap.node` 换成我们自己的 map，并在其中把 `Database.node`
+替换成「指向该 location 对应文件」的层。**
+
+**⚠️ 我给用户的成本估计被实测推翻，更正两处**（按 `LEARNINGS #002-06`：不实数字代价最大）：
+
+1. 我说过「**甲零改上游文件**」——**不对**。`AppNodeBuilder.build` 的自动分支**不是**两个 server 根
+   实际走的路径（R1 的 `hasUnbound(app, LocationServiceMap.node) === false`）；甲的接线点是 **4 处**，
+   见下「接线点清点」。
+2. 我说过「**甲结构上不可能串库**」——**对 per-location 树成立，对主树不成立**。见下「第一轮实测」。
+
+**为什么不选乙 / 丙**（复述给未来的自己，免得重新发现一轮）：
+
+- **乙**（`Database` 自持 `Map<userId, 连接>`）：它有甲没有的好处——**不用逐根接线**（一处改动，
+  所有根自动生效）。但代价是要改 ~10 个上游消费者，或做 drizzle 代理（脆弱）。
+  ⚠️ 这条在下面「第一轮实测」之后**分量上升了**：主树那条路径恰恰是甲碰不到的。
+- **丙**（userId 并进 location key）：**它并不能单独解决路由**——db 文件指针仍来自
+  `Database.node.implementation`，所以丙 = 甲的工作 **加上** 改上游 `Location.Ref` 的类型语义。
+  ⇒ 严格劣于甲。
+
+### 接线点清点（2026-09-30 · 实测）
+
+**两个 server 根都活着**，各自服务真实流量（`cli serve` 走 R2；opencode 自带 server 走 R1）：
+
+| # | 接线点 | 现状 | 要改成 |
+|---|---|---|---|
+| 1 | `packages/server/src/routes.ts`（`makeRoutes`） | 靠 `AppNodeBuilder` 的**自动分支**建 map | 显式传入我们的 map |
+| 2 | `packages/opencode/.../httpapi/server.ts` 的 `createRoutes` | 显式调 `buildLocationServiceMap()` | 换我们的 builder |
+| 3 | `.../httpapi/handlers/pty.ts` | handler 自己 `Layer.provide(locationServiceMapLayer)` | 换我们的 layer |
+| 4 | `.../httpapi/handlers/file.ts` | 同上 | 同上 |
+
+⚠️ **接线式的缝有个固有缺点**：**漏改一处 = 那条路径静默用回公共库**（不报错、不变红）。
+⇒ 必须配一条**兜底测试**（把每个根 build 出来，断言解析到的 `Database` 落在租户路径下）。
+这条测试**不是锦上添花，它是这个方案的安全网**。
+
+### ⚠️ 第一轮实测（静态依赖图）：主树确实有「不经过 location map」的 Database 路径
+
+**两个根都是「是」**（探针用完即删，未入库）：
+
+- **R1**（`app` 组，56 个直接成员）：**31 个**依赖 Database；根 → Database 共 **600 条路径**，
+  其中**含 location map 一跳的 = 0 条**。
+- **R2**（`applicationServices`，10 个直接成员）：主树消费者 = `Event` / `Session` /
+  `PermissionSaved` / `Credential` + Database 自身。
+
+**原因是结构性的，不是巧合**：`LocationServiceMap.node` 是 **unbound 叶子**
+（实测 `kind: unbound`、`dependencies.length === 0`），而 per-location 树来自**另一个模块级 group**
+（`locationServices`），由 `LayerMap` **运行时**按 ref 建出——**不是从根可达的子树**。
+⇒ **它不在任何一条通往 `Database` 的路径上**，所以在根上替换它**结构上碰不到主树**。
+
+主树的消费者里含**真实租户数据**的持有者：`Session`、`session-projector`、`PermissionSaved`、
+`Credential`、`Event`、`ProjectDirectories`。
+
+⇒ **甲按现在划定的范围，不足以保证「用户 A 读不到 B 的会话」——只要有一个租户请求由主树服务。**
+
+### 🔄 消费侧实测（**进行中**，2026-09-30）
+
+上面全是**依赖关系**：只证明主树那层**被构建**，**没有**证明运行时真有调用点去取它。
+**「被构建」≠「被消费」**——本项目恰在此处吃过亏（`LEARNINGS #002-02`：惰性连接 + 只做类型断言 ≠ 测试）。
+
+**正在测**：处理真实租户 HTTP 请求时，`Database.Service` 取自主树那份、还是 per-location 那份。
+
+- 若主树那份**没人取** ⇒ 甲成立，把该前提**钉死**（配测试守着），照原计划走。
+- 若**真有人取** ⇒ 甲要扩成混合方案，代价差别大，**回来找用户定，不自行拍板**。
 
 ## T003 结论（2026-09-30 · 验签门已落地）
 
