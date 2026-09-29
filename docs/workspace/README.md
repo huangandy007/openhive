@@ -26,6 +26,69 @@ cp docs/workspace/feature-delivery-sop.md /d/project/study/openhive/tmp/dev/feat
 cp docs/workspace/dev_tdd.003.md          /d/project/study/openhive/tmp/dev/dev_tdd.003.md
 ```
 
+## 会话恢复（断电 / 误关终端 / 换机接续）
+
+**先记住一句**：AI 会话**不是**进度载体。进度在仓库里——
+`docs/superpowers/specs/<feature>/state.md`（「当前任务」+ 各 task 的结论）与 `tasks.md`（勾选状态）。
+会话丢了不影响继续干活，只影响接手快慢。所以下面两条路都成立，A 快、B 稳。
+
+### 路线 A · 接回原会话（最省事）
+
+**必须在当初启动会话的那个目录里启动。** 会话是按「启动目录」分桶存的，目录不同就**看不到**——
+这是最常见的「我的记录没了」的真正原因，记录其实在，只是你在另一个桶里找。
+
+```bash
+# ① 看本机有哪些桶（桶名 = 启动目录路径的转义）
+ls -d ~/.claude/projects/*openhive*
+
+# ② 进原目录再启动。feature 的会话在 worktree 里：
+cd <仓库根>/.claude/worktrees/feat-003-multi-tenant-isolation
+
+claude --continue      # 桶里只有一个会话时无歧义
+claude --resume        # 桶里有多个时用这个，会列出让你挑
+```
+
+本机 openhive 现有 4 个桶（同名任务在**不同目录**启动过，就会各留一个）：
+
+| 桶 | 启动目录 |
+|---|---|
+| `D--project-study-openhive` | 外层工作区 `D:\project\study\openhive\` |
+| `D--project-study-openhive-openhive` | 主仓库 `…\openhive\` |
+| `…-feat-001-platform-foundation` | 001 的 worktree |
+| `…-feat-003-multi-tenant-isolation` | **003 的 worktree（当前这个）** |
+
+**恢复过一次之后改用 `--resume`**：桶里若出现多个会话文件，`--continue`（取最近一个）就不再有唯一性。
+先数一下：`ls ~/.claude/projects/<桶名>/*.jsonl | wc -l`。
+
+### 路线 B · 不依赖会话（换台电脑也能用）
+
+在同样的目录里新开一个会话，把这几句发给它：
+
+> 继续执行 `docs/workspace/dev_tdd.003.md` 的提示词。当前进度见
+> `docs/superpowers/specs/003-multi-tenant-isolation/state.md` 的「当前任务」与各 task 结论；
+> 下一步候选是 T004（**落点三选一未定，开工前要问我**）。
+
+提示词 + `state.md` + `tasks.md` 都在 git 里，这条路不依赖任何本机会话文件。
+
+### 恢复后的核验清单（30 秒）
+
+```bash
+pwd                      # ① 确认在 worktree 里，不是主仓库
+git status --short       # ② 应当为空；有改动先 git diff 看清再决定留还是 checkout --
+git log --oneline -3     # ③ 提交在不在
+git status -sb | head -1 # ④ 有没有 upstream（没有 = 只在本地盘上，见下「单点」）
+```
+
+然后**读 `state.md` 的「当前任务」**，别信记忆（原因见下）。
+
+### 两个坑
+
+1. **恢复时会先触发一次压缩**：会话记录大了（几 MB）就会摘要化，早期细节不一定原样回来。
+   这正是要求「每个 task 的结论都落进 `state.md`」的原因——**以文件为准，不以会话记忆为准**。
+2. **真正的单点是「分支没推 origin」**：worktree 分支默认不设 upstream，提交就只在这块盘上。
+   断电不丢，**磁盘坏会丢**。`git status -sb` 第①列若没有 `...origin/xxx`，想清楚要不要
+   `git push origin <分支名>`（推远程是对外动作，由人决定，不自动做）。
+
 ## 注意
 
 - 本目录的副本是**模板**，供复制到其他机器外层使用；本机外层也各有一份「正在使用」的副本。
