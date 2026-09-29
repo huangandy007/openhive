@@ -108,6 +108,15 @@ describe("migrate", () => {
     expect(result.rows).toEqual([{ n: 1 }])
   })
 
+  test("记账时间记的是 Unix 秒，与用户表时间列同一单位", async () => {
+    const db = freshDb()
+    await migrate(db)
+
+    const result = await db.execute(sql`select applied_at::int8 as applied_at from auth._migration`)
+    const [row] = rowsOf(result)
+    expect(Math.abs(Number(row?.applied_at) - Math.floor(Date.now() / 1000))).toBeLessThan(60)
+  })
+
   test("rollback 撤掉本迁移建出的表", async () => {
     const db = freshDb()
     await migrate(db)

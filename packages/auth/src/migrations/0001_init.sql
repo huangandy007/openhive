@@ -4,6 +4,12 @@
 -- auth schema 本身由迁移运行器保证存在（src/migrate.ts），本文件只负责表。
 --
 -- `user` 是 PG 保留字，但作为限定名后缀（auth.user）无需加引号——已实测。
+--
+-- ⚠️ 三个时间列 last_login_at / last_active_at / created_at 的单位是 **Unix 秒**，
+--    不是毫秒。integer 是 int4（上限 2147483647），秒装得下、毫秒（1.79e12）装不下——
+--    2026-09-29 首次录入账号时实测撞上 22003 numeric_value_out_of_range。
+--    写入一律走 src/time.ts 的 nowSeconds()，不要直接写 Date.now()。
+--    单位与 JWT 的 exp（hono/jwt，也是秒）保持一致。
 
 CREATE TABLE auth.user (
   id             text PRIMARY KEY,

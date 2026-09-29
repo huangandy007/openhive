@@ -11,6 +11,8 @@ export const authSchema = pgSchema("auth")
  *
  * 两点刻意留白：
  * - 列名逐个显式写出，不依赖 drizzle 的 casing 推断——迁移里的列名是硬事实。
+ * - `lastLoginAt` / `lastActiveAt` / `createdAt` 的单位是 **Unix 秒**（integer 装不下毫秒），
+ *   写入走 `src/time.ts` 的 `nowSeconds()`。
  * - `police_no` 的 UNIQUE 只存在于迁移里（drizzle 1.0 的列构建器没有列级 `unique()`，
  *   且本项目不用 drizzle-kit 生成迁移），模型侧以本注释标注，不在类型层复述。
  */

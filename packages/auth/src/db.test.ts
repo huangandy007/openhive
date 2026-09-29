@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { connect, resolveDatabaseUrl } from "./db"
 import type { MigrationTarget } from "./migrate"
+import type { UserInsertTarget } from "./register"
 
 describe("resolveDatabaseUrl", () => {
   test("由 PG_* 环境变量拼出连接串", () => {
@@ -54,6 +55,14 @@ describe("connect", () => {
     const target: MigrationTarget = connect(complete)
 
     expect(typeof target.execute).toBe("function")
+  })
+
+  // 同上，这条的断言主体也是那行**类型标注**：证明录入走的窄接口在 bun-sql 上也成立。
+  // 没有它，`UserInsertTarget` 就只被测试用的 PGlite 验证过，生产驱动无人担保。
+  test("生产驱动满足录入接口", () => {
+    const target: UserInsertTarget = connect(complete)
+
+    expect(typeof target.insert).toBe("function")
   })
 })
 

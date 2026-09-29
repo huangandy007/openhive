@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { sql, type SQL } from "drizzle-orm"
+import { nowSeconds } from "./time"
 
 const MIGRATIONS_DIR = join(import.meta.dir, "migrations")
 
@@ -16,6 +17,9 @@ const BREAKPOINT = "--> statement-breakpoint"
  *
  * 记账表记录「哪些版本跑过了」，让 `migrate()` 可重复执行——部署跑两次不会撞
  * "relation already exists"，也不会重复应用。
+ *
+ * `applied_at` 的列类型是 bigint、但存的仍是 **Unix 秒**，与用户表时间列同单位
+ * （见 `src/time.ts`）。类型放宽只是因为它是内部记账，不对任何外部契约负责。
  */
 const BOOTSTRAP = [
   "create schema if not exists auth",
@@ -92,7 +96,7 @@ export async function migrate(db: MigrationTarget): Promise<string[]> {
   for (const file of pending) {
     await runFile(db, file)
     await db.execute(
-      sql`insert into auth._migration (version, applied_at) values (${versionOf(file)}, ${Date.now()})`,
+      sql`insert into auth._migration (version, applied_at) values (${versionOf(file)}, ${nowSeconds()})`,
     )
   }
 

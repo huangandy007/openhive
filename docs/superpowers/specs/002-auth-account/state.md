@@ -1,9 +1,43 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T006 [US1] [BE] 实现管理员录入账号（8 字段 + 默认密码 + must_change_pw=1）
+T007 [US1] [BE] 实现录入时创建沙箱目录 `/workspaces/{userId}/`
 
 ## 已完成
+
+### T006 [US1] [BE] 管理员录入账号 ✅（2026-09-29）
+**交付物**：`src/register.ts`（`registerUser` / `UserInsertTarget` / `RegisterInput`）+ `register.test.ts`（7 条）；
+`src/time.ts`（`nowSeconds`）+ `time.test.ts`（2 条）。
+
+**窄接口**：`UserInsertTarget` 只收「能往 `user` 表插一行」这一件事。两种驱动的 drizzle 数据库类型**互不可赋值**
+（探测确认根因同裁定 ④：`Results<never>` vs `never[]`）。`values` 的入参类型从 `user.$inferInsert` **推导**而非手抄——
+顺带发现这个位置**不是**双变放水的：字段不全的入参会被拒，且所有 NOT NULL 列都必须提供。
+`db.test.ts` 加了一条类型标注断言，钉住**生产驱动（bun-sql）**也满足该接口——否则它只被 PGlite 验证过。
+
+**两个默认值显式写出**（不靠列默认值）：
+- `isAdmin: 0` —— 8 个业务字段里没有「是否管理员」，所以录入出来的账号一律不是管理员。**提权必须是另一条独立路径**，
+  否则管理员录入界面本身就成了提权入口。
+- `mustChangePw: 1` —— FR-003 的**要求**，写在调用点才看得见。
+
+**🔴 本 task 撞到并修掉一个真缺陷（已请用户裁定）**：
+用户表时间列在 design-v2 §4.1 是 PG `integer`（int4 上限 **2147483647**），而 `Date.now()` 返回**毫秒**（1.79e12）——
+超三个数量级，`22003 numeric_value_out_of_range`，**首行都插不进去**。文档只写了 `INTEGER` 没写单位，属真实二义。
+用户裁定 **A：沿用 INTEGER、统一存 Unix 秒**（理由：与文档吻合；与 JWT `exp` 同单位，同一模块不混两套时间单位；
+将来要扩到 2038 之后，`alter column ... type bigint` 是**值不变**的加宽）。
+落地四点：① 新增 `src/time.ts` 的 `nowSeconds()`，名字自带单位；② `register.ts` 与 `migrate.ts` 记账表都改走它
+（记账表原先也是毫秒，属同一处内部不一致，一并纠正）；③ `0001_init.sql` 与 `user.ts` 补单位注释；
+④ 加**单位锁**测试（断言与 `Date.now()/1000` 同量级），防复发。
+
+**TDD 过程**：RED「Cannot find module './register'」；时间单位先写 `time.test.ts` RED → GREEN；
+`created_at` 单位断言先加 RED（当时 7 条全红，全因毫秒）→ 改 `register.ts` GREEN。
+**有牙验证**：把 `nowSeconds()` 临时改成 `Date.now()` → **9 条齐红**（时间锁 + 7 条录入 + 记账单位），恢复后全绿、无残留。
+
+**验收证据（真跑）**：包内 `bun test` **45 pass / 0 fail**（8 文件）；`bun run typecheck` **31/31**；
+`bun run lint` 文件数 3360→**3364**、命中数 **4924 warnings / 1 error**（与基线逐字相同，1 error 仍是上游 session-ui 那条）→ **`packages/auth` 0 命中**；
+`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
+
+> 📌 **未做（有意）**：警号唯一性拒绝（T008）、沙箱目录创建（T007）都不在本 task 内。数据库层 UNIQUE 约束已在迁移里，
+> 本 task 录入重复警号会撞 PG 23505 直接抛——**友好的拒绝提示留给 T008**。
 
 ### T005 [P] [BE] 登录凭证签发与下发（JWT + httpOnly Cookie）✅（2026-09-29）
 **交付物**：`src/token.ts`（`jwtSecret` / `signToken` / `verifyToken` / `sessionCookie`）+ `src/token.test.ts`（10 条）；
@@ -143,6 +177,19 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
   但那只是把类型警报掐掉：运行时 `result.rows` 在 bun-sql 上仍是 `undefined`。
 - 附带：`drizzle-kit` **没有 down/回滚能力**（只有 generate/migrate/push…），这也是「手写 up/down」更稳的一条实证。
 
+### ⑤ 时间列一律存 **Unix 秒**（T006 请用户裁定）
+- **背景**：design-v2 §4.1 的用户表时间列写 `integer` 但**没写单位**。PG `integer` = int4，上限 `2147483647`；
+  Unix 毫秒现在是 `1.79e12`——T006 首次录入账号时实测 `22003 numeric_value_out_of_range`，**一行都插不进去**。
+  这不是「防御不可能的输入」，是眼前就挡路的真缺陷，且 T003 已把它提交进 0001_init。
+- **裁定（用户选 A）**：列类型沿用 `integer`，**存 Unix 秒**。上限 2038-01-19，将来要扩则
+  `alter table auth.user alter column created_at type bigint` 属**值不变**的加宽，非破坏性迁移。
+- **否掉的备选 B**：改 `bigint` 存毫秒 —— 偏离 design-v2 原文，且会与 JWT 的 `exp`（本来就是秒）在同一个模块里并存两套单位，
+  早晚有人拿 `last_login_at` 去和 `exp` 比。
+- **落地约定（后续 task 必须遵守）**：写入一律走 `src/time.ts` 的 `nowSeconds()`，**不要直接写 `Date.now()`**。
+  迁移记账表 `_migration.applied_at` 一并从毫秒纠正为秒（内部记账，列类型仍 bigint，只看单位）。
+- **防复发**：`time.test.ts` 断言 `nowSeconds()` 与 `Date.now()/1000` 同量级（写成毫秒即红）；`register.test.ts` 与
+  `migrate.test.ts` 各有一条断言落库值量级。**有牙验证**：把 `nowSeconds()` 改成毫秒 → 9 条齐红。
+
 ## 环境基线（真跑所得，非推断）
 
 ### Step 0 验证（2026-09-28）
@@ -171,4 +218,4 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
 （无）
 
 ## 最后更新
-2026-09-29（T005 完成并全门禁验证通过；等待「next」进 T006）
+2026-09-29（T006 完成并全门禁验证通过；等待「next」进 T007）

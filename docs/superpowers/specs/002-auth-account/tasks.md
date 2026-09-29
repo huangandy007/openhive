@@ -54,7 +54,14 @@
 
 ## Phase 3: US1 管理员录入（P1）
 
-- [ ] T006 [US1] [BE] 实现管理员录入账号（8 字段 + 默认密码 + must_change_pw=1）[FR-002][FR-003] [T003][T004] [出参：录入后账号可登录且被标记需改密]
+- [x] T006 [US1] [BE] 实现管理员录入账号（8 字段 + 默认密码 + must_change_pw=1）[FR-002][FR-003] [T003][T004] [出参：录入后账号可登录且被标记需改密]
+  - 落点 `src/register.ts`：`registerUser(db, input)` → `{ id }`（T007 拿这个 id 建沙箱目录）
+  - `UserInsertTarget` 窄接口：两种 PG 驱动的 drizzle 数据库类型**互不可赋值**（根因同裁定 ④），只收「能往 user 表插一行」；`values` 入参从 `user.$inferInsert` **推导**，列名漂移与漏填 NOT NULL 列都由编译器兜住
+  - `isAdmin: 0` 显式写出：8 个业务字段里没有「是否管理员」，故录入出来的账号一律不是管理员——提权必须是另一条独立路径，否则录入界面就成了提权入口
+  - `mustChangePw: 1` 显式写出而非靠列默认值：这是**要求**，写在调用点才看得见
+  - 🔴 **撞到并修掉一个真缺陷**：用户表时间列在 design-v2 §4.1 是 PG `integer`（int4 上限 2147483647），而 `Date.now()` 是毫秒（1.79e12）→ `22003 numeric_value_out_of_range`，**首行都插不进去**。经用户裁定选 **A：沿用 INTEGER、统一存 Unix 秒**（与 JWT `exp` 同单位）。落地：新增 `src/time.ts` 的 `nowSeconds()`，register 与迁移记账表都改走它；迁移 SQL 与 `user.ts` 补单位注释；加单位锁测试防复发
+  - 实测出参：包内 `bun test` **45 pass / 0 fail**（+11：录入 7、时间单位 2、记账单位 1、生产驱动接口 1）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
+  - 有牙验证：把 `nowSeconds()` 临时改成 `Date.now()`（毫秒）→ **9 条齐红**（时间单位锁 + 全部 7 条录入 + 记账单位），恢复后 45 全绿、无残留
 - [ ] T007 [US1] [BE] 实现录入时创建沙箱目录 `/workspaces/{userId}/` [FR-003] [T006] [出参：录入后沙箱目录存在]
 - [ ] T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）[FR-001] [T003] [出参：重复警号录入被拒]
 
