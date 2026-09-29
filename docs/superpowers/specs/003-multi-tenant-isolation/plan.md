@@ -65,7 +65,7 @@ packages/opencode/src/
 
 ```mermaid
 flowchart LR
-    GW[网关验签注入 X-User-ID] --> UC[per-request User 上下文]
+    GW["网关：剥离客户端 X-User-ID<br/>按会话凭证重新注入"] --> UC[per-request User 上下文]
     UC --> DB[Database Map userId→连接]
     DB --> DBA["/data/A/opencode.db"]
     DB --> DBB["/data/B/opencode.db"]
