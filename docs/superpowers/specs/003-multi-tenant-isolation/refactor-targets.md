@@ -160,14 +160,34 @@ LayerMap.make((ref) => {
 
 > 本文档**只登记事实与代价，不裁定**。T004 开工前若方向未定，按任务书 Step 0.5 停下来问。
 
-### 待实测项（不写进结论，标为未验证）
+### ✅ 待实测项 —— 已测（2026-09-30，T003 收尾后、T004 开工前）
 
-`location.hoisted`（含 global 节点）的 `LayerNode.compile(...)` 调用**位于 `LayerMap.make`
-的 per-key 回调内**。按其字面语义，global 节点会**每个 location key 重建一次**。
-若属实，则现状下 `Database` 可能已经**每 location 一个连接**（同一文件），
-这对 plan.md R2「连接泄漏」的评估有直接影响。
-⇒ **T004 必须实测**（数一下同一进程内 `sqliteLayer` 被 build 了几次），
-本文档**不据此下结论**。
+原文写「T004 必须实测（数一下同一进程内 `sqliteLayer` 被 build 了几次）」。**测完了**，三项：
+
+| 测法 | 结果 |
+|---|---|
+| 静态：`LayerNode.hoist(locationServices, Node.tags.values.global)` 后看 `hoisted` 集合 | **18 个 global 节点被切出**，`@opencode/v2/storage/Database` **在列**；切完后主树里带 global tag 的节点 = **0**（全被切走） |
+| 静态：数 hoisted 子树里 `Database` 的引用点 | **7 处**（5 个节点直接依赖 + 经 `ModelsDev` 的 1 处深层 + 节点自身） |
+| 运行时：用替换层包住 `Database.layerFromPath(":memory:")` 计数，materialize 两个 location key | **每 key 建 8 次**；同一个 key 再取**不重建**（16 → 16，`LayerMap` 缓存有效） |
+
+**结论（实测，非推断）**：现状下 `Database` **不是进程级单例**——它随 location key 各建一份，
+且**每个引用点各建一份**（7 处引用 / 8 次构建，量级一致）。同一 key 内由 `LayerMap` 缓存兜住
+（TTL 60 分钟），跨 key 不共享。
+
+> 探针是一个临时测试 + 一个临时脚本，**用完即删、未入库**。要不要把它固化成一条长期测试
+> （钉住「Database 在 hoisted 里」这个 T004 依赖的前提）由 T004 决定——好处是上游哪天改了会立刻变红，
+> 代价是我们为此多了一个盯上游内部的测试。
+
+**对 T004 的三条直接影响**：
+
+1. **「按用户替换 `Database.node`」的管道已经现成**——per-key 构造本来就在发生，
+   改的是「**指向哪个文件**」，不是「怎么构造」。不必为它发明新机制。
+2. ⚠️ **不能用「当前请求的 `User` 上下文」来决定路径**：location 层是**按 key 缓存**的（TTL 60 分钟），
+   而请求身份是**每次变**的。缓存里存下的是**第一个**用户解析出来的库 ⇒ **会串库**。
+   路径必须由 **key 自身**（`Location.Ref`）派生，或把 userId **并进 key**。
+   这一条是与 T003 的 `User`（每请求填）**生命周期不匹配**造成的，是本 spec 里最容易埋雷的地方。
+3. **连接基数按实测算**：不是「每用户 1 条」，而是「**每个 location key 8 条**（指向同一文件），
+   × location 数 × 用户数」。plan.md R2（连接泄漏）的评估基数据此重算。
 
 ---
 

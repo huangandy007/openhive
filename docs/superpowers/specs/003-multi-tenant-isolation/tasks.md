@@ -27,6 +27,13 @@
     ④ ⚠️ **结构性发现**：`Database.node` 是 **global tag**，其消费者 9/10 是 global 节点，
        而 `locationServices` 组**不含**它们 → **不能照抄 Location 的替换点**。
        T004 落点三选一（见 `refactor-targets.md` §3），**开工前若未定需停下来问**。
+  - ✅ **前置实测已完成（2026-09-30，T003 收尾后）**，见 `refactor-targets.md` §3 的「已测」表。
+    两条改变判断的事实：① `Database` **不是进程级单例**——它在 `hoisted` 里（18 个 global 之一），
+    随 location key 各建一份，且**每个引用点各建一份**（7 处引用 → 实测每 key 建 8 次）；
+    ② ⚠️ **路径不能由「当前请求的 `User`」决定**——location 层按 key 缓存（TTL 60 分钟），
+    请求身份每变一次，缓存里会留**第一个**用户的库 ⇒ **串库**。路径必须由 key（`Location.Ref`）
+    派生，或把 userId 并进 key。
+    ⇒ **落点仍未定，等裁定后开工。**
 - [x] T002 [P] 确定 `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案 [FR-001][FR-005] [无依赖] [出参：目录/权限方案记录在案]
   - ✅ **完成 2026-09-30**，产出 `isolation-scheme.md`（本目录）。三条要点：
     ① `/workspaces` 侧 **002 已交**（`packages/auth/src/workspace.ts` 的 `WORKSPACE_ROOT_ENV` /
