@@ -19,7 +19,13 @@ function freshDb() {
   return drizzle({ client: new PGlite() })
 }
 
-/** design-v2 §4.1 的用户表字段（`2026-09-06-openhive-design-v2.md:124-145`）。 */
+/**
+ * design-v2 §4.1 的用户表字段（`2026-09-06-openhive-design-v2.md:124-145`）。
+ *
+ * `deactivated_at` 是 **002 T016 追加**的（FR-010 要「保留 30 天」，没有停用时刻就判不了窗口），
+ * design-v2 §4.1 的表已同步。它在末尾而非 `status` 旁边，是因为**物理顺序如此**：
+ * 0002 用 `ALTER TABLE ADD COLUMN` 加列，PG 只能追加到末尾——本条断言比的正是物理顺序。
+ */
 const DESIGN_V2_COLUMNS = [
   "id",
   "police_no",
@@ -36,6 +42,7 @@ const DESIGN_V2_COLUMNS = [
   "last_login_at",
   "last_active_at",
   "created_at",
+  "deactivated_at",
 ]
 
 const seedUser = (id: string, police_no: string) => sql`
@@ -86,7 +93,7 @@ describe("migrate", () => {
 
   test("重复执行安全：第二次不再建表，已有数据不丢", async () => {
     const db = freshDb()
-    expect(await migrate(db)).toEqual(["0001_init"])
+    expect(await migrate(db)).toEqual(["0001_init", "0002_deactivated_at"])
 
     await db.execute(seedUser("u1", "000001"))
     expect(await migrate(db)).toEqual([])

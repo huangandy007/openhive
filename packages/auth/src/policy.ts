@@ -19,6 +19,9 @@ export const TOKEN_TTL_SECONDS = 2 * 60 * 60
 /** 多久没活跃就算僵尸账户（天）。design-v2 §4.3 定 90 天。 */
 export const ZOMBIE_INACTIVE_DAYS = 90
 
+/** 停用后沙箱与数据保留多久再归档/删除（天）。FR-010 定 30 天。 */
+export const DEACTIVATED_RETENTION_DAYS = 30
+
 /** 承载登录凭证的 Cookie 名。 */
 export const SESSION_COOKIE_NAME = "openhive_session"
 

@@ -33,6 +33,9 @@ export const user = authSchema.table("user", {
   lastLoginAt: integer("last_login_at"),
   lastActiveAt: integer("last_active_at"),
   createdAt: integer("created_at").notNull(),
+  // 停用时刻。**002 T016 追加的列**，不在 design-v2 §4.1 的原始 15 列里（该表已同步）。
+  // 三分语义见 migrations/0002_deactivated_at.sql 顶部。
+  deactivatedAt: integer("deactivated_at"),
 })
 
 export type UserRow = typeof user.$inferSelect

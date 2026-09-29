@@ -1,5 +1,5 @@
-import { inArray, sql } from "drizzle-orm"
-import { ZOMBIE_INACTIVE_DAYS } from "./policy"
+import { eq, inArray, sql } from "drizzle-orm"
+import { DEACTIVATED_RETENTION_DAYS, ZOMBIE_INACTIVE_DAYS } from "./policy"
 import { nowSeconds } from "./time"
 import { type UserAccountTarget, type UserRow, user } from "./user"
 
@@ -81,11 +81,83 @@ export async function findZombieAccounts(db: UserAccountTarget, now: number = no
 /**
  * 按 id 批量停用（FR-009 的「一键」）。
  *
- * 只改 `status`，**不删任何数据**——停用是可逆的（FR-010 要求 30 天内可恢复），
- * 而删除不可逆。恢复是 T016 的事。
+ * 只改 `status` + 记下 `deactivated_at`，**不删任何数据**——停用是可逆的（FR-010 要求 30 天内
+ * 可恢复），而删除不可逆。
+ *
+ * 为什么必须记停用时刻：FR-010 的「保留 30 天再归档」需要一个起算点（T016）。不记的话，
+ * 事后无法区分「刚停用」和「三年前就停了」，只能一律不敢归档。
  *
  * 空名单不必特判：`inArray(x, [])` 生成恒假条件，一行也动不了（`zombie.test.ts` 钉住了这条）。
  */
-export async function disableAccounts(db: UserAccountTarget, ids: string[]): Promise<void> {
-  await db.update(user).set({ status: DISABLED }).where(inArray(user.id, ids))
+export async function disableAccounts(
+  db: UserAccountTarget,
+  ids: string[],
+  now: number = nowSeconds(),
+): Promise<void> {
+  await db
+    .update(user)
+    .set({ status: DISABLED, deactivatedAt: now })
+    .where(inArray(user.id, ids))
+}
+
+/**
+ * 恢复一个被停用的账号（FR-010「保留期内可恢复」）。
+ *
+ * 同时把 `deactivated_at` **清回 NULL**——这条比「状态改回来」更容易漏。
+ *
+ * 诚实标注：**今天这条清空是与查询冗余的**（变异验证实测：不清也只红 1 条）。因为
+ * `findArchivableAccounts` 同时要求 `status = 0`，恢复后 `status = 1` 就已被挡在外面了。
+ * 仍然清，是为了守住「**有值即当前处于停用中**」这条数据不变式——它只在「每个消费方都记得
+ * 带上 status 过滤」时才成立，而靠每个查询的自觉来维持的不变式是个陷阱：
+ * F3 的归档任务只要写漏一次 status 条件，动到的就是正在办案的民警的沙箱。
+ * 让安全性长在**数据**上，不长在查询纪律上。
+ *
+ * **不按天数拦截**：FR-010 说的「保留期内可恢复」保留的是**沙箱/数据**，不是账号行本身；
+ * 给账号恢复加一个 30 天的硬门槛是设计文档里没有的新规则，不擅自加。
+ * 停用满 30 天后沙箱可能已被归档（F3），那时该走的是「恢复归档」而不是禁止恢复。
+ */
+export async function restoreAccount(db: UserAccountTarget, id: string): Promise<void> {
+  await db.update(user).set({ status: ENABLED, deactivatedAt: null }).where(eq(user.id, id))
+}
+
+/** 一条已过保留期、可供归档的账号。 */
+export interface ArchivableAccount {
+  id: string
+  policeNo: string
+  name: string
+  /** 停用时刻（Unix 秒）。保证非空——没有停用时刻的根本不进这个清单。 */
+  deactivatedAt: number
+}
+
+/**
+ * 列出停用已**超过 30 天**的账号，交 F3 的归档任务处置（FR-010）。
+ *
+ * 本 feature 只负责**筛出来**，不碰文件系统：002 的沙箱还只是 `createWorkspace` 建的空目录，
+ * 归档/删除留到 F3（那时才有每用户 db 与真实研判产物）。经用户 2026-09-29 裁定。
+ *
+ * **`deactivated_at` 为 NULL 的停用账号一律不进清单**（刻意保守）：那是 002 之前停用、
+ * 没有停用时刻的历史数据。把 NULL 当成「很久以前」会让一次误删再也回不来——
+ * FR-010 要的恰恰是「避免误删」。宁可漏归档，留给人判断。
+ */
+export async function findArchivableAccounts(
+  db: UserAccountTarget,
+  now: number = nowSeconds(),
+): Promise<ArchivableAccount[]> {
+  const cutoff = now - DEACTIVATED_RETENTION_DAYS * SECONDS_PER_DAY
+
+  // `<=`：正好满 30 天即到期（与僵尸账户的「超过 90 天」不同，那条要求是「超过」）。
+  // NULL 比较结果为 NULL，天然被排除——正是上面要的保守行为，不必额外写 is not null。
+  const rows = await db
+    .select()
+    .from(user)
+    .where(sql`${user.status} = ${DISABLED} and ${user.deactivatedAt} <= ${cutoff}`)
+
+  return rows.map((row) => ({
+    id: row.id,
+    policeNo: row.policeNo,
+    name: row.name,
+    // 走到这里的行 deactivatedAt 必非空（NULL 过不了上面的比较），但类型上仍是可空的，
+    // 故这里退一步：真出现 null 就当 0 报出去，好过让它静默变成 undefined 传到界面。
+    deactivatedAt: row.deactivatedAt ?? 0,
+  }))
 }

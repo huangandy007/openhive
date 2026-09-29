@@ -2,10 +2,18 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
 import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
+import { InvalidCredentialsError, login } from "./login"
 import { migrate } from "./migrate"
+import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser } from "./register"
 import { user } from "./user"
-import { disableAccounts, findZombieAccounts, lastSeenAtOf } from "./zombie"
+import {
+  disableAccounts,
+  findArchivableAccounts,
+  findZombieAccounts,
+  lastSeenAtOf,
+  restoreAccount,
+} from "./zombie"
 
 const DAY = 24 * 60 * 60
 
@@ -62,6 +70,36 @@ async function policeNosOfZombies(): Promise<string[]> {
 async function statusOf(id: string): Promise<number> {
   const result = await db.execute(sql`select status from auth.user where id = ${id}`)
   return Number(result.rows[0]?.status)
+}
+
+const SECRET = "test-secret"
+
+const credentials = (policeNo: string) => ({ policeNo, password: DEFAULT_PASSWORD })
+
+/** 跑一次应当失败的登录，把抛出的错交回来；没抛则得到 undefined。 */
+async function failureOf(action: Promise<unknown>): Promise<unknown> {
+  try {
+    await action
+    return undefined
+  } catch (cause) {
+    return cause
+  }
+}
+
+async function deactivatedAtOf(id: string): Promise<unknown> {
+  const result = await db.execute(sql`select deactivated_at from auth.user where id = ${id}`)
+  return result.rows[0]?.deactivated_at ?? null
+}
+
+/** 把停用时刻摆到指定的天数之前（`extraSeconds` 用于卡边界）。 */
+async function setDeactivatedDaysAgo(id: string, days: number, extraSeconds = 0): Promise<void> {
+  await db.execute(
+    sql`update auth.user set deactivated_at = ${NOW - days * DAY - extraSeconds} where id = ${id}`,
+  )
+}
+
+async function policeNosOfArchivable(): Promise<string[]> {
+  return (await findArchivableAccounts(db, NOW)).map((a) => a.policeNo)
 }
 
 beforeEach(async () => {
@@ -158,6 +196,97 @@ describe("一键批量停用（FR-009）", () => {
     await disableAccounts(db, [])
 
     expect(await policeNosOfZombies()).toEqual(["000024"])
+  })
+})
+
+describe("停用后保留 30 天（FR-010 / T016）", () => {
+  test("停用时记下停用时刻——没有它，「是否已满 30 天」无从判定", async () => {
+    const id = await account("000031", { createdDaysAgo: 200 })
+
+    await disableAccounts(db, [id])
+
+    const at = await deactivatedAtOf(id)
+    expect(at).not.toBeNull()
+    expect(Math.abs(Number(at) - Math.floor(Date.now() / 1000))).toBeLessThan(60)
+  })
+
+  test("恢复：状态回到启用，并**清掉**停用时刻", async () => {
+    const id = await account("000032", { createdDaysAgo: 200 })
+    await disableAccounts(db, [id])
+
+    await restoreAccount(db, id)
+
+    expect(await statusOf(id)).toBe(1)
+    // 清掉这一条是**要点**：留着的话，账号虽然恢复了，逾期清单仍会把它当成待归档对象。
+    expect(await deactivatedAtOf(id)).toBeNull()
+  })
+
+  test("恢复后能正常登录——停用被拒（T011）随之解除", async () => {
+    const id = await account("000033", { createdDaysAgo: 200 })
+    await disableAccounts(db, [id])
+    const before = await failureOf(login(db, credentials("000033"), SECRET))
+    await restoreAccount(db, id)
+
+    const after = await login(db, credentials("000033"), SECRET)
+
+    expect(before).toBeInstanceOf(InvalidCredentialsError)
+    expect(after.subject.id).toBe(id)
+  })
+
+  test("逾期清单只列停用**超过** 30 天的", async () => {
+    const longAgo = await account("000034", { createdDaysAgo: 400, status: 0 })
+    const recent = await account("000035", { createdDaysAgo: 400, status: 0 })
+    await setDeactivatedDaysAgo(longAgo, 31)
+    await setDeactivatedDaysAgo(recent, 3)
+
+    expect(await policeNosOfArchivable()).toEqual(["000034"])
+  })
+
+  // 边界与 90 天那条**刚好相反**，别照抄：FR-009 的原文是「超过 90 天」（严格小于），
+  // FR-010 的原文是「保留 30 天」——保留期满即到期，故是「满 30 天」（小于等于）。
+  test("停用**满** 30 天即可归档，差 1 秒还不行", async () => {
+    const justUnder = await account("000036", { createdDaysAgo: 400, status: 0 })
+    const exact = await account("000037", { createdDaysAgo: 400, status: 0 })
+    await setDeactivatedDaysAgo(justUnder, 30, -1)
+    await setDeactivatedDaysAgo(exact, 30)
+
+    expect(await policeNosOfArchivable()).toEqual(["000037"])
+  })
+
+  // 这是**刻意的保守**：002 之前停用的账号没有停用时刻（那时还没这列）。
+  // 若把 NULL 当成「很早就停用了」，一次误删就再也回不来——FR-010 要的恰恰是「避免误删」。
+  // 宁可漏归档，不可误删：NULL 一律不进清单，留给人判断。
+  test("没有停用时刻的停用账号**不**进逾期清单（迁移前的老数据，宁可漏不可误删）", async () => {
+    await account("000038", { createdDaysAgo: 400, status: 0 })
+
+    expect(await policeNosOfArchivable()).toEqual([])
+  })
+
+  test("启用中的账号不进逾期清单", async () => {
+    await account("000039", { createdDaysAgo: 400, status: 1 })
+
+    expect(await policeNosOfArchivable()).toEqual([])
+  })
+
+  // ⚠️ 这条**单独**钉不住「恢复要清 deactivated_at」——恢复后 status 已是 1，
+  // 上面那条 status = 0 就把它挡住了（变异验证实测：不清也只红一条）。
+  // 真正钉住清空的是上面那条「恢复：…并**清掉**停用时刻」——它断言的是**数据不变式**本身。
+  test("恢复后不再出现在逾期清单里", async () => {
+    const id = await account("000040", { createdDaysAgo: 400, status: 0 })
+    await setDeactivatedDaysAgo(id, 60)
+
+    await restoreAccount(db, id)
+
+    expect(await policeNosOfArchivable()).toEqual([])
+  })
+
+  test("逾期清单带回停用时刻，供后台显示「已停用多久」", async () => {
+    const id = await account("000041", { createdDaysAgo: 400, status: 0 })
+    await setDeactivatedDaysAgo(id, 45)
+
+    const [archivable] = await findArchivableAccounts(db, NOW)
+
+    expect(archivable?.deactivatedAt).toBe(NOW - 45 * DAY)
   })
 })
 
