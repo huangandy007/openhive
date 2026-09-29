@@ -5,6 +5,9 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "exports": {
+    "./*": "./src/*.ts"
+  },
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "tsgo --noEmit"
