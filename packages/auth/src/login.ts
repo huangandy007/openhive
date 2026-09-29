@@ -1,29 +1,14 @@
-import { type SQL, eq } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { verifyPassword } from "./password"
 import { nowSeconds } from "./time"
 import { type SessionCookie, type TokenSubject, sessionCookie, signToken } from "./token"
-import { user } from "./user"
+import { type UserAccountTarget, type UserRow, user } from "./user"
 
 /**
  * 登录：校验密码 → 签发短期凭证（design-v2 §4.1，`2026-09-06-openhive-design-v2.md:150`）。
  *
  * 本模块把 T003（用户表）/ T004（密码）/ T005（凭证）接在一起，是 [INT] 的落点。
  */
-
-export type UserRow = typeof user.$inferSelect
-export type UserPatch = Partial<typeof user.$inferInsert>
-
-/**
- * 读写 `auth.user` 行的最小面。
- *
- * 为什么不直接收 drizzle 实例：两种 PG 驱动的数据库类型**互不可赋值**
- * （PGlite 的 `execute` 解析成 `{ rows }`、bun-sql 解析成裸数组，根因见 state.md 裁定 ④）。
- * 收窄到用得到的方法，两种驱动都满足；`db.test.ts` 有类型标注钉住**生产驱动**也满足。
- */
-export interface UserLoginTarget {
-  select(): { from(table: typeof user): { where(clause: SQL): PromiseLike<UserRow[]> } }
-  update(table: typeof user): { set(values: UserPatch): { where(clause: SQL): PromiseLike<unknown> } }
-}
 
 export interface LoginInput {
   policeNo: string
@@ -71,7 +56,7 @@ async function passwordMatches(plain: string, hash: string): Promise<boolean> {
 }
 
 /** 按警号查账号。查不到返回 undefined。 */
-async function findByPoliceNo(db: UserLoginTarget, policeNo: string): Promise<UserRow | undefined> {
+async function findByPoliceNo(db: UserAccountTarget, policeNo: string): Promise<UserRow | undefined> {
   const [record] = await db.select().from(user).where(eq(user.policeNo, policeNo))
   return record
 }
@@ -81,7 +66,7 @@ async function findByPoliceNo(db: UserLoginTarget, policeNo: string): Promise<Us
  *
  * 失败一律抛 `InvalidCredentialsError`，**不签发任何凭证、不刷新最后登录时间**。
  */
-export async function login(db: UserLoginTarget, input: LoginInput, secret: string): Promise<LoginResult> {
+export async function login(db: UserAccountTarget, input: LoginInput, secret: string): Promise<LoginResult> {
   const record = await findByPoliceNo(db, input.policeNo)
   if (!record) throw new InvalidCredentialsError()
 

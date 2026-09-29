@@ -1,3 +1,4 @@
+import { type SQL } from "drizzle-orm"
 import { integer, pgSchema, text } from "drizzle-orm/pg-core"
 
 /** 账号表所在的 schema：与 core 的每用户 SQLite、业务 `public` schema 物理分开。 */
@@ -33,3 +34,25 @@ export const user = authSchema.table("user", {
   lastActiveAt: integer("last_active_at"),
   createdAt: integer("created_at").notNull(),
 })
+
+export type UserRow = typeof user.$inferSelect
+export type UserPatch = Partial<typeof user.$inferInsert>
+
+/**
+ * 读写 `auth.user` **一行**的最小面：按条件取行、按条件改行。
+ *
+ * 为什么不直接收 drizzle 实例：两种 PG 驱动的数据库类型**互不可赋值**
+ * （PGlite 的 `execute` 解析成 `{ rows }`、bun-sql 解析成裸数组，根因见 state.md 裁定 ④）。
+ * 收窄到用得到的方法，两种驱动都满足；`db.test.ts` 有类型标注钉住**生产驱动**也满足。
+ *
+ * **为什么这个接口被共享，而录入走的是另一个**：
+ * 登录（T009）、改密（T013）、僵尸账户（T015）要的都是「取行 + 改行」，是同一件事；
+ * 而录入只**插入**、不读不写既有行，收窄成 `UserInsertTarget` 才不会让它顺带拿到改任意账号的能力。
+ *
+ * 来历：前两处（`login.ts` / `password.ts`）各自抄了一份同样的形状，第三处出现时提上来的——
+ * 当时在 `password.ts` 留了「出现第三处就该提到 `user.ts`」的话，T015 兑现它。
+ */
+export interface UserAccountTarget {
+  select(): { from(table: typeof user): { where(clause: SQL): PromiseLike<UserRow[]> } }
+  update(table: typeof user): { set(values: UserPatch): { where(clause: SQL): PromiseLike<unknown> } }
+}

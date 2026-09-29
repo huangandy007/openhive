@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite"
 import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { connect, resolveDatabaseUrl } from "./db"
-import type { UserLoginTarget } from "./login"
+import type { UserAccountTarget } from "./user"
 import type { MigrationTarget } from "./migrate"
 import type { UserInsertTarget } from "./register"
 
@@ -69,7 +69,7 @@ describe("connect", () => {
   // 同上：登录要查人和记登录，生产驱动也得满足。这条同时说明「select 解析成行数组」这一
   // 形状承诺在 bun-sql 上成立（PGlite 侧由 login.test.ts 在运行时实测）。
   test("生产驱动满足登录接口", () => {
-    const target: UserLoginTarget = connect(complete)
+    const target: UserAccountTarget = connect(complete)
 
     expect(typeof target.select).toBe("function")
     expect(typeof target.update).toBe("function")

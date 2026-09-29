@@ -1,6 +1,6 @@
-import { type SQL, eq } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { PASSWORD_HASH_ALGORITHM } from "./policy"
-import { user } from "./user"
+import { type UserAccountTarget, user } from "./user"
 
 /**
  * 密码哈希与校验。算法由 `policy.ts` 锁定为 argon2id，用 Bun 内建实现（零外部依赖）。
@@ -20,23 +20,6 @@ export async function hashPassword(plain: string): Promise<string> {
 /** 校验明文密码与库里存的哈希是否匹配。 */
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   return Bun.password.verify(plain, hash)
-}
-
-type UserRow = typeof user.$inferSelect
-type UserPatch = Partial<typeof user.$inferInsert>
-
-/**
- * 读写 `auth.user` 一行的最小面。
- *
- * 为什么不直接收 drizzle 实例：两种 PG 驱动的数据库类型**互不可赋值**
- * （PGlite 的 `execute` 解析成 `{ rows }`、bun-sql 解析成裸数组，根因见 state.md 裁定 ④）。
- *
- * ⚠️ 这与 `login.ts` 的 `UserLoginTarget` 形状**逐字相同**——目前是第二份副本。
- * **若出现第三处**（僵尸账户那条线看着就像），该把它提到 `user.ts` 去，而不是再抄一遍。
- */
-export interface PasswordChangeTarget {
-  select(): { from(table: typeof user): { where(clause: SQL): PromiseLike<UserRow[]> } }
-  update(table: typeof user): { set(values: UserPatch): { where(clause: SQL): PromiseLike<unknown> } }
 }
 
 /** 当前密码不对。与登录失败不同，这里**允许**说清楚——用户已经通过鉴权，不构成枚举信号。 */
@@ -73,7 +56,7 @@ export interface PasswordChangeInput {
  * 这是本功能自己就能制造出来的坏状态，一行挡住。**注意：真正的密码强度策略没有实现**——
  * design-v2 只画了「强度条」，没写规则，故不擅自定一套（见 state.md 待裁定）。
  */
-export async function changePassword(db: PasswordChangeTarget, input: PasswordChangeInput): Promise<void> {
+export async function changePassword(db: UserAccountTarget, input: PasswordChangeInput): Promise<void> {
   if (input.newPassword.length === 0) throw new EmptyNewPasswordError()
 
   const [record] = await db.select().from(user).where(eq(user.id, input.userId))
