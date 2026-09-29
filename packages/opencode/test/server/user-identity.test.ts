@@ -1,6 +1,8 @@
-import { describe, expect } from "bun:test"
-import { ConfigProvider, Effect, Layer } from "effect"
+import { describe, expect, setSystemTime } from "bun:test"
+import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { User } from "@opencode-ai/core/user"
 import { UserIdentity } from "../../src/server/user-identity"
 import { userIdentityLayer } from "../../src/server/routes/instance/httpapi/middleware/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -8,14 +10,38 @@ import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
 
+/** ≥32 字符，过 002 的密钥地板（`packages/auth/src/token.ts` 的 `jwtSecret`）。 */
+const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+const OTHER_SECRET = "p6o5n4m3l2k1j0i9h8g7f6e5d4c3b2a1"
+
+const SUBJECT: TokenSubject = {
+  id: "550e8400-e29b-41d4-a716-446655440000",
+  policeNo: "020601",
+  name: "张三",
+  isAdmin: false,
+}
+
+function cookie(token: string) {
+  return { Cookie: `${UserIdentity.COOKIE_NAME}=${token}` }
+}
+
 /**
  * 最小应用：一条通配路由 + 身份门。**只测门**，不牵扯真实路由树——
  * 门是全局中间件（同 `corsVaryFix` 的装法），套住什么路由与它无关。
+ *
+ * 路由用 `serviceOption` 取身份：门关着时**没有** User 上下文（不是空身份），
+ * 门开着才有。用 `Option` 而不是 `yield* User.Service`，是为了让「关」这一态能跑通，
+ * 同时让「开」这一态能断言拿到的是**验签出来的**那个 id。
  */
 function app(config: Layer.Layer<UserIdentity.Config>) {
   const handler = HttpRouter.toWebHandler(
     HttpRouter.use((router) =>
-      router.add("GET", "/*", () => Effect.succeed(HttpServerResponse.jsonUnsafe({ ok: true }))),
+      router.add("GET", "/*", () =>
+        Effect.gen(function* () {
+          const user = yield* Effect.serviceOption(User.Service)
+          return HttpServerResponse.jsonUnsafe({ ok: true, userId: Option.getOrNull(user)?.id ?? null })
+        }),
+      ),
     ).pipe(Layer.provide(userIdentityLayer.pipe(Layer.provide(config)))),
     { disableLogger: true },
   ).handler
@@ -42,11 +68,15 @@ function realApp(env: Record<string, string | undefined>) {
     )
 }
 
-const OFF = UserIdentity.Config.configLayer({ required: false })
-const ON = UserIdentity.Config.configLayer({ required: true })
+const OFF = UserIdentity.Config.configLayer({ required: false, secret: Option.some(SECRET) })
+const on = (secret: Option.Option<string> = Option.some(SECRET)) =>
+  UserIdentity.Config.configLayer({ required: true, secret })
 
-describe("openhive 身份门（T018）", () => {
-  it.live("开关关（默认）：不带头也放行——今天所有客户端都不发这个头，关着才是零回归", () =>
+/** 用真实签发器造令牌——**不手搓 JWT**，免得测试自己写错格式还自以为对。 */
+const token = (subject = SUBJECT, secret = SECRET) => Effect.promise(() => signToken(subject, secret))
+
+describe("openhive 身份门（T003：验签后才认）", () => {
+  it.live("开关关（默认）：不带任何凭证也放行——今天所有客户端都没有会话凭证，关着才是零回归", () =>
     Effect.gen(function* () {
       const response = yield* app(OFF)("/session")
 
@@ -54,39 +84,115 @@ describe("openhive 身份门（T018）", () => {
     }),
   )
 
-  it.live("开关开：没有 X-User-ID 一律拒绝", () =>
+  it.live("开关开：没有凭证一律拒绝", () =>
     Effect.gen(function* () {
-      const response = yield* app(ON)("/session")
+      const response = yield* app(on())("/session")
 
       expect(response.status).toBe(401)
     }),
   )
 
-  it.live("开关开：带了 X-User-ID 就放行", () =>
+  it.live("开关开：合法令牌放行，且请求内读到的是**验签出来的** userId", () =>
     Effect.gen(function* () {
-      const response = yield* app(ON)("/session", { headers: { "X-User-ID": "u_000123" } })
+      const response = yield* app(on())("/session", { headers: cookie(yield* token()) })
+
+      expect(response.status).toBe(200)
+      expect(yield* Effect.promise(() => response.json())).toMatchObject({ userId: SUBJECT.id })
+    }),
+  )
+
+  // 签名是唯一挡在「自填一个 id 就冒充他人」前面的东西。改一个字符即失效。
+  it.live("开关开：令牌被篡改 → 拒绝", () =>
+    Effect.gen(function* () {
+      const valid = yield* token()
+      const tampered = valid.slice(0, -1) + (valid.at(-1) === "A" ? "B" : "A")
+
+      const response = yield* app(on())("/session", { headers: cookie(tampered) })
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  it.live("开关开：令牌过期 → 拒绝", () =>
+    Effect.gen(function* () {
+      // 把时钟拨回 3 小时前签发（TTL 是 2 小时），再拨回来当「现在」——令牌就已过期。
+      yield* Effect.addFinalizer(() => Effect.sync(() => setSystemTime()))
+      setSystemTime(new Date(Date.now() - 3 * 60 * 60 * 1000))
+      const expired = yield* token()
+      setSystemTime()
+
+      const response = yield* app(on())("/session", { headers: cookie(expired) })
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  // 换个密钥签 = 攻击者自签。验签必须只认自己那把密钥。
+  it.live("开关开：用别的密钥签的令牌 → 拒绝", () =>
+    Effect.gen(function* () {
+      const response = yield* app(on())("/session", { headers: cookie(yield* token(SUBJECT, OTHER_SECRET)) })
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  // `X-User-ID` 降级为路由提示后，唯一要拦的是**矛盾**：令牌说 A、头说 B。
+  // 出现矛盾只有两种解释——链路被改写，或有人手工塞了头。两种都不该放行。
+  it.live("开关开：令牌合法但 X-User-ID 与 subject 不一致 → 拒绝（fail-closed）", () =>
+    Effect.gen(function* () {
+      const response = yield* app(on())("/session", {
+        headers: { ...cookie(yield* token()), "X-User-ID": "u_999999" },
+      })
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  it.live("开关开：令牌合法且 X-User-ID 与 subject 一致 → 放行", () =>
+    Effect.gen(function* () {
+      const response = yield* app(on())("/session", {
+        headers: { ...cookie(yield* token()), "X-User-ID": SUBJECT.id },
+      })
 
       expect(response.status).toBe(200)
     }),
   )
 
-  // 网关注入链路坏掉时送的是空白，不是「没有这个头」。放行等于给下游一个**空身份**，
-  // 而空身份在 F3 会被当成一个合法的路由键——宁可当场 401。
-  //
-  // 这条钉的是「空串也算没有」：HTTP 层把 `"   "` 规整成 `""`（见实现注释），所以门必须用
-  // `!userId` 而不是 `userId === undefined`——后者会把这个空身份放行。**变异验证**：把判据换成
-  // `=== undefined` → 本条红（另有一条 no-该头 的用例仍绿），即它确实只由这条覆盖。
-  it.live("开关开：空白 X-User-ID 按没有处理", () =>
+  // 头**不是**身份来源的正面证据：提示缺失不该影响放行，否则等于把头当成了必要条件。
+  it.live("开关开：令牌合法、X-User-ID 缺失 → 放行（头只是提示，不是身份来源）", () =>
     Effect.gen(function* () {
-      const response = yield* app(ON)("/session", { headers: { "X-User-ID": "   " } })
+      const response = yield* app(on())("/session", { headers: cookie(yield* token()) })
+
+      expect(response.status).toBe(200)
+    }),
+  )
+
+  // 验不了就得拒绝，不能「验不了就当通过」——那正是这道门被裁定取代之前的毛病。
+  it.live("开关开：没配 AUTH_JWT_SECRET → 拒绝（fail-closed，不是放行）", () =>
+    Effect.gen(function* () {
+      const response = yield* app(on(Option.none()))("/session", {
+        headers: cookie(yield* token()),
+      })
 
       expect(response.status).toBe(401)
     }),
   )
 
-  it.live("开关开：带上拒绝时不给 www-authenticate——那是给浏览器弹 Basic 登录框用的，这里没有 Basic", () =>
+  // 复用 002 的地板（`jwtSecret` 的 32 字符），而不是在核心里另立一个数。
+  it.live("开关开：AUTH_JWT_SECRET 短于 32 字符 → 拒绝", () =>
     Effect.gen(function* () {
-      const response = yield* app(ON)("/session")
+      const weak = "short-secret"
+      const response = yield* app(on(Option.some(weak)))("/session", {
+        headers: cookie(yield* token(SUBJECT, weak)),
+      })
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  it.live("开关开：拒绝时不给 www-authenticate——那是给浏览器弹 Basic 登录框用的，这里没有 Basic", () =>
+    Effect.gen(function* () {
+      const response = yield* app(on())("/session")
 
       expect(response.headers.get("www-authenticate")).toBeNull()
     }),
@@ -96,7 +202,7 @@ describe("openhive 身份门（T018）", () => {
   // 不带任何应用层凭证，拦了会让 PWA 装不上（上游 #25698）。
   it.live("开关开：公共 UI 资源照常放过", () =>
     Effect.gen(function* () {
-      const response = yield* app(ON)("/site.webmanifest")
+      const response = yield* app(on())("/site.webmanifest")
 
       expect(response.status).toBe(200)
     }),
@@ -116,19 +222,19 @@ describe("openhive 身份门（T018）", () => {
   )
 })
 
-describe("门接进了真应用（T018）", () => {
-  it.live("开关打开：真应用的路由也拒绝无头请求", () =>
+describe("门接进了真应用", () => {
+  it.live("开关打开：真应用的路由也拒绝无凭证请求", () =>
     Effect.gen(function* () {
-      const response = yield* realApp({ OPENHIVE_REQUIRE_USER_ID: "1" })("/session/ses_x")
+      const response = yield* realApp({ OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET })("/session/ses_x")
 
       expect(response.status).toBe(401)
     }),
   )
 
-  it.live("开关打开：带头请求不被身份门拦下（拦不拦得住是路由自己的事，不是 401 即可）", () =>
+  it.live("开关打开：合法令牌不被身份门拦下（拦不拦得住是路由自己的事，不是 401 即可）", () =>
     Effect.gen(function* () {
-      const response = yield* realApp({ OPENHIVE_REQUIRE_USER_ID: "1" })("/session/ses_x", {
-        headers: { "X-User-ID": "u_000123" },
+      const response = yield* realApp({ OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET })("/session/ses_x", {
+        headers: cookie(yield* token()),
       })
 
       expect(response.status).not.toBe(401)
