@@ -115,6 +115,8 @@ import { corsVaryFix } from "./middleware/cors-vary"
 import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
+import { userIdentityLayer } from "./middleware/user-identity"
+import { UserIdentity } from "@/server/user-identity"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -287,6 +289,9 @@ export function createRoutes(
       compressionLayer,
       corsVaryFix,
       fenceLayer,
+      // openhive 身份门（002 T018）：全局中间件，装在合并路由之上，故只有这一处接线。
+      // 默认关（`OPENHIVE_REQUIRE_USER_ID` 未设即直通），开关与信任模型见 `@/server/user-identity`。
+      userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer)),
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,
