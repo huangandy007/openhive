@@ -37,7 +37,12 @@
   - `src/db.ts` 补 `connect()`（`drizzle-orm/bun-sql`，零新增驱动依赖；连接惰性）
   - 实测出参：包内 `bun test` **19 pass / 0 fail**；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bunx oxlint packages/auth` 0/0
   - ⚠️ 类型断言「生产驱动满足 MigrationTarget」**当场抓到** bun-sql 与 PGlite 的 `execute()` 行结构不同（数组 vs `{rows}`）——见 state.md 裁定 ④
-- [ ] T004 [P] [BE] 实现密码哈希与校验函数（argon2id）[FR-004] [T001] [出参：哈希/校验往返单测通过]
+- [x] T004 [P] [BE] 实现密码哈希与校验函数（argon2id）[FR-004] [T001] [出参：哈希/校验往返单测通过]
+  - 落点 `src/password.ts`：`hashPassword()` / `verifyPassword()`，**唯一**接触密码哈希的地方（T006/T013/T017 都走它）
+  - 算法从 `policy.ts` 取（`PASSWORD_HASH_ALGORITHM`），不在此处硬编码
+  - 实测出参：包内 `bun test` **24 pass / 0 fail**（5 条新测试）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bunx oxlint packages/auth` 0/0
+  - 有牙验证：把 `policy.ts` 的算法临时改成 bcrypt → 只有「算法锁定」那条变红，证明接线是真的
+  - ⚠️ **交接 T009**：实测 `Bun.password.verify` 对**空 hash** 返回 `false`，对**垃圾 hash 抛** `UnsupportedAlgorithm`。登录路径需决定是否兜住——见 state.md「交接项」
 - [ ] T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）[FR-004] [T001] [出参：签发凭证可被校验解析出 userId]
 
 ## Phase 3: US1 管理员录入（P1）

@@ -1,9 +1,37 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T004 [P] [BE] 实现密码哈希与校验函数（argon2id）
+T005 [P] [BE] 实现登录凭证签发与下发（JWT + httpOnly Cookie）
 
 ## 已完成
+
+### T004 [P] [BE] 密码哈希与校验函数 ✅（2026-09-29）
+**交付物**：`src/password.ts` —— `hashPassword(plain)` / `verifyPassword(plain, hash)`。
+
+设计意图：这是**唯一**接触密码哈希的地方。T006（录入）、T013（改密）、T017（重置）都走这两个函数，
+哪天要换算法只改一处。算法取值从 `policy.ts` 取，不在此处硬编码——「锁定值只写在 policy 里」。
+
+**TDD 过程**：RED「Cannot find module './password'」→ GREEN 两个函数（argo2id 由 `Bun.password` 承担）。
+
+**有牙验证**：把 `policy.ts` 的 `PASSWORD_HASH_ALGORITHM` 临时改成 `"bcrypt"` → **只有**「算法锁定为 argon2id」那条变红，
+其余 4 条不受影响 → 证明 policy → password 的接线是真的（否则该测试只靠 Bun 默认值恰好也是 argon2id 而「假绿」）。
+
+**验收证据（真跑）**：包内 `bun test` **24 pass / 0 fail**；`bun run typecheck` **31/31**；
+`bun run lint` 文件数 3356→**3358**、命中数 **4924 warnings / 1 error**（与基线逐字相同，1 error 仍是上游 session-ui 那条）→ 新增文件 0 命中；
+`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
+
+## 交接项（留给后续 task，勿丢）
+
+### ⚠️ → T009：`verifyPassword` 对畸形 hash 的两种表现（实测）
+| 输入 | `Bun.password.verify` 表现 |
+|---|---|
+| 正常 argon2id hash | `true` / `false` |
+| 空串 `""` | `false`（不抛） |
+| 垃圾串 `"not-a-hash"` | **抛** `Password verification failed with error "UnsupportedAlgorithm"` |
+
+T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「不可能的输入」，提前防御是投机）。
+但 T009 的登录路径必须决定：垃圾 hash 抛出去就是 HTTP 500，而 FR-005 要求**统一提示「账号或密码错误」**——
+500 与统一提示不同，等于**变相泄露「这个账号有异常」**。届时要么在登录层兜住，要么论证它确实不可能发生。
 
 ### T003 [BE] 实现用户表模型与迁移 + PG 连接 ✅（2026-09-29）
 **交付物**（`packages/auth/src/`）：
@@ -106,4 +134,4 @@ T004 [P] [BE] 实现密码哈希与校验函数（argon2id）
 （无）
 
 ## 最后更新
-2026-09-29（T003 完成并全门禁验证通过；等待「next」进 T004）
+2026-09-29（T004 完成并全门禁验证通过；等待「next」进 T005）
