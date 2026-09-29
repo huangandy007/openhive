@@ -109,12 +109,22 @@ async function errorOfType<T extends Error>(
 // 一个恒返回 `""` 的 walker 能让任何「不含哈希」的断言通过。本 feature 已经有 3 条
 // 首跑即绿的假绿（state.md 记着），失败模式同源：断言方向单一，没人验它真的看得见东西。
 describe("脱敏断言的工具本身可信（正向对照）", () => {
-  test("挂在 message 上的文本能被收集到——message 是不可枚举的，正是本函数要够到的东西", () => {
-    expect(textReachableFrom(new Error("marker-in-message"))).toContain("marker-in-message")
+  // `delete probe.stack` 不是洁癖，是这条断言能否成立的前提：`Error` 的 `stack` 首行**就是**
+  // `message` 的文本，所以只要 stack 还在，「message 可达」这半句即使 walker 整个跳过
+  // `message` 键也照样绿（实测：改成 `if (key === "message") continue` → 34 条全绿）。
+  // 删掉 stack，这条断言才真的只可能由 `message` 满足。
+  test("挂在 message 上的文本能被收集到——message 不可枚举，正是本函数要够到的东西", () => {
+    const probe = new Error("marker-in-message")
+    delete probe.stack
+
+    expect(textReachableFrom(probe)).toContain("marker-in-message")
   })
 
   test("挂在嵌套 cause 上的文本也能被收集到", () => {
-    expect(textReachableFrom(new Error("外层", { cause: { deep: "marker-in-cause" } }))).toContain("marker-in-cause")
+    const probe = new Error("外层", { cause: { deep: "marker-in-cause" } })
+    delete probe.stack
+
+    expect(textReachableFrom(probe)).toContain("marker-in-cause")
   })
 })
 

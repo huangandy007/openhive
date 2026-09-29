@@ -823,7 +823,7 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 | I1 | **全仓库没有任何产生管理员的路径**——`registerUser` 恒写 `isAdmin: 0`，而治理后台（录入 / 重置 / 停用）全部要求 `is_admin`，于是系统**第一天就锁死**：没有第一个管理员，就没有第二个 | 移交 → **003 T019**（用户裁定：环境变量引导首个管理员，**仅在表里无管理员时**生效、一次性） |
 | I2 | 领域错误携带原始 `DrizzleQueryError`，其 `message` 就是 `` `Failed query: …\nparams: …` ``——**查询参数被内联进消息**，含 `password_hash` / `id_card` / `phone` | **已修**，且按 `LEARNINGS #002-01` 当**类**清了一遍：register 的 insert + 改密/重置的两处 update，只带 SQLSTATE 出门 |
 | I3 | `DEFAULT_PASSWORD` 硬编码在 `policy.ts` | 移交 → **003 T020**（与 design-v2 `:155-157` 把 `admin@123456` 当公开示例写在正文里有关，改前先裁定文档） |
-| I4 | `migrate()` 无事务、无并发锁。**实测代码**（`migrate.ts:73-75` 逐条 `execute`、无 BEGIN/COMMIT；`:96-101` 记账 insert 在 `runFile` **之后**）：单个迁移文件中途失败会留下「改了库、没记账」的半应用状态，重试从文件头重跑 —— 所以**每个迁移文件必须自幂等**（`0003_flags_not_null.sql:12-13` 把它写进了文件头，但那里引用「`migrate.ts` 的已知缺口」是个**悬空引用**，该缺口在 `migrate.ts` 里根本没写）。并发上，两个 runner 会各自读到同一份 `applied` 后都去应用 | 移交 → **003 T021** |
+| I4 | `migrate()` 无事务、无并发锁。**实测代码**（`migrate.ts:73-75` 逐条 `execute`、无 BEGIN/COMMIT；`:96-101` 记账 insert 在 `runFile` **之后**）：单个迁移文件中途失败会留下「改了库、没记账」的半应用状态，重试从文件头重跑 —— 所以**每个迁移文件必须自幂等**（`0003_flags_not_null.sql` 把它写进了文件头；那里原先引用「`migrate.ts` 的已知缺口」是个**悬空引用**——该缺口在 `migrate.ts` 里根本没写——**已由第二轮复审 R9 改为自足表述**，只剩 `migrate.ts` 侧待 003 T021 补记）。并发上，两个 runner 会各自读到同一份 `applied` 后都去应用 | 移交 → **003 T021** |
 | I5 | `provisionUser` 建目录失败时留下「有账号、没沙箱」的半成品，账号行侧无处置 | 移交 → **003 T022** |
 | I6 | 录入零输入校验：8 个字段可填空白（8 列全 NOT NULL，故这是唯一能造出「有行但没有姓名」的路径）；`status` 无取值约束 | **已修** |
 | I7 | `jwtSecret` 不判强度——HS256 的安全性整个押在它上面，短密钥可离线枚举 | **已修**（下限 32 字符，RFC 7518 §3.2） |
@@ -864,6 +864,41 @@ R14 `bun.lock` 行数「3260」未实测 → 实测量准为 3234（见 C2 行�
 
 **未修的 4 条 Minor（登记理由，不静默丢弃）**：R7 `AccountWriteError` 在非 PG 失败时丢原始错误（要改错误契约，须与网关的错误呈现一并定）；R8 `DuplicatePoliceNoError` 靠 `cause.code` 让 `pgErrorCode` 取到 SQLSTATE，与 `AccountWriteError` 的 `sqlState` 字段两套机制（同 R7，一并定）；R11 `rollback` 的 `head` 只由磁盘文件推导，账上有版本而文件被删时守卫会退化（低概率，待 T021 加锁时一并处理）；R13 测试助手在 4 个文件里逐字重复 ~50 行（属重构，与「一个 PR 不混合重构与新功能」冲突，单开）。
 
+### 第三轮复审（复审第二轮修复本身）：0 Critical / 2 Important / 3 Minor
+
+**代码侧零缺陷**——三条守卫经独立复核全部为真，且"只出该出的声"：删 `typeof` → 3 红、顺序调反 → 1 红、
+walker 坏掉 → 4 红（注：4 红要求**两份 walker 都**改坏，只改一份只有 2 红——各文件的正向对照只守自己那份，
+属实、非缺陷）。复审另加两条我没做过的变异：① 把 `typeof` 换成 `String(value).trim()`
+（强制转换而非拒绝）→ 3 条新测试全红，说明它们对"把 `null` 强转成 `"null"` 放行"也有牙齿；
+② 越界输入的 `Object.assign` 构造确已达到 `typeof` 分支（反证：若它丢了 `{phone: undefined}` 的键，
+删 `typeof` 后那 3 条应仍绿，实测全红）。
+
+**2 条 Important——全部是这一轮改动自己引入的**，形态相同：改对了一处，却让另一处的记述失去前提。
+
+| 编号 | 发现 | 处置 |
+|---|---|---|
+| F1 | `state.md` 同一个「最后更新」块里先写 **149 pass**、隔一行又写 **141 pass**。141 是第一轮之后的正确值，但我新增的段落**插在它前面**，让它掉了标题、变成新段的续行，「最终门禁数」于是同段出现两个答案 | 已把 141 那段归位到第一轮段落并标注「此数为第一轮之后；当前见下一段（149）」 |
+| F2 | `003/tasks.md` 的 T021 与 `state.md` 的 I4 行仍断言「`0003` 的文件头引用 migrate.ts 的已知缺口，是悬空的」——而 R9 已把它改成自足表述，**这个前提在 HEAD 上已不成立**。003 的实现者照它走会去找一个不存在的引用。**这正是 `LEARNINGS #002-04` 说的温床：接收方的表在描述一个已消失的现状** | 两处均已改：说明 `0003` 那半边已由 R9 修掉，只剩 `migrate.ts` 侧待补 |
+
+**3 条 Minor，全部已修**：
+F3 交叉引用再次漂移——`003/tasks.md` 引 `register.test.ts:148`，实际在 **:162**。
+  这条引用**已经漂了两次**（上一轮刚把 `:98` 修成 `:148`，本轮自己加的 13 行又顶掉它），
+  **故不再补数字，改为按测试名引用**，把这类问题一次消掉。**顺带查出复审没发现的第二条**：
+  同一文件的 `password.ts:79` 引用也已失效（该注释现在在 `:106`），一并改为按 `resetPassword` 的 docstring 定位。
+F4 正向对照**名不副实**：标题说「message 是不可枚举的，正是本函数要够到的东西」，但 `Error` 的
+  `stack` 首行**就是** message 文本——把 walker 改成跳过 `message` 键，34 条**全绿**，这半边根本没被守住。
+  已按复审验证过的修法加 `delete probe.stack`（删后同一变异 **1 红**，实测确认）。
+  整体防护性本就不受影响（walker 退化成 `""` 仍会被抓），但「注释声称的性质」与「测试真守的性质」
+  不一致，正是本轮要清的形态。
+F5 安全理由说过头：新注释称顺序反了会「**无需登录即可**试出当前密码」。而 `userId` 取自
+  **已验签的凭证**，攻击者**得先持有该账号的会话**。真正的损失是**绕过登录接口的限频与审计**，
+  已按此改写。
+
+> **本轮教训（值得进 LEARNINGS）**：三次复审，缺陷从「代码错」→「测试没守住」→「文档自相矛盾」，
+> 每一轮的新 Important 都是**上一轮修复动作自己引入的**。修一处而让别处的记述失去前提，
+> 是本轮最稳定的缺陷来源。**改完要顺手扫一遍「哪些地方引用了我刚改掉的东西」**——
+> 行号、数字、前提、交叉引用，都是会在编辑中悄悄失效的东西。
+
 ## 最后更新
 2026-09-29（T018 完成、002 全部 16 条任务落地；收尾补测：`backend-testing` 六步走完步骤 0–4，
 新增回归 `002-BF-01`–`06`，抓到并修掉 `pgErrorCode` 的生产驱动 bug；**越权 P0 待用户裁定 A/B**）
@@ -871,13 +906,15 @@ R14 `bun.lock` 行数「3260」未实测 → 实测量准为 3234（见 C2 行�
 2026-09-29 续（**收尾评审**）：三视角评审判定 3 Critical + 10 Important + 16 Minor，
 经用户裁定修完 C1/C2/C3 + I2/I6/I7/I9①/I10（commit `c0c342421a` + `6267ef68d3`），
 其余 4 条 Important（I3/I4/I5/I8）与 I1、I9② 移交 003（T019–T024）。
-
-2026-09-29 再续（**第二轮复审 + 收口**）：复审判定 **0 Critical / 5 Important / 9 Minor**；
-5 条 Important（R1–R5）全部修完并逐条变异验证，另修 5 条「说了假话」型 Minor，4 条登记不修。
-修完门禁实测：`packages/auth` **149 pass / 0 fail**（13 文件）、`bun run typecheck` **31/31**
-（`@opencode-ai/auth` 真跑非缓存）、`bunx oxlint -c script/oxlintrc.openhive.json packages/auth/src`
-**0 warnings / 0 errors**、`bun.lock` 镜像 URL **0 行**。
-门禁实测：`packages/auth` **141 pass / 0 fail**；`bun run typecheck` **31/31**；
+门禁实测（**第一轮修复后**、`adca77d5aa`）：`packages/auth` **141 pass / 0 fail**；`bun run typecheck` **31/31**；
 `oxlint -c script/oxlintrc.openhive.json packages/auth/src` **0 warning 0 error**；
 `bun.lock` vs 基线 **35 行插入 / 0 删除**（`--frozen-lockfile` 通过）。
 16 条 Minor 未落盘，已在上面记为流程缺口。
+> ⚠️ 本段的 141 是**第一轮之后的数**。第二轮新增 8 条测试，**当前数见下一段（149）**。
+
+2026-09-29 再续（**第二轮复审 + 收口**）：复审判定 **0 Critical / 5 Important / 9 Minor**；
+5 条 Important（R1–R5）全部修完并逐条变异验证，另修 5 条「说了假话」型 Minor，4 条登记不修。
+修完门禁实测（**当前口径**）：`packages/auth` **149 pass / 0 fail**（13 文件）、
+`bun run typecheck` **31/31**（`@opencode-ai/auth` 真跑非缓存）、
+`bunx oxlint -c script/oxlintrc.openhive.json packages/auth/src` **0 warnings / 0 errors**、
+`bun.lock` 镜像 URL **0 行**（基线 0 → 首次污染 3226 → 峰值 3234 → 现 0）。

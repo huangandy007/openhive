@@ -235,8 +235,12 @@ describe("改密（FR-006）", () => {
   // 且与 newPassword 相同：只有「先验密」的实现才报 InvalidCurrentPassword。
   //
   // 反过来（先比相同）这条会拿到 WeakNewPasswordError，于是攻击者能用候选密码当
-  // newPassword 传进来：猜中得 Weak、猜错得 InvalidCurrent，**一次一比特**，
-  // 无需登录即可把当前密码试出来（枚举的代价从「试图登录」降到「一次改密请求」）。
+  // newPassword 传进来：猜中得 Weak、猜错得 InvalidCurrent，**一次一比特**。
+  //
+  // ⚠️ 前提要说准，别说过头：`userId` 取自**已验签的凭证**（`PasswordChangeInput` 的注释
+  // 「调用方从已验签的凭证里取，不从前端传」），所以这**不是**「无需登录即可试出密码」——
+  // 攻击者得先持有该账号的会话。真正的损失是**绕过登录接口的限频与审计**：本该在登录处
+  // 被计数、被告警的密码枚举，改从这条路径走，一次告警都不产生。
   test("当前密码错误时，即便新密码与它相同也报「当前密码不正确」——顺序是这条的性质", async () => {
     const thrown = await errorOf(
       changePassword(db, { userId, currentPassword: "guessed-wrong", newPassword: "guessed-wrong" }),
@@ -250,12 +254,20 @@ describe("改密（FR-006）", () => {
 // 正向对照。没有它，上面那几条 `not.toContain(...)` **全部可能空转**——
 // 一个恒返回 `""` 的 walker 能让任何「不含哈希」的断言通过（同 register.test.ts）。
 describe("脱敏断言的工具本身可信（正向对照）", () => {
-  test("挂在 message 上的文本能被收集到——message 是不可枚举的，正是本函数要够到的东西", () => {
-    expect(textReachableFrom(new Error("marker-in-message"))).toContain("marker-in-message")
+  // `delete probe.stack` 不是洁癖：`Error` 的 `stack` 首行**就是** `message` 的文本，
+  // 不删掉它，这条断言在 walker 跳过 `message` 键时也照样绿（同 register.test.ts）。
+  test("挂在 message 上的文本能被收集到——message 不可枚举，正是本函数要够到的东西", () => {
+    const probe = new Error("marker-in-message")
+    delete probe.stack
+
+    expect(textReachableFrom(probe)).toContain("marker-in-message")
   })
 
   test("挂在嵌套 cause 上的文本也能被收集到", () => {
-    expect(textReachableFrom(new Error("外层", { cause: { deep: "marker-in-cause" } }))).toContain("marker-in-cause")
+    const probe = new Error("外层", { cause: { deep: "marker-in-cause" } })
+    delete probe.stack
+
+    expect(textReachableFrom(probe)).toContain("marker-in-cause")
   })
 })
 
