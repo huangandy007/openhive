@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
 import { eq } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { migrate } from "./migrate"
 import { verifyPassword } from "./password"
 import { DEFAULT_PASSWORD } from "./policy"
-import { registerUser } from "./register"
+import { provisionUser, registerUser } from "./register"
 import { user } from "./user"
 
 /** FR-003 的 8 个业务字段。警号即登录用户名。 */
@@ -33,6 +36,16 @@ let db: Db
 beforeEach(async () => {
   db = await freshDb()
 })
+
+/** 跑一次应当失败的操作，把抛出的错交回来；没抛则得到 undefined。 */
+async function failureOf(action: Promise<unknown>): Promise<unknown> {
+  try {
+    await action
+    return undefined
+  } catch (cause) {
+    return cause
+  }
+}
 
 async function rowOf(policeNo: string) {
   const [row] = await db.select().from(user).where(eq(user.policeNo, policeNo))
@@ -98,5 +111,47 @@ describe("管理员录入账号", () => {
     expect(first.id).not.toBe("")
     expect(first.id).not.toBe(second.id)
     expect((await rowOf(INPUT.policeNo)).id).toBe(first.id)
+  })
+})
+
+describe("录入流程（账号 + 沙箱，FR-003）", () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "openhive-register-test-"))
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("录入后沙箱目录存在，且落在 {root}/{id}", async () => {
+    const { id, workspace } = await provisionUser(db, INPUT, root)
+
+    expect(workspace).toBe(join(root, id))
+    expect((await stat(workspace)).isDirectory()).toBe(true)
+  })
+
+  test("账号与沙箱一次办成：落库的 id 就是沙箱目录名", async () => {
+    const { id } = await provisionUser(db, INPUT, root)
+
+    expect((await rowOf(INPUT.policeNo)).id).toBe(id)
+  })
+
+  test("落库被拒时不留垃圾目录——这条钉住「先落库、后建目录」的顺序", async () => {
+    const first = await provisionUser(db, INPUT, root)
+
+    // 同警号第二次录入：PG 的 UNIQUE 先挡下，此时目录还没建。
+    expect(await failureOf(provisionUser(db, INPUT, root))).toBeInstanceOf(Error)
+    // 若顺序反了（先建目录），这里会多出一个目录。
+    expect(await readdir(root)).toEqual([first.id])
+  })
+
+  test("建目录失败时把错抛出去，不静默返回一个没有沙箱的账号", async () => {
+    // 让 root 的父级是个普通文件——mkdir 必然失败，用来模拟磁盘/权限类故障。
+    const blocker = join(root, "blocker")
+    await writeFile(blocker, "")
+
+    expect(await failureOf(provisionUser(db, INPUT, join(blocker, "sub")))).toBeInstanceOf(Error)
   })
 })

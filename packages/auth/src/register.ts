@@ -2,6 +2,7 @@ import { hashPassword } from "./password"
 import { DEFAULT_PASSWORD } from "./policy"
 import { nowSeconds } from "./time"
 import { user } from "./user"
+import { createWorkspace } from "./workspace"
 
 /**
  * 管理员录入账号（design-v2 §4.1，`2026-09-06-openhive-design-v2.md:147`）。
@@ -59,4 +60,33 @@ export async function registerUser(db: UserInsertTarget, input: RegisterInput): 
   })
 
   return { id }
+}
+
+/** 一次录入的完整产物：账号 id，以及它的沙箱目录路径。 */
+export interface ProvisionedUser {
+  id: string
+  workspace: string
+}
+
+/**
+ * 管理员录入的**完整**动作：建账号 + 建沙箱目录（FR-003 要求两者一次发生）。
+ *
+ * 顺序是**先落库、后建目录**：
+ * - 重复警号（T008）会在落库这一步就被 PG 的 UNIQUE 挡下，此时还没建目录，**不留垃圾目录**——
+ *   这是更常见的失败，值得为它优化。
+ * - 反过来若先建目录、落库失败，每次重试都漏一个空目录。
+ *
+ * 代价说清楚：建目录失败时账号行**已经存在**（PG 事务管不到文件系统，这里也不做补偿删除——
+ * 删目录是破坏性操作，用户沙箱里可能有真实研判产物，宁可留一个空目录也不冒误删的风险）。
+ * 故障会原样抛出，管理员看得见，不会静默得到一个没有沙箱的账号。
+ */
+export async function provisionUser(
+  db: UserInsertTarget,
+  input: RegisterInput,
+  workspaceRoot: string,
+): Promise<ProvisionedUser> {
+  const { id } = await registerUser(db, input)
+  const workspace = await createWorkspace(workspaceRoot, id)
+
+  return { id, workspace }
 }

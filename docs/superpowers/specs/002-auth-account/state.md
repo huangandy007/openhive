@@ -1,9 +1,44 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T007 [US1] [BE] 实现录入时创建沙箱目录 `/workspaces/{userId}/`
+T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）
 
 ## 已完成
+
+### T007 [US1] [BE] 录入时创建沙箱目录 ✅（2026-09-29）
+**交付物**：`src/workspace.ts`（`workspaceRoot` / `createWorkspace` / `WORKSPACE_ROOT_ENV`）+ `workspace.test.ts`（6 条）；
+`register.ts` 增 `provisionUser(db, input, workspaceRoot)` → `{ id, workspace }` + 4 条流程测试。
+
+**为什么要有 `provisionUser`**：FR-003 要求「建账号」与「建沙箱」一次发生。若只提供两个独立函数，
+后续每个调用方都得自己记着按序调两个——FR-003 就没有代码承载点，漏调不会被任何东西发现。
+
+**顺序裁定：先落库、后建目录**，且**有测试钉住**（那条「落库被拒时不留垃圾目录」）：
+- 重复警号（T008 的主场）在落库这步被 PG UNIQUE 挡下，此时目录还没建 → **不留垃圾目录**。这是更常见的失败。
+- 反过来先建目录、落库失败，每次重试漏一个空目录。
+- 该测试对 T008 的实现方式是健壮的：无论 T008 是预检查还是捕获 23505，都不会建出目录。
+
+**建目录失败时不做补偿删除**：PG 事务管不到文件系统。曾考虑「建目录失败就把已插入的行删掉」/「落库失败就把目录删掉」，
+均否掉——`rm -rf` 一个用户沙箱是**破坏性**操作，里面可能有真实研判产物，而补偿逻辑本身也可能有 bug。
+宁可留一个空目录（零成本、可人工清理），也不冒误删用户数据的风险。故障原样抛出，不静默返回一个没有沙箱的账号。
+
+**路径穿越守卫**：`userId` 为空、含 `/` 或 `\`、或等于 `.` / `..` 时拒绝。
+依据 design-v2 §5.3（`2026-09-06-openhive-design-v2.md:229`）——`{userId}` 就是**用户之间的隔离边界**，
+「应用层锚定（防越权）」正是该节列的第一道锁。当前调用方传的是 `crypto.randomUUID()`（不可能触发），
+但 F3 的中间件也会走这个函数，在唯一的建目录入口守一次比在每个调用点守可靠。
+
+**`OPENHIVE_WORKSPACE_ROOT`**：新增环境变量，未配置时落到 design-v2 规定的 `/workspaces`。
+有默认值（区别于 `AUTH_JWT_SECRET` 的「缺了就报错」）——因为文档已把 `/workspaces` 定为标准路径，
+配了反而多一步。**但需要部署方确认挂载点**，见下方「待补环境变量」。
+
+**TDD 过程**：RED「Cannot find module './workspace'」→ GREEN 6 条；再 RED「Export named 'provisionUser' not found」→ GREEN 流程 4 条。
+**有牙验证**：① 顺序倒置成「先建目录」→ **2 条红**；② 拆掉穿越守卫 → 1 条红。两次均恢复干净、无残留。
+
+**验收证据（真跑）**：包内 `bun test` **55 pass / 0 fail**（9 文件）；`bun run typecheck` **31/31**；
+`bun run lint` 文件数 3364→**3366**、命中数 **4924 warnings / 1 error**（与基线逐字相同，1 error 仍是上游 session-ui 那条）→ **`packages/auth` 0 命中**；
+`bun run lint:openhive` **exit 0**；`bunx oxlint packages/auth` **0/0**。
+
+> ⚠️ **未接生产**：`workspaceRoot(env)` 目前无生产调用方（HTTP 层在 T009/T018 才出现）。
+> 但它是纯函数、离线可测，与 T005 的 `jwtSecret(env)` 同性质，故不适用 T001 那条「无测试的生产代码」的推迟理由。
 
 ### T006 [US1] [BE] 管理员录入账号 ✅（2026-09-29）
 **交付物**：`src/register.ts`（`registerUser` / `UserInsertTarget` / `RegisterInput`）+ `register.test.ts`（7 条）；
@@ -211,11 +246,14 @@ T004 **有意不兜**（库里的 hash 由本模块自己写入，畸形属「�
 | 变量 | 状态 | 用途 |
 |---|---|---|
 | `AUTH_JWT_SECRET` | ❌ **`.env` 中尚无**，需部署方生成随机串写入 | `src/token.ts` 签发/校验 JWT 的 HS256 密钥 |
+| `OPENHIVE_WORKSPACE_ROOT` | ⚠️ **可选**，未配置时用 `/workspaces` | 每用户沙箱目录的根（`src/workspace.ts`） |
 
 代码侧**不提供默认值**：`jwtSecret()` 缺值时点名报错（`缺少环境变量 AUTH_JWT_SECRET`）。理由见 T005 节。
+`OPENHIVE_WORKSPACE_ROOT` 相反——**有默认值**，因为 design-v2 §5.3 已把 `/workspaces` 定为标准路径；
+只有当部署环境的挂载点不是 `/workspaces` 时才需要配。
 
 ## 阻塞项
 （无）
 
 ## 最后更新
-2026-09-29（T006 完成并全门禁验证通过；等待「next」进 T007）
+2026-09-29（T007 完成并全门禁验证通过；等待「next」进 T008）

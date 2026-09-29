@@ -62,7 +62,15 @@
   - 🔴 **撞到并修掉一个真缺陷**：用户表时间列在 design-v2 §4.1 是 PG `integer`（int4 上限 2147483647），而 `Date.now()` 是毫秒（1.79e12）→ `22003 numeric_value_out_of_range`，**首行都插不进去**。经用户裁定选 **A：沿用 INTEGER、统一存 Unix 秒**（与 JWT `exp` 同单位）。落地：新增 `src/time.ts` 的 `nowSeconds()`，register 与迁移记账表都改走它；迁移 SQL 与 `user.ts` 补单位注释；加单位锁测试防复发
   - 实测出参：包内 `bun test` **45 pass / 0 fail**（+11：录入 7、时间单位 2、记账单位 1、生产驱动接口 1）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
   - 有牙验证：把 `nowSeconds()` 临时改成 `Date.now()`（毫秒）→ **9 条齐红**（时间单位锁 + 全部 7 条录入 + 记账单位），恢复后 45 全绿、无残留
-- [ ] T007 [US1] [BE] 实现录入时创建沙箱目录 `/workspaces/{userId}/` [FR-003] [T006] [出参：录入后沙箱目录存在]
+- [x] T007 [US1] [BE] 实现录入时创建沙箱目录 `/workspaces/{userId}/` [FR-003] [T006] [出参：录入后沙箱目录存在]
+  - 落点 `src/workspace.ts`：`workspaceRoot(env)`（默认 `/workspaces`，可被 `OPENHIVE_WORKSPACE_ROOT` 覆盖）+ `createWorkspace(root, userId)`
+  - 落点 `src/register.ts` 增 `provisionUser(db, input, workspaceRoot)` → `{ id, workspace }`：把「建账号 + 建沙箱」做成一件事，FR-003 才有代码承载点（否则后续调用方得记着按序调两个函数）
+  - **顺序：先落库、后建目录**，并有测试钉住（不是只写在注释里）——重复警号在落库这步就被 UNIQUE 挡下，此时目录还没建，**不留垃圾目录**；反过来先建目录则每次重试漏一个空目录
+  - **建目录失败不做补偿删除**：PG 事务管不到文件系统，而 `rm -rf` 用户沙箱是破坏性操作（里面可能有真实研判产物），宁可留空目录也不冒误删风险。故障原样抛出，不静默返回没有沙箱的账号
+  - 路径穿越守卫：`userId` 含 `/`、`\`、`.`、`..`、空串则拒。design-v2 §5.3 明写 `{userId}` 就是隔离边界，「应用层锚定防越权」；当前调用方传 `crypto.randomUUID()`，但 F3 中间件也走这里
+  - 实测出参：包内 `bun test` **55 pass / 0 fail**（+10：workspace 6、录入流程 4）；`bun run typecheck` **31/31**；`bun run lint` 4924w/1e 与基线逐字相同（`packages/auth` 0 命中）；`bun run lint:openhive` exit 0；`bunx oxlint packages/auth` 0/0
+  - 有牙验证：① 把顺序倒置成「先建目录」→ **2 条红**（含那条顺序钉）；② 拆掉路径穿越守卫 → 对应 1 条红。两次均恢复干净
+  - ⚠️ **未接生产**：`workspaceRoot(env)` 目前没有生产调用方（HTTP 层在 T009/T018），env 变量名按约定先定下来
 - [ ] T008 [US1] [BE] 实现警号唯一性校验（重复录入拒绝）[FR-001] [T003] [出参：重复警号录入被拒]
 
 ## Phase 4: US2 警号登录（P1）
