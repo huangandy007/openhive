@@ -147,12 +147,17 @@
   - 顺带做了一次行为不变重构：`UserAccountTarget` 从 login/password 两处副本提为 `user.ts` 共享（重构后 79 pass 逐字相同）
   - 变异验证：去掉 `status = 1` → 3 红；`coalesce` 换回字面 → 6 红；`<` 改 `<=` → 1 红；**删掉空名单守卫 → 0 红**（故删掉该守卫）
   - 实测出参：包内 `bun test` **91 pass / 0 fail**（12 文件）；`bunx oxlint packages/auth` **0/0**；`bun run typecheck` **31/31**
-- [ ] T016 [P] [US4] [BE] ~~实现停用后保留 30 天再归档/删除（可恢复）~~ **改为账号侧闭环** [FR-010] [T003] [出参：停用后 30 天内可恢复]
+- [x] T016 [P] [US4] [BE] ~~实现停用后保留 30 天再归档/删除（可恢复）~~ **改为账号侧闭环** [FR-010] [T003] [出参：停用后 30 天内可恢复]
   - ⛔ **2026-09-29 原任务阻塞**：缺「停用时刻」列，且 FR-010 的保留对象是**沙箱目录/数据**（不是账号行）
   - ✅ **用户裁定（方案 A，2026-09-29）**：本 feature 只做**账号侧**——
     ① 加 `deactivated_at INTEGER` 列（迁移 `0002`）② `restoreAccount`（保留期内恢复）
     ③ 逾期清单筛选（供 F3 定时任务用）。**文件系统部分（沙箱归档/恢复/删除）移出 002，留给 F3**
   - ⚠️ **加列是平台级改动**：要同步改 `user.ts` 模型、`user.test.ts` 的防漂移断言、以及 design-v2 §4.1 的表
+  - ✅ **2026-09-29 完成**（方案 A 账号侧闭环）：迁移 `0002_deactivated_at`（up/down）、`user.ts` 加
+    `deactivatedAt`、`restoreAccount`（`src/zombie.ts`）、逾期清单筛选、防漂移断言已同步。
+    该节完整的变异验证与当时实测数见 `state.md` 的 T016 节；**收尾实测**：包内 `bun test` 149 pass / 0 fail
+  - 📌 复选框曾是 `[ ]`：**实现已完成而盒子没打勾**（收尾核 `session.md` 的「T001–T018 全部落地」
+    与 `tasks.md` 对不上才发现）。同 `#002-06` 那类——**文档状态与事实脱节，不报错、不变红**
 - [x] T017 [P] [US5] [BE] 实现密码重置（回默认密码 + must_change_pw=1）[FR-007] [T003][T004] [出参：重置后默认密码可登录且强制改密]
   - ✅ **2026-09-29 完成**。`password.ts` 加 `resetPassword`（固定回 `DEFAULT_PASSWORD`，不收新密码参数）；
     `password.test.ts` 增 4 条
