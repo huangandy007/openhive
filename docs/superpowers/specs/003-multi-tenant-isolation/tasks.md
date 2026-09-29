@@ -27,7 +27,19 @@
     ④ ⚠️ **结构性发现**：`Database.node` 是 **global tag**，其消费者 9/10 是 global 节点，
        而 `locationServices` 组**不含**它们 → **不能照抄 Location 的替换点**。
        T004 落点三选一（见 `refactor-targets.md` §3），**开工前若未定需停下来问**。
-- [ ] T002 [P] 确定 `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案 [FR-001][FR-005] [无依赖] [出参：目录/权限方案记录在案]
+- [x] T002 [P] 确定 `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案 [FR-001][FR-005] [无依赖] [出参：目录/权限方案记录在案]
+  - ✅ **完成 2026-09-30**，产出 `isolation-scheme.md`（本目录）。三条要点：
+    ① `/workspaces` 侧 **002 已交**（`packages/auth/src/workspace.ts` 的 `WORKSPACE_ROOT_ENV` /
+       `workspaceRoot()` / `createWorkspace()`，含 `../` 穿越校验）——**不重造**，本 task 只补 `/data` 侧 + 挂载 + 权限；
+    ② **SQLite WAL 的坑**：`database.ts` 设了 `journal_mode = WAL` → 会在 db 旁生成 `-wal`/`-shm`
+       ⇒ **`/data/{userId}/` 目录本身必须可写**，「文件 0600 + 目录 0500」会让 SQLite 打不开库；
+    ③ ⚠️ **§5 是一条必须先裁定的问题（未裁定，已上报）**——见下。
+  - 🔴 **上报：单进程模型下「OS 层兜底」不成立**。证据链：design-v2 §11.6 部署 = **一个 opencode 容器**；
+    §6 = **共享单进程**；而**实测** `cross-spawn-spawner` 的 spawn 选项**无 `uid`/`gid`**，
+    上游 `Dockerfile` 也**无 `USER`**。⇒ 一个进程 = 一个 OS 主体，`chmod 700` 对
+    「用户 A vs 用户 B」**零作用** ⇒ FR-006 / US2 验收场景 2 / SC-003 字面**无法成立**。
+    三个方向（甲逐用户 uid+子进程 / 乙降级为容器级 / 丙每用户一进程）见 `isolation-scheme.md` §5，
+    **本文档不裁定**。**裁定前 T007 不能开工**；T004 / T006 不受阻。
 
 ## Phase 2: Foundational（用户上下文 + db 路由）
 

@@ -1,14 +1,56 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-T002（下一 task，等「next」）—— `/data/{userId}/` 与 `/workspaces/{userId}/` 的目录挂载 + 受限用户权限方案。
+**暂停等裁定**：T002 已产出方案，但它暴露的 **§5 问题（单进程下 OS 层兜底不成立）** 需要用户裁定。
+裁定前 **T007 不能开工**；T004 / T006 不受阻。
+未裁定的还有任务书 Step 0.5 的 D2–D6。
 
 ## 已完成
 - **T001**（2026-09-30）· 定位 `database.ts` 单例现状 + 可仿模式清单 → 产出 `refactor-targets.md`。
   要点见下「T001 结论」，**含一条影响 T004 落点的结构性发现**。
+- **T002**（2026-09-30）· 目录挂载 + 受限用户权限方案 → 产出 `isolation-scheme.md`。
+  要点见下「T002 结论」，**含一条阻断 T007 的未裁定问题**。
 
 ## 阻塞项
-（无）
+- 🔴 **T002 暴露的 §5（单进程下「OS 层兜底」不成立）待用户裁定**（甲/乙/丙）。
+  阻断 T007；不阻断 T004 / T006。详见 `isolation-scheme.md` §5 与下方「T002 结论」。
+
+## T002 结论（2026-09-30 · 基点 `21d0b61b52`）
+
+### 能确定的部分
+- **`/workspaces` 侧 002 已交**：`packages/auth/src/workspace.ts` 的
+  `WORKSPACE_ROOT_ENV` / `workspaceRoot()` / `createWorkspace()`（含 `../` 穿越校验）——**不重造**。
+- **`{userId}` = UUID**（`register.ts` 的 `crypto.randomUUID()`）⇒ 可直接作目录名。
+- 目录布局：`/workspaces/{userId}/{project}/` + `/data/{userId}/opencode.db` + `/assets`（共享，独立于用户隔离）。
+- 挂载：`/workspaces`、`/data` 持久卷，`/assets` 共享卷（资产服务 rw + opencode **ro**）。
+- 本 task 新增 `OPENHIVE_DATA_ROOT`（照 `WORKSPACE_ROOT_ENV` 先例）——**落点在 T004，不在 `packages/auth`**。
+- **`/data/{userId}/` 的创建时机 = T004 连接惰性打开处**（不是 002 的 `provisionUser`——
+  历史账号没有该目录）。
+
+### ⚠️ SQLite WAL 的坑（T004 / T007 的前置约束）
+`database.ts` 层里设了 `PRAGMA journal_mode = WAL` → WAL 会在 db 文件**旁**生成 `-wal` / `-shm`。
+⇒ **`/data/{userId}/` 目录本身必须对运行身份可写**。
+「db 文件 0600 + 目录 0500」这种只读目录方案**会让 SQLite 直接打不开库**。
+
+### 🔴 未裁定：单进程模型下「OS 层兜底」不成立
+证据链：design-v2 §11.6 部署 = **一个 opencode 容器**（`/workspaces`、`/data` 是它的持久卷）；
+§6 = **共享单进程**；**实测** `packages/core/src/cross-spawn-spawner.ts` 的 spawn 选项
+= `cwd / env / stdio / detached / shell / windowsHide`，**无 `uid`/`gid`**；
+上游 `packages/opencode/Dockerfile` **无 `USER` 指令**（以 root 跑，且只是 CLI 镜像）。
+
+⇒ **一个进程 = 一个 OS 主体**：`/workspaces/{userId}/` 全属同一 uid，同一进程处理 A 与处理 B
+看到的 uid 完全相同 ⇒ **`chmod 700` 对「用户 A vs 用户 B」零作用**。
+⇒ `spec.md` 的 **FR-006 / US2 验收场景 2 / SC-003** 字面**无法成立**（不是配置问题，是模型问题）。
+
+三个方向（见 `isolation-scheme.md` §5.3）：
+| 方向 | 能真正 OS 隔离吗 | 代价 |
+|---|---|---|
+| 甲 · 逐用户 uid + 子进程 | **部分**（Bash 走子进程有效；Read/Write/Edit 进程内 fs 无效） | 1600 系统用户 + uid 映射；要动 `cross-spawn-spawner` = **深改 core**（撞 §I/§V） |
+| 乙 · 降级为「容器级」 | 否 | 改 FR-006/US2-2/SC-003 措辞；§III 仍成立（独立 db 是真物理隔离） |
+| 丙 · 每用户一进程/容器 | **是** | 把 §6.1 的「后手」提前到 P0，资源模型全变 |
+
+**我的建议（非拍板）：本轮走乙**，理由见 `isolation-scheme.md` §5.4。
+**待用户裁定。**
 
 ## T001 结论（2026-09-30 · 基点 `e788f9a9aa`）
 
@@ -71,4 +113,4 @@ T002（下一 task，等「next」）—— `/data/{userId}/` 与 `/workspaces/{
   真链路端到端在 T014 之后。
 
 ## 最后更新
-2026-09-30（T001 完成，产出 `refactor-targets.md`；FR-002 信任模型 2026-09-29 定稿为【甲】真做验签）
+2026-09-30（T001/T002 完成；**新增一条待裁定：单进程下 OS 层兜底不成立**。FR-002 信任模型 2026-09-29 定稿为【甲】真做验签）
