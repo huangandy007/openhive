@@ -138,6 +138,21 @@ describe("登录失败：统一提示（FR-005）", () => {
   })
 })
 
+describe("「稍后修改」后再登录仍弹（FR-006 / T014）", () => {
+  test("登录不清 must_change_pw——只有真的改了密码才解除", async () => {
+    // 「稍后修改」= 前端把弹窗关掉、**不发任何写请求**，所以这里刻意什么都不做，只再登录一次。
+    // 钉的是「登录都成功了，顺手把改密标记清掉吧」这类**好心改动**——它会让强制改密形同虚设，
+    // 且不会有任何别的测试发现（清掉之后第一次登录看起来完全正常）。
+    //
+    // 解除标记的唯一入口是 changePassword（T013），见 password.test.ts。
+    const first = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    const second = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+
+    expect(first.mustChangePw).toBe(true)
+    expect(second.mustChangePw).toBe(true)
+  })
+})
+
 describe("登录失败：停用账号（FR-008）", () => {
   test("停用账号即使密码正确也被拒，且不签发凭证、不刷新最后登录时间", async () => {
     await disable(ACCOUNT.policeNo)
