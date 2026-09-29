@@ -16,6 +16,9 @@ export const PASSWORD_HASH_ALGORITHM = "argon2id" as const
 /** 登录凭证有效期（秒）。2 小时。 */
 export const TOKEN_TTL_SECONDS = 2 * 60 * 60
 
+/** 多久没活跃就算僵尸账户（天）。design-v2 §4.3 定 90 天。 */
+export const ZOMBIE_INACTIVE_DAYS = 90
+
 /** 承载登录凭证的 Cookie 名。 */
 export const SESSION_COOKIE_NAME = "openhive_session"
 
