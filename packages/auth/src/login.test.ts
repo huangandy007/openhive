@@ -60,6 +60,11 @@ async function corruptHashOf(policeNo: string, hash: string): Promise<void> {
   await db.execute(sql`update auth.user set password_hash = ${hash} where police_no = ${policeNo}`)
 }
 
+/** 把账号置为停用（design-v2 §4.1：1 启用 / 0 停用）。 */
+async function disable(policeNo: string): Promise<void> {
+  await db.execute(sql`update auth.user set status = 0 where police_no = ${policeNo}`)
+}
+
 const credentials = (password: string) => ({ policeNo: ACCOUNT.policeNo, password })
 
 describe("登录成功", () => {
@@ -130,5 +135,30 @@ describe("登录失败：统一提示（FR-005）", () => {
 
     const result = await db.execute(sql`select last_login_at from auth.user where id = ${userId}`)
     expect(result.rows[0]?.last_login_at).toBeNull()
+  })
+})
+
+describe("登录失败：停用账号（FR-008）", () => {
+  test("停用账号即使密码正确也被拒，且不签发凭证、不刷新最后登录时间", async () => {
+    await disable(ACCOUNT.policeNo)
+
+    expect(await failureOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))).toBeInstanceOf(InvalidCredentialsError)
+
+    // 「不刷新最后登录时间」这条同时钉住**检查的先后次序**：停用判定必须在记登录之前，
+    // 否则停用账号会留下一串登录痕迹，运维看 last_login_at 会以为它还在被人用。
+    const result = await db.execute(sql`select last_login_at from auth.user where id = ${userId}`)
+    expect(result.rows[0]?.last_login_at).toBeNull()
+  })
+
+  test("停用账号下密码对错报同一个错——停用状态不对外构成额外信号", async () => {
+    await disable(ACCOUNT.policeNo)
+
+    const correctPw = await errorOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))
+    const wrongPw = await errorOf(login(db, credentials("wrong-password"), SECRET))
+
+    expect(correctPw).toBeInstanceOf(InvalidCredentialsError)
+    expect(wrongPw).toBeInstanceOf(InvalidCredentialsError)
+    expect(correctPw.message).toBe("账号或密码错误")
+    expect(wrongPw.message).toBe("账号或密码错误")
   })
 })

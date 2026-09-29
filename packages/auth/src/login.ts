@@ -87,6 +87,14 @@ export async function login(db: UserLoginTarget, input: LoginInput, secret: stri
 
   if (!(await passwordMatches(input.password, record.passwordHash))) throw new InvalidCredentialsError()
 
+  // 停用账号一律拒绝登录（FR-008 / design-v2 §4.3，`2026-09-06-openhive-design-v2.md:180`）。
+  // 状态取值 1 启用 / 0 停用（同上 `:136`）——与本文件既有的 `isAdmin === 1` / `mustChangePw === 1` 同一读法。
+  //
+  // **这一句必须放在密码校验之后**（刻意，别往上挪）：置于校验之前的话，停用账号会**跳过 argon2**
+  // 直接返回，耗时与「正常账号 + 错密码」明显不同，等于给外人一个探针去枚举「哪些警号被停用了」。
+  // 放在之后，只有**已经出示正确密码**的人才会走到这里，对外观察不出任何差别。
+  if (record.status !== 1) throw new InvalidCredentialsError()
+
   await db.update(user).set({ lastLoginAt: nowSeconds() }).where(eq(user.id, record.id))
 
   const subject: TokenSubject = {
