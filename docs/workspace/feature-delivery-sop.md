@@ -339,15 +339,33 @@ multi-tenant  →  push 到 origin/multi-tenant
 **根因**：仓库含 60 个 symlink 资产（git 里 mode `120000`），但本机检出时
 `core.symlinks=false`，被写成了「内容是目标路径的普通文本文件」→ git 视为类型变更。
 
-**影响**：与 worktree 无关，**不阻断切分支**（已验证：这 60 个文件在两分支间零差异）。
+**影响**（2026-09-29 在主检出实测，**比「不阻断切分支」严重**）：
 
-**修复**（需要时）：
+- **`typecheck` 直接红**：`packages/app/src/custom-elements.d.ts` 与
+  `packages/enterprise/src/custom-elements.d.ts` 被 tsgo 当 TS 解析 → `error TS1128`，
+  这两个包的 typecheck 跑不过。
+- **`turbo` 可能报假绿把它盖住**：推送时 `.husky/pre-push` 的 `bun typecheck` 实测报
+  「31 successful / 31 cached」，**同一时刻** `--force` 重跑立刻 FAILED。
+  **判据**：怀疑 typecheck 结果时用
+  `bunx turbo typecheck --filter=<包名> --force`，**不要信 cached 的绿**。
+  （假绿的机理未查清——别照某个说法去解释它。）
+- 切分支**确实**不受影响（这 60 个文件在两分支间零差异），但**别据此当成无害**。
+
+**修复**（需要时，⚠️ **必须对每个检出各做一次**）：
 
 ```bash
-git config core.symlinks true        # 已设为 true
+git config core.symlinks true        # 已设为 true（仓库本地配置，不进版本库）
 # 删掉那 60 个伪符号链接文件，再重新物化
+git status --short | grep '^ T' | awk '{print $2}' | xargs -d '\n' rm -f
 git checkout -- .
+git status --short                   # 应当为空
 ```
+
+> ⚠️ **这条真踩过**：001 收尾时按上面做了、也验过，但**只在 `.claude/worktrees/` 里那个
+> worktree 做的**，主检出被漏下——`001/state.md` 写着「工作区回到 clean（60 个 `T` 全部
+> 消除）」，而主检出在此后两天里仍有 60 个 `T`、typecheck 仍是红的。
+> **配置（`core.symlinks`）是仓库级共享的，物化不是**——配好 ≠ 各检出都修好了。
+> 做完**在每一个检出上**各跑一次 `git status --short` 确认。
 
 ### 4.2 `worktree.baseRef` 必须为 `head`
 
