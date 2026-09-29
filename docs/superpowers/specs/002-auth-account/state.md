@@ -1,7 +1,7 @@
 # 实施进度 · 认证与账号
 
 ## 当前任务
-T016（已定为方案 A：只做账号侧闭环）/ T017（Phase 6 剩余两条）。
+T017（Phase 6 最后一条：密码重置）。
 
 ## 补提交记录（2026-09-29，用户裁定「逐条补提交」）
 
@@ -19,6 +19,48 @@ T009 态 17 pass、T011 态 11 pass、T013 态 9 pass、T014 态 12 pass，全�
 下次在 worktree 里做多任务时，**完成一条就先提交一条**，别攒。
 
 ## 已完成
+
+### T016 [P] [US4] [BE] 停用后保留 30 天（账号侧闭环）✅（2026-09-29，用户裁定方案 A）
+**交付物**：迁移 `0002_deactivated_at`（up/down）；`user.ts` 模型加 `deactivatedAt`；
+`zombie.ts` 加 `restoreAccount` / `findArchivableAccounts`，`disableAccounts` 改记停用时刻；
+`policy.ts` 加 `DEACTIVATED_RETENTION_DAYS = 30`；`zombie.test.ts` 增 9 条；
+`migrate.test.ts` 的 `DESIGN_V2_COLUMNS` 与 design-v2 §4.1 的表同步加列。
+
+**⚠️ 加列是平台级改动，不是 002 内部的事**：`deactivated_at` 是 design-v2 §4.1 的**第 16 列**，
+原表 15 列里生命周期只有 `status`，**没有任何地方记「什么时候停用的」**——没有它，
+FR-010 的「保留 30 天」窗口无从判定（这就是 T016 原先卡住的原因）。
+列落在末尾而非 `status` 旁边：`ALTER TABLE ADD COLUMN` 只能追加，而迁移是物理真相
+（`migrate.test.ts` 有一条「与 design-v2 **顺序逐字一致**」的强断言钉着，故 design-v2 也照物理顺序写）。
+
+**三分语义（刻意留白第三态）**：`NULL + status=1` 从未停用 / `NULL + status=0` 停用但**时刻未知**
+（002 之前的历史数据）/ 非空 + status=0 停用且知道起算点。
+**时刻未知的账号一律不进归档清单**——把 NULL 当成「很久以前」会让一次误删再也回不来，
+而 FR-010 要的恰恰是「避免误删」。**宁可漏归档，留给人判断。**
+
+**边界与 90 天那条刚好相反**（别照抄）：FR-009 是「**超过** 90 天」（`<`），
+FR-010 是「保留 30 天」（保留期满即到期 → `<=`）。写测试时踩过一次：测试名写「恰好 30 天不算」，
+实现写的 `<=`，两边打架——**回去核原文，是测试错了**。
+
+**文件系统部分（沙箱归档/恢复/删除）明确不在 002**：002 的沙箱还只是 `createWorkspace` 建的空目录，
+没有可作用的对象；写出来只能是一堆无从验证的 `rm -rf`。留 F3（见 tasks.md T016 与 design-v2 §4.3）。
+
+**验收证据（真跑）**：RED 确认为 `Export named 'restoreAccount' not found`；
+包内 `bun test` **100 pass / 0 fail**（12 文件，+9）；`bunx oxlint packages/auth` **0/0**；
+`bun run typecheck` **31/31**。
+
+**有牙验证（逐个变异，真跑，各恰好 1 条红）**：
+| 变异 | 红的哪条 |
+|---|---|
+| `restoreAccount` 不清 `deactivated_at` | 「恢复：…并清掉停用时刻」 |
+| 逾期判定 `<=` 改 `<` | 边界那条 |
+| `coalesce(deactivated_at, 0) <= cutoff`（把 NULL 当纪元 0） | 「没有停用时刻的…不进逾期清单」 |
+| `disableAccounts` 不写停用时刻 | 「停用时记下停用时刻」 |
+
+**第一条变异暴露了一件值得记的事**：「清空 `deactivated_at`」**今天是与查询冗余的**——
+`findArchivableAccounts` 同时要求 `status = 0`，恢复后 `status = 1` 就已被挡住，不清也只红那一条
+数据不变式测试。**仍然清**，理由是守住「有值即当前处于停用中」这条不变式：它只在
+「每个消费方都记得带 status 过滤」时才成立，而靠查询纪律维持的安全是陷阱——
+F3 的归档任务写漏一次 status 条件，动到的就是正在办案的民警的沙箱。**让安全性长在数据上。**
 
 ### T015 [P] [US4] [BE] 僵尸账户筛选 + 一键批量停用 ✅（2026-09-29）
 **交付物**：新建 `src/zombie.ts`（`findZombieAccounts` / `disableAccounts` / `lastSeenAtOf`）；
@@ -552,4 +594,4 @@ T016 只做**账号侧闭环**，且**要加 `deactivated_at` 列**（迁移 `00
 > ①②③ 都是**有意识的不作为**，不是漏做。每条都写明了代价与补法，避免后来者重新推导一遍。
 
 ## 最后更新
-2026-09-29（T015 完成；T009–T015 六条已补提交；T016 经用户裁定为「账号侧闭环 + 加 deactivated_at 列」，待做）
+2026-09-29（T016 完成，账号侧闭环；Phase 6 只剩 T017）
