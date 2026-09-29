@@ -65,7 +65,7 @@ packages/opencode/src/
 
 ```mermaid
 flowchart LR
-    GW["网关：剥离客户端 X-User-ID<br/>按会话凭证重新注入"] --> UC[per-request User 上下文]
+    GW["网关：剥离客户端 X-User-ID<br/>按会话凭证重新注入<br/>透传会话 JWT"] -->|"内核验签 verifyToken"| UC[per-request User 上下文]
     UC --> DB[Database Map userId→连接]
     DB --> DBA["/data/A/opencode.db"]
     DB --> DBB["/data/B/opencode.db"]
@@ -74,7 +74,7 @@ flowchart LR
     WS -->|OS 兜底| OS[受限系统用户 + 文件权限]
 ```
 
-- **数据隔离**：`X-User-ID` → User 上下文 → `Map[userId]` 路由到对应 db 文件，物理上拿不到他人的连接。
+- **数据隔离**：网关透传的会话 JWT → **内核验签**（`verifyToken` + `AUTH_JWT_SECRET`）→ User 上下文 → `Map[userId]` 路由到对应 db 文件，物理上拿不到他人的连接。`X-User-ID` 只是路由提示，**不作为身份来源**。
 - **工作空间轴**：沙箱 `/workspaces/{userId}/` 由应用层锚定 + OS 文件权限双层锁定；项目是该沙箱内的唯一隔离边界 + git 仓库。
 - **数据轴**：F3 不直接涉及业务 PG（话单/资金在 F6/F7），但每用户身份是数据轴授权的「用户主体」来源。
 
@@ -91,7 +91,7 @@ flowchart LR
 
 ## 与现有系统集成点（要素④）
 
-- **三处必改边界的前两处**：① 用户中间件（F2 已落地「关 Basic Auth + 注入 X-User-ID」，F3 消费该身份）；② Database 按用户路由（F3 落地）。第三处「工具执行守卫」在 F4。
+- **三处必改边界的前两处**：① 用户中间件——F2 交的是**门**（「关 Basic Auth + 读 `X-User-ID` 即拒」）与 **JWT 机制**（签发 / 验签 / 密钥地板），**注入器与验签在 F3 落地**（T014 网关注入 + 透传，T003 内核验签）；② Database 按用户路由（F3 落地）。第三处「工具执行守卫」在 F4。
 - **复用 opencode 原生**：project 概念（唯一隔离边界 + git 仓库）、`session.project_id`（逻辑隔离）、`LayerNode.unbound`（per-request 上下文模式）。
 - **隔离测试**：对接 constitution §五质量门禁——「用户 A 访问用户 B 的目录/db 必须被拒，失败即阻断合并」。
 
