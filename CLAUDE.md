@@ -65,6 +65,20 @@ git push origin main        # 推回私有仓库
 - `bun run lint` — oxlint
 - `bun run typecheck` — turbo typecheck
 - `bun test` — **根目录禁止**（`test` script 明确 `exit 1`），在受影响 package 内跑
+- `bun install` — ⚠️ **跑完必须检查 `bun.lock`**（见下方「锁文件污染」）
+
+### 锁文件污染（`bun install` 必读）
+
+本机 `~/.npmrc` 指向 `registry.npmmirror.com`，而 bun 认它——**每次 `bun install` 都会把
+`bun.lock` 里那一列空串填成镜像 URL**（2026-09-29 实测：3260 行增 / 3225 行删，与手头的工作无关）。
+两个后果都不是洁癖：① 给「最小化与官方合并冲突」这条第一号约束凭空加 3260 行冲突面；
+② 锁文件进 `origin` 等于给所有开发者与 CI 指定下载源。
+
+**跑完必查**：`git diff --stat bun.lock` —— 应当为空，或只剩你**有意新增**的依赖条目。
+若被污染：`git checkout -- bun.lock` 还原（镜像镜像的是同一批 tarball，版本与 sha 都不漂）。
+
+**本项目刻意不落仓库级 `.npmrc`**（那等于代替所有开发者与 CI 决定下载源）；拦住这件事的只有
+上面这条纪律。同理不动 `bunfig.toml`——它是上游文件，改它=埋合并冲突点。
 
 ## 项目宪法
 
