@@ -112,11 +112,18 @@ FR-002 要求「网关**验签**注入、用户不可伪造」，而 002 落地�
 ## #001-05 · 2026-09-28 · tool-quirk · 001-platform-foundation
 **现象 / 决策**：给 oxlint 加插件时，`plugins` 是**整份清单、不是追加**——只写 `["jsx-a11y"]`
 会把默认插件集**整体换掉**，`typescript` / `unicorn` / `oxc` 命名空间的规则全部消失（实测启用
-规则 130 → 90，**静默丢 67 条**，含根配置显式开的 `no-floating-promises` / `no-misused-spread` /
-`no-base-to-string`）。**门不报错、不变红、exit 0**，还只报「1 warning」——比规则报错危险得多。
+规则 131 → 90，**静默丢 71 条** = 39 typescript + 17 oxc + 15 unicorn，含根配置显式开的
+`no-floating-promises` / `no-misused-spread` / `no-base-to-string`）。**门不报错、不变红、exit 0**，
+还只报「1 warning」——比规则报错危险得多。
 **应对**：`plugins` 必须**列全**（`["jsx-a11y","typescript","unicorn","oxc"]`），改完**数启用条数验**：
-`bunx oxlint -c script/oxlintrc.openhive.json --rules` 应 = **160**（= 根配置 130 + jsx-a11y 30），
-少一条说明被换过了。理由与验法已写进配置注释。
+`bunx oxlint -c script/oxlintrc.openhive.json --rules` 数「Enabled = ✅」的行数，应当 = **根配置 + 30**
+（2026-09-29 实测：**161 = 131 + 30**）。**判据是这条恒等式，不是一个写死的数**——根配置是上游文件、
+会随上游更新漂，本条目原文写死的「160 = 130 + 30」就是这么变成假警报的。
+更稳的一步是比**规则名差集**：`bunx oxlint --rules` 与上面那条各跑一次，取「Enabled = ✅」的规则名求差，
+**「根配置有、openhive 没有」必须为空集**（少一条就说明 `plugins` 被换过）；新增的那批应当**全是
+jsx-a11y 的 30 条**。命令见配置注释。理由与验法已写进配置注释。
+> ⚠️ 数字是 **2026-09-29 实测**（oxlint 1.60.0 = 仓库 pin 值）。原文的「130 → 90 / 丢 67 条 / 160」
+> 三处均与实测不符，已按实测改正；「90」与「三命名空间全消失」两句经复跑证实**是对的**。
 **应用范围**：任何给 oxlint 加插件 / 改 `plugins` 的改动。落点：`script/oxlintrc.openhive.json`。
 
 ## #001-04 · 2026-09-28 · arch · 001-platform-foundation

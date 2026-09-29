@@ -24,12 +24,24 @@
   // 那部分需要 axe + 真浏览器（本轮未做，见报告）。
   //
   // 🔴 **`plugins` 是「整份清单」，不是「追加」**——这是实测踩出来的坑，别删那三个：
-  // 只写 `["jsx-a11y"]` 时，oxlint 把**默认插件集整体换掉**，`typescript` / `unicorn` 命名空间的
-  // 规则**全部消失**（实测启用规则数 130 → 90，静默丢掉 **67 条**，其中含根配置显式开启的
-  // `no-floating-promises` / `no-misused-spread` / `no-base-to-string`）。**门不会报错、不会变红，
-  // 只是从此少查一大片**——比规则报错危险得多。
-  // 验法（规则面而非文件面）：`bunx oxlint -c script/oxlintrc.openhive.json --rules` 数启用条数，
-  // 应当 = 根配置的基线 + jsx-a11y 的条数（当前 **160 = 130 + 30**）。少一条就说明这里被换过了。
+  // 只写 `["jsx-a11y"]` 时，oxlint 把**默认插件集整体换掉**，`typescript` / `oxc` / `unicorn`
+  // 三个命名空间的规则**全部消失**（实测启用规则数 131 → 90，静默丢掉 **71 条**
+  // = 39 typescript + 17 oxc + 15 unicorn，其中含根配置显式开启的 `no-floating-promises` /
+  // `no-misused-spread` / `no-base-to-string`）。**门不会报错、不会变红，只是从此少查一大片**
+  // ——比规则报错危险得多。
+  //
+  // 验法（规则面而非文件面）。**判据是恒等式，不是一个写死的数**——根配置是上游文件，基线会随
+  // 上游更新漂（本条原写「160 = 130 + 30」，2026-09-29 实测已是 **161 = 131 + 30**，那个写死的
+  // 数会变成假警报）。两步：
+  //   ① 数条数：`bunx oxlint -c script/oxlintrc.openhive.json --rules` 数「Enabled = ✅」的行数，
+  //      应当 = **根配置的条数 + jsx-a11y 的 30 条**。
+  //   ② 比差集（更稳，不受条数漂移影响）——两次各取启用规则名求差，「根配置有、本配置没有」
+  //      **必须为空集**；新增的那批应当**全是 jsx-a11y**。可直接跑：
+  //        f='awk -F"|" "/^\\| / && \$2 !~ /Rule name/ && \$2 !~ /^-/ && \$5 ~ /✅/ {gsub(/ /,\"\",\$2); print \$2}"'
+  //        bunx oxlint --rules                          | eval $f | sort > /tmp/base.txt
+  //        bunx oxlint -c script/oxlintrc.openhive.json --rules | eval $f | sort > /tmp/oh.txt
+  //        comm -23 /tmp/base.txt /tmp/oh.txt   # ← 必须无输出；有输出就说明这里被换过了
+  //      （数字均为 2026-09-29 实测，oxlint 1.60.0 = 仓库 pin 值。）
   "plugins": ["jsx-a11y", "typescript", "unicorn", "oxc"],
 
   "rules": {
