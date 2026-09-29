@@ -1,7 +1,9 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-🔄 **T004 进行中**（落点**已裁定【甲】**；第一轮实测已出、**消费侧实测进行中**——见下「T004 落点裁定」）。
+⏸️ **T004 落点重新回到未决**：用户 2026-09-30 裁定的【甲】，其前提被**消费侧实测推翻**
+（真实请求读写的是**主树**那份 Database，而在 location map 里替换碰不到主树）。
+见下「消费侧实测结果」§D。**已带实测事实回来请用户重裁，未自行改方案。**
 （T003 已完成；其余候选：T006 沙箱锚定 / T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 D2–D6。）
 
 ## 已完成
@@ -57,6 +59,8 @@ T001 留了一句「T004 必须实测」。**测了**（探针用完即删，未
 | 运行时：替换层计数 + materialize 两个 location key | **每 key 建 8 次**；同 key 再取不重建（缓存有效） |
 
 ⇒ **`Database` 不是进程级单例**：随 location key 各建一份，且每个引用点各建一份。
+> 🔴 **2026-09-30 更正：本行结论在生产形状下不成立**——它是**用替换层**测出来的。
+> 去掉替换层后实测：**整个进程只有一份 `Database.Service` 对象**。详见下「消费侧实测结果」（§C）。
 ⇒ ⚠️ **由此浮出一条会串库的坑**：路径**不能**由「当前请求的 `User`」决定——location 层按 key 缓存
 （TTL 60 分钟），请求身份每次变，缓存里留下的是**第一个**用户解析出来的库。
 路径必须由 **key（`Location.Ref`）** 派生，或把 userId **并进 key**。
@@ -72,6 +76,9 @@ T001 留了一句「T004 必须实测」。**测了**（探针用完即删，未
 
 **甲 = 在 server 根处把 `LocationServiceMap.node` 换成我们自己的 map，并在其中把 `Database.node`
 替换成「指向该 location 对应文件」的层。**
+
+> 🔴 **2026-09-30 稍后：本裁定的前提被消费侧实测推翻**（见下「消费侧实测结果」§D）。
+> 本节保留作为**决策记录**，但**不要照此开工**。
 
 **⚠️ 我给用户的成本估计被实测推翻，更正两处**（按 `LEARNINGS #002-06`：不实数字代价最大）：
 
@@ -123,15 +130,71 @@ T001 留了一句「T004 必须实测」。**测了**（探针用完即删，未
 
 ⇒ **甲按现在划定的范围，不足以保证「用户 A 读不到 B 的会话」——只要有一个租户请求由主树服务。**
 
-### 🔄 消费侧实测（**进行中**，2026-09-30）
+### 🔴 消费侧实测结果（2026-09-30 · **HTTP 真请求**，非静态推断）
 
-上面全是**依赖关系**：只证明主树那层**被构建**，**没有**证明运行时真有调用点去取它。
-**「被构建」≠「被消费」**——本项目恰在此处吃过亏（`LEARNINGS #002-02`：惰性连接 + 只做类型断言 ≠ 测试）。
+方法：重建 `packages/server/src/routes.ts` 的 `makeRoutes`（逐字照抄，只把 `Database.node` 换成
+带账本的探针层，用 `:memory:`），`HttpRouter.toWebHandler` 起 handler，`fetch` 真实路由。
+探针用完即删。**结论：主树那份 `Database` 被真实请求消费了。**
 
-**正在测**：处理真实租户 HTTP 请求时，`Database.Service` 取自主树那份、还是 per-location 那份。
+#### A. 因果对照（把「谁在执行 SQL」钉死）
 
-- 若主树那份**没人取** ⇒ 甲成立，把该前提**钉死**（配测试守着），照原计划走。
-- 若**真有人取** ⇒ 甲要扩成混合方案，代价差别大，**回来找用户定，不自行拍板**。
+| 场景 | 探针行为 | 结果 |
+|---|---|---|
+| A1 | 主树那份**一调用就 die** | `GET /api/session?limit=5` → **500**；`POST /api/session` → **500** |
+| A2 | 主树那份**只对 `insert` die**，`select` 正常 | 同一个 `GET /api/session` → **200**；`POST /api/session` → **500**（die 在 `insert`） |
+| B | **per-location** 那份一调用就 die，主树正常 | 5 个请求**全部 200**，**无一失败** |
+
+A2 是决定性的一条：同一个 GET，`select` 不 die 就 200、`insert` die 就 500
+⇒ 这条链路上执行 SQL 的**确实是主树那份**。
+
+#### B. per-location 那份在生产形状下几乎不被调用
+
+场景 B 的 5 个请求里，per-location 那份 `Database` **总共只被调用一次**
+（`ProjectCopy.refresh` 的 `db.transaction`），且它的失败被
+`packages/core/src/project/copy.ts` 的 `Effect.catchCause(..., "project copy refresh failed")`
+**吞成一条 WARN**，不进 HTTP 响应。⇒ **失败都不会暴露**，这正是「看起来像隔离」的典型形状。
+
+#### C. 生产形状下**整个进程只有一份 `Database.Service` 对象**
+
+去掉替换层、按生产写法实测：
+
+```
+distinct real Database.Service objects: 1   （19 次构建事件，全部指向同一个对象）
+```
+
+配套控制实验（同一 layer 对象被引用两次会构建几次）：
+
+```
+E1 merge             builds=1 value=1
+E2 provideMerge      builds=1 value=1
+E3 两份 Layer.fresh   builds=2 value=2
+E4 一份 fresh 一份不 fresh  builds=2 value=2
+```
+
+⇒ **Effect 对同一个 layer 对象只构建一次**；`Database.node` 是模块级单例对象，被主树与
+per-location 树共同引用 ⇒ **两者共用一份**。这也解释了为什么上面的替换层实验会得出
+「每 key 建 8 次」——**替换层是每次新建的 layer 对象**，把 `Layer.fresh` 的效果放大了。
+
+#### D. 对方案的直接影响
+
+**⇒ 甲按现在划定的范围不成立**：真实请求读写的是**主树**那份 Database，
+而在 location map 里替换 `Database.node` **碰不到主树**（见上「第一轮实测」）。
+⇒ **T004 回到未决状态**，需重新裁定（用户 2026-09-30 已裁定甲，**此实测推翻了它的前提**）。
+
+#### E. 未测出的部分（**不当结论用**）
+
+1. **R1（`packages/opencode/.../httpapi/server.ts` 的 `app` 组）没有运行时实测**——
+   全部运行时证据来自 `packages/server` 这条路。R1 只有静态事实。
+2. 场景 A 里 500 的**确切 defect 文本没拿到**（body 为空）；归因来自事件顺序 + A2 的方法级对照，
+   不是直接读到错误消息。
+3. **未覆盖全部路由**（`file` / `pty` / `question` / `permission` 等 group 没跑），
+   per-location 那份在别的路由上是否被更多调用，未知。
+4. 生产形状探针必然注入了 replacement 节点；「未改动的 `Database.node` 在生产图里也只构建一次」
+   这一层是**由控制实验 E1/E2 推出**的，不是直接观测。
+
+**旁证**：`handlers/pty.ts` / `handlers/file.ts` 的 handler 走 v1 `Session`
+（`packages/opencode/src/session/session.ts`）；`packages/server` 的 handler 走 v2 `SessionV2`。
+两条路都存在（见 `state.md` 上方 R1/R2 的静态结论）。
 
 ## T003 结论（2026-09-30 · 验签门已落地）
 

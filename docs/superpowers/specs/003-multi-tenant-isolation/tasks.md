@@ -28,8 +28,10 @@
        而 `locationServices` 组**不含**它们 → **不能照抄 Location 的替换点**。
        T004 落点三选一（见 `refactor-targets.md` §3），**开工前若未定需停下来问**。
   - ✅ **前置实测已完成（2026-09-30，T003 收尾后）**，见 `refactor-targets.md` §3 的「已测」表。
-    两条改变判断的事实：① `Database` **不是进程级单例**——它在 `hoisted` 里（18 个 global 之一），
-    随 location key 各建一份，且**每个引用点各建一份**（7 处引用 → 实测每 key 建 8 次）；
+    两条改变判断的事实：① ~~`Database` **不是进程级单例**~~ 🔴 **2026-09-30 稍后更正：此条被推翻**——
+    它是**用替换层**测出来的；去掉替换层后实测**整个进程只有一份 `Database.Service` 对象**
+    （Effect 对同一 layer 对象只构建一次，`Layer.fresh` 才能打破；`Database.node` 是模块级单例）。
+    且**真实 HTTP 请求读写的就是主树那份**（`state.md`「消费侧实测结果」）；
     ② ⚠️ **路径不能由「当前请求的 `User`」决定**——location 层按 key 缓存（TTL 60 分钟），
     请求身份每变一次，缓存里会留**第一个**用户的库 ⇒ **串库**。路径必须由 key（`Location.Ref`）
     派生，或把 userId 并进 key。
