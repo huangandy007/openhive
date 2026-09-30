@@ -107,7 +107,25 @@
     「`X-User-ID` MUST NOT 作为身份来源」，与它存不存在无关。
   - 🔗 **取代后的中间件与 T014 是一条链的两端**：T014 网关侧注入 + 透传，本 task 内核侧验签。
     本 task 用**自造令牌**（直接调 002 的 `signToken`）即可独立测，**不必等网关**。
-- [ ] T004 实现 Database `Map<userId, 连接>`（惰性打开 + 复用 + 各自 PRAGMA）[FR-001][FR-003] [T001] [出参：多 userId 各自连接独立]
+- [x] T004 实现 Database `Map<userId, 连接>`（惰性打开 + 复用 + 各自 PRAGMA）[FR-001][FR-003] [T001] [出参：多 userId 各自连接独立]
+  - ✅ **完成 2026-09-30**。落点 `packages/core/src/database/router.ts`（新增）＋
+    `packages/core/test/database-router.test.ts`（新增，6 用例）。
+    **零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动（接进 `node` 是 T005 的事）。
+  - 出参三条怎么落的：① 路径 = `join(dataRoot(env), userId, "opencode.db")`，
+    `OPENHIVE_DATA_ROOT` 常量落在本 task（`isolation-scheme.md` §1 要求）；
+    ② 惰性 `mkdir -p` 在**层构造里**（`Layer.unwrap`）、开库之前（`new Database(...)` 不建父目录）；
+    **不放 `forUser` 里**——T005 后那是按查询调用，等于每查询一次 `mkdir` 系统调用；
+    ③ 各自 PRAGMA + 迁移——**复用 `Database.layerFromPath`**，不自己开库（那 5 条 PRAGMA、
+    `wal_checkpoint`、`DatabaseMigration.apply` 全在里面）。
+  - ⚠️ **踩到并已修的坑（值得记）**：`Layer.fresh` **不能去掉**。`layerFromPath` 内部的 `layer`
+    是**模块级常量**，`Layer.buildWithMemoMap` 按**层对象身份**缓存 ⇒ 不加 fresh 时，
+    第二个用户会复用第一个用户已建好的连接，**两个 userId 指向同一个库文件**。
+    这不是理论风险：本 task 的测试第一版就撞上了（bob 的库里出现了 alice 建的表）。
+  - 口径：校验按 002 `createWorkspace` **等价**本地实现（core 无 `@opencode-ai/auth` 依赖，
+    不能反向 import）；用 `LayerMap` + TTL 60 分钟而非裸 `Map`，直接对上 `plan.md` R2（连接泄漏）。
+  - 门禁：单测 6 pass / typecheck 通过 / oxlint 0-0（161 rules）；**全包回归做了基线对照**
+    （`state.md`「T004 结论 · 质量门禁」）——**Δ = +6 pass / 0 新失败**，既有 5 条 `NpmConfig`
+    失败是本机 `~/.npmrc` 镜像导致的存量，与 T004 无关。
 - [ ] T005 实现 db 查询从 User 上下文取 userId 路由到对应连接 [FR-003] [T003][T004] [出参：A/B 查询落各自 db 文件]
 
 ## Phase 3: US2 沙箱目录（P1）

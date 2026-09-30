@@ -244,8 +244,13 @@ LayerMap.make((ref) => {
   ⇒ **模式 A 留给 T004/T005**：那里要替换的是 `Database.node`（真·按用户构造的连接），才是它该在的位置。
   落点文件：`packages/core/src/user.ts`（**core 不是 opencode**——T005 要 core 的 `Database` 读得到它）、
   `packages/opencode/src/server/routes/instance/httpapi/middleware/user-identity.ts`。
-- **T004**（`Map<userId, 连接>`）：**复用 `layerFromPath(filename)`** 拿到 PRAGMA + 迁移；
-  落点选择见 §3（**三选一，未定**）；参考**模式 B** 的 `Layer.fresh` 与 `idleTimeToLive`。
+- **T004**（`Map<userId, 连接>`）：✅ **已落地（2026-09-30）**，落点 `packages/core/src/database/router.ts`（新增）。
+  两条预言命中：**复用 `layerFromPath(filename)`**（PRAGMA + 迁移自动跟着走）、**模式 B 的
+  `Layer.fresh` 与 `idleTimeToLive`**。⚠️ **但「仿 `unbound`/`boundNode` 替换 `Database.node`」
+  这条预言没成立**——那是【甲】，已被消费侧实测推翻（见 §3 更正块）。
+  实际形状是**注册表**（`forUser(userId)`），**没碰 `database.ts`**；接进 `node` 是 T005 的事。
+  ⚠️ 另外：`Layer.fresh` 在这里**不是可选优化而是正确性前提**——去掉它两个用户会指向同一个库文件
+  （T004 的测试抓到的，见 `state.md`「T004 结论」）。
 - **T005**（查询路由）：模式 B 的 `LayerMap` 是现成的「按 key 取服务」实现，可参照。
 - **T006**（沙箱锚定）：`Location.Ref.directory` 是现有工作目录的载体
   （`packages/core/src/location.ts` 的 `layer(ref)` 里 `project.resolve(ref.directory)`）——

@@ -1,13 +1,14 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-▶️ **T004 落点已裁定（2026-09-30 · 用户裁定「乙＋丙，丙挂 T006」）**：落点 = **取连接点路由**
-（`sqlite.bun.ts` 的 `acquirer` 按当前 fiber 的 `User` 选库）＋ Location 缓存键按用户分
-（**挂 T006 验收项，不现在做**）。裁定理由、三个条件、改判触发条件见下「落点最终裁定」。
-**T004 可以开工。**
-（T003 已完成；其余候选：T006 沙箱锚定 / T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 D2–D6。）
+⏭️ **T004 已完成**（2026-09-30）。**下一个候选：T005**（把注册表接进 `Database.node`，
+并「从请求的 `User` 上下文取 userId」——即裁定里的「取连接点路由」真正接上真实请求路径）。
+其余候选：T006 沙箱锚定（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）/ T019–T024 002 评审移交。
+未裁定的还有任务书 Step 0.5 的 **D2–D6**。
 
 ## 已完成
+- **T004**（2026-09-30）· 每用户一个库的**注册表**落地（`packages/core/src/database/router.ts`，新增）。
+  **零改动上游文件**。要点见下「T004 结论」，**含一个测试抓到的串库坑**（`Layer.fresh` 去掉即串库）。
 - **T001**（2026-09-30）· 定位 `database.ts` 单例现状 + 可仿模式清单 → 产出 `refactor-targets.md`。
   要点见下「T001 结论」，**含一条影响 T004 落点的结构性发现**。
 - **T002**（2026-09-30）· 目录挂载 + 受限用户权限方案 → 产出 `isolation-scheme.md`。
@@ -320,6 +321,76 @@ BAD-TOKEN /session -> 401
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
 
+## T004 结论（2026-09-30 · 每用户一个库的注册表已落地）
+
+**落点**：`packages/core/src/database/router.ts`（新增）+ `packages/core/test/database-router.test.ts`（新增）。
+**零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动。接进 `Database.node` 是 **T005** 的事，
+本 task 只交**注册表本身**：给一个 userId，给出那个用户独有的 `Database.Interface`；**不读任何上下文**。
+
+**公开面**：`DATA_ROOT_ENV` / `dataRoot(env)` / `userDatabasePath(root, userId)` /
+`Service`（`Interface = { forUser }`）/ `layer({ root })`。
+
+**三条出参怎么落的**：
+
+| 出参（`tasks.md` T004） | 落法 |
+|---|---|
+| `/data/{userId}/opencode.db`，`OPENHIVE_DATA_ROOT` 常量落本 task | `join(dataRoot(env), userId, "opencode.db")`；`dataRoot` 照 002 的 `workspaceRoot(env)` 先例读 **env 记录**（可注入），空串按没设处理 |
+| 目录**惰性** `mkdir -p` | 在**层构造里**（`Layer.unwrap`）、开库之前——`new Database(...)` 不会建父目录（`isolation-scheme.md` §1）。**不能放 `forUser` 里**：T005 后那是按查询调用，等于每查询一次 `mkdir` 系统调用 |
+| 各自 PRAGMA + 迁移 | **复用 `Database.layerFromPath`**，不自己开库。那 5 条 PRAGMA、`wal_checkpoint`、`DatabaseMigration.apply` 全在里面；自己写一份等于把「新库要跑迁移」分裂成两处 |
+| 多 userId 各自连接独立 | `LayerMap`（TTL 60 分钟）按 userId 缓存 + **`Layer.fresh`**（见下） |
+
+**校验口径**：与 002 `createWorkspace` **等价**、本地实现。为什么本地写：`packages/core/package.json`
+**没有 `@opencode-ai/auth` 依赖**，core 是最底层，反向 import 会让依赖倒过来。
+
+**为什么用 `LayerMap` 而不是裸 `Map`**：它自带空闲回收（TTL）与并发去重——`plan.md` R2（连接泄漏）
+要的正是这个，不必重造；`location-services.ts` 是同一个用法。
+
+### 🔴 踩到并已修的坑：`Layer.fresh` 去掉就**串库**
+
+`Database.layerFromPath(filename)` 内部是 `layer.pipe(Layer.provide(sqliteLayer({ filename })))`，
+其中 `layer` 是 **`database.ts` 的模块级常量**。而 `Layer.buildWithMemoMap` **按层对象身份缓存** ⇒
+不加 `Layer.fresh` 时，**第二个用户会直接复用第一个用户已建好的连接**，两个 userId 指向**同一个库文件**。
+
+**这不是理论风险——本 task 的测试第一版就撞上了**：关键断言「bob 看不到 alice 建的表」直接变红
+（bob 的库里查到了 `probe` 表）。修法就是 `.pipe(Layer.fresh)`，与 `location-services.ts` 同款。
+
+> 这是本 feature 第二次撞「**同一 layer 对象被共享 memo 缓存**」这一类问题（第一次是 `Database`
+> 的进程级单例），而两次都是**测试**而不是推理抓到的。`LEARNINGS #001-04`（三段真相链）同源：
+> 层树里「看起来一样」的东西，缓存键未必含你以为的那一维。
+
+### 质量门禁（2026-09-30 实跑，非外推）
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 单测 | `cd packages/core && bun test test/database-router.test.ts` | **6 pass / 0 fail**，21 expect |
+| 类型 | `cd packages/core && bun run typecheck` | 通过（`tsgo --noEmit` 无输出） |
+| lint | `bunx oxlint -c script/oxlintrc.openhive.json <两个新文件>` | **0 warning / 0 error**，161 rules（＝ `LEARNINGS #001-05` 的 161 = 131 + 30 恒等式，配置未被换过） |
+| 回归 | `cd packages/core && bun test`（全包） | **基准对照，Δ 见下** |
+
+**全包回归的基准对照**（`LEARNINGS #001-02`：门禁数字先测真实基线再引用）。两次真跑，唯一变量
+是这两个新文件在不在树里（把它们临时挪出仓库再挪回，不是靠「它没被 import」推断）：
+
+| | pass | skip | fail | 失败名单 |
+|---|---|---|---|---|
+| **无 T004（基线）** | 1087 | 7 | 5 | 5 条 `NpmConfig` |
+| **有 T004** | 1093 | 7 | 5 | **同一条不差**的 5 条 `NpmConfig` |
+
+⇒ **Δ = +6 pass（本 task 的 6 个用例）/ 0 新失败**。
+
+那 5 条 `NpmConfig` 是**存量环境失败，不是本 task 的**，根因与 CLAUDE.md 记的 `bun.lock` 污染**同源**：
+本机 `~/.npmrc` 指向 `registry.npmmirror.com`，漏进了「读项目 `.npmrc`」的用例
+（实测报错正文：`Expected "https://registry.example.test/" / Received "https://registry.npmmirror.com/"`）。
+**未动 `~/.npmrc`**——那是本机全局配置，改它超出本 feature 边界。
+
+⚠️ **一次抖动，已如实记下**：其中一次全包跑里 `test/snapshot.test.ts` 的
+`isolates snapshot indexes by canonical Git worktree` **超时**（`timed out after 5000ms`），
+另两次跑**都不出现**。判定为 5s 超时的存量 flake（与机器负载相关），**不是**稳定失败；
+本 task 没有结论依赖它，但**「跑几次绿一次」不等于稳**，若它在 T005 之后复现要当回事查。
+
+**未覆盖**（缺口，不是覆盖）：① 没跑 HTTP，本 task 的注册表**还没接进任何真实请求路径**（T005 的事）；
+② 没验真实 `OPENHIVE_DATA_ROOT` 下的权限/属主（T007 的事）；③ `Layer.fresh` 后每用户一棵树，
+    多用户下的**连接基数与内存占用**没量（R2 的量化留给收尾评审）。
+
 ## T003 结论（2026-09-30 · 验签门已落地）
 
 ### 落点（两处新增 / 重写，**未改上游既有文件**）
@@ -482,7 +553,12 @@ BAD-TOKEN /session -> 401
   真链路端到端在 T014 之后。
 
 ## 最后更新
-2026-09-30（**T004 前置实测已做，落点待你裁定**；T003 验签门已落地）
+2026-09-30（**T004 已完成**：每用户一个库的注册表落地，零改动上游文件；**下一个候选 T005**。
+补：全包回归已做**基线对照**（挪开/挪回两个新文件各真跑一次）——Δ = **+6 pass / 0 新失败**；
+既有 5 条 `NpmConfig` 失败是本机 `~/.npmrc` 镜像导致的**存量**，与 T004 无关；另记一次 `snapshot` 5s 超时抖动。
+补：REFACTOR 把 `mkdir` 从 `forUser` 挪进**层构造**（`Layer.unwrap`）——否则 T005 后是每查询一次系统调用；
+已按 `LEARNINGS #002-06` grep 后同步 `state.md` / `tasks.md` 两处旧记述）
+T004 落点三轮实测后裁定「乙＋丙，丙挂 T006」——取连接点路由 + Location 缓存键按用户分）
 2026-09-30（**T003 验签门已落地**；T001/T002 完成；**§5 隔离模型已裁定为【乙】**。
 FR-002 信任模型 2026-09-29 定稿为【甲】真做验签。
 补①：design-v2 的两类过头记述已按 `LEARNINGS #002-06` grep 后清完——【甲】那次的同步范围划小了，漏了 design-v2。
