@@ -110,7 +110,9 @@
 - [x] T004 实现 Database `Map<userId, 连接>`（惰性打开 + 复用 + 各自 PRAGMA）[FR-001][FR-003] [T001] [出参：多 userId 各自连接独立]
   - ✅ **完成 2026-09-30**。落点 `packages/core/src/database/router.ts`（新增）＋
     `packages/core/test/database-router.test.ts`（新增，6 用例）。
-    **零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动（接进 `node` 是 T005 的事）。
+    **零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动。
+    （后续更正：当时说「接进 `node` 是 T005 的事」——**T005 最终走「取连接点路由」，没接 `node`**，
+    改的是给 `sqlite.bun.ts` 加钩子；`node` 至今仍在原地。）
   - 出参三条怎么落的：① 路径 = `join(dataRoot(env), userId, "opencode.db")`，
     `OPENHIVE_DATA_ROOT` 常量落在本 task（`isolation-scheme.md` §1 要求）；
     ② 惰性 `mkdir -p` 在**层构造里**（`Layer.unwrap`）、开库之前（`new Database(...)` 不建父目录）；
@@ -126,9 +128,35 @@
   - 门禁：单测 6 pass / typecheck 通过 / oxlint 0-0（161 rules）；**全包回归做了基线对照**
     （`state.md`「T004 结论 · 质量门禁」）——**Δ = +6 pass / 0 新失败**，既有 5 条 `NpmConfig`
     失败是本机 `~/.npmrc` 镜像导致的存量，与 T004 无关。
-- [ ] T005 实现 db 查询从 User 上下文取 userId 路由到对应连接 [FR-003] [T003][T004] [出参：A/B 查询落各自 db 文件]
-  - ✅ **探针已完成（2026-09-30），三问都有实跑答案** → 结论全文见 `state.md`「T005 探针结论」。
-    **裁定「乙 · 取连接点路由」成立，落点不变。**
+- [x] T005 实现 db 查询从 User 上下文取 userId 路由到对应连接 [FR-003] [T003][T004] [出参：A/B 查询落各自 db 文件]
+  - ✅ **完成 2026-09-30**。出参达成：**同一条查询代码、同一个 `Database.Service`，按当前 fiber
+    的身份落到不同库文件**（`packages/core/test/database-routing.test.ts` 3 用例，断言一律用
+    `bun:sqlite` 直接读库文件，不经过我们自己的代码）。
+  - 落点三个文件：`connection-routing.ts`（**新增**，只有 tag 与类型）、`router.ts`（**新增**，
+    提供钩子并实现路由）、`sqlite.bun.ts`（**上游自有文件，本次唯一侵入点**）。`database.ts`
+    与 `package.json` **一行没动**。
+  - 侵入点形状：`acquirer` / `transactionAcquirer` 各包一层 `routed(...)`——先问 fiber context 里
+    有没有 `DatabaseConnectionRouting.Hook`，**没有就逐字走原来的 `fallback`**。所以 CLI / TUI /
+    ACP 等无身份入口、以及全部既有测试，行为一字不变（测试 2 钉的就是这条）。
+  - **为什么 tag 单独一个文件**：`sqlite.bun.ts` 要 import 它，而 `router.ts` 已 import
+    `database.ts`、后者 import `#sqlite` ⇒ 并进 `router.ts` 会成环；而 `database.ts` 在**模块求值期**
+    就调 `layerFromPath(path())`，谁先求值都可能踩 TDZ。`connection-routing.ts` **刻意不 import
+    任何本仓库模块**，故无此风险。
+  - ⚠️ **两个「必做」都做了，且都拿变异验证过**（不是「写了就算」）：
+    ① **重入保护 `Disabled`**——停用它后本组测试**挂住**（超过 75s 无任何输出，连 bun 的 10s
+       超时都没报出来）。⚠️ 也就是说**破坏它的表现是 CI 挂住、不是变红**。
+    ② **`transactionAcquirer` 也路由**——停用它后「事务路径」用例**红**，alice 库为 `[]`（写回了主树）。
+    ②这条测试是**实现之后补写的**（实现 GREEN 时顺手做了③，超出 RED 覆盖）——为补偿，
+    补写后立刻做了变异验证，确认它真的守得住；不把它写成「已覆盖」蒙混过去。
+  - ⚠️ **本次新增 1 条 oxlint warning**（`no-unsafe-type-assertion`，`sqlite.bun.ts` 的 `routed`
+    里那个 `as`）：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
+    `client.export` / `loadExtension` 要求无 `Scope` 的 R（那是上游两行，不去动）。已试过的替代
+    都不成立（改 `SqliteClient` 接口 = 动更多上游行；让钩子返回无 Scope 类型 = 把断言挪个位置，
+    warning 照报）。**该文件本来就是 warning 存量文件（同批另 7 条全是上游自带的）**，
+    这条与它们同类，如实登记而非隐藏。
+  - 门禁：单测 3 pass / typecheck 通过 / oxlint **0 error**（8 warning：7 上游存量 + 1 见上）；
+    **全包回归做了基线对照** → **Δ = +3 pass / 0 新失败**（1096/7/5，5 条失败全是本机 `~/.npmrc`
+    镜像导致的存量 `NpmConfig`，与 T005 无关）。
   - ⚠️ **更正一条我曾写在这里的错误推断**：本段原文断言「`run()` 用 `native.query(...)`，acquirer
     只是 facade ⇒ 换库必须发生在更靠上的地方」。**该推断被实测推翻**：`Client.make` 的
     `getConnection` **每条查询都回调 acquirer**，acquirer 返回哪个 connection 就决定落到哪个文件
@@ -140,15 +168,13 @@
        alice 那条会话**。⇒ 「`packages/core` 零改动、只在服务端加注入点」这条路**不存在**。
     ② **把 `#sqlite` 映射改成包装层会死锁**——per-user 层在**调用方 fiber** 里构建，建层期的查询
        会以同一 key 重入 `LayerMap`，实测 **5s 超时挂住**（不是递归、不是报错）。
-  - ⚠️ **落地时两个必做**：① **必须显式打断重入**（per-user 树要带一个「已在路由」标记，
-    钩子/包装见此标记即退回 `config.filename`），否则同型死锁；② **事务路径
-    `transactionAcquirer` 也要路由**，否则事务写回错库。
-  - 📌 **待用户裁定的一条**：推荐方案要碰 `packages/core/src/database/sqlite.bun.ts`
-    —— **上游自有文件**（不像 `router.ts` 是新增），约 5 行：acquirer 先问 fiber context 里一个
-    **可选**钩子，**无钩子时逐字等于现状**。这是本 feature 首次**修改**上游自有文件（§I 红线），
-    **已停下来问用户**。
-  - 附带：`router.forUser` 现在只给 `Database.Interface`，钩子需要的是 **connection**
-    （实测 `forUser(id).db.$client.reserve` 能拿到）——该接口形状要在本 task 定。
+  - ✅ **方案已获用户裁定（2026-09-30）**：批准「方案 A」——碰上游自有文件
+    `packages/core/src/database/sqlite.bun.ts`，acquirer 先问一个**可选**钩子、**无钩子时逐字
+    等于现状**。这是本 feature 首次**修改**而非新增上游自有文件（§I 红线），已按流程停下问过。
+    （改动实为 +32/−2 行，比当时估的「约 5 行」多——多出来的全是解释性注释，刻意如此：
+    同步上游冲突时，读到注释才知道这块不能丢。）
+  - 接口形状（本 task 已定）：钩子要的是 **connection**，取法 = `forUser(id).db.$client.reserve`
+    ——`reserve` 就是 `transactionAcquirer`，与「当前这次取连接」语义一致。
   - 📌 **一条新识别的预设（2026-09-30 记，非本 task 解决）**：库路径是
     `/data/{userId}/opencode.db`，**没有 workspace 维度** ⇒ **同一用户的多个工作区共享同一个库**。
     与 T006 的「一人一工作区」不冲突，但它是方案的隐含预设——若产品上允许一个民警开多个工作区，

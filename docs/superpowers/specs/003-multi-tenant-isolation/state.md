@@ -1,15 +1,21 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-🔄 **T005 进行中**（2026-09-30 开工）——「db 查询按 User 上下文路由到对应连接」。
-**探针已跑完**，结论见下「T005 探针结论」：**裁定「乙 · 取连接点路由」成立，落点不变**；
-但「不碰 `packages/core` 上游文件」这条路被实测排除，**方案要碰 `sqlite.bun.ts` 约 5 行**，
-**已停下来等用户裁定**（§I 红线：首次修改上游自有文件）。
+✅ **T005 已完成**（2026-09-30）——「db 查询按 User 上下文路由到对应连接」。
+出参达成：同一个 `Database.Service`、同一段查询代码，按当前 fiber 的身份落到不同库文件。
+落点三文件：`connection-routing.ts`（新增）/ `router.ts`（新增）/ **`sqlite.bun.ts`（上游自有文件，
+本 feature 首次「改」而非「新增」，+32/−2 行）**；`database.ts` 与 `package.json` 一行没动。
+要点见下「T005 结论」。
 
-（T004 已完成，见下「T004 结论」。）其余候选：T006 沙箱锚定（**承接 T004 移交的验收项**，
-见 `tasks.md` T006 段）/ T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 **D2–D6**。
+**下一个候选：T006 沙箱锚定**（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）——
+注意 T005 之后它更紧了：查询路由只按 fiber 的 `User` 分库，而 Location 树按**目录**缓存、
+不按用户分键 ⇒ 「两个用户共用同一个 `Location.Ref`」这个缺口**仍然开着**，没被 T005 关掉。
+其余候选：T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 **D2–D6**。
 
 ## 已完成
+- **T005**（2026-09-30）· db 查询按身份路由到各自连接。**本 feature 首次修改上游自有文件**
+  （`packages/core/src/database/sqlite.bun.ts`，用户已批准方案 A）。要点见下「T005 结论」，
+  **含两条拿「变异验证」证明过「测试真的守得住」的行为**（重入保护、事务路径）。
 - **T004**（2026-09-30）· 每用户一个库的**注册表**落地（`packages/core/src/database/router.ts`，新增）。
   **零改动上游文件**。要点见下「T004 结论」，**含一个测试抓到的串库坑**（`Layer.fresh` 去掉即串库）。
 - **T001**（2026-09-30）· 定位 `database.ts` 单例现状 + 可仿模式清单 → 产出 `refactor-targets.md`。
@@ -26,6 +32,7 @@
 
 | 缺口 | 原因 | 处置 |
 |---|---|---|
+| 🔴 **路由还没接进真实请求路径** | T005 只做到「`router.ts` 提供钩子 + 单测证明路由成立」；`DatabaseRouter.layer` **还没加进 app 层**（`app-runtime.ts` 的 `AppLayer` / `AppNodeBuilder` 等）⇒ **线上跑起来仍全落主树** | **下一件该做的事**（要再碰上游入口层，需单独裁定）。接进去之前**不得声称 db 已按用户隔离** |
 | **两个用户共用同一个 `Location.Ref` 时的隔离** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **移交 T006**：验收项 = 一条测试证明「两个用户拿不到同一个 `Location.Ref`」（已写进 `tasks.md` T006 段）。**T006 落地前不得声称已隔离。** |
 | **长连接（SSE `/event`、WebSocket `/pty`、`/tui`）与 `SessionPrompt`（发消息跑 agent）下的取连接行为** | 第三轮探针刻意避开（要 provider/LLM），只测了普通 HTTP 请求 | **T012/T013 的隔离测试**要覆盖到；落地前登记为未测 |
 | **单进程多库方案本身**（一 client 服务多库、`Semaphore.make(1)` 的全局串行化、事务语义） | 探针只验了前提「acquirer 拿得到 `User`」 | T004 自己的测试覆盖 |
@@ -324,6 +331,78 @@ BAD-TOKEN /session -> 401
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
 
+## T005 结论（2026-09-30 · 已完成）
+
+**出参**：同一个 `Database.Service`、同一段查询代码，**按当前 fiber 的身份落到不同库文件**。
+测试 `packages/core/test/database-routing.test.ts`（3 用例）——断言一律用 `bun:sqlite`
+**直接读库文件**，不经过我们自己的代码（`LEARNINGS #002-02`）。
+
+**落点三文件**：
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `packages/core/src/database/connection-routing.ts` | **新增** | 只有 tag 与类型：`Hook`（可选钩子）/ `Disabled`（重入保护） |
+| `packages/core/src/database/router.ts` | **新增**（T004 已有，本次扩） | 提供钩子并实现路由：读身份 → `forUser(id).db.$client.reserve` |
+| `packages/core/src/database/sqlite.bun.ts` | ⚠️ **上游自有文件，改** | 唯一侵入点：`acquirer`/`transactionAcquirer` 各包一层 `routed(...)` |
+
+`database.ts` 与 `package.json` **一行没动**（§V 要求「连接路由落在新增的 `router.ts`」——满足）。
+
+**侵入形状**：`routed(fallback)` 先问 fiber context 里有没有 `Hook`；**没有就逐字返回 `fallback`**。
+无钩子 = 上游原样 ⇒ CLI / TUI / ACP 等无身份入口、以及**全部既有测试**，行为一字不变
+（测试 2「没有身份时回退到本层自己的库」钉的就是这条）。
+
+**为什么 tag 单独一个文件（而不是并进 `router.ts`）**：`sqlite.bun.ts` 要 import 它，
+而 `router.ts` 已经 import `database.ts`、后者 import `#sqlite` ⇒ 并进 `router.ts` 会成环
+（`sqlite.bun.ts → router.ts → database.ts → #sqlite → sqlite.bun.ts`）；而 `database.ts` 在
+**模块求值期**就调 `layerFromPath(path())`，谁先被求值都可能踩到未初始化的绑定（TDZ）。
+`connection-routing.ts` **刻意不 import 任何本仓库模块**，故无此风险。
+
+### 两条「必做」都做了，且都拿**变异验证**证明测试守得住
+
+不是「写了就算」——每条都做过一次「故意破坏 → 看测试是否红 → 还原」：
+
+| 行为 | 破坏方式 | 结果 |
+|---|---|---|
+| **重入保护 `Disabled`** | 把钩子的 `Disabled` 判断注释掉 | 本组测试**挂住**：超过 **75s 无任何输出**，连 bun 的 10s 超时都没报出来 |
+| **事务路径 `transactionAcquirer` 也路由** | 改成 `= localTransactionAcquirer` | 「事务路径」用例**红**：alice 库为 `[]`（确实写回了主树） |
+
+🔴 **第一条的后果要说清**：破坏它的表现是 **CI 挂住、不是变红**。谁将来改这块、把 `Disabled`
+当成冗余删掉，看到的是「测试卡死」而不是一句失败信息——**别去调超时，那是死锁**。
+
+⚠️ **诚实登记**：「事务路径」那条测试是**补写的**——实现 GREEN 时顺手做了「事务也要路由」，
+超出了当时 RED 的覆盖。为补偿，补写后立刻做变异验证（上表第二行）。
+不把它写成「已覆盖」蒙混过去。
+
+### 质量门禁（2026-09-30 实跑）
+
+| 门 | 结果 |
+|---|---|
+| 单测 | `database-routing.test.ts` 3 pass + `database-router.test.ts`（T004）6 pass = **9 pass / 0 fail** |
+| typecheck | `bun run typecheck` **EXIT=0** |
+| oxlint | **0 error**；8 warning，见下 |
+| 全包回归 | **1096 pass / 7 skip / 5 fail**。T004 基线 1093/7/5 ⇒ **Δ = +3 pass / 0 新失败** |
+
+- 5 条失败全是 `NpmConfig.*`，**与 T004 基线同一批**，根因是本机 `~/.npmrc` 指向
+  `registry.npmmirror.com`（报错正文 `Expected "https://registry.example.test/" /
+  Received "https://registry.npmmirror.com/"`），存量环境失败，与 T005 无关。
+- **oxlint 那 8 条 warning 里有 1 条是我新增的**（`no-unsafe-type-assertion`，
+  `sqlite.bun.ts` 的 `routed` 里那个 `as`），其余 7 条是该文件上游自带的。
+  为什么留：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
+  `client.export` / `loadExtension` 要求无 `Scope` 的 R（那是上游的两行，不去动它）。
+  评估过的替代都不成立——改 `SqliteClient` 接口 = 动更多上游行；让钩子返回无 Scope 的类型
+  = 把断言挪个位置，warning 照报。**如实登记，不隐藏、也不为它扩大上游改动面。**
+
+### 本轮未覆盖（缺口，**不是覆盖**）
+
+- 🔴 **最重要**：**路由还没接进真实请求路径**。本 task 只做到「层提供了钩子」；
+  `DatabaseRouter.layer` **还没加进 app 层**（`packages/opencode/src/effect/app-runtime.ts` 的
+  `AppLayer`、`AppNodeBuilder` 等）。⇒ **现在跑起来，真实 HTTP 请求仍然全落主树**。
+  这是**下一件该做的事**，且它要再碰上游文件（多个入口层），需单独裁定。
+- 没跑 HTTP、没跑长连接（SSE `/event`、WebSocket `/pty`）与 `SessionPrompt` 下的取连接行为
+  ——仍在「本 feature 未覆盖」表里挂着，交给 T012/T013。
+- 两个用户共用同一个 `Location.Ref` 的隔离——**没被 T005 关掉**（路由按 fiber 的 `User` 分库，
+  Location 树按**目录**缓存、不按用户分键）。仍挂 T006。
+
 ## T005 探针结论（2026-09-30 · 三问全部实跑；**推翻了我自己的一条读码推断**）
 
 T005 开工第一步跑探针（不预设形状）。探针文件已删、临时改的上游文件已还原
@@ -386,7 +465,8 @@ T005 开工第一步跑探针（不预设形状）。探针文件已删、临时
 - `make()` 的 `acquirer`（**及 `transactionAcquirer`**）改成：先问 fiber context 里一个**可选**钩子；
   **没有钩子就逐字用本层 `connection`**（默认路径与现状逐字相同）。
 - 钩子与全部路由逻辑放 `packages/core/src/database/router.ts`（**新增**，零冲突面）。
-- 上游触碰：**1 文件 / 约 5 行**（`sqlite.bun.ts`）；`database.ts` 与 `package.json` **都不用动**。
+- 上游触碰：**1 文件**（`sqlite.bun.ts`）；`database.ts` 与 `package.json` **都不用动**。
+  （当时估「约 5 行」，**实测 +32/−2**——多出来的全是解释性注释，刻意如此。）
 - ⚠️ 仍须解 Q3 的重入（见上），且事务路径也要路由。
 
 ### 本轮未覆盖（按 `LEARNINGS #002-02`：缺口写成缺口）
@@ -401,8 +481,10 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
 ## T004 结论（2026-09-30 · 每用户一个库的注册表已落地）
 
 **落点**：`packages/core/src/database/router.ts`（新增）+ `packages/core/test/database-router.test.ts`（新增）。
-**零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动。接进 `Database.node` 是 **T005** 的事，
+**零改动上游文件**——`database.ts` / `sqlite.bun.ts` 一行没动（那时）；
 本 task 只交**注册表本身**：给一个 userId，给出那个用户独有的 `Database.Interface`；**不读任何上下文**。
+（后续更正：当时说「接进 `Database.node` 是 T005 的事」——**T005 最终走的是「取连接点路由」，
+没有接 `Database.node`**，而是给 `sqlite.bun.ts` 加钩子。`node` 至今仍在原地。）
 
 **公开面**：`DATA_ROOT_ENV` / `dataRoot(env)` / `userDatabasePath(root, userId)` /
 `Service`（`Interface = { forUser }`）/ `layer({ root })`。
@@ -630,9 +712,16 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T005 已完成**：db 查询按身份路由到各自连接，出参达成。**本 feature 首次修改上游自有
+文件**（`sqlite.bun.ts`，用户已批准方案 A，实测 +32/−2 行）；`database.ts`/`package.json` 一行没动。
+两条必做各做过**变异验证**——⚠️ 破坏重入保护 `Disabled` 的表现是**测试挂住（>75s 无输出）而非变红**。
+门禁：单测 9 pass / typecheck 0 / oxlint 0 error（**新增 1 条 warning 已如实登记**）/
+全包回归 **Δ = +3 pass、0 新失败**。🔴 **未覆盖：路由还没接进 app 层，线上跑起来仍全落主树**
+——下一件该做的事，需单独裁定。详见下「T005 结论」）
 2026-09-30（**T005 探针已跑完** → 裁定「乙」成立、落点不变；**但我据读码写的「落点站不住」被实测推翻**，
 已更正。另两条候选路被排除：请求级替换 `Database.Service` 无效（消费者建层时捕获）、`#sqlite` 包装层死锁。
-推荐方案 A 要碰 `sqlite.bun.ts` 约 5 行（§I 红线，**等用户裁定**）。详见下「T005 探针结论」）
+推荐方案 A 要碰 `sqlite.bun.ts`（§I 红线；**该裁定当天已获批准并按方案 A 做完，见上「T005 结论」**）。
+详见下「T005 探针结论」）
 2026-09-30（**T004 已完成**：每用户一个库的注册表落地，零改动上游文件；**下一个候选 T005**。
 补：全包回归已做**基线对照**（挪开/挪回两个新文件各真跑一次）——Δ = **+6 pass / 0 新失败**；
 既有 5 条 `NpmConfig` 失败是本机 `~/.npmrc` 镜像导致的**存量**，与 T004 无关；另记一次 `snapshot` 5s 超时抖动。

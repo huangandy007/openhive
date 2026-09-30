@@ -248,10 +248,17 @@ LayerMap.make((ref) => {
   两条预言命中：**复用 `layerFromPath(filename)`**（PRAGMA + 迁移自动跟着走）、**模式 B 的
   `Layer.fresh` 与 `idleTimeToLive`**。⚠️ **但「仿 `unbound`/`boundNode` 替换 `Database.node`」
   这条预言没成立**——那是【甲】，已被消费侧实测推翻（见 §3 更正块）。
-  实际形状是**注册表**（`forUser(userId)`），**没碰 `database.ts`**；接进 `node` 是 T005 的事。
+  实际形状是**注册表**（`forUser(userId)`），**没碰 `database.ts`**；接进 `node` **最终也没做**——
+  T005 的裁定是「取连接点路由」，`node` 至今仍在原地（见下 T005 条）。
   ⚠️ 另外：`Layer.fresh` 在这里**不是可选优化而是正确性前提**——去掉它两个用户会指向同一个库文件
   （T004 的测试抓到的，见 `state.md`「T004 结论」）。
-- **T005**（查询路由）：模式 B 的 `LayerMap` 是现成的「按 key 取服务」实现，可参照。
+- **T005**（查询路由）：✅ **已落地（2026-09-30）**。**预言「仿 `unbound`/`boundNode`」在这里也没成立**
+  ——真落点是**取连接点路由**：`sqlite.bun.ts` 的 `acquirer`/`transactionAcquirer` 先问一个
+  **可选钩子**（`packages/core/src/database/connection-routing.ts`，新增），钩子实现与全部路由逻辑
+  在 `router.ts`。**这是本 feature 首次修改上游自有文件**（`sqlite.bun.ts`，用户已批准）。
+  ⚠️ 三个坑都写在 `state.md`「T005 结论」：① 钩子 tag 必须单独一个文件（否则成环 + TDZ）；
+  ② 重入必须显式打断，**破坏它的表现是测试挂住而非变红**；③ 事务路径也要路由。
+  🔴 **仍有缺口：钩子还没接进 app 层**（`app-runtime.ts` 的 `AppLayer` 等），线上跑起来仍全落主树。
 - **T006**（沙箱锚定）：`Location.Ref.directory` 是现有工作目录的载体
   （`packages/core/src/location.ts` 的 `layer(ref)` 里 `project.resolve(ref.directory)`）——
   锚定的落点大概率在 `ref` 的构造处，T006 开工时确认。
