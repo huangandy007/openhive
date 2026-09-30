@@ -244,11 +244,27 @@
     在请求进路由树之前用 `HttpServerRequest.modify` 把它换掉，两条链同时被锚定（宪法 §V
     「侵入是加不是改」）。三处入参都改（`?directory=`、`location[directory]`、`x-opencode-directory`），
     因为它们**不是同一条读法**，只改一处 = 留一条明路。
-  - ⚠️ **一条超出字面出参的决定（已上报，等复核）**：一并**删掉 `?workspace=`**。
+  - ✅ **一条超出字面出参的决定——2026-09-30 已结案：维持「一并删掉 `?workspace=`」**。
     它同样由客户端给，而 `planRequest` 会用该工作区的 `target.directory` **完全绕过**
     `defaultDirectory` —— 留着它，上面三处改写等于白改。删而不是替换，是因为
     「一人一工作区」（T004 裁定）下没有第二个工作区 id 可填。
-    **若产品上确实要保留客户端选工作区的能力，本条需改判**（届时锚定必须改为按用户校验工作区归属）。
+
+    **结案依据（查出来的，不是推断的）**：
+    ① **全仓零个生产者**——`grep` 遍 `packages/**`（排除 node_modules 与测试）没有任何地方构造
+       `?workspace=`（`searchParams.set("workspace"` / `"workspace="` / `workspace=${` 全零命中）。
+       前端 `packages/app` 里的 `data-workspace=` 是 **CSS 属性**、`src/workspace/` 是 openhive
+       **自有模块目录**，都不是这个查询参数。⇒ 删掉它**不可能弄坏任何现有调用方**。
+    ② 该特性在 opencode 里是**实验性的**（`@opencode/ExperimentalHttpApiWorkspaceRouting`）。
+    ③ 它比「目录提示」重：`resolveTarget` 可给出 **Remote** target，请求会被 **proxy 到另一台服务器**
+       （`proxyRemote`）——是**请求转发开关**。留着它不只是绕过目录，是能把请求转走。
+    ④ openhive 的模型是「一人一沙箱一工作区」，项目隔离在沙箱**内部**（T008），没有「跨工作区」这回事。
+
+    ⚠️ **并补了一条此前缺失的测试守住这行删除**（原先 4 条用例**没有一条**能发现它被去掉）：
+    `packages/opencode/test/server/anchor-workspace.test.ts` 的
+    「客户端传 `?workspace=` 指别人的工作区：参数被剥掉，仍落自己的沙箱」。
+    **做过变异验证**：把那行 `delete` 去掉 ⇒ **只有这一条红**（500 而非 200，4 pass / 1 fail）。
+    **为什么非补不可**：删这行是**承重**的（不删 = 锚定被绕过），而「全仓没人发它」这个论据
+    **会随时间失效**——哪天有人加了生产者就悄悄破了。**论据会过期，测试不会。**
   - ⚠️ **残留（不假装已闭合）**：`planRequest` 是 `session?.directory || defaultDirectory(...)`——
     **会话行里的 directory 优先于请求**。所以锚定上线**之前**就已存在的会话仍会解析到它当年记下的目录。
     T005 的每用户库把**跨用户**那一半关掉了（`Session.Service.get` 只读自己的库），
