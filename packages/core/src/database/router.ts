@@ -2,7 +2,9 @@ export * as DatabaseRouter from "./router"
 
 import { mkdir } from "fs/promises"
 import { dirname, join } from "path"
-import { Context, Effect, Layer, LayerMap, type Scope } from "effect"
+import { Context, Effect, Layer, LayerMap, Option, type Scope } from "effect"
+import { User } from "../user"
+import { DatabaseConnectionRouting } from "./connection-routing"
 import { Database } from "./database"
 
 /**
@@ -62,12 +64,20 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/openhive/DatabaseRouter") {}
 
-export function layer(options: { readonly root?: string } = {}): Layer.Layer<Service> {
-  // `Layer.effect`（不是 `Layer.scoped`——本版本没有后者）：它会把 `Scope.Scope` 从
-  // 依赖里剥掉（`Layer<I, E, Exclude<R, Scope.Scope>>`），层自己提供作用域，
+/**
+ * 提供两个东西：注册表本身，以及给 `sqlite.bun.ts` 用的**取连接钩子**（T005）。
+ *
+ * 返回类型里带 `DatabaseConnectionRouting.Hook`，所以把它加进 app 层的那一刻起，
+ * **主树那一份 `Database.Service` 的查询就会按 fiber 身份分流**——这正是我们要的效果：
+ * 消费侧十余处 `yield* Database.Service`（`core/session.ts`、`core/event.ts` …）一字不改。
+ */
+export function layer(
+  options: { readonly root?: string } = {},
+): Layer.Layer<Service | DatabaseConnectionRouting.Hook> {
+  // `Layer.unwrap`（等价于原来的 `Layer.effect`，只是要一次产出两个服务）：
+  // 它同样把 `Scope.Scope` 从依赖里剥掉（`R1 | Exclude<R, Scope.Scope>`），层自己提供作用域，
   // 所以 `LayerMap` 的 Scope 依赖不必外泄。`location-services.ts` 是同一个写法。
-  return Layer.effect(
-    Service,
+  return Layer.unwrap(
     Effect.gen(function* () {
       const root = options.root ?? dataRoot(process.env)
 
@@ -95,10 +105,41 @@ export function layer(options: { readonly root?: string } = {}): Layer.Layer<Ser
         { idleTimeToLive: "60 minutes" },
       )
 
-      return Service.of({
-        forUser: (userId) =>
-          Effect.map(map.contextEffect(userId), (context) => Context.get(context, Database.Service)),
-      })
+      const forUser = (userId: string) =>
+        Effect.map(map.contextEffect(userId), (context) => Context.get(context, Database.Service))
+
+      /**
+       * 路由钩子：看**发起这次查询的 fiber** 带没带身份，带了就用那个用户的库。
+       *
+       * 实现刻意放这里、不放 `connection-routing.ts`：那边只有 tag 与类型，
+       * 免得 `sqlite.bun.ts`（为了拿一个 tag）被迫 import 到 `database.ts` 形成循环。
+       */
+      const hook: DatabaseConnectionRouting.Interface = {
+        resolve: (fiber) => {
+          // ① 已在解析中 ⇒ 不再路由。少了这一步会**死锁**：per-user 树在调用方 fiber 里构建，
+          //    它的构建体（6 条 PRAGMA + 迁移）会再命中本钩子、以同一 key 重入 `LayerMap`。
+          if (Option.isSome(Context.getOption(fiber.context, DatabaseConnectionRouting.Disabled)))
+            return Option.none()
+          // ② 没有身份 ⇒ 回退本层自己的库。判据按 T004 裁定条件 ③：是「确实没有身份」，
+          //    非 HTTP 入口（CLI / TUI / ACP）走的就是这条，行为与改造前逐字相同。
+          const user = Context.getOption(fiber.context, User.Service)
+          if (Option.isNone(user)) return Option.none()
+          // ③ 有身份 ⇒ 用该用户的库。`reserve` 就是那个库的 `transactionAcquirer`，
+          //    与「当前这次取连接」语义一致。
+          return Option.some(
+            Effect.provideService(
+              Effect.flatMap(forUser(user.value.id), (database) => database.db.$client.reserve),
+              DatabaseConnectionRouting.Disabled,
+              true,
+            ),
+          )
+        },
+      }
+
+      return Layer.merge(
+        Layer.succeed(Service, Service.of({ forUser })),
+        Layer.succeed(DatabaseConnectionRouting.Hook, hook),
+      )
     }),
   )
 }
