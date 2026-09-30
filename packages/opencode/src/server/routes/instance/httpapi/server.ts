@@ -116,6 +116,8 @@ import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { userIdentityLayer } from "./middleware/user-identity"
+import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-workspace"
+
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
@@ -296,6 +298,10 @@ export function createRoutes(
       // 身份门除身份外还每请求注入「取连接钩子」，钩子的依赖在这里满足。
       // 没有它：门会在层构造期直接炸（缺 `DatabaseRouter.Service`），不会静默回退。
       userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer), Layer.provide(DatabaseRouter.layer())),
+      // 工作目录强制锚定（003 T006）：**必须排在身份门之后**——它靠身份门放进去的 `User`
+      // 决定锚到谁的沙箱，排在前面就抓不到 User、整道锚定静默直通（测试守着这个次序）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T006）。
+      anchorWorkspaceLayer.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,
