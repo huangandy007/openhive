@@ -1,26 +1,26 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-✅ **T005 已完成**（2026-09-30）——「db 查询按 User 上下文路由到对应连接」。
-出参达成：同一个 `Database.Service`、同一段查询代码，按当前 fiber 的身份落到不同库文件，
-**并且已经接进真实请求路径**（收尾时按裁定补的，见下「T005 结论」③）。
-落点：新增 `connection-routing.ts` / `router.ts`（`packages/core/src/database/`）；
-**改**上游自有文件 `sqlite.bun.ts` + `sqlite.node.ts`（本 feature 首次「改」而非「新增」）、
-`middleware/user-identity.ts`、`httpapi/server.ts`（接线，+5/−1）；
-`database.ts` 与 `package.json` 一行没动。改动行数**不要引用写死的数**，
-取数用 `git diff --stat`（写死的行数会随下一次编辑失效——`LEARNINGS #002-06`）。
-要点见下「T005 结论」。
+✅ **T006 已完成**（2026-09-30）——「工作目录强制锚定」。
+出参达成：客户端传什么 directory 都不作数，一律锚到 `{沙箱根}/{userId}`。
+落点：**新增** `middleware/anchor-workspace.ts` + `httpapi/server.ts` **一行接线**；
+**上游文件零改动**（两条目录解析链一行没碰）。改动行数**不要引用写死的数**，
+取数用 `git diff --stat`（写死的数会随下一次编辑失效——`LEARNINGS #002-06`）。
+要点见下「T006 结论」，**含两条刻意的设计选择**（门关着直通；删 `?workspace=`——后者**超出字面出参，已上报等复核**）。
 
-**下一个候选：T006 沙箱锚定**（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）——
-注意 T005 之后它更紧了：查询路由只按 fiber 的 `User` 分库，而 Location 树按**目录**缓存、
-不按用户分键 ⇒ 「两个用户共用同一个 `Location.Ref`」这个缺口**仍然开着**，没被 T005 关掉。
+**T004 移交的那个缺口（「两个用户拿不到同一个 `Location.Ref`」）已随本 task 关闭**，
+「一人一工作区」也已钉成被测试保证的事实。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。**
+
+**下一个候选：T007**（容器以受限系统用户运行 + 文件权限 `0700`）——
+⚠️ **出参口径已改**（2026-09-30 裁定乙）：原文「OS 层拒绝跨用户读写」不成立，
+**不得宣称它承担用户间隔离**，它挡的是**容器外**。
 其余候选：T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
-D1/D2/D5/D6 定案，D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前（**推迟是裁定本身**）。
-**T005 收尾长出来的决策点「db 路由接进哪一层」已裁定并落地**（2026-09-30，见下「T005 结论」③）：
-**不是**接进 `app-runtime.ts` 的 `AppLayer`，而是**由身份中间件每请求 `provideService` 注入**
-——因为**请求 fiber 的 context 里根本没有 app 层服务**（实测，不是推测）。
+D1/D2/D5/D6 定案，**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前**（**推迟是裁定本身**，
+开工前必须回来问）。
 
 ## 已完成
+- **T006**（2026-09-30）· 工作目录强制锚定（新增中间件，**上游文件零改动**）。
+  要点见下「T006 结论」，**含两条刻意的设计选择**与**一条超出字面出参、已上报等复核的决定**（删 `?workspace=`）。
 - **T005**（2026-09-30）· db 查询按身份路由到各自连接。**本 feature 首次修改上游自有文件**
   （`packages/core/src/database/sqlite.bun.ts`，用户已批准方案 A）。要点见下「T005 结论」，
   **含两条拿「变异验证」证明过「测试真的守得住」的行为**（重入保护、事务路径）。
@@ -42,7 +42,9 @@ D1/D2/D5/D6 定案，D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工
 |---|---|---|
 | 🟡 **`node` 构建条件下「路由真的生效」未被验证** | `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`：`error: No such built-in module`），那一支一行都跑不到。已做的只是：路由逻辑抽成**两支共用的一份** `DatabaseConnectionRouting.routed`（于是 bun 支的测试覆盖的正是 node 支调用的那段代码）+ 一条**形状守卫**（读源码断言两支都接了 `routed(...)`）——**形状守卫不是行为验证**，它只防「漏接线」，不证明 node 条件下跑得对 | 需 CI 提供 **node 运行时**才算补齐。在此之前**不得声称「两种构建条件下都已隔离」** |
 | **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
-| **两个用户共用同一个 `Location.Ref` 时的隔离** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **移交 T006**：验收项 = 一条测试证明「两个用户拿不到同一个 `Location.Ref`」（已写进 `tasks.md` T006 段）。**T006 落地前不得声称已隔离。** |
+| ~~**两个用户共用同一个 `Location.Ref` 时的隔离**~~ ✅ **已关闭（T006，2026-09-30）** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **T006 已交付**：`anchor-workspace.ts` 把请求目录强制锚到 `{沙箱根}/{userId}`，两用户碰不到同一目录。验收测试 `test/server/anchor-workspace.test.ts` 真的构造 `Location.Ref.make(...)` 再 `Equal.equals` 比对（不是拿字符串不等充数），同时钉「同一用户拿不到第二个工作区」。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。** |
+| 🟡 **锚定上线前就已存在的会话，其 `directory` 仍优先于锚定** | `planRequest` 是 `session?.directory \|\| defaultDirectory(...)`——**会话行里的 directory 优先于请求**，而锚定改的是请求 | **影响面 = 该用户自己的目录，不是越权**（T005 的每用户库让 `Session.Service.get` 只读自己的库）。**未测未修**，登记为缺口。若要闭合，须在会话创建侧锚定（T006 未做，见其 tasks 段的残留说明） |
+| **`node` 构建条件下的锚定未验证** | 同上第 1 行：`sqlite.node.ts` 本机加载即报错。锚定本身与构建条件无关（纯 HTTP 层），但**未在 node 条件下跑过** | 与第 1 行同批交 CI |
 | **长连接（SSE `/event`、WebSocket `/pty`、`/tui`）与 `SessionPrompt`（发消息跑 agent）下的取连接行为** | 第三轮探针刻意避开（要 provider/LLM），只测了普通 HTTP 请求 | **T012/T013 的隔离测试**要覆盖到；落地前登记为未测 |
 | **单进程多库方案本身**（一 client 服务多库、`Semaphore.make(1)` 的全局串行化、事务语义） | 探针只验了前提「acquirer 拿得到 `User`」 | T004 自己的测试覆盖 |
 
@@ -344,6 +346,85 @@ BAD-TOKEN /session -> 401
 | HTTP server（第二支） | `packages/server/src/routes.ts`（**没看到**身份中间件，待确认） |
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
+
+## T006 结论（2026-09-30 · 已完成）
+
+**一句话**：客户端传什么目录都不作数了——请求在进路由树**之前**被改写，目录一律锚到
+`{沙箱根}/{userId}`。上游文件**一行没动**。
+
+### 落点
+
+| 文件 | 改动 |
+|---|---|
+| `packages/opencode/src/server/routes/instance/httpapi/middleware/anchor-workspace.ts` | **新增**（中间件 + `Config`） |
+| `packages/opencode/src/server/routes/instance/httpapi/server.ts` | **一行接线** + 一行 import |
+
+**为什么是「改写请求」而不是「改两条解析链」**：内核里「当前目录」有两个独立读者——
+v2 的 `workspace-routing.ts`（`defaultDirectory` 读 `?directory=` 与 `x-opencode-directory`）与
+旧版 `@opencode-ai/server/location` 的 `ref()`（另读 `location[directory]`）。它们都是上游高频文件，
+改它们 = 每次同步都冲突（宪法 §I）。**但它们都从同一个 `HttpServerRequest` 读** ⇒
+用 `HttpServerRequest.modify` 在请求进路由树之前换掉它，两条链同时被锚定（§V「侵入是加不是改」）。
+三处入参都改（`?directory=` / `location[directory]` / `x-opencode-directory`）——**它们不是同一条读法**，
+只改一处就是留一条明路。
+
+### 三条验收项 → 三条测试
+
+`packages/opencode/test/server/anchor-workspace.test.ts`（4 用例，真应用 `HttpApiApp.routes` + 真签发 Cookie）：
+
+| 验收项 | 测试 | 关键点 |
+|---|---|---|
+| 出参「伪造 directory 被忽略，落沙箱根」 | 客户端伪造的 directory 被忽略 | 断言「不等于伪造值 + 在配置的根下 + 以 userId 结尾」，**三条同时成立**，直通蒙混不过去 |
+| T004 移交：「两个用户拿不到同一个 `Location.Ref`」 | 同名用例 | **真的构造 `Location.Ref.make({directory: AbsolutePath.make(...)})` 再 `Equal.equals` 比对**——LayerMap 的键用的正是这套结构相等。不拿「目录字符串不相等」充数 |
+| 追加：「一人一工作区」 | 同一用户拿不到第二个工作区 | 同一用户换三种 directory（含他自己的沙箱根）仍只有一个锚点 |
+| （零回归守卫） | 身份门关着：不改写请求 | 见下「为什么门关着要直通」 |
+
+**测试是真应用装的**（`HttpApiApp.routes`），不是「搭个最小路由自己套中间件」——后者漏装也照样绿。
+
+### 两条刻意的设计选择
+
+1. **没有 `User` 就直通**（判据是「**谁在跑**」，与 T004 条件③一致）。身份门默认关着，此时上下文里
+   **没有** `User`（不是空身份，是没有）。锚定若无条件生效，等于把一个没有身份的系统整体搬到
+   `{根}/{undefined}` 下——比它要堵的洞更像事故。第 4 条测试钉的就是这条。
+2. **一并删掉 `?workspace=`**（⚠️ **这条超出了字面出参，已上报等复核**）。它同样由客户端给，而
+   `planRequest` 会用该工作区的 `target.directory` **完全绕过** `defaultDirectory`——留着它，
+   上面三处改写等于白改。删而不是替换：一人一工作区（T004 裁定）下没有第二个工作区 id 可填。
+   **若产品上确实要保留客户端选工作区，本条需改判**（届时锚定要改为按用户校验工作区归属）。
+
+### 次序是承重的
+
+`anchorWorkspaceLayer` **必须排在 `userIdentityLayer` 之后**——它靠身份门放进上下文的 `User`
+决定锚到谁。排前面 ⇒ 抓不到 `User` ⇒ **整道锚定静默直通**（不报错、不变红）。
+这个次序**由测试守着**：反了的话第 1~3 条用例直接红。`server.ts` 那行接线旁写了注释。
+
+### 开工前挂着的那个未决问题：**结案，不可利用**
+
+`packages/protocol` 的 `v2.session.create` 声明了请求体 `location: Location.Ref`，一度怀疑
+「会话带着自己的 location 创建」是绕过锚定的口子。**实测两条一起否掉**：
+① `SessionLocationMiddleware` **不读请求体**——它读 `route.params.sessionID` 再查 `SessionTable.directory`；
+② `ServerApi`（`/api/*` 那一家族）在本仓库**只有 schema、没有任何 `HttpApiBuilder.layer(ServerApi)`**，
+即**根本没有 handler** 去消费那个字段。
+⇒ **若将来 v2 handler 层落地，这条必须重新裁定**（届时请求体 `location` 会是一个活的绕过向量）。
+
+### 门禁（全部实测）
+
+- 测试：`anchor-workspace` + `user-identity` + `multi-tenant-routing` 三文件 **23 pass / 0 fail**；
+  core 的 `connection-routing` **5 pass / 0 fail**。
+- `bun run typecheck`（`packages/opencode`）**EXIT=0**。
+- oxlint 改动文件：**1 warning / 0 errors**（复核时刻实测）。⚠️ 如实登记：清过一轮
+  （去掉未用 import + 改用仓库既有的 `json<A>(response)` 读法），**剩下的这条**是
+  `no-unsafe-type-assertion`，与上游文件 `test/server/httpapi-mcp.test.ts` 里的
+  **同款写法、同一条警告**（上游自己也带）——沿用仓库惯例而非另造一种。
+  > 记账时的自我更正：首次提交信息里写的「3 warning」是**清理之前**的数，
+  > 清理后没重新取值就写下来了。实测（命令见下）**1 warning / 0 errors**。
+  > 取数：`bunx oxlint <改动的三个文件>` ——**别抄这里的数**，改了文件数就会变。
+- `bun.lock`：`git diff --stat bun.lock` 为空（未跑 `bun install`）。
+
+### 未覆盖（缺口，**不是覆盖**）
+
+- 🟡 **锚定上线前已存在的会话，其 `directory` 仍优先于锚定**——`planRequest` 是
+  `session?.directory || defaultDirectory(...)`，而锚定改的是**请求**。**影响面 = 该用户自己的目录，
+  不是越权**（T005 的每用户库让 `Session.Service.get` 只读自己的库）。**未测未修**。
+- 🟡 **`node` 构建条件下的锚定未验证**——锚定本身与构建条件无关（纯 HTTP 层），但本机跑不到 node 支。
 
 ## T005 结论（2026-09-30 · 已完成）
 
@@ -781,6 +862,16 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T006 已完成**：工作目录强制锚定，出参达成——客户端传什么 directory 都被改写成
+`{沙箱根}/{userId}`。**上游文件零改动**（新增 `middleware/anchor-workspace.ts` + `server.ts` 一行接线）。
+**T004 移交的「两个用户拿不到同一个 `Location.Ref`」缺口随本 task 关闭**，验收测试真的构造
+`Location.Ref.make(...)` 用 `Equal.equals` 比对；「一人一工作区」同时钉成被验的事实。
+⚠️ **两处要点**：① 接线**次序承重**——`anchorWorkspaceLayer` 必须排在 `userIdentityLayer` **之后**，
+否则抓不到 `User`、整道锚定**静默直通**（测试守着这个次序）；② **一条超出字面出参的决定已上报等复核**
+——一并删掉 `?workspace=`，因为 `planRequest` 会用该工作区的 `target.directory` **完全绕过**
+`defaultDirectory`，留着它三处改写等于白改。**若产品上要保留客户端选工作区，本条需改判。**
+另：开工前挂着的那个未决问题（请求体 `location`）**实测结案为不可利用**——`SessionLocationMiddleware`
+不读请求体、且 `ServerApi` 在本仓库**只有 schema 没有 handler**；**若 v2 handler 层将来落地要重新裁定**。）
 2026-09-30（**T005 已完成**：db 查询按身份路由到各自连接，出参达成。**本 feature 首次修改上游自有
 文件**——`sqlite.bun.ts` **与 `sqlite.node.ts`** 两支（用户已批准方案 A）；`database.ts`/`package.json`
 一行没动。三条必做各做过**变异验证**——⚠️ 破坏重入保护 `Disabled` 的表现是**测试挂住（>75s 无输出）

@@ -205,7 +205,7 @@
 
 ## Phase 3: US2 沙箱目录（P1）
 
-- [ ] T006 实现工作目录强制锚定中间件（忽略客户端传入 directory）[FR-005] [T003] [出参：伪造 directory 被忽略，落沙箱根]
+- [x] T006 实现工作目录强制锚定中间件（忽略客户端传入 directory）[FR-005] [T003] [出参：伪造 directory 被忽略，落沙箱根]
   - 🔴 **本 task 承接一条 T004 移交的验收项（2026-09-30 裁定「乙＋丙，丙挂 T006」）**：
     **判据（必须是一条测试，不是一句声明）**：**两个不同用户拿不到同一个 `Location.Ref`**。
     为什么挂这里：T004 走的是「取连接点路由」，它按**当前 fiber 的 `User`** 选库；
@@ -228,6 +228,37 @@
     必须回到 T004 给**库路径**也加 userId 以外的维度，**不得默认放行**。
   - 📌 与「缺口表」里那条 `Location.Ref` 的关系：本 task 的产出**同时**关掉两个东西——
     Location 的陈旧身份捕获（风险消失）与「库路径无 workspace 维度」的隐含假设（被验为真）。
+  - ✅ **完成 2026-09-30**。出参达成：**客户端传什么 directory 都会被改写成 `{沙箱根}/{userId}`**。
+    三条验收项各有对应测试（`packages/opencode/test/server/anchor-workspace.test.ts`，4 用例）：
+    ① 出参 —— 伪造 `?directory=` 被忽略、落自己的沙箱；
+    ② T004 移交的「两个用户拿不到同一个 `Location.Ref`」—— **真的构造 `Location.Ref.make(...)`
+       再用 `Equal.equals` 比对**（LayerMap 的键用的正是这套结构相等），而不是拿「目录字符串不等」充数；
+    ③ 「一人一工作区」—— 同一用户换三种 directory（含他自己的沙箱根）仍只有一个锚点。
+    另有第 4 条**零回归守卫**：身份门关着时锚定**必须直通**（见下）。
+  - 落点：**新增** `middleware/anchor-workspace.ts` + `httpapi/server.ts` 一行接线（`anchorWorkspaceLayer`，
+    **必须排在 `userIdentityLayer` 之后**——它靠身份门放进上下文的 `User` 决定锚到谁，
+    排前面就抓不到 User、整道锚定静默直通；测试守着这个次序）。
+    **上游文件零改动**：两条目录解析链（`workspace-routing.ts` 的 `defaultDirectory`、
+    旧版 `@opencode-ai/server/location` 的 `ref`）一行没碰。
+  - **为什么是「改写请求」而不是「改解析函数」**：两条链**都从同一个 `HttpServerRequest` 读**，
+    在请求进路由树之前用 `HttpServerRequest.modify` 把它换掉，两条链同时被锚定（宪法 §V
+    「侵入是加不是改」）。三处入参都改（`?directory=`、`location[directory]`、`x-opencode-directory`），
+    因为它们**不是同一条读法**，只改一处 = 留一条明路。
+  - ⚠️ **一条超出字面出参的决定（已上报，等复核）**：一并**删掉 `?workspace=`**。
+    它同样由客户端给，而 `planRequest` 会用该工作区的 `target.directory` **完全绕过**
+    `defaultDirectory` —— 留着它，上面三处改写等于白改。删而不是替换，是因为
+    「一人一工作区」（T004 裁定）下没有第二个工作区 id 可填。
+    **若产品上确实要保留客户端选工作区的能力，本条需改判**（届时锚定必须改为按用户校验工作区归属）。
+  - ⚠️ **残留（不假装已闭合）**：`planRequest` 是 `session?.directory || defaultDirectory(...)`——
+    **会话行里的 directory 优先于请求**。所以锚定上线**之前**就已存在的会话仍会解析到它当年记下的目录。
+    T005 的每用户库把**跨用户**那一半关掉了（`Session.Service.get` 只读自己的库），
+    **同一用户的历史会话**那一半不闭合（影响面：该用户自己的目录，非越权）。已登记进缺口表。
+  - ✅ **T006 开工前挂着的那个未决问题已结案**：`packages/protocol` 的 `v2.session.create` 声明了
+    请求体 `location: Location.Ref`，一度怀疑是绕过锚定的口子。**实测结案：不可利用**——
+    ①`SessionLocationMiddleware` **不读请求体**，它读 `route.params.sessionID` 再查 `SessionTable.directory`；
+    ②`ServerApi`（`/api/*` 那一家族）在本仓库**只有 schema、没有任何 `HttpApiBuilder.layer(ServerApi)`**，
+    即根本没有 handler 去消费那个字段。
+    **若将来 v2 handler 层落地，这条要重新裁定**（届时请求体 `location` 会是一个活的绕过向量）。
 - [ ] T007 配置 opencode 容器以受限系统用户运行 + 文件权限（`0700`）[FR-006] [T002] [出参：容器**非 root**；`/workspaces/{userId}/` 以 `0700` 建出；`/data/{userId}/` **目录可写**（WAL 需在同目录建 `-wal`/`-shm`）]
   - ⚠️ **出参口径已改（2026-09-30 裁定乙）**：原文「OS 层拒绝跨用户读写」**不成立**——
     单进程下 OS 权限不区分用户 A 与 B（见 T002 段与 `isolation-scheme.md` §5）。
