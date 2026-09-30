@@ -1,24 +1,27 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-✅ **T006 已完成**（2026-09-30）——「工作目录强制锚定」。
-出参达成：客户端传什么 directory 都不作数，一律锚到 `{沙箱根}/{userId}`。
-落点：**新增** `middleware/anchor-workspace.ts` + `httpapi/server.ts` **一行接线**；
-**上游文件零改动**（两条目录解析链一行没碰）。改动行数**不要引用写死的数**，
-取数用 `git diff --stat`（写死的数会随下一次编辑失效——`LEARNINGS #002-06`）。
-要点见下「T006 结论」，**含两条刻意的设计选择**（门关着直通；删 `?workspace=`——后者**超出字面出参，已上报等复核**）。
+✅ **T007 已完成**（2026-09-30）——「文件权限 `0700`」。出参 ①「容器非 root」**挂缺口**（无产物可改）。
+**②③ 两条**：`/workspaces/{userId}/` 与 `/data/{userId}/` 的建目录处都加了 `{ mode: 0o700 }`
+（`packages/auth/src/workspace.ts`、`packages/core/src/database/router.ts`）。
+⚠️ **本机（win32）完全忽略 mode**（实测 `mkdir({mode:0o700})` / 不传 / 建后 `chmod` 三者都是 `666`），
+故两条 `0700` 断言**在本机是 `skip` 不是绿**——按 `LEARNINGS #002-02` 记为**缺口**。
+改动行数**不要引用写死的数**，取数用 `git diff --stat`（`LEARNINGS #002-06`）。
 
-**T004 移交的那个缺口（「两个用户拿不到同一个 `Location.Ref`」）已随本 task 关闭**，
-「一人一工作区」也已钉成被测试保证的事实。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。**
+⚠️ **两件必须接着看的事**（详见下「T007 结论」）：
+① **两条 `0700` 断言的可验性不同**——`/data/` 那条 Linux CI 真跑，`/workspaces/` 那条**无人跑**
+（`turbo.json` 缺 `@opencode-ai/auth#test`，CI 到不了 auth 包；**要不要补这一行需你裁定**，
+它是上游文件）；② ③「目录可写」**改动前就是绿的**，本 task 补的是**回归护栏**，不是 RED→GREEN。
 
-**下一个候选：T007**（容器以受限系统用户运行 + 文件权限 `0700`）——
-⚠️ **出参口径已改**（2026-09-30 裁定乙）：原文「OS 层拒绝跨用户读写」不成立，
-**不得宣称它承担用户间隔离**，它挡的是**容器外**。
-其余候选：T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
+**下一个候选：T008**（验证项目 = 唯一隔离边界 + 独立 git 仓库）。
+其余候选：T009–T013；T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
 D1/D2/D5/D6 定案，**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前**（**推迟是裁定本身**，
 开工前必须回来问）。
 
 ## 已完成
+- **T007**（2026-09-30）· 文件权限 `0700`。**两条 `0700` 断言在本机不可验**（win32 忽略 mode），
+  出参 ①「容器非 root」**挂缺口**（无可改产物、本机无 docker）。要点见下「T007 结论」，
+  **含一处诚实的空白：本机没有观察到 RED**，以及**一条需你裁定的附带发现**（`turbo.json` 缺 auth 的 test 条目）。
 - **T006**（2026-09-30）· 工作目录强制锚定（新增中间件，**上游文件零改动**）。
   要点见下「T006 结论」，**含两条刻意的设计选择**与**一条超出字面出参、已上报等复核的决定**（删 `?workspace=`）。
 - **T005**（2026-09-30）· db 查询按身份路由到各自连接。**本 feature 首次修改上游自有文件**
@@ -34,12 +37,15 @@ D1/D2/D5/D6 定案，**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开�
   **含一处对 plan「模式 A」的有意偏离**（`LayerNode.unbound` → `Context.Service`，已 grep 全部引用点同步）。
 
 ## 阻塞项
-（无——§5 已于 2026-09-30 裁定为**乙**，T007 解锁）
+（无——T007 已于 2026-09-30 完成；此前它被 §5 的未裁定问题堵着，§5 裁定为**乙**后解锁）
 
 ### ⛔ 本 feature 未覆盖（登记为缺口，**不是覆盖**——`LEARNINGS #002-02`）
 
 | 缺口 | 原因 | 处置 |
 |---|---|---|
+| 🟡 **T007 ①「容器以非 root 运行」未做** | **没有可改的产物**：官方 `packages/opencode/Dockerfile` 无 `USER` 指令且只装 CLI 二进制；全仓无服务镜像 / compose / k8s 清单。本机也**无 docker**（`docker: command not found`）。规范出处是 `spec.md` **FR-006** | **登记为缺口，不假称已移交**——**承接它的部署任务根本不存在**（003 无部署任务、仓库无部署产物）。⚠️ **更正**：先写的「挂 `isolation-scheme.md` §11.6 部署任务」是**错引**，§11.6 是 **design-v2 的「AI 资产治理」**章节、`isolation-scheme.md` 无 §11（它只在 §5.1 引 design-v2 §11.6 说明「部署形态 = 一个 opencode 容器」）。见 `LEARNINGS #002-04` |
+| 🟡 **T007 ②`0700` 的「已建出」本机不可验，且 auth 侧无人跑** | ① win32 **完全忽略** mode（实测三种写法都得 `666`）⇒ 断言只能 `skip`，**本机没观察到 RED**；② `turbo.json` **没有 `@opencode-ai/auth#test`**，CI（`bun turbo test`）到不了 auth 包 ⇒ 在 Linux 上**也没有人跑它**。**旁证**：002 的整个 auth 包测试（本机 149 pass）从未在 CI 跑过 | 代码已按要求写。**若要真闭合，需裁定是否给 `turbo.json` 加 `"@opencode-ai/auth#test": {}`**——那是**上游文件**（`宪法 §I` 冲突面），**未自行改动**。`/data/{userId}/` 那条**不受此限**（core 的 test 条目已声明，Linux CI 真跑） |
+| **`mkdir` 不会收紧已存在目录的权限** | `mode` 只在**创建**时生效；目录若已存在（部署时预建 / 权限被人改过），`0700` 不生效也**不报错** | 未修。与「历史账号惰性创建」同源；若部署约定预先建目录，需由部署侧保证初始权限 |
 | 🟡 **`node` 构建条件下「路由真的生效」未被验证** | `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`：`error: No such built-in module`），那一支一行都跑不到。已做的只是：路由逻辑抽成**两支共用的一份** `DatabaseConnectionRouting.routed`（于是 bun 支的测试覆盖的正是 node 支调用的那段代码）+ 一条**形状守卫**（读源码断言两支都接了 `routed(...)`）——**形状守卫不是行为验证**，它只防「漏接线」，不证明 node 条件下跑得对 | 需 CI 提供 **node 运行时**才算补齐。在此之前**不得声称「两种构建条件下都已隔离」** |
 | **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
 | ~~**两个用户共用同一个 `Location.Ref` 时的隔离**~~ ✅ **已关闭（T006，2026-09-30）** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **T006 已交付**：`anchor-workspace.ts` 把请求目录强制锚到 `{沙箱根}/{userId}`，两用户碰不到同一目录。验收测试 `test/server/anchor-workspace.test.ts` 真的构造 `Location.Ref.make(...)` 再 `Equal.equals` 比对（不是拿字符串不等充数），同时钉「同一用户拿不到第二个工作区」。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。** |
@@ -346,6 +352,76 @@ BAD-TOKEN /session -> 401
 | HTTP server（第二支） | `packages/server/src/routes.ts`（**没看到**身份中间件，待确认） |
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
+
+## T007 结论（2026-09-30 · 已完成，但**两条 `0700` 断言在本机不可验**）
+
+**一句话**：`0700` 加上了，**但本机证明不了它加上了**——win32 忽略 mode。出参 ① 无产物可改，挂缺口。
+
+### 三条出参逐条交代
+
+| 出参 | 落点 | 本机可验？ | 结论 |
+|---|---|---|---|
+| ① 容器**非 root** | **不存在**——官方 `packages/opencode/Dockerfile` 无 `USER` 指令，且它只装 CLI 二进制；全仓**无服务镜像 / 无 compose / 无 k8s 清单** | ❌ 无 docker | **缺口**（登记进缺口表；规范出处 `spec.md` FR-006）。**不假称已移交**——承接它的部署任务**不存在**。**未新建任何部署产物** |
+| ② `/workspaces/{userId}/` 以 `0700` 建出 | `packages/auth/src/workspace.ts` 的 `createWorkspace` | ⚠️ win32 skip | 代码已加；**验证是缺口** |
+| ③ `/data/{userId}/` **目录可写** | `packages/core/src/database/router.ts`（原本就 `mkdir`） | ✅ | 真写 canary 再读回；**但改动前就是绿的**（见下「护栏不是测试」） |
+
+顺带按 §4 同一张表把 `/data/{userId}/` 也加上了 `0700`。
+
+### 🔴 重点：两条 `0700` 断言的**可验性不同**，别混为一谈
+
+| 目录 | 测试文件 | 谁真的会跑它 |
+|---|---|---|
+| `/data/{userId}/` | `packages/core/test/database-router.test.ts` | ✅ **Linux CI 真跑**（`turbo.json` 有 `@opencode-ai/core#test`；CI 跑 `bun turbo test`，矩阵含 ubuntu） |
+| `/workspaces/{userId}/` | `packages/auth/src/workspace.test.ts` | ❌ **无人跑**：本机 win32 → skip；**CI 也到不了**——`turbo.json` **没有 `@opencode-ai/auth#test`** |
+
+**两边都受同一个前提约束**：该分支得进 CI 触发范围（push 到 `dev`，或开 PR）才会跑。
+
+⚠️ **附带发现（需裁定，未自行处理）**：`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
+`function` / `app` / `ui` / `session-ui` 声明了 `test`，**`@opencode-ai/auth` 缺席**
+⇒ **002 的整个 auth 包测试（本机实测 149 pass）从未在 CI 里跑过**。修法是在 `turbo.json` 加一行
+`"@opencode-ai/auth#test": {}`，但那是**上游文件**（`宪法 §I`：加一行就是一处冲突面）。
+**未自行改动**，留给你裁定。改动之后，本出参的 ② 侧才进入「被验」状态。
+
+### ③ 的诚实交代：**护栏不是测试**
+
+「目录可写」这条**在改动之前就是绿的**（默认权限本就可写）——它**不是** RED→GREEN，
+是**回归护栏**（防将来有人把 `mode: 0o500` 之类写进来导致 SQLite 打不开库）。
+写清楚这一点，免得后人把「这条绿了」误读成「本 task 的改动被验证了」。
+另外它**刻意不断言权限位**：位断言在 win32 恒真（= 没测），落盘读写才是 WAL 真正要的能力。
+
+### ⚠️ 一个诚实的空白：本机**没有观察到 RED**
+
+TDD 要求「先看它失败」。这两条 `0700` 断言在本机**是 `skip` 不是 `fail`**——
+不是我把 RED 跳过了，而是**这台机器上没有能观察 RED 的手段**（win32 丢弃 mode，
+连 `chmod` 后再 `stat` 都还是 `666`，实测三种写法一致）。
+按 `LEARNINGS #002-02`：**测不了必须写成「缺口」，不能写成「覆盖」**。故本 task **不得**被读成
+「`0700` 已被验证生效」，只能说「代码已按要求写，Linux 上有一条会真跑的断言守着」——
+且那条只覆盖 `/data/`，`/workspaces/` 侧目前**连跑的人都没有**。
+
+### `mode` 的三个边界（写进 `router.ts` 注释里了，这里留档）
+
+1. **umask 只会清位、不会加位** ⇒ `0o700` 在**任何** umask 下都成立（不必担心 CI 的 umask 比本机严）。
+2. **目录已存在时 `mkdir` 不看 mode** ⇒ **历史账号的老目录不会被这条收紧**（与本 feature 「惰性创建」
+   同一类问题：`isolation-scheme.md` §1 说历史账号的 `/data/{userId}/` 本来就不存在，所以是**新建**，
+   但若部署时预先建过、或权限被人改过，本 task **不会**纠正它）。→ 缺口表。
+3. **win32 完全忽略 mode**（实测 `mkdir({mode:0o700})` / 不传 / 建后 `chmod(0o700)` 三者都得到 `666`）。
+
+### 质量门禁（2026-09-30 实跑，非外推）
+
+- `packages/core`：**1102 pass / 5 fail / 8 skip**（1115 tests / 147 files）。
+  5 条 fail 全是 `NpmConfig.*`，**与 T004 基线同一批**、根因是本机 `~/.npmrc` 指向
+  `registry.npmmirror.com` 漏进临时目录（实测输出 `Received: "https://registry.npmmirror.com/"`），
+  **不是本 task 引入**。skip 从 7 → 8，多出来的正是本次新增的 win32 跳过项。
+- `packages/auth`：**149 pass / 1 skip / 0 fail**（150 tests / 13 files）。
+- `bun run typecheck`：**EXIT=0**（31 tasks successful / 31）。
+- oxlint：本次改动的 4 个文件 **0 warning / 0 error**。
+- `git diff --stat bun.lock`：**空**（未跑 `bun install`）。
+
+### 本次改动文件（4 个）
+
+`packages/auth/src/workspace.ts`、`packages/auth/src/workspace.test.ts`、
+`packages/core/src/database/router.ts`、`packages/core/test/database-router.test.ts`。
+**未触碰** `database.ts`、`sql.ts`、任何 schema。**零表结构改动**。
 
 ## T006 结论（2026-09-30 · 已完成）
 
@@ -862,6 +938,23 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T007 已完成**：文件权限 `0700`。出参 ①「容器非 root」**挂缺口**（无产物可改、
+本机无 docker；⚠️ 更正：先前写的「挂 §11.6 部署任务」是**错引**——§11.6 是 design-v2 的
+「AI 资产治理」章节、`isolation-scheme.md` 无 §11，且**承接它的部署任务根本不存在**，
+故只登记为缺口、不假称已移交，见 `LEARNINGS #002-04`；规范出处是 `spec.md` FR-006）；
+②③ 落地：`createWorkspace` 与 `router.ts`
+的建目录处加 `{ mode: 0o700 }`。⚠️ **本机没有观察到 RED**——win32 **完全忽略** mode
+（实测 `mkdir({mode:0o700})` / 不传 / 建后 `chmod(0o700)` 三者都是 `666`），两条 `0700` 断言只能 `skip`，
+按 `LEARNINGS #002-02` 记为**缺口而非覆盖**。
+📌 **两条断言的可验性不同**：`/data/{userId}/` 那条 **Linux CI 真跑**（`turbo.json` 有
+`@opencode-ai/core#test`）；`/workspaces/{userId}/` 那条 **无人跑**——`turbo.json` **缺
+`@opencode-ai/auth#test`**，CI（`bun turbo test`）到不了 auth 包。
+⚠️ **附带发现（需裁定，未自行处理）**：这意味着 **002 的整个 auth 包测试从未在 CI 跑过**；
+补法是给 `turbo.json` 加一行，但那是**上游文件**（`宪法 §I` 冲突面）。
+另：③「目录可写」**改动前就是绿的**，本 task 补的是**回归护栏**而非 RED→GREEN，已写进 `tasks.md`。
+门禁：core 1102 pass / 5 fail（**全是存量 `NpmConfig`**，本机 `~/.npmrc` 镜像）/ 8 skip；
+auth 149 pass / 1 skip / 0 fail；typecheck EXIT=0；改动 4 文件 oxlint 0/0；`bun.lock` 无 diff。
+详见下「T007 结论」）
 2026-09-30（**T006 已完成**：工作目录强制锚定，出参达成——客户端传什么 directory 都被改写成
 `{沙箱根}/{userId}`。**上游文件零改动**（新增 `middleware/anchor-workspace.ts` + `server.ts` 一行接线）。
 **T004 移交的「两个用户拿不到同一个 `Location.Ref`」缺口随本 task 关闭**，验收测试真的构造

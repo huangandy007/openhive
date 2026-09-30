@@ -259,10 +259,42 @@
     ②`ServerApi`（`/api/*` 那一家族）在本仓库**只有 schema、没有任何 `HttpApiBuilder.layer(ServerApi)`**，
     即根本没有 handler 去消费那个字段。
     **若将来 v2 handler 层落地，这条要重新裁定**（届时请求体 `location` 会是一个活的绕过向量）。
-- [ ] T007 配置 opencode 容器以受限系统用户运行 + 文件权限（`0700`）[FR-006] [T002] [出参：容器**非 root**；`/workspaces/{userId}/` 以 `0700` 建出；`/data/{userId}/` **目录可写**（WAL 需在同目录建 `-wal`/`-shm`）]
+- [x] T007 配置 opencode 容器以受限系统用户运行 + 文件权限（`0700`）[FR-006] [T002] [出参：容器**非 root**；`/workspaces/{userId}/` 以 `0700` 建出；`/data/{userId}/` **目录可写**（WAL 需在同目录建 `-wal`/`-shm`）]
   - ⚠️ **出参口径已改（2026-09-30 裁定乙）**：原文「OS 层拒绝跨用户读写」**不成立**——
     单进程下 OS 权限不区分用户 A 与 B（见 T002 段与 `isolation-scheme.md` §5）。
     **不得宣称本 task 的产出承担用户间隔离**；它挡的是**容器外**（同主机其他容器/系统用户）。
+  - **范围裁定（2026-09-30，用户拍板）**：只做 ②③，①「容器非 root」**挂缺口**（没有可改的产物、
+    本机无 docker），不新建任何部署产物。①②③ 逐条交代见下。
+  - ① **容器非 root —— 缺口，非本 task 可闭合**。依据：官方 `packages/opencode/Dockerfile`
+    **没有 `USER` 指令**，且它只装 CLI 二进制；仓库内**没有服务镜像、没有 docker-compose、没有
+    k8s 清单**（`grep '^USER' --include=Dockerfile*` 全仓无命中）。**没有产物可改** →
+    登记在本 feature 缺口表（`state.md`），不在本 task 里造部署产物。
+    ⚠️ **更正一处错引（2026-09-30）**：先写的是「挂 `isolation-scheme.md` §11.6 部署任务」，
+    这句**两处都不对**——**§11.6 是 `2026-09-06-openhive-design-v2.md` 的章节，讲的是
+    「AI 资产治理（skill 存放 / 审核发布）」，不是部署任务**；`isolation-scheme.md` 全文**没有 §11**，
+    它只在 §5.1 引用 design-v2 §11.6 说明「部署形态 = **一个 opencode 容器**」。
+    规范出处其实是 `spec.md` 的 **FR-006**（「容器 MUST 以受限系统用户运行（非 root）」）。
+    ⇒ **承接这条的部署任务目前并不存在**：003 的 tasks.md 无部署任务、仓库无部署产物。
+    按 `LEARNINGS #002-04`，「这件事归别人做」必须先确认那个「别人」存在且有排期——
+    此处不成立，故**不假称已移交**，只登记为缺口。
+  - ② **`0700` 落地**：`packages/auth/src/workspace.ts` 的 `createWorkspace` 与
+    `packages/core/src/database/router.ts` 的建目录处，都加了 `{ mode: 0o700 }`。
+    **但「已建出」这件事在本机不可验**（见下方缺口行）——**不得据此宣称本出参已验**。
+  - ③ **`/data/{userId}/` 目录可写**：`router.ts` 原本就 `mkdir`（无 mode），默认权限已可写。
+    本 task 补的是**回归护栏**（真写一个 canary 文件再读回，而非只看权限位——位断言在 win32 恒真，
+    等于没测）。**这条在改动前就是绿的**，不是 RED→GREEN，如实记为护栏。
+  - 落点与验法：`packages/core/test/database-router.test.ts`（canary 护栏 + win32 跳过的 `0700` 断言）、
+    `packages/auth/src/workspace.test.ts`（win32 跳过的 `0700` 断言）。
+  - 📌 **两处 `0700` 的可验性并不相同**（实测确认，别混为一谈）：
+    | 目录 | 落点 | 谁跑得到 |
+    |---|---|---|
+    | `/data/{userId}/` | `packages/core` | ✅ Linux CI **真跑**（`turbo.json` 有 `@opencode-ai/core#test`，CI 跑 `bun turbo test`，ubuntu 矩阵） |
+    | `/workspaces/{userId}/` | `packages/auth` | ❌ **无人跑**：本机 win32 忽略 mode → skip；且 `turbo.json` **没有 `@opencode-ai/auth#test`**，CI 根本到不了这个包 |
+  - ⚠️ **附带发现（需裁定，未自行处理）**：`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
+    `function` / `app` / `ui` / `session-ui` 声明了 `test`，**`@opencode-ai/auth` 缺席** ⇒
+    **002 的整个 auth 包测试（149 条）从未在 CI 里跑过**。修法是在 `turbo.json` 加一行
+    `"@opencode-ai/auth#test": {}`，但那是**上游文件**（`宪法 §I` 冲突面）。**未自行改动**，
+    留给用户裁定。（改动后本出参的 auth 侧才进入被验状态。）
 
 ## Phase 4: US3 项目 / 会话隔离（P1）
 
