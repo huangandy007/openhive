@@ -2,6 +2,8 @@ import { UserIdentity } from "@/server/user-identity"
 import { isPublicUIPath } from "@/server/shared/public-ui"
 import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
 import { jwtSecret, verifyToken } from "@opencode-ai/auth/token"
+import { DatabaseConnectionRouting } from "@opencode-ai/core/database/connection-routing"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { User } from "@opencode-ai/core/user"
 import { Context, Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -39,6 +41,11 @@ export const userIdentityLayer = HttpRouter.middleware<{ requires: UserIdentity.
     // 只有一个发生地点。`undefined` = 这把密钥用不了，于是所有请求都 401（fail-closed）。
     const secret = resolveSecret(config)
 
+    // 取连接钩子也在层构造时取一次。**必须在请求期塞进上下文**、不能靠 app 层——
+    // 请求 fiber 的 context 里没有 app 层服务（实测见 `router.ts` 的 `hook` 注释）。
+    // 依赖由 `server.ts` 那条 `Layer.provide(DatabaseRouter.layer())` 满足。
+    const router = yield* DatabaseRouter.Service
+
     return (effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
@@ -48,7 +55,13 @@ export const userIdentityLayer = HttpRouter.middleware<{ requires: UserIdentity.
         const user = yield* authenticate(request, secret)
         if (!user) return HttpServerResponse.empty({ status: UNAUTHORIZED })
 
-        return yield* Effect.provideService(effect, User.Service, user)
+        // 身份与取连接钩子**同源注入**：下游拿到 `User` 的每一处，必然同时拿到按该身份
+        // 换库的能力；反过来，没有身份就不给钩子（否则钩子会去猜一个主体）。
+        return yield* Effect.provideService(
+          Effect.provideService(effect, User.Service, user),
+          DatabaseConnectionRouting.Hook,
+          router.hook,
+        )
       })
   }),
 ).layer

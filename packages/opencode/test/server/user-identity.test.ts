@@ -2,6 +2,7 @@ import { describe, expect, setSystemTime } from "bun:test"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { User } from "@opencode-ai/core/user"
 import { UserIdentity } from "../../src/server/user-identity"
 import { userIdentityLayer } from "../../src/server/routes/instance/httpapi/middleware/user-identity"
@@ -42,7 +43,14 @@ function app(config: Layer.Layer<UserIdentity.Config>) {
           return HttpServerResponse.jsonUnsafe({ ok: true, userId: Option.getOrNull(user)?.id ?? null })
         }),
       ),
-    ).pipe(Layer.provide(userIdentityLayer.pipe(Layer.provide(config)))),
+    ).pipe(
+      Layer.provide(
+        // 门除身份外还每请求注入「取连接钩子」（003 T005），钩子的依赖在这里满足。
+        // 本组只测门、不碰 db：`DatabaseRouter.layer()` 是**惰性**的（`LayerMap` 不打开任何库），
+        // 而这里的 root 从不被 `forUser` 用到，所以走默认值也不落盘。
+        userIdentityLayer.pipe(Layer.provide(config), Layer.provide(DatabaseRouter.layer())),
+      ),
+    ),
     { disableLogger: true },
   ).handler
 

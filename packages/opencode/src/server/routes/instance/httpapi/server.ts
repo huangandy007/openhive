@@ -116,6 +116,7 @@ import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { userIdentityLayer } from "./middleware/user-identity"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
@@ -291,7 +292,10 @@ export function createRoutes(
       fenceLayer,
       // openhive 身份门（002 T018）：全局中间件，装在合并路由之上，故只有这一处接线。
       // 默认关（`OPENHIVE_REQUIRE_USER_ID` 未设即直通），开关与信任模型见 `@/server/user-identity`。
-      userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer)),
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T005）。
+      // 身份门除身份外还每请求注入「取连接钩子」，钩子的依赖在这里满足。
+      // 没有它：门会在层构造期直接炸（缺 `DatabaseRouter.Service`），不会静默回退。
+      userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer), Layer.provide(DatabaseRouter.layer())),
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,

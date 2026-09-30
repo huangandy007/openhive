@@ -5,7 +5,6 @@ import * as Effect from "effect/Effect"
 import * as Fiber from "effect/Fiber"
 import { identity } from "effect/Function"
 import * as Layer from "effect/Layer"
-import * as Option from "effect/Option"
 import * as Scope from "effect/Scope"
 import * as Semaphore from "effect/Semaphore"
 import * as Stream from "effect/Stream"
@@ -134,32 +133,15 @@ const make = (options: Config) =>
     // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（feature 003 / T005）。
     // 唯一的上游侵入点：`Client.make` 的 `getConnection` **每条查询都回调 acquirer**，
     // 所以「这条查询落到哪个库文件」是在这里决定的。本层照旧只懂 `config.filename`；
-    // 若 fiber 上下文里带了 `DatabaseConnectionRouting.Hook`（由新增的 `router.ts` 提供），
-    // 就改用钩子给出的 acquirer。**无钩子时逐字等于上游行为**（`Option.none` → `fallback`），
-    // 所以 CLI / TUI 等没有身份的入口、以及所有既有测试，行为一字不变。
+    // 若 fiber 上下文里带了 `DatabaseConnectionRouting.Hook`（由新增的 `router.ts` 提供、
+    // 身份中间件每请求注入），就改用钩子给出的 acquirer。
+    // **无钩子时逐字等于上游行为**（`Option.none` → `fallback`），所以 CLI / TUI 等没有身份的
+    // 入口、以及所有既有测试，行为一字不变。
     // 事务路径也必须同路由：`SqlClient.reserve` 用的就是 `transactionAcquirer`，
-    // 漏掉它会让事务写回错库。
-    const routed = (fallback: Effect.Effect<SqliteConnection, SqlError>): Effect.Effect<SqliteConnection, SqlError> =>
-      Effect.withFiber((fiber) =>
-        Option.match(Context.getOption(fiber.context, DatabaseConnectionRouting.Hook), {
-          onNone: () => fallback,
-          onSome: (hook) =>
-            Option.match(hook.resolve(fiber), {
-              onNone: () => fallback,
-              onSome: (acquirer) =>
-                // 断言的理由：`Acquirer` 的**类型标注**带 `Scope`，但 `transactionAcquirer`
-                // （`reserve` 给回来的就是它）实际是 `Effect.uninterruptibleMask(...)`，
-                // 它从 fiber 上下文 `getUnsafe` 取 Scope，**R 通道上并不要求 Scope**。
-                // 钩子给回来的又必然是**同一个模块**为另一个库文件建出的 client，
-                // 形状与这里完全一致（`SqliteConnection` 只是多 `export`/`loadExtension`）。
-                // 不收窄的话 `client.export` / `loadExtension` 的 R 会多出一个 `Scope`，
-                // 与 `SqliteClient` 接口（无 R）对不上——那是上游的两行，不去动它。
-                acquirer as Effect.Effect<SqliteConnection, SqlError>,
-            }),
-        }),
-      )
-    const acquirer = routed(localAcquirer)
-    const transactionAcquirer = routed(localTransactionAcquirer)
+    // 漏掉它会让事务写回错库。两处走**同一份**实现——`sqlite.node.ts` 那支也一样，
+    // 逻辑多写一份就等于多一条没人跑的路径（`#002-01`）。
+    const acquirer = DatabaseConnectionRouting.routed(localAcquirer)
+    const transactionAcquirer = DatabaseConnectionRouting.routed(localTransactionAcquirer)
 
     const client = Object.assign(
       (yield* Client.make({

@@ -1,9 +1,9 @@
 export * as DatabaseConnectionRouting from "./connection-routing"
 
-import { Context } from "effect"
+import { Context, Effect, Option } from "effect"
 import type * as Fiber from "effect/Fiber"
-import type * as Option from "effect/Option"
-import type { Acquirer } from "effect/unstable/sql/SqlConnection"
+import type { Acquirer, Connection } from "effect/unstable/sql/SqlConnection"
+import type { SqlError } from "effect/unstable/sql/SqlError"
 
 /**
  * 「**取连接点路由**」的缝（T005）。
@@ -33,6 +33,38 @@ export interface Interface {
 
 /** 「按身份选库」的钩子。**不提供它 = 上游原样**（回退本层连接）。 */
 export class Hook extends Context.Service<Hook, Interface>()("@opencode/openhive/DatabaseConnectionRouting") {}
+
+/**
+ * 把「本层自己的连接」包成「按发起查询的 fiber 的身份路由的连接」（T005）。
+ *
+ * **为什么抽在这里、不写进各支的 `sqlite.*.ts`**：`#sqlite` 是**条件解析**的
+ * （`bun` → `sqlite.bun.ts`、`node` → `sqlite.node.ts`），而 `bun test` 只加载得到 bun 那一支
+ * ——两份各写一遍的话，node 那份**永远不会被测到**，正是 `#002-01` 咬过两次的形状
+ * （一个维度上咬一口，另一口留在没人跑的那条路径上）。抽成一份，就由 bun 支的测试覆盖同一段代码。
+ *
+ * ⚠️ 残差（别当成已覆盖）：本机 bun **不提供 `node:sqlite`**，`sqlite.node.ts` 加载即报
+ * `No such built-in module`，所以 node 那一支**只到「调用点接对了」这一层**，
+ * 「node 条件下真跑起来路由生效」仍**未验证**，需 CI 提供 node 运行时。
+ *
+ * 断言的理由：`Acquirer` 的**类型标注**带 `Scope`，但 `transactionAcquirer`
+ * （`reserve` 给回来的就是它）实际是 `Effect.uninterruptibleMask(...)`，
+ * 它从 fiber 上下文 `getUnsafe` 取 Scope，**R 通道上并不要求 Scope**。
+ * 不收窄的话 `client.export` / `loadExtension` 的 R 会多出一个 `Scope`，
+ * 与 `SqliteClient` 接口（无 R）对不上——那是上游的两行，不去动它。
+ */
+export const routed = <C extends Connection>(
+  fallback: Effect.Effect<C, SqlError>,
+): Effect.Effect<C, SqlError> =>
+  Effect.withFiber((fiber) =>
+    Option.match(Context.getOption(fiber.context, Hook), {
+      onNone: () => fallback,
+      onSome: (hook) =>
+        Option.match(hook.resolve(fiber), {
+          onNone: () => fallback,
+          onSome: (acquirer) => acquirer as Effect.Effect<C, SqlError>,
+        }),
+    }),
+  )
 
 /**
  * 重入保护：解析路由期间把它放进 context，钩子见它即**不再路由**。

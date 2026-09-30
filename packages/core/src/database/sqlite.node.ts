@@ -13,6 +13,7 @@ import * as Client from "effect/unstable/sql/SqlClient"
 import type { Connection } from "effect/unstable/sql/SqlConnection"
 import { classifySqliteError, SqlError } from "effect/unstable/sql/SqlError"
 import * as Statement from "effect/unstable/sql/Statement"
+import { DatabaseConnectionRouting } from "./connection-routing"
 import { Sqlite } from "./sqlite"
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name"
@@ -113,8 +114,8 @@ const make = (options: Config) =>
     })
 
     const semaphore = yield* Semaphore.make(1)
-    const acquirer = semaphore.withPermits(1)(Effect.succeed(connection))
-    const transactionAcquirer = Effect.uninterruptibleMask((restore) => {
+    const localAcquirer = semaphore.withPermits(1)(Effect.succeed(connection))
+    const localTransactionAcquirer = Effect.uninterruptibleMask((restore) => {
       const fiber = Fiber.getCurrent()!
       const scope = Context.getUnsafe(fiber.context, Scope.Scope)
       return Effect.as(
@@ -122,6 +123,15 @@ const make = (options: Config) =>
         connection,
       )
     })
+
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（feature 003 / T005）。
+    // 与 `sqlite.bun.ts` 同一处侵入、**同一份实现**（`DatabaseConnectionRouting.routed`）。
+    // ⚠️ **两支都要接**：`#sqlite` 按运行时条件解析（`bun` / `node`），
+    // 只改一支 = 隔离在一个构建条件下静默失效——而那条路径的测试在本机跑不到
+    // （bun 不提供 `node:sqlite`），所以漏了不会有任何东西变红。
+    // 事务路径同理：`SqlClient.reserve` 用的就是 `transactionAcquirer`。
+    const acquirer = DatabaseConnectionRouting.routed(localAcquirer)
+    const transactionAcquirer = DatabaseConnectionRouting.routed(localTransactionAcquirer)
 
     const client = Object.assign(
       (yield* Client.make({

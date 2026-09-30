@@ -60,6 +60,17 @@ export interface Interface {
    * 同一 userId 重复调用返回**同一个**对象（`LayerMap` 缓存），直到空闲 TTL 到期。
    */
   readonly forUser: (userId: string) => Effect.Effect<Database.Interface, never, Scope.Scope>
+
+  /**
+   * 取连接钩子，供**身份中间件每请求塞进请求上下文**。
+   *
+   * 为什么必须由中间件塞、不能靠「把本层加进 app 层」：**请求 fiber 的 context 里
+   * 没有 app 层服务**（实测：测试路由体直接 `yield* Database.Service` 得到
+   * `Service not found`；上游自己也只能在层构造期取服务、请求期用闭包，见
+   * `handlers/sync.ts`、`middleware/fence.ts`）。所以钩子只能走请求期 `provideService`——
+   * 与 `User.Service` **同源注入**，谁也别想只拿到其中一个。
+   */
+  readonly hook: DatabaseConnectionRouting.Interface
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/openhive/DatabaseRouter") {}
@@ -137,7 +148,7 @@ export function layer(
       }
 
       return Layer.merge(
-        Layer.succeed(Service, Service.of({ forUser })),
+        Layer.succeed(Service, Service.of({ forUser, hook })),
         Layer.succeed(DatabaseConnectionRouting.Hook, hook),
       )
     }),
