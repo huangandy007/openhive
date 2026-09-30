@@ -116,6 +116,11 @@ import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { userIdentityLayer } from "./middleware/user-identity"
+import {
+  apiQuotaLayer,
+  QuotaConfig as SessionQuotaConfig,
+  uiQuotaLayer,
+} from "./middleware/session-quota"
 import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-workspace"
 
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
@@ -177,7 +182,16 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
 )
 
 const instanceRoutes = instanceApiRoutes.pipe(
-  Layer.provide([httpApiAuthLayer, workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
+  Layer.provide([
+    httpApiAuthLayer,
+    workspaceRoutingLive,
+    instanceContextLayer,
+    // A 链（UI）的配额守卫（003 T010）。它挂在 `groups/session.ts` 的 `promptAsync` 端点上
+    // （端点级，才在实例上下文之内）；这里只负责**把层供上**。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+    uiQuotaLayer.pipe(Layer.provide(SessionQuotaConfig.layer)),
+    schemaErrorLayer,
+  ]),
 )
 const serverRoutes = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(handlers),
@@ -302,6 +316,12 @@ export function createRoutes(
       // 决定锚到谁的沙箱，排在前面就抓不到 User、整道锚定静默直通（测试守着这个次序）。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T006）。
       anchorWorkspaceLayer.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+      // B 链（CLI serve / sdk-next）的配额守卫（003 T010）。**必须挂在这一层**：
+      // 它的活跃集合来自 `SessionV2.active`（进程级）与按用户路由的 `Database`，
+      // 两者在这个 provide 链的外层可用；A 链那条读不到实例作用域的 `SessionStatus`，
+      // 所以两条链是**两次挂载、一个判定模块**（实测依据见 `middleware/session-quota.ts` 文件头）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+      apiQuotaLayer.pipe(Layer.provide(SessionQuotaConfig.layer)),
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,

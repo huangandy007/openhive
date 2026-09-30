@@ -15,6 +15,7 @@ import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
+import { UiSessionQuotaMiddleware } from "../middleware/session-quota"
 import {
   WorkspaceRoutingMiddleware,
   WorkspaceRoutingQuery,
@@ -332,7 +333,13 @@ export const SessionApi = HttpApi.make("session")
           payload: PromptPayload,
           success: described(HttpApiSchema.NoContent, "Prompt accepted"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010）。**必须是端点级**：实例上下文（`InstanceRef`）
+          // 由同样端点级的 `InstanceContextMiddleware` 注入，路由级中间件在它外面、读不到
+          // `SessionStatus`。挂错是 500 不是静默放行（实测，见 `middleware/session-quota.ts` 文件头）。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.prompt_async",
             summary: "Send async message",
