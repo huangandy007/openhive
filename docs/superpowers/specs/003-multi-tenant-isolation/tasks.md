@@ -347,7 +347,51 @@
     （= 基线 1102 **+ 新增 4**；5 条失败**全是既有的 `NpmConfig`**，本机 `~/.npmrc` 镜像所致，与本次无关）；
     `bun run typecheck` **31/31 成功、exit 0**；`bunx oxlint -c script/oxlintrc.openhive.json` 该文件
     **0 warnings / 0 errors**（161 条规则，合 `LEARNINGS #001-05` 的恒等式）；`git diff --stat bun.lock` **无输出**。
-- [ ] T009 验证 session.project_id 逻辑隔离 + 确认零表结构改动 [FR-007][FR-004] [T005] [出参：session 表无 user_id 列，逻辑隔离生效]
+- [x] T009 验证 session.project_id 逻辑隔离 + 确认零表结构改动 [FR-007][FR-004] [T005] [出参：session 表无 user_id 列，逻辑隔离生效]
+  **✅ 2026-09-30 完成 —— 两条出参都达成**。零生产代码改动，新增
+  `packages/core/test/session-project-isolation.test.ts`（3 条）。
+  - **出参①「session 表无 `user_id` 列」**：对**真实建出来的表**断言（`pragma_table_info('session')`），
+    **不只读 TS 模型**——模型与迁移是**两份真相**（`packages/auth/src/user.test.ts` 的「防漂移」即此思路）。
+    core 里可行：`packages/core/test/preload.ts` 把 `OPENCODE_DB` 设成 `:memory:`，
+    而 `Database.node` 开库时会 `DatabaseMigration.apply`。**两边都查**：模型（有人改 drizzle 定义）
+    + 真实表（有人加迁移）。并同时钉 `project_id` **必须在**——只断言「没有 `user_id`」的话，
+    查错表 / 表名写错 / 拿到空数组都会绿；钉一个**必须存在**的列才说明这份清单真读到东西了。
+  - **出参②「逻辑隔离生效」**：同一用户（同一库）两个项目，`list({project})` 各只返回自己的会话。
+    📌 **执行点不止一个，两条栈上都有**（本轮把两条都读了）：
+    ① `@opencode-ai/core/session` 的 `SessionV2.list` —— `if ("project" in input)` 时按 `project_id` 过滤；
+    ② **生产 HTTP 那条**：`packages/opencode/src/session/session.ts` 的 `Session.list` 调 `listByProject`，
+    **无条件**先按 `projectID: ctx.project.id`（来自 `InstanceState.context`）过滤，再按 `directory` 收窄。
+    ⇒ 「会话通过 `project_id` 逻辑归属到项目」**有真实执行点**，不是只写在文档里。
+  - ⚠️ **但必须说清它是什么**：`SessionStore.get` **只按 `session_id` 查、不看 project**
+    ⇒ 这是**查询侧的逻辑隔离**，**不是**一道能挡越权的门（拿得到 `session_id` 就取得到那行）。
+    **跨用户那一半不靠它**，靠 T005 的每用户独立库。**别把 `project_id` 当授权判据。**
+  - ⚠️ **顺带发现两条「项目边界之外」的读路径**（**登记给 T012/T013**，本轮未修未测）：
+    ① `SessionV2.list` 走 `ListAllInput` 变体（**不带任何 scope**）时返回**本库内全部**会话；
+    ② legacy 的 `Session.listGlobal` **完全不带 project 条件**，且经
+    `handlers/experimental.ts` 的 `experimentalHandlers` 挂载（`server.ts` 里**无开关**，直接进路由组）。
+    两条都**仍是「本库 = 本用户」内**（T005 的每用户库兜住跨用户），**不跨用户**；
+    但「同一用户内项目之间不串」在它们上面**不成立**。
+  - **与 T008 的接口**（本 task 最该一并念的事实）：`create` 里 `project_id` 是
+    `projects.resolve(input.location.directory)` **从会话目录推出来的** ⇒ 两个目录算不算两个项目由 T008 决定；
+    而 T008 已实测**首次提交之前二者都解析成 `global`**。
+  - 于是第 3 条测**那个窗口里的后备判据**：项目 id 塌成一个时 `list({project})` 会把两边一起返回
+    （**不是 bug**，是 T008 登记过的条件成立），但 `list({directory})` 仍把两边分开。
+    📌 **这条不是「理论上还有一道」——它正是生产默认行为**：`Session.list` 在 `scope !== "project"` 时
+    **总会**再加一个 `directory` 条件（`session.ts` 的 `listByProject`），前端 `directory-sync` 也正是
+    传 `{ directory, ... }`。⇒ **项目边界有前提，目录边界没有；而生产默认走的就是目录边界。**
+  - **不是 TDD**（同 T007 ③ / T008 的口径）：断言既有行为，**本机没有观察到 RED**。
+  - **变异敏感性已验**（两条）：
+    ① 往 `SessionTable` 加一列 `user_id` ⇒ 出参①红（`Expected to not contain: "user_id"`）；
+    ② 把 `list` 的 project 条件停用 ⇒ **只有**出参②那条红（2 pass / 1 fail）。
+    两个上游文件（`src/session/sql.ts`、`src/session.ts`）改后均**逐字还原**，`git diff --stat` 已核为空。
+  - ⚠️ **诚实交代 ① 的敏感性边界**：上面那条变异只动**模型**，真实表未变，所以红的只有模型那半。
+    要让**表**那半红，得加一个迁移（成本高，本轮**未做**）。表那半「不是空断言」由同一测试里的
+    `expect(table).toContain("project_id")` + `expect(table.length).toBeGreaterThan(0)` 保证——它证明 `pragma_table_info('session')`
+    真的读到了 `session` 表。
+  - **质量门禁**（2026-09-30 实跑，非外推）：core `bun test` = **1109 pass / 8 skip / 5 fail**
+    （= T008 的 1106 **+3**；5 条仍是既有 `NpmConfig`，与本轮无关）；
+    `bun run typecheck` **31/31、exit 0**；该文件 `bunx oxlint -c script/oxlintrc.openhive.json`
+    **0 warnings / 0 errors**（161 条规则）；`git diff --stat bun.lock` **无输出**。
 
 ## Phase 5: US4 资源配额（P2）
 

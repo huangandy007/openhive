@@ -1,20 +1,27 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-✅ **T008 已完成**（2026-09-30）——「项目 = 唯一隔离边界」。**零生产代码改动**，只新增
-`packages/core/test/project-sandbox-isolation.test.ts`（4 条**特征化**测试，**不是 TDD**）。
-⚠️ **出参成立，但带一条前提；两处「条件成立」已按你的裁定登记**（详见下「T008 结论」）：
-① 两个项目在**首次提交之前同属 `global`**（`initGit` 只 `git init`、不提交）——裁定【甲】只登记不兜底；
-② 未 git 化的目录，其**项目 `worktree` = 文件系统根**（在沙箱之外）——裁定【乙】已测出上报。
-**两条都不是 T006 的锚定失效**：请求目录仍被锚在沙箱内，指出去的是**项目元数据**那一份。
-另：本机观察到的那个 RED 是**我自己 fixture 的 bug**（同秒空提交哈希相同），**不是产品缺陷**，已如实记。
+✅ **T009 已完成**（2026-09-30）——「`session.project_id` 逻辑隔离 + 零表结构改动」。
+**零生产代码改动**，新增 `packages/core/test/session-project-isolation.test.ts`（3 条）。
+**两条出参都达成**：① 对**真实建出来的表**（+ TS 模型，两边都查）确认无 `user_id` 列；
+② 执行点在**两条栈**上都有——core 的 `SessionV2.list`，以及**生产 HTTP** 的 `Session.list → listByProject`
+（**无条件**先按 `projectID: ctx.project.id` 过滤）。
+⚠️ **但 `project_id` 是查询侧逻辑隔离，不是授权门**（`SessionStore.get` 只按 `session_id` 查，
+拿得到 id 就取得到那行）；**跨用户不靠它**，靠 T005 的每用户库。**别把它当授权判据。**
+⚠️ **顺带发现两条「项目边界之外」的读路径**（`SessionV2.list` 的 `ListAllInput` 变体 /
+legacy 的 `Session.listGlobal`）——**已登记给 T012/T013**，两条都仍**不跨用户**。
+⚠️ 本机同样**没有观察到 RED**（零生产改动，断言既有行为）；两条变异验证见下「T009 结论」。
 
-**下一个候选：T009**（验证 `session.project_id` 逻辑隔离 + 确认零表结构改动）——你已预先圈定。
-其余候选：T010–T013；T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
-D1/D2/D5/D6 定案，**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前**（**推迟是裁定本身**，
-开工前必须回来问）。
+**下一个候选**：**T010 或 T011 之前必须先问 D4**（这是 D4 的裁定本身：推迟到 T010/T011 开工前）；
+T012/T013（验收隔离测试，**要覆盖上面那两条读路径**）；T019–T024 是 002 评审移交。
+任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：D1/D2/D5/D6 定案，
+**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前**（**推迟是裁定本身**，开工前必须回来问）。
 
 ## 已完成
+- **T009**（2026-09-30）· `session.project_id` 逻辑隔离 + 零表结构改动。**零生产代码改动**，
+  3 条测试（`packages/core/test/session-project-isolation.test.ts`）。要点见下「T009 结论」，
+  **含一条必须记住的边界**（`project_id` 是查询侧逻辑隔离，**不是授权门**）、
+  **两条顺带发现并登记给 T012/T013 的读路径**，以及**出参① 的敏感性边界**（表那半要让迁移才红）。
 - **T008**（2026-09-30）· 项目 = 唯一隔离边界。**零生产代码改动**，4 条特征化测试
   （`packages/core/test/project-sandbox-isolation.test.ts`）。要点见下「T008 结论」，
   **含两处按裁定登记的「条件成立」**（首次提交前同属 `global` / 未 git 化目录的 worktree 在沙箱外）、
@@ -38,12 +45,15 @@ D1/D2/D5/D6 定案，**D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开�
   **含一处对 plan「模式 A」的有意偏离**（`LayerNode.unbound` → `Context.Service`，已 grep 全部引用点同步）。
 
 ## 阻塞项
-（无——T007 已于 2026-09-30 完成；此前它被 §5 的未裁定问题堵着，§5 裁定为**乙**后解锁）
+（**无**——T008 / T009 均已 2026-09-30 完成。唯一还堵着的是**决策闸**而非技术障碍：
+**D3 必须在 T015 开工前问、D4 必须在 T010/T011 开工前问**（推迟是裁定本身，见下「已裁定的事项」）。
+T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。）
 
 ### ⛔ 本 feature 未覆盖（登记为缺口，**不是覆盖**——`LEARNINGS #002-02`）
 
 | 缺口 | 原因 | 处置 |
 |---|---|---|
+| 🟡 **两条「项目边界之外」的读路径**（T009 顺带发现） | ① core 的 `SessionV2.list` 走 `ListAllInput` 变体（**不带任何 scope**）时返回**本库内全部**会话；② legacy 的 `Session.listGlobal` **完全不带 project 条件**，且经 `handlers/experimental.ts` 的 `experimentalHandlers` 挂载（`server.ts` 里**无开关**，直接进路由组） | **登记给 T012/T013**（验收隔离测试），本轮**未修未测**。⚠️ **两条都仍是「本库 = 本用户」内**（T005 的每用户库兜住跨用户），**不跨用户**；但「同一用户内项目之间不串」在它们上面**不成立**。`project_id` 是**查询侧逻辑隔离**，不是授权门——见下「T009 结论」 |
 | 🟡 **T008：「项目各自独立」在首次提交之前不成立** | `initGit`（`packages/opencode/src/project/project.ts`）**只 `git init`、不提交**；而 id = `remote() ?? .git/opencode 缓存 ?? 根提交哈希 ?? global`，三者此时**全空** ⇒ 同沙箱内两个新建项目**同属 `global`**，**不是**互相独立的边界 | **裁定【甲】：登记为「条件成立」，不兜底。** 是否在建项目时自动补一次提交属**产品决定**，不由验证类任务顺手改（宪法 §I 也要求别动上游行为）。测试：`packages/core/test/project-sandbox-isolation.test.ts` 第 3 条——它**断言两者相等**（特征化：上游改了就红，那正是要回来重读的时候）。**影响面 = 同一用户自己的沙箱内**，不跨用户 |
 | 🟡 **T008：未 git 化目录的项目 `worktree` 指向文件系统根** | `packages/opencode/src/project/project.ts` 的取法是「global 且无 vcs ⇒ `"/"`」⇒ 沙箱内一个还没 git 化的目录，其项目 `directory` 是**盘根**，**在沙箱之外** | **裁定【乙】：已测出并上报**，未修。⚠️ **别与 T006 混为一谈**——请求目录仍被锚在沙箱内，指到沙箱外的是**项目元数据**这一份。测试：同文件第 4 条 |
 | 🟡 **T007 ①「容器以非 root 运行」未做** | **没有可改的产物**：官方 `packages/opencode/Dockerfile` 无 `USER` 指令且只装 CLI 二进制；全仓无服务镜像 / compose / k8s 清单。本机也**无 docker**（`docker: command not found`）。规范出处是 `spec.md` **FR-006** | **登记为缺口，不假称已移交**——**承接它的部署任务根本不存在**（003 无部署任务、仓库无部署产物）。⚠️ **更正**：先写的「挂 `isolation-scheme.md` §11.6 部署任务」是**错引**，§11.6 是 **design-v2 的「AI 资产治理」**章节、`isolation-scheme.md` 无 §11（它只在 §5.1 引 design-v2 §11.6 说明「部署形态 = 一个 opencode 容器」）。见 `LEARNINGS #002-04` |
@@ -355,6 +365,82 @@ BAD-TOKEN /session -> 401
 | HTTP server（第二支） | `packages/server/src/routes.ts`（**没看到**身份中间件，待确认） |
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
+
+## T009 结论（2026-09-30 · 已完成；**两条出参都达成**）
+
+**零生产代码改动**——验证类任务，新增 `packages/core/test/session-project-isolation.test.ts`（3 条）。
+
+### 出参① 「session 表无 `user_id` 列」（FR-004 · 零表结构改动）
+
+对**真实建出来的表**断言（`pragma_table_info('session')`），**不只读 TS 模型**：
+模型与迁移是**两份真相**，`packages/auth/src/user.test.ts` 的「防漂移」就是这个思路。
+core 里可行——`packages/core/test/preload.ts` 把 `OPENCODE_DB` 设成 `:memory:`，
+而 `Database.node` 开库时会 `DatabaseMigration.apply`。
+
+**两边都查**：模型（有人改 drizzle 定义）+ 真实表（有人加迁移）。**并同时钉 `project_id` 必须在**——
+只断言「没有 `user_id`」的话，查错表 / 表名写错 / 拿到空数组都会绿；钉一个**必须存在**的列，
+才说明这份清单真读到东西了。
+
+### 出参② 「逻辑隔离生效」—— 执行点在**两条栈**上都有
+
+| 栈 | 执行点 |
+|---|---|
+| core | `SessionV2.list`：`if ("project" in input)` 时按 `project_id` 过滤 |
+| **生产 HTTP** | `packages/opencode/src/session/session.ts` 的 `Session.list` → `listByProject`：**无条件**先按 `projectID: ctx.project.id`（来自 `InstanceState.context`）过滤，再按 `directory` 收窄 |
+
+⇒ 「会话通过 `project_id` 逻辑归属到项目」**有真实执行点**，不是只写在文档里。
+
+### ⚠️ 但必须说清它**不是**什么
+
+`SessionStore.get` **只按 `session_id` 查、不看 project** ⇒ 这是**查询侧的逻辑隔离**，
+**不是**一道能挡越权的门：拿得到 `session_id` 就取得到那行。
+**跨用户那一半不靠它**——靠 T005 的每用户独立库（`Session.Service.get` 只读自己的库）。
+**别把 `project_id` 当授权判据**，否则会以为它挡住了它并不挡的东西。
+
+### ⚠️ 顺带发现：两条「项目边界之外」的读路径（已登记给 T012/T013）
+
+1. core 的 `SessionV2.list` 走 `ListAllInput` 变体（**不带任何 scope**）→ 返回**本库内全部**会话；
+2. legacy 的 `Session.listGlobal` → **完全不带 project 条件**，且经
+   `handlers/experimental.ts` 的 `experimentalHandlers` 挂载（`server.ts` 里**无开关**，直接进路由组）。
+
+两条都**仍是「本库 = 本用户」内**（T005 的每用户库兜住跨用户），**不跨用户**；
+但「同一用户内项目之间不串」在它们上面**不成立**。本轮**未修未测**，登记为缺口。
+
+### 与 T008 的接口：第 3 条测的是**那个窗口里的后备判据**
+
+`create` 里 `project_id` 是 `projects.resolve(input.location.directory)` **从会话目录推出来的**
+⇒ 两个目录算不算两个项目由 T008 决定；T008 已实测**首次提交之前二者都解析成 `global`**。
+于是第 3 条钉：项目 id 塌成一个时 `list({project})` 会把两边一起返回（**不是 bug**，
+是 T008 登记过的条件成立），但 `list({directory})` 仍把两边分开。
+
+📌 **这条不是「理论上还有一道」——它正是生产默认行为**：`Session.list` 在 `scope !== "project"` 时
+**总会**再加一个 `directory` 条件（`listByProject`），前端 `directory-sync` 也正是传 `{ directory, ... }`。
+⇒ **项目边界有前提，目录边界没有；而生产默认走的就是目录边界。**
+
+### 不是 TDD + 变异敏感性实测
+
+零生产代码改动 ⇒ 断言既有行为，**本机没有观察到 RED**（同 T007 ③ / T008 的口径）。
+两条变异：
+
+| 变异 | 结果 |
+|---|---|
+| 往 `SessionTable` 加一列 `user_id` | 出参①红（`Expected to not contain: "user_id"`）；**另两条也红**——模型多一列会让生成的 SQL 对不上真实表，正好佐证「模型与表必须一致」 |
+| 把 `list` 的 project 条件停用 | **只有**出参②那条红（2 pass / 1 fail） |
+
+两个上游文件（`src/session/sql.ts`、`src/session.ts`）改后均**逐字还原**，`git diff --stat` 已核为空。
+
+⚠️ **诚实交代出参①的敏感性边界**：上面那条变异**只动模型**，真实表未变，所以红的只有模型那半。
+要让**表**那半红，得加一个迁移（成本高，本轮**未做**）。表那半「不是空断言」由同一测试里的
+`expect(table).toContain("project_id")` + `expect(table.length).toBeGreaterThan(0)` 保证——它证明 `pragma_table_info('session')`
+真的读到了 `session` 表。
+
+### 质量门禁（2026-09-30 实跑，非外推）
+
+- `packages/core` `bun test`：**1109 pass / 8 skip / 5 fail** = T008 的 1106 **+3**；
+  5 条失败仍是既有 `NpmConfig`（本机 `~/.npmrc` 镜像），与本轮无关。
+- `bun run typecheck`：**31/31 成功，exit 0**。
+- 该文件 `bunx oxlint -c script/oxlintrc.openhive.json`：**0 warnings / 0 errors**（161 条规则）。
+- `git diff --stat bun.lock`：**无输出**。
 
 ## T008 结论（2026-09-30 · 已完成；出参成立，**但带一条前提**）
 
@@ -1024,6 +1110,23 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T009 已完成**：`session.project_id` 逻辑隔离 + 零表结构改动。**零生产代码改动**，
+新增 `packages/core/test/session-project-isolation.test.ts`（3 条）。**两条出参都达成**：
+① 对**真实建出来的表**（`pragma_table_info('session')`）+ TS 模型**两边都查**，确认无 `user_id` 列；
+② 执行点在**两条栈**上都有——core 的 `SessionV2.list`，以及**生产 HTTP** 的 `Session.list →
+listByProject`（**无条件**先按 `projectID: ctx.project.id` 过滤，再按 `directory` 收窄）。
+⚠️ **必须记住的边界**：`project_id` 是**查询侧逻辑隔离，不是授权门**——`SessionStore.get`
+只按 `session_id` 查，拿得到 id 就取得到那行；**跨用户不靠它**，靠 T005 的每用户库。
+⚠️ **顺带发现两条「项目边界之外」的读路径**（core 的 `ListAllInput` 变体 / legacy 的 `Session.listGlobal`，
+后者经 `experimentalHandlers` **无开关**挂载），**已登记给 T012/T013**；两条都仍**不跨用户**，
+但「同一用户内项目不串」在它们上面不成立。
+📌 与 T008 的接口：`project_id` 由会话目录推出，**首次提交前两个目录同属 `global`**；
+但第 3 条实测——**生产默认就带 `directory` 条件**，所以后备判据不是理论上的。
+⚠️ **本机没有观察到 RED**（零生产改动）；两条变异验证见下。出参① 的敏感性边界也如实记了
+（只动模型那半会红，表那半要让迁移才红，本轮未做）。
+门禁：core **1109 pass / 8 skip / 5 fail**（= T008 的 1106 **+3**；5 条仍是存量 `NpmConfig`）；
+typecheck **31/31 exit 0**；该文件 oxlint 0/0（161 条规则）；`bun.lock` 无 diff。
+详见下「T009 结论」）
 2026-09-30（**T008 已完成**：项目 = 唯一隔离边界。**零生产代码改动**，新增
 `packages/core/test/project-sandbox-isolation.test.ts`（4 条**特征化**测试，**不是 TDD**）。
 出参「沙箱内项目各自独立 git」**成立，但带一条前提**：两个项目**首次提交之前同属 `global`**
