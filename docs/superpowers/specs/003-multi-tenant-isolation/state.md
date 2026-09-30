@@ -1,10 +1,13 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-⏭️ **T004 已完成**（2026-09-30）。**下一个候选：T005**（把注册表接进 `Database.node`，
-并「从请求的 `User` 上下文取 userId」——即裁定里的「取连接点路由」真正接上真实请求路径）。
-其余候选：T006 沙箱锚定（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）/ T019–T024 002 评审移交。
-未裁定的还有任务书 Step 0.5 的 **D2–D6**。
+🔄 **T005 进行中**（2026-09-30 开工）——「db 查询按 User 上下文路由到对应连接」。
+**探针已跑完**，结论见下「T005 探针结论」：**裁定「乙 · 取连接点路由」成立，落点不变**；
+但「不碰 `packages/core` 上游文件」这条路被实测排除，**方案要碰 `sqlite.bun.ts` 约 5 行**，
+**已停下来等用户裁定**（§I 红线：首次修改上游自有文件）。
+
+（T004 已完成，见下「T004 结论」。）其余候选：T006 沙箱锚定（**承接 T004 移交的验收项**，
+见 `tasks.md` T006 段）/ T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 **D2–D6**。
 
 ## 已完成
 - **T004**（2026-09-30）· 每用户一个库的**注册表**落地（`packages/core/src/database/router.ts`，新增）。
@@ -321,6 +324,80 @@ BAD-TOKEN /session -> 401
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
 
+## T005 探针结论（2026-09-30 · 三问全部实跑；**推翻了我自己的一条读码推断**）
+
+T005 开工第一步跑探针（不预设形状）。探针文件已删、临时改的上游文件已还原
+（`git status` 只有本文档与 `tasks.md` 两处 M，无未跟踪文件；`git diff` 对
+`packages/opencode/.../user-identity.ts` 与 `packages/core/src/database/` 均为空）。
+
+### ❌ 先更正一条错话：我说「裁定落点站不住」，**是错的**
+
+我据「`sqlite.bun.ts` 的 `run()` 里是 `native.query(query)`」推断「acquirer 只是 facade、
+换不了库」。**实测推翻**：`Client.make` 的 `getConnection` **每条查询都回调 acquirer**，
+`Statement.make(getConnection, …)` 每查询取一次；**acquirer 返回哪个 connection 就决定落到哪个文件**。
+
+实测（把两个 `layerFromPath` 各自的 connection 交给第三个自建 client 的 acquirer 按身份二选一）：
+
+| 实验 | 结果 |
+|---|---|
+| 身份 = B 时写 `probe` | 只落在 **B** 的文件（`a_has_probe:false, b_has_probe:true`） |
+| 身份 = A 时写 `probe_a` | 只落在 **A** 的文件 |
+| 对照：acquirer 写死 connA/connB | 身份不再影响落点（`a:["fixed_a"], b:["fixed_b"]`） |
+
+⇒ **裁定「乙 · 取连接点路由」成立，T004 的落点不变。** 教训：`LEARNINGS #001-01` / `#002-03`
+——**读代码的推断不等于实测**，我这次就是以「看起来对」的代码形状下了结论，被 10 分钟的实验推翻。
+
+### ❌ 候选路 ①：请求级替换 `Database.Service` —— **无效**
+
+做法：真 HTTP 请求路径上，在身份中间件里 `Effect.provideService(effect, Database.Service, 每用户实例)`，
+身份门真开、真签发的 JWT。结果：
+
+```
+[Q2] POST /session (alice) -> 200      ← 建会话成功
+[Q2] alice 库: []                       ← 但 alice 库里 0 行
+[Q2] bob  库: []
+[Q2] GET /session (bob)   -> 200  [{… "title":"alice-probe" …}]   ← bob 读到了 alice 的会话
+```
+
+**机制定位（决定性）**：`[Q2-机制] {"lazy":"OUTER(中间件注入的)","captured":"INNER(路由层提供的)"}`
+—— 同一棵树、同一处注入，**每次 `yield*` 的惰性读者看得到注入，而建层时捕获的读者看不到**。
+⇒ 失败原因**不是遮蔽，是消费者在建层时就把 `Database.Service` 捕获了**。
+捕获点成串（`opencode/session/session.ts` 的 `layer`、`core/session.ts`、`core/event.ts`、
+`core/credential.ts`、`core/project/copy.ts` … 十余处），都是
+`Layer.effect(…, Effect.gen(function*(){ const { db } = yield* Database.Service …}))`。
+
+⇒ **「`packages/core` 零改动、只在服务端加一个注入点」这条路不存在**（探索过，排除）。
+
+### ❌ 候选路 ②：把 `#sqlite` 映射换成包装层 —— **死锁**
+
+```
+[Q3-①] 建层期看到的身份: ["k:caller-identity"]      ← per-user 层在调用方 fiber 里构建
+[Q3-②] {"ok":false,"why":"TimeoutError"}           ← 构建中再取同一 key：5s 挂住，不是报错
+```
+
+合成真链路：`router.ts` 的 per-user 层 → `Database.layerFromPath` → `#sqlite` → `make()`，
+而该层的构建体（`database.ts` 的 `layer`）**自己就跑 6 条 PRAGMA + `DatabaseMigration.apply`**
+⇒ 包装层若按 fiber 身份回调 router，这些建层期查询会以**同一 key** 再进一次 ⇒ 同型死锁。
+**要走这条必须先显式打断递归**（例：per-user 层 `Layer.provide(Layer.succeed(AlreadyRouting, true))`，
+包装层见标记即退回 `config.filename`）。
+
+### ✅ 推荐落点（方案 A）：`sqlite.bun.ts` 里加一个**可选钩子**，路由逻辑全在 `router.ts`
+
+- `make()` 的 `acquirer`（**及 `transactionAcquirer`**）改成：先问 fiber context 里一个**可选**钩子；
+  **没有钩子就逐字用本层 `connection`**（默认路径与现状逐字相同）。
+- 钩子与全部路由逻辑放 `packages/core/src/database/router.ts`（**新增**，零冲突面）。
+- 上游触碰：**1 文件 / 约 5 行**（`sqlite.bun.ts`）；`database.ts` 与 `package.json` **都不用动**。
+- ⚠️ 仍须解 Q3 的重入（见上），且事务路径也要路由。
+
+### 本轮未覆盖（按 `LEARNINGS #002-02`：缺口写成缺口）
+
+① **没有端到端跑过**「改了 `sqlite.bun.ts` 的 acquirer 之后落点确实改变」——Q1 是用**同型**自建
+client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 + 静态读码」的**合成**。
+② 未测事务路由后的行为；③ 未测长连接（SSE/WebSocket）与 `SessionPrompt`（agent 链路）；
+④ 未测并发（两用户同打一目录）。③④ 与第三轮的未覆盖项重合，仍未覆盖。
+⑤ 捕获点清单来自 grep + 读码，**没有逐个消费者跑**。
+⑥ Q3 的「真链路会死锁」由 ①+②+静态事实推出，**没在真实 router + `#sqlite` 包装下跑出死锁**。
+
 ## T004 结论（2026-09-30 · 每用户一个库的注册表已落地）
 
 **落点**：`packages/core/src/database/router.ts`（新增）+ `packages/core/test/database-router.test.ts`（新增）。
@@ -553,6 +630,9 @@ BAD-TOKEN /session -> 401
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T005 探针已跑完** → 裁定「乙」成立、落点不变；**但我据读码写的「落点站不住」被实测推翻**，
+已更正。另两条候选路被排除：请求级替换 `Database.Service` 无效（消费者建层时捕获）、`#sqlite` 包装层死锁。
+推荐方案 A 要碰 `sqlite.bun.ts` 约 5 行（§I 红线，**等用户裁定**）。详见下「T005 探针结论」）
 2026-09-30（**T004 已完成**：每用户一个库的注册表落地，零改动上游文件；**下一个候选 T005**。
 补：全包回归已做**基线对照**（挪开/挪回两个新文件各真跑一次）——Δ = **+6 pass / 0 新失败**；
 既有 5 条 `NpmConfig` 失败是本机 `~/.npmrc` 镜像导致的**存量**，与 T004 无关；另记一次 `snapshot` 5s 超时抖动。

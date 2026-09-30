@@ -127,6 +127,32 @@
     （`state.md`「T004 结论 · 质量门禁」）——**Δ = +6 pass / 0 新失败**，既有 5 条 `NpmConfig`
     失败是本机 `~/.npmrc` 镜像导致的存量，与 T004 无关。
 - [ ] T005 实现 db 查询从 User 上下文取 userId 路由到对应连接 [FR-003] [T003][T004] [出参：A/B 查询落各自 db 文件]
+  - ✅ **探针已完成（2026-09-30），三问都有实跑答案** → 结论全文见 `state.md`「T005 探针结论」。
+    **裁定「乙 · 取连接点路由」成立，落点不变。**
+  - ⚠️ **更正一条我曾写在这里的错误推断**：本段原文断言「`run()` 用 `native.query(...)`，acquirer
+    只是 facade ⇒ 换库必须发生在更靠上的地方」。**该推断被实测推翻**：`Client.make` 的
+    `getConnection` **每条查询都回调 acquirer**，acquirer 返回哪个 connection 就决定落到哪个文件
+    （实测：同一个 `db`、只换 fiber 里的身份标签，写就分别落到 A/B 两个文件）。
+    教训同 `LEARNINGS #001-01` / `#002-03`：**读代码的推断不等于实测**。
+  - 🔴 **但另两条候选路被实测排除，别重走**：
+    ① **请求级替换 `Database.Service` 无效**——消费者在**建层时**就把它捕获了（不是每次 `yield*`）。
+       实测：alice `POST /session` 返回 200，**alice 库 0 行**，紧接着 **bob 的 `GET /session` 读到了
+       alice 那条会话**。⇒ 「`packages/core` 零改动、只在服务端加注入点」这条路**不存在**。
+    ② **把 `#sqlite` 映射改成包装层会死锁**——per-user 层在**调用方 fiber** 里构建，建层期的查询
+       会以同一 key 重入 `LayerMap`，实测 **5s 超时挂住**（不是递归、不是报错）。
+  - ⚠️ **落地时两个必做**：① **必须显式打断重入**（per-user 树要带一个「已在路由」标记，
+    钩子/包装见此标记即退回 `config.filename`），否则同型死锁；② **事务路径
+    `transactionAcquirer` 也要路由**，否则事务写回错库。
+  - 📌 **待用户裁定的一条**：推荐方案要碰 `packages/core/src/database/sqlite.bun.ts`
+    —— **上游自有文件**（不像 `router.ts` 是新增），约 5 行：acquirer 先问 fiber context 里一个
+    **可选**钩子，**无钩子时逐字等于现状**。这是本 feature 首次**修改**上游自有文件（§I 红线），
+    **已停下来问用户**。
+  - 附带：`router.forUser` 现在只给 `Database.Interface`，钩子需要的是 **connection**
+    （实测 `forUser(id).db.$client.reserve` 能拿到）——该接口形状要在本 task 定。
+  - 📌 **一条新识别的预设（2026-09-30 记，非本 task 解决）**：库路径是
+    `/data/{userId}/opencode.db`，**没有 workspace 维度** ⇒ **同一用户的多个工作区共享同一个库**。
+    与 T006 的「一人一工作区」不冲突，但它是方案的隐含预设——若产品上允许一个民警开多个工作区，
+    要么强制「一人一工作区」（那是安全约束不是产品约束），要么路径要加维度。**未裁定，先记下。**
 
 ## Phase 3: US2 沙箱目录（P1）
 
