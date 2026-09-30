@@ -60,3 +60,32 @@ export class Config extends ConfigService.Service<Config>()("@opencode/OpenhiveU
    */
   secret: EffectConfig.string(JWT_SECRET_ENV).pipe(EffectConfig.option),
 }) {}
+
+/**
+ * 从 `Cookie` 头里取一个具名 Cookie 的值。
+ *
+ * 放在这里而不是某个中间件里：**网关（T014）与内核身份门（T003）都要读同一个 Cookie**，
+ * 各写一份解析器，将来改编码规则时必漏一边（漏了不报错，只是「登录成功但一直未登录」）。
+ *
+ * 自己解而不引依赖：只需要读一个名字，而 `packages/opencode` 既没有 `cookie` 也没有 `hono`。
+ * **只做这一件事**——无 `=` 的段、名字不匹配的段一律跳过，不认识的输入不抛错。
+ */
+export function cookieValue(header: string | undefined, name: string) {
+  if (!header) return undefined
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=")
+    if (separator === -1) continue
+    if (part.slice(0, separator).trim() !== name) continue
+    const raw = part.slice(separator + 1).trim()
+    if (!raw) return undefined
+    // 值可能被 URL 编码过（hono 的 setCookie 默认编码）。JWT 用的 base64url 字符集
+    // 在 encodeURIComponent 下不变，所以正常路径上这是恒等变换；解不开就按原文用，
+    // 反正下一步验签会把它判掉。
+    try {
+      return decodeURIComponent(raw)
+    } catch {
+      return raw
+    }
+  }
+  return undefined
+}

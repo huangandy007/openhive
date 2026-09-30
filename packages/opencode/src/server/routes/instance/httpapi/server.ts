@@ -123,6 +123,7 @@ import {
 } from "./middleware/session-quota"
 import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-workspace"
 
+import { AuthGateway } from "@/server/openhive/gateway"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
@@ -209,6 +210,11 @@ const docResponse = lazy(() => HttpServerResponse.jsonUnsafe(OpenApi.fromApi(Pub
 const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effect.succeed(docResponse()))).pipe(
   Layer.provide(authOnlyRouterLayer),
 )
+
+// openhive 网关的登录面（003 T014）。开关关着时这个层**什么都不注册**（登录路径 404），
+// 开着时才要求 `AUTH_JWT_SECRET`（`AuthGateway.routes` 构造期调 `jwtSecret`）。
+// 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T014）。
+const authGatewayRoutes = AuthGateway.routes.pipe(Layer.provide(UserIdentity.Config.layer))
 
 const uiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -300,12 +306,18 @@ export function createRoutes(
     serverRoutes,
     docRoute,
     uiRoute,
+    authGatewayRoutes,
   ).pipe(
     Layer.provide([
       errorLayer,
       compressionLayer,
       corsVaryFix,
       fenceLayer,
+      // openhive 网关（003 T014）：**必须排在身份门之前**——它干的是「剥掉客户端自带的
+      // `X-User-ID`、按验签过的 Cookie 覆盖注入」，排到门后面等于门先看到客户端自己填的头
+      // （剥离注入测试守着这个次序；它是全局中间件，与身份门同层，次序即数组次序）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T014）。
+      AuthGateway.layer.pipe(Layer.provide(UserIdentity.Config.layer)),
       // openhive 身份门（002 T018）：全局中间件，装在合并路由之上，故只有这一处接线。
       // 默认关（`OPENHIVE_REQUIRE_USER_ID` 未设即直通），开关与信任模型见 `@/server/user-identity`。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T005）。

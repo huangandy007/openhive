@@ -1,13 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { PGlite } from "@electric-sql/pglite"
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket"
 import { sql } from "drizzle-orm"
-import { connect } from "./db"
 import { login } from "./login"
 import { migrate, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
 import { DEFAULT_PASSWORD } from "./policy"
 import { DuplicatePoliceNoError, registerUser, type RegisterInput } from "./register"
+import { withProductionDb } from "./test-support"
 
 /**
  * **生产驱动 × 真库** 的回归。
@@ -18,17 +16,12 @@ import { DuplicatePoliceNoError, registerUser, type RegisterInput } from "./regi
  * 而 T003 期间正是在这条路径上抓到过真问题（两个驱动的 `execute()` 结果形状不同，
  * 见 `migrate.ts` 的 `rowsOf` 与 state.md 裁定 ④）。
  *
- * 本文件把它补上：同一个 PG 语义引擎（PGlite = 编译成 WASM 的 PostgreSQL），
- * 经 TCP 暴露，让**生产条目 `connect()`** 连上去真跑。
+ * 本文件把它补上。真库夹具（PGlite + socket + 生产条目 `connect()`）已抽到
+ * `./test-support`，因为 003 T014 的网关测试要用同一份——两处各写一份早晚漂。
  *
  * 为什么不是内存替身 / mock：本文件测的就是「生产驱动这一支」，替身会让被测对象消失。
  * 为什么不开 Docker：本机 `docker: command not found`（亦无本地 PG 二进制），
  * PGlite + socket 是离线可得且与生产同为 PostgreSQL 语义的真库。
- *
- * ⚠️ **残差（说清楚，不假装闭合）**：服务端是 **WASM 构建的 PG**，不是生产那个 PG 二进制 /
- * 版本。所以本文件闭合的是**驱动那一半**（序列化、结果解析、错误对象形状——这些是自己写的、
- * 会错的那一半），**不**闭合「与生产 PG 同版本同构建」。后者仍需一个真 PG 实例，
- * 应由 CI 提供（本 feature 无此闸）。
  */
 
 /** 让被测代码抛出的错原样交回来（drizzle 的 `execute()` 是懒 thenable，需 await 才真执行）。 */
@@ -38,39 +31,6 @@ async function failureOf(run: () => Promise<unknown>): Promise<unknown> {
     return undefined
   } catch (cause) {
     return cause
-  }
-}
-
-/**
- * 起一个真 PG，经 TCP 暴露，用**生产条目 `connect()`** 连上去。
- *
- * 走 `connect()` 而不是直接 `drizzle(url)`：前者才是生产入口，顺带把
- * `resolveDatabaseUrl` 的 PG_* 拼装也纳入被测范围。
- */
-async function withProductionDb<T>(fn: (db: ReturnType<typeof connect>) => Promise<T>): Promise<T> {
-  const pg = new PGlite()
-  // port 0 = 让 OS 挑一个空闲端口，避免与并行跑的其他用例抢端口。
-  const server = new PGLiteSocketServer({ db: pg, host: "127.0.0.1", port: 0 })
-  await server.start()
-
-  // 走公开的 getServerConn()（形如 "127.0.0.1:54321"）——`server.server` 是 private，
-  // 运行时拿得到、类型层拿不到，用它会让 typecheck 红。
-  const conn = server.getServerConn()
-  const port = conn.slice(conn.lastIndexOf(":") + 1)
-
-  try {
-    return await fn(
-      connect({
-        PG_HOST: "127.0.0.1",
-        PG_PORT: port,
-        PG_USER: "postgres",
-        PG_PASSWORD: "postgres",
-        PG_DATABASE: "postgres",
-      }),
-    )
-  } finally {
-    await server.stop()
-    await pg.close()
   }
 }
 

@@ -1,0 +1,239 @@
+export * as AuthGateway from "./gateway"
+
+/**
+ * openhive 网关（003 T014）：**身份从哪来**这条链的头一段。
+ *
+ * 它只做两件事，都不许绕过：
+ *
+ * ① **登录面**（`/openhive/auth/login`、`/logout`）：核不校验密码这件事由 `packages/auth`
+ *    的 `login()` 做（002 落地，此前**没有任何生产代码调用它**），这里只负责 HTTP 形状——
+ *    收 `{policeNo, password}`、下发 httpOnly Cookie、把身份与 `mustChangePw` 回给前端。
+ * ② **身份注入**：把客户端自带的 `X-User-ID` **剥掉**，按 Cookie 里**验签通过**的凭证
+ *    重新注入 `X-User-ID: <真实 id>`。于是明文头从「输入」变成「输出」——
+ *    FR-002 ① 的原话是「剥离客户端头后按会话凭证覆盖注入」，这是它唯一落地的地方。
+ *
+ * ⚠️ **为什么多一道验签**：内核身份门自己也验一次（`middleware/user-identity.ts`）。
+ * 两次不是冗余，是**深度防御**：网关这层被绕过（或有人直连内核端口）时，门仍然拦得住；
+ * 而门那时候看到的 `X-User-ID` 与凭证不一致，正说明「网关与内核之间被改写」。
+ *
+ * 🗓️ **开关跟着 `OPENHIVE_REQUIRE_USER_ID`，默认关**。关着时：`layer` 是恒等中间件、
+ * `routes` 一个端点都不注册（`bun run dev` 的行为逐字不变，也**不会**去要 PG 配置和密钥）。
+ * 开着时：缺密钥 / 密钥短于 002 的 32 字符地板 ⇒ **层构造期就抛**，进程起不来
+ * （D-03 要求「启动时调一次」，这是那个「一次」）。
+ *
+ * **不在这里做的事**：签发凭证（`packages/auth` 的 `signToken`，被 `login()` 调用）、
+ * 内核端口的网络可达性（部署项 D-02）。本层挡不住「绕过网关直连内核端口」——
+ * 那是网络策略的事，代码侧只有门那道验签兜底。
+ */
+
+import { UserIdentity } from "@/server/user-identity"
+import { connect } from "@opencode-ai/auth/db"
+import { InvalidCredentialsError, login, type LoginResult } from "@opencode-ai/auth/login"
+import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
+import {
+  jwtSecret,
+  sessionCookie,
+  verifyToken,
+  type SessionCookie,
+  type TokenSubject,
+} from "@opencode-ai/auth/token"
+import { Context, Effect, Option, Schema } from "effect"
+import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+
+export const PREFIX = "/openhive/auth"
+
+export const PATH = {
+  login: `${PREFIX}/login`,
+  logout: `${PREFIX}/logout`,
+} as const
+
+/**
+ * 是不是网关自己的路径。
+ *
+ * 身份门（`middleware/user-identity.ts`）用它豁免登录/登出——那两个端点**本来就是给
+ * 没身份的人用的**。只认这两个精确路径、不做前缀通配：将来在本前缀下加端点，
+ * 默认落在**受保护**那一侧，要开口子得回来明写一个常量。
+ */
+export function isAuthGatewayPath(pathname: string) {
+  return pathname === PATH.login || pathname === PATH.logout
+}
+
+/**
+ * **解析后**的配置形状（`{ required, secret }`）。理由与身份门里那份同名类型相同：
+ * 类型位置的 `UserIdentity.Config` 是「键」，取值形状得走 `Context.Service.Shape`。
+ */
+type ResolvedConfig = Context.Service.Shape<typeof UserIdentity.Config>
+
+/**
+ * 在**启动路径**上解析密钥：缺 / 短于 32 字符一律抛，调用方不吞。
+ *
+ * 判据复用 `packages/auth` 的 `jwtSecret()`，不在这里重写「≥32 字符」——
+ * 那个数只有一处定义，两边各写一份就会在改地板时漏掉一边。
+ *
+ * 与身份门里那份 `resolveSecret` 的**取向刻意相反**：门是**请求期**用的，
+ * 密钥用不了时降级成「每个请求都 401」（fail-closed，但服务还在跑）；
+ * 网关是**启动期**用的，用不了就**起不来**——带着弱密钥跑起来的每一天，
+ * 全系统的凭证都处于可伪造状态（D-03）。
+ */
+function startupSecret(config: ResolvedConfig) {
+  return jwtSecret({ [JWT_SECRET_ENV]: Option.getOrUndefined(config.secret) })
+}
+
+/**
+ * 剥离 + 覆盖注入。**必须排在身份门之前**（`server.ts` 里那条 provide 数组的次序），
+ * 排在后面等于门先看到客户端自己填的头。
+ */
+export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; handles: unknown }>()(
+  Effect.gen(function* () {
+    const config = yield* UserIdentity.Config
+    if (!config.required) return (effect) => effect
+
+    const secret = startupSecret(config)
+
+    return (effect) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+
+        // 先剥离、再按验签结果决定要不要注入。**「剥离」与「验签」是两件事**：
+        // 客户端自带什么头都得先扔掉（那是输入），能不能放进一个真的 id 另说——
+        // 验不过就让它**保持没有**，门那边自然会 401，而不是拿客户端的头当身份。
+        const stripped = Headers.remove(UserIdentity.HEADER)(request.headers)
+        const subject = yield* subjectOf(
+          UserIdentity.cookieValue(stripped.cookie, UserIdentity.COOKIE_NAME),
+          secret,
+        )
+        const headers = subject ? Headers.set(UserIdentity.HEADER, subject.id)(stripped) : stripped
+
+        return yield* Effect.provideService(
+          effect,
+          HttpServerRequest.HttpServerRequest,
+          request.modify({ headers }),
+        )
+      })
+  }),
+).layer
+
+/**
+ * 验签取身份。`undefined` = 认不出（没带凭证 / 签名不符 / 过期 / 载荷缺字段），
+ * 调用方据此**不注入**——它不区分原因，分辨「过期还是伪造」只对攻击者有用。
+ */
+function subjectOf(token: string | undefined, secret: string): Effect.Effect<TokenSubject | undefined> {
+  if (!token) return Effect.succeed(undefined)
+  return Effect.tryPromise({
+    try: () => verifyToken(token, secret),
+    catch: () => undefined,
+  }).pipe(Effect.match({ onFailure: () => undefined, onSuccess: (value) => value }))
+}
+
+/**
+ * 登录/登出端点。**开关关时一个都不注册**——不是「注册了但拒绝」：今天所有客户端都还
+ * 没有凭证，挂出来只会回一串 401，还会逼本机 dev 去配 PG 与密钥。
+ *
+ * 「不注册」在真应用里的表现**不是 404**：没有路由接管的路径会落到 UI 的 `/*` 兜底
+ * （上游行为，回页面）。测试因此断言的是「没被登录端点处理」（不下发 Cookie、响应不是
+ * JSON），不是状态码。
+ */
+export const routes = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    const config = yield* UserIdentity.Config
+    if (!config.required) return
+
+    const secret = startupSecret(config)
+
+    // 连接**惰性建、建一次就留着**：`connect()` 每次调用都会新建一个连接池，
+    // 按请求建 = 按请求泄漏；而放在层构造期又会让「只登出、不登录」的场景无谓地
+    // 要求 `PG_*` 配置（登出根本不碰库）。
+    let db: ReturnType<typeof connect> | undefined
+    const database = () => (db ??= connect(process.env))
+
+    yield* router.add("POST", PATH.login, (request) => handleLogin(request, database, secret))
+    yield* router.add("POST", PATH.logout, () => Effect.succeed(handleLogout()))
+  }),
+)
+
+const BAD_REQUEST = 400
+const UNAUTHORIZED = 401
+
+const LoginBody = Schema.Struct({ policeNo: Schema.String, password: Schema.String })
+
+function handleLogin(
+  request: HttpServerRequest.HttpServerRequest,
+  database: () => ReturnType<typeof connect>,
+  secret: string,
+) {
+  return Effect.gen(function* () {
+    // 请求体解不开 ⇒ 当成「没填对」走 400，不走 500：畸形 JSON 是客户端的事，不是服务端故障。
+    const body = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const credentials = Schema.decodeUnknownOption(LoginBody)(body)
+    if (Option.isNone(credentials)) {
+      return HttpServerResponse.jsonUnsafe({ error: "请求体不是合法的警号与密码" }, { status: BAD_REQUEST })
+    }
+
+    return yield* Effect.tryPromise({
+      try: () => login(database(), credentials.value, secret),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map(signedIn),
+      // 只有一种错误能预期到（`login()` 的文档契约：账号不存在与密码错误抛同一个类型、
+      // 同一句消息）。别的错误一律是**缺陷**——交给应用的错误层呈现，不要在这里
+      // 编一句好听的话把它盖住。
+      Effect.catch((cause) =>
+        cause instanceof InvalidCredentialsError
+          ? Effect.succeed(
+              HttpServerResponse.jsonUnsafe({ error: cause.message }, { status: UNAUTHORIZED }),
+            )
+          : Effect.die(cause),
+      ),
+    )
+  })
+}
+
+/** 登录成功的响应体。**逐字段列出**，不把 `LoginResult` 直接透传——它身上还有 `token`。 */
+function signedIn(result: LoginResult) {
+  return HttpServerResponse.jsonUnsafe(
+    {
+      id: result.subject.id,
+      policeNo: result.subject.policeNo,
+      name: result.subject.name,
+      isAdmin: result.subject.isAdmin,
+      mustChangePw: result.mustChangePw,
+    },
+    { headers: { "set-cookie": setCookieHeader(result.cookie) } },
+  )
+}
+
+/**
+ * 登出：把同一个 Cookie 用 `Max-Age=0` 覆盖掉。
+ *
+ * 描述复用 `sessionCookie("")` 再改 `maxAge`，而不是另写一句字面量——名字、`Path`、
+ * `SameSite`、`HttpOnly` 就都只有一处定义，改一处两边同时生效。
+ */
+function handleLogout() {
+  const cleared = sessionCookie("")
+  return HttpServerResponse.empty({
+    status: 204,
+    headers: { "set-cookie": setCookieHeader({ ...cleared, options: { ...cleared.options, maxAge: 0 } }) },
+  })
+}
+
+/**
+ * 把 `SessionCookie` 描述拼成 `Set-Cookie` 头。
+ *
+ * 自己在网关这侧拼、不走框架的 `cookies` 通道：本仓库此前没有任何一处下发过 Cookie，
+ * 用框架特性等于把「Cookie 到底有没有出现在响应头上」这件事押在一个**本项目没验过**的
+ * 行为上，而它恰恰是「登录拿不到凭证」这类故障唯一的表现面。
+ * 拼出来的字符串有测试逐项守着（`HttpOnly` / `SameSite` / `Path` / `Max-Age`）。
+ */
+function setCookieHeader(cookie: SessionCookie) {
+  const attributes = [
+    `Path=${cookie.options.path}`,
+    `Max-Age=${cookie.options.maxAge}`,
+    cookie.options.httpOnly ? "HttpOnly" : undefined,
+    cookie.options.secure ? "Secure" : undefined,
+    `SameSite=${cookie.options.sameSite === "lax" ? "Lax" : cookie.options.sameSite}`,
+  ].filter((attribute) => attribute !== undefined)
+
+  return [`${cookie.name}=${encodeURIComponent(cookie.value)}`, ...attributes].join("; ")
+}

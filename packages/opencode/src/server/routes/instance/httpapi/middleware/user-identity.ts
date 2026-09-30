@@ -1,3 +1,4 @@
+import { AuthGateway } from "@/server/openhive/gateway"
 import { UserIdentity } from "@/server/user-identity"
 import { isPublicUIPath } from "@/server/shared/public-ui"
 import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
@@ -28,6 +29,9 @@ const UNAUTHORIZED = 401
  *    这里**不制造**任何「默认用户」或空身份：拿不到身份就不放行，宁可 401 也不给下游一个假主体。
  * 4. **公共 UI 资源豁免**（与 Basic Auth 同款，见 `@/server/shared/public-ui`）。浏览器取 PWA
  *    manifest 的请求不带任何应用层凭证，拦了会让 PWA 装不上（上游 #25698）。
+ * 5. **网关的登录/登出路径豁免**（003 T014，见 `@/server/openhive/gateway`）。
+ *    「要先登录才能登录」是这两条路径被拦下来的唯一后果；登出同样豁免，
+ *    免得一个已过期的会话连登出都做不到。
  *
  * 拒绝时**不发** `www-authenticate`：那是让浏览器弹 Basic 登录框用的，这里没有 Basic，
  * 发了只会弹出一个永远填不对的框。
@@ -51,6 +55,10 @@ export const userIdentityLayer = HttpRouter.middleware<{ requires: UserIdentity.
         const request = yield* HttpServerRequest.HttpServerRequest
         const url = new URL(request.url, "http://localhost")
         if (isPublicUIPath(request.method, url.pathname)) return yield* effect
+        // 网关自己的登录/登出端点**本来就是给没身份的人用的**——拦下来等于「要先登录才能登录」。
+        // 只豁免这两个精确路径，不做前缀通配：`/openhive/auth/…` 下将来若长出别的端点，
+        // 默认是**受保护**的（要开一个口子得明写一个常量），而不是默认敞开。
+        if (AuthGateway.isAuthGatewayPath(url.pathname)) return yield* effect
 
         const user = yield* authenticate(request, secret)
         if (!user) return HttpServerResponse.empty({ status: UNAUTHORIZED })
@@ -105,7 +113,7 @@ function authenticate(request: HttpServerRequest.HttpServerRequest, secret: stri
   return Effect.gen(function* () {
     if (secret === undefined) return undefined
 
-    const token = cookieValue(request.headers.cookie, UserIdentity.COOKIE_NAME)
+    const token = UserIdentity.cookieValue(request.headers.cookie, UserIdentity.COOKIE_NAME)
     if (!token) return undefined
 
     const subject = yield* Effect.tryPromise({
@@ -123,28 +131,3 @@ function authenticate(request: HttpServerRequest.HttpServerRequest, secret: stri
   })
 }
 
-/**
- * 从 `Cookie` 头里取一个具名 Cookie 的值。
- *
- * 自己解而不引依赖：只需要读一个名字，而 `packages/opencode` 既没有 `cookie` 也没有 `hono`。
- * **只做这一件事**——无 `=` 的段、名字不匹配的段一律跳过，不认识的输入不抛错。
- */
-function cookieValue(header: string | undefined, name: string) {
-  if (!header) return undefined
-  for (const part of header.split(";")) {
-    const separator = part.indexOf("=")
-    if (separator === -1) continue
-    if (part.slice(0, separator).trim() !== name) continue
-    const raw = part.slice(separator + 1).trim()
-    if (!raw) return undefined
-    // 值可能被 URL 编码过（hono 的 setCookie 默认编码）。JWT 用的 base64url 字符集
-    // 在 encodeURIComponent 下不变，所以正常路径上这是恒等变换；解不开就按原文用，
-    // 反正下一步验签会把它判掉。
-    try {
-      return decodeURIComponent(raw)
-    } catch {
-      return raw
-    }
-  }
-  return undefined
-}
