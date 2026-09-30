@@ -99,9 +99,10 @@ const json = <A>(response: Response) => Effect.promise(() => response.json() as 
 /** 门开着的那个 app 只搭一次：搭一次要建整棵路由树，逐请求重搭是白烧时间。 */
 const openApp = realApp(OPEN)
 
-function readDirectory(subject: TokenSubject, forged: string) {
+function readDirectory(subject: TokenSubject, forged: string, workspace?: string) {
   return Effect.gen(function* () {
-    const response = yield* openApp(`${INSTANCE_PATH}?directory=${encodeURIComponent(forged)}`, {
+    const extra = workspace ? `&workspace=${encodeURIComponent(workspace)}` : ""
+    const response = yield* openApp(`${INSTANCE_PATH}?directory=${encodeURIComponent(forged)}${extra}`, {
       headers: cookie(yield* token(subject)),
     })
     expect(response.status).toBe(200)
@@ -146,6 +147,29 @@ describe("工作目录锚定（T006）", () => {
       expect(normalize(second.directory)).toBe(normalize(first.directory))
       expect(normalize(third.directory)).toBe(normalize(first.directory))
       expectSandbox(first.directory, ALICE)
+    }),
+  )
+
+  /**
+   * ⚠️ 守的是 `anchor()` 里那行**承重的删除**：`url.searchParams.delete("workspace")`。
+   *
+   * 不删会怎样：`?workspace=` 选中的工作区，其 `target.directory` 会**完全绕过**
+   * `defaultDirectory`（`planRequest` 用的是工作区自己的目录），上面三处改写等于白改。
+   *
+   * **变异敏感、且红得确定**：去掉那行 `delete` 本测试必红——客户端传的 `wrk_...` 是
+   * **合法形状**（`WorkspaceID` 只要求以 `wrk` 开头），于是走到 `resolveWorkspace`、
+   * 查不到 ⇒ `RequestPlan.MissingWorkspace` ⇒ **500**，而这里要的是 200 + 落自己的沙箱。
+   * （已实测变异验证，记录见 `state.md` 的 T006 段。）
+   *
+   * 为什么值得单独一条：删 `?workspace=` 当初**超出字面出参**，是靠自己判断加的；
+   * 而「全仓没有客户端发它」这个论据**会随时间失效**（哪天有人加了就悄悄破了）——
+   * 论据会过期，测试不会。
+   */
+  it.live("客户端传 ?workspace= 指别人的工作区：参数被剥掉，仍落自己的沙箱", () =>
+    Effect.gen(function* () {
+      const body = yield* readDirectory(ALICE, FORGED, "wrk_someone_elses")
+
+      expectSandbox(body.directory, ALICE)
     }),
   )
 })

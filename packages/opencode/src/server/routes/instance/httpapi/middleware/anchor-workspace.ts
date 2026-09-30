@@ -74,6 +74,10 @@ export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; ha
  * `?workspace=` 一并删掉：它同样由客户端给，而 `planRequest` 会用工作区自己的 `target.directory`
  * **完全绕过** `defaultDirectory`——留着它，上面三处改写等于白改。删而不是替换，是因为
  * 「一人一工作区」（T004 裁定）下没有第二个工作区 id 可以填。
+ * 它还能把请求 **proxy 到 Remote target**（`proxyRemote`），所以是转发开关、不只是换目录。
+ *
+ * ⚠️ **这一行是承重的，有测试守着**（`test/server/anchor-workspace.test.ts` 最后一条），
+ * 且**做过变异验证**：去掉它之后只有那条用例红（500 而非 200）。别当无用代码删。
  */
 function anchor(request: HttpServerRequest.HttpServerRequest, sandbox: string) {
   const url = new URL(request.url, "http://localhost")
