@@ -13,7 +13,9 @@ legacy 的 `Session.listGlobal`）——**已登记给 T012/T013**，两条都�
 ⚠️ 本机同样**没有观察到 RED**（零生产改动，断言既有行为）；两条变异验证见下「T009 结论」。
 
 **下一个：T010**（每用户并发计数 + 限流）。**它的决策闸 D4 已于 2026-09-30 到点裁定**，
-形状已定、可开工——**甲**（数活跃执行数，拦在启动执行时）+ 默认阈值 **`5`**；
+形状已定、可开工——**维度甲**（数「当前正在跑的」，拦在启动执行时）+ 默认阈值 **`5`**；
+⚠️ **同日二次裁定覆盖面 = 丙：两条链都拦**（实测发现原字面只覆盖 `/api` 那条，
+而**产品 UI 走的是另一条**——详见下「已裁定的事项」D4 条的二次裁定块）；
 T011 走**丙**（应用层先做，OS 层登记为部署缺口）。全文见下「已裁定的事项」的 D4 条。
 其余候选：T011、T012/T013（验收隔离测试，**要覆盖上面那两条读路径**）、T019–T024（002 评审移交）。
 任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：D1/D2/D4/D5/D6 定案，
@@ -93,6 +95,23 @@ MUST NOT 仅靠应用层 `if` 判断过滤。」
      不让跑；甲取后者，依据是它自己用的词是**「并发」**）——**与验收方对齐时要主动说出来**。
      否掉了**乙**（按存量 session 拦在 `create`：拦的不是资源消耗，空会话反挡正常使用）
      与**丙**（两道都上：多执行点 + 多阈值，提示难解释）。
+
+     > ⚠️ **同日二次裁定（覆盖面）——上面那条机制的前提被实测推翻一半，改【丙】两条链都拦。**
+     > 生产侧有**两条** prompt 链，挂在**同一棵路由树**上（`server.ts` 的 `createRoutes` 同时挂
+     > `instanceRoutes` 与 `serverRoutes`）：**A**（`POST /session/{id}/prompt_async` →
+     > `SessionPrompt.prompt` → `SessionRunState.ensureRunning`，活跃集合 = `SessionStatus`
+     > 的 busy，`InstanceState` 作用域，**完全不碰 core 的 `SessionExecution`**）；
+     > **B**（`POST /api/session/{id}/prompt` → core `SessionV2.prompt` → `execution.wake`，
+     > 活跃集合 = `SessionExecution.active`，进程级）。
+     > ⇒ 上面写的「数 `SessionExecution.active` ∩ 本用户的库」**只覆盖 B 链**，
+     > 而**产品 UI 走 A 链**（`packages/app/src/utils/server-compat.test.ts` 断言发的是
+     > `/session/ses_1/prompt_async`）。**照字面落 = web UI 主路径零配额**，而 `/api/*`
+     > 与 T009 登记的 `listGlobal` 同型——**同一棵树上、没有开关** ⇒
+     > **能被另一个端点绕过的配额不是配额。**
+     > **二次裁定【丙】**：两条链都拦，**判定 + 阈值 + 计数逻辑全在同一个
+     > `quota/session-quota.ts`**，只有「活跃集合从哪取」按链注入。代价：**两个调用点**。
+     > 📌 **不连带返工**：T005 的库路由不受影响——A 链用的也是 core 的 `Database.Service`，
+     > 路由发生在 `$client.reserve`、按发起查询的 **fiber** 的 `User` 分，消费侧一字不改。
   2. **默认阈值 = `5`**（plan：1600 用户 / 并发活跃 320~480 ⇒ 人均不到 1，5 是 5 倍以上余量）。
      ⚠️ **未经压测，非结论**。
   3. **磁盘配额（T011）= 丙**：**应用层先做**（T011 出参由这半达成），
@@ -1135,6 +1154,17 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**D4 二次裁定 · 覆盖面改【丙】**：动手 T010 前实测发现生产侧有**两条** prompt 链、
+挂在**同一棵路由树**上，而 D4-1 写的「数 `SessionExecution.active`」**只覆盖 `/api` 那条（B）**；
+**产品 UI 走的是另一条（A，`/session/{id}/prompt_async` → `SessionRunState`）**，
+其活跃集合是 `SessionStatus`、**完全不碰 core 的 `SessionExecution`**。
+⇒ 照字面落 = web UI 主路径零配额，而 `/api/*` 与 T009 登记的 `listGlobal` 同型
+（同一棵树上、**没有开关**）⇒ **能被另一个端点绕过的配额不是配额**。
+**裁定【丙】：两条链都拦**，判定 + 阈值 + 计数全在同一个 `quota/session-quota.ts`，
+只有「活跃集合从哪取」按链注入（代价：两个调用点）。
+📌 顺带核过、**不连带返工**：T005 的库路由不受影响——A 链用的也是 core 的 `Database.Service`，
+路由发生在 `$client.reserve`、按发起查询的 **fiber** 的 `User` 分。
+已同步 `dev_tdd.003.md` / `tasks.md` / `plan.md` / 本文件）
 2026-09-30（**D4 到点裁定**（T010/T011 开工前）：**甲**——数「本用户活跃执行数」
 （`SessionExecution.active` ∩ 本用户的库），拦在**启动执行时**（`prompt` → `wake`/`resume`），
 **不是**建会话时；默认阈值 **`5`**（plan 的 1600 用户 / 并发活跃 320~480 ⇒ 人均不到 1，5 倍以上余量），

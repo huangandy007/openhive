@@ -161,6 +161,30 @@ MUST NOT 当身份来源；与验签结果不一致时**以验签为准并拒绝
    **乙**（按存量 session 数拦在 `create`）被否：它拦的不是资源消耗，
    建满上限的空会话反而会挡住正常使用。**丙**（两道都上）被否：多一处执行点、
    多一套阈值，且两套规则同时生效时「为什么不让我用」变难解释（`宪法` 简单优先）。
+
+   > ⚠️ **同日二次裁定（覆盖面）：上述机制的前提被实测推翻一半，改走【丙】两条链都拦。**
+   > **实测发现**：生产侧有**两条** prompt 链，挂在**同一棵路由树**上
+   > （`server.ts` 的 `createRoutes` 同时挂 `instanceRoutes` 与 `serverRoutes`）：
+   > | 链 | 端点 | 启动执行的落点 | 活跃集合 |
+   > |---|---|---|---|
+   > | **A · web UI 走的** | `POST /session/{id}/prompt_async` | `SessionPrompt.prompt` → `SessionRunState.ensureRunning` | `SessionStatus`（busy/idle，`InstanceState` 作用域） |
+   > | **B · CLI `serve` / sdk-next 走的** | `POST /api/session/{id}/prompt` | core `SessionV2.prompt` → `execution.wake` | `SessionExecution.active`（进程级） |
+   >
+   > ⇒ 上面写的「数 `SessionExecution.active` ∩ 本用户的库」**只覆盖 B 链**；
+   > 而**产品 UI 走的是 A 链**（`packages/app/src/utils/server-compat.test.ts` 断言发的是
+   > `/session/ses_1/prompt_async`）。**照字面落 = web UI 主路径零配额**，
+   > 而 `/api/*` 与 T009 登记的 `listGlobal` 同型——**同一棵树上、没有开关**，
+   > 过得了身份门的用户都够得着 ⇒ **能被另一个端点绕过的配额不是配额**。
+   >
+   > **二次裁定【丙】**：**两条链都拦**——A 链拦在 `SessionPrompt` / `SessionRunState` 那条、
+   > 活跃数取 `SessionStatus` 的 busy 条数；B 链拦在 core `SessionV2.prompt`、
+   > 活跃数取 `SessionExecution.active`。**判定 + 阈值读取 + 计数逻辑全落在同一个
+   > `quota/session-quota.ts`**，只有「活跃集合从哪取」那一步按链注入。
+   > 代价（明记）：**两个调用点**，上游改任一条链都要跟。
+   >
+   > 📌 **顺带核过、不连带返工**：T005 的按用户库路由**不受影响**——A 链用的也是 core 的
+   > `Database.Service`（`packages/opencode/src/session/session.ts`、`session/prompt.ts`），
+   > 而路由发生在 `$client.reserve`、按**发起查询的 fiber** 的 `User` 分，消费侧一字不改。
 2. **默认阈值 —— `5`。** 依据 `plan.md` 的「1600 用户 / 并发活跃 320~480」⇒ 人均不到 1，
    给 5 是 5 倍以上余量：够宽松，也不至于让单个用户真把机器拖垮。
    ⚠️ **「未经压测，非结论」**——文档里必须原样带上这句。

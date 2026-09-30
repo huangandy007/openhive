@@ -396,11 +396,24 @@
 ## Phase 5: US4 资源配额（P2）
 
 - [ ] T010 实现每用户并发 Session 计数 + 限流（中间件 + SessionExecution）[FR-008] [T003] [出参：超限新会话被拒]
-  **✅ D4-1 已裁定（2026-09-30 · 甲）——形状已定，可开工**：
-  - **计数维度** = 本用户**当前正在跑的** session = `SessionExecution.active` ∩ 本用户的库
-    （`packages/core/src/session/execution.ts` 的 `active` 是「本进程正在执行的 session 集合」；
-    一人一库后按 `User` 上下文取交集即得）。
-  - **拦点 = 启动执行时**（`prompt` → `wake`/`resume` 这条），**不是**建会话时。
+  **✅ D4-1 已裁定（2026-09-30 · 维度甲 + 覆盖面丙）——形状已定，可开工**：
+  - **计数维度** = 本用户**当前正在跑的** session（**不是**存量、**不是**新建）。
+  - **拦点 = 启动执行时**，**不是**建会话时。
+    ⚠️ **同日二次裁定（覆盖面）**：原本写的「数 `SessionExecution.active` ∩ 本用户的库」
+    **只覆盖 B 链**，实测发现产品 UI 走的是 **A 链**（见下「两条链」）。
+    **改【丙】：两条链都拦**，判定 + 阈值 + 计数逻辑全在同一个 `quota/session-quota.ts`，
+    只有**「活跃集合从哪取」按链注入**。
+  - **两条链**（挂在同一棵路由树上，`server.ts` 的 `createRoutes` 同时挂 `instanceRoutes` 与 `serverRoutes`）：
+    | 链 | 端点 | 启动执行的落点 | 活跃集合 |
+    |---|---|---|---|
+    | **A · web UI** | `POST /session/{id}/prompt_async` | `SessionPrompt.prompt` → `SessionRunState.ensureRunning` | `SessionStatus` 的 busy（`InstanceState` 作用域） |
+    | **B · CLI `serve` / sdk-next** | `POST /api/session/{id}/prompt` | core `SessionV2.prompt` → `execution.wake` | `SessionExecution.active`（进程级） |
+    - A 链**完全不碰** core 的 `SessionExecution`——`packages/opencode` 生产代码里一处
+      `yield* SessionExecution.Service` 都没有，只有接线。
+    - **为什么必须两条都拦**：`/api/*` 与 T009 登记的 `listGlobal` 同型——**同一棵树上、没有开关**，
+      过得了身份门的用户都够得着 ⇒ **能被另一个端点绕过的配额不是配额**。
+    - 📌 **不连带返工**：T005 的库路由不受影响（A 链用的也是 core 的 `Database.Service`，
+      路由发生在 `$client.reserve`、按发起查询的 **fiber** 的 `User` 分）。
     **为什么**：session 只是一行记录、几乎不耗资源，吃资源的是跑起来的 turn
     （模型调用 / 工具 / shell）。
     ⚠️ **spec.md 验收场景 1 措辞有歧义，不拿它当依据**：「A 的并发会话数达到上限 → A 再发起新会话被拒」
