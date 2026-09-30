@@ -1,5 +1,5 @@
-import { describe, expect } from "bun:test"
-import { stat } from "fs/promises"
+import { describe, expect, test } from "bun:test"
+import { readFile, stat, writeFile } from "fs/promises"
 import path from "path"
 import { sql } from "drizzle-orm"
 import { Effect, type Scope } from "effect"
@@ -115,6 +115,28 @@ describe("DatabaseRouter", () => {
       ),
     )
 
+    /**
+     * T007 出参之二：「`/data/{userId}/` **目录可写**（WAL 需在同目录建 `-wal`/`-shm`）」
+     * （`isolation-scheme.md` §0.4 / §4）。
+     *
+     * 真往目录里写一个文件再读回来——**不是只看权限位**：win32 没有有意义的权限位
+     * （见下一条的 skip 说明），位断言在那里恒真，等于没测。落盘才是 WAL 真正要的能力。
+     */
+    it.effect("目录可写：WAL 要在同目录建 -wal/-shm（只读目录会让 SQLite 打不开库）", () =>
+      withTmp((root) =>
+        withRouter(root, (router) =>
+          Effect.gen(function* () {
+            yield* router.forUser("alice")
+            const canary = path.join(root, "alice", "canary")
+
+            yield* Effect.promise(() => writeFile(canary, "wal-needs-this"))
+
+            expect(yield* Effect.promise(() => readFile(canary, "utf8"))).toBe("wal-needs-this")
+          }),
+        ),
+      ),
+    )
+
     it.effect("同一用户重复取用是复用，不是重建", () =>
       withTmp((root) =>
         withRouter(root, (router) =>
@@ -131,5 +153,32 @@ describe("DatabaseRouter", () => {
         ),
       ),
     )
+
+    /**
+     * T007 出参之三：「`0700`」（`isolation-scheme.md` §4 四条之一）。
+     *
+     * ⚠️ **本机（win32）跑不到**：实测 `mkdir({mode:0o700})` / 不传 mode / 建后 `chmod(0o700)`
+     * 三者都得到 `666` —— 权限位在 Windows 上被完全忽略。故**显式 skip**，
+     * 按 `LEARNINGS #002-02` 登记为**缺口而非覆盖**（见 `state.md`）。Linux CI 上真跑。
+     *
+     * 用 `test.skipIf` 而非 `it.effect`：`./lib/effect` 的 `it` 只挂了 `only`/`skip`，
+     * **没有 `skipIf`**（`it.effect.skipIf` 是 undefined，会静默变成「跳过整条」或直接报错）。
+     */
+    test.skipIf(process.platform === "win32")("目录以 0700 建出（T007）", async () => {
+      const mode = await Effect.runPromise(
+        Effect.scoped(
+          withTmp((root) =>
+            withRouter(root, (router) =>
+              Effect.gen(function* () {
+                yield* router.forUser("alice")
+                return (yield* Effect.promise(() => stat(path.join(root, "alice")))).mode & 0o777
+              }),
+            ),
+          ),
+        ),
+      )
+
+      expect(mode).toBe(0o700)
+    })
   })
 })

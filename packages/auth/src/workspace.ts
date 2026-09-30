@@ -37,6 +37,10 @@ export async function createWorkspace(root: string, userId: string): Promise<str
   }
 
   const path = join(root, userId)
-  await mkdir(path, { recursive: true })
+  // `mode: 0o700`（T007 / `isolation-scheme.md` §4）：只属主可进可写。
+  // ⚠️ 按该文 §5 的裁定**乙**，单进程 = 一个 OS 主体，这个位**不隔用户**（用户间靠每用户
+  // 独立 db + T006 的目录锚定）——它挡的是**容器外**（同主机其他容器 / 系统用户）。
+  // 另：目录**已存在**时 `mkdir` 不看 mode，重复录入不会把老目录收紧。
+  await mkdir(path, { recursive: true, mode: 0o700 })
   return path
 }

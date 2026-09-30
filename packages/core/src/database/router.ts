@@ -102,7 +102,13 @@ export function layer(
               // 那就是每次查询一个 `mkdir` 系统调用。放这里 = 每用户一次。
               // 顺带：WAL 会在库文件旁生成 `-wal`/`-shm`，所以**目录**本身必须可写，
               // 只读目录打不开库。
-              Effect.promise(() => mkdir(dirname(userDatabasePath(root, userId)), { recursive: true })),
+              // `mode: 0o700`（T007 / `isolation-scheme.md` §4）：只属主可进可写。三个已知边界：
+              // ① umask 只会**清位**、不会加位，所以 0o700 在任何 umask 下都成立；
+              // ② 目录**已存在时 `mkdir` 不看 mode**——历史账号的老目录不会被这条收紧；
+              // ③ win32 **完全忽略** mode（本机实测建出来是 666），故本机测不到这条，见 `state.md`。
+              Effect.promise(() =>
+                mkdir(dirname(userDatabasePath(root, userId)), { recursive: true, mode: 0o700 }),
+              ),
               () =>
                 // ⚠️ `Layer.fresh` **不能去掉**。`Database.layerFromPath(filename)` 内部
                 // `layer.pipe(Layer.provide(sqliteLayer({ filename })))` 里的 `layer` 是
