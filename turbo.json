@@ -17,6 +17,9 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@opencode-ai/auth#test": {
+      "outputs": []
+    },
     "@opencode-ai/function#test": {
       "outputs": []
     },
