@@ -646,7 +646,7 @@
 
 ### ⚠️ 第一优先：网关本身（其余项的前置）
 
-- [ ] **T014 实现网关（Auth 服务的 HTTP 面）**：登录 HTTP 端点 + JWT 验签 + httpOnly Cookie 下发 +
+- [x] **T014 实现网关（Auth 服务的 HTTP 面）**：登录 HTTP 端点 + JWT 验签 + httpOnly Cookie 下发 +
   注入 `X-User-ID` + **透传会话 JWT** + 错误呈现。[无依赖，但**是 T015/T016 的前置**]
   [出参：浏览器带 Cookie 访问 → 网关验签 → 剥离客户端头并覆盖注入 + 透传 JWT → 内核**再验一次** → 认身份]
   - 形态待定：`002-auth-account/plan.md` R3 倾向「网关模块内嵌」，未定案。
@@ -685,6 +685,38 @@
     而不是等到签发时才 500；② 把「≥32 字符」写进部署文档 / `.env.example`，
     别让运维靠报错反推。
     > 这条与上面 I2 脱敏是同一种移交：**003 只承诺「别绕过它」是不够的，得知道它存在**。
+  - ✅ **完成 2026-09-30**。产品码 = **1 个新文件 + 3 处改动**（零 schema 变更）：
+    - **新增** `packages/opencode/src/server/openhive/gateway.ts`（网关本体：`layer` 剥头覆盖注入、
+      `routes` 两个端点、启动期密钥地板）；
+    - **新增** `packages/auth/src/test-support.ts`（真库夹具，从 `production-driver.test.ts` 抽出——
+      T014 的测试落在 `packages/opencode/`，而 `@electric-sql/pglite` 是**本包**的 devDependency，
+      共用一份夹具才不会两处各写一份、早晚漂）；
+    - **改** `httpapi/server.ts`（接线两处：`AuthGateway.routes` 并进 `Layer.mergeAll`；
+      `AuthGateway.layer` 排进 provide 数组的**身份门之前**——**次序即语义**，剥离注入测试守着它）；
+    - **改** `httpapi/middleware/user-identity.ts` + `server/user-identity.ts`
+      （放行规则第 5 条：网关登录/登出路径豁免；`cookieValue` 提为导出，两处读同一个 Cookie 只留一份实现）。
+  - ✅ **三项硬要求怎么落的**：
+    ① **剥离 + 覆盖注入**在 `AuthGateway.layer`：先 `Headers.remove` 再按验签结果 `Headers.set`；
+    **验不过就保持「没有这个头」**，不是回落到客户端自己填的那个。
+    ② **端口仅网关可达**是**部署项，本 task 没做**，落 `deploy-todo.md` **D-02**。
+    ③ **透传会话 JWT**：Cookie 天然随请求流动，**不加新头**——网关验它并按 subject 覆盖注入 userId，
+    内核那道门再验一次**同一张 Cookie**。**两次验签是深度防御，不是冗余**：网关这层被绕过
+    （或有人直连内核端口）时门仍拦得住；那时「头与凭证不一致」正说明**网关与内核之间被改写**。
+  - ✅ **登录契约**（Q1 裁定【甲】）：`POST /openhive/auth/login` → 200
+    `{id, policeNo, name, isAdmin, mustChangePw}` + `Set-Cookie: openhive_session=<JWT>; HttpOnly;
+    SameSite=Lax; Path=/; Max-Age=7200`；**四种失败原因同一个 401、同一句话、都不下发 Cookie**
+    （分辨得出「账号存不存在」等于白送一个账号枚举接口）；`POST /openhive/auth/logout` →
+    204 + 同一 Cookie 以 `Max-Age=0` 覆盖。
+  - ✅ **启动检查跟开关走**（Q3 裁定【甲】）：`OPENHIVE_REQUIRE_USER_ID` 未设 ⇒ 网关层是恒等中间件、
+    **一个端点都不注册**、也**不去要 PG 配置与密钥**（`bun run dev` 行为逐字不变）；
+    置 `1` ⇒ 层构造期调 `jwtSecret`，缺 / 短于 32 字符**当场起不来**（上面 🔑 那条要的「启动时调一次」）。
+  - 🔴 **未覆盖（缺口，不是覆盖）**：`AUTH_JWT_SECRET` 的**轮转**（代码侧无机制，是部署纪律）、
+    Cookie `Secure` 在真 HTTPS 下的行为、内核端口的**真实网络可达性**（D-02，本机 win32 单进程验不了）。
+  - ⚠️ 测试夹具的两条硬约束（**实测撞出来后才写下的**，详见 `test-support.ts` 文件头）：
+    ① `PGLiteSocketServer` 的 `maxConnections` **默认 1，超出是掐掉不是排队**，而 `bun-sql`
+    每个客户端自带连接池；② **同一实例上两个客户端不能执行同一句 SQL**（PGlite 预编译语句实例级、
+    bun-sql 缓存按客户端 ⇒ `42P05`）。**真 PG 按会话隔离，故不是产品缺陷**——落地要求是
+    「一次夹具只起一个被测客户端」（生产本来也是一个进程、一个连接池）。
 
 ### 随网关一并做的呈现层
 

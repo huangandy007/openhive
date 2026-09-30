@@ -1,30 +1,31 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-✅ **T012 + T013 已完成**（2026-09-30）——**验收隔离测试**（FR-010 / SC-001 / SC-003）。
-**零产品代码改动**（`git diff --stat packages/core/src packages/opencode/src` 无输出），
-新增 2 个测试文件，合跑 **9 pass / 0 fail / 33 expect**。
-两条出参都达成，但**范围要说准**：
-- **T012**「A 读不到 B 的会话/项目」——走**真应用**（`HttpApiApp.routes` + 真实 `signToken` 签的
-  带签名 Cookie），**无 mock**；4 条断言**双向**；oracle 用 `bun:sqlite` **直接读库文件**，不经过被测对象。
-- **T013**「A 读写不到 `/workspaces/B/`」——挡在中间的是**应用层锚定**（T006），
-  **不是 OS 权限**（`plan.md` R3 ② 要求如实这么写）。5 条断言**双向**。
-- ⚠️ 两个文件**首次跑都是全绿、没有 RED**（它们是**验证既有行为**）；按 T008/T009 的做法改用
-  **变异测试**证敏感性（T012 两次可追溯的见「T012 结论」、T013 四次见「T013 结论」），**全部还原**。
-  其中 T013 有一次变异**因错误原因通过**，逼出了「穿越到底被**哪两道**守卫挡住」的真实答案——
-  记下来免得下次重犯（`LEARNINGS #002-03` 的同类）。
-- ⚠️ **本轮没覆盖**那三条登记缺口（T009 的两条读路径 / T010 的端到端 429 / 长连接）——
-  **仍挂账，且目前没有接收方**，见下缺口表与「T012 结论」末节。
-四条必读的落点结论见下「T012 结论」「T013 结论」。
+✅ **T014 已完成**（2026-09-30）——**网关**（Auth 服务的 HTTP 面）：登录 / 登出端点、
+剥离客户端 `X-User-ID` 后按验签结果**覆盖注入**、启动期密钥地板（D-03）。
+新增 2 文件 + 改 4 文件，新增测试 **10 pass / 23 expect**，**零 schema 变更**。
+**003 原计划 13 条 + 002 移交的 T014 到此做完**；T015–T018 的硬前置（网关）已就位。
+三条门禁实跑：`bun run typecheck` **31/31 exit 0**；`packages/auth` **149 pass / 0 fail**；
+改动/新增 7 文件 oxlint **0 warning / 0 error**；`bun.lock` 无 diff。
+⚠️ `test/server` 全目录那 **1 条失败是登记在案的环境红**（`serves search endpoints`，
+本机首次 spawn `rg.exe` ≈4s vs 该用例 5s 预算），**单跑复现、与 003 无因果**——
+判读依据见下「T014 结论」③。
+四条必读的落点结论见下「T014 结论」。
 
-**下一个：T014（网关）**——它是 T015/T016/T017/T018 的硬前置。
-⚠️ **T015 开工前必须先回来问 D3**（**推迟是裁定本身**）。
-不依赖 T014 的可并行候选：**T019–T024**（002 评审移交，6 条）。
+**下一个：T015（登录页 + 强制改密弹窗）**——🔴 **开工前必须先回来问 D3**（**推迟是裁定本身**）。
+不依赖 T014 的可并行候选：**T019–T024**（002 评审移交，6 条），**现在就能做**。
 📌 **一条待你裁决**：上面那三条缺口**现在没有接收方**——T016 的语义是「跨身份越权 BOLA/BFLA」，
 与「同一用户内项目不串」「限流 429」「长连接下的取连接」都不贴切，**硬挂过去就是`LEARNINGS #002-04`
 说的把责任推进黑洞**。要不要为它们开新任务（或并入 T019–T024 的某一条），请你定。
 
 ## 已完成
+- **T014**（2026-09-30）· **网关**（002 移交）。登录/登出端点 + 剥离并覆盖注入 `X-User-ID` +
+  启动期密钥地板（D-03）。新增 `server/openhive/gateway.ts`、`packages/auth/src/test-support.ts`，
+  改 4 文件。要点见下「T014 结论」，**含三件必须记住的事**（① `HttpRouter.use()` 返回的就是 `Layer`，
+  **没有 `.layer`**；② 中间件层带 `Request<"Error">` 幻影需求 ⇒ 测试里 `Layer.build` **类型过不去**，
+  改走 `toWebHandler`；③ **次序即语义**——网关必须排在身份门**之前**，反了会把「伪造头」
+  变成「合法用户的 401」）、**两条夹具硬约束**（socket `maxConnections` 默认 1 是**掐**不是排队 /
+  同实例跨客户端同句 SQL 必撞 `42P05`，**真 PG 不这样，不是产品缺陷**），以及**三条如实登记的未覆盖**。
 - **T012 + T013**（2026-09-30）· **验收隔离测试**（FR-010 / SC-001 / SC-003）。**零产品代码改动**，
   新增 2 个测试文件（`test/server/tenant-db-isolation.test.ts` 4 pass / 20 expect、
   `tenant-directory-isolation.test.ts` 5 pass / 13 expect）。要点见下「T012 结论」「T013 结论」，
@@ -69,8 +70,9 @@
   **含一处对 plan「模式 A」的有意偏离**（`LayerNode.unbound` → `Context.Service`，已 grep 全部引用点同步）。
 
 ## 阻塞项
-（**无技术阻塞**——T009 / T010 / T011 / **T012 / T013** 均已 2026-09-30 完成，
-**003 原计划的 13 条任务（T001–T013）到此全部做完**。还堵着的是**决策闸**而非技术障碍：
+（**无技术阻塞**——T009 / T010 / T011 / T012 / T013 / **T014** 均已 2026-09-30 完成，
+**003 原计划的 13 条（T001–T013）加 002 移交的 T014 全部做完**，T015–T018 的前置已就位。
+还堵着的是**决策闸**而非技术障碍：
 **只剩 D3 必须在 T015 开工前问**（推迟是裁定本身，见下「已裁定的事项」）——
 **D4 已于 2026-09-30 到点裁定**，T010/T011 的形状不再是未知数。
 T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
@@ -104,6 +106,7 @@ T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
 | 🟡 **`node` 构建条件下「路由真的生效」未被验证** | `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`：`error: No such built-in module`），那一支一行都跑不到。已做的只是：路由逻辑抽成**两支共用的一份** `DatabaseConnectionRouting.routed`（于是 bun 支的测试覆盖的正是 node 支调用的那段代码）+ 一条**形状守卫**（读源码断言两支都接了 `routed(...)`）——**形状守卫不是行为验证**，它只防「漏接线」，不证明 node 条件下跑得对 | 需 CI 提供 **node 运行时**才算补齐。在此之前**不得声称「两种构建条件下都已隔离」** |
 | **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
 | 🟡 **上一条里 `file HttpApi` 那批 5s 超时的根因已查明（T012/T013 收尾时顺带量出来的）**——**是环境、不是 003** | **实测**（`bun test` 下、只 spawn `rg.exe`、不 import 本项目任何代码的探针，跑两次都是同一形状）：**本机第一次 spawn `rg.exe` 要 ≈4800ms**（两次实测 4874ms / 4800ms），**之后每次只要 ≈30–45ms**。而 `httpapi-file.test.ts` 的 `serves search endpoints` 把**第一次** rg 调用放在一个 **5 秒预算**里 ⇒ 在本机**稳定超时**（单跑该文件 **3/3 次都红**，报 `timed out after 5000ms` / `file search index was not ready`）。探针同时实测出「索引就绪后 `find` 只要 ~46ms/次」⇒ **应用侧一点不慢，慢的是进程冷启动** | **不是 003 引入的**，三条实测依据：① 那两个新测试文件在**进程里根本没被加载**时，单跑 `httpapi-file.test.ts` 照样红；② `git diff --stat multi-tenant...HEAD -- packages/core/src/ripgrep* packages/core/src/filesystem*` **无输出**（003 一行没碰）;③ 这是本机 Windows 上 `rg.exe` 首次启动的代价。**未修**（要改的是上游测试的 5s 预算，属上游文件 = 合并冲突面，且不在本 feature 边界内）。**判据**：见下「T013 结论」末节的复现命令 |
+| 🟡 **T014：网关侧三条未覆盖**（2026-09-30 登记） | ① `AUTH_JWT_SECRET` 的**轮转**——代码侧**没有任何轮转机制**，改密钥即全体已签发会话立即失效，是**部署纪律**；② Cookie 的 `Secure` 属性在**真 HTTPS** 下的行为（`sessionCookie` 默认关，本机无 HTTPS，验不了）；③ 内核端口的**真实网络可达性**（回环绑定 / 网络策略）——本机 win32 单进程，**验不了** | **登记为缺口，不假称覆盖**（`LEARNINGS #002-02`）。① ② 归部署文档（`deploy-todo.md` **D-03** 已改写「轮转仍是部署纪律」）；③ 是 **D-02**，已改写为「应用层已落地、网络那半待办」。**代码侧能做的都做了**：剥离注入与启动期密钥地板都有测试守着，见下「T014 结论」 |
 | ~~**两个用户共用同一个 `Location.Ref` 时的隔离**~~ ✅ **已关闭（T006，2026-09-30）** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **T006 已交付**：`anchor-workspace.ts` 把请求目录强制锚到 `{沙箱根}/{userId}`，两用户碰不到同一目录。验收测试 `test/server/anchor-workspace.test.ts` 真的构造 `Location.Ref.make(...)` 再 `Equal.equals` 比对（不是拿字符串不等充数），同时钉「同一用户拿不到第二个工作区」。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。** |
 | 🟡 **锚定上线前就已存在的会话，其 `directory` 仍优先于锚定** | `planRequest` 是 `session?.directory \|\| defaultDirectory(...)`——**会话行里的 directory 优先于请求**，而锚定改的是请求 | **影响面 = 该用户自己的目录，不是越权**（T005 的每用户库让 `Session.Service.get` 只读自己的库）。**未测未修**，登记为缺口。若要闭合，须在会话创建侧锚定（T006 未做，见其 tasks 段的残留说明） |
 | **`node` 构建条件下的锚定未验证** | 同上第 1 行：`sqlite.node.ts` 本机加载即报错。锚定本身与构建条件无关（纯 HTTP 层），但**未在 node 条件下跑过** | 与第 1 行同批交 CI |
@@ -122,6 +125,19 @@ MUST NOT 仅靠应用层 `if` 判断过滤。」
   （`D:\project\study\openhive\.specify\memory\constitution.md`），不在本仓库。
 
 ## 已裁定的事项（feature 内）
+
+- ✅ **T014 网关的三个问题（2026-09-30 · 开工前问的，**都取【甲】**）**：
+  1. **登录契约【甲】**：`POST /openhive/auth/login`（`{policeNo, password}`）→ 200
+     `{id, policeNo, name, isAdmin, mustChangePw}` + httpOnly 会话 Cookie；四种失败原因
+     **同一个 401、同一句话**；外加 `POST /openhive/auth/logout`（204 + `Max-Age=0`）。
+     否掉了「只做登录不做登出」与「失败原因分开提示」两项。
+  2. **剥离注入【甲】**：**新增独立网关层、排在身份门之前**——删客户端 `X-User-ID` → 验 Cookie →
+     注入真 id；身份门**再验一次**（两次是深度防御，不是冗余）。否掉了「只靠门验签、网关不剥头」。
+  3. **启动检查【甲】**：`jwtSecret` 的强制**跟着 `OPENHIVE_REQUIRE_USER_ID`、默认关**——
+     开关未设时网关路由组不注册、不调 `jwtSecret`，`bun run dev` 行为逐字不变。
+     否掉了「无条件在启动路径强制密钥」（那会把今天所有没配密钥的开发环境直接锁死）。
+  **已同步的落点（按文件列，不数条数）**：`gateway.ts`（文件头写明三条裁定与理由）、
+  `tasks.md`（T014 段的 ✅ 完成块）、本文件（本条 + 当前任务 + 已完成 + T014 结论 + 缺口表）。
 
 - ✅ **D4 配额（2026-09-30 · T010/T011 开工前到点裁定）——三个问题都取了推荐项**：
   1. **维度 + 拦点 = 甲**：数「**活跃执行数**」= `SessionExecution.active` ∩ 本用户的库
@@ -446,6 +462,79 @@ BAD-TOKEN /session -> 401
 | HTTP server（第二支） | `packages/server/src/routes.ts`（**没看到**身份中间件，待确认） |
 
 回退**目标**是现状的 `path()` 结果（本机用户自己的库）——对本地 CLI/TUI 是**对的**。
+
+## T014 结论（2026-09-30 · 已完成；网关落地 = 登录面 + 剥离注入 + 启动期密钥地板）
+
+**产物**：新增 2 文件（`packages/opencode/src/server/openhive/gateway.ts`、
+`packages/auth/src/test-support.ts`）+ 改 4 文件（`httpapi/server.ts`、`httpapi/middleware/user-identity.ts`、
+`server/user-identity.ts`、`packages/auth/src/production-driver.test.ts` 改用共用夹具）；
+新增测试 1 文件（`test/server/openhive-gateway.test.ts`，**10 pass / 23 expect**）。
+**零 schema 变更**，未碰 `database.ts` / `sql.ts`（红线⑥）。
+
+### ① 三个裁定【甲】怎么落的（都是用户逐条选的，不是我的默认）
+
+- **Q1 登录契约**：`POST /openhive/auth/login`（`{policeNo, password}`）→ 200
+  `{id, policeNo, name, isAdmin, mustChangePw}` + `Set-Cookie: openhive_session=<JWT>; HttpOnly;
+  SameSite=Lax; Path=/; Max-Age=7200`；`POST /openhive/auth/logout` → 204 + 同 Cookie 以 `Max-Age=0` 覆盖。
+  **响应体逐字段列出**，不把 `LoginResult` 直接透传——它身上还挂着 `token`。
+- **Q2 剥离注入**：**新起一层全局中间件，排在身份门之前**。它先 `Headers.remove(X-User-ID)`，
+  再按 Cookie 验签结果决定要不要 `Headers.set`。**验不过就保持「没有这个头」**——
+  不是回落到客户端自己填的那个（那等于把明文头又当回输入）。
+  ⚠️ 「排在门之前」是**语义**不是风格：反了的话门先看到客户端自填的头，
+  而门那条「头与凭证矛盾即拒」会把**伪造头**变成**合法用户的 401**。
+- **Q3 启动检查**：跟着 `OPENHIVE_REQUIRE_USER_ID`，**默认关**。关着时 `layer` 是恒等中间件、
+  `routes` **一个端点都不注册**、**也不去要 PG 配置与密钥**（`bun run dev` 行为逐字不变）；
+  开着时**层构造期**调 `jwtSecret` ⇒ 缺 / 短于 32 字符**进程起不来**（D-03 要的「启动时调一次」）。
+  两条取向刻意不同：门是**请求期**的（密钥用不了 ⇒ 每个请求 401，服务还在跑），
+  网关是**启动期**的（用不了 ⇒ 起不来）。
+
+### ② 三项硬要求：两项落地，一项是部署项（不假称已做）
+
+| 硬要求 | 落点 |
+|---|---|
+| ① 剥离 + 覆盖注入 | `gateway.ts` 的 `layer`，有专门测试（下游把收到的头报回来，**分得出「剥过」与「没动」**——只看真应用返回 200 是分不出的，两种情况都 200） |
+| ② 内核端口只对网关可达 | **部署项，本 task 没做**（本机 win32 单进程验不了）→ `docs/workspace/deploy-todo.md` **D-02** |
+| ③ 透传会话 JWT | Cookie 天然随请求流动，**不加新头**；网关验它并按 subject 覆盖注入，内核那道门**再验同一张 Cookie**。两次验签是**深度防御**：网关被绕过 / 有人直连内核端口时门仍拦得住，那时「头与凭证不一致」正说明**网关与内核之间被改写** |
+
+### ③ 质量门禁（2026-09-30 实跑，非外推）
+
+- `bun run typecheck` **31/31、exit 0**（第一次跑是红的，见 ④）。
+- `packages/auth`：**149 pass / 1 skip / 0 fail**（skip 是既有的，非本次新增）。
+- `packages/opencode` 的 `test/server/` 全目录：**325 pass / 23 skip / 1 fail**。
+  唯一失败 = `file HttpApi > serves search endpoints`（`file search index was not ready`，6.5s）。
+  **判读 = 存量、环境所致，不是 T014 引入**：该条**单跑又红一次**（本文件头「顺带查明」节记的就是它，
+  当时已 3/3 红），根因是本机**第一次 spawn `rg.exe` ≈4 秒**而该用例给它 5 秒预算；
+  且本轮失败数（1）**远少于** T010 记的基线（9）——判据是**名称级差集**不是总数（`LEARNINGS #001-01`）。
+- 改动/新增 **7 文件** `bunx oxlint -c script/oxlintrc.openhive.json`：**0 warning / 0 error**。
+- `git diff --stat bun.lock` **无输出**。
+
+### ④ 两处**实测**撞出来的东西（不写下来下次还得重撞）
+
+1. **`HttpRouter.use(fn)` 返回的就是 `Layer`，没有 `.layer`**。我按 `HttpRouter.middleware<...>()(gen).layer`
+   的手感给 `routes` 也加了 `.layer` ⇒ 运行时 `undefined is not an object (evaluating 'AuthGateway.routes.pipe')`，
+   而**模块体是跑完的**（`Object.keys` 能列出这个名字、值却是 `undefined`），很容易误判成循环引用之类。
+   两者只差一个 `.layer`，装法不同，记住结论即可。
+2. **测试里「构建这个层」不能直接 `Layer.build`**：`HttpRouter` 的中间件层带 `Request<"Error">` 这类
+   幻影需求，`Layer.build` 的类型要求 `R = never` ⇒ typecheck 红（运行时却是对的，**只有类型错**）。
+   改走生产那条路 `HttpRouter.toWebHandler(...).handler(...)`（它在**第一次请求**时建层树），
+   既过类型，断言的也正是「真应用起不来」。
+
+### ⑤ 夹具的两条硬约束（`@opencode-ai/auth/test-support`，实测撞出来后才写下的）
+
+① `PGLiteSocketServer` 的 `maxConnections` **默认 1，超出的是被掐掉不是排队**
+（客户端看到 `ERR_POSTGRES_CONNECTION_CLOSED`，看着像「库连不上」）；而 `bun-sql` **每个客户端自带连接池**
+（放开上限后实测铺开 10 条）⇒ 「夹具一个客户端 + 被测代码一个客户端」这种正常用法在默认值下必挂。
+② **同一实例上两个客户端不能执行同一句 SQL 文本**：PGlite 的预编译语句是**实例级**的、
+`bun-sql` 的缓存是**按客户端**的 ⇒ 第二个客户端报 `42P05 duplicate_prepared_statement`。
+判别实验：**一个**客户端同一句连跑三次全过、**第二个**客户端跑同一句必挂。
+**真 PG 的预编译语句按会话隔离，故这不是产品缺陷**——落地要求是「一次夹具只起一个被测客户端」
+（生产本来也是一个进程、一个连接池）。
+
+### ⑥ ⚠️ 未覆盖（缺口，不是覆盖）
+
+① `AUTH_JWT_SECRET` 的**轮转**（代码侧没有机制，是部署纪律；改密钥 = 全体已签发会话立即失效）；
+② Cookie 的 `Secure` 属性在**真 HTTPS** 下的行为（`sessionCookie` 默认关，本组不验）；
+③ 内核端口的**真实网络可达性**（D-02，本机 win32 单进程验不了）。三条均已登记进 `deploy-todo.md` / 本表。
 
 ## T013 结论（2026-09-30 · 已完成；出参「A 读写不到 `/workspaces/B/`」在**应用层**达成）
 
@@ -1410,6 +1499,11 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
 ### 未覆盖 / 挂账（按 `LEARNINGS #002-02`：缺口要写成缺口，不写成覆盖）
 - **真网关链路的端到端未测**——T014 之后才有，作为 T016 的前置。本 task 用 002 的 `signToken`
   **自造令牌**独立测（这是 task 设计如此，不是缺口）。
+  > 📌 **勘误（2026-09-30，T014 收尾时补）**：**「T014 之后才有」那半已经发生**——T014 的
+  > `openhive-gateway.test.ts` 走真应用 + 真库 + 真 `login()`，登录拿到 Cookie 后带它访问
+  > `/session/ses_x`，断言「内核**不是**因为认不出身份而拒绝」。但**这不是完整的端到端**：
+  > ① 断言的是 `not 401` 而不是某个具体结果（拦不拦得住是路由自己的事）；
+  > ② 没有一条用例走完「登录 → 发消息跑 agent」。**完整端到端仍属 T016 的前置**。
 - **中间件类型参数暂未声明 `provides: User.Service`**——T003 没有消费者要求它；
   等 T004/T005 定了消费者形状再加，现在加是猜。
 - **`OPENHIVE_REQUIRE_USER_ID` 仍默认关**（002 定的，T003 沿用）：网关还不存在，默认开 = 把
@@ -1545,7 +1639,25 @@ T013 挡在中间的是**应用层锚定**（T006）——**不是 OS 权限**�
 **请你裁决**（见「阻塞项」第 2 条）。
 门禁：两个新文件 `bun test` **9 pass / 0 fail**；`bun run typecheck` **31/31、exit 0**；
 新文件 `bunx oxlint` **0 warnings / 0 errors**；`git diff --stat bun.lock` **无输出**。
-**下一个：T014（网关）**，⚠️ T015 开工前必须先回来问 **D3**。）
+**下一个：T015（登录页 + 强制改密弹窗）**，⚠️ 开工前必须先回来问 **D3**。）
+
+2026-09-30（**T014 已完成 —— 网关落地**：登录 / 登出端点 + **剥离客户端 `X-User-ID` 后按验签结果
+覆盖注入** + **启动期密钥地板**（D-03）。新增 2 文件（`server/openhive/gateway.ts`、
+`packages/auth/src/test-support.ts`）、改 4 文件，新增测试 **10 pass / 23 expect**，**零 schema 变更**。
+三个开工前的裁定**都取【甲】**（登录契约 / 剥离注入 / 启动检查跟开关走、默认关）。
+**三项硬要求**：剥离注入有测试守着（下游把收到的头报回来，**分得出「剥过」与「没动」**）；
+端口仅网关可达是**部署项 D-02**（本机验不了，已改写该格）；透传走 **Cookie 天然流动、不加新头**，
+内核那道门**再验同一张 Cookie**（两次是深度防御）。门禁：`bun run typecheck` **31/31 exit 0**、
+`packages/auth` **149 pass / 0 fail**、7 个改动/新增文件 oxlint **0 warning / 0 error**、`bun.lock` 无 diff。
+⚠️ `test/server` 全目录 **1 条失败是登记在案的环境红**（`serves search endpoints`，本机首次 spawn
+`rg.exe` ≈4s vs 用例 5s 预算），**单跑复现、与 003 无因果**；本轮失败数（1）远少于 T010 记的基线（9），
+判据是**名称级差集**不是总数（`#001-01`）。
+📌 **两条实测撞出来的夹具硬约束**（已写进 `test-support.ts` 文件头）：socket 服务端
+`maxConnections` **默认 1，超出是掐掉不是排队**；同实例跨客户端**同句 SQL 必撞 `42P05`**
+（PGlite 预编译语句实例级、bun-sql 缓存按客户端）——**真 PG 按会话隔离，不是产品缺陷**。
+📌 **一个 API 坑**：`HttpRouter.use(fn)` 返回的**就是** `Layer`、**没有 `.layer`**；而中间件层带
+`Request<"Error">` 幻影需求 ⇒ 测试里 `Layer.build` **类型过不去**（运行时对），改走生产的 `toWebHandler`。
+🟡 **三条未覆盖如实登记**：密钥轮转（部署纪律）、Cookie `Secure` 在真 HTTPS 下的行为、内核端口可达性（D-02）。
 
 2026-09-30（**T011 已完成**：沙箱磁盘配额（FR-009）。新增 3 文件、改动 1 文件（+1 行调用、
 错误联合 +1 项），**零 schema 改动**。**出参在应用层达成**——拦点按裁定落在
