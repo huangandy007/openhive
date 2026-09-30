@@ -6,6 +6,7 @@ import { lookup } from "mime-types"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import type { PlatformError } from "effect/PlatformError"
 import { Glob } from "./util/glob"
+import { DiskQuota } from "./quota/disk-quota"
 import { serviceUse } from "./effect/service-use"
 import { makeGlobalNode } from "./effect/app-node"
 import { filesystem } from "./effect/app-node-platform"
@@ -21,7 +22,12 @@ export namespace FSUtil {
     }
   }
 
-  export type Error = PlatformError | FileSystemError
+  // `DiskQuota.SandboxWriteRejected`（openhive 003 T011）只在 `writeWithDirs` 上抛，
+  // 所以它进这个联合。**错误类定义在 `quota/disk-quota.ts` 而不是这里**——那边要用它构造失败，
+  // 这里要 import 那边的守卫，定义放这边就是运行时循环（`session-quota.ts` 用 `import type`
+  // 消掉的是同一类问题，但错误类抛的时候是**值**，`import type` 消不掉）。
+  // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T011）。
+  export type Error = PlatformError | FileSystemError | DiskQuota.SandboxWriteRejected
 
   export interface DirEntry {
     readonly name: string
@@ -129,6 +135,16 @@ export namespace FSUtil {
         content: string | Uint8Array,
         mode?: number,
       ) {
+        // 沙箱磁盘配额（openhive 003 T011 · FR-009）：**落盘前**判，超限直接拒。
+        // 放这里是因为 `write` / `edit` / `apply_patch` 三个工具**全部**收敛到这一处
+        // （`tool/write.ts`、`tool/edit.ts`、`patch/index.ts`、`file-mutation.ts`）——
+        // 加一道门就覆盖三个工具，不是三处接线、不会漏一个。
+        // ⚠️ `shell` 工具**不**走这里，磁盘配额拦不住它（D4-3 已认，OS 级强制才是底线）。
+        // 读 `process.env` 是照 `database/router.ts` 的 `dataRoot(process.env)` 先例；
+        // **在调用时读**，所以运行期改环境变量立即生效（测试正靠这一点注入阈值）。
+        // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T011）。
+        yield* DiskQuota.enforce(path, DiskQuota.bytesOf(content), process.env)
+
         const write = typeof content === "string" ? fs.writeFileString(path, content) : fs.writeFile(path, content)
 
         yield* write.pipe(
