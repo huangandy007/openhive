@@ -2,9 +2,13 @@
 
 ## 当前任务
 ✅ **T005 已完成**（2026-09-30）——「db 查询按 User 上下文路由到对应连接」。
-出参达成：同一个 `Database.Service`、同一段查询代码，按当前 fiber 的身份落到不同库文件。
-落点三文件：`connection-routing.ts`（新增）/ `router.ts`（新增）/ **`sqlite.bun.ts`（上游自有文件，
-本 feature 首次「改」而非「新增」，+32/−2 行）**；`database.ts` 与 `package.json` 一行没动。
+出参达成：同一个 `Database.Service`、同一段查询代码，按当前 fiber 的身份落到不同库文件，
+**并且已经接进真实请求路径**（收尾时按裁定补的，见下「T005 结论」③）。
+落点：新增 `connection-routing.ts` / `router.ts`（`packages/core/src/database/`）；
+**改**上游自有文件 `sqlite.bun.ts` + `sqlite.node.ts`（本 feature 首次「改」而非「新增」）、
+`middleware/user-identity.ts`、`httpapi/server.ts`（接线，+5/−1）；
+`database.ts` 与 `package.json` 一行没动。改动行数**不要引用写死的数**，
+取数用 `git diff --stat`（写死的行数会随下一次编辑失效——`LEARNINGS #002-06`）。
 要点见下「T005 结论」。
 
 **下一个候选：T006 沙箱锚定**（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）——
@@ -12,7 +16,9 @@
 不按用户分键 ⇒ 「两个用户共用同一个 `Location.Ref`」这个缺口**仍然开着**，没被 T005 关掉。
 其余候选：T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
 D1/D2/D5/D6 定案，D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前（**推迟是裁定本身**）。
-**另有一条从 T005 收尾长出来的新决策点：db 路由接进哪一层**（见下「T005 结论 · 本轮未覆盖」）。
+**T005 收尾长出来的决策点「db 路由接进哪一层」已裁定并落地**（2026-09-30，见下「T005 结论」③）：
+**不是**接进 `app-runtime.ts` 的 `AppLayer`，而是**由身份中间件每请求 `provideService` 注入**
+——因为**请求 fiber 的 context 里根本没有 app 层服务**（实测，不是推测）。
 
 ## 已完成
 - **T005**（2026-09-30）· db 查询按身份路由到各自连接。**本 feature 首次修改上游自有文件**
@@ -34,7 +40,8 @@ D1/D2/D5/D6 定案，D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工
 
 | 缺口 | 原因 | 处置 |
 |---|---|---|
-| 🔴 **路由还没接进真实请求路径** | T005 只做到「`router.ts` 提供钩子 + 单测证明路由成立」；`DatabaseRouter.layer` **还没加进 app 层**（`app-runtime.ts` 的 `AppLayer` / `AppNodeBuilder` 等）⇒ **线上跑起来仍全落主树** | **下一件该做的事**（要再碰上游入口层，需单独裁定）。接进去之前**不得声称 db 已按用户隔离** |
+| 🟡 **`node` 构建条件下「路由真的生效」未被验证** | `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`：`error: No such built-in module`），那一支一行都跑不到。已做的只是：路由逻辑抽成**两支共用的一份** `DatabaseConnectionRouting.routed`（于是 bun 支的测试覆盖的正是 node 支调用的那段代码）+ 一条**形状守卫**（读源码断言两支都接了 `routed(...)`）——**形状守卫不是行为验证**，它只防「漏接线」，不证明 node 条件下跑得对 | 需 CI 提供 **node 运行时**才算补齐。在此之前**不得声称「两种构建条件下都已隔离」** |
+| **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
 | **两个用户共用同一个 `Location.Ref` 时的隔离** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **移交 T006**：验收项 = 一条测试证明「两个用户拿不到同一个 `Location.Ref`」（已写进 `tasks.md` T006 段）。**T006 落地前不得声称已隔离。** |
 | **长连接（SSE `/event`、WebSocket `/pty`、`/tui`）与 `SessionPrompt`（发消息跑 agent）下的取连接行为** | 第三轮探针刻意避开（要 provider/LLM），只测了普通 HTTP 请求 | **T012/T013 的隔离测试**要覆盖到；落地前登记为未测 |
 | **单进程多库方案本身**（一 client 服务多库、`Semaphore.make(1)` 的全局串行化、事务语义） | 探针只验了前提「acquirer 拿得到 `User`」 | T004 自己的测试覆盖 |
@@ -320,7 +327,12 @@ BAD-TOKEN /session -> 401
 
 #### 非 HTTP 入口清单（条件 3 的对象）
 
-以下入口**都没有 `User`**，但**共享同一个 `Database.node` 单例**，故都需要一条显式回退：
+以下入口**都没有 `User`**，但**共享同一个 `Database.node` 单例**，故都需要回退到「本机用户自己的库」。
+
+> ✅ **T005 收尾后：这个回退是自动的，不必逐个入口去改。** 钩子由**身份中间件**注入，
+> 这些入口的 fiber 里**根本没有钩子** ⇒ `routed(fallback)` 直接走 `fallback`（逐字等于上游行为）。
+> 所以下表**不是一份待办清单**，它是「回退目标为什么必须存在、以及谁在依赖它」的证据表。
+> 换句话说：**T005 之后不需要碰这六个文件**；它们之所以正确，是因为**没被碰**。
 
 | 入口 | 落点 |
 |---|---|
@@ -339,15 +351,19 @@ BAD-TOKEN /session -> 401
 测试 `packages/core/test/database-routing.test.ts`（3 用例）——断言一律用 `bun:sqlite`
 **直接读库文件**，不经过我们自己的代码（`LEARNINGS #002-02`）。
 
-**落点三文件**：
+**落点**（行数一律取 `git diff --stat`，别引用写死的数）：
 
 | 文件 | 性质 | 内容 |
 |---|---|---|
-| `packages/core/src/database/connection-routing.ts` | **新增** | 只有 tag 与类型：`Hook`（可选钩子）/ `Disabled`（重入保护） |
-| `packages/core/src/database/router.ts` | **新增**（T004 已有，本次扩） | 提供钩子并实现路由：读身份 → `forUser(id).db.$client.reserve` |
-| `packages/core/src/database/sqlite.bun.ts` | ⚠️ **上游自有文件，改** | 唯一侵入点：`acquirer`/`transactionAcquirer` 各包一层 `routed(...)` |
+| `packages/core/src/database/connection-routing.ts` | 改（T004 就有） | tag `Hook` / `Disabled`，**外加两支共用的 `routed(...)`**（下节①为何抽在这里） |
+| `packages/core/src/database/router.ts` | 改（T004 已有） | 实现路由：读身份 → `forUser(id).db.$client.reserve`；**`Interface` 上暴露 `hook`** 供中间件每请求注入 |
+| `packages/core/src/database/sqlite.bun.ts` | ⚠️ **上游自有文件，改** | 侵入点：`acquirer`/`transactionAcquirer` 各包一层 `routed(...)`（内联实现已抽走） |
+| `packages/core/src/database/sqlite.node.ts` | ⚠️ **上游自有文件，改** | **同一处侵入、同一份实现**（下节②为何必须两支都接） |
+| `packages/opencode/.../httpapi/middleware/user-identity.ts` | 改（003 T003 新增的文件） | 层构造期取一次 `DatabaseRouter.Service`，**请求期把 `Hook` 塞进上下文**（与 `User` 同源注入） |
+| `packages/opencode/.../httpapi/server.ts` | 改（上游自有文件） | 一行接线：`userIdentityLayer` 的依赖里加 `Layer.provide(DatabaseRouter.layer())` |
 
-`database.ts` 与 `package.json` **一行没动**（§V 要求「连接路由落在新增的 `router.ts`」——满足）。
+`database.ts` 与 `package.json` **一行没动**（§V 要求「连接路由落在新增的 `router.ts`」——满足；
+注意 §V 说「新增的 `router.ts`」，而 `router.ts` 是 T004 建的、本次只是扩，**未新增其他路由落点**）。
 
 **侵入形状**：`routed(fallback)` 先问 fiber context 里有没有 `Hook`；**没有就逐字返回 `fallback`**。
 无钩子 = 上游原样 ⇒ CLI / TUI / ACP 等无身份入口、以及**全部既有测试**，行为一字不变
@@ -375,35 +391,83 @@ BAD-TOKEN /session -> 401
 超出了当时 RED 的覆盖。为补偿，补写后立刻做变异验证（上表第二行）。
 不把它写成「已覆盖」蒙混过去。
 
-### 质量门禁（2026-09-30 实跑）
+### 收尾补的三件事（2026-09-30，都是「本轮未覆盖」倒逼出来的）
+
+**① `routed` 抽成两支共用的一份**（`connection-routing.ts`）。原先内联在 `sqlite.bun.ts` 里，
+收尾时发现 `sqlite.node.ts`（`#sqlite` 的另一支）也得接，而它**在本机一行都跑不到**
+（bun 不提供 `node:sqlite`）⇒ 两份各写一遍 = 其中一份永远没人跑，正是 `#002-01` 的形状。
+抽成一份后，bun 支的测试覆盖的**就是** node 支调用的那段代码。**残差已登记**（见上「未覆盖」表）。
+
+**② `sqlite.node.ts` 一起接**。`#sqlite` 是**按运行时条件解析**的（`bun` → `sqlite.bun.ts`、
+`node` → `sqlite.node.ts`），只改一支 = 隔离在一个构建条件下静默失效，**且不会有任何东西变红**。
+为此加了两条**形状守卫**（`connection-routing.test.ts`：读源码断言两支都接了
+`routed(localAcquirer)` 与 `routed(localTransactionAcquirer)`）。
+⚠️ **形状守卫不是行为验证**——它只防「漏接线」，不证明 node 条件下跑得对，别把它当覆盖。
+
+**③ 接进真实请求路径**（这条推翻了原计划的落点）。原计划把 `DatabaseRouter.layer` 加进
+`app-runtime.ts` 的 `AppLayer`。**实测证伪**：**请求 fiber 的 context 里没有 app 层服务**——
+测试路由体直接 `yield* Database.Service` 得到 `Service not found: @opencode/v2/storage/Database`；
+上游自己也只能在**层构造期**取服务、请求期用闭包（`handlers/sync.ts`、`middleware/fence.ts` 同形状）。
+⇒ 改为：**钩子与身份同源注入**——身份中间件在**构造期**取一次 `DatabaseRouter.Service`，
+**请求期**用 `Effect.provideService` 把 `Hook` 塞进上下文。谁拿到 `User` 必然同时拿到钩子；
+没有身份就不给钩子（否则钩子会去猜一个主体）。
+**变异验证**：去掉 `server.ts` 那行 `Layer.provide(DatabaseRouter.layer())` ⇒「真应用的接线」用例
+**红**，报 `Service not found: @opencode/openhive/DatabaseRouter`——**炸在层构造期，不是静默回退**，
+这条失败模式是对的。
+
+### 质量门禁（2026-09-30 实跑，收尾后重跑）
 
 | 门 | 结果 |
 |---|---|
-| 单测 | `database-routing.test.ts` 3 pass + `database-router.test.ts`（T004）6 pass = **9 pass / 0 fail** |
-| typecheck | `bun run typecheck` **EXIT=0** |
-| oxlint | **0 error**；8 warning，见下 |
-| 全包回归 | **1096 pass / 7 skip / 5 fail**。T004 基线 1093/7/5 ⇒ **Δ = +3 pass / 0 新失败** |
+| T005 新增测试（core） | `connection-routing.test.ts` + `database-routing.test.ts` = **8 pass / 0 fail** |
+| T005 新增测试（opencode） | `multi-tenant-routing.test.ts` + `user-identity.test.ts` = **19 pass / 0 fail** |
+| core 全包 | **1101 pass / 7 skip / 5 fail**（T004 基线 1093/7/5 ⇒ Δ = +8 pass / 0 新失败） |
+| typecheck | `packages/core` **EXIT=0** + `packages/opencode` **EXIT=0** |
+| oxlint（9 个改动文件） | **15 warnings / 0 errors**。逐条分类：1 条是 `connection-routing.ts` 里从 `sqlite.bun.ts` **搬过来的**（净 0）、13 条上游存量、**新增 1 条**（见下） |
 
-- 5 条失败全是 `NpmConfig.*`，**与 T004 基线同一批**，根因是本机 `~/.npmrc` 指向
+- core 那 5 条失败全是 `NpmConfig.*`，**与 T004 基线同一批**，根因是本机 `~/.npmrc` 指向
   `registry.npmmirror.com`（报错正文 `Expected "https://registry.example.test/" /
   Received "https://registry.npmmirror.com/"`），存量环境失败，与 T005 无关。
-- **oxlint 那 8 条 warning 里有 1 条是我新增的**（`no-unsafe-type-assertion`，
-  `sqlite.bun.ts` 的 `routed` 里那个 `as`），其余 7 条是该文件上游自带的。
+- **新增的那 1 条 warning**：`multi-tenant-routing.test.ts` 里 `db.all(...) as Array<{v:string}>`
+  （`no-unsafe-type-assertion`）——与 `packages/core` 既有测试**同款写法**，随大流，不单独破例。
+  另一条 `no-unsafe-type-assertion`（`Hook.resolve` 那个 `as`）**不是我新增的**，
+  它是 `routed` 从 `sqlite.bun.ts` 搬到 `connection-routing.ts` 时**跟着搬的**，净 0。
   为什么留：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
   `client.export` / `loadExtension` 要求无 `Scope` 的 R（那是上游的两行，不去动它）。
   评估过的替代都不成立——改 `SqliteClient` 接口 = 动更多上游行；让钩子返回无 Scope 的类型
   = 把断言挪个位置，warning 照报。**如实登记，不隐藏、也不为它扩大上游改动面。**
 
+### `packages/opencode` 全包回归：**无可用基线，已改用「名称级差集」判据**
+
+全包实测 **3548 pass / 58 skip / 1 todo / 53 fail / 4 errors**（3660 tests / 256 files / **2183s**）。
+但**这个数不能直接当门禁用**——`test/server` **单独跑**也有存量 flaky 5s 超时带：
+
+| 跑法 | 结果 |
+|---|---|
+| 基线（`HEAD`，改动全部回退）跑 `bun test test/server` | 284 pass / 23 skip / **9 fail / 1 error** |
+| 带本次改动跑同一命令 | 285 pass / 23 skip / **10 fail / 0 error** |
+| 失败集合**名称级差集** | 两边都红 **5** 条（存量）；只在基线红 **4** 条；只在带改动红 **1** 条 |
+
+**判读（这是结论，不是辩解）**：失败集合**双向**变动（4 条「基线红、改动绿」+ 1 条反向），
+只有跑次噪声能解释；那条唯一「只在带改动红」的
+（`session HttpApi > durably records one v2 prompt for exact message-ID retries`）
+**单独跑该文件为绿**（19 pass / 2 fail，余下 2 条正是「两边都红」的存量）。
+⇒ **T005 未引入新失败**，且**全包绿在本机不可达**，与本 feature 无关（已登记进上表）。
+
+**复现命令**（别引用上面写死的数——它们会随跑次漂）：
+基线用 `git stash` 之外的干净做法——把改动导出成 patch、`git checkout --` 回退、跑完 `git apply` 还原；
+对比只看**测试名集合**，不看总数（oxlint 与 bun 的计数都有抖动，`LEARNINGS #001-01`）。
+
 ### 本轮未覆盖（缺口，**不是覆盖**）
 
-- 🔴 **最重要**：**路由还没接进真实请求路径**。本 task 只做到「层提供了钩子」；
-  `DatabaseRouter.layer` **还没加进 app 层**（`packages/opencode/src/effect/app-runtime.ts` 的
-  `AppLayer`、`AppNodeBuilder` 等）。⇒ **现在跑起来，真实 HTTP 请求仍然全落主树**。
-  这是**下一件该做的事**，且它要再碰上游文件（多个入口层），需单独裁定。
-- 没跑 HTTP、没跑长连接（SSE `/event`、WebSocket `/pty`）与 `SessionPrompt` 下的取连接行为
-  ——仍在「本 feature 未覆盖」表里挂着，交给 T012/T013。
+- 🟡 **`node` 构建条件下「路由真的生效」未验证**——原因与残差见上「未覆盖」表第 1 行。
+  要看的是：形状守卫**不是**行为验证，别把它当覆盖。
+- 长连接（SSE `/event`、WebSocket `/pty`、`/tui`）与 `SessionPrompt`（发消息跑 agent）下的取连接行为
+  ——**本次仍未测**（要 provider/LLM），仍在「本 feature 未覆盖」表里挂着，交给 T012/T013。
 - 两个用户共用同一个 `Location.Ref` 的隔离——**没被 T005 关掉**（路由按 fiber 的 `User` 分库，
-  Location 树按**目录**缓存、不按用户分键）。仍挂 T006。
+  Location 树按**目录**缓存、不按用户分键）。仍挂 T006，**T006 落地前不得声称已隔离**。
+
+✅ **原先那条「路由还没接进真实请求路径」已关闭**——即上面③，已接进并有变异验证。
 
 ## T005 探针结论（2026-09-30 · 三问全部实跑；**推翻了我自己的一条读码推断**）
 
@@ -468,7 +532,9 @@ T005 开工第一步跑探针（不预设形状）。探针文件已删、临时
   **没有钩子就逐字用本层 `connection`**（默认路径与现状逐字相同）。
 - 钩子与全部路由逻辑放 `packages/core/src/database/router.ts`（**新增**，零冲突面）。
 - 上游触碰：**1 文件**（`sqlite.bun.ts`）；`database.ts` 与 `package.json` **都不用动**。
-  （当时估「约 5 行」，**实测 +32/−2**——多出来的全是解释性注释，刻意如此。）
+  （当时估「约 5 行」；实测行数比估计多得多，多出来的**全是解释性注释**，刻意如此。
+  收尾后这里只剩两行 `routed(...)` 调用——实现抽到了 `connection-routing.ts`。
+  **别引用写死的行数**，取数用 `git diff --stat`。）
 - ⚠️ 仍须解 Q3 的重入（见上），且事务路径也要路由。
 
 ### 本轮未覆盖（按 `LEARNINGS #002-02`：缺口写成缺口）
@@ -548,7 +614,8 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
 另两次跑**都不出现**。判定为 5s 超时的存量 flake（与机器负载相关），**不是**稳定失败；
 本 task 没有结论依赖它，但**「跑几次绿一次」不等于稳**，若它在 T005 之后复现要当回事查。
 
-**未覆盖**（缺口，不是覆盖）：① 没跑 HTTP，本 task 的注册表**还没接进任何真实请求路径**（T005 的事）；
+**未覆盖**（缺口，不是覆盖）：① ~~没跑 HTTP，本 task 的注册表**还没接进任何真实请求路径**（T005 的事）~~
+——**已由 T005 收尾关闭**（接进真实请求路径并有变异验证，见上「T005 结论」③）；
 ② 没验真实 `OPENHIVE_DATA_ROOT` 下的权限/属主（T007 的事）；③ `Layer.fresh` 后每用户一棵树，
     多用户下的**连接基数与内存占用**没量（R2 的量化留给收尾评审）。
 
@@ -715,11 +782,17 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
 
 ## 最后更新
 2026-09-30（**T005 已完成**：db 查询按身份路由到各自连接，出参达成。**本 feature 首次修改上游自有
-文件**（`sqlite.bun.ts`，用户已批准方案 A，实测 +32/−2 行）；`database.ts`/`package.json` 一行没动。
-两条必做各做过**变异验证**——⚠️ 破坏重入保护 `Disabled` 的表现是**测试挂住（>75s 无输出）而非变红**。
-门禁：单测 9 pass / typecheck 0 / oxlint 0 error（**新增 1 条 warning 已如实登记**）/
-全包回归 **Δ = +3 pass、0 新失败**。🔴 **未覆盖：路由还没接进 app 层，线上跑起来仍全落主树**
-——下一件该做的事，需单独裁定。详见下「T005 结论」）
+文件**——`sqlite.bun.ts` **与 `sqlite.node.ts`** 两支（用户已批准方案 A）；`database.ts`/`package.json`
+一行没动。三条必做各做过**变异验证**——⚠️ 破坏重入保护 `Disabled` 的表现是**测试挂住（>75s 无输出）
+而非变红**；去掉 `server.ts` 的接线则**炸在层构造期**（非静默回退）。
+✅ **原计划「接进 `AppLayer`」被实测证伪并改道**：请求 fiber 里**没有 app 层服务**，
+改为**身份中间件每请求注入钩子**（与 `User` 同源），已接进真实请求路径。
+门禁：T005 新增单测 core 8 pass + opencode 19 pass / 两个包 typecheck 均 EXIT=0 /
+oxlint 15 warning 0 error（**新增 1 条已如实登记**）。
+🟡 **两条未覆盖已登记**：① `node` 构建条件下路由生效**未验证**（本机跑不到，只有形状守卫）；
+② **`packages/opencode` 全包在本机不是可用门禁**——`test/server` 有存量 flaky 5s 超时带，
+判据改用**名称级差集**（T005 未引入新失败，证据见下）。
+详见下「T005 结论」）
 2026-09-30（**T005 探针已跑完** → 裁定「乙」成立、落点不变；**但我据读码写的「落点站不住」被实测推翻**，
 已更正。另两条候选路被排除：请求级替换 `Database.Service` 无效（消费者建层时捕获）、`#sqlite` 包装层死锁。
 推荐方案 A 要碰 `sqlite.bun.ts`（§I 红线；**该裁定当天已获批准并按方案 A 做完，见上「T005 结论」**）。

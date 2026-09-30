@@ -258,7 +258,13 @@ LayerMap.make((ref) => {
   在 `router.ts`。**这是本 feature 首次修改上游自有文件**（`sqlite.bun.ts`，用户已批准）。
   ⚠️ 三个坑都写在 `state.md`「T005 结论」：① 钩子 tag 必须单独一个文件（否则成环 + TDZ）；
   ② 重入必须显式打断，**破坏它的表现是测试挂住而非变红**；③ 事务路径也要路由。
-  🔴 **仍有缺口：钩子还没接进 app 层**（`app-runtime.ts` 的 `AppLayer` 等），线上跑起来仍全落主树。
+  ✅ **收尾时补上并已接进真实请求路径**（`state.md`「T005 结论」③）。原计划加进
+  `app-runtime.ts` 的 `AppLayer`，**实测证伪**——**请求 fiber 的 context 里没有 app 层服务**
+  （报 `Service not found`）。改为**身份中间件每请求 `provideService` 注入钩子**，与 `User` 同源；
+  `httpapi/server.ts` 加一行 `Layer.provide(DatabaseRouter.layer())` 满足其依赖。
+  🟡 **仍开着两条缺口**（见 `state.md` 未覆盖表）：`node` 构建条件下路由生效**未验证**
+  （本机跑不到 `node:sqlite`，只有形状守卫）；`packages/opencode` 全包在本机**不是可用门禁**
+  （`test/server` 存量 flaky 5s 超时带）。
 - **T006**（沙箱锚定）：`Location.Ref.directory` 是现有工作目录的载体
   （`packages/core/src/location.ts` 的 `layer(ref)` 里 `project.resolve(ref.directory)`）——
   锚定的落点大概率在 `ref` 的构造处，T006 开工时确认。

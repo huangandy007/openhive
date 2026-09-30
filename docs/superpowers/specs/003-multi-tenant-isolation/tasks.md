@@ -132,9 +132,19 @@
   - ✅ **完成 2026-09-30**。出参达成：**同一条查询代码、同一个 `Database.Service`，按当前 fiber
     的身份落到不同库文件**（`packages/core/test/database-routing.test.ts` 3 用例，断言一律用
     `bun:sqlite` 直接读库文件，不经过我们自己的代码）。
-  - 落点三个文件：`connection-routing.ts`（**新增**，只有 tag 与类型）、`router.ts`（**新增**，
-    提供钩子并实现路由）、`sqlite.bun.ts`（**上游自有文件，本次唯一侵入点**）。`database.ts`
-    与 `package.json` **一行没动**。
+  - 落点：`connection-routing.ts`（tag / `Disabled` / **两支共用的 `routed(...)`**）、
+    `router.ts`（实现路由，并在 `Interface` 上暴露 `hook`）、**上游自有文件 `sqlite.bun.ts` 与
+    `sqlite.node.ts`**（两处 `routed(...)` 各一层）、`middleware/user-identity.ts`（请求期注入钩子）、
+    `httpapi/server.ts`（一行接线）。`database.ts` 与 `package.json` **一行没动**。
+    文件清单与行数**别抄写死的数**，取数用 `git diff --stat`（`LEARNINGS #002-06`）。
+  - ✅ **收尾补的三件事**（都写进 `state.md`「T005 结论」）：
+    ① `routed` 抽成**两支共用的一份**——否则 node 那份永远没人跑（`#002-01` 的形状）；
+    ② **`sqlite.node.ts` 一起接**（`#sqlite` 是按 `bun`/`node` 条件解析的，只改一支 =
+       隔离在一个构建条件下**静默失效**）；为此加了两条**形状守卫**，
+       ⚠️ **形状守卫不是行为验证**，它只防漏接线；
+    ③ **接进真实请求路径**——原计划的「加进 `AppLayer`」**被实测证伪**（**请求 fiber 里没有 app 层
+       服务**，报 `Service not found`），改为**身份中间件每请求 `provideService` 注入钩子**，
+       与 `User` **同源**。变异验证：去掉 `server.ts` 那行接线 ⇒ 用例**红在层构造期**（非静默回退）。
   - 侵入点形状：`acquirer` / `transactionAcquirer` 各包一层 `routed(...)`——先问 fiber context 里
     有没有 `DatabaseConnectionRouting.Hook`，**没有就逐字走原来的 `fallback`**。所以 CLI / TUI /
     ACP 等无身份入口、以及全部既有测试，行为一字不变（测试 2 钉的就是这条）。
@@ -148,15 +158,27 @@
     ② **`transactionAcquirer` 也路由**——停用它后「事务路径」用例**红**，alice 库为 `[]`（写回了主树）。
     ②这条测试是**实现之后补写的**（实现 GREEN 时顺手做了③，超出 RED 覆盖）——为补偿，
     补写后立刻做了变异验证，确认它真的守得住；不把它写成「已覆盖」蒙混过去。
-  - ⚠️ **本次新增 1 条 oxlint warning**（`no-unsafe-type-assertion`，`sqlite.bun.ts` 的 `routed`
-    里那个 `as`）：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
+  - ⚠️ **本次新增 1 条 oxlint warning**（`no-unsafe-type-assertion`，
+    `multi-tenant-routing.test.ts` 里 `db.all(...) as Array<{v:string}>`）——与 `packages/core`
+    既有测试**同款写法**，随大流。另一条 `no-unsafe-type-assertion`（`Hook.resolve` 那个 `as`）
+    **不是新增**：它是 `routed` 从 `sqlite.bun.ts` **搬到** `connection-routing.ts` 时跟着搬的，
+    净 0。为什么留：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
     `client.export` / `loadExtension` 要求无 `Scope` 的 R（那是上游两行，不去动）。已试过的替代
     都不成立（改 `SqliteClient` 接口 = 动更多上游行；让钩子返回无 Scope 类型 = 把断言挪个位置，
-    warning 照报）。**该文件本来就是 warning 存量文件（同批另 7 条全是上游自带的）**，
-    这条与它们同类，如实登记而非隐藏。
-  - 门禁：单测 3 pass / typecheck 通过 / oxlint **0 error**（8 warning：7 上游存量 + 1 见上）；
-    **全包回归做了基线对照** → **Δ = +3 pass / 0 新失败**（1096/7/5，5 条失败全是本机 `~/.npmrc`
-    镜像导致的存量 `NpmConfig`，与 T005 无关）。
+    warning 照报）。**这些文件本来就是 warning 存量文件**，如实登记而非隐藏。
+  - 门禁（收尾后重跑）：T005 新增单测 **core 8 pass + opencode 19 pass / 0 fail**；
+    `packages/core` 与 `packages/opencode` typecheck 均 **EXIT=0**；oxlint **0 error**
+    （9 个改动文件 15 warning：13 上游存量 + 1 搬过来的 + 1 新增，见上）；
+    core 全包 **1101/7/5**（T004 基线 1093/7/5 ⇒ Δ = +8 pass / 0 新失败，5 条失败全是本机
+    `~/.npmrc` 镜像导致的存量 `NpmConfig`，与 T005 无关）。
+  - 🟡 **`packages/opencode` 全包在本机不是可用门禁**（已登记进 `state.md`「未覆盖」表）：
+    跑一次 **2183s**，且 `test/server` **单独跑**也有存量 flaky 5s 超时带——基线 9 fail / 带改动
+    10 fail，失败集合**双向**变动（4 条「基线红、改动绿」+ 1 条反向，该条单独跑为绿）。
+    ⇒ 判据改为「**改动影响面所在的测试文件**全绿 + 与基线做**名称级差集**」。
+    证据与复现命令见 `state.md`「全包回归：无可用基线，已改用名称级差集判据」。
+  - 🟡 **未覆盖（登记为缺口，不是覆盖）**：**`node` 构建条件下「路由真的生效」未验证**——
+    `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`），只有形状守卫；
+    需 CI 提供 node 运行时才算补齐。在此之前**不得声称「两种构建条件下都已隔离」**。
   - ⚠️ **更正一条我曾写在这里的错误推断**：本段原文断言「`run()` 用 `native.query(...)`，acquirer
     只是 facade ⇒ 换库必须发生在更靠上的地方」。**该推断被实测推翻**：`Client.make` 的
     `getConnection` **每条查询都回调 acquirer**，acquirer 返回哪个 connection 就决定落到哪个文件
@@ -171,8 +193,9 @@
   - ✅ **方案已获用户裁定（2026-09-30）**：批准「方案 A」——碰上游自有文件
     `packages/core/src/database/sqlite.bun.ts`，acquirer 先问一个**可选**钩子、**无钩子时逐字
     等于现状**。这是本 feature 首次**修改**而非新增上游自有文件（§I 红线），已按流程停下问过。
-    （改动实为 +32/−2 行，比当时估的「约 5 行」多——多出来的全是解释性注释，刻意如此：
-    同步上游冲突时，读到注释才知道这块不能丢。）
+    （改动**远多于**当时估的「约 5 行」——多出来的全是解释性注释，刻意如此：
+    同步上游冲突时，读到注释才知道这块不能丢。**别引用写死的行数**，
+    取数用 `git diff --stat`；收尾后两支各只剩两行 `routed(...)` 调用。）
   - 接口形状（本 task 已定）：钩子要的是 **connection**，取法 = `forUser(id).db.$client.reserve`
     ——`reserve` 就是 `transactionAcquirer`，与「当前这次取连接」语义一致。
   - ✅ **一条新识别预设已裁定（2026-09-30）**：库路径是 `/data/{userId}/opencode.db`，
