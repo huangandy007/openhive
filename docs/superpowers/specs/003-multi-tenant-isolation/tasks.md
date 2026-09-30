@@ -395,7 +395,7 @@
 
 ## Phase 5: US4 资源配额（P2）
 
-- [ ] T010 实现每用户并发 Session 计数 + 限流（中间件 + SessionExecution）[FR-008] [T003] [出参：超限新会话被拒]
+- [x] T010 实现每用户并发 Session 计数 + 限流（中间件 + SessionExecution）[FR-008] [T003] [出参：超限新会话被拒]
   **✅ D4-1 已裁定（2026-09-30 · 维度甲 + 覆盖面丙）——形状已定，可开工**：
   - **计数维度** = 本用户**当前正在跑的** session（**不是**存量、**不是**新建）。
   - **拦点 = 启动执行时**，**不是**建会话时。
@@ -422,6 +422,63 @@
     **乙**（按存量 session 数拦在 `create`）被否：拦的不是资源消耗，建满上限的空会话反挡正常使用；
     **丙**（两道都上）被否：多一处执行点 + 多一套阈值，两套规则并存时「为什么不让用」难解释。
   - ⚠️ **落地时要核一件事**（D4 未涉及、但开工必查）：这个拦点与 **F4 的工具执行守卫**是否打架。
+  **✅ 2026-09-30 完成 —— 出参「超限新会话被拒」在判据层与接线层达成；端到端那一枪仍是缺口（见末行）**。
+  新增 4 文件，改动 2 文件（各 2 行挂载 + 1 行 import），**零错误契约改动、零 schema 改动**。
+  - **落点**：core `packages/core/src/quota/session-quota.ts`（唯一一份判定 + 阈值 + 计数，7 测）；
+    opencode `.../httpapi/middleware/session-quota.ts`（两种形态的适配器）；测试
+    `packages/core/test/session-quota.test.ts`（7 pass）、
+    `packages/opencode/test/server/session-quota-middleware.test.ts`（7 pass：5 条判据 + 2 条守夜）。
+  - **有意偏离 `plan.md`**：模块放 **core**，不按 plan 写的 `packages/opencode/src/quota/`。
+    理由：**B 链的拦截点在 core**（`SessionV2.prompt`），而 core 不能 import `@opencode-ai/opencode`
+    （`packages/core/package.json` 无该依赖）⇒ 两条链要共用一份判定，只能放 core。
+  - **⚠️ 裁定前提被实测推翻（本 task 最该念的一条）**：D4-1 覆盖面【丙】写「两条链都拦」，
+    但当时**默认「有活跃集合 = 能拦」**，实测发现 **两条链活在两个不同的层作用域**：
+    - `SessionV2.Service`（B 链活跃集合）、`Database.Service` —— 路由层够得着；
+    - `SessionStatus.Service`（A 链活跃集合）—— 层构造期**取得到**，**请求期调用失败**。
+      根因：实例上下文（`InstanceRef`）由**端点级** `HttpApiMiddleware`（`InstanceContextMiddleware`）
+      注入，**任何路由级中间件都在它外面**。⇒ **A 链只能走端点级**（`.middleware(...)`），
+      B 链走路由级。**两次挂载、一份判定**（`judge` 是唯一分支处）。
+    - 探针实测过坏法：挂错位置不是静默放行，是 `Service not found` → **500**。
+  - **⚠️ 官方 `HttpApiMiddleware.Service` 声明里不能写 `requires`**（typecheck 实测，二分定位）：
+    写进去的需求会**焊进 API 的类型**（`InstanceHttpApi` 的 requirement），那个位置**任何
+    `Layer.provide` 都消不掉**——层在下面供了、运行期也对，typecheck 却坚持说还欠着。
+    照官方 `Authorization` 先例（它只有 `error`、没有 `requires`），需求留在**层**上即可。
+  - **响应形状**：**裸 429 + JSON body**（`SessionQuotaExceeded`），**不声明进 HttpApi 错误契约**。
+    这是「不碰 4~6 个上游契约文件」换来的代价，客户端按状态码识别。
+  - **判据两段（不是优化）**：`exceeds` = `alreadyRunning` **先放行**、再看 `active >= limit`。
+    `run-coordinator.ts` 的 `wake` 对已在跑的 key 只置 `pendingWake`、**不新建条目**⇒
+    满配额时给正在跑的会话**追加一句 steer** 不增加并发，若只写 `active >= limit` 会把它误拒。
+  - **阈值**：`OPENHIVE_MAX_SESSIONS_PER_USER`，默认 **5**；四种回落（没设 / 空串 / 非数字 / 非正数）
+    一律回默认。**非数字那条是必须的**：`Number("abc")` 是 `NaN`，任何与 `NaN` 的比较恒假 ⇒
+    放它过去 `active >= NaN` 恒 false、**限流静默失效**（门看着还在）。⚠️ 默认值**未经压测、非结论**。
+  - **变异验证（两条，都实测）**：① 让 A 链的 `read` `Effect.die` ⇒ A 链那组测试立刻红（证明端点级
+    中间件**真的在执行**，不是挂了个摆设）；② `countActiveForUser` 空集合不进 SQL 那条由单测钉住。
+  - **核过 D4 未涉及、但本 task 必查的一条**：「与 F4 的工具执行守卫是否打架」——
+    **不打架**。F4（`004-access-control`）**尚未落地**（无 `src/authz/` 代码），其两个钩点在
+    **工具清单组装 / 执行器入口**，都在「一轮已经跑起来**之后**」；本 task 在**prompt 入口准入**。
+    不同层、不重叠：被本 task 拒的 prompt 根本走不到工具执行；被 F4 拒的工具调用发生在已准入的轮内。
+  - ⚠️ **未覆盖（缺口，不是覆盖）**：端到端「**第 6 个真会话被拒**」**未验证**——要让 `active ≥ limit`
+    得先有真会话在跑（真 agent 执行，重且不确定）。守夜测试只能证「依赖解析得开、不是 500」，
+    **证不了 429 会发生**。按 `LEARNINGS #002-02` 明写为**缺口**，留给 T012/T013 或压测补。
+  - **质量门禁（2026-09-30 实跑，非外推）**：`bun run typecheck` **31/31、exit 0**；
+    `packages/core/test/session-quota.test.ts` **7 pass / 0 fail**；
+    `packages/opencode` 影响面四文件（本 task + `user-identity` + `multi-tenant-routing` +
+    `anchor-workspace`）**31 pass / 0 fail**；改动/新增 6 文件 `bunx oxlint` **0 errors**，
+    2 条 warning 是 `groups/session.ts` 的 `Permission` / `MessageV2` 未使用 import，
+    `git show HEAD:` 实测**同样存在于 HEAD** ⇒ 非本次引入，不动（`#001-02` + 外科手术式改动）；
+    `git diff --stat bun.lock` **无输出**。
+  - **`test/server` 全目录不做「全绿」门禁**（沿用 T005 登记）：本轮真跑**基线对照**——
+    回退 2 个接线文件跑得 **298 pass / 23 skip / 9 fail**（**9 条全是 5s 超时**），
+    带改动跑 **298 pass / 23 skip / 9 fail / 1 error**；失败集合**名称级差集双向变动**
+    （7 条两边都红、2 条只在基线红、2 条只在带改动红）⇒ 同一「跑次噪声」签名，**本 task 未引入新失败**。
+  - ⚠️ **顺带实测出的一条存量 flaky（登记，本轮未修）**：`user-identity.test.ts` 的
+    「开关开：令牌被篡改 → 拒绝」以 **≈1/16** 概率**假红**。机制（300 条探针实测，非推理）：
+    HS256 签名 32 字节 → base64url **43 字符**，末字符只有 4 个真比特、**低 2 位是填充**；
+    该测试把末字符 `A`→`B`（`A`=000000 → `B`=000001）**只动了填充位** ⇒ 解出的签名字节
+    **逐字节相同** ⇒ 验签照样通过（实测：300 条里末字符为 `A` 的 20 条**全部**「篡改后仍验过」，
+    改中间字符 0/300 幸存）。**不是身份门漏了、也不是安全洞**，是**测试构造缺陷**。
+    修法（未做）：别改末字符——改中间字符、或改 payload 再重签。**留给用户裁决是否本轮修。**
+
 - [ ] T011 实现沙箱磁盘配额（Linux quota / docker volume）[FR-009] [T002] [出参：超配额写入被限制]
   **✅ D4-3 已裁定（2026-09-30 · 丙）——拆成「做的」+「挂账的」两半**：
   - **做的**：**应用层**配额——写入前统计沙箱占用，超限拒绝写入。**T011 的出参由这半达成**。
