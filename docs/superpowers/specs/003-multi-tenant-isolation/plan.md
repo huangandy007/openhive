@@ -71,7 +71,16 @@ packages/opencode/src/
 > （`packages/core/package.json` 无该依赖）⇒ 两条链要共用一份判定，只能放两者共同依赖的 core。
 > opencode 侧只放**两种形态的适配器** `.../httpapi/middleware/session-quota.ts`：
 > A 链**端点级** `.middleware(...)`（实例上下文是端点级 `HttpApiMiddleware` 注入的，路由级挂会 500）、
-> B 链路由级。`disk-quota.ts` 的落点待 T011 定。详见 `state.md` 的「T010 结论」。
+> B 链路由级。详见 `state.md` 的「T010 结论」。
+
+> ⚠️ **勘误（2026-09-30 · T011 落地时）**：`disk-quota.ts` 落在
+> **`packages/core/src/quota/disk-quota.ts`**——与上面树里写的 `packages/opencode/src/quota/` 不同，
+> **理由与 T010 那条同源且更硬**：守卫要挂在 **`packages/core/src/fs-util.ts` 的 `writeWithDirs`** 上
+> （`write` / `edit` / `apply_patch` 三个工具共用的**唯一写入漏斗** ⇒ 一处接线覆盖三个工具），
+> 而 core **不能** import `@opencode-ai/opencode`。接线改动：`fs-util.ts` **+1 处调用 + 错误联合 +1 项**，
+> 均带【保留的定制 · 同步上游时不要丢】注释（`fs-util.ts` 是上游热文件，改动已压到最小）。
+> 配套：`packages/opencode/test/disk-quota-drift.test.ts` 一条**防漂移断言**——core 抄了一份沙箱根常量，
+> 与 `packages/auth/src/workspace.ts` 那份必须相等。详见 `state.md` 的「T011 结论」。
 
 > 改造三步（design-v2 §5.2）：① 新增 per-request `User` 上下文；② `Database` 维护 `Map<userId, 连接>` 指向 `/data/{userId}/opencode.db`（惰性打开 + 复用 + 各自 PRAGMA）；③ db 查询从 User 上下文取 userId 路由到对应连接。**零表结构改动**——`session` 表不加 `user_id` 列，不碰 `sql.ts`。
 
