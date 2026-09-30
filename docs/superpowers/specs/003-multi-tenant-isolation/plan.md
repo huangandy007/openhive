@@ -65,6 +65,14 @@ packages/opencode/src/
 │                               # OS 级强制（Linux quota / docker volume）登记为部署缺口，见 R4
 ```
 
+> ⚠️ **勘误（2026-09-30 · T010 落地时）**：`session-quota.ts` 实际落在
+> **`packages/core/src/quota/session-quota.ts`**，**不是**上面树里的 `packages/opencode/src/quota/`。
+> 理由：**B 链的拦截点在 core**（`SessionV2.prompt`），而 core **不能** import `@opencode-ai/opencode`
+> （`packages/core/package.json` 无该依赖）⇒ 两条链要共用一份判定，只能放两者共同依赖的 core。
+> opencode 侧只放**两种形态的适配器** `.../httpapi/middleware/session-quota.ts`：
+> A 链**端点级** `.middleware(...)`（实例上下文是端点级 `HttpApiMiddleware` 注入的，路由级挂会 500）、
+> B 链路由级。`disk-quota.ts` 的落点待 T011 定。详见 `state.md` 的「T010 结论」。
+
 > 改造三步（design-v2 §5.2）：① 新增 per-request `User` 上下文；② `Database` 维护 `Map<userId, 连接>` 指向 `/data/{userId}/opencode.db`（惰性打开 + 复用 + 各自 PRAGMA）；③ db 查询从 User 上下文取 userId 路由到对应连接。**零表结构改动**——`session` 表不加 `user_id` 列，不碰 `sql.ts`。
 
 **Structure Decision**: 改造集中在 `user/`、`database/router.ts`、`middleware/`、`quota/` 四个新增模块，不重写 `database.ts` 既有逻辑（用「加」的方式）。
