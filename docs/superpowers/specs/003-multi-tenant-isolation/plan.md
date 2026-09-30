@@ -58,7 +58,9 @@ packages/opencode/src/
 │   └── anchor-workspace.ts     # 工作目录强制锚定到 /workspaces/{userId}/
 ├── quota/
 │   ├── session-quota.ts        # 每用户并发 Session 计数（中间件 + SessionExecution）
-│   └── disk-quota.ts           # 沙箱磁盘配额（Linux quota / docker volume）
+│   │                           # D4 裁定甲：数「活跃执行数」，拦在启动执行时（prompt→wake/resume）
+│   └── disk-quota.ts           # 沙箱磁盘配额（**应用层**；D4 裁定丙）
+│                               # OS 级强制（Linux quota / docker volume）登记为部署缺口，见 R4
 ```
 
 > 改造三步（design-v2 §5.2）：① 新增 per-request `User` 上下文；② `Database` 维护 `Map<userId, 连接>` 指向 `/data/{userId}/opencode.db`（惰性打开 + 复用 + 各自 PRAGMA）；③ db 查询从 User 上下文取 userId 路由到对应连接。**零表结构改动**——`session` 表不加 `user_id` 列，不碰 `sql.ts`。
@@ -91,7 +93,7 @@ flowchart LR
 |---|---|---|
 | Bun（monorepo） | 构建 / 运行 | opencode 既有工程 |
 | opencode `Database` / `LayerNode` | 改造基座 | 复用原生能力；`Database` 的按用户替换仿 `Location` 的 `unbound`/`boundNode`（T004/T005），per-request 上下文用 `Context.Service`（T003，已落地） |
-| Linux quota / docker volume | 磁盘配额 | 沙箱磁盘限制 |
+| Linux quota / docker volume | 磁盘配额 | 沙箱磁盘限制。⚠️ **D4 裁定丙后这是「挂账」那一半**：T011 落地的是**应用层**统计+拒绝，本条 OS 级强制**登记为部署缺口**（本机 win32、无 Docker，测不了——`LEARNINGS #002-05` 同款处境） |
 | OS 受限用户 + 文件权限 | **容器外防护**（**不承担用户间隔离**——2026-09-30 裁定乙） | 容器非 root；`/workspaces/{userId}/` `0700`，挡同主机其他容器/系统用户 |
 
 > 具体版本实现时对照 opencode 现有依赖锁定。
@@ -109,4 +111,4 @@ flowchart LR
 | R1 | 改造 `Database` 单例为 per-user `Map` 是「唯一深改 core」处，与上游合并冲突风险最高 | 用「加」的方式新增 `router.ts`，不重写 `database.ts`；改造点单独提交、标注为保留定制 |
 | R2 | 连接惰性打开/复用管理不当导致连接泄漏或未关闭 | 连接按 userId 索引 + 惰性打开 + 显式复用与回收，纳入隔离测试 |
 | R3 | ~~OS 受限用户 + 文件权限配置过松（越权）或过紧（自己都写不了）~~ **已改造（2026-09-30 裁定乙）**：单进程下 OS 权限不承担用户间隔离，真正的风险变成「**误以为 OS 已隔离**」 | ① `0700` + 最小权限照做，但**宣称的效力降级为容器外防护**；② 隔离测试（T012/T013）的断言必须**如实写「由应用层锚定保证」**，不得假装是 OS 拦的；③ `/data/{userId}/` 目录必须可写——SQLite WAL 要在同目录建 `-wal`/`-shm`，「过紧」在这里表现为**直接打不开库**（见 `isolation-scheme.md` §0.4） |
-| R4 | 并发/磁盘配额阈值未定 | design-v2 §6 已标「需压测确认」，阈值先设保守默认值，压测后调 |
+| R4 | 并发/磁盘配额阈值未定 | **已裁定（2026-09-30 · D4，T010/T011 开工前到点裁定）**：① 维度与拦点走**甲**——数本用户**活跃执行数**（`SessionExecution.active` ∩ 本用户的库），拦在**启动执行时**（`prompt` → `wake`/`resume`），**不是**建会话时；② 默认阈值 **`5`**（依据本文件「1600 用户 / 并发活跃 320~480」⇒ 人均不到 1，给 5 是 5 倍以上余量），⚠️ **未经压测，非结论**；③ 磁盘配额（T011）走**丙**——**应用层先做**（T011 的出参由这半达成），**OS 级强制**（Linux quota / docker volume）**登记为部署缺口**（本机 win32、无 Docker、无 quota 工具）。全文见 `dev_tdd.003.md` Step 0.5 的 D4 段 |
