@@ -10,7 +10,9 @@
 **下一个候选：T006 沙箱锚定**（**承接 T004 移交的验收项**，见 `tasks.md` T006 段）——
 注意 T005 之后它更紧了：查询路由只按 fiber 的 `User` 分库，而 Location 树按**目录**缓存、
 不按用户分键 ⇒ 「两个用户共用同一个 `Location.Ref`」这个缺口**仍然开着**，没被 T005 关掉。
-其余候选：T019–T024 002 评审移交。未裁定的还有任务书 Step 0.5 的 **D2–D6**。
+其余候选：T019–T024 002 评审移交。任务书 Step 0.5 的 **D1–D6 已全部裁定**（2026-09-30）：
+D1/D2/D5/D6 定案，D3 推迟到 T015 开工前、D4 推迟到 T010/T011 开工前（**推迟是裁定本身**）。
+**另有一条从 T005 收尾长出来的新决策点：db 路由接进哪一层**（见下「T005 结论 · 本轮未覆盖」）。
 
 ## 已完成
 - **T005**（2026-09-30）· db 查询按身份路由到各自连接。**本 feature 首次修改上游自有文件**
@@ -671,7 +673,7 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
 - **`layerFromPath(filename)` 已是公开导出**——接受的任意文件名，内部含 5 个 PRAGMA + `wal_checkpoint` +
   `DatabaseMigration.apply`。⇒ per-user 连接**零改动复用**它，不必重写这段逻辑。
 
-### ⚠️ 结构性发现（影响 T004 落点，**未裁定**）
+### ⚠️ 结构性发现（影响 T004 落点 —— **该落点已于 2026-09-30 三轮实测后裁定**，见「T004 结论」；本段保留为当时的发现记录）
 `Database.node` 的 tag 是 **`global`**，消费者 9/10 是 global 节点
 （`credential` / `event` / `permission/saved` / `project/copy` / `project/directories` /
 `session/projector` / `session/runner/llm` / `session/store` / `session.ts`；只有 `session/todo` 是 location），
