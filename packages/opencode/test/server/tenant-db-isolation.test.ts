@@ -5,6 +5,8 @@ import { tmpdir } from "os"
 import path from "path"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -71,6 +73,24 @@ const WORKSPACE_ROOT = path.join(SANDBOX, "workspaces")
  */
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
+
+/**
+ * ⚠️ **T020 遗留的修补（2026-10-01，T021 期间发现）**：本文件在 T012 落地时不需要这一行，
+ * 因为那时网关还**没有**「默认口令」这个概念。T020 把 `defaultPassword(process.env)` 放进了
+ * 网关的层构造期，并且选定「缺失即抛、进程起不来」——于是**任何建真应用
+ * （`HttpApiApp.routes`）的测试，都必须像一次真部署那样把口令配上**，否则整个文件一起撞
+ * 「缺少环境变量 OPENHIVE_DEFAULT_PASSWORD」。
+ *
+ * 实测基线：这两个文件（T012 / T013 的隔离验收）在 T020 落地后**共 9 条用例转红**，
+ * 而 T020 自己的记录是绿的——它只跑了 `openhive-gateway.test.ts`。已在 T021 的收尾里单独
+ * 提交修复（**不是** T021 引入的，也不是 T021 的改动能治的）。
+ *
+ * 为什么走 `process.env` 而不是 `OPEN` 那个 `ConfigProvider`：与上面 `OPENHIVE_DATA_ROOT`
+ * 同因——网关读的是 `process.env`，塞进 `ConfigProvider` 会被**无声忽略**。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+
+afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT

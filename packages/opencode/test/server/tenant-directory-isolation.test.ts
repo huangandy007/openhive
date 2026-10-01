@@ -4,6 +4,8 @@ import { tmpdir } from "os"
 import path from "path"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -51,6 +53,17 @@ writeFileSync(path.join(sandboxOf(ALICE), OWN_FILE), OWN_TEXT, "utf8")
 const SECRET_FILE = "bob-secret.txt"
 const SECRET_TEXT = "鲍勃的机密材料"
 writeFileSync(path.join(sandboxOf(BOB), SECRET_FILE), SECRET_TEXT, "utf8")
+
+/**
+ * ⚠️ **T020 遗留的修补（2026-10-01，T021 期间发现）**：同 `tenant-db-isolation.test.ts` 上那条
+ * 注释——T020 之后，建真应用（`HttpApiApp.routes`）的测试必须像一次真部署那样把
+ * `OPENHIVE_DEFAULT_PASSWORD` 配进 `process.env`，否则网关在层构造期就抛、整个文件转红。
+ * 实测：T012 / T013 两个文件在 T020 落地后共 9 条用例红，与 T021 的改动无关
+ * （已按 HEAD 基线实测确认），修在 T021 收尾的单独提交里。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+
+afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   try {
