@@ -5,6 +5,7 @@ import { drizzle } from "drizzle-orm/pglite"
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { InvalidCredentialsError, login } from "./login"
 import { migrate } from "./migrate"
 import { verifyPassword } from "./password"
 import { AccountWriteError, pgErrorCode } from "./pg-errors"
@@ -138,6 +139,13 @@ async function rowOf(policeNo: string) {
   if (!row) throw new Error(`未找到警号 ${policeNo} 的账号`)
   return row
 }
+
+/** 取全部匹配行（可为空）。`rowOf` 找不到会抛，断言「**没有**留下东西」时不能用它。 */
+function rowsOfPoliceNo(policeNo: string) {
+  return db.select().from(user).where(eq(user.policeNo, policeNo))
+}
+
+const SECRET = "test-secret"
 
 describe("管理员录入账号", () => {
   test("8 个业务字段逐字落库，默认用户名 = 警号", async () => {
@@ -371,13 +379,21 @@ describe("录入流程（账号 + 沙箱，FR-003）", () => {
     expect((await rowOf(INPUT.policeNo)).id).toBe(id)
   })
 
-  test("落库被拒时不留垃圾目录——这条钉住「先落库、后建目录」的顺序", async () => {
+  test("落库被拒时不留垃圾目录——反转顺序后这条靠清理达成", async () => {
     const first = await provisionUser(db, INPUT, root, PW)
 
-    // 同警号第二次录入：PG 的 UNIQUE 先挡下，此时目录还没建。
+    // 同警号第二次录入：新目录已经建出来了（id 是新生成的 UUID），落库才撞上 UNIQUE。
     expect(await failureOf(provisionUser(db, INPUT, root, PW))).toBeInstanceOf(Error)
-    // 若顺序反了（先建目录），这里会多出一个目录。
+    // ⚠️ 这条断言在**反转前后都成立**，变的只是它为什么成立：
+    // 原来靠「先落库、还没轮到建目录」，现在靠「落库失败后把刚建的空目录删掉」。
     expect(await readdir(root)).toEqual([first.id])
+  })
+
+  test("落库被拒时抛的仍是「警号重复」，不是清理目录时撞上的那个错", async () => {
+    await provisionUser(db, INPUT, root, PW)
+
+    // 清理动作排在重抛之前，它自己的失败**绝不能盖掉**管理员真正要知道的原因。
+    expect(await failureOf(provisionUser(db, INPUT, root, PW))).toBeInstanceOf(DuplicatePoliceNoError)
   })
 
   test("建目录失败时把错抛出去，不静默返回一个没有沙箱的账号", async () => {
@@ -386,5 +402,60 @@ describe("录入流程（账号 + 沙箱，FR-003）", () => {
     await writeFile(blocker, "")
 
     expect(await failureOf(provisionUser(db, INPUT, join(blocker, "sub"), PW))).toBeInstanceOf(Error)
+  })
+
+  /**
+   * T022（002 评审 I5）。**这条是本次的核心**。
+   *
+   * 上面那条只钉了「错抛出去了」，**没管库里那行**——而先前的顺序是「先落库、后建目录」，
+   * `createWorkspace` 失败时**账号行已经插进去了**。后果不只是难看：
+   *
+   * - 那个账号有**默认口令的 hash**、`status` **取自录入表单**（正常录入新民警就是 1），
+   *   而 `login` 的判据只卡 `status !== 1` 与密码 ⇒ **它会放它进来**。
+   *   一次管理员看到的「失败」，实际留下了一个能过认证、却没有沙箱的账号。
+   * - 它同时**挡住重试**：同警号再录一次撞 UNIQUE，管理员在界面上只会看到「该警号已录入」，
+   *   而那个账号用不了 —— 他没有第二条路，只能进库。
+   *
+   * 处置是**反转顺序**（先建目录、后落库），所以下面钉的是**不变量**：
+   * 目录建不出来时，账号行**根本还没被插**。
+   *
+   * ⚠️ **诚实标注**：这两条断言**分不出**「反转顺序」与「落库失败后补偿删除」——
+   * 两者都满足。差别只在**崩溃窗口**（前者的半成品是空目录、后者是账号行），而崩溃测不到。
+   * 选反转顺序是基于「结构上做不到」而不是基于这几条断言，别把它们读成在钉机制。
+   */
+  test("建目录失败时，库里不留账号行——失败的操作不该留下半个账号", async () => {
+    const blocker = join(root, "blocker")
+    await writeFile(blocker, "")
+
+    expect(await failureOf(provisionUser(db, INPUT, join(blocker, "sub"), PW))).toBeInstanceOf(Error)
+
+    expect(await rowsOfPoliceNo(INPUT.policeNo)).toEqual([])
+  })
+
+  /**
+   * ⚠️ **这条钉的是一个「反转顺序才出现」的新风险**：改之前是「先落库后建目录」，
+   * 非法输入在**落库那一步之前**就被 `validate` 挡下，根本走不到文件系统。
+   * 反转到「先建目录」后，校验若排在建目录之后，非法输入就会**留下一个垃圾目录**——
+   * 而这是本 task 自己引入的，不是既有的。
+   *
+   * 诚实标注：这条是**实现落笔之后补的**（不像上面两条先写后跑）。它的判别力
+   * 由变异检验给（把 `validate` 挪到 `createWorkspace` 之后 ⇒ 本条红），不是由 RED 给。
+   */
+  test("输入非法时连目录都不建——校验必须排在建目录之前", async () => {
+    const bad = { ...INPUT, name: "" }
+
+    expect(await failureOf(provisionUser(db, bad, root, PW))).toBeInstanceOf(MissingFieldError)
+    expect(await readdir(root)).toEqual([])
+  })
+
+  test("建目录失败之后，那个警号登不进来——上面那条的后果面", async () => {
+    const blocker = join(root, "blocker")
+    await writeFile(blocker, "")
+
+    await failureOf(provisionUser(db, INPUT, join(blocker, "sub"), PW))
+
+    // 「库里有行」是机制，「登得进来」才是后果。这一条让上面那条不必靠读代码才懂。
+    const thrown = await failureOf(login(db, { policeNo: INPUT.policeNo, password: PW }, SECRET))
+    expect(thrown).toBeInstanceOf(InvalidCredentialsError)
   })
 })

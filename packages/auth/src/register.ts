@@ -1,3 +1,4 @@
+import { rmdir } from "node:fs/promises"
 import { hashPassword } from "./password"
 import { AccountWriteError, pgErrorCode } from "./pg-errors"
 import { nowSeconds } from "./time"
@@ -185,14 +186,42 @@ export interface ProvisionedUser {
 /**
  * 管理员录入的**完整**动作：建账号 + 建沙箱目录（FR-003 要求两者一次发生）。
  *
- * 顺序是**先落库、后建目录**：
- * - 重复警号（T008）会在落库这一步就被 PG 的 UNIQUE 挡下，此时还没建目录，**不留垃圾目录**——
- *   这是更常见的失败，值得为它优化。
- * - 反过来若先建目录、落库失败，每次重试都漏一个空目录。
+ * ## 顺序是**先建目录、后落库**（T022 反转，理由见下）
  *
- * 代价说清楚：建目录失败时账号行**已经存在**（PG 事务管不到文件系统，这里也不做补偿删除——
- * 删目录是破坏性操作，用户沙箱里可能有真实研判产物，宁可留一个空目录也不冒误删的风险）。
- * 故障会原样抛出，管理员看得见，不会静默得到一个没有沙箱的账号。
+ * 反转前是「先落库、后建目录」，代价写在当时的注释里：「建目录失败时账号行已经存在……
+ * 故障会原样抛出，管理员看得见，不会静默得到一个没有沙箱的账号」。**那句只对了一半**：
+ * 错误确实抛出去了，但**库里那行没人管**，而它有后果——
+ *
+ * - 它带着**默认口令的 hash**、`status` 取自录入表单（正常录入新民警就是 1），
+ *   而 `login` 的判据只卡 `status !== 1` 与密码 ⇒ **它能登录**。
+ *   一次管理员看到的「失败」，实际留下了一个**能过认证、却没有沙箱**的账号。
+ * - 它还**挡住重试**：同警号再录一次撞 UNIQUE，管理员只会看到「该警号已录入」，
+ *   而那个账号用不了——他没有第二条路，只能进库。
+ *
+ * ⇒ 出参要的是「**不再留下有账号没沙箱的半成品**」。反转顺序让它**结构性做不到**：
+ * 目录建不出来时，账号行**根本还没被插**。这比「落库成功后再补一次删除」强在崩溃窗口上——
+ * 后者的窗口里半成品照样留在库里（两者都满足测试里的断言，差别在这里，见 `register.test.ts`）。
+ *
+ * ## 反转之后，原来那条理由还在吗
+ *
+ * 在。原注释说「重复警号会先被 UNIQUE 挡下，**不留垃圾目录**，这是更常见的失败，
+ * 值得为它优化」——那个**结果**靠下面的清理保住了，代价是常见失败多一次 `mkdir` + `rmdir`。
+ *
+ * ## 两处刻意的取舍
+ *
+ * 1. **清理用 `rmdir` 而不是 `rm -r`**：`rmdir` **拒绝删除非空目录**，这个安全性是内建的。
+ *    我们建的目录里不可能有东西（`id` 是本次新生成的 UUID，必然是新目录），但只要有人
+ *    改了上面那行 `crypto.randomUUID()`、让它复用已有目录，`rmdir` 就会**拒绝**而不是
+ *    连同用户真实的研判产物一起删掉。原注释担心的「误删风险」就是靠这条挡住的。
+ * 2. **清理自己失败时吞掉，绝不覆盖原始错误**：管理员要知道的是「警号重复」，
+ *    不是「删目录失败」。吞掉是可接受的——留下的只是一个空目录，而它不挡任何人的路
+ *    （下次录入用的是新 UUID）。`register.test.ts` 有一条钉着抛出的仍是领域错误。
+ *
+ * ## 与 `registerUser` 的关系
+ *
+ * 本函数**不再调 `registerUser`**：反转顺序需要**先拿到 id 再落库**，而 `registerUser`
+ * 自己生成 id、拿到就插。代价是两者共用 `validate` / `insertUser`，但插入的**时机**各写一遍；
+ * 改动其中一个时记得看另一个。
  */
 export async function provisionUser(
   db: UserInsertTarget,
@@ -200,8 +229,24 @@ export async function provisionUser(
   workspaceRoot: string,
   defaultPassword: string,
 ): Promise<ProvisionedUser> {
-  const { id } = await registerUser(db, input, defaultPassword)
+  // 校验**必须**排在建目录之前：反转到「先建目录」之后，非法输入若走到文件系统，
+  // 就会留下一个垃圾目录——而这是本次改动自己引入的风险（改前是「先落库」，走不到这里）。
+  validate(input)
+
+  const id = crypto.randomUUID()
   const workspace = await createWorkspace(workspaceRoot, id)
+
+  try {
+    await insertUser(db, input, id, defaultPassword)
+  } catch (cause) {
+    try {
+      await rmdir(workspace)
+    } catch {
+      // 见上面取舍 ① ②：目录非空（有人改过 id 的生成方式）或文件系统不配合，都放过。
+      // **不能**在这里抛——那会把「警号重复」盖成「删目录失败」。
+    }
+    throw cause
+  }
 
   return { id, workspace }
 }
