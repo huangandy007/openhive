@@ -3,7 +3,7 @@ export * as AuthGateway from "./gateway"
 /**
  * openhive 网关（003 T014）：**身份从哪来**这条链的头一段。
  *
- * 它做三件事，都不许绕过：
+ * 它做四件事，都不许绕过：
  *
  * ⓪ **引导首个管理员**（T019）：只在设了 `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO` 时，在**层构造期**
  *    把迁移跑到最新、再判一次「表里一个管理员都没有」。**这是进程里唯一会写 `auth.user` 的
@@ -17,6 +17,9 @@ export * as AuthGateway from "./gateway"
  * ② **身份注入**：把客户端自带的 `X-User-ID` **剥掉**，按 Cookie 里**验签通过**的凭证
  *    重新注入 `X-User-ID: <真实 id>`。于是明文头从「输入」变成「输出」——
  *    FR-002 ① 的原话是「剥离客户端头后按会话凭证覆盖注入」，这是它唯一落地的地方。
+ * ③ **记录活跃**（T017）：认得出身份就顺手刷一下 `auth.user.last_active_at`——
+ *    design-v2 §4.1 说的「请求时更新」就是这一处，全仓库唯一写那一列的地方。
+ *    **带节流**（默认 60 秒）且**失败被吞掉**，两条都见 `recordActivity()`。
  *
  * ⚠️ **为什么多一道验签**：内核身份门自己也验一次（`middleware/user-identity.ts`）。
  * 两次不是冗余，是**深度防御**：网关这层被绕过（或有人直连内核端口）时，门仍然拦得住；
@@ -38,6 +41,7 @@ export * as AuthGateway from "./gateway"
  */
 
 import { UserIdentity } from "@/server/user-identity"
+import { touchActivity } from "@opencode-ai/auth/activity"
 import { bootstrapAdmin } from "@opencode-ai/auth/bootstrap"
 import { connect } from "@opencode-ai/auth/db"
 import { InvalidCredentialsError, login, type LoginResult } from "@opencode-ai/auth/login"
@@ -48,8 +52,13 @@ import {
   InvalidCurrentPasswordError,
   WeakNewPasswordError,
 } from "@opencode-ai/auth/password"
-import { BOOTSTRAP_ADMIN_POLICE_NO_ENV, JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
+import {
+  activityThrottleSeconds,
+  BOOTSTRAP_ADMIN_POLICE_NO_ENV,
+  JWT_SECRET_ENV,
+} from "@opencode-ai/auth/policy"
 import { sessionIdentity } from "@opencode-ai/auth/session"
+import { nowSeconds } from "@opencode-ai/auth/time"
 import {
   jwtSecret,
   sessionCookie,
@@ -123,14 +132,14 @@ function startupSecret(config: ResolvedConfig) {
  * 引导失败、连不上库、迁移报错，一律是**缺陷**——层构造随之死掉，进程起不来。给它们编一个
  * 能被 catch 的类型，等于给「失败也继续启动」留了一道门，而那道门通向的就是锁死的系统。
  */
-function bootstrap() {
+function bootstrap(database: () => ReturnType<typeof connect>) {
   const policeNo = process.env[BOOTSTRAP_ADMIN_POLICE_NO_ENV]
   if (!policeNo) return Effect.void
 
   return Effect.promise(async () => {
-    // 与 `routes` 里的 `database()` 不同，这里**不留连接**：引导是一次性的，跑完就该把连接
-    // 还回去，没必要为一次启动动作在整个进程生命周期里占着一个连接池。
-    const db = connect(process.env)
+    // 与 `routes` 里那份同名函数不同，这里是**共用的**：本层的 `database()` 眼下已经要为
+    // 每个请求刷活跃而长期持有一个连接池，引导再另开一个只是白多一份。
+    const db = database()
     await migrate(db)
     return bootstrapAdmin(db, policeNo)
   })
@@ -142,12 +151,26 @@ function bootstrap() {
  */
 export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; handles: unknown }>()(
   Effect.gen(function* () {
-    yield* bootstrap()
+    // 连接**惰性建、建一次就留着**：`connect()` 每次调用都会新建一个连接池，
+    // 按请求建 = 按请求泄漏（plan.md 风险点 R2）。
+    //
+    // 与 `routes` 里那份**同名同形但不能合并**：两处是各自层构造期的闭包。合并要么放到
+    // 模块级——那样同一进程里多个 `app()` 会共用一条已经关掉的连接（测试直接失真，
+    // 见 `@opencode-ai/auth/test-support` 的文件头），要么给连接加一个 Effect 服务——
+    // 改动面更大（宪法 §I）。代价说清楚：一个进程里有**两个池**（这个刷活跃、那个跑
+    // 登录/自查/改密），各按需增长，不是泄漏。
+    let db: ReturnType<typeof connect> | undefined
+    const database = () => (db ??= connect(process.env))
+
+    yield* bootstrap(database)
 
     const config = yield* UserIdentity.Config
     if (!config.required) return (effect) => effect
 
     const secret = startupSecret(config)
+    // 在**层构造期**解析（与 `startupSecret` 同一个理由）：配了个读不出来的值时，
+    // 要的是「进程起不来」，不是「每个请求都静默不刷活跃」。
+    const throttleSeconds = activityThrottleSeconds(process.env)
 
     return (effect) =>
       Effect.gen(function* () {
@@ -163,6 +186,10 @@ export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; hand
         )
         const headers = subject ? Headers.set(UserIdentity.HEADER, subject.id)(stripped) : stripped
 
+        // 只有**认得出来的人**才算活跃。认不出就不刷——否则伪造的 Cookie 也能写别人的活跃时间，
+        // 而那是把「谁在线」这条运维信号交给外人来写。
+        if (subject) yield* recordActivity(database, subject.id, throttleSeconds)
+
         return yield* Effect.provideService(
           effect,
           HttpServerRequest.HttpServerRequest,
@@ -171,6 +198,32 @@ export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; hand
       })
   }),
 ).layer
+
+/**
+ * 记一次活跃（003 T017）。**跑在每个已认证请求上**，所以两件事必须成立：
+ *
+ * ① **带节流**——客户端是轮询的，不节流这条 UPDATE 就是全系统最高频的写。窗口值在
+ *    层构造期从配置读一次（`activityThrottleSeconds`），不是每请求读环境变量。
+ * ② **失败被吞掉**（2026-10-01 裁定）——记活动是**非关键路径**，不该把业务请求带下水：
+ *    PG 抖一下就让全平台用不了，代价明显大于收益。
+ *
+ * ⚠️ **代价如实记**：PG 长时间不可用时这一列会**静默停更**，僵尸识别偏保守（把还活跃的人
+ * 算成不活跃）——方向是安全的（宁可漏停，不可误停）。
+ * ⚠️ **吞掉不等于装作没发生**：留一行 warning，那是这件事唯一能被运维看见的地方。
+ * ⚠️ **它排在请求处理之前、且是 `yield*`（不是 fork）**：一个已认证请求因此多一次往返。
+ *    分叉出去能让它不占请求的延迟，但那样调用方与测试都抓不到它什么时候跑完——
+ *    现在这条链是「请求返回时，活跃已经记上了」，这是测试能断言的形状。
+ */
+function recordActivity(
+  database: () => ReturnType<typeof connect>,
+  userId: string,
+  throttleSeconds: number,
+) {
+  return Effect.tryPromise({
+    try: () => touchActivity(database(), userId, { now: nowSeconds(), throttleSeconds }),
+    catch: (cause) => cause,
+  }).pipe(Effect.catch((cause) => Effect.logWarning("记录最后活跃时间失败", { userId, cause })))
+}
 
 /**
  * 验签取身份。`undefined` = 认不出（没带凭证 / 签名不符 / 过期 / 载荷缺字段），
