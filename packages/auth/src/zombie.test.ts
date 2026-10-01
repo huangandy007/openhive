@@ -13,6 +13,7 @@ import {
   disableAccounts,
   findArchivableAccounts,
   findZombieAccounts,
+  LastAdminError,
   lastSeenAtOf,
   restoreAccount,
 } from "./zombie"
@@ -77,6 +78,17 @@ async function statusOf(id: string): Promise<number> {
 const SECRET = "test-secret"
 
 const credentials = (policeNo: string) => ({ policeNo, password: PW })
+
+/**
+ * 同上，但要求抛的确实是 `Error` 并交回来——留着逃出去的是字符串或 undefined 时，
+ * 调用点的 `thrown.message` 会读成 undefined 而**断言照样通过**（同 login / password / register /
+ * migrate 四个测试文件里同名的那只）。
+ */
+async function errorOf(action: Promise<unknown>): Promise<Error> {
+  const thrown = await failureOf(action)
+  if (!(thrown instanceof Error)) throw new Error(`期望抛出 Error，实际拿到：${String(thrown)}`)
+  return thrown
+}
 
 /** 跑一次应当失败的登录，把抛出的错交回来；没抛则得到 undefined。 */
 async function failureOf(action: Promise<unknown>): Promise<unknown> {
@@ -330,6 +342,126 @@ describe("停用后保留 30 天（FR-010 / T016）", () => {
     const [archivable] = await findArchivableAccounts(db, NOW)
 
     expect(archivable?.deactivatedAt).toBe(NOW - 45 * DAY)
+  })
+})
+
+/**
+ * T024（002 评审 I9 的另一半）：**一键批量停用不得把系统停成「一个管理员都没有」**。
+ *
+ * ## 为什么拦的是这个动作，**不是**那张名单
+ *
+ * 一个 90 天没人用、却能录入账号和重置密码的账号，是**特权休眠账号**——风险最高的一类，
+ * 恰恰最该被管理员看见。把它从僵尸名单里滤掉 = 把它藏起来（task 原文点名不许这么做）。
+ * 要拦的是那个**一次删掉一批**的动作。
+ *
+ * ## 判据是「会不会减到 0」，不是「含不含管理员」
+ *
+ * 表里有两个管理员时，停掉其中一个完全正常——真正不可接受的是**停完一个都不剩**。
+ * 所以下面既钉「该拒的拒」，也钉「**不该拒的别拒**」（过紧也是缺陷）。
+ *
+ * ## 已裁定（2026-10-01）
+ *
+ * ① **整批拒绝、抛错**，不是「跳过那一个、其余照停」。第二条用例的
+ * 「同批的普通僵尸也没被停」就是这两种实现的分界线。
+ * ② **只在「本批真的会减到 0」时拦**；表里本来就是 0 个启用管理员（例如 T019 引导之前）
+ * 时**放行**——那时没什么可保护的，拦下来只是让一个无害动作失败。
+ */
+describe("批量停用不得停掉最后一个启用管理员（T024）", () => {
+  /**
+   * 把账号提成管理员。
+   *
+   * ⚠️ 直接改列而不是调 `bootstrapAdmin`：那个函数是**一次性**的——只在「一个管理员都没有」时
+   * 生效（T019 刻意的设计，否则「把某警号提权」就成了能反复用的常开开关）。造第二个管理员
+   * 只能直接改列；提权在仓库里**没有第二条业务路径**（F10 的账号管理才会有）。
+   */
+  async function promote(id: string): Promise<void> {
+    await db.execute(sql`update auth.user set is_admin = 1 where id = ${id}`)
+  }
+
+  async function enabledAdminCount(): Promise<number> {
+    const result = await db.execute(
+      sql`select count(*)::int as n from auth.user where is_admin = 1 and status = 1`,
+    )
+    return Number(result.rows[0]?.n)
+  }
+
+  test("本批会停掉最后一个启用管理员 ⇒ 拒，且**同批的普通账号也没被停**", async () => {
+    const boss = await account("000051", { createdDaysAgo: 200 })
+    await promote(boss)
+    const zombie = await account("000052", { createdDaysAgo: 200 })
+
+    const thrown = await failureOf(disableAccounts(db, [boss, zombie]))
+
+    expect(thrown).toBeInstanceOf(LastAdminError)
+    // 「整批拒绝」与「跳过那一个」的分界线：后者会留下 `zombie` 已被停用、`boss` 还在。
+    expect(await statusOf(zombie)).toBe(1)
+    expect(await statusOf(boss)).toBe(1)
+    expect(await enabledAdminCount()).toBe(1)
+  })
+
+  /** 点名的判据取自**库里查出来的那一行**，不是入参（入参是 id，人读不懂）。 */
+  test("错误消息点名是哪个警号，而不是一句「操作失败」", async () => {
+    const boss = await account("000051", { createdDaysAgo: 200 })
+    await promote(boss)
+
+    const thrown = await errorOf(disableAccounts(db, [boss]))
+
+    expect(thrown.message).toContain("000051")
+  })
+
+  test("还有别的启用管理员 ⇒ 停掉其中一个，没问题", async () => {
+    const first = await account("000053", { createdDaysAgo: 200 })
+    const second = await account("000054", { createdDaysAgo: 200 })
+    await promote(first)
+    await promote(second)
+
+    await disableAccounts(db, [first])
+
+    expect(await statusOf(first)).toBe(0)
+    expect(await statusOf(second)).toBe(1)
+    expect(await enabledAdminCount()).toBe(1)
+  })
+
+  test("批里带了管理员但**没带全** ⇒ 照停（判据是会不会减到 0，不是含不含管理员）", async () => {
+    const first = await account("000055", { createdDaysAgo: 200 })
+    const second = await account("000056", { createdDaysAgo: 200 })
+    const zombie = await account("000057", { createdDaysAgo: 200 })
+    await promote(first)
+    await promote(second)
+
+    await disableAccounts(db, [first, zombie])
+
+    expect(await statusOf(first)).toBe(0)
+    expect(await statusOf(second)).toBe(1)
+    expect(await statusOf(zombie)).toBe(0)
+    expect(await enabledAdminCount()).toBe(1)
+  })
+
+  /**
+   * 钉住判据里的 **`status = 1`**：管理员得是**能登录的**才算数。
+   *
+   * 少了这一半，实现就会只数 `is_admin = 1`，于是「只剩一个**已停用**的管理员」被当成
+   * 「还有一个管理员」放行——而停用的人**登不进去**，系统照样锁死（T019 的引导注释里
+   * 记着同一条：判据刻意是「表里有没有管理员」，那里的取舍不同，别照抄）。
+   */
+  test("已停用的管理员不算数：只剩它一个「管理员」时照样拒", async () => {
+    const active = await account("000058", { createdDaysAgo: 200 })
+    const dormant = await account("000059", { createdDaysAgo: 200, status: 0 })
+    await promote(active)
+    await promote(dormant)
+
+    const thrown = await failureOf(disableAccounts(db, [active]))
+
+    expect(thrown).toBeInstanceOf(LastAdminError)
+    expect(await statusOf(active)).toBe(1)
+  })
+
+  test("表里本来就没有启用管理员 ⇒ 放行（没什么可保护的，不拦）", async () => {
+    const zombie = await account("000060", { createdDaysAgo: 200 })
+
+    await disableAccounts(db, [zombie])
+
+    expect(await statusOf(zombie)).toBe(0)
   })
 })
 

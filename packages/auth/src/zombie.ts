@@ -16,6 +16,22 @@ const SECONDS_PER_DAY = 24 * 60 * 60
 const ENABLED = 1
 const DISABLED = 0
 
+/** `is_admin` 取值：1 管理员 / 0 普通民警（与 `bootstrap.ts` 同一读法）。 */
+const ADMIN = 1
+
+/**
+ * 这一批停用会把系统停成「一个管理员都没有」（002 评审 I9 的另一半，T024）。
+ *
+ * 连带停掉的人和发起停用的人可以是同一个——判据只看**停完之后还剩不剩**能登录的管理员，
+ * 不看是谁点的。真按「不能停自己」写，防的是误操作，防不住「两个管理员互相停」。
+ */
+export class LastAdminError extends Error {
+  constructor(policeNos: string[]) {
+    super(`不能停用最后一个管理员（${policeNos.join("、")}）：停用后将没有人能管理账号`)
+    this.name = "LastAdminError"
+  }
+}
+
 /** 只用到三个时间列——收窄入参，纯函数才能被直接单测。 */
 export type LastSeenFields = Pick<UserRow, "lastActiveAt" | "lastLoginAt" | "createdAt">
 
@@ -104,12 +120,44 @@ export async function findZombieAccounts(db: UserAccountTarget, now: number = no
  *
  * 于是 `disableAccounts` 变成幂等的：对已停用的 id 是一次 no-op，不是一次改写。
  * 代价是这列不再能回答「最后一次点停用是什么时候」——那本来也不是它该回答的问题。
+ *
+ * ### 不得把系统停成「一个管理员都没有」（T024，002 评审 I9 的另一半）
+ *
+ * 判据是**因果式**的：本批 id 覆盖了**当前全部**启用管理员才拦。表里本来就是 0 个启用管理员
+ * （例如 T019 引导之前、或引导还没跑）时放行——那时没什么可保护的，拦下来只是让一个无害动作
+ * 失败。
+ *
+ * 三条刻意的取舍，都别「顺手改好」：
+ *
+ * 1. **整批拒绝，不是跳过那一个**。跳过会让「同批的普通僵尸照常停用」，于是调用方看到「部分成功」，
+ *    而多账号批量操作里最难查的正是**部分成功**——管理员只知道「点了一下」，不知道停掉了哪些。
+ *    抛错则整批回到原样，可重试、可改选。代价是这批白勾了，得重新挑一遍——比悄悄停掉一半强。
+ * 2. **拦的是「停」这个动作，不是把管理员从僵尸名单里滤掉**。一个 90 天没人用、却能录入账号和
+ *    重置密码的账号是**特权休眠账号**，恰恰最该被管理员看见；从名单里滤掉 = 把它藏起来。
+ * 3. **停用的管理员不算数**（判据里的 `status = 1`）。停用的人**登不进去**，把他算作「还有一个
+ *    管理员」= 放行一个把系统锁死的动作。⚠️ 与 `bootstrap.ts` 的判据**不同**，别照抄那一边：
+ *    那边的 `hasAdmin` 刻意不带 status，理由是「表里有没有管理员」是**一次性**开关的判据，
+ *    带了 status 会让「引导过一个、后来停用了」变成「谁能再引导一次」——两处前提不同。
+ *
+ * 已知缺口（与 `bootstrapAdmin` 同一先例、同一登记方式）：**读-判-写之间有窗口**（TOCTOU）。
+ * 两个管理员同时各自停用对方，可能都读到「还剩两个」而都放行。闭合它要么上事务 + 行锁、
+ * 要么把判据下推成一条带子查询的 SQL，本任务都没做——生产里这个动作**今天没有调用方**
+ * （治理后台属 F10），而调用方出现之前，窗口没人能走到。已记在 003 `state.md` 缺口表。
  */
 export async function disableAccounts(
   db: UserAccountTarget,
   ids: string[],
   now: number = nowSeconds(),
 ): Promise<void> {
+  // 守卫排在写之前。`ids` 为空时下面 `every` 恒为 false ⇒ 放行，与「空名单一行也不动」一致。
+  const admins = await db
+    .select()
+    .from(user)
+    .where(sql`${user.isAdmin} = ${ADMIN} and ${user.status} = ${ENABLED}`)
+  if (admins.length > 0 && admins.every((admin) => ids.includes(admin.id))) {
+    throw new LastAdminError(admins.map((admin) => admin.policeNo))
+  }
+
   await db
     .update(user)
     .set({ status: DISABLED, deactivatedAt: now })
