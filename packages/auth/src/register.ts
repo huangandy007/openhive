@@ -1,6 +1,5 @@
 import { hashPassword } from "./password"
 import { AccountWriteError, pgErrorCode } from "./pg-errors"
-import { DEFAULT_PASSWORD } from "./policy"
 import { nowSeconds } from "./time"
 import { user } from "./user"
 import { createWorkspace } from "./workspace"
@@ -101,13 +100,24 @@ function validate(input: RegisterInput): void {
   if (input.status !== 0 && input.status !== 1) throw new InvalidStatusError(input.status)
 }
 
-/** 录入成功后返回新账号的 id——T007 用它建沙箱目录 `/workspaces/{id}/`。 */
-export async function registerUser(db: UserInsertTarget, input: RegisterInput): Promise<{ id: string }> {
+/**
+ * 录入成功后返回新账号的 id——T007 用它建沙箱目录 `/workspaces/{id}/`。
+ *
+ * `defaultPassword` 是**调用方解析好的值**（`policy.ts` 的 `defaultPassword(env)`），
+ * 本函数不读 env——照 `createWorkspace(root, userId)` 的形状：**解析归解析、动作归动作**。
+ * 它是**必填**的：默认密码没有兜底（兜底 = 生产忘了配时静默使用公开示例口令，
+ * 正是 003 T020 要治的病），所以「忘了传」在编译期就该拦住，而不是运行期降级。
+ */
+export async function registerUser(
+  db: UserInsertTarget,
+  input: RegisterInput,
+  defaultPassword: string,
+): Promise<{ id: string }> {
   validate(input)
 
   const id = crypto.randomUUID()
 
-  await insertUser(db, input, id)
+  await insertUser(db, input, id, defaultPassword)
 
   return { id }
 }
@@ -122,11 +132,16 @@ export async function registerUser(db: UserInsertTarget, input: RegisterInput): 
  * **绝不原样抛、也绝不误判成「警号重复」**——原样抛会把这条 insert 的参数
  * （含 `password_hash` / `id_card` / `phone`）随 drizzle 错误的 message 一起带出去。
  */
-async function insertUser(db: UserInsertTarget, input: RegisterInput, id: string): Promise<void> {
+async function insertUser(
+  db: UserInsertTarget,
+  input: RegisterInput,
+  id: string,
+  defaultPassword: string,
+): Promise<void> {
   // 哈希在 try **之外**算（同 `password.ts` 的两处）：否则 `Bun.password.hash` 自己抛的错
   // 也会被下面的 catch 收走、包成 `AccountWriteError(undefined)`——没有 SQLSTATE，
   // 看不出「是哈希失败」还是「是库失败」。
-  const passwordHash = await hashPassword(DEFAULT_PASSWORD)
+  const passwordHash = await hashPassword(defaultPassword)
 
   try {
     await db.insert(user).values({
@@ -183,8 +198,9 @@ export async function provisionUser(
   db: UserInsertTarget,
   input: RegisterInput,
   workspaceRoot: string,
+  defaultPassword: string,
 ): Promise<ProvisionedUser> {
-  const { id } = await registerUser(db, input)
+  const { id } = await registerUser(db, input, defaultPassword)
   const workspace = await createWorkspace(workspaceRoot, id)
 
   return { id, workspace }

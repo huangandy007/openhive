@@ -4,9 +4,11 @@ import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { InvalidCredentialsError, login } from "./login"
 import { migrate } from "./migrate"
-import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser } from "./register"
+import { DEPLOYED_DEFAULT_PASSWORD } from "./test-support"
 import { user } from "./user"
+
+const PW = DEPLOYED_DEFAULT_PASSWORD
 import {
   disableAccounts,
   findArchivableAccounts,
@@ -48,7 +50,7 @@ async function account(
     dept: "刑侦支队",
     section: "一大队",
     status: options.status ?? 1,
-  })
+  }, PW)
 
   const daysAgo = (days: number) => NOW - days * DAY
   const at = (days: number | undefined) => (days === undefined ? null : daysAgo(days))
@@ -74,7 +76,7 @@ async function statusOf(id: string): Promise<number> {
 
 const SECRET = "test-secret"
 
-const credentials = (policeNo: string) => ({ policeNo, password: DEFAULT_PASSWORD })
+const credentials = (policeNo: string) => ({ policeNo, password: PW })
 
 /** 跑一次应当失败的登录，把抛出的错交回来；没抛则得到 undefined。 */
 async function failureOf(action: Promise<unknown>): Promise<unknown> {

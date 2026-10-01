@@ -4,9 +4,11 @@ import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { InvalidCredentialsError, login } from "./login"
 import { migrate } from "./migrate"
-import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser } from "./register"
+import { DEPLOYED_DEFAULT_PASSWORD } from "./test-support"
 import { verifyToken } from "./token"
+
+const PW = DEPLOYED_DEFAULT_PASSWORD
 
 const SECRET = "test-secret"
 
@@ -34,7 +36,7 @@ let userId: string
 
 beforeEach(async () => {
   db = await freshDb()
-  const created = await registerUser(db, ACCOUNT)
+  const created = await registerUser(db, ACCOUNT, PW)
   userId = created.id
 })
 
@@ -69,20 +71,20 @@ const credentials = (password: string) => ({ policeNo: ACCOUNT.policeNo, passwor
 
 describe("登录成功", () => {
   test("正确警号 + 正确密码，拿到可校验、且解析出本人 userId 的凭证", async () => {
-    const result = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    const result = await login(db, credentials(PW), SECRET)
 
     expect((await verifyToken(result.token, SECRET)).id).toBe(userId)
   })
 
   test("凭证通过 httpOnly Cookie 下发", async () => {
-    const { cookie } = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    const { cookie } = await login(db, credentials(PW), SECRET)
 
     expect(cookie.options.httpOnly).toBe(true)
     expect(cookie.value).not.toBe("")
   })
 
   test("登录成功把最后登录时间刷成当前时刻（Unix 秒）", async () => {
-    await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    await login(db, credentials(PW), SECRET)
 
     const result = await db.execute(sql`select last_login_at::int8 as t from auth.user where id = ${userId}`)
     const [row] = result.rows
@@ -90,7 +92,7 @@ describe("登录成功", () => {
   })
 
   test("透出 must_change_pw，供前端决定是否弹强制改密（T012 要用）", async () => {
-    const result = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    const result = await login(db, credentials(PW), SECRET)
 
     expect(result.mustChangePw).toBe(true)
   })
@@ -105,7 +107,7 @@ describe("登录失败：统一提示（FR-005）", () => {
   })
 
   test("警号不存在 → 与密码错误完全同样的错误与消息，不泄露账号是否存在", async () => {
-    const thrown = await errorOf(login(db, { policeNo: "999999", password: DEFAULT_PASSWORD }, SECRET))
+    const thrown = await errorOf(login(db, { policeNo: "999999", password: PW }, SECRET))
 
     expect(thrown).toBeInstanceOf(InvalidCredentialsError)
     expect(thrown.message).toBe("账号或密码错误")
@@ -116,7 +118,7 @@ describe("登录失败：统一提示（FR-005）", () => {
     // 调用方会回 500——与统一提示不一致，等于变相告诉对方「这个账号有异常」。
     await corruptHashOf(ACCOUNT.policeNo, "not-a-hash")
 
-    const thrown = await errorOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))
+    const thrown = await errorOf(login(db, credentials(PW), SECRET))
 
     expect(thrown).toBeInstanceOf(InvalidCredentialsError)
     expect(thrown.message).toBe("账号或密码错误")
@@ -125,7 +127,7 @@ describe("登录失败：统一提示（FR-005）", () => {
   test("空 hash（verify 返回 false，不抛）同样按「账号或密码错误」处理", async () => {
     await corruptHashOf(ACCOUNT.policeNo, "")
 
-    expect(await failureOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))).toBeInstanceOf(
+    expect(await failureOf(login(db, credentials(PW), SECRET))).toBeInstanceOf(
       InvalidCredentialsError,
     )
   })
@@ -145,8 +147,8 @@ describe("「稍后修改」后再登录仍弹（FR-006 / T014）", () => {
     // 且不会有任何别的测试发现（清掉之后第一次登录看起来完全正常）。
     //
     // 解除标记的唯一入口是 changePassword（T013），见 password.test.ts。
-    const first = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
-    const second = await login(db, credentials(DEFAULT_PASSWORD), SECRET)
+    const first = await login(db, credentials(PW), SECRET)
+    const second = await login(db, credentials(PW), SECRET)
 
     expect(first.mustChangePw).toBe(true)
     expect(second.mustChangePw).toBe(true)
@@ -157,7 +159,7 @@ describe("登录失败：停用账号（FR-008）", () => {
   test("停用账号即使密码正确也被拒，且不签发凭证、不刷新最后登录时间", async () => {
     await disable(ACCOUNT.policeNo)
 
-    expect(await failureOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))).toBeInstanceOf(InvalidCredentialsError)
+    expect(await failureOf(login(db, credentials(PW), SECRET))).toBeInstanceOf(InvalidCredentialsError)
 
     // 「不刷新最后登录时间」这条同时钉住**检查的先后次序**：停用判定必须在记登录之前，
     // 否则停用账号会留下一串登录痕迹，运维看 last_login_at 会以为它还在被人用。
@@ -168,7 +170,7 @@ describe("登录失败：停用账号（FR-008）", () => {
   test("停用账号下密码对错报同一个错——停用状态不对外构成额外信号", async () => {
     await disable(ACCOUNT.policeNo)
 
-    const correctPw = await errorOf(login(db, credentials(DEFAULT_PASSWORD), SECRET))
+    const correctPw = await errorOf(login(db, credentials(PW), SECRET))
     const wrongPw = await errorOf(login(db, credentials("wrong-password"), SECRET))
 
     expect(correctPw).toBeInstanceOf(InvalidCredentialsError)

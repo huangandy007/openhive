@@ -27,9 +27,17 @@ import path from "path"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
-import { ACTIVITY_THROTTLE_SECONDS_ENV, SESSION_COOKIE_NAME } from "@opencode-ai/auth/policy"
+import {
+  ACTIVITY_THROTTLE_SECONDS_ENV,
+  DEFAULT_PASSWORD_ENV,
+  SESSION_COOKIE_NAME,
+} from "@opencode-ai/auth/policy"
 import { registerUser, type RegisterInput } from "@opencode-ai/auth/register"
-import { restorePoint, withProductionDb } from "@opencode-ai/auth/test-support"
+import {
+  DEPLOYED_DEFAULT_PASSWORD,
+  restorePoint,
+  withProductionDb,
+} from "@opencode-ai/auth/test-support"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { signToken } from "@opencode-ai/auth/token"
 import { user } from "@opencode-ai/auth/user"
@@ -55,6 +63,17 @@ const DATA_ROOT = path.join(SANDBOX, "data")
 
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
+
+/**
+ * 本文件里「**这次部署配的**」默认密码（取值、以及「为什么刻意不等于文档示例值」写在
+ * `@opencode-ai/auth/test-support` 上）。**必须走 `process.env`**：网关读它用的是
+ * `process.env`（同 `OPENHIVE_ACTIVITY_THROTTLE_SECONDS` 的读法），塞进 `app(env)` 的
+ * `ConfigProvider` 会被无声忽略——然后整个文件一起撞「缺环境变量」。
+ */
+const PW = DEPLOYED_DEFAULT_PASSWORD
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: PW })
+
+afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
@@ -160,7 +179,7 @@ describe("刷最后活跃时间的接线", () => {
   test("带合法凭证的请求 ⇒ 这个人的 last_active_at 被刷上", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       const before = nowSeconds()
 
       const response = await request(app(ON), await cookieFor(seeded.id))
@@ -179,7 +198,7 @@ describe("刷最后活跃时间的接线", () => {
     // 而那是把「谁在线」这条运维信号交给外人来写。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
 
       expect((await request(app(ON))).status).toBe(204)
       expect((await request(app(ON), `${SESSION_COOKIE_NAME}=nonsense`)).status).toBe(204)
@@ -194,7 +213,7 @@ describe("刷最后活跃时间的接线", () => {
     // 改成把一个**确定的过去时刻**摆在行里：只要窗口生效，这次请求就绝不能盖掉它。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       const 摆着的 = nowSeconds() - 10
       await setLastActive(db, seeded.id, 摆着的)
 
@@ -211,7 +230,7 @@ describe("刷最后活跃时间的接线", () => {
     // 只有上一条的话，一个把窗口写死成 3600 的实现也会全绿。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       const 摆着的 = nowSeconds() - 10
       await setLastActive(db, seeded.id, 摆着的)
 

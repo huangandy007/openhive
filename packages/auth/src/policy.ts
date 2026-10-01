@@ -7,8 +7,46 @@
  * - 凭证有效期：spec.md FR-004 / Assumptions（约 2 小时，到期需重新登录）
  */
 
-/** 管理员录入账号时派发的统一默认密码。 */
-export const DEFAULT_PASSWORD = "admin@123456"
+/** 承载默认密码的环境变量。 */
+export const DEFAULT_PASSWORD_ENV = "OPENHIVE_DEFAULT_PASSWORD"
+
+/**
+ * 解析派发给新账号 / 重置用的**默认密码**。
+ *
+ * ## 没有默认值，缺失即抛
+ *
+ * 这里**刻意不设兜底**（照 `jwtSecret(env)` 先例）。曾经的写法是 `policy.ts` 里一个
+ * `DEFAULT_PASSWORD = "admin@123456"` 常量，问题不在于它写在源码里，而在于
+ * **兜底会让「生产忘了配」变成静默使用一个公开的示例口令**——而全系统没有一处会红。
+ * 调用方（网关）在**层构造期**调它，所以抛 = 进程起不来 = 看得见的失败。
+ *
+ * ## 与 design-v2 正文那个示例值的关系
+ *
+ * design-v2 §4.1 把 `admin@123456` 当**公开示例**写在正文里，那是**文档**在说明
+ * 「首次怎么登录」（引导链依赖它）。2026-09-30 的 D5 裁定：**保留文档正文的示例值**，
+ * 关系在这里说清——正文那个是**示例**，本函数解析出来的才是**部署实际使用的值**。
+ * 二者不一致是**正常的**，也不需要同步：示例值不会被任何代码路径读走。
+ *
+ * ⚠️ **生产部署必须配**；不配则进程起不来（上面那条刻意的设计）。
+ *
+ * ## 只拒「没配」与「配了个空白」，不校验强度
+ *
+ * 空串与纯空白**抛**：它们「看起来配了、实际等于没配」，是部署排查时最费劲的一种。
+ * **不设长度地板**——默认密码是「首次登录用、强制改密兜底」的**临时**口令
+ * （`must_change_pw = 1`），不是长期凭证；强度要求的落点是改密那一侧
+ * （`changePassword` 拒绝新密码等于默认密码），不是这里。
+ */
+export function defaultPassword(env: Record<string, string | undefined>): string {
+  const password = env[DEFAULT_PASSWORD_ENV]
+  if (!password || password.trim() === "") {
+    throw new Error(
+      `缺少环境变量 ${DEFAULT_PASSWORD_ENV}（或它的值是空白）——` +
+        `默认密码没有兜底值：公开的示例口令等于没有口令`,
+    )
+  }
+  // 不 trim：空格可以是密码的一部分，只有**纯**空白才算「没配」。
+  return password
+}
 
 /** 密码哈希算法。Bun.password 内建，无需引入第三方密码库。 */
 export const PASSWORD_HASH_ALGORITHM = "argon2id" as const

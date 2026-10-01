@@ -8,7 +8,6 @@ import { join } from "node:path"
 import { migrate } from "./migrate"
 import { verifyPassword } from "./password"
 import { AccountWriteError, pgErrorCode } from "./pg-errors"
-import { DEFAULT_PASSWORD } from "./policy"
 import {
   DuplicatePoliceNoError,
   InvalidStatusError,
@@ -17,7 +16,13 @@ import {
   registerUser,
   type RegisterInput,
 } from "./register"
+import { DEPLOYED_DEFAULT_PASSWORD, PUBLIC_EXAMPLE_PASSWORD } from "./test-support"
 import { user } from "./user"
+
+// 两个值的含义、以及「为什么必须不同」写在 `test-support.ts` 那两条常量上——一处定义，
+// 免得 7 个测试文件各写一份、各自漂走。这里的短名字只为本文件的可读性。
+const PW = DEPLOYED_DEFAULT_PASSWORD
+const EXAMPLE = PUBLIC_EXAMPLE_PASSWORD
 
 /** FR-003 的 8 个业务字段。警号即登录用户名。 */
 const INPUT = {
@@ -136,7 +141,7 @@ async function rowOf(policeNo: string) {
 
 describe("管理员录入账号", () => {
   test("8 个业务字段逐字落库，默认用户名 = 警号", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
     const row = await rowOf(INPUT.policeNo)
     expect(row.policeNo).toBe(INPUT.policeNo)
@@ -150,27 +155,32 @@ describe("管理员录入账号", () => {
   })
 
   test("status 由录入方给定，不被写成固定值", async () => {
-    await registerUser(db, { ...INPUT, status: 0 })
+    await registerUser(db, { ...INPUT, status: 0 }, PW)
 
     expect((await rowOf(INPUT.policeNo)).status).toBe(0)
   })
 
-  test("存的是默认密码的哈希：可验通，且不是明文", async () => {
-    await registerUser(db, INPUT)
+  test("存的是**配置里那个**默认密码的哈希：可验通，不是明文，且不是文档示例值", async () => {
+    await registerUser(db, INPUT, PW)
 
     const { passwordHash } = await rowOf(INPUT.policeNo)
-    expect(await verifyPassword(DEFAULT_PASSWORD, passwordHash)).toBe(true)
-    expect(passwordHash).not.toBe(DEFAULT_PASSWORD)
+    expect(await verifyPassword(PW, passwordHash)).toBe(true)
+    expect(passwordHash).not.toBe(PW)
+    // ⚠️ **这条才是本 task 的判据**：上一条只能证明「存了个能验通的哈希」，
+    // 一个仍在用硬编码常量的实现**照样能满足它**（只要测试传的 PW 恰好等于那个常量）。
+    // 这里断言「**公开示例值验不通**」——它把「读了配置」与「还用着旧常量」分开。
+    // 变异检验：把 `registerUser` 里的 `defaultPassword` 换回字面量 `"admin@123456"`，本条必红。
+    expect(await verifyPassword(EXAMPLE, passwordHash)).toBe(false)
   })
 
   test("录入即标记需改密", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
     expect((await rowOf(INPUT.policeNo)).mustChangePw).toBe(1)
   })
 
   test("is_admin 不在 8 字段内，默认关闭；最后登录/活跃时间留空", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
     const row = await rowOf(INPUT.policeNo)
     expect(row.isAdmin).toBe(0)
@@ -179,15 +189,15 @@ describe("管理员录入账号", () => {
   })
 
   test("created_at 记的是 Unix 秒（毫秒会顶穿 PG integer，首行就插不进去）", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
     const { createdAt } = await rowOf(INPUT.policeNo)
     expect(Math.abs(createdAt - Math.floor(Date.now() / 1000))).toBeLessThan(60)
   })
 
   test("生成的 id 互不相同，且与落库的行一致", async () => {
-    const first = await registerUser(db, INPUT)
-    const second = await registerUser(db, { ...INPUT, policeNo: "000124" })
+    const first = await registerUser(db, INPUT, PW)
+    const second = await registerUser(db, { ...INPUT, policeNo: "000124" }, PW)
 
     expect(first.id).not.toBe("")
     expect(first.id).not.toBe(second.id)
@@ -205,14 +215,14 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
   // 而漏掉是静默的——没人会去数这里列了几个。
   for (const field of TEXT_FIELDS) {
     test(`${field} 只有空白时拒绝，且一行都不落库`, async () => {
-      expect(await failureOf(registerUser(db, { ...INPUT, [field]: "   " }))).toBeInstanceOf(MissingFieldError)
+      expect(await failureOf(registerUser(db, { ...INPUT, [field]: "   " }, PW))).toBeInstanceOf(MissingFieldError)
       // 断言「没落库」而不是只看抛错：校验若写在 insert **之后**，同样会抛、同样会留下半条数据。
       expect(await db.select().from(user)).toEqual([])
     })
   }
 
   test("空串同样拒绝——它不是「留空」，是「没填」", async () => {
-    expect(await failureOf(registerUser(db, { ...INPUT, name: "" }))).toBeInstanceOf(MissingFieldError)
+    expect(await failureOf(registerUser(db, { ...INPUT, name: "" }, PW))).toBeInstanceOf(MissingFieldError)
   })
 
   // 上面那条参数化循环覆盖不到 `validate` 里 `typeof value !== "string"` 这半边：
@@ -235,12 +245,12 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
     }
 
     test("字段是 null 时拒绝", async () => {
-      expect(await failureOf(registerUser(db, fromGateway({ phone: null })))).toBeInstanceOf(MissingFieldError)
+      expect(await failureOf(registerUser(db, fromGateway({ phone: null }), PW))).toBeInstanceOf(MissingFieldError)
       expect(await db.select().from(user)).toEqual([])
     })
 
     test("字段是 undefined 时拒绝——`.trim()` 撞上它会抛 TypeError，把「少填一个」变成 500", async () => {
-      const thrown = await errorOfType(registerUser(db, fromGateway({ phone: undefined })), MissingFieldError)
+      const thrown = await errorOfType(registerUser(db, fromGateway({ phone: undefined }), PW), MissingFieldError)
 
       expect(thrown.field).toBe("phone")
       expect(await db.select().from(user)).toEqual([])
@@ -248,13 +258,13 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
 
     test("数字、布尔、数组同样拒绝——它们也不是「填了」", async () => {
       for (const value of [123, true, [], {}]) {
-        expect(await failureOf(registerUser(db, fromGateway({ name: value })))).toBeInstanceOf(MissingFieldError)
+        expect(await failureOf(registerUser(db, fromGateway({ name: value }), PW))).toBeInstanceOf(MissingFieldError)
       }
     })
   })
 
   test("报出是哪个字段：后台要能把提示落到对应输入框上", async () => {
-    const thrown = await errorOfType(registerUser(db, { ...INPUT, phone: "  " }), MissingFieldError)
+    const thrown = await errorOfType(registerUser(db, { ...INPUT, phone: "  " }, PW), MissingFieldError)
 
     expect(thrown.field).toBe("phone")
   })
@@ -263,12 +273,12 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
   // 越界的值不会「表现成某种状态」——僵尸扫描按 `= 1`、归档按 `= 0`，两个都匹配不上，
   // 账号就**从两边的视野里同时消失**：既不提醒也不归档，还没有任何报错。
   test("status 只接受 1（启用）/ 0（停用），越界值拒绝", async () => {
-    expect(await failureOf(registerUser(db, { ...INPUT, status: 2 }))).toBeInstanceOf(InvalidStatusError)
+    expect(await failureOf(registerUser(db, { ...INPUT, status: 2 }, PW))).toBeInstanceOf(InvalidStatusError)
   })
 
   test("status 的 0 与 1 本身合法——别把合法的 0 当成「空」", async () => {
-    await registerUser(db, { ...INPUT, status: 0 })
-    await registerUser(db, { ...INPUT, status: 1, policeNo: "000124" })
+    await registerUser(db, { ...INPUT, status: 0 }, PW)
+    await registerUser(db, { ...INPUT, status: 1, policeNo: "000124" }, PW)
 
     expect(await db.select().from(user)).toHaveLength(2)
   })
@@ -276,15 +286,15 @@ describe("录入输入校验（FR-003 的 8 个字段 MUST 填写）", () => {
 
 describe("警号唯一性（FR-001）", () => {
   test("重复警号被拒，抛可识别的领域错误", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
-    expect(await failureOf(registerUser(db, INPUT))).toBeInstanceOf(DuplicatePoliceNoError)
+    expect(await failureOf(registerUser(db, INPUT, PW))).toBeInstanceOf(DuplicatePoliceNoError)
   })
 
   test("错误信息带上警号，后台可直接转成提示语", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
-    const thrown = await errorOf(registerUser(db, INPUT))
+    const thrown = await errorOf(registerUser(db, INPUT, PW))
     expect(thrown.message).toContain(INPUT.policeNo)
   })
 
@@ -293,28 +303,28 @@ describe("警号唯一性（FR-001）", () => {
   // （drizzle-orm/errors.js：`Failed query: ...\nparams: ...`），这条 insert 的参数里
   // 同时有 password_hash、id_card、phone。把原始错误挂上 cause = 把三样一起交出去。
   test("抛出错误的可达图里没有密码哈希——原始错误内联了 params", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
-    const thrown = await errorOf(registerUser(db, INPUT))
+    const thrown = await errorOf(registerUser(db, INPUT, PW))
 
     expect(textReachableFrom(thrown)).not.toContain("$argon2")
   })
 
   test("身份证号与手机号同样不随错误外泄", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
-    const text = textReachableFrom(await errorOf(registerUser(db, INPUT)))
+    const text = textReachableFrom(await errorOf(registerUser(db, INPUT, PW)))
 
     expect(text).not.toContain(INPUT.idCard)
     expect(text).not.toContain(INPUT.phone)
   })
 
   test("排错线索不丢：SQLSTATE 仍可达", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
     // 与非唯一冲突那条路（下面）不同，这里断言的是「领域错误本身仍能回答
     // 『PG 到底报了什么码』」——它是排查时唯一真正需要的字段。
-    expect(pgErrorCode(await errorOf(registerUser(db, INPUT)))).toBe("23505")
+    expect(pgErrorCode(await errorOf(registerUser(db, INPUT, PW)))).toBe("23505")
   })
 
   // 名字里的「原样」已被 I2 改掉：不再原样抛出（那条 insert 的参数里带敏感数据），
@@ -324,16 +334,16 @@ describe("警号唯一性（FR-001）", () => {
     // 但含义完全不同。
     await db.execute(sql`drop table auth.user`)
 
-    const thrown = await errorOfType(registerUser(db, INPUT), AccountWriteError)
+    const thrown = await errorOfType(registerUser(db, INPUT, PW), AccountWriteError)
     expect(thrown).not.toBeInstanceOf(DuplicatePoliceNoError)
     // 排查要用的那一半没丢。
     expect(thrown.sqlState).toBe("42P01")
   })
 
   test("换一个警号仍可录入", async () => {
-    await registerUser(db, INPUT)
+    await registerUser(db, INPUT, PW)
 
-    expect((await registerUser(db, { ...INPUT, policeNo: "000124" })).id).not.toBe("")
+    expect((await registerUser(db, { ...INPUT, policeNo: "000124" }, PW)).id).not.toBe("")
   })
 })
 
@@ -349,23 +359,23 @@ describe("录入流程（账号 + 沙箱，FR-003）", () => {
   })
 
   test("录入后沙箱目录存在，且落在 {root}/{id}", async () => {
-    const { id, workspace } = await provisionUser(db, INPUT, root)
+    const { id, workspace } = await provisionUser(db, INPUT, root, PW)
 
     expect(workspace).toBe(join(root, id))
     expect((await stat(workspace)).isDirectory()).toBe(true)
   })
 
   test("账号与沙箱一次办成：落库的 id 就是沙箱目录名", async () => {
-    const { id } = await provisionUser(db, INPUT, root)
+    const { id } = await provisionUser(db, INPUT, root, PW)
 
     expect((await rowOf(INPUT.policeNo)).id).toBe(id)
   })
 
   test("落库被拒时不留垃圾目录——这条钉住「先落库、后建目录」的顺序", async () => {
-    const first = await provisionUser(db, INPUT, root)
+    const first = await provisionUser(db, INPUT, root, PW)
 
     // 同警号第二次录入：PG 的 UNIQUE 先挡下，此时目录还没建。
-    expect(await failureOf(provisionUser(db, INPUT, root))).toBeInstanceOf(Error)
+    expect(await failureOf(provisionUser(db, INPUT, root, PW))).toBeInstanceOf(Error)
     // 若顺序反了（先建目录），这里会多出一个目录。
     expect(await readdir(root)).toEqual([first.id])
   })
@@ -375,6 +385,6 @@ describe("录入流程（账号 + 沙箱，FR-003）", () => {
     const blocker = join(root, "blocker")
     await writeFile(blocker, "")
 
-    expect(await failureOf(provisionUser(db, INPUT, join(blocker, "sub")))).toBeInstanceOf(Error)
+    expect(await failureOf(provisionUser(db, INPUT, join(blocker, "sub"), PW))).toBeInstanceOf(Error)
   })
 })

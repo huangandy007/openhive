@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm"
 import { AccountWriteError, pgErrorCode } from "./pg-errors"
-import { DEFAULT_PASSWORD, PASSWORD_HASH_ALGORITHM } from "./policy"
+import { PASSWORD_HASH_ALGORITHM } from "./policy"
 import { type UserAccountTarget, user } from "./user"
 
 /**
@@ -67,14 +67,23 @@ export interface PasswordChangeInput {
  *
  * **本节全部是「地板」，不是「强度策略」**：下面三条都只拦「填了等于没填」的输入，不需要先定
  * 长度/字符类规则，所以不受上面那条待裁定事项的阻塞。尤其是「新密码 = 默认密码」——
- * 默认密码是写在文档里的公开值，放行它等于账号停在人尽皆知的口令上，而 `must_change_pw`
- * 已被清成 0：此后它与「正常改过密」完全同形，任何测试和运维视图都看不出区别（FR-006 的全部
- * 价值就建立在「默认密码公开、不改等于人人可冒用」之上）。
+ * 默认密码是**部署方配的那个**（可能恰好是文档里的公开示例值），放行它等于账号停在
+ * 人尽皆知的口令上，而 `must_change_pw` 已被清成 0：此后它与「正常改过密」完全同形，
+ * 任何测试和运维视图都看不出区别（FR-006 的全部价值就建立在「默认密码公开、不改等于人人可冒用」之上）。
+ *
+ * ⚠️ `defaultPassword` **必须与派发侧（`registerUser` / `resetPassword` / `bootstrapAdmin`）
+ * 是同一个解析结果**——否则配了自定义默认密码之后，用户能把新密码设成那个值，
+ * 而这条判据还在拦一个生产上根本不用的旧口令。判据**只有一份**，与 T018 的
+ * `assertSafeUserId`、T010 的限流判定同一条纪律。
  */
-export async function changePassword(db: UserAccountTarget, input: PasswordChangeInput): Promise<void> {
+export async function changePassword(
+  db: UserAccountTarget,
+  input: PasswordChangeInput,
+  defaultPassword: string,
+): Promise<void> {
   // 空白串要按「空」处理：`length === 0` 挡不住 "   "，而 "   " 正是可登录的密码。
   if (input.newPassword.trim().length === 0) throw new EmptyNewPasswordError()
-  if (input.newPassword === DEFAULT_PASSWORD) throw new WeakNewPasswordError("新密码不能是系统默认密码")
+  if (input.newPassword === defaultPassword) throw new WeakNewPasswordError("新密码不能是系统默认密码")
 
   const [record] = await db.select().from(user).where(eq(user.id, input.userId))
   if (!record) throw new Error(`账号不存在：${input.userId}`)
@@ -105,20 +114,24 @@ export async function changePassword(db: UserAccountTarget, input: PasswordChang
  * 1. **不校验当前密码**。管理员不知道也不该知道民警的密码——「不知道旧密码也能换掉」正是重置的用途。
  *    真正的门禁在调用方：这条只能由管理员后台（已鉴权 + 已判 is_admin）触发。**本函数自己不做鉴权**，
  *    它是一条能力，谁能拿到由网关决定。
- * 2. **不收新密码参数**，固定回 `DEFAULT_PASSWORD`。让管理员自选新密码是另一个产品行为
+ * 2. **不收新密码参数**，固定回**配置里那个**默认密码。让管理员自选新密码是另一个产品行为
  *    （等于让他知道民警的密码），design-v2 没写，不擅自加。
- * 3. **`must_change_pw` 置 1**。默认密码是写在文档里的公开值（`policy.ts`），重置完不强制改密
- *    等于把账号留在一个谁都能进的状态——那正好是 FR-006 要防的事。
+ * 3. **`must_change_pw` 置 1**。默认密码是部署方配的、且很可能就是文档里公开的那个示例值，
+ *    重置完不强制改密等于把账号留在一个谁都能进的状态——那正好是 FR-006 要防的事。
  *
  * 账号不存在时**报错而不静默成功**：静默的话，管理员会转告民警「用默认密码登录」，
  * 而民警登不进来、两边都不知道为什么。`changePassword` 出于需要读行顺带也有这条，
  * 这里显式读一次是为了对齐——多一次 SELECT 换一个看得见的失败。
  */
-export async function resetPassword(db: UserAccountTarget, userId: string): Promise<void> {
+export async function resetPassword(
+  db: UserAccountTarget,
+  userId: string,
+  defaultPassword: string,
+): Promise<void> {
   const [record] = await db.select().from(user).where(eq(user.id, userId))
   if (!record) throw new Error(`账号不存在：${userId}`)
 
-  const passwordHash = await hashPassword(DEFAULT_PASSWORD)
+  const passwordHash = await hashPassword(defaultPassword)
 
   try {
     await db.update(user).set({ passwordHash, mustChangePw: 1 }).where(eq(user.id, userId))

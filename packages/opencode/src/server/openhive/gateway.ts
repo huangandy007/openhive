@@ -30,6 +30,13 @@ export * as AuthGateway from "./gateway"
  * 开着时：缺密钥 / 密钥短于 002 的 32 字符地板 ⇒ **层构造期就抛**，进程起不来
  * （D-03 要求「启动时调一次」，这是那个「一次」）。
  *
+ * 🔑 **`OPENHIVE_DEFAULT_PASSWORD` 是第三个必配项**（T020）：网关开着时、以及设了引导变量时，
+ * **缺失即抛 ⇒ 进程起不来**。它有两个消费点——建管理员时当初始口令（`bootstrap()`），
+ * 改密时用来判「新密码是不是又填回了派发口令」（`handleChangePassword`）；两处必须是
+ * **同一个值**，所以都在层构造期解析一次。⚠️ 旧的 `DEFAULT_PASSWORD = "admin@123456"` 常量
+ * 已**退场**：兜底会让「生产忘了配」变成静默使用一个公开示例口令，而全系统没有一处会红。
+ * 与 `AUTH_JWT_SECRET` 的分工是：那个守「凭证能不能伪造」，这个守「账号会不会停在人所共知的口令上」。
+ *
  * ⓪ 那个引导走**另一个**开关（`OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO`），且**独立于上面这条**：
  * 它排在 `OPENHIVE_REQUIRE_USER_ID` 的早退**之前**，理由是「只设引导变量 ⇒ 静默空操作」这种
  * 失败模式比「多要一次 `PG_*` 配置」严重得多。所以上面那句「不去要 PG 配置」的准确读法是
@@ -55,6 +62,7 @@ import {
 import {
   activityThrottleSeconds,
   BOOTSTRAP_ADMIN_POLICE_NO_ENV,
+  defaultPassword,
   JWT_SECRET_ENV,
 } from "@opencode-ai/auth/policy"
 import { sessionIdentity } from "@opencode-ai/auth/session"
@@ -136,12 +144,18 @@ function bootstrap(database: () => ReturnType<typeof connect>) {
   const policeNo = process.env[BOOTSTRAP_ADMIN_POLICE_NO_ENV]
   if (!policeNo) return Effect.void
 
+  // 建管理员要一个初始口令（003 T020）。**只在这个变量设了时才解析它**——同 `policeNo`
+  // 的处理，不设引导变量的部署（含 `bun run dev`）因此一个字节都不用多配。
+  // 解析失败会当场抛（`Effect.gen` 把它记成缺陷）：设了引导变量却没配默认密码，
+  // 要的是「起不来」，不是「建出一个口令不明、只能靠猜的管理员」。
+  const dispatchedPassword = defaultPassword(process.env)
+
   return Effect.promise(async () => {
     // 与 `routes` 里那份同名函数不同，这里是**共用的**：本层的 `database()` 眼下已经要为
     // 每个请求刷活跃而长期持有一个连接池，引导再另开一个只是白多一份。
     const db = database()
     await migrate(db)
-    return bootstrapAdmin(db, policeNo)
+    return bootstrapAdmin(db, policeNo, dispatchedPassword)
   })
 }
 
@@ -251,6 +265,13 @@ export const routes = HttpRouter.use((router) =>
     if (!config.required) return
 
     const secret = startupSecret(config)
+    // 改密要拿它判断「新密码是不是又填回了派发口令」（FR-006 那条地板）。判据**只有一份**：
+    // 必须与派发侧（`registerUser` / `resetPassword` / `bootstrapAdmin`）解析出的是同一个值，
+    // 否则配了自定义默认密码的部署，会拦一个根本没人用的旧口令、放行真正那个。
+    //
+    // 位置与理由都同 `startupSecret`：**层构造期解析、缺失即抛** ⇒ 配了网关却没配默认密码的
+    // 部署**起不来**，而不是跑起来之后悄悄少拦一条规则。网关没开时早退在下面，零影响。
+    const dispatchedPassword = defaultPassword(process.env)
 
     // 连接**惰性建、建一次就留着**：`connect()` 每次调用都会新建一个连接池，
     // 按请求建 = 按请求泄漏；而放在层构造期又会让「只登出、不登录」的场景无谓地
@@ -261,7 +282,9 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.login, (request) => handleLogin(request, database, secret))
     yield* router.add("POST", PATH.logout, () => Effect.succeed(handleLogout()))
     yield* router.add("GET", PATH.me, (request) => handleMe(request, database, secret))
-    yield* router.add("POST", PATH.changePassword, (request) => handleChangePassword(request, database, secret))
+    yield* router.add("POST", PATH.changePassword, (request) =>
+      handleChangePassword(request, database, secret, dispatchedPassword),
+    )
   }),
 )
 
@@ -385,6 +408,7 @@ function handleChangePassword(
   request: HttpServerRequest.HttpServerRequest,
   database: () => ReturnType<typeof connect>,
   secret: string,
+  dispatchedPassword: string,
 ) {
   return Effect.gen(function* () {
     const subject = yield* caller(request, secret)
@@ -400,11 +424,15 @@ function handleChangePassword(
 
     return yield* Effect.tryPromise({
       try: () =>
-        changePassword(database(), {
-          userId: subject.id,
-          currentPassword: payload.value.currentPassword,
-          newPassword: payload.value.newPassword,
-        }),
+        changePassword(
+          database(),
+          {
+            userId: subject.id,
+            currentPassword: payload.value.currentPassword,
+            newPassword: payload.value.newPassword,
+          },
+          dispatchedPassword,
+        ),
       catch: (cause) => cause,
     }).pipe(
       Effect.map(() => HttpServerResponse.empty({ status: NO_CONTENT })),

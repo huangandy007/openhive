@@ -19,10 +19,11 @@ import { bootstrapAdmin } from "./bootstrap"
 import type { connect } from "./db"
 import { login } from "./login"
 import { migrate } from "./migrate"
-import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser, type RegisterInput } from "./register"
-import { withProductionDb } from "./test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb } from "./test-support"
 import { user } from "./user"
+
+const PW = DEPLOYED_DEFAULT_PASSWORD
 
 /** ≥32 字符，过 002 的密钥地板（`token.ts` 的 `jwtSecret`）。 */
 const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
@@ -52,7 +53,7 @@ describe("引导首个管理员", () => {
     await withProductionDb(async (db) => {
       await migrate(db)
 
-      expect(await bootstrapAdmin(db, POLICE_NO)).toBe("created")
+      expect(await bootstrapAdmin(db, POLICE_NO, PW)).toBe("created")
 
       const rows = await allUsers(db)
       expect(rows).toHaveLength(1)
@@ -66,9 +67,9 @@ describe("引导首个管理员", () => {
     // 账号，链条就断在这里——而它俩都不会在任何一条「表里有几行」的断言里露出来。
     await withProductionDb(async (db) => {
       await migrate(db)
-      await bootstrapAdmin(db, POLICE_NO)
+      await bootstrapAdmin(db, POLICE_NO, PW)
 
-      const result = await login(db, { policeNo: POLICE_NO, password: DEFAULT_PASSWORD }, SECRET)
+      const result = await login(db, { policeNo: POLICE_NO, password: PW }, SECRET)
 
       expect(result.subject.isAdmin).toBe(true)
       expect(result.mustChangePw).toBe(true)
@@ -78,9 +79,9 @@ describe("引导首个管理员", () => {
   test("警号已存在但没有管理员 ⇒ 只置管理员，不建第二行", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
 
-      expect(await bootstrapAdmin(db, POLICE_NO)).toBe("promoted")
+      expect(await bootstrapAdmin(db, POLICE_NO, PW)).toBe("promoted")
 
       const rows = await allUsers(db)
       // 行数 + id 一起断言：只看行数的话，「删了旧行建了个同名新行」也会绿，
@@ -94,10 +95,10 @@ describe("引导首个管理员", () => {
   test("表里已有管理员 ⇒ 完全无效：不建新账号", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const first = await registerUser(db, input(POLICE_NO))
+      const first = await registerUser(db, input(POLICE_NO), PW)
       await db.update(user).set({ isAdmin: 1 }).where(eqId(first.id))
 
-      expect(await bootstrapAdmin(db, OTHER_POLICE_NO)).toBe("skipped")
+      expect(await bootstrapAdmin(db, OTHER_POLICE_NO, PW)).toBe("skipped")
 
       // 「不是再置一个」——判据是表级的那一句，指定谁都不该多出第二个管理员。
       const rows = await allUsers(db)
@@ -109,11 +110,11 @@ describe("引导首个管理员", () => {
   test("表里已有管理员 ⇒ 完全无效：已存在的普通账号也不会被提权", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const first = await registerUser(db, input(POLICE_NO))
+      const first = await registerUser(db, input(POLICE_NO), PW)
       await db.update(user).set({ isAdmin: 1 }).where(eqId(first.id))
-      const plain = await registerUser(db, input(OTHER_POLICE_NO))
+      const plain = await registerUser(db, input(OTHER_POLICE_NO), PW)
 
-      expect(await bootstrapAdmin(db, OTHER_POLICE_NO)).toBe("skipped")
+      expect(await bootstrapAdmin(db, OTHER_POLICE_NO, PW)).toBe("skipped")
 
       const [row] = await db.select().from(user).where(eqId(plain.id))
       expect(row!.isAdmin).toBe(0)
@@ -125,9 +126,9 @@ describe("引导首个管理员", () => {
     // 只断言目标行的话，一个「顺手把所有行都置成管理员」的实现也会绿。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const bystander = await registerUser(db, input(OTHER_POLICE_NO))
+      const bystander = await registerUser(db, input(OTHER_POLICE_NO), PW)
 
-      await bootstrapAdmin(db, POLICE_NO)
+      await bootstrapAdmin(db, POLICE_NO, PW)
 
       const [row] = await db.select().from(user).where(eqId(bystander.id))
       expect(row!.isAdmin).toBe(0)

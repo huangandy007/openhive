@@ -23,10 +23,10 @@ import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import type { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
-import { DEFAULT_PASSWORD, SESSION_COOKIE_NAME } from "@opencode-ai/auth/policy"
+import { DEFAULT_PASSWORD_ENV, SESSION_COOKIE_NAME } from "@opencode-ai/auth/policy"
 import { registerUser, type RegisterInput } from "@opencode-ai/auth/register"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
-import { withProductionDb } from "@opencode-ai/auth/test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, withProductionDb } from "@opencode-ai/auth/test-support"
 import { disableAccounts } from "@opencode-ai/auth/zombie"
 import { AuthGateway } from "../../src/server/openhive/gateway"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -52,6 +52,26 @@ const WORKSPACE_ROOT = path.join(SANDBOX, "workspaces")
 
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
+
+/**
+ * 本文件里「**这次部署配的**」默认密码。短名字只为本文件可读性，
+ * 取值与「为什么刻意不等于 design-v2 §4.1 那个公开示例值」写在
+ * `@opencode-ai/auth/test-support` 上（一处定义，免得各测试文件各漂一份）。
+ */
+const PW = DEPLOYED_DEFAULT_PASSWORD
+
+/**
+ * ⚠️ **必须走 `process.env`（`restorePoint`），不能塞进 `app(env)` 的 `ConfigProvider`**：
+ * 网关读这个变量用的是 `process.env`，与 `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO`、
+ * `OPENHIVE_ACTIVITY_THROTTLE_SECONDS` 同一个读法（`gateway.ts` 的 `routes`）。
+ * 塞进 `ConfigProvider` 会被**无声忽略**，然后整个文件的用例一起撞「缺环境变量」。
+ *
+ * 放在模块顶层而不是每个用例里：这是本文件「网关开着」这个前提的一部分，
+ * 与上面那个 `OPENHIVE_DATA_ROOT` 同款处理。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: PW })
+
+afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
@@ -123,8 +143,22 @@ function cookieOf(response: Response): string {
   return header.slice(0, header.indexOf(";"))
 }
 
+/**
+ * 把一次拒绝变成一段文本，供 `toContain` 断言。
+ *
+ * 失败方向是**安全的**：认不出形状时交回空串，于是「本该失败」的断言会红，
+ * 而不是被一段噪声糊过去（`LEARNINGS #002-02` 那类假绿）。
+ *
+ * 用 `instanceof` 收窄、不用 `as`——本项目的门禁判据是「本次改动文件 0 命中」，
+ * 而 `no-unsafe-type-assertion` 会拦。（Effect 的缺陷是 `FiberFailure`，它继承 `Error`。）
+ */
+function rejectionText(thrown: unknown): string {
+  if (thrown instanceof Error) return thrown.message
+  return typeof thrown === "string" ? thrown : ""
+}
+
 /** 以某人的身份向**这个**网关发起一次登录，返回响应。 */
-async function signIn(gateway: Gateway, policeNo = POLICE_NO, password = DEFAULT_PASSWORD) {
+async function signIn(gateway: Gateway, policeNo = POLICE_NO, password = PW) {
   return Effect.runPromise(gateway(AuthGateway.PATH.login, login(policeNo, password)))
 }
 
@@ -132,7 +166,7 @@ async function signIn(gateway: Gateway, policeNo = POLICE_NO, password = DEFAULT
 const withAccount = <T>(fn: (seeded: { id: string; gateway: Gateway }) => Promise<T>) =>
   withProductionDb(async (db) => {
     await migrate(db)
-    const seeded = await registerUser(db, input(POLICE_NO))
+    const seeded = await registerUser(db, input(POLICE_NO), PW)
     return fn({ id: seeded.id, gateway: app(ON) })
   })
 
@@ -147,8 +181,8 @@ const withAccounts = <T>(
 ) =>
   withProductionDb(async (db) => {
     await migrate(db)
-    const 甲 = await registerUser(db, input(POLICE_NO))
-    const 乙 = await registerUser(db, input(OTHER_POLICE_NO))
+    const 甲 = await registerUser(db, input(POLICE_NO), PW)
+    const 乙 = await registerUser(db, input(OTHER_POLICE_NO), PW)
     return fn({ db, 甲: 甲.id, 乙: 乙.id, gateway: app(ON) })
   })
 
@@ -183,7 +217,7 @@ describe("T014 网关门面", () => {
     () =>
       withAccount(async ({ gateway }) => {
         const wrongPassword = await signIn(gateway, POLICE_NO, "not-the-password")
-        const noSuchAccount = await signIn(gateway, "999999", DEFAULT_PASSWORD)
+        const noSuchAccount = await signIn(gateway, "999999", PW)
 
         expect(wrongPassword.status).toBe(401)
         expect(noSuchAccount.status).toBe(401)
@@ -227,7 +261,7 @@ describe("T014 网关门面", () => {
   })
 
   test("开关关（默认）：网关整体不注册，登录端点不存在——今天所有客户端都还没登录，关着才是零回归", async () => {
-    const response = await Effect.runPromise(app({})(AuthGateway.PATH.login, login(POLICE_NO, DEFAULT_PASSWORD)))
+    const response = await Effect.runPromise(app({})(AuthGateway.PATH.login, login(POLICE_NO, PW)))
 
     // ⚠️ **不能断言 404**：真应用里「没被任何路由接管」的路径会落到 UI 的 `/*` 兜底
     // （上游行为，返回页面而不是 404）。能钉死的是「它没有被登录端点处理」——
@@ -334,6 +368,45 @@ describe("T014 启动路径的密钥地板（D-03）", () => {
 })
 
 /**
+ * 003 T020 的**接线**那一半：`policy.ts` 的 `defaultPassword(env)` 自己「缺失即抛」有单测守着，
+ * 但「**网关有没有在层构造期调它**」是另一件事——这一组才守得住。
+ *
+ * 少了这一组，把网关里那两句 `defaultPassword(process.env)` 改成别的东西（或挪到请求期），
+ * **其余用例全绿**：它们都在模块顶层把变量配好了，于是「配了就会用」两边都成立，
+ * 只有「没配会不会当场炸」这一条能把两种实现分开（`LEARNINGS #002-02`）。
+ */
+describe("T020 默认口令的启动地板（与密钥地板同款）", () => {
+  test("网关开着却没配默认密码 → 建应用即失败，且报的是缺哪个环境变量", async () => {
+    const saved = process.env[DEFAULT_PASSWORD_ENV]
+    delete process.env[DEFAULT_PASSWORD_ENV]
+    try {
+      // ⚠️ **建的是真应用**（`HttpApiApp.routes`），不是上面那组的 `AuthGateway.layer`。
+      // 实测（2026-10-01）：单建 `AuthGateway.layer` 这条**永远是绿的**——默认密码只在
+      // `AuthGateway.routes` 与 `bootstrap()` 里解析，`layer` 那条路根本不碰它。
+      // 一个「永远绿」的用例比没有更糟：它看上去守着这件事，实际什么都没守。
+      //
+      // `toWebHandler` 惰性建层（同 `openhive-bootstrap.test.ts` 的用法），所以必须**发一次请求**
+      // 才走到层构造期——那正是「启动」在这套测试里的对应动作。
+      //
+      // 刻意**不用** `expect(...).rejects.toThrow()`：oxlint 的 `await-thenable` 判它
+      // 「不是 thenable」，而顺着它去掉 `await` 会让断言**空转**（拒绝没人接住，测试照绿）——
+      // `openhive-bootstrap.test.ts` 里记了同一件事。换个不会两难的形式：两种结局都接住，
+      // 再断言接到的是哪一种。
+      const reason = await Effect.runPromise(app(ON)(AuthGateway.PATH.logout, { method: "POST" })).then(
+        () => "这次启动成功了",
+        rejectionText,
+      )
+
+      // 密钥这次是好的、`bootstrap` 的开关也没开，所以失败只可能来自默认密码：
+      // 报错里得点名那个变量，否则部署方拿到一句无从下手的「缺环境变量」，还得自己去猜是哪一个。
+      expect(reason).toContain(DEFAULT_PASSWORD_ENV)
+    } finally {
+      if (saved !== undefined) process.env[DEFAULT_PASSWORD_ENV] = saved
+    }
+  })
+})
+
+/**
  * 下面两条端点的 URL **写成字面量、不引 `AuthGateway.PATH`**：它们是前端硬编码要打的地址，
  * 属**线格式契约**，不是实现细节。跟着常量走的断言，在有人改常量名时会跟着一起漂，
  * 反而测不出「前端打不到这个地址」。
@@ -390,7 +463,7 @@ describe("T015 会话自查 /me", () => {
         await Effect.runPromise(
           gateway(
             CHANGE_PASSWORD,
-            post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+            post({ currentPassword: PW, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
           ),
         )
 
@@ -424,7 +497,7 @@ describe("T015 自助改密", () => {
         const changed = await Effect.runPromise(
           gateway(
             CHANGE_PASSWORD,
-            post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+            post({ currentPassword: PW, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
           ),
         )
         expect(changed.status).toBe(204)
@@ -433,7 +506,7 @@ describe("T015 自助改密", () => {
         expect(新.status).toBe(200)
         expect(await 新.json()).toMatchObject({ mustChangePw: false })
 
-        expect((await signIn(gateway, POLICE_NO, DEFAULT_PASSWORD)).status).toBe(401)
+        expect((await signIn(gateway, POLICE_NO, PW)).status).toBe(401)
       }),
     30_000,
   )
@@ -457,7 +530,7 @@ describe("T015 自助改密", () => {
         expect(await response.json()).toEqual({ error: "当前密码不正确" })
 
         // 「报了错」与「没改掉」是两件事，各测各的——只测其一，另半边错了也看不出来。
-        expect((await signIn(gateway, POLICE_NO, DEFAULT_PASSWORD)).status).toBe(200)
+        expect((await signIn(gateway, POLICE_NO, PW)).status).toBe(200)
       }),
     30_000,
   )
@@ -471,7 +544,7 @@ describe("T015 自助改密", () => {
           const response = await Effect.runPromise(
             gateway(
               CHANGE_PASSWORD,
-              post({ currentPassword: DEFAULT_PASSWORD, newPassword }, { Cookie: cookie }),
+              post({ currentPassword: PW, newPassword }, { Cookie: cookie }),
             ),
           )
           return [response.status, (await response.json()).error]
@@ -480,7 +553,7 @@ describe("T015 自助改密", () => {
         // 空白串按「空」处理：只判 `length === 0` 会放行 "   "，而 "   " 正是可登录的密码。
         expect(await 试("   ")).toEqual([400, "新密码不能为空"])
         // 默认密码是写在文档里的公开值，放行它等于账号停在人尽皆知的口令上、且 mustChangePw 已清成 0。
-        expect(await 试(DEFAULT_PASSWORD)).toEqual([400, "新密码不能是系统默认密码"])
+        expect(await 试(PW)).toEqual([400, "新密码不能是系统默认密码"])
       }),
     30_000,
   )
@@ -496,7 +569,7 @@ describe("T015 自助改密", () => {
           )
 
         // 这条要先真的改一次：当前密码还是默认密码时，会被上面那条地板先拦下，测不到这一条。
-        expect((await 换(DEFAULT_PASSWORD, NEW_PASSWORD)).status).toBe(204)
+        expect((await 换(PW, NEW_PASSWORD)).status).toBe(204)
 
         const same = await 换(NEW_PASSWORD, NEW_PASSWORD)
         expect([same.status, (await same.json()).error]).toEqual([400, "新密码不能与当前密码相同"])
@@ -513,14 +586,14 @@ describe("T015 自助改密", () => {
         const forged = await Effect.runPromise(
           gateway(
             CHANGE_PASSWORD,
-            post({ userId: 乙, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+            post({ userId: 乙, currentPassword: PW, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
           ),
         )
         expect(forged.status).toBe(204)
 
         // 两半都要断：承认「甲改成了」不够，要的恰恰是「乙没被动到」。
         expect((await signIn(gateway, POLICE_NO, NEW_PASSWORD)).status).toBe(200)
-        expect((await signIn(gateway, OTHER_POLICE_NO, DEFAULT_PASSWORD)).status).toBe(200)
+        expect((await signIn(gateway, OTHER_POLICE_NO, PW)).status).toBe(200)
       }),
     30_000,
   )
@@ -528,7 +601,7 @@ describe("T015 自助改密", () => {
   test("没有会话凭证：401——这两条路径**不在**网关豁免名单里，落在受保护那一侧", async () => {
     const 裸 = (path: string, init?: RequestInit) => Effect.runPromise(app(ON)(path, init))
 
-    expect((await 裸(CHANGE_PASSWORD, post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }))).status).toBe(401)
+    expect((await 裸(CHANGE_PASSWORD, post({ currentPassword: PW, newPassword: NEW_PASSWORD }))).status).toBe(401)
     expect((await 裸(ME)).status).toBe(401)
   })
 })

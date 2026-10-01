@@ -28,8 +28,14 @@ import path from "path"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
-import { BOOTSTRAP_ADMIN_POLICE_NO_ENV } from "@opencode-ai/auth/policy"
-import { restorePoint, withProductionDb } from "@opencode-ai/auth/test-support"
+import { BOOTSTRAP_ADMIN_POLICE_NO_ENV, DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { verifyPassword } from "@opencode-ai/auth/password"
+import {
+  DEPLOYED_DEFAULT_PASSWORD,
+  PUBLIC_EXAMPLE_PASSWORD,
+  restorePoint,
+  withProductionDb,
+} from "@opencode-ai/auth/test-support"
 import { user } from "@opencode-ai/auth/user"
 import { AuthGateway } from "../../src/server/openhive/gateway"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -53,6 +59,16 @@ const DATA_ROOT = path.join(SANDBOX, "data")
 
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
+
+/**
+ * 引导建出来的管理员用的是**部署配的**默认口令，所以本文件也必须有这个变量——
+ * 这一条不是可选的：网关开着（本文件就是）时，`routes` 的层构造期会解析它，缺失即抛。
+ * 取值与理由写在 `@opencode-ai/auth/test-support` 上。
+ */
+const PW = DEPLOYED_DEFAULT_PASSWORD
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: PW })
+
+afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
@@ -134,6 +150,33 @@ describe("引导首个管理员的接线", () => {
       // 加了会被 `no-unnecessary-type-assertion` 判为多余。
       expect(rows[0].policeNo).toBe(POLICE_NO)
       expect(rows[0].isAdmin).toBe(1)
+    })
+  })
+
+  test("引导出来的管理员，口令是**配置里那个**——不是文档示例值", async () => {
+    await withProductionDb(async (db) => {
+      const restore = restorePoint({ [BOOTSTRAP_ADMIN_POLICE_NO_ENV]: POLICE_NO })
+
+      try {
+        expect((await boot(app(ON))).status).toBe(204)
+      } finally {
+        restore()
+      }
+
+      const rows = await allUsers(db)
+      expect(rows).toHaveLength(1)
+
+      // ⚠️ **这两句合起来才是判据**：「拿配置值能验通」一句，一个仍写死
+      // `"admin@123456"` 的实现**照样满足**（只要测试恰好拿它当配置值）——
+      // 只有「文档示例值验不通」把「网关读了配置」与「网关还用着旧常量」分开
+      // （`LEARNINGS #002-02`）。上一组用例断言的是行内容，验不到口令这一列。
+      //
+      // 走 `verifyPassword` 而不是再登录一次：登录会在 `routes` 那个客户端上**再准备一遍**
+      // 引导已经在 `layer` 那个客户端上准备过的同一句取行 SQL，而同一台 PGlite 上两个客户端
+      // 撞同一句 SQL 文本必报 42P05（见 `@opencode-ai/auth/test-support` 文件头）。
+      // `verifyPassword` 是纯 JS（`Bun.password`），不碰库，把那个坑整个绕开。
+      expect(await verifyPassword(PW, rows[0].passwordHash)).toBe(true)
+      expect(await verifyPassword(PUBLIC_EXAMPLE_PASSWORD, rows[0].passwordHash)).toBe(false)
     })
   })
 

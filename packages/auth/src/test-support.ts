@@ -13,6 +13,28 @@ import { PGLiteSocketServer } from "@electric-sql/pglite-socket"
 import { connect } from "./db"
 
 /**
+ * 测试里「**这次部署配的**」默认密码——即 `OPENHIVE_DEFAULT_PASSWORD` 的值。
+ *
+ * ⚠️ **刻意不等于 `PUBLIC_EXAMPLE_PASSWORD`**。两者若相同，「产品码读了配置」与
+ * 「产品码还用着那个硬编码常量」在断言上**区分不开**，而后者正是 003 T020 要治的病
+ * （`LEARNINGS #002-02`）。判别式是那几个「**公开示例值验不通**」的断言——它们才把两种
+ * 实现分开；「配置值验得通」那半句，一个写死常量的实现照样满足。
+ *
+ * 为什么放在这里而不是各文件各写一份：网关那一组（`packages/opencode/test/`）要把**同一个
+ * 值**写进 `process.env` 再断言登录能过，两处不一致的话，失败信息会指向「密码不对」而不是
+ * 「夹具没对齐」——正是本文件开头说的「两份独立实现早晚漂」。
+ */
+export const DEPLOYED_DEFAULT_PASSWORD = "Deploy-Only-9527!"
+
+/**
+ * design-v2 §4.1 写在**正文**里的公开示例值。
+ *
+ * T020 之后**没有任何代码路径读它**——正文那个是「首次怎么登录」的**说明**，与部署实际值无关。
+ * 测试里拿它当反面素材：它必须**验不通**（见上面那条）。
+ */
+export const PUBLIC_EXAMPLE_PASSWORD = "admin@123456"
+
+/**
  * 服务端同时接受的连接数。
  *
  * ⚠️ **`PGLiteSocketServer` 默认为 1，是个会静默咬人的默认值**：超出的连接不是排队，

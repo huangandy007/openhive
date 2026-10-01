@@ -1,6 +1,5 @@
 import { eq } from "drizzle-orm"
 import { hashPassword } from "./password"
-import { DEFAULT_PASSWORD } from "./policy"
 import type { UserInsertTarget } from "./register"
 import { nowSeconds } from "./time"
 import { type UserAccountTarget, user } from "./user"
@@ -60,12 +59,16 @@ export type BootstrapOutcome = "created" | "promoted" | "skipped"
  * 判据是「表里有没有管理员」而不是「有没有能登录的管理员」——后者会让引导在「已有停用管理员」
  * 时反复生效，把一次性开关变回常开。真要处理，应是 F10 的账号管理（启用它），不是这里。
  */
-export async function bootstrapAdmin(db: BootstrapTarget, policeNo: string): Promise<BootstrapOutcome> {
+export async function bootstrapAdmin(
+  db: BootstrapTarget,
+  policeNo: string,
+  defaultPassword: string,
+): Promise<BootstrapOutcome> {
   if (await hasAdmin(db)) return "skipped"
 
   const existing = await findByPoliceNo(db, policeNo)
   if (!existing) {
-    await createAdmin(db, policeNo)
+    await createAdmin(db, policeNo, defaultPassword)
     return "created"
   }
 
@@ -107,8 +110,8 @@ async function findByPoliceNo(db: UserAccountTarget, policeNo: string) {
  * 会看到管理员已存在，安静跳过。想消除它要么加锁、要么捕获后重判，两条都超出「一次性引导」
  * 需要的复杂度，留待真有并发引导需求时再谈。
  */
-async function createAdmin(db: UserInsertTarget, policeNo: string): Promise<void> {
-  const passwordHash = await hashPassword(DEFAULT_PASSWORD)
+async function createAdmin(db: UserInsertTarget, policeNo: string, defaultPassword: string): Promise<void> {
+  const passwordHash = await hashPassword(defaultPassword)
 
   await db.insert(user).values({
     id: crypto.randomUUID(),

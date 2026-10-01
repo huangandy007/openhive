@@ -3,9 +3,10 @@ import { sql } from "drizzle-orm"
 import { login } from "./login"
 import { migrate, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
-import { DEFAULT_PASSWORD } from "./policy"
 import { DuplicatePoliceNoError, registerUser, type RegisterInput } from "./register"
-import { withProductionDb } from "./test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb } from "./test-support"
+
+const PW = DEPLOYED_DEFAULT_PASSWORD
 
 /**
  * **生产驱动 × 真库** 的回归。
@@ -74,9 +75,9 @@ describe("生产驱动 (bun-sql) × 真库", () => {
   test("重复警号的 UNIQUE 在生产驱动上被真库拦下，并翻译成领域错误", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      await registerUser(db, input("000001"))
+      await registerUser(db, input("000001"), PW)
 
-      const thrown = await failureOf(() => registerUser(db, input("000001")))
+      const thrown = await failureOf(() => registerUser(db, input("000001"), PW))
 
       expect(thrown).toBeInstanceOf(DuplicatePoliceNoError)
       // 原始 SQLSTATE 仍可达，排查线索没丢（与 register.test.ts 的同名断言同义）。
@@ -91,9 +92,9 @@ describe("生产驱动 (bun-sql) × 真库", () => {
   test("registerUser + login 在生产驱动上跑通（select 解析成行数组）", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const { id } = await registerUser(db, input("000001"))
+      const { id } = await registerUser(db, input("000001"), PW)
 
-      const result = await login(db, { policeNo: "000001", password: DEFAULT_PASSWORD }, SECRET)
+      const result = await login(db, { policeNo: "000001", password: PW }, SECRET)
 
       expect(result.subject.id).toBe(id)
       expect(result.subject.name).toBe("张三")

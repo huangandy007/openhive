@@ -14,10 +14,16 @@ import {
   verifyPassword,
 } from "./password"
 import { AccountWriteError } from "./pg-errors"
-import { DEFAULT_PASSWORD } from "./policy"
 import { registerUser } from "./register"
+import { DEPLOYED_DEFAULT_PASSWORD, PUBLIC_EXAMPLE_PASSWORD } from "./test-support"
 
+/** 哈希原语那组用例的素材，取值无所谓——它们测的是 argon2id 本身，不涉及任何策略值。 */
 const PLAIN = "admin@123456"
+
+// 两个值的含义、以及「为什么必须不同」写在 `test-support.ts` 那两条常量上——一处定义，
+// 免得 7 个测试文件各写一份、各自漂走。这里的短名字只为本文件的可读性。
+const PW = DEPLOYED_DEFAULT_PASSWORD
+const EXAMPLE = PUBLIC_EXAMPLE_PASSWORD
 
 describe("密码哈希与校验", () => {
   test("哈希后可用原密码校验通过", async () => {
@@ -140,30 +146,30 @@ describe("改密（FR-006）", () => {
 
   beforeEach(async () => {
     db = await freshDb()
-    const created = await registerUser(db, ACCOUNT)
+    const created = await registerUser(db, ACCOUNT, PW)
     userId = created.id
   })
 
   test("改密成功后 must_change_pw 解除——下次登录不再要求改密", async () => {
-    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
 
     const next = await login(db, { policeNo: ACCOUNT.policeNo, password: NEW_PASSWORD }, SECRET)
     expect(next.mustChangePw).toBe(false)
   })
 
   test("改密后新密码生效、旧密码失效", async () => {
-    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
 
     const hash = await storedHashOf(db, userId)
     expect(await verifyPassword(NEW_PASSWORD, hash)).toBe(true)
-    expect(await verifyPassword(DEFAULT_PASSWORD, hash)).toBe(false)
+    expect(await verifyPassword(PW, hash)).toBe(false)
   })
 
   test("当前密码不对时拒绝，且账号状态原封不动", async () => {
     const before = await storedHashOf(db, userId)
 
     const thrown = await failureOf(
-      changePassword(db, { userId, currentPassword: "not-the-current-one", newPassword: NEW_PASSWORD }),
+      changePassword(db, { userId, currentPassword: "not-the-current-one", newPassword: NEW_PASSWORD }, PW),
     )
 
     expect(thrown).toBeInstanceOf(InvalidCurrentPasswordError)
@@ -171,7 +177,7 @@ describe("改密（FR-006）", () => {
 
     // 「状态没动」也要用**行为**验一遍：原密码照样能登，且照样要求改密。
     // 只查列的话，一个「顺手把 must_change_pw 清了、但哈希没换」的半成品实现能蒙混过关。
-    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: PW }, SECRET)
     expect(after.mustChangePw).toBe(true)
   })
 
@@ -179,37 +185,69 @@ describe("改密（FR-006）", () => {
     const before = await storedHashOf(db, userId)
 
     const thrown = await failureOf(
-      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: "" }),
+      changePassword(db, { userId, currentPassword: PW, newPassword: "" }, PW),
     )
 
     expect(thrown).toBeInstanceOf(EmptyNewPasswordError)
     expect(await storedHashOf(db, userId)).toBe(before)
-    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: PW }, SECRET)
     expect(after.mustChangePw).toBe(true)
   })
 
   // 与上一条是**同一个洞的两种填法**：空串挡住的只是「什么都没有」，挡不住「填一个已知口令」。
-  // 默认密码是写在文档里的公开值，把它填回来等于账号停在人尽皆知的状态，而 must_change_pw
+  // 默认密码是**全系统派发的**那个值，把它填回来等于账号停在「谁都知道」的状态，而 must_change_pw
   // 已被清成 0——与「正常改过密」完全同形，测试、运维视图都看不出区别。
-  test("新密码 = 系统默认密码时拒绝——它不是「改过密」，只是把公开口令又填了一遍", async () => {
+  //
+  // ⚠️ 判据是「等于**配置里那个**默认密码」，不是「等于文档里那个示例值」。差别在今天看不出来
+  // （默认部署配的就是示例值），T020 之后就不是同一件事了：派发侧读配置，这一侧也必须读配置。
+  // **判据只有一份**，与 T018 的 `assertSafeUserId`、T010 的限流判定同一条纪律。
+  test("新密码 = 配置里那个默认密码时拒绝——它不是「改过密」，只是把派发口令又填了一遍", async () => {
+    // 先真改过一次，让 **currentPassword ≠ PW**——这一步是这条用例有没有牙的关键。
+    // 直接传 `currentPassword: PW, newPassword: PW` 的话，「新密码 = 当前密码」那条规则
+    // 会抛出**同一个** `WeakNewPasswordError`，断言就成了「抛了就算过」。
+    // 实测（2026-10-01）：把判据换回写死的 `"admin@123456"`，原写法的这条**照样绿**——
+    // 它其实没在测「默认密码」那条规则（`LEARNINGS #002-02`）。
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
     const before = await storedHashOf(db, userId)
 
     const thrown = await failureOf(
-      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: DEFAULT_PASSWORD }),
+      changePassword(db, { userId, currentPassword: NEW_PASSWORD, newPassword: PW }, PW),
     )
 
     expect(thrown).toBeInstanceOf(WeakNewPasswordError)
+    // 一个字节都没动：新密码仍是 NEW_PASSWORD，`must_change_pw` 也没被这次失败重新竖起。
     expect(await storedHashOf(db, userId)).toBe(before)
-    // 仍是「默认密码可登 + 仍要求改密」——用行为断言，不看列。
-    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
-    expect(after.mustChangePw).toBe(true)
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: NEW_PASSWORD }, SECRET)
+    expect(after.mustChangePw).toBe(false)
+  })
+
+  // ⚠️ **本条才是「判据读了配置」的判别式**：上一句只证明「等于 PW 的被拒」，一个仍拿
+  // 写死的 `"admin@123456"` 去比的实现**照样满足它**（只要 PW 恰好就是那个常量）。
+  //
+  // 这里把新密码设成**文档示例值**——本次部署没拿它当默认密码，所以它就是一个普通的弱口令，
+  // 不归这条规则管（强度是另一条待裁定的事，规则尚未定，`changePassword` 上方注释说明过）。
+  //
+  // 说清代价，别假装没有：这么一来，一个把新密码设成 `admin@123456` 的用户在**默认部署**
+  // 之外是被放行的。但那条路径的本职是「不许停在**派发的**口令上」——派发值已经跟着配置走了，
+  // 示例值不再派发给任何人；再拦它就等于把示例值重新写死回产品码，正是本 task 要拆的东西。
+  //
+  // 变异检验：把 `changePassword` 的 `defaultPassword` 换回字面量 `"admin@123456"`，本条必红。
+  test("新密码 = 文档示例值（本次部署没用它）⇒ 放行——钉住判据跟着配置走，没在比常量", async () => {
+    await changePassword(db, { userId, currentPassword: PW, newPassword: EXAMPLE }, PW)
+
+    const hash = await storedHashOf(db, userId)
+    expect(await verifyPassword(EXAMPLE, hash)).toBe(true)
+    // 反向对照：放行的是示例值，不是「什么都放行」——配发的那个值仍然被拦。
+    expect(await failureOf(
+      changePassword(db, { userId, currentPassword: EXAMPLE, newPassword: PW }, PW),
+    )).toBeInstanceOf(WeakNewPasswordError)
   })
 
   test("新密码全是空白时拒绝——`length === 0` 挡不住 \"   \"", async () => {
     const before = await storedHashOf(db, userId)
 
     const thrown = await failureOf(
-      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: "   " }),
+      changePassword(db, { userId, currentPassword: PW, newPassword: "   " }, PW),
     )
 
     expect(thrown).toBeInstanceOf(EmptyNewPasswordError)
@@ -219,11 +257,11 @@ describe("改密（FR-006）", () => {
   // 覆盖的是「改密」这个动作本身应当**改变**什么。与上一条不同：这里当前密码不是默认密码
   // （先真改过一次），所以规则 2 拦不住它——但它同样会无条件清掉 must_change_pw。
   test("新密码与当前密码相同时拒绝——那不是改密，却会清掉强制改密标记", async () => {
-    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
     const before = await storedHashOf(db, userId)
 
     const thrown = await failureOf(
-      changePassword(db, { userId, currentPassword: NEW_PASSWORD, newPassword: NEW_PASSWORD }),
+      changePassword(db, { userId, currentPassword: NEW_PASSWORD, newPassword: NEW_PASSWORD }, PW),
     )
 
     expect(thrown).toBeInstanceOf(WeakNewPasswordError)
@@ -243,7 +281,7 @@ describe("改密（FR-006）", () => {
   // 被计数、被告警的密码枚举，改从这条路径走，一次告警都不产生。
   test("当前密码错误时，即便新密码与它相同也报「当前密码不正确」——顺序是这条的性质", async () => {
     const thrown = await errorOf(
-      changePassword(db, { userId, currentPassword: "guessed-wrong", newPassword: "guessed-wrong" }),
+      changePassword(db, { userId, currentPassword: "guessed-wrong", newPassword: "guessed-wrong" }, PW),
     )
 
     expect(thrown).toBeInstanceOf(InvalidCurrentPasswordError)
@@ -283,14 +321,14 @@ describe("写库失败时不把密码哈希带出去", () => {
 
   beforeEach(async () => {
     db = await freshDb()
-    userId = (await registerUser(db, ACCOUNT)).id
+    userId = (await registerUser(db, ACCOUNT, PW)).id
   })
 
   test("改密失败：错误可达图里没有哈希，且换成了不带参数的 AccountWriteError", async () => {
     await db.execute(sql`alter table auth.user add constraint keep_changing check (must_change_pw = 1)`)
 
     const thrown = await errorOfType(
-      changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }),
+      changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW),
       AccountWriteError,
     )
 
@@ -305,7 +343,7 @@ describe("写库失败时不把密码哈希带出去", () => {
     await db.execute(sql`update auth.user set must_change_pw = 0`)
     await db.execute(sql`alter table auth.user add constraint stay_changed check (must_change_pw = 0)`)
 
-    const thrown = await errorOf(resetPassword(db, userId))
+    const thrown = await errorOf(resetPassword(db, userId, PW))
 
     expect(thrown).toBeInstanceOf(AccountWriteError)
     expect(textReachableFrom(thrown)).not.toContain("$argon2")
@@ -318,38 +356,43 @@ describe("重置（FR-007）", () => {
 
   beforeEach(async () => {
     db = await freshDb()
-    const created = await registerUser(db, ACCOUNT)
+    const created = await registerUser(db, ACCOUNT, PW)
     userId = created.id
   })
 
   test("重置回默认密码，且强制改密重新竖起——即使用户此前已改过密", async () => {
-    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
     const before = await login(db, { policeNo: ACCOUNT.policeNo, password: NEW_PASSWORD }, SECRET)
     // 前提：用户自己改过密，标记已解除。没有这一步，测试就分不清「重置竖起了标记」
     // 和「标记本来就一直竖着」——后者是个漏了实现的假通过。
     expect(before.mustChangePw).toBe(false)
 
-    await resetPassword(db, userId)
+    await resetPassword(db, userId, PW)
 
-    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: DEFAULT_PASSWORD }, SECRET)
+    const after = await login(db, { policeNo: ACCOUNT.policeNo, password: PW }, SECRET)
     expect(after.mustChangePw).toBe(true)
     expect(after.subject.id).toBe(userId)
   })
 
-  test("重置后用户自己设的密码失效——否则「重置」没真的把该账号挡在门外", async () => {
-    await changePassword(db, { userId, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD })
+  test("重置回**配置里那个**默认密码——用户自己设的失效，文档示例值也不是重置目标", async () => {
+    await changePassword(db, { userId, currentPassword: PW, newPassword: NEW_PASSWORD }, PW)
 
-    await resetPassword(db, userId)
+    await resetPassword(db, userId, PW)
 
     const hash = await storedHashOf(db, userId)
     expect(await verifyPassword(NEW_PASSWORD, hash)).toBe(false)
-    expect(await verifyPassword(DEFAULT_PASSWORD, hash)).toBe(true)
+    expect(await verifyPassword(PW, hash)).toBe(true)
+    // ⚠️ **这条才是「重置读了配置」的判别式**：上面两句只证明「重置成了 PW」，一个仍写死
+    // `"admin@123456"` 的实现只要测试恰好拿它当 PW 就照样绿。把「示例值验不通」也钉住，
+    // 「读了配置」与「还用着旧常量」才分得开（`LEARNINGS #002-02`）。
+    // 变异检验：把 `resetPassword` 的 `defaultPassword` 换回字面量，本条必红。
+    expect(await verifyPassword(EXAMPLE, hash)).toBe(false)
   })
 
   test("重置后落库的是新哈希，不是把原哈希原样留下", async () => {
     const before = await storedHashOf(db, userId)
 
-    await resetPassword(db, userId)
+    await resetPassword(db, userId, PW)
 
     expect(await storedHashOf(db, userId)).not.toBe(before)
   })
@@ -357,7 +400,7 @@ describe("重置（FR-007）", () => {
   // 刻意不静默成功：管理员在后台点「重置」却没重置到任何人，他会转告民警「用默认密码登录」，
   // 而民警登不进来、两边都不知道为什么。宁可当场报错。
   test("重置不存在的账号 → 报错，不静默成功", async () => {
-    const thrown = await errorOf(resetPassword(db, "not-a-real-id"))
+    const thrown = await errorOf(resetPassword(db, "not-a-real-id", PW))
 
     expect(thrown.message).toContain("账号不存在")
   })

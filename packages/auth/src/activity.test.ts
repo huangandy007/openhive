@@ -21,7 +21,9 @@ import { touchActivity } from "./activity"
 import type { connect } from "./db"
 import { migrate } from "./migrate"
 import { registerUser, type RegisterInput } from "./register"
-import { withProductionDb } from "./test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb } from "./test-support"
+
+const PW = DEPLOYED_DEFAULT_PASSWORD
 import { user } from "./user"
 
 /** 节流窗口取个小整数：用例里要把时间摆到窗口两侧，取值越大越难读。 */
@@ -63,7 +65,7 @@ describe("最后活跃时间的写入方", () => {
     // NULL 是最要紧的一支：这一列从建表起就一直是 NULL，所有存量账号都走这条。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
 
       await touchActivity(db, seeded.id, { now: 1000, throttleSeconds: THROTTLE })
 
@@ -76,7 +78,7 @@ describe("最后活跃时间的写入方", () => {
     // 会成为全系统最高频的写。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       await setLastActive(db, seeded.id, 1000)
 
       await touchActivity(db, seeded.id, { now: 1000 + THROTTLE - 1, throttleSeconds: THROTTLE })
@@ -88,7 +90,7 @@ describe("最后活跃时间的写入方", () => {
   test("窗口外 ⇒ 写上新的一刻", async () => {
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       await setLastActive(db, seeded.id, 1000)
 
       const now = 1000 + THROTTLE + 1
@@ -103,7 +105,7 @@ describe("最后活跃时间的写入方", () => {
     // 60 秒的窗口上无所谓，但「判据到底是哪个」得是被钉住的，不是碰巧对的。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       await setLastActive(db, seeded.id, 1000)
 
       const now = 1000 + THROTTLE
@@ -118,8 +120,8 @@ describe("最后活跃时间的写入方", () => {
     // 只断言目标行的话，一个 `where` 写漏的实现也会绿。
     await withProductionDb(async (db) => {
       await migrate(db)
-      const bystander = await registerUser(db, input(OTHER_POLICE_NO))
-      const seeded = await registerUser(db, input(POLICE_NO))
+      const bystander = await registerUser(db, input(OTHER_POLICE_NO), PW)
+      const seeded = await registerUser(db, input(POLICE_NO), PW)
       await setLastActive(db, bystander.id, 500)
 
       await touchActivity(db, seeded.id, { now: 1000, throttleSeconds: THROTTLE })
