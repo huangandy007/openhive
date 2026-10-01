@@ -216,6 +216,23 @@ describe("openhive 身份门（T003：验签后才认）", () => {
     }),
   )
 
+  // T015 补的那条：只有 manifest 那 3 条白名单时，浏览器连 SPA 外壳都拿不到——
+  // 实测 `/`、`/index.html`、`/assets/*` 全是 401 空响应，登录页永远没机会渲染。
+  // 判据用最小应用（本文件顶部那个 `app()`），因为真应用里这些路径会去反代 UI 上游、
+  // 断言会挂到网络上；这里要钉的是**门放不放行**，那正是最小应用测得到的。
+  it.live("开关开：浏览器外壳照常放过（不放行等于白屏，登录页连渲染的机会都没有）", () =>
+    Effect.gen(function* () {
+      const 门 = app(on())
+
+      expect((yield* 门("/")).status).toBe(200)
+      expect((yield* 门("/index.html")).status).toBe(200)
+      expect((yield* 门("/assets/index-4f3a2b.js")).status).toBe(200)
+      // 反向：外壳放行了，**数据接口没有**跟着一起开——这条不放，上面三条就是自说自话。
+      expect((yield* 门("/session")).status).toBe(401)
+      expect((yield* 门("/openhive/auth/me")).status).toBe(401)
+    }),
+  )
+
   // 默认态是**关**这条要单独钉：默认若是开，本机跑 dev 就是全站 401。
   it.live("不显式配置时真读环境变量，也必须落到关", () =>
     Effect.gen(function* () {

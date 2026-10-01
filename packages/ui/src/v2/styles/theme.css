@@ -23,6 +23,10 @@
     --v2-brand-gold-light: #F59E0B;
     --v2-brand-gold: #D97706;
     --v2-brand-gold-deep: #B45309;
+    /* 登录页门面（DESIGN §6.1）：全应用**唯一**的深色面，只用在登录页那几秒。
+       它是个品牌槽位而不是语义槽位——语义的 `background-bg-inverse` 会随明暗方案漂，
+       而这一块**刻意不跟着漂**（§6.2：暗色块不参与换皮，进主界面后固定暖白）。 */
+    --v2-brand-login-surface: #0F172A;
 
     /* ── Background ── */
     --v2-background-bg-base: #FCFCFC;
@@ -281,6 +285,7 @@
     --v2-brand-gold-light: #F59E0B;
     --v2-brand-gold: #D97706;
     --v2-brand-gold-deep: #B45309;
+    --v2-brand-login-surface: #0F172A;
 
     --v2-background-bg-base: #FCFCFC;
     --v2-background-bg-deep: var(--v2-grey-100);

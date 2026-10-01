@@ -26,14 +26,14 @@ const INNER_RADIUS = 25
  * `design-reference/logo-mark.svg` 逐色对应：描边主金、蜂窝浅金→深金。颜色一律写 token，
  * 不写 hex（宪法 §八）。
  */
-function BrandMark() {
+function BrandMark(props: { width?: number; height?: number }) {
   const gradientId = `openhive-brand-${createUniqueId()}`
   return (
     <svg
       data-slot="topbar-brand-mark"
       viewBox="0 0 100 114"
-      width={24}
-      height={28}
+      width={props.width ?? 24}
+      height={props.height ?? 28}
       fill="none"
       aria-hidden="true"
     >
@@ -54,11 +54,22 @@ function BrandMark() {
  *
  * 「没配」走的是内置件的**兜底**，不是 `<img src="">`——后者会去请求当前页面地址、
  * 渲染出一个破图；`resolveBrandLogo` 用 `undefined` 把「没配」标出来正是为了这个分岔。
+ *
+ * 导出 + 可传尺寸是 T015 加的：登录页要同一枚标（DESIGN §5.1 一份图形标），只是更大。
+ * 尺寸省略即顶栏原尺寸（24×28），故既有调用方逐字不变。
  */
-function BrandLogo(props: { logo?: string }) {
+export function BrandLogo(props: { logo?: string; width?: number; height?: number }) {
   return (
-    <Show when={props.logo} fallback={<BrandMark />}>
-      {(地址) => <img data-slot="topbar-brand-mark" src={地址()} width={24} height={28} alt="" />}
+    <Show when={props.logo} fallback={<BrandMark width={props.width} height={props.height} />}>
+      {(地址) => (
+        <img
+          data-slot="topbar-brand-mark"
+          src={地址()}
+          width={props.width ?? 24}
+          height={props.height ?? 28}
+          alt=""
+        />
+      )}
     </Show>
   )
 }

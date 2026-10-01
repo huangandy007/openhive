@@ -5,9 +5,11 @@ export * as AuthGateway from "./gateway"
  *
  * 它只做两件事，都不许绕过：
  *
- * ① **登录面**（`/openhive/auth/login`、`/logout`）：核不校验密码这件事由 `packages/auth`
- *    的 `login()` 做（002 落地，此前**没有任何生产代码调用它**），这里只负责 HTTP 形状——
- *    收 `{policeNo, password}`、下发 httpOnly Cookie、把身份与 `mustChangePw` 回给前端。
+ * ① **登录面**（`/openhive/auth/login`、`/logout`、`/me`、`/change-password`）：核密码这件事
+ *    由 `packages/auth` 的 `login()` 做（002 落地，此前**没有任何生产代码调用它**），
+ *    这里只负责 HTTP 形状——收 `{policeNo, password}`、下发 httpOnly Cookie、把身份与
+ *    `mustChangePw` 回给前端。T015 补上的两条（会话自查、自助改密）都由前端在**启动时**
+ *    与**进工作台之后**调用，见各自的函数注释。
  * ② **身份注入**：把客户端自带的 `X-User-ID` **剥掉**，按 Cookie 里**验签通过**的凭证
  *    重新注入 `X-User-ID: <真实 id>`。于是明文头从「输入」变成「输出」——
  *    FR-002 ① 的原话是「剥离客户端头后按会话凭证覆盖注入」，这是它唯一落地的地方。
@@ -29,7 +31,14 @@ export * as AuthGateway from "./gateway"
 import { UserIdentity } from "@/server/user-identity"
 import { connect } from "@opencode-ai/auth/db"
 import { InvalidCredentialsError, login, type LoginResult } from "@opencode-ai/auth/login"
+import {
+  changePassword,
+  EmptyNewPasswordError,
+  InvalidCurrentPasswordError,
+  WeakNewPasswordError,
+} from "@opencode-ai/auth/password"
 import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
+import { sessionIdentity } from "@opencode-ai/auth/session"
 import {
   jwtSecret,
   sessionCookie,
@@ -45,6 +54,8 @@ export const PREFIX = "/openhive/auth"
 export const PATH = {
   login: `${PREFIX}/login`,
   logout: `${PREFIX}/logout`,
+  me: `${PREFIX}/me`,
+  changePassword: `${PREFIX}/change-password`,
 } as const
 
 /**
@@ -53,6 +64,10 @@ export const PATH = {
  * 身份门（`middleware/user-identity.ts`）用它豁免登录/登出——那两个端点**本来就是给
  * 没身份的人用的**。只认这两个精确路径、不做前缀通配：将来在本前缀下加端点，
  * 默认落在**受保护**那一侧，要开口子得回来明写一个常量。
+ *
+ * T015 加进来的 `/me` 与 `/change-password` 正是照这条约定办的：**两个都留在这里**，
+ * 因为它俩问的分别是「我是谁」与「改我自己的密码」，**先有身份才谈得上**——
+ * 放行等于让没凭证的人来问「我是谁」。
  */
 export function isAuthGatewayPath(pathname: string) {
   return pathname === PATH.login || pathname === PATH.logout
@@ -148,11 +163,15 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("POST", PATH.login, (request) => handleLogin(request, database, secret))
     yield* router.add("POST", PATH.logout, () => Effect.succeed(handleLogout()))
+    yield* router.add("GET", PATH.me, (request) => handleMe(request, database, secret))
+    yield* router.add("POST", PATH.changePassword, (request) => handleChangePassword(request, database, secret))
   }),
 )
 
 const BAD_REQUEST = 400
 const UNAUTHORIZED = 401
+/** 改密没有内容可回：成功与否已经由状态码说完，再回一段 JSON 只会多一个要跟着改的契约。 */
+const NO_CONTENT = 204
 
 const LoginBody = Schema.Struct({ policeNo: Schema.String, password: Schema.String })
 
@@ -202,6 +221,118 @@ function signedIn(result: LoginResult) {
     },
     { headers: { "set-cookie": setCookieHeader(result.cookie) } },
   )
+}
+
+/**
+ * 取**这次请求的调用者**：验 Cookie、验不了返回 `undefined`。
+ *
+ * 存在的理由只有一条：**userId 只能从这里来**。凡是「改某个账号」的端点，都从这个函数拿主体，
+ * 绝不从请求体、查询串或 `X-User-ID` 里取——那些都是客户端说了算的输入。
+ *
+ * 走到本函数的请求**理应都已经过身份门**（这两条路径不在豁免名单里），所以 `undefined`
+ * 在今天的链路上几乎不可能出现。仍然逐个判，是因为「门已经拦过了」是**环境**给的保证，
+ * 而这个函数是**这一层**自己的判据：哪天有人把路径加进豁免名单，这里还是关着的。
+ */
+function caller(request: HttpServerRequest.HttpServerRequest, secret: string) {
+  return subjectOf(UserIdentity.cookieValue(request.headers.cookie, UserIdentity.COOKIE_NAME), secret)
+}
+
+/**
+ * 会话自查：把「我现在是谁、还要不要强制改密」告诉前端。
+ *
+ * 前端靠它一条请求决定三件事：显示登录页还是工作台、顶栏挂谁的名字、弹不弹强制改密框。
+ * **刻意与登录成功回同一个形状**（见 `signedIn`）——前端因此只有一套身份结构要认，
+ * 少一处「登录后能拿到的字段、刷新后拿不到」的漂移。
+ *
+ * `mustChangePw` 一律取**库里**的现值，不认可 Cookie 里的东西（cookie 里也没有）：
+ * 民警改完密码刷新页面，这个框必须立刻不再弹。
+ */
+function handleMe(
+  request: HttpServerRequest.HttpServerRequest,
+  database: () => ReturnType<typeof connect>,
+  secret: string,
+) {
+  return Effect.gen(function* () {
+    const subject = yield* caller(request, secret)
+    if (!subject) return unauthorized()
+
+    const identity = yield* Effect.tryPromise({
+      try: () => sessionIdentity(database(), subject.id),
+      catch: (cause) => cause,
+    }).pipe(Effect.orDie)
+
+    // 查不到（账号没了）与已停用，在 `sessionIdentity` 里是同一个 `undefined`，对外也同一个 401。
+    if (!identity) return unauthorized()
+
+    return HttpServerResponse.jsonUnsafe(identity)
+  })
+}
+
+const ChangePasswordBody = Schema.Struct({ currentPassword: Schema.String, newPassword: Schema.String })
+
+/**
+ * 自助改密（FR-006）：核当前密码 → 换新哈希 → 解除强制改密。
+ *
+ * **请求体里没有 `userId`，也永远不会有**。改谁的密码这件事由凭证决定，不由调用方声明——
+ * 否则这就是一个「知道别人 id 就能改别人密码」的接口。测试里专门有一条塞进别人的 id 来钉这件事。
+ *
+ * 三种「填得不对」各自回**自己的那句话**（与登录失败刻意相反）：能走到这里说明已经通过鉴权，
+ * 说清楚不构成枚举信号，而说不清只会让民警在一个其实填对了的框前反复试。
+ * 别的错误一律是**缺陷**，交给应用的错误层——不在这里编一句好听的话盖住。
+ *
+ * ⚠️ **停用账号在这一条上仍能改密**（`/me` 会先把它挡在界面外，但接口本身不看状态）。
+ * 影响为零：改完照样登不进来（`login()` 认状态），`mustChangePw` 清成 0 也无从生效。
+ * 为它加一次查询不划算，故**如实记在这里**，而不是假装已经拦了。
+ */
+function handleChangePassword(
+  request: HttpServerRequest.HttpServerRequest,
+  database: () => ReturnType<typeof connect>,
+  secret: string,
+) {
+  return Effect.gen(function* () {
+    const subject = yield* caller(request, secret)
+    if (!subject) return unauthorized()
+
+    const body = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const payload = Schema.decodeUnknownOption(ChangePasswordBody)(body)
+    if (Option.isNone(payload)) {
+      return HttpServerResponse.jsonUnsafe({ error: "请求体不是合法的当前密码与新密码" }, { status: BAD_REQUEST })
+    }
+
+    return yield* Effect.tryPromise({
+      try: () =>
+        changePassword(database(), {
+          userId: subject.id,
+          currentPassword: payload.value.currentPassword,
+          newPassword: payload.value.newPassword,
+        }),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map(() => HttpServerResponse.empty({ status: NO_CONTENT })),
+      Effect.catch((cause) => {
+        const message = rejectedPassword(cause)
+        return message === undefined
+          ? Effect.die(cause)
+          : Effect.succeed(HttpServerResponse.jsonUnsafe({ error: message }, { status: BAD_REQUEST }))
+      }),
+    )
+  })
+}
+
+/** 三种「填得不对」的话都由领域错误自带；别的错误一律返回 `undefined`（= 走缺陷通道）。 */
+function rejectedPassword(cause: unknown) {
+  return cause instanceof EmptyNewPasswordError ||
+    cause instanceof WeakNewPasswordError ||
+    cause instanceof InvalidCurrentPasswordError
+    ? cause.message
+    : undefined
+}
+
+/** 认不出身份。响应体留空：这里没什么可对客户端说的，说多了只是给探测者回话。 */
+function unauthorized() {
+  return HttpServerResponse.empty({ status: UNAUTHORIZED })
 }
 
 /**

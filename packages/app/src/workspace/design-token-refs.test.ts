@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url"
  * 门管「**有没有新写死的色值**」（形状/来源，单文件可判），本文件管「**引用的名字存不存在**」
  * （跨文件一致性）。
  *
- * ⚠️ **扫描范围与 lint 门严格同口径**：同为 openhive 自有那四个目录（`lint:openhive` 扫的就是它们），
+ * ⚠️ **扫描范围与 lint 门严格同口径**：同为 openhive 自有那批目录（`lint:openhive` 扫的就是它们），
  * 同为「除 `*.test.*` 之外」。口径一致的用意是：门与测试对同一片代码给出**同一套判断**，
  * 不会出现「门放行的东西测试骂」。扩范围时两处要一起扩——只改一处会让这份对照失真。
  *
@@ -35,8 +35,12 @@ import { fileURLToPath } from "node:url"
 
 const 仓库根 = join(fileURLToPath(new URL(".", import.meta.url)), "../../../..")
 
-/** 与 `package.json` 的 `lint:openhive` 同口径的四个目录。 */
-const 自有目录 = ["rail", "center", "topbar", "workspace"].map((d) => join(仓库根, "packages/app/src", d))
+/**
+ * 与 `package.json` 的 `lint:openhive` 同口径的目录。
+ * `auth` 是 003 T015 加的（登录页 / 强制改密遮罩 / 网关客户端）——按上面那条「两处一起扩」办的。
+ * 数目刻意不写进名字/注释：它是「会随编辑而变的值」，加目录就得回头改文字。
+ */
+const 自有目录 = ["rail", "center", "topbar", "workspace", "auth"].map((d) => join(仓库根, "packages/app/src", d))
 
 function 收集源文件(目录: string): string[] {
   const 出: string[] = []
@@ -125,7 +129,7 @@ describe("引用完整性：写了 var(--v2-x) 就得有 --v2-x", () => {
     expect(悬空).toEqual([])
   })
 
-  test("扫描确实覆盖到了四个自有目录（防止目录挪走/改名后本文件静默变空）", () => {
+  test("扫描确实覆盖到了自有目录（防止目录挪走/改名后本文件静默变空）", () => {
     // ⚠️ 这条是**元断言**：上一条测试在「扫描到 0 个引用」时也会绿——
     // 而「什么都没扫到」与「全都对」是两件事。没有这条，目录一改名本文件就变成一句废话。
     expect(源文件.length).toBeGreaterThan(20)

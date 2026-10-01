@@ -1,4 +1,5 @@
 import { AuthGateway } from "@/server/openhive/gateway"
+import { isUIShellPath } from "@/server/openhive/ui-shell"
 import { UserIdentity } from "@/server/user-identity"
 import { isPublicUIPath } from "@/server/shared/public-ui"
 import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
@@ -30,6 +31,8 @@ const UNAUTHORIZED = 401
  * 4. **公共 UI 资源豁免**（与 Basic Auth 同款，见 `@/server/shared/public-ui`）。浏览器取 PWA
  *    manifest 的请求不带任何应用层凭证，拦了会让 PWA 装不上（上游 #25698）。
  * 5. **网关的登录/登出路径豁免**（003 T014，见 `@/server/openhive/gateway`）。
+ * 6. **浏览器外壳豁免**（003 T015，见 `@/server/openhive/ui-shell`）。不放行的话连 `/` 都是 401，
+ *    SPA 加载不出来——那条 401 挡住的不是数据，是**登录页自己**。
  *    「要先登录才能登录」是这两条路径被拦下来的唯一后果；登出同样豁免，
  *    免得一个已过期的会话连登出都做不到。
  *
@@ -55,6 +58,10 @@ export const userIdentityLayer = HttpRouter.middleware<{ requires: UserIdentity.
         const request = yield* HttpServerRequest.HttpServerRequest
         const url = new URL(request.url, "http://localhost")
         if (isPublicUIPath(request.method, url.pathname)) return yield* effect
+        // 6. **浏览器外壳豁免**（003 T015，见 `@/server/openhive/ui-shell`）。不放行的话
+        //    浏览器连 `/` 都拿不到——SPA 加载不出来，登录页永远没机会渲染（白屏）。
+        //    与上一条的分工：那条管 manifest 那三个文件，这条管文档本体、构建产物与图标。
+        if (isUIShellPath(request.method, url.pathname)) return yield* effect
         // 网关自己的登录/登出端点**本来就是给没身份的人用的**——拦下来等于「要先登录才能登录」。
         // 只豁免这两个精确路径，不做前缀通配：`/openhive/auth/…` 下将来若长出别的端点，
         // 默认是**受保护**的（要开一个口子得明写一个常量），而不是默认敞开。

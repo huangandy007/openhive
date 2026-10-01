@@ -159,6 +159,7 @@
       "v2-brand-gold-light": "#F59E0B",
       "v2-brand-gold": "#D97706",
       "v2-brand-gold-deep": "#B45309",
+      "v2-brand-login-surface": "#0F172A",
       "v2-background-bg-base": "#FCFCFC",
       "v2-background-bg-deep": "var(--v2-grey-100)",
       "v2-background-bg-layer-01": "var(--v2-grey-100)",

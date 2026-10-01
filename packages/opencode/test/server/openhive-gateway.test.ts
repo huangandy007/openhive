@@ -21,11 +21,13 @@ import { tmpdir } from "os"
 import path from "path"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import type { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD, SESSION_COOKIE_NAME } from "@opencode-ai/auth/policy"
 import { registerUser, type RegisterInput } from "@opencode-ai/auth/register"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { withProductionDb } from "@opencode-ai/auth/test-support"
+import { disableAccounts } from "@opencode-ai/auth/zombie"
 import { AuthGateway } from "../../src/server/openhive/gateway"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
@@ -34,6 +36,8 @@ import { UserIdentity } from "../../src/server/user-identity"
 const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
 
 const POLICE_NO = "000001"
+/** 第二个账号：只在「身份只从会话取」那条用得上——要有一个**别人**可瞄准。 */
+const OTHER_POLICE_NO = "000002"
 
 /**
  * 临时根。**不能用默认路径**：带合法凭证访问 `/session` 会真的去开这个用户的库，
@@ -130,6 +134,22 @@ const withAccount = <T>(fn: (seeded: { id: string; gateway: Gateway }) => Promis
     await migrate(db)
     const seeded = await registerUser(db, input(POLICE_NO))
     return fn({ id: seeded.id, gateway: app(ON) })
+  })
+
+/**
+ * 比 `withAccount` 多两样，都是 T015 的用例自己要的：
+ * ① **库本身**——「账号被停用」那条得先把账号停掉，走 `disableAccounts` 而不是在测试里拼 SQL
+ *    （`packages/opencode` 没有 drizzle 依赖，也不该为了改一行数据去引一个）；
+ * ② **第二个账号**——「身份只从会话取」要有一个具体的人可以瞄准，只靠「没被改到」证明不了什么。
+ */
+const withAccounts = <T>(
+  fn: (seeded: { db: ReturnType<typeof connect>; 甲: string; 乙: string; gateway: Gateway }) => Promise<T>,
+) =>
+  withProductionDb(async (db) => {
+    await migrate(db)
+    const 甲 = await registerUser(db, input(POLICE_NO))
+    const 乙 = await registerUser(db, input(OTHER_POLICE_NO))
+    return fn({ db, 甲: 甲.id, 乙: 乙.id, gateway: app(ON) })
   })
 
 describe("T014 网关门面", () => {
@@ -310,5 +330,205 @@ describe("T014 启动路径的密钥地板（D-03）", () => {
 
   test("没配密钥 → 网关层构建即失败，且报的是缺哪个环境变量", async () => {
     expect(build(Option.none())).rejects.toThrow("AUTH_JWT_SECRET")
+  })
+})
+
+/**
+ * 下面两条端点的 URL **写成字面量、不引 `AuthGateway.PATH`**：它们是前端硬编码要打的地址，
+ * 属**线格式契约**，不是实现细节。跟着常量走的断言，在有人改常量名时会跟着一起漂，
+ * 反而测不出「前端打不到这个地址」。
+ */
+const ME = "/openhive/auth/me"
+const CHANGE_PASSWORD = "/openhive/auth/change-password"
+
+const NEW_PASSWORD = "ju-2026-0912-Aa"
+
+describe("T015 会话自查 /me", () => {
+  test(
+    "带会话 Cookie：回身份与 mustChangePw——前端靠它决定「显示登录页」还是「弹改密框」",
+    () =>
+      withAccount(async ({ id, gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+
+        const response = await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie } }))
+
+        expect(response.status).toBe(200)
+        // `toEqual` 而非 `toMatchObject`：多出来的字段（比如把 `token` 顺带透出去）也该让这条红。
+        expect(await response.json()).toEqual({
+          id,
+          policeNo: POLICE_NO,
+          name: "张三",
+          isAdmin: false,
+          mustChangePw: true,
+        })
+      }),
+    30_000,
+  )
+
+  test(
+    "认不出凭证：401——没带、乱写、签名不符都是同一个结果",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const 没带 = await Effect.runPromise(gateway(ME))
+        const 乱写 = await Effect.runPromise(gateway(ME, { headers: { Cookie: `${SESSION_COOKIE_NAME}=nonsense` } }))
+
+        expect(没带.status).toBe(401)
+        expect(乱写.status).toBe(401)
+      }),
+    30_000,
+  )
+
+  test(
+    "改密之后回 false：这个字段只可能来自库里那一行（凭证载荷里没有它）",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+        const 自查 = async () => (await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie } }))).json()
+
+        expect(await 自查()).toMatchObject({ mustChangePw: true })
+
+        await Effect.runPromise(
+          gateway(
+            CHANGE_PASSWORD,
+            post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+          ),
+        )
+
+        expect(await 自查()).toMatchObject({ mustChangePw: false })
+      }),
+    30_000,
+  )
+
+  test(
+    "账号被停用：会话还没过期也不放行——门面不该把停用的人放进工作台",
+    () =>
+      withAccounts(async ({ db, 甲, gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+        await disableAccounts(db, [甲])
+
+        const response = await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie } }))
+
+        expect(response.status).toBe(401)
+      }),
+    30_000,
+  )
+})
+
+describe("T015 自助改密", () => {
+  test(
+    "改密成功：204；新密码能登录、旧密码不能，且 mustChangePw 一并解除",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+
+        const changed = await Effect.runPromise(
+          gateway(
+            CHANGE_PASSWORD,
+            post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+          ),
+        )
+        expect(changed.status).toBe(204)
+
+        const 新 = await signIn(gateway, POLICE_NO, NEW_PASSWORD)
+        expect(新.status).toBe(200)
+        expect(await 新.json()).toMatchObject({ mustChangePw: false })
+
+        expect((await signIn(gateway, POLICE_NO, DEFAULT_PASSWORD)).status).toBe(401)
+      }),
+    30_000,
+  )
+
+  test(
+    "当前密码不对：400 + 说得清的领域消息，且密码原封不动",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+
+        const response = await Effect.runPromise(
+          gateway(
+            CHANGE_PASSWORD,
+            post({ currentPassword: "not-the-password", newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+          ),
+        )
+
+        // 这里**允许**说清楚原因（与登录失败刻意相反）：能改密说明已经通过鉴权，
+        // 不再构成账号枚举信号，而说不清只会让民警反复试一个填对的框。
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: "当前密码不正确" })
+
+        // 「报了错」与「没改掉」是两件事，各测各的——只测其一，另半边错了也看不出来。
+        expect((await signIn(gateway, POLICE_NO, DEFAULT_PASSWORD)).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  test(
+    "新密码不合规各自回各自的消息：空白 / 等于默认密码",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+        const 试 = async (newPassword: string) => {
+          const response = await Effect.runPromise(
+            gateway(
+              CHANGE_PASSWORD,
+              post({ currentPassword: DEFAULT_PASSWORD, newPassword }, { Cookie: cookie }),
+            ),
+          )
+          return [response.status, (await response.json()).error]
+        }
+
+        // 空白串按「空」处理：只判 `length === 0` 会放行 "   "，而 "   " 正是可登录的密码。
+        expect(await 试("   ")).toEqual([400, "新密码不能为空"])
+        // 默认密码是写在文档里的公开值，放行它等于账号停在人尽皆知的口令上、且 mustChangePw 已清成 0。
+        expect(await 试(DEFAULT_PASSWORD)).toEqual([400, "新密码不能是系统默认密码"])
+      }),
+    30_000,
+  )
+
+  test(
+    "新密码与当前密码相同：400 + 「新密码不能与当前密码相同」",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+        const 换 = (currentPassword: string, newPassword: string) =>
+          Effect.runPromise(
+            gateway(CHANGE_PASSWORD, post({ currentPassword, newPassword }, { Cookie: cookie })),
+          )
+
+        // 这条要先真的改一次：当前密码还是默认密码时，会被上面那条地板先拦下，测不到这一条。
+        expect((await 换(DEFAULT_PASSWORD, NEW_PASSWORD)).status).toBe(204)
+
+        const same = await 换(NEW_PASSWORD, NEW_PASSWORD)
+        expect([same.status, (await same.json()).error]).toEqual([400, "新密码不能与当前密码相同"])
+      }),
+    30_000,
+  )
+
+  test(
+    "身份只从会话取：请求体里塞一个**别人的** userId 不生效，改的仍是自己的密码",
+    () =>
+      withAccounts(async ({ 乙, gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+
+        const forged = await Effect.runPromise(
+          gateway(
+            CHANGE_PASSWORD,
+            post({ userId: 乙, currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }, { Cookie: cookie }),
+          ),
+        )
+        expect(forged.status).toBe(204)
+
+        // 两半都要断：承认「甲改成了」不够，要的恰恰是「乙没被动到」。
+        expect((await signIn(gateway, POLICE_NO, NEW_PASSWORD)).status).toBe(200)
+        expect((await signIn(gateway, OTHER_POLICE_NO, DEFAULT_PASSWORD)).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  test("没有会话凭证：401——这两条路径**不在**网关豁免名单里，落在受保护那一侧", async () => {
+    const 裸 = (path: string, init?: RequestInit) => Effect.runPromise(app(ON)(path, init))
+
+    expect((await 裸(CHANGE_PASSWORD, post({ currentPassword: DEFAULT_PASSWORD, newPassword: NEW_PASSWORD }))).status).toBe(401)
+    expect((await 裸(ME)).status).toBe(401)
   })
 })

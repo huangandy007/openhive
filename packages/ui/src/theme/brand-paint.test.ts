@@ -44,6 +44,16 @@ const 品牌金 = {
 }
 
 /**
+ * DESIGN.md §6.1 登录页深色面（T015 落地的唯一消费者）。
+ *
+ * 它归**品牌**槽位而不是语义槽位：全应用就这一块深色（「深色做门面、浅色做工作」），
+ * 语义的 `background-bg-inverse` 会随明暗方案漂，而这一块**刻意不漂**。
+ */
+const 品牌面 = {
+  "v2-brand-login-surface": "#0F172A",
+}
+
+/**
  * DESIGN.md §1（暖白 / 暖黑 / 去蓝）+ plan.md 的 v2 语义 token 映射表。
  *
  * 值写成 `var(--v2-brand-gold)` 而不是重复 hex：品牌金只在「品牌金三档」里定义一次，
@@ -61,7 +71,7 @@ const 语义换皮 = {
   "v2-border-border-focus": "var(--v2-brand-gold)", // 琥珀焦点环（plan.md ②）
 }
 
-const 全部 = { ...品牌金, ...语义换皮 }
+const 全部 = { ...品牌金, ...品牌面, ...语义换皮 }
 
 describe("品牌色换皮：三处载体一致（T017）", () => {
   for (const [名, 期望] of Object.entries(全部)) {
