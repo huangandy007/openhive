@@ -27,3 +27,11 @@ export const SESSION_COOKIE_NAME = "openhive_session"
 
 /** 签发凭证所需的密钥环境变量。取值由部署方生成，MUST NOT 在仓库里放默认值。 */
 export const JWT_SECRET_ENV = "AUTH_JWT_SECRET"
+
+/**
+ * 引导首个管理员的警号。**只在「表里一个管理员都没有」时生效**，引导跑通即可撤掉。
+ *
+ * 名字里带 `BOOTSTRAP` 而不是 `INITIAL_ADMIN` 之类，是为了让它在部署脚本里一眼可辨——
+ * 它是个**一次性**开关，长驻在环境里没有意义（逻辑上也无害，见 `bootstrap.ts`）。
+ */
+export const BOOTSTRAP_ADMIN_POLICE_NO_ENV = "OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO"

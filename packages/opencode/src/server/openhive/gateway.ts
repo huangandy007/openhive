@@ -3,7 +3,11 @@ export * as AuthGateway from "./gateway"
 /**
  * openhive 网关（003 T014）：**身份从哪来**这条链的头一段。
  *
- * 它只做两件事，都不许绕过：
+ * 它做三件事，都不许绕过：
+ *
+ * ⓪ **引导首个管理员**（T019）：只在设了 `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO` 时，在**层构造期**
+ *    把迁移跑到最新、再判一次「表里一个管理员都没有」。**这是进程里唯一会写 `auth.user` 的
+ *    启动动作**，也是唯一不做鉴权的——判据是表的状态，不是调用者的身份。详见 `bootstrap()`。
  *
  * ① **登录面**（`/openhive/auth/login`、`/logout`、`/me`、`/change-password`）：核密码这件事
  *    由 `packages/auth` 的 `login()` 做（002 落地，此前**没有任何生产代码调用它**），
@@ -18,10 +22,15 @@ export * as AuthGateway from "./gateway"
  * 两次不是冗余，是**深度防御**：网关这层被绕过（或有人直连内核端口）时，门仍然拦得住；
  * 而门那时候看到的 `X-User-ID` 与凭证不一致，正说明「网关与内核之间被改写」。
  *
- * 🗓️ **开关跟着 `OPENHIVE_REQUIRE_USER_ID`，默认关**。关着时：`layer` 是恒等中间件、
+ * 🗓️ **登录面的开关跟着 `OPENHIVE_REQUIRE_USER_ID`，默认关**。关着时：`layer` 是恒等中间件、
  * `routes` 一个端点都不注册（`bun run dev` 的行为逐字不变，也**不会**去要 PG 配置和密钥）。
  * 开着时：缺密钥 / 密钥短于 002 的 32 字符地板 ⇒ **层构造期就抛**，进程起不来
  * （D-03 要求「启动时调一次」，这是那个「一次」）。
+ *
+ * ⓪ 那个引导走**另一个**开关（`OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO`），且**独立于上面这条**：
+ * 它排在 `OPENHIVE_REQUIRE_USER_ID` 的早退**之前**，理由是「只设引导变量 ⇒ 静默空操作」这种
+ * 失败模式比「多要一次 `PG_*` 配置」严重得多。所以上面那句「不去要 PG 配置」的准确读法是
+ * **两个变量都没设时**成立。
  *
  * **不在这里做的事**：签发凭证（`packages/auth` 的 `signToken`，被 `login()` 调用）、
  * 内核端口的网络可达性（部署项 D-02）。本层挡不住「绕过网关直连内核端口」——
@@ -29,15 +38,17 @@ export * as AuthGateway from "./gateway"
  */
 
 import { UserIdentity } from "@/server/user-identity"
+import { bootstrapAdmin } from "@opencode-ai/auth/bootstrap"
 import { connect } from "@opencode-ai/auth/db"
 import { InvalidCredentialsError, login, type LoginResult } from "@opencode-ai/auth/login"
+import { migrate } from "@opencode-ai/auth/migrate"
 import {
   changePassword,
   EmptyNewPasswordError,
   InvalidCurrentPasswordError,
   WeakNewPasswordError,
 } from "@opencode-ai/auth/password"
-import { JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
+import { BOOTSTRAP_ADMIN_POLICE_NO_ENV, JWT_SECRET_ENV } from "@opencode-ai/auth/policy"
 import { sessionIdentity } from "@opencode-ai/auth/session"
 import {
   jwtSecret,
@@ -95,11 +106,44 @@ function startupSecret(config: ResolvedConfig) {
 }
 
 /**
+ * 引导首个管理员（003 T019）：**层构造期跑一次**——「起不来好过带着没有管理员的状态跑起来」。
+ *
+ * 做两件事，次序是要求不是巧合：**先把迁移跑到最新**（`auth.user` 不存在时 `bootstrapAdmin`
+ * 会当场报 42P01），**再调 `bootstrapAdmin`**（判据与三种处置见 `packages/auth/src/bootstrap.ts`）。
+ * 「先迁移、后引导」由 `openhive-bootstrap.test.ts` 那条**不预先建表**的用例钉着。
+ *
+ * ⚠️ **开关只看 `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO`，不看 `OPENHIVE_REQUIRE_USER_ID`**——
+ * 于是它落在下面那个「网关没开就早退」之前。理由是一条失败模式：**若两个开关都要，部署方
+ * 只设了引导变量时会得到一个静默的空操作**，系统照样在「一个管理员都没有」的状态下起来，
+ * 而这正是 T019 存在的理由。宁可让「设了引导变量却没配 `PG_*`」当场炸——那是能被看见的失败。
+ *
+ * ⚠️ **不设变量时零影响**：不连库、不要 `PG_*`、不发查询。`bun run dev` 的行为逐字不变。
+ *
+ * ⚠️ **为什么用的是 `Effect.promise` 而不是 `tryPromise` + `catch`**：这里没有「预期内的失败」。
+ * 引导失败、连不上库、迁移报错，一律是**缺陷**——层构造随之死掉，进程起不来。给它们编一个
+ * 能被 catch 的类型，等于给「失败也继续启动」留了一道门，而那道门通向的就是锁死的系统。
+ */
+function bootstrap() {
+  const policeNo = process.env[BOOTSTRAP_ADMIN_POLICE_NO_ENV]
+  if (!policeNo) return Effect.void
+
+  return Effect.promise(async () => {
+    // 与 `routes` 里的 `database()` 不同，这里**不留连接**：引导是一次性的，跑完就该把连接
+    // 还回去，没必要为一次启动动作在整个进程生命周期里占着一个连接池。
+    const db = connect(process.env)
+    await migrate(db)
+    return bootstrapAdmin(db, policeNo)
+  })
+}
+
+/**
  * 剥离 + 覆盖注入。**必须排在身份门之前**（`server.ts` 里那条 provide 数组的次序），
  * 排在后面等于门先看到客户端自己填的头。
  */
 export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; handles: unknown }>()(
   Effect.gen(function* () {
+    yield* bootstrap()
+
     const config = yield* UserIdentity.Config
     if (!config.required) return (effect) => effect
 
