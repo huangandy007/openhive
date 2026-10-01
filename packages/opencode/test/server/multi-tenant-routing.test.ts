@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterAll, describe, expect } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
@@ -6,6 +6,8 @@ import path from "path"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { Database } from "@opencode-ai/core/database/database"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
@@ -15,6 +17,24 @@ import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
+
+/**
+ * ⚠️ **T020 遗留的修补（2026-10-01，T023 期间发现）**：同 `tenant-db-isolation.test.ts` 与
+ * `tenant-directory-isolation.test.ts` 上那两条注释——T020 把 `defaultPassword(process.env)`
+ * 放进了网关的层构造期且选定「缺失即抛」，于是**任何建真应用（`HttpApiApp.routes`）的测试，
+ * 都必须像一次真部署那样把口令配上**。本文件下面那条「门开着服务真应用路由」正是这种测试。
+ *
+ * ⚠️ **本条是 T021 那笔修补漏掉的第三处**：T021 修了 T012 / T013 两个文件，但**没有 grep
+ * 「还有谁在同一个前提下」**（`LEARNINGS #002-06`），于是这一处一直红着。它的**绿取决于跑它
+ * 的那个 shell 有没有碰巧设了 `OPENHIVE_DEFAULT_PASSWORD`**——本机实测：不设 = 1 fail、
+ * 设了 = 2 pass。这正是最该被消灭的形态：门禁的绿取决于环境，而门禁自己不会报这件事。
+ *
+ * 为什么走 `process.env` 而不是下面 `on()` 那个 `ConfigProvider`：网关读的是 `process.env`，
+ * 塞进 `ConfigProvider` 会被**无声忽略**（同另两处的注释）。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+
+afterAll(restoreDefaultPassword)
 
 const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
 const SUBJECT: TokenSubject = {
