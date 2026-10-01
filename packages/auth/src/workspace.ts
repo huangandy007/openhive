@@ -21,6 +21,23 @@ export function workspaceRoot(env: Record<string, string | undefined>): string {
 }
 
 /**
+ * 拒绝会把路径引出沙箱根的 `userId`。
+ *
+ * **为什么单独一个函数**：003 T018 的三个动作（归档 / 恢复 / 删除）都要这道判据，
+ * 而它们是**破坏性**的——`../` 会让「删除」删到沙箱根外面去。抄一份判据就会漂
+ * （两处分头演化、改一处漏一处），所以 auth 侧只有这一份；core 侧那份是**有意**的重复
+ * （core 不能 import `@opencode-ai/auth`，反向依赖），见 `database/router.ts` 的同名校验。
+ *
+ * `acting` 只进错误信息，不参与判断——三个调用点各自说清「拒绝的是什么动作」，
+ * 排查时不必去猜是哪个操作触发的。
+ */
+export function assertSafeUserId(userId: string, acting: string): void {
+  if (!userId || userId.includes("/") || userId.includes("\\") || userId === "." || userId === "..") {
+    throw new Error(`非法用户 id，拒绝${acting}：${JSON.stringify(userId)}`)
+  }
+}
+
+/**
  * 建出 `{root}/{userId}/` 并返回该路径。
  *
  * `recursive: true` 让两件事同时成立：父目录不存在就一并建出；目录已存在也不报错
@@ -32,9 +49,7 @@ export function workspaceRoot(env: Record<string, string | undefined>): string {
  * 每个调用点守一次可靠。
  */
 export async function createWorkspace(root: string, userId: string): Promise<string> {
-  if (!userId || userId.includes("/") || userId.includes("\\") || userId === "." || userId === "..") {
-    throw new Error(`非法用户 id，拒绝建沙箱目录：${JSON.stringify(userId)}`)
-  }
+  assertSafeUserId(userId, "建沙箱目录")
 
   const path = join(root, userId)
   // `mode: 0o700`（T007 / `isolation-scheme.md` §4）：只属主可进可写。
