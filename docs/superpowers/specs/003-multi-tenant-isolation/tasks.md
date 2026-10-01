@@ -720,13 +720,55 @@
 
 ### 随网关一并做的呈现层
 
-- [ ] **T015 登录页 + 强制改密弹窗**（002 的 T010 / T012，`[FE·新增]`）[依赖 T014]
+- [x] **T015 登录页 + 强制改密弹窗**（002 的 T010 / T012，`[FE·新增]`）[依赖 T014]
   [出参：登录失败统一提示「账号或密码错误」；`must_change_pw` 命中时全屏遮罩锁死]
   - 服务层半边 002 已交（`login()` 对四种失败原因抛同一个 `InvalidCredentialsError` + 同一句消息；
     成功时透出 `mustChangePw`）。**缺的是「把它显示出来」**。
-  - 落点待定：挂在 `packages/app` 的哪个位置；以及接线到 001 留的接入缝
-    `packages/app/src/workspace/current-user.ts` 的 `setCurrentUser`
-    ——**该缝至今零生产调用者**（002 实测）。
+  - ✅ **落点已定**（2026-09-30）：`packages/app/src/auth/`（四个文件：`gateway.ts` 纯 HTTP 形状、
+    `auth-gate.tsx` 分岔 + 接线缝、`login-page.tsx`、`change-password.tsx`）；
+    在 `app.tsx` 里包在 `<ServerProvider>` 内、`<GlobalProvider>` 外——
+    未登录时连落盘查询都不建；刻意**不进** `ConnectionGate`（那道门要先健康检查）。
+  - ✅ **接线缝已接**：`setCurrentUser` 由 `AuthGate` 的一个 `createEffect` 驱动
+    （已登录喂身份、其余情况喂 `undefined`）。**002 实测的「零生产调用者」到此闭合**。
+  - ✅ **完成 2026-09-30**。三段：
+    - **T015-a 网关端点**（`packages/opencode/src/server/openhive/gateway.ts` 增 `GET /me`、
+      `POST /change-password`）：**T014 留的那个洞补上了**——T014 只有登录/登出，
+      而「已登录」与「该不该强制改密」这两件前端启动时就要知道的事，当时**没有端点可问**。
+    - **T015-b 身份门放行外壳**：`packages/opencode/src/server/openhive/ui-shell.ts`（新增）
+      + 身份门放行规则。放行**正向白名单**（不是「除了 API 都放」）——
+      否则以后新增一个后端路径会**默认变成公开的**。
+    - **T015-c 前端**：`packages/app/src/auth/` 四文件 + `app.tsx` 接线（见上面「落点已定」）。
+  - ✅ **两个新目录的口径已同步**：「`auth` 目录」加进了**同口径的两处**
+    （`package.json` 的 `lint:openhive` 扫描范围、`design-token-refs.test.ts` 的 `自有目录`）
+    ＋ `openhive-module-dirs.test.ts` 的骨架不变量。**三处的计数文字一并去掉了数字**——
+    「四个目录」这种写法在这个 feature 里已经过期两次。
+  - ✅ **dev 下的同源问题以 Vite 代理解决**（`packages/app/vite.config.ts`）：
+    `auth/` 发的是**同源相对路径**（登录/改密靠 `credentials: "same-origin"` 才会带上 Cookie），
+    故 `/openhive` 前缀在 dev 必须转给内核。代理的地址**与 `entry.tsx` 解析内核地址共用同一对
+    环境变量与同一个兜底**（`VITE_OPENCODE_SERVER_HOST/PORT`，兜底 `localhost:4096`）——
+    只改一处会让「数据面到了内核、登录到不了」，且**不报错，只是永远登不进去**。
+  - ✅ **门禁实测（2026-09-30）**：`bun run typecheck` **31/31 successful**；
+    `packages/app` `test:unit` **812 pass / 0 fail**、`test:components` **194 pass / 0 fail**；
+    `packages/ui` `brand-paint.test.ts` **18 pass / 0 fail**；
+    `packages/opencode` 三个 T015 测试文件 **41 pass / 0 fail**；
+    `packages/auth` **149 pass / 1 skip / 0 fail**；
+    `bun run lint:openhive` **23 warnings / 0 errors**，其中**本次新增目录 0 命中**
+    （23 与本 feature 之前的基线**同数**）；`bunx oxlint` 三个改动源码目录 **0/0**；
+    `git diff --stat bun.lock` **为空**。
+  - 🔴 **未覆盖（缺口，不是覆盖）**——七条，全部落进 `state.md` 的缺口表：
+    ① DESIGN §6.1 的**六边形网格纹理**没做（本环境无法目视验证几何，宁缺勿滥，只做了金色光晕）；
+    ② **登出入口**（`POST /logout` T014 已有端点，但前端没有触发它的入口）；
+    ③ 改密遮罩**没有焦点陷阱**（自己起 overlay 的代价，见 `change-password.tsx` 文件头）；
+    ④ **dev 下数据面仍直连 `:4096`**（`entry.tsx` 的 `getCurrentUrl()`），跨源 fetch 默认
+    `credentials: "same-origin"` ⇒ 会话 Cookie **不随数据请求发出**；T015 只保证登录/改密
+    这三条自身可用（同源相对路径 + 上面的代理），**把它登记成缺口而不是含糊过去**；
+    ⑤ `AuthGate` **不是安全边界**（前端门谁都能跳过，真正的门禁在内核身份门 + 网关验签）；
+    ⑥ 会话中途过期时 `change-password` 的 401 只给一句通用失败提示，**不把人踢回登录页**；
+    ⑦ **没有凭证吊销机制**——**停用账号的旧凭证在内核那道门仍然有效**（签发时带 2 小时 TTL，
+    内核只看签名、不看账号状态）。`packages/auth/src/session.ts` 的会话自查把停用的人挡在**界面**外，
+    但那是界面门禁不是撤销；「停用即立即失效」要一张**凭证吊销表**，**本 feature 没做**。
+    （`session.ts` 的文件头原先写「已记在 tasks.md 的未覆盖项里」——**当时 tasks.md 并没有这一条**，
+    是这次 grep 出来的悬空引用，现在补上，两边对得住了。）
 
 ### 🔴 P0：越权 BOLA / BFLA
 

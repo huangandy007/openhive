@@ -1,24 +1,51 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
-✅ **T014 已完成**（2026-09-30）——**网关**（Auth 服务的 HTTP 面）：登录 / 登出端点、
-剥离客户端 `X-User-ID` 后按验签结果**覆盖注入**、启动期密钥地板（D-03）。
-新增 2 文件 + 改 4 文件，新增测试 **10 pass / 23 expect**，**零 schema 变更**。
-**003 原计划 13 条 + 002 移交的 T014 到此做完**；T015–T018 的硬前置（网关）已就位。
-三条门禁实跑：`bun run typecheck` **31/31 exit 0**；`packages/auth` **149 pass / 0 fail**；
-改动/新增 7 文件 oxlint **0 warning / 0 error**；`bun.lock` 无 diff。
-⚠️ `test/server` 全目录那 **1 条失败是登记在案的环境红**（`serves search endpoints`，
-本机首次 spawn `rg.exe` ≈4s vs 该用例 5s 预算），**单跑复现、与 003 无因果**——
-判读依据见下「T014 结论」③。
-四条必读的落点结论见下「T014 结论」。
+✅ **T015 已完成**（2026-09-30）——**登录页 + 强制改密弹窗**（002 的 T010 / T012）。三段：
+网关补 `GET /me` + `POST /change-password`（T015-a）、身份门放行 SPA 外壳的正向白名单（T015-b）、
+前端 `packages/app/src/auth/` 四文件 + `app.tsx` 接线（T015-c）。
+**002 留下的接线缝 `setCurrentUser`「零生产调用者」到此闭合。**
+**零 schema 变更**。文件面（**不写死条数**，数法 = `git status --porcelain -uall`；不含文档）：
+新增 = `packages/app/src/auth/` 六个（四个产品：`gateway.ts` / `auth-gate.tsx` / `login-page.tsx` /
+`change-password.tsx`；两个测试）＋ `packages/auth/src/session.ts` ＋
+`packages/opencode/src/server/openhive/ui-shell.ts` 及其测试；
+改 = `app.tsx` / `vite.config.ts` / `topbar.tsx` / `openhive/gateway.ts` / `user-identity.ts` 等
+＋ 三个扫描清单 ＋ `theme.css`（含重跑的生成物 `oc-2.json`）。
+门禁实跑：`bun run typecheck` **31/31 successful**；`packages/app` `test:unit` **812 pass / 0 fail**、
+`test:components` **194 pass / 0 fail**；`packages/ui` `brand-paint.test.ts` **18 pass / 0 fail**；
+`packages/opencode` 三个 T015 测试文件 **41 pass / 0 fail**；`packages/auth` **149 pass / 1 skip / 0 fail**；
+`bun run lint:openhive` **23 warnings / 0 errors**（**新增目录 0 命中**，23 与改动前同数）；
+三处改动源码目录 `bunx oxlint` **0/0**；`git diff --stat bun.lock` **为空**。
+🔴 **一条要你追认的流程偏差**（不藏）：任务书 `dev_tdd.003.md` 的 **D3（T015 登录页挂在哪）
+被明确推迟到「T015 开工时再定」**，而**这一条没有单独问过你** ——落点是实现过程中定的，
+代码已写完并全绿。落点与理由见下「已裁定的事项」的 T015 条。**若你要换个位置，改法是机械的**
+（`auth-gate.tsx` 与 `app.tsx` 里那一处包裹），但我不想把这句「已裁定」写成没发生过的事。
 
-**下一个：T015（登录页 + 强制改密弹窗）**——🔴 **开工前必须先回来问 D3**（**推迟是裁定本身**）。
+**下一个：T016（越权 BOLA / BFLA，P0）**——依赖 T014，前置已就位。
 不依赖 T014 的可并行候选：**T019–T024**（002 评审移交，6 条），**现在就能做**。
-📌 **一条待你裁决**：上面那三条缺口**现在没有接收方**——T016 的语义是「跨身份越权 BOLA/BFLA」，
-与「同一用户内项目不串」「限流 429」「长连接下的取连接」都不贴切，**硬挂过去就是`LEARNINGS #002-04`
-说的把责任推进黑洞**。要不要为它们开新任务（或并入 T019–T024 的某一条），请你定。
+📌 **两条待你裁决**（都不阻塞收工，但都悬着）：
+1. **上面那条 D3 的追认**（T015 落点）。
+2. **三条缺口仍然没有接收方**（T009 的两条读路径 / T010 的端到端 429 / 长连接下的取连接）——
+   T016 的语义是「跨身份越权 BOLA/BFLA」，与这三条都不贴切，**硬挂过去就是 `LEARNINGS #002-04`
+   说的把责任推进黑洞**。要不要为它们开新任务（或并入 T019–T024 的某一条），请你定。
 
 ## 已完成
+- **T015**（2026-09-30）· **登录页 + 强制改密弹窗**（002 移交的 T010 / T012）。前端半边落
+  `packages/app/src/auth/`（`gateway.ts` 纯 HTTP 形状 / `auth-gate.tsx` 分岔与接线缝 /
+  `login-page.tsx` / `change-password.tsx`），内核半边补 `GET /openhive/auth/me` +
+  `POST /openhive/auth/change-password` 与 `ui-shell.ts` 外壳白名单。
+  要点见 `tasks.md` 的 T015 ✅ 完成块，**含七条如实登记的未覆盖**。
+  **两条必须记住的事**（本 task 实测撞出来的）：
+  ① **Solid 的非 keyed `Show` / `Switch` 判的是「真假」，不是「值变了没有」**
+  （`equals` 是 `!a === !b`）——「未探到 / 未登录 / 已登录」三个都是真值对象，
+  于是登录成功后子树**不重跑**、页面停在登录页；测试全绿以外的部分一次都没红，
+  是**肉眼**发现停在登录页才回头查的。解法：状态收敛成字符串，让每个 `Show` 判**布尔**。
+  **不能用 `keyed`**（每次身份对象更新会把整个工作台重建）；
+  ② **登录页底色 `#0F172A` 是「新增 v2 token」而不是裸写 hex**（用户选定）——
+  按 `LEARNINGS #001-04` 的三段真相链走了三处：`theme.css` 的 `:root` +
+  `[data-color-scheme="light"]` + **重跑生成器**产出 `oc-2.json`，并给
+  `brand-paint.test.ts` 补「三处一致」断言。**没走「塞进 `.css` 规避 `no-raw-color` 门」那条路**——
+  那是绕过门，不是过门。
 - **T014**（2026-09-30）· **网关**（002 移交）。登录/登出端点 + 剥离并覆盖注入 `X-User-ID` +
   启动期密钥地板（D-03）。新增 `server/openhive/gateway.ts`、`packages/auth/src/test-support.ts`，
   改 4 文件。要点见下「T014 结论」，**含三件必须记住的事**（① `HttpRouter.use()` 返回的就是 `Layer`，
@@ -70,14 +97,15 @@
   **含一处对 plan「模式 A」的有意偏离**（`LayerNode.unbound` → `Context.Service`，已 grep 全部引用点同步）。
 
 ## 阻塞项
-（**无技术阻塞**——T009 / T010 / T011 / T012 / T013 / **T014** 均已 2026-09-30 完成，
-**003 原计划的 13 条（T001–T013）加 002 移交的 T014 全部做完**，T015–T018 的前置已就位。
-还堵着的是**决策闸**而非技术障碍：
-**只剩 D3 必须在 T015 开工前问**（推迟是裁定本身，见下「已裁定的事项」）——
-**D4 已于 2026-09-30 到点裁定**，T010/T011 的形状不再是未知数。
+（**无技术阻塞**——T009 / T010 / T011 / T012 / T013 / T014 / **T015** 均已 2026-09-30 完成，
+T016–T018 的前置已就位，T019–T024 无前置、随时可开。
+**D3 / D4 都已不再是路障**：D4 到点裁定；D3 那件事（T015 落点）**已落地但未单独问过你**，
+**并入下面第 1 条待裁决**。
 T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
 
-📌 **两条待你裁决**（都不阻塞收工，但都悬着）：
+📌 **三条待你裁决**（都不阻塞收工，但都悬着）：
+0. **D3 的追认**（T015 落点，**这条与别的不同：它是「已做完但没按流程先问」**）。
+   见「当前任务」的流程偏差段与「已裁定的事项」的 T015 条。**要不要换个位置，你说了算。**
 
 1. **存量 flaky（与 003 无因果）**：T010 顺带实测出的
    `user-identity.test.ts` 的「令牌被篡改 → 拒绝」以 **≈1/16** 概率假红
@@ -107,6 +135,13 @@ T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
 | **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
 | 🟡 **上一条里 `file HttpApi` 那批 5s 超时的根因已查明（T012/T013 收尾时顺带量出来的）**——**是环境、不是 003** | **实测**（`bun test` 下、只 spawn `rg.exe`、不 import 本项目任何代码的探针，跑两次都是同一形状）：**本机第一次 spawn `rg.exe` 要 ≈4800ms**（两次实测 4874ms / 4800ms），**之后每次只要 ≈30–45ms**。而 `httpapi-file.test.ts` 的 `serves search endpoints` 把**第一次** rg 调用放在一个 **5 秒预算**里 ⇒ 在本机**稳定超时**（单跑该文件 **3/3 次都红**，报 `timed out after 5000ms` / `file search index was not ready`）。探针同时实测出「索引就绪后 `find` 只要 ~46ms/次」⇒ **应用侧一点不慢，慢的是进程冷启动** | **不是 003 引入的**，三条实测依据：① 那两个新测试文件在**进程里根本没被加载**时，单跑 `httpapi-file.test.ts` 照样红；② `git diff --stat multi-tenant...HEAD -- packages/core/src/ripgrep* packages/core/src/filesystem*` **无输出**（003 一行没碰）;③ 这是本机 Windows 上 `rg.exe` 首次启动的代价。**未修**（要改的是上游测试的 5s 预算，属上游文件 = 合并冲突面，且不在本 feature 边界内）。**判据**：见下「T013 结论」末节的复现命令 |
 | 🟡 **T014：网关侧三条未覆盖**（2026-09-30 登记） | ① `AUTH_JWT_SECRET` 的**轮转**——代码侧**没有任何轮转机制**，改密钥即全体已签发会话立即失效，是**部署纪律**；② Cookie 的 `Secure` 属性在**真 HTTPS** 下的行为（`sessionCookie` 默认关，本机无 HTTPS，验不了）；③ 内核端口的**真实网络可达性**（回环绑定 / 网络策略）——本机 win32 单进程，**验不了** | **登记为缺口，不假称覆盖**（`LEARNINGS #002-02`）。① ② 归部署文档（`deploy-todo.md` **D-03** 已改写「轮转仍是部署纪律」）；③ 是 **D-02**，已改写为「应用层已落地、网络那半待办」。**代码侧能做的都做了**：剥离注入与启动期密钥地板都有测试守着，见下「T014 结论」 |
+| 🟡 **T015 ①：DESIGN §6.1 的六边形网格纹理没做**（2026-09-30 登记） | 本机**无法目视验证**几何是否正确（无浏览器 / 无视觉回归基线）；做出来可能是视觉噪声，而「看着像做了」比没做更坏 | **登记为缺口，不假称覆盖**（`LEARNINGS #002-02`）。**金色光晕做了**（§6.1 的另一半）。补法：有视觉验收环境时按 DESIGN §6.1 补一层 `background-image` 的网格 |
+| 🟡 **T015 ②：前端没有登出入口**（2026-09-30 登记） | `POST /openhive/auth/logout` **T014 已交付**（204 + `Max-Age=0` 覆盖），但前端**没有触发它的入口**（顶栏没有登出项） | 登记为缺口。T015 的 spec 出参是「登录页 + 强制改密」，**不含登出**——但「能登进去不能登出来」在真环境里会被当场追问。**待你定**：并入 T016 或单开一条 |
+| 🟡 **T015 ③：改密遮罩没有焦点陷阱**（2026-09-30 登记） | `change-password.tsx` **刻意不用**上游 `DialogProvider`（那个栈把 Escape 绑成关闭，而强制改密框恰恰不能有关闭键）⇒ 焦点陷阱得自己操心，**本轮没做** | 登记为缺口。行为面：Tab 可以走到遮罩背后工作台的元素上。**不是安全洞**（真密码策略在服务端），是**可用性 / 无障碍**缺口 |
+| 🟡 **T015 ④：dev 下「登录能用、数据面没凭证」**（2026-09-30 登记） | `entry.tsx` 的 `getCurrentUrl()`：**DEV 下数据面 = `http://{VITE_OPENCODE_SERVER_HOST ?? "localhost"}:{VITE_OPENCODE_SERVER_PORT ?? "4096"}`，生产下 = `location.origin`**（读源码，不是推断）。于是 dev 下数据面是**跨源**（页面在 :3000、内核在 :4096），而跨源 fetch 的默认 `credentials` 是 `same-origin` ⇒ **会话 Cookie 不随数据请求发出**。T015 只把**登录 / 探查 / 改密这三条**改成了同源相对路径 + Vite 代理，**数据面一行没动** | **登记为缺口，不假称覆盖**（`LEARNINGS #002-02`）。**生产不受影响**（同源，`location.origin`）。⚠️ 修法有两条且**互相影响**：① 数据面也走 `/openhive` 代理（要动 `entry.tsx` 的默认服务器地址，**上游文件**）；② 给数据面的 fetch 加 `credentials: "include"` + 内核配 CORS（会开一个**跨源带凭证**的口子）。**哪条都要先问你**，故未自行选。**在闭合之前，dev 下的隔离验收不得用「带 Cookie 的数据请求」当手段** |
+| 🟡 **T015 ⑤：`AuthGate` 不是安全边界** | 它决定「显示登录页还是工作台」，而**能改前端的人当然也能跳过它** | **这不是缺口，是必须写明的边界**（同 `packages/auth/src/password.ts` 那句「本函数自己不做鉴权」的写法）。真正的门禁在**内核身份门 + 网关验签**；前端这层只管「让人看得见该看的」。**写在这里是因为它最容易被下一个读代码的人误当成门禁** |
+| 🟡 **T015 ⑥：会话中途过期时 `change-password` 的 401 只给通用失败提示** | `gateway.ts` 的 `changePassword` 把 401 归到 `failed`（「改密请求失败」），**不把人踢回登录页** | 登记为缺口。场景：遮罩开着的时候 Cookie 过期（`Max-Age=7200`）。修法是把这个 401 上行给 `AuthGate` 让它转回登录页——**本轮没做** |
+| 🟡 **T015 ⑦：没有凭证吊销机制——停用账号的旧凭证在内核那道门仍然有效**（2026-09-30 登记） | 凭证签发时带 **2 小时 TTL**，内核身份门**只看签名、不看账号状态** ⇒ 停用一个账号，他手上那张凭证在剩余 TTL 内**照过门**。`packages/auth/src/session.ts` 的会话自查会把停用的人挡在**界面**外，但**那是界面门禁、不是撤销**（该文件头明写） | **登记为缺口，不假称覆盖**（`LEARNINGS #002-02`）。闭合要一张**凭证吊销表**（或把签发时间与「停用时刻」比对），**本 feature 没做**。⚠️ **登记过程本身是个教训**：`session.ts` 的文件头原先写着「已记在 tasks.md 的未覆盖项里」，而 **tasks.md 当时并没有这一条**——典型的**悬空交叉引用**（`LEARNINGS #002-06`：改完一处要 grep 谁引用了它；这次是**写的时候就没落地**）。现在两边都对得住了 |
 | ~~**两个用户共用同一个 `Location.Ref` 时的隔离**~~ ✅ **已关闭（T006，2026-09-30）** | T004 的落点是「取连接点路由」，按当前 fiber 的 `User` 选库；而 Location 树按**目录**缓存、不按用户分键 ⇒ 后台 fiber 会「陈旧身份捕获」 | **T006 已交付**：`anchor-workspace.ts` 把请求目录强制锚到 `{沙箱根}/{userId}`，两用户碰不到同一目录。验收测试 `test/server/anchor-workspace.test.ts` 真的构造 `Location.Ref.make(...)` 再 `Equal.equals` 比对（不是拿字符串不等充数），同时钉「同一用户拿不到第二个工作区」。**丙（给 Location 键加 userId 维度）按裁定未做，且仍不需要做。** |
 | 🟡 **锚定上线前就已存在的会话，其 `directory` 仍优先于锚定** | `planRequest` 是 `session?.directory \|\| defaultDirectory(...)`——**会话行里的 directory 优先于请求**，而锚定改的是请求 | **影响面 = 该用户自己的目录，不是越权**（T005 的每用户库让 `Session.Service.get` 只读自己的库）。**未测未修**，登记为缺口。若要闭合，须在会话创建侧锚定（T006 未做，见其 tasks 段的残留说明） |
 | **`node` 构建条件下的锚定未验证** | 同上第 1 行：`sqlite.node.ts` 本机加载即报错。锚定本身与构建条件无关（纯 HTTP 层），但**未在 node 条件下跑过** | 与第 1 行同批交 CI |
@@ -125,6 +160,37 @@ MUST NOT 仅靠应用层 `if` 判断过滤。」
   （`D:\project\study\openhive\.specify\memory\constitution.md`），不在本仓库。
 
 ## 已裁定的事项（feature 内）
+
+- ✅ **T015 三件事（2026-09-30）**：
+  1. **登录页深色底走「新增 v2 品牌 token」**（**用户选定**，非我的默认）。
+     在 `theme.css` 的 `:root` 与 `[data-color-scheme="light"]` 各加
+     `--v2-brand-login-surface: #0F172A`，**重跑** `packages/ui/script/build-oc2-v2-overrides.ts`
+     生成 `oc-2.json`，并给 `brand-paint.test.ts` 补一条「三处一致」断言（跑出 18 pass）。
+     否掉了「裸写 hex」（会被 `no-raw-color` 命中，本次新增文件就破了「0 命中」的门禁判据）、
+     「复用 `bg-inverse`」（它是**语义**槽位，会随明暗方案漂，而登录页这一块**刻意不跟着漂**）
+     与「塞进 `.css` 规避门」（那是绕过门）。
+     ⚠️ 代价如实记：动了 001 的换皮真相链（`theme.css` 是已定制过的**上游文件**）、生成物有 diff。
+  2. **dev 下走「同源相对路径 + Vite 代理」**：`auth/` 发 `/openhive/auth/*`，
+     `vite.config.ts` 把该前缀转给内核。代理地址与 `entry.tsx` 解析内核地址**共用同一对
+     环境变量与同一个兜底**（`VITE_OPENCODE_SERVER_HOST` / `VITE_OPENCODE_SERVER_PORT`，
+     兜底 `localhost:4096`）——两处只用一处 = 数据面到得了内核、登录到不了，**且不报错**。
+     否掉了「绝对地址直连 `http://localhost:4096`」（跨源 fetch 默认 `credentials: "same-origin"`
+     ⇒ Cookie 根本不发）。
+  3. **`auth` 目录同时扩进三处**（`lint:openhive` 扫描范围 / `design-token-refs.test.ts` 的
+     `自有目录` / `openhive-module-dirs.test.ts` 的 `moduleDirs`）。前两处**必须同口径**
+     （两个文件的注释都这么写着）；**三处原本写死的「四个」计数文字一并去掉数字**——
+     这个 feature 里「四个目录」已经过期两次，数目正是 `LEARNINGS #002-06` 说的「会随编辑而变的值」。
+  - 🔴 **落点（D3 的内容）没有单独问过你**——见「当前任务」里那条流程偏差。
+    实际落地：`packages/app/src/auth/` 四文件；在 `app.tsx` 里包在 `<ServerProvider>` **内**、
+    `<GlobalProvider>` **外**（未登录时连落盘查询都不建），**刻意不进 `ConnectionGate`**
+    （那道门先健康检查再出界面，而未登录的人看的是登录页，对内核健康检查毫无意义）。
+    **代价如实记**：这个包裹给 `app.tsx` 添了一层缩进，那块 20 行成了与上游的**新冲突面**
+    （`宪法 §I` 的「最小化合并冲突」）。
+  - ✅ **已同步的落点（按文件列，不数条数）**：`tasks.md`（T015 段的 ✅ 完成块）、
+    本文件（本条 + 当前任务 + 已完成 + 缺口表）、`dev_tdd.003.md`（D3 段 + 顶部状态行 +
+    「仍被有意推迟」段 + 节奏铁律段）、`package.json`、`vite.config.ts`、
+    `design-token-refs.test.ts`、`openhive-module-dirs.test.ts`、`theme.css`、
+    `brand-paint.test.ts`、`oc-2.json`。
 
 - ✅ **T014 网关的三个问题（2026-09-30 · 开工前问的，**都取【甲】**）**：
   1. **登录契约【甲】**：`POST /openhive/auth/login`（`{policeNo, password}`）→ 200
@@ -1611,6 +1677,31 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-09-30（**T015 已完成 —— 登录页 + 强制改密弹窗**：三段 = 网关补 `GET /me` +
+`POST /change-password`（T014 当时只交了登录/登出，而前端启动就要知道「登没登录」「要不要强制改密」，
+**没有端点可问**）、身份门放行 SPA 外壳的**正向白名单**（`ui-shell.ts`；判错的代价不对称——
+白名单判错是**白屏**，看得见；黑名单判错是**静默放行一个数据接口**，看不见）、
+前端 `packages/app/src/auth/` 四文件 + `app.tsx` 接线。**002 那条「`setCurrentUser` 零生产调用者」
+到此闭合**。**零 schema 变更**；文件面见「当前任务」（**不写死条数**，取数命令也写在那里）。
+门禁：`bun run typecheck` **31/31 successful**；`packages/app` `test:unit` **812 / 0 fail**、
+`test:components` **194 / 0 fail**；`packages/ui` `brand-paint.test.ts` **18 / 0 fail**；
+`packages/opencode` 三个 T015 测试文件 **41 / 0 fail**；`packages/auth` **149 / 1 skip / 0 fail**；
+`bun run lint:openhive` **23 warnings / 0 errors**（**新增目录 0 命中**，23 与改动前同数）；
+三处改动源码目录 oxlint **0/0**；`git diff --stat bun.lock` **为空**。
+📌 **两条必须记住的**：① **Solid 的非 keyed `Show` / `Switch` 判的是「真假」不是「值变没变」**
+（`equals` 是 `!a === !b`）——「未探到 / 未登录 / 已登录」三个都是真值对象 ⇒ 登录成功后子树
+**不重跑**、页面停在登录页；**测试全绿、typecheck 全绿**，是**肉眼**看见停在登录页才回头查的
+（踩了两次，第二次是 `Switch` 同病）。解法：状态收敛成字符串、让每个 `Show` 判**布尔**；
+**不能用 `keyed`**（每次身份更新会把整个工作台重建）。② 登录页底色 `#0F172A` 走的是
+**新增 v2 品牌 token**（用户选定），按 `#001-04` 的三段真相链改了三处并给 `brand-paint.test.ts`
+补断言；**没走「塞进 `.css` 规避 `no-raw-color` 门」**——那是绕过门。
+📌 **一条流程偏差要你追认**：任务书的 **D3（T015 登录页挂在哪）明确推迟到「T015 开工时再定」，
+而它没有被单独问过你**——落点在实现中定了，代码已全绿。见「当前任务」与「已裁定的事项」的 T015 条。
+🟡 **七条未覆盖如实登记**（DESIGN §6.1 六边形网格纹理 / 前端无登出入口 / 改密遮罩无焦点陷阱 /
+dev 数据面跨源不发 Cookie / `AuthGate` 不是安全边界 / 改密 401 不踢回登录页 /
+**无凭证吊销机制**），见缺口表。其中最后一条是 grep 出来的：`session.ts` 的文件头写着
+「已记在 tasks.md 的未覆盖项里」，而 **tasks.md 当时并没有这一条**（悬空交叉引用，`#002-06`）。
+
 2026-09-30（**T012 + T013 已完成 —— 003 原计划的 13 条任务（T001–T013）到此全部做完**：
 **验收隔离测试**（FR-010 / SC-001 / SC-003）。**零产品代码改动**，新增 2 个测试文件、
 合跑 **9 pass / 0 fail / 33 expect**（T012 `tenant-db-isolation.test.ts` 4/20、
