@@ -4,7 +4,7 @@ import { login } from "./login"
 import { migrate, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
 import { DuplicatePoliceNoError, registerUser, type RegisterInput } from "./register"
-import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb } from "./test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb, withTempMigrations } from "./test-support"
 
 const PW = DEPLOYED_DEFAULT_PASSWORD
 
@@ -99,6 +99,38 @@ describe("生产驱动 (bun-sql) × 真库", () => {
       expect(result.subject.id).toBe(id)
       expect(result.subject.name).toBe("张三")
       expect(result.mustChangePw).toBe(true)
+    })
+  })
+
+  // T021 的整轮回滚要在**生产驱动**上验一遍，不能只在 PGlite 上验：事务是「随驱动而变的形状」
+  // 的重灾区——裸 `BEGIN` 走 `execute()` 在 PGlite 上能过、在 bun-sql 上被直接拒绝
+  // （实测 `ERR_POSTGRES_UNSAFE_TRANSACTION`）。`LEARNINGS #002-01` 就是这个病咬了两次。
+  //
+  // ⚠️ 断言不能只看「表没建出来」：若 `db.transaction` 在 bun-sql 上根本不支持、`migrate()`
+  // 一进门就抛，表同样不在——那会是一条**假绿**。所以下面同时钉住**抛的是迁移文件里那个错**
+  // （42P01 = undefined_table），证明事务是跑起来之后才回滚的。
+  test("迁移文件中途失败时整轮回滚（生产驱动上的事务是真的）", async () => {
+    await withProductionDb(async (db) => {
+      const thrown = await failureOf(() =>
+        withTempMigrations(
+          {
+            "0001_broken.sql": [
+              "create table probe_half (x int)",
+              "--> statement-breakpoint",
+              "select * from no_such_table_xyz",
+            ].join("\n"),
+          },
+          (dir) => migrate(db, dir),
+        ),
+      )
+
+      expect(pgErrorCode(thrown)).toBe("42P01")
+
+      const result = await db.execute(sql`
+        select count(*)::int as n from information_schema.tables where table_name = 'probe_half'
+      `)
+
+      expect(rowsOf(result)).toEqual([{ n: 0 }])
     })
   })
 

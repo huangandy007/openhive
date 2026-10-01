@@ -8,6 +8,9 @@
  * 于是**同一个夹具可以被两个 package 的测试共用**，不必各写一份（两份独立实现早晚漂）。
  */
 
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { PGlite } from "@electric-sql/pglite"
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket"
 import { connect } from "./db"
@@ -70,6 +73,14 @@ const SOCKET_CONNECTION_LIMIT = 64
  * 要发同一句 SQL 就**复用同一个客户端**（生产本来就是一个进程、一个连接池服务所有请求，
  * 一个请求一个客户端反而是失真）。
  *
+ * ⚠️ **T021 补充实测：真正的边界是「连接」不是「客户端」，而 `db.transaction()` 会另挑连接。**
+ * `bun-sql` 每个客户端自带**连接池**，`transaction()` 从池里**独占**一条；于是同一句
+ * **带参** SQL 在两个相继的事务里各跑一次 ⇒ 两条连接各准备一遍 ⇒ 同一个 PG 会话上撞 42P05。
+ * 同一次实测里不撞的形态：**无参**语句（走简单查询协议，不准备）；同一事务内同句跑两遍
+ * （同一条连接，自己缓存住了）；事务外跑一次再进事务跑一次。判别实验的落点是
+ * `migrate.ts` 那句并发锁——它因此写成无参的 `sql.raw`。
+ * 需要「两次事务、同句、带参」的用例在夹具上做不了，这是**夹具的残差**，不是产品的。
+ *
  * ⚠️ **残差（说清楚，不假装闭合）**：服务端是 **WASM 构建的 PG**，不是生产那个 PG 二进制 /
  * 版本。所以本夹具闭合的是**驱动那一半**（序列化、结果解析、错误对象形状——这些是自己写的、
  * 会错的那一半），**不**闭合「与生产 PG 同版本同构建」。后者仍需一个真 PG 实例，
@@ -124,5 +135,31 @@ export function restorePoint(values: Record<string, string>) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+}
+
+/**
+ * 造一个临时迁移目录（`files` 的键是文件名、值是内容），交给 `fn` 用，跑完连目录一起删掉。
+ *
+ * ⚠️ **为什么不把测试用的迁移文件丢进仓库的 `migrations/`**：`migrate()` 认的是「目录里
+ * 有没有这个文件」，不是「账上有没有」——一个跑挂了没删掉的残骸会被**生产的下一次迁移**
+ * 一起应用（那几个文件里写的都是 `create table` / `update` 之类的真语句）。
+ * 临时目录让这件事在**文件系统层面**不可能发生，不靠「记得删」。
+ *
+ * 与 `withProductionDb` 同理由放在本模块：两个测试文件（`migrate` 与 `production-driver`）
+ * 都要用它，各写一份早晚漂。
+ */
+export async function withTempMigrations<T>(
+  files: Record<string, string>,
+  fn: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "openhive-migrations-"))
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(join(dir, name), content)
+    }
+    return await fn(dir)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 }

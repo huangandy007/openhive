@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
+import { withTempMigrations } from "./test-support"
 
 /** 跑一条查询并把它抛出的错原样交回来（drizzle 的 `execute()` 是懒 thenable，需 await 才真执行）。 */
 async function failureOf(query: PromiseLike<unknown>): Promise<unknown> {
@@ -28,6 +29,27 @@ async function errorOf(query: PromiseLike<unknown>): Promise<Error> {
 
 function freshDb() {
   return drizzle({ client: new PGlite() })
+}
+
+/** 表在不在。用 `information_schema` 而不是 `to_regclass()`：后者认 `search_path`，判据会随会话漂。 */
+async function tableExists(db: ReturnType<typeof freshDb>, name: string, schema?: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    select count(*)::int as n from information_schema.tables
+    where table_name = ${name} and (${schema ?? null}::text is null or table_schema = ${schema ?? null})
+  `)
+  return Number(rowsOf(result)[0]?.n) > 0
+}
+
+/**
+ * 记账表里现在记着哪些版本。断言写成整个列表（通常 `[]`），比逐条 count 更能看出残留了什么。
+ *
+ * 「表整个不在」也算空：整轮回滚会连 `BOOTSTRAP` 建的那张表一起带走（它也在同一个事务里），
+ * 那是「一条记录都没有」的更强形式，不是另一种失败。
+ */
+async function ledgerVersions(db: ReturnType<typeof freshDb>): Promise<string[]> {
+  if (!(await tableExists(db, "_migration", "auth"))) return []
+  const result = await db.execute(sql`select version from auth._migration order by version`)
+  return rowsOf(result).map((row) => String(row.version))
 }
 
 /**
@@ -138,6 +160,126 @@ describe("migrate", () => {
       where table_schema = 'auth' and table_name = 'user'
     `)
     expect(result.rows).toEqual([{ n: 0 }])
+  })
+})
+
+/**
+ * T021：`migrate()` 的事务与并发锁（002 评审 I4）。
+ *
+ * 出参两半：① 两个进程同时 `migrate()` 只有一个应用，另一个等待后看到「已应用」；
+ * ② 单个迁移文件内失败时**整文件回滚**，不留半应用状态。
+ *
+ * ⚠️ **①那半在本机测不了**，理由与实测见 003 `state.md` 缺口表——这里只留②那半的测试，
+ * 以及一条能测的边角（锁不许漏出去）。别把本文件读成「并发已覆盖」。
+ */
+describe("migrate 的事务与并发锁（T021）", () => {
+  // 迁移目录可注入是②那半的**前置**：不给一条「往临时目录里放一个坏文件」的路，
+  // 就只能往仓库的 `migrations/` 里丢测试文件——一个跑挂了没删掉的残骸会被生产的下一次
+  // 迁移一起应用（见 test-support.ts 的 `withTempMigrations`）。
+  //
+  // ⚠️ 这条钉的是**注入这件事本身**：目录参数被忽略时，`migrate()` 会照常应用仓库的
+  // 三个真迁移并返回它们的版本号，这里的断言随即红——它不会「碰巧通过」。
+  test("迁移目录可注入：应用的是注入目录里的文件，不是仓库的 migrations/", async () => {
+    const db = freshDb()
+
+    const applied = await withTempMigrations({ "0001_probe.sql": "create table probe_injected (x int)" }, (dir) =>
+      migrate(db, dir),
+    )
+
+    expect(applied).toEqual(["0001_probe"])
+    expect(await tableExists(db, "probe_injected")).toBe(true)
+  })
+
+  test("迁移文件中途失败 ⇒ 整文件回滚：前面语句不留痕，也不记账", async () => {
+    const db = freshDb()
+
+    // 判别式是**前半截有没有留下**。记账那半在改之前也是空的（insert 排在 `runFile` 之后，
+    // 压根没跑到），单独断言它区分不开两种实现——`LEARNINGS #002-02`。
+    const thrown = await errorOf(
+      withTempMigrations(
+        {
+          "0001_broken.sql": [
+            "create table probe_half (x int)",
+            "--> statement-breakpoint",
+            "select * from no_such_table_xyz",
+          ].join("\n"),
+        },
+        (dir) => migrate(db, dir),
+      ),
+    )
+
+    expect(thrown.message).toContain("no_such_table_xyz")
+    expect(await tableExists(db, "probe_half")).toBe(false)
+    expect(await ledgerVersions(db)).toEqual([])
+  })
+
+  // 上一条钉的是「文件自己的语句要一起回滚」，这条钉的是**记账也在同一个事务里**——
+  // 两件事分开，是因为它们对应两种不同的改法：只把 `runFile` 包进事务，上一条就绿了，
+  // 而「改了库、没记账」这个 002 评审 I4 的原文病还在（记账 insert 仍排在事务外）。
+  //
+  // 构造法子是让**记账这一步自己失败**：文件最后一条语句替运行器把记账行写了，
+  // 运行器随后那句 insert 必撞主键。这样「DDL 成功之后、记账失败」这个窗口就必现，
+  // 不依赖时序或运气。文件内容怪，是为了把那个窗口钉死；真实迁移不会这么写。
+  test("记账与迁移文件同生共死：记账失败时该文件的 DDL 一并回滚", async () => {
+    const db = freshDb()
+
+    const thrown = await errorOf(
+      withTempMigrations(
+        {
+          "0001_greedy.sql": [
+            "create table probe_greedy (x int)",
+            "--> statement-breakpoint",
+            "insert into auth._migration (version, applied_at) values ('0001_greedy', 0)",
+          ].join("\n"),
+        },
+        (dir) => migrate(db, dir),
+      ),
+    )
+
+    // 23505 = unique_violation。
+    expect(pgErrorCode(thrown)).toBe("23505")
+    expect(await tableExists(db, "probe_greedy")).toBe(false)
+    expect(await ledgerVersions(db)).toEqual([])
+  })
+
+  // 「迁移期间持着并发锁」在本机**只能这样验**：夹具的多个客户端被 socket 服务端汇进同一个
+  // PG 会话（见 `test-support.ts`），而会话内的 advisory 锁是可重入的——实测第二个客户端
+  // `pg_try_advisory_lock` 立刻拿到 `true`。所以「另一个 runner 在等」写不出来。
+  //
+  // 剩下的可观测面是**锁在不在**：让迁移文件自己回头看一眼 `pg_locks`。它看得见自己所在
+  // 事务持有的 advisory 锁（实测），于是「持锁」这件事有了判别式。
+  // ⚠️ 这条**不**能证明互斥——那半是登记在案的缺口，别把这里读成「并发已覆盖」。
+  test("迁移执行期间确实持着 advisory 锁", async () => {
+    const db = freshDb()
+
+    await withTempMigrations(
+      {
+        "0001_saw_lock.sql": [
+          "create table probe_locked as",
+          "  select 1 as held where exists (select 1 from pg_locks where locktype = 'advisory')",
+        ].join("\n"),
+      },
+      (dir) => migrate(db, dir),
+    )
+
+    const result = await db.execute(sql`select count(*)::int as n from probe_locked`)
+    expect(rowsOf(result)).toEqual([{ n: 1 }])
+  })
+
+  // ⚠️ 这条**不是**驱动本次改动的 RED——不做任何加锁它也是绿的。写进来是为了守**将来**：
+  // 若哪天换成会话级 `pg_advisory_lock` 而忘了 `finally` 里解锁，锁会漏在连接上，
+  // 此后每次 `migrate()` 都挂住，且现象是「卡住」不是「报错」，排查代价很高。
+  // 它的有效性是用**变异**验过的（改成会话级锁不解锁 ⇒ 本条红），不是「看着像有用」。
+  test("migrate 跑完不留残余的 advisory 锁（失败路径同样不留）", async () => {
+    const db = freshDb()
+
+    await migrate(db)
+    await errorOf(
+      withTempMigrations({ "0001_broken.sql": "select * from no_such_table_xyz" }, (dir) => migrate(db, dir)),
+    )
+
+    const result = await db.execute(sql`select count(*)::int as n from pg_locks where locktype = 'advisory'`)
+    expect(rowsOf(result)).toEqual([{ n: 0 }])
   })
 })
 

@@ -31,10 +31,26 @@ const BOOTSTRAP = [
  *
  * 返回值刻意收成 `unknown`（而不是 `{ rows }`）：两个 PG 方言的行结构**不一样**，
  * 见 `rowsOf`。收窄成其中一种会让另一个驱动在运行时静默拿到 `undefined`。
+ *
+ * `transaction` 走 **drizzle 的 `db.transaction()`**，不是 `execute("begin")`：
+ * 生产驱动 bun-sql 见到裸 `BEGIN` 会直接拒绝（实测报
+ * `ERR_POSTGRES_UNSAFE_TRANSACTION`，「Only use sql.begin, sql.reserved or max: 1」），
+ * 而 `execute` 拿到的是一条条**各自成事务**的语句——用它写事务在 PGlite 上能过、
+ * 在生产上必挂，正是 `LEARNINGS #002-01` 说的「随驱动而变的形状」。
  */
 export interface MigrationTarget {
   execute(query: SQL): PromiseLike<unknown>
+  transaction<T>(fn: (tx: MigrationTarget) => Promise<T>): Promise<T>
 }
+
+/**
+ * 并发锁的键。
+ *
+ * advisory 锁的命名空间是**整个数据库**、且跨应用共享——同一台 PG 上跑别的系统时，
+ * 大家用同一个键会互相挡住。所以这个数要**专属于本用途**（取值随意，固定即可）。
+ * 别改它：改了之后，旧版 runner 与新版 runner 会各自持一把不同的锁，互斥就没了。
+ */
+const MIGRATION_LOCK_KEY = 424242
 
 /**
  * 从查询结果里取出行。
@@ -67,9 +83,27 @@ function upFiles(names: string[]): string[] {
   return names.filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql")).sort()
 }
 
-/** 按分隔符切开一条由人写的 SQL 文件，逐条执行（多语句在同一批里不可移植）。 */
-async function runFile(db: MigrationTarget, file: string): Promise<void> {
-  const text = await Bun.file(join(MIGRATIONS_DIR, file)).text()
+/**
+ * 「逐条执行」这件事有**两代说法，别把第一代当成现状**。
+ *
+ * **第一代（002 时期，`0003_flags_not_null.sql` 的文件头就是为此写的）**：运行器**没有事务**
+ * ——本函数逐条 `execute`（无 BEGIN/COMMIT），而记账 insert 排在它**之后**。于是
+ * 「一个文件中途失败」会留下**改了库、没记账**，重试时从文件头重跑——**这就是当时每个
+ * 迁移文件都必须自幂等的原因**。那段话原先写的是「见 `migrate.ts` 的已知缺口」，
+ * 而本文件当时并没有这段记载（悬空引用）；T021 把它补在这里。
+ *
+ * **第二代（T021 起，即现状）**：整轮跑在**一个事务**里并持并发锁（见 `migrate`），
+ * 中途失败**整轮回滚**，库回到本轮开始前的样子。于是「自幂等」**不再是运行器的依赖**：
+ * 重试是在干净状态上重跑，不是接着半成品往下跑。
+ *
+ * ⚠️ 这不等于「可以开始写非幂等的迁移」——那是另一个判断，本任务没有做。已知还留着
+ * 半边的正是 `rollback()`：它仍是「先跑 down、后删记账」，中途失败同样会留下
+ * 「改了库、没记账」（见 003 `state.md` 缺口表）。
+ *
+ * 实现本身：按分隔符切开一条由人写的 SQL 文件，逐条执行（多语句在同一批里不可移植）。
+ */
+async function runFile(db: MigrationTarget, dir: string, file: string): Promise<void> {
+  const text = await Bun.file(join(dir, file)).text()
   for (const statement of text.split(BREAKPOINT).map((chunk) => chunk.trim())) {
     if (statement) await db.execute(sql.raw(statement))
   }
@@ -81,26 +115,55 @@ async function appliedVersions(db: MigrationTarget): Promise<Set<string>> {
 }
 
 /**
- * 应用 `migrations/` 下尚未执行的迁移，返回本次实际应用的版本号（按顺序）。
+ * 应用 `dir` 下尚未执行的迁移，返回本次实际应用的版本号（按顺序）。
  *
  * 幂等：已记账的版本会跳过，因此可以每次部署都无脑调一次。
+ *
+ * `dir` 默认是仓库的 `migrations/`，**生产调用方不需要传**。留这个形参是为了让测试能拿一个
+ * 装着「故意写坏的文件」的临时目录进来——不这样，就只能往 `migrations/` 里丢测试文件，
+ * 而一个跑挂了没删掉的残骸会被**生产的下一次迁移**一起应用（见 `test-support.ts`
+ * 的 `withTempMigrations`）。
+ *
+ * **整轮跑在一个事务里**（T021）。为什么不是「每个文件一个事务」：并发锁必须罩住
+ * 「读账 → 应用 → 记账」这整段，而锁是**事务级**的（见下）——每文件一个事务的话，
+ * 锁会随第一个文件的事务结束就撒手，第二个 runner 便能挤进来读到同一份旧账。
+ * 顺带得到一个更强的性质：中途失败**整轮回滚**，不是只回滚那一个文件。
+ *
+ * 为什么是 `pg_advisory_xact_lock`（事务级）而不是会话语义那把：会话级的锁挂在
+ * **具体某条连接**上，而 bun-sql 的客户端自带连接池（实测一次铺开 10 条），
+ * `pg_advisory_lock` 与随后的 `pg_advisory_unlock` 很可能落到**不同连接**——
+ * 解锁解了个寂寞，锁一直留在池里那条连接上，此后每次迁移都挂住。事务级那把由
+ * 事务结束时自动释放，没有「锁在哪条连接上」这个问题。
+ *
+ * 等锁的那个 runner 拿到锁之后读到的是**新账**：PG 默认隔离级别是 READ COMMITTED，
+ * 每条语句取新快照，而「读账」排在等锁之后。所以它看到前一个 runner 已提交的记账、
+ * 本次返回空列表——正是出参要的「另一个等待后看到『已应用』」。
  */
-export async function migrate(db: MigrationTarget): Promise<string[]> {
-  for (const statement of BOOTSTRAP) {
-    await db.execute(sql.raw(statement))
-  }
+export async function migrate(db: MigrationTarget, dir: string = MIGRATIONS_DIR): Promise<string[]> {
+  return db.transaction(async (tx) => {
+    // 锁在读账之前：它保护的正是「读账 → 应用」这段不能被打断的窗口。
+    //
+    // 写成**无参**的 `sql.raw`（而不是 `${MIGRATION_LOCK_KEY}` 那样的绑定参数）：无参语句走
+    // 简单查询协议、不占连接上的预编译语句位。键是我们自己源码里的常量、不进任何用户输入，
+    // 所以这里拼接没有注入面（同 `BOOTSTRAP` 的用法）。
+    await tx.execute(sql.raw(`select pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`))
 
-  const applied = await appliedVersions(db)
-  const pending = upFiles(await readdir(MIGRATIONS_DIR)).filter((file) => !applied.has(versionOf(file)))
+    for (const statement of BOOTSTRAP) {
+      await tx.execute(sql.raw(statement))
+    }
 
-  for (const file of pending) {
-    await runFile(db, file)
-    await db.execute(
-      sql`insert into auth._migration (version, applied_at) values (${versionOf(file)}, ${nowSeconds()})`,
-    )
-  }
+    const applied = await appliedVersions(tx)
+    const pending = upFiles(await readdir(dir)).filter((file) => !applied.has(versionOf(file)))
 
-  return pending.map(versionOf)
+    for (const file of pending) {
+      await runFile(tx, dir, file)
+      await tx.execute(
+        sql`insert into auth._migration (version, applied_at) values (${versionOf(file)}, ${nowSeconds()})`,
+      )
+    }
+
+    return pending.map(versionOf)
+  })
 }
 
 /**
@@ -134,6 +197,6 @@ export async function rollback(db: MigrationTarget, version: string): Promise<vo
     throw new Error(`只能回滚最后一个已应用的版本（当前为 ${head}），不能回滚 ${version}`)
   }
 
-  await runFile(db, `${version}.down.sql`)
+  await runFile(db, MIGRATIONS_DIR, `${version}.down.sql`)
   await db.execute(sql`delete from auth._migration where version = ${version}`)
 }
