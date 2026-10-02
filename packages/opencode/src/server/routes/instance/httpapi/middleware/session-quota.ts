@@ -8,12 +8,12 @@ import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Context, Effect, Layer } from "effect"
 import {
   HttpRouter,
-  HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
+import { MatchedRoute } from "./matched-route"
 
 /**
  * 每用户并发会话限流的**传输层守卫**（003 T010，FR-008）。
@@ -44,10 +44,41 @@ import { SessionStatus } from "@/session/status"
  */
 const TOO_MANY_REQUESTS = 429
 
-/** A 链的路径式。与端点绑定是双保险：**匹配必须是链专属的**，否则会去读另一条链读不到的活跃集合。 */
-const UI_PROMPT = (pathname: string) => /^\/session\/([^/]+)\/prompt_async$/.exec(pathname)?.[1]
-/** B 链的路径式。 */
-const API_PROMPT = (pathname: string) => /^\/api\/session\/([^/]+)\/prompt$/.exec(pathname)?.[1]
+/**
+ * A 链：哪些**路由**算「启动一轮执行」。
+ *
+ * 写的是**路由表里的模式**（`/session/:sessionID/message`），不是请求路径的写法。
+ * ⚠️ 复查（2026-10-02 · R2-02）之前这里是一段**对着请求路径原文**的正则，结果是
+ * `/session/ses_x/message/`、`/SESSION/ses_x/MESSAGE`、`/session//ses_x/message`、
+ * `/session/ses_x/mess%61ge`、`/session/ses_x/message;x` 这些**匹配器全部认作同一条路由**的写法
+ * 一律绕过守卫——R-02 的修复整体落空。理由与全貌见 `middleware/matched-route.ts`。
+ *
+ * 与端点绑定仍是双保险：**匹配必须是链专属的**，否则会去读另一条链读不到的活跃集合。
+ *
+ * 导出是给测试用的（`test/server/session-quota-middleware.test.ts` 的「端点清点」组）：
+ * 这份清单与 `groups/session.ts` 上挂了几处**必须一致**，漏一边就是「清了路径却不挂」或
+ * 「挂了却不认」。两处都不报错、都静默放行，只能靠测试钉住。
+ */
+const UI_EXECUTION_ROUTES = new Set([
+  "/session/:sessionID/prompt_async",
+  "/session/:sessionID/message",
+  "/session/:sessionID/command",
+  "/session/:sessionID/shell",
+  "/session/:sessionID/init",
+  "/session/:sessionID/summarize",
+])
+
+export const uiExecutionTarget = (route: MatchedRoute.Route) =>
+  UI_EXECUTION_ROUTES.has(route.path) ? route.params["sessionID"] : undefined
+
+/**
+ * B 链的路由模式（`packages/protocol/src/groups/session.ts` 的 `session.prompt`）。
+ *
+ * 导出同样是给测试用的：那个字面量是**上游文件里的路径**，本文件没法从它那侧推导，
+ * 只能钉一条「等价写法也命中」的用例，否则上游一改路径，守卫就静默不再守任何东西。
+ */
+export const apiPromptTarget = (route: MatchedRoute.Route) =>
+  route.path === "/api/session/:sessionID/prompt" ? route.params["sessionID"] : undefined
 
 /** 阈值。照 `AnchorWorkspace.Config` 先例：解析出的值可注入（测试用 `configLayer`）。 */
 export class QuotaConfig extends ConfigService.Service<QuotaConfig>()("@opencode/OpenhiveSessionQuotaConfig", {
@@ -79,7 +110,7 @@ export interface ChainState {
 }
 
 interface JudgeInput<R> {
-  readonly target: (pathname: string) => string | undefined
+  readonly target: (route: MatchedRoute.Route) => string | undefined
   readonly read: (sessionID: string) => Effect.Effect<ChainState, never, R>
   readonly limit: number
 }
@@ -89,11 +120,18 @@ interface JudgeInput<R> {
  * 产出响应 = 拒绝（调用方直接返回它，不再执行下游）。
  *
  * 两条链的适配器都只做这一件事，所以「判据写两遍、早晚会漂」这个风险不存在。
+ *
+ * 喂给 `target` 的是**路由匹配结果**，不是 `request.url` 的 pathname——后者会让「一个尾斜杠」
+ * 之类的写法差异绕过守卫（复查 R2-02，见 `middleware/matched-route.ts`）。
+ * 读不到匹配结果（`RouteContext` 不在上下文里）时放行：对路由级/端点级中间件不该发生，
+ * 真发生了也不该由这里替路由做决定。
  */
 const judge = <R>(input: JudgeInput<R>) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest
-    const sessionID = input.target(new URL(request.url, "http://localhost").pathname)
+    const route = yield* MatchedRoute.current
+    if (route === undefined) return undefined
+
+    const sessionID = input.target(route)
     if (sessionID === undefined) return undefined
 
     const state = yield* input.read(sessionID)
@@ -116,15 +154,23 @@ const judge = <R>(input: JudgeInput<R>) =>
 /**
  * A 链（web UI）：`POST /session/{id}/prompt_async` → `SessionPrompt.prompt` → `SessionRunState`。
  *
- * **必须挂成端点级中间件**（在 `groups/session.ts` 的 `promptAsync` 上 `.middleware(...)`），
+ * **必须挂成端点级中间件**（在 `groups/session.ts` 上逐端点 `.middleware(...)`），
  * 否则读不到实例作用域的 `SessionStatus`——路由级会 500，不会静默放行（见文件头实测）。
+ *
+ * ⚠️ **挂的是六个端点，不是一处**（2026-10-02 审查 R-02）：除 `prompt_async` 外还有
+ * `prompt`（`/message`）/ `command` / `shell` / `init` / `summarize`——它们同样启动一轮执行，
+ * 漏一个就是个「换个端点绕过」的后门。**挂点集合必须与 `uiExecutionTarget` 认的路由集合一致**，
+ * 两边都不会报错，只能靠 `test/server/session-quota-middleware.test.ts` 的「端点清点」组钉。
  *
  * 活跃集合取 `SessionStatus`。**它天然就是本用户的**：实例由工作目录决定，而工作目录被 T006
  * 锚定到 `{沙箱根}/{userId}`，所以这个 Map 里不可能有别人的会话——不需要再与库做交集
  * （B 链则必须，见下）。`SessionStatus.set` 对 idle 条目做 `delete`，留下的就是「在跑」的。
  *
- * 路径匹配在这里**必然命中**（端点级的层只挂在这一个端点上），保留它是为了让两种形态共用
- * 同一份 `judge`——**没有第二处判据可比对**，少一个会漂的地方。
+ * 路由匹配在这里**必然命中**（端点级的层只挂在会启动执行的那几个端点上），保留它是为了让两种形态
+ * 共用同一份 `judge`——**没有第二处判据可比对**，少一个会漂的地方。
+ *
+ * ⚠️ 也正因为「必然命中」，**这份清单和挂点清单是同一件事的两半**：`uiExecutionTarget` 认的路由
+ * 少了谁，就等于那个端点白挂。两半都由上面那组测试钉。
  */
 /**
  * ⚠️ **不写 `requires`**（虽然类型上写得出来）——照官方 `Authorization` 的先例：`requires` 写进去的
@@ -152,7 +198,7 @@ export const uiQuotaLayer = Layer.effect(
 
     return UiSessionQuotaMiddleware.of((effect) =>
       Effect.gen(function* () {
-        const denial = yield* judge({ target: UI_PROMPT, read, limit })
+        const denial = yield* judge({ target: uiExecutionTarget, read, limit })
         return denial === undefined ? yield* effect : denial
       }),
     )
@@ -165,9 +211,12 @@ export const uiQuotaLayer = Layer.effect(
  * 只在「服务在路由层就够得着」时可用——`SessionStatus` 属于反例，见文件头。
  * `source` 在层构造期取一次服务，产出「拿去查某会话状况」的读取器；
  * 测试传桩就在这条缝上（D4 裁定明写「活跃集合从哪取按链注入」）。
+ *
+ * `target` 收**路由匹配结果**而不是路径字符串：喂进去的是 `MatchedRoute.Route`，
+ * 所以「一个尾斜杠算不算同一条路由」这件事由匹配器决定、本文件不再自己判一遍（R2-02）。
  */
 export function quotaLayer<R = never>(options: {
-  readonly target: (pathname: string) => string | undefined
+  readonly target: (route: MatchedRoute.Route) => string | undefined
   readonly source: Effect.Effect<(sessionID: string) => Effect.Effect<ChainState>, never, R>
 }) {
   return HttpRouter.middleware<{ requires: R | QuotaConfig; handles: unknown }>()(
@@ -192,7 +241,7 @@ export function quotaLayer<R = never>(options: {
  * 数出来的行数才是本用户的活跃数。这一步就是 core 的 `SessionQuota.countActiveForUser`。
  */
 export const apiQuotaLayer = quotaLayer({
-  target: API_PROMPT,
+  target: apiPromptTarget,
   source: Effect.gen(function* () {
     const v2 = yield* SessionV2.Service
     const database = yield* Database.Service

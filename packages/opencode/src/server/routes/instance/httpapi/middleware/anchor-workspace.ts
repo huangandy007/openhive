@@ -4,8 +4,9 @@ import { WORKSPACE_ROOT_ENV, workspaceRoot } from "@opencode-ai/auth/workspace"
 import { User } from "@opencode-ai/core/user"
 import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Effect, Option } from "effect"
-import { Headers, HttpRouter, HttpServerRequest } from "effect/unstable/http"
+import { Headers, HttpMethod, HttpRouter, HttpServerRequest } from "effect/unstable/http"
 import { join } from "node:path"
+import { MatchedRoute } from "./matched-route"
 
 /**
  * 工作目录**强制锚定**（003 T006，FR-005）。
@@ -16,8 +17,33 @@ import { join } from "node:path"
  * 也就是说，**目录是客户端说了算的**——一个够得着端口的人传 `?directory=/` 就能把
  * 文件 / pty / 会话的落点搬到沙箱外面去。
  *
- * 本中间件把这三个入参**全部改写**成 `{沙箱根}/{userId}`，客户端传什么都无效。
+ * 本中间件把客户端能报目录的地方**全部改写**成 `{沙箱根}/{userId}`，客户端传什么都无效。
  * 出口是「伪造 directory 被忽略，落沙箱根」。
+ *
+ * ## 第四个入参：**请求体**（审查 R-01 补，2026-10-02）
+ *
+ * 上面那句原本写的是「这三个入参」，把入参清点成「URL 与头」就收工了——**漏了从请求体读的那条**。
+ * v2 的 `POST /api/session`（`v2.session.create`）把会话落点放在**请求体** `payload.location.directory`
+ * 里（`packages/protocol/src/groups/session.ts`），handler 直接读 `ctx.payload.location`
+ * （`packages/server/src/handlers/session.ts` 的 `session.create`）。这个端点**挂在生产路由树上**
+ * （`server.ts` 的 `serverRoutes = HttpApiBuilder.layer(Api).pipe(Layer.provide(handlers))`，
+ * 而 `Api` 由 `makeDefaultApi` → `.add(makeSessionGroup(...))` 组成），所以只改 URL 与头的话，
+ * 一个已登录用户 `POST {"location":{"directory":"C:/Windows"}}` 就能把会话落在沙箱之外。
+ *
+ * 请求体**改不动**——`HttpServerRequest.modify` 只管 `url` / `headers` / `remoteAddress`，
+ * 没有 `body`。所以这条路只能**读体重建**：读出 JSON、把落点改写掉、换一个新请求进上下文。
+ *
+ * **为什么不做成「拦下带外目录的请求」**：那会让「客户端报的目录一律无效」变成「报错」，
+ * 与 URL 那条的语义（静默改写）不一致，而且会误伤那些只是把当前目录原样回传的正常客户端。
+ *
+ * **为什么只重建这一类请求**：只在**下游会当 JSON 解**的请求上读体（方法见 `HttpMethod.hasBody`、
+ * 媒体类型见 `isJsonRequest`——两处都**镜像** `HttpApiBuilder` 自己的判据，不是另写一份近似），
+ * 其余请求**一次都不碰**。读了就必须重建（原体的流已经被消费掉），所以 `replaceBody` 是
+ * 无条件调的；但「没改任何东西」时重建用的是**原样的文本**，行为等价。
+ *
+ * ⚠️ **入参清单是清过的**（别只修当下这一个点）：全仓 payload schema 里带目录的只有这一处——
+ * `groups/session.ts` 的 `SessionsDirectoryQuery` / `SessionsQuery` 与 `groups/location.ts` 的
+ * `LocationQuery` 都是 **query**，已由上面 `?directory=` 那条覆盖。再出新的，按本段补。
  *
  * ## 为什么是「改写请求」而不是「改解析函数」
  *
@@ -30,6 +56,28 @@ import { join } from "node:path"
  * 身份门默认关着，此时上下文里**没有** `User`（不是空身份，是没有）。若锚定无条件生效，
  * 等于把一个没有身份的系统整体搬到 `{根}/{undefined}` 下面——那比它要堵的洞更像事故。
  * 判据是「**谁在跑**」而不是「有没有」：有身份才锚，与 T004 的裁定一致。
+ *
+ * ## 为什么非法 id 必须拒（审查 R-05，2026-10-02）
+ *
+ * 锚定那行是 `join(config.root, user.value.id)`——`id` 被直接当成一个**路径段**。
+ * 它正常是 `auth.user.id`（002 用 `crypto.randomUUID()` 铸的 UUID），但**没有任何类型或校验
+ * 把这条写死**：`User.Info.id` 是 `string`，`verifyToken` 只查 `typeof sub === "string"`。
+ * 「id 是 UUID」于是靠的是**另一个模块的实现细节**，不是本边界自己能保证的事。
+ *
+ * 而拼错的后果不是错一格：`join(root, "../bob")` 落在根的**外面**，
+ * `join(root, "")` / `join(root, ".")` 让沙箱**塌成根自己**——所有用户共用一个目录，隔离整个失效。
+ *
+ * 判据本来就有，且不止一处（`core/database/router.ts` 的 `userDatabasePath`、
+ * `auth/workspace.ts` 的 `assertSafeUserId`），偏偏**锚定这一处漏了**——
+ * 正是 `LEARNINGS #002-01` 的形状：同一维度上别只修当下这一个点。
+ * 现在判据本体在 `User.isSafePathSegment`（core），core 与 opencode 侧共用那一份。
+ *
+ * 修法取**拒**（fail closed），不取「不锚定」：不锚定 = 客户端那个伪造的 `directory` 直接生效，
+ * 那正是本中间件存在的理由。与 T011 磁盘配额对「量不出来」的选择同源——
+ * **门看着还在、其实没有**是最坏的一种（`LEARNINGS #002-02`）。
+ *
+ * ⚠️ **射程据实**：这条**今天打不到**（拿不到密钥就签不出这样的令牌，系统自己签发的那条路只铸
+ * UUID）。它守的是**边界不依赖别人家的实现细节**，不是「已经能被利用」。
  *
  * ## 残留（已知，不假装已闭合）
  *
@@ -55,11 +103,18 @@ export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; ha
         const user = yield* Effect.serviceOption(User.Service)
         if (Option.isNone(user)) return yield* effect
 
+        // 非法 id ⇒ **拒**，不放行也不锚（审查 R-05，理由见文件头「为什么非法 id 必须拒」）。
+        if (!User.isSafePathSegment(user.value.id))
+          throw new Error(`非法用户 id，拒绝锚定工作目录：${JSON.stringify(user.value.id)}`)
+
         const request = yield* HttpServerRequest.HttpServerRequest
+        const sandbox = join(config.root, user.value.id)
+        const anchored = anchor(request, sandbox)
+
         return yield* Effect.provideService(
           effect,
           HttpServerRequest.HttpServerRequest,
-          anchor(request, join(config.root, user.value.id)),
+          yield* anchorBody(anchored, sandbox, yield* MatchedRoute.current),
         )
       })
   }),
@@ -88,5 +143,157 @@ function anchor(request: HttpServerRequest.HttpServerRequest, sandbox: string) {
   return request.modify({
     url: `${url.pathname}${url.search}`,
     headers: Headers.set(request.headers, "x-opencode-directory", sandbox),
+  })
+}
+
+/**
+ * 这个请求会不会被下游**当成 JSON 解**。
+ *
+ * ⚠️ **这是镜像，不是近似**（复查 2026-10-02）：`HttpApiBuilder` 选解码器用的是
+ * `getRequestContentType` / `getRequestMediaType`（effect 4.0.0-beta.83）——
+ * **缺头或空串 ⇒ 当 `application/json`**，有头才 `toLowerCase().trim()` 再在 `;` 处切媒体类型。
+ * 原先这里写的是 `(headers["content-type"] ?? "").includes("application/json")`，
+ * 两条判据不一致 ⇒ 客户端**不发 `Content-Type`** 或写 `APPLICATION/JSON; charset=utf-8`
+ * 就能跳过体改写，而下游照样按 JSON 解 —— R-01 那个洞换个入口原样复现。
+ *
+ * 判据错位的代价与 `LEARNINGS #002-06` 同源：**两处各写一份「同一个判断」，谁也不知道谁**。
+ * 所以这里逐字对着上面那两个函数的行为写；上游改了，这条要跟着改
+ * （守着它的用例在 `test/server/anchor-workspace.test.ts` 的 R-01 组：不带头 / 大写带参数两条）。
+ */
+function isJsonRequest(request: HttpServerRequest.HttpServerRequest): boolean {
+  const header = request.headers["content-type"]
+  const contentType = header ? header.toLowerCase().trim() : "application/json"
+  const separator = contentType.indexOf(";")
+  return (separator === -1 ? contentType : contentType.slice(0, separator).trim()) === "application/json"
+}
+
+/**
+ * 请求体里的落点（`payload.location.directory`，另兼容顶层 `directory`）一并改写成 `sandbox`。
+ *
+ * 见文件顶部「第四个入参」。要点：**读了体就必须重建**（原体的流已被消费），
+ * 所以「没改」时也走 `replaceBody`，只是文本原样传回去。
+ *
+ * 方法集合同样**镜像下游的 `HttpMethod.hasBody`**（除 `GET` / `HEAD` / `OPTIONS` / `TRACE` 之外
+ * 都算带体），不自己再列一份 `POST/PUT/PATCH` 清单——清单少一个方法，那个方法就绕过去了，
+ * 而它不会报错、不会变红。
+ */
+function anchorBody(
+  request: HttpServerRequest.HttpServerRequest,
+  sandbox: string,
+  route: MatchedRoute.Route | undefined,
+): Effect.Effect<HttpServerRequest.HttpServerRequest> {
+  if (!HttpMethod.hasBody(request.method)) return Effect.succeed(request)
+  if (!isJsonRequest(request)) return Effect.succeed(request)
+
+  return request.text.pipe(
+    // 读不出来（例如声明了 JSON 却是空体）就原样放行，让下游按它自己的方式报错——
+    // 这里不该替它决定成功还是失败。
+    Effect.orElseSucceed(() => undefined),
+    Effect.map((text) => {
+      if (text === undefined) return request
+      const parsed = parseJsonObject(text)
+      const rewritten = parsed && withSandboxDirectory(parsed, sandbox, needsLocation(request, route))
+      return replaceBody(request, rewritten ? JSON.stringify(rewritten) : text)
+    }),
+  )
+}
+
+/**
+ * 落点**可以省略**、省了就落到内核进程 cwd 的那个端点——必须替它补上沙箱，不能"什么都不做"。
+ *
+ * 省与伪造是同一个洞的两种填法：`payload.location` 是 optional，省略时
+ * `packages/server/src/handlers/session.ts` 的 `session.create` 兜底成
+ * `AbsolutePath.make(process.cwd())`，那是**内核进程的**目录，不是该用户的沙箱。
+ *
+ * 判据是路径 + 方法，不是"看体里有没有 location"——客户端**一个字段都不发**时也得补。
+ * 全仓 `packages/server/src/handlers` 与 `middleware` 里 `process.cwd()` 只此一处
+ * （grep 过），所以这里只列这一个；再出新的，按本段补。
+ *
+ * ⚠️ **路径取自路由匹配结果**（`MatchedRoute`），不是 `new URL(request.url).pathname`：
+ * 后者是**请求原文**，而 `/api/session/`、`/api//session`、`/API/SESSION`、`/api/%73ession`
+ * 这些写法对匹配器是同一个端点，对字面比对却不是——一个尾斜杠就够让「补 location」这一半
+ * 静默失效，体里没有 `location` 时 handler 就兜底到 `process.cwd()`。理由与全貌见
+ * `middleware/matched-route.ts`。
+ */
+function needsLocation(request: HttpServerRequest.HttpServerRequest, route: MatchedRoute.Route | undefined): boolean {
+  return request.method === "POST" && route?.path === SESSION_CREATE_ROUTE
+}
+
+/** 建会话端点（`packages/protocol/src/groups/session.ts` 的 `session.create`）。 */
+const SESSION_CREATE_ROUTE = "/api/session"
+
+/** 是不是一个 JSON 对象（不是 null、数组、标量）。用谓词而不是 `as`——`as` 会被 lint 门拦下。 */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+
+/** 只认 JSON 对象；数组、标量、解析失败一律 `undefined`（= 没什么可改的）。 */
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 把体里所有客户端可报的目录键改成 `sandbox`；**一个都没改到就返回 `undefined`**
+ * （调用方据此知道"不必重建内容"）。
+ *
+ * `mustCarryLocation`（见 `needsLocation`）：该端点的落点字段可以省略、省了就落进程 cwd，
+ * 所以**没有也得补一个**。它为真的端点只有一个。
+ */
+function withSandboxDirectory(
+  body: Record<string, unknown>,
+  sandbox: string,
+  mustCarryLocation: boolean,
+): Record<string, unknown> | undefined {
+  const next = { ...body }
+  let changed = false
+
+  const location = body["location"]
+  if (isRecord(location)) {
+    const fields = location
+    if (fields["directory"] !== sandbox && (typeof fields["directory"] === "string" || mustCarryLocation)) {
+      next["location"] = { ...fields, directory: sandbox }
+      changed = true
+    }
+  } else if (mustCarryLocation) {
+    next["location"] = { directory: sandbox }
+    changed = true
+  }
+
+  if (typeof body["directory"] === "string" && body["directory"] !== sandbox) {
+    next["directory"] = sandbox
+    changed = true
+  }
+
+  return changed ? next : undefined
+}
+
+/**
+ * 换一个请求进上下文。`fromWeb` 只丢 `remoteAddress`，补回来。
+ *
+ * `content-length` 必须删：改写后的 JSON 多半换了长度，留着头就是给下游/代理一个假数，
+ * 而 `new Request(..., { body })` 会按新体自己算一个。
+ *
+ * ⚠️ **删掉的头必须一路带到 `modify`**（复查 2026-10-02 抓到）：原先这里是
+ * `headers.delete("content-length")` 之后又 `headers: request.headers` **整份覆盖回去**——
+ * 而 `request.headers` 是**原请求的头**，那个 `content-length` 从头到尾没被删过。
+ * 于是删了等于没删：改写后的体换了长度，头还是老数字。
+ */
+function replaceBody(request: HttpServerRequest.HttpServerRequest, body: string) {
+  const headers = Headers.remove(request.headers, "content-length")
+
+  return HttpServerRequest.fromWeb(
+    new Request(new URL(request.url, "http://localhost").toString(), {
+      method: request.method,
+      headers,
+      body,
+    }),
+  ).modify({
+    url: request.url,
+    headers,
+    remoteAddress: request.remoteAddress,
   })
 }

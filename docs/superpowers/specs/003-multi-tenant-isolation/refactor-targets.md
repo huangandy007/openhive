@@ -156,7 +156,7 @@ LayerMap.make((ref) => {
 |---|---|---|
 | ① 在 `AppNodeBuilder.build` 的 `replacements` 层替换 `Database.node` | 全局替换，所有消费者一起生效 | 需要每个请求/每个用户各自 build 一棵树（现有 location map 已是 per-ref build，可能天然契合） |
 | ② 让 `Database` 自身持 `Map<userId, 连接>`，**节点仍是 global** | `Database.node` 不变，只改 `router.ts` 内部按上下文取连接 | 与 plan.md 「新增 `router.ts`」的落点最贴合；但需要 User 上下文在**连接取用点**可达（T005 的「从 User 上下文取 userId 路由」） |
-| ③ 把 per-user 键并入 location map 的键 | 复用现成 LayerMap + TTL 回收 | 依赖「一个用户 ↔ 一个 Location.Ref」这个前提是否成立（T006 锚定沙箱后可能成立） |
+| ③ 把 per-user 键并入 location map 的键 | 复用现成 LayerMap + TTL 回收 | 依赖「一个用户 ↔ 一个 Location.Ref」这个前提是否成立（T006 锚定沙箱后可能成立）——**✅ 已结案（2026-09-30）**：T006 落地后该前提**成立并被测试钉住**（一人一工作区），⇒ 按 T004 的裁定（「**乙＋丙，丙挂 T006 的验收项**」）**这一维成为纯冗余，不做**，见下 T006 条 |
 
 > 本文档**只登记事实与代价，不裁定**。T004 开工前若方向未定，按任务书 Step 0.5 停下来问。
 >
@@ -265,6 +265,18 @@ LayerMap.make((ref) => {
   🟡 **仍开着两条缺口**（见 `state.md` 未覆盖表）：`node` 构建条件下路由生效**未验证**
   （本机跑不到 `node:sqlite`，只有形状守卫）；`packages/opencode` 全包在本机**不是可用门禁**
   （`test/server` 存量 flaky 5s 超时带）。
-- **T006**（沙箱锚定）：`Location.Ref.directory` 是现有工作目录的载体
-  （`packages/core/src/location.ts` 的 `layer(ref)` 里 `project.resolve(ref.directory)`）——
-  锚定的落点大概率在 `ref` 的构造处，T006 开工时确认。
+- **T006**（沙箱锚定）：✅ **已落地（2026-09-30）**。**预言「落点大概率在 `ref` 的构造处」没有成立**
+  ——那是**改解析函数**；真落点是**改写请求**：新增
+  `packages/opencode/src/server/routes/instance/httpapi/middleware/anchor-workspace.ts`，
+  在请求进路由树**之前**用 `HttpServerRequest.modify` 把三处目录入参一并换掉
+  （`?directory=` / `location[directory]` / `x-opencode-directory`），另在**上游文件**
+  `…/httpapi/server.ts` 加一处接线（`anchorWorkspaceLayer` 必须排在 `userIdentityLayer` **之后**，
+  否则抓不到 `User`、整道锚定**静默直通**）。
+  **为什么反过来做**：两条目录解析链（`workspace-routing.ts` 的 `defaultDirectory`、
+  旧版 `@opencode-ai/server/location` 的 `ref`）**都从同一个 `HttpServerRequest` 读**——
+  在源头换一次，两条链同时被锚定，而**不必碰**那两个上游解析函数（宪法 §V）。
+  ⇒ 本页记的「`Location.Ref.directory` 是载体」是**对的事实**，但**不是**本次的落点。
+  ✅ **T004 移交的两个东西随本 task 关闭**：「两个用户拿不到同一个 `Location.Ref`」（②号验收项
+  真的构造 `Location.Ref.make(...)` 用 `Equal.equals` 比对）、「一人一工作区」（③号，钉成被验的事实）。
+  ⚠️ 本条**原先只有预测、没有回填**（T004/T005 都有 ✅），2026-10-02 审查 **R-32** 抓的——
+  **预测与最终落点相反**时，只留着预测那一句，读起来就像「当初说对了」。

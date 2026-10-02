@@ -269,7 +269,12 @@ export const SessionApi = HttpApi.make("session")
           payload: InitPayload,
           success: described(Schema.Boolean, "200"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010 / 审查 R-02）。`init` 落到 `promptSvc.command(INIT)`，
+          // 同样启动一轮执行——**能被另一个端点绕过的配额不是配额**。挂法与理由见 `promptAsync`。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.init",
             summary: "Initialize session",
@@ -307,7 +312,12 @@ export const SessionApi = HttpApi.make("session")
           payload: SummarizePayload,
           success: described(Schema.Boolean, "Summarized session"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010 / 审查 R-02）。`summarize` 落到 `promptSvc.loop`，
+          // 同样启动一轮执行——**能被另一个端点绕过的配额不是配额**。挂法与理由见 `promptAsync`。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.summarize",
             summary: "Summarize session",
@@ -320,7 +330,13 @@ export const SessionApi = HttpApi.make("session")
           payload: PromptPayload,
           success: described(SessionV1.WithParts, "Created message"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010 / 审查 R-02）。`prompt` 落到 `promptSvc.prompt`，
+          // 与 `prompt_async` 是同一条链的同步形态——**能被另一个端点绕过的配额不是配额**。
+          // 挂法与理由见 `promptAsync`。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.prompt",
             summary: "Send message",
@@ -337,6 +353,12 @@ export const SessionApi = HttpApi.make("session")
           // 每用户并发会话限流（003 T010）。**必须是端点级**：实例上下文（`InstanceRef`）
           // 由同样端点级的 `InstanceContextMiddleware` 注入，路由级中间件在它外面、读不到
           // `SessionStatus`。挂错是 500 不是静默放行（实测，见 `middleware/session-quota.ts` 文件头）。
+          //
+          // ⚠️ **本组一共六处**（2026-10-02 审查 R-02 补齐）：除这里外还有 `prompt` / `command` /
+          // `shell` / `init` / `summarize`——它们都会启动一轮执行。只挂一处时，满配额的用户改用
+          // `POST /session/{id}/message` 就绕过去了。**挂点集合与 `middleware/session-quota.ts` 里
+          // `uiExecutionTarget` 认的路由集合必须一致**，两边都不报错、都静默放行，只能靠
+          // `test/server/session-quota-middleware.test.ts` 的「端点清点」组钉住。
           // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
           .middleware(UiSessionQuotaMiddleware)
           .annotateMerge(
@@ -353,7 +375,12 @@ export const SessionApi = HttpApi.make("session")
           payload: CommandPayload,
           success: described(SessionV1.WithParts, "Created message"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010 / 审查 R-02）。`command` 落到 `promptSvc.command`，
+          // 同样启动一轮执行——**能被另一个端点绕过的配额不是配额**。挂法与理由见 `promptAsync`。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.command",
             summary: "Send command",
@@ -366,7 +393,12 @@ export const SessionApi = HttpApi.make("session")
           payload: ShellPayload,
           success: described(SessionV1.WithParts, "Created message"),
           error: [HttpApiError.BadRequest, ApiNotFoundError, SessionBusyError],
-        }).annotateMerge(
+        })
+          // 每用户并发会话限流（003 T010 / 审查 R-02）。`shell` 落到 `promptSvc.shell`，
+          // 同样启动一轮执行——**能被另一个端点绕过的配额不是配额**。挂法与理由见 `promptAsync`。
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T010）。
+          .middleware(UiSessionQuotaMiddleware)
+          .annotateMerge(
           OpenApi.annotations({
             identifier: "session.shell",
             summary: "Run shell command",

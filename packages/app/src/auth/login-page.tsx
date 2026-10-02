@@ -76,7 +76,13 @@ export function LoginPage(props: LoginPageProps) {
         <div class="flex items-center gap-3">
           <BrandLogo logo={BRAND_LOGO} width={36} height={42} />
           <div class="flex flex-col">
-            <span class="text-[19px] font-[600] leading-tight text-v2-text-text-inverse">{BRAND_NAME}</span>
+            {/* 品牌名用 `text-text-contrast` 而不是 `text-text-inverse`（审查 R-07）：这两个名字
+                在浅色下**值相同**（都是 `--v2-grey-50`），看着像任选一个，其实差在暗色下——
+                `inverse` 会翻成 `--v2-grey-1100`（近黑），而这块底色是 `login-surface`（品牌槽位，
+                **不翻**）。翻的那一侧画在不翻的那一侧上就是近黑画近黑，约 1.01:1。
+                `contrast` 两套都是 `--v2-grey-50`，正是「画在深色面上」该用的那个。
+                判据由 `login-face-tokens.test.ts` 守着：这个页面引用的 token 一律不许随方案漂。 */}
+            <span class="text-[19px] font-[600] leading-tight text-v2-text-text-contrast">{BRAND_NAME}</span>
             <span class="text-[12px] leading-tight text-[var(--v2-brand-gold-light)]">{BRAND_BADGE}</span>
           </div>
         </div>

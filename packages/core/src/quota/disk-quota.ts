@@ -160,18 +160,25 @@ export function usedBytes(dir: string): Effect.Effect<number, ScanFailed> {
           continue
         }
         if (!entry.isFile()) continue
-        const info = yield* Effect.tryPromise({
-          try: () => NFS.stat(full),
-          catch: (cause) => new ScanFailed({ cause }),
-        })
-        total += info.size
+        // ⚠️ **这里必须用 `sizeOf`、不能自己写裸 `stat`**（2026-10-02 审查 R-03）。
+        // `readdir` 列名与 `stat` 之间那个文件可能已经被删（沙箱里跑着 agent，删文件是日常）。
+        // 裸 `stat` 抛 ENOENT ⇒ `ScanFailed` ⇒ `enforce` 判成 `unmeasurable` ⇒ **这次写入被拒**，
+        // 而且理由听着像磁盘坏了。**ENOENT 不是「量不出来」**：读不到的那个文件已经不占空间，
+        // 贡献就是 0。同一件事本模块另两个同级调用点（`readdir`、`sizeOf`）都处理了，只漏了这里。
+        total += yield* sizeOf(full)
       }
     }
     return total
   })
 }
 
-/** 目标文件现在的大小；不存在算 0（新建文件是常态）。 */
+/**
+ * 一个路径现在的大小；不存在算 0。
+ *
+ * 两处调用点的「不存在」都是**常态而非异常**：
+ * - 目标文件（`enforce` 的 `replacing`）：新建文件时它本来就不在；
+ * - 扫描途中撞上的条目（`usedBytes` 的求和）：`readdir` 与 `stat` 之间被删掉了（审查 R-03）。
+ */
 function sizeOf(path: string): Effect.Effect<number, ScanFailed> {
   return Effect.tryPromise({
     try: () => NFS.stat(path),

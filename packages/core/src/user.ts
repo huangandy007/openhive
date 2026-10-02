@@ -30,4 +30,27 @@ export interface Info {
   readonly isAdmin: boolean
 }
 
+/**
+ * `Info.id` 能不能**当一个路径段用**——凡是要拿它拼路径的调用点，先过这里。
+ *
+ * 为什么要有这个谓词：`id` 的正常来源是 002 的 `registerUser` 用 `crypto.randomUUID()` 铸的
+ * UUID，但**没有任何类型或校验把这条写死**——`verifyToken` 只查 `typeof sub === "string"`，
+ * 于是「id 是 UUID」这个前提靠的是**另一个模块的实现细节**，不是使用侧自己能保证的事。
+ * 而 `id` 在这套系统里是**隔离边界**：拿它拼路径的地方一旦拼接逃逸，就是跨用户（甚至出沙箱）。
+ *
+ * 判据是「**拼出来的路径会不会跑掉**」，不是「id 长得像不像 UUID」——所以拦的是四类：
+ * - 空串：`join(root, "")` = 根自己，**所有用户塌进同一个目录**（隔离整个失效，最坏的一种）；
+ * - `.` / `..`：前者同上，后者落到根的**外面**；
+ * - 含 `/` 或 `\`：多带一段就换了一层目录，`../bob` 由此逃逸。
+ *
+ * ⚠️ **`packages/auth/src/workspace.ts` 有一份等价实现（`assertSafeUserId`），不是漏改**：
+ * core 与 auth 互相够不着（core 不能 import auth，auth 也不依赖 core），两份都得住。
+ * 本文件这份**覆盖 core 与 opencode 侧**：`core/database/router.ts` 的 `userDatabasePath`、
+ * `opencode/src/server/routes/instance/httpapi/middleware/anchor-workspace.ts` 的锚定。
+ * 将来若两边能互相依赖了，合并成一份——在那之前，改一侧记得看另一侧。
+ */
+export function isSafePathSegment(id: string): boolean {
+  return id !== "" && id !== "." && id !== ".." && !id.includes("/") && !id.includes("\\")
+}
+
 export class Service extends Context.Service<Service, Info>()("@opencode/User") {}

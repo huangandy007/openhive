@@ -187,6 +187,61 @@ describe("沙箱占用统计（T011）", () => {
     const root = await tmpRoot()
     expect(await Effect.runPromise(DiskQuota.usedBytes(path.join(root, "nobody")))).toBe(0)
   })
+
+  /**
+   * **扫描期间文件被删，不是「量不出来」。**（2026-10-02 审查 R-03）
+   *
+   * `usedBytes` 是「`readdir` 列名 → 逐个 `stat` 求和」两步。两步之间那个文件可能已经没了
+   * ——沙箱里跑着 agent，删文件是它的日常动作。`stat` 此时抛 ENOENT。
+   *
+   * 抛出来会一路冒泡：`ScanFailed` → `enforce` 的 `catchTag` 翻成 `unmeasurable` → **这次写入被拒**。
+   * 也就是说「别人删了个文件」会让**我的写入**失败，而且是被判成「磁盘量不出来」这种听着像磁盘坏了的错。
+   * 同文件另外两个同级调用点（`readdir` 那一处、`sizeOf` 那一处）都捕了 ENOENT，**只有扫描循环里那个漏了**。
+   *
+   * 语义上 ENOENT 与 `unmeasurable` 是两回事：**读不到的那个文件已经不占空间了，贡献就是 0**，
+   * 不是「不知道它占多少」。上面那条「沙箱量不出来 ⇒ 拒」说的是后者（`readdir` 得 ENOTDIR 这类
+   * 真读不懂的情形），两者不冲突。
+   *
+   * ⚠️ **这条测试的形状是竞态，不是确定性构造**，据实记下：
+   * 触发点要求「删」落在该文件的 `readdir` 之后、`stat` 之前，没有可注入的钩子能把这个窗口钉死。
+   * 构造办法：目录里 200 个文件，扫描从 `f00000` 升序 `stat`，同时并发一个删除者**倒序**删后半段
+   * （`f00199` → `f00100`）——两边数量相等、方向相向，必然在中段交叉。
+   * 实测（2026-10-02，本机 win32/bun 1.3.14）：200 个文件 **20/20 复现**；
+   * 降到 120 个文件时 20 次里有 1 次没撞上（扫描太快、删除者没赶上），故取 200。
+   * **修好之后这条是确定性的绿**（不再依赖时序：无论删没删到、删到哪一步，都不再失败），
+   * 竞态只存在于「证明它曾经红」那一步——而那一步已经跑过了。
+   */
+  test("扫描期间文件被删 ⇒ 不算失败，删掉的那个按 0 计（R-03）", async () => {
+    const root = await tmpRoot()
+    const alice = path.join(root, "alice")
+    await NFS.mkdir(alice, { recursive: true })
+    const COUNT = 200
+    const EACH = "0123456789" // 每个文件 10 字节，让「数出来的总量」可直接换算成文件个数
+    const nameOf = (i: number) => path.join(alice, `f${String(i).padStart(5, "0")}.txt`)
+    for (let i = 0; i < COUNT; i++) await NFS.writeFile(nameOf(i), EACH)
+
+    // 倒序删后半段：与扫描（升序）相向而行，保证在中段交叉。
+    const deleter = Effect.gen(function* () {
+      for (let i = COUNT - 1; i >= COUNT / 2; i--) {
+        yield* Effect.tryPromise(() => NFS.rm(nameOf(i), { force: true }))
+      }
+    })
+
+    const exit = await Effect.runPromise(
+      Effect.all([deleter, DiskQuota.usedBytes(alice)], { concurrency: 2 }).pipe(Effect.exit),
+    )
+
+    expect(exit._tag).toBe("Success")
+    // 求和结果本就随「删到哪一步、扫到哪一步」而变，不钉死具体数——只钉住「没失败」与量级：
+    // 被删的那一半是 f00100..f00199（扫描排在后半段），所以哪怕一个都没赶在删除前读到，
+    // 也至少剩前半段 COUNT/2 个；最多则是全没删（删除者一次都没抢在扫描前面）。
+    // 注：`exit` 是**整个 `Effect.all`** 的出口，`value` 是那个二元组，得取第二项。
+    if (exit._tag === "Success") {
+      const [, used] = exit.value
+      expect(used).toBeGreaterThanOrEqual((EACH.length * COUNT) / 2)
+      expect(used).toBeLessThanOrEqual(EACH.length * COUNT)
+    }
+  })
 })
 
 describe("写入守卫（T011）", () => {

@@ -1,13 +1,42 @@
 # 会话交接 · 多用户隔离
 
 ## 上次做到哪
-（尚未开始，初始状态）
 
-## 下次会话要做的事
-1. 先读宪法：D:/project/study/openhive/.specify/memory/constitution.md（外层 .specify）
-2. 读 state.md → 当前任务是 T001
-3. 从 T001 继续，禁止重新规划
+**Step 5（代码审查）走完两轮，已到 0 缺陷；代码冻结在最终提交上，等你在主检出合并。**
+
+- 第一轮：审出 **35 条存活**（编号 **R-01…R-32**，⚠️ 存活数与编号数不是同一本账，**不存在
+  R-33/34/35**），按裁定「修代码 + 清文档，越界的只登记」全部落地。
+- 第二轮：把**修复本身**再当靶子打一轮（5 片并行 + 对抗证伪），抓到 **R2-01…R2-05**，逐条修完，
+  各带 RED 与变异验证。
+- 收尾门禁全部真跑过（数见 `state.md` 的「当前任务」与「最后更新」两节，**别抄旧数**）。
+
+## 下一步（是人来做的，不是下一个会话）
+
+```bash
+# 在主检出（不是本 worktree）执行：
+git merge --ff-only worktree-feat-003-multi-tenant-isolation
+git tag v0.1.0-003-multi-tenant-isolation      # 打在最终状态上（Step 0.5 D6）
+git push origin multi-tenant && git push origin v0.1.0-003-multi-tenant-isolation
+```
+
+⚠️ 合并前先看 `state.md`「当前任务」顶部的**「合并前你要知道的三件事」**（R-15 多做的
+`packages/auth/src/migrations/README.md`、两个新增文件、`.playwright-mcp/` 不进提交）。
+
+## 合并之后
+
+1. **`LEARNINGS.md` 补 1–5 条**（Step 6 第 7 条）——素材已经有：修完再复查才抓得到的「同判据两处各写一份」、
+   门禁并行跑会造假红、本机 5 秒超时带与「首次 spawn `rg.exe`」的关系。
+2. **`docs/workspace/deploy-todo.md` 是交接物**：**D-01…D-12** 是**部署侧**的欠账，上线前逐条过。
+   其中三条**不是「配一下就好」**，别当普通配置项读：**D-05**（撤销引导变量后，新迁移**没人应用**）、
+   **D-09**（Cookie 的 `Secure` **代码侧没有任何开关能打开**，要先补开关）——这两条本表自己标了
+   「与 D-05 同型」；**D-06**（归档**能力**已交付，缺的是**运行者**，仓库里没有调度基础设施）。
+   其余是配额 / 非 root / 限速 / `lock_timeout` / 隔离级别等。
+   > ⚠️ 凭证吊销表、登录页纹理、登出入口这些**在 `state.md` 的缺口表里**（不在 deploy-todo），
+   > 两处别混读。
+3. **待你裁定的两条**（写在 `state.md`「阻塞项」里）：R-17（第二个 server 入口
+   `packages/server/src/routes.ts`）、R-18（暗色模式未强制执行）。
 
 ## 禁止重新规划
-plan.md 已经定稿，tasks.md 已经锁定。
-直接执行，不要再 re-plan。
+
+`plan.md` 已定稿、`tasks.md` 已锁定且全部勾选。**不要 re-plan**；
+要改的是**部署侧欠账**与**上面那两条待裁定**，它们都有明确落点。

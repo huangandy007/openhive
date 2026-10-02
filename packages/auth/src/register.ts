@@ -102,10 +102,28 @@ function validate(input: RegisterInput): void {
 }
 
 /**
- * 录入成功后返回新账号的 id——T007 用它建沙箱目录 `/workspaces/{id}/`。
+ * **只落库**：往 `user` 表插一行，返回新账号的 id。**不建沙箱目录**。
  *
- * `defaultPassword` 是**调用方解析好的值**（`policy.ts` 的 `defaultPassword(env)`），
- * 本函数不读 env——照 `createWorkspace(root, userId)` 的形状：**解析归解析、动作归动作**。
+ * ## ⚠️ 录入账号请走 `provisionUser`，不要调本函数
+ *
+ * T007 当时是「调本函数 → 拿 id → 再建目录」，**那个顺序已被 T022 判为有缺陷**（审查 R-21
+ * 顺带指出本条注释当时还在教它）。缺陷不在「报不报错」——建目录失败时错误确实抛出去了，
+ * 而在**留下什么**：库里那行没人管，而它带着默认口令的 hash、`status` 取自录入表单
+ * ⇒ **它能登录**，一次管理员看到的「失败」实际留下一个**能过认证、却没有沙箱**的账号；
+ * 它还**挡住重试**（同警号再录撞 UNIQUE，管理员只会看到「该警号已录入」）。
+ * `provisionUser` 把顺序反转成「先建目录、后落库」，结构性地做不出这个半成品。
+ *
+ * ## 今天谁在用
+ *
+ * 2026-10-02 实测：**除测试外没有调用方**（取数，**输出应为空**）：
+ * `grep -rn "registerUser(" packages --include=*.ts | grep -v '\.test\.ts' | grep -v 'function '`
+ * 留着导出是因为测试要用它**造账号**（那是纯落库、不需要沙箱，正是本函数该干的事）；
+ * 生产侧的录入 = `provisionUser`，F10 的 T005 落地时别接错。
+ *
+ * ## `defaultPassword`
+ *
+ * 是**调用方解析好的值**（`policy.ts` 的 `defaultPassword(env)`），本函数不读 env——
+ * 照 `createWorkspace(root, userId)` 的形状：**解析归解析、动作归动作**。
  * 它是**必填**的：默认密码没有兜底（兜底 = 生产忘了配时静默使用公开示例口令，
  * 正是 003 T020 要治的病），所以「忘了传」在编译期就该拦住，而不是运行期降级。
  */

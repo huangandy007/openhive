@@ -110,7 +110,12 @@ export function ChangePassword(props: ChangePasswordProps) {
           </Field>
         </div>
 
-        <p data-slot="change-password-error" role="alert" class="min-h-5 text-[13px] leading-5 text-v2-text-text-accent">
+        {/* 报错用**危险**状态色（审查 R-08）：原来是 `text-v2-text-text-accent`——那是「强调」
+            不是「出错」，而且随配色方案漂（浅色 = 品牌金，深色 = `--v2-blue-400`），同一句话
+            在两个配色下是两种颜色、深色下还是蓝字。这块坐在 `bg-v2-background-bg-base`
+            （**随方案漂**的语义面）上，所以就该用同样会漂的 danger。
+            登录页反过来——它坐在固定深色面上，只能用它那边不漂的品牌金，别照搬这条。 */}
+        <p data-slot="change-password-error" role="alert" class="min-h-5 text-[13px] leading-5 text-v2-state-fg-danger">
           {error() ?? ""}
         </p>
 

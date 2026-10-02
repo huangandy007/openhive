@@ -65,7 +65,7 @@
        `workspaceRoot()` / `createWorkspace()`，含 `../` 穿越校验）——**不重造**，本 task 只补 `/data` 侧 + 挂载 + 权限；
     ② **SQLite WAL 的坑**：`database.ts` 设了 `journal_mode = WAL` → 会在 db 旁生成 `-wal`/`-shm`
        ⇒ **`/data/{userId}/` 目录本身必须可写**，「文件 0600 + 目录 0500」会让 SQLite 打不开库；
-    ③ ⚠️ **§5 是一条必须先裁定的问题（未裁定，已上报）**——见下。
+    ③ ⚠️ **§5 是一条必须先裁定的问题（T002 当天未裁定，已上报）**——**⇒ 下条已裁定为【乙】**。
   - ✅ **裁定（2026-09-30 · 乙 · 降级为容器级）**：单进程模型下「OS 层兜底」不成立，
     已上报并由用户裁定走**乙**。证据链：design-v2 §11.6 部署 = **一个 opencode 容器**；
     §6 = **共享单进程**；**实测** `cross-spawn-spawner` 的 spawn 选项**无 `uid`/`gid`**，
@@ -128,6 +128,14 @@
   - 门禁：单测 6 pass / typecheck 通过 / oxlint 0-0（161 rules）；**全包回归做了基线对照**
     （`state.md`「T004 结论 · 质量门禁」）——**Δ = +6 pass / 0 新失败**，既有 5 条 `NpmConfig`
     失败是本机 `~/.npmrc` 镜像导致的存量，与 T004 无关。
+  - ⚠️ **2026-10-02 审查 R-06（已修）**：`LayerMap` 底下的 `RcMap` **把失败也缓存**——
+    一次**瞬时**建库失败（磁盘满 / 目录被占 / 迁移撞锁）会被重放成该用户**一小时**的故障
+    （引用计数归零 + `idleTimeToLive` 才回收），而这期间系统早已恢复；`forUser` 是**每请求**走的，
+    受害面是该用户的全部请求。修法：`Effect.onExit` → 非成功时 `map.invalidate(userId)`。
+    **判据用 `Exit` 而非 `tapError`**：这条路上抛的多半是 **defect**（`Effect.promise(() => mkdir(...))`
+    的 rejection 就是 defect），`tapError` 对它一声不响 = 修了等于没修。RED 是端到端可复现的
+    （先占出 `{root}/u1` 这个「不是目录」的文件 ⇒ 第一次失败；撤掉占位 ⇒ 修之前第二次**仍失败**），
+    已做变异验证（只回退这一处 ⇒ 只有这条用例红）。详录见 `state.md` 的「T004 结论」末节。
 - [x] T005 实现 db 查询从 User 上下文取 userId 路由到对应连接 [FR-003] [T003][T004] [出参：A/B 查询落各自 db 文件]
   - ✅ **完成 2026-09-30**。出参达成：**同一条查询代码、同一个 `Database.Service`，按当前 fiber
     的身份落到不同库文件**（`packages/core/test/database-routing.test.ts` 3 用例，断言一律用
@@ -238,8 +246,9 @@
   - 落点：**新增** `middleware/anchor-workspace.ts` + `httpapi/server.ts` 一行接线（`anchorWorkspaceLayer`，
     **必须排在 `userIdentityLayer` 之后**——它靠身份门放进上下文的 `User` 决定锚到谁，
     排前面就抓不到 User、整道锚定静默直通；测试守着这个次序）。
-    **上游文件零改动**：两条目录解析链（`workspace-routing.ts` 的 `defaultDirectory`、
-    旧版 `@opencode-ai/server/location` 的 `ref`）一行没碰。
+    **那两条目录解析链没碰**（`workspace-routing.ts` 的 `defaultDirectory`、
+    旧版 `@opencode-ai/server/location` 的 `ref`）——⚠️ 但**不等于「上游文件零改动」**：
+    上一条自己就写着 `httpapi/server.ts` 是**上游自有文件**、被改了接线（2026-10-02 审查 **R-27**）。
   - **为什么是「改写请求」而不是「改解析函数」**：两条链**都从同一个 `HttpServerRequest` 读**，
     在请求进路由树之前用 `HttpServerRequest.modify` 把它换掉，两条链同时被锚定（宪法 §V
     「侵入是加不是改」）。三处入参都改（`?directory=`、`location[directory]`、`x-opencode-directory`），
@@ -269,12 +278,30 @@
     **会话行里的 directory 优先于请求**。所以锚定上线**之前**就已存在的会话仍会解析到它当年记下的目录。
     T005 的每用户库把**跨用户**那一半关掉了（`Session.Service.get` 只读自己的库），
     **同一用户的历史会话**那一半不闭合（影响面：该用户自己的目录，非越权）。已登记进缺口表。
-  - ✅ **T006 开工前挂着的那个未决问题已结案**：`packages/protocol` 的 `v2.session.create` 声明了
-    请求体 `location: Location.Ref`，一度怀疑是绕过锚定的口子。**实测结案：不可利用**——
-    ①`SessionLocationMiddleware` **不读请求体**，它读 `route.params.sessionID` 再查 `SessionTable.directory`；
-    ②`ServerApi`（`/api/*` 那一家族）在本仓库**只有 schema、没有任何 `HttpApiBuilder.layer(ServerApi)`**，
-    即根本没有 handler 去消费那个字段。
-    **若将来 v2 handler 层落地，这条要重新裁定**（届时请求体 `location` 会是一个活的绕过向量）。
+  - ❌ **T006 开工前挂着的那个未决问题：「结案，不可利用」这个结论是错的**（2026-10-02 审查推翻并已修）。
+    原判断是「实测两条一起否掉」，其中第 ② 条「`ServerApi`（/api/* 那一家族）在本仓库只有 schema、
+    没有任何 `HttpApiBuilder.layer(ServerApi)`，即根本没有 handler 去消费那个字段」**与事实相反**：
+    `makeApiFromGroup` 里就有 `.add(makeSessionGroup(...))`，而 `server.ts` 的
+    `serverRoutes = HttpApiBuilder.layer(Api).pipe(Layer.provide(handlers))` 供的 `handlers` 里就有
+    `SessionHandler`，其 `session.create` 直接读 `ctx.payload.location`。第 ① 条（`SessionLocationMiddleware`
+    不读请求体、只读 `route.params.sessionID`）**是对的**，但它否不掉"创建那一刻就把越界目录写进会话行"。
+    **实测复现**：已登录用户 `POST /api/session` 带 `{"location":{"directory":"<沙箱外>"}}` ⇒ 200，
+    返回体目录即伪造值；**且省略 `location` 同样越界**（handler 兜底 `AbsolutePath.make(process.cwd())`）。
+    **修法**：`middleware/anchor-workspace.ts` 现在把请求体里的落点一并改写、无 location 的
+    `POST /api/session` 补上沙箱。判据见 `test/server/anchor-workspace.test.ts` 的
+    `describe("锚定：请求体里的 location（R-01）")`，已做变异验证。
+  - ⚠️ **2026-10-02 审查 R-05（已修）**：锚定那行 `join(config.root, user.value.id)` 把 `id`
+    直接当**路径段**，而**没有任何东西保证它不是 `../bob`**（`User.Info.id` 只是 `string`，
+    `verifyToken` 只查 `typeof sub === "string"`，「id 是 UUID」靠的是 002 的实现细节）。
+    后果不是错一格：`../bob` 落在沙箱根**外面**，空串 / `.` 让沙箱**塌成根自己**（全体共用一个目录）。
+    判据**本来就有、且不止一处**（`core/database/router.ts` 的 `userDatabasePath`、
+    `auth/workspace.ts` 的 `assertSafeUserId`），**偏偏锚定这处漏了**（`#002-01` 的形状）——
+    本次提成 `User.isSafePathSegment`（core），core 与 opencode 侧共用这一份，auth 那份保留为
+    等价副本并注明**不是漏改**（core 与 auth 互相够不着）。
+    取**拒**（fail closed）而不是「不锚定」：不锚定 = 客户端伪造的 `directory` 直接生效。
+    **射程据实**：这条**今天打不到**（签不出这样的令牌），守的是「边界不依赖别人家的实现细节」。
+    判据见 `test/server/anchor-workspace.test.ts` 的 `describe("非法 user id 拼路径（R-05）")`
+    （1 对照 + 7 恶意 id），已做变异验证。详录见 `state.md` 的「T006 结论」。
 - [x] T007 配置 opencode 容器以受限系统用户运行 + 文件权限（`0700`）[FR-006] [T002] [出参：容器**非 root**；`/workspaces/{userId}/` 以 `0700` 建出；`/data/{userId}/` **目录可写**（WAL 需在同目录建 `-wal`/`-shm`）]
   - ⚠️ **出参口径已改（2026-09-30 裁定乙）**：原文「OS 层拒绝跨用户读写」**不成立**——
     单进程下 OS 权限不区分用户 A 与 B（见 T002 段与 `isolation-scheme.md` §5）。
@@ -290,9 +317,13 @@
     「AI 资产治理（skill 存放 / 审核发布）」，不是部署任务**；`isolation-scheme.md` 全文**没有 §11**，
     它只在 §5.1 引用 design-v2 §11.6 说明「部署形态 = **一个 opencode 容器**」。
     规范出处其实是 `spec.md` 的 **FR-006**（「容器 MUST 以受限系统用户运行（非 root）」）。
-    ⇒ **承接这条的部署任务目前并不存在**：003 的 tasks.md 无部署任务、仓库无部署产物。
-    按 `LEARNINGS #002-04`，「这件事归别人做」必须先确认那个「别人」存在且有排期——
-    此处不成立，故**不假称已移交**，只登记为缺口。
+    ⇒ ~~**承接这条的部署任务目前并不存在**~~ —— ⚠️ **这句已作废（2026-10-02，审查 R-19）**：
+    **它是错的**。`deploy-todo.md` 那份部署侧总目**正是本 task 收尾时建的**（见 T011 段），
+    只是这一条**没被移进去**。当时按 `LEARNINGS #002-04` 判「那个『别人』不存在」判错了一半——
+    **「有那张表、但条目没进去」**与**「压根没有那张表」**是两件事，写成了后者，
+    于是「该移过去」这件事也一起被藏掉了（`LEARNINGS #002-02`：不能写成覆盖，也不能写成不存在）。
+    ✅ **现落点 = `docs/workspace/deploy-todo.md` 的 D-08**（含「怎么验」：`id -u` ≠ 0
+    **以及**「写得了自己的沙箱、写不了别人的」——非 root 与 `0700` 是配套的两半）。
   - ② **`0700` 落地**：`packages/auth/src/workspace.ts` 的 `createWorkspace` 与
     `packages/core/src/database/router.ts` 的建目录处，都加了 `{ mode: 0o700 }`。
     **但「已建出」这件事在本机不可验**（见下方缺口行）——**不得据此宣称本出参已验**。
@@ -305,12 +336,18 @@
     | 目录 | 落点 | 谁跑得到 |
     |---|---|---|
     | `/data/{userId}/` | `packages/core` | ✅ Linux CI **真跑**（`turbo.json` 有 `@opencode-ai/core#test`，CI 跑 `bun turbo test`，ubuntu 矩阵） |
-    | `/workspaces/{userId}/` | `packages/auth` | ❌ **无人跑**：本机 win32 忽略 mode → skip；且 `turbo.json` **没有 `@opencode-ai/auth#test`**，CI 根本到不了这个包 |
-  - ⚠️ **附带发现（需裁定，未自行处理）**：`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
+    | `/workspaces/{userId}/` | `packages/auth` | ⚠️ **CI 那条已闭合（2026-09-30 你裁定「加」，`turbo.json` 已补 `@opencode-ai/auth#test`）**，但**本机仍然验不了**：win32 忽略 mode ⇒ 断言只能 `skip`。⇒ 剩下的接收方是 `deploy-todo.md` **C-01** |
+  - ✅ **附带发现已结案（2026-09-30）**：原文当时写「`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
     `function` / `app` / `ui` / `session-ui` 声明了 `test`，**`@opencode-ai/auth` 缺席** ⇒
-    **002 的整个 auth 包测试（149 条）从未在 CI 里跑过**。修法是在 `turbo.json` 加一行
-    `"@opencode-ai/auth#test": {}`，但那是**上游文件**（`宪法 §I` 冲突面）。**未自行改动**，
-    留给用户裁定。（改动后本出参的 auth 侧才进入被验状态。）
+    002 的整个 auth 包测试（149 条）从未在 CI 里跑过；修法是加一行 `"@opencode-ai/auth#test": {}`，
+    但那是**上游文件**（`宪法 §I` 冲突面）⇒ **未自行改动，留给用户裁定**」。
+    **那段话已全部作废**：你裁定【加】、改动已落地（取数：`grep -n "@opencode-ai/auth#test" turbo.json`
+    ⇒ 有命中）。
+    > ⚠️ **本条是 2026-10-02 审查 R-23 抓的**：全仓**最后一处**「`turbo.json` 没有 auth#test / 需裁定」
+    的旧文**没有结案注**，而 `state.md` 当时已经宣称这批旧文「清扫完毕」——**清扫的声明比清扫本身
+    先写下**，于是它成了新的不实记述（`LEARNINGS #002-06`）。**改完一处要 grep 谁在按旧状态描述它。**
+    > ⚠️ 另外注意：这一格只结了「CI 到不到得了 auth」，**没有**结「本机验得了 mode」——
+    两件事，别合并读。
 
 ## Phase 4: US3 项目 / 会话隔离（P1）
 
@@ -482,6 +519,25 @@
     **逐字节相同** ⇒ 验签照样通过（实测：300 条里末字符为 `A` 的 20 条**全部**「篡改后仍验过」，
     改中间字符 0/300 幸存）。**不是身份门漏了、也不是安全洞**，是**测试构造缺陷**。
     修法（未做）：别改末字符——改中间字符、或改 payload 再重签。**留给用户裁决是否本轮修。**
+  - ⚠️ **2026-10-02 审查 R-02 推翻上面那张表的 A 链一行（已修）**：表里写 A 链 = `prompt_async`
+    **一个端点**，是错的——`handlers/session.ts` 里还有 **5 个**端点同样启动执行
+    （`prompt`（`/message`）/ `command` / `shell` / `init` / `summarize`），T010 一处都没拦，
+    满配额时改用 `POST /session/{id}/message` 就绕过去了。**判据不是新立的**：正是本 task 自己
+    写下的「能被另一个端点绕过的配额不是配额」——贯彻了**链间**版本、漏了**端点间**版本。
+    修法：`.middleware(UiSessionQuotaMiddleware)` 1 处 → **6 处**，路径清点同步放宽、由
+    `session-quota-middleware.test.ts` 的「端点清点」三条钉住（挂点集合 ⇄ 路径集合）。
+    **B 链清过、没有同类兄弟端点**（`/api/session/{id}/compact` 返回 `OperationUnavailableError`）。
+    详录见 `state.md` 的「T010 结论」末节。**「端到端 429 未覆盖」这条缺口扩大到 5 个端点、性质不变。**
+  - ⚠️ **2026-10-02 审查 R-04：同一条链上的另一条指控，实测证伪、未改代码**——审查说 A 链 `read()`
+    对 URL 路径段直接 `SessionID.make`、不校验 ⇒ 500（本该 400）。实测：那个 500 来自**上游**
+    `packages/opencode/src/server/shared/workspace-routing.ts` 的 `getWorkspaceRouteSessionID`，
+    它在我们的中间件**之前**就 `SessionID.make` 同一个路径段、对畸形值直接抛。
+    **判据是「撤掉我们的改动，状态码变不变」**：撤掉后 500/400 逐条**完全一致**
+    （决定性的一条是 `GET /session/not-a-session` → 500，**那条路由上根本没有配额中间件**）。
+    再加一条更硬的：**写不出能区分前后两条路的分辨性测试** ⇒ 按 `CLAUDE.md` §2，区分不出来的改动
+    不是修复而是投机性加固，故**不改**。⚠️ **别再为它写测试**（写不出区分性断言 = `#002-02` 的假覆盖），
+    也**别把那行 `SessionID.make` 当死代码删**——它守的是「`read()` 不依赖上游的次序」。
+    全部探测数据与取数方式见 `state.md` 的「T010 结论」末节（R-04 段）。
 
 - [x] T011 实现沙箱磁盘配额（Linux quota / docker volume）[FR-009] [T002] [出参：超配额写入被限制]
   **✅ D4-3 已裁定（2026-09-30 · 丙）——拆成「做的」+「挂账的」两半**：
@@ -550,9 +606,20 @@
     第二遍即回到 5 fail —— 与本 task 无因果（`#001-01`：判「有没有变坏」看**名单**不看总数）。
   - 🟡 **挂账那一半（OS 级强制）的落点 = `docs/workspace/deploy-todo.md` 的 D-01**（本 task 新建的文件）。
     为什么新建：任务书写「写进部署文档待办」，而仓库里**此前没有部署文档**（T007 ① 也记过同一处境）。
-    该文件同时收纳 002 的密钥长度地板（D-03）与 T014 的网关侧两条（D-02）——**各任务落地时把条目
+    ⚠️ **2026-10-02 更正**：本行原写「T014 的网关侧两条（D-02）」——**T014 是三条、且不是都落在 D-02**
+    （① 轮转 → D-03、② Cookie `Secure` → D-09、③ 网络可达性 → D-02；审查 R-20 核对编号时发现）。
+    ⚠️ 另：**T007 ① 当时也「记过同一处境」，但它自己没落进来**——2026-10-02 才补成 **D-08**（审查 R-19）。
+    该文件同时收纳 002 的密钥长度地板（D-03）与 T014 的网关侧（见上）——**各任务落地时把条目
     「移」进去，不要抄**（抄两份就是两个真相）。D-01 的验收写的是「**绕开 opencode 工具**灌一个大文件、
     应当被 OS 拒绝」，并明写「**只验『应用层拒绝写入』不算过**」。
+  - ⚠️ **2026-10-02 审查 R-03（已修）**：`usedBytes()` 是「`readdir` 列名 → 逐个 `stat` 求和」两步，
+    循环里那个 **裸 `NFS.stat` 没捕 ENOENT**——同文件另外两个同级调用点（`readdir` 那处、`sizeOf` 那处）
+    **都捕了，只有这个漏了**（`#002-01` 的形状）。后果是**拒写**而非少算：ENOENT → `ScanFailed` →
+    `unmeasurable` → **这一次写入被拒**，而触发条件只是「沙箱里有人在删文件」（agent 的日常动作），
+    探针实测 **12/12 全拒而磁盘没满**。语义上 ENOENT 该按 0 算（那个文件已经不占空间了），
+    `unmeasurable` 留给真读不懂的情形。修法：改调同文件**已有**的 `sizeOf`（对 ENOENT 返回 0），
+    不新造第二份容忍逻辑。RED 是**竞态形状**（200 文件升序扫描 + 并发倒序删后半段，20/20 复现，
+    据实登记；修好后是确定性的绿）。详录见 `state.md` 的「T011 结论」末节。
 
 ## Phase 6: 隔离测试（验收，P1）
 
@@ -588,7 +655,6 @@
   - **质量门禁（2026-09-30 实跑，非外推）**：两个新测试文件 **9 pass / 0 fail / 33 expect**；
     `bun run typecheck` **31/31、exit 0**；本文件 `bunx oxlint` **0 warnings / 0 errors**；
     `git diff --stat bun.lock` **无输出**。
-
 - [x] T013 写隔离测试：用户 A 访问用户 B 的目录必须被拒（含伪造 directory 场景）[FR-010][SC-003] [T006][T007] [出参：测试通过，A 读写不到 /workspaces/B/]
   **✅ 2026-09-30 完成 —— 出参「A 读写不到 `/workspaces/B/`」在**应用层**达成。**
   新增 1 文件（`packages/opencode/test/server/tenant-directory-isolation.test.ts`），**零产品代码改动**。
@@ -632,7 +698,11 @@
 - **Phase 5**：T010（依赖 T003）∥ T011（依赖 T002）
 - **Phase 6**：T012（依赖 T005）∥ T013（依赖 T006+T007）
 
-共 13 条任务（T001–T013），符合 12–18 条范围。
+共 **13 条任务（T001–T013）——这是 003 的「原计划」账**，符合 12–18 条范围。
+⚠️ **别把这句读成本 feature 的最终条数**：上面这个依赖图**只画到 T013**，而本表后面
+（「002 移交的欠账」节末）写着 **24 条 = 原计划 13 + 移交 11**，再扣掉移交出去的 T016 ⇒ **003 的账是 23 条**。
+原文只写「共 13 条任务」、没有「原计划」三个字，与同文件后半段并存时会读成两个数
+（2026-10-02 审查 **R-29** 抓的）。**要改总数，改的是那一处**（`grep -n '任务总数更新' docs/superpowers/specs/003-multi-tenant-isolation/tasks.md`）。
 
 ---
 
@@ -712,8 +782,11 @@
   - ✅ **启动检查跟开关走**（Q3 裁定【甲】）：`OPENHIVE_REQUIRE_USER_ID` 未设 ⇒ 网关层是恒等中间件、
     **一个端点都不注册**、也**不去要 PG 配置与密钥**（`bun run dev` 行为逐字不变）；
     置 `1` ⇒ 层构造期调 `jwtSecret`，缺 / 短于 32 字符**当场起不来**（上面 🔑 那条要的「启动时调一次」）。
-  - 🔴 **未覆盖（缺口，不是覆盖）**：`AUTH_JWT_SECRET` 的**轮转**（代码侧无机制，是部署纪律）、
-    Cookie `Secure` 在真 HTTPS 下的行为、内核端口的**真实网络可达性**（D-02，本机 win32 单进程验不了）。
+  - 🔴 **未覆盖（缺口，不是覆盖）**：① `AUTH_JWT_SECRET` 的**轮转**（代码侧无机制，是部署纪律）
+    → `deploy-todo.md` **D-03**；② Cookie `Secure` 在真 HTTPS 下的行为 → **D-09**
+    （⚠️ 2026-10-02 审查 R-20：原先这三条被笼统写成「已登记进 `deploy-todo.md`」，而 ② **没有任何一条收它**；
+    且查实**代码侧今天没有开关能把它打开**——`sessionCookie` 的 `secure` 参数两个调用点都没传）；
+    ③ 内核端口的**真实网络可达性**（本机 win32 单进程验不了）→ **D-02**。
   - ⚠️ 测试夹具的两条硬约束（**实测撞出来后才写下的**，详见 `test-support.ts` 文件头）：
     ① `PGLiteSocketServer` 的 `maxConnections` **默认 1，超出是掐掉不是排队**，而 `bun-sql`
     每个客户端自带连接池；② **同一实例上两个客户端不能执行同一句 SQL**（PGlite 预编译语句实例级、
@@ -771,6 +844,25 @@
     但那是界面门禁不是撤销；「停用即立即失效」要一张**凭证吊销表**，**本 feature 没做**。
     （`session.ts` 的文件头原先写「已记在 tasks.md 的未覆盖项里」——**当时 tasks.md 并没有这一条**，
     是这次 grep 出来的悬空引用，现在补上，两边对得住了。）
+  - 📌 **2026-10-02 首轮审查改了 T015-c 三处**（R-07 / R-08 / R-09，全在 `packages/app/src/auth/`），
+    详情见 `state.md` 的同名段：
+    - **R-07（P1）**：登录页品牌名的 `text-v2-text-text-inverse` **会随配色方案翻**
+      （dark 下 = `--v2-grey-1100` = `#161616`，画在**不翻**的 `#0F172A` 上 ≈ **1.01:1**）。
+      🔴 **不是潜伏的**：`context.tsx` 的 `colorScheme` 默认 `"system"`、`getSystemMode()` 读
+      `prefers-color-scheme: dark` ⇒ **系统深色的机器上今天就是看不见**。改成
+      `text-v2-text-text-contrast`（两套都是 `--v2-grey-50`，且已有工具类孪生）。
+      新增 `login-face-tokens.test.ts`（3 pass）钉**性质**：登录页引用的 token 在 light/dark 下必须同值。
+    - **R-08（P2）**：改密报错 `text-v2-text-text-accent`（浅色金 / 深色蓝）→
+      **`text-v2-state-fg-danger`**。**只改这一处**——登录页坐在固定深色面上、而 danger 会漂，
+      照搬过去是制造新缺陷。`auth-gate.test.tsx` 加一条钉住。
+    - **R-09（P2）**：`gateway.ts` 三条链原先**全无超时**，且 `probing` 两处 `<Show>` 都不渲染
+      ⇒ 内核挂起 = **永久白屏**。修法：`带超时`（10s，`abort()` + 抛，落进各链现成的 `catch`）
+      ＋ `auth-gate.tsx` 加 `data-slot="auth-probing"` 占位。
+      ⚠️ 该条 RED 的形状：修前那三条用例**把测试文件挂死**（`bun test` 不返回），不是「红」是不结束。
+    - **门禁（实跑）**：`packages/app` `tsgo -b` **EXIT=0**；单测 **820 pass / 0 fail**、
+      组件测 **101 pass / 0 fail**；oxlint 七个改动文件 **0/0**；`bun.lock` 未变。
+    - ⚠️ **组件测口径**：本机只跑了 `./src/*/*.test.tsx`（10 文件）。`test:components` 写的
+      `./src/**/*.test.tsx` 靠 shell 展开，**本机 Git Bash 不递归** ⇒ 本机跑不全，别当覆盖声明。
 
 ### 🔴 P0：越权 BOLA / BFLA
 
@@ -1065,8 +1157,11 @@
     ② **轮换默认口令不会影响已发出的账号**——`resetPassword` 用的是**重置那一刻**的环境值，
     早已改过密的人不受影响，这条**是设计意图**、不是缺口，但**没有用例钉着**（没人测过
     「改环境变量后旧哈希是否仍有效」）；
-    ③ 前端的「默认口令」提示文案（登录页 / 治理后台）**不在本 feature 范围**，仍写着示例值——
-    归 F10 与登录页所属 feature（见 `state.md` 的移交项）。
+    ③ ~~前端的「默认口令」提示文案（登录页 / 治理后台）**不在本 feature 范围**，仍写着示例值——
+    归 F10 与登录页所属 feature（见 `state.md` 的移交项）。~~
+    ⇒ **已核销（2026-10-02 复查 R2-05）**：前端**没有**这样的提示文案（取数见 `state.md`
+    缺口表的 T020 行），且原句自报的归属**三方皆不成立**（`F10` 只是代号、没落进它的表；
+    「登录页所属 feature」**就是本 feature**；所引的「移交项」**不存在**）。
   - **为什么必须有**：项目第一号约束「环境值走 config，不硬编码进源码」。
     改前 `DEFAULT_PASSWORD` 常量在 `packages/auth/src/policy.ts`，**同时**被文档当公开示例写着——
     一个值既当配置又当文档示例，是这两者迟早对不上的标准形状。
@@ -1220,7 +1315,11 @@
     `rmdir` 失败。两条都只在**未来**有人改动 id 生成方式、或文件系统不配合时才生效。
     （同 T011 那条「符号链接那一支无测试守着」的形状：行为已写、场景本机构造不出。）
   - 🔴 **`provisionUser` 今天没有生产调用者**（`registerUser` / `provisionUser` 在
-    `packages/opencode/src`、`packages/core/src` 里零命中）——**触发者仍是 F10**。
+    `packages/opencode/src`、`packages/core/src` 里零命中）。
+    ⚠️ **原写「触发者仍是 F10」已改（2026-10-02，审查 R-21）**：**「F10」不是收方**——
+    F10 的表里当时**没有这一条**。现落点 = `010-governance-console/tasks.md` 的 **T005**
+    （账号管理的「录入」那一步），移交已写进那份文件的**文件头 📥 块与 T005 条**
+    （含「调 `provisionUser` 不调 `registerUser`」这条最要紧的）。
     与 T024 那条同型：能力已交付、触发者未到。
   - ⚠️ **002 的 `state.md` 已被本次改正**（加了 ✏️ 更正块，**原文保留**）：它那两条裁定被反转，
     且「有牙验证 ① 顺序倒置成『先建目录』→ 2 条红」那个变异**现在就是实现**，已失效。
@@ -1298,7 +1397,13 @@
   ⚠️ **也不是新问题**：`tenant-directory-isolation.test.ts` 的注释写着 T021 期间**已发现同一件事**
   （T012 / T013 两个文件在 T020 后共 9 条红，修在 T021 收尾）——**修了两处，没 grep「还有谁」**
   （`LEARNINGS #002-06` 逐字说的就是这个）。我补上了这一步：8 个引用 `OPENHIVE_REQUIRE_USER_ID`
-  的文件逐个真跑，**没有第四处**。
+  的文件逐个真跑，给出结论「**没有第四处**」。
+  - 🔴 **那个结论是错的（2026-10-02 审查 R-25 抓的）——错在判据，不在跑法。**
+    真正的前提不是「谁引用了 `OPENHIVE_REQUIRE_USER_ID`」，是「**谁在建真应用**（`HttpApiApp.routes`）」
+    ——两者**不是同一个集合**。按对的谓词复跑，**还剩 2 处**（`user-identity.test.ts` 2 个用例
+    + `anchor-workspace.test.ts` 4 个用例），由**第五步·质量门禁**首轮抓到并修掉（同一修法）。
+    ⚠️ **教训**：**「grep 没命中」不等于「没有同类」**——那只能说明「**这个谓词**筛不出东西」。
+    补 grep 这一步里，**选对谓词**才是要害；跑 8 个文件是力气，谓词的准确性才是判断。
   修法与另两处**逐字同形**（`restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })` + `afterAll`）。
   ⚠️ 这条测试的形态值得记：它的**绿取决于跑它的那个 shell 有没有碰巧设了那个变量**
   （本机实测：不设 = 1 fail、设了 = 2 pass）——**门禁的绿取决于环境，而门禁自己不会报这件事**。
@@ -1308,7 +1413,8 @@
     R11 与这一条）。⇒ **不得声称「T023 的超时都做了」**。
   - 🔴 **生产侧没有连接池关闭点**：`connect()` 返回的对象带 `$client.close()`（实测可用），
     但**没有任何生产代码调它**。原因不是「没人写」，是**没有可挂的时机**（见上表第 3 行）。
-    要做得动 `server.ts`（上游文件）。**当前无接收方，待收尾裁定**。
+    要做得动 `server.ts`（上游文件）。**当前无接收方，待收尾裁定**
+    （清单在 `state.md`「阻塞项」**第 4 条**——2026-10-02 补的指针，免得这里又长出一份清单）。
     ⚠️ 实际影响比字面小：池是**进程内**的，进程退出时 OS 会回收 socket；真正的泄漏场景
     （按请求建池）已由 gateway 的 `db ??=` 单例挡掉（plan 风险点 R2）。**但这不等于「已闭合」**。
   - 🟡 **门槛以下抓不到**（常量改成 4 / 5 秒），见上文判别力那一节。
@@ -1371,10 +1477,13 @@
   - 🟡 **读-判-写之间有窗口**（TOCTOU）：两个管理员同时各自停用对方，可能都读到「还剩两个」而
     都放行。修法两条（上事务 + 行锁 / 把判据下推成一条带子查询的 SQL），本任务都没做。
     与 `bootstrapAdmin` 同一先例、同一登记方式。**这条的紧迫性取决于调用方是否存在**——见下。
-  - 🔴 **本动作今天没有生产调用方**：全仓库除测试外只有 `packages/auth/src/zombie.ts` 自己，
-    治理后台属 F10。⇒ 这道守卫**在调用方出现之前不会被任何真实流量走到**，TOCTOU 窗口同理。
+  - 🔴 **本动作今天没有生产调用方**：全仓库除测试外只有 `packages/auth/src/zombie.ts` 自己。
+    ⚠️ **原写「治理后台属 F10」已改（2026-10-02，审查 R-21）**：**「F10」不是收方**——F10 的表里当时
+    没有这一条。现落点 = `010-governance-console/tasks.md` 的 **T005**（账号管理的「停用」那一步），
+    移交里写明「**T005 一落地，这道 TOCTOU 窗口就可达了**」。
+    ⇒ 这道守卫**在调用方出现之前不会被任何真实流量走到**，TOCTOU 窗口同理。
     （这与 T016「没有 HTTP 端点」、T018「没有运行者」是同一类缺口：能力已交付，触发者未到。）
-  - 🟢 `LastAdminError` **没有消费方**：调用方（F10）拿到它才能把拒绝翻译成一句给管理员看的话。
+  - 🟢 `LastAdminError` **没有消费方**：调用方（F10 的 **T005**）拿到它才能把拒绝翻译成一句给管理员看的话。
     在那之前它只是一个抛得出来的类型。
 
 > **移交来源**：`002-auth-account/state.md` 的「范围裁定」① ②、「收尾补测」节、

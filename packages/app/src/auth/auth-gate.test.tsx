@@ -84,10 +84,22 @@ describe("T015 登录门 · 启动探查", () => {
   // 身份是模块级接入缝，测试之间必须复位，否则互相串味（与 workspace-entry.test.tsx 同款）。
   beforeEach(() => setCurrentUser(undefined))
 
-  test("探查还没回来时什么都不渲染——不闪工作台", () => {
-    const host = mount(() => new Promise<Response>(() => {}))
+  /**
+   * 探查期间**不闪工作台**，但也**不能什么都不渲染**（审查 R-09，2026-10-02）。
+   *
+   * 「不闪工作台」这半条是对的：先渲染再被顶掉，用户看见自己的会话「跳」了一下。
+   * 但当时实现成「两个分支都不亮」——整页**纯白**，而且没有尽头（内核挂住 = 永远停在那里）。
+   * 两半都要：工作台不出现，**占位出现**。
+   *
+   * 用**会应答的**替身、同步断言，而不是永不落定的 promise 再 `await` 一下：这条要的就是
+   * 「`onMount` 里那次 await 还没落定的**那一刻**」，同步看即可。用永不落定的替身反而会给
+   * 测试进程留一个 `gateway.ts` 的超时定时器在那里空转（默认 10 秒）。
+   */
+  test("探查期间：工作台不出现，但有占位（R-09）", () => {
+    const host = mount(stub({ [PATH.me]: json(不需改密) }))
 
     expect(有(host, "[data-slot='workspace']")).toBe(false)
+    expect(有(host, "[data-slot='auth-probing']")).toBe(true)
   })
 
   /**
@@ -235,6 +247,36 @@ describe("T015 强制改密（002 FR-006）", () => {
 
     expect(文案(host, "[data-slot='change-password-error']")).toBe("当前密码不正确")
     expect(有(host, "[data-component='change-password']")).toBe(true)
+  })
+
+  /**
+   * 报错色必须是**危险**语义槽位（审查 R-08，2026-10-02）。
+   *
+   * 原来用的是 `text-v2-text-text-accent`——「强调」不是「出错」，而且它随配色方案漂：
+   * 浅色下 = `--v2-brand-gold`，深色下 = `--v2-blue-400`。同一句「当前密码不正确」在两个配色下
+   * 是两种颜色，深色下还是蓝字。仓库里现成的 `--v2-state-fg-danger` **两个文件都没用**。
+   *
+   * 这里坐在 `bg-v2-background-bg-base`（随方案漂的语义面）上，所以**就该**用会漂的 danger。
+   * 登录页反过来：它坐在固定深色面上，只能用它那边不漂的品牌金——
+   * 那条判据由 `login-face-tokens.test.ts` 守着，别把这条规则照搬到登录页。
+   */
+  test("报错用危险状态色，不是强调色（R-08）", async () => {
+    const host = mount(
+      stub({
+        [PATH.me]: json(需改密),
+        [PATH.changePassword]: json({ error: "当前密码不正确" }, 400),
+      }),
+    )
+    await flush()
+
+    填(host, "currentPassword", "错的")
+    填(host, "newPassword", "New12345")
+    提交(host, "change-password")
+    await flush()
+
+    const 报错 = host.querySelector("[data-slot='change-password-error']")
+    if (!报错) throw new Error("改密被拒之后界面上没有报错位")
+    expect(报错.className).toContain("text-v2-state-fg-danger")
   })
 
   // 「锁死」的实际含义：出口只有两条（改成功 / 稍后修改）。Escape 是上游对话框栈的默认出口，

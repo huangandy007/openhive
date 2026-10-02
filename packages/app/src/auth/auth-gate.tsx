@@ -91,8 +91,19 @@ export function AuthGate(props: ParentProps<AuthGateProps>) {
 
   return (
     <>
-      {/* 探查期间两个分支都不亮 = 什么都不渲染。**不闪工作台**是刻意的：
-          先渲染再被顶掉，用户看到的是自己的会话「跳」了一下。 */}
+      {/* 探查期间**不闪工作台**——先渲染再被顶掉，用户看到的是自己的会话「跳」了一下。
+          但「不闪工作台」不等于「什么都不渲染」（审查 R-09）：那样整页是一片**纯白**，
+          内核挂住时既没有去向也没有尽头。占位只占位，`children` 一个字都不出现。
+          底色取工作台那一支（`bg-v2-background-bg-base`）而不是留白，省得进工作台时再跳一下色。 */}
+      <Show when={view() === "probing"}>
+        <div
+          data-slot="auth-probing"
+          class="flex h-dvh w-screen items-center justify-center bg-v2-background-bg-base text-[13px] leading-5 text-v2-text-text-muted"
+        >
+          正在启动…
+        </div>
+      </Show>
+
       <Show when={view() === "login"}>
         <LoginPage send={props.send} onSignedIn={signIn} />
       </Show>

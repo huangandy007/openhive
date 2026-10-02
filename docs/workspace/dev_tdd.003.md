@@ -130,6 +130,13 @@ MUST NOT 当身份来源；与验签结果不一致时**以验签为准并拒绝
 > 同步改动共 **5 处**（少一处就自相矛盾）：`spec.md`（FR-002 / 验收场景 3 / SC-003 / Assumptions）、
 > `plan.md`（数据流向图 + 数据隔离说明 + 集成点）、`tasks.md`（T003 出参 + T014 裁定段）、
 > `packages/opencode/src/server/user-identity.ts` 顶部注释、`003/state.md`。
+>
+> ⚠️ **勘误（2026-10-02 审查 R-28）**：上面这个「**5 处**」是**错的**——当次同步**漏了 design-v2**
+> （共 **6 处**）。`state.md` 早已就地更正并写明教训，**本文件当时没跟着改**（`LEARNINGS #002-06`：
+> 改完一处要 grep 谁还在按旧状态描述它）。
+> **更要紧的不是把 5 改成 6，是那个写法本身**：「数几条」把「**扫完了没有**」偷换成
+> 「**我数够 N 条了没有**」——**范围划小了就等于没扫**。判据应当是**命令**
+> （`grep` 出全部引用点，看差集是否为空），**不是一个数**。
 
 **背景（保留）**：冲突源于 003 `spec.md` 原 FR-002 要求「由网关**验签**注入」，而 002 落地的
 `X-User-ID` 是**明文头、不是凭证**（`packages/opencode/src/server/user-identity.ts` 顶部有言）。
@@ -323,6 +330,16 @@ packages/core/src/database/path.ts          ← ⚠️ 陷阱：这不是那个 
   ② Database 按用户路由（003 落地）
 - **物理隔离优先，不靠应用层 `if` 过滤**（宪法 §三）。
 - 新增模块落点（plan.md 已定）：`packages/opencode/src/{user,database,middleware,quota}/`。
+  > ⚠️ **勘误（2026-10-02 审查 R-28）——上面这条与实际落点相反，别照它找文件。**
+  > 四个模块里**有三个半落在 `packages/core`**（`plan.md` 的结构图已就地补勘误，本文件当时没跟着改）：
+  > ① `packages/core/src/user.ts`（**core 不是 opencode**——T005 要 core 的 `Database` 读得到它）；
+  > ② `packages/core/src/database/router.ts` + `connection-routing.ts`；
+  > ③ `packages/core/src/quota/{session-quota,disk-quota}.ts`——理由是**拦截点在 core**
+  > （B 链的 `SessionV2.prompt`、写漏斗的 `fs-util.ts` 的 `writeWithDirs`），
+  > 而 core **不能** import `@opencode-ai/opencode`（`packages/core/package.json` 无该依赖）。
+  > 落回 opencode 侧的只有**中间件**（身份门 / 目录锚定 / A 链配额适配器），
+  > 且都在 `server/routes/instance/httpapi/middleware/` 下、**不在** `packages/opencode/src/middleware/`。
+  > 取数：`ls packages/core/src packages/core/src/quota packages/opencode/src/server/routes/instance/httpapi/middleware`。
 
 **002 留下的可复用资产（别重复造）**：
 

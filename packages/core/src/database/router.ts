@@ -2,7 +2,7 @@ export * as DatabaseRouter from "./router"
 
 import { mkdir } from "fs/promises"
 import { dirname, join } from "path"
-import { Context, Effect, Layer, LayerMap, Option, type Scope } from "effect"
+import { Cause, Context, Effect, Exit, Layer, LayerMap, Option, type Scope } from "effect"
 import { User } from "../user"
 import { DatabaseConnectionRouting } from "./connection-routing"
 import { Database } from "./database"
@@ -47,10 +47,12 @@ export function dataRoot(env: Record<string, string | undefined>): string {
  * 校验与 002 `createWorkspace` **等价**（core 不能 import `@opencode-ai/auth`——那会反向依赖，
  * 见 `packages/core/package.json` 无 `@opencode-ai/auth`）：拦的是「拼出来的路径逃出根目录」。
  * 别改成只 `join(root, userId)`——那正是这个函数存在的理由。
+ *
+ * 判据本体在 `User.isSafePathSegment`（2026-10-02 审查 R-05 提上来的）：同一件事原先在本文件、
+ * 锚定中间件、auth 三处各写一遍，**锚定那处漏了**。core 与 opencode 侧现在共用这一份。
  */
 export function userDatabasePath(root: string, userId: string): string {
-  if (!userId || userId === "." || userId === ".." || userId.includes("/") || userId.includes("\\"))
-    throw new Error(`非法用户 id，拒绝拼数据库路径：${JSON.stringify(userId)}`)
+  if (!User.isSafePathSegment(userId)) throw new Error(`非法用户 id，拒绝拼数据库路径：${JSON.stringify(userId)}`)
   return join(root, userId, DATABASE_FILENAME)
 }
 
@@ -58,6 +60,8 @@ export interface Interface {
   /**
    * 取该用户的库。**惰性打开**（第一次调用才建目录、开文件、跑迁移）。
    * 同一 userId 重复调用返回**同一个**对象（`LayerMap` 缓存），直到空闲 TTL 到期。
+   *
+   * ⚠️ **只对成功缓存**：失败（含 defect）下一次调用会重新尝试，见实现处的注释（审查 R-06）。
    */
   readonly forUser: (userId: string) => Effect.Effect<Database.Interface, never, Scope.Scope>
 
@@ -122,8 +126,53 @@ export function layer(
         { idleTimeToLive: "60 minutes" },
       )
 
+      /**
+       * 取该用户的库。**失败不留缓存**（审查 R-06，2026-10-02）。
+       *
+       * 为什么必须显式清：`LayerMap` 底下是 `RcMap`，而 `RcMap.get` 在查表失败时做的是
+       * `Deferred.doneUnsafe(entry.deferred, exit)`——**把失败也写进那个 Deferred**，entry 却不从
+       * map 里删。于是同一个 userId 的下一次请求命中同一 entry、**直接重放上一次的失败**；
+       * entry 要等引用计数归零 + `idleTimeToLive`（本模块 60 分钟）才回收。
+       * 净效果：一次**瞬时**故障（磁盘满、目录被占、迁移撞锁）能把该用户**锁住一小时**，
+       * 而这期间系统早已恢复。`forUser` 是**每请求**走的（身份中间件塞的连接钩子），受害面是
+       * 「该用户的全部请求」。症状与 `LEARNINGS #002-02` 同族：故障过去了，门却还关着。
+       *
+       * 判据用 `Exit` 而不是 `tapError`：这条路上抛的**多半是 defect**（lookup 里
+       * `Effect.promise(() => mkdir(...))` 的 rejection 就是 defect），`tapError` 对它**一声不响**。
+       *
+       * ## 但「不成功」里还有一半不是失败：**中断**（复查 R2-03，2026-10-02）
+       *
+       * 上面那条判据原先写的是「`Exit` 不是 Success ⇒ 逐出」，而**中断也不是 Success**——
+       * 于是「这个请求被取消」与「建库真的坏了」被当成同一件事。中断在这里是**日常**：
+       * `forUser` 每请求走一次（身份中间件塞的连接钩子），客户端断连、上游超时都会打断它。
+       * 而逐出是**无谓**的——库好好的，下一个请求却要重新 `mkdir` + 开库 + 跑迁移。
+       * 守着它的用例：`test/database-router.test.ts` 的「中断（第二个取用被取消）不逐出正在建的库」。
+       *
+       * 判据取「**纯中断才不逐出**」而不是「含中断就不逐出」：`Exit.hasInterrupts` 为真的**混合**
+       * cause（既有 defect 又有中断）里，那次建库确实是坏的，留下它等于把 R-06 那一小时的锁死
+       * 又请回来。`Cause.hasInterruptsOnly` 正是这条线。
+       *
+       * ## 残留：`invalidate` 在这里**只删键，不关资源**（同一次复查，已登记不改）
+       *
+       * `RcMap.invalidate` 在 `entry.refCount > 0` 时**提前返回**——不关 entry 的 scope、不中断它的
+       * TTL fiber。而我们这个调用点**必然**满足那个条件：`forUser` 跑在**调用方**的 scope 里，而
+       * `RcMap.get` 是先 `Scope.addFinalizer(scope, entry.finalizer)` 再 `await` 那个 Deferred 的，
+       * 走到 `onExit` 时引用计数已经 ≥ 1。所以被删掉键的那个 entry 还活着，直到调用方 scope 关闭。
+       *
+       * 由此有一段**上游 quirk 引出的残留**（根因在 Effect 的 `RcMap`，本仓不改 upstream 文件）：
+       * 若在「旧 entry 尚未释放」的窗口里又有人取同一个 userId，会建出**新 entry**；旧 entry 释放时
+       * 看到「键还在」（那是新的那个），于是挂一个 60 分钟的 TTL fiber，到期后**按 key 删掉新 entry
+       * 的键**、并关掉旧 entry 的 scope。新 entry 因此丢了空闲缓存（最后一个使用者离开就立刻关闭），
+       * 且这期间同一用户可能短暂有两个连接。后果限于**缓存抖动**，不涉及正确性与隔离；
+       * 触发条件是「建库失败」这一稀有事件与并发取用重叠。登记在 `state.md` 的缺口表里。
+       */
+      const shouldInvalidate = (exit: Exit.Exit<unknown, unknown>) =>
+        Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+
       const forUser = (userId: string) =>
-        Effect.map(map.contextEffect(userId), (context) => Context.get(context, Database.Service))
+        Effect.map(map.contextEffect(userId), (context) => Context.get(context, Database.Service)).pipe(
+          Effect.onExit((exit) => (shouldInvalidate(exit) ? map.invalidate(userId) : Effect.void)),
+        )
 
       /**
        * 路由钩子：看**发起这次查询的 fiber** 带没带身份，带了就用那个用户的库。
