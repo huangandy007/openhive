@@ -1,6 +1,8 @@
-import { describe, expect, setSystemTime } from "bun:test"
+import { afterAll, describe, expect, setSystemTime } from "bun:test"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { User } from "@opencode-ai/core/user"
@@ -10,6 +12,16 @@ import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
+
+/**
+ * ⚠️ **T020 遗留的修补（2026-10-02，质量门禁期间发现）**：T020 把 `defaultPassword(process.env)`
+ * 放进了网关的层构造期且选定「缺失即抛」，所以**凡在建真应用（`HttpApiApp.routes`）的测试文件
+ * 都要像一次真部署那样把口令配上**——本文件末尾那组「门接进了真应用」正是。
+ * 来龙去脉与「为什么走 `process.env` 而不是 `ConfigProvider`」见 `anchor-workspace.test.ts` 顶部那条注释。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+
+afterAll(restoreDefaultPassword)
 
 /** ≥32 字符，过 002 的密钥地板（`packages/auth/src/token.ts` 的 `jwtSecret`）。 */
 const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"

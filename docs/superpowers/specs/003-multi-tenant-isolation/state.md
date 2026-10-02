@@ -1,6 +1,91 @@
 # 实施进度 · 多用户隔离
 
 ## 当前任务
+
+✅ **第五步 · 质量门禁 已过**（2026-10-02）——**全部 task 跑完后的整 feature 门禁，五道全绿。**
+🔴 **但它不是「一次就绿」**：首轮**两道红**，两道**都指向 003 自己**（不是环境噪声），修完**重跑了全部五道**。
+🔴 **最值得留的教训（一句）**：**T023 那次「顺手修掉」的 grep 用错了判据**——我按「谁引用了
+`OPENHIVE_REQUIRE_USER_ID`」去搜，而真正的前提是「**谁在建真应用（`HttpApiApp.routes`）**」。
+判据选错 ⇒ 漏了两处，一直红到整 feature 门禁才现形。**又一次 `LEARNINGS #002-06`，而且正是它写的那句**：
+改完一处要 grep 的是「**谁按那个前提在做同一件事**」，不是「谁提到了同一个名字」。
+
+### 首轮实测（真跑，非外推）
+
+| 门 | 命令 | 首轮结果 |
+|---|---|---|
+| ① auth 单测 | `cd packages/auth && bun test` | **200 pass / 1 skip / 0 fail** ✅ |
+| ② 前端组件 | `cd packages/app && bun run test:components` | **194 pass / 0 fail** ✅ |
+| ② ui 包 | `cd packages/ui && bun test` | **45 pass / 0 fail** ✅ |
+| ③ 视觉契约 | `bun run lint:openhive` | **23 warnings / 0 errors**，exit 0 ✅ |
+| ④ 全量 lint | `bun run lint` | exit 1（1 个已登记**上游** error，恒红基线）；**本次引入 5 条** ❌ |
+| ⑤ 全量 typecheck | `bunx turbo typecheck --force` | **31/31 successful / 0 cached** ✅ |
+| core 全包 | `cd packages/core && bun test` | **1135 pass / 8 skip / 5 fail**（= 文档基线，5 条全 `NpmConfig.*`） ✅ |
+| 门禁补跑 | `cd packages/opencode && bun test test/server test/disk-quota-drift.test.ts` | **335 pass / 23 skip / 16 fail** ❌ |
+
+### 两处红灯：**根因都在 003 自己身上**（这是关键，不是环境噪声）
+
+**红一 · 6 条 003 自己的验收测试挂了，根因与 T023 修的那条同一个**：
+`user-identity.test.ts` ×2 + `anchor-workspace.test.ts` ×4，全部报
+`缺少环境变量 OPENHIVE_DEFAULT_PASSWORD（或它的值是空白）`。
+T020 把 `defaultPassword(process.env)` 放进网关层构造期且选定「缺失即抛」，所以**凡在建真应用的
+测试文件都要像一次真部署那样把口令配上**——T021 修了 2 处、T023 修了 1 处，**还剩这 2 处**。
+已按你的既有裁定「**顺手修掉**」修，修法与另三处逐字同形（`restorePoint` + `afterAll`，走 `process.env`
+而不是 `ConfigProvider`——网关读的是 `process.env`）。
+> **怎么确认「只剩这 2 处」而不是又靠 grep 猜**：把整跑输出按 `bun test` 的
+> `test\server\x.test.ts:` 文件头归属，再数「默认口令缺失」这个根因命中谁——**恰好 2 个文件**。
+> 这是实测归属，不是搜索。**下次判断「还有没有同类」请重复这个动作，别换回 grep 名字。**
+
+**红二 · lint「本次引入 5 条」**（全是 `typescript-eslint(no-unsafe-type-assertion)`）。
+⚠️ 判据是**行**不是文件：`.app.tsx` 那 4 条、`sqlite.*.ts` 那 10 条等都是**存量**（改动文件上但不在本次加的行里）。
+逐条处置见下。
+
+### 逐条处置：5 条里 **4 条已改掉**，剩下 1 条**证明是必需的**
+
+| 落点 | 处置 | 依据 |
+|---|---|---|
+| `packages/app/vite.config.ts` 的 `plugins: [desktopPlugin, sentry] as any` | ✅ **删掉 `as any`** | 它是**上游那一行的原文**，只因缩进变了被 git 记成「新增」。实测：**删掉后 `tsgo` 直接过**（vite 的 `PluginOption` 本来就收 `false`）⇒ 这个断言**上游写得就是多余的**，删它反而比上游更短 |
+| `packages/core/test/database-routing.test.ts` 的 `.all() as Array<{v:string}>` | ✅ **改成类型实参** | bun:sqlite 的 `Database.query<ReturnType, Params>` **本来就带泛型** ⇒ `db.query<{ v: string }, []>("SELECT v FROM probe ORDER BY v").all()`。**同一段 SQL、同一批行**，形状改由类型检查保证而不是由断言 |
+| `packages/opencode/test/server/multi-tenant-routing.test.ts` 同上（T005 已登记过的那条） | ✅ **同上改掉** | 同上。**T005 当时判「随大流、不单独破例」，现撤回**——不改的理由是「别另立一种」，而这里根本没有另立，只是把断言换成类型实参 |
+| `packages/opencode/test/server/anchor-workspace.test.ts` 的 `json<A>` 读法 | ✅ **去掉断言** | 改成 `Effect.promise<A>(() => response.json())`——`Effect.promise` 收显式类型实参即可，不必写 `as Promise<A>`。**注意**：这行原本抄自上游 `httpapi-mcp.test.ts`（那条**至今仍是 lint 命中**，实测在本次全量日志里），属「沿用仓库惯例」；既已找到不破例、不改上游的写法，就换掉 |
+| `packages/core/src/database/connection-routing.ts` 的 `acquirer as Effect.Effect<C, SqlError>` | ⚠️ **保留，且已证明必需** | **实测**：删掉断言后 `packages/core` 的 `tsgo --noEmit` 直接报 `TS2322: Type 'Effect<Connection, SqlError, Scope>' is not assignable to type 'Effect<C, SqlError, never>'`——**两处不匹配一起断言掉**（`Connection` vs `C`、R 里的 `Scope`）。替代方案都会动到上游的 `SqliteClient` 那两行 ⇒ 按 `宪法 §I` 不动。**如实登记，不隐藏、也不为它扩大上游改动面** |
+
+### 修后复跑（**五道全部重跑**，不是只跑红的那道）
+
+| 门 | 复跑结果 |
+|---|---|
+| ① auth | **200 pass / 1 skip / 0 fail** ✅ |
+| ② app 组件 / ui | **194 pass / 0 fail** / **45 pass / 0 fail** ✅ |
+| ③ `lint:openhive` | **23 warnings / 0 errors**，exit 0 ✅（与首轮同数 ⇒ 我的改动没带进新告警） |
+| ④ `bun run lint` | exit 1（**恒红基线**：1 个已登记的**上游** error，4924 warnings——与改动前**同数**）；**本次引入 5 → 1**（仅剩上面那条，已证必需）/ 存量 19 ✅ |
+| ⑤ `turbo typecheck --force` | **31/31 successful / 0 cached** ✅ |
+| core 全包 | **1135 pass / 8 skip / 5 fail**（= 文档基线） ✅ |
+| `test/server` | **335→347 pass**，fail **16 → 4** ✅ |
+
+**复跑后剩的 4 条失败全部是文档化的 5s 超时存量带**（`httpapi-file` / `httpapi-session` /
+`project-copy` / `session-messages`，均 ~5000ms 撞超时上限）。**判据（不是辩解）**：
+① 「默认口令缺失」这个根因的命中数 = **0**（直接数日志）；② 这 4 个文件 `git diff --name-only
+multi-tenant...HEAD -- <文件>` **无输出**（003 一行没碰）。这条存量带的根因本文件已单列一节记过
+（本机首次 spawn `rg.exe` ≈4.8s），**不是 003 引入的**。
+> 取数命令（别抄上面的数）：`grep -c "缺少环境变量 OPENHIVE_DEFAULT_PASSWORD" <日志>`；
+> 失败清单 `grep "(fail)" <日志>`。
+
+### 顺手更正两处**已失真的文档记述**（`LEARNINGS #002-06`）
+
+- **`turbo.json` 缺 `@opencode-ai/auth#test`**——本文件**四处**（T007 结论的表格与附注、缺口表那一行、
+  最后更新那一节）还写着「需你裁定 / **未自行改动**」。**早已落地**：你 2026-09-30 裁定「加」，
+  独立提交给 `turbo.json` 补上了该条目。四处**逐条加了结案注并指回原处**，防止有人按旧文再裁一次。
+  > 取数命令：`git log --oneline --all -- turbo.json`。
+- **`connection-routing.ts` 那个 `as` 的来历**——本文件原文写「**不是我新增的**，是从 `sqlite.bun.ts`
+  跟着搬的，**净 0**」。**这是错的**：`git diff multi-tenant...HEAD -- packages/core/src/database/sqlite.bun.ts`
+  的**删除行里没有任何 `as`**（那次改动只是把两个绑定改名为 `local*` 再包一层）。
+  该 `as` 是 T005 新写的。**原文已就地更正并保留**，别照旧文读。
+
+⚠️ **本 feature 仍未闭合的**（与门禁无关，别读成「都过了」）：`vite.config.ts` 的改动属**上游文件**，
+`as any` 虽是删不是加、仍在那处冲突面里；`packages/auth` 的 `db.test.ts` 里那条**语句超时**仍是缺口
+（`deploy-todo.md` D-05）。
+
+---
+
 ✅ **T023 已完成**（2026-10-01）——**`connect()` 的连接超时**（002 评审 I8）。
 🔴 **先说清楚这一条交付了什么、没交付什么**：出参**原是三句**，实测只有**一句半打得到**，
 **你裁定缩到「连接超时 + 配置集中」**——另两句**都没做**（一句挂进 `deploy-todo.md` D-05、
@@ -321,7 +406,8 @@ T021 修了 T012 / T013 两处，**没 grep「还有谁」**（`LEARNINGS #002-0
   **一处诚实的交代**（本机那个 RED 是 fixture bug 不是产品缺陷），以及**两条变异敏感性实测**。
 - **T007**（2026-09-30）· 文件权限 `0700`。**两条 `0700` 断言在本机不可验**（win32 忽略 mode），
   出参 ①「容器非 root」**挂缺口**（无可改产物、本机无 docker）。要点见下「T007 结论」，
-  **含一处诚实的空白：本机没有观察到 RED**，以及**一条需你裁定的附带发现**（`turbo.json` 缺 auth 的 test 条目）。
+  **含一处诚实的空白：本机没有观察到 RED**，以及**一条附带发现**（`turbo.json` 缺 auth 的 test 条目
+  ——**2026-09-30 你裁定「加」，已落地**，见下「T007 结论」里那条的后续注）。
 - **T006**（2026-09-30）· 工作目录强制锚定（新增中间件，**上游文件零改动**）。
   要点见下「T006 结论」，**含两条刻意的设计选择**——其中「删 `?workspace=`」那条已于 2026-09-30
   **结案（维持删除）**，并**补了一条变异验证过的测试**守住它（此前无人守）。
@@ -395,7 +481,7 @@ T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
 | 🟡 **T008：「项目各自独立」在首次提交之前不成立** | `initGit`（`packages/opencode/src/project/project.ts`）**只 `git init`、不提交**；而 id = `remote() ?? .git/opencode 缓存 ?? 根提交哈希 ?? global`，三者此时**全空** ⇒ 同沙箱内两个新建项目**同属 `global`**，**不是**互相独立的边界 | **裁定【甲】：登记为「条件成立」，不兜底。** 是否在建项目时自动补一次提交属**产品决定**，不由验证类任务顺手改（宪法 §I 也要求别动上游行为）。测试：`packages/core/test/project-sandbox-isolation.test.ts` 第 3 条——它**断言两者相等**（特征化：上游改了就红，那正是要回来重读的时候）。**影响面 = 同一用户自己的沙箱内**，不跨用户 |
 | 🟡 **T008：未 git 化目录的项目 `worktree` 指向文件系统根** | `packages/opencode/src/project/project.ts` 的取法是「global 且无 vcs ⇒ `"/"`」⇒ 沙箱内一个还没 git 化的目录，其项目 `directory` 是**盘根**，**在沙箱之外** | **裁定【乙】：已测出并上报**，未修。⚠️ **别与 T006 混为一谈**——请求目录仍被锚在沙箱内，指到沙箱外的是**项目元数据**这一份。测试：同文件第 4 条 |
 | 🟡 **T007 ①「容器以非 root 运行」未做** | **没有可改的产物**：官方 `packages/opencode/Dockerfile` 无 `USER` 指令且只装 CLI 二进制；全仓无服务镜像 / compose / k8s 清单。本机也**无 docker**（`docker: command not found`）。规范出处是 `spec.md` **FR-006** | **登记为缺口，不假称已移交**——**承接它的部署任务根本不存在**（003 无部署任务、仓库无部署产物）。⚠️ **更正**：先写的「挂 `isolation-scheme.md` §11.6 部署任务」是**错引**，§11.6 是 **design-v2 的「AI 资产治理」**章节、`isolation-scheme.md` 无 §11（它只在 §5.1 引 design-v2 §11.6 说明「部署形态 = 一个 opencode 容器」）。见 `LEARNINGS #002-04` |
-| 🟡 **T007 ②`0700` 的「已建出」本机不可验，且 auth 侧无人跑** | ① win32 **完全忽略** mode（实测三种写法都得 `666`）⇒ 断言只能 `skip`，**本机没观察到 RED**；② `turbo.json` **没有 `@opencode-ai/auth#test`**，CI（`bun turbo test`）到不了 auth 包 ⇒ 在 Linux 上**也没有人跑它**。**旁证**：002 的整个 auth 包测试（本机 149 pass）从未在 CI 跑过 | 代码已按要求写。**若要真闭合，需裁定是否给 `turbo.json` 加 `"@opencode-ai/auth#test": {}`**——那是**上游文件**（`宪法 §I` 冲突面），**未自行改动**。`/data/{userId}/` 那条**不受此限**（core 的 test 条目已声明，Linux CI 真跑） |
+| 🟡 **T007 ②`0700` 的「已建出」本机不可验**（auth 侧此前无人跑，**已修**） | ① win32 **完全忽略** mode（实测三种写法都得 `666`）⇒ 断言只能 `skip`，**本机没观察到 RED**；② 当时 `turbo.json` 没有 `@opencode-ai/auth#test`，CI（`bun turbo test`）到不了 auth 包 ⇒ 在 Linux 上**也没有人跑它**（旁证：002 的整个 auth 包测试 149 pass 从未在 CI 跑过） | ① **仍是缺口**：本机永远验不了 mode，只有 Linux CI 能验。② **已闭合**（2026-09-30 你裁定「加」，独立提交给 `turbo.json` 补了 `@opencode-ai/auth#test`）——**本行原写的「未自行改动 / 需裁定」已作废**。`/data/{userId}/` 那条不受此限（core 的 test 条目早已声明，Linux CI 真跑） |
 | **`mkdir` 不会收紧已存在目录的权限** | `mode` 只在**创建**时生效；目录若已存在（部署时预建 / 权限被人改过），`0700` 不生效也**不报错** | 未修。与「历史账号惰性创建」同源；若部署约定预先建目录，需由部署侧保证初始权限 |
 | 🟡 **`node` 构建条件下「路由真的生效」未被验证** | `sqlite.node.ts` 在本机**加载即报错**（bun 不提供 `node:sqlite`：`error: No such built-in module`），那一支一行都跑不到。已做的只是：路由逻辑抽成**两支共用的一份** `DatabaseConnectionRouting.routed`（于是 bun 支的测试覆盖的正是 node 支调用的那段代码）+ 一条**形状守卫**（读源码断言两支都接了 `routed(...)`）——**形状守卫不是行为验证**，它只防「漏接线」，不证明 node 条件下跑得对 | 需 CI 提供 **node 运行时**才算补齐。在此之前**不得声称「两种构建条件下都已隔离」** |
 | **`packages/opencode` 全包 `bun test` 在本机不是可用的门禁** | 实测：全包 3660 tests / **2183s**；且 `test/server` **单独跑**也有**存量 flaky 5s 超时带**（基线 9 fail / 带本次改动 10 fail，失败集合**双向**变动：4 条「基线红、改动绿」，1 条反向，该条单独跑为绿）⇒ 「全包绿」在本机不可达，**不是**本 feature 能修的 | 判据改为「**改动影响面所在的测试文件**全绿」+ 与基线做**名称级差集**（不看总数）。基线与命令见下「T005 门禁」 |
@@ -1942,15 +2028,17 @@ core 里可行——`packages/core/test/preload.ts` 把 `OPENCODE_DB` 设成 `:m
 | 目录 | 测试文件 | 谁真的会跑它 |
 |---|---|---|
 | `/data/{userId}/` | `packages/core/test/database-router.test.ts` | ✅ **Linux CI 真跑**（`turbo.json` 有 `@opencode-ai/core#test`；CI 跑 `bun turbo test`，矩阵含 ubuntu） |
-| `/workspaces/{userId}/` | `packages/auth/src/workspace.test.ts` | ❌ **无人跑**：本机 win32 → skip；**CI 也到不了**——`turbo.json` **没有 `@opencode-ai/auth#test`** |
+| `/workspaces/{userId}/` | `packages/auth/src/workspace.test.ts` | ⚠️ **本机 win32 → skip**；**CI 现在到得了**——`turbo.json` 已有 `@opencode-ai/auth#test`（见下）⇒ ② 侧已进入「被验」状态，**但只在 Linux CI 上被验** |
 
 **两边都受同一个前提约束**：该分支得进 CI 触发范围（push 到 `dev`，或开 PR）才会跑。
 
-⚠️ **附带发现（需裁定，未自行处理）**：`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
-`function` / `app` / `ui` / `session-ui` 声明了 `test`，**`@opencode-ai/auth` 缺席**
-⇒ **002 的整个 auth 包测试（本机实测 149 pass）从未在 CI 里跑过**。修法是在 `turbo.json` 加一行
-`"@opencode-ai/auth#test": {}`，但那是**上游文件**（`宪法 §I`：加一行就是一处冲突面）。
-**未自行改动**，留给你裁定。改动之后，本出参的 ② 侧才进入「被验」状态。
+> ✅ **本段原写的「附带发现（需裁定，未自行处理）」已于 2026-09-30 结案**：
+> 当时 `turbo.json` 只为 `opencode` / `@opencode-ai/core` / `function` / `app` / `ui` / `session-ui`
+> 声明了 `test`，**`@opencode-ai/auth` 缺席** ⇒ 002 的整个 auth 包测试（本机实测 149 pass）
+> **从未在 CI 里跑过**。你裁定的结果是**「加」**，已在独立提交里给 `turbo.json` 补上
+> `"@opencode-ai/auth#test"`（提交标题：`chore(ci): 把 @opencode-ai/auth 的 test 任务加进 turbo.json`，
+> `git log --oneline --all -- turbo.json` 可查）。⚠️ 该行是**上游冲突面**，提交信息里已标「保留的定制」。
+> **别按本节原文再去找人裁定一次。**
 
 ### ③ 的诚实交代：**护栏不是测试**
 
@@ -2173,12 +2261,23 @@ v2 的 `workspace-routing.ts`（`defaultDirectory` 读 `?directory=` 与 `x-open
 - core 那 5 条失败全是 `NpmConfig.*`，**与 T004 基线同一批**，根因是本机 `~/.npmrc` 指向
   `registry.npmmirror.com`（报错正文 `Expected "https://registry.example.test/" /
   Received "https://registry.npmmirror.com/"`），存量环境失败，与 T005 无关。
-- **新增的那 1 条 warning**：`multi-tenant-routing.test.ts` 里 `db.all(...) as Array<{v:string}>`
+- **新增的那 1 条 warning**：`multi-tenant-routing.test.ts` 里 `db.query(...).all() as Array<{v:string}>`
   （`no-unsafe-type-assertion`）——与 `packages/core` 既有测试**同款写法**，随大流，不单独破例。
-  另一条 `no-unsafe-type-assertion`（`Hook.resolve` 那个 `as`）**不是我新增的**，
-  它是 `routed` 从 `sqlite.bun.ts` 搬到 `connection-routing.ts` 时**跟着搬的**，净 0。
-  为什么留：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而
-  `client.export` / `loadExtension` 要求无 `Scope` 的 R（那是上游的两行，不去动它）。
+  > ✅ **2026-10-02 已改掉**（003 质量门禁期间）：bun:sqlite 的 `Database.query<ReturnType, Params>`
+    **本来就带泛型**，两个 `.all() as Array<{v:string}>` 都换成了
+    `db.query<{ v: string }, []>("SELECT v FROM probe ORDER BY v").all()`——**断言换成类型实参**，
+    读的还是同一段 SQL、同一批行，但形状改由类型检查而不是由断言保证。
+- 另一条 `no-unsafe-type-assertion`（`connection-routing.ts` 的 `routed` 里 `Hook.resolve` 那个 `as`）。
+  ⚠️ **本节原文写的「不是我新增的 / 从 `sqlite.bun.ts` 跟着搬的，净 0」是错的**（2026-10-02 复核：
+  `git diff multi-tenant...HEAD -- packages/core/src/database/sqlite.bun.ts` 的**删除行里没有任何 `as`**，
+  改动只是把两个绑定改名为 `local*` 再包一层 `routed()`）——**这个 `as` 是 T005 新写的**，记错了就得改，
+  不按原文读。
+  为什么留：`Hook.resolve` 的静态类型是 `Effect<Connection, SqlError, Scope>`，而 `routed` 签名要的是
+  `Effect<C, SqlError>`（无 R）——**两处不匹配一起断言掉**：`Connection` vs `C`、以及 R 里的 `Scope`。
+  **2026-10-02 实测过「能不能不用断言」**：把那行改成 `onSome: (acquirer) => acquirer`，
+  `packages/core` 的 `tsgo --noEmit` 直接报
+  `TS2322: Type 'Effect<Connection, SqlError, Scope>' is not assignable to type 'Effect<C, SqlError, never>'`
+  ⇒ **断言是必需的**，不是顺手写的。
   评估过的替代都不成立——改 `SqliteClient` 接口 = 动更多上游行；让钩子返回无 Scope 的类型
   = 把断言挪个位置，warning 照报。**如实登记，不隐藏、也不为它扩大上游改动面。**
 
@@ -2533,6 +2632,22 @@ client 证明机制，上游文件当时一行未动；这一步是「Q1 实测 
   真链路端到端在 T014 之后。
 
 ## 最后更新
+2026-10-02（**第五步 · 质量门禁：五道全绿**——但**首轮两道红、且两道都指向 003 自己**，
+修完**重跑了全部五道**。⚠️ **T023 那次「顺手修掉」的 grep 判据用错了**（搜的是
+「谁引用了 `OPENHIVE_REQUIRE_USER_ID`」，真正的前提是「**谁在建真应用**」）⇒ 漏了
+`user-identity.test.ts` ×2 + `anchor-workspace.test.ts` ×4，一直红到整 feature 门禁才现形——
+**又一次 `LEARNINGS #002-06`，而且正是它写的那句**。
+已按既有裁定「顺手修掉」修（`restorePoint` + `afterAll`，走 `process.env`）。
+另一道红是 lint「本次引入 5 条」`no-unsafe-type-assertion`：**4 条已改掉**
+（`vite.config.ts` 的 `as any` 删掉即过——上游写得本就多余；两个 `.all() as Array<…>` 换成
+bun:sqlite 的 `query<ReturnType, Params>` 类型实参；`anchor-workspace` 的 `json<A>` 改
+`Effect.promise<A>`），**剩下 1 条已证必需**（删掉即 `TS2322`，替代方案要动上游 `SqliteClient`）。
+复跑：①400/auth 200 pass·②194+45 pass·③23 warnings/0 errors·④本次引入 5→**1**/存量 19·
+⑤turbo typecheck **31/31**·core 1135 pass·`test/server` **fail 16→4**（4 条全是文档化的
+5s 超时存量带，且命中文件 003 一行没碰、「口令缺失」根因计数 **0**）。
+顺手更正两处失真记述：`turbo.json` 缺 auth test 条目（**四处**，早已落地）、
+`connection-routing.ts` 那个 `as` 的来历（原文「搬来的、净 0」**是错的**）。
+下一步：**第六步 · 代码审查**（等你的提示词「审查」）。）
 2026-10-01（**T023 `connect()` 的连接超时**——**003 的最后一条 task 落地，task 清单余下 0 条**。
 `packages/auth/src/db.ts` 加 `CONNECTION_TIMEOUT_SECONDS = 3` 与集中配置，`connect()` 改走
 `drizzle({ connection: { url, connectionTimeout } })`（`drizzle(url)` 收不了旋钮）。
@@ -2865,10 +2980,9 @@ typecheck **31/31 exit 0**；该文件 oxlint 0/0（161 条规则）；`bun.lock
 （实测 `mkdir({mode:0o700})` / 不传 / 建后 `chmod(0o700)` 三者都是 `666`），两条 `0700` 断言只能 `skip`，
 按 `LEARNINGS #002-02` 记为**缺口而非覆盖**。
 📌 **两条断言的可验性不同**：`/data/{userId}/` 那条 **Linux CI 真跑**（`turbo.json` 有
-`@opencode-ai/core#test`）；`/workspaces/{userId}/` 那条 **无人跑**——`turbo.json` **缺
-`@opencode-ai/auth#test`**，CI（`bun turbo test`）到不了 auth 包。
-⚠️ **附带发现（需裁定，未自行处理）**：这意味着 **002 的整个 auth 包测试从未在 CI 跑过**；
-补法是给 `turbo.json` 加一行，但那是**上游文件**（`宪法 §I` 冲突面）。
+`@opencode-ai/core#test`）；`/workspaces/{userId}/` 那条 **本机 win32 只 skip、只有 Linux CI 会真跑**
+——`turbo.json` 的 `@opencode-ai/auth#test` **已于 2026-09-30 由你裁定后补上**
+（详见上文「T007 结论」里那张表下面那条结案注，别再按旧文找一次裁定）。
 另：③「目录可写」**改动前就是绿的**，本 task 补的是**回归护栏**而非 RED→GREEN，已写进 `tasks.md`。
 门禁：core 1102 pass / 5 fail（**全是存量 `NpmConfig`**，本机 `~/.npmrc` 镜像）/ 8 skip；
 auth 149 pass / 1 skip / 0 fail；typecheck EXIT=0；改动 4 文件 oxlint 0/0；`bun.lock` 无 diff。

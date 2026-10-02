@@ -51,7 +51,7 @@ function probeValues(file: string): string[] {
   if (!existsSync(file)) return []
   const db = new Sqlite(file)
   try {
-    const rows = db.query("SELECT v FROM probe ORDER BY v").all() as Array<{ v: string }>
+    const rows = db.query<{ v: string }, []>("SELECT v FROM probe ORDER BY v").all()
     return rows.map((row) => row.v)
   } catch {
     return [] // 表不存在

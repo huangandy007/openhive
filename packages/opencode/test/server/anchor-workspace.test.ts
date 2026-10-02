@@ -1,16 +1,35 @@
-import { describe, expect } from "bun:test"
+import { afterAll, describe, expect } from "bun:test"
 import { resolve, sep } from "path"
 import { tmpdir } from "os"
 import { ConfigProvider, Effect, Equal, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
+
+/**
+ * ⚠️ **T020 遗留的修补（2026-10-02，质量门禁期间发现）**：同 `multi-tenant-routing.test.ts` 与
+ * `tenant-db-isolation.test.ts` 上那几条注释——T020 把 `defaultPassword(process.env)` 放进了网关的
+ * 层构造期且选定「缺失即抛」，于是**任何建真应用（`HttpApiApp.routes`）的测试，都必须像一次真部署
+ * 那样把口令配上**。本文件下面那个 `realApp` 正是这种测试。
+ *
+ * ⚠️ **本条是 T023 那笔修补漏掉的**：T023 的收尾 grep 用的判据是「谁引用了 `OPENHIVE_REQUIRE_USER_ID`」，
+ * 而真正的前提是「**谁在建真应用**」——判据选错，于是漏了两处（本文件 + `user-identity.test.ts`）。
+ * 又一次 `LEARNINGS #002-06`：改完一处要 grep 的是「**谁按那个前提在做同一件事**」，不是「谁提到了同一个名字」。
+ *
+ * 为什么走 `process.env` 而不是下面 `ConfigProvider.layer`：网关读的是 `process.env`，
+ * 塞进 `ConfigProvider` 会被**无声忽略**（同另几处的注释）。
+ */
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+
+afterAll(restoreDefaultPassword)
 
 /** ≥32 字符，过 002 的密钥地板（`packages/auth/src/token.ts` 的 `jwtSecret`）。 */
 const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
@@ -94,7 +113,7 @@ const cookie = (value: string) => ({ Cookie: `${UserIdentity.COOKIE_NAME}=${valu
 const INSTANCE_PATH = "/path"
 
 /** 读 JSON 体，同 `httpapi-mcp.test.ts` 的 `json<A>`——仓库里既有的写法，不另立一种。 */
-const json = <A>(response: Response) => Effect.promise(() => response.json() as Promise<A>)
+const json = <A>(response: Response): Effect.Effect<A> => Effect.promise<A>(() => response.json())
 
 /** 门开着的那个 app 只搭一次：搭一次要建整棵路由树，逐请求重搭是白烧时间。 */
 const openApp = realApp(OPEN)
