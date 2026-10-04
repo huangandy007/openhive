@@ -38,6 +38,15 @@ export type ResourceType = "skill" | "mcp" | "knowledge_base"
 export type Perm = "read" | "write" | "review" | "admin"
 
 /**
+ * **唯一会投影成工具调用**的动作。
+ *
+ * 是常量而不是散落的 `"read"` 字面量：`resolve()`（v2 投影）与 `AccessSession.sessionRuleset`
+ * 的 mcp 那一段（v1 投影）都要按它筛授权行——两处各写一个字符串字面量就是「同一个判断两处各写
+ * 一份」的最小形态（`LEARNINGS #002-06`），改一处漏一处，而漏掉的那处**不报错、不变红**。
+ */
+export const READ: Perm = "read"
+
+/**
  * 一条授权 = `role_resource` 的一行（角色那一维已由调用方 join 掉：这里只关心「这个用户名下
  * **有哪些**授权」，不关心它们出自哪个角色）。
  *
@@ -70,17 +79,21 @@ export interface Grant {
  * ⇒ 第一版产出的 ruleset **一条都命中不了、全部落回 `ask`**：不报错、不变红、typecheck 照绿。
  * `LEARNINGS #003-05` 的「假镜像」形状——写的时候以为对上了，其实只在一边成立。
  *
- * ## 今天只有 `skill` 一行，其余两类是**显式缺口**
+ * ## 今天只有 `skill` 一行，其余两类**走别的投影**（不是漏掉）
  *
  * - `skill` → `"skill"`：两条链都有一个叫 `skill` 的工具，断言形状**同构**（上面那两行实测）。
- * - `mcp` → **投不到**：链 A 的 MCP 资源工具用的是 `{ permission: "read", patterns: ["mcp:<server>:*"] }`
- *   （`packages/opencode/src/session/tools.ts:172-179` / `:346-347`）——与 skill 那条**不是同一个
- *   投影**；链 B 侧的 MCP 尚无落点。归 **T007**（FR-005）。
- * - `knowledge_base` → **全仓 `packages/` 下零命中**，没有对应工具。
+ * - `mcp` → **不在这张表里，走 `AccessSession.sessionRuleset` 的第二段**（T007 / FR-005）。
+ *   原因就是这张表的形状容不下它：`TOOL_OF` 是「一个类型 → **一个**工具名」，而 mcp 的工具名
+ *   是 `<server 前缀>_<工具名>`（前缀随 server 变，且由 `McpCatalog.toolName` 生成），
+ *   它的**另一个出口**（资源工具）根本不是工具名——是 `{ permission: "read", patterns: ["mcp:<server>:*"] }`
+ *   （`packages/opencode/src/session/tools.ts`），**与文件读取同名**。
+ *   所以它要**一对规则、两套名字**，且名字由调用方翻译（core 够不着 `sanitize`）。
+ *   ⚠️ 这条投影**只对链 A 生效**；链 B（v2 / CLI）的 MCP 尚无落点，仍是缺口。
+ * - `knowledge_base` → **全仓 `packages/` 下零命中**，没有对应工具：真缺口。
  *
  * ⚠️ 没有映射的类型**不产规则**（用户 2026-10-04 裁定）——落回上游兜底 `ask`（保守：不会误放行，
  * 但**也不生效**）。这不是「已覆盖」，是**挂账的缺口**：`access-rbac.test.ts` 的 ③ 有一条断言
- * 把它钉在明面上，将来接上 mcp 时必须**同时**改这张表和那条断言（`LEARNINGS #002-02`）。
+ * 把它钉在明面上，将来接上时必须**同时**改这张表和那条断言（`LEARNINGS #002-02`）。
  */
 /**
  * ⚠️ 写法分两步是刻意的（`satisfies` 管写入侧、宽类型管读取侧）：
@@ -123,7 +136,7 @@ export function resolve(grants: readonly Grant[]): Permission.Ruleset {
 
   for (const grant of grants) {
     // 只有「使用」对应工具调用；写 / 审 / 管没有承载它们的工具（见上方 doc）。
-    if (grant.perm !== "read") continue
+    if (grant.perm !== READ) continue
     // 未映射的资源类型：不产规则，落回上游兜底 ask（显式缺口，见 TOOL_OF）。
     const tool = TOOL_OF[grant.resourceType]
     if (tool === undefined) continue
