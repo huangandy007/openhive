@@ -699,13 +699,125 @@ T006（执行守卫）开工前的侦察里，实测了**所有**吃 ruleset 的
 
 ---
 
+### T006 · 工具执行守卫（**链 A 那一半**）（FR-004 / FR-002）
+
+#### 这一段做了什么
+
+把「**授权行 → 会话规则集 → 链 A 的判决器**」接成一条直线。链 A（opencode v1）的 `evaluate`
+读 `session.permission`，所以 capability 的落点就是**会话创建时把它写进去**（裁定 ②）。
+
+```
+auth.role_resource ──join──> grantsFor()   ──> AccessRbac.resolve() ──> AccessSession.sessionRuleset()
+   (PG, auth 包)              (auth 包)              (core, 纯函数)            (core, 纯函数)
+                                                                                    │
+                             handlers/session.ts create ──────────────────────────────┘
+                                        │  并入（客户端规则在前）
+                                        ▼
+                              session.permission  ──> evaluate() ──> deny / allow / ask
+                                 (每用户 sqlite)      (上游，未改)
+```
+
+**为什么判定放 core**（不是放 `src/server/openhive/`）：`prompt.ts` 也要用它，而 `src/session`
+引 `src/server` 是**今天不存在的方向**（实测 0 条 `src/session|tool|agent → @/server` 的 import）。
+D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/package.json` 的 deps 只有
+`drizzle-orm` / `hono`），所以取行那半步留在 auth（`grantsFor()`），接线留在
+`packages/opencode/src/server/openhive/access.ts`（**全仓只有它同时依赖 auth 与 core**）。
+
+#### 产出（提交分片）
+
+| 提交 | 内容 | 性质 |
+|---|---|---|
+| `feat(004): T006 会话规则集判定` | `core/src/access/session.ts`（新增）＋ `core/src/access/rbac.ts` | openhive 定制新增 |
+| `feat(004): T006 取授权行 grantsFor` | `auth/src/rbac.ts` ＋ `rbac.test.ts` | 加，非改 |
+| `test(004): T006 auth 夹具拆出 start/stop` | `auth/src/test-support.ts` | 夹具重构 |
+| `feat(004): T006 capability 取数接线` | `opencode/src/server/openhive/access.ts`（新增） | openhive 定制新增 |
+| `feat(004): T006 接入 capability ——【保留的定制】` | `handlers/session.ts` / `session/prompt.ts` / `session/session.ts` | **改上游三文件** |
+| `test(004): T006 验收` | `openhive-access.test.ts`（9 条）＋ `openhive-access-wiring.test.ts`（3 条） | 新增 |
+| `test(004): T006 tenant-db-isolation 适配新契约 ——【保留的定制】` | `test/server/tenant-db-isolation.test.ts` | **改上游测试文件** |
+
+#### 顺手堵掉的两条**客户端可自批**的越权路
+
+`session.permission` 有**三个**客户端够得着的写入口，原来是三个都能把 capability 抹掉：
+
+| 入口 | 上游原来怎么写 | 后果 | 改法 |
+|---|---|---|---|
+| `POST /session`（`CreateInput.permission`） | 客户端值直接落库 | 自带 `allow skill:*` | 客户端在前、capability 在后 |
+| `PATCH /session/:id`（`update`） | `Permission.merge(current, payload)`（**payload 在后**） | 同上 | 改 `mergeClientRules(payload, current)` |
+| `POST /session/:id/prompt`（`input.tools`） | 非空时**整体覆盖** `session.permission` | `tools: { skill: true }` | 并入且客户端规则在前 |
+
+另约 **14 处 `Permission.merge` 调用点未动** —— 逐个读过，它们本就已把 `session.permission`
+放在最后（`findLast` 后者胜），没有越权面。**不做无差别改写**（Surgical Changes）。
+
+#### 验证
+
+**变异验证**（`LEARNINGS #003-03` 的三类据实记）：
+
+| 变异 | 结果 | 类别 |
+|---|---|---|
+| M1 去掉 `create` 里那句 merge | wiring **3 条全红** | ② 整组红（含对照）—— 去掉的正是三条共同断言的东西，符合预期 |
+| M2 并入顺序反（capability 在前） | wiring **恰红 1 条**（客户端绕过那条） | ① 恰红目标 |
+| M3 删掉 `mergeClientRules` 的去重 | 纯函数 **恰红 1 条**（幂等那条） | ① |
+| M4 `GOVERNED` 加 `"mcp"` | **恰红 1 条**（⑥ 键集同步） | ① |
+
+**关键的前后对照**（不是「跑绿了」而是「跑红过」）：`tenant-db-isolation.test.ts` 在**加夹具之前**
+4 fail（`POST /session` 500），加夹具之后 4 pass ⇒ 那个夹具**真的供上了**新契约，不是摆设。
+
+`openhive-access-wiring.test.ts` 的判据**不经过被测接口**：会话建完后直接读**库文件**里的
+`permission` 列（`packages/core/src/session/sql.ts` 的 JSON 列），再拿链 A **真正的判决器**
+`evaluate` 去问放不放。从 `GET /session/:id` 读等于拿被测对象证明被测对象（`LEARNINGS #002-02`）。
+
+#### 门禁（2026-10-04 复跑，串行）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线 |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4941 warnings / 1 error / 130 rules / 3456 files** | 全局恒红；文件数 3452 → 3456（＝新增 4 个 `.ts`）。⚠️ warnings **4942 → 4941**：名称级差集查明消失的是 `packages/llm/src/tool-runtime.ts:63:44` —— **我没碰过的文件**，且无任何新条目出现，是 `#001-01` 记的 12 线程 ±1 抖动。**改动的 12 个文件里，上游三文件各带 1~3 处既有 warning，全部落在未触及的行**（`handlers/session.ts:426`／`prompt.ts:653`／`session.ts:13,14,15`），我用 `git diff -U0` 的 hunk 范围逐个核对过：我的改动行在 163-177·218-221／1061-1074／701-705。 |
+| `packages/auth` 全量 | **exit 0**，**213 pass / 1 skip / 0 fail** / 214 tests / 18 files | T004 后基线 210/1/0 → **＋3 pass，恰是本次 3 条 rbac 用例** |
+| `packages/core` 影响面 | `access-rbac` ＋ `access-issue` ＋ `access-capability` **exit 0，16 pass / 0 fail** | 按 `#003-01`「改动影响面所在的测试文件全绿」 |
+| `packages/opencode` `test/server/` | **380 pass / 23 skip / 1 fail** / 404 tests / 60 files | 唯一那条红 `file HttpApi > serves search endpoints` **正是开工基线 14 条之一**（类别「时序 / 子进程 / 快照」）⇒ 差集为空 |
+| `bun.lock` | `git status` 无该文件改动 | 未跑 `bun install` |
+
+⚠️ **一次假红的教训（本次实测）**：我第一次跑 `bun test test/server/` **没带 `--timeout 30000`**
+（基线一直带），得到 **371 pass / 10 fail / 1 error**，比真值多 9 条。带上正确参数后是
+**380 pass / 1 fail**。**但那 10 条的名字没留下**（后台作业被中止、`grep` 块缓冲没落盘），
+所以「多出来的是超时」**是推断不是实测** —— 据实记：**同一目录、命令少一个参数，红数从 1 变 10**；
+判据一律以带 `--timeout 30000` 的那次为准。这条正是 `#001-01`「报门禁数字前先真跑一次」的另一面：
+**不只是「要跑」，还得「跑对命令」**。
+
+#### 📤 显式挂账（**不写成「已覆盖」**）
+
+1. **链 B**（core v2 / CLI·sdk-next）尚未接 —— 用户 2026-10-04 裁定。
+2. **审计**（留痕）未做 —— 用户裁定「只做『拒』」，落点 F10。
+3. **存量会话**（本次改动之前建的）的 `permission` 里没有 deny；fork 那个补丁也**不覆盖**存量会话。
+4. **进程内 `approved` 可压过 capability deny**（实测，不是推测）：
+   `packages/opencode/src/permission/index.ts:73` 是
+   `evaluate(request.permission, pattern, ruleset, approved)`，而 `evaluate` 取 `findLast`
+   ⇒ **`approved` 排在最后、它赢**。`approved` 是 `InstanceState` 里的**进程内**数组（同文件 `:51`，
+   随实例销毁而失，**不落库**）。要出现这个洞，需要同一进程里先有一条 `ask`（= 当时没有 deny 盖住它）
+   被点过「总是允许」——**门关着跑过 dev、或升级前的旧会话**都能造出这样一条。
+   **不跨进程存活**，但同一进程内它对本 capability deny 全权生效。
+   触发条件与判据逐字记在此处，不假装闭合。
+5. `write` / `review` / `admin` 三个 `perm` 今天仍无消费者；`mcp` / `knowledge_base` 仍投不到
+   工具断言（归 T007）—— 同上，落回 `ask`，**不生效但不误放行**。
+
+---
+
 ## 阻塞项
 
 （无技术阻塞。**D-05 已解**（2026-10-04，见 T015 段）——原「待裁一项：D-05 须在 T004 之前裁定」**已消**，
 T004 现无前置。）
 
+⚠️ **新增运行期契约（T006，2026-10-04）**：**身份门开着 ⇒ 建会话必须连得上 auth 库**。取不到授权
+= 不建会话（fail-closed）。**凡建真应用（`HttpApiApp.routes`）的测试，都要像真部署那样把 PG 与
+`OPENHIVE_DEFAULT_PASSWORD` 配齐** —— 落点见 T006 段，先例是 `openhive-bootstrap.test.ts`。
+后续 task（T007 / T008 / T012–T014）开工前先读这条。
+
 ## 最后更新
 
 2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发
 + D-05 裁定 ＋ T015 迁移 CLI ＋ T004 RBAC 表 ＋ 权限判定（含 0004 撞红 7 条既有断言的连带修正）
-＋ **T004 修正：`resolve()` 改用工具断言词表（T006 前置，三条裁定）**）
+＋ T004 修正：`resolve()` 改用工具断言词表（T006 前置，三条裁定）
+＋ **T006 工具执行守卫（链 A）：`AccessSession` 判定 ＋ `grantsFor()` 取行 ＋ 三处上游接线
+（各自【保留的定制】单独提交）＋ 两条客户端自批越权路收口 ＋ 12 条测试（含 M1–M4 变异验证）
+＋ tenant-db-isolation 适配新契约**）

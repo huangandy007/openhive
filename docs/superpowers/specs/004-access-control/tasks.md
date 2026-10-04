@@ -74,12 +74,48 @@
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
 
 - [ ] T005 实现工具清单过滤（组装 tools 前按 capability 只放有权工具）[FR-003] [T001][T003] [出参：无权工具不出现在 tools]
-- [ ] T006 实现工具执行守卫（执行前验 capability，无权限 AccessDenied + 审计）[FR-004] [T001][T003] [出参：越权调用被拒并留审计]
-  - 🚧 **进行中**（2026-10-04 开工）。Step 0.5 式侦察已做（两条链 ＋ 各自已有的上游 ruleset 钩子 ＋
-    工具执行必经点 `packages/core/src/tool/tool.ts` 的 `config.execute`；`packages/core/src/tool/AGENTS.md`
-    明禁在该目录加并行守卫）。**前置修正已落地**（T004 的 `resolve()` 词表 —— 见 T004 段 🔧）。
-    待办：把「取行（user → 角色 → 授权 的 join，只在 `packages/opencode` 做得到）＋ 签发 ＋ 按链注入」
-    接起来；**capability 挂载点尚未裁定**。
+- [x] T006 实现工具执行守卫（执行前验 capability，无权限 AccessDenied + 审计）[FR-004] [T001][T003] [出参：越权调用被拒并留审计]
+  - ✅ 2026-10-04 完成（**链 A 那一半**；链 B 与审计**显式挂账**，见下）。Step 0.5 式侦察已做
+    （两条链 ＋ 各自已有的上游 ruleset 钩子 ＋ 工具执行必经点 `packages/core/src/tool/tool.ts` 的
+    `config.execute`；`packages/core/src/tool/AGENTS.md` 明禁在该目录加并行守卫）；**前置修正已落地**
+    （T004 的 `resolve()` 词表 —— 见 T004 段 🔧）。
+  - **六条裁定**（用户 2026-10-04）：① 链 B 槽位 ⇒ **只接链 A，链 B 显式挂账**；
+    ② 链 A 写入口 ⇒ **会话创建时写**；③ 未授权的 skill ⇒ **显式 deny**（不是落回 `ask`）；
+    ④ 审计 ⇒ **只做「拒」，审计挂账**；⑤ 取库句柄 ⇒ **照 `gateway.ts` 的惰性闭包写法**；
+    ⑥ 实测 `Session.fork` 不复制 `permission` ⇒ **在 fork 里带上原会话的 `permission`**。
+    **capability 挂载点已裁定**（= ②，此前那句「尚未裁定」作废）。
+  - 落点（**加，不是改**）：`packages/core/src/access/session.ts`（纯判定，D0-1 裁定归 core）、
+    `packages/auth/src/rbac.ts` 的 `grantsFor()`（取行）、`packages/opencode/src/server/openhive/access.ts`
+    （接线，openhive 定制新增）。改上游三处并**各自带【保留的定制】标记、单独提交**：
+    `handlers/session.ts`（create 并入 ＋ update 顺序）、`session/prompt.ts`（`input.tools` 不再整体覆盖）、
+    `session/session.ts`（fork 带上 permission）。另新增 `auth/src/test-support.ts` 的
+    `startProductionDb()`（夹具拆出 start/stop，供跨用例生命周期，见下）。
+  - 收口了两条**客户端可自批**的越权路：`update` 端点、`prompt.ts` 的覆盖（`input.tools` 是客户端发来的）。
+    另有约 14 处 `Permission.merge` 调用点**未动** —— 它们本就已把 `session.permission` 放在最后。
+  - 测试 12 条：`openhive-access.test.ts` 9 条（纯函数；拿链 A **真判决器** `evaluate` 验，不是对字符串）
+    ＋ `openhive-access-wiring.test.ts` 3 条（真应用 ＋ 真库；**直接读库文件的 `permission` 列**，
+    不经过被测接口）。变异：M1（去掉 merge）**3 条全红**；M2（并入顺序反）**恰红 1 条**（客户端绕过那条）；
+    M3（去重）/ M4（`GOVERNED` 加 mcp）见 `state.md`。
+  - 门禁：typecheck exit 0（31/31）；`lint:openhive` exit 0（23 warnings / 0 errors / 69 files / 161 rules，
+    与基线逐字相同）；全局 lint exit 1（4941 warnings / 1 error / 130 rules / 3456 files，与基线 4942 差在
+    `packages/llm/src/tool-runtime.ts:63:44` 一条 —— **我没碰过的文件**，名称级差集确认无新增）；
+    auth **213 pass / 1 skip / 0 fail**（T004 后基线 210 → ＋3，恰是本次 rbac 用例）；
+    opencode `test/server/` **380 pass / 23 skip / 1 fail**（唯一那条红是开工基线里 14 条之一的
+    `file HttpApi > serves search endpoints`）。
+  - ⚠️ **新运行期契约：门开 ⇒ 建会话须能连 auth 库**（fail-closed —— 「取不到授权」与「没有任何授权」
+    在会话那一层长得一样，若按空授权放行，skill 会落回可自批的 `ask`）。既有测试
+    `tenant-db-isolation.test.ts` 4 条因此 500，用户 2026-10-04 裁定**照 T020 先例给测试配真库**
+    （`openhive-bootstrap.test.ts` 同一形状），已修复并单独提交。
+  - 📤 **显式挂账**（**不写成「已覆盖」**，`LEARNINGS #002-02`）：
+    ① **链 B**（core v2 / CLI·sdk-next）尚未接 —— 用户裁定；
+    ② **审计**（留痕）未做，用户裁定挂账、落点 F10；
+    ③ **存量会话**（本次改动之前建的）的 `permission` 里没有 deny；
+    ④ **进程内 `approved` 可压过 capability deny**：`evaluate(permission, pattern, ruleset, approved)`
+       把 `approved` 排在**最后**（实测 `packages/opencode/src/permission/index.ts:73`，`findLast` 后者胜），
+       而它是 `InstanceState` 里的**进程内**数组（同文件 `:51`，重启即失）。要有这个洞，需要同一进程里
+       先有一条 `ask`（= 当时没有 deny 盖住它）被点过「总是允许」——门关着跑过 dev、或升级前的旧会话
+       都能造出这样一条。**不跨进程存活**，但同一进程内它对本 capability deny 全权生效。
+       触发条件与判据逐字记在此处，不假装闭合。
 
 ## Phase 4: US3 MCP 账号兜底 + RLS（P1）
 
