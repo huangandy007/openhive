@@ -87,6 +87,37 @@ const SOCKET_CONNECTION_LIMIT = 64
  * 应由 CI 提供（本 feature 无此闸）。
  */
 export async function withProductionDb<T>(fn: (db: ReturnType<typeof connect>) => Promise<T>): Promise<T> {
+  const server = await startProductionDb()
+  try {
+    return await fn(server.db)
+  } finally {
+    await server.stop()
+  }
+}
+
+/**
+ * 起一个真 PG 夹具，**留在原地**，由调用方自己 `stop()`。
+ *
+ * 为什么要把它和 `withProductionDb` 分开（后者是「包住 `fn`」的形状）：**有的测试需要夹具
+ * 活过单个用例**。`packages/opencode/test/server/tenant-db-isolation.test.ts` 就是——
+ * 那里应用层是模块级构建的，`HttpApiApp.routes` 的层构造**全文件只跑一次**，于是层里那个
+ * auth 连接池（`@/server/openhive/access` 的惰性闭包）也只建一次、**指向第一个用例那个端口**。
+ * 若照「每用例起一个 PGlite」写，从第二个用例起就连向一个已经关掉的端口，表现为
+ * `POST /session` 500 而**第一个用例是绿的**——因果极难看出来。`LEARNINGS #003-04` 的
+ * 「实测数字要当场复现」在这里的等价物：夹具的**生命周期**也得先问清楚，再选形状。
+ *
+ * ⚠️ **`PG_*` 从 `start()` 一直留到 `stop()`**（与 `withProductionDb` 期间的行为一致）。
+ * 只想在某一小段里生效的调用方，自己再套一层 `withProductionDb`。
+ *
+ * ⚠️ **必须 `stop()`**：它同时负责还原 `PG_*`、关 socket 服务、关 PGlite。漏掉就是漏一个端口
+ * 和一个进程句柄，而且**不会报错**。
+ */
+export interface ProductionDb {
+  readonly db: ReturnType<typeof connect>
+  stop(): Promise<void>
+}
+
+export async function startProductionDb(): Promise<ProductionDb> {
   const pg = new PGlite()
   // port 0 = 让 OS 挑一个空闲端口，避免与并行跑的其他用例抢端口。
   const server = new PGLiteSocketServer({
@@ -111,12 +142,13 @@ export async function withProductionDb<T>(fn: (db: ReturnType<typeof connect>) =
   }
   const saved = restorePoint(env)
 
-  try {
-    return await fn(connect(env))
-  } finally {
-    saved()
-    await server.stop()
-    await pg.close()
+  return {
+    db: connect(env),
+    stop: async () => {
+      saved()
+      await server.stop()
+      await pg.close()
+    },
   }
 }
 
