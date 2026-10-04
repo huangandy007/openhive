@@ -73,8 +73,30 @@
 
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
 
-- [ ] T005 实现工具清单过滤（组装 tools 前按 capability 只放有权工具）[FR-003] [T001][T003] [出参：无权工具不出现在 tools]
+- [x] T005 实现工具清单过滤（组装 tools 前按 capability 只放有权工具）[FR-003] [T001][T003] [出参：无权工具不出现在 tools]
+  - ✅ 2026-10-05 完成。**前置结论**：T005 的字面出参（无权工具不出现在模型拿到的 `tools` 里）
+    **已随 T006 的通道生效**——`SessionTools.resolve` 把 `session.permission` 交给 `registry.tools`，
+    `prompt.ts` 再把它当 `permission` 传进 `resolveTools` ⇒ **不必新建 `tool-filter.ts`**
+    （`plan.md:51` 那条路径已被 D0-1 判空）。
+  - **用户 2026-10-05 裁定**：T005 在「三处可见性出口」里做到 **「补 `sys.skills` + 验收测试」**这一步
+    （另两处非会话出口 `GET /skill`、`GET /experimental/tool` **显式挂账**，见下）。
+  - 落地：`src/session/system.ts` 的 `skills(agent, permission?)` 改为吃 `session.permission`，
+    判据用**与工具过滤逐字同款**的 `Permission.disabled(["skill"], merge(agent.permission, permission ?? []))`
+    （照 `#003-05`，不另造一套判据）；`src/session/prompt.ts` 调用点传 `session.permission`（与 `sys.mcp` 同形）。
+    两处**均为上游文件**，已单独提交并标【这是要保留的定制】。
+  - 验收：`test/session/openhive-tool-visibility.test.ts` **6 条**（目录可见性 4 条，含
+    「目录可见 ⟺ skill 工具可见」的 6-ruleset 矩阵；真 `LLMRequestPrep.prepare` 2 条）。
+    变异 **M6**（`skills` 改回只读 `agent.permission`）⇒ 恰红 2 条；**M5**（`resolveTools` 的
+    `input.permission` → `undefined`）⇒ **恰红 1 条**（据实记，非「两条都红」）。
+  - 门禁（串行）：`typecheck` **31/31 exit 0**；`lint:openhive` **23/0 exit 0**（= 基线）；
+    全局 `lint` **4942 warnings / 1 error**（= 基线逐字相同；新文件 0 命中，改动行 0 命中）；
+    `test/session/` **408 pass / 1 fail**（唯一红 = 开工基线已知的 `snapshot race`）。
+  - ⚠️ 本 task 顺带修掉 **T006 的一条回归**（见 T006 段的「契约适配」）。
 - [x] T006 实现工具执行守卫（执行前验 capability，无权限 AccessDenied + 审计）[FR-004] [T001][T003] [出参：越权调用被拒并留审计]
+  - 📌 **补充（2026-10-05，T005 收尾发现）**：`src/session/prompt.ts` 的 `input.tools` 由「整体覆盖」
+    改「并入」后，上游测试 `prompt tools replace previous prompt tool rules` 变红（其名即编码旧的
+    replace 语义）。用户 2026-10-05 裁定 **保留 merge**（安全属性由 `openhive-access.test.ts` ⑦ 单独钉住），
+    该上游测试已改为断言新契约并标【这是要保留的定制】——**需适配的上游测试仅此一条**（已隔离复现确认）。
   - ✅ 2026-10-04 完成（**链 A 那一半**；链 B 与审计**显式挂账**，见下）。Step 0.5 式侦察已做
     （两条链 ＋ 各自已有的上游 ruleset 钩子 ＋ 工具执行必经点 `packages/core/src/tool/tool.ts` 的
     `config.execute`；`packages/core/src/tool/AGENTS.md` 明禁在该目录加并行守卫）；**前置修正已落地**

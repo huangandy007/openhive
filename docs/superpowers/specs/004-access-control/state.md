@@ -2,16 +2,15 @@
 
 ## 当前任务
 
-**T004 已完成**（RBAC 表 ＋ 权限判定，FR-007）。已 commit，**停下等「next」**。
+**T005 已完成**（技能目录可见性 ＋ 模型侧工具清单验收，FR-003 / SC-003）。已 commit（3 个提交：
+验收测试 `b0b0a6cb3f` ／ 上游改动【保留的定制】`310cda0d83` ／ T006 契约适配【保留的定制】`f114f00a7c`），
+**停下等「next」**。收尾时发现并处置了 **T006 的一条回归**（上游 `prompt tools replace…` 测试 ⇒ 已按裁定
+改为 merge 契约，见 T005 段 §5）。
 
-> 📌 **插叙**：原计划「T003 之后接 T004」，但 T004 的前置是 **D-05 必须裁定**（见 D0-3 段）。
-> 用户 2026-10-04 把 D-05 当场裁掉（两问两裁：独立 CLI ✅ / 只做向上迁移 ✅），于是先落地 **T015**，
-> 再回来做 T004。**D-05 已解**（见下方「阻塞项」）。
-> T004 途中 **0004 撞红了 002 时期写死的 7 条断言**（迁移 head 变了），已按 `#002-06` 改为从盘上取。
+**T006 已完成**（工具执行守卫 · 链 A，FR-004 / FR-002）。链 B 与审计**显式挂账**。
 
-下一条可选：**T005**（工具清单过滤，依赖 T001 ＋ T003）／**T006**（执行守卫，依赖 T001 ＋ T003）——
-两条前置均已就绪，且**都依赖 T004 刚落的 `resolve()` 接线**。T005/T006 可并行（见 tasks.md Phase 3）。
-先做哪条由用户定。
+下一条可选：**T007**（MCP 身份 ＋ 受限数据库账号）／**T008**（RLS）／**T009**（结果大小控制）
+／**T012–T014**（安全测试）。**T010 / T011 已移交 F7**（见 D0-4 段）。先做哪条由用户定。
 
 ---
 
@@ -803,6 +802,107 @@ D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/
 
 ---
 
+### T005 · 技能目录可见性 ＋ 模型侧工具清单（FR-003 / SC-003）
+
+**一句话**：T005 的字面出参（无权工具不出现在模型拿到的 `tools` 里）**不用新写代码**——T006 的
+通道顺带做成了；T005 要做的是**把最后一个会话级可见性出口（系统提示词里的技能目录）也接到同一判据上**，
+并用测试把这条不变式钉死。
+
+#### 1. 前置实测：字面出参已经打得到（否则要去建 `tool-filter.ts`）
+
+D0-1 已裁定 `plan.md:51` 的 `tool-filter.ts` 路径**判空**（链 A 的上游 `Permission.disabled` 就是
+过滤点）。本次实测确认搬运通道完整：
+
+```
+session.permission（T006 在 create/update/prompt/fork 四处写入 capability）
+  → SessionTools.resolve 把它交给 registry.tools + ctx.ask
+  → prompt.ts 当 permission 传进 process → llm.stream
+  → LLMRequestPrep.prepare → resolveTools
+      Permission.disabled(Object.keys(tools), Permission.merge(agent.permission, input.permission ?? []))
+```
+
+⇒ **无需「加」任何东西**，字面出参今天在仓库里打得到（Step 0.5 的那句「出参今天能不能打到」的答案）。
+
+#### 2. 缺口：唯一一个**不读 capability** 的会话级出口
+
+| 出口 | 位置 | 吃什么 | 今天跟不跟 capability |
+|---|---|---|---|
+| 模型侧工具清单 | `session/llm/request.ts` `resolveTools` | `agent.permission` + `session.permission` | ✅ 跟（T006 通道） |
+| 系统提示词技能目录 | `session/system.ts` `skills` | **只读 `agent.permission`** | ❌ **不跟**（本次修） |
+| MCP 指令 | `session/system.ts` `mcp` | `agent.permission` + `permission?` | ✅ 跟（上游本就带参） |
+| `GET /skill` | `server/.../handlers` | 全局技能列表 | ⛔ 非会话作用域（挂账） |
+| `GET /experimental/tool` | 同上 | 全局工具列表 | ⛔ 非会话作用域（挂账） |
+
+后果：零授权的民警**看不到 `skill` 工具、提示词却照样列出全部技能**，还写着「用 skill 工具加载技能」
+——提示词与工具清单互相打架，模型会去调一个不存在的工具。形状即 `#003-05` 的**假镜像**：
+同一个判断在两处各写一份，一处跟 capability、一处不跟。
+
+#### 3. 修法（用户 2026-10-05 裁定：甲）
+
+**不改「再写一套判据」，改「两处用同一个」**：`skills(agent, permission?)` 的判据写成与 `resolveTools`、
+与同文件 `mcp()` **逐字同款**——同一个 `Permission.disabled`、同一个合并顺序
+`merge(agent.permission, permission ?? [])`（capability 在后 ⇒ 后者胜）。
+
+不变式：**目录可见 ⟺ `skill` 工具可见**（同一个 helper、同一个顺序、同一个 `findLast`）。
+
+改动（**两处均为上游文件**，各自单独提交并标【这是要保留的定制】）：
+
+| 文件 | 改动 | 提交 |
+|---|---|---|
+| `src/session/system.ts` | `skills(agent, permission?)` 判据改为同款；接口签名加参 | `310cda0d83` |
+| `src/session/prompt.ts` | 调用点传 `session.permission`（与紧邻的 `sys.mcp` 同形） | 同上 |
+| `test/session/openhive-tool-visibility.test.ts` | 新增验收 6 条 | `b0b0a6cb3f` |
+
+#### 4. 验收与变异
+
+`test/session/openhive-tool-visibility.test.ts` **6 条**：
+- 第 1 段（`SystemPrompt.skills`，走**真** `Permission.disabled`）：零授权 ⇒ `undefined`；授过一条 ⇒ 照旧；
+  agent 自拒 ⇒ 照旧（上游行为不变）；**矩阵** 6 个 ruleset 断言「目录可见 ⟺ 工具可见」。
+- 第 2 段（走**真** `LLMRequestPrep.prepare`）：零授权 ⇒ `skill` 不在 `tools`、`bash` 照旧在；授过一条 ⇒
+  `skill` 照旧在。（这段是**钉现状**，不是 TDD 红——把 T006 的通道钉住，断了它会红。）
+
+| 变异 | 操作 | 结果（实测） |
+|---|---|---|
+| **M6** | `skills` 改回只读 `agent.permission` | **恰红 2 条**（零授权 / 矩阵） |
+| **M5** | `resolveTools` 的 `input.permission` → `undefined` | **恰红 1 条**（只有「零授权」那条；「授过一条」照绿——据实记，非「两条都红」） |
+
+#### 5. 顺带：发现并处置 **T006 的一条回归**
+
+收尾跑 `test/session/` 时发现上游测试 **`prompt tools replace previous prompt tool rules`** 变红
+（**不在**开工基线的 14 条红名单里）。根因（隔离复现）：T006 把 `prompt.ts` 的 `input.tools` 从
+「整体覆盖」改成「并入」，而**该测试名与断言正是编码旧的 replace 语义** ⇒ 第二次 `prompt` 不再掀掉
+第一次的 `bash: deny`。**T006 当时只跑了 `test/server/`，没跑 `test/session/`** ⇒ 漏网（呼应 `#003-01`：
+受影响面选错）。
+
+**用户 2026-10-05 裁定：保留 merge**（客户端一条 `tools:{skill:true}` 不得抹掉 capability；该安全属性
+已由 `test/server/openhive-access.test.ts` 的「⑦ 客户端 allow 不得压过 capability deny」**单独钉住**，
+不依赖这条上游测试）。据此把这条上游测试改为断言新契约并标【这是要保留的定制】（提交 `f114f00a7c`）。
+**评估：需随 T006 契约适配的上游测试仅此一条。**
+
+#### 6. 门禁（2026-10-05 实跑，**串行**）
+
+| 门禁 | 命令 | 本次实测 | 判据 |
+|---|---|---|---|
+| 类型 | `bun run typecheck` | **exit 0**，31/31 tasks | 必须 0 |
+| openhive lint | `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | = 基线逐字相同 |
+| 全局 lint | `bun run lint` | exit 1，**4942 warnings / 1 error** | = 基线**逐字相同**；新文件 0 命中、改动行 0 命中 |
+| 受影响测试 | `bun test test/session/` | **408 pass / 20 skip / 1 todo / 1 fail** | 唯一红 = 开工基线已知的 `snapshot race`；总数 430 = 改前 430 |
+
+> 全局 lint 里 `system.ts:122/138` 两条 `consistent-return`、`prompt.ts:653` 的 `unbound-method`、
+> `prompt.test.ts` 十余条，**均在本次改动行之外**（`system.ts:138` 那个函数本次根本没动，形状与
+> `skills` 同款 ⇒ 证明该规则是文件既有性质，非本次引入）。warnings 总数与基线逐字相同 ⇒ **0 新增**。
+
+#### 7. 挂账（据实记，不假装闭合）
+
+1. **`GET /skill` 与 `GET /experimental/tool` 两个非会话端点**不吃 capability（本次判为 T005 范围外）。
+   它们返回的是**全局**列表、不带会话作用域；要收口得先回答「这个端点代表谁、按哪条会话授权」——
+   属接口设计问题，**显式挂账**。
+2. **第 2 段那两条测试今天即绿**（钉现状，非 TDD 红）——已在文件注释里写明，证据是 M5 的恰红 1 条。
+3. `skills` 判据走的是「整体 deny 才隐藏」（与工具过滤同款），**不是**「按名字 allow-list」——
+   逐条授权由**执行期** `evaluate` 兜底（T006）。这是**有意**与工具过滤保持一致，非缺陷。
+
+---
+
 ## 阻塞项
 
 （无技术阻塞。**D-05 已解**（2026-10-04，见 T015 段）——原「待裁一项：D-05 须在 T004 之前裁定」**已消**，
@@ -814,6 +914,12 @@ T004 现无前置。）
 后续 task（T007 / T008 / T012–T014）开工前先读这条。
 
 ## 最后更新
+
+2026-10-05（**T005**：前置实测「字面出参已随 T006 生效 ⇒ 不建 `tool-filter.ts`」＋ 用户裁定「补
+`sys.skills` ＋ 验收测试」＋ `system.ts` / `prompt.ts` 两处上游改动（【保留的定制】）＋ 6 条验收
+（矩阵不变式 ＋ 真 `prepare`）＋ M5/M6 变异 ＋ 收尾跑 `test/session/` 揪出并处置 **T006 的一条回归**
+（上游 `prompt tools replace…` 测试 ⇒ merge 契约，用户裁定保留 merge）＋ 三个提交 ＋ 门禁串行复跑
+（typecheck 31/31 · lint:openhive 23/0 · 全局 lint 4942/1 = 基线 · `test/session/` 408 pass/1 fail=已知 `snapshot race`））
 
 2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发
 + D-05 裁定 ＋ T015 迁移 CLI ＋ T004 RBAC 表 ＋ 权限判定（含 0004 撞红 7 条既有断言的连带修正）
