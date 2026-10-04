@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite"
 import { getTableColumns, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate } from "./migrate"
-import { role, roleResource, userRole } from "./rbac"
+import { grantsFor, role, roleResource, userRole } from "./rbac"
 
 /**
  * T004 · RBAC 三张表（FR-007）。
@@ -13,10 +13,10 @@ import { role, roleResource, userRole } from "./rbac"
  * core 不依赖 auth（实测），所以两侧只能各测各的半边，**接线处的形状对齐归 T005/T006**
  * （它们住在 `packages/opencode`，那里同时看得到两个包）。
  *
- * ⚠️ 取行那一步（user → 角色 → 授权 的 join）**本任务没有生产实现**：它归 T005/T006。
- * 这里用一条内联 join **打真库**证明「这个 schema 支撑得住那条流程」，
- * 而不是先造一个没人调的 `grantsOf()` 放着（`LEARNINGS #002-02`：没真跑过的路径
- * 只能记成缺口，不能记成覆盖——所以这里宁可把 join 写进测试、让它真跑一次）。
+ * ⚠️ 取行那一步（user → 角色 → 授权 的 join）在 T004 时**还没有生产实现**，本文件当时用一条
+ * 内联 join 打真库证明 schema 支撑得住。**T006 补上了消费者**（链 A 的会话创建要按用户取授权行）
+ * ⇒ 这里改为打 `grantsFor()` 本身，内联那条 join **删掉**——留着就是同一个判断的两份写法
+ * （`LEARNINGS #002-06`），而两份写法只要有一条不覆盖就会分叉。
  */
 
 /**
@@ -82,11 +82,11 @@ describe("RBAC 表 · 真库（PGlite，走生产驱动那套迁移）", () => {
   /**
    * US4 的 Independent Test：「给角色授某资源权限，该角色下用户即获得该权限」。
    *
-   * 这里跑的是**库里那半边**：授权行写进去之后，从「用户」出发 join 得回来。
+   * 这里跑的是**库里那半边**：授权行写进去之后，`grantsFor(db, userId)` 得回来。
    * 断言刻意写成 `toEqual` 整组比对而不是「长度 > 0」——**多回来一行也是缺陷**
    * （比如 join 写漏了 user_id 条件，就会把别人的授权也算进来）。
    */
-  test("给角色授 skill 读权限并把角色给用户 ⇒ 从用户 join 得回这条授权", async () => {
+  test("给角色授 skill 读权限并把角色给用户 ⇒ grantsFor 得回这条授权", async () => {
     const db = await freshDb()
 
     await db.insert(role).values({ id: "r_analyst", name: "研判员" })
@@ -98,14 +98,13 @@ describe("RBAC 表 · 真库（PGlite，走生产驱动那套迁移）", () => {
       perm: "read",
     })
 
-    const granted = await db.execute(sql`
-      select rr.resource_type, rr.resource_id, rr.perm
-      from auth.role_resource rr
-      join auth.user_role ur on ur.role_id = rr.role_id
-      where ur.user_id = 'u1'
-    `)
-
-    expect(granted.rows).toEqual([{ resource_type: "skill", resource_id: "fund-analysis", perm: "read" }])
+    // ⚠️ 字段名是 **camelCase**，不是库里的 snake_case——这不是排版：
+    // 出口要直接喂 `AccessRbac.Grant`（`{ resourceType, resourceId, perm }`），
+    // 名字对不上就得在接线处再写一层改名，而那层改名正是 `LEARNINGS #002-06` 说的
+    // 「同一个判断两处各写一份」的入口。改名只在**这一处**、贴着 SQL 做。
+    expect(await grantsFor(db, "u1")).toEqual([
+      { resourceType: "skill", resourceId: "fund-analysis", perm: "read" },
+    ])
   })
 
   /**
@@ -133,14 +132,74 @@ describe("RBAC 表 · 真库（PGlite，走生产驱动那套迁移）", () => {
     })
 
     // 同一角色被两人持有 ⇒ 从 u1 出发**只应得回一条**（不是两条）。
-    const granted = await db.execute(sql`
-      select rr.resource_id
-      from auth.role_resource rr
-      join auth.user_role ur on ur.role_id = rr.role_id
-      where ur.user_id = 'u1'
-    `)
+    expect(await grantsFor(db, "u1")).toEqual([
+      { resourceType: "skill", resourceId: "fund-analysis", perm: "read" },
+    ])
+    // 反向也要一次：u2 同样只有一条（证明不是「只有 u1 恰好对」）。
+    expect(await grantsFor(db, "u2")).toHaveLength(1)
+  })
 
-    expect(granted.rows).toEqual([{ resource_id: "fund-analysis" }])
+  /**
+   * **零授权 ⇒ 空数组**，不是抛错、也不是 undefined。
+   *
+   * 空数组会被 `AccessRbac.resolve()` 翻成空规则集，再被 `OpenhiveAccess.sessionRuleset()`
+   * 补上一条整体 deny（T006）——**这条路要走通，前提是这里「查无授权」是个正常返回值**。
+   */
+  test("没被授过任何资源 ⇒ 空数组（不是抛错、不是 undefined）", async () => {
+    const db = await freshDb()
+
+    expect(await grantsFor(db, "u1")).toEqual([])
+  })
+
+  /**
+   * **多角色聚合 + 顺序确定**。
+   *
+   * 两条授权分别来自两个角色——判定那一步要的是「这个人名下**全部**授权」，不能只看一个角色。
+   * 顺序也钉住：`sessionRuleset()` 产出的规则集会**持久化到会话上**，DB 返回顺序不定 ⇒
+   * 同一份授权每次落库的字节都不一样，既难读、也让测试发飘。所以 `grantsFor` 自己带
+   * `order by`（插入顺序**刻意反过来**写，让「碰巧按插入序返回」的假绿不可能出现）。
+   */
+  test("多角色的授权合并返回，且顺序确定（与插入顺序无关）", async () => {
+    const db = await freshDb()
+
+    await db.insert(role).values([
+      { id: "r_z", name: "角色 Z" },
+      { id: "r_a", name: "角色 A" },
+    ])
+    await db.insert(userRole).values([
+      { userId: "u1", roleId: "r_z" },
+      { userId: "u1", roleId: "r_a" },
+    ])
+    await db.insert(roleResource).values([
+      { roleId: "r_z", resourceType: "skill", resourceId: "z-skill", perm: "read" },
+      { roleId: "r_a", resourceType: "skill", resourceId: "a-skill", perm: "read" },
+    ])
+
+    expect(await grantsFor(db, "u1")).toEqual([
+      { resourceType: "skill", resourceId: "a-skill", perm: "read" },
+      { resourceType: "skill", resourceId: "z-skill", perm: "read" },
+    ])
+  })
+
+  /**
+   * **userId 是查询参数，不是拼进 SQL 的字符串**。
+   *
+   * 拿一个「经典注入串」当用户 id：库里**有**授权行（所以若真按字符串拼接，
+   * `' or '1'='1` 会把全部行带回来），而参数化应当**一条都不返回**（没有哪个用户叫这名字）。
+   * 判据是「返回空」不是「没有报错」——拼接版也会正常返回，只是返回错的东西。
+   */
+  test("userId 走参数化：注入串把它当字面量，一条都不回", async () => {
+    const db = await freshDb()
+    await db.insert(role).values({ id: "r_analyst", name: "研判员" })
+    await db.insert(userRole).values({ userId: "u1", roleId: "r_analyst" })
+    await db.insert(roleResource).values({
+      roleId: "r_analyst",
+      resourceType: "skill",
+      resourceId: "fund-analysis",
+      perm: "read",
+    })
+
+    expect(await grantsFor(db, "' or '1'='1")).toEqual([])
   })
 })
 
