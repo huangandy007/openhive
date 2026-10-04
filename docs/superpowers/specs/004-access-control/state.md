@@ -2,14 +2,16 @@
 
 ## 当前任务
 
-**T015 已完成**（迁移 CLI，**计划外任务**——由 D-05 裁定产生，见下「已完成」）。已 commit，**停下等「next」**。
+**T004 已完成**（RBAC 表 ＋ 权限判定，FR-007）。已 commit，**停下等「next」**。
 
 > 📌 **插叙**：原计划「T003 之后接 T004」，但 T004 的前置是 **D-05 必须裁定**（见 D0-3 段）。
 > 用户 2026-10-04 把 D-05 当场裁掉（两问两裁：独立 CLI ✅ / 只做向上迁移 ✅），于是先落地 **T015**，
 > 再回来做 T004。**D-05 已解**（见下方「阻塞项」）。
+> T004 途中 **0004 撞红了 002 时期写死的 7 条断言**（迁移 head 变了），已按 `#002-06` 改为从盘上取。
 
-下一条可选：**T004**（RBAC 表 + 判定，依赖 T001）——D-05 已解，无前置；／**T005**（工具清单过滤）／
-**T006**（执行守卫）——T005/T006 依赖 T001 ＋ T003，两条已就绪。先做哪条由用户定。
+下一条可选：**T005**（工具清单过滤，依赖 T001 ＋ T003）／**T006**（执行守卫，依赖 T001 ＋ T003）——
+两条前置均已就绪，且**都依赖 T004 刚落的 `resolve()` 接线**。T005/T006 可并行（见 tasks.md Phase 3）。
+先做哪条由用户定。
 
 ---
 
@@ -510,6 +512,124 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 这句话**逐字写进了** `migrate-cli.ts` 与 `migrate-cli.test.ts` 的头部注释，并同步更新了
 `deploy-todo.md` 的 D-05 条目（原文「解 D-05 时顺手把 R11 一起裁掉」**已作废**，改为上面这个条件）。
 
+### T004 · RBAC 表 ＋ 权限判定（FR-007 / FR-002）
+
+#### 两处落点（由 D0-2 ＋ D0-3 两条裁定**共同逼出**，不是二选一）
+
+| 半 | 落点 | 性质 |
+|---|---|---|
+| **表** | `packages/auth/src/migrations/0004_rbac.sql`（＋`.down.sql`） | openhive 定制，新增——复用 002 的 `migrations/` 与 `migrate()`（D0-3 ①） |
+| **模型** | `packages/auth/src/rbac.ts` | openhive 定制，新增——drizzle 类型安全查询 |
+| **判定** | `packages/core/src/access/rbac.ts` | openhive 定制，新增——纯函数，**碰不到库**（D0-2） |
+
+**为什么判定必须在 core 且必须是纯函数**（实测，不是选择）：`packages/auth` 的 deps 只有
+`drizzle-orm` / `hono`，**不依赖 `@opencode-ai/core`**；而 `@opencode-ai/core` 反过来也不依赖 auth。
+⇒ core 侧**拿不到 `db`**。取行那一步（user → 角色 → 授权 的 join）因此归 **T005/T006**——
+那两处住在 `packages/opencode`，而**全仓只有它同时依赖 auth 与 core**（实测）。
+本任务只落「行 → ruleset」这一步。
+
+#### 两问两裁（用户 2026-10-04 选定）
+
+| 问题 | 选项 | 结果 | 为什么否掉另一侧 |
+|---|---|---|---|
+| 「用户例外」怎么表达 | ① **不加第 4 张表**（例外 = 单独给一个自定义角色）／ ② 加一张 user_resource 表 | ✅ **①** | ② 造投机结构：F9 的「授权组」也走「自定义 role」这条路（§14.3 标题「角色为主 + 用户例外」），今天不必先建一张没有消费方的表 |
+| 判定函数的出口 | ① **`resolve(...) → Permission.Ruleset`** ／ ② 返回 `boolean` | ✅ **①** | ② 接线处还得再包一层把布尔翻回 ruleset——那层包装正是「同一个判断在两处各写一份」的入口（`LEARNINGS #002-06`）。① 直接喂 T003 的证，形成「角色表 → ruleset → capability」一条直线 |
+
+#### 三个设计决定
+
+1. **`perm` / `resource_type` 存 ASCII，不存中文**：设计文档里的「读 / 写 / 审 / 管」是**散文**。
+   这四个值要进 DB、进规则字符串（`action`）、跨语言比对；编码成中文是在每个边界上多一层
+   **没有任何校验兜着**的转换。CHECK 把闭集钉在**数据**上——否则一个拼错的动作（`"rade"`）
+   会静静地躺在表里，症状是「某人莫名少一条权限」，根因在几天前的某次录入。
+2. **`effect` 恒为 `"allow"`，未授权的绝不在这一层补 allow**：`role_resource` 表里**没有 effect 列**
+   （§14.3 只给了 `role_id, resource_type, resource_id, perm`）——它记的是「授了什么」，不是「禁了什么」。
+   **没有授权 ⇒ 空 ruleset**，未命中落回上游 `evaluate` 的兜底 `ask`（FR-002 的分工：执行器只认证）。
+   把空输入兜底成一条 `{action:"*", resource:"*", effect:"allow"}` 会让**每个没被授权的资源静默放行**，
+   且形状是对的、typecheck 照绿——这是整组里最该防退化的一条（测试 ⑤）。
+3. **外键不级联**（PG 默认 RESTRICT）：删一个还被引用的角色**报错**，而不是静默把它的授权、成员关联
+   一起抹掉。RBAC 的授权丢失是「有人突然没权限了」这类最难查的故障；真要级联是另一个裁定 ＋ 另一个迁移。
+
+#### 测试（core 7 pass ＋ auth 8 pass，共 15）
+
+| 文件 | 用例 | 钉什么 |
+|---|---|---|
+| `core/test/access-rbac.test.ts` | ① 单条授权 ⇒ 一条 allow，且被**下游真匹配器** `PermissionV2.evaluate` 命中 | 映射约定（action=perm、resource=`<type>:<id>`），`LEARNINGS #003-05`：对着下游行为写，不做假镜像 |
+| | ② 四条 perm 各自原样映射 | 存 ASCII 不存中文 |
+| | ③ 资源类型是判定的**一个轴**（两向都断） | **变异 C 补出来的**：只断「skill 不落到 mcp」时，把类型写死成 `skill:` 的实现照样全绿——反向断言才照得出 |
+| | ④ 两个角色授同一条 ⇒ 去重后只出一条 | ruleset 要对两条链可直读 |
+| | ⑤ 没有任何授权 ⇒ **空 ruleset**（不是全 allow） | 见设计决定 2 |
+| | ⑥ 授过的是 allow、没授的仍是上游兜底 ask | 证明 resolve 没顺手把未授权的变 allow |
+| | ⑦ 出口**真是** `Permission.Ruleset`（编译期可赋给 issue 入参） | 形状对不上要在类型上红 |
+| `auth/src/rbac.test.ts` | 防漂移：三张表的 drizzle 模型与迁移建出的列逐列一致 | 同 `user.test.ts` 的做法（`information_schema.columns` vs `getTableColumns`） |
+| | 给角色授 skill 读并把角色给用户 ⇒ 从用户 join 得回 | US4 的 Independent Test（库里那半边） |
+| | join 按用户收窄（同一角色两个用户） | 上面那条即使 join 漏了 `where` 也绿——**它需要第二条数据才照得出来** |
+| | 重复授同一条 ⇒ 被主键拒／未知 perm、type ⇒ 被 CHECK 拒／悬空引用 ⇒ 被外键拒 | 约束是数据层事实，打真库验，不靠注释自觉 |
+| | 删角色 · **只被授权引用** ⇒ 被拦 ／ 删角色 · **只被成员关联引用** ⇒ 被拦 | 两条外键**要分别问一次**（见下方变异 E） |
+
+⚠️ **本任务没有生产侧的 join**：取行归 T005/T006。这里用**内联 join 打真库**证明「这个 schema
+支撑得住那条流程」，而不是先造一个没人调的 `grantsOf()` 放着（`LEARNINGS #002-02`：没真跑过的
+路径只能记成缺口，不能记成覆盖——所以宁可在测试里真跑一次）。
+
+#### 变异验证（`LEARNINGS #003-03`：三类都要据实记）
+
+| 变异 | 打哪 | 观察到的红 | 类别 |
+|---|---|---|---|
+| A 禁掉去重 | core `resolve` | **恰红 ④** | ① 恰红目标 |
+| B `grants.length === 0` 时返回一条全 allow | core `resolve` | **恰红 ⑤** | ① |
+| C 类型写死成 `skill:${id}` | core `resolve` | **恰红 ③**（**强化 ③ 之后**——原来只断单向，C 全绿） | ①（先补测试） |
+| D 从迁移里去掉 `perm` CHECK | `0004_rbac.sql` | **恰红 CHECK 那条** | ① |
+| E `role_resource.role_id` 改成 `ON DELETE CASCADE` | `0004_rbac.sql` | 🔴 **全绿** | ③ 全绿＝**被测的那句询问没被问出来** |
+| F join 去掉 user 过滤 | `rbac.test.ts` 的内联 join | **恰红「join 按用户收窄」** | ① |
+
+**E 的全绿是本组最有价值的一次**：我的删除测试在**同一个角色**上同时挂了两种引用，于是 `user_role`
+那条 RESTRICT **先**把删除拦下，`role_resource` 那条是不是悄悄级联了**根本没被问出来**。
+处理照 `#003-03` 的 ③：不是「测试没覆盖」，而是**测试问错了问题**——拆成两条各自只让**一把**外键
+在场的用例。用 E 仍应用的状态复跑 ⇒ **恰红 role_resource 那条** ⇒ 回退 E ⇒ 8 pass。
+（同一条规则的另一面：C 的「全绿」是**测试太弱**，处理是**强化测试**；E 是**信息隔离**，两回事。）
+
+所有变异已回退，`grep MUTATION` 无残留，探针文件（`probe-tmp.test.ts`）已删。
+
+#### ⚠️ 连带修正：0004 撞红了 002 时期写死的 7 条断言
+
+`0004_rbac` 让迁移 **head 从 `0003_flags_not_null` 变成 `0004_rbac`**，于是 002 写死的那些
+「版本清单 / head」断言全红（实测：`packages/auth` 从基线 202 pass 掉到 **7 fail**，红的正是
+`migrate > 重复执行安全`、`按逆序逐个回滚`、`rollback 的边界 ×2`、`生产驱动 ×2`、`register 警号唯一性`）。
+
+根因是 `LEARNINGS #002-06` 那条「**会随编辑或提交而变的值都别写死**」被违反了 4 处。
+修法照该条的原意——**改为从盘上取，不写死**：
+
+| 位置 | 原来 | 改为 |
+|---|---|---|
+| `migrate.ts`（**产品码，「加」不「改」**） | 无 | 新增 `migrationVersions()`：返回迁移目录里的版本号（与 `rollback` 共用同一个 `upFiles`，**不是**各写一份判据，`LEARNINGS #003-05`） |
+| `migrate.test.ts` 重复执行安全 ／ `production-driver.test.ts` migrate | `toEqual(["0001_init","0002_deactivated_at","0003_flags_not_null"])` | `toEqual(await migrationVersions())`——**断言强度不变**（仍是「应用了整批、且一条不多」），但不再随迁移数漂 |
+| `migrate.test.ts` ／ `production-driver.test.ts` 逆序回滚 | 三行写死的 `rollback(db, "0003…")`… | `const applied = await migrate(db); for (const v of [...applied].reverse()) await rollback(db, v)`——逆序的起点取**账自己报的**那份 |
+| `migrate.test.ts` 拒绝非 head ／ 回滚 head | 写死 `"0001_init"` / `"0003_flags_not_null"` | `migrationVersions()` 的**首**与**尾**（`versions[0]` / `.at(-1)`）——顺手**变强**了：原断言只钉「消息里有那个字符串」，现在钉「消息里是**当前真正的** head」 |
+| `register.test.ts` 非唯一冲突不被误判 | `drop table auth.user` | `drop table auth.user **cascade**`——`user_role` 的新外键让裸 `drop` 自己先失败（2BP01），**是真语义变化**，不是写死值 |
+
+**改写后的断言仍咬得住**（对改写本身再做变异，`LEARNINGS #003-02`「把修复当新代码再审一轮」）：
+- **M1**（把守卫报的 head 写死成 `0001_init`）⇒ **恰红「拒绝回滚非 head 版本」1 条**；
+- **M2**（`head` 取 `appliedInOrder.at(0)` 而不是 `.at(-1)`）⇒ **红 3 条**，含我改写的那两条。
+均回退，`grep MUTATION` 干净，复跑 18 pass。
+
+> 📌 这 4 个文件是 **002 / 003 时期的既有测试**，本次为 T004 的迁移而改。按 `dev_tdd.004.md` Step 3
+> 的约定：**改到其它 feature 的既有测试 ⇒ 改完重跑被改文件**（已跑，见门禁表）。
+
+#### 门禁（串行，取退出码不进管道）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线。⚠️ 首次红：`Permission.Ruleset` 是 `readonly Rule[]` ⇒ `.push` 不存在（TS2339）；改为累加进 `Permission.Rule[]`（可变数组可赋给 readonly 返回类型，出口形状不变） |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4942 warnings / 1 error / 3452 files** | warnings/error 与基线**逐字相同**；文件数 3448 → 3452（＝本次新增 4 个 `.ts`；两个 `.sql` 不进 lint）；**改动的 8 个文件逐个 0 命中**（用 `,-[` 位置标记逐文件复核） |
+| `packages/auth` 全量 | **exit 0**，**210 pass / 1 skip / 0 fail** / 211 tests / 18 files | T015 后基线 202/1/0 → **+8 pass ＋ 1 file，恰是本次 8 条用例**；7 条被撞红的既有断言已全部恢复 |
+| `packages/core` 影响面 | `bun test test/access-rbac.test.ts` **exit 0，7 pass / 0 fail** | 本次**未改** core 的任何既有文件（只新增）⇒ 按 `#003-01`「改动影响面所在的测试文件全绿」，不重跑全包（core 全包基线本就含 5 条环境红） |
+
+#### 未接线（明确记账，不是已覆盖）
+
+`resolve()` **今天没有生产调用者**——接线（把证挂到会话上）归 **T005 / T006**（表 → ruleset →
+`AccessIssue.issue` → 挂到两条链）。执行器也**仍然只认 capability、不回查角色表**（FR-002）。
+⚠️ 别把本节读成「权限已生效」：**表建好、判定写好了，但没有任何一处生产代码调用它**。
+
 ---
 
 ## 阻塞项
@@ -520,4 +640,4 @@ T004 现无前置。）
 ## 最后更新
 
 2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发
-+ **D-05 裁定 ＋ T015 迁移 CLI**）
++ D-05 裁定 ＋ T015 迁移 CLI ＋ **T004 RBAC 表 ＋ 权限判定（含 0004 撞红 7 条既有断言的连带修正）**）

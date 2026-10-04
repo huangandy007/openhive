@@ -340,7 +340,11 @@ describe("警号唯一性（FR-001）", () => {
   test("非唯一冲突的错误不被误判成重复警号，且带上 SQLSTATE", async () => {
     // 把表删掉，制造一个 42P01（undefined_table）——它和 23505 一样是 PG 错误，
     // 但含义完全不同。
-    await db.execute(sql`drop table auth.user`)
+    //
+    // ⚠️ **`cascade` 是 004 加的**：`auth.user_role` 起了外键指向 `auth.user`（0004_rbac），
+    // 不带 `cascade` 时这句 `drop` 自己先失败（2BP01，还有依赖对象），测试连 42P01 都到不了。
+    // `cascade` 只连带撤掉那些外键**约束**、不动其它表，要制造的 42P01 不受影响。
+    await db.execute(sql`drop table auth.user cascade`)
 
     const thrown = await errorOfType(registerUser(db, INPUT, PW), AccountWriteError)
     expect(thrown).not.toBeInstanceOf(DuplicatePoliceNoError)

@@ -50,7 +50,19 @@
     钉「第一次有活干 / 第二次幂等且**仍有输出**」。变异 A（把缺配置降级成静默 `return []`）**恰红 1 条**。
   - ⚠️ **R11 未被解锁**：CLI 只做向上迁移 ⇒ 003 的**回归条件 ③**（`rollback()` 有了生产调用者）**未触发**，
     维持「明确不做」。🚩 触发条件已收紧并**逐字写进** CLI 头部注释 ＋ D-05 条目。完整裁定见 `state.md` T015 段。
-- [ ] T004 [P] 实现 RBAC 表（role / user_role / role_resource）+ 权限判定（读/写/审/管）[FR-007] [T001] [出参：角色授资源权限，判定函数返回正确结果]
+- [x] T004 [P] 实现 RBAC 表（role / user_role / role_resource）+ 权限判定（读/写/审/管）[FR-007] [T001] [出参：角色授资源权限，判定函数返回正确结果]
+  - ✅ 2026-10-04 完成。两处落点：**库**在 auth（`packages/auth/src/migrations/0004_rbac.sql` ＋ drizzle 模型 `rbac.ts`），
+    **判定**在 core（`packages/core/src/access/rbac.ts` 的 `resolve()`，纯函数、碰不到库——core 不依赖 auth，实测）。
+    出口 `Permission.Ruleset`（用户裁定），直接喂 T003 的证；**未授权仍落上游兜底 `ask`，绝不补 allow**。
+  - 两问两裁：「用户例外」⇒ **不加第 4 张表**（例外 = 单独给一个自定义角色）；判定出口 ⇒ **`resolve(...) → Permission.Ruleset`**。
+  - 测试：core `test/access-rbac.test.ts`（7 pass）＋ auth `src/rbac.test.ts`（8 pass，**打真库** PGlite）。
+    变异 A–F：A/B/C/D/F **恰红目标**；**E（外键 CASCADE）一度全绿** ⇒ 查出「两条外键挂在同一个角色上互相掩护」，
+    拆成两条各自只让一把外键在场的用例后 **E 恰红**（`LEARNINGS #003-03` 的 ③ 类处理）。
+  - ⚠️ **0004 撞红了 4 个既有测试文件里的 7 条断言**（002 时期写死了迁移清单：`["0001_init", …]`、head = `0003_flags_not_null`）。
+    按 `#002-06`（会随编辑变的值别写死）改为**从盘上取**：`migrate.ts` 新增 `migrationVersions()`（**openhive 定制，「加」不「改」**），
+    4 处断言改用它 / 用 `migrate()` 的返回值；`register.test.ts` 那句 `drop table auth.user` 因新外键需加 `cascade`。
+    见 `state.md` T004 段的「既有测试的连带修正」。
+  - 门禁：typecheck exit 0；`lint` 我那 4 个新 `.ts` **0 命中**（全局 4942/1 与基线逐字相同）；auth **210 pass / 1 skip / 0 fail**（T015 后基线 202 → **+8**）。
 
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
 

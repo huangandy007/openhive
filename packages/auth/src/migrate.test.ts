@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
 import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
-import { migrate, rollback, rowsOf } from "./migrate"
+import { migrate, migrationVersions, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
 import { withTempMigrations } from "./test-support"
 
@@ -126,7 +126,9 @@ describe("migrate", () => {
 
   test("重复执行安全：第二次不再建表，已有数据不丢", async () => {
     const db = freshDb()
-    expect(await migrate(db)).toEqual(["0001_init", "0002_deactivated_at", "0003_flags_not_null"])
+    // 期望值取自**迁移目录本身**（`migrationVersions()`），不写死版本号：写死的话每加一个迁移
+    // 就要回来改这一行（`LEARNINGS #002-06`）。断言的强度不变——仍是「应用了整批、且一条不多」。
+    expect(await migrate(db)).toEqual(await migrationVersions())
 
     await db.execute(seedUser("u1", "000001"))
     expect(await migrate(db)).toEqual([])
@@ -149,11 +151,10 @@ describe("migrate", () => {
   // 现在必须按逆序回滚，而逆序回滚本来就该是唯一被演示的用法。
   test("按逆序逐个回滚可以回到空库（down 脚本真的撤掉了 up 建的东西）", async () => {
     const db = freshDb()
-    await migrate(db)
-
-    await rollback(db, "0003_flags_not_null")
-    await rollback(db, "0002_deactivated_at")
-    await rollback(db, "0001_init")
+    // 逆序的起点取 `migrate()` 自己报的「这次应用了哪些」——它就是账上的真相，
+    // 不需要在测试里另抄一份版本清单（抄一份 = 每加一个迁移再改一次，`LEARNINGS #002-06`）。
+    const applied = await migrate(db)
+    for (const version of [...applied].reverse()) await rollback(db, version)
 
     const result = await db.execute(sql`
       select count(*)::int as n from information_schema.tables
@@ -302,9 +303,15 @@ describe("rollback 的边界", () => {
     const db = freshDb()
     await migrate(db)
 
-    const thrown = await errorOf(rollback(db, "0001_init"))
+    // 「最老的那个」与「真正的 head」都从迁移目录取，不写死：这条要钉的是
+    // **守卫有没有认出当前的 head**，而 head 会随每次新增迁移往后挪。
+    const versions = await migrationVersions()
+    const oldest = versions[0]!
+    const head = versions.at(-1)!
 
-    expect(thrown.message).toContain("0003_flags_not_null")
+    const thrown = await errorOf(rollback(db, oldest))
+
+    expect(thrown.message).toContain(head)
   })
 
   test("拒绝回滚没应用过的版本，也不把版本号拼进文件路径", async () => {
@@ -323,9 +330,11 @@ describe("rollback 的边界", () => {
   test("回滚 head 之后，schema 与账仍一致，再 migrate 能完整回到 16 列", async () => {
     const db = freshDb()
     await migrate(db)
-    await rollback(db, "0003_flags_not_null")
 
-    expect(await migrate(db)).toEqual(["0003_flags_not_null"])
+    const head = (await migrationVersions()).at(-1)!
+    await rollback(db, head)
+
+    expect(await migrate(db)).toEqual([head])
     expect(await columnCountOf(db)).toBe(DESIGN_V2_COLUMNS.length)
   })
 })

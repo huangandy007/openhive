@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { login } from "./login"
-import { migrate, rollback, rowsOf } from "./migrate"
+import { migrate, migrationVersions, rollback, rowsOf } from "./migrate"
 import { pgErrorCode } from "./pg-errors"
 import { DuplicatePoliceNoError, registerUser, type RegisterInput } from "./register"
 import { DEPLOYED_DEFAULT_PASSWORD, withProductionDb, withTempMigrations } from "./test-support"
@@ -64,7 +64,7 @@ describe("生产驱动 (bun-sql) × 真库", () => {
   // 「无法从查询结果中取出行」，migrate 的第二次调用就过不去。
   test("migrate 在生产驱动上跑通，且第二次幂等", async () => {
     await withProductionDb(async (db) => {
-      expect(await migrate(db)).toEqual(["0001_init", "0002_deactivated_at", "0003_flags_not_null"])
+      expect(await migrate(db)).toEqual(await migrationVersions())
       expect(await migrate(db)).toEqual([])
     })
   })
@@ -136,13 +136,12 @@ describe("生产驱动 (bun-sql) × 真库", () => {
 
   // 以前这里只回滚 `0001_init` 一把删表——那是**越过 head 回滚**，现在被 rollback 的守卫拒绝
   // （见 migrate.ts：会让账与 schema 永久背离）。改成按逆序回滚到空库：语义相同（可逆），
-  // 而且顺带在生产驱动上把**三个** down 脚本都跑了一遍。
+  // 而且顺带在生产驱动上把**每一个** down 脚本都跑了一遍（有几个由 `migrate()` 报了算，
+  // 不在这里写死数字——`LEARNINGS #002-06`：会随编辑变的值别写死）。
   test("rollback 在生产驱动上可逆（按逆序回滚到空库）", async () => {
     await withProductionDb(async (db) => {
-      await migrate(db)
-      await rollback(db, "0003_flags_not_null")
-      await rollback(db, "0002_deactivated_at")
-      await rollback(db, "0001_init")
+      const applied = await migrate(db)
+      for (const version of [...applied].reverse()) await rollback(db, version)
 
       const result = await db.execute(sql`
         select count(*)::int as n from information_schema.tables

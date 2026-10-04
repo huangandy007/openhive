@@ -84,6 +84,20 @@ function upFiles(names: string[]): string[] {
 }
 
 /**
+ * 仓库里定义了哪些迁移版本（按文件名序，只含 up 脚本）——**「全部应当被应用的版本」的取数口**。
+ *
+ * 给测试用的：断言「migrate 应用了整批」时，期望值取这里，**不要写死 `["0001_init", …]`**。
+ * 写死的话每加一个迁移都要回来改一串测试（`LEARNINGS #002-06`：会随编辑变的值别写死），
+ * 004 加 `0004_rbac` 时就是这样一次撞击。
+ *
+ * 与 `rollback` 里那段「按文件序取已应用的最后一个」共用同一份 `upFiles` —— 两处**不是**
+ * 各写一份判据，所以不会悄悄漂（`LEARNINGS #003-05`：假的镜像比没有镜像更危险）。
+ */
+export async function migrationVersions(dir: string = MIGRATIONS_DIR): Promise<string[]> {
+  return upFiles(await readdir(dir)).map(versionOf)
+}
+
+/**
  * 「逐条执行」这件事有**两代说法，别把第一代当成现状**。
  *
  * **第一代（002 时期，`0003_flags_not_null.sql` 的文件头就是为此写的）**：运行器**没有事务**
