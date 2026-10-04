@@ -104,12 +104,17 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
    * `rbac.ts` 的 `TOOL_OF` 表和**这一条断言**——否则「mcp 授权到今天还没生效」会被
    * 悄悄读成「已经生效了」（`LEARNINGS #002-02`）。
    */
-  test("③ 未投影类型（mcp / knowledge_base）不产规则 —— 显式缺口，指向 T007", () => {
+  test("③ 未投影类型（mcp / knowledge_base）不产规则 —— 这里不产，不等于没人产", () => {
     expect(AccessRbac.resolve([grant("mcp", "fund-db", "read")])).toEqual([])
     expect(AccessRbac.resolve([grant("knowledge_base", "kb-1", "read")])).toEqual([])
 
     // 且表里那张「资源类型 → 工具名」的对照今天只认 skill 一行。
     expect(Object.keys(AccessRbac.TOOL_OF)).toEqual(["skill"])
+
+    // ⚠️ `mcp` 从 T007 起**已经投影**，但不在这条 v2 出口上：它的形状要一对规则、两套名字，
+    // 且名字由调用方给 ⇒ 落在 `AccessSession.sessionRuleset` 的第二段（`McpServerNaming`）。
+    // 这条断言钉的是「`resolve()` 这条 v2 出口仍然只认 skill」——别把上面那句读成「mcp 没人管」。
+    // 链 B（v2 / CLI）的 MCP 至今没有消费者，那一半仍是缺口。
   })
 
   /**

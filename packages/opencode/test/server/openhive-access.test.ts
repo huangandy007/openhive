@@ -95,13 +95,17 @@ describe("T006 · capability → 链 A 会话规则集", () => {
   })
 
   /**
-   * 未投影的资源类型（`mcp` / `knowledge_base`）：**不产规则**——与 `resolve()` 的裁定一致。
+   * 不给 server 名单时，**mcp 授权行产不出规则**——T007 之后仍然是这条（零回归）。
+   *
+   * T007 把 `mcp` 接上了，但**不是接在这里**：mcp 的规则形状要两个名字（工具名前缀 / 资源
+   * pattern），而名字必须由调用方翻译（core 够不着 `McpCatalog.sanitize`）⇒ 名单是
+   * `sessionRuleset(grants, mcp?)` 的**第二个参数**，不传就是不投影。本文件（T006 的验收）
+   * 走的就是不传那条，所以逐字不变。
    *
    * ⚠️ 但**那条整体 deny 仍要出**：`GOVERNED` 表说的是「哪些**资源类型**受 RBAC 管」，
    * 与「这个用户有没有该类授权」无关。今天只有 skill 一个受管类型，所以零授权也有 deny。
-   * 将来接上 mcp 时，`GOVERNED` 与 `TOOL_OF` 必须**同时**改——有一条断言钉着这个同步。
    */
-  test("⑤ mcp / knowledge_base 今天不投影，但受管工具的兜底 deny 不因此消失", () => {
+  test("⑤ 不给 server 名单 ⇒ 不投影（零回归），但受管工具的兜底 deny 不因此消失", () => {
     const ruleset = AccessSession.sessionRuleset([grant("mcp", "fund-db", "read")])
 
     expect(ruleset).toEqual([{ permission: "skill", pattern: "*", action: "deny" }])
@@ -111,11 +115,14 @@ describe("T006 · capability → 链 A 会话规则集", () => {
    * 🔗 **`GOVERNED` 必须与 `AccessRbac.TOOL_OF` 的键集一致**——这是一条「被上游变更惊醒」
    * 的断言（`LEARNINGS #003-05`：镜像要写成能被对面改动惊醒的样子）。
    *
-   * 将来谁往 `TOOL_OF` 加了 `mcp`，本条立刻红，逼他回来回答一个**必须有人回答**的问题：
-   * 「这个类型映射到的工具名，是不是被别的用途共用了？」——链 A 的 MCP 资源工具用的是
-   * `permission: "read"`（`src/session/tools.ts` 的 `ctx.ask({permission: "read", patterns: ["mcp:<server>:*"]})`），
-   * **与文件读取同名**；照抄 skill 那样给它补一条整体 `deny read:*` 会把文件读一起拒掉。
-   * 那种类型不能走「整体 deny + 逐条 allow」，得另设计。
+   * T007 接上 mcp 之后，这条**仍然**要成立，而且理由更具体了：mcp **塞不进** `TOOL_OF`
+   * 那种「一个类型 → 一个工具名」的静态对照——它的工具名是 `<server 前缀>_<工具名>`，
+   * **随 server 变**，而资源那一半根本不是工具名（是 `permission: "read"`，与文件读取同名，
+   * `src/session/tools.ts` 的 `ctx.ask({permission: "read", patterns: ["mcp:<server>:*"]})`）。
+   * 所以 mcp 走的是 `sessionRuleset` 的第二段（名单由调用方给，`src/server/openhive/access.ts`）。
+   *
+   * 将来谁**真的**往 `TOOL_OF` 里加了 `mcp`（照抄 skill 那种静态写法），本条立刻红，
+   * 逼他回来回答：「这个类型映射到的工具名，是不是被别的用途共用了？」
    */
   test("⑥ GOVERNED 与 core 的 TOOL_OF 键集同步（加新类型时这条会红）", () => {
     expect([...AccessSession.GOVERNED].map(String).sort()).toEqual(Object.keys(AccessRbac.TOOL_OF).sort())
