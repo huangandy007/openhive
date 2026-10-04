@@ -1016,7 +1016,14 @@ it.instance("subtask child inherits parent session external_directory allow", ()
   }),
 )
 
-noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
+// 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006）。
+// 上游此例名（`replace previous prompt tool rules`）编码的正是 `input.tools` 的**整体覆盖**语义。
+// openhive 改成**并入**（`AccessSession.mergeClientRules`：客户端规则在前、既有规则在后），
+// 否则客户端一条 `tools: { skill: true }` 就能把会话创建时算好的 capability 抹掉 ——
+// **一次请求绕过 RBAC**（安全属性由 `test/server/openhive-access.test.ts` 的
+// 「⑦ 客户端 tools 里的 allow 不得压过 capability 的 deny」单独钉住）。
+// 于是第二次 prompt 只并入、不再掀掉第一次的 `bash: deny`：deny 留下来（更安全的默认）。
+noLLMServer.instance("prompt tools merge into session permission (does not erase earlier rules)", () =>
   Effect.gen(function* () {
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
@@ -1038,8 +1045,14 @@ noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
     })
 
     const reloaded = yield* sessions.get(session.id)
-    expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
-    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
+    // 第二次的客户端规则在前、第一次的 `bash: deny` 在后（`mergeClientRules` 保持插入顺序）。
+    expect(reloaded.permission).toEqual([
+      { permission: "read", pattern: "*", action: "allow" },
+      { permission: "bash", pattern: "*", action: "deny" },
+    ])
+    // 并入 ⇒ 上一次的 deny 留下来（上游是 replace，这里会退回 ask）。
+    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("deny")
+    expect(Permission.evaluate("read", "anything", reloaded.permission ?? []).action).toBe("allow")
   }),
 )
 
