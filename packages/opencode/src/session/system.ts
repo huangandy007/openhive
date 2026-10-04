@@ -52,7 +52,7 @@ export function provider(model: Provider.Model) {
 
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
-  readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
+  readonly skills: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
 }
 
@@ -104,8 +104,18 @@ const layer = Layer.effect(
         ].filter((part): part is string => part !== undefined)
       }),
 
-      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
-        if (Permission.disabled(["skill"], agent.permission).has("skill")) return
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T005）。
+      // 上游这里只读 `agent.permission`，于是 capability 把 `skill` 工具从 tools 里拿掉之后，
+      // **系统提示词照样把全部技能列出来**，还写着「用 skill 工具加载技能」——提示词与工具清单
+      // 互相打架（模型会去调一个不存在的工具）。
+      // 改为与工具过滤**逐字同款**：同一个 `Permission.disabled`、同一个合并顺序
+      // （`merge(agent.permission, permission ?? [])`，capability 在后 ⇒ 后者胜）——
+      // 与 `resolveTools`（`session/llm/request.ts`）和本文件下面的 `mcp()` 完全同形。
+      // ⚠️ 上游改了 `skills` / `disabled` 的判据，这三处要一起改（否则就是假的镜像，
+      // `LEARNINGS #003-05`）。不变式：**目录可见 ⟺ skill 工具可见**，
+      // 由 `test/session/openhive-tool-visibility.test.ts` 的矩阵断言钉住。
+      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset) {
+        if (Permission.disabled(["skill"], Permission.merge(agent.permission, permission ?? [])).has("skill")) return
 
         const list = yield* skill.available(agent)
 

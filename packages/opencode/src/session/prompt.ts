@@ -1263,7 +1263,10 @@ const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
+              // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T005）。
+              // 与紧邻的 `sys.mcp(agent, session.permission)` 同款：把这条会话的 capability
+              // 一并交进去，否则 capability 拿掉了 `skill` 工具、提示词却照旧列出全部技能。
+              sys.skills(agent, session.permission),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
