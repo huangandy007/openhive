@@ -4,6 +4,12 @@
 
 **Prerequisites**: spec.md（用户故事）、plan.md（结构 / 集成点）、F1 三栏 + F3 沙箱已落地
 
+> 📥 **接收自 F4 的移交（2026-10-04，用户裁定）——半条**：004-access-control 的 **T011（数据轴 /
+> 工作空间轴两套权限解耦）** 的工作空间轴一半落到本文件 **T004**（`project_member` 表 + 微信群模型
+> 权限判定）。判据「**工作空间成员身份不改变数据访问结果**」需要**两轴的表都在**才验得了：
+> 数据轴那半在 `007-fund-analysis` T004（`fund_project_member`）。完整移交说明见
+> `007-fund-analysis/tasks.md` 的文件头 📥 块。
+
 **Tests**: 以「受影响 package 的 bun test」覆盖成员权限判定、归档/找回状态流转。
 
 ## 任务格式约定
@@ -23,6 +29,7 @@
 
 - [ ] T003 [BE] 实现 project 表加字段（type / project_type / shared_directory / last_accessed_at / archived / archived_at）[FR-008] [T001] [出参：加列后 typecheck 通过]
 - [ ] T004 [BE] 实现 project_member 表 + 微信群模型权限判定（owner/member 权责）[FR-004] [T001] [出参：权限判定单测通过]
+  - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
 
 ## Phase 3: US1 项目列表与新建（P1）
 
