@@ -67,6 +67,8 @@
     而实测**所有消费者读的都是** `{action=<工具名>, resource=<工具实参>}` ⇒ 旧词表**一条都命中不了、全部静默落回 ask**
     （`LEARNINGS #003-05` 的假镜像形状）。用户 2026-10-04 三条裁定：① **改 `resolve()`**（不改消费者）；
     ② **只有 `read` 进 ruleset**；③ **`mcp` / `knowledge_base` 跳过 ＋ 显式记缺口**（指向 T007）。
+    > ✅ ③ 里的 **`mcp` 已由 T007 落地**（2026-10-05，走 `sessionRuleset` 的 ② 段、名单由调用方给；
+    > `resolve()`/`TOOL_OF` 这条出口**仍然只认 skill**——那条断言照旧成立）。`knowledge_base` 仍是缺口。
     落地：`rbac.ts` 加 `TOOL_OF` 对照表 ＋ 两个守卫；`test/access-rbac.test.ts` **7 → 8 条**（② ③ 换语义、新增 ③ 缺口断言）。
     变异 M1/M2/M3 **全部恰红目标**。门禁复跑全绿（typecheck 0／lint:openhive 0／全局 4942/1/3452 与基线逐字相同／core 三个 access 测试 16 pass）。
     详情见 `state.md` 的「T004 修正」段。

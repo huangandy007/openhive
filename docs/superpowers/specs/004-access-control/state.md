@@ -668,6 +668,10 @@ T006（执行守卫）开工前的侦察里，实测了**所有**吃 ruleset 的
 | 四个 `perm` 都进吗 | **只有 `read` 进 ruleset** | `if (grant.perm !== "read") continue`。写 / 审 / 管是管理动作，今天没有承载它们的工具；仍留在表里，记账为「无消费者」 |
 | `mcp` / `knowledge_base` 投不到怎么办 | **跳过 ＋ 显式记缺口**（指向 T007） | `if (tool === undefined) continue` ＋ 测试 ③ 断言 `Object.keys(TOOL_OF) === ["skill"]` |
 
+> ✅ **第三行里 `mcp` 那一半已由 T007 落地**（2026-10-05）：走 `sessionRuleset` 的 ② 段（名单由调用方给），
+> `resolve()`/`TOOL_OF` 这条出口**仍然只认 skill**（上表那行断言照旧成立、未被作废）。
+> `knowledge_base` 仍无承载它的工具 —— 真缺口。
+
 #### 测试与变异（照 `LEARNINGS #003-02`：把修复本身当新代码再审一轮）
 
 测试 `test/access-rbac.test.ts` **7 → 8 条**（重写 ①②④⑤⑥⑦⑧、新增 ③ 缺口断言）。三个变异**全部恰红目标**：
@@ -799,6 +803,8 @@ D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/
    触发条件与判据逐字记在此处，不假装闭合。
 5. `write` / `review` / `admin` 三个 `perm` 今天仍无消费者；`mcp` / `knowledge_base` 仍投不到
    工具断言（归 T007）—— 同上，落回 `ask`，**不生效但不误放行**。
+   > ✅ **本条的 `mcp` 一半已由 T007 落地**（2026-10-05）：不在 `resolve()`/`TOOL_OF` 那条 v2 出口上，
+   > 而是走 `sessionRuleset` 的 ② 段（名单由调用方给）。`knowledge_base` 仍是缺口（链 A/链 B 都没有承载它的工具）。
 
 ---
 
