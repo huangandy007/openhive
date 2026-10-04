@@ -1,4 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { AccessSession } from "@opencode-ai/core/access/session"
+import { User } from "@opencode-ai/core/user"
+import { OpenhiveAccess } from "@/server/openhive/access"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -60,6 +63,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006）。
+    // 层构造期建一次「按身份取 capability」的能力（内部是惰性、复用的 auth 库连接池，
+    // 理由见 `@/server/openhive/access`）。身份门关着时它一次都不会被调用 ⇒ 零影响。
+    const capabilityFor = OpenhiveAccess.capabilityFor()
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
@@ -153,7 +160,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
-      return yield* shareSvc.create(ctx.payload)
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006）。
+      // 身份门关着 / 这次请求没有身份 ⇒ 直通，与加 capability 之前逐字相同。
+      const user = yield* Effect.serviceOption(User.Service)
+      if (Option.isNone(user)) return yield* shareSvc.create(ctx.payload)
+
+      // capability **由服务端按身份算出来**，客户端送来的 `permission`（`CreateInput.permission`
+      // 是客户端可填的）只能排在它**前面**：`mergeClientRules` 把既有规则留在最后，
+      // 而链 A 的 `evaluate` 取 `findLast` ⇒ capability 是最后的话事人。
+      // 反过来写（客户端规则在后）就是一条越权：自带一条 `allow skill:*` 就能把自己没被
+      // 授予的 skill 打开——与 `prompt.ts` 那处同形。
+      const capability = yield* capabilityFor(user.value.id)
+      return yield* shareSvc.create({
+        ...ctx.payload,
+        permission: AccessSession.mergeClientRules(ctx.payload?.permission ?? [], capability),
+      })
     })
 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {
@@ -194,7 +215,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       if (ctx.payload.permission !== undefined) {
         yield* session.setPermission({
           sessionID: ctx.params.sessionID,
-          permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
+          // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006）。
+          // 上游这里是 `Permission.merge(current, payload)`（= 拼接，客户端规则在**后**）⇒
+          // 客户端一条 `allow skill:*` 就压过 capability。改为客户端在前、既有在后。
+          permission: AccessSession.mergeClientRules(ctx.payload.permission, current.permission ?? []),
         })
       }
       if (ctx.payload.time?.archived !== undefined) {

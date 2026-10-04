@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { AccessSession } from "@opencode-ai/core/access/session"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -1057,13 +1058,20 @@ const layer = Layer.effect(
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
 
-      const permissions: PermissionV1.Rule[] = []
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006）。
+      // 上游这里是 `session.permission = permissions`（**整体覆盖**），而 `input.tools` 是
+      // 客户端发来的 ⇒ `tools: { skill: true }` 能把服务端在会话创建时算好的 capability
+      // 整个抹掉，**一次请求绕过 RBAC**。改成「客户端规则在前、既有规则在后」的合并：
+      // capability 留在最后，`evaluate` 取 `findLast` ⇒ 它才是最后的话事人。
+      // 幂等由 `mergeClientRules` 保证（否则每条 prompt 都会把客户端规则再叠一遍）。
+      const clientRules: PermissionV1.Rule[] = []
       for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-        permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
+        clientRules.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
       }
-      if (permissions.length > 0) {
-        session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+      if (clientRules.length > 0) {
+        const merged = AccessSession.mergeClientRules(clientRules, session.permission ?? [])
+        session.permission = merged
+        yield* sessions.setPermission({ sessionID: session.id, permission: merged })
       }
 
       if (input.noReply === true) return message

@@ -698,6 +698,11 @@ const layer: Layer.Layer<
         workspaceID: original.workspaceID,
         title,
         metadata: structuredClone(original.metadata),
+        // 【保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T006 裁定）。
+        // 上游 fork **不带** `permission` ⇒ fork 出来的会话没有服务端算好的 capability，
+        // 落回可自批的上游兜底 `ask`（skill 带 `always`），而成品端点是客户端可控的。
+        // 派生会话继承派生源的权限，与「派生自哪条会话」这件事的直觉也一致。
+        permission: original.permission,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
