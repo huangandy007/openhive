@@ -2,8 +2,9 @@
 
 ## 当前任务
 
-**T001 已完成**（工具执行挂载点清单，见下「已完成」），**质量门禁基线已实测并落档**（见下）。
-已 commit，**停下等「next」**才进 T002。
+**T002 已完成**（capability scope 结构，见下「已完成」）。已 commit，**停下等「next」**才进 T003。
+
+**待裁一项**：D-05（生产里谁跑迁移）须在 **T004 之前**裁定，见 D0-3 段。
 
 ---
 
@@ -212,6 +213,72 @@ NpmConfig.registry > leaves configured registry without trailing slash unchanged
 4. ⇒ 按 D0-1 裁定「两条都接」，**接线点是 2 处（每链一处注入 ruleset）**，而不是 6 处；
    因为上游的钩子已经把 6 个执行点收敛到「同一份 ruleset」上。
 
+### T002 · capability scope 结构
+
+**落点**（新建两个文件，**都是 openhive 定制、非上游**）：
+- `packages/core/src/access/capability.ts` —— 结构定义
+- `packages/core/test/access-capability.test.ts` —— 4 条 canary，4 pass
+
+**形态**（出参 = 「capability 结构定义」）：
+
+```text
+Capability
+├── id          cap_*   —— 审计要能回答「是哪一张证做的判定」（FR-010 / FR-004）
+├── scope
+│   ├── user       string         —— auth.user.id，**只能来自已验签的 User.Info**
+│   ├── project    Project.ID     —— 工作空间轴（会话锚定），**不是**数据轴
+│   └── dataScope  { subject, rule }  —— 只记「按谁、按哪条规矩查」
+└── permissions    Ruleset        —— 签发时从 RBAC 焊进证里（FR-002）
+```
+
+**三个设计决定与理由**（都是「看着可以随手改、改了就静默出错」的那类）：
+
+1. **`permissions` 焊进证里，不是欠条**。FR-002 说执行器「**只认 capability，不认角色表**」——
+   若执行器每次还要回查 RBAC 表，它就在认角色表了。附带好处：这个形状**正好是上游两条链
+   已经在吃的 `PermissionV2.Ruleset`**，不需要任何翻译层（D0-1 裁定「判定写一份、按链注入」）。
+2. **`scope.user` 只留 id，不搬 `User.Info` 的 `policeNo` / `name` / `isAdmin`**。执行层要的是
+   「这人是谁」（db 路由键 / MCP 身份 / 配额归属），不是「这人叫什么」；`isAdmin` 的判定归
+   RBAC（T004），不在这里抄一份。**这是 `#002-06` 那句「同一个判断在两处各写一份」的预防。**
+3. **`scope.project` = 工作空间轴**（`Project.ID`，即会话的 `projectID`，见
+   `packages/core/src/session/info.ts`）。依据：FR-009 要求两轴解耦，而数据轴已归 `dataScope`
+   那一栏；若 `project` 也指数据项目，两轴就在结构里绑死了。
+   ⚠️ **这条是我从 FR-009 + design-v2 §14.1 推出来的，不是用户逐字确认过的**——用户只就
+   `dataScope` 那一栏拍板（见下）。若这个理解有误，T003 签发前请指出。
+
+**用户裁定（2026-10-04，三选一）**：`dataScope` 只写「按谁、按哪条规矩查」
+⇒ `{ subject: 用户id, rule: "project-membership" }`，**刻意不含任何项目 id 列表**。
+被否掉的两案：①把 design-v2 说的「两个来源」都做成字段（`projectMembership` + `interfaceScopes`）；
+②干脆不要这一栏（与 FR-001 原文「按用户 + 项目 + 数据范围签发」不符）。
+
+**为什么「不含项目 id 列表」是安全要求而非风格**：一份 `projectIds: ["p1","p2"]` 写进证里，
+会在**整个会话生命周期内冻住**——用户事后被加进 p3，手里的证仍只认 p1/p2，**且没有任何报错**。
+FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非手动勾选」。
+
+#### 变异验证（照 `LEARNINGS #003-03`，三类结论据实记）
+
+| # | 变异 | 结果 | 属于哪类 |
+|---|---|---|---|
+| A | `DataScope` 加 `projectIds?: string[]` | **恰红 1 条**（「放不进冻结的项目 id 列表」），其余 3 条绿 | ① 最理想 |
+| B | `DataScope` 加 `project?: string` | **恰红 1 条**（「不含工作空间项目」），其余 3 条绿 | ① 最理想 |
+| C | 证里的 ruleset 补一条 catch-all `{action:"*",resource:"*",effect:"allow"}` | **恰红 1 条**（「未命中仍是 ask」） | ① —— 且**红的形态比预期更值钱** |
+
+变异 C 的额外收获（值得单记）：**catch-all allow 会把已明确 `deny` 的动作也翻成 `allow`**
+——报错原文 `Expected: "deny" / Received: "allow"`。因为上游 `evaluate` 用 `findLast` +
+通配，最后一条匹配的说了算。⇒ 以后但凡有人为了「省事」补兜底 allow，
+**拒掉的不是「多问一次」，而是把这个工具上明确写下的拒绝一起作废**。
+
+三次变异都已还原，还原后复跑 **4 pass**。
+
+#### 门禁（串行，取退出码不进管道）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线 |
+| `bun run lint` | exit 1，**4942 warnings / 1 error / 3443 files** | 与基线**逐字相同**；文件数 3441 → 3443（= 新增 2 个）；**我这两个新文件 0 命中** |
+| `packages/core` 全量测试 | **1145 pass / 8 skip / 5 fail** | pass 1141 → 1145（+4 = 新增用例）；**失败名差集为空**（仍是那 5 条 `NpmConfig` 环境红） |
+
+（`lint:openhive` 只覆盖 `packages/app/src/...`，本次改动全在 `packages/core`，与该门禁无关。）
+
 ---
 
 ## 阻塞项
@@ -220,4 +287,4 @@ NpmConfig.registry > leaves configured registry without trailing slash unchanged
 
 ## 最后更新
 
-2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档）
+2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构）

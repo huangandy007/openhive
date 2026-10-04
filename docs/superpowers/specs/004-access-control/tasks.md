@@ -19,7 +19,13 @@
     （A = opencode v1 / web UI，B = core v2 / CLI·sdk-next，互不 import），且**两条链各自已有上游的
     ruleset 驱动钩子**（清单过滤 + 执行断言）。完整挂载点清单见 `state.md` 的 D0-1 表。
     用户裁定：**两条都接**（判定写一份、按链注入 ruleset），落点 **core**。
-- [ ] T002 [P] 确定 capability scope 结构（用户 + 项目 + 数据范围字段）[FR-001] [无依赖] [出参：capability 结构定义]
+- [x] T002 [P] 确定 capability scope 结构（用户 + 项目 + 数据范围字段）[FR-001] [无依赖] [出参：capability 结构定义]
+  - ✅ 2026-10-04 完成。落点 `packages/core/src/access/capability.ts`（**openhive 定制文件，非上游**）
+    ＋ canary 测试 `packages/core/test/access-capability.test.ts`（4 pass）。结构：
+    `Capability = { id: cap_* , scope: { user, project(=工作空间轴 Project.ID), dataScope }, permissions: Ruleset }`。
+    **裁定（用户 2026-10-04）**：`dataScope` 只写「按谁、按哪条规矩查」
+    （`{ subject, rule: "project-membership" }`），**不写任何项目 id 列表**——写死即冻结，
+    与 FR-008「运行时实时算出」冲突。完整理由 / 实测 / 变异验证见 `state.md` 的 T002 段。
 
 ## Phase 2: Foundational（capability 签发 + RBAC）
 
