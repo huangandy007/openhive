@@ -1,12 +1,13 @@
-import { afterAll, describe, expect } from "bun:test"
+import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
-import { DEPLOYED_DEFAULT_PASSWORD, restorePoint } from "@opencode-ai/auth/test-support"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -100,6 +101,38 @@ afterAll(() => {
   try {
     rmSync(SANDBOX, { recursive: true, force: true })
   } catch {}
+})
+
+/**
+ * ## T006（2026-10-04）：本文件现在还要求一个**真 auth 库**
+ *
+ * T006 把「按身份取 capability」接到了会话创建上（`@/server/openhive/access`）。门开着时
+ * `POST /session` 会用 `connect(process.env)` 去查 `auth.role_resource`——**查不到就不把会话
+ * 建出来**（fail-closed）：「取不到授权」与「没有任何授权」在会话那一层长得一样，若静默按
+ * 「空授权」放行，skill 会落回**可自批的 `ask`**，正是 T006 要堵的洞。于是
+ * **「门开 ⇒ 建会话须能连 auth 库」成了运行期契约**。本文件按 T020 的先例满足它——
+ * `openhive-bootstrap.test.ts` 是同一形状：测试像一次真部署那样把配置配齐。
+ *
+ * ⚠️ **夹具必须是文件级，不能每用例一个。** 本文件的应用层是模块级构建的（下面的 `openApp`），
+ * `HttpApiApp.routes` 的层构造**全文件只跑一次**，层里那个 auth 连接池
+ * （`@/server/openhive/access` 的惰性闭包）也只建一次、**指向第一个用例那个端口**。
+ * 照「每用例起一个 PGlite」写的话，第 2~4 条会连向一个已经关掉的端口——表现为
+ * `POST /session` 500 而**第 1 条是绿的**，因果极难看出。夹具拆分的理由写在
+ * `startProductionDb` 上（`@opencode-ai/auth/test-support`）。
+ *
+ * 库里**一条授权行都没有**（空库，只跑迁移）⇒ 每个用户拿到的是「一条整体 deny skill」。
+ * 本文件断言的是**跨库隔离**，与授了什么无关；授权那一半归 `openhive-access.test.ts` 与
+ * `packages/auth/src/rbac.test.ts`。
+ */
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+})
+
+afterAll(async () => {
+  await pg?.stop()
 })
 
 const OPEN: Record<string, string | undefined> = {
