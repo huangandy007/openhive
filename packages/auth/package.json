@@ -10,7 +10,8 @@
   },
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "migrate": "bun run script/migrate.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

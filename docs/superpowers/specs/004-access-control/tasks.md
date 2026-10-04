@@ -39,6 +39,17 @@
     `dataScope.subject` **一律由 `user.id` 派生**（调用方无法替别人签，canary 钉死），
     `permissions` 原样焊进证里（未命中仍是上游兜底 `ask`）。变异 A/B/C 见 `state.md` T003 段。
     门禁：typecheck exit 0；`lint` 我两个新文件 0 命中；core **1149 pass / 8 skip / 5 fail**（差集为空）。
+- [x] T015 实现迁移 CLI（`migrate()` 的生产调用路径）[D-05 裁定] [出参：一条可执行的迁移命令——缺配置必响、没活干要说话]
+  - ⚠️ **不在原计划里**：由 `docs/workspace/deploy-todo.md` 的 **D-05** 裁定产生。004 要加 `0004`（RBAC 表），
+    正好撞上 D-05 那笔账（`migrate()` 唯一的调用点是一次性引导 ⇒ 撤掉变量后**新迁移没人应用**）。
+    用户 2026-10-04 两问两裁：路径 ⇒ **独立 CLI 脚本**；回滚范围 ⇒ **只做向上迁移**。
+  - ✅ 2026-10-04 完成。落点 `packages/auth/src/migrate-cli.ts`（openhive 定制）
+    ＋入口 `packages/auth/script/migrate.ts`＋`packages/auth/package.json` 加 `migrate` 脚本
+    （**package.json 是上游文件被改，提交信息已单独标注**）。命令：`bun run --filter @opencode-ai/auth migrate`。
+  - 测试 `packages/auth/src/migrate-cli.test.ts`（2 pass）；**第二半是真库**——PGlite socket 走**生产驱动** `bun-sql`，
+    钉「第一次有活干 / 第二次幂等且**仍有输出**」。变异 A（把缺配置降级成静默 `return []`）**恰红 1 条**。
+  - ⚠️ **R11 未被解锁**：CLI 只做向上迁移 ⇒ 003 的**回归条件 ③**（`rollback()` 有了生产调用者）**未触发**，
+    维持「明确不做」。🚩 触发条件已收紧并**逐字写进** CLI 头部注释 ＋ D-05 条目。完整裁定见 `state.md` T015 段。
 - [ ] T004 [P] 实现 RBAC 表（role / user_role / role_resource）+ 权限判定（读/写/审/管）[FR-007] [T001] [出参：角色授资源权限，判定函数返回正确结果]
 
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
@@ -81,5 +92,5 @@
   ＋ `005-project-management` T004 落地。
 - **Phase 6**：T012（依赖 T006）∥ T013（依赖 T008）∥ T014（依赖 T006+T008）
 
-共 14 条任务（T001–T014），其中 **2 条移交 F7**（T010 / T011）⇒ **本 feature 在册 12 条**（T001–T009 + T012–T014），
-符合 12–18 条范围。
+共 15 条任务（T001–T015），其中 **2 条移交 F7**（T010 / T011）⇒ **本 feature 在册 13 条**（T001–T009 + T012–T015），
+符合 12–18 条范围。⚠️ **T015 是计划外新增**（D-05 裁定产生，非原 tasks 列表），已计入。

@@ -2,12 +2,14 @@
 
 ## 当前任务
 
-**T003 已完成**（capability 签发，见下「已完成」）。已 commit，**停下等「next」**。
+**T015 已完成**（迁移 CLI，**计划外任务**——由 D-05 裁定产生，见下「已完成」）。已 commit，**停下等「next」**。
 
-下一条可选：**T004**（RBAC 表 + 判定，依赖 T001，与 T003 无双依赖）／**T005**（工具清单过滤）／
+> 📌 **插叙**：原计划「T003 之后接 T004」，但 T004 的前置是 **D-05 必须裁定**（见 D0-3 段）。
+> 用户 2026-10-04 把 D-05 当场裁掉（两问两裁：独立 CLI ✅ / 只做向上迁移 ✅），于是先落地 **T015**，
+> 再回来做 T004。**D-05 已解**（见下方「阻塞项」）。
+
+下一条可选：**T004**（RBAC 表 + 判定，依赖 T001）——D-05 已解，无前置；／**T005**（工具清单过滤）／
 **T006**（执行守卫）——T005/T006 依赖 T001 ＋ T003，两条已就绪。先做哪条由用户定。
-
-**待裁一项**：D-05（生产里谁跑迁移）须在 **T004 之前**裁定，见 D0-3 段。
 
 ---
 
@@ -164,6 +166,11 @@ Session.Info.permission（V1 形状，可选，schema/v1/session.ts:566）
   ⇒ **003 的 D-05 已成立**：004 的 RBAC 表是「新迁移」⇒ 按现状**上线建不出来**。
 - **待裁（T004 之前必须解决，用户已知悉）**：给迁移一条独立于引导的生产入口（CLI / 启动开关），
   或明确「部署流程手动跑」并写进 `docs/workspace/deploy-todo.md`。CC: `deploy-todo.md` D-05。
+  > ✅ **2026-10-04 已裁已落**：用户选**独立 CLI 脚本**（否掉「启动开关」：会把一次性引导变成常驻开关，
+  > 撤变量的初衷就没了），且**只做向上迁移、不带 `rollback`**。落点 `packages/auth/src/migrate-cli.ts`
+  > ＋入口 `packages/auth/script/migrate.ts`，命令 **`bun run --filter @opencode-ai/auth migrate`**。
+  > ⇒ 上面那句「按现状**上线建不出来**」**至此不成立**：T004 的 `0004` 有路径可应用了。
+  > 详见下方 **T015** 段与 `deploy-todo.md` D-05 的「已解」块。
 - 建表约束（`packages/auth/src/migrations/README.md`）：整轮迁移**一个事务** ⇒ **禁写
   `CREATE INDEX CONCURRENTLY`**（报 25001）；分隔符 `--> statement-breakpoint`；隔离级别依赖
   READ COMMITTED（D-12）；别改 `MIGRATION_LOCK_KEY`。
@@ -419,10 +426,98 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 
 ---
 
+### T015 · 迁移 CLI（**计划外任务**，由 D-05 裁定产生）
+
+#### 为什么会有这条
+
+`docs/workspace/deploy-todo.md` 的 **D-05**：`packages/auth` 的 `migrate()` 在生产里**唯一**的调用点是
+003 引导首个管理员的 `bootstrap()`（`gateway.ts`），而引导是**一次性**的、跑通就该撤变量 ⇒
+**撤掉之后新迁移没人应用**。002 承诺「幂等、部署可无脑重复调」，但仓库里**没有那个「调」**。
+004 要加 `0004`（RBAC 表），正好撞上这笔欠账 ⇒ **它是 T004 的前置**（见下方「阻塞项」的变更）。
+
+#### 两问两裁（用户 2026-10-04 选定）
+
+| 问题 | 选项 | 结果 | 为什么否掉另一侧 |
+|---|---|---|---|
+| 「定一条可执行的路径」 | ① **独立 CLI 脚本** ／ ② 给引导加启动开关 | ✅ **①** | ② 会把「一次性引导」变成常驻开关：撤变量的初衷是「谁被引导过看得出来」，加开关等于又埋一个「看不出跑没跑」的洞——**与原病同形** |
+| CLI 要不要带 `rollback` | ① **只做向上迁移** ／ ② 连 `rollback()` 一起暴露 | ✅ **①** | ② 会**立刻**解锁 002 评审的 **R11**（`rollback()` 的 head 守卫在「账上有版本、文件已删」时静默失效）。修 R11 是另一笔账，不该搭本次便车 |
+
+#### 落点与命令
+
+| 文件 | 性质 |
+|---|---|
+| `packages/auth/src/migrate-cli.ts` | **openhive 定制，新增**——逻辑在这（放 `src/` 才测得到） |
+| `packages/auth/script/migrate.ts` | **openhive 定制，新增**——`import.meta.main` 入口，失败 ⇒ `console.error` ＋ `process.exit(1)` |
+| `packages/auth/src/migrate-cli.test.ts` | **openhive 定制，新增**——canary |
+| `packages/auth/package.json` | ⚠️ **上游文件被改**（只加一行 `"migrate"` 脚本）——**提交信息单独标注** |
+
+命令：**`bun run --filter @opencode-ai/auth migrate`**。⚠️ `packages/auth` 是 002 才加进来的 workspace 包，
+实测**不在 `upstream/dev` 的 `packages/` 列表里** ⇒ 该目录整体是 openhive 自有，改它的 `package.json` 风险可控
+（但为守「改动可追溯」，仍在提交信息里单列）。
+
+#### 三个设计决定
+
+1. **缺 `PG_*` 必须当场抛，且抛在连库之前**：D-05 的**病根就是「静默不跑」**——今天不设引导变量，
+   迁移一个字节都不做且不报错，而部署方以为跑过了。CLI 若把缺配置降级成跳过 / 默认值 / warning，
+   就是把同一个病换个入口再得一遍。这条钉在 `resolveDatabaseUrl`（`connect()` 内部，`try` 之外），
+   测试 ① 就是它的 canary。
+2. **没活干也要说一声**：`applied.length === 0` 时打印「已是最新」。运维必须能分清
+   **「跑了、没事干」**与**「根本没跑」**——这正是 D-05 那句话的两半。测试 ② 的第二半钉它。
+3. **测试里刻意不断言具体版本列表**（不写死 `["0001_init", …]`）：004 正要加 `0004`，
+   写死了这条会被下一个迁移撞红，而它要钉的根本不是「有哪些迁移」（`LEARNINGS #002-06`：
+   会随编辑变的值别写死）。
+
+#### 测试（2 pass）
+
+| 用例 | 钉什么 |
+|---|---|
+| ① `缺 PG_*：当场抛错，不静默空操作` | 病根那半——**必须是 Error 且消息含 `PG_HOST`**，不是「返回空数组」 |
+| ② `真库：应用待迁移；第二次幂等，且仍有输出` | **真库**（PGlite socket × **生产驱动** `bun-sql`，夹具 `test-support` 的 `withProductionDb`，见 `LEARNINGS #002-05`）；两半都断，**第二半才是这条存在的理由** |
+
+变异验证（`LEARNINGS #003-03`）：把 `connect(env)` 前面加一句
+`if (!env.PG_HOST) return []`（＝把缺配置降级成静默空操作）⇒ **恰红 1 条**（正是用例 ①），
+失败信息正是新写法想要的那句「期望 runMigrate 当场抛错…实际它成功返回了」；用例 ② 仍绿。
+已还原（`grep MUTATION` 无残留），复跑 **2 pass**。
+
+#### ⚠️ 途中修正：`await expect(...).rejects` 触发 `await-thenable`（全仓存量 98 处）
+
+用例 ① 原写成 `await expect(runMigrate({}, () => {})).rejects.toThrow(/PG_HOST/)`，被全局 lint 记 1 条
+`typescript-eslint(await-thenable): Unexpected await of a non-Promise (non-"Thenable") value`。
+**根因在类型声明不在我的代码**：`bun-types@1.3.13/test.d.ts` 把 `rejects` 声明成
+`Matchers<unknown>`（`toThrow` 返回 `void`），于是 `await` 一个 `void` 就中招。
+本机实测全仓已有 **98 处**同类命中（含 `packages/app/src/center/views/zip-entry.test.ts`、
+`packages/core/test/*.test.ts` 的既有测试），**是既有模式不是本次引入**。
+但判据是「**本次新增/改动文件 0 命中**」（`LEARNINGS #001-02`），所以换了写法——**不牺牲语义**：
+`.then(() => null, (e: unknown) => e)` 接住结果，断言照样真的被执行（不是悬空的 promise），
+且「它居然没抛」这件事自己会红。**没用 `as` 强转**（守 `LEARNINGS #002-03`：修测试对齐真实形状，
+不是把产品码迁就错误假设；这里则是让断言形状与「真的被执行」一致）。
+
+#### 门禁（串行，取退出码不进管道）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线 |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4942 warnings / 1 error / 3448 files** | warnings 与基线**逐字相同**（修正前曾多 1，见上）；文件数 3445 → 3448（＝本次新增 3 个）；**我的 5 个新文件逐个 0 命中** |
+| `packages/auth` 全量 | **exit 0**，**202 pass / 1 skip / 0 fail** / 203 tests / 17 files | 基线 200/1/0 → **+2 pass ＋ 1 file，恰是本次两条用例** |
+| `packages/core` 全量 | **不重跑** | 本次**未改** core（T015 只落 `packages/auth`）⇒ 按 `#003-01`「改动影响面所在的测试文件全绿」不适用 |
+
+#### ⚠️ R11 未解锁（触发条件已收紧并要求后续遵守）
+
+003 给 **R11** 写的**回归条件 ③**原文是「`rollback()` 有了生产调用者」。裁定「只做向上迁移」⇒
+**③ 未触发** ⇒ 维持 003 的「明确不做」，本次一行未动 R11。
+🚩 **本 CLI 一旦加 `rollback` 子命令（或任何会调到 `rollback()` 的路径）⇒ R11 立即回归**——
+这句话**逐字写进了** `migrate-cli.ts` 与 `migrate-cli.test.ts` 的头部注释，并同步更新了
+`deploy-todo.md` 的 D-05 条目（原文「解 D-05 时顺手把 R11 一起裁掉」**已作废**，改为上面这个条件）。
+
+---
+
 ## 阻塞项
 
-（无技术阻塞。**待裁一项**：D-05「谁在生产里跑迁移」——须在 T004 之前裁定，见 D0-3。）
+（无技术阻塞。**D-05 已解**（2026-10-04，见 T015 段）——原「待裁一项：D-05 须在 T004 之前裁定」**已消**，
+T004 现无前置。）
 
 ## 最后更新
 
-2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发）
+2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发
++ **D-05 裁定 ＋ T015 迁移 CLI**）

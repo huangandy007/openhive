@@ -814,6 +814,16 @@ T007 曾有的 §5 未裁定问题已由 §5 裁定**乙**解锁。
 ⚠️ **这条裁定已同步到 D-05 那一行**（`deploy-todo.md`）——因为「谁在生产里跑迁移」的答案正是
 ③ 的第一个触发条件；落进接收方的表，而不是只留在这里（`LEARNINGS #002-04`）。
 
+> ✅ **2026-10-04 回填（004 T015 解 D-05 时）**：D-05 **已解**——用户裁定走**独立 CLI**
+> （`bun run --filter @opencode-ai/auth migrate`，落点 `packages/auth/src/migrate-cli.ts`），
+> 并**刻意裁定该 CLI 只做向上迁移、不带 `rollback`**。
+> ⇒ **③ 的第一个触发条件〔`rollback()` 有了生产调用者〕未满足**，本裁定**维持不变**，R11 一行未动。
+> 🚩 **新的触发器**：`migrate-cli.ts` **一旦加 `rollback` 子命令（或任何会调到 `rollback()` 的路径）
+> ⇒ R11 立即回归**，须先按上面 ④ 修掉 head 守卫（**并连带看 ④ 末尾那个「没有事务」的独立缺陷**）。
+> 这句话已逐字写进 `packages/auth/src/migrate-cli.ts` 与 `migrate-cli.test.ts` 的头部注释，
+> **下一个编辑该 CLI 的人一定会读到**（`LEARNINGS #002-04`）。完整两问两裁见
+> `004-access-control/state.md` 的 T015 段。
+
 ### ⚠️ 顺带上报：宪法 §III 的措辞可能仍需一次修订（**未动宪法**）
 宪法 §III 原文：「用户间数据隔离 MUST 靠 **OS 文件权限 + 每用户独立 db** 实现；
 MUST NOT 仅靠应用层 `if` 判断过滤。」
