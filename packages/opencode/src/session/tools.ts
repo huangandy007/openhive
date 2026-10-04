@@ -4,6 +4,7 @@ import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
+import { userMeta } from "@/mcp/openhive-identity"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
@@ -55,6 +56,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  // 【这是要保留的定制】openhive · 004 T007：本请求的 MCP 身份（FR-005）。
+  // **取一次、两个 MCP 出口共用**（server 工具 + 资源工具）——两处各取一次是假镜像。
+  // 没有 `User.Service` 时是 `undefined` ⇒ 下游一个字节都不多发。见 `@/mcp/openhive-identity`。
+  const mcpMeta = yield* userMeta()
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -347,7 +352,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               always: [`mcp:${parsed.server}:*`],
             })
 
-            const content = yield* mcp.readResource(parsed.server, parsed.uri)
+            const content = yield* mcp.readResource(parsed.server, parsed.uri, mcpMeta)
             if (!content) throw new Error(`Failed to read MCP resource: ${parsed.server}/${parsed.uri}`)
 
             const formatted = formatMcpResourceContent(parsed.server, parsed.uri, content)
@@ -388,7 +393,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   if (flags.experimentalCodeMode) return tools
 
   for (const [key, entry] of Object.entries(yield* mcp.tools())) {
-    const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
+    const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout, mcpMeta)
     const execute = item.execute
     if (!execute) continue
 

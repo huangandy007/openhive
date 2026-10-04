@@ -179,9 +179,14 @@ export interface Interface {
     name: string,
     args?: Record<string, string>,
   ) => Effect.Effect<Awaited<ReturnType<MCPClient["getPrompt"]>> | undefined>
+  // 【这是要保留的定制】openhive · 004 T007：第 3 个参数 `meta` 是本 fork 加的（上游只有前两个）。
+  // 它写进出站 `resources/read` 的 `_meta`（FR-005）。**声明在这里同样不能少**——`MCP.Service`
+  // 的消费者看到的是这个 `Interface`（实现多了个可选参数也不影响它满足本签名），
+  // 漏掉这一处就是「实现改了、契约没改」：调用点会报 `Expected 2 arguments`。
   readonly readResource: (
     clientName: string,
     resourceUri: string,
+    meta?: Record<string, unknown>,
   ) => Effect.Effect<Awaited<ReturnType<MCPClient["readResource"]>> | undefined>
   readonly startAuth: (
     mcpName: string,
@@ -778,10 +783,17 @@ const layer = Layer.effect(
       )
     })
 
-    const readResource = Effect.fn("MCP.readResource")(function* (clientName: string, resourceUri: string) {
+    // 【这是要保留的定制】openhive · 004 T007：第 3 个参数 `meta` 是本 fork 加的（上游只有前两个）。
+    // 它写进出站 `resources/read` 的 `_meta`，与 server 工具那条同源（同一份身份）。
+    // **省略 `meta` 时行为与原实现逐字相同**。定义见 `src/mcp/openhive-identity.ts`。
+    const readResource = Effect.fn("MCP.readResource")(function* (
+      clientName: string,
+      resourceUri: string,
+      meta?: Record<string, unknown>,
+    ) {
       return yield* withClient(
         clientName,
-        (client, timeout) => client.readResource({ uri: resourceUri }, { timeout }),
+        (client, timeout) => client.readResource({ uri: resourceUri, ...(meta ? { _meta: meta } : {}) }, { timeout }),
         "readResource",
         { resourceUri },
       )

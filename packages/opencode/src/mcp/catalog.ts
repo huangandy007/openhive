@@ -39,7 +39,16 @@ export function defs(client: Client, timeout?: number) {
   return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
 }
 
-export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+// 【这是要保留的定制】openhive · 004 T007：第 4 个参数 `meta` 是本 fork 加的（上游只有前三个）。
+// 它写进出站 `tools/call` 的 `_meta`，用于把「是谁在调」带给 MCP server（FR-005）。
+// **省略 `meta` 时行为与原实现逐字相同**（连键都不多一个），所有既有调用点不受影响。
+// 定义见 `src/mcp/openhive-identity.ts`。
+export function convertTool(
+  mcpTool: MCPToolDef,
+  client: Client,
+  timeout?: number,
+  meta?: Record<string, unknown>,
+): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -55,6 +64,9 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
         {
           name: mcpTool.name,
           arguments: (args || {}) as Record<string, unknown>,
+          // 【这是要保留的定制】openhive · 004 T007：`meta` 为空时这一行不产生任何键——
+          // 保持「没有身份就不注入」，不是「注入一个空身份」。
+          ...(meta ? { _meta: meta } : {}),
         },
         CallToolResultSchema,
         {
