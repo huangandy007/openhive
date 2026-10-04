@@ -2,7 +2,10 @@
 
 ## 当前任务
 
-**T002 已完成**（capability scope 结构，见下「已完成」）。已 commit，**停下等「next」**才进 T003。
+**T003 已完成**（capability 签发，见下「已完成」）。已 commit，**停下等「next」**。
+
+下一条可选：**T004**（RBAC 表 + 判定，依赖 T001，与 T003 无双依赖）／**T005**（工具清单过滤）／
+**T006**（执行守卫）——T005/T006 依赖 T001 ＋ T003，两条已就绪。先做哪条由用户定。
 
 **待裁一项**：D-05（生产里谁跑迁移）须在 **T004 之前**裁定，见 D0-3 段。
 
@@ -53,6 +56,82 @@ sed -n '106,122p' packages/core/src/tool/registry.ts       # materialize(permiss
   ⇒ **不能**在 registry 上挂一个 `tool-guard.ts`。004 的做法应是
   **把 capability / RBAC 判出来的 ruleset 注入既有钩子**，判定写一份、按链注入（形状抄
   `packages/core/src/quota/session-quota.ts`）。
+
+#### ⚠️ D0-1 补充（T003 开工前实测）：两条链的 `Rule` **形状不等价**，中间必须有一层改编
+
+| | **链 A · `PermissionV1.Rule`** | **链 B · `PermissionV2.Rule`** |
+|---|---|---|
+| 字段 | `{ permission, pattern, action }` | `{ action, resource, effect }` |
+| 定义处 | `packages/schema/src/v1/permission.ts` | `packages/schema/src/permission.ts` |
+| 判定函数 | `evaluate(permission, pattern, ...rulesets)` | `evaluate(action, resource, ...rulesets)` |
+| 命中条件 | `Wildcard.match(permission, rule.permission)` ∧ `Wildcard.match(pattern, rule.pattern)` | `Wildcard.match(action, rule.action)` ∧ `Wildcard.match(resource, rule.resource)` |
+| 未命中兜底 | `{ action: "ask", permission, pattern: "*" }` | `{ action, resource: "*", effect: "ask" }` |
+
+```bash
+cat packages/schema/src/v1/permission.ts        # V1: { permission, pattern, action }
+cat packages/schema/src/permission.ts           # V2: { action, resource, effect }
+sed -n '28,37p' packages/opencode/src/permission/index.ts   # V1 evaluate 的兜底值
+```
+
+- 语义**一致**（都是 `findLast` ＋ 双字段 `Wildcard` ＋ 兜底 `ask`），但**字段名不同**，
+  且「`action`」这个词在两处指**不同的东西**：V1 的 `action` 装的是**效果**（`allow|deny|ask`），
+  V2 的 `action` 装的是**动作**（工具名）。照名字对字段会把两栏对调。
+- ⇒「判定写一份、按链注入」中间**必须有一层改编**：
+  V2 `{ action, resource, effect }` → V1 `{ permission: action, pattern: resource, action: effect }`。
+  这是**纯改名**，而正因为是纯改名，**改错了不会报错、不会变红**——`LEARNINGS #003-05` 说的
+  「假镜像」高危形状（看着一样、实际不等价、静默放行）。
+- **归属**：改编层随**注入点**走，落在 T005/T006（那两处才真的把 ruleset 交进上游钩子）；
+  T003 只负责产出**规范形状（V2）**的那一份，不提前给链 A 造一份平行 ruleset。
+
+### 🔴 D0-5 命中（T003 开工前实测）：「会话启动」这个时刻**在两条链里都不存在**
+
+`FR-001` 说「会话启动时签发」。实测（2026-10-04，Explore 全仓扫描 ＋ 本机复核）：
+
+| 问题 | 实测结论 | 证据 |
+|---|---|---|
+| 「创建会话」在哪 | 链 A `POST /session`；链 B `POST /api/session` | `groups/session.ts:88`；`protocol/src/groups/session.ts:129` |
+| 「创建」＝「启动」吗 | **不是**。创建只发 `Created` 事件并落一行，**不启动执行** | `session/session.ts:535`；`core/session.ts:241` |
+| 「启动」在哪 | **首次 prompt** 触发 | `prompt.ts:1343`→`ensureRunning`；`core/session.ts:382`→`execution.wake` |
+| 有「执行已启动」事件吗 | **没有**。链 B 的启动是内存协调器 `wake`，不发布事件；链 A 是 `SessionRunState.runner.ensureRunning`，也不发布 | `execution/local.ts:33`；`run-state.ts:88` |
+| 哪一层同时拿得到「验签身份 ＋ 项目」 | **只有 HTTP 请求 fiber** | 身份 `middleware/user-identity.ts:70-79` 注入 `User.Service`；项目 `core/session.ts:212` `projects.resolve(input.location.directory)` |
+| core 会话 / runner 层拿得到身份吗 | **拿不到**。三处 deps 里都没有 `User.Service` | `core/session.ts:477-486`、`runner/llm.ts:426-441`、`store.ts:63` |
+| 有可写的「每会话槽位」吗 | **没有**。`SessionStore` 只读；写路径只有事件投影器或 `SessionV2.create` 的直接 `db.insert` | `store.ts:14-24` |
+
+**链 A 有一条上游自带的「每会话 ruleset」通道**（本次最重要的正面发现）：
+
+```
+Session.Info.permission（V1 形状，可选，schema/v1/session.ts:566）
+  └─ SessionTools.resolve: ruleset: Permission.merge(input.agent.permission, input.session.permission ?? [])
+       └─ 每个工具的 ctx.ask({ ruleset })          ← session/tools.ts:84-90
+```
+
+- ⚠️ **今天这个字段由调用方在 create 请求里传**：HTTP payload 就有
+  `permission: Schema.optional(PermissionV1.Ruleset)`（`groups/session.ts:53`，落到 `session.ts:509/525`），
+  另有 `setPermission` 可随时改（`:437`、`:780-782`）。
+  ⇒ **今天「这个会话拿哪些工具权限」是客户端说了算的**——这正是 `FR-002` 要改掉的。
+- **链 B 侧没有会话粒度的 ruleset 通道**：按会话取 ruleset 的现成机制是
+  `PermissionV2.configured(sessionID, agentID)`（`core/permission.ts:137-145`），但它读的是
+  `agent.permissions`——**按 agent，不按会话**。
+
+⇒ **T003 的难点不是「找到那个时刻」，而是裁定「签发的产物放在哪里、由谁放」**。见下。
+
+**裁定（用户 2026-10-04，三选一）：选「甲」——T003 只做签发函数，接线归 T005/T006。**
+
+| 选项 | 内容 | 未选原因 |
+|---|---|---|
+| **甲 ✅** | T003 ＝ 纯函数 `issue()`，不接线 | —（选中） |
+| 乙 | 现在就在两条链的会话创建处落地 | 链 B 无可写每会话槽位 ⇒ 需**新造**一个按 sessionID 的存储，并引入「内存 vs 落库 / 进程重启后证还在不在」的次级决策——把一个小任务撑成设计题 |
+| 丙 | 只落链 A（用现成的 `Session.Info.permission` 通道） | 出不对称的中间态（链 A 有、链 B 无）；且它顺带要改「客户端自传 permission」那段，那是**独立的安全修复**，混进 T003 违反「一次只做一件事 / 一个提交别混两件事」 |
+
+- 选甲的三条理由：① **T005/T006 本来就是「把 ruleset 注入既有钩子」的任务**，挂证是它们的正题，
+  甲没漏掉任何东西；② 「挂到哪」本身是**未定的设计决策**（链 B 的存储），不该在一个小任务里顺手拍板；
+  ③ 甲**只新增** `packages/core/src/access/` 下的文件，**官方代码一行不碰**——符合第一号约束
+  「最小化上游合并冲突」；乙 / 丙都要动官方会话创建流程。
+- **代价（已同步改 `tasks.md`）**：T003 出参由「会话启动产出 capability」改写为
+  「签发函数产出 scope 限定 capability」。
+- ⚠️ **顺带查实的真问题，归属 T005/T006（不在 T003 做）**：链 A 今天由**客户端**在 create 请求里传
+  `session.permission`（`groups/session.ts:53`）⇒ **客户端能自己决定自己有哪些工具权限**。
+  这正是 FR-002 要改掉的，但改它 ＝ 动官方会话创建流程，留给接线任务。
 
 ### 🔴 D0-2 命中：落点
 
@@ -281,10 +360,69 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 
 ---
 
+### T003 · capability 签发
+
+- 落点：`packages/core/src/access/issue.ts`（**openhive 定制文件，非上游**）
+  ＋ canary 测试 `packages/core/test/access-issue.test.ts`（4 pass）。新增文件，官方代码一行未碰。
+- 接口与产出：
+
+  ```ts
+  issue({ user: User.Info, project: Project.ID, permissions: Permission.Ruleset }): Capability
+  // ⇒ { id: cap_*, scope: { user: <user.id>, project,
+  //                          dataScope: { subject: <user.id>, rule: "project-membership" } },
+  //      permissions }
+  ```
+
+#### 三个设计决定
+
+1. **入参收 `User.Info` 而不是 `string`**：`User.Info` 的唯一合法来源是 `packages/auth/src/token.ts`
+   的 `verifyToken` 返回（`packages/core/src/user.ts` 顶部注释），而明文头 `X-User-ID` 只是一个
+   字符串。收字符串 ＝ 让「明文头冒充身份」在**类型上**进得来。
+2. **`scope.user` 与 `dataScope.subject` 一律由 `user.id` 派生，不接受任何独立入参**——
+   这是整个模型的根：签发方只要能单独指定数据范围主体，就能**替别人签一张证**（拿张三的身份、
+   开以李四为主体的数据范围），而且形状是对的、代码照跑、typecheck 照绿。已用 canary 钉死。
+3. **`permissions` 作为入参、原样焊进证里，不增不减**：T003 的依赖只有 T002（RBAC 是并行的
+   T004），函数**不认识角色表**——这正是 FR-002 的分工（执行器只认证，不回查角色表）。
+   不增删的另一个含义：未命中的动作保持上游兜底 `ask`，不会被「顺手补一条全量 allow」退化成静默放行。
+
+#### ⚠️ 本任务**不接线**（用户 2026-10-04 裁定，见上方 D0-5）
+
+仓库里没有「会话启动」可挂的时刻；把证挂到会话上归 **T005/T006**。`tasks.md` 的 T003 出参已同步改写。
+
+#### 变异验证（照 `LEARNINGS #003-03`，三类结论据实记）
+
+| 变异 | 结果 | 类 |
+|---|---|---|
+| A：`subject: input.user.id` → `input.project` | **2 pass / 2 fail** | **精确多命中**——红的恰是两条断言含 `subject` 的用例（含「两张证不同」那条**对照**断言），不是整组红 |
+| B：`permissions` 补一条 `{action:"*",resource:"*",effect:"allow"}` | **恰红 1 条**（③ FR-002 那条） | 理想 |
+| C：`id` 写死成常量 | **恰红 1 条**（② 「两张证不同」） | 理想 |
+
+已还原，`diff` 确认与原文逐字节一致，复跑 **4 pass**。
+
+#### 门禁（串行，取退出码不进管道）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线 |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4942 warnings / 1 error / 3445 files** | 与基线逐字相同；文件数 3443 → 3445（＝新增 2 个）；**我这两个新文件 0 命中** |
+| `packages/core` 全量测试 | **1149 pass / 8 skip / 5 fail** | pass 1145 → 1149（+4 ＝新增用例）；**失败名差集为空**（仍是那 5 条 `NpmConfig` 环境红） |
+
+#### ⚠️ 顺带查实：`lint:openhive` **覆盖不到本 feature 的代码**
+
+`package.json:16` 的脚本原文是
+`oxlint -c script/oxlintrc.openhive.json packages/app/src/{rail,center,topbar,workspace,auth}`
+——只扫 **openhive 的 5 个前端目录**。004 的定制代码全在 `packages/core/src/access/`，
+**不被这条门禁覆盖**，只有全局 `lint`（130 规则、非 openhive 配置）扫得到。
+⇒ 本项目「给 openhive 自有代码加更严的 lint 配置」这件事，**目前只管前端**；core 侧的定制代码
+没有专属配置。记在这里，收尾时再决定要不要扩（**不在 T003 里顺手扩**——那是另一件事）。
+
+---
+
 ## 阻塞项
 
 （无技术阻塞。**待裁一项**：D-05「谁在生产里跑迁移」——须在 T004 之前裁定，见 D0-3。）
 
 ## 最后更新
 
-2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构）
+2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发）

@@ -29,7 +29,16 @@
 
 ## Phase 2: Foundational（capability 签发 + RBAC）
 
-- [ ] T003 实现 capability 签发（会话启动，按用户 + 项目 + 数据范围）[FR-001] [T002] [出参：会话启动产出 scope 限定 capability]
+- [x] T003 实现 capability 签发（按用户 + 项目 + 数据范围）[FR-001] [T002] [出参：签发函数产出 scope 限定 capability]
+  - ⚠️ 出参 2026-10-04 由「**会话启动**产出」改写为「**签发函数**产出」：实测仓库里**没有「会话启动」可挂的时刻**
+    （创建不启动、启动在首次 prompt、无 started 事件；链 B 且无可写每会话槽位）。裁定见 `state.md` D0-5。
+    接线（把证挂到会话上）归 **T005 / T006**。
+  - ✅ 2026-10-04 完成。落点 `packages/core/src/access/issue.ts`（**openhive 定制文件，非上游**）
+    ＋ canary 测试 `packages/core/test/access-issue.test.ts`（4 pass）。
+    `issue({ user: User.Info, project, permissions }) → Capability`；`scope.user` 与
+    `dataScope.subject` **一律由 `user.id` 派生**（调用方无法替别人签，canary 钉死），
+    `permissions` 原样焊进证里（未命中仍是上游兜底 `ask`）。变异 A/B/C 见 `state.md` T003 段。
+    门禁：typecheck exit 0；`lint` 我两个新文件 0 命中；core **1149 pass / 8 skip / 5 fail**（差集为空）。
 - [ ] T004 [P] 实现 RBAC 表（role / user_role / role_resource）+ 权限判定（读/写/审/管）[FR-007] [T001] [出参：角色授资源权限，判定函数返回正确结果]
 
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
