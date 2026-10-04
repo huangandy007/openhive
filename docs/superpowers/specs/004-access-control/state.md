@@ -903,7 +903,138 @@ session.permission（T006 在 create/update/prompt/fork 四处写入 capability�
 
 ---
 
-## 阻塞项
+### T007 · MCP 端带身份 ＋ capability 的 mcp 投影（FR-005；FR-006 的**连接级**那一半）
+
+#### 1. 这一段做了什么（两半，各自有自己的出参）
+
+| 半 | 出参 | 落点 |
+|---|---|---|
+| ① 身份注入 | 出站 MCP 请求带 `_meta["openhive/user"]`（server 工具的 `tools/call` ＋ 资源工具的 `resources/read`） | `src/mcp/openhive-identity.ts`（新）＋ 上游三处加**可选** `meta` 参数 |
+| ② 未授权 server 堵法 | capability 里为**每个** server（含未授予的）出一对规则：授过 = allow、未授 = deny | core `access/session.ts` 的 ② 段 ＋ `src/server/openhive/access.ts` 的名单 |
+
+「受限数据库账号 + GRANT/RLS」（FR-005 的**另一半**）本机打不到 ⇒ **挂账 F6/F7**，见 §8。
+
+#### 2. 四条裁定（用户 2026-10-04 / 10-05）
+
+1. **身份载体 = 调用点直读 `User`**（`Effect.serviceOption(User.Service)`），不读 session `metadata`
+   —— 那是**客户端可写**的（伪造身份）。
+2. **未授权 server 的堵法 = capability 里加 server 名单**：名单取 `Config.mcp` 的键，sanitize 后
+   为每个 server 铺一对规则（未授 = deny）。
+3. **名字翻译 = core 出形状、opencode 出名字**：`sessionRuleset(grants, mcpPrefixes)` 收的是调用方用
+   **真** `McpCatalog.sanitize` 算好的前缀 ⇒ core 里**没有**一份复制来的 sanitize（`#003-05`）。
+4. **T007 只做今天打得到的那一半**（受限 DB 账号 ＋ GRANT 挂账 F6/F7）；T006 的回归**保留 merge**、改上游测试。
+
+> ⚠️ 早先框定的「把 `TOOL_OF` 升为函数」**作废**：落地是上面第 3 条的「core 出形状 ＋ 调用方出名字」，
+> 比升成函数更彻底——core 侧连一个可漂移的字符都不留。
+
+#### 3. 落地（提交分片）
+
+**上游文件**（各自【这是要保留的定制】、**单独提交**）：
+
+- `src/mcp/catalog.ts` — `convertTool()` 加第 4 参 `meta`，写进出站 `tools/call` 的 `_meta`；
+  `meta` 为空时**连键都不多一个**。
+- `src/mcp/index.ts` — **两处**：`Interface` 的 `readResource` **声明** ＋ `layer` 里的**实现**都加
+  第 3 参 `meta`（为什么两处都要，见 §5）。
+- `src/session/tools.ts` — `const mcpMeta = yield* userMeta()`，**取一次、两个 MCP 出口共用**
+  （server 工具 ＋ 资源工具）。**不是**在工具 `execute` 里各取一次：那是同一判断写两份。
+
+**openhive 自有**（不碰上游领地）：
+
+- `src/mcp/openhive-identity.ts`（新）——`USER_META_KEY = "openhive/user"` ＋ `userMeta()`。
+  文件头记了三条判据：`_meta` 是 schema 合法的透传字段（两边都是 `z.core.$loose`）；
+  为什么要**按调用**注入（按目录缓存的 client 是**实现产物**、不是协议保证）；
+  为什么**没有身份就不注入**（不是注入一个空身份）。
+- `packages/core/src/access/rbac.ts` — 新增常量 `READ`（`resolve()` 与 `sessionRuleset` 的 mcp 段
+  都用它筛授权行：两处各写一个 `"read"` 字面量就是「同一判断两份」的最小形态）。
+- `packages/core/src/access/session.ts` — 新增 `McpServerNaming` ＋ `sessionRuleset()` 的 ② 段。
+  **`mcp` 省略时与 T006 逐字相同**（既有调用点 `src/session/prompt.ts` 不传它 ⇒ 零回归）。
+- `src/server/openhive/access.ts` — `toolPatternOf = (server) => McpCatalog.toolName(server, "") + "*"`
+  （**故意**拿真函数取前缀，而不是自己拼 `sanitize(server) + "_"`）＋ 名单取 `Config.mcp`。
+
+#### 4. 两个关键技术判断（都是实测逼出来的）
+
+**① MCP 的两个出口在链 A 里是两条权限通道，形状不同**（`src/session/tools.ts` 实测）：
+
+| 出口 | `ask` 的 permission | 能不能隐藏 | 本 task 怎么管 |
+|---|---|---|---|
+| server 工具 | **工具名**（`sanitize(server) + "_" + sanitize(name)`） | 能（`disabled` 查得到） | `{permission: <toolPattern>, pattern: "*", action}` |
+| 资源工具 | `read`，pattern `mcp:<原样 server>:*` | **不能**（归一成 `read`，隐藏会连累读文件） | `{permission: "read", pattern: "mcp:<server>:*", action}` |
+
+⇒ 每个 server 出**两条**同向规则。⚠️ **只 deny 是半条**：MCP 工具的 `ask` 带 `always: ["*"]`，
+授过的 server 若不显式 allow，一样会弹「总是允许」（放行侧的洞，与 T006 那段同形）。
+「资源工具**可见但不可用**」是**取舍、不是遗漏**，已用测试钉住（`openhive-access-mcp.test.ts` 的可见性不对称那条）。
+
+**② 名单从 `Config.mcp` 来，不从 `MCP.status()` 来**：capability 是**建会话那一刻冻结**的规则集；
+按运行时连接状态取名单会让它随「谁先连上」而变，且把建会话绑到 MCP 连接上（迟到、甚至挂住）。
+配置是声明式、稳定、**权威**的——能不能连上是 MCP 自己的事，**能不能调**由这里说了算。
+
+#### 5. ⚠️ 途中修错：typecheck 首跑 3 条**真错**（不是回声）
+
+`bun run typecheck` 第一次退出 2，报：
+
+- `src/server/openhive/access.ts(76,5)`：`Type 'Effect<…, never, Service>' is not assignable to 'Effect<…, never, never>'`
+  ⇒ **`capabilityFor()` 的出参类型里没写出 `Config.Service` 这个需求**（T007 起 capability 依赖配置）。
+  修法是把需求**写进类型**，不是补 cast：那条红正是「capability 现在依赖配置」唯一会被编译器看见的地方。
+- `src/session/tools.ts(355,80)` ＋ `test/mcp/openhive-mcp-identity.test.ts(71,77)`：`Expected 2 arguments, but got 3`。
+  **一个根因**：`MCP` 的 `Interface.readResource` **声明**只有两个参数。实现里多一个**可选**参数
+  照样满足旧签名 ⇒ 编译器**不在实现处报错，只在调用点报错**。
+  ⇒ 教训：改「实现 ＋ 契约」这类成对的东西时，**契约那一侧漏改只会以调用点的形式报警**
+  （与 `#002-06`「改完一处，立刻 grep 谁引用了我刚改掉的东西」同型；这里引用者是**调用点**）。
+  修完复跑：**31/31 exit 0**。
+
+（同一次首跑里 `packages/core` 与其余 29 个 task 全绿——不是环境回声，是真错。）
+
+#### 6. 测试（24 pass，四层各有一组，**每组都带对照**）
+
+| 文件 | 条数 | 测哪一层 |
+|---|---|---|
+| `test/session/openhive-mcp-identity.test.ts` | 2 | 真 `SessionTools.resolve` ＋ 真 `convertTool`，**假 client 只记出站参数** |
+| `test/mcp/openhive-mcp-identity.test.ts` | 2 | 真 `MCP.Service` ＋ **进程内** streamable-HTTP 服务器记 `resources/read` 的参数（线上可见） |
+| `test/server/openhive-access-mcp.test.ts` | 10 | 纯函数 ＋ 链 A **真判决器**（`evaluate` / `Permission.disabled`） |
+| `test/server/openhive-access-mcp-wiring.test.ts` | 1 | 真应用 ＋ 真 PGlite，**直接读库里的 `permission` 列**（不经过被测接口） |
+
+- 🔴 **对照是这一组的骨架**：每组都有一条「**没有身份 ⇒ `"_meta" in params === false`**」——
+  钉的是「不注入」，不是「注入空身份」（后者在服务器侧看起来一样、语义不同）。
+- RED 观察（据实记）：临时回退 `mcp/index.ts` 的两处 ⇒ 线路那 2 条红（`_meta` 为 `undefined`）而 `uri` 匹配；
+  把 wiring 的两条 mcp 规则去掉 ⇒ 那条断言红。
+- 可见性矩阵里专门有**一条**钉住 §4-① 的不对称：server 工具被**藏**、资源工具**藏不了但执行被拒**。
+
+#### 7. 门禁（2026-10-05 实跑，**串行**）
+
+| 门禁 | 命令 | 本次实测 | 判据 |
+|---|---|---|---|
+| 类型 | `bun run typecheck` | **exit 0**，31/31 tasks（首跑 3 条真错 → 修 → 复跑 0，见 §5） | 必须 0 |
+| openhive lint | `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | = 基线**逐字相同** |
+| 全局 lint | `bun run lint` | exit 1，**4949 warnings / 1 error / 3462 files** | 唯一 error = 既有上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（裁定不私改）；**新文件 0 命中、改动行 0 命中** |
+| MCP 目录 | `bun test test/mcp/` | **67 pass / 0 fail** | 全绿 |
+| 受影响测试 | `bun test test/session/` | **407 pass / 20 skip / 1 todo / 4 fail**（432 总） | 4 条红**全是 5 秒线超时**，见下方⚠️ |
+| core RBAC | `bun test test/access-rbac.test.ts` | **8 pass / 0 fail** | 全绿 |
+
+> ⚠️ **`test/session/` 那 4 条红**：名字是 `glob tool keeps instance context during prompt runs`、
+> `restore messages in sequential order`、`restore same file in sequential order`、
+> `tool execution produces non-empty session diff`；耗时 **5001 / 5008 / 5030 / 5013 ms**（不是断言失败，是 5 秒预算）。
+> **对照**：把 `session/tools.ts` 里的 `mcpMeta` 临时中性化成 `undefined`（=`meta` 永不注入）后，
+> **逐个文件复跑，同样这 4 条、同样 5.00–5.20s** ⇒ **与 T007 无关**（`#003-01` 那一类：先怀疑测量）。
+> 据实记的**残差**：T005 收尾时同目录是 `408 pass / 20 skip / 1 todo / 1 fail`（唯一红 = 已知 `snapshot race`），
+> 本次多出的 3 条**我没能归零**，只能记「中性化对照复现 ⇒ 非 T007 引入」＋「本机当前整体偏慢」；
+> 总数 430 → 432 恰是本次新增的 2 条用例（`+2` 对得上）。
+> 全局 lint 的 warnings 总数在 **4941–4949** 之间抖动（12 线程，`#001-01` 已记 ±抖动）⇒ 判据是
+> **名称 ＋ 文件行**：逐条核过 7 处命中（`tools.ts:18/23` 未用导入、`mcp/index.ts:23 FSUtil`、`:123`、`:341`、`:479`、
+> `catalog.ts:66` 既有断言），**全在未改的上游行上**。
+
+#### 8. 📤 显式挂账（**不写成「已覆盖」**，`LEARNINGS #002-02`）
+
+1. **受限数据库账号 ＋ `GRANT` / RLS**（FR-005 的另一半）：本机无 PG / Docker，且「按用户的受限账号」
+   要等数据项目（F6/F7）落地 ⇒ **整条挂账 F6/F7**。今天做到的是**连接级**（谁能调）＋ **请求级**（带谁的身份）。
+2. **`POST /mcp` 运行期加的 server**：该端点只写 `InstanceState`、**不回写配置** ⇒ 不在 `Config.mcp` 名单里
+   ⇒ 它的工具落回上游 `ask`（不再被 capability 兜住）。**同一端点还接受 `type:"local"`**（= 任意进程）
+   且只受上游 basic `Authorization` 管 —— **上游既有洞，本次只上报、不修**（本 task 范围外）。
+3. **`src/tool/code-mode.ts` 的第二处 `callTool`**：那条路从 `resolve()` 提前 return（`flags.experimentalCodeMode`），
+   **不走**本次的身份注入 ⇒ 该模式下 MCP 调用不带身份。该开关是 env 门、默认关。
+4. **链 B（v2 / CLI·sdk-next）的 MCP** 至今没有消费者 ⇒ 那一半仍是缺口（同 T006 挂账 ①）。
+5. **资源工具无法隐藏**（`Permission.disabled` 把三个 `*_mcp_resource*` 归一成 `read`）：
+   未授权 server 的资源**可见但不可用**。这是取舍（隐藏会把民警读文件一起拒掉），已在代码注释与测试里写明。
+
 
 （无技术阻塞。**D-05 已解**（2026-10-04，见 T015 段）——原「待裁一项：D-05 须在 T004 之前裁定」**已消**，
 T004 现无前置。）
@@ -914,6 +1045,13 @@ T004 现无前置。）
 后续 task（T007 / T008 / T012–T014）开工前先读这条。
 
 ## 最后更新
+
+2026-10-05（**T007**：MCP 出站带用户身份（`src/mcp/openhive-identity.ts` 新 ＋ 上游三处加可选 `meta`，
+各自【保留的定制】）＋ capability 的 **mcp 投影**（core `McpServerNaming`/`sessionRuleset` ②段 ＋
+`Config.mcp` 名单，core 侧零镜像）＋ 四条裁定（身份载体 / 堵法 / 名字翻译 / 只做打得到的那一半）＋
+24 条测试（四层各带对照）＋ typecheck 首跑 3 条**真错**已修（`Interface` 声明漏改 ⇒ 只在调用点报警）＋
+门禁串行全绿（typecheck 31/31 · lint:openhive 23/0 · 全局限 lint 唯一 error = 既有上游文件 ·
+`test/mcp/` 67 pass）＋ `test/session/` 4 条 5 秒线超时经中性化对照确认**非本次引入** ＋ 五条挂账）
 
 2026-10-05（**T005**：前置实测「字面出参已随 T006 生效 ⇒ 不建 `tool-filter.ts`」＋ 用户裁定「补
 `sys.skills` ＋ 验收测试」＋ `system.ts` / `prompt.ts` 两处上游改动（【保留的定制】）＋ 6 条验收

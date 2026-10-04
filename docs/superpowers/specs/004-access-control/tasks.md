@@ -141,7 +141,43 @@
 
 ## Phase 4: US3 MCP 账号兜底 + RLS（P1）
 
-- [ ] T007 实现 MCP 端带 user 身份 + 受限数据库账号执行 [FR-005] [T003] [出参：MCP 查询带身份、受限账号]
+- [x] T007 实现 MCP 端带 user 身份 + 受限数据库账号执行 [FR-005] [T003] [出参：MCP 查询带身份、受限账号]
+  - ✅ 2026-10-05 完成（**只做今天打得到的那一半**；「受限数据库账号 + GRANT/RLS」**挂账 F6/F7**，见下）。
+  - **四条裁定**（用户 2026-10-04 / 10-05）：① 身份载体 = 调用点直读 `User`
+    （`Effect.serviceOption(User.Service)`）——**不读** session `metadata`（客户端可写 ⇒ 可伪造）；
+    ② 未授权 server 的堵法 = **capability 里加 server 名单**（取 `Config.mcp` 的键）；
+    ③ 名字翻译 = **core 出形状、opencode 出名字**（`sessionRuleset(grants, mcp?)` 收调用方用真
+    `McpCatalog.sanitize` 算好的前缀 ⇒ core 里没有一份复制来的 sanitize，`#003-05`）；
+    ④ T007 范围 = 只做打得到的（受限 DB 账号挂账）；T006 回归**保留 merge**、改上游测试。
+    > ⚠️ 早先框的「把 `TOOL_OF` 升为函数」**作废** —— 落地是 ③ 那条，core 侧连一个可漂移的字符都不留。
+  - 落地①**身份注入**：`src/mcp/openhive-identity.ts`（新，`USER_META_KEY` + `userMeta()`）；上游三处
+    加**可选** `meta` 参数并**各自带【这是要保留的定制】、单独提交**——`src/mcp/catalog.ts`（`convertTool`）、
+    `src/mcp/index.ts`（`Interface` **声明** ＋ `layer` **实现**两处！）、`src/session/tools.ts`
+    （`const mcpMeta = yield* userMeta()`，**取一次、两个出口共用**）。
+    `meta` 为空 ⇒ **连键都不多一个**（「没有身份就不注入」≠「注入一个空身份」）。
+  - 落地②**capability 投影**（T004 明确留给 T007 的连接级那一半）：`packages/core/src/access/rbac.ts`
+    新增常量 `READ`；`packages/core/src/access/session.ts` 新增 `McpServerNaming` ＋ `sessionRuleset()` 的
+    ② 段（**`mcp` 省略时与 T006 逐字相同** ⇒ 既有调用点零回归）；`src/server/openhive/access.ts` 的
+    `toolPatternOf`（**拿真 `McpCatalog.toolName(server, "")` 取前缀**，不自拼分隔符）＋ 名单取 `Config.mcp`。
+  - **两套形状**（实测 `src/session/tools.ts`）：server 工具 `ask` 的是**工具名** ⇒ 可隐藏也可拒；
+    资源工具 `ask` 的是 `read` + `mcp:<原样 server>:*` ⇒ **与文件读取同名，不能隐藏**（只能执行期拒）。
+    每个 server 因此出**两条**同向规则——**只 deny 是半条**（MCP 的 `ask` 带 `always:["*"]`，授过的
+    server 不显式 allow 一样会弹「总是允许」）。「资源可见但不可用」是取舍，非遗漏。
+  - 验收 **24 条**，四层各一组、**每组带对照**：`test/session/openhive-mcp-identity.test.ts` 2（真 `resolve`
+    ＋ 真 `convertTool`，假 client 只记出站参数）；`test/mcp/openhive-mcp-identity.test.ts` 2（真 `MCP.Service`
+    ＋ 进程内 streamable-HTTP 服务器记 `resources/read` 参数）；`test/server/openhive-access-mcp.test.ts` 10
+    （纯函数 ＋ 链 A 真判决器；含可见性不对称那条）；`test/server/openhive-access-mcp-wiring.test.ts` 1
+    （真应用 ＋ 真 PGlite，**直接读库里的 `permission` 列**）。对照 = 「无身份 ⇒ `"_meta" in params === false`」。
+  - 变异 / RED 观察：回退 `mcp/index.ts` 两处 ⇒ 线路那 2 条红；去掉 wiring 的两条 mcp 规则 ⇒ 该断言红。
+  - 门禁（串行，2026-10-05）：同 `state.md` T007 段 §7 —— typecheck **31/31 exit 0**（首跑 3 条真错已修，
+    根因是 `Interface` 声明漏改、只在**调用点**报警）、`lint:openhive` **23/0 exit 0** = 基线、
+    全局 `lint` 唯一 error = 既有上游文件、`test/mcp/` **67 pass / 0 fail**、core RBAC **8 pass**、
+    `test/session/` 4 条红经**中性化对照**确认非本次引入（5 秒线超时）。
+  - 📤 **显式挂账**（见 `state.md` T007 段 §8，**不写成「已覆盖」**）：① **受限数据库账号 ＋ GRANT/RLS**
+    归 **F6/F7**（本机无 PG/Docker）；② `POST /mcp` 运行期加的 server 不在名单 ⇒ 落回上游 `ask`，
+    且该端点接受 `type:"local"`（任意进程）——**上游既有洞，只上报不修**；③ `src/tool/code-mode.ts`
+    第二处 `callTool` 不走 `resolve()`（env 门、默认关）⇒ 该模式不带身份；④ 链 B MCP 无消费者（同 T006 挂账 ①）；
+    ⑤ 资源工具**藏不了**（归一成 `read`）。
 - [ ] T008 实现业务数据 PG 行级 RLS 策略（CREATE POLICY）[FR-006] [T007] [出参：越权行被 RLS 过滤]
 - [ ] T009 实现结果量级控制（MCP LIMIT + 分页 + 导出需更高权限）[FR-006] [T007] [出参：超限查询被 LIMIT 拦截]
 
