@@ -22,6 +22,40 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #003-06 · 2026-10-04 · pitfall · 003-multi-tenant-isolation
+**现象 / 决策**：**同一个提交，在一个检出红、在另一个检出绿——先怀疑环境，别怀疑代码。** 003 合并后
+pre-push 门禁 `opencode#typecheck` 报 **84 条**错（实测，主检出），落点全在
+`src/server/openhive/gateway.ts`、`src/server/routes/instance/httpapi/middleware/` 与 4 个
+`test/server/*.test.ts`：主形状是 `Cannot find module '@opencode-ai/auth/*'`，另有一大片看着像「业务
+代码写错了」的**回声**——`'cause' is of type 'unknown'`、`Property 'id' does not exist on type '{}'`、
+`Parameter 'db' implicitly has an 'any' type`。真相是：**同一个提交在 003 的 worktree 里 typecheck 全绿**。
+差异不在代码而在 `node_modules`：`packages/auth` 是 002 才加进来的 workspace 包，而主检出的
+`node_modules` 装得更早 ⇒ `packages/opencode/node_modules/@opencode-ai/` 下**独独少了 `auth` 那个
+软链接**（其余 11 个链接的时间戳都停在上一次 install，一眼可辨）。84 条错**一个根因**，其余全是
+「导入解析不了 ⇒ 类型退化成 `any` / `unknown` / `{}`」的下游回声。
+**应对**：① 门禁红了两处表现不一致时，**先做差集再改代码**——`ls -la <pkg>/node_modules/@opencode-ai/`
+比对两处的软链接与时间戳，缺哪个补哪个，比读报错快得多；② 判据：**能一次解释掉全部报错的说法，才是
+根因**；解释不了的那几条（`unknown`、隐式 `any`、`Property X does not exist on type '{}'`）通常是
+**被解释项**，不是独立缺陷；③ 修法是补依赖不是改代码——`bun install --frozen-lockfile`（冻结锁文件，
+绕开本机镜像源污染），完事 `git diff --stat bun.lock` **必须为空**；④ 最危险的一步是**照着回声去改
+`gateway.ts` / `user-identity.ts`**：那会把好代码改坏，而且改完门禁可能真的「绿」了（报了新的假绿）。
+**应用范围**：任何「门禁在一处红、另一处绿」的场合；任何报错成片出现且形状雷同的时候；换机 / 新 clone /
+长期没跑过 `bun install` 的检出。呼应 `#003-01`（并行跑门禁造假红）——两条都是**先怀疑测量，再怀疑被测物**。
+
+## #003-07 · 2026-10-04 · tool-quirk · 003-multi-tenant-isolation
+**现象 / 决策**：**文件内容一律不要过 PowerShell 的重定向。** 用 `git diff ... > f.patch` 落成补丁再
+`git apply`，**必然失败**，报 `error: No valid patches in input (allow with "--allow-empty")`；`od -c` 实测
+该文件是 **UTF-16LE**（`d \0 i \0 f \0 f \0`），且 git 输出里的 UTF-8 中文经这趟转码已经**有损**
+（`�`）——所以 `iconv` 也救不回来，只能重来。另一半是换行符：本机 `core.autocrlf=true`，仓库检出的
+文本是 **CRLF**，而工具（`Write` / bash 重定向 / `sed`）写出来的是 **LF** ⇒ 直接覆盖目标文件会让
+`git diff` 显示「**整份文件全改**」（实测 7730 行），看着像改动巨大，其实只差一个 `\r`。
+**应对**：① 写文件走 Git Bash / `Write` 工具（实测 `od -c` 均为正确 UTF-8），**不走 PowerShell 的
+`>` / `Out-File`**；② 覆盖前先 `file <目标>` 看有没有 `with CRLF line terminators`，两边不一致就先
+`sed -i 's/$/\r/'` 补齐行尾，**再用 `diff` 对着目标文件核「只差你要改的那几行」**；③ 补丁 / 脚本这类
+**对字节敏感**的交接物，别走「生成补丁 → 对面 apply」，改走**整份文件覆盖**（`cp`）+ `diff` 复核。
+**应用范围**：任何跨 PowerShell / Git Bash 传递文件内容的场合；任何生成补丁 / 脚本 / 配置文件的场合。
+（判据一句话：**「diff 全红」先看行尾，「打不开」先看编码**——两次都是字节问题，不是内容问题。）
+
 ## #003-05 · 2026-10-02 · pattern · 003-multi-tenant-isolation
 **现象 / 决策**：镜像**跨层判据**时，「写得像」不够，要写成**可被上游变更惊醒**的样子。R2-01 是这条
 的实证：锚定改写请求体的「这个请求算不算 JSON」，本文件自己写成
