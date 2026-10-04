@@ -63,11 +63,23 @@
     4 处断言改用它 / 用 `migrate()` 的返回值；`register.test.ts` 那句 `drop table auth.user` 因新外键需加 `cascade`。
     见 `state.md` T004 段的「既有测试的连带修正」。
   - 门禁：typecheck exit 0；`lint` 我那 4 个新 `.ts` **0 命中**（全局 4942/1 与基线逐字相同）；auth **210 pass / 1 skip / 0 fail**（T015 后基线 202 → **+8**）。
+  - 🔧 **修正（2026-10-04，T006 前置）**：`resolve()` 第一版产出的词表是 `{action=perm, resource="<type>:<id>"}`，
+    而实测**所有消费者读的都是** `{action=<工具名>, resource=<工具实参>}` ⇒ 旧词表**一条都命中不了、全部静默落回 ask**
+    （`LEARNINGS #003-05` 的假镜像形状）。用户 2026-10-04 三条裁定：① **改 `resolve()`**（不改消费者）；
+    ② **只有 `read` 进 ruleset**；③ **`mcp` / `knowledge_base` 跳过 ＋ 显式记缺口**（指向 T007）。
+    落地：`rbac.ts` 加 `TOOL_OF` 对照表 ＋ 两个守卫；`test/access-rbac.test.ts` **7 → 8 条**（② ③ 换语义、新增 ③ 缺口断言）。
+    变异 M1/M2/M3 **全部恰红目标**。门禁复跑全绿（typecheck 0／lint:openhive 0／全局 4942/1/3452 与基线逐字相同／core 三个 access 测试 16 pass）。
+    详情见 `state.md` 的「T004 修正」段。
 
 ## Phase 3: US2 工具过滤 + 执行鉴权（P1）
 
 - [ ] T005 实现工具清单过滤（组装 tools 前按 capability 只放有权工具）[FR-003] [T001][T003] [出参：无权工具不出现在 tools]
 - [ ] T006 实现工具执行守卫（执行前验 capability，无权限 AccessDenied + 审计）[FR-004] [T001][T003] [出参：越权调用被拒并留审计]
+  - 🚧 **进行中**（2026-10-04 开工）。Step 0.5 式侦察已做（两条链 ＋ 各自已有的上游 ruleset 钩子 ＋
+    工具执行必经点 `packages/core/src/tool/tool.ts` 的 `config.execute`；`packages/core/src/tool/AGENTS.md`
+    明禁在该目录加并行守卫）。**前置修正已落地**（T004 的 `resolve()` 词表 —— 见 T004 段 🔧）。
+    待办：把「取行（user → 角色 → 授权 的 join，只在 `packages/opencode` 做得到）＋ 签发 ＋ 按链注入」
+    接起来；**capability 挂载点尚未裁定**。
 
 ## Phase 4: US3 MCP 账号兜底 + RLS（P1）
 

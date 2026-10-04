@@ -551,6 +551,11 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 
 #### 测试（core 7 pass ＋ auth 8 pass，共 15）
 
+> ⚠️ **已被下方「T004 修正」段取代**：core 那 7 条里 **① ② ③ ⑤ ⑦**（本表按当时的编号）断言的是
+> **旧词表** `{action=perm, resource="<type>:<id>"}`，修正后重写为 8 条、且 **② ③ 更换了语义**
+> （② 由「四条 perm 原样映射」变「只有 read 产规则」；③ 由「类型是一个轴」变「未投影类型＝显式缺口」）。
+> 本表保留**当时的**记录，别照它读现状——现状见「T004 修正」段。auth 那 8 条**未受影响**。
+
 | 文件 | 用例 | 钉什么 |
 |---|---|---|
 | `core/test/access-rbac.test.ts` | ① 单条授权 ⇒ 一条 allow，且被**下游真匹配器** `PermissionV2.evaluate` 命中 | 映射约定（action=perm、resource=`<type>:<id>`），`LEARNINGS #003-05`：对着下游行为写，不做假镜像 |
@@ -622,13 +627,75 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 | `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
 | `bun run lint`（全局） | exit 1，**4942 warnings / 1 error / 3452 files** | warnings/error 与基线**逐字相同**；文件数 3448 → 3452（＝本次新增 4 个 `.ts`；两个 `.sql` 不进 lint）；**改动的 8 个文件逐个 0 命中**（用 `,-[` 位置标记逐文件复核） |
 | `packages/auth` 全量 | **exit 0**，**210 pass / 1 skip / 0 fail** / 211 tests / 18 files | T015 后基线 202/1/0 → **+8 pass ＋ 1 file，恰是本次 8 条用例**；7 条被撞红的既有断言已全部恢复 |
-| `packages/core` 影响面 | `bun test test/access-rbac.test.ts` **exit 0，7 pass / 0 fail** | 本次**未改** core 的任何既有文件（只新增）⇒ 按 `#003-01`「改动影响面所在的测试文件全绿」，不重跑全包（core 全包基线本就含 5 条环境红） |
+| `packages/core` 影响面 | `bun test test/access-rbac.test.ts` **exit 0，7 pass / 0 fail** | 本次**未改** core 的任何既有文件（只新增）⇒ 按 `#003-01`「改动影响面所在的测试文件全绿」，不重跑全包（core 全包基线本就含 5 条环境红）。⚠️ 7 pass 是**修正前**的数，修正后 8 pass（见「T004 修正」段） |
 
 #### 未接线（明确记账，不是已覆盖）
 
 `resolve()` **今天没有生产调用者**——接线（把证挂到会话上）归 **T005 / T006**（表 → ruleset →
 `AccessIssue.issue` → 挂到两条链）。执行器也**仍然只认 capability、不回查角色表**（FR-002）。
 ⚠️ 别把本节读成「权限已生效」：**表建好、判定写好了，但没有任何一处生产代码调用它**。
+
+---
+
+### T004 修正 · `resolve()` 改用**工具断言词表**（T006 前置；用户 2026-10-04 三条裁定）
+
+#### 为什么是「修正」而不是「打补丁」
+
+T006（执行守卫）开工前的侦察里，实测了**所有**吃 ruleset 的消费者，发现 T004 第一版的映射
+**一条都命中不了**。消费者读的是 `{ action: <工具名>, resource: <工具实参> }`：
+
+| 证据 | 落点 |
+|---|---|
+| 上游自带默认规则集 | `packages/core/src/plugin/agent.ts:109-140` `{ action: "read", resource: "*.env", effect: "ask" }` |
+| 「总是允许」存的两列 | `packages/core/src/permission/saved.ts:62` |
+| 清单过滤的判据 | `packages/core/src/tool/registry.ts:113` `whollyDisabled(permission(tool, name), permissions)` |
+| 链 B 断言 | `packages/core/src/tool/skill.ts:76` `permission.assert({ action: "skill", resources: [skill.name] })` |
+| 链 A 断言 | `packages/opencode/src/tool/skill.ts:28` `ctx.ask({ permission: "skill", patterns: [params.name] })` |
+
+而 `Wildcard.match`（`packages/core/src/util/wildcard.ts`）是**全串锚定**（`^…$`）——T004 第一版产出的
+`{ action: "read", resource: "skill:fund-analysis" }` 两边字段都对不上，**全部落回兜底 `ask`**。
+不报错、不变红、typecheck 照绿：`LEARNINGS #003-05` 的**假镜像**形状（写的时候以为对上了，其实只在一边成立）。
+
+> 这也是一次**自己打自己脸**的复核：T004 收尾时我先说「所有消费者都用 `{工具名, 实参}`」，
+> 随后实测发现链 A 的 MCP 资源工具用的是 `{ permission: "read", patterns: ["mcp:<server>:*"] }`
+> （`packages/opencode/src/session/tools.ts:172-179` / `:346-347`）——**那句总结是错的**，当场向用户更正。
+> 更正后的实测反而定住了裁定：**skill 维上两条链同构**（上表最后两行），所以改词表可行。
+
+#### 三条裁定（用户 2026-10-04）
+
+| 问题 | 裁定 | 落地 |
+|---|---|---|
+| 词表冲突怎么办 | **改 T004 的 `resolve()`**（不改消费者） | `rbac.ts` 加 `TOOL_OF` 对照表；`action` 取工具名、`resource` 取 `resourceId` |
+| 四个 `perm` 都进吗 | **只有 `read` 进 ruleset** | `if (grant.perm !== "read") continue`。写 / 审 / 管是管理动作，今天没有承载它们的工具；仍留在表里，记账为「无消费者」 |
+| `mcp` / `knowledge_base` 投不到怎么办 | **跳过 ＋ 显式记缺口**（指向 T007） | `if (tool === undefined) continue` ＋ 测试 ③ 断言 `Object.keys(TOOL_OF) === ["skill"]` |
+
+#### 测试与变异（照 `LEARNINGS #003-02`：把修复本身当新代码再审一轮）
+
+测试 `test/access-rbac.test.ts` **7 → 8 条**（重写 ①②④⑤⑥⑦⑧、新增 ③ 缺口断言）。三个变异**全部恰红目标**：
+
+| 变异 | 红 |
+|---|---|
+| M1 去掉 `perm !== "read"` 守卫 | **恰红 ②**（1 条） |
+| M2 去掉 `tool === undefined` 守卫 | **恰红 ③**（1 条） |
+| M3 `resource` 写死成 `resourceType` | 红 **5** 条，含专为「写死 resource」设计的 ④ |
+
+均回退，`grep MUTATION` / `grep 'if (false) continue'` 无残留，复跑 8 pass。
+
+#### 门禁（串行，取退出码不进管道）
+
+| 门禁 | 结果 | 与基线比 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**（31/31） | 同基线 |
+| `bun run lint:openhive` | **exit 0**，23 / 0 / 69 files / 161 rules | 与基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4942 warnings / 1 error / 3452 files** | 与 T004 后基线**逐字相同**；改动 2 文件定向复核 **0 命中 / 0 errors** |
+| `packages/core` 004 三个测试 | **exit 0，16 pass / 0 fail** | capability 4 ＋ issue 4 ＋ rbac 8 |
+
+#### 🔴 挂账的缺口（**不是**「已覆盖」）
+
+`mcp`（FR-005，归 **T007**）与 `knowledge_base` **今天投不到任何能命中的工具断言** ⇒ 不产规则、
+落回上游兜底 `ask`（保守：不会误放行，但**也不生效**）。这条缺口**写进了 `rbac.ts` 的 `TOOL_OF`
+注释**，并由 `access-rbac.test.ts` 的 ③ 钉在明面上——将来接上 mcp 必须**同时**改那张表和那条断言
+（`LEARNINGS #002-02`）。另：`write` / `review` / `admin` 三个 `perm` 今天**没有消费者**，同样挂账。
 
 ---
 
@@ -640,4 +707,5 @@ T004 现无前置。）
 ## 最后更新
 
 2026-10-04（开工：Step 0.5 实测 + 四条裁定 + T001 + 门禁基线落档 + T002 capability 结构 + T003 签发
-+ D-05 裁定 ＋ T015 迁移 CLI ＋ **T004 RBAC 表 ＋ 权限判定（含 0004 撞红 7 条既有断言的连带修正）**）
++ D-05 裁定 ＋ T015 迁移 CLI ＋ T004 RBAC 表 ＋ 权限判定（含 0004 撞红 7 条既有断言的连带修正）
+＋ **T004 修正：`resolve()` 改用工具断言词表（T006 前置，三条裁定）**）
