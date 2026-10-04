@@ -8,7 +8,8 @@
 |---|---|
 | `CLAUDE.md` | 工作区级规则：目录结构约定、工具/文档存放规则 |
 | `git-daily-workflow.md` | 每日 git 操作手册（含多机同步、同步官方等） |
-| `feature-delivery-sop.md` | feature 交付 SOP：F1–F10 交付循环七阶段、依赖链、环境已知坑、速查卡 |
+| `feature-delivery-sop.md` | feature 交付 SOP：F1–F10 交付循环七阶段、依赖链、环境已知坑、速查卡（讲**为什么**） |
+| `feature-delivery-steps.md` | feature 交付**操作步骤**：第一步到第十一步，从备料、建分支到审查、复盘、合并、推送，逐步给出命令与提示词（讲**怎么做**） |
 | `dev_tdd.003.md` | 003（多用户隔离）的**开工指令**：Step 0 四项验证 + Step 0.5 决策点 D1–D6 + 任务标签规则 + 质量门禁 + 节奏铁律。feature 开工提示词，**不是规格产物**（规格见 `docs/superpowers/specs/003-*/`） |
 
 ## 在新电脑上使用
@@ -95,4 +96,6 @@ git status -sb | head -1 # ④ 有没有 upstream（没有 = 只在本地盘上�
   （`CLAUDE.md` / `git-daily-workflow.md` 放在工作区**根目录**；
   `feature-delivery-sop.md` 与 `dev_tdd.003.md` 放在 `tmp/dev/`。）
 - 如果在本机外层修改了这些文件，记得同步更新到这里（或反过来），保持两边一致。
+- ⚠ **例外**：`feature-delivery-steps.md` 是**仓库内操作手册**，**不走双副本惯例**、不需要复制到外层——
+  它是「照做」用的参考资料，随时可从仓库读到，不像 SOP 与执行细则那样要被会话在启动时定位。
 - 这些是新增文件，官方上游没有，不会与 `git merge upstream/dev` 冲突。
