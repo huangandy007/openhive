@@ -40,11 +40,17 @@ export type Perm = "read" | "write" | "review" | "admin"
 /**
  * 一条授权 = `role_resource` 的一行（角色那一维已由调用方 join 掉：这里只关心「这个用户名下
  * **有哪些**授权」，不关心它们出自哪个角色）。
+ *
+ * ⚠️ **`resourceType` / `perm` 刻意是 `string`，不是上面的窄联合**。取行那一步跨包：auth 的
+ * `grantsFor()` 从 PG 取行，PG 侧的保证是 **CHECK 约束**（`0004_rbac.sql`，由 `rbac.test.ts`
+ * 打真库验），不是 TS 类型。收窄成联合会逼接线处写一次**无意义的 cast**，或者逼 auth 复制一份
+ * 联合——后者是「同一个判断两处各写一份」（`LEARNINGS #002-06`），改一处漏一处。
+ * 未知值在这里**天然被跳过**（`TOOL_OF` 查不到 ⇒ 不产规则），落回上游兜底 `ask`，是保守的一侧。
  */
 export interface Grant {
-  readonly resourceType: ResourceType
+  readonly resourceType: string
   readonly resourceId: string
-  readonly perm: Perm
+  readonly perm: string
 }
 
 /**
@@ -76,9 +82,18 @@ export interface Grant {
  * 但**也不生效**）。这不是「已覆盖」，是**挂账的缺口**：`access-rbac.test.ts` 的 ③ 有一条断言
  * 把它钉在明面上，将来接上 mcp 时必须**同时**改这张表和那条断言（`LEARNINGS #002-02`）。
  */
-export const TOOL_OF: Partial<Record<ResourceType, string>> = {
+/**
+ * ⚠️ 写法分两步是刻意的（`satisfies` 管写入侧、宽类型管读取侧）：
+ * - `satisfies Partial<Record<ResourceType, string>>` ⇒ **写这张表时**键打错会当场红；
+ * - 导出的类型放宽成 `Record<string, string | undefined>` ⇒ **读它的地方**（`resolve()` /
+ *   `sessionRuleset()`）可以直接拿一个 `string` 去索引，不必反过来给它补一次 cast
+ *   ——那个 cast 正是「明明库里有 CHECK 兜着，却要在类型层假装不确定」的假动作。
+ */
+const TOOL_OF_TABLE = {
   skill: "skill",
-}
+} satisfies Partial<Record<ResourceType, string>>
+
+export const TOOL_OF: Readonly<Record<string, string | undefined>> = TOOL_OF_TABLE
 
 /**
  * 把「某用户名下的全部授权行」解析成一条规则集。
