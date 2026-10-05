@@ -62,6 +62,12 @@ const createFixture = async () => {
     CREATE POLICY txn_read ON fund_txn FOR SELECT TO ${READER_ROLE}
       USING (project_id IN (SELECT pm.project_id FROM project_member pm
                             WHERE pm.user_id = current_setting('${IDENTITY_SETTING}', true)));
+
+    -- I5（2026-10-05）：被 GRANT 的**每一张表**都要开 RLS——成员表原先只有 GRANT，
+    -- 受限账号可以整表读（⑧ 实测：alice 读得到 bob 的成员关系行）。
+    ALTER TABLE project_member ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY member_read ON project_member FOR SELECT TO ${READER_ROLE}
+      USING (user_id = current_setting('${IDENTITY_SETTING}', true));
   `)
   return db
 }
@@ -69,26 +75,29 @@ const createFixture = async () => {
 const db = await createFixture()
 
 /**
- * 以**受限账号** + 给定身份读一次资源表，按当前身份过滤。
+ * 以**受限账号** + 给定身份跑一次查询，按当前身份过滤。
  *
  * `identity` 传 `undefined` = 这次请求**没有身份**（GUC 不设）——那正是「未认证」的形状。
  * 事务里 `SET LOCAL ROLE` + `set_config(..., true)` 都是**事务作用域**（⑤ 钉住这点）。
  */
-const readAs = async (
-  conn: PGlite,
-  identity: string | undefined,
-  sql = "SELECT id::int AS id FROM fund_txn ORDER BY id",
-): Promise<number[]> => {
+const queryAs = async <T>(conn: PGlite, identity: string | undefined, sql: string): Promise<T[]> => {
   await conn.exec("BEGIN")
   try {
     await conn.exec(`SET LOCAL ROLE ${READER_ROLE}`)
     if (identity !== undefined) await conn.query("SELECT set_config($1, $2, true)", [IDENTITY_SETTING, identity])
-    const rows = await conn.query<{ id: number }>(sql)
-    return rows.rows.map((row) => row.id)
+    const rows = await conn.query<T>(sql)
+    return rows.rows
   } finally {
     await conn.exec("ROLLBACK")
   }
 }
+
+/** 资源表那一支：按身份读 `fund_txn` 的 id。 */
+const readAs = async (
+  conn: PGlite,
+  identity: string | undefined,
+  sql = "SELECT id::int AS id FROM fund_txn ORDER BY id",
+): Promise<number[]> => (await queryAs<{ id: number }>(conn, identity, sql)).map((row) => row.id)
 
 const readAsConnectionRole = async (conn: PGlite, sql: string): Promise<number[]> => {
   const rows = await conn.query<{ id: number }>(sql)
@@ -250,6 +259,33 @@ describe("T008 · 业务数据 RLS 机制（见证测试）", () => {
     // SQLSTATE **实测为字符串** `"42501"`（探针 `typeof` 量过，见 `#002-03`），不是数字。
     expect(err.code).toBe("42501")
     expect(err.message).toMatch(/permission denied/i)
+  })
+
+  /**
+   * 🔴 **I5（2026-10-05）：被 `GRANT` 的每一张表都要开 RLS —— 成员表不是例外。**
+   *
+   * 原模板（`rls.ts`）只对 `<业务表>` 开 RLS，成员表**只 GRANT 不设策略** ⇒ 受限账号可以
+   * **整表读**：alice 读得到 bob 的成员关系行。FR-005 明说 MCP 侧会按自然语言**生成任意 SQL**
+   * ⇒ 这不是理论风险，是「谁和谁在一个项目里」这一整张关系图（FR-009 的另一轴）直接外泄。
+   *
+   * ⚠️ 只 GRANT 不设策略**不报错、不变红**：读得到、结果看起来完全正常。所以这条必须由
+   * **越权断言**（读别人的行）钉住，不能靠「能读到自己的行」（那正是泄漏的形状）。
+   */
+  test("⑧ 成员表也开 RLS：只看得到自己的成员关系行（GRANT ≠ 可以整表读）", async () => {
+    const members = (identity: string | undefined) =>
+      queryAs<{ user_id: string; project_id: string }>(
+        db,
+        identity,
+        "SELECT user_id, project_id FROM project_member ORDER BY user_id",
+      )
+
+    expect(await members("alice")).toEqual([{ user_id: "alice", project_id: "p1" }])
+    expect(await members("bob")).toEqual([{ user_id: "bob", project_id: "p2" }])
+    // 无身份 ⇒ 空集（与 ③ 同一条取向：身份通道断了 = 查不到，不是看到全部）。
+    expect(await members(undefined)).toEqual([])
+
+    // 负对照（与 ④ 同款）：连接用户（owner / superuser）看得到两行 ⇒ 上面的过滤只能来自 RLS。
+    expect(await readAsConnectionRole(db, "SELECT count(*)::int AS id FROM project_member")).toEqual([2])
   })
 })
 
