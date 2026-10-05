@@ -11,10 +11,19 @@ import type { Permission } from "@opencode-ai/schema/permission"
  * 只认「已经取出来的授权行」。取行那一步（user → 角色 → 授权 的 join）归 **T005/T006**——
  * 那两处住在 `packages/opencode`，而**全仓只有它同时依赖 auth 与 core**（实测）。
  *
- * 出口为什么是 `Permission.Ruleset`：用户 2026-10-04 二选一裁定。它直接喂 T003 的
- * `AccessIssue.issue`，形成「角色表 → ruleset → capability」一条直线，而**执行器仍然只认
+ * 出口为什么是 `Permission.Ruleset`：用户 2026-10-04 二选一裁定。它**形状上**直接喂 T003 的
+ * `AccessIssue.issue`（那个 `issue()` 的 `permissions` 收的就是这个类型），而**执行器仍然只认
  * capability、不回查角色表**（FR-002）。若出口改成 `boolean`，接线处还得再包一层把布尔翻回
  * ruleset——那层包装正是「同一个判断在两处各写一份」的入口（`LEARNINGS #002-06`）。
+ *
+ * ⚠️ **但「一条直线」今天不成立**（R3，2026-10-05 更正）。这里原来接着写「形成『角色表 →
+ * ruleset → capability』一条直线」，**与实测不符**：`AccessIssue.issue` 在各包的 `src` 下
+ * **零调用点**（取数：`grep -rn "AccessIssue\.\|AccessCapability\." packages/core/src
+ * packages/opencode/src packages/auth/src` ⇒ 只命中 `issue.ts` 自身两处 ＋ 本行这句注释），
+ * 而 `issue.ts` 自己就写着「本文件不接线」（D0-5 裁定）。
+ * 今天真正跑着的那条直线是 **角色表 → 本文件的 `resolve()` → `AccessSession.sessionRuleset()`
+ * → `session.permission`**（`resolve()` 的生产调用点在 `session.ts` 里，**不在** `issue.ts`）。
+ * 出口选 `Ruleset` 的理由**不受影响**——它同时是两条链已经在吃的形状。
  *
  * 「角色为主 + 用户例外」（design-v2 §14.3 标题）：**不加第 4 张表**（用户 2026-10-04 裁定）——
  * 「例外」= 给这一个用户单独分配一个（自定义）角色，用现有三张表表达。F9 的「授权组」走的

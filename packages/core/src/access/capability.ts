@@ -11,6 +11,13 @@ export * as AccessCapability from "./capability"
  *
  * 本文件**只放结构定义**（T002），不放签发（T003）、不放守卫（T005/T006）。
  * 结构里每个字段为什么长这样，见各自注释——那些注释是这个文件的主要价值。
+ *
+ * ⚠️ **定位：今天没有生产调用点**（R3，2026-10-05 补）。本文件的结构只被 `./issue.ts` 消费，
+ * 而 `issue()` 自己也没有生产调用点（见那个文件的「本文件不接线」裁定段）。生产里真正在跑的
+ * 投影是 `AccessSession.sessionRuleset()`（v1，`{permission, pattern, action}`）。
+ * **这不减损本文件**：它是 FR-008 / FR-010 的**机制定义**——`cap_` 前缀、`DataScope` 的
+ * `rule` 字面量、`Scope` 三件套由 canary 测试逐条钉着（`packages/core/test/access-capability.test.ts`
+ * 与 `access-issue.test.ts`），F7 落数据范围时照这套结构接。删掉它 = 丢掉 F7 要照抄的接口。
  */
 
 import { Schema } from "effect"
