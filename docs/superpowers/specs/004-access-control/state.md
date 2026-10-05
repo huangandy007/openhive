@@ -10,7 +10,7 @@
 - **移交 3 条**：T009 → F6/F7（裁定「乙」）、T010 / T011 → F7（见 D0-4 段）。
 
 ✅ **Step 6 已收尾**（2026-10-05）：最终 commit 含 `Closes 004-access-control`，tag
-`v0.1.0-004-access-control`，`session.md` 已从占位改成真交接，`LEARNINGS` 追加 `#004-01`–`#004-05`。
+`v0.1.0-004-access-control`，`session.md` 已从占位改成真交接，`LEARNINGS` 追加 `#004-01`–`#004-07`。
 `multi-tenant` 合并由**用户**执行。后续动作与挂账见 `session.md`「下次会话要做的事」。
 
 **Step 5 已完成**（2026-10-05）：6 类扫描出 **C1 ＋ I1–I10**，用户裁定**全修**（Minors 记账）；
@@ -1384,13 +1384,19 @@ GRANT）**移交 F6/F7**（接收行落进对方的 `tasks.md` 文件头，`#002
 `metadata` 形状 / `patterns` / `always`）**逐字比过，完全同形**；并 grep 全仓
 `readResource` 只有**两个调用点**（`tools.ts` / `prompt.ts`），两处都已有 ask ⇒ **无第三条泄漏路径**。
 
+> ⚠️ **2026-10-05 补正（3 席的 `M-b`，见下文实测表）**：上面那句只核了**四个字段**——`ask` 还有
+> **第五项 `ruleset`**：工具路径的 `ask` 在 `tools.ts` 里绑的是
+> `merge(input.agent.permission, input.session.permission ?? [])`，而 I11 那条只带
+> `current.permission` ⇒ **这一项不同形**（`Config.permission.read` 这类只进 agent 规则集的配置
+> 在那条支路上不生效）。原判「完全同形」应读作「四个字段同形」。
+
 ### 重审修复本身（`LEARNINGS #003-02`：把修复当新代码再打一轮）
 
 问法是「**谁在按同一个前提做同一件事**」——不是「谁提到了这个名字」（`#002-06`）。逐项结果：
 
 | 前提 | 有几处实现 | 结论 |
 |---|---|---|
-| MCP 资源读要过 `read` ask | 2（`tools.ts` / `prompt.ts`，即 I11） | **已逐字对齐**，无第三处 |
+| MCP 资源读要过 `read` ask | 2（`tools.ts` / `prompt.ts`，即 I11） | **四个字段已逐字对齐**，无第三处；⚠️ `ruleset` 一项**不同形**（`M-b`，2026-10-05 实测） |
 | v1/v2 两条链的「整体 deny 基线」 | 2（`sessionRuleset` ① 按 `GOVERNED` / `resolve()` ① 按 `TOOL_OF_TABLE`） | 两表**键集相等**由 `openhive-access.test.ts` ⑥ 钉住（**故意**是警报条：谁把 `mcp` 塞进 `TOOL_OF` 它会红）；且 `sessionRuleset` ③ 只取 `effect==="allow"`，避免把 v2 的基线搬进来造成**过拒** |
 | 「创建会话必须带 capability」 | 4（create / update / prompt / fork） | 前 3 处走 `mergeClientRules`，fork 无客户端输入 ⇒ **直接继承** `original.permission`；**四条都有测试**（I3 补的就是缺的那两条） |
 | 「子代理会话怎么继承父级权限」 | 1（`deriveSubagentSessionPermission`，只被 `tool/task.ts` 调） | 单点，已测 |
@@ -1435,7 +1441,157 @@ GRANT）**移交 F6/F7**（接收行落进对方的 `tasks.md` 文件头，`#002
 
 ---
 
+## Step 5 之后的独立审查（3 席 · 2026-10-05）
+
+Step 5 收尾（含 I11 补修）之后，用户另开一轮**独立审查**（3 席并行 ＋ 对抗证伪），得 **R1–R5**。
+裁定：**全修 R1–R5**（R3 = 补文档说清定位；R4 = 定义语义 ＋ 登记缺口），Minors 一律**记账不修**。
+
+> 口径：本节所有数字/事实均为**本节落笔前在当时的代码 HEAD（`35ece21bff`）上串行复跑复测**所得
+> （`#001-01`「报门禁数字前先真跑」、`#003-04`「实测类记述落笔前先复现」、测试**串行**跑 `#003-01`）。
+> ⚠️ **时点快照**（`LEARNINGS #004-05`）：`35ece21bff` 是本 feature **代码**最后一次改动；其后只有
+> docs 提交、不动一行代码，故这些数字对该代码状态仍成立——但**别把 `35ece21bff` 读成「当前 HEAD」**。
+
+### 缺陷表
+
+| 编号 | 类别 | 文件（符号） | 描述 | 优先级 | 处置 |
+|---|---|---|---|---|---|
+| **R1** | 安全 | `session/prompt.ts` 的 `command()` | `Command.init` 把每个 skill **也**注册成一条命令（`source: "skill"`，`template` 就是 skill 正文），而这条路径**不经过工具层** ⇒ `POST /session/:id/command { command: "<未授权的 skill 名>" }` 可绕过 `session.permission` 里那条 `{ permission: "skill", pattern: "*", action: "deny" }`（`AccessSession.sessionRuleset` ①，**零授权时也照样有**） | **Critical** | ✅ 修（`0a63df3f6e`；上游文件 ⇒ 单独提交 ＋【这是要保留的定制】） |
+| **R2** | 文档不实 | 7 处（`packages/auth/src/rls.ts`、`workspace.test.ts`、本 feature 三份主文档、F7/F8 的 `tasks.md`） | 本仓文档与注释写「`packages/auth` 的测试**不进 CI**」——**实测为假** | Important | ✅ 修（`3554cbbc54`） |
+| **R3** | 定位不实 | `core/src/access/{capability,issue}.ts` ＋ `rbac.ts` 的一段注释 | 两文件是 FR-008/FR-010 的**机制定义**（结构由 canary 测试逐条钉着），但**今天零生产调用点**；`rbac.ts` 却把它们说成「角色表 → ruleset → capability 一条直线」——与实测不符 | 定位（裁定：**不删**） | ✅ 补文档说清定位（`982cc71848`） |
+| **R4** | 语义缺口 | `spec.md` 的 Edge Cases（缺一条） | 004 全程**没写下「授权变更什么时候生效」** | Important | ✅ 定义语义（`37d8daa86a`）＋ 落进 F10 接收表 |
+| **R5** | 横切一致性 | `mcp/index.ts` 的 `getPrompt` ＋ `command/index.ts` 的 MCP prompt `template` | 原 M14 里的一条 minor，复核后**升级为 Important**（**与 I8 同形**）：`_meta` 只写进 `tools/call`（`convertTool`）与 `resources/read`（`MCP.readResource`）⇒ `prompts/get` 是**三个 MCP 出口里唯一不带身份**的那个；而它在生产里**真的会被调** | Important | ✅ 修（`35ece21bff`；上游文件 ×2 ⇒ 单独提交 ＋【这是要保留的定制】） |
+
+### 修复与见证（逐条）
+
+**R1 —— skill 命令出口补权限门**（`command()`，`0a63df3f6e`）
+
+- 加的一问：`permission.ask({ permission: "skill", patterns: [cmd.name], always: [cmd.name], metadata: {}, ruleset: Permission.merge(agent.permission, session.permission ?? []) })`，与工具路径（`src/tool/skill.ts` 的 `ctx.ask`）**同形**；只对 `cmd.source === "skill"` 生效。
+- **位置**：在 `cmd.template` 被读取之前。⚠️ 据实记——真正的执行点是模板被**展开**那一步（`ConfigMarkdown.shell` 匹配 `` !`cmd` `` 后 `Process.text` 真的执行 shell），读 `cmd.template` 本身对 skill 只是纯字符串拼接；把门放在读模板之前是**更强**的约束，把两处一起罩住。
+- **agent 解析上移**（上游原本在 `getModel` 之后）：规则集必须与工具路径一样并上 `agent.permission`——`Config.permission.skill` 是上游一等的配置键（`core/src/v1/config/permission.ts`），它**只进 agent 的规则集、不进会话规则集**，只并会话那份会比上游的工具路径**更弱**。上移本身等价，只有一处次序变化（变好）：agent 找不到时现在**先于**模板的 shell 块报错。
+- 见证（`test/session/prompt.test.ts`，两条；探针 skill 由 `writeProbeSkill` 落在 tmpdir）：
+  - `R1：未授权 skill ⇒ /command 调不动它，skill 正文一个字节都没进模型` —— 断言 `Exit.isFailure` ＋ `Cause.squash(...)` 是 `PermissionV1.DeniedError` ＋ **模型调用 0 次**；
+  - `R1 对照：已授权 skill ⇒ 命令照常执行、正文进模型` —— 断言 `Exit.isSuccess` ＋ 模型调用 > 0 ＋ 末条输入里含 skill 正文的 marker（**负对照**：拒的是越权，不是把 `command` 功能整个关掉）。
+  - RED：新用例 **1 fail**（修复前不拒、模型被调用）→ GREEN：**2 pass**；整文件 **51 pass / 14 skip / 0 fail**（本节复跑）。
+- ⚠️ **一处据实记（顺序本身没有被测试见证）**：两条见证钉住的是「**未授权 ⇒ 模型拿不到正文**」；「门在模板展开之前」这一条**没有**测试守着。要写它得让探针 skill 的 `` !`…` `` 块落一个 marker 文件、再断言被拒时 marker 不存在——**本机做不了**：本仓的 shell 用例是 Unix 门（`unixNoLLMServer` ＋ `withSh` / `hasBash`，本机 `hasBash` 为假时**静默 return**），照抄就成了 `#002-02` 说的「没有真正执行被测路径的测试＝缺口」。故记成**缺口**，不写成「已覆盖」。
+
+**R2 —— 「auth 测试不进 CI」这处不实记述（7 处）**（`3554cbbc54`）
+
+- 事实（本节复测，取数命令已写进 `rls.ts` 的注释）：`turbo.json` **第 20 行**就是 `"@opencode-ai/auth#test"`（2026-09-30 由 `c013619ddc` 加入，**早于本 feature 的 merge-base `907b3bc5`**），`.github/workflows/test.yml` 第 68 行跑 `GITHUB_ACTIONS=false bun turbo test` ⇒ 本包测试**进 CI**。复核命令：`grep -n "@opencode-ai/auth#test" turbo.json` ＋ `grep -rn "turbo test" .github/workflows/`。
+- 复核取数：`grep -rn "不进 CI" docs packages` ⇒ **7 处**（`packages/auth/src/rls.ts`、`packages/auth/src/workspace.test.ts`、`state.md`、`session.md`、`tasks.md`、`007-fund-analysis/tasks.md`、`008-call-analysis/tasks.md`），均已改正为自足表述。
+- 与 I6 同型（`#004-03`）：写着「有 X / 没有 Y」的**镜像声明本身也会假**；其中 `workspace.test.ts` 那一处是**本 feature 期间我自己写的**，且没被我自己那轮 Step 5 审计抓到。
+
+**R3 —— `capability.ts` / `issue.ts` 的定位**（`982cc71848`）
+
+- 实测（取数：`grep -rn "AccessIssue\.\|AccessCapability\." packages/core/src packages/opencode/src packages/auth/src`）⇒ 只命中 `issue.ts` 自身 ＋ `rbac.ts` 那句注释；**零生产调用点**，而 `issue.ts` 自己就写着「本文件不接线」（D0-5 裁定）。
+- 今天真正跑着的是**另一条**：角色表 → `AccessRbac.resolve()` → `AccessSession.sessionRuleset()` → `session.permission`（`resolve()` 的生产调用点在 `session.ts` 里，**不在** `issue.ts`）。出口选 `Ruleset` 的理由不受影响——它同时是两条链已经在吃的形状。
+- 处置：**不删**（F7 要照抄这套结构：`cap_` 前缀 / `DataScope.rule` / `Scope` 三件套由 `packages/core/test/access-capability.test.ts` ＋ `access-issue.test.ts` 逐条钉着）＋ 三个文件各补一段「今天的定位」（`capability.ts` 文件头、`rbac.ts` 的出口段）＋ 改正 `rbac.ts` 那处**与实测不符**的「一条直线」。
+- 判据：两个文件都是 openhive **定制创建**的文件（`git log` 只有 004 的提交）⇒ 纯注释改动**零上游冲突面**。见证：无行为变化 ⇒ 门禁复跑与基线逐字相同。
+
+**R4 —— 授权变更的生效时点**（纯文档，`37d8daa86a`）
+
+- 实测依据：`capabilityFor()` 只在会话 **create** 时调（`handlers/session.ts`），`update` 只走 `AccessSession.mergeClientRules`、**不回查** `auth.user_role` / `auth.role_resource` ⇒ capability 在**会话创建那一刻焊死**，改授权（**增也一样**）对已有会话无效。
+- `spec.md` 的 Edge Cases 新增第 4 条：**会话生命周期 = 授权的滞后窗口**；这是 FR-002「执行器只认 capability、不回查角色表」的**直接代价、不是缺陷**（回查就等于在执行器里认角色表）；将来要「立刻踢掉」的落点是**让会话作废 / 重新签发**，**不是**把回查塞回执行器；今天**不提供**会话级吊销。
+- 落进**接收方**的表（`LEARNINGS #002-04③`：责任/语义出边界必须落进对方文档，否则等于推进黑洞）：`010-governance-console/tasks.md` 的 T003 —— 界面**不要承诺「立即生效」**，验收**别把「改完立刻生效」写进出参**。
+- 判据：这不是「做不完的 task」，是一条**设计语义**——它决定 F10 的授权管理界面能承诺什么。
+
+**R5 —— `prompts/get` 补身份**（上游文件 ×2，`35ece21bff`）
+
+- 两半：**传输层**（`MCP.Interface.getPrompt` 加第 4 个可选 `meta` ＋ 实现把它塞进出站 `_meta`；`...(meta ? { _meta: meta } : {})` ⇒ 不传就**压根没有这个键**，不是「带了个空身份」）＋ **接线层**（`command/index.ts` 的 MCP prompt `template` getter 里 `const meta = yield* userMeta()` 传下去）。
+- 为什么取得到：身份本来就在请求 fiber 上（`User.Service`，每请求注入），而 `bridge` 捕获了**全量** context（`src/effect/bridge.ts` 的 `Effect.context()`）⇒ `bridge.promise(...)` 里能 `yield* userMeta()`。
+- 理由写进 `src/mcp/openhive-identity.ts` 文件头（「补的是哪个洞」「为什么三条出口必须是**同源的一份**身份」，与 I9 同因 `#003-05`）。
+- 见证（两半各一对：身份 ＋ **对照**）：
+  - `test/mcp/openhive-mcp-identity.test.ts`：``getPrompt` 把身份放进 `prompts/get` 的 `_meta`（线上可见）`（记录服务端实收的 params）＋ 对照`不传 meta ⇒ `prompts/get` 的 params 里没有 `_meta` 这个键``。RED **3 pass / 1 fail**（实收 `undefined`）→ GREEN **4 pass**。
+  - `test/session/openhive-mcp-identity.test.ts`：`带身份 ⇒ MCP prompt 命令取模板时 getPrompt 拿到这个人`（接线层，用 `LayerNode.compile(commandRoot, [[MCP.node, fakePromptMcp]])` 替换实现）＋ 对照「没有身份 ⇒ 第 4 个实参是 `undefined`」。RED **5 pass / 1 fail** → GREEN **6 pass**。
+- 变异（`#003-03`：红集据实记，三类分开）：
+  - **M-K**（把 `...(meta ? { _meta: meta } : {})` 改成无条件 `_meta: meta ?? {}`）⇒ **恰红 1 条 = 那条对照**（其余 3 绿）——证明对照条抓得住「默认塞一个空身份」。
+  - **M-J**（接线层 `const meta = yield* userMeta()` → `const meta = undefined`）⇒ **恰红 1 条 = 接线身份测试**，对照绿。
+
+### 本轮新增的挂账（据实记，不假装闭合）
+
+1. **MCP 来源的命令今天无法用 capability 表达**：`Command.Info` 的字段里**没有 server**（只有 `source: "mcp"`，见 `src/command/index.ts` 的 `Info`），而 mcp 那条投影按 `mcp:<server>:*` 判 ⇒ 「这条 prompt 命令属于哪个 server」在数据里**不存在**，判据写不出来。R1 只堵住了 skill 那一支（`name` 就在 `Command.Info` 里）。
+2. **`GET /command` 与已挂账的 `GET /skill` 同型**：instance 级、**非会话作用域**（`handlers/instance.ts` 的 `getCommand` 直接 `command.list()`）⇒ 拿不到 capability、无处可过滤；而返回的 `Command.Info[]` 里 skill 的 `template` **就是正文**。并入 `GET /skill` / `GET /experimental/tool` 那一张账（见「T005」节的挂账行）。
+3. **R1 的门被拒时呈现为 500**：`command()` 的契约错误类型只有 `Image.Error`，把 `PermissionV1.Error` 写进签名要动 `Interface` 的全部调用方（HTTP 路由 / CLI）＝上游面 ⇒ 用 `Effect.orDie`（与工具路径**逐字同形**），代价是呈现层粗糙。落点注释已写明（`prompt.ts` 的 R1 段）。
+
+### 3 席的 Minors（**记账，不修** —— 逐条列出，不假装闭合）
+
+| 编号 | 类别 | 文件（符号） | 描述 | 复核结论 |
+|---|---|---|---|---|
+| `M-a` | 文档 | `core/src/access/session.ts` | 一段 `sessionRuleset` 说明**重复且错位** | **两席独立命中**，属实 |
+| `M-b` | 一致性 | `session/prompt.ts` 的资源支路 | `ask` 只带 `current.permission`、**未叠加** `agent.permission`，与同类调用**不同形**（`#003-05` 形状） | 属实（本节复核见下） |
+| `M-c` | 可用性 | `core/src/access/session.ts` 的 `sessionRuleset` | mcp 授权行须与配置键**逐字相同**（`fund.db` vs `fund_db`），否则**静默过拒** | 属实 |
+| `M-d` | 健壮性 | 同上 | server 名含 glob 元字符（`*`）⇒ 资源 pattern **过宽** | 属实 |
+| `M-e` | 可用性 | `access.ts` 的 `capabilityFor` | 配置冲突用 `Effect.die`（defect）表达，500 里不带结构化原因 | 属实 |
+
+**`M-b` 的现场实测**（本节补做；`#004-04`：表里「同形 / 已覆盖」这类**事实性说法**要逐条去代码核）：
+
+| 调用点 | `ruleset` |
+|---|---|
+| `session/tools.ts` 的 `ask`（工具路径，资源工具走它） | `Permission.merge(input.agent.permission, input.session.permission ?? [])` |
+| `session/prompt.ts` 的 `command()`（**R1 新增**的门） | `Permission.merge(agent.permission, session.permission ?? [])` |
+| `session/prompt.ts` 的资源支路（I11 新增的门） | `current.permission ?? []` —— **未叠加 `agent.permission`** |
+
+⇒ 与工具路径**不同形**：`Config.permission.read` 这类**只进 agent 规则集**的配置在这条支路上**不生效**。今天不改（Minors 记账），但它是「**同一条判定的两处实现只对上了四个字段、第五个字段各写各的**」——`#002-06` 的形状，留待有生产调用点时一并处理。
+
+> 判据：这五条**都不改变今天可达路径上的安全结论**（或落在上游既有代码上），记在这里备查；
+> 修它们会扩大与上游的冲突面（第一号约束）。
+
+### 门禁（**代码最终状态** `35ece21bff` 上**串行**复跑，`#003-01`：并行会造假红）
+
+> ⚠️ **时点**：下表是 `35ece21bff`（R5 之后、代码最后一次改动）上的快照；其后只有 docs 提交、不动代码
+> ⇒ 复核请**串行**重跑，别读成「在当前 HEAD 上跑过」（`LEARNINGS #004-05`）。
+
+| 门禁 | 结果 | 判据 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**，31 successful / 31 total（其中 30 个是 turbo 缓存命中——输入未变的包复用上次结论） | 必须 0 |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | = 基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4953 warnings / 1 error / 3468 files**（恒红） | 唯一 error = 既有上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163:19`（`'\200B'` 八进制转义，`#001-02` 裁定**不私改**、登记上报上游）⇒ `src` 侧**改动行 0 命中**；相对 Step 5 那次（4951/1、同为 3468 files）**＋2**，与 R5 在两个测试文件里各新加的一个 Service 桩（各 ＋1 条 `no-unsafe-type-assertion`）**对得上**（`#001-01`：总数有 ±1 抖动，判「有没有变坏」看**规则名 ＋ 文件行**） |
+| `packages/core`（4 个 access 测试文件） | **25 pass / 0 fail** | 改动影响面所在文件全绿 |
+| `packages/auth`（`rls` ＋ `rbac` ＋ `workspace`） | **25 pass / 1 skip / 0 fail** | 同上（`rls` 走 PGlite 真跑，31 s） |
+| `packages/opencode` access 套件（7 文件） | **39 pass / 0 fail** | 同上 |
+| `packages/opencode` `test/session/prompt.test.ts` | **51 pass / 14 skip / 0 fail**（97 s） | 含 R1 的两条见证 |
+| `packages/opencode` `test/mcp/openhive-mcp-identity.test.ts` | **4 pass / 0 fail** | 含 R5 的两条 |
+| `packages/opencode` `test/session/openhive-mcp-identity.test.ts` | **6 pass / 0 fail** | 含 R5 的两条 |
+| `bun.lock` | `git diff --stat bun.lock` = **空** | 未跑 `bun install`，无镜像源污染 |
+
+⚠️ **据实记（不假装 0 命中）**：两个**改动过的测试文件**的全局 lint 残差（单文件实测，
+取数：**在仓库根**跑 `bunx oxlint <文件>`——在包目录里跑会因根配置的 `options.typeAware`
+报「only supported in the root config」而测不到数）：
+
+- `test/session/openhive-mcp-identity.test.ts`：**8 warnings / 0 errors**，8 条**全是**
+  `no-unsafe-type-assertion`（Step 5 记的是 6 → 7；R5 又 ＋1——新写的 `fakePromptMcp` 桩）；
+- `test/mcp/openhive-mcp-identity.test.ts`：**3 warnings / 0 errors** ＝ 2 条 `no-unsafe-type-assertion`
+  ＋ 1 条 `no-floating-promises`（`http.stop(true)` 未 `await`）。**那条 `no-floating-promises` 不是 R5 引入的**
+  ——取数：`git diff 35ece21bff~1 35ece21bff -- <该文件> | grep 'http.stop'` **零命中**（它是**未改动的上下文行**），
+  且与上游 `test/mcp/lifecycle.test.ts` 的 `await protocol.close().catch(() => {})` ＋ `http.stop(true)`
+  两行**逐字同款**（上游 `headers.test.ts` 则 `await` 了——两种写法上游都有）。
+
+规则是 **warning 级**（全局 error 仍恰 1 条、在上游文件上）⇒ 按「照抄同文件/同上游既有写法」保留，
+不为凑门禁偏离既有风格。
+
 ## 最后更新
+
+2026-10-05（**Step 5 之后的独立审查（3 席）**：得 **R1–R5**，用户裁定**全修**（Minors 记账）——
+R1/Critical：`Command.init` 把每个 skill 也注册成一条命令，`POST /session/:id/command` 可绕开
+`{ skill, *, deny }`（上游文件 `session/prompt.ts`，【这是要保留的定制】**单独提交** `0a63df3f6e`；
+两条见证 ＋ RED 1 fail → GREEN 2 pass；据实记「门的位置本身**没有测试见证**——要写它得让 skill 里的
+`` !`…` `` 落一个 marker，而本仓 shell 用例是 **Unix 门**、本机静默 return ⇒ 记**缺口**不记覆盖」）／
+R2/Important：「auth 测试不进 CI」这处**实测为假**的记述 **7 处**已改正（`turbo.json:20` ＋
+`.github/workflows/test.yml:68`，取数命令写进注释）`3554cbbc54`／R3：`capability.ts` / `issue.ts`
+**今天零生产调用点**的定位补进文档（裁定**不删**——F7 要照抄这套结构）＋ 改正 `rbac.ts` 那句
+「一条直线」（实测为假）`982cc71848`／R4：**定义「授权变更的生效时点」**（capability 在会话创建那刻
+焊死 ⇒ **会话生命周期 = 授权的滞后窗口**；是 FR-002 的直接代价、不是缺陷；将来要「立刻踢掉」只能让
+会话作废）＋ 落进 **F10 接收表** `37d8daa86a`／R5/Important（原 M14 的 minor 升级，**与 I8 同形**）：
+`prompts/get` 是三个 MCP 出口里唯一不带身份的 ⇒ `getPrompt` 加第 4 个可选 `meta` ＋ 接线层
+`userMeta()`（上游文件 ×2，【这是要保留的定制】）`35ece21bff`，见证两对 ＋ 变异 **M-K / M-J 各恰红
+1 条**）＋ 本轮**新增三条挂账**（MCP 来源的命令 `Command.Info` 里**没有 server 字段** ⇒ 表达不出
+capability／`GET /command` 与已挂账的 `GET /skill` 同型（instance 级、非会话作用域，`template` 就是
+skill 正文）／R1 的门被拒时呈现为 **500**）＋ **3 席的 Minors `M-a`…`M-e` 记账**（其中 **`M-b` 现场
+实测**：`tools.ts` 的 ask 与 R1 的门都是 `merge(agent.permission, …)`，而 I11 的资源支路只带
+`current.permission` ⇒ **不同形**，`Config.permission.read` 在那条支路不生效）＋ 门禁在**代码最终状态
+（`35ece21bff`）上串行复跑**（typecheck 31/31 exit 0 · lint:openhive 23/0/69 files/161 rules 与基线逐字相同 ·
+全局 lint **4953 warnings / 1 error**（唯一 error 仍是上游 `prompt-input/index.tsx:163:19`；＋2 与两个
+测试桩对得上、`src` 改动行 0 命中）· core 25 · auth 25 pass/1 skip · opencode access 39 ·
+`prompt.test.ts` 51 pass/14 skip · 两张身份测试表 **4 ＋ 6 pass** · `bun.lock` 空））
 
 2026-10-05（**Step 5 代码审查**：6 类扫描出 **C1 ＋ I1–I10**，用户裁定**全修**（Minors 记账）；
 表定稿后复核又发现 **I11**（`prompt.ts` 资源支路缺 `read` ask —— 与工具路径**同形的一问**，

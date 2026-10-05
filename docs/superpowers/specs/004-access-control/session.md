@@ -2,7 +2,8 @@
 
 **状态**：✅ **已收尾**（2026-10-05）。15 条 task：**12 条落地**，
 **3 条整条移交**下游 feature（T009 / T010 / T011，见下）。Step 5 审查发现 **C1 + I1–I11 共 12 条缺陷，
-全部已修**；Minors 除 M14 外一律挂账未修。
+全部已修**；**Step 5 之后的独立审查（3 席）又得 R1–R5，也全部已修**（含 1 条 Critical：skill 命令出口
+缺权限门）。两轮的 Minors 一律挂账未修。
 
 > 合并到 `multi-tenant` 由**用户**执行（本 feature 不自行 merge）。spec 目录 `004-access-control/`
 > **永不删除**（下一 feature 的上下文 + CI 种子）。
@@ -43,9 +44,18 @@
   ⇔ core 的 `RESOURCE_TYPES` / `PERMS` **逐值双向**。**为什么住在 opencode**：全仓只有它同时
   依赖 auth（够得着真库）与 core（够得着值）。
 
-**上游文件的两处「要保留的定制」**（各自单独提交，带 `【这是要保留的定制】` 标记）
+**上游文件里的「要保留的定制」**（各自单独提交，带 `【这是要保留的定制】` 标记）
 - `packages/opencode/src/session/prompt.ts` —— ① 会话创建时取一次 `mcpMeta`；② **I11**：
-  `resolvePart` 的 `source.type === "resource"` 支路补上**与工具路径同形**的 `permission.ask`。
+  `resolvePart` 的 `source.type === "resource"` 支路补上**与工具路径同形**的 `permission.ask`；
+  ③ **R1**：`command()` 里 `source === "skill"` 的命令在**读模板之前**补
+  `permission.ask({ permission: "skill", patterns: [cmd.name], always: [cmd.name], metadata: {} })`
+  ——并**把 agent 解析上移**，好让规则集并上 `agent.permission`（与工具路径同形；`Config.permission.skill`
+  只进 agent 规则集、不进会话规则集）。
+- `packages/opencode/src/mcp/index.ts` —— MCP 出站带身份那几处（可选 `meta` 形参）；
+  **R5** 又给 `getPrompt` 加第 4 个可选 `meta` 并写进出站 `_meta`。⚠️ `Interface` 的**声明与实现两处都要改**
+  （漏了声明就是「实现改了、契约没改」，只在调用点报警）。
+- `packages/opencode/src/command/index.ts` —— **R5**：MCP prompt 命令的 `template` getter 里
+  `const meta = yield* userMeta()` 再传下去（身份本来就在请求 fiber 上，`bridge` 捕获了全量 context）。
 
 ### Step 5 修了什么（12 条，全修）
 
@@ -64,6 +74,27 @@
 **I11 的由来值得记一笔**：它是「表定稿之后」为了把「同形」这句话写准、去逐字核对工具路径时**顺手
 发现**的，当时**不在表里**——而它恰恰是最重的一条（资源支路能整个绕开会话里的 MCP deny）。
 
+### Step 5 之后的独立审查（3 席 · 2026-10-05，R1–R5 **全修**）
+
+| 编号 | 一句话 | commit |
+|---|---|---|
+| **R1**（Critical） | skill 命令出口（`Command.init` 把每个 skill **也**注册成一条命令）**不经过工具层** ⇒ `POST /session/:id/command` 能绕开 `{ skill, *, deny }`。补权限门 + 两条见证 | `0a63df3f6e` |
+| **R2**（Important） | 「`packages/auth` 测试**不进 CI**」这处**实测为假**的记述 **7 处**改正（`turbo.json:20` ＋ `test.yml:68`） | `3554cbbc54` |
+| **R3**（定位） | `capability.ts` / `issue.ts` **今天零生产调用点**——补文档说清定位（裁定**不删**：F7 要照抄这套结构）；改正 `rbac.ts` 那句「一条直线」（与实测不符） | `982cc71848` |
+| **R4**（语义） | **定义「授权变更的生效时点」**：capability 在会话创建那刻焊死 ⇒ **会话生命周期 = 授权的滞后窗口**；落进 **F10 接收表** | `37d8daa86a` |
+| **R5**（Important） | `prompts/get` 是三个 MCP 出口里**唯一不带身份**的 ⇒ `getPrompt` 加可选 `meta` ＋ 接线层 `userMeta()`；变异 M-K / M-J 各恰红 1 条 | `35ece21bff` |
+
+**本轮新增三条挂账**（都据实记在 `state.md`，不假装闭合）：① MCP 来源的命令在 `Command.Info` 里
+**没有 server 字段** ⇒「它属于哪个 server」表达不出来、capability 判据写不出（R1 只堵住了 skill 那一支）；
+② `GET /command` 与已挂账的 `GET /skill` **同型**（instance 级、**非会话作用域** ⇒ 无处过滤，而
+`Command.Info[]` 里 skill 的 `template` **就是正文**）；③ R1 的门被拒时**呈现为 500**（`Effect.orDie`，
+与工具路径逐字同形；要出可读文案得动 `command()` 的契约错误类型＝动 `Interface` 的全部调用方＝上游面）。
+
+**`M-b` 的现场实测**（3 席 Minor 之一，收尾时补做）：`tools.ts` 的 `ask` 与 R1 的门都是
+`merge(agent.permission, session.permission ?? [])`，而 **I11 的资源支路只带 `current.permission`**
+⇒ 与工具路径**不同形**：`Config.permission.read` 这类**只进 agent 规则集**的配置在那条支路上**不生效**。
+今天记账不改（Minors 裁定）；形状是 `#002-06` 的「同一个判断两处各写一份」，留待有生产调用点时一并处理。
+
 ---
 
 ## 下次会话要做的事
@@ -72,10 +103,17 @@
 
 ### 1. 用户侧
 - 把 `worktree-feat-004-access-control` 合并到 `multi-tenant`（**由用户执行**）。
-- 裁定一条挂账：`packages/opencode/test/session/openhive-mcp-identity.test.ts` 的全局 lint
-  警告数 **6 → 7**（+2 `no-unsafe-type-assertion`、−1 `no-unnecessary-type-assertion`），
-  新增两条与新测试 stub 逐字同款于文件既有 5 条。规则是 warning 级、全局 error 数不变（仍 1 条，
-  在上游文件）。**当前处置：记账保留**，待用户裁定是「接受」还是「改 stub 写法」。
+- 裁定一条挂账：**改动过的两个测试文件**的全局 lint 残差（现值，2026-10-05 复测）——
+  `packages/opencode/test/session/openhive-mcp-identity.test.ts` **8 warnings / 0 errors**
+  （8 条**全是** `no-unsafe-type-assertion`，都落在 Service 桩上）；
+  `packages/opencode/test/mcp/openhive-mcp-identity.test.ts` **3 warnings / 0 errors**
+  （2 条 `no-unsafe-type-assertion` ＋ 1 条 `no-floating-promises`——`http.stop(true)` 未 `await`，
+  **T007 建文件时就在**（R5 的 diff 里它是**未改动的上下文行**），与上游 `test/mcp/lifecycle.test.ts`
+  的两行**逐字同款**）。规则是 warning 级、全局 error 数不变（仍 1 条，在上游
+  `packages/session-ui/src/v2/components/prompt-input/index.tsx:163:19`）。**当前处置：记账保留**，
+  待用户裁定「接受」还是「改 stub 写法」。
+  > 取数命令：**在仓库根**跑 `bunx oxlint <文件>`（在包目录里跑会因根配置的 `options.typeAware`
+  > 报「only supported in the root config」而测不到数）。
 
 ### 2. 下游 feature（三笔移交，均已在接收方 `tasks.md` 落表）
 
@@ -103,6 +141,14 @@
 - **T011 两轴解耦**：落 007 T004 + `005-project-management` T004；验收判据「工作空间成员身份不改
   数据访问结果」要**两轴的表都建出来之后**才验得了。
 
+**→ F10 `010-governance-console`（**不是** task 移交，是一条**语义**，R4）**
+- **授权变更的生效时点**：capability 在**会话创建那一刻**焊死（建会话 / 改会话两条路径都只走
+  `mergeClientRules`、**不回查**角色表）⇒ **改授权对已存在的会话无效**（**增也一样**），下一次建会话
+  才生效。**会话生命周期 = 授权的滞后窗口**；这是 FR-002 的直接代价，不是缺陷。
+- 因此 **T003**（RBAC 权限矩阵）若做「改角色 / 改授权」的写入动作：界面**不要写「立即生效」**，
+  验收**别把「改完立刻生效」写进出参**。真要「立刻踢掉」只能**让会话作废 / 重新签发**。
+- 已在**接收方**的表里落字（`010-governance-console/tasks.md` 文件头，`LEARNINGS #002-04③`）。
+
 ---
 
 ## 已知缺口（**不是**「已覆盖」，别读错）
@@ -112,27 +158,36 @@
 | **链 B 的 MCP 授权** | `sessionRuleset` 的 mcp 段 | 只对**链 A**（v1 / web UI）生效。链 B（v2 / CLI·sdk-next）**尚无落点**——v2 侧没有对应的 MCP 承载 |
 | **`knowledge_base` 资源类型** | `TOOL_OF` | 全仓 `packages/` 下**零命中**，没有对应工具 ⇒ 不产 allow，只被 fail-closed 基线罩着。接上时必须**同时**改 `TOOL_OF` 与 `access-rbac.test.ts` 的 ③ |
 | **`write` / `review` / `admin` 三个动作** | `resolve()` | 是**管理动作**（改内容 / 批上线 / 上下架），今天没有承载它们的工具 ⇒ 只有 `read` 产 allow。不是漏做 |
-| **Minors（除 M14）** | 见 `state.md` Step 5 表 | 一律**挂账未修**（用户裁定） |
-| **M14** | `state.md` | Step 5 唯一记进 M14 的 minor |
-| **lint 残留 6 → 7** | 见上「用户侧」 | 待裁定 |
+| **`capability.ts` / `issue.ts` 今天无生产调用点**（R3） | `packages/core/src/access/` | 机制定义**已就绪**、结构由 canary 测试逐条钉着，但 `AccessIssue.issue` 在生产里**零调用点**（`issue.ts` 自己写着「本文件不接线」，D0-5）。**不删**——F7 落数据范围时要照抄这套结构；接线那一半在 T005/T006/F7 |
+| **授权的滞后窗口**（R4，**已定义的语义**、不是缺口） | 会话创建 | 改授权（**增也一样**）对**已存在**的会话无效，下一次建会话才生效；今天**不提供**会话级吊销（回查＝在执行器里认角色表＝违反 FR-002）。F10 的授权管理界面**不要承诺「立即生效」** |
+| **MCP 来源的命令无法用 capability 表达**（R1 派生） | `src/command/index.ts` 的 `Info` | 字段里**没有 server** ⇒「这条 prompt 命令属于哪个 server」表达不出来，`mcp:<server>:*` 的判据写不出（R1 只堵住了 skill 那一支） |
+| **`GET /command`**（R1 派生） | `handlers/instance.ts` 的 `getCommand` | 与 `GET /skill` / `GET /experimental/tool` **同型**：instance 级、**非会话作用域** ⇒ 拿不到 capability、无处过滤，而 `Command.Info[]` 里 skill 的 `template` **就是正文** |
+| **R1 的门被拒时呈现为 500** | `prompt.ts` 的 `command()` | `Effect.orDie`（`command()` 的契约错误类型只有 `Image.Error`；改它＝动 `Interface` 的全部调用方＝上游面）。**呈现层**粗糙，不改变授权结论 |
+| **Minors（Step 5 的 M14 ＋ 3 席的 `M-a`…`M-e`）** | 见 `state.md` | 一律**挂账未修**（用户裁定）。其中 **`M-b` 已现场实测**（I11 的资源支路只带 `current.permission`，与工具路径不同形，见上） |
+| **lint 残差** | 见上「用户侧」 | 待裁定（8 条 / 3 条，均 warning 级） |
 
 ⚠️ **`ask` 不是安全的一侧**（I7 的核心结论）：两条链的弹窗都带「总是允许」，点一次就把没规则的动作
 变成持久 allow ⇒ **「没规则」在这里等于「可自批」**，这正是 `resolve()` 必须有 deny 基线的原因。
 
 ---
 
-## 门禁（Step 5 全修后**串行**复跑，2026-10-05）
+## 门禁（**代码最终状态 `35ece21bff` 上串行复跑**，2026-10-05）
+
+> ⚠️ **时点**：`35ece21bff` 是本 feature **代码**最后一次改动（R5）；其后只有 docs 提交，
+> **不动一行代码** ⇒ 下表数字对该代码状态仍成立，别读成「在当前 HEAD 上跑过」。
+> 复核请在自己的检出上**串行**重跑（`#003-01` 并行会造假红；`LEARNINGS #004-05`）。
 
 | 门 | 结果 |
 |---|---|
-| `bun run typecheck` | 31/31，exit 0 |
+| `bun run typecheck` | 31 successful / 31 total，exit 0 |
 | `bun run lint:openhive` | exit 0（23 warnings / 0 errors / 69 files / 161 rules = 基线逐字） |
-| `bun run lint`（全局） | 本次新增/改动文件 **0 命中**（全局基线恒红，见 `LEARNINGS #001-02`） |
-| `packages/core` | 25 pass |
-| `packages/auth` | 19 pass |
-| opencode access 套件 | 39 pass |
-| `test/session/prompt.test.ts` | 49 pass / 14 skip |
-| `openhive-mcp-identity.test.ts` | 4 pass |
+| `bun run lint`（全局） | 4953 warnings / **1 error** / 3468 files，exit 1（恒红）。唯一 error = 既有上游 `prompt-input/index.tsx:163:19`；`src` 改动行 **0 命中**；＋2 与两个测试桩对得上（见 `LEARNINGS #001-02`） |
+| `packages/core`（4 个 access 测试文件） | 25 pass / 0 fail |
+| `packages/auth`（`rls` ＋ `rbac` ＋ `workspace`） | 25 pass / 1 skip / 0 fail（`rls` 走 PGlite 真跑，31 s） |
+| opencode access 套件（7 文件） | 39 pass / 0 fail |
+| `test/session/prompt.test.ts` | **51** pass / 14 skip / 0 fail（含 R1 的两条见证） |
+| `test/session/openhive-mcp-identity.test.ts` | **6** pass / 0 fail（含 R5 的两条） |
+| `test/mcp/openhive-mcp-identity.test.ts` | **4** pass / 0 fail（含 R5 的两条） |
 | `git diff --stat bun.lock` | **空**（无镜像源污染） |
 
 > ⚠️ 门禁**串行**跑（`LEARNINGS #003-01`：并行跑重测试会造假红）。取退出码**不许进管道**。
