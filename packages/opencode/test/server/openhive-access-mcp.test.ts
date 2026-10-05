@@ -183,4 +183,53 @@ describe("T007 · mcp 授权行 → 会话规则集（连接级，FR-005/FR-006�
     expect(evaluateV1("read", "mcp:fund_db:ledger", ruleset).action).not.toBe("deny")
     expect(evaluateV1(FUND_QUERY, "*", ruleset).action).toBe("deny")
   })
+
+  /**
+   * 🔴 **C1 的实证（2026-10-05）：前缀碰撞真的会改授权** —— 这是「为什么调用方必须拒绝建会话」
+   * 的证据，不是纸面担忧。
+   *
+   * `fund.db`（前缀 `fund_db_`）与 `fund.db.prod`（前缀 `fund_db_prod_`）互相覆盖：
+   * 工具名 `fund_db_prod_query`（`McpCatalog.toolName("fund.db.prod", "query")`）**同时命中**
+   * 两条方向相反的规则，而链 A 取 `findLast`（后者胜）⇒ **后写的那条赢**。于是「授了
+   * `fund.db.prod`」这件事，在一种配置键序下是 `allow`、另一种下是 `deny`——**不报错、不变红**。
+   *
+   * 判据（`AccessSession.namingConflicts`）与后果（下面两行 `evaluateV1`）钉在**同一条测试**里：
+   * 单看任何一半都可能是巧合——判定报冲突、结论却不翻，或者结论翻了但判定看不见。
+   *
+   * ⇒ 调用方必须在建会话**之前**跑判定并**拒绝**（fail-closed，见
+   * `packages/opencode/src/server/openhive/access.ts`）。这条测试钉的是「不拒绝就会这样」。
+   */
+  it("🔴 前缀碰撞：同一份授权，配置键序一换结论就翻（所以调用方必须 fail-closed 拒绝）", () => {
+    const FUND: AccessSession.McpServerNaming = { server: "fund.db", toolPattern: "fund_db_*" }
+    const PROD: AccessSession.McpServerNaming = { server: "fund.db.prod", toolPattern: "fund_db_prod_*" }
+    // 只授 PROD，不授 FUND。
+    const grants = [grant("mcp", "fund.db.prod", "read")]
+    // PROD 的某个工具在链 A 里的名字——它同时匹配 `fund_db_*` 与 `fund_db_prod_*`。
+    const PROD_QUERY = "fund_db_prod_query"
+
+    // 键序 A：[fund.db, fund.db.prod] ⇒ PROD 的 allow 写在后面 ⇒ 授过的放行。
+    const orderA = rulesetOf(grants, [FUND, PROD])
+    // 键序 B：[fund.db.prod, fund.db] ⇒ FUND 的 deny 写在后面 ⇒ **同一个授权**被拒。
+    const orderB = rulesetOf(grants, [PROD, FUND])
+
+    expect(evaluateV1(PROD_QUERY, "*", orderA).action).toBe("allow")
+    expect(evaluateV1(PROD_QUERY, "*", orderB).action).toBe("deny")
+
+    // 判定与后果要对得上：这个碰撞确实被 `namingConflicts` 报出来了（两种键序都报）。
+    expect(AccessSession.namingConflicts([FUND, PROD])).toEqual([["fund.db", "fund.db.prod"]])
+    expect(AccessSession.namingConflicts([PROD, FUND])).toEqual([["fund.db.prod", "fund.db"]])
+
+    /**
+     * 🔴 **对照**：把 FUND 的名字换成**不碰撞**的（`fundx_db_*`），两种键序的结论就**一致**了。
+     * 少了这半，「结论会翻」可能只是「这条规则集本来就判 deny」——对照证明翻转**确实来自碰撞**，
+     * 而不是来自夹具里别的什么东西。
+     */
+    const FUND_NO_CLASH: AccessSession.McpServerNaming = { server: "fund.db", toolPattern: "fundx_db_*" }
+    const controlA = rulesetOf(grants, [FUND_NO_CLASH, PROD])
+    const controlB = rulesetOf(grants, [PROD, FUND_NO_CLASH])
+
+    expect(evaluateV1(PROD_QUERY, "*", controlA).action).toBe(evaluateV1(PROD_QUERY, "*", controlB).action)
+    expect(evaluateV1(PROD_QUERY, "*", controlA).action).toBe("allow") // 授过的照样放行
+    expect(AccessSession.namingConflicts([FUND_NO_CLASH, PROD])).toEqual([])
+  })
 })

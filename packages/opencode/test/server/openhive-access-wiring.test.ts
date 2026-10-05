@@ -252,3 +252,94 @@ describe("T006 · capability 挂到会话上（真应用 + 真库）", () => {
     30_000,
   )
 })
+
+/**
+ * **I3（2026-10-05）· 另外两条会写 `permission` 的路，此前零覆盖。**
+ *
+ * `POST /session`（上面那组）之外，链 A 还有**两处**能把规则写进会话：
+ *
+ * | 路径 | 定制点 | 曾经的覆盖 |
+ * |---|---|---|
+ * | `PATCH /session/:id` | `handlers/session.ts` 的 `update` 改用 `mergeClientRules` | **0** |
+ * | `POST /session/:id/fork` | `Session.fork` 带上 `permission: original.permission` | **0** |
+ *
+ * 两处都是「改上游的一行」——把那一行删掉/写回上游写法，**全仓不会有任何测试变红**
+ * （`LEARNINGS #002-06` 第三轮那条：修对了但没测试守着，等于随时可以被静默删掉）。本组就是
+ * 那两个守门人：删掉任一处的定制，这里必红（**已用变异验证过**，见 `004/state.md`）。
+ *
+ * 断言照旧落在**真判决器**上（不是「列表里有没有某条」）：要红的是「客户端能不能压过
+ * capability」和「派生会话有没有 capability」这两件**行为**。
+ */
+describe("I3 · 另外两条写 permission 的路径（真应用 + 真库）", () => {
+  /**
+   * 🔴 `PATCH /session/:id` 的 `permission` 是**客户端可填**的（`UpdatePayload.permission`）。
+   * 上游那里是 `Permission.merge(current, payload)`——**拼接**，客户端规则在**后** ⇒
+   * 一条 `allow skill:*` 就压过 capability。
+   */
+  it.live(
+    "PATCH 带 allow skill:* ⇒ 压不过 capability（未授的仍被拒、授过的仍放行）",
+    () =>
+      Effect.gen(function* () {
+        const id = yield* createSessionAs(ALICE)
+
+        const response = yield* as(ALICE, `/session/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ permission: [clientAllow("*")] }),
+        })
+        expect(response.status).toBe(200)
+
+        const stored = storedRuleset(ALICE.id, id)
+        expect(evaluateV1("skill", "call-analysis", stored).action).toBe("deny")
+        expect(evaluateV1("skill", "fund-analysis", stored).action).toBe("allow")
+      }),
+    30_000,
+  )
+
+  /** 对照：没有客户端规则时，PATCH 别的字段**不动** `permission`（别把既有 capability 洗掉）。 */
+  it.live(
+    "PATCH 只改 title ⇒ permission 原样不动",
+    () =>
+      Effect.gen(function* () {
+        const id = yield* createSessionAs(ALICE)
+        const before = storedRuleset(ALICE.id, id)
+
+        const response = yield* as(ALICE, `/session/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: "改个名" }),
+        })
+        expect(response.status).toBe(200)
+
+        expect(storedRuleset(ALICE.id, id)).toEqual(before)
+      }),
+    30_000,
+  )
+
+  /**
+   * 🔴 **fork 出来的会话必须继承源会话的 capability。**
+   *
+   * 上游 `Session.fork` 的 `createNext` **不带** `permission` ⇒ 派生会话没有服务端算好的规则集
+   * ⇒ 落回上游兜底 `ask`，而 skill 工具带 `always` ⇒ **派生一下就把 RBAC 绕过去了**
+   * （`POST /session/:id/fork` 是客户端可控的端点）。这条从库里读派生的那条会话。
+   */
+  it.live(
+    "fork ⇒ 派生会话的规则集与源会话逐字相同（顺序也是语义）",
+    () =>
+      Effect.gen(function* () {
+        const id = yield* createSessionAs(ALICE)
+
+        const response = yield* as(ALICE, `/session/${id}/fork`, { method: "POST" })
+        expect(response.status).toBe(200)
+        const forked = (yield* json(SessionInfo, response)).id
+
+        expect(forked).not.toBe(id)
+        expect(storedRuleset(ALICE.id, forked)).toEqual(storedRuleset(ALICE.id, id))
+
+        const stored = storedRuleset(ALICE.id, forked)
+        expect(evaluateV1("skill", "call-analysis", stored).action).toBe("deny")
+        expect(evaluateV1("skill", "fund-analysis", stored).action).toBe("allow")
+      }),
+    30_000,
+  )
+})

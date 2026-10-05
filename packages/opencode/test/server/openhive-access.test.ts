@@ -180,4 +180,32 @@ describe("T006 · 把 prompt 带来的工具开关并进会话规则集", () => 
 
     expect(AccessSession.mergeClientRules(client, once)).toEqual(once)
   })
+
+  /**
+   * 🔴 **客户端不得把既有规则「提前」**（2026-10-05 修，I1）。
+   *
+   * 去重只在**每个来源内部**做。旧版把两侧拼起来整体去重、保留首次出现 —— 于是客户端送来一条
+   * **与 capability 的 allow 同键**的规则时，capability 那份被删掉，而它的位置正是「整体 deny
+   * 之后」那个**唯一**让 allow 生效的位置：删掉它，整体 deny 就成了最后命中。
+   *
+   * ```
+   * client   = [{ skill, fund-analysis, allow }]                     ← 客户端回声 / 照抄回来的
+   * existing = [{ skill, *, deny }, { skill, fund-analysis, allow }] ← capability
+   * 整体去重 = [{ skill, fund-analysis, allow }, { skill, *, deny }]  ⇒ 授过的 skill 变成 deny
+   * ```
+   *
+   * 触发点很现实：`CreateInput.permission` 与 `UpdatePayload.permission` 都**是客户端可填的**，
+   * 客户端把从会话里读到的规则照抄回来就会撞键。后果是**过拒**（不是放行）——不报错、不变红，
+   * 只是「这个功能今天用不了」。
+   */
+  test("⑩ 客户端送来与 capability 同键的规则 ⇒ 不得把 capability 的 allow 挤到整体 deny 之前", () => {
+    const capability = AccessSession.sessionRuleset([grant("skill", "fund-analysis", "read")])
+    const client: PermissionV1.Rule[] = [{ permission: "skill", pattern: "fund-analysis", action: "allow" }]
+
+    const merged = AccessSession.mergeClientRules(client, capability)
+
+    expect(evaluateV1("skill", "fund-analysis", merged).action).toBe("allow")
+    // 反向：别的 skill 仍然不许被顺手打开（并入不是覆盖）。
+    expect(evaluateV1("skill", "call-analysis", merged).action).toBe("deny")
+  })
 })

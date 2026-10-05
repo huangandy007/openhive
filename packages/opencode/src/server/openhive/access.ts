@@ -71,6 +71,9 @@ export function capabilityFor() {
    * 名单是**键**（`Config.mcp` 的名字），翻译成一对名字交给 core（见模块头「分工分在两处」）：
    * 工具名通配走 {@link toolPatternOf}；资源 pattern 的**原样** server 名由 core 拼
    * （`mcp:<server>:*`，与 `src/session/tools.ts` 的 `ask` 逐字同形）。
+   *
+   * ⚠️ **名单还要过一道命名检查**（C1）：两个 server 的工具名前缀若互相覆盖，授权会随
+   * `Config.mcp` 的**键序**漂移（不报错、不变红）⇒ 这里**拒绝建会话**，见下面那段注释。
    */
   // ⚠️ 出参类型里**必须**写出 `Config.Service` 这个需求（T007 起）。
   // 少写它（= 声明成 `Effect<Ruleset>`）typecheck 当场红——别把它当成类型体操去绕：
@@ -83,6 +86,29 @@ export function capabilityFor() {
         server,
         toolPattern: toolPatternOf(server),
       }))
+
+      // 🔴 C1（2026-10-05）：名单里两个 server 的工具名前缀互相覆盖 ⇒ **拒绝建会话**。
+      //
+      // 为什么不能「挑个顺序继续」：撞键的两个 server 里**总有一个的工具被另一个的规则罩住**
+      // （要么被误 deny、要么被误 allow），换个键序只是换个受害者——不报错、不变红，
+      // 而结果是**授权随 `Config.mcp` 的键序漂移**（实证见
+      // `test/server/openhive-access-mcp.test.ts` 那条「同一份授权，键序一换结论就翻」）。
+      // 这是**配置错误**，只有配置能治好 ⇒ 在这里拒掉，把问题推回配置期。
+      // 判定本身是纯函数，住在 core（`AccessSession.namingConflicts`，8 条用例）；
+      // **这里只是它的强制点**——少了这一句，core 那 8 条照绿，全仓没有一条测试会红
+      // （`test/server/openhive-access-naming.test.ts` 就是补这一句的）。
+      const conflicts = AccessSession.namingConflicts(servers)
+      if (conflicts.length > 0) {
+        return yield* Effect.die(
+          new Error(
+            `openhive：MCP server 名互相覆盖，拒绝建会话 —— ${conflicts
+              .map(([left, right]) => `${left} / ${right}`)
+              .join("、")}` +
+              "（净化后一个是另一个的前缀，工具名会互相覆盖 ⇒ 授权随配置键序漂移）。请改其中一个 server 名。",
+          ),
+        )
+      }
+
       const grants = yield* Effect.promise(() => grantsFor(database(), userId))
       return AccessSession.sessionRuleset(grants, servers)
     })

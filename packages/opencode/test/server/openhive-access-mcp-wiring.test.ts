@@ -65,10 +65,16 @@ const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
 
 /**
- * 配一个 MCP server——这就是「名单从哪来」的那个 `Config.mcp`。
+ * 配**两个互不覆盖**的 MCP server——这就是「名单从哪来」的那个 `Config.mcp`。
  *
  * ⚠️ 名字带点（见文件头）。URL 指到 discard 端口（`9`）：万一有别的路径真的去连它，
  * 拒绝得也快（`127.0.0.1` 上没人听），不会把测试挂住。
+ *
+ * 🔴 **为什么是「两个」而不是一个**（2026-10-05 加）：C1 的 fail-closed 检查
+ * （`packages/opencode/src/server/openhive/access.ts`，碰撞即拒绝建会话）需要一个**反向对照**——
+ * 一个「凡是多 server 就拒」的实现看着也 fail-closed，却会让真实部署一个 server 都配不了。
+ * `fund_db_*` 与 `call_db_*` 互不为前缀 ⇒ 这条请求**必须成功**。配对的那条（碰撞 ⇒ 拒绝）在
+ * `openhive-access-naming.test.ts`。**两条要一起看**，删了任何一条，另一半的结论都不成立。
  *
  * `Config` 读的是 **`process.env`**（`src/config/config.ts`：`if (process.env.OPENCODE_CONFIG_CONTENT)`），
  * 不是 Effect 的 `ConfigProvider`——所以这里和 `OPENHIVE_DATA_ROOT` 一样只能走 `process.env`，
@@ -76,7 +82,10 @@ process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
  */
 const previousConfigContent = process.env.OPENCODE_CONFIG_CONTENT
 process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-  mcp: { "fund.db": { type: "remote", url: "http://127.0.0.1:9/" } },
+  mcp: {
+    "fund.db": { type: "remote", url: "http://127.0.0.1:9/" },
+    "call.db": { type: "remote", url: "http://127.0.0.1:9/" },
+  },
 })
 
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
@@ -168,9 +177,12 @@ describe("T007 · 配置里的 MCP server 进了 capability（真应用 + 真库
    * ② 工具前缀是**翻译过**的 `fund_db_*`（不是 `fund.db_*`）⇒ 证明走的是 `McpCatalog.sanitize`；
    * ③ 资源 pattern 是**原样**的 `mcp:fund.db:*` ⇒ 证明两套名字分别翻译；
    * ④ 顺序：整体 deny 在前、mcp 在中、skill 的 allow 在后（链 A 取 `findLast`，顺序即语义）。
+   *
+   * 🔴 **两个 server 都要出现**（C1 的反向对照，见文件头）：`fund_db_*` 与 `call_db_*` 互不为前缀
+   * ⇒ 检查放行、两个各出一对规则。只断言 `fund.db` 的话，一个「只认第一个 server」的实现照样绿。
    */
   it.live(
-    "配了 `fund.db` 且没授权 ⇒ 会话里落两条 deny（工具前缀已 sanitize、资源用原样名）",
+    "配了两个不碰撞的 server 且没授权 ⇒ 请求成功、两个各出一对 deny（工具前缀已 sanitize、资源用原样名）",
     () =>
       Effect.gen(function* () {
         const response = yield* as(ALICE, "/session", { method: "POST" })
@@ -184,12 +196,16 @@ describe("T007 · 配置里的 MCP server 进了 capability（真应用 + 真库
           { permission: "skill", pattern: "*", action: "deny" },
           { permission: "fund_db_*", pattern: "*", action: "deny" },
           { permission: "read", pattern: "mcp:fund.db:*", action: "deny" },
+          { permission: "call_db_*", pattern: "*", action: "deny" },
+          { permission: "read", pattern: "mcp:call.db:*", action: "deny" },
           { permission: "skill", pattern: "fund-analysis", action: "allow" },
         ])
 
         // 拿**链 A 真正的判决器**问一次——这才是本 task 出参那句「受限执行」。
         expect(evaluateV1("fund_db_query", "*", stored).action).toBe("deny")
         expect(evaluateV1("read", "mcp:fund.db:ledger", stored).action).toBe("deny")
+        expect(evaluateV1("call_db_query", "*", stored).action).toBe("deny")
+        expect(evaluateV1("read", "mcp:call.db:ledger", stored).action).toBe("deny")
         // 授过的 skill 照旧放行（并入不是覆盖）。
         expect(evaluateV1("skill", "fund-analysis", stored).action).toBe("allow")
         // 文件读取不受影响（资源那条 deny 只锚着一个 server）。

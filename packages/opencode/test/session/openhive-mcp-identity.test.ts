@@ -55,6 +55,14 @@ import { testEffect } from "../lib/effect"
  * 放了什么」。判据（`LEARNINGS #002-02`）：这条测试**真的执行了**被测路径——把 `resolve` 里
  * 那行身份摘掉、或 `convertTool` 不再写进 params，它一定红；只做类型断言 / mock 掉被测逻辑
  * 的写法不算测试。
+ *
+ * ## 两半都在这一个文件里（I9，2026-10-05）
+ *
+ * `resolve` 里的身份是**取一次、两处共用**的（`src/session/tools.ts:62` 的 `mcpMeta`）：
+ * server 工具（`convertTool` → `tools/call`）与资源工具（`MCP.readResource`）走同一份。
+ * 上面两条钉 server 那半；下面两条钉资源那半——本文件原先只有前一半，于是
+ * **把资源工具那行的 `mcpMeta` 摘掉，全仓不会有任何测试变红**（Step 5 的 I9）。
+ * 反向也各有其害：两半各取一次身份 = `LEARNINGS #003-05` 那种「同一个判断写两遍」的假镜像。
  */
 
 const callID = "call-t007"
@@ -110,8 +118,8 @@ function recordingClient(calls: RecordedCall[]) {
 function fakeMcp(calls: RecordedCall[]) {
   return MCP.Service.of({
     tools: () => Effect.succeed({ [MCP_TOOL_KEY]: { def: mcpToolDef, client: recordingClient(calls) } }),
-    // 资源工具要一个「宣称支持 resources」的 client 才注册；本文件只验 server 工具那条。
-    // 资源那一半（`_meta` 要走真 transport）在 test/mcp/openhive-mcp-identity.test.ts。
+    // 资源工具要一个「宣称支持 resources」的 client 才注册；那份在 `fakeMcpWithResources`（I9）。
+    // 本函数只给 server 工具那条用。
     clients: () => Effect.succeed({}),
   } as Partial<MCP.Interface> as MCP.Interface)
 }
@@ -145,16 +153,18 @@ const fakeRegistry = Layer.succeed(
   }),
 )
 
-/** 除了「请求 fiber 上有没有人」之外，两个用例的层**逐字相同**——对照组才成立。 */
-const anonymous = (calls: RecordedCall[]) =>
+/** 除了「请求 fiber 上有没有人」之外，用例们的层**逐字相同**——对照组才成立。 */
+const anonymousWith = (mcpLayer: Layer.Layer<MCP.Service>) =>
   Layer.mergeAll(
     Layer.succeed(Plugin.Service, fakePlugin),
     Layer.succeed(Permission.Service, fakePermission),
-    Layer.succeed(MCP.Service, fakeMcp(calls)),
+    mcpLayer,
     Layer.succeed(Truncate.Service, fakeTruncate),
     RuntimeFlags.layer(),
     fakeRegistry,
   )
+
+const anonymous = (calls: RecordedCall[]) => anonymousWith(Layer.succeed(MCP.Service, fakeMcp(calls)))
 
 const processed = {
   message: {
@@ -175,9 +185,9 @@ const processed = {
   completeToolCall: () => Effect.void,
 } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
 
-/** 跑一次真 `resolve`，把那个 MCP 工具执行一遍（链 A 把工具交给模型前后真正发生的事）。 */
-const runMcpTool = Effect.gen(function* () {
-  const tools = yield* SessionTools.resolve({
+/** 跑一次真 `resolve`，拿到组装好的工具表（链 A 把工具交给模型前后真正发生的事）。 */
+const resolveTools = Effect.gen(function* () {
+  return yield* SessionTools.resolve({
     agent,
     model,
     session: { id: sessionID, permission: [] } as unknown as Session.Info,
@@ -186,13 +196,21 @@ const runMcpTool = Effect.gen(function* () {
     messages: [],
     promptOps: {} as never,
   })
-  const execute = tools[MCP_TOOL_KEY].execute
-  if (!execute) throw new Error(`${MCP_TOOL_KEY} is missing execute`)
-  yield* Effect.promise(() =>
-    execute({}, { toolCallId: callID, abortSignal: new AbortController().signal, messages: [] }),
-  )
-  return Object.keys(tools)
 })
+
+/** 把某个工具执行一遍，返回整张工具表（也顺带证明那个工具确实注册进去了）。 */
+const runTool = (key: string, args: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    const tools = yield* resolveTools
+    const execute = tools[key].execute
+    if (!execute) throw new Error(`${key} is missing execute`)
+    yield* Effect.promise(() =>
+      execute(args, { toolCallId: callID, abortSignal: new AbortController().signal, messages: [] }),
+    )
+    return Object.keys(tools)
+  })
+
+const runMcpTool = runTool(MCP_TOOL_KEY, {})
 
 const identifiedCalls: RecordedCall[] = []
 const withIdentity = testEffect(Layer.merge(anonymous(identifiedCalls), Layer.succeed(User.Service, ALICE)))
@@ -228,5 +246,86 @@ withoutIdentity.effect("没有身份 ⇒ 出站 params 里根本没有 `_meta` �
     expect(anonymousCalls).toHaveLength(1)
     expect(anonymousCalls[0].hasMeta).toBe(false)
     expect(anonymousCalls[0].meta).toBeUndefined()
+  }),
+)
+
+/**
+ * I9（2026-10-05）· **资源工具（`read_mcp_resource`）也带同一份身份**（FR-005）。
+ *
+ * ## 补的是哪个洞
+ *
+ * `src/session/tools.ts` 里 `mcpMeta` 是 `resolve` 期取一次、**两处共用**的：server 工具走
+ * `convertTool`（:396），资源工具走 `MCP.readResource`（:355）。上面两条只钉住了前一处 ⇒
+ * 把 :355 那个 `mcpMeta` 摘掉，**全仓测试全绿**——而那正是「资源读不带身份」这个洞，
+ * 与它同形的 :396 有测试守着、:355 没有（`LEARNINGS #002-06`：修对了但没测试守着，随时可被静默删掉）。
+ *
+ * ## 判据落点与 server 那半不同（不是笔误）
+ *
+ * 这里断言的是 `MCP.readResource` 的**第三个实参**：`{"openhive/user": …}` 或 `undefined`。
+ * 「`undefined` 时下游一个字节都不发」由 `MCP.readResource` 的实现保证，已在
+ * `test/mcp/openhive-mcp-identity.test.ts` 钉住（那里才看得见出站 params 里键的有无）——
+ * 本文件钉的是**这一支有没有去取身份**，与上面两条同一口径。
+ */
+interface RecordedResourceRead {
+  readonly server: string
+  readonly uri: string
+  /** 出站 `resources/read` 的第 3 个实参（`mcpMeta` 的原值或 `undefined`）。 */
+  readonly meta: unknown
+}
+
+/** 资源工具只在「某个 client 宣称支持 resources」时才注册（`tools.ts:141`）⇒ 这个 client 必须报 resources。 */
+function resourceRecordingClient() {
+  return {
+    getServerCapabilities: () => ({ resources: { subscribe: false, listChanged: false } }),
+  } as unknown as Client
+}
+
+function fakeMcpWithResources(reads: RecordedResourceRead[]) {
+  return MCP.Service.of({
+    tools: () => Effect.succeed({}),
+    clients: () => Effect.succeed({ fund: resourceRecordingClient() }),
+    // 只记录出站实参；返回值按资源工具会读的字段最小化地造（`content.contents` 里一条 text）。
+    readResource: (server: string, uri: string, meta?: Record<string, unknown>) => {
+      reads.push({ server, uri, meta })
+      return Effect.succeed({ contents: [{ uri, mimeType: "text/plain", text: "ledger" }] })
+    },
+  } as Partial<MCP.Interface> as MCP.Interface)
+}
+
+const RESOURCE_TOOL_KEY = "read_mcp_resource"
+
+const identifiedReads: RecordedResourceRead[] = []
+const withIdentityResource = testEffect(
+  Layer.merge(anonymousWith(Layer.succeed(MCP.Service, fakeMcpWithResources(identifiedReads))), Layer.succeed(User.Service, ALICE)),
+)
+
+withIdentityResource.effect("带身份 ⇒ 资源工具 `resources/read` 的第 3 个实参就是这个人", () =>
+  Effect.gen(function* () {
+    const keys = yield* runTool(RESOURCE_TOOL_KEY, { server: "fund", uri: "ledger://1" })
+
+    expect(keys).toContain(RESOURCE_TOOL_KEY)
+    expect(identifiedReads).toHaveLength(1)
+    expect(identifiedReads[0].server).toBe("fund")
+    expect(identifiedReads[0].uri).toBe("ledger://1")
+    expect(identifiedReads[0].meta).toEqual({ "openhive/user": ALICE.id })
+  }),
+)
+
+/**
+ * **对照组**：没有 `User.Service` ⇒ 传下去的是 `undefined`（= 不注入）。
+ * 少了这条，「无条件编一个默认身份」也能让上一条绿——那比不注入更坏。
+ */
+const anonymousReads: RecordedResourceRead[] = []
+const withoutIdentityResource = testEffect(
+  anonymousWith(Layer.succeed(MCP.Service, fakeMcpWithResources(anonymousReads))),
+)
+
+withoutIdentityResource.effect("对照：没有身份 ⇒ 资源工具 `resources/read` 的第 3 个实参是 `undefined`", () =>
+  Effect.gen(function* () {
+    const keys = yield* runTool(RESOURCE_TOOL_KEY, { server: "fund", uri: "ledger://1" })
+
+    expect(keys).toContain(RESOURCE_TOOL_KEY)
+    expect(anonymousReads).toHaveLength(1)
+    expect(anonymousReads[0].meta).toBeUndefined()
   }),
 )
