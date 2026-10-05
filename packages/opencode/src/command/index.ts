@@ -6,6 +6,7 @@ import type { InstanceContext } from "@/project/instance-context"
 import { Effect, Layer, Context, Schema } from "effect"
 import { Config } from "@/config/config"
 import { MCP } from "../mcp"
+import { userMeta } from "../mcp/openhive-identity"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
@@ -109,22 +110,29 @@ const layer = Layer.effect(
           description: prompt.description,
           get template() {
             return bridge.promise(
-              mcp
-                .getPrompt(
+              Effect.gen(function* () {
+                // 【这是要保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 · R5 · FR-005）。
+                // MCP prompt 这条命令**也是一个 MCP 出口**，与 server 工具（`convertTool`）和
+                // 资源工具（`MCP.readResource`）走**同一份身份**（`src/mcp/openhive-identity.ts`）。
+                // 身份本来就在请求 fiber 上（`User.Service`，每请求注入），而 `bridge` 捕获了
+                // 全量 context（`src/effect/bridge.ts` 的 `Effect.context()`）⇒ 这里取得到。
+                // 没身份（非 HTTP 入口 / 未登录）时 `userMeta()` 给 `undefined` ⇒ 出站
+                // `prompts/get` 里**没有** `_meta` 这个键，与另两条出口语义一致。
+                const meta = yield* userMeta()
+                const template = yield* mcp.getPrompt(
                   prompt.client,
                   prompt.name,
                   prompt.arguments
                     ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
                     : {},
+                  meta,
                 )
-                .pipe(
-                  Effect.map(
-                    (template) =>
-                      template?.messages
-                        .map((message) => (message.content.type === "text" ? message.content.text : ""))
-                        .join("\n") || "",
-                  ),
-                ),
+                return (
+                  template?.messages
+                    .map((message) => (message.content.type === "text" ? message.content.text : ""))
+                    .join("\n") || ""
+                )
+              }),
             )
           },
           hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],

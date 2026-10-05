@@ -178,6 +178,10 @@ export interface Interface {
     clientName: string,
     name: string,
     args?: Record<string, string>,
+    // 【这是要保留的定制】openhive · 004 R5：第 4 个参数 `meta` 是本 fork 加的（上游只有前三个）。
+    // 它写进出站 `prompts/get` 的 `_meta`（FR-005）。**声明在这里同样不能少**——`MCP.Service`
+    // 的消费者看到的是这个 `Interface`，漏掉这一处就是「实现改了、契约没改」。
+    meta?: Record<string, unknown>,
   ) => Effect.Effect<Awaited<ReturnType<MCPClient["getPrompt"]>> | undefined>
   // 【这是要保留的定制】openhive · 004 T007：第 3 个参数 `meta` 是本 fork 加的（上游只有前两个）。
   // 它写进出站 `resources/read` 的 `_meta`（FR-005）。**声明在这里同样不能少**——`MCP.Service`
@@ -770,14 +774,20 @@ const layer = Layer.effect(
       )
     })
 
+    // 【这是要保留的定制】openhive · 004 R5：第 4 个参数 `meta` 是本 fork 加的（上游只有前三个）。
+    // 它写进出站 `prompts/get` 的 `_meta`，与 `readResource` / server 工具那两条**同源**
+    // （同一份身份、同一个键，见 `src/mcp/openhive-identity.ts`）。
+    // **省略 `meta` 时行为与原实现逐字相同**（`...(meta ? {_meta: meta} : {})` ⇒ 没 meta 就
+    // 压根没有 `_meta` 这个键，不是「带了个空身份」）。
     const getPrompt = Effect.fn("MCP.getPrompt")(function* (
       clientName: string,
       name: string,
       args?: Record<string, string>,
+      meta?: Record<string, unknown>,
     ) {
       return yield* withClient(
         clientName,
-        (client, timeout) => client.getPrompt({ name, arguments: args }, { timeout }),
+        (client, timeout) => client.getPrompt({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, { timeout }),
         "getPrompt",
         { promptName: name },
       )

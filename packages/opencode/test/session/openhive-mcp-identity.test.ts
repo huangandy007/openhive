@@ -1,4 +1,5 @@
 import { expect } from "bun:test"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -6,8 +7,11 @@ import { User } from "@opencode-ai/core/user"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
 import { Agent } from "@/agent/agent"
+import { Command } from "@/command"
+import { Config } from "@/config/config"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
+import { Skill } from "@/skill"
 import type { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { MessageID, SessionID } from "@/session/schema"
@@ -328,4 +332,107 @@ withoutIdentityResource.effect("对照：没有身份 ⇒ 资源工具 `resource
     expect(anonymousReads).toHaveLength(1)
     expect(anonymousReads[0].meta).toBeUndefined()
   }),
+)
+
+/**
+ * R5（2026-10-05）· **第三个出口的接线**：MCP prompt 命令（`Command` 的 `source: "mcp"`）
+ * 取模板时也要把身份交给 `MCP.getPrompt`（FR-005）。
+ *
+ * ## 这是「接线那一半」，与上面四处同一口径
+ *
+ * `packages/opencode/src/mcp/index.ts` 里 `getPrompt` 有了 `meta` 形参**还不够**——真正决定
+ * 「线上带不带身份」的是**调用点有没有把身份交下来**。生产里 `getPrompt` 只有一个调用点：
+ * `src/command/index.ts` 里 `source: "mcp"` 那条命令的 `get template()` getter
+ * （`Command.init` 把每个 MCP prompt 注册成一条命令）。所以这里跑**真** `Command.Service`
+ * 的这一条路径，断言的是「传进 `MCP.getPrompt` 的第 4 个实参」。
+ *
+ * ## 少了这条会怎样（I8/I9 的同款形状）
+ *
+ * 把 `command/index.ts` 里那句 `yield* userMeta()` 摘掉 ⇒ 出站 `prompts/get` 不带身份、
+ * 下游业务 server 把这次调用按匿名处理，而**本侧不报错、不变红**。上面四处钉住的
+ * `tools/call` 与 `resources/read` 两条出口都照旧绿。
+ */
+const PROMPT_KEY = "fund_brief"
+const PROMPT_TEXT = "brief the case"
+
+interface RecordedPromptGet {
+  readonly client: string
+  readonly name: string
+  /** 出站 `prompts/get` 的第 4 个实参（`mcpMeta` 的原值或 `undefined`）。 */
+  readonly meta: unknown
+}
+
+/**
+ * 假 MCP：**只**记录 `getPrompt` 的出站实参，另外把 `prompts()` 报成「有一个 prompt」
+ * （`Command.init` 正是按它注册 MCP 命令的，报空就根本没这条命令可测）。
+ */
+function fakePromptMcp(calls: RecordedPromptGet[]) {
+  return MCP.Service.of({
+    tools: () => Effect.succeed({}),
+    clients: () => Effect.succeed({}),
+    prompts: () =>
+      Effect.succeed({
+        [PROMPT_KEY]: { name: "brief", description: PROMPT_TEXT, arguments: [], client: "fund" },
+      }),
+    getPrompt: (client: string, name: string, _args?: Record<string, string>, meta?: Record<string, unknown>) => {
+      calls.push({ client, name, meta })
+      return Effect.succeed({
+        description: PROMPT_TEXT,
+        messages: [{ role: "user" as const, content: { type: "text" as const, text: PROMPT_TEXT } }],
+      })
+    },
+  } as Partial<MCP.Interface> as MCP.Interface)
+}
+
+const commandRoot = LayerNode.group([Command.node, Config.node, MCP.node, Skill.node])
+const commandWith = (mcp: Layer.Layer<MCP.Service>) => LayerNode.compile(commandRoot, [[MCP.node, mcp]])
+
+/** 取一条命令的模板（MCP 命令的 `template` 是个 Promise，见 `command/index.ts` 的 getter）。 */
+const commandTemplate = (key: string) =>
+  Effect.gen(function* () {
+    const commands = yield* Command.Service
+    const cmd = yield* commands.get(key)
+    if (!cmd) throw new Error(`command is missing: ${key}`)
+    return yield* Effect.promise(() => Promise.resolve(cmd.template))
+  })
+
+const identifiedPrompts: RecordedPromptGet[] = []
+const withIdentityPrompt = testEffect(
+  Layer.merge(
+    commandWith(Layer.succeed(MCP.Service, fakePromptMcp(identifiedPrompts))),
+    Layer.succeed(User.Service, ALICE),
+  ),
+)
+
+withIdentityPrompt.instance("带身份 ⇒ MCP prompt 命令取模板时 `getPrompt` 拿到这个人", () =>
+  Effect.gen(function* () {
+    const text = yield* commandTemplate(PROMPT_KEY)
+
+    expect(text).toContain(PROMPT_TEXT)
+    expect(identifiedPrompts).toHaveLength(1)
+    expect(identifiedPrompts[0].client).toBe("fund")
+    expect(identifiedPrompts[0].name).toBe("brief")
+    expect(identifiedPrompts[0].meta).toEqual({ "openhive/user": ALICE.id })
+  }),
+  { git: true },
+)
+
+/**
+ * **对照组**：没有 `User.Service` ⇒ 交下去的是 `undefined`（= 不注入）。
+ * 少了这条，「无条件编一个默认身份」也能让上一条绿——那比不注入更坏。
+ */
+const anonymousPrompts: RecordedPromptGet[] = []
+const withoutIdentityPrompt = testEffect(commandWith(Layer.succeed(MCP.Service, fakePromptMcp(anonymousPrompts))))
+
+withoutIdentityPrompt.instance(
+  "对照：没有身份 ⇒ MCP prompt 命令取模板时 `getPrompt` 的第 4 个实参是 `undefined`",
+  () =>
+    Effect.gen(function* () {
+      const text = yield* commandTemplate(PROMPT_KEY)
+
+      expect(text).toContain(PROMPT_TEXT)
+      expect(anonymousPrompts).toHaveLength(1)
+      expect(anonymousPrompts[0].meta).toBeUndefined()
+    }),
+  { git: true },
 )
