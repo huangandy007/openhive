@@ -9,9 +9,13 @@
 - **记账任务 3 条**：T012 / T013 / T014（机制可测的一半已被 T006/T008/003 的测试覆盖；另一半显式挂账）。
 - **移交 3 条**：T009 → F6/F7（裁定「乙」）、T010 / T011 → F7（见 D0-4 段）。
 
-➡️ **下一步 = Step 5 代码审查**（6 类 ＋ 按 `LEARNINGS #003-02` 把修复本身再审一轮）→ **Step 6 收尾**
-（最终 commit 含 `Closes 004-access-control`、tag `v0.1.0-004-access-control`、更新 `session.md`、
-追加 `LEARNINGS` 条目）。`multi-tenant` 合并由**用户**执行。
+➡️ **下一步 = Step 6 收尾**（最终 commit 含 `Closes 004-access-control`、tag
+`v0.1.0-004-access-control`、更新 `session.md`、追加 `LEARNINGS` 条目）。`multi-tenant` 合并由
+**用户**执行。
+
+**Step 5 已完成**（2026-10-05）：6 类扫描出 **C1 ＋ I1–I10**，用户裁定**全修**（Minors 记账）；
+表定稿后复核又发现 **I11**（资源支路缺 `read` ask，同一批安全结论的第三处出口），另裁**补齐授权**。
+逐条修法与见证见下方「Step 5 · 代码审查」节（含 `#003-02` 的修复重审）。
 
 ---
 
@@ -93,28 +97,28 @@ sed -n '28,37p' packages/opencode/src/permission/index.ts   # V1 evaluate 的兜
 
 | 问题 | 实测结论 | 证据 |
 |---|---|---|
-| 「创建会话」在哪 | 链 A `POST /session`；链 B `POST /api/session` | `groups/session.ts:88`；`protocol/src/groups/session.ts:129` |
-| 「创建」＝「启动」吗 | **不是**。创建只发 `Created` 事件并落一行，**不启动执行** | `session/session.ts:535`；`core/session.ts:241` |
-| 「启动」在哪 | **首次 prompt** 触发 | `prompt.ts:1343`→`ensureRunning`；`core/session.ts:382`→`execution.wake` |
-| 有「执行已启动」事件吗 | **没有**。链 B 的启动是内存协调器 `wake`，不发布事件；链 A 是 `SessionRunState.runner.ensureRunning`，也不发布 | `execution/local.ts:33`；`run-state.ts:88` |
-| 哪一层同时拿得到「验签身份 ＋ 项目」 | **只有 HTTP 请求 fiber** | 身份 `middleware/user-identity.ts:70-79` 注入 `User.Service`；项目 `core/session.ts:212` `projects.resolve(input.location.directory)` |
-| core 会话 / runner 层拿得到身份吗 | **拿不到**。三处 deps 里都没有 `User.Service` | `core/session.ts:477-486`、`runner/llm.ts:426-441`、`store.ts:63` |
-| 有可写的「每会话槽位」吗 | **没有**。`SessionStore` 只读；写路径只有事件投影器或 `SessionV2.create` 的直接 `db.insert` | `store.ts:14-24` |
+| 「创建会话」在哪 | 链 A `POST /session`；链 B `POST /api/session` | `groups/session.ts`；`protocol/src/groups/session.ts` |
+| 「创建」＝「启动」吗 | **不是**。创建只发 `Created` 事件并落一行，**不启动执行** | `session/session.ts`；`core/session.ts` |
+| 「启动」在哪 | **首次 prompt** 触发 | `prompt.ts` 的 `ensureRunning`；`core/session.ts` 的 `execution.wake` |
+| 有「执行已启动」事件吗 | **没有**。链 B 的启动是内存协调器 `wake`，不发布事件；链 A 是 `SessionRunState.runner.ensureRunning`，也不发布 | `execution/local.ts`；`run-state.ts` |
+| 哪一层同时拿得到「验签身份 ＋ 项目」 | **只有 HTTP 请求 fiber** | 身份 `middleware/user-identity.ts` 注入 `User.Service`；项目 `core/session.ts` 的 `projects.resolve(input.location.directory)` |
+| core 会话 / runner 层拿得到身份吗 | **拿不到**。三处 deps 里都没有 `User.Service` | `core/session.ts`、`runner/llm.ts`、`store.ts` |
+| 有可写的「每会话槽位」吗 | **没有**。`SessionStore` 只读；写路径只有事件投影器或 `SessionV2.create` 的直接 `db.insert` | `store.ts` |
 
 **链 A 有一条上游自带的「每会话 ruleset」通道**（本次最重要的正面发现）：
 
 ```
-Session.Info.permission（V1 形状，可选，schema/v1/session.ts:566）
+Session.Info.permission（V1 形状，可选，schema/v1/session.ts）
   └─ SessionTools.resolve: ruleset: Permission.merge(input.agent.permission, input.session.permission ?? [])
-       └─ 每个工具的 ctx.ask({ ruleset })          ← session/tools.ts:84-90
+       └─ 每个工具的 ctx.ask({ ruleset })          ← session/tools.ts 的 SessionTools.resolve
 ```
 
 - ⚠️ **今天这个字段由调用方在 create 请求里传**：HTTP payload 就有
-  `permission: Schema.optional(PermissionV1.Ruleset)`（`groups/session.ts:53`，落到 `session.ts:509/525`），
-  另有 `setPermission` 可随时改（`:437`、`:780-782`）。
+  `permission: Schema.optional(PermissionV1.Ruleset)`（`groups/session.ts`，落到 `session.ts` 的创建/更新处），
+  另有 `setPermission` 可随时改。
   ⇒ **今天「这个会话拿哪些工具权限」是客户端说了算的**——这正是 `FR-002` 要改掉的。
 - **链 B 侧没有会话粒度的 ruleset 通道**：按会话取 ruleset 的现成机制是
-  `PermissionV2.configured(sessionID, agentID)`（`core/permission.ts:137-145`），但它读的是
+  `PermissionV2.configured(sessionID, agentID)`（`core/permission.ts`），但它读的是
   `agent.permissions`——**按 agent，不按会话**。
 
 ⇒ **T003 的难点不是「找到那个时刻」，而是裁定「签发的产物放在哪里、由谁放」**。见下。
@@ -134,7 +138,7 @@ Session.Info.permission（V1 形状，可选，schema/v1/session.ts:566）
 - **代价（已同步改 `tasks.md`）**：T003 出参由「会话启动产出 capability」改写为
   「签发函数产出 scope 限定 capability」。
 - ⚠️ **顺带查实的真问题，归属 T005/T006（不在 T003 做）**：链 A 今天由**客户端**在 create 请求里传
-  `session.permission`（`groups/session.ts:53`）⇒ **客户端能自己决定自己有哪些工具权限**。
+  `session.permission`（`groups/session.ts`）⇒ **客户端能自己决定自己有哪些工具权限**。
   这正是 FR-002 要改掉的，但改它 ＝ 动官方会话创建流程，留给接线任务。
 
 ### 🔴 D0-2 命中：落点
@@ -233,7 +237,7 @@ grep -rn "fund_project_member\|call_project_member\|CREATE POLICY" packages --in
 
 ### 唯一的那个 lint error（**上游的，不私改**）
 
-落点 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`：Tailwind 任意值
+落点 `packages/session-ui/src/v2/components/prompt-input/index.tsx` 里那行 Tailwind 任意值
 `content-['\200B']` 被 oxlint 判为「0 前缀八进制字面量」。与 `LEARNINGS #001-02` 登记的**同一处**、
 同一规则 ⇒ **基线未被本次改动污染**；裁定仍为**不私改、上报上游**。
 
@@ -279,7 +283,7 @@ NpmConfig.registry > leaves configured registry without trailing slash unchanged
 `bun install --frozen-lockfile --force` 退出码 **1**，唯一报错是
 `install script from "tree-sitter-powershell" exited with 1`（node-gyp 在 Node v24 上原生编译失败）。
 **非阻塞**：该包实际用到的是 `tree-sitter-powershell.wasm`
-（`packages/opencode/src/tool/shell.ts:325` 只 import 那个 `.wasm`），而 `.wasm` 已随包落地；
+（`packages/opencode/src/tool/shell.ts` 只 import 那个 `.wasm`），而 `.wasm` 已随包落地；
 失败的只是可选的 native binding。`git diff --stat bun.lock` = **空** ✅（无镜像源污染）。
 ⇒ 记在这里是为了下次别再把它当异常查一遍。
 
@@ -295,7 +299,7 @@ NpmConfig.registry > leaves configured registry without trailing slash unchanged
 1. **存在两条独立主链**（A / B），互不 import —— 一条的守卫不会自动覆盖另一条。
 2. **两条链各自已有**上游的 ruleset 驱动钩子：清单过滤（`visibleTools` / `materialize`）＋
    执行断言（`ask` / `assert`）。
-3. **B 链（core）里 `tool.ts:95` 是唯一必经点**；**A 链（opencode v1）里没有单一必经点**——
+3. **B 链（core）里 `tool.ts` 的工具栈是唯一必经点**；**A 链（opencode v1）里没有单一必经点**——
    本地工具 / MCP 工具 / MCP resource / plugin 工具各一处 `execute`，外加两处**非模型直调**
    （`session/prompt.ts` 的 `taskTool.execute` 与 `read.execute`）。
 4. ⇒ 按 D0-1 裁定「两条都接」，**接线点是 2 处（每链一处注入 ruleset）**，而不是 6 处；
@@ -419,7 +423,7 @@ FR-008 明写数据范围「运行时 join 实时算出、不提前落库、非�
 
 #### ⚠️ 顺带查实：`lint:openhive` **覆盖不到本 feature 的代码**
 
-`package.json:16` 的脚本原文是
+`package.json` 里 `lint:openhive` 脚本的原文是
 `oxlint -c script/oxlintrc.openhive.json packages/app/src/{rail,center,topbar,workspace,auth}`
 ——只扫 **openhive 的 5 个前端目录**。004 的定制代码全在 `packages/core/src/access/`，
 **不被这条门禁覆盖**，只有全局 `lint`（130 规则、非 openhive 配置）扫得到。
@@ -646,11 +650,11 @@ T006（执行守卫）开工前的侦察里，实测了**所有**吃 ruleset 的
 
 | 证据 | 落点 |
 |---|---|
-| 上游自带默认规则集 | `packages/core/src/plugin/agent.ts:109-140` `{ action: "read", resource: "*.env", effect: "ask" }` |
-| 「总是允许」存的两列 | `packages/core/src/permission/saved.ts:62` |
-| 清单过滤的判据 | `packages/core/src/tool/registry.ts:113` `whollyDisabled(permission(tool, name), permissions)` |
-| 链 B 断言 | `packages/core/src/tool/skill.ts:76` `permission.assert({ action: "skill", resources: [skill.name] })` |
-| 链 A 断言 | `packages/opencode/src/tool/skill.ts:28` `ctx.ask({ permission: "skill", patterns: [params.name] })` |
+| 上游自带默认规则集 | `packages/core/src/plugin/agent.ts` 的 `{ action: "read", resource: "*.env", effect: "ask" }` |
+| 「总是允许」存的两列 | `packages/core/src/permission/saved.ts` |
+| 清单过滤的判据 | `packages/core/src/tool/registry.ts` 的 `whollyDisabled(permission(tool, name), permissions)` |
+| 链 B 断言 | `packages/core/src/tool/skill.ts` 的 `permission.assert({ action: "skill", resources: [skill.name] })` |
+| 链 A 断言 | `packages/opencode/src/tool/skill.ts` 的 `ctx.ask({ permission: "skill", patterns: [params.name] })` |
 
 而 `Wildcard.match`（`packages/core/src/util/wildcard.ts`）是**全串锚定**（`^…$`）——T004 第一版产出的
 `{ action: "read", resource: "skill:fund-analysis" }` 两边字段都对不上，**全部落回兜底 `ask`**。
@@ -658,7 +662,7 @@ T006（执行守卫）开工前的侦察里，实测了**所有**吃 ruleset 的
 
 > 这也是一次**自己打自己脸**的复核：T004 收尾时我先说「所有消费者都用 `{工具名, 实参}`」，
 > 随后实测发现链 A 的 MCP 资源工具用的是 `{ permission: "read", patterns: ["mcp:<server>:*"] }`
-> （`packages/opencode/src/session/tools.ts:172-179` / `:346-347`）——**那句总结是错的**，当场向用户更正。
+> （`packages/opencode/src/session/tools.ts` 的工具注册与 `ctx.ask` 两处）——**那句总结是错的**，当场向用户更正。
 > 更正后的实测反而定住了裁定：**skill 维上两条链同构**（上表最后两行），所以改词表可行。
 
 #### 三条裁定（用户 2026-10-04）
@@ -776,7 +780,7 @@ D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/
 |---|---|---|
 | `bun run typecheck` | **exit 0**（31/31） | 同基线 |
 | `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | 与基线**逐字相同** |
-| `bun run lint`（全局） | exit 1，**4941 warnings / 1 error / 130 rules / 3456 files** | 全局恒红；文件数 3452 → 3456（＝新增 4 个 `.ts`）。⚠️ warnings **4942 → 4941**：名称级差集查明消失的是 `packages/llm/src/tool-runtime.ts:63:44` —— **我没碰过的文件**，且无任何新条目出现，是 `#001-01` 记的 12 线程 ±1 抖动。**改动的 12 个文件里，上游三文件各带 1~3 处既有 warning，全部落在未触及的行**（`handlers/session.ts:426`／`prompt.ts:653`／`session.ts:13,14,15`），我用 `git diff -U0` 的 hunk 范围逐个核对过：我的改动行在 163-177·218-221／1061-1074／701-705。 |
+| `bun run lint`（全局） | exit 1，**4941 warnings / 1 error / 130 rules / 3456 files** | 全局恒红；文件数 3452 → 3456（＝新增 4 个 `.ts`）。⚠️ warnings **4942 → 4941**：名称级差集查明消失的是 `packages/llm/src/tool-runtime.ts:63:44` —— **我没碰过的文件**，且无任何新条目出现，是 `#001-01` 记的 12 线程 ±1 抖动。**改动的 12 个文件里，上游三文件各带 1~3 处既有 warning，全部落在未触及的行**（`handlers/session.ts:426`／`prompt.ts:653`／`session.ts:13,14,15`），我用 `git diff -U0` 的 hunk 范围逐个核对过：我的改动行在 163-177·218-221／1061-1074／701-705（⚠️ 这是 **T006 阶段的快照**——T007 起 `prompt.ts` 等又被改过，行号**已漂**；复核请重跑 `git diff -U0 <merge-base>`，勿照抄这串数字，`#002-06`）。 |
 | `packages/auth` 全量 | **exit 0**，**213 pass / 1 skip / 0 fail** / 214 tests / 18 files | T004 后基线 210/1/0 → **＋3 pass，恰是本次 3 条 rbac 用例** |
 | `packages/core` 影响面 | `access-rbac` ＋ `access-issue` ＋ `access-capability` **exit 0，16 pass / 0 fail** | 按 `#003-01`「改动影响面所在的测试文件全绿」 |
 | `packages/opencode` `test/server/` | **380 pass / 23 skip / 1 fail** / 404 tests / 60 files | 唯一那条红 `file HttpApi > serves search endpoints` **正是开工基线 14 条之一**（类别「时序 / 子进程 / 快照」）⇒ 差集为空 |
@@ -795,9 +799,9 @@ D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/
 2. **审计**（留痕）未做 —— 用户裁定「只做『拒』」，落点 F10。
 3. **存量会话**（本次改动之前建的）的 `permission` 里没有 deny；fork 那个补丁也**不覆盖**存量会话。
 4. **进程内 `approved` 可压过 capability deny**（实测，不是推测）：
-   `packages/opencode/src/permission/index.ts:73` 是
+   `packages/opencode/src/permission/index.ts` 里那次调用是
    `evaluate(request.permission, pattern, ruleset, approved)`，而 `evaluate` 取 `findLast`
-   ⇒ **`approved` 排在最后、它赢**。`approved` 是 `InstanceState` 里的**进程内**数组（同文件 `:51`，
+   ⇒ **`approved` 排在最后、它赢**。`approved` 是 `InstanceState` 里的**进程内**数组（同文件，
    随实例销毁而失，**不落库**）。要出现这个洞，需要同一进程里先有一条 `ask`（= 当时没有 deny 盖住它）
    被点过「总是允许」——**门关着跑过 dev、或升级前的旧会话**都能造出这样一条。
    **不跨进程存活**，但同一进程内它对本 capability deny 全权生效。
@@ -817,7 +821,7 @@ D0-1 也已裁定判定归 core。core **碰不到库**（实测 `packages/auth/
 
 #### 1. 前置实测：字面出参已经打得到（否则要去建 `tool-filter.ts`）
 
-D0-1 已裁定 `plan.md:51` 的 `tool-filter.ts` 路径**判空**（链 A 的上游 `Permission.disabled` 就是
+D0-1 已裁定 `plan.md` 里 `tool-filter.ts` 那条路径**判空**（链 A 的上游 `Permission.disabled` 就是
 过滤点）。本次实测确认搬运通道完整：
 
 ```
@@ -896,7 +900,7 @@ session.permission（T006 在 create/update/prompt/fork 四处写入 capability�
 | 受影响测试 | `bun test test/session/` | **408 pass / 20 skip / 1 todo / 1 fail** | 唯一红 = 开工基线已知的 `snapshot race`；总数 430 = 改前 430 |
 
 > 全局 lint 里 `system.ts:122/138` 两条 `consistent-return`、`prompt.ts:653` 的 `unbound-method`、
-> `prompt.test.ts` 十余条，**均在本次改动行之外**（`system.ts:138` 那个函数本次根本没动，形状与
+> `prompt.test.ts` 十余条，**均在本次改动行之外**（行号为该次 lint 输出的原文快照；`system.ts:138` 那个函数本次根本没动，形状与
 > `skills` 同款 ⇒ 证明该规则是文件既有性质，非本次引入）。warnings 总数与基线逐字相同 ⇒ **0 新增**。
 
 #### 7. 挂账（据实记，不假装闭合）
@@ -1309,7 +1313,144 @@ GRANT）**移交 F6/F7**（接收行落进对方的 `tasks.md` 文件头，`#002
 ⇒ 门禁沿用 T008 末次结果（同一棵树，代码零差异）。**没有新代码就没有新门禁要跑**；
 上面 §4 的三跑是**证据复核**、不是门禁。可由 `git diff --stat` 自证改动全在 `docs/`。
 
+## Step 5 · 代码审查（2026-10-05）
+
+`run-feature` Step 4 ＋ `superpowers:requesting-code-review`，扫 6 类：① 韧性 ② 横切一致性
+③ 防御性 ④ DB 迁移 ⑤ 宪法合规（本 feature **无 `[FE]`** ⇒ 视觉合规那一半豁免，代之以
+⑥ **上游同步面**：改动是否都以「最小化合并冲突」为前提）。
+
+### 裁定（用户 2026-10-05）：**全修**（C1 ＋ I1–I10），Minors 一律**记账不修**
+
+`I11` 是 Step 5 表定稿**之后**复核时新发现的，用户当场另裁「**补齐授权**」（见下）。
+
+### 缺陷表
+
+⚠️ 表里的 `文件` 一律写**文件名 ＋ 符号名**，不写行号（`#002-06`：行号会随编辑／上游同步漂，
+写死的行号是「看着像证据的旧数」）。类别按 6 类扫描归类。
+
+| 编号 | 类别 | 文件（符号） | 描述 | 优先级 |
+|---|---|---|---|---|
+| **C1** | 安全·越权 | `core/src/access/session.ts` 的 `namingConflicts` ＋ `opencode/src/server/openhive/access.ts` 的 `capabilityFor` | MCP 工具名通配 `sanitize(server)+"_*"` 的 `*` 跨得过 `_` ⇒ 前缀重叠的 server 之间规则互相命中，**放行取决于 `Config.mcp` 键序**（未授权 server 的工具可被 allow；反向命名也能借证） | Critical |
+| I1 | 正确性 | `core/src/access/session.ts` 的 `mergeClientRules` | 「保留首次出现」去重把 capability 自己的 allow 挪到整体 deny 之前 ⇒ 客户端回送同键规则即 **over-deny**（已授予的 skill 反被拒） | Important |
+| I2 | 完整性 | `opencode/src/agent/subagent-permissions.ts` ＋ `tool/task.ts` | 子代理会话的手写 filter 只留 deny ⇒ **capability 的 allow 全丢**，子代理里已授予的 skill 不可用；文档把「写入口」只列了 3 处，漏了这条 | Important |
+| I3 | 测试缺口 | `handlers/session.ts` 的 `update` 端点、`session/session.ts` 的 `Session.fork` | 两者的**安全修复无测试**——回退成上游顺序全套仍绿（第一号约束下最易被静默回退） | Important |
+| I4 | 契约不实 | `auth/src/rls.ts` 不变式 ④；本文件 | 不变式 ④ 漏「**连接必须干净**」前提（见证测试 ⑤ 已实测出这事），而本文件谎称「已写进 `rls.ts`」 | Important |
+| I5 | 安全·泄漏 | `auth/src/rls.ts` 的**策略模板** | 模板 `GRANT SELECT ON <业务表>, <成员表>` 却只对业务表开 RLS ⇒ 受限账号可**直读全部成员关系**（FR-005 明说 MCP 会生成任意 SQL） | Important |
+| I6 | 假镜像声明 | `auth/src/migrations/0004_rbac.sql` 注释；`core/src/access/rbac.ts` | 注释声称 `rbac.test.ts` 有「CHECK 闭集 ⇔ core 的 `ResourceType`/`Perm`」防漂移断言，**该断言不存在**（实测零命中，两侧各写各的） | Important |
+| I7 | 潜在缺口 | `core/src/access/rbac.ts` 的 `resolve()`；`capability.ts` | v2 `resolve()` 不产整体 deny ⇒ 落回 `ask`（v2 的 `always` 可永久放行）；注释「`ask` 不会误放行」**不成立**。今天**零生产调用点** ⇒ 潜在 | Important |
+| I8 | 横切不一致 | `opencode/src/session/prompt.ts` 的 `resolvePart` 资源支路 | 同一请求 fiber 里的 `mcp.readResource` **不带 `_meta`** ⇒ 资源工具的**两个出口身份不对称**，且未记为缺口 | Important |
+| I9 | 测试缺口 | `opencode/src/session/tools.ts` 的资源工具 | 资源工具「共用身份」的**接线无测试**（摘掉 `mcpMeta`，两文件仍全绿） | Important |
+| I10 | 文档债 | 本文件 | 源码行号引用（违反 `#002-06`），多指向**上游文件** ⇒ 同步时静默漂移 | Important |
+| **I11** | 安全·越权 | `opencode/src/session/prompt.ts` 的 `resolvePart` 资源支路 | **Step 5 表定稿后新发现**：该支路**不经过工具层**，客户端自填 `source.type === "resource"` 的 part 就能绕过会话里那条 `{ read, "mcp:<server>:*", deny }` 把资源读出来。上游自 `c5442d418d` 起就没有这一问 | Critical |
+
+### I10 的处置（据实记，与「29 处」不符）
+
+原判据写「29 处」。**实测 42 处**（`grep -oE '[A-Za-z0-9_./-]+\.(ts|tsx|sql|json):[0-9]+'`）。
+按「**引用当前位置** vs **记录一次测量**」两类分：
+
+- **定位性（改）**——「X 在哪 / 落点在 Y」那一类，共 31 处 ⇒ 一律改成**文件名 ＋ 符号名／表达式**
+  （如 `prompt.ts:1343`→`ensureRunning` → `prompt.ts` 的 `ensureRunning`；`groups/session.ts:53`
+  → `groups/session.ts`）。
+- **门禁取证快照（留）**——`file:line:col` 是 **lint 输出的原文**，而 `#001-01` 恰好要求门禁判据
+  看「**规则名 ＋ 文件行**」⇒ 改掉会毁掉证据。保留，并给两处会漂的加**时点限定 + 取数命令**
+  （`state.md` 里 T006 门禁那行原写「我的改动行在 163-177…」，T007 之后已漂，已改成
+  「T006 阶段快照 … 复核请重跑 `git diff -U0 <merge-base>`」）。
+
+⇒ 两条规则的张力（`#002-06` 要「别写死会漂的值」 vs `#001-01` 要「判据含文件行」）用
+「**定位引用不写行号、取证快照标时点**」化解。
+
+### 修复与见证（逐条）
+
+| 编号 | 修法 | 见证 |
+|---|---|---|
+| C1 | core 出纯函数 `namingConflicts`（前缀比较，**不碰 `sanitize`**——core 不依赖 opencode，抄一份就是假镜像）；`access.ts` 的 `capabilityFor` **先跑、有冲突即拒建会话**（fail-closed） | `core/test/access-session.test.ts` 8 条 ＋ `openhive-access-naming.test.ts` 验**后果**（判定与后果钉在同一条测试里，`#003-02`） |
+| I1 | 去重**拆到每个来源内部**；客户端侧与既有侧**撞键的一律丢弃**（既有那份留在原位置） | `openhive-access.test.ts`「客户端不得把既有规则『提前』」＋幂等条 |
+| I2 | `deriveSubagentSessionPermission` 加 `blanketDenied`：**只**把「被父级整体 deny 罩住的那些 permission」的父级 allow 带下去（`#这是要保留的定制`，纯新增） | `test/agent/openhive-subagent-capability.test.ts` 4 条（含上游行为逐字不变的对照条） |
+| I3 | 补两条 live 测试 | `openhive-access-wiring.test.ts`「update 端点…」＋「fork ⇒ 派生会话的规则集与源会话逐字相同」（断言**逐字相同** ＋ 拿链 A 真判决器 `evaluate` 验 allow/deny） |
+| I4 | 不变式 ④ 改成「身份必须事务作用域，**且前提是「交到你手上的连接本身干净」**」，补 🔴 段（新连接 / `RESET ALL` / `DISCARD ALL` / 绝不用会话级 SET） | `rls.test.ts` ⑤ 后半段（LOCAL 剥不掉上一层）＋ `rls.ts:103` 的 `IDENTITY_SETTING` ⑦ 钉字面值 |
+| I5 | 模板加「成员表**也要**开 RLS ＋ 策略」（不变式 5）；夹具同步 | `rls.test.ts` ⑧（alice 只看得到自己那行、无身份空集、**负对照**连接用户看得到 2 行） |
+| I6 | core 的 `ResourceType`/`Perm` 从**裸联合**改成**运行时数组**（`RESOURCE_TYPES`/`PERMS`，类型由它导出）；`packages/opencode/test/server/openhive-rbac-closed-set.test.ts` 从 `pg_constraint` 读 CHECK **定义串**、抠字面量、与 core 数组**逐值双向**比；两处假镜像注释改写 | 变异 **M-H**（动 core ⇒ 红）／**M-I**（动 SQL ⇒ 红），两条都恰红 |
+| I7 | `resolve()` 补 ① fail-closed 基线（遍历 `TOOL_OF_TABLE`，每个已映射类型一条整体 deny）；改正「ask 不会误放行」那句 | `core/test/access-rbac.test.ts` ③（没有映射的类型**只被基线罩着**）＋ ⑨（`bash`/`read` 不被基线波及） |
+| I8 | `mcpMeta` 在 `SessionTools.resolve` **取一次**（`tools.ts` 的 `resolveTools`），server 工具路径与 resource 工具路径**共用** | 变异 **M-F**（剥掉 resource 路径的 `mcpMeta`）⇒ **恰红 1**（identity 那条），匿名对照保持绿 |
+| I9 | `openhive-mcp-identity.test.ts` 补**资源侧**假 client（`getServerCapabilities().resources`）＋ 2 条测试 | 同上 M-F：摘掉 `mcpMeta` 时**恰红那 1 条** ⇒ 接线被钉住 |
+| I10 | 见上「I10 的处置」 | 42 → 11（余下 11 处全是门禁取证快照） |
+| **I11** | `resolvePart` 资源支路插入与工具路径**同形的一问**（`permission.ask`：`permission:"read"`、`metadata:{server,uri}`、`patterns:["mcp:<server>:<uri>"]`、`always:["mcp:<server>:*"]`、`ruleset: current.permission`），拒了走文件既有的「读失败」合成 text 支路（不抛）；**【这是要保留的定制】单独提交** | 两条见证测试（`test/session/prompt.test.ts`）：deny ⇒ **出站 `resources/read` 一次都不发生** ＋ 对照 allow ⇒ 发生 1 次且读到 `ledger`；变异 **M-D/M-E** 恰红 |
+
+**I11 的镜像核对**（`#003-05` 要求「判据逐字对着上游写」）：把 I11 与
+`opencode/src/session/tools.ts` 资源工具那条 `ctx.ask` 的四个字段（`permission` /
+`metadata` 形状 / `patterns` / `always`）**逐字比过，完全同形**；并 grep 全仓
+`readResource` 只有**两个调用点**（`tools.ts` / `prompt.ts`），两处都已有 ask ⇒ **无第三条泄漏路径**。
+
+### 重审修复本身（`LEARNINGS #003-02`：把修复当新代码再打一轮）
+
+问法是「**谁在按同一个前提做同一件事**」——不是「谁提到了这个名字」（`#002-06`）。逐项结果：
+
+| 前提 | 有几处实现 | 结论 |
+|---|---|---|
+| MCP 资源读要过 `read` ask | 2（`tools.ts` / `prompt.ts`，即 I11） | **已逐字对齐**，无第三处 |
+| v1/v2 两条链的「整体 deny 基线」 | 2（`sessionRuleset` ① 按 `GOVERNED` / `resolve()` ① 按 `TOOL_OF_TABLE`） | 两表**键集相等**由 `openhive-access.test.ts` ⑥ 钉住（**故意**是警报条：谁把 `mcp` 塞进 `TOOL_OF` 它会红）；且 `sessionRuleset` ③ 只取 `effect==="allow"`，避免把 v2 的基线搬进来造成**过拒** |
+| 「创建会话必须带 capability」 | 4（create / update / prompt / fork） | 前 3 处走 `mergeClientRules`，fork 无客户端输入 ⇒ **直接继承** `original.permission`；**四条都有测试**（I3 补的就是缺的那两条） |
+| 「子代理会话怎么继承父级权限」 | 1（`deriveSubagentSessionPermission`，只被 `tool/task.ts` 调） | 单点，已测 |
+| 「`Config.mcp` 名单的命名冲突」 | 1（`namingConflicts`，只被 `capabilityFor` 调） | 单点，已测 |
+
+⇒ **本轮重审未发现新缺陷**（I11 是上一轮发现的，已在本轮修复）。
+
+### Minors（**记账，不修** —— 逐条列出，不假装闭合）
+
+`M14`（杂项，合并一条）：`TOOL_OF` 原型链键（不可达）／`grantsFor` 无生产驱动用例／
+`stop()` 不漏句柄实为漏／`rollback` 非事务（既有）／负对照 ④ 只证「该用户绕过」／
+模板缺 membership 的 `GRANT`／`doom_loop` 只用 `agent.permission`／`Effect.promise` 失败不可归类／
+`prompts/get` 未带身份／空 user id 注入空身份／重名 server 无校验。
+
+> 判据：这些**都不改变今天可达路径上的安全结论**（或落在上游既有代码上），记在这里备查；
+> 修它们会扩大与上游的冲突面（第一号约束），留待有生产调用点或同步上游时再议。
+
+### 门禁（全修后**串行**复跑，`#003-01`：并行会造假红）
+
+| 门禁 | 结果 | 判据 |
+|---|---|---|
+| `bun run typecheck` | **exit 0**，31/31 tasks | 必须 0 |
+| `bun run lint:openhive` | **exit 0**，23 warnings / 0 errors / 69 files / 161 rules | = 基线**逐字相同** |
+| `bun run lint`（全局） | exit 1，**4951 warnings / 1 error / 3468 files**（恒红） | 唯一 error = 既有上游 `packages/session-ui/src/v2/components/prompt-input/index.tsx` 那行；`prompt.ts` 的唯一命中在 **655**，**不在本次改动行**（本次 hunk = `+23,2` / `+702,9` / `+727,32`）⇒ **改动行 0 命中** |
+| `packages/core` | **25 pass / 0 fail**（`access-rbac` ＋ `access-session` ＋ `access-capability` ＋ `access-issue`） | 改动影响面所在文件全绿 |
+| `packages/auth` | **19 pass / 0 fail**（`rls.test.ts` ＋ `rbac.test.ts`） | 同上（`rls` 走 PGlite 真跑，25 s） |
+| `packages/opencode` access 套件 | **39 pass / 0 fail**（7 文件：`openhive-access{,-wiring,-mcp,-mcp-wiring,-naming}` ＋ `openhive-rbac-closed-set` ＋ `openhive-subagent-capability`） | 同上 |
+| `packages/opencode` `test/session/prompt.test.ts` | **49 pass / 14 skip / 0 fail** | 同上 |
+| `packages/opencode` `test/session/openhive-mcp-identity.test.ts` | **4 pass / 0 fail** | 同上 |
+| `bun.lock` | `git diff --stat bun.lock` = **空** | 未跑 `bun install`，无镜像源污染 |
+
+⚠️ **一处据实记（不假装 0 命中）**：改动文件 `packages/opencode/test/session/openhive-mcp-identity.test.ts`
+的全局 lint 命中 **6 → 7**（单文件实测：`bunx oxlint <该文件>`）——**＋2 条** `no-unsafe-type-assertion`、
+**−1 条** `no-unnecessary-type-assertion`。＋的这 2 条落在本次新写的两个测试桩
+（`resourceRecordingClient` 的 `as unknown as Client`、`fakeMcpWithResources` 的 `as … as MCP.Interface`），
+**与同文件既有 5 条逐字同款**（该文件用 10 个 Service 桩，MCP 那两个因实现不全、必须双断言）。
+规则是 **warning 级**（全局 error 仍恰 1 条、在上游文件上）⇒ 按「照抄同文件既有写法」保留，
+不用为凑门禁偏离本文件风格。
+
+> 判据出处：`#001-02`「全局红的门 ⇒ 判据改为『本次新增/改动文件 0 命中』」，且**改动行 0 命中**
+> 是本 feature 沿用 003 的更严版本。上面那条是它的**实测残差**，不是「已闭合」。
+
+---
+
 ## 最后更新
+
+2026-10-05（**Step 5 代码审查**：6 类扫描出 **C1 ＋ I1–I10**，用户裁定**全修**（Minors 记账）；
+表定稿后复核又发现 **I11**（`prompt.ts` 资源支路缺 `read` ask —— 与工具路径**同形的一问**，
+上游自 `c5442d418d` 起就没有，客户端自填 `source.type==="resource"` 的 part 即可绕过
+`{ read, "mcp:<server>:*", deny }`），另裁**补齐授权** ＋ 【这是要保留的定制】**单独提交** ＋
+两条见证测试（deny ⇒ 出站 `resources/read` **一次都不发生** / 对照 allow ⇒ 发生 1 次）＋
+变异 M-D/M-E 恰红 ＋ 逐字核对四个字段与 `tools.ts` 的资源工具 ask **完全同形**、grep 全仓
+`readResource` **仅两个调用点**、两处都已有 ask ⇒ 无第三条泄漏路径）＋ **`#003-02` 修复重审**
+（问「谁在按同一个前提做同一件事」：MCP 资源读 2 处已对齐 / 两条链的整体 deny 基线 2 处由
+`openhive-access.test.ts` ⑥ 键集断言钉住 / 「创建会话必须带 capability」4 处中 fork 走直接继承、
+四条都有测试 / 子代理继承 1 处 / 命名冲突 1 处 ⇒ **未发现新缺陷**）＋ **I10 据实修正**
+（原判「29 处」实测 **42 处**：定位性 31 处改文件名＋符号名、门禁取证快照保留并加时点限定 ＋
+取数命令 ⇒ 余 11 处，见节内说明）＋ 门禁**串行**全绿（typecheck 31/31 · lint:openhive 23/0 与基线
+逐字相同 · core 25 pass · auth 19 pass · opencode access 39 pass · `prompt.test.ts` 49 pass/14 skip ·
+`bun.lock` 空）＋ 据实记一处残差（改动文件 `openhive-mcp-identity.test.ts` 全局 lint **6 → 7**：
+＋2 `no-unsafe-type-assertion`/－1 `no-unnecessary-type-assertion`，新增两条与同文件既有 5 条**逐字同款**、
+warning 级、不改安全结论）＋ RLS 不变式升至**五条**（新增「被 GRANT 的每一张表都要开 RLS」）
+＋ `state.md:1136` 的 I4 断言两半**都已为真**（`rls.ts` ④ ＋ F6/F7 移交行均已核））
 
 2026-10-05（**T012–T014**：用户裁定**甲** —— 安全测试三条**纯记账关闭、零新增测试** ＋ Step 0.5
 实测表「这三条今天打得到什么」（可测的一半：拒绝 / RLS 机制 / 路径穿越 / SQL 注入判据；
