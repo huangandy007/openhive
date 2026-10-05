@@ -4,6 +4,31 @@
 
 **Prerequisites**: spec.md（用户故事）、plan.md（结构 / 集成点）、F6 资金分析已落地（复用其模式）
 
+> 📥 **接收自 F4 的移交 · 第二笔（2026-10-05，用户裁定「甲」）**：004-access-control 的 **T008
+> （业务数据 RLS 机制）** 的**落地**落到本文件（与 F6 同构，两边都要；F6 侧见
+> `007-fund-analysis/tasks.md` 的同一块）。
+>
+> **为什么是移交**：业务库 / 业务表 / 成员表 / 受限账号今天都不存在（实测：全仓零业务表迁移），
+> 出参「越权行被 RLS 过滤」**打不到**；但「机制对不对」打得到——004 用 PGlite（WASM 版真 PG）
+> 真跑了 PG 的 RLS 执行器，把写法钉成契约（`packages/auth/src/rls.ts`）＋ 见证测试
+> （`packages/auth/src/rls.test.ts`，7 条，变异验过会红）。
+>
+> **本文件要做的「落地」**：
+> - **T001**：建 `call_*` 表时一并 `CREATE ROLE … NOLOGIN` ＋ 最小 `GRANT` ＋
+>   `ALTER TABLE … ENABLE ROW LEVEL SECURITY` ＋ `CREATE POLICY … USING (…)`（模板照抄 rls.ts）。
+> - **T006**（话单数据查询 MCP）：每个查询在**同一事务内** `SET LOCAL ROLE <受限账号>` ＋
+>   `set_config('openhive.user_id', <该 id>, true)`。
+>
+> ⚠️ **跨 feature 语义冲突（`LEARNINGS #002-04③`）**：T006 现写「带 **X-User-ID** \+ RLS」。
+> `X-User-ID` 是 **F3 的入站 HTTP 头**；本仓 MCP **出站**请求的身份载体是 **F4 T007 落地的
+> `_meta["openhive/user"]`**（`packages/opencode/src/mcp/openhive-identity.ts`）。MCP server 应读
+> **`_meta`**，不是 `X-User-ID`。T006 此处措辞需按 T007 更正。
+>
+> ⚠️ **三条不许忘**：① 受限账号不得是表 owner / superuser / `BYPASSRLS`；② 无身份 ⇒ **空集** 而非
+> 看得见全部；③ 身份**必须事务作用域**且**连接要干净**（`LOCAL` 剥不掉会话级残留）。
+> ⚠️ **不得声称 FR-006 行级部分已在 F4 端到端验证**（`LEARNINGS #002-02`）；见证测试是**本地门禁**
+> （`packages/auth` 不进 CI），且 PGlite **不等于**生产 PG 同版本同构建。
+
 **Tests**: 以「受影响 package 的 bun test」覆盖权限、关注状态、RLS 越权拦截；性能以压测验收。
 
 ## 任务格式约定

@@ -25,6 +25,39 @@
 > 004 的 `spec.md` Assumptions 原话即为「业务数据的 RLS 落地依赖 F6/F7 的数据项目成员表」。
 > 📌 同型先例：003 的 **T016（越权 BOLA/BFLA）** 因「无对象可测」整条移交 `010-governance-console` T015。
 
+> 📥 **接收自 F4 的移交 · 第二笔（2026-10-05，用户裁定「甲」）**：004-access-control 的 **T008
+> （业务数据 RLS 机制）** 的**落地**落到本文件（F7 同构，两边都要）。
+>
+> **为什么是移交**：同上一笔——**业务库 / 业务表 / 成员表 / 受限账号今天都不存在**（实测：全仓
+> 零业务表迁移），出参「越权行被 RLS 过滤」**今天在仓库里打不到**。但「机制对不对」打得到：
+> 004 用 PGlite（WASM 版真 PG）**真跑了 PG 的 RLS 执行器**，把写法钉成契约 + 见证测试。
+>
+> **004 交出的东西（照抄即可）**：
+> - **契约 + 账号级/行级策略模板**：`packages/auth/src/rls.ts`（文件头 ＋ 四条不变式）。
+> - **见证测试**：`packages/auth/src/rls.test.ts`（7 条；M1–M4 变异逐条验过会红）。
+> - **身份通道**：MCP server 读 `_meta["openhive/user"]` → **同一事务内**
+>   `SET LOCAL ROLE <受限账号>` ＋ `set_config('openhive.user_id', <该 id>, true)` → PG RLS。
+>
+> **本文件要做的「落地」**：
+> - **T001**：建表时一并 `CREATE ROLE <受限账号> NOLOGIN` ＋ 最小 `GRANT` ＋
+>   `ALTER TABLE … ENABLE ROW LEVEL SECURITY` ＋ `CREATE POLICY … USING (…)`（模板照抄 rls.ts）。
+> - **T006**（资金数据查询 MCP）：每个查询在**同一事务**里走上面的身份通道。
+>
+> ⚠️ **跨 feature 语义冲突（开工前先裁定，`LEARNINGS #002-04③`）**：T006 现写「带 **X-User-ID**
+> \+ RLS」。`X-User-ID` 是 **F3 的入站 HTTP 头**（明文、非凭证）；而本仓 MCP **出站**请求的身份载体
+> 是 **F4 T007 落地的 `_meta["openhive/user"]`**（见 `packages/opencode/src/mcp/openhive-identity.ts`）。
+> 方向不同、载体不同 —— MCP server 应读 **`_meta`**，不是 `X-User-ID`。T006 此处措辞需按 T007 更正。
+>
+> ⚠️ **三条不许忘**（见证测试钉住，见 rls.ts 不变式）：
+> ① 受限账号**不得**是表 owner / superuser / `BYPASSRLS`（PG 对 owner 默认不套策略）；
+> ② 无身份 ⇒ **空集**（fail-closed），不是「看得见全部」（`current_setting(…, true)` 必须传 `true`）；
+> ③ 身份**必须事务作用域**，且**连接本身要干净**：`LOCAL` 只回滚到上一层，**剥不掉**连接里的会话级
+> 残留 ⇒ 用连接池时先 `RESET ALL`（或事务池模式）。
+>
+> ⚠️ **不得声称 FR-006 行级部分已在 F4 端到端验证**（`LEARNINGS #002-02`）。且 `packages/auth`
+> 的测试**不进 CI** ⇒ 上述见证测试是**本地门禁**、不是 F6/F7 的 CI 门禁；它跑在 PGlite 上，
+> **不等于**「与生产 PG 同版本同构建」（残差见 rls.ts 文件头）。
+
 **Tests**: 以「受影响 package 的 bun test」覆盖权限判定、关注状态流转、RLS 越权拦截；性能以压测验收。
 
 ## 任务格式约定
