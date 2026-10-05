@@ -9,9 +9,9 @@
 - **记账任务 3 条**：T012 / T013 / T014（机制可测的一半已被 T006/T008/003 的测试覆盖；另一半显式挂账）。
 - **移交 3 条**：T009 → F6/F7（裁定「乙」）、T010 / T011 → F7（见 D0-4 段）。
 
-➡️ **下一步 = Step 6 收尾**（最终 commit 含 `Closes 004-access-control`、tag
-`v0.1.0-004-access-control`、更新 `session.md`、追加 `LEARNINGS` 条目）。`multi-tenant` 合并由
-**用户**执行。
+✅ **Step 6 已收尾**（2026-10-05）：最终 commit 含 `Closes 004-access-control`，tag
+`v0.1.0-004-access-control`，`session.md` 已从占位改成真交接，`LEARNINGS` 追加 `#004-01`–`#004-05`。
+`multi-tenant` 合并由**用户**执行。后续动作与挂账见 `session.md`「下次会话要做的事」。
 
 **Step 5 已完成**（2026-10-05）：6 类扫描出 **C1 ＋ I1–I10**，用户裁定**全修**（Minors 记账）；
 表定稿后复核又发现 **I11**（资源支路缺 `read` ask，同一批安全结论的第三处出口），另裁**补齐授权**。
