@@ -30,6 +30,21 @@ import type { Permission } from "@opencode-ai/schema/permission"
  *
  * `Wildcard.match` 是**全串锚定**（`^…$`），两边字段都对不上 ⇒ 第一版产出的 ruleset
  * **一条都命中不了、全部落回 ask**：不报错、不变红、typecheck 照绿。`LEARNINGS #003-05` 的假镜像形状。
+ *
+ * ## 🔴 fail-closed 基线（2026-10-05 补 —— `resolve()` 出口的**第一段**）
+ *
+ * `resolve()` **先**给每个**已映射**的类型铺一条整体 deny（`{action: <工具名>, resource: "*",
+ * effect: "deny"}`），**再**接逐条 allow —— 与链 A 的 `sessionRuleset` ① 同构
+ * （顺序是语义：`evaluate` 取 `findLast`，后者胜）。
+ *
+ * 为什么必须补：原先只有 allow 一侧，于是「没授过的 skill」落回上游兜底 `ask`——而 `ask`
+ * **不是安全的一侧**。两条链都有「总是允许」这条路（`packages/core/src/permission/saved.ts`
+ * 存的就是那两列），一次点击就把没授过的 skill 变成持久 allow。**「没规则」在这里等于
+ * 「可自批」**，所以本文档旧版那句「落回 `ask`（保守：不会误放行）」是**不实的**，已改正
+ * （`capability.ts` 里同一句不实说法同步改正）。
+ *
+ * ⚠️ 副作用：`resolve()` 的出口**不再全是 allow** ⇒ `sessionRuleset` ③ 只取
+ * `effect === "allow"` 那批（它自己的整体 deny 由 ① 按 `GOVERNED` 出）。
  */
 
 const grant = (resourceType: AccessRbac.ResourceType, resourceId: string, perm: AccessRbac.Perm): AccessRbac.Grant => ({
@@ -47,10 +62,13 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
    * 拿**下游真正吃这条 ruleset 的那个调用形状**验，不是逐字段对字符串
    * （`#003-05`：镜像要对着下游那一侧的行为写）。
    */
-  test("① 授 skill 读 ⇒ 一条 allow，且能被执行断言那条 evaluate 命中", () => {
+  test("① 授 skill 读 ⇒ 先整体 deny、后逐条 allow；且能被执行断言那条 evaluate 命中", () => {
     const ruleset = AccessRbac.resolve([grant("skill", "fund-analysis", "read")])
 
-    expect(ruleset).toEqual([{ action: "skill", resource: "fund-analysis", effect: "allow" }])
+    expect(ruleset).toEqual([
+      { action: "skill", resource: "*", effect: "deny" },
+      { action: "skill", resource: "fund-analysis", effect: "allow" },
+    ])
 
     // 下游是这么问的：evaluate(<工具名>, <实参>, ruleset)。
     // 链 B 的 skill 工具断言 action="skill"、resources=[技能名]；链 A 改名为 permission/pattern。
@@ -62,22 +80,23 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
   })
 
   /**
-   * **只有 `read` 进 ruleset**（用户 2026-10-04 裁定）。
+   * **只有 `read` 产 allow**（用户 2026-10-04 裁定）。
    *
    * `perm` 的四个值仍然存在表里（§11.2：读 / 写 / 审 / 管），但**「调用一个工具」只对应「使用」**——
-   * 写 / 审 / 管是管理动作（改内容、批上线、上下架），不是工具调用，今天也没有承载它们的工具。
+   * 写 / 审 / 管是管理动作（改内容、批上线 / 上下架），不是工具调用，今天也没有承载它们的工具。
    * 把它们也翻成工具断言，等于凭空发明一条没人请求的权限。
    *
    * ⚠️ 这条同时钉住「别顺手把四个都放进去」：把 `perm !== "read"` 那行删掉，本条即红。
    */
-  test("② 只有 read 产生规则：写 / 审 / 管一律不产", () => {
+  test("② 只有 read 产 allow：写 / 审 / 管一律不产", () => {
     const ruleset = AccessRbac.resolve([
       grant("skill", "a", "write"),
       grant("skill", "b", "review"),
       grant("skill", "c", "admin"),
     ])
 
-    expect(ruleset).toEqual([])
+    // 全是管理动作 ⇒ 出口只剩那条 fail-closed 基线，一条 allow 都没有。
+    expect(ruleset).toEqual([{ action: "skill", resource: "*", effect: "deny" }])
 
     // 单独再来一遍「read 在、其余也在」：read 那条要出，另三条不许跟着出。
     const mixed = AccessRbac.resolve([
@@ -86,7 +105,10 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
       grant("skill", "drop-review", "review"),
       grant("skill", "drop-admin", "admin"),
     ])
-    expect(mixed).toEqual([{ action: "skill", resource: "keep", effect: "allow" }])
+    expect(mixed).toEqual([
+      { action: "skill", resource: "*", effect: "deny" },
+      { action: "skill", resource: "keep", effect: "allow" },
+    ])
   })
 
   /**
@@ -94,19 +116,24 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
    *
    * 实测今天两条投不到任何能命中的工具断言：
    * - `mcp`：链 A 的 MCP 资源工具用 `{permission:"read", pattern:"mcp:<server>:*"}`
-   *   （`packages/opencode/src/session/tools.ts:172-179` / `:346-347`）——与 skill 那条**不是同一个投影**；
+   *   （`packages/opencode/src/session/tools.ts`）——与 skill 那条**不是同一个投影**；
    *   链 B 侧的 MCP 尚无落点。归 **T007**（FR-005）。
    * - `knowledge_base`：全仓 `packages/` 下**零命中**，没有对应工具。
    *
-   * ⇒ 不产规则，落回上游兜底 `ask`（保守：不会误放行，但**也不会生效**）。
+   * ⇒ 不产 allow。⚠️ **但这不等于「落回 ask 是安全的」**——`ask` 可被「总是允许」批掉，
+   * 所以未映射类型的真实处境是「**只被基线的 deny 罩着**，授权本身不生效」：拿得到 deny 这一侧，
+   * 拿不到 allow 那一侧。原始注释把这点说反了（「保守：不会误放行」），已改正。
    *
    * ⚠️ 这条断言的存在意义是**把缺口钉在明面上**：将来谁接上 mcp，必须同时改
    * `rbac.ts` 的 `TOOL_OF` 表和**这一条断言**——否则「mcp 授权到今天还没生效」会被
    * 悄悄读成「已经生效了」（`LEARNINGS #002-02`）。
    */
-  test("③ 未投影类型（mcp / knowledge_base）不产规则 —— 这里不产，不等于没人产", () => {
-    expect(AccessRbac.resolve([grant("mcp", "fund-db", "read")])).toEqual([])
-    expect(AccessRbac.resolve([grant("knowledge_base", "kb-1", "read")])).toEqual([])
+  test("③ 未投影类型（mcp / knowledge_base）不产 allow —— 这里不产，不等于没人产", () => {
+    const mcp = AccessRbac.resolve([grant("mcp", "fund-db", "read")])
+    // 出口只剩那条 fail-closed 基线；**没有 allow**，且 grant 的 resourceId 没被投影出去。
+    expect(mcp).toEqual([{ action: "skill", resource: "*", effect: "deny" }])
+    expect(AccessRbac.resolve([grant("knowledge_base", "kb-1", "read")])).toEqual(mcp)
+    expect(mcp.every((rule) => rule.resource !== "fund-db")).toBe(true)
 
     // 且表里那张「资源类型 → 工具名」的对照今天只认 skill 一行。
     expect(Object.keys(AccessRbac.TOOL_OF)).toEqual(["skill"])
@@ -127,12 +154,13 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
   test("④ 资源 id 是一个轴：授了 X 不得用 Y，且各自命中各自", () => {
     const onlyX = AccessRbac.resolve([grant("skill", "X", "read")])
     expect(PermissionV2.evaluate("skill", "X", onlyX).effect).toBe("allow")
-    expect(PermissionV2.evaluate("skill", "Y", onlyX).effect).toBe("ask")
+    // 没授的落到**基线那条 deny**（不是 ask —— ask 可被「总是允许」批掉）。
+    expect(PermissionV2.evaluate("skill", "Y", onlyX).effect).toBe("deny")
 
     // 反向：Y 的授权必须命中 Y——否则「写死 resource」那类实现会漏过去。
     const onlyY = AccessRbac.resolve([grant("skill", "Y", "read")])
     expect(PermissionV2.evaluate("skill", "Y", onlyY).effect).toBe("allow")
-    expect(PermissionV2.evaluate("skill", "X", onlyY).effect).toBe("ask")
+    expect(PermissionV2.evaluate("skill", "X", onlyY).effect).toBe("deny")
   })
 
   /**
@@ -143,32 +171,44 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
   test("⑤ 两个角色授予同一条 ⇒ 去重后只出一条", () => {
     const ruleset = AccessRbac.resolve([grant("skill", "fund-analysis", "read"), grant("skill", "fund-analysis", "read")])
 
-    expect(ruleset).toEqual([{ action: "skill", resource: "fund-analysis", effect: "allow" }])
+    expect(ruleset).toEqual([
+      { action: "skill", resource: "*", effect: "deny" },
+      { action: "skill", resource: "fund-analysis", effect: "allow" },
+    ])
   })
 
   /**
-   * **没有授权 ⇒ 空 ruleset**，绝不能是「全 allow」。
+   * 🔴 **没有授权 ⇒ 仍然一条整体 deny**，绝不是空集、更不是「全 allow」。
    *
-   * 把空输入兜底成一条 `{action:"*", resource:"*", effect:"allow"}` 会让**每个没被授权的工具
-   * 都静默放行**，而且形状是对的、typecheck 照绿、别的用例全过。
-   * 「没授权」与「授权全部」在代码上只差一行，在安全上是全部。
+   * 两个反向的写法都要被这条挡住：
+   * - 兜底成 `{action:"*", resource:"*", effect:"allow"}` ⇒ 每个没被授权的工具静默放行；
+   * - 返回空集 ⇒ 每个没被授权的 skill 落回上游兜底 `ask`，而 `ask` **可被「总是允许」批掉**
+   *   （`packages/core/src/permission/saved.ts`）——等于把「没授权」变成「点一下就有」。
+   * 两者都形状正确、typecheck 照绿、别的用例全过。
    */
-  test("⑥ 没有任何授权 ⇒ 空 ruleset（不是全 allow）", () => {
-    expect(AccessRbac.resolve([])).toEqual([])
+  test("⑥ 没有任何授权 ⇒ 仍有一条整体 deny（不是空集，更不是全 allow）", () => {
+    const ruleset = AccessRbac.resolve([])
+
+    expect(ruleset).toEqual([{ action: "skill", resource: "*", effect: "deny" }])
+    // 「不是 ask」单独断一次：这两个在返回形状上像，后果差一个「民警可以自己批」。
+    expect(PermissionV2.evaluate("skill", "fund-analysis", ruleset).effect).toBe("deny")
+    expect(PermissionV2.evaluate("skill", "fund-analysis", ruleset).effect).not.toBe("ask")
   })
 
   /**
    * 接上环路：resolve 的产物交给 `evaluate` 之后，
-   * **授过的**是 allow、**没授的**仍是上游兜底 `ask`。
+   * **授过的**是 allow、**没授的（但同属受管类型）**是 deny、**不受管的工具**才落回 `ask`。
    *
-   * 第二半才是这条存在的理由——它证明 resolve **没有**顺手把未授权的也变成 allow
-   * （FR-002 的分工：证里没有的东西，就该落回上游的默认，不是落回「允许」）。
+   * 三档分开断，因为每档的失败方式不同：
+   * - 授过的变成 deny ⇒ 正常功能坏掉；
+   * - 没授的变成 ask ⇒ 可被「总是允许」批掉（**这一档才是安全的那条**）；
+   * - 不受管的（`bash`）变成 deny ⇒ agent 直接不能用（基线**只**覆盖已映射类型）。
    */
-  test("⑦ 授过的是 allow，没授的仍是上游兜底 ask", () => {
+  test("⑦ 授过的是 allow、没授的（受管类型）是 deny、不受管的仍是 ask", () => {
     const ruleset = AccessRbac.resolve([grant("skill", "fund-analysis", "read")])
 
     expect(PermissionV2.evaluate("skill", "fund-analysis", ruleset).effect).toBe("allow")
-    expect(PermissionV2.evaluate("skill", "call-analysis", ruleset).effect).toBe("ask")
+    expect(PermissionV2.evaluate("skill", "call-analysis", ruleset).effect).toBe("deny")
     // 别的工具（不是被授权的那个）同样不许被带出来。
     expect(PermissionV2.evaluate("bash", "rm -rf /", ruleset).effect).toBe("ask")
   })
@@ -180,6 +220,19 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
   test("⑧ 出口就是 Permission.Ruleset（编译期可赋给 issue 的入参）", () => {
     const ruleset: Permission.Ruleset = AccessRbac.resolve([grant("skill", "fund-analysis", "read")])
 
-    expect(ruleset).toHaveLength(1)
+    expect(ruleset).toHaveLength(2)
+  })
+
+  /**
+   * 🔴 **基线的覆盖范围就是 `TOOL_OF` 的键集**——多一条、少一条都要红。
+   *
+   * 从表**派生**期望（而不是写死 `["skill"]`）：将来往 `TOOL_OF` 加一行却忘了补基线，
+   * 本条立刻红；反过来手工多 deny 一个没人管的工具（比如 `bash`），这里也会红
+   * ——那会让 agent 直接不能用（上游 `bash` 的规则集在别处，不该被这里罩住）。
+   */
+  test("⑨ 每个已映射类型各有一条整体 deny（多一条少一条都红）", () => {
+    const baselines = AccessRbac.resolve([]).filter((rule) => rule.effect === "deny" && rule.resource === "*")
+
+    expect(baselines.map((rule) => rule.action).sort()).toEqual(Object.keys(AccessRbac.TOOL_OF).sort())
   })
 })

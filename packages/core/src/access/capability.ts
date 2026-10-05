@@ -111,9 +111,17 @@ export type Scope = typeof Scope.Type
  * 直接吃它，不需要任何翻译层。`Rule` / `Ruleset` 因此直接复用
  * `@opencode-ai/schema/permission`，**不自造一份平行类型**（`#003-05`）。
  *
- * ⚠️ 上游兜底值是 `ask` 而**不是** `allow`：证里没写到的动作既不放行也不拒绝，而是
- * 弹窗问人。这条是整套授权的安全底线，已用测试钉死——补成「全量 allow」会让越权从
- * 「问一下」退化成「静默放行」，而代码照跑、门禁照绿。
+ * ⚠️ 上游兜底值是 `ask` 而**不是** `allow`——但 **`ask` 不是安全底线**（2026-10-05 改正旧注释，
+ * 旧版写的是「这条是整套授权的安全底线」，那是错的）。弹窗带「总是允许」
+ * （`packages/core/src/permission/saved.ts`），一次点击就把兜底 `ask` 变成持久 allow ⇒
+ * 「证里没写到」与「放行」之间只隔一次点击。
+ *
+ * 所以两件事**都要**：
+ * ① **受管类型必须在证里自带一条整体 deny 基线**——由 `AccessRbac.resolve()` ① 产出
+ *    （`access-rbac.test.ts` ⑥ 与 ⑨ 钉住）；那条 deny 不进询问，也就没有「总是允许」可点；
+ * ② 兜底 `ask` 继续做**不受管**工具（`bash` / `read` / `edit`…）的默认——给它们补全量 deny
+ *    会让 agent 直接不能用。
+ * 「顺手补一条全量 allow」仍然要禁：那会让越权从「问一下」退化成「静默放行」。
  */
 export const Capability = Schema.Struct({
   id: ID,

@@ -53,6 +53,10 @@ export interface Input {
  *
  * `permissions` 原样焊进证里，不做增删：**未命中的动作保持上游兜底值 `ask`**，
  * 「顺手补一条全量 allow」会让越权从「问一下」退化成「静默放行」。
+ *
+ * ⚠️ 但**别把「兜底 `ask`」当成安全底线**（2026-10-05 补）：`ask` 可被弹窗里的「总是允许」批掉。
+ * 所以**受管的动作必须由 `permissions` 自己带一条整体 deny**——那一条由 `AccessRbac.resolve()` ①
+ * 产出（说明见 `capability.ts` 与 `rbac.ts` 的同款段落）。
  */
 export function issue(input: Input): AccessCapability.Capability {
   return {

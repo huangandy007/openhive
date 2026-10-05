@@ -77,8 +77,57 @@ export interface McpServerNaming {
    * `packages/opencode/src/mcp/catalog.ts` 的 `sanitize`（`McpCatalog.toolName` 用的就是它），
    * 而 **core 不依赖 opencode**（实测）——在这里抄一份 sanitize 就是
    * `LEARNINGS #003-05` 的假镜像（上游改了正则，这边不会红、只会静默失配）。
+   *
+   * ⚠️ **命名约束**：`sanitize(server) + "_"` **两两不得互为前缀**——否则两个 server 的工具名
+   * 互相覆盖，授权随 `Config.mcp` 的**键序**漂移（不报错、不变红）。判据与例子见
+   * {@link namingConflicts}；调用方**必须先跑一次那个函数**、有冲突就**拒绝建会话**。
    */
   readonly toolPattern: string
+}
+
+/**
+ * 名单里的**前缀碰撞**：两个 server 的工具名通配互相覆盖 ⇒ 授权结果随 `Config.mcp` 的
+ * **键序**漂移（`evaluate` 取 `findLast`，后者胜）。返回**冲突的名字对**；空数组 = 无冲突。
+ *
+ * ## 为什么会撞
+ *
+ * `toolPattern` 是 `sanitize(server) + "_" + "*"`（由调用方按 `McpCatalog.toolName` 算好），
+ * 而工具名是 `sanitize(server) + "_" + sanitize(toolName)`。**那个 `_` 不是无歧义的分界**：
+ * `sanitize` 把 `.` / `/` 之类一律换成 `_`（`packages/opencode/src/mcp/catalog.ts`），
+ * 于是这些服务名会**产生同一个工具名**：
+ *
+ * | server A | A 的工具 | server B | B 的工具 | 撞在同一个工具名 |
+ * |---|---|---|---|---|
+ * | `fund`   | `db`      | `fund_db` | （其它） | `fund_db_…` |
+ * | `a`      | `b/query` | `a_b`     | `query`  | `a_b_query` |
+ *
+ * 判据化成一条：把 `toolPattern` 末尾那个 `*` 去掉，得到 `sanitize(server) + "_"`；
+ * 两个 server 碰撞 ⟺ **其中一个前缀是另一个的前缀**（`startsWith`，非严格 ⇒ 净化后同名也算）。
+ * 例：`fund_db_` 是 `fund_db_prod_` 的前缀 ⇒ 撞；`fund_db_` 与 `fundx_` 互不为前缀 ⇒ 不撞。
+ *
+ * ## 为什么是「拒绝」而不是「换个顺序」
+ *
+ * 换个顺序只把「哪一边生效」挪个位置：撞键的两个 server 里**总有一个的工具被另一个的规则
+ * 罩住**（要么被误 deny、要么被误 allow），且**不报错、不变红**。所以调用方应当
+ * **拒绝建会话**（fail-closed）并要求改配置——见 `packages/opencode/src/server/openhive/access.ts`。
+ *
+ * ⚠️ 本函数**不碰 `sanitize`**：输入是已经翻译好的 `toolPattern`，它只做前缀比较
+ * （core 不依赖 opencode；在这里抄一份 sanitize 就是 `LEARNINGS #003-05` 的假镜像）。
+ */
+export function namingConflicts(servers: readonly McpServerNaming[]): ReadonlyArray<readonly [string, string]> {
+  const prefixes = servers.map((naming) => ({
+    server: naming.server,
+    // 末尾的 `*` 是通配符不是名字的一部分：去掉它才拿到「前缀」。
+    prefix: naming.toolPattern.endsWith("*") ? naming.toolPattern.slice(0, -1) : naming.toolPattern,
+  }))
+
+  const conflicts: Array<readonly [string, string]> = []
+  for (const [i, a] of prefixes.entries()) {
+    for (const b of prefixes.slice(i + 1)) {
+      if (a.prefix.startsWith(b.prefix) || b.prefix.startsWith(a.prefix)) conflicts.push([a.server, b.server])
+    }
+  }
+  return conflicts
 }
 
 /**
@@ -137,10 +186,15 @@ export function sessionRuleset(
     rules.push({ permission: "read", pattern: `mcp:${naming.server}:*`, action })
   }
 
-  // ③ 再逐条 allow。`resolve()` 只产 allow（`role_resource` 表没有 effect 列）。
+  // ③ 再逐条 allow。🔴 **只取 `effect === "allow"` 那批**——`resolve()` 从 2026-10-05 起
+  //    自带 ① fail-closed 基线（每个已映射类型一条整体 deny）。若把基线也搬进来，它会排在
+  //    allow **之后** ⇒ `findLast` 取到它 ⇒ **把授过的 skill 一起拒掉**。
+  //    链 A 这边的整体 deny 由本函数 ①（按 `GOVERNED`）承担，两张表的键集由
+  //    `openhive-access.test.ts` ⑥ 钉同步；两条链的基线因此不会重复也不会缺席。
   //    v2 的 `{action, resource, effect}` → v1 的 `{permission, pattern, action}`：字段改名，
   //    匹配语义同源（见文件头）。
   for (const rule of AccessRbac.resolve(grants)) {
+    if (rule.effect !== "allow") continue
     rules.push({ permission: rule.action, pattern: rule.resource, action: rule.effect })
   }
 
@@ -159,21 +213,60 @@ export function sessionRuleset(
  * 本函数把客户端规则排在**前面**、既有规则（capability）留在**后面**：`evaluate` 取
  * `findLast` ⇒ capability 永远是最后的话事人。
  *
- * 幂等：按 `(permission, pattern, action)` 去重、**保留首次出现**。并进来是会被逐次写回
- * `session.permission` 的——不去重会随每次 prompt 增长（同一条规则翻倍），既泄漏存储、
- * 也让「这条会话到底有什么规则」没法直读。
+ * ## 🔴 去重**只在每个来源内部做**（2026-10-05 修，I1）
+ *
+ * 旧版把两侧拼起来整体去重、保留首次出现。那是**错的**，因为**次序在这里是语义**
+ * （`evaluate` 取 `findLast`）：一条在 `client` 里、一条在 `existing` 里、**键相同**的规则
+ * **不是**重复项——它们处在不同位置，而**位置本身就是它们唯一的差别**。整体去重会把
+ * `existing` 那份删掉，于是 capability 的 allow 从「整体 deny 之后」掉到「整体 deny 之前」：
+ *
+ * ```
+ * client   = [{ skill, fund-analysis, allow }]                     ← 客户端回声 / 照抄回来的
+ * existing = [{ skill, *, deny }, { skill, fund-analysis, allow }] ← capability
+ * 整体去重 = [{ skill, fund-analysis, allow }, { skill, *, deny }]  ⇒ 授过的 skill 变成 deny
+ * ```
+ *
+ * 授过的东西被拒（**过拒**，不是放行）——不报错、不变红，只是「这个功能今天用不了」。
+ * 触发点很现实：`POST /session` 的 `CreateInput.permission`、`PATCH /session/:id` 的
+ * `UpdatePayload.permission` 都是**客户端可填**的，客户端把从会话里读到的规则照抄回来就会撞键。
+ *
+ * ⇒ 规则：**`client` 里与 `existing` 撞键的一律丢弃**（既有的那份留在原位置、不动），
+ * 两侧各自再去自身重复。一句话：**客户端不得把既有规则「提前」**。
+ * 这也让本函数保持幂等——第二次并同一份 `client` 时，它的键已全在 `existing` 里 ⇒ 全丢 ⇒ 结果不变。
  */
+/**
+ * 规则的身份键（这三个字段就是 `PermissionV1.Rule` 的**全部**字段）。
+ *
+ * 单独抽出来是因为去重要在**两个循环**里各做一次（见下）：各写一遍模板串就是
+ * 「同一个判断两处各写一份」（`LEARNINGS #002-06`），改一处漏一处。
+ */
+const ruleKey = (rule: PermissionV1.Rule) => `${rule.permission}\u0000${rule.pattern}\u0000${rule.action}`
+
 export function mergeClientRules(
   client: PermissionV1.Ruleset,
   existing: PermissionV1.Ruleset,
 ): PermissionV1.Rule[] {
+  const existingKeys = new Set(existing.map(ruleKey))
   const seen = new Set<string>()
   const merged: PermissionV1.Rule[] = []
-  for (const rule of [...client, ...existing]) {
-    const key = `${rule.permission}\u0000${rule.pattern}\u0000${rule.action}`
+
+  // 客户端侧：与既有规则**撞键的一律丢弃**——既有的那份留在原位置（最后），
+  // 客户端规则不许把它挤到前面去（那会让整体 deny 变成最后命中）。
+  for (const rule of client) {
+    const key = ruleKey(rule)
+    if (existingKeys.has(key) || seen.has(key)) continue
+    seen.add(key)
+    merged.push(rule)
+  }
+
+  // 既有侧：次序**原样**保留，只去自身重复。`seen` 此刻全是「不在 existingKeys 里」的客户端键，
+  // 所以这里的 `seen.has` 只会命中 `existing` 自己的重复项——不会误删既有规则。
+  for (const rule of existing) {
+    const key = ruleKey(rule)
     if (seen.has(key)) continue
     seen.add(key)
     merged.push(rule)
   }
+
   return merged
 }
