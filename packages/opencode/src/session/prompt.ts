@@ -20,6 +20,8 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+// 【这是要保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T007 · FR-005）。
+import { userMeta } from "@/mcp/openhive-identity"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -697,6 +699,15 @@ const layer = Layer.effect(
         id: part.id ? PartID.make(part.id) : PartID.ascending(),
       })
 
+      // 【这是要保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 T007 · FR-005）。
+      // 本请求的 MCP 身份，**取一次供下面所有 part 共用**（与 `session/tools.ts` 同一条纪律）。
+      // 为什么这里得另取一份：`resolvePart` 的资源支路**直接调 `MCP.readResource`**，不经过
+      // 工具层 ⇒ 它不落在 `SessionTools.resolve` 那份 `mcpMeta` 的覆盖范围里。少了这一句，
+      // 出站 `resources/read` 不带 `_meta`，下游业务 server 看不见是谁在取数
+      // （I8，2026-10-05；见证测试 `test/session/prompt.test.ts` 的两条）。
+      // 定义与「没有身份时不发这个键」的口径见 `@/mcp/openhive-identity`。
+      const mcpMeta = yield* userMeta()
+
       const resolvePart: (part: PromptInput["parts"][number]) => Effect.Effect<Draft<SessionV1.Part>[]> = Effect.fn(
         "SessionPrompt.resolveUserPart",
       )(function* (part) {
@@ -713,7 +724,38 @@ const layer = Layer.effect(
                 text: `Reading MCP resource: ${part.filename} (${uri})`,
               },
             ]
-            const exit = yield* mcp.readResource(clientName, uri).pipe(Effect.exit)
+            // 【这是要保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 · FR-004）。
+            // 与工具路径（`session/tools.ts` 的 `ctx.ask`）**同形的一问**：这条支路不经过工具层，
+            // 不补这一问，客户端自填的 `source.type === "resource"` part 就能把会话里那条
+            // `{ read, "mcp:<server>:*", deny }` 整个绕过去、把该 server 的资源读出来。
+            // 拒了就走下面「读失败」那条既有支路（合成 text，不抛）——与「读不到资源」同一种呈现。
+            // 上游**没有**这一问（`c5442d418d`）⇒ 删掉它 = 越权可用，不退化成别的问题。
+            // （I11，2026-10-05；见证测试 `test/session/prompt.test.ts` 的两条。）
+            const permitted = yield* permission
+              .ask({
+                sessionID: input.sessionID,
+                permission: "read",
+                metadata: { server: clientName, uri },
+                patterns: [`mcp:${clientName}:${uri}`],
+                always: [`mcp:${clientName}:*`],
+                ruleset: current.permission ?? [],
+              })
+              .pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)))
+            if (!permitted) {
+              yield* Effect.logInfo("MCP resource not permitted", { clientName, uri })
+              pieces.push({
+                messageID: info.id,
+                sessionID: input.sessionID,
+                type: "text",
+                synthetic: true,
+                text: `Failed to read MCP resource ${part.filename}: permission denied`,
+              })
+              return pieces
+            }
+
+            // 【这是要保留的定制 · 同步上游时不要丢】—— 第三个参数（`_meta`）是本 fork 加的，
+            // 上游只有前两个。省略它时行为与原实现逐字相同（见 `@/mcp/openhive-identity`）。
+            const exit = yield* mcp.readResource(clientName, uri, mcpMeta).pipe(Effect.exit)
             if (Exit.isSuccess(exit)) {
               const content = exit.value
               if (!content) throw new Error(`Resource not found: ${clientName}/${uri}`)

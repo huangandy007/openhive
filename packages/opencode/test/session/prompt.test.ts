@@ -1,5 +1,7 @@
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { User } from "@opencode-ai/core/user"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -109,7 +111,17 @@ function errorTool(parts: SessionV1.Part[]) {
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
 }
 
-function makeMcp(instructions: MCP.ServerInstructions[] = []) {
+/**
+ * 记录出站 `resources/read` 的**第三个参数**（`_meta`，本 fork 加的，见
+ * `src/mcp/openhive-identity.ts`）。
+ *
+ * 这是 I8 的观察窗：`prompt.prompt` 的 MCP 资源 part 那条支路（`src/session/prompt.ts`
+ * 里 `part.source.type === "resource"`）**直接调 `MCP.readResource`**，不经过工具层——
+ * 身份有没有传过去，只有在 `MCP.Service` 这个边界上才看得见。
+ */
+type ReadResourceRecorder = { readonly calls: Array<Record<string, unknown> | undefined> }
+
+function makeMcp(instructions: MCP.ServerInstructions[] = [], recorder?: ReadResourceRecorder) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
@@ -124,7 +136,14 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
       connect: () => Effect.void,
       disconnect: () => Effect.void,
       getPrompt: () => Effect.succeed(undefined),
-      readResource: () => Effect.succeed(undefined),
+      // 给了 recorder 就同时**返回一份最小可用的成功结果**：`resolvePart` 只在「读到内容」
+      // 那条支路里往下走，返回 `undefined` 会让它 `throw`（`Resource not found`）而整个
+      // prompt 挂掉——那样测的就不是身份了。
+      readResource: (_clientName: string, _uri: string, meta?: Record<string, unknown>) => {
+        if (!recorder) return Effect.succeed(undefined)
+        recorder.calls.push(meta)
+        return Effect.succeed({ contents: [{ uri: "mcp://fixture/ledger", mimeType: "text/plain", text: "ledger" }] })
+      },
       startAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
       authenticate: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
       finishAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
@@ -208,11 +227,15 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
-function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makePrompt(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  mcpResourceRead?: ReadResourceRecorder
+}) {
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions)],
+    [MCP.node, makeMcp(input?.mcpInstructions, input?.mcpResourceRead)],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -221,12 +244,16 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  mcpResourceRead?: ReadResourceRecorder
+}) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions)],
+    [MCP.node, makeMcp(input?.mcpInstructions, input?.mcpResourceRead)],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -235,7 +262,11 @@ function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processo
   return LayerNode.compile(root, replacements)
 }
 
-function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttpNoLLMServer(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  mcpResourceRead?: ReadResourceRecorder
+}) {
   return makePrompt(input)
 }
 
@@ -255,6 +286,24 @@ const withMcpInstructions = testEffect(
 )
 const unix = process.platform !== "win32" ? it.instance : it.instance.skip
 const unixNoLLMServer = process.platform !== "win32" ? noLLMServer.instance : noLLMServer.instance.skip
+
+/**
+ * I8（2026-10-05）：**prompt 自带的 MCP 资源 part 也要带身份**（FR-005）。
+ *
+ * 两个 harness 只差「请求 fiber 上有没有 `User.Service`」，其余**逐字相同**——对照才成立。
+ * 身份进不来的那条（关掉身份门 / 非 HTTP 入口）必须**一个字节都不多发**，与
+ * `test/mcp/openhive-mcp-identity.test.ts` 的口径一致。
+ */
+const identifiedResourceRead: ReadResourceRecorder = { calls: [] }
+const anonymousResourceRead: ReadResourceRecorder = { calls: [] }
+
+/** 身份门开着时请求 fiber 上挂着的那个人（与 `openhive-mcp-identity.test.ts` 同一个 id）。 */
+const ALICE: User.Info = { id: "u_alice", policeNo: "0451", name: "爱丽丝", isAdmin: false }
+
+const resourceReadWithIdentity = testEffect(
+  Layer.merge(makeHttp({ mcpResourceRead: identifiedResourceRead }), Layer.succeed(User.Service, ALICE)),
+)
+const resourceReadAnonymous = testEffect(makeHttp({ mcpResourceRead: anonymousResourceRead }))
 
 // Config that registers a custom "test" provider with a "test-model" model
 // so provider model lookup succeeds inside the loop.
@@ -578,6 +627,142 @@ withMcpInstructions.instance(
       yield* Fiber.interrupt(fiber)
     }),
   15_000,
+)
+
+/**
+ * I8（2026-10-05）· **MCP 资源 part 这条支路也要带身份**（FR-005）。
+ *
+ * ## 补的是哪个洞
+ *
+ * `src/session/prompt.ts` 里 `part.source.type === "resource"` 那一支**直接调
+ * `MCP.readResource(clientName, uri)`**——客户端的 prompt 可以把任意 MCP 资源当附件塞进来。
+ * T007 只覆盖了**工具**那两条出口（`session/tools.ts` 的 `tools/call` 与 `read_mcp_resource`），
+ * 这一支整个漏掉：出站 `resources/read` **不带 `_meta`** ⇒ 业务侧 MCP server 看不见是谁在取数，
+ * 而这正是 FR-005 要求的那件事（`_meta["openhive/user"]`）。
+ *
+ * ## 为什么判据落在 `MCP.Service` 这个边界上
+ *
+ * 把真 `SessionPrompt.prompt` 跑一遍（`noReply: true`：只解析 parts、不触发 LLM），断言的是
+ * **生产代码往 MCP 边界上放了什么**——不是「有没有调某个函数」。摘掉 `prompt.ts` 那行身份，
+ * 两条必红（**已用变异验证过**）。换掉的真东西只有 MCP client（transport 边界）。
+ *
+ * `noReply: true` 让这条不碰假 LLM server；`useServerConfig` 只是为了让 model 解析过。
+ */
+const resourcePart = (): SessionV1.FilePartInput => ({
+  type: "file",
+  mime: "text/plain",
+  filename: "ledger.json",
+  url: "mcp://fund.db/ledger",
+  source: { type: "resource", clientName: "fund.db", uri: "ledger://1", text: { value: "", start: 0, end: 0 } },
+})
+
+/**
+ * 跑一次「带 MCP 资源 part 的 prompt」——各用例共用，只有层与**会话规则集**不同。
+ *
+ * 规则集必须显式给：004 的 `read` 门在 `resolvePart` 里就地问一次；不给规则 ⇒
+ * `evaluate` 落回 `ask` ⇒ 弹询问并**阻塞等回复**，测试里没人回，只能等到超时。
+ */
+const promptWithResourcePart = (permission: PermissionV1.Ruleset) =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    void llm
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "mcp resource", permission })
+    return yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [resourcePart()] })
+  })
+
+/** 004 对**已授权** server 的形状（`AccessSession.sessionRuleset` 里那条逐条 allow）。 */
+const READ_ALLOWED: PermissionV1.Ruleset = [{ permission: "read", pattern: "mcp:fund.db:*", action: "allow" }]
+
+/** 004 对**未授权** server 的形状（同一张表里那条硬拒）。 */
+const READ_DENIED: PermissionV1.Ruleset = [{ permission: "read", pattern: "mcp:fund.db:*", action: "deny" }]
+
+/** 资源正文（桩里那份 `ledger`）**只有真读到**才会出现在 parts 里。 */
+const readLedger = (parts: SessionV1.Part[]) => parts.some((part) => part.type === "text" && part.text === "ledger")
+
+resourceReadWithIdentity.instance(
+  "带身份 ⇒ prompt 里的 MCP 资源 part 出站 `resources/read` 带 `_meta`",
+  () =>
+    Effect.gen(function* () {
+      identifiedResourceRead.calls.length = 0
+
+      yield* promptWithResourcePart(READ_ALLOWED)
+
+      expect(identifiedResourceRead.calls).toHaveLength(1)
+      expect(identifiedResourceRead.calls[0]).toEqual({ "openhive/user": ALICE.id })
+    }),
+  30_000,
+)
+
+/**
+ * **对照组**：身份门关着（没有 `User.Service`）⇒ 传下去的是 `undefined`。
+ *
+ * 少了这条，「无条件编一个默认身份」也能让上面那条绿——那比不注入更坏。
+ * 「`undefined` 时下游一个字节都不发」由 `MCP.readResource` 的实现保证，已在
+ * `test/mcp/openhive-mcp-identity.test.ts` 钉住；这里钉的是**prompt 这一支有没有去取身份**。
+ */
+resourceReadAnonymous.instance(
+  "对照：没有身份 ⇒ prompt 里的 MCP 资源 part 不带 `_meta`",
+  () =>
+    Effect.gen(function* () {
+      anonymousResourceRead.calls.length = 0
+
+      yield* promptWithResourcePart(READ_ALLOWED)
+
+      expect(anonymousResourceRead.calls).toHaveLength(1)
+      expect(anonymousResourceRead.calls[0]).toBeUndefined()
+    }),
+  30_000,
+)
+
+/**
+ * I11（2026-10-05）· **prompt 资源支路也要问一次 `read`**（Step 5 类别 ②：鉴权覆盖所有接口）。
+ *
+ * ## 补的是哪个洞
+ *
+ * 等价的**工具**路径读之前先 `ctx.ask({ permission: "read", patterns: ["mcp:<server>:<uri>"],
+ * always: ["mcp:<server>:*"] })`（`src/session/tools.ts`）；`resolvePart` 这条支路**没有**这一问，
+ * 直接 `MCP.readResource`。而 `PromptInput.parts` 是**客户端可填**的 ⇒ 客户端提一个
+ * `source.type === "resource"` 的 part，就能把 004 写进会话的那条
+ * `{ permission: "read", pattern: "mcp:call.db:*", action: "deny" }` **整个绕过去**读该 server 的资源
+ * ——正是本 feature 要拦的那类越权，且不报错、不变红。
+ *
+ * ⚠️ 这一支是**上游既有形状**（`c5442d418d`，非 003/004 引入）⇒ 修它是一处**刻意与官方分歧**，
+ * 故单独提交并标【这是要保留的定制】。
+ *
+ * ## 判据
+ *
+ * deny ⇒ `MCP.Service.readResource` **一次都不被调用**（出站请求根本不发生，不是「调用被拒」），
+ * 且 parts 里没有资源正文；allow（对照）⇒ 读到正文。少了对照，deny 那条在「读功能整个坏了」
+ * 的情况下也会绿。
+ */
+resourceReadWithIdentity.instance(
+  "I11：会话 deny `read mcp:fund.db:*` ⇒ 资源一个字节都不读（出站 `resources/read` 不发生）",
+  () =>
+    Effect.gen(function* () {
+      identifiedResourceRead.calls.length = 0
+
+      const result = yield* promptWithResourcePart(READ_DENIED)
+
+      expect(identifiedResourceRead.calls).toHaveLength(0)
+      expect(readLedger(result.parts)).toBe(false)
+    }),
+  30_000,
+)
+
+resourceReadWithIdentity.instance(
+  "I11 对照：会话 allow `read mcp:fund.db:*` ⇒ 正文照旧读得到（拒的是越权，不是读功能）",
+  () =>
+    Effect.gen(function* () {
+      identifiedResourceRead.calls.length = 0
+
+      const result = yield* promptWithResourcePart(READ_ALLOWED)
+
+      expect(identifiedResourceRead.calls).toHaveLength(1)
+      expect(readLedger(result.parts)).toBe(true)
+    }),
+  30_000,
 )
 
 it.instance("legacy prompt emits message events without session.next events", () =>
