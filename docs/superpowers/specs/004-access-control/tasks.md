@@ -145,6 +145,8 @@
 
 - [x] T007 实现 MCP 端带 user 身份 + 受限数据库账号执行 [FR-005] [T003] [出参：MCP 查询带身份、受限账号]
   - ✅ 2026-10-05 完成（**只做今天打得到的那一半**；「受限数据库账号 + GRANT/RLS」**挂账 F6/F7**，见下）。
+    > ✅ 前向指针（2026-10-05 补）：那条挂账的**机制那一半**已由 **T008** 补上（契约 + 见证测试，
+    > 见下方 T008 块）；**落地那一半**仍归 F6/F7（接收行在其 tasks.md 文件头）。
   - **四条裁定**（用户 2026-10-04 / 10-05）：① 身份载体 = 调用点直读 `User`
     （`Effect.serviceOption(User.Service)`）——**不读** session `metadata`（客户端可写 ⇒ 可伪造）；
     ② 未授权 server 的堵法 = **capability 里加 server 名单**（取 `Config.mcp` 的键）；
@@ -175,12 +177,47 @@
     根因是 `Interface` 声明漏改、只在**调用点**报警）、`lint:openhive` **23/0 exit 0** = 基线、
     全局 `lint` 唯一 error = 既有上游文件、`test/mcp/` **67 pass / 0 fail**、core RBAC **8 pass**、
     `test/session/` 4 条红经**中性化对照**确认非本次引入（5 秒线超时）。
-  - 📤 **显式挂账**（见 `state.md` T007 段 §8，**不写成「已覆盖」**）：① **受限数据库账号 ＋ GRANT/RLS**
-    归 **F6/F7**（本机无 PG/Docker）；② `POST /mcp` 运行期加的 server 不在名单 ⇒ 落回上游 `ask`，
+  - 📤 **显式挂账**（见 `state.md` T007 段 §8，**不写成「已覆盖」**）：
+    > ✅ 前向指针（2026-10-05 补）：挂账 ① 的**机制那一半**已由 **T008** 补上（契约 + 见证测试）；
+    > **落地那一半**仍归 F6/F7。其余 ②–⑤ 不受 T008 影响。
+    ① **受限数据库账号 ＋ GRANT/RLS** 归 **F6/F7**（本机无 PG/Docker）；
+    ② `POST /mcp` 运行期加的 server 不在名单 ⇒ 落回上游 `ask`，
     且该端点接受 `type:"local"`（任意进程）——**上游既有洞，只上报不修**；③ `src/tool/code-mode.ts`
     第二处 `callTool` 不走 `resolve()`（env 门、默认关）⇒ 该模式不带身份；④ 链 B MCP 无消费者（同 T006 挂账 ①）；
     ⑤ 资源工具**藏不了**（归一成 `read`）。
-- [ ] T008 实现业务数据 PG 行级 RLS 策略（CREATE POLICY）[FR-006] [T007] [出参：越权行被 RLS 过滤]
+- [x] T008 实现业务数据 PG 行级 RLS 策略（CREATE POLICY）[FR-006] [T007] [出参：越权行被 RLS 过滤]
+  - ✅ 2026-10-05 完成（**甲裁定**：机制在本 feature **定义**并**本机可验证**；**落地**（建表 / 建策略 /
+    建角色 / GRANT）**移交 F6/F7**，接收行已写进 `007-fund-analysis/tasks.md` 与
+    `008-call-analysis/tasks.md` 的**文件头**——`LEARNINGS #002-04①`：移交要落进**接收方**的表）。
+  - **裁定「甲」**（用户 2026-10-05）：出参「越权行被 RLS 过滤」**今天在仓库里打不到**——`spec.md:137`
+    自己写着「业务数据的 RLS 落地依赖 F6/F7 的数据项目成员表，**本 feature 定义权限机制**」。
+    ⇒ 只做打得到的那一半（同 T007 处置）：**契约 + 见证测试**，**产品代码不落任何业务表或策略迁移**
+    （本仓没有业务库迁移目录；auth 的 `src/migrations/` 是 **auth schema** 的，两者是**两个库**）。
+  - **Step 0.5 实测（动代码前）**：`fund_project_member` / `call_project_member` / `project_member`
+    在 `packages/**` 下**零命中**（全仓无业务表迁移）；`packages/core/src/access/capability.ts` 已把成员规则
+    记为 F7 的；本机无 Docker / PG 二进制（`#002-05`），但 **PGlite 探针实测** `CREATE ROLE` / `GRANT` /
+    `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` / `SET LOCAL ROLE` / `set_config(…, true)` **全部真跑**，
+    且连接用户 `rolsuper = true`（⇒ owner/superuser 绕过 RLS 这一层也量得到）。
+  - **落点**：`packages/auth/src/rls.ts`（契约常量 `IDENTITY_SETTING` ＋ 文件头承载策略模板与四条不变式）
+    ＋ 同目录 `rls.test.ts`（见证测试）。**为什么在 auth**：`@electric-sql/pglite` 只装在 auth
+    （devDependency），且 **auth 不 import core**（实测）⇒ 放 core 会造一条今天不存在的边；auth 的
+    `policy.ts` + `policy.test.ts` 是本仓「契约常量模块 + 同目录测试」的**先例**。**不新建包、不写投机 SQL 构造器。**
+  - **身份通道（与 T007 的接缝）**：`_meta["openhive/user"]`（T007 已交付）→ MCP server 在**同一事务内**
+    `SET LOCAL ROLE <受限账号>` ＋ `set_config('openhive.user_id', <id>, true)` → PG RLS。两端名字
+    **故意不同**（`_meta` 键 ≠ GUC 名）——同形是**假镜像**（`#003-05`）。
+  - 见证测试 **7 条**：①成对正向（alice→[1,2] / bob→[3]）②反向（互不可见）③无身份⇒空集（含 carol）
+    ④**负对照**（连接用户看到全部 3 行）⑤作用域（LOCAL vs 连接级残留 + 空串/NULL 两形态 + LOCAL 不剥上层）
+    ⑥无 GRANT⇒`42501` 非空集 ⑦GUC 名字面钉死。
+  - **变异（证据来自变异，首次绿不算，`#002-02`）**：M1（不 ENABLE RLS）⇒ 恰红 ①②③⑤；
+    M2（`USING (true)`）⇒ 恰红 ①②③⑤（与 M1 同集——本组**区分不了**「没开」与「恒真」）；
+    M3（`USING (false)`）⇒ **恰红 ①⑤**，②③绿 ⇒ **只有 ① 的相等断言**抓得住「过紧」，
+    这正是 spec 风险 R3 要**双向**的实证；M4b（身份改连接级、无事务）⇒ **恰红 ③④⑤**（③ 抓跨请求串号）。
+  - 门禁（串行，2026-10-05）：见 `state.md` T008 段。
+  - 📤 **显式挂账**（不写成「已覆盖」）：① 业务表 / 策略 / 角色 / GRANT **落地**归 F6/F7；
+    ② PGlite **≠** 生产 PG 同版本同构建（owner / `BYPASSRLS` / `FORCE` 那层仍需 CI 真实例）；
+    ③ **`packages/auth` 测试不进 CI** ⇒ 本组是**本地门禁**；④ 改 GUC 名要**同时改 F6/F7 策略 SQL**，
+    而**策略侧不会红**（故 ⑦ 把本侧钉死）；⑤ 结果量级（LIMIT / 分页 / 导出）是 **T009**，不在本 task。
+
 - [ ] T009 实现结果量级控制（MCP LIMIT + 分页 + 导出需更高权限）[FR-006] [T007] [出参：超限查询被 LIMIT 拦截]
 
 ## Phase 5: US5 数据范围（数据轴）（P2）

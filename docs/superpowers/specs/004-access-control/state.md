@@ -1032,6 +1032,8 @@ session.permission（T006 在 create/update/prompt/fork 四处写入 capability�
 
 1. **受限数据库账号 ＋ `GRANT` / RLS**（FR-005 的另一半）：本机无 PG / Docker，且「按用户的受限账号」
    要等数据项目（F6/F7）落地 ⇒ **整条挂账 F6/F7**。今天做到的是**连接级**（谁能调）＋ **请求级**（带谁的身份）。
+   > ✅ **前向指针（2026-10-05 补）**：**机制那一半已由 T008 补上**（`packages/auth/src/rls.ts` 契约 ＋
+   > 见证测试）。**落地那一半**仍归 F6/F7（接收行在其 `tasks.md` 文件头）。见下方 T008 段。
 2. **`POST /mcp` 运行期加的 server**：该端点只写 `InstanceState`、**不回写配置** ⇒ 不在 `Config.mcp` 名单里
    ⇒ 它的工具落回上游 `ask`（不再被 capability 兜住）。**同一端点还接受 `type:"local"`**（= 任意进程）
    且只受上游 basic `Authorization` 管 —— **上游既有洞，本次只上报、不修**（本 task 范围外）。
@@ -1050,7 +1052,136 @@ T004 现无前置。）
 `OPENHIVE_DEFAULT_PASSWORD` 配齐** —— 落点见 T006 段，先例是 `openhive-bootstrap.test.ts`。
 后续 task（T007 / T008 / T012–T014）开工前先读这条。
 
+### T008 · 业务数据 PG 行级 RLS（FR-006 的**行级**那一半）—— 机制在此定义，落地移交 F6/F7
+
+#### 1. 裁定「甲」（用户 2026-10-05）
+
+出参「越权行被 RLS 过滤」**今天在仓库里打不到**：业务库 / 业务表 / 成员表 / 受限账号**全部不存在**，
+`spec.md` 自己写着「业务数据的 RLS 落地依赖 F6/F7 的数据项目成员表，**本 feature 定义权限机制**」。
+⇒ 用户裁定**甲**：**机制**在本 feature **定义**并**本机可验证**；**落地**（建表 / 建策略 / 建角色 /
+GRANT）**移交 F6/F7**（接收行落进对方的 `tasks.md` 文件头，`#002-04①`）。
+同 T007 的处置：**只做今天打得到的那一半**。
+
+#### 2. Step 0.5 实测（动第一行代码前）
+
+- `fund_project_member` / `call_project_member` / `project_member` 在 `packages/**` 下**零命中**
+  （全仓没有任何业务数据表的迁移或 schema）。
+- `packages/core/src/access/capability.ts` 已把「数据项目成员」规则记为 **F7 的**。
+- 本机无 Docker / PG 二进制（`#002-05`）。**PGlite 探针实测**：`CREATE ROLE` / `GRANT` /
+  `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` / `SET LOCAL ROLE` / `set_config(…, true)` **全部真跑**；
+  连接用户 `rolsuper = true` ⇒「owner / superuser 绕过 RLS」这一层**也量得到**。
+  ⇒ 机制**本机可验证**这个前提，是**量出来的**，不是假设的。
+
+#### 3. 落点（为什么在 auth，且不新建包）
+
+`packages/auth/src/rls.ts`（契约常量 `IDENTITY_SETTING` ＋ 文件头承载**策略模板**与**四条不变式**）
+＋ 同目录 `rls.test.ts`（见证测试）。依据：① `@electric-sql/pglite` **只**装在 auth（devDependency）；
+② **auth 不 import core**（实测）⇒ 放 core 会造一条今天不存在的边；③ auth 的 `policy.ts` +
+`policy.test.ts` 是本仓「契约常量模块 ＋ 同目录测试」的**先例**。
+⇒ **不新建包、不写投机 SQL 构造器**（D0-3 裁定的反面）。
+⚠️ 产品代码里**不落任何业务表或策略迁移**：本仓没有业务库迁移目录，auth 的 `src/migrations/` 是
+**auth schema** 的 —— 两者是**两个库**（design-v2 §12.1）。
+
+#### 4. 契约内容（`rls.ts` 文件头，F6/F7 照抄）
+
+- **身份通道**（与 T007 的接缝）：`_meta["openhive/user"]`（T007 已交付）→ MCP server 在**同一事务内**
+  `SET LOCAL ROLE <受限账号>` ＋ `set_config('openhive.user_id', <该 id>, true)` → PG RLS。
+  两端名字**故意不同**（`_meta` 键 ≠ GUC 名）——写成同一个字符串是**假镜像**（`#003-05`）。
+- **策略模板**：账号级（每个角色一个 `NOLOGIN` 账号 ＋ 最小 `GRANT`）＋ 行级
+  （`ENABLE ROW LEVEL SECURITY` ＋ `CREATE POLICY … USING (<项目列> IN (SELECT … WHERE user_id =
+  current_setting('openhive.user_id', true)))`）。判据是「**行所属项目 ∈ 用户是成员的项目**」，
+  **不是**「这一行是谁建的」。
+- **四条不变式**：① 受限账号不得是表 owner / superuser / `BYPASSRLS`；② 无身份 ⇒ 空集；
+  ③ 必须**双向**验证；④ 身份必须**事务作用域**。
+- GUC 名 `openhive.user_id`：**带命名空间前缀**（PG 对未注册的带前缀 GUC 任何角色都能 `SET`，
+  实测受限账号设得进去）。
+
+#### 5. 见证测试（7 条，`rls.test.ts`）
+
+①正向成对（alice→[1,2] / bob→[3]）②反向（互不可见）③无身份 ⇒ 空集（含 carol 对照）
+④**负对照**（连接用户看全 3 行）⑤作用域 ⑥无 GRANT ⇒ `42501` 非空集 ⑦GUC 名字面钉死。
+
+> **为什么这组不是「新功能的红→绿」**：首次跑就绿**不构成证据**（`#002-02`：没执行过被测路径的测试
+> 是缺口，不是覆盖）。**证据来自变异**（§6）。
+
+#### 6. 变异（`LEARNINGS #003-03`：三类都要据实记，红集不许美化）
+
+| 变异 | 改了哪条判据 | 红集 | 读法 |
+|---|---|---|---|
+| M1 | 不 `ENABLE ROW LEVEL SECURITY` | **恰红 ①②③⑤** | 策略没生效 ⇒ 全都不过滤 |
+| M2 | `USING (true)`（过松） | **恰红 ①②③⑤** | 与 M1 **同集** |
+| M3 | `USING (false)`（过紧） | **恰红 ①⑤**，②③ 绿 | 只有 ① 的**相等断言**抓得住「过紧」 |
+| M4b | 身份改**连接级**、无事务 | **恰红 ③④⑤** | ③ 抓跨请求串号 |
+
+- **M1 与 M2 同集** ⇒ 本组**区分不了**「没开 RLS」与「策略恒真」（两者含义都是「没过滤」）。据实记。
+- **M3 只红 ①⑤** ⇒ **只有 ①**（`toEqual([1,2])` 这种**相等**断言）抓得住「把所有人拦死」；
+  ②③ 用的是 `not.toContain` / `toEqual([])`，过紧时**照样绿**。这是 spec 风险 R3「必须双向」的**实证**
+  —— 不是教条。
+- **M4b 红 ③** 正是「跨请求串号」那条；④ 连带红是因为 readAs 不再复位 `SET ROLE`。
+  ⚠️ M4b 的写法要点：`SET ROLE` / `SET`（**非** `LOCAL`）**在事务内也会被回滚** ⇒ 要真造出「连接级」，
+  必须**在事务之外**设，否则量的不是那个轴（首跑 M4 因**忘了先还原 M3** 而红集错乱，已作废重跑）。
+
+#### 7. 途中修错（都是**我引入的**，据实记）
+
+- **⑤ 的「空串」断言写错了**：我原先断言「事务回滚后 `current_setting` 读空串」——实测在**该会话**
+  已有连接级残留时，回滚后**回到残留值** `"alice"`，不是空串。按 `#002-03`：**改测试，不改产品假设**。
+  改写成**两个实测事实**（在**新库**上量，避开残留）：① 从没设过 ⇒ `NULL`，设过又回滚 ⇒ **空串**；
+  ② 🔴 **`LOCAL` 剥不掉上一层** —— 会话已有残留时，事务内 LOCAL 值回滚后**回到残留值**。
+  ② 这条比 ①–⑤ 都隐蔽：它**静默地**让一个事务拿到「别人的身份」⇒「用 `SET LOCAL` 就安全了」是**错的**，
+  前提是**连接本身干净**。已写进 `rls.ts` 不变式 ④ 与 F6/F7 的移交行。
+- **`await expect(...).rejects.toThrow()`**：本包**两处先例**（`rbac.test.ts` / `migrate-cli.test.ts`）
+  都**刻意避开**（`bun-types` 把 `.rejects` 声明成 `Matchers<unknown>` ⇒ `await-thenable` 命中）。
+  改为本包既有的 `failure(run)` 辅助，并按探针实测把 ⑥ 钉到 SQLSTATE **字符串** `"42501"`
+  （探针 `typeof` 量的：`code` 是 string、`cause` 是 undefined）。
+- **`no-unsafe-type-assertion` / `no-unnecessary-type-conversion`**：`failure()` 首版用了
+  `as unknown as Record<string, unknown>`、断言用了 `String(err.message)` ⇒ 两条 lint 命中。
+  改用具名 `interface PgError extends Error { code?: string }` 与直读 `err.message`。
+  ⇒ 两个新文件在**全局限 lint 下 0 命中**（本 feature 判据）。
+
+#### 8. 门禁（2026-10-05 实跑，**串行**）
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `bun run typecheck` | **31/31 exit 0**（auth 那条**真跑**，非缓存） |
+| 新规 lint | `bun run lint:openhive` | **23/0 exit 0** = 基线（⚠️ 该门只覆盖 `packages/app/src/*`，**不含** auth ⇒ 它验不到本次文件） |
+| 全局限 lint | `bun run lint` | exit 1（**既有**上游 error）；**新文件 `rls.ts` / `rls.test.ts` 0 命中**（判据） |
+| 包测试 | `bun test`（in `packages/auth`） | **220 pass / 1 skip / 0 fail**（基线 213 ＋ 新 7） |
+
+#### 9. 移交（接收方表已落，`#002-04①`）
+
+- `007-fund-analysis/tasks.md` **文件头**：第二笔移交块（T001 建表时建角色/GRANT/策略；T006 走身份通道）。
+- `008-call-analysis/tasks.md` **文件头**：同款块（同构）。
+- ⚠️ 两块都点名了**跨 feature 语义冲突**（`#002-04③`）：007/008 的 T006 现写「带 **X-User-ID** + RLS」，
+  而本仓 MCP **出站**身份载体是 **T007 的 `_meta["openhive/user"]`**（`X-User-ID` 是 **F3 的入站 HTTP 头**，
+  方向不同）⇒ 需按 T007 更正。**只点出，不代改**（surgical）。
+
+#### 10. 📤 显式挂账（**不写成「已覆盖」**，`LEARNINGS #002-02`）
+
+1. **业务表 / 策略 / 角色 / GRANT 的落地**归 **F6/F7**（本机无 PG/Docker；无业务表可建）。
+2. **PGlite ≠ 生产 PG 同版本同构建** ⇒ owner / superuser / `BYPASSRLS` / `FORCE ROW LEVEL SECURITY`
+   这一层仍需 **CI 上的真实例**复核。见证测试钉的是「机制形状」，不是「生产构建」。
+3. **`packages/auth` 的测试不进 CI**（turbo 只跑 opencode / core 等）⇒ 本组是**本地门禁**，
+   不是 CI 门禁；F6/F7 不能用「CI 绿」当这组测试跑过的证据。
+4. **改 GUC 名要同时改 F6/F7 的策略 SQL**，而**策略侧不会红** ⇒ ⑦ 只把本仓这一侧钉死。
+5. **结果量级**（LIMIT / 分页 / 导出）是 **T009**，不在本 task。
+
+#### 11. 留给后续 task 的裁定点（**不自行拍板**，Step 2 ⑦）
+
+- **T013**（「越权 SQL 被 RLS 拦截、拿不到无权数据行」）与 **T014**（安全测试）依赖 T008。按同一逻辑，
+  它们的**链路出参**（真跑业务表的越权查询）今天**同样打不到** —— 能打的只有本 task 的**机制见证**。
+  ⇒ T013/T014 到时是「标记机制已见证、链路验收移交 F6/F7」，还是另行处置，**到那一步再问**。
+
 ## 最后更新
+
+2026-10-05（**T008**：用户裁定**甲** —— 业务数据行级 RLS 的**机制**本 feature 定义并本机可验证、
+**落地**（建表/策略/角色/GRANT）移交 F6/F7 ＋ Step 0.5 实测「PGlite 真跑 RLS 执行器、连接用户
+`rolsuper = true`」＋ 落点 `packages/auth/src/rls.ts`（契约 ＋ 策略模板 ＋ 四条不变式）与
+`rls.test.ts`（见证测试 7 条）＋ 变异 M1–M4b（红集**据实记**：M1/M2 同集、M3 只红 ①⑤ ⇒ 只有相等断言
+抓得住「过紧」、M4b 红 ③④⑤）＋ **途中修错三处**（⑤ 空串断言写错 ⇒ 改成两个实测事实、由此发现
+「`LOCAL` 剥不掉上一层」、`await expect().rejects` 与两处 lint 改为本包既有写法）＋ 门禁串行全绿
+（typecheck 31/31 · lint:openhive 23/0 · 全局限 lint 新文件 0 命中 · auth **220 pass/1 skip/0 fail**）
+＋ 移交行落进 `007-fund-analysis` / `008-call-analysis` 的 `tasks.md` 文件头（含点名的 `X-User-ID`
+vs `_meta["openhive/user"]` **跨 feature 语义冲突**）＋ 五条挂账 ＋ 一条留给 T013/T014 的裁定点）
 
 2026-10-05（**T007**：MCP 出站带用户身份（`src/mcp/openhive-identity.ts` 新 ＋ 上游三处加可选 `meta`，
 各自【保留的定制】）＋ capability 的 **mcp 投影**（core `McpServerNaming`/`sessionRuleset` ②段 ＋
