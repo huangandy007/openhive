@@ -86,8 +86,11 @@
  *
  * - 见证测试跑在 **PGlite**（WASM 版真 PG，本机无 Docker/PG，`#002-05`）。它**不是**
  *   「与生产 PG 同版本同构建」⇒ owner / superuser / `FORCE` 这一层仍需 CI 用真实例复核。
- * - **`packages/auth` 的测试不进 CI**（`turbo.json` 只跑 opencode / core 等，见
- *   `workspace.test.ts` 的注释）⇒ 本组测试是**本地门禁**，不是 CI 门禁。
+ * - `packages/auth` 的测试**进 CI**（`turbo.json` 有 `@opencode-ai/auth#test`，CI 跑
+ *   `GITHUB_ACTIONS=false bun turbo test`）⇒ 本组测试**不只是本地门禁**。
+ *   ⚠️ 2026-10-05 更正（R2）：这里原来写「**不进 CI**」，**与事实相反**——`turbo.json` 第 20 行
+ *   就是 `@opencode-ai/auth#test`（2026-09-30 由 `c013619ddc` 加入，早于本 feature 的 merge-base）。
+ *   复核取数：`grep -n "@opencode-ai/auth#test" turbo.json` ＋ `bun turbo run test --dry-run`。
  * - 结果量级（FR-006 第四档：LIMIT / 分页 / 导出）是 **T009**，不在本文件。
  */
 

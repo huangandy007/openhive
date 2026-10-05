@@ -215,7 +215,8 @@
   - 门禁（串行，2026-10-05）：见 `state.md` T008 段。
   - 📤 **显式挂账**（不写成「已覆盖」）：① 业务表 / 策略 / 角色 / GRANT **落地**归 F6/F7；
     ② PGlite **≠** 生产 PG 同版本同构建（owner / `BYPASSRLS` / `FORCE` 那层仍需 CI 真实例）；
-    ③ **`packages/auth` 测试不进 CI** ⇒ 本组是**本地门禁**；④ 改 GUC 名要**同时改 F6/F7 策略 SQL**，
+    ③ ~~**`packages/auth` 测试不进 CI**~~ ❌ 错（2026-10-05 更正，R2）：`turbo.json` 有
+    `@opencode-ai/auth#test`，CI 跑 `bun turbo test` ⇒ **进 CI**；④ 改 GUC 名要**同时改 F6/F7 策略 SQL**，
     而**策略侧不会红**（故 ⑦ 把本侧钉死）；⑤ 结果量级（LIMIT / 分页 / 导出）是 **T009**，不在本 task。
 
 - [ ] T009 ~~实现结果量级控制（MCP LIMIT + 分页 + 导出需更高权限）~~ 📤 **整条移交 F6/F7**（2026-10-05 用户裁定「乙」，见 `state.md` T009 段）[FR-006] [T007] [出参：超限查询被 LIMIT 拦截]

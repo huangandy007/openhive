@@ -92,8 +92,9 @@
 - ⚠️ **三条不许忘**（rls.ts 不变式，见证测试钉着）：① 受限账号**不得**是表 owner / superuser /
   `BYPASSRLS`；② 无身份 ⇒ **空集**（fail-closed），不是「看得见全部」；③ 身份**必须事务作用域**，
   且**连接本身要干净**（`LOCAL` 剥不掉会话级残留 ⇒ 连接池先 `RESET ALL`）。
-- ⚠️ **不得声称 FR-006 行级部分已在 F4 端到端验证**（`LEARNINGS #002-02`）。且 `packages/auth`
-  的测试**不进 CI** ⇒ 见证测试是**本地门禁**；PGlite **不等于**生产 PG 同版本同构建（残差见 rls.ts 文件头）。
+- ⚠️ **不得声称 FR-006 行级部分已在 F4 端到端验证**（`LEARNINGS #002-02`）。`packages/auth`
+  的测试**进 CI**（`turbo.json` 有 `@opencode-ai/auth#test`，CI 跑 `GITHUB_ACTIONS=false bun turbo test`
+  ——2026-10-05 更正，原文写「不进 CI」与事实相反）；PGlite **不等于**生产 PG 同版本同构建（残差见 rls.ts 文件头）。
 
 **→ `007-fund-analysis`（T010 / T011）**
 - **T010 数据范围**：004 只交**机制定义** —— capability 的 `dataScope` 字段结构 + 「两轴不绑定」的

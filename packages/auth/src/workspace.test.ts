@@ -77,11 +77,13 @@ describe("createWorkspace", () => {
    * 实测 `mkdir({mode:0o700})` / 不传 mode / 建后 `chmod(0o700)` 三者都得到 `666`。
    * 所以这里**显式 skip**，而不是写一条在 Windows 上永远绿的假断言。
    *
-   * ⚠️ 而且**本包的测试根本没进 CI**：`turbo.json` 只为 `opencode` / `@opencode-ai/core` /
-   * `function` / `app` / `ui` / `session-ui` 声明了 `test`，**没有 `@opencode-ai/auth#test`**，
-   * 而 CI 跑的是 `bun turbo test`。于是这条在 win32 被 skip、在 Linux 上也**没人跑**——
-   * 按 `LEARNINGS #002-02`，这是**缺口，不是覆盖**（已在 `state.md` 登记）。
-   * 留在文件里的理由：契约写下来，本机 Linux / 修好 turbo 之后立刻生效。
+   * ⚠️ **本包的测试是进 CI 的**（2026-10-05 更正，R2：原文写「根本没进 CI」，**与事实相反**）。
+   * `turbo.json` 第 20 行就是 `@opencode-ai/auth#test`（2026-09-30 由 `c013619ddc` 加入，
+   * 早于本 feature 的 merge-base），CI 跑的是 `GITHUB_ACTIONS=false bun turbo test`
+   * （`.github/workflows/test.yml`），实测 `bun turbo run test --dry-run` 里该任务在图上。
+   * ⇒ 这条在 **Linux 矩阵上真跑**，只在 win32（本机 ＋ CI 的 windows 那路）被 skip。
+   * 按 `LEARNINGS #002-02`，**本机**没跑到就仍是**缺口不是覆盖**——但理由不是「CI 到不了」，
+   * 是「本机环境验不了 mode」。留在文件里的理由：契约写下来，Linux 上立刻生效。
    *
    * 📌 「0700 挡的是谁」：按 §5 裁定**乙**，单进程下它**不挡**容器内的用户 A vs 用户 B
    * （一个进程 = 一个 OS 主体），挡的是**容器外**（同主机其他容器 / 系统用户）。

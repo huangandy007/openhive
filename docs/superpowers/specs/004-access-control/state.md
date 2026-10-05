@@ -1165,8 +1165,11 @@ GRANT）**移交 F6/F7**（接收行落进对方的 `tasks.md` 文件头，`#002
 1. **业务表 / 策略 / 角色 / GRANT 的落地**归 **F6/F7**（本机无 PG/Docker；无业务表可建）。
 2. **PGlite ≠ 生产 PG 同版本同构建** ⇒ owner / superuser / `BYPASSRLS` / `FORCE ROW LEVEL SECURITY`
    这一层仍需 **CI 上的真实例**复核。见证测试钉的是「机制形状」，不是「生产构建」。
-3. **`packages/auth` 的测试不进 CI**（turbo 只跑 opencode / core 等）⇒ 本组是**本地门禁**，
-   不是 CI 门禁；F6/F7 不能用「CI 绿」当这组测试跑过的证据。
+3. ~~**`packages/auth` 的测试不进 CI**~~ ❌ **这句是错的（2026-10-05 更正，R2）**：`turbo.json`
+   有 `@opencode-ai/auth#test`（2026-09-30 由 `c013619ddc` 加入，**早于本 feature 的 merge-base**），
+   CI 跑 `GITHUB_ACTIONS=false bun turbo test` ⇒ 本组测试**在 Linux 矩阵上真跑**。
+   原句想说的「别把 CI 绿当成这组跑过的证据」，在**本机 win32 被 skip 的那些用例**上仍成立，
+   但理由不是「CI 到不了」，是「本机环境验不了」（如 `workspace.test.ts` 的 `0700` 那条）。
 4. **改 GUC 名要同时改 F6/F7 的策略 SQL**，而**策略侧不会红** ⇒ ⑦ 只把本仓这一侧钉死。
 5. **结果量级**（LIMIT / 分页 / 导出）是 **T009**，不在本 task。
 
