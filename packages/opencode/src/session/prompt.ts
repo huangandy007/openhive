@@ -1422,6 +1422,56 @@ const layer = Layer.effect(
       }
       const agentName = cmd.agent ?? input.agent
 
+      // 【这是要保留的定制 · 同步上游时不要丢】—— openhive 权限控制（004 · FR-004）。
+      //
+      // **skill 命令这条出口也要问一次 `skill`。** `Command.init` 把每个 skill 也注册成一条
+      // 命令（`source: "skill"`，`template` 就是 skill 正文，见 `src/command/index.ts`），
+      // 而这条路径**不经过工具层** ⇒ 少了下面这一问，客户端发一个
+      // `POST /session/:id/command { command: "<未授权的 skill 名>" }`，就把
+      // `session.permission` 里那条 `{ permission: "skill", pattern: "*", action: "deny" }`
+      // （`AccessSession.sessionRuleset` ①——零授权时也照样有的那条）整个绕过去。
+      // 与工具路径（`src/tool/skill.ts` 的 `ctx.ask`）**同形**：同样的四个字段与 `always`，
+      // 只是这里不在工具调用里，故没有 `tool`。
+      //
+      // ⚠️ 门必须落在**读 `cmd.template` 之前**：那个模板随后会被 `resolvePromptParts` 拆解，
+      // 其中的 ```!``` 块还会**真的执行 shell**（本函数下面那段，上游行为）——先执行再鉴权
+      // 等于没鉴权（`LEARNINGS #004-01`：清点覆盖面要锚在「**做那件事的那一行**」）。
+      //
+      // ⚠️ 为此把 agent 解析**上移了几行**（上游原本在 `getModel` 之后）：规则集要与工具路径
+      // 一样并上 `agent.permission`。不能只并 `session.permission`——`Config.permission.skill`
+      // 是上游一等的配置键（`core/src/v1/config/permission.ts`），它只进 agent 的规则集、
+      // 不进会话规则集；只并会话那份会比上游的工具路径**更弱**。
+      // 上移本身是等价的，只有一处次序变化（且是变好）：agent 找不到时现在**先于**模板的
+      // shell 块报错，原来要先执行再报错。
+      //
+      // 上游没有这一问 ⇒ 删掉它 = 越权可用，不退化成别的问题。
+      // （R1，2026-10-05；见证测试 `test/session/prompt.test.ts` 的两条。）
+      const agent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
+      if (!agent) {
+        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
+        const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      }
+      if (cmd.source === "skill") {
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        // 拒 = 一处 defect（`orDie`，与工具路径逐字同形）：`command` 的契约错误类型只有
+        // `Image.Error`，要把 `PermissionV1.Error` 写进签名得动 `Interface` 的全部调用方
+        // （HTTP 路由 / CLI），那是上游面。呈现层的粗糙（500 而非可读文案）记在 004 的
+        // `state.md` 挂账表里，不在这一处解决。
+        yield* permission
+          .ask({
+            sessionID: input.sessionID,
+            permission: "skill",
+            patterns: [cmd.name],
+            always: [cmd.name],
+            metadata: {},
+            ruleset: Permission.merge(agent.permission, session.permission ?? []),
+          })
+          .pipe(Effect.orDie)
+      }
+
       const raw = input.arguments.match(argsRegex) ?? []
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
       const templateCommand = yield* Effect.promise(async () => cmd.template)
@@ -1473,14 +1523,8 @@ const layer = Layer.effect(
 
       yield* getModel(taskModel.providerID, taskModel.modelID, input.sessionID)
 
-      const agent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
-      if (!agent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
-        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-        throw error
-      }
+      // `agent` 的解析已上移到本函数开头（为了在读 `cmd.template` 之前就能问权限，见那一段的
+      // 注释）——原来它在这里。`if (!agent)` 那段错误处理跟着一起上移。
 
       const templateParts = yield* resolvePromptParts(template)
       const inputFiles = new Set(

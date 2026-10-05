@@ -765,6 +765,116 @@ resourceReadWithIdentity.instance(
   30_000,
 )
 
+/**
+ * R1（2026-10-05）· **skill 命令这条出口也要过 `skill` 权限门**（Step 5 类别 ②：鉴权覆盖所有接口）。
+ *
+ * ## 补的是哪个洞
+ *
+ * `Command.init`（`src/command/index.ts`）把**每个 skill 也注册成一条命令**
+ * （`source: "skill"`，`template` 就是 skill 正文），而 `SessionPrompt.command`
+ * 不先问权限就把 `cmd.template` 读出来、当用户消息喂给模型。于是
+ * `POST /session/:id/command { command: "<未授权的 skill 名>" }` 直接绕开
+ * `session.permission` 里那条 `{ permission: "skill", pattern: "*", action: "deny" }`
+ * ——正是 `AccessSession.sessionRuleset` ① 用来挡住「没被授予的 skill」的那条。
+ *
+ * 修之前 `skill` 这条能力有**两个出口**：工具（`src/tool/skill.ts`，有 `ctx.ask`）
+ * 与命令（无门）。所以这不是「工具没门」，是「同一件事有第二个出口、那个出口没门」
+ * （`LEARNINGS #004-01`：清点覆盖面要锚在**做那件事的那一行**——这里就是
+ * `SessionPrompt.command` 读 `cmd.template` 的那行）。
+ *
+ * ⚠️ 上游既有形状（非 003/004 引入）⇒ 补门是**刻意与官方分歧**，单独提交并标
+ * 【这是要保留的定制】。
+ *
+ * ## 判据：用生产里真实的两种会话规则集形状
+ *
+ * 两条都取 `core/src/access/session.ts` 的 `sessionRuleset` 真形状（① 整体 deny，
+ * ③ 逐条 allow）——不是为测试发明的写法：
+ * - **未授权**（只有 ①）⇒ 命令跑不起来，且 `llm.calls` 恒为 **0**：skill 正文
+ *   **一个字节都没进模型**（不是「进去了又被拒」）；
+ * - **已授权**（① ＋ ③ 那条同名的 allow，后者胜）⇒ 命令照常执行，正文出现在模型入参里。
+ *
+ * 🔴 **对照那条是必需的**，它同时证明「这个 skill 真的被发现了」：少了它，上面那条在
+ * 「skill 没被发现 ⇒ `Command not found` 抛错」的情况下**也会绿**，测的就不是权限了。
+ */
+const SKILL_COMMAND = "openhive-perm-probe"
+
+/** 只出现在这个 skill 正文里，用来判断正文有没有进模型（读 `llm.inputs`）。 */
+const SKILL_MARKER = "openhive-perm-probe-body-marker-3f1a"
+
+const writeProbeSkill = (dir: string) =>
+  Effect.promise(() =>
+    Bun.write(
+      path.join(dir, ".opencode", "skill", SKILL_COMMAND, "SKILL.md"),
+      [
+        "---",
+        `name: ${SKILL_COMMAND}`,
+        "description: 004 R1 的探针 skill（命令出口的权限门）。",
+        "---",
+        "",
+        "# Probe",
+        "",
+        SKILL_MARKER,
+        "",
+      ].join("\n"),
+    ),
+  )
+
+/** 未授权的会话规则集：`sessionRuleset` ① 那条整体 deny（零授权时也是这一条）。 */
+const SKILL_UNGRANTED: PermissionV1.Ruleset = [{ permission: "skill", pattern: "*", action: "deny" }]
+
+/** 已授权：① 的整体 deny ＋ ③ 那条同名的 allow——`evaluate` 取 `findLast`，allow 胜。 */
+const SKILL_GRANTED: PermissionV1.Ruleset = [
+  ...SKILL_UNGRANTED,
+  { permission: "skill", pattern: SKILL_COMMAND, action: "allow" },
+]
+
+/** 跑一次 `/command <探针 skill>`——两条用例只差**会话规则集**。 */
+const runSkillCommand = (permission: PermissionV1.Ruleset) =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    // 修复前命令会真的跑到模型；先把回复备好，让 RED 快而准（不靠 30 秒超时来红）。
+    yield* llm.text("done")
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "skill command",
+      agent: "build",
+      model: { providerID: ref.providerID, id: ref.modelID },
+      permission,
+    })
+    const exit = yield* prompt.command({ sessionID: chat.id, command: SKILL_COMMAND, arguments: "" }).pipe(Effect.exit)
+    return { llm, exit }
+  })
+
+it.instance(
+  "R1：未授权 skill ⇒ `/command` 调不动它，skill 正文一个字节都没进模型",
+  () =>
+    Effect.gen(function* () {
+      const { llm, exit } = yield* runSkillCommand(SKILL_UNGRANTED)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(yield* llm.calls).toBe(0)
+    }),
+  { git: true, init: writeProbeSkill },
+  30_000,
+)
+
+it.instance(
+  "R1 对照：已授权 skill ⇒ 命令照常执行、正文进模型（拒的是越权，不是 command 功能）",
+  () =>
+    Effect.gen(function* () {
+      const { llm, exit } = yield* runSkillCommand(SKILL_GRANTED)
+
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(yield* llm.calls).toBeGreaterThan(0)
+      const inputs = yield* llm.inputs
+      expect(JSON.stringify(inputs.at(-1)?.messages)).toContain(SKILL_MARKER)
+    }),
+  { git: true, init: writeProbeSkill },
+  30_000,
+)
+
 it.instance("legacy prompt emits message events without session.next events", () =>
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
