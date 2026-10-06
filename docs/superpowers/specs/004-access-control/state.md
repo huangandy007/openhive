@@ -1473,6 +1473,12 @@ Step 5 收尾（含 I11 补修）之后，用户另开一轮**独立审查**（3
   - `R1 对照：已授权 skill ⇒ 命令照常执行、正文进模型` —— 断言 `Exit.isSuccess` ＋ 模型调用 > 0 ＋ 末条输入里含 skill 正文的 marker（**负对照**：拒的是越权，不是把 `command` 功能整个关掉）。
   - RED：新用例 **1 fail**（修复前不拒、模型被调用）→ GREEN：**2 pass**；整文件 **51 pass / 14 skip / 0 fail**（本节复跑）。
 - ⚠️ **一处据实记（顺序本身没有被测试见证）**：两条见证钉住的是「**未授权 ⇒ 模型拿不到正文**」；「门在模板展开之前」这一条**没有**测试守着。要写它得让探针 skill 的 `` !`…` `` 块落一个 marker 文件、再断言被拒时 marker 不存在——**本机做不了**：本仓的 shell 用例是 Unix 门（`unixNoLLMServer` ＋ `withSh` / `hasBash`，本机 `hasBash` 为假时**静默 return**），照抄就成了 `#002-02` 说的「没有真正执行被测路径的测试＝缺口」。故记成**缺口**，不写成「已覆盖」。
+> **（2026-10-06 更新：这条缺口已补，且上面「本机做不了」的结论**不成立**。）** 已补的落点是
+> `test/server/openhive-access-command-route.test.ts` 的 `004-BF-03`（真库 ＋ 真应用 ＋ marker 文件）。
+> 「本机做不了」错在哪里：本机跑不了的是**没配 `shell` 时的默认那条**（win32 兜底 powershell，
+> 而 `Process.text` 在 win32 一律按 `['/d','/s','/c','"cmd"']` 拼参）——**显式把 `shell` 指到
+> `cmd.exe`（win32）/ `/bin/sh`（其余）** 之后两条平台都跑得起来，用不着 `unixNoLLMServer` 那道门。
+> 详见 `LEARNINGS #004-08` 与「收尾补测」节。
 
 **R2 —— 「auth 测试不进 CI」这处不实记述（7 处）**（`3554cbbc54`）
 
@@ -1568,13 +1574,129 @@ Step 5 收尾（含 I11 补修）之后，用户另开一轮**独立审查**（3
 规则是 **warning 级**（全局 error 仍恰 1 条、在上游文件上）⇒ 按「照抄同文件/同上游既有写法」保留，
 不为凑门禁偏离既有风格。
 
+## 收尾补测：`backend-testing` 六步闭环 · 2026-10-06
+
+来源：`test-routing-advisor` 把 004 判为**单后端**，四个候选缺口路由到 `backend-testing`。
+本节是后者的**步骤 4「按蓝本归档」**（蓝本 = `testing-system-blueprint`）。
+
+**步骤 5 的交付载体**（按本项目惯例）：本节 ＋ 提交 ＋ `session.md` 缺口表 —— 本项目**无 PR 流程**，
+合并到 `multi-tenant` 由用户在主检出执行 ⇒ **人审节点＝用户**。
+
+### 步骤 1–2 · 命中判定（防过度测）
+
+| 缺口 | 命中 | 依据 | 覆盖状态 |
+|---|---|---|---|
+| 真库数据层 / 迁移 / 约束 | ✅ | `0004_rbac.sql` ＋ `.down.sql` 往返、两个 CHECK 闭集、`migrate-cli` | ✅ **已被 TDD 覆盖 → 跳过**（`rls.test.ts` 真跑 RLS 执行器 / `openhive-rbac-closed-set.test.ts` 逐值双向 / `migrate-cli.test.ts` 往返）。**残差另记**（见下「未闭合 ③」） |
+| 鉴权 / 越权 BOLA·BFLA | ✅ **P0** | 四个授权出口 ＋ capability 判定；多身份存储（`auth.user` / `user_role` / `role_resource`） | 🔧 **部分未覆盖 → 本轮补齐**（见下） |
+| 并发 / 竞态 / 限频 | ❌ | 004 无共享可变资源争用、无配额 / 计数器 / 库存式扣减；会话创建那条路径是「读角色表 → 算规则集 → 写会话行」，不含并发不变量 | 不命中（防过度测） |
+| 韧性 / 故障注入 | ❌ | 004 未新增重试 / 超时 / 熔断 / 降级（取数见下表注） | 不命中（防过度测） |
+
+> **韧性那条的取数**：`git diff $(git merge-base multi-tenant HEAD) HEAD -- packages/opencode/src
+> packages/core/src packages/auth/src` 取新增行（`grep '^+'`），对 `retry` / `timeout` / `catchAll` /
+> `orDie` / `withTimeout` / `Schedule` 逐个 grep。命中全是**既有语义**：`timeout` 那两处是**既有变量透传**
+> （diff 的 `-` / `+` 两侧都出现，只是箭头函数体重写成带 `_meta` 的拼装行）；唯一的失败相关新增是
+> R1 门上的 `Effect.orDie`，方向是 **fail-closed**（拒），且已有见证。
+
+**「命中」但本轮没动的部分**（据实记，**不是**遗漏）：**MCP prompt 出口**（`prompts/get`）没有授权门 ——
+capability 判据**写不出**（`Command.Info` 里没有 server 字段，R1 派生挂账）；`GET /command` / `GET /skill`
+是 **instance 级、非会话作用域** ⇒ 拿不到 capability、**无处过滤**（同一条挂账）。两条都要动上游面或等 F10，
+**不在本执行器射程内**。
+
+### 步骤 3–4 · 新增回归 + 风险分级
+
+| ID | 回归 | 档 | 发布门 | 层 | 落点 |
+|---|---|---|---|---|---|
+| `004-BF-01` | 命令出口的**路由接缝**：零授权身份走 HTTP 发 `POST /session/:id/command` ⇒ **被拒** ＋ skill 正文**零字节**进模型 | **P0** | 硬阻断 | L2 集成 | `packages/opencode/test/server/openhive-access-command-route.test.ts` |
+| `004-BF-02` | **对照**（与 01 是**同一条请求**、只换身份）：已授权身份 ⇒ **放行** ＋ 正文真的进了模型 | **P0**（对照） | 硬阻断 | L2 | 同上 |
+| `004-BF-03` | 门的**顺序**：拒发生在**副作用之前** —— skill 正文里的 `` !`…` `` 块**一次都没被执行** | **P0** | 硬阻断 | L2 | 同上 |
+
+**为什么是 P0**：越权可绕过 ＝ 安全边界击穿（蓝本判据：权限相关默认进 P0，除有明确理由降级）。
+
+**三层节奏**：三条**只能落 L2** —— 要「真应用（HTTP 路由 ＋ 中间件链）＋ 真库（PG 角色/资源表）＋
+假模型（观测面）」三者同时拼装才暴露得了，按蓝本「需要真实拼装才暴露的 P0/P1 落 L2」。
+**L1 覆盖不了这一点有实证**：R1 的两条 Effect 层见证**自己把规则集塞进会话**，整条
+「HTTP 身份头 → 用户 → 每用户库 → 会话行 → 规则集 → 判决」的搬运**一步都不走** ——
+**把门去掉，它们照样全绿**（M-① 就是照这条推理做的）。
+
+### 三条判据为什么各自独立
+
+① 「**被拒**」是**终点**判据；② 「**正文没进模型**」是**泄漏**判据（可以「被拒」却已泄漏，也可以
+拒得干净但答得含糊）；③ 「**门在副作用之前**」是**顺序**判据（门若挪到读模板之后，① ② 仍然全绿）。
+三者互相独立不是推理出来的，是**变异跑出来的**（下）。
+
+### 变异验证（真跑 · 2026-10-06）
+
+| 变异 | 做法 | 红集（**实测**，据实记） |
+|---|---|---|
+| **M-① · 去掉门** | `prompt.ts` 的 `if (cmd.source === "skill")` ⇒ `&& false` | **BOB 那条红在泄漏断言**：`bodiesWithMarker().length` → **`Expected: 0 / Received: 2`**（越权身份的正文**整段进了模型**）；**ALICE 对照 pass** ⇒ 红的是**权限**，不是 skill 机制（`1 pass / 1 fail`） |
+| **M-② · 挪门** | 把门整段移到 `template = template.trim()` **之后**（此时正文的 `` !`…` `` 块**已执行完**） | **恰红一条**：`existsSync(markerPath(BOB))` → **`Expected: false / Received: true`**；同一条用例的**另两条断言照样绿**（仍被拒、正文仍没进模型）、**ALICE 对照 pass** ⇒ ③ 是**独立**判据（`1 pass / 1 fail`） |
+
+两条都落 `#003-03` 分类里的①**恰红目标那几条**（**不是**「整组红、连对照一起红」，也**不是**「全绿」）；
+M-② **只**红那一条。
+
+**还原复核**：两次变异后 `git checkout -- packages/opencode/src/session/prompt.ts` ⇒ `git diff --stat`
+**为空**；`grep -n 'cmd.source === "skill"' packages/opencode/src/session/prompt.ts` 回到**读模板之前**
+（该门紧挨 `const agent = …`，在 `const templateCommand = yield* Effect.promise(async () => cmd.template)` 之上）。
+
+⚠️ **一处小账（改的是测试，不是产品码）**：M-① 第一次跑时先红在 `response.ok`（期望 false 实得 true），
+失败信息只说「放行了」、**看不出正文漏没漏** ⇒ 把**泄漏断言调到状态码断言之前**，再跑才拿到 `Received: 2`。
+断言**没有弱化**（只调序）。
+
+### 门禁（**最终状态**上**串行**复跑，`#003-01`：并行会造假红）
+
+| 门禁 | 结果 | 判据 |
+|---|---|---|
+| `bunx oxlint packages/opencode/test/server/openhive-access-command-route.test.ts`（**在仓库根**跑） | **0 warnings / 0 errors**（1 file / 130 rules） | 新增文件 **0 命中** |
+| `packages/opencode` 的 `bun run typecheck`（`tsgo --noEmit`，退出码**不进管道**） | **exit 0** | 必须 0 |
+| 新文件 ＋ 同族 `openhive-access-wiring.test.ts` **同一进程**跑 | **8 pass / 0 fail / 32 expect() calls**（15.66 s） | 跨文件 **env 干扰**是真实风险（包级 `test` 脚本 `bun test --only-failures` **同进程**跑全部文件，而 `process.env.OPENHIVE_DATA_ROOT` 是**模块级**写）⇒ 必须同进程验 |
+| `bun.lock` | `git diff --stat bun.lock` **为空** | 未跑 `bun install` |
+
+⚠️ **产品码最终状态仍是 `35ece21bff`**（本轮**一行产品码都不动**，见下）；上面那节「门禁（代码最终状态）」的
+数字对它**仍然成立**，本节只补**新增文件**那几行。
+
+### 产品码改动
+
+**无。** 本轮只新增一个测试文件（＋ 两次变异中临时改过的产品码，**已完整还原**，见「还原复核」）。
+缺口 ①② 的行为**本来就是对的** —— 属**覆盖缺口**，按 skill「补测后即应为绿，无需改产品码」。
+
+### 🔧 未闭合（据实记，不假装闭合）
+
+**③ PGlite ≠ 生产 PG**（`#002-02` 的残差）：本机无 Docker、无 PG 二进制，`rls.test.ts` 跑的是
+**WASM 版 PG**。闭合的是**测试自己写的那一半**（RLS 执行器、身份事务作用域、策略拼装），**不闭合**
+「与生产 PG **同版本同构建**」。要闭合得在 CI 里加真 PG service —— 那要动**上游文件**
+`.github/workflows/test.yml`（【这是要保留的定制】**单独提交**），且「env 缺失即 skip」会造出**假覆盖**。
+**⇒ 待用户裁定**，本轮**不自行改 CI**。
+
+**④ capability 契约零消费者**（R3 已记：`capability.ts` / `issue.ts` 今天无生产调用点）：属
+**跨模块契约**类 —— `test-routing-advisor` 的**候选类**（那一格在路由表里标 🔧占位·待建），
+**不在 `backend-testing` 射程**（它的四类是：真库 / 越权 / 并发 / 韧性）。今天能做的只有**结构/形状断言**
+（`core/test/access-capability.test.ts` 已是 canary 级）。**⇒ 待用户裁定**。
+
 ## 最后更新
+
+2026-10-06（**收尾补测（`backend-testing` 六步闭环）**：判为**单后端**，四类缺口命中 **2 类**
+（真库 ✅ 已被 TDD 覆盖 → 跳过；越权 P0 🔧 部分未覆盖 → 本轮补齐）、另两类**据实标不命中**
+（并发：无共享争用/计数器；韧性：未新增重试超时降级，取数命令写进节内）＋ 补的是 **skill 命令出口的
+「路由接缝」** —— R1 的两条见证在 Effect 层且**自塞规则集**，整条「HTTP 身份头 → 用户 → 每用户库 →
+会话行 → 规则集 → 判决」的搬运**一步没走**，**把门去掉它们照样全绿** ⇒ 新文件
+`packages/opencode/test/server/openhive-access-command-route.test.ts` 三条判据（`004-BF-01` 拒 ＋ 正文零泄漏 /
+`004-BF-02` 同请求换身份的**对照** / `004-BF-03` 门的**顺序**：正文 `` !`…` `` 块零执行），**全 P0 · 硬阻断 · L2**
+（要真应用 ＋ 真库 ＋ 假模型三者拼装才暴露）＋ **两条变异真跑**（M-① 去掉门 ⇒ 红在泄漏断言
+`Expected: 0 / Received: 2`、ALICE 对照 pass；M-② 挪门到读模板之后 ⇒ **恰红一条**
+`existsSync(markerPath(BOB))` `Expected: false / Received: true`、另两条断言与对照**照样绿** ⇒ 顺序判据**独立**；
+两次变异均 `git checkout --` 完整还原、`git diff --stat` 为空、门回读模板之前）＋ **据实记一处小账**
+（M-① 先红在状态码、看不出泄漏 ⇒ 把泄漏断言调到状态码之前，**只调序、不弱化**）＋ 门禁**串行**复跑
+（新文件 oxlint **0/0** / `tsgo --noEmit` **exit 0** / 新文件 ＋ 同族 wiring 文件**同进程** **8 pass / 0 fail**
+/ `bun.lock` 空）＋ **产品码改动＝无**（属覆盖缺口，行为本就正确）＋ 两条**未闭合待裁定**（③ PGlite ≠ 生产 PG：
+闭合要动上游 `.github/workflows/test.yml` 加真 PG service，本轮不自行改 CI；④ capability 契约零消费者：
+属「跨模块契约」候选类、**不在 `backend-testing` 射程**）＋ 同步 `session.md` 缺口表）
 
 2026-10-05（**Step 5 之后的独立审查（3 席）**：得 **R1–R5**，用户裁定**全修**（Minors 记账）——
 R1/Critical：`Command.init` 把每个 skill 也注册成一条命令，`POST /session/:id/command` 可绕开
 `{ skill, *, deny }`（上游文件 `session/prompt.ts`，【这是要保留的定制】**单独提交** `0a63df3f6e`；
 两条见证 ＋ RED 1 fail → GREEN 2 pass；据实记「门的位置本身**没有测试见证**——要写它得让 skill 里的
-`` !`…` `` 落一个 marker，而本仓 shell 用例是 **Unix 门**、本机静默 return ⇒ 记**缺口**不记覆盖」）／
+`` !`…` `` 落一个 marker，而本仓 shell 用例是 **Unix 门**、本机静默 return ⇒ 记**缺口**不记覆盖」；
+**该缺口 2026-10-06 已补**（`004-BF-03`，见「收尾补测」节；「本机做不了」的结论不成立，原因见 `LEARNINGS #004-08`））／
 R2/Important：「auth 测试不进 CI」这处**实测为假**的记述 **7 处**已改正（`turbo.json:20` ＋
 `.github/workflows/test.yml:68`，取数命令写进注释）`3554cbbc54`／R3：`capability.ts` / `issue.ts`
 **今天零生产调用点**的定位补进文档（裁定**不删**——F7 要照抄这套结构）＋ 改正 `rbac.ts` 那句

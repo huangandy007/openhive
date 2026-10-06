@@ -5,6 +5,10 @@
 全部已修**；**Step 5 之后的独立审查（3 席）又得 R1–R5，也全部已修**（含 1 条 Critical：skill 命令出口
 缺权限门）。两轮的 Minors 一律挂账未修。
 
+2026-10-06 又走了一轮**收尾补测**（`backend-testing` 六步闭环）：越权那一类补了**命令出口的路由接缝**
+（三条 **P0** 回归 `004-BF-01/02/03`），**产品码零改动** —— 详见 `state.md`
+「收尾补测：`backend-testing` 六步闭环 · 2026-10-06」。
+
 > 合并到 `multi-tenant` 由**用户**执行（本 feature 不自行 merge）。spec 目录 `004-access-control/`
 > **永不删除**（下一 feature 的上下文 + CI 种子）。
 
@@ -103,6 +107,13 @@
 
 ### 1. 用户侧
 - 把 `worktree-feat-004-access-control` 合并到 `multi-tenant`（**由用户执行**）。
+- **裁定 ③（2026-10-06 新增）**：**PGlite ≠ 生产 PG** 这条残差**要不要现在闭合**？闭合 ＝ 在 CI 加
+  真 PG service，要动**上游** `.github/workflows/test.yml`（【这是要保留的定制】**单独提交**）；
+  ⚠️ **只加 service 不够** —— 「env 缺失即 skip」会造出**假覆盖**，得让流程**缺 PG 就红**。
+  **当前处置：挂账，等裁定。**
+- **裁定 ④（2026-10-06 新增）**：**capability 契约零消费者** —— 现在补**结构断言**（形状层，canary 级已有），
+  还是**等 F6/F7 有消费者**时再钉契约？前者能防 `capability` 结构在「无人消费」的窗口里悄悄漂；
+  后者更省、且真正的契约应由**消费者**来钉。**当前处置：挂账，等裁定。**
 - 裁定一条挂账：**改动过的两个测试文件**的全局 lint 残差（现值，2026-10-05 复测）——
   `packages/opencode/test/session/openhive-mcp-identity.test.ts` **8 warnings / 0 errors**
   （8 条**全是** `no-unsafe-type-assertion`，都落在 Service 桩上）；
@@ -158,13 +169,16 @@
 | **链 B 的 MCP 授权** | `sessionRuleset` 的 mcp 段 | 只对**链 A**（v1 / web UI）生效。链 B（v2 / CLI·sdk-next）**尚无落点**——v2 侧没有对应的 MCP 承载 |
 | **`knowledge_base` 资源类型** | `TOOL_OF` | 全仓 `packages/` 下**零命中**，没有对应工具 ⇒ 不产 allow，只被 fail-closed 基线罩着。接上时必须**同时**改 `TOOL_OF` 与 `access-rbac.test.ts` 的 ③ |
 | **`write` / `review` / `admin` 三个动作** | `resolve()` | 是**管理动作**（改内容 / 批上线 / 上下架），今天没有承载它们的工具 ⇒ 只有 `read` 产 allow。不是漏做 |
-| **`capability.ts` / `issue.ts` 今天无生产调用点**（R3） | `packages/core/src/access/` | 机制定义**已就绪**、结构由 canary 测试逐条钉着，但 `AccessIssue.issue` 在生产里**零调用点**（`issue.ts` 自己写着「本文件不接线」，D0-5）。**不删**——F7 落数据范围时要照抄这套结构；接线那一半在 T005/T006/F7 |
+| **`capability.ts` / `issue.ts` 今天无生产调用点**（R3） | `packages/core/src/access/` | 机制定义**已就绪**、结构由 canary 测试逐条钉着，但 `AccessIssue.issue` 在生产里**零调用点**（`issue.ts` 自己写着「本文件不接线」，D0-5）。**不删**——F7 落数据范围时要照抄这套结构；接线那一半在 T005/T006/F7。**2026-10-06 补测裁定项 ④**：它的「契约」那一面属**跨模块契约**类（`test-routing-advisor` 的候选类，路由表里标 🔧占位·待建），**不在 `backend-testing` 射程**（真库 / 越权 / 并发 / 韧性）；今天能做的只有结构断言（canary 级已有：`core/test/access-capability.test.ts`） |
 | **授权的滞后窗口**（R4，**已定义的语义**、不是缺口） | 会话创建 | 改授权（**增也一样**）对**已存在**的会话无效，下一次建会话才生效；今天**不提供**会话级吊销（回查＝在执行器里认角色表＝违反 FR-002）。F10 的授权管理界面**不要承诺「立即生效」** |
 | **MCP 来源的命令无法用 capability 表达**（R1 派生） | `src/command/index.ts` 的 `Info` | 字段里**没有 server** ⇒「这条 prompt 命令属于哪个 server」表达不出来，`mcp:<server>:*` 的判据写不出（R1 只堵住了 skill 那一支） |
 | **`GET /command`**（R1 派生） | `handlers/instance.ts` 的 `getCommand` | 与 `GET /skill` / `GET /experimental/tool` **同型**：instance 级、**非会话作用域** ⇒ 拿不到 capability、无处过滤，而 `Command.Info[]` 里 skill 的 `template` **就是正文** |
 | **R1 的门被拒时呈现为 500** | `prompt.ts` 的 `command()` | `Effect.orDie`（`command()` 的契约错误类型只有 `Image.Error`；改它＝动 `Interface` 的全部调用方＝上游面）。**呈现层**粗糙，不改变授权结论 |
 | **Minors（Step 5 的 M14 ＋ 3 席的 `M-a`…`M-e`）** | 见 `state.md` | 一律**挂账未修**（用户裁定）。其中 **`M-b` 已现场实测**（I11 的资源支路只带 `current.permission`，与工具路径不同形，见上） |
 | **lint 残差** | 见上「用户侧」 | 待裁定（8 条 / 3 条，均 warning 级） |
+| **PGlite ≠ 生产 PG**（③） | `packages/auth/src/rls.test.ts` | 闭合的是**测试自己写的那一半**（RLS 执行器 / 身份事务作用域 / 策略拼装），**不闭合**「与生产 PG **同版本同构建**」。要闭合得在 CI 加真 PG service —— 那要动**上游** `.github/workflows/test.yml`。**2026-10-06 列为待裁定** |
+| 命令出口的**路由接缝**（**已补**，2026-10-06） | `session/prompt.ts` 的 `command()` | 原缺口：R1 的两条见证在 **Effect 层**且**自己把规则集塞进会话** ⇒「HTTP 身份头 → 用户 → 每用户库 → 会话行 → 规则集 → 判决」这条搬运**零覆盖**（**把门去掉它们照样全绿**）。**已补** `004-BF-01`（拒 ＋ 正文**零字节**进模型）/ `004-BF-02`（同一条请求换身份的**对照**），落点 `packages/opencode/test/server/openhive-access-command-route.test.ts` |
+| 门的**顺序**（**已补**，2026-10-06） | 同上 | 原缺口：门必须在读 `cmd.template` **之前**（否则正文里的 `` !`…` `` 块**先被执行**、再被拒）。**已补** `004-BF-03`；变异 M-②（把门挪到读模板之后）**恰红一条**，证明它是**独立**判据 |
 
 ⚠️ **`ask` 不是安全的一侧**（I7 的核心结论）：两条链的弹窗都带「总是允许」，点一次就把没规则的动作
 变成持久 allow ⇒ **「没规则」在这里等于「可自批」**，这正是 `resolve()` 必须有 deny 基线的原因。
@@ -173,8 +187,9 @@
 
 ## 门禁（**代码最终状态 `35ece21bff` 上串行复跑**，2026-10-05）
 
-> ⚠️ **时点**：`35ece21bff` 是本 feature **代码**最后一次改动（R5）；其后只有 docs 提交，
-> **不动一行代码** ⇒ 下表数字对该代码状态仍成立，别读成「在当前 HEAD 上跑过」。
+> ⚠️ **时点**：`35ece21bff` 是本 feature **产品码**最后一次改动（R5）；其后只有 docs 提交与
+> **2026-10-06 的收尾补测**（只加一个测试文件、产品码一行未动）⇒ 下表数字对该产品码状态仍成立，
+> 别读成「在当前 HEAD 上跑过」。
 > 复核请在自己的检出上**串行**重跑（`#003-01` 并行会造假红；`LEARNINGS #004-05`）。
 
 | 门 | 结果 |
@@ -188,6 +203,7 @@
 | `test/session/prompt.test.ts` | **51** pass / 14 skip / 0 fail（含 R1 的两条见证） |
 | `test/session/openhive-mcp-identity.test.ts` | **6** pass / 0 fail（含 R5 的两条） |
 | `test/mcp/openhive-mcp-identity.test.ts` | **4** pass / 0 fail（含 R5 的两条） |
+| `test/server/openhive-access-command-route.test.ts`（**2026-10-06 新增**） | **2** pass / 0 fail（`004-BF-01/02/03`）；＋ 与同族 `openhive-access-wiring.test.ts` **同一进程**跑 **8 pass / 0 fail** |
 | `git diff --stat bun.lock` | **空**（无镜像源污染） |
 
 > ⚠️ 门禁**串行**跑（`LEARNINGS #003-01`：并行跑重测试会造假红）。取退出码**不许进管道**。
