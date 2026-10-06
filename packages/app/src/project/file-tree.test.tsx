@@ -100,6 +100,79 @@ const 树 = (...paths: string[]) => paths
  * 属 T009**——本 task 的禁用态只有一条判据：**未接线就禁用**（同 T005 三个按钮、T006 两个新建键）。
  */
 describe("FileTree 文件树（FR-005）", () => {
+  /**
+   * Kobalte 的菜单 Portal 到 `document.body`、且关闭后**不卸载**（退场动画在 happy-dom 里
+   * 永不结束）⇒ 不清就会串到下一条测试，而下面的 `菜单内容()` 查的是**整个 document**。
+   */
+  afterEach(() => {
+    document.body.innerHTML = ""
+  })
+
+  /**
+   * ── 右键菜单的探针（Kobalte `ContextMenu`）─────────────────────────────────
+   *
+   * 放在**顶层**、不放在「右键菜单」那一组里：T009 的删除确认必须**从两个入口**都能走
+   * （工具栏的 🗑 与菜单的「删除」），于是「右键开菜单 → 点某一项」被**两组**测试共用。
+   * `LEARNINGS #002-06`：同一件事两处各写一份，迟早只改一处。
+   *
+   * ⚠️ 它们用 `document` 查而不是 `host`：菜单 **Portal 到 `document.body`**，**不在** host 里。
+   */
+  const 菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-content']")
+
+  /**
+   * 菜单**开着**吗——返回**布尔**。
+   *
+   * ⚠️ 判据是 `data-expanded` 这个**状态属性**，不是「内容元素在不在」：Kobalte 关闭时是
+   * **先播一段退场动画、动画结束才卸载**（`components/context-menu.css` 的
+   * `animation: contextMenuContentHide … forwards`），而 happy-dom 没有 CSS 引擎 ⇒
+   * 动画永远不结束、元素一直留在 `document.body` 里。查「元素在不在」会读成「菜单永远开着」。
+   */
+  const 有菜单 = () => 菜单内容()?.hasAttribute("data-expanded") ?? false
+
+  const 菜单项 = (action: string) => 菜单内容()?.querySelector<HTMLElement>(`[data-action='${action}']`)
+
+  /** 菜单里各项的 `data-action`，**按渲染顺序**——顺序即设计表里的分组顺序。 */
+  const 菜单动作 = () =>
+    [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
+      el.getAttribute("data-action"),
+    )
+
+  /** 菜单里各项的文案，按渲染顺序。 */
+  const 菜单文案 = () =>
+    [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
+      el.textContent?.trim(),
+    )
+
+  const 分隔符数 = () => 菜单内容()?.querySelectorAll("[data-slot='context-menu-separator']").length ?? 0
+
+  const 项禁用 = (action: string) => 菜单项(action)?.getAttribute("aria-disabled") === "true"
+
+  /**
+   * 右键一个元素——`contextmenu` 冒泡到组件的触发器上，菜单就开在指针处。
+   * 收 `null` 也收 `undefined`：两种「按名字找元素」的辅助函数一个给前者、一个给后者。
+   */
+  const 右键 = (el: HTMLElement | null | undefined) =>
+    el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+
+  /** 等一拍宏任务（Kobalte 有些收尾是 `setTimeout` 里做的，同步读会读到中间态）。 */
+  const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+  /** 点一个菜单项：走真实的指针序列（`pointerdown` + `pointerup`），`.click()` **不够**。 */
+  const 点菜单项 = (action: string) => {
+    const el = 菜单项(action)
+    if (!el) return
+    for (const 类型 of ["pointerdown", "pointerup"])
+      el.dispatchEvent(
+        new PointerEvent(类型, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          button: 0,
+          isPrimary: true,
+        }),
+      )
+  }
+
   describe("工具栏（设计 §6.1）", () => {
     test("六个入口齐备，顺序即设计里的表格顺序：搜索 → 全部收缩 → 全部展开 → ＋ → 重命名 → 删除", () => {
       const host = mount(() => <FileTree paths={树("a.txt")} />)
@@ -361,6 +434,8 @@ describe("FileTree 文件树（FR-005）", () => {
       行按名(host, "资金.xlsx")?.click()
       按钮(host, "file-tree-action-rename")?.click()
       按钮(host, "file-tree-action-delete")?.click()
+      // 删除自 T009 起走二次确认（FR-006）：回调要等确认条上那个「删除」才发出去
+      按钮(host, "file-tree-delete-ok")?.click()
 
       expect(记).toEqual(["改:资金.xlsx", "删:资金.xlsx"])
     })
@@ -453,65 +528,8 @@ describe("FileTree 文件树（FR-005）", () => {
    * ② 断言「没有菜单」时**不能把节点交给 `expect`**（`LEARNINGS #005-01`：红的实得值是节点会把整轮挂哑）。
    */
   describe("右键菜单（设计 §6.2）", () => {
-    afterEach(() => {
-      document.body.innerHTML = ""
-    })
-
-    const 菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-content']")
-
-    /**
-     * 菜单**开着**吗——返回**布尔**，理由见上方 ②。
-     *
-     * ⚠️ 判据是 `data-expanded` 这个**状态属性**，不是「内容元素在不在」：Kobalte 关闭时是
-     * **先播一段退场动画、动画结束才卸载**（`components/context-menu.css` 的
-     * `animation: contextMenuContentHide … forwards`），而 happy-dom 没有 CSS 引擎 ⇒
-     * 动画永远不结束、元素一直留在 `document.body` 里。查「元素在不在」会读成「菜单永远开着」。
-     */
-    const 有菜单 = () => 菜单内容()?.hasAttribute("data-expanded") ?? false
-
-    const 菜单项 = (action: string) => 菜单内容()?.querySelector<HTMLElement>(`[data-action='${action}']`)
-
-    /** 菜单里各项的 `data-action`，**按渲染顺序**——顺序即设计表里的分组顺序。 */
-    const 菜单动作 = () =>
-      [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
-        el.getAttribute("data-action"),
-      )
-
-    /** 菜单里各项的文案，按渲染顺序。 */
-    const 菜单文案 = () =>
-      [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
-        el.textContent?.trim(),
-      )
-
-    const 分隔符数 = () => 菜单内容()?.querySelectorAll("[data-slot='context-menu-separator']").length ?? 0
-
-    const 项禁用 = (action: string) => 菜单项(action)?.getAttribute("aria-disabled") === "true"
-
-    /**
-     * 右键一个元素——`contextmenu` 冒泡到组件的触发器上，菜单就开在指针处。
-     * 收 `null` 也收 `undefined`：两种「按名字找元素」的辅助函数一个给前者、一个给后者。
-     */
-    const 右键 = (el: HTMLElement | null | undefined) =>
-      el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
-
-    /** 等一拍宏任务（Kobalte 有些收尾是 `setTimeout` 里做的，同步读会读到中间态）。 */
-    const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
-
-    /** 点一个菜单项：走真实的指针序列（`pointerdown` + `pointerup`），理由见上方 ①。 */
-    const 点菜单项 = (action: string) => {
-      const el = 菜单项(action)
-      if (!el) return
-      for (const 类型 of ["pointerdown", "pointerup"])
-        el.dispatchEvent(
-          new PointerEvent(类型, {
-            bubbles: true,
-            cancelable: true,
-            pointerId: 1,
-            button: 0,
-            isPrimary: true,
-          }),
-        )
-    }
+    // 本组的探针（菜单内容 / 有菜单 / 菜单项 / 右键 / 点菜单项 …）已提到**顶层**——
+    // T009 的删除确认要从**工具栏与菜单两个入口**走，两组得用同一套。见顶层那段注释。
 
     const 六个动作 = ["copy", "move", "upload", "download", "backup", "restore"] as const
     type 六动作 = (typeof 六个动作)[number]
@@ -642,12 +660,19 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual(["a.md"])
       })
 
-      test("删除走的是工具栏那个 onDelete", () => {
+      test("删除走的是工具栏那个 onDelete（同样过二次确认，T009 起）", () => {
         const 收到: string[] = []
         const host = mount(() => <FileTree paths={树("a.md")} onDelete={(path) => 收到.push(path)} />)
 
         右键(行按名(host, "a.md"))
         点菜单项("delete")
+
+        // 「同样过二次确认」这句写进了用例名，就得有断言配它——只断言终值的话，
+        // 一个**直接喊**的实现照样满足（收到的一样是 `["a.md"]`）。`#004-14`
+        expect(无槽(host, "file-tree-delete-confirm")).toBe(false)
+        expect(收到).toEqual([])
+
+        按钮(host, "file-tree-delete-ok")?.click()
 
         expect(收到).toEqual(["a.md"])
       })
@@ -735,6 +760,170 @@ describe("FileTree 文件树（FR-005）", () => {
         点菜单项("create-file")
         expect(收到).toEqual([{ kind: "file", parent: "" }])
       })
+    })
+  })
+
+  describe("删除二次确认 + 选中点亮 / 置灰（FR-006 / 设计 §6.1 / US2 AC2·AC4）", () => {
+    /**
+     * 确认条**存在吗**？——返回**布尔**，不是节点。
+     *
+     * 同 `无槽`：`expect(确认条(host)).toBeNull()` 这类断言红了会把整轮挂死（`LEARNINGS #005-01`），
+     * 所以一律断在布尔上。
+     */
+    const 有确认条 = (host: HTMLElement) => !无槽(host, "file-tree-delete-confirm")
+
+    test("接了线但**没选中**：重命名 / 删除都是置灰态（FR-006「未选中置灰」／US2 AC4「置灰不可点」）", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onRename={() => {}} onDelete={() => {}} />)
+
+      expect(按钮(host, "file-tree-action-rename")?.disabled).toBe(true)
+      expect(按钮(host, "file-tree-action-delete")?.disabled).toBe(true)
+    })
+
+    test("选中一项后：重命名 / 删除都可点（「选中后点亮」）", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onRename={() => {}} onDelete={() => {}} />)
+
+      行按名(host, "话单.csv")?.click()
+
+      expect(按钮(host, "file-tree-action-rename")?.disabled).toBe(false)
+      expect(按钮(host, "file-tree-action-delete")?.disabled).toBe(false)
+    })
+
+    test("未接线时纵使选中了仍禁用——「没接线」与「没选中」是**两条独立**的禁用理由（同 T008 菜单那组）", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} />)
+
+      行按名(host, "话单.csv")?.click()
+
+      expect(按钮(host, "file-tree-action-rename")?.disabled).toBe(true)
+      expect(按钮(host, "file-tree-action-delete")?.disabled).toBe(true)
+    })
+
+    test("删除按钮**点亮时**才带 danger token，置灰时不带（设计 §6.1：「删除：选中后点亮（红色）」）", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={() => {}} />)
+      const 删除 = () => 按钮(host, "file-tree-action-delete")
+
+      expect(删除()?.classList.contains("text-v2-state-fg-danger")).toBe(false)
+
+      行按名(host, "话单.csv")?.click()
+
+      expect(删除()?.classList.contains("text-v2-state-fg-danger")).toBe(true)
+    })
+
+    test("重命名**不带** danger token——设计要求红的只有删除", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onRename={() => {}} />)
+
+      行按名(host, "话单.csv")?.click()
+
+      expect(按钮(host, "file-tree-action-rename")?.classList.contains("text-v2-state-fg-danger")).toBe(false)
+    })
+
+    test("点删除**不立刻**喊 onDelete，而是先出现确认条（FR-006「MUST 二次确认」）", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+
+      expect(有确认条(host)).toBe(true)
+      expect(记).toEqual([])
+    })
+
+    test("确认条上写着要删的那一项的名字——用户得看得出删的是谁", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={() => {}} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+
+      expect(文本(host, "file-tree-delete-name")).toBe("话单.csv")
+    })
+
+    test("点「取消」：确认条消失，且 onDelete **一次都没**被喊", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+
+      // 前置：确认条**真的开出来了**。没有这一句，「取消」就成了「取消一个不存在的东西也是不删」——
+      // 一个**没有确认条**的实现同样能满足下面两条（`#004-14` 的伴随信号）。
+      expect(有确认条(host)).toBe(true)
+
+      按钮(host, "file-tree-delete-cancel")?.click()
+
+      expect(有确认条(host)).toBe(false)
+      expect(记).toEqual([])
+    })
+
+    test("点确认条里的「删除」：这才喊 onDelete（带选中项路径），确认条收掉", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+
+      // 先把「此刻还没喊 ＋ 确认条在」钉住，再点确认——否则一个「直接喊、根本没有确认条」的实现
+      // 会让本用例**假绿**（现状正是如此：确认按钮不存在 ⇒ `.click()` 是 no-op ⇒ 两条终点断言偶然全成立）。
+      // 一条用例里「被测属性在前、伴随信号在后」的排法见 `LEARNINGS #004-14`。
+      expect(有确认条(host)).toBe(true)
+      expect(记).toEqual([])
+
+      按钮(host, "file-tree-delete-ok")?.click()
+
+      expect(记).toEqual(["话单.csv"])
+      expect(有确认条(host)).toBe(false)
+    })
+
+    test("右键菜单里的「删除」走**同一个**确认——FR-006 说的是「文件删除」，不分入口", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+
+      右键(行按名(host, "话单.csv"))
+      点菜单项("delete")
+
+      expect(有确认条(host)).toBe(true)
+      expect(记).toEqual([])
+    })
+
+    test("菜单删除确认后喊的是**右键那一行**，不是选中项——「两套当前项」在确认流程里也一样（T008 的约定）", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={(path) => 记.push(path)} />)
+
+      行按名(host, "话单.csv")?.click() // 选中甲
+      右键(行按名(host, "资金.xlsx")) // 右键乙
+      点菜单项("delete")
+
+      // 同前一条：先钉「还没喊 ＋ 确认的是乙」，否则「直接喊右键那一行」的实现会假绿（`#004-14`）。
+      expect(有确认条(host)).toBe(true)
+      expect(文本(host, "file-tree-delete-name")).toBe("资金.xlsx")
+      expect(记).toEqual([])
+
+      按钮(host, "file-tree-delete-ok")?.click()
+
+      expect(记).toEqual(["资金.xlsx"])
+    })
+
+    test("取消后改选另一项再点删除：确认条换成了新那一项，不留上一次的残留", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={() => {}} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+      按钮(host, "file-tree-delete-cancel")?.click()
+
+      行按名(host, "资金.xlsx")?.click()
+      动作(host, "delete")?.click()
+
+      expect(文本(host, "file-tree-delete-name")).toBe("资金.xlsx")
+    })
+
+    test("工具栏五个图标都有 title（设计 §6.1 最后一条：「悬停给 tooltip 提示动作名」）", () => {
+      const host = mount(() => <FileTree paths={树("a.txt")} />)
+
+      // 只数 `button`：搜索是**输入框**不是图标——它的名字由 `aria-label` ＋ `placeholder` 承担，
+      // 再挂一个 `title` 是三重冗余（且 `title` 那点延时提示对输入框没有意义）。
+      const 缺提示 = [...host.querySelectorAll<HTMLElement>("button[data-action]")].filter(
+        (el) => !el.getAttribute("title"),
+      )
+
+      expect(缺提示.map((el) => el.getAttribute("data-action"))).toEqual([])
     })
   })
 })

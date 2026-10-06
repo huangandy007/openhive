@@ -45,6 +45,16 @@ const EMPTY_SEARCH = "没有匹配的文件"
 
 const TOOL_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-background-bg-layer-03 hover:text-v2-text-text-base disabled:pointer-events-none disabled:text-v2-text-text-faint"
+
+/**
+ * 🗑 **点亮**时的那条（设计 §6.1：「删除：选中后点亮（红色）」）。
+ *
+ * 另起一条而不是在原 class 上追加 `text-v2-state-fg-danger`：`TOOL_BUTTON` 里已经写死了
+ * `text-v2-text-text-muted`，两个同权重的文本色类同时挂在元素上时，谁生效取决于 **CSS 里的先后**，
+ * 不看 class 属性的顺序 ⇒ 那会是一个「看着该红、实际不一定红」的写法。
+ */
+const TOOL_BUTTON_DANGER =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-state-fg-danger hover:bg-v2-background-bg-layer-03 hover:text-v2-state-fg-danger disabled:pointer-events-none disabled:text-v2-text-text-faint"
 const SEARCH_INPUT =
   "h-6 min-w-0 flex-1 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
 const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
@@ -132,6 +142,13 @@ export function FileTree(props: FileTreeProps) {
   const [selected, setSelected] = createSignal<string>()
   const [createOpen, setCreateOpen] = createSignal(false)
   /**
+   * 「待确认删除」的那一项——非空即**确认条开着**（FR-006：文件删除 MUST 二次确认）。
+   *
+   * 存**路径**而不是布尔：确认条上要写出「删的是谁」（用户得看得出对象），取消 / 确认之后
+   * 还得原样把路径喊回 `onDelete`。工具栏与右键菜单共用这一个信号 ⇒ 两个入口天然是**同一条**确认。
+   */
+  const [待删, set待删] = createSignal<string>()
+  /**
    * 右键点在哪个节点上（`undefined` = 没点在行上：空态、或行以外的空白）。
    *
    * **不是** `selected`：菜单的作用对象是「右键那一行」，选中态是工具栏的作用对象，
@@ -197,7 +214,9 @@ export function FileTree(props: FileTreeProps) {
               data-slot={`file-tree-action-${action}`}
               type="button"
               aria-label={标签[action]}
-              class={TOOL_BUTTON}
+              // 悬停给 tooltip 提示动作名（设计 §6.1 最后一条）
+              title={标签[action]}
+              class={action === "delete" && !禁用("delete") ? TOOL_BUTTON_DANGER : TOOL_BUTTON}
               disabled={禁用(action)}
               onClick={() => 点(action)}
             >
@@ -343,7 +362,7 @@ export function FileTree(props: FileTreeProps) {
               action="delete"
               文案="删除"
               禁用={要对象(props.onDelete)}
-              onSelect={() => props.onDelete?.(菜单对象() ?? "")}
+              onSelect={() => 点删(菜单对象())}
             />
             <ContextMenu.Separator />
             {/* 第三行：沙箱 ↔ 本地电脑（§6.3 拖拽 A 的替代入口） */}
@@ -376,14 +395,45 @@ export function FileTree(props: FileTreeProps) {
           </ContextMenu.Content>
         </ContextMenu.Portal>
       </ContextMenu>
+
+      {/* 删除的二次确认（FR-006）——**内联**一条，不用 `Dialog`：树是用户眼睛已经在的地方，
+          再叠一层跨模块的模态还得让人多解释一步「这是在删哪儿」。`role="alert"` 让屏幕阅读器
+          在条冒出来时读一遍（不是模态，不需要焦点管理）。 */}
+      <Show when={待删()}>
+        {(path) => (
+          <div
+            data-slot="file-tree-delete-confirm"
+            role="alert"
+            class="flex w-full min-w-0 items-center gap-1 rounded-[4px] bg-v2-background-bg-layer-01 px-1 py-0.5 text-[13px] text-v2-text-text-base"
+          >
+            <span class="min-w-0 truncate">
+              确定删除「<span data-slot="file-tree-delete-name">{path()}</span>」？
+            </span>
+            <button
+              data-slot="file-tree-delete-cancel"
+              type="button"
+              class={MENU_ITEM}
+              onClick={() => set待删(undefined)}
+            >
+              取消
+            </button>
+            <button data-slot="file-tree-delete-ok" type="button" class={MENU_ITEM} onClick={确认删}>
+              删除
+            </button>
+          </div>
+        )}
+      </Show>
     </div>
   )
 
   function 禁用(action: Exclude<FileTreeAction, "search">) {
     if (action === "collapse-all" || action === "expand-all") return false
     if (action === "create") return !props.onCreate
-    if (action === "rename") return !props.onRename
-    return !props.onDelete
+    // 重命名 / 删除作用于**选中项**：没接线**与**没选中是两条**独立**的禁用理由（FR-006
+    // 「未选中置灰」／US2 AC4「置灰不可点」）。写了 `|| !selected()` 之后，`点` 里那句
+    // 「没有作用对象就不动作」仍然是必要的兜底——禁用只是不让点，不是不许调。
+    if (action === "rename") return !props.onRename || !selected()
+    return !props.onDelete || !selected()
   }
 
   function 点(action: Exclude<FileTreeAction, "search">) {
@@ -393,6 +443,22 @@ export function FileTree(props: FileTreeProps) {
     const path = selected()
     if (!path) return // 没有作用对象就不动作（不猜「大概是指根」）
     if (action === "rename") return props.onRename?.(path)
+    点删(path)
+  }
+
+  /**
+   * 删除**永远**先开确认条，绝不直接喊 `onDelete`（FR-006：文件删除 MUST 二次确认）——
+   * 工具栏与右键菜单都走这一个函数，所以「不分入口」是结构上成立的，不是靠两处各写一遍留意着。
+   */
+  function 点删(path: string | undefined) {
+    if (path) set待删(path)
+  }
+
+  /** 确认条上那个「删除」——到这里才真正喊回调，同时把条收掉。 */
+  function 确认删() {
+    const path = 待删()
+    if (!path) return
+    set待删(undefined)
     props.onDelete?.(path)
   }
 
