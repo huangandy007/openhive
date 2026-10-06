@@ -873,13 +873,27 @@ const 私有 = (id: string, name: string, lastAccessedAt: number): ProjectEntry 
 })
 
 /**
+ * 我建的项目（`role: "owner"`）——面板据此画「归档」（T023；判定走 `ProjectMembership.decide`）。
+ * 没有 `role` 的行**不画**：缺键 = 没有成员关系，不是「默认是 owner」。
+ */
+const 我的 = (e: ProjectEntry): ProjectEntry => ({ ...e, role: "owner" })
+/** 已归档的一行（`archived: true`）——它只在「已归档」tab 里，带「找回」。 */
+const 封存 = (e: ProjectEntry): ProjectEntry => ({ ...e, archived: true })
+
+/**
  * 一个**记账**的数据源替身。
  *
  * ⚠️ 替的是**数据源**这一个 prop（界面与外面世界之间那道缝），不是被测对象——被测的是
  * 「叫没叫、叫了几次、给的结果怎么落到界面上」，而组件、缝、渲染全是真的。
  */
-function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "files">> = {}) {
-  const 记 = { list: 0, files: [] as string[], 建的: [] as Array<NewProjectInput> }
+function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "archive" | "restore" | "files">> = {}) {
+  const 记 = {
+    list: 0,
+    files: [] as string[],
+    建的: [] as Array<NewProjectInput>,
+    归档的: [] as string[],
+    找回的: [] as string[],
+  }
   const data: ProjectData = {
     list: async () => {
       记.list += 1
@@ -890,6 +904,15 @@ function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "fil
       记.建的.push(input)
       // 没给剧本就是「没建成」：一条没接剧本的路，不该在测试里**悄悄**报成功。
       return 剧本.create ? await 剧本.create(input) : { kind: "failed", message: "没有剧本" }
+    },
+    archive: async (projectId) => {
+      记.归档的.push(projectId)
+      // 同 `create`：没给剧本就是**没办成**。默认报成功会让「接线根本没接上」看起来是绿的。
+      return 剧本.archive ? await 剧本.archive(projectId) : { kind: "failed", message: "没有剧本" }
+    },
+    restore: async (projectId) => {
+      记.找回的.push(projectId)
+      return 剧本.restore ? await 剧本.restore(projectId) : { kind: "failed", message: "没有剧本" }
     },
     files: async (projectId) => {
       记.files.push(projectId)
@@ -1149,5 +1172,255 @@ describe("项目数据接线（T018 出参）", () => {
 
     expect(路径们(host)).toContain("乙/话单.csv")
     expect(路径们(host)).not.toContain("甲/资料.csv")
+  })
+})
+
+/** 面板里某个 tab 的页签（`data-tab` 是身份）。 */
+const 面板页签 = (host: HTMLElement, id: string) =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='project-panel-tab'][data-tab='${id}']`)
+
+/** 面板**最底下**那句失败文案——归档与找回共用一格（`project-panel.tsx` 的 `没办成`）。 */
+const 面板报错 = (host: HTMLElement) => text(host, "project-panel-action-error")
+
+/**
+ * 走一遍归档：滑出面板 → 「全部」tab → 点那一行的「归档」→ 点确认。
+ *
+ * ⚠️ 四步都要，少一步都不叫「归档过」：**点「归档」不交出去**（T023 的二次确认），
+ * 少掉最后那下确认，测的就是「点了个按钮」而不是归档（`#004-14`：一条用例里既钉被测属性
+ * 又钉伴随信号时，被测的排前面）。
+ */
+function 点归档(host: HTMLElement) {
+  锚点按钮(host, "project-anchor-toggle")?.click()
+  面板页签(host, "all")?.click()
+  host.querySelector<HTMLButtonElement>("[data-slot='project-archive']")?.click()
+  host.querySelector<HTMLButtonElement>("[data-slot='project-archive-ok']")?.click()
+}
+
+/** 走一遍找回：「已归档」tab → 点那一行的「找回」。**找回没有二次确认**（不是破坏性动作）。 */
+function 点找回(host: HTMLElement) {
+  锚点按钮(host, "project-anchor-toggle")?.click()
+  面板页签(host, "archived")?.click()
+  host.querySelector<HTMLButtonElement>("[data-slot='project-restore']")?.click()
+}
+
+/**
+ * 归档 / 找回接进工作台（T023 出参）。
+ *
+ * 这一节验的是**办成之后做什么**——面板那一侧只负责「问一句、把回话显示出来」，
+ * 「重拉清单 / 清当前项目」是接线的事，因为只有接线知道清单和当前项目在哪儿。
+ *
+ * ⚠️ 归档**破坏性**（沙箱文件先备份进 MinIO、本地这份删掉），所以「归档掉的项目别留在
+ * 「全部」里 ／ 它要是当前项目就把当前项目清掉」不是收拾现场，是**不让界面显示一个已经不存在
+ * 的沙箱**：留着它，民警点进去看到的是空目录，而文件其实在 MinIO 上。
+ */
+describe("归档 / 找回接进工作台（T023 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+  })
+
+  test("归档成功 ⇒ 把 id 交给数据源，并重拉清单（归档掉的行走掉，不留在「全部」里）", async () => {
+    let 清单: readonly ProjectEntry[] = [我的(私有("p1", "8·17专案", 1))]
+    const { data, 记 } = 假数据源({
+      list: async () => 清单,
+      archive: async () => {
+        清单 = []
+        return { kind: "done" }
+      },
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    点归档(host)
+    await 冲一遍()
+
+    expect(记.归档的).toEqual(["p1"])
+    // 拉第二次 = 归档完重拉了一次（不是把那一行从旧清单里抠掉——「抠掉」在这个组件里做不了，
+    // 清单是缝里的只读数据，而重拉还能顺带把**别人**的改动带回来）。
+    expect(记.list).toBe(2)
+    expect(面板(host)?.textContent).not.toContain("8·17专案")
+  })
+
+  test("归档的是**当前项目** ⇒ 当前项目清掉（锚点行不挂着一个已经归档的项目）", async () => {
+    const { data } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1))],
+      archive: async () => ({ kind: "done" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`：说「清掉了」之前先证明它**挂上去过**）——否则「未选择项目」在
+    // 压根没接线时也是绿的。
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+
+    点归档(host)
+    await 冲一遍()
+
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+  })
+
+  /**
+   * 归档当前项目 ⇒ **左栏那棵文件树也跟着清**（别留着一个已归档项目的文件树）。
+   *
+   * 上一条只断锚点行；「清文件」是 `createEffect` 顺带做的（当前项目变成 `undefined` 触发），
+   * 于是「只清锚点、忘了清文件」这种改法**没有任何断言拦得住**（2026-10-07 席 C 审查的变异盲区）。
+   * 这不是收拾现场：归档会把沙箱那份**删掉**，留着树 = 让民警点进一个空目录，而文件其实在 MinIO 上
+   * ——正是本节开头那句「不让界面显示一个已经不存在的沙箱」的另一半。
+   */
+  test("归档的是当前项目 ⇒ 左栏文件树跟着清（不留一个已归档项目的文件树）", async () => {
+    const { data } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1))],
+      files: async () => ["甲/资料.csv"],
+      archive: async () => ({ kind: "done" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`）：树真的长出来过——否则「它没了」在压根没接线时也是绿的。
+    expect(路径们(host)).toContain("甲/资料.csv")
+
+    点归档(host)
+    await 冲一遍()
+
+    expect(路径们(host)).not.toContain("甲/资料.csv")
+  })
+
+  test("归档的是**别的**项目 ⇒ 当前项目不动（清的是被归档那一个，不是「有归档就清」）", async () => {
+    const { data, 记 } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1)), 我的(私有("p2", "9·03专案", 2))],
+      archive: async () => ({ kind: "done" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p2", name: "9·03专案" })
+    await 冲一遍()
+
+    点归档(host)
+    await 冲一遍()
+
+    // 前置：归档的确实是**另一个**项目（默认点的是「我的项目」组里第一行 = p1）。
+    expect(记.归档的).toEqual(["p1"])
+    expect(text(host, "project-anchor-name")).toBe("9·03专案")
+  })
+
+  /**
+   * **没办成的时候，当前项目也不动**——失败路径别顺手清。
+   *
+   * 本节所有「没办成」用例的 `beforeEach` 都把当前项目清成 `undefined`、用例里也没设过 ⇒
+   * 在失败分支里补一句 `setCurrentProject(undefined)` **全绿**（2026-10-07 席 C 审查的变异盲区 ②）。
+   * 它与成功路径是两件事：清当前项目的依据是「**它真的被归档了**」，而拒绝根本没归档——
+   * 顺手清掉等于替后端宣布一个它没说过、也没发生的结果（同上面「没办成不重拉清单」那条一条心）。
+   */
+  test("归档没办成 ⇒ 当前项目也不动（失败路径别顺手清）", async () => {
+    const { data } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1))],
+      archive: async () => ({ kind: "rejected", message: "无权归档该项目" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`）：挂上去了。
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+
+    点归档(host)
+    await 冲一遍()
+
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+  })
+
+  test("归档没办成 ⇒ 那句话回到面板上，且**不重拉清单**（没成的事不该刷成「好像变了」）", async () => {
+    const { data, 记 } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1))],
+      archive: async () => ({ kind: "rejected", message: "无权归档该项目" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    点归档(host)
+    await 冲一遍()
+
+    expect(面板报错(host)).toBe("无权归档该项目")
+    expect(记.list).toBe(1)
+    // 那一行还在——没办成却把它从画面上抹掉，等于替后端宣布了一个它没说过的结果。
+    expect(面板(host)?.textContent).toContain("8·17专案")
+  })
+
+  /**
+   * ⚠️ 「归档 / 找回回话的那句话」与「面板本来就有的失败文案」是**同一个槽**
+   * （`project-panel-action-error`）：面板不认识 HTTP，它只把接线交回来的一句话显示出来。
+   * 这一条钉的就是那根线——接线**把 `rejected.message` 原样交回去**，不自己改写措辞
+   * （它不知道是哪一条规则挡下的，同 T018 的 400 那条）。
+   */
+  test("找回没办成 ⇒ 那句话回到面板上（接线把服务端那句话原样交回去）", async () => {
+    const { data } = 假数据源({
+      list: async () => [封存(我的(私有("p1", "8·17专案", 1)))],
+      restore: async () => ({ kind: "failed", message: "找回项目失败" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    点找回(host)
+    await 冲一遍()
+
+    expect(面板报错(host)).toBe("找回项目失败")
+  })
+
+  test("找回成功 ⇒ 重拉清单（项目从「已归档」回到「全部」，不是留在原地）", async () => {
+    let 清单: readonly ProjectEntry[] = [封存(我的(私有("p1", "8·17专案", 1)))]
+    const { data, 记 } = 假数据源({
+      list: async () => 清单,
+      restore: async () => {
+        清单 = [我的(私有("p1", "8·17专案", 1))]
+        return { kind: "done" }
+      },
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    点找回(host)
+    await 冲一遍()
+
+    expect(记.找回的).toEqual(["p1"])
+    expect(记.list).toBe(2)
+    expect(面板(host)?.textContent).not.toContain("8·17专案")
+
+    面板页签(host, "all")?.click()
+    expect(面板(host)?.textContent).toContain("8·17专案")
+  })
+
+  /**
+   * **找回不碰当前项目**（用户裁定 2026-10-07）——「点一下直达」是 `onOpen` 的事，
+   * 找回只把清单重拉一次，**不切、也不清**。
+   *
+   * 为什么单开一条：本节所有「找回」用例的 `beforeEach` 都把当前项目清成 `undefined`、
+   * 「找回成功」那条也没设过 ⇒ 给 `onRestore` 里补一句 `setCurrentProject(undefined)`
+   * （看着像「与归档对齐」的无害改动）**全绿**（2026-10-07 席 C 审查的变异盲区 ①）。
+   * 对民警的后果是真的：他找回的是**另一个**项目，正在看的那一份上下文却被清掉了。
+   */
+  test("找回**不碰**当前项目（找回 ≠ 切到它）", async () => {
+    const { data } = 假数据源({
+      list: async () => [封存(我的(私有("p1", "8·17专案", 1))), 我的(私有("p2", "9·03专案", 2))],
+      restore: async () => ({ kind: "done" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p2", name: "9·03专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`）：挂上去了，最后那句才有意义。
+    expect(text(host, "project-anchor-name")).toBe("9·03专案")
+
+    // 「已归档」tab 里只有 p1（p2 是活跃的）⇒ 找回的是**另一个**项目。
+    点找回(host)
+    await 冲一遍()
+
+    expect(text(host, "project-anchor-name")).toBe("9·03专案")
   })
 })

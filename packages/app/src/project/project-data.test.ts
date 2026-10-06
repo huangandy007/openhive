@@ -87,4 +87,31 @@ describe("PROJECT_DATA 生产绑定", () => {
     expect(await PROJECT_DATA.files("p1")).toEqual(["资料/话单.csv"])
     expect(发出).toEqual([{ url: "/file?path=", method: "GET", 项目头: "p1" }])
   })
+
+  /**
+   * 归档（T023 / FR-008）。
+   *
+   * ⚠️ **不带 `x-openhive-project` 头**，这一条与上一条正相反、而且必须钉住：那个头是 T017 中间件
+   * 用来定位**沙箱目录**的，而它的第一道门对「已归档项目」一律 403 —— 找回时带上它，
+   * 请求会被**自己**挡在门外，于是那个项目**永久找不回来**（`tasks.md` 里 T023 那条告诫）。
+   * 这是「多带一个头」造成的、看着像权限问题的静默死结。
+   */
+  test("archive 走归档那条出口（POST /openhive/project/archive），不带项目头", async () => {
+    const 发出 = 假服务({ "/openhive/project/archive": { projectId: "p1", archived: true } })
+
+    expect(await PROJECT_DATA.archive("p1")).toEqual({ kind: "done" })
+    expect(发出).toEqual([{ url: "/openhive/project/archive", method: "POST", 项目头: null }])
+  })
+
+  /**
+   * 找回与归档**只差路径**（同路径前缀、同 `POST`、同 `{ projectId }` 体、同结论类型）——
+   * 接反了不报错、不变红，类型上也都合法（`(projectId: string) => Promise<ProjectActionOutcome>`）。
+   * 后果却不对称：把归档接成找回 ⇒ 民警点「归档」什么都没变**却被告知成功**。
+   */
+  test("restore 走找回那条出口（POST /openhive/project/restore），同样不带项目头", async () => {
+    const 发出 = 假服务({ "/openhive/project/restore": { projectId: "p1", archived: false } })
+
+    expect(await PROJECT_DATA.restore("p1")).toEqual({ kind: "done" })
+    expect(发出).toEqual([{ url: "/openhive/project/restore", method: "POST", 项目头: null }])
+  })
 })

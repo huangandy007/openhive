@@ -29,6 +29,7 @@
  * 加一层超时只是多一份要维护、要测的机制（`Simplicity First`）。
  */
 
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import type { ProjectEntry, ProjectType } from "./project-panel"
 import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
 
@@ -43,6 +44,8 @@ export const PREFIX = "/openhive/project"
 export const PATH = {
   list: PREFIX,
   create: PREFIX,
+  archive: `${PREFIX}/archive`,
+  restore: `${PREFIX}/restore`,
 } as const
 
 /** 新建项目的入参 —— 与内核那条 `POST` 的体**逐字对应**（`{ name, type }`，没有第三项）。 */
@@ -64,6 +67,76 @@ export type CreateProjectOutcome =
 
 /** 服务端拒绝时的兜底文案——只在服务端**没说为什么**的时候用（400 却空体）。 */
 const FAILED_MESSAGE = "新建项目失败"
+
+/**
+ * 归档 / 找回这两种**项目级动作**的三种结论（T023）。
+ *
+ * `done` **不带对象**：这两个动作的结果不在响应体里，而在**重拉之后的那份清单**里
+ * （`workspace-entry` 办成就重拉）。带一个「服务端自述的」快照回来，只会让人以为那就是真相
+ * ——而它引用的是刚刚被删掉/搬走的那个沙箱。
+ */
+export type ProjectActionOutcome =
+  | { kind: "done" }
+  | { kind: "rejected"; message: string }
+  | { kind: "failed"; message: string }
+
+const ARCHIVE_FAILED = "归档项目失败"
+const RESTORE_FAILED = "找回项目失败"
+
+/**
+ * 归档（FR-008）与找回（FR-009）**共用一条**——两者的 HTTP 形状逐字相同（同路径前缀、
+ * 同 `POST`、同 `{ projectId }` 体、同 400 / 403 文案约定），只有**路径**与**服务端自述的
+ * 那个 `archived`** 是各自的。分开写两份 = 把「怎么说清一次失败」这条逻辑复制两遍，
+ * 而它正是最容易各改一半的那类（`LEARNINGS #002-06`）。
+ *
+ * ⚠️ **判据是「体能当 JSON 解，且服务端自述的那个状态就是我要的那个」**，不是「状态码 200」：
+ * 出口没挂上时这条路径落进 UI 的 `/*` 兜底、回 **200 ＋ `text/html`**（本文件头那条实测）。
+ * 只看状态码 ⇒ 「内核是旧版本」被读成「归档好了」，而界面会**照常重拉清单**、项目照旧在「全部」里
+ * ⇒ 民警以为点坏了（`LEARNINGS #002-02` 的取向：这条判据必须真跑过那条路径）。
+ */
+async function projectAction(
+  path: string,
+  expected: boolean,
+  failed: string,
+  projectId: string,
+  send: ForkFetch,
+): Promise<ProjectActionOutcome> {
+  const response = await trySend(send, path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId }),
+  })
+  if (!response) return { kind: "failed", message: failed }
+
+  // 400（体不合法）与 403（无权的那个动作）都**带着服务端那句话**——照 T018 的处置：
+  // 前端不自己改写措辞，它不知道是哪一条规则挡下的。
+  if (response.status === 400 || response.status === 403) {
+    const body = await readJson(response)
+    return { kind: "rejected", message: messageOf(body) ?? failed }
+  }
+  if (!response.ok) return { kind: "failed", message: failed }
+
+  const body = await readJson(response)
+  if (!isRecord(body) || body.archived !== expected) return { kind: "failed", message: failed }
+  return { kind: "done" }
+}
+
+/** 归档一个项目（FR-008）。破坏性：沙箱文件先备份进 MinIO、本地那份删掉——**二次确认在界面那侧**。 */
+export async function archiveProject(
+  projectId: string,
+  send: ForkFetch = defaultSend,
+): Promise<ProjectActionOutcome> {
+  return projectAction(PATH.archive, true, ARCHIVE_FAILED, projectId, send)
+}
+
+/** 找回一个已归档的项目（FR-009）：把 MinIO 上的备份下载回沙箱，`archived` 翻回 false。 */
+export async function restoreProject(
+  projectId: string,
+  send: ForkFetch = defaultSend,
+): Promise<ProjectActionOutcome> {
+  return projectAction(PATH.restore, false, RESTORE_FAILED, projectId, send)
+}
 
 /**
  * 取当前用户的全部项目。
@@ -134,9 +207,10 @@ function messageOf(body: unknown): string | undefined {
  * **逐字段挑，不整份透传**（同 `gateway.ts` 的 `readIdentity`）：少 `id` / `name` 的行压根
  * 画不出来（`id` 是列表 key，`name` 是锚点行上唯一的显示物），判为无效。
  *
- * ⚠️ `memberCount` / `archived` **缺键就是缺键**，不补默认值：
+ * ⚠️ `memberCount` / `archived` / `role` **缺键就是缺键**，不补默认值：
  * 补 `memberCount: 0` 会让私有项目的锚点行长出「👥 0」；补 `archived: false` 会把
- * 「来源还没说」说成「来源说了不归档」。`ProjectEntry` 上那两个的注释写的正是这条。
+ * 「来源还没说」说成「来源说了不归档」；补 `role` 则是**给一行没有授权依据的项目发权限**
+ * （`decide` 只问 `actor`）。`ProjectEntry` 上那三个的注释写的正是这条。
  */
 function readEntry(value: unknown): ProjectEntry | undefined {
   if (!isRecord(value)) return undefined
@@ -153,5 +227,19 @@ function readEntry(value: unknown): ProjectEntry | undefined {
   }
   if (typeof value.memberCount === "number") entry.memberCount = value.memberCount
   if (value.archived === true) entry.archived = true
+  const role = roleOf(value.role)
+  if (role) entry.role = role
   return entry
+}
+
+/**
+ * `role` 只认 core 那个闭集里的值（`MEMBER_ROLES`）。**没见过的写法不读**（缺键）——
+ * 未知值倒向保守侧：`decide({ actor: undefined })` 对归档是拒，那一行就不画按钮；
+ * 而把不认识的字符串当 `actor` 透传下去，是在让一个谁也没定义过的东西参与授权判定。
+ *
+ * ⚠️ **闭集从 core 取、不在这里抄一份**：它与库里 `project_member.role` 的 CHECK 已经是
+ * 同一份值的两处写法（`membership.ts` 文件头「镜像」一节），抄第三份只会多一个漂点。
+ */
+function roleOf(value: unknown): ProjectMembership.MemberRole | undefined {
+  return ProjectMembership.MEMBER_ROLES.find((role) => role === value)
 }

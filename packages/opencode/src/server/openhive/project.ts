@@ -57,6 +57,11 @@ export * as OpenhiveProject from "./project"
  * - **`archived` 没有归档行就缺键**（不是给 `false`）：「还没有来源」与「来源说没有」是两件事
  *   （同 `project-list.ts` 文件头那条），默认值该由调用方定。`archiveStatesOf` 的键缺席语义正是
  *   为这个口径建的。
+ * - **`role` 只有读出口给**（T023，**没有成员行就缺键**）：它是「**我**在这一行上的角色」，面板拿它
+ *   当 `ProjectMembership.decide` 的 `actor`（判定只有那一份实现，组件零规则复述）。建项目那条出口
+ *   **不**回这个键：那一行按定义就是调用者自己建的（第 7 步刚落 owner 行），写出口再回去查一遍等于
+ *   把「角色是**查**出来的」偷偷降级成「角色是写的时候**知道**的」——同一个判断从此有两份知识
+ *   （`LEARNINGS #002-06`）。前端拿创建结果只判「成没成」，面板的数据一律来自随后的重拉。
  *
  * ## 与 `project-location.ts` 的镜像（改一处要改另一处）
  *
@@ -75,7 +80,7 @@ export * as OpenhiveProject from "./project"
  * （见本模块测试文件头那张实测表）。
  */
 
-import { addMember, archiveStatesOf, memberCountsOf } from "@opencode-ai/auth/project-member"
+import { addMember, archiveStatesOf, memberCountsOf, rolesOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
@@ -238,13 +243,16 @@ function handleList(deps: Deps) {
     // 是 `ProjectV2.ID`（品牌类型），而 `project_ext.project_id` 是 `text`。两侧不是同一个类型，
     // 「看起来都是字符串」正是这种地方最容易用一个 `as` 糊过去（typecheck 这次直接拦下了）。
     const named = new Map((yield* deps.project.list()).map((info) => [info.id, info]))
-    // 成员数与归档态：两个批量函数，各**一次**往返（`archiveStatesOf` 是 T018 收口时从单条改成
-    // 批量的，正是为了这一步——见该函数注释）。
+    // 成员数 / 归档态 / 我在这一行的角色：三个批量函数，各**一次**往返（`archiveStatesOf` 是
+    // T018 收口时从单条改成批量的，正是为了这一步——见该函数注释）。
     const counts = yield* Effect.promise(() => memberCountsOf(deps.pg(), ids))
     const archives = yield* Effect.promise(() => archiveStatesOf(deps.pg(), ids))
+    // `userId` 取的是**调用者**（不是「按项目查全部成员再挑」）——理由见 `rolesOf` 的注释。
+    const roles = yield* Effect.promise(() => rolesOf(deps.pg(), { userId: user.value.id, projectIds: ids }))
 
     const entries = rows.map((row) => {
       const archive = archives.get(row.project_id)
+      const role = roles.get(row.project_id)
       return {
         id: row.project_id,
         // `?? ""` 是类型收敛，**不是可达分支**：`project_ext.project_id` 带外键指向上游 `project(id)`
@@ -256,6 +264,9 @@ function handleList(deps: Deps) {
         lastAccessedAt: row.last_accessed_at,
         // 没有归档行 ⇒ 缺键（不是 `false`）——同上。
         ...(archive ? { archived: archive.archived } : {}),
+        // 没有成员行 ⇒ 缺键（不是 `"member"`）——同上，且这是**授权数据**：补一个默认角色
+        // 就是给前端一个「能点」的归档按钮。
+        ...(role ? { role } : {}),
       }
     })
 

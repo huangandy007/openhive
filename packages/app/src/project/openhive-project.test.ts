@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { createProject, listProjects } from "./openhive-project"
+import { archiveProject, createProject, listProjects, restoreProject } from "./openhive-project"
 import type { ForkFetch } from "./openhive-fetch"
 import type { ProjectEntry } from "./project-panel"
 
@@ -264,5 +264,128 @@ describe("createProject", () => {
       kind: "failed",
       message: "新建项目失败",
     })
+  })
+})
+
+describe("role 那一列（T023）", () => {
+  /**
+   * 面板拿 `role` 当 `ProjectMembership.decide` 的 `actor` 判「这一行画不画『归档』」——
+   * 所以它必须**从列表一路活着到组件**，不许在这层被丢掉。
+   */
+  test("role 是 owner ⇒ 读进结果（面板据此判「归档」画不画）", async () => {
+    const { send } = stub(json([{ id: "p1", name: "X", type: "shared", lastAccessedAt: 1, role: "owner" }]))
+
+    expect((await listProjects(send))?.[0]?.role).toBe("owner")
+  })
+
+  /**
+   * **member 也要读进来**，不许在这一层写成「只有 owner 才算数」。
+   *
+   * 这一层只负责**把闭集搬过去**，判「能不能归档」的活是 `decide` 的（组件零规则复述）。
+   * 在这里先抹掉 member，就等于把「member 现在恰好没有能做的项目级动作」这个**今天的巧合**
+   * 写死成了这一层的规则——哪天 member 能退群/邀请，这条会静默地把它们一起拦掉。
+   */
+  test("role 是 member ⇒ 也读进来（闭集整个搬，判定不在这层做）", async () => {
+    const { send } = stub(json([{ id: "p1", name: "X", type: "shared", lastAccessedAt: 1, role: "member" }]))
+
+    expect((await listProjects(send))?.[0]?.role).toBe("member")
+  })
+
+  /**
+   * 没见过的 role ⇒ **不读**（缺键）。未知值倒向保守侧：`decide({ actor: undefined })`
+   * 对归档是**拒**，于是那一行不画按钮；读成 `"member"` 只是少画一个按钮，而读成任何
+   * 「能归档的东西」就会在**没有授权依据**的行上画出一个按钮（同 `type` 那条「未知值倒向保守侧」）。
+   */
+  test("role 是没见过的写法 ⇒ 不读（未知值倒向保守侧：没有 role 就画不出「归档」）", async () => {
+    const { send } = stub(json([{ id: "p1", name: "X", type: "shared", lastAccessedAt: 1, role: "admin" }]))
+
+    const entry = (await listProjects(send))?.[0]
+
+    expect(entry && "role" in entry).toBe(false)
+  })
+})
+
+describe("archiveProject / restoreProject（T023）", () => {
+  test("archiveProject 发的是 POST /openhive/project/archive，体是 {projectId}", async () => {
+    const { send, sent } = stub(json({ projectId: "p1", archived: true }))
+
+    await archiveProject("p1", send)
+
+    expect(sent).toEqual([
+      {
+        path: "/openhive/project/archive",
+        method: "POST",
+        credentials: "same-origin",
+        contentType: "application/json",
+        body: { projectId: "p1" },
+      },
+    ])
+  })
+
+  /**
+   * 找回与归档**同形、只差路径**（内核那两条出口就是同路径不同动作，见 `archive.ts` 的 `PATH`）。
+   * 单钉一条路径，是因为**接错路径不报错也不变红**：打成 `/archive` 会「归档两次」——
+   * 而第二次归档对一个已经归档的项目恰好会被判定拒掉，看起来像一切正常。
+   */
+  test("restoreProject 打的是 /openhive/project/restore（同形，只有路径不同）", async () => {
+    const { send, sent } = stub(json({ projectId: "p1", archived: false }))
+
+    await restoreProject("p1", send)
+
+    expect(sent.map((request) => request.path)).toEqual(["/openhive/project/restore"])
+  })
+
+  test("200 且服务端说 archived: true ⇒ done", async () => {
+    const { send } = stub(json({ projectId: "p1", archived: true }))
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "done" })
+  })
+
+  /**
+   * ⚠️ **200 不等于办成了**：出口没挂上时，这条路径落进 UI 的 `/*` 兜底，回 **200 ＋ HTML**
+   * （本文件头那条实测）。所以判据是「体能当 JSON 解 **且** 服务端自述归档了」，
+   * 不是「状态码 200」——只看状态码会把「内核是旧版本、这条出口不存在」读成「归档好了」，
+   * 而它会带来一个更坏的后果：界面**照常重拉清单**、项目照旧在「全部」里 ⇒ 民警以为点坏了。
+   */
+  test("200 + HTML（出口没挂上）⇒ failed（200 不是办成了）", async () => {
+    const { send } = stub(html())
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "failed", message: "归档项目失败" })
+  })
+
+  test("找回反过来：200 说 archived: false ⇒ done；说 true ⇒ failed（别把方向读反）", async () => {
+    const 好 = stub(json({ projectId: "p1", archived: false }))
+    const 坏 = stub(json({ projectId: "p1", archived: true }))
+
+    expect(await restoreProject("p1", 好.send)).toEqual({ kind: "done" })
+    expect(await restoreProject("p1", 坏.send)).toEqual({ kind: "failed", message: "找回项目失败" })
+  })
+
+  /**
+   * **403 的体必须读出来给民警看**（内核那条链的文案是「无权归档该项目」）。
+   * 与 T018 的 400 同一条：前端**不自己改写措辞**——它不知道是哪一条规则挡下的。
+   */
+  test("403 ⇒ rejected ＋ 服务端那句话（越权时前端不自己改写措辞）", async () => {
+    const { send } = stub(json({ error: "无权归档该项目" }, 403))
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "rejected", message: "无权归档该项目" })
+  })
+
+  test("400 但没说为什么 ⇒ rejected ＋ 兜底文案", async () => {
+    const { send } = stub(json({}, 400))
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "rejected", message: "归档项目失败" })
+  })
+
+  test("500 ⇒ failed（不是「你不行」，是这边坏了）", async () => {
+    const { send } = stub(json({ error: "炸了" }, 500))
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "failed", message: "归档项目失败" })
+  })
+
+  test("网络抛 ⇒ failed（不把异常丢给界面）", async () => {
+    const { send } = stub(new Error("连不上"))
+
+    expect(await restoreProject("p1", send)).toEqual({ kind: "failed", message: "找回项目失败" })
   })
 })

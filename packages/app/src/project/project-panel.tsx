@@ -1,3 +1,4 @@
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { Icon } from "@opencode-ai/ui/icon"
 import { For, Show, createSignal } from "solid-js"
 import { MEMBER_GLYPH } from "./project-anchor"
@@ -38,6 +39,23 @@ import { MEMBER_GLYPH } from "./project-anchor"
  *
  * 分组的依据是**数据字段**（`type` / `archived`），不是调用方给的顺序——那样三个 tab 才真是
  * 同一份集合的视图，而不是三份碰巧长得像的清单。
+ *
+ * ## 归档入口（T023 / FR-008）：只在「全部」tab，且**必须先问一句**
+ *
+ * 出口的落点是设计 §8.1 定的：**行内**一个「归档」，只长在「全部」tab 的行上（「最近」不画——
+ * 那里是「接着干」的地方，放破坏性动作只会让人点错）。哪一行画还要过 `canArchive`（见下）。
+ *
+ * **二次确认不是装饰**：归档会把沙箱里的文件先备份进 MinIO、再把本地那份删掉，而 005 全仓
+ * **没有删项目的入口** ⇒ 点错一下的代价是一条不可逆的路。所以点「归档」**不直接办**，先在面板
+ * 底下开一条确认（`project-archive-confirm`），说明句写清三件民警必须知道的事：**文件会先备份进
+ * MinIO、本地这份会删掉、之后能在「已归档」里找回**——少写一件，这一问就没起到「问」的作用。
+ *
+ * 用**内联确认条**而不是 `Dialog`：同 `file-tree.tsx` 的删除确认、`dual-file-tree.tsx` 的拉回确认
+ * ——面板本身就是浮层，再叠一层模态只会难收场。确认里存的是**项目对象**（`待归档`）、不是布尔：
+ * 布尔要再存一份「是哪一个」，两份状态就得再定谁先谁后。
+ *
+ * ⚠️ **「找回」不问**（FR-009）：它把东西还回来，代价小得多，而且是可重复的（再归档一次即可）。
+ * 两条路径的差别是**破坏性**，不是「哪个更正式」。
  */
 export type ProjectType = "private" | "shared"
 
@@ -67,6 +85,15 @@ export interface ProjectEntry {
   lastAccessedAt: number
   /** 已归档。「已归档」tab 靠它筛（设计 §3 / §8）；省略 = 活跃。 */
   archived?: boolean
+  /**
+   * **我**在这个项目里的角色（T023）。面板拿它当 `ProjectMembership.decide` 的 `actor`
+   * 判「这一行画不画『归档』」——判定**只有那一份实现**，本组件零规则复述。
+   *
+   * **省略 = 没有成员关系**（不是「member」）：`decide({ actor: undefined })` 对归档是拒，
+   * 于是那一行不长尾巴。类型**复用 core 的 `MemberRole`**、不在这里重新声明一个
+   * `"owner" | "member"`（同 `member-panel.tsx` 的 `role`）。
+   */
+  role?: ProjectMembership.MemberRole
 }
 
 /**
@@ -79,6 +106,16 @@ export interface NewProjectInput {
   name: string
   type: ProjectType
 }
+
+/**
+ * 项目级动作（归档 / 找回）的回调（T023）。
+ *
+ * 约定与 `onCreate` **逐字相同**：**回一句话 = 没办成**，那句话给民警看；`undefined` / 不回 = 收工。
+ * 面板**不认识 HTTP**——把 403 / 网络错翻成一句人话是调用方的事（同本文件头「受控组件」口径）。
+ */
+export type ProjectActionCallback = (
+  project: ProjectEntry,
+) => string | undefined | Promise<string | undefined> | void
 
 export interface ProjectPanelProps {
   /** 面板要列的全部项目（三 tab 各自取子集）。省略 / 空 = 走空态。 */
@@ -105,9 +142,44 @@ export interface ProjectPanelProps {
    */
   onCreate?: (input: NewProjectInput) => string | undefined | Promise<string | undefined> | void
 
-  /** 点已归档项目的「找回」（FR-009）。省略 = 不画「找回」按钮。 */
-  onRestore?: (project: ProjectEntry) => void
+  /**
+   * 点已归档项目的「找回」（FR-009）。省略 = 不画「找回」按钮。
+   *
+   * T023 起它的回话**有意义**了（`ProjectActionCallback`）——在那之前它的签名是 `(project) => void`，
+   * 而「点了没反应」与「办成了」在画面上长得一样。
+   */
+  onRestore?: ProjectActionCallback
+
+  /**
+   * 归档一个项目（FR-008）。省略 = 整块不长「归档」。
+   *
+   * ⚠️ 两件事与这条 prop 有关、但**都不由它决定**：
+   * ① **画在哪个 tab**：只画在「全部」tab 的行上（设计 §8.1），面板自己只把这条回调喂给那一组；
+   * ② **哪一行画**：还要过 `canArchive`（`decide` 那一份实现）——同一份清单里「我建的」（owner）
+   *    与「别人拉我进去的」（member / 没有成员行）长得不一样。
+   */
+  onArchive?: ProjectActionCallback
 }
+
+/**
+ * 「这一行画不画『归档』」——判定**只有** `ProjectMembership.decide` 那一份实现，
+ * 本组件零规则复述（同 `member-panel.tsx`：它只问「能不能」，不自己答）。
+ *
+ * 三个输入都从行上来：`actor` = **我**在这行的角色（缺键 ⇒ `null` = 不是成员）、
+ * `archived` = 这行归档没归档（缺键 = 活跃）、`target` = `null`（归档没有对象——见
+ * `DecisionInput.target` 那条「刻意必填」的注释）。
+ *
+ * ⚠️ 已归档的行**不该**走到这里（它归「已归档」tab，由 `ArchivedGroup` 画，而那个组的行上只有
+ * 「找回」）——`archived` 照实传，是为了让这条判据在**归档态确实成立**时也不放行，
+ * 而不是靠「反正走不到」。
+ */
+const canArchive = (project: ProjectEntry) =>
+  ProjectMembership.decide({
+    actor: project.role ?? null,
+    action: "archive",
+    target: null,
+    archived: project.archived === true,
+  })
 
 /** 三 tab 的**顺序即优先级**（设计 §3：最近 / 全部 / 已归档）。 */
 const TABS: readonly { id: ProjectPanelTab; label: string }[] = [
@@ -149,9 +221,24 @@ const TAB_BUTTON = [
   "text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover",
 ].join(" ")
 
-/** 一行项目（可点的那些；归档那组的行是 `div`，因为它里面还要放「找回」按钮）。 */
-const ITEM_BUTTON = [
-  "flex h-7 min-w-0 w-full shrink-0 cursor-pointer items-center gap-2 rounded-[6px] px-1.5 text-left",
+/**
+ * 一行的外壳（T023 起是 `div`，不再是 `button`）。
+ *
+ * 换掉 `button` 是因为有些行里现在有**第二个**按钮（「归档」），而按钮不能嵌按钮
+ * ——同 `ArchivedGroup` 那条注释。名字那一块**仍是** `button`（`ITEM_NAME_BUTTON`），
+ * 「点一下直达」不丢：改的只是「谁是可点的」，不是「还能不能点」。
+ *
+ * ⚠️ 三个 tab 的行**共用这一套外壳**（连没有尾巴的行也套着），不按 tab 分两种结构：
+ * 两种结构意味着「同一个行样子」有两份写法，将来再往行上加一个动作时只会改到其中一份。
+ */
+const ITEM_ROW = "flex h-7 min-w-0 w-full shrink-0 items-center gap-1"
+
+/**
+ * 行里的名字按钮。与原来的整行按钮只差两处，都是被上面那层 flex 逼的：
+ * `w-full` → `flex-1`（外壳里还要站一个「归档」），`h-7` 移到外壳上（外壳定高、按钮填满它）。
+ */
+const ITEM_NAME_BUTTON = [
+  "flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[6px] px-1.5 text-left",
   "text-v2-text-text-muted transition-colors",
   "hover:bg-v2-background-bg-layer-01 hover:text-v2-text-text-base",
   "disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-v2-text-text-muted",
@@ -196,6 +283,11 @@ function Group(props: {
   items: readonly ProjectEntry[]
   currentId?: string
   onOpen?: (project: ProjectEntry) => void
+  /**
+   * 点了这一行的「归档」。**不是执行归档**：面板要先弹一条确认（破坏性操作，见 `待归档`），
+   * 所以这里传出去的是「把这个项目记下来」，真正交出去发生在确认那一步。
+   */
+  onAskArchive?: (project: ProjectEntry) => void
 }) {
   return (
     <Show when={props.items.length > 0}>
@@ -207,19 +299,34 @@ function Group(props: {
           {(project) => {
             const current = () => project.id === props.currentId
             return (
-              <button
-                type="button"
-                data-slot="project-item"
-                data-current={current() ? "true" : undefined}
-                class={ITEM_BUTTON}
-                classList={{
-                  "bg-v2-background-bg-layer-03 text-v2-text-text-base": current(),
-                }}
-                disabled={props.onOpen === undefined}
-                onClick={() => props.onOpen?.(project)}
-              >
-                <ItemBody project={project} current={current()} />
-              </button>
+              <div data-slot="project-row" class={ITEM_ROW}>
+                <button
+                  type="button"
+                  data-slot="project-item"
+                  data-current={current() ? "true" : undefined}
+                  class={ITEM_NAME_BUTTON}
+                  classList={{
+                    "bg-v2-background-bg-layer-03 text-v2-text-text-base": current(),
+                  }}
+                  disabled={props.onOpen === undefined}
+                  onClick={() => props.onOpen?.(project)}
+                >
+                  <ItemBody project={project} current={current()} />
+                </button>
+                {/* 不给回调 ⇒ 不画（「未接线即禁用」的另一种形态：归档是破坏性动作，
+                    画一个 disabled 的「归档」只是噪音）；给了回调也还要过 `decide`。 */}
+                <Show when={props.onAskArchive !== undefined && canArchive(project)}>
+                  <button
+                    type="button"
+                    data-slot="project-archive"
+                    aria-label={`归档 ${project.name}`}
+                    class={CREATE_BUTTON}
+                    onClick={() => props.onAskArchive?.(project)}
+                  >
+                    归档
+                  </button>
+                </Show>
+              </div>
             )
           }}
         </For>
@@ -289,6 +396,22 @@ export function ProjectPanel(props: ProjectPanelProps) {
   const [没建成, set没建成] = createSignal<string | undefined>()
   /** 交出去之后、回话之前。这段缝隙里这一行是**锁着**的（见 `建`）。 */
   const [在办, set在办] = createSignal(false)
+  /**
+   * 正在等着确认归档的那个项目；`undefined` = 没有待确认的（那条确认不画）。
+   *
+   * 存的是**项目本身**而不是 `id`：确认条上要写出「归档的是谁」，而 005 全仓没有改名入口
+   * ——名字打下去就是永久的，所以这里存下来的名字不会过期（同 `dual-file-tree.tsx` 的 `待拉回`
+   * 存路径：确认条得说清对象是谁）。
+   */
+  const [待归档, set待归档] = createSignal<ProjectEntry | undefined>()
+  /**
+   * 上一个动作没办成的那句话（归档 / 找回共用一格）。
+   *
+   * 与 `onCreate` 的回话同一条约定：**字符串 = 没办成**。归位放在面板最底下、`role="alert"`
+   * ——民警点了「归档」却什么都没发生是最坏的一种静默（`LEARNINGS #004-08`：副作用类判据
+   * 必须先有一条对照证明机制是活的，这里反过来：机制没活也得说出来）。
+   */
+  const [没办成, set没办成] = createSignal<string | undefined>()
 
   /** 收起草稿：`起名` 与 `没建成` 一起清——只清一个就会留下话不对板的文案。 */
   const 收起 = () => {
@@ -315,6 +438,49 @@ export function ProjectPanel(props: ProjectPanelProps) {
     }
     set没建成(回话)
   }
+
+  /**
+   * 交出去办一个**项目级动作**（归档 / 找回），等回话。
+   *
+   * 与 `建` 同一条约定：**回一句字符串 = 没办成**（显示在面板最底下），`undefined` / 没回 = 收工。
+   * 两个动作共用这一处——它们的「怎么收场」是同一件事，分成两份只会在改一处时漏掉另一处
+   * （`LEARNINGS #002-06`）。
+   */
+  const 办 = async (project: ProjectEntry, 动作: ProjectActionCallback | undefined) => {
+    set没办成(undefined)
+    const 回话 = await 动作?.(project)
+    if (typeof 回话 === "string") set没办成(回话)
+  }
+
+  /**
+   * 确认归档。**先收起确认条，再交出去**：留着它挡在「已经交出去了」前面，民警会再点一次
+   * ——而 005 全仓没有「取消归档」，第二次点只会撞上「已归档的只放行找回」。
+   */
+  const 确认归档 = () => {
+    const project = 待归档()
+    set待归档(undefined)
+    if (project) void 办(project, props.onArchive)
+  }
+
+  /**
+   * 记下「要归档的是哪一个」，等确认。它**只在真的有人接得住的时候**才递下去
+   * （下面两个 `Group` 里写的就是这条三元）——`Group` 那侧「不给回调即不画」的约定
+   * 靠的是**调用方不递**，不是靠它自己去猜面板有没有接收方（一个没有接收方的「归档」按钮
+   * 点下去什么都不会发生，那是对用户的谎）。2026-10-07 由「没接线 ⇒ 谁都不画」那条用例抓出来的。
+   */
+  const 问归档 = (project: ProjectEntry) => set待归档(project)
+
+  /**
+   * 找回（FR-009）。**上面那条规矩的第二个出口，同款三元**——`ArchivedGroup` 那侧也写着
+   * 「不给回调即不画」（`<Show when={props.onRestore}>` 的回调形式），所以这里同样**只在不
+   * 为空时递下去**。
+   *
+   * ⚠️ 别写成 `onRestore={(p) => void 办(p, props.onRestore)}`：那是个**恒真的函数**，会把
+   * `ArchivedGroup` 里那条 `Show` 永远点亮——未接线的面板上就多出一个**点了没反应**的
+   * 「找回」（2026-10-07 席 B 审查抓出；`LEARNINGS #003-02`：修完一处要 grep 谁在按同一个
+   * 前提做同一件事，`问归档` 那条三元就是同一个前提）。
+   */
+  const 找回 = (project: ProjectEntry) => void 办(project, props.onRestore)
 
   const 全部 = () => props.projects ?? []
   const 活跃 = () => 全部().filter((p) => p.archived !== true)
@@ -459,6 +625,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
           </Show>
         </Show>
 
+        {/* 「归档」只画在**这一个** tab 的行上（设计 §8.1：「项目列表『全部』tab 内，或项目名右键」；
+            右键那一半本仓没有先例，故不做）。「最近 / 已归档」两组不传 `onAskArchive` ⇒ 不长尾巴。 */}
         <Show when={tab() === "all"}>
           <Show when={活跃().length > 0} fallback={空态(EMPTY_ACTIVE)}>
             <Group
@@ -467,6 +635,7 @@ export function ProjectPanel(props: ProjectPanelProps) {
               items={活跃().filter((p) => p.type === "private")}
               currentId={props.currentId}
               onOpen={props.onOpen}
+              onAskArchive={props.onArchive === undefined ? undefined : 问归档}
             />
             <Group
               group="shared"
@@ -474,16 +643,69 @@ export function ProjectPanel(props: ProjectPanelProps) {
               items={活跃().filter((p) => p.type === "shared")}
               currentId={props.currentId}
               onOpen={props.onOpen}
+              onAskArchive={props.onArchive === undefined ? undefined : 问归档}
             />
           </Show>
         </Show>
 
         <Show when={tab() === "archived"}>
           <Show when={已归档().length > 0} fallback={空态(EMPTY_ARCHIVED)}>
-            <ArchivedGroup items={已归档()} currentId={props.currentId} onRestore={props.onRestore} />
+            <ArchivedGroup
+              items={已归档()}
+              currentId={props.currentId}
+              onRestore={props.onRestore === undefined ? undefined : 找回}
+            />
           </Show>
         </Show>
       </div>
+
+      {/* 没办成的那句话（归档 / 找回共用）。放在面板最底下、`role="alert"`：这句话是民警
+          **必须知道**的（他刚点了一个破坏性动作），不该只靠眼睛扫到。 */}
+      <Show when={没办成()}>
+        {(文案) => (
+          <p
+            data-slot="project-panel-action-error"
+            role="alert"
+            class="px-1.5 text-[11px] leading-4 text-v2-state-fg-danger"
+          >
+            {文案()}
+          </p>
+        )}
+      </Show>
+
+      {/* 归档的二次确认（FR-008 / 设计 §8.2）——**内联**一条，不用 `Dialog`：同 T009 的删除确认
+          与 T012 的拉回确认，面板就在眼睛底下，再叠一层模态还得让人多解释一步「这是在归档哪个」。
+          破坏性在于**沙箱文件会被删**，所以那句话说清三步：先备份进 MinIO → 本地这份删掉 →
+          之后可以找回（这正是 T013 落地的次序保证，不是安慰话）。 */}
+      <Show when={待归档()}>
+        {(project) => (
+          <div
+            data-slot="project-archive-confirm"
+            role="alert"
+            class="flex w-full min-w-0 flex-col gap-1 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-1 text-[12px] text-v2-text-text-base"
+          >
+            <span class="min-w-0 truncate">
+              确定归档「<span data-slot="project-archive-name">{project().name}</span>」？
+            </span>
+            <span class="text-[11px] leading-4 text-v2-text-text-muted">
+              文件会先备份进 MinIO、本地这份删掉；之后可在「已归档」里找回。
+            </span>
+            <span class="flex items-center justify-end gap-1">
+              <button
+                data-slot="project-archive-cancel"
+                type="button"
+                class={CREATE_BUTTON}
+                onClick={() => set待归档(undefined)}
+              >
+                取消
+              </button>
+              <button data-slot="project-archive-ok" type="button" class={CREATE_BUTTON} onClick={确认归档}>
+                归档
+              </button>
+            </span>
+          </div>
+        )}
+      </Show>
     </div>
   )
 }

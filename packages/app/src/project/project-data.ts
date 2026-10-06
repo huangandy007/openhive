@@ -29,35 +29,49 @@
  * `workspace-entry.tsx` 文件头里 `loadFile` 那条注释防的同一件事。
  */
 
-import type { CreateProjectOutcome } from "./openhive-project"
-import { createProject, listProjects } from "./openhive-project"
+import type { CreateProjectOutcome, ProjectActionOutcome } from "./openhive-project"
+import { archiveProject, createProject, listProjects, restoreProject } from "./openhive-project"
 import { listProjectFiles } from "./openhive-files"
 import type { NewProjectInput, ProjectEntry } from "./project-panel"
 
 /**
- * 界面要用到的三件事——**按「谁要用」定的，不是按后端有什么**（`LEARNINGS #004-07`）。
+ * 界面要用到的五件事——**按「谁要用」定的，不是按后端有什么**（`LEARNINGS #004-07`）。
  *
- * `create` 交出去的是**结论**（`CreateProjectOutcome`）而不是一句话：把「拒绝」与「失败」
+ * `create` / `archive` / `restore` 交出去的都是**结论**而不是一句话：把「拒绝」与「失败」
  * 并成一句话的活不在这层做（那会让「你填得不对」和「我们这边坏了」长成一个样），
  * 而把结论翻成给人看的那句话，是**界面**那一侧的事（`workspace-entry` → `ProjectPanel`）。
+ *
+ * ## 为什么 `archive` / `restore` 是**两个**方法，不合成一个 `(projectId, archived: boolean)`
+ *
+ * 合成一个的话，调用方要负责把「我要归档」翻成一个布尔，而**翻反了不报错也不变红**——
+ * 民警点「归档」却被恢复了。两个名字把方向写在**函数名**上（同 `auth/project-member.ts` 的
+ * `markArchived` / `markRestored` 不合成一个的道理）。两者共用的那部分在
+ * `openhive-project.ts` 的 `projectAction` 里已经只有一份。
  */
 export interface ProjectData {
   /** 取当前用户的全部项目。`undefined` = 取不到，`[]` = 一个都没有（三态见 `listProjects`）。 */
   list(): Promise<readonly ProjectEntry[] | undefined>
   /** 建一个新项目。 */
   create(input: NewProjectInput): Promise<CreateProjectOutcome>
+  /** 归档一个项目（FR-008，破坏性：沙箱文件先备份再删）。 */
+  archive(projectId: string): Promise<ProjectActionOutcome>
+  /** 找回一个已归档的项目（FR-009）。 */
+  restore(projectId: string): Promise<ProjectActionOutcome>
   /** 取某个项目的全部文件路径（`undefined` = 取不到，`[]` = 一个文件都没有）。 */
   files(projectId: string): Promise<readonly string[] | undefined>
 }
 
 /**
- * 生产用的那一个——三个方法各接各的客户端（`openhive-project` ×2 ＋ `openhive-files`）。
+ * 生产用的那一个——五个方法各接各的客户端（`openhive-project` ×4 ＋ `openhive-files`）。
  *
- * ⚠️ **三个都别接错**：接错了不报错、不变红，类型上也都合法。`project-data.test.ts`
- * 就是为这件事写的（stub 进程的 `fetch`，走真客户端）。
+ * ⚠️ **五个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
+ * 更是一模一样，接反了只有请求路径不同）。`project-data.test.ts` 就是为这件事写的
+ * （stub 进程的 `fetch`，走真客户端）。
  */
 export const PROJECT_DATA: ProjectData = {
   list: () => listProjects(),
   create: (input) => createProject(input),
+  archive: (projectId) => archiveProject(projectId),
+  restore: (projectId) => restoreProject(projectId),
   files: (projectId) => listProjectFiles(projectId),
 }

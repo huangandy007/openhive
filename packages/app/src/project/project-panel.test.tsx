@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { ProjectPanel, type ProjectEntry } from "./project-panel"
@@ -112,6 +113,12 @@ const 共享 = (id: string, name: string, lastAccessedAt: number, memberCount: n
   lastAccessedAt,
 })
 const 归档 = (e: ProjectEntry): ProjectEntry => ({ ...e, archived: true })
+/**
+ * 带「**我**在这个项目里的角色」的一行（T023）。角色的闭集**从 core 取**、不在这里抄一份
+ * （`MemberRole` 与库里 `project_member.role` 的 CHECK 已经是同一份值的两处写法，
+ * `membership.ts` 文件头记着——本文件没必要成为第三处）。
+ */
+const 我的 = (e: ProjectEntry, role: ProjectMembership.MemberRole): ProjectEntry => ({ ...e, role })
 
 /**
  * 项目面板（FR-002 / FR-003 / `2026-09-11-项目管理-design.md` §3）：
@@ -548,7 +555,16 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
   test("「已归档」tab 的项目带「找回」入口（设计 §3 / FR-009）", () => {
     const 记: ProjectEntry[] = []
     const 封存 = 归档(私有("p2", "封存专案", 1))
-    const host = mount(() => <ProjectPanel projects={[封存]} onRestore={(p) => 记.push(p)} />)
+    // 块体、不回话（`ProjectActionCallback` 的回话集合里没有 `number`——`push` 那个返回值
+    // 不是「给民警看的一句话」，写成表达式体是拿数组长度冒充回话）。
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[封存]}
+        onRestore={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
 
     页签(host, "archived")?.click()
     组(host, "archived")?.querySelector<HTMLButtonElement>("[data-slot='project-restore']")?.click()
@@ -556,12 +572,27 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
     expect(记.map((p) => p.id)).toEqual(["p2"])
   })
 
+  /**
+   * 「找回」是**归档区**的事（FR-009）：活跃列表里没有它。
+   *
+   * ⚠️ 这条原来**只查了活跃那一侧**、没切到「已归档」tab——而那条「不给回调即不画」的守卫
+   * 正好长在归档组里 ⇒ 两边都没盖住。2026-10-07 席 B 审查抓出：调用方把 `onRestore` 包成
+   * 一个**恒真的函数**之后，`ArchivedGroup` 的 `Show` 被永远点亮，而未接线时这里**照样全绿**。
+   * 所以两侧都要断（`LEARNINGS #003-02`：修完一处要 grep 谁在按同一个前提做同一件事）。
+   */
   test("「找回」只在「已归档」tab 出现，不在活跃列表里（FR-009 是归档区的事）", () => {
     const host = mount(() => (
-      <ProjectPanel projects={[私有("p1", "活跃专案", 2), 归档(私有("p2", "封存专案", 1))]} />
+      <ProjectPanel
+        projects={[私有("p1", "活跃专案", 2), 归档(私有("p2", "封存专案", 1))]}
+        onRestore={() => {}}
+      />
     ))
 
     expect(无槽(host, "project-restore")).toBe(true)
+
+    页签(host, "archived")?.click()
+
+    expect(无槽(host, "project-restore")).toBe(false)
   })
 
   test("没有项目时三 tab 都走空态，不伪造项目名（宁缺勿假）", () => {
@@ -584,5 +615,270 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
     页签(host, "archived")?.click()
 
     expect(文本(host, "project-panel-empty")).toBe("没有已归档的项目")
+  })
+})
+
+/**
+ * 归档 / 找回的**接线与呈现**（T023 · FR-008 / FR-009）。
+ *
+ * 本 task 只做接线与呈现：判定（谁能归档、归档态下能做什么）**一份都不在这里**，
+ * 全部走 `ProjectMembership.decide`（`project-panel.tsx` 的 `canArchive`）。
+ * 所以这组用例钉的是**范围**（画在哪个 tab、哪一行画）与**流程**（二次确认、失败落到哪）。
+ *
+ * ⚠️ 二次确认是本组最要紧的一条：归档**是破坏性操作**（沙箱文件先备份进 MinIO、本地那份删掉），
+ * 而 005 全仓**没有「取消归档」**——误触之后只能等文件搬回来。所以「点一下就直接归档」这件事
+ * 必须有一条用例明确地说不允许（`记` 在确认之前是空的）。
+ */
+describe("归档 / 找回的接线（T023）", () => {
+  /** 切到「全部」再点那一行尾巴上的「归档」——面板上的归档动作**只**画在那儿（设计 §8.1）。 */
+  const 点归档 = (host: HTMLElement) => {
+    页签(host, "all")?.click()
+    按钮(host, "project-archive")?.click()
+  }
+
+  test("「全部」tab 上，owner 那一行带「归档」，且写明是归档哪一个（FR-008 的入口）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(文本(host, "project-archive")).toBe("归档")
+    expect(按钮(host, "project-archive")?.getAttribute("aria-label")).toBe("归档 8·17专案")
+  })
+
+  test("「最近」tab 不画「归档」——归档动作只画在「全部」里（设计 §8.1）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    expect(无槽(host, "project-archive")).toBe(true)
+  })
+
+  test("member 的行不画「归档」（owner 才行——判定走 `decide`，组件零规则复述）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(共享("p2", "串并案", 2, 3), "member")]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-archive")).toBe(true)
+  })
+
+  /**
+   * 缺 `role` = **没有成员关系**（不是 member）⇒ fail-closed。
+   *
+   * 这条与上一条分开，因为它们是两件事：上一条是「判定说不行」，这条是「**没有授权依据**」。
+   * 后者最危险的写法是给个默认角色（`?? "owner"` 会立刻放行，`?? "member"` 则把「不知道」
+   * 说成「知道他不是 owner」）——两种都不报错、不变红（`LEARNINGS #004-07`）。
+   */
+  test("没有 role 的行不画「归档」（缺键 = 没有授权依据，不倒向任何角色）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-archive")).toBe(true)
+  })
+
+  test("没接线（没传 onArchive）⇒ 谁都不画「归档」（不画一个点了没用的按钮）", () => {
+    const host = mount(() => <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} />)
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-archive")).toBe(true)
+  })
+
+  /**
+   * 上一条的**第二个出口**（FR-009）。两条分开写，因为守卫长在两个不同的组里——归档那条读
+   * `props.onAskArchive`，找回这条读 `props.onRestore`（在 `ArchivedGroup` 内部）。
+   *
+   * ⚠️ 必须**切到「已归档」tab**才测得到：守卫在归档组里，不切过去它压根不渲染，这条就退化成
+   * 一句废话（原来的「找回只在已归档 tab」那条正是这么退化的）。
+   */
+  test("没接线（没传 onRestore）⇒ 「已归档」tab 上谁都不画「找回」（同一个约定的第二个出口）", () => {
+    const host = mount(() => <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} />)
+
+    页签(host, "archived")?.click()
+
+    expect(无槽(host, "project-restore")).toBe(true)
+  })
+
+  test("点「归档」是先问一句，**不立刻交出去**（破坏性操作要二次确认）", () => {
+    const 记: ProjectEntry[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(私有("p1", "8·17专案", 3), "owner")]}
+        onArchive={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    点归档(host)
+
+    expect(记).toEqual([])
+    expect(无槽(host, "project-archive-confirm")).toBe(false)
+  })
+
+  test("确认条上写出归档的是哪一个项目（点确认前得看清对象）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    点归档(host)
+
+    expect(文本(host, "project-archive-name")).toBe("8·17专案")
+  })
+
+  /**
+   * 确认文案必须说清**三步**（用户 2026-10-06 裁定）——这不是措辞洁癖：民警要据此判断
+   * 「我点下去会失去什么、还能不能拿回来」。三件事各对应实现里一个真实的事实：
+   * 备份先发生（T013 的次序保证）、本地那份真的没了、之后能找回（FR-009 存在）。
+   */
+  test("确认文案说清三件事：先备份进 MinIO、本地这份删掉、之后能找回", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    点归档(host)
+
+    const 文案 = 文本(host, "project-archive-confirm") ?? ""
+    expect(文案).toContain("MinIO")
+    expect(文案).toContain("删掉")
+    expect(文案).toContain("找回")
+  })
+
+  test("取消 ⇒ 确认条收掉，什么都不发（改主意不用付出代价）", () => {
+    const 记: ProjectEntry[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(私有("p1", "8·17专案", 3), "owner")]}
+        onArchive={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    点归档(host)
+    按钮(host, "project-archive-cancel")?.click()
+
+    expect(无槽(host, "project-archive-confirm")).toBe(true)
+    expect(记).toEqual([])
+  })
+
+  test("确认 ⇒ 交出去的是那一行项目本身，确认条同时收掉（不留一条挡住第二次点）", async () => {
+    const 记: ProjectEntry[] = []
+    const 甲 = 我的(私有("p1", "8·17专案", 3), "owner")
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[甲]}
+        onArchive={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    点归档(host)
+    按钮(host, "project-archive-ok")?.click()
+    await 冲一遍()
+
+    expect(记).toEqual([甲])
+    expect(无槽(host, "project-archive-confirm")).toBe(true)
+  })
+
+  /**
+   * 没办成必须有回音。**点了归档却什么都没发生**是最坏的一种静默：民警会以为归档好了，
+   * 而项目还在「全部」里（同 `project-panel-create-error` 那条「失败的话没地方落」）。
+   */
+  test("归档没办成 ⇒ 面板底下那句话，`role=alert`（点了什么都不发生是最坏的静默）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => "无权归档该项目"} />
+    ))
+
+    点归档(host)
+    按钮(host, "project-archive-ok")?.click()
+    await 冲一遍()
+
+    expect(文本(host, "project-panel-action-error")).toBe("无权归档该项目")
+    expect(槽(host, "project-panel-action-error")?.getAttribute("role")).toBe("alert")
+  })
+
+  test("归档办成了（回调不回话）⇒ 一句错误文案都不留", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    点归档(host)
+    按钮(host, "project-archive-ok")?.click()
+    await 冲一遍()
+
+    expect(无槽(host, "project-panel-action-error")).toBe(true)
+  })
+
+  /** 下一次动作开始时上一句话就该消失——留着它，民警分不清那是新结果还是旧结果。 */
+  test("再办一次 ⇒ 上一次那句话先清掉（不把旧结论挂在新动作上）", async () => {
+    let 这次: string | undefined = "第一次没办成"
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(私有("p1", "8·17专案", 3), "owner")]}
+        onArchive={() => {
+          const 回话 = 这次
+          这次 = undefined
+          return 回话
+        }}
+      />
+    ))
+
+    点归档(host)
+    按钮(host, "project-archive-ok")?.click()
+    await 冲一遍()
+    expect(文本(host, "project-panel-action-error")).toBe("第一次没办成")
+
+    点归档(host)
+    按钮(host, "project-archive-ok")?.click()
+    await 冲一遍()
+
+    expect(无槽(host, "project-panel-action-error")).toBe(true)
+  })
+
+  test("找回没办成 ⇒ 同一处报错（两个动作共一格，不各报一半）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} onRestore={() => "找回项目失败"} />
+    ))
+
+    页签(host, "archived")?.click()
+    按钮(host, "project-restore")?.click()
+    await 冲一遍()
+
+    expect(文本(host, "project-panel-action-error")).toBe("找回项目失败")
+  })
+
+  test("找回的回话是异步的（Promise）也等得到（同 onCreate 那条）", async () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[归档(私有("p2", "封存专案", 1))]}
+        onRestore={() => Promise.resolve("还是不行")}
+      />
+    ))
+
+    页签(host, "archived")?.click()
+    按钮(host, "project-restore")?.click()
+    await 冲一遍()
+
+    expect(文本(host, "project-panel-action-error")).toBe("还是不行")
+  })
+
+  test("找回办成了 ⇒ 不留错误文案（同一格的另一半）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} onRestore={() => {}} />
+    ))
+
+    页签(host, "archived")?.click()
+    按钮(host, "project-restore")?.click()
+    await 冲一遍()
+
+    expect(无槽(host, "project-panel-action-error")).toBe(true)
   })
 })

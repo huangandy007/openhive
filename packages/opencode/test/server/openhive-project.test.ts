@@ -9,6 +9,7 @@ import { HttpRouter } from "effect/unstable/http"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
+import { addMember } from "@opencode-ai/auth/project-member"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -186,7 +187,7 @@ const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
  * 而「键名对不上」的失败模式是**静默的空列表**（`panel.projects?.filter(...)` 全落空）。
  * 把它当**客户端契约**钉死（`LEARNINGS #003-05`：镜像要写成能被惊醒的样子）。
  *
- * ⚠️ **`memberCount` 与 `archived` 是可选键，这是刻意的**（第一版写成必填，是把「我以为的形状」
+ * ⚠️ **`memberCount` / `archived` / `role` 是可选键，这是刻意的**（第一版写成必填，是把「我以为的形状」
  * 当成了契约，`LEARNINGS #004-07`：形状由**被调方**定义——这里是消费侧 `ProjectEntry` 的注释）：
  *
  * - `memberCount`：`ProjectEntry` 原话「**私有项目读作 `undefined`**（同 `ProjectAnchor`：
@@ -194,6 +195,10 @@ const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
  *   就画 `👥 N` ⇒ 「给 0」与「给真数」都会让**私有项目**长出一个成员徽章。缺键 = 没有这回事。
  * - `archived`：`ProjectEntry` 原话「省略 = 活跃」。`project_archive` 的行要到 T013 才写，
  *   今天一条都没有；读成 `false` 等于替归档那条链**声称**「查过了，没归档」。
+ * - `role`（T023 追加）：**我**在这行项目里的角色，面板拿它当 `ProjectMembership.decide` 的
+ *   `actor`（判定只有那一份实现，组件零规则复述）。**没有成员行 ⇒ 缺键**——读成 `"member"` 会
+ *   让 `decide` **放行**，读成 `"owner"` 更糟（凭空多一个能点的「归档」）。同上面两条口径：
+ *   「还没查」不许写成「查过了」。
  */
 const Entry = Schema.Struct({
   id: Schema.String,
@@ -202,6 +207,7 @@ const Entry = Schema.Struct({
   memberCount: Schema.optional(Schema.Number),
   lastAccessedAt: Schema.Number,
   archived: Schema.optional(Schema.Boolean),
+  role: Schema.optional(Schema.String),
 })
 
 /** `POST /openhive/project` —— 建一个项目，返回它的 `ProjectEntry`。 */
@@ -318,6 +324,31 @@ async function memberRows(projectId: string): Promise<{ user_id: string; role: s
     sql`select user_id, role from auth.project_member where project_id = ${projectId} order by user_id`,
   )
   return rowsOf(result).map((row) => ({ user_id: String(row.user_id), role: String(row.role) }))
+}
+
+/**
+ * 删掉某项目的**全部**成员行（**夹具**，T023）：构造「有 `project_ext` 行、却没有成员行」的分叉态。
+ *
+ * 与 `writeUserDb` 同一条理由：改的是**输入**（PG 里的成员关系），断言仍然读 HTTP 响应
+ * （`LEARNINGS #002-02`：oracle 不经过被测对象）。真库没起来 ⇒ **抛**——搭错了不该静默变成
+ * 「没这回事」（同 `writeUserDb` 的取法）。
+ */
+async function dropMemberRows(projectId: string): Promise<void> {
+  if (!pg) throw new Error(`夹具要删成员行，但真库没起来：${projectId}`)
+  await pg.db.execute(sql`delete from auth.project_member where project_id = ${projectId}`)
+}
+
+/**
+ * 给某项目插**一行**成员关系（**夹具**，T023）：构造「库里剩下的那行**不是我的**」。
+ *
+ * 走生产的 `addMember`（T021 的邀请出口今天还不存在，同 `openhive-project-shared.test.ts` 的
+ * `addMemberTo`）。与 `dropMemberRows` 同一条理由：写的是**输入**（PG 里的成员关系），
+ * 断言读的仍是 HTTP 响应（`LEARNINGS #002-02`）；真库没起来 ⇒ **抛**，搭错了不该静默。
+ */
+async function addMemberRow(projectId: string, userId: string, role: string): Promise<void> {
+  if (!pg) throw new Error(`夹具要插成员行，但真库没起来：${projectId}`)
+  // Unix **秒**（`src/time.ts` 的 `nowSeconds()` 口径）——`addMember` 要求调用方给。
+  await addMember(pg.db, { projectId, userId, role, timeCreated: Math.floor(Date.now() / 1000) })
 }
 
 /**
@@ -588,6 +619,108 @@ describe("T018 · 出口本身（身份门）", () => {
 
         expect(created.status).toBe(401)
         expect(listed.status).toBe(401)
+      }),
+    30_000,
+  )
+})
+
+describe("T023 · 列项目带 role（授权数据）", () => {
+  /**
+   * **主判据**：行上的 `role` 是**调用者自己**在那个项目里的角色（T018 建项目时落的 `owner` 行）。
+   *
+   * 为什么列表要带它、而不是让面板自己猜：名单取自**每用户库**的 `project_ext`，而今天那张表
+   * **只有创建者会写**（T018 第 8 步）⇒「列表里每一行都是我建的」这个**巧合**让「每一行都能归档」
+   * 看着也对。等到成员也拿到 `project_ext` 行的那天，巧合消失，面板上会多出一排点不动的「归档」
+   * 且**不报错不变红**（`LEARNINGS #003-05`：镜像要写成能被惊醒的样子）。role 摊到列表上之后，
+   * 「谁能归档」只剩 `ProjectMembership.decide` **一份**实现。
+   *
+   * 断言写成「过滤出这一行再比数组」而不是 `entries[0].role`：过滤后为空、为一行、为两行
+   * 都读得出来（`Received: []` 一眼是「这一行根本没回来」），而 `[0]` 在行缺失时只是
+   * `undefined`——那与「role 键没给」是**两件事**，混在一起就分不清该修哪一半。
+   */
+  it.live(
+    "列项目：自己建的项目带 role: owner",
+    () =>
+      Effect.gen(function* () {
+        const created = yield* createAs(BOB, { name: "我建的", type: "private" })
+
+        expect((yield* listAs(BOB)).filter((entry) => entry.id === created.id).map((entry) => entry.role)).toEqual([
+          "owner",
+        ])
+      }),
+    30_000,
+  )
+
+  /**
+   * **fail-closed**：没有成员行 ⇒ **没有 `role` 键**（不是 `"member"`、更不是 `"owner"`）。
+   *
+   * 这条判据守的是「**读不到就画不出**」。默认成任何角色，面板都会在一条**没有授权依据**的行上
+   * 画出「归档」按钮——而 `decide(actor: 编出来的角色)` 恰恰会**放行**（`RULES.archive` 只问
+   * `actor === "owner"`）。这与 `memberCount` / `archived` 的缺键是同一条口径：读的一侧不许替
+   * 写的那一侧作证。
+   *
+   * 构造手法是**直接改库**（删成员行），与「同一毫秒」那条同一条理由：改的是**输入**
+   * （PG 里的成员关系），断言仍然读 HTTP 响应（`LEARNINGS #002-02`）。
+   *
+   * ⚠️ **对照排在被测属性之前，这里是被时间顺序逼的**（`#004-14` 的例外）：删之前那次列表
+   * 就是「机制是活的」的证明——少了它，删库那一步没生效（写错表名、连接打空）也会让最后那句绿
+   * （`LEARNINGS #004-08`：副作用类判据必须先有一条对照）。
+   */
+  it.live(
+    "没有成员行 ⇒ 列表里没有 role 键（fail-closed）",
+    () =>
+      Effect.gen(function* () {
+        const created = yield* createAs(ALICE, { name: "没有成员行", type: "private" })
+
+        // 对照（前置）：删之前这一行是带 role 的。
+        expect(
+          (yield* listAs(ALICE)).filter((entry) => entry.id === created.id).map((entry) => entry.role),
+        ).toEqual(["owner"])
+
+        yield* Effect.promise(() => dropMemberRows(created.id))
+
+        const listed = (yield* listAs(ALICE)).filter((entry) => entry.id === created.id)
+        // 断「键在不在」而不是「值是不是 undefined」：`Schema.optional` 的缺席是**键不在**
+        // （同上面 `memberCount` / `archived` 那两条既有断言），断值会把两种情形混成一句。
+        expect(listed.map((entry) => "role" in entry)).toEqual([false])
+      }),
+    30_000,
+  )
+
+  /**
+   * **别人的成员行 ≠ 我的成员行**——`rolesOf` 里 `where user_id = ${input.userId}` 那一行。
+   *
+   * 为什么单开一条：上面那条把成员行**全删了**，于是「查全部成员再挑一个」这种写法
+   * （`user_id` 过滤丢掉）会得到**同样的空结果** ⇒ 两条都绿（2026-10-07 席 A 审查指出）。
+   * 要抓住它，库里得**剩一行属于别人**：只剩 BOB 的 `member` 行时，ALICE 必须**仍然没有
+   * `role` 键**——她确实没有成员行。方向也正：丢了过滤是**多给**角色（面板画出「归档」按钮），
+   * 与「宁可漏给不能多给」相反。
+   *
+   * ⚠️ 判据特意**不**写成「owner 拿到 owner、member 拿到 member」：那种写法要靠 SQL 的返回顺序
+   * 才能决定变异红不红（`new Map()` 后写覆盖先写，PGlite 的返回顺序没有契约）——那是**不稳定的红**，
+   * 不算数（`LEARNINGS #003-03`：凑不出「恰红」就不能记成恰红）。这里断的是**有没有这一行**，
+   * 与顺序无关。
+   *
+   * 构造手法同上：改的是**输入**（PG 里的成员关系），断言读的仍是 HTTP 响应（`#002-02`）。
+   */
+  it.live(
+    "别人是成员 ⇒ 不等于我是成员（没有我的成员行时列表里没有 role 键）",
+    () =>
+      Effect.gen(function* () {
+        const created = yield* createAs(ALICE, { name: "别人的成员行", type: "private" })
+
+        // 对照（前置）：换之前我这一行是带 role 的——机制是活的，最后那句才有意义
+        // （`LEARNINGS #004-08`：副作用类判据必须先有一条对照）。
+        expect(
+          (yield* listAs(ALICE)).filter((entry) => entry.id === created.id).map((entry) => entry.role),
+        ).toEqual(["owner"])
+
+        // 把我那一行**换成 BOB 的**：库里从此还剩一行，且**不是我的**。
+        yield* Effect.promise(() => dropMemberRows(created.id))
+        yield* Effect.promise(() => addMemberRow(created.id, BOB.id, "member"))
+
+        const listed = (yield* listAs(ALICE)).filter((entry) => entry.id === created.id)
+        expect(listed.map((entry) => "role" in entry)).toEqual([false])
       }),
     30_000,
   )

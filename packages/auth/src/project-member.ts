@@ -31,8 +31,8 @@ import { rowsOf } from "./migrate"
  *    `migrate.ts` 的 `MigrationTarget`）——这样调用方递真库还是 PGlite 都行，测试不必给驱动搭替身。
  * ② **出口是 camelCase 且只吐调用方要的列**：改名只在贴着 SQL 的这里做一次（同 `grantsFor` 的
  *    理由）。单条查询（`membersOf`）**不吐 `project_id`**——按定义它就是查询参数，吐回去等于给
- *    调用方一个「可以拿错行」的机会；批量查询（`archiveStatesOf` / `memberCountsOf`）则**以
- *    `project_id` 为 Map 的键**——那里的 projectId 是「这一行属于谁」，不吐就没法归位。
+ *    调用方一个「可以拿错行」的机会；批量查询（`archiveStatesOf` / `memberCountsOf` / `rolesOf`）
+ *    则**以 `project_id` 为 Map 的键**——那里的 projectId 是「这一行属于谁」，不吐就没法归位。
  * ③ **`membersOf` 的 `order by` 是语义不是修饰**：`time_created` 只有**秒**粒度，同一次建项目里
  *    两个成员极易同秒，所以次级键 `user_id` 必需——否则成员面板的名单顺序会随 PG 的返回顺序漂。
  *
@@ -265,6 +265,34 @@ export async function memberCountsOf(
     group by project_id
   `)
   return new Map(rowsOf(result).map((row) => [String(row.project_id), Number(row.n)]))
+}
+
+/**
+ * 一次取「**这个身份**在这批项目里各是什么角色」（T023：项目列表的 `role`）。
+ *
+ * ⚠️ **收的是 `userId` ＋ 一批 projectId，返回 `Map<projectId, role>`**——不是「按项目取全部成员，
+ * 调用方再挑出自己那个」。后者把「我是谁」这件事交给了调用方：挑错了（或者干脆取了第一个）
+ * 不报错、不变红，只是**给了错的人 owner 权限**（`LEARNINGS #004-01` 的同族形状：判据要锚在
+ * 「做那件事的那一行」，而这里做那件事的是 `where user_id = ?`）。
+ *
+ * **没有那一行的项目，键在 Map 里缺席**（同 `archiveStatesOf` / `memberCountsOf` 的口径）：
+ * 消费侧（`packages/opencode/src/server/openhive/project.ts`）据此**不给 `role` 键**，
+ * 而前端的 `decide({ actor: undefined })` 因此 fail-closed（`RULES.archive` 只认 `owner`）。
+ * 在这里补一个默认角色就等于替成员那条链**声称**「查过了」——正是这条要防的。
+ *
+ * 空数组在入口提前返回（同 `memberCountsOf`：`in ()` 是语法错，应当炸出来而不是被兜住）。
+ */
+export async function rolesOf(
+  db: ProjectMemberTarget,
+  input: { readonly userId: string; readonly projectIds: readonly string[] },
+): Promise<Map<string, string>> {
+  if (input.projectIds.length === 0) return new Map()
+  const result = await db.execute(sql`
+    select project_id, role
+    from auth.project_member
+    where user_id = ${input.userId} and project_id in (${idsOf(input.projectIds)})
+  `)
+  return new Map(rowsOf(result).map((row) => [String(row.project_id), String(row.role)]))
 }
 
 /**

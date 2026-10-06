@@ -254,6 +254,50 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                             }
                           : undefined
                       }
+                      /*
+                        归档（FR-008 / T023）。**破坏性**操作，所以办成之后有两件收尾：
+
+                        ① **清单重拉**——那一行不再属于「全部」了。不把旧清单抠掉那行，正是因为
+                           清单是缝里的只读数据，而重拉还能顺带把**别人**的改动带回来。
+                        ② 归档的要是**当前项目**，就把它清掉：不清的话锚点行还挂着它，而它的沙箱
+                           已经删了——民警点进去看到空目录，文件其实在 MinIO 上（这正是「界面显示一个
+                           已经不存在的东西」，不是在收拾现场）。
+                           清的是**被归档的那一个**，不是「有归档就清」：归档别人不动当前项目。
+
+                        没办成 ⇒ 把服务端那句话原样交回去（`结论.message`——`rejected` 与 `failed` 两支
+                        都带它，接线这一层不需要、也不该分开看），前端不自己改写措辞——它不知道是哪一条
+                        规则挡下的（同 T018 的 400 那条）。
+                      */
+                      onArchive={
+                        projectData
+                          ? async (project) => {
+                              const 结论 = await projectData.archive(project.id)
+                              if (结论.kind !== "done") return 结论.message
+                              if (currentProject()?.id === project.id) setCurrentProject(undefined)
+                              await 拉清单(projectData)
+                              return undefined
+                            }
+                          : undefined
+                      }
+                      /*
+                        找回（FR-009 / T023）。**不碰当前项目**：找回一个项目不等于切到它
+                        ——「点一下直达」是 `onOpen` 的事，这里只把清单重拉一次
+                        （那一行从「已归档」回到「全部」）。
+
+                        ⚠️ 归档与找回**都不带 `x-openhive-project` 头**，`project-data.ts` 那两个
+                        方法已经钉住了这件事（带了的话，找回会被 T017 中间件的第一道门自己挡在
+                        门外——那个项目**永久找不回来**）。
+                      */
+                      onRestore={
+                        projectData
+                          ? async (project) => {
+                              const 结论 = await projectData.restore(project.id)
+                              if (结论.kind !== "done") return 结论.message
+                              await 拉清单(projectData)
+                              return undefined
+                            }
+                          : undefined
+                      }
                     />
                   </div>
                 </Show>
