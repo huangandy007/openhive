@@ -7,9 +7,11 @@ import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
 import { currentProject, setCurrentProject } from "@/project/current-project"
 import { FileTree } from "@/project/file-tree"
+import { MemberPanel } from "@/project/member-panel"
 import { ProjectAnchor } from "@/project/project-anchor"
 import { projectFiles } from "@/project/project-files"
 import { projectList } from "@/project/project-list"
+import { projectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
@@ -67,6 +69,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 所以不进接入缝。
    */
   const [panelOpen, setPanelOpen] = createSignal(false)
+  /**
+   * 成员面板开没开（T010）。理由同 `panelOpen`：开关它的按钮（`👥 N` 徽章）在锚点行上，
+   * 而面板本身在下面，两者分属两个组件 ⇒ 状态只能落在共同祖先里。同样是纯 UI 开关，不进接入缝。
+   *
+   * **两个浮层互斥**（开一个就关另一个）：左栏只有一列宽，两块浮层叠在一起是「坏了」的样子，
+   * 不是风格选择——所以两处开关都顺手把对方收掉。
+   */
+  const [memberOpen, setMemberOpen] = createSignal(false)
 
   return (
     <>
@@ -96,7 +106,17 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                 <ProjectAnchor
                   name={currentProject()?.name}
                   memberCount={currentProject()?.memberCount}
-                  onToggleList={() => setPanelOpen((open) => !open)}
+                  onToggleList={() => {
+                    setMemberOpen(false)
+                    setPanelOpen((open) => !open)
+                  }}
+                  // 👥 徽章：滑出成员面板（T010）。`ProjectAnchor` 早在 T005 就预留了这个回调
+                  // （注释点名「接的是 T010 的成员面板」），今天才接上——在那之前它渲染成 `disabled`。
+                  // 今天只有**共享项目**有徽章（`memberCount` 非空），私有项目没有成员管理这回事。
+                  onOpenMembers={() => {
+                    setPanelOpen(false)
+                    setMemberOpen((open) => !open)
+                  }}
                   // `＋` 今天退化成「打开面板」——面板置顶就是「＋新建项目（私有/共享）」
                   // （设计 §3：「置顶最易达」）。**这不是「新建」的替代**：面板里那两个按钮
                   // 今天同样是禁用的（没有落库接收方，见 `project-panel.tsx` 文件头）。
@@ -118,6 +138,18 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         })
                         setPanelOpen(false)
                       }}
+                    />
+                  </div>
+                </Show>
+                {/* 成员面板（FR-004 / US3 / 设计 §4）：`👥 N` 徽章滑出，同项目面板一样是浮层。
+                    数据走 `@/project/project-members` 那条缝、身份走 `@/workspace/current-user`；
+                    三个动作回调**今天不接线** ⇒ 渲染成 `disabled`（落库缺口归 T021，见 `member-panel.tsx` 文件头）。 */}
+                <Show when={memberOpen()}>
+                  <div data-slot="member-panel-slot" class="absolute inset-x-0 top-10 z-10 px-1">
+                    <MemberPanel
+                      projectName={currentProject()?.name}
+                      members={projectMembers()}
+                      selfPoliceId={currentUser()?.policeId}
                     />
                   </div>
                 </Show>

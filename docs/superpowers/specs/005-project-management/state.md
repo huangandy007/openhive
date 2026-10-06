@@ -836,6 +836,70 @@ M5 `确认删` 喊 `selected()` 而非 `待删()` ⇒ 恰红 **2**；M6 danger c
 **原来那一项**（跟着 `待删` 走、不跟 `selected`）——测试只覆盖了「先取消、再选」这条路径；
 ② 确认删除后 `selected()` **不清空**（树内容由父组件经 `paths` 受控，选中项是否随之失效不在本组件职责内）。
 
+### T010 · 成员面板（FR-004 / US3 / 设计 §4）
+
+**交付**：新建 `packages/app/src/project/member-panel.tsx`（受控组件，`data-component="member-panel"`）＋
+`member-panel.test.tsx`（**18 条**）＋ 接缝 `packages/app/src/project/project-members.ts`（与 `project-list.ts`
+同型同因）；接线落在 `packages/app/src/workspace/workspace-entry.tsx`（`memberOpen` 信号 ＋
+`ProjectAnchor` 的 `onOpenMembers` ＋ `member-panel-slot` 浮层）＋ `workspace-entry.test.tsx`（＋6 条）。
+测试命令同 T007–T009 的三段式（`--conditions=browser` ＋ 两个 `--preload`）。
+
+**`onOpenMembers` 不是新加的接口**：`ProjectAnchorProps` 在 T005 就预留了它，注释原文「点成员徽章：滑出成员
+面板（T010）。省略 = 禁用」——今天只是把回调接上，禁用态自然消失。徽章本身（`👥 N`）也只在 `memberCount`
+非空时渲染 ⇒ **私有项目没有成员管理入口**是既有的、天然成立的（`ProjectAnchor` 的 `<Show when={props.memberCount}>`）。
+
+**权限：一律问 `decide`，本组件零规则复述。** `actor` 从 `selfPoliceId` 在成员表里反查 role，**查不到就是
+`null`** ⇒ `decide` 对每个动作都落空 ⇒ 前端天然 fail-closed（身份没到之前宁少勿假）。四条权限各有用例：
+member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`（移除目标必须是 member）、owner 看不到
+`[退出项目]`、已归档时三条动作全不画（FR-010 的冻结在面板上一样成立）。
+
+**「权限决定画不画，接线决定能不能点」——两条独立的理由**（T005 起的老口径）：`decide` 说不成立 ⇒
+按钮**根本不渲染**；回调没给 ⇒ 渲染成 `disabled`。所以组件里 `disabled` **只**看「接没接线」，从不看权限。
+混在一起写就会得到「有权限但没接线」时按钮**可点而无声**的形状。
+
+**⚠️ 变异 M5 逼出的一处收敛（`#002-06` 的又一实例）**：「谁是我」我一开始写了**两遍**——`我()` 里的
+`find(...)` 判权限，标记里另写 `m.policeId === props.selfPoliceId`。把 `find` 换成 `成员()[0]` 时**只有权限
+那侧红**（5 条），标记那侧一条用例都不动。改成 `<Show when={m === 我()}>`（比**同一个对象引用**，两处都取自
+`props.members` 的元素）后，同一个变异红 **6** 条 —— 一个判断一处实现，一个变异点覆盖两处。
+
+**⚠️ 探针自己的一处 bug（「红得莫名其妙」的那类）**：`行内有(row, slot)` 起初写成
+`row?.querySelector(...) !== null` —— **行压根不存在**时 `undefined !== null` 为 `true` ⇒ 它替一棵没渲染
+出来的行作证「里面有权限按钮」（假绿），并把紧接着的 `null!` 撑成 `null.querySelector` 的 TypeError。
+判据：**返回布尔的探针必须显式判 `row !== null`**，不能靠 `?.` 的 `undefined` 碰巧不等于 `null`。
+
+**面板形态**：定位（`absolute`）由**调用方**包一层，同 `ProjectPanel` —— `MemberPanel` 自己不知道自己在
+哪儿（happy-dom 没有 CSS 引擎，几何本来也测不进组件，故这一层不进组件测试）。两个浮层**互斥**（开一个就
+关另一个，两处开关都顺手收掉对方）：左栏只有一列宽，叠着是「坏了」的样子不是风格选择，有测试钉住。
+
+**门禁（串行跑，2026-10-06）**：
+
+| 门 | 结果 | 对照 |
+|---|---|---|
+| `packages/app` `test:components` | **330 pass / 0 fail / 24 文件** | T009 基线 306 ⇒ ＋24（T010 的 18 ＋ 接缝 6） |
+| `bun run typecheck` | **31/31，EXIT=0** | 同基线（⚠️ 首跑红 3 条，见下「一处 typecheck 才抓到的」） |
+| `bun run lint:openhive` | **23 warnings / 0 errors / EXIT=0** | **本次三文件 0 命中**——引入的 4 处已当场清掉 |
+| `bun run lint` | **本次文件 0 命中** | 那 1 error 仍是 `#001-02` 记的上游 `session-ui/src/v2/components/prompt-input/index.tsx:163`，裁定不私改 |
+
+**⚠️ 一处只有 typecheck 才抓到的**：`member-panel.test.tsx` 里 `文本(行(host, …), …)` 把 `HTMLElement | null`
+递给了收非空的 `文本` —— `bun test`（bun 的 runner）**不做类型检查**，所以 RED/GREEN 一路都是绿的、没暴露。
+已把 `文本` 的第一参数放宽为 `HTMLElement | null`（那一行真不存在时该是「文本读作 `undefined`，于是断言红」，
+不是抛异常）。同批清掉 lint 引入的 4 处：`member-panel.tsx` 的 `Icon` 死导入（本组件两个图标都是 emoji，
+不用 `Icon`）＋ 测试里 3 处类型断言（泛型 `槽<T>` 会被 `no-unnecessary-type-parameters` 报「T 只用一次」，
+改用具名的 `输入框` / `行内按钮` 两个 helper）。
+
+**变异（串行跑，据实记 `#003-03`，全部为①类恰红）**：
+
+- **组件侧**：M1 `能("invite")`⇒`true` 恰红 **2**；M2 `能("remove", m.role)`⇒`true` 恰红 **4**；
+  M3 `能("leave")`⇒`true` 恰红 **3**；M4 忽略归档 恰红 **1**；M5 不看 `selfPoliceId` 恰红 **6**
+  （收敛后；收敛前 5）；M6 未接线也可点 恰红 **1**；M7 空警号也喊 恰红 **1**；M8 喊错人 恰红 **1**。
+- **接线侧**：N1 徽章点了不开 恰红 **5**；N2 两浮层不互斥 恰红 **1**（⚠️ 首跑 sed 的**子串匹配**连带删掉了
+  `onOpen` 回调里那处同名的 `setPanelOpen(false)`，红成 2 条——收窄到 `onOpenMembers` 行内后才是恰红；
+  那是**工具不精确**造的②类假象，不是被测对象的性质，据实记）；N3 `members` 恒 `undefined` 恰红 **1**；
+  N4 标题硬编码 恰红 **1**。
+
+**⛔ 不在本 task 交付**：邀请 / 移除 / 退群的**落库与 HTTP 出口** —— 三个回调今天不接线（⇒ 按钮 `disabled`），
+归 **T021**（同批已补编号，见「第五批：T010 开工前裁定」）。
+
 ## 开工前裁定（2026-10-06，用户裁定 · 主检出会话执行）
 
 来源：`docs/workspace/dev_tdd.005.md` 文末「未定项清单」。三条已裁定，并已同步到 plan.md / tasks.md / 两份 design 文档。
@@ -976,6 +1040,7 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
+2026-10-06（**T010 收尾**：新建 `app/src/project/member-panel.tsx`（受控组件：`👥 成员管理 · 项目名` ＋ `＋ 邀请成员（输入警号）` ＋ `成员（N）` ＋ 每行 `👤 名字（本人） role [移除]` ＋ 底部 `[退出项目]`，按设计 §4）＋ `member-panel.test.tsx`（**18 条**）＋ 接缝 `project-members.ts`；接线落在 `workspace-entry.tsx`（`memberOpen` 信号 ＋ 接上 **T005 就预留**的 `ProjectAnchor.onOpenMembers`——注释原文「接的是 T010 的成员面板」＋ `member-panel-slot` 浮层，**两个浮层互斥**）＋ `workspace-entry.test.tsx`（＋6 条）。**权限一律问 `ProjectMembership.decide`、本组件零规则复述**（`actor` 从 `selfPoliceId` 反查 role、查不到即 `null` ⇒ 天然 fail-closed）；**「权限决定画不画、接线决定能不能点」两条独立理由**。**12 处变异全部①类恰红**（组件侧 8：2/4/3/1/6/1/1/1；接线侧 4：5/1/1/1），其中 **M5 逼出一处真收敛**——「谁是我」我一开始写了两遍（`我()` 的 `find` ＋ 标记里的 `policeId ===`），变异后标记那侧**一条都不红**，改成 `<Show when={m === 我()}>` 比同一对象引用后同一变异红 6 条（`#002-06` 的又一实例）；另修掉**探针自己的 bug**（`row?.querySelector(...) !== null` 在行不存在时返回 `true`，替没渲染的行作证）。**一处只有 typecheck 才抓到的**：测试里 `文本(行(host,…), …)` 把 `HTMLElement | null` 递给收非空的 `文本`——`bun test` 不做类型检查所以 RED/GREEN 一路没暴露，已放宽签名。四道门禁串行全过（`test:components` **330 pass / 0 fail / 24 文件**（基线 306＋24）／ typecheck **31/31 exit 0** ／ `lint:openhive` **23 warnings·0 errors·exit 0**、**本次三文件 0 命中**（引入的 4 处当场清：`Icon` 死导入 ＋ 3 处类型断言）／ 根 `lint` 本次文件 **0 命中**，那 1 error 仍是 `#001-02` 记的上游那处）。**⛔ 落库与 HTTP 出口不在本 task 交付**（三个回调不接线 ⇒ 按钮 `disabled`），归 **T021**。下一步 = T011。见「T010」节）
 2026-10-06（**补 T020（用户裁定「补，phase 你定」）**：T008 侦察出「复制／移动／上传／下载」四个动作**零任务认领** ⇒ 补 **T020**、归 **Phase 4**（US2），依赖 `[T007][T008][T018]`。补之前先做了一轮**只读侦察**（上游到底有没有现成能力），五条实证已落 T020 条目：① 上游**文件路由全是只读**（新 HttpApi 与旧 protocol v2 两套都只有 read／list／find，**无 write／create／delete／rename／move／copy**）；② 单文件 **copy／move／rename 无任何端点或服务**——唯一「单文件移动」先例是 `packages/opencode/src/tool/apply_patch.ts` 的 `move_path` 分支（**写新 ＋ 删旧**两步），而 V2 那侧明确 **not supported**；可复用底座是 `core/src/file-mutation.ts` 的 `FileMutation.Service`（`create`/`write`/`remove`）；③ **multipart 上传端点全仓查无** ⇒ 要新增；④ 下载最贴近的是 `GET /api/fs/read/*` 返回原始字节、**缺 `Content-Disposition: attachment`**；⑤ 客户端上传／下载**有先例可抄**（`dialog-edit-project.tsx` 的 `<input type="file">`＋onDrop、`session-ui` 的 `prompt-input/attachments.ts` 完整拖放、`utils/session-export.ts` 的 `downloadSessionExport`）。**同时给 T018 补范围第 ⑤ 条「文件列表读取」**（`project-files.ts` 早把这条账挂给 T018，但**接收方的表里此前没有它**，`#002-04`）——不补则 T020 开工才发现「没有列文件就没有可操作的对象」。另记一笔：设计文档 11 个 FR 引用里 **9 个在现行 005 spec 里不存在**（旧前端 spec `002-openhive-frontend-ui` 的编号），见「跨 feature 备注」补记）
 2026-10-06（**T008 收尾**：`file-tree.tsx` 扩出右键菜单——**复用 `@opencode-ai/ui/context-menu`（Kobalte），不手写**；十项按设计 §6.2 落地（新建文件／新建文件夹｜重命名／复制／移动／删除｜上传／下载｜备份到 MinIO／从 MinIO 拉回），四组三分隔符。**不新增文件**，只有 `file-tree.tsx` ＋ `file-tree.test.tsx`（＋19 条 ⇒ **53 条**）。本 task 首轮 GREEN **13 条红**，根因是 `ContextMenu.Trigger` **吞掉外部 `onContextMenu`**（`splitProps` ＋ `preventDefault()` 后不调用）⇒ 挪到 Trigger 内层即解。**6 处变异**：M1／M3／M4／M5 恰红 1，**M2／M6 整组红 13**（据实记，`#003-03` 第②类）；**M4 是补出来的**——变异前先补断言证明能抓，再跑。四道门禁串行全过（`test:components` **293 pass / 23 文件**（基线 274＋19）／ `test:unit` **824 pass** 逐项同基线／ typecheck **31/31** exit 0 ／ `lint:openhive` **23 / 0 / 78 文件** 逐项同基线、新文件 0 命中 ／ 改动两文件 oxlint **0/0**）。**六条 Kobalte 契约已落 `state.md`**（内容钩子是 `data-component`、Trigger/Item 是 `data-slot`；`onSelect` 要 pointerdown＋pointerup；关闭看 `data-expanded` 不看元素在不在）。**一处设计取舍（我定的，待复核）**：工具栏作用于选中项、菜单作用于右键那一行——**两套当前项**。**🚩 计划缺口**：复制／移动／上传／下载**四个动作零任务认领**（grep 已核实），待裁定是否补编号。**顺手恢复被 T007 那次编辑顶掉的 `### T002` 标题**。下一步 = T009。见「T008」节）
 2026-10-06（**T007 收尾**：新建 `app/src/project/file-tree.tsx`（受控组件，**不依赖 `useFile()`**——底座取 `components/file-tree-v2-model.ts` 的纯函数，上游一字未改）＋ `file-tree.test.tsx`（34 条）＋ 接入缝 `project-files.ts`；`workspace-entry.tsx` 把文件树**挂到锚点行下**（`file-tree-slot`，＋5 条接线测试）。工具栏六入口全落地（搜索＝真输入框／全部收缩／全部展开／＋下拉两项／重命名／删除）。本 task 34 ＋ 接线 5 = **39 条全绿**（`test:components` **274 pass / 23 文件**）；**8 处变异**：6 处恰红、M2 红 3（都真依赖「过滤」）、M8 红 2，**M7 是接线层的恰红**（断 `projectFiles()` 那根线 ⇒ 接线测试恰红 1）。**门禁首跑抓到 4 条新 warning**（27 vs 基线 23）——1 条是真 a11y 缺陷（行可点但键盘不可达）**按 TDD 补 5 条键盘测试再实现**，3 条是测试里的危险强转，全部清掉后回到 **23 / 0 / 78 文件 / exit 0**；四道门禁串行全过（`test:unit` **824 pass** ／ typecheck exit 0 ／ 改动文件 oxlint **0/0** ／ `bun.lock` 为空）。**两条新实测事实**：同层节点排序随 locale（本机拼音序）⇒ 测试按名字找行不按顺序；`aria-expanded` 类型不收 `string`、空 `new Set()` 推成 `Set<unknown>`。**计划缺口补 T019**（左栏 ② tab 容器 ＋ ④ MinIO 窄条；US4 验收原文依赖 ②）＋ 顺手恢复被 T006 吃掉的 `## 阻塞项` 标题。下一步 = T008。见「T007」节）

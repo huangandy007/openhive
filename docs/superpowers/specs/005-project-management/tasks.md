@@ -144,10 +144,18 @@
 
 ## Phase 5: US3 成员管理（P1）
 
-- [ ] T010 [US3] [FE·新增] 实现成员面板（👥 侧滑：邀请/移除/退群，按微信群模型）[FR-004] [T004] [出参：owner 邀请/移除、member 退群]
+- [x] T010 [US3] [FE·新增] 实现成员面板（👥 侧滑：邀请/移除/退群，按微信群模型）[FR-004] [T004] [出参：owner 邀请/移除、member 退群]
   - 🔒 **范围裁定（2026-10-06，T010 开工前用户裁定）**：**照 T005–T008 口径 = 前端面板 ＋ 接缝**（受控组件，只喊 `onInvite` / `onRemove` / `onLeave`），**不新增后端 API、不真落库**。真执行的接收方见下面的 **T021**（本次同批补入）。
   - ⚠️ **置灰判据不许重写**：面板上「谁能移除谁、谁能退群」的可用性一律走 `ProjectMembership.decide`（`packages/app` **已依赖** `@opencode-ai/core`，实测 `packages/app/package.json`）——**同一份规则不写第二遍**（`LEARNINGS #002-06` / `#004-02`：一份判定、多个出口，必须共享实现而非靠注释对齐）。`decide` 收 `{actor, action, target, archived}` 四项，面板的 props 里要有「我的 role」与「项目是否已归档」才喂得进。
   - 📌 **设计规格**：`2026-09-11-项目管理-design.md` §4（👥 侧滑面板：`＋ 邀请成员（输入警号）` ／ 成员列表带 role 与「本人」标记 ／ 每行 `[移除]` ／ 底部 `[退出项目]`）。
+  - ✅ **出参落地（T010，2026-10-06）**：新建 `packages/app/src/project/member-panel.tsx`（受控组件，`data-component="member-panel"`）＋ `member-panel.test.tsx`（**18 条**）＋ 接缝 `packages/app/src/project/project-members.ts`；接线落在 `packages/app/src/workspace/workspace-entry.tsx`（`memberOpen` 信号 ＋ `ProjectAnchor` 的 `onOpenMembers`——T005 就预留好的回调、注释点名「接的是 T010」＋ `member-panel-slot` 浮层）＋ `workspace-entry.test.tsx`（＋6 条）。**权限一律问 `decide`，本组件零规则复述**：`actor` 从 `selfPoliceId` 在成员表里反查 role，查不到就是 `null` ⇒ 前面对每个动作都落空 ⇒ 天然 fail-closed。
+  - ⚠️ **「权限决定画不画、接线决定能不能点」——两条独立的理由**：`decide` 说不成立 ⇒ 按钮**根本不渲染**；回调没给 ⇒ 渲染成 `disabled`。混在一起写就会得到「有权限但没接线」时按钮**可点而无声**的形状（T005 起的老口径）。四条权限各有用例：member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`（移除目标必须是 member，否则项目无主）、owner 看不到 `[退出项目]`、已归档时三条动作全不画。
+  - ⚠️ **变异 M5 逼出的一处收敛（`#002-06` 的又一实例）**：「谁是我」我一开始写了**两遍**——`我()` 里的 `find(...)` 判权限，标记里另写 `m.policeId === props.selfPoliceId`。把 `find` 换成 `成员()[0]` 时**只有权限那侧红**（5 条），标记那侧一条都不动。改成 `<Show when={m === 我()}>`（比**同一个对象引用**，两处都取自 `props.members` 的元素）后，同一个变异红 **6** 条——一个判断一处实现，一个变异点覆盖两处。
+  - ⚠️ **探针自己的一处 bug（红得莫名其妙的那类）**：`行内有(row, slot)` 起初写成 `row?.querySelector(...) !== null`，**行压根不存在**时 `undefined !== null` 为 `true` ⇒ 它替一棵没渲染出来的行作证「里面有权限按钮」（假绿），并把紧接着的 `null!` 撑成 `null.querySelector` 的 TypeError。判据：**返回布尔的探针必须显式判 `row !== null`**，不能靠 `?.` 的 `undefined` 碰巧不等于 `null`。
+  - 📌 **面板形态**：定位（`absolute`）由**调用方**包一层，同 `ProjectPanel`——`MemberPanel` 自己不知道自己在哪儿（happy-dom 没有 CSS 引擎，几何本来也测不进组件）。两个浮层**互斥**（开一个就关另一个）：左栏只有一列宽，叠着是「坏了」的样子不是风格选择，有测试钉住。
+  - ✅ **变异验证（2026-10-06，串行跑，据实记三类 `#003-03`）**：<br>**组件侧**：**M1** `能("invite")`⇒`true` 恰红 **2**；**M2** `能("remove", m.role)`⇒`true` 恰红 **4**；**M3** `能("leave")`⇒`true` 恰红 **3**；**M4** 忽略归档 恰红 **1**；**M5** 不看 `selfPoliceId` 恰红 **6**（收敛后；收敛前 5）；**M6** 未接线也可点 恰红 **1**；**M7** 空警号也喊 恰红 **1**；**M8** 喊错人（永远喊第一行）恰红 **1**。<br>**接线侧**：**N1** 徽章点了不开 恰红 **5**；**N2** 两浮层不互斥 恰红 **1**（⚠️ 首跑 sed 的子串匹配**连带删掉** `onOpen` 回调里那处同名的 `setPanelOpen(false)`，红成 2 条——**收窄到 `onOpenMembers` 行内**后才是恰红；那是**工具不精确**造的②类假象，据实记在这里，不是被测对象的性质）；**N3** `members` 恒 `undefined` 恰红 **1**；**N4** 标题硬编码 恰红 **1**。<br>**12 个变异全部①类（恰红目标），无②③类**。
+  - 🧭 **门禁（T010 收尾，串行，2026-10-06）**：`packages/app` 组件测试 **330 pass / 0 fail / 24 文件**（T009 基线 306 ⇒ ＋24，其中 T010 ＋24）；`lint:openhive` **exit 0**（23 warnings / 0 errors，**本次三文件 0 命中**——引入的 4 处已当场清掉：`Icon` 死导入 ＋ 3 处类型断言）；`typecheck` **31/31，exit 0**（⚠️ 首跑红 3 条：`文本(行(host,…), …)` 传进去 `HTMLElement | null`——`bun test` **不做类型检查**，所以 RED/GREEN 一路没暴露，已放宽 `文本` 的签名收 `| null`）；`bun run lint` **本次文件 0 命中**（那 1 error 仍是 `#001-02` 记的上游 `session-ui/src/v2/components/prompt-input/index.tsx:163`，裁定不私改）。
+  - ⛔ **不在本 task 交付**：邀请 / 移除 / 退群的**落库与 HTTP 出口**——三个回调今天不接线（⇒ 按钮 `disabled`），归 **T021**。
 
 - [ ] T021 [US3] [BE] 实现成员**邀请 / 移除 / 退群**的落库 ＋ HTTP 出口（判定一律走 `decide`）[FR-004] [T004][T018] [出参：owner 能邀请/移除、member 能退群，越权被拒]
   - 🔒 **补编号裁定（2026-10-06，T010 开工前用户裁定「只做前端＋接缝，另补编号」）**：T010 侦察出的**计划缺口**——`grep` 全 `tasks.md`，「邀请 / 移除 / 退群」的**服务端出口与落库零任务认领**：T004 只交纯判定（`membership.ts`）＋ 两张表，T010 只交前端面板，T013／T014／T015 是归档线（归档 / 找回 / 失权），T018 的范围是项目 CRUD。按 T017／T018／T019／T020 先例：**编号排最后、不重排既有编号**，**归 Phase 5（US3 成员管理）**。

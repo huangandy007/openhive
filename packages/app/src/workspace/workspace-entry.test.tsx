@@ -7,6 +7,7 @@ import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
 import { setProjectFiles } from "@/project/project-files"
 import { setProjectList } from "@/project/project-list"
+import { setProjectMembers } from "@/project/project-members"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -558,5 +559,100 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     入口(host, "资金分析").click()
 
     expect(有树(host)).toBe(false)
+  })
+})
+
+const 成员面板 = (host: HTMLElement) => host.querySelector("[data-component='member-panel']")
+/** 成员面板开着吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
+const 成员面板开着 = (host: HTMLElement) => 成员面板(host) !== null
+
+/**
+ * 成员面板接进左栏（FR-004 / US3 出参）。
+ *
+ * 与上两节同因（T005 立下的规矩）：组件单测里全绿，不等于**接线接上了**。
+ * 这一节验的正是那根线——`👥 N` 徽章是入口（`ProjectAnchor` 早在 T005 就预留了
+ * `onOpenMembers`，注释点名「接的是 T010 的成员面板」）、数据来自 `@/project/project-members`
+ * 这条缝、面板落在左栏里。
+ *
+ * ⚠️ **今天没有写入方**（缝恒空 ⇒ 走空态），三个动作回调也没接线（⇒ 禁用）——
+ * 那两笔是 T021 的账（邀请/移除/退群的落库 ＋ HTTP 出口），见 `tasks.md`。
+ */
+describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectMembers(undefined)
+  })
+
+  test("项目是共享的（有 `👥 N`）时，点徽章滑出成员面板：在左栏里，且排在锚点行之后", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    // 徽章只在有 `memberCount` 时存在（`ProjectAnchor` 的 `<Show when={props.memberCount}>`），
+    // 所以先给当前项目一个共享项目的形状——私有项目**不该**有成员管理入口。
+    setCurrentProject({ name: "8·17专案", memberCount: 3 })
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(成员面板开着(host)).toBe(true)
+    expect(成员面板(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
+  })
+
+  test("再点徽章收起——它是开关，不是单程票", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ name: "8·17专案", memberCount: 3 })
+
+    锚点按钮(host, "project-anchor-members")?.click()
+    // ⚠️ 前置不是废话（同上一节那条）：缺了它，本条在「面板压根不存在」时也全绿，
+    // 而那种绿什么也没证明（`#004-14`）。
+    expect(成员面板开着(host)).toBe(true)
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(成员面板开着(host)).toBe(false)
+  })
+
+  test("私有项目（没有 `memberCount`）连徽章都没有——没有成员管理这回事，就不给入口", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    setCurrentProject({ name: "我的项目" })
+
+    expect(不存在(host, "[data-slot='project-anchor-members']")).toBe(true)
+    // 对照：同一个位置上，给了 `memberCount` 徽章就在——否则上面那条在「徽章从来就不渲染」时也绿。
+    setCurrentProject({ name: "8·17专案", memberCount: 1 })
+    expect(不存在(host, "[data-slot='project-anchor-members']")).toBe(false)
+  })
+
+  test("面板里的成员来自接入缝；缝里没数据时走空态，不伪造成员（宁缺勿假）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ name: "8·17专案", memberCount: 2 })
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(text(host, "member-panel-empty")).toBe("还没有成员")
+
+    setProjectMembers([{ policeId: "001", name: "张三", role: "owner" }])
+
+    expect(text(host, "member-name")).toBe("张三")
+    expect(text(host, "member-panel-empty")).toBeUndefined()
+  })
+
+  test("两个浮层不叠着：开成员面板会把项目面板收掉（左栏只有一列宽）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ name: "8·17专案", memberCount: 3 })
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(开着(host)).toBe(true) // 前置：项目面板真的开了，否则下面那个 `false` 什么也没证明
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(成员面板开着(host)).toBe(true)
+    expect(开着(host)).toBe(false)
+  })
+
+  test("标题用的是**当前项目**的名字，不是硬编码（设计 §4：`成员管理 · 8·17 专案`）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ name: "8·17专案", memberCount: 1 })
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(text(host, "member-panel-title")).toBe("成员管理 · 8·17专案")
   })
 })
