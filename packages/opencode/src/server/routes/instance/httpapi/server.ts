@@ -125,6 +125,7 @@ import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-works
 import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
+import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveProject } from "@/server/openhive/project"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
@@ -318,6 +319,16 @@ export function createRoutes(
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T018）。
     OpenhiveProject.routes.pipe(
       Layer.provide(OpenhiveProject.SharedRootConfig.layer),
+      Layer.provide(AnchorWorkspace.Config.layer),
+    ),
+    // openhive 归档出口（005 T013）：项目归档（上传 MinIO ＋ 删沙箱 ＋ 标记）。
+    // 沙箱根**复用**上一项同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义，两处漂了就是
+    // 「建到 A、归档时去 B 找」）；`MinioConfig` 是本层自己的配置服务，同样必须在这里供上
+    // （路由体在层构造期 `yield*`，漏供是**层构造期炸**）。它是 `Option`：没配 MinIO 的应用
+    // 照常起得来，只是归档回 503（见该模块文件头）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T013）。
+    OpenhiveArchive.routes.pipe(
+      Layer.provide(OpenhiveArchive.MinioConfig.layer),
       Layer.provide(AnchorWorkspace.Config.layer),
     ),
   ).pipe(

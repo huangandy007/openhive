@@ -1,4 +1,19 @@
 /**
+ * ⚠️ **本文件住在 `src/` 而不是 `test/`，是刻意的**（005 T013 从 `test/fixture/` 移入）：
+ * `packages/opencode` 的归档测试也要用这个端点，而本包的 `exports` 是 `"./*": "./src/*.ts"`
+ * ⇒ 放在 `test/` 下**别的包 import 不到**（T013 实测：`@opencode-ai/core/test/fixture/fake-s3`
+ * 解析成 `./src/test/fixture/fake-s3.ts`，不存在）。处置与 `packages/auth/src/test-support.ts`
+ * 同因同形——那份文件头写着同一句话，是本仓「跨包夹具放 `src/`」的既有先例。
+ *
+ * **约定：只有 `*.test.ts` 才 import 本模块。**
+ * ⚠️ 这是一条**没有门守着的约定**（2026-10-06 三席评审 S1-06 纠的：原文写「MUST NOT」，读起来像
+ * 有东西在拦）：文件搬进 `src/` 之后它进了生产包的**编译面**，而谁在生产代码里 import 它，
+ * typecheck / lint / 全部测试**一个都不会红**。要把它变成有门的约束得加一条 lint 的
+ * `no-restricted-imports`（或一条「生产文件不得出现该 import」的断言）——**本轮没做**，
+ * 已挂 `005/state.md` 的 T013 缺口表（`#004-03`：说「有 X 钉住」必须点名那条测试）。
+ */
+
+/**
  * 一个够用的**假 S3 端点**（005 T011 的观测面）。
  *
  * ## 为什么不是「注入替身」
@@ -65,9 +80,32 @@ export interface FakeS3 {
    *
    * 给「404 是一种正常答案，而 403 / 500 不是」这条判据用：实装若把所有错误都吞成
    * `undefined`，用户看到的是「没备份过」而不是「凭据错了」——**静默**，且方向危险。
-   * 传 `undefined` 恢复。
+   * 传 `undefined` 恢复（同时把 `failOn` 的条件一并清掉）。
    */
   failWith(status: number | undefined): void
+  /**
+   * **从第一个匹配 `when` 的请求起**一律回 `status`，之前的一律照常放过。
+   *
+   * `failWith` 只答得了「第一次外呼就失败」；而「**备份没做完之前不许删本地**」这条顺序判据
+   * 需要「前一半成功、后一半失败」（005 T013）：那时才看得出实装是「全员传完再全员删」
+   * 还是「传一个删一个」——后者会在第二个成员上传失败时，让第一个成员的沙箱**已经没了**，
+   * 而项目并**没有**被标成已归档（`archived_at` 为空）。
+   *
+   * ## ⚠️ 条件写在**「哪个键」上，不是「第几个请求」**（T013 变异实测改的）
+   *
+   * 初版是 `failAfter(count, status)`——「放过前 `count` 个」。它有两个坑，且都不报错：
+   * ① 计数用的是**服务端累计的 `requests.length`**，而本夹具是**文件级共享**的
+   *    （`bun test` 跑完同文件的前若干用例后，水位早已上千）⇒ `failAfter(1, …)` 的实际含义是
+   *    「**从这个请求起全失败**」，与「第一次外呼就失败」成了同一件事；
+   * ② 「一个成员要传几个对象」不是一个**测试该去数**的数——沙箱项目目录里必然含 `.git`
+   *    （T018 的 `git init`，本机实测 19 个文件），数它会随平台/版本漂。
+   * 改成按**键**判定后，用例说的是它的本意：「**乙的第一个对象**起就失败」——而乙的键在甲的
+   * 全部键之后（`backupAll` 按成员逐个传完），于是「前一半成功、后一半失败」是**由构造保证的**。
+   *
+   * 2026-10-06 实测（T013 的 M2 变异：把「全员传完再删」改成「传一个删一个」）：旧夹具下**全绿**
+   * ——判据没测到它要测的东西；换成按键判定后 M2 **恰红**那一条。
+   */
+  failOn(status: number, when: (request: Recorded) => boolean): void
   stop(): void
 }
 
@@ -90,9 +128,16 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
    * 真 S3 / MinIO 的默认是 1000；调小是为了让「过千才出错」的缺陷在三条数据上就现形。
    */
   const pageSize = options.pageSize ?? 1000
-  const objects = new Map<string, Uint8Array>()
+  // ⚠️ 泛型参数写死成 `ArrayBuffer`（不是默认的 `ArrayBufferLike`）：`Response` 的
+  // `BodyInit` 在当前 lib 下**不收**兜底的 `ArrayBufferLike`。这是 T013 把本文件从 `test/`
+  // 搬进 `src/` 之后才显形的——`packages/opencode` 的 program 会连带 typecheck 它，
+  // 而两边的 lib 面不一样（core 自己那份不报）。语义没变，只是把「这个数组一定在普通
+  // ArrayBuffer 上」写明。
+  const objects = new Map<string, Uint8Array<ArrayBuffer>>()
   const requests: Recorded[] = []
   let failure: number | undefined
+  /** 失败态的条件（`failWith` 恒为 `undefined` ⇒ 之后的每个请求都失败）。 */
+  let shouldFail: ((request: Recorded) => boolean) | undefined
 
   const server = Bun.serve({
     port: 0,
@@ -104,9 +149,11 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
       const key = segments.slice(1).map(decodeURIComponent).join("/")
       const body = request.method === "PUT" ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array()
 
-      requests.push({ method: request.method, path: url.pathname, query: url.searchParams, bucket: requestBucket, key, body })
+      const record: Recorded = { method: request.method, path: url.pathname, query: url.searchParams, bucket: requestBucket, key, body }
+      requests.push(record)
 
-      if (failure !== undefined) {
+      // ⚠️ 失败态**记进请求表之后**才判：失败的请求也要留下痕迹（「外呼到没到」本身是判据）。
+      if (failure !== undefined && (shouldFail === undefined || shouldFail(record))) {
         return new Response(errorXml("InternalError", "假 S3 被要求报错"), {
           status: failure,
           headers: { "content-type": "application/xml" },
@@ -190,6 +237,11 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
     keys: () => [...objects.keys()].sort(),
     failWith: (status) => {
       failure = status
+      shouldFail = undefined
+    },
+    failOn: (status, when) => {
+      failure = status
+      shouldFail = when
     },
     stop: () => void server.stop(true),
   }

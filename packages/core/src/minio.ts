@@ -24,7 +24,7 @@ import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectC
  * ⚠️ **本模块不闭合的账**（如实登记，`LEARNINGS #002-02`：测不了的要写成缺口，不能写成覆盖）：
  * 桶策略、STS、`${aws:username}` 绑定一个都没验（本机无 MinIO，D-13 部署时做）。
  * 本模块的测试验的是**我们发出去的请求长什么样**（键、method、body、错误映射），
- * 观测面是 `packages/core/test/fixture/fake-s3.ts` 那个真 HTTP 端点。
+ * 观测面是 `packages/core/src/test-support/fake-s3.ts` 那个真 HTTP 端点。
  */
 
 /** 对象键的前两段：`{userId}/{projectId}/`，见 `minio.md` §1。 */

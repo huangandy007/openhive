@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Minio } from "@opencode-ai/core/minio"
-import { type FakeS3, startFakeS3 } from "./fixture/fake-s3"
+import { type FakeS3, startFakeS3 } from "../src/test-support/fake-s3"
 
 /**
  * MinIO 客户端（005 T011 / FR-007 / `minio.md` §1 §3）。
  *
- * **被测对象是真的 `@aws-sdk/client-s3`**，对上 `test/fixture/fake-s3.ts` 那个真 HTTP 端点——
+ * **被测对象是真的 `@aws-sdk/client-s3`**，对上 `src/test-support/fake-s3.ts` 那个真 HTTP 端点——
  * 不是替身。理由见夹具文件头与 `LEARNINGS #002-02`：T011 的产物就是那段实装，用替身会把
  * 被测对象换掉。本机测不到的那半边（桶策略 / STS / `${aws:username}`）在 D-13，**不在本文件**。
  */

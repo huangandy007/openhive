@@ -127,6 +127,41 @@ export async function addMember(db: ProjectMemberTarget, input: AddMemberInput):
   `)
 }
 
+export interface MarkArchivedInput {
+  readonly projectId: string
+  /**
+   * 归档时刻（Unix **秒**，`src/time.ts` 的 `nowSeconds()`）。
+   *
+   * 与 `archived = true` 是**一对**（迁移的 `project_archive_coherence_check` 钉着
+   * `archived = (archived_at IS NOT NULL)`）⇒ 两者由**同一个**写入点决定，调用方给不了
+   * 「只写一个」的组合。时刻由调用方给，不在这里取（同 `addMember`：同一批写入共用一个时刻）。
+   */
+  readonly archivedAt: number
+}
+
+/**
+ * 把项目标成**已归档**（T013 / FR-008）。**判定的结果**由调用方先算好（`ProjectMembership.decide`），
+ * 本函数只落库——同 `addMember` 的分工：`auth` 不依赖 `core`，所以「能不能」不在这里。
+ *
+ * 写 `archived = true` ＋ `archived_at`，**upsert**：找回（T014）之后还能再归档，那条路子会
+ * 撞上已经存在的 `project_id` 主键——`insert` 会因主键冲突抛出去，而这是**正常流程**，不是异常。
+ *
+ * ⚠️ **本函数只管「归档」这一侧**：`archived = false` / `archived_at = null`（找回）是 T014 的事，
+ * 刻意没在这里合一个 `archived: boolean` 参数——那样两个方向就共用一条写入路径，而它们的
+ * 判据、调用点、失败后果都不一样（`LEARNINGS #002-06` 的取向：别把两件事塞进一个判定）。
+ *
+ * ⚠️ **不吞错**：写不进去（PG 抖一下）必须抛出去——归档流程的最后一步是它，静默失败会让
+ * 沙箱已经删了、MinIO 已经有备份，而项目**看起来**没归档。
+ */
+export async function markArchived(db: ProjectMemberTarget, input: MarkArchivedInput): Promise<void> {
+  await db.execute(sql`
+    insert into auth.project_archive (project_id, archived, archived_at)
+    values (${input.projectId}, true, ${input.archivedAt})
+    on conflict (project_id) do update
+      set archived = excluded.archived, archived_at = excluded.archived_at
+  `)
+}
+
 /**
  * 列一个项目的成员（T010 成员面板 / T018 列项目取成员数）。
  *
