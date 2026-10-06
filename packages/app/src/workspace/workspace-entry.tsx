@@ -6,7 +6,9 @@ import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
 import { currentProject, setCurrentProject } from "@/project/current-project"
+import { FileTree } from "@/project/file-tree"
 import { ProjectAnchor } from "@/project/project-anchor"
+import { projectFiles } from "@/project/project-files"
 import { projectList } from "@/project/project-list"
 import { ProjectPanel } from "@/project/project-panel"
 import { RAIL_ENTRIES } from "@/rail/entries"
@@ -119,6 +121,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     />
                   </div>
                 </Show>
+                {/* 文件树（FR-005 / 设计 §2 的左栏 ③）。
+                    按 005 的裁定先**直接挂在锚点行下**（＝默认「文件」态）：设计 §2 的 ②[会话][文件]
+                    tab 容器今天还不存在（无 task 认领 → 已补 T019），先让「文件树可用」变成看得见的东西；
+                    T019 落地时把这一块**整体搬进 tab body**，组件本身一行不改。
+                    它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。 */}
+                <div data-slot="file-tree-slot" class="min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1">
+                  <FileTree paths={projectFiles()} />
+                </div>
               </div>
             ) : undefined
           }

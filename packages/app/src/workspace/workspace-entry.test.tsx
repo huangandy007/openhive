@@ -5,6 +5,7 @@ import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
+import { setProjectFiles } from "@/project/project-files"
 import { setProjectList } from "@/project/project-list"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
@@ -406,7 +407,9 @@ describe("项目面板接进左栏（FR-002 出参）", () => {
 
     expect(开着(host)).toBe(true)
     expect(面板(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
-    expect(侧栏层级(host)).toEqual(["project-anchor", "project-panel-slot"])
+    // `file-tree-slot` 是 T007 加的（左栏 ③，紧贴锚点行）；面板是 `absolute` 浮层，
+    // 排在它前面只是 DOM 顺序，视觉上仍压在文件树之上。
+    expect(侧栏层级(host)).toEqual(["project-anchor", "project-panel-slot", "file-tree-slot"])
   })
 
   test("再点 ▾ 收起——它是开关，不是单程票", () => {
@@ -492,5 +495,68 @@ describe("项目面板接进左栏（FR-002 出参）", () => {
     入口(host, "资金分析").click()
 
     expect(开着(host)).toBe(false)
+  })
+})
+
+const 树 = (host: HTMLElement) => host.querySelector("[data-component='file-tree']")
+/** 左栏里有文件树吗？——返回**布尔**（`#005-01`）。 */
+const 有树 = (host: HTMLElement) => 树(host) !== null
+const 树行 = (host: HTMLElement) => [...host.querySelectorAll("[data-slot='file-tree-row']")]
+
+/**
+ * 文件树接进左栏（FR-005 出参）。
+ *
+ * 与上一节同因（T005 立下的规矩）：组件单测里全绿，不等于**接线接上了**。
+ * 这一节验的正是那根线——数据来自 `@/project/project-files` 这条缝、落在左栏 ③ 的位置、
+ * 且**今天没有写入方**（缝恒空 ⇒ 走空态）。按 T007 的裁定先直接挂在锚点行下（默认「文件」态），
+ * 设计 §2 的 ②[会话][文件] tab 容器归 T019。
+ */
+describe("文件树接进左栏（FR-005 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectFiles(undefined)
+  })
+
+  test("左栏里有一棵文件树，排在锚点行之后", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(有树(host)).toBe(true)
+    expect(树(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
+    expect(侧栏层级(host)).toEqual(["project-anchor", "file-tree-slot"])
+  })
+
+  test("缝里写进路径，树里就长出来——接线真的把 projectFiles() 传下去了", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    setProjectFiles(["资料/8·17/话单.csv", "笔记.md"])
+
+    expect(树行(host).map((el) => el.getAttribute("data-path"))).toContain("资料/8·17/话单.csv")
+  })
+
+  test("缝里没数据时走空态，不伪造文件（宁缺勿假）——今天确实没有写入方", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(树行(host).length).toBe(0)
+    expect(text(host, "file-tree-empty")).toBe("还没有文件")
+  })
+
+  test("三个动作今天都没接线 ⇒ ＋ / 重命名 / 删除 是禁用的，搜索与收缩展开照常可用", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    const 按钮 = (slot: string) => host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+    expect(按钮("file-tree-action-create")?.disabled).toBe(true)
+    expect(按钮("file-tree-action-rename")?.disabled).toBe(true)
+    expect(按钮("file-tree-action-delete")?.disabled).toBe(true)
+    expect(按钮("file-tree-action-collapse-all")?.disabled).toBe(false)
+    expect(按钮("file-tree-action-expand-all")?.disabled).toBe(false)
+  })
+
+  test("切到别的模块，文件树跟左栏一起让位", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    expect(有树(host)).toBe(true) // 前置：先证明它在，否则「不在」什么也没证明（`#004-14`）
+
+    入口(host, "资金分析").click()
+
+    expect(有树(host)).toBe(false)
   })
 })
