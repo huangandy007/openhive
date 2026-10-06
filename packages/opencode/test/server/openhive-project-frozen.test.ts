@@ -92,6 +92,16 @@ const ACTIVE = "prj_frozen_0002"
  * ——那条路径上第一道门会先把「带头建会话」拦掉（夹具是同一个库、跨用例共享状态）。
  */
 const ARCHIVED_LATER = "prj_frozen_0003"
+/**
+ * 用例 ⑧ 专用（同 `ARCHIVED_LATER` 的理由：前提是「会话**先**进去、项目**后**归档」）。
+ * 它另需一个**诱饵项目头**（下面那个常量）来证明「头的存在不是第二道门的开关」。
+ */
+const ARCHIVED_HEADED = "prj_frozen_0004"
+/**
+ * 诱饵头之一：**合法的路径段、库里没有 `project_ext` 行** ⇒ 第一道门走到 R5 直通那一支，
+ * 请求看上去「不属于任何项目」。这正是绕过面的形状（F1）。
+ */
+const DECOY_UNKNOWN = "prj_frozen_0005"
 
 const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-project-frozen-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -573,6 +583,55 @@ describe("T015 · 归档 = 冻结（FR-010）：已归档的项目上不能干�
         expect(v2body.error).toBe(FROZEN_MESSAGE)
         expect(归档后.status).toBe(403)
         expect(v2归档后.status).toBe(403)
+      }),
+    30_000,
+  )
+
+  /**
+   * **第二道门不能被「再带一个头」解除**（F1，2026-10-06 第二轮审查实测出来的 Critical）。
+   *
+   * 绕过面：请求带**任意**一个不是「已归档项目」的项目头 ⇒ 第一道门那一支要么按该项目放行
+   * （本人名下的活跃项目）、要么走 R5 直通（查不到 `project_ext` 行）；而**会话作用域路由的
+   * 工作目录取自会话行、不取自请求**（A 链 `middleware/workspace-routing.ts` 的
+   * `session?.directory || defaultDirectory(...)`，B 链 `packages/server/src/middleware/session-location.ts`
+   * 直读 `SessionTable.directory`）⇒ 归档项目里的旧会话照样在它的目录里干活。
+   * 也就是说：**「请求有没有说自己在哪个项目」不该是「要不要问会话行」的开关**。
+   *
+   * 两式诱饵缺一不可，它们走的是第一道门里**两条不同的分支**：
+   * - `DECOY_UNKNOWN`（库里没有 `project_ext` 行）⇒ R5 直通；
+   * - `ACTIVE`（本人名下的活跃项目，用例 ④ 种过 `project_ext` 行且无归档行）⇒ 按它放行并改写目录。
+   *   第二式更险：它连「落点被改写到别的项目目录」都说得通，只有会话行才认得出真相。
+   *
+   * 对照（`#004-08`）：**无头**那一条必须先 403——否则下面两条「也是 403」可能只是
+   * 「这条路由本来就不通」，看着一样红。
+   */
+  it.live(
+    "已有会话落在归档项目：请求再**带上**一个别的项目头（查不到的 ／ 本人名下活跃的）也解除不了冻结",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ARCHIVED_HEADED)
+
+        // 会话**先**进去（这条旁路的前提），项目**后**归档。
+        const created = yield* postSessionAs(ALICE, ARCHIVED_HEADED)
+        expect(created.status).toBe(200)
+        const { data: session } = yield* json(SessionV2, created)
+
+        yield* 标成已归档(ARCHIVED_HEADED)
+
+        const 对照无头 = yield* as(ALICE, `/api/session/${session.id}`)
+        expect(对照无头.status).toBe(403)
+
+        const 诱饵1 = yield* as(ALICE, `/api/session/${session.id}`, {
+          headers: { [PROJECT_HEADER]: DECOY_UNKNOWN },
+        })
+        const 诱饵1body = yield* json(Frozen, 诱饵1)
+        expect(诱饵1body.error).toBe(FROZEN_MESSAGE)
+        expect(诱饵1.status).toBe(403)
+
+        const 诱饵2 = yield* as(ALICE, `/api/session/${session.id}`, { headers: { [PROJECT_HEADER]: ACTIVE } })
+        const 诱饵2body = yield* json(Frozen, 诱饵2)
+        expect(诱饵2body.error).toBe(FROZEN_MESSAGE)
+        expect(诱饵2.status).toBe(403)
       }),
     30_000,
   )

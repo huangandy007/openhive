@@ -72,15 +72,17 @@ import { MatchedRoute } from "./matched-route"
  * 所以这里照锚定的做法**三处都改**：`?directory=` ＋ `location[directory]` ＋ `x-opencode-directory`
  * 头 ＋ 请求体。只改一处 = 另一条链静默退回沙箱根（不会报错、不会变红）。
  *
- * ## 没有项目头 ⇒ **一次都不碰请求**
+ * ## 没有项目头 ⇒ **不改写请求**
  *
- * 这是本层最重要的性质：`PROJECT_HEADER` 不在 ⇒ 立刻 `return yield* effect`，
- * 于是所有不带项目的请求（会话、文件、pty、上传……）走的是**与今天完全一样**的那条路。
+ * `PROJECT_HEADER` 不在 ⇒ 请求原样往下走（`return yield* effect`）：url、头、请求体一律不动。
+ * 所有不带项目的请求（文件、pty、上传，以及大多数会话请求）走的是**与今天完全一样**的那条路。
  * 「不在场时不产生副作用」比「在场时做对」更容易被写坏，故写在这里。
  *
- * ⚠️ T015 加的那道门（下节）**长在同一个早退之后**：不带头的请求连库都不查。这条由
- * `test/server/openhive-project-frozen.test.ts` 的「不带项目头」用例钉着——门是**全局**中间件，
- * 「它只认项目头」必须是一条被钉住的性质，而不是一句注释。
+ * ⚠️ **但「连库都不查」这条在 T015 之后不成立**（本节原文写的是「一次都不碰请求」「不带头的
+ * 请求连库都不查」，2026-10-06 第二轮审查 F1 改准）：第二道门（下节）**排在早退之前**——它只认
+ * **会话行**、不认请求说自己属于谁。无头请求若匹配到的路由带 `sessionID` 参数（会话作用域那批），
+ * 照样会读一次会话行（本地 sqlite）、可能再读一次归档表；只有不带 `sessionID` 参数的路由才一个库
+ * 都不查。「不碰请求」是「不改写」，「不查库」是另一件事——前者仍成立，后者不成立，别混。
  *
  * ## 归档 = 冻结（T015，FR-010）：已归档的项目上**不能干活**
  *
@@ -114,9 +116,16 @@ import { MatchedRoute } from "./matched-route"
  * 上面那道门只认「请求**自己说**它在哪个项目」（`PROJECT_HEADER`）。但会话作用域那条链的实例
  * 目录取自**会话行**——`middleware/workspace-routing.ts` 的 `session?.directory || …`（那是**上游**
  * 文件，改不动）——于是「建会话时带了头、以后用这个会话时不必再带」是一条**旁路**：归档后它照样
- * 在那个（已被 T013 删掉的）目录里跑。本文件因此补第二道门：**不带项目头时**，若本次请求匹配到的
- * 路由带 `sessionID` 参数（两条链同名，`#004-01`：出口要按「谁在做那件事」数），就读那个会话的目录；
- * 目录**恰好**是 `join(config.root, 本人 id, projectId)` 的形状、且该项目已归档 ⇒ **403**。
+ * 在那个（已被 T013 删掉的）目录里跑。本文件因此补第二道门：**不论请求带不带项目头**，若本次请求
+ * 匹配到的路由带 `sessionID` 参数（两条链同名，`#004-01`：出口要按「谁在做那件事」数），就读那个
+ * 会话的目录；目录**恰好**是 `join(config.root, 本人 id, projectId)` 的形状、且该项目已归档 ⇒ **403**。
+ *
+ * ⚠️ **「带不带项目头」不是这道门的开关**（2026-10-06 第二轮审查 F1，实测的 Critical）：第一版把
+ * 这段挂在 `if (projectId === undefined)` 里，于是「再带一个别的项目头」就能解除冻结——诱饵可以是
+ * 一个查不到的 id（第一道门走 R5 直通），也可以是**本人名下的活跃项目**（第一道门按它放行并改写
+ * 目录）。而「工作目录取自会话行」这条事实不因请求说了什么而改变：同一个归档项目、同一条会话、
+ * 同一个应用，**只差一个诱饵头**，403 变 200（用例 ⑧ 的 RED 就是这个形状）。判据是「这个请求实际
+ * 会落在哪个目录」，而那个目录只有会话行说了算。
  *
  * ⚠️ **连带语义**：**归档项目的会话整体冻住**——不只「在它里面跑提示词」，连 `GET /session/:id`、
  * 删会话这些也是 403。这是「归档 = 冻结」这条规则的一致读法（活都不让干了，一个区里）。
@@ -172,6 +181,22 @@ import { MatchedRoute } from "./matched-route"
  *   比这更深的会话目录（`…/{projectId}/sub`）**不认**，会走「不是项目会话」那一支放行。今天到不了
  *   那条路：锚定把客户端能报的目录全部改写成沙箱根，深目录只能是本层自己加的，而本层只加一段。
  *   真要支持子目录会话，改这里的同时得补一条用例（`#002-02`：没覆盖的要写成缺口，不是写成已覆盖）。
+ * - **第二道门认的是路由参数的名字**（`params["sessionID"]`）：上游把任一条链的该参数改名、或新增
+ *   第三条会话链用了别的名字 ⇒ 本层读不到 ⇒ **静默放行（fail-open）**，不报错、不变红。清点过
+ *   （2026-10-06）：**今天**全仓会话作用域出口（A / B 两条链的 session / message / permission /
+ *   question / background）参数都叫 `sessionID`，其中两条 GET 各有用例钉着（用例 ⑦）；**其余出口
+ *   与将来新增的链**没有人守——这是上游侵入面，本层自证不了（同上 `#004-03` 的取向：不说「有 X 钉住」
+ *   除非真钉住）。
+ * - **pty 不在第二道门射程内**：它走 `ptyID`（`packages/server/src/handlers/pty.ts`），不带
+ *   `sessionID` 参数 ⇒ 归档**前**在项目目录里建出来的 pty，其 cwd 仍指着那个（已被 T013 删掉的）
+ *   目录，归档后 `connect` / `attach` 本层不拦。利用面弱（进程级、目录已删），**未实测**，登记为同族出口。
+ * - **「缺归档行 ⇒ 未归档」这个默认值有三处写法**：两道门共用一份（`isArchived` 的 `?? false`，
+ *   刻意收在一处），归档链与项目列表链各有一份（T013 的 `decide` 输入、T018 列表的键缺席）。
+ *   今天三处同口径，但**没有**一条断言把它们钉在一起——别把它读成「有测试守着」。
+ * - **第一道门的归档检查排在 R5 之后**：请求头指向一个**已归档**的项目、而请求方在该项目**没有**
+ *   `project_ext` 行（非成员 / 行缺失）时，走 R5 直通 ⇒ **200 落沙箱根**，不是 403。不构成对项目目录的
+ *   访问（那一支进不了任何项目目录），但与「已归档 ⇒ 一律 403」的字面不一致；改它要动第一道门的次序
+ *   （每次无 `project_ext` 行的带头请求多一次 PG 往返），按 Minor 记着。
  */
 
 /**
@@ -261,21 +286,30 @@ export const projectLocationLayer = HttpRouter.middleware<{
         const request = yield* HttpServerRequest.HttpServerRequest
         const projectId = request.headers[PROJECT_HEADER]
 
-        // ── 没有项目头：第二道门（T015 · D1，见文件头「目录来自会话行的那一半」）──
-        // 走到这里说明请求**自己没说**在哪个项目，但它可能**正打在**某个项目里的会话上。
-        if (projectId === undefined) {
-          const route = yield* MatchedRoute.current
-          const sessionID = route?.params["sessionID"]
-          if (sessionID !== undefined) {
-            // 会话存在才谈得上「在哪个项目里」；不存在就放行，让 handler 用它的口径回 404。
-            const found = yield* session.get(SessionID.make(sessionID)).pipe(Effect.option)
-            if (Option.isSome(found)) {
-              const sessionProjectID = projectIdOfSessionDirectory(config.root, user.value.id, found.value.directory)
-              if (sessionProjectID !== undefined && (yield* isArchived(openhivePg, sessionProjectID))) return forbidden()
-            }
+        // ── 第二道门（T015 · D1，见文件头「目录来自会话行的那一半」）──
+        // 请求可能**正打在**某个项目里的会话上，而**会话作用域路由的工作目录取自会话行、
+        // 不取自请求**（A 链 `middleware/workspace-routing.ts` 的 `session?.directory ||
+        // defaultDirectory(...)`，B 链 `packages/server/src/middleware/session-location.ts`
+        // 直读 `SessionTable.directory`）。
+        //
+        // ⚠️ 所以这一段**不能挂在「请求有没有带项目头」上**：挂上去就是一个绕过面——
+        // 带**任意**一个不是「已归档项目」的头（自己名下的活跃项目、或一个查不到的 id），
+        // 第一道门那一支就按它放行或走 R5 直通，而归档项目里的旧会话照样在它的目录里干活。
+        // 2026-10-06 实测（用例 ⑧）：同一个归档项目、同一条会话、同一个应用，**只差一个诱饵头**，
+        // 冻结从 403 变 200。判据是「这个请求实际会落在哪个目录」，而那个目录只有会话行说了算。
+        const route = yield* MatchedRoute.current
+        const sessionID = route?.params["sessionID"]
+        if (sessionID !== undefined) {
+          // 会话存在才谈得上「在哪个项目里」；不存在就放行，让 handler 用它的口径回 404。
+          const found = yield* session.get(SessionID.make(sessionID)).pipe(Effect.option)
+          if (Option.isSome(found)) {
+            const sessionProjectID = projectIdOfSessionDirectory(config.root, user.value.id, found.value.directory)
+            if (sessionProjectID !== undefined && (yield* isArchived(openhivePg, sessionProjectID))) return forbidden()
           }
-          return yield* effect
         }
+
+        // 没有项目头：会话那条已经问过了，这里直接放行。
+        if (projectId === undefined) return yield* effect
 
         if (!User.isSafePathSegment(projectId))
           throw new Error(`非法项目 id，拒绝锚定项目目录：${JSON.stringify(projectId)}`)
