@@ -1,7 +1,7 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）已完成（清单见「已完成」）。**三批开工前裁定全部落定**（U1 / U4 / U5 ＋ D0-1 / D0-2(b) / D0-4 / ⑤ / U8 ＋ Q1–Q4），见下方三张表。**T002（MinIO 目录/权限方案）的输入已齐**（Q1 定路径带 userId、Q4 定权限下沉、U8 定部署项去向），Phase 2 的 T003 / T004 亦解锁。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ —— 见「已完成」。**下一步 = T003**（openhive 自有 `project_ext` 表 ＋ 建表钩子），依赖已全部满足（U4 / Q3 定表形、D0-1 定必给接口）。
 
 ## 已完成
 
@@ -94,6 +94,31 @@ T001 只做定位、不动产品码。它把下列**开工前裁定**推到了�
 ## 阻塞项
 （无）
 
+### T002 · MinIO 部署与目录 / 权限方案
+
+**出参**（tasks.md：「MinIO 目录/权限方案」）＝ **`005-project-management/minio.md`**（本次新建）。
+性质：**一份部署约定，不是代码**——`dev_tdd.005.md` D0-4 已实测定性（本机无 MinIO 可连、`packages/*/package.json` 无任何对象存储 SDK），
+所以「写得出来、跑不了」是这条的**正常形态**，不是没做完。
+
+**方案要点**（每条都锚在一条裁定上）：
+
+| 要素 | 取值 | 锚 |
+|---|---|---|
+| 桶 | 单桶 `openhive`（不建 1600 个桶） | 运维面不随人数涨 |
+| 对象键 | `{userId}/{projectId}/{沙箱内相对路径}`，与沙箱**恒等镜像** | Q1（各存一份）⇒ `{userId}` 是**调用者自己**的 id |
+| 权限 | 服务凭据 ＋ STS 会话；bucket policy 用 `${aws:username}` 钉 `openhive/${aws:username}/*` | Q4（下沉到存储层，宪法 §四） |
+| SDK | `@aws-sdk/client-s3` | D0-4 |
+| 应用侧形状 | **窄接口**（put/get/list/delete，入参**不带**桶名与前缀）＋ 测试注入替身 | runbook D0-4 ③ ＋ `LEARNINGS #002-02`（防「测替身」的假测试） |
+| 过期策略 | 不配自动过期 | 找回手动且无期限，自动过期 = 静默丢证据 |
+
+**移交（`LEARNINGS #002-04`：责任推出边界必须落接收方的表）**：部署侧两笔已落 `docs/workspace/deploy-todo.md`
+**D-13**（建桶 ＋ 策略 ＋ **实测策略变量是否生效**——`plan.md` R7 点名的唯一风险）与
+**D-14**（`/shared` 共享卷，Q2 的 bare 仓库落点）。两条的「怎么验」都写了**反向判据**
+（D-13：同会话上传别人的前缀**应被拒**；D-14：**冲突那一半**要验，不是只验能 push）。
+
+**本 task 未闭合的账**：`minio.md` §5 列了五条指向，其中「策略变量是否生效」**只能在目标环境验**
+（本机与替身都验不了——替身会把存储层的拒绝一起假掉）。
+
 ## 开工前裁定（2026-10-06，用户裁定 · 主检出会话执行）
 
 来源：`docs/workspace/dev_tdd.005.md` 文末「未定项清单」。三条已裁定，并已同步到 plan.md / tasks.md / 两份 design 文档。
@@ -152,7 +177,29 @@ T001 只做定位、不动产品码。它把下列**开工前裁定**推到了�
 - ~~**共享项目的 `archived` 语义**~~——**已裁（Q3，2026-10-06）**：拆开落，共享态进 PG，FR-010 成立。（原写「留待 T001 定位时钉」，实际 T001 未钉，由 T002 开工前裁定补齐。）
 - **U2 / U3 / U6 / U7** 未裁（案件实体无 task / 超期提醒触发者 / T004 半条判据 / —）——按 `dev_tdd.005.md` 的节奏在对应 task 开工前裁定。**U6（FR-012 并发靠 git）已由 Q2 解决**（载体＝`/shared/{projectId}.git`）；**U8 已由第二批默认执行**。
 
-**门禁基线**：**未测**。按 `dev_tdd.005.md` Step 4：开工时自己跑一次 `bun run lint:openhive`，把当时的 warnings / errors / 文件数落进本文件再引用——**不要抄 001 的数**（`LEARNINGS #001-02` / `#002-06`）。
+**门禁基线（2026-10-06 实测，T002 阶段快照）**：`bun run lint:openhive`
+
+```
+Found 23 warnings and 0 errors.
+Finished in 1.3s on 69 files with 161 rules using 12 threads.   EXIT=0
+```
+
+**按规则名归并**（`LEARNINGS #001-01`：判「有没有变坏」看**规则名 ＋ 文件行**，不看总数——12 线程下总数有抖动）：
+
+| 条数 | 规则 |
+|---|---|
+| 17 | `typescript-eslint(no-unnecessary-type-assertion)` |
+| 2 | `typescript-eslint(unbound-method)` |
+| 1 | `typescript-eslint(no-unsafe-type-assertion)` |
+| 1 | `typescript-eslint(no-misused-spread)` |
+| 1 | `eslint-plugin-unicorn(no-new-array)` |
+| 1 | `eslint-plugin-jsx-a11y(click-events-have-key-events)` |
+
+**这是一条真实基线，不是抄的**（`LEARNINGS #001-02` / `#002-06`）：退出码 **0**、23 条全在 `warn` 级、**零 error**。
+⚠️ 因此本 feature 的门禁判据必须是「**本次新增 / 改动文件 0 命中**」，**不是**「全局 0 warning」——
+全局基线本来就带着这 23 条存量（`#001-02` 的第二条：存量未清零前不许把门升成 error）。
+⚠️ **`161 rules` 与「5 个自有目录」对得上**：本 feature 若新增 `app/src/project/` 而**忘改 3 处目录清单**，
+这个门会**静默扫不到新文件**（第二步已裁，见「第二批」表的 ⑤ 行）。
 
 ## 跨 feature 备注（2026-10-06，本次实测发现 · 未处理）
 
@@ -161,4 +208,4 @@ T001 只做定位、不动产品码。它把下列**开工前裁定**推到了�
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
-2026-10-06（三批开工前裁定全部落定：U1/U4/U5 ＋ D0-1/D0-2b/D0-4/⑤/U8 ＋ Q1–Q4）
+2026-10-06（T002 完成：MinIO 方案落 `minio.md`，部署侧两笔落 deploy-todo D-13/D-14）
