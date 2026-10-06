@@ -50,7 +50,12 @@
   - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
   - 🔒 **U7 裁定（2026-10-06）：本条只做工作空间轴那半，完整判据显式移交 007**——判据「工作空间成员身份不改变数据访问结果」**要两轴的表都在**才验得了（数据轴那半 `fund_project_member` 在 `007-fund-analysis` T004）。本 feature 验工作空间轴能验的全部（owner/member 权责、邀请/移除/退群、归档后失权/owner 保留找回），**完整判据写进 `007-fund-analysis/tasks.md` 的 📥 块**（`LEARNINGS #002-04`：责任推出边界必须落**接收方**的表）。⚠️ 出参因此收窄为「**工作空间轴**判定单测通过」——**不得**写成「两轴解耦已验证」（`#002-02`：测不了要写成缺口，不是覆盖）。
 
-- [ ] T017 [BE] 实现**「当前项目」身份的落地口径**：建会话时服务端按 `projectId` 查 `project_ext`，拼出 `join(沙箱根, 目录)` 写进 `session.directory` [FR-001] [T003] [出参：建会话落进项目目录、且客户端给的目录一律无效]
+- [x] T017 [BE] 实现**「当前项目」身份的落地口径**：建会话时服务端按 `projectId` 查 `project_ext`，拼出 `join(沙箱根, 目录)` 写进 `session.directory` [FR-001] [T003] [出参：建会话落进项目目录、且客户端给的目录一律无效]
+  - ✅ **出参落地**：`packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`（新建 fork 中间件：按 `PROJECT_HEADER` 查 `ProjectExt.findByProjectID`，命中则把目录上移一层到 `join(config.root, user.id, projectId)`）／`.../httpapi/server.ts`（＋7 行挂载，**排在 `anchorWorkspaceLayer` 之后**）／`packages/opencode/test/server/openhive-project-directory.test.ts`（**8 条用例全绿**）。**两条链各一条主判据**（A 链 URL ／ B 链请求体），回归那条钉「不带项目头 ＋ 伪造 `../../` ⇒ 仍落沙箱根」。
+  - 🔒 **裁定（2026-10-06，本 task 开工前用户裁定三笔）**：① 客户端用**请求头 `x-openhive-project`** 报 `projectId`（`payload.location` 里没有这个字段，两条链只有头是共用的）；② 落在**新 fork 中间件**，挂锚定**之后**；③ `join(沙箱根, 目录)` 里的**目录就是 `projectId` 本身**（`project_ext` 那四列里**没有**目录列）。
+  - 🔒 **裁定（2026-10-06，按锚定 R-05 先例落的一笔，待复核）**：**非法 `projectId` 取「拒」**（`User.isSafePathSegment` 不过 ⇒ 抛错），不是「忽略后落沙箱根」。依据是锚定对**同一类**输入（会被 `join` 进路径的身份段）已经选了 fail closed。⚠️ **「非法」与「查不到」是两件事**：查不到（R5）走「落沙箱根」的正常路径。
+  - ⚠️ **`anchor-workspace.ts` 一字不动**（D0-1 的另一半）：实测 `git diff --stat` 只有 `server.ts | 7 ++++`，锚定文件零改动；那条「客户端给的目录一律无效」的不变量原样保留（回归用例 5 钉着）。
+  - ⚠️ **已知不覆盖三条**（详见 `project-location.ts` 文件头「已知不覆盖」）：① **不建目录**（只写路径，目录由 T006 落地）；② **剥 `PROJECT_HEADER` 没有测试守着**（本仓今天无下游读它 ⇒ 写不出会红的断言）；③ **射程 = 所有带头的请求，判断据只钉了建会话**（文件树 / pty 等入口的上移是**推**出来的，要动它们先补用例）。
   - 🔒 **裁定（2026-10-06，T003 收尾时用户裁定「补一条 T017」）**：**本条是 T003 逼出来的孤儿**——`plan.md` 的 D0-1 落地口径原文写着「客户端只报 `projectId`（业务标识），建会话时服务端查 `project_ext` 拼出 `join(sandbox, dir)` 写进 `session.directory`」，但这句**不在 T003 / T005 / T006 / T016 任何一条的文字里**（`LEARNINGS #002-04`：责任推出边界必须落接收方的表）。T003 只交到接口级（`ProjectExt.findByProjectID` 已就绪）。
   - ⚠️ **不动的东西（D0-1 的另一半）**：`anchor-workspace.ts` **一字不动**——它今天钉死两段 `join(config.root, user.value.id)`，客户端给的 `?directory=` / 头 / 请求体三条入参**全部被改写成沙箱根**。本条只是**在沙箱根里面**再加一段项目目录，**不碰**那条不变量；判据必须含**回归断言**：客户端自填的目录（含 `../../` 逃逸写法）**仍然无效**。
   - ⚠️ **查不到就落沙箱根**（plan.md R5）：**不做隐式建项目**（与 U4 的「两张表同步创建 ⇒ 收成一个写入模块」一致）。判据：查库失败**不改变**上面那条不变量。
@@ -92,7 +97,7 @@
 ## 并行组与依赖总览
 
 - **Phase 1**：T001 ∥ T002（并行）
-- **Phase 2**：T003 ✅（依赖 T001）；T004 ✅（依赖 T001，可与 T003 并行）；T017（依赖 T003，可与 T004 并行）
+- **Phase 2**：T003 ✅（依赖 T001）；T004 ✅（依赖 T001，可与 T003 并行）；T017 ✅（依赖 T003，可与 T004 并行）
 
 > 📌 **T017 编号排最后、归属在 Phase 2**（2026-10-06 T003 收尾时裁定补入）：它是 D0-1 落地口径的实装，属「Foundational」而非某个用户故事；补编号时 Phase 2 已有 T003/T004，故用末号而**不重排**既有编号（编号是 ID 不是顺序，同 `LEARNINGS.md` 的条目号规则）。
 - **Phase 3**：T005（依赖 T003）；T006（依赖 T003）

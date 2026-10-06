@@ -122,6 +122,7 @@ import {
   uiQuotaLayer,
 } from "./middleware/session-quota"
 import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-workspace"
+import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
@@ -328,6 +329,12 @@ export function createRoutes(
       // 决定锚到谁的沙箱，排在前面就抓不到 User、整道锚定静默直通（测试守着这个次序）。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 多租户隔离（003 T006）。
       anchorWorkspaceLayer.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+      // 「当前项目」的落地口径（005 T017）：**必须排在锚定之后**——它在**沙箱根里面**再进一层，
+      // 排在前面就会被锚定原样覆盖掉（锚定把三处目录入参全改成沙箱根）。
+      // 与锚定共用同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义，别在这里再定义一个）。
+      // 次序与理由见 `middleware/project-location.ts` 文件头「为什么挂在锚定之后」。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T017）。
+      projectLocationLayer.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
       // B 链（CLI serve / sdk-next）的配额守卫（003 T010）。**必须挂在这一层**：
       // 它的活跃集合来自 `SessionV2.active`（进程级）与按用户路由的 `Database`，
       // 两者在这个 provide 链的外层可用；A 链那条读不到实例作用域的 `SessionStatus`，
