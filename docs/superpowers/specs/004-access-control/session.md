@@ -107,13 +107,12 @@
 
 ### 1. 用户侧
 - 把 `worktree-feat-004-access-control` 合并到 `multi-tenant`（**由用户执行**）。
-- **裁定 ③（2026-10-06 新增）**：**PGlite ≠ 生产 PG** 这条残差**要不要现在闭合**？闭合 ＝ 在 CI 加
-  真 PG service，要动**上游** `.github/workflows/test.yml`（【这是要保留的定制】**单独提交**）；
-  ⚠️ **只加 service 不够** —— 「env 缺失即 skip」会造出**假覆盖**，得让流程**缺 PG 就红**。
-  **当前处置：挂账，等裁定。**
-- **裁定 ④（2026-10-06 新增）**：**capability 契约零消费者** —— 现在补**结构断言**（形状层，canary 级已有），
-  还是**等 F6/F7 有消费者**时再钉契约？前者能防 `capability` 结构在「无人消费」的窗口里悄悄漂；
-  后者更省、且真正的契约应由**消费者**来钉。**当前处置：挂账，等裁定。**
+- ✅ **裁定 ③（2026-10-06，已裁定）**：**PGlite ≠ 生产 PG** —— **挂账，留到 F6/F7 一并闭合**
+  （那时第一次出现真实 RLS 策略，版本敏感行为恰在那时才被真正检验）。判据仍是「**缺 PG 就红**」，
+  `env` 缺失即 `skip` 会造出**假覆盖**。**落点已写进接收方的表**（F6/F7 的「第四笔」）。
+- ✅ **裁定 ④（2026-10-06，已裁定）**：**capability 契约零消费者** —— **等 F6/F7 有消费者时再钉**：
+  契约的形状由**消费者**定义（`LEARNINGS #004-07`），零消费者时写下的形状断言很可能钉错形状。
+  **落点已写进接收方的表**（F6/F7 的「第四笔」）。
 - 裁定一条挂账：**改动过的两个测试文件**的全局 lint 残差（现值，2026-10-05 复测）——
   `packages/opencode/test/session/openhive-mcp-identity.test.ts` **8 warnings / 0 errors**
   （8 条**全是** `no-unsafe-type-assertion`，都落在 Service 桩上）；
@@ -126,7 +125,7 @@
   > 取数命令：**在仓库根**跑 `bunx oxlint <文件>`（在包目录里跑会因根配置的 `options.typeAware`
   > 报「only supported in the root config」而测不到数）。
 
-### 2. 下游 feature（三笔移交，均已在接收方 `tasks.md` 落表）
+### 2. 下游 feature（**四笔**移交，均已在接收方 `tasks.md` 落表）
 
 **→ F6 `007-fund-analysis` / F7 `008-call-analysis`（两处同构，都要做）**
 - **T008 机制落地**：建业务表时一并 `CREATE ROLE … NOLOGIN` + 最小 `GRANT` +
@@ -144,6 +143,11 @@
 - ⚠️ **不得声称 FR-006 行级部分已在 F4 端到端验证**（`LEARNINGS #002-02`）。`packages/auth`
   的测试**进 CI**（`turbo.json` 有 `@opencode-ai/auth#test`，CI 跑 `GITHUB_ACTIONS=false bun turbo test`
   ——2026-10-05 更正，原文写「不进 CI」与事实相反）；PGlite **不等于**生产 PG 同版本同构建（残差见 rls.ts 文件头）。
+- **补测 ③ / ④（2026-10-06 用户裁定后新增，两处同构）**：**(a)** 「PGlite ≠ 生产 PG」在**你们建表 /
+  写策略的那一批**一并闭合 —— CI 加真 PG service，判据必须是「**缺 PG 就红**」（`env` 缺失即 `skip` ＝
+  **假覆盖**）；**(b)** `capability` 契约今天**零消费者** ⇒ **由你们（消费者）在接 `dataScope` 时把形状钉住**，
+  而不是在零消费者时凭空写形状断言（`LEARNINGS #004-07`：判据来源必须是**被调方**）。
+  **完整块在** `007-fund-analysis/tasks.md` / `008-call-analysis/tasks.md` 的**「第四笔」**。
 
 **→ `007-fund-analysis`（T010 / T011）**
 - **T010 数据范围**：004 只交**机制定义** —— capability 的 `dataScope` 字段结构 + 「两轴不绑定」的
@@ -169,14 +173,14 @@
 | **链 B 的 MCP 授权** | `sessionRuleset` 的 mcp 段 | 只对**链 A**（v1 / web UI）生效。链 B（v2 / CLI·sdk-next）**尚无落点**——v2 侧没有对应的 MCP 承载 |
 | **`knowledge_base` 资源类型** | `TOOL_OF` | 全仓 `packages/` 下**零命中**，没有对应工具 ⇒ 不产 allow，只被 fail-closed 基线罩着。接上时必须**同时**改 `TOOL_OF` 与 `access-rbac.test.ts` 的 ③ |
 | **`write` / `review` / `admin` 三个动作** | `resolve()` | 是**管理动作**（改内容 / 批上线 / 上下架），今天没有承载它们的工具 ⇒ 只有 `read` 产 allow。不是漏做 |
-| **`capability.ts` / `issue.ts` 今天无生产调用点**（R3） | `packages/core/src/access/` | 机制定义**已就绪**、结构由 canary 测试逐条钉着，但 `AccessIssue.issue` 在生产里**零调用点**（`issue.ts` 自己写着「本文件不接线」，D0-5）。**不删**——F7 落数据范围时要照抄这套结构；接线那一半在 T005/T006/F7。**2026-10-06 补测裁定项 ④**：它的「契约」那一面属**跨模块契约**类（`test-routing-advisor` 的候选类，路由表里标 🔧占位·待建），**不在 `backend-testing` 射程**（真库 / 越权 / 并发 / 韧性）；今天能做的只有结构断言（canary 级已有：`core/test/access-capability.test.ts`） |
+| **`capability.ts` / `issue.ts` 今天无生产调用点**（R3） | `packages/core/src/access/` | 机制定义**已就绪**、结构由 canary 测试逐条钉着，但 `AccessIssue.issue` 在生产里**零调用点**（`issue.ts` 自己写着「本文件不接线」，D0-5）。**不删**——F7 落数据范围时要照抄这套结构；接线那一半在 T005/T006/F7。**2026-10-06 补测裁定 ④：挂账 → 等 F6/F7 有消费者时由消费者钉**（已落进接收方 `tasks.md` 的「第四笔」）。它的「契约」那一面属**跨模块契约**类（`test-routing-advisor` 的候选类，路由表里标 🔧占位·待建），**不在 `backend-testing` 射程**（真库 / 越权 / 并发 / 韧性）；今天能做的只有结构断言（canary 级已有：`core/test/access-capability.test.ts`） |
 | **授权的滞后窗口**（R4，**已定义的语义**、不是缺口） | 会话创建 | 改授权（**增也一样**）对**已存在**的会话无效，下一次建会话才生效；今天**不提供**会话级吊销（回查＝在执行器里认角色表＝违反 FR-002）。F10 的授权管理界面**不要承诺「立即生效」** |
 | **MCP 来源的命令无法用 capability 表达**（R1 派生） | `src/command/index.ts` 的 `Info` | 字段里**没有 server** ⇒「这条 prompt 命令属于哪个 server」表达不出来，`mcp:<server>:*` 的判据写不出（R1 只堵住了 skill 那一支） |
 | **`GET /command`**（R1 派生） | `handlers/instance.ts` 的 `getCommand` | 与 `GET /skill` / `GET /experimental/tool` **同型**：instance 级、**非会话作用域** ⇒ 拿不到 capability、无处过滤，而 `Command.Info[]` 里 skill 的 `template` **就是正文** |
 | **R1 的门被拒时呈现为 500** | `prompt.ts` 的 `command()` | `Effect.orDie`（`command()` 的契约错误类型只有 `Image.Error`；改它＝动 `Interface` 的全部调用方＝上游面）。**呈现层**粗糙，不改变授权结论 |
 | **Minors（Step 5 的 M14 ＋ 3 席的 `M-a`…`M-e`）** | 见 `state.md` | 一律**挂账未修**（用户裁定）。其中 **`M-b` 已现场实测**（I11 的资源支路只带 `current.permission`，与工具路径不同形，见上） |
 | **lint 残差** | 见上「用户侧」 | 待裁定（8 条 / 3 条，均 warning 级） |
-| **PGlite ≠ 生产 PG**（③） | `packages/auth/src/rls.test.ts` | 闭合的是**测试自己写的那一半**（RLS 执行器 / 身份事务作用域 / 策略拼装），**不闭合**「与生产 PG **同版本同构建**」。要闭合得在 CI 加真 PG service —— 那要动**上游** `.github/workflows/test.yml`。**2026-10-06 列为待裁定** |
+| **PGlite ≠ 生产 PG**（③） | `packages/auth/src/rls.test.ts` | 闭合的是**测试自己写的那一半**（RLS 执行器 / 身份事务作用域 / 策略拼装），**不闭合**「与生产 PG **同版本同构建**」。要闭合得在 CI 加真 PG service —— 那要动**上游** `.github/workflows/test.yml`。**2026-10-06 裁定：挂账 → 移交 F6/F7**（两处 `tasks.md` 的「第四笔」：建表/写策略那一批一并闭合，判据「缺 PG 就红」） |
 | 命令出口的**路由接缝**（**已补**，2026-10-06） | `session/prompt.ts` 的 `command()` | 原缺口：R1 的两条见证在 **Effect 层**且**自己把规则集塞进会话** ⇒「HTTP 身份头 → 用户 → 每用户库 → 会话行 → 规则集 → 判决」这条搬运**零覆盖**（**把门去掉它们照样全绿**）。**已补** `004-BF-01`（拒 ＋ 正文**零字节**进模型）/ `004-BF-02`（同一条请求换身份的**对照**），落点 `packages/opencode/test/server/openhive-access-command-route.test.ts` |
 | 门的**顺序**（**已补**，2026-10-06） | 同上 | 原缺口：门必须在读 `cmd.template` **之前**（否则正文里的 `` !`…` `` 块**先被执行**、再被拒）。**已补** `004-BF-03`；变异 M-②（把门挪到读模板之后）**恰红一条**，证明它是**独立**判据 |
 

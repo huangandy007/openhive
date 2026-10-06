@@ -1665,12 +1665,18 @@ M-② **只**红那一条。
 **WASM 版 PG**。闭合的是**测试自己写的那一半**（RLS 执行器、身份事务作用域、策略拼装），**不闭合**
 「与生产 PG **同版本同构建**」。要闭合得在 CI 里加真 PG service —— 那要动**上游文件**
 `.github/workflows/test.yml`（【这是要保留的定制】**单独提交**），且「env 缺失即 skip」会造出**假覆盖**。
-**⇒ 待用户裁定**，本轮**不自行改 CI**。
+**⇒ 用户裁定（2026-10-06）：挂账，留到 F6/F7 一并闭合** —— 那时第一次出现真实 RLS 策略，
+版本敏感行为恰在那时才被真正检验；判据仍是「**缺 PG 就红**」。已落进**接收方**的表：
+`007-fund-analysis/tasks.md` / `008-call-analysis/tasks.md` 的「第四笔」（`LEARNINGS #002-04`：
+账只写在自己文档里等于没写）。
 
 **④ capability 契约零消费者**（R3 已记：`capability.ts` / `issue.ts` 今天无生产调用点）：属
 **跨模块契约**类 —— `test-routing-advisor` 的**候选类**（那一格在路由表里标 🔧占位·待建），
 **不在 `backend-testing` 射程**（它的四类是：真库 / 越权 / 并发 / 韧性）。今天能做的只有**结构/形状断言**
-（`core/test/access-capability.test.ts` 已是 canary 级）。**⇒ 待用户裁定**。
+（`core/test/access-capability.test.ts` 已是 canary 级）。**⇒ 用户裁定（2026-10-06）：等 F6/F7 有消费者
+时再钉** —— 契约的形状由**消费者**定义，零消费者时写下的形状断言很可能钉错形状（`LEARNINGS #004-07`）。
+已落进**接收方**的表：`007-fund-analysis/tasks.md`（T004 接 `dataScope` 时由消费者钉住）与
+`008-call-analysis/tasks.md` 的同一块。
 
 ## 最后更新
 
@@ -1687,9 +1693,11 @@ M-② **只**红那一条。
 两次变异均 `git checkout --` 完整还原、`git diff --stat` 为空、门回读模板之前）＋ **据实记一处小账**
 （M-① 先红在状态码、看不出泄漏 ⇒ 把泄漏断言调到状态码之前，**只调序、不弱化**）＋ 门禁**串行**复跑
 （新文件 oxlint **0/0** / `tsgo --noEmit` **exit 0** / 新文件 ＋ 同族 wiring 文件**同进程** **8 pass / 0 fail**
-/ `bun.lock` 空）＋ **产品码改动＝无**（属覆盖缺口，行为本就正确）＋ 两条**未闭合待裁定**（③ PGlite ≠ 生产 PG：
-闭合要动上游 `.github/workflows/test.yml` 加真 PG service，本轮不自行改 CI；④ capability 契约零消费者：
-属「跨模块契约」候选类、**不在 `backend-testing` 射程**）＋ 同步 `session.md` 缺口表）
+/ `bun.lock` 空）＋ **产品码改动＝无**（属覆盖缺口，行为本就正确）＋ 两条**未闭合 → 用户裁定均「挂账」**
+（③ PGlite ≠ 生产 PG：**留到 F6/F7 建表/写策略那一批一并闭合**，判据「缺 PG 就红」；④ capability 契约
+零消费者：**等 F6/F7 有消费者时由消费者钉**——零消费者时写下的形状断言很可能钉错形状）＋ **两条都落进
+接收方的表**（`007-fund-analysis` / `008-call-analysis` 的「**第四笔**」，`LEARNINGS #002-04`：账只写在
+自己文档里等于没写）＋ 同步 `session.md` 缺口表）
 
 2026-10-05（**Step 5 之后的独立审查（3 席）**：得 **R1–R5**，用户裁定**全修**（Minors 记账）——
 R1/Critical：`Command.init` 把每个 skill 也注册成一条命令，`POST /session/:id/command` 可绕开
