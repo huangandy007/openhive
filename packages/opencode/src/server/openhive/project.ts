@@ -75,7 +75,6 @@ export * as OpenhiveProject from "./project"
  * （见本模块测试文件头那张实测表）。
  */
 
-import { connect } from "@opencode-ai/auth/db"
 import { addMember, archiveStatesOf, memberCountsOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
@@ -93,6 +92,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { OpenhivePg } from "./pg"
 
 /** 与 `AuthGateway.PREFIX` 同款：fork 自己的前缀，避开上游 `/project` 的既有出口。 */
 export const PREFIX = "/openhive/project"
@@ -132,7 +132,7 @@ interface Deps {
   readonly projectV2: ProjectV2.Interface
   readonly database: Database.Interface
   readonly git: Git.Interface
-  readonly pg: () => ReturnType<typeof connect>
+  readonly pg: OpenhivePg.Interface["pg"]
 }
 
 /**
@@ -145,8 +145,12 @@ interface Deps {
  * 注入，所以要 `Effect.serviceOption(User.Service)` 在请求期取（同 `project-location.ts`）。
  *
  * PG 连接与网关同款：**惰性建、建一次就留着**（`connect()` 每次调用新建一个连接池，
- * 按请求建 = 按请求泄漏，plan.md 风险点 R2）。放在这里而不是模块级：模块级会让同一进程里
- * 多个 `app()` 共用一条已经关掉的连接（测试直接失真，见 `@opencode-ai/auth/test-support`）。
+ * 按请求建 = 按请求泄漏，plan.md 风险点 R2）。
+ *
+ * ⚠️ **T015 起池子搬到了 `./pg`**（不再是本模块的 `let pool`）：同一个 `auth.project_archive`
+ * 现在有三个读它的地方（本模块的列表、`archive.ts` 的归档/找回、`project-location.ts` 的门），
+ * 各持一个池时「同句 SQL 文本 × 两个客户端」会在 PGlite 夹具上撞 `42P05`——理由与取舍逐条写在
+ * `./pg` 的文件头（含「为什么是一个**层**一个池，而不是模块级单例」那条实测）。
  */
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -156,11 +160,17 @@ export const routes = HttpRouter.use((router) =>
     const projectV2 = yield* ProjectV2.Service
     const database = yield* Database.Service
     const git = yield* Git.Service
+    const openhivePg = yield* OpenhivePg.Service
 
-    let pool: ReturnType<typeof connect> | undefined
-    const pg = () => (pool ??= connect(process.env))
-
-    const deps: Deps = { root: config.root, shared: shared.root, project, projectV2, database, git, pg }
+    const deps: Deps = {
+      root: config.root,
+      shared: shared.root,
+      project,
+      projectV2,
+      database,
+      git,
+      pg: openhivePg.pg,
+    }
 
     yield* router.add("GET", PATH.list, () => handleList(deps))
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, deps))

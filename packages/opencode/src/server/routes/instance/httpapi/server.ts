@@ -126,6 +126,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
+import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
@@ -320,6 +321,12 @@ export function createRoutes(
     OpenhiveProject.routes.pipe(
       Layer.provide(OpenhiveProject.SharedRootConfig.layer),
       Layer.provide(AnchorWorkspace.Config.layer),
+      // 业务 PG 客户端（005 T015）：这三个消费方（建/列项目、归档/找回、中间件那道「已归档」
+      // 的门）**必须拿到同一个实例**——它们都读 `auth.project_archive`，两个客户端跑同一句
+      // SQL 文本会在 PGlite 夹具上撞 `42P05`（理由与取舍见 `@/server/openhive/pg` 文件头）。
+      // `OpenhivePg.layer` 是**同一个模块级值**，三处 provide 同一对象 ⇒ 层记忆化只建一次。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
+      Layer.provide(OpenhivePg.layer),
     ),
     // openhive 归档出口（005 T013）：项目归档（上传 MinIO ＋ 删沙箱 ＋ 标记）。
     // 沙箱根**复用**上一项同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义，两处漂了就是
@@ -330,6 +337,9 @@ export function createRoutes(
     OpenhiveArchive.routes.pipe(
       Layer.provide(OpenhiveArchive.MinioConfig.layer),
       Layer.provide(AnchorWorkspace.Config.layer),
+      // 与建/列项目**共用同一个**业务 PG 客户端（005 T015，理由见上面那一项）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
+      Layer.provide(OpenhivePg.layer),
     ),
   ).pipe(
     Layer.provide([

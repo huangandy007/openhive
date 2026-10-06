@@ -83,7 +83,6 @@ export * as OpenhiveArchive from "./archive"
  * `test/server/openhive-project-restore.test.ts` 的「下载失败 ⇒ 归档行没动」那条。
  */
 
-import { connect } from "@opencode-ai/auth/db"
 import { archiveStatesOf, markArchived, markRestored, membersOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { Minio } from "@opencode-ai/core/minio"
@@ -96,6 +95,7 @@ import { lstatSync } from "node:fs"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { OpenhivePg } from "./pg"
 import { PREFIX } from "./project"
 
 /**
@@ -164,8 +164,8 @@ interface Deps {
   /** 沙箱根（`AnchorWorkspace.Config`，与 T018 建项目用的是**同一个**——沙箱根只有一处定义）。 */
   readonly root: string
   readonly minio: Option.Option<MinioSettings>
-  /** 惰性建、建一次就留着（理由同 `project.ts`：按请求建连接池 = 按请求泄漏）。 */
-  readonly pg: () => ReturnType<typeof connect>
+  /** 业务 PG 客户端（**共享的那个**，T015 收口：`./pg` 的文件头讲了为什么三个模块要共用一个）。 */
+  readonly pg: OpenhivePg.Interface["pg"]
 }
 
 /**
@@ -179,11 +179,9 @@ export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const config = yield* AnchorWorkspace.Config
     const minio = yield* MinioConfig
+    const openhivePg = yield* OpenhivePg.Service
 
-    let pool: ReturnType<typeof connect> | undefined
-    const pg = () => (pool ??= connect(process.env))
-
-    const deps: Deps = { root: config.root, minio: minio.connection, pg }
+    const deps: Deps = { root: config.root, minio: minio.connection, pg: openhivePg.pg }
 
     yield* router.add("POST", PATH.archive, (request) => handleArchive(request, deps))
     yield* router.add("POST", PATH.restore, (request) => handleRestore(request, deps))
