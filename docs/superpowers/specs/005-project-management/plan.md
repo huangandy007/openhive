@@ -50,7 +50,7 @@ packages/app/src/
 │   ├── project-anchor.tsx        # 项目锚点行（项目名 + 成员数 + ▾ + ＋）
 │   ├── project-panel.tsx         # 项目面板（＋新建 + 最近/全部/已归档三 tab）
 │   ├── member-panel.tsx          # 成员面板（👥 侧滑：邀请/移除/退群）
-│   ├── file-tree.tsx             # 文件树（复用原生 + 工具栏 + 右键菜单）
+│   ├── file-tree.tsx             # 文件树外包层（底座取 v2 model；上游 components/file-tree.tsx 一字不动）
 │   └── minio-dual-tree.tsx       # 文件 ↔ MinIO 上下双树拖拽
 
 packages/opencode/src/
@@ -79,7 +79,7 @@ packages/auth/src/migrations/
 
 | opencode 组件 | openhive 改造 | 类型 |
 |---|---|---|
-| 原生文件树（SolidJS） | 复用 + 换皮（token）+ 补工具栏 / 右键菜单 | 换皮 + 新增能力 |
+| 原生文件树（SolidJS） | **包一层，不碰本体**：`components/file-tree.tsx` 一字不动，在 `app/src/project/` 新建；**底座取 v2**（`file-tree-v2-model.ts` 是纯函数、可单测） | 新增（外包 ＋ token） |
 | opencode 无项目锚点 / 面板 | 项目锚点行 + 项目面板（新建 / 最近 / 全部 / 已归档） | 新增 |
 | opencode 无成员面板 | 成员面板（👥 侧滑：邀请 / 移除 / 退群） | 新增 |
 | opencode 无 MinIO 双树 | 文件 ↔ MinIO 上下双树拖拽（已备份标 ✓） | 新增 |
@@ -103,8 +103,8 @@ packages/auth/src/migrations/
 
 | 类型 | 本 feature 具体 |
 |---|---|
-| 换皮 | 原生文件树（token）、左栏样式 |
-| 新增 | 项目锚点 / 面板、成员面板、MinIO 双树拖拽 |
+| 换皮 | 左栏样式（token） |
+| 新增 | 文件树外包层（D0-2 裁定：上游组件一字不动，缺的六项能力〔工具栏 / 右键菜单 / 新建 / 重命名 / 删除 / 上传下载〕全部新增）、项目锚点 / 面板、成员面板、MinIO 双树拖拽 |
 
 ## 数据流向（要素②）
 
@@ -127,8 +127,8 @@ flowchart LR
 | 依赖 | 用途 | 说明 |
 |---|---|---|
 | Bun（monorepo） | 构建 / 运行 | opencode 既有工程 |
-| opencode 原生文件树（SolidJS） | 复用基座 | 补搜索/折叠/拖 MinIO + 换皮 |
-| MinIO SDK | 对象存储 | 文件备份 / 归档 |
+| opencode 原生文件树（SolidJS） | 只读参考基座 | **D0-2 裁定（2026-10-06）**：`components/file-tree.tsx` **一字不动**；底座逻辑取 v2 的纯函数 model（`file-tree-v2-model.ts`，可单测），在 `app/src/project/` 包一层。原写「复用 + 换皮」，实测该组件缺工具栏/右键菜单/新建/重命名/删除/上传下载六项 ⇒ 实为新增 |
+| **`@aws-sdk/client-s3`** | 对象存储 | 文件备份 / 归档。**D0-4 裁定（2026-10-06）**：复用既有 `@aws-sdk/credential-providers`（Bedrock 认证）的同一 SDK 家族，`bun.lock` 增量最小；MinIO 是 S3 兼容 ⇒ 直连。原写「MinIO SDK」指同一能力，具体包名以此为准 |
 | git | 版本留痕 | 文件并发靠 git，不做实时协同 |
 
 > 具体版本实现时对照 opencode 现有依赖锁定。
@@ -137,6 +137,7 @@ flowchart LR
 
 - **复用 F1 三栏**：图标栏「项目管理」入口呼出左栏（F1 已落地五入口）。
 - **复用 F3 沙箱**：项目是 `/workspaces/{userId}/{project}/` 内的隔离边界 + git 仓库。
+- **「当前项目」身份由服务端算（D0-1 裁定，2026-10-06）**：客户端只报 `projectId`（业务标识），建会话时服务端查 `project_ext` 拼出 `join(sandbox, dir)` 写进 `session.directory`。**`anchor-workspace.ts` 一字不动**——它今天钉死两段 `join(config.root, user.value.id)`，客户端给的 `?directory=` / 头 / 请求体三条入参**全部被改写成沙箱根**；把「哪一段是项目」交给服务端算，003 的「客户端报的目录一律无效」不变量原样保留（沙箱**仍需**由 F3 兜底，本 feature 不加第二道门）。
 - **成员判定自成一条线（U5 裁定，2026-10-06）**：`project_member` 是工作空间轴权限，**不接 `core/access` capability**（那是数据轴，004 裁定 ④ 留给 F6/F7 钉契约）——存储落业务 PG、判定写 core 纯函数、接线在执行层；不绑定数据轴权限。
 - **六个字段落 openhive 自有表（U4 裁定，2026-10-06）**：新增 `project_ext` 表（`type` / `project_type` / `shared_directory` / `last_accessed_at` / `archived` / `archived_at`），建表钩子挂在 fork 自有的 `packages/core/src/database/router.ts`（每用户库那一层）；上游 `packages/core/src/project/sql.ts` 与 `database/migration/` 一字不动。
 
@@ -148,3 +149,4 @@ flowchart LR
 | R2 | MinIO 备份/归档的大文件传输性能 | 分片上传、归档异步执行、进度反馈 |
 | R3 | 归档/找回的文件一致性（上传失败/中断） | 上传校验 + 幂等重试，归档前确认完整性 |
 | R4 | ~~自动归档形态待决策~~ **已定（U1 裁定，2026-10-06）** | **先提醒、owner 确认后归档**——与 spec.md 的 AC4 / US5 注记 / FR-008 / Assumptions 四处一致。本条原写「待决策」，与 spec 自相矛盾，已按 spec 收口 |
+| R5 | 「当前项目」身份由服务端算（D0-1 裁定）⇒ **建会话这条热路径上多一次库读**（查 `project_ext` 拼目录） | 该读在**建会话时**发生、不在每次请求上；查不到就落沙箱根（**不做隐式建项目**，与 U4 的「写入收成一个模块」一致）。判据：查库失败不改变「客户端给的目录无效」这条不变量 |

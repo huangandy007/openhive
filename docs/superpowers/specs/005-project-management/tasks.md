@@ -30,6 +30,7 @@
 
 - [ ] T003 [BE] 实现 **openhive 自有 `project_ext` 表**（type / project_type / shared_directory / last_accessed_at / archived / archived_at）＋建表钩子（挂 fork 自有的 `core/src/database/router.ts`；上游 `project/sql.ts` 与 `database/migration/` **一字不动**）[FR-008] [T001] [出参：新表建成、typecheck 通过]
   - 🔒 **U4 裁定（2026-10-06）：另起表，不加列**——宪法行 57 的处方原话「新增独立文件/表；不碰表结构」。原出参「加列后 typecheck 通过」已作废。
+  - 🔒 **D0-1 裁定（2026-10-06）：本项目身份**：`project_ext` 要能被**建会话那条路径**按 `projectId` 查到（服务端据此拼目录），所以「按 id 单行查询」是**必给接口**，不是可选项。`anchor-workspace.ts` 一字不动。
 - [ ] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
   - 🔒 **U5 裁定（2026-10-06）：不接 `core/access` capability**——那是数据轴，004 裁定 ④ 明确「等 F6/F7 有消费者时再钉」。本条走自有成员判定线（存储 PG / 判定 core 纯函数 / 接线执行层）。
   - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
@@ -42,6 +43,8 @@
 ## Phase 4: US2 文件树（P1）
 
 - [ ] T007 [US2] [FE·换皮] 实现文件树工具栏（新建/重命名/删除 + 搜索/折叠/展开）[FR-005] [T001] [出参：工具栏图标可用]
+  - 🔒 **D0-2 裁定（2026-10-06）：包一层，不碰上游**——上游 `components/file-tree.tsx` 一字不动；新建 `app/src/project/file-tree.tsx`，**底座取 v2 的纯函数 model**。实测上游该组件**没有**工具栏/右键菜单/新建/重命名/删除/上传下载 ⇒ 标注的「换皮」实为**新增**。
+  - ⚠️ **⑤ 前置（单独一次提交，先于建目录）**：`app/src/project/` 加入 **3 处**目录清单——根 `package.json` 的 `lint:openhive`、`app/src/openhive-module-dirs.test.ts` 的 `moduleDirs`、`app/src/workspace/design-token-refs.test.ts` 的 `自有目录`。少一处 ⇒ **视觉契约门扫不到新文件**且不报错（`LEARNINGS #002-06`）。
 - [ ] T008 [P] [US2] [FE·换皮] 实现文件树右键菜单（复制/移动/上传/下载/备份/拉回）[FR-005] [T001] [出参：右键菜单完整操作]
 - [ ] T009 [US2] [FE·换皮] 实现删除二次确认 + 重命名/删除选中后点亮、未选中置灰 [FR-006] [T007] [出参：删除有确认、未选中图标置灰]
 
@@ -52,6 +55,7 @@
 ## Phase 6: US4 MinIO 备份（P1）
 
 - [ ] T011 [US4] [BE] 实现 MinIO 客户端（文件级备份/拉回）[FR-007] [T002] [出参：文件可备份/拉回]
+  - 🔒 **D0-4 裁定（2026-10-06）：用 `@aws-sdk/client-s3`**——复用既有 `@aws-sdk/credential-providers` 的同一 SDK 家族，`bun.lock` 增量最小；MinIO 是 S3 兼容。加依赖后**必查** `git diff --stat bun.lock`（只应有本次新增的条目）。
 - [ ] T012 [US4] [FE·新增] 实现上下双树拖拽（沙箱 ↔ MinIO，已备份标 ✓）[FR-007] [T011] [出参：拖拽备份/拉回成功]
 
 ## Phase 7: US5 归档 / 找回（P2）
