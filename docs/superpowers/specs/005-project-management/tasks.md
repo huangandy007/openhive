@@ -22,7 +22,8 @@
 
 ## Phase 1: Setup（定位 + 方案锁定）
 
-- [ ] T001 [P] [INT] 定位 opencode 原生 project 表与文件树组件，产出改造落点 [FR-001] [无依赖] [出参：project 表/文件树真实入口清单]
+- [x] T001 [P] [INT] 定位 opencode 原生 project 表与文件树组件，产出改造落点 [FR-001] [无依赖] [出参：project 表/文件树真实入口清单]
+  - ✅ 清单落 `state.md` 的「T001 · 定位」节：`project` 表生产入口 **6 处**（U4 下全不改）／文件树**同名 3 个、活跃 2 条链**／左栏是**无人认领的空槽**／`{project}` 段 HTTP 层**不存在**／新增目录要同时改 **3 处**。
 - [ ] T002 [P] [BE] 确定 MinIO 部署与目录结构 `/minio/{userId}/{projectId}/` [FR-007] [无依赖] [出参：MinIO 目录/权限方案]
 
 ## Phase 2: Foundational（数据模型 + 权限）
