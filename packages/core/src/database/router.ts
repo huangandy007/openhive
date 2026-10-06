@@ -4,8 +4,10 @@ import { mkdir } from "fs/promises"
 import { dirname, join } from "path"
 import { Cause, Context, Effect, Exit, Layer, LayerMap, Option, type Scope } from "effect"
 import { User } from "../user"
+import { ProjectExt } from "../project/ext"
 import { DatabaseConnectionRouting } from "./connection-routing"
 import { Database } from "./database"
+import { DatabaseMigration } from "./migration"
 
 /**
  * 每用户一个 SQLite 库的**注册表**（T004）。
@@ -120,7 +122,24 @@ export function layer(
                 // 第二个用户会直接复用第一个用户已建好的连接，两个 userId 指向**同一个库文件**。
                 // 这不是理论风险：本 task 的测试第一版就撞上了（bob 的库里出现了 alice 建的表）。
                 // `location-services.ts` 用的是同一个解法。
-                Database.layerFromPath(userDatabasePath(root, userId)).pipe(Layer.fresh),
+                Database.layerFromPath(userDatabasePath(root, userId)).pipe(
+                  Layer.fresh,
+                  /**
+                   * **openhive 自有表的建表钩子（T003）**：上游 `database/migration/` 一字不动，
+                   * 借 `applyOnly` 的 journal 记账、幂等重放（细节与边界见 `../project/ext.ts` 顶部）。
+                   *
+                   * 位置有讲究，三条都是实的：
+                   * ① 挂在**这一层**（LayerMap 的构建体）⇒ 每用户一次、不随查询重复；
+                   * ② 挂在 `Layer.fresh` **之后** ⇒ 每次真正的重建都跑，缓存命中时不跑；
+                   * ③ 挂在层构造期而非 `forUser` 里 ⇒ 与上游 `apply()` 同一次建库，不会出现
+                   *    「库开了、表还没建」的窗口。
+                   */
+                  Layer.tap((context) =>
+                    DatabaseMigration.applyOnly(Context.get(context, Database.Service).db, [
+                      ProjectExt.migration,
+                    ]).pipe(Effect.orDie),
+                  ),
+                ),
             ),
           ),
         { idleTimeToLive: "60 minutes" },

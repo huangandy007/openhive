@@ -33,10 +33,15 @@
 
 ## Phase 2: Foundational（数据模型 + 权限）
 
-- [ ] T003 [BE] 实现 **openhive 自有 `project_ext` 表**（type / project_type / shared_directory / last_accessed_at / archived / archived_at）＋建表钩子（挂 fork 自有的 `core/src/database/router.ts`；上游 `project/sql.ts` 与 `database/migration/` **一字不动**）[FR-008] [T001] [出参：新表建成、typecheck 通过]
+- [x] T003 [BE] 实现 **openhive 自有 `project_ext` 表**（**个人态 4 字段**：type / project_type / shared_directory / last_accessed_at）＋建表钩子（挂 fork 自有的 `core/src/database/router.ts`；上游 `project/sql.ts` 与 `database/migration/` **一字不动**）[FR-008] [T001] [出参：新表建成、typecheck 通过]
+  - ✅ **出参落地**：`packages/core/src/project/ext.ts`（表 `ProjectExtTable` ＋ `migration` ＋ `findByProjectID`）／`packages/core/src/database/router.ts` 的 `Layer.tap` 钩子／`packages/core/test/project-ext.test.ts` **5 条用例全绿**。
+    **建表机制**：不走上游 `database/migration/`（那是上游清单＋生成物），改借上游**已导出**的 `DatabaseMigration.applyOnly(db, input)`——它接受任意 `Migration[]`、借同一本 `migration` journal 记账、幂等重放。钩子挂在每用户库那一层（`Layer.fresh` 之后），与上游 `apply()` 同一次建库。**实装落点修正**：原图写在 `opencode/project/project-ext.ts`，但建表要用表定义、而 **core 不能 import opencode**，故合并进 `core/project/ext.ts`（plan.md 的文件树与 Structure Decision 已同步改，全文只有那一处引用过旧路径）。
   - 🔒 **U4 裁定（2026-10-06）：另起表，不加列**——宪法行 57 的处方原话「新增独立文件/表；不碰表结构」。原出参「加列后 typecheck 通过」已作废。
   - 🔒 **Q3 裁定（2026-10-06）：六字段拆开落，本表只留个人态 4 个**——`type` / `project_type` / `shared_directory` / `last_accessed_at` 落**每用户库** `project_ext`；`archived` / `archived_at` 移出，落业务 PG 的 `project_archive`（见 T004）。理由：FR-010「归档后成员失权」要求归档状态是**项目级共享态**。
   - 🔒 **D0-1 裁定（2026-10-06）：本项目身份**：`project_ext` 要能被**建会话那条路径**按 `projectId` 查到（服务端据此拼目录），所以「按 id 单行查询」是**必给接口**，不是可选项。`anchor-workspace.ts` 一字不动。
+  - ⚠️ **本 task 未闭合、需要裁定的两条**（已落 `state.md`「T003」节，不自行拍板）：
+    ① **「建会话拼目录」的接线没有任何 task 认领**——`findByProjectID` 已按 D0-1 交到接口级，但 plan.md 那句「建会话时服务端查 `project_ext` 拼出 `join(沙箱, dir)` 写进 `session.directory`」**不在 T003/T005/T006/T016 任何一条的文字里**；
+    ② **钩子只覆盖每用户库**——进程级主库（`Database.node`）由上游 `database.ts` 建，**没有**这张表（给上游加钩子＝破坏「一字不动」）。当前无消费者在无身份上下文里读它。
 - [ ] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
   - 🔒 **U5 裁定（2026-10-06）：不接 `core/access` capability**——那是数据轴，004 裁定 ④ 明确「等 F6/F7 有消费者时再钉」。本条走自有成员判定线（存储 PG / 判定 core 纯函数 / 接线执行层）。
   - 🔒 **Q3 裁定（2026-10-06）：`project_archive` 表同批落这里**——`archived` / `archived_at` 两字段，与 `project_member` 同在业务 PG（同一次迁移 `0005_project_member.sql`）。它是**共享态**：owner 归档 ⇒ 全项目可见（FR-010 才立得住）。

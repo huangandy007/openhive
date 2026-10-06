@@ -55,7 +55,6 @@ packages/app/src/
 
 packages/opencode/src/
 ├── project/
-│   ├── project-ext.ts            # openhive 自有 project_ext 表落点（个人态 4 字段：type/project_type/shared_directory/last_accessed_at；Q3 裁定）
 │   ├── member.ts                 # 成员判定接线层（判定纯函数在 core/project/membership.ts，表在业务 PG）
 │   ├── shared-repo.ts            # 共享 bare 仓库接线（/shared/{projectId}.git 的 init/clone/commit/push；Q2 裁定）
 │   └── archive.ts                # 项目归档/找回（MinIO 上传/下载 + project_archive 状态流转）
@@ -64,6 +63,7 @@ packages/opencode/src/
 
 packages/core/src/
 └── project/
+    ├── ext.ts                    # openhive 自有 project_ext 表 ＋ 建表迁移 ＋ `findByProjectID`（T003 实装；个人态 4 字段；Q3 裁定）
     └── membership.ts             # 微信群模型判定（纯函数；U5 裁定不接 capability）
 
 packages/auth/src/migrations/
@@ -71,6 +71,8 @@ packages/auth/src/migrations/
 ```
 
 **Structure Decision**: 前端 `app/project/` 承载左栏交互，后端 `opencode/project/` 承载数据模型与归档逻辑；六个生命周期字段落 openhive 自有 `project_ext` 表、`project_member` 落业务 PG 并新增，**上游 `project` 表一字不动**——全部「加」的方式。
+
+> ⚠️ **`project_ext` 的落点从 `opencode/project/` 移到 `core/project/ext.ts`（T003 实装时修正，2026-10-06）**：原图的 `packages/opencode/src/project/project-ext.ts` **放不下**——建表钩子挂在 `core/src/database/router.ts`（T003 明文），而建表要用到表定义与 DDL，**core 不能 import `@opencode-ai/opencode`**（反向依赖，见 `packages/core/package.json`）。所以「表 ＋ 迁移 ＋ 按 id 单行查询（D0-1 必给接口）」三样合成 **`core/src/project/ext.ts`** 一个文件；`opencode` 侧若日后需要，直接 import 这个模块即可，**不再另开同名的透传文件**。全文只有本文件引用过旧路径（已 grep 确认）。
 
 ## 前端换皮区（左栏项目 / 文件树 / MinIO 双树）
 

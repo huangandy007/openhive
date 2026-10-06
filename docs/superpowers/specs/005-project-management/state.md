@@ -1,7 +1,9 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ —— 见「已完成」。**下一步 = T003**（openhive 自有 `project_ext` 表 ＋ 建表钩子），依赖已全部满足（U4 / Q3 定表形、D0-1 定必给接口）。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ —— 见「已完成」。
+**下一步 = T004**（`project_member` 表 ＋ 微信群模型权限判定，含 Q3 拆出的 `project_archive`），依赖 T001 已满足。
+⚠️ **T004 开工前有两笔要先钉**：① **U7**（T004 的「半条」判据怎么验——004 移交的「工作空间成员身份不改变数据访问结果」需数据轴那半也在，而它在 `007-fund-analysis` T004）；② T003 未闭合项 ①（「建会话拼目录」的接线无 task 认领）。
 
 ## 已完成
 
@@ -90,6 +92,63 @@ T001 只做定位、不动产品码。它把下列**开工前裁定**推到了�
 2. **D0-2(a)**：左栏怎么接——填 `ThreePane.left` 槽，还是照 001 的先例走外层行容器？
 3. **D0-2(b)**：文件树走 **(a)** 改上游组件本体（单独提交 + 标定制）还是 **(b)** 在 openhive 自有目录里包一层（零侵入）；**并**顺带定 v1 / v2 谁当底座。
 4. **⑤**：把 `app/src/project/` 加进那 3 处清单——**改法要先报告**。
+
+### T003 · openhive 自有 `project_ext` 表 ＋ 建表钩子
+
+**落点（3 个文件，2 新 1 改）**
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `packages/core/src/project/ext.ts` | **新增** | `ProjectExtTable`（drizzle 表声明）＋ `PROJECT_TYPES` 运行时闭集 ＋ `migration`（建表 DDL）＋ `findByProjectID`（D0-1 必给接口） |
+| `packages/core/src/database/router.ts` | **改**（fork 自有文件） | 每用户库那一层加 `Layer.tap`：`DatabaseMigration.applyOnly(db, [ProjectExt.migration])` |
+| `packages/core/test/project-ext.test.ts` | **新增** | 5 条用例（见下） |
+
+**建表机制（这是本 task 唯一需要想清楚的地方）**
+
+上游的库文件结构是三层：`database/migration/*`（一条一个文件）→ `migration.gen.ts` / `schema.gen.ts`（**生成物**，由 `packages/core/script/migration.ts` 产出）→ `database/migration.ts` 的 `apply()` / `applyOnly()`。
+⇒ 往 `database/migration/` 加一个文件**不是「加」而是「改」**：生成物要重跑、清单要重排，每次 `git merge upstream/dev` 都要解冲突（宪法 §一 NON-NEGOTIABLE）。
+
+改走**上游已经导出**的 `DatabaseMigration.applyOnly(db, input: Migration[])`——它本来就接受**任意** `Migration[]`，借同一本 `migration` journal 记账、幂等重放。于是：
+
+- 我们的迁移**不占上游清单**，上游重跑生成器也不会挤掉它；
+- 记账在 `migration` 表里（运行时数据，不是源码）⇒ 零冲突面；
+- 钩子挂在 `router.ts` 的**每用户库那一层**（`Layer.fresh` 之后、`Layer.tap` 之前没有窗口）——与上游 `apply()` **同一次建库**，不存在「库开了、表还没建」的中间态。三条位置理由写在代码注释里。
+
+**验证证据（`dev_tdd.005.md` Step 2 ④：RED→GREEN→REFACTOR）**
+
+| 用例 | 判据 |
+|---|---|
+| ① 每个用户库都建出了 `project_ext` 表（钩子挂在 router 那一层） | 建库后 `sqlite_master` 里 `count(*) = 1` |
+| ② 列形状 = `project_id` ＋ 个人态 4 字段；`archived` / `archived_at` 不在本表（Q3） | `pragma_table_info` 名字集合 **`toEqual`**（警报型，多一列就红） |
+| ③ `type` 闭集由存储层兜：`PROJECT_TYPES` 全部通过、闭集外的值被拒 | 逐值插入 + 一个 `'public'` 必须 `Failure` |
+| ④ `findByProjectID` 按 projectId 单行查询、查不到给 `undefined`（D0-1） | 命中行 `toEqual` 五字段；不存在的 id 给 `undefined` |
+| ⑤ 属主隔离：alice 的 `project_ext` 行在 bob 的库里查不到 | 被测属性（bob 查不到）**排在前**，对照（alice 查得到）在后（`#004-14`） |
+
+**变异验证（`#003-03`：三类结论都要据实记）**——① 是真正走完 RED→GREEN 的（首版 `n: 0`、④⑤ 首版 `ProjectExt.findByProjectID is not a function`）；②③⑤ 是**写在已实现代码上的钉子**，靠变异证它们会红：
+
+| 变异 | 结果 | 结论 |
+|---|---|---|
+| M1 DDL 里多一列 `archived` | **恰红 1 条**（②） | 归「恰红目标那几条」。**顺带测出**：drizzle 的 `select()` 只取**声明过的**列，所以多出来的库列**不会**让 ④ 的 `toEqual` 变红——列形状只能靠 ② 这种 `pragma_table_info` 断言钉 |
+| M2 去掉 `CHECK (type IN …)` | **恰红 1 条**（③） | 同上 |
+| M3 去掉 `project_ext` 所在层的 `Layer.fresh` | **恰红 1 条**（⑤） | 同上。这条最有价值：`Layer.fresh` 缺失是 router.ts 里**登记在案的真实旧 bug**（「bob 的库里出现了 alice 建的表」），⑤ 能把它抓出来 |
+
+**门禁（2026-10-06 实测，本 task 阶段）**
+
+- `packages/core` 单测：`project-ext.test.ts` **5 pass / 0 fail**；同族回归（`database-router` / `database-migration` / `project*` / `session-project-isolation` / `database-routing` / `connection-routing` 9 个文件）**68 pass / 1 skip / 0 fail**（串行跑，`#003-01`）。
+- `packages/core` `bun run typecheck`（`tsgo --noEmit`）：**EXIT=0**。
+- 根 `bun run lint:openhive`：**23 warnings / 0 errors / 69 files / 161 rules**——与 T002 基线**逐项相同**，且 `grep` 本次三个文件**零命中**（判据按 `#001-02` 是「本次新增/改动文件 0 命中」）。
+
+**本 task 未闭合、需要裁定的两条**（不自行拍板，`dev_tdd.005.md` Step 2 ⑦）
+
+1. **「建会话拼目录」的接线没有任何 task 认领。** D0-1 裁定里 plan.md 的落地口径是「客户端只报 `projectId`（业务标识），**建会话时服务端查 `project_ext` 拼出 `join(sandbox, dir)` 写进 `session.directory`**」。T003 按 D0-1 的结论只交到**接口级**（`findByProjectID` 存在且可用），因为 T003 的**明文出参是「新表建成、typecheck 通过」**；而这句话**不在 T003 / T005 / T006 / T016 任何一条的文字里**。⇒ 要么补一条 task，要么并入某条已有 task——**请裁定**（`LEARNINGS #002-04`：责任推出边界必须落接收方的表）。
+2. **钩子只覆盖每用户库，主库没有这张表。** 进程级那份主库（`Database.node`，`Global.Path.data/opencode.db`）由**上游** `database.ts` 建，为它加钩子＝破坏「上游一字不动」，故**没加**。当前没有任何消费者在**无身份**上下文里读 `project_ext`（D0-1 定的消费者是建会话那条路径，它带 `User.Service`、必走每用户库）。⇒ 记为**已知边界**；将来若出现 CLI / 后台任务要读它，**先回来改 `ext.ts` 顶部那段注释**。
+
+**顺带实测出来的两条工具事实**（候选 LEARNINGS，本 feature 收尾时再定要不要收）
+
+- `schema.sql.ts` 的 `Timestamps` 用 drizzle 的 **`.$default(() => Date.now())`**——那是**运行时**默认值，**不是 SQL 的 `DEFAULT`**。裸 SQL 插入 `project` 表不写 `time_created` / `time_updated` 会 `NOT NULL constraint failed`（实测）。
+- `drizzle` 的 `select().from(table)` **只 select 声明过的列**：库里多出来的列不会出现在结果对象里（M1 实测），所以「表结构被偷偷加列」**测不出来**，得用 `pragma_table_info`。
+
+**实装落点修正（已同步 plan.md）**：原文件树把 `project-ext.ts` 画在 `packages/opencode/src/project/`，实际落在 `packages/core/src/project/ext.ts`——建表钩子在 core，而**core 不能 import opencode**（反向依赖）。全文只有 plan.md 一处引用过旧路径（已 grep 确认并改）。
 
 ## 阻塞项
 （无）
@@ -208,4 +267,4 @@ Finished in 1.3s on 69 files with 161 rules using 12 threads.   EXIT=0
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
-2026-10-06（T002 完成：MinIO 方案落 `minio.md`，部署侧两笔落 deploy-todo D-13/D-14）
+2026-10-06（T003 完成：`core/project/ext.ts` ＋ `router.ts` 的 `Layer.tap` 建表钩子，5 条用例全绿、3 个变异各恰红 1 条；plan.md 的文件树落点已同步修正）
