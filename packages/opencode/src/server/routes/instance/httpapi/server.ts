@@ -125,6 +125,7 @@ import { AnchorWorkspace, anchorWorkspaceLayer } from "./middleware/anchor-works
 import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
+import { OpenhiveProject } from "@/server/openhive/project"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
@@ -308,6 +309,17 @@ export function createRoutes(
     docRoute,
     uiRoute,
     authGatewayRoutes,
+    // openhive 项目出口（005 T018）：建项目 / 列项目。
+    // **唯一**不可避免的侵入——新增出口不可能不上挂（fork 的新文件本身不与上游冲突，
+    // 冲突面只有这一行）。不改上游 `api.ts` 的 endpoint 定义；`AnchorWorkspace.Config`
+    // 用与上一项同一个（沙箱根只有一处定义）。
+    // 第二个是共享仓库根——**本层自己的配置服务，必须在这里供上**：路由体在层构造期
+    // `yield* SharedRootConfig`，漏供是**层构造期炸**（`Service not found`），不是静默回退。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T018）。
+    OpenhiveProject.routes.pipe(
+      Layer.provide(OpenhiveProject.SharedRootConfig.layer),
+      Layer.provide(AnchorWorkspace.Config.layer),
+    ),
   ).pipe(
     Layer.provide([
       errorLayer,

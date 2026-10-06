@@ -91,6 +91,46 @@ export function findByProjectID(db: Database, projectID: string) {
     .pipe(Effect.orDie)
 }
 
+export interface InsertProjectExtInput {
+  readonly projectId: string
+  readonly type: ProjectExtType
+  /** 自由文本（设计 §224：单案 / 串并 / 专项行动 / 考核督导 / 内勤文字…）。**没有闭集**：调用方给什么存什么。 */
+  readonly projectType: string
+  /** 仅共享项目有值（bare 仓库路径）；私有项目传 `null`。 */
+  readonly sharedDirectory: string | null
+  /** Unix **毫秒**（本表是 SQLite 侧，与上游 `project.time_created` 同一刻度）。 */
+  readonly lastAccessedAt: number
+}
+
+/**
+ * 落一行扩展行（T018 的「建项目」是第一个调用点）。
+ *
+ * 两个刻意的选择：
+ *
+ * ① **`Effect.orDie`，绝不吞错**——本表带外键（`project_id → project(id)`，见上面的列注释），
+ *    所以「`project` 行还没落就写扩展行」会撞 FK。吞掉它的后果不是「少一行」而是**静默的错项目**：
+ *    `project-location.ts` 的中间件拿本表判断「这个项目在不在」，查不到就落沙箱根（R5 那条
+ *    **正常路径**）⇒ 「建项目失败」与「这个项目本来就不存在」在结果上一模一样、不报错、不变红。
+ *    `LEARNINGS #002-02`：一个把失败咽下去的错误处理，就是一个看着还在、其实没有的门。
+ * ② **不收事务句柄**（对照 `ProjectDirectories.create(input, tx?)`）。理由不是省事：建项目那一步
+ *    要写**两个不同的库**（每用户 SQLite ＋ 业务 PG 的 `project_member`），**没有**一个能盖住两者的
+ *    事务可开 ⇒ 只给这一半加事务能力，会给人「这一步是原子的」的错觉，而那正是最该说清楚的地方。
+ *    真需要原子性时，那是跨库补偿（saga）的问题，不是本函数签名的问题。
+ */
+export function insertProjectExt(db: Database, input: InsertProjectExtInput) {
+  return db
+    .insert(ProjectExtTable)
+    .values({
+      project_id: input.projectId,
+      type: input.type,
+      project_type: input.projectType,
+      shared_directory: input.sharedDirectory,
+      last_accessed_at: input.lastAccessedAt,
+    })
+    .run()
+    .pipe(Effect.orDie)
+}
+
 /**
  * 建表迁移。`id` **不带上游那种时间戳前缀**，一眼可辨是 fork 产出的：
  * `applyOnly` 在**老库**上会用 `id.startsWith(\`${prefix}_\`)` 去匹配 `__drizzle_migrations` 的

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { WORKSPACE_ROOT_ENV, createWorkspace, workspaceRoot } from "./workspace"
+import { SHARED_ROOT_ENV, WORKSPACE_ROOT_ENV, createWorkspace, sharedRoot, workspaceRoot } from "./workspace"
 
 const USER_ID = "0f9c2a5e-1b3d-4a6f-8c7e-2d4b6a8c0e1f"
 
@@ -30,6 +30,29 @@ describe("workspaceRoot", () => {
 
   test("未配置时落到 design-v2 规定的默认路径", () => {
     expect(workspaceRoot({})).toBe("/workspaces")
+  })
+})
+
+/**
+ * T018 · 共享 bare 仓库的根（Q2 裁定：`/shared/{projectId}.git`）。
+ *
+ * ⚠️ **这个根此前全仓零定义**（2026-10-06 `grep`：只有设计文档的散文里提过 `/shared`，
+ * 没有任何常量、env 或默认值）。本条与 `workspaceRoot` **同款同形**，理由也同款：
+ * 常量名与默认值只许有一处定义，两处各写一份会在改默认值时漏掉一边
+ * （`disk-quota-drift.test.ts` 就是为「沙箱根被写了两份」而存在的）。
+ */
+describe("sharedRoot", () => {
+  test("从环境变量取共享仓库根", () => {
+    expect(sharedRoot({ [SHARED_ROOT_ENV]: "/srv/shared" })).toBe("/srv/shared")
+  })
+
+  test("未配置时落到 Q2 裁定的默认路径", () => {
+    expect(sharedRoot({})).toBe("/shared")
+  })
+
+  /** 空串按「未配置」处理——与 `workspaceRoot` 同一个 `||` 语义，不是 `??`（空串不是合法根）。 */
+  test("空串按未配置处理（与 workspaceRoot 同款）", () => {
+    expect(sharedRoot({ [SHARED_ROOT_ENV]: "" })).toBe("/shared")
   })
 })
 

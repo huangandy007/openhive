@@ -79,6 +79,23 @@
   - ⚠️ **范围（今天写成明账，动手前再核一遍）**：① **项目创建落库**——`ProjectTable`（上游）＋ `ProjectDirectoryTable`（上游）＋ `project_ext`（T003）＋ `project_member`（T004）的**同步创建**，U4 的「两张表同步创建 ⇒ 收成一个写入模块」正是这条要收的口子；② **项目列表查询**——把上表拼成 `ProjectEntry`（`id` / `name` / `type` / `memberCount` / `lastAccessedAt` / `archived`，形状见 `project-panel.tsx`）；③ **HTTP 出口**——`GET /project` 已有，**缺 create**；④ **建目录**——T017 的 `project-location.ts` 文件头「已知不覆盖 ①」原话是「只写路径，**目录由 T006 落地**」，而 T006 裁定不做落库 ⇒ 这一条一并归到本条（**这是 T006 → T018 的第二次移交，别以为它已经有人做了**）；⑤ **文件列表读取**——把 `GET /file`（上游已有，`.../httpapi/handlers/file.ts` 的 `list`）接进 `packages/app/src/project/project-files.ts`，**否则左栏文件树恒走空态**。⚠️ **本条是 2026-10-06 T008 收尾时补进来的**：`project-files.ts` 的文件头早就写着「把文件列表接进来是 **T018** 之后的欠账」，但**本条的范围里此前没有它**（`LEARNINGS #002-04`：责任推出边界必须落接收方的表）——不补，则 T020 开工时才发现「没有列文件就没有可操作的对象」。
   - ⚠️ **收口时必查（⑤ 的去向）**：`project-files.ts` 接上真数据后，空项目应给 `[]`（合法的「一个都没有」）而**不是**继续 `undefined`——两者的区别写在该文件头（同 `project-list.ts` 那条）。
   - ⚠️ **收口时必查**：`current-project.ts` 的 `id` 必须**真的等于**服务端认的 projectId（T017 的中间件按它拼 `join(沙箱根, projectId)`）；`project-list.ts` 接上真数据后，空库里应给 `[]`（合法的「一个都没有」）而**不是**继续 `undefined`——两者的区别写在该文件头。
+  - 🔒 **开工前三条裁定（2026-10-06，用户裁定，开工前问）**：
+    - **(1) `projectId` 的形状 = `crypto.randomUUID()`**。它是三处共用的同一个值：`/workspaces/{userId}/{projectId}` 的目录名、`project_member.project_id`（**全成员共享**，只有 `userId` 那段不同）、`x-openhive-project` 头的值。选 UUID 的理由：零碰撞 ⇒ **不需要**「撞了就重取」那条检查与它的测试（`#002-06`：会漂的分支少一条是一条），取向也与上游 id 本来就是不透明哈希一致。**代价据实记**：沙箱目录长成 `3f2a-…`，人不可读（设计文档没给可读性要求）。⚠️ 形状上的唯一约束来自 `User.isSafePathSegment`（非空、非 `.` / `..`、不含 `/` `\`），UUID 天然满足。
+    - **(2) 共享项目的 bare 仓库归 T018 建**。Q2 定的 `/shared/{projectId}.git` 此前**没有任何 task 认领创建**（T016 是纯验证、任务文字里没有「建」这一动作）——按 `#002-04` 落进接收方的表。⇒ 建共享项目 = `git init --bare` ＋ 把 `shared_directory` 写进 `project_ext`（该列「仅共享项目有值」）。⚠️ **同时新定一个配置源**：`/shared` 这个根**全仓零定义**（2026-10-06 `grep`：只有设计文档提过）⇒ 本条定义 `OPENHIVE_SHARED_ROOT`（env，同 `minio.md` §4 那批 `OPENHIVE_*` 的形状），并**与 T022 的 D-13 一样，在 state.md 记下「本机无目标内网、部署时实测」**。
+    - **(3) HTTP 出口的落法 = fork 自己的 `HttpRouter` 层**，并进 `packages/opencode/src/server/routes/instance/httpapi/server.ts` 的 `Layer.mergeAll`（逐字照 `AuthGateway.routes` 那三行的先例，带 `【保留的定制 · 同步上游时不要丢】` 标记）。**不改上游 `api.ts` 的 endpoint 定义**——改 `server.ts` 那一行是不可避免的最小侵入（新增出口不可能不上挂），但要**单独提交**并标「这是要保留的定制」（宪法 §一 三原则）。
+  - ⚠️ **一个不写就会静默分裂的接缝（读代码推出，动手时用测试钉住）**：上游 `ProjectV2.resolve()`（`packages/core/src/project.ts`）会对**同一个目录**算出**它自己的** project id，优先级 `git remote 哈希 → 仓库里的 `opencode` 缓存文件 → root commit`。⇒ T018 建完项目后，建会话时 `Project.fromDirectory()` 走进来会**再插一行 id 完全不同的 `project`**，而那行 `project_ext` 就永远配不上、不报错、不变红。唯一的对齐口是 `ProjectV2.commit({store, id})`——它把 id 写进仓库里那个缓存文件，`resolve()` 会优先读它（`readFileString(path.join(dir, "opencode")).trim()`）。⚠️ 本条是**读代码推出的口径，不是实测**（`#003-04`：复现不了的不要写成实测）——实测法见下：建一个带 `project_ext` 行的项目目录，跑一次 `fromDirectory`，断 id 与它相等。
+
+  - 🟡 **进行中（2026-10-06）：BE 半边（范围 ①②③④）已交付并全绿；⑤ 卡在未定决策点上，停下来问（`dev_tdd.005.md` Step 2 ⑦）。**
+    - ✅ **已交付**：`packages/opencode/src/server/openhive/project.ts`（新）——`GET /openhive/project` 列项目 ＋ `POST /openhive/project` 建项目。建项目的**八步顺序**（顺序本身是产物）：① 建 `{沙箱根}/{userId}/{projectId}` → ② 在其中 `git init` → ③ 把 id 写进仓库里的 `opencode` 缓存文件（`ProjectV2.commit`）→ ④ `Project.fromDirectory`（**只跑这一次**，它自己还会再 `commit` 一次，故 ③ 必须先做）→ ⑤ 改项目名 → ⑥ **仅共享项目**：`git init --bare /shared/{projectId}.git` → ⑦ `project_member` 写 owner → ⑧ `project_ext` 落 `type` / `shared_directory` / `last_accessed_at`。接线：`server.ts` ＋12 行挂进 `Layer.mergeAll`（带 `【保留的定制 · 同步上游时不要丢】`；**不改上游 `api.ts` 的 endpoint 定义**，符合裁定 (3)）。测试 `packages/opencode/test/server/openhive-project.test.ts`（新，**10 条**）**全绿**。
+    - ✅ **两处原条目点名的接缝已真被钉住**（不是推断，是两条用例）：① 「不写就会静默分裂的接缝」——建项目后用该项目目录建会话，`ProjectV2.resolve()` 认的 id 与 `project_ext.project_id` **相等**（若 ③ 不做，会多出一行 id 不同的 `project`，且不报错、不变红）；② 建目录归谁——`shared_directory` 的 bare 仓库与沙箱项目目录都真在盘上（`existsSync` 判据）。
+    - 🔒 **两处实测抓到的坑（形状都与我事先以为的不同，已写进源码注释）**：① **`Schema.Literal(...PROJECT_TYPES)` 在 Effect 4 里是单数签名**（多值的是 `Literals`）⇒ 多出来的 `"shared"` 被 JS **静默丢掉**、解码器只认 `"private"`，建共享项目一律 **400**；② **`git init --bare <bare>` 跑不通**——`Git.run` 起进程前会 `FileSystem.access(cwd)`，cwd 不存在直接 `NotFound`、被收敛成 `exitCode: 1`、最终成**建项目 500**，且**只有共享项目中招**（私有项目一切正常，症状极具误导性）⇒ 必须先 `mkdir(bare)` 再进去 `git init --bare`。
+    - ⛔ **⑤ 未做 ＋ 一条收口必查项做不到，两者卡在同一个问题上**：`GET /openhive/project` 是 **fork 自己的裸 `HttpRouter` 路由**、**不在上游 `api.ts` 的 endpoint 定义里** ⇒ 前端 SDK（`useSDK()`）**类型上没有它、调不到**；而裁定 (3) 又明写「不改上游 `api.ts` 的 endpoint 定义」。同时 `project-files.ts` / `project-list.ts` 至今**零写入方**，且 `workspace-entry.tsx` 拿不到 `useSDK()`（六层 provider 之下）。⇒ 「写 `project-files.ts` 的人从哪儿拿数据」是个**未定决策点**，三条候选与代价见下方「待裁定」，**不自行拍板**。
+    - 📌 **附带发现（据实记）**：`packages/app/src/workspace/workspace-entry.tsx` 里 `file-tree-slot` 旁的注释写着「由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组）」——**实测为假**（该文件既无 `useSDK()` 也无 `loadFile` 一类 prop）。这是 T007 落下的**不实注释**，收口时一并改掉（`#004-04`：写下的结论也要当靶子）。
+  - 🔒 **待裁定（2026-10-06，BE 半边收尾时报请用户裁定，未拍板）**：**前端怎么够到 fork 的裸路由**。⑤ 与「`current-project.ts` 的 `id` 真送到服务端」两件事都卡在这里。候选与代价：
+    - **(A) 前端直连裸路径**（`fetch("/openhive/project")`，不经 SDK）——零上游侵入；代价是契约写死在两处（服务端 `PATH` 与前端字符串），且丢掉 SDK 现成的身份头与错误处理链路。
+    - **(B) 把 fork 出口补进上游 `api.ts` 的 endpoint 定义**——类型与 SDK 全都有；代价是与裁定 (3) 字面冲突，且**动的是上游文件**，每次同步都要解这处冲突。
+    - **(C) 在 `packages/app` 侧单写一层薄客户端**（`src/project/openhive-client.ts`：自己 `fetch` ＋ 自己 `Schema` 收口）——契约集中一处；代价是仍绕开 SDK，且多一层要维护的镜像（`#003-05`）。
+  - ⚠️ **两笔随本半边记档的缺口**（收尾时并入 `state.md`）：① `OPENHIVE_SHARED_ROOT` 与 T022 的 D-13 同性质——**本机无目标内网，部署时实测**；② `project_ext.project_type` 今天写**空串**（该列是自由文本 NOT NULL 无默认值，而 005 没有任何表单收集它）——**不是补默认值，是显式留白**。
 
 > 📌 **T018 编号排最后、归属在 Phase 3**（2026-10-06 T006 收尾时裁定补入）：它服务的是 US1「项目列表与新建」，内容上属 Phase 3；补编号时 Phase 3 已有 T005/T006，故用末号而**不重排**既有编号——与 T017 同一条先例（编号是 **ID 不是顺序**，同 `LEARNINGS.md` 的条目号规则）。
 
@@ -228,11 +245,14 @@
 ## Phase 7: US5 归档 / 找回（P2）
 
 - [ ] T013 [US5] [BE] 实现项目归档（上传 MinIO + 删除沙箱 + archived=1）[FR-008] [T003][T011] [出参：归档后项目移入「已归档」]
-  - ⚠️ **开工前必须先钉（Q1×Q3 逼出的缺口，2026-10-06 本批不拍）**：owner 归档时，**成员的**沙箱文件怎么办？——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 归档只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 状态拦住后续写入；(b) 成员各自在收到归档通知后上传自己的那份（需站内信 + 状态机）。**这两条实现量与产物完全不同，动手前问用户**（`dev_tdd.005.md` Step 2 ⑦）。
+  - 🔒 **Q1×Q3 缺口裁定（2026-10-06，用户裁定取 (c)）**：owner 归档时，**成员的**沙箱文件怎么办？——原缺口是 owner 读不到成员沙箱（物理隔离），而 FR-008 写的是「沙箱文件**全部**上传 MinIO + 删除沙箱文件」，两句话对不上。用户裁定取 **(c) 服务端替全体成员各跑一遍**：归档时服务端对该项目**每个成员**的沙箱各跑「上传到**该成员自己的** MinIO 前缀 ＋ 删该成员沙箱」。理由：这是唯一同时满足 FR-008 字面（「全部」）与归档目的（释放沙箱空间）的读法；被否的两条——(a) 只动 owner 自己那份（成员文件继续占盘、失权后取不回，与「归档释放空间」相抵）、(b) 成员收到通知后各自上传（需站内信＋状态机，而站内信是本 feature 还没有的组件，且把 T013 拆成多步流程）。
+    - ⚠️ **这条裁定带一个必须先对齐的架构前提**：`/minio/{userId}/{projectId}/` 的前缀是**按用户分**的（Q1 裁定：镜像各人自己的沙箱）⇒ (c) 是**每个成员各上传到自己那一份前缀**，不是收进一个共享前缀。务必与 T011 已落的 `makeStore(scope)` 前缀约定对齐（`scope` 定死前缀、调用者给不出自己的前缀——**这条约束正是为 (c) 准备的**，见 T011 条的「收窄接口的用处」）。
+    - ⚠️ **同时新增了一条跨用户写路径**：服务端要以**非锚定身份**读写「别人的」沙箱。这是 003 隔离设计的既有假设之外的东西（003 的隔离是**请求作用域**的：一个请求绑定一个 userId、只能碰自己的锚定根）。**动手前先确认这条与 003 的隔离口径不冲突**，冲突则以宪法 III（物理隔离优先）为准；不冲突也要在 state.md 里写清「这是哪一类特权路径、凭什么被授权」。
 - [ ] T014 [US5] [BE] 实现项目找回（archived=0 + MinIO 下载回沙箱）[FR-009] [T013] [出参：找回后项目回到「最近/全部」]
 - [ ] T015 [US5] [BE] 实现归档后成员失权、owner 保留找回权 [FR-010] [T004][T013] [出参：归档后 member 失权]
 - [ ] T016 [P] [BE] 验证会话彻底私有（成员会话只存自己 db）+ 文件并发靠 git [FR-011][FR-012] [T003] [出参：owner 看不到 member 会话、git 留痕]
   - 🔒 **Q2 裁定（2026-10-06）：`git` 的载体 = 共享 bare 仓库 `/shared/{projectId}.git`**——成员各自 clone / commit / push（FR-012「各自 commit、冲突 merge」的唯一逐字实现：不同检出、同一仓库）。**不经 HTTP** ⇒ 锚定不变量不破。原 `U6`（「FR-012 无载体」）由此解决；本 task 要验的就是「两个检出各自 commit 后能 push 并 merge 冲突」。
+    - ⚠️ **2026-10-06 补记（裁定「裸仓库归 T018」时一并落）**：**仓库的「建」这一动作归 T018**（见 T018 的裁定 (2)）——本 task 只**用**它，不建它。开工时那个 `/shared/{projectId}.git` 应当已经存在（由 T018 建的共享项目带出来）；若没有，说明是 T018 的缺口，回来查 T018 而不是在这里补建。
 
 ---
 

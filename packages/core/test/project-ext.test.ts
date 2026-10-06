@@ -180,4 +180,87 @@ describe("ProjectExt", () => {
       ),
     ),
   )
+
+  /**
+   * T018 · **写函数**（本表的第一组写入口，消费者是「建项目」那一步）。
+   *
+   * T003 只交了读函数——「有消费者才写取数」同样适用于**写**：写入口的形状由调用点定。
+   * T018 的 `create()` 是第一个调用点，它一次要落四处（`project` / `project_directory` /
+   * `project_ext` / 业务 PG 的 `project_member`），本表是其中一处。
+   */
+  it.effect("insertProjectExt：写进去的能按 id 读回来（shared_directory 的 null 与路径两种都往返）", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+          yield* seedProject(alice.db, "proj_p").pipe(Effect.orDie)
+          yield* seedProject(alice.db, "proj_s").pipe(Effect.orDie)
+
+          yield* ProjectExt.insertProjectExt(alice.db, {
+            projectId: "proj_p",
+            type: "private",
+            projectType: "",
+            sharedDirectory: null,
+            lastAccessedAt: 1700000000001,
+          })
+          yield* ProjectExt.insertProjectExt(alice.db, {
+            projectId: "proj_s",
+            type: "shared",
+            projectType: "单案",
+            sharedDirectory: "/shared/proj_s.git",
+            lastAccessedAt: 1700000000002,
+          })
+
+          // 被测属性在前（`#004-14`）：两行都读得到，且两列**没被互相写串**
+          // （private 的 null 不许变成路径、shared 的路径不许丢）。
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_p")).toEqual({
+            project_id: "proj_p",
+            type: "private",
+            project_type: "",
+            shared_directory: null,
+            last_accessed_at: 1700000000001,
+          })
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_s")).toEqual({
+            project_id: "proj_s",
+            type: "shared",
+            project_type: "单案",
+            shared_directory: "/shared/proj_s.git",
+            last_accessed_at: 1700000000002,
+          })
+        }),
+      ),
+    ),
+  )
+
+  /**
+   * **写失败必须炸，不许被吞**——这是本表带外键的直接后果：`project` 行还没落就写扩展行，
+   * 会撞 FK。吞掉它的后果不是「少一行」而是**静默的错项目**：
+   * `project-location.ts` 的中间件靠本表判断「这个项目在不在」，查不到就**落沙箱根**
+   * （R5 那条正常路径），于是「建项目失败」与「这个项目本来就不存在」在结果上一模一样。
+   * `LEARNINGS #002-02`：一条没有真正把失败传出去的错误处理，等于一个看起来还在、其实没有的门。
+   *
+   * ⚠️ 这条同时钉住 plan.md R1 的**行序要求**（`project` 先落、扩展行后落）——那是本表的
+   * FK 带来的硬约束，不是风格。
+   */
+  it.effect("insertProjectExt 不吞错：project 行还没落时写扩展行 ⇒ 失败（外键，不是静默放过）", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+
+          const failed = yield* Effect.exit(
+            ProjectExt.insertProjectExt(alice.db, {
+              projectId: "proj_ghost",
+              type: "private",
+              projectType: "",
+              sharedDirectory: null,
+              lastAccessedAt: 1700000000003,
+            }),
+          )
+
+          expect(failed._tag).toBe("Failure")
+        }),
+      ),
+    ),
+  )
 })

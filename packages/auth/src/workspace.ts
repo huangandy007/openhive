@@ -21,6 +21,26 @@ export function workspaceRoot(env: Record<string, string | undefined>): string {
 }
 
 /**
+ * **共享项目 bare 仓库的根**（005 T018，Q2 裁定：`/shared/{projectId}.git`）。
+ *
+ * 为什么单独一个常量而不是散在调用点：`/shared` 这个根此前**全仓零定义**（2026-10-06 `grep`：
+ * 只有设计文档的散文里出现过），而它现在有两个消费者——建项目的 `git init --bare` 与
+ * （T016 起）共享项目的读写路径。与 `workspaceRoot` 同款同形：常量名与默认值只许有一处定义。
+ *
+ * ⚠️ **部署时要实测的是另一件事**：本机（开发机）没有目标内网，`/shared` 落在这个开发机上
+ * 只是**默认值可用**，不代表部署环境挂载正确——同 T022 的 D-13，收尾时在 `state.md` 记一笔。
+ */
+export const SHARED_ROOT_ENV = "OPENHIVE_SHARED_ROOT"
+
+/** Q2 裁定的默认共享仓库根（与沙箱根同级别、同风格的字面量）。 */
+const DEFAULT_SHARED_ROOT = "/shared"
+
+/** 取共享仓库根：优先环境变量，未配置时落到 Q2 裁定的 `/shared`。 */
+export function sharedRoot(env: Record<string, string | undefined>): string {
+  return env[SHARED_ROOT_ENV] || DEFAULT_SHARED_ROOT
+}
+
+/**
  * 拒绝会把路径引出沙箱根的 `userId`。
  *
  * **为什么单独一个函数**：003 T018 的三个动作（归档 / 恢复 / 删除）都要这道判据，

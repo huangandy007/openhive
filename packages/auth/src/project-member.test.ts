@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite"
 import { getTableColumns, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate } from "./migrate"
-import { projectArchive, projectMember } from "./project-member"
+import { addMember, archiveStatesOf, memberCountsOf, membersOf, projectArchive, projectMember } from "./project-member"
 
 /**
  * T004 · `project_member` ＋ `project_archive`（FR-004 / FR-010，Q3 裁定）。
@@ -211,5 +211,142 @@ describe("project_archive · 约束（真库验）", () => {
     ])
     const count = await db.execute(sql`select count(*) as n from auth.project_archive`)
     expect(Number(count.rows[0]?.n)).toBe(2)
+  })
+})
+
+/**
+ * T018 · **这两张表的第一组读写辅助**（T004 文件头那句「有消费者才写取数」的兑现）。
+ *
+ * T004 当初刻意一个查询函数都没写，理由是：「在消费者出现之前先写一份『猜的形状』，很可能把口径
+ * 钉错（`LEARNINGS #004-07`：判据的形状由**被调方**定义），而且那份猜的形状没有调用点、不会被
+ * 任何门禁提醒」。现在消费者到了——T018 的**建项目**要写 owner 行、**列项目**要读成员数与归档态
+ * ——所以形状这次由真实调用点定义。
+ *
+ * ⚠️ 三件事**不在这里测**（各归各家，写成两份就会分叉，`LEARNINGS #002-06`）：
+ * ① 判定（「这个身份 ⇒ 能不能归档」）在 `packages/core/test/project-membership.test.ts`；
+ * ② 约束（CHECK / 部分唯一索引）在上面那两组 describe 里；
+ * ③ 拼成 `ProjectEntry` 的**业务形状**在 `packages/opencode`（只有它同时够得着 core 与 auth）。
+ */
+describe("project_member / project_archive · 读写辅助（T018 的消费者）", () => {
+  /**
+   * 写进去的读得回来，**role 忠实往返**。
+   *
+   * 一起钉「按入表先后读回」：成员面板要列人，顺序每次不一样的话，两次「邀请完重开面板」看到的
+   * 名单会跳。`time_created` 只有**秒**粒度（`nowSeconds()`）⇒ 同一次建项目里两个成员极易同秒，
+   * 所以必须有次级排序键 `user_id` 兜底。
+   *
+   * 两句是**实测**的，不是推的（`LEARNINGS #003-04`）：本用例的两行**同为** `timeCreated: 7`，
+   * 而插入序（u2 先）与 `user_id` 序（u1 先）**正相反**——所以把 `order by` 砍成只剩
+   * `time_created` 时本用例**恰红**（实测 11 pass / 1 fail，收到 `[u2, u1]`）。
+   * 即：这条断言真的钉住了那个次级键，而不是在同秒时恰好飘绿。
+   */
+  test("addMember 写进两行 ⇒ membersOf 按入表先后忠实读回（含同秒打平的情形）", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 7 })
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 7 })
+
+    // 同秒 ⇒ 次级键 `user_id` 定序（u1 在 u2 前）。
+    expect(await membersOf(db, "p1")).toEqual([
+      { userId: "u1", role: "owner" },
+      { userId: "u2", role: "member" },
+    ])
+  })
+
+  /**
+   * **只认这个项目**——漏掉 `where project_id` 时，成员面板会列出**全库所有人**，
+   * 而它看起来只是「项目里人有点多」。
+   *
+   * 断言写成**两半**：既钉 p1 读回两条，又钉 p1 那份**不含** p2 的人。
+   * 只写前半句的话，「把两张表的行都倒出来」也能绿（同 `#002-02` 的取向：对照是判据的一部分）。
+   */
+  test("membersOf 只认这个项目：p1 的两条读回、p2 的人不混进来", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 1 })
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 2 })
+    await addMember(db, { projectId: "p2", userId: "u2", role: "owner", timeCreated: 3 })
+
+    expect(await membersOf(db, "p1")).toEqual([
+      { userId: "u1", role: "owner" },
+      { userId: "u2", role: "member" },
+    ])
+    expect(await membersOf(db, "p_ghost")).toEqual([])
+  })
+
+  /**
+   * **没有归档行 ⇒ 键不在 Map 里（`undefined`），不是 `{ archived: false }`**。
+   *
+   * 这与前端那两个接缝（`project-list.ts` / `project-files.ts`）是**同一条**口径：
+   * 「没有来源」与「来源说没有」是两件事。落到这里：`project_archive` 的行是 **T013 归档时**
+   * 才写的——今天一条都没有，而「读作 `false`」等于替归档那条链**声称**了「查过了，没归档」。
+   * 判据：缺席让调用方**自己决定**默认值（今天列表给 `false` 是它的事，可以改），
+   * 而 `false` 把这个决定**焊死在读的一侧**。
+   */
+  test("archiveStatesOf：没有这一行 ⇒ 键缺席（不是 { archived: false }）", async () => {
+    const db = await freshDb()
+
+    expect(await archiveStatesOf(db, ["p_none"])).toEqual(new Map())
+  })
+
+  /** 有行时照读——两个正当组合各来一次，别把 `archived_at` 的 `null` 读丢。 */
+  test("archiveStatesOf：有行则照读 archived / archivedAt（两种正当组合各一条）", async () => {
+    const db = await freshDb()
+    await db.insert(projectArchive).values([
+      { projectId: "p_live", archived: false, archivedAt: null },
+      { projectId: "p_done", archived: true, archivedAt: 100 },
+    ])
+
+    expect(await archiveStatesOf(db, ["p_live", "p_done"])).toEqual(
+      new Map([
+        ["p_live", { archived: false, archivedAt: null }],
+        ["p_done", { archived: true, archivedAt: 100 }],
+      ]),
+    )
+  })
+
+  /**
+   * `memberCountsOf`：**一次取一批项目的成员数**（项目列表要它，见 S3）。
+   *
+   * 三个判据分三层，缺一层都能被一种写错的方式蒙过去：
+   * ① **计数要对**——p1 两个人、p2 一个人，两组各 2 / 1；
+   * ② **零成员的项目键缺席**（`p_empty` 不在 Map 里，不是 `0`）——口径同 `archiveStatesOf`：
+   *    「没有行」是缺席，「有一行但数是零」在 `project_member` 里根本不存在。
+   * ③ **不在入参里的项目不许出现**——漏掉 `where` 时会把**全库**的计数倒出来，
+   *    看着只是「数字有点多」。
+   *
+   * ⚠️ 判据 ③ **必须有一个范围外的项目落在库里**（`p_other`，它有成员、**不**在入参里）。
+   * 这一句是变异验证补上的：本用例初版只造了 p1 / p2，两者**都在**入参里 ⇒ 把
+   * `where ... in (...)` 换成 `where ... or true` 之后用例**照样全绿**（实测 14 pass）
+   * ——那条注释当时说的是本用例测不到的事（`LEARNINGS #004-04`：写下的结论也要当靶子打）。
+   */
+  test("memberCountsOf：一次取一批的计数；零成员的键缺席；范围只认入参", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 1 })
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 2 })
+    await addMember(db, { projectId: "p2", userId: "u1", role: "owner", timeCreated: 3 })
+    // 范围外：有成员、不在入参里 ⇒ 它的计数一个字都不许出现。
+    await addMember(db, { projectId: "p_other", userId: "u1", role: "owner", timeCreated: 4 })
+
+    expect(await memberCountsOf(db, ["p1", "p2", "p_empty"])).toEqual(
+      new Map([
+        ["p1", 2],
+        ["p2", 1],
+      ]),
+    )
+  })
+
+  /**
+   * **空入参不发查询**——`where project_id in ()` 是**语法错**，PGlite / 真 PG 都会当场拒。
+   * 所以这条不是洁癖：`list()` 在一个项目都没有的用户身上**必然**走到它，而它与
+   * 「查得到但没有」在调用方的写法上只差一次 `if`。判据是「返回空 Map 且**不抛**」。
+   */
+  test("memberCountsOf / archiveStatesOf：空入参 ⇒ 空 Map，不抛（in () 是语法错）", async () => {
+    const db = await freshDb()
+
+    expect(await memberCountsOf(db, [])).toEqual(new Map())
+    expect(await archiveStatesOf(db, [])).toEqual(new Map())
   })
 })

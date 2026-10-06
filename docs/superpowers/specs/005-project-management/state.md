@@ -1,8 +1,9 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ ／ T012（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓）✅ —— 见「已完成」。
-**下一步 = T013**（US5 项目归档：上传 MinIO ＋ 删除沙箱 ＋ `archived=1`），依赖 T003 ＋ T011 均已满足。⚠️ **开工前必须先钉那条未定项**（`tasks.md` T013 条已写明，2026-10-06 本批**不拍**）：**owner 归档时，成员的沙箱文件怎么办**——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 归档只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 状态拦住后续写入；(b) 成员各自在收到归档通知后上传自己的那份（需站内信 ＋ 状态机）。**这两条实现量与产物完全不同，动手前问用户**（`dev_tdd.005.md` Step 2 ⑦）。⚠️ **T013 是 `[BE]`**：`lint:openhive` 只扫 `packages/app/src/*` 六个目录、**不覆盖 core/auth/opencode**（T011 已实测记档，那是**空结论**）⇒ 必须另取**文件级** oxlint（仓库根跑，`#004-10`）。✅ **T022 是 T012 收尾时补的编号**（MinIO 的 HTTP 出口：读 `OPENHIVE_MINIO_*` ＋ `projectId` 透传 ＋ 备份/拉回路由），**依赖 D-13**，双树的行在它落地前**不可拖**。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ ／ T012（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓）✅ ／ **T018（项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口）🟡 BE 半边已交付，⑤ 待裁定** —— 见「已完成」。
+**下一步 = 等裁定后继续 T018**：BE 半边（范围 ①②③④ ＋ 建目录 ＋ 共享 bare 仓库）已交付全绿，**范围 ⑤（文件列表读取）卡在一个未定决策点上**（「前端怎么够到 fork 的裸路由」，三条候选与代价见「待裁定」节）。按 `dev_tdd.005.md` Step 2 ⑦「遇到未定的决策点先停下来问我，不要自行拍板」**停下来**，不自选。
+**若裁定前要先推别的**：候选是 **T013**（US5 项目归档：上传 MinIO ＋ 删除沙箱 ＋ `archived=1`），依赖 T003 ＋ T011 均已满足，但⚠️ **它自己也带一条未定项**（`tasks.md` T013 条已写明，2026-10-06 本批**不拍**）：**owner 归档时，成员的沙箱文件怎么办**——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 拦住后续写入；(b) 成员各自收到通知后上传自己那份（需站内信 ＋ 状态机）。**两条实现量与产物完全不同**，动手前同样要问。⚠️ **T013 是 `[BE]`**：`lint:openhive` 只扫 `packages/app/src/*` 六个目录、**不覆盖 core/auth/opencode**（T011 已实测记档，那是**空结论**）⇒ 必须另取**文件级** oxlint（仓库根跑，`#004-10`）。✅ **T022 是 T012 收尾时补的编号**（MinIO 的 HTTP 出口：读 `OPENHIVE_MINIO_*` ＋ `projectId` 透传 ＋ 备份/拉回路由），**依赖 D-13**，双树的行在它落地前**不可拖**。
 （上一轮读者留下的注意，已完成：**T007 的 ⑤ 前置（3 处目录清单）已随 T005 办完**，不需重做；T009 那条「T007 刻意没在未选中时禁用重命名/删除」的活也已随 T009 办完。）
 ✅ **T008 留的待裁定项已裁定（2026-10-06，用户「补，phase 你定」）**：复制／移动／上传／下载四个动作零任务认领（`grep` 已核实）⇒ **补 T020，归 Phase 4**（同 T017／T018／T019 先例，编号排最后）。
 ✅ **T006 顺带接掉了 T005 的欠账（半个）**：`currentProject` 有了第一个写入方（面板点一行 ⇒ 写它 ⇒ 锚点行跟着变）——**但只接了「切项目」**，「新建项目」没有落库就没有项目可切，那半个**明账挂在 T018**（不是暗账）。
@@ -1193,6 +1194,102 @@ member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`
    那几处）**仍未清理**（同 T019 挂账 2，不在本 task 范围内）。
 3. **↑↓ 区间导航**仍挂账（T019 挂账 3，本 task 未动）。
 
+### T018 · 项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口（🟡 进行中：BE 半边已交付，⑤ 待裁定）
+
+**出参**（tasks.md：「新建项目成功、项目列表可查询、客户端能切项目（`x-openhive-project`）」）。
+🟡 **前两条已交付；第三条（客户端能切项目）与范围 ⑤ 一起卡在未定决策点上**——见文末「待裁定」。
+
+**落点（三件）**
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 实现 | `packages/opencode/src/server/openhive/project.ts`（**新**） | `PREFIX = "/openhive/project"`；`GET` 列项目、`POST` 建项目；`SharedRootConfig`（本层自己的配置服务）＋ `gitInit` 薄包装 |
+| 接线 | `.../httpapi/server.ts`（＋**12 行**） | 并进 `Layer.mergeAll`，逐字照 `AuthGateway.routes` 先例，带 `【保留的定制 · 同步上游时不要丢】` |
+| 验证 | `packages/opencode/test/server/openhive-project.test.ts`（**新**，**10 条**） | 建私有/共享项目四处落库、id 是 UUID v4、**建完项目用它建会话**（接缝支点）、建私有项目 `/shared` 下不留东西（对照）、列项目排序与次级键、空库 `[]`、身份隔离、不带凭证 401 |
+
+**建项目的八步顺序——顺序本身就是产物**
+
+① `mkdir({沙箱根}/{userId}/{projectId})` → ② 在其中 `git init` → ③ **把 id 写进仓库里的 `opencode`
+缓存文件**（`ProjectV2.commit`）→ ④ `Project.fromDirectory`（**只跑这一次**：它自己末尾还会再 `commit` 一次）
+→ ⑤ 改名 → ⑥ **仅共享项目**：`git init --bare {共享根}/{projectId}.git` → ⑦ `project_member` 写 owner
+→ ⑧ `project_ext` 落 `type` / `shared_directory` / `last_accessed_at`。
+
+③ 的位置是全条的关键：上游 `ProjectV2.resolve()` 优先级是 `git remote 哈希 → 仓库里的 `opencode`
+缓存文件 → root commit`，不先写缓存文件的话 `fromDirectory` 会**再插一行 id 完全不同的 `project`**，
+那行 `project_ext` 就永远配不上、**不报错、不变红**。这正是 tasks.md 原条目点名「不写就会静默分裂的
+接缝」——本条**真跑了**（用例：建项目 → 用该项目目录建会话 → 断两个 id 相等），不是推断。
+
+**两处实测抓到的坑**
+
+| # | 形状 | 实测症状 | 修法 |
+|---|---|---|---|
+| 1 | Effect 4 的 `Schema.Literal(...arr)` **是单数签名**（多值的是 `Literals`），多出来的实参被 JS **静默丢掉** | 解码器只认 `"private"` ⇒ **建共享项目一律 400**，私有一切正常（5 条用例红，`Expected: 200 / Received: 400`） | 改 `Schema.Literals(PROJECT_TYPES)`；注释写明「闭集唯一来源是 core 的 `PROJECT_TYPES`」 |
+| 2 | `git init --bare <bare>` 的 `cwd` **必须已存在**——`Git.run` 起进程前 `FileSystem.access(cwd)` | 不存在 ⇒ `NotFound` ⇒ 收敛成 `exitCode: 1` ⇒ **建项目 500**；**只有共享项目中招** | 先 `mkdir(bare)` 再进去 `git init --bare` |
+
+两处症状都极具误导性（都是「私有项目全绿、只有共享项目炸」），定位靠的是**临时包一层
+`Effect.catchCause` 把 cause 打出来**，不是靠猜。
+
+**门禁（串行，`#003-01`）**
+
+| 门 | 结果 |
+|---|---|
+| `packages/opencode` `bun test test/server/openhive-project.test.ts` | **10 pass / 0 fail**（57 expect） |
+| `packages/auth` `bun test` | **238 pass / 1 skip / 0 fail** |
+| `packages/core` `bun test` | **1211 pass / 8 skip / 5 fail**——5 条全是上游 `NpmConfig.*`（本机 `~/.npmrc` 镜像源的产物），与基线做**名称级差集为空** |
+| `bun run typecheck` | **31/31 successful** |
+| `bun run lint:openhive` | **exit 0 · 23 warnings / 0 errors**（＝T012 基线，本次改动目录**不在它扫的六个目录内**⇒「0 命中」是**空结论**，故另取文件级） |
+| 文件级 oxlint（仓库根跑，`#004-10`；9 个改动文件） | **0 warnings / 0 errors** |
+| 根 `bun run lint` | 本次新增/改动文件 **0 命中**（那 1 error 仍是 `#001-02` 记的上游 `session-ui` 那处） |
+| `git diff --stat bun.lock` | **空**（未跑 `bun install`） |
+
+**⚠️ 一处 lint 规则的行为（记下来省下一次排查）**：`oxlint-disable-next-line` 看的是**字面下一行**——
+指令与目标行之间**再夹任何一行注释**（哪怕还是注释）就等于**没禁用**，而且警告行号会跟着目标往下漂，
+看着像「指令失效」。本次实测：三行注释块 ⇒ 警告照旧；收成紧贴函数的**一行** ⇒ `0 warnings`。
+
+**缺口 / 挂账（`#002-02`）**
+
+1. 🔒 **范围 ⑤（文件列表读取）未做**，且**不是「还没轮到」，是卡在未定决策点上**——见「待裁定」。
+2. **`OPENHIVE_SHARED_ROOT` 的部署面**——本机（开发机）无目标内网，`/shared` 只是**默认值可用**，
+   不代表部署环境挂载正确。同 **T022 的 D-13**，**部署时实测**。
+3. **`project_ext.project_type` 今天写空串**——该列是自由文本 `NOT NULL` 无默认值，而 005 没有任何
+   表单/流程收集它。**这不是「暂时用空串」，是显式留白**：谁将来收这个字段，谁负责迁已有行。
+4. **`workspace-entry.tsx` 一处不实注释**（T007 落下）：`file-tree-slot` 旁写着「由应用入口注入
+   （`pages/layout-new.tsx` 拿 `useSDK()` 组）」，**实测为假**（该文件既无 `useSDK()` 也无 `loadFile`
+   一类 prop）。收口时改掉（`#004-04`）。
+5. **裁定 (3) 的「单独提交」读法**：原文写「要**单独提交**并标『这是要保留的定制』」。实做为
+   **一次专门的 T018 提交**（带 `【保留的定制 · 同步上游时不要丢】` 标记），与 T014 `19186944e3` /
+   T017 `198166fabc` 的先例一致——**不与别的 feature 的改动混在一个提交里**即满足原意；
+   若本意是「挂载那一行必须与 `project.ts` 新文件分开两次提交」，请纠正。
+6. ⚠️ **本半边不含任何前端改动** ⇒ `test:components` 未跑（无 `packages/app` 改动）；
+   ⑤ 落地时按 `[FE]` 规矩补跑并出**实测落点表**。
+
+## 待裁定（2026-10-06，T018 BE 半边收尾时报请用户裁定 · **未拍板**）
+
+**问题**：**前端怎么够到 fork 的裸路由。**
+
+**为什么它挡住两件事**：① 范围 ⑤「把 `GET /file` 接进 `project-files.ts`」——`project-files.ts`
+是模块级信号，文件头写明写入方是「应用入口（或以后的模块动作）」，而 `workspace-entry.tsx`
+**拿不到 `useSDK()`**（在六层 provider 之下），被它注释指认为「应用入口」的 `pages/layout-new.tsx`
+也**并没有**做这件事（实测假注释，见上「缺口 4」）；② 收口必查项「`current-project.ts` 的 `id`
+必须真的等于服务端认的 projectId」——**写进去的是 id，送出去要有路**。
+
+**为什么不能用 SDK 走**：`GET /openhive/project` 是 fork 自己的裸 `HttpRouter` 路由，
+**不在上游 `api.ts` 的 endpoint 定义里** ⇒ SDK **类型上没有它**；而裁定 (3) 明写
+「**不改上游 `api.ts` 的 endpoint 定义**」。两条同时成立 ⇒ 无路。
+
+**三条候选**
+
+| 候选 | 做法 | 代价 |
+|---|---|---|
+| **(A) 直连裸路径** | 前端 `fetch("/openhive/project")`，不经 SDK | 零上游侵入；契约写死**两处**（服务端 `PATH` ＋ 前端字符串），丢掉 SDK 现成的身份头与错误处理链路 |
+| **(B) 补进上游 `api.ts`** | 按 `HttpApiBuilder` 那套定义 endpoint | 类型与 SDK 全都有；与裁定 (3) **字面冲突**，且**动上游文件** ⇒ 每次同步都要解这处冲突（宪法第一号约束） |
+| **(C) 前端自写薄客户端** | `src/project/openhive-client.ts`：自己 `fetch` ＋ 自己 `Schema` 收口，其余前端只认它 | 契约集中一处；仍绕开 SDK，且新增一层要维护的镜像（`#003-05`） |
+
+**我的取向（供参考，不是决定）**：**(C)**——它把「契约只有一处」与「零上游侵入」同时拿住，
+代价（一层镜像）可以用一条「`PATH` 与前端常量必须逐字相等」的断言钉住（`#004-02` 的做法）。
+但 (A) 更省一层、且 005 现有的三条缝（`project-list` / `project-files` / `current-project`）
+本来就是「组件不碰网络」的形状，**(A) 与它们的形状更合**。⇒ **两条都站得住，请裁定。**
+
 ## 开工前裁定（2026-10-06，用户裁定 · 主检出会话执行）
 
 来源：`docs/workspace/dev_tdd.005.md` 文末「未定项清单」。三条已裁定，并已同步到 plan.md / tasks.md / 两份 design 文档。
@@ -1333,6 +1430,7 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
+2026-10-06（**T018 BE 半边收尾 🟡**：新建 `packages/opencode/src/server/openhive/project.ts`——`GET /openhive/project` 列项目 ＋ `POST /openhive/project` 建项目（**八步顺序**：建目录 → `git init` → **写仓库里的 `opencode` 缓存文件（`ProjectV2.commit`）** → `fromDirectory`（只跑一次）→ 改名 → 仅共享项目再 `git init --bare {共享根}/{id}.git` → `project_member` 写 owner → `project_ext` 落 `type`/`shared_directory`/`last_accessed_at`）＋ `server.ts` **＋12 行**挂进 `Layer.mergeAll`（带 `【保留的定制 · 同步上游时不要丢】`，**不改上游 `api.ts`**，符合裁定 (3)）＋ `openhive-project.test.ts`（新，**10 条全绿**）。③ 那一笔的位置是全条关键：不先写缓存文件，上游 `ProjectV2.resolve()` 会**再插一行 id 完全不同的 `project`**，两行配不上却**不报错不变红**——本条真跑了（建项目 → 用该项目目录建会话 → 断两个 id 相等）。**两处实测抓到的坑**：① Effect 4 的 `Schema.Literal(...arr)` **是单数签名**（多值的是 `Literals`），多出来的 `"shared"` 被 JS **静默丢掉** ⇒ 建共享项目一律 **400**、私有全绿；② `git init --bare <bare>` 的 `cwd` 不存在 ⇒ `FileSystem.access` `NotFound` ⇒ `exitCode: 1` ⇒ **建项目 500**，**只有共享项目中招**（两者症状都极具误导性，定位靠临时 `catchCause` 打 cause，不是猜）⇒ 先 `mkdir(bare)` 再进去。**同时按裁定 (2) 新定一个配置源**：`OPENHIVE_SHARED_ROOT`（`packages/auth/src/workspace.ts` 的 `sharedRoot`，与 `workspaceRoot` 同款同形；此前 `/shared` 全仓零定义）。**门禁串行全过**（`packages/auth` **238/1/0**；`packages/core` **1211/8/5**、5 条全是上游 `NpmConfig.*`、与基线**名称级差集为空**；typecheck **31/31**；`lint:openhive` **exit 0 · 23 warnings / 0 errors** ＝T012 基线、且本次改动**不在它扫的六个目录内**⇒「0 命中」是**空结论**、故另取文件级；**文件级 oxlint（仓库根跑）9 个改动文件 0/0**；根 `lint` 本次文件 0 命中；`bun.lock` 一行未动）。**一并记下一条 oxlint 行为**：`oxlint-disable-next-line` 看的是**字面下一行**，指令与目标之间夹任何一行注释（哪怕还是注释）＝**没禁用**，且行号会跟着目标漂（三行块照旧红 → 收成紧贴函数一行 ⇒ 0 warnings）。**⛔ 范围 ⑤（文件列表读取）未做，且卡在未定决策点上**：`GET /openhive/project` 是 fork 的**裸 `HttpRouter` 路由**、不在上游 `api.ts` 里 ⇒ SDK **类型上没有它**，而裁定 (3) 又禁改 `api.ts`；同时 `project-files.ts` / `project-list.ts` **至今零写入方**、`workspace-entry.tsx` 拿不到 `useSDK()`。⇒ 「前端怎么够到 fork 的裸路由」**报请用户裁定**（三条候选 A/B/C 与代价见「待裁定」节），**不自行拍板**。**另记一笔不实注释**：`workspace-entry.tsx` 里「由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组）」——**实测为假**（该文件既无 `useSDK()` 也无 `loadFile` prop），T007 落下，收口时改。见「T018」节）
 2026-10-06（**T012 收尾**：新建 `app/src/project/dual-file-tree.tsx`（`DualFileTree`：上树＝`FileTree` **本体**、下树＝同文件内 `MinioTree` 只读树、中间 `ResizeHandle` 可拖分隔条、拉回二次确认**内联条**）＋ `dual-file-tree.test.tsx`（**20 条**）；`file-tree.tsx` **只加一个 `draggable?: boolean`**（＋行上一个判断，其余一行未动）；`workspace-entry.tsx` 把「文件」pane 的内容换成 `DualFileTree`（`dualOpen` 信号）＋ 窄条 `onOpen` **一步做两件事**（§5.1 步骤 2①②：切回「文件」**并**展开）⇒ **还清 T019 挂的「2② 归 T012」**。**四问全按推荐项 A 裁定**（① 只前端 ＋ 补编号 **T022** 承接 HTTP 出口；② ✓ 判据＝纯路径；③ 只换 pane 内容、tab 容器保留；④ 备份直接覆盖、拉回先确认）。**上树不另起一棵**——`extends Omit<FileTreeProps, "draggable">` ＋ `splitProps` ＋ 其余原样 spread ⇒ 能力面跟着 `FileTree` 长（逐项转发＝会漂的镜像，`#004-07`）。**拖拽是最外层一次问完**：两棵树的行**刻意同构**（共用 `data-slot="file-tree-row"` ＋ `data-path` ＋ `data-type`，`data-tree` 分哪棵）⇒ 四个问题一次问完（`#004-12`），代价是下树**复用了那个 `data-slot`**（看着像笔误，实为委托的唯一前提），收益是两棵树都不必知道「MinIO」存在。**14 个变异**（组件 10 ＋ 接线 4）：M1 1／M2 5／M3 1／**M4 全绿→补条后 1**／M5 1／M6 1／**M7 全绿→补条后 1**／M8 1／M9 1／M10 1；N1 4／N2 2／N3 1／N4 1。**M4／M7 全绿不是代码多余，是测试少了一条**——同一个形态：同一件事有**两道判据**（M4：上树那条由 `file-tree.tsx` 守、下树那条由 `MinioTree` 守；M7：`draggable` 属性＝「浏览器不发 `dragstart`」（外）、`可放` 的方向判据＝「组件自己挡」（内）），而用例只压了前一道 ⇒ **各补一条，都是在变异体上补的**（先红后绿）。**M2 逼出第三处同型缺口**：数 `拼路径` 的**分支覆盖面**，发现「文件行」一个用例都没有（文件行与空白在 `位.路径` 上**恰好相反** ⇒ 空白那条绿着证明不了文件行也对，`#004-01`）⇒ 补一条，成牙证据是 M3 的恰红（⚠️ 据实说明：**不是 RED-first 写的**）。**记下一处 RED 阶段的假绿**：「展开 → 收起 → 再展开是同一节点」在空壳上也绿（两边都是 `null`）——它绿过，别算作 RED-first。**`#005-01` 的落点**：所有「某处没有元素」都断布尔（`不存在 = el === null`）。**happy-dom 没有 `DragEvent`**（有 `DataTransfer`）⇒ 用例拿裸 `Event`，产品码对 `dataTransfer` 全用可选链（那两处 `?.` 是测试进得来的前提）。**门禁串行全过**（`test:components` **383/0/27 文件**，基线 357/26 ⇒ ＋26 条＋1 文件；`test:unit` **824/0/117** 同基线；`lint:openhive` **23·0·88 files·exit 0** 本次三文件 **0 命中**——引入的 1 处 `require-array-sort-compare`（`.sort()` 没给 compare）当场清掉；`bun run lint` 本次文件 0 命中；`typecheck` exit 0——⚠️ 首跑红 1 条：`aria-expanded` 写成 `String(...)`，Solid 只收布尔，**`bun test` 不做类型检查一路没暴露**；`bun.lock` 一行未动）。**⛔ `onBackup`/`onRestore` 的接收方（HTTP 出口）归 T022** ⇒ 生产里不传 ⇒ 行不可拖（「未接线即禁用」）；`minio-backups.ts` 的写入方同归 T022。下一步 = T013（⚠️ 开工前必须先钉 Q1×Q3 那条未定项：owner 归档时**成员的沙箱文件**怎么办）。见「T012」节）
 2026-10-06（**T019 收尾**：新建 `app/src/project/sidebar-tabs.tsx`（**受控**组件：`active` ＋ `onSelect`，自己不带 tab 状态；两个 pane **同时挂载、靠 `hidden` 切换**——`FileTree` 的搜索词／折叠态／选中行是内部信号，一卸载就「切一下 tab 全没了」，`hidden` 同时保证非激活 pane 不进 Tab 顺序）＋ `minio-bar.tsx`（`cloud-upload` 图标而非设计字面的 `⬆`，DESIGN §1.2 单色线性图标纪律）＋ 接缝 `minio-backups.ts`（第三件）；`workspace-entry.tsx` 把 T007 的 `file-tree-slot` **整体搬进** ② 的「文件」pane（`file-tree.tsx` **一行未改**，`data-slot` 沿用旧名——搬位置不是搬身份）。**＋27 条**（13＋6＋8）。**三处未定决策点已问用户、全部按推荐项裁定**：① 「会话」tab ＝ **显式空态**（`data-state="empty"` ＋「会话列表未接入」）；② 点窄条 ＝ **只做设计 §5.1 步骤 2①**（拨回「文件」tab），2②「展开上下双树」归 T012；③ 键盘 ＝ **只做外壳自己的 ← →**，**↑↓ 继续挂账**（遵守本 task 自己写的「`file-tree.tsx` 一行不改」）。**🔴 本 task 最重要的产出是变异 M4 逼出来的**：`#005-01` 那颗地雷**适用范围比原记的更宽**——不止 `.toBeNull()`，**任何把被 Solid 渲染过的节点当实得值的断言**都在内。M4 删掉键盘焦点跟随后，预期「恰红 1 条」，实际**不是红是崩**（`expect(document.activeElement).toBe(tab(...))` 红了、bun 打印实得值停不下来 ⇒ **Bun internal assertion failure ＋ panic**、`timeout` 挡下时已 29s、峰值 **4.68GB**、`EXIT=3`、**一条结果都取不到**）；改成比**布尔**后 **2 秒**出结果、恰红 1、12 pass。**新写的 4 处同形状断言已全部改成断布尔**（焦点跟随／同节点／aria 指向／「文件树还是同一棵」），`.not.toBeNull()` 那类留原样（失败时实得值是 `null`，原语）。**变异 5 处：除 M4 首次崩溃外全部①类**（M1 恰红 2；M2／M3 各恰红 1；M4 修断言后恰红 1；M5 恰红 1）。**一处 tsgo 与 oxlint 意见相反**：键盘处理器**必须内联箭头**（加断言被 oxlint 判多余、不加 tsgo 报 TS18047＋TS2339；Solid 只在内联处收窄 `currentTarget`，先例 `auth/login-page.tsx`）。**门禁串行全过**（`test:components` **357/0/812 expect/26 文件**，基线 330/24 ⇒ ＋27 条＋2 文件；`test:unit` **824/0/3173/117** 同基线；`lint:openhive` **23 warnings·0 errors·86 files·exit 0**——警告数同基线、文件 81⇒86 即新增 5 个文件 **0 命中**；改动 7 文件单跑 oxlint **0/0**；typecheck **31/31**）。**⚠️ 缺口**：`minio-backups.ts` **今天没有写入方、也没有能写的东西**（T011 的 `core/minio` 是包内库、**零 HTTP 出口**）⇒ 窄条恒走「不知道几项」态；第一个消费者是 **T012**。**⛔ 「会话」tab 的会话列表（设计 §7）、窄条 2② 双树展开、↑↓ 导航均不在本 task**。收尾时把「实得值为节点」这档并入 `#005-01`。下一步 = T012。见「T019」节）
 2026-10-06（**T011 收尾**：新建 `packages/core/src/minio.ts`（`Minio.makeStore(config) ⇒ Minio.Interface`：`put`/`get`/`list`/`delete`，**入参不带桶名与前缀**——前缀由构造时的 `scope` 定死）＋ `packages/core/test/minio.test.ts`（**22 条**）＋ 观测面 `packages/core/test/fixture/fake-s3.ts`（`Bun.serve({port:0})` 真 HTTP 端点）。**零 `package.json` 改动、零 `bun.lock` 改动**——**D0-4 的前提被实测推翻**：`@aws-sdk/client-s3@3.933.0` **本来就是上游根 `package.json` 的依赖**（`upstream/dev:package.json` 第 113 行），已装、全仓零 import ⇒ 没跑 `bun add`；落点也零成本（`packages/core` 的 `exports` 是通配 `./*`）。**观测面取「真端点」而非替身**（T011 的产物就是那段实装，用替身=把被测对象换掉，`#002-02`），残差如实记（桶策略/STS/`${aws:username}` 本机一条未验 ⇒ D-13）。**16 个变异全部①类恰红**（5/1/1/1/1/1/4/1/6/3/6/1/1/**0**/13/1），两条「全绿/异常」都追到了根因：**M15**（关 `forcePathStyle`）首跑**21 条全绿**——不是那行多余，而是**端点 host 是 IP 字面量时 SDK 自己退回 path-style**，那行在原观测面里不可见；夹具改绑 `localhost` 后红 13（`#004-13` 情形①换观测面）；**M14**（空 body 分支）全绿则**实测**出另一件事——删掉它 `typecheck` 立刻红（`TS18048`，exit 2），所以它是**类型收窄**、守它的是编译器不是测试（`#003-03` 类③ 的前提在这里不成立，这条是量出来的）。另**补一条杀死另一种实现的用例**（桶名配错=404 `NoSuchBucket`；M16 恰红 1 正是它；据实说明：**不是 RED-first 写的**，拿 M16 当它的成牙证据）。修掉**我自己的一个 bug**（`拦住了` 的 `.then` 两分支写反，7 条用例当场红）。**门禁串行全过**（`packages/core` `bun test` **1209/8/5**，对照开工时 **1208/8/5**，5 条失败名称未变、全是上游 `NpmConfig.*`；`test:components` **不适用**；typecheck **31/31 exit 0**；文件级 oxlint **0/0**；`bun.lock` 一行未动）。**🚩 两条要记住的**：① **`lint:openhive` 只扫 `packages/app/src/*` 六个目录、不覆盖 `packages/core`**——对本题「0 命中」**恒真、等于没测**，`[BE]` 落在 core/auth/opencode 的 task 必须另取文件级 oxlint；② `await expect(...).rejects.toThrow()` 会被 `await-thenable` 记一条，仓库成文写法是**返回错误本体**的助手（`auth/src/*.test.ts` 三处同注，全仓已有 98 处）。**⛔ 接线与出口归 T012/T013**；`minio.md` §4 的 `OPENHIVE_MINIO_*` **刻意没落进本模块**（凭据形状正是 D-13 要裁定的，现在写死等于替它拍板；全仓零引用，改名前无需 grep）。下一步 = T012。见「T011」节）
