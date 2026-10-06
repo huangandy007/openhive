@@ -67,7 +67,19 @@
   - 🔒 **裁定（2026-10-06，开工前用户裁定）：范围 = 组件 ＋ 左栏接线 ＋ 空态接缝**——不做真实数据源、不新增后端 API。「谁来喂真实项目数据」登记成明确欠账交 **T006**（`currentProject` 的写入方），届时**只改调用处**，锚点组件一字不动。
   - ⚠️ **⑤ 前置措辞已修正**——原文（写在 T007 下）要求「清单更新**单独一次提交，先于建目录**」，实测**做不到**：git 提交不了空目录，而两份清单里各带断言要求该目录存在（`openhive-module-dirs.test.ts` 的 `existsSync`、`design-token-refs.test.ts` 的 `readdirSync`）⇒ 「只更新清单」的那次提交**必红**。故实做为**与建目录同一次提交**（就是本提交）。T007 下那条已同步改写。
   - ⚠️ **待设计侧复核项**：成员徽章图形取设计文档字面的 `👥`（`MEMBER_GLYPH`）——opencode 原生图标集里**没有** people/users 一档（已逐个枚举 `packages/ui/src/components/icon.tsx`）。代价写在源码注释里：emoji 不接 `--icon-base`，与 DESIGN §1.2「单色线性图标」不同调，而同一行的 `▾`／`＋` 都是单色 `Icon`。两条收尾各带代价（① 往上游 `icon.tsx` 加一档＝动**上游文件**，须单独提交；② 自绘内联 SVG＝照 `@/topbar/topbar` 品牌标记先例），留待设计侧裁定。
-- [ ] T006 [US1] [FE·新增] 实现项目面板（＋新建私有/共享 + 最近/全部/已归档三 tab）[FR-002][FR-003] [T003] [出参：新建项目成功、三 tab 可切换]
+- [x] T006 [US1] [FE·新增] 实现项目面板（＋新建私有/共享 + 最近/全部/已归档三 tab）[FR-002][FR-003] [T003] [出参：新建项目成功、三 tab 可切换]
+  - ✅ **出参落地**：`packages/app/src/project/project-panel.tsx`（受控组件：置顶「＋新建项目（私有/共享）」＋ `role="tablist"` 三 tab；「全部」按 `type` 分「我的项目 / 共享项目」两组，「最近」按 `lastAccessedAt` 倒序；空态**分两句**）／`packages/app/src/project/project-list.ts`（模块级接入缝，仿 `current-project.ts`）／`packages/app/src/workspace/workspace-entry.tsx`（接线：`▾`／`＋` 开面板、点一行写 `currentProject` 并收起）／`packages/app/src/project/project-anchor.tsx`（`MEMBER_GLYPH` 改**导出**——面板的 `👥 N` 与锚点行是同一设计元素）／`packages/app/src/project/current-project.ts`（补 `id?: string`，面板靠它认「哪一行是当前」）。测试：`project-panel.test.tsx` **18 条**＋`workspace-entry.test.tsx` 新增 **8 条**，**全绿**。
+  - 🔒 **裁定（2026-10-06，开工前用户裁定）：范围 = 前端面板 ＋ 接缝（同 T005 口径）**——不新增后端 API、不真落库。依据是侦察实证（不是判断）：上游两条链**都没有** `POST /project`（create），`project_ext` 只有读函数（T003），`project_member` / `project_archive` 刻意无查询辅助（T004 裁定「有消费者才写取数」），客户端今天**零处**发 `x-openhive-project`（`grep` 零命中）⇒「新建项目成功」这个出参**今天不可能交付**，写进 ✅ 就是假记述（`#003-04`）。
+  - ⚠️ **⑤ 出参拆成两半，据实记**：「三 tab 可切换」✅ **已交付**；「新建项目成功」❌ **不在本 task 交付**——`onCreate` 不接线 ⇒ 两个新建按钮渲染成 `disabled`。**这是实情不是缺陷**：同锚点行三个按钮的既有口径——一个点了没反应的按钮是对用户的谎，「看起来能点」比「少个按钮」更难查。落库缺口由 **T018** 认领（`#002-04`：责任推出边界必须落**接收方**的表）。
+  - ⚠️ **已知不覆盖三条**：① **项目数据没有任何来源**——`projectList` 缝读作 `undefined` 而**不是** `[]`（「还没有来源」与「来源说一个都没有」是两件事，后者才配渲染「你还没有项目」）；② 锚点行的 `＋` 今天**退化成「打开面板」**（面板置顶就是新建入口），T018 接上落库后要再定一次：`＋` 继续开面板，还是直达新建表单；③ `current-project.ts` 的 `id` 今天**没有真实写入方**（测试里那一行的 id 来自 `projectList` 造数），T017 建立的 `x-openhive-project` 契约要等 T018 才接得上。
+  - ⚠️ **待设计侧复核项（T005 那条的延续）**：面板的 `👥 N` 直接 `import { MEMBER_GLYPH }`——**同一设计元素在两处**，故取同一常量而非各写一份（改一处不会漏另一处）；emoji 不接 `--icon-base` 的代价与两条收尾仍在 T005 下挂着。
+
+- [ ] T018 [US1] [BE] 实现**项目 CRUD 落库 ＋ 项目列表查询 ＋ HTTP 出口（含建目录）** [FR-002][FR-003] [T003][T004][T017] [出参：新建项目成功、项目列表可查询、客户端能切项目（`x-openhive-project`）]
+  - 🔒 **补编号裁定（2026-10-06，T006 收尾时用户裁定「补一条 T018 进 tasks.md」）**：T006 侦察出的**计划缺口**——**没有任何 task 认领「建项目 / 列项目」的落库**。实证：上游两条链都**没有** `POST /project`（create）；`project_ext`（每用户 SQLite）只有读函数；`project_member` / `project_archive`（业务 PG）刻意留白；`ProjectDirectories` 有 create 但那是**目录**不是项目。于是 T005 的锚点行与 T006 的面板**两处都只立了缝、没人喂数**。`LEARNINGS #002-04`：责任推出边界必须落接收方的表。
+  - ⚠️ **范围（今天写成明账，动手前再核一遍）**：① **项目创建落库**——`ProjectTable`（上游）＋ `ProjectDirectoryTable`（上游）＋ `project_ext`（T003）＋ `project_member`（T004）的**同步创建**，U4 的「两张表同步创建 ⇒ 收成一个写入模块」正是这条要收的口子；② **项目列表查询**——把上表拼成 `ProjectEntry`（`id` / `name` / `type` / `memberCount` / `lastAccessedAt` / `archived`，形状见 `project-panel.tsx`）；③ **HTTP 出口**——`GET /project` 已有，**缺 create**；④ **建目录**——T017 的 `project-location.ts` 文件头「已知不覆盖 ①」原话是「只写路径，**目录由 T006 落地**」，而 T006 裁定不做落库 ⇒ 这一条一并归到本条（**这是 T006 → T018 的第二次移交，别以为它已经有人做了**）。
+  - ⚠️ **收口时必查**：`current-project.ts` 的 `id` 必须**真的等于**服务端认的 projectId（T017 的中间件按它拼 `join(沙箱根, projectId)`）；`project-list.ts` 接上真数据后，空库里应给 `[]`（合法的「一个都没有」）而**不是**继续 `undefined`——两者的区别写在该文件头。
+
+> 📌 **T018 编号排最后、归属在 Phase 3**（2026-10-06 T006 收尾时裁定补入）：它服务的是 US1「项目列表与新建」，内容上属 Phase 3；补编号时 Phase 3 已有 T005/T006，故用末号而**不重排**既有编号——与 T017 同一条先例（编号是 **ID 不是顺序**，同 `LEARNINGS.md` 的条目号规则）。
 
 ## Phase 4: US2 文件树（P1）
 
@@ -105,10 +117,10 @@
 - **Phase 2**：T003 ✅（依赖 T001）；T004 ✅（依赖 T001，可与 T003 并行）；T017 ✅（依赖 T003，可与 T004 并行）
 
 > 📌 **T017 编号排最后、归属在 Phase 2**（2026-10-06 T003 收尾时裁定补入）：它是 D0-1 落地口径的实装，属「Foundational」而非某个用户故事；补编号时 Phase 2 已有 T003/T004，故用末号而**不重排**既有编号（编号是 ID 不是顺序，同 `LEARNINGS.md` 的条目号规则）。
-- **Phase 3**：T005（依赖 T003）；T006（依赖 T003）
+- **Phase 3**：T005 ✅（依赖 T003）；T006 ✅（依赖 T003）；T018（依赖 T003+T004+T017）
 - **Phase 4**：T007（依赖 T001）；T008 ∥ T007（依赖 T001）；T009（依赖 T007）
 - **Phase 5**：T010（依赖 T004）
 - **Phase 6**：T011（依赖 T002）；T012（依赖 T011）
 - **Phase 7**：T013（依赖 T003+T011）→ T014（依赖 T013）；T015（依赖 T004+T013）∥ T016（依赖 T003）
 
-共 17 条任务（T001–T017），符合 12–18 条范围。
+共 18 条任务（T001–T018），符合 12–18 条范围（T017 / T018 都是收尾补入的**孤儿认领**，见各自的裁定说明）。

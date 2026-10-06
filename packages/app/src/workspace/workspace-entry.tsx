@@ -1,12 +1,14 @@
-import { Show, type ParentProps } from "solid-js"
+import { createSignal, Show, type ParentProps } from "solid-js"
 import { Portal } from "solid-js/web"
 import { CenterContent } from "@/center/center-content"
 import type { LoadFileContent } from "@/center/file-content"
 import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
-import { currentProject } from "@/project/current-project"
+import { currentProject, setCurrentProject } from "@/project/current-project"
 import { ProjectAnchor } from "@/project/project-anchor"
+import { projectList } from "@/project/project-list"
+import { ProjectPanel } from "@/project/project-panel"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { Topbar } from "@/topbar/topbar"
@@ -56,6 +58,13 @@ export function WorkspaceEntry(props: ParentProps<WorkspaceEntryProps>) {
 /** provider 之内的那一层——context 只能由 provider **下面**的组件消费。 */
 function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const center = useCenterTabs()
+  /**
+   * 项目面板开没开。**放在这里而不是面板里**：面板是「滑出」的浮层，开关它的按钮在锚点行上
+   * （`▾` / `＋`），两者分属两个组件 ⇒ 状态只能落在共同祖先（本组件）里。
+   * 这是个纯 UI 开关（`2026-09-11-项目管理-design.md` §3：点 `▾` 滑出），不是共享数据，
+   * 所以不进接入缝。
+   */
+  const [panelOpen, setPanelOpen] = createSignal(false)
 
   return (
     <>
@@ -77,7 +86,40 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         <ThreePane
           left={
             center.module() === "project" ? (
-              <ProjectAnchor name={currentProject()?.name} memberCount={currentProject()?.memberCount} />
+              // 这一层 `relative` 是给面板当定位祖先的：面板按设计 §3 是**滑出**的浮层
+              // （「点项目名 ▾ 滑出」），不能挤掉下面 §2 的 ②tab / ③文件树。
+              // 代价：左栏的第一层从「锚点行」变成这个容器——`workspace-entry.test.tsx` 里
+              // T005 那条「锚点行是左栏第一个孩子」的断言因此改成了「锚点在左栏里」。
+              <div data-component="project-sidebar" class="relative flex h-full min-h-0 w-full flex-col">
+                <ProjectAnchor
+                  name={currentProject()?.name}
+                  memberCount={currentProject()?.memberCount}
+                  onToggleList={() => setPanelOpen((open) => !open)}
+                  // `＋` 今天退化成「打开面板」——面板置顶就是「＋新建项目（私有/共享）」
+                  // （设计 §3：「置顶最易达」）。**这不是「新建」的替代**：面板里那两个按钮
+                  // 今天同样是禁用的（没有落库接收方，见 `project-panel.tsx` 文件头）。
+                  // T018 接上落库后，这里要再定一次：`＋` 是继续打开面板，还是直达新建表单。
+                  onCreate={() => setPanelOpen(true)}
+                />
+                <Show when={panelOpen()}>
+                  <div data-slot="project-panel-slot" class="absolute inset-x-0 top-10 z-10 px-1">
+                    <ProjectPanel
+                      projects={projectList()}
+                      currentId={currentProject()?.id}
+                      onOpen={(project) => {
+                        // 「点一下直达」（设计 §3）：切当前项目并把面板收起来——留着它挡在
+                        // 文件树前面，正是「直达」的反面。
+                        setCurrentProject({
+                          id: project.id,
+                          name: project.name,
+                          memberCount: project.memberCount,
+                        })
+                        setPanelOpen(false)
+                      }}
+                    />
+                  </div>
+                </Show>
+              </div>
             ) : undefined
           }
         >

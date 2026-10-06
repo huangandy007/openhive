@@ -5,6 +5,7 @@ import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
+import { setProjectList } from "@/project/project-list"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -326,7 +327,11 @@ describe("左栏（项目侧栏）接进工作台（FR-001 出参）", () => {
 
     const 左栏 = host.querySelector("[data-slot='three-pane-left']")
     expect(左栏).not.toBeNull()
-    expect(左栏?.firstElementChild?.getAttribute("data-component")).toBe("project-anchor")
+    // T005 时断言的是「锚点行是左栏的**第一个孩子**」；T006 给左栏加了一层定位容器
+    // （`project-sidebar`，面板要靠它当定位祖先），故改成「锚点在左栏里、且是侧栏的第一个孩子」——
+    // 断言的是**同一件事**（锚点占据顶部），只是不再把容器的存在与否写进判据。
+    const 侧栏 = 左栏?.querySelector("[data-component='project-sidebar']")
+    expect(侧栏?.firstElementChild?.getAttribute("data-component")).toBe("project-anchor")
   })
 
   test("当前项目还没来源时，锚点行走空态、不伪造项目名（宁缺勿假）", () => {
@@ -360,5 +365,132 @@ describe("左栏（项目侧栏）接进工作台（FR-001 出参）", () => {
     入口(host, "项目管理").click()
 
     expect(host.querySelector("[data-component='project-anchor']")).not.toBeNull()
+  })
+})
+
+const 面板 = (host: HTMLElement) => host.querySelector("[data-component='project-panel']")
+/** 面板开着吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
+const 开着 = (host: HTMLElement) => 面板(host) !== null
+const 锚点按钮 = (host: HTMLElement, slot: string) =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+/** 侧栏里各层的顺序（用 `data-` 名标识，因为既有 `data-component` 也有 `data-slot`）。 */
+const 侧栏层级 = (host: HTMLElement) =>
+  [...(host.querySelector("[data-component='project-sidebar']")?.children ?? [])].map(
+    (el) => el.getAttribute("data-component") ?? el.getAttribute("data-slot"),
+  )
+
+/**
+ * 项目面板接进左栏（FR-002 / FR-003 出参）。
+ *
+ * 这一节验的是**接线**（T005 立下的那条规矩：组件写好不接线，等于没做）：
+ * 面板的数据来自 `@/project/project-list` 那条接入缝、开关来自锚点行、点一行会回流到
+ * `@/project/current-project`——三段都在真实组件树上，不是各自单测里。
+ */
+describe("项目面板接进左栏（FR-002 出参）", () => {
+  // 两条接入缝都是模块级的（T006 才写），测试之间必须复位，否则互相串味（同 `currentUser`）。
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+  })
+
+  test("没点 ▾ 之前面板不占位——它是滑出的浮层，不是常驻的一栏（设计 §3）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(开着(host)).toBe(false)
+  })
+
+  test("点 ▾ 滑出项目面板：在左栏里，且排在锚点行之后", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    expect(开着(host)).toBe(true)
+    expect(面板(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
+    expect(侧栏层级(host)).toEqual(["project-anchor", "project-panel-slot"])
+  })
+
+  test("再点 ▾ 收起——它是开关，不是单程票", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    // ⚠️ 这行**前置**不是废话：缺了它，本条在「面板压根不存在」时也全绿（两个 `false` 相等），
+    // 而那种绿什么也没证明——本 task 第一次跑 RED 时它就是这样混过去的（`#004-14`）。
+    expect(开着(host)).toBe(true)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    expect(开着(host)).toBe(false)
+  })
+
+  test("面板列的项目来自接入缝；缝里没数据时走空态，不伪造项目（宁缺勿假）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    expect(text(host, "project-panel-empty")).toBe("还没有项目")
+
+    setProjectList([{ id: "p1", name: "8·17专案", type: "private", lastAccessedAt: 1 }])
+
+    expect(text(host, "project-item-name")).toBe("8·17专案")
+    expect(text(host, "project-panel-empty")).toBeUndefined()
+  })
+
+  // 本条是**变异 M7 找出来的缺口补的**（`project-panel.tsx` 那侧的「当前标记」早有覆盖，
+  // 缺的是「接线把 `currentProject()?.id` 传进 `currentId`」这一根线）：把 `<ProjectPanel>` 的
+  // `currentId` 换成 `undefined` 时，全文件 27 条一条都不红。这不是死代码——面板标出当前项目
+  // 是设计 §3 明写的用户可见行为——所以处理是**补断言**，不是删代码（`#003-03` ③ 的形态、
+  // 但落点不同：死的那段是**接线**，活的是组件）。
+  test("面板里「当前项目」那行带标记——接线真的把 currentId 传下去了（设计 §3 的「（当前）」）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    setProjectList([
+      { id: "p1", name: "8·17专案", type: "private", lastAccessedAt: 2 },
+      { id: "p2", name: "旧案", type: "private", lastAccessedAt: 1 },
+    ])
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    const 行 = [...host.querySelectorAll("[data-slot='project-item']")]
+    expect(行.length).toBe(2)
+    const 当前行 = 行.filter((el) => el.getAttribute("data-current") === "true")
+    expect(当前行.length).toBe(1)
+    expect(当前行[0]?.textContent).toContain("8·17专案")
+  })
+
+  test("点面板里的一行：锚点行跟着变（US1 AC4），面板同时收起（设计 §3「点一下直达」）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    setProjectList([
+      { id: "p1", name: "8·17专案", type: "shared", memberCount: 3, lastAccessedAt: 1 },
+    ])
+
+    host.querySelector<HTMLButtonElement>("[data-slot='project-item']")?.click()
+
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+    expect(text(host, "project-anchor-member-count")).toBe("3")
+    expect(开着(host)).toBe(false)
+  })
+
+  test("锚点行的 ＋ 已接线（不再是禁用态）——它今天打开面板，面板置顶就是新建入口", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(锚点按钮(host, "project-anchor-create")?.disabled).toBe(false)
+
+    锚点按钮(host, "project-anchor-create")?.click()
+
+    expect(开着(host)).toBe(true)
+    // 但「新建」本身仍无接收方（T006 不落库）⇒ 面板里那两个按钮是禁用的。两条一起断，
+    // 才不会把「打开了面板」误读成「能建项目了」。
+    expect(锚点按钮(host, "project-panel-create-private")?.disabled).toBe(true)
+  })
+
+  test("切到别的模块，面板跟左栏一起让位", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(开着(host)).toBe(true) // 前置：先证明它开着，否则「关着」什么也没证明（同上）
+
+    入口(host, "资金分析").click()
+
+    expect(开着(host)).toBe(false)
   })
 })
