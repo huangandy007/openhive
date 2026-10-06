@@ -22,6 +22,24 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #005-02 · 2026-10-06 · tool-quirk · 005-project-management
+**现象 / 决策**：**PGlite 夹具里「两个并发请求」会撞 `42P05 duplicate_prepared_statement`，症状像「被测的那道门在并发下崩了」。**
+实测（2026-10-06，T025）：第一版夹具用 `Effect.forkChild(那一轮)` ＋ 主纤程**每 100ms 轮询** `GET /permission`，
+**稳定**假红——被 fork 的那一轮在 **15ms** 就回 **500**，报
+`PostgresError errno "42P05" / routine "StorePreparedStatement" → prepared statement "…project_archive…" already exists`。
+**根因**：**PGlite 的预编译语句名是实例级的**——`@electric-sql/pglite-socket` 把多条连接汇进**同一个 PG 会话**，
+于是同一进程里**两个并发请求准备同一句 SQL 文本**就撞。触发条件＝「被 fork 的那一轮（走到第二道门的 `isArchived`）
+与主纤程第一次轮询（走到第一道门）**同时**准备同一句 SQL」。
+**这不是产品缺陷**：生产走**多连接池**（`packages/auth/src/db.ts` 的 `connect` = `drizzle({connection:{url,…}})`，
+注释写着「只落在池里那一条连接上，其余连接照旧」）⇒ 生产不会撞。属 `#003-01`「先怀疑测量、再怀疑被测物」的又一实例。
+（同族已知：`packages/opencode/src/server/openhive/pg.ts` 的文件头早记过**两个客户端**版本的同一枚 42P05。）
+**应对**：写「fork 一轮 ＋ 轮询」型夹具时，**先让主纤程在进程内等**（等假模型的调用次数到 1，**一个 HTTP 都不发**），
+**再**发那些会走到门的 HTTP 请求——此时被 fork 的那一轮已**阻塞在 `Permission.ask`**，不再碰门，并发窗口消失。
+判据一句话：**看到 `42P05 duplicate_prepared_statement`，先问「这两个请求是不是同一进程里的并发」**，别去改被测的那道门。
+⚠️ **别把它改回紧轮询**（T025 的测试文件头有醒目注释）。建议落点：`pg.ts` 文件头补一句「**并发**（同一进程两个并发请求）也会撞」。
+**应用范围**：任何「同一 `bun test` 进程里并发跑两个会查同一个库的请求」的夹具；任何 PGlite ＋ socket 服务端的测试。
+落点：`packages/opencode/test/server/openhive-project-frozen-pending.test.ts`（文件头「并发与 42P05」一节 ＋ `等模型开口` 助手）。
+
 ## #005-01 · 2026-10-06 · tool-quirk · 005-project-management
 **现象 / 决策**：**组件测试里 `expect(<节点>).toBeNull()` 这类断言，红了会把整轮 `bun test` 挂死——
 不是红，是哑。** 机制：断言失败时 bun 会打印**实得值**，而**被 Solid 渲染过的节点**会让打印器停不下来。
