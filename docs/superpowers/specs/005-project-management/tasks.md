@@ -62,14 +62,19 @@
 
 ## Phase 3: US1 项目列表与新建（P1）
 
-- [ ] T005 [US1] [FE·新增] 实现项目锚点行（项目名 + 成员数 + ▾ + ＋）[FR-001] [T003] [出参：左栏顶部锚点渲染]
+- [x] T005 [US1] [FE·新增] 实现项目锚点行（项目名 + 成员数 + ▾ + ＋）[FR-001] [T003] [出参：左栏顶部锚点渲染]
+  - ✅ **出参落地**：`packages/app/src/project/project-anchor.tsx`（受控组件：`name` / `memberCount` / `onToggleList` / `onCreate` / `onOpenMembers`；空态文案「未选择项目」＋ `data-state="empty"`；成员徽章按**属性在不在**决定画不画，不给 0 也不给假数）／`packages/app/src/project/current-project.ts`（模块级接入缝，仿 `@/workspace/current-user`，未选中读作 `undefined`）／`packages/app/src/workspace/workspace-entry.tsx`（＋20/−2：把 `ThreePane` 的 `left` 槽接到锚点行，条件落在 **`left` prop 本身**——包一层 `<Show>` 是错的，`ThreePane` 判的是 `props.left !== undefined`，`<Show>` 元素恒非 `undefined`，会给空态留一条 280px 空栏）。测试：`project-anchor.test.tsx` **9 条**＋`workspace-entry.test.tsx` 新增 **5 条**，**全绿**。
+  - 🔒 **裁定（2026-10-06，开工前用户裁定）：范围 = 组件 ＋ 左栏接线 ＋ 空态接缝**——不做真实数据源、不新增后端 API。「谁来喂真实项目数据」登记成明确欠账交 **T006**（`currentProject` 的写入方），届时**只改调用处**，锚点组件一字不动。
+  - ⚠️ **⑤ 前置措辞已修正**——原文（写在 T007 下）要求「清单更新**单独一次提交，先于建目录**」，实测**做不到**：git 提交不了空目录，而两份清单里各带断言要求该目录存在（`openhive-module-dirs.test.ts` 的 `existsSync`、`design-token-refs.test.ts` 的 `readdirSync`）⇒ 「只更新清单」的那次提交**必红**。故实做为**与建目录同一次提交**（就是本提交）。T007 下那条已同步改写。
+  - ⚠️ **待设计侧复核项**：成员徽章图形取设计文档字面的 `👥`（`MEMBER_GLYPH`）——opencode 原生图标集里**没有** people/users 一档（已逐个枚举 `packages/ui/src/components/icon.tsx`）。代价写在源码注释里：emoji 不接 `--icon-base`，与 DESIGN §1.2「单色线性图标」不同调，而同一行的 `▾`／`＋` 都是单色 `Icon`。两条收尾各带代价（① 往上游 `icon.tsx` 加一档＝动**上游文件**，须单独提交；② 自绘内联 SVG＝照 `@/topbar/topbar` 品牌标记先例），留待设计侧裁定。
 - [ ] T006 [US1] [FE·新增] 实现项目面板（＋新建私有/共享 + 最近/全部/已归档三 tab）[FR-002][FR-003] [T003] [出参：新建项目成功、三 tab 可切换]
 
 ## Phase 4: US2 文件树（P1）
 
 - [ ] T007 [US2] [FE·换皮] 实现文件树工具栏（新建/重命名/删除 + 搜索/折叠/展开）[FR-005] [T001] [出参：工具栏图标可用]
   - 🔒 **D0-2 裁定（2026-10-06）：包一层，不碰上游**——上游 `components/file-tree.tsx` 一字不动；新建 `app/src/project/file-tree.tsx`，**底座取 v2 的纯函数 model**。实测上游该组件**没有**工具栏/右键菜单/新建/重命名/删除/上传下载 ⇒ 标注的「换皮」实为**新增**。
-  - ⚠️ **⑤ 前置（单独一次提交，先于建目录）**：`app/src/project/` 加入 **3 处**目录清单——根 `package.json` 的 `lint:openhive`、`app/src/openhive-module-dirs.test.ts` 的 `moduleDirs`、`app/src/workspace/design-token-refs.test.ts` 的 `自有目录`。少一处 ⇒ **视觉契约门扫不到新文件**且不报错（`LEARNINGS #002-06`）。
+  - ⚠️ **⑤ 前置**：`app/src/project/` 加入 **3 处**目录清单——根 `package.json` 的 `lint:openhive`、`app/src/openhive-module-dirs.test.ts` 的 `moduleDirs`、`app/src/workspace/design-token-refs.test.ts` 的 `自有目录`。少一处 ⇒ **视觉契约门扫不到新文件**且不报错（`LEARNINGS #002-06`）。
+    ✅ **已于 T005（2026-10-06）办完**——原文写「**单独一次提交**，先于建目录」，实测**做不到**：git 提交不了空目录，而两份清单里各带断言要求该目录存在 ⇒ 单独提交必红。实做为**与建目录同一次提交**（T005 那一笔），此处保留记录以免后面有人照着原文重做一遍。T007 本体**不再需要**做这件事。
 - [ ] T008 [P] [US2] [FE·换皮] 实现文件树右键菜单（复制/移动/上传/下载/备份/拉回）[FR-005] [T001] [出参：右键菜单完整操作]
 - [ ] T009 [US2] [FE·换皮] 实现删除二次确认 + 重命名/删除选中后点亮、未选中置灰 [FR-006] [T007] [出参：删除有确认、未选中图标置灰]
 

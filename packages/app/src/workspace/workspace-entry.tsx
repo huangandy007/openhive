@@ -5,6 +5,8 @@ import type { LoadFileContent } from "@/center/file-content"
 import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
+import { currentProject } from "@/project/current-project"
+import { ProjectAnchor } from "@/project/project-anchor"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { Topbar } from "@/topbar/topbar"
@@ -58,15 +60,27 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   return (
     <>
       {/* 图标栏是**三栏之外**的独立一列（DESIGN §4.1：图标栏 56px → 左项目侧栏 280px → 中 → 右），
-          故不能塞进 `ThreePane` 的 `left` 槽（那是左项目侧栏，归 T010）。外层这层行容器因此必需：
-          挂载点 `<main>`（layout-new.tsx）是 `flex-col`，直接并列两个子元素会变成上下堆叠。 */}
+          故不能塞进 `ThreePane` 的 `left` 槽（那是左项目侧栏，005 T005 起交给 `ProjectAnchor`）。
+          外层这层行容器因此必需：挂载点 `<main>`（layout-new.tsx）是 `flex-col`，
+          直接并列两个子元素会变成上下堆叠。 */}
       <div data-component="workspace-entry" class="flex-1 min-h-0 min-w-0 w-full flex">
         <Rail
           active={center.module()}
           onSelect={(id) => center.switchModule(id)}
           capabilities={props.capabilities}
         />
-        <ThreePane>
+        {/* 左栏按模块开关（`2026-09-11-项目管理-design.md` §2：左栏是「项目管理 / AI 资产」两入口
+            共用的一列）。今天只有「项目管理」有左栏内容，故先只认它——多认一个模块就要多一份内容，
+            而「AI 资产」的左栏属 006 之后的事（见 state.md 的欠账表）。
+            ⚠️ 条件必须落在 `left` **prop 本身**：包一层 `<Show>` 再传进去是错的——`ThreePane` 判的是
+            `props.left !== undefined`，`<Show>` 元素恒非 `undefined`，于是空态下会留下一条 280px 空栏。 */}
+        <ThreePane
+          left={
+            center.module() === "project" ? (
+              <ProjectAnchor name={currentProject()?.name} memberCount={currentProject()?.memberCount} />
+            ) : undefined
+          }
+        >
           {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
           <TabBar
             tabs={center.tabs()}

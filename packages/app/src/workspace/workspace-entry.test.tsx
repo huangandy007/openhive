@@ -4,6 +4,7 @@ import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
+import { setCurrentProject } from "@/project/current-project"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -37,6 +38,22 @@ const 入口 = (host: HTMLElement, label: string) => {
 }
 
 const text = (root: HTMLElement, slot: string) => root.querySelector(`[data-slot='${slot}']`)?.textContent?.trim()
+
+/**
+ * 某选择器**不存在**吗？——返回**布尔**，不是节点。
+ *
+ * ⚠️ 不能图省事写成 `expect(host.querySelector("[data-…]")).toBeNull()`：**那条断言红了会把整轮
+ * 测试挂死**。机制（2026-10-06 实测，bun 1.3.14 + happy-dom）：断言失败时 bun 打印**实得值**，
+ * 而**被 Solid 渲染过的节点**会让打印器停不下来——同一条断言，实得值换成手搓的
+ * `document.createElement("button")`（挂进文档、带子节点）是 **133ms** 出结果，换成 `render()`
+ * 出来的元素则 **45s 仍未结束、被 `timeout` 杀掉**（脱离文档也一样）；进程内存同时涨到 ~375MB。
+ * 挂死时**一条结果都拿不到**：不是红，是哑——比红更坏，看着像「还没跑完」。
+ * 断在这个布尔上，红的时候打印的是 `false`，毫秒级。
+ *
+ * ⚠️ 本文件里既有几处 `expect(...).toBeNull()`（判 `topbar` / `document-view` 不在的那些）是**同样
+ * 形状**、同样会挂哑，但不是 005 加的，按「只动自己碰过的地方」留原样，只在 state.md 里挂账。
+ */
+const 不存在 = (root: HTMLElement, selector: string) => root.querySelector(selector) === null
 
 describe("WorkspaceEntry 进入三栏工作台的入口", () => {
   // 身份是模块级接入缝（F2 才写），测试之间必须复位，否则互相串味。
@@ -290,5 +307,58 @@ describe("中栏内容区接进工作台（FR-007 出参）", () => {
     await 等到(() => 取过的.length > 0)
 
     expect(取过的).toEqual(["/p/立项书.docx"])
+  })
+})
+
+/**
+ * 左栏（项目侧栏）接进工作台（FR-001 出参）。
+ *
+ * `ThreePane` 早有可用的 `left` 槽，但**一直没人传**——本组件（`workspace-entry.tsx`）是它的
+ * 唯一接线处，`workspace-entry.tsx` 头注里那句「图标栏与顶栏此前都只是『组件齐备、没接进应用』」
+ * 说的就是这个坑，而 005 的锚点行正是踩在同一格上：组件写好了不接线，等于没做。
+ */
+describe("左栏（项目侧栏）接进工作台（FR-001 出参）", () => {
+  // 「当前项目」是模块级接入缝（T006 才写），测试之间必须复位，否则互相串味（同 `currentUser`）。
+  beforeEach(() => setCurrentProject(undefined))
+
+  test("进门停在「项目管理」，左栏就位、锚点行在它顶部", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    const 左栏 = host.querySelector("[data-slot='three-pane-left']")
+    expect(左栏).not.toBeNull()
+    expect(左栏?.firstElementChild?.getAttribute("data-component")).toBe("project-anchor")
+  })
+
+  test("当前项目还没来源时，锚点行走空态、不伪造项目名（宁缺勿假）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+  })
+
+  test("接入缝写进项目后锚点跟着显示（T006 的落点）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    setCurrentProject({ name: "8·17专案", memberCount: 3 })
+
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+    expect(text(host, "project-anchor-member-count")).toBe("3")
+  })
+
+  test("切到别的模块，左栏让位（左栏是「项目管理」这个模块的）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    入口(host, "资金分析").click()
+
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(true)
+    expect(不存在(host, "[data-component='project-anchor']")).toBe(true)
+  })
+
+  test("切回来左栏回来——让位不是一次性的", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    入口(host, "资金分析").click()
+    入口(host, "项目管理").click()
+
+    expect(host.querySelector("[data-component='project-anchor']")).not.toBeNull()
   })
 })
