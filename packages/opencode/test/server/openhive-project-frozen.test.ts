@@ -197,6 +197,11 @@ const SessionV2 = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
 /** 403 的线上形状（两道门同一个口径）。**断它而不是只断状态码**：403 谁都会回，断文案才知道是这道门回的那一条。 */
 const Frozen = Schema.Struct({ error: Schema.String })
 const FROZEN_MESSAGE = "项目已归档，请先找回"
+/**
+ * 400 的线上形状（上游 v2 的 `InvalidRequestError`）。用例 ⑨ 要它来证明那个 400 是
+ * **handler 自己的口径**回的（`field` 指名 `sessionID`），不是别的什么地方顺手回的 400。
+ */
+const BadRequest = Schema.Struct({ _tag: Schema.String, field: Schema.String })
 
 /** B 链建会话（目录读**请求体**）。**不在这里断言状态码**——本文件的判据就是状态码本身。 */
 const postSessionAs = (subject: TokenSubject, projectId: string) =>
@@ -635,4 +640,34 @@ describe("T015 · 归档 = 冻结（FR-010）：已归档的项目上不能干�
       }),
     30_000,
   )
+
+  /**
+   * 用例 ⑨（第二次审查 **R2**，Important —— 这是本门**自己引入的回归**）：
+   * **第二道门不能把 handler 的 400 变成 500**。
+   *
+   * 路由参数是**客户端说了算**的字符串，而第二道门拿它去 `SessionID.make()` 造带 brand 的
+   * 会话 id——`packages/schema/src/session-id.ts` 那侧是 `Schema.String.check(isStartsWith("ses"))`，
+   * **构造失败是同步 throw**。throw 发生在 `Effect.gen` 体内 ⇒ 变 **defect**，而
+   * `Effect.option` **只接 typed failure**、接不住它 ⇒ 500。
+   *
+   * 实测（2026-10-06，真应用 ＋ 身份开 ＋ 无项目头）：`GET /api/session/foo`
+   * **加本门之前**是 400 `{"_tag":"InvalidRequestError","message":"Invalid session ID","field":"sessionID"}`，
+   * **之后**是 500 `{"name":"UnknownError",…}`。⚠️ 影响面**不是个例**：所有带 `sessionID`
+   * 路由参数的 `/api/*` v2 请求都经过这一行（本文件上面八条用例全走这条）。
+   *
+   * 判据选「仍是 400」而不是「不是 500」：**形状非法就该由 handler 用它原来的口径回**——
+   * 本门是**加**上去的一段，不该改变原有出口的错误形态（`#002-02`：没覆盖的写成覆盖最危险，
+   * 反过来「改了别人的口径还说只加了一段」同样不该留）。
+   *
+   * ⚠️ 修法**不许写 `startsWith("ses")`**：那是把 schema 的判据**镜像**一份到本文件
+   * （`LEARNINGS #003-05`）——上游改前缀/改哈希时这里不会报错、不会变红，只会**静默放行
+   * 本该被拦的会话**（这正是本门要防的方向）。要问就问 schema 本身（`Schema.is(SessionID)`）。
+   */
+  it.live("畸形会话 id 走 v2 会话作用域路由：仍是 handler 的 400，不是第二道门造出来的 500", () =>
+    Effect.gen(function* () {
+      const response = yield* as(ALICE, "/api/session/foo")
+      expect(response.status).toBe(400)
+      const body = yield* json(BadRequest, response)
+      expect(body.field).toBe("sessionID")
+    }), 30_000)
 })

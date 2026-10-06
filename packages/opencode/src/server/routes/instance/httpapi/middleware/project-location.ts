@@ -8,7 +8,7 @@ import { User } from "@opencode-ai/core/user"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { OpenhivePg } from "@/server/openhive/pg"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Headers, HttpMethod, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { join, relative } from "node:path"
 import { AnchorWorkspace } from "./anchor-workspace"
@@ -299,7 +299,17 @@ export const projectLocationLayer = HttpRouter.middleware<{
         // 冻结从 403 变 200。判据是「这个请求实际会落在哪个目录」，而那个目录只有会话行说了算。
         const route = yield* MatchedRoute.current
         const sessionID = route?.params["sessionID"]
-        if (sessionID !== undefined) {
+        // ⚠️ 路由参数是**客户端说了算**的字符串，直接用 `SessionID.make()` 去造带 brand 的 id
+        // 会把 handler 的 400 变成 500：brand 检查（`packages/schema/src/session-id.ts`）**失败是
+        // 同步 throw**，throw 在 `Effect.gen` 体内 = **defect**，而 `Effect.option` **只接 typed
+        // failure**、接不住它。实测（2026-10-06，真应用 ＋ 身份开 ＋ 无项目头）：`GET /api/session/foo`
+        // 在本门之前是 400（handler 的口径），加了本门后变 500 —— 而**所有**带 `sessionID` 路由参数的
+        // `/api/*` v2 请求都经过这一行（第二次审查 R2）。
+        // ⇒ 形状非法的 id **原样交给 handler**（它自己会回 400），本门在这儿一个字都不造。
+        // ⚠️ 判断必须问 **schema 本身**（`Schema.is(SessionID)`），不许写 `startsWith("ses")`——
+        // 那是把 schema 的判据镜像一份到本文件（`LEARNINGS #003-05`）：上游改前缀/改哈希时这里
+        // 不报错、不变红，只会**静默放行本该被拦的会话**（正是本门要防的方向）。
+        if (sessionID !== undefined && Schema.is(SessionID)(sessionID)) {
           // 会话存在才谈得上「在哪个项目里」；不存在就放行，让 handler 用它的口径回 404。
           const found = yield* session.get(SessionID.make(sessionID)).pipe(Effect.option)
           if (Option.isSome(found)) {
