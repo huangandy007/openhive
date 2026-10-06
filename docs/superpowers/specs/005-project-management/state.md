@@ -1,9 +1,10 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ —— 见「已完成」。
-**下一步 = T004**（`project_member` 表 ＋ 微信群模型权限判定，含 Q3 拆出的 `project_archive`），依赖 T001 已满足。
-✅ **T004 开工前的两笔已裁定（2026-10-06，见「第四批」）**：① **U7** = 半条 ＋ 落 007 的表（T004 出参收窄为「**工作空间轴**判定单测通过」）；② T003 未闭合项 ① = **在 005 内补一条 T017**（建会话拼目录的接线），归属 Phase 2。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ —— 见「已完成」。
+**下一步 = T017**（「当前项目」身份的落地口径：建会话时按 `projectId` 查 `project_ext` 拼 `session.directory`），依赖 T003 已满足。
+✅ **T004 开工前的两笔已裁定（2026-10-06，见「第四批」）**：① **U7** = 半条 ＋ 落 007 的表（T004 出参已按此**收窄**为「**工作空间轴**判定单测通过」；完整判据在 `007-fund-analysis/tasks.md` T004）；② T003 未闭合项 ① = **在 005 内补一条 T017**（建会话拼目录的接线），归属 Phase 2。
+✅ **T004 新裁定一笔（2026-10-06）**：**「归档 = 冻结」**——FR-010 字面只写「成员失权、owner 保留找回」，本模块读成「归档后除 owner 的 `restore` 外任何动作都不成立」（含 owner 自己的 invite/remove/archive）。方向**收紧**；理由与「若本意是放宽则要有据再改」见下一节。
 
 ## 已完成
 
@@ -150,6 +151,107 @@ T001 只做定位、不动产品码。它把下列**开工前裁定**推到了�
 
 **实装落点修正（已同步 plan.md）**：原文件树把 `project-ext.ts` 画在 `packages/opencode/src/project/`，实际落在 `packages/core/src/project/ext.ts`——建表钩子在 core，而**core 不能 import opencode**（反向依赖）。全文只有 plan.md 一处引用过旧路径（已 grep 确认并改）。
 
+### T004 · `project_member` ＋ `project_archive` ＋ 微信群模型判定
+
+**出参**（tasks.md：「权限判定单测通过」）。⚠️ 按 🔒 **U7 裁定**，出参**收窄为「工作空间轴」那半**——
+完整判据「工作空间成员身份不改变数据访问结果」需要**数据轴那半**（`fund_project_member`）也在，
+那条已显式落到 `007-fund-analysis/tasks.md` T004（`LEARNINGS #002-04`：责任推出边界要落**接收方**的表）。
+**不得**据此写「两轴解耦已验证」（`#002-02`：测不了要写成缺口，不是覆盖）。
+
+**四处落点（依赖方向是硬约束，不是偏好）**
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 判定 | `packages/core/src/project/membership.ts`（新） | `MEMBER_ROLES` / `PROJECT_ACTIONS` / `decide`——**纯函数**，不读库、不抛错、不碰 Effect |
+| 存储 | `packages/auth/src/migrations/0005_project_member.sql` ＋ `.down.sql`（新） | `project_member`（成员关系）＋ `project_archive`（归档态；Q3 裁定） |
+| 存储 | `packages/auth/src/project-member.ts`（新） | drizzle 模型；**刻意无查询辅助函数** |
+| 防漂移 | `packages/opencode/test/server/openhive-project-member-closed-set.test.ts`（新） | DB 的 `role` CHECK ⇔ core 的 `MEMBER_ROLES`，逐值双向 |
+
+为什么只能是这个分布（实测，不是偏好）：`packages/auth` 的 deps 只有 `drizzle-orm` / `hono`
+（**不依赖 core**），而 core 也不依赖 auth ⇒ ① core 侧**碰不到库**，判定收不到「行」、只收得到
+「身份」⇒ 只能是纯函数；② 两侧各测各的半边；③ 要**同时**看见真库（CHECK 在库里）与 core 的值，
+**全仓只有 `packages/opencode`** 够得着（与 `openhive-rbac-closed-set.test.ts` 同因）。
+「有消费者才写取数」同 `rbac.ts` 的先例：`grantsFor()` 是 T006 有链 A 之后才加的，
+本条**没有**任何消费者（T010/T013/T015 才接），故模型只交表定义（`LEARNINGS #004-07`：判据形状由被调方定义）。
+
+**两条不变量，各由一层守**
+
+1. **项目永远有一个 owner**——「**至少**一个」由判定守（`leave` 拒 owner、`remove` 拒 owner 目标），
+   「**至多**一个」**只能**由库守（部分唯一索引 `project_member_single_owner`，`WHERE role = 'owner'`）。
+   判定函数只看得到一个 `role`，它**分不出**「这个项目有两个 owner」这种库状态；两个 owner 各自都能
+   归档、都能找回，谁说了算没有答案，而两行 `project_member` 都完全合法。
+2. **`project_id` 没有外键、也不可能有**——项目本体是 opencode 原生 `project` 表，活在**每用户 SQLite**
+   （003 的物理隔离），与 PG 是两个库。所以「悬空 project_id」**在本层查不出来**，能拦住它的只有写入侧
+   把 `project` 行与这两张表的行**收成一个写入模块**（`plan.md` R1 的代价栏）。已写进迁移头部。
+
+**「归档 = 冻结」是一次裁定，不是顺手写的**
+
+FR-010 的字面只说「归档后**成员**失权，owner 保留**找回**权」。本模块读成：
+**归档后除 owner 的 `restore` 之外，任何动作都不成立**（含 owner 自己的 `invite` / `remove` / 再来一次 `archive`）。
+理由：归档时沙箱文件已上传、本地已删，此时「邀请谁进来」「成员退群」都没有可作用的实体，唯一有意义的出口是找回。
+方向是**收紧**（比字面更严），不会放走任何一次越权。
+⚠️ **若本意是「owner 归档后仍可邀请」，那是一次放宽**，要有据再改（`LEARNINGS #002-02` 的取向）。
+
+**验证（本 task 自身 25 条）**
+
+| 文件 | 条数 | 判据要点 |
+|---|---|---|
+| `packages/core/test/project-membership.test.ts` | 16 | 邀请三向 / 移除三向（含**目标 owner ⇒ 拒**）/ 退群三向 / 归档两向 / 「归档 = 冻结」**按闭集遍历** / 非成员 fail-closed **按闭集遍历** / 闭集取值 |
+| `packages/auth/src/project-member.test.ts` | 8 | 防漂移（两表列形状 ⇔ 模型）/ PK 含 `project_id`（对照：一人可跨项目）/ `role` CHECK（**含中文「群主」**）/ 悬空用户被外键拒 / 第二个 owner 被索引拒 ＋ **第二个 member 放行（对照）** / 归档态 PK / coherence CHECK ＋ **两种正当组合（对照）** |
+| `packages/opencode/test/server/openhive-project-member-closed-set.test.ts` | 1 | CHECK 定义串抠字面量 ⇔ `MEMBER_ROLES`，`toEqual` 双向 |
+
+两处「按闭集遍历」是刻意的（`LEARNINGS #002-06` 的形状）：逐动作各写一条的话，**新加一个动作时没人会回来补**，
+那条新动作会在归档态下悄悄放行而全部用例照样绿。
+
+**变异验证（`#003-03`：三类结论都要据实记）**
+
+| 变异 | 结果 | 结论 |
+|---|---|---|
+| M1 core `MEMBER_ROLES` 加 `"guest"` | core 闭集组**恰红 1**；opencode 防漂移**恰红 1** | 归「恰红」。**两条各自都红** ⇒ 两侧都在看 |
+| M2 SQL 的 CHECK 加 `'guest'` | 防漂移**恰红 1**（core 侧不动） | 同上。证明它测的是「两侧相等」，不是「已知值被接受」 |
+| M3 `remove` 去掉 `target === "member"` | 移除组**恰红 2**（目标 owner ／ 目标 null），邀请·退群组不动 | 同上 |
+| M4 `remove` 整条改成「actor 是 owner 或 member」 | 移除组红 3 | 同上（这条变异不精确，故另跑 M3 把 `target` 那一半单独证） |
+| M5 归档短路写成 `if (false && …)` | 归档组**恰红 3**（「已归档 owner 可找回」＋两条闭集遍历）；**「未归档 restore 被拒」不红** | 同上。不红的那条对——它走的是 `restore` 那一支，与归档短路无关 |
+| M6 部分唯一索引去掉 `WHERE role = 'owner'` | auth **恰红 1**，红的正是**对照那半**（member 加不进去） | 同上。**索引写宽了不会让「第二个 owner 被拒」变红**（它照样拒），只有对照能抓 ⇒ 对照不是装饰 |
+| M7 删 `project_archive_coherence_check` | auth **恰红 1** | 同上 |
+| M8 删 `user_id` 外键 | auth **恰红 1** | 同上 |
+| M9 重构后复跑 M3 | 同上（恰红 2） | **重构没有把钉子变松** |
+
+**门禁（2026-10-06 实测，本 task 阶段；全程串行，`#003-01`）**
+
+- 本 task 自身：core **16 pass**／auth **8 pass**／opencode **1 pass** ⇒ 共 **25 pass / 0 fail**。
+- `packages/auth` 全量（`bun test`，包目录内）：**229 pass / 1 skip / 0 fail / 230 tests / 20 files**。
+  **基线是本次实测的 221 / 1 / 0**——取法：临时把本文件移出 `src/` 跑一遍（跑完移回），
+  ⇒ 差集 **＋8 pass ＋ 1 file，恰是本次 8 条用例**（`#001-01`：判「有没有变坏」看**名称级差集**，不看总数）。
+  ⚠️ 004 收尾记录的是 **220**，本次实测基线 **221**，**差 1、未归因**——据实记（`#003-04`：复现不出来的别写成结论）。
+- `packages/core` 同族回归（`project*` / `database-*` / `session-project-isolation`，8 文件）：
+  **67 pass / 1 skip / 0 fail**。
+- `packages/opencode` access 族（8 文件，含 004 的 5 个接缝测试）：**34 pass / 0 fail**。
+- typecheck：`packages/core` / `packages/auth` / `packages/opencode` 三包 `bun run typecheck`（`tsgo --noEmit`）**全 0 错**
+  （auth 那侧第一版红在测试里 `count.rows[0].n` 的 `TS2532`，改 `?.` 后干净）。
+- lint：根 `bun run lint:openhive` = **23 warnings / 0 errors / 69 files / 161 rules**（与 T002/T003 基线**逐项相同**）。
+  本次 5 个代码文件**不在**它的 glob 内（它只扫 `app/src/` 的 5 个前端目录，`69 files` 是这条的佐证）
+  ⇒ 另在**仓库根**单跑 `bunx oxlint <这 5 个文件>`（`#004-10`：单文件 lint 必须在仓库根）得到
+  **0 warnings / 0 errors / 130 rules**。
+
+**出参外的两点说明（是刻意，不是缺口）**
+
+1. **`decide` 的出口是 `boolean`，没有「为什么被拒」的结构化理由。** 接线层（T010/T015）自己知道问的是哪个
+   动作、归档态是什么，文案由它组。现在就加一层 reason 是投机结构（Karpathy 原则 2）。
+2. **防漂移只覆盖 `role` 的 CHECK**：`PROJECT_ACTIONS` **没有**对应的 SQL 闭集（动作不进库）⇒ 它不需要镜像，
+   只在 core 侧有一条取值断言。别把这条扩展成「所有闭集都有防漂移」，那是无对象的断言（`#002-02`）。
+
+**工具事实（候选 LEARNINGS）**
+
+- auth 的 `migrate()` 的 `upFiles()` **动态扫** `migrations/*.sql`（排除 `*.down.sql`）⇒ 新增迁移**无需登记**，
+  全仓**没有「迁移清单」这种东西**（复核：`grep` 只命中注释）。加 `0005` 不必改任何注册表。
+- 「根目录禁止 `bun test`」的**实装方式**是 `bunfig.toml` 的 `[test] root = "./do-not-run-tests-from-root"`
+  （不是脚本 `exit 1`）⇒ 判据是「**必须 `cd <包>` 再跑**」，在根目录跑会收不到用例。
+- 第一版 `decide` 写成穷尽 `switch`，**被 oxlint 的 `consistent-return` 记了 1 warning**
+  （TS 知道它对联合类型穷尽、linter 不知道）。改法是 `Record<ProjectAction, …>` 映射表——
+  顺带把「加动作忘了写规则」从**静默拒**提升成**编译错误**。这条是「本次新增/改动文件 0 命中」
+  那条判据**抓出来的**，不查就会带进提交。
+
 ## 阻塞项
 （无）
 
@@ -280,4 +382,4 @@ Finished in 1.3s on 69 files with 161 rules using 12 threads.   EXIT=0
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
-2026-10-06（T004 开工前裁定：U7 = 半条 ＋ 落 007 的表；补 T017 = 建会话拼目录的接线，归属 Phase 2。见「第四批」）
+2026-10-06（**T004 收尾**：`project_member` ＋ `project_archive` 两表落 auth 的 `0005` 迁移，判定落 core 纯函数 `project/membership.ts`，防漂移断言落 opencode；本 task 自身 25 条（16＋8＋1）全绿，8 处变异全部恰红、已还原。新裁定一笔「**归档 = 冻结**」。下一步 = T017。见「T004」节）

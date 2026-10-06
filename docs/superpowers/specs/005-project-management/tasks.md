@@ -42,7 +42,9 @@
   - ⚠️ **本 task 未闭合、需要裁定的两条**（已落 `state.md`「T003」节，不自行拍板）：
     ① **「建会话拼目录」的接线没有任何 task 认领**——`findByProjectID` 已按 D0-1 交到接口级，但 plan.md 那句「建会话时服务端查 `project_ext` 拼出 `join(沙箱, dir)` 写进 `session.directory`」**不在 T003/T005/T006/T016 任何一条的文字里**；
     ② **钩子只覆盖每用户库**——进程级主库（`Database.node`）由上游 `database.ts` 建，**没有**这张表（给上游加钩子＝破坏「一字不动」）。当前无消费者在无身份上下文里读它。
-- [ ] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
+- [x] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
+  - ✅ **出参落地**：`packages/core/src/project/membership.ts`（判定纯函数：`MEMBER_ROLES` / `PROJECT_ACTIONS` / `decide`）／`packages/auth/src/migrations/0005_project_member.sql` ＋ `.down.sql`（`project_member` ＋ `project_archive` 两表）／`packages/auth/src/project-member.ts`（drizzle 模型，**刻意无查询辅助函数**——有消费者才写取数，`LEARNINGS #004-07`）。三个测试文件：core 16 条、auth 8 条、opencode 防漂移 1 条，**全绿**。
+    **三条分工**（依赖方向是硬约束）：判定在 **core**（`auth` 不依赖 `core`、`core` 也不依赖 `auth`，故 core 侧只能是纯函数）、表在 **auth**（走既有 `migrations/` ＋ `migrate()`，D0-3 ①）、**防漂移断言在 opencode**（`project_member.role` 的 CHECK ⇔ core 的 `MEMBER_ROLES`，全仓只有它两边都够得着——同 `openhive-rbac-closed-set.test.ts` 的先例）。
   - 🔒 **U5 裁定（2026-10-06）：不接 `core/access` capability**——那是数据轴，004 裁定 ④ 明确「等 F6/F7 有消费者时再钉」。本条走自有成员判定线（存储 PG / 判定 core 纯函数 / 接线执行层）。
   - 🔒 **Q3 裁定（2026-10-06）：`project_archive` 表同批落这里**——`archived` / `archived_at` 两字段，与 `project_member` 同在业务 PG（同一次迁移 `0005_project_member.sql`）。它是**共享态**：owner 归档 ⇒ 全项目可见（FR-010 才立得住）。
   - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
@@ -90,7 +92,7 @@
 ## 并行组与依赖总览
 
 - **Phase 1**：T001 ∥ T002（并行）
-- **Phase 2**：T003 ✅（依赖 T001）；T004（依赖 T001，可与 T003 并行）；T017（依赖 T003，可与 T004 并行）
+- **Phase 2**：T003 ✅（依赖 T001）；T004 ✅（依赖 T001，可与 T003 并行）；T017（依赖 T003，可与 T004 并行）
 
 > 📌 **T017 编号排最后、归属在 Phase 2**（2026-10-06 T003 收尾时裁定补入）：它是 D0-1 落地口径的实装，属「Foundational」而非某个用户故事；补编号时 Phase 2 已有 T003/T004，故用末号而**不重排**既有编号（编号是 ID 不是顺序，同 `LEARNINGS.md` 的条目号规则）。
 - **Phase 3**：T005（依赖 T003）；T006（依赖 T003）
