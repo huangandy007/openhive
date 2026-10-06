@@ -1648,7 +1648,7 @@ M-② **只**红那一条。
 |---|---|---|
 | `bunx oxlint packages/opencode/test/server/openhive-access-command-route.test.ts`（**在仓库根**跑） | **0 warnings / 0 errors**（1 file / 130 rules） | 新增文件 **0 命中** |
 | `packages/opencode` 的 `bun run typecheck`（`tsgo --noEmit`，退出码**不进管道**） | **exit 0** | 必须 0 |
-| 新文件 ＋ 同族 `openhive-access-wiring.test.ts` **同一进程**跑 | **8 pass / 0 fail / 32 expect() calls**（15.66 s） | 跨文件 **env 干扰**是真实风险（包级 `test` 脚本 `bun test --only-failures` **同进程**跑全部文件，而 `process.env.OPENHIVE_DATA_ROOT` 是**模块级**写）⇒ 必须同进程验 |
+| 新文件 ＋ 同族 `openhive-access-wiring.test.ts` **同一次调用**跑 | **8 pass / 0 fail / 32 expect() calls**（15.66 s） | 两文件互不影响 ＋ 两条链在同一次运行里都覆盖。⚠️ **判据已于 2026-10-06 改正**（原文写「跨文件 **env 干扰**是真实风险…⇒ 必须同进程验」）：**前半句真**（同一次调用是**同一个进程**，探针实测两文件 `process.pid` **相同**），**后半句假**——`bun test` **按文件隔离全局域**，`a.test.ts` 模块级写的 `process.env` / `globalThis` 在 `b.test.ts` 里**读到 `undefined`** ⇒ 跨文件污染**不存在**，「同跑」不再是为验污染（详见 `LEARNINGS #004-11`） |
 | `bun.lock` | `git diff --stat bun.lock` **为空** | 未跑 `bun install` |
 
 ⚠️ **产品码最终状态仍是 `35ece21bff`**（本轮**一行产品码都不动**，见下）；上面那节「门禁（代码最终状态）」的

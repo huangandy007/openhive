@@ -22,6 +22,89 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #004-10 · 2026-10-06 · tool-quirk · 004-access-control
+**现象 / 决策**：**oxlint 的单文件 lint 必须在仓库根跑**，在包目录里跑会**配置解析失败**（不是 lint 失败）：
+`cd packages/opencode && bunx oxlint test/server/openhive-access-command-route.test.ts`
+⇒ `Failed to parse oxlint configuration file.` ＋ `x The options.typeAware option is only supported in
+the root config, but it was found in D:\project\study\openhive\openhive\.oxlintrc.json.` ，**EXIT=1**
+（oxlint 1.60.0，2026-10-06 实测）。危险之处：报错文本点名的是**仓库根**那个配置文件，人在包目录里看到
+会以为「根配置坏了」而去改 `-c` 指向或删配置——**真因只是 cwd**。同一文件在仓库根跑：**0 warnings /
+0 errors（1 file / 130 rules）**。
+**应对**：单文件 lint 一律**在仓库根**取数，路径写成相对仓库根（`bunx oxlint packages/opencode/test/...`）；
+在包目录里只剩包脚本可走。判据一句话：**看到 `Failed to parse oxlint configuration file` 先换 cwd，
+别去改配置**。落点：根 `.oxlintrc.json`（`options.typeAware` 在根）、`script/oxlintrc.openhive.json`
+（`"extends": ["../.oxlintrc.json"]` ＋ `jsPlugins`）。
+**应用范围**：任何在 monorepo 子包里单文件跑 oxlint 的场合（与 `#001-05` 同族：都属「oxlint 配置层容易
+静默出错」）。
+
+## #004-11 · 2026-10-06 · tool-quirk · 004-access-control
+**现象 / 决策**：**`bun test` 一次调用是同一个进程，但每个测试文件有独立的全局域——env 不共享。** 探针实测
+（bun 1.3.14，两个文件各一条 `console.log(process.pid)`）：**PID 相同（10584）**；而 `a.test.ts` 模块级写下的
+`process.env.OPENHIVE_PROBE_MARK` 与 `globalThis.OPENHIVE_PROBE_GLOBAL`，在 `b.test.ts` 里**两条都读到
+`undefined`**（1 pass / 2 fail）⇒ 同进程、按文件隔离（形态像 worker 的 isolate：PID 共享、全局与 env 各自一份）。
+**这条推翻了我自己刚写下的推断**：`docs/superpowers/specs/004-access-control/state.md` 收尾补测门禁表里
+那句「跨文件 **env 干扰**是真实风险（包级 `test` 脚本同进程跑全部文件…）⇒ 必须同进程验」——**前半句（同进程）
+是真的，后半句（会互相污染）是假的**，两条都是我现在实测的。
+**应对**：① **夹具要「自己的环境自己设」**——模块级写 `process.env` / `globalThis` 只对**本文件**生效，
+同一次 `bun test` 的另一个文件**读不到**，所以每个文件都得各写一遍（新文件
+`packages/opencode/test/server/openhive-access-command-route.test.ts` 的模块级
+`process.env.OPENHIVE_DATA_ROOT` 正是此因，与蓝本 `openhive-access-wiring.test.ts` 各自写一份）；
+② **别为「跨文件 env 污染」写防护**——不存在的风险；③ 真要跨文件共享 setup 得走 `bunfig.toml` 的
+`[test] preload`，而本仓库 `[test]` 段**只有 `root`**（2026-10-06 实测），且它是上游文件、要动按【定制单独提交】。
+**应用范围**：任何「多测试文件 ＋ 模块级 env/全局」的场合；任何要写「同进程 ⇒ 会互相影响」这类**推断**
+的时候（`#003-04`：推断落笔前先复现；这条正是一次「推断被实测打回」的实例）。
+
+## #004-12 · 2026-10-06 · pattern · 004-access-control
+**现象 / 决策**：**给同一条链的「新出口」补接缝测试时，第一动作是 `grep` 出同族测试文件、把它的 harness
+整段抄来，只换判据点**——不要自己从零搭。本次给「命令出口」补路由接缝，我照
+`packages/opencode/test/server/openhive-access-wiring.test.ts`（345 行）抄了整组约法：`@opencode-ai/auth/test-support`
+的 `startProductionDb` / `migrate` / `restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })`、
+`@opencode-ai/auth/token` 的 `signToken`/`TokenSubject`、`openApp = HttpRouter.toWebHandler(HttpApiApp.routes.pipe(
+Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(OPEN)))), { disableLogger: true })`、`as()` 注入
+`Cookie: UserIdentity.COOKIE_NAME=<jwt>`、`createSessionAs()`、`testProviderConfig(llmUrl)` ＋ `lib/effect` 的
+`testEffect`；新文件 351 行，与蓝本**同构**，只在判据处换成「命令出口 ＋ 标记文件」，文件内还直接写着
+「与 `openhive-access-wiring.test.ts` 同因同注」。
+**应对**：新出口接缝的**第一动作 = `ls` 同目录 + `grep` 同族**（同一被测子系统），把 import 组、`openApp` 构造、
+身份注入、真库夹具、假外呼**整段搬**过来再写判据。理由：harness 里全是**隐性约定**——`process.env.OPENHIVE_DATA_ROOT`
+只能走 env（塞 `ConfigProvider` 会被**无声忽略**）、假模型要用 `Bun.serve({port:0})` 回 SSE、身份走 cookie 名而不是
+自造头——自己发明一遍就等于把这些坑再踩一遍。
+**应用范围**：任何「同一 feature 再加一条出口 / 链路」的接缝测试。
+蓝本：`packages/opencode/test/server/openhive-access-wiring.test.ts`；
+新文件：`packages/opencode/test/server/openhive-access-command-route.test.ts`。
+
+## #004-13 · 2026-10-06 · decision-rethink · 004-access-control
+**现象 / 决策**：**「本机做不了」是要验的结论，不是能推出来的结论。** 004 收尾时我把两处性质**相反**的判断
+归成了一类（都写「本机做不了」）：<br>
+(a) **R1 门的顺序**（`packages/opencode/src/session/prompt.ts` 的 `command()` 里，门 vs 读 `cmd.template`
+的先后）——原判「门之前没有观测面 ⇒ 做不了」；补测时**做出来了**：把副作用放到**文件系统**（skill 正文里
+的 ```!``` 块 `echo probed > <标记文件>`，每个身份一个），于是**门之前就有观测面**；唯一真障碍是 win32 上
+`` !`cmd` `` 块跑不起来（`#004-08`，显式配 `shell` 即解）。<br>
+(b) **T009 结果量级（`LIMIT` + 分页 + 导出）**——**真做不了**：强制点全在 F6/F7 的 MCP server 自己的 SQL 里，
+而本仓**没有 MCP server**（opencode 只是 MCP **客户端**）⇒ 现在补出来的断言是**空的**（或退化成「测 PG 的
+`LIMIT`」），所以整条移交。
+**应对**：判「本机做不了」时换问法——**不问「本机框架支不支持」，问「我要写的那条断言，是不是空的」**：
+① 断言非空、只是没有现成观测面 ⇒ 是**工程问题**，换观测面即可（文件系统副作用 / 假外呼记请求体 / 真库真跑），
+要做；② 断言本身为空、或测的是被 mock 的/第三方那一侧 ⇒ 才是真缺口，**挂账 ＋ 移交**（`#002-02`）。
+判据一句话：**「没有现成观测面」≠「没有观测面」**。
+**应用范围**：任何「顺序 / 时序 / 副作用先后」这类乍看不可测的性质；任何要在收尾写「本机做不了」的场合。
+落点：`docs/superpowers/specs/004-access-control/state.md`（原句已加补记，明说「本机做不了」**不成立**）。
+
+## #004-14 · 2026-10-06 · pattern · 004-access-control
+**现象 / 决策**：**一个用例里既钉「被测的安全属性」又钉「伴随信号」时，把安全属性排在前面。** 未授权那条
+用例同时断言「正文没进模型」（`bodiesWithMarker().length === 0`，**泄漏**＝被测属性）与「请求被拒」
+（`response.ok === false`，**伴随信号**）。变异时若状态码断言在前，红出来的第一条只说「放行了」，
+**看不出正文漏没漏**；调序后（泄漏在前）红的才是 `Received: 2`——即「正文已经进了模型」这条证据本身。
+机制（2026-10-06 实测）：**bun 的 `expect` 一失败即中止用例体**，后面的断言**不再执行**（探针：一条用例里
+两条必败断言，只报第一条、`console.log` 也不打印）⇒ **书写顺序决定你拿到哪条证据**。
+**应对**：一条用例内按「**被测属性 → 伴随信号 → 对照/前置条件**」排列；跑变异**之前**先问一句
+「**这条用例红的时候，我读到的是哪一条**」。伴随信号（状态码 / 异常类型）**只在没有更强断言时**才当判据。
+与 `#003-03` 配套：那条讲变异结论分三类怎么记，这条讲**先保证变异时红的是对的那条**。
+**应用范围**：任何「拒绝 ＋ 无副作用」型的安全断言；任何一用例多断言的变异验证。
+落点：`packages/opencode/test/server/openhive-access-command-route.test.ts`（未授权用例，文件内已注此因由）＋
+`docs/superpowers/specs/004-access-control/state.md` 收尾补测节「一处小账」。
+
+---
+
 ## #004-06 · 2026-10-05 · tool-quirk · 004-access-control
 **现象 / 决策**：**`/** … */` 块注释里出现 `*/` 会提前闭合注释**——哪怕那串 `*/` 只是别的东西的一部分。
 我在 `packages/core/src/access/rbac.ts` 的 JSDoc 里写了一条取数命令 `grep -rn "…" packages/*/src`，
