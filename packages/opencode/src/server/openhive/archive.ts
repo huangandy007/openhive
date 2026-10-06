@@ -55,10 +55,36 @@ export * as OpenhiveArchive from "./archive"
  *
  * 「配不齐」的粒度取**整组**（`Config.option(Config.all({…}))`）：endpoint 有、密钥没有，
  * 是一个**配了一半**的部署，把它当「配好了」只会在第一次外呼时炸在 SDK 里，报一个与配置无关的错。
+ *
+ * ---
+ *
+ * ## 找回（T014 / FR-009）——本文件的另一半，三条约定
+ *
+ * 起因是它和归档**共用**得太多：配置（`MinioConfig`）、endpoint 归一（`endpointOf`）、
+ * 角色的闭集解码（`asRole`）、路径段守卫、`Deps`、那三个响应构造——各写一份就是
+ * `LEARNINGS #002-06` 那句话本身。所以是同文件的第二个出口，不是第二个文件；接线也因此在
+ * `routes` 里加一行，**`server.ts` 一行不动**。
+ *
+ * ① **作用对象与归档同构（(c) 裁定的镜像）**：owner 触发，服务端按 `project_member` 对**每个
+ * 成员**各跑一遍「把**他自己前缀**的文件下载回**他自己沙箱**」。这不是自由选择：成员**已失权**
+ * （FR-010）自己触发不了，只还原 owner 那一份，成员的文件就永远留在 MinIO 里——直接违背 FR-009
+ * 的「MinIO 文件**全部**下载回沙箱」。
+ *
+ * ② **共享 bare 仓库 `/shared/{projectId}.git` 归档与找回都不动它**（2026-10-06 用户裁定）。
+ * 它是**项目级**的 git 载体、在 `/shared` 共享卷上；而 MinIO 那些键镜像的是**各人沙箱**
+ * （`minio.md` §1），塞不进一个项目级对象——所以归档不搬它、找回也不必重建它（它从没被删过）。
+ * 代价如实记账：**`/shared` 的空间不随归档释放**，且「谁有权建/删它」另有部署侧的事
+ * （`deploy-todo.md` 的 D-14）。
+ *
+ * ③ **标记最后落**（把 `design` §8.3 的「②改状态 ③下载」调成与归档同一条次序，用户 2026-10-06
+ * 裁定）：下载**全部**成功之后才 `markRestored`。失败时项目仍是「已归档」、重试即可——而不是
+ * 「界面说找回了、沙箱却是空的/半份」。`design` 的原顺序反过来的话，这一次没有「标记」可以回退。
+ * ⚠️ 这条**次序**是独立判据：端点断言对顺序不敏感（`LEARNINGS #004-09`），钉它的是
+ * `test/server/openhive-project-restore.test.ts` 的「下载失败 ⇒ 归档行没动」那条。
  */
 
 import { connect } from "@opencode-ai/auth/db"
-import { archiveStatesOf, markArchived, membersOf } from "@opencode-ai/auth/project-member"
+import { archiveStatesOf, markArchived, markRestored, membersOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { Minio } from "@opencode-ai/core/minio"
 import { MEMBER_ROLES, type MemberRole, ProjectMembership } from "@opencode-ai/core/project/membership"
@@ -67,16 +93,16 @@ import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { lstatSync } from "node:fs"
-import { readFile, readdir, rm } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { dirname, join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { PREFIX } from "./project"
 
 /**
- * 归档出口的路径。`PREFIX` 从 `./project` **import**，不重抄 `/openhive/project` 字面量
+ * 两个出口的路径。`PREFIX` 从 `./project` **import**，不重抄 `/openhive/project` 字面量
  * （`#002-06`：同一个值别在两处各写一份——那两个前缀漂了就是「列表在一个前缀、归档在另一个」）。
  */
-export const PATH = { archive: `${PREFIX}/archive` } as const
+export const PATH = { archive: `${PREFIX}/archive`, restore: `${PREFIX}/restore` } as const
 
 /** `minio.md` §4 的五个变量（**凭据不入仓库**，见该文档同节）。 */
 export const MINIO_ENDPOINT_ENV = "OPENHIVE_MINIO_ENDPOINT"
@@ -160,11 +186,15 @@ export const routes = HttpRouter.use((router) =>
     const deps: Deps = { root: config.root, minio: minio.connection, pg }
 
     yield* router.add("POST", PATH.archive, (request) => handleArchive(request, deps))
+    yield* router.add("POST", PATH.restore, (request) => handleRestore(request, deps))
   }),
 )
 
-/** 请求体。`projectId` 走**体**而不是路径参数：本仓的 fork 出口里没有 `:id` 路由的先例。 */
-const ArchiveBody = Schema.Struct({ projectId: Schema.String })
+/**
+ * 两个出口**同一个请求体**：`projectId` 走**体**而不是路径参数（本仓的 fork 出口里没有 `:id`
+ * 路由的先例）。两个出口共用一个 `Schema` 而不是各写一份——它们是同一个契约。
+ */
+const ProjectIdBody = Schema.Struct({ projectId: Schema.String })
 
 const BAD_REQUEST = 400
 const UNAUTHORIZED = 401
@@ -180,17 +210,20 @@ function badRequest(message: string) {
 }
 
 /**
- * 「不能归档」只有一句文案，**不区分**「不是成员」「不是 owner」「已归档」。
+ * 「不能归档 / 不能找回」各只有一句文案，**不区分**「不是成员」「不是 owner」「已归档」。
  *
  * 区分开是**信息泄漏**：非成员能靠状态码/文案的差异问出「这个 projectId 存不存在」。
- * 这三件事对调用者的处置也完全一样——找 owner 去。
+ * 这几件事对调用者的处置也完全一样——找 owner 去。
+ *
+ * 文案按**方向**分（归档/找回），不按**身份**分：前者的差异是「我要做的事不同」，
+ * 后者才会漏出「你是谁 / 这个项目在不在」。
  */
-function forbidden() {
-  return HttpServerResponse.jsonUnsafe({ error: "无权归档该项目" }, { status: FORBIDDEN })
+function forbidden(message: string) {
+  return HttpServerResponse.jsonUnsafe({ error: message }, { status: FORBIDDEN })
 }
 
-function unavailable() {
-  return HttpServerResponse.jsonUnsafe({ error: "MinIO 未配置，归档不可用" }, { status: UNAVAILABLE })
+function unavailable(message: string) {
+  return HttpServerResponse.jsonUnsafe({ error: message }, { status: UNAVAILABLE })
 }
 
 /**
@@ -215,7 +248,7 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     const raw = yield* request.json.pipe(
       Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
     )
-    const payload = Schema.decodeUnknownOption(ArchiveBody)(raw)
+    const payload = Schema.decodeUnknownOption(ProjectIdBody)(raw)
     if (Option.isNone(payload)) return badRequest("请求体要带 projectId")
 
     const projectId = payload.value.projectId
@@ -236,14 +269,14 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     const archived = archives.get(projectId)?.archived ?? false
 
     // ③ 判定（纯函数，在 core）。**在动手之前**——见文件头「次序是要求」。
-    if (!ProjectMembership.decide({ actor, action: "archive", target: null, archived })) return forbidden()
+    if (!ProjectMembership.decide({ actor, action: "archive", target: null, archived })) return forbidden("无权归档该项目")
 
     // ④ 配置。**放在授权之后**：未授权的人不该从「503 还是 403」读出这台机器的部署状态。
     //    ⚠️ 这条**次序**是一条独立判据，端点断言对顺序不敏感（`#004-09`）：把 ③ ④ 调个头，
     //    「配好了」那一整个文件**全绿**（那里人人都是 owner 或干脆没这回事）。钉它的是
     //    `openhive-project-archive-unconfigured.test.ts` 的「非成员 ⇒ 403（而不是 503）」——
     //    **未配置 ＋ 非成员**两个条件缺一都造不出观测面（2026-10-06 三席评审的 S1-02）。
-    if (Option.isNone(deps.minio)) return unavailable()
+    if (Option.isNone(deps.minio)) return unavailable("MinIO 未配置，归档不可用")
     const settings = deps.minio.value
 
     // ⑤ 成员的 id 是**库里的**数据，但它也要当路径段用 ⇒ 与请求入参同一条判据。
@@ -270,6 +303,65 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     yield* Effect.promise(() => markArchived(pg, { projectId, archivedAt: nowSeconds() }))
 
     return HttpServerResponse.jsonUnsafe({ projectId, archived: true })
+  })
+}
+
+/**
+ * 找回（T014 / FR-009）。八步里 ①②③④⑤ 与归档**逐条同形**（身份 / 归档态 / 判定 / 配置 / 成员
+ * 校验），只有 ⑥⑦ 是反方向，且顺序仍是「搬完再落标记」。审阅时值得逐条对着 `handleArchive` 看：
+ * 两处**应当**同形的东西（守卫、次序、拒绝口径）不一致就是缺陷，而它们不会报错。
+ */
+function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return unauthorized()
+
+    const raw = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const payload = Schema.decodeUnknownOption(ProjectIdBody)(raw)
+    if (Option.isNone(payload)) return badRequest("请求体要带 projectId")
+
+    const projectId = payload.value.projectId
+    // 与归档同一条守卫、同一个理由：`projectId` 在**两个**方向上都要当路径段用（归档是 `rm` 的
+    // 父目录、找回是每个文件落盘的父目录）⇒ 少判一次，`projectId = "."` 就能把文件写到沙箱根上。
+    if (!User.isSafePathSegment(projectId)) return badRequest("projectId 不是合法的路径段")
+
+    const userId = user.value.id
+    if (!User.isSafePathSegment(userId)) return yield* Effect.die(new Error(`非法用户 id：${JSON.stringify(userId)}`))
+
+    const pg = deps.pg()
+    const members = yield* Effect.promise(() => membersOf(pg, projectId))
+    const actor = asRole(members.find((member) => member.userId === userId)?.role)
+    const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
+    const archived = archives.get(projectId)?.archived ?? false
+
+    // ③ 判定：`decide` 里「归档 = 冻结」那一层让 `restore` 成为**已归档项目上唯一成立的动作**
+    //    （且要 owner）；反过来，**没归档**的项目落到 `RULES.restore`（那个函数恒 false）；
+    //    非成员/成员两条也都落空。三个方向合起来是一句话：只有「owner ＋ 已归档」放行。
+    if (!ProjectMembership.decide({ actor, action: "restore", target: null, archived })) return forbidden("无权找回该项目")
+
+    // ④ 配置，同归档：**在授权之后**（否则非成员能从「503 还是 403」读出部署状态）。
+    if (Option.isNone(deps.minio)) return unavailable("MinIO 未配置，找回不可用")
+    const settings = deps.minio.value
+
+    // ⑤ 成员 id 也要当路径段用（落盘父目录），判据与请求入参同一条；**先全部判完再动手**。
+    for (const member of members) {
+      if (!User.isSafePathSegment(member.userId)) {
+        yield* Effect.die(new Error(`项目 ${projectId} 的成员 id 不是合法路径段：${JSON.stringify(member.userId)}`))
+      }
+    }
+
+    const targets = members.map((member) => ({
+      userId: member.userId,
+      directory: join(deps.root, member.userId, projectId),
+    }))
+
+    // ⑥ 全员下载（只读 MinIO ＋ 只写沙箱）。⑦ **到这里才**翻标记——见文件头「标记最后落」。
+    yield* Effect.promise(() => restoreAll(targets, projectId, settings))
+    yield* Effect.promise(() => markRestored(pg, { projectId }))
+
+    return HttpServerResponse.jsonUnsafe({ projectId, archived: false })
   })
 }
 
@@ -350,4 +442,49 @@ async function backupAll(targets: readonly Target[], projectId: string, settings
 /** ② 全员释放沙箱目录。`force` 让「本来就不存在」不抛——与 `filesUnder` 的跳过口径一致。 */
 async function releaseAll(targets: readonly Target[]): Promise<void> {
   for (const target of targets) await rm(target.directory, { recursive: true, force: true })
+}
+
+/**
+ * ① 全员下载：**每个成员各造一个 store**（键的前两段因此天然是 `{他自己的 id}/{projectId}`）——
+ * 与 `backupAll` 是**同一条不变量**、只是方向反过来。共用 store 不会报错，只会把**乙的**备份
+ * 写进**甲的**沙箱（见文件头）。
+ *
+ * 三处刻意的选择：
+ * - **清单空 ⇒ 跳过、不建目录**：与 `filesUnder` / `releaseAll` 的跳过口径一致。成员从没 clone
+ *   过这个项目时他的前缀是空的，此时凭空给他建一个空项目目录，等于让他的文件树显示一个
+ *   **他从没有过的项目**。
+ * - **`mkdir` 逐级递归**：键里的相对路径带目录（`资料/话单.csv`），只写一层会在 win32 与 POSIX
+ *   上都直接 `ENOENT`。`.git/**` 一并回来也是这条（工作树没回来，「文件找回了」只是一堆散文件）。
+ * - **`get` 回 `undefined` ⇒ 抛出，不静默跳过**：`list` 刚说这个键在。跳过会让「找回完成」与
+ *   「沙箱里少一个文件」同时成立，而调用方只看得见前者（那正是 `#002-02` 要写成缺口的那类）。
+ *   抛出 ⇒ 500、项目仍是已归档、可重试。
+ *
+ * ⚠️ `path` 先过 `Minio.get`，而它内部对每一段跑 `assertSafeSegment` ⇒ 桶里若有人塞了带 `..`
+ * 的键，这里是**抛**而不是写到目录外面去（fail-closed；与 `filesUnder` 跳过符号链接同一个取向）。
+ */
+async function restoreAll(targets: readonly Target[], projectId: string, settings: MinioSettings): Promise<void> {
+  for (const target of targets) {
+    const store = Minio.makeStore({
+      endpoint: endpointOf(settings),
+      bucket: settings.bucket,
+      // 凭据：与 `backupAll` 同一份**静态服务凭据**（`minio.md` §4）。缺口同款：§2 的
+      // `${aws:username}` 策略把权限绑在**调用者**身上，表达不出「服务端读写各成员的前缀」，
+      // 那条新的凭据路径归 D-13（部署侧）。
+      credentials: { accessKeyId: settings.accessKeyId, secretAccessKey: settings.secretAccessKey },
+      scope: { userId: target.userId, projectId },
+    })
+
+    const paths = await store.list()
+    if (paths.length === 0) continue
+
+    for (const path of paths) {
+      const body = await store.get({ path })
+      if (body === undefined) throw new Error(`备份里列出的对象读不到：${JSON.stringify(path)}`)
+      // 分隔符只在这里处理一次（`path` 是 `/` 归一的相对路径，`join` 按平台重拼），
+      // 与 `backupAll` 读文件那句同一个口径（`#002-06`：只留一处）。
+      const file = join(target.directory, ...path.split("/"))
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, body)
+    }
+  }
 }

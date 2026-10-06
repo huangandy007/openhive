@@ -8,6 +8,7 @@ import { HttpRouter } from "effect/unstable/http"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
+import { nowSeconds } from "@opencode-ai/auth/time"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -30,10 +31,14 @@ import { testEffect } from "../lib/effect"
  * D-13（「服务凭据怎么签」）还没裁定，部署方今天很可能一个 `OPENHIVE_MINIO_*` 都没配——若把它写成
  * 必填，**整个应用起不来**，而没配 MinIO 只是「归档用不了」。
  *
- * 本文件有**两条**用例，钉的是同一份「配了一半」配置下**两种调用者**的两种答案：
- * ① 有权限（owner）⇒ **503**（明说归档不可用）；② 没权限（非成员）⇒ **403**
- * ——后者钉的是**次序**：授权判定排在配置检查**之前**，否则「这台机器配没配 MinIO」就成了
- * 谁都能读的部署状态（2026-10-06 三席评审 S1-02 补，原本一条测试都没有）。
+ * 本文件有**三条**用例，钉的是同一份「配了一半」配置下的三个方向：
+ * ① 归档 ＋ 有权限（owner）⇒ **503**（明说归档不可用）；② 归档 ＋ 没权限（非成员）⇒ **403**；
+ * ③ **找回** ＋ 没权限（非成员，且项目**确实已归档**）⇒ **403**。
+ *
+ * ②③ 钉的是**同一个性质在两个出口上各一条**：授权判定排在配置检查**之前**，否则「这台机器配没配
+ * MinIO」就成了谁都能读的部署状态（② 是 2026-10-06 三席评审 S1-02 补的，原本一条测试都没有；
+ * ③ 是 T014 把同一条性质补到**找回**那侧——`handleRestore` 的 ③④ 是照着 `handleArchive` 抄的，
+ * 抄反了不会有别的东西变红，除非这一条在）。
  *
  * 所以下面这份 env **刻意配一半**（endpoint ＋ bucket 有，两把密钥没有）：这正是要拦的那种部署——
  * 把它当「配好了」不会在配置处报错，只会在第一次外呼时炸在 SDK 里、报一个与配置无关的错。
@@ -53,6 +58,7 @@ const BOB: TokenSubject = { id: "660e8400-e29b-41d4-a716-446655440001", policeNo
 /** 出口路径（**客户端契约**，写**字面量**、**刻意不 import** 生产常量——`LEARNINGS #003-05`）。 */
 const PROJECT_PATH = "/openhive/project"
 const ARCHIVE_PATH = "/openhive/project/archive"
+const RESTORE_PATH = "/openhive/project/restore"
 
 const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-archive-bare-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -168,7 +174,30 @@ const 归档行 = (projectId: string) =>
     return rowsOf(result)[0]
   })
 
-describe("T013 · MinIO 没配：有权限 ⇒ 503，没权限 ⇒ 403（次序）", () => {
+/**
+ * **夹具注入**一行「已归档」——直接写 `project_archive`，不是流程。
+ *
+ * 本文件里 MinIO 配了一半 ⇒ **真归档跑不了**（那条链第一步就 503），所以第三条用例要的
+ * 「一个**确实已归档**的项目」只能自己造。`#004-13`：要测「门在**哪儿**」就得先把观测面造出来。
+ *
+ * ⚠️ 为什么非要有这个前置（而不是「随便拿个非成员的项目就行」）：**未归档**的项目上
+ * 「非成员 ⇒ 403」也成立——但那时 `decide` 走的是 `RULES.restore`（那个函数**恒 false**），
+ * **连 owner 都是 403**。于是那条绿证明不了「403 是因为你不是 owner」，也就区分不出
+ * 「判定拦下的」与「本来就谁都不行」。已归档 ＋ 非成员才是那个唯一能问出次序的组合。
+ *
+ * `archived_at` 不能省：迁移的 `project_archive_coherence_check` 钉着
+ * `archived = (archived_at IS NOT NULL)`。`project_archive` **没有外键**（项目本体在每用户
+ * SQLite，见 0005 迁移头部）⇒ 不必先造项目行。
+ */
+const 标成已归档 = (projectId: string) =>
+  Effect.promise(async () => {
+    await pg?.db.execute(sql`
+      insert into auth.project_archive (project_id, archived, archived_at)
+      values (${projectId}, true, ${nowSeconds()})
+    `)
+  })
+
+describe("T013/T014 · MinIO 没配：有权限 ⇒ 503，没权限 ⇒ 403（两个出口各一条次序）", () => {
   it.live(
     "配了一半 = 没配：归档不可用（503 ＋ 说明），沙箱一个没动、库里没有归档行，列表照常",
     () =>
@@ -244,6 +273,55 @@ describe("T013 · MinIO 没配：有权限 ⇒ 503，没权限 ⇒ 403（次序�
         // 同一件事的两个层面（`#004-14` 的次序：被测属性 → 伴随信号 → 对照）。
         expect(existsSync(projectDirOf(project.id))).toBe(true)
         expect(yield* 归档行(project.id)).toBeUndefined()
+      }),
+    30_000,
+  )
+
+  /**
+   * T014 的那一条：**同一个性质，换到找回出口**。为什么要单独一条——`handleRestore` 的 ③④
+   * 是照着 `handleArchive` 抄的，抄反了（配置检查提到判定之前）不会有任何别的东西变红：
+   * 「配好了」那个文件里没人是非成员，而这个文件原本只有归档那两条。
+   *
+   * 观测面比上面 ② 多一个条件（`#004-13`）：**项目得真的「已归档」**，理由见 `标成已归档`。
+   */
+  it.live(
+    "找回：非成员（有身份、不在成员表里）⇒ 403，**不是** 503：授权判定排在配置检查之前",
+    () =>
+      Effect.gen(function* () {
+        const created = yield* as(PROJECT_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "8·17专案（乙来找回）", type: "private" }),
+        })
+        const project = yield* json(Entry, created)
+        yield* 标成已归档(project.id)
+
+        // 前置条件**真的成立**（`#002-02`：先证明机制活着，再钉被测那条）。注入没生效的话，
+        // 下面那条 403 会退化成「未归档 ⇒ 谁都拒」，**看着一样绿**。
+        // ⚠️ 断言写在 `archived_at` 上而不是 `archived` 上：后者在两个 PG 驱动下形状不同
+        // （`#002-01`），而 `归档行` 吐的是**裸行**、没经 `project-member.ts` 的 `asBool`。
+        const 前置 = yield* 归档行(project.id)
+        expect(前置).toBeDefined()
+        expect(前置?.archived_at).not.toBeNull()
+
+        const response = yield* asWho(BOB, RESTORE_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id }),
+        })
+
+        // ① 被测属性：MinIO 明明没配（同一份 `OPEN`），非成员拿到的是 403 而**不是** 503
+        //    ⇒ 「这台机器配没配 MinIO」不外泄给没权限问的人。把 ③ ④ 调个头会让它变 503。
+        expect(response.status).toBe(403)
+        // ② 拒绝要**说得清**（回 JSON ＋ 非空 error），不是空体、也不是 SPA 兜底那个 200 ＋ `text/html`。
+        expect((yield* json(Schema.Struct({ error: Schema.String }), response)).error.length).toBeGreaterThan(0)
+        // ③ 零副作用：归档行**逐值原样**。⚠️ 这一条**不**随次序变化（503 还更早返回）⇒ 它钉的是
+        //    另一件事：「拒绝了之后没有顺手把它翻回未归档」（同族 ② 的「沙箱没动」）。
+        //    分两句写而不是一句 `.not.toBeNull()`：后者在**行整个不见了**时也会通过
+        //    （`undefined?.archived_at` 是 `undefined`，不是 `null`）——那样「行被删了」会冒充成绿。
+        const 事后 = yield* 归档行(project.id)
+        expect(事后).toBeDefined()
+        expect(事后?.archived_at).toEqual(前置?.archived_at)
       }),
     30_000,
   )

@@ -162,6 +162,36 @@ export async function markArchived(db: ProjectMemberTarget, input: MarkArchivedI
   `)
 }
 
+/** 找回（T014 / FR-009）：把项目翻回**未归档**。**没有时刻参数**——未归档的 `archived_at` 就是 `NULL`。 */
+export interface MarkRestoredInput {
+  readonly projectId: string
+}
+
+/**
+ * 把项目翻回**未归档**（T014 / FR-009）。`markArchived` 的**反方向**，刻意是两个函数而不是
+ * 一个带 `archived: boolean` 的（理由写在 `markArchived` 的注释里：两方向的判据、调用点、
+ * 失败后果都不一样）。
+ *
+ * `update` 而不是 `insert … on conflict do update`（对照 `markArchived` 的 upsert）：走得到这里
+ * = 上一句刚从这个表里读出 `archived = true` ⇒ **那一行必然在**。写成 upsert 就等于允许
+ * 「本来没有也行」，把「该翻的那一行找不着」也静默算成成功。
+ *
+ * ⚠️ **残差（如实记，不假装防住了）**：`update` 命中 0 行时它**同样成功返回**，调用方分辨不出。
+ * 那条路今天**不可达**——没有任何代码删 `project_archive` 的行（`archived = false` 是「改」不是「删」，
+ * 这正是本表要有那一列的理由，见模型注释）。真想防它得去数 `rowsOf(update)` 的行数，而那条形状
+ * 在两种驱动下是否一致**没验过**（`LEARNINGS #002-01` 咬的正是这条维度）⇒ 不写没验过的判据。
+ *
+ * `archived = false` 与 `archived_at = null` **必须成对写**：迁移的
+ * `project_archive_coherence_check` 钉着 `archived = (archived_at IS NOT NULL)`，只改一个会被库拒。
+ */
+export async function markRestored(db: ProjectMemberTarget, input: MarkRestoredInput): Promise<void> {
+  await db.execute(sql`
+    update auth.project_archive
+    set archived = false, archived_at = null
+    where project_id = ${input.projectId}
+  `)
+}
+
 /**
  * 列一个项目的成员（T010 成员面板 / T018 列项目取成员数）。
  *

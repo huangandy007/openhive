@@ -260,7 +260,106 @@
   - ⚠️ **据实记两类之外的两笔**：① `endpointOf` 那条纯函数用例**不是 RED-first**（补它时实装已经是对的），成牙证据取 **M5 的恰红**，不冒充「先红后绿」；② 重入那条（归档一个已归档的项目 ⇒ 403）**只能抓跨秒的重入**——`nowSeconds()` 是秒粒度，同一秒内 `archived_at` 不比上一次更早 ⇒ 断言次序必须是「先比归档行相等、后比状态码」（`#004-14`：`expect` 一失败即中止用例体，**书写顺序决定拿到哪条证据**）。
   - 🧭 **门禁（T013 收尾，串行，2026-10-06）**：`packages/opencode` 归档两文件 **15 pass / 0 fail（102 expect）** ＋ **2 pass / 0 fail（14 expect）**；同族 project / directory / member-closed-set / bootstrap 四文件 **23 pass / 0 fail（102 expect）**；`packages/core` `bun test` ⇒ **1211 pass / 8 skip / 5 fail / 3278 expect / 1224 tests / 159 files**（5 条失败**按名比对**全是 `NpmConfig.*`——本机 `~/.npmrc` 镜像所致，**无新增**，`#003-01`）；`packages/auth` `bun test` ⇒ **238 pass / 1 skip / 0 fail**；`packages/app` `bun run test:components` ⇒ **405 pass / 0 fail / 27 文件**（本题零前端改动，跑它是为了确认 T018/T019 的既有绿没被带坏）；`bun run typecheck`（turbo）**31/31 successful，exit 0**；**文件级** oxlint（仓库根，`#004-10`）⇒ **0 warnings / 0 errors / 5 files / 130 rules / exit 0**；`bun run lint:openhive` ⇒ **exit 0**（**23 warnings / 0 errors / 161 rules** ＝ 基线，**本次文件 0 命中**）；`bun.lock` **一行未动**。
   - ⛔ **不在本 task 交付（均已落 `005/state.md` 缺口表，`#004-03`）**：① **FE 归档入口**（项目/列表里的「归档」按钮、已归档分组的呈现）——**补编号 T023**（见 Phase 7）；② **FR-008 的「超期 3 个月自动提醒」**——22 条任务里**一条都没认领**（S3-04 指出），补一条认领（见 Phase 7）；③ **共享项目 bare 仓库 `/shared/{projectId}.git` 归档后既不上传也不删除**（第 3 席的附加观察）——移交 **T014**；④ 已修但**空目录不备份**（`filesUnder` 跳过口径的代价，可接受、如实记）；⑤ `.git` 一并上传（本机实测 19 个文件，含 `.git/opencode`）；⑥ 每成员各建一个 `S3Client` 而 `Minio.Interface` **没有 close**（S2-06）；⑦ `assertSafeSegment` 的 `DRIVE` 判据会在 POSIX 上误伤 `C:xxx` 这类**文件名**以致整个归档 500（S3-07）；⑧ `fake-s3.ts` 的「生产代码不得 import」是**没有门守着的约定**（S1-06，要变成有门的约束得加 lint 的 `no-restricted-imports`，**本轮没做**）。
-- [ ] T014 [US5] [BE] 实现项目找回（archived=0 + MinIO 下载回沙箱）[FR-009] [T013] [出参：找回后项目回到「最近/全部」]
+- [x] T014 [US5] [BE] 实现项目找回（archived=0 + MinIO 下载回沙箱）[FR-009] [T013] [出参：找回后项目回到「最近/全部」]
+  - 🔒 **两笔未定项开工前裁定（2026-10-06，用户裁定，均取推荐项）**：
+    **(1) 共享 bare 仓库 `/shared/{projectId}.git`（T013 缺口表第 3 条移交的那笔）⇒ 归档/找回都不动它。**
+    理由：它是**项目级**的 git 载体、在 `/shared` 共享卷上，而 MinIO 那些键镜像的是**各人沙箱**（`minio.md` §1）——
+    一个项目级的对象塞不进「按 `{userId}` 分区」的键空间。代价如实记账（**`/shared` 的占用不随归档释放**）⇒
+    落 `005/state.md` 缺口表 ＋ `docs/workspace/deploy-todo.md` 的 **D-14 第 ④ 项** ＋ `minio.md` §1 的一段。
+    ⇒ **T014 的实现量：零**——那笔账就此**关掉**，不是又挪一处（`#002-04`）。
+    **(2) 找回时 `archived = false` 什么时候落 ⇒ 标记最后落**：下载**全部**成功之后才落。这把 `design` §8.3 的
+    「②改状态 ③下载」调成与 T013 归档同一条次序。理由：中途失败 ⇒ 项目**仍是「已归档」**、可重试，界面不会
+    谎称已找回；`design` 的原顺序反过来则这次**没有「标记」可以回退**。
+  - ✅ **出参落地（2026-10-06）**：**同一个文件**（`packages/opencode/src/server/openhive/archive.ts`）加**第二个出口**
+    ——`PATH.restore` ＝ `POST /openhive/project/restore`，体收同一个 `{projectId}`（`ArchiveBody` 改名 `ProjectIdBody`，
+    **两个出口共用一份契约**，不各写一份）；`packages/auth/src/project-member.ts` 加 `markRestored`；新测试文件
+    `packages/opencode/test/server/openhive-project-restore.test.ts`（**11 条**／664 行）；`…-unconfigured.test.ts`
+    加**第 3 条**（找回的次序，见下）。⚠️ **接线只加一行**（`routes` 里 `router.add("POST", PATH.restore, …)`），
+    **`server.ts` 一行未动**——沙箱根（`AnchorWorkspace.Config`）与 `MinioConfig` 那个层 T013 已供上。
+  - ⚠️ **为什么是同一个文件、不是新起 `restore.ts`**：两个方向共用得太多——`MinioConfig` / `endpointOf` /
+    `MinioSettings` / `asRole` / `Deps`（惰性 pg 池）/ 三个响应构造 / 路径段守卫。各写一份就是 `#002-06` 那句话本身；
+    而把 `archive.ts` 的私有件导出去给新文件用，是把 API 外扩一次。`plan.md` 第 60 行本来就写
+    `archive.ts # 项目归档/找回`。文件头新增一整节「找回（T014 / FR-009）——本文件的另一半，三条约定」。
+  - ⚠️ **找回是同一条 (c) 裁定的镜像，不是自由选择**：owner 触发、服务端按 `project_member` 对**每个成员**各跑一遍
+    「把**他自己前缀**的文件下载回**他自己沙箱**」。成员**已失权**（FR-010）自己触发不了；只还原 owner 那一份，
+    成员的文件就永远留在 MinIO 里——直接违背 FR-009 的「MinIO 文件**全部**下载回沙箱」。
+  - ⚠️ **次序（八步，与归档逐条同形，只有 ⑥⑦ 反向）**：`① 身份 → ② 归档态 → ③ 授权判定（`decide`，纯函数在 core）
+    → ④ 配置检查（`Option.isNone(deps.minio)` ⇒ 503） → ⑤ 成员 id 逐条校验 → ⑥ 全员下载（`restoreAll`，只读 MinIO ＋
+    只写沙箱） → ⑦ **到这里才**翻标记（`markRestored`）`。③ 仍在 ④ **之前**（同归档：未授权的人不该从
+    「503 还是 403」读出部署状态）；⑦ 最后落 = 下载中途失败时项目**仍是「已归档」**、重试即可。
+  - ⚠️ **`restoreAll` 三处刻意的选择**：① **清单空 ⇒ 跳过、不建目录**（与 `filesUnder` / `releaseAll` 同一个跳过口径：
+    成员从没 clone 过时凭空给他建一个空项目目录，等于让他的文件树显示一个**他从没有过的项目**）；
+    ② **`mkdir` 逐级递归**（键里的相对路径带目录，只写一层在 win32 与 POSIX 上都会 `ENOENT`；`.git/**` 一并回来
+    也是这条）；③ **`store.get` 回 `undefined` ⇒ 抛出，不静默跳过**（`list` 刚说这个键在；跳过会让「找回完成」与
+    「沙箱里少一个文件」同时成立、而调用方只看得见前者）。⚠️ 写入方向的**符号链接守卫**没有对应物（归档那侧的
+    `lstatSync` 是**读**方向的），如实记在缺口表，不假装覆盖。
+  - ⚠️ **`markRestored` 是 `update` 而不是 upsert**（对照 `markArchived` 的 upsert）：走得到这里 ＝ 上一句刚从这个表里
+    读出 `archived = true` ⇒ **那一行必然在**。写成 upsert 就等于允许「本来没有也行」，把「该翻的那一行找不着」
+    也静默算成成功。⚠️ **残差如实记**：`update` 命中 0 行**同样成功返回**，调用方分辨不出——那条路今天**不可达**
+    （没有任何代码删 `project_archive` 的行）；真要防得去数 `rowsOf(update)` 的行数，而那条形状在两种驱动下是否
+    一致**没验过**（`#002-01`）⇒ **不写没验过的判据**。`archived = false` 与 `archived_at = null` **必须成对写**
+    （迁移的 `project_archive_coherence_check` 钉着这一对；**M5 变异证明它是真的拦得住**，见下）。
+  - ✅ **变异验证（2026-10-06，串行跑，据实记三类 `#003-03`）**：**5 个变异**。
+    **M1** 把 `markRestored` 提到 `restoreAll` **之前** ⇒ **恰红 1**（「下载失败 ⇒ 项目仍是「已归档」」，8 pass / 1 fail）；
+    **M2** 删掉找回里的 `isSafePathSegment(projectId)` 门 ⇒ **恰红 1**（逃逸用例 `projectId = "."`，8 pass / 1 fail）；
+    **M3** `restoreAll` 里所有成员**共用一个 store**（`targets[0]` 的 scope）⇒ **红 2**（「谁的东西进谁的沙箱」这条
+    不变量的两个投影：主用例 ＋「没 clone 过的成员不被建空目录」；**无对照被误伤** ⇒ 属②类「整组红」，不是①类恰红）；
+    **M4** 把找回的 ③ 授权与 ④ 配置**调换** ⇒ **恰红 1**（`-unconfigured.test.ts` 的第 3 条，403 变 503；
+    **restore 那 8 条全绿** ⇒ 这条次序**确实只有它在钉**）；**M5** `markRestored` 的成对写拆开（只 `set archived = false`）
+    ⇒ **红 4**（所有「成功找回」的用例，同一根因：库的 `project_archive_coherence_check` 真的拒了 ⇒ 500 ⇒
+    `json()` 先断 `content-type` 就红；未授权/失败那 3 条仍绿 ⇒ 属②类）。每条改完即还原、复跑回绿。
+  - 🔍 **审查（2026-10-06，子代理，覆盖 runbook 六类）0 条「必须修」**，报 F1–F7：
+    **F1（找回缺「无凭证 ⇒ 401」与「畸形体 ⇒ 400」两条，归档侧两条都有）已办，但据实改写了结论**。
+    补完两条后**按 TDD 取成牙证据**，发现两者性质不同：**畸形体那条有牙**（**M7**：删掉
+    `handleRestore` 的 `badRequest("请求体要带 projectId")` ⇒ **恰红 1**，400 → 500，其余 10 条全绿）；
+    **401 那条没有牙，而且是结构性的**（**M6**：把 `handleRestore` 的
+    `if (Option.isNone(user)) return unauthorized()` **整行删掉** ⇒ **11 条全绿**；**M8**：把 `handleArchive`
+    的同一行删掉 ⇒ 归档两文件 **18 条全绿**）。根因：`user-identity.ts` **中间件**在进 handler **之前**就把
+    无身份请求回成 401，而 `OpenhiveArchive.routes` 全仓**只有一个挂载点**（`httpapi/server.ts`，且在那条链里）
+    ⇒ handler 那行**不可达**。**401 用例保留**（它如实断言了出口级的性质、将来中间件豁免表一变它就是第一道网），
+    但**不写成「产品码被钉住了」**；**handler 那行没删**——它与 `handleArchive` 逐条同形是整条链的骨架，
+    单删一侧会让两个 handler 悄悄分叉（**这是明写的判断，不是「忘了」**）。**这条同时更正了 T013 收尾时的
+    理解**：那条「不带凭证 ⇒ 401」用例当时被读成「钉住了 handler 的守卫」，实测**不成立**。
+    **F2（4 处 `expect(…?..archived_at).not.toBeNull()` 是弱形式：行整个不见了时实得值 `undefined`、
+    断言照样通过）已修** —— 抽 `仍是已归档(id)` 助手，**先断 `行` 在、再断 `archived_at`**，与
+    `-unconfigured.test.ts` 那条 ③ **同口径**（`#002-06`）。**F3–F7 挂缺口**（F3/F4 原已记；
+    **F5** `restoreAll` 的 `get === undefined ⇒ throw` 分支本地**测不到**（`fake-s3` 的 `list`/`get`
+    读同一份 map、`failOn` 只回 `InternalError`）；**F6** 空目录不还原 ⇒ 往返**不是逐字节「完整还原」**；
+    **F7** 「八步同形」**只靠复制粘贴维持**、单侧漏改不会有测试变红 ⇒ 新增缺口第 7/8/9 条）。
+    审查**逐项核实成立**的关键项：同形①②③④⑤ 对着**被调方**逐条打勾（`#004-07`）、`server.ts` 一行不动
+    属实、`markRestored` 的「命中 0 行不可达」为真、主判据**非空**（逐键全等能拦住「把 owner 的备份铺给
+    所有成员」）、测试 oracle 不经过被测对象、找回**只有一条出口**。
+  - ⚠️ **一条工具怪癖复现（T018 记过，本次又撞上）**：`packages/app` 的 `test:components` 在**启用默认运行时转译缓存**时
+    本次实测 **257 pass / 3 fail / 3 error**（`Expected JSX element name but found "?" at
+    packages/ui/src/components/file-icons/sprite.svg:1:2` 级联出空白的 `# Unhandled error between tests`），
+    而 `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0` **405 pass / 0 fail / 27 文件** ＝ 基线。**先怀疑测量**（`#003-01`）：
+    本题**零前端改动**，那 3 红与代码无关。
+  - 🧭 **门禁（T014 收尾，串行，2026-10-06）**：`packages/opencode` 找回 **11 pass / 0 fail（106 expect）** ＋
+    归档两文件 **18 pass / 0 fail（124 expect）**（T013 是 15 ＋ 2 ＝ 17，本题 ＋1 条 = 18）；
+    `packages/auth` `src/project-member.test.ts` **14 pass / 0 fail**；`packages/core` `bun test` ⇒
+    **1211 pass / 8 skip / 5 fail** ＝ 基线（5 条全是 `NpmConfig.*`，**无新增**，`#003-01`）；
+    `packages/app` `bun run test:components` ⇒ **405 pass / 0 fail / 27 文件**（⚠️ 须带
+    `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`，见上）；`bun run typecheck`（turbo）⇒ **31/31 successful，exit 0**；
+    **文件级** oxlint（仓库根，`#004-10`，四个文件）⇒ **0 warnings / 0 errors / 130 rules / exit 0**
+    （⚠️ 首跑 1 warning：新测试里 `test` import 未使用 ⇒ **当场清掉、不留账**，同 T018 的处置）；
+    `bun run lint:openhive` ⇒ **exit 0**（**23 warnings / 0 errors / 161 rules** ＝ 基线，本次文件 0 命中）；
+    `bun run lint` ⇒ **本次 4 个改动文件 0 命中**（全局 4953 warnings / 1 error / 3513 files，那 1 error 仍是
+    `#001-02` 记的上游文件，裁定不私改）；`git diff --stat bun.lock` **为空**。
+  - ⛔ **不在本 task 交付**：① **MinIO 下载没有重试 / 超时 / 熔断**（与上传同款，全项目一致 ⇒ 挂缺口表，不写成覆盖）；
+    ② **找回的写入方向没有符号链接守卫**（对照 `filesUnder` 的 `lstatSync`）；③ **`restoreAll` 的重入/部分成功语义**
+    （标记没落时重试 = 重下一遍）未测；④ FE 的**找回入口**归 **T023**（与「归档入口」同一条）；⑤ T015（归档后失权
+    的正向出口）仍待做——本题只证明 `decide` 在找回这条链上把 member/非成员都拦住了。
+    ⑥ **`restoreAll` 的 `get === undefined ⇒ throw` 分支本地测不到**（审查 F5：`fake-s3` 的 `list`/`get` 读
+    同一份 `objects` map ⇒ 造不出「list 见到、get 见不到」；`failOn` 只回 `InternalError`、不是 `NoSuchKey`）
+    ——语义方向对（fail-closed），但**是未验证的分支、不是「已覆盖的刻意选择」**（`#002-02`）；
+    ⑦ **空目录不还原 ⇒ 往返不是逐字节「完整还原」**（审查 F6：归档侧 `filesUnder` 只收 `isFile()`）——
+    T013 已记过，但 T014 的 `restoreAll` 注释**没重申**，读 FR-009 容易误以为已闭合；
+    ⑧ **「八步与归档逐条同形」只靠复制粘贴维持**（审查 F7：守卫序列是两份拷贝，只有 ③④ 的**先后**
+    被 `-unconfigured` 第 3 条钉住 ⇒ **单侧漏改**（漏成员 id 循环、漏 `userId` 的 `die`）**不会有测试变红**）
+    —— 正是本文件头引的 `#002-06`，也是 `#004-02` 说的「两个投影必须有一条**故意会红**的相等断言」，**今天没有那条**；
+    ⑨ **handler 里的 401 守卫是「纵深防御」、不是被测行为**（审查 F1 ＋ 实测 M6/M8：`handleRestore` 与
+    `handleArchive` 的那行**整行删掉两边测试全绿**，因为 401 由 `user-identity.ts` **中间件**在进 handler
+    之前给出，而 `OpenhiveArchive.routes` 全仓**只有一个挂载点**）—— 照 `#003-03` ③类本应删码，**没删的理由明写在上**。
 - [ ] T015 [US5] [BE] 实现归档后成员失权、owner 保留找回权 [FR-010] [T004][T013] [出参：归档后 member 失权]
 - [ ] T016 [P] [BE] 验证会话彻底私有（成员会话只存自己 db）+ 文件并发靠 git [FR-011][FR-012] [T003] [出参：owner 看不到 member 会话、git 留痕]
   - 🔒 **Q2 裁定（2026-10-06）：`git` 的载体 = 共享 bare 仓库 `/shared/{projectId}.git`**——成员各自 clone / commit / push（FR-012「各自 commit、冲突 merge」的唯一逐字实现：不同检出、同一仓库）。**不经 HTTP** ⇒ 锚定不变量不破。原 `U6`（「FR-012 无载体」）由此解决；本 task 要验的就是「两个检出各自 commit 后能 push 并 merge 冲突」。
