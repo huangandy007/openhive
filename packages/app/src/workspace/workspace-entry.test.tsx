@@ -6,9 +6,11 @@ import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
 import { setMinioBackups } from "@/project/minio-backups"
+import { type ProjectData } from "@/project/project-data"
 import { setProjectFiles } from "@/project/project-files"
-import { setProjectList } from "@/project/project-list"
+import { projectList, setProjectList } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
+import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -851,5 +853,301 @@ describe("上下双树接进左栏（T012 出参）", () => {
     expect(
       不存在(host, "[data-tree='minio'] [data-slot='file-tree-row'][data-path='资料/话单.csv']"),
     ).toBe(false)
+  })
+})
+
+/**
+ * 等异步那一段走完。
+ *
+ * 用**宏任务**（`setTimeout 0`）而不是 `await Promise.resolve()`：从「叫了」到「落地」中间隔着
+ * 几层微任务（接口 → 客户端 → 缝 → 渲染），几层取决于实现；微任务只让一轮，数错就是一条假红。
+ */
+const 冲一遍 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** 造一行项目——形状即 `ProjectEntry`。 */
+const 私有 = (id: string, name: string, lastAccessedAt: number): ProjectEntry => ({
+  id,
+  name,
+  type: "private",
+  lastAccessedAt,
+})
+
+/**
+ * 一个**记账**的数据源替身。
+ *
+ * ⚠️ 替的是**数据源**这一个 prop（界面与外面世界之间那道缝），不是被测对象——被测的是
+ * 「叫没叫、叫了几次、给的结果怎么落到界面上」，而组件、缝、渲染全是真的。
+ */
+function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "files">> = {}) {
+  const 记 = { list: 0, files: [] as string[], 建的: [] as Array<NewProjectInput> }
+  const data: ProjectData = {
+    list: async () => {
+      记.list += 1
+      // 没给剧本就当「一个都没有」——`[]` 是**来源明确说了空**，不是「取不到」（三态见 `listProjects`）。
+      return 剧本.list ? await 剧本.list() : []
+    },
+    create: async (input) => {
+      记.建的.push(input)
+      // 没给剧本就是「没建成」：一条没接剧本的路，不该在测试里**悄悄**报成功。
+      return 剧本.create ? await 剧本.create(input) : { kind: "failed", message: "没有剧本" }
+    },
+    files: async (projectId) => {
+      记.files.push(projectId)
+      return 剧本.files ? await 剧本.files(projectId) : []
+    },
+  }
+  return { data, 记 }
+}
+
+const 挂 = (data: ProjectData) => mount(() => <WorkspaceEntry projectData={data}>中栏</WorkspaceEntry>)
+
+/**
+ * 树里各行的 `data-path`。
+ *
+ * ⚠️ **一行不一定是一个文件**：目录也占一行——`乙/话单.csv` 会长出 `乙` 与 `乙/话单.csv` 两行。
+ * 所以判「某个文件在不在」用 `toContain`，只有判「树里就这些」才用 `toEqual`。混用的后果是
+ * 一条永远绿的软断言，或者一条莫名其妙红的硬断言（本 task 第一次跑就红在这上面）。
+ */
+const 路径们 = (host: HTMLElement) => 树行(host).map((el) => el.getAttribute("data-path"))
+
+/** 面板里那一行命名输入框（点「私有 / 共享」之后才在）。 */
+const 命名框 = (host: HTMLElement) => host.querySelector<HTMLInputElement>("[data-slot='project-panel-name']")
+
+/**
+ * 起个名交出去：打字 ＋ 回车。
+ *
+ * **回车是异步的**（要等那边的回话才知道成没成），所以调用方自己接一句 `await 冲一遍()`。
+ * 走**原生派发**——组件只认 `key` 那一个字段（同 `project-panel.test.tsx` 的辅助）。
+ */
+function 起个名(host: HTMLElement, name: string) {
+  const el = 命名框(host)
+  if (!el) throw new Error("命名框不在，建不了项目")
+  el.value = name
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+  el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+}
+
+/**
+ * 上面几节验的都是「缝里的数据画不画得出来」；这一节验的是**谁把数据写进缝里**。
+ *
+ * 在此之前（T006 - T019）缝里**没有写入方**——所以上面每一节的空态都是真话，也确实没什么可接。
+ * T018 把三段都接上了：清单来自 `projectData.list()`、新建走 `projectData.create()`、
+ * 文件走 `projectData.files(当前项目 id)`，落点全在本组件（`project-data.ts` 的接口由应用入口注入）。
+ *
+ * ⚠️ 数据源是 **prop**，不是模块级缝：省略时**一次请求都不发**。组件测试因此能完全离线跑
+ * ——这正是 `loadFile` 那条注释防的同一件事（`useSDK()` 要六层 provider 才活得下来）。
+ */
+describe("项目数据接线（T018 出参）", () => {
+  // 三条接入缝都是模块级的，测试之间必须复位，否则互相串味。
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+  })
+
+  /**
+   * 没注入 ⇒ 停在 T018 之前的形态。
+   *
+   * 这条与下一条是**一对**：单看哪一条都证明不了「没人发请求」（前一条里没有对象可记账，
+   * 后一条里本来就该发）。两条放在一起，才说明「发不发」是由**有没有数据源**决定的。
+   */
+  test("没注入数据源 ⇒ 面板停在 T018 之前的形态（按钮禁用，不假装能建）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    expect(锚点按钮(host, "project-panel-create-private")?.disabled).toBe(true)
+    expect(text(host, "project-panel-empty")).toBe("还没有项目")
+  })
+
+  test("注入数据源 ⇒ 进门就拉一次清单，写进接入缝（面板里看得到）", async () => {
+    const { data, 记 } = 假数据源({ list: async () => [私有("p1", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    expect(记.list).toBe(1)
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-item-name")).toBe("8·17专案")
+  })
+
+  /**
+   * **拉到清单也不自动认领当前项目**（用户 2026-10-06 裁定）。
+   *
+   * 理由：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与 AC4「点某项目切换」，
+   * 对「打开时选谁」一个字没写。而不选的代价是零：不发 `x-openhive-project` ⇒ 后端落回沙箱根
+   * （005 之前的行为），锚点行走它本来就有的「未选择项目」空态。
+   * 反过来说，「自动选最近访问的那个」今天**语义对不上**——`project_ext.last_accessed_at`
+   * 只在**建项目**时写，没有「选中即更新」的出口，所谓「最近」其实是「最后建的」。
+   *
+   * 这条也是**防手滑**的：将来有人图省事写成 `setCurrentProject(清单[0])`，这里会红。
+   */
+  test("不自动认领当前项目——清单里有项目，也等民警点一下（spec 只写了「新建」与「点」）", async () => {
+    const { data } = 假数据源({ list: async () => [私有("p1", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    // ⚠️ 前置不能省：**没有前置，这一条在「压根没接线」时也是绿的**（清单没来、当前项目没设，
+    // 锚点当然显示「未选择项目」）。先证明清单真的到了面板上，那句「未选择」才是在说
+    // 「到了也不自动选」，而不是在说「什么都没发生」（`#004-14`）。
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-item-name")).toBe("8·17专案")
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+  })
+
+  test("新建成功 ⇒ 成为当前项目（FR-003），清单跟着刷新（新项目出现在面板里）", async () => {
+    const 新 = 私有("p2", "9·03专案", 2)
+    let 清单: readonly ProjectEntry[] = [私有("p1", "8·17专案", 1)]
+    const { data, 记 } = 假数据源({
+      list: async () => 清单,
+      create: async () => {
+        清单 = [新, ...清单]
+        return { kind: "created", project: 新 }
+      },
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    锚点按钮(host, "project-panel-create-private")?.click()
+    起个名(host, "9·03专案")
+    await 冲一遍()
+
+    expect(记.建的).toEqual([{ name: "9·03专案", type: "private" }])
+    expect(text(host, "project-anchor-name")).toBe("9·03专案")
+    // 拉第二次 = 建完刷新了一次（不是把新项目拼进旧清单——那会在「还没拉到」时说成「就这些」）。
+    expect(记.list).toBe(2)
+    expect(面板(host)?.textContent).toContain("9·03专案")
+  })
+
+  test("新建没成 ⇒ 那句话落在输入框下，当前项目不动（FR-003 不成立时不能装作成立）", async () => {
+    const { data } = 假数据源({
+      list: async () => [],
+      create: async () => ({ kind: "rejected", message: "项目名已存在" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    锚点按钮(host, "project-panel-create-private")?.click()
+    起个名(host, "8·17专案")
+    await 冲一遍()
+
+    expect(text(host, "project-panel-create-error")).toBe("项目名已存在")
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+    expect(命名框(host)).not.toBeNull()
+  })
+
+  test("没有当前项目时不取文件——不发一个空 id 的请求（宁可空态，不发假请求）", async () => {
+    const { data, 记 } = 假数据源({ files: async () => ["资料/话单.csv"] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    expect(记.files).toEqual([])
+    // 断在自己这棵树上，不是 `document.body`：本文件每个用例都往 body 里挂一个 host 且不摘，
+    // 断 body 会把**别的用例**留下的树行数进来。
+    expect(树行(host).length).toBe(0)
+
+    // 对照（`#002-02`：说「没发生」之前先证明机制是活的）：**同一个组件**给上当前项目就取。
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1"])
+    expect(路径们(host)).toContain("资料/话单.csv")
+  })
+
+  test("切当前项目 ⇒ 按新 id 重新取文件，左栏文件树跟着换（AC4）", async () => {
+    const { data, 记 } = 假数据源({
+      files: async (id) => (id === "p2" ? ["乙/话单.csv"] : ["甲/资料.csv"]),
+    })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    expect(记.files).toEqual(["p1"])
+    expect(路径们(host)).toContain("甲/资料.csv")
+
+    setCurrentProject({ id: "p2", name: "乙" })
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1", "p2"])
+    expect(路径们(host)).toContain("乙/话单.csv")
+    // **旧项目那棵不能留着**：换项目时缝要先清空，否则甲的文件会在乙的树下继续显示。
+    expect(路径们(host)).not.toContain("甲/资料.csv")
+  })
+
+  /**
+   * 进门那一次清单**迟到**时，不许把刚建好的新项目抹掉。
+   *
+   * 写这个缝的有**两个出口**（进门拉一次、建完重拉一次），这条测的是两者乱序。成因不是假想的：
+   * 新建入口**不依赖清单**（清单还没到，面板照样能建），所以「建完的那一刻，进门那次还没回来」
+   * 是够得着的状态（`#004-01`：缺口按定义长在「谁在写这个缝」的清单里，不是「谁看起来像这一类」）。
+   */
+  test("进门那次清单迟到 ⇒ 丢掉，不把刚建好的项目从面板里抹掉", async () => {
+    const 放进门: Array<(v: readonly ProjectEntry[]) => void> = []
+    const 新 = 私有("p2", "9·03专案", 2)
+    let 第几次 = 0
+    const { data } = 假数据源({
+      list: () => {
+        第几次 += 1
+        // 第一次（进门）卡住不放；第二次（建完重拉）立刻回**新清单**。
+        return 第几次 === 1
+          ? new Promise<readonly ProjectEntry[]>((resolve) => {
+              放进门.push(resolve)
+            })
+          : Promise.resolve([新])
+      },
+      create: async () => ({ kind: "created", project: 新 }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    // 前置：清单果然还没到（否则这一条就不是在测「迟到」了）。
+    // 断**缝本身**而不是面板上的空态文案——`undefined`（还没到）与 `[]`（到了、是空的）
+    // 在面板上画出来是**同一句**「还没有项目」，用文案断不出这个前提。
+    expect(projectList()).toBeUndefined()
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    锚点按钮(host, "project-panel-create-private")?.click()
+    起个名(host, "9·03专案")
+    await 冲一遍()
+    expect(面板(host)?.textContent).toContain("9·03专案")
+
+    // 进门那一次现在才回来——它带的是**建之前**的清单（不含新项目）。
+    放进门.forEach((放) => 放([]))
+    await 冲一遍()
+
+    expect(面板(host)?.textContent).toContain("9·03专案")
+    expect(projectList()).toEqual([新])
+  })
+
+  /**
+   * 上一个项目的响应**迟到**时不许覆盖新的。
+   *
+   * 这不是假想的竞态：取文件是一层一层走的（`openhive-files.ts` 递归），大目录比小目录慢得多，
+   * 民警连点两下换项目就够触发。少了这道闸，界面上会出现「当前项目是乙，树里是甲的文件」
+   * ——**看着像串项目了**，而在这个产品里「串项目」是最不能容忍的那种错觉。
+   */
+  test("上一个项目的文件迟到 ⇒ 丢掉，不覆盖当前项目（宁可空态，不画错项目的文件）", async () => {
+    let 放甲: (v: readonly string[]) => void = () => {}
+    const { data } = 假数据源({
+      files: (id) =>
+        id === "p1"
+          ? new Promise<readonly string[]>((resolve) => {
+              放甲 = resolve
+            })
+          : Promise.resolve(["乙/话单.csv"]),
+    })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    setCurrentProject({ id: "p2", name: "乙" })
+    await 冲一遍()
+    expect(路径们(host)).toContain("乙/话单.csv")
+
+    // 甲的文件现在才回来。
+    放甲(["甲/资料.csv"])
+    await 冲一遍()
+
+    expect(路径们(host)).toContain("乙/话单.csv")
+    expect(路径们(host)).not.toContain("甲/资料.csv")
   })
 })

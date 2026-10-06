@@ -24,6 +24,59 @@ const 按钮 = (host: HTMLElement, slot: string) => host.querySelector<HTMLButto
  */
 const 无槽 = (host: HTMLElement, slot: string) => 槽(host, slot) === null
 
+/** 新建时那一行命名输入框（点「私有 / 共享」之后才在）。写法同上面的 `按钮`——泛型取元素，
+ *  不写成 `槽(...) as HTMLInputElement`（断言会被 `no-unsafe-type-assertion` 告警）。 */
+const 输入框 = (host: HTMLElement) =>
+  host.querySelector<HTMLInputElement>("[data-slot='project-panel-name']")
+
+/**
+ * 焦点在不在那一行输入框上？——**返回布尔，不是拿节点去比**。
+ *
+ * ⚠️ 写成 `expect(document.activeElement).toBe(输入框(host))` 会**把整轮测试挂死**：
+ * `.toBe` 失败时要打印**实得值**，而实得值是 `document.activeElement`，一个**被渲染过的节点**
+ * ——打印器停不下来（`LEARNINGS #005-01`）。本条是那条的**推广形态**：中招的不只是
+ * `.toBeNull()`，而是**任何「实得值可能是节点」的断言**。判据一句话：**实得值必须是原语**。
+ * 2026-10-06 实测：写成上面那种，`timeout 60` 到点被杀，`EXIT=124`、一条结果都取不到。
+ */
+const 焦点在输入框 = (host: HTMLElement) => document.activeElement === 输入框(host)
+
+/** 往那一行里打字。**先设 value 再派发 `input`**——Solid 的 `onInput` 靠这个事件。 */
+const 输入 = (host: HTMLElement, 值: string) => {
+  const el = 输入框(host)
+  if (!el) throw new Error("输入框不在，打不了字")
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/**
+ * 在输入框上按一个键。
+ *
+ * 走**原生派发**而不是 `keyboard()` 之类：本组件只认 `key` 那一个字段，派真事件比造一串
+ * 依赖更贴近浏览器里发生的事。
+ */
+const 按下 = (host: HTMLElement, key: string) => {
+  const el = 输入框(host)
+  if (!el) throw new Error("输入框不在，按不了键")
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
+}
+const 回车 = (host: HTMLElement) => 按下(host, "Enter")
+
+/** 失焦。`blur` **不冒泡**，所以是真派在元素自己身上——与浏览器里点别处时一样。 */
+const 失焦 = (host: HTMLElement) => {
+  const el = 输入框(host)
+  if (!el) throw new Error("输入框不在，失不了焦")
+  el.dispatchEvent(new FocusEvent("blur"))
+}
+
+/**
+ * 等异步那一段走完。
+ *
+ * 用**宏任务**（`setTimeout 0`）而不是 `await Promise.resolve()`：提交之后要经过几个微任务
+ * 才落地，取决于实现里 `await` 了几层；微任务只让一轮，数错了就会变成一条**假红**。
+ * 宏任务一定排在当前所有微任务之后。
+ */
+const 冲一遍 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
 /** 三 tab 之一（`data-tab` 是它的身份，`data-slot` 是它的种类）。 */
 const 页签 = (host: HTMLElement, id: string) =>
   host.querySelector<HTMLButtonElement>(`[data-slot='project-panel-tab'][data-tab='${id}']`)
@@ -80,14 +133,285 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
     expect(按钮(host, "project-panel-create-shared")?.textContent?.trim()).toBe("共享")
   })
 
-  test("点私有 / 共享，各报告各的类型（FR-003）", () => {
-    const 记: string[] = []
-    const host = mount(() => <ProjectPanel onCreate={(type) => 记.push(type)} />)
+  test("点私有 / 共享 ⇒ 先要一个名字，不立刻建（名字是锚点行上唯一的显示物）", () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
 
     按钮(host, "project-panel-create-private")?.click()
-    按钮(host, "project-panel-create-shared")?.click()
 
-    expect(记).toEqual(["private", "shared"])
+    expect(无槽(host, "project-panel-name")).toBe(false)
+    // 关键：**还没建**。点了就建的话名字只能是编出来的，而 005 全仓没有改名入口 ⇒ 那名字是永久的。
+    expect(记).toEqual([])
+  })
+
+  test("输入框出现时就拿住焦点——不然民警还得再点一下才打得出字", async () => {
+    const host = mount(() => <ProjectPanel onCreate={() => {}} />)
+
+    按钮(host, "project-panel-create-private")?.click()
+    // 组件里聚焦要等一个微任务（`ref` 跑的时候节点还没进文档，见 `project-panel.tsx` 那条注）。
+    await Promise.resolve()
+
+    expect(焦点在输入框(host)).toBe(true)
+  })
+
+  test("打名字 ＋ 回车 ⇒ 报告 {name, type}，把输入框收起来（FR-003）", async () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    // 交出去是**异步**的：要等那边的回话才知道该收起还是该报错，故等回话落地再断。
+    await 冲一遍()
+
+    expect(记).toEqual([{ name: "8·17专案", type: "private" }])
+    expect(无槽(host, "project-panel-name")).toBe(true)
+    // 建成不等于「没有话要说」——这一槽位压根不该在（同下一条的「失败才在」）。
+    expect(无槽(host, "project-panel-create-error")).toBe(true)
+  })
+
+  test("点「共享」建的共享项目，type 是 shared（两个入口各报各的）", async () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-shared")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    await 冲一遍()
+
+    expect(记).toEqual([{ name: "8·17专案", type: "shared" }])
+  })
+
+  test("名字首尾的空格去掉（民警手滑打了尾空格，项目名不该带着它走）", async () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "  8·17专案  ")
+    回车(host)
+    await 冲一遍()
+
+    expect(记).toEqual([{ name: "8·17专案", type: "private" }])
+  })
+
+  /**
+   * 失败**必须看得见**。这一段是用户 2026-10-06 裁定「输入框下显示一句」的落点：
+   * 交出去的名字要是没建成，而界面上一点动静都没有，民警只会以为点坏了、再点一次
+   * ——而 005 全仓**没有改名、也没有删项目**，重复建出来的东西只能留着。
+   *
+   * 三件事一起断：① 那句话在；② 输入框**留着**（要能改个名字重来）；③ 名字还在框里
+   * （不能让他重打一遍）。
+   */
+  test("没建成 ⇒ 输入框下显示出那句话，输入框留着、名字还在（不许悄无声息地没了）", async () => {
+    const host = mount(() => <ProjectPanel onCreate={async () => "项目名已存在"} />)
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    await 冲一遍()
+
+    expect(文本(host, "project-panel-create-error")).toBe("项目名已存在")
+    expect(无槽(host, "project-panel-name")).toBe(false)
+    expect(输入框(host)?.value).toBe("8·17专案")
+  })
+
+  /** 重来一次成功 ⇒ 那条文案跟着没了（不然上一次的失败会一直挂在那儿，像新的失败）。 */
+  test("失败之后再建一次、这次成了 ⇒ 收起，那条文案也跟着消失", async () => {
+    let 回话: string | undefined = "项目名已存在"
+    const host = mount(() => <ProjectPanel onCreate={() => 回话} />)
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    await 冲一遍()
+    // 前置：先证明它真的报过错，否则下面的「没了」可能只是从来没出现过。
+    expect(文本(host, "project-panel-create-error")).toBe("项目名已存在")
+
+    回话 = undefined
+    回车(host)
+
+    // **交出去的那一刻**上一条就该没了：留着的话，正在办的这一段里显示的是**上一次**的判决。
+    expect(文本(host, "project-panel-create-error")).toBeUndefined()
+
+    await 冲一遍()
+
+    expect(无槽(host, "project-panel-create-error")).toBe(true)
+    expect(无槽(host, "project-panel-name")).toBe(true)
+  })
+
+  /**
+   * 失败了按 `Esc` 收起、再重开 ⇒ **没有残留文案**。
+   *
+   * 本条是**变异找出来的缺口补的**（`#003-03` ② 的形态）：把「收起草稿时一起清文案」那一行
+   * 去掉，全组 30 条**一条都不红**。但那一行不是多余的——清的是这一条路径：收起草稿之后
+   * 输入框没了，而文案信号还留着上一次那句话，重开时它就**跟着新草稿一起冒出来**，
+   * 说的却是上一回的事。缺的不是代码，是没人走过这条路。
+   */
+  test("失败后按 Esc 收起，再重开 ⇒ 没有残留文案（上一次的判决不跟着新草稿回来）", async () => {
+    const host = mount(() => <ProjectPanel onCreate={async () => "项目名已存在"} />)
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    await 冲一遍()
+    // 前置：先证明它真的报过错，否则下面的「没有」可能只是从来没出现过。
+    expect(文本(host, "project-panel-create-error")).toBe("项目名已存在")
+
+    按下(host, "Escape")
+    按钮(host, "project-panel-create-private")?.click()
+
+    expect(无槽(host, "project-panel-create-error")).toBe(true)
+  })
+
+  /**
+   * 「正在办」的时候回车不算数。
+   *
+   * 不是洁癖：005 全仓**没有删项目的入口**（`grep` 过），重复建出来的两个项目只能留着，
+   * 而名字是永久的。这条路径是本 task 自己引入的——提交从同步改成异步之后，回车与回话之间
+   * 才有了一段缝隙。
+   */
+  test("正在办的时候再按回车 ⇒ 只交一次（那段缝隙里按几下都不算）", async () => {
+    let 回话: (v: string | undefined) => void = () => {}
+    const 记: string[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input.name)
+          return new Promise<string | undefined>((resolve) => {
+            回话 = resolve
+          })
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+    // 前置：第一次真的交出去了（不然下面的「只一次」是废话）。
+    expect(记).toEqual(["8·17专案"])
+
+    回车(host)
+    回车(host)
+
+    expect(记).toEqual(["8·17专案"])
+
+    // 回话之后仍然能正常收工（锁不是永久的）。
+    回话(undefined)
+    await 冲一遍()
+    expect(无槽(host, "project-panel-name")).toBe(true)
+  })
+
+  /**
+   * 正在办的时候点别处（失焦）**不收起**——与「正在办的时候回车不算数」同一条锁。
+   *
+   * 为什么失焦要跟回车一个待遇：收起之后那一行就没了，而**失败的话没地方落**
+   * （文案槽在输入框里面）⇒ 民警看到的是「点了回车，然后什么都没发生」。这正是上一条要防的
+   * 那种静默失败，只是从另一个门进来。
+   */
+  test("正在办的时候失焦 ⇒ 不收起（还没回话，这一行不能先没了）", async () => {
+    const host = mount(() => (
+      <ProjectPanel onCreate={() => new Promise<string | undefined>(() => {})} />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+
+    失焦(host)
+
+    expect(无槽(host, "project-panel-name")).toBe(false)
+  })
+
+  test("正在办的时候按 Esc ⇒ 也不收起（同上：锁是一次性的，等回话）", async () => {
+    const host = mount(() => (
+      <ProjectPanel onCreate={() => new Promise<string | undefined>(() => {})} />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    回车(host)
+
+    按下(host, "Escape")
+
+    expect(无槽(host, "project-panel-name")).toBe(false)
+  })
+
+  test("空名字回车 ⇒ 什么都不发生，输入框留着（不拿一个空名去建）", () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "   ")
+    回车(host)
+
+    expect(记).toEqual([])
+    expect(无槽(host, "project-panel-name")).toBe(false)
+  })
+
+  test("按 Esc ⇒ 收起，不建（改主意不用付出代价）", () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    按下(host, "Escape")
+
+    expect(记).toEqual([])
+    expect(无槽(host, "project-panel-name")).toBe(true)
+  })
+
+  test("点到别处（失焦）⇒ 收起，不建", () => {
+    const 记: Array<{ name: string; type: string }> = []
+    const host = mount(() => (
+      <ProjectPanel
+        onCreate={(input) => {
+          记.push(input)
+        }}
+      />
+    ))
+
+    按钮(host, "project-panel-create-private")?.click()
+    输入(host, "8·17专案")
+    失焦(host)
+
+    expect(记).toEqual([])
+    expect(无槽(host, "project-panel-name")).toBe(true)
   })
 
   test("未接线时新建按钮是禁用态——不假装能点（本 task 确实没有接收方）", () => {

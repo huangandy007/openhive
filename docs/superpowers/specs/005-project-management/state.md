@@ -1,9 +1,9 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ ／ T012（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓）✅ ／ **T018（项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口）🟡 BE 半边已交付，⑤ 待裁定** —— 见「已完成」。
-**下一步 = 等裁定后继续 T018**：BE 半边（范围 ①②③④ ＋ 建目录 ＋ 共享 bare 仓库）已交付全绿，**范围 ⑤（文件列表读取）卡在一个未定决策点上**（「前端怎么够到 fork 的裸路由」，三条候选与代价见「待裁定」节）。按 `dev_tdd.005.md` Step 2 ⑦「遇到未定的决策点先停下来问我，不要自行拍板」**停下来**，不自选。
-**若裁定前要先推别的**：候选是 **T013**（US5 项目归档：上传 MinIO ＋ 删除沙箱 ＋ `archived=1`），依赖 T003 ＋ T011 均已满足，但⚠️ **它自己也带一条未定项**（`tasks.md` T013 条已写明，2026-10-06 本批**不拍**）：**owner 归档时，成员的沙箱文件怎么办**——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 拦住后续写入；(b) 成员各自收到通知后上传自己那份（需站内信 ＋ 状态机）。**两条实现量与产物完全不同**，动手前同样要问。⚠️ **T013 是 `[BE]`**：`lint:openhive` 只扫 `packages/app/src/*` 六个目录、**不覆盖 core/auth/opencode**（T011 已实测记档，那是**空结论**）⇒ 必须另取**文件级** oxlint（仓库根跑，`#004-10`）。✅ **T022 是 T012 收尾时补的编号**（MinIO 的 HTTP 出口：读 `OPENHIVE_MINIO_*` ＋ `projectId` 透传 ＋ 备份/拉回路由），**依赖 D-13**，双树的行在它落地前**不可拖**。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ ／ T012（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓）✅ ／ **T018（项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口）✅ 两半都已交付** —— 见「已完成」。
+**下一步 = T013**（US5 项目归档：上传 MinIO ＋ 删除沙箱 ＋ `archived=1`），依赖 T003 ＋ T011 均已满足，但⚠️ **它带一条未定项**（`tasks.md` T013 条已写明，2026-10-06 本批**不拍**）：**owner 归档时，成员的沙箱文件怎么办**——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 拦住后续写入；(b) 成员各自收到通知后上传自己那份（需站内信 ＋ 状态机）。**两条实现量与产物完全不同**，动手前要问。⚠️ **T013 是 `[BE]`**：`lint:openhive` 只扫 `packages/app/src/*` 六个目录、**不覆盖 core/auth/opencode**（T011 已实测记档，那是**空结论**）⇒ 必须另取**文件级** oxlint（仓库根跑，`#004-10`）。✅ **T022 是 T012 收尾时补的编号**（MinIO 的 HTTP 出口：读 `OPENHIVE_MINIO_*` ＋ `projectId` 透传 ＋ 备份/拉回路由），**依赖 D-13**，双树的行在它落地前**不可拖**。
+**其余候选**：T014（依赖 T013）／ T015（依赖 T004＋T013）／ T016（依赖 T003）／ T020（依赖 T007＋T008＋T018 ⇒ **T018 已交付，前置齐了**）／ T021（依赖 T004＋T018 ⇒ 同上）／ T022（依赖 T011＋T012＋D-13）。
 （上一轮读者留下的注意，已完成：**T007 的 ⑤ 前置（3 处目录清单）已随 T005 办完**，不需重做；T009 那条「T007 刻意没在未选中时禁用重命名/删除」的活也已随 T009 办完。）
 ✅ **T008 留的待裁定项已裁定（2026-10-06，用户「补，phase 你定」）**：复制／移动／上传／下载四个动作零任务认领（`grep` 已核实）⇒ **补 T020，归 Phase 4**（同 T017／T018／T019 先例，编号排最后）。
 ✅ **T006 顺带接掉了 T005 的欠账（半个）**：`currentProject` 有了第一个写入方（面板点一行 ⇒ 写它 ⇒ 锚点行跟着变）——**但只接了「切项目」**，「新建项目」没有落库就没有项目可切，那半个**明账挂在 T018**（不是暗账）。
@@ -1194,10 +1194,17 @@ member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`
    那几处）**仍未清理**（同 T019 挂账 2，不在本 task 范围内）。
 3. **↑↓ 区间导航**仍挂账（T019 挂账 3，本 task 未动）。
 
-### T018 · 项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口（🟡 进行中：BE 半边已交付，⑤ 待裁定）
+### T018 · 项目 CRUD 落库 ＋ 列表查询 ＋ HTTP 出口（✅ 两半都已交付）
 
-**出参**（tasks.md：「新建项目成功、项目列表可查询、客户端能切项目（`x-openhive-project`）」）。
-🟡 **前两条已交付；第三条（客户端能切项目）与范围 ⑤ 一起卡在未定决策点上**——见文末「待裁定」。
+**出参**（tasks.md：「新建项目成功、项目列表可查询、客户端能切项目（`x-openhive-project`）」）——**三条全交付**：
+
+| 出参 | 交付方式（FE 半边） |
+|---|---|
+| 新建项目成功 | `ProjectPanel.onCreate` 接线 ⇒ 真落库（`POST /openhive/project`），**建成后成为当前项目**（FR-003） |
+| 项目列表可查询 | 进门拉一次 ＋ 建完重拉（`project-list` 缝）；面板三 tab 读它 |
+| 客户端能切项目 | 点一行 ⇒ 写 `currentProject` ⇒ `createEffect` 拉该项目文件（**带 `x-openhive-project` 头**，T017 契约落地） |
+
+范围 ⑤（文件列表读取）也一并落地（见下「FE 半边」）。
 
 **落点（三件）**
 
@@ -1246,24 +1253,127 @@ member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`
 指令与目标行之间**再夹任何一行注释**（哪怕还是注释）就等于**没禁用**，而且警告行号会跟着目标往下漂，
 看着像「指令失效」。本次实测：三行注释块 ⇒ 警告照旧；收成紧贴函数的**一行** ⇒ `0 warnings`。
 
+**FE 半边（2026-10-06 续作，用户裁定 A/B/C ⇒ 薄客户端）**
+
+**实测落点表**（`[FE]` 规矩；「上游文件」一列点明哪一行是合并时要保留的定制）
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 客户端底座 | `packages/app/src/project/openhive-fetch.ts`（新） | `ForkFetch` 类型 ＋ `defaultSend`（默认 `globalThis.fetch`）＋ `trySend`（网络错 ⇒ `undefined`，**不抛**）＋ `readJson`（解不开 ⇒ `undefined`）＋ `isRecord`。**两条链共用一份**：`LEARNINGS #002-06`「同一个判断别两处各写一份」 |
+| 客户端 | `packages/app/src/project/openhive-project.ts`（新） | `GET /openhive/project` 列表（`listProjects`）＋ `POST` 新建（`createProject`）；`CreateProjectOutcome` 三态 `created` / `rejected` / `failed` |
+| 客户端 | `packages/app/src/project/openhive-files.ts`（新） | `listProjectFiles`：**深度优先**走 `GET /file?path=`（上游 `list` 只回一层），**带 `x-openhive-project` 头**；只收 `type === "file"` 的路径（收目录会把它画成文件）；**一条走不通 ⇒ 整份 `undefined`**（不交半棵树） |
+| 接口 ＋ 生产绑定 | `packages/app/src/project/project-data.ts`（新） | 窄接口 `ProjectData`（`list` / `create` / `files`，**按「谁要用」定的**）＋ 生产绑定 `PROJECT_DATA` |
+| 接线（**上游文件**，＋5 行） | `packages/app/src/pages/layout-new.tsx` | 1 行 import ＋ 1 个 prop（`projectData={PROJECT_DATA}`）；带 `⚠️ openhive 定制（005 T018）：这是要保留的定制 —— 合并上游时两侧都留着` |
+| 接线 | `packages/app/src/workspace/workspace-entry.tsx` | ① 进门拉清单（**代次闸** `清单代次`）；② `createEffect` 换当前项目 ⇒ 拉文件（**`onCleanup` 作废闸**）；③ `onCreate` 接线：真落库 ⇒ 建成后写 `currentProject` ＋ **重拉清单** |
+| 验证 | `openhive-project.test.ts`（新 **18**）／`openhive-files.test.ts`（新 **11**）／`project-data.test.ts`（新 **3**）／`workspace-entry.test.tsx`（**＋9**）／`project-panel.test.tsx`（**＋13**） | 替身只替**系统边界**（HTTP 出口 / 进程 `fetch`），**不替被测对象** |
+
+**两条闸为什么必需**（不是防御性编程，各自对应一个**真出口**）：
+
+| 闸 | 挡的是什么 | 不写的后果 |
+|---|---|---|
+| `清单代次`（计数器） | 「进门那一次」与「建完重拉那一次」**两个写清单的出口**都异步、都可能迟到 | 一个慢的进门响应把**刚建好的新项目**从清单里抹回去 |
+| `作废`（`onCleanup`） | `currentProject` 换得快时，**上一轮的文件响应迟到** | 回来时把**上一个项目的文件**写进缝里——看起来像串项目 |
+
+判据来源：`LEARNINGS #004-01`（数出口要数「谁在写这个缝」，不是数「谁看起来像这一类」）＋ `#004-09`（顺序判据只在门之前有观测面时才测得出来）。两条都用**变异**分开证明（见下 W 系列）。
+
+**门禁（串行，`#003-01`；全部在 worktree 内跑）**
+
+| 门 | 结果 |
+|---|---|
+| `packages/app` `test:unit` | **856 pass / 0 fail / 3211 expect / 120 文件**（T012 基线 **824 / 0 / 117**：＋3 文件 ＋32 条 = 本 task 新增的三个客户端测试文件） |
+| `packages/app` `test:components` | **405 pass / 0 fail / 918 expect / 27 文件**（基线 **383** ＋ 本 task **22** 条） |
+| `bun run typecheck` | **31/31 successful，exit 0** |
+| `bun run lint:openhive` | **exit 0 · 23 warnings / 0 errors** ＝基线**逐项相同**（本 task 初测 **26** = 基线 ＋ 我引入的 3，**已全部修掉**，见下「三处告警」） |
+| 根 `bun run lint` | 本次新增/改动文件 **0 命中**（唯一命中在 `layout-new.tsx:25` 的 `consistent-return`，是**上游代码**：`git show HEAD:` 里同一行在 `:21`，被我 ＋4 行 import 顶下去；**不私改**，见下） |
+| `git diff --stat bun.lock` | **空**（未跑 `bun install`） |
+
+**三处告警（初测 26 = 基线 23 ＋ 我这 3）——都修了，不留账**
+
+| 规则 | 位置 | 修法 |
+|---|---|---|
+| `consistent-return` | `workspace-entry.tsx` 的 `onCreate` | 该回调两个出口都回值（没建成回一句话、建成回「没有话要说」）⇒ 补 `return undefined`，不靠落空 |
+| `no-base-to-string` | `project-data.test.ts` 假服务里的 `String(input)` | 摊成 `typeof input === "string" ? input : input instanceof URL ? input.href : input.url`（真 `fetch` 收三种入参） |
+| `no-unsafe-type-assertion` | `project-panel.test.tsx` 的 `输入框` | 改 `host.querySelector<HTMLInputElement>(...)`（同文件 `按钮` 的既有写法），不用 `as` |
+
+**typecheck 红了 8 条（只有 `tsgo` 看得见，运行期全绿）——据实记，两形状**
+
+| 形状 | 处数 | 位置 | 修法 |
+|---|---|---|---|
+| fixture 的 `type` 被**拓宽成 `string`** ⇒ 撞 `ProjectEntry.type: ProjectType` | 4 | `openhive-project.test.ts`（`ENTRY`）、`project-data.test.ts`（`一行`） | 给 fixture **标 `ProjectEntry`**（不标的话 `type: "private"` 拓宽成 `string`，`toEqual` 就撞不上） |
+| `onCreate={(input) => 记.push(input)}` ⇒ 回调**返回 `number`** | 4 | `project-panel.test.tsx` | 改块体（`push` 的返回值不外露）。⚠️ `void` 返回类型的**特例**在这里不适用：`onCreate` 的返回是 `void \| string \| Promise<string \| undefined>` **联合**，不是裸 `void` |
+
+⚠️ **`layout-new.tsx:25` 那条不私改**：它是上游 `TitlebarUpdate.version` 的既有 `consistent-return`，不是本 task 引入的（`git show HEAD:` 同一行在 `:21`）。**只改自己碰过的那几行**（宪法「侵入是加不是改」）——修它就得改上游代码，为 0 收益换一处同步冲突面。
+
+**变异验证（W 系列，8 处，据实记 `#003-03`）**
+
+| # | 变异 | 结果 |
+|---|---|---|
+| W1 | 去掉进门拉清单 | **恰红 1** |
+| W2 | 去掉建完重拉清单 | **恰红 1** |
+| W3 | 去掉 `清单代次` 闸 | **恰红 1** |
+| W4 | `createEffect` 里不清空旧文件 | **恰红 1** |
+| W5 | 去掉 `onCleanup` 作废闸 | **2 红**（目标 ＋ 一条真实的依赖项「进门那次清单迟到」——**可解释**，不是误伤） |
+| W6 | 建完不写 `currentProject` | **恰红 1** |
+| W7 | `files` 不带 `x-openhive-project` 头 | **2 红**（目标 ＋ T005 时代的一条 ——同一性质被保护了两次） |
+| W8 | 换项目时不清空旧项目文件 | **全绿** ⇒ 见下「测试框架缺口」，**据实记为全绿，不记成恰红**（`#003-03` ③：全绿的处置是**查代码可达性**，不是补测试） |
+
+**⚠️ 测试框架缺口（W8 全绿的根因，据实挂账）**：`workspace-entry.test.tsx` 的 `mount()` 是
+`document.body.appendChild(host); render(element, host); return host`——**`render()` 返回的 dispose 被丢掉**。
+于是此前挂上的组件**在整个文件里一直活着**、并且**继续响应模块级的缝**（`currentProject` / `projectFiles`…）：
+较早的组件稍后会往缝里写，把被测值顶掉。W8 那条「清空旧项目文件」因此**测不出来**——
+探针实测：变异下缝里存的是**上一个用例**的 `["资料/话单.csv"]`。
+⇒ **不是「测试没覆盖」，是「挂载没卸载」**。修它要动 `mount()`（影响本文件全部用例），
+**不在本 task 范围内**，挂账。
+
+**⚠️ 一条与本 task 有关的工具怪癖（据实记，值一次排查）**：`bun test` 在**启用运行时转译缓存**（默认）时，
+**间歇性**报 `error: Expected JSX element name but found "?" at packages/ui/src/components/file-icons/sprite.svg:1:2`，
+使整个文件中止（`0 pass / 1 fail / 1 error`）并**级联**出后续文件的空白 `# Unhandled error between tests`。
+判据：**`BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`** ⇒ 完全确定、全绿。实测对比（同一条命令、同一棵树）：
+**禁用缓存 405 pass / 0 fail / 27 文件** vs **启用默认缓存 257 pass / 3 fail / 3 error**。
+不是代码缺陷（`solid-jsx.ts` 插件的 `onLoad` 过滤器压根不匹配 `.svg`）⇒ **本 task 起所有门禁/变异一律带这个 env**。
+性质同 `#003-01`：**先怀疑测量，再怀疑被测物**。
+
+**⚠️ 一次基线对账（记下来省得下次重算）**：本 task 起 `test:components` 记的是 **383**（T012 收尾值），
+而实测 **405** ⇒ 差额 **22**。对账法：把两个改过的测试文件用 `git show HEAD:` 换回旧版再跑，
+得 **HEAD 全量 = 383**（`workspace-entry.test.tsx` **53** ＋ `project-panel.test.tsx` **18** ＋ 其余 **312**）；
+我的版本是 **62** ＋ **31** ⇒ 383 ＋ 9 ＋ 13 = **405** ✓。
+（最初算成 393，是因为**误记** `project-panel.test.tsx` 的 HEAD 版是 30 条，**实际 18 条**——
+`LEARNINGS #003-04`：数字落笔前先复现一次。）
+
+**三条新裁定（2026-10-06，用户）**
+
+| # | 事项 | 裁定 |
+|---|---|---|
+| (4) | 打开平台时「当前项目」要不要自动选一个 | **不自动选**（照 spec 字面：不选 ⇒ 不发 `x-openhive-project` ⇒ 后端落回沙箱根，即 005 之前的行为）。已写进 `onMount` 的注释 |
+| (5) | 新建失败怎么告诉民警 | **输入框下显示一句**（`ProjectPanel` 的 `错误` 槽；回话约定：**字符串 = 没建成**，`undefined` = 收工） |
+| (3) 的读法 | 「单独提交」 | 实做为**一次专门的 T018 提交**（带【保留的定制 · 同步上游时不要丢】标记），与 T014 / T017 先例一致——**不与别的 feature 的改动混在一个提交里**即满足原意 |
+
 **缺口 / 挂账（`#002-02`）**
 
-1. 🔒 **范围 ⑤（文件列表读取）未做**，且**不是「还没轮到」，是卡在未定决策点上**——见「待裁定」。
+1. ✅ **范围 ⑤（文件列表读取）已还清**（`openhive-files.ts` ＋ `project-files` 有了真写入方）。
 2. **`OPENHIVE_SHARED_ROOT` 的部署面**——本机（开发机）无目标内网，`/shared` 只是**默认值可用**，
    不代表部署环境挂载正确。同 **T022 的 D-13**，**部署时实测**。
 3. **`project_ext.project_type` 今天写空串**——该列是自由文本 `NOT NULL` 无默认值，而 005 没有任何
    表单/流程收集它。**这不是「暂时用空串」，是显式留白**：谁将来收这个字段，谁负责迁已有行。
-4. **`workspace-entry.tsx` 一处不实注释**（T007 落下）：`file-tree-slot` 旁写着「由应用入口注入
-   （`pages/layout-new.tsx` 拿 `useSDK()` 组）」，**实测为假**（该文件既无 `useSDK()` 也无 `loadFile`
-   一类 prop）。收口时改掉（`#004-04`）。
-5. **裁定 (3) 的「单独提交」读法**：原文写「要**单独提交**并标『这是要保留的定制』」。实做为
-   **一次专门的 T018 提交**（带 `【保留的定制 · 同步上游时不要丢】` 标记），与 T014 `19186944e3` /
-   T017 `198166fabc` 的先例一致——**不与别的 feature 的改动混在一个提交里**即满足原意；
-   若本意是「挂载那一行必须与 `project.ts` 新文件分开两次提交」，请纠正。
-6. ⚠️ **本半边不含任何前端改动** ⇒ `test:components` 未跑（无 `packages/app` 改动）；
-   ⑤ 落地时按 `[FE]` 规矩补跑并出**实测落点表**。
+4. ✅ **`workspace-entry.tsx` 那处不实注释已改**（T007 落下，「由应用入口注入（`layout-new.tsx` 拿
+   `useSDK()` 组）」实测为假）。改后写的是实情：**该由入口注入、今天还没接**（接它要六层 provider，
+   属中栏视图那条线），并注明「省略 = 视图拿不到内容（停在空态），但路由与 tab 照常」。
+   同时改了 `＋` 旁那句「T018 接上落库后要再定一次」——**定过一次了**（裁定 (3)：面板内联一行命名输入），
+   结论是 `＋` 保持「打开面板」，不直达表单（直达要再养一份「起名」状态，而面板那一份已经在了）。
+5. **`loadFile` 仍未注入到任何地方**——`WorkspaceEntryProps.loadFile` 的接缝在，但 `layout-new.tsx`
+   只传了 `titlebarRight` 与 `projectData`。属**中栏视图**那条线，不是 T018 的事（注释里已写明）。
+6. **`workspace-entry.test.tsx` 里既有的 4 处 `.toBeNull()` 仍未清理**（T019 挂账 2；同 `#005-01`）。
+7. **`mount()` 从不 dispose** ⇒ W8 测不出（见上「测试框架缺口」）。
+8. **`↑↓` 区间导航仍挂账**（T019 挂账 3）。
 
-## 待裁定（2026-10-06，T018 BE 半边收尾时报请用户裁定 · **未拍板**）
+## 待裁定（2026-10-06，T018 BE 半边收尾时报请用户裁定 · ✅ 已裁定，见文末「裁定 (A/B/C)」）
+
+> ✅ **2026-10-06 已裁定**：**照 `gateway.ts` 先例写薄客户端** ＝ 下面的候选 **(C)**。
+> 落点：`openhive-fetch.ts`（底座）＋ `openhive-project.ts` / `openhive-files.ts`（两条链），
+> 上游 `api.ts` **一字不动**。用户同时裁定 **⑤ 留在 T018、本轮做完**，并另下两条（(4) 不自动选当前项目、
+> (5) 新建失败在输入框下显示一句），见「T018」节的「三条新裁定」。
+
+
 
 **问题**：**前端怎么够到 fork 的裸路由。**
 
@@ -1430,6 +1540,7 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
+2026-10-06（**T018 FE 半边收尾 ✅ —— T018 整条完成**：用户裁定 A/B/C **取 (C)「照 `gateway.ts` 先例写薄客户端」**、并裁定 **⑤ 留在 T018 本轮做完**，另下两条（(4) **不自动选当前项目**、(5) **新建失败在输入框下显示一句**）。新建 4 个文件：`openhive-fetch.ts`（底座：`ForkFetch`／`defaultSend`／`trySend`／`readJson`／`isRecord`，**两条链共用一份**）＋ `openhive-project.ts`（`GET`/`POST /openhive/project`，`CreateProjectOutcome` 三态）＋ `openhive-files.ts`（`listProjectFiles`：**深度优先**走 `GET /file?path=`，**带 `x-openhive-project` 头**，只收 `type==="file"`，**一条走不通 ⇒ 整份 `undefined`**）＋ `project-data.ts`（窄接口 `ProjectData` ＋ 生产绑定 `PROJECT_DATA`）。接线：**上游文件** `pages/layout-new.tsx` **＋5 行**（1 import ＋ 1 prop，带【保留的定制 · 同步上游时不要丢】——这是本 task 唯一碰上游的地方）；`workspace-entry.tsx` 三件事（进门拉清单／`createEffect` 换项目拉文件／`onCreate` 接线）。**两条闸各有真出口**：`清单代次`（挡「进门那一次」与「建完重拉那一次」的迟到，`#004-01`）、`onCleanup` 作废（挡换项目时上一轮文件响应迟到）。**顺带改掉 T007 落下的不实注释**（「由 `layout-new.tsx` 拿 `useSDK()` 组」实测为假）＋ `＋` 旁那句「T018 后要再定一次」（**定过了**，见裁定 (3)：`＋` 保持「打开面板」）。**新增 44 条**（18＋11＋3＋9＋13）。**门禁串行全过**（`test:unit` **856/0/3211/120 文件**，基线 824/0/117 ⇒ ＋3 文件＋32 条；`test:components` **405/0/918/27 文件**，基线 383 ⇒ ＋22 条，**差额已对账**：HEAD 全量 383 = 53（workspace-entry）＋18（project-panel）＋312，我的 62＋31 ⇒ 383＋9＋13＝405；`typecheck` **31/31**；`lint:openhive` **23·0·exit 0** ＝基线**逐项相同**；根 `lint` 本次文件 **0 命中**；`bun.lock` 一行未动）。**据实记三类「红」**：① **lint 初测 26 = 基线 23 ＋ 我引入的 3**（`consistent-return`／`no-base-to-string`／`no-unsafe-type-assertion`）⇒ **三处全修掉、不留账**；② **typecheck 红 8 条**（只有 `tsgo` 看得见、运行期全绿）：2 个 fixture 的 `type` **拓宽成 `string`**（⇒ 4 条）＋ `onCreate={(input) => 记.push(input)}` **回调返回 `number`**（⇒ 4 条，`onCreate` 的返回是**联合**不是裸 `void`，TS 的「返回值被丢弃」特例不适用）；③ **变异 W 系列 8 处**：W1–W4、W6 各恰红 1，**W5 = 2 红**（目标 ＋ 一条真实依赖项「进门那次清单迟到」，可解释），**W7 = 2 红**（目标 ＋ T005 时代那条，同一性质保护了两次），**W8 = 全绿**（`#003-03` ③：**据实记为全绿**）——W8 的根因查出来了：`workspace-entry.test.tsx` 的 `mount()` **把 `render()` 的 dispose 丢掉** ⇒ 早先组件一直活着、继续写模块级缝，把被测值顶掉（探针实测：变异下缝里是**上一个用例**的 `["资料/话单.csv"]`）⇒ **不是「测试没覆盖」，是「挂载没卸载」**，挂账。**⚠️ 一条新工具怪癖（值一次排查）**：`bun test` **启用默认运行时转译缓存**时**间歇性**报 `Expected JSX element name but found "?" at .../sprite.svg:1:2`、整个文件中止并**级联**出空白 `# Unhandled error between tests`；`BUN_RUNTIME_TRANSPILER_CACHE_PATH=0` ⇒ 完全确定。实测对比（同命令同树）：**禁缓存 405/0/27** vs **默认缓存 257/3/3 error**。性质同 `#003-01`：**先怀疑测量**。见「T018」节）
 2026-10-06（**T018 BE 半边收尾 🟡**：新建 `packages/opencode/src/server/openhive/project.ts`——`GET /openhive/project` 列项目 ＋ `POST /openhive/project` 建项目（**八步顺序**：建目录 → `git init` → **写仓库里的 `opencode` 缓存文件（`ProjectV2.commit`）** → `fromDirectory`（只跑一次）→ 改名 → 仅共享项目再 `git init --bare {共享根}/{id}.git` → `project_member` 写 owner → `project_ext` 落 `type`/`shared_directory`/`last_accessed_at`）＋ `server.ts` **＋12 行**挂进 `Layer.mergeAll`（带 `【保留的定制 · 同步上游时不要丢】`，**不改上游 `api.ts`**，符合裁定 (3)）＋ `openhive-project.test.ts`（新，**10 条全绿**）。③ 那一笔的位置是全条关键：不先写缓存文件，上游 `ProjectV2.resolve()` 会**再插一行 id 完全不同的 `project`**，两行配不上却**不报错不变红**——本条真跑了（建项目 → 用该项目目录建会话 → 断两个 id 相等）。**两处实测抓到的坑**：① Effect 4 的 `Schema.Literal(...arr)` **是单数签名**（多值的是 `Literals`），多出来的 `"shared"` 被 JS **静默丢掉** ⇒ 建共享项目一律 **400**、私有全绿；② `git init --bare <bare>` 的 `cwd` 不存在 ⇒ `FileSystem.access` `NotFound` ⇒ `exitCode: 1` ⇒ **建项目 500**，**只有共享项目中招**（两者症状都极具误导性，定位靠临时 `catchCause` 打 cause，不是猜）⇒ 先 `mkdir(bare)` 再进去。**同时按裁定 (2) 新定一个配置源**：`OPENHIVE_SHARED_ROOT`（`packages/auth/src/workspace.ts` 的 `sharedRoot`，与 `workspaceRoot` 同款同形；此前 `/shared` 全仓零定义）。**门禁串行全过**（`packages/auth` **238/1/0**；`packages/core` **1211/8/5**、5 条全是上游 `NpmConfig.*`、与基线**名称级差集为空**；typecheck **31/31**；`lint:openhive` **exit 0 · 23 warnings / 0 errors** ＝T012 基线、且本次改动**不在它扫的六个目录内**⇒「0 命中」是**空结论**、故另取文件级；**文件级 oxlint（仓库根跑）9 个改动文件 0/0**；根 `lint` 本次文件 0 命中；`bun.lock` 一行未动）。**一并记下一条 oxlint 行为**：`oxlint-disable-next-line` 看的是**字面下一行**，指令与目标之间夹任何一行注释（哪怕还是注释）＝**没禁用**，且行号会跟着目标漂（三行块照旧红 → 收成紧贴函数一行 ⇒ 0 warnings）。**⛔ 范围 ⑤（文件列表读取）未做，且卡在未定决策点上**：`GET /openhive/project` 是 fork 的**裸 `HttpRouter` 路由**、不在上游 `api.ts` 里 ⇒ SDK **类型上没有它**，而裁定 (3) 又禁改 `api.ts`；同时 `project-files.ts` / `project-list.ts` **至今零写入方**、`workspace-entry.tsx` 拿不到 `useSDK()`。⇒ 「前端怎么够到 fork 的裸路由」**报请用户裁定**（三条候选 A/B/C 与代价见「待裁定」节），**不自行拍板**。**另记一笔不实注释**：`workspace-entry.tsx` 里「由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组）」——**实测为假**（该文件既无 `useSDK()` 也无 `loadFile` prop），T007 落下，收口时改。见「T018」节）
 2026-10-06（**T012 收尾**：新建 `app/src/project/dual-file-tree.tsx`（`DualFileTree`：上树＝`FileTree` **本体**、下树＝同文件内 `MinioTree` 只读树、中间 `ResizeHandle` 可拖分隔条、拉回二次确认**内联条**）＋ `dual-file-tree.test.tsx`（**20 条**）；`file-tree.tsx` **只加一个 `draggable?: boolean`**（＋行上一个判断，其余一行未动）；`workspace-entry.tsx` 把「文件」pane 的内容换成 `DualFileTree`（`dualOpen` 信号）＋ 窄条 `onOpen` **一步做两件事**（§5.1 步骤 2①②：切回「文件」**并**展开）⇒ **还清 T019 挂的「2② 归 T012」**。**四问全按推荐项 A 裁定**（① 只前端 ＋ 补编号 **T022** 承接 HTTP 出口；② ✓ 判据＝纯路径；③ 只换 pane 内容、tab 容器保留；④ 备份直接覆盖、拉回先确认）。**上树不另起一棵**——`extends Omit<FileTreeProps, "draggable">` ＋ `splitProps` ＋ 其余原样 spread ⇒ 能力面跟着 `FileTree` 长（逐项转发＝会漂的镜像，`#004-07`）。**拖拽是最外层一次问完**：两棵树的行**刻意同构**（共用 `data-slot="file-tree-row"` ＋ `data-path` ＋ `data-type`，`data-tree` 分哪棵）⇒ 四个问题一次问完（`#004-12`），代价是下树**复用了那个 `data-slot`**（看着像笔误，实为委托的唯一前提），收益是两棵树都不必知道「MinIO」存在。**14 个变异**（组件 10 ＋ 接线 4）：M1 1／M2 5／M3 1／**M4 全绿→补条后 1**／M5 1／M6 1／**M7 全绿→补条后 1**／M8 1／M9 1／M10 1；N1 4／N2 2／N3 1／N4 1。**M4／M7 全绿不是代码多余，是测试少了一条**——同一个形态：同一件事有**两道判据**（M4：上树那条由 `file-tree.tsx` 守、下树那条由 `MinioTree` 守；M7：`draggable` 属性＝「浏览器不发 `dragstart`」（外）、`可放` 的方向判据＝「组件自己挡」（内）），而用例只压了前一道 ⇒ **各补一条，都是在变异体上补的**（先红后绿）。**M2 逼出第三处同型缺口**：数 `拼路径` 的**分支覆盖面**，发现「文件行」一个用例都没有（文件行与空白在 `位.路径` 上**恰好相反** ⇒ 空白那条绿着证明不了文件行也对，`#004-01`）⇒ 补一条，成牙证据是 M3 的恰红（⚠️ 据实说明：**不是 RED-first 写的**）。**记下一处 RED 阶段的假绿**：「展开 → 收起 → 再展开是同一节点」在空壳上也绿（两边都是 `null`）——它绿过，别算作 RED-first。**`#005-01` 的落点**：所有「某处没有元素」都断布尔（`不存在 = el === null`）。**happy-dom 没有 `DragEvent`**（有 `DataTransfer`）⇒ 用例拿裸 `Event`，产品码对 `dataTransfer` 全用可选链（那两处 `?.` 是测试进得来的前提）。**门禁串行全过**（`test:components` **383/0/27 文件**，基线 357/26 ⇒ ＋26 条＋1 文件；`test:unit` **824/0/117** 同基线；`lint:openhive` **23·0·88 files·exit 0** 本次三文件 **0 命中**——引入的 1 处 `require-array-sort-compare`（`.sort()` 没给 compare）当场清掉；`bun run lint` 本次文件 0 命中；`typecheck` exit 0——⚠️ 首跑红 1 条：`aria-expanded` 写成 `String(...)`，Solid 只收布尔，**`bun test` 不做类型检查一路没暴露**；`bun.lock` 一行未动）。**⛔ `onBackup`/`onRestore` 的接收方（HTTP 出口）归 T022** ⇒ 生产里不传 ⇒ 行不可拖（「未接线即禁用」）；`minio-backups.ts` 的写入方同归 T022。下一步 = T013（⚠️ 开工前必须先钉 Q1×Q3 那条未定项：owner 归档时**成员的沙箱文件**怎么办）。见「T012」节）
 2026-10-06（**T019 收尾**：新建 `app/src/project/sidebar-tabs.tsx`（**受控**组件：`active` ＋ `onSelect`，自己不带 tab 状态；两个 pane **同时挂载、靠 `hidden` 切换**——`FileTree` 的搜索词／折叠态／选中行是内部信号，一卸载就「切一下 tab 全没了」，`hidden` 同时保证非激活 pane 不进 Tab 顺序）＋ `minio-bar.tsx`（`cloud-upload` 图标而非设计字面的 `⬆`，DESIGN §1.2 单色线性图标纪律）＋ 接缝 `minio-backups.ts`（第三件）；`workspace-entry.tsx` 把 T007 的 `file-tree-slot` **整体搬进** ② 的「文件」pane（`file-tree.tsx` **一行未改**，`data-slot` 沿用旧名——搬位置不是搬身份）。**＋27 条**（13＋6＋8）。**三处未定决策点已问用户、全部按推荐项裁定**：① 「会话」tab ＝ **显式空态**（`data-state="empty"` ＋「会话列表未接入」）；② 点窄条 ＝ **只做设计 §5.1 步骤 2①**（拨回「文件」tab），2②「展开上下双树」归 T012；③ 键盘 ＝ **只做外壳自己的 ← →**，**↑↓ 继续挂账**（遵守本 task 自己写的「`file-tree.tsx` 一行不改」）。**🔴 本 task 最重要的产出是变异 M4 逼出来的**：`#005-01` 那颗地雷**适用范围比原记的更宽**——不止 `.toBeNull()`，**任何把被 Solid 渲染过的节点当实得值的断言**都在内。M4 删掉键盘焦点跟随后，预期「恰红 1 条」，实际**不是红是崩**（`expect(document.activeElement).toBe(tab(...))` 红了、bun 打印实得值停不下来 ⇒ **Bun internal assertion failure ＋ panic**、`timeout` 挡下时已 29s、峰值 **4.68GB**、`EXIT=3`、**一条结果都取不到**）；改成比**布尔**后 **2 秒**出结果、恰红 1、12 pass。**新写的 4 处同形状断言已全部改成断布尔**（焦点跟随／同节点／aria 指向／「文件树还是同一棵」），`.not.toBeNull()` 那类留原样（失败时实得值是 `null`，原语）。**变异 5 处：除 M4 首次崩溃外全部①类**（M1 恰红 2；M2／M3 各恰红 1；M4 修断言后恰红 1；M5 恰红 1）。**一处 tsgo 与 oxlint 意见相反**：键盘处理器**必须内联箭头**（加断言被 oxlint 判多余、不加 tsgo 报 TS18047＋TS2339；Solid 只在内联处收窄 `currentTarget`，先例 `auth/login-page.tsx`）。**门禁串行全过**（`test:components` **357/0/812 expect/26 文件**，基线 330/24 ⇒ ＋27 条＋2 文件；`test:unit` **824/0/3173/117** 同基线；`lint:openhive` **23 warnings·0 errors·86 files·exit 0**——警告数同基线、文件 81⇒86 即新增 5 个文件 **0 命中**；改动 7 文件单跑 oxlint **0/0**；typecheck **31/31**）。**⚠️ 缺口**：`minio-backups.ts` **今天没有写入方、也没有能写的东西**（T011 的 `core/minio` 是包内库、**零 HTTP 出口**）⇒ 窄条恒走「不知道几项」态；第一个消费者是 **T012**。**⛔ 「会话」tab 的会话列表（设计 §7）、窄条 2② 双树展开、↑↓ 导航均不在本 task**。收尾时把「实得值为节点」这档并入 `#005-01`。下一步 = T012。见「T019」节）

@@ -1,4 +1,4 @@
-import { createSignal, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { Portal } from "solid-js/web"
 import { CenterContent } from "@/center/center-content"
 import type { LoadFileContent } from "@/center/file-content"
@@ -11,8 +11,9 @@ import { MemberPanel } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import { minioBackups } from "@/project/minio-backups"
 import { ProjectAnchor } from "@/project/project-anchor"
-import { projectFiles } from "@/project/project-files"
-import { projectList } from "@/project/project-list"
+import type { ProjectData } from "@/project/project-data"
+import { projectFiles, setProjectFiles } from "@/project/project-files"
+import { projectList, setProjectList } from "@/project/project-list"
 import { projectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
 import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
@@ -33,11 +34,21 @@ export interface WorkspaceEntryProps {
   /**
    * 取文件内容的接缝，供中栏视图渲染。
    *
-   * 由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组），**不在这里 `useFile()`**：
+   * 该由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组），**不在这里 `useFile()`**：
    * `useFile` 要六层 provider 才活得下来，会把工作台的组件测试整个拖进去。
-   * 省略 = 视图拿不到内容（停在空态），但路由与 tab 照常。
+   * ⚠️ **今天还没接**（`layout-new.tsx` 只传了 `titlebarRight` 与 `projectData`）——接它要六层
+   * provider，属中栏视图那条线，不是 T018 的事。省略 = 视图拿不到内容（停在空态），但路由与 tab 照常。
    */
   loadFile?: LoadFileContent
+  /**
+   * **项目这件事的数据源**（T018）：清单 / 新建 / 项目文件三条链都从它走。
+   *
+   * 同样由应用入口注入（`pages/layout-new.tsx` 传生产的那一个 `PROJECT_DATA`），**不在这里
+   * import 生产实现**：那样组件一挂上就会去打真接口，组件测试再也跑不成离线
+   * （同 `loadFile` 的理由）。省略 = 一次请求都不发，界面停在 T018 之前的形态
+   * （面板里项目行不可点、新建按钮禁用、文件树恒空态）。
+   */
+  projectData?: ProjectData
 }
 
 /**
@@ -98,6 +109,60 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const [dualOpen, setDualOpen] = createSignal(false)
 
+  /**
+   * 项目数据源（省略 = 一次都不发）。取一次存下来就够：应用里它是**开局定死**的
+   * （`layout-new.tsx` 传的是常量），不值当为「会变的 prop」再写一层。
+   */
+  const projectData = props.projectData
+  /**
+   * 清单请求的**代次**——只有最新一代的响应能写缝。
+   *
+   * 为什么清单需要一道闸，而它看起来只是「进门拉一次」：写这个缝的有**两个出口**
+   * （进门那一次、建完重拉那一次），两者都异步、都可能迟到。少了它，一个慢的进门响应能把
+   * **刚建好的新项目**从清单里抹回去（`#004-01`：数出口要数「谁在写这个缝」，
+   * 不是数「谁看起来像这一类」）。
+   */
+  let 清单代次 = 0
+  const 拉清单 = async (data: ProjectData) => {
+    const 代 = ++清单代次
+    const 清单 = await data.list()
+    if (代 === 清单代次) setProjectList(清单)
+  }
+
+  /**
+   * 进门拉一次清单。
+   *
+   * **只拉清单，不认领当前项目**：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与
+   * AC4「点某项目切换」，对「打开时选谁」一个字没写。用户 2026-10-06 裁定照 spec 字面：
+   * **不自动选**（不选 ⇒ 不发 `x-openhive-project` ⇒ 后端落回沙箱根，即 005 之前的行为）。
+   */
+  onMount(() => {
+    if (projectData) void 拉清单(projectData)
+  })
+
+  /**
+   * 当前项目变了就换文件清单（AC4：左栏文件树随之切换）。
+   *
+   * 三件事按顺序：**先清空**（`undefined` = 还不知道，不是「这个项目没有文件」；留着上一个项目的
+   * 文件更糟——那看起来像**串项目**了）→ 去取 → 回来时确认自己还是最新的。
+   * 第三件不是假想的竞态：取文件要一层层走（`openhive-files.ts`），大目录慢得多，
+   * 连点两下换项目就够触发。这道闸用 `onCleanup`（而不是上面那个代次计数器）是因为
+   * **这里有一个响应式的键**——每次重跑，Solid 自己就会跑上一轮的清理。
+   */
+  createEffect(() => {
+    const id = currentProject()?.id
+    setProjectFiles(undefined)
+    if (!id || !projectData) return
+
+    let 作废 = false
+    onCleanup(() => {
+      作废 = true
+    })
+    void projectData.files(id).then((paths) => {
+      if (!作废) setProjectFiles(paths)
+    })
+  })
+
   return (
     <>
       {/* 图标栏是**三栏之外**的独立一列（DESIGN §4.1：图标栏 56px → 左项目侧栏 280px → 中 → 右），
@@ -137,10 +202,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     setPanelOpen(false)
                     setMemberOpen((open) => !open)
                   }}
-                  // `＋` 今天退化成「打开面板」——面板置顶就是「＋新建项目（私有/共享）」
-                  // （设计 §3：「置顶最易达」）。**这不是「新建」的替代**：面板里那两个按钮
-                  // 今天同样是禁用的（没有落库接收方，见 `project-panel.tsx` 文件头）。
-                  // T018 接上落库后，这里要再定一次：`＋` 是继续打开面板，还是直达新建表单。
+                  // `＋` 就是「打开面板」——面板置顶就是「＋新建项目（私有/共享）」
+                  // （设计 §3：「置顶最易达」）。
+                  // T018 接上落库后**定过一次**（用户 2026-10-06 裁定：面板内联一行命名输入），
+                  // 结论是 `＋` 保持现状、不直达表单：直达要在这里再养一份「起名」状态，而面板
+                  // 那一份已经在了（`project-panel.tsx` 的 `起名`）——两份状态就得再定谁先谁后。
                   onCreate={() => setPanelOpen(true)}
                 />
                 <Show when={panelOpen()}>
@@ -158,6 +224,36 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         })
                         setPanelOpen(false)
                       }}
+                      /*
+                        新建（FR-003）。没数据源就**不传** ⇒ 面板照旧渲染成禁用态
+                        ——「未接线即禁用」，与项目行不可点、锚点行三个按钮同一条规矩。
+
+                        回话的约定：**字符串 = 没建成**（面板把它显示在输入框下并留住输入框），
+                        `undefined` = 收工。把「拒绝 / 失败」翻成一句给民警看的话是在这里做的
+                        ——面板不认识 HTTP，它只管有没有话要说。
+                      */
+                      onCreate={
+                        projectData
+                          ? async (input) => {
+                              const 结论 = await projectData.create(input)
+                              if (结论.kind !== "created") return 结论.message
+                              // FR-003：新建后**成为当前项目**。用服务端给的 id，不自己编
+                              // ——`x-openhive-project` 那个头要拿它去定位目录（T017 的中间件），
+                              // 前端编的 id 后端不认。
+                              setCurrentProject({
+                                id: 结论.project.id,
+                                name: 结论.project.name,
+                                memberCount: 结论.project.memberCount,
+                              })
+                              // 清单**重拉**，不把新行拼进旧清单：旧清单可能压根还没到
+                              // （`undefined` = 还不知道），拼上去就成了「一个不完整的清单当完整的用」。
+                              await 拉清单(projectData)
+                              // 明写 `undefined`，不靠落空：这一支的两个出口都回值（没建成回一句话、
+                              // 建成回「没有话要说」），漏写这个 `return` 会被 `consistent-return` 告警。
+                              return undefined
+                            }
+                          : undefined
+                      }
                     />
                   </div>
                 </Show>
