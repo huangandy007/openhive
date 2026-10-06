@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import { FileTree, type FileTreeAction } from "./file-tree"
+import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -436,6 +436,305 @@ describe("FileTree 文件树（FR-005）", () => {
 
       expect(文本(无来源, "file-tree-empty")).toBe("还没有文件")
       expect(文本(空来源, "file-tree-empty")).toBe("还没有文件")
+    })
+  })
+
+  /**
+   * 右键菜单（设计 §6.2）。
+   *
+   * ## 菜单不在 `host` 里
+   *
+   * Kobalte 的菜单是**传送门**进 `document.body` 的（实测），所以本组一律查 `document`，
+   * 且 `afterEach` 必须清 body——否则上一轮的菜单留到下一轮，把「此刻有没有菜单」弄脏。
+   *
+   * ## 两项容易写错的操作（都来自实测，见 005/state.md 的探针记录）
+   *
+   * ① **点菜单项不能用 `.click()`**：Kobalte 在 `pointerup` 上选中，单独 `.click()` 不触发 `onSelect`。
+   * ② 断言「没有菜单」时**不能把节点交给 `expect`**（`LEARNINGS #005-01`：红的实得值是节点会把整轮挂哑）。
+   */
+  describe("右键菜单（设计 §6.2）", () => {
+    afterEach(() => {
+      document.body.innerHTML = ""
+    })
+
+    const 菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-content']")
+
+    /**
+     * 菜单**开着**吗——返回**布尔**，理由见上方 ②。
+     *
+     * ⚠️ 判据是 `data-expanded` 这个**状态属性**，不是「内容元素在不在」：Kobalte 关闭时是
+     * **先播一段退场动画、动画结束才卸载**（`components/context-menu.css` 的
+     * `animation: contextMenuContentHide … forwards`），而 happy-dom 没有 CSS 引擎 ⇒
+     * 动画永远不结束、元素一直留在 `document.body` 里。查「元素在不在」会读成「菜单永远开着」。
+     */
+    const 有菜单 = () => 菜单内容()?.hasAttribute("data-expanded") ?? false
+
+    const 菜单项 = (action: string) => 菜单内容()?.querySelector<HTMLElement>(`[data-action='${action}']`)
+
+    /** 菜单里各项的 `data-action`，**按渲染顺序**——顺序即设计表里的分组顺序。 */
+    const 菜单动作 = () =>
+      [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
+        el.getAttribute("data-action"),
+      )
+
+    /** 菜单里各项的文案，按渲染顺序。 */
+    const 菜单文案 = () =>
+      [...(菜单内容()?.querySelectorAll<HTMLElement>("[data-action]") ?? [])].map((el) =>
+        el.textContent?.trim(),
+      )
+
+    const 分隔符数 = () => 菜单内容()?.querySelectorAll("[data-slot='context-menu-separator']").length ?? 0
+
+    const 项禁用 = (action: string) => 菜单项(action)?.getAttribute("aria-disabled") === "true"
+
+    /**
+     * 右键一个元素——`contextmenu` 冒泡到组件的触发器上，菜单就开在指针处。
+     * 收 `null` 也收 `undefined`：两种「按名字找元素」的辅助函数一个给前者、一个给后者。
+     */
+    const 右键 = (el: HTMLElement | null | undefined) =>
+      el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+
+    /** 等一拍宏任务（Kobalte 有些收尾是 `setTimeout` 里做的，同步读会读到中间态）。 */
+    const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+    /** 点一个菜单项：走真实的指针序列（`pointerdown` + `pointerup`），理由见上方 ①。 */
+    const 点菜单项 = (action: string) => {
+      const el = 菜单项(action)
+      if (!el) return
+      for (const 类型 of ["pointerdown", "pointerup"])
+        el.dispatchEvent(
+          new PointerEvent(类型, {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            button: 0,
+            isPrimary: true,
+          }),
+        )
+    }
+
+    const 六个动作 = ["copy", "move", "upload", "download", "backup", "restore"] as const
+    type 六动作 = (typeof 六个动作)[number]
+    const 回调名: Record<六动作, keyof FileTreeProps> = {
+      copy: "onCopy",
+      move: "onMove",
+      upload: "onUpload",
+      download: "onDownload",
+      backup: "onBackup",
+      restore: "onRestore",
+    }
+
+    /** 开一棵单文件的树、**只**给 `action` 那一个回调接线，右键那行、点它，返回收到的路径。 */
+    function 点它(action: 六动作, 别的接线: Partial<FileTreeProps> = {}) {
+      const 收到: string[] = []
+      const 接线: Partial<FileTreeProps> = {
+        ...别的接线,
+        [回调名[action]]: (path: string) => 收到.push(path),
+      }
+      const host = mount(() => <FileTree paths={树("a.md")} {...接线} />)
+
+      右键(行按名(host, "a.md"))
+      点菜单项(action)
+
+      return 收到
+    }
+
+    describe("弹出与收起", () => {
+      test("右键一行才弹出菜单——在那之前没有菜单", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+
+        expect(有菜单()).toBe(false)
+        右键(行按名(host, "a.md"))
+        expect(有菜单()).toBe(true)
+      })
+
+      test("点一项之后菜单收起来——不留在屏幕上挡路", async () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("a.md")} onCopy={(path) => 收到.push(path)} />)
+
+        右键(行按名(host, "a.md"))
+        点菜单项("copy")
+        // Kobalte 的菜单项在 `onSelect` 里用 `setTimeout` 才关（`menu-item-base.tsx`）——
+        // 点完这一拍还没到，同步断言必然读成「还开着」。
+        await 歇一拍()
+
+        expect(有菜单()).toBe(false)
+        expect(收到).toEqual(["a.md"])
+      })
+    })
+
+    describe("项齐备（设计 §6.2 的四组）", () => {
+      test("十个动作齐备，顺序即设计表里的四行", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(菜单动作()).toEqual([
+          // 第一行：新建文件 / 新建文件夹
+          "create-file",
+          "create-dir",
+          // 第二行：重命名 / 复制 / 移动 / 删除
+          "rename",
+          "copy",
+          "move",
+          "delete",
+          // 第三行：上传 / 下载
+          "upload",
+          "download",
+          // 第四行：备份到 MinIO / 从 MinIO 拉回
+          "backup",
+          "restore",
+        ])
+      })
+
+      test("四组之间有三个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(分隔符数()).toBe(3)
+      })
+
+      test("每一项的文案就是设计表里那十个词", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(菜单文案()).toEqual([
+          "新建文件",
+          "新建文件夹",
+          "重命名",
+          "复制",
+          "移动",
+          "删除",
+          "上传",
+          "下载",
+          "备份到 MinIO",
+          "从 MinIO 拉回",
+        ])
+      })
+    })
+
+    describe("作用对象", () => {
+      test("作用于**右键那一行**，不是当前选中那一行——两者可以不是同一行", () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("甲.md", "乙.md")} onCopy={(path) => 收到.push(path)} />)
+
+        行按名(host, "甲.md")?.click() // 先选中「甲」
+        右键(行按名(host, "乙.md")) // 但右键的是「乙」
+        点菜单项("copy")
+
+        expect(收到).toEqual(["乙.md"])
+      })
+    })
+
+    describe("每个动作各回传各的", () => {
+      for (const action of 六个动作) {
+        test(`点「${action}」只喊它自己的回调，带上被右键那一行的路径`, () => {
+          expect(点它(action)).toEqual(["a.md"])
+        })
+      }
+
+      test("重命名走的是工具栏那个 onRename——两个入口同一个动作，不另起一套", () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("a.md")} onRename={(path) => 收到.push(path)} />)
+
+        右键(行按名(host, "a.md"))
+        点菜单项("rename")
+
+        expect(收到).toEqual(["a.md"])
+      })
+
+      test("删除走的是工具栏那个 onDelete", () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("a.md")} onDelete={(path) => 收到.push(path)} />)
+
+        右键(行按名(host, "a.md"))
+        点菜单项("delete")
+
+        expect(收到).toEqual(["a.md"])
+      })
+
+      test("右键一个**目录**建文件 ⇒ 落点就是它自己", () => {
+        const 收到: { kind: string; parent: string }[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
+        ))
+
+        右键(行按名(host, "材料"))
+        点菜单项("create-dir")
+
+        expect(收到).toEqual([{ kind: "directory", parent: "材料" }])
+      })
+
+      test("右键一个**文件**建文件 ⇒ 落点是它所在的目录，不是文件自己", () => {
+        const 收到: { kind: string; parent: string }[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
+        ))
+
+        右键(行按名(host, "话单.csv"))
+        点菜单项("create-file")
+
+        expect(收到).toEqual([{ kind: "file", parent: "材料" }])
+      })
+    })
+
+    describe("未接线即禁用（同 T005／T006／T007 的口径）", () => {
+      /** 设计 §6.2 的十项。**照它去问、而不是照菜单里有什么去问**——菜单为空时后者会空跑成假绿。 */
+      const 十项 = [
+        "create-file",
+        "create-dir",
+        "rename",
+        "copy",
+        "move",
+        "delete",
+        "upload",
+        "download",
+        "backup",
+        "restore",
+      ]
+      /** 这些项里**还能点**的那些。 */
+      const 还活着的 = (项: readonly string[]) => 项.filter((action) => !项禁用(action))
+
+      test("什么都没接线 ⇒ 十项全是禁用态——一个点了没反应的项是对用户的谎", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(还活着的(十项)).toEqual([])
+      })
+
+      test("只接了备份 ⇒ 只有「备份到 MinIO」可用，其余五项仍禁用", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} onBackup={() => {}} />)
+        右键(行按名(host, "a.md"))
+
+        expect(还活着的(六个动作)).toEqual(["backup"])
+      })
+    })
+
+    describe("没有作用对象", () => {
+      test("树是空的时候右键仍能弹菜单：新建与上传可用（落在根），要对象的动作禁用", () => {
+        const 收到: { kind: string; parent: string }[] = []
+        const host = mount(() => (
+          <FileTree
+            paths={树()}
+            onCreate={(input) => 收到.push(input)}
+            onUpload={() => {}}
+            onCopy={() => {}}
+          />
+        ))
+
+        // 空态那一块也在触发器里——「一个文件都没有」时右键，正是最想新建/导入的时候
+        右键(槽(host, "file-tree-empty"))
+
+        expect(有菜单()).toBe(true)
+        expect(项禁用("create-file")).toBe(false)
+        expect(项禁用("create-dir")).toBe(false)
+        // 上传要的是**落点目录**，没有对象时落点＝根——「传到项目根」是说得通的，故不因缺对象而禁用
+        expect(项禁用("upload")).toBe(false)
+        // 复制不一样：已接线，但此刻没有作用对象 ⇒ 不凭空复制
+        expect(项禁用("copy")).toBe(true)
+
+        点菜单项("create-file")
+        expect(收到).toEqual([{ kind: "file", parent: "" }])
+      })
     })
   })
 })
