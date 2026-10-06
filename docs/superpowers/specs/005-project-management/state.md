@@ -1,8 +1,8 @@
 # 实施进度 · 项目管理（工作空间轴）
 
 ## 当前任务
-T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ —— 见「已完成」。
-**下一步 = T012**（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓），依赖 T011 ＋ T019 均已满足；⚠️ 开工前读者注意：**T012 是 `[FE·新增]`**，组件测试要走 T007–T010 那套三段式命令（`--conditions=browser` ＋ 两个 `--preload`，裸跑全红）；**它是 T007 / T008 那棵文件树的「第二棵树」**，先读 `file-tree.tsx` 的文件头（状态归属）与 T008 的六条 Kobalte 契约；**T011 今天刚落的上游件是 `packages/core/src/minio.ts`**——T012 该用的是它的 `Minio.Interface`（在**边界**注入替身），**别把 `makeStore` 整个换成假的**（那会把被测对象换掉，`#002-02`）。✅ **T019 已落地**：US4 验收里「当前在『文件』tab」这句现在有据可依（② 默认停「文件」，`data-slot="file-tree-slot"` 沿用旧名）；T012 可直接用 ② 的 `active`/`onSelect` 把左栏拨到「文件」，而 **④ 窄条的 `onOpen` 今天只做设计 §5.1 步骤 2①（拨回「文件」tab），2②「展开上下双树」留给 T012**。
+T001（定位）✅ ／ T002（MinIO 目录与权限方案）✅ ／ T003（`project_ext` 表 ＋ 建表钩子）✅ ／ T004（`project_member` ＋ `project_archive` ＋ 微信群模型判定）✅ ／ T017（「当前项目」身份的落地口径）✅ ／ T005（项目锚点行 ＋ 左栏接线 ＋ 空态接缝）✅ ／ T006（项目面板 ＋ 接缝 ＋ 左栏接线）✅ ／ T007（文件树 ＋ 接缝 ＋ 左栏接线）✅ ／ T008（文件树右键菜单）✅ ／ T009（删除二次确认 ＋ 选中点亮/置灰）✅ ／ T010（成员面板 ＋ 接缝 ＋ 接线）✅ ／ T011（MinIO 客户端）✅ ／ T019（左栏外壳：② tab 容器 ＋ ④ MinIO 常驻窄条）✅ ／ T012（US4 上下双树拖拽：沙箱 ↔ MinIO，已备份标 ✓）✅ —— 见「已完成」。
+**下一步 = T013**（US5 项目归档：上传 MinIO ＋ 删除沙箱 ＋ `archived=1`），依赖 T003 ＋ T011 均已满足。⚠️ **开工前必须先钉那条未定项**（`tasks.md` T013 条已写明，2026-10-06 本批**不拍**）：**owner 归档时，成员的沙箱文件怎么办**——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 归档只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 状态拦住后续写入；(b) 成员各自在收到归档通知后上传自己的那份（需站内信 ＋ 状态机）。**这两条实现量与产物完全不同，动手前问用户**（`dev_tdd.005.md` Step 2 ⑦）。⚠️ **T013 是 `[BE]`**：`lint:openhive` 只扫 `packages/app/src/*` 六个目录、**不覆盖 core/auth/opencode**（T011 已实测记档，那是**空结论**）⇒ 必须另取**文件级** oxlint（仓库根跑，`#004-10`）。✅ **T022 是 T012 收尾时补的编号**（MinIO 的 HTTP 出口：读 `OPENHIVE_MINIO_*` ＋ `projectId` 透传 ＋ 备份/拉回路由），**依赖 D-13**，双树的行在它落地前**不可拖**。
 （上一轮读者留下的注意，已完成：**T007 的 ⑤ 前置（3 处目录清单）已随 T005 办完**，不需重做；T009 那条「T007 刻意没在未选中时禁用重命名/删除」的活也已随 T009 办完。）
 ✅ **T008 留的待裁定项已裁定（2026-10-06，用户「补，phase 你定」）**：复制／移动／上传／下载四个动作零任务认领（`grep` 已核实）⇒ **补 T020，归 Phase 4**（同 T017／T018／T019 先例，编号排最后）。
 ✅ **T006 顺带接掉了 T005 的欠账（半个）**：`currentProject` 有了第一个写入方（面板点一行 ⇒ 写它 ⇒ 锚点行跟着变）——**但只接了「切项目」**，「新建项目」没有落库就没有项目可切，那半个**明账挂在 T018**（不是暗账）。
@@ -1095,6 +1095,104 @@ member 看不到别人的 `[移除]`、owner 自己那一行也没有 `[移除]`
 2. **`workspace-entry.test.tsx` 里既有的 4 处 `expect(...).toBeNull()`**（判 `topbar` / `document-view` 不在的那几处）
    **未清理**——不是本 task 加的（`#005-01` 原始挂账），下次碰到再清。
 
+### T012 · 上下双树拖拽（沙箱 ↔ MinIO）（FR-007 / US4 / 设计 §5）
+
+**交付**（2 新 ＋ 3 改）：
+
+| 文件 | 内容 |
+|---|---|
+| `packages/app/src/project/dual-file-tree.tsx` | `DualFileTree`（上树＝`FileTree` 本体、下树＝同文件内的 `MinioTree` 只读树、可拖分隔条、拉回确认条） |
+| `packages/app/src/project/dual-file-tree.test.tsx` | **20 条**（8 条双树结构 ＋ 12 条拖拽） |
+| `packages/app/src/project/file-tree.tsx` | **只加一个 `draggable?: boolean` prop** ＋ 行上一个 `draggable={props.draggable === true && row.node.type === "file"}`；**其余一行未动** |
+| `packages/app/src/workspace/workspace-entry.tsx` | `dualOpen` 信号；「文件」pane 的内容由 `FileTree` 换成 `DualFileTree`；窄条 `onOpen` 一步做两件事（切回「文件」＋ 展开） |
+| `packages/app/src/workspace/workspace-entry.test.tsx` | ＋**6 条**接线用例 |
+
+**范围（开工前用户裁定，四问全取推荐项 A）**：① 只做前端 ＋ 另补编号 **T022** 承接 HTTP 出口（凭据形状 D-13
+**不提前拍板**）；② ✓ 的判据 ＝ **纯路径**（`MinIO key 清单 ∋ 沙箱相对路径`）；③ 双树只替换「文件」pane 的
+**内容**，`[会话][文件]` tab 容器（T019）**保留**；④ 备份**直接覆盖**、拉回覆盖沙箱现行那份时**先确认一次**。
+
+**上树不另起一棵**：`DualFileTreeProps extends Omit<FileTreeProps, "draggable">`，`splitProps` 掉自己那五个、
+其余原样 spread 给 `FileTree` ⇒ 上树的能力面**跟着 `FileTree` 长**（搜索 / 折叠 / 新建 / 右键都在），不必逐项
+转发——那份转发清单本身就是一份会漂的镜像（`#004-07`：说「同形」要按**被调方的全表**打勾）。
+
+**拖拽是「最外层一次问完」**：两棵树的行**刻意同构**（都带 `data-slot="file-tree-row"` ＋ `data-path` ＋
+`data-type`，靠 `data-tree` 分是哪棵），所以四个问题——从哪棵树、拖的哪一行、放到哪棵树的哪一行——在 `DualFileTree`
+自己那层一次问完（`#004-12`）。代价是**下树复用了 `file-tree-row` 这个 `data-slot`**（看着像笔误，实为委托的
+唯一前提），两处注释都写明了。收益是 `FileTree` / `MinioTree` **都不必知道「MinIO」这种东西存在**——它们只交出
+一个事实：「这行可以拖」。
+
+**收起态只卸载下树，上树恒挂载**：`FileTree` 自带搜索词 / 折叠态 / 选中行三份内部信号，展开再收起就清掉的话，
+用户会看见刚选好的东西不见了（同 T019 的「两个 pane 常挂不卸载」）。有一条用例比**节点本身**
+（`树(host, "sandbox") === 前`）钉住——那处也是比布尔，见下。
+
+**`#005-01` 在本 task 的落点**：本次所有「某处没有元素」的断言都写成 `不存在 = (el) => el === null`，因为实得值
+若是**被 Solid 渲染过的节点**，红了会把整轮 `bun test` **挂死**（是哑不是红——T019 已实测：29s / 4.68GB /
+一条结果都取不到）。⚠️ `workspace-entry.test.tsx` 里**既有**的 4 处同形状断言（判 `topbar` / `document-view`）
+**不在本 task 范围内、未动**，仍在挂账。
+
+**happy-dom 没有 `DragEvent`（有 `DataTransfer`）**：拖拽一律拿**裸 `Event`** 顶着，产品码对 `dataTransfer` 一律
+可选链（`event.dataTransfer?.setData`）——那两处 `?.` 不是防御性编程，是**测试进得来**的前提。判「拖的是谁」用
+组件自己的 `拖源` 信号，而不是 `dataTransfer` 里的 payload（payload 照放，与上游 `file-tree-v2.tsx` 同为
+`file:<path>` 形状，但**没有一条断言依赖它**）。
+
+**变异验证（串行，2026-10-06，据实记三类 `#003-03`）**：
+
+| 变异 | 结果 |
+|---|---|
+| **M1** 去掉「跨树」判据（同树也放行） | **恰红 1**（「同树内拖 ⇒ 两个回调都不喊」） |
+| **M2** 落点改成「目录行也取父目录」 | **恰红 5**（红的全是「目标为目录」的用例，**对照条不红**） |
+| **M3** 落点改成「文件行取自己」 | **恰红 1**（正是 M2 逼出的那条补条） |
+| **M4** 下树 `draggable` 去掉「只文件行」 | **19 条全绿** → 补一条后**恰红 1**（见下） |
+| **M5** 上树 `draggable` 恒 `true` | **恰红 1** |
+| **M6** 下树 `draggable` 恒 `true` | **恰红 1** |
+| **M7** `可放` 的方向判据恒 `true` | **19 条全绿** → 补一条后**恰红 1**（见下） |
+| **M8** 拉回不看同名 | **恰红 1**（「无同名 ⇒ 直接拉回」） |
+| **M9** ✓ 也画在目录行 | **恰红 1** |
+| **M10** 收起态仍渲染下树 | **恰红 1** |
+| **N1** 窄条不 `setDualOpen` | **恰红 4**（同一个「展开」动作被 4 条共同依赖，含两条「先展开再操作」的后续用例，**对照条不红**） |
+| **N2** 窄条不切回「文件」 | **恰红 2**（T019 那条 ＋ T012 那条） |
+| **N3** `onCollapse` 不接 | **恰红 1** |
+| **N4** `backups` 不传 | **恰红 1** |
+
+**M4 / M7 全绿不是「代码多余」，是「测试少了一条」**（`#003-03` 类③ 的前提在这里不成立）：两个是**同一个形态**
+——同一件事有**两道判据**，而用例只压了前一道。**M4**：上树「目录行不可拖」由 `file-tree.tsx` 守、
+**下树那条由 `MinioTree` 自己守**；**M7**：`draggable` 属性是「浏览器不发 `dragstart`」（外部手段）、`可放` 里的
+方向判据是「组件自己挡」（内部手段）⇒ 只测前者的话，削掉后者**一条都不会红**（`#004-09` 的形态：端点判据对
+「拦在哪儿」不敏感）。⇒ 各补一条用例，**且都是在变异体上补的**（先红后绿，成牙证据就是这两次红）。
+
+**M2 逼出的第三处同型缺口**：M2 红了 5 条后回头数 `拼路径` 的**分支覆盖面**——它有两个分支（目录行 /
+非目录行），而落点用例只压到「目录行」与「空白」，「**文件行**」一条都没有；文件行与空白在 `位.路径` 上
+**恰好相反**（有父目录 vs 没有），所以「空白那条绿着」**证明不了**「文件行也对」（`#004-01`：判据的出口数要
+数全）。补了一条（`拖到文件行上 ⇒ 落点仍是它所在目录`），成牙证据是 M3 的恰红 1。
+⚠️ **据实说明：这条不是 RED-first 写的**（补它时实装已经是对的），拿 M3 的恰红当证据，不冒充「先红后绿」。
+
+**一处 RED 阶段就记下的「假绿」**：「展开 → 收起 → 再展开，沙箱树是**同一个节点**」这条在**空壳上也绿**
+（那时两边都是 `null`，`null === null`）——它当时**恒真**，要等实装落地才成为真判据。记在这里是因为**它绿过**：
+别把它算作「RED-first」，它没有红过。
+
+**门禁（T012 收尾，串行，2026-10-06）**：`packages/app` 组件测试 **383 pass / 0 fail / 27 文件**
+（T019 基线 357 / 26 ⇒ **＋26 条、＋1 文件**，正是 T012 的 20 ＋ 6）；`test:unit` **824 / 0 / 117 文件**（同基线）；
+`lint:openhive` **exit 0**（23 warnings / 0 errors / 88 files，**本次三文件 0 命中**——引入的 1 处
+`require-array-sort-compare`（`.sort()` 没给 compare）已当场清掉）；`bun run lint` **本次文件 0 命中**；
+`typecheck` **exit 0**（⚠️ 首跑红 1 条：`MinioTree` 的 `aria-expanded` 写成 `String(展开(...))`，而 Solid 只收
+`"true" | "false" | boolean` ⇒ 改布尔，与 `file-tree.tsx` 同写法；**`bun test` 不做类型检查，RED/GREEN 一路
+没暴露**）；`bun.lock` **一行未动**。
+
+**⛔ 不在本 task 交付**：
+
+1. **`onBackup` / `onRestore` 的接收方**（MinIO 的 HTTP 出口）——归 **T022**。⇒ **生产里这两个 prop 不传 ⇒
+   行不可拖**（「未接线即禁用」，与右键菜单第 9/10 项自 T008 起就禁用同因）。组件这一侧的能力由
+   `dual-file-tree.test.tsx` 证明。
+2. **`minio-backups.ts` 的写入方**——同 T022（缝里恒 `undefined` ⇒ 下树走「备份清单未接入」空态、窄条走
+   「不知道几项」态）。
+
+**缺口 / 挂账（`#002-02`）**：
+
+1. ✅ **T019 挂的那条「窄条 2② 展开上下双树」本 task 已还清**（`MinioBar` 的 `onOpen` 现在一步做两件事）。
+2. `workspace-entry.test.tsx` 里**既有**的 4 处 `expect(...).toBeNull()`（判 `topbar` / `document-view` 不在的
+   那几处）**仍未清理**（同 T019 挂账 2，不在本 task 范围内）。
+3. **↑↓ 区间导航**仍挂账（T019 挂账 3，本 task 未动）。
+
 ## 开工前裁定（2026-10-06，用户裁定 · 主检出会话执行）
 
 来源：`docs/workspace/dev_tdd.005.md` 文末「未定项清单」。三条已裁定，并已同步到 plan.md / tasks.md / 两份 design 文档。
@@ -1235,6 +1333,7 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
+2026-10-06（**T012 收尾**：新建 `app/src/project/dual-file-tree.tsx`（`DualFileTree`：上树＝`FileTree` **本体**、下树＝同文件内 `MinioTree` 只读树、中间 `ResizeHandle` 可拖分隔条、拉回二次确认**内联条**）＋ `dual-file-tree.test.tsx`（**20 条**）；`file-tree.tsx` **只加一个 `draggable?: boolean`**（＋行上一个判断，其余一行未动）；`workspace-entry.tsx` 把「文件」pane 的内容换成 `DualFileTree`（`dualOpen` 信号）＋ 窄条 `onOpen` **一步做两件事**（§5.1 步骤 2①②：切回「文件」**并**展开）⇒ **还清 T019 挂的「2② 归 T012」**。**四问全按推荐项 A 裁定**（① 只前端 ＋ 补编号 **T022** 承接 HTTP 出口；② ✓ 判据＝纯路径；③ 只换 pane 内容、tab 容器保留；④ 备份直接覆盖、拉回先确认）。**上树不另起一棵**——`extends Omit<FileTreeProps, "draggable">` ＋ `splitProps` ＋ 其余原样 spread ⇒ 能力面跟着 `FileTree` 长（逐项转发＝会漂的镜像，`#004-07`）。**拖拽是最外层一次问完**：两棵树的行**刻意同构**（共用 `data-slot="file-tree-row"` ＋ `data-path` ＋ `data-type`，`data-tree` 分哪棵）⇒ 四个问题一次问完（`#004-12`），代价是下树**复用了那个 `data-slot`**（看着像笔误，实为委托的唯一前提），收益是两棵树都不必知道「MinIO」存在。**14 个变异**（组件 10 ＋ 接线 4）：M1 1／M2 5／M3 1／**M4 全绿→补条后 1**／M5 1／M6 1／**M7 全绿→补条后 1**／M8 1／M9 1／M10 1；N1 4／N2 2／N3 1／N4 1。**M4／M7 全绿不是代码多余，是测试少了一条**——同一个形态：同一件事有**两道判据**（M4：上树那条由 `file-tree.tsx` 守、下树那条由 `MinioTree` 守；M7：`draggable` 属性＝「浏览器不发 `dragstart`」（外）、`可放` 的方向判据＝「组件自己挡」（内）），而用例只压了前一道 ⇒ **各补一条，都是在变异体上补的**（先红后绿）。**M2 逼出第三处同型缺口**：数 `拼路径` 的**分支覆盖面**，发现「文件行」一个用例都没有（文件行与空白在 `位.路径` 上**恰好相反** ⇒ 空白那条绿着证明不了文件行也对，`#004-01`）⇒ 补一条，成牙证据是 M3 的恰红（⚠️ 据实说明：**不是 RED-first 写的**）。**记下一处 RED 阶段的假绿**：「展开 → 收起 → 再展开是同一节点」在空壳上也绿（两边都是 `null`）——它绿过，别算作 RED-first。**`#005-01` 的落点**：所有「某处没有元素」都断布尔（`不存在 = el === null`）。**happy-dom 没有 `DragEvent`**（有 `DataTransfer`）⇒ 用例拿裸 `Event`，产品码对 `dataTransfer` 全用可选链（那两处 `?.` 是测试进得来的前提）。**门禁串行全过**（`test:components` **383/0/27 文件**，基线 357/26 ⇒ ＋26 条＋1 文件；`test:unit` **824/0/117** 同基线；`lint:openhive` **23·0·88 files·exit 0** 本次三文件 **0 命中**——引入的 1 处 `require-array-sort-compare`（`.sort()` 没给 compare）当场清掉；`bun run lint` 本次文件 0 命中；`typecheck` exit 0——⚠️ 首跑红 1 条：`aria-expanded` 写成 `String(...)`，Solid 只收布尔，**`bun test` 不做类型检查一路没暴露**；`bun.lock` 一行未动）。**⛔ `onBackup`/`onRestore` 的接收方（HTTP 出口）归 T022** ⇒ 生产里不传 ⇒ 行不可拖（「未接线即禁用」）；`minio-backups.ts` 的写入方同归 T022。下一步 = T013（⚠️ 开工前必须先钉 Q1×Q3 那条未定项：owner 归档时**成员的沙箱文件**怎么办）。见「T012」节）
 2026-10-06（**T019 收尾**：新建 `app/src/project/sidebar-tabs.tsx`（**受控**组件：`active` ＋ `onSelect`，自己不带 tab 状态；两个 pane **同时挂载、靠 `hidden` 切换**——`FileTree` 的搜索词／折叠态／选中行是内部信号，一卸载就「切一下 tab 全没了」，`hidden` 同时保证非激活 pane 不进 Tab 顺序）＋ `minio-bar.tsx`（`cloud-upload` 图标而非设计字面的 `⬆`，DESIGN §1.2 单色线性图标纪律）＋ 接缝 `minio-backups.ts`（第三件）；`workspace-entry.tsx` 把 T007 的 `file-tree-slot` **整体搬进** ② 的「文件」pane（`file-tree.tsx` **一行未改**，`data-slot` 沿用旧名——搬位置不是搬身份）。**＋27 条**（13＋6＋8）。**三处未定决策点已问用户、全部按推荐项裁定**：① 「会话」tab ＝ **显式空态**（`data-state="empty"` ＋「会话列表未接入」）；② 点窄条 ＝ **只做设计 §5.1 步骤 2①**（拨回「文件」tab），2②「展开上下双树」归 T012；③ 键盘 ＝ **只做外壳自己的 ← →**，**↑↓ 继续挂账**（遵守本 task 自己写的「`file-tree.tsx` 一行不改」）。**🔴 本 task 最重要的产出是变异 M4 逼出来的**：`#005-01` 那颗地雷**适用范围比原记的更宽**——不止 `.toBeNull()`，**任何把被 Solid 渲染过的节点当实得值的断言**都在内。M4 删掉键盘焦点跟随后，预期「恰红 1 条」，实际**不是红是崩**（`expect(document.activeElement).toBe(tab(...))` 红了、bun 打印实得值停不下来 ⇒ **Bun internal assertion failure ＋ panic**、`timeout` 挡下时已 29s、峰值 **4.68GB**、`EXIT=3`、**一条结果都取不到**）；改成比**布尔**后 **2 秒**出结果、恰红 1、12 pass。**新写的 4 处同形状断言已全部改成断布尔**（焦点跟随／同节点／aria 指向／「文件树还是同一棵」），`.not.toBeNull()` 那类留原样（失败时实得值是 `null`，原语）。**变异 5 处：除 M4 首次崩溃外全部①类**（M1 恰红 2；M2／M3 各恰红 1；M4 修断言后恰红 1；M5 恰红 1）。**一处 tsgo 与 oxlint 意见相反**：键盘处理器**必须内联箭头**（加断言被 oxlint 判多余、不加 tsgo 报 TS18047＋TS2339；Solid 只在内联处收窄 `currentTarget`，先例 `auth/login-page.tsx`）。**门禁串行全过**（`test:components` **357/0/812 expect/26 文件**，基线 330/24 ⇒ ＋27 条＋2 文件；`test:unit` **824/0/3173/117** 同基线；`lint:openhive` **23 warnings·0 errors·86 files·exit 0**——警告数同基线、文件 81⇒86 即新增 5 个文件 **0 命中**；改动 7 文件单跑 oxlint **0/0**；typecheck **31/31**）。**⚠️ 缺口**：`minio-backups.ts` **今天没有写入方、也没有能写的东西**（T011 的 `core/minio` 是包内库、**零 HTTP 出口**）⇒ 窄条恒走「不知道几项」态；第一个消费者是 **T012**。**⛔ 「会话」tab 的会话列表（设计 §7）、窄条 2② 双树展开、↑↓ 导航均不在本 task**。收尾时把「实得值为节点」这档并入 `#005-01`。下一步 = T012。见「T019」节）
 2026-10-06（**T011 收尾**：新建 `packages/core/src/minio.ts`（`Minio.makeStore(config) ⇒ Minio.Interface`：`put`/`get`/`list`/`delete`，**入参不带桶名与前缀**——前缀由构造时的 `scope` 定死）＋ `packages/core/test/minio.test.ts`（**22 条**）＋ 观测面 `packages/core/test/fixture/fake-s3.ts`（`Bun.serve({port:0})` 真 HTTP 端点）。**零 `package.json` 改动、零 `bun.lock` 改动**——**D0-4 的前提被实测推翻**：`@aws-sdk/client-s3@3.933.0` **本来就是上游根 `package.json` 的依赖**（`upstream/dev:package.json` 第 113 行），已装、全仓零 import ⇒ 没跑 `bun add`；落点也零成本（`packages/core` 的 `exports` 是通配 `./*`）。**观测面取「真端点」而非替身**（T011 的产物就是那段实装，用替身=把被测对象换掉，`#002-02`），残差如实记（桶策略/STS/`${aws:username}` 本机一条未验 ⇒ D-13）。**16 个变异全部①类恰红**（5/1/1/1/1/1/4/1/6/3/6/1/1/**0**/13/1），两条「全绿/异常」都追到了根因：**M15**（关 `forcePathStyle`）首跑**21 条全绿**——不是那行多余，而是**端点 host 是 IP 字面量时 SDK 自己退回 path-style**，那行在原观测面里不可见；夹具改绑 `localhost` 后红 13（`#004-13` 情形①换观测面）；**M14**（空 body 分支）全绿则**实测**出另一件事——删掉它 `typecheck` 立刻红（`TS18048`，exit 2），所以它是**类型收窄**、守它的是编译器不是测试（`#003-03` 类③ 的前提在这里不成立，这条是量出来的）。另**补一条杀死另一种实现的用例**（桶名配错=404 `NoSuchBucket`；M16 恰红 1 正是它；据实说明：**不是 RED-first 写的**，拿 M16 当它的成牙证据）。修掉**我自己的一个 bug**（`拦住了` 的 `.then` 两分支写反，7 条用例当场红）。**门禁串行全过**（`packages/core` `bun test` **1209/8/5**，对照开工时 **1208/8/5**，5 条失败名称未变、全是上游 `NpmConfig.*`；`test:components` **不适用**；typecheck **31/31 exit 0**；文件级 oxlint **0/0**；`bun.lock` 一行未动）。**🚩 两条要记住的**：① **`lint:openhive` 只扫 `packages/app/src/*` 六个目录、不覆盖 `packages/core`**——对本题「0 命中」**恒真、等于没测**，`[BE]` 落在 core/auth/opencode 的 task 必须另取文件级 oxlint；② `await expect(...).rejects.toThrow()` 会被 `await-thenable` 记一条，仓库成文写法是**返回错误本体**的助手（`auth/src/*.test.ts` 三处同注，全仓已有 98 处）。**⛔ 接线与出口归 T012/T013**；`minio.md` §4 的 `OPENHIVE_MINIO_*` **刻意没落进本模块**（凭据形状正是 D-13 要裁定的，现在写死等于替它拍板；全仓零引用，改名前无需 grep）。下一步 = T012。见「T011」节）
 2026-10-06（**T010 收尾**：新建 `app/src/project/member-panel.tsx`（受控组件：`👥 成员管理 · 项目名` ＋ `＋ 邀请成员（输入警号）` ＋ `成员（N）` ＋ 每行 `👤 名字（本人） role [移除]` ＋ 底部 `[退出项目]`，按设计 §4）＋ `member-panel.test.tsx`（**18 条**）＋ 接缝 `project-members.ts`；接线落在 `workspace-entry.tsx`（`memberOpen` 信号 ＋ 接上 **T005 就预留**的 `ProjectAnchor.onOpenMembers`——注释原文「接的是 T010 的成员面板」＋ `member-panel-slot` 浮层，**两个浮层互斥**）＋ `workspace-entry.test.tsx`（＋6 条）。**权限一律问 `ProjectMembership.decide`、本组件零规则复述**（`actor` 从 `selfPoliceId` 反查 role、查不到即 `null` ⇒ 天然 fail-closed）；**「权限决定画不画、接线决定能不能点」两条独立理由**。**12 处变异全部①类恰红**（组件侧 8：2/4/3/1/6/1/1/1；接线侧 4：5/1/1/1），其中 **M5 逼出一处真收敛**——「谁是我」我一开始写了两遍（`我()` 的 `find` ＋ 标记里的 `policeId ===`），变异后标记那侧**一条都不红**，改成 `<Show when={m === 我()}>` 比同一对象引用后同一变异红 6 条（`#002-06` 的又一实例）；另修掉**探针自己的 bug**（`row?.querySelector(...) !== null` 在行不存在时返回 `true`，替没渲染的行作证）。**一处只有 typecheck 才抓到的**：测试里 `文本(行(host,…), …)` 把 `HTMLElement | null` 递给收非空的 `文本`——`bun test` 不做类型检查所以 RED/GREEN 一路没暴露，已放宽签名。四道门禁串行全过（`test:components` **330 pass / 0 fail / 24 文件**（基线 306＋24）／ typecheck **31/31 exit 0** ／ `lint:openhive` **23 warnings·0 errors·exit 0**、**本次三文件 0 命中**（引入的 4 处当场清：`Icon` 死导入 ＋ 3 处类型断言）／ 根 `lint` 本次文件 **0 命中**，那 1 error 仍是 `#001-02` 记的上游那处）。**⛔ 落库与 HTTP 出口不在本 task 交付**（三个回调不接线 ⇒ 按钮 `disabled`），归 **T021**。下一步 = T011。见「T010」节）

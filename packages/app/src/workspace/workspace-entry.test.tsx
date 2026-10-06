@@ -669,6 +669,9 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
 const 侧栏tab = (host: HTMLElement, key: "session" | "files") =>
   host.querySelector<HTMLButtonElement>(`[data-slot='sidebar-tab'][data-tab='${key}']`)
 const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-component='minio-bar']")
+const 双树 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>("[data-component='dual-file-tree']")
+const 沙箱树 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-tree='sandbox']")
 const tabpane = (host: HTMLElement, key: "session" | "files") =>
   host.querySelector<HTMLElement>(`[role='tabpanel'][data-pane='${key}']`)
 /** 这个 pane 被藏起来了吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
@@ -772,5 +775,81 @@ describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T0
     setMinioBackups(["笔记.md", "资料/话单.csv"])
 
     expect(text(host, "minio-bar-count")).toBe("· 2 项")
+  })
+})
+
+/**
+ * 上下双树接进左栏（T012 出参：**点窄条 → 展开双树**，设计 §5.1 步骤 2②）。
+ *
+ * 与上几节同因（T005 立下的规矩）：组件单测全绿 ≠ 接线接上了。这一节验的正是那根线——
+ * 「文件」pane 里装的是 `DualFileTree`（不再是裸 `FileTree`），而 ④ 窄条点下去除了
+ * 切回「文件」tab（T019 已验），还要**展开双树**。
+ *
+ * ⚠️ **生产里 `onBackup` / `onRestore` 不接**（MinIO 的 HTTP 出口还不存在，归 T022）⇒
+ * 双树的行**不可拖**。这是刻意的「未接线即禁用」，与本节的断言不冲突：本节只验
+ * 「能展开 / 能收起 / 下树走哪条缝」。
+ */
+describe("上下双树接进左栏（T012 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectFiles(undefined)
+    setMinioBackups(undefined)
+  })
+
+  test("「文件」pane 里装的是双树容器，上树仍是**那棵**文件树（设计 §5.2 上树）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(双树(host)?.closest("[data-slot='file-tree-slot']")).not.toBeNull()
+    expect(沙箱树(host)?.closest("[data-component='dual-file-tree']")).not.toBeNull()
+  })
+
+  test("**默认收起**：没有 MinIO 树（设计 §5.1 步骤 1「不常驻双树，避免挤占文件区」）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(不存在(host, "[data-tree='minio']")).toBe(true)
+  })
+
+  test("点窄条 ⇒ 展开双树（设计 §5.1 步骤 2②）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    // 前置对照（`#002-02`）：先证明「点了才有」——否则「有」在一个恒展开的实现上也成立
+    expect(不存在(host, "[data-tree='minio']")).toBe(true)
+
+    窄条(host)?.click()
+
+    expect(沙箱树(host)).not.toBeNull()
+    expect(不存在(host, "[data-tree='minio']")).toBe(false)
+  })
+
+  test("点下树标题的 ✕ ⇒ 收回默认窄条态（设计 §5.1 步骤 4）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    窄条(host)?.click()
+    expect(不存在(host, "[data-tree='minio']")).toBe(false) // 前置：确实展开了
+
+    host.querySelector<HTMLElement>("[data-slot='minio-tree-collapse']")?.click()
+
+    expect(不存在(host, "[data-tree='minio']")).toBe(true)
+  })
+
+  test("在「会话」tab 点窄条：一步做两件事——切回「文件」**并**展开双树（设计 §5.1 步骤 2①②）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    侧栏tab(host, "session")?.click()
+
+    窄条(host)?.click()
+
+    expect(藏起来了(tabpane(host, "files"))).toBe(false)
+    expect(不存在(host, "[data-tree='minio']")).toBe(false)
+  })
+
+  test("下树走接入缝：缝里写进备份清单，下树才列得出来", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    窄条(host)?.click()
+    // 前置：今天没有写入方 ⇒ 下树是「未接入」空态（不是「还没有备份」——那两句意思相反）
+    expect(text(host, "minio-tree-empty")).toBe("备份清单未接入")
+
+    setMinioBackups(["资料/话单.csv"])
+
+    expect(
+      不存在(host, "[data-tree='minio'] [data-slot='file-tree-row'][data-path='资料/话单.csv']"),
+    ).toBe(false)
   })
 })

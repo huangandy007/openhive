@@ -6,7 +6,7 @@ import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
 import { currentProject, setCurrentProject } from "@/project/current-project"
-import { FileTree } from "@/project/file-tree"
+import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import { minioBackups } from "@/project/minio-backups"
@@ -88,6 +88,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 与 `panelOpen` / `memberOpen` 同因：状态只能落在共同祖先。
    */
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTabKey>("files")
+  /**
+   * 上下双树展开态（T012 / `2026-09-11-项目管理-design.md` §5.1）。理由同 `sidebarTab`——
+   * **两个读写方**：④ 窄条点击展开它（步骤 2②），下树标题的 ✕ 收起它（步骤 4）；
+   * 收起 ＝ 默认态（步骤 1「不常驻双树，避免挤占文件区」）。
+   *
+   * 与 `sidebarTab` 同属「左栏此刻长什么样」：两个信号一起决定「文件」pane 里是**一棵树**
+   * 还是**上下两棵树**，所以同样只能落在共同祖先。
+   */
+  const [dualOpen, setDualOpen] = createSignal(false)
 
   return (
     <>
@@ -165,21 +174,41 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   </div>
                 </Show>
                 {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件]` tab 容器 ＋ 主体。
-                    文件树（T007）**整体搬进**「文件」pane——搬的是位置不是身份，`file-tree.tsx`
-                    一行未改，pane 的 `data-slot` 也仍叫 `file-tree-slot`（这正是 T007 当初选
-                    「受控组件 ＋ 接缝」的原因）。`files` 传的是元素本身，`SidebarTabs` 两个 pane
-                    常挂不卸载 —— 切一下 tab 不该把选中的行、展开的目录、搜过的词丢掉。
-                    它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。 */}
+                    「文件」pane 里装的是**上下双树**（T012 / 设计 §5）：上树＝沙箱那棵文件树
+                    （T007 的 `FileTree` 一字未改地当了上树），下树＝MinIO 备份，默认收起、点 ④
+                    窄条展开。pane 的 `data-slot` 仍叫 `file-tree-slot`（T007 起就是这个名字，
+                    不必随装进去的东西改）。`files` 传的是元素本身，`SidebarTabs` 两个 pane
+                    常挂不卸载 —— 切一下 tab 不该把选中的行、展开的目录、搜过的词丢掉
+                    （`DualFileTree` 也因此只把**下树**放进 `<Show>`，上树恒挂载）。
+                    它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
+
+                    ⚠️ `onBackup` / `onRestore` **刻意不接**：它们的接收方（MinIO 的 HTTP 出口）
+                    今天还不存在，归 T022。不接 ⇒ 行不可拖（「未接线即禁用」，与右键菜单第 9/10
+                    项自 T008 起就禁用是同一件事）。 */}
                 <SidebarTabs
                   active={sidebarTab()}
                   onSelect={setSidebarTab}
-                  files={<FileTree paths={projectFiles()} />}
+                  files={
+                    <DualFileTree
+                      paths={projectFiles()}
+                      backups={minioBackups()}
+                      open={dualOpen()}
+                      onCollapse={() => setDualOpen(false)}
+                    />
+                  }
                 />
                 {/* 左栏 ④ MinIO 常驻窄条（设计 §2 / §5.1 步骤 1）。`count` 走接入缝——今天
                     缝里没有写入方，所以窄条走「不知道几项」态（`@/project/minio-backups` 文件头）。
-                    点它的动作是设计 §5.1 步骤 2①：把左栏拨回「文件」tab（MinIO 是文件操作，
-                    不该停在会话视图）。2②「展开上下双树」归 T012——双树本身是 T012 的产物。 */}
-                <MinioBar count={minioBackups()?.length} onOpen={() => setSidebarTab("files")} />
+                    点它一步做两件事（设计 §5.1 步骤 2①②）：① 把左栏拨回「文件」tab（MinIO 是
+                    文件操作，不该停在会话视图）；② 展开上下双树。**两件事要一起做**——只切 tab
+                    不展开的话，用户点这一下等于点了个空（T019 时 2② 还没实现，就是这个半截态）。 */}
+                <MinioBar
+                  count={minioBackups()?.length}
+                  onOpen={() => {
+                    setSidebarTab("files")
+                    setDualOpen(true)
+                  }}
+                />
               </div>
             ) : undefined
           }

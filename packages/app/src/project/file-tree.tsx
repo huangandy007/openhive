@@ -94,6 +94,18 @@ export interface FileTreeProps {
   onDownload?: (path: string) => void
   onBackup?: (path: string) => void
   onRestore?: (path: string) => void
+
+  /**
+   * 行是否可拖（设计 §6.3 拖拽 B「沙箱 ↔ MinIO」里**上树**那一侧）。只有**文件行**会被标上
+   * `draggable`——§5 划的是「文件级」备份，把目录整个拖下去不是一个动作。
+   *
+   * 本组件**只**负责「让行可拖」；拖起来之后往哪儿去、放到谁身上，由**容器**
+   * （`dual-file-tree.tsx`）在自己那层做事件委托——树不必知道「MinIO」这种东西存在
+   * （同「六个动作一律走 props」的口径）。
+   *
+   * 省略 ＝ 不可拖。今天由 `DualFileTree` 按「有没有接 `onBackup`」决定（未接线即禁用）。
+   */
+  draggable?: boolean
 }
 
 /**
@@ -286,6 +298,9 @@ export function FileTree(props: FileTreeProps) {
                       // 每一行都可 Tab 到，而不是 roving tabindex——后者若不补齐 ↑↓ 区间导航，键盘用户反而
                       // 出不了这一行，比「多几个 Tab 停靠点」更糟。
                       tabindex="0"
+                      // 拖拽只在**文件**行上开（见 `draggable` 那条注释）。拖起来的 payload 与
+                      // 「放到哪棵树」都由容器判，这里只交出「这一行可以拖」这一个事实。
+                      draggable={props.draggable === true && row.node.type === "file"}
                       style={{ "padding-left": `${row.level * INDENT_STEP}px` }}
                       classList={{ [ROW]: true, [ROW_SELECTED]: selected() === row.node.path }}
                       onClick={() => setSelected(row.node.path)}
