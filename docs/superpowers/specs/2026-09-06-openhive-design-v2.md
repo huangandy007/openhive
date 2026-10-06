@@ -869,7 +869,7 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 - **会话（session）彻底私有**：每个成员和 AI 的对话只存自己 db，任何人（含 owner）看不到别人的会话。
 - **权限只设 owner / member 两级**：成员进来就是 member（协作编辑者）。谁建项目谁是 **owner**；**owner 与 member 都能邀请他人**（被邀者 role=member）；**只有 owner 能移除某人**；member 可退群（删自己）、owner 不能退群。不设 viewer「只读旁观」角色。
-- **文件并发靠 git**：各自 commit、冲突 merge，不做实时协同编辑。
+- **文件并发靠 git**：各自 commit、冲突 merge，不做实时协同编辑。**载体（Q2 裁定 2026-10-06）**：一个 **bare 仓库** `/shared/{projectId}.git`——成员各自 clone 到自己的沙箱、commit、push（不同检出、同一仓库，正是「各自 commit、冲突 merge」的逐字形态）；**不经 HTTP**，沙箱锚定不变量不破。这也意味着**文件是各存一份**（Q1 裁定）：项目是用户沙箱**之内**的子目录，不是跨用户共享目录。
 
 ### 13.2 协同工作增强（有边界）
 
@@ -880,11 +880,11 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 ### 13.3 数据模型
 
-- `project_ext` 表（**openhive 自有扩展表**；U4 裁定 2026-10-06——上游 `project` 表一字不动，宪法 §一）：`type`（`private`/`shared`）+ `project_type`（`单案`/`串并`/`专项行动`/`考核督导`/`内勤文字`…）+ `shared_directory`（指向 `/shared/{projectId}/`）+ `last_accessed_at`（最近访问时间：「最近」排序 + 3 个月无操作归档判断）+ `archived`（0 活跃 / 1 已归档）+ `archived_at`（归档时间，可选）。项目列表、成员管理、归档/找回等左栏设计详见 `2026-09-11-项目管理-design.md`。
+- `project_ext` 表（**openhive 自有扩展表**；U4 裁定 2026-10-06——上游 `project` 表一字不动，宪法 §一）：`type`（`private`/`shared`）+ `project_type`（`单案`/`串并`/`专项行动`/`考核督导`/`内勤文字`…）+ `shared_directory`（**Q2 裁定后语义收窄**：指向共享 bare 仓库 `/shared/{projectId}.git`，仅共享项目有值；不是工作目录）+ `last_accessed_at`（最近访问时间：「最近」排序 + 3 个月无操作归档判断）。**Q3 裁定 2026-10-06**：`archived` / `archived_at` **不在本表**——它们是**项目级共享态**，落业务 PG 的新表 `project_archive`（与 `project_member` 同侧），否则「归档后成员失权」推不出来。项目列表、成员管理、归档/找回等左栏设计详见 `2026-09-11-项目管理-design.md`。
 - 新增 `project_member` 表：`project_id` + `user_id` + `role`（`owner`/`member`），唯一约束 `(project_id, user_id)`。
 - **`project_member` 只属「工作空间轴」**：它决定「谁是 openhive 项目的成员、产物能落到哪个工作空间」。**数据访问权限是另一套**（数据轴，由 `fund_project_member` 等数据自身的项目成员表决定，见 §14.1）。两者不互相绑定，勿混淆。
 - **项目 vs 案件**：案件是项目下的业务实体，结构化属性落业务 PG——新增 `case` 表（案件编号、性质、承办人、状态、关联数据范围）+ `project_case` 关联表（`project_id ↔ case_id`，多对多，一个项目 0/1/N 起案件）。案件材料文件放项目目录子文件夹，靠 `case_id` 关联。
-- **项目归档（工作空间轴）**：手动 + `last_accessed_at` 超 3 个月无操作自动。归档 = 沙箱文件全部上传 MinIO 对应目录（`/minio/{userId}/{projectId}/`）+ 删除沙箱文件 + `archived=1`；**找回**（手动）= `archived=0` + MinIO 文件全部下载回沙箱。详见 `2026-09-11-项目管理-design.md` §8。
+- **项目归档（工作空间轴）**：手动 + `last_accessed_at` 超 3 个月无操作自动。归档 = 沙箱文件全部上传 MinIO 对应目录（`/minio/{userId}/{projectId}/`，**Q1 裁定后确认带 userId**——MinIO 镜像的是**各人自己的**沙箱）+ 删除沙箱文件 + `archived=1`（**Q3 裁定后落业务 PG `project_archive`**）；**找回**（手动）= `archived=0` + MinIO 文件全部下载回沙箱。⚠️ 共享项目下，owner 读不到成员沙箱 ⇒ 「沙箱文件**全部**上传」只覆盖 owner 自己那份，成员那份怎么办**留待 T013 开工前钉**。详见 `2026-09-11-项目管理-design.md` §8。
 
 ---
 

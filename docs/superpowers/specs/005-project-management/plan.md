@@ -14,7 +14,7 @@
 
 **Primary Dependencies**: opencode 原生文件树（SolidJS）、MinIO（对象存储）、git（版本留痕）
 
-**Storage**: project 表（opencode 原生，**一字不动**）＋ openhive 自有 `project_ext` 表（六个生命周期字段）、project_member 表（业务 PG）、MinIO（`/minio/{userId}/{projectId}/`）、沙箱文件（F3 已落地）
+**Storage**: project 表（opencode 原生，**一字不动**）＋ openhive 自有 `project_ext` 表（**个人态 4 字段**：`type` / `project_type` / `shared_directory` / `last_accessed_at`）、`project_archive` 表（**共享态 2 字段**：`archived` / `archived_at`，业务 PG；Q3 裁定）、project_member 表（业务 PG）、MinIO（`/minio/{userId}/{projectId}/`）、共享 bare 仓库 `/shared/{projectId}.git`（Q2 裁定）、沙箱文件（F3 已落地）
 
 **Testing**: oxlint + turbo typecheck + bun test
 
@@ -34,11 +34,11 @@
 
 | 宪法原则 | 本 feature 的符合情况 | 结论 |
 |---|---|---|
-| I. 最小化上游合并冲突（NON-NEGOTIABLE） | 六个字段改走 openhive 自有 `project_ext` 表（U4 裁定，宪法行 57 的处方原话「新增独立文件/表」）⇒ **不碰上游 `project/sql.ts`、也不往上游 `database/migration/` 加文件**；文件树复用原生 + 补能力；MinIO 是「加」的能力 | ✅ 无冲突 |
+| I. 最小化上游合并冲突（NON-NEGOTIABLE） | 六个字段改走 openhive 自有表（U4 裁定＋Q3 修正：`project_ext` 个人态 4 字段落每用户库、`project_archive` 共享态 2 字段落业务 PG；宪法行 57 的处方原话「新增独立文件/表」）⇒ **不碰上游 `project/sql.ts`、也不往上游 `database/migration/` 加文件**；文件树**包一层**、上游 `components/file-tree.tsx` 一字不动（D0-2）；MinIO 是「加」的能力 | ✅ 无冲突 |
 | II. 品牌化走配置（NON-NEGOTIABLE） | 文件树换皮走视觉规范（配置/样式层），不硬编码品牌 | ✅ 无冲突 |
 | III. 物理隔离优先 | 项目是 F3 沙箱内的隔离边界 + git 仓库，本 feature 在物理隔离之上组织，不破坏隔离 | ✅ 无冲突 |
 | IV. 权限下沉执行层 | `project_member` 是工作空间轴权限，判定写 core 纯函数、接线在 `opencode/src/server/openhive/` 执行层网关（U5 裁定）；**不接 `core/access` capability**（004 裁定 ④：契约零消费者，留给 F6/F7）；文件操作权限靠 F3 沙箱锚定 | ✅ 无冲突 |
-| V. 侵入是「加」不是「改」 | `project_ext` 表新增、`project_member` 表新增、MinIO 备份新增；上游 `project` 表与 `sql.ts` 一字不动 | ✅ 无冲突 |
+| V. 侵入是「加」不是「改」 | `project_ext` / `project_archive` / `project_member` 三表新增、MinIO 备份新增、共享 bare 仓库新增、文件树外包层新增；上游 `project` 表、`sql.ts`、`components/file-tree.tsx` 一字不动 | ✅ 无冲突 |
 
 **结论**: 无 MUST 级原则违规。
 
@@ -55,9 +55,10 @@ packages/app/src/
 
 packages/opencode/src/
 ├── project/
-│   ├── project-ext.ts            # openhive 自有 project_ext 表落点（type/project_type/shared_directory/last_accessed_at/archived/archived_at）
+│   ├── project-ext.ts            # openhive 自有 project_ext 表落点（个人态 4 字段：type/project_type/shared_directory/last_accessed_at；Q3 裁定）
 │   ├── member.ts                 # 成员判定接线层（判定纯函数在 core/project/membership.ts，表在业务 PG）
-│   └── archive.ts                # 项目归档/找回（MinIO 上传/下载 + archived 状态流转）
+│   ├── shared-repo.ts            # 共享 bare 仓库接线（/shared/{projectId}.git 的 init/clone/commit/push；Q2 裁定）
+│   └── archive.ts                # 项目归档/找回（MinIO 上传/下载 + project_archive 状态流转）
 └── minio/
     └── backup.ts                 # MinIO 客户端（文件级备份/拉回）
 
@@ -66,7 +67,7 @@ packages/core/src/
     └── membership.ts             # 微信群模型判定（纯函数；U5 裁定不接 capability）
 
 packages/auth/src/migrations/
-└── 0005_project_member.sql       # project_member 表（业务 PG；U5 裁定）
+└── 0005_project_member.sql       # project_member + project_archive 两表（业务 PG；U5 / Q3 裁定）
 ```
 
 **Structure Decision**: 前端 `app/project/` 承载左栏交互，后端 `opencode/project/` 承载数据模型与归档逻辑；六个生命周期字段落 openhive 自有 `project_ext` 表、`project_member` 落业务 PG 并新增，**上游 `project` 表一字不动**——全部「加」的方式。
@@ -112,14 +113,15 @@ packages/auth/src/migrations/
 flowchart LR
     USER[民警操作] --> TREE[文件树]
     TREE -->|读写文件| WS["沙箱 /workspaces/{userId}/{project}/"]
-    WS --> GIT[git 版本留痕]
+    WS --> GIT["共享 bare 仓库 /shared/{projectId}.git"]
+    WS -->|"clone / commit / push"| GIT
     TREE -->|备份 / 拉回| MINIO["MinIO /minio/{userId}/{projectId}/"]
     WS -->|归档: 上传 + 删除| MINIO
     MINIO -->|找回: 下载| WS
 ```
 
-- **工作空间轴**：项目是沙箱内的唯一隔离边界 + git 仓库，产物/文件在该目录内，git 留痕。
-- **MinIO 备份**：文件级备份/拉回与项目级归档/找回两条链路，均落在 `/minio/{userId}/{projectId}/` 镜像沙箱路径。
+- **工作空间轴**：项目是沙箱内的唯一隔离边界；**文件共享靠 git**（Q2：`/shared/{projectId}.git`，成员各自 clone/commit/push），沙箱**各自独立**（Q1：各存一份）——产物/文件在该目录内，git 留痕。
+- **MinIO 备份**：文件级备份/拉回与项目级归档/找回两条链路，均落在 `/minio/{userId}/{projectId}/` **镜像各人自己的沙箱**（Q1 裁定；与 `2026-09-11-项目管理-design.md` §5.2「下树 = MinIO 备份，镜像沙箱路径」逐字一致）。
 - **数据轴不涉及**：本 feature 只碰工作空间轴（project/project_member），业务数据（资金/话单项目）在 F6/F7。
 
 ## 依赖清单（要素③）
@@ -139,7 +141,9 @@ flowchart LR
 - **复用 F3 沙箱**：项目是 `/workspaces/{userId}/{project}/` 内的隔离边界 + git 仓库。
 - **「当前项目」身份由服务端算（D0-1 裁定，2026-10-06）**：客户端只报 `projectId`（业务标识），建会话时服务端查 `project_ext` 拼出 `join(sandbox, dir)` 写进 `session.directory`。**`anchor-workspace.ts` 一字不动**——它今天钉死两段 `join(config.root, user.value.id)`，客户端给的 `?directory=` / 头 / 请求体三条入参**全部被改写成沙箱根**；把「哪一段是项目」交给服务端算，003 的「客户端报的目录一律无效」不变量原样保留（沙箱**仍需**由 F3 兜底，本 feature 不加第二道门）。
 - **成员判定自成一条线（U5 裁定，2026-10-06）**：`project_member` 是工作空间轴权限，**不接 `core/access` capability**（那是数据轴，004 裁定 ④ 留给 F6/F7 钉契约）——存储落业务 PG、判定写 core 纯函数、接线在执行层；不绑定数据轴权限。
-- **六个字段落 openhive 自有表（U4 裁定，2026-10-06）**：新增 `project_ext` 表（`type` / `project_type` / `shared_directory` / `last_accessed_at` / `archived` / `archived_at`），建表钩子挂在 fork 自有的 `packages/core/src/database/router.ts`（每用户库那一层）；上游 `packages/core/src/project/sql.ts` 与 `database/migration/` 一字不动。
+- **六个字段落 openhive 自有表（U4 裁定，2026-10-06；Q3 修正表的张数）**：`project_ext` 表（个人态 `type` / `project_type` / `shared_directory` / `last_accessed_at`）建表钩子挂在 fork 自有的 `packages/core/src/database/router.ts`（每用户库那一层）；`archived` / `archived_at` **拆出去**落业务 PG 的新表 `project_archive`（与 `project_member` 同侧）——因为「归档后成员失权」（FR-010）要求归档状态是**项目级共享态**，个人态推不出这句话。上游 `packages/core/src/project/sql.ts` 与 `database/migration/` 一字不动。
+- **文件共享靠 git remote，不靠共享目录（Q2 裁定，2026-10-06）**：沙箱各自独立（Q1：各存一份，MinIO 镜像各人沙箱 ⇒ `/minio/{userId}/{projectId}/`）；共享发生在**一个 bare 仓库** `/shared/{projectId}.git` 上——成员各自 clone / commit / push，FR-012「各自 commit、冲突 merge」由此逐字实现。**不经 HTTP** ⇒ 锚定不变量不破。`/shared/` 需挂共享卷（落 `deploy-todo.md` D 表）。
+- **MinIO 权限下沉到存储层（Q4 裁定，2026-10-06）**：应用持服务凭据，MinIO policy 用变量 `${aws:username}` 把可写范围钉在 `openhive/${aws:username}/*` ⇒ 越权在存储层被拒（宪法 §四），不建 1600 个账号。
 
 ## 风险点清单（要素⑤）
 
@@ -149,4 +153,6 @@ flowchart LR
 | R2 | MinIO 备份/归档的大文件传输性能 | 分片上传、归档异步执行、进度反馈 |
 | R3 | 归档/找回的文件一致性（上传失败/中断） | 上传校验 + 幂等重试，归档前确认完整性 |
 | R4 | ~~自动归档形态待决策~~ **已定（U1 裁定，2026-10-06）** | **先提醒、owner 确认后归档**——与 spec.md 的 AC4 / US5 注记 / FR-008 / Assumptions 四处一致。本条原写「待决策」，与 spec 自相矛盾，已按 spec 收口 |
+| R6 | 共享 bare 仓库（Q2）的并发与授权：谁有权建/删 `/shared/{projectId}.git`？`/shared` 卷如何挂、成员进程如何写它？ | 仓库路径**由服务端按 projectId 生成**（客户端给不出，与 D0-1 同一条不变量）；接线前先过 `project_member` 判定（U5 那条线）；并发冲突按 git 原生 merge 处理（FR-012 本就这么要求）。`/shared` 挂共享卷 → `deploy-todo.md` D 表 |
+| R7 | MinIO policy 变量（Q4）依赖 STS/`AssumeRole` 与策略变量支持——`${aws:username}` 不是所有 MinIO 版本/配置都开箱可用 | **T002 出方案时必须实测内网 MinIO 版本是否支持**；不支持就退到「服务凭据 ＋ 应用层前缀」**并显式记成缺口**（`LEARNINGS #002-02`：不能把「降级验证」写成「已覆盖」） |
 | R5 | 「当前项目」身份由服务端算（D0-1 裁定）⇒ **建会话这条热路径上多一次库读**（查 `project_ext` 拼目录） | 该读在**建会话时**发生、不在每次请求上；查不到就落沙箱根（**不做隐式建项目**，与 U4 的「写入收成一个模块」一致）。判据：查库失败不改变「客户端给的目录无效」这条不变量 |

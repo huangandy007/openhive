@@ -117,13 +117,13 @@
 - **FR-007**: 文件 MUST 支持沙箱 ↔ MinIO 拖拽备份/拉回（文件级，上下双树，已备份标 ✓）。
 - **FR-008**: 项目归档 MUST 支持手动归档 + 超期（3 个月无操作）自动触发提醒（owner 确认后才归档）；归档 = 沙箱文件全部上传 MinIO + 删除沙箱文件 + 标记归档。
 - **FR-009**: 项目找回 MUST 为手动——`archived` 恢复 + MinIO 文件全部下载回沙箱。
-- **FR-010**: 归档后成员 MUST 失权，owner 保留找回权。
+- **FR-010**: 归档后成员 MUST 失权，owner 保留找回权。（落地口径 Q3 裁定 2026-10-06：归档状态是**项目级共享态**，落业务 PG 的 `project_archive` 表、**不**落每用户库——否则「成员失权」推不出来。）
 - **FR-011**: 会话 MUST 彻底私有——成员会话只存自己 db，任何人（含 owner）不可见。
 - **FR-012**: 文件并发 MUST 靠 git（各自 commit、冲突 merge），不做实时协同编辑。
 
 ### Key Entities
 
-- **项目（project）**：type（private/shared）、project_type（单案/串并/专项行动/考核督导/内勤文字）、shared_directory、last_accessed_at、archived、archived_at。
+- **项目（project）**：type（private/shared）、project_type（单案/串并/专项行动/考核督导/内勤文字）、shared_directory、last_accessed_at、archived、archived_at。（落点 Q3 裁定 2026-10-06：前四项是**个人态**落每用户库 `project_ext`；`archived` / `archived_at` 是**共享态**落业务 PG `project_archive`。）
 - **项目成员（project_member）**：project_id + user_id + role（owner/member），唯一约束 (project_id, user_id)。
 - **案件（case）**：项目下的业务实体，结构化属性落业务 PG，通过 project_case 与项目多对多关联。
 
@@ -142,8 +142,8 @@
 
 ## Assumptions
 
-- 项目是唯一隔离边界 + 独立 git 仓库，复用 opencode 原生 project 概念（F3 已落地沙箱）。
+- 项目是唯一隔离边界，复用 opencode 原生 project 概念（F3 已落地沙箱）。落地口径（Q1/Q2 裁定 2026-10-06）：项目是**用户沙箱之内**的子目录（`/workspaces/{userId}/{project}/`，锚定两段一字不动），**文件各存一份**；「共享」发生在一个 **bare git 仓库** `/shared/{projectId}.git` 上——成员各自 clone / commit / push，FR-012「各自 commit、冲突 merge」由此成立。**不经 HTTP**，锚定不变量不破。
 - 数据轴的资金项目/话单项目（`fund_project` / `call_project`）不在本 feature 范围，由 F6/F7 展开；`project_member` 只管工作空间轴。
 - MinIO 备份是 opencode 原生「三个缺失功能」之一（design-v2 §8.1），本 feature 补齐。
-- 文件树复用 opencode 原生 SolidJS 文件树，不引入新树控件（design-v2 §8.1 / 项目管理-design §6.4）。
+- 文件树复用 opencode 原生 SolidJS 文件树，不引入新树控件（design-v2 §8.1 / 项目管理-design §6.4）。落地口径（D0-2 裁定 2026-10-06）：**包一层**——上游 `components/file-tree.tsx` 一字不动，在 `app/src/project/` 新建、底座取 v2 的纯函数 model。「不引入新树控件」仍然成立，但实测上游该组件**没有**工具栏 / 右键菜单 / 新建 / 重命名 / 删除 / 上传下载 ⇒ 这些能力是**新增**，不是换皮。
 - 自动归档形态已确定为「先提醒、owner 确认后归档」（超期触发提醒，owner 确认后才归档）。

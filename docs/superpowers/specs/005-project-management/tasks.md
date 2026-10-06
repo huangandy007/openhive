@@ -25,14 +25,20 @@
 - [x] T001 [P] [INT] 定位 opencode 原生 project 表与文件树组件，产出改造落点 [FR-001] [无依赖] [出参：project 表/文件树真实入口清单]
   - ✅ 清单落 `state.md` 的「T001 · 定位」节：`project` 表生产入口 **6 处**（U4 下全不改）／文件树**同名 3 个、活跃 2 条链**／左栏是**无人认领的空槽**／`{project}` 段 HTTP 层**不存在**／新增目录要同时改 **3 处**。
 - [ ] T002 [P] [BE] 确定 MinIO 部署与目录结构 `/minio/{userId}/{projectId}/` [FR-007] [无依赖] [出参：MinIO 目录/权限方案]
+  - 🔒 **Q1 裁定（2026-10-06）：路径带 userId**——沙箱各自独立、MinIO 镜像**各人自己的**沙箱 ⇒ `/minio/{userId}/{projectId}/`（对象键 `{userId}/{projectId}/…`），桶名下**不带 userId**。原写的路径形态保留，本裁定确认其依据（曾有两组自相矛盾的写法，见 `state.md`「第三批」的矛盾点表）。
+  - 🔒 **Q4 裁定（2026-10-06）：权限下沉到存储层**——应用持服务凭据，policy 用 `${aws:username}` 钉前缀 `openhive/${aws:username}/*`。
+  - ⚠️ **出方案时必须实测内网 MinIO 版本是否支持 policy 变量/STS**（plan.md R7）；不支持就退到「服务凭据 ＋ 应用层前缀」并**显式记成缺口**——不许把降级写成已覆盖（`LEARNINGS #002-02`）。
+  - 📤 **部署项（U8）落 `docs/workspace/deploy-todo.md` 的 D 表**：endpoint / 凭据来源 / 桶创建 / `/shared` 共享卷（Q2）。
 
 ## Phase 2: Foundational（数据模型 + 权限）
 
 - [ ] T003 [BE] 实现 **openhive 自有 `project_ext` 表**（type / project_type / shared_directory / last_accessed_at / archived / archived_at）＋建表钩子（挂 fork 自有的 `core/src/database/router.ts`；上游 `project/sql.ts` 与 `database/migration/` **一字不动**）[FR-008] [T001] [出参：新表建成、typecheck 通过]
   - 🔒 **U4 裁定（2026-10-06）：另起表，不加列**——宪法行 57 的处方原话「新增独立文件/表；不碰表结构」。原出参「加列后 typecheck 通过」已作废。
+  - 🔒 **Q3 裁定（2026-10-06）：六字段拆开落，本表只留个人态 4 个**——`type` / `project_type` / `shared_directory` / `last_accessed_at` 落**每用户库** `project_ext`；`archived` / `archived_at` 移出，落业务 PG 的 `project_archive`（见 T004）。理由：FR-010「归档后成员失权」要求归档状态是**项目级共享态**。
   - 🔒 **D0-1 裁定（2026-10-06）：本项目身份**：`project_ext` 要能被**建会话那条路径**按 `projectId` 查到（服务端据此拼目录），所以「按 id 单行查询」是**必给接口**，不是可选项。`anchor-workspace.ts` 一字不动。
 - [ ] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
   - 🔒 **U5 裁定（2026-10-06）：不接 `core/access` capability**——那是数据轴，004 裁定 ④ 明确「等 F6/F7 有消费者时再钉」。本条走自有成员判定线（存储 PG / 判定 core 纯函数 / 接线执行层）。
+  - 🔒 **Q3 裁定（2026-10-06）：`project_archive` 表同批落这里**——`archived` / `archived_at` 两字段，与 `project_member` 同在业务 PG（同一次迁移 `0005_project_member.sql`）。它是**共享态**：owner 归档 ⇒ 全项目可见（FR-010 才立得住）。
   - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
 
 ## Phase 3: US1 项目列表与新建（P1）
@@ -61,9 +67,11 @@
 ## Phase 7: US5 归档 / 找回（P2）
 
 - [ ] T013 [US5] [BE] 实现项目归档（上传 MinIO + 删除沙箱 + archived=1）[FR-008] [T003][T011] [出参：归档后项目移入「已归档」]
+  - ⚠️ **开工前必须先钉（Q1×Q3 逼出的缺口，2026-10-06 本批不拍）**：owner 归档时，**成员的**沙箱文件怎么办？——owner 读不到成员沙箱（物理隔离），「沙箱文件全部上传 MinIO」只能覆盖**自己**那一份。两种读法：(a) 归档只动 owner 自己那份，成员那份留在各自沙箱、仅由 `archived` 状态拦住后续写入；(b) 成员各自在收到归档通知后上传自己的那份（需站内信 + 状态机）。**这两条实现量与产物完全不同，动手前问用户**（`dev_tdd.005.md` Step 2 ⑦）。
 - [ ] T014 [US5] [BE] 实现项目找回（archived=0 + MinIO 下载回沙箱）[FR-009] [T013] [出参：找回后项目回到「最近/全部」]
 - [ ] T015 [US5] [BE] 实现归档后成员失权、owner 保留找回权 [FR-010] [T004][T013] [出参：归档后 member 失权]
 - [ ] T016 [P] [BE] 验证会话彻底私有（成员会话只存自己 db）+ 文件并发靠 git [FR-011][FR-012] [T003] [出参：owner 看不到 member 会话、git 留痕]
+  - 🔒 **Q2 裁定（2026-10-06）：`git` 的载体 = 共享 bare 仓库 `/shared/{projectId}.git`**——成员各自 clone / commit / push（FR-012「各自 commit、冲突 merge」的唯一逐字实现：不同检出、同一仓库）。**不经 HTTP** ⇒ 锚定不变量不破。原 `U6`（「FR-012 无载体」）由此解决；本 task 要验的就是「两个检出各自 commit 后能 push 并 merge 冲突」。
 
 ---
 
