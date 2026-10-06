@@ -22,6 +22,27 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #005-01 · 2026-10-06 · tool-quirk · 005-project-management
+**现象 / 决策**：**组件测试里 `expect(<节点>).toBeNull()` 这类断言，红了会把整轮 `bun test` 挂死——
+不是红，是哑。** 机制：断言失败时 bun 会打印**实得值**，而**被 Solid 渲染过的节点**会让打印器停不下来。
+四个探针实测（bun 1.3.14 ＋ happy-dom，2026-10-06）：同一条断言、同一个 `bun test` 命令，
+实得值换成手搓的 `document.createElement("div")`（脱离文档、空）是 **36ms** 出结果，
+换成手搓的 `button`（挂进文档、带子节点）是 **133ms**，
+换成 `render()` 出来的元素则 **45s 仍未结束、被 `timeout` 杀掉**（EXIT=124），进程内存涨到 **~375MB**；
+**脱离文档也一样**（挂不挂进文档**不是**条件）。危险之处在于**挂死时一条结果都取不到**——
+它看着像「还没跑完」，而不是「失败了」，比红更坏：在 CI 上就是**卡住**，在变异验证里就是「变异取不到红」。
+本次抓到它，正是 T005 的 M2 变异跑出「挂死」而非「恰红」，逼着回头查出来的。
+**应对**：断言「某处没有元素」时**断在布尔上**，别把节点当实得值——写
+`const 无槽 = (h, s) => 槽(h, s) === null`，再 `expect(无槽(h, "x")).toBe(true)`；
+红的时候打印的是 `false`，毫秒级。判据一句话：**`.toBeNull()` 的实得值必须是原语（或能退化成原语）**。
+注意**只有「失败时实得值是节点」的那一类中招**：`.not.toBeNull()` 失败时实得值是 `null`（原语），照打印不误，
+不必改。
+**应用范围**：任何 happy-dom / jsdom 组件测试；任何「查一个元素在不在」的断言。
+落点：`packages/app/src/project/project-anchor.test.tsx` 的 `无槽` 与
+`packages/app/src/workspace/workspace-entry.test.tsx` 的 `不存在`（两个函数的注释里都写明此因由）；
+⚠️ 后一个文件里**既有**的 4 处同形状断言（判 `topbar` / `document-view` 不在的那几处）**同样会挂哑**，
+不是 005 加的故未动，已在 005 的 `state.md` 挂账，下次碰到再清。
+
 ## #004-10 · 2026-10-06 · tool-quirk · 004-access-control
 **现象 / 决策**：**oxlint 的单文件 lint 必须在仓库根跑**，在包目录里跑会**配置解析失败**（不是 lint 失败）：
 `cd packages/opencode && bunx oxlint test/server/openhive-access-command-route.test.ts`
