@@ -166,8 +166,26 @@
 
 ## Phase 6: US4 MinIO 备份（P1）
 
-- [ ] T011 [US4] [BE] 实现 MinIO 客户端（文件级备份/拉回）[FR-007] [T002] [出参：文件可备份/拉回]
+- [x] T011 [US4] [BE] 实现 MinIO 客户端（文件级备份/拉回）[FR-007] [T002] [出参：文件可备份/拉回]
   - 🔒 **D0-4 裁定（2026-10-06）：用 `@aws-sdk/client-s3`**——复用既有 `@aws-sdk/credential-providers` 的同一 SDK 家族，`bun.lock` 增量最小；MinIO 是 S3 兼容。加依赖后**必查** `git diff --stat bun.lock`（只应有本次新增的条目）。
+  - ✅ **§ 范围裁定（2026-10-06，T011 开工前用户裁定，三问全取推荐项）**：*落点* = `packages/core/src/minio.ts`（core 顶层，**不是** `core/src/project/`）；*凭据半场* = **只收凭据、不签发凭据**（STS / 策略变量留给 D-13）；*测试深度* = 加一个 `Bun.serve` **假 S3 端点**，让真 `@aws-sdk/client-s3` 真发请求。
+  - ✅ **D0-4 的前提被实测推翻（省下一件事）**：`@aws-sdk/client-s3@3.933.0` **本来就是上游根 `package.json` 的依赖**（`upstream/dev:package.json` 第 113 行），已装、全仓**零 import** ⇒ **本次没有 `bun add`、`bun.lock` 一行未动**（实测 `git diff --stat bun.lock` 为空）。D0-4 担心的锁文件污染不存在；那条「加完必查」的纪律仍照走，只是这次查出来是空的。落点也顺带零成本：`packages/core` 的 `exports` 是通配 `"./*": "./src/*.ts"` ⇒ 新增 `src/minio.ts` **零 `package.json` 改动**。
+  - ✅ **出参落地（T011，2026-10-06）**：新建 `packages/core/src/minio.ts`（`Minio.makeStore(config) ⇒ Minio.Interface`：`put` / `get` / `list` / `delete` 四个动作，**入参不带桶名与前缀**——前缀由构造时的 `scope` 定死）＋ `packages/core/test/minio.test.ts`（**22 条**）＋ 观测面 `packages/core/test/fixture/fake-s3.ts`（`Bun.serve({ port: 0 })` 起一个真 HTTP 端点）。
+  - ⚠️ **观测面为什么是「假 S3」而不是「替身」**：`minio.md` §3 说的「测试注入替身」是给 **T012 / T013** 用的（它们的被测对象是归档流程，换掉 MinIO 是**边界替身**）；而 **T011 自己的产物就是那段 S3 实装**，用替身等于把被测对象换掉，那不是测试是缺口（`#002-02`）。本机没有 MinIO 可连，但可以有**一个够用的端点**——同 `#002-05` 的路数（PGlite 让生产驱动真连上）。残差也一样如实记：**它不闭合「真实 MinIO 的语义」**。
+  - ⚠️ **收窄接口的用处**：`scope` 定死前缀 ⇒ **调用者给不出自己的前缀**（入参里根本没有这个位置）；同时 T012 / T013 的测试能在**边界**注入替身。这两件事是同一个设计的两个收益。
+  - ⚠️ **键的前两段也是输入（`#004-01` 在这里的形态）**：「数底层函数的调用点」在键拼装这件事上表现为——键是**三段拼起来的**（`userId` / `projectId` / `path`），只查第三段会漏掉前两段；而前两段**比第三段更隐蔽**，因为它们**不在任何一次调用的入参里**。所以 `scope` 在**构造时**过同一条判据，`path` 在**每次调用**过，`keyOf` 是唯一拼装点。
+  - ⚠️ **路径边界是「安全 ＋ 正确性」两条腿，判据取「请求根本没产生」**：S3 的键是不透明字符串，但 URL 不是——`007/p-42/../p-99/x` 若原样进请求路径，HTTP 那层一规范化就落在**别人的前缀**里。所以 `拒于门外` 的第一条断言是 `s3.requests.length === 0`，「调用方收到了错」是**伴随信号**排在其后（`#004-14`）。反斜杠单列一条：win32 拿它当分隔符，`..\p-99\x` 与 `../p-99/x` 在那边是同一件事。
+  - ⚠️ **`list` 必须把分页走完**：`ListObjectsV2` 一次最多 1000 条，超出置 `IsTruncated` ＋ `NextContinuationToken`。只发一次请求的写法**在小项目上永远绿**，项目文件过千就静默少列——而归档（T013）正是拿这份清单去传文件的，「少列一条」= **少备份一个文件**，且不报错。夹具把 1000 缩成 `pageSize: 2`，于是「过千才出错」的缺陷在三条数据上就现形（`#002-01` 的形态）。
+  - ⚠️ **404 要分「对象没备份过」与「桶配错了」**：只认 `NoSuchKey` ⇒ `undefined`；`NoSuchBucket`（**也是 404**）必须上抛。判据钉在 `error.name` 上，实测（探针，2026-10-06）`@aws-sdk/client-s3` 把响应 XML 里的 `<Code>` **原样放进 `error.name`**（403 那条实得 `"InternalError"`，桶配错那条实得 `"NoSuchBucket"`）。后果方向相反：一个是「这个文件没备份过」，一个是「你的桶根本不存在」。
+  - ⚠️ **一处观测面修正（`#004-13` 情形①「没有现成观测面 ≠ 没有观测面」）**：夹具最初绑 `127.0.0.1`，于是 **M15**（`forcePathStyle: true ⇒ false`）跑出 **21 条全绿**。根因不是「那行是多余的」，而是**端点 host 是 IP 字面量时 SDK 会自己退回 path-style**（`openhive.127.0.0.1` 不是合法主机名）⇒ 那一行**在原来的观测面里根本不可见**。换观测面（夹具绑 `localhost`、端点给主机名）后 M15 变红 **13** 条。这不是洁癖：`forcePathStyle` 在真环境里是要命的（MinIO 在 `minio.internal:9000`，不开就打到 `openhive.minio.internal`）。夹具里另有一条兜底：万一某台机器把 `*.localhost` 通配解析了，请求会带着桶名当主机名到达，落到「桶名不是 openhive」那条 404 上——**两种世界都是红**。
+  - ⚠️ **一条「只有 typecheck 才守得住」的代码——M14 全绿的正确读法**：`if (response.Body === undefined) throw` 变异掉之后**22 条全绿**。按 `#003-03` 类③ 的规矩本该删，但**实测删掉它 `typecheck` 立刻红**（`src/minio.ts(132,16): error TS18048: 'response.Body' is possibly 'undefined'`，`packages/core` `tsgo --noEmit` exit 2；还原后 exit 0）。⇒ 那段代码**不是「没人守的多余代码」，而是一次类型收窄**——`#003-03` 类③ 的前提是「只有测试能守它」，这里前提不成立，而这件事是**量出来的、不是推出来的**（`#003-04`）。故按要求保留，并把「谁在守它」写在这里。
+  - ⚠️ **补的一条「杀死另一种实现」的用例**：403 那条只能证明「**非 404** 的真错误会抛」；把判据写成 `状态码 === 404 ⇒ undefined`（很自然的写法，因为「404 就是没有」）那条**照样绿**。故补「桶名配错（404 `NoSuchBucket`）」一条，钉 `error.name === "NoSuchBucket"`；**M16**（把判据改成按状态码）**恰红 1 条**、正是这条 ⇒ 它确有牙。⚠️ 据实说明：**这条不是 RED-first 写出来的**——补它时实装已经是对的，所以拿 M16 的恰红当它的成牙证据，不冒充「先红后绿」。
+  - ⚠️ **一处我自己的 bug（测试先红才发现的）**：把 `拦住了` 改成基于新助手 `抛了` 时，`.then` 两个分支**写反了**——`抛了` 在「动作真的抛错」时是**正常 resolve**（它把错误当返回值交出去），只有「动作居然成功了」才 reject。于是 7 条路径边界用例当场全红。是测试先红的，产品码没动。
+  - ✅ **变异验证（2026-10-06，串行跑，据实记三类 `#003-03`）**：**16 个变异全部①类（恰红目标），无②③类**。<br>**M1** 去掉「`..`」判据 ⇒ 红 **5**（它一处守着**三个输入**：`path` ＋ `scope.userId` ＋ `scope.projectId`，各自有用例）；**M2** 反斜杠 红 **1**；**M3** 盘符 红 **1**；**M4** 开头的「/」红 **1**；**M5** 空路径 红 **1**；**M6** 建店时不校验 `scope.userId` 红 **1**；**M7** `list` 不剥前缀 红 **4**；**M8** `list` 不翻页 红 **1**（正是「三条数据一条不少」那条）；**M9** 前缀漏掉 `projectId` 红 **6**；**M10** 把所有错误都吞成 `undefined` 红 **3**（403 条 ＋ 桶配错条 ＋ **`get` 的路径边界条**——因为 `keyOf` 在 `notFoundToUndefined` 的闭包**里面**，吞错会连带吞掉边界校验的抛出）；**M11** `put` 绕过键边界 红 **6**；**M12** `get` 绕过 红 **1**；**M13** `delete` 绕过 红 **1**；**M14** 空 body 分支 红 **0**（见上，守它的是 typecheck）；**M15** 关掉 `forcePathStyle` 红 **13**；**M16** 改按状态码判 404 红 **1**。
+  - 🧭 **门禁（T011 收尾，串行，2026-10-06）**：`packages/core` `bun test` ⇒ **1209 pass / 8 skip / 5 fail / 3275 expect() / 1222 tests / 159 files**（对比**本轮开工时同机同 worktree** 的 **1208 / 8 / 5 / 3274 / 1221**：＋1 条用例、＋1 次 expect，**5 条失败名称未变**，全是上游 `NpmConfig.*`——本机 `~/.npmrc` 指向镜像所致，与本题无关）；`packages/app` `bun run test:components` **不适用**（本题零前端改动）；`bun run typecheck`（根 `tsgo -b`）**31/31 successful，exit 0**（29 cached）；**文件级** oxlint（仓库根，`#004-10`）`bunx oxlint packages/core/src/minio.ts packages/core/test/minio.test.ts packages/core/test/fixture/fake-s3.ts` ⇒ **0 warnings / 0 errors / 3 files / 130 rules / exit 0**；`bun.lock` **一行未动**。
+  - 🚩 **`lint:openhive` 对本题是空结论（记下来免得下次再报一次假的）**：它 **exit 0**（23 warnings / 0 errors / 81 files），但**只扫 `packages/app/src/{rail,center,topbar,workspace,project,auth}` 六个目录**——**不覆盖 `packages/core`**（脚本原文见根 `package.json`；输出里 29 处文件命中全是 `packages/app/`）。所以「本次文件 0 命中」在这道门上**恒真**。**任何 `[BE]` 落在 `packages/core` / `packages/auth` / `packages/opencode` 的 task，必须另取文件级 oxlint，不能拿这道门当判据。**
+  - ⚠️ **文件级 oxlint 首跑 1 warning，已按仓库成文写法清掉**：`await-thenable` 命中 `await expect(store.get(...)).rejects.toThrow()`。`packages/auth/src/{rbac,rls,migrate-cli}.test.ts` 三处都留着同因同注——「**刻意不写** `await expect(...).rejects.toThrow()`：`bun-types` 把 `.rejects` 声明成 `Matchers<unknown>`，`await` 一个 `void` 会被记一条，**全仓已有 98 处同类命中**」。本文件改成仓库同一写法：一个返回**错误本体**的 `抛了(run)` 助手。顺带比原写法更强——「抛了」只是伴随信号，返回错误本体才能钉「抛的是**哪一个**错」（`#004-14`），而正是这一条让 M16 有牙。
+  - ⛔ **不在本 task 交付**：① **文件级备份/拉回的接线与出口**（谁调 `makeStore`、endpoint 与桶从哪来、菜单第 9/10 项背后谁执行）⇒ 归 **T012**（前端双树）与 **T013**（归档）；② **环境变量读取**（`minio.md` §4 的五个 `OPENHIVE_MINIO_*`）**刻意没有落进本模块**——§4 原文写着「最终以 T011 的实装为准」，但凭据那一半的形状**恰恰是 D-13 要裁定的东西**，现在写死「读 `ACCESS_KEY` / `SECRET_KEY`」等于替 D-13 提前拍板，与本次裁定的「只收凭据、不签发凭据」相抵。⇒ **`OPENHIVE_MINIO_*` 目前全仓零引用（改名前无需 grep），读取落点随 D-13 一并裁定**；③ **桶策略 / STS `AssumeRole` / `${aws:username}`**——本机一条都验不到（无 MinIO、无目标内网），**如实记为缺口**（`#002-02`：测不了的要写成缺口，不能写成覆盖），D-13 部署时实测。
 - [ ] T012 [US4] [FE·新增] 实现上下双树拖拽（沙箱 ↔ MinIO，已备份标 ✓）[FR-007] [T011] [出参：拖拽备份/拉回成功]
 
 ## Phase 7: US5 归档 / 找回（P2）
@@ -189,8 +207,8 @@
 > 📌 **T017 编号排最后、归属在 Phase 2**（2026-10-06 T003 收尾时裁定补入）：它是 D0-1 落地口径的实装，属「Foundational」而非某个用户故事；补编号时 Phase 2 已有 T003/T004，故用末号而**不重排**既有编号（编号是 ID 不是顺序，同 `LEARNINGS.md` 的条目号规则）。
 - **Phase 3**：T005 ✅（依赖 T003）；T006 ✅（依赖 T003）；T018（依赖 T003+T004+T017）
 - **Phase 4**：T007 ✅（依赖 T001）；T008 ✅ ∥ T007（依赖 T001）；T009 ✅（依赖 T007）；T019（依赖 T007+T011，左栏外壳）；T020（依赖 T007+T008+T018，四项文件操作）
-- **Phase 5**：T010（依赖 T004）；T021（依赖 T004+T018）
-- **Phase 6**：T011（依赖 T002）；T012（依赖 T011）
+- **Phase 5**：T010 ✅（依赖 T004）；T021（依赖 T004+T018）
+- **Phase 6**：T011 ✅（依赖 T002）；T012（依赖 T011）
 - **Phase 7**：T013（依赖 T003+T011）→ T014（依赖 T013）；T015（依赖 T004+T013）∥ T016（依赖 T003）
 
 共 **21** 条任务（T001–T021），超出 12–18 条范围（T017 / T018 / T019 / T020 / T021 都是补入的**孤儿认领**，见各自的裁定说明）。
