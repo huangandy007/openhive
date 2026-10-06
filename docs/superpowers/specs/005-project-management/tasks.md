@@ -27,8 +27,10 @@
 
 ## Phase 2: Foundational（数据模型 + 权限）
 
-- [ ] T003 [BE] 实现 project 表加字段（type / project_type / shared_directory / last_accessed_at / archived / archived_at）[FR-008] [T001] [出参：加列后 typecheck 通过]
-- [ ] T004 [BE] 实现 project_member 表 + 微信群模型权限判定（owner/member 权责）[FR-004] [T001] [出参：权限判定单测通过]
+- [ ] T003 [BE] 实现 **openhive 自有 `project_ext` 表**（type / project_type / shared_directory / last_accessed_at / archived / archived_at）＋建表钩子（挂 fork 自有的 `core/src/database/router.ts`；上游 `project/sql.ts` 与 `database/migration/` **一字不动**）[FR-008] [T001] [出参：新表建成、typecheck 通过]
+  - 🔒 **U4 裁定（2026-10-06）：另起表，不加列**——宪法行 57 的处方原话「新增独立文件/表；不碰表结构」。原出参「加列后 typecheck 通过」已作废。
+- [ ] T004 [BE] 实现 `project_member` 表（业务 PG，走 auth 包迁移体系，与 004 的 rbac/rls 同构）＋微信群模型权限判定（owner/member 权责；判定写 core 纯函数、接线在执行层）[FR-004] [T001] [出参：权限判定单测通过]
+  - 🔒 **U5 裁定（2026-10-06）：不接 `core/access` capability**——那是数据轴，004 裁定 ④ 明确「等 F6/F7 有消费者时再钉」。本条走自有成员判定线（存储 PG / 判定 core 纯函数 / 接线执行层）。
   - 📥 **本条接收 004 的 T011 之半**（工作空间轴）——见文件头移交块。
 
 ## Phase 3: US1 项目列表与新建（P1）

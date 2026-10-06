@@ -14,7 +14,7 @@
 
 **Primary Dependencies**: opencode 原生文件树（SolidJS）、MinIO（对象存储）、git（版本留痕）
 
-**Storage**: project 表（opencode 原生 + 加字段）、project_member 表、MinIO（`/minio/{userId}/{projectId}/`）、沙箱文件（F3 已落地）
+**Storage**: project 表（opencode 原生，**一字不动**）＋ openhive 自有 `project_ext` 表（六个生命周期字段）、project_member 表（业务 PG）、MinIO（`/minio/{userId}/{projectId}/`）、沙箱文件（F3 已落地）
 
 **Testing**: oxlint + turbo typecheck + bun test
 
@@ -34,11 +34,11 @@
 
 | 宪法原则 | 本 feature 的符合情况 | 结论 |
 |---|---|---|
-| I. 最小化上游合并冲突（NON-NEGOTIABLE） | `project` 表只加列不改列；文件树复用原生 + 补能力；MinIO 是「加」的能力，不侵入 `sql.ts` | ✅ 无冲突 |
+| I. 最小化上游合并冲突（NON-NEGOTIABLE） | 六个字段改走 openhive 自有 `project_ext` 表（U4 裁定，宪法行 57 的处方原话「新增独立文件/表」）⇒ **不碰上游 `project/sql.ts`、也不往上游 `database/migration/` 加文件**；文件树复用原生 + 补能力；MinIO 是「加」的能力 | ✅ 无冲突 |
 | II. 品牌化走配置（NON-NEGOTIABLE） | 文件树换皮走视觉规范（配置/样式层），不硬编码品牌 | ✅ 无冲突 |
 | III. 物理隔离优先 | 项目是 F3 沙箱内的隔离边界 + git 仓库，本 feature 在物理隔离之上组织，不破坏隔离 | ✅ 无冲突 |
-| IV. 权限下沉执行层 | `project_member` 是工作空间轴权限，鉴权走 F4 执行层；文件操作权限靠 F3 沙箱锚定 | ✅ 无冲突 |
-| V. 侵入是「加」不是「改」 | `project` 表加字段、`project_member` 表新增、MinIO 备份新增，不改 opencode core 既有逻辑 | ✅ 无冲突 |
+| IV. 权限下沉执行层 | `project_member` 是工作空间轴权限，判定写 core 纯函数、接线在 `opencode/src/server/openhive/` 执行层网关（U5 裁定）；**不接 `core/access` capability**（004 裁定 ④：契约零消费者，留给 F6/F7）；文件操作权限靠 F3 沙箱锚定 | ✅ 无冲突 |
+| V. 侵入是「加」不是「改」 | `project_ext` 表新增、`project_member` 表新增、MinIO 备份新增；上游 `project` 表与 `sql.ts` 一字不动 | ✅ 无冲突 |
 
 **结论**: 无 MUST 级原则违规。
 
@@ -55,14 +55,21 @@ packages/app/src/
 
 packages/opencode/src/
 ├── project/
-│   ├── project.ts                # project 表加字段（type/project_type/shared_directory/last_accessed_at/archived/archived_at）
-│   ├── member.ts                 # project_member 表 + 微信群模型权限判定
+│   ├── project-ext.ts            # openhive 自有 project_ext 表落点（type/project_type/shared_directory/last_accessed_at/archived/archived_at）
+│   ├── member.ts                 # 成员判定接线层（判定纯函数在 core/project/membership.ts，表在业务 PG）
 │   └── archive.ts                # 项目归档/找回（MinIO 上传/下载 + archived 状态流转）
 └── minio/
     └── backup.ts                 # MinIO 客户端（文件级备份/拉回）
+
+packages/core/src/
+└── project/
+    └── membership.ts             # 微信群模型判定（纯函数；U5 裁定不接 capability）
+
+packages/auth/src/migrations/
+└── 0005_project_member.sql       # project_member 表（业务 PG；U5 裁定）
 ```
 
-**Structure Decision**: 前端 `app/project/` 承载左栏交互，后端 `opencode/project/` 承载数据模型与归档逻辑；`project` 表加字段、`project_member` 新增，全部「加」的方式。
+**Structure Decision**: 前端 `app/project/` 承载左栏交互，后端 `opencode/project/` 承载数据模型与归档逻辑；六个生命周期字段落 openhive 自有 `project_ext` 表、`project_member` 落业务 PG 并新增，**上游 `project` 表一字不动**——全部「加」的方式。
 
 ## 前端换皮区（左栏项目 / 文件树 / MinIO 双树）
 
@@ -130,14 +137,14 @@ flowchart LR
 
 - **复用 F1 三栏**：图标栏「项目管理」入口呼出左栏（F1 已落地五入口）。
 - **复用 F3 沙箱**：项目是 `/workspaces/{userId}/{project}/` 内的隔离边界 + git 仓库。
-- **复用 F4 权限**：`project_member` 是工作空间轴权限，鉴权走 F4 执行层；不绑定数据轴权限。
-- **`project` 表加字段**：opencode 原生 project 表加列（`type` / `project_type` / `shared_directory` / `last_accessed_at` / `archived` / `archived_at`），不重写表。
+- **成员判定自成一条线（U5 裁定，2026-10-06）**：`project_member` 是工作空间轴权限，**不接 `core/access` capability**（那是数据轴，004 裁定 ④ 留给 F6/F7 钉契约）——存储落业务 PG、判定写 core 纯函数、接线在执行层；不绑定数据轴权限。
+- **六个字段落 openhive 自有表（U4 裁定，2026-10-06）**：新增 `project_ext` 表（`type` / `project_type` / `shared_directory` / `last_accessed_at` / `archived` / `archived_at`），建表钩子挂在 fork 自有的 `packages/core/src/database/router.ts`（每用户库那一层）；上游 `packages/core/src/project/sql.ts` 与 `database/migration/` 一字不动。
 
 ## 风险点清单（要素⑤）
 
 | ID | 风险 | 缓解 |
 |---|---|---|
-| R1 | `project` 表加字段与上游合并冲突 | 只加列不改列，冲突面小；单独提交标注为保留定制 |
+| R1 | ~~`project` 表加字段与上游合并冲突~~ **已由 U4 裁定消除** | 改走 openhive 自有 `project_ext` 表 ⇒ 上游 `project/sql.ts` 不动，无冲突面。**代价（新）**：项目列表查询多一次 LEFT JOIN；`project` 行与 `project_ext` 行须同步创建 ⇒ 收成**一个写入模块**，别两处各写一份（`LEARNINGS #002-06`） |
 | R2 | MinIO 备份/归档的大文件传输性能 | 分片上传、归档异步执行、进度反馈 |
 | R3 | 归档/找回的文件一致性（上传失败/中断） | 上传校验 + 幂等重试，归档前确认完整性 |
-| R4 | 自动归档形态待决策（先提醒 vs 直接归档） | 默认「先提醒、owner 确认后归档」，待用户确认 |
+| R4 | ~~自动归档形态待决策~~ **已定（U1 裁定，2026-10-06）** | **先提醒、owner 确认后归档**——与 spec.md 的 AC4 / US5 注记 / FR-008 / Assumptions 四处一致。本条原写「待决策」，与 spec 自相矛盾，已按 spec 收口 |

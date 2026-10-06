@@ -880,7 +880,7 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 ### 13.3 数据模型
 
-- `project` 表加字段：`type`（`private`/`shared`）+ `project_type`（`单案`/`串并`/`专项行动`/`考核督导`/`内勤文字`…）+ `shared_directory`（指向 `/shared/{projectId}/`）+ `last_accessed_at`（最近访问时间：「最近」排序 + 3 个月无操作归档判断）+ `archived`（0 活跃 / 1 已归档）+ `archived_at`（归档时间，可选）。项目列表、成员管理、归档/找回等左栏设计详见 `2026-09-11-项目管理-design.md`。
+- `project_ext` 表（**openhive 自有扩展表**；U4 裁定 2026-10-06——上游 `project` 表一字不动，宪法 §一）：`type`（`private`/`shared`）+ `project_type`（`单案`/`串并`/`专项行动`/`考核督导`/`内勤文字`…）+ `shared_directory`（指向 `/shared/{projectId}/`）+ `last_accessed_at`（最近访问时间：「最近」排序 + 3 个月无操作归档判断）+ `archived`（0 活跃 / 1 已归档）+ `archived_at`（归档时间，可选）。项目列表、成员管理、归档/找回等左栏设计详见 `2026-09-11-项目管理-design.md`。
 - 新增 `project_member` 表：`project_id` + `user_id` + `role`（`owner`/`member`），唯一约束 `(project_id, user_id)`。
 - **`project_member` 只属「工作空间轴」**：它决定「谁是 openhive 项目的成员、产物能落到哪个工作空间」。**数据访问权限是另一套**（数据轴，由 `fund_project_member` 等数据自身的项目成员表决定，见 §14.1）。两者不互相绑定，勿混淆。
 - **项目 vs 案件**：案件是项目下的业务实体，结构化属性落业务 PG——新增 `case` 表（案件编号、性质、承办人、状态、关联数据范围）+ `project_case` 关联表（`project_id ↔ case_id`，多对多，一个项目 0/1/N 起案件）。案件材料文件放项目目录子文件夹，靠 `case_id` 关联。
