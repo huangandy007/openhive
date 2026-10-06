@@ -138,6 +138,35 @@ describe("微信群模型 · 归档 / 找回（FR-008 / FR-009 / FR-010）", () 
   })
 })
 
+describe("T015 · 冻结（FR-010 的另一个出口：在项目里干活）", () => {
+  /**
+   * **两个投影必须一起动**（`LEARNINGS #004-02`）。`decide` 里那句「归档态下除 owner 的
+   * `restore` 之外没有动作成立」与 `frozen` 是**同一条规则的两个出口**：前者管
+   * 「邀请 / 移除 / 退群 / 归档 / 找回」这个动作闭集，后者管**动作闭集之外**的那个出口——
+   * 建会话、读写文件（`x-openhive-project` 那条链，判据落在
+   * `middleware/project-location.ts`）。
+   *
+   * ⚠️ **这条断言是故意写成警报的**：谁将来**放宽** `decide` 的归档分支（例如让 owner
+   * 在归档项目上还能 invite），它立刻红，逼人回来回答「那 `frozen` 还该不该为真」——
+   * 而不是让两个投影各自长（`LEARNINGS #002-06` 的形状）。
+   *
+   * 写**取值断言**（`frozen(x) === !还有动作成立`）而不是比字符串/比常量：
+   * 两个值由两条独立的路径算出来，**相等才是那条不变量本身**。
+   */
+  test("冻结 ⟺ 归档态下没有任何非「找回」动作成立", () => {
+    for (const archived of [true, false]) {
+      const 还有别的动作成立 = ProjectMembership.PROJECT_ACTIONS.filter((action) => action !== "restore").some(
+        (action) =>
+          [null, ...ProjectMembership.MEMBER_ROLES].some((actor) => ask(actor, action, { target: "member", archived })),
+      )
+      expect({ archived, 冻结: ProjectMembership.frozen(archived) }).toEqual({
+        archived,
+        冻结: !还有别的动作成立,
+      })
+    }
+  })
+})
+
 describe("非成员在未归档的项目上（fail-closed 基线）", () => {
   /**
    * **没有身份 ⇒ 一条也放不过**。006 的会话创建是「取不到授权 ⇒ 不建会话」

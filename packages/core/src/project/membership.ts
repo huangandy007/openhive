@@ -11,7 +11,7 @@ export * as ProjectMembership from "./membership"
  * |---|---|---|
  * | **判定**（本文件） | `packages/core/src/project/membership.ts` | 「这个身份 ＋ 这个动作 ⇒ 能不能」 |
  * | 存储 | `packages/auth/src/migrations/0005_project_member.sql` ＋ 同目录的 drizzle 模型 | 「库里有什么」 |
- * | 接线 | `packages/opencode/src/project/member.ts`（T010/T013/T015） | 「取身份 → 问判定 → 执行」 |
+ * | 接线 | `packages/opencode/src/server/openhive/archive.ts`（归档/找回，`decide`，T013）＋ `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`（「已归档 ⇒ 拒」两道门，`frozen`，T015） | 「取身份 → 问判定 → 执行」 |
  *
  * 本文件**不读库、不抛错、不碰 Effect**——纯函数，所以它能在 core 里（core **不依赖 auth**，
  * 见 `packages/auth/package.json` 的 deps）。取身份那一步归 `packages/opencode`：
@@ -48,6 +48,10 @@ export * as ProjectMembership from "./membership"
  * ⚠️ 这是**一次裁定**（2026-10-06，T004，已记 `state.md`），不是顺手写的：方向是**收紧**
  * （比字面更严），不会放走任何一次越权。若本意是「owner 归档后仍可邀请」，那是一次**放宽**，
  * 要有据再改（`LEARNINGS #002-02` 的取向：没覆盖的要写成缺口，不是写成已覆盖）。
+ *
+ * 这条读法有**两个出口**：动作闭集内由 `decide` 回答（上表那五条），闭集**外**的那半个
+ * ——「已经归档的项目上还能不能在里头干活（建会话 / 读文件）」——由 `frozen` 回答（T015）。
+ * 两者是同一条规则的两处投影，由测试锁死，理由写在 `frozen` 的注释里。
  *
  * ## 镜像：`MEMBER_ROLES` ⇔ 迁移里 `project_member.role` 的 CHECK
  *
@@ -124,4 +128,32 @@ export function decide(input: DecisionInput): boolean {
   // 归档 = 冻结：唯一的出口是 owner 的找回（见文件头「归档态的读法」）。
   if (input.archived) return input.action === "restore" && input.actor === "owner"
   return RULES[input.action](input)
+}
+
+/**
+ * 「这个项目冻住了吗」——归档分支的**第二个出口**（005 T015，FR-010）。
+ *
+ * ## 为什么不能借 `decide` 现成的某个动作来问
+ *
+ * 中间件要问的不是「**这个动作**能不能」，而是「**这个项目上还能不能干活**」——建会话、读文件
+ * （判据落在 `middleware/project-location.ts`，那是两道门：**带了项目头**的那条链，与**目录来自
+ * 会话行**的那条链）。而动作闭集里
+ * **没有「干活」这个动作**：`PROJECT_ACTIONS` 是邀请 / 移除 / 退群 / 归档 / 找回，五条都是
+ * 项目**管理**。借 `archive` 来问会把「归档后 owner 还能不能再归档」混进来（那条今天不成立，
+ * 但它是**另一条**规则，将来可能单独放宽），借 `invite` 来问同理。
+ *
+ * ## 今天它长得像 `identity`，而那个形状是**刻意的**
+ *
+ * 函数体一句话就写完，判据的全部内容在 `decide` 上面那条归档分支里——本函数是它的**读法出口**，
+ * 不是它的第二份实现。真正的守卫在测试那一侧：`packages/core/test/project-membership.test.ts`
+ * 的 T015 组遍历 `PROJECT_ACTIONS`，断言
+ * 「`frozen(archived)` ⟺ 归档态下**没有任何**非 `restore` 动作成立」。
+ *
+ * ⇒ 谁**放宽** `decide` 的归档分支（例如让 owner 在归档项目上还能邀请），那条断言立刻红，
+ * 逼人回来回答「那 `frozen` 还该不该为真」（`LEARNINGS #004-02`：两个投影之间必须有一条
+ * **故意会红**的相等断言，不能靠注释约定同步）。所以本函数**不要**改写成「照着 `decide` 现算
+ * 一遍」——那样两个投影就并成了一个，警报也随之消失。
+ */
+export function frozen(archived: boolean): boolean {
+  return archived
 }

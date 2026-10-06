@@ -367,7 +367,13 @@ export function createRoutes(
       // 与锚定共用同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义，别在这里再定义一个）。
       // 次序与理由见 `middleware/project-location.ts` 文件头「为什么挂在锚定之后」。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T017）。
-      projectLocationLayer.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+      // T015 起它还要一个业务 PG 客户端（「已归档 ⇒ 拒」那道门要读 `auth.project_archive`）——
+      // 与建/列项目、归档/找回**共用同一个**（同上，否则夹具上撞 `42P05`）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
+      projectLocationLayer.pipe(
+        Layer.provide(AnchorWorkspace.Config.layer),
+        Layer.provide(OpenhivePg.layer),
+      ),
       // B 链（CLI serve / sdk-next）的配额守卫（003 T010）。**必须挂在这一层**：
       // 它的活跃集合来自 `SessionV2.active`（进程级）与按用户路由的 `Database`，
       // 两者在这个 provide 链的外层可用；A 链那条读不到实例作用域的 `SessionStatus`，

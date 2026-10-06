@@ -1,12 +1,18 @@
 export * as ProjectLocation from "./project-location"
 
+import { archiveStatesOf } from "@opencode-ai/auth/project-member"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectExt } from "@opencode-ai/core/project/ext"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { User } from "@opencode-ai/core/user"
+import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
+import { OpenhivePg } from "@/server/openhive/pg"
 import { Effect, Option } from "effect"
-import { Headers, HttpMethod, HttpRouter, HttpServerRequest } from "effect/unstable/http"
-import { join } from "node:path"
+import { Headers, HttpMethod, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { join, relative } from "node:path"
 import { AnchorWorkspace } from "./anchor-workspace"
+import { MatchedRoute } from "./matched-route"
 
 /**
  * 「当前项目」的落地口径（005 T017，FR-001 · D0-1）。
@@ -72,6 +78,61 @@ import { AnchorWorkspace } from "./anchor-workspace"
  * 于是所有不带项目的请求（会话、文件、pty、上传……）走的是**与今天完全一样**的那条路。
  * 「不在场时不产生副作用」比「在场时做对」更容易被写坏，故写在这里。
  *
+ * ⚠️ T015 加的那道门（下节）**长在同一个早退之后**：不带头的请求连库都不查。这条由
+ * `test/server/openhive-project-frozen.test.ts` 的「不带项目头」用例钉着——门是**全局**中间件，
+ * 「它只认项目头」必须是一条被钉住的性质，而不是一句注释。
+ *
+ * ## 归档 = 冻结（T015，FR-010）：已归档的项目上**不能干活**
+ *
+ * 项目在 `auth.project_archive` 里是 `archived = true` ⇒ **一律 403**（含 owner）：建会话、
+ * 读文件树这些「在项目里干活」的入口全部关掉，只剩「找回」那一条管理链。
+ * 三笔裁定与依据（2026-10-06，用户）记在 `docs/superpowers/specs/005-project-management/state.md`；
+ * 判据本身在 core 的 `ProjectMembership.frozen`，与归档/找回那条 `decide` 是**同一条规则的两个
+ * 投影**（等值关系由 `packages/core/test/project-membership.test.ts` 的 T015 组锁死）。
+ *
+ * 为什么门必须在这里：本层是「当前项目」的**唯一**服务端消费者（T017 那三笔裁定的结论），
+ * 建会话两条链与文件树的目录都从它这里出去——把门放在别处就等于**再数一遍出口**
+ * （`LEARNINGS #004-01`：漏掉的出口按定义不在「已经有守卫的那些」里面）。
+ *
+ * ⚠️ **一个必须知道的后果**：归档 / 找回那两条管理链**也在本层的下游**（全局中间件挂在合并
+ * 路由之上）。谁给管理类调用带上项目头，门就会**先于** handler 把它拦下——**已归档的项目
+ * 再也找回不了**（找回正需要「已归档」这个前提）。今天不会发生：前端那两条薄客户端
+ * （`packages/app/src/project/openhive-project.ts`）都不发这个头，`grep` 全仓只有
+ * `openhive-files.ts` 发。取向是**把契约钉死**：带了头 =「我要进这个已经冻住的项目里干活」
+ * ⇒ 403 是对的，错的是那个头。T023（归档/找回入口）接线时**别**给找回的调用加这个头。
+ *
+ * ⚠️ 那条「管理类调用带了项目头」的用例（`openhive-project-frozen.test.ts`）**只钉「门在不在」**：
+ * 找回 handler 对非 owner 也回 403，与门同值 ⇒ 先 `让谁当owner` 造出对照，再用「不带头 503 ／
+ * 带头 403」的**差**证明门确实拦下了。⚠️ **它并不证明「门排在 handler 之前」**（复查 2026-10-06
+ * 席2 F1 纠正过一版把这句话写大了的注释）：门若排在 handler **之后**，带头这一枪同样会是 403
+ * ——handler 先跑、回它的 403 或 503，门根本没机会。区分「门在不在」与「门在哪儿」要的是
+ * **门之前就有观测面**（`LEARNINGS #004-09`）；管理类链上一个副作用都没有，这里**造不出来**，
+ * 如实记进「已知不覆盖」。
+ *
+ * ## 第二道门：目录来自**会话行**的那一半（T015 · D1）
+ *
+ * 上面那道门只认「请求**自己说**它在哪个项目」（`PROJECT_HEADER`）。但会话作用域那条链的实例
+ * 目录取自**会话行**——`middleware/workspace-routing.ts` 的 `session?.directory || …`（那是**上游**
+ * 文件，改不动）——于是「建会话时带了头、以后用这个会话时不必再带」是一条**旁路**：归档后它照样
+ * 在那个（已被 T013 删掉的）目录里跑。本文件因此补第二道门：**不带项目头时**，若本次请求匹配到的
+ * 路由带 `sessionID` 参数（两条链同名，`#004-01`：出口要按「谁在做那件事」数），就读那个会话的目录；
+ * 目录**恰好**是 `join(config.root, 本人 id, projectId)` 的形状、且该项目已归档 ⇒ **403**。
+ *
+ * ⚠️ **连带语义**：**归档项目的会话整体冻住**——不只「在它里面跑提示词」，连 `GET /session/:id`、
+ * 删会话这些也是 403。这是「归档 = 冻结」这条规则的一致读法（活都不让干了，一个区里）。
+ *
+ * 两处细节是**刻意的**：
+ * - **判据用 `MatchedRoute.current` 的 `params["sessionID"]`，不自己拿 URL 原文比对**——
+ *   `/session/ses_x/message/`、`%61`、`;x` 这些写法匹配器都认作同一条路由（`R-01`/`R-02`），
+ *   比原文的守卫一律能被绕过。路由匹配结果里没有 `sessionID` 的端点一律不碰。
+ * - **会话不存在 ⇒ 放行**，让 handler 按它自己的口径回 404——本层不替它决定（同「读不到
+ *   匹配结果就直通」的取向）。`Session.get` 的 `NotFoundError` 是**类型化失败**，DB 真炸是
+ *   `orDie` 的缺陷、照样 500：吞掉的只有「这个会话没有」这一种。
+ *
+ * ⚠️ **为什么它必须也在本文件**：本层是「当前项目」的唯一服务端消费者；第二道门只是同一个
+ * 「这个项目冻住了吗」判据的**第二个出口**，判据本体仍是 core 的 `ProjectMembership.frozen`
+ * （下面 `isArchived` 是它唯一的取用点，两道门共用）。
+ *
  * ## 镜像（两处，都不是近似的借口）
  *
  * 1. **沙箱根**：本文件的 `join(config.root, user.value.id)` ⇔ `anchor-workspace.ts` 里那行。
@@ -102,6 +163,15 @@ import { AnchorWorkspace } from "./anchor-workspace"
  *   上移一层，于是**文件树 / pty / 上传那些入口的实例目录也跟着上移**。这是产品想要的方向
  *   （「当前项目」就该是当前工作目录），但那些入口**没有跑过带头的情形**——它们的行为是**推**出来的，
  *   不是测出来的。要动它们之前先补一条用例，别默认这条路已经验过。
+ * - **「门排在 handler 之前」在管理类链上测不出来**（上面「一个必须知道的后果」那节）：那一条没有
+ *   副作用可当观测面，端到端断言分不出门的先后。建会话那条链上是**测过**的（用例 ①②③ 断的是
+ *   落盘目录，门在 handler 之后就不会是那个目录）。要补管理类链的顺序判据，得先给它造一个门之前
+ *   就能读到的副作用（`LEARNINGS #004-09` / `#004-13`）。
+ * - **第二道门只认「恰好一层」的目录**：判据是 `relative(沙箱根, 会话目录)` 切成**两段**、第一段
+ *   等于本人 id（即 `join(沙箱根, 本人 id, projectId)` 的形状，也正是第一道门写进去的形状）。
+ *   比这更深的会话目录（`…/{projectId}/sub`）**不认**，会走「不是项目会话」那一支放行。今天到不了
+ *   那条路：锚定把客户端能报的目录全部改写成沙箱根，深目录只能是本层自己加的，而本层只加一段。
+ *   真要支持子目录会话，改这里的同时得补一条用例（`#002-02`：没覆盖的要写成缺口，不是写成已覆盖）。
  */
 
 /**
@@ -113,8 +183,57 @@ import { AnchorWorkspace } from "./anchor-workspace"
  */
 export const PROJECT_HEADER = "x-openhive-project"
 
+/**
+ * 已归档 ⇒ 403（T015）。写成 **JSON 体**而不是空响应：与归档 / 找回那两条链的拒绝同一口径
+ * （`{ error }`），前端能直接把这句话显示给人看（「项目已归档，请先找回」）。
+ */
+function forbidden() {
+  return HttpServerResponse.jsonUnsafe({ error: "项目已归档，请先找回" }, { status: 403 })
+}
+
+/**
+ * 这个项目归档了吗——**两道门唯一的取用点**（T015）。
+ *
+ * ⚠️ **缺行 ⇒ 未归档**（`?? false`），与 T018 列表那条「没有归档行 ⇒ 省略 `archived` 键
+ * ⇒ 前端读作活跃」是**同一条默认值**——两处漂了就是「列表说活跃、进门被拒」。
+ * `archiveStatesOf` 的键缺席语义正是为这个口径建的（那个函数的注释里写着「没有来源」与
+ * 「来源说没有」是两件事）。两道门写一份，是为了让这个默认值**只有一个地方会漂**
+ * （`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+ */
+const isArchived = (openhivePg: OpenhivePg.Interface, projectId: string) =>
+  Effect.promise(() => archiveStatesOf(openhivePg.pg(), [projectId])).pipe(
+    Effect.map((states) => ProjectMembership.frozen(states.get(projectId)?.archived ?? false)),
+  )
+
+/**
+ * 从**会话目录**里取出项目 id（第二道门，T015 · D1）：只认**恰好一层**
+ * `join(沙箱根, 本人 id, projectId)` 的形状——那正是第一道门写进 `session.directory` 的形状。
+ *
+ * 比这更深或更浅一律 `undefined`（= 「这条会话不在任何项目里」⇒ 放行）：
+ * - **浅**（= 沙箱根本身）：不带头建会话的正常落点，当然不是项目会话；
+ * - **深**（`…/{projectId}/sub`）：今天到不了（锚定把客户端报的目录全改写成沙箱根，
+ *   而本层只加一段）；真到了这里，宁可放行也不猜——猜错的方向是**乱拒**。
+ *   见文件头「已知不覆盖」最后一条。
+ *
+ * ⚠️ 第一段必须等于**本人 id**：不这么写的话，`{沙箱根}/{别人}/{projectId}` 也会被当成
+ * 「我的项目会话」。那条路今天走不到（会话目录由本层从本人沙箱算出来），但这一行让判据
+ * **自己**站得住，而不是靠「上游不会那样写」。
+ *
+ * ⚠️ **这一行测不到，是实测的**（M9，2026-10-06）：把它改成恒不成立 ⇒ **7 pass / 0 fail**，
+ * 一条都不红。造不出那样一条会话行（会话目录只有本层与锚定两个来源，都在本人沙箱里），
+ * 所以它属于 `#003-03` 的第③类「变异全绿」。**留着而不是删掉**的理由：它不是抽象出来的
+ * 灵活性，而是一个等式，写出来是为了让这个判定**不依赖一条没说出口的上游不变量**——
+ * 但读者要知道它没有测试守着（`LEARNINGS #002-02`：没覆盖的写成缺口，不写成已覆盖）。
+ */
+function projectIdOfSessionDirectory(root: string, userId: string, directory: string): string | undefined {
+  const parts = relative(root, directory).split(/[\\/]/)
+  if (parts.length !== 2) return undefined
+  if (parts[0] !== userId) return undefined
+  return parts[1]
+}
+
 export const projectLocationLayer = HttpRouter.middleware<{
-  requires: AnchorWorkspace.Config | Database.Service
+  requires: AnchorWorkspace.Config | Database.Service | OpenhivePg.Service | Session.Service
   handles: unknown
 }>()(
   Effect.gen(function* () {
@@ -124,6 +243,14 @@ export const projectLocationLayer = HttpRouter.middleware<{
     // 所以下面那句查到的是**请求方自己的** `project_ext`（别人家的项目 id 在这里查不到，
     // 落到 R5 那一支）——本文件因此**不需要**任何身份判断。
     const database = yield* Database.Service
+    // 业务 PG（T015 的门读 `auth.project_archive`）。⚠️ 它与建/列项目、归档/找回用的是
+    // **同一个实例**（layer 在 `server.ts` 里只 provide 一次的那个值），理由见 `@/server/openhive/pg`。
+    const openhivePg = yield* OpenhivePg.Service
+    // 第二道门要读**会话行**的目录（T015 · D1）。用 `Session` 而不是自己查 `SessionTable`：
+    // 那是生产真正走的那条读法，本文件不该成为它的第二份实现（`LEARNINGS #002-06`）。
+    // ⚠️ 它是**进程级**服务（deps 全是全局 node）⇒ 路由级中间件取得到；对照：`SessionStatus`
+    // 是实例级的，路由级取到、请求期调用会失败（`session-quota.ts` 文件头的实测）。
+    const session = yield* Session.Service
 
     return (effect) =>
       Effect.gen(function* () {
@@ -133,7 +260,22 @@ export const projectLocationLayer = HttpRouter.middleware<{
 
         const request = yield* HttpServerRequest.HttpServerRequest
         const projectId = request.headers[PROJECT_HEADER]
-        if (projectId === undefined) return yield* effect
+
+        // ── 没有项目头：第二道门（T015 · D1，见文件头「目录来自会话行的那一半」）──
+        // 走到这里说明请求**自己没说**在哪个项目，但它可能**正打在**某个项目里的会话上。
+        if (projectId === undefined) {
+          const route = yield* MatchedRoute.current
+          const sessionID = route?.params["sessionID"]
+          if (sessionID !== undefined) {
+            // 会话存在才谈得上「在哪个项目里」；不存在就放行，让 handler 用它的口径回 404。
+            const found = yield* session.get(SessionID.make(sessionID)).pipe(Effect.option)
+            if (Option.isSome(found)) {
+              const sessionProjectID = projectIdOfSessionDirectory(config.root, user.value.id, found.value.directory)
+              if (sessionProjectID !== undefined && (yield* isArchived(openhivePg, sessionProjectID))) return forbidden()
+            }
+          }
+          return yield* effect
+        }
 
         if (!User.isSafePathSegment(projectId))
           throw new Error(`非法项目 id，拒绝锚定项目目录：${JSON.stringify(projectId)}`)
@@ -145,6 +287,19 @@ export const projectLocationLayer = HttpRouter.middleware<{
         // 本来就要写同一个库，吞掉只会把同一个故障挪到下一步，还多一个「看着还在、其实没有」的
         // 分支（`LEARNINGS #002-02`）。
         if (project === undefined) return yield* effect
+
+        // 归档 = 冻结（005 T015，FR-010）：**已归档的项目上不能干活**——建会话、读写文件一律拒，
+        // 连 owner 也不行（唯一的出口是「找回」，而那条管理链**不带这个头**）。
+        // 判据在 core 的 `ProjectMembership.frozen`，与归档/找回用的 `decide` 是同一条规则的两个
+        // 投影（那条等值关系由 `packages/core/test/project-membership.test.ts` 的 T015 组锁死）。
+        // ⚠️ **两道门共用** `isArchived`（见下），所以「缺行 ⇒ 未归档」那个默认值只有一处。
+        //
+        // 位置：**在 R5 之后**——查不到 `project_ext` 行 ⇒ 落**沙箱根**（`effect` 直通），
+        // 那条路上根本进不了任何项目目录，也就无所谓冻不冻；为它多花一次 PG 往返没有收益。
+        // （这里原本写的是「owner 行与 `project_ext` 行同生共死 ⇒ 那条路上不可能有归档行」，
+        // 那句按字面是**假的**——成员今天就没有 `project_ext` 行、而项目完全可能已归档；
+        // 真正的理由就是前一句：那一支的落点是沙箱根。）
+        if (yield* isArchived(openhivePg, projectId)) return forbidden()
 
         const target = join(config.root, user.value.id, projectId)
         const rewritten = rewriteBody(rewriteRequest(request, target), target)
