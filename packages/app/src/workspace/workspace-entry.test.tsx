@@ -5,6 +5,7 @@ import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
+import { setMinioBackups } from "@/project/minio-backups"
 import { setProjectFiles } from "@/project/project-files"
 import { setProjectList } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
@@ -408,9 +409,14 @@ describe("项目面板接进左栏（FR-002 出参）", () => {
 
     expect(开着(host)).toBe(true)
     expect(面板(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
-    // `file-tree-slot` 是 T007 加的（左栏 ③，紧贴锚点行）；面板是 `absolute` 浮层，
+    // `sidebar-tabs` 是 T019 加的左栏 ②③（tab 容器 ＋ 主体）；面板是 `absolute` 浮层，
     // 排在它前面只是 DOM 顺序，视觉上仍压在文件树之上。
-    expect(侧栏层级(host)).toEqual(["project-anchor", "project-panel-slot", "file-tree-slot"])
+    expect(侧栏层级(host)).toEqual([
+      "project-anchor",
+      "project-panel-slot",
+      "sidebar-tabs",
+      "minio-bar",
+    ])
   })
 
   test("再点 ▾ 收起——它是开关，不是单程票", () => {
@@ -509,8 +515,8 @@ const 树行 = (host: HTMLElement) => [...host.querySelectorAll("[data-slot='fil
  *
  * 与上一节同因（T005 立下的规矩）：组件单测里全绿，不等于**接线接上了**。
  * 这一节验的正是那根线——数据来自 `@/project/project-files` 这条缝、落在左栏 ③ 的位置、
- * 且**今天没有写入方**（缝恒空 ⇒ 走空态）。按 T007 的裁定先直接挂在锚点行下（默认「文件」态），
- * 设计 §2 的 ②[会话][文件] tab 容器归 T019。
+ * 且**今天没有写入方**（缝恒空 ⇒ 走空态）。T007 时它直接挂在锚点行下；T019 把它**整体搬进**
+ * 了 ② 的「文件」pane（`sidebar-tabs.tsx` 的 `file-tree-slot`），组件本身一行未改。
  */
 describe("文件树接进左栏（FR-005 出参）", () => {
   beforeEach(() => {
@@ -523,7 +529,10 @@ describe("文件树接进左栏（FR-005 出参）", () => {
 
     expect(有树(host)).toBe(true)
     expect(树(host)?.closest("[data-slot='three-pane-left']")).not.toBeNull()
-    expect(侧栏层级(host)).toEqual(["project-anchor", "file-tree-slot"])
+    // T019 之后树不再挂在侧栏直接孩子上，而是**搬进** ② 的「文件」pane（左栏 ③）——
+    // 位置变了，身份没变：它仍然是 `file-tree-slot`（`sidebar-tabs.tsx` 里那个 pane 的 `data-slot`）。
+    expect(侧栏层级(host)).toEqual(["project-anchor", "sidebar-tabs", "minio-bar"])
+    expect(树(host)?.closest("[data-slot='file-tree-slot']")).not.toBeNull()
   })
 
   test("缝里写进路径，树里就长出来——接线真的把 projectFiles() 传下去了", () => {
@@ -654,5 +663,114 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
     锚点按钮(host, "project-anchor-members")?.click()
 
     expect(text(host, "member-panel-title")).toBe("成员管理 · 8·17专案")
+  })
+})
+
+const 侧栏tab = (host: HTMLElement, key: "session" | "files") =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='sidebar-tab'][data-tab='${key}']`)
+const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-component='minio-bar']")
+const tabpane = (host: HTMLElement, key: "session" | "files") =>
+  host.querySelector<HTMLElement>(`[role='tabpanel'][data-pane='${key}']`)
+/** 这个 pane 被藏起来了吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
+const 藏起来了 = (el: HTMLElement | null) => el !== null && el.hasAttribute("hidden")
+
+/**
+ * 左栏外壳接进左栏（T019 出参：**左栏能切「会话/文件」、MinIO 窄条常驻**）。
+ *
+ * 与上几节同因（T005 立下的规矩）：组件单测里全绿，不等于**接线接上了**。
+ * 这一节验的正是那几根线——两块外壳落在左栏 ②③④ 的位置、文件树**搬进了**「文件」pane、
+ * 窄条的数字来自 `@/project/minio-backups` 那条缝、点窄条回到「文件」tab（设计 §5.1①）。
+ *
+ * ⚠️ **今天没有写入方**：`minioBackups` 恒空（T011 的 `core/minio` 没有 HTTP 出口，
+ * 见 `@/project/minio-backups` 文件头），所以窄条恒走「不知道几项」态。
+ */
+describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T019 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectFiles(undefined)
+    setMinioBackups(undefined)
+  })
+
+  test("左栏有 [会话][文件] 两个 tab，且**默认停在「文件」**（设计 §2）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(侧栏tab(host, "files")?.getAttribute("aria-selected")).toBe("true")
+    expect(侧栏tab(host, "session")?.getAttribute("aria-selected")).toBe("false")
+  })
+
+  test("点「会话」切过去：会话 pane 露出来、文件 pane 藏起来", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    // 前置：默认在「文件」——否则下面那个「藏起来了」在「压根没接线」时也成立（`#004-14`）
+    expect(藏起来了(tabpane(host, "files"))).toBe(false)
+
+    侧栏tab(host, "session")?.click()
+
+    expect(藏起来了(tabpane(host, "session"))).toBe(false)
+    expect(藏起来了(tabpane(host, "files"))).toBe(true)
+  })
+
+  test("「会话」pane 是显式空态——设计 §7 的会话列表不在本 feature，就明说没接入", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    侧栏tab(host, "session")?.click()
+
+    expect(text(host, "session-empty")).toBe("会话列表未接入")
+  })
+
+  test("切到「会话」再切回来，**文件树还是同一棵**（选中/折叠/搜索不会因为看眼会话就没了）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setProjectFiles(["笔记.md"])
+    const 前 = 树(host)
+    expect(前).not.toBeNull() // 前置：先有一棵树可比
+
+    侧栏tab(host, "session")?.click()
+    // ⚠️ 中段这条**不是**装饰：缺了它，本条在「压根没有 tab 容器」的旧结构上也全绿
+    // （树从不卸载，「同一棵树」自然成立）——那就成了一条不区分实现、只跟着代码走的断言。
+    expect(藏起来了(tabpane(host, "files"))).toBe(true)
+    侧栏tab(host, "files")?.click()
+
+    // ⚠️ 比布尔而不是比节点（`#005-01`：节点当实得值，红了会把整轮 `bun test` 崩掉）
+    expect(树(host) === 前).toBe(true)
+    expect(树行(host).map((el) => el.getAttribute("data-path"))).toEqual(["笔记.md"])
+  })
+
+  test("MinIO 窄条常驻左栏底部：切到哪个 tab 都在，且排在 tab 容器之后", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(窄条(host)).not.toBeNull()
+
+    侧栏tab(host, "session")?.click()
+
+    expect(窄条(host)).not.toBeNull()
+    expect(侧栏层级(host)).toEqual(["project-anchor", "sidebar-tabs", "minio-bar"])
+  })
+
+  test("点窄条：在「会话」tab 时自动切回「文件」（设计 §5.1 步骤 2①）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    侧栏tab(host, "session")?.click()
+    expect(藏起来了(tabpane(host, "files"))).toBe(true) // 前置：确实停在「会话」
+
+    窄条(host)?.click()
+
+    expect(侧栏tab(host, "files")?.getAttribute("aria-selected")).toBe("true")
+    expect(藏起来了(tabpane(host, "files"))).toBe(false)
+  })
+
+  test("已经在「文件」时点窄条不会把它切走——它不是开关，是「带我去文件」", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    窄条(host)?.click()
+
+    expect(侧栏tab(host, "files")?.getAttribute("aria-selected")).toBe("true")
+  })
+
+  test("窄条的数字走接入缝：缝里写进清单才显示项数", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    // 前置：今天没有写入方 ⇒ 不显示数字（不是「· 0 项」）
+    expect(不存在(host, "[data-slot='minio-bar-count']")).toBe(true)
+
+    setMinioBackups(["笔记.md", "资料/话单.csv"])
+
+    expect(text(host, "minio-bar-count")).toBe("· 2 项")
   })
 })

@@ -8,11 +8,14 @@ import { viewRegistry } from "@/center/views"
 import { currentProject, setCurrentProject } from "@/project/current-project"
 import { FileTree } from "@/project/file-tree"
 import { MemberPanel } from "@/project/member-panel"
+import { MinioBar } from "@/project/minio-bar"
+import { minioBackups } from "@/project/minio-backups"
 import { ProjectAnchor } from "@/project/project-anchor"
 import { projectFiles } from "@/project/project-files"
 import { projectList } from "@/project/project-list"
 import { projectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
+import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { Topbar } from "@/topbar/topbar"
@@ -77,6 +80,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 不是风格选择——所以两处开关都顺手把对方收掉。
    */
   const [memberOpen, setMemberOpen] = createSignal(false)
+  /**
+   * 左栏 ② 当前停在哪个 tab（设计 §2：`[会话] [文件]`，**默认「文件」**）。
+   *
+   * 落在这里而不是 `SidebarTabs` 里，是因为**有两个读写方**：窄条点击要把它拨回「文件」
+   * （设计 §5.1 步骤 2①），而它是左栏的状态、跟中栏模块一样是「我在哪」的一部分。
+   * 与 `panelOpen` / `memberOpen` 同因：状态只能落在共同祖先。
+   */
+  const [sidebarTab, setSidebarTab] = createSignal<SidebarTabKey>("files")
 
   return (
     <>
@@ -153,14 +164,22 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     />
                   </div>
                 </Show>
-                {/* 文件树（FR-005 / 设计 §2 的左栏 ③）。
-                    按 005 的裁定先**直接挂在锚点行下**（＝默认「文件」态）：设计 §2 的 ②[会话][文件]
-                    tab 容器今天还不存在（无 task 认领 → 已补 T019），先让「文件树可用」变成看得见的东西；
-                    T019 落地时把这一块**整体搬进 tab body**，组件本身一行不改。
+                {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件]` tab 容器 ＋ 主体。
+                    文件树（T007）**整体搬进**「文件」pane——搬的是位置不是身份，`file-tree.tsx`
+                    一行未改，pane 的 `data-slot` 也仍叫 `file-tree-slot`（这正是 T007 当初选
+                    「受控组件 ＋ 接缝」的原因）。`files` 传的是元素本身，`SidebarTabs` 两个 pane
+                    常挂不卸载 —— 切一下 tab 不该把选中的行、展开的目录、搜过的词丢掉。
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。 */}
-                <div data-slot="file-tree-slot" class="min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1">
-                  <FileTree paths={projectFiles()} />
-                </div>
+                <SidebarTabs
+                  active={sidebarTab()}
+                  onSelect={setSidebarTab}
+                  files={<FileTree paths={projectFiles()} />}
+                />
+                {/* 左栏 ④ MinIO 常驻窄条（设计 §2 / §5.1 步骤 1）。`count` 走接入缝——今天
+                    缝里没有写入方，所以窄条走「不知道几项」态（`@/project/minio-backups` 文件头）。
+                    点它的动作是设计 §5.1 步骤 2①：把左栏拨回「文件」tab（MinIO 是文件操作，
+                    不该停在会话视图）。2②「展开上下双树」归 T012——双树本身是 T012 的产物。 */}
+                <MinioBar count={minioBackups()?.length} onOpen={() => setSidebarTab("files")} />
               </div>
             ) : undefined
           }
