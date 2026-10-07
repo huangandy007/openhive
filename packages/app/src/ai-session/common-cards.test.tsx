@@ -225,4 +225,45 @@ describe("常用操作指令卡（FR-002 / DESIGN §4.7.1–§4.7.2）", () => {
     expect(钮?.textContent?.trim()).toBe("⋯")
     expect(钮?.getAttribute("aria-label")).toBe("还有 1 张卡片")
   })
+
+  // ── hover 面（Step 5 · F-01 ＋ F-02）──────────────────────────────────────
+  //
+  // `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 源码里落在 **7 处**，而 Step 5 清点时
+  // **只有 1 处**有断言守着（上面那条溢出钮）。卡面（`instruction-cards.tsx:78`）这处
+  // **改回旧 token 也全套绿**——`LEARNINGS #005-07` 的老形状：一个视觉约定落 N 处，只钉一处
+  // 等于没钉。本文件这两条 ＋ `session-panel.test.tsx` 那五条 ＝ 7 处齐。
+  //
+  // ⚠️ 卡面这处是**一条表达式**（`"hover:…": !props.选中`）的两个方向，但两面是**两个独立属性**，
+  // 所以拆成两条、不合成一条：合成时「摘掉整行」与「改成无条件」会红在**同一条**用例上，
+  // 而这条纪律要的正是「**摘哪处、红哪条**」（`LEARNINGS #005-12`）。
+  //
+  // ⚠️ 两条的**对照互不耦合**（这是能拆开的前提）：A 的对照是「容器不带 hover」，
+  // B 的对照是「那张卡确实是选中的（带浅金）」——所以「整行摘掉」只红 A（B 的对照还在），
+  // 「改成无条件」只红 B（A 那两张未选中的照旧带 hover）。
+  // 若把 B 的对照写成「另一张未选中的带 hover」，两次变异会一起红、归属又糊了。
+  const HOVER = "hover:bg-v2-overlay-simple-overlay-hover"
+
+  test("hover 面 A（F-01）：**未选中**的卡带 `overlay-hover`，容器不带", () => {
+    const 宿主 = mountCards({ activePrompt: 甲卡二.prompt })
+    const 串 = 槽(宿主, "card").map((el) => el.className ?? "")
+
+    expect([串[0]?.includes(HOVER), 串[1]?.includes(HOVER)]).toEqual([true, true])
+    // 对照：`card-row` 是**容器**（底色 layer-01），hover 落在**可点的那个叶子**上、不落在容器上。
+    // ⚠️ 它**不**防「容器与叶子同时带上」——那种改法这条还是绿的，别把对照读得比它实际管的多
+    // （`LEARNINGS #005-15`：注解不许比断言强）。
+    expect(槽(宿主, "card-row")[0]?.className ?? "").not.toContain(HOVER)
+  })
+
+  test("hover 面 B（F-02）：**选中**的那张卡**不带** `overlay-hover`（选中与 hover 不同色）", () => {
+    // 「选中态与 hover **必须不同色**」（`DESIGN.md:311`；`instruction-cards.tsx:60` 那段注释
+    // 写着同一句）。选中的那张底色已是浅金，再叠一层 hover 灰 ⇒ 悬停时那张卡看着像「坏了」，
+    // 而不报错、不变红。判据就是 `classList` 里那句 `: !props.选中`——改成无条件的静态类 ⇒ 这条红。
+    const 宿主 = mountCards({ activePrompt: 甲卡二.prompt })
+    const 串 = 槽(宿主, "card").map((el) => el.className ?? "")
+
+    expect(串[2]?.includes(HOVER)).toBe(false)
+    // 对照（与 A 不耦合）：那张卡**确实是选中的那张**——带浅金。少了它，「三张卡一张都没渲染出来」
+    // 或「选中态整个坏了」也能让上面那条绿，而这条证明的不是「它不带 hover」，是「**它**不带 hover」。
+    expect(串[2]?.includes("bg-[var(--v2-background-bg-accent-soft)]")).toBe(true)
+  })
 })

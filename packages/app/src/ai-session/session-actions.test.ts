@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { DirectorySDK } from "@/context/sdk"
 import { routeSessionID } from "./route-session"
-import { 删除后去哪, 建会话, 删会话, 会话路径, type 会话行 } from "./session-actions"
+import { 删除后去哪, 在途守卫, 建会话, 删会话, 会话路径, type 会话行 } from "./session-actions"
 
 /**
  * 右栏「会话管理三件事」（T015 / FR-010 / US4 场景 2）：**新建 / 切换 / 删除**。
@@ -176,5 +176,86 @@ describe("T015 / FR-010 · 切会话 = 换 URL 末段", () => {
     // 拼错的话会得到一条**半截 URL**（例如 `/server/undefined/session/x`），而那会真的把页面导航走。
     expect(会话路径("/", "ses_新")).toBe(undefined)
     expect(会话路径("/new-session", "ses_新")).toBe(undefined)
+  })
+})
+
+/**
+ * 在途守卫（Step 5 · R-01）。
+ *
+ * ## 它堵的是什么
+ *
+ * 三根线（新建 / 切换 / 删除）都交出去一个**不可重入**的动作：新建连点两下 ⇒ 建出**两场**会话，
+ * 第二场是个没人认领的孤儿（界面只会跳到第一场）；删除连点 ⇒ 第二下在第一下还没回来时就发出去了
+ * ——而 `session-panel.tsx` 的二次确认在 `await` **之前**就把 `待删` 归了零，所以「确认」那一下
+ * 并不会被它自己的状态机拦住。
+ *
+ * ⚠️ 与缺口表里那条「`待删` 是**粘**的」**不是同一件事**：那条讲的是「确认态在切走再切回之后
+ * 还亮着」，这条讲的是「同一个动作能不能同时在途两份」。两条都真实，修法不同。
+ *
+ * ## 为什么放在这一层
+ *
+ * 三根线的异步动作都在 `ai-session-slot.tsx`（纯接线、挂不起来测）。守卫是有判断的那一半的
+ * 一小块 ⇒ 落在这里，接线层只写 `在途守卫()(动作)`。
+ */
+describe("T015 / FR-010 · 在途守卫", () => {
+  /** 一个「要外面放行才回来」的动作，外加它被跑了几次。 */
+  const 造挂起动作 = () => {
+    const 放行: Array<() => void> = []
+    let 次数 = 0
+    const 动作 = () =>
+      new Promise<string>((好) => {
+        次数 += 1
+        放行.push(() => 好(`第 ${次数} 次`))
+      })
+    return { 动作, 放行, 次数: () => 次数 }
+  }
+
+  test("① 动作没回来之前再点 ⇒ **当场忽略**（动作只跑一次）", async () => {
+    const { 动作, 放行, 次数 } = 造挂起动作()
+    const 守 = 在途守卫()
+
+    const 第一次 = 守(动作)
+
+    // 被测属性：第二下**当场**就没有下文（返回 `undefined`），而不是「排着队等第一下回来再跑」。
+    expect(守(动作)).toBe(undefined)
+    expect(次数()).toBe(1)
+
+    放行[0]()
+    expect(await 第一次).toBe("第 1 次")
+  })
+
+  test("② 动作回来之后 ⇒ 解锁，能再跑一次（守卫不是一次性的）", async () => {
+    // 少了这一条，一个「跑过一次就永远返回 undefined」的实现也能过 ①——那个实现的症状是
+    // 「第一场会话建完之后，「＋ 新会话」再也按不动了」。
+    const { 动作, 放行 } = 造挂起动作()
+    const 守 = 在途守卫()
+
+    const 一 = 守(动作)
+    放行[0]()
+    await 一
+
+    const 二 = 守(动作)
+    expect(二).not.toBe(undefined)
+    放行[1]()
+    expect(await 二).toBe("第 2 次")
+  })
+
+  test("③ 动作**失败**之后也解锁（失败不能把钮焊死）", async () => {
+    // 这一条是**失败路径**上的 ②。少了它，一个「只在成功分支解锁」的实现（例如
+    // `动作().then(() => { 忙 = false })`）会同时过 ①②，而它的症状最坏：一次网络抖动之后，
+    // 那颗钮**永久**没反应，且不报错、不变红。
+    let 次数 = 0
+    const 守 = 在途守卫()
+    const 动作 = () => {
+      次数 += 1
+      return Promise.reject(new Error("坏了"))
+    }
+
+    await expect(守(动作)!).rejects.toThrow("坏了")
+
+    const 第二次 = 守(动作)
+    expect(第二次).not.toBe(undefined)
+    await expect(第二次!).rejects.toThrow("坏了")
+    expect(次数).toBe(2)
   })
 })

@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { MANIFESTS } from "./capabilities"
+import { RAIL_ENTRIES } from "../rail/entries"
+import { GENERIC_MODULE, MANIFESTS, type SkillCapability } from "./capabilities"
+import { projectCapabilities } from "./projection"
 
 /**
  * `capabilities.ts` 那份「skill 能力清单」是不是**还和真实的 skill 集合对得上**。
@@ -137,6 +139,57 @@ describe("清单本身的形状约束", () => {
     // 也声明进自己的模块，这条会红——那时要回答的是「它到底算通用还是算模块专属」，不是删测试。
     const 全部 = MANIFESTS.flatMap((清单) => 清单.capabilities.map((条) => 条.skill))
     expect(全部.filter((名, 序) => 全部.indexOf(名) !== 序).sort()).toEqual([])
+  })
+
+  /**
+   * `CapabilityManifest.module` 的取值（Step 5 的 ④-1）。
+   *
+   * ## 为什么它需要断言
+   *
+   * `module` 的类型是**自由 `string`**（`capabilities.ts`），而 `projectCapabilities` 靠
+   * `清单.module === module` 选清单（`projection.ts`）⇒ 打错一个字母的后果是**那份清单被静默丢掉**，
+   * 四层（常用操作 / 上下文指令 / 抽屉 / `/` 面板）一起空掉，而**构建、类型检查、其它测试全绿**
+   * ——与「这个模块还没有 skill」在界面上分不开。
+   *
+   * ⚠️ **本来想靠类型收窄（`RailEntry["id"]`）解决，做不到**：`rail/entries.ts` 的 `RailEntry.id`
+   * 是 `string`（那张表是 `readonly RailEntry[]`，没 `as const`）⇒ 收不出一支联合，而且
+   * `CenterTabState.module` 也是 `string | undefined`（`center/tab-context.tsx`）。所以判据只能
+   * 落在**运行时警报**上——「类型能拦住」这句话在这里是假的，别照着它去改类型。
+   *
+   * ## 三条各自的牙
+   *
+   * ① **子集**：真值从 `RAIL_ENTRIES` 读（**不是**在这里抄一份 id 字面量——抄一份就是
+   *    第二个会漂的镜像，`LEARNINGS #003-05`）⇒ 打错、或上游删掉一个模块而清单没跟上，都会红。
+   * ② **精确集合**：它是**警报**（`LEARNINGS #004-02` ②：多一项就红，不是「已知项都在就绿」）。
+   *    加一份**合法**的新清单它也红——那正是要的：逼作者回到这里回答「这个模块 id 与
+   *    `rail/entries.ts` 对得上吗」。只写 ① 的话，一个拼对的新模块会静默通过，而它可能是
+   *    「照自己心里的名字写的、恰好也拼对了」。
+   * ③ **对照**：把「打错 ⇒ 四层全空」写成**事实**——前两条才有意义。只写正向那条时，
+   *    一个「把四层恒清空」的畸形实现也能过（`LEARNINGS #005-07` ③）。
+   *
+   * ⚠️ 这三条**今天全绿**（`MANIFESTS` 只有一份、`module` 就是 `GENERIC_MODULE`）⇒ 它们
+   * **先红后绿做不到**，牙靠**变异**证：临时把 `MANIFESTS[0].module` 改成 `"通用2"`，
+   * ①②各恰红一条（记账在 006 `state.md` 的 Step 5 修复节）。同族先例见本文件上面
+   * 「卡的三条」那段注释。
+   */
+  test("① `module` 必须是**真实模块 id**（`rail/entries.ts`）或 `GENERIC_MODULE`", () => {
+    const 真模块 = new Set<string>([...RAIL_ENTRIES.map((条) => 条.id), GENERIC_MODULE])
+
+    expect(MANIFESTS.map((清单) => 清单.module).filter((名) => !真模块.has(名))).toEqual([])
+  })
+
+  test("② 用到的模块集合**逐项钉住**（加清单必须回到这里确认模块 id 是真的）", () => {
+    expect(MANIFESTS.map((清单) => 清单.module)).toEqual([GENERIC_MODULE])
+  })
+
+  test("③ 对照：打错一个字母 ⇒ `projectCapabilities` 四层静默全空（① 守的就是它）", () => {
+    const 一条能力: SkillCapability = { skill: "x", name: "x", description: "x", group: "业务研判", cards: [] }
+
+    // 反面：写对了才选得中（少了这半条，「恒不选」的畸形实现也过）。
+    expect(projectCapabilities([{ module: "cdr-analysis", capabilities: [一条能力] }], "cdr-analysis").all).toHaveLength(1)
+
+    // 正面：一个字母之差 ⇒ 一个字都不剩，且**不抛错**（静默是本条唯一的症状）。
+    expect(projectCapabilities([{ module: "cdr-analysys", capabilities: [一条能力] }], "cdr-analysis").all).toEqual([])
   })
 
   /**

@@ -263,6 +263,35 @@
     **新** `session-actions.test.ts`（**13 条**，**180 行**）；② `session-panel.tsx` 加 `onDeleteSession?` 接缝 ＋
     行内删除钮（**+60**）；③ `session-panel.test.tsx` 加「二次确认」一组（**5 条**，**+113/−1**）；
     ④ `ai-session-slot.tsx` 三根接线（**+62/−14**：`useNavigate`、`报错` 抽成一处、三个 handler）。
+    ⚠️ 上面这串数字是 **T015 交付那一刻的快照**（`#004-05`：取证快照带时点）。**Step 5 的修复**
+    又给这两份文件加了货：`session-actions.test.ts` **+3**（在途守卫）、`session-panel.test.tsx` **+6**
+    （D1 一条 ＋ hover 五条）、`common-cards.test.tsx` **+2**（hover 面 A / B）⇒ 见
+    `state.md`「Step 5 出参（一）」。**别拿这份快照去核当前的条数。**
+
+## Phase 9: Step 5 补 · 右栏导出会话入口（2026-10-07 裁定补开）
+
+- [ ] T016 [FE·新增] 右栏加**导出会话**入口（复用上游 `utils/session-export.ts` 的三件套）[FR-010] [T015] [出参：右栏能把当前会话导出成 JSON 落盘]（**未开工**）
+  - **为什么补开（`#005-09`：先读挂账，别把已挂的当新缺口）**：Step 5 的 **D2**。原裁定（U11 · 笔 3）
+    是「FR-010 的『导出会话』**本仓没有这个能力** ⇒ 改 spec 正文」；2026-10-07 复核时**原裁定的前提
+    被推翻**——能力在上游就在，缺的只是**右栏的入口**。用户裁定：**补进 006，新开一条 task**。
+    （`spec.md` 的 FR-010 更正块已当天二次更正，`plan.md` 那行同步恢复。）
+  - **开工第一件事（铁律 #1：先答「这条 task 的出参，今天在仓库里打得到的吗」）**：**打得到**——
+    `packages/app/src/utils/session-export.ts` 的三个导出（`fetchSessionExport` /
+    `sessionExportFilename` / `downloadSessionExport`）已存在、有单测（`session-export.test.ts`），
+    且**上游已有三处生产调用点**可抄（`#004-12` 先抄同族，形状三处一致）：
+    `components/session/session-context-tab.tsx:231` · `pages/session/timeline/message-timeline.tsx:796` ·
+    `pages/session/use-session-commands.tsx:242`（三处都是 `fetchSessionExport({…})` →
+    `sessionExportFilename(data.info)` → `downloadSessionExport(filename, data)`）。
+  - **它要的东西右栏都有**：`fetchSessionExport` 用到的 `api.session.get` 与 `api.session.messages`
+    正是右栏 `会话出口`（`session-actions.ts` 的 `DirectorySDK["api"]["session"]`）上已有的两个方法
+    ⇒ **不需要新开取数通道**（那是本条能做小的根据）。
+  - ⚠️ **不许发明**（照 T015 的同一条纪律）：① **入口位置**——判据与「删除」同：它是**对当前会话**的
+    动作 ⇒ 放会话行；② **失败回话**——走 `ai-session-slot.tsx` 那处唯一的 `报错`（`#002-06`：
+    同一句话不写第二遍）；③ **下载的触发形态**（blob / 文件名）——照上游三处，不自己造。
+  - ⚠️ **与 `session.share` 不是一回事**：share 是**发布到网上**（`"Publish on web"` /「复制链接」），
+    公安数据场景的适用性**未裁定**（见 `spec.md` 的 FR-010 更正块）。别把两者混成一条需求。
+  - ⚠️ **排期**：`plan.md` 没排这条（它是 Step 5 补开的）⇒ 落地时同步 `plan.md`，别让「15 条」
+    与「tasks.md 里 16 条」在两个文件里各说各话。
     （行数取自 `git diff --numstat`，2026-10-07 实测。）
     ⇒ **两条不许发明都照做了**：删除后的落点 = `message-timeline.tsx:823` 的
     `.filter(!parentID && !archived)` ＋ `[i+1] ?? [i-1]`（**逐字**搬进 `删除后去哪`）；新建后 = 建完
@@ -332,6 +361,8 @@
 - **Phase 6**：T011 ∥ T012（依赖 T010，可并行）
 - **Phase 7**：T013（依赖 T003+T005）∥ T014（依赖 T012）
 - **Phase 8**（2026-10-07 裁定**补开**）：T015（依赖 T008+T010）
+- **Phase 9**（2026-10-07 **Step 5 补开**）：T016（依赖 T015）
 
-共 15 条任务（T001–T015），符合 12–18 条范围。⚠️ 其中 **T015 是裁定补开的**（见该条「为什么补开」），
-不在 `plan.md` 的原始排期里——所以「15 条」不等于「plan 排了 15 条」。
+共 **16** 条任务（T001–T016），符合 12–18 条范围。⚠️ 其中 **T015 / T016 都是裁定补开的**
+（各见该条「为什么补开」），**不在 `plan.md` 的原始排期里**——所以「16 条」不等于「plan 排了 16 条」。
+（T015 已完成；**T016 尚未开工**。）

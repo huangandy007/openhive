@@ -68,8 +68,14 @@ const 原语环境 = (内容: () => JSX.Element) => (
 // 夹具只需要 `id` / `title` / `time` 三个字段，逐字段填是给夹具加噪音，且**上游给 `Session` 加一个
 // 必填字段就红**——红的还是我们这条夹具。同族写法（同样触发这条规则、上游未关）见
 // `context/global-sync/event-reducer.test.ts`。
-// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码；见上三行。
-const 造会话 = (id: string, title: string) => ({ id, title, time: { created: 1, updated: 1 } }) as Session
+//
+// ⚠️ `oxlint-disable-next-line` **必须贴着断言那一行**（不是贴着 `const`）：Step 5 的 D1 给
+// `造会话` 加了 `额外` 展开之后，这条命中的报告节点从左值那一行挪到了**断言表达式**那一行
+// ——实测同一个文件、HEAD 版本 0 warnings、加了展开就 1 warning（`LEARNINGS #003-04`：
+// 位置类的事落笔前先量）。贴在 `const` 上时它挡的是**前一行的隔壁**，看着像在关、其实没关。
+const 造会话 = (id: string, title: string, 额外: Partial<Session> = {}) =>
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码；理由见上。
+  ({ id, title, time: { created: 1, updated: 1 }, ...额外 }) as Session
 
 const 造消息 = (id: string, sessionID: string) =>
   ({
@@ -308,6 +314,37 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
     // 另半条对照：列表是**浮层**、取白底；与行不同色才叫「分层」。
     // 两条一起才有牙——反过来说，两处写成同一个色也能过其中任意一条。
     expect(宿主.querySelector('[data-slot="session-list"]')!.className).toContain("bg-v2-background-bg-base")
+  })
+
+  test("列表只列**顶层且未归档**的会话：子会话与已归档的不出现（筛法与 `session-actions.ts` 同一份）", () => {
+    // 「列表里点得进去的那几场」与「删完该跳到哪一场」是**同一个判断**
+    // （`session-actions.ts` 的 `可列出的会话`）。两处各写一遍，这两个集合就会分家
+    // （`LEARNINGS #002-06`）——而右边那个集合今天**没有**筛（本组 ②③ 两条用例里
+    // 两场都是顶层会话，分辨不出来）。
+    //
+    // 今天这两类真的点得进去：点进子会话，右栏就换成一条带 `parentID` 的会话的时间线；
+    // 点进已归档的，等于把「归档＝冻结」绕过——那道门住在 `project-location.ts` 的路径前缀
+    // 中间件上，管的是**请求**，而这里只是从一份已经取回来的清单里点一下（`#005-11` 同族）。
+    const 混杂: SessionPanelData = {
+      ...夹具数据(),
+      session: [
+        造会话("ses_1", "资金分析会话"),
+        造会话("ses_子", "子会话", { parentID: "ses_1" }),
+        造会话("ses_档", "已归档会话", { time: { created: 1, updated: 1, archived: 1 } }),
+        造会话("ses_2", "话单分析会话"),
+      ],
+    }
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel data={混杂} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      )),
+    )
+
+    宿主.querySelector<HTMLElement>('[data-slot="session-toggle"]')!.click()
+
+    // 顺序也要与表一致：这里断的是**筛选后**的全表，不是「筛掉的那几个不在」——
+    // 后者在「顺序被换过」时照样绿（`LEARNINGS #003-03` ②：集合对了、形态不一定对）。
+    expect(列出的会话(宿主)).toEqual(["资金分析会话", "话单分析会话"])
   })
 })
 
@@ -825,5 +862,97 @@ describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
     点删除()
 
     expect(删除钮().className).toContain("text-v2-state-fg-danger")
+  })
+})
+
+/**
+ * hover 面：**每一处各钉一条**（Step 5 · F-01）。
+ *
+ * ## 补的是什么
+ *
+ * `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 的源码里落在 **7 处**
+ * （`instruction-cards.tsx` 2 处 ＋ `session-panel.tsx` 5 处），而 Step 5 清点时**只有 1 处**
+ * 有断言守着（`common-cards.test.tsx` 的溢出钮那条）。另 6 处**改回旧 token 也全套绿**
+ * ——`LEARNINGS #005-07` 的老形状：一个视觉约定落 N 处，只钉一处等于没钉。
+ * 本文件这 5 处 ＋ `common-cards.test.tsx` 那 2 处（卡面与溢出钮）＝ 7 处齐。
+ *
+ * ## 为什么是 5 条、不是 1 条遍历
+ *
+ * `LEARNINGS #005-12`：约定落在 N 个动作上就写 N 条用例。合成一条「把这 5 个槽过一遍」时，
+ * 摘掉其中一处的 token 只会让**那一条**红，而红的集合读不出「是哪个落点漏了」——这条纪律要的
+ * 正是那个信息。5 条各查自己的槽 ⇒ **摘哪处、红哪条**。
+ *
+ * ## 判据的边界（`LEARNINGS #002-02` / `#005-15`：注解不许比断言强）
+ *
+ * - 只断 `className` **串**：happy-dom 不跑布局、不解析 CSS（`#005-07`）⇒ **hover 真的会不会
+ *   变色量不出来**，这里证的是「那串类名还在」。它因此是**弱判据**（token 改名就失效）——
+ *   每处注释里写清它守的是哪一条设计约定，免得下一个人当成随手挑的颜色改掉。
+ * - 每条的**对照**是「那一处的**容器**不带 hover」：判的是「hover 落在**可点的那个叶子**上，
+ *   不落在它所在的容器上」。⚠️ 它**不**防「容器与叶子同时带上」——那种改法两条都还是绿的。
+ * - ⚠️ 这 5 条有一处**不是**先红后绿（实现早就在，缺的是断言）⇒ 牙靠**变异**证：
+ *   逐个摘掉某一处的 token，应当**恰红那一条**（账记在 `state.md` 的 Step 5 一节）。
+ */
+describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
+  const HOVER = "hover:bg-v2-overlay-simple-overlay-hover"
+
+  /** 摆一棵右栏（默认一场会话）。5 条各自摆自己的，互不借状态 ⇒ 变异时归属干净。 */
+  const 摆右栏 = () =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel data={夹具数据()} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      )),
+    )
+
+  /** 某个槽**自己**的 `className` 串（不是它的子孙的）。 */
+  const 串 = (宿主: HTMLElement, 名: string) => {
+    const 元素 = 宿主.querySelector<HTMLElement>(`[data-slot="${名}"]`)
+    if (!元素) throw new Error(`没找到 [data-slot="${名}"]`)
+    return 元素.className
+  }
+
+  test("① `session-toggle`：会话名那颗钮（名字与 ▾ 是**同一颗钮**，不是一个标签）", () => {
+    const 宿主 = 摆右栏()
+
+    expect(串(宿主, "session-toggle")).toContain(HOVER)
+    // 对照：`session-row` 是整行**容器**（底色 layer-01），hover 不在它身上。
+    expect(串(宿主, "session-row")).not.toContain(HOVER)
+  })
+
+  test("② `session-new`：`＋ 新会话`（与同栏 `session-delete` 取同一档 token）", () => {
+    const 宿主 = 摆右栏()
+
+    expect(串(宿主, "session-new")).toContain(HOVER)
+    expect(串(宿主, "session-row")).not.toContain(HOVER)
+  })
+
+  test("③ `session-delete`：确认态换的是**前景色**，hover 底色两态都在", () => {
+    const 宿主 = 摆右栏()
+
+    // 第一态（「删除」）。
+    expect(串(宿主, "session-delete")).toContain(HOVER)
+    // ⚠️ 第二态（「确认删除？」）也要有——`classList` 里那两项只换**前景色**，
+    // 若改成「确认态顺手把 hover 也摘了」，下面是红的那一条。
+    宿主.querySelector<HTMLElement>('[data-slot="session-delete"]')!.click()
+    expect(串(宿主, "session-delete")).toContain(HOVER)
+    expect(串(宿主, "session-row")).not.toContain(HOVER)
+  })
+
+  test("④ `session-option`：列表里能切过去的那一场（展开之后才在 DOM 里）", () => {
+    const 宿主 = 摆右栏()
+
+    // 列表用 `Show`（收起时整段不在 DOM 里），所以先展开——**不是**为了让选择器找得到而放宽判据。
+    宿主.querySelector<HTMLElement>('[data-slot="session-toggle"]')!.click()
+
+    expect(串(宿主, "session-option")).toContain(HOVER)
+    // 对照：`session-list` 是浮层**容器**（白底），hover 不在它身上。
+    expect(串(宿主, "session-list")).not.toContain(HOVER)
+  })
+
+  test("⑤ `drawer-entry`：`▸ 更多 skill`（输入框旁边那颗）", () => {
+    const 宿主 = 摆右栏()
+
+    expect(串(宿主, "drawer-entry")).toContain(HOVER)
+    // 对照：`session-tools` 是那一行**容器**，hover 不在它身上。
+    expect(串(宿主, "session-tools")).not.toContain(HOVER)
   })
 })

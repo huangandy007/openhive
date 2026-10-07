@@ -66,19 +66,72 @@ export async function 删会话(input: { api: 会话出口; sessionID: string })
 }
 
 /**
+ * 一份会话表里**能列出来 / 能切过去**的那几场。两个筛子各是一件事：
+ *
+ * - `!parentID` —— 子会话不是一个能切过去的**对等**会话；
+ * - `!archived` —— 归档＝冻结，切过去是一场只读会话。
+ *
+ * ⚠️ **它是唯一一份判据**（`LEARNINGS #002-06`）：`删除后去哪` 拿它算「下一场」，
+ * 右栏那份列表（`session-panel.tsx`）拿它算「能点的那几场」。这两件事的判据必须是同一个
+ * ——两处各写一遍时，「删完跳去的那一场」与「列表里点得到的那几场」会分家，
+ * 而且**不报错、不变红**（右边那个集合原先根本没筛，是 006 Step 5 的 D1）。
+ *
+ * 泛型是为了**保住调用方的元素类型**：面板要用 `title` 渲染，`Session` 比 `会话行` 宽，
+ * 收窄成 `会话行[]` 会把 `title` 丢掉。
+ */
+export function 可列出的会话<T extends 会话行>(会话表: readonly T[]): T[] {
+  return 会话表.filter((行) => !行.parentID && !行.time?.archived)
+}
+
+/**
  * 删掉某场会话之后该去哪一场。**就是上游 `message-timeline.tsx:823` 那三行**。
  *
- * 两个筛子各是一件事、各有断言守着：`!parentID`（子会话不是一个能切过去的对等会话）、
- * `!archived`（归档＝冻结，切过去是一场只读会话）。
+ * 候选集走 `可列出的会话`（上面那条注释讲清了为什么必须共用一份）。
  *
  * 找不到（`-1`）返回 `undefined`，而不是「回落到第一场」——被删的 id 可能来自一份**旧表**
  * （`data.session` 还没同步到），那种时候「跳去第一场」是把用户从原位挪走。
  */
 export function 删除后去哪(会话表: readonly 会话行[], 被删id: string): string | undefined {
-  const 候选 = 会话表.filter((行) => !行.parentID && !行.time?.archived)
+  const 候选 = 可列出的会话(会话表)
   const 位置 = 候选.findIndex((行) => 行.id === 被删id)
   if (位置 === -1) return undefined
   return (候选[位置 + 1] ?? 候选[位置 - 1])?.id
+}
+
+/**
+ * 在途守卫：一件**不可重入**的动作，在它回来之前再点一次就**当场忽略**（返回 `undefined`）。
+ *
+ * 三根线（新建 / 切换 / 删除）各配一份。堵的是同一个洞的三种落法：连点两下「＋ 新会话」
+ * ⇒ **建出两场**会话，第二场没人认领（界面只跳到第一场）；连点两下「确认删除」
+ * ⇒ 第二下在第一下还没回来时就发出去了。
+ *
+ * ⚠️ **失败路径也必须解锁**（用例 ③）：只在成功分支把 `忙` 放回 `false` 的写法，
+ * 症状是「一次网络抖动之后那颗钮**永久**没反应」——不报错、不变红。
+ * 所以这里的复位在 `finally` 里，且动作**同步抛出**时也复位（`try` 只包住 `动作()` 这一下，
+ * 状态与承诺分开管）。
+ *
+ * ⚠️ 返回 `Promise<T> | undefined` 而不是 `Promise<T | undefined>`：`undefined` 要能
+ * **同步**拿到，调用方才能区分「这次被忽略了」与「这次跑完了」。异步形态做不到这件事
+ * （`async` 函数**永远**回一个承诺），那会让「被忽略」在 `await` 之后与「动作真的返回了
+ * undefined」长得一样。
+ */
+export function 在途守卫() {
+  let 忙 = false
+  return <T>(动作: () => Promise<T>): Promise<T> | undefined => {
+    if (忙) return undefined
+    忙 = true
+    let 结果: Promise<T>
+    try {
+      结果 = 动作()
+    } catch (错) {
+      // 同步抛出（取 SDK 那一句就可能抛）——不复位的话这颗钮当场焊死。
+      忙 = false
+      throw 错
+    }
+    return 结果.finally(() => {
+      忙 = false
+    })
+  }
 }
 
 /**

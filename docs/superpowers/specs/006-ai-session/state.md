@@ -149,7 +149,7 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
 | **U8** | **抽屉只做「按 skill 分组」**；「最近使用」若做只做本机权重并写明降级形态；**「收藏」挂 009** | 009 的 `tasks.md` 接收方表 + 本文件缺口表 |
 | **U9** | **确认：`ai-session` 三处一起加** | `packages/app/src/openhive-module-dirs.test.ts` 的 `moduleDirs`、`packages/app/src/workspace/design-token-refs.test.ts` 的 `自有目录`、根 `package.json` 的 `lint:openhive` |
 | **U10** | **按 `LEARNINGS #002-04` 默认** —— 契约产物写进 **009 的 `tasks.md` 接收方表** + 本文件记一笔 | 随 T002 落地 |
-| **U11** | **三笔未结账的归属**（T014 之后清点出来的，全**没有接收方**）：① 右栏会话管理（新建 / 切换）＋ ② spec US4 场景 2 的「删除会话」→ **并成 T015 补进 006**；③ FR-010 的「导出会话」→ **改 spec 正文**（本仓没有这个能力） | `tasks.md` 新增 Phase 8 / T015（**✅ 2026-10-07 完成**）；`spec.md` 的 FR-010 更正块；本文件「未结账单与裁定」 |
+| **U11** | **三笔未结账的归属**（T014 之后清点出来的，全**没有接收方**）：① 右栏会话管理（新建 / 切换）＋ ② spec US4 场景 2 的「删除会话」→ **并成 T015 补进 006**；③ FR-010 的「导出会话」→ ~~改 spec 正文（本仓没有这个能力）~~ ⚠️ **二次更正（2026-10-07 · Step 5 的 D2）：能力在上游就在，缺的是右栏入口 ⇒ 改判为补进 006 的 T016** | `tasks.md` 新增 Phase 8 / T015（**✅ 2026-10-07 完成**）；`spec.md` 的 FR-010 更正块；本文件「未结账单与裁定」 |
 
 ---
 
@@ -163,15 +163,25 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
 |---|---|---|---|
 | **1** | `tasks.md:84` T008 出参「右栏可对话、**可切换会话**」（已勾 `[x]`） | `session-panel.tsx` 的 `session-new` 钮调 `props.onNewSession?.()`、列表项调 `props.onSelectSession?.(会话.id)`；而生产 `ai-session-slot.tsx` **一个都没传** ⇒ 点列表不切、点「＋新会话」不建。⚠️ **裁定只覆盖一半**：T008 裁定 ④「本轮**不调** SDK `session.create`，只留接缝」管的是**新建**；**「切换」没有裁定依据** | 缺口表原话「这两颗各要一套新的异步链……是**下一条**的活」——而 **006 没有下一条** |
 | **2** | `spec.md:79` US4 场景 2（**P1**）「民警新建/切换/**删除**会话，When 操作，Then 会话管理正常」 | 「删除会话」在 006 的 `tasks.md` / `state.md` 里**零命中**（不是「做了有缺口」，是**从没进过 14 条**）。⚠️ **但它不是「本仓没能力」**：上游**已有完整实现**——`pages/session/timeline/message-timeline.tsx:818-834`（取相邻会话 → `api.session.remove({sessionID})` → 失败 toast）；CLI 侧也有 `session delete`。**缺的只是右栏那个入口** | 同上 |
-| **3** | `spec.md:122` FR-010「……会话管理、**导出会话**」；出处 `2026-09-06-openhive-design-v2.md:340` | 本仓**没有** export 路由 / 命令。会话相关只有 CLI `session list` / `session delete`，与 SDK `session.share` / `unshare`——而 share 的文案是 **`"Publish on web"` /「复制链接」**（`packages/app/src/i18n/en.ts` 的 `session.share.popover.title`），是**发布到网上**，不是导出 ⇒ 这不是 006 漏接线，是 FR-010 **引用了一个本仓不存在的能力** | 不适用（**它不该有接收方，该被更正**） |
+| **3** | `spec.md:122` FR-010「……会话管理、**导出会话**」；出处 `2026-09-06-openhive-design-v2.md:340` | **本节第一版的实况（已作废，见下方二次更正）**：本仓**没有** export 路由 / 命令。会话相关只有 CLI `session list` / `session delete`，与 SDK `session.share` / `unshare`——而 share 的文案是 **`"Publish on web"` /「复制链接」**（`packages/app/src/i18n/en.ts` 的 `session.share.popover.title`），是**发布到网上**，不是导出 ⇒ 这不是 006 漏接线，是 FR-010 **引用了一个本仓不存在的能力** | 不适用（**它不该有接收方，该被更正**） |
 
 **裁定（U11，用户 2026-10-07 三轮）**：
 
 - **笔 1 ＋ 笔 2 → 并成一条 T015 补进 006**（`tasks.md` 的 **Phase 8**，标「裁定补开」）。
   两笔本来就是**同一件事**：右栏的会话管理（建 / 切 / 删），且**都是接线级**（现成能力全在，见该条）。
   ✅ **2026-10-07 已完成**——见「T015 出参」。
-- **笔 3 → 改 spec 正文**（`spec.md` 的 FR-010 已加更正块）：收敛为「会话消息流 ＋ 会话管理」，
-  并写明「导出」若确需是**新需求**、「分享」是云端发布且**适用性未裁定**。
+- **笔 3 → ⚠️ 当天二次更正：原裁定的前提不成立**（2026-10-07 · Step 5 的 **D2** 复核）。
+  第一版按「本仓没有这个能力」把 FR-010 收敛成「会话消息流 ＋ 会话管理」——**那条实测口径错了**：
+  导出能力**在**（`packages/app/src/utils/session-export.ts` 的 `fetchSessionExport` /
+  `sessionExportFilename` / `downloadSessionExport`，**上游文件**，来历 `f1adabcddc` ·
+  `feat(app): export session as json from ui (#40781)`），今天**已有三处生产调用点**
+  （`components/session/session-context-tab.tsx` · `pages/session/timeline/message-timeline.tsx` ·
+  `pages/session/use-session-commands.tsx`）。**第一版为什么判错**：`grep` 的锚点选在**路由 / CLI**
+  上，而导出是**客户端 util**、不经路由 ⇒ 锚点选错、缺口按定义不在集合里（`LEARNINGS #004-01`）。
+  ⇒ **用户重新裁定：补进 006，另开 `tasks.md` 的 Phase 9 / T016**；`spec.md` 的 FR-010 更正块
+  **当天二次更正**（该项**保留**在 FR-010 里）、`plan.md` 对应那行同步恢复。
+  ⚠️ **仍然成立的那一半**：「分享」是云端发布（`"Publish on web"`）且**适用性未裁定**——
+  它与导出（本地 JSON 落盘）**不是一回事**。
 - ✅ **T015 开工前那一项已裁定（2026-10-07）**：**删除会话要人确认，形态＝就地二次确认**（点删除钮 →
   钮变成「确认删除？」→ 再点才真删）——与 FR-009 / SC-003「高风险动作（**删除数据**）必须人确认」同口径；
   闸门住 `permission.bash`（只管 shell 命令，**管不到 `api.session.remove` 这条 HTTP 出口**）⇒ 这层
@@ -1895,6 +1905,171 @@ unit 那一轮**，于是报 **58 条假红**（首跑实测 66 pass / 58 fail /
 
 ---
 
+## Step 5 出参（一）· 五条 Important 修复（D1 / R-01 / ④-1 / F-01 / F-02 · 2026-10-07）
+
+### 审查面的口径（先把「审了什么」钉住）
+
+Step 5 按 `docs/workspace/dev_tdd.006.md` 的 **6 类**跑（① 韧性 ② 横切一致性 ③ 防御性编码
+④「机制通用」成色 ⑤ 前端换皮一致性 ⑥ 上游侵入面），产出 **7 条 Important**（用户裁定原文：
+**「7 条全修」**）。7 条各走哪条路：
+
+| 条 | 一句话 | 本批处理 |
+|---|---|---|
+| **D1** | 会话列表把**整张表**列出来（子会话 / 已归档都点得进去） | ✅ **本节**（已修） |
+| **R-01** | 三根线（新建 / 切换 / 删除）**没有在途守卫**，连点两下建出两场 | ✅ **本节**（已修） |
+| **④-1** | `CapabilityManifest.module` 打错时 `projectCapabilities` **四层静默全空** | ✅ **本节**（已修） |
+| **F-01** | hover 约定落在 **7 处**，清点时**只有 1 处**有断言 | ✅ **本节**（已修） |
+| **F-02** | 选中态与 hover **同色**（「必须不同色」那条只有正向断言） | ✅ **本节**（已修） |
+| **②-1** | 右栏整条会话链落在**沙箱根**、不感知项目 | ➡️ 用户裁定 **B：cookie 通道** ⇒ 见本文件「Step 5 出参（二）」 |
+| **D2** | 导出会话：能力在（`utils/session-export.ts`）、入口缺 | ➡️ 裁定 **补进 006** ⇒ 另开 **T016**（`tasks.md` 已同步） |
+
+⚠️ **②-1 的原裁定被推翻过一次**：第一轮裁定是「**修：带上项目头**」，真去读链之后发现照字面做是
+**回归**——SDK 那条链的目录是 `?directory=` 查询参数，会被 `anchor-workspace.ts` **无条件**改写成
+沙箱根，而**只有 005 那四个裸路由**带 `x-openhive-project` 头 ⇒ 只给 `建会话` 加头，新会话会落到
+项目目录、而**列表查询仍被改写到沙箱根** ⇒ 新会话**在列表里看不见**。据此回报、用户重新裁定为
+**B：cookie 通道**（改 `project-location.ts`，fork 文件、零上游改动）。
+另：**②-1 不是 spec 违规**——`grep` 过 `spec.md` / `plan.md` / `tasks.md`，**没有一处**要求会话落在
+项目目录；那句要求只存在于本文件（T015 时我自己写的）与代码注释里（`#003-04` 的形状：写下时没核）。
+
+### 五条各是什么 · 落点 · 会红的那一条
+
+**D1 · 会话列表直接把整张表列出来**
+
+- **现象**：`session-panel.tsx` 的 `<For each={props.data.session}>` 吃**全表** ⇒ ① 点进**子会话**
+  是一场没有独立上下文的会话；② 点进**已归档**会话 ＝ 把 005 的「归档＝冻结」**绕过**（那道门住在
+  **请求**的路径前缀中间件上、管不到「从一份已经取回来的清单里点一下」，`#005-11` 同族）。
+  而 `删除后去哪` **早就有**同一份筛选（`!parentID && !time?.archived`）⇒ 两个集合会**分家**，
+  且不报错、不变红。
+- **落点**：`session-actions.ts` 新增 `可列出的会话`（**唯一一份判据**，`#002-06`），`删除后去哪`
+  改为调它；`session-panel.tsx` 的 `For` 改吃它。**共 2 改**。
+- **会红的那一条**：`session-panel.test.tsx`「会话行」组的「列表只列**顶层且未归档**的会话」——
+  fixture 是 `ses_1` / `ses_子`(parentID) / `ses_档`(archived) / `ses_2`，断的是**筛选后**的全表
+  `["资金分析会话", "话单分析会话"]`（断全表而非「被筛的不在」：后者在**顺序被换过**时照样绿，
+  `#003-03` ②）。RED 实测**恰红 1 条**（多了 2 条）。
+
+**R-01 · 三根线没有在途守卫**
+
+- **现象**：连点两下「＋ 新会话」⇒ **建出两场**，第二场没人认领（界面只跳到第一场）；连点「确认删除」
+  ⇒ 第二下在第一下没回来时就发出去了（`session-panel.tsx` 的二次确认在 `await` **之前**就把 `待删`
+  归零，拦不住）。⚠️ 与缺口表那条「`待删` 是**粘**的」**不是同一件事**：那条讲「确认态残留」，
+  这条讲「同一动作同时在途两份」。
+- **落点**：`session-actions.ts` 新增 `在途守卫()`；`ai-session-slot.tsx` 里 `建在途` / `删在途`
+  **各一份**（不共用：共用会让「建还没回来时删不了」）。**共 2 改**。⚠️ 切换那条**不配**：它是
+  **同步**的（只 `navigate`），没有在途窗口。
+- **会红的那一条**：`session-actions.test.ts` 的三条（① 在途忽略 ② 完成后解锁 ③ **失败后**也解锁）。
+  ③ 是**失败路径上的 ②**：少了它，`结果.then(() => { 忙 = false })` 这种「只在成功分支解锁」的写法
+  会同时过 ①②，而症状最坏——**一次网络抖动之后那颗钮永久没反应**。
+- ⚠️ **返回 `Promise<T> | undefined` 而不是 `Promise<T | undefined>`**：`undefined` 要能**同步**
+  拿到，调用方才能区分「这次被忽略了」与「这次跑完了」（`async` 函数永远回承诺，两个含义会撞在一起）。
+
+**④-1 · `module` 打错 ⇒ 四层静默全空**
+
+- **现象**：`projection.ts` 声称有「跨 manifest 重名 / 错名」的报警断言（注释里点了 `capabilities.test.ts`），
+  实测**该文件里对 `module` 零断言**（`#004-03`：「有 X 钉住」必须 grep 验证）。后果：`module` 打错一个
+  字母 ⇒ `projectCapabilities` 四层**全空**，界面上就是「这个模块还没有 skill」，**不报错、不变红**。
+- **为什么不能用类型收窄**：`CapabilityManifest.module` 是自由 `string`、`RailEntry.id` 也是 `string`
+  （没有 `as const`）、`CenterTabState.module` 是 `Accessor<string | undefined>` ⇒ **运行时告警**才是
+  正确的杠杆（不是「懒得改类型」）。
+- **落点**：`capabilities.test.ts` **3 条**（① 子集从 `RAIL_ENTRIES` 读 ② 用到的模块集合**逐项钉住**
+  ③ **对照**：打错一个字母 ⇒ 四层静默全空）。**只改测试**。
+- **会红的那一条**：② 是**带警报语义**的（加一份清单就红，逼人回来回答「这个模块 id 是真的吗」），
+  ① 钉「确实是真模块 id」，③ 是**对照**（证明 ① 守的那个洞真的存在）。
+
+**F-01 · hover 约定 7 处只钉了 1 处**
+
+- **现象**：`hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 源码里落在 **7 处**
+  （`instruction-cards.tsx` 的 `:78` 卡面 / `:143` 溢出钮；`session-panel.tsx` 的 `session-toggle` /
+  `session-new` / `session-delete` / `session-option` / `drawer-entry`），清点时**只有溢出钮那 1 处**
+  有断言（`common-cards.test.tsx`）⇒ 另 6 处**改回旧 token 也全套绿**（`#005-07` 的老形状）。
+- **落点**：`common-cards.test.tsx` **2 条**（卡面 A / 卡面 B）＋ `session-panel.test.tsx` 新起一组
+  **5 条**（①–⑤，一处一条）。**只改测试**。
+- **为什么是 5 条、不是 1 条遍历**（`#005-12`）：合成一条「把这 5 个槽过一遍」时，摘掉其中一处只会让
+  **那一条**红，而红的集合读不出「是哪个落点漏了」——这条纪律要的正是那个信息。
+- ⚠️ **判据的边界**（`#002-02` / `#005-15`，注释里也写了）：只断 `className` **串**（happy-dom 不跑
+  布局、不解析 CSS，`#005-07`）⇒ **hover 真的会不会变色量不出来**，证的是「那串类名还在」。每条的
+  **对照**是「那一处的**容器**不带 hover」——它**不**防「容器与叶子同时带上」，那种改法两条都还是绿的。
+
+**F-02 · 选中态与 hover 同色**
+
+- **现象**：「选中态与 hover **必须不同色**」（`DESIGN.md:311`；`instruction-cards.tsx:60` 那段注释
+  写着同一句），而这条只有**正向**断言（「选中 ⇒ 带浅金」），没有一条钉「选中 ⇒ **不带** hover」。
+  ⇒ 把 `classList` 里那句 `: !props.选中`（`:78`）写成无条件的静态类，**全套仍绿**，而表现是
+  「悬停时那张选中的卡像坏了」。
+- **落点**：`common-cards.test.tsx` 的「hover 面 B」一条。**只改测试**。
+- **两面互不耦合**（这是能拆成两条的前提）：A 的对照是「容器不带 hover」，B 的对照是「那张卡**确实是
+  选中的**（带浅金）」⇒ 所以「整行删掉」只红 A、「改成无条件」只红 B。若把 B 的对照写成「另一张未选中
+  的带 hover」，两次变异会一起红、归属又糊了。
+
+### 变异账（**12 批**，全部实测；每批「注入 → 跑 → **逐字节还原**」）
+
+| # | 注入 | 结果 |
+|---|---|---|
+| 1 | **D1**：`<For each={可列出的会话(props.data.session)}>` → `each={props.data.session}` | **恰红 1**：那条筛选用例（37 pass / 1 fail） |
+| 2 | **R-01 a**：`if (忙) return undefined` → `if (false) return undefined` | **恰红 1**：① 在途忽略（15 pass / 1 fail） |
+| 3 | **R-01 b**：`结果.finally(…)` → `结果.then(…)`（只在成功分支解锁） | **恰红 1**：③ 失败后解锁 |
+| 4 | **④-1**：`MANIFESTS[0].module` 的 `GENERIC_MODULE` → `"通用2"` | **恰红 2**：① 真模块 id ＋ ② 集合逐项钉住；**③ 对照不红**（它用自己的夹具） |
+| 5 | **F-01 卡面（删行）**：`instruction-cards.tsx:78` 整行删掉 | **恰红 1**：`hover 面 A`（52 pass / 1 fail） |
+| 6 | **F-02 卡面（改无条件）**：同处 `!props.选中` → `true` | **恰红 1**：`hover 面 B` |
+| 7 | **F-01 溢出钮**：`instruction-cards.tsx:143` 摘 token | **恰红 1**：溢出钮那条 |
+| 8–12 | **F-01 ①–⑤**：`session-panel.tsx` 的 `229 / 239 / 255 / 282 / 327` **逐处**摘 token（**5 批**） | **各恰红 1**，且红的正是该槽那一条（①…⑤） |
+
+⚠️ **拆成两条的代价与收益**（批次 5/6 的由来）：第一版把 F-01 卡面与 F-02 合成**一条**，两次变异
+**红在同一条用例上**、归属读不出来 ⇒ 拆成 A / B 两条、各配**不耦合**的对照后，**摘哪处、红哪条**
+（`#005-12`）。批次 5/6/7 每次跑的都是**两个文件合起来**（`common-cards.test.tsx` ＋
+`session-panel.test.tsx`），所以「恰红 1」是**跨这两个文件**的计数。
+
+⚠️ **一条非测试的实测**（本批**引入**的命中，别当成老账）：`session-panel.test.tsx` 的
+`oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion` 原本贴在 `const 造会话` 那一行上，
+而 D1 给 `造会话` 加了 `额外` 展开之后，命中的**报告节点从左值那行挪到了断言表达式那行**
+⇒ 实测：**HEAD 版本该文件 0 warnings，加了展开 1 warning**（复现命令：把 `git show HEAD:<该文件>`
+落到同目录下的临时 `.tsx` 里、在**仓库根**跑 oxlint，量完删掉）。修法＝把 disable 注释挪到**断言那一行**，
+复跑 **0 warnings / 0 errors**（161 规则）。⚠️ 这是**位置**类的事实，落笔前量过（`#003-04`）。
+
+### 一个测量层的小账（本批差点写成「文档数字不一致」）
+
+T015 门禁表里那条 `95 pass / 184 expect / 7 文件` 用的 glob 是**非递归**的
+`./src/ai-session/*.test.tsx`；本轮一度用**递归**的 `./src/ai-session` 量到 `155 / 270 / 12 文件`
+——两个数**不是同一条命令**，谁也证不了谁错（`#003-01`：先怀疑测量，再怀疑被测物）。
+用**原命令**复跑：**103 pass / 200 expect / 7 文件**，比 T015 记录的 **+8**，正好等于本批给这两个文件
+加的 8 条（`session-panel.test.tsx` +6 ＝ D1 一条 ＋ hover 五条；`common-cards.test.tsx` +2）。
+⇒ **T015 那个数不改**（它是自己那条命令的快照，`#004-05`：取证快照带时点与取数命令），本轮的数
+按本条命令记。
+
+### 门禁（2026-10-07 实测，**串行**跑；`#003-01`）
+
+| 门 | 结果 |
+|---|---|
+| `packages/app` typecheck（`tsgo -b`） | **干净** |
+| 单文件 oxlint（**在仓库根**跑，`#004-10`；本批 7 个改动文件） | **0 warnings / 0 errors**（161 规则，3.6s） |
+| `bun test ./src/ai-session`（unit，**必须带** `--path-ignore-patterns="**/*.test.tsx"`） | **66 pass / 0 fail / 99 expect / 5 文件**（+6：`session-actions.test.ts` +3、`capabilities.test.ts` +3） |
+| `bun test ./src/ai-session/*.test.tsx`（**同一非递归 glob**，与 T015 那条可比） | **103 pass / 0 fail / 200 expect / 7 文件** |
+| `bun test ./src/ai-session`（**递归**，含 `.test.tsx`） | **169 pass / 0 fail / 299 expect / 12 文件** |
+| `git diff --numstat -- bun.lock` | **空** |
+
+### 上游侵入面
+
+**零。** 本批 7 个改动文件全部在 `packages/app/src/ai-session/`（本仓自有目录）；
+`ai-session-slot.tsx` / `session-actions.ts` 都是本仓自己的文件。
+
+### 顺带更正的两处文档不准确（座位 ② 的清点 · 都按实测改）
+
+1. **`session-panel.tsx` 的三处注释说生产组装在 `workspace-entry.tsx`**（`useSync()` 注入 `data` /
+   传 `projectCapabilities` / 改 `sessionID`）——**过时**。实测：今天的生产组装是
+   **`ai-session-slot.tsx`**，而 `workspace-entry.tsx` 只把 `right` 访问器交给
+   **`layout-new.tsx:57`** 的 `right={() => <AiSessionSlot />}`（取数命令：
+   `grep -n "SessionPanel\|AiSessionSlot" packages/app/src -r --include=*.tsx`，
+   `workspace-entry.tsx` 侧**零命中** `SessionPanel`）。已把三处注释改点名 `ai-session-slot.tsx`。
+2. **缺口表那条「005 的归档＝冻结门在 `session.remove` 上没有断言」里对 005 测试面的枚举不全**。
+   原句写「005 的测试打的是 `POST /api/session` 与 `GET /api/session/:id`」；实测（取数命令：
+   `grep -ohn '"/[a-zA-Z0-9/_:?=$-]*"' packages/opencode/test/server/openhive-project-frozen*.test.ts`）
+   出现的路由是 `/session`(4) · `/api/session`(2) · `/api/session/foo`(1) · `/permission`(1) ·
+   `/openhive/project/restore`(1) · `/file?path=`(1) · `/`(2)。已按实测改。
+   ⚠️ 顺带记一笔**实测**：`LEARNINGS #005-11` 那句「三份 `openhive-project-frozen*.test.ts`」，
+   本仓今天只有**两份**（`openhive-project-frozen.test.ts` / `openhive-project-frozen-pending.test.ts`）。
+   **LEARNINGS 条目已冻结、不改**（该文件自己的规矩），此处只留实测供下一个人核。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -1937,7 +2112,7 @@ unit 那一轮**，于是报 **58 条假红**（首跑实测 66 pass / 58 fail /
 | **会话列表 = 注入数据的 `session`，本栏不自己拉** | T008 | 列表渲染的是 `props.data.session`（`For` 直接吃它），**不**调 `session.list`。故数据没同步到的那一瞬列表可能是空的（当前会话名会退回显示 id）。**不为此加保护代码**——T010 接 SDK 时若需要「主动拉一次列表」，那是那一条的决定 |
 | **会话行的视觉是 self-decision** | T008 / `openhive-DESIGN.md §4.7.5` | §4.7.5 只写了「新建 / 切换走 SDK `session.create` / `session.list`」，**没写长什么样**（原生 `SessionHeader` 依赖页面级 context，搬不进来）。本条的取法是**对齐原生右栏抽屉那一档**（`layer-01` 底 ＋ `text-[13px]`），**不是设计给的** ⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八）。⚠️ 同时复核 `skill-drawer.tsx` 那条同型缺口（抽屉 header 也是照原生抄的） |
 | **删除钮的视觉是 self-decision**（T015 新增） | T015 / `openhive-DESIGN.md §4.7.5` | §4.7.5 只写了「新建 / **切换**」，**根本没写「删除」这个动作**、更没写它长什么样 ⇒ 本条自己定的：`text-[11px]` 小字钮 ＋ 危险态 `text-v2-state-fg-danger`（确认中）／平时 `text-v2-text-text-muted`。⚠️ **危险色不是随手挑的**——`--v2-state-fg-danger` 是 `packages/ui/src/v2/styles/theme.css:89` 现成的语义 token，仓里有先例（`auth/change-password.tsx:118`、`dialog-connect-provider.tsx:880`）。⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八） |
-| **005 的「归档＝冻结」门在 `session.remove` 这条新出口上没有断言**（T015 新增） | T015 → 005 的横切机制 | 005 那道门住在**路径前缀中间件**（`packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts` 的 `isArchived`）⇒ **结构上**覆盖 `DELETE /session/:sessionID`，但 005 的测试打的是 `POST /api/session` 与 `GET /api/session/:id` —— ⚠️ **正是 `LEARNINGS #005-11` 的形状**：「中间件是全局的」是**推断**，「这条出口上它真的生效」是**事实**，两者不能互相顶替。⇒ 如实挂账，**不写成已覆盖**（`#002-02`）。补法：照 `#005-11` 的收尾清单——把 005 已有的横切机制（冻结门 / 权限门）在新出口上各重放一遍、**这条出口写一条断言** |
+| **005 的「归档＝冻结」门在 `session.remove` 这条新出口上没有断言**（T015 新增） | T015 → 005 的横切机制 | 005 那道门住在**路径前缀中间件**（`packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts` 的 `isArchived`）⇒ **结构上**覆盖 `DELETE /session/:sessionID`，但 005 的测试打的是别的出口（实测枚举：`/session` · `/api/session` · `/permission` · `/openhive/project/restore` · `/file?path=`，取数命令见上「顺带更正的两处文档不准确」） —— ⚠️ **正是 `LEARNINGS #005-11` 的形状**：「中间件是全局的」是**推断**，「这条出口上它真的生效」是**事实**，两者不能互相顶替。⇒ 如实挂账，**不写成已覆盖**（`#002-02`）。补法：照 `#005-11` 的收尾清单——把 005 已有的横切机制（冻结门 / 权限门）在新出口上各重放一遍、**这条出口写一条断言** |
 | **`待删` 是粘的（故意不修）**（T015 新增） | T015 / `session-panel.tsx` | 点过「删除」之后切走、再切回**同一场**会话，钮上那句「确认删除？」**还在**（第二下仍会删 ⇒ 仍是两次点击，不构成单点误删）。**故意不修**：修它要一个 `createEffect` 盯 `sessionID` 归零，为一次「多问一次」引一个 effect 不划算。⚠️ **没有断言守着**——已在 `session-panel.tsx` 的 `待删` doc 注释里自陈（`#005-15`：别让注释比断言强）。⚠️ 与它相对的那条**有**断言（P5：「确认态挂在哪一场上」，改用 `boolean` 会恰红） |
 | **F3：`/` 命令分支解引用 `model`（有哨兵）** | 上游 `submit.ts` → T010 挂账 | `sendFollowupDraft` 的命令分支读 `input.draft.model.modelID`，而右栏在「会话没记过 model」时**正是要传 `undefined`** ⇒ 组合起来当场抛 `Cannot read properties of undefined (reading 'modelID')`。**2026-10-07 用户裁定「保持既有链行为」**（不为它改产品码）⇒ `submit-prompt.test.ts` 有一条**哨兵**钉着（`.rejects.toThrow(/modelID/)`，用例名自带「⚠️ 已知缺陷」）。⚠️ **它何时触发没有实测**：原先注释里那句「右栏展示的会话都已有 model」是**推断**，已删（`#003-04`）⇒ 右栏接上 `onNewSession` 那天，第一件事就是验「新会话第一次提交，`session.model` 在不在」 |
 | **F4：`{...undefined, variant}` 是类型谎言** | 上游 `submit.ts` → T010 挂账（Minor） | normal 分支组 `Message` 时写 `model: { ...input.draft.model, variant }`，而 `draft.model` 就是 `undefined` ⇒ 展开得 `{}`。类型上 `Message.model` 必填 ⇒ **骗过了 typecheck**。**与 F3 同根因的第二落点**（右栏「不自选」＝传 `undefined`，而上游那两处都假设它必有值）⇒ 一并挂账、不修补（同一裁定） |

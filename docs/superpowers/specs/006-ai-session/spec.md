@@ -119,17 +119,28 @@ AI 只执行「确定性查询/统计」与「需要专家经验的研判」，�
 - **FR-007**: 点指令卡 MUST = 填入一句话，AI 执行并展示过程。
 - **FR-008**: AI MUST 只执行「确定性查询/统计」与「需要专家经验的研判」，不滥用 AI 做确定性的事。
 - **FR-009**: 高风险动作（删除数据、判定涉案）MUST 强制人确认。
-- **FR-010**: 右栏 MUST 复用 opencode 原生会话能力（会话消息流、会话管理）。
+- **FR-010**: 右栏 MUST 复用 opencode 原生会话能力（会话消息流、会话管理、导出会话）。
 
-  > ⚠️ **2026-10-07 更正（裁定 U11 · 笔 3）**：原文第三项「**导出会话**」**作废**——本仓**没有**这个能力。
-  > 实测：会话相关只有 CLI `session list` / `session delete`，与 SDK `session.share` / `unshare`；
-  > 而 share 的文案是 **`"Publish on web"` /「复制链接」**（`packages/app/src/i18n/en.ts` 的
-  > `session.share.popover.title`）——那是**发布到网上**，不是导出；全仓没有任何 export 路由 / 命令。
-  > 原出处是 `2026-09-06-openhive-design-v2.md:340`「……会话管理、导出会话——全部原生已有，直接用」，
-  > 属**上游文档的泛述**；照抄会得到一条**没有对象**的需求（`LEARNINGS #002-02`）。
-  > 故 FR-010 收敛为「**会话消息流 ＋ 会话管理**」。⚠️ 两件事**不因本条更正而被认作已落地**：
-  > ① 若业务确需「导出」（本地文件 / PDF…），那是**新需求**，按新 feature 走，不挂 FR-010 名下；
-  > ② `session.share` 是**云端发布**，公安数据场景的适用性**未裁定**。
+  > ⚠️ **2026-10-07 更正（裁定 U11 · 笔 3）** —— ⚠️ **当天二次更正：第一版的实测口径是错的，别照它读。**
+  >
+  > 第一版写的是「原文第三项『**导出会话**』**作废**——本仓**没有**这个能力」。**这条实测口径不成立**：
+  > 导出能力**在**——`packages/app/src/utils/session-export.ts` 的 `fetchSessionExport` /
+  > `sessionExportFilename` / `downloadSessionExport`，且是**上游文件**
+  > （来历 `f1adabcddc` · `feat(app): export session as json from ui (#40781)`），
+  > 今天**已有三处生产调用点**：`components/session/session-context-tab.tsx` ·
+  > `pages/session/timeline/message-timeline.tsx` · `pages/session/use-session-commands.tsx`。
+  >
+  > **第一版为什么判错**：`grep` 的锚点选在**路由 / CLI 子命令**上（`session list` / `session delete` /
+  > `session.share`），而导出是**客户端 util**、不经路由 ⇒ **锚点选错，缺口按定义不在集合里**
+  > （`LEARNINGS #004-01` 的同型：判据要锚在「**做那件事的那一行**」，不是「已经守着的那一行」）。
+  >
+  > ⇒ **成立的事实**：**右栏（006 的界面）没有导出入口**，能力在框架层。按裁定**补进 006**（**T016**，
+  > 见 `tasks.md`）。⚠️ 原文那句「导出会话——全部原生已有，直接用」（`2026-09-06-openhive-design-v2.md:340`）
+  > 在**能力层**是对的，错的只是「006 已经接上了」这层读法。
+  >
+  > ⚠️ **仍成立的那一半**：`session.share` 是**云端发布**（`"Publish on web"` /「复制链接」，
+  > `packages/app/src/i18n/en.ts` 的 `session.share.popover.title`），公安数据场景的适用性**未裁定**
+  > ——它与**导出（本地 JSON 落盘）不是一回事**，别把两者混成一条需求。
 
 ### Key Entities
 

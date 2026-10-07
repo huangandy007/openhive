@@ -12,6 +12,7 @@ import { createStore } from "solid-js/store"
 import { skillCommands } from "./command-palette"
 import { CommonCards } from "./common-cards"
 import { projectCapabilities } from "./projection"
+import { 可列出的会话 } from "./session-actions"
 import { SkillDrawer } from "./skill-drawer"
 
 /**
@@ -25,14 +26,14 @@ import { SkillDrawer } from "./skill-drawer"
 export type SessionPanelData = Parameters<typeof DataProvider>[0]["data"]
 
 export interface SessionPanelProps {
-  /** 会话数据。生产由 `workspace-entry.tsx` 的 `useSync()` 注入，测试喂夹具。 */
+  /** 会话数据。生产由 `ai-session-slot.tsx` 从 `useServerSync()` 取、经 `dataFor` 注入，测试喂夹具。 */
   data: SessionPanelData
   /** 工作目录。`DataProvider` 要它（会话里的文件引用按它解析）。 */
   directory: string
   /** 当前会话 id。 */
   sessionID: string
   /**
-   * 四层内容的**投影结果**（`ai-session/projection.ts` 的纯函数）。生产由 `workspace-entry.tsx`
+   * 四层内容的**投影结果**（`ai-session/projection.ts` 的纯函数）。生产由 `ai-session-slot.tsx`
    * 传 `projectCapabilities(清单, 当前模块)`。
    *
    * **一份，不是三份**。四层同出一次投影：分开传 `commands` / `commonCards` / `skillGroups`
@@ -57,7 +58,8 @@ export interface SessionPanelProps {
   onSubmitPrompt?: (text: string) => Promise<boolean> | void
   /**
    * 切到另一场会话。**本组件不自己改 `sessionID`**——它是受控的，生产里由
-   * `workspace-entry.tsx` 改（同 `skill-drawer.tsx` 的 `open` / `onClose` 那对受控接缝）。
+   * `ai-session-slot.tsx` 改（它改的是**路由**，右栏的会话 id 只有一个产地、
+   * 就是 URL；同 `skill-drawer.tsx` 的 `open` / `onClose` 那对受控接缝）。
    */
   onSelectSession?: (sessionID: string) => void
   /** 新建一场会话。真正调 SDK `session.create` 的是生产侧，不是这里。 */
@@ -274,7 +276,7 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         {/* 列表用 `Show`（展开才在 DOM 里），不是 `hidden`——收起时它整段不存在，占位也为零。 */}
         <Show when={展开()}>
           <div data-slot="session-list" class="flex w-full shrink-0 flex-col bg-v2-background-bg-base p-2">
-            <For each={props.data.session}>
+            <For each={可列出的会话(props.data.session)}>
               {(会话) => (
                 <button
                   data-slot="session-option"

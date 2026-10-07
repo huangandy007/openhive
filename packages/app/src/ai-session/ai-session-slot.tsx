@@ -8,7 +8,7 @@ import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
-import { 删除后去哪, 建会话, 删会话, 会话路径 } from "./session-actions"
+import { 删除后去哪, 在途守卫, 建会话, 删会话, 会话路径 } from "./session-actions"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
 
@@ -68,6 +68,8 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    `navigate(...)`（含「一场都不剩 ⇒ `/new-session`」那条分支）没有断言守着——它要一个
  *    活的路由器与活服务器才跑得起来。**有判断的那一半**（拼哪个 URL、删完去哪一场）已经抽到
  *    `session-actions.ts` 并单测覆盖，所以这里剩下的**只是「调它、把结果交给 navigate」**。
+ * ⑤ **`建在途` / `删在途` 这两份守卫的接线**（Step 5 的 R-01）——同上：`在途守卫` 本身有
+ *    三条单测，而「有没有把它套在那两根线上」只有人读代码看得见。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 export function AiSessionSlot(): JSX.Element {
@@ -124,6 +126,17 @@ export function AiSessionSlot(): JSX.Element {
       description: err instanceof Error ? err.message : String(err),
     })
 
+  /**
+   * 两根线各一份**在途守卫**（`session-actions.ts` 的 `在途守卫`，Step 5 的 R-01）。
+   *
+   * 各配一份、不共用一份：建与删是两件不相干的事，共用一份会让「建会话还没回来时删不了」
+   * ——那不是这道守卫要管的事。**切换那条不配**：它是**同步**的（只 `navigate`），
+   * 没有在途窗口，连点两下最多是导航两次同一个地址。守卫本身有单元测试
+   * （`session-actions.test.ts` 三条）；**下面这处接线没有**（同本文件头那条口径）。
+   */
+  const 建在途 = 在途守卫()
+  const 删在途 = 在途守卫()
+
   // 三样齐了才渲染（`ready` 由 `right-pane-source` 守着），省得在这里写三个 `!`
   // ——那种 `!` 没有东西守着，改了 `data` 的来历就会悄悄说谎。
   // 没有会话（首页 / 草稿页）时这里什么都不渲染，`ThreePane` 那边因此**整根右栏都不在**
@@ -170,9 +183,15 @@ export function AiSessionSlot(): JSX.Element {
           onNewSession={() => {
             const 现在 = 态()
             // ⚠️ 建在**有目录作用域的那份 api** 上（`现在.api`），目录取自当前这场会话
-            // ——新会话因此落在同一个项目目录里（`建会话` 把它带进 `location.directory`）。
-            建会话({ api: 现在.api, directory: 现在.directory })
-              .then((id) => {
+            // （`建会话` 把它带进 `location.directory`）。
+            //
+            // ⚠️ **目录这一半今天不生效**：服务端的锚定（`anchor-workspace.ts`）把 `POST /api/session`
+            // 体里的 `location.directory` **无条件**改写成沙箱根，而项目那一层（`project-location.ts`）
+            // 只在带了 `x-openhive-project` 头时才往上推进一段——SDK 这条链不发那个头
+            // （带头的只有 005 那四个裸路由）。⇒ 会话落在**沙箱根**、不在当前项目目录里。
+            // 这是 006 Step 5 的 ②-1，**尚未修**（缺口表有整条），别把上面那句读成已成立。
+            建在途(() => 建会话({ api: 现在.api, directory: 现在.directory }))
+              ?.then((id) => {
                 const 去 = 会话路径(location.pathname, id)
                 if (去) navigate(去)
               })
@@ -180,8 +199,8 @@ export function AiSessionSlot(): JSX.Element {
           }}
           onDeleteSession={(sessionID) => {
             const 现在 = 态()
-            删会话({ api: 现在.api, sessionID })
-              .then(() => {
+            删在途(() => 删会话({ api: 现在.api, sessionID }))
+              ?.then(() => {
                 const 下一场 = 删除后去哪(现在.data.session ?? [], sessionID)
                 const 去 = 下一场 === undefined ? undefined : 会话路径(location.pathname, 下一场)
                 // 一场都不剩时落到**草稿页**——蓝本 `pages/session/session-archive.ts:35-38`
