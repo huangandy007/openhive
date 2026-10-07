@@ -127,6 +127,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveFile } from "@/server/openhive/file"
+import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
@@ -350,6 +351,16 @@ export function createRoutes(
     // 所以本模块**一个字都不用写**，也就不会漂成两份）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T020）。
     OpenhiveFile.routes.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+    // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
+    // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
+    // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。
+    // 沙箱根**不供**：本模块一个文件都不碰（项目身份走查询串 / 请求体，不当路径段用）——
+    // 少供一个服务是默认，不是遗漏。
+    // ⚠️ 这四个出口**刻意不带 `x-openhive-project`**：带了就会被 `projectLocationLayer`
+    // 套上「已归档 ⇒ 403」，而名单要的恰恰是「归档 ≠ 看不见」——决定「冻不冻」的判据
+    // 因此只留 `decide` 一处（见该模块文件头）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T021）。
+    OpenhiveMember.routes.pipe(Layer.provide(OpenhivePg.layer)),
   ).pipe(
     Layer.provide([
       errorLayer,

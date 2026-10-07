@@ -1,4 +1,4 @@
-import { type SQL } from "drizzle-orm"
+import { eq, inArray, type SQL } from "drizzle-orm"
 import { integer, pgSchema, text } from "drizzle-orm/pg-core"
 
 /** 账号表所在的 schema：与 core 的每用户 SQLite、业务 `public` schema 物理分开。 */
@@ -60,4 +60,60 @@ export type UserPatch = Partial<typeof user.$inferInsert>
 export interface UserAccountTarget {
   select(): { from(table: typeof user): { where(clause: SQL): PromiseLike<UserRow[]> } }
   update(table: typeof user): { set(values: UserPatch): { where(clause: SQL): PromiseLike<unknown> } }
+}
+
+/**
+ * 「一个人」在**跨层契约**上要的最小面：id（库里那个 UUID）＋ 警号 ＋ 姓名。
+ *
+ * ⚠️ **这三列不是随手挑的**：它们是 `packages/app/src/project/member-panel.tsx` 的
+ * `MemberEntry` 要的东西（`policeId` / `name` / `role`），而 `role` 来自**另一张表**
+ * （`project_member`），由调用点自己拼——本模块只管 `auth.user` 这一半。
+ *
+ * 为什么不是一个 `UserRow`：整行含 `passwordHash`、`idCard`。把整行原样交给调用方，
+ * 就是让「成员名单」这条链**够得着**它不需要、也不该碰的列（同 `grantsFor` 只吐
+ * `tool` / `pattern` 的取向——出口只吐调用方要的列）。
+ */
+export interface UserBrief {
+  readonly id: string
+  readonly policeNo: string
+  readonly name: string
+}
+
+const briefOf = (row: UserRow): UserBrief => ({ id: row.id, policeNo: row.policeNo, name: row.name })
+
+/**
+ * 005 T021 · 按 **id** 批量取人（成员名单把 `project_member.user_id` 翻译成警号与姓名）。
+ *
+ * 回 **Map 而不是数组**：调用方按 id 归位（名单的顺序由 `project_member` 的 `time_created` 说了算，
+ * 那是另一张表的事），而数组会让调用方再排一次序——那就成了「谁的顺序为准」的第二个答案。
+ *
+ * **缺席语义**：库里没有的 id **不在 Map 里**（同 `archiveStatesOf` 的口径——
+ * 「没有来源」与「来源说没有」是两件事）。⚠️ 但在**本函数的调用点**这条分支不可达：
+ * `project_member.user_id` 有指回 `auth.user(id)` 的外键 ⇒ 有成员行就必有用户行。
+ * 所以调用方那一侧写 `??` 是**类型收敛**而不是可达分支（同 `project.ts` 的
+ * `named.get(...)?.name ?? ""`）。
+ *
+ * ⚠️ **空数组必须短路**：`inArray` 落空时生成的判据与「不给条件」在形状上很近，
+ * 而这里写错的后果是**回全表**——调用方是成员名单，多出来的每个人都会被画成一行。
+ */
+export async function usersByIds(db: UserAccountTarget, ids: readonly string[]): Promise<Map<string, UserBrief>> {
+  if (ids.length === 0) return new Map()
+  const rows = await db.select().from(user).where(inArray(user.id, [...ids]))
+  return new Map(rows.map((row) => [row.id, briefOf(row)]))
+}
+
+/**
+ * 005 T021 · 按 **警号**取一个人（邀请 / 移除时把界面说的警号翻译成库里的 id）。
+ *
+ * `undefined` ＝ 查无此警号。⚠️ **这条分支在这里是可达的**（上面的 `usersByIds` 不是）：
+ * 警号是**客户端填的**，写错一个数字就走到这里 ⇒ 调用方必须自己决定怎么交代
+ * （`member.ts` 把它翻成 400 的一句话，而不是一个静默的「邀请成功」）。
+ *
+ * 不做 `limit 1`：`police_no` 的 UNIQUE 只在迁移里（`user.ts` 文件头那条），而
+ * 「靠库的约束保证只有一行」正是要让它**取不到第二行**时能看得出来——加 `limit` 反而
+ * 把这个事实藏起来。`[0]` 对空数组是 `undefined`，语义正好。
+ */
+export async function userByPoliceNo(db: UserAccountTarget, policeNo: string): Promise<UserBrief | undefined> {
+  const [row] = await db.select().from(user).where(eq(user.policeNo, policeNo))
+  return row ? briefOf(row) : undefined
 }

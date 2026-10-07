@@ -127,6 +127,49 @@ export async function addMember(db: ProjectMemberTarget, input: AddMemberInput):
   `)
 }
 
+export interface RemoveMemberInput {
+  readonly projectId: string
+  readonly userId: string
+}
+
+/**
+ * 删掉一条成员关系（**T021**：owner 移除一个 member ／ member 退群，FR-004）。
+ *
+ * ## 为什么 `remove` 与 `leave` 共用这一个函数
+ *
+ * 两者在库里要做的事**逐字相同**：删掉 `(project_id, user_id)` 那一行。差的是**谁**被删
+ * （`remove` 删别人、`leave` 删自己）以及 `ProjectMembership.decide` 认不认——而那是**调用点**
+ * 的事（同 `markArchived` 的分工：`auth` 不依赖 `core`）。分开写成两个函数就是把同一句 `delete`
+ * 写两遍，且两处一漂就有一侧静默不删（`LEARNINGS #002-06`）。
+ *
+ * ## 为什么它是 `addMember` 的反面，而 `markRestored` 不是 `markArchived` 的反面
+ *
+ * 记号上不追求对称：`markArchived` / `markRestored` 之所以分开，是因为「往回翻」要同时改
+ * `archived` 与 `archived_at` 两列（那条一致性 CHECK 钉着），是两个字段、两种组合；
+ * 而这里两个方向**动作一样**（一行进 / 一行出），多出的那个名字只会多一个漂移点。
+ *
+ * ## 只删**这个项目**里的那一行
+ *
+ * `where` 里两个条件缺一不可：漏掉 `project_id` ⇒ 同一个人被从**所有项目**里踢出去，
+ * 而调用方只看到「本项目少了一个人」（`project-member.test.ts` 有一条两半的断言钉着它）。
+ * 漏掉 `user_id` ⇒ 整个项目的成员一次清空。两条都不报错。
+ *
+ * ## 不吞错；但「删到 0 行」算成功（幂等）
+ *
+ * 调用方在删之前刚读过名单（`decide` 的 `target` 要用那个 role），所以正常情况下那一行一定在；
+ * 两次移除撞在一起时，后来那次删到 0 行——此时**抛错才是错的**（第一次已经成功，
+ * 第二次报「失败」会让界面把话反过来）。
+ * ⚠️ **残差如实记**（同 `markRestored`）：`delete` 命中 0 行时同样成功返回，调用方分辨不出
+ * 「删掉了」与「本来就没有」。真要防它得去数返回行数，而那条形状在 PGlite 与生产 bun-sql 下
+ * 是否一致**没验过**（`LEARNINGS #002-01` 咬的正是这条维度）⇒ 不写没验过的判据。
+ */
+export async function removeMember(db: ProjectMemberTarget, input: RemoveMemberInput): Promise<void> {
+  await db.execute(sql`
+    delete from auth.project_member
+    where project_id = ${input.projectId} and user_id = ${input.userId}
+  `)
+}
+
 export interface MarkArchivedInput {
   readonly projectId: string
   /**

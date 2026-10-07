@@ -3,7 +3,15 @@ import { PGlite } from "@electric-sql/pglite"
 import { getTableColumns, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate } from "./migrate"
-import { addMember, archiveStatesOf, memberCountsOf, membersOf, projectArchive, projectMember } from "./project-member"
+import {
+  addMember,
+  archiveStatesOf,
+  memberCountsOf,
+  membersOf,
+  projectArchive,
+  projectMember,
+  removeMember,
+} from "./project-member"
 
 /**
  * T004 · `project_member` ＋ `project_archive`（FR-004 / FR-010，Q3 裁定）。
@@ -348,5 +356,67 @@ describe("project_member / project_archive · 读写辅助（T018 的消费者�
 
     expect(await memberCountsOf(db, [])).toEqual(new Map())
     expect(await archiveStatesOf(db, [])).toEqual(new Map())
+  })
+})
+
+/**
+ * 005 T021 · **移除一条成员关系**（FR-004：仅 owner 能移除 member；member 可退群）。
+ *
+ * 判定（「这个人能不能移除那一个人」）**不在这里**，在 core 的 `ProjectMembership.decide`——
+ * 同 `markArchived` 的分工：`auth` 不依赖 `core`，所以「能不能」由调用方先算好，
+ * 本函数只落库。**`leave` 与 `remove` 共用这一个函数**：两者在库里的动作逐字相同
+ * （删掉 `(project_id, user_id)` 那一行），差的是**谁**被删、以及 `decide` 认不认。
+ * 分成两个函数就是把同一句 `delete` 写两遍（`LEARNINGS #002-06`）。
+ */
+describe("project_member · 移除（T021）", () => {
+  test("removeMember 删掉那一行 ⇒ membersOf 读不到了", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 1 })
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 2 })
+
+    await removeMember(db, { projectId: "p1", userId: "u2" })
+
+    expect(await membersOf(db, "p1")).toEqual([{ userId: "u1", role: "owner" }])
+  })
+
+  /**
+   * **只删这个项目里的那一行**——漏掉 `where project_id` 时，同一个人会被**从所有项目里踢出去**，
+   * 而调用方只看到「本项目的名单少了一个人」，看起来一切正常。
+   *
+   * 与 `membersOf 只认这个项目` 同因（`tasks.md` 的 T021 条：`decide` 只看得到一个 role，
+   * 库这一侧的范围必须自己钉住）。判据写**两半**：p1 那行没了 ＋ p2 那行**还在**。
+   */
+  test("removeMember 只认这个项目：p2 里同一个人的行必须还在", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 1 })
+    await addMember(db, { projectId: "p2", userId: "u2", role: "owner", timeCreated: 2 })
+
+    await removeMember(db, { projectId: "p1", userId: "u2" })
+
+    expect(await membersOf(db, "p1")).toEqual([])
+    expect(await membersOf(db, "p2")).toEqual([{ userId: "u2", role: "owner" }])
+  })
+
+  /**
+   * **删一条不存在的行 ⇒ 不抛**（幂等）。这条**不是**「反正不会发生」，而是刻意选的行为：
+   * 调用方在删之前刚读过名单（`decide` 要用 `target` 的 role），所以正常情况下那一行一定在；
+   * 两次移除撞在一起时，后来那次删到 0 行——此时**抛错才是错的**（第一次已经成功了，
+   * 第二次报「失败」会让界面说反）。
+   *
+   * ⚠️ **残差如实记**（同 `markRestored` 的那条）：`update` / `delete` 命中 0 行时同样成功返回，
+   * 调用方分辨不出「删掉了」与「本来就没有」。真想防它得去数返回行数，而那条形状在
+   * PGlite 与生产 bun-sql 下是否一致**没验过**（`LEARNINGS #002-01` 咬的正是这条维度）
+   * ⇒ 不写没验过的判据。
+   */
+  test("removeMember：删不存在的行 ⇒ 不抛（幂等，撞车时第二次那次不算失败）", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+
+    await removeMember(db, { projectId: "p1", userId: "u2" })
+    await removeMember(db, { projectId: "p1", userId: "u2" })
+
+    expect(await membersOf(db, "p1")).toEqual([])
   })
 })
