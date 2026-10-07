@@ -407,10 +407,28 @@ async function filesUnder(directory: string): Promise<readonly string[]> {
 }
 
 /**
- * ① 全员上传：**每个成员各造一个 store**，键的前两段因此天然是 `{他自己的 id}/{projectId}`。
+ * ① 全员上传 ＋ **收敛**：**每个成员各造一个 store**，键的前两段因此天然是 `{他自己的 id}/{projectId}`。
  *
  * 共用 store（比如拿 owner 的 scope 传所有人的文件）不会报错，只会把乙的文件写进甲的前缀——
  * 那正是本 task 要拦的（见文件头）。
+ *
+ * ## 为什么上传完还要「收敛」
+ *
+ * 备份的语义是「**归档那一刻沙箱的镜像**」，不是「历次上传的并集」。少了最后那个删除循环，
+ * 序列「归档 → 找回 → 沙箱里删掉 B → 再归档 → 再找回」会让 **B 静默复活**：B 的旧对象一直在
+ * 前缀里，而 `restoreAll` 是照着 `list()` 全量下回来的。用户没做过任何「恢复」动作，删掉的
+ * 东西自己回来了——Step 5 审查抓到的真缺陷（往返用例原先止步于「再归档」，看不到它）。
+ *
+ * ⚠️ **次序：传完才删**。反过来（先清空再传）中途失败时备份就没了；本次序下任何时刻 MinIO 里
+ * 是「旧全量 ∪ 新全量」的超集，都够找回——与文件头「全员传完，才开删」同一条取向。
+ *
+ * ⚠️ 上面 `files.length === 0 ⇒ continue` **是这一步的前提，不是优化**：沙箱空时若也收敛，
+ * 「第二次归档一个空沙箱」会把整个备份删光。空沙箱的语义是**跳过**（`releaseAll` / `restoreAll`
+ * 同款口径），不是「备份现在是空的」。
+ *
+ * ⚠️ **这个前缀下不许有第二个写入方**：收敛删的是「不在这份清单里的键」，判断依据是**整段前缀**。
+ * 今天写这个前缀的只有本函数（T022 的文件级备份出口**尚未接线**）——T022 上线时若也往同一前缀写
+ * 对象，两者会互相删对方的对象，那笔账记在 T022 的表里。
  */
 async function backupAll(targets: readonly Target[], projectId: string, settings: MinioSettings): Promise<void> {
   for (const target of targets) {
@@ -433,6 +451,12 @@ async function backupAll(targets: readonly Target[], projectId: string, settings
 
     for (const path of files) {
       await store.put({ path, body: await readFile(join(target.directory, ...path.split("/"))) })
+    }
+
+    // 收敛：删掉「不在这份清单里」的旧对象（理由与次序见函数注释）。
+    const wanted = new Set(files)
+    for (const path of await store.list()) {
+      if (!wanted.has(path)) await store.delete({ path })
     }
   }
 }

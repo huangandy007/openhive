@@ -458,6 +458,36 @@ describe("T014 · 找回：各人前缀的文件回到各人沙箱（T013 (c) �
       }),
     30_000,
   )
+
+  it.live(
+    "往返：二次归档清掉**已经不在沙箱里**的旧对象（不清的话，再找回时它静默复活）",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* 已归档项目(({ id }) => {
+          seedFile(ALICE, id, "甲.txt", "甲的")
+          seedFile(ALICE, id, "乙.txt", "乙的")
+        })
+
+        出口接住了(yield* restoreAs(ALICE, { projectId: project.id }))
+        expect(升序(沙箱文件(projectDirOf(ALICE, project.id)))).toEqual(升序(["甲.txt", "乙.txt"]))
+
+        // 用户在沙箱里删掉乙 —— 这是**正常工作**：项目还在用，它的文件本来就会变。
+        rmSync(path.join(projectDirOf(ALICE, project.id), "乙.txt"))
+
+        // 再归档。备份的语义是「**此刻**沙箱的镜像」，不是「历次上传的并集」。
+        出口接住了(yield* archiveAs(ALICE, { projectId: project.id }))
+
+        // 被测属性：再找回时，回来的**就是再归档那一刻的沙箱**——乙不许出现。
+        // （「复活」是最坏的一种错：用户删掉的东西自己回来了，而他没有做过任何「恢复」动作。）
+        出口接住了(yield* restoreAs(ALICE, { projectId: project.id }))
+        expect(升序(沙箱文件(projectDirOf(ALICE, project.id)))).toEqual(["甲.txt"])
+
+        // 伴随信号：陈旧对象确实被清掉了（根因那一侧）。放后面——先钉用户看得见的后果
+        // （`LEARNINGS #004-14`：被测属性在前，伴随信号在后）。
+        expect(用户备份(project.id)).toEqual([`${ALICE.id}/${project.id}/甲.txt`])
+      }),
+    30_000,
+  )
 })
 
 describe("T014 · 找回：标记最后落（次序是要求不是巧合）", () => {
