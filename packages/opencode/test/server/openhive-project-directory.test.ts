@@ -494,8 +494,13 @@ describe("T017 · 建会话落进项目目录（FR-001）", () => {
 
         // ① 没有落盘（`..` 既不该逃出 ALICE 的沙箱，也不该静默退回沙箱根把会话建出来）
         expect(sessionCount(ALICE.id)).toBe(before)
-        // ② 被拒：收得住两种形态——中间件抛出来（`Exit` 失败）或变成 5xx 响应
-        expect(Exit.isFailure(outcome) || outcome.value.status !== 200).toBe(true)
+        // ② 被拒，且**是 400 不是 5xx**：`..` 是**客户端给的字符串**不合法，属「你给的不对」，
+        //    不是「服务端出错了」。原先写成 `throw new Error(...)`，而 `throw` 在 `Effect.gen` 体内
+        //    = **defect** ⇒ 整个请求成 `Exit` 失败（500 / 直接抛出）——与同文件对 `sessionID` 那条
+        //    **刻意回 400** 的口径打架（`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+        //    旧断言 `Exit.isFailure(outcome) || status !== 200` 把 defect 也当「被拒」收下了，
+        //    所以这个不一致一直是绿的。
+        expect(Exit.isSuccess(outcome) ? outcome.value.status : "FiberFailure").toBe(400)
       }),
     30_000,
   )

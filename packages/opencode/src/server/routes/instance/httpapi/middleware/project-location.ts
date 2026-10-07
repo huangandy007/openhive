@@ -217,6 +217,21 @@ function forbidden() {
 }
 
 /**
+ * 项目头非法（`x-openhive-project` 不是合法路径段）⇒ **400**。
+ *
+ * 与上面 `sessionID` 那条同口径（那个 `throw` 的由来与反例写在第二道门那段注释里）：**客户端
+ * 可控的字符串不合法 ⇒ 400**，不是 defect。写成 `throw` 的话，`throw` 在 `Effect.gen` 体内是
+ * defect、被外层折成 **500**（实测，2026-10-06 Step 5 审查 X3-3：`POST /api/session` 带
+ * `x-openhive-project: ../../bob` 得 500）——「你给的字符串不对」被报成「服务端出错了」，
+ * 与 `sessionID` 那条**刻意回 400** 打架（`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+ *
+ * 体用 `{ error }` 形状，与 `forbidden()` 同一口径：前端能把这句话直接显示给人看。
+ */
+function badRequest() {
+  return HttpServerResponse.jsonUnsafe({ error: "项目 id 非法" }, { status: 400 })
+}
+
+/**
  * 这个项目归档了吗——**两道门唯一的取用点**（T015）。
  *
  * ⚠️ **缺行 ⇒ 未归档**（`?? false`），与 T018 列表那条「没有归档行 ⇒ 省略 `archived` 键
@@ -321,8 +336,9 @@ export const projectLocationLayer = HttpRouter.middleware<{
         // 没有项目头：会话那条已经问过了，这里直接放行。
         if (projectId === undefined) return yield* effect
 
-        if (!User.isSafePathSegment(projectId))
-          throw new Error(`非法项目 id，拒绝锚定项目目录：${JSON.stringify(projectId)}`)
+        // 形状非法 ⇒ **400，不是 defect**（理由见 `badRequest()` 的注释；与第二道门对 `sessionID`
+        // 那条同口径）。**不锚定任何目录**这个判据仍然成立——400 在锚定之前就把请求交回去了。
+        if (!User.isSafePathSegment(projectId)) return badRequest()
 
         const project = yield* ProjectExt.findByProjectID(database.db, projectId)
         // R5：查不到就落沙箱根，**不做隐式建项目**（本层一个字都不写库）。
