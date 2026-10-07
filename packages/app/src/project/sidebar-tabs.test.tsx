@@ -95,6 +95,31 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(tab(host, "session")?.getAttribute("aria-selected")).toBe("false")
   })
 
+  /**
+   * 选中态＝品牌浅金（005 Step 5 审查 **X5-1**；第二轮补这条断言，**R2-03**）。
+   *
+   * 为什么非钉不可：`aria-selected` 只说明**谁是激活的**，不说明**它长什么样**。把 `TAB_ACTIVE`
+   * 整体改回中性 `layer-03`（＝改之前的样子：选中与 hover 同一个底，鼠标一移开就分不清
+   * 哪行还选着），**上面那条照样绿**（`#004-02`：两个投影各长各的，没有相等断言把他们钉在一起）。
+   * 实得值取 **`className` 字符串**（不是节点），红了毫秒级出结果（`#005-01`）。
+   */
+  test("选中态走品牌浅金，未选中的不带；两个 tab 的 hover 都是 house 标准", () => {
+    const { host } = 挂("files")
+    const 金 = "bg-[var(--v2-background-bg-accent-soft)]"
+    const hover = "hover:bg-v2-overlay-simple-overlay-hover"
+
+    // 被测属性：激活的那个是浅金
+    expect(tab(host, "files")?.className).toContain(金)
+    // 对照：另一个**不是**——只写上面那条的话，把浅金加到两个 tab 上也算「过」
+    expect(tab(host, "session")?.className).not.toContain(金)
+    // 未选中的那个 hover 走 house 标准；**选中的那个不带 hover**——本组件的选中态是
+    // **另一条整串**（`TAB_ACTIVE`），不是叠加：两条同权重的底同时挂着时谁生效只看 CSS 先后，
+    // 所以这里刻意不给它 hover 底。这条断的就是「选中项划过去不变色」，将来要改先回答
+    // 「选中 ＋ hover 该长什么样」。
+    expect(tab(host, "session")?.className).toContain(hover)
+    expect(tab(host, "files")?.className).not.toContain(hover)
+  })
+
   test("只有激活的 pane 可见；另一个带 hidden（不是「仍在屏幕上」）", () => {
     const { host } = 挂("files")
 

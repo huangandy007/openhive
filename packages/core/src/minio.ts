@@ -132,14 +132,28 @@ export function makeStore(config: Config): Interface {
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   /**
-   * 给**一次**外呼套上限时：到点 `abort()`，`client.send` 随之拒绝（理由与后果见 `Config.timeoutMs`）。
+   * 给**一次动作**套上限时：到点 `abort()`，被 `signal` 拴住的外呼随之拒绝
+   * （理由与后果见 `Config.timeoutMs`）。
+   *
+   * ⚠️ **回调的整段都算「一次动作」，不只是 `client.send` 那一下。** `get` 的响应体是**流**
+   * （`GetObjectCommand` 的 `Body` 要等 `transformToByteArray()` 才读得完），定时器若在
+   * `send` resolve 时就放掉，那条读取路径就**没有超时**了——005 第二轮审查实测：
+   * MinIO「发得出头、不发完 body」⇒ `get` 无限期挂起，正是 X4-1 要消灭的症状，
+   * 只是从 `put` 挪到了找回路径上。所以调用方要把「读 body」也写进回调里。
+   *
+   * ⚠️ `async` ＋ `try/finally`，**不是** `.finally()`：回调**同步**抛时（`keyOf` 对非法路径
+   * 当场抛）`.finally()` 根本接不上那个 promise，定时器会白活一整段 `timeoutMs`。
    *
    * **每个动作都从这里过**——边界只有一处（`#004-01`：数「做那件事的那一行」，别数「已经包了超时的那几行」）。
    */
-  const withTimeout = <Out,>(run: (signal: AbortSignal) => Promise<Out>): Promise<Out> => {
+  const withTimeout = async <Out,>(run: (signal: AbortSignal) => Promise<Out>): Promise<Out> => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
-    return run(controller.signal).finally(() => clearTimeout(timer))
+    try {
+      return await run(controller.signal)
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /** 唯一的键拼装点：**每个动作都从这里过**，所以边界只有一处（`#004-01`）。 */
@@ -155,14 +169,53 @@ export function makeStore(config: Config): Interface {
       )
     },
 
+    /**
+     * ⚠️ 这条比别的动作多一层，两层都不能省（005 第二轮审查实测出来的）：
+     *
+     * ① **读 body 要在 `withTimeout` 的回调里**——`GetObjectCommand` 的 `Body` 是**流**，
+     *    `client.send` 收到响应头就返回了，body 是后面 `transformToByteArray()` 才读的；
+     *    读在回调外面，它就落在超时之外。
+     * ② **光挪进来还不够**：`abortSignal` 对**已经发出的响应流没有约束力**（SDK 只在请求
+     *    阶段听它，`send` 一 resolve 这条线就断了）——实测：只做 ① 仍然挂到本用例的兜底。
+     *    所以到点要**自己把中断接到流上**，`transformToByteArray()` 才会失败。
+     *
+     *    ⚠️ 而且必须是 **`destroy(new Error(...))`，不能是裸 `destroy()`**：2026-10-07 探针实测
+     *    （Bun 1.3.14），裸的只 emit `aborted` ＋ `close`、`readable` 转 false，而
+     *    `transformToByteArray()` **照样挂着**；带上 error 才 emit `error` 并让读取当场 reject。
+     *
+     * 症状：MinIO 发得出响应头、发不出 body（网络断、进程冻、反代半死）⇒ 找回**无限期挂起**。
+     */
     get: ({ path }) =>
-      notFoundToUndefined(async () => {
-        const response = await withTimeout((abortSignal) =>
-          client.send(new GetObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), { abortSignal }),
-        )
-        if (response.Body === undefined) throw new Error(`MinIO 对 ${JSON.stringify(path)} 回了空 body`)
-        return response.Body.transformToByteArray()
-      }),
+      notFoundToUndefined(() =>
+        withTimeout(async (abortSignal) => {
+          const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), {
+            abortSignal,
+          })
+          const body = response.Body
+          if (body === undefined) throw new Error(`MinIO 对 ${JSON.stringify(path)} 回了空 body`)
+
+          /**
+           * ⚠️ `response.Body` 的**静态**类型是 SDK 的联合（Node 下是 `IncomingMessage`、浏览器下是
+           * `Blob & SdkStreamMixin`），只有前者有 `destroy` —— 所以**先问再调**，不硬转类型
+           * （`Reflect.get` 取出来当 `unknown` 看，`typeof === "function"` 之后才调）。
+           * 真落到 `Blob` 那一支时不调（那一支没有可中断的流）；本模块跑在 Bun/Node 上，走的是
+           * `IncomingMessage`。
+           */
+          const 停读 = () => {
+            const 目标: unknown = body
+            if (typeof 目标 !== "object" || 目标 === null) return
+            const 销毁: unknown = Reflect.get(目标, "destroy")
+            if (typeof 销毁 === "function")
+              Reflect.apply(销毁, 目标, [new Error(`读 MinIO 响应体超时（${timeoutMs}ms）`)])
+          }
+          abortSignal.addEventListener("abort", 停读, { once: true })
+          try {
+            return await body.transformToByteArray()
+          } finally {
+            abortSignal.removeEventListener("abort", 停读)
+          }
+        }),
+      ),
 
     /**
      * 列出**本项目**的全部对象键，**剥掉前缀**（`minio.md` §3：窄接口的入参出参都不带前缀）。
@@ -171,6 +224,11 @@ export function makeStore(config: Config): Interface {
      * 并给 `NextContinuationToken`。只发一次请求的写法**在小项目上永远绿**，项目文件过千就
      * 静默少列——而归档（T013）正是拿这份清单去传文件的，「少列一条」= **少备份一个文件**，
      * 且不报错。这类「小数据下测不出来」的缺陷是本项目最想拦的一种（`#002-01`）。
+     *
+     * ⚠️ 超时是**每页各拿一次**（`withTimeout` 在循环体内，不是整轮共用一个）：好处是「一页慢」
+     * 不牵连别的页；代价是整轮的上界成了**「页数 × `timeoutMs`」**——对象越多，`list()` 的
+     * 合法耗时就越长（每页 1000 个对象）。这**是有界**的（不是 X4-1 那种无限挂起），所以不改；
+     * 写在这里只为让这个上界是**已知**的，而不是哪天被当成 bug 重新发现一遍。
      */
     list: async () => {
       const keys: string[] = []

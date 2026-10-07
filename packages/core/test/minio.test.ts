@@ -315,3 +315,56 @@ describe("MinIO 外呼超时（005 Step 5 审查 X4-1）", () => {
     }
   })
 })
+
+/**
+ * 同一条超时的**另一半**（005 第二轮对抗审查，当场抓到的漏网）。
+ *
+ * 上面那条只盖住了 `put`，而 `put` 的超时**顺带**成立：上传体是随请求发出去的，
+ * `client.send` 要等整个请求发完才 resolve ⇒ 定时器活到那时候，覆盖面够。
+ *
+ * `get` 不一样，它有两个阶段：
+ *  ① `client.send(GetObjectCommand)` —— **收到响应头就 resolve**（`GetObjectCommand` 的
+ *     `Body` 是**流式**的，SDK 不替你收完，这是它的设计）；
+ *  ② `response.Body.transformToByteArray()` —— 真把 body 读出来。
+ *
+ * 定时器只在 ① 里活着，① 一 resolve 就把 `clearTimeout` 了 ⇒ ② 是**没有超时的**。
+ * MinIO 回了头、然后卡住不发 body（网络中断、进程被冻、反代半死）时，`get` 照样
+ * **无限期挂起**——正是 X4-1 要消灭的那个症状，只是从 `put` 挪到了找回路径上。
+ * （`list` / `delete` 不受影响：它们的响应体由 SDK 在 `send` **内部**收完再解析，
+ * 天然落在定时器覆盖范围内。）
+ *
+ * 判据形式与上面那条一致：失败必须是**外呼自己**在超时后给的（`#004-14`）。
+ */
+describe("MinIO 外呼超时 · get 的响应体（005 第二轮审查）", () => {
+  test("MinIO 回了响应头却**不发完 body** 时，get 也要自己在超时后失败", async () => {
+    // 「发得出头、发不出 body」：先 enqueue 一小段，**然后永不 close**。
+    // 这一步是必须的——纯黑洞（连头都不回）在 ① 就挂住了，验不到 ② 这一半。
+    const 半截 = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(编码("half"))
+            },
+          }),
+        ),
+    })
+    try {
+      const 店 = Minio.makeStore({
+        endpoint: `http://127.0.0.1:${半截.port}`,
+        bucket: "openhive",
+        credentials: 凭据,
+        scope: { userId: "007", projectId: "p-42" },
+        timeoutMs: 300,
+      })
+
+      const 错 = await 抛了(() => 快过(店.get({ path: "a.txt" }), 2000))
+
+      // 被测属性：这次失败是**外呼自己的超时**给的，不是本用例的兜底掐断的。
+      expect(错.message).not.toContain(兜底标记)
+    } finally {
+      void 半截.stop(true)
+    }
+  })
+})

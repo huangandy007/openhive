@@ -535,6 +535,36 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
     expect(标了[0]?.textContent).toContain("当前")
   })
 
+  /**
+   * 选中态＝品牌浅金（005 Step 5 审查 **X5-1**，本用例是第二轮补的 **R2-03**）。
+   *
+   * 为什么非钉不可：`data-current` / `aria-selected` 只说**谁是激活的**，不说**它长什么样**。
+   * 这条修复一共改了四处，`file-tree` 与 `sidebar-tabs` 各有一条断言守着，**面板里这两处没有**
+   * ——把它们改回中性的 `layer-03`（改之前：选中与 hover 同一个底，鼠标一移开就分不清
+   * 哪行还选着）**全套测试照样绿**（`#004-02`：两个投影各长各的，没有相等断言钉在一起）。
+   * 实得值取 `className` 字符串（原语），红了毫秒级出结果（`#005-01`）。
+   */
+  test("「当前项目」行与选中页签都走品牌浅金，未选中的不带（X5-1 / R2-03）", () => {
+    const host = mount(() => (
+      <ProjectPanel
+        currentId="p2"
+        projects={[私有("p1", "8·17专案", 3), 共享("p2", "串并案", 2, 3)]}
+      />
+    ))
+    const 金 = "bg-[var(--v2-background-bg-accent-soft)]"
+    const 当前行 = 行(host).find((el) => el.getAttribute("data-current") === "true")
+    const 别的行 = 行(host).find((el) => el.getAttribute("data-current") !== "true")
+
+    // 被测属性先写：当前项目那一行是浅金
+    expect(当前行?.className).toContain(金)
+    // 对照：同一列表里别的行**不是**——只写上面那条的话，把整个列表刷成浅金也算「过」
+    expect(别的行?.className).not.toContain(金)
+
+    // 页签同理（默认停在「最近」）
+    expect(页签(host, "recent")?.className).toContain(金)
+    expect(页签(host, "all")?.className).not.toContain(金)
+  })
+
   test("点某个项目：报告该项目本身（FR-003 / AC4 的落点）", () => {
     const 记: ProjectEntry[] = []
     const 甲 = 私有("p1", "8·17专案", 3)

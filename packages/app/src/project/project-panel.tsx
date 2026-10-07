@@ -253,7 +253,12 @@ const ITEM_ROW = "flex h-7 min-w-0 w-full shrink-0 items-center gap-1"
 const ITEM_NAME_BUTTON = [
   "flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[6px] px-1.5 text-left",
   "text-v2-text-text-muted transition-colors",
-  "hover:bg-v2-background-bg-layer-01 hover:text-v2-text-text-base",
+  // hover 底走全 app 的 house 标准（`overlay-hover`）。原先跟的是上游 home
+  // `HomeProjectNavButton` 的 `hover:bg-v2-background-bg-layer-01`，但那面镜子**已经不成立**了：
+  // 本行的选中态按 X5-1 改成了品牌浅金（见 `classList` 那处），两半不再逐字对应——
+  // 留着「我在镜像 home」的说法比不镜像更坏（`#003-05`）。何况 `layer-01` 就是最浅那档中性底
+  // （`grey-100`），与面板底色几乎同色 ⇒ 划过去的反馈几乎看不见（005 第二轮审查 **R2-04**）。
+  "hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base",
   "disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-v2-text-text-muted",
 ].join(" ")
 
