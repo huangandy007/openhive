@@ -397,7 +397,7 @@ describe("MinIO 外呼超时 · list 与 delete（005 后端缺口补测）", ()
   /** 一个「收下连接、永远不回话」的端点（同上面两条的 fixture：TCP 建得上、请求发出去了、就是不回）。 */
   const 造黑洞 = () => Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) })
 
-  const 对着黑洞开 = (port: number) =>
+  const 对着黑洞开 = (port: number | undefined) =>
     Minio.makeStore({
       endpoint: `http://127.0.0.1:${port}`,
       bucket: "openhive",
