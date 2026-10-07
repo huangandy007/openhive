@@ -725,3 +725,81 @@ describe("T023 · 列项目带 role（授权数据）", () => {
     30_000,
   )
 })
+
+/**
+ * 建项目**中途失败**专用身份。**故意不给它 `auth.user` 行**——那正是下面那条注入点。
+ *
+ * ⚠️ 与 `CAROL` 是两个不同身份，别合并：CAROL 是「空库 ⇒ []」的对照，它得一直是「一次也不写」；
+ * 这个身份**会**写（写在失败的那次建项目里）。也不用 ALICE / BOB——他们**有** `auth.user` 行，
+ * 外键那条注入点在他们身上根本不成立。
+ */
+const DAVE: TokenSubject = { id: "880e8400-e29b-41d4-a716-446655440003", policeNo: "020604", name: "赵六", isAdmin: false }
+
+/**
+ * 补测（backend-testing · 真库/原子性）· **建项目中途失败 ⇒ 这个项目等于没建成**。
+ *
+ * ## 被钉的契约
+ *
+ * 住在 `packages/opencode/src/server/openhive/project.ts` 的文件头（第 7、8 步的次序）：
+ * 「项目列表**只读 `project_ext`**，所以『这个项目可不可见』由第 ⑧ 步单独决定。把它放最后
+ * ⇒ 中途任何一步失败，结果是**这个项目根本不出现在列表里**（等于没建成）」。那句话的判据形式是
+ * **「可见性最后落，失败就退回『不存在』」**——T018 自己写在文件头，但**零用例**钉它
+ * （2026-10-07 清点：全仓 `grep` 不到任何「建项目失败」的用例）。
+ *
+ * ## 怎么让它在「中途」失败（注入点 ＝ ① 之后、⑧ 之前）
+ *
+ * 第 ⑦ 步 `addMember` 往 `auth.project_member` 写 owner 行，而 `user_id` 那一列有外键
+ * `→ auth.user(id)`（`0005_project_member.sql` 的 DDL 逐字）。所以**一个没有 `auth.user` 行的身份**
+ * 发 `POST /openhive/project` 时：①–⑥ 全部成功（目录、git 仓库、上游 `project` 与
+ * `project_directory` 两行都落了），第 ⑦ 步被外键当场拒 ⇒ 500。
+ *
+ * ⚠️ **这是人造注入，如实说明**：生产里登录就会落 `auth.user` 行，这个身份状态不会自然出现。
+ * 选它恰恰因为它**确定**——真实的触发源（PG 抖一下 / 磁盘满）不可控，写不成一条稳定用例。
+ * 本用例问的是**次序那条契约**（中途失败 ⇒ 不可见），不是「外键会不会拒」。
+ *
+ * ## 判据分两层，都读**副作用**（`#004-14`：被测属性排在伴随信号之前）
+ *
+ * 1. **前提证据**（`#004-08`：副作用类判据必须先证明机制是活的）：④ 的上游两行**在**
+ *    ⇒ 建项目确实走到了 ⑧ 之前。少了这一条，一个畸形的 400 会看着和这里的 500 一模一样。
+ * 2. **被测属性**：列项目**一条都没多**。
+ * 3. 伴随信号（状态码）放最后：这是服务端故障，不是「请求被拒」。
+ *
+ * ## 本用例**不**断言的那一半（如实登记，别读成「已覆盖」）
+ *
+ * 物理残留**确实留下了**，本用例一个字都没说。2026-10-07 实测（`private` 那一支）：
+ * 项目目录**在**、`.git` **在**、上游 `project` 一行 ＋ `project_directory` 一行（`directoryCount = 1`）
+ * **在**、`project_member` **0 行**（⑦ 正是被拒的那一步）；`shared` 那一支还会多一个 bare 仓库。
+ * 断言一个缺陷「按预期发生」等于把它写成规格（`#002-02` 的反面用法），所以这里只记不断。
+ * 残留是 **X4-9** 那条已登记缺口（`state.md`），取舍见本次交付说明。
+ */
+describe("补测 · 建项目中途失败 ⇒ 项目不存在（真库原子性）", () => {
+  it.live(
+    "⑦ owner 行被外键拒 ⇒ 500，且列项目一条都没多",
+    () =>
+      Effect.gen(function* () {
+        // 前提：这个身份还没有任何项目（这是它**自己**的性质——本文件里只有本用例用它）。
+        const 前 = yield* listAs(DAVE)
+
+        const response = yield* as(DAVE, PROJECT_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "建到一半", type: "private" }),
+        })
+
+        // 前提证据（先证明机制是活的）：①–⑥ 落了上游两行 ⇒ 失败点确实在 ⑧ 之前。
+        const 幽灵 = queryOne<{ id: string }>(DAVE.id, "SELECT id FROM project ORDER BY rowid LIMIT 1")
+        if (幽灵 === undefined) throw new Error("建项目没走到 ④——注入点不是「中途」，本用例不成立")
+        expect(directoryCount(DAVE.id, 幽灵.id)).toBe(1)
+
+        // 被测属性：可见性（列表）**一条都没多**。
+        const 后 = yield* listAs(DAVE)
+        expect(后.map((entry) => entry.id)).toEqual(前.map((entry) => entry.id))
+        // ⑧ 之后的正面证据：`project_ext` 一行都没有（列表唯一的数据源）。
+        expect(extRow(DAVE.id, 幽灵.id)).toBeUndefined()
+
+        // 伴随信号：服务端故障，不是「请求被拒」。
+        expect(response.status).toBe(500)
+      }),
+    30_000,
+  )
+})

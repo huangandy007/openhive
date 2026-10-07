@@ -2634,3 +2634,62 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 2026-10-06（**T007 收尾**：新建 `app/src/project/file-tree.tsx`（受控组件，**不依赖 `useFile()`**——底座取 `components/file-tree-v2-model.ts` 的纯函数，上游一字未改）＋ `file-tree.test.tsx`（34 条）＋ 接入缝 `project-files.ts`；`workspace-entry.tsx` 把文件树**挂到锚点行下**（`file-tree-slot`，＋5 条接线测试）。工具栏六入口全落地（搜索＝真输入框／全部收缩／全部展开／＋下拉两项／重命名／删除）。本 task 34 ＋ 接线 5 = **39 条全绿**（`test:components` **274 pass / 23 文件**）；**8 处变异**：6 处恰红、M2 红 3（都真依赖「过滤」）、M8 红 2，**M7 是接线层的恰红**（断 `projectFiles()` 那根线 ⇒ 接线测试恰红 1）。**门禁首跑抓到 4 条新 warning**（27 vs 基线 23）——1 条是真 a11y 缺陷（行可点但键盘不可达）**按 TDD 补 5 条键盘测试再实现**，3 条是测试里的危险强转，全部清掉后回到 **23 / 0 / 78 文件 / exit 0**；四道门禁串行全过（`test:unit` **824 pass** ／ typecheck exit 0 ／ 改动文件 oxlint **0/0** ／ `bun.lock` 为空）。**两条新实测事实**：同层节点排序随 locale（本机拼音序）⇒ 测试按名字找行不按顺序；`aria-expanded` 类型不收 `string`、空 `new Set()` 推成 `Set<unknown>`。**计划缺口补 T019**（左栏 ② tab 容器 ＋ ④ MinIO 窄条；US4 验收原文依赖 ②）＋ 顺手恢复被 T006 吃掉的 `## 阻塞项` 标题。下一步 = T008。见「T007」节）
 2026-10-06（**T006 收尾**：新建 `app/src/project/project-panel.tsx`（受控组件：置顶「＋新建私有/共享」＋ 最近/全部/已归档三 tab；「全部」按 `type` 分两组、「最近」按 `lastAccessedAt` 倒序、空态**分两句**）＋ `project-list.ts`（接入缝）；`workspace-entry.tsx` 把 `▾`/`＋` 接到面板、点一行回写 `currentProject` 并收起；`project-anchor.tsx` 的 `MEMBER_GLYPH` 改导出、`current-project.ts` 补 `id`。本 task 18 ＋ 接线 8 = **26 条全绿**（`test:components` **235 pass / 22 文件**）；7 处变异：5 处恰红、M2/M3/M4/M5 整组红（都据实记），**M7 第一次全绿**——由此抓出真缺口「接线没把 `currentId` 传下去」并**补一条断言**（在变异下恰红 1 后转绿）。四道门禁串行全过（`test:unit` **824 pass** ／ typecheck exit 0 ／ `lint:openhive` 23 warnings·0 errors·exit 0，warnings 与基线逐项相同 ／ 7 个改动文件 oxlint **0/0**）。**出参拆两半**：「三 tab 可切换」交付、「新建项目成功」**不交付**（无落库接收方，两个按钮 disabled）；缺口按用户裁定**补 T018**。**两条新实测事实**：组件测试必须走 `test:components` 三段式（裸跑全红）；设计 §3 一处措辞滞后（登记未改）。下一步 = T007。见「T006」节）
 2026-10-06（**T005 收尾**：新建 `app/src/project/project-anchor.tsx`（受控组件）＋ `current-project.ts`（空态接缝）＋ `workspace-entry.tsx` 把 `ThreePane` 的 `left` 槽接上（＋20/−2）；新增目录已同步进 **3 处清单**（⑤ 前置的原文「单独一次提交」**实测做不到**，已改口径）。本 task 自身 9 ＋ 接线 5 = **14 条全绿**；7 处变异：6 处恰红、M3 整组红（预期），**M2 第一次跑挂死**——由此抓出真缺陷「`expect(<Solid 节点>).toBeNull()` 失败时打印器停不下来，红变哑」，本 task 新写的 3 条已改成断布尔；既有 4 处同形状断言**留原样挂账**。四道门禁串行全过（`test:components` **209 pass** ／ `test:unit` **824 pass** ／ typecheck exit 0 ／ `lint:openhive` 23 warnings·0 errors·exit 0 ／ 根 lint 本 task 文件 **0 命中**，非空绿）。**一笔待设计侧复核**：成员徽章 `👥`（图标集无 people/users 一档）。下一步 = T006（顺带接掉「谁喂真实项目数据」这条欠账）。见「T005」节）
+
+---
+
+## 收尾补测 · 后端结构性缺口（`backend-testing` · 2026-10-07）
+
+**性质**：005 办结（Step 6）之后单独跑的一次**结构性缺口闭环补测**，与「前端缺口补测」（`8dc671e72a`，8 组 stories / 31 条）是同一条线上的两半。**产品码零改动**——下面四条回归**全部是补测**（今天就是绿的），不是修缺陷。四类缺口的判据、自愈护栏与归档口径按 `backend-testing` ＋ `testing-system-blueprint` 走。
+
+### ① 命中的维度
+
+| 维度 | 命中 | 依据 |
+|---|---|---|
+| 真库数据层（约束 / 迁移 / 事务） | ✅ | 005 落了 `0005_project_member.sql`（PK ＋ 单 owner 偏索引 ＋ `project_archive` 的一致性 CHECK）；而 `handleCreate` 一次请求跨 **SQLite ＋ PG ＋ 文件系统 ＋ git** 四个存储 |
+| 越权 BOLA / BFLA | ✅ | 三个身份（owner / member / 外人）＋ 项目级共享态 |
+| 并发 / 竞态 | ❌ | 见 ③ 的判据 |
+| 韧性 / 故障注入 | ✅ | `archive.ts` / `restore.ts` 外呼 MinIO；`minio.ts` 四个动作 |
+
+### ② 覆盖区分 → 落地的四条回归
+
+| ID | 缺口 | 落点 | 用例 | 风险 | 发布门 |
+|---|---|---|---|---|---|
+| **005-BT-01** | 韧性 · `list` / `delete` 外呼**无超时** | `packages/core/test/minio.test.ts` | 2 | P1 | 发布前绿 |
+| **005-BT-02** | 越权 · **归档＝冻结（FR-010）没落在 `file.ts` 四个出口上** | `packages/opencode/test/server/openhive-file-ops.test.ts` | 2 | **P0** | **硬阻断** |
+| **005-BT-03** | 越权 · 跨身份递同一个项目头（BOLA） | 同上 | 1 | P1（见下「牙在哪」） | 发布前绿 |
+| **005-BT-04** | 真库 · **建项目中途失败 ⇒ 项目不可见**（八步的「可见性最后落」） | `packages/opencode/test/server/openhive-project.test.ts` | 1 | P1 | 发布前绿 |
+
+**四处证据与代价，如实记**：
+
+- **005-BT-01 的缺口形状比「漏一个」更细**：`minio.ts` 原注释写着「`list` / `delete` 不受影响：它们的响应体由 SDK 在 `send` 内部收完再解析，天然落在定时器覆盖范围内」——**那句话当时没有任何测试撑着**，而 `withTimeout` 的**调用点**只有 `put` / `get`（`#004-01`：数「做那件事的那一行」，不数「已经包了的那几行」）。补法是**现成可装**：复用本文件既有的「黑洞端点」夹具（`Bun.serve` 收下连接、永不回话）。变异：摘 `list` 的 `withTimeout` ⇒ 恰红 1 条；摘 `delete` 的 ⇒ 恰红 1 条——**两条各自有牙**，不是一条替两条。
+- **005-BT-02 是本次最重的一条**：`file.ts` 的复制 / 移动 / 上传 / 下载**此前零归档断言**。T015 的两道门确实被钉过，但钉的是**别的出口**（2026-10-07 复核实测：`openhive-project-frozen*.test.ts` 打的是 `/api/session`、`/file?path=`、`/permission`、`/session`、`/openhive/project/restore`，**三份里 `file/` 零命中**）。变异：摘掉 `isArchived` 那道门 ⇒ 恰红 1 条，且红的**正是第一个副作用断言**（`sub/a.txt` 存在 = true，即变异让写入通过了）——被测属性排在伴随信号之前（`#004-14`）。
+- **005-BT-03 的牙在哪里**（`#003-04`：写进文档的实测必须当场复现）：一条两行改动（中间件 `join(root, projectId)` ＋ `projectDirectoryOf` 的 `relative(root, directory)`）**只让对照组变红，乙那半 6 条断言照旧全绿**。原因是围堵有两套**独立**机制：① 一人一个库 ⇒ 甲的行在甲的库里；② 目录是 `join(root, caller.id, projectId)`，**从调用者的 id 建**、不从项目头建。所以这条今天的身份是**回归网 ＋ 哨兵**，**不是缺陷探测器**；它在 **T016「成员进共享项目」落地那天会变红**（那时乙必须进得去）。用例注释里逐字记了这个实测。
+- **005-BT-04 的注入点是人造的**：⑦ `addMember` 的 `user_id` 有外键 `→ auth.user(id)`，故**一个没有 `auth.user` 行的身份**建项目会在 ⑦ 被拒（①–⑥ 已成功）。生产里登录就落 `auth.user` 行，这个状态不会自然出现——选它是因为它**确定**（真实触发源 PG 抖动不可控）。用例问的是**次序那条契约**（中途失败 ⇒ 不可见），不是「外键会不会拒」。变异：把 ⑧ 挪到 ⑦ 之前 ⇒ 恰红 1 条，落在**可见性**那一条（列表多出一行 `project_ext`），前提证据那条照旧绿。另有一层：`expect(directoryCount(...)).toBe(1)` 是**注入点证据**（`#004-08`：副作用类判据要先证明机制是活的），它保证「500 是中途失败」而不是「请求畸形」。
+
+### ③ 跳过的维度及理由
+
+| 跳过的 | 为什么 |
+|---|---|
+| 并发 / 竞态 | **不命中**。判据是「存在共享可变状态的读-改-写」，而 005 全盘核过：`markArchived` / `markRestored` 只写 PG 单语句 upsert；`touchProjectExt` 写的是**调用者自己**的库（一人一份）；`insertProjectExt` 只在建项目写一次 ⇒ **没有任何跨存储的读-改-写**，不变量全由 DB 守（`project_member` 的 PK、单 owner 偏索引、一致性 CHECK），而那几条的真库断言**已有**（T004 那批）。⚠️ 另有一条**反向**理由：005 已实测 PGlite 夹具下**同进程两个并发请求会撞 `42P05`**（`LEARNINGS #005-02`），照那个形状补并发用例等于**制造假红**（`#003-01`）。 |
+| 越权的**路由级** 403（成员出口 / 归档 / 找回） | **已被开发期测试覆盖**——本表初稿误记为「路由级无」，2026-10-07 复查改正（`#005-04`：「我记得的都改了」不是检完）：`openhive-project-member-route.test.ts`（名单 / 邀请 / 移除 / 退群各自的非成员 403 ＋ 「零副作用」两半）＋ `-archive.test.ts`（「非成员（外人）不能归档：同样零副作用、403」）＋ `-restore.test.ts`（6 处 403）。**不重复造**。 |
+| 真库约束 / 迁移 up-down | **已覆盖**（T004 那批 ＋ `migrate.test.ts` 的反向回滚）。残差：`0005` 没有**专属**往返断言（P2）——登记不补。 |
+| 韧性 · 归档 503 / 失败语义 | **已覆盖**（`-archive.test.ts` 的假 S3 故障注入）。 |
+| 韧性 · `put` 上传后无回读校验 | **已挂账，本次不重复报**：`plan.md:156` R3 的缓解措施「上传校验 ＋ 归档前确认完整性」在实现里无对应物——正是 Step 5 的 **X3-2**（已挂账 / **Minor**）。本次复核后**同意那个分级**，我先前的「P0」是**高估**：`PutObject` 的 body 是内存 `Uint8Array`、`Content-Length` 由 SDK 算，服务端收下更少字节即违反 S3 语义 ⇒ 传输层截断会**报错**而非静默；真正会静默截断的是「读一个正在被写的文件」，而那种损坏**回读也查不出来**（上游就坏了），回读只是把每次上传流量翻倍。**不改产品码、不加用例**。
+
+### ④ 产品码改动
+
+**无。** 全程只写测试；四次变异（`minio.ts` ×2、`project.ts` 的 ⑧↔⑦ ×1、`middleware/project-location.ts` 与 `file.ts` 的那两行 ×1）**全部当场还原**，`git diff --stat` 空。
+
+### ⑤ 门禁复跑（**串行**，`#003-01`）
+
+| 文件 | 结果 |
+|---|---|
+| `packages/core/test/minio.test.ts` | **26 pass / 0 fail**（41 expect） |
+| `packages/opencode/test/server/openhive-file-ops.test.ts` | **22 pass / 0 fail**（113 expect；19 → 22） |
+| `packages/opencode/test/server/openhive-project.test.ts` | **14 pass / 0 fail**（86 expect；13 → 14） |
+
+### ⑥ 仍然开着、需要裁定的两件事（本次范围之外）
+
+1. **X4-9 的物理残留**：本次实测确认它**今天确实发生**——建项目中途失败后，项目目录**在**、`.git` **在**、上游 `project` 与 `project_directory` **各一行在**、`project_member` **0 行**（⑦ 正是被拒的那一步）；`shared` 那支还会多一个 bare 仓库。005-BT-04 **只钉「不可见」，不断言残留**——断言一个缺陷「按预期发生」等于把它写成规格。补它要动产品码（补偿或清理），**留待裁定**。
+2. **`put` 侧的超时 / 重试**：X4-6 更正之后已如实登记（上传侧「无重试」此前并未真正进表）。
+

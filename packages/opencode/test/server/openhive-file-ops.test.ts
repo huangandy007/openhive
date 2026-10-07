@@ -3,6 +3,7 @@ import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
@@ -747,6 +748,206 @@ describe("T020 · 项目里的链接（junction / 符号链接）不是越界通
 
         expect(readFileSync(path.join(项目根, "sub", "a.txt"), "utf8")).toBe(甲)
         expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+})
+
+/**
+ * ## 后端缺口补测（`backend-testing` skill · 步骤 3）
+ *
+ * 下面两组是**收尾补测**，不是 T020 开发期的用例：它们补的是
+ * `docs/superpowers/specs/005-project-management/session.md` 缺口表里
+ * 「**实现有、断言零**」的那一格。本文件原有的用例已经把 T020 自己的判据钉住了，
+ * 这两组只管**别人的门落在文件出口上**时对不对。
+ */
+
+/** 第二个身份（越权组用）。`id` 是合法 UUID、且过 `isSafePathSegment`——它要进沙箱路径。 */
+const BOB: TokenSubject = {
+  id: "6f1b2c3d-4e5a-4b7c-8d9e-0f1a2b3c4d5e",
+  policeNo: "020602",
+  name: "李四",
+  isAdmin: false,
+}
+
+/**
+ * 归档组**专属**的项目 id。
+ *
+ * ⚠️ **不能在 `ALPHA` 上做**：归档行落进的是**文件级共享**的 PG 夹具，一旦在 `ALPHA` 上写了行，
+ * 本文件**后面**任何带 `ALPHA` 头的用例都会一起被冻结——而那种「改了一处、另一处莫名变红」的
+ * 隐性耦合正是 `#002-06` 说的「会随编辑悄悄失效的前提」。专属 id 让这组**自足**。
+ */
+const 冻结的项目 = "prj_frozen_0002"
+
+/**
+ * 备好一个项目：目录 ＋ 一个源文件 ＋ `project_ext` 行，**并按需写入或清掉归档行**。
+ *
+ * ⚠️ 两个分支都**显式写**（不是「写」与「不写」）：同一份 PG 夹具被两条用例共用，
+ * 只写「写」不写「删」的话，**对照那条的结论会取决于它和归档那条的声明次序**
+ * （bun 按声明序跑用例）。把「删」也写出来，两条就各自独立、顺序无关。
+ *
+ * ⚠️ `archived_at` 不能省：迁移的 `project_archive_coherence_check` 钉着
+ * `archived = (archived_at IS NOT NULL)`，只写 `archived` 会被库当场拒。
+ */
+const 备好项目 = (projectId: string, 归档: boolean) =>
+  Effect.gen(function* () {
+    重置文件()
+    const dir = path.join(沙箱根, projectId)
+    mkdirSync(path.join(dir, "sub"), { recursive: true })
+    writeFileSync(path.join(dir, "a.txt"), 甲)
+    yield* 种项目(ALICE, projectId)
+
+    const db = pg!.db
+    yield* Effect.promise(() =>
+      Promise.resolve(
+        归档
+          ? db.execute(
+              sql`insert into auth.project_archive (project_id, archived, archived_at)
+                  values (${projectId}, true, 1700000000)
+                  on conflict (project_id) do update set archived = excluded.archived, archived_at = excluded.archived_at`,
+            )
+          : db.execute(sql`delete from auth.project_archive where project_id = ${projectId}`),
+      ),
+    )
+    return dir
+  })
+
+/** 403 的线上形状。**断文案而不是只断状态码**：403 谁都会回，断文案才知道是这道门回的那一条。 */
+const Frozen = Schema.Struct({ error: Schema.String })
+const FROZEN_MESSAGE = "项目已归档，请先找回"
+
+/**
+ * **归档＝冻结（FR-010）要落在 `file.ts` 的四个出口上**（005 后端缺口补测）。
+ *
+ * 这一条此前**零断言**（两次 grep 实测 2026-10-07）：`openhive-project-frozen.test.ts` 把冻结
+ * 钉在**建会话两条链**与**上游文件树 `GET /file`** 上，而这四个出口是**另外四扇门**
+ * （`LEARNINGS #004-01`：要数的是「做那件事的那一行」有几个）。
+ *
+ * 实现侧**是对的**——冻结由 `middleware/project-location.ts` 的第一道门统一落地（头在场且查得到
+ * `project_ext` 行 ⇒ 查 `auth.project_archive` ⇒ 403），四个出口都过这道门。所以这组补的是
+ * **覆盖**，不是修 bug：RED 不是靠写测试造出来的，而是靠**变异**证明它咬得住
+ * （去掉门里那次 `isArchived` ⇒ 这几条红，见 `state.md` 的补测记录）。
+ *
+ * ⚠️ 判据一律断**副作用在前、状态码在后**（`#004-14`）：只断 403 的话，一道「先写盘、
+ * 再发现归档了」的实现照样绿。
+ */
+describe("补测 · 归档＝冻结（FR-010）落在文件四出口", () => {
+  /**
+   * **对照**（`#004-08`：「没报错」不等于「执行了」，同族：**「全 403」也可能是这条链本来就不通**）。
+   *
+   * 同一个项目 id、同一套夹具、同一个发法，**只差库里那一行归档行**。少了这条，
+   * 下面那组「四条全 403」就分不清是归档挡的、还是这个专属 id 根本用不了。
+   */
+  it.live(
+    "对照：同一个项目、只是没有归档行 ⇒ 复制照常 200、文件真的落到盘上",
+    () =>
+      Effect.gen(function* () {
+        const 项目 = yield* 备好项目(冻结的项目, false)
+
+        const response = yield* send(ALICE, 出口.copy, { path: "a.txt", dir: "sub" }, 冻结的项目)
+
+        expect(readFileSync(path.join(项目, "sub", "a.txt"), "utf8")).toBe(甲)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * 归档之后四个出口**全拒**，且项目里**一个字节都没动**。
+   *
+   * 四个一起发是照本文件「不带头」那组的先例（四扇门一条用例）：每扇门的落点各写一条断言，
+   * 状态码合并成一条数组断言——红了能看出是哪一个。
+   *
+   * 四条副作用判据各自对应一发：
+   * - 复制 / 移动 ⇒ `sub/a.txt` **没被造出来**（两条都会造同一个位置，故一条断言即可，
+   *   但要**两发都发**：它们是两扇不同的门）；
+   * - 上传 ⇒ `sub/偷渡.txt` 没出现（**新名**，见「不带头」那组对判别力的注解）；
+   * - 下载 ⇒ 没拿到那段字节，且源文件内容原样。
+   */
+  it.live(
+    "归档后：复制 / 移动 / 上传 / 下载全部 403，且项目里一个字节都没动",
+    () =>
+      Effect.gen(function* () {
+        const 项目 = yield* 备好项目(冻结的项目, true)
+
+        const 复制 = yield* send(ALICE, 出口.copy, { path: "a.txt", dir: "sub" }, 冻结的项目)
+        const 移动 = yield* send(ALICE, 出口.move, { path: "a.txt", dir: "sub" }, 冻结的项目)
+        const 上传 = yield* upload(ALICE, "sub", "偷渡.txt", "偷渡的正文", 冻结的项目)
+        const 下载 = yield* as(ALICE, `${出口.download}?path=a.txt`, {
+          headers: { [PROJECT_HEADER]: 冻结的项目 },
+        })
+
+        // 被测属性（副作用）在前（`#004-14`）。
+        expect(existsSync(path.join(项目, "sub", "a.txt"))).toBe(false)
+        expect(existsSync(path.join(项目, "sub", "偷渡.txt"))).toBe(false)
+        expect(readFileSync(path.join(项目, "a.txt"), "utf8")).toBe(甲)
+        expect(下载.headers.get("content-disposition")).toBe(null)
+        // 断文案：证明这四条 403 是**归档那道门**回的，不是别的什么地方顺手回的。
+        expect((yield* json(Frozen, 复制)).error).toBe(FROZEN_MESSAGE)
+        expect([复制.status, 移动.status, 上传.status, 下载.status]).toEqual([403, 403, 403, 403])
+      }),
+    30_000,
+  )
+})
+
+/**
+ * **项目头不是凭证**：同一个 `projectId` 在别人手里够不着（005 后端缺口补测 · 越权 BOLA）。
+ *
+ * ## 这条为什么此前是空的
+ *
+ * `middleware/project-location.ts` 把一个客户端可填的头（`x-openhive-project`）变成「工作目录」，
+ * 而它的授权实质只有一句：**「这个 projectId 在不在`项目_ext` 里」**——那张表在**每用户分库**里，
+ * 所以别人家的 id 查不到。`openhive-project-directory.test.ts` 只在**建会话**那条出口上验过这一点
+ * （`:454`），`file.ts` 四出口**一次都没验**（两次 grep 实测 2026-10-07）。
+ *
+ * ## 判别力：**有限，且已实测**（`#003-03` 第③类，如实记）
+ *
+ * 实测（2026-10-07，两行变异：中间件目标去掉用户段 `join(root, projectId)` ＋
+ * `projectDirectoryOf` 基准改成 `relative(root, …)`）：**对照组红**（甲自己那次上传落到了
+ * `{根}/{projectId}`，`甲自己.txt` 根本没出现在沙箱里），而**乙那半 6 条断言照样全过**。
+ *
+ * 也就是说乙那半**单点变异做不出红**，因为封堵是**两重独立的**：
+ * ① 每用户分库里查不到行 ⇒ 走 R5 直通、不重写目录；
+ * ② 就算重写了，目标也是 `join(根, 本人 id, projectId)` ⇒ 落回**乙自己的沙箱**。
+ * 两重都在时，乙拿甲的项目 id 得到的永远是 400 或「乙自己沙箱里那个同名目录」——
+ * 要让它真红，得让路径落到**甲的**沙箱，而那需要一个**新设计**
+ * （例如按项目 owner 解析沙箱——正是 T016「成员进共享项目」最自然的实现）。
+ * ⇒ 它**不是**缺陷探测器，是一条**回归网 ＋ 一个哨兵**：T016 落地时它会红，提醒那句
+ * 「隐含 owner-only 就是今天的授权」需要重新裁定。把这句写出来，是为了不让下一个人
+ * 把它当成「越权测过了」的凭据（`#002-02`：没覆盖的写成缺口，不写成已覆盖）。
+ *
+ * ⚠️ 甲的上传落在 `sub/甲自己.txt`，与乙四发的落点**各不相同**——这样「乙没造出来」与
+ * 「对照确实造出来了」才在文件系统上是**两件事**，不会互相顶替。
+ */
+describe("补测 · 项目头不是凭证：同一个 id 在别人手里够不着（BOLA）", () => {
+  it.live(
+    "乙带甲的项目 id ⇒ 四项全拒、甲的项目零改动；对照：甲本人同一发法 ⇒ 200",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        // 乙：同一条路径、同一个头、同样的发法——差别**只有身份**。
+        const 乙复制 = yield* send(BOB, 出口.copy, { path: "sub/b.txt", dir: "" }, ALPHA)
+        const 乙移动 = yield* send(BOB, 出口.move, { path: "a.txt", dir: "sub" }, ALPHA)
+        const 乙上传 = yield* upload(BOB, "sub", "偷渡.txt", "偷渡的正文", ALPHA)
+        const 乙下载 = yield* as(BOB, `${出口.download}?path=a.txt`, {
+          headers: { [PROJECT_HEADER]: ALPHA },
+        })
+        // 对照（`#004-08`：先证明这条链在这台机器上是活的，否则上面四条「全 400」也可能是
+        // 「这条链本来就不通」）。落点与乙四处**全不同**。
+        const 甲上传 = yield* upload(ALICE, "sub", "甲自己.txt", "甲的正文二", ALPHA)
+
+        // 被测属性（副作用）在前（`#004-14`）：乙那四发一个落点都不许出现。
+        expect(existsSync(path.join(项目根, "b.txt"))).toBe(false)
+        expect(existsSync(path.join(项目根, "sub", "a.txt"))).toBe(false)
+        expect(existsSync(path.join(项目根, "sub", "偷渡.txt"))).toBe(false)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(乙下载.headers.get("content-disposition")).toBe(null)
+        // 对照确实活着——这一条绿，上面那几条「没出现」才有意义。
+        expect(readFileSync(path.join(项目根, "sub", "甲自己.txt"), "utf8")).toBe("甲的正文二")
+        expect(甲上传.status).toBe(200)
+        expect([乙复制.status, 乙移动.status, 乙上传.status, 乙下载.status]).toEqual([400, 400, 400, 400])
       }),
     30_000,
   )

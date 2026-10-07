@@ -368,3 +368,63 @@ describe("MinIO 外呼超时 · get 的响应体（005 第二轮审查）", () =
     }
   })
 })
+
+/**
+ * 剩下两个动作的超时（005 **后端**缺口补测）。
+ *
+ * ## 为什么这两条必须存在
+ *
+ * 上面那段注释里有一句**断言性的话**：
+ * 「（`list` / `delete` 不受影响：它们的响应体由 SDK 在 `send` **内部**收完再解析，天然落在
+ * 定时器覆盖范围内。）」——它是**推断**，而当时**零用例**兜着（list 只测过分页、delete 只测过
+ * 幂等；两次 grep 实测 2026-10-07）。按 `#003-04`（推断落笔前先复现）与 `#002-02`
+ * （没覆盖的要写成缺口，不能写成已覆盖）：**这句「不受影响」今天是一句没人验过的话。**
+ *
+ * 它的失败模式与 X4-1 一模一样、且同样静默：MinIO 僵死时 `list` / `delete` 无限期挂住，
+ * 不是 500、是可重试性为零的永久 pending。而 `list` 正处在**归档链的上游**
+ * （`backupAll` 拿它的清单去传文件），`delete` 在收敛那一步——两条都在归档这条链上。
+ *
+ * ## 两条各钉什么
+ *
+ * - `delete`：**单次 `send`**，与 `put` 同形，定时器罩住整段。
+ * - `list`：**每页各一次** `withTimeout`（`minio.ts` 的 do/while 把调用放在**体内**）。
+ *   黑洞端点下第一页就挂住，所以它同时反证了「分页没有把定时器拆到罩不住的地方」。
+ *
+ * 判据形式与上面两条一致（`#004-14`）：失败必须是**外呼自己**在超时后给的——`兜底标记` 是
+ * 本用例自己的兜底计时器抛的字符串，断言 `not.toContain` 就是「不是兜底掐断的」。
+ */
+describe("MinIO 外呼超时 · list 与 delete（005 后端缺口补测）", () => {
+  /** 一个「收下连接、永远不回话」的端点（同上面两条的 fixture：TCP 建得上、请求发出去了、就是不回）。 */
+  const 造黑洞 = () => Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) })
+
+  const 对着黑洞开 = (port: number) =>
+    Minio.makeStore({
+      endpoint: `http://127.0.0.1:${port}`,
+      bucket: "openhive",
+      credentials: 凭据,
+      scope: { userId: "007", projectId: "p-42" },
+      timeoutMs: 300,
+    })
+
+  test("MinIO 不回话时，list 自己在超时后失败 —— 不是无限期挂起", async () => {
+    const 黑洞 = 造黑洞()
+    try {
+      const 错 = await 抛了(() => 快过(对着黑洞开(黑洞.port).list(), 2000))
+
+      expect(错.message).not.toContain(兜底标记)
+    } finally {
+      void 黑洞.stop(true)
+    }
+  })
+
+  test("MinIO 不回话时，delete 自己在超时后失败 —— 不是无限期挂起", async () => {
+    const 黑洞 = 造黑洞()
+    try {
+      const 错 = await 抛了(() => 快过(对着黑洞开(黑洞.port).delete({ path: "a.txt" }), 2000))
+
+      expect(错.message).not.toContain(兜底标记)
+    } finally {
+      void 黑洞.stop(true)
+    }
+  })
+})
