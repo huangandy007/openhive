@@ -2,7 +2,7 @@
 
 ## 当前任务
 
-T001 已完成（Phase 1 Setup 的「定位」半条）。**下一个：T002**（skill 能力清单声明接口）。
+T002 已完成（**Phase 1 Setup 收尾**）。**下一个：T003**（指令卡机制通用框架）。
 
 ## 已完成
 
@@ -11,6 +11,8 @@ T001 已完成（Phase 1 Setup 的「定位」半条）。**下一个：T002**�
 - **T001 补测**（同日）· 追加第 7 条：**右栏不在路由 `DataProvider` 的子树内**（它是 `WorkspaceEntry` 的
   **后代**，不是祖先）⇒ 右栏须自挂一份，且 `useSync()`/`useSDK()` 在外壳层已可用、故可行。
   ⚠️ 这条是**查实**得出的，不是推断（`#004-13`：判「做不了 / 做得成」都要先验）。
+- **T002**（2026-10-07）· 确定 skill 能力清单声明接口 → 出参见下「T002 出参」。
+  落地 U4(b) 旁路清单 ＋ U9 三处目录清单 ＋ U10 契约移交（`#002-04`）。
 - **开工前裁定 U1–U10**（2026-10-07，用户逐条裁定）→ 见下「裁定表」。**Spec 未定项至此清零**。
 
 ---
@@ -57,6 +59,41 @@ T001 已完成（Phase 1 Setup 的「定位」半条）。**下一个：T002**�
 
 ---
 
+## T002 出参 · skill 能力清单声明接口（2026-10-07）
+
+**产物**：`packages/app/src/ai-session/capabilities.ts`（格式 ＋ 今天的清单）
+＋ `capabilities.test.ts`（对账 ＋ 形状约束，5 条用例）。
+
+| # | 定型的事 | 取数 / 依据 |
+|---|---|---|
+| 1 | **走旁路清单，不动上游**（U4(b)） | 实测：两套 skill `Info` 都只有 `name` / `description`(＋`slash`)，无分组 / 分类 / 标签 / 能力字段；扩 frontmatter 要动上游三处（`packages/schema/src/skill.ts` ＋ `packages/core/src/skill.ts` ＋ `packages/opencode/src/skill/index.ts`）⇒ 顶在第一号约束上 |
+| 2 | **四个类型**：`CardLayer`("common" / "context")、`InstructionCard`(label / prompt / layer)、`SkillCapability`(skill / name / description / group / cards)、`CapabilityManifest`(module / capabilities) | 009 spec **FR-001** 的元数据清单取前端拿得到的子集；`§8.2` 那张四层表定 `CardLayer` |
+| 3 | **`skill` 是连接键**，必须等于文件系统里那个 skill 的名（上游 `Info.name`） | 上游 `SkillV2.load`：先取 frontmatter `name`，没有才回退「**根层** `.md` 的文件名」，子目录里没 `name` 的**跳过** |
+| 4 | **扫描口径逐字镜像上游**：目录源 = `<configDir>/skill` 与 `<configDir>/skills`（`packages/core/src/config/plugin/skill.ts`）⇒ 本仓扫 `.opencode/skills`；文件集 = 上游 glob 的「根层 `*.md`」＋「任意深度 `SKILL.md`」 | 不是「文件夹里的 `SKILL.md`」那种差不多写法（`#003-05`：镜像要写成会被上游变更惊醒的样子） |
+| 5 | **对账断言 3 条，方向分开写**（`#005-12`） | ① 元断言「扫到了 > 0 条」（防空转）② 无孤儿 ③ 无悬空。**合成一条时一个方向先红，另一方向的证据就看不见了** |
+| 6 | **今天 `cards` 全为空**——不是漏写 | 006 只造机制；卡片文案是**内容、随模块**（`§8.2`：框架「不重画一遍」）。今天本仓只有两个 opencode **开发工具链**的 skill（`effect` / `rtl-aware-development`），对民警没有指令卡语义，替它们编文案就是造数据 |
+
+**变异验证（每条断言各自隔离注入，`#005-04` / `#005-15`）**：
+
+| 注入 | 期望 | 实得 |
+|---|---|---|
+| **M1** 在 `.opencode/skills/` 丢一个 `zz-probe-tmp/SKILL.md`（真 skill，清单没声明） | 恰红「无孤儿」，另一方向绿 | **1 fail**，红的正是「无孤儿」并点名 `zz-probe-tmp` ✅ |
+| **M2** 往 `MANIFESTS` 塞一条 `zz-ghost-tmp`（清单声明了不存在的 skill） | 恰红「无悬空」，另一方向绿 | **1 fail**，红的正是「无悬空」并点名 `zz-ghost-tmp` ✅ |
+| **M3** 把扫描根改到 `.opencode/themes`（存在但无 `.md`） | 元断言必红（否则它是摆设） | **2 fail**：元断言 ＋ 无悬空 ✅（顺带证了「扫空了」这件事有两双眼睛盯着） |
+
+> ⚠️ M3 的实得是 **2 fail 而不是 1**：扫描为空时，「无悬空」也会红（所有声明都悬空）。这是对的
+> ——记下来是因为**它说明元断言不是唯一那道保险**，而不是「变异不精确」。
+
+**U9 三处目录清单**（`ai-session` 一起加）：`packages/app/src/openhive-module-dirs.test.ts` 的
+`moduleDirs`、`packages/app/src/workspace/design-token-refs.test.ts` 的 `自有目录`、
+根 `package.json` 的 `lint:openhive`。**加之前先跑过一趟 `openhive-module-dirs`**：红在
+`ai-session/ 缺失` ⇒ 这条清单确实有牙，不是摆设。
+
+**U10 契约移交**：已按 `#002-04` 落进 `009-ai-assets/tasks.md` 的 📥 块（两笔：U10 契约形状 ＋
+U8 的「收藏」因子下落）。**不写在只有 006 自己会读的地方。**
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -64,15 +101,19 @@ T001 已完成（Phase 1 Setup 的「定位」半条）。**下一个：T002**�
 | 缺口 | 位置 | 说明 |
 |---|---|---|
 | **SC-004 的「有权」一半** | `spec.md` | 前端无授权输入 ⇒ 只对「可发现」负责；「有权可发现」依赖 009 的资产授权元数据 |
-| **「收藏」排序因子** | FR-004 / T006 | 本轮不做，**挂 009**（U8） |
-| **「最近使用」** | FR-004 / T006 | 若做只做本机权重，须写明降级形态（U8） |
+| **「收藏」排序因子** | FR-004 / T006 | 本轮不做，**已落 009 的 `tasks.md` 📥 块**（U8 → 009 T011） |
+| **「最近使用」** | FR-004 / T006 | 若做只做本机权重，须写明降级形态（U8）；**服务端统计那一半已落 009 的 📥 块** |
 | **「判定涉案」的判定逻辑** | T012 | AI 只提取/查证/预填，不替人下结论；判定本身属 **F6/F7**（U5） |
 | **暗色无 `--v2-background-bg-accent-soft`** | `packages/ui` 的 dark 块 | 沿用 005 裁定（R2-09）：`DESIGN.md §6.2` 明写**不启用暗色** ⇒ **非本次引入**，继续挂账（U7） |
-| **能力清单的「真值来源」** | T002 | 旁路清单是**镜像**（`LEARNINGS #003-05`）⇒ 必须写成**会被上游变更惊醒**的样子；009 落地后须复核形状 |
+| **能力清单的「漂」已建网，但网只罩住「skill 集合」** | T002 | 旁路清单是**镜像**（`LEARNINGS #003-05`）。`capabilities.test.ts` 双向对账**文件系统里真实存在的 skill 名**（三条断言各自做过变异验证）⇒ 改名 / 新增 / 删除会红。**它不管**：① 描述文案改了对不上（本轮不钉，skill 描述不是判据）；② `packages/opencode/test/fixture/skills/` 下那两个上游**测试夹具** skill（口径是「扫 `.opencode/skills` 这一个目录源」，不是全仓 glob，故夹具天然在外）；③ 全局 skill 目录（`~/.config/opencode/skills`）——**跟机器走，不能进断言** |
+| **frontmatter 只读 `name:` 一条正则** | `capabilities.test.ts` | 上游用真 YAML 解码器，这边只认单行 `name:`。**不为此加保护代码**——两个方向互相看着（真读漏 ⇒ 清单那条变「悬空」而红），故漏读会被另一种红抓住。已写进测试文件头 |
+| **`SkillCapability.group` 的取值是占位** | `capabilities.ts` | skill 无分组 / 分类 / 标签元数据（实测）⇒ 今天两个 skill 都填「开发工具」，是 006 手填的。真来源 = 009 的业务分类 / 标签（已进 009 的 📥 块） |
+| **`cards` 今天全为空** | `capabilities.ts` | 006 只造机制，卡片文案随模块（F6 / F7 / F9 落地时填）。今天两个 skill 是 opencode 开发工具链的，对民警无指令卡语义 ⇒ 编文案就是造数据 |
+| **指令卡的 `context` 层触发条件未进类型** | `InstructionCard` | FR-003 的「随中栏选中浮现」取决于中栏当前上下文，是 **T005** 的活；T005 落地时把触发字段加进 `InstructionCard` 并回填注释 |
 | **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表 |
 
 ---
 
 ## 最后更新
 
-2026-10-07（T001 收尾；裁定 U1–U10 全部落表）
+2026-10-07（T002 收尾；Phase 1 Setup 完成，U4(b) / U9 / U10 落地）

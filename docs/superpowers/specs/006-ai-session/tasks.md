@@ -17,8 +17,9 @@
 ## Phase 1: Setup（定位 + 声明接口）
 
 - [x] T001 [P] [FE·定位] 定位右栏会话槽位 + 会话管理入口 [FR-010] [无依赖] [出参：见 `state.md`「T001 出参」——右栏槽位 `ThreePane.right` **生产未接线**；`SessionSidePanel` 是 review-diff **不是**消息流；可复用原语在 `@opencode-ai/session-ui`]（2026-10-07 完成）
-- [ ] T002 [P] [FE·新增] 确定 skill 能力清单声明接口（各模块 skill 声明能力的契约）[FR-006] [无依赖] [出参：能力清单声明格式定义]
+- [x] T002 [P] [FE·新增] 确定 skill 能力清单声明接口（各模块 skill 声明能力的契约）[FR-006] [无依赖] [出参：能力清单声明格式定义]（2026-10-07 完成）
   - **2026-10-07 裁定 U4(b)**：**旁路一份 openhive 清单**（`app/src/ai-session/capabilities.ts`），**零上游改动**；须配一条**会报警**的断言钉住「清单 ≡ 实际 `SKILL.md` 全集」（`#004-03`）；形状按 009 §11 资产元数据写，并标「**009 落地时须复核**」
+  - **出参落地**：见 `state.md`「T002 出参」——四个类型（`CardLayer` / `InstructionCard` / `SkillCapability` / `CapabilityManifest`）＋ `MANIFESTS` 数据 ＋ 对账测试 3 条断言（各自做过变异验证）。**与 009 的契约已按 `#002-04` 落进 `009-ai-assets/tasks.md` 的 📥 块**
 
 ## Phase 2: Foundational（指令卡通用框架）
 

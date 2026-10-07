@@ -40,9 +40,10 @@ const 仓库根 = join(fileURLToPath(new URL(".", import.meta.url)), "../../../.
  * `auth` 是 003 T015 加的（登录页 / 强制改密遮罩 / 网关客户端）——按上面那条「两处一起扩」办的。
  * `project` 是 005 T005 加的（项目锚点行）；同批一起扩的是**三处**：本文件、根 `package.json`
  * 的 `lint:openhive`、以及 `../openhive-module-dirs.test.ts`（缺一处就有一条门静默扫不到新文件）。
+ * `ai-session` 是 006 T002 加的（skill 能力清单旁路清单），三处同样一起扩。
  * 数目刻意不写进名字/注释：它是「会随编辑而变的值」，加目录就得回头改文字。
  */
-const 自有目录 = ["rail", "center", "topbar", "workspace", "project", "auth"].map((d) =>
+const 自有目录 = ["rail", "center", "topbar", "workspace", "project", "auth", "ai-session"].map((d) =>
   join(仓库根, "packages/app/src", d),
 )
 
