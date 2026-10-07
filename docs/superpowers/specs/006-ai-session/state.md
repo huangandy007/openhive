@@ -2,10 +2,13 @@
 
 ## 当前任务
 
-**T009 已完成**（点指令卡 ＝ 填入一句话：`session-panel.tsx` 把 `activePrompt` / `onPick` 接上
-`CommonCards`）→ 出参见下「T009 出参」。
-**下一个：T010**（AI 执行 ＋ 展示过程）——它是 `onSubmitPrompt` 的接收方（真正调 SDK `session.prompt`）
-⇒ 「点卡 → 一句话进输入框 → 回车 → AI 真的跑」这条链**今天断在终点**（右栏把正文交出去了，没人接）。
+**T011 已完成**（AI 不滥用确定性事 / FR-008：环境准则接进每次会话的系统提示词）→ 出参见下「T011 出参」。
+**下一个：T012**（高风险动作强制人确认 / FR-009）——它是 US5 场景 2 的那一半；开工前读 `tasks.md` 的
+**`📌 T011 更正块`** 与 **`## 📤 交出`**（U5 的时序是「T011 开工时改写正文」，T012 同理先看自己那一格）。
+⚠️ 出参同样会**收窄**：「闸门机制」在本仓（工具层 `permission.ask`）可交付并**可测**，
+「判定涉案」的**判定逻辑**是 F6 / F7 的对象（📤-2 已落两文件的 T014）。
+
+**已完成到 T011**（T001–T011，见下「已完成」）。
 
 ⚠️ 视觉规格在 `DESIGN.md §4.7`：T008 用到 §4.7.5（Hero 输入）与 §4.7.1（卡行）；不要凭记忆挑 token。
 §4.7.0 末尾那条 ⚠️（**别把那张对照表照抄进源码注释**）是 T004 实测踩出来的；T008 那条
@@ -62,6 +65,23 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
   ＝瞎的，新写法恰红 1 条）；第三轮定点复核 F1 的修复 ⇒ **0 缺陷 ＋ 4 条 Nit**（N1–N3 是引文 / 措辞 /
   记账，**N4 是我从它的差集实测反推出来的自纠**）。细节见下「T009 审查」。
   ⚠️ 如实记一条：接线通了，**但生产里今天没卡可点**（`MANIFESTS` 的 `cards` 全为空）。
+- **T010**（2026-10-07）· AI 执行 ＋ 展示过程（FR-007 / US4 场景 1）→ 出参见下「T010 出参」。
+  新建 `submit-prompt.ts` ＋ `submit-prompt.test.ts`（12 条）＋ `packages/opencode/test/server/
+  openhive-prompt-minimal.test.ts`（真链 1 条）；改 `session-panel.tsx` / `session-panel.test.tsx` /
+  `ai-session-slot.tsx`；**8 批变异 ＋ 1 批反向**（M8 报「无牙」⇒ 改注释挂账，不补测试）。
+  ⚠️ **本条漏记在「已完成」里，2026-10-07 补**（T011 收尾时核账发现的——出参节当时写了，
+  这一节忘了加）。两处**推翻继承推断**：U6 的「右栏 `/skill` 会把命令名当正文发」**是错的**
+  （会真的执行该 skill）；另一条写进注释的推断也**已删改挂账**（`LEARNINGS #003-04`）。
+- **T011**（2026-10-07）· AI 不滥用确定性事（FR-008 / US5 场景 1）→ 出参见下「T011 出参」。
+  按用户裁定落 **「配置注入的指令文件」**：新建 `.opencode/instructions/openhive-tool-path.md`
+  （规则正文）＋ `.opencode/opencode.jsonc` 加 `instructions` 键（＋3 行）＋ 见证测试
+  `packages/opencode/test/session/openhive-tool-path-instruction.test.ts`（2 条）。
+  **3 批变异**（M1 恰红 2 / M2 ①pass②fail / M2b 恰红 1）；**两轮审查**（5 条：修 2 —— 夹具改
+  `tmpdirScoped`、目录筛法改成「每个文件都要被注入」（`#005-11` 的漏口）；挂账 3）。
+  **零上游源码改动**（只在上游文件里新增一个键，提交标【这是要保留的定制】）。
+  出参**收窄**：交付「准则进提示词 ＋ 接线是活的」，**不**交付「AI 不会滥用」——硬那一半已按
+  `#002-04` 落进 007 / 008 的 📥 块。连带落 U5 的两笔（`plan.md` / `spec.md` 正文改写 ＋ `tasks.md`
+  的 `📌 T011 更正块` 与 `## 📤 交出`）；部署侧下发挂 `docs/workspace/deploy-todo.md` 的 **D-15**。
 - **U6 起草件 → 定稿**（2026-10-07）· 起草 → 用户审 → **移入 `openhive-DESIGN.md` 作 §4.7**（并改
   `§3.1` 的圆角口径）→ 出参见下「U6 起草件出参」。**起草件本身已删**（宪法 §八：DESIGN.md 是视觉真理的
   单一来源；留副本＝两份真相会漂，`#003-05`），其「取数命令核对记录」整段**挪进**了本节（不丢证据、
@@ -1198,6 +1218,141 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 
 ---
 
+## T011 出参 · AI 不滥用确定性事（FR-008 / US5 场景 1 · 2026-10-07）
+
+### 产品码落点（三处，全部随仓库版本化）
+
+| # | 落点 | 是什么 |
+|---|---|---|
+| ① | `.opencode/instructions/openhive-tool-path.md`（**新建**） | 规则**正文**，四节：确定性的活走工具路径（不要靠印象）／需要专家经验的研判才是给意见的地方／高风险动作先问人／取不到数就如实说取不到。取数（2026-10-07 21:0x 实测）：`wc -l -c` ⇒ **27 行 / 1468 字节**，`file` ⇒ UTF-8 **LF**（无 CR）。⚠️ 正文里的数字与措辞是**产品文案**，不是断言——它好不好是人的判断 |
+| ② | `.opencode/opencode.jsonc`（**改，+3 行**） | **接线**：`"instructions": [".opencode/instructions/*.md"]`（含一行注释说明它是 006 的定制、正文在同目录） |
+| ③ | `packages/opencode/test/session/openhive-tool-path-instruction.test.ts`（**新建**） | **接线自检**（2 条用例 / 6 expects）。⚠️ 它测的**不是**「AI 会不会遵守」——本机没有真模型、没有真业务工具（F6/F7 才有）⇒ 那件事**测不了**；它测的是**接线是活的**（`LEARNINGS #005-15`：别让注释比断言强） |
+
+**落点依据**：2026-10-07 用户裁定（压缩前的未定项询问）——产品码落在**「配置注入的指令文件」**这一层。
+同一裁定里的两个 ⚠️ 都已落：① 这是**零上游源码改动**的形态（只加配置文件里的一个键）；② 「产品侧的配置
+**下发**」属部署侧 ⇒ 已挂 `docs/workspace/deploy-todo.md` 的 **D-15**。
+
+⚠️ **`.opencode/opencode.jsonc` 是纯上游文件**（实测：`git log` 提交史全是上游的；
+`git merge-base --is-ancestor bb82aab5c8 upstream/dev` **成立**；本分支相对 `upstream/dev` 的提交里
+`.opencode/` **零命中**）⇒ 这 3 行是**新增键**、不是改上游语义，但**提交信息里要标【这是要保留的定制】**。
+（这一条记在审查结论的「上游侵入面」一项里，`#004-03` 的「有 X 钉住要核」同族。）
+
+### 真链（读码 ＋ grep，非推断）
+
+```
+.opencode/opencode.jsonc 的 instructions
+  → Instruction.systemPaths()   packages/opencode/src/session/instruction.ts
+      · 绝对项 ⇒ 原样；相对项 ⇒ relative() ⇒ fs.globUp(项, ctx.directory, ctx.worktree)
+        （**从实例目录逐级向上** glob 到 worktree，{absolute:true, include:"file", dot:true}）
+  → 拼成 `Instructions from: <绝对路径>\n<正文>`（本 task 的判据正是这个**拼接形状**）
+  → SessionPrompt.run           packages/opencode/src/session/prompt.ts:1313 的 instruction.system()
+  → const system = [...env, ...instructions, ...(mcpInstructions?[..]:[]), ...(skills?[skills]:[])]
+  → handle.process(…)
+```
+
+- **组装点只有一个**（实测取数：`grep -rn "instruction\.\(system\|resolve\)(" packages`）⇒
+  `instruction.system()` 只被 `prompt.ts` 的 `SessionPrompt.run` 调，`instruction.resolve()` 只被
+  `tool/read.ts` 调。**主会话与子会话走同一条链** ⇒ 不存在「另有一个出口忘了注入」。
+- **`sys.environment()` 不含 instructions**（读 `packages/opencode/src/session/system.ts`）——
+  `environment()` 是环境信息 ＋ references；`mcp()` 那个 `mcp.instructions()` 是 **MCP server 自己的
+  说明**，另一回事。⇒ 「第二条注入出口」不存在。
+- ⚠️ **另一套 ambient 通道（不在今天这条路上，但要记）**：`packages/core/src/instruction-context.ts`
+  注册为 SystemContext 键 `core/instructions`，**只读 `AGENTS.md`**、**不读 `config.instructions`**。
+  实测 `grep -rn "SystemContext" packages/opencode/src packages/app/src packages/session-ui/src`
+  **零命中** ⇒ 它今天不在会话路径上。**风险如实记**：会话路径哪天迁到 SystemContext，本条接线会
+  **静默失效**（已进缺口表）。
+
+### ⚠️ 出参收窄（两半都要说清）
+
+本条交付的是**两件事**：① **规则进了每次会话的系统提示词**；② **这条接线是活的**（有断言、变异会红）。
+本条**没有**交付「AI 不会滥用确定性的事」——提示词是**软机制**：它只是让模型看见一句准则，**不强制任何行为**。
+**硬**那一半（确定性查询 / 统计**真的**有可调用的工具、且调用受鉴权约束）在 **F6 / F7**：
+已按 `#002-04` 落进 `007-fund-analysis/tasks.md` 与 `008-call-analysis/tasks.md` 的 **📥 块**（📤-1）。
+⚠️ **不得声称 FR-008 已在 006 端到端验证**（`LEARNINGS #002-02`）。
+
+### 测试怎么写的（两个反直觉处，都写进文件头了）
+
+- **instance 指向仓库根**（不是 tmpdir）：相对项走 `globUp(…, ctx.directory, ctx.worktree)`，
+  只有把实例对准仓库根，测的才是「**本仓配置里的相对路径能不能命中**」；喂 tmpdir 就得自己造一份
+  `.opencode/instructions/`，那测的是**夹具**而不是产品（`#002-02`）。
+- **但不用真 `Config`**：`packages/opencode/src/config/config.ts` 的 `.opencode` 目录循环里还挂着
+  `ensureGitignore(dir)` ＋ `npmSvc.install(dir, {add:[@opencode-ai/plugin]}).forkDetach` **两个副作用**
+  ⇒ 对着仓库根真跑一次会**污染工作树**。故 `Config` 用 `TestConfig.make` 桩，而喂给桩的 `instructions`
+  **不是编的**——**照产品同一个解析器**（`ConfigParse.jsonc`）从**真配置**里读出来（`#002-06`）。
+- `Global` 指向**空 tmpdir**（`tmpdirScoped`）：否则会去读开发机的 `~/.claude/CLAUDE.md`，测试就依赖本机了。
+
+### 变异账（3 批，各自逐字节还原后复核）
+
+| 批 | 注入 | 结果 |
+|---|---|---|
+| **M1** | 从 `.opencode/opencode.jsonc` 删掉 `"instructions": [` 这一行 | **恰红 2 条**（① 声明为空；② 集合相等 0 ≠ 1） |
+| **M2** | 配置保留，把 `.md` 挪成 `.md.off` | **① pass / ② fail** —— 两个变异各自**恰好**让一条变红（声明层 / 命中层） |
+| **M2b** | 真 `.md` 与 `.md.off` **并存**（后补，专为 F-5 的修复取证） | **② 恰红**，`Received length: 1` vs 期望 2 ⇒ 证实「目录里放进来却没注入」这个漏口**真会红** |
+
+⚠️ 第一批跑之前踩过一个坑（**中文变量名**）：`备份=/tmp/… && cp … "$备份"` 报
+`bash: line 1: 备份=/tmp/…: No such file or directory`（bash 变量名必须 ASCII）⇒ 变异**没跑**、
+测试对着**未变异**的文件跑了 2 pass。**是「假绿」**——判据是「命令回执那一刻的样子」，不是「变异生效了」。
+改用 ASCII 变量名 ＋ 分步（不串一条 `&&`）后复跑，读数如上。
+
+### 审查（两轮；`#003-02` / `#005-04`）
+
+**第一轮 5 条**，**修 2 、挂账 3**：
+
+| 编号 | 性质 | 处置 |
+|---|---|---|
+| **F-3** | 夹具生命周期 | 模块级 `mkdtempSync` ＋ `process.on("exit")` 清理 ⇒ **改**为 `tmpdirScoped()` ＋ 用例体内 `Effect.provide(instructionLayer(空))`（与 `instruction.test.ts` 的 `withFiles` 同形） |
+| **F-5** | **漏口** | 原 `readdirSync(dir).filter(名 => 名.endsWith(".md"))` ⇒ 往规则目录里放一份**非 `.md`** 的规则、它没被注入，**全套照样绿**。改成按 Dirent 判「是不是文件」⇒ 那个漏口自己当场变红（由 **M2b** 取证）。**这就是 `#005-11`**：横切机制在「新出口」上没人验 |
+| F-1 / F-2 / F-4 | 挂账 | 见下 |
+
+**挂账 3 条（未改产品码 / 未改测试，理由各自不同）**：
+
+1. **`prompt.ts` 把 instruction 摊进 `system` 那一跳没有断言** —— 全仓没有任何测试钉住
+   「`Instruction.system()` 的返回值真的进了 `system` 数组」。⚠️ 这是**所有** instruction 源共有的
+   老账（非本条引入），且它要动的是 `SessionPrompt.run` 的内部结构 ⇒ 不在本 task 的出参里。
+2. **`config.instructions` 的绝对路径支路没有断言** —— 本仓用的是相对项；绝对项那条分支
+   （部署侧形态未定）今天没有观测面。
+3. **另一套 ambient 通道的静默失效风险** —— `core/instruction-context.ts` 只读 `AGENTS.md`；
+   会话路径若迁到 SystemContext，本条的 `config.instructions` 接线会**不报错地**失效。
+
+**第二轮（把「第一轮的修复」再当靶子）**：两条修复各做一次**自证**，不靠「看起来对」——
+- F-3 的 `tmpdirScoped` **真的会清**：跑测试前后数 `$TMPDIR/opencode-test-*` 目录数
+  ⇒ **76 → 76**（顺带观察：本机已有 76 个**他人遗留**的临时目录，非本次引入）。
+- F-5 的牙由 **M2b** 证（见上表）——不是「它应该会红」。
+
+### 门禁（2026-10-07，**串行**；`#003-01`）
+
+| 门 | 读数 |
+|---|---|
+| `bunx oxlint packages/opencode/test/session/openhive-tool-path-instruction.test.ts`（**仓库根**跑，`#004-10`） | **0 warnings / 0 errors**（1 file / 130 rules / 10.0s） |
+| `bun run lint:openhive`（`packages/app` 侧） | **23 warnings / 0 errors**（131 files / 161 rules）—— 与基线一致；⚠️ 本条**不改 `packages/app` 任何文件** ⇒ 本次改动文件 0 命中 |
+| `packages/opencode` 的 `bun run typecheck`（`tsgo --noEmit`） | **EXIT=0**，无输出 |
+| 本文件 `bun test test/session/openhive-tool-path-instruction.test.ts` | **2 pass / 0 fail / 6 expect**（10.23s） |
+| 兄弟文件 `bun test test/session/instruction.test.ts` | **9 pass / 1 todo / 0 fail** —— 未回归（两文件合跑即 **11 pass / 1 todo**） |
+
+### 同 task 一并落的文档动作（U5 的两笔，2026-10-07）
+
+- **`plan.md` / `spec.md` 正文改写**：「确定性走 **MCP**」⇒「确定性走**工具 / 代码执行路径**」——
+  U5 原本就定「T011 开工时改写正文」，本次开工即落。理由照 `#004-13` 的 (b) 类：本仓**没有 MCP server**
+  （opencode 只是 MCP **客户端**）⇒ 照原样写会得到一条**空的**断言。
+- **`tasks.md`**：T011 出参**收窄**（「环境准则进系统提示词；业务查询工具的产源在 F6/F7」）；
+  把那段注重构成带标签的 **`📌 T011 更正块`**（`plan.md` / `spec.md` 的指针本来就指着这个名字，
+  而它**此前不存在**——`grep "更正块"` 零命中 ⇒ 指不解析，`#002-06` 同型，本次补上）；
+  新增 **`## 📤 交出`** 节（📤-1 确定性查询 / 统计的工具产源 → 007 的 T006/T014、008 的 T006/T014；
+  📤-2 「判定涉案」的判定逻辑 → 007/008 的 T014）。
+- **`007-fund-analysis/tasks.md` / `008-call-analysis/tasks.md`**：各加一份同形的 **📥 接收块**
+  （在 `**Tests**:` 行之前，两份互为镜像、各自点名对方同一块）——按 `#002-04`：**责任推出边界时，
+  要落进接收方的表**，不能只写在自己文档里。
+
+### 上游侵入面（审查的第 ⑥ 类）
+
+| 文件 | 上游是不是动过 | 本次形态 | 同步风险 |
+|---|---|---|---|
+| `.opencode/opencode.jsonc` | **是上游文件**（本 fork 此前零改动） | **新增一个键**（`instructions`），不改既有键 | 低——上游改这个文件时是「各自加键」，冲突面是**相邻行**，不是语义 |
+| `.opencode/instructions/openhive-tool-path.md` | 上游**没有**这个目录 | 全新文件 | **零**（上游不可能改一个它没有的文件） |
+| `packages/opencode/test/session/openhive-tool-path-instruction.test.ts` | 上游没有同名文件 | 全新文件 | **零** |
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -1207,7 +1362,11 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 | **SC-004 的「有权」一半** | `spec.md` | 前端无授权输入 ⇒ 只对「可发现」负责；「有权可发现」依赖 009 的资产授权元数据 |
 | **「收藏」排序因子** | FR-004 / T006 | 本轮不做，**已落 009 的 `tasks.md` 📥 块**（U8 → 009 T011） |
 | **「最近使用」** | FR-004 / T006 | 若做只做本机权重，须写明降级形态（U8）；**服务端统计那一半已落 009 的 📥 块** |
-| **「判定涉案」的判定逻辑** | T012 | AI 只提取/查证/预填，不替人下结论；判定本身属 **F6/F7**（U5） |
+| **「判定涉案」的判定逻辑** | T012 | AI 只提取/查证/预填，不替人下结论；判定本身属 **F6/F7**（U5）。✅ **2026-10-07 T011 已按 `#002-04` 落进接收方表**：`007-fund-analysis/tasks.md` 与 `008-call-analysis/tasks.md` 各一份 📥 块（📤-2 → 两文件 T014） |
+| **FR-008「确定性的事」的硬那一半** | T011 → **F6 / F7** | 本条（T011）交付的是**软**机制：一句进系统提示词的准则 ＋ 它的接线自检。**硬**那一半——「查询 / 统计**真的**有可调用的工具、且调用受鉴权约束」——本仓**今天没有对象**：通用工具只有 `shell` / `grep` / `glob` / `read`，**没有任何业务查询路径**（F6 的资金 / F7 的话单才有）。✅ 已落 007 / 008 的 📥 块（📤-1 → 两文件 T006/T014）。⚠️ **不得声称 FR-008 已在 006 端到端验证**（`LEARNINGS #002-02`） |
+| **`prompt.ts` 摊进 `system` 那一跳无断言** | T011 审查 F-1 挂账 | 全仓**没有任何测试**钉住「`Instruction.system()` 的返回值真的进了 `SessionPrompt.run` 的 `system` 数组」——今天绿的是「`system()` 返回了对的东西」，**不是**「它到了模型面前」。⚠️ **非本条引入**（是**所有** instruction 源共有的老账），且要动的是 `SessionPrompt.run` 的内部结构 ⇒ 挂账。判据一句话：**能红的那一条只到 `system()` 的边界为止**（`#004-09`：端点断言对最后一跳不敏感） |
+| **`config.instructions` 的绝对路径支路无断言** | T011 审查 F-2 挂账 | `systemPaths()` 对绝对项是**原样收下**的分支，而本仓用的是**相对项** ⇒ 那条分支今天没有观测面。**部署形态未定**（D-15 那条下发路径是不是绝对路径，今天无从知道）⇒ 等 D-15 落定再钉，别凭空造一个形态（`#004-07`：判据来源必须是**被调方**） |
+| **另一套 ambient 通道：路由改了会静默失效** | T011 审查 F-4 挂账 | `packages/core/src/instruction-context.ts` 是**第二套** ambient instruction 系统（注册为 SystemContext 键 `core/instructions`），它**只读 `AGENTS.md`**、**不读 `config.instructions`**。实测它在今天这条链上**够不着**（`grep -rn "SystemContext" packages/opencode/src packages/app/src packages/session-ui/src` **零命中**）⇒ 本条接线今天成立。⚠️ **风险**：会话路径哪天迁到 SystemContext，`config.instructions` 会被**绕过而无人报错** —— 那条准则就**不报错地**从民警的提示词里消失了（`LEARNINGS #003-05`：镜像要写成能被惊醒的样子；这是它的同族——**两条并行通道之间没有任何断言看着**） |
 | **暗色无 `--v2-background-bg-accent-soft`** | `packages/ui` 的 dark 块 | 沿用 005 裁定（R2-09）：`DESIGN.md §6.2` 明写**不启用暗色** ⇒ **非本次引入**，继续挂账（U7） |
 | **能力清单的「漂」已建网，但网只罩住「skill 集合」** | T002 | 旁路清单是**镜像**（`LEARNINGS #003-05`）。`capabilities.test.ts` 双向对账**文件系统里真实存在的 skill 名**（三条断言各自做过变异验证）⇒ 改名 / 新增 / 删除会红。**它不管**：① 描述文案改了对不上（本轮不钉，skill 描述不是判据）；② `packages/opencode/test/fixture/skills/` 下那两个上游**测试夹具** skill（口径是「扫 `.opencode/skills` 这一个目录源」，不是全仓 glob，故夹具天然在外）；③ 全局 skill 目录（`~/.config/opencode/skills`）——**跟机器走，不能进断言** |
 | **frontmatter 只读 `name:` 一条正则** | `capabilities.test.ts` | 上游用真 YAML 解码器，这边只认单行 `name:`。**不为此加保护代码**——两个方向互相看着（真读漏 ⇒ 清单那条变「悬空」而红），故漏读会被另一种红抓住。已写进测试文件头 |
@@ -1217,7 +1376,7 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 | **`contexts` 生产里必为空 ⇒ 上下文指令这一层在生产里必然不渲染** | T005 → T008 | **实测**（不是推断）：中栏**没有任何右栏读得到的「选中」状态**——`CenterTabState` 只有 `tabs` / `active` / `module`（`center/` 侧），`project/file-tree.tsx` 的选中行是组件**内部**状态。且 `MANIFESTS` 的 `cards` 全为空 ⇒ 就算喂了 `contexts` 也没卡可浮。今天测绿的是**纯组件**（喂夹具），**不是**「右栏能看到上下文指令」。真正的产源是 **F6 资金 / F7 话单**的中栏选中。**2026-10-07 T008 开工时按未定项问了，用户裁定「本轮不接这一层」** ⇒ `session-panel.tsx` 里**没有** `ContextCards`（喂恒空集＝把「这一层永远不显示」伪装成已接线，故宁可不接）。📤 **F6 / F7 收**（`#002-04`） |
 | **`context` 的取值词表不由 006 定义** | `InstructionCard.context` | 同 `group` 那条：US2 场景 1 举的是「选中账户」「上传文件」，但真正的词表是各模块内容作者的（F6 / F7）。006 只钉一条能钉实的性质——「上下文层的卡必须带**非空**值」（报警断言），渲染层对畸形声明 **fail-closed** |
 | **`capabilities.ts` 形状本次有变（006→009 契约）** | T005 → 009 | 加了一个**可选字段** `context`，**未**重塑类型。009 的 Prerequisites 把「F8 指令卡已落地」列为前置 ⇒ 009 落地时仍须按它自己的资产元数据复核一遍（本文件头也写着这条） |
-| **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表 |
+| **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表。📌 **2026-10-07 状态**：**T011 侧已落**（📤-1 ＋ 📤-2 的两份 📥 块都在 007 / 008 里）；**T012 侧待落** —— 它交的是「高风险动作清单 ＋ 判定逻辑」，接收方是两文件 T014，接上 006 T012 的闸门机制 |
 | **框架今天还没有生产调用点** | T003 → T008 | `projectCapabilities` 目前**仍只被测试调用**。T004 交给它的是 `cards` 这个 prop（组件本身能渲染了），但**没有任何生产代码把投影出来的卡喂进去**，整行也没挂进右栏 ⇒ 今天有一个「看上去已经能投影了」的错觉：测绿的是**纯函数 ＋ 组件**，**不是**「右栏能看到卡」。别把它读成「FR-002 已实现」。✅ **T008 已接线（2026-10-07）**：`ai-session-slot.tsx` 调 `projectCapabilities(MANIFESTS, center.module())`，一次投影喂四层（`SessionPanel` 的 `projection` 是**必填**，忘了传会红）。⚠️ **但**：① `MANIFESTS` 的 `cards` 今天全为空 ⇒ 生产里卡行**是空的**；② `contexts` 那一层按裁定 ① 不接。即「**接线通了、还没有内容**」 |
 | **`activePrompt` 生产里恒为 `undefined`** | T004 → T009 | §4.7.1 的**选中态**靠它驱动（输入框那句话来自哪张卡就点亮哪张）。✅ **T009 已接线（2026-10-07）**：`session-panel.tsx` 传 `activePrompt={controller.value()}`（判据是**实时值**，用户一改就掉——§4.7.1 那句 ⚠️ 点名的正是它）。⚠️ **但**「接线通了」不等于「生产里看得见」：`MANIFESTS` 的 `cards` 全为空 ⇒ **今天没卡可点**（见下一条 `cards` 缺口） |
 | **卡文案不能落状态机的三个特殊分支** | T009 审查 R2 → **F6 / F7 / F9 造卡时**回看 | 填入走 `input.changed`（`onPick`），那条道**自带三个旁支**：整句恰好 `!`（且 normal 模式）⇒ 切 shell 模式**且把正文清空**（点了等于没点、卡也不亮，**不报错**）；整句 `/^\/(\S*)$/` ⇒ 顺带弹 `/` 面板；句中出现**行首或空白领起的 `@`** ⇒ 顺带弹 `@` 面板。今天 `MANIFESTS` 的 `cards` 全空 ⇒ **潜伏**（真实中文指令句也不落这三支）。**不在产品码里拦**：拦＝把状态机那三条正则在本处再写一份（`#002-06`）⇒ 拦在**文案这一侧**：`capabilities.ts` 的 `InstructionCard.prompt` JSDoc 写了约束 ＋ `capabilities.test.ts` 一条**报警哨兵**（与 T005 那两条同型：今天空转，管加卡那一天；已用变异证过**三条正则各自是活的**）。⚠️ 那是**镜像**（`#003-05`）⇒ 哨兵的正则对着 `machine.ts` 的 `inputChanged` 写，**上游改了要跟着改**；且③支**不是**照抄——上游吃的是切片 `value.slice(0, cursor ?? value.length)`（`cursor` 可缺省，**第三轮 N1** 补齐了那半句引文），而 `cursor` 是**用户点卡前留下的位置**（不是句子长度）⇒ 哨兵按**最坏情形**收成「出现空白领起的 `@` 即犯规」（**第二轮 F1 改正**，第一版抄了 `$` ⇒ **会漏报**；第三轮另证这个存在性判定与「∃ 游标会炸」**互为充分必要**，既不漏报也不误报——详见「T009 审查」） |
@@ -1248,6 +1407,52 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 ---
 
 ## 最后更新
+
+2026-10-07（**T011 已完成**：AI 不滥用确定性事 / FR-008。产物 **3 处**——新建
+`.opencode/instructions/openhive-tool-path.md`（规则正文，27 行 / 1468 字节）＋ `.opencode/opencode.jsonc`
+加 `instructions` 键（**＋3 行**）＋ 新建 `packages/opencode/test/session/openhive-tool-path-instruction.test.ts`
+（2 条 / 6 expects）；**零上游源码改动**）→ 出参见上「T011 出参」。
+
+**落点由用户裁定**（压缩前的未定项询问）＝**「配置注入的指令文件」**：规则正文 ＋ `config.instructions` 接线，
+不改任何上游代码。同一裁定里的第二个 ⚠️（产品侧配置**下发**属部署侧）已落
+`docs/workspace/deploy-todo.md` 的 **D-15**。
+
+**3 批变异**（逐批逐字节还原后复核）：**M1**（删配置声明）**恰红 2**／**M2**（挪走 `.md`）**①pass ②fail**
+——两个变异各自**恰好**让一条红（声明层 vs 命中层）／**M2b**（真文件与 `.md.off` 并存）**恰红 1**，
+`Received length: 1` vs 期望 2。M2b 是**专为第一轮审查 F-5 的修复**补的取证。
+
+⚠️ **如实记一个假绿**：M1 第一次跑时中文变量名（`备份=…`）把 `&&` 链弄断了（bash 变量名必须 ASCII）
+⇒ 变异**根本没执行**，测试对着**未变异**的文件跑了 **2 pass**。改用 ASCII 名 ＋ 分步后复跑才是上表读数。
+**教训**：变异脚本的「命令回执」不等于「变异生效」——两次都得看（`#003-01` 同族：先怀疑测量）。
+
+**审查两轮**（`#003-02` / `#005-04`）：第一轮 5 条，**修 2**——F-3（模块级 `mkdtempSync` ＋ `process.on("exit")`
+⇒ 换 `tmpdirScoped()` ＋ 用例体内 `Effect.provide`）、**F-5**（`readdirSync` 只筛 `.md` ⇒ 往规则目录里放一份
+**非 `.md`** 的规则、没被注入也全套绿，即 `#005-11` 的漏口；改成按 Dirent 判文件）；**挂账 3**——
+① `prompt.ts` 摊进 `system` 那一跳全仓无断言（非本条引入，是所有 instruction 源共有的老账）；
+② `config.instructions` 的**绝对路径支路**无观测面（部署形态未定，等 D-15）；③ `core/src/instruction-context.ts`
+是**第二套** ambient 通道（只读 `AGENTS.md`，实测 `SystemContext` 在本仓三个 app 包里零命中）⇒
+会话路径若迁过去，本条接线会**静默失效**（`#003-05` 同族）。**第二轮**：两条修复各做**自证**——
+`tmpdirScoped` 真会清（跑前跑后 `$TMPDIR/opencode-test-*` 计数 **76 → 76**）、F-5 的牙由 **M2b** 证。
+
+**门禁（串行，`#003-01`）**：单文件 lint **0 warnings / 0 errors**（130 rules）；`lint:openhive`
+**23 warnings / 0 errors**（131 files / 161 rules，与基线一致，**本次改动文件 0 命中**——本条不碰
+`packages/app`）；`packages/opencode` typecheck（`tsgo --noEmit`）**EXIT=0 无输出**；本文件 **2 pass / 0 fail**；
+兄弟文件 `instruction.test.ts` **9 pass / 1 todo / 0 fail**（未回归）。
+
+**同 task 一并落的文档动作（U5 的两笔）**：`plan.md` / `spec.md` 正文「走 MCP」⇒「走**工具 / 代码执行路径**」
+（依据 `#004-13` 的 (b) 类：本仓没有 MCP server，照原样写会得到**空的**断言）；`tasks.md` 出参收窄 ＋
+把那段注**补上 `📌 T011 更正块` 标签**（`plan.md` / `spec.md` 一直指着这个名字而它**此前不存在**，
+`grep "更正块"` 零命中，`#002-06` 同型）＋ 新增 **`## 📤 交出`**；`007` / `008` 的 `tasks.md` 各加一份
+同形 **📥 块**（`#002-04`）。
+
+⚠️ **出参收窄（`#002-02`）**：交付的是「**准则进了每次会话的系统提示词**」＋「**这条接线是活的**」，
+**不是**「AI 不会滥用确定性的事」——提示词是**软**机制；**硬**那一半（查询 / 统计真的有工具可调、
+且调用受鉴权约束）在 F6 / F7，已落 007 / 008 的 📥 块（📤-1）；「判定涉案」的判定逻辑同（📤-2）。
+
+⚠️ **收尾核账时发现一条账目缺口**：**T010 缺席「已完成」清单**（出参节当时写了，清单忘了加）⇒
+本次一并补上（`#002-06` 同族：改一处要 grep 同类）。
+
+---
 
 2026-10-07（**T009 已完成**：点指令卡 ＝ 填入一句话。产物 **2 处产品码 ＋ 2 处测试、没有新文件**
 （`session-panel.tsx` 把 `activePrompt` / `onPick` 接给 `CommonCards`；`capabilities.ts` 加**纯注释**的
@@ -1305,6 +1510,7 @@ lint **23 警告、0 errors、本次改动文件 0 命中**）→ 出参见上�
 只钉哨兵、不修补。② 另一条我写进注释的推断也**已删并改挂账**（「右栏展示的会话都已有 model」——
 `LEARNINGS #003-04`：复现不了的别写成实测）。
 
-**下一个 T011**——AI 不滥用确定性事（确定性查询 / 统计走**工具 / 代码执行路径**）[FR-008]。
-开工前先读它下面那两条 **2026-10-07 裁定 U5**（「走 MCP」的措辞已作废：本仓没有 MCP server，
-要锚在**工具层选择**上）。
+**下一个 T012**——高风险动作强制人确认 [FR-009]。
+开工前先读 `tasks.md` 的 **`📌 T011 更正块`** 与 **`## 📤 交出`**（U5 的时序：T011 开工时已改写正文，
+T012 同类动作先看自己那一格），并按 T011 的先例**先把出参收窄**：「闸门机制」（工具层 `permission.ask`）
+在本仓可交付、可测；「判定涉案」的**判定逻辑**是 F6 / F7 的对象（📤-2 已落 007 / 008 的 T014）。

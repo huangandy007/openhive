@@ -2,6 +2,9 @@
   "$schema": "https://opencode.ai/config.json",
   "provider": {},
   "permission": {},
+  // 【这是要保留的定制】openhive / 006-ai-session T011（FR-008）：把 openhive 的环境准则
+  // 接进每次会话的系统提示词。规则正文见 .opencode/instructions/（同一份由部署侧下发到民警环境）。
+  "instructions": [".opencode/instructions/*.md"],
   "references": {
     "effect": {
       "repository": "github.com/Effect-TS/effect-smol",
