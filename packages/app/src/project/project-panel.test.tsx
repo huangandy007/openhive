@@ -882,3 +882,99 @@ describe("归档 / 找回的接线（T023）", () => {
     expect(无槽(host, "project-panel-action-error")).toBe(true)
   })
 })
+
+/**
+ * 超期提醒的呈现（T024 · FR-008 的下半条：3 个月无操作 ⇒ **提醒 owner** 确认后归档）。
+ *
+ * ## 本 task 只做「呈现」，判定一条都不在这里
+ *
+ * `stale` 是**服务端算好的**（`project_ext.last_accessed_at` ＋ 一次 `Date.now()`，
+ * 见 `core/src/project/ext.ts` 的 `isStale`）——本面板不碰时钟、不碰「90 天」那个数。
+ * 谁该被提醒则复用现成的 `canArchive`（`ProjectMembership.decide` 那一份实现），
+ * 所以本组钉的是**范围**：提醒跟着「能归档」那一行走，且**不跟着归档按钮一起被限制在「全部」tab**。
+ *
+ * ## 提醒与动作是两件事（用户 2026-10-07 裁定的范围）
+ *
+ * `行` 上出现「超期未归档」**只说明事实**（这个项目 3 个月没人动过），它不是一个按钮：
+ * 归档那个动作仍只在「全部」tab 的那一行上（设计 §8.1）。所以下面有一条用例专门钉
+ * 「最近 tab 有提醒、却没有归档按钮」——这两件事混起来（把提醒挂在按钮的守卫上）会让
+ * 民警在「最近」里看不到任何提醒，而那正是他每天会打开的那个 tab。
+ */
+describe("超期提醒的呈现（T024）", () => {
+  /** 一个「超期」的行（服务端说这一行的 `stale` 为真）。 */
+  const 超期 = (e: ProjectEntry): ProjectEntry => ({ ...e, stale: true })
+
+  test("「全部」tab：owner 那一行带「超期未归档」（FR-008 的提醒）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[超期(我的(私有("p1", "8·17专案", 3), "owner"))]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(文本(host, "project-stale")).toBe("超期未归档")
+  })
+
+  /** 不超期 ⇒ 什么都不画（缺的槽位读作 `undefined`，不是「空字」）。 */
+  test("没过 3 个月的行不带提醒（`stale` 缺键 = 不提醒）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-stale")).toBe(true)
+  })
+
+  /**
+   * **提醒只给能归档的那个人**（owner）——判定复用 `canArchive`，组件零规则复述。
+   * member 看得见项目，但归档不是他能做的（`decide` 拒）⇒ 提醒他也不该看到：
+   * 一条他无法处置的提醒只是噪音（`§3` 那句「提醒 owner 确认」的「owner」就是这个意思）。
+   */
+  test("member 的行不带提醒（提醒的是能处置它的那个人）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[超期(我的(共享("p2", "串并案", 2, 3), "member"))]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-stale")).toBe(true)
+  })
+
+  /** 缺 `role` = 没有成员关系 ⇒ 同 `canArchive`：fail-closed，不提醒。 */
+  test("没有 role 的行不带提醒（缺键 = 没有授权依据，不倒向 owner）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[超期(私有("p1", "8·17专案", 3))]} onArchive={() => {}} />
+    ))
+
+    页签(host, "all")?.click()
+
+    expect(无槽(host, "project-stale")).toBe(true)
+  })
+
+  /** 已归档的行不带提醒——归档就是这条提醒的**结果**（`canArchive` 对归档态拒）。 */
+  test("已归档的行不带提醒（归档正是这条提醒要办的事，办完了就不提醒）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[超期(归档(我的(私有("p1", "8·17专案", 3), "owner")))]} onRestore={() => {}} />
+    ))
+
+    页签(host, "archived")?.click()
+
+    expect(无槽(host, "project-stale")).toBe(true)
+  })
+
+  /**
+   * **「最近」tab 也画提醒**，但**不画**归档按钮——这两件事在 T024 被刻意拆开
+   * （`onArchive` 只喂给「全部」那一组，而提醒跟着 `canArchive` 走）。
+   *
+   * 一条用例同时钉住两半：少了后半句，把提醒挂在 `onAskArchive` 上的写法会绿；少了前半句，
+   * 提醒只活在用户不常打开的 tab 里（每天打开的是「最近」）。
+   */
+  test("「最近」tab 也画提醒，但不画「归档」（提醒只说明事实，动作仍在「全部」）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[超期(我的(私有("p1", "8·17专案", 3), "owner"))]} onArchive={() => {}} />
+    ))
+
+    expect(文本(host, "project-stale")).toBe("超期未归档")
+    expect(无槽(host, "project-archive")).toBe(true)
+  })
+})

@@ -940,6 +940,7 @@ function 假数据源(
       | "invite"
       | "remove"
       | "leave"
+      | "touch"
     >
   > = {},
 ) {
@@ -957,6 +958,7 @@ function 假数据源(
     邀请的: [] as Array<[string, string]>,
     移除的: [] as Array<[string, string]>,
     退的: [] as string[],
+    触碰的: [] as string[],
   }
   const data: ProjectData = {
     list: async () => {
@@ -1020,6 +1022,13 @@ function 假数据源(
     leave: async (projectId) => {
       记.退的.push(projectId)
       return 剧本.leave ? await 剧本.leave(projectId) : { kind: "failed", message: "没有剧本" }
+    },
+    // T024 的访问记账。⚠️ 默认是 `true`（＝记下了）而**不是**「没办成」——与上面几条**相反**，
+    // 理由：这条链上没有「办没办成」要显示给谁看（返回布尔、界面上一个字都不显示），
+    // 它唯一的消费者是**记账断言本身**。默认报失败只会让「接线接上了没有」这件事被搅浑。
+    touch: async (projectId) => {
+      记.触碰的.push(projectId)
+      return 剧本.touch ? await 剧本.touch(projectId) : true
     },
   }
   return { data, 记 }
@@ -1102,8 +1111,12 @@ describe("项目数据接线（T018 出参）", () => {
    * 理由：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与 AC4「点某项目切换」，
    * 对「打开时选谁」一个字没写。而不选的代价是零：不发 `x-openhive-project` ⇒ 后端落回沙箱根
    * （005 之前的行为），锚点行走它本来就有的「未选择项目」空态。
-   * 反过来说，「自动选最近访问的那个」今天**语义对不上**——`project_ext.last_accessed_at`
-   * 只在**建项目**时写，没有「选中即更新」的出口，所谓「最近」其实是「最后建的」。
+   *
+   * ⚠️ **这条理由在 T024 之前还有第二半，那半现在已经不成立了**（原文：「『自动选最近访问的
+   * 那个』语义对不上——`last_accessed_at` 只在**建项目**时写，没有『选中即更新』的出口」）。
+   * T024 补上了那个出口（`onOpen` → `projectData.touch()`），「最近」这才真的是「最近访问」。
+   * 但**裁定不变**：依据是前半句（spec 一个字没写），不是后半句——所以这里不改行为，
+   * 只把那条已经不实的记述改掉（`LEARNINGS #002-06`：改完一处要 grep 谁引用了它）。
    *
    * 这条也是**防手滑**的：将来有人图省事写成 `setCurrentProject(清单[0])`，这里会红。
    */
@@ -1118,6 +1131,45 @@ describe("项目数据接线（T018 出参）", () => {
     锚点按钮(host, "project-anchor-toggle")?.click()
     expect(text(host, "project-item-name")).toBe("8·17专案")
     expect(text(host, "project-anchor-name")).toBe("未选择项目")
+  })
+
+  /**
+   * **点开一个项目 ⇒ 记一次访问**（T024 · FR-008 的「3 个月无操作」）。
+   *
+   * 这条链的另一半在服务端（`POST /openhive/project/touch` 刷新那一列），而**触发点在界面**：
+   * `onOpen` 才是「访问」这件事发生的地方。少了这次记账，「3 个月无操作」判出来的其实是
+   * 「建项目后 3 个月」——一个天天在用的项目照样到期（T024 的裁定 ③）。
+   */
+  test("点开某个项目 ⇒ 记一次访问（超期判定的写入方，T024）", async () => {
+    const { data, 记 } = 假数据源({ list: async () => [私有("p1", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    host.querySelector<HTMLButtonElement>("[data-slot='project-item']")?.click()
+
+    // 被测属性在前（`#004-14`）：记的是**哪一个**项目，不只是「记了一次」。
+    expect(记.触碰的).toEqual(["p1"])
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+  })
+
+  /**
+   * **拉清单不记访问**——列项目是「算超期」，不是「访问了」。
+   *
+   * 这条钉的是那个最省事的错法：把刷新塞进列清单那条链（或塞进「进门拉一次」的 effect）。
+   * 那样一来**每打开一次界面**就把所有项目都刷成「刚访问」⇒ 超期判定恒假、提醒永远不出现，
+   * 而且不报错、不变红（`LEARNINGS #004-09`：端点判据对「它拦在哪一侧」完全不敏感）。
+   */
+  test("进门拉清单 ⇒ 不记访问（列项目是算超期，不是访问了——塞进那条链会让提醒永不出现）", async () => {
+    const { data, 记 } = 假数据源({ list: async () => [私有("p1", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    // 前置：清单真的拉过了（否则这条在「压根没接线」时也是绿的）。
+    expect(记.list).toBe(1)
+    expect(记.触碰的).toEqual([])
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-item-name")).toBe("8·17专案")
   })
 
   test("新建成功 ⇒ 成为当前项目（FR-003），清单跟着刷新（新项目出现在面板里）", async () => {

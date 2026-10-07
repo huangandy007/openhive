@@ -464,6 +464,19 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           memberCount: project.memberCount,
                         })
                         setPanelOpen(false)
+                        /*
+                          记一次「我打开了它」（T024 / FR-008 的「3 个月无操作」）。
+
+                          ⚠️ **触发点只能是这里**（不是「拉清单时顺手刷一下」）：列项目是做
+                          「算超期」那件事，把它变成写入方，超期判定就恒假、提醒永远不出现，
+                          而且不报错、不变红（`openhive-project.ts` 的 `touchProject` 讲了这条）。
+
+                          `void` 是刻意的、不是偷懒：这条链**没有失败态要显示**（服务端没记上
+                          最坏只是这个项目照旧算超期），所以既不 `await`（不让一次记账拖慢
+                          「点一下直达」）、也不接回话（它只回一个布尔，没有话要说）。
+                          没数据源 ⇒ 连请求都不发（`?.`，与上面几条「未接线即禁用」同一规矩）。
+                        */
+                        void projectData?.touch(project.id)
                       }}
                       /*
                         新建（FR-003）。没数据源就**不传** ⇒ 面板照旧渲染成禁用态

@@ -62,6 +62,10 @@ export * as OpenhiveProject from "./project"
  *   **不**回这个键：那一行按定义就是调用者自己建的（第 7 步刚落 owner 行），写出口再回去查一遍等于
  *   把「角色是**查**出来的」偷偷降级成「角色是写的时候**知道**的」——同一个判断从此有两份知识
  *   （`LEARNINGS #002-06`）。前端拿创建结果只判「成没成」，面板的数据一律来自随后的重拉。
+ * - **`stale` 恰好相反：它一定给**（T024）。上面三个键缺席都读作「来源没这件事」，而 `stale` 是
+ *   **算出来的**（输入是 NOT NULL 的一列 ＋ 一次 `Date.now()`）⇒「缺键」在这里没有含义，只能是
+ *   出口写漏了；写漏的症状是**一个提醒都不出现**（`LEARNINGS #002-02`：别把「没做到」写成
+ *   「做到了」）。它的**写入方**是 `POST {PREFIX}/touch`（见 `handleTouch`）——读出口只负责算。
  *
  * ## 与 `project-location.ts` 的镜像（改一处要改另一处）
  *
@@ -85,7 +89,7 @@ import { nowSeconds } from "@opencode-ai/auth/time"
 import { SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectV2 } from "@opencode-ai/core/project"
-import { PROJECT_TYPES, ProjectExtTable, insertProjectExt } from "@opencode-ai/core/project/ext"
+import { PROJECT_TYPES, ProjectExtTable, insertProjectExt, isStale, touchProjectExt } from "@opencode-ai/core/project/ext"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { User } from "@opencode-ai/core/user"
 import { Project } from "@/project/project"
@@ -103,12 +107,19 @@ import { OpenhivePg } from "./pg"
 export const PREFIX = "/openhive/project"
 
 /**
- * 两个出口**同路径、不同方法**（`GET` 列 / `POST` 建）。写成两个键而不是一个字面量复用两处，
- * 是为了调用方（与测试）能按名字引用，而不是各自抄一遍字符串。
+ * 出口路径。写成按名字索引的键而不是一个字面量复用几处，是为了调用方（与测试）能按名字引用，
+ * 而不是各自抄一遍字符串。
+ *
+ * - `list` / `create`：**同路径、不同方法**（`GET` 列 / `POST` 建）。
+ * - `touch`（T024）：单独一段路径，方法 `POST`。它**不是**「建」的一个参数、也**不并进 `list`**——
+ *   理由见 `handleTouch`，一句话：刷新「最近访问时间」必须是**用户开项目这个动作**触发的，
+ *   把它塞进任何一条**读**出口，那条读出口就会变成自己的写入方（列一次项目＝所有项目都被访问一次，
+ *   `stale` 恒假）。
  */
 export const PATH = {
   list: PREFIX,
   create: PREFIX,
+  touch: `${PREFIX}/touch`,
 } as const
 
 /**
@@ -141,7 +152,7 @@ interface Deps {
 }
 
 /**
- * 挂两个出口。
+ * 挂三个出口（列 / 建 / 刷新访问时间）。
  *
  * ⚠️ **所有服务都在层构造期取、请求期用闭包**——这不是风格，是实测约束
  * （`packages/core/src/database/router.ts` 的 `hook` 注释原话：「**请求 fiber 的 context 里
@@ -179,6 +190,7 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("GET", PATH.list, () => handleList(deps))
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, deps))
+    yield* router.add("POST", PATH.touch, (request) => handleTouch(request, deps))
   }),
 )
 
@@ -198,6 +210,15 @@ const CreateBody = Schema.Struct({
    * 但这一轮是先跑测试后跑 typecheck，所以它先在这里炸出来了。
    */
   type: Schema.Literals(PROJECT_TYPES),
+})
+
+/**
+ * 刷新访问时间的请求体（T024）。**只有一个 `projectId`**：时间由**服务端**取（`Date.now()`），
+ * 客户端给不了——它给了就得判「这个时间合不合理」，而那个判断的正确性还不如直接不信它
+ * （同 `anchor-workspace.ts`：**位置不由客户端给**）。所以这里连「可选的时间戳」都不留。
+ */
+const TouchBody = Schema.Struct({
+  projectId: Schema.String,
 })
 
 const BAD_REQUEST = 400
@@ -250,6 +271,12 @@ function handleList(deps: Deps) {
     // `userId` 取的是**调用者**（不是「按项目查全部成员再挑」）——理由见 `rolesOf` 的注释。
     const roles = yield* Effect.promise(() => rolesOf(deps.pg(), { userId: user.value.id, projectIds: ids }))
 
+    // ⚠️ **一次 `Date.now()`，提到 map 外面**：`isStale` 的 `now` 由调用方给（`ext.ts` 里那条
+    // 注释讲了为什么不取时钟）。在 map 里现取的话，同一个响应里**每一行各有一个基准**——边界上
+    // （差几毫秒到期）会出现「相邻两行、同一个时刻、一个超期一个不超期」这种解释不清的输出。
+    // 一次取、整列共用，判据才是「**这个响应**说它们各自超期了吗」。
+    const now = Date.now()
+
     const entries = rows.map((row) => {
       const archive = archives.get(row.project_id)
       const role = roles.get(row.project_id)
@@ -262,6 +289,9 @@ function handleList(deps: Deps) {
         // 私有项目**不给**这个键（不是给 0）——理由见文件头「出参形状」。
         ...(row.type === "shared" ? { memberCount: counts.get(row.project_id) ?? 0 } : {}),
         lastAccessedAt: row.last_accessed_at,
+        // **一定给**（T024）：与上面那几个可选键不是一类——它是**算出来的**，不是「来源有没有说」。
+        // 理由（含「为什么必填」）见文件头「出参形状」那一条。
+        stale: isStale(row.last_accessed_at, now),
         // 没有归档行 ⇒ 缺键（不是 `false`）——同上。
         ...(archive ? { archived: archive.archived } : {}),
         // 没有成员行 ⇒ 缺键（不是 `"member"`）——同上，且这是**授权数据**：补一个默认角色
@@ -367,6 +397,60 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
       ...(payload.value.type === "shared" ? { memberCount: 1 } : {}),
       lastAccessedAt,
     })
+  })
+}
+
+/**
+ * 刷新「最近访问时间」（T024 / FR-008 的「3 个月无操作」那条判据的**写入方**）。
+ *
+ * ## 为什么必须有一个**独立的写出口**，而不是「列项目时顺手刷一下」
+ *
+ * T024 的裁定 ① 是「**服务端在列项目时算** `stale`」——算，不是**刷**。这两件事必须分开：
+ * 若在 `handleList` 里顺手把 `last_accessed_at` 写成现在，那这道出口就成了**自己的写入方**，
+ * 于是「列一次项目」＝「把所有项目都访问了一遍」⇒ `stale` **恒为假**，提醒永远不会出现，
+ * 且**不报错、不变红**（`LEARNINGS #004-09`：端点的判据对「它拦在哪一侧」完全不敏感的另一种形态：
+ * 这里读出的一列永远是对的，只是那个输入已经被读的那一步自己改掉了）。
+ *
+ * 触发者是**前端**「打开项目」那个动作（`workspace-entry.tsx` 的 `onOpen`）：它才是「访问」这件事
+ * 发生的地方。代价如实记（`#002-02`）：**接口客户端不调它，就退化成今天的样子**——「3 个月无操作」
+ * 等价于「建项目后 3 个月」。前端那侧因此有一条接线断言钉着「open 时调了」。
+ *
+ * ## 授权：这里**没有** `decide` 可问（这是结构性的，不是漏了）
+ *
+ * `project_ext` 是**个人态**（一人一份）、`touchProjectExt` 的 `where` 只认 `project_id`，
+ * 而落笔的那份库是 `deps.database.db`——**调用者自己那一份**（连接路由按身份分库，见
+ * `database/router.ts`）。所以「刷新别人的行」在这条路上**不是一个能表达的动作**：
+ * 别人的行根本不在这份库里。传一个别人的 `projectId` 进来 ⇒ **零行、不报错**，
+ * 这正是 `touchProjectExt` 注释里那条「零行是正常路径」。
+ *
+ * ⚠️ 所以**不**给这个出口加「这个项目我认识吗」的校验，也**不**往 `PROJECT_ACTIONS` 里加一个
+ * 「访问」动作：「能不能邀请 / 归档」是**项目内的权限**（要问成员关系），而「刷新我自己看过它的
+ * 时间」是**纯个人事实**。把两者塞进同一条判定，那个判定就同时有两个主语了（`#002-06`）。
+ * 判据落在**结果**上（测试里那条「touch 别人的项目 ⇒ 对方那一行一个毫秒都没动」）。
+ *
+ * ## 体不对 ⇒ 400（**不是 404、也不是 500**）
+ *
+ * 「这个项目不存在」与「体里没给 `projectId`」是两件事：前者**不打**这个出口的错（零行是正常
+ * 路径，`{ projectId }` 照回 200）；后者是客户端把请求造错了 ⇒ 400，与 `handleCreate` 同口径。
+ */
+function handleTouch(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return unauthorized()
+
+    const body = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const payload = Schema.decodeUnknownOption(TouchBody)(body)
+    if (Option.isNone(payload)) return badRequest("请求体缺少 projectId")
+
+    yield* touchProjectExt(deps.database.db, {
+      projectId: payload.value.projectId,
+      // 时间是**服务端**取的：见 `TouchBody` 的注释（客户端给的时间不可信）。
+      lastAccessedAt: Date.now(),
+    })
+
+    return HttpServerResponse.jsonUnsafe({ projectId: payload.value.projectId })
   })
 }
 

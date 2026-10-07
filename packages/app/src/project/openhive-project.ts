@@ -46,6 +46,7 @@ export const PATH = {
   create: PREFIX,
   archive: `${PREFIX}/archive`,
   restore: `${PREFIX}/restore`,
+  touch: `${PREFIX}/touch`,
 } as const
 
 /** 新建项目的入参 —— 与内核那条 `POST` 的体**逐字对应**（`{ name, type }`，没有第三项）。 */
@@ -139,6 +140,38 @@ export async function restoreProject(
 }
 
 /**
+ * 记一次「我打开了这个项目」（T024 / FR-008 的「3 个月无操作」）。
+ *
+ * 调用点在 `workspace-entry.tsx` 的 `onOpen`——**打开**才是「访问」这件事发生的地方。
+ *
+ * ## 为什么不套 `ProjectActionOutcome`（这条链上没有话要说）
+ *
+ * 归档 / 找回那两条要显示「为什么没办成」，因为用户正等着那个动作生效。这条不是：它的作用只是
+ * 把 `last_accessed_at` 往后挪，没挪成的最坏结果是这个项目**照旧**被算作超期（多提醒一次，
+ * 而收拾它是 `archive` 那条链的事）。所以交一个布尔就够了，界面上一个字都不显示
+ * （`Simplicity First`；也免得在这里编一句没人看的话）。
+ *
+ * ## 判据与 `projectAction` 同形：**不是「状态码 200」**
+ *
+ * 体要能当 JSON 解，**且**服务端自述的 `projectId` 就是刚发出去的那个。出口没挂上时这条路径
+ * 落进 UI 的 `/*` 兜底、回 **200 ＋ `text/html`**（本文件头那条实测）。这条比归档那条更该钉死：
+ * 归档至少还会重拉清单（项目照旧在「全部」里，用户看得出不对），这条**什么都不显示**——
+ * 读成「记下了」的话，提醒会一直挂着，而没有任何人会注意到（`LEARNINGS #004-08`）。
+ */
+export async function touchProject(projectId: string, send: ForkFetch = defaultSend): Promise<boolean> {
+  const response = await trySend(send, PATH.touch, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId }),
+  })
+  if (!response?.ok) return false
+
+  const body = await readJson(response)
+  return isRecord(body) && body.projectId === projectId
+}
+
+/**
  * 取当前用户的全部项目。
  *
  * 三态**必须分清**（`project-list.ts` 的裁定）：
@@ -211,6 +244,12 @@ function messageOf(body: unknown): string | undefined {
  * 补 `memberCount: 0` 会让私有项目的锚点行长出「👥 0」；补 `archived: false` 会把
  * 「来源还没说」说成「来源说了不归档」；补 `role` 则是**给一行没有授权依据的项目发权限**
  * （`decide` 只问 `actor`）。`ProjectEntry` 上那三个的注释写的正是这条。
+ *
+ * ⚠️ `stale`（T024）走**同一个取法**（`=== true` 才算数），但理由不同：它不是「来源有没有说」，
+ * 而是**只认服务端那一个说法**——`false` / 缺键 / 非布尔一律读作「不提醒」。两个方向的代价不对称：
+ * 少一条提醒最多是「这个项目晚一天被收拾」，而把没有依据的行读成超期，会在**没超期**的项目旁边
+ * （同一个行上就有「归档」按钮）画一条「超期未归档」，民警照着它把在用的项目归档掉
+ * ——沙箱文件当场被搬走（同 `type` 那条「未知值倒向保守侧」）。
  */
 function readEntry(value: unknown): ProjectEntry | undefined {
   if (!isRecord(value)) return undefined
@@ -227,6 +266,7 @@ function readEntry(value: unknown): ProjectEntry | undefined {
   }
   if (typeof value.memberCount === "number") entry.memberCount = value.memberCount
   if (value.archived === true) entry.archived = true
+  if (value.stale === true) entry.stale = true
   const role = roleOf(value.role)
   if (role) entry.role = role
   return entry

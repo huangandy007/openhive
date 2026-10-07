@@ -263,4 +263,116 @@ describe("ProjectExt", () => {
       ),
     ),
   )
+
+  /**
+   * T024 · **超期判定的两半**（FR-008 的下半条：3 个月无操作 ⇒ 提醒 owner）。
+   *
+   * 判定的输入是 `last_accessed_at`（本表那一列，列注释里那句「最近访问时间 + 3 个月无操作
+   * 归档判断」就是它），`now` 由**调用方**给——本函数**不取时钟**：取了就测不出边界，
+   * 而「刚好到期算不算」正是这条判据唯一需要说清楚的地方（`#003-04`：写下来的每个数字都先跑一次）。
+   *
+   * ⚠️ **「3 个月」读成 90 天是**一次读法**，不是唯一的读法**（日历月减法有 `5-31 − 3 月 = 2-31`
+   * 这种归一化歧义）。读法与它的依据写在 `ext.ts` 那两处的注释里；下面第三条把**天数本身**
+   * 钉住——谁改成别的数，得回来回答「FR-008 的 3 个月为什么等于那个数」。
+   */
+  it.effect("isStale：差 90 天算超期、89 天不算（边界取 >=，不是 >）", () =>
+    Effect.gen(function* () {
+      const 天 = 24 * 60 * 60 * 1000
+      const t = 1_700_000_000_000
+
+      // 被测属性（「不算超期」那侧）排在前面：一条用例里两条断言时，书写顺序决定红的时候读到哪条（`#004-14`）。
+      expect(ProjectExt.isStale(t, t + 89 * 天)).toBe(false)
+      expect(ProjectExt.isStale(t, t + 90 * 天)).toBe(true)
+      expect(ProjectExt.isStale(t, t + 91 * 天)).toBe(true)
+    }),
+  )
+
+  it.effect("isStale：刚建的不算超期；时间戳在未来（时钟回拨）也不算——负差不许读成超期", () =>
+    Effect.gen(function* () {
+      const 天 = 24 * 60 * 60 * 1000
+      const t = 1_700_000_000_000
+
+      expect(ProjectExt.isStale(t, t)).toBe(false)
+      expect(ProjectExt.isStale(t, t - 1)).toBe(false)
+      expect(ProjectExt.isStale(t, t - 天)).toBe(false)
+    }),
+  )
+
+  /** 取值断言：把「3 个月 = 90 天」这条读法写成会红的样子（`#004-02`／`#004-03`）。 */
+  it.effect("STALE_AFTER_MS 就是 90 天（3 个月这条读法有值可凭）", () =>
+    Effect.gen(function* () {
+      expect(ProjectExt.STALE_AFTER_MS).toBe(90 * 24 * 60 * 60 * 1000)
+    }),
+  )
+
+  /**
+   * T024 的第二半：**写入方**。在这条之前，`last_accessed_at` 全仓只有建项目时写一次
+   * ⇒ 「3 个月无操作」实际等价于「建项目后 3 个月」（项目天天在用也照样到期）。
+   */
+  it.effect("touchProjectExt：刷新的能按 id 读回来，且**只动这一行**", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+          yield* seedProject(alice.db, "proj_a").pipe(Effect.orDie)
+          yield* seedProject(alice.db, "proj_b").pipe(Effect.orDie)
+          yield* insertExt(alice.db, { project_id: "proj_a", type: "shared", shared_directory: "/shared/a.git" })
+            .pipe(Effect.orDie)
+          yield* insertExt(alice.db, { project_id: "proj_b", type: "private" }).pipe(Effect.orDie)
+
+          yield* ProjectExt.touchProjectExt(alice.db, { projectId: "proj_a", lastAccessedAt: 1800000000000 })
+
+          // 一次三断：目标那行的时间变了、**它的其余列一个没动**、隔壁那行**整行原样**。
+          // 中间那条钉的是「update 只 set 时间」，最后那条钉的是 `where`——少了它（全表更新）
+          // 隔壁那行会跟着变，而「最近」tab 的排序与全部项目的超期判定都会跟着歪。
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_a")).toEqual({
+            project_id: "proj_a",
+            type: "shared",
+            project_type: "单案",
+            shared_directory: "/shared/a.git",
+            last_accessed_at: 1800000000000,
+          })
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_b")).toEqual({
+            project_id: "proj_b",
+            type: "private",
+            project_type: "单案",
+            shared_directory: null,
+            last_accessed_at: 1700000000000,
+          })
+        }),
+      ),
+    ),
+  )
+
+  /**
+   * 目标行不在（**成员没有 `project_ext` 行**，T016 实测；或 id 压根不存在）⇒ **不报错、零行**。
+   *
+   * 这是**正常路径**不是异常（同 `findByProjectID` 的「查不到给 `undefined`、不抛」）：
+   * 「访问了一个我没有个人行的项目」在共享项目里是常态，把那一下写成失败会让成员的每次
+   * 「打开项目」都炸一次，而它唯一的作用只是刷新**自己**那一行的时间。
+   */
+  it.effect("touchProjectExt：目标行不存在 ⇒ 不报错、零行，且不动别人的行", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+          yield* seedProject(alice.db, "proj_a").pipe(Effect.orDie)
+          yield* insertExt(alice.db, { project_id: "proj_a", type: "private" }).pipe(Effect.orDie)
+
+          const 结果 = yield* Effect.exit(
+            ProjectExt.touchProjectExt(alice.db, { projectId: "proj_别人的", lastAccessedAt: 1800000000000 }),
+          )
+
+          expect(结果._tag).toBe("Success")
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_a")).toEqual({
+            project_id: "proj_a",
+            type: "private",
+            project_type: "单案",
+            shared_directory: null,
+            last_accessed_at: 1700000000000,
+          })
+        }),
+      ),
+    ),
+  )
 })

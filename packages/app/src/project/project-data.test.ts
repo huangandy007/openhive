@@ -252,3 +252,26 @@ describe("PROJECT_DATA 的成员动作绑定（T021）", () => {
     ])
   })
 })
+
+/**
+ * T024 的访问记账（FR-008 的超期判定靠它）——同样只是一个转手，唯一的失效方式是接错。
+ *
+ * ⚠️ **不带 `x-openhive-project` 头，与上面那两组同侧**：那个头是 T017 中间件用来定位**沙箱目录**
+ * 的，而它会对「已归档项目」一律 403。这条出口按体里的 `projectId` 去查**调用者自己那一份**库
+ * （`project_ext` 是个人态），压根不需要那个头 ⇒ 带上它只会凭空多一道「归档了就记不上」的门。
+ */
+describe("PROJECT_DATA 的访问记账绑定（T024）", () => {
+  test("touch 走刷新访问时间那条出口（POST /openhive/project/touch），体里只有 projectId", async () => {
+    const 发出 = 假服务({ "/openhive/project/touch": { projectId: "p1" } })
+
+    expect(await PROJECT_DATA.touch("p1")).toBe(true)
+    expect(发出).toEqual([
+      {
+        url: "/openhive/project/touch",
+        method: "POST",
+        项目头: null,
+        体: JSON.stringify({ projectId: "p1" }),
+      },
+    ])
+  })
+})

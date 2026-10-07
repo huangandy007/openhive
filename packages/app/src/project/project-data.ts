@@ -30,7 +30,7 @@
  */
 
 import type { CreateProjectOutcome, ProjectActionOutcome } from "./openhive-project"
-import { archiveProject, createProject, listProjects, restoreProject } from "./openhive-project"
+import { archiveProject, createProject, listProjects, restoreProject, touchProject } from "./openhive-project"
 import type { FileOpOutcome } from "./openhive-file-ops"
 import { copyFile, downloadFile, moveFile, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
@@ -92,10 +92,18 @@ export interface ProjectData {
   remove(projectId: string, policeNo: string): Promise<ProjectActionOutcome>
   /** 退出项目（T021 / FR-004：member 可退、owner 不可退）。**不带「谁」**——退的永远是自己。 */
   leave(projectId: string): Promise<ProjectActionOutcome>
+  /**
+   * 记一次「我打开了这个项目」（T024 / FR-008 的超期判定靠它）。
+   *
+   * ⚠️ 它是**唯一一个交布尔**的动作（其余交 `ProjectActionOutcome`）：这条链上没有话要说
+   * ——失败了最坏只是这个项目照旧算超期，界面上一个字都不显示（见 `touchProject` 的注释）。
+   * 调用点是 `workspace-entry` 的 `onOpen`。
+   */
+  touch(projectId: string): Promise<boolean>
 }
 
 /**
- * 生产用的那一个——每个方法各接各的客户端（`openhive-project` ×4 ＋ `openhive-files`
+ * 生产用的那一个——每个方法各接各的客户端（`openhive-project` ×5 ＋ `openhive-files`
  * ＋ `openhive-file-ops` ×4 ＋ `openhive-members` ×4）。
  *
  * ⚠️ **一个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
@@ -116,4 +124,5 @@ export const PROJECT_DATA: ProjectData = {
   invite: (projectId, policeNo) => inviteMember(projectId, policeNo),
   remove: (projectId, policeNo) => removeMember(projectId, policeNo),
   leave: (projectId) => leaveProject(projectId),
+  touch: (projectId) => touchProject(projectId),
 }

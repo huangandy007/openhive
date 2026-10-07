@@ -94,6 +94,19 @@ export interface ProjectEntry {
    * `"owner" | "member"`（同 `member-panel.tsx` 的 `role`）。
    */
   role?: ProjectMembership.MemberRole
+  /**
+   * 这个项目**在我这儿**超期了（T024 · FR-008 的「3 个月无操作」）：面板据此画一条
+   * 「超期未归档」的标记。**省略 = 不提醒**（不是「不超期」——面板不区分「服务端说不超期」
+   * 与「服务端没这条信息」，两者都只是不画标记，见 `openhive-project.ts` 的 `readEntry`）。
+   *
+   * ⚠️ **判定不在这里**：算「够不够 90 天」的活是服务端的（`core/src/project/ext.ts` 的
+   * `isStale`）——面板不碰时钟、不碰那个数。**只认 `true`**（`stale?: true` 而不是
+   * `stale: boolean`）与 `archived` 同款：少一个状态就少一处能写错的地方。
+   *
+   * ⚠️ 提醒画在哪一行由 `canArchive` 定（提醒的是**能处置它的那个人**，见 `Group`）——
+   * 但它**不跟归档按钮绑在同一个 tab**：每天打开的是「最近」，提醒在那儿也得看得见。
+   */
+  stale?: true
 }
 
 /**
@@ -313,6 +326,21 @@ function Group(props: {
                 >
                   <ItemBody project={project} current={current()} />
                 </button>
+                {/* 超期提醒（T024）——**不是按钮**，只是把事实摆出来。判定分两层：
+                    ① 服务端说他超期了（`stale`，缺键 = 不提醒）；
+                    ② 提醒的是**能处置它的那个人**（`canArchive`，与「归档」按钮同一份 `decide`）。
+                    第二层的理由：member 看得见项目，但归档不是他能做的——一条他动不了的提醒只是噪音。
+                    ⚠️ 刻意**不**加 `props.onAskArchive !== undefined`：那样提醒就只剩「全部」tab 有，
+                    而每天打开的是「最近」（见 `ProjectEntry.stale` 那条注释）。 */}
+                <Show when={project.stale === true && canArchive(project)}>
+                  <span
+                    data-slot="project-stale"
+                    aria-label={`${project.name} 超过 3 个月未访问`}
+                    class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-03 px-1 text-[11px] text-v2-text-text-muted"
+                  >
+                    超期未归档
+                  </span>
+                </Show>
                 {/* 不给回调 ⇒ 不画（「未接线即禁用」的另一种形态：归档是破坏性动作，
                     画一个 disabled 的「归档」只是噪音）；给了回调也还要过 `decide`。 */}
                 <Show when={props.onAskArchive !== undefined && canArchive(project)}>

@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { archiveProject, createProject, listProjects, restoreProject } from "./openhive-project"
+import { archiveProject, createProject, listProjects, restoreProject, touchProject } from "./openhive-project"
 import type { ForkFetch } from "./openhive-fetch"
 import type { ProjectEntry } from "./project-panel"
 
@@ -387,5 +387,107 @@ describe("archiveProject / restoreProject（T023）", () => {
     const { send } = stub(new Error("连不上"))
 
     expect(await restoreProject("p1", send)).toEqual({ kind: "failed", message: "找回项目失败" })
+  })
+})
+
+describe("stale 那一列（T024）", () => {
+  /**
+   * 服务端说这一行超期 ⇒ 读进来（面板据此画「超期未归档」）。
+   *
+   * `stale` 与 `role` **不是一类**：`role` 是授权数据、未知值要倒向保守侧；而 `stale` 是个
+   * **纯事实**（服务端拿库里那一列算的），这一层只负责搬，不重新判一次「够不够 90 天」
+   * ——在这里再判一次就多出第二份判定，而两份判定漂了不报错、不变红（`LEARNINGS #002-06`）。
+   */
+  test("stale 为 true ⇒ 读进结果（面板据此画提醒）", async () => {
+    const { send } = stub(json([{ id: "p1", name: "X", type: "private", lastAccessedAt: 1, stale: true }]))
+
+    expect((await listProjects(send))?.[0]?.stale).toBe(true)
+  })
+
+  /**
+   * `stale: false` / 缺键 / 非布尔 ⇒ **一律不读**（等于「不提醒」），同 `archived` 那条
+   * 「只认 `true`」的取法。
+   *
+   * 两个方向的代价不对称：少显示一条提醒最多是「这个项目晚一天被收拾」；反过来（把没有依据的
+   * 行读成超期）会在**没超期**的项目上画一条「超期未归档」，而它旁边就站着真正能动它的那个
+   * 「归档」按钮——民警照着它把在用的项目归档掉，代价是沙箱文件被搬走。
+   */
+  test("stale 为 false / 缺键 / 不是布尔 ⇒ 都不读（只认 true，缺依据就不提醒）", async () => {
+    const { send } = stub(
+      json([
+        { id: "p1", name: "X", type: "private", lastAccessedAt: 1, stale: false },
+        { id: "p2", name: "Y", type: "private", lastAccessedAt: 1 },
+        { id: "p3", name: "Z", type: "private", lastAccessedAt: 1, stale: "true" },
+      ]),
+    )
+
+    const projects = await listProjects(send)
+
+    expect(projects?.map((entry) => entry && "stale" in entry)).toEqual([false, false, false])
+  })
+})
+
+/**
+ * 记一次「我打开过它」（T024 · FR-008 的写入方）。
+ *
+ * ## 它的结论是**布尔**，没有文案
+ *
+ * 这是唯一一条「失败了也不必说什么」的项目动作：它的作用只是把 `last_accessed_at` 往后挪，
+ * 没挪成的最坏结果是这个项目照旧被算作超期（多提醒一次，而收拾它是 `archive` 那条链的事）。
+ * 所以不套 `ProjectActionOutcome`——那三态是给**要显示一句话**的动作准备的。
+ */
+describe("touchProject（T024）", () => {
+  test("发的是 POST /openhive/project/touch，体是 {projectId}，声明的就是 JSON", async () => {
+    const { send, sent } = stub(json({ projectId: "p1" }))
+
+    await touchProject("p1", send)
+
+    expect(sent).toEqual([
+      {
+        path: "/openhive/project/touch",
+        method: "POST",
+        credentials: "same-origin",
+        contentType: "application/json",
+        body: { projectId: "p1" },
+      },
+    ])
+  })
+
+  /** 时间由服务端取（客户端给不了）——体里**只有** `projectId`，多带一个字段就是自造契约。 */
+  test("200 且服务端自述的 projectId 就是我发的那个 ⇒ true", async () => {
+    const { send } = stub(json({ projectId: "p1" }))
+
+    expect(await touchProject("p1", send)).toBe(true)
+  })
+
+  /**
+   * ⚠️ **200 不等于记下了**：出口没挂上时这条路径落进 UI 的 `/*` 兜底、回 **200 ＋ HTML**
+   * （本文件头那条实测）。只看状态码会把「内核是旧版本、这条出口不存在」读成「记下了」。
+   * 比 `archive` 那边更该钉这一条：那条至少还会重拉清单（用户看得见项目还在），
+   * 这条**什么都不显示**——它要错了没有任何人会注意到，只会让提醒一直挂着。
+   */
+  test("200 + HTML（出口没挂上）⇒ false（200 不是记下了）", async () => {
+    const { send } = stub(html())
+
+    expect(await touchProject("p1", send)).toBe(false)
+  })
+
+  /**
+   * 体是 JSON 但**说的不是我刚发的那个项目** ⇒ false。同 `projectAction` 那条判据的形状：
+   * 「体能当 JSON 解，且服务端自述的值就是我要的那个」——只看「是不是 JSON」，一个回
+   * `{"error":...}` 的中间层也能混过去。
+   */
+  test("200 + JSON 但 projectId 不是刚发的那个 ⇒ false", async () => {
+    const { send } = stub(json({ projectId: "别人家的" }))
+
+    expect(await touchProject("p1", send)).toBe(false)
+  })
+
+  test("500 / 网络抛 ⇒ false（不把异常丢给界面——这条链上没人接得住它）", async () => {
+    const 坏 = stub(json({ error: "炸了" }, 500))
+    const 断 = stub(new Error("连不上"))
+
+    expect(await touchProject("p1", 坏.send)).toBe(false)
+    expect(await touchProject("p1", 断.send)).toBe(false)
   })
 })

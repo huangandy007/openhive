@@ -72,6 +72,34 @@ export const ProjectExtTable = sqliteTable("project_ext", {
 type Database = EffectDrizzleSqlite.EffectSQLiteDatabase
 
 /**
+ * **超期阈值**：90 天（T024 / FR-008 的「3 个月无操作 ⇒ 提醒 owner 确认后归档」）。
+ *
+ * ⚠️ **把「3 个月」读成 90 天是一次读法，不是唯一读法**——写在这里，因为它是那条判据里
+ * 唯一一个「不来自代码、也不来自 spec 字面」的数字：
+ *
+ * - 日历减法（`setMonth(-3)`）更贴近字面，但有归一化歧义：`5-31 − 3 月 = 2-31`，而 2 月没有 31 号
+ *   ⇒ JS 把它滚成 `3-2` 或 `3-3`（闰年还不同）。同一个「3 个月」在两个日期上差一天，
+ *   而这条判据要的是**确定、单调、可测**（`#003-04`：每个写下来的数字都要跑得出来）。
+ * - 90 天是**静态**的：不随月份长短、不随闰年变，测试里可以精确地压边界。
+ *
+ * 谁要改这个数（或改成日历月），**先回 FR-008 回答「3 个月」到底是哪个意思**，别在实现里顺手改。
+ */
+export const STALE_AFTER_MS = 90 * 24 * 60 * 60 * 1000
+
+/**
+ * 「这个项目**在我这儿**超期了吗」——`now` 由**调用方**给，本函数**不取时钟**。
+ *
+ * 取了时钟就测不出边界，而这条判据唯一需要说清楚的地方正是边界：**恰好 90 天算超期**
+ * （`>=`，不是 `>`）——「到期」的那一天就该提醒，而不是再等一天。
+ *
+ * 未来时间戳（时钟回拨 / 客户端与服务端时钟不一致）差为负 ⇒ **不算超期**：
+ * 这侧的错法是「提醒得晚」，另一侧的错法（把负数当超期）会让所有项目一起亮。选保守的那侧。
+ */
+export function isStale(lastAccessedAt: number, now: number): boolean {
+  return now - lastAccessedAt >= STALE_AFTER_MS
+}
+
+/**
  * 按 `projectId` 取**这一行**。**D0-1 裁定（2026-10-06）的必给接口**，不是可选项：
  * 建会话那条路径靠它拿到项目身份，再由服务端拼出 `join(沙箱根, 目录)` 写进 `session.directory`
  * （客户端给不出位置 ⇒ `anchor-workspace.ts` 那条不变量原样保留）。
@@ -127,6 +155,40 @@ export function insertProjectExt(db: Database, input: InsertProjectExtInput) {
       shared_directory: input.sharedDirectory,
       last_accessed_at: input.lastAccessedAt,
     })
+    .run()
+    .pipe(Effect.orDie)
+}
+
+export interface TouchProjectExtInput {
+  readonly projectId: string
+  /** Unix **毫秒**，同 `InsertProjectExtInput.lastAccessedAt`。 */
+  readonly lastAccessedAt: number
+}
+
+/**
+ * 刷新「最近访问时间」——`isStale` 那条判据的**写入方**（T024）。
+ *
+ * ## 为什么非有它不可
+ *
+ * 在这条函数之前，`last_accessed_at` **全仓只有建项目时写一次**（`grep` 实测）⇒「3 个月无操作」
+ * 实际等价于「**建项目后 3 个月**」：一个天天在用的项目照样到期被提醒，而它「最近访问时间」
+ * 这个列名也就成了假话。写入方不是锦上添花，是那条判据**成立的前提**（T024 裁定 ③）。
+ *
+ * ## 只有 `update`，**没有 upsert**（与 `markArchived` 刻意相反）
+ *
+ * 目标行不在（**成员没有 `project_ext` 行**——T016 实测；或 id 根本不存在）⇒ **零行、不报错**。
+ * 这是**正常路径**：`project_ext` 是个人态、一人一份，「访问了一个我没有个人行的项目」在共享
+ * 项目里是常态，唯一的作用只是刷新**自己**那一行。写成 upsert 就等于允许「本来没有也行」，
+ * 而那一行**能不能凭空出现**是**建项目**说了算的（本表带外键，`insertProjectExt` 的三段注释
+ * 讲了为什么那条路必须炸着走）。
+ *
+ * ⚠️ 因此「**零行**」在这里**不**是错误、也**不**用去数它（`#002-02`：别写一条分辨不出差别的判据）。
+ */
+export function touchProjectExt(db: Database, input: TouchProjectExtInput) {
+  return db
+    .update(ProjectExtTable)
+    .set({ last_accessed_at: input.lastAccessedAt })
+    .where(eq(ProjectExtTable.project_id, input.projectId))
     .run()
     .pipe(Effect.orDie)
 }
