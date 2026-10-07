@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { ConfigProvider, Effect, Exit, Layer, Schema } from "effect"
@@ -496,6 +496,102 @@ describe("T017 · 建会话落进项目目录（FR-001）", () => {
         expect(sessionCount(ALICE.id)).toBe(before)
         // ② 被拒：收得住两种形态——中间件抛出来（`Exit` 失败）或变成 5xx 响应
         expect(Exit.isFailure(outcome) || outcome.value.status !== 200).toBe(true)
+      }),
+    30_000,
+  )
+})
+
+/**
+ * T020 的**前置两条之 2**（`tasks.md` 逐字：「**先补一条用例：文件树入口的实例目录确实上移了**」）。
+ *
+ * ## 为什么要在这里补，而不是「顺手假设它已经成立」
+ *
+ * `project-location.ts` 的文件头「已知不覆盖」第三条自己点名了本 task，原话是：
+ * 「……于是**文件树 / pty / 上传那些入口的实例目录也跟着上移**。这是产品想要的方向……
+ * 但那些入口**没有跑过带头的情形**——它们的行为是**推**出来的，不是测出来的。**要动它们之前
+ * 先补一条用例**」。**T020 就是这条欠账的第一个消费者**：四项文件操作全部按「落点＝项目目录」写，
+ * 若这条推出来的结论不成立，四项会**静默地全落到沙箱根**——不报错、不变红，只是写错了地方。
+ *
+ * ## 两条判据，缺一不可（`LEARNINGS #004-08`：「没报错」不等于「执行了」）
+ *
+ * ① **带头 ⇒ 列的是项目目录**（被测属性）；
+ * ② **不带头 ⇒ 列的是沙箱根**（对照／阳性证明：这条证明「两个目录真的不是同一个」，
+ *    少了它，一个「任何请求都列项目目录」的实现照样绿——而那会让 `GET /file` 在没选项目时
+ *    把某个项目的内容画给用户）。
+ *
+ * 观测面是**磁盘上的两个不同文件**，不是响应状态码——「目录是谁」这件事只有内容说得清
+ * （`LEARNINGS #002-02`：oracle 不经过被测对象）。
+ */
+describe("T020 前置 · 文件树入口的实例目录上移（FR-005）", () => {
+  /** 沙箱根上那个文件：**只有不带头时才该看得见**。 */
+  const 沙箱根上的 = "沙箱根上的.txt"
+  /** 项目目录里那个文件：**只有带头时才该看得见**。 */
+  const 项目里的 = "项目里的.txt"
+
+  /**
+   * 在盘上摆出两个**内容不同**的目录——两条判据的分辨率全来自这里。
+   *
+   * ⚠️ 本文件的既有那组用例**刻意不建目录**（见 `sandboxOf` 的注释），本组是**唯一**建目录的地方；
+   * 两组的 DATA_ROOT / WORKSPACE_ROOT 虽然共用，但断言一律过 `canonical`（两侧都过），
+   * 故「目录存在 ⇒ realpath 解析」这件事对两组都只是把两侧一起换算一遍。
+   */
+  const 摆两个目录 = (subject: TokenSubject, projectId: string) => {
+    const 沙箱 = sandboxOf(subject)
+    const 项目 = path.join(沙箱, projectId)
+    mkdirSync(项目, { recursive: true })
+    writeFileSync(path.join(沙箱, 沙箱根上的), "root-only")
+    writeFileSync(path.join(项目, 项目里的), "project-only")
+  }
+
+  /** `GET /file?path=`（一层）。返回路径清单——**路径**而不是整行：判据只关心「列到了谁」。 */
+  const 列一层 = (subject: TokenSubject, project?: string) =>
+    Effect.gen(function* () {
+      const response = yield* as(subject, "/file?path=", {
+        headers: project === undefined ? {} : { [PROJECT_HEADER]: project },
+      })
+      expect(response.status).toBe(200)
+      const rows = yield* json(Schema.Array(Schema.Struct({ path: Schema.String })), response)
+      return rows.map((row) => row.path)
+    })
+
+  /**
+   * **主判据**：带项目头 ⇒ `GET /file` 列的是**项目目录**。
+   *
+   * 断言写成两半（`tenant-db-isolation` 的「过紧也是缺陷」同款取向）：既要**看见**项目里那个，
+   * 也要**看不见**沙箱根上那个。只写前半句的话，「把两个目录的内容并起来回」也能绿。
+   */
+  it.live(
+    "带 x-openhive-project ⇒ 列的是项目目录（不是沙箱根）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+        摆两个目录(ALICE, ALPHA)
+
+        const paths = yield* 列一层(ALICE, ALPHA)
+
+        expect(paths).toContain(项目里的)
+        expect(paths).not.toContain(沙箱根上的)
+      }),
+    30_000,
+  )
+
+  /**
+   * **对照 / 阳性证明**：不带头 ⇒ 列的是**沙箱根**。
+   *
+   * 这条不是重复上面那条：它证明「两个目录**真的不是同一个**」。少了它，上面那条在一个
+   * 「不管有没有头都列项目目录」的实现上照样绿（`LEARNINGS #004-08`）。
+   */
+  it.live(
+    "不带头 ⇒ 列的是沙箱根（证明上面那条的两个目录确实不同）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+        摆两个目录(ALICE, ALPHA)
+
+        const paths = yield* 列一层(ALICE)
+
+        expect(paths).toContain(沙箱根上的)
+        expect(paths).not.toContain(项目里的)
       }),
     30_000,
   )

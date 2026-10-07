@@ -126,6 +126,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
+import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
@@ -341,6 +342,14 @@ export function createRoutes(
       // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
       Layer.provide(OpenhivePg.layer),
     ),
+    // openhive 文件操作出口（005 T020）：复制 / 移动 / 上传 / 下载（FR-005）。
+    // 沙箱根**复用**同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义）——本模块要用它
+    // 判「这次请求在不在一个项目里」（`?directory=` 相对沙箱根恰好一层）。
+    // ⚠️ 这四个出口**依赖 `projectLocationLayer` 在场**：基准目录取自那个中间件改写的
+    // `?directory=`，而它同时也把「已归档 ⇒ 403」那道门套在这四个出口上（门在中间件里，
+    // 所以本模块**一个字都不用写**，也就不会漂成两份）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T020）。
+    OpenhiveFile.routes.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
   ).pipe(
     Layer.provide([
       errorLayer,
