@@ -103,6 +103,30 @@ const 夹具数据 = (条数 = 1): SessionPanelData => ({
 const 数turn = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-component="session-turn"]').length
 
 /**
+ * 往 Hero 的编辑器里打一段字。
+ *
+ * 走的是**真实那条链**（`index.tsx` 的 `onInput`）：`parsePromptInputV2Editor` 读 DOM
+ * → `controller.onInput(...)` → 状态机。**不**绕过组件直接调 controller —— 那样测的是
+ * 「controller 能用」（T007 已经证过），不是「右栏把它接上了」。
+ *
+ * 定义在**模块级**（T009 起两组用例都要用它）：留一份、别抄第二份——两处各写一遍
+ * 「打字怎么打」就会在有人改一处时静默分家（`LEARNINGS #002-06` 的同型）。
+ */
+const 打字 = (宿主: HTMLElement, 串: string) => {
+  const 编辑器 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input"]')
+  if (!编辑器) throw new Error("没找到 Hero 输入的编辑器（`[data-component=\"prompt-input\"]`）")
+  编辑器.textContent = 串
+  编辑器.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/** Hero 编辑器当下**真的**装着什么文字（读 DOM，不读 store）。 */
+const 输入框里的话 = (宿主: HTMLElement) =>
+  宿主.querySelector('[data-component="prompt-input"]')?.textContent ?? undefined
+
+/** 指令卡行的卡（`data-slot="card"` 是共用语法的卡面）。 */
+const 卡们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLElement>('[data-slot="card"]')]
+
+/**
  * 一份**四层都空**的投影，给不关心能力清单的用例用。
  *
  * `projection` 是**必填**的（理由同 `commands` 曾经那条：可选就等于「忘了传也没人红」，
@@ -282,20 +306,6 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
   /** `useFilteredList` 底下是 `createResource`——结果**不是同步**就绪的。 */
   const 歇 = () => new Promise((r) => setTimeout(r, 10))
 
-  /**
-   * 往 Hero 的编辑器里打一段字。
-   *
-   * 走的是**真实那条链**（`index.tsx` 的 `onInput`）：`parsePromptInputV2Editor` 读 DOM
-   * → `controller.onInput(...)` → 状态机。**不**绕过组件直接调 controller —— 那样测的是
-   * 「controller 能用」（T007 已经证过），不是「右栏把它接上了」。
-   */
-  const 打字 = (宿主: HTMLElement, 串: string) => {
-    const 编辑器 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input"]')
-    if (!编辑器) throw new Error("没找到 Hero 输入的编辑器（`[data-component=\"prompt-input\"]`）")
-    编辑器.textContent = 串
-    编辑器.dispatchEvent(new Event("input", { bubbles: true }))
-  }
-
   /** 弹层里列出的建议 id。原生浮层的条目是 `[data-suggestion-id]`。 */
   const 列出的建议 = (宿主: HTMLElement) =>
     [...宿主.querySelectorAll<HTMLElement>("[data-suggestion-id]")].map((元素) => 元素.dataset.suggestionId)
@@ -449,5 +459,129 @@ describe("常用操作行 + 更多 skill 抽屉（T004 📥 / T006 📥 交来�
     宿主.querySelector<HTMLElement>('[aria-label="关闭更多 skill"]')!.click()
 
     expect(宿主.querySelector('[data-slot="skill-drawer"]')).toBeNull()
+  })
+})
+
+describe("点指令卡 ＝ 填入一句话（T009 / FR-007；T004 📥 那一笔的产源）", () => {
+  // 这一组钉的是 **T004 📥 交来的那一笔**：`InstructionCardRow` 的 `activePrompt` 与 `onPick`
+  // 两个接缝在 T004/T005 就已经在了（组件层的断言在 `common-cards.test.tsx` / `context-cards.test.tsx`），
+  // 缺的**不是接缝本身**，是**右栏把不把它接上**——今天两个 prop 生产里都是空的，
+  // 即 §4.7.1 的选中态**在生产里看不见**（`state.md` 缺口表那一行）。
+  //
+  // 所以本组的判据一律取**右栏这一层**的实得值：① 编辑器 DOM 里的字（不是 store、不是 prop）；
+  // ② 卡面的 `className` 串（happy-dom 没有 CSS 引擎 ⇒ 量不出颜色，只能钉 class，`LEARNINGS #005-07`）。
+
+  const 造清单 = (capabilities: SkillCapability[]): CapabilityManifest => ({
+    module: GENERIC_MODULE,
+    capabilities,
+  })
+
+  const 两张卡 = {
+    skill: "analysis-common",
+    name: "通用分析",
+    description: "通用",
+    group: "业务研判",
+    cards: [
+      { label: "资金穿透", prompt: "帮我做资金穿透", layer: "common" },
+      { label: "关系图谱", prompt: "帮我画关系图谱", layer: "common" },
+    ],
+  } satisfies SkillCapability
+
+  const 摆好 = () =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={projectCapabilities([造清单([两张卡])], undefined)}
+        />
+      )),
+    )
+
+  /** §4.7.1 的选中态底色。任意值写法——`--v2-background-bg-accent-soft` **没有** Tailwind 孪生（§4.7.0）。 */
+  const 浅金 = "bg-[var(--v2-background-bg-accent-soft)]"
+
+  /** 每张卡亮不亮，按 DOM 顺序。 */
+  const 亮着的 = (宿主: HTMLElement) => 卡们(宿主).map((卡) => 卡.className.includes(浅金))
+
+  /**
+   * 点**第二张**卡。
+   *
+   * ⚠️ 不写成 `卡们(宿主)[1].click()` 三遍：那三遍里每一遍都要在「恒点第一张」的实现上过得去
+   * ——而这条正是本组第一句断言要打的东西。收成一个点了名说「第二张」的动作，读的时候
+   * 就不必再逐句确认「这处点的是第几张」（`LEARNINGS #005-12`：一条断言要能与「只做了这一个」相区别）。
+   */
+  const 点第二张卡 = (宿主: HTMLElement) => 卡们(宿主)[1].click()
+
+  test("点卡 ⇒ 输入框里出现**那张卡**的句子（点第二张，不是第一张、也不是空）", () => {
+    // 点**第二张**是故意的：只点第一张时，「填了第一张」与「填了任意一张 / 填了第一张写死」
+    // 在实得值上分不开（`LEARNINGS #005-12`：一条断言要能把「整组都做了」与「只做了这一个」分开）。
+    const 宿主 = 摆好()
+
+    expect(输入框里的话(宿主)).toBe("")
+
+    点第二张卡(宿主)
+
+    expect(输入框里的话(宿主)).toBe("帮我画关系图谱")
+  })
+
+  test("点卡 ⇒ **那张**亮浅金、其余不亮（§4.7.1 选中态；负向对照）", () => {
+    // 初始态先断一次「一张都不亮」：少了这半条，一个「恒全亮」的实现也能过
+    // （`LEARNINGS #005-07` ③：只写正向那条时，把整行刷成浅金也算过）。
+    const 宿主 = 摆好()
+
+    expect(亮着的(宿主)).toEqual([false, false])
+
+    点第二张卡(宿主)
+
+    expect(亮着的(宿主)).toEqual([false, true])
+  })
+
+  test("点卡是**替换**、不是追加（先打过字 ⇒ 只剩卡片的句子，先打的半句不在了）", () => {
+    // 这一条盯的是**「写入语义」这一轴**，是 T009 审查（R1）补的：前面三条都从**空输入框**起手，
+    // 而空框下「替换」与「追加」的实得值**逐字相同** ⇒ 三条合起来也分辨不出这两种实现。
+    // 实测（2026-10-07 审查）：把 `onPick` 换成在游标处 `addText` 的写法 ⇒ 旧三条 **全绿**
+    // （`LEARNINGS #005-12`：同一轴上两种实现要各有一条用例，别指望一组合起来就认得出）。
+    //
+    // 判据必须是**恰好相等**（`toBe`）——用 `toContain` 的话「先打的半句＋卡片句子」照样通过，
+    // 那就把这条又变回一条认不出追加的断言了。
+    //
+    // 顺序按 `LEARNINGS #004-14`：先钉**被测属性**（输入框里到底剩下什么，用户看得见的那份），
+    // 再钉**伴随信号**（选中态）——后面半条是反证：选中态的判据是「输入框那句话 == 卡片句子」
+    // （§4.7.1），所以它能一并证明「替换」不是只换了个 DOM 样子、store 里也只留了卡片那一句。
+    //
+    // ⚠️ **一条已知的脆性依赖**（T009 审查第二轮 F3 实测，**不修**、只记）：本用例读的是**编辑器 DOM**，
+    // 而它要靠上游 `prompt-input/index.tsx` 那个 `localInput` 守卫（**一次性**：DOM input 置位、
+    // effect 命中后即清）在 `打字` 这一步**被消费掉**——否则点卡的程序化改文不会重渲染 DOM。
+    // 两个探针各测了一遍：**把守卫整段删掉 ⇒ 照样 22 pass**（说明绿不是守卫给的，是「store 变 ⇒
+    // 重渲染」这条真链）；**把守卫改成不复位 ⇒ 恰好本用例红**（`Received: "先打的半句"`）。
+    // ⇒ 判据一句话：它**脆**（上游改守卫语义会误红）但**不瞎**（不会掩盖被测语义——守卫滞留时
+    // DOM 停在 `"先打的半句"`，仍 ≠ 卡片句子，照样红）。上游若真动了那个守卫，先怀疑这条的**测量**，
+    // 别去改 `onPick`（`LEARNINGS #003-01`：先怀疑测量，再怀疑被测物）。
+    const 宿主 = 摆好()
+
+    打字(宿主, "先打的半句")
+
+    点第二张卡(宿主)
+
+    expect(输入框里的话(宿主)).toBe("帮我画关系图谱")
+    expect(亮着的(宿主)).toEqual([false, true])
+  })
+
+  test("改输入框 ⇒ 选中态灭（产源是输入框的**实时那句话**，不是点击时记下的一份）", () => {
+    // 这一条是**变异探测器**：若把 `activePrompt` 实现成「点击时 set 一个信号」，前两条照样绿、
+    // 只有这条红。它同时是 §4.7.1 那句 ⚠️（「若哪天判定这个态不稳定（输入框一改就掉）…」）
+    // 的**落点**——本实现就是「一改就掉」，因为选中态的判据按 §4.7.1 的定义是
+    // 「输入框里那句话来自这张卡」，句子改了就不再是那张卡的句子。
+    // ⇒ 这条把「掉」写成**期望**（设计侧若要改成「填过就一直亮」，红的就是它）。
+    const 宿主 = 摆好()
+
+    点第二张卡(宿主)
+    expect(输入框里的话(宿主)).toBe("帮我画关系图谱")
+
+    打字(宿主, "帮我画关系图谱，按近一个月")
+
+    expect(亮着的(宿主)).toEqual([false, false])
   })
 })

@@ -184,8 +184,25 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         {/* ① 顶部常驻「常用操作」（FR-002 / T004 📥 ①）。
             ⚠️ 宽度**不用传**：`InstructionCardRow` 自己挂 `ResizeObserver` 量自己
             （`instruction-cards.tsx` 的 `onMount`）——一挂进右栏它就在量了，生产里会真的溢出。
-            本组件只负责把它放进 DOM，**不**再转一手宽度（转一手就多一个会漂的来源）。 */}
-        <CommonCards cards={props.projection.common} />
+            本组件只负责把它放进 DOM，**不**再转一手宽度（转一手就多一个会漂的来源）。
+
+            `activePrompt` / `onPick` 是 **T004 📥 交来的那一笔**（T009 / FR-007 / §4.7.1）：
+
+            - `onPick`：点一张卡 ⇒ 把**那张卡**的句子填进输入框。走的是**状态机自己那条程序化
+              改文的道**——`input.changed` ⇒ `draft.setText`（`machine.ts` 的 `inputChanged`；
+              `/` 与 `@` 两个入口用的就是它）。**不**自己拼 `PromptInputV2Prompt` 的 part 形状：
+              那是把「一段文字长什么样」在第二处再写一份（`LEARNINGS #002-06`），而 store 的
+              `setText` 连游标都替我们摆好了。
+            - `activePrompt`：选中态的产源**就是输入框当下的那句话**，不另立一个「点过哪张」的信号
+              ——立了就有两处写法在说同一件事，且用户改一个字之后卡还亮着、而输入框里已经不是那张
+              卡的句子了。§4.7.1 给的判据本就是**相等**（「输入框里那句话来自这张卡」）。
+              ⇒ 它是 `controller.value()`（读 store 的响应式表达式），不是 `createSignal`。
+              代价是「一改就掉」——§4.7.1 那句 ⚠️ 点名的就是它，本处按设计原文落地。 */}
+        <CommonCards
+          cards={props.projection.common}
+          activePrompt={controller.value()}
+          onPick={(卡) => controller.dispatch({ type: "input.changed", value: 卡.prompt })}
+        />
 
         <div data-slot="session-turns" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
           <For each={props.data.message[props.sessionID] ?? []}>
