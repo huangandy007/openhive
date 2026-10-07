@@ -82,11 +82,24 @@ export interface SkillCapability {
   cards: InstructionCard[]
 }
 
+/**
+ * 「跨模块常在」那个清单的 `module` 取值（design-v2 §8.2：「通用 skill（研判记录 / 类案对照）
+ * 跨模块常在」）。
+ *
+ * 之所以给常量而不是让各处写魔法串：投影框架（`projection.ts`）**必须**知道哪个清单是跨模块的那份
+ * ——它决定「切换模块时这份清单留不留」。两处各写一个 `"通用"` 时，改一处不会报错，
+ * 只会静默地「通用 skill 突然只在某一个模块里出现」（`LEARNINGS #002-06`）。
+ *
+ * ⚠️ 它不是图标栏模块 id（`rail/entries.ts` 的 `RailEntry.id` 那五个）之一，是**正交的第二个维度**：
+ * 模块清单按 id 命中，通用清单永远命中。
+ */
+export const GENERIC_MODULE = "通用"
+
 /** 一个模块的能力清单 —— FR-006「机制通用、内容随模块」的那个「内容」。 */
 export interface CapabilityManifest {
   /**
-   * 模块标识。取值对应 design-v2 §8.3 的图标栏模块（项目管理 / AI 资产 / AI 会话 /
-   * 话单分析 / 资金分析），外加 `通用`——design-v2 §8.2 明写「通用 skill 跨模块常在」。
+   * 模块标识。取值是 design-v2 §8.3 的图标栏模块（项目管理 / AI 资产 / AI 会话 /
+   * 话单分析 / 资金分析）——即 `rail/entries.ts` 的 `RailEntry.id`；**或** `GENERIC_MODULE`。
    */
   module: string
   capabilities: SkillCapability[]
@@ -107,7 +120,7 @@ export interface CapabilityManifest {
  */
 export const MANIFESTS: CapabilityManifest[] = [
   {
-    module: "通用",
+    module: GENERIC_MODULE,
     capabilities: [
       {
         skill: "effect",

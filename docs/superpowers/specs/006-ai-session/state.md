@@ -2,7 +2,13 @@
 
 ## 当前任务
 
-T002 已完成（**Phase 1 Setup 收尾**）。**下一个：T003**（指令卡机制通用框架）。
+T003 已完成（**Phase 2 Foundational 收尾**）。**下一个：T004**（顶部「常用操作」指令卡）。
+
+⚠️ **T004 前面有一道门**（2026-10-07 裁定 U6 / runbook D0-5）：T004 是**第一个有视觉值的任务**，
+而 `openhive-DESIGN.md` 里**还没有**「AI 会话 · 四层指令卡」那一节。**这一节由我先起草、交用户审过之后
+才能落码**——参照物取样不到（`design-reference/figma-export/` 没有页面子目录、`front/RightAIChat`
+不在本仓），规格只能对齐 `packages/session-ui` 原生组件 ＋ `theme.css` 的 token。
+T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数，无 JSX）。
 
 ## 已完成
 
@@ -13,6 +19,8 @@ T002 已完成（**Phase 1 Setup 收尾**）。**下一个：T003**（指令卡�
   ⚠️ 这条是**查实**得出的，不是推断（`#004-13`：判「做不了 / 做得成」都要先验）。
 - **T002**（2026-10-07）· 确定 skill 能力清单声明接口 → 出参见下「T002 出参」。
   落地 U4(b) 旁路清单 ＋ U9 三处目录清单 ＋ U10 契约移交（`#002-04`）。
+- **T003**（2026-10-07）· 指令卡机制通用框架（投影能力清单）→ 出参见下「T003 出参」。
+  纯函数四层投影 ＋ 15 条用例（四层各做过隔离变异验证）。
 - **开工前裁定 U1–U10**（2026-10-07，用户逐条裁定）→ 见下「裁定表」。**Spec 未定项至此清零**。
 
 ---
@@ -94,6 +102,64 @@ U8 的「收藏」因子下落）。**不写在只有 006 自己会读的地方�
 
 ---
 
+## T003 出参 · 指令卡机制通用框架（2026-10-07）
+
+**产物**：`packages/app/src/ai-session/projection.ts`（纯函数投影层）
+＋ `projection.test.ts`（15 条用例）；连带给 T002 的 `capabilities.ts` 补了 `GENERIC_MODULE` 常量
+（＋ `capabilities.test.ts` 一条跨清单重名的报警断言）。
+
+FR-006 的判据是「**换模块，四层跟着换内容**」——happy-dom 量不出来（不跑布局、不解析 CSS），
+所以框架的取模块那一步做成**形参**：`projectCapabilities(清单集, 当前模块)`。
+
+| # | 定型的事 | 取数 / 依据 |
+|---|---|---|
+| 1 | **四层字段**：`common`（FR-002）/ `context`（FR-003）/ `drawer`（FR-004）/ `all`（FR-005） | design-v2 §8.2 那张四层表逐行对应；`InstructionCard.layer` 的两种取值分别进前两层 |
+| 2 | **「当前模块」的真值来源已存在**，不是本 task 新造的 | `center/tab-store.ts` 的 `CenterTabState.module`（文档：「当前**停留**的模块（左栏所在的那个）」）；UI 取用口 `center/tab-context.tsx` 的 `CenterTabs.module: Accessor<string \| undefined>`；`workspace-entry.tsx` 已用它喂 `<Rail active>` |
+| 3 | **`module` 可空**，未登记不抛错 | `CenterTabState.module?: string`，`CenterTabsProvider` 初值就是 `props.initialModule`（可为 `undefined`）⇒ 「未登记」「`undefined`」各一条用例 |
+| 4 | **`module` 取 `string` 不取联合类型** | 先例 `center/module-color.ts` 的 `moduleColorVar(moduleId: string)`（带兜底）——F6/F7 加模块时不用改签名 |
+| 5 | **通用清单跨模块常在**：命中条件是 `module === 当前模块 \|\| module === GENERIC_MODULE`（一个 filter 写全，天然不会同一份被算两次） | design-v2 §8.2「通用 skill（研判记录 / 类案对照）跨模块常在」 |
+| 6 | **补 `GENERIC_MODULE` 常量**（T002 文件） | 框架**必须**知道哪个清单算跨模块那份；两处各写魔法串 `"通用"` 时改一处不报错、只静默「通用 skill 只在某一个模块里出现」（`#002-06`） |
+| 7 | **`ProjectedCard` 比 `InstructionCard` 多一个 `skill`** | spec 的 Key Entities 把「**关联 skill**」列为指令卡属性；卡片在 `SkillCapability.cards` 里时这个关联是**结构性**的，拍平成一层列表就丢了 |
+| 8 | **有意不去重**：`all` 是选中清单按序拍平的结果；同 skill 跨清单重复会**出现两次** | 静默替人在两份声明里挑一份比「让它重复」更坏；冲突该在**数据**那侧拦 ⇒ `capabilities.test.ts` 新增一条会报警的断言（已变异验证） |
+| 9 | **有意不钉层的顺序** | 「`通用` 的卡排模块的卡前面还是后面」是**产品决定**、属渲染层（T004）；钉了就把一个未裁定的决定焊进测试。测试一律做**集合**比较 |
+| 10 | **不 import 中栏 context、不引用 `MANIFESTS`** | 取数（见下）——框架只能通过形参拿模块，清单只能通过形参拿 |
+
+**runbook 的判据取数**（「`grep` 出框架里所有取『当前模块』的地方，每个都要能跟着注入换」）：
+
+```
+$ grep -n "module" packages/app/src/ai-session/projection.ts | grep -v '^\s*[0-9]*:\s*\*' | grep -v '//'
+projection.ts:81:  module: string | undefined,
+projection.ts:83:  const 选中 = manifests.filter((清单) => 清单.module === module || 清单.module === GENERIC_MODULE)
+
+$ grep -n "tab-context\|useCenterTabs\|useContext\|center/" packages/app/src/ai-session/projection.ts   ⇒ 无
+$ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                                          ⇒ 仅文档注释一行
+```
+
+⇒ **读「当前模块」的地方恰好 1 处**（那个形参），四层都从它派生。接线（把 `center.module()` 传进来）
+是 T004/T008 的事，那时会变成两处，**两处都是跟着注入换的、没有第三处偷读全局**（`#004-01`）。
+
+**变异验证（四层各一次隔离注入，`#005-04` / `#005-12` / `#005-15`）**：
+
+| 注入 | 期望 | 实得 |
+|---|---|---|
+| **M-a** `common` 改从**全部清单**取（不看模块） | 「常用操作」那几条红，另三层绿 | **4 fail**：③、四层来源(common)、两条边界。**全落在 common 层**，context/drawer/`all` 三条照旧绿 ✅ |
+| **M-b** `context` 同上 | context 那条红 | **4 fail**，含「「上下文指令」层同样跟着模块换」✅ |
+| **M-c** `drawer` 同上 | 抽屉那两条红 | 首跑 **2 fail**（见下「一处小账」）；**改过网眼后复跑 3 fail**，③ 也红了 ✅ |
+| **M-d** `all` 同上 | 「/」那条红 | **4 fail**，含「「/」命令面板的匹配池跟着模块换」✅ |
+| **M-e** 往 `MANIFESTS` 塞一份**跨清单重名**（新增的报警断言） | 恰红它自己 | **1 fail**，正是那条；「无孤儿 / 无悬空 / 同清单内不重复」全绿 ⇒ 它盯的是**别的断言够不到的维度** ✅ |
+
+**一处小账（M-c 首跑暴露的，已修）**：③ 那条「甲的卡一处都不出现」初版对抽屉用的是 **`条.name`**
+（显示名），而夹具里显示名不含「甲」⇒ **抽屉漏进了乙的条目，③ 照样绿**。四层改成一律按 **`skill`**
+（连接键）取之后，M-c 复跑 ③ 才红。这正是 `#005-15`：**一条网拦不拦得住，只能靠拆掉那一行去看**，
+不能靠读它的自我描述。教训候选（留给收尾的 LEARNINGS）：**横切网在每一腿上要用同一个键**——
+混用显示名/连接键时，其中一条腿是瞎的且没人会发现。
+
+**今天的实况（给 T004 的交接）**：`MANIFESTS` 只有「通用」那一份（两个 opencode 开发工具链的 skill、
+卡片为空）⇒ 在 `ai-session` 模块下四层是「抽屉/命令面板各 2 条、两张卡层皆空」。
+业务模块的清单（F6 资金 / F7 话单 / F9 资产）落地时往 `MANIFESTS` 里加。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -111,9 +177,11 @@ U8 的「收藏」因子下落）。**不写在只有 006 自己会读的地方�
 | **`cards` 今天全为空** | `capabilities.ts` | 006 只造机制，卡片文案随模块（F6 / F7 / F9 落地时填）。今天两个 skill 是 opencode 开发工具链的，对民警无指令卡语义 ⇒ 编文案就是造数据 |
 | **指令卡的 `context` 层触发条件未进类型** | `InstructionCard` | FR-003 的「随中栏选中浮现」取决于中栏当前上下文，是 **T005** 的活；T005 落地时把触发字段加进 `InstructionCard` 并回填注释 |
 | **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表 |
+| **框架今天还没有生产调用点** | T003 | `projectCapabilities` 目前**只被测试调用**——右栏没有任何东西消费它（接线是 T004 / T008）。今天有一个「看上去已经能投影了」的错觉：测绿的只是**纯函数**，**不是**「右栏能看到卡」。别把它读成「FR-002 已实现」 |
+| **`drawer` 的分组顺序未裁定** | `projection.ts` | 框架给的是**首次出现顺序**（不排序，理由写在那个私有函数的文档里：`group` 今天没有客观来源、排序要引中文排序规则）。抽屉要不要换个顺序是 T006 的渲染决定 |
 
 ---
 
 ## 最后更新
 
-2026-10-07（T002 收尾；Phase 1 Setup 完成，U4(b) / U9 / U10 落地）
+2026-10-07（T003 收尾；Phase 2 Foundational 完成。**下一个 T004 被 U6 的 DESIGN.md 草案门挡住**）
