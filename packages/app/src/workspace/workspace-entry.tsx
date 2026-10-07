@@ -7,16 +7,17 @@ import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
 import { currentProject, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
-import { MemberPanel } from "@/project/member-panel"
+import { MemberPanel, type MemberEntry } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import { minioBackups } from "@/project/minio-backups"
 import type { FileOpOutcome } from "@/project/openhive-file-ops"
+import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
 import { TargetPicker } from "@/project/target-picker"
 import { projectFiles, setProjectFiles } from "@/project/project-files"
 import { projectList, setProjectList } from "@/project/project-list"
-import { projectMembers } from "@/project/project-members"
+import { projectMembers, setProjectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
 import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
 import { RAIL_ENTRIES } from "@/rail/entries"
@@ -156,6 +157,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const [文件话, set文件话] = createSignal<string>()
   /** 文件清单的重取代次：拨一下 ⇒ 上面那个 effect 重跑（它在读它）。 */
   const [清单重取, set清单重取] = createSignal(0)
+  /**
+   * 成员动作（T021）那一对：界面上那一句话 ＋ 名单重取的代次。
+   *
+   * 与上面文件那一对**逐字同因**（`undefined` ＝ 没有话要说、拨一下 ⇒ 重取），所以不再各讲一遍。
+   */
+  const [成员话, set成员话] = createSignal<string>()
+  const [名单重取, set名单重取] = createSignal(0)
   /** 上传的落点目录：右键「上传」时先定下（树给的是**目录**，见 `FileTreeProps.onUpload`），选中文件后才用得着。 */
   const [上传落点, set上传落点] = createSignal("")
   /** 那台隐藏的文件选择器（拖进来那条路不用它，两条入口都落在同一个 `传` 上）。 */
@@ -195,6 +203,103 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       if (!作废) setProjectFiles(paths)
     })
   })
+
+  /**
+   * 当前项目变了就换成员名单（T021 / FR-004）。
+   *
+   * **写法与上面那份逐字同因**（同一个键 ＋ 先清空 ＋ `onCleanup` 作废），多出来的只是
+   * 第二个触发点：名单还会被**自己的动作**改（邀请 / 移除办成 ⇒ 拨 `名单重取`）。文件那份
+   * 由 `清单重取` 拨、这份由 `名单重取` 拨——两条链各有一枚代次，混用一枚的话，挪一个文件
+   * 会白白重取一次名单。
+   *
+   * ⚠️ **名单只有一个来源**：`projectData.members(id)`。不从清单里那份 `memberCount` 推——
+   * 那个数只够画徽章，画不出「谁是 owner」，而 `role` 正是权限判定的输入。
+   */
+  createEffect(() => {
+    const id = currentProject()?.id
+    名单重取() // 读一下：成员动作办成之后拨它
+    setProjectMembers(undefined)
+    if (!id || !projectData) return
+
+    let 作废 = false
+    onCleanup(() => {
+      作废 = true
+    })
+    void projectData.members(id).then((名单) => {
+      if (!作废) setProjectMembers(名单)
+    })
+  })
+
+  /**
+   * 一次成员动作的收尾：**办成** ⇒ 清话；**没办成** ⇒ 把服务端那句话留下。返回「办成了吗」。
+   *
+   * 三只共用一份——它们的回话约定逐字相同（同 `收下`）。返回布尔而不是让每个调用方再看一次
+   * `结论.kind`，是为了让「怎么说清一次失败」只有一处（`LEARNINGS #002-06`）。
+   */
+  function 收成员话(结论: ProjectActionOutcome): boolean {
+    if (结论.kind !== "done") {
+      set成员话(结论.message)
+      return false
+    }
+    set成员话(undefined)
+    return true
+  }
+
+  /**
+   * 邀请（FR-004：owner 与 member **都能**）。(`policeNo` 是**警号**——「谁是谁」的翻译在服务端，
+   * 见 `openhive-members.ts` 文件头。)
+   *
+   * 办成 ⇒ **重取名单**，不把这个人本地拼进列表：服务端那份才是真相（同 T018「清单重拉」）。
+   */
+  async function 邀请(policeNo: string) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    if (收成员话(await projectData.invite(id, policeNo))) set名单重取((代次) => 代次 + 1)
+  }
+
+  /**
+   * 移除（FR-004：**仅 owner**，目标须是 member）。带的是**那一行**的警号——面板的 `onRemove`
+   * 回传的是整行（`member-panel.tsx` 的 `onRemove` 注释），而这条出口说的是警号。
+   */
+  async function 移除(member: MemberEntry) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    if (收成员话(await projectData.remove(id, member.policeId))) set名单重取((代次) => 代次 + 1)
+  }
+
+  /**
+   * 退出项目（FR-004：member 可退、owner 不可退）。**不带警号**——退的永远是自己。
+   *
+   * 办成之后两件事都要做：
+   * ① **收起面板**——退群之后「这个项目的成员管理」跟我没关系了；
+   * ② **把名单清成 `undefined`**——缝里那份**还有我**，再点开面板会看到自己还在名单里
+   *    （而三个动作里至少「退群」还画得出来，点了只会收到 403）。`undefined` 是老实话：
+   *    **还不知道**（不是「这个项目没有成员」）。
+   *
+   * ⚠️ **不重取**：退了之后这条出口必然 403，发出去只是把「取不到」写进缝里，绕一圈回到同一个
+   * 地方，还多一个请求。⚠️ 也**不清当前项目**：清单读的是 `project_ext`（与成员关系是两张表），
+   * 退群之后那个项目照旧挂在清单里——清它是在跟清单打架（谁在管那份数据，见 `project.ts` 的
+   * `handleList`），而「看不见」不是退群该有的后果。
+   */
+  async function 退群() {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    if (!收成员话(await projectData.leave(id))) return
+    setProjectMembers(undefined)
+    setMemberOpen(false)
+  }
+
+  /**
+   * 当前项目**是不是已归档的**——从**清单**里查，不从 `currentProject()` 查。
+   *
+   * `CurrentProject` 那个形状只有 id / name / memberCount（T005 定的），归档这一项只在清单的
+   * 那一行上（`ProjectEntry.archived`）。再养一份「当前项目归档了吗」的状态，就是同一个事实
+   * 的第二处写法，而服务端那份清单是**唯一来源**（`LEARNINGS #002-06`）。查不到（清单还没到 /
+   * 那一行不在清单里）⇒ **不归档**：归档与否最终由服务端判（`decide` 会拒），前端这一份只是
+   * 用来「别把点了必然被拒的按钮画出来」。
+   */
+  const 当前已归档 = () =>
+    projectList()?.find((项目) => 项目.id === currentProject()?.id)?.archived === true
 
   /**
    * 一次文件动作的收尾：**办成** ⇒ 清话 ＋ 重取清单；**没办成** ⇒ 把服务端那句话留下。
@@ -438,15 +543,40 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   </div>
                 </Show>
                 {/* 成员面板（FR-004 / US3 / 设计 §4）：`👥 N` 徽章滑出，同项目面板一样是浮层。
-                    数据走 `@/project/project-members` 那条缝、身份走 `@/workspace/current-user`；
-                    三个动作回调**今天不接线** ⇒ 渲染成 `disabled`（落库缺口归 T021，见 `member-panel.tsx` 文件头）。 */}
+                    数据走 `@/project/project-members` 那条缝（写入方是上面那个 effect）、
+                    身份走 `@/workspace/current-user`；三个动作（T021）各接各的出口。
+                    `archived` 交给面板去问 `decide`（本层不重写规则，只把**事实**递过去）——
+                    否则归档项目上会画出三颗点了必然被拒的按钮。 */}
                 <Show when={memberOpen()}>
                   <div data-slot="member-panel-slot" class="absolute inset-x-0 top-10 z-10 px-1">
                     <MemberPanel
                       projectName={currentProject()?.name}
                       members={projectMembers()}
                       selfPoliceId={currentUser()?.policeId}
+                      archived={当前已归档()}
+                      /*
+                        没数据源就**不传** ⇒ 面板照旧渲染成禁用态（「未接线即禁用」，同项目面板那条）。
+                        回话的约定也同那一侧：`undefined` = 收工（名单自己会变），
+                        有话说 = 没办成、把服务端那句话显示出来。
+                      */
+                      onInvite={projectData ? (policeNo) => void 邀请(policeNo) : undefined}
+                      onRemove={projectData ? (member) => void 移除(member) : undefined}
+                      onLeave={projectData ? () => void 退群() : undefined}
                     />
+                    {/* 那句话（`undefined` ＝ 没有话要说）——同文件动作那条，`role="alert"` 让屏幕
+                        阅读器在它冒出来时读一遍。排在面板**下面**：它不是面板的一部分，
+                        而是这次动作的结果。 */}
+                    <Show when={成员话()}>
+                      {(话) => (
+                        <p
+                          data-slot="member-op-message"
+                          role="alert"
+                          class="mt-1 w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] break-all text-v2-state-fg-danger"
+                        >
+                          {话()}
+                        </p>
+                      )}
+                    </Show>
                   </div>
                 </Show>
                 {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件]` tab 容器 ＋ 主体。

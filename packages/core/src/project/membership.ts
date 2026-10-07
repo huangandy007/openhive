@@ -11,7 +11,7 @@ export * as ProjectMembership from "./membership"
  * |---|---|---|
  * | **判定**（本文件） | `packages/core/src/project/membership.ts` | 「这个身份 ＋ 这个动作 ⇒ 能不能」 |
  * | 存储 | `packages/auth/src/migrations/0005_project_member.sql` ＋ 同目录的 drizzle 模型 | 「库里有什么」 |
- * | 接线 | `packages/opencode/src/server/openhive/archive.ts`（归档/找回，`decide`，T013）＋ `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`（「已归档 ⇒ 拒」两道门，`frozen`，T015） | 「取身份 → 问判定 → 执行」 |
+ * | 接线 | `packages/opencode/src/server/openhive/archive.ts`（归档/找回，`decide`，T013）＋ `packages/opencode/src/server/openhive/member.ts`（名单 / 邀请 / 移除 / 退群，`decide`，T021）＋ `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`（「已归档 ⇒ 拒」两道门，`frozen`，T015） | 「取身份 → 问判定 → 执行」 |
  *
  * 本文件**不读库、不抛错、不碰 Effect**——纯函数，所以它能在 core 里（core **不依赖 auth**，
  * 见 `packages/auth/package.json` 的 deps）。取身份那一步归 `packages/opencode`：

@@ -23,6 +23,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test"
 import { PROJECT_DATA } from "./project-data"
+import type { MemberEntry } from "./member-panel"
 import type { ProjectEntry } from "./project-panel"
 
 /** 记下一个请求；按路径前缀回体。**没配到的路径回 404**——静默回空体会让「少了条请求」看不出来。 */
@@ -183,6 +184,71 @@ describe("PROJECT_DATA 的文件动作绑定（T020）", () => {
     expect(await blob?.text()).toBe("甲")
     expect(发出.map((r) => [r.method, r.url, r.项目头])).toEqual([
       ["GET", "/openhive/file/download?path=%E8%AF%9D%E5%8D%95.csv", "p1"],
+    ])
+  })
+})
+
+/**
+ * T021 的四个成员动作（FR-004）。
+ *
+ * 与上面那两组**同一个理由**，而这里接错的空间更大：`invite` 与 `remove` 的签名**一模一样**
+ * （`(projectId, policeNo)`），接反了类型检查完全合法，后果却是「点移除，把那个人**又邀请
+ * 了一遍**」——两次都回成功。
+ *
+ * ⚠️ 四项都**不带** `x-openhive-project`（与上面 archive / restore 同侧）：那个头会被 T017
+ * 中间件套上「已归档 ⇒ 403」的门，而名单要的恰恰是「归档 ≠ 看不见」（见 `openhive-members.ts`
+ * 文件头）。**这一组全是 `null`，不是漏写。**
+ */
+describe("PROJECT_DATA 的成员动作绑定（T021）", () => {
+  const 张三: MemberEntry = { policeId: "020601", name: "张三", role: "owner" }
+
+  test("members 走成员名单那条出口（projectId 在查询串上），不带项目头", async () => {
+    const 发出 = 假服务({ "/openhive/project/member": [张三] })
+
+    expect(await PROJECT_DATA.members("p1")).toEqual([张三])
+    expect(发出).toEqual([
+      { url: "/openhive/project/member?projectId=p1", method: "GET", 项目头: null, 体: undefined },
+    ])
+  })
+
+  /**
+   * `policeNo` 是**警号**、不是 `auth.user.id` 那个 UUID——前端自始至终说警号，翻译在服务端
+   * （`openhive-members.ts` 文件头）。接错的话这里会发一个 UUID 出去，而服务端只会回
+   * 「查无此警号」：**看着像业务错误，其实是接错线**。
+   */
+  test("invite 走邀请那条出口，体里带的是警号", async () => {
+    const 发出 = 假服务({ "/openhive/project/member/invite": { projectId: "p1" } })
+
+    expect(await PROJECT_DATA.invite("p1", "020602")).toEqual({ kind: "done" })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/project/member/invite",
+        method: "POST",
+        项目头: null,
+        体: JSON.stringify({ projectId: "p1", policeNo: "020602" }),
+      },
+    ])
+  })
+
+  test("remove 走移除那条出口（不是邀请）", async () => {
+    const 发出 = 假服务({ "/openhive/project/member/remove": { projectId: "p1" } })
+
+    expect(await PROJECT_DATA.remove("p1", "020602")).toEqual({ kind: "done" })
+    expect(发出.map((r) => [r.method, r.url])).toEqual([["POST", "/openhive/project/member/remove"]])
+  })
+
+  /** 退群体里**只有** `projectId`——退的永远是自己（服务端拿身份定人）。多带警号是另一回事。 */
+  test("leave 走退群那条出口，体里只有 projectId", async () => {
+    const 发出 = 假服务({ "/openhive/project/member/leave": { projectId: "p1" } })
+
+    expect(await PROJECT_DATA.leave("p1")).toEqual({ kind: "done" })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/project/member/leave",
+        method: "POST",
+        项目头: null,
+        体: JSON.stringify({ projectId: "p1" }),
+      },
     ])
   })
 })

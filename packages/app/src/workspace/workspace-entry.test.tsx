@@ -5,6 +5,7 @@ import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { setCurrentProject } from "@/project/current-project"
+import type { MemberEntry } from "@/project/member-panel"
 import { setMinioBackups } from "@/project/minio-backups"
 import { type ProjectData } from "@/project/project-data"
 import { setProjectFiles } from "@/project/project-files"
@@ -14,10 +15,29 @@ import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
+/**
+ * 挂一个 `WorkspaceEntry`，并把卸载函数**记账**——`afterEach` 里逐个卸载（T021 实测补上）。
+ *
+ * ⚠️ 这个记账**不是**洁癖，是这一组测试能不能信的前提。`render()` 返回一个 `dispose`，此前
+ * 被丢掉了，于是**每个用例挂过的实例全都活着**：`currentProject` / `projectList` 是**模块级**
+ * 接入缝，旧实例的 effect 照样订阅着它们 ⇒ 下一条用例 `setCurrentProject(...)` 时，
+ * 前几条用例那些实例会**一起**跑起来、拿**它们自己那个替身**去取数、再往**同一个**模块级缝里写。
+ *
+ * 实测（2026-10-07，T021 的接线做完之后）：`项目数据接线（T018 出参） > 切当前项目 ⇒ 按新 id
+ * 重新取文件` 报 `Expected to contain: "乙/话单.csv"  Received: [ "资料", "资料/话单.csv" ]`
+ * ——而 `["资料/话单.csv"]` 这个体在本文件里只有一个出处（`files: async () => ["资料/话单.csv"]`，
+ * **它连 id 都不看**），也就是**前面**某条用例那棵树。谁后落地谁赢，于是红成
+ * 「当前项目是乙、树里是甲的文件」——**看着像产品串项目了，其实是夹具串了**。
+ *
+ * 为什么现在才炸：它是**竞速**，谁的 promise 最后落地谁赢。多挂一个订阅者（本 task 的名单
+ * effect）就足以把胜负翻过来——不改也要在改动量再大一点时炸，所以这里一次修掉。
+ */
+const 挂过的: Array<() => void> = []
+
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  挂过的.push(render(element, host))
   return host
 }
 
@@ -39,6 +59,9 @@ function titlebarSlot() {
  * `file-tree.test.tsx` 里有一条同因的 `afterEach`（那边的注释写得更细）。
  */
 afterEach(() => {
+  // **先卸载、再清 body**（顺序要紧）：卸载才是把旧实例的 effect 从模块级缝上摘下来的那一步，
+  // 只清 `innerHTML` 摘不掉订阅——那一半正是本文件的假红来源（见 `mount` 的注释）。
+  挂过的.splice(0).forEach((卸载) => 卸载())
   document.body.innerHTML = ""
 })
 
@@ -902,12 +925,28 @@ const 封存 = (e: ProjectEntry): ProjectEntry => ({ ...e, archived: true })
  */
 function 假数据源(
   剧本: Partial<
-    Pick<ProjectData, "list" | "create" | "archive" | "restore" | "files" | "copy" | "move" | "upload" | "download">
+    Pick<
+      ProjectData,
+      | "list"
+      | "create"
+      | "archive"
+      | "restore"
+      | "files"
+      | "copy"
+      | "move"
+      | "upload"
+      | "download"
+      | "members"
+      | "invite"
+      | "remove"
+      | "leave"
+    >
   > = {},
 ) {
   const 记 = {
     list: 0,
     files: [] as string[],
+    members: [] as string[],
     建的: [] as Array<NewProjectInput>,
     归档的: [] as string[],
     找回的: [] as string[],
@@ -915,6 +954,9 @@ function 假数据源(
     移动的: [] as Array<[string, string, string]>,
     传的: [] as Array<[string, string, string]>,
     下的: [] as Array<[string, string]>,
+    邀请的: [] as Array<[string, string]>,
+    移除的: [] as Array<[string, string]>,
+    退的: [] as string[],
   }
   const data: ProjectData = {
     list: async () => {
@@ -959,6 +1001,25 @@ function 假数据源(
     download: async (projectId, path) => {
       记.下的.push([projectId, path])
       return 剧本.download ? await 剧本.download(projectId, path) : undefined
+    },
+    // T021 的四个成员动作。前三条同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
+    // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
+    members: async (projectId) => {
+      记.members.push(projectId)
+      // 同 `list`：没给剧本就当「服务端说了这个项目没有成员」（`[]` 是**一条答案**，不是「取不到」）。
+      return 剧本.members ? await 剧本.members(projectId) : []
+    },
+    invite: async (projectId, policeNo) => {
+      记.邀请的.push([projectId, policeNo])
+      return 剧本.invite ? await 剧本.invite(projectId, policeNo) : { kind: "failed", message: "没有剧本" }
+    },
+    remove: async (projectId, policeNo) => {
+      记.移除的.push([projectId, policeNo])
+      return 剧本.remove ? await 剧本.remove(projectId, policeNo) : { kind: "failed", message: "没有剧本" }
+    },
+    leave: async (projectId) => {
+      记.退的.push(projectId)
+      return 剧本.leave ? await 剧本.leave(projectId) : { kind: "failed", message: "没有剧本" }
     },
   }
   return { data, 记 }
@@ -1725,5 +1786,266 @@ describe("文件动作接进工作台（T020 出参）", () => {
 
     expect(text(host, "file-op-message")).toContain("话单.csv")
     expect(存了).toBe(0)
+  })
+})
+
+/** 成员面板里某个 `data-slot` 的按钮（面板自己那几个 `data-slot` 名见 `member-panel.tsx`）。 */
+const 成员按钮 = (host: HTMLElement, slot: string) =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+/** 名单**某一行里**的按钮（行按警号认——`member-row` 上有 `data-police-id`）。 */
+const 行内按钮 = (host: HTMLElement, policeId: string, slot: string) =>
+  host.querySelector<HTMLButtonElement>(
+    `[data-slot='member-row'][data-police-id='${policeId}'] [data-slot='${slot}']`,
+  )
+
+/**
+ * 成员动作接进工作台（T021 出参）。
+ *
+ * 上面「成员面板接进左栏」那一节（T010）验的是**缝里的名单画不画得出来**；这一节验
+ * **谁把名单写进缝里、三颗按钮真的能走到数据源上**——在那之前缝里没有写入方、三个回调
+ * 没接（⇒ 渲染成 `disabled`），这是 T005 起的老口径「未接线即禁用」。
+ *
+ * ⚠️ 每一条都先 `setCurrentUser`：面板的 `decide` 拿 `selfPoliceId` 在名单里反查 role，
+ * 查不到 ⇒ `actor` 为 `null` ⇒ **三颗按钮一个都不画**（T010 的有意 fail-closed）。
+ * 忘了这一步，用例会红在「按钮不在」，而真正的原因是身份没给——那是一条**误导的红**。
+ */
+describe("成员动作接进工作台（T021 出参）", () => {
+  const 名册: MemberEntry[] = [
+    { policeId: "020601", name: "张三", role: "owner" },
+    { policeId: "020602", name: "李四", role: "member" },
+  ]
+
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectMembers(undefined)
+    // 我是 owner 张三：能邀请（FR-004：owner 与 member **都能**邀请）、能移除 member（李四那一行）。
+    setCurrentUser({ name: "张三", policeId: "020601" })
+  })
+  // 身份是模块级接入缝，别把它留给后面的用例。
+  afterEach(() => setCurrentUser(undefined))
+
+  /** 挂一个**已选定共享项目**、且成员面板已经滑出来的左栏。 */
+  async function 开(剧本: Parameters<typeof 假数据源>[0] = {}) {
+    const { data, 记 } = 假数据源({ members: async () => 名册, ...剧本 })
+    const host = 挂(data)
+    await 冲一遍() // 进门拉清单（`archived` 从那一份里来）
+    setCurrentProject({ id: "p1", name: "8·17专案", memberCount: 名册.length })
+    await 冲一遍() // 选定项目 ⇒ 拉名单
+    锚点按钮(host, "project-anchor-members")?.click()
+    return { host, 假: 记 }
+  }
+
+  /** 在邀请框里填一个警号再点「邀请」（面板自己会 trim 并把输入框清空）。 */
+  function 邀请(host: HTMLElement, 警号: string) {
+    const 框 = host.querySelector<HTMLInputElement>("[data-slot='member-panel-invite-input']")
+    if (!框) throw new Error("邀请框不在——这条用例的前提不成立")
+    框.value = 警号
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    成员按钮(host, "member-panel-invite-ok")?.click()
+  }
+
+  test("选定项目 ⇒ 拉一次名单，写进接入缝（面板里看得到）", async () => {
+    const { host, 假 } = await 开()
+
+    expect(假.members).toEqual(["p1"])
+    expect(text(host, "member-name")).toBe("张三")
+  })
+
+  /**
+   * 切项目要**换一份**名单，而不是把上一个项目的人留在界面上（`projectMembers` 是模块级的
+   * 一条缝，不是按项目分区的）。判据两条：新项目的人**在**、上一个项目的人**不在**
+   * ——只看前一条的话，一个「两份名单叠着画」的实现在「新人画得出来」这件事上照样绿。
+   */
+  test("切项目 ⇒ 换一份名单（不把上一个项目的人留在界面上）", async () => {
+    const { host, 假 } = await 开({
+      members: async (id) => (id === "p1" ? 名册 : [{ policeId: "020603", name: "王五", role: "member" }]),
+    })
+    // 前置：换之前张三是画得出来的——否则下面那个「不在」在面板**压根是空**的时候也绿。
+    expect(text(host, "member-name")).toBe("张三")
+
+    setCurrentProject({ id: "p2", name: "另一案", memberCount: 1 })
+    await 冲一遍()
+
+    expect(假.members).toEqual(["p1", "p2"])
+    expect(text(host, "member-name")).toBe("王五")
+    expect(不存在(host, "[data-slot='member-row'][data-police-id='020601']")).toBe(true)
+  })
+
+  /**
+   * 换项目**那一瞬间**就先清空，不等新名单回来。
+   *
+   * 与上面两条判的不是同一段：那两条判「新名单落地之后，旧的人不在」，这一条判**中间那一小段**
+   * ——新名单卡着没回来时（乙的名单故意让它永不落地），界面不能还挂着上一个项目的人。
+   * 少了那次清空，这个窗口里就是「当前项目是乙、名单里是甲的人」：两句都对不上，
+   * 而**端点**判据看不见它（`#004-09`）。
+   */
+  test("换项目那一刻就先清空：新名单还没回来时，不显示上一个项目的人", async () => {
+    const { data } = 假数据源({
+      members: (id) => (id === "p1" ? Promise.resolve(名册) : new Promise(() => {})),
+    })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲", memberCount: 2 })
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-members")?.click()
+    // 前置：甲的名单真的画出来了——否则下面那个「不在」在面板压根是空的时候也成立（`#004-14`）。
+    expect(text(host, "member-name")).toBe("张三")
+
+    setCurrentProject({ id: "p2", name: "乙", memberCount: 1 })
+    // 乙那一份**永不落地** ⇒ 这一等仍然停在那个窗口里（不是「等新名单回来再看」）。
+    await 冲一遍()
+
+    expect(不存在(host, "[data-slot='member-row'][data-police-id='020601']")).toBe(true)
+    expect(text(host, "member-panel-count")).toBe("成员（0）")
+  })
+
+  /**
+   * 上一个项目的名单**迟到**时不许覆盖新的（同上面文件清单那条，同一个成因）。
+   *
+   * 这一条钉的是 effect 里那道 `onCleanup` 作废闸：少了它，慢的那一份会**后**落地、
+   * 把当前项目的名单顶掉——界面上就成了「当前项目是乙、名单里是甲的人」，
+   * 而那正是这个产品最不能容忍的错觉（`#004-09`：端点判据对**顺序**完全不敏感，
+   * 所以「有闸」这件事必须单独一条）。
+   */
+  test("上一个项目的名单迟到 ⇒ 丢掉，不覆盖当前项目（宁可空态，不画错项目的人）", async () => {
+    let 放甲: (v: readonly MemberEntry[]) => void = () => {}
+    const { data } = 假数据源({
+      members: (id) =>
+        id === "p1"
+          ? new Promise<readonly MemberEntry[]>((resolve) => {
+              放甲 = resolve
+            })
+          : Promise.resolve([{ policeId: "020603", name: "王五", role: "member" }]),
+    })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    setCurrentProject({ id: "p2", name: "乙", memberCount: 1 })
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-members")?.click()
+    // 前置：乙的名单真的画出来了——否则下面那两个「不是甲的人」在面板空白时也成立（`#004-14`）。
+    expect(text(host, "member-name")).toBe("王五")
+
+    // 甲的名单现在才回来。
+    放甲(名册)
+    await 冲一遍()
+
+    expect(text(host, "member-name")).toBe("王五")
+    expect(不存在(host, "[data-slot='member-row'][data-police-id='020601']")).toBe(true)
+  })
+
+  /**
+   * 没注入数据源 ⇒ 三颗按钮**渲染成禁用**（T005 起的老口径：未接线即禁用）。
+   *
+   * 名单是**直接写进缝里**的（不经过数据源）：这样「禁用」只能归因于「没接线」，而不是
+   * 「缝里没数据 ⇒ `decide` 把按钮整个去掉了」。两件事长得一样，混在一起看不出是哪种。
+   *
+   * ⚠️ **顺序要紧**：缝要**在挂载之后**才写。本层是那条缝唯一的写入方，而它「换项目就先清空
+   * 再取」——没有数据源时清完就返回（取不了）。先写后挂的话，那一下挂载会把名单当场清掉，
+   * 于是这条用例红在「按钮不在」（`我()` 反查不到 ⇒ `decide` 落空），而不是红在「能点」
+   * ——那是一条**归因错了的红**。顺序与 T010 那条「缝里没数据时走空态」一致（它也是挂载后写）。
+   *
+   * 这条同时钉住了「未接线即禁用」：把回调写成不带 `projectData ?` 的直连，
+   * `disabled` 就不再成立（`?.disabled` 拿到的是 `false`）——而**按钮不在**时它拿到的是
+   * `undefined`，同样不成立 ⇒ 两种坏法都躲不过去。
+   */
+  test("没注入数据源 ⇒ 邀请 / 移除渲染成**禁用**，且一个请求都不发", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "8·17专案", memberCount: 2 })
+    setProjectMembers(名册)
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    expect(成员按钮(host, "member-panel-invite-ok")?.disabled).toBe(true)
+    expect(行内按钮(host, "020602", "member-remove")?.disabled).toBe(true)
+  })
+
+  test("点「邀请」⇒ 走 invite 那条出口（带当前项目 id 与警号）；办成 ⇒ 名单重取一次", async () => {
+    const { host, 假 } = await 开({ invite: async () => ({ kind: "done" }) })
+    const 拉前 = 假.members.length
+
+    邀请(host, "020603")
+    await 冲一遍()
+
+    expect(假.邀请的).toEqual([["p1", "020603"]])
+    expect(假.members.length).toBe(拉前 + 1)
+    // 办成了就**不留话**：名单自己会变（重取），再补一句「邀请成功」是给屏幕加噪音
+    // （同 T018/T020 的「`undefined` = 收工」）。
+    expect(text(host, "member-op-message")).toBeUndefined()
+  })
+
+  /** 被拒 ⇒ 把服务端那句话留在界面上（前端不自己改写措辞），**且不重取**——什么都没变。 */
+  test("邀请被拒 ⇒ 留下服务端那句话，且**不**重取名单", async () => {
+    const { host, 假 } = await 开({ invite: async () => ({ kind: "rejected", message: "查无此警号" }) })
+    const 拉前 = 假.members.length
+
+    邀请(host, "029999")
+    await 冲一遍()
+
+    expect(text(host, "member-op-message")).toBe("查无此警号")
+    expect(假.members.length).toBe(拉前)
+  })
+
+  /**
+   * `remove` 与 `invite` 的方法签名**一模一样**（`(projectId, policeNo)`），接错了不报错、
+   * 不变红（`project-data.test.ts` 钉的是**绑定**那一层，这里钉的是**界面这一路**）。
+   *
+   * 带的是**那一行**的警号，不是「名单第一行」：`MemberPanel` 的 `onRemove` 回传的是**整行**，
+   * 而本层要从那一行里取出警号（`remove` 这条出口说的是警号）。
+   */
+  test("点「移除」⇒ 走 remove 那条出口，带的是**那一行**的警号", async () => {
+    const { host, 假 } = await 开({ remove: async () => ({ kind: "done" }) })
+    // 前置：owner 自己那一行**没有**「移除」（目标须是 member，否则项目会无主）。
+    expect(不存在(host, "[data-slot='member-row'][data-police-id='020601'] [data-slot='member-remove']")).toBe(true)
+
+    行内按钮(host, "020602", "member-remove")?.click()
+    await 冲一遍()
+
+    expect(假.移除的).toEqual([["p1", "020602"]])
+    expect(假.邀请的).toEqual([])
+  })
+
+  /**
+   * 退群是**独立的一条**（不与「移除」合并）：体里不带警号——退的永远是自己。
+   *
+   * 我是 member 李四（owner 看不到「退出项目」）。办成之后**收起面板**：退群之后
+   * 「这个项目的成员管理」跟我没关系了，留着它只会让下一次重取（此时必然 403）把
+   * 「还没有成员」当结论画出来。
+   */
+  test("点「退出项目」⇒ 走 leave 那条出口；办成 ⇒ 面板收起", async () => {
+    setCurrentUser({ name: "李四", policeId: "020602" })
+    const { host, 假 } = await 开({ leave: async () => ({ kind: "done" }) })
+    // 前置：member 看不到任何「移除」——按钮真的按身份画出来了，才说明反查是活的。
+    expect(不存在(host, "[data-slot='member-remove']")).toBe(true)
+
+    成员按钮(host, "member-panel-leave")?.click()
+    await 冲一遍()
+
+    expect(假.退的).toEqual(["p1"])
+    expect(成员面板开着(host)).toBe(false)
+  })
+
+  /**
+   * 当前项目已归档 ⇒ 三颗动作**一个都不画**（FR-010：归档 = 冻结），而名单**照样在**
+   * ——「冻结的是动作不是看见」是 BE 的裁定（`openhive/member.ts` 文件头整节），
+   * 这里钉的是它在界面上也成立。
+   *
+   * 归档态从**清单**里取（`ProjectEntry.archived`），不从 `currentProject()` 取——那个形状
+   * 只有 id / name / memberCount（T005 定的）。故这一条用改清单的方式翻转归档态，
+   * **同一个挂载**上前后对照（`#004-14`：先证明它是画的，再说它不画了）。
+   */
+  test("当前项目已归档 ⇒ 三颗动作一个都不画；对照：不归档时是画的", async () => {
+    const { host } = await 开()
+
+    expect(不存在(host, "[data-slot='member-panel-invite-ok']")).toBe(false)
+    expect(text(host, "member-name")).toBe("张三")
+
+    setProjectList([封存(私有("p1", "8·17专案", 1))])
+
+    expect(不存在(host, "[data-slot='member-panel-invite-ok']")).toBe(true)
+    expect(不存在(host, "[data-slot='member-remove']")).toBe(true)
+    // 名单还在——归档 ≠ 看不见
+    expect(text(host, "member-name")).toBe("张三")
   })
 })

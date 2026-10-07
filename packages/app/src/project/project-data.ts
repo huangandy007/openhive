@@ -34,6 +34,8 @@ import { archiveProject, createProject, listProjects, restoreProject } from "./o
 import type { FileOpOutcome } from "./openhive-file-ops"
 import { copyFile, downloadFile, moveFile, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
+import { inviteMember, leaveProject, listMembers, removeMember } from "./openhive-members"
+import type { MemberEntry } from "./member-panel"
 import type { NewProjectInput, ProjectEntry } from "./project-panel"
 
 /**
@@ -77,14 +79,28 @@ export interface ProjectData {
    * `<a download>`），而这一层要能在没有 DOM 的单测里跑。存盘落点见 `workspace-entry.tsx`。
    */
   download(projectId: string, path: string): Promise<Blob | undefined>
+  /** 取某个项目的成员名单（T021 / FR-004）。`undefined` = 取不到，`[]` = 一个成员都没有（含 403）。 */
+  members(projectId: string): Promise<readonly MemberEntry[] | undefined>
+  /**
+   * 邀请一位民警（T021 / FR-004）。
+   *
+   * ⚠️ `policeNo` 是**警号**、不是 `auth.user.id` 那个 UUID——界面说的就是警号，
+   * 翻译在服务端（`openhive-members.ts` 文件头）。
+   */
+  invite(projectId: string, policeNo: string): Promise<ProjectActionOutcome>
+  /** 移除一位民警（T021 / FR-004：仅 owner，且目标须是 member）。 */
+  remove(projectId: string, policeNo: string): Promise<ProjectActionOutcome>
+  /** 退出项目（T021 / FR-004：member 可退、owner 不可退）。**不带「谁」**——退的永远是自己。 */
+  leave(projectId: string): Promise<ProjectActionOutcome>
 }
 
 /**
- * 生产用的那一个——五个方法各接各的客户端（`openhive-project` ×4 ＋ `openhive-files`）。
+ * 生产用的那一个——每个方法各接各的客户端（`openhive-project` ×4 ＋ `openhive-files`
+ * ＋ `openhive-file-ops` ×4 ＋ `openhive-members` ×4）。
  *
- * ⚠️ **五个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
- * 更是一模一样，接反了只有请求路径不同）。`project-data.test.ts` 就是为这件事写的
- * （stub 进程的 `fetch`，走真客户端）。
+ * ⚠️ **一个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
+ * 一模一样，`invite` 与 `remove` 也是，接反了只有请求路径不同）。`project-data.test.ts`
+ * 就是为这件事写的（stub 进程的 `fetch`，走真客户端）。
  */
 export const PROJECT_DATA: ProjectData = {
   list: () => listProjects(),
@@ -96,4 +112,8 @@ export const PROJECT_DATA: ProjectData = {
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
   upload: (projectId, dir, file) => uploadFile(projectId, dir, file),
   download: (projectId, path) => downloadFile(projectId, path),
+  members: (projectId) => listMembers(projectId),
+  invite: (projectId, policeNo) => inviteMember(projectId, policeNo),
+  remove: (projectId, policeNo) => removeMember(projectId, policeNo),
+  leave: (projectId) => leaveProject(projectId),
 }

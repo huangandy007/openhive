@@ -22,6 +22,25 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #005-03 · 2026-10-07 · tool-quirk · 005-project-management
+**现象 / 决策**：**组件测试里 `mount()` 丢掉 `render()` 的 dispose ⇒ 旧实例一直订阅模块级接缝，
+后面每一个用例改接缝时，**旧实例**都会用**它自己那份 stub** 去取数、再写回**同一条缝**，
+谁的回包最后落地谁赢。** 现场长成「产品串项目」的样子，而产品是好的：
+`workspace-entry.test.tsx` 报 `Expected to contain: "乙/话单.csv" Received: [ "资料", "资料/话单.csv" ]`，
+而 `["资料/话单.csv"]` 在这**一个文件**里**只出现一次**（某处 stub 无视 id）——唯一来源即某个
+**早就该被卸载**的旧实例。触发条件是「**会写模块级接缝的组件** ＋ 每用例重挂 ＋ 后面用例改接缝」；
+005 的 T021 给每个实例**多加了一个名单订阅者**，把这场竞态从「偶尔翻车」拨成「稳定常红」，
+于是它才现形（此前 T018/T020 的用例一直在赌谁先落地）。
+**应对**：`mount()` 记账 ＋ 外层 `afterEach` 里**先卸载、再清 `document.body`**——**顺序要紧**
+（先清 body 会让 dispose 去碰已经摘掉的节点）。两个判据：① **「红在别人的数据上」先找订阅者**，
+别去改被测组件（`#003-01` 同族：先怀疑测量）；② 排查时先 `grep` 那个实得值在文件里的**出现次数**——
+**只有一次**就说明它来自「当时活着的另一个实例」，不是「被测对象算错了」。
+**应用范围**：任何「模块级信号 / 单例接缝 ＋ 每用例重挂组件」的测试文件。⚠️ 同型 `mount()`
+散落在 `packages/app/src/**/*.test.tsx`（`center/views`、`project/`、`auth` 都有），
+但**只有「会写接缝的组件」咬得到**——不是每个都要改，逐个问「这个组件写不写接缝」。
+落点：`packages/app/src/workspace/workspace-entry.test.tsx` 的 `挂过的` ＋ `afterEach`；
+记账在 `docs/superpowers/specs/005-project-management/state.md` 的「T021」节。
+
 ## #005-02 · 2026-10-06 · tool-quirk · 005-project-management
 **现象 / 决策**：**PGlite 夹具里「两个并发请求」会撞 `42P05 duplicate_prepared_statement`，症状像「被测的那道门在并发下崩了」。**
 实测（2026-10-06，T025）：第一版夹具用 `Effect.forkChild(那一轮)` ＋ 主纤程**每 100ms 轮询** `GET /permission`，
