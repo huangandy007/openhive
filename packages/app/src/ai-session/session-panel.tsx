@@ -62,6 +62,19 @@ export interface SessionPanelProps {
   onSelectSession?: (sessionID: string) => void
   /** 新建一场会话。真正调 SDK `session.create` 的是生产侧，不是这里。 */
   onNewSession?: () => void
+  /**
+   * 删除**当前**那场会话（T015 / US4 场景 2）。生产由 `ai-session-slot.tsx` 接上
+   * （调 `session-actions.ts` 的 `删会话`，成功后再按 `删除后去哪` 跳走）。
+   *
+   * ⚠️ **失败归调用方**（与 `onSelectSession` / `onNewSession` 同一个 `void` 签名）：本组件不接
+   * 回话，也就不可能在「删没删掉」这件事上撒谎。生产那边 `.catch` 里弹 toast——与它接
+   * `onSubmitPrompt` 同款，只是那边需要回话（决定要不要清空输入框），这边不需要。
+   *
+   * ⚠️ **不可逆动作**（上游：删会话会连带消息与历史一起永久删掉），而执行层的
+   * `permission.bash` 闸门筛的是 shell 命令 pattern，**管不到**这条 HTTP 出口 ⇒ 要拦只能在前端拦。
+   * 形态由 2026-10-07 用户裁定：**就地二次确认**（见 `确认中`）。
+   */
+  onDeleteSession?: (sessionID: string) => void
 }
 
 /**
@@ -85,6 +98,24 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * design-v2 §8.2 与 `2026-09-12-AI资产-design.md` 都把它画在**输入框旁边**。
    */
   const [抽屉开, set抽屉开] = createSignal(false)
+
+  /**
+   * 「待删的是**哪一场**」——存 id，不存 `boolean`（T015）。
+   *
+   * 用户点过「删除」（钮已变成「确认删除？」）之后，完全可能去点列表里**另一场**会话。
+   * 若确认态是一个 `boolean`，钮上那句「确认删除？」**还亮着**，而下一次点击删掉的是**新那场**
+   * ——用户从没想过要删的那场，且不可逆。判据写成 `待删() === props.sessionID`，「钮上的文案」
+   * 与「它真会删的那一场」就**按构造**一致（`LEARNINGS #004-02`：两个投影要靠会红的相等断言
+   * 同步，别靠注释约定）。用例见 `session-panel.test.tsx` 的 ④。
+   *
+   * ⚠️ **一条已知的残留（不修，只记）**：`待删` 是**粘**的——点过「删除」之后切到别场、再切回来，
+   * 钮上那句「确认删除？」**还在**（那确实是「这场会话有一条待确认」），于是一下点击就删了。
+   * 不修的理由：要消掉它得再加一条过期/复位规则，而钮上的字**始终如实**写着它要干什么，
+   * 用户不必猜。⚠️ 这条**没有断言守着**（用例 ④ 钉的是「切走之后归位」，不是「切回来」）。
+   */
+  const [待删, set待删] = createSignal<string | undefined>(undefined)
+  /** 此刻这个钮是「问」还是「做」:问的是**当前**这场会话。 */
+  const 确认中 = () => 待删() === props.sessionID
 
   /** 当前那条会话。找不到（如 data 还没同步到）时退回显示 id，别渲染成空白。 */
   const 当前会话 = () => props.data.session.find((会话) => 会话.id === props.sessionID)
@@ -208,6 +239,35 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
             onClick={() => props.onNewSession?.()}
           >
             ＋ 新会话
+          </button>
+          {/* 删除**当前**这场（T015）。坐在行上、不坐在列表的每一行里：详情列表是「切到哪一场」，
+              而删除是一个**对当前**的动作（上游 `message-timeline` 把删除放在会话列表行里，那边一行
+              就是一场；右栏这一行说的是「当前会话」，动作自然也挂在这儿）。
+
+              ⚠️ **视觉是本处自定的**：`DESIGN.md` §4.7.5 的会话管理那一格只写了「新建 / 切换走
+              SDK `session.create` / `session.list`」，**没有**删除、更没有它的样子。本处按同栏的
+              「＋ 新会话」取同一档 token（`text-v2-text-text-muted` ＋ hover 同底色），确认态改用
+              仓里现成的语义色 `text-v2-state-fg-danger`（`auth/change-password.tsx` 的报错行、
+              `dialog-connect-provider.tsx` 同款，**不是**随手挑的颜色）。已记进 `state.md` 的缺口表。 */}
+          <button
+            data-slot="session-delete"
+            class="shrink-0 cursor-pointer rounded px-1 py-0.5 text-[11px] hover:bg-v2-overlay-simple-overlay-hover"
+            classList={{
+              "text-v2-state-fg-danger": 确认中(),
+              "text-v2-text-text-muted": !确认中(),
+            }}
+            onClick={() => {
+              // 第一下只问、不删（不可逆动作 ⇒ 2026-10-07 裁定的就地二次确认）。
+              if (!确认中()) {
+                set待删(props.sessionID)
+                return
+              }
+              // 第二下：先收起确认态再交出去——不留一个「已确认」的钮给下一场会话。
+              set待删(undefined)
+              props.onDeleteSession?.(props.sessionID)
+            }}
+          >
+            {确认中() ? "确认删除？" : "删除"}
           </button>
         </div>
 

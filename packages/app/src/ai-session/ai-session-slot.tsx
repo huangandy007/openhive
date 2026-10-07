@@ -1,4 +1,4 @@
-import { useLocation } from "@solidjs/router"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
 import { useCenterTabs } from "@/center/tab-context"
 import { useLanguage } from "@/context/language"
@@ -8,6 +8,7 @@ import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
+import { 删除后去哪, 建会话, 删会话, 会话路径 } from "./session-actions"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
 
@@ -47,25 +48,31 @@ import { submitRightPanePrompt } from "./submit-prompt"
  * 的 provider 要一个**活着的服务器连接**才建得起来 ⇒ 在 `bun test` 里挂不起来。按
  * `LEARNINGS #002-02`：**「测不了」要如实写成「缺口」，不能写成「覆盖」**——已记进
  * `docs/superpowers/specs/006-ai-session/state.md` 的缺口表。
- * 它里面**真正会出错**的三件事都单独抽出来测了：
+ * 它里面**真正会出错**的四件事都单独抽出来测了：
  * ① 「路由 → id → 目录 → 数据」那条异步链（含竞态）＝ `right-pane-source.test.tsx`；
- * ② 投影本身 ＝ `projection.test.ts`；③ **提交那一句话** ＝ `submit-prompt.test.ts`。
- * 本文件只负责**把它们接对**。
+ * ② 投影本身 ＝ `projection.test.ts`；③ **提交那一句话** ＝ `submit-prompt.test.ts`；
+ * ④ **会话管理三件事里有判断的那一半** ＝ `session-actions.test.ts`（T015：目录参数怎么传、
+ *    删完去哪一场、切会话的 URL 怎么拼）。本文件只负责**把它们接对**。
  *
- * ⚠️ 但**不是本文件里的一切都被测到了**（原话写到「三件事都测了」为止，读起来像全覆盖）：
- * 下面这三条**只在代码上核过、没有断言守着**（`#002-02` 的口径：这就是缺口）——
+ * ⚠️ 但**不是本文件里的一切都被测到了**（「四件事都测了」读起来仍像全覆盖）：
+ * 下面这几条**只在代码上核过、没有断言守着**（`#002-02` 的口径：这就是缺口）——
  * ① `提交态` 是 `createMemo`（引用随 memo 重算释放，上面那段 refcount 讲的就是它）；
  * ② 「**点击那一刻才读**」：`态()` 是 `<Show>` 的子访问器**参数**（⚠️ 原注释把它写成了
- *    memo，名字安错了——第二轮审查核出），真正读它的时刻是 `onSubmitPrompt` 回调体内
- *    （`const 现在 = 态()`），也就是点提交那一刻；
+ *    memo，名字安错了——第二轮审查核出），真正读它的时刻是回调体内（`const 现在 = 态()`），
+ *    也就是点下去那一刻；
  * ③ `Show` 非 keyed —— ⚠️ 它的作用**不是**「同会话内消息增长不重挂」（原注释因果挂错了）：
  *    消息增长压根不会让 `提交态` 重算（依赖是 `源.ready()`，只读 `sessionID` / `directory` /
  *    `data`，而 `data` 按目录缓存、引用稳）。非 keyed 真正防的是「条件**仍是真值**、
  *    但**引用变了**」——例如切目录时 `ready` 返回一个新对象。
- * 三条错了都**不报错、不变红**，只有人读代码才看得见。
+ * ④ **T015 的三根线**：`onSelectSession` / `onNewSession` / `onDeleteSession` 各自那一句
+ *    `navigate(...)`（含「一场都不剩 ⇒ `/new-session`」那条分支）没有断言守着——它要一个
+ *    活的路由器与活服务器才跑得起来。**有判断的那一半**（拼哪个 URL、删完去哪一场）已经抽到
+ *    `session-actions.ts` 并单测覆盖，所以这里剩下的**只是「调它、把结果交给 navigate」**。
+ * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 export function AiSessionSlot(): JSX.Element {
   const location = useLocation()
+  const navigate = useNavigate()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()
   const center = useCenterTabs()
@@ -105,6 +112,18 @@ export function AiSessionSlot(): JSX.Element {
   /** 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。 */
   const 投影 = createMemo(() => projectCapabilities(MANIFESTS, center.module()))
 
+  /**
+   * 失败那一句话。**只有一处**——提交 / 新建 / 删除三条路都要说同一句
+   * （`LEARNINGS #002-06`：同一个判断两处各写一份是缺陷的温床）。
+   * 形状照上游 `open-in-app.tsx` 的 `notifyError`。
+   */
+  const 报错 = (err: unknown) =>
+    showToast({
+      variant: "error",
+      title: language.t("common.requestFailed"),
+      description: err instanceof Error ? err.message : String(err),
+    })
+
   // 三样齐了才渲染（`ready` 由 `right-pane-source` 守着），省得在这里写三个 `!`
   // ——那种 `!` 没有东西守着，改了 `data` 的来历就会悄悄说谎。
   // 没有会话（首页 / 草稿页）时这里什么都不渲染，`ThreePane` 那边因此**整根右栏都不在**
@@ -135,13 +154,42 @@ export function AiSessionSlot(): JSX.Element {
               serverSync: serverSync(),
               sync: 现在.sync,
             }).catch((err: unknown) => {
-              showToast({
-                variant: "error",
-                title: language.t("common.requestFailed"),
-                description: err instanceof Error ? err.message : String(err),
-              })
+              报错(err)
               return false
             })
+          }}
+          // ── T015：会话管理三件事的**接线**（有判断的那一半在 `session-actions.ts`，有单测）──
+          //
+          // 三件事的落点**都是改路由**：右栏的会话 id 只有一个产地，就是 URL
+          // （`route-session.ts` 文件头）。所以「切会话」不必自己维护状态——`源` 会跟着
+          // `location.pathname` 重算（它的依赖就是它）。
+          onSelectSession={(id) => {
+            const 去 = 会话路径(location.pathname, id)
+            if (去) navigate(去)
+          }}
+          onNewSession={() => {
+            const 现在 = 态()
+            // ⚠️ 建在**有目录作用域的那份 api** 上（`现在.api`），目录取自当前这场会话
+            // ——新会话因此落在同一个项目目录里（`建会话` 把它带进 `location.directory`）。
+            建会话({ api: 现在.api, directory: 现在.directory })
+              .then((id) => {
+                const 去 = 会话路径(location.pathname, id)
+                if (去) navigate(去)
+              })
+              .catch(报错)
+          }}
+          onDeleteSession={(sessionID) => {
+            const 现在 = 态()
+            删会话({ api: 现在.api, sessionID })
+              .then(() => {
+                const 下一场 = 删除后去哪(现在.data.session ?? [], sessionID)
+                const 去 = 下一场 === undefined ? undefined : 会话路径(location.pathname, 下一场)
+                // 一场都不剩时落到**草稿页**——蓝本 `pages/session/session-archive.ts:35-38`
+                // （那边是 `tabs.newDraft(...)`）。⚠️ 不能留在原地：URL 会继续指着一场已经不存在的
+                // 会话，而右栏那条解析链是拿它去问服务器的（`right-pane-source.ts`）。
+                navigate(去 ?? "/new-session")
+              })
+              .catch(报错)
           }}
         />
       )}

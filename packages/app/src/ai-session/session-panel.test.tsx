@@ -3,7 +3,7 @@ import type { Message, Part, Session } from "@opencode-ai/sdk/v2"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { FileComponentProvider } from "@opencode-ai/ui/context/file"
 import { SessionTurn } from "@opencode-ai/session-ui/session-turn"
-import type { JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
 import { SessionPanel, type SessionPanelData } from "./session-panel"
@@ -713,5 +713,117 @@ describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
 
     // 老那句失败回来了，但用户已经在写新的 ⇒ 回填会把新输入**当场吃掉**。
     expect(输入框里的话(宿主)).toBe("再查一下这个人的通话记录")
+  })
+})
+
+/**
+ * 删除会话（T015 / FR-010 / US4 场景 2）。
+ *
+ * ## 为什么要二次确认（2026-10-07 用户裁定：**就地**二次确认）
+ *
+ * 删会话是**不可逆**的（上游文案：「Delete a session and permanently remove all associated data,
+ * including messages and history」）。执行层的 `permission.bash` 那道闸门**管不到**它——那道门
+ * 筛的是 shell 命令的 pattern，而这条走的是 `api.session.remove` 这条 HTTP 出口（F4 的裁定：
+ * 闸门住在执行层、按 pattern 匹配）⇒ **要拦只能在前端拦**，形态由用户定为「就地」：不弹窗、
+ * 不新增全局浮层，钮自己改成「确认删除？」再点一下才真删。
+ *
+ * ## 确认态为什么挂在**会话 id** 上、而不是一个 `boolean`
+ *
+ * 这是本组最重要的一条：用户点过删除（钮已变成「确认删除？」）之后，完全可能去点列表里**另一场**
+ * 会话——此时如果确认态只是一个 `boolean`，钮上那句「确认删除？」**还在**，而下一次点击删掉的
+ * 是**新那场**——用户从没想过要删的那场。`LEARNINGS #004-02` 的同款：两个投影（钮上的文案 与
+ * 它真会删的那一场）必须**按构造**一致，不能靠注释约定同步。把「待删的是哪一场」存成 id，
+ * 判据写 `待删() === props.sessionID`，这条一致性就是结构性的：④ 那条用例钉的就是它。
+ */
+describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
+  const 两场 = (): SessionPanelData => ({
+    ...夹具数据(),
+    session: [造会话("ses_1", "资金分析会话"), 造会话("ses_2", "话单分析会话")],
+    message: { ses_1: [造消息("msg_1", "ses_1")], ses_2: [造消息("msg_9", "ses_2")] },
+  })
+
+  /** 摆一棵树。`sessionID` 传访问器时是**活**的（④ 那条要切换它）。 */
+  const 摆好 = (sessionID: string | (() => string) = "ses_1") => {
+    const 事件: string[] = []
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={两场()}
+          directory="/tmp/openhive-test"
+          sessionID={typeof sessionID === "function" ? sessionID() : sessionID}
+          projection={空投影}
+          onDeleteSession={(id) => 事件.push(id)}
+        />
+      )),
+    )
+    const 删除钮 = () => {
+      const 钮 = 宿主.querySelector<HTMLElement>('[data-slot="session-delete"]')
+      if (!钮) throw new Error('没找到删除钮（`[data-slot="session-delete"]`）')
+      return 钮
+    }
+    return { 宿主, 事件, 删除钮, 点删除: () => 删除钮().click() }
+  }
+
+  test("① 第一下**不删**：钮自己改成「确认删除？」（`onDeleteSession` 一次都没被调）", () => {
+    const { 事件, 删除钮, 点删除 } = 摆好()
+
+    expect(删除钮().textContent).toBe("删除")
+
+    点删除()
+
+    // 被测属性（`LEARNINGS #004-14`：被测的那条写在伴随信号前）——**一个字节的数据都没动**。
+    // 没有这条，「点了就删」的实现照样能过 ②（它只是少一次点击）。
+    expect(事件).toEqual([])
+    expect(删除钮().textContent).toBe("确认删除？")
+  })
+
+  test("② 第二下才删：收到**当前**会话 id，且钮回到「删除」（不给下一场留一个已确认的钮）", () => {
+    const { 事件, 删除钮, 点删除 } = 摆好()
+
+    点删除()
+    点删除()
+
+    expect(事件).toEqual(["ses_1"])
+    expect(删除钮().textContent).toBe("删除")
+  })
+
+  test("③ 问的是**当前那一场**：当前是 ses_2 ⇒ 收到 ses_2（不是列表第一条 ses_1）", () => {
+    // 夹具里两场**不同名不同 id**，所以「删列表第一条」与「删当前那场」在实得值上分得开。
+    const { 事件, 点删除 } = 摆好("ses_2")
+
+    点删除()
+    点删除()
+
+    expect(事件).toEqual(["ses_2"])
+  })
+
+  test("④ 确认态挂在**哪一场**上：确认到一半切换会话 ⇒ 钮当场回到「删除」，且不会顺手删掉新那场", () => {
+    // 这一条是本组的**数据丢失守卫**（见上面「为什么挂在会话 id 上」）。写成 `boolean` 的实现
+    // 在这一条上红：切过去之后钮**仍写着「确认删除？」**，再点一下就删掉了 ses_2。
+    const [id, setId] = createSignal("ses_1")
+    const { 事件, 删除钮, 点删除 } = 摆好(id)
+
+    点删除()
+    expect(删除钮().textContent).toBe("确认删除？")
+
+    setId("ses_2")
+
+    expect(删除钮().textContent).toBe("删除")
+    点删除()
+    // 切过来之后这一下只是**重新问一次**，不是「把上一条确认带过来」。
+    expect(事件).toEqual([])
+  })
+
+  test("⑤ 视觉：确认态取 `danger` 前景色，平时不取（负向对照；happy-dom 量不出色 ⇒ 钉 `className`）", () => {
+    // `text-v2-state-fg-danger` 是仓里现成的语义 token（`auth/change-password.tsx` 的报错行、
+    // `dialog-connect-provider.tsx` 同款）——**不是**随手挑的颜色。
+    // 只写正向那条时，把「删除」也刷成红色照样过（`LEARNINGS #005-07` ③）。
+    const { 删除钮, 点删除 } = 摆好()
+
+    expect(删除钮().className).not.toContain("text-v2-state-fg-danger")
+
+    点删除()
+
+    expect(删除钮().className).toContain("text-v2-state-fg-danger")
   })
 })
