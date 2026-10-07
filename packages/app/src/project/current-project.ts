@@ -49,10 +49,13 @@ export const currentProject = currentProjectSignal
 /**
  * 「当前项目」的 cookie 名（006 Step 5 · ②-1，用户裁定 **B：cookie 通道**，2026-10-07）。
  *
- * ⚠️ **这是客户端契约，两侧各写一份**——服务端那份在
+ * ⚠️ **这是客户端契约，一共四处字面量**——**产品**两份（服务端
  * `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`
- * 的 `PROJECT_COOKIE`；测试那第三份在 `current-project.test.ts`（写字面量，不 import）。
- * **改名要同时改三处**。
+ * 的 `PROJECT_COOKIE` ＋ 客户端本文件）、**测试**两份（`current-project.test.ts` ＋
+ * `packages/opencode/test/server/openhive-project-directory.test.ts`，都写字面量、刻意不 import）。
+ * 改名**四处一起改**；取数命令（**仓库根**跑）——⚠️ 别数「三处」，那是个错的记法
+ * （2026-10-08 复核改正）：
+ * `grep -rn '= "openhive_project"' packages/opencode/src packages/opencode/test packages/app/src`
  */
 const PROJECT_COOKIE = "openhive_project"
 

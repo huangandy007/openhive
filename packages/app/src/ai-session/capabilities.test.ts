@@ -189,7 +189,14 @@ describe("清单本身的形状约束", () => {
     expect(projectCapabilities([{ module: "cdr-analysis", capabilities: [一条能力] }], "cdr-analysis").all).toHaveLength(1)
 
     // 正面：一个字母之差 ⇒ 一个字都不剩，且**不抛错**（静默是本条唯一的症状）。
-    expect(projectCapabilities([{ module: "cdr-analysys", capabilities: [一条能力] }], "cdr-analysis").all).toEqual([])
+    // ⚠️ **四层各断一条**：标题说的是「**四层**」，断言就必须钉四层（`#005-12` 落点 N 处写 N 条）。
+    // 只断 `.all` 时，一个「`all` 空了、而 `分组(all)` 仍造出一个空组」的畸形实现照样过——
+    // `drawer` 是**另一个落点**（`projection.ts` 的 `分组`），不是从 `.all` 构造性推出来的。
+    const 落空 = projectCapabilities([{ module: "cdr-analysys", capabilities: [一条能力] }], "cdr-analysis")
+    expect(落空.all).toEqual([])
+    expect(落空.common).toEqual([])
+    expect(落空.context).toEqual([])
+    expect(落空.drawer).toEqual([])
   })
 
   /**

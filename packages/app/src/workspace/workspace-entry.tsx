@@ -187,13 +187,36 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   let 文件选择器: HTMLInputElement | undefined
 
   /**
-   * 进门拉一次清单。
+   * 进门：清掉遗留的「当前项目」，并拉一次清单。
    *
-   * **只拉清单，不认领当前项目**：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与
-   * AC4「点某项目切换」，对「打开时选谁」一个字没写。用户 2026-10-06 裁定照 spec 字面：
-   * **不自动选**（不选 ⇒ 不发 `x-openhive-project` ⇒ 后端落回沙箱根，即 005 之前的行为）。
+   * ## 一、清掉遗留（006 第二轮审查裁定 **B**，2026-10-08）
+   *
+   * 005 定下「打开时**不自动选**项目」：spec 只写了两件事——FR-003「新建后成为当前项目」与
+   * AC4「点某项目切换」，对「打开时选谁」一个字没写，用户 2026-10-06 裁定照 spec 字面**不自动选**
+   * （不选 ⇒ 界面停在「未选择项目」）。
+   *
+   * ⚠️ **但「不选」这句话在今天只对信号成立，对 cookie 不成立**（原注释那句「不选 ⇒ 不发
+   * `x-openhive-project` ⇒ 后端落回沙箱根」在 006 Step 5 ②-1 之后就已经是假的，2026-10-08 复核改正）：
+   * ②-1 给「当前项目」加了 **cookie 通道**，而 cookie **活得比页面久** ⇒ **刷新之后**信号回到
+   * `undefined`（界面说没项目）、cookie 却还指着上次那个项目 ⇒ **界面说没有项目、请求落在旧
+   * 项目目录里**。所以这里必须显式清一次，把 cookie 拉回**会话级**——`current-project.ts` 那边
+   * 刻意不给它 `Max-Age`，「我此刻在看哪个项目」本就不是设置。
+   *
+   * ⚠️ **走 `setCurrentProject(undefined)` 这一个写入点**，不手搓 `document.cookie`：信号与 cookie
+   * 必须**同时**回到「未选择」，两处各写一份就是「界面显示甲、请求落乙」这类分叉的老家
+   * （`LEARNINGS #002-06`）。`workspace-entry.test.tsx` 末尾那一节两条断言分别钉这两半。
+   *
+   * ⚠️ **「挂载即清」只在「本组件每次启动只挂一次」时成立**，而那是**上游事实**：`NewAppLayout`
+   * 落在**路由根**里（`app.tsx` 那段「lives in the router root so it remains mounted across route
+   * changes」）⇒ SPA 换路由不重挂。若哪天它被挪到某个 `<Route>` 之下，这一行就会**每次导航清一次**
+   * 用户刚选的项目——那条假设今天**没有断言钉着**，已登记在 `006/state.md` 缺口表。
+   *
+   * ## 二、拉一次清单
+   *
+   * 与上面无关的那一半：清单是左栏面板的数据，进门拉一次。
    */
   onMount(() => {
+    setCurrentProject(undefined)
     if (projectData) void 拉清单(projectData)
   })
 

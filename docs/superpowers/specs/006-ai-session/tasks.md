@@ -274,31 +274,6 @@
     `packages/app/src/project/current-project.test.ts`（5 条）、`openhive-project-directory.test.ts`（**+6 条**）；
     `ai-session-slot.tsx` 只改了**注释**（那条「②-1 尚未修」的过时话）⇒ 见 `state.md`「Step 5 出参（二）」。
     **这一笔与 T015 的产物数字无关，别混算。**
-
-## Phase 9: Step 5 补 · 右栏导出会话入口（2026-10-07 裁定补开）
-
-- [ ] T016 [FE·新增] 右栏加**导出会话**入口（复用上游 `utils/session-export.ts` 的三件套）[FR-010] [T015] [出参：右栏能把当前会话导出成 JSON 落盘]（**未开工**）
-  - **为什么补开（`#005-09`：先读挂账，别把已挂的当新缺口）**：Step 5 的 **D2**。原裁定（U11 · 笔 3）
-    是「FR-010 的『导出会话』**本仓没有这个能力** ⇒ 改 spec 正文」；2026-10-07 复核时**原裁定的前提
-    被推翻**——能力在上游就在，缺的只是**右栏的入口**。用户裁定：**补进 006，新开一条 task**。
-    （`spec.md` 的 FR-010 更正块已当天二次更正，`plan.md` 那行同步恢复。）
-  - **开工第一件事（铁律 #1：先答「这条 task 的出参，今天在仓库里打得到的吗」）**：**打得到**——
-    `packages/app/src/utils/session-export.ts` 的三个导出（`fetchSessionExport` /
-    `sessionExportFilename` / `downloadSessionExport`）已存在、有单测（`session-export.test.ts`），
-    且**上游已有三处生产调用点**可抄（`#004-12` 先抄同族，形状三处一致）：
-    `components/session/session-context-tab.tsx:231` · `pages/session/timeline/message-timeline.tsx:796` ·
-    `pages/session/use-session-commands.tsx:242`（三处都是 `fetchSessionExport({…})` →
-    `sessionExportFilename(data.info)` → `downloadSessionExport(filename, data)`）。
-  - **它要的东西右栏都有**：`fetchSessionExport` 用到的 `api.session.get` 与 `api.session.messages`
-    正是右栏 `会话出口`（`session-actions.ts` 的 `DirectorySDK["api"]["session"]`）上已有的两个方法
-    ⇒ **不需要新开取数通道**（那是本条能做小的根据）。
-  - ⚠️ **不许发明**（照 T015 的同一条纪律）：① **入口位置**——判据与「删除」同：它是**对当前会话**的
-    动作 ⇒ 放会话行；② **失败回话**——走 `ai-session-slot.tsx` 那处唯一的 `报错`（`#002-06`：
-    同一句话不写第二遍）；③ **下载的触发形态**（blob / 文件名）——照上游三处，不自己造。
-  - ⚠️ **与 `session.share` 不是一回事**：share 是**发布到网上**（`"Publish on web"` /「复制链接」），
-    公安数据场景的适用性**未裁定**（见 `spec.md` 的 FR-010 更正块）。别把两者混成一条需求。
-  - ⚠️ **排期**：`plan.md` 没排这条（它是 Step 5 补开的）⇒ 落地时同步 `plan.md`，别让「15 条」
-    与「tasks.md 里 16 条」在两个文件里各说各话。
     （行数取自 `git diff --numstat`，2026-10-07 实测。）
     ⇒ **两条不许发明都照做了**：删除后的落点 = `message-timeline.tsx:823` 的
     `.filter(!parentID && !archived)` ＋ `[i+1] ?? [i-1]`（**逐字**搬进 `删除后去哪`）；新建后 = 建完
@@ -324,6 +299,42 @@
     `POST /api/session` 与 `GET /api/session/:id`（`#005-11` 的形状：横切机制在新出口上没人验）。
     另加一笔**自陈的残留**：`待删` 是**粘**的（切走再切回来，「确认删除？」还在），**故意不修**、
     **没有断言守着**——已在 `session-panel.tsx` 的 `待删` 注释里写明，免得注释比断言强（`#005-15`）。
+
+## Step 5（三）· 第二轮对抗性验证（2026-10-08 · ✅ 已完成 · **不新增 task**）
+
+`#003-02` / `#005-04` 的明文要求：把 Step 5 那两批修复**本身**再当靶子打一轮（换视角、查「全部同类落点」）。
+五席只读审查打在 `e972d14f44..HEAD` 上 ⇒ **三席独立**命中同一处 Important：**②-1 的 cookie 通道刷新后
+与信号分叉**；用户裁定 **B：启动清掉 cookie**。落点与变异账见 `state.md` 的「**Step 5 出参（三）**」——
+本节留个指针，免得下一个人以为「Step 5 到此为止了」。
+
+⚠️ **它留了两笔给 T016 / 收尾**（都在 `state.md` 缺口表，**不写成已覆盖**）：① **多标签页**那条残余
+（cookie 全浏览器共享，A/B/C 三种修法都修不到）；② 「挂载即清」仰赖一条**上游事实**（`NewAppLayout` 落在
+路由根里 ⇒ SPA 不重挂），**今天没有断言钉着**——别把本轮读成「分叉已根除」。
+
+## Phase 9: Step 5 补 · 右栏导出会话入口（2026-10-07 裁定补开）
+
+- [ ] T016 [FE·新增] 右栏加**导出会话**入口（复用上游 `utils/session-export.ts` 的三件套）[FR-010] [T015] [出参：右栏能把当前会话导出成 JSON 落盘]（**未开工**）
+  - **为什么补开（`#005-09`：先读挂账，别把已挂的当新缺口）**：Step 5 的 **D2**。原裁定（U11 · 笔 3）
+    是「FR-010 的『导出会话』**本仓没有这个能力** ⇒ 改 spec 正文」；2026-10-07 复核时**原裁定的前提
+    被推翻**——能力在上游就在，缺的只是**右栏的入口**。用户裁定：**补进 006，新开一条 task**。
+    （`spec.md` 的 FR-010 更正块已当天二次更正，`plan.md` 那行同步恢复。）
+  - **开工第一件事（铁律 #1：先答「这条 task 的出参，今天在仓库里打得到的吗」）**：**打得到**——
+    `packages/app/src/utils/session-export.ts` 的三个导出（`fetchSessionExport` /
+    `sessionExportFilename` / `downloadSessionExport`）已存在、有单测（`session-export.test.ts`），
+    且**上游已有三处生产调用点**可抄（`#004-12` 先抄同族，形状三处一致）：
+    `components/session/session-context-tab.tsx:231` · `pages/session/timeline/message-timeline.tsx:796` ·
+    `pages/session/use-session-commands.tsx:242`（三处都是 `fetchSessionExport({…})` →
+    `sessionExportFilename(data.info)` → `downloadSessionExport(filename, data)`）。
+  - **它要的东西右栏都有**：`fetchSessionExport` 用到的 `api.session.get` 与 `api.session.messages`
+    正是右栏 `会话出口`（`session-actions.ts` 的 `DirectorySDK["api"]["session"]`）上已有的两个方法
+    ⇒ **不需要新开取数通道**（那是本条能做小的根据）。
+  - ⚠️ **不许发明**（照 T015 的同一条纪律）：① **入口位置**——判据与「删除」同：它是**对当前会话**的
+    动作 ⇒ 放会话行；② **失败回话**——走 `ai-session-slot.tsx` 那处唯一的 `报错`（`#002-06`：
+    同一句话不写第二遍）；③ **下载的触发形态**（blob / 文件名）——照上游三处，不自己造。
+  - ⚠️ **与 `session.share` 不是一回事**：share 是**发布到网上**（`"Publish on web"` /「复制链接」），
+    公安数据场景的适用性**未裁定**（见 `spec.md` 的 FR-010 更正块）。别把两者混成一条需求。
+  - ⚠️ **排期**：`plan.md` 没排这条（它是 Step 5 补开的）⇒ 落地时同步 `plan.md`，别让「15 条」
+    与「tasks.md 里 16 条」在两个文件里各说各话。
 
 ---
 

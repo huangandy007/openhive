@@ -4,7 +4,7 @@ import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
-import { setCurrentProject } from "@/project/current-project"
+import { currentProject, setCurrentProject } from "@/project/current-project"
 import type { MemberEntry } from "@/project/member-panel"
 import { setMinioBackups } from "@/project/minio-backups"
 import { type ProjectData } from "@/project/project-data"
@@ -14,6 +14,20 @@ import { setProjectMembers } from "@/project/project-members"
 import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
+
+/**
+ * **夹具：把文档挂到一个 http 源上。** 本文件只有末尾那一节（cookie）需要它。
+ *
+ * ⚠️ 少了这一句，那节测的就是 happy-dom 而不是产品：`happydom.ts` 只 `register()`、没设 URL，
+ * 文档是 **`about:blank`**，而 happy-dom 会**正确地**拒收 `Path=/` 的 cookie 写（整条被丢弃、
+ * 读回空串）⇒「清掉 cookie」那条断言在**任何**实现下都绿。
+ * 完整机制与对照探针写在 `packages/app/src/project/current-project.test.ts` 的文件头——**同一句
+ * 夹具的两个落点**，那里也解释了为什么补 URL 而不是把 `Path=/` 从被测字符串里删掉。
+ *
+ * ⚠️ 只影响**本文件**：`bun test` 里每个测试文件有独立的全局域（`LEARNINGS #004-11`）。
+ */
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码：`happyDOM` 长在 happy-dom 自己的 `Window` 上（`DetachedWindowAPI`），而 TS 的全局 `window` 是 lib.dom 那个 `Window`——没有可收窄的交集（理由与取数方式同 `current-project.test.ts` 那一句）。
+;(window as unknown as { happyDOM: { setURL: (url: string) => void } }).happyDOM.setURL("http://localhost/")
 
 /**
  * 挂一个 `WorkspaceEntry`，并把卸载函数**记账**——`afterEach` 里逐个卸载（T021 实测补上）。
@@ -1109,8 +1123,15 @@ describe("项目数据接线（T018 出参）", () => {
    * **拉到清单也不自动认领当前项目**（用户 2026-10-06 裁定）。
    *
    * 理由：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与 AC4「点某项目切换」，
-   * 对「打开时选谁」一个字没写。而不选的代价是零：不发 `x-openhive-project` ⇒ 后端落回沙箱根
-   * （005 之前的行为），锚点行走它本来就有的「未选择项目」空态。
+   * 对「打开时选谁」一个字没写，锚点行走它本来就有的「未选择项目」空态。
+   *
+   * ⚠️ **原文那半句「而不选的代价是零：不发 `x-openhive-project` ⇒ 后端落回沙箱根」，从
+   * 2026-10-08 起不成立**（006 Step 5 ②-1 给「当前项目」加了 **cookie 通道**）：cookie 由浏览器
+   * **对每一条同源请求自动附带**、且**活得比页面久** ⇒ 刷新之后信号归零、cookie 却还在
+   * ——「不选」不再是自然状态，而是**要主动维持**的（006 已裁定 **B：启动清掉 cookie**，
+   * 落点在 `workspace-entry.tsx` 的 `onMount`，判据在本文件末尾那一节）。
+   * **本条的裁定与判据一个字不变**，改的只是那条已经过时的理由（`LEARNINGS #002-06`：
+   * 改完一处要 grep 谁引用了它）。
    *
    * ⚠️ **这条理由在 T024 之前还有第二半，那半现在已经不成立了**（原文：「『自动选最近访问的
    * 那个』语义对不上——`last_accessed_at` 只在**建项目**时写，没有『选中即更新』的出口」）。
@@ -2153,5 +2174,77 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
     const host = mount(() => <WorkspaceEntry right={() => <探针 />}>中栏</WorkspaceEntry>)
 
     expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toBe("project")
+  })
+})
+
+/**
+ * 启动（挂载）时清掉遗留的「当前项目」cookie（006 第二轮审查裁定 **B**，2026-10-08）。
+ *
+ * ## 为什么必须由**启动**来清
+ *
+ * 005 定下「打开时**不自动选**项目」（`workspace-entry.tsx` 的 `onMount` 那两段注释；spec 只写了
+ * 「新建后成为当前项目」与「点某项目切换」）。006 Step 5 ②-1 之后「当前项目」多了一条 **cookie
+ * 通道**：浏览器对每一条同源请求自动附带它，而 cookie **活得比页面久**。两条一撞就分叉——
+ * **刷新之后**信号回到 `undefined`（界面说「未选择项目」），cookie 却还指着上次那个项目
+ * ⇒ **界面说没有项目、请求落在旧项目目录里**（三席独立审查命中同一处，`LEARNINGS #003-02`）。
+ *
+ * 裁定 **B：启动清掉 cookie**，把它拉回**会话级**——`current-project.ts` 那边刻意不给它
+ * `Max-Age`，「我此刻在看哪个项目」本就不是设置。
+ *
+ * ⚠️ **它不解决多标签页**（cookie 是全浏览器共享的）：一个标签页清掉，另一个正在用的标签页
+ * 下一次请求照样落回沙箱根。那条残余**另行挂账**在 `006/state.md` 的缺口表里——别把这一节
+ * 读成「分叉已经根除」。
+ *
+ * ⚠️ 「挂载 ⇒ 清」这条**只在 `WorkspaceEntry` 每次启动只挂一次时成立**，而那是一条**上游
+ * 事实**、不是本文件的假设：`NewAppLayout` 落在**路由根**里（`app.tsx` 那一段的注释写着
+ * 「lives in the router root so it remains mounted across route changes」）⇒ SPA 里换路由
+ * **不重挂**。若哪天它被挪到某个 `<Route>` 之下，这一节会绿着、而民警刚选的项目每次导航都被清掉
+ * （`LEARNINGS #005-15`：注释不许比断言强——这条假设今天**没有**断言钉着，已记在缺口表）。
+ */
+describe("启动（挂载）时清掉遗留的「当前项目」cookie（006 第二轮审查裁定 B）", () => {
+  /**
+   * jar 里那条 cookie 的**值**；没有它、或被 `Max-Age=0` 置空，都读作 `undefined` / `""`。
+   *
+   * ⚠️ 名字**写字面量、不 import 生产常量**：与 `current-project.test.ts` 那个同名助手同因
+   * （`LEARNINGS #003-05`：import 过来就成了假镜像——生产改什么、测试跟着改什么，改名也测不出来）。
+   * ⚠️ 它读的是**真 `document.cookie`**，不是替身：stub 掉它等于把「浏览器认不认这段字符串」
+   * 换成「我自己的假实现认不认」（同 `#005-07` 的取向）。
+   */
+  const 读cookie = (): string | undefined => {
+    for (const part of document.cookie.split(";")) {
+      const 分隔 = part.indexOf("=")
+      if (分隔 === -1) continue
+      if (part.slice(0, 分隔).trim() !== "openhive_project") continue
+      return part.slice(分隔 + 1).trim()
+    }
+    return undefined
+  }
+
+  test("启动把上次留下的「当前项目」清掉：cookie 与信号**一起**回到「未选择」", () => {
+    // 摆出「上一次启动留下的现场」——用**产品自己的写入点**写，与刷新前那一刻逐字相同。
+    setCurrentProject({ id: "prj_stale_0001", name: "上次看的项目" })
+
+    // 前置（`LEARNINGS #004-08`：判「没发生」之前先证明机制是活的）：这一幕**真的摆好了**。
+    // 少了这半，在「写入本来就被夹具吃掉」的场合（文档 URL 还是 `about:blank` 时正是如此）
+    // 下面那两条断言照样绿——而那种绿什么也没证明。
+    expect(读cookie()).toBe("prj_stale_0001")
+    expect(currentProject()?.id).toBe("prj_stale_0001")
+
+    document.cookie = "probe_keep=1; Path=/; SameSite=Lax" // 对照：一条无关的 cookie
+
+    mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    // 判据写成「**空的或不存在**」，不写死形态：happy-dom 的 `Max-Age=0` **不删条目**、只把值置空，
+    // 真实浏览器会整条删掉——两种形态在服务端读取器（`cookieValue` 的 `if (!raw) return undefined`）
+    // 眼里**等价**（`current-project.test.ts` 的 `等于没有` 同因；写死任一种就是在钉 happy-dom）。
+    expect(读cookie() ?? "").toBe("")
+    // ⚠️ 第二条不是上面那条的复述：它钉的是「清这件事走的是**那个唯一的写入点**」。手搓一句
+    // `document.cookie = "openhive_project=; …"` 也能让上面那条绿，但会**留着信号** ⇒ 于是变成
+    // 「界面还显示着上次那个项目、而请求已经落回沙箱根」——**换了个方向的分叉**
+    // （`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+    expect(currentProject()).toBeUndefined()
+
+    // 对照：清的是**那一条**，不是把整个 jar 端了。
+    expect(document.cookie).toContain("probe_keep=1")
   })
 })

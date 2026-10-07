@@ -10,7 +10,8 @@ import { currentProject, setCurrentProject } from "@/project/current-project"
  * 读 `PROJECT_COOKIE`）只能**读**；写进来的是这里。两侧各写一份**名字字面量**——本文件刻意不
  * import 生产常量，理由与那个文件对 `PROJECT_HEADER` 的处理逐字相同（`LEARNINGS #003-05`：
  * 假镜像——import 过来就变成「生产改什么、测试跟着改什么」，改名也测不出来）。
- * **改名要同时改三处**：服务端常量、本文件这个字面量、`current-project.ts` 的写入点。
+ * **改名要同时改四处**：服务端常量、本文件这个字面量、`current-project.ts` 那个常量、
+ * `openhive-project-directory.test.ts` 那个字面量（取数命令见 `current-project.ts` 里那条注释）。
  *
  * ## 为什么「客户端」不是一个可以省掉的角色
  *
@@ -43,7 +44,11 @@ import { currentProject, setCurrentProject } from "@/project/current-project"
  *   不过滤，构造不出稳定断言。
  * - **不覆盖真实浏览器的 cookie 行为**：happy-dom 不是浏览器（过期与路径语义都与真浏览器有差异，
  *   见 `等于没有` 的注释）。本组钉的是「这段字符串被一个**按 URL / Path / Max-Age 规则解析**的实现
- *   收下了，且服务端读到的值等于 id（或等于没有）」——**不是** mock，也不是浏览器本身。
+ *   收下了，且**那串里的值**等于 id（或等于没有）」——**不是** mock，也不是浏览器本身。
+ *   ⚠️ **「服务端那个解析器读得到」这一步，本组没有断言**（`#003-05`）：下面那个 `读cookie` 是照着
+ *   `@/server/user-identity` 的 `cookieValue` **另写的一份**（只取第一条命中、不做解码），验的是
+ *   「jar 里有这一项、其值等于 id」，两侧靠「标准 `name=value` 格式大家都认」衔接。
+ *   ⇒ 它能钉住「产品把值写对了」，钉不住「服务端读得出来」；那条边界归服务端那组测试。
  */
 
 /**
