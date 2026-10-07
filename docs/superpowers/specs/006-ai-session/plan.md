@@ -77,8 +77,15 @@ skill/
 | 原生消息流**耦合过重**，不适合搬进右栏 | `packages/app/src/pages/session/timeline/message-timeline.tsx` 的 `MessageTimeline` 有 **20 个 props**（过半是滚动机制 `scroll` / `setScrollRef` / `onAutoScrollHandleScroll` / `hasScrollGesture` / `onHistoryScroll` / `shouldAnchorBottom`…），组件内部直接用 `useSessionKey()` / `useSync()` / `useSDK()` 等**页面级** context |
 | 可复用的**原语**在 `@opencode-ai/session-ui` | `session-turn`（`SessionTurn({sessionID, messageID, messages?, actions?, …})`）、`message-part`、`markdown`、`v2/prompt-input`（Hero 输入）；数据由 `@opencode-ai/session-ui/context` 的 `DataProvider` / `useData` 提供 |
 | 会话数据与管理的**出口**是 SDK | `client.session.list / create / messages / update`（`packages/app/src/context/directory-sync.ts`、`context/server-session.ts:568`、`components/prompt-input/submit.ts:404` 是既有调用点） |
+| ⚠️ 路由的 `DataProvider` 是 `WorkspaceEntry` 的**后代**，**不是祖先** | `pages/directory-layout.tsx` 的 `<DataProvider>` 挂在**路由组件**里（渲染进**中栏**的 `{props.children}`），而 `WorkspaceEntry` 在**外壳** `pages/layout-new.tsx`（由 `app.tsx` 的 `NewAppLayout` 渲染）⇒ `ThreePane` 的 `right` 槽与它**平级**，**不在其子树内**。`SessionTurn` / `MessagePart` 都 `useData()` ⇒ **右栏直接放会抛错** |
 
 **裁定（U1(c)）**：右栏落地**最小可用会话**＝消息流（`SessionTurn` 逐个渲染）＋ Hero 输入（`v2/prompt-input`）＋ 会话新建/切换。**不引入** `MessageTimeline`，**不改** `SessionSidePanel`。
+
+**必要的一道接线（补测得出）**：右栏须**自挂一份 `DataProvider`**。可行为何成立——`useSync()` / `useSDK()`
+由 `app.tsx` 的 `SelectedServerProviders` 提供，**在 `WorkspaceEntry` 那一层已可用**（它们在 `NewLayout` 之上），
+故右栏可写 `<DataProvider data={sync().data} directory={…}>…</DataProvider>`；`enterprise` 的分享页
+（`packages/enterprise/src/routes/share/[shareID].tsx`）与 storybook 都有**独立挂载**先例。
+⇒ **T008 的 RED 用例第一件事就是这条**：不挂 `DataProvider` 时右栏必须红（证伪「原生 set 里已有」的错觉）。
 
 ## 前端换皮区（右栏会话 + 指令卡）
 
