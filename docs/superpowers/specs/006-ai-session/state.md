@@ -2,14 +2,21 @@
 
 ## 当前任务
 
-**T006 已完成**（「更多 skill」抽屉，**只做「按 skill 分组」**；裁定 U8）→ 出参见下「T006 出参」。
-**下一个：T007**（`/` 命令面板，模糊匹配 **skill 全集**）——它与 T006 消费的是**同一份输入**
-（`projectCapabilities(...).all` / `drawer`），差别只在「匹配」与「呈现」：T006 分组列出，T007 输入 `/`
-唤起 ＋ 模糊匹配。⚠️ **授权过滤不在前端**（裁定 U2：宪法 §四，执行层拦）。
-⚠️ 视觉规格两处都在 `DESIGN.md §4.7`：T006 用到 §4.7.3，**T007 的那两行先读一遍再落码**。
+**T007 已完成**（`/` 命令面板：输入 `/` 唤起 ＋ 模糊匹配 skill 全集；裁定 U2）→ 出参见下「T007 出参」。
+**下一个：T008**（新建「最小可用右栏会话」`session-panel.tsx`，挂 `ThreePane.right`）——它是本 feature
+里**唯一**把前面所有层接起来的那一条：右栏自挂 `DataProvider`（T001 补测得出的必要接线）、
+Hero 输入（§4.7.5）、指令卡那一行、抽屉入口 ▸、以及 **T007 的那根线**
+（`skillCommands(...)` 传进 controller 的 `commands`）。
 
-📥 **T008 欠的那一笔**：抽屉的入口 ▸ 按钮 ＋ 开合状态归它（T006 是**受控面板**，`open` / `onClose`
-就是给它留的接缝）——已落 `tasks.md` 的 T008 条。
+📥 **T008 收四笔**（`#002-04`，`tasks.md` 的 T008 条 ⊕ `state.md` 缺口表）：
+① 抽屉入口 ▸ ＋ 开合状态（T006，受控面板的 `open` / `onClose` 就是接缝）；
+② `availableWidth`（T004，接进右栏才会真的量到）；
+③ **`contexts`（T005）——⚠️ 中栏今天没有任何右栏读得到的「选中」状态**，喂恒空集等于「这一层永远不显示」
+（`spec.md` 的「未定项」纪律：**信号不存在就按未定项停下来问**，别自行发明）；
+④ **`/` 命令面板的接线**（T007）：把 `skillCommands(...)` 传进 controller 的 `commands`
+（⚠️ 唤起走 `onInput`，不是 `onKeyDown`）。
+
+⚠️ 视觉规格在 `DESIGN.md §4.7`：T008 用到 §4.7.5（Hero 输入）与 §4.7.1（卡行）；不要凭记忆挑 token。
 
 ⚠️ 写码时按 `DESIGN.md §4.7.0`（一行里的取用纪律）与 §4.7.1 / §4.7.2，不要凭记忆挑 token；
 §4.7.0 末尾那条 ⚠️（**别把那张对照表照抄进源码注释**）是 T004 实测踩出来的。
@@ -44,6 +51,11 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
 - **T006**（2026-10-07）· 「更多 skill」抽屉（**只做「按 skill 分组」**，裁定 U8）→ 出参见下「T006 出参」。
   受控面板 `skill-drawer.tsx` ＋ 12 条用例（21 批注入 ＋ 1 批反向 ＋ 2 批报警，逐条实测）。
   **入口 ▸ 归 T008**（本层不带钮）；组顺序**保持输入顺序、不排序**（接 T003 那条挂账，至此闭合）。
+- **T007**（2026-10-07）· `/` 命令面板（输入 `/` 唤起 ＋ 模糊匹配 skill 全集）→ 出参见下「T007 出参」。
+  §4.7.4 的「能换数据源就不新写」**成立** ⇒ 产物是**一个纯映射函数**（`command-palette.ts` 的
+  `skillCommands`）＋ 11 条用例（其中 7 条**真 controller ＋ 真状态机 ＋ 真 `fuzzysort`** 的端到端）；
+  10 批变异（8 批产品 ＋ 2 批**反向注入上游**）＋ 2 批报警，逐条实测。**接线归 T008**。
+  连带**就地更正 `plan.md` 的三处旧述**（`#002-06`）。
 - **U6 起草件 → 定稿**（2026-10-07）· 起草 → 用户审 → **移入 `openhive-DESIGN.md` 作 §4.7**（并改
   `§3.1` 的圆角口径）→ 出参见下「U6 起草件出参」。**起草件本身已删**（宪法 §八：DESIGN.md 是视觉真理的
   单一来源；留副本＝两份真相会漂，`#003-05`），其「取数命令核对记录」整段**挪进**了本节（不丢证据、
@@ -538,6 +550,120 @@ $ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                 
 
 ---
 
+## T007 出参 · `/` 命令面板（2026-10-07）
+
+**出参**：输入 `/` 唤起 ＋ 模糊匹配。§4.7.4 的硬指令（「能换数据源就不新写」）**成立**——
+本条的产物**不是一个浮层**，是一个**纯映射函数**。
+
+| 产物 | 说明 |
+|---|---|
+| `packages/app/src/ai-session/command-palette.ts` | `skillCommands(清单) → PromptInputV2Suggestion[]`。唯一的出口，**无 JSX、无视觉值、不 import 任何组件** |
+| `packages/app/src/ai-session/command-palette.test.tsx` | **11 条**：适配层 4 条（纯函数）＋ 端到端 7 条（**真 controller ＋ 真状态机 ＋ 真 `fuzzysort`**） |
+
+**本层只做一件事**：把 `SkillCapability` 填进原生 controller 的**那一个空位**
+（`commands: Accessor<PromptInputV2Suggestion[]>`）。**接线是 T008**。
+
+### 为什么没有浮层（开工第一件事的核查结果）
+
+§4.7.4 要求先核「原生弹层是不是本来就挂在 `/` 上」。**是**，而且是逐环都短不了：
+
+| 环节 | 原件 | 取数命令 |
+|---|---|---|
+| 打 `/` 唤起 | `machine.ts` 的 `inputChanged`：正文匹配 `/^\/(\S*)$/` ⇒ `popover = { type: "command-inline" }`；正文非空时 `openCommands()` 走 `command-menu` 支 | `grep -n 'command = value.match' packages/session-ui/src/v2/components/prompt-input/machine.ts` |
+| 浮层形态 | `index.tsx` 的 `PromptInputV2Popover`——§4.7.4 那张表的 class 串就是它的逐字实况 | `grep -n 'PromptInputV2Popover' packages/session-ui/src/v2/components/prompt-input/index.tsx` |
+| 模糊匹配 | `interaction.ts` 的 `commandList = useFilteredList({ filterKeys: ["trigger","title"] })`（`fuzzysort`，**真子序列**） | `grep -n 'filterKeys' packages/session-ui/src/v2/components/prompt-input/interaction.ts` |
+| 数据源 | controller 入参 `commands` —— **唯一的空位** | `grep -n 'commands:' packages/session-ui/src/v2/components/prompt-input/interaction.ts` |
+
+上游填这个空位的地方是 `packages/app/src/components/prompt-input-v2.tsx`（SDK 自定义命令 ＋ 内置斜杠
+命令），那是**高频文件**（CLAUDE.md 的 Anti-Patterns）⇒ 本函数**不碰它**，只做一份并列的数据源。
+
+### 探明但没料到的三件事（都是踩出来的，写在这里省下一个人重踩）
+
+1. **`/` 不从 `onKeyDown` 进来，从 `onInput` 进来**。第一版探针照 `onKeyDown(键("/"))` 打，
+   三条路（打 `/`、非空正文 `openCommands()`、`setQuery`）**全空**——状态机里 `keyDown` 对 `/`
+   **一支都没有**（`popover` 关着时直接 `unchanged`）。真正的入口是正文变化：
+   `controller.onInput("/", prompt, cursor)` ⇒ `input.changed` ⇒ 那个正则。**判据**：
+   `grep -n '"key.down"' .../machine.ts` 与 `grep -n 'inputChanged' .../machine.ts` 一对照就清楚。
+2. **`suggestions()` 是异步的**（`useFilteredList` 底下是 `createResource`）⇒ 打完字要等一个 tick；
+   探针第一版读同步值，拿到的是初始化时的 `empty`。
+3. **`suggestions()` 与弹层开关无关**。`interaction.ts` 的 `suggestions = () => list().flat()`——
+   controller 一建起来就把 `commands()` 收进去了，资源一 resolve 就有内容。所以「打 `/` 之前列表是
+   空的」**是假的**：本条第一版测试就栽在这句上（红的正是那条不实的前置，不是产品）。测里已注明。
+
+### 定型的事
+
+| # | 事 | 依据 |
+|---|---|---|
+| 1 | **不新写浮层**，只换数据源 | §4.7.4 的硬指令（第一号约束）。连带**就地更正 `plan.md` 的三处旧述**（`├── command-palette.tsx`、「新增」两处）——那三行写在「原生弹层挂在 `/` 上」这个事实查明**之前**（`#002-06`：改一处就 grep 全部同类） |
+| 2 | 文件名是 `command-palette.ts`（不是 `plan.md` 曾写的 `.tsx`） | 本条没有组件。**self-decision**，理由是「文件后缀要跟内容一致」 |
+| 3 | **`label` 与 `trigger` 取连接键 `skill`、`title` 取显示名 `name`** | **2026-10-07 用户裁定**（三个候选里选第一个）。硬约束是实测定下来的：原生弹层**渲染的是 `item.label`**（`index.tsx` 只画 `label` ＋ `description`，**`title` 不显示**），而选中后插进正文的也是 `label`（`machine.ts` 的 `suggestionSelected` 走 `replaceTrigger`）⇒ `label` **一物二用**，做不出「显示中文名、插入连接键」。插进正文的 token 会原样成为 prompt 正文，得让下游对得回 skill ⇒ 取寻址名；而民警**不必记英文**，因为 `filterKeys` 含 `title`——**打中文一样筛得到** |
+| 4 | `title` 填显示名（**不**照上游自定义命令那样填标识符） | 同上，这正是「打中文能搜到」的来源。夹具刻意让连接键与显示名**不同值**，让这条断言今天就有牙（`#004-13`） |
+| 5 | **不做**前端授权过滤 | 裁定 U2 / 宪法 §四。传进来的就是 `projectCapabilities(...).all` |
+| 6 | 顺序 = 清单给的顺序，**不排序** | 与 T003 / T006 同口径 |
+| 7 | 端到端测试**不渲染 DOM**，直接驱动 controller | 原生把 `suggestions` / `dispatch` / `setQuery` 都挂在 controller 的 return 上（`interaction.ts:292` 起），且 `@opencode-ai/session-ui/v2/prompt-input/interaction` 是**公开导出** ⇒ 「唤起 ＋ 匹配」这两条**真的打得到**，测的是**真组件的那套机器**，不是影子实现（`#004-13`：先问「断言是不是空的」，答案是不是） |
+
+### 变异验证（10 批：8 批注入产品码 ＋ 2 批**反向**注入上游；`oh-mut-007.mjs`）
+
+每批「注入 → 跑 → 还原」，**注入前先数锚命中次数、不为 1 直接报「没注入」拒跑**；每批跑的是
+**整个 `src/ai-session/` 目录**（既取「红的集合长什么样」（`#003-03`），又顺带证没波及其他用例）。
+**基线 72 pass / 0 fail；10 批跑完再跑一次回 72 / 0**；三个被改的文件还原后**逐字节相同**。
+
+| 注入 | 实得（pass / fail） |
+|---|---|
+| **M1** `label` 取显示名 | **70 / 2**——适配层那条 ＋ 「选中后插进正文的是连接键」那条（**下游认不出中文名这件事，今天就有断言守**） |
+| **M2** `trigger` 取显示名 | **69 / 3**——适配层、顺序、**「打 `/rtl` 按连接键筛」** |
+| **M3** `title` 取连接键（去掉中文搜索面） | **68 / 4**——适配层、打中文、真·模糊、选中那条 |
+| **M4** `description` 置空 | **71 / 1**（适配层） |
+| **M5** `id` 塌成一个常量 | **66 / 6**——`id` 那条 ＋ 5 条端到端（`createList` 按 id 去重 ⇒ 列表只剩一条，`#005-11`：一条出口漏了，另一个出口的断言不会替你看见） |
+| **M6** `kind` 换成 `reference` | **70 / 2**——适配层 ＋ 选中那条（非 `command` 走 `mention.add`，正文不动） |
+| **M7** 清单顺序反转 | **69 / 3**——顺序、打 `/` 列全集、非空正文唤起（三处都按序比对） |
+| **M8** 只发第一条 | **67 / 5**——`id` 那条 ＋ 4 条端到端 |
+| **M9（反向）** 原生 `filterKeys` 去掉 `title` | **69 / 3**——打中文、真·模糊、**选中那条（级联：筛空 ⇒ `suggestions()[0]` 是 `undefined`）**。**这一批证明端到端那几条真的在吃原生机制**，不是自说自话（`#005-15`） |
+| **M10（反向）** 原生唤起正则改成 `/^\/(\S+)$/`（至少要一个字符） | **71 / 1**——正是「打 `/` ⇒ 弹层开」那条 |
+
+**没有一类②**：10 批每批 pass ＋ fail 都 = 72（无名外波及），也没有「红得不成比例」的集合。
+**M9 的第三个红是级联**（`#003-03` 第 ② 类的近亲），据实记在这里，不写成「恰红三条」。
+
+**两条断言在变异里被改准了（记载下来，因为它们是「测试自己错」而不是「产品错」）**：
+
+- 夹具第二条 skill 的显示名一度写成「RTL 与 LTR」，而连接键是 `rtl-aware-development` ⇒
+  **打 `/rtl` 其实命中的是 `title`**，「按连接键筛」那条断言**测的不是它说的那件事**
+  （M2 跑了它照样绿）。改成纯中文显示名「双语方向适配」后 M2 才红它（`#005-15`）。
+- 「`id` 逐条不同」那条一度写成**有序** `toEqual` ⇒ M7（顺序反转）红在它头上，而它声称的是
+  「id 各不相同」。改成 `new Set(...).size`，顺序归顺序那条管。
+
+### 报警验证（证两道全局门是活的，`#004-08`）
+
+| 注入 | 实得 |
+|---|---|
+| 往新文件里塞 `bg-v2-token-does-not-exist` | `design-token-refs.test.ts` **3 pass / 2 fail**，两条红都点名那个假 token |
+| 往新文件里塞 `const 报警探针: number = "我不是数字"` | `tsgo -b --force` **EXIT=1**，点名 `command-palette.ts(58,7): error TS2322` |
+
+（`#003-01` 同族的坑：`bunx tsgo -b \| tail; echo $?` 取到的是 **`tail`** 的退出码，上面这两个 EXIT
+都是**去掉管道**另取的。）
+
+### 门禁（2026-10-07 实测，串行跑；`#003-01`）
+
+| 门 | 结果 |
+|---|---|
+| `ai-session` 组件档（4 个 `.test.tsx`，含本条 11 条） | **48 pass / 0 fail** |
+| `ai-session` 单元档（`capabilities.test.ts` ＋ `projection.test.ts`） | **24 pass / 0 fail** |
+| `ai-session` 全目录（browser 条件，6 文件，上面两档的并集） | **72 pass / 0 fail** |
+| `design-token-refs.test.ts`（扫 `ai-session` 全目录，含新文件） | **5 pass / 0 fail**（＋上面那道报警验证） |
+| oxlint（**仓库根**跑，2 个新文件；`#004-10`） | **0 warnings / 0 errors**（130 rules） |
+| `packages/app` 的 `tsgo -b --force` | **EXIT=0**（＋上面那道报警验证 EXIT=1） |
+
+### 交接
+
+- **T008**：**把 `skillCommands(projectCapabilities(...).all)` 传进右栏 Hero 输入的 controller 的
+  `commands`** —— 这一条就是本 feature 的 `/` 命令面板在生产里唯一缺的那根线（`tasks.md` 已落 📥，
+  `#002-04`）。⚠️ 走 `onInput` 那条链（不是 `onKeyDown`），见上文第 1 条。
+- **T013**（测试验收）：**这 11 条已经在，别再写一遍**。T013 该做的是换一份注入的清单跑。
+- **可提上游的一件事**（不是缺口，是观察）：原生弹层**不渲染 `title`**，所以「列表里显示中文名」
+  在今天这个形状下做不到——除非改上游 `PromptInputV2Popover`。已记缺口表。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -565,14 +691,18 @@ $ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                 
 | **`drawer` 的分组顺序** | `projection.ts` → T006 | **2026-10-07 已裁定：保持框架给的「首次出现顺序」，不排序** ⇒ T006 照搬输入顺序、一行排序都不加（已由变异 **M10** 钉住：加 `localeCompare` 当场红）。**T003 留下的那条未定项至此闭合**，此行留作出处 |
 | **抽屉今天没被任何生产视图渲染** | T006 → T008 | 组件测绿 ≠ 民警能看到抽屉。本组件**零生产调用点**（`projectCapabilities` 本身也仍只被测试调用）。与 T004 / T005 那两条缺口同形：测绿的是**纯组件**，不是「右栏能开抽屉」。入口与挂载点都在 T008 |
 | **抽屉头部那一行是 self-decision** | T006 / `openhive-DESIGN.md §4.7.3` | §4.7.3 的表里**没有 header 这一格**（只写了组标题 / 条目两行 / 底面 / 圆角 / 阴影 / 行高 / 无图标）。本条的取法是**对齐原生右栏抽屉**（`components/help-button.tsx`：`h-[40px]` ＋ 下边框 ＋ `px-4` ＋ `IconButtonV2`／`xmark-small`＋`ghost-muted`），**不是设计给的** ⇒ T008 接进去时若它丑、或 §4.7 后续补写 header 规格，**以 DESIGN 为准**（宪法 §八：DESIGN.md 是视觉真理的单一来源） |
-| **`DESIGN.md §3.1` 与原生 Hero 输入的圆角冲突** | `openhive-DESIGN.md §3.1` | §3.1 原写「右栏对话 Hero 输入 12~16px」，而原生 `prompt-input-v2` 外壳是 `rounded-xl`＝**10px**。**2026-10-07 已裁 A 并就地改口径**（「沿用原生外壳的 10px」）——**缺口已闭合**，此行留作出处。这是**已提交文档之间**的不一致，不是本 feature 引入的 |
+| **命令面板今天没被任何生产视图渲染** | T007 → T008 | 与「框架还没有生产调用点」「抽屉今天没被任何生产视图渲染」同形：`skillCommands` **零生产调用点**（全仓只有 `command-palette.test.tsx` 调它）。测绿的是**纯函数 ＋ 真实原生机器**，**不是**「民警在右栏打 `/` 能看到 skill」——那根线（把结果传进 Hero 输入的 controller `commands`）在 T008 |
+| **列表里显示的是连接键，不是中文名** | T007 / 原生 `PromptInputV2Popover` | 实测定下来的：原生弹层**只渲染 `item.label`**（`index.tsx`：`<span>{item.label}</span>` ＋ `description`，**`title` 根本不显示**），而 `label` 同时决定「选中后插进正文的那串」⇒ 二者拆不开。2026-10-07 用户裁定取连接键（理由：插进正文的 token 要能让下游对回 skill）。**代价**：列表里民警看到的是 `/fund-link-analysis` 而非「资金关联分析」（`description` 仍是中文，且**打中文能搜到**）。要显示中文名只能改上游 `PromptInputV2Popover` ⇒ 与第一号约束冲突，**不改**；若将来要改，这是**可提上游**的一条 |
+| **很散的子序列匹不上** | T007 / `fuzzysort` 默认阈值 | 实测：`/资金分析` 命中「资金关联分析」（跳过「关联」，**真子序列** ✅），而 `/flz` **不**命中 `fund-link-analysis`（f-z-l 之间隔太远）。**非本次引入**——上游自定义命令走的是同一个 `useFilteredList`，行为完全一致。**不改**（改阈值要动上游 `interaction.ts`，且会让匹配变噪声） |
 
 ---
 
 ## 最后更新
 
-2026-10-07（**T006 已完成**：「更多 skill」抽屉，**只做按 skill 分组**（裁定 U8），入口 ▸ 归 T008
-→ 出参见上「T006 出参」（21 批注入 ＋ 1 批反向 ＋ 2 批报警验证逐条实测 ＋ 五道门禁；**闭合 1 条**
-——T003 留下的「`drawer` 顺序未定」；**新增 2 条**缺口，其中一条是本条的 self-decision 待复核）。
-**下一个 T007**——`/` 命令面板，模糊匹配 skill 全集（裁定 U2：前端不做授权过滤）；
-它与 T006 同一份输入，差别只在「匹配 ＋ 呈现」）
+2026-10-07（**T007 已完成**：`/` 命令面板——§4.7.4 的「能换数据源就不新写」**成立**，产物是
+一个纯映射函数＋ 11 条用例（7 条端到端真驱动原生 controller）→ 出参见上「T007 出参」
+（10 批变异，含 2 批**反向注入上游** ＋ 2 批报警验证 ＋ 五道门禁；**未闭合缺口，新增 3 条**
+——接线归 T008、列表显示连接键、fuzzysort 阈值；连带就地更正 `plan.md` 三处旧述）。
+**下一个 T008**——新建「最小可用右栏会话」`session-panel.tsx` 挂 `ThreePane.right`：它是把前七条
+全接起来的那一条（`DataProvider` 自挂 ＋ Hero 输入 ＋ 指令卡行 ＋ 抽屉入口 ▸ ＋ `skillCommands` 接线）；
+⚠️ 其中 **`contexts` 今天没有生产来源**（中栏无右栏读得到的选中态）——按未定项**先问**，别自行发明）

@@ -58,7 +58,10 @@ packages/app/src/
 │   ├── common-cards.tsx         # 顶部「常用操作」（固定一行 + 溢出收「⋯」）
 │   ├── context-cards.tsx        # 「上下文指令」（随中栏选中动态浮现）
 │   ├── skill-drawer.tsx         # 「更多 skill」抽屉（按 skill 分组）
-│   ├── command-palette.tsx      # `/` 命令面板（模糊匹配）
+│   ├── command-palette.ts       # `/` 命令面板的**数据源**（skill 清单 → 原生弹层的建议形状）
+│   │                            # ⚠️ 2026-10-07 T007 就地更正：原写 `command-palette.tsx`「新增」
+│   │                            # ——原生 `v2/prompt-input` 自带的弹层本来就挂在 `/` 上（`DESIGN.md`
+│   │                            # §4.7.4 的硬指令「能换数据源就不新写」），故**没有新组件**，只有这个纯函数
 │   └── session-panel.tsx        # 右栏最小可用会话（消息流 + Hero 输入，挂 ThreePane 的 right 槽）
 
 skill/
@@ -99,7 +102,7 @@ skill/
 | `@opencode-ai/session-ui` 原语（`session-turn` / `message-part` / `v2/prompt-input`） | 组合成右栏最小可用会话（`session-panel.tsx`）＋ 顶部挂指令卡 | 新增（组合原生原语） |
 | opencode 无指令卡机制 | 指令卡通用框架（投影 skill 能力清单） | 新增 |
 | opencode 无「更多 skill」抽屉 | 更多 skill 抽屉（**按 skill 分组**；「最近使用」/「收藏」见 §裁定 U8） | 新增 |
-| opencode 的 command-palette（功能命令） | `/` 命令面板（模糊匹配 **skill 全集**，语义不同） | 新增 |
+| opencode 原生的 `/` 弹层（`PromptInputV2Popover`：SDK 自定义命令 ＋ 内置斜杠命令） | `/` 命令面板（模糊匹配 **skill 全集**，语义不同） | **2026-10-07 T007 更正为「换数据源」**：不新写浮层，只把 `commands` 这一注入点填成 skill 清单（§4.7.4） |
 
 ### ② 语义 token（右栏，DESIGN.md §1/§4）
 
@@ -121,7 +124,7 @@ skill/
 | 类型 | 本 feature 具体 |
 |---|---|
 | 换皮 | 无（右栏会话改为**组合原生原语**，不套既有组件） |
-| 新增 | 指令卡框架、常用操作、上下文指令、更多抽屉、`/` 命令面板 |
+| 新增 | 指令卡框架、常用操作、上下文指令、更多抽屉、`/` 命令面板的**数据源**（后者不是新组件，见上表；2026-10-07 T007 更正） |
 
 ## 数据流向（要素②）
 

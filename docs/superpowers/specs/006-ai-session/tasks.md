@@ -62,14 +62,25 @@
   - 📤 **T008 收（`#002-04`）**：**抽屉的入口 ▸ 按钮 ＋ 开合状态归它**（T006 是受控面板，那两个 prop
     就是给它留的接缝）。另：§4.7.3 **没写 header**，本条的 header 是**照原生右栏抽屉抄**的
     self-decision ⇒ T008 接进去时一并复核（`state.md` 缺口表有一条）。
-- [ ] T007 [FE·新增] 实现 `/` 命令面板（模糊匹配 **skill 全集**）[FR-005] [T003] [出参：输入 `/` 唤起 + 模糊匹配]
+- [x] T007 [FE·新增] 实现 `/` 命令面板（模糊匹配 **skill 全集**）[FR-005] [T003] [出参：输入 `/` 唤起 + 模糊匹配]（2026-10-07 完成）
   - **2026-10-07 裁定 U2**：**不做**前端授权过滤（宪法 §四，授权在执行层）
+  - ⚠️ **2026-10-07 标签就地更正**：本条**不是**「新写一个浮层」——原生 `v2/prompt-input` 自带的弹层
+    本来就挂在 `/` 上（`DESIGN.md §4.7.4` 的硬指令「**能换数据源就不新写**」，T007 开工第一件事核过）。
+    `plan.md` 的三处旧述（`command-palette.tsx`、「新增」两处）已就地更正（`#002-06`）。
+  - **出参落地**：见 `state.md`「T007 出参」——`ai-session/command-palette.ts` 的纯函数
+    `skillCommands(清单) → PromptInputV2Suggestion[]` ＋ 11 条用例（4 条适配层 ＋ 7 条**真 controller
+    ＋ 真状态机 ＋ 真 `fuzzysort`** 的端到端）；10 批变异（含 2 批反向注入上游）＋ 2 批报警验证。
+    **`label` / `trigger` 取连接键、`title` 取显示名**（2026-10-07 用户裁定）。
+  - 📤 **T008 收（`#002-04`）**：**把 `skillCommands(projectCapabilities(...).all)` 传进右栏 Hero 输入的
+    controller 的 `commands`** —— 这是 `/` 命令面板在生产里唯一缺的那根线（本条零生产调用点）。
+    ⚠️ 唤起走 **`onInput`** 那条链（`machine.ts` 的 `input.changed`），**不是** `onKeyDown`。
+  - 📤 **T013 收（`#002-04`）**：这 11 条已经在了，T013 **别再写一遍**——该做的是**换一份注入的清单**跑。
 
 ## Phase 5: US4 右栏会话 + 点卡片执行（P1）
 
 - [ ] T008 [FE·新增] 新建「**最小可用右栏会话**」（`app/src/ai-session/session-panel.tsx`：`SessionTurn` 消息流 ＋ `v2/prompt-input` Hero 输入 ＋ 会话新建/切换），挂 `ThreePane` 的 `right` 槽 [FR-010] [T001] [出参：右栏可对话、可切换会话]
   - **2026-10-07 裁定 U1(c)**：原条「复用 opencode 原生右栏会话」**作废**（T001 实测 `SessionSidePanel` 不是消息流）
-  - 📥 **T004 / T005 / T006 各交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：指令卡那一行
+  - 📥 **T004 / T005 / T006 / T007 各交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：指令卡那一行
     （`InstructionCardRow` 的两个层）**接进右栏是本条**，接的时候有两个 prop **今天没有生产来源**：
     ① **`availableWidth`**（T004）——本行自己会量（`ResizeObserver`），但**没接进右栏就不会真的量到**
     ⇒ 生产里永远不溢出；② **`contexts`**（T005）——中栏**没有任何右栏读得到的「选中」状态**
@@ -78,7 +89,10 @@
     **F6 资金 / F7 话单**的中栏选中 ⇒ 若本条开工时那个信号还不存在，**按未定项停下来问**
     （runbook Step 2 ⑦），别自行裁定。③ **「更多 skill」抽屉的入口 ▸ 按钮 ＋ 开合状态**（T006）——
     抽屉本身是受控面板（`skill-drawer.tsx` 的 `open` / `onClose`），**钮坐在哪由本条的 Hero 输入决定**
-    （design-v2 §8.2 与 `2026-09-12-AI资产-design.md` 都画在输入框旁边）。三条都已进 `state.md` 缺口表。
+    （design-v2 §8.2 与 `2026-09-12-AI资产-design.md` 都画在输入框旁边）。④ **`/` 命令面板的接线**（T007）
+    ——把 `skillCommands(projectCapabilities(...).all)` 传进 controller 的 `commands`。
+    ⚠️ 唤起走 **`onInput`**（`machine.ts` 的 `input.changed`）而**不是** `onKeyDown`——状态机里 `keyDown`
+    对 `/` 一支都没有，照 keydown 写会得到「按了没反应」。四条都已进 `state.md` 缺口表。
 - [ ] T009 [FE·新增] 实现点指令卡 = 填入一句话 [FR-007] [T003] [出参：点卡片填入一句话]
   - 📥 **T004 交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：`InstructionCardRow` 的
     `activePrompt` **生产来源就是本条**——「点卡片 = 填入一句话」把它填进输入框，§4.7.1 的**选中态**
