@@ -41,7 +41,15 @@
     ＋ 13 条用例；`projection.ts` 补 `ProjectedCard.module`（＋1 条用例）。
   - **原先留的「顺序未裁定」已由 §4.7.1 裁定**：跨模块那支（`GENERIC_MODULE`）的卡排在模块卡**前面**
     ⇒ 顺序在**渲染层**（`instruction-cards.tsx` 的 `通用优先`），`projection.ts` 依旧只给集合与来源。
-- [ ] T005 [FE·新增] 实现「上下文指令」动态浮现（随中栏选中，无上下文消失）[FR-003] [T003] [出参：选中浮现、取消消失]
+- [x] T005 [FE·新增] 实现「上下文指令」动态浮现（随中栏选中，无上下文消失）[FR-003] [T003] [出参：选中浮现、取消消失]（2026-10-07 完成）
+  - **出参落地**：见 `state.md`「T005 出参」——`ai-session/context-cards.tsx`（本层：取 `context` 那一支
+    ＋ 按 `contexts` 筛 ＋ 空集整段不渲染；**长相零代码**，全走 T004 的 `instruction-cards.tsx`）
+    ＋ 12 条用例；`capabilities.ts` 补 `InstructionCard.context?: string`（可选字段 ＋ 运行时报警，
+    **未**重塑类型）＋ `capabilities.test.ts` 两条报警断言。
+  - 📤 **T013 收（`#002-04`）**：这 12 条已经在了，T013 **别再写一遍**——它该做的是**换一份注入的清单**
+    跑（本文件今天喂的全是测试自己的夹具，`MANIFESTS` 的 `cards` 全空）。
+  - 📤 **F6 / F7 收**：`context` 的**取值词表**归它们（US2 场景 1 举的「选中账户」是 F6 中栏的选中）；
+    006 只钉「不能为空」。
 
 ## Phase 4: US3 抽屉 + 命令面板（P1）
 
@@ -54,6 +62,14 @@
 
 - [ ] T008 [FE·新增] 新建「**最小可用右栏会话**」（`app/src/ai-session/session-panel.tsx`：`SessionTurn` 消息流 ＋ `v2/prompt-input` Hero 输入 ＋ 会话新建/切换），挂 `ThreePane` 的 `right` 槽 [FR-010] [T001] [出参：右栏可对话、可切换会话]
   - **2026-10-07 裁定 U1(c)**：原条「复用 opencode 原生右栏会话」**作废**（T001 实测 `SessionSidePanel` 不是消息流）
+  - 📥 **T004 / T005 各交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：指令卡那一行
+    （`InstructionCardRow` 的两个层）**接进右栏是本条**，接的时候有两个 prop **今天没有生产来源**：
+    ① **`availableWidth`**（T004）——本行自己会量（`ResizeObserver`），但**没接进右栏就不会真的量到**
+    ⇒ 生产里永远不溢出；② **`contexts`**（T005）——中栏**没有任何右栏读得到的「选中」状态**
+    （`CenterTabState` 只有 `tabs` / `active` / `module`；`project/file-tree.tsx` 的选中行是组件内部状态）。
+    ⚠️ ② 这条**不要在本条里悄悄发明**：喂一个恒空集等于「这一层永远不显示」，而真正的产源是
+    **F6 资金 / F7 话单**的中栏选中 ⇒ 若本条开工时那个信号还不存在，**按未定项停下来问**
+    （runbook Step 2 ⑦），别自行裁定。两条都已进 `state.md` 缺口表。
 - [ ] T009 [FE·新增] 实现点指令卡 = 填入一句话 [FR-007] [T003] [出参：点卡片填入一句话]
   - 📥 **T004 交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：`InstructionCardRow` 的
     `activePrompt` **生产来源就是本条**——「点卡片 = 填入一句话」把它填进输入框，§4.7.1 的**选中态**
