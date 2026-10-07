@@ -5,9 +5,50 @@
 > 本文件是交给**主检出会话**的一段操作指令，对应 SOP [`feature-delivery-sop.md`](./feature-delivery-sop.md)
 > 的 **Phase 6（合并 + tag）** 与 **Phase 0/1（开下一个工作台）**。
 >
-> ⚠️ 本文件是在 005 工作台里写的，**要等合并完成后才会出现在主检出**。本次执行请以对话里粘贴的文本为准
-> （或直接读工作台路径
-> `D:\project\study\openhive\openhive\.claude\worktrees\feat-005-project-management\docs\workspace\merge-005-open-006.md`）。
+> ⚠️ 本文件是在 005 工作台里写的，**要等合并完成后才会出现在主检出**——所以下面 §0.0 的提示词里给的是
+> **工作台的绝对路径**。
+
+## 0.0 · 给主检出会话的提示词（复制这个代码块，粘贴到新会话）
+
+> 用法：在**主检出** `D:\project\study\openhive\openhive` 下开新会话，把下面代码块整段粘进去。
+> 它只做一件事——让新会话**先读本文件、再照本文件办事**；所有判据、红线、报告格式都在下面各 Step 里，
+> 提示词不重复它们（`LEARNINGS #002-06`：同一件事不写两份，免得漂）。
+>
+> ⚠️ 路径说明：合并**完成前**，主检出的 `docs/workspace/` 里还没有本文件（它只存在于 005 分支），
+> 所以第一行给的是**工作台绝对路径**——合并后该路径依然有效（文件已进主检出）；
+> 那时换用主检出相对路径 `docs/workspace/merge-005-open-006.md` 亦可。
+
+```
+【任务】在主检出 D:\project\study\openhive\openhive 执行「005 合并 + 006 开台」。
+
+第一步：先读完整 runbook，再动手：
+
+  D:\project\study\openhive\openhive\.claude\worktrees\feat-005-project-management\docs\workspace\merge-005-open-006.md
+
+然后照它 Step A → Step G 逐步执行，每一步达标才走下一步：
+
+  A 合并前体检（站位 / 工作区干净 / ff-only 可行性 / 记录取数）
+  B git merge --ff-only worktree-feat-005-project-management
+  C git push origin multi-tenant
+  D git tag -a v0.1.0-005-project-management -m "005-project-management 收尾（含 006 开工物料 dev_tdd.006.md）"
+    然后 git push origin v0.1.0-005-project-management
+  E 合并后验证（逐条给结论）
+  F claude --worktree feat-006-ai-session；进去验基点、bun install --frozen-lockfile
+  G 按固定格式报告
+
+红线（runbook §1，本次没有任何例外）：
+- 任何一步不达判据 ⇒ 停下来报告，不要「想办法让它过」。
+- 全程禁止：--force / -f / -X / --no-ff / reset --hard / rebase / checkout -- / clean / stash / --no-verify。
+- 本次不写任何产品码、不改任何文件；不做任何 git add（不预期需要），更不许 git add .。
+- git push 会触发 .husky/pre-push 的 bun typecheck，红了按 runbook Step C1 的顺序诊断
+  （先做 node_modules 软链接差集，别照回声改业务代码），绝不 --no-verify 绕过。
+- 不把 upstream 掺进来；不动 oh-mut 那条 prunable 工作台；不跑 git worktree prune。
+- 不删 005/004/003 的工作台与分支；specs 目录永不删除。
+
+最后按 runbook Step G 的固定格式汇报。
+```
+
+---
 
 ## 0 · 你在哪儿、这件事是什么
 
