@@ -3,6 +3,7 @@ import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Exit, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
@@ -71,10 +72,28 @@ const BOB: TokenSubject = { id: "660e8400-e29b-41d4-a716-446655440001", policeNo
  */
 const PROJECT_HEADER = "x-openhive-project"
 
+/**
+ * 「当前项目」的**第二个通道：cookie**（006 Step 5 · ②-1，裁定 2026-10-07）。
+ *
+ * ⚠️ 同样**写字面量、不 import 生产常量**（理由与 `PROJECT_HEADER` 逐字相同，`#003-05` 的假镜像）。
+ * 生产那份导出在 `middleware/project-location.ts` 的 `PROJECT_COOKIE`。
+ */
+const PROJECT_COOKIE = "openhive_project"
+
+/** 项目 cookie 的 `名=值`。拼进**同一个 `Cookie` 头**（与身份那个共用头，见 `as()`）。 */
+const 项目cookie = (projectId: string) => `${PROJECT_COOKIE}=${projectId}`
+
 /** 已有 `project_ext` 行的项目 id。**合法路径段**——它会被 `join` 进沙箱路径。 */
 const ALPHA = "prj_alpha_0001"
 /** 格式合法、但库里**没有**这一行（R5：落沙箱根，不做隐式建项目）。 */
 const GHOST = "prj_ghost_0002"
+/**
+ * 一个**已归档**的项目 id（006 Step 5 · ②-1 的判据要用）。
+ *
+ * ⚠️ 与 `ALPHA` 分开是**必需**的：归档是写在共享 PG 夹具里的**全局**状态，一旦 `ALPHA` 被标成
+ * 归档，本文件前面那些「带头落项目目录」的用例会**一起变红**——而那是夹具传染，不是被测对象出了事。
+ */
+const FROZEN = "prj_frozen_0003"
 
 const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-project-dir-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -141,7 +160,15 @@ function realApp(env: Record<string, string | undefined>) {
 
 const openApp = realApp(OPEN)
 
-const cookie = (value: string) => ({ Cookie: `${UserIdentity.COOKIE_NAME}=${value}` })
+/**
+ * 身份那个 cookie 的 `名=值`（**不含头名那一层**）。
+ *
+ * ⚠️ 2026-10-07（006 Step 5 · ②-1）从原先那个 `cookie()` 里拆出来：项目 cookie 要拼在
+ * **同一个 `Cookie` 头**里，而这里原来是 `headers.set("Cookie", …)`（**整份覆盖**）——
+ * 直接把第二个 cookie 传进来会被它挤掉，于是用例「带着项目 cookie」却什么都没带，
+ * 而**红出来的方向是错的**（`#004-08` 那种「没报错 ≠ 执行了」）。
+ */
+const sessionCookie = (value: string) => `${UserIdentity.COOKIE_NAME}=${value}`
 
 /** 用真实签发器造令牌——**不手搓 JWT**。 */
 const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject, SECRET))
@@ -150,11 +177,20 @@ const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject,
 const json = <A>(schema: Schema.Codec<A>, response: Response) =>
   Effect.map(Effect.promise(() => response.json()), (body: unknown) => Schema.decodeUnknownSync(schema)(body))
 
-/** 以某人的身份发一个请求；额外头（本项目那个通道）从 `init.headers` 进。 */
-const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
+/**
+ * 以某人的身份发一个请求。
+ *
+ * - 额外**头**（项目头那条通道）从 `init.headers` 进；
+ * - 第二个 **cookie**（项目 cookie 那条通道，006 ②-1）从 `extraCookie` 进。
+ *
+ * ⚠️ `Cookie` 头**一次拼好**：身份与项目两个 cookie 共用这一个头，分两次 `set` 只会剩最后一个。
+ */
+const as = (subject: TokenSubject, url: string, init: RequestInit = {}, extraCookie?: string) =>
   Effect.gen(function* () {
     const headers = new Headers(init.headers)
-    for (const [key, value] of Object.entries(cookie(yield* token(subject)))) headers.set(key, value)
+    const jar = [sessionCookie(yield* token(subject))]
+    if (extraCookie !== undefined) jar.push(extraCookie)
+    headers.set("Cookie", jar.join("; "))
     return yield* openApp(url, { ...init, headers })
   })
 
@@ -170,13 +206,21 @@ const V2SessionInfo = Schema.Struct({ data: Schema.Struct({ id: Schema.String })
  * 这是「同一个头的第二个出口」——锚定当初把入参清点成「URL 与头」时漏掉请求体那次
  * （审查 R-01），本项目层不能重犯：两条链的落点读法**不同**，所以两条都钉。
  */
-const createV1As = (subject: TokenSubject, init: { project?: string; directory?: string } = {}) =>
+const createV1As = (
+  subject: TokenSubject,
+  init: { project?: string; projectCookie?: string; directory?: string } = {},
+) =>
   Effect.gen(function* () {
     const query = init.directory === undefined ? "" : `?directory=${encodeURIComponent(init.directory)}`
-    const response = yield* as(subject, `/session${query}`, {
-      method: "POST",
-      headers: init.project === undefined ? {} : { [PROJECT_HEADER]: init.project },
-    })
+    const response = yield* as(
+      subject,
+      `/session${query}`,
+      {
+        method: "POST",
+        headers: init.project === undefined ? {} : { [PROJECT_HEADER]: init.project },
+      },
+      init.projectCookie === undefined ? undefined : 项目cookie(init.projectCookie),
+    )
     expect(response.status).toBe(200)
     return (yield* json(SessionInfo, response)).id
   })
@@ -189,17 +233,22 @@ const createV1As = (subject: TokenSubject, init: { project?: string; directory?:
  */
 const createV2As = (
   subject: TokenSubject,
-  init: { project?: string; directory?: string; headers?: Record<string, string> } = {},
+  init: { project?: string; projectCookie?: string; directory?: string; headers?: Record<string, string> } = {},
 ) =>
   Effect.gen(function* () {
-    const response = yield* as(subject, "/api/session", {
-      method: "POST",
-      headers: {
-        ...(init.headers ?? { "Content-Type": "application/json" }),
-        ...(init.project === undefined ? {} : { [PROJECT_HEADER]: init.project }),
+    const response = yield* as(
+      subject,
+      "/api/session",
+      {
+        method: "POST",
+        headers: {
+          ...(init.headers ?? { "Content-Type": "application/json" }),
+          ...(init.project === undefined ? {} : { [PROJECT_HEADER]: init.project }),
+        },
+        body: JSON.stringify({ location: init.directory === undefined ? {} : { directory: init.directory } }),
       },
-      body: JSON.stringify({ location: init.directory === undefined ? {} : { directory: init.directory } }),
-    })
+      init.projectCookie === undefined ? undefined : 项目cookie(init.projectCookie),
+    )
     expect(response.status).toBe(200)
     return (yield* json(V2SessionInfo, response)).data.id
   })
@@ -597,6 +646,220 @@ describe("T020 前置 · 文件树入口的实例目录上移（FR-005）", () =
 
         expect(paths).toContain(沙箱根上的)
         expect(paths).not.toContain(项目里的)
+      }),
+    30_000,
+  )
+})
+
+/**
+ * 006 Step 5 · ②-1（用户裁定 **B：cookie 通道**，2026-10-07）：**「当前项目」的第二个通道**。
+ *
+ * ## 这条为什么存在
+ *
+ * 006 的右栏（`packages/app/src/ai-session/`）建会话走 **SDK v2**（`POST /api/session`，B 链），
+ * 而 SDK **不发 `x-openhive-project` 头**——带这个头的只有 005 那四个裸路由。于是「给右栏的建会话
+ * 加个项目头」这条**按字面做会回归**：只有建会话带头、列会话不带头 ⇒ 新会话落在项目目录、
+ * 而列表看的是沙箱根 ⇒ **新会话在列表里看不见**。右栏因此整条链落在**沙箱根**、不感知项目（②-1）。
+ *
+ * 选 cookie 的理由是**唯一零上游侵入**：fork 侧够不着那个要注入头的地方——右栏的目录作用域客户端
+ * 由**上游** `context/server-sdk.tsx` 的 `createDirSdkContext` 造（`ensureDirSdkContext` /
+ * `ensureDirSyncContext` 都从那里出来），实测没有可注入的缝。而 cookie 由**浏览器自动附带**，
+ * SDK 那条链因此也带上了它。
+ *
+ * ## ⚠️ 但 cookie 是**环境信号**，不是**意向声明**——本组的判据全从这一点长出来
+ *
+ * 头是客户端**主动**填的：填了就是「我要进这个项目干活」。cookie 是浏览器**自动**带的：
+ * 用户没做过任何声明，只是「当前选中的项目是它」。两者在本中间件里的处置**必须不同**，
+ * 否则一个背景噪声就能砖掉前台：
+ *
+ * | 情形 | 显式通道（头） | 环境通道（cookie） |
+ * |---|---|---|
+ * | 指向**已归档**的项目 | **403**（005 T015 原语义，**一字不动**） | **当作没带** ⇒ 落沙箱根 |
+ * | 值**非法**（`../../` 逃逸写法） | **400**（客户端能立刻看见并改） | **当作没带** ⇒ 落沙箱根 |
+ * | 指向查不到的项目 | 落沙箱根（R5） | 落沙箱根（R5，同一支） |
+ *
+ * 判据一句话：**显式通道会拒绝；环境通道只会在「无效」时退化成「没有」。**
+ *
+ * 为什么归档那一支**不能**照 403 做（裁定前实测）：cookie 对**全 app 每一条请求**生效 ⇒
+ * 当前项目一旦是已归档的（共享项目被 owner 归档、而本地 `currentProject` 还挂着它），
+ * 连 `GET /openhive/project/list` 都会 403 ⇒ **项目清单读不到、用户切不出去**。
+ * 而「不许在冻结目录里干活」这条**一点没松**：它由 T015 的**第二道门**（会话目录那道）原样守着
+ * ——本组第 ⑤ 条就是它的对照（头打同一个归档项目仍然 403，说明门本身还活着）。
+ *
+ * ## 头压过 cookie（不是「cookie 补头」）
+ *
+ * 头在场时 **cookie 一次都不看**（第 ③ 条）：两者冲突时，只有显式那个是用户当下那句话。
+ * 实现上就是 `header ?? cookie` 这个顺序，但**顺序本身是语义**，所以专门钉一条。
+ *
+ * ## 两条链都来一条（`LEARNINGS #004-01`：数**出口**）
+ *
+ * 与上面带头那两组的理由逐字相同：A 链目录在 **URL**、B 链在**请求体**，只接一条就是另一条
+ * 静默退回沙箱根。⚠️ 但要说清一件事：cookie 的**读取**只有一处（中间件里那一行），在两条链的
+ * **上游**——所以这里的两条钉的是「同一个 cookie 真的走到了两条链各自的改写点」，
+ * **不是**两个独立的通道。⚠️ 实测口径：**右栏走的是 B 链**（SDK v2），A 链那条是本组对称补的。
+ *
+ * ## 本组不覆盖什么
+ *
+ * - **不覆盖「cookie 与头指向同一个项目」**：那一条退化成「头那一支」，与上面第二组同值，
+ *   多写一条只是重复（`#005-12` 的反面：把一个落点拆成两条不是更严，是填充）。
+ * - **不覆盖客户端的写入 / 清除**：那在 `packages/app/src/project/current-project.test.ts`
+ *   （cookie 的名字在两侧各写一份字面量，都是**客户端契约**）。
+ * - **不覆盖「换身份后旧 cookie 会不会串到别人身上」**：**不会**，而且是结构上不会——
+ *   `findByProjectID` 查的是**请求方自己那份**每用户库，别人的项目 id 在那份库里查不到 ⇒ 走 R5。
+ *   这条**推得出来**（每用户库物理隔离已由 `tenant-db-isolation.test.ts` 钉住），故本组不重复钉。
+ */
+describe("项目 cookie 通道（006 Step 5 · ②-1）", () => {
+  /**
+   * **夹具注入**一行「已归档」——直接写 `project_archive`，不是走归档流程
+   * （同 `openhive-project-frozen.test.ts` 的同名助手，抄它而不是自己发明，`#004-12`）。
+   *
+   * ⚠️ `archived_at` 不能省：迁移的 `project_archive_coherence_check` 钉着
+   * `archived = (archived_at IS NOT NULL)`，只写 `archived` 会被库当场拒。
+   * ⚠️ `on conflict` 不能省：本文件多条用例**共用同一个 PG 夹具**，第二次插入会撞主键，
+   * 而那是**夹具**问题、不是被测对象的问题（撞主键会把用例炸成 error 而不是 fail）。
+   */
+  const 标成已归档 = (projectId: string) =>
+    Effect.promise(() =>
+      Promise.resolve(
+        pg!.db.execute(
+          sql`insert into auth.project_archive (project_id, archived, archived_at)
+              values (${projectId}, true, 1700000000)
+              on conflict (project_id) do update set archived = excluded.archived, archived_at = excluded.archived_at`,
+        ),
+      ),
+    )
+
+  /**
+   * **主判据（B 链 ＝ 右栏走的那条）**：只带项目 cookie ⇒ 落 `{沙箱根}/{projectId}`。
+   *
+   * 另一半在同一个断言里：**落点在沙箱根里面**（`startsWith`）——少了它，一条「把项目 id 当绝对
+   * 路径用」的实现（落 `/{projectId}`）也能满足「结尾是 projectId」这种弱断言（同上面第一组）。
+   */
+  it.live(
+    "B 链：不带项目头、只带项目 cookie ⇒ 落 {沙箱根}/{projectId}（且在沙箱根里面）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+
+        const id = yield* createV2As(ALICE, { projectCookie: ALPHA })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        const root = canonical(sandboxOf(ALICE))
+        expect(landed).toBe(canonical(path.join(sandboxOf(ALICE), ALPHA)))
+        expect(landed.startsWith(`${root}/`)).toBe(true)
+      }),
+    30_000,
+  )
+
+  /** 同一个 cookie 的**第二个出口**：A 链的目录从 URL 读（`?directory=`），不是从请求体。 */
+  it.live(
+    "A 链：只带项目 cookie ⇒ 同样落 {沙箱根}/{projectId}",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+
+        const id = yield* createV1As(ALICE, { projectCookie: ALPHA })
+
+        expect(canonical(sessionDirectory(ALICE.id, id) ?? "")).toBe(canonical(path.join(sandboxOf(ALICE), ALPHA)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **头在场时 cookie 一次都不看**。
+   *
+   * 诱饵选的是「头指向一个**查不到**的项目（R5 直通）、cookie 指向一个**存在**的项目」——
+   * 于是两种实现分得开：`header ?? cookie`（正确）落**沙箱根**；
+   * 而「头查不到就回落到 cookie」落 **ALPHA 项目目录**。两个落点不同值，断言有牙。
+   */
+  it.live(
+    "头压过 cookie：头指向查不到的项目、cookie 指向存在的项目 ⇒ 落沙箱根（cookie 一次都不看）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+
+        const id = yield* createV2As(ALICE, { project: GHOST, projectCookie: ALPHA })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        expect(landed).toBe(canonical(sandboxOf(ALICE)))
+        expect(landed).not.toBe(canonical(path.join(sandboxOf(ALICE), ALPHA)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **本次裁定的核心**：cookie 指向**已归档**项目 ⇒ **当作没带**、落沙箱根、**200**（不是 403）。
+   *
+   * 两半都是被测属性，缺一不可：
+   * ① 落沙箱根（不是落那个已归档的项目目录——那会在一个**已被 T013 删掉**的目录里建会话）；
+   * ② **200**（不是 403）——这是「环境信号不构成归档意向」这句话本身。
+   * 对照组是紧跟着的第 ⑤ 条（同一个项目、同一个夹具，只改通道）。
+   */
+  it.live(
+    "cookie 指向**已归档**项目 ⇒ 当作没带、落沙箱根、200（环境信号不构成归档意向）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, FROZEN)
+        yield* 标成已归档(FROZEN)
+
+        const id = yield* createV2As(ALICE, { projectCookie: FROZEN })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        expect(landed).toBe(canonical(sandboxOf(ALICE)))
+        expect(landed).not.toBe(canonical(path.join(sandboxOf(ALICE), FROZEN)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **对照：门本身还活着**——同一个已归档项目，走**头**仍然是 403。
+   *
+   * 少了这一条，上面那条「落沙箱根、200」在一个「**归档门整个被删掉**」的实现上照样绿
+   * （`#004-08`：副作用类判据必须先证明机制是活的）。两条只差**通道**这一个变量：
+   * 同一个用户、同一个项目 id、同一份应用、同一个归档态。
+   *
+   * ⚠️ 断言顺序照 `#004-14`：**被测属性（一条会话都没落盘）在前**，伴随信号（403）在后。
+   */
+  it.live(
+    "对照：同一个已归档项目走**头** ⇒ 403、一条会话都没落盘（归档门没被上一条动过）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, FROZEN)
+        yield* 标成已归档(FROZEN)
+        const before = sessionCount(ALICE.id)
+
+        const response = yield* as(ALICE, "/api/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", [PROJECT_HEADER]: FROZEN },
+          body: JSON.stringify({ location: {} }),
+        })
+
+        expect(sessionCount(ALICE.id)).toBe(before)
+        expect(response.status).toBe(403)
+      }),
+    30_000,
+  )
+
+  /**
+   * **cookie 值非法（逃逸写法）⇒ 当作没带**，不是 400。
+   *
+   * 这是「环境通道不产生错误」那条规则的第二个落点（与归档那一支同一条规则）：
+   * 一个被改坏的 cookie 若能把请求变成 400，就等于**用一条背景噪声砖掉整个 app**。
+   * 而安全性一点没松——非法值的结果是**落沙箱根**，`../../bob` 既不逃出去、也不静默生效。
+   *
+   * ⚠️ 与**头**那条非法值正相反：头非法 ⇒ **400**（上面那组钉着）。两条刻意不同，别当成不一致。
+   */
+  it.live(
+    "cookie 值非法（`../../bob`）⇒ 当作没带、落沙箱根、200（环境通道不产生错误）",
+    () =>
+      Effect.gen(function* () {
+        yield* createV1As(ALICE) // 先把 ALICE 的库建出来，下面才好读它
+
+        const id = yield* createV2As(ALICE, { projectCookie: "../../bob" })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        expect(landed).toBe(canonical(sandboxOf(ALICE)))
+        expect(landed).not.toContain("bob")
       }),
     30_000,
   )

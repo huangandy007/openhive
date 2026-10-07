@@ -267,6 +267,13 @@
     又给这两份文件加了货：`session-actions.test.ts` **+3**（在途守卫）、`session-panel.test.tsx` **+6**
     （D1 一条 ＋ hover 五条）、`common-cards.test.tsx` **+2**（hover 面 A / B）⇒ 见
     `state.md`「Step 5 出参（一）」。**别拿这份快照去核当前的条数。**
+    ⚠️ **同批还有第二笔修复（②-1），它不在这份快照的范围内**——用户裁定 **B：cookie 通道**，
+    落点是 `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`（fork 文件：
+    新增 `PROJECT_COOKIE` 通道 ＋ 两处 `if (ambient) return`）、`packages/app/src/project/current-project.ts`
+    （005 T005 建的接缝：`setCurrentProject` 成为 cookie 的唯一写入点）、**新文件**
+    `packages/app/src/project/current-project.test.ts`（5 条）、`openhive-project-directory.test.ts`（**+6 条**）；
+    `ai-session-slot.tsx` 只改了**注释**（那条「②-1 尚未修」的过时话）⇒ 见 `state.md`「Step 5 出参（二）」。
+    **这一笔与 T015 的产物数字无关，别混算。**
 
 ## Phase 9: Step 5 补 · 右栏导出会话入口（2026-10-07 裁定补开）
 

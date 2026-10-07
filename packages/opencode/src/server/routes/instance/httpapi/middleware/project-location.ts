@@ -8,6 +8,7 @@ import { User } from "@opencode-ai/core/user"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { OpenhivePg } from "@/server/openhive/pg"
+import { cookieValue } from "@/server/user-identity"
 import { Effect, Option, Schema } from "effect"
 import { Headers, HttpMethod, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { join, relative } from "node:path"
@@ -19,9 +20,12 @@ import { MatchedRoute } from "./matched-route"
  *
  * ## 这个中间件干什么
  *
- * 客户端用**请求头**报「我现在在哪个项目」（`PROJECT_HEADER`，裁定①），服务端据此把会话目录
- * 从**沙箱根**推进一层到 `join(沙箱根, projectId)`。`project_ext` 在这里的作用是
- * **「这个项目在不在」**（裁定③：那四列里**没有目录列**，「目录」就是 projectId 本身）。
+ * 客户端用**两个通道**报「我现在在哪个项目」——**请求头**（`PROJECT_HEADER`，005 裁定①）与
+ * **cookie**（`PROJECT_COOKIE`，006 ②-1 的第四笔裁定），服务端据此把会话目录从**沙箱根**推进
+ * 一层到 `join(沙箱根, projectId)`。`project_ext` 在这里的作用是**「这个项目在不在」**
+ * （裁定③：那四列里**没有目录列**，「目录」就是 projectId 本身）。
+ * 两个通道**不是平等的**：头是**意向**（会拒），cookie 是**环境**（只会退化成「没有」）——
+ * 读下面「第四笔裁定」那一节之前**别**按同一套语义理解这两行。
  *
  * ## 三笔裁定（2026-10-06，用户裁定，见 `docs/superpowers/specs/005-project-management/state.md`）
  *
@@ -30,6 +34,49 @@ import { MatchedRoute } from "./matched-route"
  * | 客户端用什么通道报 `projectId` | **请求头 `x-openhive-project`**——`payload.location` 里没有这个字段（`Location.Ref` 只有 `directory` / `workspaceID`），两条链也只有**头**是共用的 |
  * | 这段代码落在哪 | **本文件（新的 fork 中间件）**，挂在 `anchorWorkspaceLayer` **之后** |
  * | `join(沙箱根, 目录)` 里的「目录」取什么 | **`projectId` 本身** |
+
+## 第四笔裁定（006 Step 5 · ②-1，2026-10-07，用户裁定 **B**）：第二个通道＝**环境通道（cookie）**
+
+006 的右栏（`packages/app/src/ai-session/`）建会话走 **SDK v2**（B 链），而 **SDK 不发
+`x-openhive-project` 头** ⇒ 右栏整条链落在**沙箱根**、不感知项目（②-1）。照字面「给右栏加上这个头」
+**会回归**：只有建会话带头、列会话不带头 ⇒ 新会话落项目目录、列表仍看沙箱根 ⇒
+**新会话在列表里看不见**。
+
+裁定 = **再加一个 cookie 通道**（`PROJECT_COOKIE`）。理由只有一条：**它是唯一零上游侵入的缝**。
+头要求客户端能改「那条链发出去的请求」，而右栏的目录作用域客户端由**上游** `context/server-sdk.tsx`
+的 `createDirSdkContext` 构造（`ensureDirSdkContext` / `ensureDirSyncContext` 都从它出来）、
+`packages/app/src/utils/server.ts` 的 `createSdkForServer` 也是上游文件 ⇒ **fork 侧没有注入头的
+地方**（2026-10-07 实测，见 006 的 `state.md`）。cookie 则**由浏览器自动附带**：SDK 那条链一个字
+不改也带上了它。写入方是客户端唯一那个 `setCurrentProject`（`app/src/project/current-project.ts`）。
+
+### ⚠️ 由此长出的规则：**显式通道会拒绝；环境通道只在「无效」时退化成「没有」**
+
+| 情形 | 显式通道（头） | 环境通道（cookie） |
+|---|---|---|
+| 指向**已归档**的项目 | **403**（T015 原语义，一字不动） | **当作没带** ⇒ 落沙箱根、**200** |
+| 值**非法**（`../../` 逃逸写法） | **400** | **当作没带** ⇒ 落沙箱根、**200** |
+| 指向查不到的项目 | 落沙箱根（R5） | 落沙箱根（R5，**同一支**，不另写） |
+
+判据一句话：**头是意向，cookie 是环境**。头是客户端**主动填的**——「我要进这个项目干活」，
+填错了正是它该被拒的时候；cookie 是浏览器**自动带的**，用户没做过任何声明，只是「当前选中的
+项目是它」。而 **cookie 对全 app 每一条请求生效** ⇒ 「归档也照 403 做」这一支**实测会砖掉整个
+app**：当前项目一旦是已归档的（共享项目被 owner 归档、而本地 `currentProject` 还挂着它），
+连 `GET /openhive/project/list` 都回 403 ⇒ **项目清单读不到、用户切不出去**（唯一挡住它的是
+`workspace-entry.tsx` 里「我归档我当前的项目就清空 `currentProject`」那一句，只覆盖那一种情形）。
+
+**「不许在冻结目录里干活」一点没松**：它由**第二道门**（下节：目录取自会话行那道）原样守着，
+与请求走哪个通道无关。对照用例——同一个已归档项目、只差通道 ⇒ **走头仍然 403**。
+
+### 头优先，不是「cookie 补头」
+
+头在场时 **cookie 一次都不看**（`headerProjectId ?? cookieProjectId`）：两者指向不同项目时，只有
+显式那个是用户当下那句话。这条顺序**本身是语义**，有一条用例专门钉它（诱饵是「头指向查不到的
+项目、cookie 指向存在的项目」——落点不同值，判据才有牙）。
+
+⚠️ **cookie 不在这里剥掉**（对照下面「摘掉自己的头」那半）：`Cookie` 头里同时装着**身份** cookie
+（`UserIdentity.COOKIE_NAME`），删整头会把身份一起删掉（下游 401）。而留着它的代价是零：**全仓
+`grep` 过（2026-10-07），`openhive_project` 只有四处声明——左右两侧的「产品 + 测试」各两份——
+除本文件外没有任何读者**，且它在下游**不再是输入**，就只是一个多余的字节。
  *
  * ## 为什么挂在锚定**之后**，以及为什么**重算**沙箱根而不是读请求
  *
@@ -57,6 +104,10 @@ import { MatchedRoute } from "./matched-route"
  * - `projectId` 过 `User.isSafePathSegment`（**与锚定对 `userId` 同一判据、同一类逃逸**：
  *   空串 / `.` / `..` / 带分隔符的串会让沙箱**塌掉或逃出去**）⇒ 非法**拒**，不放行（判据理由见锚定
  *   文件头「为什么非法 id 必须拒」，那一段逐字适用于这里）；
+ *   ⚠️ **2026-10-07（②-1）**：这条「拒」**只对显式通道成立**——环境通道（cookie）来的非法值
+ *   **当作没带**、落沙箱根。理由不是「cookie 不可信」（两边都过同一道 `isSafePathSegment`），
+ *   而是**报错的对象错了**：一个被改坏的环境值若能把请求变成 400，等于**用背景噪声砖掉整个 app**。
+ *   落点仍是沙箱根 ⇒ 逃逸面**完全没有变化**；
  * - 查不到（R5）⇒ **落沙箱根**，**不做隐式建项目**。
  *
  * ⚠️ **一笔按先例落的裁定（2026-10-06，T017）**：非法 projectId 取「拒」而不是「忽略后落沙箱根」。
@@ -64,6 +115,9 @@ import { MatchedRoute } from "./matched-route"
  * 这里若改成「忽略」，同一个仓库里两个同类输入就有了两种处置，而它们的安全性不因名字不同而不同。
  * 之所以显式记出来：`project_ext` 里**没有**这一行时是「落沙箱根」（正常路径），
  * 「非法」与「查不到」是**两件事**，别被前一句读混。
+ * ⚠️ **2026-10-07（②-1）对这条裁定加了一个限定，别读成它被推翻了**：这一笔讲的是「**同一个通道内**，
+ * 非法比忽略更对」；而 ②-1 引入的是**两个通道之间的差别**（显式 vs 环境），是另一层的事
+ * ——「环境通道非法 ⇒ 当没带」并没有把「显式通道非法 ⇒ 拒」改掉，两者今天同时成立。
  *
  * ## 为什么两条链都要管（`LEARNINGS #004-01`：数**出口**）
  *
@@ -72,11 +126,14 @@ import { MatchedRoute } from "./matched-route"
  * 所以这里照锚定的做法**三处都改**：`?directory=` ＋ `location[directory]` ＋ `x-opencode-directory`
  * 头 ＋ 请求体。只改一处 = 另一条链静默退回沙箱根（不会报错、不会变红）。
  *
- * ## 没有项目头 ⇒ **不改写请求**
+ * ## **两个通道都不在场** ⇒ **不改写请求**
  *
- * `PROJECT_HEADER` 不在 ⇒ 请求原样往下走（`return yield* effect`）：url、头、请求体一律不动。
- * 所有不带项目的请求（文件、pty、上传，以及大多数会话请求）走的是**与今天完全一样**的那条路。
- * 「不在场时不产生副作用」比「在场时做对」更容易被写坏，故写在这里。
+ * 头与 cookie 都没有（或都退化成「没有」，见第四笔裁定）⇒ 请求原样往下走（`return yield* effect`）：
+ * url、头、请求体一律不动。所有不带项目的请求（文件、pty、上传，以及大多数会话请求）走的是
+ * **与今天完全一样**的那条路。「不在场时不产生副作用」比「在场时做对」更容易被写坏，故写在这里。
+ *
+ * ⚠️ **2026-10-07（②-1）本节改了条件**：原文只说「`PROJECT_HEADER` 不在」，而**只有 cookie 不在
+ * 时改写照样发生**（那正是 ②-1 要的）。所以今天的判据是**两个通道一起看**——别只读头那一半。
  *
  * ⚠️ **但「连库都不查」这条在 T015 之后不成立**（本节原文写的是「一次都不碰请求」「不带头的
  * 请求连库都不查」，2026-10-06 第二轮审查 F1 改准）：第二道门（下节）**排在早退之前**——它只认
@@ -86,8 +143,12 @@ import { MatchedRoute } from "./matched-route"
  *
  * ## 归档 = 冻结（T015，FR-010）：已归档的项目上**不能干活**
  *
- * 项目在 `auth.project_archive` 里是 `archived = true` ⇒ **一律 403**（含 owner）：建会话、
- * 读文件树这些「在项目里干活」的入口全部关掉，只剩「找回」那一条管理链。
+ * 项目在 `auth.project_archive` 里是 `archived = true` ⇒ **走显式通道（头）一律 403**（含 owner）：
+ * 建会话、读文件树这些「在项目里干活」的入口全部关掉，只剩「找回」那一条管理链。
+ * ⚠️ **2026-10-07（②-1）加了一句限定**：上面这句话**只对头成立**——**环境通道（cookie）指向已归档
+ * 项目时当作没带**（落沙箱根、200），理由见第四笔裁定（照 403 做会砖掉全 app）。
+ * 「冻结」这条规则本身没动：它由**第二道门**（目录取自会话行）继续守着，与通道无关。
+ *
  * 三笔裁定与依据（2026-10-06，用户）记在 `docs/superpowers/specs/005-project-management/state.md`；
  * 判据本身在 core 的 `ProjectMembership.frozen`，与归档/找回那条 `decide` 是**同一条规则的两个
  * 投影**（等值关系由 `packages/core/test/project-membership.test.ts` 的 T015 组锁死）。
@@ -102,6 +163,14 @@ import { MatchedRoute } from "./matched-route"
  * （`packages/app/src/project/openhive-project.ts`）都不发这个头，`grep` 全仓只有
  * `openhive-files.ts` 发。取向是**把契约钉死**：带了头 =「我要进这个已经冻住的项目里干活」
  * ⇒ 403 是对的，错的是那个头。T023（归档/找回入口）接线时**别**给找回的调用加这个头。
+ * （环境通道**顺带**把这个坑也盖住了：找回的请求同样带 cookie，而那个通道在归档时退化成
+ * 「没带」⇒ 即使前端不清 `currentProject`，找回也不会被自己挡住。⚠️ **这条是照规则推的、
+ * 没有单独用例**，别当成测过。）
+ *
+ * ⇒ 环境通道有**一条要记住的副作用**：同一个 cookie，在「那个项目归档」前后**落点不同**
+ * （归档 ⇒ 当没带 ⇒ 沙箱根；被找回 ⇒ 不再退化 ⇒ 项目目录）。这不是 bug（用户确实选中了它），
+ * 但它是「归档改变请求落点」这件事的**唯一**一处，排查时先想到它。**未测**（没有 T023 的入口，
+ * 今天构造不出稳定用例）。
  *
  * ⚠️ 那条「管理类调用带了项目头」的用例（`openhive-project-frozen.test.ts`）**只钉「门在不在」**：
  * 找回 handler 对非 owner 也回 403，与门同值 ⇒ 先 `让谁当owner` 造出对照，再用「不带头 503 ／
@@ -161,6 +230,17 @@ import { MatchedRoute } from "./matched-route"
  *
  * ## 已知不覆盖（别把它读大）
  *
+ * - ⚠️ **环境通道（cookie，②-1）的射程比头大得多，而断言只钉了六条**：头是**按调用点**发的
+ *   （今天全仓只有 `openhive-files.ts` 发），cookie 是**浏览器对每一条同源请求**自动带的 ⇒
+ *   这一层楼从「少数几个诚实调用者的行为」变成了「**全 app 每一条请求**的背景状态」。
+ *   六条用例盖的是：两条链各自的落点、头优先、归档退化、非法退化、以及归档门仍活着的对照。
+ *   **推论出来的**（不是测出来的）：文件 / pty / 上传 / 权限 / 项目清单那些出口**全都在**这个
+ *   通道的射程内——它们的行为与「带头」那一支**同形**（同一个中间件、同一段改写），但各自
+ *   **没有**跑过带 cookie 的情形。
+ * - **同一通道内「归档态翻转 ⇒ 落点翻转」未测**（见上面「一个必须知道的副作用」）：没有 T023
+ *   的入口，构造不出稳定用例。
+ * - **客户端 cookie 的 `Path=/` 没有被任何断言钉住**（happy-dom 的读回不按路径过滤，实测）：
+ *   护栏只有代码可读性。详见 `packages/app/src/project/current-project.test.ts` 文件头。
  * - **不建目录**：本层只把路径**写进** `session.directory`。`{沙箱根}/{projectId}` 那个目录
  *   由建项目那一步（T006）落地。实测：两条链在目录**不存在**时照样 200
  *   （`anchor-workspace.test.ts` / `tenant-db-isolation.test.ts` 的沙箱根都从未被创建）。
@@ -207,6 +287,20 @@ import { MatchedRoute } from "./matched-route"
  * 改名也测不出来（`LEARNINGS #003-05` 的假镜像）。改名要同时改那边那个字面量。
  */
 export const PROJECT_HEADER = "x-openhive-project"
+
+/**
+ * 「当前项目」的**第二个通道：cookie 名**（006 Step 5 · ②-1，用户裁定 **B**，2026-10-07）。
+ *
+ * ⚠️ **同样是客户端契约**：`test/server/openhive-project-directory.test.ts` 里那个字面量与
+ * **客户端**（`packages/app/src/project/current-project.ts`，写；`ai-session/**` 那条 SDK 链，
+ * 浏览器自动带）各写一份。理由与 `PROJECT_HEADER` 逐字相同——import 过来就变成「生产改什么、
+ * 测试跟着改什么」。改名要同时改**三处**：这里、那边那个字面量、客户端那个写入点。
+ *
+ * 为什么需要第二个通道（不是重复造）：**SDK 那条链够不着头**——右栏的目录作用域客户端由
+ * **上游** `context/server-sdk.tsx` 的 `createDirSdkContext` 造，fork 侧没有注入头的缝，
+ * 而 cookie 由浏览器对**每一条同源请求**自动附带。完整裁定见文件头「第四笔裁定」。
+ */
+export const PROJECT_COOKIE = "openhive_project"
 
 /**
  * 已归档 ⇒ 403（T015）。写成 **JSON 体**而不是空响应：与归档 / 找回那两条链的拒绝同一口径
@@ -299,7 +393,17 @@ export const projectLocationLayer = HttpRouter.middleware<{
         if (Option.isNone(user)) return yield* effect
 
         const request = yield* HttpServerRequest.HttpServerRequest
-        const projectId = request.headers[PROJECT_HEADER]
+        // 「当前项目」的两个通道（006 Step 5 · ②-1，见文件头「第四笔裁定」）。**头优先**：头在场时
+        // cookie 一次都不看——头是**显式意向**（客户端主动填的），cookie 是**环境**（浏览器自动带的）。
+        // 两者指向不同项目时，只有前者是用户当下那句话（这条顺序本身是语义，用例③ 专门钉它）。
+        // ⚠️ 读取器复用身份那一个（`@/server/user-identity` 的 `cookieValue`）：本项目读 cookie 只该
+        // 有一个解析器（`#002-06`：同一个判断两处各写一份，迟早不等）。
+        const headerProjectId = request.headers[PROJECT_HEADER]
+        const cookieProjectId = cookieValue(request.headers["cookie"], PROJECT_COOKIE)
+        const projectId = headerProjectId ?? cookieProjectId
+        // 落定的这个 id 是不是从**环境通道**来的——决定下面两处「无效 ⇒ 当作没带」而不是报错。
+        // ⚠️ 判据是「**头在不在场**」，不是「cookie 在不在场」：头在场时结果一定来自头。
+        const ambient = headerProjectId === undefined
 
         // ── 第二道门（T015 · D1，见文件头「目录来自会话行的那一半」）──
         // 请求可能**正打在**某个项目里的会话上，而**会话作用域路由的工作目录取自会话行、
@@ -333,12 +437,21 @@ export const projectLocationLayer = HttpRouter.middleware<{
           }
         }
 
-        // 没有项目头：会话那条已经问过了，这里直接放行。
+        // 两个通道都没有项目 id：会话那条已经问过了，这里直接放行。
         if (projectId === undefined) return yield* effect
 
         // 形状非法 ⇒ **400，不是 defect**（理由见 `badRequest()` 的注释；与第二道门对 `sessionID`
         // 那条同口径）。**不锚定任何目录**这个判据仍然成立——400 在锚定之前就把请求交回去了。
-        if (!User.isSafePathSegment(projectId)) return badRequest()
+        //
+        // ⚠️ **这一条只对显式通道生效**（006 Step 5 · ②-1）：环境通道来的非法值 ⇒ **当作没带**、
+        // 落沙箱根。理由见文件头「第四笔裁定」——cookie 对**全 app 每一条请求**生效，一个被改坏的
+        // 值若能把请求变成 400，就等于**用一条背景噪声砖掉整个 app**。安全性一点没松（落点＝沙箱根）。
+        // ⚠️ 判据必须落在**解码之后**的值上（`cookieValue` 会 `decodeURIComponent`）：否则
+        // `openhive_project=%2E%2E%2Fbob` 能绕过这一行——解码后它才是 `../bob`。
+        if (!User.isSafePathSegment(projectId)) {
+          if (ambient) return yield* effect
+          return badRequest()
+        }
 
         const project = yield* ProjectExt.findByProjectID(database.db, projectId)
         // R5：查不到就落沙箱根，**不做隐式建项目**（本层一个字都不写库）。
@@ -359,7 +472,16 @@ export const projectLocationLayer = HttpRouter.middleware<{
         // （这里原本写的是「owner 行与 `project_ext` 行同生共死 ⇒ 那条路上不可能有归档行」，
         // 那句按字面是**假的**——成员今天就没有 `project_ext` 行、而项目完全可能已归档；
         // 真正的理由就是前一句：那一支的落点是沙箱根。）
-        if (yield* isArchived(openhivePg, projectId)) return forbidden()
+        // ⚠️ **归档门也只对显式通道生效**（006 Step 5 · ②-1 的裁定本体）：环境通道指向一个**已归档**
+        // 项目 ⇒ **当作没带**、落沙箱根、**200**。反过来的做法（照 403 做）**实测会砖掉全 app**：
+        // cookie 对每一条请求生效 ⇒ 当前项目被归档时（共享项目被 owner 归档，而本地 `currentProject`
+        // 还挂着它），连 `GET /openhive/project/list` 都 403 ⇒ **项目清单读不到、用户切不出去**。
+        // 「不许在冻结目录里干活」**一点没松**：由**第二道门**（上面会话目录那道）原样守着——
+        // 用例⑤ 就是它的对照（同一个归档项目、只差通道 ⇒ 走头仍然 403）。
+        if (yield* isArchived(openhivePg, projectId)) {
+          if (ambient) return yield* effect
+          return forbidden()
+        }
 
         const target = join(config.root, user.value.id, projectId)
         const rewritten = rewriteBody(rewriteRequest(request, target), target)

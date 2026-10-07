@@ -185,11 +185,15 @@ export function AiSessionSlot(): JSX.Element {
             // ⚠️ 建在**有目录作用域的那份 api** 上（`现在.api`），目录取自当前这场会话
             // （`建会话` 把它带进 `location.directory`）。
             //
-            // ⚠️ **目录这一半今天不生效**：服务端的锚定（`anchor-workspace.ts`）把 `POST /api/session`
-            // 体里的 `location.directory` **无条件**改写成沙箱根，而项目那一层（`project-location.ts`）
-            // 只在带了 `x-openhive-project` 头时才往上推进一段——SDK 这条链不发那个头
-            // （带头的只有 005 那四个裸路由）。⇒ 会话落在**沙箱根**、不在当前项目目录里。
-            // 这是 006 Step 5 的 ②-1，**尚未修**（缺口表有整条），别把上面那句读成已成立。
+            // ⚠️ **目录这一半曾经不生效，现在是「有条件生效」**（006 Step 5 · ②-1，2026-10-07 已修）：
+            // 服务端的锚定（`anchor-workspace.ts`）把 `POST /api/session` 体里的 `location.directory`
+            // **无条件**改写成沙箱根，而项目那一层（`project-location.ts`）只在拿到「当前项目」时
+            // 才往上推进一段。SDK 这条链不发 `x-openhive-project` 头（带头的只有 005 那四个裸路由）
+            // ⇒ 那条链**靠 cookie**：`setCurrentProject` 把当前项目写进 `openhive_project` cookie，
+            // 浏览器自动带上它（`current-project.ts` 的 `writeProjectCookie`）。
+            // ⇒ **当前项目选中了一个活跃项目时，会话落在它的目录里**；未选中 ⇒ 落沙箱根；
+            // 选中的项目**已归档** ⇒ 当作没带、也落沙箱根（环境信号不构成归档意向，见那边文件头
+            // 「第四笔裁定」）。⚠️ 别把上面那句读成「一律生效」——它的前提是**用户确实选了项目**。
             建在途(() => 建会话({ api: 现在.api, directory: 现在.directory }))
               ?.then((id) => {
                 const 去 = 会话路径(location.pathname, id)
