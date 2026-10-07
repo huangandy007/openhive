@@ -2,18 +2,14 @@
 
 ## 当前任务
 
-**T013 已完成**（[FE] 写测试：指令卡投影 ＋ 上下文动态浮现 / SC-002：新建
-`ai-session/capability-pipeline.test.tsx` **6 条**，补 `projection.context → ContextCards` 与
-`projection.drawer → SkillDrawer` 这两条此前**零覆盖**的缝）→ 出参见下「T013 出参」。
-**下一个：T014**（[INT] 写测试：高风险动作强制人确认 [SC-003] [T012]）。
-⚠️ T014 与 T013 **同型**——是**测试验收**条，**不是**实现条（闸门机制 T012 已落地并带 6 条见证）。
-开工前先读 `tasks.md` 的 T014 行与它的锚（T012 的配置清单 ＋ `openhive-highrisk-ask.test.ts`），
-并照 `LEARNINGS #005-09`（先读本 feature 的**挂账清单**，别把已挂的当新缺口）**先收窄出参**：
-T012 已如实挂了两条——**黑名单按模式天生可绕过**（包装器 / 脚本内调用）与**「民警真的会被弹窗拦住」
-本机测不到**（没有真前端、没有真模型）。T014 能补的是**再往上一段**的可测性质
-（例如：闸门在**真实工具执行路径**上的落点、`ask` 之前的零副作用），**不是**把这两条挂账重报一遍。
+**T014 已完成**（[INT] 写测试：高风险动作强制人确认 / SC-003：新建
+`packages/opencode/test/permission/openhive-highrisk-gate.test.ts` **4 条 / 16 expect**，接的是 T012
+文件头自己写明**缺的那一跳**——T012 止步于 `evaluate()` 判定出 `ask`；本条把生产里那个 `ctx.ask`
+原样接上**真 `Permission.Service` ＋ 真 shell 工具**，让「挂起 → 等人 → 拒后不执行」在测试里真跑）
+→ 出参见下「T014 出参」。
 
-**已完成到 T013**（T001–T013，见下「已完成」）。
+✅ **14 条 task 全部完成**（T001–T014，见下「已完成」）⇒ **下一个动作是 feature 收尾**
+（final commit；merge / tag 由**用户在主检出**里跑，本 worktree 只做最终提交）。
 
 ⚠️ 视觉规格在 `DESIGN.md §4.7`：T008 用到 §4.7.5（Hero 输入）与 §4.7.1（卡行）；不要凭记忆挑 token。
 §4.7.0 末尾那条 ⚠️（**别把那张对照表照抄进源码注释**）是 T004 实测踩出来的；T008 那条
@@ -110,6 +106,14 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
   **零产品码改动**（还原后五文件 md5 与备份全等、`--numstat` 为空）。
   ⚠️ 夹具初版把通用清单声明在**最前** ⇒ 渲染层的 `通用优先()` 成了**空转**（摘掉排序 A1 照样绿）——
   已把通用挪到**最后**声明，并用 **M1** 证实那条断言**真的会红**（`LEARNINGS #005-15`）。
+- **T014**（2026-10-07）· 写测试：高风险动作强制人确认（SC-003）→ 出参见下「T014 出参」。
+  按用户两项裁定落**「新建 gate 测试文件」**：`test/permission/openhive-highrisk-gate.test.ts`
+  （**4 条 / 16 expect**），把生产里那个 `ctx.ask`（含 `ruleset` 项）接上**真 `Permission.Service`
+  ＋ 真 shell 工具** ⇒ 「挂起 → 等人 → 拒后不执行」真跑；T012 的 `openhive-highrisk-ask.test.ts`
+  **一字不动**（两层各有各的见证）。**4 批变异**（每批「注入 → 跑 → 逐字节还原」），4 条用例**每条**
+  都被点红过。**零产品码改动**（`packages/opencode` 侧；`.opencode/opencode.jsonc` 只读）。
+  ⚠️ **M4 做砸过两次**：变异必须落在**被断言那件事的前置条件**上——落在断言**之后**＝**空转**
+  （只把收尾的 `reject` 换成 `once` ⇒ 4 pass 全绿），落在会让用例体**提前中止**的地方＝红在别处。
 - **U6 起草件 → 定稿**（2026-10-07）· 起草 → 用户审 → **移入 `openhive-DESIGN.md` 作 §4.7**（并改
   `§3.1` 的圆角口径）→ 出参见下「U6 起草件出参」。**起草件本身已删**（宪法 §八：DESIGN.md 是视觉真理的
   单一来源；留副本＝两份真相会漂，`#003-05`），其「取数命令核对记录」整段**挪进**了本节（不丢证据、
@@ -1395,7 +1399,7 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 | # | 落点 | 是什么 |
 |---|---|---|
 | ① | `.opencode/opencode.jsonc`（**改，+17 / −1**） | **规则**：`permission` 键从空的 `{}` 换成 `bash` 下 **8 条**删除类 pattern → `"ask"`（＋ 6 行注释说明它是 006 的定制）。⚠️ 生效的是**单数** `permission`（v1）；复数 `permissions` 在 `config/v2-compat.ts` 里**直接抛** `V2 permissions are not supported by OpenCode V1` |
-| ② | `packages/opencode/test/permission/openhive-highrisk-ask.test.ts`（**新建**） | **见证**（6 条用例 / 27 expects）。⚠️ 它测的**不是**「民警真的会被弹窗拦住」——那要前端 ＋ 一次真会话（本机没有）；它测的是「**声明 → 规则集 → 判定**这条链是活的」，且**真 `Config`** 走完目录发现（顺带把「这个文件到底会不会被加载」一起测了） |
+| ② | `packages/opencode/test/permission/openhive-highrisk-ask.test.ts`（**新建**） | **见证**（6 条用例 / 27 expects）。⚠️ 它测的**不是**「民警真的会被弹窗拦住」——那要前端 ＋ 一次真会话（本机没有）；它测的是「**声明 → 规则集 → 判定**这条链是活的」，且**真 `Config`** 走完目录发现（顺带把「这个文件到底会不会被加载」一起测了）。✅ **2026-10-07 T014 已在它下游补上「判定之后那一跳」**（真挂起 ＋ 拒后不执行）＝ `test/permission/openhive-highrisk-gate.test.ts`（4 条）；⚠️ 但**仍止于「前端把 `Asked` 渲染成弹窗」之前** |
 
 **落点依据**：2026-10-07 用户裁定（压缩前的未定项询问，三项全按建议）——
 ① **落地层**＝**配置文件的 `permission` 键**（复用上游闸门、零上游源码改动）；
@@ -1633,6 +1637,107 @@ cd packages/app && bun test --conditions=browser --preload ./happydom.ts --prelo
 
 ---
 
+## T014 出参 · 高风险动作强制人确认（判定之后那一跳 / SC-003 · 2026-10-07）
+
+### 产品码落点
+
+**零。** 本条是 `[INT] 写测试`，产物**就是测试本身**——新建
+`packages/opencode/test/permission/openhive-highrisk-gate.test.ts`（**4 条 / 16 expect**）。
+T012 那份清单（`.opencode/opencode.jsonc`）**只读**：4 批变异全部逐字节还原（`md5sum -c` 全 OK）。
+⚠️ 与 T013 不同：T013 是前端 `.tsx`（要 `--conditions=browser` 那一套），本条是 `packages/opencode`
+的 Effect 测试，**没有**那些预载要求。
+
+### 开工第一件事：先把出参收窄（`#005-09`：先读挂账，别把已挂的当新缺口）
+
+| 已被别处占住的事 | 对 T014 的约束 |
+|---|---|
+| **`ask` / `reply` 的机制**（once / always / reject / 同会话连坐 / 事件）——`test/permission/next.test.ts` 有一整组 | 本文件**不重写** `reply` 语义 |
+| **前端自动应答开关默认关**——`packages/app/src/context/permission-auto-respond.test.ts:34` | 不重测那个开关 |
+| **T012 已如实挂账的两条天花板**（模式匹配天生可绕过 / 真弹窗要前端＋真会话） | **只引用，不重报**（`#005-09`） |
+
+T012 的文件头自己写明了它**止步于** `evaluate()` 的判定；**判定之后那一跳**（挂不挂得住、拒了跑不跑）
+就是本条的唯一增量——这也是它那 6 条**证不到**的一段。
+
+### 真链（读码，非推断）
+
+```
+真 shell 工具的 collect() → scan.patterns / scan.always
+  → ctx.ask（生产形状：merge(agent.permission, session.permission ?? []) ＋ Effect.orDie）
+  → Permission.ask()：命中 ask ⇒ 挂 pending ＋ publish Event.Asked ＋ **阻塞在 Deferred 上**
+  → 测试扮演「民警」调 reply(reject / once)
+  → 工具：die（RejectedError，命令一步没跑） / 真的执行
+```
+
+`ctx.ask` 那一行逐字照 `session/tools.ts` 写，**含 `ruleset` 那一项**（`#004-07`：判据清单要照
+**被调方**逐项打勾——省了它 `ask` 会按「未知 permission」兜底，测试看着还绿）。
+
+### 出参：4 条，各自「凭什么不是重复」
+
+| 用例 | 断的是什么 | 凭什么不是别处的重写 |
+|---|---|---|
+| **①** 真挂起 | `待办.length === 1`；`{permission, patterns, always}` 逐字等于 `{bash, [命令], ["rm *"]}`；**靶子仍在**；交叉核对「`always[0]` 就是产品声明成 ask 的那条」 | T012 止于「判定是 `ask`」；这条接的是「判定之后**真挂住** ＋ 命令**真没跑**」 |
+| **②** 拒绝 ⇒ 零副作用 | 先证靶子在（前置）→ reject → **靶子仍在**（被测属性在前）→ `Exit.isFailure` ＋ `Cause.squash` 是 `RejectedError` | `next.test.ts` 钉的是 `Pending` 被拒这个**机制**；这条钉的是**工具这一侧**的结局（`.pipe(Effect.orDie)` 真的 die 了） |
+| **③** 对照：放行 once ⇒ 真删除 | 靶子没了 ＋ `Exit.isSuccess` | 没有它，② 的「还在」可能只是「**这条命令根本跑不动**」——文件头坑 ① 那个反斜杠就是这个形状（`#004-08`） |
+| **④** 对照：不在清单里的命令 | `记录.length > 0`（**真问过**）＋ 记录里每条 pattern 都不在清单 ＋ `Exit.isSuccess` ＋ `pending` 为空 ＋ 命令真跑 | 「没人被拦」与「**压根没问**」是两件事（同 `#004-08` 的判据形状） |
+
+### ⚠️ 两个夹具坑（都实测过，写进文件头）
+
+① **命令里的路径必须走正斜杠**。`rm -rf C:\…\victim` 退出码是 **0**，而 victim **一个都没删**——
+bash 把反斜杠当转义吃掉、`-f` 又把不存在的路径静默放过。这正是 `#004-08`「没报错 ≠ 执行了」，
+也正是 ③ 那条**对照**存在的理由。
+② **shell 必须显式 pin**。`shell.ts` 走 `Shell.acceptable(cfg.shell)`；不给就是 `select(process.env.SHELL)`，
+win32 兜底取 `win()[0]`（本机顺序表里 `pwsh` 缺、落在 **powershell**），而 `rm -rf` 在 PowerShell 下
+**参数不合法** ⇒ 同一份测试会**看谁在跑**而红绿不同。故 pin 成 Git Bash（同 `test/tool/shell.test.ts`）。
+
+### 变异账（4 批；每批「注入 → 跑 → 逐字节还原」，还原后 `md5sum -c` 全 OK ＋ `--numstat` 为空）
+
+| # | 变异（注入哪一侧、改了什么） | 恰红 | 绿 |
+|---|---|---|---|
+| **M1** | `.opencode/opencode.jsonc`：`"rm *": "ask"` → `"allow"` | **① ② ③** | ④ |
+| **M2** | 测试文件：靶子路径去掉 `.replaceAll("\\", "/")` | **③** | ①②④ |
+| **M3** | `.opencode/opencode.jsonc`：整份清单换成 `{"*": "ask"}` | **① ④** | ②③ |
+| **M4** | 测试文件：在 ① 的「被测属性」断言**之前**插入 `reply once` ＋ 等命令跑完 | **①**（红在**目标断言**） | ②③④ |
+
+⇒ 4 条用例**每条**都被至少一个变异点红，**无恒绿者**。
+
+- **M1 的红集**（①②③）说明前三条**共用同一个前置**：「`rm *` 是 `ask`」。M1 之下 ① 的 `等挂起`
+  会 3s 超时 `Effect.die`（请求根本没挂上来）⇒ 「闸门没生效」以**明说**的样子红，不会伪装成别的。
+- **M3 的红集**（①④）正是那两条**带警报语义**的断言：① 的交叉核对（`always[0]` 不再命中清单）
+  与 ④ 的「不该被拦」（`记录.every(… === undefined)` ＋ `pending` 为空）——`#004-02` 那两条**故意
+  会红**的断言在这里各显形一次。
+
+⚠️ **M4 做砸过两次，两种形状都记下来（`#003-03` 的「三类」之外还有「空转」这一类）**：
+- **第一版**把 ① 收尾的 `reject` 换成 `once` 却**没等命令跑完** ⇒ 红的是**收尾那句重复 reply** 抛的
+  `Permission.NotFoundError`（`permission/index.ts` 的 `reply`）——**红错了地方**，没证到目标；
+- **第三版**（本次复跑）只把收尾换成 `once` ⇒ **4 pass / 0 fail 全绿**——因为 ① 的三条断言**全都写在
+  `reply` 之前**，动「断言之后」的代码**根本不在被测性质的前置上** ⇒ **空转**；
+- 正确形态是**第二版**：把注入点挪到**断言之前**（先放行、等命令真跑完，再看那条「靶子仍在」）
+  ⇒ **恰红 ① 且红在目标断言**（`Expected: true / Received: false`）。
+**判据一句话**：变异必须落在**被断言那件事的前置条件**上——落在断言**之后**是空转，落在会让用例体
+**提前中止**的地方是红在别处。（`#005-15` 的同族：那条讲「拆掉哪一行它会红吗」，这条讲「**拆的位置
+对不对**」。）
+
+### 门禁（2026-10-07 实测，**串行**跑；`#003-01`）
+
+| 门 | 结果 |
+|---|---|
+| 单文件 lint（**在仓库根**跑，`#004-10`） | **0 warnings / 0 errors**（161 rules） |
+| `packages/opencode` typecheck（`tsgo --noEmit`） | **EXIT=0** |
+| 新文件 | **4 pass / 0 fail / 16 expect**（18.55s） |
+| `test/permission/`（**4** 个文件，含新文件） | **95 pass / 0 fail / 174 expect**（76.49s） |
+| 既有三个文件（`openhive-highrisk-ask` / `arity` / `next`）单独跑 | **91 pass / 0 fail**（＝ T012 时的基线值，**新文件没影响它们**） |
+| `git diff --stat bun.lock` | **空**（本条没跑 `bun install`） |
+
+⚠️ 单文件 lint 有个尾巴：第一遍报 **9 warnings**，全是 `typescript-eslint(no-unnecessary-type-assertion)`
+（`待办[0]!` 之类的 `!`——本仓 `noUncheckedIndexedAccess` 关着）⇒ 去掉那 9 个 `!` 才 0/0；
+**改动只删断言符，不动任何断言**，删完复跑仍是 4 pass / 16 expect。
+
+### 上游侵入面
+
+**零。** 本条不碰任何上游文件；新增的测试在 `packages/opencode/test/permission/`（本仓自己的测试目录）。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -1686,12 +1791,59 @@ cd packages/app && bun test --conditions=browser --preload ./happydom.ts --prelo
 | **黑名单按模式匹配 ⇒ 天生可绕过** | T012 / `shell.ts` 的 `collect()` | 高风险闸门靠 `command` 的**模式匹配**（`rm *` …），而 `scan.patterns.add(source(node))` 取的是**命令节点的源文本**⇒ `sudo rm -rf build` 扫出来的就是整条 `sudo rm -rf build`（不以 `rm ` 开头）⇒ 不命中 ⇒ 兜底 `allow`。同类的还有 `bash -c "rm …"`、脚本内调 rm、`find … -delete`、`\rm`。**不是待修的 bug**（这类做法的天花板），⑥ 组用一条**哨兵**钉住（哪天这层加了「拆包装器」的解析，它会红，逼人回来重判）。**真正的兜底在沙箱 / 备份，不在这一层**（D-01 / D-16） |
 | **上游 `ask` 的 `once / always / reject` 语义是上游的** | T012 → 上游 `permission/index.ts` 的 `reply` | 「always」会把该 pattern 在**本会话内**永久放行（`reply` 里 `approved.push(...)`，之后 `evaluate(…, approved)` 命中即 allow）。这是**上游行为**，本条不改也不假装能改（改它要动上游核心 ⇒ 与第一号约束冲突）。⚠️ **部署侧据此有一条纪律**：D-16 写明「前端自动应答开关**不得**打开」——那个开关在 `packages/app/src/context/permission-auto-respond.ts`（实测**默认关**），一旦打开，闸门就变成**自动 say yes**，而**没有任何测试会变红** |
 | **配置规则排最后 ⇒ 三个隐藏 agent 的 `"*":"deny"` 被放宽成 `ask`** | T012 → `agent/agent.ts` 的 `merge(defaults, 本 agent, user)` | `title` / `summary` / `compaction` 自己的规则集是 `Permission.fromConfig({ "*": "deny" })`（＝`{permission:"*", pattern:"*", action:"deny"}`，**匹配一切**）⇒ 这三个 agent 本来**一条命令都跑不了**；而 `user`（配置）排**最后** ＋ `findLast` ⇒ 我们声明的 8 条 pattern 把它们自己的 deny 放宽成 `ask`（**未声明**的命令照旧 deny）。方向是「**更爱问**」不是「更放行」——这三个 agent 若真去跑删数据的命令，现在是**弹窗**而不再是**当场拒绝**。⑤ 组里用一条**报警断言**钉住它（`user` 哪天排到 per-agent deny **之前** ⇒ 红 ⇒ 回来回答「要不要保留这个放宽」） |
-| **民警真的会被弹窗拦住 —— 本机测不到** | T012 → 缺口 | 本机**没有真模型、没有前端**⇒ 「弹窗出现、民警点『拒绝』、命令不执行」这条端到端链**测不了**（`LEARNINGS #002-02`）。本机测到的是它**上游**那一跳：**规则集上的判定是 `ask`**（③ 组）。两者之间还隔着一层：`Permission.ask()` 弹窗 ＋ `Deferred` 等 `reply` ＋ 前端渲染。⇒ **不得声称 FR-009 已在 006 端到端验证**；把「弹窗真的出现」写进 D-16 的**怎么验**（部署 / 目标环境侧） |
+| **民警真的会被弹窗拦住 —— 本机测不到**（⚠️ **T014 之后只剩最后一层**） | T012 → 缺口 | 本机**没有真模型、没有前端**⇒ 「弹窗出现、民警点『拒绝』、命令不执行」这条端到端链**测不了**（`LEARNINGS #002-02`）。✅ **2026-10-07 T014 已把中间那一层收进来**：`Permission.ask()` **挂 pending ＋ 阻塞在 `Deferred`** ⇒ `reply(reject)` ⇒ 工具 **die ＋ 命令一步没跑**（`openhive-highrisk-gate.test.ts` ①②③，4 批变异证实有牙）。⇒ 端到端链上**只剩「前端把 `Event.Asked` 渲染成弹窗」这一段**没测；本机两跳合起来＝ **判定是 `ask`**（T012 ③ 组）＋ **挂起后被拒则真不执行**（T014）。**仍不得声称 FR-009 已在 006 端到端验证**；把「弹窗真的出现」写进 D-16 的**怎么验**（部署 / 目标环境侧） |
 | **`edit` / `write` 本轮不动** | T012 裁定 ② | 本次清单**只覆盖 `bash` 的删除类命令**；`edit` / `write` 工具改文件（含删文件内容）**不在本轮的 `ask` 清单里**（用户裁定 ②：本轮 bash 删除类，其余照旧）。⇒ 「修改 / 覆盖数据文件」这一类高风险动作**今天仍静默执行**。⚠️ 与 `capabilities.ts` 的 `cards` 那条不同：这里不是「没有对象」，是**明确划出范围**——要扩就改 `.opencode/opencode.jsonc` 的 `permission` 块（`edit` / `write` 各有自己的权限名） |
 
 ---
 
 ## 最后更新
+
+2026-10-07（**T014 已完成** ⇒ ⚠️ **14 条 task 全部完成，本 feature 的 task 轮到此结束**：写测试 ——
+高风险动作强制人确认 / SC-003。产物 **1 处：1 个新文件** ——
+`packages/opencode/test/permission/openhive-highrisk-gate.test.ts`（**4 条 / 16 expect**）；
+**零产品码改动**）→ 出参见上「T014 出参」。
+
+**用户两项裁定（全按建议）**：① 产物形态 = **新建 gate 测试文件**（T012 的 `openhive-highrisk-ask.test.ts`
+**一字不动**——两层各有各的见证，与 T013 先例一致）；② 夹具规则来源 = **config 注入 ＋ pin shell**：
+用产品自己的 `ConfigParse.jsonc` 从仓库 `.opencode/opencode.jsonc` 读出 `permission.bash` 那份清单
+（不自己编一份，`#002-06`），经 `it.instance` 的 `config` 注入，避免把「配置怎么被发现」再测一遍。
+
+**开工第一件事：先读挂账、再收窄**（`#005-09`）：三条已被别处占住（`next.test.ts` 的 `ask/reply` 机制、
+`permission-auto-respond.test.ts:34` 的默认关、T012 已挂的两条天花板）⇒ 本条唯一增量正是 T012 文件头
+自己写明**缺的那一跳**：把生产里那个 `ctx.ask`（含 `ruleset` 项，`#004-07`）接上**真
+`Permission.Service` ＋ 真 shell 工具**，让「挂起 → 等人 → 拒后不执行」真跑。
+
+**4 批变异**（每批「注入 → 跑 → **逐字节还原**」，还原后 `md5sum -c` 全 OK ＋ `--numstat` 为空）：
+**M1**（配置 `rm *` → `allow`）**恰红 3**（①②③）／**M2**（靶子路径去掉正斜杠转换）**恰红 1**（③）／
+**M3**（配置整份换成 `{"*": "ask"}`）**恰红 2**（①④）／**M4**（在「被测属性」断言**之前**插入放行 ＋
+等命令跑完）**恰红 1**（①，红在**目标断言**）。⇒ 4 条用例**每条**都被点红过，无恒绿者。
+
+⚠️ **M4 做砸过两次，两种形状都值得记**（`#003-03` 的「三类」之外还有「空转」这一类）：第一版改收尾
+却**没等命令跑完** ⇒ 红在**收尾那句重复 reply** 抛的 `Permission.NotFoundError`（**红错地方**）；
+第三版只改收尾 ⇒ **4 pass 全绿**（① 的断言**全在 `reply` 之前**，动「断言之后」的代码＝**空转**）。
+正确形态是把注入点挪到**断言之前**。判据一句话：**变异必须落在被断言那件事的前置条件上**
+（`#005-15` 的同族：那条讲「拆哪一行」，这条讲「**拆的位置对不对**」）。
+
+⚠️ **两个夹具坑（实测，写进文件头）**：① `rm -rf C:\…\victim` 退出码 **0** 却什么都没删（bash 把
+反斜杠当转义吃掉 ＋ `-f` 静默放过）——`#004-08`「没报错 ≠ 执行了」，也是 ③ 那条对照存在的理由；
+② **shell 不 pin** 就落 `win()[0]`（本机 **powershell**），而 `rm -rf` 在 PowerShell 下**参数不合法**
+⇒ 同一份测试会「看谁在跑」而红绿不同。
+
+**门禁（串行，`#003-01`）**：单文件 lint（**在仓库根**跑，`#004-10`）**0 warnings / 0 errors**（161 rules；
+⚠️ 第一遍报 **9** 条 `no-unnecessary-type-assertion`，删掉那 9 个 `!` 才 0/0——**只删断言符，不动断言**）；
+`packages/opencode` typecheck（`tsgo --noEmit`）**EXIT=0**；新文件 **4 pass / 0 fail / 16 expect**（18.55s）；
+`test/permission/`（**4** 个文件）**95 pass / 0 fail / 174 expect**（76.49s）；既有三个文件单独跑
+**91 pass / 0 fail**（＝ T012 时的基线值，**新文件没有影响它们**）；`git diff --stat bun.lock` **空**。
+
+**同 task 一并落的文档动作**：`tasks.md` 勾 T014 ＋ 出参条；`state.md` 里 **T012 的产出表**与
+**缺口表那条**（「民警真的会被弹窗拦住」）各补一句 ✅ 已收／只剩最后一层（`#002-06`：这类跨节点标记
+在本文件里有多处）。
+
+**⚠️ 下一步是 feature 收尾**（14 / 14 已完成）：final commit ＋ 交**用户在主检出**跑
+`git merge --ff-only worktree-feat-006-ai-session`；`006-ai-session/session.md` 与根 `LEARNINGS.md`
+的收尾补充同时做。
+
+---
 
 2026-10-07（**T013 已完成**：写测试 —— 指令卡投影 ＋ 上下文动态浮现 / SC-002。产物 **1 处：1 个新文件**
 ——`packages/app/src/ai-session/capability-pipeline.test.tsx`（**6 条 / 14 expect**）；**零产品码改动**）
@@ -1787,6 +1939,8 @@ happy-dom 那一半）。照包脚本 `test:components` 的形状跑。
 别把已挂的当新缺口）⇒ **先把出参收窄**：T012 已如实挂了两条——**黑名单按模式匹配天生可绕过**
 （包装器 / 脚本内调用）与**「民警真的会被弹窗拦住」本机测不到**（没有真前端、没有真模型）
 ——**别把这两条挂账重报成新缺口**；T014 能补的是**再往上一段**的可测性质。
+✅ **2026-10-07 T014 已收**（见下「T014 出参」）：落点就是「**判定之后那一跳**」——真挂起 ＋ 拒后
+不执行，4 条用例 ＋ 4 批变异（含 M4 两次做砸的形状）。
 
 ---
 

@@ -184,6 +184,8 @@
       对象（📤-2）。
     - 见证：`packages/opencode/test/permission/openhive-highrisk-ask.test.ts`（6 条 / 27 expects）；
       部署侧下发挂 `docs/workspace/deploy-todo.md` 的 **D-16**。
+      ✅ **2026-10-07 T014 已在它下游补上「判定之后那一跳」**（真挂起 ＋ 拒后不执行）——
+      见下方 T014 条；⚠️ 但**仍止于「前端把 `Event.Asked` 渲染成弹窗」之前**。
 
 ## Phase 7: 测试验收（P1）
 
@@ -200,7 +202,31 @@
     若把通用清单声明在最前，声明序与渲染序**同向** ⇒ 那条断言会**空转**（`LEARNINGS #005-15`）。
   - 📤 **F6 / F7 收**：本文件喂的仍是**测试自己造的**清单；真正的 `contexts` 产源与 `MANIFESTS.cards`
     仍归它们（`state.md` 缺口表那两条不动）。
-- [ ] T014 [INT] 写测试：高风险动作强制人确认 [SC-003] [T012] [出参：测试通过]
+- [x] T014 [INT] 写测试：高风险动作强制人确认 [SC-003] [T012] [出参：测试通过]（2026-10-07 完成）
+  - **出参落地**：见 `state.md`「T014 出参」——新建 `test/permission/openhive-highrisk-gate.test.ts`（**4 条 /
+    16 expects**），接的是 T012 文件头自己写明**缺的那一跳**：T012 止步于 `evaluate()` 判定出 `ask`；
+    本文件把生产里那个 `ctx.ask`（`session/tools.ts`：`merge(agent.permission, session.permission ?? [])`
+    ＋ `orDie`，含 `ruleset` 那一项）原样接上**真 `Permission.Service` ＋ 真 `shell` 工具**，
+    于是「判定之后那一跳」在测试里真跑：挂 pending ＋ publish `Asked` ＋ 阻塞在 `Deferred` → 测试扮演民警
+    `reply(reject / once)` → 工具 die / 真执行。**不需要前端、不需要真模型。**
+  - **明确不测的三条**（都已在别处占住，重写只会稀释证据，`#005-09`）：① 上游 `ask/reply` 机制
+    （`next.test.ts` 一整组）；② 前端自动应答开关的默认值（`permission-auto-respond.test.ts:34`）；
+    ③ T012 已如实挂账的两条天花板（模式可绕过 / 真弹窗要靠前端）——只引用，不重报。
+  - **2026-10-07 两项裁定**：① 产物形态 = **新建 gate 测试文件**（`openhive-highrisk-ask.test.ts` **一字不动**，
+    两层各有各的见证，与 T013 先例一致）；② 夹具规则来源 = **config 注入 ＋ pin shell**——用产品自己的
+    `ConfigParse.jsonc` 从仓库 `.opencode/opencode.jsonc` 读出 `permission.bash` 那份清单
+    （不自己编一份，`#002-06`），经 `it.instance` 的 `config` 注入；同时显式 pin `shell`。
+  - ⚠️ **两个夹具坑（都实测过，写进文件头）**：① 命令里的路径必须**正斜杠**——`rm -rf C:\…\victim`
+    退出码 **0** 却什么都没删（bash 吃反斜杠 ＋ `-f` 静默放过），正是 `#004-08`「没报错 ≠ 执行了」，
+    也正是 ③ 组那条**对照**的用处；② **shell 不 pin 就会「看谁在跑」**——`Shell.acceptable` 无 config 时
+    落 `win()[0]`，本机是 **powershell**，而 `rm -rf` 在 PowerShell 下参数不合法。
+  - **4 批变异（全部实测）**：M1（配置 `rm *` → `allow`）⇒ ①②③ 红 / ④ 绿；M2（靶子路径改回反斜杠）
+    ⇒ **恰红 ③**；M3（配置只剩 `"*": "ask"`）⇒ **恰红 ① ④**；M4 第一版**红错了地方**（红在收尾那句重复
+    reply 的 `Permission.NotFoundError`，即变异**没证到**目标），重做（先 `reply once` 再等命令跑完才断言）
+    ⇒ **恰红 ① 且红在目标断言**。⇒ 4 条用例每条都被至少一个变异点红，**无恒绿者**。两版都如实记进
+    `state.md` 的变异账（`#003-03`）。
+  - 📤 **F6 / F7 收**：本文件用的是**产品声明的通用删除类清单**；**业务高风险动作清单 ＋「判定涉案」的
+    判定逻辑**仍归它们（📤-2，`tasks.md` 下方那一节不动）。
 
 ---
 
