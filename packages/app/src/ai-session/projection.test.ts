@@ -156,6 +156,17 @@ describe("四层各自的来源", () => {
   })
 })
 
+describe("卡带着「来自哪份清单」（T004 的行内排序要用它，§4.7.1）", () => {
+  test("每张卡带 `module`：通用那支的卡排模块卡前面，靠它才分得开", () => {
+    // 不断言集合的**顺序**（见文件头）——把「label → 来源」映成一张表来比，
+    // 顺序漂了这条照样绿，而「来源标错了」它必红。
+    const 来源 = Object.fromEntries(
+      projectCapabilities(清单集, "甲模块").common.map((张) => [张.label, 张.module]),
+    )
+    expect(来源).toEqual({ "查甲的账户流水": "甲模块", "记一笔研判": GENERIC_MODULE })
+  })
+})
+
 describe("边界", () => {
   test("未登记的模块 ⇒ 不抛错，四层只剩通用那一份", () => {
     const 无 = projectCapabilities(清单集, "丙模块")

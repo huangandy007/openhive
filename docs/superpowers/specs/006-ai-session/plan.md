@@ -53,7 +53,8 @@
 packages/app/src/
 ├── ai-session/
 │   ├── capabilities.ts          # skill 能力清单「旁路清单」（2026-10-07 裁定 U4(b)：零上游改动）
-│   ├── instruction-cards.tsx    # 指令卡机制通用框架（投影能力清单）
+│   ├── instruction-cards.tsx    # 四层共用的**视觉语法**（卡面 + 分组标题 + 溢出「⋯」）；
+│   │                            # 投影框架本身落在 projection.ts（T003 的产物）
 │   ├── common-cards.tsx         # 顶部「常用操作」（固定一行 + 溢出收「⋯」）
 │   ├── context-cards.tsx        # 「上下文指令」（随中栏选中动态浮现）
 │   ├── skill-drawer.tsx         # 「更多 skill」抽屉（按 skill 分组）

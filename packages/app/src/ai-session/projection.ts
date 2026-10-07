@@ -40,6 +40,15 @@ import { GENERIC_MODULE, type CapabilityManifest, type InstructionCard, type Ski
 export interface ProjectedCard extends InstructionCard {
   /** 贡献这张卡的 skill（= `SkillCapability.skill`，也是与文件系统对账的那个键）。 */
   skill: string
+  /**
+   * 贡献这张卡的**清单**（`CapabilityManifest.module`）——卡在 `SkillCapability.cards` 里时
+   * 「这份 skill 属于哪个模块」是结构性的，拍平就丢了，同 `skill` 一样补回来。
+   *
+   * 渲染层要用它做 §4.7.1 的**行内排序**：`GENERIC_MODULE` 那支的卡排在模块自己的卡前面
+   * （「常数在前才形成肌肉记忆：第一张卡永远在同一位置」）。**排序本身不在这里**——
+   * 本文件只给事实，长相与次序是 T004 起的渲染层的事（同文件头那条分层约定）。
+   */
+  module: string
 }
 
 /** 抽屉里的一组：同 `group` 的 skill（U8 裁定的「只做按 skill 分组」）。 */
@@ -82,7 +91,11 @@ export function projectCapabilities(
 ): CapabilityProjection {
   const 选中 = manifests.filter((清单) => 清单.module === module || 清单.module === GENERIC_MODULE)
   const all = 选中.flatMap((清单) => 清单.capabilities)
-  const 卡 = all.flatMap((条) => 条.cards.map((张) => ({ ...张, skill: 条.skill })))
+  // 卡的来源两样都要带：`skill`（哪份能力声明）与 `module`（哪份清单）。后者只能从**清单**这一层拿，
+  // 故这里按清单展开，不按已经拍平的 `all` 展开——从 `all` 走会拿不到 `module`。
+  const 卡 = 选中.flatMap((清单) =>
+    清单.capabilities.flatMap((条) => 条.cards.map((张) => ({ ...张, skill: 条.skill, module: 清单.module }))),
+  )
 
   return {
     common: 卡.filter((张) => 张.layer === "common"),
