@@ -90,7 +90,8 @@
 
 | 元素 | 圆角 |
 |---|---|
-| 卡片 / 输入框（右栏对话 Hero 输入） | 12~16px |
+| 卡片（中栏内容卡） | 12~16px |
+| 输入框（右栏对话 Hero 输入） | **沿用 opencode 原生外壳的 10px**（`prompt-input-v2` 的 `rounded-xl`；见 §4.7.5）——那个外壳是原生组件，改成 12~16px 只能靠 app 级 CSS 覆盖，代价是多一处会漂的联姻 |
 | 按钮 | 8~10px |
 | 弹窗 / 大容器 | 16px |
 
@@ -219,6 +220,154 @@
   清单的条数已经错过一次，点名字比记数目耐改。
 - ⚠️ 措辞（五档标题与说明的具体字句、`shield` 这个图标选型）属**待设计侧复核项**，同 §4.5 的
   模块配色注记；改文案只动 `center/degraded-view.tsx` 的 `说法` 一处。
+
+### 4.7 AI 会话 · 四层指令卡（右栏）
+
+右栏的指令卡与 skill 入口是**同一套机制的四个出口**（design-v2 §8.2）：投影框架
+（`ai-session/projection.ts` 的纯函数）把「当前模块的能力清单」投成四支，四个出口各取一支。
+**四支由框架定，长相由本节定**——本节只写长相，不重复框架的契约。
+
+| 层 | 取投影的哪一支 | 位置 | 常驻 | 落地文件 |
+|---|---|---|---|---|
+| 常用操作 | `common` | 右栏顶部，固定一行 | 是 | `ai-session/common-cards.tsx` |
+| 上下文指令 | `context` | 常用操作**下方**，无上下文时整段不渲染 | 否 | `ai-session/context-cards.tsx` |
+| 更多 skill | `drawer`（按 `group` 分组） | 右栏内浮层（§4.7.3） | 否 | `ai-session/skill-drawer.tsx` |
+| `/` 命令面板 | `all`（模糊匹配全集） | Hero 输入框上方浮层 | 否 | `ai-session/command-palette.tsx` |
+
+四条共同的规矩，先说在前面：
+
+- **同一张卡的语法只有一个。** 常用操作与上下文指令**长相完全相同**（同一个 `InstructionCard`
+  渲染），来源不同不靠长相区分，靠**分组标题**。FR-001 要的是「机制通用」，给两层两种长相就是把
+  「通用」在视觉上又拆回两份。
+- **卡面不带图标。** 不是审美取舍：`ai-session/capabilities.ts` 的注释里已记明，skill 的
+  **图标 / 分类 / 标签今天没有客观来源**（`SKILL.md` frontmatter 只有 `name` / `description` /
+  `slash`；009 §11 的资产元数据还没落地）。给卡面配图标就是**造数据**。等 009 落地后再议。
+- **状态提示配文字，不只靠颜色**（§4.3）。本节的层级差异一律**同时**由位置（第几行）与字号表达，
+  颜色只做加强。
+- **不新增 hex、不新增 token。** 下文每个名字都在 `packages/ui/src/v2/styles/theme.css` 里，
+  或取自 Tailwind 的既有刻度（`rounded-lg` / `w-24` / `size-6` 这类）。
+
+#### 4.7.0 一行里的取用纪律（**先读这条，再读下表**）
+
+`theme.css` 的 v2 名字要经生成物 `packages/ui/src/styles/tailwind/colors.css` 的 `--color-v2-*`
+才能当 Tailwind 工具类用（生成物开头就是 `--color-*: initial`，把 Tailwind 默认调色板整个清空）。
+**那 51 条孪生不覆盖全部 token**——2026-10-07 实测：
+
+| token | 有工具类孪生？ | 所以只能这么写 |
+|---|---|---|
+| `--v2-background-bg-{base,accent,layer-01..04}` | 有 | `bg-v2-background-bg-base` |
+| `--v2-background-bg-accent-soft` | **无** | `bg-[var(--v2-background-bg-accent-soft)]` |
+| `--v2-overlay-simple-overlay-{hover,pressed}` | 有 | `bg-v2-overlay-simple-overlay-hover` |
+| `--v2-text-text-{base,muted,faint,accent}` | 有 | `text-v2-text-text-muted` |
+| `--v2-icon-icon-{base,muted,accent}` | 有 | `text-v2-icon-icon-muted` |
+| `--v2-border-border-{base,muted,strong,focus}` | 有 | `border-v2-border-border-muted` |
+| `--v2-state-*`（12 条） | 有 | `bg-v2-state-bg-danger` |
+| `--v2-elevation-*` | **无**（0 条） | `shadow-[var(--v2-elevation-raised)]` |
+| `--v2-avatar-*`（19 条） | **无** | （本节不用；§4.5 的模块色按那条既有办法走） |
+
+> ⚠️ **`shadow-v2-elevation-floating` 这种写法一定会红**。`workspace/design-token-refs.test.ts`
+> 对工具类形态的引用**要求孪生存在**（它的正则捕获组必须以 `v2-` 开头，抓到 `shadow-v2-…` 就去查
+> `--color-v2-…`），而生成物里 `--color-v2-elevation-*` **一个都没有**。任意值写法
+> `shadow-[var(--v2-elevation-…)]` 走的是另一条正则（`var(--v2-…)`），只查「名字存不存在」⇒ 合法。
+> 这不是绕测试：本仓既有代码（`auth/change-password.tsx`、`prompt-input/slash-popover.tsx`）
+> 用的就是任意值写法。**新增视觉值前先对这张表，别先写再跑。**
+>
+> ⚠️ 同一条纪律的另一半：**任意值里的 `text-[13px]` / `rounded-[10px]` 这类不查 token**
+> （正则的捕获组要求以 `v2-` 开头）。所以「任意值合法」**不等于**「任意值随便写」——
+> 尺寸仍受下面各表约束。
+
+#### 4.7.1 指令卡（常用操作 / 上下文指令共用）
+
+| 项 | 规范 |
+|---|---|
+| 形状 | 白底卡片：`bg-v2-background-bg-base` + `shadow-[var(--v2-elevation-raised)]` + `border border-v2-border-border-muted` |
+| 宽 | 定宽 `w-24`（96px）。**必须定宽**——见 §4.7.2 |
+| 高 | `h-8`（32px） |
+| 圆角 | `rounded-lg`（8px，§3.1 的按钮档） |
+| 卡面文字 | 13px，`text-v2-text-text-base`，**单行截断**（`truncate`） |
+| 行内间距 | `gap-2`（8px） |
+| hover 态 | `hover:bg-v2-overlay-simple-overlay-hover` |
+| 选中态 | `bg-[var(--v2-background-bg-accent-soft)]`（§1.3 选中态浅金） |
+| 行底色 | 右栏底面 `bg-v2-background-bg-layer-01` |
+| 行内排序 | 跨模块那支（`GENERIC_MODULE`）的卡排在**模块自己**的卡**前面**——常数在前才形成肌肉记忆：第一张卡永远在同一位置 |
+
+三点说明：
+
+- **圆角取 8px 而非 §3.1 的「卡片 12~16px」**：§3.1 那档是给中栏的**大内容卡**写的。这里是 360px
+  栏内一行里的紧凑卡片，一行要放得下两张以上；16px 圆角会让一行卡看起来像两颗按钮球。8px 是 §3.1
+  的**按钮档下沿**，也在 Tailwind 既有刻度上（`--radius-lg: 8px`）。
+- **右栏底面取 `layer-01` 而非白**：卡片本身是白底。同白相叠时 §4.2 那条「柔和阴影」无处着力，
+  卡片与底面糊成一片。给底面降一档，阴影才有分层的对象。
+- **选中态 = 「输入框里那句话来自这张卡」**。它与 hover **必须不同色**（选中浅金、hover 灰 overlay）
+  ——这条约定与 `rail.tsx` / `project/file-tree.tsx` 一致，别在两处各写一套。
+  ⚠️ 若哪天判定这个态不稳定（输入框一改就掉），**就删掉这条引用**，不要留一条永不命中的分支。
+
+> ⚠️ 圆角（8px）、右栏底面（`layer-01`）、卡宽（96px）三处属**待设计侧复核项**，同 §4.5 的模块
+> 配色注记：改它们只动 `common-cards.tsx` / `context-cards.tsx` 的 class 串，不动上游。
+
+#### 4.7.2 分组标题与溢出
+
+| 项 | 规范 |
+|---|---|
+| 分组标题（「常用操作」「上下文指令」） | 11px，`text-v2-text-text-muted`（§2.2 的「徽章/标签/辅助 9~11px」档） |
+| 溢出钮 | 与 `center/tab-bar.tsx` 同一颗：字形 `⋯`（U+22EF，原生图标集**没有** ellipsis 一档）、`size-6`、`rounded`(4px)、`text-v2-icon-icon-muted`、`hover:bg-v2-overlay-simple-overlay-hover` |
+| 溢出菜单 | 用原生 `MenuV2`（`@opencode-ai/ui/v2/menu-v2`），**不自己写一份**：浮层 chrome 由 `menu-v2.css` 给（min-width 160px / padding 2px / radius 6px / `box-shadow: var(--v2-elevation-floating)` / `z-index: 60`） |
+| 可见几张 | 走**纯函数**（形态同 `center/tab-overflow.ts` 的 `splitTabOverflow(条数, 可用宽, {卡宽, 溢出钮宽})`，它的宽度已是参数 ⇒ 天然通用），**不读 `clientWidth`** |
+
+- **可见数为什么必须是纯函数**：happy-dom **没有 CSS 引擎**，`clientWidth` 恒为 0、
+  `getComputedStyle` 拿不到真值。任何「靠量出来的宽度算能放几张」的写法在本仓的测试环境里
+  **测不了**——把它做成入参为宽度的纯函数，才有一条能红的断言。这是**测试可行性**决定的形状，
+  不是审美偏好。
+- 若发现卡片与 tab 的截断策略要分家（比如卡片不留尾缝），**另写一个同形的纯函数**，不改
+  `center/tab-overflow.ts`——那份已经在守 FR-005。
+- **「⋯」与「更多 skill」是两件事，界面必须分开**：`⋯` 装的是**本行放不下的那几张卡**；
+  「更多 skill」打开的是**整个 skill 全集**。两者收纳范围差一个数量级，合成一个入口会让民警以为
+  「⋯」里就是全部 skill。
+
+#### 4.7.3 更多 skill 抽屉
+
+| 项 | 规范 |
+|---|---|
+| 形态 | **只盖右栏**的面板：右栏容器 `relative`，面板 `absolute inset-0` |
+| 底面 / 圆角 / 阴影 | `bg-v2-background-bg-base` / 10px / `shadow-[var(--v2-elevation-overlay)]` |
+| 分组 | 只做**按 skill 分组**；组标题同上表 11px `text-v2-text-text-muted` |
+| 条目 | 两行：`name` 13px `text-v2-text-text-base` ＋ `description` 11px `text-v2-text-text-muted`（单行截断）；**无图标**（同 §4.7 开篇那条） |
+| 行高 | ≥ 40px |
+
+- **不采用 `app/src/components/ui/drawer.tsx`**（corvu，`fixed inset-y-[6px] end-[6px] w-[560px]`
+  ＋ overlay）——它的宽度与**阻断语义**是按应用级侧栏设计的。塞进 360px 右栏要么改宽要么去掉
+  overlay，改它等于把它掰成另一个组件（该文件头部注释自己也写着「only used in one place hence
+  not a v2 component yet」）。
+- **不做全屏遮罩**：民警用抽屉时多半在**看着中栏选中的东西**挑 skill（那正是上下文指令存在的理由）。
+  带 scrim 的 modal 会盖住他正在看的东西，把「随用随现」变成「先记下来再开面板」。
+- 圆角取 10px 是**右栏内浮层的唯一一档**——原生 `PromptInputV2Popover` 与 `PromptPopover`
+  都写 `rounded-[10px]`。同一栏里两套浮层圆角不一致会露破绽。§3.1 的「弹窗 16px」指**应用级对话框**
+  （实测先例 `auth/change-password.tsx` 的 `rounded-2xl`），是另一档，别混。
+
+#### 4.7.4 `/` 命令面板
+
+| 项 | 规范 |
+|---|---|
+| 唤起 | 输入框内打 `/` |
+| 形态 | **照搬**原生 `PromptPopover`：`absolute inset-x-0 -top-2 -translate-y-full`、`max-h-80`、`p-2`、`rounded-[10px]`、`bg-v2-background-bg-base`、`shadow-[var(--v2-elevation-raised)]` |
+| 条目 | 原生逐字：`flex w-full items-center gap-2 rounded-md px-2 py-1 text-start hover:bg-v2-overlay-simple-overlay-hover`，当前项 `bg-v2-overlay-simple-overlay-hover` |
+| 匹配 | 模糊匹配 **skill 全集**；**不做**前端授权过滤（宪法 §四，授权在执行层） |
+
+> ⚠️ **开工第一件事是先核一件事**：若右栏会话用的是原生 `v2/prompt-input`，而它**自带的**
+> 那个弹层（`PromptInputV2Popover` / `PromptPopover`）本来就挂在 `/` 上——那这一条可能只是
+> **换一个数据源**（skill 全集 → 原生 `SlashCommand` 形状），而不是新写一个浮层。
+> **能换数据源就不新写**（第一号约束：与上游的冲突面越小越好）。上表就是那个弹层当前的**实况**。
+
+#### 4.7.5 右栏会话（Hero 输入）
+
+| 项 | 规范 |
+|---|---|
+| 输入框 | 原生 `v2/prompt-input` 的外壳**原样**：`rounded-xl`(10px) + `bg-v2-background-bg-base` + `shadow-[var(--v2-elevation-raised)]` + `min-h-[96px]` |
+| 消息流 | `SessionTurn` 逐个渲染（`MessageTimeline` 有 20 个 props、内部直接用页面级 context，**不搬**） |
+| 会话管理 | 新建 / 切换走 SDK `session.create` / `session.list` |
+
+> 圆角**沿用原生 10px**（本节即 §3.1 那行「右栏对话 Hero 输入」的口径：原生外壳是 `rounded-xl`，
+> 它落不到 12~16px 而不动上游）。**不**新增 app 级 CSS 覆盖——少一处将来会漂的联姻。
 
 ---
 

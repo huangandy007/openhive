@@ -2,22 +2,18 @@
 
 ## 当前任务
 
-**U6 起草件已出，等用户审**：`docs/superpowers/specs/006-ai-session/design-draft-四层指令卡.md`
-（未来的 `openhive-DESIGN.md` **§4.7**）。**T004 仍未开工**——起草件审过之前不许落任何视觉值。
+**U6 这道门已过**。`DESIGN.md §4.7`（＋ §3.1 的口径修正）已定稿落地。
+**下一个：T004**（顶部「常用操作」指令卡）——**这是本 feature 第一个有视觉值的任务**，
+写码时按 `DESIGN.md §4.7.0`（一行里的取用纪律）与 §4.7.1 / §4.7.2，不要凭记忆挑 token。
 
-⚠️ **T004 前面有一道门**（2026-10-07 裁定 U6 / runbook D0-5）：T004 是**第一个有视觉值的任务**，
-而 `openhive-DESIGN.md` 里**还没有**「AI 会话 · 四层指令卡」那一节。**这一节由我先起草、交用户审过之后
-才能落码**——参照物取样不到（`design-reference/figma-export/` 没有页面子目录、`front/RightAIChat`
-不在本仓），规格只能对齐 `packages/session-ui` 原生组件 ＋ `theme.css` 的 token。
+⚠️ **T004 前面那道门**（2026-10-07 裁定 U6 / runbook D0-5）之所以存在：T004 是**第一个有视觉值的
+任务**，而参照物取样不到（`docs/superpowers/specs/design-reference/figma-export/` 只有 logo 与一份
+shadcn 模板 `tokens.css`，**没有页面子目录**；`front/RightAIChat` 不在本仓）⇒ 规格只能对齐
+`packages/ui/src/v2` 与 `packages/session-ui/src/v2` 的原生组件 ＋ `theme.css` 的 token。
 T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数，无 JSX）。
 
-**起草件里要请用户裁定的三件事**（详见该文件末尾的裁定表）：
-
-| # | 事项 | 我的建议 |
-|---|---|---|
-| 1 | 原生 Hero 输入外壳是 `rounded-xl`＝**10px**，而 `DESIGN.md §3.1` 写「右栏对话 Hero 输入 12~16px」——**两边冲突**。取 (A) 沿用原生 10px 并改 §3.1 该行口径，还是 (B) 用 app 级 CSS 覆盖到 16px（正例：`dialog-command-palette-v2.css` 把原生 dialog 覆盖成 12px） | **(A)** |
-| 2 | 右栏底面（拟 `bg-v2-background-bg-layer-01`）、卡面圆角（拟 8px，§3.1 的按钮档）、卡宽（拟 `w-24`＝96px）——三处 ⚠️ 待设计侧复核项 | 按草案 |
-| 3 | 常用操作行内排序：「通用」清单的卡排模块自己的卡**前**还是**后**（T003 有意不钉，见 T003 出参） | **前**（常数在前才有肌肉记忆） |
+**用户已裁定三件事（2026-10-07，全按建议）**：① Hero 输入圆角取 **A**（沿用原生 10px，§3.1 已改）；
+② 右栏底面 `layer-01` / 卡面 8px / 卡宽 96px 照草案；③「通用」的卡排模块自己的卡**前面**。
 
 ## 已完成
 
@@ -30,8 +26,10 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
   落地 U4(b) 旁路清单 ＋ U9 三处目录清单 ＋ U10 契约移交（`#002-04`）。
 - **T003**（2026-10-07）· 指令卡机制通用框架（投影能力清单）→ 出参见下「T003 出参」。
   纯函数四层投影 ＋ 15 条用例（四层各做过隔离变异验证）。
-- **U6 起草件**（2026-10-07）· `design-draft-四层指令卡.md`（未来的 `DESIGN.md §4.7`）→ 出参见下
-  「U6 起草件出参」。**交用户审，未生效**——审过之后才移入 `openhive-DESIGN.md`，然后 T004 才能开工。
+- **U6 起草件 → 定稿**（2026-10-07）· 起草 → 用户审 → **移入 `openhive-DESIGN.md` 作 §4.7**（并改
+  `§3.1` 的圆角口径）→ 出参见下「U6 起草件出参」。**起草件本身已删**（宪法 §八：DESIGN.md 是视觉真理的
+  单一来源；留副本＝两份真相会漂，`#003-05`），其「取数命令核对记录」整段**挪进**了本节（不丢证据、
+  不留镜像）。
 - **开工前裁定 U1–U10**（2026-10-07，用户逐条裁定）→ 见下「裁定表」。**Spec 未定项至此清零**。
 
 ---
@@ -55,10 +53,15 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
 
 ---
 
-## U6 起草件出参 · `DESIGN.md §4.7`「AI 会话 · 四层指令卡」（2026-10-07）
+## U6 起草件出参 · `DESIGN.md §4.7`「AI 会话 · 四层指令卡」（2026-10-07 定稿）
 
-**文件**：`docs/superpowers/specs/006-ai-session/design-draft-四层指令卡.md`（**草案，未生效**；
-审过后移入 `docs/superpowers/specs/openhive-DESIGN.md` 作 §4.7，接在 §4.6 之后、同其写法）。
+**已定稿并落地**：移入 `docs/superpowers/specs/openhive-DESIGN.md` 作 **§4.7**（接 §4.6 之后、同其写法）。
+**同一提交里按裁定改了 `§3.1` 那一行**——「右栏对话 Hero 输入」的圆角从「12~16px」改为
+「**沿用原生外壳的 10px**」（原生 `prompt-input-v2` 是 `rounded-xl`；要 12~16px 只能靠 app 级 CSS
+覆盖，代价是多一处会漂的联姻）。
+
+**用户裁定（2026-10-07）**：三件事**全部按建议**——① 圆角取 **A**（沿用原生 10px，改 §3.1 口径）；
+② 右栏底面 `layer-01` / 卡面 8px / 卡宽 96px **照草案**；③「通用」的卡排模块自己的卡**前面**。
 
 **它定了什么**（行级，值全部走既有 token / 既有 Tailwind 刻度）：
 
@@ -93,6 +96,21 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
 ④ `grep` 传两个文件时 `-o` 会加 `文件名:` 前缀 ⇒ `comm` 拿裸名比，全不中；`[\s]` 在 bracket 里也没按 `\s` 解释。
 **判据**：核对类脚本**必须带正负对照**（喂一个真名、喂一个假名，看它报不报）——这次正是正对照先红，
 才把 ③④ 那两处空转挖出来的。**没有对照的自检，绿是假的。**
+
+**第四节 7.0 每条的取数命令**（复核时在仓库根重跑；起草件已随定稿删去，这张表挪来此处）：
+
+| 说法 | 取数命令 |
+|---|---|
+| 桥接类 51 条及其名单 | `grep -oP '^\s*--color-\Kv2-[a-z0-9-]+' packages/ui/src/styles/tailwind/colors.css \| sort -u` |
+| `--color-v2-elevation-*` 为 0 | `grep -c 'color-v2-elevation' packages/ui/src/styles/tailwind/colors.css` |
+| 正则只收 `v2-` 开头的捕获组 | `design-token-refs.test.ts` 的 `名` / `变量引用` / `工具类引用` |
+| 右栏 360px / 240~2/3、tab 40px、选中态浅金 | `openhive-DESIGN.md` §4.1 / §3.2 / §1.3 |
+| 原生 Hero 外壳 `rounded-xl`＋`min-h-[96px]`＋`elevation-raised` | `packages/session-ui/src/v2/components/prompt-input/index.tsx` 的 `<form data-component="prompt-input-v2">` |
+| 原生 `/` 弹层逐字 class | `packages/app/src/components/prompt-input/slash-popover.tsx`、`.../v2/components/prompt-input/index.tsx` |
+| `⋯`＝U+22EF、`size-6`、`rounded` | `packages/app/src/center/tab-bar.tsx` |
+| `splitTabOverflow(条数, 可用宽, {…})` 宽度是参数 | `packages/app/src/center/tab-overflow.ts` |
+| 原生浮层 10px / 应用级 dialog 16px（12px 覆盖） | `slash-popover.tsx` / `auth/change-password.tsx` / `components/dialog-command-palette-v2.css` |
+| skill 无图标 / 标签元数据 | `packages/app/src/ai-session/capabilities.ts` 文件头 |
 
 ---
 
@@ -231,11 +249,11 @@ $ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                 
 | **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表 |
 | **框架今天还没有生产调用点** | T003 | `projectCapabilities` 目前**只被测试调用**——右栏没有任何东西消费它（接线是 T004 / T008）。今天有一个「看上去已经能投影了」的错觉：测绿的只是**纯函数**，**不是**「右栏能看到卡」。别把它读成「FR-002 已实现」 |
 | **`drawer` 的分组顺序未裁定** | `projection.ts` | 框架给的是**首次出现顺序**（不排序，理由写在那个私有函数的文档里：`group` 今天没有客观来源、排序要引中文排序规则）。抽屉要不要换个顺序是 T006 的渲染决定 |
-| **`DESIGN.md §3.1` 与原生 Hero 输入的圆角冲突** | `openhive-DESIGN.md §3.1` | §3.1 写「右栏对话 Hero 输入 12~16px」，而原生 `prompt-input-v2` 外壳是 `rounded-xl`＝**10px**。起草件按 (A) 沿用原生并建议改 §3.1 该行口径；**裁 (B) 则要新增一处 app 级覆盖**。这是**已提交文档之间**的不一致，不是本 feature 引入的（等裁定） |
+| **`DESIGN.md §3.1` 与原生 Hero 输入的圆角冲突** | `openhive-DESIGN.md §3.1` | §3.1 原写「右栏对话 Hero 输入 12~16px」，而原生 `prompt-input-v2` 外壳是 `rounded-xl`＝**10px**。**2026-10-07 已裁 A 并就地改口径**（「沿用原生外壳的 10px」）——**缺口已闭合**，此行留作出处。这是**已提交文档之间**的不一致，不是本 feature 引入的 |
 
 ---
 
 ## 最后更新
 
-2026-10-07（**U6 起草件已出**：`design-draft-四层指令卡.md`，交用户审。**T004 仍被这道门挡住**，
-起草件里三件事待裁定——见「当前任务」表）
+2026-10-07（**U6 门已过**：`DESIGN.md §4.7` 定稿落地 ＋ `§3.1` 圆角口径修正；起草件已删。
+**下一个 T004**——本 feature 第一个有视觉值的任务）
