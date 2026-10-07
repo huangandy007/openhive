@@ -10,8 +10,10 @@ import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import { minioBackups } from "@/project/minio-backups"
+import type { FileOpOutcome } from "@/project/openhive-file-ops"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
+import { TargetPicker } from "@/project/target-picker"
 import { projectFiles, setProjectFiles } from "@/project/project-files"
 import { projectList, setProjectList } from "@/project/project-list"
 import { projectMembers } from "@/project/project-members"
@@ -130,6 +132,36 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
+   * 文件动作（T020）：右键菜单那四项 ＋ 从桌面拖进来的上传。
+   *
+   * ## 复制 / 移动为什么是**两段**
+   *
+   * 点菜单那一刻只**开一个目标选择器**，一个请求都不发（用户 2026-10-06 裁定①）——
+   * 「搬到哪个目录」是这次操作的一部分，不该由前端猜一个（猜到根上就等于把一个文件悄悄挪走了）。
+   * 于是状态里存着「正在搬谁、往哪个方向搬」，等用户点中目标才发请求。
+   *
+   * ## 搬忙：进行中把面板整个禁掉
+   *
+   * 不是防呆，是防**重放**：连点两下目标会发两个请求，第二个必然撞「目标已存在同名文件」，
+   * 那句报错会让用户以为是自己操作错了。
+   */
+  const [待搬, set待搬] = createSignal<{ path: string; mode: "copy" | "move" }>()
+  const [搬忙, set搬忙] = createSignal(false)
+  /**
+   * 界面上那一句话（`undefined` ＝ 没有话要说）。
+   *
+   * **只说没成的事**：办成了树自己会变（清单重取），再补一句「复制成功」是给屏幕加噪音
+   * （同 T018 的 `onCreate` 「`undefined` = 收工」）。
+   */
+  const [文件话, set文件话] = createSignal<string>()
+  /** 文件清单的重取代次：拨一下 ⇒ 上面那个 effect 重跑（它在读它）。 */
+  const [清单重取, set清单重取] = createSignal(0)
+  /** 上传的落点目录：右键「上传」时先定下（树给的是**目录**，见 `FileTreeProps.onUpload`），选中文件后才用得着。 */
+  const [上传落点, set上传落点] = createSignal("")
+  /** 那台隐藏的文件选择器（拖进来那条路不用它，两条入口都落在同一个 `传` 上）。 */
+  let 文件选择器: HTMLInputElement | undefined
+
+  /**
    * 进门拉一次清单。
    *
    * **只拉清单，不认领当前项目**：005 的 spec 只写了两件事——FR-003「新建后成为当前项目」与
@@ -151,6 +183,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   createEffect(() => {
     const id = currentProject()?.id
+    清单重取() // 读一下：文件动作办成之后拨它，清单就跟着重取（T020）——同一道闸、两处触发
     setProjectFiles(undefined)
     if (!id || !projectData) return
 
@@ -162,6 +195,109 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       if (!作废) setProjectFiles(paths)
     })
   })
+
+  /**
+   * 一次文件动作的收尾：**办成** ⇒ 清话 ＋ 重取清单；**没办成** ⇒ 把服务端那句话留下。
+   *
+   * 「重取」而不是「本地拼」：服务端回的新路径**只用来报一句话**，界面上的真相永远是重取那一份
+   * （同 T018 的「清单重拉，不把新行拼进旧清单」——拼出来的树跟磁盘没有对过账）。
+   */
+  function 收下(结论: FileOpOutcome) {
+    if (结论.kind !== "done") {
+      set文件话(结论.message)
+      return
+    }
+    set文件话(undefined)
+    set清单重取((代次) => 代次 + 1)
+  }
+
+  /** 开目标选择器（复制 / 移动共用）。**此刻一个请求都不发**——目标还没选。 */
+  function 要搬(path: string, mode: "copy" | "move") {
+    set文件话(undefined)
+    set待搬({ path, mode })
+  }
+
+  /** 点了目标才真搬。 */
+  async function 搬(dir: string) {
+    const 目标 = 待搬()
+    const id = currentProject()?.id
+    if (!目标 || !id || !projectData) return
+    set搬忙(true)
+    const 结论 =
+      目标.mode === "copy"
+        ? await projectData.copy(id, 目标.path, dir)
+        : await projectData.move(id, 目标.path, dir)
+    set搬忙(false)
+    set待搬(undefined)
+    收下(结论)
+  }
+
+  /**
+   * 上传一批文件到某个目录。**逐个发**：服务端一次只收一个（`file.ts` 的 `handleUpload`），
+   * 而「几个成了、几个没成」这句话只有在这一层说得出来。
+   */
+  async function 传(dir: string, files: readonly File[]) {
+    const id = currentProject()?.id
+    if (!id || !projectData || files.length === 0) return
+    set搬忙(true)
+    let 成了 = 0
+    let 缘由: string | undefined
+    for (const file of files) {
+      const 结论 = await projectData.upload(id, dir, file)
+      if (结论.kind === "done") 成了 += 1
+      // 只留**第一句**：一批文件失败的原因常常是同一个，逐条堆出来会是一面墙。
+      else 缘由 ??= 结论.message
+    }
+    set搬忙(false)
+
+    const 没成 = files.length - 成了
+    if (没成 === 0) {
+      收下({ kind: "done", path: dir })
+      return
+    }
+    // ⚠️ 那句话只讲**其中一个**。不说清还有几个的话，界面会把「3 个里失败了 2 个」
+    // 说成「失败了 1 个」——报一个数就得报准它（`LEARNINGS #003-04` 同族：写下的数要经得起复核）。
+    set文件话(files.length === 1 ? (缘由 ?? "上传文件失败") : `${缘由 ?? "上传文件失败"}（这批 ${files.length} 个里 ${没成} 个没成功）`)
+    if (成了 > 0) set清单重取((代次) => 代次 + 1)
+  }
+
+  /**
+   * 下载：取字节 → 存到本地。
+   *
+   * 文件名从**路径的末段**取，不从响应头取：`project-data.ts` 的 `download` 只交出字节
+   * （那一层要能在没有 DOM 的单测里跑，响应头过不去），而服务端在 `Content-Disposition` 里
+   * 给的名字与路径末段是同一个（`file.ts` 的 `disposition(basename(target))`）。
+   */
+  async function 下载(path: string) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    set文件话(undefined)
+    const blob = await projectData.download(id, path)
+    if (!blob) {
+      set文件话(`下载「${path}」失败`)
+      return
+    }
+    存到本地(blob, 末段(path))
+  }
+
+  /** 右键「上传」：先记下落点，再开系统文件选择器。落点由**树**给（它判的类型），本层不重判一遍。 */
+  function 选文件(dir: string) {
+    set上传落点(dir)
+    文件选择器?.click()
+  }
+
+  /**
+   * 选择器回来：交给 `传`，然后把输入框**清空**。
+   *
+   * 清空不是随手一笔：浏览器按 `value` 判「有没有变」，不清的话**同一个文件连选两次不会触发
+   * `change`**——民警第一次传失败、想再传一次，第二次点它什么都不会发生。
+   */
+  function 选中(event: { currentTarget: HTMLInputElement }) {
+    const 器 = event.currentTarget
+    const files = Array.from(器.files ?? [])
+    器.value = ""
+    void 传(上传落点(), files)
+  }
 
   return (
     <>
@@ -329,12 +465,61 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   active={sidebarTab()}
                   onSelect={setSidebarTab}
                   files={
-                    <DualFileTree
-                      paths={projectFiles()}
-                      backups={minioBackups()}
-                      open={dualOpen()}
-                      onCollapse={() => setDualOpen(false)}
-                    />
+                    <>
+                      {/* ④ 个文件动作（T020）：四项各接各的回调。`onBackup` / `onRestore` 仍不接
+                          —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。 */}
+                      <DualFileTree
+                        paths={projectFiles()}
+                        backups={minioBackups()}
+                        open={dualOpen()}
+                        onCollapse={() => setDualOpen(false)}
+                        onCopy={(path) => 要搬(path, "copy")}
+                        onMove={(path) => 要搬(path, "move")}
+                        onUpload={选文件}
+                        onDownload={(path) => void 下载(path)}
+                        onDropFiles={(files, dir) => void 传(dir, files)}
+                      />
+                      {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
+                          排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树
+                          （同 `file-tree.tsx` 的删除确认、`dual-file-tree.tsx` 的拉回确认）。 */}
+                      <Show when={待搬()}>
+                        {(正在搬) => (
+                          <TargetPicker
+                            path={正在搬().path}
+                            mode={正在搬().mode}
+                            paths={projectFiles()}
+                            busy={搬忙()}
+                            onPick={(dir) => void 搬(dir)}
+                            onCancel={() => set待搬(undefined)}
+                          />
+                        )}
+                      </Show>
+                      {/* 那句话（`undefined` ＝ 没有话要说）。`role="alert"` 让屏幕阅读器在条冒出来时
+                          读一遍（不是模态，不需要焦点管理——同上面两条内联确认）。 */}
+                      <Show when={文件话()}>
+                        {(话) => (
+                          <p
+                            data-slot="file-op-message"
+                            role="alert"
+                            class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] break-all text-v2-state-fg-danger"
+                          >
+                            {话()}
+                          </p>
+                        )}
+                      </Show>
+                      {/* 「上传」的第一条入口（设计 §6.3 原话「含文件选择器上传」）。
+                          `multiple`：一次拖一批也走同一个 `传`，两条入口的行为没有第二条路。
+                          隐藏而**不是**不渲染：`display:none` 的 input 照样能被 `click()` 打开
+                          （浏览器如此），而留在 DOM 里也让组件测试够得着它。 */}
+                      <input
+                        data-slot="file-op-input"
+                        ref={文件选择器}
+                        type="file"
+                        multiple
+                        hidden
+                        onChange={选中}
+                      />
+                    </>
                   }
                 />
                 {/* 左栏 ④ MinIO 常驻窄条（设计 §2 / §5.1 步骤 1）。`count` 走接入缝——今天
@@ -377,4 +562,27 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       </Show>
     </>
   )
+}
+
+/** 路径的末段（文件名）。两种分隔符都认：树给的路径归一成 `/`，而服务端原样给的可能是 `\`（win32）。 */
+function 末段(path: string) {
+  return path.split(/[\\/]/).pop() ?? path
+}
+
+/**
+ * 把取回来的字节**存到本地**——`utils/session-export.ts` 的 `downloadSessionExport` 是同一套
+ * （`<a download>` 那条链：`createObjectURL` → 点一下 → 收回 URL）。
+ *
+ * 为什么这一段落在**这里**而不是 `openhive-file-ops.ts`：那一层要能在没有 DOM 的单测里跑
+ * （`project-data.ts` 的 `download` 注释），所以它到字节为止；DOM 只在这一层出现。
+ */
+function 存到本地(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }

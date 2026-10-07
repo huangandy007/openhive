@@ -82,6 +82,33 @@ const 按键 = (el: HTMLElement | undefined, key: string) => {
 /** 造路径数据——形状就是 `buildFileTreeV2Model` 收的那个 `readonly string[]`，不经任何后端。 */
 const 树 = (...paths: string[]) => paths
 
+/** 一个待上传的文件（内容不重要，`name` 是判据里能看见的那一项）。 */
+const 一件 = (name: string) => new File(["甲"], name)
+
+/**
+ * 派发一次「从桌面拖进来」的事件。
+ *
+ * ⚠️ happy-dom **没有 `DragEvent`**（`dual-file-tree.test.tsx` 的实测：`DataTransfer` 有、
+ * `DragEvent` 无），而这里**非得**有个交得出 `File` 的 `dataTransfer` 不可——与那边「连它都不必造」
+ * 的情形不同（那边判据不读 payload）。所以拿裸 `Event` 顶着，再挂一个只有产品码会读的那两样
+ * （`types` 与 `files`）的替身。产品码对 `dataTransfer` 一律用可选链，正是为了这里进得来。
+ *
+ * 返回造出来的事件：`dragover` 那一条要判 `defaultPrevented`（不 `preventDefault` 就不会有 `drop`）。
+ */
+function 拖入(
+  el: HTMLElement | null | undefined,
+  type: "dragover" | "drop",
+  物: { types?: readonly string[]; files?: readonly File[] } = {},
+) {
+  if (!el) throw new Error("拖拽落点不在——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperty(event, "dataTransfer", {
+    value: { types: 物.types ?? ["Files"], files: 物.files ?? [一件("话单.csv")] },
+  })
+  el.dispatchEvent(event)
+  return event
+}
+
 /**
  * 文件树（FR-005 / `2026-09-11-项目管理-design.md` §6）：工具栏 + 树本体。
  *
@@ -643,8 +670,60 @@ describe("FileTree 文件树（FR-005）", () => {
       })
     })
 
+    /**
+     * 复制 / 移动**只对普通文件成立**（T020 的范围裁定：服务端只搬单文件，递给它一个目录回 400）。
+     *
+     * 与上面「作用对象」那组**不是同一件事**，所以单起一组：那组问的是**有没有对象**（右键空白处），
+     * 这组问的是**对象对不对**（右键一个目录）。两条失效路径的修法不同，混在一起会读成一个。
+     *
+     * ⚠️ 判据落在 `aria-disabled`（`项禁用`），不是「点了没反应」：Kobalte 的禁用项不派发事件，
+     * 拿「收没收到」去验的话，**把类型判据整段删掉这条用例照样绿**。
+     */
+    describe("复制 / 移动只画在文件行上（T020 的单文件范围）", () => {
+      /** 三个都接线：好分辨「因类型而禁用」与「因没接线而禁用」——后者对任何行都禁用。 */
+      const 接线了 = { onCopy: () => {}, onMove: () => {}, onDownload: () => {} }
+
+      test("右键一个**目录** ⇒ 复制与移动禁用", () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} {...接线了} />)
+
+        右键(行按名(host, "材料"))
+
+        expect(项禁用("copy")).toBe(true)
+        expect(项禁用("move")).toBe(true)
+      })
+
+      /** 对照：同一棵树上右键**文件**是活的——否则上面那条会退化成「永远为真」（`#003-03` 第②类）。 */
+      test("右键那个目录里的**文件** ⇒ 复制与移动可用", () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} {...接线了} />)
+
+        右键(行按名(host, "话单.csv"))
+
+        expect(项禁用("copy")).toBe(false)
+        expect(项禁用("move")).toBe(false)
+      })
+
+      /**
+       * 右键的**对象换了**，禁用态就得跟着换。
+       *
+       * 判据是 `菜单对象()` 这个信号，而菜单项是**常驻**的（Kobalte 关闭时不卸载，见 `有菜单`）。
+       * 一次性算出来的实现（挂载时算一次、或者拿第一次右键那个对象）会在这里露出来：
+       * 先右键文件（可用）再右键目录（该禁用），中间没有任何重新挂载。
+       */
+      test("第二次右键换到目录 ⇒ 复制跟着禁用", () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} {...接线了} />)
+
+        右键(行按名(host, "话单.csv"))
+        expect(项禁用("copy")).toBe(false)
+
+        右键(行按名(host, "材料"))
+
+        expect(项禁用("copy")).toBe(true)
+      })
+    })
+
     describe("每个动作各回传各的", () => {
-      for (const action of 六个动作) {
+      // 上传**不在**这一组里：它收的是**落点目录**，不是被右键那一行的路径（见下面单独那组）。
+      for (const action of 六个动作.filter((action) => action !== "upload")) {
         test(`点「${action}」只喊它自己的回调，带上被右键那一行的路径`, () => {
           expect(点它(action)).toEqual(["a.md"])
         })
@@ -701,6 +780,52 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual([{ kind: "file", parent: "材料" }])
       })
     })
+
+    /**
+     * 上传收的是**落点目录**，不是被右键那一行的路径——与 `onCreate` 的 `parent` 同一族
+     * （「往哪儿放」问的是目录，不是「拿谁当参照」）。
+     *
+     * 判类型这件事**只有本组件做得了**：它手里有 `节点表`。而接收方（`workspace-entry`）
+     * 那一侧只有一份**扁平的**文件清单——目录根本不在里面，它要靠「有没有以 `材料/` 开头的项」
+     * 去推。把同一条规则推给每个接收方各写一遍，就是 `LEARNINGS #002-06` 那种会各漂一半的两份。
+     */
+    describe("上传收的是落点目录", () => {
+      test("右键一个**目录**并上传 ⇒ 传到它自己", () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onUpload={(dir) => 收到.push(dir)} />
+        ))
+
+        右键(行按名(host, "材料"))
+        点菜单项("upload")
+
+        expect(收到).toEqual(["材料"])
+      })
+
+      test("右键一个**文件**并上传 ⇒ 传到它所在的目录", () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onUpload={(dir) => 收到.push(dir)} />
+        ))
+
+        右键(行按名(host, "话单.csv"))
+        点菜单项("upload")
+
+        expect(收到).toEqual(["材料"])
+      })
+
+      /** 空白处右键 ⇒ 没有作用对象，落点＝根——「传到项目根」是说得通的（同上面那条注释）。 */
+      test("空白处上传 ⇒ 传到项目根", () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onUpload={(dir) => 收到.push(dir)} />)
+
+        右键(槽(host, "file-tree-region"))
+        点菜单项("upload")
+
+        expect(收到).toEqual([""])
+      })
+    })
+
 
     describe("未接线即禁用（同 T005／T006／T007 的口径）", () => {
       /** 设计 §6.2 的十项。**照它去问、而不是照菜单里有什么去问**——菜单为空时后者会空跑成假绿。 */
@@ -924,6 +1049,118 @@ describe("FileTree 文件树（FR-005）", () => {
       )
 
       expect(缺提示.map((el) => el.getAttribute("data-action"))).toEqual([])
+    })
+  })
+
+  /**
+   * 从桌面拖进来 ＝ 上传（设计 §6.3 拖拽 A 的「拖回」那一半）。
+   *
+   * 与上面那组右键菜单**同一条出口**：拖进来的落点也是「指针底下这一行」推出来的目录，
+   * 所以判据与「上传收的是落点目录」那组四处同形（目录 ⇒ 它自己、文件 ⇒ 它所在的目录、空白 ⇒ 根）——
+   * 一份规则两处入口，若各写各的就迟早分家。
+   *
+   * ⚠️ 这一路的事件是**跨进程**的（文件来自操作系统，不是页面里某一行）⇒ 判据只能靠
+   * `dataTransfer.types` 里有没有 `"Files"`。同页面内的内部拖拽（MinIO 备份 / 拉回）也在冒泡路上
+   * 经过这一层，少了这一问，它们会被这棵树当成「拖进来一批文件」吃掉——而它们的 payload 里没有文件。
+   */
+  describe("从桌面拖入上传（设计 §6.3 拖拽 A）", () => {
+    /** 拖进来的那一批文件，一次拖拽只喊一次（批量的拆分是接收方的事，本组件不替它发请求）。 */
+    test("落在**目录**行上 ⇒ 喊一次，带上整批文件与那个目录", () => {
+      const 收到: Array<{ files: readonly File[]; dir: string }> = []
+      const host = mount(() => (
+        <FileTree
+          paths={树("材料/话单.csv")}
+          onDropFiles={(files, dir) => 收到.push({ files, dir })}
+        />
+      ))
+
+      拖入(行按名(host, "材料"), "drop", { files: [一件("甲.csv"), 一件("乙.csv")] })
+
+      expect(收到.map((c) => [c.files.map((f) => f.name), c.dir])).toEqual([[["甲.csv", "乙.csv"], "材料"]])
+    })
+
+    test("落在**文件**行上 ⇒ 落点仍是它所在的目录（文件行不是文件夹）", () => {
+      const 收到: string[] = []
+      const host = mount(() => (
+        <FileTree paths={树("材料/话单.csv")} onDropFiles={(_files, dir) => 收到.push(dir)} />
+      ))
+
+      拖入(行按名(host, "话单.csv"), "drop")
+
+      expect(收到).toEqual(["材料"])
+    })
+
+    test("落在**空白**处 ⇒ 传到项目根", () => {
+      const 收到: string[] = []
+      const host = mount(() => (
+        <FileTree paths={树("材料/话单.csv")} onDropFiles={(_files, dir) => 收到.push(dir)} />
+      ))
+
+      拖入(槽(host, "file-tree-region"), "drop")
+
+      expect(收到).toEqual([""])
+    })
+
+    /**
+     * **内部拖拽不是上传**。`types` 里没有 `"Files"` 就是「页面里拖来拖去」或「选中了一段文字」——
+     * 这两种都不该往项目里塞文件，而它们的 `files` 也是空的（替身里给空数组，正是这个意思）。
+     */
+    test("不是文件拖拽 ⇒ 一次都不喊", () => {
+      const 收到: string[] = []
+      const host = mount(() => (
+        <FileTree paths={树("材料/话单.csv")} onDropFiles={(_files, dir) => 收到.push(dir)} />
+      ))
+
+      拖入(行按名(host, "材料"), "drop", { types: ["text/plain"], files: [] })
+
+      expect(收到).toEqual([])
+    })
+
+    /** 没接线 ⇒ 硬派一次也不动作（同「未接线即禁用」：一个拖了没反应的行同样是谎）。 */
+    test("没接 onDropFiles ⇒ 硬派一次也不动作", () => {
+      const host = mount(() => <FileTree paths={树("材料/话单.csv")} />)
+
+      const event = 拖入(行按名(host, "材料"), "drop")
+
+      expect(event.defaultPrevented).toBe(false)
+    })
+
+    /**
+     * 悬停时 `preventDefault` —— **不 `preventDefault` 就不会触发 `drop`**（HTML5 拖拽的规矩，
+     * 不是可选的优化；同 `dual-file-tree.tsx` 的 `悬停`）。
+     *
+     * 判据取 `defaultPrevented`（机制本身），不取「有没有高亮」：后者是样式，而这一步的失效
+     * 恰恰是**无声的**——文件放下去，什么都没发生，控制台一个字都没有。
+     */
+    test("接了线且拖的是文件 ⇒ 悬停时 preventDefault", () => {
+      const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDropFiles={() => {}} />)
+
+      expect(拖入(行按名(host, "材料"), "dragover").defaultPrevented).toBe(true)
+    })
+
+    /** 对照：没接线时**不**拦——否则上面那条会退化成「这里永远 preventDefault」。 */
+    test("没接线 ⇒ 悬停时不拦（不让用户以为这里能放）", () => {
+      const host = mount(() => <FileTree paths={树("材料/话单.csv")} />)
+
+      expect(拖入(行按名(host, "材料"), "dragover").defaultPrevented).toBe(false)
+    })
+
+    /**
+     * **`types` 这条判据只有在 `dragover` 上才测得出来**——这条是变异逼出来的（2026-10-07）。
+     *
+     * 上面那条「不是文件拖拽 ⇒ 一次都不喊」走的是 `drop`，而 `drop` 上 `types` 是**多余的**：
+     * 拦不拦由 `files.length === 0` 那道守卫决定（浏览器真到 `drop` 时会给 `files`）。实测：
+     * 把 `从桌面` 里的 `types.includes("Files")` **整条去掉**，那一条**照样绿**——它测的是那道守卫，
+     * 不是这个判据（`LEARNINGS #003-03` ③：全绿＝被变异的代码没被钉住；`#004-09`：一个出口里的
+     * 判据要分成几层各钉各的）。
+     *
+     * 而 `dragover` **拿不到 `files`**（浏览器在悬停阶段就不给，只给 `types`）⇒
+     * 「这批东西是不是文件」在那里只剩 `types` 一条线索。去掉它，这条**恰红**。
+     */
+    test("接了线但拖的不是文件 ⇒ 悬停时不拦（`dragover` 认的只有 `types`）", () => {
+      const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDropFiles={() => {}} />)
+
+      expect(拖入(行按名(host, "材料"), "dragover", { types: ["text/plain"], files: [] }).defaultPrevented).toBe(false)
     })
   })
 })

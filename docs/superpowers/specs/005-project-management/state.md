@@ -2011,6 +2011,138 @@ auth **238 pass / 1 skip / 0 fail**；`typecheck` **31/31 exit 0**；`lint:openh
 工作区 blob `1e64044d9dddda332dbc2277668ff6a2b3bfed0f` 与 `HEAD:` **逐字节相同** ⇒ 陈旧 stat 缓存，**内容零改动**
 （提交时是 no-op）。
 
+### T020 · 文件树的复制 / 移动 / 上传 / 下载：四个真执行出口 ＋ 客户端接线（2026-10-07）
+
+**出参**：右键菜单那四项**真能执行**——「复制」「移动」弹同一个**目标目录选择器**（`target-picker.tsx`）、
+「上传」走**文件选择器**（含从桌面拖进来）、「下载」把字节取回并**落盘**。四项都只落在**项目内**
+（`{沙箱根}/{userId}/{projectId}`），**且四项一律要求 `x-openhive-project` 头在场**。
+
+**权限锚（不新造判定）**：文件动作的授权**搭 F3 沙箱那道锚**走——不是 `project_member`、不是 `core/access`
+的能力位。服务端靠 `x-openhive-project` 头把工作目录钉进项目，而**头不在时文件路由会退回裸沙箱根**
+（＝**所有项目的父目录**）⇒ **四个动作必须一律要求这个头**，这正是 `tasks.md` T020 那条 ⚠️ 警告的由来
+（`file.ts` / 两个客户端文件 / 测试文件头都引了它）。
+
+**用户裁定的四条**（2026-10-07，全取推荐项）：① 复制 / 移动**共用一个**目标目录选择器；
+② 服务端落点 = fork 自有新路由文件 `packages/opencode/src/server/openhive/file.ts`（**上游 `api.ts` 一字不动**）；
+③ 上传走 **`multipart/form-data`**；④ **「拖出浏览器到桌面＝下载」挂账**（见下），下载只走右键菜单那一项。
+
+**改动文件（15 个真改动；另 1 个伪影）**
+
+- **生产 8**：新 3 —— `packages/opencode/src/server/openhive/file.ts`（425 行）、
+  `packages/app/src/project/openhive-file-ops.ts`（234）、`packages/app/src/project/target-picker.tsx`（122）；
+  改 5 —— `packages/app/src/project/{file-tree.tsx,project-data.ts,project-files.ts}`、
+  `packages/app/src/workspace/workspace-entry.tsx`（214＋/6−）、
+  **上游** `packages/opencode/src/server/routes/instance/httpapi/server.ts`。
+- **测试 7**：新 3 —— `packages/opencode/test/server/openhive-file-ops.test.ts`（753 行）、
+  `packages/app/src/project/openhive-file-ops.test.ts`（305）、`packages/app/src/project/target-picker.test.tsx`（190）；
+  改 4 —— `packages/app/src/project/file-tree.test.tsx`（238＋/1−）、`packages/app/src/project/project-data.test.ts`、
+  `packages/app/src/workspace/workspace-entry.test.tsx`（306＋/3−）、
+  `packages/opencode/test/server/openhive-project-directory.test.ts`（97＋/1−）。
+- **伪影**：`openhive-project-frozen.test.ts` 在 `git status` 里显示 ` M` 但**不出现在 `git diff --numstat`** ⇒
+  陈旧 stat 缓存、**内容零改动**（同 T023 记的那条），**未**写进本次提交的改动清单。
+
+**上游侵入面**：唯一上游文件 `server.ts`，**9 insertions / 0 deletions**（全是「加」），带
+`【保留的定制 · 同步上游时不要丢】`。**提交切分**：这一处**与它挂载的 fork 模块 `file.ts` 同属一次提交**——
+`server.ts` 那句 import 指向 `file.ts`，硬拆会让中间那个提交**连导入都解析不了**；而
+`openhive-file-ops.test.ts` 走的是 `HttpApiApp.routes`，**少了这次挂载四条路由全 404** ⇒
+拆不出一个「既能过测试、又只含上游那一处」的提交。**前端半边另起一次提交**，上游 diff 因此仍在一眼可辨的范围里。
+**`bun.lock` 一行未动**（`git diff --stat bun.lock` 空）。
+
+**门禁（全部串行，`#003-01`；命令一律带 `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`）**：新文件
+`openhive-file-ops.test.ts`（opencode）**19 pass / 0 fail / 92 expect**；opencode 项目族 **10 文件 88 pass / 0 fail**
+（＝ 19 ＋ 同族 9 文件的 69）；app `test:components` **470 pass / 0 fail / 28 文件**、`test:unit`
+**895 pass / 0 fail / 121 文件**、`test:browser` **41 pass / 0 fail / 14 文件**；`typecheck`（turbo）**31/31 exit 0**；
+`lint:openhive` **23 warnings / 0 errors / 99 files / exit 0**（本次改动文件 **0 命中**）；根 `lint`
+**4953 warnings / 1 error / exit 1**（唯一那个 error 仍是既有上游
+`packages/session-ui/…/prompt-input/index.tsx:163`，`#001-02`，**改动文件 0 命中**）。
+
+⚠️ **一次「看着像红」的测量**：合并跑 opencode 同族时首跑报 **29 pass / 1 fail（30 条）**，串行复跑两次均
+**29 pass / 0 fail**；两个文件各自单跑为 **10 / 19** ⇒ 29 才是正确总数，首跑多吐了一个**匿名条目**
+（与 T018 记的那次 `# Unhandled error between tests` 同族）。据 `#003-01`：**先怀疑测量**。
+
+**变异（逐组还原并复跑）**。BE（`file.ts`）**14 组**：
+
+| 组 | 变异 | 判词 | `#003-03` 类 |
+|---|---|---|---|
+| M1 | `projectDirectoryOf` 恒 `undefined` | 12 pass / 1 fail（「不带头」那条） | ① |
+| M2 | 预检 ＋ `COPYFILE_EXCL` **一起**去掉 | 11 pass / 2 fail（复制 ＋ 移动各一） | **②**（连对照一起红，据实记） |
+| M2b | **只**去预检 | 12 pass / 1 fail（**只有移动那条红**——复制被 `COPYFILE_EXCL` 兜住） | ① |
+| M4 | `inside` 去掉越界判据 | 恰红 1 | ① |
+| M5 | 去掉 `info.isFile()` | 恰红 1 | ① |
+| M11 | transfer **目标目录**的 `realInside` 去掉 | 恰红 1（复制到目录链接） | ① |
+| M12 | 下载 `lstat` → `stat` | 恰红 1（文件符号链接） | ① |
+| M13 | transfer **源**那一侧的 `realInside` 去掉 | 恰红 1（源在目录链接底下） | ① |
+| M14 | upload 目标目录的 `realInside` 去掉 | 恰红 1（上传到目录链接） | ① |
+| M15 | `gate` 一律退回沙箱根（＝全门失效） | 恰红 1（「不带头四项」） | ① |
+| M16 | **只摘 upload 的门** | 恰红 1，**红在「偷渡.txt」那一条** | ① |
+| M17 | `inside` 越界判据去掉 | 恰红 1 | ① |
+| M18 | 上传文件名不取末段（`join(targetDir, part.name)`） | 恰红 1（名里带 `../` 那条） | ① |
+| M19 | 去掉「目标存在预检」 | 恰红 1（**只有移动那条**） | ① |
+
+⚠️ **M19 与 M2b 是同一处、同一改法**（主阶段跑一次、审查轮又跑一次），据实记为**同一条证据**、
+不重复计数。⚠️ **M15 的报错文本在同一行号打印了两次**（bun / Effect 把一次失败打了两遍），**不是**
+两处都触发了——由 **M16**（只摘 upload 的门）恰好红在**另一行**反证。
+⚠️ 表格里 **M1 / M2 / M2b / M4 / M5** 这五行是**从本 task 的会话记录回收的**（当时未落进本节），
+判词与数字照记录誊入、**本轮未复跑**；**M11–M19 是本轮与审查轮当场实测**的。
+
+FE / UI **7 组**：**F-M1**「复制」接到 `move` 出口 ⇒ **红 3**（都走 `onCopy` 那条路）＝ **②类**；
+**F-M2** 办成后不重取清单 ⇒ **恰红 1**；**F-M3** 被拒时也重取清单 ⇒ **恰红 1**；**F-M4** 下载不存盘 ⇒
+**恰红 1**；**F-M5** `要文件` 退回 `要对象`（对目录不再置灰）⇒ **红 3**（两条 T020 判据 ＋ 空树那条）＝ **②类**；
+**F-M6** `落点` 只回原路径 ⇒ **红 4**（该规则的四个出口）；`file-tree.test.tsx` 去掉拖放判据里
+`types.includes("Files")` ⇒ **恰红 1**（新加的 dragover 那条）。⚠️ **F-M5 第一次的改法是「翻转判据」，得 7 红**——
+翻转本来就宽，换成**摘掉**（`return !接`）才是要测的形状；两次都按 `#003-03` **②类**记，**不写成恰红**。
+
+**★ 第二轮审查（`#003-02`，三席并行）抓到 5 条，全部已修**：
+
+1. **[Critical · 本次 diff 引入]「项目里的链接」不是越界通道，而 `inside` 拦不住它**（审查时报为 S1）。
+   `inside` 是**纯词法**判据（`resolve` ＋ `relative`），而复制 / 上传 / 下载走的是**跟随链接**的系统调用 ⇒
+   项目里一个指向**兄弟项目**的 junction（`symlinkSync(t, p, "junction")`，本机实测**与是否管理员无关**）
+   就能让四项动作**全都伸到项目外**。用探针独立复现：`copyFile` 真把兄弟项目的文件写进了沙箱根。
+   修法 = 新增 `realInside`（先 `realpath`、再过一遍 `inside`）落**四处**（transfer 的目标目录 /
+   transfer 的 `dirname(source)` / upload 的目标目录 / download 的 `dirname(target)`）＋ 下载把 `stat` 换
+   `lstat`（判「最后一段是不是普通文件」**不能跟随链接**）。**RED 先行**：新文件 **14 pass / 5 fail → 19 pass / 0 fail**。
+   成牙证据 = M11 / M12 / M13 / M14 **各恰红 1**。
+2. **[Important]「不带头上传」那条断言**判别力为零**：只发**同名**文件时，`exists` 预检 ＋ `writeFile` 的
+   `wx` **各自**就会回 400 ⇒ 那条绿**证明不了**门在不在。补一次**新名**（`偷渡.txt`）作真判据，断言顺序按
+   `#004-14`（先断**副作用一个都没有**——密件正文没变、兄弟项目里没有 `偷渡.txt`——再断那串五个状态码）。
+   成牙证据 = **M16**（只摘 upload 的门）**恰红在它那一行**。
+3. **[Important] 四处 `tasks.md:177` 引用错行**（`#004-05`）：真锚在 **171**，177 是「T020 编号排最后、
+   归属在 Phase 4」那条注。四处改成**点名内容**（「T020 的『⚠️ 权限锚（**不新造判定**）』那条」）而不写行号。
+4. **[Important] `openhive-file-ops.ts` 文件头拿「挂账」去指 `tasks.md`，而 `tasks.md` 说的是「两条都要」**
+   （`#004-03` 同族）：改成**明说二者不是一回事**——`tasks.md` 那句是**设计口径**，裁定与平台原因是**挂账**，
+   指向本节（即这条记录本身）。
+5. **[Medium] 测试文件指向「本 task state.md 的变异记录」，而那份记录当时不存在**：本节即为那条记录。
+
+**挂账 / 已知不覆盖**
+
+- **🔴「拖出浏览器到桌面＝下载」没做（用户 2026-10-07 裁定：挂账）**。设计 §6.2 原话是「拖出浏览器到桌面＝下载、
+  从桌面拖回＝上传」，裁定把前半**挂账**、只落右键菜单那一项。三条原因逐条都是平台事实（`#002-02`：
+  不可做要写成缺口，不能写成覆盖）：① `dataTransfer` 在 `dragstart` **之后只读**，而 `DownloadURL` 必须在
+  `dragstart` **里**设（先取字节再设＝来不及）；② Chrome 的 `DownloadURL` 要一条**真 HTTP URL**，而那条 URL
+  **带不了 `x-openhive-project` 头** ⇒ 中间件退回沙箱根 ⇒ 服务端的「这次请求在不在项目里」当场判否 ⇒ 400
+  （同 `openhive-file-ops.ts` 文件头「下载为什么不返回一个可以点的 URL」那条）；③ 行**今天本来就不可拖**——
+  `draggable={local.onBackup !== undefined}`，而 `onBackup` 属 **T022**。
+  另**据实记**：「从桌面拖回＝上传」这**另一半做了**（`file-tree.tsx` 的 `dragover` / `drop` ＋
+  `workspace-entry.tsx` 的 `传(dir, files)`）⇒ **「拖入」有、「拖出」没有**。
+- **上传无体积上限、四个动作均无超时（R1，留待人裁定）**：`formData()` 把整个请求体**读进内存**。
+  ⚠️ 上限是**产品数字**（话单 / 资金文件本来就大——那正是这个 feature 存在的理由），故**不在这里凭空造一个
+  常量**（同 T011 不替 D-13 拍板的理由）；已写进 `file.ts` 的「已知不覆盖」待裁。超时同 `MinIO` 那侧的既有缺口。
+- **移动的「目标已存在」在竞态下有缝**：`move` 只有 `exists(target)` 预检 ＋ 裸 `rename`；Node 的 `fs`
+  **没有**「目标存在就失败」的改名原语（`rename` 是 POSIX 语义＝**静默替换**，win32 那侧还有
+  `MOVEFILE_REPLACE_EXISTING`）。复制有 `COPYFILE_EXCL` 兜底，**移动没有** ⇒ 两个并发移动落到同一个新名时，
+  前一个被**静默吃掉**。修它要么 CAS 式命名、要么把四个动作串行化，**都出了 T020 的射程**。M2b / M19 的
+  「**只有移动那条红**」正是这处缝的现场证据。
+- **`Content-Disposition` 的清洗本机测不出**（转义 / 非 ASCII 文件名在真浏览器里的落盘名）——`file.ts` 已记。
+- **`inside` 的 UNC / 盘符判据无独立用例**——`file.ts` 已记。
+- **两条旧账（本次**不修**，遵「外科手术式改动」）**：① `packages/app/src/workspace/workspace-entry.test.tsx`
+  第 466 行注释写「全文件 **27** 条」，而该文件现在 **80** 条 —— **写死会漂的数字**（`#002-06` / `#003-04` 同族，
+  出处 `6afafc08`）；② `packages/app/src/workspace/workspace-entry.tsx` 第 316 行注释指向「**state.md 的欠账表**」
+  与「**AI 资产**」，`grep` 全仓**零命中** —— **悬空引用**（`#004-03` 同族，出处 `2c35b888`）。两条都在本次
+  diff 的语义之外。
+
+**⚠️ TDD 次序如实记**：本轮**补的**两处是 **RED 先行**——链接那组（14 pass / 5 fail → 19 pass）与 F2 的新名断言
+（由 M16 证明有牙）。**主阶段各段的次序本节不追述**——不在本次收尾的观测范围内，不补写没测过的话。
+
 ## 待裁定（2026-10-06，T018 BE 半边收尾时报请用户裁定 · ✅ 已裁定，见文末「裁定 (A/B/C)」）
 
 > ✅ **2026-10-06 已裁定**：**照 `gateway.ts` 先例写薄客户端** ＝ 下面的候选 **(C)**。
@@ -2185,6 +2317,7 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 **用户裁定（2026-10-06）：本次不动那四份文档，只在此记一笔。** 理由：它们是各自 feature 的开工依据，应由那些 feature 开工时像本部 U5 一样**自己实测**再钉（这正是 U5 被抓出来的方式）。**005 不受影响**——U5 已裁定 `project_member` 不接 capability。
 
 ## 最后更新
+2026-10-07（**T020 收尾 ✅ —— 文件树的复制 / 移动 / 上传 / 下载：四个**真执行**出口 ＋ 客户端接线**：右键菜单那四项**真能执行**（复制 / 移动共用一个目标目录选择器、上传走文件选择器含拖入、下载把字节取回落盘），四项**一律要求 `x-openhive-project` 头在场**（头不在时文件路由退回**裸沙箱根**＝所有项目的父目录）。**权限锚「不新造判定」**——搭 F3 沙箱那道锚走，不是 `project_member`、不是 `core/access`。**四条裁定（用户全取推荐项）**：共用选择器／服务端落 fork 自有新文件 `server/openhive/file.ts`（上游 `api.ts` 一字不动）／上传走 `multipart/form-data`／**「拖出浏览器到桌面＝下载」挂账**（下载只走右键菜单）。**改动 15 个文件**（生产 8 ＋ 测试 7）；**上游侵入面 1 处** —— `httpapi/server.ts` **9 insertions / 0 deletions**、带 `【保留的定制 · 同步上游时不要丢】`；**与它挂载的 `file.ts` 同属一次提交**（硬拆：`server.ts` 的 import 解析不了 ＋ 测试走 `HttpApiApp.routes`、少了挂载四条路由全 404 ⇒ 拆不出「既过测试又只含上游那一处」的提交），**前端半边另起一次提交**；`bun.lock` 一行未动。<br>**★ 第二轮审查（`#003-02`，三席并行）抓到 5 条、全部已修**，最重一条是**本次 diff 自己引入的 Critical**：`inside` 是**纯词法**判据而复制/上传/下载走**跟随链接**的系统调用 ⇒ 项目里一个指向**兄弟项目**的 junction 就能让四项动作**全都伸到项目外**（探针独立复现：`copyFile` 真把兄弟项目的文件写进沙箱根）⇒ 新增 `realInside` **四处**落点 ＋ 下载 `stat`→`lstat`，**RED 先行 14 pass / 5 fail → 19 pass / 0 fail**。另四条：**「不带头上传」那条断言判别力为零**（只发同名 ⇒ `exists` 预检 ＋ `wx` **各自**就回 400，绿得毫无信息；补**新名**「偷渡.txt」作真判据）／四处 `tasks.md:177` **引用错行**（真锚在 **171**，改成点名内容，`#004-05`）／`openhive-file-ops.ts` 拿「挂账」去指 `tasks.md` 而那里写的是「两条都要」（改成明说二者不同、指向本节，`#004-03` 同族）／测试文件指向的「变异记录」当时不存在（本节即是）。<br>**✅ 变异 21 组据实记三类（`#003-03`）**：BE **14 组**（M1 12/1、**M2 11/2 属②类**、M2b 12/1 **只有移动那条红**、M4、M5、M11–M19 各恰红 1）＋ FE/UI **7 组**（**F-M1 红 3、F-M5 红 3 皆②类**，F-M2/F-M3/F-M4 恰红 1、F-M6 红 4、`file-tree` 去掉 `types.includes("Files")` 恰红 1）。⚠️ **M19 ≡ M2b**（同一处同一改法，跑过两次）**记为同一条证据、不重复计数**；**M15 的报错文本在同一行号打印两次**（不是两处都触发，由 **M16** 恰红在**另一行**反证）；**F-M5 第一次改法（翻转判据）得 7 红**，换成「摘掉」才是要测的形状 —— 两次都记 ②类、**不写成恰红**。⚠️ 表里 **M1/M2/M2b/M4/M5 五行的数字是从会话记录回收的、本轮未复跑**（已在节内标注）。<br>**🧭 门禁串行全过**：新文件（opencode）**19 pass / 0 fail / 92 expect**；opencode 项目族 **10 文件 88/0**；app `components` **470/0/28 文件**、`unit` **895/0/121 文件**、`browser` **41/0/14 文件**；`typecheck` **31/31 exit 0**；`lint:openhive` **23·0·99 files·exit 0**（改动文件 0 命中）；根 `lint` **4953 w / 1 error / exit 1**（那 1 个 error 仍是既有上游 `prompt-input/index.tsx:163`，**改动文件 0 命中**）；`bun.lock` 空。⚠️ **一次「看着像红」的测量**：opencode 同族合并跑首报 **29 pass / 1 fail（30 条）**、串行复跑两次均 **29/0**，逐文件单跑 **10 / 19** ⇒ 29 才对，首跑多吐一个**匿名条目**（`#003-01`：先怀疑测量）。<br>**⛔ 缺口（已落「T020」节）**：**「拖出浏览器到桌面＝下载」没做**（裁定挂账；三条平台事实：`dataTransfer` 在 `dragstart` 后**只读** ／ `DownloadURL` 要真 HTTP URL 而**带不了项目头** ／ 行今天本就不可拖——`draggable` 挂在属 **T022** 的 `onBackup` 上），⚠️ **「拖入＝上传」这另一半做了**；**上传无体积上限 ＋ 四项无超时**（**R1，留人裁定**——上限是产品数字，不凭空造常量）；**移动的「目标已存在」在竞态下有缝**（无独占改名原语，复制有 `COPYFILE_EXCL` 兜底、**移动没有**）；`Content-Disposition` 清洗与 `inside` 的 UNC/盘符判据本机测不出；**两条旧账本次不修**（`workspace-entry.test.tsx:466` 注释写死「27 条」而实际 **80**，出处 `6afafc08` ／ `workspace-entry.tsx:316` 指向「state.md 的欠账表」与「AI 资产」而全仓 `grep` **零命中**，出处 `2c35b888`）——遵「外科手术式改动」。见「T020」节）
 2026-10-07（**T023 收尾 ✅ —— 项目归档的 FE 入口 ＋ 找回入口**：民警点得到「归档」（「**全部**」tab 行内、**二次确认**后才送出）、能在「已归档」tab 看见它并**找回**。**判定一份都不在这里**——全走 `ProjectMembership.decide`，组件零规则复述，后端 `archive.ts` 各自再判一次（宪法 IV）。改动 **11 个文件**（生产 6 ＋ 测试 5），**上游文件 0 处**、`bun.lock` 未动（`git diff --stat bun.lock` 空）。四条裁定（用户全取推荐项）：列表多给 `role`（新增 `rolesOf` 批量读）／「归档」只画「全部」tab（设计 §8.1）／归档成功 ⇒ **重拉清单 ＋ 清当前项目**／缺口 12 只规避 ＋ 继续挂账。**门禁全绿（串行）**：app `components` **431 pass / 27 文件**、`unit` **870 pass / 120 文件**、`browser` **41 pass**；opencode 项目族 9 文件 **67 pass**；auth **238 pass / 1 skip**；`typecheck` **31/31 exit 0**；`lint:openhive` **23 warnings / 0 errors**；根 `lint` **4953 warnings / 1 error**（唯一 error 是**既有上游** `session-ui/…/prompt-input/index.tsx:163`，我改的 11 个文件 **0 命中**——阳性对照：同份输出里 `member-panel` / `file-tree` 有 35 处命中）。**变异 17 组**（主阶段 12 ＋ 审查补 5）；补的 5 组全属 `#003-03` ① 类「恰红目标那一条」，主阶段 **M5 属 ② 类「整组红、连对照一起」**（据实记，不写成恰红）。<br>**★ 第二轮审查（三席并行 ＋ `#003-02`）抓到 3 条「声明的语义没有断言守着」，全部已修**：① **最重 ＝ 本 task 自己引入的回归**——面板调用方把 `onRestore` 写成 `(p) => void 办(p, props.onRestore)`（**恒真函数**），把 `ArchivedGroup` 里 `<Show when={props.onRestore}>` 那条「不给回调即不画」整个绕过 ⇒ **未接线时「已归档」tab 多出一个点了没反应的「找回」**；根因就是**我自己写下的规矩只贯彻到一个出口**（`问归档` 旁那段注释明写「靠的是调用方不递」）——正是 `#003-02`。② `rolesOf` 的 `where user_id = ?` 那半条**没测试钉住**（原用例把成员行**全删**了 ⇒ 丢过滤得到同样空结果、两条都绿），补「把我那一行换成 BOB 的 ⇒ ALICE 仍无 `role` 键」（判据特意**不**写成「owner 拿 owner、member 拿 member」——那要靠 SQL 返回顺序才决定红不红，是不稳定的红）。③ 「**找回不碰当前项目**」是**裁定过的语义**，而本节找回用例的 `beforeEach` 都清成 `undefined` ⇒ 补一句 `setCurrentProject(undefined)` 全绿；补两条（找回另设当前项目 ＋ **归档没办成也不清**）。**挂账（Minor）**：找回无「在办」锁（连点两次发两次，非破坏性）／非 400/403 失败体被丢（内核 **MinIO 未配回 503 ＋ `{error}`**，民警只看到「归档项目失败」——**与缺口 12 同源、合并挂账**）／回调抛异常时面板静默（沿用 `建` 的既有约定）／`roleOf` 的 `null`·数字边界未钉（行为已 fail-closed）／`rolesOf` 在 `packages/auth` 无**单元**测试（安全属性已由集成用例守住）。<br>**⚠️ 射程外（如实记，不是「做了」）**：设计 §8.1「归档触发」写了**两条**路径——「『全部』tab 内，**或项目名右键**」；本 task 只落前者（右键是 T008 的机制、不在 `ProjectPanel` 里）。**⚠️ TDD 偏差如实记**：**面板段与客户端段的生产代码先于测试写成**（不是 RED→GREEN），证据由**变异**补（7 组）；只有**接线**段是真 TDD（先 **62 pass / 6 fail** → 改 → **68 pass**）。<br>**⚠️ 工具怪癖（本 task 起所有门禁 / 变异一律带 `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`）**：不设它时 bun 的运行时转译缓存在**复用**时**确定性**报 `Expected JSX element name but found "?" at …file-icons/sprite.svg:1:2`，使整个测试文件**中止**（`0 pass / 1 fail / 1 error`）——**看着像「还没跑完」，不是「失败了」**（连跑 5 次全挂；`-t "zzz不存在zzz"` 同样失败 ⇒ 加载期而非用例级）。本会话独立复现并**细化**：缓存目录**首次写**那一轮必过、**紧接着复用同一个已写过的目录必挂**；换无关 env（`OPENHIVE_PROBE=1`）**仍挂** ⇒ 不是「随便加个变量就好」。性质同 `#003-01`：**先怀疑测量，再怀疑被测物**。另：`openhive-project-frozen.test.ts` 在 `git status` 里显示 `M` 是**陈旧 stat 伪影**（`git diff`/`--numstat`/`--raw` 全空，工作区 blob `1e64044d…` 与 `HEAD:` **逐字节相同**）⇒ **内容零改动**，**未**写进本次提交的改动清单。）
 2026-10-06（**T016 收尾 ✅ —— 会话私有（FR-011）＋ 文件并发靠 git（FR-012）：实测为「只钉属性、零生产代码改动」**：只加 `packages/opencode/test/server/openhive-project-shared.test.ts`（新，**5 条 · 55 expect**）＋ 本 docs 两份；**`packages/*/src` 一行未动、上游文件 0 处**。**FR-011 的增量不是重述 003**——`tenant-db-isolation.test.ts` 的 describe 是「跨库隔离（T012 · **FR-010** / SC-001）」，钉的是**任意两个用户**；本 task 钉的是**同一个共享项目里的 owner 与 member**（一条新的潜在泄漏路径），oracle **不经过被测对象**（直接读两个库文件 ＋ 双向 404 ＋ 双向 list）。**FR-012 走完整流程**：⓪ 先断 **`--is-bare-repository` = true**（**这条承重、别当装饰**，见下）→ ① 甲 clone ＋ 建 `trunk` ＋ commit ＋ push → ② 乙 clone → ③ 甲改、commit、push → ④ 断乙**工作区没变**（＝不做实时协同）→ ⑤ 乙改、commit → ⑥ 乙 push **被拒**（`exitCode !== 0` 且 stderr 含 `rejected`）→ ⑦ fetch ＋ merge ⇒ 非 0 且 `diff --diff-filter=U` 里**有那个文件** → ⑧ 解冲突、commit、push → ⑨ **第三个检出**从 bare 取留痕（三条提交信息 ＋ 合并后正文）。全程走上游 `Git` 服务（**不自己 spawn**：那串 `-c core.autocrlf=false` 等是本机 `core.autocrlf=true`（`#003-07`）下仓库落盘形态与上游一致的前提，照 `project.ts` 的 `gitInit` 注释办）。**★ 两条实测发现（`#003-04`）**：<br>① **成员带项目头被无声忽略**——`project_ext` 是**个人态**、T018 只给**创建者**写一行 ⇒ 成员那头查不到 ⇒ 中间件**静默退回沙箱根**（`projectID` 读作 `"global"`，四行探针取数已固化进文件头）。这是 T017 文件头早写过的退化路径在**会话链**上的第一个实例；**因此下面一律用「不带头的会话」去钉隔离**（带不带头对成员是同一结果 ⇒ 拿头当判据会**假绿**）。⚠️ **挂账**：「**成员进不去共享项目的目录**」与「**成员那几个检出由谁建**（clone 到 `{沙箱根}/{memberId}/{projectId}`？）」在 `tasks.md` 里**仍然零任务认领**——修它 = 新能力，属 **T018 / T021** 地界（`#002-04`）。<br>② **「必须是裸仓库」只有一道防线**——去掉 `--bare` 后 ①–⑨ **全绿**：非裸仓库的当前分支是那个**未出生**的默认分支，推 `trunk` 不被 `receive.denyCurrentBranch` 拦。⇒ **M2 只红 ⓠ 那一条**，其余全靠它守着；这条性质今天**只由测试里一句断言钉着**，已记缺口。**✅ 变异 2 处、三类据实记（`#003-03`）**：**M1**（`router.ts` 的 `hook.resolve` **不看身份**＝恒用本层自己的库）⇒ **3 红 2 绿**，红的是三条声称隔离的用例**含对照**（「owner 带真头落在自己库与项目目录」也红）＝**②类**，**不许写成①类恰红**；**M2**（`project.ts` 去掉 `--bare`）⇒ **恰红 1** ＝ **①类**（无对照被误伤）。两处变异**均已还原**（`git diff --stat packages/opencode/src packages/core/src` **为空**）。**⚠️ 开工抓到的三处夹具坑**：(a) `bun:sqlite` 导出名是 **`Database as Sqlite`**（不是 `Sqlite`）；(b) `session` 表的列名是 **`project_id`**（`packages/core/src/session/sql.ts`）——`projectID` 只是 Schema 解码出的**线上形状**，照着响应体写 SQL 会红成 `no such column:`；(c) `canonical` 漏掉 **`realpathSync.native`** 时 **win32 假红**（`ADMINI~1` vs `Administrator`）——**这是对 `#003-04` 的补充**：那条原写「探了三种取法都返短名 ⇒ 复现不出来遂不写」，本次**复现出来了**，条件是**差异的一方是被测对象**（应用自己 realpath），**不是**夹具侧的自比。**🧭 门禁串行全过**：新文件 **5 pass / 0 fail / 55 expect**；同族 9 文件 **69 pass / 0 fail / 446 expect**；`typecheck`（turbo）**31/31 exit 0**；文件级 oxlint（**仓库根**，`#004-10`）**0 warnings / 0 errors / exit 0**（首跑 2 warnings：`rowsOf` 死导入 ＋ `queryOne<T>` 的 `no-unnecessary-type-parameters`——收掉 `queryOne`、把查询内联进 `sessionRow`，**当场清掉、不留账**）；`lint:openhive` **exit 0（23/0 ＝ 基线，本次文件 0 命中）**；根 `lint` 本次新增文件 **0 命中**（全局 4952 w / 1 error ＝ 上游 `prompt-input/index.tsx:163`，裁定不私改）；`git diff --stat bun.lock` **为空**。**⛔ 缺口（已落「T016」节）**：成员的项目头被无声忽略 ＋ 成员检出无归属；「裸仓库」只靠一条断言钉着；FR-012 只钉「git 能这么用」，**没有**钉「共享项目里真有这个 bare 仓库给成员用」（建它属 T018、用它得先解决成员检出归属）。下一步 = **T020 / T021 / T023**（前置齐；T023 是 FE）。见「T016」节）
 2026-10-06（**T025 收尾 ✅ —— 「归档 = 冻结」射程外那类出口：实测为「只钉属性、不加门」**：原设想＝给「会话身份不在 `params["sessionID"]` 里」的出口补一条**端点级中间件**。**取数推翻了前提**——出参**已经达成**，达成它的**不是**中间件，是 **`Permission` 的实例分桶**（pending 挂在 `InstanceState.make` 上、按 `ctx.directory` 分桶 ⇒ 答复请求落不到会话那个实例就查不到）。**四行实测（已固化成用例）**：无头 **404**／诱饵头（ACTIVE）**404**／真头（FROZEN）**403**／解冻后＋真头 **200**（消费且那一轮继续）。**原设想的中间件是 no-op**：它在**同一实例**里 `Permission.list()` ⇒ 跨项目 pending 不在该实例、列表恒 `[]`。⇒ **用户裁定「只钉属性、不加门」**：**生产代码 0 行、上游文件 0 处**，只加 `packages/opencode/test/server/openhive-project-frozen-pending.test.ts`（新，2 条）＋ 本 docs 两份。**两道门都管不着它**：第一道门（项目头）**够不着**会话（带了也只会落到**另一个**实例、仍 404）；第二道门（`params["sessionID"]`）**根本不跑**（这条路由只有 `requestID` 参数 ⇒ 正是 T015 缺口第 11 条说的射程外）。**⚠️ `question` 同形属推断、`sync`／`warp` 仍挂缺口**（会话身份在**请求体**、**不**经过 `Permission` 分桶 ⇒ 很可能真没门；**未实测** ⇒ 挂账，`#002-02`）。**★ 一枚夹具假红：`42P05 duplicate_prepared_statement`**——第一版夹具「fork 那一轮 ＋ 每 100ms 轮询」**稳定**假红（被 fork 那一轮回 500、长得像「门在并发下崩了」）；真因是 **PGlite 的预编译语句名是实例级的**（socket 服务端汇进同一个 PG 会话）⇒ 同一进程**两个并发请求撞同一句 SQL** 就 500；**生产是多连接池 ⇒ 不会撞** ⇒ 是**夹具产物**（`#003-01`：先怀疑测量）。修法＝夹具**先进程内等**（等假模型被调用、一个 HTTP 都不发）、再发列表请求（那时那一轮已阻塞在 `Permission.ask`）；**别改回紧轮询**（文件头有注释）。建议给 `pg.ts` 文件头补「**并发**也会撞」一句，**本轮按裁定不改**。**🧭 门禁串行全过**：同族 8 文件 **59 pass / 0 fail**；新文件 **2 pass / 0 fail / 32 expect**（3 连跑稳定，~39 s）；`typecheck`（turbo）**31/31 exit 0**；文件级 oxlint（**仓库根**）**0 warnings / 0 errors / 130 rules / exit 0**（首跑 3 warnings ＝ `marker!` 多余非空断言 ⇒ 当场改成 `if` 收窄、清掉）；`lint:openhive` **exit 0（23/0 ＝ 基线，本次文件 0 命中）**；根 `lint` 本次新增文件 **0 命中**（全局 4953 w / 1 error ＝ 上游 `prompt-input/index.tsx:163`，裁定不私改）；`git diff --stat bun.lock` **为空**。**✅ 变异 2 处（`#003-03` 三类据实记）**：**M2**（`instance-state.ts` 的 `directory` 换常量 ⇒ 单桶）**整组红含夹具**＝**②类**（不证明判据有牙）；**M3**（`permission/index.ts` 的 `pending` 拉成模块级）**恰红 1**＝**①类**（无头答复 404→200、只它红，8 expect）——⚠️ **调序前**红是 `SchemaError: Expected object, got true`，按 `#004-14` 把**状态码排到正文字段前** ⇒ 红变成 `Expected: 404 / Received: 200`；两处变异**均已还原**（`git diff` 对 `src/` 为空）。另改正 `tasks.md` 一处**不实数字**（「共 24 条」⇒ **25 条**）与四条**路径名**（`/api/...` ⇒ v1 裸路径）。见「已完成 → T025」节）

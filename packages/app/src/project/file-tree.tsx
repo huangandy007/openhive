@@ -82,18 +82,45 @@ export interface FileTreeProps {
   onDelete?: (path: string) => void
 
   /**
-   * 设计 §6.2 第二～四组的那六个动作。**一律收「被右键那个节点」的路径**——包括上传：
-   * 「传到哪 / 从哪传」由接收方按节点是文件还是目录自己判，本组件不替它先阉一刀。
+   * 设计 §6.2 第二～四组的那六个动作。**除上传外**一律收「被右键那个节点」的路径。
    *
-   * 六个**各自独立**接线：菜单里一项一项地亮（备份归 T011/T012，其余四项目前无人认领），
+   * 六个**各自独立**接线：菜单里一项一项地亮（备份／拉回归 T011/T012；其余四项由 T020 接上），
    * 不是「全接上才一起亮」。省略 = 该项禁用。
+   *
+   * ⚠️ `onCopy` / `onMove` 多一条**类型**上的禁用理由（见 `要文件`）：服务端只搬单文件，
+   * 菜单里这两项因此**只画在文件行上**。其余三项没这条——`onDownload` / `onBackup` / `onRestore`
+   * 对着目录是**说得出话**的（服务端会拒，界面据此报一句）。
    */
   onCopy?: (path: string) => void
   onMove?: (path: string) => void
-  onUpload?: (path: string) => void
+  /**
+   * 上传：收的是**落点目录**（同 `onCreate` 的 `parent`），不是被右键那一行的路径——
+   * 右键目录 ⇒ 它自己、右键文件 ⇒ 它所在的目录、空白 ⇒ 根。
+   *
+   * `File` 是**文件系统里的东西**，本组件一个都拿不到（那是 `onDropFiles` 与文件选择器的事）：
+   * 这一项只交出「往哪儿放」。
+   *
+   * ⚠️ 判类型只有本组件做得了（它手里有 `节点表`）：接收方那一侧只有一份**扁平的**文件清单，
+   * 目录根本不在里面——把同一条「路径 → 落点目录」的规则推给每个接收方各写一遍，就是
+   * `LEARNINGS #002-06` 那种会各漂一半的两份。
+   */
+  onUpload?: (dir: string) => void
   onDownload?: (path: string) => void
   onBackup?: (path: string) => void
   onRestore?: (path: string) => void
+
+  /**
+   * 从**桌面**拖一批文件进来（设计 §6.3 拖拽 A 的「拖回」那一半；§6.2 里「上传」的替代入口）。
+   *
+   * `dir` 与 `onUpload` 同一套规则（目录 ⇒ 它自己、文件 ⇒ 它所在的目录、空白 ⇒ 根）。
+   * **一批一起喊**、不逐个喊：拖进来的那一刻它们是一件事，拆成几个请求是**接收方**的事
+   * （服务端一次只收一个文件，而「几个成了几个没成」那句话只有接收方说得出来）。
+   *
+   * 本组件只认**跨进程**的拖拽——判据是 `dataTransfer.types` 里有 `"Files"`。同页面内的拖拽
+   * （`DualFileTree` 的 MinIO 备份 / 拉回）也在冒泡路上经过这里，但它们的 payload 里没有文件，
+   * 不该被当成上传吃掉。省略 ＝ 不接受拖入（悬停也不拦）。
+   */
+  onDropFiles?: (files: readonly File[], dir: string) => void
 
   /**
    * 行是否可拖（设计 §6.3 拖拽 B「沙箱 ↔ MinIO」里**上树**那一侧）。只有**文件行**会被标上
@@ -140,12 +167,16 @@ export interface FileTreeProps {
  * 本组件今天**不**在「没选中」时禁用重命名 / 删除——按钮是活的，只是没有作用对象就不喊回调；
  * 「选中后点亮、未选中置灰」的视觉门禁与删除二次确认归 **T009**。
  *
- * ## 右键菜单的接线状态（T008）
+ * ## 右键菜单的接线状态
  *
- * 十项里**只有三项接得上**：新建两项走 `onCreate`、重命名/删除走 T007 就有的回调。
- * 其余六项（复制 / 移动 / 上传 / 下载 / 备份 / 拉回）**今天都没有接收方**——按「未接线即禁用」
- * 一律置灰（备份 / 拉回等 T011/T012，复制 / 移动 / 上传 / 下载**尚无 task 认领**，已挂进
- * `tasks.md` 的欠账）。菜单先把**入口与形状**做齐，接线时只补 props，不改菜单结构。
+ * 十项里**七项接得上**：新建两项走 `onCreate`、重命名/删除走 T007 就有的回调、
+ * 复制 / 移动 / 上传 / 下载走 T020 的四个回调。**只剩备份 / 拉回**没有接收方（T011/T012），
+ * 按「未接线即禁用」置灰。菜单先把**入口与形状**做齐，接线只补 props，不改菜单结构——
+ * T020 正是这样接的（唯一的例外见下一条）。
+ *
+ * ⚠️ T020 给复制 / 移动**加了一条类型上的禁用理由**（`要文件`）：服务端只搬单文件，
+ * 对目录弹「搬到哪儿」的面板本身就是错的。这是本文件里唯一一处「接上了线、菜单项却仍可能灰着」
+ * 的地方，故没有沿用 T008 那句「接线即点亮」。
  */
 export function FileTree(props: FileTreeProps) {
   const [keyword, setKeyword] = createSignal("")
@@ -271,7 +302,13 @@ export function FileTree(props: FileTreeProps) {
               `preventDefault()` ＋ `stopPropagation()` 之后**不调用**外部传进来的那个），
               挂上去会**静默失效**：菜单照开，作用对象永远是「没有」。挂在内层：冒泡时我们先跑，
               它再接着开菜单。 */}
-          <div data-slot="file-tree-region" class="flex w-full min-w-0 flex-col" onContextMenu={记对象}>
+          <div
+            data-slot="file-tree-region"
+            class="flex w-full min-w-0 flex-col"
+            onContextMenu={记对象}
+            onDragOver={拖过}
+            onDrop={放开}
+          >
             <Show
               when={行列表().length > 0}
               fallback={
@@ -364,13 +401,13 @@ export function FileTree(props: FileTreeProps) {
             <菜单项
               action="copy"
               文案="复制"
-              禁用={要对象(props.onCopy)}
+              禁用={要文件(props.onCopy)}
               onSelect={() => props.onCopy?.(菜单对象() ?? "")}
             />
             <菜单项
               action="move"
               文案="移动"
-              禁用={要对象(props.onMove)}
+              禁用={要文件(props.onMove)}
               onSelect={() => props.onMove?.(菜单对象() ?? "")}
             />
             <菜单项
@@ -385,7 +422,7 @@ export function FileTree(props: FileTreeProps) {
               action="upload"
               文案="上传"
               禁用={!props.onUpload}
-              onSelect={() => props.onUpload?.(菜单对象() ?? "")}
+              onSelect={() => props.onUpload?.(落点(菜单对象()))}
             />
             <菜单项
               action="download"
@@ -493,13 +530,68 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
+   * 复制 / 移动要的**不只是**「有对象」，还得是**普通文件**——比上面那条多一个理由。
+   *
+   * 服务端只搬单文件（`file.ts` 递进来的目录回 400：不做递归是 T020 的范围裁定），
+   * 所以对着一个目录画这两项，就是画了一个**点了必然失败**的入口。禁用态是长在**类型**上、
+   * 不是长在「有没有接线」上，所以它得单起一个谓词，不能塞进 `要对象`。
+   *
+   * ⚠️ 其余「要对象」的项**不**跟着走这条：下载/备份/拉回对着目录都是**说得出话**的
+   * （目录会被服务端拒掉，界面据此报一句），而复制/移动在界面上会先弹一个「搬到哪儿」的面板
+   * ——对着目录弹那个面板本身就是错的。
+   */
+  function 要文件(接: ((path: string) => void) | undefined) {
+    const path = 菜单对象()
+    // `节点表` 里只有**清单里真实存在**的路径；表格查不到就当不是文件（不猜）。
+    return !接 || !path || 节点表().get(path)?.type !== "file"
+  }
+
+  /**
    * 右键时记下**指针底下那一行**。挂在这一层（而不是每行各挂一个）：落在行以外的空白
    * 自然就记成「没有对象」，不必再写一条「清空」的分支。
    */
   function 记对象(event: MouseEvent) {
+    set菜单对象(指针行(event))
+  }
+
+  /**
+   * 指针底下那一行的 `data-path`（不在任何行上 ⇒ `undefined`）。
+   *
+   * 右键与拖入共用一份：两处问的是**同一个问题**（「指针现在落在哪个节点上」），
+   * 而它们真的会各漂一半——右键那处写 `event.target`、拖入那处写成 `currentTarget`，
+   * 症状是拖到行上却落到根（`LEARNINGS #002-06`）。
+   */
+  function 指针行(event: Event) {
     const target = event.target
-    const row = target instanceof Element ? target.closest<HTMLElement>("[data-slot='file-tree-row']") : null
-    set菜单对象(row?.getAttribute("data-path") ?? undefined)
+    if (!(target instanceof Element)) return undefined
+    return target.closest<HTMLElement>("[data-slot='file-tree-row']")?.getAttribute("data-path") ?? undefined
+  }
+
+  /**
+   * 这一次拖拽是不是**从桌面拖文件进来**。
+   *
+   * 判据只能是 `dataTransfer.types`：跨进程的拖拽里，文件**在 `drop` 之前读不出来**
+   * （`dataTransfer.files` 那时是空的，浏览器只在 `drop` 才把它填上）——所以「有没有文件」
+   * 这件事在悬停阶段就得从 `types` 里问。
+   *
+   * 两处 `?.` / `?? []` 是刻意的：happy-dom 里拖拽事件是**裸 `Event`**（没有 `DragEvent`），
+   * 产品码在这里多依赖一笔，组件测试就再也进不来了（同 `dual-file-tree.tsx` 的 `起拖`）。
+   */
+  function 从桌面(event: DragEvent) {
+    return props.onDropFiles !== undefined && (event.dataTransfer?.types ?? []).includes("Files")
+  }
+
+  /** 悬停：**不 `preventDefault` 就不会触发 `drop`**（HTML5 拖拽的规矩，不是可选的优化）。 */
+  function 拖过(event: DragEvent) {
+    if (从桌面(event)) event.preventDefault()
+  }
+
+  function 放开(event: DragEvent) {
+    if (!从桌面(event)) return
+    event.preventDefault()
+    const files = Array.from(event.dataTransfer?.files ?? [])
+    if (files.length === 0) return
+    props.onDropFiles?.(files, 落点(指针行(event)))
   }
 
   /** 行上的键盘动作：回车 / 空格＝选中，←/→＝目录开合（与点箭头同一个意思）。 */

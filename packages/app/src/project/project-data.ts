@@ -31,6 +31,8 @@
 
 import type { CreateProjectOutcome, ProjectActionOutcome } from "./openhive-project"
 import { archiveProject, createProject, listProjects, restoreProject } from "./openhive-project"
+import type { FileOpOutcome } from "./openhive-file-ops"
+import { copyFile, downloadFile, moveFile, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
 import type { NewProjectInput, ProjectEntry } from "./project-panel"
 
@@ -59,6 +61,22 @@ export interface ProjectData {
   restore(projectId: string): Promise<ProjectActionOutcome>
   /** 取某个项目的全部文件路径（`undefined` = 取不到，`[]` = 一个文件都没有）。 */
   files(projectId: string): Promise<readonly string[] | undefined>
+  /**
+   * 把项目内的一个文件复制到**项目内的另一个目录**（T020 / FR-005）。
+   * `dir` 是目标**目录**（相对项目根，`""` ＝ 项目根），目标名由服务端取源的末段。
+   */
+  copy(projectId: string, path: string, dir: string): Promise<FileOpOutcome>
+  /** 把一个文件**移动**过去（同上，只有动作不同）。 */
+  move(projectId: string, path: string, dir: string): Promise<FileOpOutcome>
+  /** 从本地电脑上传**一个**文件（拖进来一批时调用方逐个发）。 */
+  upload(projectId: string, dir: string, file: File): Promise<FileOpOutcome>
+  /**
+   * 取一个文件的**字节**（`undefined` = 取不到）。
+   *
+   * 只到「字节」为止——**存盘不在这层做**：那是 DOM 的事（`URL.createObjectURL` ＋
+   * `<a download>`），而这一层要能在没有 DOM 的单测里跑。存盘落点见 `workspace-entry.tsx`。
+   */
+  download(projectId: string, path: string): Promise<Blob | undefined>
 }
 
 /**
@@ -74,4 +92,8 @@ export const PROJECT_DATA: ProjectData = {
   archive: (projectId) => archiveProject(projectId),
   restore: (projectId) => restoreProject(projectId),
   files: (projectId) => listProjectFiles(projectId),
+  copy: (projectId, path, dir) => copyFile(projectId, path, dir),
+  move: (projectId, path, dir) => moveFile(projectId, path, dir),
+  upload: (projectId, dir, file) => uploadFile(projectId, dir, file),
+  download: (projectId, path) => downloadFile(projectId, path),
 }

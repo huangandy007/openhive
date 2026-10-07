@@ -8,11 +8,11 @@ import { createSignal } from "solid-js"
  * 应用入口（或以后的模块动作）往缝里写。
  *
  * `| undefined` 与 `[]` 说的**不是**一件事，别合并：
- * - `undefined` = 还没有来源（今天就是这一态）；
- * - `[]` = 来源明确说了「这个项目一个文件都没有」。
+ * - `undefined` = 取不到（还没选项目，或那一趟取数失败了）；
+ * - `[]` = 取到了，这个项目一个文件都没有。
  *
- * ⚠️ 今天**没有写入方**：把文件列表接进来（`GET /file` 或项目沙箱目录）是
- * `005/tasks.md` 的 **T018**（项目落库 ＋ HTTP 出口）之后的欠账，已在 `state.md` 挂账。
- * 在那之前左栏文件树恒走空态——**这是据实显示，不是占位**。
+ * 写入方只有一个：`workspace-entry.tsx` 的 `拉清单`（T018 落地，走 `ProjectData.files`）。
+ * 文件动作办成之后（复制 / 移动 / 上传）它会被**再拨一次**——见那里的 `清单重取`
+ * （T020）：树上的位置换了靠的是重取，不是就地改这份数组。
  */
 export const [projectFiles, setProjectFiles] = createSignal<readonly string[] | undefined>()

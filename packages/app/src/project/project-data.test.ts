@@ -27,7 +27,7 @@ import type { ProjectEntry } from "./project-panel"
 
 /** 记下一个请求；按路径前缀回体。**没配到的路径回 404**——静默回空体会让「少了条请求」看不出来。 */
 function 假服务(routes: Record<string, unknown>) {
-  const 发出: Array<{ url: string; method: string; 项目头: string | null }> = []
+  const 发出: Array<{ url: string; method: string; 项目头: string | null; 体: unknown }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     // 真 `fetch` 收三种入参（字符串 / `URL` / `Request`），这里三种都摊开——
     // 图省事写 `String(input)` 会被 `no-base-to-string` 拦（`Request` 走它就成了 `[object Object]`）。
@@ -36,9 +36,13 @@ function 假服务(routes: Record<string, unknown>) {
       url,
       method: init?.method ?? "GET",
       项目头: init?.headers ? new Headers(init.headers).get("x-openhive-project") : null,
+      体: init?.body,
     })
     for (const [前缀, 体] of Object.entries(routes)) {
       if (url.startsWith(前缀)) {
+        // 直接给一个 `Response` 时**原样回**——下载那条不是 JSON（它要带 `Content-Disposition`，
+        // 而且体得是字节），塞进 `JSON.stringify` 就把它掰成了另一件事。
+        if (体 instanceof Response) return 体.clone()
         return new Response(JSON.stringify(体), { headers: { "content-type": "application/json" } })
       }
     }
@@ -63,7 +67,7 @@ describe("PROJECT_DATA 生产绑定", () => {
     const 发出 = 假服务({ "/openhive/project": [一行] })
 
     expect(await PROJECT_DATA.list()).toEqual([一行])
-    expect(发出.map((r) => [r.method, r.url])).toEqual([["GET", "/openhive/project"]])
+    expect(发出.map((r) => [r.method, r.url, r.体])).toEqual([["GET", "/openhive/project", undefined]])
   })
 
   test("create 走的是同一条出口的 POST，体里带着名字与类型", async () => {
@@ -85,7 +89,7 @@ describe("PROJECT_DATA 生产绑定", () => {
     const 发出 = 假服务({ "/file": [{ path: "资料/话单.csv", type: "file", ignored: false }] })
 
     expect(await PROJECT_DATA.files("p1")).toEqual(["资料/话单.csv"])
-    expect(发出).toEqual([{ url: "/file?path=", method: "GET", 项目头: "p1" }])
+    expect(发出).toEqual([{ url: "/file?path=", method: "GET", 项目头: "p1", 体: undefined }])
   })
 
   /**
@@ -100,7 +104,7 @@ describe("PROJECT_DATA 生产绑定", () => {
     const 发出 = 假服务({ "/openhive/project/archive": { projectId: "p1", archived: true } })
 
     expect(await PROJECT_DATA.archive("p1")).toEqual({ kind: "done" })
-    expect(发出).toEqual([{ url: "/openhive/project/archive", method: "POST", 项目头: null }])
+    expect(发出).toEqual([{ url: "/openhive/project/archive", method: "POST", 项目头: null, 体: JSON.stringify({ projectId: "p1" }) }])
   })
 
   /**
@@ -112,6 +116,73 @@ describe("PROJECT_DATA 生产绑定", () => {
     const 发出 = 假服务({ "/openhive/project/restore": { projectId: "p1", archived: false } })
 
     expect(await PROJECT_DATA.restore("p1")).toEqual({ kind: "done" })
-    expect(发出).toEqual([{ url: "/openhive/project/restore", method: "POST", 项目头: null }])
+    expect(发出).toEqual([{ url: "/openhive/project/restore", method: "POST", 项目头: null, 体: JSON.stringify({ projectId: "p1" }) }])
+  })
+})
+
+/**
+ * T020 的四个文件动作（FR-005）。
+ *
+ * 与上面那几个**同一个理由**：这四个方法也都只是转手，唯一的失效方式是接错。而这里接错的
+ * 空间比上面更大——`copy` 与 `move` 的签名**一模一样**（`(projectId, path, dir)`）、
+ * `upload` 与它们只差第三参的类型，接反了类型检查完全合法，后果却是「点复制，原文件被搬走」。
+ *
+ * ⚠️ 四项都**必须带 `x-openhive-project`**：那个头是 T017 中间件定位沙箱目录的唯一依据，
+ * 缺了它服务端的「这次请求在不在项目里」当场判否（这条与上面 archive/restore **正相反**，
+ * 那两条刻意不带——带了会被归档那道门自己挡在门外，见那里的注释）。
+ */
+describe("PROJECT_DATA 的文件动作绑定（T020）", () => {
+  test("copy 走复制那条出口，体里带 path 与 dir", async () => {
+    const 发出 = 假服务({ "/openhive/file/copy": { path: "档案/话单.csv" } })
+
+    expect(await PROJECT_DATA.copy("p1", "资料/话单.csv", "档案")).toEqual({ kind: "done", path: "档案/话单.csv" })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/file/copy",
+        method: "POST",
+        // ⚠️ `p1` 是**项目 id**（它进了头），不是别的什么——与上面 `files` 那条同一条契约。
+        项目头: "p1",
+        体: JSON.stringify({ path: "资料/话单.csv", dir: "档案" }),
+      },
+    ])
+  })
+
+  test("move 走移动那条出口（不是复制）", async () => {
+    const 发出 = 假服务({ "/openhive/file/move": { path: "档案/话单.csv" } })
+
+    expect(await PROJECT_DATA.move("p1", "资料/话单.csv", "档案")).toEqual({ kind: "done", path: "档案/话单.csv" })
+    expect(发出.map((r) => [r.method, r.url])).toEqual([["POST", "/openhive/file/move"]])
+  })
+
+  test("upload 走上传那条出口：dir 在查询串上，体是 FormData，带项目头", async () => {
+    const 发出 = 假服务({ "/openhive/file/upload": { path: "资料/话单.csv" } })
+
+    expect(await PROJECT_DATA.upload("p1", "资料", new File(["甲"], "话单.csv"))).toEqual({
+      kind: "done",
+      path: "资料/话单.csv",
+    })
+    const [第一条] = 发出
+    expect([第一条.method, 第一条.url, 第一条.项目头]).toEqual([
+      "POST",
+      "/openhive/file/upload?dir=%E8%B5%84%E6%96%99",
+      "p1",
+    ])
+    expect(第一条.体).toBeInstanceOf(FormData)
+  })
+
+  /** 下载回的是**字节**，不是 JSON——这条出口是唯一一个「体是文件内容」的。 */
+  test("download 走下载那条出口，把字节交回来", async () => {
+    const 发出 = 假服务({
+      "/openhive/file/download": new Response("甲", {
+        headers: { "content-disposition": `attachment; filename="话单.csv"` },
+      }),
+    })
+
+    const blob = await PROJECT_DATA.download("p1", "话单.csv")
+
+    expect(await blob?.text()).toBe("甲")
+    expect(发出.map((r) => [r.method, r.url, r.项目头])).toEqual([
+      ["GET", "/openhive/file/download?path=%E8%AF%9D%E5%8D%95.csv", "p1"],
+    ])
   })
 })

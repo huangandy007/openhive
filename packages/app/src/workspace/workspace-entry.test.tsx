@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
@@ -27,6 +27,20 @@ function titlebarSlot() {
   document.body.appendChild(slot)
   return slot
 }
+
+/**
+ * 每条用例前把 `document.body` 清空。
+ *
+ * ⚠️ 这不是洁癖：**Kobalte 的右键菜单传送到 `document.body`，关掉之后也不卸载**（退场动画在
+ * happy-dom 里永远不结束），于是下一条用例的 `document.querySelector` 会先命中**上一条**那个菜单
+ * ——而它的菜单项处理函数绑在**上一条用例的组件实例**上。实测（2026-10-07）：T020 接线那一组里，
+ * 点着「复制」的那个请求打到了上一棵树身上，`假.复制的` 恒为空；只有**第一条**用菜单的用例
+ * 和**不用菜单**的那条（拖入）是绿的，其余 7 条齐刷刷红。
+ * `file-tree.test.tsx` 里有一条同因的 `afterEach`（那边的注释写得更细）。
+ */
+afterEach(() => {
+  document.body.innerHTML = ""
+})
 
 const entries = (host: HTMLElement) => [
   ...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']"),
@@ -510,7 +524,7 @@ describe("项目面板接进左栏（FR-002 出参）", () => {
 const 树 = (host: HTMLElement) => host.querySelector("[data-component='file-tree']")
 /** 左栏里有文件树吗？——返回**布尔**（`#005-01`）。 */
 const 有树 = (host: HTMLElement) => 树(host) !== null
-const 树行 = (host: HTMLElement) => [...host.querySelectorAll("[data-slot='file-tree-row']")]
+const 树行 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>("[data-slot='file-tree-row']")]
 
 /**
  * 文件树接进左栏（FR-005 出参）。
@@ -886,13 +900,21 @@ const 封存 = (e: ProjectEntry): ProjectEntry => ({ ...e, archived: true })
  * ⚠️ 替的是**数据源**这一个 prop（界面与外面世界之间那道缝），不是被测对象——被测的是
  * 「叫没叫、叫了几次、给的结果怎么落到界面上」，而组件、缝、渲染全是真的。
  */
-function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "archive" | "restore" | "files">> = {}) {
+function 假数据源(
+  剧本: Partial<
+    Pick<ProjectData, "list" | "create" | "archive" | "restore" | "files" | "copy" | "move" | "upload" | "download">
+  > = {},
+) {
   const 记 = {
     list: 0,
     files: [] as string[],
     建的: [] as Array<NewProjectInput>,
     归档的: [] as string[],
     找回的: [] as string[],
+    复制的: [] as Array<[string, string, string]>,
+    移动的: [] as Array<[string, string, string]>,
+    传的: [] as Array<[string, string, string]>,
+    下的: [] as Array<[string, string]>,
   }
   const data: ProjectData = {
     list: async () => {
@@ -917,6 +939,26 @@ function 假数据源(剧本: Partial<Pick<ProjectData, "list" | "create" | "arc
     files: async (projectId) => {
       记.files.push(projectId)
       return 剧本.files ? await 剧本.files(projectId) : []
+    },
+    // T020 的四个文件动作。同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
+    // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
+    copy: async (projectId, path, dir) => {
+      记.复制的.push([projectId, path, dir])
+      return 剧本.copy ? await 剧本.copy(projectId, path, dir) : { kind: "failed", message: "没有剧本" }
+    },
+    move: async (projectId, path, dir) => {
+      记.移动的.push([projectId, path, dir])
+      return 剧本.move ? await 剧本.move(projectId, path, dir) : { kind: "failed", message: "没有剧本" }
+    },
+    // 记的是**文件名**不是 `File` 对象本身：断言里要比的是名字，换成对象会让 `toEqual` 在两个
+    // 内容相同的 `File` 上判假。
+    upload: async (projectId, dir, file) => {
+      记.传的.push([projectId, dir, file.name])
+      return 剧本.upload ? await 剧本.upload(projectId, dir, file) : { kind: "failed", message: "没有剧本" }
+    },
+    download: async (projectId, path) => {
+      记.下的.push([projectId, path])
+      return 剧本.download ? await 剧本.download(projectId, path) : undefined
     },
   }
   return { data, 记 }
@@ -1422,5 +1464,266 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     await 冲一遍()
 
     expect(text(host, "project-anchor-name")).toBe("9·03专案")
+  })
+})
+
+/**
+ * 右键菜单在**传送门**里（Kobalte 的 `ContextMenu.Portal` 把内容挂到 `document.body`），
+ * 所以这一节的菜单探针一律查 `document`，不是 `host`——同 `file-tree.test.tsx` 那几条。
+ */
+const 菜单项 = (action: string) =>
+  document.querySelector<HTMLElement>(`[data-component='context-menu-content'] [data-action='${action}']`)
+
+/** 右键树里某一行（按名字找：同层顺序随 locale 变，见 `file-tree-v2-model` 那条注释）。 */
+function 右键行(host: HTMLElement, name: string) {
+  const 行 = 树行(host).find((el) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim() === name)
+  if (!行) throw new Error(`树里没有「${name}」这一行——这条用例的前提不成立（#004-14）`)
+  行.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+}
+
+/** 点一个菜单项：Kobalte 在 `pointerup` 上选中，单发 `.click()` **不够**（`file-tree.test.tsx` 实测）。 */
+function 点菜单项(action: string) {
+  const el = 菜单项(action)
+  if (!el) throw new Error(`菜单里没有「${action}」`)
+  for (const 类型 of ["pointerdown", "pointerup"])
+    el.dispatchEvent(
+      new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+    )
+}
+
+/** 目标选择器上某一个目标按钮（`data-dir` 是**契约本身那个值**——`""` ＝ 项目根）。 */
+const 目标按钮 = (host: HTMLElement, dir: string) =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='target-picker-target'][data-dir='${dir}']`)
+
+/** 那台隐藏的文件选择器。 */
+const 文件选择器 = (host: HTMLElement) => host.querySelector<HTMLInputElement>("input[type='file']")
+
+/**
+ * 从桌面拖一批文件到某个元素上。
+ *
+ * ⚠️ happy-dom **没有 `DragEvent`**，而这一路**非得**有个交得出 `File` 的 `dataTransfer` 不可
+ * （判据要从 `dataTransfer.files` 里读文件）⇒ 拿裸 `Event` 顶着再挂一个替身。
+ * `file-tree.test.tsx` 里有一份同形的（那边验的是树自己的落点规则，这边验的是**线接上了**）——
+ * 不合并的原因见 `LEARNINGS #004-11`：每个测试文件有自己的全局域，夹具一律各写各的。
+ */
+function 拖入(el: HTMLElement | null, files: readonly File[]) {
+  if (!el) throw new Error("拖拽落点不在——这条用例的前提不成立")
+  const event = new Event("drop", { bubbles: true, cancelable: true })
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files } })
+  el.dispatchEvent(event)
+}
+
+/**
+ * 文件动作接进工作台（T020 出参）。
+ *
+ * 上一节（T018）验的是「数据源的三个方法接对了」；这一节验**另外四件事**：
+ * ① 右键菜单那四项**真的**能走到 `projectData` 那四个方法上（不是只画了个菜单项）；
+ * ② 复制 / 移动是**先选目标、后发请求**（用户 2026-10-06 裁定①）——点菜单那一刻一个请求都不发；
+ * ③ 办成之后**清单重取**（树的位置换了，真相是重取那一份，不是本地拼的）；
+ * ④ 上传的两条入口（右键菜单的文件选择器 ＋ 从桌面拖进来）都能把**文件**交出去。
+ *
+ * ⚠️ 四项都**必须带当前项目的 id**：服务端拿它定位沙箱目录（T017 的中间件），
+ * 所以每一条都先 `setCurrentProject`。
+ */
+describe("文件动作接进工作台（T020 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+  })
+
+  /** 挂一个已经选定项目的左栏：树里两个目录各一个文件（目标选择器因此有三个可选项）。 */
+  async function 开(剧本: Parameters<typeof 假数据源>[0] = {}) {
+    const { data, 记 } = 假数据源({
+      files: async () => ["资料/话单.csv", "档案/旧件.csv"],
+      ...剧本,
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+    return { host, 假: 记 }
+  }
+
+  /**
+   * 「先选目标、后发请求」——**这条用例的被测属性是「一个请求都没发」**，不是「面板出现了」。
+   *
+   * 为什么把「没发请求」排在前面（`#004-14`）：一个「点复制就直接复制到根」的实现照样会弹面板，
+   * 只有先钉「此刻 `复制的` 是空的」，红的时候读到的才是「它已经动手了」这条证据本身。
+   */
+  test("右键点「复制」⇒ 先出目标选择器，此刻**一个请求都不发**", async () => {
+    const { host, 假 } = await 开()
+
+    右键行(host, "话单.csv")
+    点菜单项("copy")
+
+    expect(假.复制的).toEqual([])
+    expect(text(host, "target-picker-title")).toContain("话单.csv")
+    // 目标清单来自树里现有的目录（＋ 项目根），不是空的
+    const 目标们 = [...host.querySelectorAll("[data-slot='target-picker-target']")].map((el) =>
+      el.getAttribute("data-dir"),
+    )
+    expect(目标们).toEqual(["", "档案", "资料"])
+  })
+
+  test("选一个目标目录 ⇒ 走 copy 那条出口，带上项目 id、被搬的文件与那个目录", async () => {
+    const { host, 假 } = await 开({ copy: async () => ({ kind: "done", path: "档案/话单.csv" }) })
+
+    右键行(host, "话单.csv")
+    点菜单项("copy")
+    目标按钮(host, "档案")?.click()
+    await 冲一遍()
+
+    expect(假.复制的).toEqual([["p1", "资料/话单.csv", "档案"]])
+    // 选完就收起来——留着它挡在树前面，正是「直达」的反面
+    expect(不存在(host, "[data-slot='target-picker-target']")).toBe(true)
+  })
+
+  /**
+   * 复制与移动的**签名一模一样**，接反了不报错、不变红，后果是**原文件被搬走**。
+   * 所以这一条不验「移动也能用」，而是验**它走的是哪条出口**。
+   */
+  test("「移动」走的是 move，不是 copy", async () => {
+    const { host, 假 } = await 开({ move: async () => ({ kind: "done", path: "档案/话单.csv" }) })
+
+    右键行(host, "话单.csv")
+    点菜单项("move")
+    目标按钮(host, "档案")?.click()
+    await 冲一遍()
+
+    expect(假.移动的).toEqual([["p1", "资料/话单.csv", "档案"]])
+    expect(假.复制的).toEqual([])
+  })
+
+  /**
+   * 办成之后**重取清单**：界面上的真相是服务端给的那一份，不是本地拼的
+   * （服务端回的新路径只用来报一句话，不用来改树——同 T018 的「清单重拉，不把新行拼进旧清单」）。
+   */
+  test("搬完之后清单重取一次 —— 树上的位置换了，靠的是重取", async () => {
+    const { host, 假 } = await 开({ copy: async () => ({ kind: "done", path: "档案/话单.csv" }) })
+    const 搬前 = 假.files.length
+
+    // 前置：树上是「旧的」那份，搬过之后的位置还不在（`#002-02`：先证明机制是活的）
+    expect(路径们(host)).toContain("资料/话单.csv")
+
+    右键行(host, "话单.csv")
+    点菜单项("copy")
+    目标按钮(host, "档案")?.click()
+    await 冲一遍()
+
+    expect(假.files.length).toBe(搬前 + 1)
+  })
+
+  /** 被拒（目标已存在之类）⇒ 把服务端那句话留在界面上，**且不重取**——什么都没变，重取是空跑。 */
+  test("被拒 ⇒ 留下服务端那句话，且不重取清单", async () => {
+    const { host, 假 } = await 开({ copy: async () => ({ kind: "rejected", message: "目标已存在同名文件" }) })
+    const 搬前 = 假.files.length
+
+    右键行(host, "话单.csv")
+    点菜单项("copy")
+    目标按钮(host, "档案")?.click()
+     await 冲一遍()
+
+    expect(text(host, "file-op-message")).toBe("目标已存在同名文件")
+    expect(假.files.length).toBe(搬前)
+  })
+
+  /**
+   * 上传第一条入口：右键菜单 → 文件选择器。
+   *
+   * ⚠️ 两条断言缺一不可——「选择器被打开了」与「选中的文件去了正确的落点」。
+   * 只验后者的话，一个**根本不打开选择器**的实现照样绿。
+   */
+  test("点「上传」⇒ 打开文件选择器；选中的文件传到被右键那一项的**落点目录**", async () => {
+    const { host, 假 } = await 开({ upload: async () => ({ kind: "done", path: "资料/话单.csv" }) })
+    const 器 = 文件选择器(host)
+    if (!器) throw new Error("文件选择器不在——这条用例的前提不成立")
+    let 打开了 = 0
+    器.addEventListener("click", () => (打开了 += 1))
+
+    右键行(host, "资料") // 右键一个**目录** ⇒ 传到它自己
+    点菜单项("upload")
+
+    expect(打开了).toBe(1)
+
+    // happy-dom 里 `input.files` 是只读的 ⇒ 挂一个替身再派发 `change`
+    Object.defineProperty(器, "files", { value: [new File(["甲"], "话单.csv")] })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 冲一遍()
+
+    expect(假.传的).toEqual([["p1", "资料", "话单.csv"]])
+  })
+
+  /**
+   * 上传第二条入口：从桌面拖进树里。
+   *
+   * 这一条同时钉住**接线**——`workspace-entry` → `DualFileTree` → `FileTree` 三跳的 prop 透传
+   * （`DualFileTree` 靠 `rest` 整份 spread，一个 prop 都不必新增，而「不必新增」正是最容易在
+   * 下次改动里被破坏的那种约定）。一次拖一批 ⇒ **逐个**发请求（服务端一次只收一个）。
+   */
+  test("从桌面拖一批文件进树里 ⇒ 逐个上传到落点目录", async () => {
+    const { host, 假 } = await 开({ upload: async (_id, _dir, file) => ({ kind: "done", path: file.name }) })
+    const 落点 = 树行(host).find((el) => el.getAttribute("data-path") === "资料") ?? null
+
+    拖入(落点, [new File(["甲"], "甲.csv"), new File(["乙"], "乙.csv")])
+    await 冲一遍()
+
+    expect(假.传的).toEqual([
+      ["p1", "资料", "甲.csv"],
+      ["p1", "资料", "乙.csv"],
+    ])
+  })
+
+  /**
+   * 下载：取字节 → 存到本地。
+   *
+   * 存盘是 DOM 的事（`<a download>` 那条链），本层只到字节为止（`project-data.ts` 的 `download`
+   * 注释）。所以判据分两截：**取**（数据源被叫对）与**存**（那个 `<a>` 带着原名被点了一下）
+   * ——只验前者的话，一个「取回来就扔掉」的实现照样绿。
+   */
+  test("点「下载」⇒ 取字节，并以原文件名存到本地", async () => {
+    const { host, 假 } = await 开({ download: async () => new Blob(["甲"], { type: "text/csv" }) })
+    const 存下来的: Array<{ href: string; download: string }> = []
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 存回去的就是同一个函数，这里只做替换与还原、不调用它。
+    const 原create = URL.createObjectURL
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同上；`click` 靠 `this`，而这里只是把它换掉再换回来。
+    const 原click = HTMLAnchorElement.prototype.click
+    URL.createObjectURL = () => "blob:openhive-test"
+    HTMLAnchorElement.prototype.click = function () {
+      存下来的.push({ href: this.href, download: this.download })
+    }
+    try {
+      右键行(host, "话单.csv")
+      点菜单项("download")
+      await 冲一遍()
+    } finally {
+      URL.createObjectURL = 原create
+      HTMLAnchorElement.prototype.click = 原click
+    }
+
+    expect(假.下的).toEqual([["p1", "资料/话单.csv"]])
+    expect(存下来的).toEqual([{ href: "blob:openhive-test", download: "话单.csv" }])
+  })
+
+  /** 取不到（没挂上 / 被拒 / 网络错）⇒ 留一句话，且**一个文件都不落盘**。 */
+  test("取不到字节 ⇒ 留一句话，不存盘", async () => {
+    const { host } = await 开({ download: async () => undefined })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前一条用例。
+    const 原create = URL.createObjectURL
+    let 存了 = 0
+    URL.createObjectURL = () => {
+      存了 += 1
+      return "blob:openhive-test"
+    }
+    try {
+      右键行(host, "话单.csv")
+      点菜单项("download")
+      await 冲一遍()
+    } finally {
+      URL.createObjectURL = 原create
+    }
+
+    expect(text(host, "file-op-message")).toContain("话单.csv")
+    expect(存了).toBe(0)
   })
 })
