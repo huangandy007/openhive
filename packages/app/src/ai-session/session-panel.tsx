@@ -6,6 +6,7 @@ import {
   type PromptInputV2Suggestion,
 } from "@opencode-ai/session-ui/v2/prompt-input"
 import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
+import { createPromptInputV2Store } from "@opencode-ai/session-ui/v2/prompt-input/store"
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { skillCommands } from "./command-palette"
@@ -45,8 +46,15 @@ export interface SessionPanelProps {
    * `input.changed`）——本组件把 `PromptInputV2` 原样挂上，这条约束由原生件承担，不在这里重写。
    */
   projection: ReturnType<typeof projectCapabilities>
-  /** 提交一句话。**真正发出去的是调用方**（T010 接 SDK `session.prompt`）；本轮右栏只负责把它交出去。 */
-  onSubmitPrompt?: (text: string) => void
+  /**
+   * 提交一句话。**真正发出去的是调用方**（T010 的 `submit-prompt.ts` 交给会话执行链）；
+   * 本组件只负责交出去、并按回话决定**要不要清空输入框**。
+   *
+   * ⚠️ 回话（`Promise<boolean>`）不是装饰：`false` ＝「没发出去」⇒ 正文**留**在输入框里。
+   * 不接（`undefined`）＝ 一个字都不动——**清空的含义是「已经交出去了」**，没交出去就不能清
+   * （见 `onSubmit` 里那三条用例钉的三个分支）。
+   */
+  onSubmitPrompt?: (text: string) => Promise<boolean> | void
   /**
    * 切到另一场会话。**本组件不自己改 `sessionID`**——它是受控的，生产里由
    * `workspace-entry.tsx` 改（同 `skill-drawer.tsx` 的 `open` / `onClose` 那对受控接缝）。
@@ -104,6 +112,23 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   })
 
   /**
+   * 草稿的门面（`store.ts` 的 `createPromptInputV2Store`），本组件只用它的 `reset()` 与
+   * `setText()` —— 提交的**收官动作**（见下面 `onSubmit`）。
+   *
+   * 不手写 `草稿[1]("prompt", …)`：清空这一步上游已经有一份实现，手写第二份就是同一件事的
+   * 两处写法（`LEARNINGS #002-06`）。
+   *
+   * ⚠️ **别把 `reset()` 说成「顺手归零 cursor，所以更好」**：那是**推断**，且**已实测证伪到
+   * 「无断言守着」**——把上游 `store.ts` 的 `reset()` 里那行 `setStore()("cursor", 0)` 拆掉，
+   * 本组 **27 条全绿、一条都不红**（2026-10-07 变异 M8）。原先那句「漏了它，下次打字的光标
+   * 位置会落在旧位置」已删（`LEARNINGS #005-15`：别让注释比断言强）。真正成立的事实只有两条：
+   * ① 用 `reset()` 省得写第二份清空逻辑；② `reset()` 的实现里确实带 `cursor: 0`。
+   * 「不归零会怎样」**没有断言守着 ⇒ 已挂账**（缺口表），别读成已验证的收益。
+   * ⚠️ 传**整个 tuple**，别解构（同下面 `controller` 那条注释）。
+   */
+  const 草稿操作 = createPromptInputV2Store(草稿)
+
+  /**
    * `/` 面板的数据源（T007 📤 的那一根线）：**投影的 `all` 那一支**再经 `skillCommands` 适配。
    *
    * 用 `createMemo` 而不是裸箭头：适配每次会**新造一个数组**，而 controller 底下是
@@ -122,7 +147,29 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         // `view.submit.onSubmit` 的签名是 `() => void`（**不收正文**）⇒ 正文得自己取。
         // 取法只有一种是对的：`controller.value()`——别在这里重写一遍「哪些 part 算正文」
         // （那就是同一件事的第二处写法，`LEARNINGS #002-06`）。
-        onSubmit: () => props.onSubmitPrompt?.(取正文()),
+        //
+        // ⚠️ **清空是收尾、不是开场**（原生件自己不清草稿：`interaction.ts` 的 `submit()` 只调
+        // `onSubmit`，**外加关一下弹层**，草稿一个字都不动——清空是调用方的责任；上游
+        // `prompt-input.stories.tsx` 正是在 `onSubmit` 里调 `store.reset()`）。三个分支各有一条
+        // 用例钉着（`session-panel.test.tsx`）：
+        // 没接回调 ⇒ 一个字都不动；回话 `false` ⇒ 正文留着；回话 `true` ⇒ 清空。
+        onSubmit: () => {
+          const 正文 = 取正文()
+          const 回话 = props.onSubmitPrompt?.(正文)
+          // 没接回调（`undefined`）就到此为止：**清空的含义是「已经交出去了」**，
+          // 没有接收方就不存在「交出去」。（`Promise<boolean> | void` 里非 `void` 的那一支
+          // 恒是真值，所以这个判据实际只筛掉「回调没回话」。）
+          if (!回话) return
+          草稿操作.reset()
+          void 回话.then((发了) => {
+            if (发了) return
+            // 没发出去 ⇒ 把正文还回输入框。⚠️ 只在**用户还没打新字**时还：否则一次网络抖动
+            // 会连带吃掉用户刚敲的半句（上游 `submit.ts` 的 `restoreInput` 是同一条判据——
+            // 回填前先比一次当前正文）。
+            if (草稿操作.state.prompt.some((part) => part.type === "text" && part.content !== "")) return
+            草稿操作.setText(正文)
+          })
+        },
         onStop: () => {},
       },
     },

@@ -1059,6 +1059,145 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 
 ---
 
+## T010 出参 · AI 执行并展示过程（FR-007 / US4 场景 1 · 2026-10-07）
+
+这条出参是**两个半边**：「**AI 真的跑起来**」＋「**交出去的那句话在右栏看得见**」。
+2026-10-07 裁定**两侧拆开测**——app 侧证「右栏把那句话按正确的形状**交出去了**」（止步于
+`api.session.prompt` 那一下），`packages/opencode` 侧证「交出去之后**真的跑起来了**」。
+⚠️ 理由在 `openhive-prompt-minimal.test.ts` 文件头：`bun test` 里起不了服务器 ⇒ app 侧**测不到执行**，
+按 `LEARNINGS #002-02` 那一半只能写成**另一侧的判据**，不能拿 app 侧的绿去顶。
+
+### 产物（3 处产品码 ＋ 3 处测试；其中 3 个是新文件）
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `packages/app/src/ai-session/submit-prompt.ts` | **新** | `submitRightPanePrompt(input)`：正文 → 既有执行链。**依赖全由参数注入、本模块不碰 context**（这是它能被 `bun test` 测到的全部原因） |
+| `packages/app/src/ai-session/session-panel.tsx` | 改 | ① `onSubmitPrompt` 的签名多了**回话**（`Promise<boolean> \| void`）；② `onSubmit` 的**三分支**（没接回调 / 回话 true / 回话 false）；③ `createPromptInputV2Store` 门面（清空走上游的 `reset()`） |
+| `packages/app/src/ai-session/ai-session-slot.tsx` | 改 | 把生产的两样接上：`ensureDirSdkContext(目录).api.session`（⚠️ 必须在 `提交态` 那个 **memo** 里取——`ensureDir*Context` 是 `createRefCountMap`，释放走 `onCleanup`，在事件处理器里现取就是每次提交涨一份永不释放的上下文）＋ 失败时 `showToast` 并把 `catch` 翻成 `false`（正文留在框里，可重试） |
+| `packages/app/src/ai-session/submit-prompt.test.ts` | **新** | 12 条 / **31 expects** |
+| `packages/app/src/ai-session/session-panel.test.tsx` | 改 | ＋**4 条**（该文件 **27 条**）——本栏「提交」出口的三个分支各一条 ＋ 一条竞态 |
+| `packages/opencode/test/server/openhive-prompt-minimal.test.ts` | **新** | 1 条 / **5 expects**（真 HTTP ＋ 真库 ＋ 假模型，22 秒） |
+
+### 裁定
+
+- **U5（2026-10-07）**：**复用既有会话执行链**（`components/prompt-input/submit.ts` 的
+  `sendFollowupDraft`），不自己写第二份。理由：那条链里有 `Identifier.ascending("message")` 的消息号、
+  `buildRequestParts`（正文 / 文件 / agent 提及 → part）、**v1-v2 双协议分流**、乐观插入与它的失败回滚、
+  `/` 命令分支——重写＝同一件事的第二处写法（`LEARNINGS #002-06`）。
+  **代价只有一处**：`FollowupDraft` 把 `agent` / `model` 声明成**必填**（右栏没有选择器 ⇒ 见下面那段让步）。
+- **出参测试两侧拆开**（同日裁定）：app 组件 ＋ opencode 真链（理由见上）。
+
+### U6 的裁定前提被实测推翻（本次最重的一次修正）
+
+**原裁定**写着「`/skill-name` **不**命中 `sync.data.command` ⇒ 原样当正文发出去」。
+**三环实测反证**：
+
+1. `packages/opencode/src/command/index.ts` 把 `skill.all()` 的每一项都注册成一条命令
+   （`source: "skill"`）—— **skill 在服务端就是命令**；
+2. `packages/app/src/context/global-sync/bootstrap.ts` 的 `loadCommands` 把 `GET /command` 的返回
+   **全量**装进 `sync.data.command`（不过滤 `source`；且是 `void loadCommands(…).then(setStore(…))`，
+   **不 await**）；
+3. `ai-session/command-palette.ts` 插进正文的 token 是 `/${条.skill}` —— 与上面那条命令名**同值**。
+
+⇒ **「从 `/` 面板选一个 skill → 回车」这条主路径今天真的在执行那个 skill**，不是「当正文发」。
+
+**停下来问了用户**，裁定＝**保持既有链行为**（不为它改产品码）。于是测试改成**如实钉住现实**：
+两条各钉一半（命中 ⇒ 走命令分支；没命中 ⇒ 回退支）＋ 一条**哨兵**（F3，见缺口表）。
+⚠️ 两个后果一并挂账：**命令分支解引用 `model`（F3）**、**命令分支无乐观插入 / 无 busy（回车后界面零反馈）**。
+
+### 两个决定性的实测发现（下一个 task 会用上）
+
+**① `it.live` 丢弃返回值 ⇒ 「return 一个待比对的对象」等于零断言。**
+`packages/opencode/test/lib/effect.ts` 的 `make` 把 `it.live(name, effect)` 实现成
+`test(name, () => run(value, liveLayer))` —— **effect 的返回值被丢掉**。所以断言**必须写在 effect 内部**
+（`effect` / `live` 里直接 `expect(...)`）。
+⚠️ 蓝本 `test/server/httpapi-sdk.test.ts` 里 `serverPathParity` 那几支正是 `return {…}` 形状
+（`:411` / `:426` / `:434` 等）⇒ 那几条**一条断言都没有**，却一直是绿的。
+（不写总数：`#002-06` 「会随编辑变的值别写死」，要数就现场 `grep`。）
+
+**② `sync.data.command` 是异步填的 ⇒ 同一操作两种结果。**
+`server-sync.tsx` 的 `void loadCommands(…).then(setStore("command", …))` 不 await
+⇒ 命令表就绪前后，同一句 `/effect …` 会走**两条不同分支**（执行 skill / 当正文发）。
+已挂账（缺口表）。
+
+### 变异账（本轮 8 批；每批都是「注入 → 跑单测 → 还原」，上游文件逐字节还原并核 `--numstat`）
+
+| 变异 | 落点 | 结果 |
+|---|---|---|
+| **M1** `find` 恒假 | 上游 `submit.ts` 的命令判定 | **恰红 2**（命令分支那两条） |
+| **M2** `find` 恒真 | 同上 | **恰红 1**（回退支那条） |
+| **M3** 删 `if (!回话) return` | `session-panel.tsx` 的 `onSubmit` | **恰红 1**（对照那条） |
+| **M4** 回填永不发生 | 同上（`.then` 体清空） | **恰红 1**（回话 `false` 那条） |
+| **M5** 删「用户还没打新字」判据 | 同上 | **恰红 1**（竞态那条） |
+| **M6** 回话恒 `false` | `submit-prompt.ts` 的 `return sendFollowupDraft(…)` | **恰红 2**（normal ＋ 命令分支各一条）——**第二轮审查 F-2 补的**：这条缝原先**两端都没人看着** |
+| **M7** 乐观那份 id 自己造 | 上游 `build-request-parts.ts` 的 `toOptimisticPart` | **恰红 1**（「两边同源」那条相等断言）——**第二轮审查 F-3 补的** |
+| **M8** `reset()` 不归零 `cursor` | 上游 `session-ui` 的 `store.ts` | **无用例红（27 全绿）** —— 这不是「修好了」，是**如实记一条无牙的轴**（第二轮审查 F-1）：原先那句「漏了它下次打字光标会落旧位置」是**推断**，已从注释里删掉（`LEARNINGS #005-15`） |
+
+⚠️ M8 是**反向用途**：变异跑出「全绿」不等于失败——它证明的是「这条轴今天没有断言守着」，
+所以结论是**改注释、挂账**，不是补测试（补了也是补一条**测不出东西**的测试）。
+
+### 审查（两轮；`#003-02` / `#005-04`：第一轮修完之后，**把「修复本身」再当靶子打一轮**）
+
+**第一轮**挖出 **F1–F4 ＋ R2-1**，全部修掉：
+
+- **F1 / F2（P1）**：第 10 条用例建在**空夹具**上（`造sync([])`）⇒ 它**只测到 normal 分支**，与真实部署**相反**；
+  且那条注释里三处「形状事实」写反了。⇒ 拆成「命中命令分支」＋「回退支」两条 ＋ 一条哨兵，
+  并用 **M1 / M2** 分别证明两条各有牙。
+- **F3（P2）**：`/` 分支解引用 `model`（会话没记过 model 时当场抛）——**用户裁定「保持既有链行为」**
+  ⇒ 只钉**哨兵**、挂账（缺口表 F3）。
+- **F4（Minor）**：`submit.ts` 的 `{...undefined, variant}` 是**类型谎言** ⇒ 同根因的第二落点，
+  一并挂账（缺口表 F4），不修补（同一裁定）。
+- **R2-1（P2）**：**右栏提交后不清空输入框**（RED 实测：`Expected: ""` / `Received: "查一下…"`，
+  且前一条断言绿 ⇒ 回车链本身是通的）⇒ 补三分支 ＋ 一条竞态，共 **4 条用例**（M3 / M4 / M5 证明四个落点各有牙）。
+- **我自己漏掉的一个落点**：`onSubmit` 里「用户还没打新字才回填」**零断言**（`#005-04` 的现场：
+  我是按「记忆里改了几处」打勾的）⇒ 补第 4 条用例 ＋ **M5**。
+
+**第二轮（两席并行，靶子＝第一轮的修复本身）**：
+
+**席①「修复的断言有没有牙」**：独立走码复核了我自报的三个变异（结论一致），**另外找到两条我没提的牙**
+（`if (发了) return`、以及「清空是同步的、不等回话」），并报 **7 条缺口**（P1×1 / P2×1 / Minor×3 / info×2）：
+
+| 编号 | 内容 | 处理 |
+|---|---|---|
+| **F-2（P1）** | 「**成功 ⇒ 回话 `true`**」这个契约**两端都没人看着**（本文件成功用例只 `await 提交(...)` 不看返回值，面板那侧喂的是手搓 `return true`）⇒ 坏法：每次**成功**提交后正文被回填进输入框 | 补 **2 条断言**（normal ＋ 命令分支各一）⇒ **M6 恰红 2** |
+| F-1（P2） | `reset()` 的 `cursor` 归零**零断言**，且注释里那句后果是**推断** | **M8 实测**（拆掉上游那行 ⇒ **27 条全绿**）⇒ 按 `#005-15` **改写注释** ＋ 挂账 |
+| F-3（Minor） | 注释声称「两边 id **同源**」，而断言只钉了「发出去那件带 id」 | 补那条**相等断言**（`#004-02`）⇒ **M7 恰红 1** |
+| F-4（Minor） | 真链里那个 `id` 只复现「**字段在**」、不复现**取值形状** | 改注释（把这条限度写明） |
+| F-5（Minor） | **空框回车照样调 `onSubmitPrompt("")`**（调用点 1、守卫点 0） | 挂账，**不补**（`#002-06`；详见缺口表） |
+| F-6 / F-7（info） | `Promise \| void` 的恒真支没有会红的对照；本栏两条提交出口只钉了一条 | 保留自陈 / 如实挂账 |
+
+**席②「注释里每个事实性说法是否属实」**：逐条给命令与输出，报 **3 条不实 ＋ 4 条部分属实**；
+⚠️ 我**全部复跑复现之后**才改（`#004-04`：别人的结论也是待证断言）：
+
+| 编号 | 我原先写下的说法 | 复跑取到的实况 |
+|---|---|---|
+| **不实-1** | 真链文件头：「本仓 server **只注册了** `/global/health`（`groups/global.ts`），**`/api/health` 零命中**」 | **假**：`/api/health` 由 `packages/protocol/src/groups/health.ts` 定义、经 `api.ts` 的 `.add(HealthGroup)` 进 `Api`、`httpapi/server.ts` 的 `serverRoutes` 真的 materialize。⇒ 那句删掉，理由改成「**第一档** `/global/health` 先命中」。⚠️ **它支撑的结论（本部署是 v1）不变**——退到第二档，`/api/health` 返回 `{healthy:true}`（无 `pid`）**仍然判 v1** |
+| **不实-2** | `submit-prompt.ts`：「`createUserMessage`：`input.agent ?? agents.defaultInfo()`」 | **假**：`prompt.ts` 里**没有**那个表达式；真身是 `agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()`。⇒ 照抄真身（同一括号里的模型那一句 `input.model ?? ag.model ?? currentModel(...)` 原本就逐字**对**） |
+| **不实-3** | `ai-session-slot.tsx`：「`态()` 是 `createMemo`」 | **假**：`态` 是 `<Show>` 的子访问器**参数**，memo 是 `提交态`。⇒ 名字改正 |
+| 部分-1…4 | 「被 stub 的只有**三**处」「`submit()` **只**调 `onSubmit` 就完事」「`Show` 非 keyed ⇒ **消息增长不重挂**」「真链用例标题写『**会话**被写上…』」 | 漏了 `serverSync`（第四处替身，且它是**碰就抛的哨兵**）；`submit()` 还 `dispatch(popover.close)`；非 keyed 真正防的是「条件**仍是真值**但**引用变了**」（消息增长压根不让 `提交态` 重算）；标题按体内断言改「**用户那条消息**」 |
+
+⚠️ **这三条不实里，不实-1 与不实-2 是同一形状**：**照着自己以为的形状写下来、没 grep 过**正要引用的那一行。
+`#004-03`（「有 X 钉住」要去核）／`#004-04`（写下的结论本身也是靶子）讲的正是这一类。
+⚠️ 不实-1 尤其值得记一笔：**结论对、理由错**——下一个人若按那句错理由去动 `detectServerProtocol`，
+会以为「补上 `/api/health` 就能切 v2」。
+
+### 门禁（2026-10-07，**串行**复跑；`#003-01`）
+
+| 门 | 读数 |
+|---|---|
+| `lint:openhive` | **23 warnings / 0 errors**（131 files / 161 rules）—— 与基线一致；本次改动文件 **0 命中** |
+| `bunx oxlint packages/opencode/test/server/openhive-prompt-minimal.test.ts` | **0 warnings / 0 errors**（130 rules）。⚠️ **这个文件不归 `lint:openhive` 管**（它的路径里没有 `packages/opencode`）⇒ 是我**单独**跑的。第一次跑报过 `no-unnecessary-type-conversion` 1 条（`String(...)` 包了个已经是 string 的值）⇒ 已去壳 |
+| `typecheck`（turbo） | **31 successful / 31 total**（`@opencode-ai/app` 与 `opencode` 实跑未缓存） |
+| `packages/app` `test:unit` | **977 pass / 0 fail / 3377 expects / 126 files** |
+| `packages/app` `test:components` | **578 pass / 0 fail / 1240 expects / 34 files** |
+| 真链用例（`openhive-prompt-minimal.test.ts`） | **1 pass / 5 expects**（22.55s） |
+
+⚠️ 如实记一条**噪音**：`test:components` 的输出里有 `NetworkError: Failed to execute "fetch()" …
+"http://xn--nqqs3etzam25g/": ECONNREFUSED`（happy-dom 自己的 `Fetch.js`）。**非本次引入**——实测
+`session-panel.test.tsx` 单跑 **0 个**、全量跑才出现，且 **0 fail**。别把它当成新缺陷去追。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -1091,11 +1230,20 @@ diff** ⇒ `RESULT: 逐字符相同 (IDENTICAL)`（**F2 这才算真闭合**，�
 | **列表里显示的是连接键，不是中文名** | T007 / 原生 `PromptInputV2Popover` | 实测定下来的：原生弹层**只渲染 `item.label`**（`index.tsx`：`<span>{item.label}</span>` ＋ `description`，**`title` 根本不显示**），而 `label` 同时决定「选中后插进正文的那串」⇒ 二者拆不开。2026-10-07 用户裁定取连接键（理由：插进正文的 token 要能让下游对回 skill）。**代价**：列表里民警看到的是 `/fund-link-analysis` 而非「资金关联分析」（`description` 仍是中文，且**打中文能搜到**）。要显示中文名只能改上游 `PromptInputV2Popover` ⇒ 与第一号约束冲突，**不改**；若将来要改，这是**可提上游**的一条 |
 | **很散的子序列匹不上** | T007 / `fuzzysort` 默认阈值 | 实测：`/资金分析` 命中「资金关联分析」（跳过「关联」，**真子序列** ✅），而 `/flz` **不**命中 `fund-link-analysis`（f-z-l 之间隔太远）。**非本次引入**——上游自定义命令走的是同一个 `useFilteredList`，行为完全一致。**不改**（改阈值要动上游 `interaction.ts`，且会让匹配变噪声） |
 | **`ai-session-slot.tsx` 无测试（薄接线）** | T008 | 它是**纯接线**（读三份 context、把结果交给上面两件），**没有分支、没有状态**；而 `useServerSync()` 的 provider 要一个**活着的服务器连接**才建得起来 ⇒ `bun test` 里挂不起来。按 `LEARNINGS #002-02`：**写成缺口，不写成覆盖**。它里面**真的会出错**的两件事都单独抽出来测了：① 「路由 → id → 目录 → 数据」那条异步链 ＝ `right-pane-source.test.tsx`（9 条）；② 投影 ＝ `projection.test.ts`。**未覆盖的是「这三份 context 名字接对了」**——名字接错的症状是右栏整栏不出现（`Show` 恒假）或当场抛，不会静默 |
-| **`onSubmitPrompt` 生产里没人接** | T008 → T010 | 用户按回车的**终点**是 T010（真正调 SDK `session.prompt`）。`SessionPanel` 只把正文交出去（`controller.value()`），而 `ai-session-slot.tsx` **没传**这个 prop ⇒ 今天回车**什么都不会发生**。⚠️ `activePrompt` 那一半已由 **T009 接线**（选中态看得见了——前提是得先有卡）；空的这一半仍在 ⇒ **「点卡 → 一句话进输入框 → 回车」这条链今天断在终点** |
+| **`onSubmitPrompt` 生产里没人接** | T008 → **T010 已闭合（2026-10-07）** | 用户按回车的**终点**是 T010（真正调 SDK `session.prompt`）。`SessionPanel` 只把正文交出去（`controller.value()`），而 `ai-session-slot.tsx` **没传**这个 prop ⇒ 当时回车**什么都不会发生**。✅ **T010 已接线**：`ai-session-slot.tsx` 传 `onSubmitPrompt`（实现＝`submitRightPanePrompt` ＋ 失败 `showToast`），`SessionPanel` 按**回话**决定清空还是把正文留下。⚠️ **但「点卡 → 回车」这条链今天仍走不到终点**——`MANIFESTS` 的 `cards` 全为空 ⇒ **没卡可点**（见上面「`cards` 今天全为空」那条）。链路本身已由 **4 条组件用例 ＋ 12 条 app 单测 ＋ 1 条真链用例**钉住（喂的是有卡的投影 / 手搓的替身） |
 | **`ContextCards` 的两个 prop 还没有接线** | T005 → 待接 | `context-cards.tsx` 与 `common-cards.tsx` 是**同形**的（都吃 `InstructionCardRowProps`），T009 只接了 `CommonCards` 那一层。`ContextCards` **今天根本没被 `session-panel.tsx` 渲染**（T008 裁定「本轮不接这一层」，因为中栏没有右栏读得到的选中状态）⇒ 它的 `activePrompt` / `onPick` **不需要接线**，否则是死代码。**接线随 `contexts` 的产源一起来**（F6 / F7 把中栏选中喂进来时，照 `CommonCards` 那两行的样子加，别再发明一套） |
-| **「＋ 新会话」只留接缝** | T008 / 用户裁定 ④ | 按钮调的是 `props.onNewSession?.()`，而生产侧**没传**（本轮**不调** SDK `session.create`）。同样地 `onSelectSession` 也没接 ⇒ **点会话列表不会真的切会话**（受控接缝的两头都待 T010 那一段落地） |
+| **「＋ 新会话」/「切会话」只留接缝** | T008 → **T010 之后仍未接** | 按钮调的是 `props.onNewSession?.()`，而生产侧**没传**（不调 SDK `session.create`）；`onSelectSession` 同样没接 ⇒ **点会话列表不会真的切会话**。⚠️ **更正一句**：原先写「两头都待 T010 落地」，而 **T010 只接了「提交那一句话」**——这两颗各要一套新的异步链（建会话 → 改路由 → 右栏跟着换），是**下一条**的活 |
 | **会话列表 = 注入数据的 `session`，本栏不自己拉** | T008 | 列表渲染的是 `props.data.session`（`For` 直接吃它），**不**调 `session.list`。故数据没同步到的那一瞬列表可能是空的（当前会话名会退回显示 id）。**不为此加保护代码**——T010 接 SDK 时若需要「主动拉一次列表」，那是那一条的决定 |
 | **会话行的视觉是 self-decision** | T008 / `openhive-DESIGN.md §4.7.5` | §4.7.5 只写了「新建 / 切换走 SDK `session.create` / `session.list`」，**没写长什么样**（原生 `SessionHeader` 依赖页面级 context，搬不进来）。本条的取法是**对齐原生右栏抽屉那一档**（`layer-01` 底 ＋ `text-[13px]`），**不是设计给的** ⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八）。⚠️ 同时复核 `skill-drawer.tsx` 那条同型缺口（抽屉 header 也是照原生抄的） |
+| **F3：`/` 命令分支解引用 `model`（有哨兵）** | 上游 `submit.ts` → T010 挂账 | `sendFollowupDraft` 的命令分支读 `input.draft.model.modelID`，而右栏在「会话没记过 model」时**正是要传 `undefined`** ⇒ 组合起来当场抛 `Cannot read properties of undefined (reading 'modelID')`。**2026-10-07 用户裁定「保持既有链行为」**（不为它改产品码）⇒ `submit-prompt.test.ts` 有一条**哨兵**钉着（`.rejects.toThrow(/modelID/)`，用例名自带「⚠️ 已知缺陷」）。⚠️ **它何时触发没有实测**：原先注释里那句「右栏展示的会话都已有 model」是**推断**，已删（`#003-04`）⇒ 右栏接上 `onNewSession` 那天，第一件事就是验「新会话第一次提交，`session.model` 在不在」 |
+| **F4：`{...undefined, variant}` 是类型谎言** | 上游 `submit.ts` → T010 挂账（Minor） | normal 分支组 `Message` 时写 `model: { ...input.draft.model, variant }`，而 `draft.model` 就是 `undefined` ⇒ 展开得 `{}`。类型上 `Message.model` 必填 ⇒ **骗过了 typecheck**。**与 F3 同根因的第二落点**（右栏「不自选」＝传 `undefined`，而上游那两处都假设它必有值）⇒ 一并挂账、不修补（同一裁定） |
+| **命令分支没有乐观插入、没有 busy** | 上游 `submit.ts` 的 `/` 分支 → T010 挂账 | normal 分支是 `batch(() => { setBusy(); add() })`；`/` 分支**既不 add 也不 setBusy**（`optimisticBusy` 未传 ⇒ `setBusy()` 是 no-op）⇒ **从 `/` 面板选 skill 回车，界面上零反馈**（消息流不动、忙碌态不亮），只能等服务端那条消息回环。⚠️ **不是右栏漏接**，是既有链在这个分支上的样子；已用一条断言把「不碰 `api.session.prompt`、不做乐观插入」**钉住**（免得它悄悄变） |
+| **`sync.data.command` 异步填充 ⇒ 同一操作两种结果** | `server-sync.tsx` / `bootstrap.ts` → T010 挂账 | `void loadCommands(…).then(setStore("command", …))` **不 await**。命令表就绪**前**发 `/effect …` ⇒ 当正文发；就绪**后** ⇒ 执行 skill。**同一句输入两种结果，且没有任何提示**。⚠️ 不改：这是上游的加载时序，右栏自建一份命令表就是 `#002-06` 的第二处写法 |
+| **提交链没有超时 / 没有 Cancel / 没有 stop** | 上游 `submit.ts` ＋ `PromptInputV2` → T010 挂账 | `sendFollowupDraft` 的每个 `await` 都没有超时预算；`view.submit.onStop` 在右栏是空函数（`session-panel.tsx` 写 `onStop: () => {}`）⇒ 服务端卡住时右栏**没有任何取消手段**。⚠️ 要动的是上游那条链 ＋ `controller` 的 stop 语义，不是右栏能单独解决的 ⇒ 挂账 |
+| **`reset()` 的 `cursor` 归零没有断言守着** | 上游 `session-ui` 的 `store.ts` → T010（第二轮审查 F-1） | 右栏清空走 `createPromptInputV2Store` 的 `reset()`（它顺手写 `cursor: 0`）。**实测（变异 M8）**：把上游那行 `setStore()("cursor", 0)` 拆掉 ⇒ 本组 **27 条全绿、一条都不红** ⇒ 「不归零会怎样」**今天没有观测面**（审查方读码复核也找不到可达路径：打字时 `onInput` 按 DOM selection 重算并覆写 cursor）。注释已按 `#005-15` 改写（删掉那句**推断**的后果），轴本身挂账 |
+| **空输入框按回车照样调 `onSubmitPrompt("")`** | 上游 `PromptInputV2` → T010 挂账（第二轮审查 F-5） | `index.tsx` 的 Enter 分支**不查 `canSubmit()`**（只有提交钮查），`controller.submit()` 无条件调 `onSubmit`。今天**无害**只因**接收方**拦下了（`submit-prompt.ts` 的 `trim()===""`）——`#004-01` 的又一实例：**调用点 1 个、守卫点 0 个**。⚠️ **不在右栏补第二道门**（那是 `#002-06` 的第二处写法，且会让右栏与上游 Enter 语义分叉）⇒ 挂账 |
+| **本栏两条提交出口只钉了一条** | 上游 `PromptInputV2` → T010 挂账（第二轮审查 F-7） | Enter（`index.tsx` 的 `onKeyDown`）与提交钮（`onSubmit={props.controller.submit}`）都汇进同一个 `controller.submit()` ⇒ 行为等价、风险低；4 条用例**只打了 Enter**。按 `#005-11`（新出口逐个验）它是一条零断言的出口 ⇒ 如实记 |
+| **真链用例的 5 秒预算可能 flake（本机未见）** | `openhive-prompt-minimal.test.ts` → T010 挂账 | `pollWithTimeout` 默认 5 秒，而本机已有卡 5 秒线的用例（`#003-01` 记过：PGLite / 首次 spawn `rg.exe`）。**至今未见过它 flake**（22 秒那次是首次冷启动，判据等的是「假模型被调」，冷启动那一段在 `it.live` 的 60 秒兜底里）⇒ 真出现 flake 时**先加预算、别改判据** |
 
 ---
 
@@ -1126,4 +1274,37 @@ prop 今天不需要接线（那一层还没被渲染 ⇒ 接线随 `contexts` �
 接在哪」）；②**卡文案不能落状态机的三个特殊分支**（拦在文案侧，不在产品码里再写一份判定）。
 
 ⚠️ 如实记一笔：**接线通了，但生产里今天没卡可点**（`MANIFESTS` 的 `cards` 全为空）。
-**下一个 T010**——AI 执行 ＋ 展示过程（`onSubmitPrompt` 的接收方）。
+
+---
+
+2026-10-07（**T010 已完成**：AI 执行 ＋ 展示过程。产物 **6 处：3 个新文件 ＋ 3 处改动**——
+新建 `submit-prompt.ts`（右栏正文 → 上游 `sendFollowupDraft`）、`submit-prompt.test.ts`（12 条 / 31 expects）、
+`packages/opencode/test/server/openhive-prompt-minimal.test.ts`（真链 1 条 / 5 expects）；改
+`session-panel.tsx`（`onSubmitPrompt` 的回话语义 ＋ 三个清空分支）、`session-panel.test.tsx`（＋4 条）、
+`ai-session-slot.tsx`（把 `useServerSDK` / `LanguageProvider` / `showToast` 接进来））；
+五道门禁全绿（单元档 **977**／组件档 **578**／真链 **1 pass·5 expects**／typecheck **31-31**／
+lint **23 警告、0 errors、本次改动文件 0 命中**）→ 出参见上「T010 出参」。
+
+**8 批变异 ＋ 1 批反向**（M1–M8，逐批注入 → 跑 → **逐字节还原**上游三个文件并核 `--numstat` 全空）：
+实现 5 批（M1 恰红 2／M2 恰红 1／M3 恰红 1／M4 恰红 1／M5 恰红 1）＋ 第二轮修复 **M6**（回话恒 `false`
+⇒ **恰红 2**）、**M7**（乐观 id 自己造 ⇒ **恰红 1**）＋ **M8**（拆掉上游 `reset()` 里的 `cursor: 0`
+⇒ **27 条全绿、一条不红**）——M8 是**反向用途**：结论是**改注释、挂账**，不是补测试。
+
+**审查三轮**（`#003-02` / `#005-04`）：第一轮挖出 **F1–F4 ＋ R2-1** 全修（含**我自己按记忆打勾漏掉的那个落点**）；
+**第二轮两席并行打到「我刚落的修复」里**——断言席报 **7 条缺口**（**F-2（P1）**：回话契约**两端都没人看着**
+⇒ 补 2 条断言；**F-3**：注释说「同源」而只钉了「字段在」⇒ 补**相等断言**；**F-1**：`reset()` 的 cursor
+零断言 ⇒ **M8 实测无牙** ⇒ 改注释挂账；F-4/F-5/F-6/F-7 改注释或如实挂账），
+注释席报 **3 不实 ＋ 4 部分属实**，**我逐条复跑复现后才改**——三不实里**两条是同一形状**
+（**照着自己以为的形状写下来、没 grep 过那一行**）：① 真链文件头「`/api/health` 零命中」**是假的**
+（它真注册；结论 v1 不变，退到第二档也仍判 v1）⇒ 这正是 `#004-03` / `#004-04` 点的那类
+——**「结论对、理由错」最危险**，下一个人会按错理由去改 `detectServerProtocol`；② `createUserMessage`
+的 agent 那一句我写的 `??` 表达式**在 `prompt.ts` 里不存在** ⇒ 照真身逐字改。
+
+⚠️ **两处推翻继承下来的推断**：① **裁定 U6 的前提被实测证伪**——「右栏 `/skill-name` 会把命令名原样当正文发」
+**是错的**，它会**真的执行该 skill**（skill 在服务端就是命令）；2026-10-07 用户裁定**保持既有链行为**，
+只钉哨兵、不修补。② 另一条我写进注释的推断也**已删并改挂账**（「右栏展示的会话都已有 model」——
+`LEARNINGS #003-04`：复现不了的别写成实测）。
+
+**下一个 T011**——AI 不滥用确定性事（确定性查询 / 统计走**工具 / 代码执行路径**）[FR-008]。
+开工前先读它下面那两条 **2026-10-07 裁定 U5**（「走 MCP」的措辞已作废：本仓没有 MCP server，
+要锚在**工具层选择**上）。

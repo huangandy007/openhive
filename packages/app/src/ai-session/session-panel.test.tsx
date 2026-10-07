@@ -4,6 +4,7 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { FileComponentProvider } from "@opencode-ai/ui/context/file"
 import { SessionTurn } from "@opencode-ai/session-ui/session-turn"
 import type { JSX } from "solid-js"
+import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
 import { SessionPanel, type SessionPanelData } from "./session-panel"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
@@ -184,6 +185,36 @@ describe("消息流（FR-010）", () => {
 
     expect(数turn(挂会话(两场))).toBe(1)
     expect(数turn(挂会话(两场, "ses_2"))).toBe(1)
+  })
+
+  /**
+   * 「展示过程」的**动态**那一半（T010 / FR-007 的出参）。
+   *
+   * 上面三条喂的都是**进栏那一刻的静态夹具**，所以「首屏渲染对了」就全绿——而「过程」这个词
+   * 指的就是**后来才写进去的那些**：用户自己那条（乐观插入）、助手的回复与工具调用（SSE）。
+   * 右栏手里那份 `data` 是一个**身份稳定**的 store（生产里是 `directory-sync.ts` 的 Proxy，
+   * `server-session.ts` 的 `optimistic.add` 落的也是 `setData("message", …)`，SSE 走同一处）
+   * ⇒ 判据是：**同一次挂载里**往 `data` 里再写一条，消息流当场长一个 turn。
+   *
+   * ⚠️ **这一条今天就是绿的，所以它是回归网，不是缺陷探测器**（`LEARNINGS #005-15`：
+   * 「这条拦住了 X」要靠变异去证，不能靠「它看起来会红」）。它拦的是「有人把 `data`
+   * 冻成一份快照 / 深拷贝一次」这一类改法——那时右栏**只显示进栏那一刻的历史**，新消息
+   * 再也不出现，而本文件所有静态用例照旧全绿。冻快照那种改法本文件**造不出来**
+   * （要么改产品码、要么改成断言一个别的机制），故不写变异，只如实标注它是回归网。
+   */
+  test("写了新消息就跟着长：往 `data` 里再加一条 ⇒ 当场多一个 turn（不重挂、不刷新）", () => {
+    const [数据, 改数据] = createStore<SessionPanelData>(夹具数据(1))
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel data={数据} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      )),
+    )
+
+    expect(数turn(宿主)).toBe(1)
+
+    改数据("message", "ses_1", (旧) => [...旧, 造消息("msg_2", "ses_1")])
+
+    expect(数turn(宿主)).toBe(2)
   })
 })
 
@@ -583,5 +614,104 @@ describe("点指令卡 ＝ 填入一句话（T009 / FR-007；T004 📥 那一笔
     打字(宿主, "帮我画关系图谱，按近一个月")
 
     expect(亮着的(宿主)).toEqual([false, false])
+  })
+})
+
+/**
+ * 提交一句话（T010 / FR-007 / US4 场景 1）——**右栏这一半**。
+ *
+ * ⚠️ 这一组测不到「AI 真的跑起来了」：`bun test` 里起不了 opencode 服务器（T008 已实测），
+ * 那一半在 `packages/opencode/test/server/openhive-prompt-minimal.test.ts`（假模型回真 SSE ＋ 真库）。
+ * 本组钉的是**收官那一下**：交出去的正文取自输入框，且**交出去之后**输入框才清空。
+ *
+ * 宿主与 Hero 组那份只差投影（本组不关心 `/` 面板，用 `空投影`）——两处各自最小，不抽公共层。
+ */
+describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
+  const 摆好 = (onSubmitPrompt?: (text: string) => Promise<boolean> | void) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          onSubmitPrompt={onSubmitPrompt}
+        />
+      )),
+    )
+
+  /**
+   * 回车。挂点就是 `打字` 用的那个编辑器：`index.tsx` 的 `onKeyDown` 在它身上，
+   * 且弹层没开时 `controller.onKeyDown` 不消费这个键（本组不打 `/`）。
+   */
+  const 回车 = (宿主: HTMLElement) => {
+    const 编辑器 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input"]')
+    if (!编辑器) throw new Error('没找到 Hero 输入的编辑器（`[data-component="prompt-input"]`）')
+    编辑器.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  }
+
+  /** 让提交收尾那两条微任务跑完（`onSubmit` 里没有 await，只挂了 `.then`）。 */
+  const 歇 = () => new Promise((r) => setTimeout(r, 0))
+
+  test("回车 ⇒ 交出去的是**输入框里那句话**，交出去之后输入框才清空", async () => {
+    const 收到: string[] = []
+    const 宿主 = 摆好(async (text) => {
+      收到.push(text)
+      return true
+    })
+
+    打字(宿主, "查一下这个账户的资金流向")
+    expect(输入框里的话(宿主)).toBe("查一下这个账户的资金流向")
+
+    回车(宿主)
+    await 歇()
+
+    // 先钉「交出去的是哪句」：它是下面那条清空的**前置条件**——没交出去就清空才是错的
+    // （`LEARNINGS #004-14`：一条用例里，书写顺序决定你拿到哪条证据）。
+    expect(收到).toEqual(["查一下这个账户的资金流向"])
+    expect(输入框里的话(宿主)).toBe("")
+  })
+
+  test("提交回话 `false`（没发出去）⇒ 正文**留在**输入框里", async () => {
+    const 宿主 = 摆好(async () => false)
+
+    打字(宿主, "查一下这个账户的资金流向")
+    回车(宿主)
+    await 歇()
+
+    expect(输入框里的话(宿主)).toBe("查一下这个账户的资金流向")
+  })
+
+  test("对照：没接 `onSubmitPrompt` ⇒ 回车一个字都不动（清空的含义是「已经交出去了」）", async () => {
+    const 宿主 = 摆好()
+
+    打字(宿主, "查一下这个账户的资金流向")
+    回车(宿主)
+    await 歇()
+
+    expect(输入框里的话(宿主)).toBe("查一下这个账户的资金流向")
+  })
+
+  test("回话**迟迟不来**，用户先打了新的一句 ⇒ 老正文不回填（不吃掉新输入）", async () => {
+    let 回话!: (值: boolean) => void
+    const 宿主 = 摆好(
+      () =>
+        new Promise<boolean>((resolve) => {
+          回话 = resolve
+        }),
+    )
+
+    打字(宿主, "查一下这个账户的资金流向")
+    回车(宿主)
+    await 歇()
+    // 清空是**当时**就发生的（不等回话）——这一条同时钉住「清空不是等回话才做」。
+    expect(输入框里的话(宿主)).toBe("")
+
+    打字(宿主, "再查一下这个人的通话记录")
+    回话(false)
+    await 歇()
+
+    // 老那句失败回来了，但用户已经在写新的 ⇒ 回填会把新输入**当场吃掉**。
+    expect(输入框里的话(宿主)).toBe("再查一下这个人的通话记录")
   })
 })
