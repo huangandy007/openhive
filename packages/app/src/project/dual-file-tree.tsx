@@ -14,9 +14,9 @@ const 上树最大 = 480
 const 上树默认 = 180
 
 const ROW =
-  "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
+  "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 const 确认按钮 =
-  "flex h-6 shrink-0 items-center rounded-[4px] px-1.5 text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
+  "flex h-6 shrink-0 items-center rounded-[4px] px-1.5 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
 /** 下树的空态两句**不同**文案——「没有来源」与「来源说了没有」不是一件事（同 `file-tree.tsx` 两个空态、同 `minio-backups.ts` 的 `undefined` / `[]` 之分）。 */
 const EMPTY_NO_SOURCE = "备份清单未接入"
@@ -297,7 +297,7 @@ function MinioTree(props: {
           data-slot="minio-tree-collapse"
           type="button"
           aria-label="收起 MinIO 备份"
-          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-background-bg-layer-03 hover:text-v2-text-text-base"
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
           onClick={() => props.onCollapse?.()}
         >
           <Icon name="close" size="small" class="[--icon-base:currentColor]" />

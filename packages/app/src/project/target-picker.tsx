@@ -28,7 +28,7 @@ import { Icon } from "@opencode-ai/ui/icon"
  */
 
 const ROW =
-  "flex h-6 w-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-left text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03 disabled:pointer-events-none disabled:text-v2-text-text-faint"
+  "flex h-6 w-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-left text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:pointer-events-none disabled:text-v2-text-text-faint"
 
 /** 项目根那一条的显示名。**不能留空**——空按钮看着像坏了，而不是「搬到项目根」。 */
 const ROOT_LABEL = "项目根目录"

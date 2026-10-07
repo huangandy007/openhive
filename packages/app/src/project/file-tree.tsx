@@ -44,7 +44,7 @@ const EMPTY_TREE = "还没有文件"
 const EMPTY_SEARCH = "没有匹配的文件"
 
 const TOOL_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-background-bg-layer-03 hover:text-v2-text-text-base disabled:pointer-events-none disabled:text-v2-text-text-faint"
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base disabled:pointer-events-none disabled:text-v2-text-text-faint"
 
 /**
  * 🗑 **点亮**时的那条（设计 §6.1：「删除：选中后点亮（红色）」）。
@@ -54,13 +54,21 @@ const TOOL_BUTTON =
  * 不看 class 属性的顺序 ⇒ 那会是一个「看着该红、实际不一定红」的写法。
  */
 const TOOL_BUTTON_DANGER =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-state-fg-danger hover:bg-v2-background-bg-layer-03 hover:text-v2-state-fg-danger disabled:pointer-events-none disabled:text-v2-text-text-faint"
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-state-fg-danger hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-state-fg-danger disabled:pointer-events-none disabled:text-v2-text-text-faint"
 const SEARCH_INPUT =
   "h-6 min-w-0 flex-1 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
-const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
-const ROW_SELECTED = "bg-v2-background-bg-layer-03"
+const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+
+/**
+ * **选中态**＝品牌浅金 `--v2-background-bg-accent-soft`（`DESIGN.md` §1.3「选中态」＝`#FEF3C7`，
+ * `plan.md` §2 同款；先例＝同栏 `rail/rail.tsx` 的 `bg-[var(--v2-background-bg-accent-soft)]`）。
+ *
+ * ⚠️ **不是** `hover` 的那个 overlay token——选中和 hover 必须是**两种颜色**，否则鼠标移开后
+ * 分不清哪一行还选着（005 Step 5 审查 **X5-1**：改之前两者都是 `layer-03`，同一个值）。
+ */
+const ROW_SELECTED = "bg-[var(--v2-background-bg-accent-soft)]"
 const MENU_ITEM =
-  "flex h-6 w-full shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-left text-[13px] text-v2-text-text-base hover:bg-v2-background-bg-layer-03 disabled:pointer-events-none disabled:text-v2-text-text-faint"
+  "flex h-6 w-full shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-left text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:pointer-events-none disabled:text-v2-text-text-faint"
 
 export interface FileTreeProps {
   /**

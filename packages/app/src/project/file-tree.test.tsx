@@ -379,6 +379,28 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(行按名(host, "资料")?.getAttribute("data-selected")).toBe("true")
       expect(行按名(host, "资料")?.getAttribute("data-type")).toBe("directory")
     })
+
+    /**
+     * 选中态的**颜色**（005 Step 5 审查 **X5-1**）。
+     *
+     * 改之前选中与 hover 都挂 `layer-03` ⇒ **同一个值**，鼠标一移开就分不清哪一行还选着。
+     * 规范（`DESIGN.md` §1.3 / `plan.md` §2）与同栏先例（`rail/rail.tsx`）都写选中＝品牌浅金
+     * `--v2-background-bg-accent-soft`。
+     *
+     * **两条都要钉**（`#004-02`：两个投影要有一条**故意会红**的断言）：① 选中行带着浅金；
+     * ② 选中色与 hover 色**不是同一个** token——只钉 ① 的话，哪天有人把 hover 也改成浅金，
+     * 「移开就分不清」原样复现，而 ① 照样绿。
+     */
+    test("选中态走品牌浅金，且与 hover 是两种颜色（不是同一个 token）", () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} />)
+
+      行按名(host, "话单.csv")?.click()
+
+      const 类 = 行按名(host, "话单.csv")?.className ?? ""
+      expect(类).toContain("bg-[var(--v2-background-bg-accent-soft)]")
+      expect(类).toContain("hover:bg-v2-overlay-simple-overlay-hover")
+      expect(类).not.toContain("hover:bg-[var(--v2-background-bg-accent-soft)]")
+    })
   })
 
   describe("新建 / 重命名 / 删除（FR-005 的前三项；T008 收复制/移动/上传/下载）", () => {

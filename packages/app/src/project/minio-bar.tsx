@@ -16,7 +16,7 @@ const ICON_WRAP = "flex items-center [--icon-base:var(--v2-icon-icon-muted)]"
  */
 const BAR =
   "flex h-7 w-full shrink-0 cursor-pointer items-center gap-1.5 border-t border-v2-border-border-muted " +
-  "px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-layer-03 " +
+  "px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover " +
   "disabled:cursor-default disabled:hover:bg-transparent"
 
 /** 设计 §5.1 的字面文案。 */

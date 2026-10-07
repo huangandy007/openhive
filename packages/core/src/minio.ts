@@ -45,6 +45,18 @@ export interface Config {
   readonly bucket: string
   readonly credentials: Credentials
   readonly scope: Scope
+  /**
+   * 单次外呼的超时（毫秒），默认 `DEFAULT_TIMEOUT_MS`（30_000）。
+   *
+   * ⚠️ 不给它一个好值等于「**挂起**」不是「**慢**」：MinIO 僵死（进程还在、就是不回话）时，
+   * aws-sdk v3 **默认没有 request 超时** ⇒ `store.put` 永不 settle，调用方（归档 / 找回）
+   * 永远停在那次 `await` 上——不是 500、不是可重试，界面一直转、日志里什么都没有
+   * （005 Step 5 审查 **X4-1**）。这里给每一次 `client.send` 套一个 `AbortSignal`，
+   * 到点就 abort ⇒ 变成一次**普通的、可捕获的失败**。
+   *
+   * 测试把它调小（几百毫秒）到「黑洞端点」上验；生产用默认值。
+   */
+  readonly timeoutMs?: number
 }
 
 export interface Interface {
@@ -56,6 +68,9 @@ export interface Interface {
 
 /** win32 的盘符（`C:`），只认开头——`a:C` 这种中段出现的不算。 */
 const DRIVE = /^[A-Za-z]:/
+
+/** 单次外呼的默认超时（毫秒）——理由见 `Config.timeoutMs`（005 Step 5 审查 X4-1）。 */
+export const DEFAULT_TIMEOUT_MS = 30_000
 
 /**
  * 键的**每一段**都要过这里。三段（`userId` / `projectId` / `path`）用的是同一条判据。
@@ -114,6 +129,18 @@ export function makeStore(config: Config): Interface {
   })
 
   const prefix = `${config.scope.userId}/${config.scope.projectId}/`
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+  /**
+   * 给**一次**外呼套上限时：到点 `abort()`，`client.send` 随之拒绝（理由与后果见 `Config.timeoutMs`）。
+   *
+   * **每个动作都从这里过**——边界只有一处（`#004-01`：数「做那件事的那一行」，别数「已经包了超时的那几行」）。
+   */
+  const withTimeout = <Out,>(run: (signal: AbortSignal) => Promise<Out>): Promise<Out> => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    return run(controller.signal).finally(() => clearTimeout(timer))
+  }
 
   /** 唯一的键拼装点：**每个动作都从这里过**，所以边界只有一处（`#004-01`）。 */
   const keyOf = (path: string) => {
@@ -123,12 +150,16 @@ export function makeStore(config: Config): Interface {
 
   return {
     put: async ({ path, body }) => {
-      await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: keyOf(path), Body: body }))
+      await withTimeout((abortSignal) =>
+        client.send(new PutObjectCommand({ Bucket: config.bucket, Key: keyOf(path), Body: body }), { abortSignal }),
+      )
     },
 
     get: ({ path }) =>
       notFoundToUndefined(async () => {
-        const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }))
+        const response = await withTimeout((abortSignal) =>
+          client.send(new GetObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), { abortSignal }),
+        )
         if (response.Body === undefined) throw new Error(`MinIO 对 ${JSON.stringify(path)} 回了空 body`)
         return response.Body.transformToByteArray()
       }),
@@ -145,8 +176,11 @@ export function makeStore(config: Config): Interface {
       const keys: string[] = []
       let token: string | undefined
       do {
-        const response = await client.send(
-          new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefix, ContinuationToken: token }),
+        const response = await withTimeout((abortSignal) =>
+          client.send(
+            new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefix, ContinuationToken: token }),
+            { abortSignal },
+          ),
         )
         for (const item of response.Contents ?? []) {
           if (item.Key !== undefined) keys.push(item.Key.slice(prefix.length))
@@ -157,7 +191,9 @@ export function makeStore(config: Config): Interface {
     },
 
     delete: async ({ path }) => {
-      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }))
+      await withTimeout((abortSignal) =>
+        client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), { abortSignal }),
+      )
     },
   }
 }

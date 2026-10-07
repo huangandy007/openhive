@@ -275,3 +275,43 @@ describe("Minio 客户端（005 T011 / FR-007）", () => {
     })
   })
 })
+
+/**
+ * 外呼超时（005 Step 5 审查 **X4-1**）。
+ *
+ * 问题：`makeStore` 造 `S3Client` 时**一个超时都没给**（`requestTimeout` / `connectionTimeout` /
+ * `socketTimeout` 全缺，aws-sdk v3 默认没有 request 超时）。⇒ MinIO 僵死（进程还在、就是不回话）时，
+ * 归档 / 找回**无限期挂起**——不是 500、不是可重试，就是永远不 settle：`handleArchive` 里那次
+ * `await store.put(...)` 永远不会返回，界面一直转、日志里什么都没有。
+ *
+ * 这条把「挂起」钉成「**有限时间内失败**」。判据的关键在**失败是谁给的**：必须是**外呼自己**
+ * 在超时后失败的，不是本用例的兜底掐断的（`#004-14`：「抛了错」只是伴随信号，兜底也会抛）。
+ */
+const 兜底标记 = "【RED 兜底】外呼到 2s 还没自己失败"
+/** 给被测调用套一个兜底计时器——**修好之后用不上**（外呼 300ms 就自己失败），
+ * **修好之前**它保证 RED 快速失败、而不是把整个 `bun test` 挂在一条永不 settle 的 await 上（`#005-01` 同族的坏结果）。 */
+const 快过 = <T,>(p: Promise<T>, ms: number) =>
+  Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(兜底标记)), ms))])
+
+describe("MinIO 外呼超时（005 Step 5 审查 X4-1）", () => {
+  test("MinIO 不回话时，外呼**自己在超时后失败** —— 不是无限期挂起", async () => {
+    // 一个「收下连接、永远不回话」的端点：这是真挂起（TCP 建得上、请求发出去了、就是不回）。
+    const 黑洞 = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) })
+    try {
+      const 店 = Minio.makeStore({
+        endpoint: `http://127.0.0.1:${黑洞.port}`,
+        bucket: "openhive",
+        credentials: 凭据,
+        scope: { userId: "007", projectId: "p-42" },
+        timeoutMs: 300,
+      })
+
+      const 错 = await 抛了(() => 快过(店.put({ path: "a.txt", body: 编码("x") }), 2000))
+
+      // 被测属性：这次失败是**外呼自己的超时**给的，不是本用例的兜底掐断的。
+      expect(错.message).not.toContain(兜底标记)
+    } finally {
+      void 黑洞.stop(true)
+    }
+  })
+})

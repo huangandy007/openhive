@@ -126,7 +126,7 @@ const ROLE_LABEL = "shrink-0 text-[11px] text-v2-text-text-muted"
 
 const SMALL_BUTTON = [
   "cursor-pointer rounded-[4px] px-1.5 py-0.5 text-[12px] transition-colors",
-  "text-v2-text-text-base hover:bg-v2-background-bg-layer-03",
+  "text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover",
   "disabled:cursor-default disabled:text-v2-text-text-faint disabled:hover:bg-transparent",
 ].join(" ")
 

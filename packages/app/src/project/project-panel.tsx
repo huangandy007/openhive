@@ -224,7 +224,7 @@ const NAME_INPUT = [
 /** 新建入口里的两个按钮：小、次要（DESIGN §4.2「次要按钮」）。 */
 const CREATE_BUTTON = [
   "cursor-pointer rounded-[4px] px-1.5 py-0.5 text-[12px] transition-colors",
-  "text-v2-text-text-base hover:bg-v2-background-bg-layer-03",
+  "text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover",
   "disabled:cursor-default disabled:text-v2-text-text-faint disabled:hover:bg-transparent",
 ].join(" ")
 
@@ -319,7 +319,8 @@ function Group(props: {
                   data-current={current() ? "true" : undefined}
                   class={ITEM_NAME_BUTTON}
                   classList={{
-                    "bg-v2-background-bg-layer-03 text-v2-text-text-base": current(),
+                    // 「当前项目」＝选中态：品牌浅金（理由见 `file-tree.tsx` 的 `ROW_SELECTED`，X5-1）。
+                    "bg-[var(--v2-background-bg-accent-soft)] text-v2-text-text-base": current(),
                   }}
                   disabled={props.onOpen === undefined}
                   onClick={() => props.onOpen?.(project)}
@@ -631,7 +632,10 @@ export function ProjectPanel(props: ProjectPanelProps) {
               data-tab={t.id}
               aria-selected={tab() === t.id ? "true" : "false"}
               class={TAB_BUTTON}
-              classList={{ "bg-v2-background-bg-layer-03 text-v2-text-text-base": tab() === t.id }}
+              classList={{
+                // 选中页签＝品牌浅金（同 `sidebar-tabs.tsx` 的 `TAB_ACTIVE`，X5-1）。
+                "bg-[var(--v2-background-bg-accent-soft)] text-v2-text-text-base": tab() === t.id,
+              }}
               onClick={() => setTab(t.id)}
             >
               {t.label}

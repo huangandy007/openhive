@@ -34,8 +34,9 @@ const EMPTY_SESSION = "会话列表未接入"
  * 「看着该亮、实际不一定亮」的假象（`LEARNINGS #003-05`）。
  */
 const TAB_BASE = "h-6 shrink-0 cursor-pointer rounded-[4px] px-2 text-[13px] transition-colors"
-const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-background-bg-layer-03`
-const TAB_ACTIVE = `${TAB_BASE} bg-v2-background-bg-layer-03 font-semibold text-v2-text-text-base`
+const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover`
+// 选中态＝品牌浅金（理由见 `file-tree.tsx` 的 `ROW_SELECTED`：005 Step 5 审查 X5-1）。
+const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-semibold text-v2-text-text-base`
 
 /** pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。 */
 const PANE = "min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1"
