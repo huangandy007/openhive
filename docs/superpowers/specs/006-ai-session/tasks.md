@@ -78,7 +78,20 @@
 
 ## Phase 5: US4 右栏会话 + 点卡片执行（P1）
 
-- [ ] T008 [FE·新增] 新建「**最小可用右栏会话**」（`app/src/ai-session/session-panel.tsx`：`SessionTurn` 消息流 ＋ `v2/prompt-input` Hero 输入 ＋ 会话新建/切换），挂 `ThreePane` 的 `right` 槽 [FR-010] [T001] [出参：右栏可对话、可切换会话]
+- [x] T008 [FE·新增] 新建「**最小可用右栏会话**」（`app/src/ai-session/session-panel.tsx`：`SessionTurn` 消息流 ＋ `v2/prompt-input` Hero 输入 ＋ 会话新建/切换），挂 `ThreePane` 的 `right` 槽 [FR-010] [T001] [出参：右栏可对话、可切换会话]（2026-10-07 完成）
+  - **出参落地**：见 `state.md`「T008 出参」——`ai-session/session-panel.tsx`（自挂 `DataProvider` ＋
+    消息流 ＋ 会话行 ＋ Hero 输入 ＋ 卡行 ＋ 抽屉入口）＋ `route-session.ts`（路由解 id）＋
+    `right-pane-source.ts`（id → 目录 → 数据那条异步链）＋ `ai-session-slot.tsx`（生产组装，薄接线）
+    ＋ `workspace-entry.tsx` 的 `right` 访问器 prop ＋ `layout-new.tsx` 的挂载；新增 **37 条**用例
+    （`session-panel.test.tsx` 18 ＋ `right-pane-source.test.tsx` 9 ＋ `route-session.test.ts` 10）
+    ＋ `workspace-entry.test.tsx` 补 3 条。实测：`ai-session` 全目录 **109 pass / 0 fail（9 文件）**
+    （T007 时基线 72；T008 新增 3 个文件）＋ `workspace-entry.test.tsx` **95 pass / 0 fail**。
+  - **2026-10-07 用户裁定五条**（开工前，全按建议）：① `contexts` **本轮不接这一层**（中栏没有右栏读得到的
+    选中态，喂恒空集＝这一层永远不显示 ⇒ 真正的产源是 F6/F7，已落缺口表）；② 会话新建/切换做成
+    **右栏自带的会话行**；③ 「当前会话」**右栏自带**（从路由解 id，不走全局 context）；④ 「＋ 新会话」
+    **本轮不调 SDK `session.create`，只留接缝**；⑤ 当前目录 **A′：解出会话 id，目录向会话要**。
+  - ⚠️ **连带就地更正 `plan.md §②` 一句被证伪的前提**（原文写「`useSync()` / `useSDK()` 在
+    `WorkspaceEntry` 那一层已可用」——`SDKProvider` 其实挂在**路由层**、`useSync()` 根本不是 context）。
   - **2026-10-07 裁定 U1(c)**：原条「复用 opencode 原生右栏会话」**作废**（T001 实测 `SessionSidePanel` 不是消息流）
   - 📥 **T004 / T005 / T006 / T007 各交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：指令卡那一行
     （`InstructionCardRow` 的两个层）**接进右栏是本条**，接的时候有两个 prop **今天没有生产来源**：
@@ -93,6 +106,12 @@
     ——把 `skillCommands(projectCapabilities(...).all)` 传进 controller 的 `commands`。
     ⚠️ 唤起走 **`onInput`**（`machine.ts` 的 `input.changed`）而**不是** `onKeyDown`——状态机里 `keyDown`
     对 `/` 一支都没有，照 keydown 写会得到「按了没反应」。四条都已进 `state.md` 缺口表。
+    ✅ **T008 已收（2026-10-07）**：① `availableWidth` —— **不传**，`InstructionCardRow` 自己挂
+    `ResizeObserver`，挂进右栏即在量（有 1 条用例把「观察的是卡行自己」钉住）；② `contexts` ——
+    **用户裁定本轮不接**（缺口留在表里，产源是 F6/F7）；③ 抽屉入口 ▸ ＋ 开合状态 —— 落在
+    `session-panel.tsx` 的 `session-tools` 行（`drawer-entry` 钮 ＋ `抽屉开` 信号，2 条用例）；
+    ④ `/` 命令面板接线 —— `命令集 = createMemo(() => skillCommands(props.projection.all))` 传进
+    controller 的 `commands`（2 条用例 ＋ 1 条**对照**）。
 - [ ] T009 [FE·新增] 实现点指令卡 = 填入一句话 [FR-007] [T003] [出参：点卡片填入一句话]
   - 📥 **T004 交来一笔（`#002-04`：推出去的责任要落进接收方的表）**：`InstructionCardRow` 的
     `activePrompt` **生产来源就是本条**——「点卡片 = 填入一句话」把它填进输入框，§4.7.1 的**选中态**

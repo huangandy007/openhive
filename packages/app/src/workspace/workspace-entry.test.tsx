@@ -2101,3 +2101,57 @@ describe("成员动作接进工作台（T021 出参）", () => {
     expect(text(host, "member-name")).toBe("张三")
   })
 })
+
+/**
+ * 右栏（AI 会话）接进工作台（FR-010 出参 / T008 的第一半）。
+ *
+ * 本文件只验**转发**这一段：`WorkspaceEntry` 把注入的 `right` 交给 `ThreePane`。
+ * `ThreePane` 自己的几何与「不传就不渲染」在 `three-pane.test.tsx` 里，别在这儿重写一遍。
+ *
+ * 为什么右栏是**注入**（`right?: () => JSX.Element`）而不是本组件自己 import 生产实现：
+ * 与 `loadFile` / `projectData` 同因——生产那份要 `useServerSync()`（右栏的会话数据按目录取），
+ * 组件自己去 context 里拿，组件测试就再也跑不成离线（本文件全程**不挂任何 provider**）。
+ */
+describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
+  test("对照：不传 `right` ⇒ 右栏（含手柄）整根不渲染", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    expect(不存在(host, "[data-slot='three-pane-right']")).toBe(true)
+    expect(不存在(host, "[data-slot='three-pane-right-group']")).toBe(true)
+  })
+
+  test("传了 `right` ⇒ 内容落在右栏里，且**中栏 / 左栏都没有它**", () => {
+    // 用一个**本页不可能撞车的标记**来找它，而不是拿「会话」这种会出现在侧栏 tab 里的词
+    // ——否则「不在左栏」那条会因为左栏本来就有「会话」两个字而假红。
+    const 标记 = "右栏内容-唯一标记-8f3a"
+    const host = mount(() => (
+      <WorkspaceEntry right={() => <div data-testid="右栏内容">{标记}</div>}>中栏</WorkspaceEntry>
+    ))
+
+    // 判据一律取**字符串**（`?.textContent ?? ""`），不取节点：`#005-01` 实测——断言失败时
+    // 若实得值是**被 Solid 渲染过的节点**，bun 的打印器会停不下来，整轮测试**挂死**而不是变红。
+    const 文本 = (sel: string) => host.querySelector(sel)?.textContent ?? ""
+    expect(文本("[data-slot='three-pane-right']")).toContain(标记)
+    // 「各归其位」这一半必须单独钉：只断「它渲染出来了」的话，一个把 right 塞进中栏的写法照样过。
+    expect(文本("[data-slot='three-pane-center']")).not.toContain(标记)
+    expect(文本("[data-slot='three-pane-left']")).not.toContain(标记)
+  })
+
+  /**
+   * 注入的内容必须**创建在 `CenterTabsProvider` 之内**——这是「注入一个访问器」而不是
+   * 「注入一个现成的元素」的真正理由（同 `titlebarRight` 的形状）。
+   * `AiSessionSlot` 要按当前模块算投影（`useCenterTabs()`），而那个 provider 是
+   * `WorkspaceEntry` 自己建的 ⇒ 内容若在**外面**被创建，它当场抛
+   * 「... must be used within a context provider」，而右栏整栏消失、**不报错在右栏上**。
+   */
+  test("注入的内容读得到工作台的模块状态（证明它创建在 provider 之内）", () => {
+    const 探针 = () => {
+      const center = useCenterTabs()
+      return <div data-testid="模块">{center.module()}</div>
+    }
+
+    const host = mount(() => <WorkspaceEntry right={() => <探针 />}>中栏</WorkspaceEntry>)
+
+    expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toBe("project")
+  })
+})

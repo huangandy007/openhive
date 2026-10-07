@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
 import { Portal } from "solid-js/web"
 import { CenterContent } from "@/center/center-content"
 import type { LoadFileContent } from "@/center/file-content"
@@ -52,6 +52,23 @@ export interface WorkspaceEntryProps {
    * （面板里项目行不可点、新建按钮禁用、文件树恒空态）。
    */
   projectData?: ProjectData
+  /**
+   * **右栏（AI 会话）**的内容（T008 / FR-010）。
+   *
+   * 同样是注入，理由与 `loadFile` / `projectData` 一字相同：生产那份要 `useServerSync()`
+   * （右栏的会话数据按目录取），组件自己去 context 里拿，本组件的测试就再也跑不成离线
+   * ——本文件全程**不挂任何 provider**。生产入口是 `pages/layout-new.tsx` 的
+   * `right={() => <AiSessionSlot />}`。
+   *
+   * **形状是访问器、不是现成的元素**（同 `titlebarRight`）：内容必须**读的时候才创建**，
+   * 且创建在 `CenterTabsProvider`（本组件自己建的）**之内**——`AiSessionSlot` 要按当前模块算投影
+   * （`useCenterTabs()`），在外面创建会当场抛错，而症状是右栏整栏消失、**错不在右栏上**。
+   *
+   * ⚠️ 条件必须落在这个 **prop 本身**（`right={props.right?.()}` 得到 `undefined`），
+   * 不能包一层 `<Show>` 再传进去：`ThreePane` 判的是 `props.right !== undefined`，
+   * 而 `<Show>` 元素恒非 `undefined`，会留下一条 360px 空栏（与 `left` 那条同因，见下面那段注释）。
+   */
+  right?: () => JSX.Element
 }
 
 /**
@@ -680,6 +697,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               </div>
             ) : undefined
           }
+          // 右栏（AI 会话，T008 / FR-010）。⚠️ `?.()` 不能省，也不能包 `<Show>`——理由见 prop 上那段注释。
+          right={props.right?.()}
         >
           {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
           <TabBar

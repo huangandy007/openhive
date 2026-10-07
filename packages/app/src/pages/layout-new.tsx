@@ -1,5 +1,6 @@
 import { createEffect, Suspense, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
+import { AiSessionSlot } from "@/ai-session/ai-session-slot"
 import { DebugBar } from "@/components/debug-bar"
 import { TabsInfoPopup } from "@/components/help-button"
 import { Titlebar, useTitlebarRightMount, type TitlebarUpdate } from "@/components/titlebar"
@@ -45,7 +46,16 @@ export default function NewLayout(props: ParentProps) {
         }
       />
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
-        <WorkspaceEntry titlebarRight={titlebarRight} projectData={PROJECT_DATA}>
+        <WorkspaceEntry
+          titlebarRight={titlebarRight}
+          projectData={PROJECT_DATA}
+          // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
+          // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
+          // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的
+          // `CenterTabsProvider` 之内（`AiSessionSlot` 要按当前模块算投影）。理由与注意事项见
+          // `workspace-entry.tsx` 的 `right` prop 上那段注释。
+          right={() => <AiSessionSlot />}
+        >
           <Suspense>{props.children}</Suspense>
         </WorkspaceEntry>
       </main>

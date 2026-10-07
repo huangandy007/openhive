@@ -2,24 +2,14 @@
 
 ## 当前任务
 
-**T007 已完成**（`/` 命令面板：输入 `/` 唤起 ＋ 模糊匹配 skill 全集；裁定 U2）→ 出参见下「T007 出参」。
-**下一个：T008**（新建「最小可用右栏会话」`session-panel.tsx`，挂 `ThreePane.right`）——它是本 feature
-里**唯一**把前面所有层接起来的那一条：右栏自挂 `DataProvider`（T001 补测得出的必要接线）、
-Hero 输入（§4.7.5）、指令卡那一行、抽屉入口 ▸、以及 **T007 的那根线**
-（`skillCommands(...)` 传进 controller 的 `commands`）。
-
-📥 **T008 收四笔**（`#002-04`，`tasks.md` 的 T008 条 ⊕ `state.md` 缺口表）：
-① 抽屉入口 ▸ ＋ 开合状态（T006，受控面板的 `open` / `onClose` 就是接缝）；
-② `availableWidth`（T004，接进右栏才会真的量到）；
-③ **`contexts`（T005）——⚠️ 中栏今天没有任何右栏读得到的「选中」状态**，喂恒空集等于「这一层永远不显示」
-（`spec.md` 的「未定项」纪律：**信号不存在就按未定项停下来问**，别自行发明）；
-④ **`/` 命令面板的接线**（T007）：把 `skillCommands(...)` 传进 controller 的 `commands`
-（⚠️ 唤起走 `onInput`，不是 `onKeyDown`）。
+**T008 已完成**（最小可用右栏会话：`session-panel.tsx` ＋ `route-session.ts` ＋ `right-pane-source.ts`
+＋ `ai-session-slot.tsx`，挂 `ThreePane.right`）→ 出参见下「T008 出参」。
+**下一个：T009**（点指令卡 ＝ 填入一句话）——它是 §4.7.1 **选中态**的产源（`activePrompt` 今天在生产里
+恒为 `undefined`），也是「点卡 → 一句话进输入框」这条链的起点；再往后 T010 接 SDK。
 
 ⚠️ 视觉规格在 `DESIGN.md §4.7`：T008 用到 §4.7.5（Hero 输入）与 §4.7.1（卡行）；不要凭记忆挑 token。
-
-⚠️ 写码时按 `DESIGN.md §4.7.0`（一行里的取用纪律）与 §4.7.1 / §4.7.2，不要凭记忆挑 token；
-§4.7.0 末尾那条 ⚠️（**别把那张对照表照抄进源码注释**）是 T004 实测踩出来的。
+§4.7.0 末尾那条 ⚠️（**别把那张对照表照抄进源码注释**）是 T004 实测踩出来的；T008 那条
+「会话行视觉是 self-decision」已进缺口表。
 
 ⚠️ **T004 前面那道门**（2026-10-07 裁定 U6 / runbook D0-5）之所以存在：T004 是**第一个有视觉值的
 任务**，而参照物取样不到（`docs/superpowers/specs/design-reference/figma-export/` 只有 logo 与一份
@@ -56,6 +46,12 @@ T003 之所以能先做，正因为它**一个视觉值都没有**（纯函数�
   `skillCommands`）＋ 11 条用例（其中 7 条**真 controller ＋ 真状态机 ＋ 真 `fuzzysort`** 的端到端）；
   10 批变异（8 批产品 ＋ 2 批**反向注入上游**）＋ 2 批报警，逐条实测。**接线归 T008**。
   连带**就地更正 `plan.md` 的三处旧述**（`#002-06`）。
+- **T008**（2026-10-07）· 新建「最小可用右栏会话」并挂进 `ThreePane.right` → 出参见下「T008 出参」。
+  `session-panel.tsx`（自挂 `DataProvider` ＋ 消息流 ＋ 会话行 ＋ 卡行 ＋ 抽屉入口 ＋ Hero 输入）
+  ＋ `route-session.ts` ＋ `right-pane-source.ts` ＋ `ai-session-slot.tsx`；新增 37 条用例
+  （另 `workspace-entry.test.tsx` 补 3 条）；**6 批变异 + 1 批工具链假红的排查**。
+  连带**就地更正 `plan.md §②` 一句被证伪的前提**（`useSync()` / `useSDK()` 在外壳层并不可用），
+  并在**自己刚写的代码里**抓到一个真缺陷（`.then` 里注册的 `onCleanup` 没有 owner ⇒ 引用计数只增不减）。
 - **U6 起草件 → 定稿**（2026-10-07）· 起草 → 用户审 → **移入 `openhive-DESIGN.md` 作 §4.7**（并改
   `§3.1` 的圆角口径）→ 出参见下「U6 起草件出参」。**起草件本身已删**（宪法 §八：DESIGN.md 是视觉真理的
   单一来源；留副本＝两份真相会漂，`#003-05`），其「取数命令核对记录」整段**挪进**了本节（不丢证据、
@@ -664,6 +660,120 @@ $ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                 
 
 ---
 
+## T008 出参 · 最小可用右栏会话（2026-10-07）
+
+### 产物（6 处产品码 ＋ 1 处测试预载修复；其中 3 个新文件带测试、1 个新文件是薄接线）
+
+| 文件 | 是什么 | 用例 |
+|---|---|---|
+| `ai-session/route-session.ts` | 从路由路径解出会话 id。**为什么要它**：右栏挂在 shell 层（`ThreePane.right`），而 shell 在所有路由**之上** ⇒ 它拿不到 `:id` 路由参数 | 10 条 |
+| `ai-session/right-pane-source.ts` | 「路由 → 会话 id → 那个会话的目录 → 那个目录的会话数据」那条**异步链**（含**代次**防竞态 ＋ `ready` 三样齐） | 9 条 |
+| `ai-session/session-panel.tsx` | 右栏本体：**自挂** `DataProvider` ＋ `SessionTurn` 消息流 ＋ 会话行（切换 / ＋新会话）＋ 常用操作卡行 ＋ 抽屉入口 ▸ ＋ Hero 输入 | 18 条 |
+| `ai-session/ai-session-slot.tsx` | 生产组装（读 `useLocation` / `useServerSync` / `useCenterTabs` 三份 context） | **0（缺口，见缺口表）** |
+| `workspace/workspace-entry.tsx` | 新增 `right?: () => JSX.Element` **访问器** prop，接到 `ThreePane` 的 `right` 槽 | ＋3 条（该文件共 95 条） |
+| `pages/layout-new.tsx` | 挂载点：`right={() => <AiSessionSlot />}` | —— |
+| `solid-jsx.ts`（测试预载） | 修一条**假红**：Bun 的转译缓存把 `packages/ui` 的 `sprite.svg` 按 **JSX** 解析（见下「门禁」里那段 ⚠️） | —— |
+
+### 2026-10-07 用户裁定五条（开工前问的，全按建议）
+
+| # | 问题 | 裁定 |
+|---|---|---|
+| ① | `contexts`（T005 的上下文指令层）需要「中栏选中了什么」，而这个信号今天在仓库里不存在 | **本轮不接这一层** ⇒ 缺口表那条继续挂着，产源是 F6/F7 |
+| ② | 会话「新建 / 切换」做成什么形态（§4.7.5 只写「走 SDK」，没写长相；原生 `SessionHeader` 依赖页面级 context） | **右栏自带的会话行** |
+| ③ | 右栏的「当前会话」从哪来（全仓唯一的「当前会话」是路由参数，而右栏在路由之外） | **右栏自带**（从路由路径解 id） |
+| ④ | 「＋ 新会话」本轮调不调 SDK `session.create` | **不调，只留接缝** |
+| ⑤ | 右栏要一份「当前目录」才取得到数，而 shell 层拿不到 | **A′：解出会话 id，目录向会话要**（`session.lineage.resolve`） |
+
+### 两条被实测推翻的事（都就地更正/落证据，不写成「本来就知道」）
+
+**① `plan.md §②` 那句「`useSync()` / `useSDK()` 在 `WorkspaceEntry` 那一层已可用」——假的。**
+两处都错：`SDKProvider`（`context/sdk.tsx`）挂在**路由层**（`app.tsx` 的 `ResolvedDraftRoute` 那一支，
+渲染进**中栏**），不在 `SelectedServerProviders` 里；而 `useSync()` **根本不是 context**——它是
+`context/sync.tsx` 里 `serverSync().ensureDirSyncContext(sdk().directory)` 的一层薄组合、**依赖 `useSDK()`**。
+外壳层真正取得到的是 **`useServerSync()`**。⇒ 右栏写的是
+`useServerSync().ensureDirSyncContext(<这个会话的目录>)`，而目录**向会话要**（裁定 ⑤）。
+`plan.md §②` 已就地更正（`#002-06`）。
+
+**② 我自己在 T008 写的 `right-pane-source.ts` 里有一个真缺陷：`onCleanup` 在 `.then` 里没有 owner。**
+原写法把取数（`ensureDirSyncContext`）放在 effect 的 `.then` 回调里 ⇒ 探针实测（2026-10-07，
+bun 1.3.14 ＋ solid-js 1.9.10）：**effect 体内 `getOwner()` 非空，同一个 effect 的 `.then` 里是 `null`**
+（探针原文：`同步owner有？ true ｜then里的owner有？ false`，卸载后注册的回调**一条都没跑**）。
+而 `createRefCountMap`（`utils/refcount.ts`，`ensureDirSyncContext` 用的就是它）**把释放动作写在
+`onCleanup` 里** ⇒ 每换一次会话只**加**引用、从不减，目录同步上下文再也放不掉——**不报错、不变红**。
+**修法**：`data` 由目录**派生**成 `createMemo`（取数发生在有 owner 的计算里），与 `context/sync.tsx`
+的 `useSync()` 同形。有牙：变异 **M2**（改回 `.then` 写法）**恰红 1 条**。
+
+### 变异验证（6 批注入，逐批「注入 → 跑 → 还原」）
+
+| 注入 | 实得 | 类 |
+|---|---|---|
+| **M1** `workspace-entry.tsx` 的 `right={props.right?.()}` 换成 `right={undefined}` | **93 pass / 2 fail**——红的正是 T008 新加的两条（内容落在右栏、内容创建在 provider 之内）；**那条对照（不传 `right` ⇒ 右栏不在）照旧绿** | ① 恰红 |
+| **M2** `right-pane-source.ts` 的 `data` 改回「effect 的 `.then` 里 `dataFor` ＋ 信号」 | **8 pass / 1 fail**——恰是那条「`onCleanup` 要真的跑」 | ① 恰红 |
+| **M3** `ready` 不再等目录（`if (!id) return undefined` ＋ `dir ?? ""` ＋ `数据!`） | **8 pass / 1 fail**——恰是那条「目录还没解出来之前不算就绪」 | ① 恰红 |
+| **M4** `session-panel.tsx` 的 `commands: 命令集` 换成 `() => []` | **16 pass / 2 fail**——`/` 唤起 ＋ 「继续打字真的在筛」；**那条对照（打普通字 ⇒ 弹层不开）照旧绿** | ① 恰红 |
+| **M5** `session-panel.tsx` 摘掉自挂的 `DataProvider` | **2 pass / 16 fail**——凡是要挂载渲染的都当场抛（`SessionTurn` 要 `useData()`）；活下来的 2 条是**那条对照**（它本来就断言「不挂会抛」）与「空会话 ⇒ 零 turn」（没有消息就不渲染 `SessionTurn`） | **② 整组红**（据实记，不写成恰红，`#003-03`） |
+| **M6** `session-panel.tsx` 抽屉入口的 `set抽屉开(true)` 改成 `(false)` | **16 pass / 2 fail**——恰是两条抽屉用例（入口开 / 关闭钮收） | ① 恰红 |
+
+**M5 属 `#003-03` 的第 ② 类**：摘的是一个**全体依赖**的 provider，红得广是应该的；判据是那 2 条活下来的
+**恰是应该活下来的**（对照 ＋ 无需渲染的边界），而不是「红得多就算数」。
+
+**三条断言在写的过程中被改准了**（记下来，因为它们是「测试自己错」而不是「产品错」）：
+
+- 「内容落在右栏」那条一度写成 `expect(host.querySelector("[data-slot='three-pane-left']")).toBeNull()`
+  ⇒ **整轮 `bun test` 挂死**（EXIT=124）。根因是 `#005-01`：左栏**存在**（模块默认 `project`）⇒ 断言失败，
+  而实得值是**被 Solid 渲染过的节点**，bun 的打印器停不下来。**改法**：判据取**字符串**
+  （`?.textContent ?? ""`），并用一个**本页不可能撞车的标记**（否则「不在左栏」会因为侧栏本来就有
+  「会话」两个字而假红）。
+- 「会话行取 `layer-01`」那条一开始只钉了正向；补上**对照**（展开的列表必须是白底）才算数（`#005-07`）。
+- `/` 那条补了一条**对照**（打普通字 ⇒ 弹层不开）——只写正向的话，「浮层恒开」也能过。
+
+### 门禁（2026-10-07 实测，**串行**跑；`#003-01`）
+
+| 门 | 结果 |
+|---|---|
+| `packages/app` 组件档（`bun run test:components`，34 文件） | **569 pass / 0 fail** |
+| `packages/app` 单元档（`bun run test:unit`，125 文件） | **964 pass / 0 fail** |
+| `ai-session` 全目录（browser 条件，9 文件） | **109 pass / 0 fail**（T007 基线 72 ⇒ T008 ＋37） |
+| `workspace-entry.test.tsx`（单文件） | **95 pass / 0 fail**（含 T008 的 3 条） |
+| `bun run lint:openhive`（**仓库根**跑；`#004-10`） | **0 errors**；25 → **23 warnings**，且**本次新增/改动文件 0 命中**（判据按 `#001-02`；存量那 23 条在 `center/views`、`center/tab-bar.tsx`，非 006 引入） |
+| `packages/app` 的 `typecheck`（`tsgo -b`） | **EXIT=0** |
+| `layout-new.tsx` 那 1 条 `consistent-return` | **非本次引入**（`version()` 那段是 HEAD 原文，`git diff` 只有 1 行 import ＋ 1 个 prop）；且 `pages/` **不在** `lint:openhive` 的扫描范围里 |
+
+⚠️ **一条工具链假红，记在这里免得下一个人重查**：跑 `workspace-entry.test.tsx` 时一度报
+`Expected JSX element name but found "?"`，指向 **`packages/ui` 的 `sprite.svg` 第 1 行**——看着像
+「上游资源坏了」，而 `git status` 干净、同一条链在别的测试文件里照样绿。**根因是 Bun 的转译缓存**
+（`C:\Users\Administrator\.bun\install\cache\@t@\`）：登记了 bun 插件之后，那个 `.svg` 的 loader 判定
+**不稳定，而且错的那次会被写进缓存**（清空缓存后第一次过、第二次起次次红）。
+**判据**（认这条现场用）：把 `BUN_RUNTIME_TRANSPILER_CACHE_PATH` 指到一个**空目录**再跑 ⇒ 绿；用默认缓存
+⇒ 红。**修法**：在 `packages/app/solid-jsx.ts` 里显式给 `.svg` 挂一个 `onLoad`（默认导出 ＝ 路径串，
+`loader: "js"`，照 Vite 的资源导入语义）⇒ 缓存里存的就是我们返回的产物。修完**默认缓存连跑 3 次全绿**。
+
+### 待落 LEARNINGS 的候选（**feature 收尾时**按模板整理，别丢）
+
+1. **Bun 的转译缓存会在「登记了插件」的情况下把 `.svg` 按错 loader 缓存** ⇒ 假红指向上游资源，
+   而 `git status` 干净。判据：`BUN_RUNTIME_TRANSPILER_CACHE_PATH` 指空目录跑 ⇒ 绿 ⇒ 是缓存不是代码。
+   修法：在预载插件里显式给 `.svg` 挂 `onLoad`。
+2. **`onCleanup` 需要一个 owner，而 effect 的 `.then` 回调里 `getOwner()` 是 `null`** ⇒
+   `createRefCountMap`（`utils/refcount.ts`）的释放**永不执行**，引用计数只增不减（不报错、不变红）。
+   判据：把「取数」放进有 owner 的**计算**（`createMemo`）里，并用一条「释放回调真的跑了」的用例钉住。
+3. **`bun test --conditions=solid` 解析到的是 Solid 的 SSR 构建**（`dist/server.js`，响应式是**一次性**的）
+   ⇒ 任何测响应式（`createEffect` / 换信号）的文件写成 `.test.ts` 会**假红**。落地：这类文件一律
+   `.test.tsx`，由 `test:components`（`--conditions=browser`）跑，`test:unit` 的
+   `--path-ignore-patterns` 把 `.test.tsx` 排除在外。（`solid-jsx.ts` 文件头有实测原文。）
+4. **块注释里别写 glob**（`#004-06` 复发一次）：`right-pane-source.test.tsx` 文件头注释里差点写出
+   `星号＋斜杠` 那条排除模式，会**当场闭合块注释**——已改成文字描述。
+
+### 交接
+
+- **T009**（点指令卡 ＝ 填入一句话）：本条的 Hero 输入把 `onSubmitPrompt` 交出去，但**还没有人接**
+  （生产里 `ai-session-slot.tsx` 没传）。`activePrompt` 那条缺口（T004 遗留）**仍在**——选中态在生产里
+  还看不见，T009 是它的产源。
+- **T010**（AI 执行 ＋ 过程展示）：`onSubmitPrompt` 的接收方就是它（真正调 SDK `session.prompt`）。
+- **F6 / F7 收**（`#002-04`）：`contexts` 的产源（中栏选中）＝ 上下文指令层在生产里能不能显示，取决于它。
+- **T013**：`session-panel` 这 18 条已经在，**别再写一遍**——该做的是换一份注入的清单 / 数据跑。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -680,29 +790,36 @@ $ grep -n "MANIFESTS" packages/app/src/ai-session/projection.ts                 
 | **`SkillCapability.group` 的取值是占位** | `capabilities.ts` | skill 无分组 / 分类 / 标签元数据（实测）⇒ 今天两个 skill 都填「开发工具」，是 006 手填的。真来源 = 009 的业务分类 / 标签（已进 009 的 📥 块） |
 | **`cards` 今天全为空** | `capabilities.ts` | 006 只造机制，卡片文案随模块（F6 / F7 / F9 落地时填）。今天两个 skill 是 opencode 开发工具链的，对民警无指令卡语义 ⇒ 编文案就是造数据 |
 | **指令卡的 `context` 层触发条件未进类型** | `InstructionCard` | FR-003 的「随中栏选中浮现」取决于中栏当前上下文。**2026-10-07 T005 已就地兑现**（补 `context?: string` 可选字段 ＋ 注释 ＋ 两条报警断言）——**缺口已闭合**，此行留作出处，也是 006 那句 self-delegation（「T005 落地时把触发字段加进本类型」）的兑现记录 |
-| **`contexts` 生产里必为空 ⇒ 上下文指令这一层在生产里必然不渲染** | T005 → T008 | **实测**（不是推断）：中栏**没有任何右栏读得到的「选中」状态**——`CenterTabState` 只有 `tabs` / `active` / `module`（`center/` 侧），`project/file-tree.tsx` 的选中行是组件**内部**状态。且 `MANIFESTS` 的 `cards` 全为空 ⇒ 就算喂了 `contexts` 也没卡可浮。今天测绿的是**纯组件**（喂夹具），**不是**「右栏能看到上下文指令」。真正的产源是 **F6 资金 / F7 话单**的中栏选中。已落 📥 进 `tasks.md` 的 T008 条（`#002-04`） |
+| **`contexts` 生产里必为空 ⇒ 上下文指令这一层在生产里必然不渲染** | T005 → T008 | **实测**（不是推断）：中栏**没有任何右栏读得到的「选中」状态**——`CenterTabState` 只有 `tabs` / `active` / `module`（`center/` 侧），`project/file-tree.tsx` 的选中行是组件**内部**状态。且 `MANIFESTS` 的 `cards` 全为空 ⇒ 就算喂了 `contexts` 也没卡可浮。今天测绿的是**纯组件**（喂夹具），**不是**「右栏能看到上下文指令」。真正的产源是 **F6 资金 / F7 话单**的中栏选中。**2026-10-07 T008 开工时按未定项问了，用户裁定「本轮不接这一层」** ⇒ `session-panel.tsx` 里**没有** `ContextCards`（喂恒空集＝把「这一层永远不显示」伪装成已接线，故宁可不接）。📤 **F6 / F7 收**（`#002-04`） |
 | **`context` 的取值词表不由 006 定义** | `InstructionCard.context` | 同 `group` 那条：US2 场景 1 举的是「选中账户」「上传文件」，但真正的词表是各模块内容作者的（F6 / F7）。006 只钉一条能钉实的性质——「上下文层的卡必须带**非空**值」（报警断言），渲染层对畸形声明 **fail-closed** |
 | **`capabilities.ts` 形状本次有变（006→009 契约）** | T005 → 009 | 加了一个**可选字段** `context`，**未**重塑类型。009 的 Prerequisites 把「F8 指令卡已落地」列为前置 ⇒ 009 落地时仍须按它自己的资产元数据复核一遍（本文件头也写着这条） |
 | **U5 的两条依赖** | T011 / T012 | 「确定性走工具/代码执行路径」「高风险强制 ask」的落地依赖：007 / 008 的 `tasks.md` 接收方表 |
-| **框架今天还没有生产调用点** | T003 → T008 | `projectCapabilities` 目前**仍只被测试调用**。T004 交给它的是 `cards` 这个 prop（组件本身能渲染了），但**没有任何生产代码把投影出来的卡喂进去**，整行也没挂进右栏 ⇒ 今天有一个「看上去已经能投影了」的错觉：测绿的是**纯函数 ＋ 组件**，**不是**「右栏能看到卡」。别把它读成「FR-002 已实现」 |
+| **框架今天还没有生产调用点** | T003 → T008 | `projectCapabilities` 目前**仍只被测试调用**。T004 交给它的是 `cards` 这个 prop（组件本身能渲染了），但**没有任何生产代码把投影出来的卡喂进去**，整行也没挂进右栏 ⇒ 今天有一个「看上去已经能投影了」的错觉：测绿的是**纯函数 ＋ 组件**，**不是**「右栏能看到卡」。别把它读成「FR-002 已实现」。✅ **T008 已接线（2026-10-07）**：`ai-session-slot.tsx` 调 `projectCapabilities(MANIFESTS, center.module())`，一次投影喂四层（`SessionPanel` 的 `projection` 是**必填**，忘了传会红）。⚠️ **但**：① `MANIFESTS` 的 `cards` 今天全为空 ⇒ 生产里卡行**是空的**；② `contexts` 那一层按裁定 ① 不接。即「**接线通了、还没有内容**」 |
 | **`activePrompt` 生产里恒为 `undefined`** | T004 → T009 | §4.7.1 的**选中态**靠它驱动（输入框那句话来自哪张卡就点亮哪张）。今天它是**测试专用接缝**——「点卡片 = 填入一句话」是 T009 的活 ⇒ **选中态在生产里还看不见**。已按 `#002-04` 落进 `tasks.md` 的 T009 条 |
 | **「选完菜单收起」不可断言** | T004 / `MenuV2` | happy-dom 无 CSS 引擎 ⇒ Kobalte 的 `Presence` 等不到 exit 动画（实测 200ms 后菜单项仍在 `document.body`）。已断的是**本组件的契约**（「⋯」出现、菜单列出被收走的那几张、点项回调带对的卡）；**「收起」是 `MenuV2` 自己的行为**，未断，也没办法在此环境断（`#002-02`：测不了的写成缺口，不写成覆盖） |
-| **`availableWidth` 尚无生产来源** | T004 → T008 | 本行自己会量（`ResizeObserver`，同 `center/tab-bar.tsx`；无该 API 时保持「还没量到」），但**整行今天没接进右栏** ⇒ 生产里不会真的发生溢出。接进 `ThreePane.right` 是 T008 |
+| **`availableWidth` 尚无生产来源** | T004 → T008 | 本行自己会量（`ResizeObserver`，同 `center/tab-bar.tsx`；无该 API 时保持「还没量到」），但**整行今天没接进右栏** ⇒ 生产里不会真的发生溢出。接进 `ThreePane.right` 是 T008。✅ **T008 已接线（2026-10-07）**：**故意不传宽度**——卡行一挂进右栏就自己在量（转一手就多一个会漂的来源）；`session-panel.test.tsx` 有 1 条用例把「它观察的是卡行自己」钉住 |
 | **`drawer` 的分组顺序** | `projection.ts` → T006 | **2026-10-07 已裁定：保持框架给的「首次出现顺序」，不排序** ⇒ T006 照搬输入顺序、一行排序都不加（已由变异 **M10** 钉住：加 `localeCompare` 当场红）。**T003 留下的那条未定项至此闭合**，此行留作出处 |
-| **抽屉今天没被任何生产视图渲染** | T006 → T008 | 组件测绿 ≠ 民警能看到抽屉。本组件**零生产调用点**（`projectCapabilities` 本身也仍只被测试调用）。与 T004 / T005 那两条缺口同形：测绿的是**纯组件**，不是「右栏能开抽屉」。入口与挂载点都在 T008 |
+| **抽屉今天没被任何生产视图渲染** | T006 → T008 | 组件测绿 ≠ 民警能看到抽屉。本组件**零生产调用点**（`projectCapabilities` 本身也仍只被测试调用）。与 T004 / T005 那两条缺口同形：测绿的是**纯组件**，不是「右栏能开抽屉」。入口与挂载点都在 T008。✅ **T008 已接线（2026-10-07）**：入口 ▸（`session-tools` 行）＋ 开合状态都在 `session-panel.tsx`，本体 `<SkillDrawer>` 挂同一容器（`relative` 那一层） |
 | **抽屉头部那一行是 self-decision** | T006 / `openhive-DESIGN.md §4.7.3` | §4.7.3 的表里**没有 header 这一格**（只写了组标题 / 条目两行 / 底面 / 圆角 / 阴影 / 行高 / 无图标）。本条的取法是**对齐原生右栏抽屉**（`components/help-button.tsx`：`h-[40px]` ＋ 下边框 ＋ `px-4` ＋ `IconButtonV2`／`xmark-small`＋`ghost-muted`），**不是设计给的** ⇒ T008 接进去时若它丑、或 §4.7 后续补写 header 规格，**以 DESIGN 为准**（宪法 §八：DESIGN.md 是视觉真理的单一来源） |
-| **命令面板今天没被任何生产视图渲染** | T007 → T008 | 与「框架还没有生产调用点」「抽屉今天没被任何生产视图渲染」同形：`skillCommands` **零生产调用点**（全仓只有 `command-palette.test.tsx` 调它）。测绿的是**纯函数 ＋ 真实原生机器**，**不是**「民警在右栏打 `/` 能看到 skill」——那根线（把结果传进 Hero 输入的 controller `commands`）在 T008 |
+| **命令面板今天没被任何生产视图渲染** | T007 → T008 | 与「框架还没有生产调用点」「抽屉今天没被任何生产视图渲染」同形：`skillCommands` **零生产调用点**（全仓只有 `command-palette.test.tsx` 调它）。测绿的是**纯函数 ＋ 真实原生机器**，**不是**「民警在右栏打 `/` 能看到 skill」——那根线（把结果传进 Hero 输入的 controller `commands`）在 T008。✅ **T008 已接线（2026-10-07）**：`命令集 = createMemo(() => skillCommands(props.projection.all))` 传进 controller；`session-panel.test.tsx` 有 2 条＋1 条对照 |
 | **列表里显示的是连接键，不是中文名** | T007 / 原生 `PromptInputV2Popover` | 实测定下来的：原生弹层**只渲染 `item.label`**（`index.tsx`：`<span>{item.label}</span>` ＋ `description`，**`title` 根本不显示**），而 `label` 同时决定「选中后插进正文的那串」⇒ 二者拆不开。2026-10-07 用户裁定取连接键（理由：插进正文的 token 要能让下游对回 skill）。**代价**：列表里民警看到的是 `/fund-link-analysis` 而非「资金关联分析」（`description` 仍是中文，且**打中文能搜到**）。要显示中文名只能改上游 `PromptInputV2Popover` ⇒ 与第一号约束冲突，**不改**；若将来要改，这是**可提上游**的一条 |
 | **很散的子序列匹不上** | T007 / `fuzzysort` 默认阈值 | 实测：`/资金分析` 命中「资金关联分析」（跳过「关联」，**真子序列** ✅），而 `/flz` **不**命中 `fund-link-analysis`（f-z-l 之间隔太远）。**非本次引入**——上游自定义命令走的是同一个 `useFilteredList`，行为完全一致。**不改**（改阈值要动上游 `interaction.ts`，且会让匹配变噪声） |
+| **`ai-session-slot.tsx` 无测试（薄接线）** | T008 | 它是**纯接线**（读三份 context、把结果交给上面两件），**没有分支、没有状态**；而 `useServerSync()` 的 provider 要一个**活着的服务器连接**才建得起来 ⇒ `bun test` 里挂不起来。按 `LEARNINGS #002-02`：**写成缺口，不写成覆盖**。它里面**真的会出错**的两件事都单独抽出来测了：① 「路由 → id → 目录 → 数据」那条异步链 ＝ `right-pane-source.test.tsx`（9 条）；② 投影 ＝ `projection.test.ts`。**未覆盖的是「这三份 context 名字接对了」**——名字接错的症状是右栏整栏不出现（`Show` 恒假）或当场抛，不会静默 |
+| **`onSubmitPrompt` 生产里没人接** | T008 → T010 | 用户按回车的**终点**是 T010（真正调 SDK `session.prompt`）。`SessionPanel` 只把正文交出去（`controller.value()`），而 `ai-session-slot.tsx` **没传**这个 prop ⇒ 今天回车**什么都不会发生**。`activePrompt`（T004 遗留）也仍为空 ⇒ **选中态在生产里还看不见**（T009 是它的产源） |
+| **「＋ 新会话」只留接缝** | T008 / 用户裁定 ④ | 按钮调的是 `props.onNewSession?.()`，而生产侧**没传**（本轮**不调** SDK `session.create`）。同样地 `onSelectSession` 也没接 ⇒ **点会话列表不会真的切会话**（受控接缝的两头都待 T010 那一段落地） |
+| **会话列表 = 注入数据的 `session`，本栏不自己拉** | T008 | 列表渲染的是 `props.data.session`（`For` 直接吃它），**不**调 `session.list`。故数据没同步到的那一瞬列表可能是空的（当前会话名会退回显示 id）。**不为此加保护代码**——T010 接 SDK 时若需要「主动拉一次列表」，那是那一条的决定 |
+| **会话行的视觉是 self-decision** | T008 / `openhive-DESIGN.md §4.7.5` | §4.7.5 只写了「新建 / 切换走 SDK `session.create` / `session.list`」，**没写长什么样**（原生 `SessionHeader` 依赖页面级 context，搬不进来）。本条的取法是**对齐原生右栏抽屉那一档**（`layer-01` 底 ＋ `text-[13px]`），**不是设计给的** ⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八）。⚠️ 同时复核 `skill-drawer.tsx` 那条同型缺口（抽屉 header 也是照原生抄的） |
 
 ---
 
 ## 最后更新
 
-2026-10-07（**T007 已完成**：`/` 命令面板——§4.7.4 的「能换数据源就不新写」**成立**，产物是
-一个纯映射函数＋ 11 条用例（7 条端到端真驱动原生 controller）→ 出参见上「T007 出参」
-（10 批变异，含 2 批**反向注入上游** ＋ 2 批报警验证 ＋ 五道门禁；**未闭合缺口，新增 3 条**
-——接线归 T008、列表显示连接键、fuzzysort 阈值；连带就地更正 `plan.md` 三处旧述）。
-**下一个 T008**——新建「最小可用右栏会话」`session-panel.tsx` 挂 `ThreePane.right`：它是把前七条
-全接起来的那一条（`DataProvider` 自挂 ＋ Hero 输入 ＋ 指令卡行 ＋ 抽屉入口 ▸ ＋ `skillCommands` 接线）；
-⚠️ 其中 **`contexts` 今天没有生产来源**（中栏无右栏读得到的选中态）——按未定项**先问**，别自行发明）
+2026-10-07（**T008 已完成**：最小可用右栏会话挂进 `ThreePane.right`——新增 4 个文件（其中 3 个带测试、
+1 个是薄接线）、6 个门禁里的 5 道全绿 → 出参见上「T008 出参」
+（**6 批变异**，其中 5 批恰红、1 批属 `#003-03` 第 ② 类；另排查掉一条**工具链假红**＝ Bun 转译缓存把
+`sprite.svg` 当 JSX 缓存；连带就地更正 `plan.md §②` 一句被证伪的前提；并在**自己新写的代码里**抓到一个
+真缺陷——`.then` 里注册的 `onCleanup` 没有 owner ⇒ 引用计数泄漏）。
+**闭合缺口 4 条**（`availableWidth` / 框架无生产调用点 / 抽屉 / 命令面板 各一条「今天没被生产渲染」），
+**新增缺口 6 条**（薄接线无测试、`onSubmitPrompt` 没人接、＋新会话只留接缝、会话列表只读注入数据、
+会话行视觉是 self-decision、`contexts` 那层按用户裁定**本轮不接**）。
+**下一个 T009**——点指令卡 ＝ 填入一句话（§4.7.1 选中态 `activePrompt` 的产源）。

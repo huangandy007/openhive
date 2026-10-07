@@ -62,7 +62,10 @@ packages/app/src/
 │   │                            # ⚠️ 2026-10-07 T007 就地更正：原写 `command-palette.tsx`「新增」
 │   │                            # ——原生 `v2/prompt-input` 自带的弹层本来就挂在 `/` 上（`DESIGN.md`
 │   │                            # §4.7.4 的硬指令「能换数据源就不新写」），故**没有新组件**，只有这个纯函数
-│   └── session-panel.tsx        # 右栏最小可用会话（消息流 + Hero 输入，挂 ThreePane 的 right 槽）
+│   ├── session-panel.tsx        # 右栏最小可用会话（消息流 + Hero 输入，挂 ThreePane 的 right 槽）
+│   ├── route-session.ts         # 从路由路径解出会话 id（T008；外壳层拿不到 `:id` 路由参数）
+│   ├── right-pane-source.ts     # 「路由 id → 目录 → 数据」那条异步链（T008，可单测）
+│   └── ai-session-slot.tsx      # 生产组装：三份 context 接进上面两件（T008，薄接线，见 state.md 缺口表）
 
 skill/
 └── （各模块 skill 声明能力清单，供指令卡框架投影）
@@ -76,7 +79,7 @@ skill/
 
 | 事实 | 取数（实测） |
 |---|---|
-| 右栏**槽位**存在但**生产未接线** | `packages/app/src/workspace/three-pane.tsx` 的 `ThreePaneProps.right?`（不传则整栏含手柄不渲染）；唯一生产调用点 `packages/app/src/workspace/workspace-entry.tsx` 只传 `left` 与 `children` |
+| 右栏**槽位**存在但**生产未接线** | `packages/app/src/workspace/three-pane.tsx` 的 `ThreePaneProps.right?`（不传则整栏含手柄不渲染）；唯一生产调用点 `packages/app/src/workspace/workspace-entry.tsx` 只传 `left` 与 `children`。<br>✅ **2026-10-07 T008 已接线**：`workspace-entry.tsx` 新增 `right?: () => JSX.Element` 访问器 prop，`pages/layout-new.tsx` 传 `right={() => <AiSessionSlot />}`（3 条用例，含变异 M1 恰红） |
 | `SessionSidePanel` **不是**消息流 | 定义在 `packages/app/src/pages/session/session-side-panel.tsx`，props 是 `canReview` / `diffs` / `reviewPanel` / `fileBrowserState` —— review-diff ＋ 文件树；仅被原生会话页 `packages/app/src/pages/session.tsx` 使用 |
 | 原生消息流**耦合过重**，不适合搬进右栏 | `packages/app/src/pages/session/timeline/message-timeline.tsx` 的 `MessageTimeline` 有 **20 个 props**（过半是滚动机制 `scroll` / `setScrollRef` / `onAutoScrollHandleScroll` / `hasScrollGesture` / `onHistoryScroll` / `shouldAnchorBottom`…），组件内部直接用 `useSessionKey()` / `useSync()` / `useSDK()` 等**页面级** context |
 | 可复用的**原语**在 `@opencode-ai/session-ui` | `session-turn`（`SessionTurn({sessionID, messageID, messages?, actions?, …})`）、`message-part`、`markdown`、`v2/prompt-input`（Hero 输入）；数据由 `@opencode-ai/session-ui/context` 的 `DataProvider` / `useData` 提供 |
@@ -85,11 +88,27 @@ skill/
 
 **裁定（U1(c)）**：右栏落地**最小可用会话**＝消息流（`SessionTurn` 逐个渲染）＋ Hero 输入（`v2/prompt-input`）＋ 会话新建/切换。**不引入** `MessageTimeline`，**不改** `SessionSidePanel`。
 
-**必要的一道接线（补测得出）**：右栏须**自挂一份 `DataProvider`**。可行为何成立——`useSync()` / `useSDK()`
-由 `app.tsx` 的 `SelectedServerProviders` 提供，**在 `WorkspaceEntry` 那一层已可用**（它们在 `NewLayout` 之上），
-故右栏可写 `<DataProvider data={sync().data} directory={…}>…</DataProvider>`；`enterprise` 的分享页
+**必要的一道接线（补测得出）**：右栏须**自挂一份 `DataProvider`**。`enterprise` 的分享页
 （`packages/enterprise/src/routes/share/[shareID].tsx`）与 storybook 都有**独立挂载**先例。
-⇒ **T008 的 RED 用例第一件事就是这条**：不挂 `DataProvider` 时右栏必须红（证伪「原生 set 里已有」的错觉）。
+⇒ **T008 的 RED 用例第一件事就是这条**：不挂 `DataProvider` 时右栏必须红（证伪「原生 set 里已有」的错觉）
+——**已兑现**：`session-panel.test.tsx` 的第一条**对照**就是不挂时 `SessionTurn` 当场抛
+`Data context must be used within a context provider`。
+
+> ⚠️ **2026-10-07 T008 就地更正一句（`#002-06`：改一处就 grep 全部同类）**：本节原写
+> 「`useSync()` / `useSDK()` 由 `app.tsx` 的 `SelectedServerProviders` 提供，**在 `WorkspaceEntry`
+> 那一层已可用**」——**实测不成立**，两处都错：
+> ① `SDKProvider`（`useSDK` 的 provider，`packages/app/src/context/sdk.tsx`）挂在**路由层**
+> （`app.tsx` 的 `ResolvedDraftRoute` 那一支，渲染进**中栏**的 `{props.children}`），**不在**
+> `SelectedServerProviders` 里（后者逐字只给 `ServerKey → ServerSDKProvider → ServerSyncProvider`）；
+> ② `useSync()` **根本不是 context**——它是 `context/sync.tsx` 里
+> `serverSync().ensureDirSyncContext(sdk().directory)` 的一层**薄组合**，**依赖 `useSDK()`**。
+>
+> ⇒ 外壳层（`NewLayout` / `WorkspaceEntry`）真正取得到的是 **`useServerSync()`**，它的
+> `ensureDirSyncContext(目录)` 正是右栏要的那一份。于是右栏取数**不经 `useSync()`**，写的是
+> `useServerSync().ensureDirSyncContext(<这个会话的目录>)`；而「那个目录」也**不是** `sdk().directory`
+> （那是**路由**那一条的目录）——新布局的 URL 里只有会话 id，故目录得**向会话要**
+> （`session.lineage.resolve(id)`，2026-10-07 用户裁定 **A′**）。落点：
+> `app/src/ai-session/ai-session-slot.tsx`（生产组装）＋ `right-pane-source.ts`（那条解析链，单测覆盖）。
 
 ## 前端换皮区（右栏会话 + 指令卡）
 
