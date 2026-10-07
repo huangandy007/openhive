@@ -119,6 +119,9 @@
     `session-panel.tsx` 的 `session-tools` 行（`drawer-entry` 钮 ＋ `抽屉开` 信号，2 条用例）；
     ④ `/` 命令面板接线 —— `命令集 = createMemo(() => skillCommands(props.projection.all))` 传进
     controller 的 `commands`（2 条用例 ＋ 1 条**对照**）。
+    ⚠️ **但本条的出参里有半句当时没兑现**：「可切换会话」——`onNewSession` / `onSelectSession` **生产侧
+    都没传**（`ai-session-slot.tsx` 只传了 `data` / `directory` / `sessionID` / `projection` /
+    `onSubmitPrompt`）⇒ 点会话列表不切、点「＋新会话」不建。出参见 T015。
 - [x] T009 [FE·新增] 实现点指令卡 = 填入一句话 [FR-007] [T003] [出参：点卡片填入一句话]（2026-10-07 完成）
   - **出参落地**：见 `state.md`「T009 出参」——**2 处产品码 ＋ 2 处测试，没有新文件**：
     `session-panel.tsx` 把 `activePrompt={controller.value()}` 与
@@ -228,6 +231,33 @@
   - 📤 **F6 / F7 收**：本文件用的是**产品声明的通用删除类清单**；**业务高风险动作清单 ＋「判定涉案」的
     判定逻辑**仍归它们（📤-2，`tasks.md` 下方那一节不动）。
 
+## Phase 8: US4 补 · 右栏会话管理（2026-10-07 裁定补开）
+
+- [ ] T015 [FE·新增] 补齐右栏**会话管理三件事**（新建 / 切换 / 删除）——把 T008 留下的两处接缝接上（`onNewSession` / `onSelectSession`）＋ 新增删除入口 [FR-010 / US4 场景 2] [T008][T010] [出参：右栏能新建 / 切换 / 删除会话]（2026-10-07 裁定补开）
+  - **为什么补开（`#005-09`：先读挂账，别把已挂的当新缺口）**：两笔账本来各自悬着——
+    ① T008 的 `state.md` 缺口表原写「这两颗各要一套新的异步链（建会话 → 改路由 → 右栏跟着换），
+    是**下一条**的活」，而 006 **没有下一条** ⇒ 那笔账**无接收方**；② spec 的 **US4 场景 2**
+    「新建 / 切换 / **删除**会话」（`spec.md:79`）在 006 从未排期（`tasks.md` / `state.md` 里
+    「删除会话」**零命中**）。2026-10-07 用户裁定：**两笔并成这一条**，补进 006。
+  - **开工第一件事（铁律 #1：先答「这条 task 的出参，今天在仓库里打得到的吗」）**——三件事**都是接线级**，
+    现成能力都在，缺的只是「右栏把它们接上」：① 新建 = SDK `api.session.create({ location: { directory } })`
+    （形状见上游先例 `components/prompt-input/submit.ts:404`；`agent` / `model` 是否必填**在 RED 阶段实测**，
+    不照抄上游那份「提交时顺带建会话」的参数）；② 切换 = **改路由**（右栏的 id 从 `location.pathname` 解，
+    见 `right-pane-source.ts` 文件头——所以「切换」不是一个状态，是一次跳转）；③ 删除 =
+    SDK `api.session.remove({ sessionID })`——**上游已有完整实现可抄**（`#004-12` 先抄同族）：
+    `pages/session/timeline/message-timeline.tsx:818-834` 的「取相邻会话 → remove → 失败 toast」。
+  - **产物预案**（照 T008 的先例：**可测的抽成模块，生产组装层只做薄接线**）：
+    ① `ai-session/session-actions.ts`（**新文件**，异步链 ＋ 依赖注入 `navigate` / `api` / `directory`，
+    与 `right-pane-source.ts` 同因同法——它今天能单测，正是因为依赖是注进来的）；② `session-panel.tsx`
+    加删除入口（`onDeleteSession?` 接缝 ＋ 列表项上的钮）；③ `ai-session-slot.tsx` 接线（`useNavigate`
+    ＋ 三个回调）——**薄接线、无测试**（该文件挂不起来，已如实记在缺口表；不许写成「已覆盖」）。
+  - ⚠️ **开工前待裁定（未定项，按 runbook Step 2 ⑦ 停下来问，不得自行拍板）**：
+    **删除会话要不要人确认？**——FR-009 / SC-003 写「高风险动作（**删除数据**）必须人确认」，
+    而定下来的闸门住在 `permission.bash`（**只管 shell 命令**，管不到 `api.session.remove` 这条 HTTP 出口）
+    ⇒ 若它算高风险动作，就得在**前端**加一步确认（成本：一个确认态 ＋ 它的用例）。
+  - **两条不许发明**：① 删除**当前**会话之后的落点、② 新建会话之后的落点——**先看上游怎么做的**
+    （删除：`message-timeline.tsx:823` 取相邻会话；新建：建完跳过去），别自造一套。
+
 ---
 
 ## 📤 交出（T011 / T012 各一笔；接收方 = `007-fund-analysis` / `008-call-analysis`）
@@ -270,5 +300,7 @@
 - **Phase 5**：T008（依赖 T001）；T009（依赖 T003）→ T010（依赖 T009）
 - **Phase 6**：T011 ∥ T012（依赖 T010，可并行）
 - **Phase 7**：T013（依赖 T003+T005）∥ T014（依赖 T012）
+- **Phase 8**（2026-10-07 裁定**补开**）：T015（依赖 T008+T010）
 
-共 14 条任务（T001–T014），符合 12–18 条范围。
+共 15 条任务（T001–T015），符合 12–18 条范围。⚠️ 其中 **T015 是裁定补开的**（见该条「为什么补开」），
+不在 `plan.md` 的原始排期里——所以「15 条」不等于「plan 排了 15 条」。
