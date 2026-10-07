@@ -313,7 +313,7 @@
 
 ## Phase 9: Step 5 补 · 右栏导出会话入口（2026-10-07 裁定补开）
 
-- [ ] T016 [FE·新增] 右栏加**导出会话**入口（复用上游 `utils/session-export.ts` 的三件套）[FR-010] [T015] [出参：右栏能把当前会话导出成 JSON 落盘]（**未开工**）
+- [x] T016 [FE·新增] 右栏加**导出会话**入口（复用上游 `utils/session-export.ts` 的三件套）[FR-010] [T015] [出参：右栏能把当前会话导出成 JSON 落盘]（✅ **2026-10-08 完成**；产物、变异账、门禁见 `state.md` 的「**T016 出参**」）
   - **为什么补开（`#005-09`：先读挂账，别把已挂的当新缺口）**：Step 5 的 **D2**。原裁定（U11 · 笔 3）
     是「FR-010 的『导出会话』**本仓没有这个能力** ⇒ 改 spec 正文」；2026-10-07 复核时**原裁定的前提
     被推翻**——能力在上游就在，缺的只是**右栏的入口**。用户裁定：**补进 006，新开一条 task**。
@@ -325,9 +325,23 @@
     `components/session/session-context-tab.tsx:231` · `pages/session/timeline/message-timeline.tsx:796` ·
     `pages/session/use-session-commands.tsx:242`（三处都是 `fetchSessionExport({…})` →
     `sessionExportFilename(data.info)` → `downloadSessionExport(filename, data)`）。
-  - **它要的东西右栏都有**：`fetchSessionExport` 用到的 `api.session.get` 与 `api.session.messages`
-    正是右栏 `会话出口`（`session-actions.ts` 的 `DirectorySDK["api"]["session"]`）上已有的两个方法
-    ⇒ **不需要新开取数通道**（那是本条能做小的根据）。
+  - **它要的东西右栏都有**：`fetchSessionExport` 要的是 `{ session: { get, messages } }`，
+    而这**两样在右栏同一个 `ensureDirSdkContext(目录)` 上都取得到** ⇒ **不需要新开取数通道**
+    （那是本条能做小的根据）。⚠️ **但落点不是那一个属性，见下面那条更正。**
+  - ⚠️⚠️ **更正（2026-10-08，动第一行代码时被 `tsgo` 推翻的原始前提）**：本条**原先写的是**
+    「`api.session.get` 与 `api.session.messages` 正是右栏 `会话出口`（`DirectorySDK["api"]["session"]`）
+    上已有的两个方法」——**前半对、后半错**。`api.session.get` 有，**`api.session.messages` 没有**；
+    写 `client: 出口.api.session` 当场红 `TS2739: Property 'messages' is missing in type
+    'CompatibleSessionApi' but required in type 'SessionExportClient'`。
+    真因：**新协议里没有 `session.messages` 这个出口**——消息在**另一个命名空间**
+    （`packages/client/src/contract.ts` 的 `endpointNames["session.messages"] = "list"`；协议侧
+    `packages/protocol/src/groups/message.ts` 的 `GET /api/session/:sessionID/message`），
+    且新形状要过 `normalizeSessionMessages` 才是 `{ info, parts }`。
+    ⇒ **传 `出口.client`**（`DirectorySDK` 的另一个属性，`createOpencodeClient` 出来的 **legacy**
+    客户端）——**上游三处生产调用点传的从来都是 `sdk().client`**，不是 `api`（`#004-12`：
+    先抄同族，别自己发明）。**一行适配都不用写。**
+    ⚠️ 记这条的用意不是自责，是给下一个人一个判据：**「右栏有这个出口」是推断，
+    「它的类型上真有两个方法」是事实，两者不能互相顶替**（`#005-11` 同族）。
   - ⚠️ **不许发明**（照 T015 的同一条纪律）：① **入口位置**——判据与「删除」同：它是**对当前会话**的
     动作 ⇒ 放会话行；② **失败回话**——走 `ai-session-slot.tsx` 那处唯一的 `报错`（`#002-06`：
     同一句话不写第二遍）；③ **下载的触发形态**（blob / 文件名）——照上游三处，不自己造。
@@ -383,4 +397,4 @@
 
 共 **16** 条任务（T001–T016），符合 12–18 条范围。⚠️ 其中 **T015 / T016 都是裁定补开的**
 （各见该条「为什么补开」），**不在 `plan.md` 的原始排期里**——所以「16 条」不等于「plan 排了 16 条」。
-（T015 已完成；**T016 尚未开工**。）
+（**16 条全部完成**：T015 于 2026-10-07、T016 于 2026-10-08。）

@@ -4,11 +4,12 @@ import { useCenterTabs } from "@/center/tab-context"
 import { useLanguage } from "@/context/language"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
+import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
-import { 删除后去哪, 在途守卫, 建会话, 删会话, 会话路径 } from "./session-actions"
+import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 会话路径 } from "./session-actions"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
 
@@ -51,8 +52,9 @@ import { submitRightPanePrompt } from "./submit-prompt"
  * 它里面**真正会出错**的四件事都单独抽出来测了：
  * ① 「路由 → id → 目录 → 数据」那条异步链（含竞态）＝ `right-pane-source.test.tsx`；
  * ② 投影本身 ＝ `projection.test.ts`；③ **提交那一句话** ＝ `submit-prompt.test.ts`；
- * ④ **会话管理三件事里有判断的那一半** ＝ `session-actions.test.ts`（T015：目录参数怎么传、
- *    删完去哪一场、切会话的 URL 怎么拼）。本文件只负责**把它们接对**。
+ * ④ **会话动作里有判断的那一半** ＝ `session-actions.test.ts`（T015：目录参数怎么传、
+ *    删完去哪一场、切会话的 URL 怎么拼；T016：导出取的是哪一场、拼成什么、文件名叫什么）。
+ *    本文件只负责**把它们接对**。
  *
  * ⚠️ 但**不是本文件里的一切都被测到了**（「四件事都测了」读起来仍像全覆盖）：
  * 下面这几条**只在代码上核过、没有断言守着**（`#002-02` 的口径：这就是缺口）——
@@ -69,7 +71,12 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    活的路由器与活服务器才跑得起来。**有判断的那一半**（拼哪个 URL、删完去哪一场）已经抽到
  *    `session-actions.ts` 并单测覆盖，所以这里剩下的**只是「调它、把结果交给 navigate」**。
  * ⑤ **`建在途` / `删在途` 这两份守卫的接线**（Step 5 的 R-01）——同上：`在途守卫` 本身有
- *    三条单测，而「有没有把它套在那两根线上」只有人读代码看得见。
+ *    四条单测，而「有没有把它套在那两根线上」只有人读代码看得见。
+ * ⑥ **T016 导出那一句落盘**（`.then((导出物) => downloadSessionExport(...))`）——同上：
+ *    `导出会话` 有四条单测、上游 `downloadSessionExport` 有上游的单测，而「有没有把**这一份**
+ *    交给它」只有人读代码看得见（同文件 `session-panel.test.tsx` 钉的是「点导出交出哪一场」，
+ *    钉不到这一句）。⚠️ 它旁边那句 `.catch(报错)` 同理——报不报得出来，要靠人在浏览器里拉一次
+ *    网络失败才看得见。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 export function AiSessionSlot(): JSX.Element {
@@ -104,10 +111,15 @@ export function AiSessionSlot(): JSX.Element {
   const 提交态 = createMemo(() => {
     const 三样 = 源.ready()
     if (!三样) return undefined
+    // 目录作用域那一份**只取一次**，两个属性各要一个（`createDirSdkContext` 同时给 `api` 与 `client`）：
+    // `api.session` 给会话动作（新建 / 删除），`client`（**legacy** 客户端）给导出
+    // ——`fetchSessionExport` 要的就是后者，上游三处传的也是 `sdk().client`（见 `导出会话` 的注释）。
+    const 出口 = serverSDK().ensureDirSdkContext(三样.directory)
     return {
       ...三样,
       sync: serverSync().ensureDirSyncContext(三样.directory),
-      api: serverSDK().ensureDirSdkContext(三样.directory).api.session,
+      api: 出口.api.session,
+      client: 出口.client,
     }
   })
 
@@ -212,6 +224,25 @@ export function AiSessionSlot(): JSX.Element {
                 // 会话，而右栏那条解析链是拿它去问服务器的（`right-pane-source.ts`）。
                 navigate(去 ?? "/new-session")
               })
+              .catch(报错)
+          }}
+          // ── T016：导出会话的**接线**（判据在 `session-actions.ts` 的 `导出会话`，有单测）──
+          //
+          // ⚠️ **它不在这段「落点都是改路由」的注释里**（上面那三件才是改路由）：导出的落点在
+          // **文件系统**——取数回来交给上游 `downloadSessionExport`（blob ＋ `<a download>`）。
+          // 这里只写「调它、把结果交给落盘」；**取的是哪一场、拼出来是什么、文件名叫什么**三件事
+          // 都在单测里钉着（`session-actions.test.ts`）。
+          //
+          // ⚠️ 失败必须接住：`导出会话` 在「会话取不到」时**抛**（`fetchSessionExport` 那一支），
+          // 不接就是一条没人看的 unhandled rejection，而界面上只是「点了导出，什么都没发生」
+          // ——没有文件、也没有报错。走的是全右栏唯一那处 `报错`。
+          //
+          // ⚠️ 传的是 `现在.client`（**legacy**），不是 `现在.api`：右栏那个「会话出口」上
+          // **没有 `messages`**（新协议的消息在另一个命名空间里）——tsgo 实测抓的，不是推断。
+          onExportSession={(sessionID) => {
+            const 现在 = 态()
+            void 导出会话({ client: 现在.client, sessionID })
+              .then((导出物) => downloadSessionExport(导出物.文件名, 导出物.数据))
               .catch(报错)
           }}
         />

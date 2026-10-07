@@ -188,6 +188,10 @@ flowchart LR
   （`packages/app/src/utils/session-export.ts`，上游文件 `f1adabcddc`，今天已有三处生产调用点）。
   第一版把 `grep` 的锚点选在**路由 / CLI** 上，而导出是**客户端 util** ⇒ 锚点选错
   （`LEARNINGS #004-01`）。⇒ **保留**该项，右栏的入口缺失作为 **T016** 补进本 feature（见 `tasks.md`）。
+  ✅ **2026-10-08 T016 已落地**：右栏会话行加了导出钮，接线层一行 `.then(downloadSessionExport)`；
+  出参见 `state.md` 的「T016 出参」。⚠️ 落地时发现原判**又错了一半**——`fetchSessionExport` 要的
+  `client` 是 **legacy 那一个**（`DirectorySDK.client`），不是右栏一直在用的 `api.session`
+  （新协议没有 `session.messages`）；`tasks.md` 该条有更正块。
   同 `spec.md` 的 FR-010 更正块。
 
 ## 风险点清单（要素⑤）

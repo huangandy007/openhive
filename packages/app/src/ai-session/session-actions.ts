@@ -1,17 +1,24 @@
 import type { DirectorySDK } from "@/context/sdk"
+import {
+  fetchSessionExport,
+  sessionExportFilename,
+  type SessionExportClient,
+  type SessionExportData,
+} from "@/utils/session-export"
 import { routeSessionID } from "./route-session"
 
 /**
- * 右栏「会话管理三件事」（T015 / FR-010 / US4 场景 2）的**可测那一半**：新建 / 删除 / 切换。
+ * 右栏会话动作的**可测那一半**：新建 / 删除 / 切换（T015 / FR-010 / US4 场景 2）
+ * ＋ 导出（T016 / FR-010）。
  *
  * ## 为什么单独一个文件
  *
- * 三件事都发生在 `ai-session-slot.tsx`（生产组装），而那是**纯接线、挂不起来测**的一层
+ * 这些动作都发生在 `ai-session-slot.tsx`（生产组装），而那是**纯接线、挂不起来测**的一层
  * （它要活着的服务器连接才建得起 `ServerSyncProvider`，见那文件头）。
- * ⇒ 把**有判断的那些**抽到这里：目录参数怎么传、删完去哪一场、切会话的 URL 怎么拼。
- * 接线层只剩「取 SDK → 调这里 → `navigate`」。
+ * ⇒ 把**有判断的那些**抽到这里：目录参数怎么传、删完去哪一场、切会话的 URL 怎么拼、
+ * 导出拿的是哪一场的哪两块数据。接线层只剩「取 SDK → 调这里 → `navigate` / 落盘」。
  *
- * ## 三件事都照上游现成实现，不自己发明（`LEARNINGS #004-12`：新出口先抄同族）
+ * ## 都照上游现成实现，不自己发明（`LEARNINGS #004-12`：新出口先抄同族）
  *
  * | 这里 | 蓝本（上游调用点） |
  * |---|---|
@@ -19,6 +26,7 @@ import { routeSessionID } from "./route-session"
  * | `删会话` | `pages/session/timeline/message-timeline.tsx:826` — `api.session.remove({ sessionID })` |
  * | `删除后去哪` | 同文件 **`:823`** — `sessions[index + 1] ?? sessions[index - 1]`（连上面那行 `.filter` 一起） |
  * | `会话路径` | `route-session.ts` 的**逆命题**（那边解 id，这边拼 id） |
+ * | `导出会话` | `utils/session-export.ts` 的三件套（`session-context-tab.tsx:231` / `message-timeline.tsx:796` / `use-session-commands.tsx:242` 三处同形） |
  *
  * ⚠️ **`remove` 这个名字是实测的、不是推断**：`DirectorySDK["api"]["session"]` 来自
  * `createCompatibleApi`（`utils/server-compat.ts:86`）——一个 **lazy Proxy**，而它底下 v2 生成客户端
@@ -148,4 +156,62 @@ export function 在途守卫() {
 export function 会话路径(pathname: string, id: string): string | undefined {
   if (routeSessionID(pathname) === undefined) return undefined
   return `/server/${pathname.split("/")[2]}/session/${id}`
+}
+
+/** 一份导出物：**文件名 ＋ 内容**，两样都齐了才落得成盘。 */
+export interface 导出物 {
+  readonly 文件名: string
+  readonly 数据: SessionExportData
+}
+
+/**
+ * 取回**这一场**会话的导出物（T016 / FR-010 / US4）。
+ *
+ * ## 它只做「取 ＋ 拼 ＋ 起名」，不落盘
+ *
+ * 上游三件套的第三件 `downloadSessionExport`（blob ＋ `<a download>` ＋ `URL.createObjectURL`）
+ * **不由本函数调用**，而是接线层接在 `.then` 上。理由只有一条，是**可测性**：本函数是「有判断的
+ * 那一半」，它要在 `bun test` 里挂得起来；把 DOM 那一下留在里面，这一组就得靠打桩才测得了
+ * （`LEARNINGS #004-12` 的反面：抄同族的**形状**，不抄同族的**断言**——落盘那一下上游自己有单测）。
+ * ⇒ 判据只剩「取的是哪一场」「拼出来是什么」「文件名叫什么」，三条都实打实。
+ *
+ * ## ⚠️ 它要的是**legacy 客户端**，不是右栏那个 `api`（2026-10-08 实测更正）
+ *
+ * `fetchSessionExport` 要 `{ session: { get, messages } }`（`SessionExportClient`），而上游三处
+ * 生产调用点传的都是 **`sdk().client`**——那份 `createOpencodeClient` 出来的 **legacy** 客户端。
+ *
+ * ⚠️ **不能传 `DirectorySDK["api"]["session"]`**（右栏 T015 一直在用的那个「会话出口」）：
+ * 它是 `createCompatibleApi` 的产物，而**新协议里根本没有 `session.messages` 这个出口**——
+ * 消息在**另一个命名空间**里（`endpointNames["session.messages"] = "list"`，
+ * `packages/client/src/contract.ts`；协议侧 `groups/message.ts` 的 `GET /api/session/:id/message`），
+ * 且新形状要过 `normalizeSessionMessages` 才是 `{ info, parts }`。
+ * 这是 tsgo 抓出来的（`Property 'messages' is missing in type 'CompatibleSessionApi'`），
+ * 不是推断——**T016 的 task 条目原先写的「`api.session.get` / `api.session.messages` 正是右栏已有的
+ * 两个方法」有一半是错的**，那条更正见 `tasks.md` 该条与 `state.md`。
+ *
+ * ⇒ 右栏要的那一份就在同一个 `ensureDirSdkContext(目录)` 上：**`.client`**（`DirectorySDK` 的两个
+ * 属性之一，`context/server-sdk.tsx` 的 `createDirSdkContext` 同时返回 `client` 与 `api`）。
+ * 一行适配都不用写——**上游传什么，这里就传什么**（`LEARNINGS #004-12`）。
+ *
+ * ## 为什么不去用右栏**已经有的** `data`
+ *
+ * 右栏手上确实有一份 `props.data`（sync store 的投影）。不用它的理由不是「取不到」，而是
+ * **别再写第二份导出物形状**（`LEARNINGS #002-06`）：上游那份 `{ info, messages }` 是
+ * CLI `opencode export` 的同一个形状，三处生产调用点都走这条取数；拿 store 拼一份「像导出物」
+ * 的东西，两份形状一旦漂开**不报错、不变红**，只是导出的文件跟 CLI 导出的不一样。
+ *
+ * ## ⚠️ 中文标题 ⇒ 文件名回落成会话 id
+ *
+ * 起名交给上游 `sessionExportFilename`（照抄，不重写正则），而它只保留 `[a-z0-9_-]`
+ * ⇒ 本产品的会话标题基本全是中文时，导出的文件叫 `ses_xxxx.json`。**这是上游既有行为**，
+ * 本处不改（`用例 ③` 把它记成哨兵：哪天有人动那条正则，会红）。
+ *
+ * ## ⚠️ 与 `session.share` 不是一回事
+ *
+ * share 是**发布到网上**（`"Publish on web"` / 复制链接），数据适用性在公安场景**未裁定**；
+ * 导出是**落到本地一个文件**。别把两者混成一条需求（见 `spec.md` 的 FR-010 更正块）。
+ */
+export async function 导出会话(input: { client: SessionExportClient; sessionID: string }): Promise<导出物> {
+  const 数据 = await fetchSessionExport({ sessionID: input.sessionID, client: input.client })
+  return { 文件名: sessionExportFilename(数据.info), 数据 }
 }

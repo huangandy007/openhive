@@ -866,21 +866,99 @@ describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
 })
 
 /**
+ * 导出会话（T016 / FR-010 · [出参：右栏能把当前会话导出成 JSON 落盘]）。
+ *
+ * ## 本组件这一侧只管什么
+ *
+ * 上游三件套（取数 / 起名 / 落盘）与「有判断的那一半」在 `session-actions.ts`（`导出会话`，
+ * 那边 4 条单测）。本组件这一侧只有**一件事**要钉：**入口坐在哪、点下去交出哪一场**。
+ *
+ * ## 为什么入口与「删除」同居会话行（不许发明的第一条）
+ *
+ * 判据与 T015 给「删除」的那条**同**：它是**对当前会话**的动作（不是「切到哪一场」），
+ * ⇒ 放会话行。列表里那些行是「切到哪一场」，动作自然不挂在那儿——② 就是这条的判据。
+ *
+ * ## 与「导出」有关的另外两条边界（写在这里免得下一个人当成漏做）
+ *
+ * - **失败回话不在这里**：本组件接的是 `void`（和 `onSelectSession` / `onNewSession` 一样，
+ *   不回话），生产侧 `.catch(报错)` —— 全右栏只有那一处 `报错`（`#002-06`）。
+ * - **不配在途守卫**：导出是可重复的读操作（连点两下最多下载两个文件），不是 T015 那两根
+ *   「不可重入的写」；`在途守卫` 的注释里点名它守的是**新建 / 删除两根线**。
+ */
+describe("导出会话（T016 / FR-010）", () => {
+  const 两场 = (): SessionPanelData => ({
+    ...夹具数据(),
+    session: [造会话("ses_1", "资金分析会话"), 造会话("ses_2", "话单分析会话")],
+    message: { ses_1: [造消息("msg_1", "ses_1")], ses_2: [造消息("msg_9", "ses_2")] },
+  })
+
+  const 摆好 = (sessionID = "ses_1") => {
+    const 事件: string[] = []
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={两场()}
+          directory="/tmp/openhive-test"
+          sessionID={sessionID}
+          projection={空投影}
+          onExportSession={(id) => 事件.push(id)}
+        />
+      )),
+    )
+    const 导出钮 = () => {
+      const 钮 = 宿主.querySelector<HTMLElement>('[data-slot="session-export"]')
+      if (!钮) throw new Error('没找到导出钮（`[data-slot="session-export"]`）')
+      return 钮
+    }
+    return { 宿主, 事件, 导出钮, 点导出: () => 导出钮().click() }
+  }
+
+  test("① 点了才交出去，交的是**当前**那一场（不是列表第一条）", () => {
+    const { 事件, 点导出 } = 摆好("ses_2")
+
+    // 被测属性：点之前**一次都没调**。少了这一半，「挂载即导出」的实现也能过下面那条。
+    expect(事件).toEqual([])
+
+    点导出()
+
+    // 夹具里两场不同名不同 id ⇒「导出列表第一条」与「导出当前那场」实得值分得开。
+    expect(事件).toEqual(["ses_2"])
+  })
+
+  test("② 入口坐在**会话行**上：展开列表之后，导出钮仍然只有一颗", () => {
+    // 它是**对当前会话**的动作，所以与「删除」同居会话行；列表里那些行只做「切到哪一场」。
+    // 变异：把导出钮渲染进列表的每一行 ⇒ 下面是红的（实得 3，期望 1）。
+    const { 宿主 } = 摆好()
+
+    宿主.querySelector<HTMLElement>('[data-slot="session-toggle"]')!.click()
+
+    const 数 = (名: string) => 宿主.querySelectorAll(`[data-slot="${名}"]`).length
+    // 对照：列表**确实**展开了（两场都在）——没有这一条，「压根没展开」也让上面那个 1 成立。
+    expect(数("session-option")).toBe(2)
+    expect(数("session-export")).toBe(1)
+  })
+})
+
+/**
  * hover 面：**每一处各钉一条**（Step 5 · F-01）。
  *
  * ## 补的是什么
  *
- * `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 的源码里落在 **7 处**
- * （`instruction-cards.tsx` 2 处 ＋ `session-panel.tsx` 5 处），而 Step 5 清点时**只有 1 处**
- * 有断言守着（`common-cards.test.tsx` 的溢出钮那条）。另 6 处**改回旧 token 也全套绿**
+ * `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 的源码里落在 **8 处**
+ * （`instruction-cards.tsx` 2 处 ＋ `session-panel.tsx` **6** 处），而 Step 5 清点时**只有 1 处**
+ * 有断言守着（`common-cards.test.tsx` 的溢出钮那条）。另 7 处**改回旧 token 也全套绿**
  * ——`LEARNINGS #005-07` 的老形状：一个视觉约定落 N 处，只钉一处等于没钉。
- * 本文件这 5 处 ＋ `common-cards.test.tsx` 那 2 处（卡面与溢出钮）＝ 7 处齐。
+ * 本文件这 6 处 ＋ `common-cards.test.tsx` 那 2 处（卡面与溢出钮）＝ 8 处齐。
  *
- * ## 为什么是 5 条、不是 1 条遍历
+ * ⚠️ 数字是 **2026-10-08 T016 落地时**重数的（`grep -rn 'hover:bg-v2-overlay-simple-overlay-hover'
+ * packages/app/src --include=*.tsx` 去掉 `*.test.*`）：本组的第 ⑥ 条就是 T016 新加的那颗导出钮
+ * ——**加了出口就要回来补一条**，别让「7 处齐」这句话在新出口上悄悄失效（`LEARNINGS #005-11`）。
  *
- * `LEARNINGS #005-12`：约定落在 N 个动作上就写 N 条用例。合成一条「把这 5 个槽过一遍」时，
+ * ## 为什么是 6 条、不是 1 条遍历
+ *
+ * `LEARNINGS #005-12`：约定落在 N 个动作上就写 N 条用例。合成一条「把这 6 个槽过一遍」时，
  * 摘掉其中一处的 token 只会让**那一条**红，而红的集合读不出「是哪个落点漏了」——这条纪律要的
- * 正是那个信息。5 条各查自己的槽 ⇒ **摘哪处、红哪条**。
+ * 正是那个信息。6 条各查自己的槽 ⇒ **摘哪处、红哪条**。
  *
  * ## 判据的边界（`LEARNINGS #002-02` / `#005-15`：注解不许比断言强）
  *
@@ -954,5 +1032,13 @@ describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
     expect(串(宿主, "drawer-entry")).toContain(HOVER)
     // 对照：`session-tools` 是那一行**容器**，hover 不在它身上。
     expect(串(宿主, "session-tools")).not.toContain(HOVER)
+  })
+
+  test("⑥ `session-export`：`导出`（T016 新加的那颗，与同栏 `session-new` / `session-delete` 同档 token）", () => {
+    const 宿主 = 摆右栏()
+
+    expect(串(宿主, "session-export")).toContain(HOVER)
+    // 对照同上：`session-row` 是整行**容器**，hover 不在它身上。
+    expect(串(宿主, "session-row")).not.toContain(HOVER)
   })
 })

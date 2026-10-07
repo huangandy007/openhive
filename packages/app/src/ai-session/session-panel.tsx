@@ -77,6 +77,18 @@ export interface SessionPanelProps {
    * 形态由 2026-10-07 用户裁定：**就地二次确认**（见 `确认中`）。
    */
   onDeleteSession?: (sessionID: string) => void
+  /**
+   * 导出**当前**那场会话（T016 / FR-010）。生产由 `ai-session-slot.tsx` 接上：调
+   * `session-actions.ts` 的 `导出会话`，回来了再把文件名与内容交给上游 `downloadSessionExport` 落盘。
+   *
+   * ⚠️ **失败归调用方**（与另外三颗钮同一个 `void` 签名）：本组件不接回话，也就不可能在
+   * 「导没导出去」这件事上撒谎。生产那边 `.catch(报错)`——全右栏只有那一处报错
+   * （`LEARNINGS #002-06`）。
+   *
+   * ⚠️ **不配在途守卫**（与删除**不同**）：导出是可重复的**读**动作，连点两下最多下载两个文件；
+   * `在途守卫` 守的是「不可重入的**写**」（`session-actions.ts` 里点名是新建 / 删除两根线）。
+   */
+  onExportSession?: (sessionID: string) => void
 }
 
 /**
@@ -251,6 +263,19 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
               「＋ 新会话」取同一档 token（`text-v2-text-text-muted` ＋ hover 同底色），确认态改用
               仓里现成的语义色 `text-v2-state-fg-danger`（`auth/change-password.tsx` 的报错行、
               `dialog-connect-provider.tsx` 同款，**不是**随手挑的颜色）。已记进 `state.md` 的缺口表。 */}
+          {/* 导出**当前**这场（T016）。与「删除」同居会话行的判据**同**：它是**对当前会话**的动作
+              （不是「切到哪一场」）⇒ 坐在这一行上，不坐进列表的每一行里。
+
+              ⚠️ **视觉同「删除」那笔账**：`DESIGN.md` §4.7.5 的会话管理只写了「新建 / 切换」，
+              导出与删除都**没有**样子 ⇒ 取同栏「＋ 新会话」那一档 token（不新增 app 级 CSS）。
+              已记进 `state.md` 的缺口表。 */}
+          <button
+            data-slot="session-export"
+            class="shrink-0 cursor-pointer rounded px-1 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+            onClick={() => props.onExportSession?.(props.sessionID)}
+          >
+            导出
+          </button>
           <button
             data-slot="session-delete"
             class="shrink-0 cursor-pointer rounded px-1 py-0.5 text-[11px] hover:bg-v2-overlay-simple-overlay-hover"
