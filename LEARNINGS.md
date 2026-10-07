@@ -22,6 +22,38 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ---
 
+## #005-09 · 2026-10-07 · decision-rethink · 005-project-management
+**现象 / 决策**：**「这是个新缺口」在查过本 feature 的挂账清单之前不成立。** 后端结构性补测分类时，
+我把「上传后无回读校验」单独列成一条、判成 **P0（数据损坏）**；写交付说明时才撞见——它**就是
+Step 5 的 `X3-2`**（`plan.md:156` R3 的缓解措施在实现里无对应物），**已挂账、判 Minor**。而且复核后
+我**同意 Minor**：`PutObject` 的 body 是内存 `Uint8Array`、`Content-Length` 由 SDK 算，服务端收下更少
+字节即违反 S3 语义 ⇒ **传输层截断会报错而非静默**；真正会静默截断的是「读一个正在被写的文件」，
+而那种损坏**回读也查不出来**（上游就坏了），回读只是把每次上传流量翻倍。也就是说：重报一遍的代价
+不只是白干，还会**把一条已裁的 Minor 抬成 P0**（下一个人照着 P0 去改，是白改）。
+**应对**：结构性补测的**第一步不是「列缺口」，是读这张 feature 自己的挂账清单**——`state.md` 的缺口表节
+＋ Step 5 审查表 ＋ `tasks.md` 的「未覆盖」行，**逐条问「我要补的这条在不在里面」**；在里面的**只引用、
+不重报**，级别不同就写清「我复核后同意 / 不同意，理由是……」。判据一句话：
+**先 grep 本 feature 的挂账，再谈「新缺口」**（与 `#002-02` 配套：那条讲「测不了的别写成已覆盖」，
+这条讲「已挂账的别再当新发现」）。
+**应用范围**：任何 feature 收尾后的补测 / 二次审查 / 复盘的第一步。
+
+## #005-10 · 2026-10-07 · tool-quirk · 005-project-management
+**现象 / 决策**：**`index.lock` 存在、而没有任何 git 进程时，所有 git 命令一律过不去。**
+2026-10-07 实测（本机 win32）：`fatal: Unable to create
+'D:/…/.git/worktrees/feat-005-project-management/index.lock': File exists. Another git process seems
+to be running…`，连 `git add <单个文件>` 也一样。查下来：那个文件 **0 字节**、建于 13:21、13:28 仍在
+（7 分钟），而 `tasklist //FI "IMAGENAME eq git.exe"` 回**「没有运行的任务匹配」** ⇒ **无持有者**。
+成因看着像 `git status` 刷新 index 时被中断（本会话跑过多次 `git status`）。⚠️ 路径是
+**`.git/worktrees/<本 worktree 名>/index.lock`**——**每个 worktree 一份**，所以它是**本 worktree 自己的**
+锁，不是别的工作树或主检出在跑（别误判成「别的会话占着」）。
+**应对**：判据＝**「零字节 ＋ 没有 git 进程」⇒ 陈旧、可删**：先 `ls -la <lock>` 看大小与时间，再用
+`tasklist //FI "IMAGENAME eq git.exe"` 证无持有者，**两条都成立**才 `rm -f <那个 index.lock>`
+（git 下次用时自己重建，index 本身不受影响）。⚠️ 反过来：**别的会话真在跑时删掉它，坏的是它的 index**
+——所以先量再删，别一见 lock 就删。与 `#005-08`（陈旧 stat 伪影）同一天同一族：
+**git 的「工件」与「改动 / 故障」长得像，判据都得先量**（`#003-04`）。
+**应用范围**：任何 win32 ＋ worktree 检出（本仓所有 worktree）；任何 `git add` / commit 突然报
+`index.lock` 存在的场合。
+
 ## #005-04 · 2026-10-07 · decision-rethink · 005-project-management
 **现象 / 决策**：**`#003-02`「修完 ≠ 审完」第三次成立，而这次的增量是「按什么打勾」。** 005 第一轮审查
 （五席 · 16 条）修完之后，把**修复本身**再当靶子打一轮（三席 · 对抗证伪），抓到的**两条 Important 都在
