@@ -349,6 +349,12 @@ function writeProviderConfigInto(directory: string) {
 /** 造一个「项目已存在」的用户（同 `openhive-project-frozen.test.ts` 的同名助手）。 */
 const withProject = (subject: TokenSubject, projectId: string) =>
   Effect.gen(function* () {
+    // 假 provider 必须在**任何请求之前**落盘：实例的配置是**第一次请求时读一次并常驻**的
+    // （`InstanceStore.load` 按目录缓存实例），第一个请求（下面那句 `/session`）就会把
+    // 沙箱根实例建起来 ⇒ 之后再写 `opencode.json` 已读不到（2026-10-09 实测：`GET /config`
+    // 不含 `test-model` ⇒ 那一轮 500 `ProviderModelNotFoundError`）。
+    writeProviderConfigInto(sandboxOf(subject))
+    writeProviderConfigInto(path.join(sandboxOf(subject), projectId))
     yield* as(subject, "/session", { method: "POST" })
     mkdirSync(path.join(sandboxOf(subject), projectId), { recursive: true })
     const db = new Sqlite(userDb(subject.id))
@@ -364,11 +370,9 @@ const withProject = (subject: TokenSubject, projectId: string) =>
     } finally {
       db.close()
     }
-    // 两个实例目录各写一份：用例 ① 的轮落在项目目录、用例 ② 的轮落在沙箱根。少写一份不会红成
-    // 「判据不成立」，而是红成「那一轮根本没起来」（配置读不到 ⇒ 模型没被调用）——`#002-02` 那类
-    // 「看着像被测对象坏了」的假红，夹具自己先堵死。
-    writeProviderConfigInto(sandboxOf(subject))
-    writeProviderConfigInto(path.join(sandboxOf(subject), projectId))
+    // ⚠️ 这两份写在**函数开头**（见那里的注释）：少写一份不会红成「判据不成立」，而是红成
+    // 「那一轮根本没起来」（配置读不到 ⇒ 模型没被调用）——`#002-02` 那类「看着像被测对象坏了」的
+    // 假红，夹具自己先堵死。
   })
 
 /** **夹具注入**一行「已归档」（同 `openhive-project-frozen.test.ts` 的同名助手，理由见那里）。 */

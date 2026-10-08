@@ -158,7 +158,24 @@ function realApp(env: Record<string, string | undefined>) {
 
 const openApp = realApp(OPEN)
 
-const cookie = (value: string) => ({ Cookie: `${UserIdentity.COOKIE_NAME}=${value}` })
+/**
+ * 身份 cookie 的 `名=值`（**不含头名那一层**）。
+ *
+ * ⚠️ 2026-10-09 从原先那个 `cookie()`（返回一整个 `{ Cookie }`）里拆出来，与同族文件
+ * `openhive-project-directory.test.ts` 的 `sessionCookie` 同形——理由在那边的注释里：项目 cookie
+ * 要拼在**同一个 `Cookie` 头**里，而「返回一整份 headers」的写法会让第二个 cookie 把它**挤掉**，
+ * 于是「带着项目 cookie」的用例其实什么都没带，**红出来的方向还是错的**（`#004-08`）。
+ */
+const sessionCookie = (value: string) => `${UserIdentity.COOKIE_NAME}=${value}`
+
+/**
+ * 「当前项目」的**第二个通道：cookie 名**（006 Step 5 · ②-1）。
+ *
+ * ⚠️ **同族文件里那句的理由逐字适用**：写字面量、**刻意不 import** 生产常量
+ * （`middleware/project-location.ts` 的 `PROJECT_COOKIE`）——import 过来就变成「生产改什么、
+ * 测试跟着改什么」，改名也测不出来（`LEARNINGS #003-05` 的假镜像）。
+ */
+const 项目cookie = (projectId: string) => `openhive_project=${projectId}`
 
 /** 用真实签发器造令牌——**不手搓 JWT**。 */
 const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject, SECRET))
@@ -172,11 +189,22 @@ const json = <A>(schema: Schema.Codec<A>, response: Response) =>
     return Schema.decodeUnknownSync(schema)(JSON.parse(body))
   })
 
-/** 以某人的身份发一个请求；额外头（项目头那类）从 `init.headers` 进。 */
-const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
+/**
+ * 以某人的身份发一个请求。
+ *
+ * - 额外**头**（项目头那条通道）从 `init.headers` 进；
+ * - 第二个 **cookie**（项目 cookie 那条通道）从 `extraCookie` 进——**左栏/右栏那条 SDK 链够不着
+ *   项目头**（那是上游 `createDirSdkContext` 造的，fork 侧没有注入头的缝），靠的是浏览器对
+ *   每一条同源请求自动带的 cookie ⇒「左栏列会话」那条取数在本文件里**只能**用 cookie 通道复现。
+ *
+ * ⚠️ `Cookie` 头**一次拼好**：身份与项目两个 cookie 共用这一个头，分两次 `set` 只会剩最后一个。
+ */
+const as = (subject: TokenSubject, url: string, init: RequestInit = {}, extraCookie?: string) =>
   Effect.gen(function* () {
     const headers = new Headers(init.headers)
-    for (const [key, value] of Object.entries(cookie(yield* token(subject)))) headers.set(key, value)
+    const jar = [sessionCookie(yield* token(subject))]
+    if (extraCookie !== undefined) jar.push(extraCookie)
+    headers.set("Cookie", jar.join("; "))
     return yield* openApp(url, { ...init, headers })
   })
 
@@ -199,6 +227,11 @@ const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
  *   `actor`（判定只有那一份实现，组件零规则复述）。**没有成员行 ⇒ 缺键**——读成 `"member"` 会
  *   让 `decide` **放行**，读成 `"owner"` 更糟（凭空多一个能点的「归档」）。同上面两条口径：
  *   「还没查」不许写成「查过了」。
+ * - `directory`（2026-10-08 追加深，**必给**）：这个项目在**沙箱里的落点**，左栏会话列表拿它
+ *   去取那个目录的会话（`ensureDirSyncContext(目录)`）。与 `stale` 同**一类**——它是**算出来的**
+ *   （`{沙箱根}/{userId}/{projectId}`），不是「来源有没有说」⇒ 缺键在语义上不成立，只能是写漏了；
+ *   写漏的症状是**左栏一个会话都列不出来**（`LEARNINGS #002-02`）。⚠️ 它是**必给**键，
+ *   `Schema.optional` 只是为了让上面那批「形状」用例不必每条都写它（同 `stale` 在别处的处置）。
  */
 const Entry = Schema.Struct({
   id: Schema.String,
@@ -208,6 +241,7 @@ const Entry = Schema.Struct({
   lastAccessedAt: Schema.Number,
   archived: Schema.optional(Schema.Boolean),
   role: Schema.optional(Schema.String),
+  directory: Schema.optional(Schema.String),
 })
 
 /** `POST /openhive/project` —— 建一个项目，返回它的 `ProjectEntry`。 */
@@ -239,6 +273,27 @@ const createSessionAs = (subject: TokenSubject, projectId: string) =>
     })
     expect(response.status).toBe(200)
     return (yield* json(Schema.Struct({ id: Schema.String }), response)).id
+  })
+
+/**
+ * 建会话（**B 链**，`POST /api/session` ＋ 项目 **cookie**）——**照左栏/右栏那条 SDK 链的原样形状**
+ * （`session-actions.ts` 的 `建会话`：`api.session.create({ location: { directory } })`，而那条链
+ * **不发项目头**，靠 cookie 认项目）。
+ */
+const createV2SessionAs = (subject: TokenSubject, projectId: string, directory: string) =>
+  Effect.gen(function* () {
+    const response = yield* as(
+      subject,
+      "/api/session",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: { directory } }),
+      },
+      项目cookie(projectId),
+    )
+    expect(response.status).toBe(200)
+    return (yield* json(Schema.Struct({ data: Schema.Struct({ id: Schema.String }) }), response)).data.id
   })
 
 /** 某个用户的库文件。 */
@@ -517,6 +572,96 @@ describe("T018 · 列项目（FR-003）", () => {
         // 「不给假数」两条：私有项目没有 `memberCount`、没有归档行就没有 `archived`。
         expect("memberCount" in own).toBe(false)
         expect("archived" in shared).toBe(false)
+      }),
+    30_000,
+  )
+
+  /**
+   * **列表要给出这个项目的目录**（2026-10-08，左栏会话列表的取数前提）。
+   *
+   * 左栏的会话列表**按目录取数**（`ensureDirSyncContext(目录)`，与右栏同一个缓存槽），而它
+   * 此前**问不出「当前项目的目录是什么」**——`ProjectEntry` 上没有这个字段，服务端只在中间件里
+   * 现算。前端拿不到就只剩两条路：猜一个（错的时候**左栏列的是另一个目录的会话**，界面上看不出
+   * 不对），或者干脆不列（功能永远接不上）。所以这个字段是**接口缺口**，不是锦上添花。
+   *
+   * ⚠️ 判据**不**写成「等于我重新算一遍的字符串」——那样两边一起漂也会绿。钉的是**中间件实际
+   * 锚定的那个目录**：拿列表给的值去建会话，再**直接读库**看那条会话落在哪（oracle 不过被测对象，
+   * `LEARNINGS #002-02`）。三者（列表给的 / 会话实际落的 / 沙箱根＋id）由此串成一条链。
+   */
+  it.live(
+    "列项目出参带 directory，且等于中间件实际锚定的那个目录（左栏会话列表的取数前提）",
+    () =>
+      Effect.gen(function* () {
+        const entry = yield* createAs(ALICE, { name: "目录出参", type: "private" })
+        const listed = (yield* listAs(ALICE)).find((row) => row.id === entry.id)
+
+        // 第一半：键在、且是绝对路径（缺键时下一条断言会读成 `undefined`，先把它钉成「有」）。
+        expect(listed?.directory).toBeDefined()
+
+        const sessionId = yield* createSessionAs(ALICE, entry.id)
+
+        expect(canonical(listed?.directory ?? "")).toBe(canonical(sessionDirectory(ALICE.id, sessionId) ?? ""))
+        // 第二半（与上面那条同款的重算，把「中间件锚点」与「沙箱布局」也串上）：三者必须同源。
+        expect(canonical(listed?.directory ?? "")).toBe(canonical(path.join(sandboxOf(ALICE), entry.id)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **列表给的那个 `directory`，要能原样穿过会话列表那一道出口**（2026-10-09 补的另一半）。
+   *
+   * ## 上一条为什么拦不住这个缺陷
+   *
+   * 上一条断的是「列表给的值 ≙ 会话实际落的目录 ≙ 沙箱根＋id」，而**三处都过了 `canonical()`**
+   * ——那一步把 8.3 短名、符号链接、大小写**全抹平**了。缺陷恰好长在被抹平的那一个维度上
+   * （`LEARNINGS #003-05` 的假镜像：判据两侧一起归一化，就再也比不出「写法不同」这件事）。
+   *
+   * ## 缺陷的形状（左栏「一个会话都看不到」，2026-10-09 实测）
+   *
+   * 用户打的是**列表出口**，而列表出口**不做那层归一化**，它把两半拿来直接比：
+   * - **过滤那一半**：`handlers/session.ts` 的 `ctx.query.directory ? yield* InstanceState.directory : undefined`
+   *   ——客户端给的串**被丢掉**，用的是**实例层**的目录（`project/instance-store.ts` 里的 `FSUtil.resolve(...)`）；
+   * - **存储那一半**：写进 `session.directory` 的是 `location.directory` **原样**
+   *   （`packages/core/src/session.ts` 的 `directory: input.location.directory`），而那个值由中间件算成
+   *   `projectDirectory(Config.root, …)`（`middleware/project-location.ts`）——**不过 `resolve`**。
+   *
+   * ⇒ 两侧只有在**该值是实例层归一化的不动点**时才相等。`OPENHIVE_WORKSPACE_ROOT` 不是它自己的
+   * 规范化形式时（本机 `os.tmpdir()` 就是 `C:\Users\ADMINI~1\…`，8.3 短名；软链接根同理），
+   * **存的是短名、比的是长名** ⇒ 列表回 0 行 ⇒ 左栏空白。而右栏打开同一场会话**一切正常**
+   * （它按会话 id 直接读那一行，不比目录）⇒ 这缺陷**看起来像「没有会话」**，不像「目录写错了」。
+   *
+   * ## 判据（两条，都**不掺测试侧的归一化**）
+   *
+   * ① **端到端**：按左栏的形状取数（cookie 通道 ＋ `?directory=` ＋ `roots=true`，与
+   *    `sidebar-sessions.tsx` → `client.session.list({ directory, roots: true })` 同形）⇒ 建的那场**在**。
+   * ② **机制**：列表给的串 ≙ **实例层自己报的那个目录**——`GET /path` 的 `directory` 就是它
+   *    （`handlers/instance.ts` 的 `getPath` 读 `InstanceState.context.directory`，与列表的过滤值
+   *    **同一个来源**）。两个产品出口对同一个值给出同一个串，中间不掺 `canonical()`。
+   */
+  it.live(
+    "列项目给的 directory 能列回该项目的会话（左栏「看不到会话」那条）",
+    () =>
+      Effect.gen(function* () {
+        const entry = yield* createAs(ALICE, { name: "左栏会话可见性", type: "private" })
+        const listed = (yield* listAs(ALICE)).find((row) => row.id === entry.id)
+        expect(listed?.directory).toBeDefined()
+        const 目录 = listed?.directory ?? ""
+
+        // ① 端到端（**被测属性排在前面**，`LEARNINGS #004-14`：`expect` 一失败即中止用例体，
+        // 书写顺序决定你读到哪一条证据——这条红了才读得到「会话列不出来」这个现象本身）。
+        const sessionId = yield* createV2SessionAs(ALICE, entry.id, 目录)
+        const rows = yield* json(
+          Schema.Array(Schema.Struct({ id: Schema.String })),
+          yield* as(ALICE, `/session?directory=${encodeURIComponent(目录)}&roots=true`, {}, 项目cookie(entry.id)),
+        )
+        expect(rows.map((row) => row.id)).toContain(sessionId)
+
+        // ② 机制：列表给的串必须**就是**实例层算出来的那个目录（两个产品出口对上，见文件头判据）。
+        const instance = yield* json(
+          Schema.Struct({ directory: Schema.String }),
+          yield* as(ALICE, "/path", {}, 项目cookie(entry.id)),
+        )
+        expect(instance.directory).toBe(目录)
       }),
     30_000,
   )

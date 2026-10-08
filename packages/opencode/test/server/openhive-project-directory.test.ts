@@ -95,7 +95,11 @@ const GHOST = "prj_ghost_0002"
  */
 const FROZEN = "prj_frozen_0003"
 
-const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-project-dir-"))
+// ⚠️ 归一化到长名再往下接：本机 `TMP` 是 **8.3 短名**（`ADMINI~1`），而锚定那一侧会把
+// 存在的父目录 `realpath` 成长名 ⇒ 若这里留着短名，`sandboxOf` 的**期望值**就与实际值
+// 只差这一层拼法（实测 7 条红全是这种「只差拼法」）。`mkdtempSync` 已经建了目录 ⇒
+// 整条路径可以一次归一化到底（`realpathSync.native` 与产品那侧同一个原语）。
+const SANDBOX = realpathSync.native(mkdtempSync(path.join(tmpdir(), "openhive-project-dir-")))
 const DATA_ROOT = path.join(SANDBOX, "data")
 const WORKSPACE_ROOT = path.join(SANDBOX, "workspaces")
 

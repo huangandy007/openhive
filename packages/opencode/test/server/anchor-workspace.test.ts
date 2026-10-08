@@ -1,5 +1,6 @@
 import { afterAll, describe, expect } from "bun:test"
-import { resolve, sep } from "path"
+import { join, resolve, sep } from "path"
+import { realpathSync } from "fs"
 import { tmpdir } from "os"
 import { ConfigProvider, Context, Effect, Equal, Layer } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -53,8 +54,12 @@ const BOB: TokenSubject = {
 /**
  * 沙箱根。**不用默认的 `/workspaces`**：测试绝不碰真实路径，且根可注入才断言得了
  * 「落在配置的那个根下面」，而不是「碰巧不等于伪造值」这种谁都能过的弱断言。
+ *
+ * ⚠️ 末段（`openhive-anchor-workspace`）**本文件不创建**，而本机 `TMP` 是 **8.3 短名**
+ * （`ADMINI~1` 那一层）⇒ 锚定那一侧会把它归一成长名（`openhive-project-directory.test.ts`
+ * 同款）。故这里**只把存在的父目录归一化**、末段原样接回去：断言钉的是**归属**，不是拼法。
  */
-const ROOT = resolve(tmpdir(), "openhive-anchor-workspace")
+const ROOT = join(realpathSync.native(tmpdir()), "openhive-anchor-workspace")
 
 /**
  * 断言落进某人的沙箱。**不写成 `toBe(join(ROOT, id))` 的字面比对**：

@@ -1,11 +1,13 @@
 export * as AnchorWorkspace from "./anchor-workspace"
 
 import { WORKSPACE_ROOT_ENV, workspaceRoot } from "@opencode-ai/auth/workspace"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { User } from "@opencode-ai/core/user"
 import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Effect, Option } from "effect"
 import { Headers, HttpMethod, HttpRouter, HttpServerRequest } from "effect/unstable/http"
-import { join } from "node:path"
+import { existsSync } from "node:fs"
+import { basename, dirname, join, resolve as pathResolve } from "node:path"
 import { MatchedRoute } from "./matched-route"
 
 /**
@@ -90,9 +92,78 @@ export class Config extends ConfigService.Service<Config>()("@opencode/OpenhiveW
   /**
    * 沙箱根。默认取 `workspaceRoot({})` 而不是另写一个 `"/workspaces"`——
    * 那个默认值只有一处定义（design-v2 §5.3），两边各写一份就会在改默认时漏掉一边。
+   *
+   * ## 解析出来的值一律过 `canonicalRoot`（2026-10-09，缺陷：左栏「看不到会话」）
+   *
+   * **实测的根因**（`test/server/openhive-project.test.ts` 那条用例，修前）：
+   *
+   * ```
+   * 期望（项目清单给的 directory）C:\Users\ADMINI~1\AppData\Local\Temp\openhive-project-bTlaxp\workspaces\55e8…\55f3…
+   * 实得（GET /path ＝ 实例层目录）  C:\Users\Administrator\AppData\Local\Temp\openhive-project-bTlaxp\workspaces\55e8…\55f3…
+   * ```
+   *
+   * 同一个物理目录、两种写法。两侧各说各的：
+   *
+   * - **存储侧**：本文件算出的沙箱（＝ `join(config.root, userId)`）：`project-location.ts` 的
+   *   `projectDirectory(config.root, …)` 原样写进请求 ⇒ `core/src/session.ts` 原样落库
+   *   （`directory: input.location.directory`）——**不过 `resolve`**；
+   * - **过滤侧**：`?directory=` 由实例层解析成 `InstanceState.directory`，
+   *   而 `InstanceStore` 把它交给 `FSUtil.resolve`（`project/instance-store.ts`）——
+   *   后者在 win32 上会把 8.3 短名展开（`ADMINI~1` → `Administrator`）。
+   *
+   * 两侧要相等，`projectDirectory(config.root, …)` 就必须是 `FSUtil.resolve` 的**不动点**。
+   * 根不规范（win32 短名 / 根是符号链接）时这个前提当场破功，而**红的是别人**：请求被改写成
+   * 「短名版」、落库也是短名版，实例层一解析变成「长名版」⇒ `GET /session?directory=…` 一行都
+   * 选不出来（左栏空、右栏没反应），**不报错、不变红**。
+   *
+   * 修在**根**这一处，而不是改写 `projectDirectory` 或存储侧（那两处各有一个更硬的原因）：
+   * ① `projectDirectory`（`auth/workspace.ts`）是**纯拼接**，文件头写明了「保持**纯**」；
+   * ② 项目清单给的这个串还是**前端的缓存键**（`ensureDirSyncContext(目录)`）与
+   *   `event-reducer.ts` 的 `directory` 判据——只改存储侧会让「清单给的串」与
+   *   「落库的串」再分一次叉。根只有一处，五个消费者（锚定 / 项目落点 / 清单 / 建项目 /
+   *   文件出口）全从它派生。
    */
-  root: EffectConfig.string(WORKSPACE_ROOT_ENV).pipe(EffectConfig.withDefault(workspaceRoot({}))),
+  root: EffectConfig.string(WORKSPACE_ROOT_ENV).pipe(
+    EffectConfig.withDefault(workspaceRoot({})),
+    EffectConfig.map(canonicalRoot),
+  ),
 }) {}
+
+/**
+ * 把沙箱根规范化成**它自己的规范形态**：win32 展开 8.3 短名、解开符号链接。
+ *
+ * 与 `FSUtil.resolve` 的差别只有一处、但缺不得：**整段路径还不存在时，退到「存在的最长前缀」
+ * 再把它拼回来**。
+ *
+ * 为什么不能直接用 `FSUtil.resolve`：它 ENOENT 时退化成**纯字面**（`normalizePath` 里的
+ * `realpathSync.native` 也抛，于是走 `pathResolve`），短名原样留着。而沙箱根**恰恰常常不存在**
+ * ——它由建项目那一步 `mkdir(directory, { recursive: true })` 才生出来（
+ * `test/server/openhive-project.test.ts` 的字面注释：「本文件不预先创建它」），
+ * 而配置是在**层构造期**解析一次的、早于第一个请求。实测：这个根不存在时 `FSUtil.resolve`
+ * 是**空操作** ⇒ 修了等于没修（`#004-08`：副作用类判据先问「机制是不是活的」）。
+ *
+ * 于是「往上一层层找存在的那一段、再拼回来」这一半是承重的：`…\openhive-project-bTlaxp\workspaces`
+ * 里的 `workspaces` 还不存在，但它的父目录存在 ⇒ 父目录被规范化成长名、`workspaces` 原样接上。
+ * 之后建项目 `mkdir` 出来的是**长名**路径 ⇒ 两侧同形。
+ *
+ * ⚠️ **不是幂等性的补丁**：`FSUtil.resolve` 本身幂等（`resolve(resolve(x)) === resolve(x)`，
+ * 存在与否都成立），本函数只是在它前面补上「路径尚不存在」这一档。走到盘符还找不到存在的段
+ * （畸形配置）就原样返回字面量，交给下游按它自己的方式报错——这里不该替它决定成功还是失败。
+ */
+function canonicalRoot(root: string): string {
+  const target = pathResolve(root)
+  const tail: string[] = []
+  let existing = target
+
+  while (!existsSync(existing)) {
+    const parent = dirname(existing)
+    if (parent === existing) return target
+    tail.unshift(basename(existing))
+    existing = parent
+  }
+
+  return join(FSUtil.resolve(existing), ...tail)
+}
 
 export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; handles: unknown }>()(
   Effect.gen(function* () {

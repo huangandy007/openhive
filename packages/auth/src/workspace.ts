@@ -79,3 +79,32 @@ export async function createWorkspace(root: string, userId: string): Promise<str
   await mkdir(path, { recursive: true, mode: 0o700 })
   return path
 }
+
+/**
+ * 一个项目的目录：`{沙箱根}/{userId}/{projectId}`（2026-10-08 收口）。
+ *
+ * ## 为什么非抽出来不可
+ *
+ * 这句话此前**散在四个地方各写一份**（T017 的中间件锚 `join(config.root, user.id, projectId)`、
+ * 建项目、归档、找回），三处业务码 ＋ 一处中间件。而中间件那一份是**权威**：所有请求的
+ * `?directory=` 都按它改写。四份里**任何一份漂了**，症状都是「会话/文件落在不存在的目录里」
+ * ——不报错、不变红，只有打开文件树才发现「我在项目里干活，东西却不在项目里」。
+ * `LEARNINGS #005-04` 的原话正是这件事：**「我记得的都改了」不是检完，「它全部同类落点都改了」
+ * 才是**；而只要还有第二份写法，就有第二个会漂的点。
+ *
+ * ## 为什么在 `auth` 这一层，而不是 `opencode` 里另建一个文件
+ *
+ * 布局知识本来就住在这里：`createWorkspace` 算的就是上面那一级（`join(root, userId)`），本函数
+ * 只是再下一级。放这里，`auth` 侧（沙箱归档 `sandbox-archive.ts`）与 `opencode` 侧的四个调用点
+ * 都够得着，且**只有这一个文件**知道目录长什么样。
+ *
+ * ## 为什么不在这里校验 `projectId`
+ *
+ * 它是**拼接**、不是**入口**：校验各有各的语义（中间件要说清「拒绝的是哪个动作」，
+ * `assertSafeUserId` 的注释讲了同一件事），而**读**路径（列项目）上游是数据库里的 UUID
+ * ——在那里加一个会抛的守卫，等于让一行坏数据把整份列表打炸。所以本函数保持**纯**：
+ * 谁当入口谁校验（`createWorkspace` 的 `assertSafeUserId` 就是那类，刻意**不**搬进来）。
+ */
+export function projectDirectory(root: string, userId: string, projectId: string): string {
+  return join(root, userId, projectId)
+}

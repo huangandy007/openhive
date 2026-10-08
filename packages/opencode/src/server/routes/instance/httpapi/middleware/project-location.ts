@@ -1,6 +1,7 @@
 export * as ProjectLocation from "./project-location"
 
 import { archiveStatesOf } from "@opencode-ai/auth/project-member"
+import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectExt } from "@opencode-ai/core/project/ext"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
@@ -11,7 +12,7 @@ import { OpenhivePg } from "@/server/openhive/pg"
 import { cookieValue } from "@/server/user-identity"
 import { Effect, Option, Schema } from "effect"
 import { Headers, HttpMethod, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { join, relative } from "node:path"
+import { relative } from "node:path"
 import { AnchorWorkspace } from "./anchor-workspace"
 import { MatchedRoute } from "./matched-route"
 
@@ -216,7 +217,11 @@ import { MatchedRoute } from "./matched-route"
  *
  * ## 镜像（两处，都不是近似的借口）
  *
- * 1. **沙箱根**：本文件的 `join(config.root, user.value.id)` ⇔ `anchor-workspace.ts` 里那行。
+ * 1. **沙箱根**：本文件与 `anchor-workspace.ts` 里那行**必须取同一个 `root`**（两处都写作
+ *    `yield* AnchorWorkspace.Config`，**实测**）。⚠️ 项目**目录**（比沙箱根再深一级）自
+ *    2026-10-08 起**不再是镜像、而是同一份代码**——`@opencode-ai/auth/workspace` 的
+ *    `projectDirectory(root, userId, projectId)`，本文件、`./project`（建 / 列）、`./archive`
+ *    （归档 / 找回）四处都调它。
  * 2. **什么算「下游会当 JSON 解」**：本文件的 `isJsonRequest` ⇔ 锚定的同名函数 ⇔ 它们共同镜像的
  *    `HttpApiBuilder` 的 `getRequestContentType` / `getRequestMediaType`。
  *
@@ -500,7 +505,11 @@ export const projectLocationLayer = HttpRouter.middleware<{
           return forbidden()
         }
 
-        const target = join(config.root, user.value.id, projectId)
+        // 目录算法**只有 `projectDirectory` 一份**（`@opencode-ai/auth/workspace`，2026-10-08 收口）。
+        // 本行此前是全仓**四处同款写法**中的一处；四份里任何一份漂了都静默变成「会话落在别的目录」。
+        // ⚠️ `config.root` 必须是 `AnchorWorkspace.Config`——`./project` 的 `deps.root` 也是它
+        // （**实测**：两处都写作 `yield* AnchorWorkspace.Config`）。换成 `/shared` 那套会全盘错位。
+        const target = projectDirectory(config.root, user.value.id, projectId)
         const rewritten = rewriteBody(rewriteRequest(request, target), target)
 
         return yield* Effect.provideService(effect, HttpServerRequest.HttpServerRequest, yield* rewritten)
