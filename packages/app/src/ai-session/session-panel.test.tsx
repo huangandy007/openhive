@@ -374,6 +374,58 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
   })
 })
 
+/**
+ * 自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）。
+ *
+ * 现场：**发完问题之后，AI 的回答不在视野里**，要用鼠标往上滚才看得见。根因是右栏这个滚动容器
+ * （`session-panel.tsx` 的 `[data-slot="session-turns"]`）是个**裸 `overflow-y-auto`**，全仓在它上面
+ * 没有任何自动滚动逻辑；上游会话页则一直有（`createAutoScroll` ＋ 虚拟化时间线的 `scrollToEnd`）。
+ *
+ * ⚠️ **本组只能断结构，断不了那条缺陷本身。** 判据是几何的（「内容长高之后 `scrollTop` 还在不在底部」），
+ * 而 happy-dom **不跑布局**——`scrollHeight` / `clientHeight` / `scrollTop` 恒为 0
+ * （`LEARNINGS #005-07` / `#006-15`：几何约定在 happy-dom 里量不出）。真判据在真栈 E2E
+ * （`packages/app/e2e/real-stack/ai-session-real.spec.ts` 的「自动跟随」两条）。
+ *
+ * 那这两条钉的是什么？钉的是**让那条几何判据能成立的两个前提**，各配一条变异：
+ *
+ * ① `overflow-anchor: none` 是 `createAutoScroll` **在 `scrollRef` 真接上之后**才写上去的
+ *    （`create-auto-scroll.tsx` 的 `createEffect` 里 `if (!el) return`）⇒ 它非空就等于
+ *    「`ref={自动跟随.scrollRef}` 真接上了」。摘掉那个 `ref` ⇒ 本文件其余用例一条都不红
+ *    （`#005-11`：接线只写不测，红不了），**只有这一条红**。
+ * ② turn **不是**滚动容器的直接子元素——中间隔着一层内容包裹层。这不是排版癖好：`contentRef`
+ *    必须是那个**随内容长高**的元素（`createResizeObserver` 观测它），而容器是 `flex-1`
+ *    （高度确定）⇒ 把 `contentRef` 挂到容器上，容器在内容增长时**根本不会 resize**，
+ *    自动跟随静默失效（`#006-15` 的同型：上游 CSS 的前提被自己的容器违背）。这一条钉住那个前提。
+ */
+describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）", () => {
+  const 挂对话 = (data: SessionPanelData) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel data={data} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      )),
+    )
+
+  const 滚动容器 = (宿主: HTMLElement) => 宿主.querySelector<HTMLElement>('[data-slot="session-turns"]')
+  const 内容包裹层 = (宿主: HTMLElement) =>
+    宿主.querySelector<HTMLElement>('[data-slot="session-turns"] > [data-slot="session-turns-content"]')
+  /** 断言断**布尔**：把 Solid 渲染过的节点当实得值，失败时 bun 的打印器会挂死（`LEARNINGS #005-01`）。 */
+  const turn直接挂在容器下 = (宿主: HTMLElement) =>
+    宿主.querySelector('[data-slot="session-turns"] > [data-component="session-turn"]') !== null
+
+  test("① 滚动容器接上了自动滚动原语（`overflow-anchor: none` 是它自己写上去的）", () => {
+    const 容器 = 滚动容器(挂对话(对话(1)))
+
+    expect(容器?.style.overflowAnchor).toBe("none")
+  })
+
+  test("② turn 不直接挂在滚动容器下——中间那层才是 `contentRef`（容器自己不长高，观测它没用）", () => {
+    const 宿主 = 挂对话(对话(2))
+
+    expect(内容包裹层(宿主) !== null).toBe(true)
+    expect(turn直接挂在容器下(宿主)).toBe(false)
+  })
+})
+
 describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右栏内）", () => {
   const 两场 = (): SessionPanelData => ({
     ...夹具数据(),

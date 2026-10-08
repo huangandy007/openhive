@@ -7,7 +7,8 @@ import {
 } from "@opencode-ai/session-ui/v2/prompt-input"
 import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
 import { createPromptInputV2Store } from "@opencode-ai/session-ui/v2/prompt-input/store"
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
+import { createAutoScroll } from "@opencode-ai/ui/hooks"
+import { For, Show, createEffect, createMemo, createSignal, on, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { skillCommands } from "./command-palette"
 import { CommonCards } from "./common-cards"
@@ -168,6 +169,46 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * 两者引用都稳（`data` 按目录缓存）⇒ 它不是每一帧都重算。
    */
   const 轮次 = createMemo(() => (props.data.message[props.sessionID] ?? []).filter((消息) => 消息.role === "user"))
+
+  // ── 自动跟随底部（缺陷修复 · 2026-10-08）────────────────────────────────────
+  //
+  // 现场：**发完问题之后，AI 的回答不在视野里**，要用鼠标往上滚才看得见。根因是这个滚动容器
+  // 当年就没接过任何自动滚动——`[data-slot="session-turns"]` 是个裸 `overflow-y-auto`，
+  // 全仓在它上面没有一条 `scrollTop` / `scrollIntoView`（上游会话页则一直有）。
+  //
+  // 修法是**复用上游那件现成的东西**，不自己写第二份：`@opencode-ai/ui/hooks` 的
+  // `createAutoScroll`（`packages/ui/src/hooks/create-auto-scroll.tsx`，全仓唯一一处），
+  // 参数与上游会话页**逐字同源**（`pages/session.tsx:1499`）。
+  //
+  // ⚠️ `working: () => true` 是**照抄上游**的，不是偷懒：上游那边这个位置本来是「AI 正在答」，
+  // 它传的却是**常量真**——因为 `userScrolled` 那条粘性标志已经管住了「用户滚上去就别再拽他」
+  // 这一半，剩下的「内容长高就跟随」不需要业务信号。自己另立一个「在不在生成中」的判据
+  // 就是把同一件事在第二处再写一份，且那一份**不会随上游一起改**（`LEARNINGS #002-06` / `#003-05`）。
+  //
+  // ⚠️ `overflowAnchor: "none"` 同样照抄：浏览器自己的 scroll anchoring 会和这套跟随打架。
+  const 自动跟随 = createAutoScroll({ working: () => true, overflowAnchor: "none" })
+
+  /**
+   * 换会话 ⇒ 恢复跟随。
+   *
+   * ⚠️ **这一步不能省**，而它之所以容易漏，是因为「切会话会重建组件」是个**看着很对、其实不对**
+   * 的推断：本面板外面是 `ai-session-slot.tsx` 的 `<Show when={提交态()}>`，**非 keyed** ⇒ 换会话时
+   * 那个 `<Show>` 一直为真，`SessionPanel` **不重挂**，滚动容器元素被跨会话复用
+   * （`LEARNINGS #004-13`：能一次解释掉全部现象的说法才是根因——这里是它的反面，一个解释不掉的推断）。
+   *
+   * 不恢复的后果：在 A 会话往上滚过（`userScrolled` 变真）之后切到 B，B 从第一屏起就**不跟随**，
+   * 且界面上没有任何东西说明为什么。上游同一位置也是这么做的（`pages/session.tsx:1501-1509`）。
+   *
+   * `defer: true` ＝ 首次挂载不跑：挂载那一刻 `scrollRef` 还没接上（`createAutoScroll` 内部
+   * `if (!el) return`），跟随由内容包裹层的 `ResizeObserver` 首次触发兜住，这里只管**切换**。
+   */
+  createEffect(
+    on(
+      () => props.sessionID,
+      () => 自动跟随.resume(),
+      { defer: true },
+    ),
+  )
 
   // ── Hero 输入（§4.7.5）─────────────────────────────────────────────────────
   //
@@ -373,48 +414,75 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           onPick={(卡) => controller.dispatch({ type: "input.changed", value: 卡.prompt })}
         />
 
-        <div data-slot="session-turns" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
-          <For each={轮次()}>
-            {(消息) => (
-              /* 这一层 `<div>` **不是装饰**，是修「没有垂直滚动」的那一半（2026-10-08 真栈肉眼报的）。
+        {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- 这两条只对 **DOM 元素上的 JSX 事件属性**生效，而 `onClick` 在这里不是「点击动作」、是**观察**（`handleInteraction` 内部只在 `window.getSelection()` 非空时才 `stop()`，即「用户正在选文本 ⇒ 别再抢他的视野」），**没有**可键盘触发的动作，补一个空 `onKeyDown` 只是哄门。上游把同一个回调挂在 `<ScrollView onClick>`（组件）上、经 `{...rest}` 落到 div —— DOM 形状与这里逐字相同，只是 jsx-a11y **看不见跨组件的那一跳**，所以上游不报。我们用的是裸 div，报得对，故按本仓 `oxlint-disable-next-line -- 理由` 的惯例据实标注（`LEARNINGS #001-05` 同族：门的判据要据实，别为了让门闭嘴去改行为）。 */}
+        <div
+          ref={自动跟随.scrollRef}
+          data-slot="session-turns"
+          class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto"
+          onScroll={自动跟随.handleScroll}
+          onClick={自动跟随.handleInteraction}
+        >
+          {/* 这一层是**自动跟随的观测面**，与下面那层（修「没有垂直滚动」的）是两件事，别合并。
 
-                 `SessionTurn` 自带两条 CSS（在 `session-ui` 的样式表里，按属性选择器写，不是
-                 Tailwind 类，所以从源码里看不见）：
+              `createAutoScroll` 靠 `createResizeObserver(contentRef)` 在**内容长高时**跟到底部，
+              而 `ResizeObserver` 观测的是**元素自己的盒子**：本容器是 `flex-1`（高度确定）
+              ⇒ 内容长高时**它自己不变**（变的是 `scrollHeight`）⇒ 把 `contentRef` 挂在容器上，
+              观测器一次都不会因为内容增长而触发，自动跟随**静默失效**（不报错、不变红）。
 
-                     [data-component="session-turn"]          { height: 100%; display: flex; … }
-                     [data-slot="session-turn-content"]       { height: 100%; overflow-y: auto; … }
+              所以中间必须有一个**高度随内容长高**的元素，`contentRef` 挂它。上游同一个原语的挂法
+              就是分两处的：`scrollRef` 在滚动根、`contentRef` 在 `[data-timeline-virtual-content]`
+              （`message-timeline.tsx` :572 / :1826）。
 
-                 它的设计前提是**父层高度 auto**：内容把那一层撑开，滚动交给外层。上游两处权威用法
-                 都在这个前提下用它——`timeline-playground.stories.tsx` 包一层
-                 `<div style={{ width: "100%" }}>`，`enterprise/routes/share/[shareID].tsx` 靠外层
-                 `flex flex-col` 的高度 auto。
+              `shrink-0` 在这里也不是装饰：它是容器的 flex 项，默认 `flex-shrink: 1` ⇒ 内容超高时
+              它会被压到**容器高**，那一瞬间 `contentRef` 的高度不再等于内容高，观测面就失真了
+              （同族：`#006-15` 的「格子高 = 容器高 ÷ 条数」正是这么来的）。
 
-                 本容器（`flex-1`，高度确定）违背了这个前提：`height:100%` 会解析成**容器全高**
-                 ⇒ n 条 turn 的 `flex-basis` 全等 ⇒ 被 flex-shrink 按比例压成 `容器高 / n`。
-                 2026-10-08 实测两次，精确吻合：6 条各 **106.17px**（637÷6）、3 条各 **212.33px**
-                 （637÷3），而它们的内容真实需要 139 / 340 / 269px。后果有两个，**都不报错**：
-                 ① 长回答被压进那一条里、由 `content` 那条 `overflow-y:auto` **在格内滚**；
-                 ② 外层 `scrollHeight` 恒等于 `clientHeight` ⇒ **永远不出现滚动条**，且内容叠在一起。
-                 用户报的「没有垂直滚动」就是这个——不是滚不动，是**滚动被藏在每一格内部**。
+              ⚠️ 它**不加** `flex flex-col`：里面那层是有意让 `<For>` 生成的块级 div 自然堆叠的；
+              多引入一个 flex 格式化上下文，等于给下面那段注释里已经量过的几何再加一个变量。
+              本层对版面无影响（`w-full` 的块级 div 在 `w-full` 的块级父层里，宽度与之前逐字相同）。 */}
+          <div ref={自动跟随.contentRef} data-slot="session-turns-content" class="w-full shrink-0">
+            <For each={轮次()}>
+              {(消息) => (
+                /* 这一层 `<div>` **不是装饰**，是修「没有垂直滚动」的那一半（2026-10-08 真栈肉眼报的）。
 
-                 包这一层的两个作用，**缺一不可**（实测：只改 `content` 那侧不够，turn 仍被压成
-                 `容器高/n`）：① 它的高度是 auto ⇒ 内层 `height:100%` 相对它解析为 auto；
-                 ② `shrink-0` 让它自己不被 flex 收缩。撑高一条到 1500px 的对照实测：容器
-                 `scrollHeight` 637 → **1876**、`maxScroll` **1239**（精确 = 1876-637）⇒ 真能滚。
+                   `SessionTurn` 自带两条 CSS（在 `session-ui` 的样式表里，按属性选择器写，不是
+                   Tailwind 类，所以从源码里看不见）：
 
-                 ⚠️ **不传 `classes`**（上游那两处都传了 `content: "… !overflow-visible"`）：实测
-                 **不需要**——内层高度一变成 auto，它的 `height:100%` 也跟着 auto，内容自然撑开、
-                 不溢出，那条 `overflow-y:auto` 就此惰性。少传一个 prop 就少一份与上游漂移的面。
-                 （另记一笔：`!overflow-visible` 这个类**当前是查不到的**——Tailwind v4 按需生成，
-                 实测 `.overflow-visible` 在、带 `!` 的变体不在 ⇒ 写了也未必生效。）
+                       [data-component="session-turn"]          { height: 100%; display: flex; … }
+                       [data-slot="session-turn-content"]       { height: 100%; overflow-y: auto; … }
 
-                 ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
-                 真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
-              <div class="w-full shrink-0">
-                <SessionTurn sessionID={props.sessionID} messageID={消息.id} />
-              </div>
-            )}
-          </For>
+                   它的设计前提是**父层高度 auto**：内容把那一层撑开，滚动交给外层。上游两处权威用法
+                   都在这个前提下用它——`timeline-playground.stories.tsx` 包一层
+                   `<div style={{ width: "100%" }}>`，`enterprise/routes/share/[shareID].tsx` 靠外层
+                   `flex flex-col` 的高度 auto。
+
+                   本容器（`flex-1`，高度确定）违背了这个前提：`height:100%` 会解析成**容器全高**
+                   ⇒ n 条 turn 的 `flex-basis` 全等 ⇒ 被 flex-shrink 按比例压成 `容器高 / n`。
+                   2026-10-08 实测两次，精确吻合：6 条各 **106.17px**（637÷6）、3 条各 **212.33px**
+                   （637÷3），而它们的内容真实需要 139 / 340 / 269px。后果有两个，**都不报错**：
+                   ① 长回答被压进那一条里、由 `content` 那条 `overflow-y:auto` **在格内滚**；
+                   ② 外层 `scrollHeight` 恒等于 `clientHeight` ⇒ **永远不出现滚动条**，且内容叠在一起。
+                   用户报的「没有垂直滚动」就是这个——不是滚不动，是**滚动被藏在每一格内部**。
+
+                   包这一层的两个作用，**缺一不可**（实测：只改 `content` 那侧不够，turn 仍被压成
+                   `容器高/n`）：① 它的高度是 auto ⇒ 内层 `height:100%` 相对它解析为 auto；
+                   ② `shrink-0` 让它自己不被 flex 收缩。撑高一条到 1500px 的对照实测：容器
+                   `scrollHeight` 637 → **1876**、`maxScroll` **1239**（精确 = 1876-637）⇒ 真能滚。
+
+                   ⚠️ **不传 `classes`**（上游那两处都传了 `content: "… !overflow-visible"`）：实测
+                   **不需要**——内层高度一变成 auto，它的 `height:100%` 也跟着 auto，内容自然撑开、
+                   不溢出，那条 `overflow-y:auto` 就此惰性。少传一个 prop 就少一份与上游漂移的面。
+                   （另记一笔：`!overflow-visible` 这个类**当前是查不到的**——Tailwind v4 按需生成，
+                   实测 `.overflow-visible` 在、带 `!` 的变体不在 ⇒ 写了也未必生效。）
+
+                   ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
+                   真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
+                <div class="w-full shrink-0">
+                  <SessionTurn sessionID={props.sessionID} messageID={消息.id} />
+                </div>
+              )}
+            </For>
+          </div>
         </div>
 
         {/* 待答的闸门（权限 / 提问）。位置与理由见 prop 上那段注释。 */}
