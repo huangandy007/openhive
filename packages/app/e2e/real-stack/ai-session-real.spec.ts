@@ -235,6 +235,167 @@ test("④ 右栏发消息：乐观插入与服务端回包只该留一条（真�
   await expect(右栏.locator('[data-component="session-turn"]')).toHaveCount(1)
 })
 
+/**
+ * ⑤⑥⑦ **右栏不自动跟随底部**——真栈几何实测（2026-10-08 用户肉眼报出）。
+ *
+ * 用户原话：「当我输入问题之后，AI 助手的回答不能实时显示在我能够看见的地方，我需要通过鼠标滚动
+ * 才能够看到」。根因不在渲染层：右栏滚动容器（`session-panel.tsx` 的 `[data-slot="session-turns"]`）
+ * 是个**裸 `overflow-y-auto`**，全仓在它上面没有一条自动滚动逻辑（上游会话页一直有
+ * `createAutoScroll`，右栏当年没接）。修法见该文件「自动跟随底部」那一段。
+ *
+ * ## 为什么这三条必须在这里、单测断不了
+ *
+ * 判据是**几何**的（「内容长高之后视野还在不在底部」），而 happy-dom 不跑布局、
+ * `scrollHeight`/`clientHeight`/`scrollTop` 恒为 0（`LEARNINGS #005-07` / `#006-15`）。
+ * 单测那两条钉的是**让这条几何判据能成立的两个前提**，不是这条判据本身。
+ *
+ * ## 内容怎么长高：**只能靠真实提交**（这条约束来自本栈的形态，不是偷懒）
+ *
+ * 真栈**没有模型**（本文件头「缺口 ④ 不命中」已记）⇒ 没有回包、没有流式，`message[]` 只能靠
+ * 用户自己的提交长出来。所以三条用例都走「从 Hero 真提交 → 等它真的出现在 turn 区」这条路，
+ * **一次 DOM 注入都没有**（注入会踩 Solid 的插入点：`<For>` 的自有节点与注入节点在同一父层，
+ * 新 turn 会插到注入块**之前**，于是「新的一轮在不在下面」这个几何前提当场失真）。
+ *
+ * ## 视口要调小：让「能滚」变成可证的前置条件，而不是假设
+ *
+ * 默认 1440×900 下右栏高约 637px，要提交很多轮才撑得满。把视口压到 1440×**420**，
+ * 两三句话就能滚。**每一条都先断言「真的能滚」**——撑不满时 `距底` 恒为 0，
+ * 「跟到底」就是一条恒真的测量、看着是绿的（`LEARNINGS #006-06`：判据先要有非零的量）。
+ *
+ * ## 三条的分工（缺一条都不够）
+ *
+ * - ⑤ **被测属性**：内容长高 ⇒ 视野落到底部。
+ * - ⑥ **对照（会坏的那一格）**：用户先滚到顶、再长高 ⇒ 视野**不许动**。它是「无脑跳到底」那种
+ *   实现（直接在 `轮次()` 上写 `scrollTop = scrollHeight`——也就是**不接原语时最容易写出的那份**）
+ *   唯一会红的地方。⚠️ 它在**修复前也是绿的**（修复前压根没人动滚动），**据实记**：
+ *   它的价值是**哨兵**，不是缺陷探测器（`LEARNINGS #005-15`：别让注释比断言强）。
+ * - ⑦ **真路**：与⑤同一件事，但判据取用户那句话说的事实本身——「新出现的一轮落在**视野里**」，
+ *   用 `toBeInViewport`。⑤ 量的是滚动量，⑦ 量的是「看不看得见」；两者在多数坏法下同红，
+ *   但⑦是**唯一**直接对上用户原话的那条。
+ */
+const 量滚动 = (page: Page) =>
+  page.evaluate(() => {
+    // ⚠️ 数一遍匹配个数，不只取第一个：右栏若哪天渲染出两个 `session-turns`（或中栏那页
+    // 也长出一个），`querySelector` 会**静默**量到另一个元素，而所有判据照旧有个数
+    // （`LEARNINGS #004-01`：数不对，缺口就看不见）。
+    const 全部 = document.querySelectorAll<HTMLElement>('[data-slot="session-turns"]')
+    const el = 全部[0]
+    if (!el) throw new Error('没找到 [data-slot="session-turns"]（右栏滚动容器换地方了？）')
+    const 可滚量 = el.scrollHeight - el.clientHeight
+    return {
+      可滚量,
+      距底: 可滚量 - el.scrollTop,
+      匹配数: 全部.length,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
+    }
+  })
+
+/** 右栏压矮到几句话就能滚（宽度不动，免得踩响应式断点）。 */
+const 压矮 = (page: Page) => page.setViewportSize({ width: 1440, height: 420 })
+
+const 打开右栏 = async (page: Page, 标题: string) => {
+  const 起始会话 = await 建真会话(标题)
+  await setup(page, 起始会话)
+  await page.goto(`/server/${base64Encode(FRONT())}/session/${起始会话}`)
+  await expect(page.locator('[data-slot="session-turns"]')).toBeVisible()
+}
+
+/** 从 Hero 真提交一句话，等它**真的**出现在 turn 区里（乐观插入到账）。 */
+async function 提交一条(page: Page, 标记: string) {
+  const hero = page.locator('[data-slot="session-hero"]')
+  await expect(hero.locator('[data-component="prompt-input"]')).toBeVisible()
+  await hero.locator('[data-component="prompt-input"]').fill(标记)
+  await hero.locator('[data-action="prompt-submit"]').click()
+  // 锚在 `[data-slot="session-turns"]`（不是整根右栏）：表头那个会话题名按钮也会承载这句话
+  // （内核收到首条消息后把标题改成它）——测试 ④ 的注释里记着这一条实测。
+  await expect(page.locator('[data-slot="session-turns"]').getByText(标记).last()).toBeVisible({
+    timeout: 30_000,
+  })
+}
+
+/**
+ * 一直提交到 turn 区**滚得够多**为止（返回提交了几次）。
+ *
+ * ⚠️ **目标是「滚得够多」，不是「刚刚能滚」**（2026-10-08 第一次跑实测打回的一版）：第一版把判据
+ * 写成 `可滚量 > 1`，于是循环在第一句话**刚**撑满时立刻停手——实测那一刻 `可滚量` 只有 **26px**，
+ * 于是 ⑥ 那条「用户滚到顶」的前置（`距底 > 50`）当场红了，红在**前置**上、读起来像「scroll 没生效」。
+ * 26px 的「滚到顶」也确实不是用户说的「滚上去看东西」：真判据需要一个能容人的余量。
+ *
+ * 为什么是循环而不是定次数：每轮的高度取决于真实渲染，猜不准；而「提交 N 次」是个**猜出来的数**，
+ * 「能滚多少」是个**可量的判据**（`LEARNINGS #003-04`：数字落笔前先量，量不成写成命令/条件）。
+ */
+async function 提交到能滚(page: Page, 目标 = 200, 上限 = 8): Promise<number> {
+  for (let i = 1; i <= 上限; i++) {
+    await 提交一条(page, `撑高${i}·${Date.now()}`)
+    const { 可滚量 } = await 量滚动(page)
+    if (可滚量 >= 目标) return i
+  }
+  const { 可滚量 } = await 量滚动(page)
+  throw new Error(`提交了 ${上限} 次 turn 区只滚得动 ${可滚量}px（目标 ${目标}）⇒ 前置撑不住，不测下去`)
+}
+
+test("⑤ 右栏内容长高 ⇒ 自动跟到底部（真栈几何实测）", async ({ page }) => {
+  await 压矮(page)
+  await 打开右栏(page, "右栏自动跟随")
+  await 提交到能滚(page)
+
+  const 几何 = await 量滚动(page)
+  // 前置：真的能滚（否则下面那条恒真）。放在被测属性**之前**是为了让 ⑤ 的自我描述成立
+  // （`#004-14` 讲的是同一条纪律的另一面：书写顺序决定红的时候你读到哪条证据）。
+  expect(几何.可滚量, "前置：turn 区应当真的能滚").toBeGreaterThan(1)
+
+  // 被测属性：最后一条提交之后，视野底应当贴着内容底。
+  expect(几何.距底, "内容长高之后视野应当跟到底部（修复前这里是 400 上下，即停在顶部）").toBeLessThan(2)
+})
+
+test("⑥ 对照：用户先滚到顶，再长高 ⇒ 视野不许被拽回来", async ({ page }) => {
+  await 压矮(page)
+  await 打开右栏(page, "右栏跟随对照")
+  await 提交到能滚(page)
+
+  // 用户往上滚（真 scroll 事件 ⇒ `handleScroll` ⇒ `userScrolled`）。`dispatchEvent` 是为了
+  // **同步**把处理器跑掉：`scrollTop` 赋值触发的原生 scroll 事件是异步投递的，不等它就得靠
+  // `waitForTimeout` 猜（猜出来的等待在慢机器上就是 flake）。
+  const 滚前 = await 量滚动(page)
+  await page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('[data-slot="session-turns"]')!
+    el.scrollTop = 0
+    el.dispatchEvent(new Event("scroll"))
+  })
+  const 滚上去 = (await 量滚动(page)).距底
+  // 消息里带**实测的数**：这条前置若是红的，只报「距底 0」分不清是「压根没可滚的量」还是
+  // 「置 0 之后被弹回底部」——两者的排查方向相反（`LEARNINGS #003-04`：数字要落成实测）。
+  expect(
+    滚上去,
+    `前置：真的滚上去了（否则 scroll 没生效，下面那条判据就没有意义）` +
+      `｜滚前 可滚量=${滚前.可滚量} 距底=${滚前.距底} scrollTop=${滚前.scrollTop}` +
+      ` clientHeight=${滚前.clientHeight} 匹配数=${滚前.匹配数}` +
+      `｜置 0 之后 距底=${滚上去} scrollTop=${(await 量滚动(page)).scrollTop}`,
+  ).toBeGreaterThan(150)
+
+  await 提交一条(page, `对照·${Date.now()}`)
+
+  const 之后 = (await 量滚动(page)).距底
+  // 「视野没动」的可量形态：`scrollTop` 还是 0 ⇒ `距底` 只会**因为内容变高**而变大（多出这一轮的高度）。
+  // 无脑跳到底的实现会把 `距底` 打回 0 附近 ⇒ 恰红这一条。
+  expect(之后, "用户已经在上面读东西 ⇒ 新内容不该把视野拽走").toBeGreaterThan(滚上去 + 30)
+})
+
+test("⑦ 真路：撑满的会话里从 Hero 提交 ⇒ 新的一轮落在**视野里**（用户原话的那条判据）", async ({ page }) => {
+  await 压矮(page)
+  await 打开右栏(page, "右栏跟随真路")
+  await 提交到能滚(page)
+
+  const 标记 = `看得见·${Date.now()}`
+  await 提交一条(page, 标记)
+
+  // 与测试 ④ 相反的一侧：那里问「这句话在 turn 区里出现几次」，这里问「它**看得见吗**」。
+  // 修复前：提交把它追加在内容底、而视野停在顶部 ⇒ `toBeInViewport` 红（这正是用户报的现场）。
+  // 断言前一行那句「新出现的一轮应当落在视野里，而不是要人往上滚才看得见」是这条用例的自我描述。
+  await expect(page.locator('[data-slot="session-turns"]').getByText(标记).last()).toBeInViewport()
+})
+
 async function setup(page: Page, sessionID: string) {
   await page.addInitScript(
     ({ directory, server, sessionID }) => {
