@@ -1051,13 +1051,36 @@ export function createServerSession(
           return
         }
         const result = Binary.search(messages, messageKey(info), messageKey)
-        if (result.found) setData("message", info.sessionID, result.index, reconcile(info))
-        if (!result.found)
+        if (result.found) {
+          setData("message", info.sessionID, result.index, reconcile(info))
+          return
+        }
+        // ── openhive 定制（2026-10-08，**要保留**）：同一条消息的两个写入出口，去重判据要一致 ──
+        // `found` 为假**不等于**「这是条新消息」——它也可能只是**键变了**：乐观插入
+        // （`optimistic.add`，本文件下方）写进 `data.message` 的那条带的是**调用方**给的
+        // `time.created`（生产里是客户端 `Date.now()`），而这份事件信封带的是**内核**时钟
+        // ⇒ `messageKey` 两者不等 ⇒ 二分落空 ⇒ 下面 `splice` **再插一条同 id 的**。
+        // 真栈现象：右栏同一条消息显示两遍、刷新整页即消失（刷新走 `reconcileFetched`，
+        // 那条出口是按 `id` 去重的，只有这条出口不是）。
+        // 所以这里先按 **id** 认一次身份；命中就用服务端这条**替换**（服务端优先，与原语义一致）。
+        const sameID = messages.findIndex((message) => message.id === info.id)
+        if (sameID >= 0) {
+          // ⚠️ 重建而不是就地 `setData(…, sameID, …)`：`info` 的键与它替下去那条**不同**
+          // （上面刚讲的那对时钟），留在原下标会让数组**失序** ⇒ 之后每一次
+          // `Binary.search` 都可能落在错位：`found` 为真时会把**别人的格子**就地改写
+          // ——那比重复更坏。移除旧的、按新键插回，一条元素的「重新排序」，其余相对顺序不变。
           setData("message", info.sessionID, (value = []) => {
-            const next = value.slice()
-            next.splice(result.index, 0, info)
+            const next = value.filter((message) => message.id !== info.id)
+            next.splice(Binary.search(next, messageKey(info), messageKey).index, 0, info)
             return next
           })
+          return
+        }
+        setData("message", info.sessionID, (value = []) => {
+          const next = value.slice()
+          next.splice(result.index, 0, info)
+          return next
+        })
         return
       }
       case "message.removed": {
