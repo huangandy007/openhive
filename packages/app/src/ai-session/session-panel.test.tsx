@@ -187,6 +187,24 @@ const 打字 = (宿主: HTMLElement, 串: string) => {
 const 输入框里的话 = (宿主: HTMLElement) =>
   宿主.querySelector('[data-component="prompt-input"]')?.textContent ?? undefined
 
+/**
+ * 在 Hero 编辑器里按回车。
+ *
+ * 挂点就是 `打字` 用的那个编辑器：`index.tsx` 的 `onKeyDown` 在它身上，且弹层没开时
+ * `controller.onKeyDown` 不消费这个键（用例都不打 `/`）。走的是真实那条链，与 `打字` 同理。
+ *
+ * 定义在**模块级**：提交组与自动跟随组都要用它（`LEARNINGS #002-06`——两处各写一遍
+ * 「回车怎么按」，改一处就静默分家）。
+ */
+const 回车 = (宿主: HTMLElement) => {
+  const 编辑器 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input"]')
+  if (!编辑器) throw new Error("没找到 Hero 输入的编辑器（`[data-component=\"prompt-input\"]`）")
+  编辑器.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+}
+
+/** 让提交收尾那几条微任务跑完（`onSubmit` 里没有 `await`，只挂了 `.then` 与一处副作用）。 */
+const 歇 = () => new Promise((r) => setTimeout(r, 0))
+
 /** 指令卡行的卡（`data-slot="card"` 是共用语法的卡面）。 */
 const 卡们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLElement>('[data-slot="card"]')]
 
@@ -381,13 +399,10 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
  * （`session-panel.tsx` 的 `[data-slot="session-turns"]`）是个**裸 `overflow-y-auto`**，全仓在它上面
  * 没有任何自动滚动逻辑；上游会话页则一直有（`createAutoScroll` ＋ 虚拟化时间线的 `scrollToEnd`）。
  *
- * ⚠️ **本组只能断结构，断不了那条缺陷本身。** 判据是几何的（「内容长高之后 `scrollTop` 还在不在底部」），
- * 而 happy-dom **不跑布局**——`scrollHeight` / `clientHeight` / `scrollTop` 恒为 0
- * （`LEARNINGS #005-07` / `#006-15`：几何约定在 happy-dom 里量不出）。真判据在真栈 E2E
- * （`packages/app/e2e/real-stack/ai-session-real.spec.ts` 的「自动跟随」两条）。
+ * ⚠️ 判据是几何的，而 happy-dom **不跑布局**——`scrollHeight` / `clientHeight` / `scrollTop` 恒为 0
+ * （`LEARNINGS #005-07` / `#006-15`：几何约定在 happy-dom 里量不出）。本组因此分两层下判：
  *
- * 那这两条钉的是什么？钉的是**让那条几何判据能成立的两个前提**，各配一条变异：
- *
+ * - **①② 断结构**：钉住「让几何判据能成立的两个前提」，各配一条变异。
  * ① `overflow-anchor: none` 是 `createAutoScroll` **在 `scrollRef` 真接上之后**才写上去的
  *    （`create-auto-scroll.tsx` 的 `createEffect` 里 `if (!el) return`）⇒ 它非空就等于
  *    「`ref={自动跟随.scrollRef}` 真接上了」。摘掉那个 `ref` ⇒ 本文件其余用例一条都不红
@@ -396,6 +411,18 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
  *    必须是那个**随内容长高**的元素（`createResizeObserver` 观测它），而容器是 `flex-1`
  *    （高度确定）⇒ 把 `contentRef` 挂到容器上，容器在内容增长时**根本不会 resize**，
  *    自动跟随静默失效（`#006-15` 的同型：上游 CSS 的前提被自己的容器违背）。这一条钉住那个前提。
+ *
+ * - **③④ 断几何**：给容器装一副**假几何**（`装假几何`），让原语在 happy-dom 里真跑起来。
+ *   假的是它拿来算的**输入**，不是它算的**东西**——原语的数学、以及提交那条真实链路
+ *   （`打字` → 回车 → controller → `view.submit.onSubmit`）一行都没假（`#006-08`：某条支路在某个
+ *   测试层里没有观测面时，是**给它开一个观测面**，不是把断言换弱）。
+ *
+ * ⚠️ ③④ **仍然观测不到**的那一半：「内容长高 ⇒ 自动跟随」（`ResizeObserver` 那条支路）。
+ * 2026-10-08 实测（happy-dom 20.12.0）：`typeof ResizeObserver` **是 `function`**，但 `observe()`
+ * 之后、动过 DOM 与几何之后，回调次数**恒为 0**——`#006-08` 那句「happy-dom 里 ResizeObserver
+ * 不存在」在 20.12.0 上已不准，**不触发**才是事实（`#003-04`：数字与机制落笔前先复现）。
+ * ⇒ 这一半只能靠真栈 E2E（`packages/app/e2e/real-stack/ai-session-real.spec.ts`）。本组**不假装**
+ * 覆盖了它。
  */
 describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）", () => {
   const 挂对话 = (data: SessionPanelData) =>
@@ -423,6 +450,111 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
 
     expect(内容包裹层(宿主) !== null).toBe(true)
     expect(turn直接挂在容器下(宿主)).toBe(false)
+  })
+
+  // ── ③④ 的夹具 ──────────────────────────────────────────────────────────
+  //
+  // 与 `挂对话` 只差 `onSubmitPrompt`（③ 要真提交，④ 要「没接回调」那一支）。两处各自最小。
+  const 挂提交对话 = (onSubmitPrompt?: (text: string) => Promise<boolean> | void) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          onSubmitPrompt={onSubmitPrompt}
+        />
+      )),
+    )
+
+  const 取容器 = (宿主: HTMLElement) => {
+    const 容器 = 滚动容器(宿主)
+    if (!容器) throw new Error('没找到 `[data-slot="session-turns"]`（滚动容器换地方了？）')
+    return 容器
+  }
+
+  /**
+   * 给滚动容器装一副**假几何**。
+   *
+   * 只假三样读法：`scrollHeight` / `clientHeight` / `scrollTop`。`scrollTop` 的 setter **按真浏览器
+   * 的语义夹进 `[0, 可滚量]`**——原语正是靠 `el.scrollTop = el.scrollHeight` 这个**越界赋值**来
+   * 「到底」的（`create-auto-scroll.tsx` 的 `scrollToBottomNow`），不夹的话它的产物与真栈不同型。
+   *
+   * 开局在**最底**：真栈里首屏本来就在底部（下面那条前置的比较基准就是它）。
+   */
+  const 装假几何 = (容器: HTMLElement, 内容高: number, 视口高: number) => {
+    const 可滚量 = Math.max(0, 内容高 - 视口高)
+    let 位置 = 可滚量
+    Object.defineProperty(容器, "scrollHeight", { get: () => 内容高, configurable: true })
+    Object.defineProperty(容器, "clientHeight", { get: () => 视口高, configurable: true })
+    Object.defineProperty(容器, "scrollTop", {
+      get: () => 位置,
+      set: (值: number) => {
+        位置 = Math.min(Math.max(0, 值), 可滚量)
+      },
+      configurable: true,
+    })
+    return { 可滚量: () => 可滚量, 位置: () => 位置, 距底: () => 可滚量 - 位置 }
+  }
+
+  /**
+   * 模拟「用户往上滚」：把容器挪到顶部，再派发一个**滚轮**事件。
+   *
+   * ⚠️ 为什么用滚轮，而**不**用真栈 E2E 那条写法（改 `scrollTop` 再派发 `scroll`）——
+   * 原语里「用户往上滚」有**两个**入口：`handleWheel`（滚轮，直接 `stop()`）与 `handleScroll`
+   * （滚动事件，要先过一道「这次滚动是不是我们自己干的」的判据）。那道判据是**时间窗 ＋ 数值**的：
+   * `isAuto(el)` ＝「记账在 1500ms 内」**且** `|el.scrollTop - 记下的 maxScroll| < 2`。
+   * 而本层里那个「记下的 maxScroll」**恰好是 0**：挂载时几何还是 0（happy-dom 不跑布局），原语
+   * 内部那个 `on(options.working)` 副作用**却在 ref 接上之后才跑**（2026-10-08 探针实测：它跑了，
+   * 且那一刻 `scrollHeight - clientHeight` ＝ 0 ⇒ 记账 0）。⇒ 我把 `scrollTop` 置 0 正落在它 ±2 里
+   * ⇒ `handleScroll` 把这次置 0 认成「它自己刚滚到底」⇒ **当场把视野弹回底部**，`userScrolled`
+   * 一直是假，用例会「绿得毫无观测力」。**这正是 `LEARNINGS #006-17` 记的那个坑**（上一轮在真栈
+   * 上踩过一次，那次靠「等 2 秒让时间窗过期」绕开）。⇒ 本层改走**滚轮**：它是原语里专为「用户意图」
+   * 设的入口，不经时间窗，确定、不需要 sleep。
+   *
+   * ⚠️ 真栈 E2E 那边用「改 `scrollTop` 再派发 `scroll`」是**对的**，别照抄这条改过去：那边几何是真的，
+   * 记下的 maxScroll 与 0 必然不等（E2E ⑥ 的前置就在证明这一点）。
+   */
+  const 上滚 = (容器: HTMLElement) => {
+    容器.scrollTop = 0
+    容器.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))
+  }
+
+  test("③ 用户滚上去之后再提交 ⇒ 视野回到底部（`resume()` 那一句的正解）", async () => {
+    const 宿主 = 挂提交对话(async () => true)
+    const 容器 = 取容器(宿主)
+    const 尺 = 装假几何(容器, 1000, 400)
+
+    上滚(容器)
+    // 前置：**真的滚上去了**。少了这一条，「回到 0」在「本来就在底部」时也一样算过
+    // （`#006-17`：先在**缺陷态**下证明那个破坏动作成立，否则这条用例对缺陷毫无观测力）。
+    expect(尺.位置()).toBe(0)
+    expect(尺.距底()).toBe(600)
+
+    打字(宿主, "查一下这个账户的资金流向")
+    回车(宿主)
+    await 歇()
+
+    expect(尺.距底()).toBe(0)
+  })
+
+  test("④ 对照：没接 `onSubmitPrompt` ⇒ 回车**不动视野**（触发条件是「交出去了」，与清空同一条判据）", async () => {
+    const 宿主 = 挂提交对话()
+    const 容器 = 取容器(宿主)
+    const 尺 = 装假几何(容器, 1000, 400)
+
+    上滚(容器)
+    expect(尺.位置()).toBe(0)
+
+    打字(宿主, "查一下这个账户的资金流向")
+    回车(宿主)
+    await 歇()
+
+    // 一个字都没发出去 ⇒ 没有「新的」可看，把视野拽到底只是莫名其妙。
+    // 这条同时是 ③ 的对照：它证明 ③ 里那次移动是**提交**带来的，不是「回车这个键」带来的。
+    expect(尺.位置()).toBe(0)
+    expect(输入框里的话(宿主)).toBe("查一下这个账户的资金流向")
   })
 })
 
@@ -878,19 +1010,6 @@ describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
         />
       )),
     )
-
-  /**
-   * 回车。挂点就是 `打字` 用的那个编辑器：`index.tsx` 的 `onKeyDown` 在它身上，
-   * 且弹层没开时 `controller.onKeyDown` 不消费这个键（本组不打 `/`）。
-   */
-  const 回车 = (宿主: HTMLElement) => {
-    const 编辑器 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input"]')
-    if (!编辑器) throw new Error('没找到 Hero 输入的编辑器（`[data-component="prompt-input"]`）')
-    编辑器.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
-  }
-
-  /** 让提交收尾那两条微任务跑完（`onSubmit` 里没有 await，只挂了 `.then`）。 */
-  const 歇 = () => new Promise((r) => setTimeout(r, 0))
 
   test("回车 ⇒ 交出去的是**输入框里那句话**，交出去之后输入框才清空", async () => {
     const 收到: string[] = []
