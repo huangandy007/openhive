@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show, type JSX, type ParentProps } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { DegradedView, type DegradedReason } from "./degraded-view"
 import type { LoadFileContent } from "./file-content"
@@ -9,6 +9,34 @@ import { extensionOf, type ViewComponent, type ViewRegistry } from "./view-regis
 export interface CenterContentProps {
   registry: ViewRegistry
   load?: LoadFileContent
+  /**
+   * 调用方的页面（`children`）此刻**可不可以露出来**。省略 = 可以（与引入本 prop 之前逐字同行为）。
+   *
+   * **为什么需要它**：`children` 在生产里是**上游路由自己的页面**——在
+   * `/server/:key/session/:id` 上就是 `pages/session.tsx`（一页完整的 AI 会话：消息流 ＋ composer）。
+   * 而中栏按 design-v2 §8.2 是「用户看结果、改结果」的地方、右栏才是「让 AI 干活」的地方
+   * ⇒ 在这一条路由上，中栏把上游会话页露出来就等于**同一场会话在屏幕上画了两遍**（两个输入框、
+   * 两条消息流），且两个 composer 都在真的发消息。这是 2026-10-08 真栈上肉眼报出的缺陷。
+   *
+   * **为什么不在这里读路由**：本组件（以及它的挂载者 `workspace-entry.tsx`）被组件测试**裸挂**
+   * （不挂 Router）⇒ 在这里 `useLocation()` 会当场抛。判据由**壳层**算好传进来
+   * （`pages/layout-new.tsx` 的 `routeSessionID(location.pathname) === undefined`），
+   * 与 `right` / `projectData` / `loadFile` 同一个注入理由：**能读 context 的那一层算，本层只认值**。
+   */
+  pageVisible?: boolean
+  /**
+   * 「页面不露、也没有激活的 tab」时拿什么替。省略 = 什么都不露（中栏空白）。
+   *
+   * 判据（三选一）在下面那段注释里：**tab 优先，其次页面，最后才是它**。它**不是**「没有内容时
+   * 的通用空态」——tab 开着但内容看不了时仍然由内容区说话（`degraded`），轮不到它。
+   *
+   * ⚠️ `JSX` 必须**从这个 import 进来**，不能靠全局那个：本包同时装着 `@types/react`，**裸写
+   * `JSX.Element` 解析到的是 React 的 `ReactElement`**，而本文件里 JSX 表达式产出的却是 solid 的
+   * `JSX.Element`（`jsxImportSource: "solid-js"`）——两者互不兼容，报错长成
+   * 「Type 'Element' is not assignable to type 'Element | undefined'」，看不出是两个 `Element`。
+   * 这是 2026-10-08 当场探针量出来的（`LEARNINGS #003-04`），不是推断。
+   */
+  empty?: JSX.Element
 }
 
 /**
@@ -121,17 +149,28 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
     )
   })
 
+  /**
+   * 页面此刻露不露。省略 `pageVisible` 即恒真（与引入这个 prop 之前逐字同行为）。
+   * 读一次 props 就够了——调用方传的是 getter，Solid 会把这条访问挂进依赖图。
+   */
+  const 露页 = () => props.pageVisible ?? true
+
   return (
     <>
       {/*
-        页面**常驻**，有内容时只把它藏起来（`display:none`），而不是从树上摘掉。
+        页面**常驻**，不看它时只把它藏起来（`display:none`），而不是从树上摘掉。
         生产里 `children` 是上游路由页面，卸载重挂会丢掉整页状态（滚动位置、已取的数据、表单填写）。
         可见时用 `contents` 而非 `block`：不引入多余盒，页面仍是中栏原本的 flex 子项。
-        「有内容」含降级提示——tab 开着就轮不到页面（否则未知格式看起来像「点错了」）。
+
+        三档，优先级从上到下（与上面 `中栏内容` 那段注释同一套判据，别在别处再写一份）：
+        ① tab 开着（含降级提示）⇒ 藏页面，由内容区说话（否则未知格式看起来像「点错了」）；
+        ② 没 tab 且 `露页()` ⇒ 露页面 —— 这是引入 `pageVisible` 之前的唯一形态；
+        ③ 没 tab 且 `!露页()` ⇒ 页面不露，交 `empty`（会话路由下中栏让位给右栏，见 prop 上注释）。
       */}
-      <div data-slot="center-page" style={{ display: 内容() ? "none" : "contents" }}>
+      <div data-slot="center-page" style={{ display: 内容() || !露页() ? "none" : "contents" }}>
         {props.children}
       </div>
+      <Show when={!内容() && !露页()}>{props.empty}</Show>
       <Show when={内容()} keyed>
         {(current) =>
           current.kind === "view" ? (

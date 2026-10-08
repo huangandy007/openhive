@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { For, onMount, type JSX } from "solid-js"
+import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
@@ -2246,5 +2246,62 @@ describe("启动（挂载）时清掉遗留的「当前项目」cookie（006 第
 
     // 对照：清的是**那一条**，不是把整个 jar 端了。
     expect(document.cookie).toContain("probe_keep=1")
+  })
+})
+
+/**
+ * 中栏在**会话路由**上让位（2026-10-08 缺陷修复 · 中栏错显上游会话页）。
+ *
+ * `children` 在生产里是**上游路由自己的页面**——在 `/server/:key/session/:id` 上就是
+ * `pages/session.tsx`（一页完整的 AI 会话：消息流 ＋ composer）。中栏把它露出来，屏幕上就有
+ * **两个输入框、两条消息流**，且两个 composer 都在真的发消息，用户当场肉眼报出。
+ *
+ * 本组件**不读 Router**（本文件的 96 条用例都裸挂它，无 Router；在里面 `useLocation()` 会当场抛），
+ * 判定由壳层算好、当作访问器传进来（生产入口是 `pages/layout-new.tsx` 那一行）。所以这一组量的是
+ * 「拿到判定之后中栏怎么摆」，**不是**「那一行接线有没有接上」——后者只有真路由下才求得了值，
+ * 由真栈 E2E 钉住（`e2e/real-stack/ai-session-real.spec.ts` 测试 ③）。
+ * 两条各管一半，谁也不能顶替谁（`LEARNINGS #005-11`）。
+ */
+describe("中栏让位：`routePageVisible` 决定 children 露不露", () => {
+  const 页面层 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='center-page']")
+  /** 有没有那句提示。判**布尔**不判节点（`LEARNINGS #005-01`：节点当实得值会挂哑整轮）。 */
+  const 有提示 = (host: HTMLElement) => host.querySelector("[data-slot='center-empty']") !== null
+  const 中栏内容 = <div data-slot="center-content">中栏内容</div>
+
+  test("对照：不传 ⇒ children 照旧露、不凭空冒提示（与加这个 prop 之前逐字同行为）", () => {
+    const host = mount(() => <WorkspaceEntry>{中栏内容}</WorkspaceEntry>)
+
+    expect(页面层(host)?.style.display).toBe("contents")
+    expect(text(host, "center-content")).toBe("中栏内容")
+    expect(有提示(host)).toBe(false)
+  })
+
+  test("`() => false`（会话路由）⇒ children 不露、改由一句提示说话", () => {
+    const host = mount(() => <WorkspaceEntry routePageVisible={() => false}>{中栏内容}</WorkspaceEntry>)
+
+    // 被测属性：页面让位。
+    expect(页面层(host)?.style.display).toBe("none")
+    // 同一时刻不能只剩一片空白——那读起来像「坏了」，而不是「去右栏干活」。
+    expect(text(host, "center-empty")).toContain("右栏")
+  })
+
+  test("`() => true`（其余路由）⇒ 提示不出现（反向对照，防「恒藏」也能过上面那条）", () => {
+    const host = mount(() => <WorkspaceEntry routePageVisible={() => true}>{中栏内容}</WorkspaceEntry>)
+
+    expect(页面层(host)?.style.display).toBe("contents")
+    expect(有提示(host)).toBe(false)
+  })
+
+  test("判定是**访问器**：它变了中栏跟着变（传现成 boolean 会把中栏冻在首次渲染那一刻）", async () => {
+    const [会话路由, set会话路由] = createSignal(false)
+    const host = mount(() => <WorkspaceEntry routePageVisible={() => !会话路由()}>{中栏内容}</WorkspaceEntry>)
+
+    expect(页面层(host)?.style.display).toBe("contents")
+
+    set会话路由(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(页面层(host)?.style.display).toBe("none")
+    expect(text(host, "center-empty")).toContain("右栏")
   })
 })

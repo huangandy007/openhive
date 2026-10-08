@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "bun:test"
-import { onMount, Show, type Component, type JSX } from "solid-js"
+import { createSignal, onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent } from "./file-content"
 import { 加载上界, CenterContent } from "./center-content"
@@ -62,7 +62,17 @@ function 可放行() {
  * 后者在 `setUp()` 时就被求值成固定 DOM 节点了，反复插入不会重跑组件体，
  * 于是「重挂」永远测不出来（这条本身踩过一次假绿，见测试内注释）。
  */
-function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent; 页面组件?: Component } = {}) {
+function setUp(
+  options: {
+    registry?: ViewRegistry
+    load?: LoadFileContent
+    页面组件?: Component
+    /** 页面此刻露不露（`CenterContentProps.pageVisible`）。不传 = 没这个 prop。 */
+    页面可见?: () => boolean
+    /** 「页面不露、也没 tab」时拿什么替（`CenterContentProps.empty`）。 */
+    空态?: JSX.Element
+  } = {},
+) {
   let center!: CenterTabs
   function Probe() {
     center = useCenterTabs()
@@ -71,7 +81,12 @@ function setUp(options: { registry?: ViewRegistry; load?: LoadFileContent; 页�
   const host = mount(() => (
     <CenterTabsProvider initialModule="project">
       <Probe />
-      <CenterContent registry={options.registry ?? 注册(".docx")} load={options.load}>
+      <CenterContent
+        registry={options.registry ?? 注册(".docx")}
+        load={options.load}
+        pageVisible={options.页面可见?.()}
+        empty={options.空态}
+      >
         <Show when={options.页面组件} fallback={<div data-slot="fallback">没有内容视图</div>} keyed>
           {(component) => <Dynamic component={component} />}
         </Show>
@@ -202,6 +217,83 @@ describe("内容区不夺走调用方的页面：常驻而非重挂", () => {
     center.close(contentTabKey(专案))
     await 落定()
     expect(页面层()?.style.display).toBe("contents")
+  })
+})
+
+/**
+ * 中栏在**会话路由**上让位（2026-10-08 缺陷修复 · 中栏错显上游会话页）。
+ *
+ * `children` 在生产里是**上游路由自己的页面**——在 `/server/:key/session/:id` 上就是
+ * `pages/session.tsx`（一页完整的 AI 会话：消息流 ＋ composer）。中栏把它露出来，屏幕上就有
+ * **两个输入框、两条消息流**，且两个 composer 都在真的发消息。判据（当前路由是不是会话页）
+ * 由**壳层**算好传进来（`pages/layout-new.tsx`），本组件只认那个布尔。
+ *
+ * ⚠️ **接线本身（`layout-new.tsx` 那一行）在这里看不见**——那要一个真路由器才求值得了。
+ * 它由真栈 E2E 钉住（`e2e/real-stack/ai-session-real.spec.ts` 测试 ③）。本条与那条各管一半，
+ * 谁都不能顶替谁（`LEARNINGS #005-11`：机制「对不对」与「在这条出口上有没有生效」是两个事实）。
+ */
+describe("中栏让位：页面不露时不卸、改由 `empty` 说话", () => {
+  const 空态 = <div data-slot="center-empty">从左侧选择文件查看，或在右栏让 AI 生成成果</div>
+  /** 有没有空态。判**布尔**不判节点（`LEARNINGS #005-01`：节点当实得值会把整轮挂哑）。 */
+  const 有 = (host: HTMLElement) => host.querySelector("[data-slot='center-empty']") !== null
+
+  test("对照：不传 `pageVisible` ⇒ 与引入本 prop 之前逐字同行为（页面照旧露、不该凭空冒空态）", () => {
+    const { host } = setUp({ 空态 })
+
+    expect(页面层(host)?.style.display).toBe("contents")
+    expect(有(host)).toBe(false)
+  })
+
+  test("`pageVisible={false}` ⇒ 页面改 `display:none`、同一时刻空态露出来", () => {
+    const { host } = setUp({ 页面可见: () => false, 空态 })
+
+    expect(页面层(host)?.style.display).toBe("none")
+    expect(有(host)).toBe(true)
+  })
+
+  test("藏 ≠ 卸：翻的是 `display`，页面**从不重挂**（切走再切回不丢整页状态）", async () => {
+    // 与上面「视图来来去去，children 只挂载一次」同一条纪律（T013 的教训），
+    // 只是这次的触发者从「tab 开关」换成了「路由判定」——后者**每次导航都会变**，
+    // 一旦写成卸载重挂，民警每点一次会话列表就会丢掉中栏那一页的全部状态。
+    let 挂载次数 = 0
+    function 页面() {
+      onMount(() => 挂载次数++)
+      return <div data-slot="页面">路由页</div>
+    }
+    const [露, set露] = createSignal(true)
+    const { host } = setUp({ 页面组件: 页面, 页面可见: 露, 空态 })
+
+    expect(页面层(host)?.style.display).toBe("contents")
+
+    set露(false)
+    await 落定()
+    expect(页面层(host)?.style.display).toBe("none")
+
+    set露(true)
+    await 落定()
+    expect(页面层(host)?.style.display).toBe("contents")
+
+    expect(挂载次数).toBe(1)
+  })
+
+  test("tab 优先：`pageVisible={false}` 时开一个 tab ⇒ 视图照常看得到，空态**不**露", async () => {
+    // 少了这条，「`!内容() && !露页()` 写成了 `!露页()`」这种坏法照样绿——
+    // 那会让「路由判定为假」时**连文件内容也一起吞掉**（tab 开着却只看见一句提示）。
+    const { host, 视图, 开 } = setUp({ 页面可见: () => false, 空态 })
+
+    await 开(专案)
+
+    expect(视图()?.getAttribute("data-path")).toBe("/p/立项书.docx")
+    expect(页面层(host)?.style.display).toBe("none")
+    expect(有(host)).toBe(false)
+  })
+
+  test("`empty` 省略 ⇒ 页面不露时中栏就是空的（不在这里凭空造一个通用空态）", () => {
+    // 「空态」是**调用方**给的（生产里由 `workspace-entry.tsx` 提供文案），本组件不内置。
+    const { host } = setUp({ 页面可见: () => false })
+
+    expect(页面层(host)?.style.display).toBe("none")
+    expect(有(host)).toBe(false)
   })
 })
 

@@ -69,6 +69,22 @@ export interface WorkspaceEntryProps {
    * 而 `<Show>` 元素恒非 `undefined`，会留下一条 360px 空栏（与 `left` 那条同因，见下面那段注释）。
    */
   right?: () => JSX.Element
+  /**
+   * 中栏**要不要露出调用方的页面**（`children`），也就是 `CenterContent` 的 `pageVisible`。
+   * 省略 = 要（与引入本 prop 之前逐字同行为）。
+   *
+   * **为什么判定算在外面**：`children` 在生产里是**上游路由自己的页面**，在
+   * `/server/:key/session/:id` 上就是 `pages/session.tsx`——一页完整的 AI 会话。中栏把它露出来，
+   * 屏幕上就有**两个输入框、两条消息流**，且两个 composer 都在真的发消息（2026-10-08 真栈肉眼报出）。
+   * 判据是「当前这条路由是不是会话页」，只有**读得到 Router 的那一层**算得出来。
+   * ⚠️ 本组件**不读 Router**——`workspace-entry.test.tsx` 的 96 条用例**裸挂**它（无 Router），
+   * 在这里 `useLocation()` 会当场抛。所以照 `right` / `loadFile` / `projectData` 的老规矩：
+   * **能读 context 的那一层算，本层只认值**（生产入口是 `pages/layout-new.tsx`）。
+   *
+   * **形状是访问器**（同 `titlebarRight` / `right`）：切换路由时它要能变，
+   * 传现成的 boolean 会把中栏冻在首次渲染那一刻的判断上。
+   */
+  routePageVisible?: () => boolean
 }
 
 /**
@@ -732,8 +748,22 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           />
           {/* tab 栏下面就是内容区（FR-007 / DESIGN §4.5 的「中栏承载内容视图」）。
               没有可解析的激活 tab 时原样落回 `children`——即上游路由自己的页面，
-              故 001 下（尚无模块动作）行为与本组件引入前完全一致。 */}
-          <CenterContent registry={viewRegistry} load={props.loadFile}>
+              故 001 下（尚无模块动作）行为与本组件引入前完全一致。
+              `pageVisible` / `empty` 只在**会话路由**上改变这一档：那里中栏让位给右栏
+              （design-v2 §8.2「中栏看结果、右栏让 AI 干活」），页面照旧常驻、只是不露。 */}
+          <CenterContent
+            registry={viewRegistry}
+            load={props.loadFile}
+            pageVisible={props.routePageVisible?.() ?? true}
+            empty={
+              <div
+                data-slot="center-empty"
+                class="flex w-full flex-1 items-center justify-center px-6 text-center text-[13px] text-v2-text-text-faint"
+              >
+                从左侧选择文件查看，或在右栏让 AI 生成成果
+              </div>
+            }
+          >
             {props.children}
           </CenterContent>
         </ThreePane>
