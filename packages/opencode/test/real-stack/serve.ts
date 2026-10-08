@@ -32,6 +32,7 @@ import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
+import { hashPassword } from "@opencode-ai/auth/password"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
@@ -84,9 +85,23 @@ await migrate(pg.db)
 //   `aria-modal` 的强制改密对话框（`data-component="change-password"`），右栏一切点击都被它
 //   **截获**——Playwright 的报错是 `… intercepts pointer events`，症状长得像「按钮点不动」。
 //   种子语义取「已改过密的普通用户」，那正是过完入职流程之后的生产常态。
+//
+// ⚠️ 还有第三列不是「有默认值」而是**必须自己给**：`password_hash`。
+//   2026-10-08 之前这里种的是占位符 `'h'`，后果是**人登不进来**——`status` 种错至少还长得像
+//   「身份通道没接通」，这一列种错长得像「密码输错了」：`login.ts` 的 `passwordMatches` 把
+//   `Bun.password.verify` 对垃圾 hash 抛的 `UnsupportedAlgorithm` **吞成「密码不匹配」**
+//   （那是 FR-005「账号不存在与密码错误提示一致」的**刻意**取舍，有注释、有理由）⇒ 这个账号
+//   输任何口令都回 400「账号或密码错误」，而库里一切正常、日志里什么都没有。
+//   本脚本的消费者（Playwright）**不受影响**：它走 cookie（`ai-session-real.spec.ts:83` 把内核
+//   签发的 token 塞进 cookie jar），从不碰密码；所以只有「人用登录页进来」这一条路被锁住，
+//   而那条路正是验收时要走的。⇒ 种**真哈希**：口令取 deployment 的默认口令
+//   （`policy.ts` 的 `defaultPassword(env)`，production 里 `bootstrap.ts` / `register.ts`
+//   给新账号发的是同一个值），于是「警号 ＋ 一行口令」就能从登录页进来。
+const PASSWORD = DEPLOYED_DEFAULT_PASSWORD
+const PASSWORD_HASH = await hashPassword(PASSWORD)
 await pg.db.execute(sql`
   insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, must_change_pw, password_hash, created_at)
-  values (${ALICE.id}, ${ALICE.policeNo}, ${ALICE.name}, 'x', 'x', 'x', 'x', 'x', 1, 0, 'h', 0)
+  values (${ALICE.id}, ${ALICE.policeNo}, ${ALICE.name}, 'x', 'x', 'x', 'x', 'x', 1, 0, ${PASSWORD_HASH}, 0)
   on conflict (id) do nothing
 `)
 
@@ -104,7 +119,26 @@ const listener = await Server.listen({ hostname: "127.0.0.1", port })
  */
 const token = await signToken(ALICE, SECRET)
 
-log(`READY ${JSON.stringify({ kernel: listener.port, sandbox: SANDBOX, alice: ALICE.id, secret: SECRET, token })}`)
+/**
+ * 这一行是给**编排器**的交接物（`stack.ts` 解析它、落进 `STACK_FILE`）。
+ *
+ * ⚠️ `password` 也放进来，纯粹是给**人**的：2026-10-08 起 `password_hash` 种的是真哈希，
+ * 于是「警号 ＋ 口令」能从登录页进来——而「口令是多少」此前要靠读本文件才知道
+ * （那次是用户直接问「登录的用户名和密码是多少？」）。它不是新秘密：这是 `test-support.ts`
+ * 的 `DEPLOYED_DEFAULT_PASSWORD`，且只在本地这台栈上有效。
+ */
+log(
+  `READY ${JSON.stringify({
+    kernel: listener.port,
+    sandbox: SANDBOX,
+    alice: ALICE.id,
+    policeNo: ALICE.policeNo,
+    name: ALICE.name,
+    password: PASSWORD,
+    secret: SECRET,
+    token,
+  })}`,
+)
 
 let closing = false
 async function stop(code: number) {
