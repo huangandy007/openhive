@@ -10,12 +10,12 @@
 | （一） | D1 / R-01 / ④-1 / F-01 / F-02（5 条） | ✅ 已提交 `5a228efd90` · 出参见「Step 5 出参（一）」 |
 | （二） | **②-1**（右栏整条会话链落沙箱根 ⇒ **B：cookie 通道**） | ✅ 已提交 `3ebe26da43` · 出参见「Step 5 出参（二）」 |
 | （三） | **第二轮对抗性验证**（五席只读审查打在 `e972d14f44..HEAD` 上）⇒ **1 条 Important**（cookie / 信号刷新后分叉，三席独立命中）＋ 若干注释/文档不实；用户裁定 **B：启动清掉 cookie** | ✅ 已修 · 见「Step 5 出参（三）」 |
-| **T016** | **D2：右栏导出会话入口**（复用上游 `utils/session-export.ts` 三件套） | ✅ 已完成 · 见「T016 出参」（**本批**） |
+| **T016** | **D2：右栏导出会话入口**（复用上游 `utils/session-export.ts` 三件套） | ✅ 已完成 · 见「T016 出参」 |
+| **Step 6** | **收尾**：final commit（信息带 `Closes 006-ai-session`）＋ `session.md` 重写 ＋ 缺口表补行 ＋ `LEARNINGS` 补 4 条（`#006-01`…`#006-04`）＋ 门禁在最终状态上串行复跑 | ✅ **已完成（2026-10-08）** · 见「最后更新」与同目录 `session.md` |
 
-⇒ **只剩一步：feature 收尾** —— final commit（提交信息带 `Closes 006-ai-session`）→
-**merge / tag 由用户在主检出里跑**，本 worktree 只做最终提交 → 更新本 feature 的 `session.md` →
-往 `LEARNINGS.md` 顶部补 1–5 条（候选见 T008 那节的「待落 LEARNINGS 的候选」＋ T013 / T014 / T015 /
-**（二）（三）两批**各自新增的 ＋ 本批的 tsgo 那一笔）。
+⇒ **本 feature 已收尾**，无待办 task。**merge / tag 由用户在主检出里跑**
+（`git merge --ff-only worktree-feat-006-ai-session` ＋ `git tag v0.1.0-006-ai-session`）
+——本 worktree 只做了最终提交。**交付摘要与门禁基线看 `session.md`**（同一目录）。
 
 ⚠️ **第二轮留了两笔给 T016 / 收尾**：① **裁定 B 的残余＝多标签页**（cookie 全浏览器共享，三种修法都
 修不到，见缺口表）；② **「挂载即清」仰赖一条上游事实**（`NewAppLayout` 在路由根里 ⇒ SPA 不重挂），
@@ -2517,10 +2517,30 @@ C 走不通的理由就是 ②-1 的立论：右栏那条 SDK v2 链**够不着�
 | **导出钮的视觉是 self-decision**（T016 新增） | T016 / `openhive-DESIGN.md §4.7.5` | §4.7.5 连「删除」都没写，**更没有「导出」** ⇒ 本条自己定的：与会话行里那颗删除钮**同档**（`text-[11px]` 小字 ＋ `text-v2-text-text-muted` ＋ 同一串 hover token）。**位置**不是 self-decision——它是**对当前会话**的动作 ⇒ 与「删除」同居会话行（判据同 T015）。⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八） |
 | **导出的「落盘那一句」没有断言守着**（T016 新增） | T016 / `ai-session-slot.tsx` 的 `.then((导出物) => downloadSessionExport(...))` | `导出会话` 有 4 条单测、上游 `downloadSessionExport` 有上游的单测，而**「有没有把这一份交给它」**只有人读代码看得见（与 T015 的 ⑤ 同形：接线层挂不起来测，`#002-02`）。⚠️ **旁边那句 `.catch(报错)` 同理**——「失败到底报不报得出来」要靠人在浏览器里拉一次网络失败才看得见。⇒ 如实挂账，**不写成已覆盖** |
 | **中文标题 ⇒ 文件名回落成会话 id**（T016 新增） | T016 → 上游 `utils/session-export.ts` | `sessionExportFilename` 只保留 `[a-z0-9_-]`（上游既有行为，**本处不改**——照抄不重写正则，`#002-06`）⇒ 本产品会话标题基本全是中文，导出的文件叫 **`ses_xxxx.json`**，民警看不出是哪一场。⚠️ **可理解性与命名规则是产品问题、不是本条的**：今天已用一条**哨兵**把这个行为记下来（改名 ⇒ 红 ⇒ 回来重判）。真要改（如「标题拼音 + 日期」）＝改**上游文件**，按第一号约束先议「是否可提上游」 |
+| **`openhive-project-directory.test.ts` 与任何另一个测试文件同进程同跑 ⇒ 稳定挂**（收尾实测 · **非 006 引入**） | `packages/opencode/test/server/` → **测试基建**（不在本 feature 的改动面里） | 收尾复跑实测（**三次不同组合，症状逐字相同**）：该文件与**任何**另一个测试文件放进同一次 `bun test` ⇒ `(fail) (unnamed) [5.0~5.3s]  ^ a beforeEach/afterEach hook timed out for this test.` ＋ `# Unhandled error between tests` / `PostgresError: Connection closed` / `code: "ERR_POSTGRES_CONNECTION_CLOSED"`（`wrapPostgresError (internal:sql/postgres:171:10)`）。✅ **不是 006 引入**（**已实测、不是推断**）：把 006 起点那一版（`git show 39be0146df:packages/opencode/test/server/openhive-project-directory.test.ts`，603 行 / 005 时代的 8 条）拉到**当前**环境与同一个文件同跑 ⇒ **现象逐字相同**（`6 pass / 1 fail / 1 error`）。`--max-concurrency=1` **也不解** ⇒ 不是文件级并发争抢，是**同进程里两套 PGlite 夹具互相关连接**（`LEARNINGS #005-02` 的**同一族**：那条是 42P05 预编译语句撞名，这条是连接被关）。⚠️ **成因未定论**（`#003-04`）：能确定的是「同进程 ＋ 另一个文件 ⇒ 挂」，**没有**继续拆到「是哪两样资源打架」。**门禁口径**：按 `#003-01` 的既有裁定取「受影响文件**逐个 / 分组单跑**」——该文件**单跑 16 pass / 0 fail / 62 expect**（与 006 早先记录逐字相同），其余 4 个 feature 文件成组 **13 pass / 0 fail**。⚠️ 全包类命令在本机**本来就不是可用门禁** |
 
 ---
 
 ## 最后更新
+
+2026-10-08（**Step 6 · 收尾完成 ⇒ feature 006 收官**。四件产物：① **`session.md` 重写**（原为
+「尚未开始」的空壳 ⇒ 现为完整交班：状态 ✅ 已收尾 / 16 条 task 按标签 **FE 11 · INT 4 · P 1** /
+两轮审查表 / 交付物一览 / 用户侧 merge+tag 命令 / 三笔下游移交 / 缺口指针 / 门禁基线）；
+② **缺口表 +1 行**（`openhive-project-directory.test.ts` 与任何另一个测试文件同进程同跑必挂——
+**已实测非 006 引入**，见该行）；③ **`LEARNINGS.md` 顶部补 4 条**（`#006-01` 任务书前提要用编译器验 /
+`#006-02` 「是不是本次引入」用「拉起点那版同跑」判 / `#006-03` 本机 `globstar off` ⇒ `**` 少算 10 个
+测试文件 / `#006-04` `#003-02` 第三次成立，增量是「同一条新账三席独立命中」）；④ **最终提交**。
+**门禁在本 feature 最终状态上串行复跑（2026-10-08）**：`packages/app` 与 `packages/opencode` 的
+`tsgo -b` **干净**；`bun run lint:openhive` **23 warnings / 0 errors / 135 files**（＝ T008 记录的基线，
+**未变**）；opencode 侧 6 个改动文件单文件 oxlint（仓库根跑）**0/0**（161 规则）；app unit 同口径
+**182 pass / 0 fail / 252 expect / 11 文件**、全量 **1006 pass / 0 fail / 3426 expect / 128 文件**、
+components 全量 **601 pass / 0 fail / 1292 expect / 35 文件**；opencode 侧 4 文件成组 **13 pass / 0 fail**
+＋ `openhive-project-directory.test.ts` **单跑 16 pass / 0 fail / 62 expect**（见「缺口」表末行）；
+`git diff --numstat -- bun.lock` **空**。**上游侵入面 2 个文件**（`package.json` 的 `lint:openhive`
+目录清单 ＋ `packages/app/src/pages/layout-new.tsx` 的 `right` 槽），都是**纯加**。
+**merge 与 tag 留用户在检出执行**：`git merge --ff-only worktree-feat-006-ai-session` ＋
+`git tag v0.1.0-006-ai-session`。⚠️ **report 里那两条别读错**：Task 数取 `tasks.md` 实测 **16**
+（runbook 写 14 是它自己没跟上的旧数）；**「本机测不到」的条目照旧是缺口、不是已覆盖**。）
 
 2026-10-08（**T016 完成 ⇒ 16 条 task（T001–T016）全部收官** —— 右栏加了**导出会话**入口，
 复用上游 `utils/session-export.ts` 三件套。产物 **4 改 ＋ 2 改测**（全在 `packages/app/src/ai-session/`）；
