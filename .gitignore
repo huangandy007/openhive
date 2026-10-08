@@ -39,3 +39,13 @@ tsconfig.tsbuildinfo
 
 # Claude Code worktree 工作台 —— 每个都是整仓库的副本（GB 级），误提交会污染历史
 .claude/worktrees/
+
+# 浏览器工具的本机产物 —— Playwright MCP 每开一次浏览器就往这里落 console-*.log / page-*.yml，
+# 下面几张是验收时的取证截图。纯本机会话痕迹，无跨机价值（提交红线里已明写「不提交浏览器工具产物」）。
+# ⚠️ 不写 `*.png` 这种宽模式：仓库里有正当的 PNG 资源，一刀切会连它们一起忽略掉。
+.playwright-mcp/
+pane-after.png
+pane-before.png
+pane-seam-left-center.png
+right-pane-dup-and-scroll.png
+right-pane-verify.png
