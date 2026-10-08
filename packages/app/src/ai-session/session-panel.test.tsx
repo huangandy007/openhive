@@ -77,11 +77,20 @@ const 造会话 = (id: string, title: string, 额外: Partial<Session> = {}) =>
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码；理由见上。
   ({ id, title, time: { created: 1, updated: 1 }, ...额外 }) as Session
 
-const 造消息 = (id: string, sessionID: string) =>
+/**
+ * 造一条消息。
+ *
+ * ⚠️ 第二版才长出 `角色` 这个参数（缺陷修复那条线）。第一版把 `role` **写死成 `"user"`**
+ * ⇒ 本文件全部既有用例喂的都是 user ⇒ 「喂一条 assistant 会怎样」**在测试里压根不存在**
+ * （而生产里 `message[]` 是一场对话的两倍长：user 与 assistant 各占一半）。这正是那条缺陷
+ * 能一路绿到真栈才现形的原因——`LEARNINGS #006-08` 的同型：**夹具喂给被测组件的那一支
+ * 只覆盖了一半，另一支没有观测面**。默认值保持 `"user"`，既有 40 余条用例逐字不变。
+ */
+const 造消息 = (id: string, sessionID: string, 角色: Message["role"] = "user") =>
   ({
     id,
     sessionID,
-    role: "user",
+    role: 角色,
     time: { created: 1 },
     agent: "assistant",
     model: { providerID: "openai", modelID: "gpt" },
@@ -106,8 +115,56 @@ const 夹具数据 = (条数 = 1): SessionPanelData => ({
   part: { msg_1: [造文本块("prt_1", "msg_1", "帮我看看这个账户")] },
 })
 
+/**
+ * 一场**真实形状**的对话：`message[]` 里 user 与 assistant **各占一半**，交替落下。
+ *
+ * ⚠️ 上面那份 `夹具数据(条数)` 是「N 条全是 user」——它造不出这条缺陷（`LEARNINGS #006-08`：
+ * 夹具绕开了那一支，于是那一支没有观测面）。上游 SSE 落的正是这一份形状：
+ * 用户一问、助手一答，`message[]` 长度是**轮数的两倍**。真栈实测的现场是 4 轮 ⇒ `message[]` 8 条
+ * ⇒ 屏上 8 格、其中 4 格是空壳（`session-turn` 的根 div 无条件渲染，见 `数容器` 的注释）。
+ */
+const 对话 = (轮数: number): SessionPanelData => {
+  const 消息: Message[] = []
+  const 块: Record<string, Part[]> = {}
+  for (let i = 1; i <= 轮数; i++) {
+    消息.push(造消息(`usr_${i}`, "ses_1", "user"), 造消息(`ast_${i}`, "ses_1", "assistant"))
+    块[`usr_${i}`] = [造文本块(`prt_${i}`, `usr_${i}`, `第 ${i} 问`)]
+  }
+  return {
+    session: [造会话("ses_1", "资金分析会话")],
+    session_status: {},
+    session_diff: {},
+    message: { ses_1: 消息 },
+    part: 块,
+  }
+}
+
 /** 当前会话里 `session-turn` 根节点的个数。 */
 const 数turn = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-component="session-turn"]').length
+
+/**
+ * 当前会话里**真装进了内容**的 turn 个数。
+ *
+ * ⚠️ 为什么要有第二个数量：`session-turn` 的根 div 是**无条件渲染**的
+ * （`session-turn.tsx` 的 `return <div data-component="session-turn">…`），而里面那层
+ * `[data-slot="session-turn-message-container"]` 走在 `<Show when={message()}>` 之下
+ * ——`message()` 对非 user 消息恒为 `undefined`（同一文件两处 `msg.role !== "user"`）。
+ * ⇒ **光数根节点分不出「4 格真的」与「8 格其中 4 格是空壳」**，那是这条缺陷的原始症状。
+ * `数turn` 钉的是「渲染了几格」，`数容器` 钉的是「几格真的有东西」——两条都要。
+ */
+const 数容器 = (宿主: HTMLElement) =>
+  宿主.querySelectorAll('[data-slot="session-turn-message-container"]').length
+
+/**
+ * 每格**实际渲的是哪条**消息（`session-turn.tsx` 在容器上写着 `data-message={message()!.id}`）。
+ *
+ * 比数个数更硬的一层：只数个数的话，「多渲了两格 assistant 空壳」与「漏渲了两格 user」
+ * 在数字上**长得一样**（8 ＝ 6＋2 也 ＝ 6＋2）。列出 id 才能把两个方向分开。
+ */
+const 渲出的消息 = (宿主: HTMLElement) =>
+  [...宿主.querySelectorAll('[data-slot="session-turn-message-container"]')].map((节点) =>
+    节点.getAttribute("data-message"),
+  )
 
 /**
  * 往 Hero 的编辑器里打一段字。
@@ -180,6 +237,42 @@ describe("消息流（FR-010）", () => {
     expect(数turn(挂会话({ ...夹具数据(), message: { ses_1: [] } }))).toBe(0)
   })
 
+  test("每格 turn 外面包着一层「高度 auto ＋ 不许收缩」的盒子（「没有垂直滚动」的修复面）", () => {
+    // ⚠️ **这条断的是结构，不是几何**——happy-dom 不跑布局，量不出「容器能不能滚」
+    // （`LEARNINGS #005-07`：视觉约定在组件测试里只能退化成 class 串）。几何判据在真栈 E2E
+    // 那条「turn 高度 ≠ 容器高 / 条数」。**但结构这条不是凑数的**：它是修复的**必需条件**，
+    // 且是唯一能在单测里挡住回归的那个条件。
+    //
+    // 修的是什么（2026-10-08 真栈肉眼报，根因实测）：`SessionTurn` 自带
+    // `[data-component="session-turn"]{height:100%}`，设计前提是**父层高度 auto**。而列表
+    // （`[data-slot="session-turns"]`）是限高的 flex 容器 ⇒ turn 直接当它的 flex item 时，
+    // `height:100%` 解析成**容器全高** ⇒ n 条 `flex-basis` 全等 ⇒ 被压成 `容器高 / n`
+    // （实测 637÷6＝106.17、637÷3＝212.33，精确吻合）⇒ 长内容在格内滚（`content` 那条
+    // `overflow-y:auto`）、外层 `scrollHeight` 恒等于 `clientHeight` ⇒ **永远没有滚动条**。
+    // 包一层有两个作用，**实测缺一不可**（只治 `content` 那侧不够，turn 仍被压成 `容器高/n`）：
+    // ① 它高度 auto ⇒ 内层 `height:100%` 相对它解析为 auto；② `shrink-0` 让它不被收缩。
+    //
+    // 变异（两条各自有牙）：去掉包层 ⇒ 父层变成列表本身（第一组断言红）；包层留着但去掉
+    // `shrink-0` ⇒ 第二组断言红。
+    const 格子 = [...挂会话(夹具数据(3)).querySelectorAll('[data-component="session-turn"]')]
+    expect(格子.length).toBe(3)
+
+    const 包层 = 格子.map((格) => 格.parentElement)
+    // 父层存在、且**不是列表本身**（中间真的隔了一层）。
+    // ⚠️ 读出来的是字符串 / `null`（原语）——别把节点当实得值，`toBeNull` 失败时打印 Solid
+    // 节点会把整轮 `bun test` 挂哑（`LEARNINGS #005-01`）。
+    expect(包层.map((层) => 层?.getAttribute("data-slot") ?? "（无 data-slot）")).toEqual([
+      "（无 data-slot）",
+      "（无 data-slot）",
+      "（无 data-slot）",
+    ])
+    expect(包层.every((层) => 层?.classList.contains("shrink-0") === true)).toBe(true)
+    // 对照：列表自己**不带** `shrink-0`——否则上面那条可能是在断一个恒真的东西。
+    expect(
+      挂会话(夹具数据(3)).querySelector('[data-slot="session-turns"]')?.classList.contains("shrink-0"),
+    ).toBe(false)
+  })
+
   test("别会话的消息不进这一栏（本栏只认传进来的 `sessionID`）", () => {
     // 「切换会话」的**底层性质**就靠这条钉着：同一份 data 里有两场会话，右栏只渲染当前那一场。
     // 若哪天实现改成「把所有 session 的消息拼起来」（或忘了按 id 取），这条会红。
@@ -221,6 +314,63 @@ describe("消息流（FR-010）", () => {
     改数据("message", "ses_1", (旧) => [...旧, 造消息("msg_2", "ses_1")])
 
     expect(数turn(宿主)).toBe(2)
+  })
+})
+
+/**
+ * 一「轮」＝ 一条 **user** 消息（缺陷修复 · 右栏空壳，2026-10-08 真栈上肉眼报出）。
+ *
+ * ## 症状与根因
+ *
+ * 真栈：一场 4 轮对话的右栏有 **8 格**，其中 4 格是**空壳**（无 `session-turn-message-container`）。
+ * 根因是渲染那条 `<For>` 喂错了东西——它喂 `data.message[sessionID]` 的**每一条**
+ * （user 与 assistant 各占一半），而 `SessionTurn` 只接受 user 的 id，根节点却无条件渲染。
+ *
+ * ## 这几条判据各自拦什么（变异能证的）
+ *
+ * - 把过滤摘掉（退回 `props.data.message[sessionID] ?? []`）⇒ ① 当场红成 **8 格 / 4 容器**、
+ *   id 列成 `['usr_1','ast_1',…]`。⚠️ 这就是**修之前**那条代码，所以 ① 是缺陷探测器、不是回归网
+ *   （`LEARNINGS #005-15`：这条要拿变异去证，不是靠「它看着会红」）。
+ * - 把判据换成「只留最后一条」「按别的字段筛」这类**过度过滤** ⇒ ① 的 id 列短了，红。
+ * - ② 是 ① 的**反向对照**（`LEARNINGS #005-07`）：只有 assistant 的会话必须 **0 格**。
+ *   少了它，一个「恒留一格」的实现也能让 ① 过。
+ *
+ * ⚠️ `data-message` 这个锚点来自上游 `session-turn.tsx` 的容器元素，**不是我们加的**
+ * （同 `#005-15`：注释别比断言强——这里的锚点是什么、不是什么是查过的）。
+ */
+describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右栏空 turn）", () => {
+  const 挂对话 = (data: SessionPanelData) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel data={data} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      )),
+    )
+
+  test("① 4 轮对话（4 user ＋ 4 assistant）⇒ 恰好 4 格，渲的是那 4 条 user，assistant 一条都不在", () => {
+    const 宿主 = 挂对话(对话(4))
+
+    expect(数turn(宿主)).toBe(4)
+    expect(数容器(宿主)).toBe(4)
+    expect(渲出的消息(宿主)).toEqual(["usr_1", "usr_2", "usr_3", "usr_4"])
+  })
+
+  test("② 对照：只有 assistant 的会话 ⇒ 一格都没有（防「恒留一格」也能过 ①）", () => {
+    const 只有答: SessionPanelData = {
+      ...对话(2),
+      message: { ses_1: [造消息("ast_1", "ses_1", "assistant"), 造消息("ast_2", "ses_1", "assistant")] },
+    }
+
+    expect(数turn(挂对话(只有答))).toBe(0)
+    expect(数容器(挂对话(只有答))).toBe(0)
+  })
+
+  test("③ 对照：全是 user（3 条）⇒ 3 格全装内容——筛的是 assistant，不是「把一半滤掉」", () => {
+    // 上面两条合起来只证明「assistant 不进」。这一条说的是**另一半没被误伤**：
+    // 一场只有 user 的会话（`夹具数据` 那份形状）必须一条不少地渲出来。
+    const 宿主 = 挂对话(夹具数据(3))
+
+    expect(数turn(宿主)).toBe(3)
+    expect(数容器(宿主)).toBe(3)
   })
 })
 

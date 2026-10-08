@@ -89,6 +89,20 @@ export interface SessionPanelProps {
    * `在途守卫` 守的是「不可重入的**写**」（`session-actions.ts` 里点名是新建 / 删除两根线）。
    */
   onExportSession?: (sessionID: string) => void
+  /**
+   * 坐在**消息流与工具栏之间**的那一块（今天只有一样东西：待答的权限 / 提问闸门）。
+   *
+   * **为什么是注入而不是本组件自己渲染**：闸门那两件要 `usePermission()`（问「这条请求是不是
+   * 已经被自动放行规则吃掉了」）与目录作用域的 `api.permission.reply`，两者都长在
+   * `ai-session-slot.tsx` 才够得着的 context 上（`PermissionProvider` 在 `app.tsx` 里、
+   * 在所有栏之上）。本组件是**受控**的：它只决定「坐在哪」，不决定「由谁答」
+   * ——同 `onSelectSession` 那条（右栏的会话 id 只有一个产地，就是 URL）。
+   *
+   * ⚠️ **位置是有讲究的**：`session-turns` 与 `session-tools` 之间，即「消息流之下、输入框之上」
+   * ——与中栏那页上游会话页里 dock 的位置一致（`session-composer-region.tsx` 把它排在
+   * `promptInput` 之上），也是「闸门挡着你，先答再输入」这个意思该有的次序。
+   */
+  dock?: JSX.Element
 }
 
 /**
@@ -133,6 +147,27 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
 
   /** 当前那条会话。找不到（如 data 还没同步到）时退回显示 id，别渲染成空白。 */
   const 当前会话 = () => props.data.session.find((会话) => 会话.id === props.sessionID)
+
+  /**
+   * 要渲染成「一轮」的消息。
+   *
+   * ⚠️ **这不是过滤噪音，是 `SessionTurn` 的入参契约**：它只接受 **user** 消息的 id
+   * （`session-turn.tsx` 的 `messageIndex` / `message` 两处都写着 `msg.role !== "user"` ⇒ 返回
+   * `-1` / `undefined`），而它的根 `<div data-component="session-turn">` 是**无条件渲染**的
+   * ⇒ 喂一条 assistant 消息进去，屏幕上是**一个空壳**（无 `session-turn-message-container`）。
+   * 一场 4 轮对话的 `message[]` 是 8 条（4 user ＋ 4 assistant）⇒ 在此之前右栏是 8 格、4 格是空的。
+   *
+   * 判据与仓里既有两处**逐字相同**：`enterprise/routes/share/[shareID].tsx`、
+   * `session-ui/.../timeline-playground.stories.tsx` 都是「先筛 user、再交给 `SessionTurn`」。
+   * （`pages/session/timeline/model.ts` 的 `selectUserMessages` 是同一条判据的另一处写法；这里
+   * **不 import 它**——那是一页页面级的模块，右栏引它等于把会话页那条取数链拽进右栏的依赖图，
+   * 而这条判据只有一行。`LEARNINGS #002-06` 说的是「同一个判断别两处各写一份**同一个对象的
+   * 状态**」，不是「一行谓词也得共享」。）
+   *
+   * ⚠️ 与「同一场会话里消息增长」无关的那份注意：本 memo 只依赖 `props.data` 与 `props.sessionID`，
+   * 两者引用都稳（`data` 按目录缓存）⇒ 它不是每一帧都重算。
+   */
+  const 轮次 = createMemo(() => (props.data.message[props.sessionID] ?? []).filter((消息) => 消息.role === "user"))
 
   // ── Hero 输入（§4.7.5）─────────────────────────────────────────────────────
   //
@@ -339,10 +374,51 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         />
 
         <div data-slot="session-turns" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
-          <For each={props.data.message[props.sessionID] ?? []}>
-            {(消息) => <SessionTurn sessionID={props.sessionID} messageID={消息.id} />}
+          <For each={轮次()}>
+            {(消息) => (
+              /* 这一层 `<div>` **不是装饰**，是修「没有垂直滚动」的那一半（2026-10-08 真栈肉眼报的）。
+
+                 `SessionTurn` 自带两条 CSS（在 `session-ui` 的样式表里，按属性选择器写，不是
+                 Tailwind 类，所以从源码里看不见）：
+
+                     [data-component="session-turn"]          { height: 100%; display: flex; … }
+                     [data-slot="session-turn-content"]       { height: 100%; overflow-y: auto; … }
+
+                 它的设计前提是**父层高度 auto**：内容把那一层撑开，滚动交给外层。上游两处权威用法
+                 都在这个前提下用它——`timeline-playground.stories.tsx` 包一层
+                 `<div style={{ width: "100%" }}>`，`enterprise/routes/share/[shareID].tsx` 靠外层
+                 `flex flex-col` 的高度 auto。
+
+                 本容器（`flex-1`，高度确定）违背了这个前提：`height:100%` 会解析成**容器全高**
+                 ⇒ n 条 turn 的 `flex-basis` 全等 ⇒ 被 flex-shrink 按比例压成 `容器高 / n`。
+                 2026-10-08 实测两次，精确吻合：6 条各 **106.17px**（637÷6）、3 条各 **212.33px**
+                 （637÷3），而它们的内容真实需要 139 / 340 / 269px。后果有两个，**都不报错**：
+                 ① 长回答被压进那一条里、由 `content` 那条 `overflow-y:auto` **在格内滚**；
+                 ② 外层 `scrollHeight` 恒等于 `clientHeight` ⇒ **永远不出现滚动条**，且内容叠在一起。
+                 用户报的「没有垂直滚动」就是这个——不是滚不动，是**滚动被藏在每一格内部**。
+
+                 包这一层的两个作用，**缺一不可**（实测：只改 `content` 那侧不够，turn 仍被压成
+                 `容器高/n`）：① 它的高度是 auto ⇒ 内层 `height:100%` 相对它解析为 auto；
+                 ② `shrink-0` 让它自己不被 flex 收缩。撑高一条到 1500px 的对照实测：容器
+                 `scrollHeight` 637 → **1876**、`maxScroll` **1239**（精确 = 1876-637）⇒ 真能滚。
+
+                 ⚠️ **不传 `classes`**（上游那两处都传了 `content: "… !overflow-visible"`）：实测
+                 **不需要**——内层高度一变成 auto，它的 `height:100%` 也跟着 auto，内容自然撑开、
+                 不溢出，那条 `overflow-y:auto` 就此惰性。少传一个 prop 就少一份与上游漂移的面。
+                 （另记一笔：`!overflow-visible` 这个类**当前是查不到的**——Tailwind v4 按需生成，
+                 实测 `.overflow-visible` 在、带 `!` 的变体不在 ⇒ 写了也未必生效。）
+
+                 ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
+                 真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
+              <div class="w-full shrink-0">
+                <SessionTurn sessionID={props.sessionID} messageID={消息.id} />
+              </div>
+            )}
           </For>
         </div>
+
+        {/* 待答的闸门（权限 / 提问）。位置与理由见 prop 上那段注释。 */}
+        <Show when={props.dock}>{props.dock}</Show>
 
         {/* ③ 抽屉入口（T006 📥 ③）。坐在**输入框旁边**——design-v2 §8.2 与
             `2026-09-12-AI资产-design.md` 都这么画；`skill-drawer.tsx` 的文件头也写着

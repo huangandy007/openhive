@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
 import { useCenterTabs } from "@/center/tab-context"
 import { useLanguage } from "@/context/language"
+import { usePermission } from "@/context/permission"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { downloadSessionExport } from "@/utils/session-export"
@@ -10,6 +11,7 @@ import { MANIFESTS } from "./capabilities"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
 import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 会话路径 } from "./session-actions"
+import { SessionDocks } from "./session-docks"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
 
@@ -77,6 +79,14 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    交给它」只有人读代码看得见（同文件 `session-panel.test.tsx` 钉的是「点导出交出哪一场」，
  *    钉不到这一句）。⚠️ 它旁边那句 `.catch(报错)` 同理——报不报得出来，要靠人在浏览器里拉一次
  *    网络失败才看得见。
+ * ⑦ **待答闸门的接线**（`dock={…}` 那一段，本次新增）——`SessionDocks` 自己有 8 条单测
+ *    （`session-docks.test.tsx`：筛法 / 挑哪一场 / 回话三字段 / 在途），而「这三样东西有没有
+ *    真的喂给它」只有人读代码看得见：`permission={态().data.permission}` 那张表要是喂错、
+ *    `autoResponds` 忘了传目录、或 `reply` 接成了 `api.session` 而不是 `api.permission`
+ *    （**两个不同命名空间**，接错了是 `undefined.reply` 那种运行时报错，也可能被 lazy Proxy
+ *    安静吞掉——见 `LEARNINGS #006-01`），界面上都只是「闸门不弹」或「点了没反应」。
+ *    ⚠️ 这条**不能**用 E2E 兜底：要弹一条真闸门得让真模型跑一次真工具调用
+ *    （`Permission.ask`），成本与不确定性都不合适。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 export function AiSessionSlot(): JSX.Element {
@@ -86,6 +96,9 @@ export function AiSessionSlot(): JSX.Element {
   const serverSDK = useServerSDK()
   const center = useCenterTabs()
   const language = useLanguage()
+  // 待答闸门的「自动放行」筛法（`SessionDocks` 的 `autoResponds`）。`PermissionProvider` 挂在
+  // `app.tsx` 里、**在所有栏之上** ⇒ 右栏这一层拿得到（与 `useServerSync()` 同一层）。
+  const permission = usePermission()
 
   const 源 = createRightPaneSource({
     pathname: () => location.pathname,
@@ -120,6 +133,10 @@ export function AiSessionSlot(): JSX.Element {
       sync: serverSync().ensureDirSyncContext(三样.directory),
       api: 出口.api.session,
       client: 出口.client,
+      // 待答权限的回话出口（`SessionDocks` 的 `reply`）。**与 `api` 分开取**：`api` 那一份是
+      // `出口.api.session`（会话动作），权限在**另一个命名空间**上——同 `导出会话` 那条注释里
+      // 说的「右栏那个会话出口上没有 `messages`」，这里只是同一件事的另一个命名空间。
+      permissionApi: 出口.api.permission,
     }
   })
 
@@ -245,6 +262,28 @@ export function AiSessionSlot(): JSX.Element {
               .then((导出物) => downloadSessionExport(导出物.文件名, 导出物.数据))
               .catch(报错)
           }}
+          // ── 待答闸门（权限 / 提问）的接线（本次新增）──
+          //
+          // ⚠️ **为什么闸门的宿主必须搬进右栏**：全仓唯一回话权限的地方是会话页级的
+          // `session-composer-state.ts`，而它只被 `pages/session.tsx` 用；本次三栏改造把中栏
+          // 那页在会话路由下**藏掉了**（`center-content.tsx` 的 `pageVisible`）⇒ 那两个 dock 还在
+          // DOM 里但**没人点得到** ⇒ `Permission.ask` 会永远挂在 `Deferred` 上。
+          // 判据与实现都在 `session-docks.tsx`；这里只负责把**三样取不到的东西**喂给它
+          // （`autoResponds` 要 `usePermission()`、`reply` 要目录作用域的 api、`data` 三张表）。
+          //
+          // ⚠️ `sessions` / `permission` / `question` 取自 `态().data`——与右栏消息流**同一份数据**
+          // （同一目录的 `DirectorySync.data`），不是另开一路取数。
+          dock={
+            <SessionDocks
+              directory={态().directory}
+              sessionID={态().sessionID}
+              sessions={态().data.session}
+              permission={态().data.permission}
+              question={态().data.question}
+              autoResponds={(请求) => permission.autoResponds(请求, 态().directory)}
+              reply={(input) => 态().permissionApi.reply(input)}
+            />
+          }
         />
       )}
     </Show>
