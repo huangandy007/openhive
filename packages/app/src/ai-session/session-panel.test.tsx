@@ -216,6 +216,36 @@ const 卡们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLElement>
  */
 const 空投影 = projectCapabilities([], undefined)
 
+/**
+ * 摆一棵右栏（默认一场会话）。**模块级**——hover 面那组与版面那组都要用，
+ * 两处各写一遍「右栏怎么摆」就会在有人改一处时静默分家（`LEARNINGS #002-06`；本文件里
+ * 同一条纪律的既有落点是 `打字` / `回车` / `数容器`）。
+ */
+const 摆右栏 = () =>
+  挂(() =>
+    原语环境(() => (
+      <SessionPanel data={夹具数据()} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+    )),
+  )
+
+/** 某个槽**自己**的 `className` 串（不是它的子孙的）。槽不在时**当场抛**，红会点名是哪个槽。 */
+const 串 = (宿主: HTMLElement, 名: string) => {
+  const 元素 = 宿主.querySelector<HTMLElement>(`[data-slot="${名}"]`)
+  if (!元素) throw new Error(`没找到 [data-slot="${名}"]`)
+  return 元素.className
+}
+
+/**
+ * 把 `className` 串切成**类名集合**再断言。
+ *
+ * ⚠️ 为什么不能直接对串用 `toContain`：那是**子串**匹配，会被别的类名的**后缀**满足。实测
+ * （2026-10-08，变异 M3）：把 `border-b` 从顶栏摘掉、只留颜色类，`expect(串).toContain("border-b")`
+ * **照样绿**——因为 `border-v2-border-border-base` 的后半段 `border-base` 里就含 `border-b`。
+ * 也就是说那条断言**从来没有钉住「有线」**，而它读起来完全像钉住了（`LEARNINGS #003-03` 第 ③ 类：
+ * 变异全绿 ⇒ 要先怀疑断言，别先怀疑被测物）。
+ */
+const 类集 = (类串: string) => 类串.split(/\s+/)
+
 describe("右栏会话的 `DataProvider`（FR-010 / 计划 §② 的那道接线）", () => {
   test("对照：`SessionTurn` 不挂 `DataProvider` 直接渲染 ⇒ 当场抛错", () => {
     // 这一条**不测产品码**，它测的是一条**事实**（也是 T008 的第一条 RED）：会话原语要
@@ -1294,21 +1324,6 @@ describe("导出会话（T016 / FR-010）", () => {
 describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
   const HOVER = "hover:bg-v2-overlay-simple-overlay-hover"
 
-  /** 摆一棵右栏（默认一场会话）。5 条各自摆自己的，互不借状态 ⇒ 变异时归属干净。 */
-  const 摆右栏 = () =>
-    挂(() =>
-      原语环境(() => (
-        <SessionPanel data={夹具数据()} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
-      )),
-    )
-
-  /** 某个槽**自己**的 `className` 串（不是它的子孙的）。 */
-  const 串 = (宿主: HTMLElement, 名: string) => {
-    const 元素 = 宿主.querySelector<HTMLElement>(`[data-slot="${名}"]`)
-    if (!元素) throw new Error(`没找到 [data-slot="${名}"]`)
-    return 元素.className
-  }
-
   test("① `session-toggle`：会话名那颗钮（名字与 ▾ 是**同一颗钮**，不是一个标签）", () => {
     const 宿主 = 摆右栏()
 
@@ -1361,5 +1376,71 @@ describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
     expect(串(宿主, "session-export")).toContain(HOVER)
     // 对照同上：`session-row` 是整行**容器**，hover 不在它身上。
     expect(串(宿主, "session-row")).not.toContain(HOVER)
+  })
+})
+
+/**
+ * 右栏版面（2026-10-08 用户第二次裁定）。
+ *
+ * 要求原话：「右栏容器上沿往下 40px 位置，水平绘制横线，用以区分右栏的顶栏区域，水平线的颜色
+ * DFDFDF，右栏容器左侧、右侧留出 10px 的空白区域，目前，输出的文字紧贴着边缘，十分丑陋。」
+ *
+ * 三条裁定（提问后用户选定）：
+ * 1. 横线颜色**复用** `border-border-base`：仓里**没有**等于 #DFDFDF 的 token（`grey-400`
+ *    = #dbdbdb 差 4/255、`grey-300` = #eeeeee 差 15/255），而该 token 在顶栏自身的 `layer-01`
+ *    （#FAFAFA）上合成 ≈ #E1E1E1（差 2/255）。为一个肉眼分不出的差去新增 token = 白给
+ *    `theme.css` 两处镜像 ＋ 重跑两个生成物，不划算。
+ * 2. 10px **只垫内容区**——顶栏那条 `layer-01` 灰底仍要铺满卡片全宽。
+ * 3. 40px 是用户给的**数**，所以顶栏用 `h-10` **钉死**（而非「自然高度是多少算多少」）。
+ *
+ * ⚠️「文字贴边」的落点已定性（读源码，不是推断）：`session-turn.css` 的
+ * `[data-component="session-turn"]` 与 `[data-slot="session-turn-message-content"]`
+ * **都没有水平 padding**（整个文件只有 `padding-top` / `padding-bottom` 四条），而右栏的滚动区
+ * `[data-slot="session-turns"]` 也没有 ⇒ 文字一路贴到卡片边。同栏的 `session-tools`（`px-3`）
+ * 与 `session-hero`（`p-3`）本来就有 12px，**不动**——只改坏了的那一层（外科手术）。
+ *
+ * ⚠️ happy-dom 不跑布局、不解析 Tailwind ⇒ 本组只能断 class 串（`LEARNINGS #005-07`）。
+ * 「真的是 40px / 10px」这两个**像素数**要真浏览器复核，见 E2E。
+ */
+describe("右栏版面：顶栏分界线 ＋ 内容区左右留白", () => {
+  test("顶栏钉在 40px 高，下沿一条 border-base 横线（把顶栏区域划出来）", () => {
+    const 顶栏 = 串(摆右栏(), "session-row")
+
+    // `h-10` = 2.5rem = 40px（根字号未被改，实测确认；像素值仍待真浏览器复核）。
+    // 之所以**钉死**而不是让它按内容自然高：用户给的是一个**数**（40px），自然高（≈36px）
+    // 会让横线落在不是他要的那条线上。
+    const 类 = 类集(顶栏)
+    expect(类).toContain("h-10")
+    expect(类).toContain("border-b")
+    expect(类).toContain("border-v2-border-border-base")
+  })
+
+  test("消息流左右各留 10px（输出文字不再贴边）", () => {
+    expect(类集(串(摆右栏(), "session-turns"))).toContain("px-[10px]")
+  })
+
+  /**
+   * 对照（`#005-07` 第 ② 条）：10px **只许**落在内容区那一层，不许落在顶栏、也不许落在**容器**上。
+   *
+   * 两个落点各钉一条，因为它们是**两种不同的错法**，而第一版只写了第一个：
+   *
+   * - **落在顶栏自己身上** ⇒ 顶栏那条 `layer-01` 灰底左右各被截掉 10px，「铺满卡片全宽」落空。
+   * - **落在外层容器上**（`session-panel` 根节点）⇒ 整块内容一起内缩，顶栏的灰底同样被截窄
+   *   ——**这条第一版漏了**：变异实测（把 `px-[10px]` 从 `session-turns` 挪到根节点）时，
+   *   第一版那条对照**照样绿**，只有上面那条正向断言红了。也就是说第一版的注释
+   *   （「一个把 10px 加到根节点的实现照样全绿」）**把这条断言说强了**——`LEARNINGS #005-15`：
+   *   别让注释比断言强，要么补牙、要么改描述。这里选**补牙**。
+   *
+   * ⚠️ 但这不是「灰底铺满全宽」的**完整**判据：真正的几何（灰底到底铺到哪儿）happy-dom 量不出来
+   * ——`LEARNINGS #005-07`。本组是那条真浏览器判据的**形状哨兵**，不是它的替代。
+   */
+  test("对照：10px 不落在顶栏上——灰底仍要铺满卡片全宽", () => {
+    expect(类集(串(摆右栏(), "session-row"))).not.toContain("px-[10px]")
+  })
+
+  test("对照：10px 也不落在外层容器上（否则整块内容一起内缩，顶栏灰底照样被截窄）", () => {
+    const 根 = 摆右栏().querySelector<HTMLElement>('[data-component="session-panel"]')
+    if (!根) throw new Error('没找到 [data-component="session-panel"]')
+    expect(类集(根.className)).not.toContain("px-[10px]")
   })
 })

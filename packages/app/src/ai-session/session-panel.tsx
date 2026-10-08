@@ -319,10 +319,21 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           ——那是**中栏**，也就是 §4.7.3 特意不要的「把民警正在看的东西盖住」。 */}
       <div data-component="session-panel" class="relative flex h-full w-full flex-col">
         {/* 会话行（2026-10-07 裁定：做在右栏内，不新增全局浮层）。视觉照 §4.7.0 的 token 纪律，
-            底色取 `layer-01` 与指令卡行（§4.7.1）同一档，避免同白相叠。 */}
+            底色取 `layer-01` 与指令卡行（§4.7.1）同一档，避免同白相叠。
+
+            2026-10-08 用户裁定：顶栏下沿画一条横线把它与内容区分开。
+            - `h-10` = 2.5rem = **40px**，用户给的是一个**数** ⇒ 钉死，而不是「自然高是多少算多少」
+              （自然高 ≈36px，横线就会落在不是他要的那条线上）。
+            - 线的颜色**复用** `border-border-base`：仓里没有等于 #DFDFDF 的 token（`grey-400`
+              #dbdbdb 差 4、`grey-300` #eeeeee 差 15），为一个肉眼分不出的差去新增 token = 白给
+              `theme.css` 两处镜像 ＋ 重跑两个生成物。
+              真浏览器实测（2026-10-08，1920×953）：线是 `rgba(0, 0, 0, 0.1)` 铺在顶栏自身的
+              `layer-01`（`rgb(250, 250, 250)`）上 ⇒ 合成 **≈ #E1E1E1**，与 #DFDFDF 差 2/255。
+            - ⚠️ 这里**不许**加内容区那 10px：顶栏这条灰底要**铺满卡片全宽**（用户选的是
+              「只垫内容区」）。`session-panel.test.tsx` 有一条对照钉着这件事。 */}
         <div
           data-slot="session-row"
-          class="flex w-full shrink-0 items-center gap-2 bg-v2-background-bg-layer-01 px-3 py-2"
+          class="flex h-10 w-full shrink-0 items-center gap-2 border-b border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2"
         >
           {/* 名字与 ▾ 是**同一颗钮**：点名字就是展开（「当前会话名 ▾」是一个动作，不是一个标签）
               ⇒ `session-toggle` 是钮、`session-current` 是钮里的名字。 */}
@@ -428,10 +439,18 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         />
 
         {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- 这两条只对 **DOM 元素上的 JSX 事件属性**生效，而 `onClick` 在这里不是「点击动作」、是**观察**（`handleInteraction` 内部只在 `window.getSelection()` 非空时才 `stop()`，即「用户正在选文本 ⇒ 别再抢他的视野」），**没有**可键盘触发的动作，补一个空 `onKeyDown` 只是哄门。上游把同一个回调挂在 `<ScrollView onClick>`（组件）上、经 `{...rest}` 落到 div —— DOM 形状与这里逐字相同，只是 jsx-a11y **看不见跨组件的那一跳**，所以上游不报。我们用的是裸 div，报得对，故按本仓 `oxlint-disable-next-line -- 理由` 的惯例据实标注（`LEARNINGS #001-05` 同族：门的判据要据实，别为了让门闭嘴去改行为）。 */}
+        {/* 2026-10-08 用户裁定：内容区左右各留 **10px**（`px-[10px]`）。
+            原话「右栏容器左侧、右侧留出 10px 的空白区域，目前，输出的文字紧贴着边缘，十分丑陋」
+            ——贴边的落点就在这一层：`session-turn.css` 的 `[data-component="session-turn"]` 与
+            `[data-slot="session-turn-message-content"]` **都没有水平 padding**（整个文件只有
+            `padding-top` / `padding-bottom`），滚动区自己此前也是 0 ⇒ 文字一路贴到卡片边。
+            同栏的 `session-tools`（`px-3`）与 `session-hero`（`p-3`）本来就有 12px，**不动**
+            ——只改坏了的那一层。
+            等值写法 `px-2.5` 也行（根字号 16px ⇒ 10px），这里取字面值：用户给的是像素数。 */}
         <div
           ref={自动跟随.scrollRef}
           data-slot="session-turns"
-          class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto"
+          class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-[10px]"
           onScroll={自动跟随.handleScroll}
           onClick={自动跟随.handleInteraction}
         >
