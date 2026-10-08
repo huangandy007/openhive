@@ -2593,6 +2593,112 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 
 ---
 
+## 收尾补测 · 局部前后端接缝（`fullstack-slice-testing` skill · 2026-10-08）
+
+**性质**：006 办结之后单独跑的一次**局部前后端接缝对账**，与本文件上面那节「收尾补测 · 前端结构性
+缺口」（`frontend-testing`）互补——那节把**后端 mock 掉**只验前端，本节把**mock 停掉、起真栈**，
+让单前端阶段对后端撒的那纸「善意的谎」第一次与真实碰面。**产品码零改动**（`git diff --numstat` 对
+已跟踪文件为空，可复跑）。判据、自愈护栏与归档口径按 `fullstack-slice-testing` ＋ `testing-system-blueprint` 走。
+
+### ① 圈定的切片与命中缺口（防过度测）
+
+**切片**：右栏「AI 会话」的**建会话落库 ＋ 列表可见**链——`session-actions.ts` 的真 SDK
+（`建会话` / `可列出的会话`）→ 真内核（`Server.listen`）→ 真 PG（PGlite）。**单切片、不贪多**。
+
+| 缺口 | 命中 | 依据 |
+|---|---|---|
+| ① 环境编排 | ✅ **命中（本格前提）** | 本仓**所有** `openhive-*.test.ts` 走 `toWebHandler`（**进程内、无网络**），浏览器只能连**真在监听**的地址 ⇒ 必须真起 `Server.listen` |
+| ② 契约真实性 | ✅ **命中（有实证）** | 见 ④ 节——`/api/reference` 的 mock 与真后端**当场对不上** |
+| ③ 接缝粘合 | ✅ **命中** | 身份 cookie 透传 ＋ 目录参数 ＋ 同源/跨源差异，正是本切片的核心风险 |
+| ④ 真实时序/实时 | ❌ **不命中**（如实记） | 切片是**普通请求-响应**，无流式 / 无 SSE / 无长轮询 ⇒ **不硬造时序断言**（skill 明文：非流式切片只命中 ①②③ 是正常的） |
+
+### ② 起真栈（本格核心难点，不可跳过）
+
+三个文件、一个进程做三件事：
+
+| 文件 | 角色 | 关键点 |
+|---|---|---|
+| `packages/opencode/test/real-stack/serve.ts` | **提供者侧** | 真内核（`Server.listen`，与 `cli/cmd/serve.ts` 同源）＋ 真 PG（`startProductionDb` 经 TCP）＋ 真 seed ＋ 真签发 token；打印 `READY {json}` 后挂住等 SIGTERM |
+| `packages/app/e2e/real-stack/stack.ts` | **编排器** | 起内核 ＋ 用 Vite **程序化**（`createServer`）监听前门端口 ⇒ **页面同源**；模块图由 Vite 自己服务（**零代理**），只有**数据面**过 proxy |
+| `packages/app/e2e/real-stack/playwright.config.ts` | **真栈专属配置** | 与 `packages/app/playwright.config.ts` **分开**（那一份要起 28 个 mock spec，混进来会把它们拖进 25s 起步的真栈） |
+
+**为什么必须同源**：生产形态是**同源反代**，而 `bun run dev` 是**跨源**的（Vite :3000 ／ 内核 :4096）。
+跨源下浏览器**不会**把身份 cookie 带进对内核的 `fetch`——不是 SameSite 问题（同站点），是 **Fetch 的
+`credentials` 语义**（默认 `same-origin` ⇒ 跨源一律不带），而本仓 SDK 客户端（`utils/server.ts`）
+**没设 `credentials`**、内核 CORS **也没有 `credentials` 选项** ⇒ 身份门开着时跨源形态下**数据面必 401**。
+
+**路由规则按「请求意图」而非路径前缀**：内核的 `/session` 与 app 的客户端路由 `/session/:id`
+**同形**（`app.tsx`）⇒ 前缀路由会误判。判据取浏览器自己给的信号（`server.proxy` 的 `bypass` 契约）：
+`Sec-Fetch-Dest: empty` 且非 `Upgrade` ⇒ 数据面转内核，其余交回 Vite。
+
+⚠️ **编排路上踩了四处自伤，全部实测、全部记进 `LEARNINGS`**（这正是 skill 说的「本格新难点在起真栈，
+不在写断言」）：
+
+| # | 自伤 | 症状 | 处置 | 条目 |
+|---|---|---|---|---|
+| 1 | Playwright `outputDir` 落在 Vite root 内 | 测试**中途**页面被 full-reload，事件流**只有 REQ 没有 RES** ⇒ `net::ERR_ABORTED`（**长得像接缝断**） | 挪到 `tmpdir()`（reload 2 → 0） | `#006-09` |
+| 2 | `VITE_OPENCODE_SERVER_HOST/PORT` 被「页面同源」与「`vite.config.ts` 的 `/openhive` 规则」**两个用途抢占** | Vite 把 `/openhive/*` **代理给自己** ⇒ 无限自环、`/openhive/auth/me` 先挂、后续请求一起饿死 | 内联配置里**显式重写**那条规则（并放在 `/` 之前） | `#006-10` |
+| 3 | 种子漏种 `status`（默认 0 ＝ 停用） | 内核门**只看签名** ⇒ `/api/session` 200 而 `/openhive/auth/me` 401 ⇒ 正确停在**登录页**（**像「身份通道没接通」**） | 显式种 `status = 1` | `#006-11` |
+| 4 | 种子漏种 `must_change_pw`（建表默认 1 ＝ 强制改密） | `aria-modal` 改密弹窗**截获**所有点击（**像「按钮点不动」**） | 显式种 `must_change_pw = 0` | `#006-11` |
+
+⚠️ **第 2 处推翻了一个我写下的假设**：原以为「往 `createServer({ server: { proxy } })` 里写一份
+＝ 替换文件里那份」——**错**，那是**深度合并**，文件里既有规则仍在（只是目标被覆盖）。判据已在
+`stack.ts` 与 `#006-10` 里写明。
+
+**为什么不让手写反代搬流量**：第一版自己写了个 Bun 反代搬**所有**流量，被**打爆**——一页要 ~800 个
+模块请求，连接池在中段耗尽，成批 `✗ Error: Unable to connect`，`load` 事件永远等不到（实测日志
+790 行、尾部 7 条 connection 错误）。正解是**别去搬模块图**：让 Vite 当同一端口上的前门。
+
+### ③ 两层落地（步骤 3）
+
+| ID | 层 | 落点 | 判据 | 缺口 | 风险 | 发布门 |
+|---|---|---|---|---|---|---|
+| **006-FS-01** | 结构化接缝断言 | `e2e/real-stack/ai-session-real.spec.ts` 测试① | 真浏览器里对**同一个内核**发两次 `fetch`，只差**同源/跨源**一个变量：经前门 **200** ／ 直连内核 **401** | ③ 接缝粘合 | P1 | 发布前绿 |
+| **006-FS-02** | 黑盒冒烟 | 同文件测试② | 真 SDK 建会话 → 真内核落库 → 右栏渲染（3 组断言） | ② 契约 ＋ ③ 接缝 | P1 | 发布前绿 |
+
+**测试①（最强的那条）**：它同时证明「**②-1 的 cookie 环境通道成立的前提是同源**」，而本仓
+`bun run dev` 的跨源形态**不满足**这个前提。两个状态码都由**真内核的身份证**给出，不是转述。
+
+**测试②**：真栈起点会话用**测试侧 oracle**（直接打内核 v2 出口 `/api/session`）建；再走真前端
+（真 SDK 兼容层）→ 断言 ① 面板 ＋ hero 输入框可见；② 数据面走的是**同源前门**（请求 host 是前门
+端口）且带上**本场目录**；③ 点「新会话」→ **内核侧会话数 +1**（oracle 只读真内核，不经前端）。
+
+⚠️ **判据取「实测形状」不取「我以为的形状」**：断言第一版写 `GET /api/session`（**我以为**的 v2
+形状），红了才发现右栏实际打的是 `GET /session?directory=…`（兼容层 `createCompatibleApi` 那条
+**v1** 出口）⇒ 改成实测形状（`#006-12`）。
+
+### ④ RED 变异（步骤 4，`#005-15`：断言「拦住了什么」要靠变异证）
+
+| # | 注入 | 结果 | 类别（`#003-03`） |
+|---|---|---|---|
+| M1 | 摘掉 `context.addCookies(...)` | **恰红**：`Expected: 200 / Received: 401`，红的正是「同源应带得上 cookie」那一条；另一半（跨源 401）**照旧绿** | **①类（恰红目标）** |
+| M2 | 摘掉 `/openhive` 那条代理规则（＝回退第 2 处自伤的修法） | **恰红但「粗」**：红在第一层冒烟（`session-panel` `element(s) not found`），证明该规则**承重**，但对「**哪一条**断言有牙」**毫无信息** | **②类（整组红）**——据实记，**不写成「恰红 1」** |
+
+⚠️ **M2 的诚实读法**：它打在**编排层**（上游于一切断言），所以红的是「面板根本没出现」，
+不是某一条结构化断言 ⇒ 它证的是「这条代理规则不能少」，**不是**「我的断言精准」。两条变异都已
+**逐字节还原**并复跑基线：**`2 passed (1.4m)`**。
+
+### ⑤ 数据隔离（步骤 4 前提）与拆栈
+
+- **沙箱**：`mkdtempSync(path.join(tmpdir(), "openhive-real-stack-"))` ⇒ `OPENHIVE_DATA_ROOT` /
+  `WORKSPACE_ROOT` / `SHARED_ROOT` 三个根**全落在沙箱内**，与真机数据零交叉。
+- **库**：**进程内 PGlite 经 TCP 暴露**（`startProductionDb`）⇒ 零外部依赖、离线可得，且**测的就是
+  生产那一支** `connect()`（`#002-05`）。
+- **拆栈成对**：`serve.ts` 收 SIGTERM ⇒ 依次 `listener.stop()` → `pg.stop()` → `还原 env` →
+  `rmSync(沙箱)`。实测：Playwright 跑完 **4711 ／ 3010 ／ 4096 三个端口零残留监听**。
+- **产物不落仓库**：Playwright `outputDir` 在 `tmpdir()`（见第 1 处自伤）；临时诊断 spec 与探针**已删**。
+
+### ⑥ 切片外发现（**挂账，不在本轮修**——护栏：只写测试与编排，不改产品码）
+
+| 发现 | 说明 |
+|---|---|
+| **`/api/reference` 的 mock 与真后端对不上** | **假后端**（`e2e/utils/mock-server.ts`）返 **200** `{location, data: []}`；**真内核**返 **500**（`grep` 下来内核**没有**这个 handler / group，它是 v2 生成的 SDK 端点「List references」）。⚠️ **这是本格价值的实证**（mock 撒的谎在这里穿帮），但它**不在本轮圈定的切片内**（本切片＝建会话落库 ＋ 列表可见）⇒ 按护栏**不自行改产品码**、**不顺手扩切片**，如实挂账。**判据一句话**：mock 返回得比真后端**更好**（200 vs 500）就是漂移（`#006-12`） |
+
+⚠️ **本轮没做、也不声称做了的**：缺口 ④（真实时序/实时）**不命中**（切片非流式）；**导出**与
+**指令卡投影**两条链**本轮没圈**（切片只圈了「建会话落库 ＋ 列表可见」）⇒ 别把本条读成「右栏已端到端对账」。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
@@ -2662,10 +2768,42 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **导出的「落盘那一句」没有断言守着**（T016 新增） | T016 / `ai-session-slot.tsx` 的 `.then((导出物) => downloadSessionExport(...))` | `导出会话` 有 4 条单测、上游 `downloadSessionExport` 有上游的单测，而**「有没有把这一份交给它」**只有人读代码看得见（与 T015 的 ⑤ 同形：接线层挂不起来测，`#002-02`）。⚠️ **旁边那句 `.catch(报错)` 同理**——「失败到底报不报得出来」要靠人在浏览器里拉一次网络失败才看得见。⇒ 如实挂账，**不写成已覆盖** |
 | **中文标题 ⇒ 文件名回落成会话 id**（T016 新增） | T016 → 上游 `utils/session-export.ts` | `sessionExportFilename` 只保留 `[a-z0-9_-]`（上游既有行为，**本处不改**——照抄不重写正则，`#002-06`）⇒ 本产品会话标题基本全是中文，导出的文件叫 **`ses_xxxx.json`**，民警看不出是哪一场。⚠️ **可理解性与命名规则是产品问题、不是本条的**：今天已用一条**哨兵**把这个行为记下来（改名 ⇒ 红 ⇒ 回来重判）。真要改（如「标题拼音 + 日期」）＝改**上游文件**，按第一号约束先议「是否可提上游」 |
 | **`openhive-project-directory.test.ts` 与任何另一个测试文件同进程同跑 ⇒ 稳定挂**（收尾实测 · **非 006 引入**） | `packages/opencode/test/server/` → **测试基建**（不在本 feature 的改动面里） | 收尾复跑实测（**三次不同组合，症状逐字相同**）：该文件与**任何**另一个测试文件放进同一次 `bun test` ⇒ `(fail) (unnamed) [5.0~5.3s]  ^ a beforeEach/afterEach hook timed out for this test.` ＋ `# Unhandled error between tests` / `PostgresError: Connection closed` / `code: "ERR_POSTGRES_CONNECTION_CLOSED"`（`wrapPostgresError (internal:sql/postgres:171:10)`）。✅ **不是 006 引入**（**已实测、不是推断**）：把 006 起点那一版（`git show 39be0146df:packages/opencode/test/server/openhive-project-directory.test.ts`，603 行 / 005 时代的 8 条）拉到**当前**环境与同一个文件同跑 ⇒ **现象逐字相同**（`6 pass / 1 fail / 1 error`）。`--max-concurrency=1` **也不解** ⇒ 不是文件级并发争抢，是**同进程里两套 PGlite 夹具互相关连接**（`LEARNINGS #005-02` 的**同一族**：那条是 42P05 预编译语句撞名，这条是连接被关）。⚠️ **成因未定论**（`#003-04`）：能确定的是「同进程 ＋ 另一个文件 ⇒ 挂」，**没有**继续拆到「是哪两样资源打架」。**门禁口径**：按 `#003-01` 的既有裁定取「受影响文件**逐个 / 分组单跑**」——该文件**单跑 16 pass / 0 fail / 62 expect**（与 006 早先记录逐字相同），其余 4 个 feature 文件成组 **13 pass / 0 fail**。⚠️ 全包类命令在本机**本来就不是可用门禁** |
+| **`/api/reference` 的 mock 与真后端对不上**（`fullstack-slice-testing` 收尾补测新增） | `packages/app/e2e/utils/mock-server.ts` → 真内核 | **假后端返 200** `{location: …}` ＋ `data: []`，**真内核返 500**（`grep` 下来内核**没有**这个 handler / group，它是 v2 生成的 SDK 端点「List references」）。⚠️ **这是本格价值的实证**——单前端那份 mock 撒的谎在这里**当场穿帮**；但它**不在本轮圈定的切片内**（本切片 ＝ 建会话落库 ＋ 列表可见）⇒ 按护栏**不自行改产品码、不顺手扩切片**，如实挂账（`#006-12`）。**判据一句话**：mock 返回得比真后端**更好**（200 vs 500）就是漂移 |
 
 ---
 
 ## 最后更新
+
+2026-10-08（**收尾补测 · 局部前后端接缝**（`fullstack-slice-testing` skill）——与上一条「前端结构性缺口」
+是同一批收尾补测的另一半：**停掉 mock、起真栈**，让单前端对后端撒的那纸善意的谎第一次与真实碰面。
+**切片** ＝ 右栏「建会话落库 ＋ 列表可见」；**缺口命中 ①②③**、**④（真实时序）不命中**（切片非流式，
+如实记）。**四件产物**：① `packages/opencode/test/real-stack/serve.ts`（真内核 `Server.listen` ＋
+真 PGlite 经 TCP ＋ 真 seed ＋ 真签发 token）；② `packages/app/e2e/real-stack/stack.ts`（用 Vite 程序化
+当**同源前门**的编排器）；③ 同目录 `playwright.config.ts`（真栈专属配置，与既有那份**分开**）；
+④ 同目录 `ai-session-real.spec.ts`（2 条接缝对账：`006-FS-01` cookie 通道同源/跨源对照 ＋
+`006-FS-02` 右栏真栈冒烟）。＋ **`e2e/tsconfig.json` include +1 行**（`./real-stack/**/*.ts`，纯加）
+＋ 本文件新增节 ＋ 缺口表 **+1 行**（`/api/reference` mock 200 vs 真 500）＋ **`LEARNINGS.md` 顶部 +4 条**。
+**实测与变异**：spec **`2 passed (1.4m)`**；**M1**（摘 `addCookies`）**恰红**（`Expected: 200 /
+Received: 401`）；**M2**（摘 `/openhive` 代理规则）**粗红**（红在第一层冒烟 —— `session-panel`
+`element(s) not found`；它证的是「这条规则**承重**」，**不是**「哪条断言有牙」，据实记，`#003-03` 第②类）。
+**起栈路上四处编排自伤，全部实测**：`#006-09`（`outputDir` 落在 Vite root 内 ⇒ 被测页被自己的 trace
+**full-reload**，症状「只有 REQ 没有 RES」像接缝断）、`#006-10`（同一对 env 被「页面同源」与
+`vite.config.ts` 的 `/openhive` 规则**两个用途抢占** ⇒ Vite 代理给自己**成环**、请求饿死；且
+「内联配置覆盖文件配置」**是错的**——是**深度合并**）、`#006-11`（种子两列默认值把界面**锁住**：
+`status` 漏种 ⇒ 停用（像「身份通道没接通」）、`must_change_pw` 漏种 ⇒ 改密弹窗截胡点击（像「按钮点不动」））、
+`#006-12`（真栈第一产出常是**挂账清单**；断言要锚在**实测形状**上——右栏实际打 v1 `/session`，
+不是我以为的 v2 `/api/session`）。**数据隔离**：`mkdtempSync` 沙箱 ＋ 进程内 PGlite，SIGTERM 时
+**拆栈成对**（实测三个端口**零残留监听**）；产物落 `tmpdir()`、不落仓库。**切片外发现**（护栏：
+只写测试与编排 ⇒ **不修、挂账**）：`/api/reference` **假后端返 200、真内核返 500**（内核没有该
+handler / group）——正是本格价值的实证。
+**门禁（2026-10-08 实测，串行跑；`#003-01`）**：`packages/opencode` 与 `packages/app` 的 `tsgo -b`
+各 **EXIT=0**；`tsgo -b e2e/tsconfig.json` **EXIT=0**，且 `--listFiles` **实测**三个 real-stack 文件
+都在编译集内（**不让「跑绿」当 include 生效的证据**）；`bun run lint:openhive` **23 warnings / 0 errors /
+138 files / 161 rules**（＝既有基线，**未变**）；真栈 4 文件 oxlint（仓库根 / openhive 配置）
+**7 warnings / 0 errors**；`git diff --numstat -- bun.lock` **空**；临时探针 `probe.ts` 与诊断 spec
+`_diag.spec.ts` 已删。
+⚠️ **别读错**：本轮只圈了**一条切片**，**导出**与**指令卡投影**两条链**没圈**；缺口 ④ 不命中是**如实的**
+（非流式切片），不是漏做。）
 
 2026-10-08（**收尾补测 · 前端结构性缺口**（`frontend-testing` skill，与 005 的 `backend-testing` 那批
 同一条线的另外半）。**产品码零改动**（已跟踪文件 `git diff --numstat` 为空）。四件产物：① **3 个 story
