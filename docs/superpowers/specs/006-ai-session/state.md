@@ -2773,15 +2773,71 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **右栏同一条消息显示两遍 —— 上游高频文件里两个写入出口判据不一致**（2026-10-08 真栈肉眼报 ＋ 就地最小修） | `context/server-session.ts` 的 `message.updated` 分支（**上游逐字节原样**的文件） | 现场：发一条消息，右栏出现**两条同 id** 的 user turn，**刷新即消失**。根因：乐观插入按**客户端**时钟给 `time.created`，服务端回包按**内核**时钟（同 `id`、不同 `time.created`），而事件那条出口按 `messageKey = time.created + id` 二分找 ⇒ **找不到 ⇒ 再插一条**。修法：**先按 `id` 认一次身份**再走原判据（就地最小修，3 行）。复现网在单测 `context/server-session-optimistic-duplicate.test.ts`；真栈端到端在 `ai-session-real.spec.ts` 测试 ④。⚠️ 那条 E2E 的度量**曾被一个假阳性污染**：右栏表头那个会话题名按钮也承载这句话（内核收到首条消息后把标题从建会话时的名字改成了它）⇒ 锚在**整根右栏**上时 `getByText` 同时命中标题与 turn ⇒ 峰值**恒为 2**、与有没有重复**无关**，红也红不出真因（`#006-06` 那一族：测量取错了对象，而它看起来像结果）⇒ 判据改锚 `[data-slot="session-turns"]`。⚠️ 采样**取整段窗口的峰值**、不只断稳定态——「最终是 1」在修复前**也成立**（整页 fetch 那条出口按 id 去重，会把重复吃掉），只看终值会漏掉被测的坏法。⚠️ **另三处同类落点未验可达性**：`context/global-sync/event-reducer.ts:279`、`context/sync.tsx:71`、`context/sync.tsx:96`（后者**无条件 splice**）——形状相同，但今天**没有观测面**（要活服务器 ＋ 真流）。⚠️ **未做上游文件变异**（改 `server-session.ts` 跑一次真栈 E2E 成本高、且它是上游高频文件）⇒ 这条 E2E 的「真牙」今天**只在单测层**，如实记 |
 | **右栏「没有垂直滚动」—— 上游 `SessionTurn` 的 CSS 前提被本容器违背**（2026-10-08 真栈肉眼报 ＋ 修） | `ai-session/session-panel.tsx` 的 `[data-slot="session-turns"]` 那一层 | 现场：消息多了滚不动、长回答挤在一起。根因（真栈**两次实测、精确吻合**）：`SessionTurn` 自带 `[data-component="session-turn"]{height:100%}`（写在 `session-ui` 的样式表里、**按属性选择器**、不是 Tailwind 类 ⇒ **从源码里看不见**），其设计前提是**父层高度 auto**；而列表是 `flex-1`（高度确定）⇒ `height:100%` 解析成**容器全高** ⇒ n 条 `flex-basis` 全等 ⇒ 被 flex-shrink 按比例压成 `容器高 / n`（实测 637÷6＝**106.17**、637÷3＝**212.33**，而内容真实需要 139 / 340 / 269px）⇒ ① 长回答在**格内滚**（内层那条 `overflow-y:auto`）；② 外层 `scrollHeight` 恒等于 `clientHeight` ⇒ **永远没有滚动条**。修法：每条 turn 外面包一层 `w-full shrink-0`——**两个作用缺一不可**（实测只治内层不够，turn 仍被压成 `容器高/n`）；撑高一条到 1500px 的对照实测：容器 `scrollHeight` **637 → 1876**、`maxScroll` **1239**（精确 = 1876−637）⇒ 真能滚。⚠️ **单测只能断结构、断不了几何**（happy-dom 不跑布局，`#005-07`）⇒ 结构那条是「修复的**必需条件**」（变异：去包层 ⇒ 红在「父层不是列表本身」那组；留包层去 `shrink-0` ⇒ 红在 `shrink-0` 那组，**两条各自有牙、红在不同断言组**）；几何判据在真栈 E2E。⚠️ 顺带记一笔：上游两处权威用法（`timeline-playground.stories.tsx` / `enterprise/routes/share/[shareID].tsx`）都传了 `classes={{content: "… !overflow-visible"}}`，**本处不传**——内层高度变 auto 后它那条 `overflow-y:auto` 就此惰性，少传一个 prop 就少一份与上游漂移的面（另实测：带 `!` 的 Tailwind 变体在本仓**并没生成**） |
 | **待答闸门搬进右栏；提问那半没有单测**（2026-10-08 新增） | `ai-session/session-docks.tsx`（新 fork 文件）＋ `ai-session-slot.tsx` 的 `dock={…}` | **为什么必须搬**：全仓**只有一处**回话出口——`pages/session/composer/session-composer-state.ts` 的 `decide`（`api.permission.reply`，2026-10-08 `grep` 全 `src/` **唯一**调用点），而它只被 `pages/session.tsx`（**中栏那页**）用；`layout-new.tsx` **零** permission/question 处理 ⇒ 中栏一藏，`Permission.ask` 阻塞在 `Deferred` 上、工具**永远挂着**，界面上什么都没说（`#005-11` 那一族：机制的**老出口**被藏了，没人发现它的活没人接）。**权限那半**有 8 条单测（`session-docks.test.tsx`：筛法 / 挑哪一场 / 回话三字段 / 在途），**3 批变异**：摘 `autoResponds` 筛法 ⇒ 恰红 1（对照条）；`sessionID` 错用 `props.sessionID` ⇒ 恰红 1（子会话条）；**在途守卫 ⇒ 全绿**（见下）。⚠️ **提问那半没有单测**——`SessionQuestionDock` 内部自用 `useServerSDK()`（`ScopedKey.from(serverSDK().scope, …)`），要一个**活着的服务器连接**才建得起来 ⇒ `bun test` 里挂不动（`#002-02`：如实写缺口，**不写成「已覆盖」**）。⚠️ **三样注入本身没有断言守着**：`permission` 表喂错 / `autoResponds` 忘了传目录 / `reply` 接成 `api.session`（**两个不同命名空间**）——最后那种是 `undefined.reply` 式的运行时报错，也可能被 lazy Proxy **静默**吞掉（`#006-01`），界面上只是「闸门不弹」或「点了没反应」；已写进 `ai-session-slot.tsx` 文件头「未被测到的接线」清单第 ⑦ 条，并注明**不能用 E2E 兜底**（要弹一条真闸门得让真模型跑一次真工具调用）。⚠️ **在途守卫那条断言没有牙**（`#005-15` / `#003-03` ②）：把 `if (响应中() === 请求.id) return` 整句摘掉，本文件**照旧 8 pass**——因为 `responding` 一置上三个按钮**同时 `disabled`**，而**禁用按钮不派发 click** ⇒ 第二次点击根本进不到 `决定` ⇒ 那句话在**渲染出来的界面**上**不可达**。处置：**改写断言的自我描述**（从「守卫挡住了重入」改成「按钮变灰、点不动，回来之后能再发」），**不删**那句代码——它与上游 `session-composer-state.ts:78-88` **逐字同形**，两处形状对着看本身有价值。⚠️ 另：`onSubmit` 传**空实现** ⇒ 回完话后 dock 会**多留一瞬**（等服务的 `question.replied` 事件把它摘掉；中栏那页有 `controller.onResponseSubmit()` 做乐观收起）。⚠️ 中栏那页（`display:none` 常驻）**仍会渲染自己那份 dock**，只是不可见、无人点得到 |
-| **真栈编排上的四处新发现**（2026-10-08 新增） | `packages/app/e2e/real-stack/**` | ① **`STACK_FILE` 是固定路径**（`path.join(tmpdir(), "openhive-real-stack.json")`）⇒ **后起的栈覆盖它**；而 Playwright 可能在 `webServer` 起栈**之前**就加载 spec（收集阶段）⇒ 模块级 `const` 会把**上一套栈**的端口冻进去（默认形态下恰好同端口、看不出差别，**换端口并行跑第二套栈时**才会打到别人那套栈上、读别人的会话写别人的数据而断言照样绿）⇒ 已改成**每次现读**（`#003-01` 那一族：测量打到别的对象上）。② 本仓 **`bunx playwright` 起得来**（起的是 **node** 里的 runner ⇒ 与 `#006-05` 记的「bun 跑不了 Playwright」**不是同一枚障碍**）；真正的障碍是 `@playwright/test@1.59.1` 期望 `chromium_headless_shell-1217` 而本机实装 `-1208`／`-1234` ⇒ 默认 `launch()` 必失败 ⇒ 走**环境变量门控**的 `launchOptions.executablePath`（CI 不设该变量 ⇒ 与上游行为**完全一致**）。③ **Tabs 引导浮层遮挡右栏提交钮**：`TabsInfoPopup` 是 `fixed bottom-5 end-5 z-50`／192×240，位置正好压在**右栏底部的 hero 输入框**上 ⇒ Playwright 报 `intercepts pointer events`，读起来像「按钮点不动」，真因是一个**引导浮层**（`#006-11` 同族：那里是强制改密弹窗）⇒ 夹具里 `shouldDisplayTabsToast: false`，且**只影响本套真栈**。④ **约 30 个 `openhive-real-stack-*` 沙箱残留在系统临时目录**（`stack.ts` 用 `mkdtempSync` 建、**不清理**）⇒ 部署 / CI 上要单独收，本轮不动 |
+| **真栈编排上的五处新发现**（2026-10-08 新增） | `packages/app/e2e/real-stack/**` | ① **`STACK_FILE` 是固定路径**（`path.join(tmpdir(), "openhive-real-stack.json")`）⇒ **后起的栈覆盖它**；而 Playwright 可能在 `webServer` 起栈**之前**就加载 spec（收集阶段）⇒ 模块级 `const` 会把**上一套栈**的端口冻进去（默认形态下恰好同端口、看不出差别，**换端口并行跑第二套栈时**才会打到别人那套栈上、读别人的会话写别人的数据而断言照样绿）⇒ 已改成**每次现读**（`#003-01` 那一族：测量打到别的对象上）。② 本仓 **`bunx playwright` 起得来**（起的是 **node** 里的 runner ⇒ 与 `#006-05` 记的「bun 跑不了 Playwright」**不是同一枚障碍**）；真正的障碍是 `@playwright/test@1.59.1` 期望 `chromium_headless_shell-1217` 而本机实装 `-1208`／`-1234` ⇒ 默认 `launch()` 必失败 ⇒ 走**环境变量门控**的 `launchOptions.executablePath`（CI 不设该变量 ⇒ 与上游行为**完全一致**）。③ **Tabs 引导浮层遮挡右栏提交钮**：`TabsInfoPopup` 是 `fixed bottom-5 end-5 z-50`／192×240，位置正好压在**右栏底部的 hero 输入框**上 ⇒ Playwright 报 `intercepts pointer events`，读起来像「按钮点不动」，真因是一个**引导浮层**（`#006-11` 同族：那里是强制改密弹窗）⇒ 夹具里 `shouldDisplayTabsToast: false`，且**只影响本套真栈**。④ **约 30 个 `openhive-real-stack-*` 沙箱残留在系统临时目录**（`stack.ts` 用 `mkdtempSync` 建、**不清理**）⇒ 部署 / CI 上要单独收，本轮不动。⑤ **`bunx playwright` 解析到哪一版随 cwd 而变 ⇒ 从仓库根跑必挂**（2026-10-08 实测）：仓库根 `node_modules` 里**没有** `playwright` / `@playwright/test` ⇒ bunx 去缓存里取**最新的**（实测 `bunx playwright --version` ＝ **1.64.0**），而 `packages/app/node_modules/@playwright/test` 是指向 `@playwright+test@1.59.1` 的**符号链接** ⇒ **同一份 spec 被两个版本的库各加载一次**，报 `Error: Playwright Test did not expect test.beforeEach() to be called here.` ＋ `Error: No tests found`，栈里点名的是根目录之外那份 `bunx` 缓存里的 `playwright@1.59.1` ⇒ 读起来像「spec 写坏了」。**正确口径：一律 `cd packages/app` 再跑**（那里 `bunx playwright --version` ＝ **1.59.1**，与配置同版）。⚠️ 同族于 `#006-05`（那条问「入口跑在哪个**运行时**」，这条问「入口从哪个 **cwd** 解析」）——两者症状都是「工具起不来」，处置完全不同 |
 | **单测层对 `contentRef` 零观测面**（2026-10-08 新增） | `session-panel.tsx` 的 `ref={自动跟随.contentRef}` | **实测（变异 M3）**：把那一条 ref 整条摘掉，`session-panel.test.tsx` **47 pass 全绿 / 一条都不红**，而真栈 E2E **⑤⑦ 红**。原因**结构性**：`contentRef` 只喂 `createResizeObserver(...)`，而 happy-dom **不跑布局、`ResizeObserver` 也不真触发** ⇒ 那个消费者在本环境里是**惰性的**，接没接上**看不见**。⇒ 「两个 ref 都接上了」这句话**只有把两层合起来读才成立**（① 锚 `scrollRef` 的可见痕迹 `overflowAnchor`；② 锚**结构**——中间那层包裹层在不在；**几何**归真栈）。⚠️ **别**把单测全绿读成「接线接上了」（`LEARNINGS #006-18`，与 `#005-07` 同族但对象不同：那条讲**测量**失效，这条讲**接线**失效） |
 | **自动跟随的「用户意图」两条入口只验了一条**（2026-10-08 新增） | `session-panel.tsx` 的 `[data-slot="session-turns"]` 上那几个监听 | 本轮 E2E ⑥ 验的「用户想自己看」走的是**合成 `scroll` 事件**（`scrollTop = 0` ＋ `dispatchEvent(new Event("scroll"))`），而生产里用户**怎么**发出这个意图有两条：① **真滚轮**——原语 `handleWheel` 对 `event.target.closest("[data-scrollable]")` 命中的**嵌套滚动区**提前 `return`，而本仓多处带该属性（`session-turn-diff-view`、`message-part.tsx`）⇒ 真滚轮验法有**假绿风险** ⇒ **没用它**（也没写成断言）；② **选中文本**（`onClick={自动跟随.handleInteraction}`；原语内部**只在 `window.getSelection()` 非空**时才 `stop()`）⇒ **零断言**。⇒ 「跟随会暂停」这条性质**只在合成 scroll 那一条入口上有证据**，另两条今天**没有观测面**（`#002-02`：不写成已覆盖）。⚠️ 顺带记：那条 `onClick` 是**观察**不是动作（没有可键盘触发的行为）⇒ jsx-a11y 的两条警告按理由 `oxlint-disable-next-line`，**没**补一个空 `onKeyDown` 哄门 |
-| **`resume()`（切会话复位「用户滚过」）零断言**（2026-10-08 新增） | `session-panel.tsx` 的 `createEffect(on(() => props.sessionID, () => 自动跟随.resume(), { defer: true }))` | 右栏**不随会话切换重挂**（`ai-session-slot.tsx` 用非 keyed `<Show>`）⇒ 原语内部的 `userScrolled` 是**跨会话留着**的：不 `resume()` 的话，用户在一场会话里滚上去读过东西，**切到另一场后新内容也不再跟随**。⚠️ 这是**推得、未测**（要一个「先滚上去 → 切会话 → 再提交」的夹具）；本轮三条 E2E 都在**同一场**会话里 ⇒ 这条接线今天**没有观测面**，如实挂账 |
-| **真栈验的是「乐观插入长高」，不是「流式长高」**（2026-10-08 新增） | `e2e/real-stack/ai-session-real.spec.ts` ⑤⑥⑦ | 真栈**没有模型** ⇒ 「AI 一边答一边逐块长高」这种生产常态**在这里做不出来**；本轮的内容增长靠**真 Hero 提交 ⇒ 乐观插入**（一次落一整条）。而 `ResizeObserver` 回调在**流式**形态下会被调用**很多次**（每次一行、甚至每个 token）⇒ 「那种形态下会不会抖 / 会不会把已经滚上去的用户反复拽回底部」**没有观测面**（`#002-02`：如实记缺口，**不写成已覆盖**）。⚠️ 但它**不属于**「本机做不了」那一类（`#004-13`）：要补得先有一条**假模型的流式 SSE**（`openhive-prompt-minimal.test.ts` 已有假模型先例）⇒ 属下一轮的活 |
+| **`resume()` 的两个恢复点：提交那处已验、切会话那处仍零断言**（2026-10-08 新增，**第三轮收窄**） | 提交处 ＝ `session-panel.tsx` 的 `view.submit.onSubmit` 里那句 `自动跟随.resume()`；切会话处 ＝ `createEffect(on(() => props.sessionID, () => 自动跟随.resume(), { defer: true }))` | **提交处**（第三轮新增）**已有观测面**：单测 ③「提交 ⇒ 距底 0」＋ ④ 对照「没接 `onSubmitPrompt` ⇒ 视野一动不动」（各配变异，见「最后更新」第三轮）；真栈 E2E **⑧** 走真提交两条腿验「回到底部 ＋ 继续跟随」，且**变异实测**：只摘这一句 ⇒ 恰红 ⑧（`Expected < 2 / Received 286`）、⑤⑥⑦ 全绿 ⇒ 它**真有牙**（`#003-03` 类①）。原始现场见「最后更新」第三轮。**切会话处今天仍无观测面**：右栏**不随会话切换重挂**（`ai-session-slot.tsx` 用非 keyed `<Show>`）⇒ 原语内部的 `userScrolled` 是**跨会话留着**的，不 `resume()` 的话，用户在一场会话里滚上去读过东西、**切到另一场后新内容也不再跟随**。⚠️ 这是**推得、未测**（要一个「先滚上去 → 切会话 → 再提交」的夹具，而本套真栈一次只起一场会话）⇒ 如实挂账 |
+| **真栈验的是「乐观插入长高 / 人造长高」，不是「流式长高」**（2026-10-08 新增，**第三轮扩写**） | `e2e/real-stack/ai-session-real.spec.ts` ⑤⑥⑦⑧ | 真栈**没有模型** ⇒ 「AI 一边答一边逐块长高」这种生产常态**在这里做不出来**。今天两条路都不是流式：⑤⑦⑧ 靠**真 Hero 提交 ⇒ 乐观插入**（一次落一整条）；**⑥ 靠一次人造 append**（`长高一截`：往 `[data-slot="session-turns-content"]` 末尾塞一个定高 `div`，用于制造「用户在看历史时内容自己长高」那个**被动**场景，用例里自陈是人造注入，`#005-13`）。而 `ResizeObserver` 回调在**流式**形态下会被调用**很多次**（每次一行、甚至每个 token）⇒ 「那种形态下会不会抖 / 会不会把已经滚上去的用户反复拽回底部」**没有观测面**（`#002-02`：如实记缺口，**不写成已覆盖**）。⚠️ 但它**不属于**「本机做不了」那一类（`#004-13`）：要补得先有一条**假模型的流式 SSE**（`openhive-prompt-minimal.test.ts` 已有假模型先例）⇒ 属下一轮的活 |
 
 ---
 
 ## 最后更新
+
+2026-10-08（**合并后缺陷修复轮 · 第三轮** —— 用户在第二轮的自动跟随后**再测**，报出残留的那一处，原话：
+「当滚动条在最底部的时候，可以实现实时显示输出。但是当滚动条不在底部的时候……用户敲回车键后，滚动条
+应当自动滚动到底部，然后实时显示输出的信息给用户」。⇒ 第二轮接上了「内容长高就跟随」，但
+`createAutoScroll` 的 `userScrolled` 是**粘性**的（用户一往上滚，之后内容怎么长都不再跟随——这是
+「别把正在读历史的人拽走」该有的样子），而**没有谁在「提交」时把它清掉** ⇒ 滚上去看过历史之后发的
+每一条问题，回答都落在视野外面。**产品码 1 处 ＋ 单测 +2 条 ＋ 真栈 E2E 改写 1 条 / 新增 1 条**：
+
+- **产品码**（`ai-session/session-panel.tsx`）：`view.submit.onSubmit` 里、`草稿操作.reset()` 之旁补一句
+  `自动跟随.resume()`。选择这个位置有**两层理由**：① 放在 `if (!回话) return` **之后**——触发条件是
+  「**确实交出去了**」，与上面清空正文**同一条判据**；没接回调时一个字都没发出去，此时把视野拽到底
+  只是莫名其妙（这也是它与上游 `pages/session.tsx` 的差别：那边回调恒在、没有这道门）；② 放在
+  `reset()` **之旁**——两者都是「交出去了」的收官动作，读起来是一件事。**同一原语今天有两个恢复点**
+  （切会话 ＋ 提交），两处都写了「为什么必须有」的注释并互相点名（`#002-06`：别让两处各长一份）。
+- **单测**（`session-panel.test.tsx` 新增 ③④，落在既有的「自动跟随」describe 里）：这一组原先
+  **只断结构、断不了几何**（happy-dom 不跑布局）。③④ 给它开了一个观测面——`装假几何` 给容器装一副假
+  的 `scrollHeight` / `clientHeight`，让原语在 happy-dom 里**真跑起来**：**假的是它拿来算的输入，
+  不是它算的东西**（原语的数学、以及提交那条真实链路 `打字` → 回车 → controller → `view.submit.onSubmit`
+  一行都没假；`LEARNINGS #006-08`：某条支路在某个测试层里没有观测面时，是**给它开一个观测面**，
+  不是把断言换弱）。③ 提交 ⇒ `距底 0`；④ **对照**：没接 `onSubmitPrompt` ⇒ 视野**一动不动**。
+  ⚠️ 夹具里「滚上去」走的是 `scrollTop = 0` ＋ 一次 `WheelEvent`（**不是**只置 `scrollTop`）——
+  原语 `handleScroll` 里那条「这是我们自己滚的」支路靠 `isAuto` 判，与用户意图无关的那个置 0 会被
+  **弹回底部**（`LEARNINGS #006-17` 的现场；`handleWheel` 是原语专门留的用户意图入口、没有时间窗）。
+- **真栈 E2E**（`ai-session-real.spec.ts`）：**⑥ 改写** ＋ **⑧ 新增**（编号按文件顺序，⑧ 排在 ⑦ 之后）。
+  - **⑥ 旧判据与新需求相反**，必须改写而不是留着：旧 ⑥ 是「用户先滚上去、**再提交一条** ⇒ 视野不许被
+    拽回来」，而本轮需求正相反（提交**就该**拽回来）。⇒ 把**同一条性质**用另一条触发源诚实复活：
+    「用户先滚上去、**然后内容自己长高**（`长高一截`：往 `[data-slot="session-turns-content"]` 末尾
+    append 一个定高 `div`）⇒ 视野不许被拽走」。注入是**人造**的、用例里自陈（`#005-13`），但**触发链
+    仍然是产品码**（`ResizeObserver` → `scrollToBottom(false)` → 因 `userScrolled` 而 `return`），
+    只有「长高的来源」是假的。⇒ 它今天是**对照 / 哨兵**（修复前后都该绿），而不是缺陷探测器。
+  - **⑧** 用**真提交**验两段（用户原话就有两个落点，`#005-12`：落点 N 处就写 N 条断言）：
+    ① 滚上去之后提交 ⇒ **回到底部**（`距底 < 2`）＋ 新那一轮 `toBeInViewport`；
+    ② **再**提交一条 ⇒ 仍然 `距底 < 2`（即「回到底部」之后要**继续**跟随，不是只弹一次）。
+  - ③④ 与 ⑥⑧ 的分工照 `#006-18`：单测能钉「提交这条链把粘性清掉了」（有牙、会红），
+    「长高 ⇒ 跟随」那一半仍**只有真栈**有观测面（`ResizeObserver` 在 happy-dom 20.12.0 里
+    `typeof` **是 `function`**、回调却**恒为 0** 次 ⇒ 不触发，见 `LEARNINGS #006-19`）。
+
+**变异验证（据实记，`#003-03`）**：只摘掉**提交处**那一句 `自动跟随.resume()` ⇒ 真栈 E2E
+**1 failed / 3 passed（2.2m）**，红的**恰是 ⑧**（`Error: 提交之后就该回到底部（滚上去时 距底=221
+scrollTop=0）`／`Expected: < 2`／`Received: 286`／`Timeout 15000ms exceeded while waiting on the
+predicate`），⑤⑥⑦ 全绿 ⇒ **对照条不红、只有被测那一条红**（类①）。⚠️ 另记一处**当时就退回来的**：
+⑥ 的第一版在缺陷态（M3 那类）下红在**它自己的前置**「先把它滚上去」上，而不是红在被测属性——缺陷态里
+内容压根没跟着长、视野**本来就在顶部**，那次「置 0」是**空操作**（`LEARNINGS #006-17` 的又一实例）。
+⇒ ⑥ 的判据**不改**，但它的**前置断言保留了失败消息里的实测值**，好让下一次读到「红在前置」时能一眼分辨。
+
+**门禁（2026-10-08 实测，串行跑；`#003-01`）**：`packages/app` `tsgo -b` **EXIT=0**；
+`session-panel.test.tsx` 单跑 **49 pass / 0 fail / 95 expect（6.86s）**；真栈 E2E ⑤⑥⑦⑧
+**4 passed（1.7m）**；三个改动文件在**仓库根**跑 `oxlint -c script/oxlintrc.openhive.json`
+**7 warnings / 0 errors**——**本轮新增行 0 命中**（取证：`git diff -U0` 显示本轮首个改动 hunk 在第
+**239** 行，而那 7 条警告的落点是 `ai-session-real.spec.ts` 的 **48 / 65(×2) / 77 / 134 / 140**
+与 `session-panel.test.tsx` 的 **90**，**全部早于首个 hunk**，即全在**未改动的既有行**上；
+判据按 `#001-02` 的「本次新增 / 改动文件 0 命中」）。**未提交**：浏览器工具产物 `.playwright-mcp/`、
+`right-pane-dup-and-scroll.png`。
+⚠️ **别读错**：本轮只修「**提交时**回到底部并继续跟随」；「**流式**长高」（AI 一边答一边逐块长高）
+在真栈里**仍然没有观测面**（真栈无模型；⑥ 那一次长高是**人造的一次 append**，不是几百次小长高）
+⇒ 见缺口表那一行。「**切会话**那个恢复点」**仍然零断言** ⇒ 见缺口表那一行。
 
 2026-10-08（**合并后缺陷修复轮 · 第二轮** —— 用户在第一轮修完后的真栈（前门 `:3010` / 内核 `:4711`）
 上肉眼复验，报出下一处：「当我输入问题之后，AI 助手的回答不能实时显示在我能够看见的地方，我需要通过
