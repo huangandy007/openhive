@@ -2451,12 +2451,156 @@ C 走不通的理由就是 ②-1 的立论：右栏那条 SDK v2 链**够不着�
 
 ---
 
+## 收尾补测 · 前端结构性缺口（`frontend-testing` skill · 2026-10-08）
+
+**性质**：006 办结之后单独跑的一次**前端结构性缺口闭环补测**，与 005 的「收尾补测 · 后端结构性缺口」
+（`backend-testing`，`005-BT-01…04`）是同一条线上的另外半。**产品码零改动**——下面每一条**今天就是绿的**，
+不是修缺陷（`git diff --numstat` 对已跟踪文件为空，可复跑）。判据、自愈护栏与归档口径按
+`frontend-testing` ＋ `testing-system-blueprint` 走。
+
+### ① 命中的维度（防过度测）
+
+| 层 | 命中 | 依据 |
+|---|---|---|
+| L0 / L1 测试地基 | ❌ **已存在，只核对** | `test:unit` **1006 pass** ／ `test:components` **601 pass**（口径见 `#006-03`） |
+| ① 编译期 token 门 | ❌ **已存在，只核对** | `lint:openhive` 的任意值禁令 ＋ `workspace/design-token-refs.test.ts` 双覆盖（本批零新增） |
+| **③ L3 a11y** | ✅ | 右栏有交互组件（卡／溢出钮／抽屉／输入框），且**对比度已知敏感**（dark 选中态） |
+| **③ L4 响应式** | ✅ | `spec.md` 把「空间不足收「⋯」、**不用横向滚动条**」写成验收标准 ⇒ 几何硬约束 |
+| ③ L4 跨浏览器 | ⚠️ **记缺口**（见 ③节） | `packages/app/playwright.config.ts` 只有一个 chromium project |
+| **④ L6 契约 mock** | ✅ | 右栏吃 `/api/session/<id>` ＋ `/api/session?directory=`，而**生产组装那一层从来没被观测过** |
+| ⑤ L2 视觉回归 | ⚠️ **记缺口**（见 ③节） | 视觉契约存在，而基线裁决是整套里**唯一**的人审节点 |
+
+### ② 覆盖区分 → 落地的三件产物
+
+| ID | 缺口 | 落点 | 判据 | 风险 | 发布门 |
+|---|---|---|---|---|---|
+| **006-FE-01** | a11y · 右栏三组组件**没有 story ⇒ axe 照不到** | `packages/app/src/ai-session/instruction-cards.stories.tsx`（7 组）／`session-panel.stories.tsx`（2 组）／`skill-drawer.stories.tsx`（3 组） | 24 格 axe 审计（12 组 story × light/dark） | P1 | 发布前绿 |
+| **006-FE-02** | 响应式 · 「空间不足收⋯、不横向滚动」**两个既有测试层都到达不了** | `instruction-cards.stories.tsx` 的 `MeasuredNarrow`／`MeasuredWide` ＋ `packages/app/e2e/a11y/storybook-axe-audit.ts` 的几何那一半 | 16 格（ai-session 全部）／12 格（指令卡） | **P0**（横滚＝布局破） | **硬阻断** |
+| **006-FE-03** | 契约 · 右栏**生产组装那一层**（`layout-new` → `AiSessionSlot` → `SessionPanel`）零观测面 | `packages/app/e2e/regression/ai-session-right-pane.spec.ts` | 1 条 / 5 组断言 | P1 | 发布前绿 |
+
+#### 006-FE-01：story 是「审计面」的开关，不是装饰
+
+`session-panel.stories.tsx`（2 组）与 `skill-drawer.stories.tsx`（3 组）为本批新建；
+`instruction-cards.stories.tsx` 补齐到 7 组（新增 `MeasuredNarrow`／`MeasuredWide`）。
+**每格跑 light ＋ dark 两遍**（审计输出里 `theme-in-DOM` 那一列是证据：dark 那遍 `<html>` 上真有
+`data-color-scheme`），因为 axe 只在**选中态那一格**照得出对比度问题。
+
+**实测**（2026-10-08，本条两次独立跑，尾行逐字相同）：
+
+```
+合计 1 条违例｜几何 16 格，0 条失格
+❌ app-openhive-ai-session-instruction-cards--common-selected [dark]　1 违例
+     - serious · color-contrast · Elements must meet minimum color contrast ratio thresholds
+```
+
+⚠️ **这 1 条不是新缺口**（`LEARNINGS #005-09`：已挂账的别再当新发现）——它就是本文件缺口表里
+「暗色无 `--v2-background-bg-accent-soft`」那条（沿用 005 裁定 R2-09 / U7，**非本次引入**）。
+本次的**增量只有一条**：它此前被记在 **rail ／ 005** 那两处落点上，**axe 现在给出第 3 个落点
+（指令卡选中态）** ⇒ 根因仍是同一个，而**已知落点数从 2 涨到 3**（`#005-04`：按被改方的**全部落点**
+打勾）。⇒ 只引用、不重报；**级别不变**。
+
+#### 006-FE-02：被两条支路绕开的那条路，只有真浏览器到得了
+
+`instruction-cards.tsx` 里有**两条**算宽的路：`props.availableWidth ?? (量到的() || ∞)`。
+既有的三组 story **全都显式传了 `availableWidth`** ⇒ 走的是**入参那一支**；而**实测那一支**要
+`ResizeObserver`，happy-dom 里**不存在**（组件自己判了 `typeof ResizeObserver === "undefined"` 就
+`return`）⇒ `量到的()` 恒为 0 ⇒ 走「不限宽」⇒ **溢出永远不会发生**。也就是说 `spec.md` 那条验收标准
+在**两个既有测试层里都到达不了**。这正是 `#004-13` 那个问法的实例——问「我要写的那条断言，是不是
+空的」：**不是空的**（它有真实观测面，只是要真浏览器），缺的只是**观测面**。
+
+补法是给**被绕开的那一支**单独开观测面：新增 `MeasuredNarrow`／`MeasuredWide` **不传 `availableWidth`**、
+宽度由外层 `div` 给死（视口不变也能确定地窄／宽），且配成**正反两条**（`#005-07`：只写窄的那条时，
+「量到的恒为 0 ⇒ 于是永远全显示」这个坏法**照样绿**——因为它也只是「没收」）。审计脚本对**任何**带
+`[data-slot="card-row"]` 的 story 跑三条不变量（① 不横向滚动；② **卡片守恒** `可见 ＋ 收进 == 总数`，
+总数由夹具外层的 `data-fixture-cards` 声明；③ **有收进 ⇒ 必须有溢出钮**），外加一条跨格单调性。
+⚠️ 不变量**不重抄产品那条算式**（`#002-06`）。
+
+**实测**（尾行 `合计 … 几何 16 格，0 条失格`）：
+
+```
+measured-narrow 量到宽=320 可见=2 收进=3 总数=5
+measured-wide   量到宽=900 可见=5 收进=0 总数=5
+```
+
+**变异账（2 批，全部实测；每批「注入 → 跑 → 逐字节还原」）**：
+
+| # | 注入 | 结果 | 类别（`#003-03`） |
+|---|---|---|---|
+| M1 | **审计脚本**：记录块被我放在 `continue` **之后** | 24 格只剩 **1 格**被记 | **③类（全绿=白）**——**不是测试没覆盖，是整段被跳过**，处置＝**修脚本位置**，不是补测试 |
+| M2 | **产品码**：`observer.observe(行)` → `observer.disconnect()`（＝ happy-dom 里的实际情形） | **恰红**：`量到宽=320 可见=5 收进=0 总数=5 —— 横向溢出 204px`，**2 条失格** | **①类（恰红目标那几条）** |
+
+⚠️ **M1 的机制**：记录块被插在 `if (违例.length === 0) { console.log("✅ …"); continue }` **下面**，
+于是**每一格干净的 story 都跳过它** ⇒ 唯一被记的恰好是那格**有违例**的。危险在于**它长得像结果**
+（「几何 1 格」读起来是「只审到一格」，不会让人想到「代码在 continue 下面」）。
+修正后格数 **1 → 16**（`#004-14` 的同族：**书写位置决定你拿到哪条证据**）。
+
+⚠️ **M2 逼出一条诚实的子结论**：变异那一格 **②守恒判据仍然是绿的**（`5 + 0 == 5`，一张都没丢）
+⇒ **载荷在①那条（横向溢出）上，②不是**。②管的是「丢没丢」，对「没地方放、但被硬塞进去」
+**完全不敏感**（`#005-15`：断言**声称**拦住了什么，要靠变异证，不能靠「它看起来会红」）。
+
+#### 006-FE-03：第一次观测到「生产组装」那一层
+
+`ai-session-slot.tsx` 自陈是**纯接线、在 `bun test` 里挂不起来**（要活着的服务器连接），并把六处
+「只有人读代码才看得见」的接线列在那儿。本条用**假后端**（`mockOpenCodeServer` 在浏览器里拦掉全部
+后端流量）把「要活着的服务器」这件事满足掉 ⇒ ③ **第一次有了观测面**。它不覆盖 ④⑤⑥ 那些接线的
+**行为**（那半边仍归单测），覆盖的是这条链**真的接通了**：路由 → 会话 id → 目录 → 数据 → 面板。
+
+夹具**逐字照同族 spec**（`#004-12`）：`e2e/regression/file-browser-sidebar-tab-switch.spec.ts` 的
+**新布局**那条 URL `/server/<base64 serverKey>/session/<id>`。⚠️ **不能照抄
+`session-request-docks.spec.ts` 的 URL**——那条是旧布局形态 `/<base64 dir>/session/<id>`，而
+`route-session.ts` 明写**不认**它（会被 `NewLayoutLegacySessionRedirect` 重定向掉）⇒ 右栏在那条 URL 上
+**故意不亮**。
+
+最强的判据是 `[data-slot="session-current"]` 显示**会话 payload 里的 title**：它非空 ⇒
+① 右栏问到了那场会话（`ServerSession.lineage.resolve`）；② 拿会话身上的 `directory` 去取了那个目录的
+会话列表；③ 假后端按 `directory=` **过滤**了列表（`session.directory === directory`）——目录错一个字节，
+列表就是空的、`session-current` 会退回显示 `sessionID`。**URL 里没有目录可解**，这个 title 只可能来自
+会话 payload ⇒ 一条断言同时钉住 006 的设计断言（`route-session.ts` 文件头）。另有一条断言把
+**观测到的请求**记下来（`/api/session/<id>` 与 `/api/session?directory=<dir>` 都在），按参数解析、
+不拼字符串（`#002-06`）。
+
+**变异账（1 批）**：注入 `directoryOf` 的 `.then((血缘) => 血缘.session.directory + "-wrong")`
+⇒ **恰红**在那条 title 断言，实得 `"ses_ai_session_pane"`——正是 `?? props.sessionID` 那条回退
+⇒ 证明它**不是恒真的**（`#005-15`）。跑：**`1 passed (34.8s)`**。已逐字节还原。
+
+⚠️ **本机跑法（与 CI 的差异只有一处）**：`@playwright/test@1.59.1` 期望
+`chromium_headless_shell-1217`，本机实装 `-1208`／`-1234` ⇒ 默认 `launch()` 必失败。故 spec 里用
+**环境变量门控**顶一个已装的可执行文件：**CI 不设 `E2E_BROWSER` ⇒ 这一项不出现、行为与上游完全一致**
+（`npx playwright install chromium` 在本机约 18KB/s，不可行）：
+
+```bash
+E2E_BROWSER="C:/Users/Administrator/AppData/Local/ms-playwright/chromium-1234/chrome-win64/chrome.exe" \
+  bunx playwright test regression/ai-session-right-pane.spec.ts
+```
+
+⚠️ **审计脚本那半必须用 `node` 跑**（`AXE_BROWSER=… node e2e/a11y/storybook-axe-audit.ts`）：
+bun 的 node 兼容层接不上 Playwright 的 CDP 传输层（同机同 binary 对照实测：`node` ✓534ms ／
+`bun` ✗挂到超时），脚本文件头有完整对照。**但这不等于「本机用不了 Playwright」**——`bunx playwright
+test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径上**（判据：`bunx` 只是转发器，
+**不决定被测程序的运行时**）。
+
+### ③ 跳过的维度 → 两条如实记成缺口（`#002-02`：测不了要写成缺口，**不写成覆盖**）
+
+| 缺口 | 为什么今天做不了 | 复现命令（复核用） |
+|---|---|---|
+| **L2 视觉回归** | 基线裁决是整套里**唯一的人审节点**（「这个 diff 算不算回归」是语义判断，机器只能给 diff）；且可靠像素基线要**渲染环境稳定**（本机 win32、**无 Docker** ⇒ 平台 flake 会把真信号淹掉） | `bunx playwright test --update-snapshots`——⚠️ **今天没有任何基线文件**，跑它等于**新建**基线，不是回归检查 |
+| **L4 跨浏览器** | `playwright.config.ts` 只有 **1 个 project（chromium / Desktop Chrome）**；firefox ／ webkit 的浏览器包本机**未装**，`playwright install` 在这里约 18KB/s ⇒ 不可行 | `bunx playwright test --list`（数 project）／`ls "$LOCALAPPDATA/ms-playwright"`（看实装了哪些） |
+
+**这一批没做、也不声称做了的另外两件事，一并写明**：① 视觉／语义类里**机器断言不了**的那一类
+（设计样本还原度、装饰克制、认知层级、整体质感）按 `frontend-testing` 的口径**明确划在自动化之外**，
+留人审——**不为它们写脆弱断言**；② **焦点顺序 ／ 屏幕阅读器行为不在 axe 的覆盖范围内**
+（axe 自动检约 57%）——这批只做到 axe 那一层。
+
+---
+
 ## 缺口（**不是**「已覆盖」，别读错）
 
 > 纪律：`LEARNINGS #002-02` —— 测不了 / 本机做不了的，**单列一行写「缺口」**，不写成「已覆盖」。
 
 | 缺口 | 位置 | 说明 |
 |---|---|---|
+| **前端 L2 视觉回归（本机无基线）** | 006 收尾补测 → `packages/app/playwright.config.ts` | 见「收尾补测 · 前端结构性缺口」③节：基线裁决**是整套里唯一的人审节点**，且本机 win32 ＋ **无 Docker** ⇒ 渲染 flake 会淹掉真信号。**今天没有任何基线文件**，`--update-snapshots` 等于**新建**基线。⇒ 如实记缺口，**不写成「视觉已覆盖」**（对比度那一半由 axe 覆盖、几何那一半由几何不变量覆盖，**都不等于像素级回归**） |
+| **前端 L4 跨浏览器（只有 chromium）** | 同上 → `packages/app/playwright.config.ts` | 同上 ③节：配置里只有 **1 个 project（chromium / Desktop Chrome）**，firefox ／ webkit 浏览器包本机未装且下载不可行。⇒ 「跨浏览器」这一半今天**没有观测面**，如实记缺口 |
 | **SC-004 的「有权」一半** | `spec.md` | 前端无授权输入 ⇒ 只对「可发现」负责；「有权可发现」依赖 009 的资产授权元数据 |
 | **「收藏」排序因子** | FR-004 / T006 | 本轮不做，**已落 009 的 `tasks.md` 📥 块**（U8 → 009 T011） |
 | **「最近使用」** | FR-004 / T006 | 若做只做本机权重，须写明降级形态（U8）；**服务端统计那一半已落 009 的 📥 块** |
@@ -2522,6 +2666,24 @@ C 走不通的理由就是 ②-1 的立论：右栏那条 SDK v2 链**够不着�
 ---
 
 ## 最后更新
+
+2026-10-08（**收尾补测 · 前端结构性缺口**（`frontend-testing` skill，与 005 的 `backend-testing` 那批
+同一条线的另外半）。**产品码零改动**（已跟踪文件 `git diff --numstat` 为空）。四件产物：① **3 个 story
+文件**（`ai-session/instruction-cards.stories.tsx` 7 组、`session-panel.stories.tsx` 2 组、
+`skill-drawer.stories.tsx` 3 组）——story 是 **axe 的审计面开关**；② **`e2e/a11y/storybook-axe-audit.ts`**
+（零新依赖：仓库既有 Playwright ＋ addon-a11y 的传递依赖 axe-core，**不动任何 `package.json`／`bun.lock`**）
+——同一次渲染里顺带跑 **24 格 axe（12 组 × light/dark）＋ 16 格几何**；③
+**`e2e/regression/ai-session-right-pane.spec.ts`**——右栏**生产组装那一层**的第一次观测面（假后端）；
+④ **本文件新增节 〈收尾补测 · 前端结构性缺口〉** ＋ **缺口表 +2 行**（L2 / L4 跨浏览器）。
+**实测与变异**：axe 尾行 `合计 1 条违例｜几何 16 格，0 条失格`（那条违例＝已挂账的 dark 选中态对比度，
+**不是新缺口**，增量只是**已知落点数 2→3**）；几何 M2 变异（`observer.observe` → `disconnect`）
+**恰红**（`横向溢出 204px`／2 条失格），并逼出「②守恒判据不是载荷」这条诚实子结论；
+契约 spec `1 passed (34.8s)`，其 title 断言的变异**恰红**（实得 `ses_ai_session_pane`）。
+**门禁**：`lint:openhive` **23 warnings / 0 errors / 138 files / 161 rules**（＝既有基线）；
+`packages/app` `tsgo -b` 与 `e2e/tsconfig.json` 各 **EXIT=0**；`git diff --numstat -- bun.lock` **空**；
+throwaway 探针已删。**`LEARNINGS.md` 顶部 +4 条**（`#006-05` 「bun 驱动不了 Playwright」被 runner 跑在
+node 上这条事实推翻／`#006-06` `overflow: visible` ⇒ `scrollWidth - clientWidth` 恒为 0／
+`#006-07` 插在 `continue` 下面的整段会被静默跳过／`#006-08` 「有 story」≠「响应式那半有审计」）。）
 
 2026-10-08（**Step 6 · 收尾完成 ⇒ feature 006 收官**。四件产物：① **`session.md` 重写**（原为
 「尚未开始」的空壳 ⇒ 现为完整交班：状态 ✅ 已收尾 / 16 条 task 按标签 **FE 12（定位 1 / 新增 10 / 验收 1）· INT 4 · BE 0**（⚠️ 初稿误写「FE 11 · INT 4 ·
