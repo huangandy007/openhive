@@ -259,22 +259,36 @@ describe("SessionList 左栏会话列表（设计 §7）", () => {
    *   说成「问到了，一场都没有」；
    * - 目录和在手的表都有、就是空的 ⇒ 「暂无会话」，这一句是真的。
    */
-  test("目录已知但一场会话都没有 ⇒ 「暂无会话」", () => {
+  test("目录已知但一场会话都没有 ⇒ 「暂无会话」，且**不**画「加载中…」", () => {
     const { host } = 挂({ directory: "/workspaces/u1/p1", sessions: [] })
 
     expect(文本(host, "session-empty")).toBe("暂无会话")
+    // 对照（`#006-22` 的口径：一个视觉/文案约定要配一条「另一边不带」的负向断言，
+    // 否则「两个都画」也过）。
+    expect(槽(host, "session-loading") === null).toBe(true)
   })
 
-  test("数据还没到（undefined）⇒ 不画空态（「还没问到」不是「没有」）", () => {
+  /**
+   * 「还没问到」是**第三态**，不是「没有」——2026-10-09 用户实报：切到没访问过的项目后，
+   * 左栏先显示「暂无会话」、几秒后才列出新项目的会话。
+   *
+   * ⚠️ 这一条钉的是**组件**那一半（三态各画什么）；「接线层有没有把在途错传成空表」是另一
+   * 半，组件测试够不着（`sidebar-sessions.tsx` 的文件头写着它为什么不带测试），由真栈
+   * `e2e/real-stack/sidebar-project-switch-real.spec.ts` 钉住（`#006-18` 的分工）。
+   */
+  test("数据还没到（undefined）⇒ 画「加载中…」，**不**画空态（「还没问到」不是「没有」）", () => {
     const { host } = 挂({ directory: "/workspaces/u1/p1", sessions: undefined })
 
+    // 被测属性在前（`#004-14`）：这条用例红的时候，要红在「说了假话」那一条上。
     expect(槽(host, "session-empty") === null).toBe(true)
+    expect(文本(host, "session-loading")).toBe("加载中…")
   })
 
-  test("目录未知 ⇒ 不画空态（锚点行已经说了「未选择项目」）", () => {
+  test("目录未知 ⇒ 两个都不画（锚点行已经说了「未选择项目」）", () => {
     const { host } = 挂({ sessions: [] })
 
     expect(槽(host, "session-empty") === null).toBe(true)
+    expect(槽(host, "session-loading") === null).toBe(true)
   })
 
   /**

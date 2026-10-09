@@ -43,6 +43,15 @@ export type State = {
   config: Config
   path: Path
   session: Session[]
+  /**
+   * 这个目录的**根会话表取到过没有**（2026-10-09）。
+   *
+   * ⚠️ 它不是「有没有会话」，也不是 `status`——`session` 的初值就是 `[]`（一建出来就有），
+   * 而 `status` 在慢批开始前就翻成 `"partial"` 了（`bootstrap.ts`）⇒ 两者都**分不出**
+   * 「还没问到」与「问到了，一场都没有」。这一位是唯一那个判据，产地只有一处：
+   * `loadSessions` 成功回来时（`server-sync.tsx`）——与 `sessionMeta` 同一次记账。
+   */
+  sessionsLoaded: boolean
   sessionTotal: number
   session_status: {
     [sessionID: string]: SessionStatus

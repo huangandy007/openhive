@@ -227,6 +227,9 @@ export function createChildStoreManager(input: {
               return referenceQuery.isLoading ? [] : (referenceQuery.data ?? [])
             },
             session: [],
+            // ⚠️ `false` 是**语义**、不是占位：`session: []` 只表示「手上还没有行」，
+            // 不表示「这个目录是空的」。左栏据此把它画成「加载中…」（`types.ts` 那一位的注释）。
+            sessionsLoaded: false,
             sessionTotal: 0,
             session_status: {},
             session_working(id: string) {

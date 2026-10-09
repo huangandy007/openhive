@@ -52,6 +52,8 @@ function directoryState() {
     config: {},
     path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
     session: [],
+    // 与 `child-store.ts` 的初值逐字同形（这条夹具就是那份初值的镜像）。
+    sessionsLoaded: false,
     sessionTotal: 0,
     session_status: {},
     session_working(id: string) {

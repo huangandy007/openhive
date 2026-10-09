@@ -444,6 +444,10 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
                   }),
                 )
                 setStore("session", reconcile(next, { key: "id" }))
+                // 「这个目录的列表**问到了**」——左栏据此把「在途」与「一场都没有」分开
+                // （`global-sync/types.ts` 的 `sessionsLoaded`）。与下面那条 `sessionMeta`
+                // 同一次记账、同一处产地：能画空态的前提是**这一次取数回来了**。
+                setStore("sessionsLoaded", true)
               })
               sessionMeta.set(key, { limit })
             })

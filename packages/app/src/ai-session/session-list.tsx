@@ -21,11 +21,15 @@ import { 会话重命名输入 } from "./session-rename"
  * 4. **右键某一行** ⇒ 「重命名 / 删除」（2026-10-09 用户下达；设计 §7 原话只说「左栏不重复放每行
  *    的图标」——**不放图标**这条仍然成立，变的是这些动作左栏也够得着了）。
  *
- * ## 三个 `data-slot`
+ * ## 四个 `data-slot`
  *
  * `session-list-bar`（标题行）/ `session-new`（＋）/ `session-item`（一行）/ `session-empty`（空态）
- * ——`session-item` / `session-empty` 沿用 T019 那批接线用例认的名字（`session-empty` 此前是
- * 「会话列表未接入」那块硬编码空态）。
+ * ＋ `session-loading`（**在途态**，2026-10-09 加）——`session-item` / `session-empty` 沿用 T019 那批
+ * 接线用例认的名字（`session-empty` 此前是「会话列表未接入」那块硬编码空态）。
+ *
+ * ⚠️ **空态与在途态是两件事**：`session-empty` 只在「目录已知 ＋ 表在手 ＋ 一场都没有」时说；
+ * 表还没到手时说 `session-loading`。初版把两者合成了一个判据，于是切到第一次访问的项目时，
+ * 那几秒里界面在说「暂无会话」——把「还没问到」讲成了「问到了，一场都没有」（`#002-02`）。
  *
  * ## 复用而非重造（用户的原话：「不要重复造轮子」）
  *
@@ -271,6 +275,23 @@ export function SessionList(props: SessionListProps): JSX.Element {
                 </Show>
               )}
             </For>
+
+            {/* 第三态：目录已知、**表还没到手**（`undefined`）⇒ 说「加载中…」。
+                ⚠️ 与下面那条空态**不是同一句话**：「还没问到」和「问到了，一场都没有」是两个画面
+                （`#002-02`）。切到第一次访问的项目时这一屏要挂几秒（2026-10-09 真栈实测 3~9s，
+                见 `e2e/real-stack/sidebar-project-switch-real.spec.ts`），那几秒里能说的真话只有这句。
+                ⚠️ 文案**逐字硬写**、不走 `language.t("common.loading")`：本文件所有文案
+                （「暂无会话」/「新建会话」/「重命名」/「删除」）都是硬写的，而 `useLanguage()` 会给
+                这一层挂上 provider 依赖、把纯组件测试变成需要夹具（同文件头「纯展示」那条口径）。 */}
+            <Show when={props.directory !== undefined && props.sessions === undefined}>
+              <p
+                data-slot="session-loading"
+                data-state="loading"
+                class="px-1 py-2 text-[13px] text-v2-text-text-faint"
+              >
+                加载中…
+              </p>
+            </Show>
 
             {/* 空态只在**两样都有**时才说：目录已知 ＋ 表在手（`!== undefined`）。
                 少了任何一个，说「暂无会话」都是把「还没问到」讲成「问到了，没有」（`#002-02`）。 */}

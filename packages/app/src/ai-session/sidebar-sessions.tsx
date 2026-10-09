@@ -1,13 +1,15 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, type JSX } from "solid-js"
 import { useLanguage } from "@/context/language"
+import { ServerConnection } from "@/context/server"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { currentProject } from "@/project/current-project"
 import { projectList } from "@/project/project-list"
+import { sessionHref } from "@/utils/session-route"
 import { showToast } from "@/utils/toast"
 import { routeSessionID } from "./route-session"
-import { 删除后去哪, 当前项目目录, 在途守卫, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
+import { 删除后去哪, 当前项目目录, 在途守卫, 建会话, 删会话, 重命名会话 } from "./session-actions"
 import { SessionList } from "./session-list"
 
 /**
@@ -30,12 +32,30 @@ import { SessionList } from "./session-list"
  * 这条是**接线**、没有断言守着（下面「这个文件不带测试」那条）；能钉的是**判据**那一半
  * （`当前项目目录` 有单测）。
  *
+ * ## ⚠️ 切会话的 URL **不走 `会话路径`**（2026-10-09 修，别改回去）
+ *
+ * `session-actions.ts` 的 `会话路径(pathname, id)` 开口第一句是
+ * `if (routeSessionID(pathname) === undefined) return undefined`——**「当前已经在会话路由上」**。
+ * 那条前提对**右栏**成立（右栏整根只在会话路由下渲染，见 `ai-session-slot.tsx` 的
+ * `<Show when={提交态()}>`），对**左栏**恰恰不成立：左栏常驻，用户正是在**项目页**（URL = `/`）
+ * 上点它。⇒ `"/"` 解不出会话 id ⇒ 返回 `undefined` ⇒ 调用点那句 `if (去) navigate(去)`
+ * **静默跳过**：点击成功、不报错、URL 一个字不动（用户 2026-10-09 实报：「可以显示会话的名称
+ * 列表，但是点击……无法打开其对应的 AI 会话界面」）。
+ *
+ * 左栏与右栏缺的那一半不同：右栏只有 `useLocation().pathname`，所以它只能**从路径推路径**；
+ * 左栏手上有**真连接**（`useServerSDK()`）⇒ 服务器 key 直接向它要，走
+ * `sessionHref(ServerConnection.key(serverSDK().server), id)`——与 `context/prompt.tsx:104`
+ * 那个既有写法同源。⚠️ **别把 `会话路径` 改宽松**：它对右栏是对的，而且
+ * `session-actions.test.ts` 用例③ 已把「非会话路由 ⇒ `undefined`、一个字都不拼」钉成**契约**。
+ * 这条缺陷的判据在 `e2e/real-stack/sidebar-session-nav-real.spec.ts`（那里必须**从项目页点**）。
+ *
  * ## 这个文件为什么不带测试（`LEARNINGS #002-02`：测不了要写成缺口，不是写成覆盖）
  *
  * 它依赖 `useServerSync()`，而那个 provider 要一个**活着的服务器连接**才建得起来
  * ⇒ 在 `bun test` 里挂不起来（同 `ai-session-slot.tsx` 文件头那条）。**有判断的那一半都抽出去
  * 单测了**：① 目录从哪来 ＝ `session-actions.test.ts` 的 `当前项目目录` 七条；
- * ② 切会话的 URL ＝ 同文件 `会话路径`；③ 新建会话的形状 ＝ 同文件 `建会话`；
+ * ② 切会话的 URL ＝ `utils/session-route.test.ts` 的 `sessionHref`（**左栏走的这条**，
+ *    不是 `会话路径`——理由见上面那一段）；③ 新建会话的形状 ＝ 同文件 `建会话`；
  * ④ 列哪几场 ＝ `session-list.test.tsx`（筛法复用右栏的 `可列出的会话`）。
  *
  * **本文件剩下的、没有断言守着的**（这就是缺口，不是「已覆盖」）：
@@ -74,7 +94,16 @@ export function SidebarSessions(): JSX.Element {
    */
   const 表 = createMemo(() => {
     const 现在 = 目录()
-    return 现在 === undefined ? undefined : serverSync().ensureDirSyncContext(现在).data.session
+    if (现在 === undefined) return undefined
+    const 槽 = serverSync().ensureDirSyncContext(现在)
+    // ⚠️ **第三态**：目录已知、可它的表**还没问到** ⇒ 交 `undefined`，**不是** store 里那个 `[]`。
+    // 新目录的 `session` 一建出来就是 `[]`（`global-sync/child-store.ts` 的初值），原样交出去，
+    // 下游那道空态守卫就会把「还没问到」画成「暂无会话」——2026-10-09 用户实报的正是它（切到
+    // 第一次访问的项目，左栏先空几秒、显示「暂无会话」，之后才列出）。
+    // 判据是 `sessionsLoaded`（`global-sync/types.ts`）：`session` 的初值分不出「没有」与「没问到」，
+    // 而 `status` 在慢批开始前就翻成 `partial`，同样分不出。它俩都是 store 上的字段 ⇒ 在同一个
+    // memo 里读，两件事都会驱动这一次重算。
+    return 槽.data.sessionsLoaded ? 槽.data.session : undefined
   })
 
   /**
@@ -85,6 +114,15 @@ export function SidebarSessions(): JSX.Element {
     const 现在 = 目录()
     return 现在 === undefined ? undefined : serverSDK().ensureDirSdkContext(现在).api.session
   })
+
+  /**
+   * 切会话要去的 URL（见文件头「切会话的 URL **不走 `会话路径`**」那一段）。
+   *
+   * **服务器 key 向手上的真连接要**（`serverSDK().server`），不从 pathname 里认——左栏在
+   * 项目页 / 首页上也渲染，那时 pathname 里根本没有服务器段。三根线（切 / 新建后 / 删完去哪）
+   * 共用这一处（`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+   */
+  const 会话URL = (id: string) => sessionHref(ServerConnection.key(serverSDK().server), id)
 
   /** 新建那一根线的在途守卫（文件头 ④）。**切换那条不配**——它是同步的，没有在途窗口。 */
   const 建在途 = 在途守卫()
@@ -120,17 +158,14 @@ export function SidebarSessions(): JSX.Element {
       // 当前会话 id 只有一个产地，就是 URL（同 `route-session.ts` 文件头）。
       currentID={routeSessionID(location.pathname)}
       // 切会话 ＝ 改路由：右栏的解析链跟着 `location.pathname` 重算（`创建` 那句注释）。
-      onSelect={(id) => {
-        const 去 = 会话路径(location.pathname, id)
-        if (去) navigate(去)
-      }}
+      // 目标 URL 的拼法见 `会话URL`（**不是** `会话路径`——那条要求「已经在会话路由上」）。
+      onSelect={(id) => navigate(会话URL(id))}
       onNewSession={(directory) => {
         const api = 出口()
         if (api === undefined) return
         建在途(() => 建会话({ api, directory }))
           ?.then((id) => {
-            const 去 = 会话路径(location.pathname, id)
-            if (去) navigate(去)
+            navigate(会话URL(id))
           })
           .catch(() => {
             // ⚠️ **这一处仍然静默**（与下面两条**不一致**，如实记着、不顺手改）：原注释写「左栏
@@ -161,8 +196,7 @@ export function SidebarSessions(): JSX.Element {
             // 理由同右栏那段：URL 会继续指着一场已经不存在的会话，而右栏那条解析链是拿它去问
             // 服务器的（`right-pane-source.ts`）。
             const 下一场 = 删除后去哪(表() ?? [], sessionID)
-            const 去 = 下一场 === undefined ? undefined : 会话路径(location.pathname, 下一场)
-            navigate(去 ?? "/new-session")
+            navigate(下一场 === undefined ? "/new-session" : 会话URL(下一场))
           })
           .catch(报错)
       }}
