@@ -1,11 +1,13 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, type JSX } from "solid-js"
+import { useLanguage } from "@/context/language"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { currentProject } from "@/project/current-project"
 import { projectList } from "@/project/project-list"
+import { showToast } from "@/utils/toast"
 import { routeSessionID } from "./route-session"
-import { 当前项目目录, 在途守卫, 建会话, 会话路径 } from "./session-actions"
+import { 删除后去哪, 当前项目目录, 在途守卫, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
 import { SessionList } from "./session-list"
 
 /**
@@ -41,12 +43,19 @@ import { SessionList } from "./session-list"
  *    的释放走 `onCleanup`；在点击回调里现取就是每次涨一份永不释放的目录上下文，不报错、不变红
  *    ——与 `ai-session-slot.tsx` 那条同因）；
  * ② 「左右栏落在同一个缓存槽」（上面那段）——只有人读代码看得见；
- * ③ 两根线各自的 `navigate(...)`，以及「建会话落在**有目录作用域的那份 api** 上」；
- * ④ `新建` 那份 `在途守卫` 的接线（守门本身有四条单测，套没套上去看不见）。
+ * ③ 四根线各自的 `navigate(...)`，以及「建会话落在**有目录作用域的那份 api** 上」；
+ * ④ `新建` / `删除` 那两份 `在途守卫` 的接线（守门本身有四条单测，套没套上去看不见）；
+ * ⑤ **`新建` 失败仍然静默**（与 `重命名` / `删除` 那两条**不一致**）：原先的理由是「左栏没有
+ *    一句话可说的地方」——2026-10-09 实测**证伪**（`showToast` 是模块级的、`LanguageProvider`
+ *    在很外层 ⇒ 左栏取得到，`报错` 就在本文件里）。没顺手改是因为那是本次任务之外的既有行为。
+ *    后果如实记：点了＋没反应时，用户仍然只看到「没反应」。
+ * ⑥ `重命名` / `删除` 这两条**新接线**本身（判据全在 `session-actions.ts`，有单测；本处只是
+ *    「调它、把结果交给 navigate / 报错」）——与 `ai-session-slot.tsx` 文件头 ④ / ⑧ 同口径。
  */
 export function SidebarSessions(): JSX.Element {
   const location = useLocation()
   const navigate = useNavigate()
+  const language = useLanguage()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()
 
@@ -79,6 +88,30 @@ export function SidebarSessions(): JSX.Element {
 
   /** 新建那一根线的在途守卫（文件头 ④）。**切换那条不配**——它是同步的，没有在途窗口。 */
   const 建在途 = 在途守卫()
+  /**
+   * 删除那一根线的在途守卫——**与新建各一份、不共用**（同右栏那处的理由：两件不相干的事，
+   * 共用一份会让「新建还没回来时删不了」）。
+   *
+   * 删除在左栏是**新增**的动作（2026-10-09 用户下达），所以这一份是新的接线、**没有断言守着**
+   * （文件头 ④ 的口径）。
+   */
+  const 删在途 = 在途守卫()
+
+  /**
+   * 失败那一句话。**形状与右栏那处逐字同源**（`ai-session-slot.tsx` 的 `报错`），而 `showToast`
+   * 是**模块级函数**、`LanguageProvider` 也在很外层 ⇒ 左栏取得到（这一点原先的文件注释说反了，
+   * 见下面 `onNewSession` 那处更正的注释）。
+   *
+   * ⚠️ 仓里这个形状有 ~20 处先例（`grep 'common.requestFailed'`）⇒ 每个文件各写一份是**既有
+   * 惯例**，不是「同一个判断两处各写一份」（`LEARNINGS #002-06` 讲的是同一件事的**判据**——
+   * 例如 trim / 比较 / 请求形状，那些都在 `session-actions.ts` 里各只有一份）。
+   */
+  const 报错 = (err: unknown) =>
+    showToast({
+      variant: "error",
+      title: language.t("common.requestFailed"),
+      description: err instanceof Error ? err.message : String(err),
+    })
 
   return (
     <SessionList
@@ -100,11 +133,38 @@ export function SidebarSessions(): JSX.Element {
             if (去) navigate(去)
           })
           .catch(() => {
-            // 失败**不在这里回话**：左栏没有一句话可说的地方（那两处 `showToast` 都在右栏）。
-            // 后果如实记：用户看到的是「点了＋，没反应」。新建的真实报错路径由右栏那条线覆盖
-            // （`ai-session-slot.tsx` 的 `报错`），本处只保证**不产生一条没人看的
-            // unhandled rejection**。
+            // ⚠️ **这一处仍然静默**（与下面两条**不一致**，如实记着、不顺手改）：原注释写「左栏
+            // 没有一句话可说的地方（那两处 `showToast` 都在右栏）」——**已实测证伪**：`showToast` 是
+            // 模块级函数、`LanguageProvider` 在 `app.tsx` 很外层，左栏取得到（`报错` 就在上面）。
+            // 不改它是因为那是**本次任务之外**的既有行为（改了会动到用户没点名的那条线）；本处只保证
+            // **不产生一条没人看的 unhandled rejection**，并把它记进文件头缺口表的 ⑤。
           })
+      }}
+      // ── 重命名 / 删除：右栏那两条线的**第二个入口**（2026-10-09 用户下达）──
+      //
+      // ⚠️ 判据**一行都不在这里**：改名的 trim / 比较走 `改名草稿`，请求走 `重命名会话`；
+      // 删除走 `删会话`，「删完去哪」走 `删除后去哪`——与右栏调的是**同一批函数**（用户原话：
+      // 「与 1 中的功能一致，直接复用，不要重复造轮子」）。本文件只负责「调它、把结果交给 navigate」。
+      onRenameSession={(sessionID, title) => {
+        const api = 出口()
+        if (api === undefined) return
+        // 不配在途守卫：改名只写一场会话的标题，且提交那一刻输入框就卸载了 ⇒ 界面上没有第二次
+        // 点击可发（与右栏同一条理由，`LEARNINGS #006-16`：别写走不到的守卫）。
+        void 重命名会话({ api, sessionID, title }).catch(报错)
+      }}
+      onDeleteSession={(sessionID) => {
+        const api = 出口()
+        if (api === undefined) return
+        删在途(() => 删会话({ api, sessionID }))
+          ?.then(() => {
+            // 「删完去哪」与右栏**同一处判断**（`删除后去哪`）。⚠️ 一场都不剩时要落到草稿页，
+            // 理由同右栏那段：URL 会继续指着一场已经不存在的会话，而右栏那条解析链是拿它去问
+            // 服务器的（`right-pane-source.ts`）。
+            const 下一场 = 删除后去哪(表() ?? [], sessionID)
+            const 去 = 下一场 === undefined ? undefined : 会话路径(location.pathname, 下一场)
+            navigate(去 ?? "/new-session")
+          })
+          .catch(报错)
       }}
     />
   )

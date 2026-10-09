@@ -10,7 +10,7 @@ import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
-import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 会话路径 } from "./session-actions"
+import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
 import { SessionDocks } from "./session-docks"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
@@ -87,6 +87,11 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    安静吞掉——见 `LEARNINGS #006-01`），界面上都只是「闸门不弹」或「点了没反应」。
  *    ⚠️ 这条**不能**用 E2E 兜底：要弹一条真闸门得让真模型跑一次真工具调用
  *    （`Permission.ask`），成本与不确定性都不合适。
+ * ⑧ **重命名那一句**（2026-10-09 用户下达，下面 `onRenameSession`）——同上：`重命名会话` /
+ *    `改名草稿` 各有单测（`session-actions.test.ts`），交互由 `会话重命名输入` 承担且单测覆盖
+ *    （`session-rename.test.tsx`），而「点提交那一刻**这一场的 id** 与哪个新名字被交出去」
+ *    只有人读代码看得见——`session-panel.test.tsx` 钉的是「面板交出了 `props.sessionID` ＋ 那个
+ *    标题」，钉不到这一句把它接到了 `重命名会话` 上。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 export function AiSessionSlot(): JSX.Element {
@@ -229,6 +234,19 @@ export function AiSessionSlot(): JSX.Element {
                 if (去) navigate(去)
               })
               .catch(报错)
+          }}
+          // ── 重命名会话的**接线**（判据在 `session-actions.ts` 的 `重命名会话` / `改名草稿`，有单测）──
+          //
+          // ⚠️ **它也不改路由**（同上一条）：改名只写一场会话的标题，当前还在这一场上。
+          // ⚠️ **不配在途守卫**，而且理由是**结构**的而不是「小事一桩」：右栏那颗「重命名」钮一点就
+          // 把那一格换成输入框（`session-panel.tsx` 的 `<Show when={在改名()}>`），提交那一刻编辑态
+          // 就收了、输入框当场卸载 ⇒ **界面上没有第二次点击可发**。加一道走不到的守卫只会多一条
+          // 「变异全绿」的假用例（`LEARNINGS #006-16`）。
+          //
+          // ⚠️ 失败走**全右栏唯一那处** `报错`（`LEARNINGS #002-06`）——与另外三颗钮同一句话。
+          onRenameSession={(sessionID, title) => {
+            const 现在 = 态()
+            void 重命名会话({ api: 现在.api, sessionID, title }).catch(报错)
           }}
           onDeleteSession={(sessionID) => {
             const 现在 = 态()

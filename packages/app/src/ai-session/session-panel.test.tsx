@@ -598,6 +598,8 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
   /** 造一次「点了哪个槽」。返回 `[宿主, 记下的动作]`。 */
   const 摆好 = (sessionID = "ses_1") => {
     const 事件: string[] = []
+    /** 改名交出去的那一对，**成对记**——「改的是谁」与「改成什么」都要能分辨（夹具里两场不同 id）。 */
+    const 改名过: Array<[string, string]> = []
     const 宿主 = 挂(() =>
       原语环境(() => (
         <SessionPanel
@@ -607,6 +609,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           projection={空投影}
           onSelectSession={(id) => 事件.push(`切到 ${id}`)}
           onNewSession={() => 事件.push("新建")}
+          onRenameSession={(id, title) => 改名过.push([id, title])}
         />
       )),
     )
@@ -615,7 +618,34 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
       if (!元素) throw new Error(`没找到 ${选择器}`)
       元素.click()
     }
-    return { 宿主, 事件, 点 }
+    return { 宿主, 事件, 改名过, 点 }
+  }
+
+  /**
+   * 会话行里**直接子元素**的 `data-slot`，按 DOM 顺序。
+   *
+   * 只取直接子元素（`children`，不是 `querySelectorAll`）：`session-toggle` 里还嵌着
+   * `session-current`，全量查会把它也数进来，顺序判据就被噪声淹了。
+   */
+  const 行里的槽 = (宿主: HTMLElement) =>
+    [...(宿主.querySelector('[data-slot="session-row"]')?.children ?? [])].map((el) => el.getAttribute("data-slot"))
+
+  /** 就地改名那个框（编辑态才有）。 */
+  const 改名框 = (宿主: HTMLElement) =>
+    宿主.querySelector<HTMLInputElement>('[data-slot="session-rename-input"]')
+
+  /** 往改名框里打字。Solid 的 `onInput` 读 `event.currentTarget.value`。 */
+  const 改打字 = (宿主: HTMLElement, 值: string) => {
+    const el = 改名框(宿主)
+    if (!el) throw new Error("改名框不在——这条用例的前提不成立（#004-14）")
+    el.value = 值
+    el.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+
+  const 改敲 = (宿主: HTMLElement, key: string) => {
+    const el = 改名框(宿主)
+    if (!el) throw new Error("改名框不在——这条用例的前提不成立（#004-14）")
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))
   }
 
   const 列出的会话 = (宿主: HTMLElement) =>
@@ -653,6 +683,84 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
     点('[data-slot="session-new"]')
 
     expect(事件).toEqual(["新建"])
+  })
+
+  // ── 顶栏「重命名」（2026-10-09 用户下达）───────────────────────────────────────
+  //
+  // 用户的原话是「在『新会话』右侧、『导出』左侧添加『重命名』按钮，并实际实现其功能，
+  // **与 1 中的功能一致，直接复用，不要重复造轮子**」。所以这一组只钉**本层真做的事**：
+  // 那颗钮在**哪个位置**、点了进编辑态、编辑态里怎么退出来、交出去的是**哪一场**。
+  // 编辑器本身的键盘语义（Enter / Escape / 失焦 / 空草稿 / 合成中）与请求那一半在
+  // `session-rename.test.tsx` / `session-actions.test.ts` 里各钉一遍，**不在这里复写**
+  // （`LEARNINGS #002-06`）。
+
+  test("① 位置：`session-rename` 就在 `session-new` 与 `session-export` **之间**（顺序即整个行的槽序）", () => {
+    const { 宿主 } = 摆好()
+
+    // 断**整个**顺序而不是「它在不在」：只判在不在的话，把它插到「删除」后面也照样绿，
+    // 而用户说的是「新会话右侧、导出左侧」——**位置**就是他要的那件事。
+    expect(行里的槽(宿主)).toEqual([
+      "session-toggle",
+      "session-new",
+      "session-rename",
+      "session-export",
+      "session-delete",
+    ])
+  })
+
+  test("② 点它 ⇒ 当前会话名就地变成输入框，**预填着那一场的名字**", () => {
+    const { 宿主, 点 } = 摆好("ses_2")
+
+    点('[data-slot="session-rename"]')
+
+    expect(改名框(宿主)?.value).toBe("话单分析会话")
+  })
+
+  /**
+   * ⚠️ `<input>` 塞进 `<button>` 是**非法嵌套**（浏览器会把 DOM 拆开）⇒ 编辑态必须**换掉**
+   * `session-toggle` 那颗钮，而不是往它里头加一条 `<Show>`。这条判据就是那句话本身：
+   * 那个框**不在**任何 `<button>` 里。
+   */
+  test("③ 那个框**不在** `<button>` 里（`<button>` 里放 `<input>` 是非法嵌套，必须换结构）", () => {
+    const { 宿主, 点 } = 摆好()
+
+    点('[data-slot="session-rename"]')
+
+    expect(改名框(宿主)?.closest("button") !== null).toBe(false)
+  })
+
+  test("④ 编辑态里按 Enter ⇒ `onRenameSession` 收到**当前那一场**与新名字，行退回展示态", () => {
+    const { 宿主, 改名过, 点 } = 摆好("ses_2")
+
+    点('[data-slot="session-rename"]')
+    改打字(宿主, "话单分析（8·17）")
+    改敲(宿主, "Enter")
+
+    // 夹具里两场不同 id ⇒「改当前那场」与「改列表第一条」实得值分得开。
+    expect(改名过).toEqual([["ses_2", "话单分析（8·17）"]])
+    expect(改名框(宿主) === null).toBe(true)
+    expect(宿主.querySelector('[data-slot="session-current"]')?.textContent?.trim()).toBe("话单分析会话")
+  })
+
+  test("⑤ 编辑态里按 Escape ⇒ 什么都不喊，行退回展示态、名字没变", () => {
+    const { 宿主, 改名过, 点 } = 摆好()
+
+    点('[data-slot="session-rename"]')
+    改打字(宿主, "改到一半")
+    改敲(宿主, "Escape")
+
+    expect(改名过).toEqual([])
+    expect(改名框(宿主) === null).toBe(true)
+    expect(宿主.querySelector('[data-slot="session-current"]')?.textContent?.trim()).toBe("资金分析会话")
+  })
+
+  /** 编辑态里**不许**顺带把列表展开（`session-toggle` 那个动作跟着被换掉了，别让它漏出去）。 */
+  test("⑥ 进编辑态不会顺手展开会话列表（toggle 那个动作跟着一起被换掉了）", () => {
+    const { 宿主, 点 } = 摆好()
+
+    点('[data-slot="session-rename"]')
+
+    expect(列出的会话(宿主)).toEqual([])
   })
 
   // ── 视觉约定（节奏铁律 #2：happy-dom **无 CSS 引擎**，颜色量不出来，只能钉 `className` 串）──
@@ -1295,21 +1403,23 @@ describe("导出会话（T016 / FR-010）", () => {
  *
  * ## 补的是什么
  *
- * `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 的源码里落在 **8 处**
- * （`instruction-cards.tsx` 2 处 ＋ `session-panel.tsx` **6** 处），而 Step 5 清点时**只有 1 处**
- * 有断言守着（`common-cards.test.tsx` 的溢出钮那条）。另 7 处**改回旧 token 也全套绿**
+ * `hover:bg-v2-overlay-simple-overlay-hover` 在本 feature 的源码里落在 **9 处**
+ * （`instruction-cards.tsx` 2 处 ＋ `session-panel.tsx` **7** 处），而 Step 5 清点时**只有 1 处**
+ * 有断言守着（`common-cards.test.tsx` 的溢出钮那条）。另 8 处**改回旧 token 也全套绿**
  * ——`LEARNINGS #005-07` 的老形状：一个视觉约定落 N 处，只钉一处等于没钉。
- * 本文件这 6 处 ＋ `common-cards.test.tsx` 那 2 处（卡面与溢出钮）＝ 8 处齐。
+ * 本文件这 7 处 ＋ `common-cards.test.tsx` 那 2 处（卡面与溢出钮）＝ 9 处齐。
  *
- * ⚠️ 数字是 **2026-10-08 T016 落地时**重数的（`grep -rn 'hover:bg-v2-overlay-simple-overlay-hover'
- * packages/app/src --include=*.tsx` 去掉 `*.test.*`）：本组的第 ⑥ 条就是 T016 新加的那颗导出钮
- * ——**加了出口就要回来补一条**，别让「7 处齐」这句话在新出口上悄悄失效（`LEARNINGS #005-11`）。
+ * ⚠️ 数字是 **2026-10-09** 重数的（`grep -rn 'hover:bg-v2-overlay-simple-overlay-hover'
+ * packages/app/src --include=*.tsx` 去掉 `*.test.*`）：第 ⑥ 条是 2026-10-08 T016 新加的导出钮、
+ * 第 ⑦ 条是 2026-10-09 新加的重命名钮——**加了出口就要回来补一条**，别让「8 处齐」这句话在
+ * 新出口上悄悄失效（`LEARNINGS #005-11`）。⚠️ 第 ⑦ 条是**实现之后**补的（不是先红后绿），
+ * 它的牙同样靠变异证（摘掉那颗钮的 token ⇒ 恰红 ⑦ 一条）。
  *
- * ## 为什么是 6 条、不是 1 条遍历
+ * ## 为什么是 7 条、不是 1 条遍历
  *
- * `LEARNINGS #005-12`：约定落在 N 个动作上就写 N 条用例。合成一条「把这 6 个槽过一遍」时，
+ * `LEARNINGS #005-12`：约定落在 N 个动作上就写 N 条用例。合成一条「把这 7 个槽过一遍」时，
  * 摘掉其中一处的 token 只会让**那一条**红，而红的集合读不出「是哪个落点漏了」——这条纪律要的
- * 正是那个信息。6 条各查自己的槽 ⇒ **摘哪处、红哪条**。
+ * 正是那个信息。7 条各查自己的槽 ⇒ **摘哪处、红哪条**。
  *
  * ## 判据的边界（`LEARNINGS #002-02` / `#005-15`：注解不许比断言强）
  *
@@ -1374,6 +1484,14 @@ describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
     const 宿主 = 摆右栏()
 
     expect(串(宿主, "session-export")).toContain(HOVER)
+    // 对照同上：`session-row` 是整行**容器**，hover 不在它身上。
+    expect(串(宿主, "session-row")).not.toContain(HOVER)
+  })
+
+  test("⑦ `session-rename`：`重命名`（2026-10-09 新加的那颗，与同栏 `session-export` 同档 token）", () => {
+    const 宿主 = 摆右栏()
+
+    expect(串(宿主, "session-rename")).toContain(HOVER)
     // 对照同上：`session-row` 是整行**容器**，hover 不在它身上。
     expect(串(宿主, "session-row")).not.toContain(HOVER)
   })

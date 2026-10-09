@@ -14,6 +14,7 @@ import { skillCommands } from "./command-palette"
 import { CommonCards } from "./common-cards"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
+import { 会话重命名输入 } from "./session-rename"
 import { SkillDrawer } from "./skill-drawer"
 
 /**
@@ -91,6 +92,18 @@ export interface SessionPanelProps {
    */
   onExportSession?: (sessionID: string) => void
   /**
+   * 重命名**当前**那一场（2026-10-09 用户下达：`＋ 新会话` 右侧、`导出` 左侧）。
+   *
+   * ⚠️ **与左栏右键菜单里的「重命名」是同一件事**（用户原话：「与 1 中的功能一致，直接复用，
+   * 不要重复造轮子」）：交互都由 `session-rename.tsx` 的 `会话重命名输入` 承担，请求都由
+   * `session-actions.ts` 的 `重命名会话` 发。本组件这一处没有一行 trim / 比较 / 请求的判据
+   * ——那些全仓各只有一份（`LEARNINGS #002-06`）。生产由 `ai-session-slot.tsx` 接上。
+   *
+   * ⚠️ **失败归调用方**（与另外四颗钮同一个 `void` 签名）：本组件不接回话，也就不可能在
+   * 「改没改成」这件事上撒谎。生产那边 `.catch(报错)`。
+   */
+  onRenameSession?: (sessionID: string, title: string) => void
+  /**
    * 坐在**消息流与工具栏之间**的那一块（今天只有一样东西：待答的权限 / 提问闸门）。
    *
    * **为什么是注入而不是本组件自己渲染**：闸门那两件要 `usePermission()`（问「这条请求是不是
@@ -145,6 +158,18 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   const [待删, set待删] = createSignal<string | undefined>(undefined)
   /** 此刻这个钮是「问」还是「做」:问的是**当前**这场会话。 */
   const 确认中 = () => 待删() === props.sessionID
+
+  /**
+   * 「正在改名的是哪一场」——与 `待删` **同一个形状、同一个理由**：存 id 不存 `boolean`。
+   *
+   * 一个 `boolean` 在这里的坏法比删除那处温和（改名可逆），但同型：路由切到别场时输入框
+   * **还开着**，而它挂在别场的名字上——用户按下的那一下 Enter 改的是**另一场**。
+   * 判据写成 `改名中() === props.sessionID`，「输入框画在哪一场」与「它真会改哪一场」就
+   * **按构造**一致（`LEARNINGS #004-02`）。
+   */
+  const [改名中, set改名中] = createSignal<string | undefined>(undefined)
+  /** 这一刻名字那一格是「展示」还是「就地编辑」。 */
+  const 在改名 = () => 改名中() === props.sessionID
 
   /** 当前那条会话。找不到（如 data 还没同步到）时退回显示 id，别渲染成空白。 */
   const 当前会话 = () => props.data.session.find((会话) => 会话.id === props.sessionID)
@@ -336,23 +361,68 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           class="flex h-10 w-full shrink-0 items-center gap-2 border-b border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2"
         >
           {/* 名字与 ▾ 是**同一颗钮**：点名字就是展开（「当前会话名 ▾」是一个动作，不是一个标签）
-              ⇒ `session-toggle` 是钮、`session-current` 是钮里的名字。 */}
-          <button
-            data-slot="session-toggle"
-            class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-start hover:bg-v2-overlay-simple-overlay-hover"
-            onClick={() => set展开((上一态) => !上一态)}
+              ⇒ `session-toggle` 是钮、`session-current` 是钮里的名字。
+
+              改名时**整颗钮被换掉**（2026-10-09）——不是往钮里塞一条 `<Show>`：`<input>` 放进
+              `<button>` 是**非法嵌套**（浏览器会把 DOM 拆开，Solid 的 `ref` 与事件随后全落在错位的
+              节点上）。左栏会话列表换掉那一行的 `<button>`是同一个理由。
+              ⚠️ 换掉之后 `session-toggle` **不在**了（那颗钮此刻不存在），编辑态那一格叫
+              `session-rename-host`——不复用 `session-toggle` 这个名字，它在这时**不是**一个 toggle。 */}
+          <Show
+            when={在改名()}
+            fallback={
+              <button
+                data-slot="session-toggle"
+                class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-start hover:bg-v2-overlay-simple-overlay-hover"
+                onClick={() => set展开((上一态) => !上一态)}
+              >
+                <span data-slot="session-current" class="min-w-0 truncate text-[13px] text-v2-text-text-base">
+                  {当前会话()?.title ?? props.sessionID}
+                </span>
+                <span class="shrink-0 text-[11px] text-v2-icon-icon-muted">▾</span>
+              </button>
+            }
           >
-            <span data-slot="session-current" class="min-w-0 truncate text-[13px] text-v2-text-text-base">
-              {当前会话()?.title ?? props.sessionID}
-            </span>
-            <span class="shrink-0 text-[11px] text-v2-icon-icon-muted">▾</span>
-          </button>
+            {/* 几何照那颗钮（`flex-1` / `px-1 py-0.5`）：名字那一格的位置与宽度都别动，
+                否则进编辑态时整行会跳一下。 */}
+            <div
+              data-slot="session-rename-host"
+              data-state="renaming"
+              class="flex min-w-0 flex-1 items-center gap-1 px-1 py-0.5"
+            >
+              <会话重命名输入
+                原名={当前会话()?.title}
+                on提交={(新名) => {
+                  // 先收编辑态再交出去（同删除那处：不留一个「还开着」的输入框给下一场会话）。
+                  set改名中(undefined)
+                  props.onRenameSession?.(props.sessionID, 新名)
+                }}
+                on取消={() => set改名中(undefined)}
+              />
+            </div>
+          </Show>
           <button
             data-slot="session-new"
             class="shrink-0 cursor-pointer rounded px-1 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
             onClick={() => props.onNewSession?.()}
           >
             ＋ 新会话
+          </button>
+          {/* 重命名**当前**这场（2026-10-09 用户下达：坐 `＋ 新会话` 与 `导出` 之间）。
+              与另外几颗钮同一个判据：它是**对当前会话**的动作，不是「切到哪一场」。
+
+              ⚠️ **本处一点就进编辑态**（就地改名字），不弹框——与左栏右键菜单里那一项是**同一件事**
+              （用户原话「与 1 中的功能一致，直接复用，不要重复造轮子」）：交互走 `session-rename.tsx`
+              的 `会话重命名输入`，请求走 `session-actions.ts` 的 `重命名会话`。这里只翻一个信号。
+
+              ⚠️ **视觉同「导出」/「删除」那笔账**：`DESIGN.md` §4.7.5 的会话管理只写了「新建 / 切换」，
+              重命名与导出、删除一样**没有样子** ⇒ 取同栏「＋ 新会话」那一档 token（不新增 app 级 CSS）。 */}
+          <button
+            data-slot="session-rename"
+            class="shrink-0 cursor-pointer rounded px-1 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+            onClick={() => set改名中(props.sessionID)}
+          >
+            重命名
           </button>
           {/* 删除**当前**这场（T015）。坐在行上、不坐在列表的每一行里：详情列表是「切到哪一场」，
               而删除是一个**对当前**的动作（上游 `message-timeline` 把删除放在会话列表行里，那边一行

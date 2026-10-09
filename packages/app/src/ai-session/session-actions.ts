@@ -74,6 +74,56 @@ export async function 删会话(input: { api: 会话出口; sessionID: string })
 }
 
 /**
+ * 给一场会话改名（左栏右键菜单与右栏顶栏**共用这一个出口**——两边都只调它）。
+ *
+ * ## 出口名是**实测**的（`rename`），不是推断
+ *
+ * `api.session.rename` 早就在兼容层实现好了：`utils/server-compat.ts` 的
+ * `async rename(value) { await legacy(value).session.update({ sessionID, title }) }`。
+ * ⚠️ **底下那一下是 legacy 客户端的 `session.update`**，而 `rename` 这个名字是兼容层
+ * `Omit<…, "rename"> & { rename: … }` 显式加回来的——与同文件 `remove` 那条注释是同一个坑：
+ * 写错名字**不报错**，`lazyApi` 的 `get` 对取不到的函数直接返回 `sample`（`undefined`）
+ * ⇒ 点下去那一刻才 `TypeError`。本仓另有两处上游调用点同形：
+ * `pages/session/timeline/message-timeline.tsx` 的 `titleMutation` 与
+ * `components/titlebar-tab-strip.tsx` 的 `rename`，两处都是 `api.session.rename({ sessionID, title })`
+ * （**不带 `directory`**：目录由 SDK 上下文带，与那两处的口径一致）。
+ *
+ * ## 不传目录、也不传别的字段
+ *
+ * 就 `{ sessionID, title }` 两项——照**被调方**的签名打勾（`LEARNINGS #004-07`），
+ * 多传的字段在兼容层会被忽略、在下游会变成噪音。
+ *
+ * **失败向上抛**（`rename` 的 reject 原样冒出去），由接线层回话——与同文件 `删会话` 同一分工。
+ */
+export async function 重命名会话(input: {
+  api: 会话出口
+  sessionID: string
+  title: string
+}): Promise<void> {
+  await input.api.rename({ sessionID: input.sessionID, title: input.title })
+}
+
+/**
+ * 这份草稿**值不值得发出去**——不值得就是 `undefined`（调用方据此**不发请求**、直接退出编辑态）。
+ *
+ * 三条判据，一条一个理由：
+ * - **trim 后为空** ⇒ 不改：把标题清空不是一次重命名，是一次删除内容（本产品没有「无标题」这个态，
+ *   清空之后的界面会退回去显示会话 id）。
+ * - **trim 后与原名相同** ⇒ 不改：用户点开输入框、什么都没动就关掉，不该产生一次写请求
+ *   （蓝本 `message-timeline.tsx` 的 `saveTitleEditor` 就是这么收尾的）。
+ * - 其余 ⇒ 交 **trim 后**的值：`\"  新名字  \"` 两头的空白是输入法的边角，不是名字的一部分。
+ *
+ * ⚠️ 单独抽成一个纯函数**不是为了好看**：这条判断在**两个入口**上都要用（左栏那一行、右栏那一行），
+ * 各写一遍就是同一件事的第二处写法（`LEARNINGS #002-06`）——而两份一旦漂开**不报错、不变红**，
+ * 只是「左栏能改成空标题、右栏不能」。
+ */
+export function 改名草稿(草稿: string, 原名: string | undefined): string | undefined {
+  const 新 = 草稿.trim()
+  if (新 === "" || 新 === 原名) return undefined
+  return 新
+}
+
+/**
  * 一份会话表里**能列出来 / 能切过去**的那几场。两个筛子各是一件事：
  *
  * - `!parentID` —— 子会话不是一个能切过去的**对等**会话；

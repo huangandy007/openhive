@@ -8,9 +8,11 @@ import {
   在途守卫,
   导出会话,
   建会话,
+  改名草稿,
   删会话,
   当前项目目录,
   会话路径,
+  重命名会话,
   type 会话行,
   type 可定位的项目行,
 } from "./session-actions"
@@ -62,14 +64,16 @@ import {
  * 那份 api 上**没有 `messages`**（见 `造客户端` 的注释）。
  */
 const 造会话出口 = (
-  回话: { 建?: unknown; 建失败?: unknown; 删失败?: unknown } = {},
+  回话: { 建?: unknown; 建失败?: unknown; 删失败?: unknown; 改失败?: unknown } = {},
 ): {
   建的: Array<Record<string, unknown>>
   删的: Array<Record<string, unknown>>
+  改的: Array<Record<string, unknown>>
   api: DirectorySDK["api"]["session"]
 } => {
   const 建的: Array<Record<string, unknown>> = []
   const 删的: Array<Record<string, unknown>> = []
+  const 改的: Array<Record<string, unknown>> = []
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `DirectorySDK["api"]["session"]` 是 context 反推的巨型接口（见上面「假依赖」一节），替身只实现本模块真调的那两下。
   const api = {
     create: async (value: Record<string, unknown>) => {
@@ -82,13 +86,18 @@ const 造会话出口 = (
       if (回话.删失败 !== undefined) throw 回话.删失败
       return {}
     },
+    rename: async (value: Record<string, unknown>) => {
+      改的.push(value)
+      if (回话.改失败 !== undefined) throw 回话.改失败
+      return {}
+    },
     // ⚠️ 其余出口**故意留空**（不写「碰就抛」的哨兵）：留空时调它当场
     // `TypeError: … is not a function`，本身就是一句会响的断言（`LEARNINGS #002-02`：
     // 空替身是把**缺口**写成**覆盖**；这里反过来——空得会响，不是覆盖）。
 
     // 这一行只是为了让读者看清「本模块真调的只有上面两下」。
   } as unknown as DirectorySDK["api"]["session"]
-  return { 建的, 删的, api }
+  return { 建的, 删的, 改的, api }
 }
 
 /**
@@ -176,6 +185,53 @@ describe("T015 / FR-010 · 删会话", () => {
     const 出口 = 造会话出口({ 删失败: new Error("删不掉") })
 
     await expect(删会话({ api: 出口.api, sessionID: "ses_甲" })).rejects.toThrow("删不掉")
+  })
+})
+
+describe("会话重命名（左栏右键菜单 ＋ 右栏顶栏，同一个出口）", () => {
+  test("① 改的是**这一场**：rename 收到 { sessionID, title }，就这两项", async () => {
+    const 出口 = 造会话出口()
+
+    await 重命名会话({ api: 出口.api, sessionID: "ses_要改的", title: "新名字" })
+
+    // ⚠️ 这一条同时也是**出口名**的哨兵：右栏那份 api 是 `createCompatibleApi` 的 lazy Proxy，
+    // 写错方法名（例如 v2 那边的 `update`）**不会报错**，只会静默取到 `undefined`
+    // ⇒ 点重命名那一刻才 `TypeError`。`toEqual` 一旦变成空数组，就是这条链断了。
+    expect(出口.改的).toEqual([{ sessionID: "ses_要改的", title: "新名字" }])
+  })
+
+  test("② rename 失败 ⇒ 抛出去，由调用方回话", async () => {
+    const 出口 = 造会话出口({ 改失败: new Error("改名失败") })
+
+    await expect(重命名会话({ api: 出口.api, sessionID: "ses_甲", title: "乙" })).rejects.toThrow(
+      "改名失败",
+    )
+  })
+})
+
+describe("改名草稿：这一份草稿值不值得发出去（蓝本 message-timeline.tsx 的 saveTitleEditor）", () => {
+  test("① 正常改动 ⇒ 交出 trim 后的新名字", () => {
+    expect(改名草稿("新名字", "旧名字")).toBe("新名字")
+  })
+
+  test("② 前后空白被 trim 掉（右栏顶栏那一下带得进空格）", () => {
+    expect(改名草稿("  新名字  ", "旧名字")).toBe("新名字")
+  })
+
+  test("③ 空草稿 ⇒ undefined（**不发请求**：把标题清空不是一次重命名）", () => {
+    expect(改名草稿("", "旧名字")).toBe(undefined)
+  })
+
+  test("④ 纯空白草稿 ⇒ undefined（同上，别把 `\"   \"` 发成标题）", () => {
+    expect(改名草稿("   ", "旧名字")).toBe(undefined)
+  })
+
+  test("⑤ 与原名相同 ⇒ undefined（点开又原样关掉，不该产生一次写请求）", () => {
+    expect(改名草稿("旧名字", "旧名字")).toBe(undefined)
+  })
+
+  test("⑥ 原名还没有（`undefined`）而草稿非空 ⇒ 照改", () => {
+    expect(改名草稿("新名字", undefined)).toBe("新名字")
   })
 })
 
