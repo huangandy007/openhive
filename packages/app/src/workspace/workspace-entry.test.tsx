@@ -139,6 +139,48 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
   })
 
   /**
+   * **底部「系统设置」不是模块**（2026-10-09 用户下达的 #3）。
+   *
+   * 期望：点它**开设置对话框**，图标栏**不高亮**（仍停在原业务模块上）。
+   *
+   * ⚠️ 这条钉的是**接线**：`openSettings` 由 `pages/layout-new.tsx` 注入（那里才读得到
+   * Router / `useDialog`——本组件被裸挂，见 `onOpenSettings` 那个 prop 上的注释）。真对话框
+   * 在这里开不出来（要 `DialogProvider` ＋ 懒加载 `settings-v2`），所以断言是「注入的入口被调了」
+   * ＋「模块字符串没被换掉」——**后半才是本次要修的那一半**：旧行为下 `switchModule("settings")`
+   * 会把模块换走，图标点亮、左栏（`module === "project"` 才渲染）整列消失。
+   */
+  test("点「系统设置」不切模块：调用注入的开设置入口，图标栏仍停在原业务模块上、设置自己不点亮", () => {
+    let 开过 = 0
+    const host = mount(() => (
+      <WorkspaceEntry
+        onOpenSettings={() => {
+          开过 += 1
+        }}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+
+    入口(host, "系统设置").click()
+
+    expect(开过).toBe(1)
+    // 「不高亮」：高亮**不动**，仍在入口那一个业务模块上（不是变成「系统设置」）
+    expect(currentModule(host)).toBe("项目管理")
+    // 另一半：设置那颗自己**没有** `aria-current`（顺序按 `#004-14`：被测属性在前，伴随信号在后）
+    expect(入口(host, "系统设置").getAttribute("aria-current")).toBeNull()
+    // 伴随信号：左栏还在（旧行为下模块被换走 ⇒ 这一列消失）
+    expect(host.querySelector("[data-slot='three-pane-left']")).not.toBeNull()
+  })
+
+  test("省略 onOpenSettings：点「系统设置」不崩、也不切模块（**不退回 switchModule**）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+    入口(host, "系统设置").click()
+
+    expect(currentModule(host)).toBe("项目管理")
+  })
+
+  /**
    * ⚠️ 原先这里有四条「顶栏注入缝」的用例（注入点缺失不渲染 / 挂进注入点 / 身份未就位 /
    * 身份就位）。**2026-10-08 顶栏改造起它们搬到了 `@/topbar/topbar-mount.test.tsx`**：
    * 顶栏不再由本组件 Portal 进上游 `#opencode-titlebar-right`，改由入口层挂进上游那条 header

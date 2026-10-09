@@ -11,7 +11,20 @@ export interface RailProps {
   capabilities?: ReadonlySet<string>
   /** 当前高亮入口的 id（= 左栏正停留的模块）。 */
   active?: string
+  /** 五个**业务**入口的出口（`id` ⇒ 切模块）。底部「系统设置」**不走这里**，见下。 */
   onSelect: (id: string) => void
+  /**
+   * 底部「系统设置」那颗的动作：**开设置对话框**（2026-10-09 用户下达的 #3）。
+   *
+   * **为什么与 `onSelect` 分开**：设置**不是模块**——`center-content.tsx` 里没有任何按 module 的
+   * 分支，`switchModule` 只是换个字符串。走 `onSelect` 的旧行为因此是：图标点亮、左栏
+   * （`module === "project"` 才渲染）整列消失、**什么也不打开**。
+   *
+   * 省略 = 点它什么都不做——**刻意不退回 `onSelect`**（退回就是旧行为，且左栏会莫名消失）。
+   * 由应用入口注入：取它要 `useParams()` ＋ `useDialog()`，只有读得到 Router 的那一层拿得到
+   * （生产入口是 `pages/layout-new.tsx`）。
+   */
+  onOpenSettings?: () => void
 }
 
 function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (id: string) => void }) {
@@ -88,10 +101,15 @@ export function Rail(props: RailProps) {
       </For>
       <div class="mt-auto flex flex-col items-center gap-3">
         <span class="my-1 h-px w-8 bg-v2-border-border-muted" />
+        {/* 这颗**不走 `props.onSelect`**（设置不是模块，见 `RailProps.onOpenSettings` 那段）：
+            它开对话框，因此**不改**当前模块 ⇒ 高亮天然停在原业务入口上（「设置对话框打开时图标栏
+            不高亮」的由来）。`active` 仍按 `SETTINGS_ENTRY.id === props.active` 算——那是
+            `RailEntryButton` 的通用语义（`rail.test.tsx` 有它自己的用例），只是**没人再把模块
+            设成 "settings"** 了。 */}
         <RailEntryButton
           entry={SETTINGS_ENTRY}
           active={SETTINGS_ENTRY.id === props.active}
-          onSelect={props.onSelect}
+          onSelect={() => props.onOpenSettings?.()}
         />
       </div>
     </div>

@@ -91,6 +91,20 @@ export interface WorkspaceEntryProps {
    * 传现成的 boolean 会把中栏冻在首次渲染那一刻的判断上。
    */
   routePageVisible?: () => boolean
+  /**
+   * 图标栏底部「系统设置」被点时的动作：**开设置对话框**（2026-10-09 用户下达的 #3）。
+   *
+   * **为什么也算在外面**（与 `routePageVisible` 同因、**同一段理由**）：生产那份取它要
+   * `useSettingsDialog()`，而那个 hook 内部走 `useParams()` 与 `useDialog()`——本组件被
+   * `workspace-entry.test.tsx` **裸挂**（无 Router、无 provider），在它里面调会当场抛。
+   * 故照 `right` / `loadFile` / `projectData` 的老规矩：**能读 context 的那一层算，本层只认值**
+   * （生产入口是 `pages/layout-new.tsx`）。
+   *
+   * 省略 = 点它什么都不做。**刻意不退回 `switchModule("settings")`**——设置不是模块
+   * （`center-content.tsx` 没有任何按 module 的分支），退回只是把模块串换掉：图标点亮、左栏消失、
+   * 什么也不打开。语义与代价见 `rail/rail.tsx` 的 `RailProps.onOpenSettings`。
+   */
+  onOpenSettings?: () => void
 }
 
 /**
@@ -495,6 +509,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         <Rail
           active={center.module()}
           onSelect={(id) => center.switchModule(id)}
+          // 「系统设置」那颗**不切模块**：它开对话框，动作由入口层注入（见本文件 `onOpenSettings`
+          // prop 上那段注释）。
+          onOpenSettings={props.onOpenSettings}
           capabilities={props.capabilities}
         />
         {/* 左栏按模块开关（`2026-09-11-项目管理-design.md` §2：左栏是「项目管理 / AI 资产」两入口

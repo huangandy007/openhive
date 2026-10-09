@@ -25,6 +25,20 @@ const 壳内入口 = (host: HTMLElement) =>
     el.querySelector("[data-slot='rail-entry']")?.getAttribute("aria-label"),
   )
 
+/**
+ * 按 `aria-label` 找入口；找不到**抛**。
+ *
+ * ⚠️ 不用 `?.click()`：元素缺失时那条用例会**空过**（`#004-14`），而这里「找得到」正是前置条件。
+ * 与 `workspace-entry.test.tsx` 的同名辅助同形。
+ */
+const 入口 = (host: HTMLElement, label: string) => {
+  const found = [...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']")].find(
+    (el) => el.getAttribute("aria-label") === label,
+  )
+  if (!found) throw new Error(`图标栏里没有「${label}」`)
+  return found
+}
+
 describe("Rail 图标栏", () => {
   test("未传能力位时，五入口 + 底部系统设置全部渲染（FR-002）", () => {
     const host = mount(() => <Rail onSelect={() => {}} />)
@@ -42,6 +56,44 @@ describe("Rail 图标栏", () => {
     资金?.click()
 
     expect(picked).toEqual(["fund-analysis"])
+  })
+
+  /**
+   * **「系统设置」不是模块**（FR-002 的补充规格 / 2026-10-09 用户下达）。
+   *
+   * 它曾经和五个业务入口走同一条出口（`onSelect(id)` ⇒ `center.switchModule(id)`），而
+   * `center-content.tsx` **没有任何按 module 的分支** ⇒ `switchModule("settings")` 只把那个字符串
+   * 换掉：图标点亮、左栏（`module === "project"` 才渲染）消失、**什么都不打开**。
+   * 故底部这颗改走 `onOpenSettings`——判据同时钉两半：**它调了 opener** 且
+   * **`onSelect` 一个 id 都没收到**（后半才是「不再切模块」的那一半，只断前半会漏掉「两个都调」）。
+   */
+  test("点「系统设置」走 onOpenSettings，不走 onSelect——设置不是模块（#3）", () => {
+    const picked: string[] = []
+    let 开过 = 0
+    const host = mount(() => (
+      <Rail
+        onSelect={(id) => picked.push(id)}
+        onOpenSettings={() => {
+          开过 += 1
+        }}
+      />
+    ))
+
+    入口(host, "系统设置").click()
+
+    expect(开过).toBe(1)
+    // 反证：`onSelect` 必须**一个都没收到**——尤其不是 "settings"（旧行为就是它）
+    expect(picked).toEqual([])
+  })
+
+  test("省略 onOpenSettings：点「系统设置」什么都不做——**不退回 onSelect**", () => {
+    const picked: string[] = []
+    const host = mount(() => <Rail onSelect={(id) => picked.push(id)} />)
+
+    入口(host, "系统设置").click()
+
+    // 退回 onSelect 的后果不是「没反应」，是「模块被改成 settings、左栏消失」（见上一条的注释）。
+    expect(picked).toEqual([])
   })
 
   test("会话只签到部分能力位时：无能力的入口不渲染，系统设置仍在（出参：无权限入口隐藏）", () => {

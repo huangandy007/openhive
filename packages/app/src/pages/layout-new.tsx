@@ -12,6 +12,11 @@ import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useCommand } from "@/context/command"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
+// ⚠️ openhive 定制（2026-10-09 #3 设置迁到 rail）：这是要保留的定制 —— 合并上游时两侧都留着。
+// 图标栏底部「系统设置」那颗对话框的**动作在这里取**：`useSettingsDialog()` 要 `useParams()`
+// 与 `useDialog()`，只有**落在路由根之内**的这一层拿得到（`WorkspaceEntry` 被测试裸挂，读不了
+// Router——见它 `onOpenSettings` 那个 prop 上的注释）。
+import { useSettingsDialog } from "@/components/settings-dialog"
 // ⚠️ openhive 定制（005 T018）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 工作台「项目」那件事的数据源在这里注入（1 行 import ＋ 1 个 prop，见 `@/project/project-data`
 // 文件头「为什么要有这一层」）。删掉这两处 = 面板/文件树退回「未接线即禁用」态。
@@ -38,6 +43,15 @@ export default function NewLayout(props: ParentProps) {
   // ⚠️ 代价：这条指令 id 是**字符串约定**（上游改名 ⇒ 本按钮静默无反应）。
   const layout = useLayout()
   const command = useCommand()
+  /**
+   * 图标栏那颗「系统设置」开对话框的动作（2026-10-09 #3）。
+   *
+   * **刻意用 `useSettingsDialog()` 而不是 `useSettingsCommand()`**：后者会**多注册一遍**
+   * `settings.open`（`mod+,` 那条），而它已由 `pages/session.tsx` / `use-new-session-commands` /
+   * `home-projects-controller` 在各自的页面上注册过——本组件罩着**所有**路由，再注册一次就是同一
+   * 条指令的重复登记（这层不做那件事）。设置对话框这一侧本来就不用 `useCommand`。
+   */
+  const openSettings = useSettingsDialog()
   const titlebarHost = useTitlebarHostMount()
   const [state, setState] = createStore({ debugTools: true })
 
@@ -120,6 +134,10 @@ export default function NewLayout(props: ParentProps) {
           // `routeSessionID` 只认生产那一种形态（`/server/<key>/session/<id>`），其余路由一律
           // `undefined` ⇒ 中栏照旧露上游页面，行为与加这一行之前逐字相同。
           routePageVisible={() => routeSessionID(location.pathname) === undefined}
+          // ⚠️ openhive 定制（2026-10-09 #3 设置迁到 rail）：这是要保留的定制。
+          // 图标栏底部那颗「系统设置」的动作——在本层取（要 Router ＋ DialogProvider），
+          // 往里只传值（`WorkspaceEntry` 不读 Router）。
+          onOpenSettings={openSettings}
         >
           <Suspense>{props.children}</Suspense>
         </WorkspaceEntry>
