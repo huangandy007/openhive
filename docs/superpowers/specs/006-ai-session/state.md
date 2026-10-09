@@ -9,7 +9,7 @@
 |---|---|---|
 | （一） | D1 / R-01 / ④-1 / F-01 / F-02（5 条） | ✅ 已提交 `5a228efd90` · 出参见「Step 5 出参（一）」 |
 | （二） | **②-1**（右栏整条会话链落沙箱根 ⇒ **B：cookie 通道**） | ✅ 已提交 `3ebe26da43` · 出参见「Step 5 出参（二）」 |
-| （三） | **第二轮对抗性验证**（五席只读审查打在 `e972d14f44..HEAD` 上）⇒ **1 条 Important**（cookie / 信号刷新后分叉，三席独立命中）＋ 若干注释/文档不实；用户裁定 **B：启动清掉 cookie** | ✅ 已修 · 见「Step 5 出参（三）」 |
+| （三） | **第二轮对抗性验证**（五席只读审查打在 `e972d14f44..HEAD` 上）⇒ **1 条 Important**（cookie / 信号刷新后分叉，三席独立命中）＋ 若干注释/文档不实；用户裁定 **B：启动清掉 cookie**（⚠️ **2026-10-09 被 Task B 的「A：跟随当前项目」取代**——见「Step 5 出参（三）」那条替代说明） | ✅ 已修 · 见「Step 5 出参（三）」 |
 | **T016** | **D2：右栏导出会话入口**（复用上游 `utils/session-export.ts` 三件套） | ✅ 已完成 · 见「T016 出参」 |
 | **Step 6** | **收尾**：final commit（信息带 `Closes 006-ai-session`）＋ `session.md` 重写 ＋ 缺口表补行 ＋ `LEARNINGS` 补 4 条（`#006-01`…`#006-04`）＋ 门禁在最终状态上串行复跑 | ✅ **已完成（2026-10-08）** · 见「最后更新」与同目录 `session.md` |
 
@@ -20,6 +20,11 @@
 ⚠️ **第二轮留了两笔给 T016 / 收尾**：① **裁定 B 的残余＝多标签页**（cookie 全浏览器共享，三种修法都
 修不到，见缺口表）；② **「挂载即清」仰赖一条上游事实**（`NewAppLayout` 在路由根里 ⇒ SPA 不重挂），
 **今天没有断言钉着**——两笔都在缺口表里，别当成「分叉已根除」。
+
+⚠️ **2026-10-09 更新（Task B：裁定 A 取代 B）**：上面两笔的**语义都改了**，缺口表那两行已就地加注。
+① 裁定 A（启动**还原**而非清）不写 cookie ⇒ B 那条「乙一启动就把 cookie 清掉」的残余**不再发生**，
+残余改为「甲切项目后、乙的信号停在旧项目直到它自己下次挂载」；② 「挂载即还原」对重挂是**幂等**的
+（不再像 B 那样把刚选的项目清掉），但那条上游事实**仍然没有断言钉着**。
 
 ⚠️ **②-1 那条改动的形状值得记住**：它是本 feature **唯一一条把「环境信号」当通道**的改动——头是
 **意向**（无效就**拒**），cookie 是**环境**（无效就**当没有**）。这条语义差别**不写在类型里**，只写在
@@ -2391,6 +2396,16 @@ cookie 每一条请求都带 ⇒ 若照头那套语义（已归档 ⇒ 403）处
 **用户裁定（2026-10-08）：B —— 启动清掉 cookie。**（另两条：A 什么都不做 / C 改成请求头。
 C 走不通的理由就是 ②-1 的立论：右栏那条 SDK v2 链**够不着头**。）
 
+> ⚠️ **已被取代（2026-10-09，Task B）**：用户改判 **A：跟随当前项目**——启动时把 cookie 里那份存档
+> **读回来还原**（不再清），于是刷新后左栏会话 tab 列的是该项目自己的会话。裁定 B 的「清」缩到
+> 「存档**失效**」那一支（项目没了 / 已归档）；「**没有**存档」仍是**什么都不做**（2026-10-06 的裁定
+> 不动）。落点：`packages/app/src/project/current-project.ts`（新增 `读项目cookie` /
+> `可还原的项目行` / `还原启动项目`）＋ `workspace-entry.tsx` 的 `onMount`（`拉清单` 改为交出清单）。
+> 本节以下（落点表、RED、变异账）**是 2026-10-08 那次修复的记录，保持原样**——不要按它去核对今天的
+> 代码。另：裁定 A **顺带收掉了裁定 B 的多标签页残余**（B 下「甲在用、乙一启动就清掉 cookie ⇒ 甲下次
+> 请求落回沙箱根」不再发生），残余改为「甲切了项目、乙的**信号**停在旧项目直到它自己下次挂载」
+> （见缺口表）。
+
 ### 落点（1 处产品码 ＋ 1 处测试 ＋ 6 处注释/文档）
 
 | # | 落点 | 改什么 |
@@ -2761,8 +2776,8 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **`edit` / `write` 本轮不动** | T012 裁定 ② | 本次清单**只覆盖 `bash` 的删除类命令**；`edit` / `write` 工具改文件（含删文件内容）**不在本轮的 `ask` 清单里**（用户裁定 ②：本轮 bash 删除类，其余照旧）。⇒ 「修改 / 覆盖数据文件」这一类高风险动作**今天仍静默执行**。⚠️ 与 `capabilities.ts` 的 `cards` 那条不同：这里不是「没有对象」，是**明确划出范围**——要扩就改 `.opencode/opencode.jsonc` 的 `permission` 块（`edit` / `write` 各有自己的权限名） |
 
 | **环境通道（cookie）的射程远大于断言**（②-1 新增） | 006 Step 5 · ②-1 | 服务端那条 cookie 通道（`PROJECT_COOKIE`，见「Step 5 出参（二）」）对**每一条同源请求**生效——文件 / pty / 上传 / 下载 / 权限 / 项目清单**全在射程内**，而本批只跑了 **6 条**（A / B 两条会话链 ＋ 四条语义边界：非法值 / 已归档 / 头优先 / 对照）。⇒ ① **其余出口「带着 cookie 会怎样」没跑过**——⚠️ 正是 `LEARNINGS #005-11` 的形状：「机制对每条出口生效」是**推断**，「这条出口上它真的生效」才是**事实**；② **归档态翻转导致的落点翻转未测**（项目由活跃变已归档那一刻，同一条带 cookie 的请求落点**从项目目录翻到沙箱根**——**推得、未测**，要一个「先活跃后归档」的时序夹具）；③ **客户端 `Path=/` 没有任何断言钉住**（happy-dom 的 `document.cookie` **读回不按路径过滤**，探针实测 ⇒ 构造不出会红的断言，护栏只剩代码可读性；已同时写进 `current-project.ts` 注释与 `current-project.test.ts` 文件头）。**不写成已覆盖**（`#002-02`）。补法：照 `#005-11` 的收尾清单——新增出口时把这条环境通道在**那条出口上**重放一遍、写一条断言 |
-| **多标签页：cookie 是全浏览器共享的 ⇒ 裁定 B 修不到它**（第二轮审查裁定 B 的残余） | 006 · 裁定 B | 「启动清掉 cookie」把**本标签页**拉回「未选择」，但 cookie 的存储**不按标签页隔离**（`Path=/` ＋ 无 `Max-Age`）⇒ 甲标签页正在用项目 A 时，乙标签页**启动**会把 cookie 清掉 ⇒ 甲标签页**下一次请求**落回沙箱根（**推得、未测**——要两个真标签页的夹具）。⚠️ 三种修法（A 什么都不做 / B 启动清 / C 改成请求头）**没有一种**解决它：真正的解法是**每标签页各自的通道**（`sessionStorage` ＋ 显式头），而右栏那条 SDK v2 链**够不着头**（②-1 的立论）⇒ 属下一轮。**不写成已覆盖**（`#002-02`）。⚠️ 与它相对的是**已覆盖的那一半**：单标签页的「刷新后分叉」已由裁定 B ＋ `workspace-entry.test.tsx` 新节两条断言钉住 |
-| **「挂载即清」仰赖一条上游事实，今天没有断言钉着**（第二轮新记） | `workspace-entry.tsx` 的 `onMount` → 上游 `app.tsx` | 这一行只在「`WorkspaceEntry` **每次启动只挂一次**」时才对，而那条依据是 `NewAppLayout` 落在**路由根**里（`app.tsx` 那段注释：lives in the router root so it remains mounted across route changes）⇒ SPA 换路由**不重挂**。**本案没有断言钉住这条上游事实**：哪天有人把 `NewAppLayout` 挪进某个 `<Route>` 之下，`onMount` 就变成**每次导航清一次**民警刚选的项目——而 `workspace-entry.test.tsx` 那节会**照旧全绿**（它只挂一次）。⚠️ 正是 `#005-15`「注释不许比断言强」的形状：两个落点的注释都**如实标明**了这条假设无断言。要钉得用真路由器挂一次 `NewLayout` 再 navigate 两次、断言 cookie 未再被清 |
+| **多标签页：cookie 是全浏览器共享的 ⇒ 裁定 B 修不到它**（第二轮审查裁定 B 的残余；**2026-10-09 裁定 A 取代后语义改了**） | 006 · 裁定 B → **A** | 「启动清掉 cookie」把**本标签页**拉回「未选择」，但 cookie 的存储**不按标签页隔离**（`Path=/` ＋ 无 `Max-Age`）⇒ 甲标签页正在用项目 A 时，乙标签页**启动**会把 cookie 清掉 ⇒ 甲标签页**下一次请求**落回沙箱根（**推得、未测**——要两个真标签页的夹具）。⚠️ 三种修法（A 什么都不做 / B 启动清 / C 改成请求头）**没有一种**解决它：真正的解法是**每标签页各自的通道**（`sessionStorage` ＋ 显式头），而右栏那条 SDK v2 链**够不着头**（②-1 的立论）⇒ 属下一轮。**不写成已覆盖**（`#002-02`）。⚠️ 与它相对的是**已覆盖的那一半**：单标签页的「刷新后分叉」已由 (2026-10-09 起) 裁定 A ＋ `workspace-entry.test.tsx` 新节三条断言钉住。**⚠️ 2026-10-09 更新（裁定 A 取代 B）**：B 那条「启动即清」的机制**消失**（A 不写 cookie）⇒ B 机制引发的那条残余（乙一启动就把 cookie 清掉）**不再发生**；残余改为「甲切了项目、乙的**信号**停在旧项目直到它自己下次挂载」——真正的解法（每标签页各自通道）**不变**，仍属下一轮 |
+| **「挂载即清」仰赖一条上游事实，今天没有断言钉着**（第二轮新记；**2026-10-09 语义改为「挂载即还原」**） | `workspace-entry.tsx` 的 `onMount` → 上游 `app.tsx` | 这一行只在「`WorkspaceEntry` **每次启动只挂一次**」时才对，而那条依据是 `NewAppLayout` 落在**路由根**里（`app.tsx` 那段注释：lives in the router root so it remains mounted across route changes）⇒ SPA 换路由**不重挂**。**本案没有断言钉住这条上游事实**：哪天有人把 `NewAppLayout` 挪进某个 `<Route>` 之下，`onMount` 就会**每次导航跑一次**——而 `workspace-entry.test.tsx` 那节会**照旧全绿**（它只挂一次）。⚠️ 正是 `#005-15`「注释不许比断言强」的形状：两个落点的注释都**如实标明**了这条假设无断言。要钉得用真路由器挂一次 `NewLayout` 再 navigate 两次、断言 `onMount` 只跑一次。**⚠️ 2026-10-09 更新（裁定 A）**：危险的**程度**降了、这条假设**仍然无断言**——A 下重挂是**幂等**的（民警选项目时 `setCurrentProject` 已把同一个 id 写进 cookie ⇒ 重挂读回同一个，只白一次 `list()` 请求），不再像 B 那样「把刚选的项目清掉」 |
 | **头被剥、cookie 留着 —— 不对称是明账**（第二轮新记） | `project-location.ts` 的 `Headers.remove(…, PROJECT_HEADER)` | 那条中间件**读完之后**把 `x-openhive-project` 头剥掉，而 **cookie 留着**。两者「客户端可填」的性质相同，差别在 cookie 里还装着身份（剥不了整头）⇒ 今天**无读者**（服务端不再读这个头）⇒ **无实际危害**；但这是一处**不对称**：将来谁回到头上去读，读到的会是「已经被剥过」的表象。已同时写进那个文件的 `PROJECT_COOKIE` 注释（明文自陈是明账，不是漏掉） |
 | **导出钮的视觉是 self-decision**（T016 新增） | T016 / `openhive-DESIGN.md §4.7.5` | §4.7.5 连「删除」都没写，**更没有「导出」** ⇒ 本条自己定的：与会话行里那颗删除钮**同档**（`text-[11px]` 小字 ＋ `text-v2-text-text-muted` ＋ 同一串 hover token）。**位置**不是 self-decision——它是**对当前会话**的动作 ⇒ 与「删除」同居会话行（判据同 T015）。⇒ 若 §4.7 后续补写这一格，**以 DESIGN 为准**（宪法 §八） |
 | **导出的「落盘那一句」没有断言守着**（T016 新增） | T016 / `ai-session-slot.tsx` 的 `.then((导出物) => downloadSessionExport(...))` | `导出会话` 有 4 条单测、上游 `downloadSessionExport` 有上游的单测，而**「有没有把这一份交给它」**只有人读代码看得见（与 T015 的 ⑤ 同形：接线层挂不起来测，`#002-02`）。⚠️ **旁边那句 `.catch(报错)` 同理**——「失败到底报不报得出来」要靠人在浏览器里拉一次网络失败才看得见。⇒ 如实挂账，**不写成已覆盖** |
@@ -2779,9 +2794,249 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **`resume()` 的两个恢复点：提交那处已验、切会话那处仍零断言**（2026-10-08 新增，**第三轮收窄**） | 提交处 ＝ `session-panel.tsx` 的 `view.submit.onSubmit` 里那句 `自动跟随.resume()`；切会话处 ＝ `createEffect(on(() => props.sessionID, () => 自动跟随.resume(), { defer: true }))` | **提交处**（第三轮新增）**已有观测面**：单测 ③「提交 ⇒ 距底 0」＋ ④ 对照「没接 `onSubmitPrompt` ⇒ 视野一动不动」（各配变异，见「最后更新」第三轮）；真栈 E2E **⑧** 走真提交两条腿验「回到底部 ＋ 继续跟随」，且**变异实测**：只摘这一句 ⇒ 恰红 ⑧（`Expected < 2 / Received 286`）、⑤⑥⑦ 全绿 ⇒ 它**真有牙**（`#003-03` 类①）。原始现场见「最后更新」第三轮。**切会话处今天仍无观测面**：右栏**不随会话切换重挂**（`ai-session-slot.tsx` 用非 keyed `<Show>`）⇒ 原语内部的 `userScrolled` 是**跨会话留着**的，不 `resume()` 的话，用户在一场会话里滚上去读过东西、**切到另一场后新内容也不再跟随**。⚠️ 这是**推得、未测**（要一个「先滚上去 → 切会话 → 再提交」的夹具，而本套真栈一次只起一场会话）⇒ 如实挂账 |
 | **真栈验的是「乐观插入长高 / 人造长高」，不是「流式长高」**（2026-10-08 新增，**第三轮扩写**） | `e2e/real-stack/ai-session-real.spec.ts` ⑤⑥⑦⑧ | 真栈**没有模型** ⇒ 「AI 一边答一边逐块长高」这种生产常态**在这里做不出来**。今天两条路都不是流式：⑤⑦⑧ 靠**真 Hero 提交 ⇒ 乐观插入**（一次落一整条）；**⑥ 靠一次人造 append**（`长高一截`：往 `[data-slot="session-turns-content"]` 末尾塞一个定高 `div`，用于制造「用户在看历史时内容自己长高」那个**被动**场景，用例里自陈是人造注入，`#005-13`）。而 `ResizeObserver` 回调在**流式**形态下会被调用**很多次**（每次一行、甚至每个 token）⇒ 「那种形态下会不会抖 / 会不会把已经滚上去的用户反复拽回底部」**没有观测面**（`#002-02`：如实记缺口，**不写成已覆盖**）。⚠️ 但它**不属于**「本机做不了」那一类（`#004-13`）：要补得先有一条**假模型的流式 SSE**（`openhive-prompt-minimal.test.ts` 已有假模型先例）⇒ 属下一轮的活 |
 
+| **win32 上 `GET /api/session?directory=` 报 0 条 —— 两条列表出口对同一批行结果不同**（2026-10-09 Item 1 验收实测 · **机制未定**） | 观测面 ＝ `packages/app/e2e/real-stack/ai-session-real.spec.ts:138`（E2E ②）；查询侧 ＝ `packages/core/src/session.ts` 的 `SessionV2.list`（`eq(SessionTable.directory, …)`） | **现象（实测，不是推断）**：真栈 E2E ② **恒红** `Expected 1 Received 0` —— 浏览器**确实建成了**（事件流里有 `POST /session?directory=<D> → 200`，`<D>` 与 spec 的 `directory()` 逐字相同），而 spec 的 oracle `GET /api/session?directory=<D>` **数不到**。探针在**同一进程、同一份库**上复现：**同一个已存在**的沙箱根目录，用 **Windows 天然写法（反斜杠）**创建并查询 ⇒ **v1=3 / v2=0**；把**查询串**换成**落库形态（正斜杠）**（直读 SQLite 实测落库是 `C:/Users/…`）⇒ **v1=3 / v2=3**。⚠️ **但项目目录那一次，反斜杠查询 v2 数得到（count=1）** ⇒ **不是**「win32 上 v2 一律废」，E2E ② 这一红也**不能**当成通用形态。**已证伪、别沿用**：第一版解释「v2 字面比较 vs 落库经 `toDriver` 归一化」**不成立** —— drizzle 1.0.0-rc.2 的 `eq` 把右侧绑成 `Param(value, column)` ⇒ 过 `mapToDriverValue`（`sql/expressions/conditions.js:7,30` ＋ `sqlite-core/columns/custom.js:54`），两种写法应落到**同一个绑定值**（`#003-01`：先怀疑自己的解释）。**与 `#006-23` 同族**（同一条「win32 上同一目录有 4 种以上写法」），但**不是同一条**：那条修的是**存储侧 vs 过滤侧**的短/长名，这条两种写法**都是长名**、只差分隔符。**接收方**：能起真栈的人。**下一步实验（判据一句话）**：同一进程内对**同一目录**跑正／反斜杠两种查询 ＋ 直读库对照 —— 把差异切在「绑定值不同」还是「过滤条件之外还有别的判据」 |
+| **B1 影子行：成员的项目目录从不创建**（2026-10-09 B1 记账） | `server/openhive/project.ts` 建项目那一步的 ①（只建 owner 那份）＋ `handleList` 的 `directory` 算法 | `directory` 按**调用者**算（文件头：`{沙箱根}/{userId}/{projectId}`）⇒ 成员拿到的是 `{沙箱根}/{成员自己的 userId}/{projectId}`，而建项目只 `mkdir` 了 **owner 那份**。后果按那段注释自己的话：「**静默**变成『会话落在不存在的目录里』——不报错、不变红，只有打开文件树才发现」。⚠️ **非 B1 引入**（是 005 建项目那一步的既有形状），B1 只是**第一次让成员在列表里看得见**这一行 ⇒ 它从「存在但不可达」变成「**可见但不可用**」。**接收方**：005 |
+| **B1 影子行：成员的 `lastAccessedAt` 是「加入时刻」，不是「最近访问」**（2026-10-09 B1 记账） | `handleList` 对影子行取 `project_member` 行的时间；写入方 `touchProjectExt` 只写**每用户库**的 `project_ext` | 成员在 `project_ext` 里**没有行**（005 T024 已记同一事实）⇒ 成员的「最近访问」今天**没有写入方** ⇒ 列表排序里那一列对成员是**恒定值**（= 加入时刻）。**接收方**：005 |
+| **B1：0006 之前建的共享项目名字回填不了**（2026-10-09 B1 记账） | `packages/auth/src/migrations/0006_project_meta.sql` 的「回填：没有（如实记，不假装）」那一节 | 迁移跑在 PG 上，而那些名字只存在于**各自创建者的每用户 SQLite** 里 ⇒ 已存在的共享项目在成员列表里是**空名字**（`type` 按 `shared` 兜底；消费侧 `?? ""` / `?? "shared"` 那两处）。今天**没有**「重新写名字」的出口。开发期不受影响（`REAL_STACK_STATE_DIR` 一删就干净）。**接收方**：005（补一个改名 / 回填出口） |
+| **`NewHome`（`/`）读的仍是上游每用户项目列表**（2026-10-09 实测 · **切片外**） | `packages/app/src/pages/home.tsx` → `home-projects-controller.tsx` 的 `home.project.*` | `/` 首页的项目栏走**上游** `home.project`（`worktree` / `sandboxes` / `unseenCount` / `add`），**不是** `GET /openhive/project` ⇒ B1 让「成员看得见别人共享的项目」这件事**在首页那一栏看不到**（只有左栏项目面板那条链看得到）。**不是缺陷**（006 只圈了左栏那条链）⇒ 按 `#006-12` 如实记**切片外**、**不顺手扩切片**。**接收方**：需要裁定「首页项目栏要不要也走 openhive 的项目清单」 |
+| **陈旧持久化标签页 → `/session/<id>` 404**（2026-10-09 Task B 真栈验收观测 · **根因未查**） | `localStorage` 的 `opencode.window.browser.dat:tabs` / `:tabs.info`；路由 `/session/<id>` | 真栈刷新后控制台**稳定出现**一条 `Failed to load resource: 404 … /session/ses_ee08dfb63ffeCHYanNayzJGZv2`。实测：该 id **不在**当前项目（`f1a3cabc-…`）那 3 个会话里（列表 id 是 `ses_ee0c9be2…` / `ses_ee0f0921…` / `ses_ee0eda57…`）⇒ 它是 `localStorage` 里**持久化的一组标签页**（`tabs` ＋ `tabs.info`，跨刷新存活）中指向**已不存在会话**的一个。**据实记**：只知道「陈旧标签 + 404」，**没查**「该由谁 prune、404 之后界面表现如何」，**也没归因**是否 Task B 引入（未做 before/after 对照）。**接收方**：负责标签页持久化 / 会话路由的人。 |
+
 ---
 
 ## 最后更新
+
+2026-10-09（**顶栏右侧整体左移 20px ＋ 用户区下拉三项真实实现** —— 用户原话：「请把主页顶栏右侧的：
+主页、站内信、全屏、用户区 整体往左侧平移20px；目前用户区顶着右侧，不美观。」＋「请对用户区的下拉三
+个功能全部真实实现：个人信息、修改密码、退出登录。」四道口径由用户在开工前逐条裁定：① 个人信息 ＝
+**只读展示**；② 修改密码 ＝ **加确认字段**；③ 退出登录 ＝ **直接退出**（无确认框）；④ 弹窗外壳 ＝
+**上游 `useDialog()` / `Dialog`**。）
+
+**① 根因：「三个功能」不是没实现，是接线断了 —— `props.onSelect` 在生产里零调用方**（实测，不是推断）
+
+- 全仓 grep（2026-10-09）：接线前 `onSelect` 的命中只有 `topbar.tsx:99`（声明）、`:257`（`UserMenu`
+  自己收它）、`:315`（菜单项把它喊出去）——**上游一层 `TopbarMount` 从没透出这个 prop**（它的入参只有
+  `user` / `logo` / `homeActive` / `onOpenHome`），`pages/layout-new.tsx` 也没有传 ⇒ 生产里那一句恒为
+  `props.onSelect?.(item.id)` ＝ **空操作**。不报错、不变红、没有日志（`#006-14` 那类「机制整个消失」）。
+- 所以本轮的**第一件事是把线接上**（`#004-01`：锚在「做那件事的那一行」）；三个功能各自的行为是接上
+  之后才有机会被验的——先写功能再发现点不动，就是先斩后奏。
+- 判据（实跑）：`grep -rn "onSelect=" packages/app/src --include=*.tsx | grep -v "\.test\.\|\.stories\."`
+  ⇒ 生产侧**只有一条链**：`layout-new.tsx → topbar-connected.tsx:87 → topbar-mount.tsx:48 → topbar.tsx:257`。
+
+**② 落地：新增 1 层接线组件 ＋ 复用既有弹窗壳（9 改 / 9 增，含测试）**
+
+| 文件 | 动作 | 一句话 |
+|---|---|---|
+| `src/auth/session-context.ts` | 增 | 会话 context：`identity`（**getter**）＋ `signOut` |
+| `src/auth/change-password-form.tsx` | 增 | 改密表单**抽出来**：登录后强制改密（`change-password.tsx`）与下拉「修改密码」共用一份 |
+| `src/topbar/topbar-connected.tsx` | 增 | **新增的接线层**：`useAuthSession()` ＋ `useDialog()` → 三个动作 |
+| `src/topbar/user-menu-actions.ts` | 增 | id → 动作的映射（对 `"admin"` 与一切未知 id 回 `undefined`） |
+| `src/topbar/profile-dialog.tsx` / `change-password-dialog.tsx` | 增 | 两个弹窗（外壳 ＝ 上游 `useDialog()` ＋ `Dialog`） |
+| `src/topbar/topbar.tsx` | 改 | `topbar-actions` 那层加 **`pr-5`**（一行；四项**一起**左移 20px，不逐项加间距） |
+| `src/topbar/topbar-mount.tsx` | 改 | 补上 `onSelect` 的透出（本轮的**那一行**） |
+| `src/pages/layout-new.tsx` | 改 | `TopbarMount` → `TopbarConnected`；`currentUser()` 的 import 与 `user={}` 成孤儿一并移除 |
+| `src/auth/auth-gate.tsx` | 改 | `signOut`；`view() === "app"` 那一支外面包 `AuthSessionProvider` |
+| `src/auth/gateway.ts` | 改 | `logout()`（`POST /openhive/auth/logout`；拿不到 204 **就不动界面**——Cookie 还在却把人送去登录页，是这一层能说的最坏的一句谎） |
+
+- **身份为什么也搬进 context**：`AuthGate` 是 `currentUser()` 的**唯一**生产写入者（grep 实证），而它
+  同一刻也在发这条 context ⇒ 两者对顶栏**同源**；「个人信息」要的 `Identity` 比 `TopbarUser` 全（含
+  `id` / `mustChangePw`），同一件事从两处取数正是 `#002-06` 那类缺陷的产地。**代价写进了文件头**：
+  context 取不到时界面**静默少一块** ⇒ `#006-14` 那条纪律适用，收尾必须去真栈点一遍（本条第 ⑦ 节）。
+
+**③ 先写的红用例**（4 个测试文件：`auth-gate.test.tsx` 改 ＋ `topbar-connected.test.tsx` /
+`profile-dialog.test.tsx` / `change-password-dialog.test.tsx` 新）
+
+- ⚠️ **`auth-gate.test.tsx` 的头一版红得不对**：14 pass / **3 fail**，症状是「点了退出什么都不发生」。
+  根因 ＝ **`useContext()` 解析的是调用那一刻的 owner**——测试体里**直接调用** `退出按钮()`（一个读
+  context 的组件）时**没有 owner** ⇒ 取到 `undefined` ⇒ `signOut` 静默 no-op。修法**不在产品码**：
+  `mount` 收 **thunk**（`mount(send, () => <退出按钮 />)`），元素在 provider 的 **children getter 里**
+  才被创建。改完 **17 pass / 0 fail**。（`#003-01`：先怀疑测量，结论可以是「测量对、我写法错了」。）
+- `topbar-connected.test.tsx` 五条：个人信息开**只读**弹窗（真身份 张三 / 020601）且**未误喊 `signOut`**；
+  修改密码开到 `input[name='confirmPassword']`；退出**直接**喊 `signOut` 且**不弹窗**；**对照**：管理员
+  的第四项**可见但点了什么都不发生**；网关不在 ⇒ 用户区不渲染、其余三项照旧。
+- harness 照 `profile-dialog.test.tsx` 抄（`#004-12`）：`DialogProvider > AuthSessionProvider > 被测`
+  ＋ 文件内 `挂过的` 数组 ＋ `afterEach` **先 dispose 再清 `body`**（`#005-03`）。
+
+**④ 变异（三类据实记，`#003-03`）**
+
+| 变异 | 实得 | 类 |
+|---|---|---|
+| `auth-gate.tsx` 的 `setSession({kind:"signed-out"})` 拆掉 | **恰红 2** | ① |
+| 失败分支的 `return` 去掉（失败也放行） | **恰红 1** | ① |
+| `topbar-mount.tsx` 的 `onSelect` 转发拆掉 | **恰红 3**（**对照**与「网关不在」两条照旧绿） | ① |
+
+**⑤ 门禁**（**串行**跑，`#003-01`；命令按 `#003-04` 记，数字只记本次实测）
+
+| 门 | 命令（cwd） | 实得 |
+|---|---|---|
+| typecheck | `bunx tsgo -b`（`packages/app`） | **EXIT=0**（无输出） |
+| 组件档 | `bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts --path-ignore-patterns="**/*.test.ts" ./src`（`packages/app`） | **731 pass / 0 fail / 43 files**（基线 715/40 ⇒ +16 tests / +3 `.tsx`：auth-gate +3、topbar +1、profile-dialog +3、change-password-dialog +4、topbar-connected +5 —— 构成对得上） |
+| 单元档 | `bun test --conditions=solid --path-ignore-patterns="**/*.test.tsx" --preload ./happydom.ts ./src`（`packages/app`） | **1041 pass / 0 fail / 130 files**（基线 1032/129 ⇒ +9 tests / +1 file ＝ `user-menu-actions.test.ts`） |
+| lint | `bunx oxlint <本轮 19 个改动文件>`（**仓库根**，`#004-10`） | **1 warning / 0 errors**（那 1 条是**既有**的 `consistent-return`，落在 `layout-new.tsx`：把 `git show HEAD:…layout-new.tsx` 拷进仓库同跑取到**同一条** ⇒ 不动它，Surgical Changes） |
+| 锁文件 | `git diff --stat bun.lock` | **空** |
+
+**⑥ 同类落点逐个打勾**（`#002-06`：找「谁在按同一个前提做同一件事」—— 顶栏的这些回调**有没有生产调用方**）
+
+| 落点 | 结论 |
+|---|---|
+| 顶栏·主页 `onOpenHome` | **已接**（`layout-new.tsx:98` 传上游 `home.toggle`） |
+| 顶栏·站内信 `onOpenMessages` | **生产零调用方** —— 唯一命中是 `topbar.tsx:99/236`（声明与它自己被读那一行）⇒ **点了什么都不发生**。**不在本轮切片内**、站内信本体也不存在 ⇒ 按 `#006-12` 挂账（见 ⑧-3） |
+| 顶栏·全屏 | **组件内自调** `toggleFullscreen()`，不经 props ⇒ 不在这条缺口上 |
+| 顶栏·用户区下拉 `onSelect` | **本轮接上**（`topbar-connected.tsx:87`） |
+| 下拉·个人信息 / 修改密码 / 退出登录 | **本轮实现** |
+| 下拉·用户管理（管理员可见的第四项） | **刻意未接线**（网关只有 `/login`、`/me`、`/change-password`、`/logout` 四条，无管理端点）⇒ 界面可见、点了无反应。判据落 `user-menu-actions.test.ts`（映射对 `"admin"` 回 `undefined` ＋ 一条「只有它未接线」的**报警**断言，`#004-02`） |
+| `project/file-tree.tsx` 的 `onRename/onDelete/onCreate` | **同一形状、非本轮**（生产未接线 ⇒ 菜单项 `disabled`、路径不可达）——已在上一节记账 |
+
+**⑦ 真栈 3 条（`e2e/real-stack/topbar-user-menu-real.spec.ts`，新增；一次全绿 / 45s；**在 `packages/app`
+里跑**，`#006-20`）**
+
+- **为什么非得上真栈**：① 20px 是**几何**（happy-dom 不跑布局、不解析 Tailwind，`#006-22`——组件测试的
+  上限只是「`pr-5` 在不在 class 串里」）；② 三项是不是**真接了线**——`topbar-connected` 从 context 取
+  身份，而组件测试里这条 context 是**自己桩出来的**（桩在、链不在，正是最容易谎绿的一处；真栈上没有任何
+  桩，链路断了用户区那块**根本不渲染**，第一条断言当场红）。
+- ① 前置：操作区**就是**顶栏最右缘（差 <0.5px）；被测：`Math.round(操作区.right - 用户区.right)`
+  **＝ 20**（取整数化后的相等，不给 0.5px 容差——容差会让 14px 也过）；对照：用户区自身宽度 **>60**
+  （防「左移」是靠把用户区挤瘦做到的）。
+- ② 非管理员下拉**恰** `["个人信息","修改密码","退出登录"]`；个人信息弹窗字段 ＝ **真网关身份**（`/me`
+  给的名字与警号）且 `input` 数 **0**；关掉再开修改密码（`input[name='confirmPassword']` 可见）；两个
+  都关掉人**还在工作台**。
+- ③ 退出 ⇒ 登录页 ＋ `[data-slot='topbar-user']` 消失 ＋ **context cookie jar 里会话凭证清空**（内核侧
+  证据，不经前端）＋ **刷新一次人没回来**（这一条是必需的：只断「界面回到登录页」的话，一个**只改前端
+  状态、不动内核**的实现照样绿）。
+- **真栈变异**：`pr-5` 拆掉 ⇒ **恰红 1**（`Expected: 20 / Received: 0`）；把 `AuthSessionProvider` 拿掉
+  ⇒ **恰红**（用户区元素不存在）⇒ 这条变异正是「context 真的接上了」的**事实**（`#006-14`：横切机制
+  「应该生效」是推断，「真栈上生效」是事实）。
+- ⚠️ **两条调试弯路（如实记，各烧掉一次 120s 超时）**：用户区那颗按钮是**开合式**的
+  （`setOpen(v => !v)`），点中任一项后菜单**自己就收** ⇒ `展开下拉` / `点项` **必须分开**，调用点得数准
+  「现在菜单是关的还是开的」。第一次**漏展开**、第二次**多展开一次**（那一把把它**关上**了），两次症状
+  都是「在等一个根本不存在的菜单项」，读起来像「弹窗没开」。**这两行的先后是语义的一部分**（注释已写在
+  helper 上）。
+- ⚠️ **隐变量已排除**：上一轮真栈留下两枚**孤儿进程**（bun 17092/17200，跑的是**改动前**的代码）占着
+  3010/4711 ⇒ 先 `taskkill //PID … //T //F` 再让 Playwright 起新栈，免得「绿的是旧码」。凭证从
+  `%TEMP%\openhive-real-stack.json` 读（**不手工抄进注释**）。
+
+**⑧ 如实挂账（4 条，一条都不写成「已覆盖」）**
+
+| # | 事项 | 实况 |
+|---|---|---|
+| 1 | **设计文本写的是 `DialogV2`，而 v2 没有 dialog** | 实际用的是上游 `@opencode-ai/ui/context/dialog` 的 `useDialog()` ＋ `@opencode-ai/ui/dialog` 的 `Dialog`（与 `src/components/dialog-*.tsx` 同一套壳）。**行为与用户裁定的口径一致**（只读 / 加确认字段 / 直接退 / 上游外壳），差的是**名字**——记在这里，免得下次去 v2 里找一个不存在的东西 |
+| 2 | **「用户管理」（管理员第四项）本轮刻意未接线** | 网关四条端点里没有任何管理端点，接了也是点不动的空壳。**界面可见、点了无反应**，判据（含报警断言）落 `user-menu-actions.test.ts` |
+| 3 | **站内信（顶栏铃铛）在生产里零调用方** | ⑥ 步 grep 打出来的：`onOpenMessages` 从未被 `TopbarMount` 透出、`layout-new` 从未传 ⇒ 那颗按钮点了什么都不发生。**切片外 ＋ 功能本体不存在**（无未读数来源）⇒ 按 `#006-12` 挂账、**不顺手扩切片** |
+| 4 | **新增 e2e spec 带 1 条 `no-unsafe-type-assertion` 告警** | `JSON.parse(…) as {…}` 读凭证那一句；与同族 `ai-session-real.spec.ts`（同规则 6 条）**逐字同款** ⇒ 按 `#004-12`「整段搬同族 harness」保留，如实报数 |
+
+**未提交**：本轮**不提交、不推送**（未获用户要求）。
+
+---
+
+2026-10-09（**加固条目：左栏右键「重命名」输入框丢焦点 —— 六步轨道跑完、已修** —— 用户原话：「**要做这一条，这个比较严重**……要不要把它立成六步轨道的下一条？」→「**要把这个问题处理好**」。上一节在收尾处把它记成「顺路发现、如实挂账、**未修**」，本条是它的六步轨道记录。）
+
+**① 根因：Kobalte `ContextMenu` 的 `createFocusScope` 是模态语义，而这条菜单不是模态**（两层，都是真浏览器实测到的，不是推断）
+
+- **第一层（同一调用栈里当场抢回）**：`@kobalte/core/dist/chunk/ISKHZMHS.js:146/147` —— `trapFocus` 把 `focusout` 监听器注册在 **`document`** 上（**不是**菜单容器），判据是 `!container.contains(target)`。我们的改名输入框**在菜单之外** ⇒ 输入框 `focus()` 一执行，`focusout` 就从 document 冒上来、被判成「焦点跑到陷阱外面了」⇒ **同一个调用栈里**把焦点拉回 `lastFocusedElement`（＝菜单项）。真浏览器轨迹逐帧：`DIV[context-menu-item]{rename} ⟵ 201 ⟵ 146 ⟵ HTMLElement.focus ⟵ 30`。
+- **第二层（卸载时丢回 `body`）**：`ISKHZMHS.js:114` —— onCleanup 里 `setTimeout(0) → focusWithoutScrolling(previouslyFocusedElement ?? ownerDocument().body)`；鼠标右键点在 `div` 上**不留**「先前聚焦元素」⇒ 回落到 `document.body`。
+- **为什么单测与真栈症状长得不一样**：真浏览器上 `focusin` **从未派发到输入框**（在 focus-in 派发阶段就被劫持）⇒ `onBlur={提交}` 从未触发 ⇒ 框**留在原地但不聚焦**（末态 `active = BODY`）；happy-dom 里同一根因走到下游是「框自己关掉了」。**同根、两个下游表象**。
+
+**② 先写的红用例**（`session-list.test.tsx`）：新增「点「重命名」之后等一拍：输入框还在，焦点也在它身上（不被菜单的焦点陷阱抢走）」＋两个辅助 `焦点()`（打印 `TAG[data-slot]` **字符串**，`#005-01`）与 `冲刷()`。⚠️ **第一版是同 tick 点菜单项的，结果绿**——那个窗口里站起来的是**菜单挂载时的延迟自动聚焦**（`H6DSIDEC.js:438` 的 `tryAutoFocus` ⇒ `setTimeout(0)`，`ISKHZMHS.js:97`），与鼠标 / 键盘 / 长按任何一条真人路径都无关。把「菜单先显示出来」那一拍（`冲刷()`）补在点菜单项**之前**才红 ⇒ 这是 `#006-17` 那一类（**前提不成立**，红的不是被测属性），不是产品缺陷（判据同 `#006-16`：那条路径在界面上走不到）。
+
+**③ 改到绿**：`session-list.tsx:226` 的 `<ContextMenu>` → **`<ContextMenu modal={false}>`**，一行。走的是 Kobalte **自己的开关**：`MenuRoot` 默认 `modal: true`（`LEK3K6R3.jsx:1561`、`isModal()` 在 1582），而 `createFocusScope({ trapFocus: () => isRootModalContent() && context.isOpen(), … })`（581-591）⇒ `modal={false}` ⇒ `isRootModalContent()` 假 ⇒ **trapFocus 整个不注册**。上下文菜单在语义上本来就不是模态焦点所有者：这条入口要的恰恰是「把焦点交给菜单**外面**的元素」。（`packages/ui/src/components/context-menu.tsx` 是上游文件、`props` 直透，**不动它**。）
+
+**④ 变异（2026-10-09 复跑取数）**：把那一个 prop 摘掉 ⇒ `session-list.test.tsx` **28 pass / 1 fail**，红的就是新增那条、`Expected: "INPUT[session-rename-input]"` / `Received: "DIV"`（＝被拉回菜单项那个 div）⇒ **恰红 1**，`#003-03` 第 ① 类。还原后本文件 **29 pass / 0 fail**。
+
+**⑤ 门禁**（**串行**跑，`#003-01`；命令按 `#003-04` 记，数字只记本次实测）：
+
+| 门 | 命令（cwd） | 实得 |
+|---|---|---|
+| 组件档 | `bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts --path-ignore-patterns="**/*.test.ts" ./src`（`packages/app`） | **715 pass / 0 fail / 40 files** |
+| 单元档 | `bun test --conditions=solid --path-ignore-patterns="**/*.test.tsx" --preload ./happydom.ts ./src`（`packages/app`） | **1032 pass / 0 fail / 129 files** |
+| typecheck | `bunx tsgo -b`（`packages/app`） | **EXIT=0**（无输出） |
+| lint | `bunx oxlint packages/app/src/ai-session/session-list.tsx packages/app/src/ai-session/session-list.test.tsx`（**仓库根**，`#004-10`） | **0 warnings / 0 errors**（130 rules / 2 files） |
+| 锁文件 | `git diff --stat bun.lock` | **空** |
+
+**⑥ 同类落点逐个打勾**（`#002-06`：找「谁在按同一个前提做同一件事」——同一份 `ContextMenu` / 同一句 `modal` 缺省）
+
+| 落点 | 结论 |
+|---|---|
+| `ai-session/session-list.tsx` 右键「重命名」 | **已修**（本条） |
+| `ai-session/session-list.tsx` 右键「删除」 | **不需要**：它不把焦点交给菜单外的元素（菜单自己收掉） |
+| `project/file-tree.tsx` 的重命名 / 删除 | **生产里没有接线**（`workspace-entry.tsx` 没传 `onRename` / `onDelete` / `onCreate`）⇒ 菜单项 `disabled`、路径**不可达** |
+| `pages/layout/sidebar-project.tsx`、`pages/home/home-projects-view.tsx` | 它们开的是**对话框**，而对话框是**顶层**（`data-kb-top-layer`，`ISKHZMHS.js:131/143` 对顶层直接 `return`）⇒ 天然豁免这条陷阱 |
+
+**真栈实测（修复后，1440×900）**：轨迹末段 `INPUT[session-rename-input] ⟵ 30` 紧接 `focusin INPUT[session-rename-input]`、**无劫持**；50 / 121 / 402 / 900 / 1515ms 采样**全部** `INPUT[session-rename-input]`；末态 `active = INPUT[session-rename-input]`、框在 `true`、选区 **[0,5]**。
+
+**探针已清**：`packages/app/e2e/real-stack/__probe-rename-focus.spec.ts`、`playwright.probe.config.ts`、`packages/app/src/ai-session/__probe-focus.test.tsx` 及 tsgo 留下的 `.ts-dist` 残骸**全部删除**，残留检查干净。
+
+---
+
+2026-10-09（**左栏「会话」tab 行视觉规格 ＋ 会话重命名** —— 用户原话：「列表数据，每行的高度设置成
+32px，文字垂直居中对齐，单击右键选择"重命名"以后，会话标题文字全部选中，背景呈现灰色，以便能够很好的
+区分。」四道口径由用户在开工前逐条裁定：① 灰底 ＝ **编辑态整行底变灰**（不是 `::selection` 高亮）；
+② token ＝ `bg-v2-overlay-simple-overlay-pressed`；③ 与浅金的关系 ＝ **盖掉，灰 > 金**；
+④ 复用而非重建（`session-rename.tsx` 的就地编辑器 ＋ 既有删除链各只有一份）。）
+
+- **产品码 1 个文件**（`packages/app/src/ai-session/session-list.tsx`）：`ITEM` / `ITEM_EDIT` 两条 class
+  串。`h-6`（24px）→ **`h-8`（32px）**、两条都补 `items-center`；`ITEM_EDIT` 新增灰底并**去掉**原先的
+  浅金条件分支（`class={ITEM_EDIT}` 恒定，不再分成两支）。⚠️ **两个落点必须一起改**，各钉一条
+  （`#005-12`）；**不许把 `ITEM_ACTIVE` 叠回编辑行**——两个同权重 `bg-*` 谁生效看 **CSS 先后**、
+  不看 class 属性顺序（`#003-05`），叠加就是「看着该灰、实际可能还是金」。
+- **用例 4 条**（`session-list.test.tsx` 的「行视觉规格（32px / 居中 / 编辑态灰底）」组）：展示行 32px ／
+  编辑行 32px ／ 编辑**当前**行灰 ／ 编辑**非当前**行灰。断 class 串一律**先切类名集合再 `toContain`**
+  （`#006-22`：`border-b` ⊂ `border-base`）。
+- **全选**：`session-rename.tsx` 的 `ref` 里 `requestAnimationFrame` → `focus()` ＋ `el.select()`，
+  本次未改它；为它补了一条用例（`session-rename.test.tsx`：`selectionStart=0`、`selectionEnd=`名字长
+  度）。⚠️ 判据落在**一次 rAF 冲刷之后**（同刻读是 `0/0`），且取 `selectionStart/End`、**不取
+  `activeElement`**（happy-dom 20.12.0 探针实测 `focus()` 后 `activeElement` 不是这个 input）。
+- **变异 7 批，逐批恰红**：M1 `ITEM` h-6 ⇒ 红 1；M2 `ITEM_EDIT` h-6 ⇒ 红 1；M3 摘灰底 ⇒ 红 2；
+  M4 叠回浅金 ⇒ 红 2（**`#003-03` 第 ② 类**：整组红）；M5a `ITEM` 摘 `items-center` ⇒ 红 1；
+  M5b `ITEM_EDIT` 摘 `items-center` ⇒ 红 1；M6 摘 `el.select()` ⇒ 红 1。每批「注入 → 跑 → **逐字节还
+  原**」后复跑基线全绿。
+- **门禁**（2026-10-09 实测，**串行**跑，`#003-01`）：ai-session 档 **39 pass / 0 fail**（上述两文件）／
+  单元档 **1025**／组件档 **700 pass / 0 fail**／`test:browser` **41**／`packages/app` typecheck
+  **EXIT=0**（`tsgo -b`）／oxlint **0 warnings、0 errors**（130 rules / 3 files，**仓库根**跑，
+  `#004-10`）。`git diff --stat bun.lock` **空**。
+- **真栈实测**（同源真全栈，1440×900）：展示态 / 编辑态每行高 **32**（上 4 / 下 4）；编辑行底
+  **`rgba(0,0,0,0.08)`**（＝ overlay-pressed）；**对照**行底 **`rgb(254,243,199)`**（浅金）；全选区间
+  **[0,5]**（「我们的春天」）；改名输入框 179×24。
+
+⚠️ **顺路发现的焦点缺陷 —— 已另起一条、走完六步轨道并已修**（见本节上方那条「加固条目：左栏右键
+「重命名」输入框丢焦点」）：**左栏右键菜单那条入口上，改名输入框拿不到键盘焦点**（当时证据：`select()`
+确实跑了、选区已设成 `[0,7]`，而焦点从 t=30ms 到 1000ms 一直是 `BODY`；而**右栏**那条不走菜单的入口是
+`INPUT` ＋ `[0,4]`）。根因 = Kobalte `ContextMenu` 默认 `modal: true` ⇒ `createFocusScope` 的
+`trapFocus` 把焦点从菜单**外面**的输入框抢回去（`ISKHZMHS.js:146/147`）、卸载时又丢回 `body`
+（`ISKHZMHS.js:114`）。修法 = `<ContextMenu modal={false}>`（一行）。当时记的那句「属既有缺陷、本次只改
+class 串」仍然成立——它**不在**上一节那批 class 串改动里，是**另起一条**修的。
+
+**LEARNINGS 压缩（用户同轮下达）**：**1120 行 / 120,663 字节 → 977 行 / 99,855 字节**
+（**-12.8% 行 / -17.2% 字节**）。12 组并入（原号**只留一行指引**，号**不删、不重排**），**71 个号全
+在、顺序与原文逐字相同、无重复**，`grep '^## #NNN-MM'` 全部可取。⚠️ **未达预批的「≈700 行 /
+~72 KB（-40%）」**——预估值偏乐观：并入是「**搬内容**」不是「删内容」，且每条正文携带的实测数字与路
+径在逐条压措辞下存活，再往下砍就要丢证据（如实记，不粉饰）。
+
+---
+
+2026-10-09（**Item 1 验收（真栈落盘开关 `REAL_STACK_STATE_DIR`）＋ 缺陷补记** —— 用户上一轮的要求是
+「**共享的项目换个人登录也要看得见、自己建的也要看得见**，**开发阶段不要走临时目录、要与真实场景一致**」
+⇒ 拆成两条：**Item 1 ＝ 真栈落盘开关**、**Item 2（B1）＝ 项目名落 PG ⇒ 成员看得见共享项目**。
+本节只记 Item 1 的验收结论与顺路实测到的缺口；B1 的落点见 `0006_project_meta.sql` 与
+`packages/opencode/test/server/openhive-project-member-visible.test.ts`。）
+
+- **前半（设变量 ⇒ 停栈再起、数据还在）：判据实测全绿。** 驱动脚本走的是**人真走的那条路**
+  （`POST /openhive/auth/login` 真登录，不是自签一张券，因为要验的正是「退出系统再次登录」）：设
+  `REAL_STACK_STATE_DIR` 起栈 → 登录 **200** → 建共享项目（`a94b457a-ad79-4580-aa95-b4f78c97a660`，
+  名 `重启存活验收-13976`）→ 建会话（`ses_ee1243e9dffer4tZpXzX2m8iiV`，**200**）→ **停栈**（干净退出）
+  → 状态目录**还在**（真 PG 数据目录 ＋ 每用户 SQLite ＋ `workspaces/`）→ **同一个目录再起** →
+  口令与第一次**逐字一致** → 再登录 **200** → 列表里**同一个 project id、同一个名字** → 那条会话在
+  **v1 与 v2 两条列表里都在**（`v1: {count: 1}`、`v2: {count: 1}`，两条的 ids 都含那条 `ses_…`）。
+  ⇒ 判据 `{项目id一致: true, 会话还在: true}`。
+- **后半（不设变量跑 E2E 仍全绿）：⚠️ 未达成 —— 7 passed / 1 failed。** 红的恰是 ②
+  （`ai-session-real.spec.ts:138`，`Expected 1 Received 0`）。**不是 Item 1 引入**，两条独立证据：
+  ① PGlite 0.5.8 实测 `new PGlite()` / `new PGlite(undefined)` / `new PGlite({dataDir: undefined})`
+  三者 `dataDir` **全是 `undefined`** ⇒ 不设变量那条路与改动前**同一个形状**；② 把 Item 1 的两个文件
+  **退回 HEAD** 再跑，② **逐字同红**（同行号、同数字），还原后 md5 一致
+  （`7d1f8ffe34a0ccdc003466bf9e835e2e` / `411f6f73d0619f746d175444b8a49eea`）。⇒ **不写成「已全绿」**，
+  这条红也**没有记成 Item 1 的账**（归因见缺口表第一行：现象已实测、**机制未定**）。
+- **顺路实测到的缺口（都进上面的表）**：① **win32 上 `GET /api/session?directory=` 报 0 条**
+  （同一进程、同一份库，v1 数得到、v2 数不到；**机制未定**，第一版解释已被 drizzle 源码**证伪**，别沿用）；
+  ② **B1 的三条影子行缺口**（成员目录不建 / `lastAccessedAt` 无写入方 / 0006 前的名字回填不了）；
+  ③ 首页 `NewHome` 走上游项目清单这一处**切片外**。
 
 2026-10-08（**合并后缺陷修复轮 · 第三轮** —— 用户在第二轮的自动跟随后**再测**，报出残留的那一处，原话：
 「当滚动条在最底部的时候，可以实现实时显示输出。但是当滚动条不在底部的时候……用户敲回车键后，滚动条
