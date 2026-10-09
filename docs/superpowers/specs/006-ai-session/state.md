@@ -2800,10 +2800,72 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **B1：0006 之前建的共享项目名字回填不了**（2026-10-09 B1 记账） | `packages/auth/src/migrations/0006_project_meta.sql` 的「回填：没有（如实记，不假装）」那一节 | 迁移跑在 PG 上，而那些名字只存在于**各自创建者的每用户 SQLite** 里 ⇒ 已存在的共享项目在成员列表里是**空名字**（`type` 按 `shared` 兜底；消费侧 `?? ""` / `?? "shared"` 那两处）。今天**没有**「重新写名字」的出口。开发期不受影响（`REAL_STACK_STATE_DIR` 一删就干净）。**接收方**：005（补一个改名 / 回填出口） |
 | **`NewHome`（`/`）读的仍是上游每用户项目列表**（2026-10-09 实测 · **切片外**） | `packages/app/src/pages/home.tsx` → `home-projects-controller.tsx` 的 `home.project.*` | `/` 首页的项目栏走**上游** `home.project`（`worktree` / `sandboxes` / `unseenCount` / `add`），**不是** `GET /openhive/project` ⇒ B1 让「成员看得见别人共享的项目」这件事**在首页那一栏看不到**（只有左栏项目面板那条链看得到）。**不是缺陷**（006 只圈了左栏那条链）⇒ 按 `#006-12` 如实记**切片外**、**不顺手扩切片**。**接收方**：需要裁定「首页项目栏要不要也走 openhive 的项目清单」 |
 | **陈旧持久化标签页 → `/session/<id>` 404**（2026-10-09 Task B 真栈验收观测 · **根因未查**） | `localStorage` 的 `opencode.window.browser.dat:tabs` / `:tabs.info`；路由 `/session/<id>` | 真栈刷新后控制台**稳定出现**一条 `Failed to load resource: 404 … /session/ses_ee08dfb63ffeCHYanNayzJGZv2`。实测：该 id **不在**当前项目（`f1a3cabc-…`）那 3 个会话里（列表 id 是 `ses_ee0c9be2…` / `ses_ee0f0921…` / `ses_ee0eda57…`）⇒ 它是 `localStorage` 里**持久化的一组标签页**（`tabs` ＋ `tabs.info`，跨刷新存活）中指向**已不存在会话**的一个。**据实记**：只知道「陈旧标签 + 404」，**没查**「该由谁 prune、404 之后界面表现如何」，**也没归因**是否 Task B 引入（未做 before/after 对照）。**接收方**：负责标签页持久化 / 会话路由的人。 |
+| **目录通道升为「显式档」：其余按目录取数的出口没重放，且「非法值 ⇒ 400」今天不可达**（2026-10-09 **方案 A** 新增） | 判据 ＝ `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts` 的 `ambient`（`headerProjectId === undefined && directoryProjectId === undefined`）；用例 ＝ `packages/opencode/test/server/openhive-project-directory.test.ts` 用例 ⑦ | **用户 2026-10-09 裁定方案 A**：把客户端报的 `?directory=`（经 `AnchorWorkspace.REQUESTED_DIRECTORY_HEADER` 抄进中间件的**原串**）从**环境档**升为**显式档**——指向已归档项目 ⇒ **403**（不再是「当作没带 ⇒ 静默落沙箱根 ⇒ 200」）。档位判据是「这条信号骑在**多少条**请求上」（头/目录 ＝ 为这一条请求主动填；cookie ＝ 浏览器**每条**请求都带）。**① 本批只在一条出口上写了断言**（`GET /session?directory=`）⇒ 同类的另两条按目录取数的消费者——`packages/app/src/components/titlebar-tab-strip.tsx` 的预热（`ensureDirSyncContext(value.directory).session.sync(...)`）与 `packages/app/src/context/notification.tsx` 的 `lookup`——**只有读码结论、零断言**。两条都取**会话自己的** `directory`（不是项目目录）、且都 `.catch` 掉 ⇒ 失败是**静默降级**；而那条会话本身早被**第二道门**（会话目录取自**会话行**、与通道无关）挡在 403 ⇒ **不构成新的砖化**。⚠️ 正是 `#005-11` 的形状：「机制对新出口生效」是**推断**，「这条出口上它真的生效」才是**事实**。**⑤ 真正会被打到的是 `context/layout.tsx` 的**开局预热**，不是这两条**：`context/layout.tsx:595-607` 的 `onMount` 里 `Promise.all(server.projects.list().map((p) => loadSessions(p.worktree)))` —— **页面加载时替「本地持久化已打开项目」清单里的每一个 worktree 各拉一次列表**。⚠️ 这条清单**结构上没有 `archived`**（`context/server.tsx:8` 的 `type StoredProject = { worktree: string; expanded: boolean }`；`list` 是 `store.projects[scope] ?? []` 原样返回）⇒ **不可能**按 archived 过滤；而归档动作（`workspace/workspace-entry.tsx:626-629`）**只** `setCurrentProject(undefined)` ＋ 重拉 openhive 清单，**不把 worktree 从那份持久化清单里摘掉**。⇒ **一个「先打开过、再被归档」的项目，其目录会被预热一直问下去**，而升档后这条请求由 200（静默落沙箱根）变成 **403**。**后果（读码，两个独立的读码者各自得出同一结论）**：① `context/server-sync.tsx:454-463` 的 `.catch` 把它**吞成一句错误 toast**（`console.error` ＋ `showToast({variant:"error", title:"会话列表加载失败", description: 含项目名})`），`.then(() => null)` 让 queryFn **resolve** ⇒ **无 unhandled rejection、TanStack 不 retry**；② **成功才置 `sessionsLoaded`**（`:450`）⇒ 该目录槽**永不置位**，左栏那一格表现为**一直空白**（不是「暂无会话」、也不是错误页）；③ `context/global-sync/session-load.ts:19-27` 失败后会**再去掉 `limit` 打第二次** ⇒ **每个目录 2 次 HTTP**。⚠️ **这是本次改动引入的用户可见变化**（`#005-11` 那条「新出口上机制真的生效」在这里**成立了**），**已按事先承诺回报用户**（他现在的选项是：保留 A ＋ 记缺口 ／ 退回环境档 ／ 在前端加过滤闸）。**仍属读码证据**：**没有**运行时实测「某次预热确实打到 403」，也**没有**在真栈上看过那条 toast（`packages/app/src` 此刻正被另一个会话改动）。**② 「值非法（`..` 逃逸）⇒ 400」这条判据今天不可达**（**探针实测**，不是推断）：`projectIdOfSessionDirectory` 走 `path.relative(root, directory)`，`..` 早被归一化掉；`..%2F..` 又过得了 `User.isSafePathSegment` ⇒ `badRequest()` 那一支**只有头与 cookie 两条通道喂得到**，目录那一条**永远走不到** ⇒ 硬写只会得到「改前改后都绿」（`#003-03` 第③类假绿）。**不写成已覆盖**（`#002-02`）。**③ 左栏（会话 tab）不会向已归档项目发列表请求**（⚠️ **只有这一条路安全，预热那条见 ⑤**）——`packages/app/src/ai-session/session-actions.ts` 的 `当前项目目录` 对 `archived === true` 返回 `undefined`（**读码 ＋ 该函数自带的单测**；`readEntry` 确实把服务端的 `archived: true` 读进 `ProjectEntry`），`sidebar-sessions.tsx` 把 `currentProject()?.id` 与 `projectList()` 喂给它 ⇒ 交出去的 `directory` 是 `undefined` ⇒ 一个请求都不发。⚠️ **这是读码证据，不是真栈实测**。**④ 一处已失效的源码注释（未改，留给接手人）**：`session-actions.ts` 的 `当前项目目录` doc 写着「服务端的目录锚定**只对活跃项目生效**：项目已归档时它**当作没带那个信号**，会话实际落在**沙箱根**（`project-location.ts` 的『**第四笔裁定**』）」——升档后**前半句已不成立**（目录通道现在 403），**结论那一半（返回 `undefined`）仍成立、也仍要**。**没改它的理由**：本文件不在本次改动面内，且 `git status` 实测**另有会话正在改 `packages/app/src`**（20 个 app 文件挂 `M`）⇒ 不与其抢同一批文件（`LEARNINGS` 的多会话纪律）。**下一个人别照那句旧说法去推行为** |
 
 ---
 
 ## 最后更新
+
+2026-10-09（**「当前项目」的目录通道：环境档 → 显式档** —— 用户开工前裁定 **方案 A**）
+
+用户原话（裁定）：把客户端报的 `?directory=` 从**环境档**升为**显式档** —— 指向已归档项目 ⇒ **403**，
+不再是「当作没带 ⇒ 静默落沙箱根 ⇒ 200」。**我自报的完成判据**是两条会红的用例：① `?directory=` 指向
+已归档项目 ⇒ 403；② 值非法（`..` 逃逸）⇒ 400。**第二条当场被判为做不到，已在开工后如实改判**（见下
+「改判」）。
+
+**判据一句话**：**信号骑在多少条请求上**——头 ＝ 为**这一条**请求主动填（最纯意向）；目录 ＝ 只在
+「说到某个项目」的请求上出现；cookie ＝ 浏览器**每一条**请求都带（含项目清单 ⇒ 照 403 做会**砖掉整个
+app**）。故 cookie **留在环境档**，只升目录。
+
+**改动面（3 个文件，全部挂 `M`、未提交）**
+
+- `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts` —— **本体一行**：
+  `const ambient = headerProjectId === undefined` → `const ambient = headerProjectId === undefined &&
+  directoryProjectId === undefined`。另按本次裁定重写了文件头的三通道说明、档位表、第五笔裁定节、
+  「归档＝冻结」节，并把**实测**的「目录通道产不出非法值 ⇒ `badRequest()` 对它不可达」据实写进注释
+  （`#003-03` 第③类的形状）。
+- `packages/opencode/test/server/openhive-project-directory.test.ts` —— 新增**用例 ⑦**（目录指向已归档
+  ⇒ 403，且**前置半条**先钉「归档前同一条请求是 200 且列的就是它的会话」）；`标成已归档` 夹具从 cookie
+  组**提到文件级**（判据 ⑦⑧ 都要用）；新增**新常量** `FROZEN_DIR`（`prj_frozen_0003` 已被 cookie 组
+  标成归档，而归档是**共享 PG 里的全局状态** ⇒ 借它会红在夹具传染上）；文件头那节由「目录是**环境**
+  通道」改写为「目录是**显式**通道」。
+- `packages/opencode/src/server/routes/instance/httpapi/middleware/anchor-workspace.ts` —— **本次未改**
+  （它自 2026-10-07 起就把客户端**原串**抄进 `x-openhive-requested-directory`；升档只是**换了中间的
+  判据**，不需要它变）。
+
+**六步轨道的实测输出**
+
+| 步 | 实得 |
+|---|---|
+| ① 根因 | 读码定位到 `ambient` 是唯一的档位判据（`headerProjectId === undefined`）；两处使用：非法支、归档支 |
+| ② 红 | **22 pass / 1 fail**，红在 `expect(归档后.status).toBe(403)` — `Received: 200`（前置半条通过） |
+| ③ 绿 | **23 pass / 0 fail** |
+| ④ 变异 | 把 `ambient` 退回「头不在场即环境」⇒ **恰红 ⑦ 一条**（`#003-03` 类①）；cookie 组的归档退化用例与「头 ⇒ 403」对照**保持绿** |
+| ⑤ 门禁 | `packages/opencode` typecheck（`tsgo --noEmit`）**无输出**；该测试文件 **23/23**；仓库根 oxlint 两文件 **0 warnings / 0 errors** |
+| ⑥ grep 落点 | `ambient` 定义 1 处 / 使用 2 处；`isArchived(` 2 处；`REQUESTED_DIRECTORY_HEADER` 写点仅 anchor-workspace、读点仅 `project-location` 1 处；`PROJECT_HEADER` 读点仅 1 处；`projectIdOfSessionDirectory` 调用 2 处；`badRequest()` 1 处；`forbidden()` 2 处 |
+
+**改判（如实记，`#003-03`）**：第二条判据「值非法 ⇒ 400」**不可达** —— 探针实测
+`projectIdOfSessionDirectory` 走 `path.relative`（`..` 先被归一化），而 `..%2F..` 过得了
+`User.isSafePathSegment` ⇒ 那条 `badRequest()` 支路**只有头与 cookie 两条通道喂得到**。**没有**写那条
+用例（硬写只会得到「改前改后都绿」的假绿），而是把实测结论写进源码与测试文件头。
+
+**「会不会砖掉左栏」的收尾结论**：**分开看，一半安全、一半命中**。
+
+- **安全的**：左栏「会话」tab 那条按目录取数的路 —— `当前项目目录` 对 `archived === true` 返回 `undefined`
+  ⇒ 一个请求都不发（读码；该判断自带单测，但它不覆盖「接线层真的用上了它」那一跳）。
+- ⚠️ **命中回退线的**：`context/layout.tsx:595-607` 的**开局预热**（替「本地持久化已打开项目」清单里
+  **每一个** worktree 各拉一次列表）**不看 `archived`**（那份清单**结构上**就没有这个字段），而归档
+  **不把它从清单里摘掉** ⇒ 升档后「先打开过、再被归档」的项目**每次加载都 403**，被
+  `server-sync.tsx:454-463` 的 `.catch` 吞成**一条错误 toast**（项目名写在里面），该目录槽**一直空白**、
+  且 `session-load.ts:19-27` 会**再打第二次**。
+
+⇒ **如实说**：**这不叫「砖」**（app 照用、左栏照常、无 unhandled rejection），**但它正是我承诺里那句
+「界面变错误态」**。**已按承诺回报用户**（选项：保留 A ＋ 记缺口 ／ 退回环境档 ／ 前端加过滤闸）。
+⚠️ **两边都是读码结论**（这是我 + `preheat-check` 两个独立读码者各自得出的同一结论）；
+**没有**做真栈实测（`packages/app/src` 此时正被**另一个会话**改动中），也**没有**在真栈上看过那条 toast。
+
+**未做**：① 未提交、未推送（用户未要求）；② 未动 `packages/app/src/**`（兄弟会话在用，含上面那条预热的
+落点）；③ `session-actions.ts` 里那段已失效的注释**没改**，理由见缺口表那一行 ④。
 
 2026-10-09（**顶栏右侧整体左移 20px ＋ 用户区下拉三项真实实现** —— 用户原话：「请把主页顶栏右侧的：
 主页、站内信、全屏、用户区 整体往左侧平移20px；目前用户区顶着右侧，不美观。」＋「请对用户区的下拉三
