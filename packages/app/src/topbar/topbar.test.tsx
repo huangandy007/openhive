@@ -271,7 +271,11 @@ describe("Topbar 顶栏", () => {
     const host = mount(() => <Topbar user={张三} onOpenHome={() => (次 += 1)} />)
     const 按 = host.querySelector<HTMLElement>("[data-slot='topbar-home']")!
 
-    expect(按.getAttribute("aria-label")).toBe("主页")
+    // 文案 2026-10-09 按用户下达改过一次：那颗按钮开的是**会话搜索**页，提示／`aria-label` 都叫
+    // 「会话搜索」（`label` 是两者的**同一份**来源，见 `topbar.tsx` 的 `TopbarIconButton`）。
+    // ⚠️ 悬停浮层本身在 happy-dom 里**打不开**（hover / focus 都不开，2026-10-09 探针实测）⇒
+    // 「悬停显示什么」这一半只能去真栈量（`LEARNINGS #006-18`）；这里守的是它的**同一份**文案。
+    expect(按.getAttribute("aria-label")).toBe("会话搜索")
     // ⚠️ v2 与 v1 是两个独立的 sprite，**名字不通用**——v1 的 Icon 收到 "grid-plus" 会画出一个空图标，
     // 且**不报错**（`icons[name]` 取不到就落到占位）。所以这里必须钉住 **v2 那个** symbol。
     expect(按.querySelector("use")?.getAttribute("href")).toBe("#opencode-v2-icon-grid-plus")

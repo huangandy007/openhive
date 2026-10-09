@@ -224,7 +224,13 @@ export function Topbar(props: TopbarProps) {
       <span data-slot="topbar-actions" class="flex items-center gap-3.5 pr-5">
         <TopbarIconButton
           slot="topbar-home"
-          label="主页"
+          /* 文案 2026-10-09 按用户下达从「主页」改为「会话搜索」——那颗按钮开的是会话搜索页。
+             它是**悬停提示与 `aria-label` 的同一份来源**（`TopbarIconButton` 里 `value={props.label}`
+             ＋ `aria-label={props.label}`），故改这一处即两处都对，不另立第二份文案。
+             ⚠️ 别去改上游那条标题栏那份（`i18n/zh.ts` 的 `home.title` → `components/titlebar.tsx`）：
+             那条带子已被 CSS 隐掉（见本文件头顶那段 ＋ `pages/layout-new.tsx` 的隐藏规则），
+             改了用户看不见。 */
+          label="会话搜索"
           glyph={<IconV2 name="grid-plus" size="small" />}
           pressed={props.homeActive}
           onClick={() => props.onOpenHome?.()}
