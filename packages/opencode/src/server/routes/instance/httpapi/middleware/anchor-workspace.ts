@@ -21,6 +21,12 @@ import { MatchedRoute } from "./matched-route"
  * 本中间件把客户端能报目录的地方**全部改写**成 `{沙箱根}/{userId}`，客户端传什么都无效。
  * 出口是「伪造 directory 被忽略，落沙箱根」。
  *
+ * ⚠️ **2026-10-09 起，本层在改写之前会把客户端的原值抄一份进 `REQUESTED_DIRECTORY_HEADER`**
+ * （见下面 `anchor()` 里那段注释）：**本层对请求的处置一字未改**——三处照样改写、出口照样是沙箱根、
+ * `anchor()` 的返回值形状也没变。抄的那一份只给**下一层**（`project-location.ts`）当「客户端在问
+ * 哪个项目」的**线索**用。别把这条读成「客户端报的目录生效了」：生效的仍然是**服务端从根算出来的**
+ * 那一份，客户端报的值连自己那一层都进不去（见 `project-location.ts` 的「第五笔裁定」）。
+ *
  * ## 第四个入参：**请求体**（审查 R-01 补，2026-10-02）
  *
  * 上面那句原本写的是「这三个入参」，把入参清点成「URL 与头」就收工了——**漏了从请求体读的那条**。
@@ -167,6 +173,21 @@ export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; ha
 ).layer
 
 /**
+ * 客户端**原本**报的目录的留存处（004 T006 与 005 T017 之间的跨层契约，2026-10-09 加）。
+ *
+ * 为什么需要它、以及为什么抄进**头**而不是新开一个 query 参数，见文件头那段 ⚠️ 与
+ * `project-location.ts` 的「第五笔裁定」。这里只钉死它的**身份**：
+ *
+ * - **取值方只有 `project-location.ts` 一处**，且它只把值当**线索**（「客户端在问哪个项目」），
+ *   绝不直接拿它当落点——落点始终由「服务端算的根 ＋ 服务端校验过的身份段 ＋ 项目 id」拼出来
+ *   （那条不变量没动，见 `project-location.ts` 的同名一节）；
+ * - **客户端伪造不了它**：本层用下面三条**正牌**入参算出这个值，再**覆盖或删掉**头里原有的同名字段
+ *   ⇒ 客户端自己塞一个 `x-openhive-requested-directory` 进来，达不到「绕过三条入参」的效果
+ *   （它要么被正牌入参盖掉，要么被删掉）。
+ */
+export const REQUESTED_DIRECTORY_HEADER = "x-openhive-requested-directory"
+
+/**
  * 把请求里的目录入参一律改写成 `sandbox`。
  *
  * 三处都要改，因为它们**不是同一条读法**：`?directory=` 是 v2 的，`location[directory]` 是旧版的，
@@ -182,13 +203,35 @@ export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; ha
  */
 function anchor(request: HttpServerRequest.HttpServerRequest, sandbox: string) {
   const url = new URL(request.url, "http://localhost")
+
+  // 改写**之前**把客户端原值抄一份（下面三处改写与这里的三个读法一一对应）。**只记不改**：
+  // 下面三行一字不动，本层对请求的处置与从前完全一致。
+  //
+  // ⚠️ 这里用 `||` 串而不是 `??`——**这是镜像，不是随手写**（`LEARNINGS #003-05`）：下游那个真正的
+  // 读取器（`middleware/workspace-routing.ts` 的 `defaultDirectory()`）写的正是
+  // `url.searchParams.get("directory") || request.headers["x-opencode-directory"] || …`，
+  // 空串在那条链上**也是「没有」**。用 `??` 就会让「`?directory=` 给了空串、头里有值」这个输入在
+  // 本层与下游得到**不同的结论**（本层抄空串、下游用头）。旧版链（`@opencode-ai/server/location`）
+  // 那条 `location[directory]` 另插在中间，两边都读不到它时以头兜底。
+  const requested =
+    url.searchParams.get("directory") ||
+    url.searchParams.get("location[directory]") ||
+    request.headers["x-opencode-directory"] ||
+    undefined
+
   url.searchParams.set("directory", sandbox)
   url.searchParams.set("location[directory]", sandbox)
   url.searchParams.delete("workspace")
 
+  const headers = Headers.set(request.headers, "x-opencode-directory", sandbox)
   return request.modify({
     url: `${url.pathname}${url.search}`,
-    headers: Headers.set(request.headers, "x-opencode-directory", sandbox),
+    // 没抄到（三条读法都没有 / 都是空串）⇒ **删掉**同名头：留着等于把客户端自己塞的那个值当成了
+    // 「正牌入参算出来的线索」（`requested` 为空时下游该读到「客户端没说」）。`Headers.remove`
+    // 对不存在的键是无操作。
+    headers: requested
+      ? Headers.set(headers, REQUESTED_DIRECTORY_HEADER, requested)
+      : Headers.remove(headers, REQUESTED_DIRECTORY_HEADER),
   })
 }
 

@@ -336,6 +336,29 @@ const withProject = (subject: TokenSubject, projectId: string) =>
   })
 
 /**
+ * **夹具注入**一行「已归档」——直接写 `project_archive`，不是走归档流程
+ * （同 `openhive-project-frozen.test.ts` 的同名助手，抄它而不是自己发明，`#004-12`）。
+ *
+ * ⚠️ `archived_at` 不能省：迁移的 `project_archive_coherence_check` 钉着
+ * `archived = (archived_at IS NOT NULL)`，只写 `archived` 会被库当场拒。
+ * ⚠️ `on conflict` 不能省：本文件多条用例**共用同一个 PG 夹具**，第二次插入会撞主键，
+ * 而那是**夹具**问题、不是被测对象的问题（撞主键会把用例炸成 error 而不是 fail）。
+ *
+ * ⚠️ 2026-10-09 从「项目 cookie 通道」那组**提到文件级**（判据 ⑦⑧ 也要用它）：归档是写进共享 PG 的
+ * **全局**状态，两份定义迟早漂；而它一旦漂，症状是「某组用例莫名其妙 403 / 不 403」，读起来像别的事。
+ */
+const 标成已归档 = (projectId: string) =>
+  Effect.promise(() =>
+    Promise.resolve(
+      pg!.db.execute(
+        sql`insert into auth.project_archive (project_id, archived, archived_at)
+            values (${projectId}, true, 1700000000)
+            on conflict (project_id) do update set archived = excluded.archived, archived_at = excluded.archived_at`,
+      ),
+    ),
+  )
+
+/**
  * 归一化：断言钉的是**归属**，不是路径的书写形式（同 `tenant-directory-isolation.test.ts`）。
  * 目录不存在时 `realpath` 抛错 ⇒ 退回原样——本文件的沙箱目录**从不被创建**，两侧因此走同一条路。
  */
@@ -714,26 +737,6 @@ describe("T020 前置 · 文件树入口的实例目录上移（FR-005）", () =
  */
 describe("项目 cookie 通道（006 Step 5 · ②-1）", () => {
   /**
-   * **夹具注入**一行「已归档」——直接写 `project_archive`，不是走归档流程
-   * （同 `openhive-project-frozen.test.ts` 的同名助手，抄它而不是自己发明，`#004-12`）。
-   *
-   * ⚠️ `archived_at` 不能省：迁移的 `project_archive_coherence_check` 钉着
-   * `archived = (archived_at IS NOT NULL)`，只写 `archived` 会被库当场拒。
-   * ⚠️ `on conflict` 不能省：本文件多条用例**共用同一个 PG 夹具**，第二次插入会撞主键，
-   * 而那是**夹具**问题、不是被测对象的问题（撞主键会把用例炸成 error 而不是 fail）。
-   */
-  const 标成已归档 = (projectId: string) =>
-    Effect.promise(() =>
-      Promise.resolve(
-        pg!.db.execute(
-          sql`insert into auth.project_archive (project_id, archived, archived_at)
-              values (${projectId}, true, 1700000000)
-              on conflict (project_id) do update set archived = excluded.archived, archived_at = excluded.archived_at`,
-        ),
-      ),
-    )
-
-  /**
    * **主判据（B 链 ＝ 右栏走的那条）**：只带项目 cookie ⇒ 落 `{沙箱根}/{projectId}`。
    *
    * 另一半在同一个断言里：**落点在沙箱根里面**（`startsWith`）——少了它，一条「把项目 id 当绝对
@@ -864,6 +867,254 @@ describe("项目 cookie 通道（006 Step 5 · ②-1）", () => {
         const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
         expect(landed).toBe(canonical(sandboxOf(ALICE)))
         expect(landed).not.toContain("bob")
+      }),
+    30_000,
+  )
+})
+
+/**
+ * 目录通道（2026-10-09，用户裁定 **A**）：**客户端在 URL 上报的目录**也能指名「哪个项目」。
+ *
+ * ## 这条为什么存在（用户看到的那个 bug）
+ *
+ * 左栏会话列表按**目录**取会话（`loadSessions(project.worktree)` 走 `GET /session?directory=…`），
+ * 而服务端此前只认**头 / cookie** ⇒ 客户端替**另一个项目**发的请求（页面加载时那段**预热**
+ * 会给每个项目各拉一次列表）拿到的是**当前项目**的会话 ⇒ 切项目后左栏列的还是别人的会话。
+ * 真栈实测（2026-10-09，同一页面内直打服务端）：`cookie=p1` ＋ `?directory=…/p2` 返回的集合
+ * **逐条等于** p1 自己的。本组钉的就是「**目录说了算**」。
+ *
+ * ## 目录通道是**显式通道**（2026-10-09 用户裁定 **方案 A**），与 cookie **不同档**
+ *
+ * 第一版把它与 cookie 并列成**环境**档（理由：都骑在一串请求上）。**用户同日改判**，判据是本仓那条
+ * 尺子——「这条信号骑在**多少条**请求上」：cookie 骑在**每一条**请求上（含项目清单 ⇒ 会砖掉整个
+ * app，见 cookie 那组末段），而目录只在**说到某个项目**的请求上出现（项目清单**不走目录作用域
+ * SDK**：`listProjects` 是裸 `fetch(PATH.list, { credentials: "same-origin" })`）。
+ * ⇒ 它按**显式**档处置：指向**已归档**项目 ⇒ **403**，不再是「当作没带 ⇒ 静默换成沙箱根的集合」
+ * ——那正是用户报的那个 bug 的形状（指名要 p2 的会话，拿回来**别人**的集合）。第 ⑦ 条钉它。
+ *
+ * ⚠️ 升级的作用面**只有归档那一支**：目录通道**产不出**非法值（见下「形状判据」末段），
+ * 所以 `400` 那一支对它**不可达**——别为它写用例，那是 `#003-03` 第③类的形状（写不出红）。
+ * 头仍是最纯的显式通道、仍**最高优先级**（第 ④ 条钉它）。
+ *
+ * ## 形状判据（安全那一半）
+ *
+ * 目录必须**恰好**是 `{沙箱根}/{本人 id}/{projectId}`——比这深 / 浅、或第一段**不是本人 id**
+ * （＝指向别人的沙箱）⇒ 一律 `undefined`（当作没带）。判据本体是 `project-location.ts` 既有的
+ * `projectIdOfSessionDirectory`，本组是它**第一次**被外部输入喂到（此前只有会话行喂它），
+ * 所以第 ⑤ 条顺带把它那条「第一段必须是自己」的分支也钉住了（那分支自己的注释里写着
+ * 「今天走不到、没有测试守着」——**本组让它走到了**）。
+ *
+ * ### ⚠️ 为什么这里**没有**「非法值 ⇒ 400」那条用例（本次刻意不写）
+ *
+ * 因为**写不出红**：`projectIdOfSessionDirectory` 走 `path.relative`，而它**已归一化** ⇒ `.` /
+ * `..` / 尾分隔一律被吃掉、落进「长度 ≠ 2」或「首段不是本人 id」⇒ `undefined`（2026-10-09 探针
+ * 实测：`{根}/{本人 id}/..` ⇒ `relative` 为 `""`；`{根}/{本人 id}/.` 与尾分隔 ⇒ `relative` 为本人
+ * id 那一段）。`..%2F..` 这类**字面**串确实**原样保留**成 projectId，可它不含 `/` 或 `\`
+ * ⇒ 过得了 `isSafePathSegment`（它只拒空 / `.` / `..` / 含分隔符）⇒ 也不是非法值。
+ * 一句话：`badRequest()` 那一支**对目录通道不可达**。硬写一条只会得到「改前改后都绿」
+ * ——那是 `#003-03` 第③类（不可达 ⇒ 该删代码 / 该记缺口，不是补测试），据实记在这里。
+ */
+describe("目录通道（客户端报的 ?directory= 只说「哪个项目」）", () => {
+  /** 第二个项目。与 `ALPHA` 分开：两条会话落在**两个不同目录**，判据才有分辨率。 */
+  const BETA = "prj_beta_0004"
+
+  /**
+   * 第三个项目：**只**给这条组的归档用例（⑦）用。
+   *
+   * ⚠️ **不能借 `FROZEN`**（`prj_frozen_0003`）：它在上面那组 cookie 用例里**已经被标成归档**，
+   * 而归档是写进共享 PG 夹具的**全局**状态 ⇒ 本组「归档**之前**」那半条会当场红，红在**夹具传染**
+   * 上而不是被测对象上（`#004-08` 那种「红了，但红的不是我预期那条」）。
+   */
+  const FROZEN_DIR = "prj_frozen_0005"
+
+  /** 客户端会填的目录（＝服务端项目清单给的那个 worktree，见 `project.ts` 的 `handleList`）。 */
+  const 项目目录 = (subject: TokenSubject, projectId: string) => path.join(sandboxOf(subject), projectId)
+
+  /**
+   * 列某个**目录**下的会话 id。
+   *
+   * oracle 是**响应体**（不是库）：这条读法正是左栏会话列表走的那条，比读库更贴被测的那件事。
+   * 客户端报的是**目录**，项目 cookie 另给（`undefined` ＝ 不带）。
+   */
+  const 列目录 = (subject: TokenSubject, directory: string, projectCookie?: string) =>
+    Effect.gen(function* () {
+      const url = `/session?directory=${encodeURIComponent(directory)}&limit=50&order=desc`
+      const response = yield* as(subject, url, {}, projectCookie === undefined ? undefined : 项目cookie(projectCookie))
+      expect(response.status).toBe(200)
+      const rows = yield* json(Schema.Array(Schema.Struct({ id: Schema.String })), response)
+      return rows.map((row) => row.id)
+    })
+
+  /** 两个项目各建一条会话，返回 `{ 甲, 乙 }`（ALPHA / BETA 各一）。 */
+  const 两个项目各一条 = () =>
+    Effect.gen(function* () {
+      yield* withProject(ALICE, ALPHA)
+      const 甲 = yield* createV1As(ALICE, { project: ALPHA })
+      yield* withProject(ALICE, BETA)
+      const 乙 = yield* createV1As(ALICE, { project: BETA })
+      return { 甲, 乙 }
+    })
+
+  /**
+   * **主判据**：cookie 指向 BETA、目录指向 ALPHA ⇒ 列的是 **ALPHA** 的会话。
+   *
+   * 这正是用户看到的那件事：客户端替 ALPHA 发请求，而「当前项目」（cookie）是 BETA。
+   * 修之前 red in the right way：返回的集合是 BETA 的（`toContain(甲)` 先红）。
+   */
+  it.live(
+    "① 主判据：cookie=BETA、目录=ALPHA ⇒ 列 ALPHA 的会话（目录压过 cookie）",
+    () =>
+      Effect.gen(function* () {
+        const { 甲, 乙 } = yield* 两个项目各一条()
+
+        const ids = yield* 列目录(ALICE, 项目目录(ALICE, ALPHA), BETA)
+
+        expect(ids).toContain(甲)
+        expect(ids).not.toContain(乙)
+      }),
+    30_000,
+  )
+
+  /**
+   * **对照 / 阳性证明**：同一个 cookie、目录换成 BETA ⇒ 列的是 **BETA** 的会话。
+   *
+   * 少了它，一条「不管目录报什么都列同一个项目」的实现照样满足上面那条
+   * （`#004-08`：「没报错」不等于「执行了」）。两条只差**目录**这一个变量。
+   */
+  it.live(
+    "② 对照：同一个 cookie、目录=BETA ⇒ 列 BETA 的会话（证明上面那条的两个目录确实不同）",
+    () =>
+      Effect.gen(function* () {
+        const { 甲, 乙 } = yield* 两个项目各一条()
+
+        const ids = yield* 列目录(ALICE, 项目目录(ALICE, BETA), BETA)
+
+        expect(ids).toContain(乙)
+        expect(ids).not.toContain(甲)
+      }),
+    30_000,
+  )
+
+  /**
+   * **回归 · 目录没给出项目时 cookie 仍然说了算**：目录停在**沙箱根**（缺 `{projectId}` 那一段）
+   * ⇒ 当作没带 ⇒ cookie=BETA 生效。
+   *
+   * 这条守的是「目录通道没有把 cookie 那条**打掉**」——不带头建会话 / 列会话的正常落点正是沙箱根。
+   */
+  it.live(
+    "③ 回归：目录=沙箱根（没有项目那一段）⇒ cookie 仍然说了算（列 BETA）",
+    () =>
+      Effect.gen(function* () {
+        const { 甲, 乙 } = yield* 两个项目各一条()
+
+        const ids = yield* 列目录(ALICE, sandboxOf(ALICE), BETA)
+
+        expect(ids).toContain(乙)
+        expect(ids).not.toContain(甲)
+      }),
+    30_000,
+  )
+
+  /**
+   * **回归 · 头仍然压过目录**：头=ALPHA、目录=BETA ⇒ 落 ALPHA。
+   *
+   * 通道优先级是 `头 ?? 目录 ?? cookie`；头是唯一**显式**那个（如上「环境通道」一节），
+   * 它压过其余两个。观测面用**建会话**（读库）：落点这件事库说得最清楚。
+   */
+  it.live(
+    "④ 回归：头=ALPHA、目录=BETA ⇒ 落 ALPHA（头仍压过目录）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, ALPHA)
+        yield* withProject(ALICE, BETA)
+
+        const id = yield* createV1As(ALICE, {
+          project: ALPHA,
+          directory: 项目目录(ALICE, BETA),
+          projectCookie: BETA,
+        })
+
+        expect(canonical(sessionDirectory(ALICE.id, id) ?? "")).toBe(canonical(项目目录(ALICE, ALPHA)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **回归 · 安全那一半：目录指向别人的沙箱 ⇒ 当作没带**。
+   *
+   * 目录是**客户端可填**的，而这个通道会把它的**第二段**当成 projectId 拼进**自己的**沙箱
+   * ⇒ 「第一段必须等于本人 id」这条判据（`projectIdOfSessionDirectory` 里那句）从此**可达**了。
+   * 断言写成两半：落本人沙箱根，且**没有**落到 BOB 的沙箱里（少了后半句，「把所有人锚进同一个
+   * 空目录」也能绿）。
+   */
+  it.live(
+    "⑤ 回归：目录指向别人的沙箱 ⇒ 当作没带（不落 BOB 的沙箱）",
+    () =>
+      Effect.gen(function* () {
+        yield* createV1As(ALICE) // 先把 ALICE 的库建出来，下面才好读它
+
+        const id = yield* createV1As(ALICE, { directory: path.join(sandboxOf(BOB), "prj_someone_else") })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        expect(landed).toBe(canonical(sandboxOf(ALICE)))
+        expect(landed).not.toContain(canonical(sandboxOf(BOB)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **回归 · 逃逸写法仍然无效**：目录写 `../../` ⇒ 当作没带，落沙箱根。
+   *
+   * 与上面第一组那条同源（锚定 + 本层的同一条不变量），单独留在这组里是因为**通道变了**：
+   * 目录从此是「有效输入」，所以「哪些写法算**无效**」必须各钉一条。
+   */
+  it.live(
+    "⑥ 回归：目录写 `../../` 逃逸写法 ⇒ 一律无效（落沙箱根，不逃出去）",
+    () =>
+      Effect.gen(function* () {
+        yield* createV1As(ALICE)
+
+        const id = yield* createV1As(ALICE, { directory: FORGED })
+
+        const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
+        expect(landed).toBe(canonical(sandboxOf(ALICE)))
+        expect(landed).not.toContain("escaped-outside-sandbox")
+      }),
+    30_000,
+  )
+
+  /**
+   * **目录通道指向已归档项目 ⇒ 403**（2026-10-09 用户裁定「方案 A」：目录通道升 **显式档**）。
+   *
+   * 为什么它不能再是「当作没带、落沙箱根、200」：那是**静默换项目**——客户端指名要 FROZEN_DIR 的
+   * 会话，服务端却把请求改写到**沙箱根**，返回**另一个目录**的集合（用户报的那个 bug 的形状）。
+   * cookie 那组仍走环境档（它骑在**每一条**请求上，会把整个 app 砖掉，见该组末段），两条**刻意不同档**。
+   *
+   * ⚠️ 两半都在断言里，缺一会让这条用例失去分辨率：
+   * ①（**前置**）归档**之前**同一条请求 200 **且列出的就是 FROZEN_DIR 那条会话**——少了它，
+   * 一个「本通道对所有目录都回 403」的实现照样绿（`#004-08`：副作用类判据先证明机制是活的）。
+   * ②（**被测属性**）归档**之后** 403。
+   * ⚠️ 断言顺序照 `#004-14` 本应「被测属性在前」，这里相反是**时间上的必然**（题设必须先发生），
+   * 已在用例名里点明「归档前 … 是 200」。
+   */
+  it.live(
+    "⑦ 显式：目录指向已归档项目 ⇒ 403（归档前同一条请求是 200 且列的就是它的会话）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, FROZEN_DIR)
+        const 冻 = yield* createV1As(ALICE, { project: FROZEN_DIR })
+        const url = `/session?directory=${encodeURIComponent(项目目录(ALICE, FROZEN_DIR))}&limit=50&order=desc`
+
+        // ① 前置：这条目录形状被接受，且**真的路由到了 FROZEN_DIR**（不是碰巧 200）。
+        const 归档前 = yield* as(ALICE, url)
+        expect(归档前.status).toBe(200)
+        const 归档前的行 = yield* json(Schema.Array(Schema.Struct({ id: Schema.String })), 归档前)
+        expect(归档前的行.map((row) => row.id)).toContain(冻)
+
+        // ② 被测属性：归档之后，同一条请求**拒绝**，不再静默换成沙箱根的集合。
+        yield* 标成已归档(FROZEN_DIR)
+        const 归档后 = yield* as(ALICE, url)
+        expect(归档后.status).toBe(403)
       }),
     30_000,
   )
