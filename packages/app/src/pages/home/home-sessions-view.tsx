@@ -112,15 +112,14 @@ export function HomeSessionsView(props: HomeSessionsViewProps) {
             </div>
           }
         >
-          <Show
-            when={props.groups().length > 0}
-            fallback={
-              <HomeSessionsEmpty
-                onNewSession={props.canCreateSession() ? props.onCreateSession : undefined}
-                language={props.language}
-              />
-            }
-          >
+          {/* 空态（「这里还没有内容」＋ 说明 ＋ 「新建会话」按钮）2026-10-09 按用户下达删除（截图 ③）
+              ⇒ 一个会话都没有时这一支**什么都不渲染**（原来那三样连 `data-action="home-new-session"`
+              一起走，不留死锚）。
+              ⚠️ 两个「别删错」的点：① **加载态不在此列**——上面那个 `<Suspense>` 的
+              `fallback={<HomeSessionSkeleton/>}` 原样保留（口径「只藏文案＋按钮、保留加载态」）；
+              ② 表头那颗 `data-action="home-new-session"`（列表**非空**时出现，本文件更上方那一段）
+              同样保留，那是正常态该有的入口，别顺手一起删。 */}
+          <Show when={props.groups().length > 0}>
             <div ref={props.onSetContent} class="flex flex-col pt-3 pr-3 pb-16">
               <For each={props.groups()}>
                 {(group, index) => (
@@ -503,36 +502,6 @@ function HomeSessionProjectName(props: { name: string; search?: boolean }) {
     >
       {props.name}
     </span>
-  )
-}
-
-function HomeSessionsEmpty(props: { onNewSession?: () => void; language: ReturnType<typeof useLanguage> }) {
-  return (
-    <div class="flex min-h-full flex-col items-center gap-4 px-6 pt-[52px] text-center">
-      <div
-        class={`
-          shrink-0 text-[13px] leading-[13px] tracking-[-0.04px]
-          text-v2-text-text-base [font-weight:530]
-        `}
-      >
-        {props.language.t("home.sessions.empty")}
-      </div>
-      <p
-        class={`
-          mb-1 text-center text-[13px] leading-5 tracking-[-0.04px]
-          text-v2-text-text-muted [font-weight:440]
-        `}
-      >
-        {props.language.t("home.sessions.empty.description")}
-      </p>
-      <Show when={props.onNewSession}>
-        {(onNewSession) => (
-          <ButtonV2 data-action="home-new-session" variant="neutral" size="normal" icon="edit" onClick={onNewSession()}>
-            {props.language.t("command.session.new")}
-          </ButtonV2>
-        )}
-      </Show>
-    </div>
   )
 }
 

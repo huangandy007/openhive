@@ -1,7 +1,6 @@
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
 import { createHomeController } from "./home/home-controller"
 import { createHomeProjectsController } from "./home/home-projects-controller"
-import { HomeUtilityNav } from "./home/home-projects-view"
 import { HomeProjects } from "./home/home-projects"
 import { createHomeScrollController } from "./home/home-scroll-controller"
 import { createHomeSessionSearchController } from "./home/home-session-search-controller"
@@ -37,12 +36,10 @@ export function NewHome() {
         >
           <HomeProjects projects={projects} scroll={scroll} />
           <HomeSessions sessions={sessions} search={search} scroll={scroll} />
-          <HomeUtilityNav
-            class="flex lg:hidden"
-            onOpenSettings={projects.utility.settings}
-            onOpenHelp={projects.utility.help}
-            language={projects.copy.language}
-          />
+          {/* 窄屏那份 `HomeUtilityNav`（第三行「设置」）2026-10-09 随 #3 删除：它与桌面那份渲染的
+              是**同一个组件**，两行下掉后组件整个变空 ⇒ 连组件一起删（见 `home-projects-view.tsx`
+              里那一大段注释）。网格模板仍写着三行、第三行现在恒空 —— 那行 `auto` 无内容即 0 高，
+              是上游的模板（不动它＝少一处与上游漂移的面）。 */}
         </div>
       </ScrollView>
     </div>

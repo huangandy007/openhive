@@ -42,7 +42,7 @@ export type HomeProjectsViewProps = {
   canRevealProject: (server: ServerConnection.Any) => boolean
   unseenCount: (server: ServerConnection.Any, project: LocalProject) => number
   onWheel: (event: WheelEvent) => void
-  onChooseProject: (server: ServerConnection.Any) => void
+  // `onChooseProject` 2026-10-09 删（它只喂 `HomeServerRow` 那颗已删的「添加项目」图标）。
   onFocusServer: (server: ServerConnection.Any) => void
   onToggleCollapsed: (server: ServerConnection.Any) => void
   onEditServer: (server: ServerConnection.Http) => void
@@ -56,8 +56,8 @@ export type HomeProjectsViewProps = {
   onRevealProject: (server: ServerConnection.Any, project: LocalProject) => void
   onClearNotifications: (server: ServerConnection.Any, project: LocalProject) => void
   onCloseProject: (server: ServerConnection.Any, directory: string) => void
-  onOpenSettings: () => void
-  onOpenHelp: () => void
+  // `onOpenSettings` 2026-10-09 随底部的设置行一起删（#3：功能迁到图标栏那颗 `settings-gear`）。
+  // 它的**唯一**消费方是 `HomeUtilityNav`（那一颗按钮），行删了它就没人调。
 }
 
 export function HomeProjectsView(props: HomeProjectsViewProps) {
@@ -80,22 +80,10 @@ export function HomeProjectsView(props: HomeProjectsViewProps) {
     >
       <div class="flex h-7 min-w-0 shrink-0 items-center justify-between pl-1.5 pr-3">
         <div class="text-v2-text-text-muted [font-weight:530]">{props.language.t("home.projects")}</div>
-        <Show
-          when={props.servers().length === 1 && !(props.projects().length === 0 && props.recentlyClosed().length > 0)}
-        >
-          <TooltipV2 placement="bottom" value={props.language.t("home.project.add")}>
-            <IconButtonV2
-              data-action="home-add-project"
-              variant="ghost-muted"
-              size="large"
-              class="titlebar-icon [&_[data-slot=icon-svg]]:text-v2-icon-icon-muted"
-              icon={<IconV2 name="folder-add-left" />}
-              disabled={props.serverHealth(props.servers()[0])?.healthy === false}
-              onClick={() => props.onChooseProject(props.servers()[0])}
-              aria-label={props.language.t("home.project.add")}
-            />
-          </TooltipV2>
-        </Show>
+        {/* 表头那颗「添加项目」图标按钮 2026-10-09 按用户下达**整块删除**（截图 ②，连 `data-action`
+            一起删，不留死锚）——「项目」这一行现在只留标题。
+            ⚠️ 同一件事还有两处落点，见本文件 `HomeServerRow` 那颗与 `HomeProjectEmpty` 那整行：
+            前者**有意保留**（多服务器态 hover 才出现，用户本轮未涉及），后者同批删除（截图 ①）。 */}
       </div>
       <ScrollView data-slot="home-projects-scroll" class="min-h-0 min-w-0 shrink">
         <Show
@@ -144,41 +132,15 @@ export function HomeProjectsView(props: HomeProjectsViewProps) {
           </div>
         </Show>
       </ScrollView>
-      <HomeUtilityNav
-        class="mb-8 mt-4 hidden shrink-0 lg:flex"
-        onOpenSettings={props.onOpenSettings}
-        onOpenHelp={props.onOpenHelp}
-        language={props.language}
-      />
+      {/* `HomeUtilityNav`（底部的「帮助」＋「设置」两行）2026-10-09 整颗删除——两行先后被下掉之后
+          它渲染的是**一个空 div**，故按 CLAUDE.md §3「清理自己造成的孤儿」连组件一起清：
+          · ④「帮助」行：2026-10-09 用户下达（截图 ④）；
+          · ⑤「设置」行：同日用户下达的 #3——**设置功能迁到图标栏底部那颗 `settings-gear`**
+            （`rail/rail.tsx` → `pages/layout-new.tsx` 的 `useSettingsDialog()`），主页不再留第二个入口。
+          ⚠️ 它曾**同时**是两个落点（本处 `hidden lg:flex` 与 `pages/home.tsx` 的 `flex lg:hidden`
+          渲染的是同一个它）⇒ 删组件即两处一起消失，不必两处各删一遍。
+          侧边栏那一份「设置」是**另一条**通道（`pages/layout.tsx` → `sidebar-shell.tsx`），不在此列。 */}
     </aside>
-  )
-}
-
-export function HomeUtilityNav(props: {
-  class?: string
-  onOpenSettings: () => void
-  onOpenHelp: () => void
-  language: ReturnType<typeof useLanguage>
-}) {
-  return (
-    <div class={`${props.class ?? ""} min-w-0 flex-col gap-1 pr-3`}>
-      <HomeProjectNavButton
-        type="button"
-        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
-        onClick={props.onOpenSettings}
-      >
-        <IconV2 name="settings-gear" size="small" />
-        <span class={HOME_PROJECT_NAV_LABEL}>{props.language.t("sidebar.settings")}</span>
-      </HomeProjectNavButton>
-      <HomeProjectNavButton
-        type="button"
-        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
-        onClick={props.onOpenHelp}
-      >
-        <IconV2 name="help" size="small" />
-        <span class={HOME_PROJECT_NAV_LABEL}>{props.language.t("sidebar.help")}</span>
-      </HomeProjectNavButton>
-    </div>
   )
 }
 
@@ -194,7 +156,6 @@ function HomeServerRow(props: {
   onSetDefaultServer: HomeProjectsViewProps["onSetDefaultServer"]
   onRemoveServer: HomeProjectsViewProps["onRemoveServer"]
   onSetContextMenuOpen: HomeProjectsContextMenuProps["onSetContextMenuOpen"]
-  onChooseProject: HomeProjectsViewProps["onChooseProject"]
   server: ServerConnection.Any
   selected: boolean
   collapsed: boolean
@@ -284,17 +245,12 @@ function HomeServerRow(props: {
           open={props.contextMenuOpen(contextMenuID())}
           onOpenChange={(open) => props.onSetContextMenuOpen(contextMenuID(), open)}
         />
-        <TooltipV2 class="flex shrink-0 items-center" placement="bottom" value={props.language.t("home.project.add")}>
-          <IconButtonV2
-            data-action="home-add-project"
-            variant="ghost-muted"
-            size="small"
-            icon={<IconV2 name="folder-add-left" />}
-            aria-label={props.language.t("home.project.add")}
-            disabled={props.health?.healthy === false}
-            onClick={() => props.onChooseProject(props.server)}
-          />
-        </TooltipV2>
+        {/* 「添加项目」那颗 `folder-add-left`（`data-action="home-add-project"`）2026-10-09 连同
+            `data-action` 一起删（截图 ② 的**同族第三处**：单服务器/空列表态那两处删掉后，只剩这一处
+            多服务器 hover 才出现的）。它删掉 = 主页**已无任何**「添加项目」入口，这是用户 2026-10-09
+            裁定的方向。本簇另一件事——服务器菜单「⋯」（`ServerRowMenuView`，edit/默认/删除）——不在此列。
+            ⚠️ `onChooseProject` 这个入参**同批删掉**（连同 `home-projects.tsx` 的传参、`home-projects-controller`
+            的 `choose`）：它是本次改动造成的孤儿，留着就是死参数。 */}
       </div>
     </div>
   )
@@ -389,19 +345,13 @@ function HomeProjectEmpty(
     items: LocalProject[]
   },
 ) {
-  const unreachable = () => props.serverHealth(props.server)?.healthy === false
   return (
     <div class="flex min-w-0 flex-col gap-1">
-      <HomeProjectNavButton
-        type="button"
-        data-action="home-add-project-row"
-        class="disabled:opacity-60 [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
-        disabled={unreachable()}
-        onClick={() => props.onChooseProject(props.server)}
-      >
-        <IconV2 name="folder-add-left" size="small" />
-        <span class={HOME_PROJECT_NAV_LABEL}>{props.language.t("home.project.add")}</span>
-      </HomeProjectNavButton>
+      {/* 空列表里那整行「添加项目」2026-10-09 按用户下达删除（截图 ①）——**整块删，连
+          `data-action="home-add-project-row"` 一起**，不留死锚（e2e 曾按这个锚点取件，见
+          `home-hidden-entries.test.tsx` 的文件头）。删完后本组件只剩「最近关闭」那一块，
+          没有最近关闭时这一支渲染出一个空容器（= 空态什么都不显示）。
+          它原来的 `unreachable()` 守卫随按钮一起走——那是个只喂 `disabled` 的局部量。 */}
       <Show when={props.items.length > 0}>
         <div class="mt-3 flex h-7 min-w-0 shrink-0 items-center pl-1.5 pr-3">
           <div class="text-v2-text-text-faint [font-weight:530]">{props.language.t("home.recentlyClosed")}</div>
