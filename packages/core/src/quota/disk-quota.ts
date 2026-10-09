@@ -3,6 +3,7 @@ export * as DiskQuota from "./disk-quota"
 import { Effect, Schema } from "effect"
 import * as NFS from "fs/promises"
 import { isAbsolute, join, relative, resolve as pathResolve, sep } from "path"
+import { WorkspaceRoot } from "../workspace-root"
 
 /**
  * 沙箱磁盘配额（T011 · FR-009）。
@@ -110,13 +111,41 @@ export function exceeds(input: { used: number; incoming: number; replacing: numb
  * **要有第二段才算沙箱内**（`{root}/{userId}/…`）。沙箱根自身、以及直接摊在根下的散文件
  * 都不算：它们没有「属于哪个用户」可言，强行认成一个沙箱反而会踩雷——比如把根下某个文件
  * 当成沙箱目录去扫，`readdir` 得 ENOTDIR，于是那个文件的每次写入都被判成「量不出来」而拒掉。
+ *
+ * ## 两步判定：先按字面，字面说「在外面」时才退到**规范形态**（2026-10-09）
+ *
+ * 同一个物理目录在这个系统里有**多种拼法**：win32 的 8.3 短名（`…\ADMINI~1\…`）与长名
+ * （`…\Administrator\…`）、符号链接、junction。根来自 `OPENHIVE_WORKSPACE_ROOT`（本机是短名），
+ * 写入目标来自实例层（已解析成长名）⇒ `relative(短名根, 长名目标)` 是 `..` 开头 ⇒ 判成
+ * 「沙箱外」⇒ `enforce` 当场 `Effect.void` **静默放行**：这道门等于没发生过。
+ * 真栈同一次写入、同一份阈值的对照实测：短名根「放行」、长名根「拒写」。
+ *
+ * 两步的顺序**不是**随手写的，两个方向各有理由，缺一条都会掉进一个静默的坑：
+ *
+ * ① **字面就在根下 ⇒ 就认这个沙箱，不再解析链接**：沙箱目录**自己**是 junction / 符号链接时
+ *    （把某个用户的大盘挂到 `/workspaces/alice` 这种部署），全量规范化会把这个目录解到**别的卷**上
+ *    ⇒ 与「字面在根下的目标」对不上 ⇒ 同样判成沙箱外而放行。**归属按路径算**是本函数的语义
+ *    （错误信息里的 `sandbox` 也是这个路径），解析掉反而丢了管辖。
+ * ② **字面说在外面时才规范化再比一次**：这才是接住「同一目录两种拼法」的那一支——根写短名 /
+ *    目标写长名（① 那条真实缺陷），或目标走别名而根写真身（下面用例的第二条）。
+ *
+ * 返回值用**原样**的 `root` 拼（不换成规范形态）：它是写进错误信息、呈给管理员看的那个串，
+ * 应当是配置里那一份；而拿它去 `readdir` / `stat` 也照常成立（同一目录的两种拼法都读得到）。
  */
 export function sandboxOf(path: string, root: string): string | undefined {
-  const rest = relative(pathResolve(root), pathResolve(path))
+  const segment =
+    sandboxSegment(relative(pathResolve(root), pathResolve(path))) ??
+    sandboxSegment(relative(WorkspaceRoot.canonicalRoot(root), WorkspaceRoot.canonicalRoot(path)))
+  if (segment === undefined) return undefined
+  return join(root, segment)
+}
+
+/** `path.relative` 的结果 ⇒ 它归属的沙箱名（第一段）；「不在根下」与「只有一层」都算不归属。 */
+function sandboxSegment(rest: string): string | undefined {
   if (rest === "" || isAbsolute(rest) || rest === ".." || rest.startsWith(`..${sep}`)) return undefined
   const parts = rest.split(sep)
   if (parts.length < 2 || !parts[0]) return undefined
-  return join(root, parts[0])
+  return parts[0]
 }
 
 /** 扫目录时量不出来。**内部错误**：`enforce` 会把它定性成 `unmeasurable` 的拒写，不外泄。 */

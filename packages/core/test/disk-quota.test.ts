@@ -168,6 +168,86 @@ describe("路径 ↔ 沙箱（T011）", () => {
   })
 })
 
+/**
+ * 别名写法（2026-10-09）。**这里钉的是一个已经发生过的缺陷**：
+ *
+ * 真栈里沙箱根由 `OPENHIVE_WORKSPACE_ROOT` 给，而那个串在本机 win32 上是 **8.3 短名**
+ * （`…\ADMINI~1\…\workspaces`）；写入目标却来自实例层（锚定中间件那道归一化之后）的**长名**。
+ * 判据若按字面串比，`relative(短, 长)` 是 `..` 开头的 ⇒ `sandboxOf` 返回 `undefined`
+ * ⇒ `enforce` 当场 `Effect.void` **静默放行**（探针实测：短名根「放行（配额没看见这次写入）」、
+ * 长名根「拒写(quota-exceeded)」，同一次写入、同一份阈值）。
+ *
+ * 这一组刻意用 **junction / 符号链接**造别名（本机 win32 实测：junction **不需要管理员**，
+ * `fs.symlinkSync(真, 别名, "junction")` 直接成功），因为它是**两个平台都成立**的别名形态；
+ * 8.3 短名那一支由 `workspace-root.test.ts` 钉（那台机器上有短名才有牙）。
+ */
+describe("写入守卫：根 / 目标的别名写法（2026-10-09）", () => {
+  /** 建一对「同一目录的两种写法」：真目录 ＋ 一个指向它的 junction（posix 上是符号链接）。 */
+  const withAlias = async () => {
+    const 真 = await tmpRoot()
+    const 别名 = path.join(await tmpRoot(), "ws")
+    await NFS.symlink(真, 别名, process.platform === "win32" ? "junction" : "dir")
+    const alice = path.join(真, "alice")
+    await NFS.mkdir(alice, { recursive: true })
+    await NFS.writeFile(path.join(alice, "old.txt"), "0123456789") // 已用 10
+    return { 真, 别名, alice }
+  }
+
+  test("根写成别名 ⇒ 该拒的仍然拒（不静默放行）", async () => {
+    const { 真, 别名 } = await withAlias()
+    const env = { [DiskQuota.WORKSPACE_ROOT_ENV]: 别名, [DiskQuota.MAX_SANDBOX_BYTES_ENV]: "10" }
+
+    const error = await Effect.runPromise(
+      Effect.flip(DiskQuota.enforce(path.join(真, "alice", "b.txt"), 1, env)),
+    )
+    expect(error._tag).toBe("SandboxWriteRejected")
+    expect(error.reason).toBe("quota-exceeded")
+    // 账目对上 ⇒ 这道门**真的扫了那个沙箱**（不是碰巧拒的）：`#005-13` 的前半条。
+    expect(error.used).toBe(10)
+    expect(error.incoming).toBe(1)
+    expect(error.limit).toBe(10)
+  })
+
+  test("目标写成别名 ⇒ 同一个沙箱照样认得出", async () => {
+    const { 真, 别名 } = await withAlias()
+    const env = { [DiskQuota.WORKSPACE_ROOT_ENV]: 真, [DiskQuota.MAX_SANDBOX_BYTES_ENV]: "10" }
+
+    // 与上一条互为镜像：根是真身、目标走别名。
+    const error = await Effect.runPromise(
+      Effect.flip(DiskQuota.enforce(path.join(别名, "alice", "b.txt"), 1, env)),
+    )
+    expect(error._tag).toBe("SandboxWriteRejected")
+    expect(error.reason).toBe("quota-exceeded")
+    expect(error.used).toBe(10)
+  })
+
+  /**
+   * 第三条钉的是判定的**另一半**：字面就在根下时**按路径归属**，不去解链接。
+   *
+   * 「沙箱目录**自己**是 junction / 符号链接」是常见部署（把某个用户的大盘挂到
+   * `/workspaces/alice`）。这时若把两边都全量规范化，`{根}/alice` 会解到**别的卷**上
+   * ⇒ 与字面在根下的目标对不上 ⇒ 同样判成「沙箱外」⇒ 这些用户**整片**掉出配额，
+   * 不报错、不变红。所以 `sandboxOf` 是两步：**字面能答就按字面答**，答不了才规范化再比。
+   * 没有这一条，那半支被删掉也是全绿（`LEARNINGS #006-08`：为被绕开的那一支单独开观测面）。
+   */
+  test("沙箱目录自己是 junction ⇒ 仍按路径归属，不掉出配额", async () => {
+    const 根 = await tmpRoot()
+    const 外面 = await tmpRoot()
+    const alice = path.join(根, "alice")
+    await NFS.symlink(外面, alice, process.platform === "win32" ? "junction" : "dir")
+    await NFS.writeFile(path.join(外面, "old.txt"), "0123456789") // 10 字节（物理上在别处）
+
+    const env = { [DiskQuota.WORKSPACE_ROOT_ENV]: 根, [DiskQuota.MAX_SANDBOX_BYTES_ENV]: "10" }
+    const error = await Effect.runPromise(
+      Effect.flip(DiskQuota.enforce(path.join(根, "alice", "b.txt"), 1, env)),
+    )
+    expect(error._tag).toBe("SandboxWriteRejected")
+    expect(error.reason).toBe("quota-exceeded")
+    // 账目对上 ⇒ 确实扫的是 `{根}/alice` 这个沙箱（穿过那个 junction 读到的 10 字节）。
+    expect(error.used).toBe(10)
+  })
+})
+
 describe("沙箱占用统计（T011）", () => {
   test("递归求和：子目录里的文件也算进去", async () => {
     const root = await tmpRoot()

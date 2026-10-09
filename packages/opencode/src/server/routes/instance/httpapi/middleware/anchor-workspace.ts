@@ -1,13 +1,12 @@
 export * as AnchorWorkspace from "./anchor-workspace"
 
 import { WORKSPACE_ROOT_ENV, workspaceRoot } from "@opencode-ai/auth/workspace"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 import { User } from "@opencode-ai/core/user"
+import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Effect, Option } from "effect"
 import { Headers, HttpMethod, HttpRouter, HttpServerRequest } from "effect/unstable/http"
-import { existsSync } from "node:fs"
-import { basename, dirname, join, resolve as pathResolve } from "node:path"
+import { join } from "node:path"
 import { MatchedRoute } from "./matched-route"
 
 /**
@@ -93,7 +92,7 @@ export class Config extends ConfigService.Service<Config>()("@opencode/OpenhiveW
    * 沙箱根。默认取 `workspaceRoot({})` 而不是另写一个 `"/workspaces"`——
    * 那个默认值只有一处定义（design-v2 §5.3），两边各写一份就会在改默认时漏掉一边。
    *
-   * ## 解析出来的值一律过 `canonicalRoot`（2026-10-09，缺陷：左栏「看不到会话」）
+   * ## 解析出来的值一律过 `WorkspaceRoot.canonicalRoot`（2026-10-09，缺陷：左栏「看不到会话」）
    *
    * **实测的根因**（`test/server/openhive-project.test.ts` 那条用例，修前）：
    *
@@ -122,48 +121,24 @@ export class Config extends ConfigService.Service<Config>()("@opencode/OpenhiveW
    *   `event-reducer.ts` 的 `directory` 判据——只改存储侧会让「清单给的串」与
    *   「落库的串」再分一次叉。根只有一处，五个消费者（锚定 / 项目落点 / 清单 / 建项目 /
    *   文件出口）全从它派生。
+   *
+   * ## 为什么函数本体搬到了 core（2026-10-09 当天第二步）
+   *
+   * 同一个缺陷在**另一个方向**上还有一份：`core/quota/disk-quota.ts` 的 `sandboxOf` 拿
+   * `workspaceRoot(env)`（**原样** env 值，本机是短名）去和写入目标（实例层解析后的长名）比
+   * 字面串 ⇒ `relative(短名根, 长名目标)` 是 `..` 开头 ⇒ 判成「沙箱外」⇒ 磁盘配额这道门
+   * **静默放行**（探针实测：同一次写入、同一份阈值，短名根「放行」、长名根「拒写」）。
+   *
+   * 两份实现就是两个投影，一处改了另一处不会红（`LEARNINGS #004-02`）——所以归一化下沉到
+   * `@opencode-ai/core/workspace-root`，**两边共用一份**：本文件在配置解析时过一次
+   * （消费者是「沙箱落点」这一族），`sandboxOf` 在判归属时过一次（消费者是磁盘配额那道门）。
+   * 那边的文件头写着它与 `FSUtil.resolve` 的两处差别、以及为什么不 import `fs-util`（会成环）。
    */
   root: EffectConfig.string(WORKSPACE_ROOT_ENV).pipe(
     EffectConfig.withDefault(workspaceRoot({})),
-    EffectConfig.map(canonicalRoot),
+    EffectConfig.map(WorkspaceRoot.canonicalRoot),
   ),
 }) {}
-
-/**
- * 把沙箱根规范化成**它自己的规范形态**：win32 展开 8.3 短名、解开符号链接。
- *
- * 与 `FSUtil.resolve` 的差别只有一处、但缺不得：**整段路径还不存在时，退到「存在的最长前缀」
- * 再把它拼回来**。
- *
- * 为什么不能直接用 `FSUtil.resolve`：它 ENOENT 时退化成**纯字面**（`normalizePath` 里的
- * `realpathSync.native` 也抛，于是走 `pathResolve`），短名原样留着。而沙箱根**恰恰常常不存在**
- * ——它由建项目那一步 `mkdir(directory, { recursive: true })` 才生出来（
- * `test/server/openhive-project.test.ts` 的字面注释：「本文件不预先创建它」），
- * 而配置是在**层构造期**解析一次的、早于第一个请求。实测：这个根不存在时 `FSUtil.resolve`
- * 是**空操作** ⇒ 修了等于没修（`#004-08`：副作用类判据先问「机制是不是活的」）。
- *
- * 于是「往上一层层找存在的那一段、再拼回来」这一半是承重的：`…\openhive-project-bTlaxp\workspaces`
- * 里的 `workspaces` 还不存在，但它的父目录存在 ⇒ 父目录被规范化成长名、`workspaces` 原样接上。
- * 之后建项目 `mkdir` 出来的是**长名**路径 ⇒ 两侧同形。
- *
- * ⚠️ **不是幂等性的补丁**：`FSUtil.resolve` 本身幂等（`resolve(resolve(x)) === resolve(x)`，
- * 存在与否都成立），本函数只是在它前面补上「路径尚不存在」这一档。走到盘符还找不到存在的段
- * （畸形配置）就原样返回字面量，交给下游按它自己的方式报错——这里不该替它决定成功还是失败。
- */
-function canonicalRoot(root: string): string {
-  const target = pathResolve(root)
-  const tail: string[] = []
-  let existing = target
-
-  while (!existsSync(existing)) {
-    const parent = dirname(existing)
-    if (parent === existing) return target
-    tail.unshift(basename(existing))
-    existing = parent
-  }
-
-  return join(FSUtil.resolve(existing), ...tail)
-}
 
 export const anchorWorkspaceLayer = HttpRouter.middleware<{ requires: Config; handles: unknown }>()(
   Effect.gen(function* () {
