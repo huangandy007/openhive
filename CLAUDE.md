@@ -8,13 +8,11 @@
 - 官方上游（`upstream`）：`anomalyco/opencode`（默认分支 `dev`，最新 release v1.18.32）
 - 本地主分支：`main`（跟踪 `origin/main`）；当前多租户改造工作在 `multi-tenant` 分支（跟踪 `origin/multi-tenant`）
 
-## 项目是什么（WHAT）
+## 项目是什么 / 为什么（WHAT / WHY）
 
 openhive（蜂巢）是**面向公安民警的「公安全流程 AI 工作平台」**——把 opencode 改造成民警能用自然语言驱动 AI 干活、产出有形成果的平台。三层架构：**opencode（能力内核，不动）→ skill（方法，长在 opencode 之上）→ 产物（成品，落回项目）**。首批落地「资金分析 → 话单分析」两个研判环节作示范，再横向铺开。
 
-## 为什么（WHY）
-
-民警**不懂代码**，要的是「分析结论 + 文档」，不是代码编辑器。传统工具门槛高、效率低。用「**薄界面 + 厚 skill**」：界面只做「浏览 + 操作」，分析能力由 skill 承载，实现「个人提效、组织增智」。
+民警**不懂代码**，要的是「分析结论 + 文档」，不是代码编辑器；传统工具门槛高、效率低。故用「**薄界面 + 厚 skill**」：界面只做「浏览 + 操作」，分析能力由 skill 承载——实现「个人提效、组织增智」。
 
 ## 核心约束：必须能持续同步官方更新
 
@@ -37,16 +35,41 @@ git push origin main        # 推回私有仓库
 
 ### 注意事项
 
-- 官方默认分支是 `dev`，本地是 `main`，合并方向永远是 `upstream/dev → main`。
-- 若 `git fetch upstream` 后报 `non-fast-forward`，说明官方做过强推/重置，需谨慎处理（先备份本地定制再 rebase），不要盲目 force。
+- 合并方向恒为 `upstream/dev → 本地`（官方默认分支叫 `dev`，本地是 `main`）。若 `git fetch upstream` 报 `non-fast-forward`，说明官方强推/重置过——先备份本地定制再 rebase，**不要盲目 force**。
+
+## 加固/修 bug 铁律（2026-10-08 起，逐条越不过）
+
+> 适用于「停掉新 feature、回头完善已完成功能并修 bug」（001–006）。用户**逐条**下达要改的地方，每条都按下面轨道走完——**不跳步、不合并、不攒批**。
+
+### 六步轨道（每条改动都走，缺一步不算完成）
+
+| 步 | 做什么 | 判据 / 工具 |
+|---|---|---|
+| ① | 复述「现象 / 期望」，**用证据定根因**（探针 / 日志 / 真栈实测），**不猜** | `superpowers:systematic-debugging`；交根因的**实测输出** |
+| ② | 先写一条**会红的**用例钉住它 | `superpowers:test-driven-development`；红 ＋ 实得值 |
+| ③ | 改到绿 | 同上 |
+| ④ | **变异验证**：把修复拆掉，那条用例**必须红**；红成什么样按 `LEARNINGS #003-03` 三类据实记 | 拆哪一行 → 红哪几条 |
+| ⑤ | 门禁：受影响 package 的 typecheck ＋ 测试 ＋ oxlint（**在仓库根**跑，`#004-10`） | 命令 ＋ 实得输出 |
+| ⑥ | **grep 全部同类落点**逐个打勾（`#002-06`：找「谁在按同一个前提做同一件事」） | 落点清单 |
+
+### 三条红线
+
+- **不谎称改了**——报告只写跑过的命令与它**实际的**输出；没跑的、跑不动的，明说没跑。
+- **不做表面修改**——**找不到根因就不动代码**，先报「卡在哪、缺什么证据」。
+- **不把测不了的写成已覆盖**——本机验不了的（真模型 / 真 PG / CI）如实写进缺口表（`#002-02`）。
+
+### 配套
+
+- 非 bug 类（填内容、补视觉规格）：先走 `superpowers:brainstorming` 把「做成什么样」谈定，**谈定再动手**（不先斩后奏）。
+- 每条开工前先声明**完成判据**（什么命令跑出什么结果算完成），用户认可再动手。
+- 收尾对账走 `superpowers:verification-before-completion`。
 
 ## 工作流（HOW）
 
 1. **启动 feature**：新 feature 用 `/speckit-specify`；实现已就绪 feature 用 `run-feature` skill（worktree 隔离 + TDD）。
 2. **每个 task 启动必读**：`@../.specify/memory/constitution.md` + `@docs/superpowers/specs/openhive-DESIGN.md` + 对应 feature 的 `plan.md` / `tasks.md`。
 3. **测试纪律**：`bun test` 只跑受影响 package；根目录 `bun test` 被 scripts 强制 `exit 1`，禁止。
-4. **同步上游**：见「核心约束」——方向恒为 `upstream/dev → 本地`。
-5. **落地原则**：品牌化走配置、侵入是「加」不是「改」（见「核心约束」三原则）。
+4. **同步上游 / 落地原则**：见「核心约束」（方向恒 `upstream/dev → 本地`；品牌化走配置、侵入是「加」不是「改」）。
 
 ## 技术栈
 
@@ -69,26 +92,9 @@ git push origin main        # 推回私有仓库
 
 ### 锁文件污染（`bun install` 必读）
 
-本机 `~/.npmrc` 指向 `registry.npmmirror.com`，而 bun 认它——**每次 `bun install` 都会把
-`bun.lock` 里那一列空串填成镜像 URL**（2026-09-29 实测：3260 行增 / 3225 行删，与手头的工作无关）。
-两个后果都不是洁癖：① 给「最小化与官方合并冲突」这条第一号约束凭空加 3260 行冲突面；
-② 锁文件进 `origin` 等于给所有开发者与 CI 指定下载源。
+本机 `~/.npmrc` 指向 `registry.npmmirror.com`，而 bun 认它——**每次 `bun install` 都会把 `bun.lock` 里那一列空串填成镜像 URL**（2026-09-29 实测：3260 行增 / 3225 行删，与本轮工作无关）。两个后果都不是洁癖：① 给「最小化与官方合并冲突」这条第一号约束凭空加 3260 行冲突面；② 锁文件进 `origin` 等于给所有开发者与 CI 指定下载源。
 
-**跑完必查**：`git diff --stat bun.lock` —— 应当为空，或只剩你**有意新增**的依赖条目。
-若被污染：`git checkout -- bun.lock` 还原（镜像镜像的是同一批 tarball，版本与 sha 都不漂）。
-
-**本项目刻意不落仓库级 `.npmrc`**（那等于代替所有开发者与 CI 决定下载源）；拦住这件事的只有
-上面这条纪律。同理不动 `bunfig.toml`——它是上游文件，改它=埋合并冲突点。
-
-## 项目宪法
-
-`@../.specify/memory/constitution.md` —— 9 章架构宪法（边界 / 核心原则 / 架构约束 / 禁止模式 / 质量门禁 / 治理 / 术语 / 前端设计系统 / 版本）。
-
-⚠️ 宪法文件在**外层工作区** `D:\project\study\openhive\.specify\`，不在本仓库（相对本根目录是 `../.specify/memory/constitution.md`）。
-
-## 视觉规范
-
-`@docs/superpowers/specs/openhive-DESIGN.md` —— 视觉系统 6 节（Colors / Typography / Spacing / Components / Brand / Theme）。品牌资产见 `design-reference/figma-export/`（logo + tokens 备份）。
+**跑完必查**：`git diff --stat bun.lock` 应为空，或只剩你**有意新增**的依赖条目；被污染就 `git checkout -- bun.lock` 还原（镜像的是同一批 tarball，版本与 sha 都不漂）。**本项目刻意不落仓库级 `.npmrc`**，也**不动 `bunfig.toml`**（上游文件，改它=埋冲突点）。
 
 ## Anti-Patterns
 
@@ -106,8 +112,8 @@ git push origin main        # 推回私有仓库
 |---|---|
 | `docs/superpowers/specs/openhive-PRD.md` | 理解业务需求 / 验收标准（14 章） |
 | `docs/superpowers/specs/2026-09-06-openhive-design-v2.md` | 理解架构决策 / 两条轴 / 三处必改边界 / 前端换皮路线 |
-| `../.specify/memory/constitution.md` | 每个 feature 开始前必读 |
-| `docs/superpowers/specs/openhive-DESIGN.md` | 前端换皮 / 视觉 token |
+| `../.specify/memory/constitution.md` | 9 章架构宪法（边界/原则/约束/禁止/质量门禁/治理/术语/前端/版本）；**每个 feature 开始前必读**。⚠️ 在**外层工作区** `D:\project\study\openhive\.specify\`，不在本仓库 |
+| `docs/superpowers/specs/openhive-DESIGN.md` | 视觉系统 6 节（Colors/Typography/Spacing/Components/Brand/Theme）；品牌资产见 `design-reference/figma-export/` |
 | `docs/superpowers/specs/001~010-*/` | 各 feature 的 spec / plan / tasks |
 | `docs/superpowers/specs/2026-09-*.md`（单模块 design） | 深挖某模块设计背景 / 备选方案时读（已被 spec 吸收） |
 
