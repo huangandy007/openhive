@@ -1,11 +1,20 @@
 import { expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
+import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { withProductionDb } from "@opencode-ai/auth/test-support"
+import { PROJECT_TYPES } from "@opencode-ai/core/project/ext"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 
 /**
- * 005 T004（2026-10-06）· **成员身份闭集的防漂移断言**：DB 的 CHECK ⇔ core 的数组。
+ * 005 T004（2026-10-06）· **闭集的防漂移断言**：DB 的 CHECK ⇔ core 的数组。
+ *
+ * 本文件收**两条同型**的闭集（006 加了第二条）：
+ * ① `auth.project_member.role` ⇔ `ProjectMembership.MEMBER_ROLES`（0005）；
+ * ② `auth.project_meta.type` ⇔ `PROJECT_TYPES`（0006）——`0006_project_meta.sql` 的头注释
+ *    逐字写着「有防漂移断言比对 core 的 `PROJECT_TYPES`」，按 `LEARNINGS #004-03` 那句声明
+ *    必须**当场为真**（004 的 I6 就是一句话写着「有测试钉住」而实测零命中）。
+ * 两条共用同一套取数与抠字面量的手法（`rowsOf` / `literalsOf`），所以住同一个文件。
  *
  * ## 补的是哪一类洞
  *
@@ -37,29 +46,43 @@ import { ProjectMembership } from "@opencode-ai/core/project/membership"
  * 见 `state.md` 的 T004 变异表：① 给 core 的 `MEMBER_ROLES` 加一个值 ⇒ 本文件必须红；
  * ② 给 SQL 的 CHECK 加一个值（改迁移重跑）⇒ 同样必须红。跑不出红的那一条，就是没测到。
  */
-const CHECK = "project_member_role_check"
+const MEMBER_CHECK = "project_member_role_check"
+const META_CHECK = "project_meta_type_check"
 
 /** 从 `pg_get_constraintdef` 的定义串里抠出闭集（形如 `role = ANY (ARRAY['owner'::text, …])`）。 */
 const literalsOf = (definition: string): string[] =>
   [...definition.matchAll(/'([^']*)'/g)].map((match) => match[1]).sort()
 
+/**
+ * 取一条 CHECK 的定义串。两个闭集共用（`LEARNINGS #004-12`：同族的两条别各写一份取数）。
+ *
+ * ⚠️ 取行必须过 `rowsOf`：这里走**生产驱动**（bun-sql，结果是裸数组），而本仓多数测试
+ * 走 PGlite（行挂在 `rows` 上）——同一个根因换了驱动就换形状（`LEARNINGS #002-01`）。
+ * ⚠️ `expect(rows).toHaveLength(1)` **不是形式**：少一条说明约束被改名 / 删了，而下面的
+ * 比对会**假绿**——`String(undefined)` 抠不出字面量、`[]`，而「两边都是空数组」也是相等。
+ */
+async function constraintDefOf(db: ReturnType<typeof connect>, name: string) {
+  const rows = rowsOf(
+    await db.execute(sql`
+      select conname as name, pg_get_constraintdef(oid) as def
+      from pg_constraint
+      where conname = ${name}
+    `),
+  )
+  expect(rows).toHaveLength(1)
+  return String(rows[0].def)
+}
+
 test("闭集防漂移：DB 的 role CHECK ⇔ core 的 MEMBER_ROLES（逐值，双向）", async () => {
   await withProductionDb(async (db) => {
     await migrate(db)
+    expect(literalsOf(await constraintDefOf(db, MEMBER_CHECK))).toEqual([...ProjectMembership.MEMBER_ROLES].sort())
+  })
+}, 30_000)
 
-    // ⚠️ 取行必须过 `rowsOf`：这里走**生产驱动**（bun-sql，结果是裸数组），而本仓多数测试
-    // 走 PGlite（行挂在 `rows` 上）——同一个根因换了驱动就换形状（`LEARNINGS #002-01`）。
-    const rows = rowsOf(
-      await db.execute(sql`
-        select conname as name, pg_get_constraintdef(oid) as def
-        from pg_constraint
-        where conname = ${CHECK}
-      `),
-    )
-
-    // 少一条就说明约束被改名 / 删了：下面的比对会在 `undefined` 上假绿，这里先把它挡住。
-    expect(rows).toHaveLength(1)
-
-    expect(literalsOf(String(rows[0].def))).toEqual([...ProjectMembership.MEMBER_ROLES].sort())
+test("闭集防漂移：DB 的 project_meta.type CHECK ⇔ core 的 PROJECT_TYPES（逐值，双向）", async () => {
+  await withProductionDb(async (db) => {
+    await migrate(db)
+    expect(literalsOf(await constraintDefOf(db, META_CHECK))).toEqual([...PROJECT_TYPES].sort())
   })
 }, 30_000)

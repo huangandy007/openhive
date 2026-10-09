@@ -9,7 +9,7 @@ export * as OpenhiveProject from "./project"
  * 上游两条链都**没有** `POST /project`，`project_ext` 只有读函数，`project_member` 刻意留白。
  * 本模块把那句话收成一个写入模块 ＋ 一个读出口，形状逐字对齐消费侧（见下「出参形状」）。
  *
- * ## 建项目 = **四张表 ＋ 一个目录 ＋ 一个 git 仓库**，次序是要求不是巧合
+ * ## 建项目 = **五张表 ＋ 一个目录 ＋ 一个 git 仓库**，次序是要求不是巧合
  *
  * 1. **建目录** `{沙箱根}/{userId}/{projectId}`（T017 文件头「已知不覆盖 ①」移交过来的那一条：
  *    「只写路径，目录由 T006 落地」——而 T006 裁定不做落库 ⇒ 一并归本条）。
@@ -20,7 +20,8 @@ export * as OpenhiveProject from "./project"
  *    （不自己写 SQL：那两张表的形状是上游的，抄一份会在上游改列时静默漂）。
  * 5. **项目名**（`Project.update`）。
  * 6. **共享项目才建** bare 仓库 `/shared/{projectId}.git`（Q2 裁定的第二半）。
- * 7. **`project_member` 的 owner 行**（业务 PG）。
+ * 7. **业务 PG 的注册性写入**：`project_member` 的 owner 行 **＋** `project_meta` 的名字与类型
+ *    （006 加的后半；两笔都在这一步，次序见下）。
  * 8. **最后**写 `project_ext`（每用户 SQLite）。
  *
  * ⚠️ **为什么 7、8 的次序与其余各处相反（注册性的写入放在物理创建之后，而 `project_ext` 放最后）**：
@@ -32,6 +33,11 @@ export * as OpenhiveProject from "./project"
  * ⚠️ **为什么 7 在 8 前面（而不是反过来）**：`addMember` 失败时（PG 抖一下）项目应当**不出现**
  * 在列表里——owner 行缺失的项目在 T013 归档判定里会把 owner 判成外人（`ProjectMembership`），
  * 那是一个「能用但不能归档」的项目，比「建失败」更难查。
+ *
+ * ⚠️ **7 里那两笔与 8 的关系（`project_meta` 那笔是 006 加的）**：名字 ＋ 类型与 owner 行同属
+ * **注册性写入**，必须与它一起落在 ⑧ **之前**——⑧ 一落，`handleList` 就把「我加入的」这条链
+ * 并进来了，那时名字**必须已经在 PG 里**，否则成员拿到的是一个空名字（看得见、认不出）。
+ * 两笔之间**没有**次序要求（互不读对方），写成相邻两行只为让「注册段」这件事看得出来。
  *
  * ## 支点：建出来的 id **必须**就是服务端认的那个 id
  *
@@ -96,7 +102,15 @@ export * as OpenhiveProject from "./project"
  * （见本模块测试文件头那张实测表）。
  */
 
-import { addMember, archiveStatesOf, memberCountsOf, rolesOf } from "@opencode-ai/auth/project-member"
+import {
+  addMember,
+  archiveStatesOf,
+  memberCountsOf,
+  membershipsOf,
+  projectMetaOf,
+  recordProject,
+  rolesOf,
+} from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { projectDirectory, SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
@@ -107,7 +121,6 @@ import { User } from "@opencode-ai/core/user"
 import { Project } from "@/project/project"
 import { Git } from "@/git"
 import { ConfigService } from "@/effect/config-service"
-import { desc } from "drizzle-orm"
 import { Config as EffectConfig, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { mkdir } from "node:fs/promises"
@@ -245,39 +258,81 @@ function badRequest(message: string) {
 }
 
 /**
- * 列项目（FR-003）：每用户库的 `project_ext` 是**名单**，名字从上游 `project` 表取，
- * 成员数与归档态从业务 PG 批量取。
+ * 列项目（FR-003）＝**两份名单的并集**：我自己建的（每用户 `project_ext`）∪ 我被加进去的
+ * （业务 PG 的 `auth.project_member`）——后半是 006 加的。
  *
- * **名单为什么以 `project_ext` 为准**而不是「上游 `project` 表里有什么」：上游那张表里还有
- * `fromDirectory` 顺手建出来的**非 openhive 项目**（最典型的是 `ID.global` —— 打开一个非 git
- * 目录就会建一行）。以 `project_ext` 为准，列表里就只会有**建过的项目**。
+ * ## 为什么要并（并之前坏在哪儿）
+ *
+ * 名单与名字**都是每用户态**：`project_ext` 一人一份，名字住在上游 `project` 表、同样一人一份
+ * （003 的物理隔离）。于是「甲建一个共享项目、把乙加成成员」这条路上，乙那份库里**一行都没有**，
+ * 只读 `project_ext` 的实现在乙那头给的是一个**合法的空数组**——不报错、不变红
+ * （同 `CAROL` 那条「空库 ⇒ []」）。这正是用户实报的「共享给我的项目换个人登录就看不见」。
+ *
+ * 名单那一半由 PG 的成员关系给；**名字那一半**只能由 PG 的 `project_meta` 给——每用户那两处
+ * （`project_ext` 与上游 `project`）在成员那头都够不着。⇒ 名字必须落共享 PG，否则「看得见」
+ * 也只是一个空名字（看得见、认不出）。
+ *
+ * ## 名单两个来源各自的取舍
+ *
+ * - **`project_ext`（我自己建的）**：名单以它为准，而不是「上游 `project` 表里有什么」——
+ *   上游那张表里还有 `fromDirectory` 顺手建出来的**非 openhive 项目**（最典型的是 `ID.global`：
+ *   打开一个非 git 目录就会建一行）。以 `project_ext` 为准，列表里就只会有**建过的项目**。
+ * - **`project_member`（我加入的）**：只要**我**在那个项目里有成员行，它就出现在我列表里。
+ *   已经在 `project_ext` 里的那些要**剔掉**（那是「我自己建的」，不是「别人共享给我的」），
+ *   否则同一个项目会出现两行。
+ *
+ * ## 两条链的字段各自从哪儿来（**不能混**）
+ *
+ * - 自己建的那些（`project_ext` 有行）：来源与 006 之前**逐字不变**（`name` 从上游 `project` 表、
+ *   `type` / `lastAccessedAt` 从 `project_ext`）。
+ * - 只在成员名单里的那些（下文叫**影子行**）：`type` 取 PG `project_meta`、`lastAccessedAt` 取
+ *   **加入时刻**、`name` **优先自己库、否则 PG**（自己库那边必然没有，所以实际取 PG——保留那个
+ *   优先级只是为了让两条链共用同一句取值，将来若成员也在自己库里有了这一行，不会两处写法分叉）。
+ * - `directory` / `stale` / `memberCount` / `archived` / `role` 两条链**同一套算法**——尤其
+ *   `directory` 共用 `projectDirectory`：它同时也是中间件改写 `?directory=` 用的那个函数，
+ *   两处漂一寸就是「项目在自己的目录下，文件树却在另一个目录」。
+ *
+ * ⚠️ **影子行的 `lastAccessedAt` 是「加入时刻」，不是「最近访问」**——成员的「最近访问」今天
+ * **没有写入方**（`handleTouch` 走的 `touchProjectExt` 只 `update`，目标行不存在就是零行、不报错，
+ * 见那个函数的注释）。如实记成已知缺口，不在这里编一个「看起来对」的值（`#002-02`）。
+ *
+ * ⚠️ **0006 之前建的项目在 `project_meta` 里没有行** ⇒ 成员看到的是**空名字**（`type` 按 `shared`
+ * 兜底）。回填不了——那些名字只在各自创建者的每用户 SQLite 里，迁移跑在 PG 上够不着。
+ * 已登记为已知缺口（不作为本轮的判据）。
+ *
+ * ## 排序：从 SQL 的 `orderBy` 搬到了 JS 的比较器
+ *
+ * 并集之后两类行走的是**不同来源**（每用户 SQLite / 共享 PG），没法在一条 SQL 里排，
+ * 所以排序整体搬到这里。判据与原来那条 SQL **逐字同义**：主键 `lastAccessedAt` 降序、
+ * 次级键 `project_id` 升序。
  */
 function handleList(deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isNone(user)) return unauthorized()
 
-    const rows = yield* deps.database.db
-      .select()
-      .from(ProjectExtTable)
-      // 次级键是语义不是修饰：`last_accessed_at` 是**毫秒**，同一毫秒里建两个项目是有可能的
-      // （批量导入、脚本建项目），没有次级键时列表顺序**不确定**——用户可见的「行会跳」。
-      // 用 `project_id`（UUID v4）当次级键：它没有业务含义，但它**稳定**，这就够了。
-      .orderBy(desc(ProjectExtTable.last_accessed_at), ProjectExtTable.project_id)
-      .all()
-      .pipe(Effect.orDie)
+    const rows = yield* deps.database.db.select().from(ProjectExtTable).all().pipe(Effect.orDie)
 
-    if (rows.length === 0) return HttpServerResponse.jsonUnsafe([])
+    // 「我加入的」名单（006）：`project_member` 里 `user_id` = 我的那些行。
+    const memberships = yield* Effect.promise(() => membershipsOf(deps.pg(), user.value.id))
+    // 自己建的那批已经在 `project_ext` 里 ⇒ 从成员名单里剔掉（理由见函数头「名单两个来源」）。
+    const owned = new Set(rows.map((row) => row.project_id))
+    const joined = memberships.filter((membership) => !owned.has(membership.projectId))
 
-    const ids = rows.map((row) => row.project_id)
+    if (rows.length === 0 && joined.length === 0) return HttpServerResponse.jsonUnsafe([])
+
+    const ids = [...rows.map((row) => row.project_id), ...joined.map((membership) => membership.projectId)]
 
     // 名字：**一次**取全再建 Map，不按 id 逐条查（N 个项目 N 次查询）。
     // ⚠️ 查表的键要用 `ProjectV2.ID.make` 把**库里读出来的裸字符串**重新带上品牌——`Project.Info.id`
     // 是 `ProjectV2.ID`（品牌类型），而 `project_ext.project_id` 是 `text`。两侧不是同一个类型，
     // 「看起来都是字符串」正是这种地方最容易用一个 `as` 糊过去（typecheck 这次直接拦下了）。
     const named = new Map((yield* deps.project.list()).map((info) => [info.id, info]))
+    // 名字与类型的**共享**来源（006）：影子行只有这一处能给名字（见函数头「为什么要并」）。
+    const meta = yield* Effect.promise(() => projectMetaOf(deps.pg(), ids))
     // 成员数 / 归档态 / 我在这一行的角色：三个批量函数，各**一次**往返（`archiveStatesOf` 是
-    // T018 收口时从单条改成批量的，正是为了这一步——见该函数注释）。
+    // T018 收口时从单条改成批量的，正是为了这一步——见该函数注释）。三个 id 列表都要**含影子行**，
+    // 否则「乙在这一行是 member」与「这个共享项目有 2 个人」在成员那头会一起缺席。
     const counts = yield* Effect.promise(() => memberCountsOf(deps.pg(), ids))
     const archives = yield* Effect.promise(() => archiveStatesOf(deps.pg(), ids))
     // `userId` 取的是**调用者**（不是「按项目查全部成员再挑」）——理由见 `rolesOf` 的注释。
@@ -289,7 +344,7 @@ function handleList(deps: Deps) {
     // 一次取、整列共用，判据才是「**这个响应**说它们各自超期了吗」。
     const now = Date.now()
 
-    const entries = rows.map((row) => {
+    const ownEntries = rows.map((row) => {
       const archive = archives.get(row.project_id)
       const role = roles.get(row.project_id)
       return {
@@ -319,6 +374,40 @@ function handleList(deps: Deps) {
         ...(role ? { role } : {}),
       }
     })
+
+    // 影子行：只在我的**成员名单**里、不在我的 `project_ext` 里——006 加的这一半（见函数头）。
+    // ⚠️ `?? ""` / `?? "shared"` 那两处**是兜底，不是可达的正常路径**：0006 之后建的每一个项目
+    // 都写了 `project_meta` 行，只有 0006 之前建的会在 PG 里缺席（那是已登记的已知缺口）。
+    const joinedEntries = joined.map((membership) => {
+      const archive = archives.get(membership.projectId)
+      const role = roles.get(membership.projectId)
+      const type = meta.get(membership.projectId)?.type ?? "shared"
+      // 加入时刻是 Unix **秒**（`project_member.time_created`）⇒ 毫秒，与
+      // `project_ext.last_accessed_at` 同口径（`isStale` 也按毫秒判）。
+      const lastAccessedAt = membership.timeCreated * 1000
+      return {
+        id: membership.projectId,
+        // 名字**优先自己库、否则取共享 PG**（理由见函数头「两条链的字段各自从哪儿来」）。
+        name: named.get(ProjectV2.ID.make(membership.projectId))?.name ?? meta.get(membership.projectId)?.name ?? "",
+        type,
+        // 私有项目**不给**这个键（不是给 0）——与上面那条同一口径。
+        ...(type === "shared" ? { memberCount: counts.get(membership.projectId) ?? 0 } : {}),
+        lastAccessedAt,
+        stale: isStale(lastAccessedAt, now),
+        directory: projectDirectory(deps.root, user.value.id, membership.projectId),
+        ...(archive ? { archived: archive.archived } : {}),
+        ...(role ? { role } : {}),
+      }
+    })
+
+    // 排序与原来那条 `orderBy(desc(last_accessed_at), project_id)` **逐字同义**（理由见函数头
+    // 「排序」）。次级键是语义不是修饰：`lastAccessedAt` 是**毫秒**，同一毫秒里建两个项目是
+    // 有可能的（批量导入、脚本建项目），没有次级键时列表顺序**不确定**——用户可见的「行会跳」。
+    // 用 `project_id`（UUID v4）当次级键：它没有业务含义，但它**稳定**，这就够了。
+    // 影子行那种「同一秒加入两个项目」也由它兜住，比较器仍是**全序**。
+    const entries = [...ownEntries, ...joinedEntries].sort(
+      (a, b) => b.lastAccessedAt - a.lastAccessedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
 
     return HttpServerResponse.jsonUnsafe(entries)
   })
@@ -397,6 +486,14 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     const timeCreated = nowSeconds()
     yield* Effect.promise(() =>
       addMember(deps.pg(), { projectId: id, userId, role: "owner", timeCreated }),
+    )
+
+    // ⑦b 名字与类型落共享 PG（006）。**必须在 ⑧ 之前**（理由见文件头「7 里那两笔与 8 的关系」）：
+    //     名字的家在上游 `project` 表里，而那张表活在**每用户 SQLite**——被邀进来的成员那边
+    //     一行都没有，所以不落这一笔，`handleList` 就算并进了名单也**给不出名字**。
+    //     `type` 一并落是为了让「被邀进私有项目」的成员拿到真实类型，而不是消费侧写死的 `shared`。
+    yield* Effect.promise(() =>
+      recordProject(deps.pg(), { projectId: id, name, type: payload.value.type }),
     )
 
     // ⑧ 可见性最后落（理由见文件头「为什么 7、8 的次序」）。

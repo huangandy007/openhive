@@ -6,11 +6,16 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "./migrate"
 
 /**
- * 005 T004 · `project_member` / `project_archive` 两张表的模型（FR-004 / FR-010，Q3 裁定）。
+ * **项目级共享态**（PG `auth` schema）的模型：`project_member` / `project_archive`（005 T004，
+ * FR-004 / FR-010，Q3 裁定）＋ `project_meta`（006，FR-003 的名单那一半）。
  *
- * ⚠️ **表的真相来源是 `migrations/0005_project_member.sql`**，这里只负责类型安全查询。
- * 改结构时两侧都要动——只改一侧会被 `project-member.test.ts` 的防漂移断言拦下
- * （同 `rbac.ts` / `user.ts` 的做法）。
+ * 三张表同住本文件、不是各开一个：它们回答的是**同一个问题**（「这个项目在共享层面是什么」），
+ * 且共用底下的 `idsOf`（`#002-06`：同一个判断别在两处各写一份——`in (...)` 的编参正是那种
+ * 「两处一漂，一处注入 / 一处语法错」的东西）。`rbac.ts` 收 `auth.role` 与授权表也是同一取向。
+ *
+ * ⚠️ **表的真相来源是 `migrations/0005_project_member.sql` ＋ `migrations/0006_project_meta.sql`**，
+ * 这里只负责类型安全查询。改结构时两侧都要动——只改一侧会被 `project-member.test.ts` 的防漂移断言
+ * 拦下（同 `rbac.ts` / `user.ts` 的做法）。
  *
  * 判定（「这个身份 ＋ 这个动作 ⇒ 能不能」）**不在这里**，在
  * `packages/core/src/project/membership.ts`（U5 裁定：判定写 core 纯函数、接线在执行层）。
@@ -70,8 +75,27 @@ export const projectArchive = authSchema.table("project_archive", {
   archivedAt: integer("archived_at"),
 })
 
+/**
+ * 项目的**名字与类型**（**项目级共享事实**，0006）。
+ *
+ * 为什么非要有这张表：名字的家在上游 `project` 表里，而那张表活在**每用户 SQLite**——
+ * 于是「甲建的共享项目」在乙那份库里**一行都没有**，列表出口既取不出名单、也取不出名字
+ * （详见迁移 `0006_project_meta.sql` 的头两节）。名单那一半由 `project_member` 给，这一半给不了：
+ * 名字是**项目**的属性，不是**成员关系**的属性。
+ *
+ * `type` 一并落在这里，是为了让「被邀进一个项目的人」拿到**它真实的类型**，而不是消费侧
+ * 一句写死的 `"shared"`（今天没有规则拦着「把成员邀进私有项目」）。
+ */
+export const projectMeta = authSchema.table("project_meta", {
+  projectId: text("project_id").primaryKey(),
+  name: text("name").notNull(),
+  /** `private` / `shared`；闭集由迁移的 CHECK 钉住，**且**有防漂移断言比对 core 的 `PROJECT_TYPES`。 */
+  type: text("type").notNull(),
+})
+
 export type ProjectMemberRow = typeof projectMember.$inferSelect
 export type ProjectArchiveRow = typeof projectArchive.$inferSelect
+export type ProjectMetaRow = typeof projectMeta.$inferSelect
 
 /** 能跑 SQL 的句柄（形状同 `rbac.ts` 的 `GrantTarget` / `migrate.ts` 的 `MigrationTarget`）。 */
 export interface ProjectMemberTarget {
@@ -336,6 +360,100 @@ export async function rolesOf(
     where user_id = ${input.userId} and project_id in (${idsOf(input.projectIds)})
   `)
   return new Map(rowsOf(result).map((row) => [String(row.project_id), String(row.role)]))
+}
+
+export interface RecordProjectInput {
+  readonly projectId: string
+  readonly name: string
+  /** `private` / `shared`（迁移的 CHECK 是闭集的真相来源）。 */
+  readonly type: string
+}
+
+/**
+ * 记一个项目的**名字与类型**（006：`handleCreate` 注册性写入段的一步，**早于**可见性那一步）。
+ *
+ * ⚠️ **写的是 `insert`，不是 upsert**（对照 `markArchived` 的 upsert）——`project_id` 是建项目时
+ * 现取的 UUID，**同一个 id 不会有第二次创建**。撞主键在这里意味着「同一个 id 被记了两次」，
+ * 那是写入侧的 bug，**应当抛出来**而不是被 upsert 静默吞掉（`addMember` 同款：这两条约束是
+ * 数据层的事实，catch 掉就等于把它们的验证变成装饰）。
+ *
+ * ⚠️ **私有项目也写**：这张表的消费者（`handleList`）对私有项目同样要用它取名字与类型——
+ * 「被邀进一个私有项目」今天拦不住，那时成员看到的类型必须是 `private`。
+ */
+export async function recordProject(db: ProjectMemberTarget, input: RecordProjectInput): Promise<void> {
+  await db.execute(sql`
+    insert into auth.project_meta (project_id, name, type)
+    values (${input.projectId}, ${input.name}, ${input.type})
+  `)
+}
+
+export interface MembershipOfUser {
+  readonly projectId: string
+  /** 加入时刻，Unix **秒**（`time_created`）。 */
+  readonly timeCreated: number
+}
+
+/**
+ * 列「**我**被记在哪些项目里」（006：项目列表的名单那一半）。
+ *
+ * 名单 = 「我自己建的」∪「我加入的」：前者在各人的 `project_ext` 里，后者**只在 PG 里**
+ * ——邀一个人进项目**不会**给他写 `project_ext` 行（T016 实测：`touchProjectExt` 的注释逐字记着
+ * 「成员没有 `project_ext` 行」）。所以只读 `project_ext` 的实现必然漏掉成员。
+ *
+ * 收的是 `userId`（不是「取全部成员再挑」）——同 `rolesOf`：把「我是谁」交给调用方，
+ * 挑错了不报错、不变红，只是把别人的项目列给了我。
+ *
+ * **不吐 `role`**：角色由 `rolesOf` 一条批量查询按 `(userId, projectIds)` 给，两处各取一份
+ * 就是同一个判定写两遍（`#002-06`）；本函数只回答「名单里有谁」。
+ *
+ * 顺序**不写 `order by`**：唯一消费者（`handleList`）要把两类行并起来后按
+ * `(lastAccessedAt desc, project_id asc)` **全序**排——那是一个总的比较器，这里的返回顺序
+ * 进不了出参。写一条用不上的排序就是替调用方**声称**一个它并不依赖的语义（`LEARNINGS #004-07`：
+ * 形状由被调方定，而不是「顺手加一条看着更整齐的」）。
+ */
+export async function membershipsOf(db: ProjectMemberTarget, userId: string): Promise<MembershipOfUser[]> {
+  const result = await db.execute(sql`
+    select project_id, time_created
+    from auth.project_member
+    where user_id = ${userId}
+  `)
+  return rowsOf(result).map((row) => ({
+    projectId: String(row.project_id),
+    timeCreated: Number(row.time_created),
+  }))
+}
+
+/** 一个项目的名字与类型（`projectMetaOf` 的值形状）。 */
+export interface ProjectMeta {
+  readonly name: string
+  readonly type: string
+}
+
+/**
+ * 一次取一批项目的名字与类型（006：`handleList` 给「只在成员名单里」的那些行取名）。
+ *
+ * **没有那一行的项目，键在 Map 里缺席**（同 `archiveStatesOf` / `memberCountsOf` / `rolesOf` 的口径）：
+ * 0006 之前建的项目在 PG 里就没有名字行，读成某个默认值等于替它们**编**一个名字。
+ * 调用方的默认值口径由调用方定（`handleList` 给 `""`，并把它登记成已知缺口）。
+ *
+ * 空数组在入口提前返回（同 `memberCountsOf`：`in ()` 是语法错，应当炸出来而不是被兜住）。
+ */
+export async function projectMetaOf(
+  db: ProjectMemberTarget,
+  projectIds: readonly string[],
+): Promise<Map<string, ProjectMeta>> {
+  if (projectIds.length === 0) return new Map()
+  const result = await db.execute(sql`
+    select project_id, name, type
+    from auth.project_meta
+    where project_id in (${idsOf(projectIds)})
+  `)
+  return new Map(
+    rowsOf(result).map((row) => [
+      String(row.project_id),
+      { name: String(row.name), type: String(row.type) },
+    ]),
+  )
 }
 
 /**

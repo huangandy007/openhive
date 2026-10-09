@@ -7,9 +7,13 @@ import {
   addMember,
   archiveStatesOf,
   memberCountsOf,
+  membershipsOf,
   membersOf,
   projectArchive,
   projectMember,
+  projectMeta,
+  projectMetaOf,
+  recordProject,
   removeMember,
 } from "./project-member"
 
@@ -64,18 +68,22 @@ const addUser = (db: Awaited<ReturnType<typeof freshDb>>, id: string, policeNo: 
     values (${id}, ${policeNo}, '乙民警', 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
   `)
 
-describe("project_member / project_archive · 防漂移（模型 ⇔ 迁移）", () => {
+describe("project_member / project_archive / project_meta · 防漂移（模型 ⇔ 迁移）", () => {
   /**
    * 迁移是表的**真相来源**，drizzle 模型只是类型安全的查询壳。两侧不齐 = 有人只改了一侧，
    * 而症状是「查询按旧列名写、库里那列已经改名」——类型系统看不见，运行时才发现。
+   *
+   * ⚠️ `project_meta` 是 **006** 加进来的，所以循环里现在有第三张表：新表**一进来就要在这里**
+   * （少了它，那张表的模型与迁移各长各的，而本文件其余断言不会红）。
    */
-  test("两张表的 drizzle 模型与迁移建出的列逐列一致（名字 + 可空性）", async () => {
+  test("三张表的 drizzle 模型与迁移建出的列逐列一致（名字 + 可空性）", async () => {
     const db = drizzle({ client: new PGlite() })
     await migrate(db)
 
     for (const [tableName, table] of [
       ["project_member", projectMember],
       ["project_archive", projectArchive],
+      ["project_meta", projectMeta],
     ] as const) {
       const migrated = await db.execute(sql`
         select column_name, is_nullable from information_schema.columns
@@ -418,5 +426,115 @@ describe("project_member · 移除（T021）", () => {
     await removeMember(db, { projectId: "p1", userId: "u2" })
 
     expect(await membersOf(db, "p1")).toEqual([])
+  })
+})
+
+/**
+ * 006（2026-10-09）· **`project_meta`：项目的名字与类型**（FR-003 的名单那一半的配对物）。
+ *
+ * 表的进因写在迁移 `0006_project_meta.sql` 的头注释里，一句话：名字的家在**每用户 SQLite**，
+ * 而被邀进来的成员那边一行都没有 ⇒ 名字**必须**落共享 PG，否则「看得见」也只是一个空名字。
+ * 判定（「谁该看到这个项目」）**不在这里**，在 `packages/opencode` 的 `handleList`——
+ * 本包不依赖 core、core 也不依赖本包（同 `project_member` 那两组的分工）。
+ *
+ * ⚠️ 与上面几组同一个口径：**约束在数据层验**（不靠注释自觉，`#002-02`），
+ * **读写辅助的形状由真实调用点定**（`#004-07`）。
+ */
+describe("project_meta · 约束（真库验）", () => {
+  /**
+   * 一个项目只有一行名字——撞主键必须**抛错**，不是静默覆盖。
+   *
+   * 这条是 `recordProject` **刻意用 `insert` 而不是 upsert** 的判据（对照 `markArchived` 的
+   * upsert：那条的重复是正常流程，这条的重复是写入侧的 bug）。写成 upsert 的话，本用例会红在
+   * 「它却成功了」，而生产里的症状是「同一个 id 被记了两次、后来那次把名字改了」——不报错。
+   */
+  test("同一项目写第二行 ⇒ 被主键拒（recordProject 是 insert，不是 upsert）", async () => {
+    const db = await freshDb()
+    await recordProject(db, { projectId: "p1", name: "甲起的名字", type: "shared" })
+
+    const error = await failure(() => recordProject(db, { projectId: "p1", name: "另一个名字", type: "shared" }))
+
+    expect(error.message).toMatch(/project_meta_pkey/)
+  })
+
+  /**
+   * **类型闭集钉在数据上**：写错 / 写歪的 `type` 必须当场被拒。
+   *
+   * 这一列直接喂出参的 `type`：库里放进一个判定不认识的值，成员那边就拿到一个既不是 `private`
+   * 也不是 `shared` 的类型，而面板按 `type === "shared"` 决定要不要画成员徽章 ⇒ 一行静默的
+   * 「没有徽章」，界面上看不出哪里不对。
+   *
+   * ⚠️ 与 core 的 `PROJECT_TYPES` 的**逐值双向**比对不在这里、也不该在这里——那条要同时看得见
+   * core 与 auth，只有 `packages/opencode` 够得着（`openhive-project-member-closed-set.test.ts`）。
+   * 这边钉的是「库里真的会拒」，两者不可互相替代。
+   */
+  test("未知 type ⇒ 被 CHECK 拒（含大小写 / 中文写法，防「看着像」的录入）", async () => {
+    const db = await freshDb()
+
+    const shout = await failure(() => recordProject(db, { projectId: "p1", name: "n", type: "Shared" }))
+    expect(shout.message).toMatch(/project_meta_type_check/)
+
+    const chinese = await failure(() => recordProject(db, { projectId: "p2", name: "n", type: "共享" }))
+    expect(chinese.message).toMatch(/project_meta_type_check/)
+
+    // 对照：两个正当值都放行——少了它，「CHECK 把什么都拒了」也会让上面两条绿。
+    await recordProject(db, { projectId: "p3", name: "n", type: "shared" })
+    await recordProject(db, { projectId: "p4", name: "n", type: "private" })
+    const count = await db.execute(sql`select count(*) as n from auth.project_meta`)
+    expect(Number(count.rows[0]?.n)).toBe(2)
+  })
+})
+
+describe("project_meta / project_member · 读写辅助（006 的消费者）", () => {
+  /**
+   * 写进去的名字与类型**忠实往返**。
+   *
+   * 四种取法各钉一次，因为它们回答的是四个不同的问题：命中 ⇒ 值；**没记过 ⇒ 键缺席**
+   * （不是空串、也不是某个默认类型——0006 之前建的项目就是这一种，调用方据此决定兜底）；
+   * **只取点名的那批 id**（库里有、但没问它 ⇒ 不出现）；**空入参 ⇒ 空 Map 且不抛**
+   * （`in ()` 是语法错，而 `handleList` 在一个项目都没有的用户身上必然走到它，同 `memberCountsOf` 那条）。
+   */
+  test("recordProject 写进两行 ⇒ projectMetaOf 忠实读回（含键缺席与空入参）", async () => {
+    const db = await freshDb()
+    await recordProject(db, { projectId: "p1", name: "话单分析", type: "shared" })
+    await recordProject(db, { projectId: "p2", name: "甲的私事", type: "private" })
+    // ⚠️ 这一行**不在下面问的 id 里**，它是这条用例对「按 id 取」那一步的牙齿：
+    // 少了它，把 `where project_id in (…)` 整条摘掉也照样绿（库里一共就两行，全取回来正好相等）。
+    // `handleList` 每轮都会带上一批**只属于自己**的 id 去问，全库返回就意味着别人项目的名字
+    // 跟着回来——不报错、不变红，只是名字串了。
+    await recordProject(db, { projectId: "p_other", name: "甲另一个项目", type: "shared" })
+
+    expect(await projectMetaOf(db, ["p1", "p2", "p_none"])).toEqual(
+      new Map([
+        ["p1", { name: "话单分析", type: "shared" }],
+        ["p2", { name: "甲的私事", type: "private" }],
+      ]),
+    )
+    expect(await projectMetaOf(db, [])).toEqual(new Map())
+  })
+
+  /**
+   * **`membershipsOf` 只认这个人**——它回答的是「我加入的名单」。
+   *
+   * 漏掉 `where user_id` 时，一个用户的项目列表里会出现**全库所有人加入的项目**（跨用户横向
+   * 越权），而症状只是「项目有点多」：不报错、不变红——同 `membersOf 只认这个项目` 那条的形状。
+   * 判据写**两半**：我的两条读回（含加入时刻）＋ 别人的那条**不在**。
+   *
+   * ⚠️ 期望值按 `projectId` 排过：`membershipsOf` **刻意不写 `order by`**（排进不了出参——唯一
+   * 消费者 `handleList` 要把两类行并起来后按 `(lastAccessedAt desc, project_id asc)` 全序排）。
+   * 这里排序是在**消费侧**补的，不是替模型声称一个它不提供的语义。
+   */
+  test("membershipsOf：只列我被记在里面的项目（含加入时刻），不含别人的", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "020002")
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 11 })
+    await addMember(db, { projectId: "p2", userId: "u1", role: "member", timeCreated: 22 })
+    await addMember(db, { projectId: "p3", userId: "u2", role: "owner", timeCreated: 33 })
+
+    expect((await membershipsOf(db, "u1")).sort((a, b) => a.projectId.localeCompare(b.projectId))).toEqual([
+      { projectId: "p1", timeCreated: 11 },
+      { projectId: "p2", timeCreated: 22 },
+    ])
+    expect(await membershipsOf(db, "u_nobody")).toEqual([])
   })
 })
