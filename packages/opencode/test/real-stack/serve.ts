@@ -24,10 +24,11 @@
  *
  * - 端口一律**传 0** 让 OS 挑（PG 的 socket server 与内核都如此）：并行用例不抢端口。
  * - 本脚本**自己不做断言**——它是「起栈」，不是「测栈」。测栈在 Playwright spec 里。
- * - 关栈：收到 SIGTERM/SIGINT 时按「内核 → PG」次序收，且**清理临时沙箱目录**。
+ * - 关栈：收到 SIGTERM/SIGINT 时按「内核 → PG」次序收，且**清理临时沙箱目录**（设了
+ *   `REAL_STACK_STATE_DIR` 的落盘态**不清理**——那是「停栈再起，数据还在」的载体，见 `SANDBOX` 注释）。
  */
 
-import { mkdtempSync, rmSync } from "fs"
+import { mkdirSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
@@ -49,7 +50,23 @@ const ALICE: TokenSubject = {
   isAdmin: false,
 }
 
-const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-real-stack-"))
+/**
+ * 状态目录 —— **设了 `REAL_STACK_STATE_DIR` 就落在那儿、停栈不删**；**不设 ⇒ 与 2026-10-09 之前逐字一致**
+ * （`mkdtempSync` 临时目录 ＋ 停栈删掉）。
+ *
+ * 为什么要有这条支路：用户实报「项目管理里之前的项目和会话没了」。根因就是本脚本 `stop()` 里那句
+ * `rmSync`——开发时用真栈手动验收（「退出再登录，项目 / 会话还在不在」）本就走不通，因为**一停栈就没了**。
+ * 落盘之后那类验收才做得成（`Item 2` 的「成员退出再登录仍可见共享项目」也得靠它手动验收）。
+ *
+ * ⚠️ **落盘的不止三个根**（三根都从 `SANDBOX` 派生，所以设了它就一起落）：业务库在
+ * `<状态目录>/data`（per-user SQLite）、共享事实在 `<状态目录>/pg`（PGlite 的 dataDir）。
+ * 两半都要落——只落一半会出现「自己建的项目在、被加进的共享项目不在」这类半吊子态，正是要治的病。
+ * PGlite 的落盘形态已当场实测（见 `startProductionDb` 调用处的注释与 `test-support.ts`）。
+ */
+const STATE_DIR = process.env.REAL_STACK_STATE_DIR ? path.resolve(process.env.REAL_STACK_STATE_DIR) : undefined
+const SANDBOX = STATE_DIR ?? mkdtempSync(path.join(tmpdir(), "openhive-real-stack-"))
+// `mkdtempSync` 自己会建目录；`path.resolve(STATE_DIR)` 不会 ⇒ 落盘态得自己建（SQLite 与 PG 都要往底下写）。
+if (STATE_DIR) mkdirSync(SANDBOX, { recursive: true })
 
 const env = {
   OPENHIVE_DATA_ROOT: path.join(SANDBOX, "data"),
@@ -71,7 +88,9 @@ const restorePassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_
 
 const log = (line: string) => process.stdout.write(`${line}\n`)
 
-const pg = await startProductionDb()
+// 落盘态把 PGlite 的 dataDir 指到 `<状态目录>/pg`（实测过会真落盘，见 `test-support.ts` 的 JSDoc）；
+// 临时态不传 ⇒ 内存实例，与今天逐字一致。
+const pg = await startProductionDb({ dataDir: STATE_DIR ? path.join(SANDBOX, "pg") : undefined })
 await migrate(pg.db)
 // ⚠️ 两列都**必须显式种**，两处默认值都会把界面锁住：
 //
@@ -155,9 +174,12 @@ async function stop(code: number) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  try {
-    rmSync(SANDBOX, { recursive: true, force: true })
-  } catch {} // Windows 上 SQLite 句柄可能仍被持有，清理失败不该变成失败
+  // 落盘态（`REAL_STACK_STATE_DIR` 设了）**不删**——那正是「停栈再起，数据还在」的载体。
+  if (!STATE_DIR) {
+    try {
+      rmSync(SANDBOX, { recursive: true, force: true })
+    } catch {} // Windows 上 SQLite 句柄可能仍被持有，清理失败不该变成失败
+  }
   process.exit(code)
 }
 

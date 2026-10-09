@@ -111,14 +111,22 @@ export async function withProductionDb<T>(fn: (db: ReturnType<typeof connect>) =
  *
  * ⚠️ **必须 `stop()`**：它同时负责还原 `PG_*`、关 socket 服务、关 PGlite。漏掉就是漏一个端口
  * 和一个进程句柄，而且**不会报错**。
+ *
+ * ⚠️ **`options.dataDir` 决定内存还是落盘**（默认**不传 = 内存**，与 2026-10-09 之前逐字一致）。
+ * 传一个目录就**落盘**：关掉重开数据还在。这是给真栈的 `REAL_STACK_STATE_DIR` 用的——开发时手动
+ * 验收「停栈再起，项目 / 会话还在不在」必须有落盘的库，临时内存库一停就空。
+ * 实测（`@electric-sql/pglite@0.5.8`，2026-10-09 本机，带对照）：
+ * `new PGlite()` 写表 → 关 → 重开 ⇒ `relation "probe" does not exist`；
+ * `new PGlite(dir)` 同样一轮 ⇒ dir 下真建出 PG 数据目录（`base`/`global`/`pg_wal`/`PG_VERSION`…），
+ * 重开后 `select` 拿到先前插入的行。
  */
 export interface ProductionDb {
   readonly db: ReturnType<typeof connect>
   stop(): Promise<void>
 }
 
-export async function startProductionDb(): Promise<ProductionDb> {
-  const pg = new PGlite()
+export async function startProductionDb(options: { dataDir?: string } = {}): Promise<ProductionDb> {
+  const pg = new PGlite(options.dataDir)
   // port 0 = 让 OS 挑一个空闲端口，避免与并行跑的其他用例抢端口。
   const server = new PGLiteSocketServer({
     db: pg,
