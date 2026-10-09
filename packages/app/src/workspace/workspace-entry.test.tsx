@@ -1119,10 +1119,12 @@ describe("项目数据接线（T018 出参）", () => {
    * ⚠️ **原文那半句「而不选的代价是零：不发 `x-openhive-project` ⇒ 后端落回沙箱根」，从
    * 2026-10-08 起不成立**（006 Step 5 ②-1 给「当前项目」加了 **cookie 通道**）：cookie 由浏览器
    * **对每一条同源请求自动附带**、且**活得比页面久** ⇒ 刷新之后信号归零、cookie 却还在
-   * ——「不选」不再是自然状态，而是**要主动维持**的（006 已裁定 **B：启动清掉 cookie**，
-   * 落点在 `workspace-entry.tsx` 的 `onMount`，判据在本文件末尾那一节）。
-   * **本条的裁定与判据一个字不变**，改的只是那条已经过时的理由（`LEARNINGS #002-06`：
-   * 改完一处要 grep 谁引用了它）。
+   * ——「不选」不再是自然状态，而是**要主动维持**的。维持它的地方是 `workspace-entry.tsx` 的
+   * `onMount`：**有存档就还原、存档失效就清**（Task B · 2026-10-09 用户裁定 **A：跟随当前项目**；
+   * 判据在本文件末尾那一节）。
+   * ⚠️ **本条测的仍是「没有存档 ⇒ 不自动选」那一支**（2026-10-06 的裁定），它没有被裁定 A 动过——
+   * 本条的裁定与判据一个字不变，改的只是那条已经过时的理由（`LEARNINGS #002-06`：改完一处要
+   * grep 谁引用了它）。
    *
    * ⚠️ **这条理由在 T024 之前还有第二半，那半现在已经不成立了**（原文：「『自动选最近访问的
    * 那个』语义对不上——`last_accessed_at` 只在**建项目**时写，没有『选中即更新』的出口」）。
@@ -2169,9 +2171,9 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
 })
 
 /**
- * 启动（挂载）时清掉遗留的「当前项目」cookie（006 第二轮审查裁定 **B**，2026-10-08）。
+ * 启动（挂载）时**还原**上次的「当前项目」（Task B · 2026-10-09，用户裁定 **A：跟随当前项目**）。
  *
- * ## 为什么必须由**启动**来清
+ * ## 为什么必须由**启动**来做
  *
  * 005 定下「打开时**不自动选**项目」（`workspace-entry.tsx` 的 `onMount` 那两段注释；spec 只写了
  * 「新建后成为当前项目」与「点某项目切换」）。006 Step 5 ②-1 之后「当前项目」多了一条 **cookie
@@ -2179,20 +2181,25 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
  * **刷新之后**信号回到 `undefined`（界面说「未选择项目」），cookie 却还指着上次那个项目
  * ⇒ **界面说没有项目、请求落在旧项目目录里**（三席独立审查命中同一处，`LEARNINGS #003-02`）。
  *
- * 裁定 **B：启动清掉 cookie**，把它拉回**会话级**——`current-project.ts` 那边刻意不给它
- * `Max-Age`，「我此刻在看哪个项目」本就不是设置。
+ * 006 第二轮审查当时的处置（裁定 **B**）是**启动即清**；用户 2026-10-09 改判 **A：跟随当前项目**
+ * ——把存档**读回来还原**（左栏会话 tab 于是列的是这个项目自己的会话）。「清」那一支没消失，
+ * 它缩到「存档**失效**」那一支（项目没了 / 已归档）；「**没有**存档」仍是**什么都不做**
+ * （2026-10-06 那条裁定不变，本组最后一条正是它的正面钉法）。
  *
- * ⚠️ **它不解决多标签页**（cookie 是全浏览器共享的）：一个标签页清掉，另一个正在用的标签页
- * 下一次请求照样落回沙箱根。那条残余**另行挂账**在 `006/state.md` 的缺口表里——别把这一节
- * 读成「分叉已经根除」。
+ * ⚠️ **裁定 A 顺带收掉了裁定 B 的多标签页残余**（cookie 全浏览器共享）：B 下「甲在用、乙一启动
+ * 就把 cookie 清掉 ⇒ 甲下次请求落回沙箱根」不再发生——A 不写 cookie。真正的残余变成
+ * 「甲切了项目、乙的**信号**还停在旧项目直到它自己下次挂载」（`006/state.md` 缺口表），别把本节
+ * 读成「分叉已根除」。
  *
- * ⚠️ 「挂载 ⇒ 清」这条**只在 `WorkspaceEntry` 每次启动只挂一次时成立**，而那是一条**上游
- * 事实**、不是本文件的假设：`NewAppLayout` 落在**路由根**里（`app.tsx` 那一段的注释写着
- * 「lives in the router root so it remains mounted across route changes」）⇒ SPA 里换路由
- * **不重挂**。若哪天它被挪到某个 `<Route>` 之下，这一节会绿着、而民警刚选的项目每次导航都被清掉
- * （`LEARNINGS #005-15`：注释不许比断言强——这条假设今天**没有**断言钉着，已记在缺口表）。
+ * ⚠️ 「挂载 ⇒ 还原」也**只在 `WorkspaceEntry` 每次启动只挂一次时才是「启动」**，而那条是一条
+ * **上游事实**：`NewAppLayout` 落在**路由根**里（`app.tsx` 那一段的注释写着「lives in the router
+ * root so it remains mounted across route changes」）⇒ SPA 里换路由**不重挂**。
+ * 与裁定 B 不同，这条假设**不再危险**：民警选了项目 ⇒ `setCurrentProject` 会**同时**写 cookie，
+ * 于是即便将来它被挪进某个 `<Route>` 之下、每次导航都重挂，读回的也是**刚刚写进去的**同一个
+ * 项目（结果幂等），只是白一次 `list()` 请求。但那条假设今天仍**没有**断言钉着（`LEARNINGS
+ * #005-15`：注释不许比断言强），已记在缺口表。
  */
-describe("启动（挂载）时清掉遗留的「当前项目」cookie（006 第二轮审查裁定 B）", () => {
+describe("启动（挂载）时**还原**上次的「当前项目」（Task B · 2026-10-09 用户裁定 A）", () => {
   /**
    * jar 里那条 cookie 的**值**；没有它、或被 `Max-Age=0` 置空，都读作 `undefined` / `""`。
    *
@@ -2211,32 +2218,85 @@ describe("启动（挂载）时清掉遗留的「当前项目」cookie（006 第
     return undefined
   }
 
-  test("启动把上次留下的「当前项目」清掉：cookie 与信号**一起**回到「未选择」", () => {
-    // 摆出「上一次启动留下的现场」——用**产品自己的写入点**写，与刷新前那一刻逐字相同。
-    setCurrentProject({ id: "prj_stale_0001", name: "上次看的项目" })
+  /**
+   * 摆出「刷新那一刻的真实状态」：**信号是空的（内存），cookie 里还留着存档（活得比页面久）**。
+   *
+   * ⚠️ cookie 这里走**裸 `document.cookie`**，不用产品的写入点：产品那个写入点**同时写信号**，
+   * 而这条链要的恰恰是「只有 cookie 有」——用产品写入点**摆不出**这个状态。这与旧版那条
+   * 「清掉」用例的摆法相反（那边用产品写入点是对的，它要的就是「两处都有」）。
+   */
+  function 摆出存档(id: string) {
+    setCurrentProject(undefined) // 信号归零（顺带把 cookie 清干净）
+    document.cookie = `openhive_project=${id}; Path=/`
+  }
 
-    // 前置（`LEARNINGS #004-08`：判「没发生」之前先证明机制是活的）：这一幕**真的摆好了**。
-    // 少了这半，在「写入本来就被夹具吃掉」的场合（文档 URL 还是 `about:blank` 时正是如此）
-    // 下面那两条断言照样绿——而那种绿什么也没证明。
-    expect(读cookie()).toBe("prj_stale_0001")
+  beforeEach(() => {
+    // 两条接入缝都是模块级的，测试之间必须复位（同本文件其余各节）。
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+  })
+
+  /**
+   * 主判据（裁定 A）：**存档那个项目还在 ⇒ 恢复成当前项目**。
+   *
+   * ⚠️ 前置两条缺一不可（`LEARNINGS #004-08`：判「发生」之前先证明现场摆好了）：少了它们，
+   * 在「cookie 写入被夹具吃掉」的场合（文档 URL 还是 `about:blank` 时正是如此）end 断言照样绿
+   * ——而那种绿什么也没证明。
+   */
+  test("存档那个项目还在清单里 ⇒ 恢复成当前项目（cookie 不动、锚点行显示它）", async () => {
+    摆出存档("prj_stale_0001")
+    expect(读cookie()).toBe("prj_stale_0001") // 前置①：存档真的摆上了
+    expect(currentProject()).toBeUndefined() // 前置②：信号确实是空的（不然这条测不出「还原」）
+
+    const { data } = 假数据源({ list: async () => [私有("prj_stale_0001", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
     expect(currentProject()?.id).toBe("prj_stale_0001")
+    expect(读cookie()).toBe("prj_stale_0001")
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+  })
 
-    document.cookie = "probe_keep=1; Path=/; SameSite=Lax" // 对照：一条无关的 cookie
+  /**
+   * 存档**失效**（那个项目没了）⇒ **清掉**，不挂着它。
+   *
+   * 判据分两半（同旧版那条的理由）：cookie 与信号**一起**回到「未选择」。只手搓一句
+   * `document.cookie = "openhive_project=; …"` 也能让 cookie 那半绿，但会**留着信号** ⇒
+   * 「界面还显示着上次那个项目、而请求已经落回沙箱根」——换了个方向的分叉（`LEARNINGS #002-06`）。
+   * 另一半（已归档）在 `current-project.test.ts` 里有独立一条。
+   */
+  test("存档那个项目已经不在清单里 ⇒ 信号与 cookie 一起回到「未选择」", async () => {
+    摆出存档("prj_gone_0009")
+    expect(读cookie()).toBe("prj_gone_0009") // 前置：存档摆上了
 
-    mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    const { data } = 假数据源({ list: async () => [私有("prj_alpha_0001", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
 
     // 判据写成「**空的或不存在**」，不写死形态：happy-dom 的 `Max-Age=0` **不删条目**、只把值置空，
     // 真实浏览器会整条删掉——两种形态在服务端读取器（`cookieValue` 的 `if (!raw) return undefined`）
-    // 眼里**等价**（`current-project.test.ts` 的 `等于没有` 同因；写死任一种就是在钉 happy-dom）。
+    // 眼里等价（`current-project.test.ts` 的 `等于没有` 同因）。
     expect(读cookie() ?? "").toBe("")
-    // ⚠️ 第二条不是上面那条的复述：它钉的是「清这件事走的是**那个唯一的写入点**」。手搓一句
-    // `document.cookie = "openhive_project=; …"` 也能让上面那条绿，但会**留着信号** ⇒ 于是变成
-    // 「界面还显示着上次那个项目、而请求已经落回沙箱根」——**换了个方向的分叉**
-    // （`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
     expect(currentProject()).toBeUndefined()
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+  })
 
-    // 对照：清的是**那一条**，不是把整个 jar 端了。
-    expect(document.cookie).toContain("probe_keep=1")
+  /**
+   * **没有存档 ⇒ 不自动选**（2026-10-06 那条裁定的正面钉法，裁定 A 没有动它）。
+   *
+   * 与下面 T018 那节的「不自动认领当前项目」是**同一件事的两面**：那边从面板角度看，这边
+   * 紧挨着「有存档就还原」摆着当**对照**——少了它，「还原」与「无条件认领」在测试里长得一样。
+   */
+  test("没有存档 ⇒ 保持「未选择项目」，不自动选（清单里有项目也不认领）", async () => {
+    const { data } = 假数据源({ list: async () => [私有("prj_alpha_0001", "8·17专案", 1)] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    expect(currentProject()).toBeUndefined()
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
+    // 前置：清单真的到了面板上——否则上面那两条在「压根没接线」时也是绿的（`#004-14`）。
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-item-name")).toBe("8·17专案")
   })
 })
 

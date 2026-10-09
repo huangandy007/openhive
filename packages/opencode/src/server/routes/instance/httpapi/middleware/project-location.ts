@@ -302,10 +302,15 @@ export const PROJECT_HEADER = "x-openhive-project"
  * ⚠️ **同样是客户端契约**：`test/server/openhive-project-directory.test.ts` 里那个字面量与
  * **客户端**（`packages/app/src/project/current-project.ts`，写；`ai-session/**` 那条 SDK 链，
  * 浏览器自动带）各写一份。理由与 `PROJECT_HEADER` 逐字相同——import 过来就变成「生产改什么、
- * 测试跟着改什么」。改名要**四处一起改**（**产品**两侧各一份 ＋ **测试**两侧各一份），
- * ⚠️ **别数「三处」**（那是个错的记法，2026-10-08 复核改正）：取数命令（**仓库根**跑）
- * `grep -rn '= "openhive_project"' packages/opencode/src packages/opencode/test packages/app/src`
- * ⇒ 应当**恰好 4 条**。
+ * 测试跟着改什么」。改名要把**所有文本落点**一起改——取数**以宽 grep 为准**（**仓库根**跑）：
+ * `grep -rn 'openhive_project' packages/opencode/src packages/opencode/test packages/app/src`
+ *
+ * ⚠️ **别用「数命中行」的办法保证改全**（**Task B · 2026-10-09 复核补记**）——窄 grep
+ * `grep -rn '= "openhive_project"' …`（2026-10-08 起以「应当恰好 4 条」记进本文档）**既漏又错**：
+ * ① **漏**掉插值形态 `` `openhive_project=${id}` ``（如 `test/server/openhive-project.test.ts`）；
+ * ② **错**在它会命中**自身文档**（注释里引了这条命令 ⇒ 自匹配，本文件与客户端各一行）＋
+ * `!== "openhive_project"` 这种比较（`!==` 末尾那个 `=` 也算数）。⇒ 这条命令**验不出漏改**
+ * ——别再把它的命中数读成「只有这么多处」（`#005-15`：检查不许比事实强）。真落点以**宽 grep** 为准。
  *
  * 为什么需要第二个通道（不是重复造）：**SDK 那条链够不着头**——右栏的目录作用域客户端由
  * **上游** `context/server-sdk.tsx` 的 `createDirSdkContext` 造，fork 侧没有注入头的缝，

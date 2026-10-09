@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test"
-import { currentProject, setCurrentProject } from "@/project/current-project"
+import { currentProject, setCurrentProject, type 可还原的项目行, 读项目cookie, 还原启动项目 } from "@/project/current-project"
 
 /**
  * 「当前项目」写进 cookie（006 Step 5 · ②-1，用户裁定 **B：cookie 通道**，2026-10-07）。
@@ -176,5 +176,135 @@ describe("「当前项目」的 cookie 写入（006 Step 5 · ②-1）", () => {
 
     setCurrentProject(undefined)
     expect(currentProject()).toBeUndefined()
+  })
+})
+
+/**
+ * **读回 ＋ 启动还原**（Task B：刷新后跟随当前项目，2026-10-09 用户裁定 **A**）。
+ *
+ * ## 为什么要有读回这一半
+ *
+ * 在它之前，这个通道**只有写侧**：`setCurrentProject` 把 id 写进 cookie，**没有任何一处读回来**
+ * ⇒ 刷新之后信号归零（内存）而 cookie 还在（活得比页面久）。当时的处理（006 第二轮审查裁定 B）
+ * 是**启动时主动清掉**；用户 2026-10-09 改判 **A：跟随当前项目**——把那份存档**读回来还原**。
+ * 没有存档的新用户仍是不自动选，2026-10-06 那条裁定不变（本组最后一条正是它的正面钉法）。
+ *
+ * ## 判据为什么落在「信号 ＋ cookie 一起」
+ *
+ * `还原启动项目` 是**唯一写入点**（`setCurrentProject`）的调用方之一，两半必须同时到位：
+ * 只写信号不写 cookie ⇒ 「界面说甲、请求落乙」原样复现；只写 cookie 不写信号 ⇒ 反过来的分叉
+ * （`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。
+ */
+describe("「当前项目」的 cookie 读回 ＋ 启动还原（Task B · 2026-10-09 裁定 A）", () => {
+  /**
+   * 每条用例前把**信号**也归零——文件级那条 `beforeEach` 只清 cookie，**信号是模块级的、会串味**。
+   *
+   * ⚠️ 为什么本组**必须**另有这一条（而上面「写入」那组刻意没有）：还原这一组里有的用例
+   * （「没有存档 ⇒ 不自动选」）**不自己摆现场**，它起手读的就是模块级信号 —— 上一条用例若
+   * 落下了一个非空的当前项目，它当场就红在**别人的状态**上（`LEARNINGS #005-03`：红在别人的
+   * 数据上先找订阅者 / 残骸）。实测：变异「拆掉 `archived` 那半」时，上一条（已归档）不再清信号
+   * ⇒ 这一条跟着红，读起来像「`archived` 影响了两条用例」，其实是**串味**。
+   * 写入那组之所以不这么做：它测的就是 `setCurrentProject` 自己，用它当前置会让「清除那一支坏了」
+   * 静默变成**前置失败**（见文件级 `beforeEach` 的注释）。
+   */
+  beforeEach(() => setCurrentProject(undefined))
+
+  /** 一行清单项——形状即 `可还原的项目行`（是 `ProjectEntry` 的一个窄化）。 */
+  const 私有行 = (
+    id: string,
+    name: string,
+    extra: { archived?: boolean; memberCount?: number } = {},
+  ): 可还原的项目行 => ({ id, name, ...extra })
+
+  /**
+   * 摆出「上一次启动留下的现场」：**信号归零，cookie 里还留着存档**。
+   *
+   * 这正是刷新之后、`onMount` 跑起来之前那一刻的真实状态（信号是内存、cookie 是磁盘）。
+   * cookie 走**裸 `document.cookie`**（不是产品写入点）：产品那个写入点会**同时写信号**，
+   * 而这条链要的恰恰是「只有 cookie 有」这个状态——用产品写入点摆不出来。
+   */
+  function 摆出存档(id: string) {
+    setCurrentProject(undefined) // 信号归零（顺带把 cookie 清干净）
+    document.cookie = `${PROJECT_COOKIE}=${id}; Path=/`
+  }
+
+  it("读项目cookie：写进去什么就读回什么", () => {
+    setCurrentProject({ id: "prj_alpha_0001", name: "8·17专案" })
+
+    expect(读项目cookie()).toBe("prj_alpha_0001")
+  })
+
+  it("读项目cookie：没有这条 cookie ⇒ `undefined`（不是空串）", () => {
+    expect(读项目cookie()).toBeUndefined()
+  })
+
+  /**
+   * jar 里掺着别的 cookie 时**只认这一条**——按分号切开、按名字精确匹配。
+   * 少了这条，一个「取第一段」的朴素实现（不比对名字）照样能过上面两条。
+   */
+  it("读项目cookie：jar 里掺着别的 cookie，只认这一条（不拿第一段凑数）", () => {
+    document.cookie = "oc_locale=zh-CN; Path=/"
+    document.cookie = "probe_keep=1; Path=/"
+    setCurrentProject({ id: "prj_alpha_0001", name: "8·17专案" })
+
+    expect(读项目cookie()).toBe("prj_alpha_0001")
+  })
+
+  /**
+   * 主判据：**存档有效 ⇒ 恢复成当前项目**，且 `memberCount` 一并带过来
+   * （少了它，共享项目的 `👥 N` 徽章会消失——那是用户可见的）。
+   */
+  it("还原：存档还在清单里且没归档 ⇒ 信号恢复成它、cookie 仍是那个 id", () => {
+    摆出存档("prj_alpha_0001")
+
+    还原启动项目(读项目cookie(), [私有行("prj_alpha_0001", "8·17专案", { memberCount: 3 })])
+
+    expect(currentProject()?.id).toBe("prj_alpha_0001")
+    expect(currentProject()?.name).toBe("8·17专案")
+    expect(currentProject()?.memberCount).toBe(3)
+    expect(读cookie()).toBe("prj_alpha_0001")
+  })
+
+  /**
+   * 存档**失效**的第一种：那个项目已经不在清单里了。
+   * ⇒ 连同 cookie 一起清掉——留着它就是一个指着死项目的环境通道。
+   */
+  it("还原：存档不在清单里 ⇒ 信号与 cookie 一起回到「未选择」", () => {
+    摆出存档("prj_gone_0009")
+
+    还原启动项目(读项目cookie(), [私有行("prj_alpha_0001", "8·17专案")])
+
+    expect(currentProject()).toBeUndefined()
+    等于没有()
+  })
+
+  /**
+   * 存档**失效**的第二种：那一行**已归档**。
+   *
+   * ⚠️ 与上一条**不是一个条件**（`行 === undefined` vs `行.archived === true`），故各写一条：
+   * 合成一条时，把 `archived` 那半摘掉不会有任何用例变红（`LEARNINGS #005-12`：同一个修法落在
+   * N 个条件上就写 N 条）。这一支**真实可达**——`当前项目目录` 也会因 `archived` 判「没有目录」，
+   * 两处口径必须一致，否则会出现「锚点行挂着这个项目、会话 tab 却列不出任何东西」。
+   */
+  it("还原：存档那一行已归档 ⇒ 同样回到「未选择」（与 `当前项目目录` 的口径一致）", () => {
+    摆出存档("prj_archived_0007")
+
+    还原启动项目(读项目cookie(), [私有行("prj_archived_0007", "旧案", { archived: true })])
+
+    expect(currentProject()).toBeUndefined()
+    等于没有()
+  })
+
+  /**
+   * **没有存档 ⇒ 什么都不做**（全新用户 / 清过 cookie）。
+   *
+   * 这是 2026-10-06 那条裁定的**正面钉法**：清单里有项目也**不自动选**。
+   * 顺带钉「不写」——实现里若顺手 `setCurrentProject(清单[0])`，这条会红。
+   */
+  it("还原：没有存档 ⇒ 不自动选（清单里有项目也不认领），且一个 cookie 都不写", () => {
+    还原启动项目(undefined, [私有行("prj_alpha_0001", "8·17专案")])
+
+    expect(currentProject()).toBeUndefined()
+    等于没有()
   })
 })

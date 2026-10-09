@@ -49,13 +49,18 @@ export const currentProject = currentProjectSignal
 /**
  * 「当前项目」的 cookie 名（006 Step 5 · ②-1，用户裁定 **B：cookie 通道**，2026-10-07）。
  *
- * ⚠️ **这是客户端契约，一共四处字面量**——**产品**两份（服务端
- * `packages/opencode/src/server/routes/instance/httpapi/middleware/project-location.ts`
- * 的 `PROJECT_COOKIE` ＋ 客户端本文件）、**测试**两份（`current-project.test.ts` ＋
- * `packages/opencode/test/server/openhive-project-directory.test.ts`，都写字面量、刻意不 import）。
- * 改名**四处一起改**；取数命令（**仓库根**跑）——⚠️ 别数「三处」，那是个错的记法
- * （2026-10-08 复核改正）：
- * `grep -rn '= "openhive_project"' packages/opencode/src packages/opencode/test packages/app/src`
+ * ⚠️ **这是客户端契约**：左右两侧「**产品** ＋ **测试**」各写字面量、**刻意不 import**
+ * （`LEARNINGS #003-05` 的假镜像：import 过来就变成「生产改什么、测试跟着改什么」）。
+ * 改名要把**所有文本落点**一起改——取数**以宽 grep 为准**（**仓库根**跑）：
+ * `grep -rn 'openhive_project' packages/opencode/src packages/opencode/test packages/app/src`
+ *
+ * ⚠️ **别用「数命中行」的办法保证改全**（Task B · 2026-10-09 复核实测）——窄 grep
+ * `grep -rn '= "openhive_project"' …`（2026-10-08 曾以「应当恰好 4 条」记进两侧文档）**既漏又错**：
+ * ① **漏**掉插值形态 `` `openhive_project=${id}` ``（不以引号紧跟等号出现，如
+ * `packages/opencode/test/server/openhive-project.test.ts` 那处）；② **错**在它会命中**自身文档**
+ * 那两行（注释里引了这条命令 ⇒ 自匹配）＋ `!== "openhive_project"` 这种比较（`!==` 末尾那个 `=`
+ * 也算数，如 `workspace-entry.test.tsx`）。⇒ 这条命令**验不出漏改**（`#005-15`：检查不许比事实强；
+ * 已记 `006/state.md` 缺口表）。真落点以**宽 grep** 为准，改完逐个打勾。
  */
 const PROJECT_COOKIE = "openhive_project"
 
@@ -105,14 +110,117 @@ function writeProjectCookie(id: string | undefined) {
 /**
  * 「当前项目」的**唯一写入点**——信号与 cookie **在这里一起变**（006 Step 5 · ②-1 起）。
  *
- * 收在一处而不是让每个调用点自己记得写 cookie：写入点有三个（面板切项目 / 新建项目后成为当前
- * 项目 / 归档后清掉），散着写就是**三处会漂的清单**（`LEARNINGS #002-06`：同一个判断两处各写一份，
- * 早晚不等）。`current-project.test.ts` 钉的就是这个函数。
+ * 收在一处而不是让每个调用点自己记得写 cookie：调用点有**五个**（面板切项目 / 新建项目后成为当前
+ * 项目 / 归档后清掉 / **启动时还原** / **启动时没有数据源那一支的兜底清除**），散着写就是**五处会漂
+ * 的清单**（`LEARNINGS #002-06`：同一个判断两处各写一份，早晚不等）。`current-project.test.ts` 钉
+ * 的就是这个函数。
  *
- * ⚠️ 它是**普通函数**而不是信号 `Setter`（不接 `(prev) => next` 那种形式）——本仓三个调用点
+ * ⚠️ 别把这个数写成一个「我记得的」数——**它漂过**：Task B 重写 `onMount` 时把「无数据源兜底清除」
+ * 那处（`workspace-entry.tsx` 的 `onMount`，`if (!projectData)` 支）带进来，注释里的「四个」当场
+ * 就不成立了（`LEARNINGS #003-02`：数落点靠 `grep -rn 'setCurrentProject' packages/app/src`，
+ * 不靠记忆。同类：cookie 字面量的「三处实为四处」）。
+ *
+ * ⚠️ 它是**普通函数**而不是信号 `Setter`（不接 `(prev) => next` 那种形式）——本仓五个调用点
  * 全是直接传值，接函数形态只是**没人用的灵活性**（Karpathy 原则 2：不写没要求的灵活性）。
  */
 export function setCurrentProject(project: CurrentProject | undefined) {
   writeCurrentProject(project)
   writeProjectCookie(project?.id)
+}
+
+/**
+ * 从 jar 里读回「当前项目」的存档（Task B · 2026-10-09，用户裁定 **A：跟随当前项目**）。
+ *
+ * ## 为什么要有读侧
+ *
+ * 在它之前这条通道**只有写侧**（见 `writeProjectCookie`）：写进去的 id **没有任何一处读回来**
+ * ⇒ 刷新之后信号归零（内存）、cookie 却还在（活得比页面久）。裁定 A 要求「刷新后把上次那个项目
+ * 恢复回来」，读侧是它的第一步。
+ *
+ * ## 判据：按名字**精确**匹配，不拿第一段凑数
+ *
+ * jar 里通常掺着别的 cookie（本域还落着 `oc_locale` 等），所以逐段按 `name=value` 切开、比对
+ * **整段名字**。一个「取第一段」的朴素实现在只有一条 cookie 的用例里照样绿——所以读回那一组
+ * 专门有一条「掺着别的 cookie」的用例钉这一点。
+ *
+ * ⚠️ 与测试里的两份**同类助手**（`current-project.test.ts` / `workspace-entry.test.tsx` 各自的
+ * `读cookie`）是**三份实现**：测试那两份刻意不 import 本函数（`LEARNINGS #003-05`：假镜像——
+ * import 过来就成「生产改什么、测试跟着改什么」，改名也测不出来）。这里读的是**真
+ * `document.cookie`**，不 stub。
+ *
+ * **没有这条 cookie ⇒ `undefined`**（不是空串）：调用方（`还原启动项目`）拿 `undefined` 当
+ * 「全新用户 / 清过 cookie」，那是**什么都不做**的一支，必须与「有一条空值的 cookie」分开。
+ *
+ * ⚠️ **空值按「没有」处理**，与**服务端读取器**同口径（`@/server/user-identity` 的 `cookieValue`
+ * 对空值有一句 `if (!raw) return undefined`；`LEARNINGS #003-05`：要镜像就对着它的行为写）。
+ * 这不是为了迁就某个环境：真浏览器里 `Max-Age=0` 把整条删掉（读到 `undefined`），happy-dom
+ * **不删、只置空**（读到 `"openhive_project="`）——两种形态在本通道语义上**等价**（都是「没选
+ * 项目」），判据写死任一种都会变成在钉 happy-dom（`LEARNINGS #005-07`）。而项目 id 是
+ * `crypto.randomUUID()`，**永不可能是空串** ⇒ 空值只可能来自「清过」。
+ */
+export function 读项目cookie(): string | undefined {
+  for (const part of document.cookie.split(";")) {
+    const 分隔 = part.indexOf("=")
+    if (分隔 === -1) continue
+    if (part.slice(0, 分隔).trim() !== PROJECT_COOKIE) continue
+    const 值 = part.slice(分隔 + 1).trim()
+    return 值 === "" ? undefined : 值
+  }
+  return undefined
+}
+
+/**
+ * 「还原」需要的那几项清单行属性——**是 `ProjectEntry` 的一个窄化**
+ * （`project-panel.tsx` 那个接口多出来的 `type` / `lastAccessedAt` / `role` 这里一个都不读）。
+ *
+ * 写成**结构型**而不是直接吃 `ProjectEntry`：这条缝只关心「还原一个当前项目」要什么，多出来的
+ * 字段就是将来没人负责的接口（同上面 `CurrentProject` 的取向）。`ProjectEntry` 结构上可赋值给它，
+ * 调用方（`workspace-entry.tsx`）不必转换。
+ */
+export interface 可还原的项目行 {
+  /** 见 `ProjectEntry.id`；这里是可选的——比对用的是「能找到同 id 的行」，没有 id 的行匹配不上。 */
+  readonly id?: string
+  /** 见 `CurrentProject.name`（锚点行显示的就是它）。 */
+  readonly name: string
+  /** 见 `CurrentProject.memberCount`：一并带回去，少了它共享项目的 `👥 N` 徽章会消失。 */
+  readonly memberCount?: number
+  /**
+   * 已归档。`当前项目目录` 也因它判「没有目录」⇒ 这里必须**同口径**（见 `还原启动项目`）。
+   */
+  readonly archived?: boolean
+}
+
+/**
+ * 「启动还原」——把 cookie 里那份存档**读回信号**（Task B · 2026-10-09，用户裁定 **A**）。
+ *
+ * ## 三支，缺一不可
+ *
+ * 1. **没有存档**（`undefined`）⇒ **什么都不做**。这是 2026-10-06「打开时不自动选」那条裁定的
+ *    正面保法：全新用户不该被塞一个项目（`清单[0]` 也不行——有一条用例专门钉它）。
+ * 2. **存档有效**（清单里有这一行，且**未归档**）⇒ 恢复成当前项目，连同 `memberCount`。
+ * 3. **存档失效**（不在清单里 / 那一行已归档）⇒ **清掉**（`setCurrentProject(undefined)`）。
+ *    留着它就是一根「指着死项目的环境通道」——界面说没项目、请求却还带着它落过去
+ *    （与 `writeProjectCookie` 那条注释同因）。
+ *
+ * 第 2、3 两支各有一条**独立**用例：合成一条时，把 `archived` 那半摘掉不会有任何东西变红
+ * （`LEARNINGS #005-12`：同一个修法落在 N 个条件上就写 N 条）。`archived` 那一支并非理论上的
+ * ——`当前项目目录` 也因归档判「没有目录」，两处口径必须一致，否则会出现「锚点行挂着这个项目、
+ * 会话 tab 却列不出任何东西」。
+ *
+ * ## 为什么不直接手搓 `document.cookie`
+ *
+ * 走 **`setCurrentProject`**（唯一写入点）：信号与 cookie 必须**一起**变，两处各写一份就是
+ * 「界面显示甲、请求落乙」这类分叉的老家（`LEARNINGS #002-06`）。注意**失效那一支也得走它**——
+ * 只清 cookie 会**留着信号**，那是反过来的同一处分叉。
+ */
+export function 还原启动项目(存档: string | undefined, 清单: readonly 可还原的项目行[]) {
+  if (存档 === undefined) return
+  const 行 = 清单.find((候选) => 候选.id === 存档)
+  // `行 === undefined`（已不在清单）与 `行.archived === true`（已归档）是**两个**条件，各有一条用例。
+  // ⚠️ `行.id === undefined` 是给类型收窄用的，**不是第三支**：`find` 命中的行其 `id` 必等于 `存档`。
+  if (行 === undefined || 行.id === undefined || 行.archived === true) {
+    setCurrentProject(undefined)
+    return
+  }
+  setCurrentProject({ id: 行.id, name: 行.name, memberCount: 行.memberCount })
 }

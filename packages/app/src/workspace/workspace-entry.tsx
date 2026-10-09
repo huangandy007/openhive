@@ -4,7 +4,7 @@ import type { LoadFileContent } from "@/center/file-content"
 import { TabBar } from "@/center/tab-bar"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { viewRegistry } from "@/center/views"
-import { currentProject, setCurrentProject } from "@/project/current-project"
+import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
@@ -168,7 +168,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const 拉清单 = async (data: ProjectData) => {
     const 代 = ++清单代次
     const 清单 = await data.list()
-    if (代 === 清单代次) setProjectList(清单)
+    // 被新的一代顶掉 ⇒ **不写缝、也不交出去**：`onMount` 的还原拿这份清单判「存档还在不在」，
+    // 交一份过期的清单出去，就会凭着一份**已经不成立**的名单去认领项目（同一道闸的另一半）。
+    if (代 !== 清单代次) return undefined
+    setProjectList(清单)
+    return 清单
   }
 
   /**
@@ -209,37 +213,52 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   let 文件选择器: HTMLInputElement | undefined
 
   /**
-   * 进门：清掉遗留的「当前项目」，并拉一次清单。
+   * 进门：**还原**上次的「当前项目」，并拉一次清单。
    *
-   * ## 一、清掉遗留（006 第二轮审查裁定 **B**，2026-10-08）
+   * ## 一、还原（Task B · 2026-10-09，用户裁定 **A：跟随当前项目**）
    *
    * 005 定下「打开时**不自动选**项目」：spec 只写了两件事——FR-003「新建后成为当前项目」与
-   * AC4「点某项目切换」，对「打开时选谁」一个字没写，用户 2026-10-06 裁定照 spec 字面**不自动选**
-   * （不选 ⇒ 界面停在「未选择项目」）。
+   * AC4「点某项目切换」，对「打开时选谁」一个字没写，用户 2026-10-06 裁定照 spec 字面**不自动选**。
+   * 那条裁定**没有变**——它管的是「**没有任何存档**时选谁」，答案是「谁也不选」。
    *
-   * ⚠️ **但「不选」这句话在今天只对信号成立，对 cookie 不成立**（原注释那句「不选 ⇒ 不发
-   * `x-openhive-project` ⇒ 后端落回沙箱根」在 006 Step 5 ②-1 之后就已经是假的，2026-10-08 复核改正）：
-   * ②-1 给「当前项目」加了 **cookie 通道**，而 cookie **活得比页面久** ⇒ **刷新之后**信号回到
-   * `undefined`（界面说没项目）、cookie 却还指着上次那个项目 ⇒ **界面说没有项目、请求落在旧
-   * 项目目录里**。所以这里必须显式清一次，把 cookie 拉回**会话级**——`current-project.ts` 那边
-   * 刻意不给它 `Max-Age`，「我此刻在看哪个项目」本就不是设置。
+   * 变的是**有存档**的那一支。006 Step 5 ②-1 给「当前项目」加了 **cookie 通道**，而 cookie
+   * **活得比页面久** ⇒ 刷新之后信号回到 `undefined`（界面说没项目）、cookie 却还指着上次那个项目
+   * ⇒ **界面说没有项目、请求落在旧项目目录里**（三席独立审查命中同一处，`LEARNINGS #003-02`）。
    *
-   * ⚠️ **走 `setCurrentProject(undefined)` 这一个写入点**，不手搓 `document.cookie`：信号与 cookie
-   * 必须**同时**回到「未选择」，两处各写一份就是「界面显示甲、请求落乙」这类分叉的老家
-   * （`LEARNINGS #002-06`）。`workspace-entry.test.tsx` 末尾那一节两条断言分别钉这两半。
+   * 006 第二轮审查当时的处理（裁定 B）是**启动即清**，把 cookie 拉回会话级；用户 2026-10-09
+   * 改判 **A：跟随当前项目**——把那份存档**读回来还原**，于是刷新之后左栏会话 tab 列的还是这个
+   * 项目自己的会话（今天最直觉的行为）。「清」那一支并没有消失：存档**失效**（项目没了 / 已归档）
+   * 时照样清，见 `还原启动项目` 的三支。
    *
-   * ⚠️ **「挂载即清」只在「本组件每次启动只挂一次」时成立**，而那是**上游事实**：`NewAppLayout`
+   * ⚠️ 必须**等清单回来**才判得了「存档有没有效」（有效性就是「在不在清单里」）⇒ 还原落在拉清单
+   * **之后**。清单没回来（`拉清单` 被新的一代顶掉）时**什么都不做**：宁可停在「未选择」，也不凭
+   * 一个此刻验证不了的存档去认领（那会造出「锚点行挂着它、面板里却没有这一行」的悬空态）。
+   *
+   * ⚠️ **走 `读项目cookie` ＋ `还原启动项目`**（后者的唯一写入点是 `setCurrentProject`），不手搓
+   * `document.cookie`：信号与 cookie 必须**同时**变，两处各写一份就是分叉的老家
+   * （`LEARNINGS #002-06`）。`workspace-entry.test.tsx` 末尾那一节三条断言分别钉这三半。
+   *
+   * ⚠️ **「挂载即还原」只在「本组件每次启动只挂一次」时成立**，而那是**上游事实**：`NewAppLayout`
    * 落在**路由根**里（`app.tsx` 那段「lives in the router root so it remains mounted across route
-   * changes」）⇒ SPA 换路由不重挂。若哪天它被挪到某个 `<Route>` 之下，这一行就会**每次导航清一次**
-   * 用户刚选的项目——那条假设今天**没有断言钉着**，已登记在 `006/state.md` 缺口表。
+   * changes」）⇒ SPA 换路由不重挂。若哪天它被挪到某个 `<Route>` 之下，也只是重复算一次同样的
+   * 结果（信号已经是对的），但那条假设今天**没有断言钉着**，已登记在 `006/state.md` 缺口表。
    *
    * ## 二、拉一次清单
    *
-   * 与上面无关的那一半：清单是左栏面板的数据，进门拉一次。
+   * 上面那一半要用它；它本身也是左栏面板的数据（进门拉一次）。
    */
   onMount(() => {
-    setCurrentProject(undefined)
-    if (projectData) void 拉清单(projectData)
+    const 存档 = 读项目cookie()
+    if (!projectData) {
+      // 没有数据源 ⇒ 判不了存档有没有效 ⇒ 不能还原；但也不能留着它与信号分叉（见上）。
+      // 这里沿用裁定 B 的老行为清一次：此刻「清」与「不选」是同一个状态，没有信息可丢。
+      if (存档 !== undefined) setCurrentProject(undefined)
+      return
+    }
+    void (async () => {
+      const 清单 = await 拉清单(projectData)
+      if (清单) 还原启动项目(存档, 清单)
+    })()
   })
 
   /**
