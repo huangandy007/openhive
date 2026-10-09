@@ -284,6 +284,23 @@ describe("FileTree 文件树（FR-005）", () => {
       // 断在布尔上（`#005-01`：实得值若是节点，红了会把整轮测试挂哑）
       expect(箭头(行按名(host, "a.txt")) === null).toBe(true)
     })
+
+    /**
+     * 箭头的悬停提示：只有一枚朝向箭头＋`aria-label`，鼠标用户看不见后者。
+     * ⚠️ 只钉接线（happy-dom 打不开浮层，`LEARNINGS #006-18`）；提示文案与 `aria-label` 同源，
+     * 故**随开合两态**那件事由下面这条一并守着（若有人把文案写死成「展开」，收起态那条会红）。
+     */
+    test("箭头在 tooltip 触发壳内，且可访问名随开合变（展开 / 收起）", () => {
+      const host = mount(() => <FileTree paths={树("资料/a.txt")} />)
+      const 在壳内 = 箭头(行(host)[0])?.closest("[data-component='tooltip-v2-trigger']") != null
+
+      expect(在壳内).toBe(true)
+      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("收起")
+
+      箭头(行(host)[0])?.click()
+
+      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("展开")
+    })
   })
 
   describe("搜索（设计 §6.1 的 🔍：输入即过滤 + 父级路径自动展开 + 关键词高亮）", () => {
@@ -1061,16 +1078,32 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(文本(host, "file-tree-delete-name")).toBe("资金.xlsx")
     })
 
-    test("工具栏五个图标都有 title（设计 §6.1 最后一条：「悬停给 tooltip 提示动作名」）", () => {
+    /**
+     * 悬停提示（设计 §6.1 最后一条：「悬停给 tooltip 提示动作名」）。
+     *
+     * 2026-10-09 前这里挂的是**原生 `title=`**；统一成 `TooltipV2` 后判据跟着换成「五颗都套在触发壳里」，
+     * 并**加一条反向断言**把 `title` 钉死不在——两层提示同时冒出来才是回归。
+     * 只数 `button`：搜索是**输入框**不是图标，它的名字由 `aria-label` ＋ `placeholder` 承担。
+     *
+     * ⚠️ 本层钉的是**接线**：happy-dom 里 hover / focus 都打不开浮层（2026-10-09 探针实测），
+     * 「悬停会显示什么」不在单测可证范围内（`LEARNINGS #006-18`）。
+     */
+    test("工具栏五个图标都在 tooltip 触发壳内，且不再挂原生 title（设计 §6.1 最后一条）", () => {
       const host = mount(() => <FileTree paths={树("a.txt")} />)
 
-      // 只数 `button`：搜索是**输入框**不是图标——它的名字由 `aria-label` ＋ `placeholder` 承担，
-      // 再挂一个 `title` 是三重冗余（且 `title` 那点延时提示对输入框没有意义）。
-      const 缺提示 = [...host.querySelectorAll<HTMLElement>("button[data-action]")].filter(
-        (el) => !el.getAttribute("title"),
-      )
+      const 壳内 = (action: string) =>
+        [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+          (el) => el.querySelector(`[data-slot='file-tree-action-${action}']`) != null,
+        ).length
 
-      expect(缺提示.map((el) => el.getAttribute("data-action"))).toEqual([])
+      expect((["collapse-all", "expand-all", "create", "rename", "delete"] as const).map(壳内)).toEqual([1, 1, 1, 1, 1])
+      expect([...host.querySelectorAll<HTMLElement>("button[data-action]")].map((el) => el.getAttribute("title"))).toEqual([
+        null,
+        null,
+        null,
+        null,
+        null,
+      ])
     })
   })
 

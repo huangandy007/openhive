@@ -1,6 +1,7 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { createMemo, createSignal, For, Show, splitProps } from "solid-js"
 import { buildFileTreeV2Model, flattenFileTreeV2 } from "@/components/file-tree-v2-model"
 import { FileTree, type FileTreeProps } from "@/project/file-tree"
@@ -293,15 +294,20 @@ function MinioTree(props: {
       >
         <Icon name="cloud-upload" size="small" class="shrink-0 [--icon-base:currentColor]" />
         <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-muted">MinIO 备份</span>
-        <button
-          data-slot="minio-tree-collapse"
-          type="button"
-          aria-label="收起 MinIO 备份"
-          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
-          onClick={() => props.onCollapse?.()}
-        >
-          <Icon name="close" size="small" class="[--icon-base:currentColor]" />
-        </button>
+        {/* 悬停提示：只剩一枚 `✕`——标题那行的「MinIO 备份」说的是**这棵树**，不是这颗按钮做什么。
+            文案与 `aria-label` 同源。
+            ⚠️ `TooltipV2` 插的那层 `<div>` 顶替了原先长在按钮上的 `shrink-0`（同 `file-tree.tsx`）。 */}
+        <TooltipV2 value="收起 MinIO 备份" class="flex shrink-0">
+          <button
+            data-slot="minio-tree-collapse"
+            type="button"
+            aria-label="收起 MinIO 备份"
+            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+            onClick={() => props.onCollapse?.()}
+          >
+            <Icon name="close" size="small" class="[--icon-base:currentColor]" />
+          </button>
+        </TooltipV2>
       </div>
 
       <div class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-1 pt-1">
@@ -337,22 +343,25 @@ function MinioTree(props: {
                   class={ROW}
                 >
                   <Show when={row.node.type === "directory"} fallback={<span class="w-4 shrink-0" />}>
-                    <button
-                      data-slot="minio-tree-chevron"
-                      type="button"
-                      aria-label={展开(row.node.path) ? "收起" : "展开"}
-                      class="flex h-4 w-4 shrink-0 items-center justify-center text-v2-text-text-muted"
-                      onClick={(event) => {
-                        event.stopPropagation() // 箭头只管开合，不外溢
-                        切换(row.node.path)
-                      }}
-                    >
-                      <Icon
-                        name={展开(row.node.path) ? "chevron-down" : "chevron-right"}
-                        size="small"
-                        class="[--icon-base:currentColor]"
-                      />
-                    </button>
+                    {/* 悬停提示：与 `file-tree.tsx` 的箭头同法（文案随开合变、与 `aria-label` 同源）。 */}
+                    <TooltipV2 value={展开(row.node.path) ? "收起" : "展开"} class="flex shrink-0">
+                      <button
+                        data-slot="minio-tree-chevron"
+                        type="button"
+                        aria-label={展开(row.node.path) ? "收起" : "展开"}
+                        class="flex h-4 w-4 shrink-0 items-center justify-center text-v2-text-text-muted"
+                        onClick={(event) => {
+                          event.stopPropagation() // 箭头只管开合，不外溢
+                          切换(row.node.path)
+                        }}
+                      >
+                        <Icon
+                          name={展开(row.node.path) ? "chevron-down" : "chevron-right"}
+                          size="small"
+                          class="[--icon-base:currentColor]"
+                        />
+                      </button>
+                    </TooltipV2>
                   </Show>
                   <FileIcon
                     node={{ path: row.node.path, type: row.node.type }}

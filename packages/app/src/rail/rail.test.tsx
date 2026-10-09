@@ -13,6 +13,18 @@ function mount(element: () => JSX.Element) {
 const labels = (host: HTMLElement) =>
   [...host.querySelectorAll("[data-slot='rail-entry']")].map((el) => el.getAttribute("aria-label"))
 
+/**
+ * 提示壳内的按钮名单（`TooltipV2` 的触发层）。
+ *
+ * 取名单而不是取布尔：失败时打印的是**实得的整串名单**，一眼看出是哪一个入口漏了、
+ * 还是顺序/数量变了（同 `labels()` 的口径）。壳的 `data-component` 是实测值——2026-10-09 探针
+ * 拿到的 outerHTML 是 `<div data-closed="" data-component="tooltip-v2-trigger"><button …></div>`。
+ */
+const 壳内入口 = (host: HTMLElement) =>
+  [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].map((el) =>
+    el.querySelector("[data-slot='rail-entry']")?.getAttribute("aria-label"),
+  )
+
 describe("Rail 图标栏", () => {
   test("未传能力位时，五入口 + 底部系统设置全部渲染（FR-002）", () => {
     const host = mount(() => <Rail onSelect={() => {}} />)
@@ -102,5 +114,26 @@ describe("Rail 图标栏", () => {
     expect(设置?.querySelector("[data-slot='rail-entry-bar']")).not.toBeNull()
     expect(设置?.getAttribute("aria-current")).toBe("page")
     expect(业务.some((el) => el.getAttribute("aria-current") !== null)).toBe(false)
+  })
+
+  /**
+   * 悬停提示（FR-002 的补充规格）：每个入口都套在 `TooltipV2` 的触发壳里。
+   *
+   * ⚠️ 这条钉的是**接线**，不是「悬停会显示」——happy-dom 里 hover 与 focus **都打不开**浮层
+   * （2026-10-09 探针实测：`pointerenter` / `focus()` 之后 0 / 500 / 1000ms 均查不到文案；
+   * `LEARNINGS #006-18` 的「消费者在本测试层里是惰性的」）。文案与提示的显示行为要在真浏览器里看。
+   * 文案本身仍由本文件上面的 `labels()` 那几条钉着（提示与 `aria-label` 同源，见 `rail.tsx`）。
+   */
+  test("每个入口都在 tooltip 触发壳内（五入口 + 系统设置，共 6 颗）", () => {
+    const host = mount(() => <Rail onSelect={() => {}} />)
+
+    expect(壳内入口(host)).toEqual([
+      "项目管理",
+      "AI 资产",
+      "AI 会话",
+      "话单分析",
+      "资金分析",
+      "系统设置",
+    ])
   })
 })

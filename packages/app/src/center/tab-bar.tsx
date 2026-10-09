@@ -1,4 +1,5 @@
 import { Icon, type IconProps } from "@opencode-ai/ui/icon"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { RAIL_ENTRIES } from "../rail/entries"
 import { moduleColorVar } from "./module-color"
@@ -60,32 +61,37 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
       <span data-slot="tab-title" class="truncate">
         {props.tab.title}
       </span>
-      <button
-        type="button"
-        data-slot="tab-close"
-        aria-label={`关闭 ${props.tab.title}`}
-        onClick={(event) => {
-          // 关按钮长在 tab 上，不拦一下会连带把这张 tab 也激活
-          event.stopPropagation()
-          props.onClose()
-        }}
-        class="group flex size-4 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-v2-overlay-simple-overlay-hover"
-      >
-        {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`：写在按钮上的 `text-v2-icon-*`
-            到不了图标（`icon.css` 给图标自身写了 `color: var(--icon-base)`），不注入就静默恒灰、
-            连悬停提亮一起失效——与本文件的模块图标、rail、topbar 是同一套做法。
-
-            这里写**类**而不是内联 style：关闭按钮只有「默认 / 悬停」两档**固定**色，走类才有
-            `group-hover:` 提亮的余地。上面那个模块图标反过来用内联——因为它的色是
-            `moduleColorVar()` **运行时算出来**的身份色，拼不出类名。两处取舍不同是**这个区别**
-            造成的（算得出来的只能内联，固定档位才轮到类），不是漏了一处。 */}
-        <span
-          data-slot="tab-close-icon"
-          class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+      {/* 悬停提示：关闭钮只有一枚 `×`，鼠标用户看不见 `aria-label`。
+          ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故原先挂在按钮上的 `shrink-0`
+          要由这层接过去——否则宽 tab 被 `max-w-44` 截断时，先被压掉的会是这颗按钮。 */}
+      <TooltipV2 value={`关闭 ${props.tab.title}`} class="flex shrink-0">
+        <button
+          type="button"
+          data-slot="tab-close"
+          aria-label={`关闭 ${props.tab.title}`}
+          onClick={(event) => {
+            // 关按钮长在 tab 上，不拦一下会连带把这张 tab 也激活
+            event.stopPropagation()
+            props.onClose()
+          }}
+          class="group flex size-4 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-v2-overlay-simple-overlay-hover"
         >
-          <Icon name="close" />
-        </span>
-      </button>
+          {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`：写在按钮上的 `text-v2-icon-*`
+              到不了图标（`icon.css` 给图标自身写了 `color: var(--icon-base)`），不注入就静默恒灰、
+              连悬停提亮一起失效——与本文件的模块图标、rail、topbar 是同一套做法。
+
+              这里写**类**而不是内联 style：关闭按钮只有「默认 / 悬停」两档**固定**色，走类才有
+              `group-hover:` 提亮的余地。上面那个模块图标反过来用内联——因为它的色是
+              `moduleColorVar()` **运行时算出来**的身份色，拼不出类名。两处取舍不同是**这个区别**
+              造成的（算得出来的只能内联，固定档位才轮到类），不是漏了一处。 */}
+          <span
+            data-slot="tab-close-icon"
+            class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+          >
+            <Icon name="close" />
+          </span>
+        </button>
+      </TooltipV2>
     </div>
   )
 }
@@ -144,17 +150,22 @@ export function TabBar(props: TabBarProps) {
       </For>
       <Show when={hidden().length > 0}>
         <div class="relative flex items-center">
-          <button
-            type="button"
-            data-slot="tab-overflow"
-            aria-label={`还有 ${hidden().length} 个标签页`}
-            aria-expanded={menuOpen()}
-            onClick={() => setMenuOpen(!menuOpen())}
-            class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
-          >
-            {/* 原生图标集没有 ellipsis / more 一档，用字面字形 U+22EF 顶（同 §5.3 的线性风格） */}
-            ⋯
-          </button>
+          {/* 悬停提示：`⋯` 只有字形，说不出「还有几个」。
+              `aria-expanded` 就挂在这颗按钮上，于是菜单一展开，`TooltipV2` 的 `sync()` 会顺带
+              把提示压住——提示与下拉不同屏出现，正是想要的那条（免得两层浮层打架）。 */}
+          <TooltipV2 value={`还有 ${hidden().length} 个标签页`} class="flex shrink-0">
+            <button
+              type="button"
+              data-slot="tab-overflow"
+              aria-label={`还有 ${hidden().length} 个标签页`}
+              aria-expanded={menuOpen()}
+              onClick={() => setMenuOpen(!menuOpen())}
+              class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
+            >
+              {/* 原生图标集没有 ellipsis / more 一档，用字面字形 U+22EF 顶（同 §5.3 的线性风格） */}
+              ⋯
+            </button>
+          </TooltipV2>
           <Show when={menuOpen()}>
             <div
               data-slot="tab-overflow-menu"

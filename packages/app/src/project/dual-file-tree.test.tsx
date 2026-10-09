@@ -290,3 +290,33 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     expect(不存在(槽(host, "restore-confirm"))).toBe(true)
   })
 })
+
+/**
+ * 悬停提示：下树标题的 `✕` 与目录箭头各套一层 `TooltipV2` 触发壳。
+ *
+ * ⚠️ 同 `rail.test.tsx`：本层钉的是**接线**。happy-dom 里 hover / focus 都打不开浮层
+ * （2026-10-09 探针实测），「悬停会显示什么」不在单测可证范围内（`LEARNINGS #006-18`）。
+ * 文案与同一颗按钮的 `aria-label` 同源，故文案由 `aria-label` 替它守着。
+ */
+describe("DualFileTree 的悬停提示", () => {
+  /** 触发壳里装着哪个 `data-slot` 的按钮——按 `data-component` 数。 */
+  const 壳内 = (host: HTMLElement, slot: string) =>
+    [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+      (el) => el.querySelector(`[data-slot='${slot}']`) != null,
+    ).length
+
+  test("下树标题的 ✕ 在提示壳内（§5.2 那行「MinIO 备份 … ✕」）", () => {
+    const { host } = 挂({ open: true })
+
+    expect(壳内(host, "minio-tree-collapse")).toBe(1)
+  })
+
+  test("下树的目录箭头在提示壳内，且可访问名随开合变（收起 / 展开）", () => {
+    const { host } = 挂({ open: true })
+    const 箭头 = 槽(行(host, "minio", "资金流水"), "minio-tree-chevron")
+
+    // 断在布尔上（`#005-01`：实得值若是节点，红了会把整轮测试挂哑）
+    expect(箭头?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
+    expect(箭头?.getAttribute("aria-label")).toBe("收起")
+  })
+})

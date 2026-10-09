@@ -68,8 +68,11 @@ describe("ProjectAnchor 项目锚点行（FR-001）", () => {
   test("锚点四件套齐备且顺序固定：项目名 → 成员数 → ▾ → ＋", () => {
     const host = mount(() => <ProjectAnchor name="8·17专案" memberCount={3} />)
 
-    // 直接子元素即四件套本身（图标与数字在各自的按钮**里面**，不是这一层）
-    const 顺序 = [...(根(host)?.children ?? [])].map((el) => el.getAttribute("data-slot"))
+    // 项目名直接挂在根上；后三个自 2026-10-09 起各套了一层 `TooltipV2` 的触发壳（`<div>`，
+    // 不带 `data-slot`）⇒ 取「这一层自己的 slot，没有就取它里面那颗按钮的」，顺序仍是四件套的顺序。
+    const 顺序 = [...(根(host)?.children ?? [])].map(
+      (el) => el.getAttribute("data-slot") ?? el.querySelector("[data-slot]")?.getAttribute("data-slot"),
+    )
 
     expect(顺序).toEqual([
       "project-anchor-name",
@@ -119,5 +122,36 @@ describe("ProjectAnchor 项目锚点行（FR-001）", () => {
     for (const slot of ["project-anchor-members", "project-anchor-toggle", "project-anchor-create"]) {
       expect(槽(host, slot)?.getAttribute("aria-label")).toBeTruthy()
     }
+  })
+})
+
+/**
+ * 悬停提示：三颗**图形按钮**各套一层 `TooltipV2` 触发壳（`👥 N` 里的数字不构成说明，故也在内）。
+ *
+ * ⚠️ 同 `rail.test.tsx`：本层钉的是**接线**。happy-dom 里 hover / focus 都打不开浮层
+ * （2026-10-09 探针实测），「悬停会显示什么」不在单测可证范围内（`LEARNINGS #006-18`）。
+ *
+ * ⚠️ 起初担心「未接线时按钮是 `disabled` ⇒ 提示弹不出来」，**真浏览器实测推翻了这个担心**：
+ * `disabled` 只是让指针穿透那颗按钮、落到包着它的触发壳 `<div>` 上，Kobalte 收到的是那一层的
+ * `pointerenter`，提示照常出现（同日实测 `file-tree.tsx` 工具栏的禁用键 ⇒ 浮层正常弹出）。
+ * 故这里**不记缺口**；三颗按钮真浏览器实测见收尾报告。
+ */
+describe("ProjectAnchor 的悬停提示", () => {
+  /** 触发壳里装着哪个 `data-slot` 的按钮——按 `data-component` 数。 */
+  const 壳内 = (host: HTMLElement, slot: string) =>
+    [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+      (el) => el.querySelector(`[data-slot='${slot}']`) != null,
+    ).length
+
+  test("成员徽章 / ▾ / ＋ 都在提示壳内", () => {
+    const host = mount(() => <ProjectAnchor name="8·17专案" memberCount={3} />)
+
+    expect(["project-anchor-members", "project-anchor-toggle", "project-anchor-create"].map((slot) => 壳内(host, slot))).toEqual([1, 1, 1])
+  })
+
+  test("私有项目（无成员数）时 ▾ / ＋ 仍在壳内、且不多出成员徽章", () => {
+    const host = mount(() => <ProjectAnchor name="我的专案" />)
+
+    expect([壳内(host, "project-anchor-toggle"), 壳内(host, "project-anchor-create"), 壳内(host, "project-anchor-members")]).toEqual([1, 1, 0])
   })
 })

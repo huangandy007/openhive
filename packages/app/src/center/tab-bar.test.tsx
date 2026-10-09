@@ -146,3 +146,30 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
     expect(slots(host, "tab-overflow")).toHaveLength(0)
   })
 })
+
+/**
+ * 悬停提示：两颗**纯图标**按钮各套一层 `TooltipV2` 触发壳。
+ *
+ * ⚠️ 与 `rail.test.tsx` 同：本层钉的是**接线**。happy-dom 里 hover / focus **都打不开**浮层
+ * （2026-10-09 探针实测），所以「悬停会显示什么」不在单测可证范围内（`LEARNINGS #006-18`）。
+ * 文案与同一颗按钮的 `aria-label` 同源，故文案仍由上面那些 `aria-label` 断言替它守着。
+ */
+describe("TabBar 的悬停提示", () => {
+  /** 触发壳里装着哪个 `data-slot` 的按钮——按 `data-component` 数，不按按钮数（按钮本来就在）。 */
+  const 壳内 = (host: HTMLElement, slot: string) =>
+    [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+      (el) => el.querySelector(`[data-slot='${slot}']`) != null,
+    ).length
+
+  test("每张 tab 的关闭按钮都在提示壳内（3 张 tab → 3 颗，不是只包了第一颗）", () => {
+    const host = mountBar()
+
+    expect(壳内(host, "tab-close")).toBe(3)
+  })
+
+  test("行末「⋯」也在提示壳内（FR-005 的溢出钮）", () => {
+    const host = mountBar({ availableWidth: 400 })
+
+    expect(壳内(host, "tab-overflow")).toBe(1)
+  })
+})

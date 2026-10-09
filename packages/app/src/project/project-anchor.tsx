@@ -1,4 +1,5 @@
 import { Icon } from "@opencode-ai/ui/icon"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { Show } from "solid-js"
 
 /**
@@ -96,45 +97,56 @@ export function ProjectAnchor(props: ProjectAnchorProps) {
           `number | undefined`，就得靠非空断言，而那正是 lint 门盯的东西。 */}
       <Show when={props.memberCount} keyed>
         {(count) => (
-          <button
-            type="button"
-            data-slot="project-anchor-members"
-            aria-label={`成员 ${count}`}
-            disabled={props.onOpenMembers === undefined}
-            onClick={() => props.onOpenMembers?.()}
-            class={`${BUTTON} gap-1 px-1 text-v2-text-text-muted`}
-          >
-            <span aria-hidden="true">{MEMBER_GLYPH}</span>
-            <span data-slot="project-anchor-member-count">{count}</span>
-          </button>
+          /* 悬停提示：`👥 N` 里没有一个词说得出「点它开成员面板」（数字不是说明），故补一层；
+             文案与 `aria-label` 同源。
+             ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故 `shrink-0` 要由这层接过去
+             ——否则项目名（`flex-1`）之外的这一项也会被挤。 */
+          <TooltipV2 value={`成员 ${count}`} class="flex shrink-0">
+            <button
+              type="button"
+              data-slot="project-anchor-members"
+              aria-label={`成员 ${count}`}
+              disabled={props.onOpenMembers === undefined}
+              onClick={() => props.onOpenMembers?.()}
+              class={`${BUTTON} gap-1 px-1 text-v2-text-text-muted`}
+            >
+              <span aria-hidden="true">{MEMBER_GLYPH}</span>
+              <span data-slot="project-anchor-member-count">{count}</span>
+            </button>
+          </TooltipV2>
         )}
       </Show>
 
-      <button
-        type="button"
-        data-slot="project-anchor-toggle"
-        aria-label="切换项目"
-        disabled={props.onToggleList === undefined}
-        onClick={() => props.onToggleList?.()}
-        class={`${BUTTON} w-6 justify-center`}
-      >
-        <span class={ICON_WRAP}>
-          <Icon name="chevron-down" size="small" />
-        </span>
-      </button>
+      {/* 悬停提示：▾ 与 ＋ 都是「一枚图形 + `aria-label`」，鼠标用户看不见后者。 */}
+      <TooltipV2 value="切换项目" class="flex shrink-0">
+        <button
+          type="button"
+          data-slot="project-anchor-toggle"
+          aria-label="切换项目"
+          disabled={props.onToggleList === undefined}
+          onClick={() => props.onToggleList?.()}
+          class={`${BUTTON} w-6 justify-center`}
+        >
+          <span class={ICON_WRAP}>
+            <Icon name="chevron-down" size="small" />
+          </span>
+        </button>
+      </TooltipV2>
 
-      <button
-        type="button"
-        data-slot="project-anchor-create"
-        aria-label="新建项目"
-        disabled={props.onCreate === undefined}
-        onClick={() => props.onCreate?.()}
-        class={`${BUTTON} w-6 justify-center`}
-      >
-        <span class={ICON_WRAP}>
-          <Icon name="plus" size="small" />
-        </span>
-      </button>
+      <TooltipV2 value="新建项目" class="flex shrink-0">
+        <button
+          type="button"
+          data-slot="project-anchor-create"
+          aria-label="新建项目"
+          disabled={props.onCreate === undefined}
+          onClick={() => props.onCreate?.()}
+          class={`${BUTTON} w-6 justify-center`}
+        >
+          <span class={ICON_WRAP}>
+            <Icon name="plus" size="small" />
+          </span>
+        </button>
+      </TooltipV2>
     </div>
   )
 }

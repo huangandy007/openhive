@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, Show } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import {
   buildFileTreeV2Model,
   flattenFileTreeV2,
@@ -260,19 +261,29 @@ export function FileTree(props: FileTreeProps) {
         />
         <For each={["collapse-all", "expand-all", "create", "rename", "delete"] as const}>
           {(action) => (
-            <button
-              data-action={action}
-              data-slot={`file-tree-action-${action}`}
-              type="button"
-              aria-label={标签[action]}
-              // 悬停给 tooltip 提示动作名（设计 §6.1 最后一条）
-              title={标签[action]}
-              class={action === "delete" && !禁用("delete") ? TOOL_BUTTON_DANGER : TOOL_BUTTON}
-              disabled={禁用(action)}
-              onClick={() => 点(action)}
-            >
-              <Icon name={图标[action]} size="small" />
-            </button>
+            /* 悬停提示（设计 §6.1 最后一条「悬停给 tooltip 提示动作名」）：五颗都只有一枚图形，
+               文案与 `aria-label` 同源。
+               早先这里挂的是原生 `title=`（浏览器自带的慢速气泡）——2026-10-09 统一成 `TooltipV2`
+               后**必须摘掉**，否则同一颗按钮上会前后冒出两层气泡。
+               ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故 `shrink-0` 要由这层接过去，
+               工具栏（`input` 占 `flex-1`）收窄时才不会先挤掉图标。
+               ⚠️ 禁用态那颗带 `disabled:pointer-events-none`（`TOOL_BUTTON`）——**它照样弹得出来**：
+               指针穿透按钮、落到包着它的触发壳 `<div>` 上，Kobalte 收到的是那一层的 `pointerenter`。
+               2026-10-09 真浏览器实测：`file-tree-action-create`（`disabled=true`）悬停 ⇒ 浮层「新建」、
+               `…-delete` ⇒ 「删除」。（别按直觉写「禁用就不弹」——那是**没实测**的假前提。） */
+            <TooltipV2 value={标签[action]} class="flex shrink-0">
+              <button
+                data-action={action}
+                data-slot={`file-tree-action-${action}`}
+                type="button"
+                aria-label={标签[action]}
+                class={action === "delete" && !禁用("delete") ? TOOL_BUTTON_DANGER : TOOL_BUTTON}
+                disabled={禁用(action)}
+                onClick={() => 点(action)}
+              >
+                <Icon name={图标[action]} size="small" />
+              </button>
+            </TooltipV2>
           )}
         </For>
       </div>
@@ -352,19 +363,24 @@ export function FileTree(props: FileTreeProps) {
                       onKeyDown={(event) => 按键(event, row.node.path, row.node.type)}
                     >
                       <Show when={row.node.type === "directory"} fallback={<span class="w-4 shrink-0" />}>
-                        <button
-                          data-slot="file-tree-chevron"
-                          type="button"
-                          aria-label={展开(row.node.path) ? "收起" : "展开"}
-                          class="flex h-4 w-4 shrink-0 items-center justify-center text-v2-text-text-muted"
-                          onClick={(event) => {
-                            // 箭头只管开合，别把点击冒泡给行——否则会连带切换选中（设计取舍见文件头）
-                            event.stopPropagation()
-                            切换(row.node.path)
-                          }}
-                        >
-                          <Icon name={展开(row.node.path) ? "chevron-down" : "chevron-right"} size="small" />
-                        </button>
+                        {/* 悬停提示：箭头朝向只说得出「现在开/关着」，说不出点它做什么；文案与 `aria-label` 同源。
+                            ⚠️ `TooltipV2` 插的那层 `<div>` 顶替了原先长在按钮上的 `shrink-0`（同工具栏）。
+                            文案**随展开态变**（「收起」/「展开」），与 `aria-label` 逐帧同源。 */}
+                        <TooltipV2 value={展开(row.node.path) ? "收起" : "展开"} class="flex shrink-0">
+                          <button
+                            data-slot="file-tree-chevron"
+                            type="button"
+                            aria-label={展开(row.node.path) ? "收起" : "展开"}
+                            class="flex h-4 w-4 shrink-0 items-center justify-center text-v2-text-text-muted"
+                            onClick={(event) => {
+                              // 箭头只管开合，别把点击冒泡给行——否则会连带切换选中（设计取舍见文件头）
+                              event.stopPropagation()
+                              切换(row.node.path)
+                            }}
+                          >
+                            <Icon name={展开(row.node.path) ? "chevron-down" : "chevron-right"} size="small" />
+                          </button>
+                        </TooltipV2>
                       </Show>
                       <FileIcon
                         node={{ path: row.node.path, type: row.node.type }}
