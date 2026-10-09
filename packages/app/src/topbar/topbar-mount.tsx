@@ -22,6 +22,13 @@ export function TopbarMount(props: {
   user?: TopbarUser
   homeActive?: boolean
   onOpenHome?: () => void
+  /**
+   * 用户下拉选中项（带出 `UserMenuItem.id`）。
+   *
+   * 2026-10-09 之前**本层根本没有这个 prop** ⇒ 四个菜单项的 `onSelect` 在生产里**没有任何调用方**
+   * ——点下去是 `props.onSelect?.()` 的空操作，不报错、不变红。接线那一条在 `topbar-connected.tsx`。
+   */
+  onSelect?: (id: string) => void
 }) {
   return (
     <Show when={props.host} keyed>
@@ -34,7 +41,12 @@ export function TopbarMount(props: {
            这里也**不给宽高**：`h-9` 由 header 给，`items-stretch` 会把它拉满。 */
         <Portal mount={host}>
           <span class="flex min-w-0 flex-1 items-center">
-            <Topbar user={props.user} homeActive={props.homeActive} onOpenHome={props.onOpenHome} />
+            <Topbar
+              user={props.user}
+              homeActive={props.homeActive}
+              onOpenHome={props.onOpenHome}
+              onSelect={props.onSelect}
+            />
           </span>
         </Portal>
       )}

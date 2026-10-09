@@ -19,9 +19,8 @@ import { PROJECT_DATA } from "@/project/project-data"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
-import { TopbarMount } from "@/topbar/topbar-mount"
+import { TopbarConnected } from "@/topbar/topbar-connected"
 import { useTitlebarHostMount } from "@/topbar/titlebar-host"
-import { currentUser } from "@/workspace/current-user"
 import { WorkspaceEntry } from "@/workspace/workspace-entry"
 import { setV2Toast, ToastRegion } from "@/utils/toast"
 
@@ -88,9 +87,13 @@ export default function NewLayout(props: ParentProps) {
           `span[data-slot=topbar-host]`（为什么是 span、为什么不能加宽高：`@/topbar/titlebar-host`
           与 `@/topbar/topbar-mount` 里那两处注释）——那条约束与上面那条隐藏规则是一对。
           「主页」那颗按钮的语义直接借上游的指令（见上面 `command.trigger` 那段注释）。 */}
-      <TopbarMount
+      {/* ⚠️ openhive 定制（2026-10-09 用户下拉接线）：这是要保留的定制 —— 合并上游时两侧都留着。
+          原先是 `TopbarMount` ＋ `user={currentUser()}`；换成 `TopbarConnected` 之后**身份与四个
+          菜单项的动作都在那一层从 context 取**（`useAuthSession()` ＋ `useDialog()`，两者都只有
+          这一层拿得到），本行只剩「宿主 + 按下态 + 主页语义」三样还是入口层的事。
+          为什么身份也搬过去、以及那条「静默少一块」的代价：`@/topbar/topbar-connected` 文件头。 */}
+      <TopbarConnected
         host={titlebarHost()}
-        user={currentUser()}
         homeActive={layout.route().type === "home"}
         onOpenHome={() => command.trigger("home.toggle")}
       />

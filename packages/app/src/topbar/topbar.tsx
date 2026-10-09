@@ -2,6 +2,7 @@ import { Icon } from "@opencode-ai/ui/icon"
 // ⚠️ v2 与 v1 是**两套独立的 sprite**，名字不通用：`grid-plus` 只在 v2 里，v1 的 `Icon` 收到它会
 // 画出一个**空的**图标且**不报错**（`icons[name]` 取不到就落到占位）。故这里两个都引。
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { createSignal, createUniqueId, For, Show, type JSX } from "solid-js"
 import { BRAND_BADGE, BRAND_LOGO, BRAND_NAME } from "./brand"
 import { toggleFullscreen } from "./fullscreen"
@@ -152,28 +153,33 @@ function TopbarIconButton(props: {
   children?: JSX.Element
 }) {
   return (
-    <button
-      type="button"
-      data-slot={props.slot}
-      aria-label={props.label}
-      aria-pressed={props.pressed}
-      onClick={() => props.onClick?.()}
-      class="group relative flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-v2-overlay-simple-overlay-hover"
-      classList={{ "bg-v2-overlay-simple-overlay-hover": props.pressed === true }}
-    >
-      {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`（写在按钮上的 `text-*` 到不了图标，
-          原因见 `rail.tsx` 同一处注释）。未选中的档位靠类、hover 提亮才有空间。
-          ⚠️ 还要**同时**给出 `color`：`--icon-base` 只有 **v1** 的 `Icon`（`[data-component="icon"]`）
-          会自己去取，**v2 的 `Icon` 与内联 svg 都不会** ⇒ 少了 `[color:var(--icon-base)]`，
-          那两颗会是默认文字色、且 hover 不提亮（静默、不变红）。 */}
-      <span
-        data-slot="topbar-icon"
-        class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] [color:var(--icon-base)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+    /* 悬停提示：三颗都是「只有一枚图标」的按钮，`aria-label` 鼠标用户看不见。
+       文案**就是** `props.label`（与 `aria-label` 同一个值，不再写第二份）。
+       ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故 `shrink-0` 要由这层接过去。 */
+    <TooltipV2 value={props.label} class="flex shrink-0">
+      <button
+        type="button"
+        data-slot={props.slot}
+        aria-label={props.label}
+        aria-pressed={props.pressed}
+        onClick={() => props.onClick?.()}
+        class="group relative flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-v2-overlay-simple-overlay-hover"
+        classList={{ "bg-v2-overlay-simple-overlay-hover": props.pressed === true }}
       >
-        {props.glyph}
-      </span>
-      {props.children}
-    </button>
+        {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`（写在按钮上的 `text-*` 到不了图标，
+            原因见 `rail.tsx` 同一处注释）。未选中的档位靠类、hover 提亮才有空间。
+            ⚠️ 还要**同时**给出 `color`：`--icon-base` 只有 **v1** 的 `Icon`（`[data-component="icon"]`）
+            会自己去取，**v2 的 `Icon` 与内联 svg 都不会** ⇒ 少了 `[color:var(--icon-base)]`，
+            那两颗会是默认文字色、且 hover 不提亮（静默、不变红）。 */}
+        <span
+          data-slot="topbar-icon"
+          class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] [color:var(--icon-base)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+        >
+          {props.glyph}
+        </span>
+        {props.children}
+      </button>
+    </TooltipV2>
   )
 }
 
@@ -211,8 +217,11 @@ export function Topbar(props: TopbarProps) {
           {BRAND_BADGE}
         </span>
       </span>
-      {/* 操作区在最右，次序固定：主页 → 站内信 → 全屏 → 用户区。四项之间 14px（`gap-3.5`）。 */}
-      <span data-slot="topbar-actions" class="flex items-center gap-3.5">
+      {/* 操作区在最右，次序固定：主页 → 站内信 → 全屏 → 用户区。四项之间 14px（`gap-3.5`）。
+          `pr-5`（20px）＝ 用户 2026-10-09 下达的「整体往左侧平移 20px」：原先用户区的右缘
+          就是顶栏的右缘，四项一起顶着边。加在**这一层**（四项共处的那一层）而不是逐项加
+          右间距——加一次即整体左移，`gap-3.5` 与各按钮自身一处不动。 */}
+      <span data-slot="topbar-actions" class="flex items-center gap-3.5 pr-5">
         <TopbarIconButton
           slot="topbar-home"
           label="主页"
@@ -259,30 +268,36 @@ function UserMenu(props: { user: TopbarUser; onSelect?: (id: string) => void }) 
   // 不再自带 `ml-1`：它与右侧区另三项的间距现在统一由 `topbar-actions` 的 `gap-3.5` 给。
   return (
     <div class="relative shrink-0">
-      <button
-        type="button"
-        data-slot="topbar-user"
-        aria-label={`${props.user.name} 的账户菜单`}
-        aria-expanded={open()}
-        onClick={() => setOpen((value) => !value)}
-        class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg py-0.5 pr-1.5 pl-0.5 transition-colors hover:bg-v2-overlay-simple-overlay-hover"
-      >
-        <span
-          data-slot="topbar-user-avatar"
-          class="flex size-6 shrink-0 items-center justify-center rounded-full border border-v2-border-border-base bg-v2-overlay-simple-overlay-hover text-xs font-semibold text-v2-icon-icon-accent"
+      {/* 悬停提示：这一颗显示的是**身份**（姓名 + 警号），说不出「点它会开账户菜单」，
+          故按「可见内容里没有说明它做什么的词」补一层提示；文案与 `aria-label` 同源。
+          `aria-expanded` 就在这颗按钮上 ⇒ 菜单一开，`TooltipV2` 的 `sync()` 会把提示压住，
+          不与下拉同屏（想要的正是这条，免得两层浮层打架）。 */}
+      <TooltipV2 value={`${props.user.name} 的账户菜单`}>
+        <button
+          type="button"
+          data-slot="topbar-user"
+          aria-label={`${props.user.name} 的账户菜单`}
+          aria-expanded={open()}
+          onClick={() => setOpen((value) => !value)}
+          class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg py-0.5 pr-1.5 pl-0.5 transition-colors hover:bg-v2-overlay-simple-overlay-hover"
         >
-          {props.user.name.slice(0, 1)}
-        </span>
-        {/* 姓名与警号**左右一行**（早先是 `flex-col` 上下两行）；两段字号不同，靠 `items-center` 对齐。 */}
-        <span data-slot="topbar-user-text" class="flex items-center gap-1.5">
-          <span data-slot="topbar-user-name" class="text-xs font-semibold text-v2-text-text-base">
-            {props.user.name}
+          <span
+            data-slot="topbar-user-avatar"
+            class="flex size-6 shrink-0 items-center justify-center rounded-full border border-v2-border-border-base bg-v2-overlay-simple-overlay-hover text-xs font-semibold text-v2-icon-icon-accent"
+          >
+            {props.user.name.slice(0, 1)}
           </span>
-          <span data-slot="topbar-user-police-id" class="text-[10px] text-v2-text-text-muted">
-            警号: {props.user.policeId}
+          {/* 姓名与警号**左右一行**（早先是 `flex-col` 上下两行）；两段字号不同，靠 `items-center` 对齐。 */}
+          <span data-slot="topbar-user-text" class="flex items-center gap-1.5">
+            <span data-slot="topbar-user-name" class="text-xs font-semibold text-v2-text-text-base">
+              {props.user.name}
+            </span>
+            <span data-slot="topbar-user-police-id" class="text-[10px] text-v2-text-text-muted">
+              警号: {props.user.policeId}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+      </TooltipV2>
       <Show when={open()}>
         <div
           data-slot="topbar-user-menu"

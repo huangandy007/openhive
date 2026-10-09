@@ -237,6 +237,26 @@ describe("Topbar 顶栏", () => {
     expect(类集(区.className)).toContain("gap-3.5")
   })
 
+  /**
+   * 右侧整体向左让出 20px（用户 2026-10-09 下达：「用户区顶着右侧，不美观」）。
+   *
+   * 落点是 `topbar-actions` **自己**的 `pr-5`，不是四项各自的右间距——四项同在这一层，
+   * 加一次即整体左移，`gap-3.5` 一个数都不动。
+   *
+   * ⚠️ 断的是**类名集合**（`#006-22`）：直接 `toContain("pr-5")` 会被 `pr-5x` 之类满足，
+   * 而这里更险——同一条 class 串里本来就有 `gap-3.5`，子串匹配下「改成 `gap-5`」也可能被
+   * 别的片段蒙混过去。
+   *
+   * happy-dom 不跑布局（`#005-07`），所以「真的移了 20px」只能去真浏览器量——那条落在
+   * `docs/superpowers/specs/006-ai-session/state.md` 的真栈记录里，本条钉的是**它的成因**。
+   */
+  test("右侧区整体向左让出 20px：自己带 pr-5（不再顶着最右边）", () => {
+    const host = mount(() => <Topbar user={张三} />)
+    const 区 = host.querySelector<HTMLElement>("[data-slot='topbar-actions']")!
+
+    expect(类集(区.className)).toContain("pr-5")
+  })
+
   test("用户区的姓名与警号改成左右排列：不再 flex-col 上下堆叠", () => {
     const host = mount(() => <Topbar user={张三} />)
     const 文字层 = host.querySelector<HTMLElement>("[data-slot='topbar-user-name']")!.parentElement!
@@ -283,5 +303,34 @@ describe("Topbar 顶栏", () => {
     expect(类).toContain("bg-v2-state-bg-danger")
     expect(类).toContain("text-white")
     expect(类).not.toContain("border")
+  })
+})
+
+/**
+ * 悬停提示：四颗**只有图标 / 只有身份**的可点件各套一层 `TooltipV2` 触发壳。
+ *
+ * ⚠️ 与 `rail.test.tsx` / `tab-bar.test.tsx` 同：本层钉的是**接线**。happy-dom 里 hover / focus
+ * **都打不开**浮层（2026-10-09 探针实测），所以「悬停会显示什么」不在单测可证范围内（`LEARNINGS #006-18`）。
+ * 文案与同一颗按钮的 `aria-label` 同源，故文案仍由上面那些 `aria-label` 断言替它守着。
+ *
+ * 用户区（`topbar-user`）只有传了 `user` 才渲染，故这一档自带前置。
+ */
+describe("Topbar 的悬停提示", () => {
+  /** 触发壳里装着哪个 `data-slot` 的按钮——按 `data-component` 数。 */
+  const 壳内 = (host: HTMLElement, slot: string) =>
+    [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+      (el) => el.querySelector(`[data-slot='${slot}']`) != null,
+    ).length
+
+  test("三颗图标按钮（主页 / 站内信 / 全屏）都在提示壳内", () => {
+    const host = mount(() => <Topbar user={张三} />)
+
+    expect(["topbar-home", "topbar-messages", "topbar-fullscreen"].map((slot) => 壳内(host, slot))).toEqual([1, 1, 1])
+  })
+
+  test("用户区按钮也在提示壳内（文案是「<姓名> 的账户菜单」）", () => {
+    const host = mount(() => <Topbar user={张三} />)
+
+    expect(壳内(host, "topbar-user")).toBe(1)
   })
 })

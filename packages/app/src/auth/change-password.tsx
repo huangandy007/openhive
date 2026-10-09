@@ -14,13 +14,19 @@
  * ⚠️ **「稍后修改」不持久化**：内存信号，刷新页面会再弹一次。与 spec 的「下次登录再弹」相比，
  * 「刷新再弹」是**更严**的一侧（多拦，不会漏拦）；用 sessionStorage 反而会让「下次登录」也不弹。
  * 这个偏差如实记在这里，不假装等同。
+ *
+ * ## 2026-10-09：表单抽去了 `change-password-form.tsx`
+ *
+ * 用户下达「下拉里的『修改密码』真实实现」之后，同一份表单有了第二个入口（`topbar/` 那个弹窗）。
+ * 本文件因此只剩**壳**：那层「不能关」的 overlay ＋ 三处与弹窗不同的字（标题 / 说明 / 出口按钮
+ * 文案）。字段、提交、清空、错误回话一律在共用件里，**判据只有一处**（`LEARNINGS #002-06`）。
+ * ⚠️ 本文件对外的 DOM 契约逐字未变（`[data-component='change-password']` ＋ 根上的
+ * `role`/`aria-modal`/`aria-labelledby`）——`auth-gate.test.tsx` 那一组**一条都没改**。
  */
 
-import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
-import { Field } from "@opencode-ai/ui/v2/field-v2"
-import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
-import { createSignal, createUniqueId } from "solid-js"
-import { changePassword, type AuthFetch } from "./gateway"
+import { createUniqueId } from "solid-js"
+import type { AuthFetch } from "./gateway"
+import { 改密表单 } from "./change-password-form"
 
 export interface ChangePasswordProps {
   /** 测试注入用；省略 = 真 `fetch`。 */
@@ -33,32 +39,6 @@ export interface ChangePasswordProps {
 
 export function ChangePassword(props: ChangePasswordProps) {
   const titleId = createUniqueId()
-  const [currentPassword, setCurrentPassword] = createSignal("")
-  const [newPassword, setNewPassword] = createSignal("")
-  const [error, setError] = createSignal<string | undefined>()
-  const [pending, setPending] = createSignal(false)
-
-  const submit = async (event: SubmitEvent) => {
-    event.preventDefault()
-    if (pending()) return
-
-    setPending(true)
-    setError(undefined)
-    const outcome = await changePassword(currentPassword(), newPassword(), props.send)
-    setPending(false)
-
-    // 与登录页同款：口令不留在内存里。
-    setCurrentPassword("")
-    setNewPassword("")
-
-    if (outcome.kind === "changed") {
-      props.onChanged()
-      return
-    }
-    // 三种「填得不对」各自回自己的那句话（能走到这里说明已通过鉴权，说清楚不构成枚举信号），
-    // 原样显示，不自己改写。
-    setError(outcome.message)
-  }
 
   return (
     <div
@@ -68,66 +48,21 @@ export function ChangePassword(props: ChangePasswordProps) {
       aria-labelledby={titleId}
       class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--v2-alpha-dark-60)] p-6"
     >
-      <form
-        class="flex w-[min(24rem,calc(100vw-3rem))] flex-col gap-5 rounded-2xl bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-floating)]"
-        onSubmit={submit}
-      >
-        <div class="flex flex-col gap-1">
-          <h2 id={titleId} class="text-[16px] font-[600] leading-tight text-v2-text-text-base">
-            请修改初始密码
-          </h2>
-          <p class="text-[13px] leading-5 text-v2-text-text-muted">
-            首次登录需要设置自己的密码。也可以稍后修改，下次登录时会再提醒。
-          </p>
-        </div>
-
-        <div class="flex flex-col gap-4">
-          <Field>
-            <Field.Label>当前密码</Field.Label>
-            <TextInputV2
-              appearance="large"
-              class="!w-full"
-              name="currentPassword"
-              type="password"
-              autocomplete="current-password"
-              autofocus
-              value={currentPassword()}
-              onInput={(event) => setCurrentPassword(event.currentTarget.value)}
-            />
-          </Field>
-
-          <Field>
-            <Field.Label>新密码</Field.Label>
-            <TextInputV2
-              appearance="large"
-              class="!w-full"
-              name="newPassword"
-              type="password"
-              autocomplete="new-password"
-              value={newPassword()}
-              onInput={(event) => setNewPassword(event.currentTarget.value)}
-            />
-          </Field>
-        </div>
-
-        {/* 报错用**危险**状态色（审查 R-08）：原来是 `text-v2-text-text-accent`——那是「强调」
-            不是「出错」，而且随配色方案漂（浅色 = 品牌金，深色 = `--v2-blue-400`），同一句话
-            在两个配色下是两种颜色、深色下还是蓝字。这块坐在 `bg-v2-background-bg-base`
-            （**随方案漂**的语义面）上，所以就该用同样会漂的 danger。
-            登录页反过来——它坐在固定深色面上，只能用它那边不漂的品牌金，别照搬这条。 */}
-        <p data-slot="change-password-error" role="alert" class="min-h-5 text-[13px] leading-5 text-v2-state-fg-danger">
-          {error() ?? ""}
-        </p>
-
-        <div class="flex items-center justify-end gap-2">
-          <ButtonV2 type="button" variant="ghost" onClick={() => props.onLater()}>
-            稍后修改
-          </ButtonV2>
-          <ButtonV2 type="submit" variant="neutral" disabled={pending()}>
-            {pending() ? "提交中…" : "修改密码"}
-          </ButtonV2>
-        </div>
-      </form>
+      {/* 三处与主动改密弹窗不同的字，**逐字都在这里**：遮罩这一屏的标题自己画（那块
+          `aria-labelledby` 指的就是它），出口那颗叫「稍后修改」——002 的原话就是这个词。
+          外衣（宽度 / 圆角 / 底色 / 阴影）也跟着这一屏给，共用件本身只带 `flex flex-col gap-5`。 */}
+      <改密表单
+        标题={{
+          id: titleId,
+          文字: "请修改初始密码",
+          说明: "首次登录需要设置自己的密码。也可以稍后修改，下次登录时会再提醒。",
+        }}
+        取消文案="稍后修改"
+        class="w-[min(24rem,calc(100vw-3rem))] rounded-2xl bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-floating)]"
+        send={props.send}
+        on取消={() => props.onLater()}
+        on成功={() => props.onChanged()}
+      />
     </div>
   )
 }

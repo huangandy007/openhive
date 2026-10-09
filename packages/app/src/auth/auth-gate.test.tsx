@@ -10,11 +10,13 @@
  * 网络用替身（`fetch` 是外部边界），但断言的是**界面行为**与**发出去的请求**，不查替身被调了几次。
  */
 
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { currentUser, setCurrentUser } from "@/workspace/current-user"
 import { AuthGate } from "./auth-gate"
 import { PATH, type AuthFetch, type Identity } from "./gateway"
+import { useAuthSession } from "./session-context"
 
 /** 刻意带 `mustChangePw: true`：它就是 T015 那条强制改密链的入口。 */
 const 需改密: Identity = {
@@ -44,16 +46,37 @@ function stub(replies: Record<string, Reply>): AuthFetch {
 /** 让 `onMount` 里那次 `probeSession` 的微任务落定。 */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-function mount(send: AuthFetch) {
+/**
+ * 挂过的实例记账 ＋ `afterEach` 收掉（`LEARNINGS #005-03`）。
+ *
+ * ⚠️ **2026-10-09 补**：本文件原先是「挂了就不管」——每个用例建一个宿主、`render` 的返回值
+ * 丢掉，于是**同一条 `bun test` 里所有 AuthGate 实例一直活着**。今天往这里补「退出登录」
+ * 那一组时它成了真问题：那些活着的实例各自持有一条 `createEffect`，而它写的是**模块级接缝**
+ * `setCurrentUser`（`workspace/current-user.ts`）——「旧实例把身份写回来」正是 `#005-03`
+ * 描述的那个形状。既有 14 条照样全绿（各自的宿主仍在），但新加的用例不该再往这个坑里放。
+ *
+ * 顺序要紧：**先 dispose、再清 body**（反了的话 dispose 会去碰已经摘掉的节点）。
+ */
+const 挂过的: Array<() => void> = []
+
+afterEach(() => {
+  while (挂过的.length) 挂过的.pop()!()
+  document.body.innerHTML = ""
+})
+
+/**
+ * `内容` 收的是 **thunk**，不是现成的元素——这不是洁癖，是 2026-10-09 实测的坑：
+ * 传 `内容={退出按钮()}`（在测试体里**调用**那个组件）时，`useAuthSession()` 是在**没有 owner**
+ * 的地方执行的 ⇒ `useContext` 返回 `undefined` ⇒ 点那颗按钮**什么都不会发生**，而三个用例
+ * 一起红在「界面没回登录页」上，读起来像 `signOut` 写错了。
+ * 传 thunk 之后，元素在 `AuthGate` 的子表达式里才被创建，而那一刻的 owner 正在
+ * `AuthSessionProvider` 之内（`#006-01`：前提要过一遍运行时不变量，别照抄）。
+ */
+function mount(send: AuthFetch, 内容?: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(
-    () => (
-      <AuthGate send={send}>
-        <div data-slot="workspace">工作台</div>
-      </AuthGate>
-    ),
-    host,
+  挂过的.push(
+    render(() => <AuthGate send={send}>{内容 ? 内容() : <div data-slot="workspace">工作台</div>}</AuthGate>, host),
   )
   return host
 }
@@ -301,5 +324,92 @@ describe("T015 强制改密（002 FR-006）", () => {
 
     expect(有(host, "[data-component='change-password']")).toBe(false)
     expect(有(host, "[data-slot='workspace']")).toBe(true)
+  })
+})
+
+/**
+ * 退出登录（2026-10-09 用户下达：「下拉三项全部真实实现」）。这一组钉的是**门**那一侧：
+ * 谁把「已登录」这个状态收掉、收到什么程度。
+ *
+ * ⚠️ 触发者是**探测器**（`退出按钮`：读 `useAuthSession()` 喊一句 `signOut`），不是顶栏——
+ * 顶栏那条链（点菜单项 → 喊 `signOut`）由 `topbar/topbar-connected.test.tsx` 钉。
+ * 两层分开的理由同本仓的老规矩：这一层挂不动顶栏（顶栏要 `DialogProvider` 与宿主），
+ * 而「门收到 `signOut` 之后做了什么」不该靠挂一整个顶栏才验得了。
+ */
+describe("T015 退出登录", () => {
+  beforeEach(() => setCurrentUser(undefined))
+
+  /** 探测器：把 context 里那个 `signOut` 接在一颗按钮上。 */
+  function 退出按钮(): JSX.Element {
+    const session = useAuthSession()
+    return (
+      <button data-slot="signout" onClick={() => void session?.signOut()}>
+        退出
+      </button>
+    )
+  }
+
+  /**
+   * 三样一起断言，因为它们**缺一样都算没退干净**：
+   * ① 请求发出去（Cookie 由内核那侧清，前端只负责喊）；
+   * ② 界面回到登录页；
+   * ③ `currentUser()` 清空——它是顶栏名字与管理员可见项的来源，留着上一个人的身份
+   *    就是「退了但还看得见别人」（`auth-gate.tsx` 那条 `createEffect` 的 `undefined` 分支
+   *    正是为这个写的）。
+   */
+  test("退出成功 ⇒ 请求发出、回到登录页、接线缝不再留人", async () => {
+    const send = stub({
+      [PATH.me]: json(不需改密),
+      [PATH.logout]: new Response(null, { status: 204 }),
+    })
+    const host = mount(send, () => <退出按钮 />)
+    await flush()
+    // 前置：确实先在工作台上（否则「回到登录页」这句话没有起点）。
+    expect(currentUser()).toEqual({ name: "张三", policeId: "020601", isAdmin: false })
+
+    host.querySelector<HTMLElement>("[data-slot='signout']")!.click()
+    await flush()
+
+    expect(有(host, "[data-component='login-page']")).toBe(true)
+    // 工作台那一支整棵被换掉 ⇒ 探测器跟着消失（`AuthSessionProvider` 随子树生死）。
+    expect(有(host, "[data-slot='signout']")).toBe(false)
+    expect(currentUser()).toBeUndefined()
+  })
+
+  /**
+   * 失败**不许假装退了**：Cookie 还在（刷新一下人又回来），界面却把人送去登录页——
+   * 这是这一层能说出的最坏的一句谎。故失败时留在工作台，**原样**（`currentUser()` 不动）。
+   */
+  test("退出失败 ⇒ 留在工作台，接线缝一个字都不动", async () => {
+    const send = stub({
+      [PATH.me]: json(不需改密),
+      [PATH.logout]: new Response("boom", { status: 500 }),
+    })
+    const host = mount(send, () => <退出按钮 />)
+    await flush()
+
+    host.querySelector<HTMLElement>("[data-slot='signout']")!.click()
+    await flush()
+
+    // 「留在工作台」在这一层看得见的形式 = 探测组件仍在（工作台那一支没有被换掉）。
+    expect(有(host, "[data-slot='signout']")).toBe(true)
+    expect(有(host, "[data-component='login-page']")).toBe(false)
+    expect(currentUser()).toEqual({ name: "张三", policeId: "020601", isAdmin: false })
+  })
+
+  /**
+   * 网关不在时（`unavailable`）顶栏不渲染用户区，但 context 仍在、`signOut` 仍可调——
+   * 这一条钉的是**它不会把整个工作台打崩**：没有身份，`setSession({kind:"signed-out"})`
+   * 之后界面落到登录页，而不是抛在某个读 `identity` 的地方。
+   */
+  test("网关不在时退出 ⇒ 不抛，落到登录页", async () => {
+    const send = stub({ [PATH.me]: html(), [PATH.logout]: new Response(null, { status: 204 }) })
+    const host = mount(send, () => <退出按钮 />)
+    await flush()
+
+    host.querySelector<HTMLElement>("[data-slot='signout']")!.click()
+    await flush()
+
+    expect(有(host, "[data-component='login-page']")).toBe(true)
   })
 })

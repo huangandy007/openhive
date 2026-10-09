@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { changePassword, login, PATH, probeSession, type AuthFetch } from "./gateway"
+import { changePassword, login, logout, PATH, probeSession, type AuthFetch } from "./gateway"
 
 const IDENTITY = {
   id: "550e8400-e29b-41d4-a716-446655440000",
@@ -285,5 +285,41 @@ describe("T015 自助改密", () => {
     const { send } = stub(new Response(null, { status: 401 }))
 
     expect(await changePassword("old", "new", send)).toEqual({ kind: "failed", message: "改密请求失败" })
+  })
+})
+
+/**
+ * 退出登录（2026-10-09 用户下达：「用户区的下拉三个功能全部真实实现」）。
+ *
+ * 内核那一侧**早就有了**（`packages/opencode/src/server/openhive/gateway.ts` 的 `PATH.logout`
+ * → `handleLogout()`），缺的一直是前端这一个调用点——所以这一组钉的是**发出去的请求**与
+ * 「204 到底算不算退出」这条翻译规则。
+ *
+ * ⚠️ 有一条**不能测**：「Cookie 真的被浏览器丢掉了」不在这一层——本层只读状态码，`Set-Cookie`
+ * 由浏览器自己执行（内核那边有测试逐项守着那个头的属性）。把它写成「断言已退」是**把测不了的
+ * 写成已覆盖**（`#002-02`），故这一层只认 204。
+ */
+describe("T015 退出登录", () => {
+  test("204 ⇒ 已退出（清 Cookie 是内核的事，这一层只认状态码）", async () => {
+    const { send, sent } = stub(new Response(null, { status: 204 }))
+
+    expect(await logout(send)).toEqual({ kind: "signed-out" })
+    expect(sent).toEqual([{ path: PATH.logout, method: "POST", body: undefined }])
+  })
+
+  /**
+   * ⚠️ 失败分支不是「洁癖」：这一支答错，界面上会出现**最坏的那一种谎**——把用户送去登录页，
+   * 而 Cookie 还在，刷新一下人又回来了（或者反过来，人以为已经退了）。
+   */
+  test("500 ⇒ 失败，绝不说成「已退出」", async () => {
+    const { send } = stub(new Response("boom", { status: 500 }))
+
+    expect(await logout(send)).toEqual({ kind: "failed", message: "退出请求失败" })
+  })
+
+  test("网络不通 ⇒ 失败（同一条翻译规则）", async () => {
+    const { send } = stub(new Error("offline"))
+
+    expect(await logout(send)).toEqual({ kind: "failed", message: "退出请求失败" })
   })
 })

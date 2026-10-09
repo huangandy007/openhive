@@ -16,10 +16,12 @@
  */
 
 import { createEffect, createSignal, onMount, Show, type ParentProps } from "solid-js"
+import { showToast } from "@/utils/toast"
 import { setCurrentUser } from "@/workspace/current-user"
 import { ChangePassword } from "./change-password"
-import { probeSession, type AuthFetch, type Identity, type Session } from "./gateway"
+import { logout, probeSession, type AuthFetch, type Identity, type Session } from "./gateway"
 import { LoginPage } from "./login-page"
+import { AuthSessionProvider, type AuthSession } from "./session-context"
 
 export interface AuthGateProps {
   /**
@@ -89,6 +91,50 @@ export function AuthGate(props: ParentProps<AuthGateProps>) {
     return current?.kind === "signed-in" && current.identity.mustChangePw && !deferred()
   }
 
+  /** 当前身份（`unavailable` 时没有）。写成函数，理由同上——联合类型要收窄。 */
+  const 身份 = () => {
+    const current = session()
+    return current?.kind === "signed-in" ? current.identity : undefined
+  }
+
+  /**
+   * 退出登录（2026-10-09 用户下达：「下拉三项全部真实实现」）。
+   *
+   * 两件事的次序是刻意的：**先问内核**（`POST /openhive/auth/logout`，它会把会话 Cookie 用
+   * `Max-Age=0` 覆盖掉），**拿不到 204 就不改界面**。
+   *
+   * 失败那一支为什么不能「也退了吧」：Cookie 还在，刷新一下人又回来了——把人送去登录页却什么
+   * 都没清，是这一层能说出的最坏的一句谎（比报错坏，因为它长得像成功）。所以失败只弹一句提示，
+   * 停在原处。
+   *
+   * 成功后**只做一件事**：把会话置成 `signed-out`。界面切到登录页、顶栏的名字与管理员可见项
+   * 一并消失——都由既有的那条 `createEffect`（`setCurrentUser(undefined)`）与 `view()` 负责，
+   * 不在这里重写一遍（`LEARNINGS #002-06`：同一个判断只有一处）。
+   */
+  const signOut = async () => {
+    const outcome = await logout(props.send)
+    if (outcome.kind !== "signed-out") {
+      showToast(outcome.message)
+      return
+    }
+    // 换人之前，把「稍后修改」那个旧决定一并作废（同 `signIn`）——否则下一个人登进来时
+    // 该弹的强制改密被上一个人的决定挡掉。
+    setDeferred(false)
+    setSession({ kind: "signed-out" })
+  }
+
+  /**
+   * 交给下游的会话对象。**身份走 getter**：它在会话变化时才该变，而本对象在门的整个生命周期里
+   * 是同一个引用——写成字面量快照的话，改密之后（`changed()` 换掉了 identity 对象）下游读到的
+   * 仍是旧的那一份，且**不报错、不变红**。
+   */
+  const 会话: AuthSession = {
+    get identity() {
+      return 身份()
+    },
+    signOut,
+  }
+
   return (
     <>
       {/* 探查期间**不闪工作台**——先渲染再被顶掉，用户看到的是自己的会话「跳」了一下。
@@ -107,7 +153,11 @@ export function AuthGate(props: ParentProps<AuthGateProps>) {
       <Show when={view() === "login"}>
         <LoginPage send={props.send} onSignedIn={signIn} />
       </Show>
-      <Show when={view() === "app"}>{props.children}</Show>
+      {/* 会话只发给**工作台那一支**：登录页与探查占位上没有任何东西该读身份，发出去只是多一个
+          能读错的地方。`AuthSessionProvider` 随这棵子树生死，门一卸载它一并没了。 */}
+      <Show when={view() === "app"}>
+        <AuthSessionProvider value={会话}>{props.children}</AuthSessionProvider>
+      </Show>
       <Show when={mustChangePassword()}>
         <ChangePassword send={props.send} onChanged={changed} onLater={() => setDeferred(true)} />
       </Show>

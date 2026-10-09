@@ -27,6 +27,7 @@ export const PATH = {
   login: `${PREFIX}/login`,
   me: `${PREFIX}/me`,
   changePassword: `${PREFIX}/change-password`,
+  logout: `${PREFIX}/logout`,
 } as const
 
 /**
@@ -64,8 +65,17 @@ export type ChangeOutcome =
   | { kind: "rejected"; message: string }
   | { kind: "failed"; message: string }
 
+/**
+ * 退出登录的结论。**只有两支**：内核那条链没有「被拒」这一说——`handleLogout()` 是纯粹的
+ * 「把同一个 Cookie 用 `Max-Age=0` 覆盖掉」，不认身份、也不会失败（2026-10-09 逐字读过内核
+ * 那一侧）。所以非 2xx 与网络不通一律归 `failed`——**绝不混成 `signed-out`**：把用户送去登录页
+ * 而 Cookie 还在，是这一层能说出的最坏的一句谎（刷新一下人又回来了）。
+ */
+export type LogoutOutcome = { kind: "signed-out" } | { kind: "failed"; message: string }
+
 const LOGIN_FAILED = "登录请求失败"
 const CHANGE_FAILED = "改密请求失败"
+const LOGOUT_FAILED = "退出请求失败"
 
 /**
  * 一次请求的上限（审查 R-09，2026-10-02）。
@@ -296,4 +306,27 @@ export async function changePassword(
   if (!reply.ok) return { kind: "failed", message: CHANGE_FAILED }
 
   return { kind: "changed" }
+}
+
+/**
+ * 退出登录（2026-10-09 用户下达：「用户区的下拉三个功能全部真实实现」）。
+ *
+ * 内核那侧一直都有这个端点（`handleLogout()`：204 ＋ 用 `Max-Age=0` 覆盖掉会话 Cookie），
+ * 缺的只是前端这一个调用点。**请求体与参数一概没有**——退出谁由 Cookie 决定，
+ * 不由调用方声明（同 `changePassword` 那条「请求体里没有 userId」的约定）。
+ *
+ * 之所以要套 `带超时`：内核挂着时点「退出登录」会永远停在原地，而用户以为自己已经退了
+ * ——这一条比另外两条链更坏，因为**没有出口**（另两条至少还停在原界面上）。
+ */
+export async function logout(send: AuthFetch = defaultSend, 超时毫秒: number = TIMEOUT_MS): Promise<LogoutOutcome> {
+  let reply: Reply
+  try {
+    reply = await 带超时(超时毫秒, roundTrip(send, PATH.logout, { method: "POST", credentials: "same-origin" }))
+  } catch {
+    return { kind: "failed", message: LOGOUT_FAILED }
+  }
+
+  if (!reply.ok) return { kind: "failed", message: LOGOUT_FAILED }
+
+  return { kind: "signed-out" }
 }
