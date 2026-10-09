@@ -17,16 +17,6 @@ const TAB_LABEL: Record<SidebarTabKey, string> = { session: "会话", files: "�
 const TAB_ORDER: readonly SidebarTabKey[] = ["session", "files"]
 
 /**
- * 空态文案（设计 §7 的会话列表**不在**本 task 范围内，见 `tasks.md` 的 T019）。
- *
- * ⚠️ 写「**未接入**」而不是「暂无会话」：前者说的是**这个功能还没做**，后者说的是
- * 「做了，只是你还没有会话」——两句在屏幕上长得一样，对用户的意思却相反。同
- * `@/workspace/current-user` 与 `ProjectAnchor` 的「宁缺勿假」：宁可承认没接，也不编一个
- * 看着正常的空。
- */
-const EMPTY_SESSION = "会话列表未接入"
-
-/**
  * tab 的两种外观——**两条独立的 class 串，不是「基础串 ＋ 叠加串」**。
  *
  * 理由同 `file-tree.tsx` 的 `TOOL_BUTTON` / `TOOL_BUTTON_DANGER`：两个同权重的文本色类同时挂在
@@ -55,6 +45,15 @@ export interface SidebarTabsProps {
    * 本组件不认识文件树，正如 `ProjectAnchor` 不认识项目列表。
    */
   files: JSX.Element
+  /**
+   * 「会话」tab 的 body——**同样由调用方注入**（生产接的是 `@/ai-session/sidebar-sessions`
+   * 那一具取数 ＋ 导航的壳，2026-10-08 接入）。本组件**不认识会话**，正如它不认识文件树。
+   *
+   * ⚠️ T019 那版这里是一句硬编码的「会话列表未接入」；接上之后那句**没有了**——空态归列表
+   * 自己（`@/ai-session/session-list` 的 `session-empty`），因为「没接入」与「暂无会话」是
+   * 两句相反的话，而只有列表知道自己是哪一种（`LEARNINGS #002-02`）。
+   */
+  sessions: JSX.Element
 }
 
 /**
@@ -131,8 +130,8 @@ export function SidebarTabs(props: SidebarTabsProps) {
         </For>
       </div>
 
-      {/* ③ 会话。设计 §2 说这个 tab 存在，但设计 §7 的会话列表不在本 feature（见 tasks.md 的
-          T019「只收两块外壳」）⇒ **显式空态**，不装作有内容、也不白屏。 */}
+      {/* ③ 会话。**与「文件」pane 同一条规则**：body 由调用方注入（设计 §7 的列表在
+          `@/ai-session/session-list`，取数与导航在 `@/ai-session/sidebar-sessions`）。 */}
       <div
         role="tabpanel"
         data-slot="session-list-slot"
@@ -142,13 +141,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
         hidden={props.active !== "session"}
         class={PANE}
       >
-        <p
-          data-slot="session-empty"
-          data-state="empty"
-          class="px-1 py-2 text-[13px] text-v2-text-text-faint"
-        >
-          {EMPTY_SESSION}
-        </p>
+        {props.sessions}
       </div>
 
       {/* ③ 文件。**这个 `data-slot` 名沿用 T007 的**：设计 §2 的 ③ 主体今天就是文件树那一块，

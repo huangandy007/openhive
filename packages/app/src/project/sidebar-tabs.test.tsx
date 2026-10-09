@@ -40,10 +40,13 @@ const 隐藏了 = (el: HTMLElement | null) => el !== null && el.hasAttribute("hi
  * 刻意不用真 `FileTree`：本文件的判据应当只依赖 `SidebarTabs` 自己的契约（body 由调用方注入），
  * 不该跟着文件树的 DOM 走。真树的那条在 `workspace-entry.test.tsx`。
  */
-function 探针() {
+function 探针(props: { slot?: string }) {
   const [次数, set次数] = createSignal(0)
+  // ⚠️ 默认值必须写成 `props.slot ?? "probe"`，**不能**写成 `function 探针(slot = "probe")`：
+  // Solid 调组件时传的是**一个 props 对象**（`{}`），不是 `undefined` ⇒ 参数默认值永不生效，
+  // `data-slot={slot}` 会渲染成 `[object Object]`，于是查槽位的那几条用例全找不到元素。
   return (
-    <button type="button" data-slot="probe" onClick={() => set次数((n) => n + 1)}>
+    <button type="button" data-slot={props.slot ?? "probe"} onClick={() => set次数((n) => n + 1)}>
       {次数()}
     </button>
   )
@@ -64,6 +67,7 @@ function 挂(初始: SidebarTabKey = "files", 接住 = true) {
         if (接住) setActive(key)
       }}
       files={<探针 />}
+      sessions={<探针 slot="probe-session" />}
     />
   ))
   return { host, 喊过 }
@@ -143,11 +147,18 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(pane(host, "files")?.contains(槽(host, "probe"))).toBe(true)
   })
 
-  test("「会话」pane 是**显式空态**，不是白板——说清「没接入」而不是「没有会话」", () => {
+  /**
+   * 「会话」pane 的 body **也是注入的**（2026-10-08 接入）。
+   *
+   * ⚠️ 这条**取代**了 T019 那条「会话 pane 是显式空态（文案＝『会话列表未接入』）」：
+   * 列表接上之后那句硬编码文案没有了，空态归列表自己
+   * （`@/ai-session/session-list` 的 `session-empty`，判据在那边）。本文件要钉的是**注入接口**
+   * ——否则「列表没接上」与「会话表恰好是空的」在屏幕上长得一样。
+   */
+  test("「会话」pane 的 body 由调用方注入——组件不认识会话列表", () => {
     const { host } = 挂("session")
 
-    expect(文本(host, "session-empty")).toBe("会话列表未接入")
-    expect(槽(host, "session-empty")?.getAttribute("data-state")).toBe("empty")
+    expect(pane(host, "session")?.contains(槽(host, "probe-session"))).toBe(true)
   })
 
   test("← / → 把焦点与选中一起移到另一个 tab（本 task 的「外壳自己的键盘」）", () => {

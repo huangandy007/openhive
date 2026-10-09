@@ -102,6 +102,7 @@ import { archiveStatesOf, markArchived, markRestored, membersOf } from "@opencod
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { Minio } from "@opencode-ai/core/minio"
 import { MEMBER_ROLES, type MemberRole, ProjectMembership } from "@opencode-ai/core/project/membership"
+import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { User } from "@opencode-ai/core/user"
 import { ConfigService } from "@/effect/config-service"
 import { Config as EffectConfig, Effect, Option, Schema } from "effect"
@@ -265,7 +266,7 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     if (Option.isNone(payload)) return badRequest("请求体要带 projectId")
 
     const projectId = payload.value.projectId
-    // ⚠️ **这条不是形式主义**：`projectId` 要当**路径段**用（`join(root, userId, projectId)`），
+    // ⚠️ **这条不是形式主义**：`projectId` 要当**路径段**用（`projectDirectory(root, userId, projectId)`），
     // 客户端能自填 ⇒ `../x` 会让归档去动沙箱根之外的目录。判据与 `anchor-workspace.ts` /
     // `T018` 对 userId 用的是**同一条**（`User.isSafePathSegment`），不是各写一份。
     if (!User.isSafePathSegment(projectId)) return badRequest("projectId 不是合法的路径段")
@@ -304,7 +305,7 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const targets = members.map((member) => ({
       userId: member.userId,
-      directory: join(deps.root, member.userId, projectId),
+      directory: projectDirectory(deps.root, member.userId, projectId),
     }))
 
     // ⑥ 全员上传（只读沙箱 ＋ 只写 MinIO）。
@@ -367,7 +368,7 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const targets = members.map((member) => ({
       userId: member.userId,
-      directory: join(deps.root, member.userId, projectId),
+      directory: projectDirectory(deps.root, member.userId, projectId),
     }))
 
     // ⑥ 全员下载（只读 MinIO ＋ 只写沙箱）。⑦ **到这里才**翻标记——见文件头「标记最后落」。

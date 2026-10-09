@@ -66,13 +66,25 @@ export * as OpenhiveProject from "./project"
  *   **算出来的**（输入是 NOT NULL 的一列 ＋ 一次 `Date.now()`）⇒「缺键」在这里没有含义，只能是
  *   出口写漏了；写漏的症状是**一个提醒都不出现**（`LEARNINGS #002-02`：别把「没做到」写成
  *   「做到了」）。它的**写入方**是 `POST {PREFIX}/touch`（见 `handleTouch`）——读出口只负责算。
+ * - **`directory` 由读出口一定给**（2026-10-08）：与 `stale` 同**一类**——**算出来的**
+ *   （`{沙箱根}/{userId}/{projectId}`），不是「来源有没有说」。消费方是左栏会话列表：它按**目录**
+ *   取那个项目的会话（`ensureDirSyncContext(目录)`，与右栏共用同一个缓存槽），而目录此前只活在
+ *   中间件里 ⇒ 前端**问不出来**，只能猜（猜错＝左栏列的是另一个目录的会话，界面上看不出不对）。
+ *   ⚠️ 与 `role` 同款，**建项目那条出口不回这个键**：前端拿创建结果只判「成没成」（数据一律来自
+ *   随后的重拉），多回一个没人读的键，等于又养一处会漂的出口。上一条「一定给」指的是**读**出口。
  *
- * ## 与 `project-location.ts` 的镜像（改一处要改另一处）
+ * ## 与 `project-location.ts` 的**同源**（不是「镜像」——这里是同一份代码）
  *
- * 本模块拼目录用 `join(root, userId, projectId)`；T017 的中间件拼会话落点用**同一句**。
- * 两者漂了会**静默**变成「会话落在不存在的目录里」。**防漂的断言不是又写一句比较**，而是
- * `test/server/openhive-project.test.ts` 那条端到端用例：建项目 → 用它建会话 → 断会话目录
- * **等于**刚建出来的那个目录。
+ * 目录的算法**只有一处**：`@opencode-ai/auth/workspace` 的 `projectDirectory(root, userId, projectId)`
+ * （2026-10-08 收口，此前是本模块与 T017 的中间件**各写一份 `join`**，另加归档/找回两处）。
+ * 漂了会**静默**变成「会话落在不存在的目录里」——不报错、不变红，只有打开文件树才发现。
+ *
+ * ⚠️ 抽成函数只解决了「**同一个算法**」，不解决「**同一个 root**」：`deps.root` 与中间件的
+ * `config.root` 都必须来自 `AnchorWorkspace.Config`（**实测**：两处都是
+ * `yield* AnchorWorkspace.Config`，见 `routes` 与 `project-location.ts` 的 `requires`）
+ * ——换成 `SharedRootConfig`（`/shared`）就全盘错位，而那是个**不同的**配置服务，不会报错。
+ * 端到端判据仍在 `test/server/openhive-project.test.ts`：建项目 → **列项目拿到 `directory`** →
+ * 用它建会话 → 直接读库断会话落点**等于那个值**。
  *
  * ## 与 `AuthGateway` 的接线同形（`tasks.md` 裁定 (3)）
  *
@@ -86,7 +98,7 @@ export * as OpenhiveProject from "./project"
 
 import { addMember, archiveStatesOf, memberCountsOf, rolesOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
-import { SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
+import { projectDirectory, SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { PROJECT_TYPES, ProjectExtTable, insertProjectExt, isStale, touchProjectExt } from "@opencode-ai/core/project/ext"
@@ -292,6 +304,14 @@ function handleList(deps: Deps) {
         // **一定给**（T024）：与上面那几个可选键不是一类——它是**算出来的**，不是「来源有没有说」。
         // 理由（含「为什么必填」）见文件头「出参形状」那一条。
         stale: isStale(row.last_accessed_at, now),
+        // **也一定给**（2026-10-08）：与 `stale` 同一类——**算出来的**（`{沙箱根}/{userId}/{projectId}`），
+        // 不是「来源有没有说」⇒ 缺键在语义上不成立。它的消费方是左栏会话列表：前端按**目录**取那个
+        // 项目的会话（`ensureDirSyncContext(目录)`，与右栏同一个缓存槽），而目录此前只存在于中间件里，
+        // 前端**问不出来** ⇒ 只能猜（猜错＝左栏列的是另一个目录的会话，界面上看不出不对）。
+        // ⚠️ 与中间件共用 `projectDirectory`（`@opencode-ai/auth/workspace`）——两处算法漂了，
+        // 症状就是这个字段与「请求实际落在哪个目录」不一致。判据在 `openhive-project.test.ts`：
+        // 拿这个字段去建会话，再直接读库看会话落在哪。
+        directory: projectDirectory(deps.root, user.value.id, row.project_id),
         // 没有归档行 ⇒ 缺键（不是 `false`）——同上。
         ...(archive ? { archived: archive.archived } : {}),
         // 没有成员行 ⇒ 缺键（不是 `"member"`）——同上，且这是**授权数据**：补一个默认角色
@@ -331,7 +351,10 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     // 裁定 (1)：id 用 UUID v4 —— 零碰撞 ⇒ 不需要「撞了就重取」那条分支与它的测试。
     // 它天然满足上面那条 `isSafePathSegment`（非空、非 `.`/`..`、不含分隔符），故不再判一次。
     const id = crypto.randomUUID()
-    const directory = join(deps.root, userId, id)
+    // 目录布局**只有 `projectDirectory` 一份**（`@opencode-ai/auth/workspace`）——它是**前提**，
+    // 不是风格：中间件把每条请求的 `?directory=` 都按同一句改写，这里漂一寸就是「项目在自己的
+    // 目录下，文件树却在另一个目录里」。落点清单见那个函数的注释。
+    const directory = projectDirectory(deps.root, userId, id)
 
     // ① 目录。`recursive` 让父目录（沙箱根）一并建出——T017 的「已知不覆盖 ①」到此闭合。
     // `mode: 0o700` 与 `createWorkspace` 同款（⚠️ win32 完全忽略 mode，本机测不到那条，

@@ -30,9 +30,18 @@ const 文件body = (
   </p>
 )
 
+/** 「会话」tab 的 body **同样**由调用方注入（生产接的是 `@/ai-session/sidebar-sessions`）。 */
+const 会话body = (
+  <p data-slot="story-sessions-body" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+    （这里由调用方注入会话列表）
+  </p>
+)
+
 const 受控 = (初始: SidebarTabKey) => {
   const [active, setActive] = createSignal<SidebarTabKey>(初始)
-  return () => <SidebarTabs active={active()} onSelect={setActive} files={文件body} />
+  return () => (
+    <SidebarTabs active={active()} onSelect={setActive} files={文件body} sessions={会话body} />
+  )
 }
 
 /** 默认档：激活「文件」，`会话` pane 带 `hidden`（不进 Tab 顺序）。 */
@@ -40,7 +49,7 @@ export const FilesTab = {
   render: 受控("files"),
 }
 
-/** 激活「会话」：`会话` 是显式空态（「会话列表未接入」），不是白板。 */
+/** 激活「会话」：body 是调用方注入的那一块（空态归列表自己，不在这里）。 */
 export const SessionTab = {
   render: 受控("session"),
 }

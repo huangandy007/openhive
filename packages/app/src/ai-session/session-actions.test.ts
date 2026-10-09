@@ -3,7 +3,17 @@ import type { Message, Part, Session } from "@opencode-ai/sdk/v2/client"
 import type { DirectorySDK } from "@/context/sdk"
 import type { SessionExportClient } from "@/utils/session-export"
 import { routeSessionID } from "./route-session"
-import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 会话路径, type 会话行 } from "./session-actions"
+import {
+  删除后去哪,
+  在途守卫,
+  导出会话,
+  建会话,
+  删会话,
+  当前项目目录,
+  会话路径,
+  type 会话行,
+  type 可定位的项目行,
+} from "./session-actions"
 
 /**
  * 右栏会话语义层：**新建 / 切换 / 删除**（T015）**＋ 导出**（T016）。
@@ -423,5 +433,56 @@ describe("T016 / FR-010 · 导出会话", () => {
     const 客户端 = 造客户端({ 会话: null })
 
     await expect(导出会话({ client: 客户端.client, sessionID: "ses_没了" })).rejects.toThrow("Session not found: ses_没了")
+  })
+})
+
+describe("当前项目目录（左栏会话列表的取数前提，2026-10-08）", () => {
+  /**
+   * 左栏「会话」tab 要靠**目录**取数，而目录是服务端在项目列表上给的（`ProjectEntry.directory`）。
+   * 本函数把「清单 ＋ 当前项目 → 该去哪个目录取会话」这一条判断**从接线层抽出来**——接线层
+   * （`sidebar-sessions.tsx`）依赖活着的服务器连接，挂不起来测；而这条判断错了**不报错、不变红**，
+   * 只是左栏列的是另一个目录的会话。
+   */
+  const 行 = (over: Partial<可定位的项目行> & { id: string }): 可定位的项目行 => ({
+    directory: `/workspaces/u1/${over.id}`,
+    ...over,
+  })
+
+  test("当前项目在清单里、活跃、有目录 ⇒ 给出它的目录", () => {
+    expect(当前项目目录("p2", [行({ id: "p1" }), 行({ id: "p2" })])).toBe("/workspaces/u1/p2")
+  })
+
+  test("没选项目（undefined）⇒ 没有目录可去", () => {
+    expect(当前项目目录(undefined, [行({ id: "p1" })])).toBe(undefined)
+  })
+
+  test("清单还没到（undefined）⇒ 没有目录可去（不是「空清单」）", () => {
+    expect(当前项目目录("p1", undefined)).toBe(undefined)
+  })
+
+  test("清单里找不到这个 id ⇒ 没有目录可去（宁缺勿假，不猜一个）", () => {
+    expect(当前项目目录("p9", [行({ id: "p1" })])).toBe(undefined)
+  })
+
+  test("那一行没有 directory 键 ⇒ 没有目录可去", () => {
+    expect(当前项目目录("p1", [{ id: "p1" }])).toBe(undefined)
+  })
+
+  /**
+   * **已归档 ⇒ 没有目录可去**——这条不是洁癖，是左右栏会不会分家的判据。
+   *
+   * 归档＝冻结，而服务端的目录锚定（`project-location.ts`）**只对活跃项目生效**：项目已归档时
+   * 它当作没带 cookie，会话实际读的是**沙箱根**。此时左栏若照常列出「项目目录下的会话」，
+   * 列出来的是**另一个目录**的东西——屏幕上完全看不出不对（这正是后端出参那段注释警告的
+   * 「列的是另一个目录的会话」）。所以这里返回 `undefined` ⇒ 不画「＋」、不去取数、不画空态。
+   */
+  test("当前项目**已归档** ⇒ 没有目录可去（冻结：服务端对它不做目录锚定）", () => {
+    expect(当前项目目录("p1", [行({ id: "p1", archived: true })])).toBe(undefined)
+  })
+
+  test("同清单里活跃的那一个照常给（不是「有归档行就全不给」）", () => {
+    expect(当前项目目录("p2", [行({ id: "p1", archived: true }), 行({ id: "p2" })])).toBe(
+      "/workspaces/u1/p2",
+    )
   })
 })

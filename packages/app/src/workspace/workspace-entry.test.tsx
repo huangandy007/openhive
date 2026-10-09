@@ -55,13 +55,6 @@ function mount(element: () => JSX.Element) {
   return host
 }
 
-/** 上游 `Titlebar` 的顶栏右侧注入点；测试里造一个同用途的容器代替真顶栏。 */
-function titlebarSlot() {
-  const slot = document.createElement("div")
-  document.body.appendChild(slot)
-  return slot
-}
-
 /**
  * 每条用例前把 `document.body` 清空。
  *
@@ -107,7 +100,7 @@ const text = (root: HTMLElement, slot: string) => root.querySelector(`[data-slot
  * 挂死时**一条结果都拿不到**：不是红，是哑——比红更坏，看着像「还没跑完」。
  * 断在这个布尔上，红的时候打印的是 `false`，毫秒级。
  *
- * ⚠️ 本文件里既有几处 `expect(...).toBeNull()`（判 `topbar` / `document-view` 不在的那些）是**同样
+ * ⚠️ 本文件里既有几处 `expect(...).toBeNull()`（判 `document-view` 不在的那些）是**同样
  * 形状**、同样会挂哑，但不是 005 加的，按「只动自己碰过的地方」留原样，只在 state.md 里挂账。
  */
 const 不存在 = (root: HTMLElement, selector: string) => root.querySelector(selector) === null
@@ -145,37 +138,14 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
     expect(currentModule(host)).toBe("资金分析")
   })
 
-  test("没有注入点时顶栏不渲染（不存在的挂载点不该被硬塞进中栏）", () => {
-    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
-
-    expect(host.querySelector("[data-component='topbar']")).toBeNull()
-  })
-
-  test("顶栏挂进上游注入点，而不是留在工作台里（DESIGN §4.4）", () => {
-    const slot = titlebarSlot()
-    const host = mount(() => <WorkspaceEntry titlebarRight={() => slot}>中栏</WorkspaceEntry>)
-
-    expect(slot.querySelector("[data-slot='topbar-brand-name']")).not.toBeNull()
-    expect(host.querySelector("[data-component='topbar']")).toBeNull()
-  })
-
-  test("身份未就位时顶栏照常，但不给用户区（宁缺勿假）", () => {
-    const slot = titlebarSlot()
-    mount(() => <WorkspaceEntry titlebarRight={() => slot}>中栏</WorkspaceEntry>)
-
-    expect(text(slot, "topbar-brand-name")).toBe("OpenHive")
-    expect(slot.querySelector("[data-slot='topbar-user']")).toBeNull()
-  })
-
-  test("身份就位后顶栏显示用户区（F2 的接入点）", () => {
-    const slot = titlebarSlot()
-    mount(() => <WorkspaceEntry titlebarRight={() => slot}>中栏</WorkspaceEntry>)
-
-    setCurrentUser({ name: "张三", policeId: "012345" })
-
-    expect(text(slot, "topbar-user-name")).toBe("张三")
-    expect(text(slot, "topbar-user-police-id")).toBe("警号: 012345")
-  })
+  /**
+   * ⚠️ 原先这里有四条「顶栏注入缝」的用例（注入点缺失不渲染 / 挂进注入点 / 身份未就位 /
+   * 身份就位）。**2026-10-08 顶栏改造起它们搬到了 `@/topbar/topbar-mount.test.tsx`**：
+   * 顶栏不再由本组件 Portal 进上游 `#opencode-titlebar-right`，改由入口层挂进上游那条 header
+   * 里**本产品自建的宿主 `span[data-slot=topbar-host]`**（2026-10-09 起；理由见
+   * `@/topbar/titlebar-host`），接缝从 `WorkspaceEntry.titlebarRight` 换成了
+   * `TopbarMount.host` —— 判据逐条照搬，只是换了被测组件。删掉的不是覆盖。
+   */
 })
 
 const 专案: ContentTab = { module: "project", title: "专案A", path: "/p/a.intent" }
@@ -765,12 +735,33 @@ describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T0
     expect(藏起来了(tabpane(host, "files"))).toBe(true)
   })
 
-  test("「会话」pane 是显式空态——设计 §7 的会话列表不在本 feature，就明说没接入", () => {
+  /**
+   * 「会话」pane 的内容**由 `sessions` 这个访问器注入**（2026-10-08 接入）。
+   *
+   * ⚠️ 这条**取代**了此前那条「会话 pane 是显式空态（文案＝『会话列表未接入』）」：
+   * 列表接上之后那句硬编码文案没有了，空态归列表自己（`@/ai-session/session-list`）。
+   * 本文件要钉的是**接线**——注入的东西真的落进了那一个 pane（不落的话，「列表接上了」
+   * 与「pane 里什么都没有」在屏幕上长得一样，`LEARNINGS #002-02`）。
+   */
+  test("「会话」pane 透传调用方注入的 `sessions`（本组件不认识会话列表）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry sessions={() => <p data-slot="probe-sessions">注入的会话</p>}>中栏</WorkspaceEntry>
+    ))
+
+    侧栏tab(host, "session")?.click()
+
+    expect(tabpane(host, "session")?.contains(host.querySelector("[data-slot='probe-sessions']"))).toBe(true)
+    expect(text(host, "probe-sessions")).toBe("注入的会话")
+  })
+
+  /** 省略 `sessions` ⇒ pane **空着**（不假装有内容，也不白屏）。 */
+  test("没注入 `sessions` ⇒ 会话 pane 里什么都没有（不是一句编出来的空态）", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
     侧栏tab(host, "session")?.click()
 
-    expect(text(host, "session-empty")).toBe("会话列表未接入")
+    // ⚠️ 比布尔而不是比节点（`#005-01`：`.toBeNull()` 的实得值是节点会挂死整轮）
+    expect(tabpane(host, "session")?.children.length === 0).toBe(true)
   })
 
   test("切到「会话」再切回来，**文件树还是同一棵**（选中/折叠/搜索不会因为看眼会话就没了）", () => {
@@ -2160,7 +2151,7 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
 
   /**
    * 注入的内容必须**创建在 `CenterTabsProvider` 之内**——这是「注入一个访问器」而不是
-   * 「注入一个现成的元素」的真正理由（同 `titlebarRight` 的形状）。
+   * 「注入一个现成的元素」的真正理由（同 `right` 那一槽的形状）。
    * `AiSessionSlot` 要按当前模块算投影（`useCenterTabs()`），而那个 provider 是
    * `WorkspaceEntry` 自己建的 ⇒ 内容若在**外面**被创建，它当场抛
    * 「... must be used within a context provider」，而右栏整栏消失、**不报错在右栏上**。

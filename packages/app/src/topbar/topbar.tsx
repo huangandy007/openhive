@@ -1,4 +1,7 @@
-import { Icon, type IconProps } from "@opencode-ai/ui/icon"
+import { Icon } from "@opencode-ai/ui/icon"
+// ⚠️ v2 与 v1 是**两套独立的 sprite**，名字不通用：`grid-plus` 只在 v2 里，v1 的 `Icon` 收到它会
+// 画出一个**空的**图标且**不报错**（`icons[name]` 取不到就落到占位）。故这里两个都引。
+import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { createSignal, createUniqueId, For, Show, type JSX } from "solid-js"
 import { BRAND_BADGE, BRAND_LOGO, BRAND_NAME } from "./brand"
 import { toggleFullscreen } from "./fullscreen"
@@ -99,12 +102,52 @@ export interface TopbarProps {
    * 生产侧走配置，不必传。
    */
   logo?: string
+  /** 是否已在「主页」视图；为真时主页按钮呈按下态（与上游那颗同语义）。 */
+  homeActive?: boolean
+  /**
+   * 点主页按钮。行为由**调用方**给（`layout-new` 传上游那句 `tabs.toggleHome`）——
+   * 组件自己不碰路由，才能在单测里裸挂（同 `onOpenMessages` / `onSelect` 的约定）。
+   */
+  onOpenHome?: () => void
+}
+
+/**
+ * 铃铛（站内信图标）：**本产品专有图标，内联在本文件里**，不进设计系统的图标集
+ * （`@opencode-ai/ui/icon` 与 `@opencode-ai/ui/v2/icon` 两套都**没有** bell，2026-10-08 实测）。
+ * 这么做是为了**不动上游文件**（宪法「最小化与官方合并冲突」）。
+ *
+ * `stroke="currentColor"`：颜色由外层 `topbar-icon` 那层的 `color` 决定（见 `TopbarIconButton`），
+ * 故它跟着 hover 一起提亮，与两套图标集里的图标同一条通道。
+ */
+function BellIcon() {
+  return (
+    <svg
+      data-slot="topbar-bell"
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  )
 }
 
 function TopbarIconButton(props: {
   slot: string
   label: string
-  icon: IconProps["name"]
+  /**
+   * 图标本体。收 `JSX.Element` 而不是图标名：三颗按钮分别用 v2 图标 / 内联铃铛 / v1 图标，
+   * 一个「名字」入参表达不了这种混用，而且**传错 sprite 是静默的**（名字不通用 ⇒ 空图标）。
+   */
+  glyph: JSX.Element
+  pressed?: boolean
   onClick?: () => void
   children?: JSX.Element
 }) {
@@ -113,16 +156,21 @@ function TopbarIconButton(props: {
       type="button"
       data-slot={props.slot}
       aria-label={props.label}
+      aria-pressed={props.pressed}
       onClick={() => props.onClick?.()}
       class="group relative flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-v2-overlay-simple-overlay-hover"
+      classList={{ "bg-v2-overlay-simple-overlay-hover": props.pressed === true }}
     >
       {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`（写在按钮上的 `text-*` 到不了图标，
-          原因见 `rail.tsx` 同一处注释）。未选中的档位靠类、hover 提亮才有空间。 */}
+          原因见 `rail.tsx` 同一处注释）。未选中的档位靠类、hover 提亮才有空间。
+          ⚠️ 还要**同时**给出 `color`：`--icon-base` 只有 **v1** 的 `Icon`（`[data-component="icon"]`）
+          会自己去取，**v2 的 `Icon` 与内联 svg 都不会** ⇒ 少了 `[color:var(--icon-base)]`，
+          那两颗会是默认文字色、且 hover 不提亮（静默、不变红）。 */}
       <span
         data-slot="topbar-icon"
-        class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
+        class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] [color:var(--icon-base)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
       >
-        <Icon name={props.icon} size="small" />
+        {props.glyph}
       </span>
       {props.children}
     </button>
@@ -130,15 +178,28 @@ function TopbarIconButton(props: {
 }
 
 /**
- * 顶栏（FR-003 / DESIGN §4.4）：品牌 Logo、站内信、全屏、用户下拉。
+ * 顶栏（FR-003 / DESIGN §4.4）：品牌组在左，主页 / 站内信 / 全屏 / 用户区在右。
  *
- * 组件本身不关心落在哪——挂载由调用方通过上游的 `useTitlebarRightMount()` +
- * `<Portal>` 注入 `#opencode-titlebar-right`（**不改 Titlebar 主体**，宪法 V）。
+ * 组件本身不关心落在哪——挂载由调用方 `pages/layout-new.tsx` 铺在标题栏那条上。
+ *
+ * ⚠️ **2026-10-08 起它不再 Portal 进上游的 `#opencode-titlebar-right`**：那一条（`data-slot=
+ * "titlebar-v2"` 的整行）已被 openhive 隐掉（换掉上游的标签页 / DEV 徽标 / 主页按钮），投进去
+ * 即是投进一个不可见的容器。品牌要跑到**最左**，那个注入点在最右，本来也够不到。
  */
 export function Topbar(props: TopbarProps) {
   return (
-    <div data-component="topbar" class="flex shrink-0 items-center justify-end gap-1">
-      <span class="flex items-center gap-1.5 pl-1">
+    /* `data-tauri-drag-region`：本组件现在**顶掉了上游标题栏那条带子**（见 `titlebar-host.ts`），
+       桌面窗口的拖拽区得有人接。样式规则在 `packages/ui/src/styles/base.css`：
+       `#root *[data-tauri-drag-region] { app-region: drag }`，且**同一条规则把里面的
+       `button` / `[role=button]` 等逐类重置成 `no-drag`** ⇒ 空处能拖窗、按钮照旧可点，
+       与上游那条 header 的配置逐字同类。 */
+    <div
+      data-component="topbar"
+      data-tauri-drag-region
+      class="flex min-w-0 flex-1 items-center justify-between"
+    >
+      {/* 品牌组在最左：图形标 → 品牌名 → 品牌标签。**内部间距与调整前逐字相同**（`gap-1.5` + `pl-1`）。 */}
+      <span data-slot="topbar-brand" class="flex items-center gap-1.5 pl-1">
         <BrandLogo logo={props.logo ?? BRAND_LOGO} />
         <span data-slot="topbar-brand-name" class="text-v2-text-text-base text-sm font-bold">
           {BRAND_NAME}
@@ -150,32 +211,43 @@ export function Topbar(props: TopbarProps) {
           {BRAND_BADGE}
         </span>
       </span>
-      <TopbarIconButton
-        slot="topbar-messages"
-        label="站内信"
-        icon="comment"
-        onClick={() => props.onOpenMessages?.()}
-      >
-        <Show when={props.unreadCount}>
-          {(count) => (
-            <span
-              data-slot="topbar-messages-unread"
-              class="absolute -top-0.5 -right-0.5 min-w-3.5 rounded-full border border-v2-state-border-danger bg-v2-state-bg-danger px-0.5 text-center text-[10px] leading-3.5 font-semibold text-v2-state-fg-danger"
-            >
-              {count()}
-            </span>
-          )}
+      {/* 操作区在最右，次序固定：主页 → 站内信 → 全屏 → 用户区。四项之间 14px（`gap-3.5`）。 */}
+      <span data-slot="topbar-actions" class="flex items-center gap-3.5">
+        <TopbarIconButton
+          slot="topbar-home"
+          label="主页"
+          glyph={<IconV2 name="grid-plus" size="small" />}
+          pressed={props.homeActive}
+          onClick={() => props.onOpenHome?.()}
+        />
+        <TopbarIconButton
+          slot="topbar-messages"
+          label="站内信"
+          glyph={<BellIcon />}
+          onClick={() => props.onOpenMessages?.()}
+        >
+          <Show when={props.unreadCount}>
+            {(count) => (
+              /* 按参考图：**实心红圆 + 白字**，无描边（早先是红边红字）。 */
+              <span
+                data-slot="topbar-messages-unread"
+                class="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-v2-state-bg-danger px-1 text-[10px] leading-none font-semibold text-white"
+              >
+                {count()}
+              </span>
+            )}
+          </Show>
+        </TopbarIconButton>
+        <TopbarIconButton
+          slot="topbar-fullscreen"
+          label="全屏"
+          glyph={<Icon name="expand" size="small" />}
+          onClick={() => void toggleFullscreen()}
+        />
+        <Show when={props.user} keyed>
+          {(user) => <UserMenu user={user} onSelect={props.onSelect} />}
         </Show>
-      </TopbarIconButton>
-      <TopbarIconButton
-        slot="topbar-fullscreen"
-        label="全屏"
-        icon="expand"
-        onClick={() => void toggleFullscreen()}
-      />
-      <Show when={props.user} keyed>
-        {(user) => <UserMenu user={user} onSelect={props.onSelect} />}
-      </Show>
+      </span>
     </div>
   )
 }
@@ -184,8 +256,9 @@ export function Topbar(props: TopbarProps) {
 function UserMenu(props: { user: TopbarUser; onSelect?: (id: string) => void }) {
   const [open, setOpen] = createSignal(false)
 
+  // 不再自带 `ml-1`：它与右侧区另三项的间距现在统一由 `topbar-actions` 的 `gap-3.5` 给。
   return (
-    <div class="relative ml-1 shrink-0">
+    <div class="relative shrink-0">
       <button
         type="button"
         data-slot="topbar-user"
@@ -200,7 +273,8 @@ function UserMenu(props: { user: TopbarUser; onSelect?: (id: string) => void }) 
         >
           {props.user.name.slice(0, 1)}
         </span>
-        <span class="flex flex-col items-start leading-tight">
+        {/* 姓名与警号**左右一行**（早先是 `flex-col` 上下两行）；两段字号不同，靠 `items-center` 对齐。 */}
+        <span data-slot="topbar-user-text" class="flex items-center gap-1.5">
           <span data-slot="topbar-user-name" class="text-xs font-semibold text-v2-text-text-base">
             {props.user.name}
           </span>
@@ -212,7 +286,9 @@ function UserMenu(props: { user: TopbarUser; onSelect?: (id: string) => void }) 
       <Show when={open()}>
         <div
           data-slot="topbar-user-menu"
-          class="absolute top-full right-0 z-50 mt-1 flex min-w-32 flex-col rounded-xl border border-v2-border-border-base bg-v2-background-bg-base py-1 shadow-lg"
+          /* 下拉整体退出拖拽区：`base.css` 只把 `button` 等逐类重置成 `no-drag`，
+             而这一层是 `div`——不显式退出的话，它的 `py-1` 内边距会把点按变成拖窗。 */
+          class="absolute top-full right-0 z-50 mt-1 flex min-w-32 flex-col rounded-xl border border-v2-border-border-base bg-v2-background-bg-base py-1 shadow-lg [app-region:no-drag]"
         >
           <For each={visibleUserMenuItems(USER_MENU_ITEMS, props.user.isAdmin)}>
             {(item) => (

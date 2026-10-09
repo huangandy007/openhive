@@ -147,6 +147,53 @@ export function 在途守卫() {
 }
 
 /**
+ * 项目清单里的一行——「当前项目目录」只读这三样：`id` 用来认行、`archived` 判冻结、
+ * `directory` 就是答案本身。**形状由被调方定义**（`LEARNINGS #004-07`）：本函数不需要
+ * `ProjectEntry` 的其余字段（`name` / `type` / `lastAccessedAt` …），写成窄形状，测试才不必
+ * 造一个假项目出来。
+ */
+export interface 可定位的项目行 {
+  readonly id: string
+  readonly archived?: boolean
+  readonly directory?: string
+}
+
+/**
+ * 左栏会话列表该去**哪个目录**取数（2026-10-08）。
+ *
+ * ## 为什么要单独一个函数
+ *
+ * 这条判断的落点是接线层（`sidebar-sessions.tsx`），而那一层要活着的服务器连接才挂得起来
+ * ⇒ 挂不起来测。可它的判据错了**不报错、不变红**，只是**左栏列的是另一个目录的会话**
+ * ——同上 `#002-06` 那条「同一个判断两处各写一份」的另一种形态。所以按本文件一贯的做法把它
+ * 抽出来：接线层只剩「读这两个信号 → 调它 → 把结果喂给 `SessionList`」。
+ *
+ * ## 四种「没有目录」（返回 `undefined`）——四种都**不**猜一个
+ *
+ * ① 没选项目（`项目ID === undefined`）；② 清单还没到（`清单 === undefined`，不是「空清单」）；
+ * ③ 清单里找不到这个 id；④ 那一行没有 `directory` 键。四者的界面后果都是：不画「＋」
+ * （`SessionList` 的 `directory` 是 `undefined`）、不去取会话、不画空态。
+ *
+ * ## ⑤ 已归档 ⇒ **也没有目录**（这条是左右栏会不会分家的判据）
+ *
+ * 归档＝冻结，而服务端的目录锚定（`project-location.ts`）**只对活跃项目生效**：项目已归档时
+ * 它当作没带那个信号，会话实际落在**沙箱根**（`packages/opencode/src/server/routes/instance/
+ * httpapi/middleware/project-location.ts` 的「第四笔裁定」）。此刻左栏若照常列出「项目目录下
+ * 的会话」，列出的是**另一个目录**的东西，而屏幕上完全看不出不对
+ * （后端 `project.ts` 出参那段注释警告的正是这个）。⇒ 宁可什么都不列：界面上的说法是
+ * 「这个项目冻结了」，而不是一句看起来正常的、错的列表。
+ */
+export function 当前项目目录(
+  项目ID: string | undefined,
+  清单: readonly 可定位的项目行[] | undefined,
+): string | undefined {
+  if (项目ID === undefined || 清单 === undefined) return undefined
+  const 行 = 清单.find((候选) => 候选.id === 项目ID)
+  if (行 === undefined || 行.archived === true) return undefined
+  return 行.directory
+}
+
+/**
  * 把会话路径的末段换成另一个 id（切会话 ＝ **改路由**：右栏的会话 id 只有一个产地，
  * 就是 URL——见 `route-session.ts` 文件头）。
  *

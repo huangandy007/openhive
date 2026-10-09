@@ -1,5 +1,4 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
-import { Portal } from "solid-js/web"
 import { CenterContent } from "@/center/center-content"
 import type { LoadFileContent } from "@/center/file-content"
 import { TabBar } from "@/center/tab-bar"
@@ -22,16 +21,10 @@ import { ProjectPanel } from "@/project/project-panel"
 import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
-import { Topbar } from "@/topbar/topbar"
 import { currentUser } from "./current-user"
 import { ThreePane } from "./three-pane"
 
 export interface WorkspaceEntryProps {
-  /**
-   * 顶栏右侧注入点的挂载元素访问器（上游 `useTitlebarRightMount()`）。
-   * 省略 / 为空 = 顶栏无处可挂，**不渲染**——绝不退而求其次塞进中栏。
-   */
-  titlebarRight?: () => HTMLElement | null
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
   capabilities?: ReadonlySet<string>
   /**
@@ -39,7 +32,7 @@ export interface WorkspaceEntryProps {
    *
    * 该由应用入口注入（`pages/layout-new.tsx` 拿 `useSDK()` 组），**不在这里 `useFile()`**：
    * `useFile` 要六层 provider 才活得下来，会把工作台的组件测试整个拖进去。
-   * ⚠️ **今天还没接**（`layout-new.tsx` 只传了 `titlebarRight` 与 `projectData`）——接它要六层
+   * ⚠️ **今天还没接**（`layout-new.tsx` 只传了 `projectData`）——接它要六层
    * provider，属中栏视图那条线，不是 T018 的事。省略 = 视图拿不到内容（停在空态），但路由与 tab 照常。
    */
   loadFile?: LoadFileContent
@@ -60,7 +53,7 @@ export interface WorkspaceEntryProps {
    * ——本文件全程**不挂任何 provider**。生产入口是 `pages/layout-new.tsx` 的
    * `right={() => <AiSessionSlot />}`。
    *
-   * **形状是访问器、不是现成的元素**（同 `titlebarRight`）：内容必须**读的时候才创建**，
+   * **形状是访问器、不是现成的元素**（同下面的 `routePageVisible`）：内容必须**读的时候才创建**，
    * 且创建在 `CenterTabsProvider`（本组件自己建的）**之内**——`AiSessionSlot` 要按当前模块算投影
    * （`useCenterTabs()`），在外面创建会当场抛错，而症状是右栏整栏消失、**错不在右栏上**。
    *
@@ -69,6 +62,19 @@ export interface WorkspaceEntryProps {
    * 而 `<Show>` 元素恒非 `undefined`，会留下一条 360px 空栏（与 `left` 那条同因，见下面那段注释）。
    */
   right?: () => JSX.Element
+  /**
+   * **左栏「会话」tab 的内容**（2026-10-08 接入）。
+   *
+   * 与 `right` 逐条同因：注入而不 import（生产那份要 `useServerSync()` / `useLocation()`，
+   * 组件自己去 context 里拿，本文件的组件测试就再也跑不成离线）；**形状是访问器**——内容必须
+   * 读的时候才创建，且创建在 `CenterTabsProvider`（本组件自己建的）之内。
+   * 生产入口是 `pages/layout-new.tsx` 的 `sessions={() => <SidebarSessions />}`。
+   *
+   * 省略 = 会话 pane 空着（同 `projectData` 省略时文件树恒空态：不假装有内容，也不白屏）。
+   * ⚠️ 与 `right` 那条不同，这里**没有** `<Show>` 包一层的风险：`SidebarTabs` 收的是
+   * `JSX.Element`，`undefined` 就是「什么都不画」。
+   */
+  sessions?: () => JSX.Element
   /**
    * 中栏**要不要露出调用方的页面**（`children`），也就是 `CenterContent` 的 `pageVisible`。
    * 省略 = 要（与引入本 prop 之前逐字同行为）。
@@ -81,7 +87,7 @@ export interface WorkspaceEntryProps {
    * 在这里 `useLocation()` 会当场抛。所以照 `right` / `loadFile` / `projectData` 的老规矩：
    * **能读 context 的那一层算，本层只认值**（生产入口是 `pages/layout-new.tsx`）。
    *
-   * **形状是访问器**（同 `titlebarRight` / `right`）：切换路由时它要能变，
+   * **形状是访问器**（同上面的 `right`）：切换路由时它要能变，
    * 传现成的 boolean 会把中栏冻在首次渲染那一刻的判断上。
    */
   routePageVisible?: () => boolean
@@ -663,6 +669,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                 <SidebarTabs
                   active={sidebarTab()}
                   onSelect={setSidebarTab}
+                  // ③ 会话 pane（2026-10-08）：与 `files` 同款注入——本组件不认识会话列表，
+                  // 正如它不认识文件树。`?.()` 得到 `undefined` ＝ 调用方没接（pane 空着）。
+                  sessions={props.sessions?.()}
                   files={
                     <>
                       {/* ④ 个文件动作（T020）：四项各接各的回调。`onBackup` / `onRestore` 仍不接
@@ -768,13 +777,6 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           </CenterContent>
         </ThreePane>
       </div>
-      <Show when={props.titlebarRight?.()} keyed>
-        {(mount) => (
-          <Portal mount={mount}>
-            <Topbar user={currentUser()} />
-          </Portal>
-        )}
-      </Show>
     </>
   )
 }

@@ -266,6 +266,11 @@ function readEntry(value: unknown): ProjectEntry | undefined {
   }
   if (typeof value.memberCount === "number") entry.memberCount = value.memberCount
   if (value.archived === true) entry.archived = true
+  // 目录（2026-10-08）：与 `stale` 同一类（服务端**算出来的**，读出口一定给），但取法与
+  // `memberCount` 那条「是数就读」同款——这里只搬，不判它像不像一个路径（那是服务端的事，
+  // 本层再判一次就多出第二份判定）。**空串当缺键**：`""` 是「没有可用目录」的另一种写法，
+  // 读进来会让调用方拿空目录取会话（`ensureDirSyncContext("")` 不是任何一个项目）。
+  if (typeof value.directory === "string" && value.directory.length > 0) entry.directory = value.directory
   if (value.stale === true) entry.stale = true
   const role = roleOf(value.role)
   if (role) entry.role = role

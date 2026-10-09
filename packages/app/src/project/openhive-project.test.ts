@@ -305,6 +305,44 @@ describe("role 那一列（T023）", () => {
   })
 })
 
+describe("directory 那一列（左栏会话列表的取数前提，2026-10-08）", () => {
+  /**
+   * 服务端在 `GET /openhive/project` 的每一行上给 `directory`
+   * （`packages/opencode/src/server/openhive/project.ts` 的 `handleList`）——左栏「会话」tab
+   * 靠它去取这个项目目录下的会话表，右栏那条链也靠它（`ensureDirSyncContext(目录)`）。
+   *
+   * ⚠️ 它与 `memberCount` / `role` **不是一类**：那两类是「**来源有没有说**」（缺键就是缺键）；
+   * `directory` 与 `stale` 同一类——是**算出来的**（`projectDirectory(root, userId, projectId)`，
+   * 服务端一定给）。缺了它的症状是「项目在、会话一个都列不出来」，不报错、不变红。
+   */
+  test("directory 是字符串 ⇒ 读进结果", async () => {
+    const { send } = stub(
+      json([{ id: "p1", name: "X", type: "private", lastAccessedAt: 1, directory: "/workspaces/u1/p1" }]),
+    )
+
+    expect((await listProjects(send))?.[0]?.directory).toBe("/workspaces/u1/p1")
+  })
+
+  /**
+   * 缺键 / 空串 / 非字符串 ⇒ **都不读**（不是补一个默认值）。三种都是「这一行没有可用的
+   * 目录」，而补 `""` 的后果比缺键更坏：调用方会拿着空目录去取会话
+   * （`ensureDirSyncContext("")` 取到的不是任何一个项目），界面看着像「这个项目没有会话」。
+   */
+  test("directory 缺键 / 空串 / 非字符串 ⇒ 都不读", async () => {
+    const { send } = stub(
+      json([
+        { id: "p1", name: "X", type: "private", lastAccessedAt: 1 },
+        { id: "p2", name: "Y", type: "private", lastAccessedAt: 1, directory: "" },
+        { id: "p3", name: "Z", type: "private", lastAccessedAt: 1, directory: 7 },
+      ]),
+    )
+
+    const projects = await listProjects(send)
+
+    expect(projects?.map((entry) => entry && "directory" in entry)).toEqual([false, false, false])
+  })
+})
+
 describe("archiveProject / restoreProject（T023）", () => {
   test("archiveProject 发的是 POST /openhive/project/archive，体是 {projectId}", async () => {
     const { send, sent } = stub(json({ projectId: "p1", archived: true }))
