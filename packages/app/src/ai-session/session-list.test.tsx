@@ -580,21 +580,65 @@ describe("SessionList 右键菜单（左栏）", () => {
     expect(菜单项("delete")?.getAttribute("aria-disabled")).toBe("true")
   })
 
-  /** 右键落在**列表空白处**（不在任何一行上）⇒ 没有作用对象，于是不动作、也不乱删。 */
+  /**
+   * 右键落在**列表空白处**（不在任何一行上）⇒ 没有作用对象，于是不动作、也不乱删。
+   *
+   * ## ⚠️ 这一条在 2026-10-10 之前是**空转**的（当场取证：注入临时日志，实得
+   * `[取证] 身子 = null ； region存在 = true`、29 pass / 0 fail）
+   *
+   * 它查的 `[data-slot='session-list-body']` 在 DOM 里**从来不存在**：`packages/ui` 的
+   * `ContextMenuTrigger` 把 `data-slot="context-menu-trigger"` 硬写在 `{...rest}` **之后**，
+   * 调用方传的值被**静默覆盖**。于是 `身子 = null` ⇒ `右键(undefined)` 一个事件都没发
+   * ⇒ 两个 `if (菜单项(...))` 都不进 ⇒ 两条断言度量的是**什么都没做**（`#004-14` 的同族）。
+   * 改查**真正挂着 `记行` 的那一层**（`session-list-region`），并把「菜单确实开了」写成**前提**：
+   * 前提不成立要当场炸，不能默默空转。
+   *
+   * ## 它钉什么、不钉什么
+   *
+   * 钉**行为**（空白 ⇒ 作用对象为空 ⇒ 点两次删除也不误删）。**「空白究竟归谁」是几何问题**，
+   * happy-dom 量不出来（`#005-07`）⇒ 那一半归 `e2e/real-stack/session-pane-blank-menu-real.spec.ts`
+   * （`#004-02`：同一件事的两个投影各钉一条）。
+   */
   test("右键空白处（不在任何一行上）⇒ 不动作、不误删", () => {
     const { host, 删过, 重命名过 } = 造()
 
-    const 身子 = host.querySelector<HTMLElement>("[data-slot='session-list-body']")
-    右键(身子 ?? undefined)
+    const 域 = host.querySelector<HTMLElement>("[data-slot='session-list-region']")
+    // ⚠️ 判据写成布尔、不做节点匹配：`expect(<节点>).toBeNull()` 这类断言红了会把整轮
+    // `bun test` **挂死**（`#005-01`：不是红，是哑）。
+    expect(域 !== null, "前提：挂 `记行` 的那一层要在（旧名 session-list-body 在 DOM 里从不存在）").toBe(true)
 
-    if (菜单项("delete")) {
-      点菜单项("delete")
-      点菜单项("delete")
-    }
-    if (菜单项("rename")) 点菜单项("rename")
+    右键(域 ?? undefined)
+    expect(有菜单(), "前提：右键必须真的把菜单开出来——否则下面两条是空转").toBe(true)
+
+    点菜单项("delete")
+    点菜单项("delete")
+    点菜单项("rename")
 
     expect(删过).toEqual([])
     expect(重命名过).toEqual([])
+  })
+
+  /**
+   * 右键作用面的**盒子构成**（2026-10-10 加固）：region 必须是撑满触发器的那一层。
+   *
+   * 为什么值得单写一条：`flex-1` 没接上时**症状极其安静**——菜单照开、`记行` 不跑，
+   * 作用对象停在上一次的残留（真栈实测见 `session-pane-blank-menu-real.spec.ts` 的变异记录）。
+   * happy-dom 量不出几何（`#005-07`）⇒ 这里只能钉**类名集合**；真几何归那条真栈 spec。
+   * 它的价值是「同步上游时被改回去，在本机立刻红」。
+   */
+  test("右键作用面：region 是撑满的那一层（flex-1 / min-h-0），触发器是 flex 容器", () => {
+    const { host } = 造()
+
+    const 域类 = 类集(host.querySelector<HTMLElement>("[data-slot='session-list-region']"))
+    expect(域类, "region 要能撑满（flex-1）").toContain("flex-1")
+    expect(域类, "region 要能在 flex 容器里收缩（min-h-0）").toContain("min-h-0")
+    expect(域类, "region 自己就是滚动容器（标题行不该被滚走）").toContain("overflow-y-auto")
+
+    // ⚠️ 这个名字是 `packages/ui` **硬写**的：调用方传的 `data-slot` 会被它覆盖（见上一条注释）
+    // ⇒ 只能按它查。它同时也是「别指望用自定义 `data-slot` 找到触发壳」那条教训的现场。
+    const 触类 = 类集(host.querySelector<HTMLElement>("[data-slot='context-menu-trigger']"))
+    expect(触类, "触发器要当 flex 容器，region 的 flex-1 才**有剩余空间可分**").toContain("flex")
+    expect(触类).toContain("flex-col")
   })
 })
 

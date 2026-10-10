@@ -28,18 +28,22 @@ const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-overlay-simple-over
 // 选中态＝品牌浅金（理由见 `file-tree.tsx` 的 `ROW_SELECTED`：005 Step 5 审查 X5-1）。
 const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-semibold text-v2-text-text-base`
 
-/** pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。 */
-const PANE = "min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1"
-
 /**
- * 「文件」pane 的骨架：在 `PANE` 之上**再当一层 flex 容器**。
+ * pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
  *
- * 为什么只有这一个 pane 需要（2026-10-11，用户实报「空白处右键呼不出菜单」的根因）：
- * 见 `@/project/file-tree` 里那条同题注释——树的外层写着 `flex-1`，而它的父级若**不是**
- * flex 容器，那个 `flex-1` 就无剩余空间可分，退化成「高度＝内容高」⇒ 页签余下的空白
- * 不属于任何 `ContextMenu` 触发区 ⇒ 空白处右键冒不到触发器。
+ * ## `flex flex-col` 是**两个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
+ *
+ * 这一层必须是 flex 容器，body 根上那个 `flex-1` 才**有剩余空间可分**；否则它退化成
+ * 「高度＝内容高」，页签余下的空白**不属于任何 `ContextMenu` 触发区** ⇒ 空白处右键冒不到
+ * 触发器（症状：用户原话「在空白处单击右键呼不出右键」）。
+ *
+ * 用户先报的是「文件」tab，当天只给那一个 pane 加了这一条（当时的 `PANE_FILES`）；随后按 ⑥ 步
+ * grep 同类落点，真栈实测**会话** tab **逐字同型** —— 页签 `session-list-slot` bottom = 841、
+ * 列表根 `session-list` bottom = 189；空白点最上层是页签**自己** ⇒ 菜单开 = `false`。
+ * ⇒ 合成一条。不保留两个常量的理由：它们本来就会一样，留着就是同一件事的第二个说法
+ * （`LEARNINGS #002-06`）。
  */
-const PANE_FILES = `${PANE} flex flex-col`
+const PANE = "min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1 flex flex-col"
 
 export interface SidebarTabsProps {
   /**
@@ -164,7 +168,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
         id={paneId("files")}
         aria-labelledby={tabId("files")}
         hidden={props.active !== "files"}
-        class={PANE_FILES}
+        class={PANE}
       >
         {props.files}
       </div>

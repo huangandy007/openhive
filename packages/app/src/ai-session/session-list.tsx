@@ -226,15 +226,27 @@ export function SessionList(props: SessionListProps): JSX.Element {
 
       {/* 列表与空态共处一个滚动区：标题行常驻（它是这个 pane 的「工具栏」，不该被滚走）」
           `ContextMenu` 罩住**这一整块**（不是每行一个）：触发器要有一个「右键落在哪儿就算哪儿」
-          的区域，而 `记行` 在内层自己找那一行（同 `file-tree.tsx` 的结构）。 */}
+          的区域，而 `记行` 在内层自己找那一行（同 `file-tree.tsx` 的结构）。
+
+          ⚠️ **`flex-1 min-h-0` 从触发器一路传到 `session-list-region`，滚动容器是 region** ——
+          逐字照抄 `file-tree.tsx` 那一对（`LEARNINGS #004-12`：同族搭法整段抄，只换判据点）。
+          不是装饰：会话 pane 里「标题行之下的空白」必须落进**挂着 `记行` 的那一层**，否则
+          `记行` 根本没跑、`菜单对象` 停在上一次的残留 ⇒ **菜单照开、作用对象是上一条会话**
+          （用户 2026-10-10 实报的「空白处呼不出右键」在文件 tab 修好之后的**第二层**）。
+          2026-10-10 真栈实测：只把 pane 改成 flex 容器（不补这一对）时，空白点最上层是
+          `context-menu-trigger` 而 `session-list-region` 的盒高＝内容高（189-78＝111px），
+          空白在它外面。 */}
       <ContextMenu modal={false}>
-        <ContextMenu.Trigger
-          as="div"
-          data-slot="session-list-body"
-          class="min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1"
-        >
-          {/* ⚠️ `onContextMenu` 挂**这一层**、不挂 `ContextMenu.Trigger`（理由见 `菜单对象` 的注释）。 */}
-          <div data-slot="session-list-region" class="flex w-full min-w-0 flex-col" onContextMenu={记行}>
+        <ContextMenu.Trigger as="div" class="flex min-h-0 w-full flex-1 flex-col">
+          {/* ⚠️ `onContextMenu` 挂**这一层**、不挂 `ContextMenu.Trigger`（理由见 `菜单对象` 的注释）。
+              `overflow-y-auto` 也在这层（不在触发器上）：盒子填满触发器 ⇒ 空白点必然落在
+              `记行` 的射程里；`px-1 pt-1` 一并搬过来，视觉与从前**逐像素相同**（同一个盒子，
+              只是那串 class 挂到了里面那一层）。 */}
+          <div
+            data-slot="session-list-region"
+            class="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto px-1 pt-1"
+            onContextMenu={记行}
+          >
             <For each={列出()}>
               {(会话) => (
                 /* 编辑态**换掉**那个 `<button>`，不是往里塞一个 `<input>`——`<button>` 里放
