@@ -163,6 +163,21 @@ const 弹窗提交 = () => {
 const 有新建弹窗 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
 
 /**
+ * ── 删除弹窗的探针（2026-10-11，⑦-③）────────────────────────────────────────
+ *
+ * 与新建弹窗同一套壳、同一套坑（`startTransition` 晚一拍 ⇒ 点完入口要 `await 歇一拍()`；
+ * 查 `document` 不查 host），但**要钉的判据不是同一条**：新建那条钉「名字交出去了」，
+ * 这条钉「删的是谁」＋「它**不在文件树栏里**」。
+ *
+ * ⚠️ 后一条是本次改动的**要害**。改之前它不是弹窗，是**内联**在 `file-tree` 栏最底部的整栏宽横幅
+ * ——真栈实测：宽 262（＝ 与工具栏同宽，整栏宽），上 813 而树区域止于 809 ⇒ 它在**树区域之外**，
+ * 与用户刚点的那一行隔了整棵树（读数见 `state.md` ⑦-③）。「落进 `document.body`、**不在 host 里**」
+ * 正是「它不再占文件树栏的布局」这条结构判据在组件层的替身（几何在 happy-dom 里量不出来，`#006-06`）。
+ */
+const 删弹窗内 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+const 有删除弹窗 = () => 删弹窗内("file-delete-dialog") !== null
+
+/**
  * ── 「＋」那个浮层菜单的探针（2026-10-11）────────────────────────────────────
  *
  * 它与右键菜单、弹窗同为 `Kobalte.Portal` 传送到 body 的浮层（`@opencode-ai/ui/dropdown-menu`
@@ -348,6 +363,25 @@ describe("FileTree 文件树（FR-005）", () => {
 
   /** 等一拍宏任务（Kobalte 有些收尾是 `setTimeout` 里做的，同步读会读到中间态）。 */
   const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+  /**
+   * 轮询等到某条件成立——**不要**用固定延时去等一个「稍后会发生的事」。
+   *
+   * 弹窗关闭就是这么一件事：`context/dialog.tsx` 的 `close()` 把 `open` 置 false 之后，
+   * 真摘节点是**再等 100ms** 的事（`setTimeout(…, 100)` 里才 `dispose()`）——`await 歇一拍()`
+   * 只等 5ms，读到的必然是「弹窗还挂在 body 上」。`LEARNINGS #005-29` 那条「等条件不等时间」
+   * 在这里同样成立（那条讲的是退场动画、这条讲的是固定定时器，同一个处方）。
+   *
+   * 超时返回**最后一次**的实得值，让断言红在它自己身上，而不是红在一个超时异常里。
+   */
+  const 等到 = async (条件: () => boolean, 限时 = 1000) => {
+    const 起 = Date.now()
+    while (Date.now() - 起 < 限时) {
+      if (条件()) return true
+      await new Promise((resolve) => setTimeout(resolve, 16))
+    }
+    return 条件()
+  }
 
   /** 点一个菜单项：走真实的指针序列（`pointerdown` + `pointerup`），`.click()` **不够**。 */
   const 点菜单项 = (action: string) => {
@@ -830,7 +864,7 @@ describe("FileTree 文件树（FR-005）", () => {
      * 为的是钉住「两个入口的作用对象都是**选中项**」——它们各自的作用对象来源不同
      * （工具栏取 `selected`、菜单取 `菜单对象`），但走的是同一对回调。
      */
-    test("接了线、选中一项后点重命名：那一行就地变成输入条，敲 Enter 才回传**选中项**的新旧名字", () => {
+    test("接了线、选中一项后点重命名：那一行就地变成输入条，敲 Enter 才回传**选中项**的新旧名字", async () => {
       const 记: string[] = []
       const host = mount(() => (
         <FileTree
@@ -856,7 +890,9 @@ describe("FileTree 文件树（FR-005）", () => {
 
       // 删除仍作用于**选中项**，且仍走二次确认（FR-006）
       按钮(host, "file-tree-action-delete")?.click()
-      按钮(host, "file-tree-delete-ok")?.click()
+      await 歇一拍()
+      删弹窗内("file-delete-ok")?.click()
+      await 歇一拍()
 
       expect(记).toEqual(["改:资金.xlsx=>资金明细.xlsx", "删:资金.xlsx"])
     })
@@ -1154,19 +1190,21 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual(["a.md=>b.md"])
       })
 
-      test("删除走的是工具栏那个 onDelete（同样过二次确认，T009 起）", () => {
+      test("删除走的是工具栏那个 onDelete（同样过二次确认，T009 起）", async () => {
         const 收到: string[] = []
         const host = mount(() => <FileTree paths={树("a.md")} onDelete={(path) => 收到.push(path)} />)
 
         右键(行按名(host, "a.md"))
         点菜单项("delete")
+        await 歇一拍()
 
         // 「同样过二次确认」这句写进了用例名，就得有断言配它——只断言终值的话，
         // 一个**直接喊**的实现照样满足（收到的一样是 `["a.md"]`）。`#004-14`
-        expect(无槽(host, "file-tree-delete-confirm")).toBe(false)
+        expect(有删除弹窗()).toBe(true)
         expect(收到).toEqual([])
 
-        按钮(host, "file-tree-delete-ok")?.click()
+        删弹窗内("file-delete-ok")?.click()
+        await 歇一拍()
 
         expect(收到).toEqual(["a.md"])
       })
@@ -1314,12 +1352,12 @@ describe("FileTree 文件树（FR-005）", () => {
 
   describe("删除二次确认 + 选中点亮 / 置灰（FR-006 / 设计 §6.1 / US2 AC2·AC4）", () => {
     /**
-     * 确认条**存在吗**？——返回**布尔**，不是节点。
+     * 确认**弹窗**开着吗——`有删除弹窗()` 断在**布尔**上（同 `无槽`：`expect(节点).toBeNull()`
+     * 这类断言红了会把整轮挂死，`LEARNINGS #005-01`）。
      *
-     * 同 `无槽`：`expect(确认条(host)).toBeNull()` 这类断言红了会把整轮挂死（`LEARNINGS #005-01`），
-     * 所以一律断在布尔上。
+     * 探针在文件头部（`删弹窗内` / `有删除弹窗`）：查的是 `document`，不是 `host`——
+     * 「它不在文件树栏里」本身就是这条改动要钉的判据之一（见那里长注释）。
      */
-    const 有确认条 = (host: HTMLElement) => !无槽(host, "file-tree-delete-confirm")
 
     test("接了线但**没选中**：重命名 / 删除都是置灰态（FR-006「未选中置灰」／US2 AC4「置灰不可点」）", () => {
       const host = mount(() => <FileTree paths={树("话单.csv")} onRename={() => {}} onDelete={() => {}} />)
@@ -1365,102 +1403,138 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(按钮(host, "file-tree-action-rename")?.classList.contains("text-v2-state-fg-danger")).toBe(false)
     })
 
-    test("点删除**不立刻**喊 onDelete，而是先出现确认条（FR-006「MUST 二次确认」）", () => {
-      const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
-
-      行按名(host, "话单.csv")?.click()
-      动作(host, "delete")?.click()
-
-      expect(有确认条(host)).toBe(true)
-      expect(记).toEqual([])
-    })
-
-    test("确认条上写着要删的那一项的名字——用户得看得出删的是谁", () => {
+    /**
+     * ⑦-③ 的要害判据：确认走的是**弹窗**，不是文件树栏底部那条内联横幅。
+     *
+     * 改之前那条真栈实测是钉在 `file-tree` 栏最底、**整栏宽**（262px ＝ 与工具栏同宽）、
+     * 且在**树区域之外**（上 813 vs 树区域止于 809）——点第 3 行、条出现在 800px 外。
+     *
+     * ⚠️ 「有弹窗」与「弹窗不在栏里」是**两条独立判据**（`#004-19` / `#005-19` 的「开在谁身上」）：
+     * 只钉前者，一个把它渲染回 host 里的实现照样全绿。
+     */
+    test("删除确认是个**弹窗**（落在 document.body），**不是**文件树栏里的内联条（⑦-③ 的要害）", async () => {
       const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={() => {}} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
+      await 歇一拍()
 
-      expect(文本(host, "file-tree-delete-name")).toBe("话单.csv")
+      expect(有删除弹窗()).toBe(true)
+      // 「不在 host 里」是这条改动的核心：内联条正是长在 host（＝文件树栏）里面的。
+      expect(无槽(host, "file-delete-dialog")).toBe(true)
+      // 旧槽位名整个不该再有活着的落点——**反向断言**，否则「两处各画一份」不会被发现。
+      expect(无槽(host, "file-tree-delete-confirm")).toBe(true)
     })
 
-    test("点「取消」：确认条消失，且 onDelete **一次都没**被喊", () => {
+    test("点删除**不立刻**喊 onDelete，而是先出现确认弹窗（FR-006「MUST 二次确认」）", async () => {
       const 记: string[] = []
       const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
+      await 歇一拍()
 
-      // 前置：确认条**真的开出来了**。没有这一句，「取消」就成了「取消一个不存在的东西也是不删」——
-      // 一个**没有确认条**的实现同样能满足下面两条（`#004-14` 的伴随信号）。
-      expect(有确认条(host)).toBe(true)
-
-      按钮(host, "file-tree-delete-cancel")?.click()
-
-      expect(有确认条(host)).toBe(false)
+      expect(有删除弹窗()).toBe(true)
       expect(记).toEqual([])
     })
 
-    test("点确认条里的「删除」：这才喊 onDelete（带选中项路径），确认条收掉", () => {
+    test("弹窗里写着要删的那一项的名字——用户得看得出删的是谁", async () => {
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={() => {}} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+      await 歇一拍()
+
+      expect(删弹窗内("file-delete-name")?.textContent?.trim()).toBe("话单.csv")
+    })
+
+    test("点弹窗里的「取消」：弹窗消失，且 onDelete **一次都没**被喊", async () => {
       const 记: string[] = []
       const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
+      await 歇一拍()
 
-      // 先把「此刻还没喊 ＋ 确认条在」钉住，再点确认——否则一个「直接喊、根本没有确认条」的实现
-      // 会让本用例**假绿**（现状正是如此：确认按钮不存在 ⇒ `.click()` 是 no-op ⇒ 两条终点断言偶然全成立）。
+      // 前置：弹窗**真的开出来了**。没有这一句，「取消」就成了「取消一个不存在的东西也是不删」——
+      // 一个**没有弹窗**的实现同样能满足下面两条（`#004-14` 的伴随信号）。
+      expect(有删除弹窗()).toBe(true)
+
+      删弹窗内("file-delete-cancel")?.click()
+      await 等到(() => !有删除弹窗())
+
+      expect(有删除弹窗()).toBe(false)
+      expect(记).toEqual([])
+    })
+
+    test("点弹窗里的「删除」：这才喊 onDelete（带选中项路径），弹窗收掉", async () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+
+      行按名(host, "话单.csv")?.click()
+      动作(host, "delete")?.click()
+      await 歇一拍()
+
+      // 先把「此刻还没喊 ＋ 弹窗在」钉住，再点确认——否则一个「直接喊、根本没有弹窗」的实现
+      // 会让本用例**假绿**（确认按钮不存在 ⇒ `.click()` 是 no-op ⇒ 两条终点断言偶然全成立）。
       // 一条用例里「被测属性在前、伴随信号在后」的排法见 `LEARNINGS #004-14`。
-      expect(有确认条(host)).toBe(true)
+      expect(有删除弹窗()).toBe(true)
       expect(记).toEqual([])
 
-      按钮(host, "file-tree-delete-ok")?.click()
+      删弹窗内("file-delete-ok")?.click()
+      await 等到(() => !有删除弹窗())
 
       expect(记).toEqual(["话单.csv"])
-      expect(有确认条(host)).toBe(false)
+      expect(有删除弹窗()).toBe(false)
     })
 
-    test("右键菜单里的「删除」走**同一个**确认——FR-006 说的是「文件删除」，不分入口", () => {
+    test("右键菜单里的「删除」走**同一个**确认弹窗——FR-006 说的是「文件删除」，不分入口", async () => {
       const 记: string[] = []
       const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
 
       右键(行按名(host, "话单.csv"))
       点菜单项("delete")
+      await 歇一拍()
 
-      expect(有确认条(host)).toBe(true)
+      expect(有删除弹窗()).toBe(true)
+      expect(无槽(host, "file-delete-dialog")).toBe(true)
       expect(记).toEqual([])
     })
 
-    test("菜单删除确认后喊的是**右键那一行**，不是选中项——「两套当前项」在确认流程里也一样（T008 的约定）", () => {
+    test("菜单删除确认后喊的是**右键那一行**，不是选中项——「两套当前项」在确认流程里也一样（T008 的约定）", async () => {
       const 记: string[] = []
       const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={(path) => 记.push(path)} />)
 
       行按名(host, "话单.csv")?.click() // 选中甲
       右键(行按名(host, "资金.xlsx")) // 右键乙
       点菜单项("delete")
+      await 歇一拍()
 
       // 同前一条：先钉「还没喊 ＋ 确认的是乙」，否则「直接喊右键那一行」的实现会假绿（`#004-14`）。
-      expect(有确认条(host)).toBe(true)
-      expect(文本(host, "file-tree-delete-name")).toBe("资金.xlsx")
+      expect(有删除弹窗()).toBe(true)
+      expect(删弹窗内("file-delete-name")?.textContent?.trim()).toBe("资金.xlsx")
       expect(记).toEqual([])
 
-      按钮(host, "file-tree-delete-ok")?.click()
+      删弹窗内("file-delete-ok")?.click()
+      await 歇一拍()
 
       expect(记).toEqual(["资金.xlsx"])
     })
 
-    test("取消后改选另一项再点删除：确认条换成了新那一项，不留上一次的残留", () => {
+    test("取消后改选另一项再点删除：弹窗里换成了新那一项，不留上一次的残留", async () => {
       const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={() => {}} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
-      按钮(host, "file-tree-delete-cancel")?.click()
+      await 歇一拍()
+      删弹窗内("file-delete-cancel")?.click()
+      await 歇一拍()
 
       行按名(host, "资金.xlsx")?.click()
       动作(host, "delete")?.click()
+      await 歇一拍()
 
-      expect(文本(host, "file-tree-delete-name")).toBe("资金.xlsx")
+      expect(删弹窗内("file-delete-name")?.textContent?.trim()).toBe("资金.xlsx")
     })
 
     /**

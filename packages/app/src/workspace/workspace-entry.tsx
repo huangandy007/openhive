@@ -793,7 +793,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                       />
                       {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
                           排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树
-                          （同 `file-tree.tsx` 的删除确认、`dual-file-tree.tsx` 的拉回确认）。 */}
+                          （同 `dual-file-tree.tsx` 的拉回确认）。
+                          ⚠️ **不再**援引 `file-tree.tsx` 的删除确认：那条 2026-10-11 已改弹窗
+                          （`file-delete-dialog.tsx`）。 */}
                       <Show when={待搬()}>
                         {(正在搬) => (
                           <TargetPicker

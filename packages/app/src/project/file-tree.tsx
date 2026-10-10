@@ -8,6 +8,7 @@ import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v2-model"
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileCreateDialog } from "@/project/file-create-dialog"
+import { FileDeleteDialog } from "@/project/file-delete-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
@@ -78,8 +79,6 @@ const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 
  * 分不清哪一行还选着（005 Step 5 审查 **X5-1**：改之前两者都是 `layer-03`，同一个值）。
  */
 const ROW_SELECTED = "bg-[var(--v2-background-bg-accent-soft)]"
-const MENU_ITEM =
-  "flex h-6 w-full shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-left text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:pointer-events-none disabled:text-v2-text-text-faint"
 
 export interface FileTreeProps {
   /**
@@ -238,13 +237,6 @@ export function FileTree(props: FileTreeProps) {
    * 好把 `onRename(旧路径, 新名字)` 的两样凑齐。存新名字的中间态则要在本文件里再写一遍草稿判据。
    */
   const [改名的, set改名的] = createSignal<string>()
-  /**
-   * 「待确认删除」的那一项——非空即**确认条开着**（FR-006：文件删除 MUST 二次确认）。
-   *
-   * 存**路径**而不是布尔：确认条上要写出「删的是谁」（用户得看得出对象），取消 / 确认之后
-   * 还得原样把路径喊回 `onDelete`。工具栏与右键菜单共用这一个信号 ⇒ 两个入口天然是**同一条**确认。
-   */
-  const [待删, set待删] = createSignal<string>()
   /**
    * 右键点在哪个节点上（`undefined` = 没点在行上：空态、或行以外的空白）。
    *
@@ -573,33 +565,6 @@ export function FileTree(props: FileTreeProps) {
         </ContextMenu.Portal>
       </ContextMenu>
 
-      {/* 删除的二次确认（FR-006）——**内联**一条，不用 `Dialog`：树是用户眼睛已经在的地方，
-          再叠一层跨模块的模态还得让人多解释一步「这是在删哪儿」。`role="alert"` 让屏幕阅读器
-          在条冒出来时读一遍（不是模态，不需要焦点管理）。 */}
-      <Show when={待删()}>
-        {(path) => (
-          <div
-            data-slot="file-tree-delete-confirm"
-            role="alert"
-            class="flex w-full min-w-0 items-center gap-1 rounded-[4px] bg-v2-background-bg-layer-01 px-1 py-0.5 text-[13px] text-v2-text-text-base"
-          >
-            <span class="min-w-0 truncate">
-              确定删除「<span data-slot="file-tree-delete-name">{path()}</span>」？
-            </span>
-            <button
-              data-slot="file-tree-delete-cancel"
-              type="button"
-              class={MENU_ITEM}
-              onClick={() => set待删(undefined)}
-            >
-              取消
-            </button>
-            <button data-slot="file-tree-delete-ok" type="button" class={MENU_ITEM} onClick={确认删}>
-              删除
-            </button>
-          </div>
-        )}
-      </Show>
     </div>
   )
 
@@ -626,19 +591,19 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 删除**永远**先开确认条，绝不直接喊 `onDelete`（FR-006：文件删除 MUST 二次确认）——
+   * 删除**永远**先开确认弹窗，绝不直接喊 `onDelete`（FR-006：文件删除 MUST 二次确认）——
    * 工具栏与右键菜单都走这一个函数，所以「不分入口」是结构上成立的，不是靠两处各写一遍留意着。
+   *
+   * 与 `新建` 同一条约定：作用对象（`path`）在**开弹窗那一刻**就定下、作为 prop 交给弹窗，
+   * 回调只回「删或不删」——所以确认的**永远**是弹窗开出来的那一项，用户之后再怎么点行、
+   * 选中态怎么变都改不了它（弹窗是模态的，本来也点不到树）。
    */
   function 点删(path: string | undefined) {
-    if (path) set待删(path)
-  }
-
-  /** 确认条上那个「删除」——到这里才真正喊回调，同时把条收掉。 */
-  function 确认删() {
-    const path = 待删()
-    if (!path) return
-    set待删(undefined)
-    props.onDelete?.(path)
+    const 交 = props.onDelete
+    if (!path || !交) return
+    // `void`：`show()` 交回来的是 `startTransition` 那个返回值（不是真 promise，弹窗是**同步**
+    // 排进栈、下一拍渲染）。`no-floating-promises` 认的是形状，这里标一下「有意丢弃」（同 `新建`）。
+    void dialog.show(() => <FileDeleteDialog path={path} onConfirm={() => 交(path)} />)
   }
 
   /**

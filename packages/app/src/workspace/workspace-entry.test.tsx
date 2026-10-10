@@ -2010,6 +2010,16 @@ const 弹窗提交 = () => {
 const 弹窗取消 = () =>
   document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
 
+/**
+ * ── 删除弹窗的探针（2026-10-11，⑦-③：删除二次确认从内联条改成弹窗）────────────
+ *
+ * 与新建弹窗同一套（`document` 而非 host、`startTransition` 晚一拍）。**不并进上面那几个
+ * 辅助函数**：它们查的是 `file-create-dialog`，删的那条查 `file-delete-dialog`——
+ * 合成一个「查哪个都行」的助手，会让「弹窗开的是**哪一个**」这条判据消失。
+ */
+const 删弹窗钮 = (slot: string) =>
+  document.body.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+
 /** 树上的一个按钮槽位（`file-tree-action-*` / `file-tree-create-*` / `file-tree-delete-*`）。 */
 const 树按钮 = (host: HTMLElement, slot: string) =>
   host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
@@ -2119,12 +2129,13 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
 
     右键行(host, "话单.csv")
     点菜单项("delete")
+    await 冲一遍()
 
     // 二次确认（FR-006）：点到菜单那一刻，一个请求都还没发——这条先钉，红的时候读到的才是
     // 「它已经动手了」这条证据本身（`#004-14`）
     expect(假.删的).toEqual([])
 
-    树按钮(host, "file-tree-delete-ok")?.click()
+    删弹窗钮("file-delete-ok")?.click()
     await 冲一遍()
 
     expect(假.删的).toEqual([["p1", "资料/话单.csv"]])
@@ -2138,7 +2149,8 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
 
     右键行(host, "话单.csv")
     点菜单项("delete")
-    树按钮(host, "file-tree-delete-ok")?.click()
+    await 冲一遍()
+    删弹窗钮("file-delete-ok")?.click()
     await 冲一遍()
 
     expect(text(host, "file-op-message")).toBe("项目根不能删")

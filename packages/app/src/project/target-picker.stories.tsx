@@ -7,8 +7,9 @@ import { TargetPicker } from "./target-picker"
  * ## 为什么它不是 `role="dialog"`
  *
  * 本组件**没有焦点管理、没有 `role="dialog"`**：它是内联在下拉里的一条，不是跨模块的模态
- * （同 `file-tree.tsx` 的删除确认与 `dual-file-tree.tsx` 的拉回确认——「树是用户眼睛已经在的地方，
- * 再叠一层模态还得让人多解释一步『这是在搬哪儿』」）。取而代之的是 `role="group"` +
+ * （同 `dual-file-tree.tsx` 的拉回确认——「树是用户眼睛已经在的地方，再叠一层模态还得让人多解释
+ * 一步『这是在搬哪儿』」。⚠️ **不再**援引 `file-tree.tsx` 的删除确认：那条 2026-10-11 已改弹窗，
+ * 理由见 `file-delete-dialog.tsx`——同样的话它那里被实测量出了反例）。取而代之的是 `role="group"` +
  * `aria-label`。**这正是一条 axe 会查的东西**，所以这个 story 必须存在。
  *
  * ## `copy` 与 `move` 是两种措辞、同一套 DOM
