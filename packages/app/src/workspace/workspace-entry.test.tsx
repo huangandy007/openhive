@@ -615,7 +615,17 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     expect(text(host, "file-tree-empty")).toBe("还没有文件")
   })
 
-  test("三个动作今天都没接线 ⇒ ＋ / 重命名 / 删除 是禁用的，搜索与收缩展开照常可用", () => {
+  /**
+   * **没选中项目时，三个写动作仍是禁用的**（T018 起）。
+   *
+   * 改之前它们是因为「T007 还没接线」而禁用；现在接线了，禁用理由换成了**没有可动的项目**
+   * ——三个 handler 都要 `currentProject()?.id`，没有它一个都办不成。所以 `workspace-entry`
+   * 只在有项目时才把它们接给树（见那里的 `有项目`）。
+   *
+   * ⚠️ 红的时候别把它读成「禁用是洁癖」：不这样，树上会多出三颗**点了没反应**的按钮
+   * ——`file-tree.tsx` 反复挡的正是这个形状。
+   */
+  test("没选中项目 ⇒ ＋ / 重命名 / 删除 是禁用的，搜索与收缩展开照常可用", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
     const 按钮 = (slot: string) => host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
@@ -979,6 +989,9 @@ function 假数据源(
       | "archive"
       | "restore"
       | "files"
+      | "createEntry"
+      | "renameEntry"
+      | "removeEntry"
       | "copy"
       | "move"
       | "upload"
@@ -998,6 +1011,9 @@ function 假数据源(
     建的: [] as Array<NewProjectInput>,
     归档的: [] as string[],
     找回的: [] as string[],
+    建的条目: [] as Array<[string, string, string, string]>,
+    改名的: [] as Array<[string, string, string]>,
+    删的: [] as Array<[string, string]>,
     复制的: [] as Array<[string, string, string]>,
     移动的: [] as Array<[string, string, string]>,
     传的: [] as Array<[string, string, string]>,
@@ -1030,6 +1046,22 @@ function 假数据源(
     files: async (projectId) => {
       记.files.push(projectId)
       return 剧本.files ? await 剧本.files(projectId) : []
+    },
+    // T018 的建 / 改名 / 删。同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
+    // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
+    createEntry: async (projectId, kind, dir, name) => {
+      记.建的条目.push([projectId, kind, dir, name])
+      return 剧本.createEntry
+        ? await 剧本.createEntry(projectId, kind, dir, name)
+        : { kind: "failed", message: "没有剧本" }
+    },
+    renameEntry: async (projectId, path, name) => {
+      记.改名的.push([projectId, path, name])
+      return 剧本.renameEntry ? await 剧本.renameEntry(projectId, path, name) : { kind: "failed", message: "没有剧本" }
+    },
+    removeEntry: async (projectId, path) => {
+      记.删的.push([projectId, path])
+      return 剧本.removeEntry ? await 剧本.removeEntry(projectId, path) : { kind: "failed", message: "没有剧本" }
     },
     // T020 的四个文件动作。同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
     // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
@@ -1643,11 +1675,12 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
 const 菜单项 = (action: string) =>
   document.querySelector<HTMLElement>(`[data-component='context-menu-content'] [data-action='${action}']`)
 
-/** 右键树里某一行（按名字找：同层顺序随 locale 变，见 `file-tree-v2-model` 那条注释）。 */
+/**
+ * 右键树里某一行（按名字找：同层顺序随 locale 变，见 `file-tree-v2-model` 那条注释）。
+ * 「哪一行叫这个名字」只在 `找行` 里写一遍——两处各写一份，迟早只改一处（`#002-06`）。
+ */
 function 右键行(host: HTMLElement, name: string) {
-  const 行 = 树行(host).find((el) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim() === name)
-  if (!行) throw new Error(`树里没有「${name}」这一行——这条用例的前提不成立（#004-14）`)
-  行.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+  找行(host, name).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
 }
 
 /** 点一个菜单项：Kobalte 在 `pointerup` 上选中，单发 `.click()` **不够**（`file-tree.test.tsx` 实测）。 */
@@ -1894,6 +1927,182 @@ describe("文件动作接进工作台（T020 出参）", () => {
 
     expect(text(host, "file-op-message")).toContain("话单.csv")
     expect(存了).toBe(0)
+  })
+})
+
+/** 树里某一行（按名字找）。找不到就**抛**——找不到还往下走，红会落在断言上（`#004-14`）。 */
+function 找行(host: HTMLElement, name: string) {
+  const 行 = 树行(host).find(
+    (el) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim() === name,
+  )
+  if (!行) throw new Error(`树里没有「${name}」这一行——这条用例的前提不成立（#004-14）`)
+  return 行
+}
+
+/**
+ * 树上的**内联输入条**（新建 / 重命名那两根，T018）。
+ *
+ * 与 `file-tree.test.tsx` 里的同名辅助**刻意各写一份**：`LEARNINGS #004-11` —— 每个测试文件有
+ * 自己的全局域，夹具不跨文件共享；跨文件 import 一个测试辅助反而会让两处的改动互相绊住。
+ */
+const 输入条 = (host: HTMLElement, slot: string) => {
+  const el = host.querySelector<HTMLInputElement>(`[data-slot='${slot}']`)
+  if (!el) throw new Error(`输入条 ${slot} 不在——这条用例的前提不成立（#004-14）`)
+  return el
+}
+
+/** 往输入条里打字（`InlineInput` 的 `onInput` 读 `event.currentTarget.value`，先落值再派事件）。 */
+const 条里打字 = (host: HTMLElement, slot: string, 值: string) => {
+  const el = 输入条(host, slot)
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+  return el
+}
+
+/** 对输入条按一个键（Enter ＝ 交 / Escape ＝ 撤）。 */
+const 条里敲 = (el: HTMLElement, key: string) =>
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))
+
+/** 树上的一个按钮槽位（`file-tree-action-*` / `file-tree-create-*` / `file-tree-delete-*`）。 */
+const 树按钮 = (host: HTMLElement, slot: string) =>
+  host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+
+/**
+ * 建 / 改名 / 删接进工作台（T018 出参）。
+ *
+ * 上一节（T020）验的是四个「拿一个已有文件去搬」的动作；这一节验三个**改变树本身**的动作：
+ * ① 树上那根输入条**敲完 Enter 才真的发请求**（不是点一下菜单就发——T018 之前正是这么错的，
+ *    而服务端的 `name` 是必填，那个形状根本交不出名字）；
+ * ② 三个动作**各走各的出口**——`renameEntry` 与 `removeEntry` 只差一个字段，接反了是「点重命名、
+ *    文件没了」，所以两条各钉一条、且都钉到「另一个动作一次都没调」；
+ * ③ 办成 ⇒ **清单重取**（树上的真相是重取那一份，不是本地拼的新行）；
+ * ④ 被拒 ⇒ 服务端那句**原话**留在界面上（这一组的拒绝理由民警得看得懂，如「项目根不能删」）。
+ *
+ * ⚠️ 三项都**必须带当前项目的 id**：服务端拿它定位沙箱目录（T017 的中间件）。
+ */
+describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+  })
+
+  /** 挂一个已经选定项目的左栏：树里一个目录一个文件。 */
+  async function 开(剧本: Parameters<typeof 假数据源>[0] = {}) {
+    const { data, 记 } = 假数据源({
+      files: async () => ["资料/话单.csv"],
+      ...剧本,
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+    return { host, 假: 记 }
+  }
+
+  /**
+   * 对照组（`#003-03` 第②类）：上一节那条「没选中项目 ⇒ 三个动作禁用」不能退化成「**永远**禁用」
+   * ——同一棵树上选中项目之后，＋ 必须亮起来，否则那条断言什么也没钉住。
+   *
+   * 同一条里再钉一问：**接线**与**有作用对象**是两条独立的理由（FR-006「未选中置灰」）——
+   * 有项目但没选中任何一行时，✏️ 仍该是灰的。
+   */
+  test("选中项目 ⇒ ＋ 亮起来；✏️ 要选了一行才亮（接线与有对象是两条理由）", async () => {
+    const { host } = await 开()
+
+    expect(树按钮(host, "file-tree-action-create")?.disabled).toBe(false)
+    expect(树按钮(host, "file-tree-action-rename")?.disabled).toBe(true)
+
+    找行(host, "话单.csv").click()
+
+    expect(树按钮(host, "file-tree-action-rename")?.disabled).toBe(false)
+  })
+
+  test("右键目录「新建文件夹」⇒ 输入条敲 Enter 才走 createEntry，带 kind / 落点 / 名字", async () => {
+    const { host, 假 } = await 开({ createEntry: async () => ({ kind: "done", path: "资料/子目录" }) })
+
+    右键行(host, "资料")
+    点菜单项("create-dir")
+
+    // 点了菜单还不够——名字还没问（T018：这一步改之前就发请求了，而那时它交不出 name）
+    expect(假.建的条目).toEqual([])
+
+    条里敲(条里打字(host, "file-tree-create-input", "子目录"), "Enter")
+    await 冲一遍()
+
+    expect(假.建的条目).toEqual([["p1", "directory", "资料", "子目录"]])
+  })
+
+  test("新建办成 ⇒ 清单重取一次（树上的真相是重取那一份）", async () => {
+    const { host, 假 } = await 开({ createEntry: async () => ({ kind: "done", path: "资料/新.md" }) })
+    const 建前 = 假.files.length
+
+    右键行(host, "资料")
+    点菜单项("create-file")
+    条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+    await 冲一遍()
+
+    expect(假.files.length).toBe(建前 + 1)
+  })
+
+  /**
+   * 重命名走**工具栏**那一条路（选中项 ⇒ ✏️）：与菜单那条走的是同一对 prop，但作用对象来源不同
+   * （工具栏取选中项、菜单取右键那一项）——`LEARNINGS #005-12`：落在 N 个入口上的同一个修法，
+   * 写 N 条用例。
+   */
+  test("选中一行点 ✏️ ⇒ 走 renameEntry，带上项目 id、**旧路径**与新名字", async () => {
+    const { host, 假 } = await 开({ renameEntry: async () => ({ kind: "done", path: "资料/旧名.csv" }) })
+
+    找行(host, "话单.csv").click()
+    树按钮(host, "file-tree-action-rename")?.click()
+    条里敲(条里打字(host, "file-tree-rename-input", "旧名.csv"), "Enter")
+    await 冲一遍()
+
+    expect(假.改名的).toEqual([["p1", "资料/话单.csv", "旧名.csv"]])
+    // 改名**不是**删除：两个方法只差一个参数，接反了文件直接没了
+    expect(假.删的).toEqual([])
+  })
+
+  test("右键「删除」⇒ 先过二次确认，确认后才走 removeEntry（只带路径）", async () => {
+    const { host, 假 } = await 开({ removeEntry: async () => ({ kind: "done", path: "资料/话单.csv" }) })
+
+    右键行(host, "话单.csv")
+    点菜单项("delete")
+
+    // 二次确认（FR-006）：点到菜单那一刻，一个请求都还没发——这条先钉，红的时候读到的才是
+    // 「它已经动手了」这条证据本身（`#004-14`）
+    expect(假.删的).toEqual([])
+
+    树按钮(host, "file-tree-delete-ok")?.click()
+    await 冲一遍()
+
+    expect(假.删的).toEqual([["p1", "资料/话单.csv"]])
+    // 删除**不是**改名：同一条理由
+    expect(假.改名的).toEqual([])
+  })
+
+  test("删除被拒（项目根不能删）⇒ 留下服务端那句原话，且不重取清单", async () => {
+    const { host, 假 } = await 开({ removeEntry: async () => ({ kind: "rejected", message: "项目根不能删" }) })
+    const 删前 = 假.files.length
+
+    右键行(host, "话单.csv")
+    点菜单项("delete")
+    树按钮(host, "file-tree-delete-ok")?.click()
+    await 冲一遍()
+
+    expect(text(host, "file-op-message")).toBe("项目根不能删")
+    expect(假.files.length).toBe(删前)
+  })
+
+  test("新建输入条敲 Escape ⇒ 一个请求都不发", async () => {
+    const { host, 假 } = await 开({ createEntry: async () => ({ kind: "done", path: "资料/新.md" }) })
+
+    右键行(host, "资料")
+    点菜单项("create-file")
+    条里敲(条里打字(host, "file-tree-create-input", "建了一半"), "Escape")
+    await 冲一遍()
+
+    expect(假.建的条目).toEqual([])
   })
 })
 

@@ -8,6 +8,7 @@ import {
   flattenFileTreeV2,
   type FileTreeV2Node,
 } from "@/components/file-tree-v2-model"
+import { 就地改名输入 } from "@/components/inline-rename-input"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
@@ -79,14 +80,25 @@ export interface FileTreeProps {
   paths?: readonly string[]
   /**
    * 新建文件 / 文件夹。`parent` 是**落点目录**（`""` = 根）：选中目录 ⇒ 它自己，
-   * 选中文件 ⇒ 它所在的目录，什么都没选 ⇒ 根。
+   * 选中文件 ⇒ 它所在的目录，什么都没选 ⇒ 根。`name` 是用户在**内联输入条**里敲的名字。
+   *
+   * ⚠️ **点了「新建文件」不会立刻喊这个回调**（T018 起）：先落一根输入条（见 `新建中`），
+   * 敲 Enter 才把 `name` 一起喊出去。改之前是「点一下 ⇒ 服务端凭空建一个没名字的条目」——
+   * 那在建文件这件事上根本不成立（`file.ts` 的 `name` 是必填）。
    *
    * 省略 = 还没接线：**＋ 本身禁用**，下拉都打不开（同 T005 三个按钮、T006 两个新建键）。
    * 一个点了没反应的按钮是对用户的谎——「看起来能点」比「少个按钮」更难查。
    */
-  onCreate?: (input: { kind: "file" | "directory"; parent: string }) => void
-  /** 重命名**选中项**（工具栏）／**右键那一项**（菜单）。省略 = 还没接线，按钮与菜单项都禁用。 */
-  onRename?: (path: string) => void
+  onCreate?: (input: { kind: "file" | "directory"; parent: string; name: string }) => void
+  /**
+   * 重命名**选中项**（工具栏）／**右键那一项**（菜单），`name` 是**新的单段名**。
+   *
+   * ⚠️ 同样**不立刻喊**（T018 起）：先把那一行的名字就地换成输入条（见 `改名的`），
+   * Enter 才把新名字喊出去。`path` 仍是**旧路径**——服务的责任是拿它反推所在目录（同 `renameEntry`）。
+   *
+   * 省略 = 还没接线，按钮与菜单项都禁用。
+   */
+  onRename?: (path: string, name: string) => void
   /** 删除**选中项**（工具栏）／**右键那一项**（菜单）。省略 = 还没接线，按钮与菜单项都禁用。（二次确认属 T009。） */
   onDelete?: (path: string) => void
 
@@ -193,6 +205,23 @@ export function FileTree(props: FileTreeProps) {
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   const [selected, setSelected] = createSignal<string>()
   const [createOpen, setCreateOpen] = createSignal(false)
+  /**
+   * 「正在建的那一条」——非空即**新建输入条开着**（T018）。存 `kind` 与 `parent` 而不是布尔：
+   * 输入条要拿它们说清两件事——**建的是文件还是文件夹**（决定占位文案）与**建在哪儿**——
+   * 而这两样在 `新建()` 那一刻就定了，之后没有第二个来源（若从 `selected()` 现算，
+   * 用户中途点一下别处，落点就跟着漂了）。
+   *
+   * 与 `createOpen`（＋ 的**下拉**）是两回事、先后发生：点「新建文件」⇒ 下拉收掉、本信号落下。
+   */
+  const [新建中, set新建中] = createSignal<{ kind: "file" | "directory"; parent: string }>()
+  /**
+   * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
+   *
+   * 存**旧路径**而不是新名字：改名的唯一判据是「用户敲完之后的名字与原样不同吗」，那是
+   * `就地改名输入` 的 `改名草稿` 说了算的（一份实现，见那个文件）；本组件只负责记住**改的是哪一行**，
+   * 好把 `onRename(旧路径, 新名字)` 的两样凑齐。存新名字的中间态则要在本文件里再写一遍草稿判据。
+   */
+  const [改名的, set改名的] = createSignal<string>()
   /**
    * 「待确认删除」的那一项——非空即**确认条开着**（FR-006：文件删除 MUST 二次确认）。
    *
@@ -312,6 +341,35 @@ export function FileTree(props: FileTreeProps) {
         </div>
       </Show>
 
+      {/* 新建的**内联输入条**（T018）——点「新建文件 / 新建文件夹」之后落在这里（＋ 的正下方、
+          也就是那个下拉刚收掉的位置），敲 Enter 才把名字交出去。
+
+          ⚠️ 位置**在树之外**（与工具栏同层）：它的落点是 `新建中().parent`（点下拉那一刻定下的），
+          跟「现在选着哪一行」无关——所以它不该长在某一行里，那会读成「改这一行的名字」。 */}
+      <Show when={新建中()}>
+        {(中) => (
+          <div
+            data-slot="file-tree-create-input-box"
+            class="flex w-full min-w-0 flex-col gap-0.5 rounded-[4px] bg-v2-background-bg-layer-01 p-0.5"
+          >
+            <就地改名输入
+              槽位="file-tree-create-input"
+              可访问名称={中().kind === "directory" ? "新文件夹名称" : "新文件名称"}
+              占位={中().kind === "directory" ? "文件夹名" : "文件名"}
+              on提交={(name) => {
+                // 先把输入条收掉再喊回调：回调那侧会去发请求，若它同步失败（哨兵 / 抛错），
+                // 输入条已经不在，用户不会对着一个「填好了却没反应」的框发呆。
+                const 父目录 = 中().parent
+                const kind = 中().kind
+                set新建中(undefined)
+                props.onCreate?.({ kind, parent: 父目录, name })
+              }}
+              on取消={() => set新建中(undefined)}
+            />
+          </div>
+        )}
+      </Show>
+
       <ContextMenu>
         {/* 右键落在哪儿就算哪儿：这一层是**树区域**（行 ＋ 空态），工具栏**不在**里面——
             右键搜索框弹出「新建文件」是说不通的。「把菜单开出来」是 Kobalte 的事。 */}
@@ -387,9 +445,28 @@ export function FileTree(props: FileTreeProps) {
                         expanded={展开(row.node.path)}
                         class="h-4 w-4 shrink-0"
                       />
-                      <span data-slot="file-tree-name" class="min-w-0 truncate">
-                        <高亮 name={row.node.name} keyword={词()} />
-                      </span>
+                      {/* 改名态就地换掉**名字那一格**（T018）：图钉、箭头、缩进都还在原处，
+                          用户看得见自己在改哪一行。图标与箭头不重画——它们与名字是同一行的三个独立格子。 */}
+                      <Show
+                        when={改名的() === row.node.path}
+                        fallback={
+                          <span data-slot="file-tree-name" class="min-w-0 truncate">
+                            <高亮 name={row.node.name} keyword={词()} />
+                          </span>
+                        }
+                      >
+                        <就地改名输入
+                          槽位="file-tree-rename-input"
+                          可访问名称="条目名称"
+                          原名={row.node.name}
+                          on提交={(name) => {
+                            // 先收编辑态再喊回调——同上面新建那条，理由一样。
+                            set改名的(undefined)
+                            props.onRename?.(row.node.path, name)
+                          }}
+                          on取消={() => set改名的(undefined)}
+                        />
+                      </Show>
                     </div>
                   )}
                 </For>
@@ -420,7 +497,7 @@ export function FileTree(props: FileTreeProps) {
               action="rename"
               文案="重命名"
               禁用={要对象(props.onRename)}
-              onSelect={() => props.onRename?.(菜单对象() ?? "")}
+              onSelect={() => 改名(菜单对象() ?? "")}
             />
             <菜单项
               action="copy"
@@ -518,7 +595,7 @@ export function FileTree(props: FileTreeProps) {
     if (action === "create") return setCreateOpen((open) => !open)
     const path = selected()
     if (!path) return // 没有作用对象就不动作（不猜「大概是指根」）
-    if (action === "rename") return props.onRename?.(path)
+    if (action === "rename") return 改名(path)
     点删(path)
   }
 
@@ -538,9 +615,22 @@ export function FileTree(props: FileTreeProps) {
     props.onDelete?.(path)
   }
 
+  /**
+   * 点「新建文件 / 新建文件夹」——**只是把输入条落下来**，一个请求都不发（T018）。
+   *
+   * 落点在**这一刻**算好并记进 `新建中`：之后用户再怎么点行、选中态怎么变，都不影响它
+   * （见 `新建中` 那条注释）。这也是本函数收 `path` 而不读 `selected()` 的原因——
+   * 工具栏从选中项取、菜单从右键对象取，规则同一份（同 `落点`）。
+   */
   function 新建(kind: "file" | "directory", path: string | undefined) {
-    props.onCreate?.({ kind, parent: 落点(path) })
+    if (!props.onCreate) return
     setCreateOpen(false)
+    set新建中({ kind, parent: 落点(path) })
+  }
+
+  /** 点重命名（工具栏 / 菜单）——同样只是把那一行换成输入条。 */
+  function 改名(path: string) {
+    set改名的(path)
   }
 
   /**
@@ -549,7 +639,7 @@ export function FileTree(props: FileTreeProps) {
    * 新建两项与上传不适用——它们要的是**落点目录**，没有对象时落点＝根，是合理的
    * （正如工具栏的 ＋）。其余七项对着「根」是说不通的：复制根、删除根都不是一个动作。
    */
-  function 要对象(接: ((path: string) => void) | undefined) {
+  function 要对象(接: ((...名字: string[]) => void) | undefined) {
     return !接 || !菜单对象()
   }
 

@@ -189,6 +189,100 @@ describe("PROJECT_DATA 的文件动作绑定（T020）", () => {
 })
 
 /**
+ * 005 T018 · 建 / 改名 / 删这三个写动作的绑定。
+ *
+ * ## 为什么名字是 `*Entry` 而不是 `create` / `rename` / `remove`
+ *
+ * `create` / `remove` / `restore` 在同一个 `ProjectData` 上**已经被占用**了：`create` 是**建项目**、
+ * `remove` 是**移除成员**、`restore` 是**找回项目**。同一个接口上「create 是建什么」有两个答案，
+ * 是下一个人接错线的现成入口；所以这三个一律挂 `Entry` 后缀（`#002-06` 同族：同名的两件事要么合并、
+ * 要么在名字上分得开）。
+ *
+ * ## 三条各自的失效方式
+ *
+ * `renameEntry` 与 `removeEntry` **只差一个字段**（`{ path, name }` vs `{ path }`），接反了在类型上
+ * 完全合法，后果却是「点重命名，文件没了」——所以两条各钉一条、且钉到 `体` 这一层。
+ * 三项都**必须带 `x-openhive-project`**（同 T020 那组的理由：它是定位沙箱目录的唯一依据）。
+ */
+describe("PROJECT_DATA 的建 / 改名 / 删绑定（T018）", () => {
+  test("createEntry 走新建那条出口，体里带 kind / dir / name", async () => {
+    const 发出 = 假服务({ "/openhive/file/create": { path: "档案/话单.csv" } })
+
+    expect(await PROJECT_DATA.createEntry("p1", "file", "档案", "话单.csv")).toEqual({
+      kind: "done",
+      path: "档案/话单.csv",
+    })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/file/create",
+        method: "POST",
+        // ⚠️ `p1` 是**项目 id**（它进了头），不是别的什么——同 T020 那条。
+        项目头: "p1",
+        体: JSON.stringify({ kind: "file", dir: "档案", name: "话单.csv" }),
+      },
+    ])
+  })
+
+  test("createEntry 的 kind 原样送上去（`directory` 不能被顺手翻掉）", async () => {
+    const 发出 = 假服务({ "/openhive/file/create": { path: "档案/子目录" } })
+
+    expect(await PROJECT_DATA.createEntry("p1", "directory", "档案", "子目录")).toEqual({
+      kind: "done",
+      path: "档案/子目录",
+    })
+    expect(发出[0]?.体).toBe(JSON.stringify({ kind: "directory", dir: "档案", name: "子目录" }))
+  })
+
+  test("renameEntry 走重命名那条出口，体里带 path 与 name", async () => {
+    const 发出 = 假服务({ "/openhive/file/rename": { path: "档案/新名.csv" } })
+
+    expect(await PROJECT_DATA.renameEntry("p1", "档案/旧名.csv", "新名.csv")).toEqual({
+      kind: "done",
+      path: "档案/新名.csv",
+    })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/file/rename",
+        method: "POST",
+        项目头: "p1",
+        // 字段名逐字：服务端那条 `RenameBody` 是 `{ path, name }`，写成别的当场 400。
+        体: JSON.stringify({ path: "档案/旧名.csv", name: "新名.csv" }),
+      },
+    ])
+  })
+
+  test("removeEntry 走删除那条出口，体里**只有 path**（多了 name 就是改名那条）", async () => {
+    const 发出 = 假服务({ "/openhive/file/remove": { path: "档案/旧名.csv" } })
+
+    expect(await PROJECT_DATA.removeEntry("p1", "档案/旧名.csv")).toEqual({
+      kind: "done",
+      path: "档案/旧名.csv",
+    })
+    expect(发出).toEqual([
+      {
+        url: "/openhive/file/remove",
+        method: "POST",
+        项目头: "p1",
+        体: JSON.stringify({ path: "档案/旧名.csv" }),
+      },
+    ])
+  })
+
+  /** 破坏性的那一支：服务端拒绝时那句原话必须原样到得了调用方（它要说清「为什么不能删」）。 */
+  test("removeEntry 被拒 ⇒ rejected，带上服务端的原话", async () => {
+    const 发出 = 假服务({
+      "/openhive/file/remove": new Response(JSON.stringify({ error: "项目根不能删" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    })
+
+    expect(await PROJECT_DATA.removeEntry("p1", "")).toEqual({ kind: "rejected", message: "项目根不能删" })
+    expect(发出.map((r) => [r.method, r.url, r.项目头])).toEqual([["POST", "/openhive/file/remove", "p1"]])
+  })
+})
+
+/**
  * T021 的四个成员动作（FR-004）。
  *
  * 与上面那两组**同一个理由**，而这里接错的空间更大：`invite` 与 `remove` 的签名**一模一样**

@@ -32,7 +32,7 @@
 import type { CreateProjectOutcome, ProjectActionOutcome } from "./openhive-project"
 import { archiveProject, createProject, listProjects, restoreProject, touchProject } from "./openhive-project"
 import type { FileOpOutcome } from "./openhive-file-ops"
-import { copyFile, downloadFile, moveFile, uploadFile } from "./openhive-file-ops"
+import { copyFile, createEntry, downloadFile, moveFile, removeEntry, renameEntry, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
 import { inviteMember, leaveProject, listMembers, removeMember } from "./openhive-members"
 import type { MemberEntry } from "./member-panel"
@@ -79,6 +79,21 @@ export interface ProjectData {
    * `<a download>`），而这一层要能在没有 DOM 的单测里跑。存盘落点见 `workspace-entry.tsx`。
    */
   download(projectId: string, path: string): Promise<Blob | undefined>
+  /**
+   * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
+   *
+   * ⚠️ 名字带 `Entry` 后缀：同一个接口上 `create` 已经是**建项目**了。两个「create」并排摆着，
+   * 是下一个人接错线的现成入口——类型上也拦不住（两者第一参都是 `string`）。
+   */
+  createEntry(projectId: string, kind: "file" | "directory", dir: string, name: string): Promise<FileOpOutcome>
+  /**
+   * 把 `path` 换成**同一目录**下的 `name`（T018）。**不搬家**——那是 `move` 的事。
+   *
+   * ⚠️ 与 `removeEntry` **只差一个 `name`**：接反了类型合法、后果是「点重命名，文件没了」。
+   */
+  renameEntry(projectId: string, path: string, name: string): Promise<FileOpOutcome>
+  /** 删除一个条目（T018）：文件直接删，**目录递归删**（用户 2026-10-10 裁定）。 */
+  removeEntry(projectId: string, path: string): Promise<FileOpOutcome>
   /** 取某个项目的成员名单（T021 / FR-004）。`undefined` = 取不到，`[]` = 一个成员都没有（含 403）。 */
   members(projectId: string): Promise<readonly MemberEntry[] | undefined>
   /**
@@ -104,11 +119,12 @@ export interface ProjectData {
 
 /**
  * 生产用的那一个——每个方法各接各的客户端（`openhive-project` ×5 ＋ `openhive-files`
- * ＋ `openhive-file-ops` ×4 ＋ `openhive-members` ×4）。
+ * ＋ `openhive-file-ops` ×7 ＋ `openhive-members` ×4）。
  *
  * ⚠️ **一个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
- * 一模一样，`invite` 与 `remove` 也是，接反了只有请求路径不同）。`project-data.test.ts`
- * 就是为这件事写的（stub 进程的 `fetch`，走真客户端）。
+ * 一模一样，`invite` 与 `remove` 也是，`renameEntry` 与 `removeEntry` 只差一个参数，
+ * 接反了只有请求路径不同）。`project-data.test.ts` 就是为这件事写的（stub 进程的 `fetch`，
+ * 走真客户端）。
  */
 export const PROJECT_DATA: ProjectData = {
   list: () => listProjects(),
@@ -120,6 +136,9 @@ export const PROJECT_DATA: ProjectData = {
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
   upload: (projectId, dir, file) => uploadFile(projectId, dir, file),
   download: (projectId, path) => downloadFile(projectId, path),
+  createEntry: (projectId, kind, dir, name) => createEntry(projectId, kind, dir, name),
+  renameEntry: (projectId, path, name) => renameEntry(projectId, path, name),
+  removeEntry: (projectId, path) => removeEntry(projectId, path),
   members: (projectId) => listMembers(projectId),
   invite: (projectId, policeNo) => inviteMember(projectId, policeNo),
   remove: (projectId, policeNo) => removeMember(projectId, policeNo),

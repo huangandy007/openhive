@@ -79,6 +79,34 @@ const 按键 = (el: HTMLElement | undefined, key: string) => {
   el?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
 }
 
+/**
+ * 取一根**内联输入条**（新建 / 重命名那两根，T018）——用 `instanceof` 收窄成 `HTMLInputElement`。
+ *
+ * ⚠️ 不在就**抛**，不静默跳过：这几条用例判的是「打完字之后发生了什么」，前提没了还往下走，
+ * 红会落在断言上、看着像「回调没喊」（`#004-14`：先立前提再判果）。
+ */
+const 输入条 = (host: HTMLElement, slot: string) => {
+  const el = 槽(host, slot)
+  if (!(el instanceof HTMLInputElement)) throw new Error(`输入条 ${slot} 不在——这条用例的前提不成立（#004-14）`)
+  return el
+}
+
+/**
+ * 往输入条里打字。`InlineInput` 的 `onInput` 读的是 `event.currentTarget.value`
+ * （同 `inline-rename-input.test.tsx`），所以先落值、再派一个**冒泡**的 `input`。
+ */
+const 条里打字 = (host: HTMLElement, slot: string, 值: string) => {
+  const el = 输入条(host, slot)
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+  return el
+}
+
+/** 对输入条按一个键（Enter ＝ 交 / Escape ＝ 撤，语义在 `inline-rename-input.tsx`）。 */
+const 条里敲 = (el: HTMLElement, key: string) => {
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))
+}
+
 /** 造路径数据——形状就是 `buildFileTreeV2Model` 收的那个 `readonly string[]`，不经任何后端。 */
 const 树 = (...paths: string[]) => paths
 
@@ -431,38 +459,95 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(文本(host, "file-tree-create-dir")).toBe("新建文件夹")
     })
 
-    test("点两项各报告各的 kind，落点是根（未选中任何项时）", () => {
-      const 记: { kind: string; parent: string }[] = []
-      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(input) => 记.push(input)} />)
+    /**
+     * T018 把「点一下 ⇒ 当场建」改成了「点一下 ⇒ 落一根输入条，敲 Enter 才建」。
+     *
+     * 为什么非改不可：服务端的 `CREATE` 体里 `name` 是**必填**（`file.ts` 的 `CreateBody`），
+     * 「点一下」那一版交不出名字——改之前它喊给调用方的就是 `{ kind, parent }` 两样。
+     */
+    test("点「新建文件」不立刻喊 onCreate——先落一根输入条（T018：名字得先问）", () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
+
+      expect(记).toEqual([])
+      expect(无槽(host, "file-tree-create-input")).toBe(false)
+      // 下拉要收掉：一个「新建文件」还没填完，不该同时摆着两个入口
+      expect(无槽(host, "file-tree-create-menu")).toBe(true)
+    })
+
+    test("输入条敲 Enter ⇒ 才喊 onCreate，带上 kind / parent / name（未选中 ⇒ 落点是根）", () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+
+      动作(host, "create")?.click()
+      按钮(host, "file-tree-create-file")?.click()
+      条里敲(条里打字(host, "file-tree-create-input", "话单.csv"), "Enter")
+
+      expect(记).toEqual([{ kind: "file", parent: "", name: "话单.csv" }])
+      // 交完就收：一个已经建过的名字不该还摆在框里等第二次 Enter
+      expect(无槽(host, "file-tree-create-input")).toBe(true)
+    })
+
+    /**
+     * 「新建文件夹」单独一条（`#005-12`：同一个修法落在 N 个动作上就写 N 条用例）。
+     *
+     * 两个入口共用 `新建()` 与同一根输入条，**只有 `kind` 与那两句文案不同**——而 `kind` 正是
+     * 服务端 `Schema.Literals(["file","directory"])` 要逐字对上的那一个（翻错当场 400）。
+     */
+    test("「新建文件夹」⇒ kind 是 directory，占位也换成文件夹那句", () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-dir")?.click()
 
-      expect(记).toEqual([
-        { kind: "file", parent: "" },
-        { kind: "directory", parent: "" },
-      ])
+      const 条 = 条里打字(host, "file-tree-create-input", "材料")
+      expect(条.getAttribute("placeholder")).toBe("文件夹名")
+      条里敲(条, "Enter")
+
+      expect(记).toEqual([{ kind: "directory", parent: "", name: "材料" }])
     })
 
+    test("输入条敲 Escape ⇒ 什么都不喊，输入条收掉", () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+
+      动作(host, "create")?.click()
+      按钮(host, "file-tree-create-file")?.click()
+      条里敲(条里打字(host, "file-tree-create-input", "建了一半"), "Escape")
+
+      expect(记).toEqual([])
+      expect(无槽(host, "file-tree-create-input")).toBe(true)
+    })
+
+    /**
+     * 落点跟着选中走（`#005-12`：两个落点各钉一条；第三种「没选中 ⇒ 根」在上面那条用例里）。
+     *
+     * 判据是**点下拉那一刻**定的落点，不是敲 Enter 那一刻——期间选中态若被改（这里没有），
+     * 落点不该跟着漂。`新建中` 存着 `parent` 正是为这件事。
+     */
     test("落点跟着选中走：选中目录 ⇒ 在它下面；选中文件 ⇒ 在它所在的目录下", () => {
-      const 记: { kind: string; parent: string }[] = []
+      const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("甲/乙/a.txt", "丙/x.txt")} onCreate={(i) => 记.push(i)} />)
 
       // 选中目录「乙」⇒ 落点是它自己
       行按名(host, "乙")?.click()
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
+      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
 
-      // 选中文件「a.txt」⇒ 落点是它所在的目录「甲/乙」
+      // 选中文件「a.txt」⇒ 落点是它所在的目录「甲/乙」（不是文件自己）
       行按名(host, "a.txt")?.click()
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
+      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
 
       expect(记).toEqual([
-        { kind: "file", parent: "甲/乙" },
-        { kind: "file", parent: "甲/乙" },
+        { kind: "file", parent: "甲/乙", name: "新.md" },
+        { kind: "file", parent: "甲/乙", name: "新.md" },
       ])
     })
 
@@ -487,23 +572,54 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(按钮(host, "file-tree-action-expand-all")?.disabled).toBe(false)
     })
 
-    test("接了线、选中一项后点重命名 / 删除，回传的是**选中项**的路径", () => {
+    /**
+     * 工具栏的重命名 = **就地编辑选中那一行**（T018）。两个动作都在这一条里走一遍，
+     * 为的是钉住「两个入口的作用对象都是**选中项**」——它们各自的作用对象来源不同
+     * （工具栏取 `selected`、菜单取 `菜单对象`），但走的是同一对回调。
+     */
+    test("接了线、选中一项后点重命名：那一行就地变成输入条，敲 Enter 才回传**选中项**的新旧名字", () => {
       const 记: string[] = []
       const host = mount(() => (
         <FileTree
           paths={树("话单.csv", "资金.xlsx")}
-          onRename={(p) => 记.push(`改:${p}`)}
-          onDelete={(p) => 记.push(`删:${p}`)}
+          onRename={(path, name) => 记.push(`改:${path}=>${name}`)}
+          onDelete={(path) => 记.push(`删:${path}`)}
         />
       ))
 
       行按名(host, "资金.xlsx")?.click()
       按钮(host, "file-tree-action-rename")?.click()
+
+      // 还没敲名字，一个回调都不该发出去（T018 之前这里会当场喊一次）
+      expect(记).toEqual([])
+      const 条 = 输入条(host, "file-tree-rename-input")
+      // 编辑的是**选中那一行**（不是别的行），且**预填了原名**
+      expect(条.closest("[data-slot='file-tree-row']")?.getAttribute("data-path")).toBe("资金.xlsx")
+      expect(条.value).toBe("资金.xlsx")
+
+      条里敲(条里打字(host, "file-tree-rename-input", "资金明细.xlsx"), "Enter")
+
+      expect(记).toEqual(["改:资金.xlsx=>资金明细.xlsx"])
+
+      // 删除仍作用于**选中项**，且仍走二次确认（FR-006）
       按钮(host, "file-tree-action-delete")?.click()
-      // 删除自 T009 起走二次确认（FR-006）：回调要等确认条上那个「删除」才发出去
       按钮(host, "file-tree-delete-ok")?.click()
 
-      expect(记).toEqual(["改:资金.xlsx", "删:资金.xlsx"])
+      expect(记).toEqual(["改:资金.xlsx=>资金明细.xlsx", "删:资金.xlsx"])
+    })
+
+    test("重命名输入条敲 Escape ⇒ 不喊 onRename，那一行退回展示态", () => {
+      const 记: string[] = []
+      const host = mount(() => <FileTree paths={树("资金.xlsx")} onRename={(p, n) => 记.push(`${p}=>${n}`)} />)
+
+      行按名(host, "资金.xlsx")?.click()
+      按钮(host, "file-tree-action-rename")?.click()
+      条里敲(条里打字(host, "file-tree-rename-input", "改了一半"), "Escape")
+
+      expect(记).toEqual([])
+      expect(无槽(host, "file-tree-rename-input")).toBe(true)
+      // 退回展示态：名字那一格又读得到了（编辑态下它是输入条，`file-tree-name` 整格不在）
+      expect(行(host).some((el) => 行名(el) === "资金.xlsx")).toBe(true)
     })
 
     test("接了线但**没选中**任何项时，重命名 / 删除不回传——没有作用对象就不动作", () => {
@@ -768,14 +884,21 @@ describe("FileTree 文件树（FR-005）", () => {
         })
       }
 
-      test("重命名走的是工具栏那个 onRename——两个入口同一个动作，不另起一套", () => {
+      test("菜单「重命名」走的是工具栏那一个——两个入口同一件事：就地编辑那一行", () => {
         const 收到: string[] = []
-        const host = mount(() => <FileTree paths={树("a.md")} onRename={(path) => 收到.push(path)} />)
+        const host = mount(() => <FileTree paths={树("a.md")} onRename={(path, name) => 收到.push(`${path}=>${name}`)} />)
 
         右键(行按名(host, "a.md"))
         点菜单项("rename")
 
-        expect(收到).toEqual(["a.md"])
+        // 与工具栏同一个行为：先落输入条，敲 Enter 才回传（T018）
+        expect(收到).toEqual([])
+        expect(无槽(host, "file-tree-rename-input")).toBe(false)
+        expect(输入条(host, "file-tree-rename-input").value).toBe("a.md")
+
+        条里敲(条里打字(host, "file-tree-rename-input", "b.md"), "Enter")
+
+        expect(收到).toEqual(["a.md=>b.md"])
       })
 
       test("删除走的是工具栏那个 onDelete（同样过二次确认，T009 起）", () => {
@@ -795,28 +918,30 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual(["a.md"])
       })
 
-      test("右键一个**目录**建文件 ⇒ 落点就是它自己", () => {
-        const 收到: { kind: string; parent: string }[] = []
+      test("右键一个**目录**建文件夹 ⇒ 落点就是它自己", () => {
+        const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
         ))
 
         右键(行按名(host, "材料"))
         点菜单项("create-dir")
+        条里敲(条里打字(host, "file-tree-create-input", "子目录"), "Enter")
 
-        expect(收到).toEqual([{ kind: "directory", parent: "材料" }])
+        expect(收到).toEqual([{ kind: "directory", parent: "材料", name: "子目录" }])
       })
 
       test("右键一个**文件**建文件 ⇒ 落点是它所在的目录，不是文件自己", () => {
-        const 收到: { kind: string; parent: string }[] = []
+        const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
         ))
 
         右键(行按名(host, "话单.csv"))
         点菜单项("create-file")
+        条里敲(条里打字(host, "file-tree-create-input", "笔记.md"), "Enter")
 
-        expect(收到).toEqual([{ kind: "file", parent: "材料" }])
+        expect(收到).toEqual([{ kind: "file", parent: "材料", name: "笔记.md" }])
       })
     })
 
@@ -900,7 +1025,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     describe("没有作用对象", () => {
       test("树是空的时候右键仍能弹菜单：新建与上传可用（落在根），要对象的动作禁用", () => {
-        const 收到: { kind: string; parent: string }[] = []
+        const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree
             paths={树()}
@@ -922,7 +1047,8 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(项禁用("copy")).toBe(true)
 
         点菜单项("create-file")
-        expect(收到).toEqual([{ kind: "file", parent: "" }])
+        条里敲(条里打字(host, "file-tree-create-input", "话单.csv"), "Enter")
+        expect(收到).toEqual([{ kind: "file", parent: "", name: "话单.csv" }])
       })
     })
   })

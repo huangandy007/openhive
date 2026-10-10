@@ -20,7 +20,16 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { copyFile, downloadFile, moveFile, uploadFile, type FileOpsFetch } from "./openhive-file-ops"
+import {
+  copyFile,
+  createEntry,
+  downloadFile,
+  moveFile,
+  removeEntry,
+  renameEntry,
+  uploadFile,
+  type FileOpsFetch,
+} from "./openhive-file-ops"
 
 const PROJECT = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -301,5 +310,196 @@ describe("downloadFile", () => {
     }
 
     expect(await downloadFile(PROJECT, "话单.csv", send)).toBeUndefined()
+  })
+})
+
+/**
+ * T018 的三个出口：**新建 / 重命名 / 删除**。
+ *
+ * ## 为什么三条各自成组、只钉「走的是哪条出口」那一条
+ *
+ * 三个的**体不一样**（`{ kind, dir, name }` / `{ path, name }` / `{ path }`），而 `rename` 与
+ * `remove` 只差中间几个字母——接反了**不报错、不变红**，类型上也合法（两个都收 `(projectId, path)`
+ * 一族），后果却是「民警点重命名，文件没了」。所以「这条走的是哪条出口、体里到底有什么」
+ * 三条各钉一条（`LEARNINGS #005-12`：同一类判据落在 N 个落点上就写 N 条）。
+ *
+ * 400 / 403 与「出口没挂上」那两种处置**不再各写一遍**：那是 `outcomeOf` 一份判据，
+ * 已经由 `copyFile` 那组钉住了。这里只留一条「它也走那条判据」的抽样，免得同一件事有第二份断言。
+ */
+describe("createEntry（T018 新建）", () => {
+  test("发 POST /openhive/file/create，体是 { kind, dir, name }，带项目头与 cookie", async () => {
+    const { send, sent } = stub(() => 成功("资料/话单.csv"))
+
+    await createEntry(PROJECT, "file", "资料", "话单.csv", send)
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/create",
+        method: "POST",
+        project: PROJECT,
+        contentType: "application/json",
+        credentials: "same-origin",
+        body: JSON.stringify({ kind: "file", dir: "资料", name: "话单.csv" }),
+      },
+    ])
+  })
+
+  /**
+   * `kind` **原样送上去，不由这一层翻译**。
+   *
+   * 服务端的判据是 `Schema.Literals(["file","directory"])`——翻错一个词、或这一层「顺手」把
+   * `directory` 写成 `dir`，服务端**当场 400**，而这条错在别处看不见（类型是收窄过的字符串联合，
+   * 编译期只保证这一层自己的词表自洽）。所以两个值各钉一条。
+   */
+  test("kind: directory 原样送上去（这一层不做任何翻译）", async () => {
+    const { send, sent } = stub(() => 成功("材料"))
+
+    await createEntry(PROJECT, "directory", "", "材料", send)
+
+    expect(JSON.parse(String(sent[0]?.body))).toEqual({ kind: "directory", dir: "", name: "材料" })
+  })
+
+  test("200 且体里有 path ⇒ done，并把新条目的路径带回去", async () => {
+    const { send } = stub(() => 成功("资料/话单.csv"))
+
+    expect(await createEntry(PROJECT, "file", "资料", "话单.csv", send)).toEqual({
+      kind: "done",
+      path: "资料/话单.csv",
+    })
+  })
+
+  test("400（同名已存在）⇒ rejected，带服务端那句话", async () => {
+    const { send } = stub(() => 拒绝(400, "这个位置已经有同名的东西了"))
+
+    expect(await createEntry(PROJECT, "file", "", "话单.csv", send)).toEqual({
+      kind: "rejected",
+      message: "这个位置已经有同名的东西了",
+    })
+  })
+
+  test("200 但体是 HTML 兜底页（出口没挂上）⇒ failed", async () => {
+    const { send } = stub(() => 兜底页())
+
+    expect(await createEntry(PROJECT, "file", "", "话单.csv", send)).toEqual({
+      kind: "failed",
+      message: "新建失败",
+    })
+  })
+
+  test("网络抛 ⇒ failed", async () => {
+    const send: FileOpsFetch = async () => {
+      throw new Error("连不上")
+    }
+
+    expect(await createEntry(PROJECT, "file", "", "话单.csv", send)).toEqual({
+      kind: "failed",
+      message: "新建失败",
+    })
+  })
+})
+
+describe("renameEntry（T018 重命名）", () => {
+  /**
+   * ⚠️ 这一条同时是**反接反**的判据（`{ path }` 正是删除那个出口的体，而删除**不带 name**）：
+   * 断言取**整体相等**（`toEqual` 而不是 `toContain`），少一项、多一项、换个出口都红。
+   *
+   * 曾经另起过一条「体里两个字段都在」用 `Object.keys(...).toSorted()` 再钉一遍，2026-10-10 删掉：
+   * 它判的是**同一件事**（`#002-06`），而且为了拿到对象得写一句 `as object`
+   * （`typescript-eslint(no-unsafe-type-assertion)` 实测会报）。
+   */
+  test("走的是重命名那条出口（POST /openhive/file/rename），体是 { path, name }", async () => {
+    const { send, sent } = stub(() => 成功("资料/新名.csv"))
+
+    await renameEntry(PROJECT, "资料/旧名.csv", "新名.csv", send)
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/rename",
+        method: "POST",
+        project: PROJECT,
+        contentType: "application/json",
+        credentials: "same-origin",
+        body: JSON.stringify({ path: "资料/旧名.csv", name: "新名.csv" }),
+      },
+    ])
+  })
+
+  test("200 ⇒ done，带新路径（调用方要拿它把话说清楚）", async () => {
+    const { send } = stub(() => 成功("资料/新名.csv"))
+
+    expect(await renameEntry(PROJECT, "资料/旧名.csv", "新名.csv", send)).toEqual({
+      kind: "done",
+      path: "资料/新名.csv",
+    })
+  })
+
+  test("400（目标已存在）⇒ rejected，带服务端那句话", async () => {
+    const { send } = stub(() => 拒绝(400, "这个位置已经有同名的东西了"))
+
+    expect(await renameEntry(PROJECT, "资料/旧名.csv", "新名.csv", send)).toEqual({
+      kind: "rejected",
+      message: "这个位置已经有同名的东西了",
+    })
+  })
+
+  test("网络抛 ⇒ failed", async () => {
+    const send: FileOpsFetch = async () => {
+      throw new Error("连不上")
+    }
+
+    expect(await renameEntry(PROJECT, "资料/旧名.csv", "新名.csv", send)).toEqual({
+      kind: "failed",
+      message: "重命名失败",
+    })
+  })
+})
+
+describe("removeEntry（T018 删除）", () => {
+  test("走的是删除那条出口（POST /openhive/file/remove），体**只有** path", async () => {
+    const { send, sent } = stub(() => 成功("资料/旧名.csv"))
+
+    await removeEntry(PROJECT, "资料/旧名.csv", send)
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/remove",
+        method: "POST",
+        project: PROJECT,
+        contentType: "application/json",
+        credentials: "same-origin",
+        body: JSON.stringify({ path: "资料/旧名.csv" }),
+      },
+    ])
+  })
+
+  /**
+   * 服务端那道「项目根不许删」是整个功能里唯一一处**破坏性**判据（`rm` 递归，判据错了会把
+   * 整个项目清空）——它的话必须原样到得了民警眼前。所以这里钉的是**那一句**：
+   * `rejected.message` 用服务端原话，不是「删除失败」。
+   */
+  test("400（不许删项目根）⇒ rejected，带服务端**原话**", async () => {
+    const { send } = stub(() => 拒绝(400, "项目根不能删"))
+
+    expect(await removeEntry(PROJECT, "", send)).toEqual({ kind: "rejected", message: "项目根不能删" })
+  })
+
+  test("200 ⇒ done，带被删掉的那条路径", async () => {
+    const { send } = stub(() => 成功("资料/旧名.csv"))
+
+    expect(await removeEntry(PROJECT, "资料/旧名.csv", send)).toEqual({
+      kind: "done",
+      path: "资料/旧名.csv",
+    })
+  })
+
+  test("网络抛 ⇒ failed", async () => {
+    const send: FileOpsFetch = async () => {
+      throw new Error("连不上")
+    }
+
+    expect(await removeEntry(PROJECT, "资料/旧名.csv", send)).toEqual({
+      kind: "failed",
+      message: "删除失败",
+    })
   })
 })

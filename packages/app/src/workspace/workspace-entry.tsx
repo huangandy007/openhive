@@ -496,6 +496,48 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     存到本地(blob, 末段(path))
   }
 
+  /**
+   * 建一个新条目（T018）。`kind` / `parent` / `name` 三样都由文件树给：`parent` 是它按节点表
+   * 判出来的**落点目录**、`name` 是用户在树上现敲的。
+   *
+   * ⚠️ 本层**一个字都不加工**——尤其不重判「这个名字合不合法」：判据在服务端只有一条
+   * （`file.ts` 的 `usableName`），前端再判一遍就是会各漂一半的第二份（`LEARNINGS #002-06`）。
+   * 被拒时服务端那句原话经 `收下` 到民警眼前（如「文件名里不能含 `:`…」）。
+   */
+  async function 建条(input: { kind: "file" | "directory"; parent: string; name: string }) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    收下(await projectData.createEntry(id, input.kind, input.parent, input.name))
+  }
+
+  /** 改名（T018）：`path` 是**旧路径**、`name` 是新名字——两样都由文件树给（它手里有节点表）。 */
+  async function 改名条(path: string, name: string) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    收下(await projectData.renameEntry(id, path, name))
+  }
+
+  /** 删除（T018）：文件直接删、**目录递归删**。二次确认在文件树那侧（FR-006），到这里已经确认过。 */
+  async function 删条(path: string) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    收下(await projectData.removeEntry(id, path))
+  }
+
+  /**
+   * 「现在有没有一个项目可以动」——建 / 改名 / 删这三项**接线与否**的判据。
+   *
+   * 三个 handler 各自也守着一条（拿不到 id 就不发请求），但那只是**兜底**：光靠它的话，树上的
+   * ＋ 与 ✏️ 在没选中项目时**照样是亮的**，点下去什么都不发生——正是 `file-tree.tsx` 反复挡的
+   * 那种谎（「看起来能点」比「少个按钮」更难查）。所以判据要落在**接线与否**上，让树自己置灰。
+   *
+   * ⚠️ 与 T020 那四项**今天还不一致**：`onCopy` / `onMove` / `onUpload` / `onDownload` 是无条件
+   * 接的，其中「上传」在没选中项目时同样点得动、同样静默（复制 / 移动 / 下载被菜单的「要有作用
+   * 对象」间接挡住，没选中项目时树通常是空的）。那是 T020 留下的账，改它要连它的用例一起动，
+   * 不并进本条（登记在 `005/state.md`）。
+   */
+  const 有项目 = () => currentProject()?.id !== undefined
+
   /** 右键「上传」：先记下落点，再开系统文件选择器。落点由**树**给（它判的类型），本层不重判一遍。 */
   function 选文件(dir: string) {
     set上传落点(dir)
@@ -733,13 +775,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   sessions={props.sessions?.()}
                   files={
                     <>
-                      {/* ④ 个文件动作（T020）：四项各接各的回调。`onBackup` / `onRestore` 仍不接
-                          —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。 */}
+                      {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项。`onBackup` / `onRestore`
+                          仍不接 —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。 */}
                       <DualFileTree
                         paths={projectFiles()}
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}
+                        onCreate={有项目() ? (input) => void 建条(input) : undefined}
+                        onRename={有项目() ? (path, name) => void 改名条(path, name) : undefined}
+                        onDelete={有项目() ? (path) => void 删条(path) : undefined}
                         onCopy={(path) => 要搬(path, "copy")}
                         onMove={(path) => 要搬(path, "move")}
                         onUpload={选文件}

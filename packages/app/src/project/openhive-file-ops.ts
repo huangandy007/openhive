@@ -1,19 +1,19 @@
 /**
- * 005 T020 · 文件树四个**写**动作的薄客户端（`openhive-project` / `openhive-files` 的同族）。
+ * 005 T020／T018 · 文件树七个**写 / 拉**动作的薄客户端（`openhive-project` / `openhive-files` 的同族）。
  *
  * ## 与 `openhive-files.ts`（读）为什么是两个文件
  *
- * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的四条
+ * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的七条
  * 都是**一次请求一件事**。合在一个文件里，头注要同时讲两件不相干的事，而「目录谁说了算」
  * 那条（读那一侧的核心）会变得像是写这一侧也要遵守的规矩。
  *
- * ## 四个出口都是 fork 自己的裸路由，不在 SDK 里
+ * ## 七个出口都是 fork 自己的裸路由，不在 SDK 里
  *
- * `POST /openhive/file/{copy,move,upload}` ＋ `GET /openhive/file/download`
- * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这四个端点，
+ * `POST /openhive/file/{copy,move,upload,create,rename,remove}` ＋ `GET /openhive/file/download`
+ * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这七个端点，
  * 类型化 SDK 里也就没有，故单写一层（同 `openhive-project.ts` 文件头那条）。
  *
- * ## 「哪个项目」只走 `x-openhive-project` 头，四项**都必须带**
+ * ## 「哪个项目」只走 `x-openhive-project` 头，七项**都必须带**
  *
  * T017 的 `project-location.ts` 拿这个头把工作目录钉到 `{沙箱根}/{userId}/{projectId}`，
  * **并把自己那个头摘掉**。头不在时它**原样放行**，工作目录退回**沙箱根**——而沙箱根是
@@ -54,6 +54,10 @@ export const PATH = {
   move: `${PREFIX}/move`,
   upload: `${PREFIX}/upload`,
   download: `${PREFIX}/download`,
+  /** T018 的三项。`create` 的 `kind` 分文件 / 目录（用户 2026-10-10 裁定「新建文件夹」也要）。 */
+  create: `${PREFIX}/create`,
+  rename: `${PREFIX}/rename`,
+  remove: `${PREFIX}/remove`,
 } as const
 
 /**
@@ -84,6 +88,9 @@ export type FileOpOutcome =
 const COPY_FAILED = "复制文件失败"
 const MOVE_FAILED = "移动文件失败"
 const UPLOAD_FAILED = "上传文件失败"
+const CREATE_FAILED = "新建失败"
+const RENAME_FAILED = "重命名失败"
+const REMOVE_FAILED = "删除失败"
 
 /**
  * 复制一个文件到**项目内的另一个目录**（FR-005）。
@@ -169,6 +176,60 @@ export async function downloadFile(
 }
 
 /**
+ * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
+ *
+ * `dir` 是落点**目录**（相对项目根，`""` ＝ 项目根），`name` 是**单段名**——两样都由文件树给
+ * （`FileTreeProps.onCreate`），本层不重判一遍「选中项是文件还是目录」（那是 `节点表` 的事，
+ * 这里没有节点表；`LEARNINGS #002-06`）。
+ *
+ * ⚠️ `kind` **原样送上去**：服务端那条判据是 `Schema.Literals(["file","directory"])`，翻错一个词
+ * 就是当场 400，而这一层「顺手」翻一次（比如把 `directory` 写成 `dir`）在类型上也合法
+ * ——所以用例把两个值各钉了一条。
+ */
+export async function createEntry(
+  projectId: string,
+  kind: "file" | "directory",
+  dir: string,
+  name: string,
+  send: FileOpsFetch = defaultSend,
+): Promise<FileOpOutcome> {
+  return postJson(PATH.create, CREATE_FAILED, projectId, { kind, dir, name }, send)
+}
+
+/**
+ * 把 `path` 换成**同一目录**下的 `name`（T018）。**不搬家**——要搬是 `moveFile` 那个出口的事。
+ *
+ * `path` 是**旧路径**（相对项目根）、`name` 是**新的单段名**：服务端拿 `path` 反推所在目录，
+ * 本层不切字符串（切了就得跟服务端用同一套规则，那是第二个会漂的判据——同 `copyFile` 那条）。
+ *
+ * ⚠️ **与 `removeEntry` 只差中间几个字母**，而两者接反了不报错、不变红：`{ path, name }` 与
+ * `{ path }` 在类型上都是对象。后果不对称——点「重命名」走成删除，文件直接没了。
+ */
+export async function renameEntry(
+  projectId: string,
+  path: string,
+  name: string,
+  send: FileOpsFetch = defaultSend,
+): Promise<FileOpOutcome> {
+  return postJson(PATH.rename, RENAME_FAILED, projectId, { path, name }, send)
+}
+
+/**
+ * 删除一个条目（T018）：文件直接删，**目录递归删**（用户 2026-10-10 裁定「支持删文件夹」）。
+ *
+ * ⚠️ 这是**本项目里唯一一处破坏性、且判据错了会连累整个项目**的动作（服务端的 `rm` 是递归的，
+ * 少一道「项目根不许删」的守卫就会把项目清空）——所以服务端拒绝时那句原话必须到得了民警眼前：
+ * 本层一个字都不改写（`outcomeOf` 的 `rejected` 那一支）。
+ */
+export async function removeEntry(
+  projectId: string,
+  path: string,
+  send: FileOpsFetch = defaultSend,
+): Promise<FileOpOutcome> {
+  return postJson(PATH.remove, REMOVE_FAILED, projectId, { path }, send)
+}
+
+/**
  * 复制 / 移动**共用一条**——HTTP 形状逐字相同（同前缀、同 `POST`、同 `{ path, dir }` 体、
  * 同 400/403 处置），只有路径与失败文案是各自的。分开写两份 = 把「怎么说清一次失败」复制
  * 两遍，而它正是最容易各改一半的那类（`LEARNINGS #002-06`，同 `openhive-project.ts` 的
@@ -182,11 +243,32 @@ async function transfer(
   dir: string,
   send: FileOpsFetch,
 ): Promise<FileOpOutcome> {
+  return postJson(endpoint, failed, projectId, { path, dir }, send)
+}
+
+/**
+ * 一次 **JSON 体的 POST**——七个写出口里五条共用这一份（复制 / 移动 / 新建 / 重命名 / 删除），
+ * 差别只有路径、体与失败文案。
+ *
+ * 提取的是那**六行字面量**（`method` / `credentials` / 两个头 / `JSON.stringify`）：五处各写一遍
+ * 就是同一件事的第五份，而其中任何一处「顺手」少个 `credentials` 或忘了项目头，**都不报错**
+ * ——只会让那一个动作静默落进别的目录（同 `openhive-project.ts` 的 `projectAction`）。
+ *
+ * ⚠️ **上传不走这里**：它发的是 `FormData`，而 `content-type` 一律不能手写（boundary 在里面，
+ * 见 `uploadFile`）。硬套这个形状会把唯一一条只在真环境里才犯的错引进来。
+ */
+async function postJson(
+  endpoint: string,
+  failed: string,
+  projectId: string,
+  body: Record<string, unknown>,
+  send: FileOpsFetch,
+): Promise<FileOpOutcome> {
   const response = await trySend(send, endpoint, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json", [PROJECT_HEADER]: projectId },
-    body: JSON.stringify({ path, dir }),
+    body: JSON.stringify(body),
   })
   return outcomeOf(response, failed)
 }
