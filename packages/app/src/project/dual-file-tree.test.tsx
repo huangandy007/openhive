@@ -59,6 +59,23 @@ const 各行 = (host: HTMLElement, which: "sandbox" | "minio") => [
 const 排序 = (xs: readonly string[]) => [...xs].sort((a, b) => a.localeCompare(b))
 
 /**
+ * 点上树（`FileTree`）的「全部展开」。
+ *
+ * 上树自 2026-10-11 起**默认全收缩**（用户第 5 条：进入文件 tab 只看得见顶层）⇒ 沙箱里深一层的行
+ * （`资金流水/财付通.xlsx` 这些）挂载时看不见，要够到它们得先全打开。
+ *
+ * ⚠️ 变的是**前提**，不是判据：这几条钉的是「拖拽／对照的内容对不对」，与默认展开几层无关。
+ * 不补这一步，`行(...)` 会返回 `undefined` 而断言照样跑（`#005-22`：查一个不存在的名字 ⇒ 空转）。
+ *
+ * ⚠️ **变异记录（据实记，`#003-03` 第 ③ 类）**：把 `file-tree.tsx` 的第 5 条**整份撤回**之后，
+ * 本文件 23 条**全绿** ⇒ 这一处补丁**不是**那个改动的守护者（它守的是**本文件自己的前提**，
+ * 撤回产品码后旧默认本就全展开、补丁退化成 no-op）。**别把这几条绿读成「默认值那件事有防护」**
+ * ——钉它的是 `file-tree.test.tsx` 里那 6 条。
+ */
+const 全展开上树 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>("[data-action='expand-all']")?.click()
+
+/**
  * 「这个东西不存在」——断在**布尔**上，绝不写 `expect(槽(...)).toBeNull()`。
  *
  * ⚠️ `LEARNINGS #005-01`：实测值若是**被 Solid 渲染过的节点**，红了会把整轮 `bun test` **崩掉**
@@ -170,6 +187,7 @@ describe("DualFileTree 上下双树（设计 §5）", () => {
 
   test("上树列的是沙箱全部（三份都在）——与下树的一对照就看出谁没备份", () => {
     const { host } = 挂({ open: true })
+    全展开上树(host) // 默认全收缩（用户第 5 条）⇒ 沙箱深一层那两份要先打开才在这一眼里
 
     expect(排序(各行(host, "sandbox").map((el) => el.getAttribute("data-path") ?? ""))).toEqual(
       排序(["报告.docx", "资金流水", "资金流水/财付通.xlsx", "资金流水/支付宝.xlsx"]),
@@ -213,6 +231,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
 
   test("沙箱文件拖到下树的**空白处**（根）⇒ onBackup 带原文件名", () => {
     const { host, 备份过 } = 挂({ open: true })
+    全展开上树(host) // 默认全收缩（用户第 5 条）⇒ 拖的源行在沙箱深一层
 
     拖到(行(host, "sandbox", "资金流水/财付通.xlsx"), 树(host, "minio"))
 
@@ -239,6 +258,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
 
   test("备份**直接覆盖**，不弹确认（裁定 4A：盖的是自己那份旧备份，反复备份不该被拦）", () => {
     const { host, 备份过 } = 挂({ open: true }) // 备份里已有 资金流水/支付宝.xlsx
+    全展开上树(host) // 默认全收缩（用户第 5 条）⇒ 拖的源行在沙箱深一层
 
     拖到(行(host, "sandbox", "资金流水/支付宝.xlsx"), 行(host, "minio", "资金流水"))
 

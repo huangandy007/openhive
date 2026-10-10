@@ -462,31 +462,32 @@ describe("FileTree 文件树（FR-005）", () => {
   })
 
   describe("展开 / 收起（设计 §6.1 的 ⊟ / ⊞）", () => {
-    test("默认全部展开——镜像上游静态树的行为（v2 model 那侧 `expanded` 缺省为真）", () => {
-      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} />)
-
-      expect(路径(host)).toEqual(["资料", "资料/8·17", "资料/8·17/c.txt"])
-    })
-
-    test("点「全部收缩」把所有目录收起来，只剩顶层", () => {
+    test("默认**全收缩**——用户第 5 条：进入文件 tab 时只看得见顶层，要看哪一层自己点开", () => {
       const host = mount(() => <FileTree paths={树("资料/8·17/c.txt", "笔记.md")} />)
-
-      动作(host, "collapse-all")?.click()
 
       expect(路径(host)).toEqual(["资料", "笔记.md"])
     })
 
-    test("「全部收缩」之后再点「全部展开」回到全量——两个动作是互逆的，不是一次性的", () => {
-      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} />)
+    test("点「全部展开」把整棵树打开——默认收着不等于打不开", () => {
+      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt", "笔记.md")} />)
 
-      动作(host, "collapse-all")?.click()
       动作(host, "expand-all")?.click()
 
-      expect(路径(host)).toEqual(["资料", "资料/8·17", "资料/8·17/c.txt"])
+      expect(路径(host)).toEqual(["资料", "资料/8·17", "资料/8·17/c.txt", "笔记.md"])
+    })
+
+    test("「全部展开」之后再点「全部收缩」回到默认——两个动作是互逆的，不是一次性的", () => {
+      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} />)
+
+      动作(host, "expand-all")?.click()
+      动作(host, "collapse-all")?.click()
+
+      expect(路径(host)).toEqual(["资料"])
     })
 
     test("点目录的箭头只收它自己——兄弟目录不受影响", () => {
       const host = mount(() => <FileTree paths={树("甲/a.txt", "乙/b.txt")} />)
+      动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，才谈得上「收它自己」
 
       箭头(行按名(host, "甲"))?.click()
 
@@ -498,17 +499,18 @@ describe("FileTree 文件树（FR-005）", () => {
     test("目录行带展开状态（可访问性：`aria-expanded`，不只靠箭头方向）", () => {
       const host = mount(() => <FileTree paths={树("资料/a.txt")} />)
 
-      expect(行(host)[0]?.getAttribute("aria-expanded")).toBe("true")
+      expect(行(host)[0]?.getAttribute("aria-expanded")).toBe("false")
 
       箭头(行(host)[0])?.click()
       // 重新取一次：行是 `<For>` 渲染的，重算后节点会换 ⇒ **不跨重渲染持节点引用**
-      expect(行(host)[0]?.getAttribute("aria-expanded")).toBe("false")
+      expect(行(host)[0]?.getAttribute("aria-expanded")).toBe("true")
     })
 
     test("开合归箭头、选中归行——点目录行本身**不**收起它", () => {
       // 为什么必须分开：点行若连带收起，则「选中目录 ⇒ 在它下面新建」会把落点当场藏起来，
       // 用户看不见自己正在哪儿建。（本 task 唯一一处设计取舍，见 `file-tree.tsx` 文件头。）
       const host = mount(() => <FileTree paths={树("甲/a.txt")} />)
+      动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先让子项可见，才判得了「点行没收起它」
 
       行按名(host, "甲")?.click()
 
@@ -533,11 +535,73 @@ describe("FileTree 文件树（FR-005）", () => {
       const 在壳内 = 箭头(行(host)[0])?.closest("[data-component='tooltip-v2-trigger']") != null
 
       expect(在壳内).toBe(true)
-      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("收起")
+      // 默认收缩（用户第 5 条）⇒ 一开始那枚箭头说的是「展开」
+      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("展开")
 
       箭头(行(host)[0])?.click()
 
-      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("展开")
+      expect(箭头(行(host)[0])?.getAttribute("aria-label")).toBe("收起")
+    })
+  })
+
+  /**
+   * 新建成功之后树往哪儿看（用户第 5 条配套，2026-10-11）。
+   *
+   * 默认全收缩之后，「在深层目录里新建」会冒出一个新问题：落点（以及它上面每一层）本来是收着的，
+   * 用户建完**看不见自己刚建的东西**——这不是第 5 条的反面，是它的收尾。所以提交那一刻把
+   * **落点目录及其祖先链**打开：只开这一条链，别的目录不动（「开得刚好够看见」）。
+   *
+   * ⚠️ 展开发生在**提交那一刻**，不是「服务端回了成功」。`onCreate` 是 `void` 转发（组件不知道
+   * 服务端成没成，也不知道落库后的路径），而这条路的前提是「用户确实提交了这个落点」——失败时
+   * 只是多展开了几个目录，无害，且更方便用户当场重试。这条取舍如实写在这里，不假称「成功后展开」。
+   */
+  describe("新建成功后自动展开落点（用户第 5 条的配套）", () => {
+    /**
+     * 走到「选中深层目录、且它那一支收着」这个前提——走的是**真实可达的一条路**：
+     * 默认收缩下深层行点不到，所以先「全部展开」去选它、再「全部收缩」。`selected` 独立于展开态，
+     * 收起来不会把选中项弄丢；用户完全可能这么操作（选中了目录、又点了 ⊟、再点 ＋）。
+     */
+    const 选中深层目录再全收起 = (host: HTMLElement) => {
+      动作(host, "expand-all")?.click()
+      行按名(host, "8·17")?.click()
+      动作(host, "collapse-all")?.click()
+    }
+
+    test("落点是深层目录 ⇒ 提交之后**落点及其祖先链**都打开，别的目录不受牵连", async () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() =>
+        <FileTree paths={树("资料/8·17/c.txt", "别的/x.txt")} onCreate={(i) => 记.push(i)} />,
+      )
+      选中深层目录再全收起(host)
+      expect(路径(host)).toEqual(["别的", "资料"]) // 前提：两支都收着、深层行看不见
+
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
+      await 歇一拍()
+      弹窗填("新话单.csv")
+      弹窗提交()
+
+      expect(记).toEqual([{ kind: "file", parent: "资料/8·17", name: "新话单.csv" }])
+      // `资料`（祖先）与 `资料/8·17`（落点）都开了 ⇒ 新建的那一层看得见；`别的` 不在链上，仍旧收着
+      expect(路径(host)).toEqual(["别的", "资料", "资料/8·17", "资料/8·17/c.txt"])
+    })
+
+    test("落点是根 ⇒ 一层都不展开——「展开落点」不是「随便开点什么」", async () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} onCreate={(i) => 记.push(i)} />)
+
+      // 不选中任何东西 ⇒ 落点＝项目根（既有约定，见「未选中 ⇒ 落点是根」那条）
+      点加号(host)
+      await 歇一拍()
+      点菜单行("directory")
+      await 歇一拍()
+      弹窗填("新目录")
+      弹窗提交()
+
+      expect(记).toEqual([{ kind: "directory", parent: "", name: "新目录" }])
+      // 根这一档没有链可开；`资料` 仍旧收着（不许顺手把它打开）
+      expect(路径(host)).toEqual(["资料"])
     })
   })
 
@@ -554,8 +618,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("匹配项在深层目录里，父级路径自动展开（设计 §6.1 原话）", () => {
       const host = mount(() => <FileTree paths={树("甲/乙/丙/话单.csv", "甲/丁/别的.txt")} />)
-      // 先全收起，证明「看得见」不是本来就展开的
-      动作(host, "collapse-all")?.click()
+      // 默认就全收缩（用户第 5 条）⇒ 深层项本来就看不见，搜索要把它**连同父级**翻出来
       expect(路径(host)).not.toContain("甲/乙/丙/话单.csv")
 
       输入(host, "话单")
@@ -811,6 +874,7 @@ describe("FileTree 文件树（FR-005）", () => {
     test("落点跟着选中走：选中目录 ⇒ 在它下面；选中文件 ⇒ 在它所在的目录下", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("甲/乙/a.txt", "丙/x.txt")} onCreate={(i) => 记.push(i)} />)
+      动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那两行才点得到
 
       // 选中目录「乙」⇒ 落点是它自己
       行按名(host, "乙")?.click()
@@ -986,18 +1050,20 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(行按名(host, "话单.csv")?.getAttribute("data-selected")).toBe("true")
     })
 
-    test("目录行按 ← 收起、按 → 展开——与点箭头同一个意思", () => {
+    test("目录行按 → 展开、按 ← 收起——与点箭头同一个意思", () => {
       const host = mount(() => <FileTree paths={树("甲/a.txt")} />)
+
+      // 默认全收缩（用户第 5 条）⇒ 先按 →，两态各钉一次才不空转
+      按键(行按名(host, "甲"), "ArrowRight")
+      expect(路径(host)).toContain("甲/a.txt")
 
       按键(行按名(host, "甲"), "ArrowLeft")
       expect(路径(host)).not.toContain("甲/a.txt")
-
-      按键(行按名(host, "甲"), "ArrowRight")
-      expect(路径(host)).toContain("甲/a.txt")
     })
 
     test("文件行按 ← / → 不动也不报错，更不该顺手把它选中——方向键不是「选中」的意思", () => {
       const host = mount(() => <FileTree paths={树("甲/a.txt")} />)
+      动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 文件行得先可见才按得到
 
       按键(行按名(host, "a.txt"), "ArrowLeft")
       按键(行按名(host, "a.txt"), "ArrowRight")
@@ -1359,6 +1425,7 @@ describe("FileTree 文件树（FR-005）", () => {
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
         ))
+        动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那一行才右键得到
 
         右键(行按名(host, "话单.csv"))
         点菜单项("create-file")
@@ -1396,6 +1463,7 @@ describe("FileTree 文件树（FR-005）", () => {
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onUpload={(dir) => 收到.push(dir)} />
         ))
+        动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那一行才右键得到
 
         右键(行按名(host, "话单.csv"))
         点菜单项("upload")
@@ -1728,6 +1796,7 @@ describe("FileTree 文件树（FR-005）", () => {
       const host = mount(() => (
         <FileTree paths={树("材料/话单.csv")} onDropFiles={(_files, dir) => 收到.push(dir)} />
       ))
+      动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那一行才放得下
 
       拖入(行按名(host, "话单.csv"), "drop")
 

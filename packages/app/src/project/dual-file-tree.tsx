@@ -281,7 +281,15 @@ function MinioTree(props: {
   draggable?: boolean
   onCollapse?: () => void
 }) {
-  /** 收起态**存反向**（收起集合而不是展开集合）：默认全展开是常态，空集合即默认（同 `file-tree.tsx`）。 */
+  /**
+   * 收起态**存反向**（收起集合而不是展开集合）：默认全展开，空集合即默认。
+   *
+   * ⚠️ 与上树（`file-tree.tsx`）**故意相反**，不是漏改：上树自 2026-10-11 起默认**全收缩**
+   * （用户第 5 条「开始进入文件 Tab 页面时，默认全部收缩」），这里维持默认全展开。两条理由的前提不同
+   * （`LEARNINGS #005-28`）：第 5 条讲的是**沙箱树**的初始态（深了摊开一屏放不下几条），
+   * 而这棵是**只读的云上备份镜像**、用途是跟沙箱对照着看，一屏本来就短。裁定与落点表见
+   * `docs/superpowers/specs/005-project-management/state.md` ⑦ 第 5 条。
+   */
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   // 与上树（`file-tree.tsx`）**同一个建树函数**：下树这一侧的备份清单是**文件级**的
   // （一条目录项都没有），所以今天两函数结果逐字相同——接上不是为了改变什么，是为了

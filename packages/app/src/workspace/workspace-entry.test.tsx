@@ -614,6 +614,7 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
     setProjectFiles(["资料/8·17/话单.csv", "笔记.md"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
 
     expect(树行(host).map((el) => el.getAttribute("data-path"))).toContain("资料/8·17/话单.csv")
   })
@@ -1326,6 +1327,7 @@ describe("项目数据接线（T018 出参）", () => {
     await 冲一遍()
 
     expect(记.files).toEqual(["p1"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("资料/话单.csv")
   })
 
@@ -1338,12 +1340,14 @@ describe("项目数据接线（T018 出参）", () => {
     setCurrentProject({ id: "p1", name: "甲" })
     await 冲一遍()
     expect(记.files).toEqual(["p1"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("甲/资料.csv")
 
     setCurrentProject({ id: "p2", name: "乙" })
     await 冲一遍()
 
     expect(记.files).toEqual(["p1", "p2"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("乙/话单.csv")
     // **旧项目那棵不能留着**：换项目时缝要先清空，否则甲的文件会在乙的树下继续显示。
     expect(路径们(host)).not.toContain("甲/资料.csv")
@@ -1417,6 +1421,7 @@ describe("项目数据接线（T018 出参）", () => {
     await 冲一遍()
     setCurrentProject({ id: "p2", name: "乙" })
     await 冲一遍()
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("乙/话单.csv")
 
     // 甲的文件现在才回来。
@@ -1535,6 +1540,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     await 冲一遍()
 
     // 前置（`#002-02`）：树真的长出来过——否则「它没了」在压根没接线时也是绿的。
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("甲/资料.csv")
 
     点归档(host)
@@ -1816,6 +1822,7 @@ describe("文件动作接进工作台（T020 出参）", () => {
     const 搬前 = 假.files.length
 
     // 前置：树上是「旧的」那份，搬过之后的位置还不在（`#002-02`：先证明机制是活的）
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("资料/话单.csv")
 
     右键行(host, "话单.csv")
@@ -1940,11 +1947,35 @@ describe("文件动作接进工作台（T020 出参）", () => {
   })
 })
 
+/**
+ * 点上树（`FileTree`）的「全部展开」——**默认全收缩**之下的还原动作（2026-10-11，用户第 5 条）。
+ *
+ * ⚠️ 只有**这个文件**需要它：本文件 16 条用例引用的都是深一层的行（`甲/资料.csv`、
+ * `乙/话单.csv` 这些）——它们判的是**接线与取数**，一条都不判「默认展开几层」。默认值一翻，
+ * 它们的前提就没了（`#006-17`：为被测属性搭的前置条件会随产品改）。
+ *
+ * ⚠️ **不能**在挂载那一刻点：挂载时清单还没回来、树是空的 ⇒ `节点表` 空 ⇒ 点了等于没点。
+ * 必须在**行已经渲染出来之后**点（`找行` 的兜底因此是「找不到才点」，而不是提前点）。
+ *
+ * ⚠️ **变异记录（据实记，`#003-03` 第 ③ 类）**：把 `file-tree.tsx` 的第 5 条**整份撤回**之后，
+ * 本文件 111 条**全绿** ⇒ 这 8 处调用**不是**那个改动的守护者（它们守的是**本文件自己的前提**：
+ * 深一层的行要看得见）。**别把这 111 条绿读成「默认全收缩有防护」**——钉它的是
+ * `file-tree.test.tsx` 里那 6 条。
+ */
+const 全展开 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>("[data-action='expand-all']")?.click()
+
 /** 树里某一行（按名字找）。找不到就**抛**——找不到还往下走，红会落在断言上（`#004-14`）。 */
 function 找行(host: HTMLElement, name: string) {
-  const 行 = 树行(host).find(
-    (el) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim() === name,
-  )
+  const 找一遍 = () =>
+    树行(host).find((el) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim() === name)
+  let 行 = 找一遍()
+  if (!行) {
+    // 兜底：默认全收缩（用户第 5 条）之下，深一层的行挂载时看不见 ⇒ 先全打开，再找一次。
+    // 这个兜底**不会掩盖本文件要测的东西**：本文件没有一条用例把「某行看不见」当判据。
+    全展开(host)
+    行 = 找一遍()
+  }
   if (!行) throw new Error(`树里没有「${name}」这一行——这条用例的前提不成立（#004-14）`)
   return 行
 }

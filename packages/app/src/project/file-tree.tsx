@@ -226,8 +226,14 @@ export function FileTree(props: FileTreeProps) {
    */
   const dialog = useDialog()
   const [keyword, setKeyword] = createSignal("")
-  /** 收起态**存反向**（收起集合而不是展开集合）：默认全展开是常态，空集合即默认。 */
-  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
+  /**
+   * 展开态**存正向**（展开集合）：**默认全收缩**，空集合即默认（用户第 5 条，2026-10-11）。
+   *
+   * 改之前存的是**反向**（`collapsed`，空集合 ＝ 全展开，镜像上游静态树的缺省）。用户原话：
+   * 「开始进入文件 Tab 页面时，默认全部收缩」——深层目录一进来就全摊开，一屏只放得下几条，
+   * 而绝大多数时候用户要的是顶层的轮廓。所以默认值反过来，`展开` 的判据也跟着翻面。
+   */
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [selected, setSelected] = createSignal<string>()
   /**
    * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
@@ -249,18 +255,39 @@ export function FileTree(props: FileTreeProps) {
   const 词 = () => keyword().trim().toLowerCase()
 
   const 全模型 = createMemo(() => buildProjectFileTreeModel(全部()))
-  /** 路径 → 节点，只为「选中项是目录还是文件」这一问（落点要用）。 */
+  /** 路径 → 节点：给「选中项是目录还是文件」这一问（落点要用）与「全部展开」那一档（要按 `type` 筛出目录）。 */
   const 节点表 = createMemo(() => {
     const map = new Map<string, FileTreeV2Node>()
     for (const list of 全模型().children.values()) for (const node of list) map.set(node.path, node)
     return map
   })
 
-  const 展开 = (path: string) => !collapsed().has(path)
+  const 展开 = (path: string) => expanded().has(path)
   const 切换 = (path: string) => {
-    const next = new Set(collapsed())
+    const next = new Set(expanded())
     if (!next.delete(path)) next.add(path)
-    setCollapsed(next)
+    setExpanded(next)
+  }
+
+  /**
+   * 把某条路径**连同它上面每一层**打开——新建成功那一刻用（用户第 5 条的配套）。
+   *
+   * 默认全收缩之后，「在深层目录里新建」会「建完看不见」：落点那一支本来收着。所以提交那一刻
+   * 只把**落点这一条链**打开——**只加不减**，别的目录保持原样（「开得刚好够看见」，
+   * 不是一个「重置展开态」的动作）。
+   *
+   * `path` 用的是 `落点()` 交出来的那个串，与 `节点表()` 里的是同一套写法（`/` 分隔、无前后斜杠，
+   * 由 `normalizeFileTreeV2Path` 归一化）——不在这里另立一套切分规则（`LEARNINGS #006-23`）。
+   */
+  function 展开链(path: string) {
+    if (!path) return
+    const 下一份 = new Set(expanded())
+    let 段 = ""
+    for (const 片 of path.split("/")) {
+      段 = 段 ? `${段}/${片}` : 片
+      下一份.add(段)
+    }
+    setExpanded(下一份)
   }
 
   /** 搜索态下模型只含命中项及其祖先 ⇒ 全部展开即「父级路径自动展开」（设计 §6.1 原话）。 */
@@ -590,8 +617,13 @@ export function FileTree(props: FileTreeProps) {
   }
 
   function 点(action: Exclude<FileTreeAction, "search">) {
-    if (action === "collapse-all") return setCollapsed(new Set(节点表().keys()))
-    if (action === "expand-all") return setCollapsed(new Set<string>())
+    if (action === "collapse-all") return setExpanded(new Set<string>())
+    // 只放**目录**：把文件路径塞进展开集合是死数据（文件行不读 `展开`），
+    // 而「展开所有目录」这句话按字面就该只有目录（`#002-06`：一句话只留一个说法）。
+    if (action === "expand-all")
+      return setExpanded(
+        new Set([...节点表().values()].filter((node) => node.type === "directory").map((node) => node.path)),
+      )
     // 「＋」不在这儿：它现在是 `DropdownMenu.Trigger`，开关归 Kobalte 自己管
     // （`menu-trigger` 收到 `pointerdown` 就 `context.toggle(true)`）——再在这儿存一份
     // 「开没开」的信号，就是 `#002-06` 那句「同一个判断在两处各写一份」。
@@ -631,7 +663,18 @@ export function FileTree(props: FileTreeProps) {
     // `void`：`show()` 交回来的是 `startTransition` 那个返回值（不是真 promise，弹窗是**同步**
     // 排进栈、下一拍渲染）。`no-floating-promises` 认的是形状，这里标一下「有意丢弃」。
     void dialog.show(() => (
-      <FileCreateDialog kind={kind} parent={parent} onConfirm={(name) => 交({ kind, parent, name })} />
+      <FileCreateDialog
+        kind={kind}
+        parent={parent}
+        onConfirm={(name) => {
+          // 默认全收缩（用户第 5 条）之下，不打开落点这一条链，用户建完就**看不见自己刚建的东西**
+          // ——所以提交那一刻先开链，再喊回调。
+          // ⚠️ 时机是「用户提交了」，不是「服务端回了成功」：`onCreate` 是 `void` 转发，组件既不知道
+          // 成没成、也不知道落库后的路径。这条取舍的代价只是「失败时多展开了几个目录」。
+          展开链(parent)
+          交({ kind, parent, name })
+        }}
+      />
     ))
   }
 
