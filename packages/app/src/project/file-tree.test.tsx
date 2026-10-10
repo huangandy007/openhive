@@ -66,14 +66,33 @@ const 路径 = (host: HTMLElement) => 行(host).map((el) => el.getAttribute("dat
 const 行名 = (el: HTMLElement) => el.querySelector("[data-slot='file-tree-name']")?.textContent?.trim()
 
 /**
- * 按名字取一行。
+ * 按名字取一行。**找不到就抛**（2026-10-11 加固）。
  *
  * ⚠️ 同层节点的**排序随 locale 变**（`file-tree-v2-model.ts` 用 `localeCompare`；本机实测是**拼音序**：
  * `["乙","甲"]` → `["甲","乙"]`、`["话单.csv","笔记.md"]` → `["笔记.md","话单.csv"]`，2026-10-06 探针）。
  * 所以「两个同层文件谁在前面」在本机测得出来、在别的机器/CI 上不一定 ⇒ 断言一律**按名字找**，
  * 只有「目录排在文件前」这一条是 model 自己用 `type` 定死的，才敢直接比顺序数组。
+ *
+ * ## 为什么原来是 `find()`（回 `undefined`）、现在要抛
+ *
+ * 因为它原先回 `undefined` 时，**「这一行根本不在树上」会被下游全部吞掉、而且吞得很像绿**：
+ * `右键(undefined)` 派不出事件 ⇒ 菜单压根没开 ⇒ `菜单项(action)` 是 `undefined` ⇒ 任何形如
+ * `expect(项禁用(x)).toBe(false)` 的判据读成 `false` ⇒ **用例绿着通过**。
+ *
+ * 这不是假想：2026-10-11 实测，⑦-5（默认全收缩）把**同一文件里两条**引用嵌套行（`话单.csv`）的
+ * 用例变成了这种行为——整轮 `96 pass / 0 fail`，两条判据**一个都没在测东西**。发现手段就是把这里
+ * 改成抛（一次跑出 2 条红，逐条都对得上）。同族见 `LEARNINGS #005-36`（前提过期会**红**）——
+ * 那条是响的，这条是**哑的**，哑的只有靠「取不到就抛」才听得见。
+ *
+ * ⚠️ 由此得到一条规矩：**引用深层行的用例要自己立前提**（`动作(host,"expand-all")?.click()`），
+ * 默认值将来再翻面时，它们会**响**地红在前提上，而不是静静地空转。
  */
-const 行按名 = (host: HTMLElement, name: string) => 行(host).find((el) => 行名(el) === name)
+const 行按名 = (host: HTMLElement, name: string) => {
+  const 找到 = 行(host).find((el) => 行名(el) === name)
+  // 找不到就**抛**，不是回 `undefined`（2026-10-11 加固，理由见下）。
+  if (!找到) throw new Error(`这一行不在树上：找不到名为「${name}」的行，此刻可见的是 ${JSON.stringify(路径(host))}`)
+  return 找到
+}
 
 /** 目录行的开合箭头（文件行没有）。开合归它，选中归行本身——见「展开 / 收起」那组最后一条。 */
 const 箭头 = (el: HTMLElement | undefined) => el?.querySelector<HTMLElement>("[data-slot='file-tree-chevron']")
@@ -378,7 +397,10 @@ describe("FileTree 文件树（FR-005）", () => {
 
   /**
    * 右键一个元素——`contextmenu` 冒泡到组件的触发器上，菜单就开在指针处。
-   * 收 `null` 也收 `undefined`：两种「按名字找元素」的辅助函数一个给前者、一个给后者。
+   *
+   * 收 `null` 是有用的：`槽(host, …)` 找不到时**回 `null`**，而「空白处右键」那条用例要的正是
+   * 一个**真的区域盒子**（`file-tree-region`），不是一次失败查找。`行按名` 那条路已经改成找不到
+   * 就抛（见它自己的文件头）——**别**再把「行找不到」交给这里静默吞掉：那会让整条用例空转。
    */
   const 右键 = (el: HTMLElement | null | undefined) =>
     el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
@@ -1335,6 +1357,10 @@ describe("FileTree 文件树（FR-005）", () => {
       /** 对照：同一棵树上右键**文件**是活的——否则上面那条会退化成「永远为真」（`#003-03` 第②类）。 */
       test("右键那个目录里的**文件** ⇒ 复制与移动可用", () => {
         const host = mount(() => <FileTree paths={树("材料/话单.csv")} {...接线了} />)
+        // 默认全收缩（⑦-5）⇒ 先全打开，深层那一行才右键得到。⚠️ 这一句是 2026-10-11 **补的**：
+        // 漏掉它的时候，这条用例整条在空转（右键一个 `undefined` ⇒ 菜单没开 ⇒ `项禁用` 读成 `false`）
+        // 而整轮照样全绿；发现手段是让 `行按名` 找不到就抛（见它的文件头）。
+        动作(host, "expand-all")?.click()
 
         右键(行按名(host, "话单.csv"))
 
@@ -1351,6 +1377,7 @@ describe("FileTree 文件树（FR-005）", () => {
        */
       test("第二次右键换到目录 ⇒ 复制跟着禁用", () => {
         const host = mount(() => <FileTree paths={树("材料/话单.csv")} {...接线了} />)
+        动作(host, "expand-all")?.click() // 同上：默认全收缩（⑦-5）⇒ 深层那一行得先让它可见
 
         右键(行按名(host, "话单.csv"))
         expect(项禁用("copy")).toBe(false)
