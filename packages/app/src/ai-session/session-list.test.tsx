@@ -252,6 +252,47 @@ describe("SessionList 左栏会话列表（设计 §7）", () => {
   })
 
   /**
+   * 「＋」这颗钮的**视觉规格**（2026-10-10 用户下达；参考材料 `images/screen/2026-10-10_192112.png`）。
+   *
+   * 用户原话：「左栏"会话"Tab页面的"新建会话"图标按钮不明显，我担心初始用户难以找到，为了突出，
+   * 我希望把这里的图标设计成〈截图〉这种样式」——截图是一颗**深色实心圆角矩形 ＋ 白字**的钮。
+   *
+   * 落点取仓里**现成的设计系统件**，不手搓颜色：`ButtonV2 variant="contrast"`。`contrast` 的底/字
+   * 正是 `--v2-background-bg-contrast`（浅色主题 grey-1000 近黑、深色主题 grey-700）
+   * ＋ `--v2-text-text-contrast`（浅色 near-white、深色 grey-100），并且自带
+   * hover / pressed / focus-visible / disabled 四态 ⇒ **不新增 app 级 CSS**，也不落一组只在本地成立的色值。
+   *
+   * ⚠️ 判据的**分工**（别把这一条读成「外观已经验过了」）：happy-dom **没有 CSS 引擎**
+   *（`#005-07`）⇒ 这里能钉的只有「**用了哪一档**」——设计系统钮 ＋ `contrast` 档 ＋ 带字；
+   * 「**真的是深色实心、字真的看得清**」要真栈量（`e2e/real-stack/session-new-button-real.spec.ts`
+   * 量盒子的底色/字色与对比度）。两层各钉一半，谁都替代不了谁（同 `#004-02`：一份东西两个投影）。
+   */
+  test("「＋」＝设计系统那颗**深色实心**钮（`contrast`），并且带「新建会话」四个字与 plus 图标", () => {
+    const { host } = 挂({ directory: "/workspaces/u1/p1", sessions: [] })
+
+    const 钮 = 槽(host, "session-new")
+    expect(钮 === null).toBe(false)
+
+    // ① 它是**仓里现成那颗设计系统钮**，不是我手搓的一颗 —— 换回手搓按钮这条就红。
+    expect(钮?.getAttribute("data-component")).toBe("button-v2")
+    // ② 深色实心那一档（截图那个底/字就是 `contrast`，见文件头：token 在两套主题下都成立）。
+    expect(钮?.getAttribute("data-variant")).toBe("contrast")
+    // ③ 它是**带字**的钮：「不明显」这件事的正面解药就是这四个字。
+    //  ⚠️ 用**全等**不用包含（`#006-22`：`toContain` 是子串匹配）——顺带钉住「旧那个全角『＋』字符
+    //  没有被留成第二个加号」（`icon="plus"` 已经画了一个）。
+    expect(钮?.textContent?.trim()).toBe("新建会话")
+    // ④ 图标走设计系统的 plus，不是全角字符（全角「＋」在不同字体下宽度会歪）。
+    expect(钮?.querySelector("[data-slot='icon-svg']") === null).toBe(false)
+
+    // ⑤ 负向：**旧钮那两个记号一个都不该在**——`text-v2-text-text-muted`（无底色的小灰字）与
+    //  `hover:bg-v2-overlay-simple-overlay-hover`（hover 才现形的幽灵钮）。
+    //  ⚠️ 按 `#006-22` 取**类名集合**取，不取子串。据实记它的**射程**：它只咬得住
+    //  「新钮上又被贴回旧 token」，**咬不住**「整个钮被换回手搓版」——那一半归 ①② 条。
+    expect(类集(钮)).not.toContain("text-v2-text-text-muted")
+    expect(类集(钮)).not.toContain("hover:bg-v2-overlay-simple-overlay-hover")
+  })
+
+  /**
    * 空态。**三种「什么都没列出来」不是一回事**，屏幕上却长得一样（`#002-02`）：
    *
    * - 目录未知（没选项目）⇒ 什么都不画：上面的锚点行已经说了「未选择项目」，这里再写一句是重复;

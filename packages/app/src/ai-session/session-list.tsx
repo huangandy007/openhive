@@ -1,5 +1,6 @@
 import { createSignal, For, Show, type JSX } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
+import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { 可列出的会话, type 会话行 } from "./session-actions"
 import { 会话重命名输入 } from "./session-rename"
 
@@ -204,22 +205,34 @@ export function SessionList(props: SessionListProps): JSX.Element {
 
   return (
     <div data-component="session-list" class="flex min-h-0 w-full flex-1 flex-col">
-      {/* 标题行：**只有「＋」**（左边不写「会话」二字——头上那个 tab 已经写了）。
+      {/* 标题行：**一颗带字的深色实心钮**（「新建会话」四个字右边那颗 plus 图标自己画）。
           它**不在** `role="tablist"` 里：tablist 里只许有 tab，塞个按钮进去屏幕阅读器读到的
-          是「第三个 tab」。 */}
+          是「第三个 tab」。
+
+          ⚠️ 样子是 2026-10-10 用户下达改的（原话：「『新建会话』图标按钮不明显，我担心初始用户
+          难以找到，为了突出……」；参考材料 `images/screen/2026-10-10_192112.png` 那颗深色实心钮）。
+          改动前这里是**一个裸的全角「＋」**、无底色、`text-v2-text-text-muted`——只有 hover 才现形，
+          所以「不明显」是真的。
+          ⇒ 取仓里**现成的**设计系统钮 `ButtonV2 variant="contrast"`（底/字/四态都在 `button-v2.css` 里），
+          **不手搓颜色、不新增 app 级 CSS**。`size="small"`＝24px 高、`rounded-[4px]`
+          ⇒ 正好塞进这条 `h-7`(28px) 的标题行，**行高不变、会话列表不下移**。
+          `icon="plus"` 替掉原来那个全角「＋」字符（全角字符在不同字体下宽度会歪）。 */}
       <Show when={props.directory}>
         {(目录) => (
           <div data-slot="session-list-bar" class="flex h-7 shrink-0 items-center justify-end px-1">
-            <button
+            <ButtonV2
               type="button"
               data-slot="session-new"
               aria-label="新建会话"
               title="新建会话"
-              class="h-6 shrink-0 cursor-pointer rounded-[4px] px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover"
+              variant="contrast"
+              size="small"
+              icon="plus"
+              class="shrink-0"
               onClick={() => props.onNewSession(目录())}
             >
-              ＋
-            </button>
+              新建会话
+            </ButtonV2>
           </div>
         )}
       </Show>
