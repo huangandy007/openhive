@@ -42,7 +42,7 @@
 
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import type { MemberEntry } from "./member-panel"
-import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
+import { defaultSend, isRecord, isSessionExpired, readJson, SESSION_EXPIRED, trySend, type ForkFetch } from "./openhive-fetch"
 import { PREFIX, type ProjectActionOutcome } from "./openhive-project"
 
 /**
@@ -168,6 +168,10 @@ async function memberAction(
     body: JSON.stringify(payload),
   })
   if (!response) return { kind: "failed", message: failed }
+
+  // 401（会话过期）：先问身份、再问这一步行不行（理由与文案见 `openhive-fetch.ts`
+  // 的 `SESSION_EXPIRED`；`outcomeOf` 那边同款同因）。
+  if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
 
   // 400（体不行 / 查无此警号 / 已经是成员）与 403（无权 / 已归档）都**带着服务端那句话**。
   if (response.status === 400 || response.status === 403) {

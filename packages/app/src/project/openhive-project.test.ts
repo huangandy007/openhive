@@ -223,6 +223,19 @@ describe("createProject", () => {
     })
   })
 
+  /**
+   * 401 与 500 / 网络错**必须分开**：那两种不是「你填得不对」，这一种更不是——它是
+   * **你没有身份**，民警要做的是去重新登录。糊成「新建项目失败」的话，他会去改项目名。
+   */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「新建项目失败」", async () => {
+    const { send } = stub(new Response(null, { status: 401 }))
+
+    expect(await createProject({ name: "8·17专案", type: "private" }, send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
+
   /** 5xx 与网络错**都归 failed**：它们都不是「你填得不对」，不该说成同一句话（同 gateway 的分法）。 */
   test("500 ⇒ failed", async () => {
     const { send } = stub(json({ error: "炸了" }, 500))
@@ -413,6 +426,22 @@ describe("archiveProject / restoreProject（T023）", () => {
     const { send } = stub(json({}, 400))
 
     expect(await archiveProject("p1", send)).toEqual({ kind: "rejected", message: "归档项目失败" })
+  })
+
+  /**
+   * 401：**归档 / 找回共用这一支**，所以两条各钉一次——接反了不报错、不变红
+   * （同 `archiveProject` / `restoreProject` 那对「只有路径不同」的用例）。
+   */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」（归档）", async () => {
+    const { send } = stub(new Response(null, { status: 401 }))
+
+    expect(await archiveProject("p1", send)).toEqual({ kind: "rejected", message: "登录已过期，请重新登录" })
+  })
+
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」（找回）", async () => {
+    const { send } = stub(new Response(null, { status: 401 }))
+
+    expect(await restoreProject("p1", send)).toEqual({ kind: "rejected", message: "登录已过期，请重新登录" })
   })
 
   test("500 ⇒ failed（不是「你不行」，是这边坏了）", async () => {

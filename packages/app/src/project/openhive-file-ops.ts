@@ -40,7 +40,7 @@
  * 而 Chrome 的 `DownloadURL` 需要一条**真 HTTP URL**、带不了 `x-openhive-project` 头。
  */
 
-import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
+import { defaultSend, isRecord, isSessionExpired, readJson, SESSION_EXPIRED, trySend, type ForkFetch } from "./openhive-fetch"
 
 /** 与内核 `OpenhiveFile.PATH` 逐字对应（`packages/opencode/src/server/openhive/file.ts`）。 */
 export const PREFIX = "/openhive/file"
@@ -77,8 +77,8 @@ export type FileOpsFetch = ForkFetch
  * 服务端确实给了，不带反而是把已知的信息扔掉）。
  *
  * `rejected` 与 `failed` **必须分开**：前者是「这个动作现在不行」（服务端说得出为什么，
- * **含 403 已归档**），后者是「我们这边坏了」。并成一句话会让民警对着网络故障去改文件名
- * （同 `openhive-project.ts`）。
+ * **含 403 已归档、含 401 没身份**），后者是「我们这边坏了」。并成一句话会让民警对着网络故障
+ * 去改文件名（同 `openhive-project.ts`）。
  */
 export type FileOpOutcome =
   | { kind: "done"; path: string }
@@ -276,16 +276,21 @@ async function postJson(
 /**
  * 一次写动作的响应 → 三种结论。
  *
- * **400 与 403 都归 `rejected`**：400 是「你这一步不行」（目标已存在 / 越界 / 源不是普通文件），
- * 403 是 T017 中间件那道「已归档 ⇒ 冻结」的门——两者都是「**现在**做不了」，而不是「我们这边
- * 坏了」。归 `failed` 的话民警会以为重试能好，而重试永远撞同一道门（`projectAction` 那边是
- * 同一条处置，只是它没有 403 之外的写动作）。
+ * **400、401、403 都归 `rejected`**：400 是「你这一步不行」（目标已存在 / 越界 / 源不是普通文件），
+ * 401 是「身份没了」（见 `openhive-fetch.ts` 的 `SESSION_EXPIRED`），403 是 T017 中间件那道
+ * 「已归档 ⇒ 冻结」的门——三者都是「**现在**做不了」，而不是「我们这边坏了」。归 `failed` 的话
+ * 民警会以为重试能好，而重试永远撞同一道门（`projectAction` 那边是同一条处置）。
  *
  * 200 的判据是「**体里有 `path`**」而不是「状态码 200」——出口没挂上回的是 200 ＋ HTML，
  * 只看状态码会把「内核是旧版本」读成「复制好了」。
  */
 async function outcomeOf(response: Response | undefined, failed: string): Promise<FileOpOutcome> {
   if (!response) return { kind: "failed", message: failed }
+
+  // 401（会话过期）排在最前：**先问「你有没有身份」，再问「你这一步行不行」**——同
+  // `auth/gateway.ts` 的 `probeSession` 那条刻意排过的次序。归 `rejected` 而不是 `failed`：
+  // 重试永远撞同一道门（同下面 403 那条的理由），文案见 `openhive-fetch.ts` 的 `SESSION_EXPIRED`。
+  if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
 
   if (response.status === 400 || response.status === 403) {
     const body = await readJson(response)

@@ -50,3 +50,44 @@ export async function readJson(response: Response): Promise<unknown> {
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
+
+/**
+ * 会话过期（401）时那句话。
+ *
+ * ## 为什么单列一条，不并进各家那句兜底
+ *
+ * 401 是**身份没了**——既不是「这一步不行」（400 / 403：去改名字、去换目标），也不是
+ * 「我们这边坏了」（网络错 / 5xx：等会儿重试）。糊进同一句「新建失败」的代价不是措辞难看：
+ * 民警会对着一次登录过期去改文件名，而**每个动作都会回同一句**，试几遍也找不到出路
+ * （用户 2026-10-10 实报：会话过期 345 秒后点「新建」，横幅只说「新建失败」）。
+ *
+ * ## 为什么住在这一层
+ *
+ * 这条判断要在**每一个** fork 外呼的结论函数里落地（`openhive-file-ops` 的 `outcomeOf`、
+ * `openhive-project` 的 `projectAction` / `createProject`、`openhive-members` 的 `memberAction`…）。
+ * 判断与话各写 N 份 ⇒ 改一处漏一处**不报错也不变红**（`LEARNINGS #002-06`），这正是本文件
+ * 存在的理由（见文件头那条）。**引用它、别再写字面量。**
+ *
+ * ## 实测（2026-10-10）：状态码**到得了**这一层
+ *
+ * `fetch` 收到 401 时是 **resolve** 出一个 `status === 401` 的 `Response`，不是 reject。
+ * `file-tree-expired-token-probe.spec.ts` 打桩 `window.fetch` 记到的原话是
+ * `resolve 401 POST /openhive/file/create`（同一刻横幅是「新建失败」）。所以「认不出来」是
+ * 各层结论函数自己的事——`trySend` 那两个 `catch` 只吞「网络抛」与「体解不开」，与 401 无关。
+ *
+ * ⚠️ 说完这句话，**用户手上仍然没有登录入口**（过期时页面不跳登录页，URL 停在原处）：
+ * 今天「重新登录」＝刷新页面（冷加载时 `AuthGate` 会探一次身份）。那个缺口是**另一条**
+ * （缺的是恢复路径，不是这句话），登记在 `005/state.md` 的挂账表里。
+ */
+export const SESSION_EXPIRED = "登录已过期，请重新登录"
+
+/**
+ * 这个响应是不是「没身份」（401）。
+ *
+ * 写成具名判断、而不是各家写 `response.status === 401`：**「401 ＝ 会话没了」是一条判断**，
+ * 将来内核换别的码表达同一件事（或要连 440 一起认），改的是一处，不是逐个文件去找
+ * （`#002-06`：同一个判断在两处各写一份，换个写法就绕过）。
+ */
+export function isSessionExpired(response: Response | undefined): boolean {
+  return response?.status === 401
+}

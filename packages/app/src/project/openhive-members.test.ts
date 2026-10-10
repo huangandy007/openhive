@@ -210,6 +210,16 @@ describe("inviteMember（邀请）", () => {
     expect(await inviteMember(PROJECT, "020602", send)).toEqual({ kind: "rejected", message: "无权邀请成员" })
   })
 
+  /** 401（会话过期）：三条写出口共用这一支，所以三个动作各钉一条（`LEARNINGS #005-12`）。 */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「邀请成员失败」", async () => {
+    const { send } = stub(() => new Response(null, { status: 401 }))
+
+    expect(await inviteMember(PROJECT, "020602", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
+
   test("200 但体是 HTML 兜底页（出口没挂上）⇒ failed", async () => {
     const { send } = stub(() => 兜底页())
 
@@ -264,6 +274,15 @@ describe("removeMember（移除）", () => {
 
     expect(await removeMember(PROJECT, "020602", send)).toEqual({ kind: "failed", message: "移除成员失败" })
   })
+
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」", async () => {
+    const { send } = stub(() => new Response(null, { status: 401 }))
+
+    expect(await removeMember(PROJECT, "020602", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
 })
 
 describe("leaveProject（退群）", () => {
@@ -305,5 +324,11 @@ describe("leaveProject（退群）", () => {
     const { send } = stub(() => 兜底页())
 
     expect(await leaveProject(PROJECT, send)).toEqual({ kind: "failed", message: "退出项目失败" })
+  })
+
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」", async () => {
+    const { send } = stub(() => new Response(null, { status: 401 }))
+
+    expect(await leaveProject(PROJECT, send)).toEqual({ kind: "rejected", message: "登录已过期，请重新登录" })
   })
 })

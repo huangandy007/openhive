@@ -31,7 +31,7 @@
 
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import type { ProjectEntry, ProjectType } from "./project-panel"
-import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
+import { defaultSend, isRecord, isSessionExpired, readJson, SESSION_EXPIRED, trySend, type ForkFetch } from "./openhive-fetch"
 
 /** 与内核 `OpenhiveProject.PATH` 逐字对应（`packages/opencode/src/server/openhive/project.ts`）。 */
 export const PREFIX = "/openhive/project"
@@ -58,8 +58,9 @@ export interface CreateProjectInput {
 /**
  * 新建的三种结论。
  *
- * `rejected` 与 `failed` **必须分开**：前者是「你填的这行不行」（服务端说得出为什么），
- * 后者是「这边出问题了」。并成一句话会让民警对着网络故障改项目名（同 `gateway.ts`）。
+ * `rejected` 与 `failed` **必须分开**：前者是「这个动作现在不行」（你填的这行不行 / 401 没身份
+ * ——都说得清为什么），后者是「这边出问题了」。并成一句话会让民警对着网络故障改项目名
+ * （同 `gateway.ts`）。
  */
 export type CreateProjectOutcome =
   | { kind: "created"; project: ProjectEntry }
@@ -109,6 +110,10 @@ async function projectAction(
     body: JSON.stringify({ projectId }),
   })
   if (!response) return { kind: "failed", message: failed }
+
+  // 401（会话过期）排在最前：先问身份，再问这一步行不行（理由与文案见
+  // `openhive-fetch.ts` 的 `SESSION_EXPIRED`；`outcomeOf` 那边同款同因）。
+  if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
 
   // 400（体不合法）与 403（无权的那个动作）都**带着服务端那句话**——照 T018 的处置：
   // 前端不自己改写措辞，它不知道是哪一条规则挡下的。
@@ -210,6 +215,10 @@ export async function createProject(
     body: JSON.stringify({ name: input.name, type: input.type }),
   })
   if (!response) return { kind: "failed", message: FAILED_MESSAGE }
+
+  // 401（会话过期）排在最前：它不是「你填得不对」，别让民警去改项目名（见 `openhive-fetch.ts`
+  // 的 `SESSION_EXPIRED`）。
+  if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
 
   // 只看 400：内核那条链上**所有**「你的输入不行」都走 `badRequest()`（同一个状态码），
   // 5xx / 网络错则一律归 failed——它们不是「你填得不对」。

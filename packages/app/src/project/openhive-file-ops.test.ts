@@ -68,6 +68,18 @@ const 拒绝 = (status: number, message: string) =>
   new Response(JSON.stringify({ error: message }), { status, headers: { "content-type": "application/json" } })
 /** 出口没挂上：UI 的 `/*` 兜底。 */
 const 兜底页 = () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } })
+/**
+ * 会话过期（401）。
+ *
+ * ⚠️ **它必须与「网络抛」「兜底页」分开**——三种都长得像「这个动作没成」，而民警要做的事
+ * 完全不同：网络抛是「等会儿重试」，兜底页是「内核版本不对」，401 是**去重新登录**。
+ * 糊在一句「新建失败」里，民警会对着网络故障去改文件名（用户 2026-10-10 实报，
+ * 会话过期 345 秒后点「新建」，横幅只说「新建失败」）。
+ *
+ * ⚠️ 后端回 401 时**带不带体**不由本层决定，故这条**故意空体**：话说得清不清不该依赖服务端
+ * 写了什么（那句「登录已过期」是前端自己该说的话，见 `openhive-fetch.ts` 的 `SESSION_EXPIRED`）。
+ */
+const 过期 = () => new Response(null, { status: 401 })
 /** 下载成功那条的形状：字节 ＋ `Content-Disposition`（本出口承诺过它，见下）。 */
 const 附件 = (内容: string) =>
   new Response(内容, { headers: { "content-disposition": `attachment; filename="话单.csv"` } })
@@ -135,6 +147,15 @@ describe("copyFile", () => {
     })
   })
 
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「复制文件失败」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await copyFile(PROJECT, "a.csv", "", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
+
   test("200 但体是 HTML 兜底页（出口没挂上）⇒ failed", async () => {
     const { send } = stub(() => 兜底页())
 
@@ -175,6 +196,16 @@ describe("moveFile", () => {
     const { send } = stub(() => 兜底页())
 
     expect(await moveFile(PROJECT, "a.csv", "", send)).toEqual({ kind: "failed", message: "移动文件失败" })
+  })
+
+  /** 401 那条**也**要各钉一条：它走的是与复制**同一支** 401，接反了不报错（同本文件头那条）。 */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await moveFile(PROJECT, "a.csv", "", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
   })
 })
 
@@ -233,6 +264,16 @@ describe("uploadFile", () => {
     expect(await uploadFile(PROJECT, "", 文件(), send)).toEqual({
       kind: "rejected",
       message: "目标位置已经有同名文件",
+    })
+  })
+
+  /** 401 那条也各钉一条：上传发的是 `FormData`、走的是另一段代码，但 401 的处置必须一模一样。 */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await uploadFile(PROJECT, "资料", 文件(), send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
     })
   })
 
@@ -377,6 +418,20 @@ describe("createEntry（T018 新建）", () => {
     })
   })
 
+  /**
+   * 用户实报那一条（2026-10-10）：过期 345 秒后点「新建」，横幅只写「新建失败」。
+   * 真栈实测（`file-tree-expired-token-probe.spec.ts`）：`fetch` 是 **resolve** 出一个
+   * `status 401`，所以状态码**到得了** `outcomeOf`——「认不出来」是这一层自己的事，不是被吃掉了。
+   */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「新建失败」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await createEntry(PROJECT, "file", "", "话单.csv", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
+
   test("200 但体是 HTML 兜底页（出口没挂上）⇒ failed", async () => {
     const { send } = stub(() => 兜底页())
 
@@ -442,6 +497,15 @@ describe("renameEntry（T018 重命名）", () => {
     })
   })
 
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「重命名失败」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await renameEntry(PROJECT, "资料/旧名.csv", "新名.csv", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
+    })
+  })
+
   test("网络抛 ⇒ failed", async () => {
     const send: FileOpsFetch = async () => {
       throw new Error("连不上")
@@ -489,6 +553,19 @@ describe("removeEntry（T018 删除）", () => {
     expect(await removeEntry(PROJECT, "资料/旧名.csv", send)).toEqual({
       kind: "done",
       path: "资料/旧名.csv",
+    })
+  })
+
+  /**
+   * ⚠️ 删除这条尤其要紧：过期时说「删除失败」，民警的第一反应是**再点一次**
+   * ——而这一次如果会话又好了，删掉的就是他以为没删掉的那个文件夹。
+   */
+  test("401（会话过期）⇒ rejected，话说成「登录已过期」而不是「删除失败」", async () => {
+    const { send } = stub(() => 过期())
+
+    expect(await removeEntry(PROJECT, "资料/旧名.csv", send)).toEqual({
+      kind: "rejected",
+      message: "登录已过期，请重新登录",
     })
   })
 
