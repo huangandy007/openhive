@@ -276,7 +276,12 @@ export function FileTree(props: FileTreeProps) {
   }
 
   return (
-    <div data-component="file-tree" class="flex w-full min-w-0 flex-col gap-1">
+    /* ⚠️ `flex-1 min-h-0` 一路往下（本层 → 触发器 → `file-tree-region`），**不是装饰**：
+       要让「页签里树之下的空白」也归右键触发区（2026-10-11，用户实报「空白处右键呼不出
+       菜单」）。配套改动在 `@/project/sidebar-tabs`（files pane 成为 flex 容器）与
+       `@/project/dual-file-tree`（`dual-file-tree` 早已写着 `flex-1`，父级变成 flex 容器后
+       它才真的生效）。滚动容器随之从页签下移到 `file-tree-region`：工具栏钉住、只有树滚。 */
+    <div data-component="file-tree" class="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-1">
       {/* 设计 §6.1 的六入口，顺序即优先级：搜索 → ⊟ → ⊞ → ＋ → ✏️ → 🗑 */}
       <div data-slot="file-tree-toolbar" class="flex w-full min-w-0 items-center gap-0.5">
         <input
@@ -373,7 +378,7 @@ export function FileTree(props: FileTreeProps) {
       <ContextMenu>
         {/* 右键落在哪儿就算哪儿：这一层是**树区域**（行 ＋ 空态），工具栏**不在**里面——
             右键搜索框弹出「新建文件」是说不通的。「把菜单开出来」是 Kobalte 的事。 */}
-        <ContextMenu.Trigger as="div" data-slot="file-tree-area" class="flex w-full min-w-0 flex-col">
+        <ContextMenu.Trigger as="div" data-slot="file-tree-area" class="flex min-h-0 w-full min-w-0 flex-1 flex-col">
           {/* ⚠️ `onContextMenu` **不能挂在 `ContextMenu.Trigger` 上**——Kobalte 的触发器把它整个
               收走了（`context-menu-trigger.tsx` 里 `splitProps` 掉它，非 `disabled` 分支
               `preventDefault()` ＋ `stopPropagation()` 之后**不调用**外部传进来的那个），
@@ -381,7 +386,7 @@ export function FileTree(props: FileTreeProps) {
               它再接着开菜单。 */}
           <div
             data-slot="file-tree-region"
-            class="flex w-full min-w-0 flex-col"
+            class="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto"
             onContextMenu={记对象}
             onDragOver={拖过}
             onDrop={放开}

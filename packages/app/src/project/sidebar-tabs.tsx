@@ -31,6 +31,16 @@ const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-se
 /** pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。 */
 const PANE = "min-h-0 w-full flex-1 overflow-y-auto px-1 pt-1"
 
+/**
+ * 「文件」pane 的骨架：在 `PANE` 之上**再当一层 flex 容器**。
+ *
+ * 为什么只有这一个 pane 需要（2026-10-11，用户实报「空白处右键呼不出菜单」的根因）：
+ * 见 `@/project/file-tree` 里那条同题注释——树的外层写着 `flex-1`，而它的父级若**不是**
+ * flex 容器，那个 `flex-1` 就无剩余空间可分，退化成「高度＝内容高」⇒ 页签余下的空白
+ * 不属于任何 `ContextMenu` 触发区 ⇒ 空白处右键冒不到触发器。
+ */
+const PANE_FILES = `${PANE} flex flex-col`
+
 export interface SidebarTabsProps {
   /**
    * 当前激活的 tab。**受控**——本组件自己不持有 tab 状态（同 `ProjectAnchor` / `FileTree` 的口径：
@@ -154,7 +164,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
         id={paneId("files")}
         aria-labelledby={tabId("files")}
         hidden={props.active !== "files"}
-        class={PANE}
+        class={PANE_FILES}
       >
         {props.files}
       </div>
