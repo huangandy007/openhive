@@ -2213,6 +2213,66 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
 })
 
 /**
+ * 右栏（AI 会话）的**乒乓开关**（2026-10-10 用户下达）。
+ *
+ * 用户原话：「点击『AI 会话』图标（高亮），右栏的 AI 会话界面会出现，再次点击（高亮消失），
+ * 右栏隐藏，中栏的宽度自动适应屏幕大小」——判断依据在设计文档里，不在本次对话里：
+ * `docs/superpowers/specs/2026-09-11-项目管理-design.md:25`「**AI 会话** ｜ 呼出/收起右栏 ｜ 💬」、
+ * `archive/2026-08-17-openhive-design-v1.md:229`「点图标呼出/收起对应侧栏；**高亮 = 当前展开**」。
+ *
+ * ⚠️ 这条链上**两半都要钉**，缺一半都过得去：
+ * ① 右栏真的**整根不在**——`three-pane-right` **与** `three-pane-right-group` 都要断（前者是栏本身、
+ *    后者是连 `ResizeHandle` 一起的包裹；只断前者的写法在「栏还在、只是空了」时照样绿）；
+ * ② 收起时**模块一个字都不动**——只断 ① 的话，「借切模块实现收起」也能过，而那正是本次要拆掉的
+ *    旧路（`module` 变成 `"ai-session"` ⇒ `left` 只在 `module === "project"` 时渲染 ⇒ 左栏整列消失，
+ *    用户报的症状正是它）。
+ *
+ * 「中栏自动适应」不在这里断：中栏是 `flex-1 min-w-0`，右栏那块不渲染就自然吃满，属
+ * `three-pane.test.tsx` 的几何（happy-dom 没有 CSS 引擎，量不出来）。
+ */
+describe("右栏（AI 会话）的乒乓开关（2026-10-10 用户下达）", () => {
+  /** 本页不可能撞车的标记（同上面那组的理由：别拿「会话」这种会出现在侧栏 tab 里的词）。 */
+  const 标记 = "右栏内容-开关标记-2c91"
+
+  const 开 = () =>
+    mount(() => <WorkspaceEntry right={() => <div data-testid="右栏内容">{标记}</div>}>中栏</WorkspaceEntry>)
+
+  test("默认展开：进门右栏就在（2026-10-10 用户裁定「默认展开」）", () => {
+    const host = 开()
+
+    expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toContain(标记)
+    expect(不存在(host, "[data-slot='three-pane-right-group']")).toBe(false)
+  })
+
+  test("点「AI 会话」⇒ 右栏连手柄一起收起；再点 ⇒ 回来。全程模块一个字不动", () => {
+    const host = 开()
+    expect(currentModule(host)).toBe("项目管理")
+
+    入口(host, "AI 会话").click()
+
+    expect(不存在(host, "[data-slot='three-pane-right']")).toBe(true)
+    expect(不存在(host, "[data-slot='three-pane-right-group']")).toBe(true)
+    // 右栏轴与模块轴**互不干扰**：收起不该顺手把左栏也弄没（旧路就是这么弄没的）
+    expect(currentModule(host)).toBe("项目管理")
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
+
+    入口(host, "AI 会话").click()
+
+    expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toContain(标记)
+    expect(currentModule(host)).toBe("项目管理")
+  })
+
+  test("点别的业务入口不影响右栏开合（2026-10-10 用户裁定「不动」）", () => {
+    const host = 开()
+
+    入口(host, "话单分析").click()
+
+    expect(currentModule(host)).toBe("话单分析")
+    expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toContain(标记)
+  })
+})
+
+/**
  * 启动（挂载）时**还原**上次的「当前项目」（Task B · 2026-10-09，用户裁定 **A：跟随当前项目**）。
  *
  * ## 为什么必须由**启动**来做

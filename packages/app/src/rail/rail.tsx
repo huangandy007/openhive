@@ -1,7 +1,7 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show } from "solid-js"
-import { RAIL_ENTRIES, SETTINGS_ENTRY, visibleEntries, type RailEntry } from "./entries"
+import { AI_SESSION_ENTRY_ID, RAIL_ENTRIES, SETTINGS_ENTRY, visibleEntries, type RailEntry } from "./entries"
 
 /** 图标栏宽度（DESIGN.md §4.1：56px）。 */
 export const RAIL_WIDTH = 56
@@ -9,10 +9,30 @@ export const RAIL_WIDTH = 56
 export interface RailProps {
   /** 会话签到能力位；省略 = 尚未接签发方，不设限（语义见 `entries.ts`）。 */
   capabilities?: ReadonlySet<string>
-  /** 当前高亮入口的 id（= 左栏正停留的模块）。 */
+  /** 当前高亮入口的 id（= 左栏正停留的模块）。⚠️ **点不亮「AI 会话」那一颗**，见 `aiSessionOpen`。 */
   active?: string
-  /** 五个**业务**入口的出口（`id` ⇒ 切模块）。底部「系统设置」**不走这里**，见下。 */
+  /**
+   * **业务**入口的出口（`id` ⇒ 切模块）。**「AI 会话」与底部「系统设置」都不走这里**，见下。
+   */
   onSelect: (id: string) => void
+  /**
+   * 「AI 会话」那一颗（`AI_SESSION_ENTRY_ID`）的**开合态** = 右栏在不在。
+   *
+   * **为什么它不走 `active`**：两条轴是独立的——`active` 是「我在哪个业务模块」（左栏/中栏看它），
+   * 这一条是「右栏展开着没」。混成一条的后果就是改之前那样：点它把 `module` 换成 `"ai-session"`，
+   * 而 `left` 只在 `module === "project"` 时渲染 ⇒ **左栏整列被顺手弄没**，右栏却一动不动。
+   * 依据在设计文档里（`entries.ts` 那个常量上引了两处原文：「呼出/收起右栏」「高亮 = 当前展开」）。
+   *
+   * 省略 = 不亮（与「右栏不展开」同义）。⚠️ 于是**两颗同时亮是常态**：模块轴上的一颗 ＋ 这一颗。
+   */
+  aiSessionOpen?: boolean
+  /**
+   * 「AI 会话」那一颗的动作：**开关右栏**。
+   *
+   * 省略 = 点它什么都不做——**刻意不退回 `onSelect`**（退回就是改之前的行为：模块被改成
+   * `"ai-session"`、左栏消失、右栏不动）。与 `onOpenSettings` 那条同一条规矩、同一个理由。
+   */
+  onToggleAiSession?: () => void
   /**
    * 底部「系统设置」那颗的动作：**开设置对话框**（2026-10-09 用户下达的 #3）。
    *
@@ -27,7 +47,26 @@ export interface RailProps {
   onOpenSettings?: () => void
 }
 
-function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (id: string) => void }) {
+function RailEntryButton(props: {
+  entry: RailEntry
+  active: boolean
+  onSelect: (id: string) => void
+  /**
+   * 这颗**是不是开关**（而不是「当前所在」）。
+   *
+   * 长相两条轴**一样**（浅金底 ＋ 左侧竖条 ＋ `--icon-base` 浅金），**读法不一样**：
+   * - 开关（「AI 会话」那颗）读 `aria-pressed` —— 它说的是「这一栏此刻开着」；
+   * - 其余读 `aria-current="page"` —— 它们说的是「我停在哪个业务模块」。
+   *
+   * ⚠️ **两条轴不能都写 `aria-current="page"`**（那是第一版写法，实测踩到）：
+   * ① 对屏幕阅读器会念出**两个「当前页」**，而其中一个根本不是「页」，是个开关；
+   * ② 「当前模块是哪一颗」在 DOM 上**失去答案**——`workspace-entry.test.tsx` 的 `currentModule()`
+   *    按 `[aria-current='page']` 取第一颗，而亮着的两颗里「AI 会话」排在「话单分析 / 资金分析」
+   *    **前面** ⇒ 切到资金分析之后它读回 `"AI 会话"`，**4 条既有断言连带红**（2026-10-10 实测）。
+   *    「红在别人的文件里」，但根因在这一行——同一个信号被两条轴共用。
+   */
+  toggle?: boolean
+}) {
   /*
     悬停提示：入口只有图标，不套一层提示就只剩 `aria-label`（鼠标用户看不见它）。
     文案**与 `aria-label` 同源**（同一个 `props.entry.label`）——两处各写一份就会各漂一半
@@ -43,7 +82,11 @@ function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (
         type="button"
         data-slot="rail-entry"
         aria-label={props.entry.label}
-        aria-current={props.active ? "page" : undefined}
+        aria-current={props.toggle ? undefined : props.active ? "page" : undefined}
+        // 开关常带 `aria-pressed`（真假都带）：`false` 也是信息——「这一栏现在是收起的」。
+        // 刻意**不带** `aria-controls`：它要指向一个恒存在的元素 id，而右栏在没有会话时整根不在
+        // （`AiSessionSlot` 只在有会话时渲染），指过去就是个悬空引用。
+        aria-pressed={props.toggle ? props.active : undefined}
         onClick={() => props.onSelect(props.entry.id)}
         class="group relative flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl transition-colors hover:bg-v2-overlay-simple-overlay-hover"
         // 选中底走浅金语义 token（DESIGN §1.3「图标栏选中底 = 浅金」）。走任意值写法是**有意**的：
@@ -78,7 +121,11 @@ function RailEntryButton(props: { entry: RailEntry; active: boolean; onSelect: (
 }
 
 /**
- * 左侧图标栏（FR-002 / DESIGN.md §4.1）：顶部五个业务入口 + 底部「系统设置」。
+ * 左侧图标栏（FR-002 / DESIGN.md §4.1）：顶部五个入口 + 底部「系统设置」。
+ *
+ * ⚠️ 顶部那五颗**不都是模块**：四个业务入口切模块（`onSelect`），「AI 会话」那一颗开关右栏
+ * （`onToggleAiSession`，见 `RailProps.aiSessionOpen` 那段）。底部「系统设置」更不走 `onSelect`
+ * ——它开对话框。**出口一共三种**，别按「五颗一个出口」读本文件。
  *
  * 只负责「显示哪些、点了通知谁」——入口可见性按 capability 过滤，但真正的鉴权在
  * 下游执行层（宪法 IV）。
@@ -95,9 +142,23 @@ export function Rail(props: RailProps) {
       class="flex h-full shrink-0 select-none flex-col items-center gap-3 border-r border-v2-border-border-muted bg-v2-background-bg-base py-4"
     >
       <For each={visibleEntries(RAIL_ENTRIES, props.capabilities)}>
-        {(entry) => (
-          <RailEntryButton entry={entry} active={entry.id === props.active} onSelect={props.onSelect} />
-        )}
+        {(entry) => {
+          /*
+            「AI 会话」是这一列里**唯一**一颗不切模块的：它的高亮与出口都走另一条轴（右栏开合）。
+            这个判断**只写一次**（下面两处都用它）——两处各写一遍的话，改一处另一处会静默分家：
+            点它走开关、高亮却留在模块轴上（或反过来），两种都只是「看着有点怪」，不报错、不变红
+            （`LEARNINGS #002-06`）。
+          */
+          const 是右栏开关 = entry.id === AI_SESSION_ENTRY_ID
+          return (
+            <RailEntryButton
+              entry={entry}
+              active={是右栏开关 ? props.aiSessionOpen === true : entry.id === props.active}
+              onSelect={是右栏开关 ? () => props.onToggleAiSession?.() : props.onSelect}
+              toggle={是右栏开关}
+            />
+          )
+        }}
       </For>
       <div class="mt-auto flex flex-col items-center gap-3">
         <span class="my-1 h-px w-8 bg-v2-border-border-muted" />

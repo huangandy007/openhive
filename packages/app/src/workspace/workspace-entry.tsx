@@ -166,6 +166,22 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const [dualOpen, setDualOpen] = createSignal(false)
 
   /**
+   * 右栏（AI 会话）开没开（2026-10-10 用户下达：图标栏那颗「AI 会话」是它的乒乓开关）。
+   *
+   * **初值 `true`**（用户同日裁定「默认展开」）：进门右栏就在 = 与改动之前**看到的样子一致**，
+   * 也让会话路由（中栏在那里让位给右栏）不会一进去就是空白。点一下收起、再点呼出。
+   *
+   * **与 `center.module()` 是两条轴**，刻意分开：模块轴管「我在哪个业务模块」（决定左栏露不露、
+   * 指令卡投影按哪个模块算），这条只管右栏这一栏的开合。合着用正是改动前的毛病——点它把
+   * `module` 换成 `"ai-session"`，左栏（只在 `module === "project"` 时渲染）**整列消失**，
+   * 右栏却一动不动。语义与出处见 `rail/rail.tsx` 的 `RailProps.aiSessionOpen`。
+   *
+   * ⚠️ 状态落在这里而不是 `Rail` 里，与 `panelOpen` / `memberOpen` 同因：**读写方分属两个组件**
+   * （图标栏那颗是写方、`ThreePane` 的 `rightCollapsed` 是读方），只能落在共同祖先。
+   */
+  const [aiSessionOpen, setAiSessionOpen] = createSignal(true)
+
+  /**
    * 项目数据源（省略 = 一次都不发）。取一次存下来就够：应用里它是**开局定死**的
    * （`layout-new.tsx` 传的是常量），不值当为「会变的 prop」再写一层。
    */
@@ -508,7 +524,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       <div data-component="workspace-entry" class="flex-1 min-h-0 min-w-0 w-full flex">
         <Rail
           active={center.module()}
+          // ⚠️ 这颗收到的 id **永远不是** `"ai-session"`：「AI 会话」那一颗的出口在下面两条，
+          // 不经过这里（`rail.tsx` 里按 `AI_SESSION_ENTRY_ID` 分流）。故 `module` 不会再变成
+          // `"ai-session"`——那正是改动前「点它左栏消失」的成因。
           onSelect={(id) => center.switchModule(id)}
+          // 右栏那颗乒乓开关（2026-10-10 用户下达）。高亮与出口是**同一条轴的两半**，
+          // 都喂给 `Rail` 的同一颗入口（见 `RailProps.aiSessionOpen`）。
+          aiSessionOpen={aiSessionOpen()}
+          onToggleAiSession={() => setAiSessionOpen((open) => !open)}
           // 「系统设置」那颗**不切模块**：它开对话框，动作由入口层注入（见本文件 `onOpenSettings`
           // prop 上那段注释）。
           onOpenSettings={props.onOpenSettings}
@@ -782,6 +805,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             ) : undefined
           }
           // 右栏（AI 会话，T008 / FR-010）。⚠️ `?.()` 不能省，也不能包 `<Show>`——理由见 prop 上那段注释。
+          //
+          // `rightCollapsed` 是那颗乒乓开关的**执行端**（2026-10-10 用户下达）：收起时
+          // `ThreePane` 整块 `<Show>` 不渲染 ⇒ 右栏**连同 `ResizeHandle` 一起**让位，中栏是
+          // `flex-1 min-w-0`，自然吃满——「中栏宽度自动适应」不需要另写一行宽度逻辑。
+          // ⚠️ 它与 `right` 是**两个独立的门**（`有右栏 = props.right !== undefined && !props.rightCollapsed`）：
+          // 没有会话时 `right` 本来就是 `undefined`（`AiSessionSlot` 只在有会话时渲染），
+          // 于是**首页 / 草稿页上拨这个开关只有图标亮灭、右栏照旧不出现**。那是右栏「整根只在
+          // 会话路由下渲染」的既有事实，不是这条开关引入的（已记进本次交付说明）。
+          rightCollapsed={!aiSessionOpen()}
           right={props.right?.()}
         >
           {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
