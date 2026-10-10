@@ -10,6 +10,8 @@ import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
+import { 复制文本 } from "@/utils/copy-text"
+import { showToast } from "@/utils/toast"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
@@ -33,14 +35,20 @@ const 图标: Record<工具栏动作, "collapse" | "expand" | "plus" | "pencil-l
 }
 
 /**
- * 右键菜单十项的标识——顺序与分组即 `2026-09-11-项目管理-design.md` §6.2 那张表的四行
+ * 右键菜单的标识——顺序与分组即 `2026-09-11-项目管理-design.md` §6.2 那张表的四行
  * （表里一行＝菜单里一组，组间一个分隔符）。
+ *
+ * ⚠️ **`copy-path` 是本仓加的（第十一项）**，设计表那张表里没有它：那张表说的是「把文件复制到另一个
+ * 目录」（`copy`），而这一项是「把这一行的**路径**放进剪贴板」，给用户贴到右栏会话框里指路用
+ * （2026-10-11，用户提出）。它落在第二组「重命名 / 复制 / …」里、紧跟 `copy`——两者都叫「复制」，
+ * 排在一起才好分辨；按拼音序或新起一组都会读成两种不相干的东西。
  */
 export type FileTreeMenuItem =
   | "create-file"
   | "create-dir"
   | "rename"
   | "copy"
+  | "copy-path"
   | "move"
   | "delete"
   | "upload"
@@ -559,6 +567,17 @@ export function FileTree(props: FileTreeProps) {
               禁用={要文件(props.onCopy)}
               onSelect={() => props.onCopy?.(菜单对象() ?? "")}
             />
+            {/* 「文件路径」：把这一行的**项目内相对路径**放进剪贴板（本仓加的第十一项）。
+                ⚠️ 它与上一项的区别只在**宾语**：`复制` 复制的是**文件**（复制到别处去），
+                这一项复制的是**路径这串字**（贴给右栏的 AI 会话框指路）。两项挨着放。
+                ⚠️ 判据是 `!菜单对象()`，**不是** `要文件(...)`：目录**也有**路径、也要抄
+                （目录的路径补尾斜杠），而 `要文件` 会把目录判成禁用——那正是本项最常用的场合之一。 */}
+            <菜单项
+              action="copy-path"
+              文案="文件路径"
+              禁用={!菜单对象()}
+              onSelect={() => 复制路径(菜单对象() ?? "")}
+            />
             <菜单项
               action="move"
               文案="移动"
@@ -684,10 +703,10 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 菜单里**要作用对象**的那七项的共同前置：没接线、或没右键到任何节点，都禁用。
+   * 菜单里**要作用对象**的那八项的共同前置：没接线、或没右键到任何节点，都禁用。
    *
    * 新建两项与上传不适用——它们要的是**落点目录**，没有对象时落点＝根，是合理的
-   * （正如工具栏的 ＋）。其余七项对着「根」是说不通的：复制根、删除根都不是一个动作。
+   * （正如工具栏的 ＋）。其余八项对着「根」是说不通的：复制根、删除根都不是一个动作。
    */
   function 要对象(接: ((...名字: string[]) => void) | undefined) {
     return !接 || !菜单对象()
@@ -708,6 +727,29 @@ export function FileTree(props: FileTreeProps) {
     const path = 菜单对象()
     // `节点表` 里只有**清单里真实存在**的路径；表格查不到就当不是文件（不猜）。
     return !接 || !path || 节点表().get(path)?.type !== "file"
+  }
+
+  /**
+   * 把某一行的路径放进剪贴板（菜单「文件路径」，本仓加的第十一项）。
+   *
+   * 复制的是**项目内相对路径**（`资料/8·17/话单.csv`），因为会话的工作目录就是项目目录
+   * （`ai-session/session-actions.ts` 那侧），贴进右栏会话框**直接可用**；绝对路径长、带盘符、
+   * 还有空格歧义。**目录补一个尾斜杠**（`资料/8·17/`）——路径自己说清「这是目录」，沿用仓里
+   * 已有的记号（上游 `fs.list` 对目录就是这么标的）而不发明第二种写法（`#005-20`）。
+   *
+   * 成功 / 失败**都要吭一声**：这一项**不改变屏幕上任何东西**，不吭声的话「复制成了」与
+   * 「压根没复制」在用户眼里一模一样。（与 `workspace-entry.tsx` 那条「成功不吵」先例故意不同：
+   * 那条的前提是「动作之后屏幕就换了地方」，这里不成立——`#005-28`。）
+   */
+  async function 复制路径(path: string) {
+    if (!path) return
+    const 是目录 = 节点表().get(path)?.type === "directory"
+    const 文本 = 是目录 ? `${path}/` : path
+    if (await 复制文本(文本)) {
+      showToast({ variant: "success", icon: "circle-check", title: "已复制", description: 文本 })
+      return
+    }
+    showToast({ variant: "error", title: "复制失败", description: 文本 })
   }
 
   /**

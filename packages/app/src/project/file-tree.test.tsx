@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
+import { toaster } from "@opencode-ai/ui/toast"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
+import { ToastRegion } from "@/utils/toast"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
 
 /**
@@ -1271,7 +1273,7 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     describe("项齐备（设计 §6.2 的四组）", () => {
-      test("十个动作齐备，顺序即设计表里的四行", () => {
+      test("十一个动作齐备，顺序即设计表里的四行（第十一项是本仓加的，见下）", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1279,9 +1281,12 @@ describe("FileTree 文件树（FR-005）", () => {
           // 第一行：新建文件 / 新建文件夹
           "create-file",
           "create-dir",
-          // 第二行：重命名 / 复制 / 移动 / 删除
+          // 第二行：重命名 / 复制 / 文件路径 / 移动 / 删除
+          //          ⚠️ `copy-path` 是**本仓加的**（设计表那张十项表里没有它）——它是「复制路径」
+          //          这件事在文件树这一侧的入口，与「复制」（把文件复制到另一个目录）不是一回事。
           "rename",
           "copy",
+          "copy-path",
           "move",
           "delete",
           // 第三行：上传 / 下载
@@ -1300,7 +1305,7 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(分隔符数()).toBe(3)
       })
 
-      test("每一项的文案就是设计表里那十个词", () => {
+      test("每一项的文案就是设计表里那十个词（外加本仓那一个「文件路径」）", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1309,6 +1314,7 @@ describe("FileTree 文件树（FR-005）", () => {
           "新建文件夹",
           "重命名",
           "复制",
+          "文件路径",
           "移动",
           "删除",
           "上传",
@@ -1385,6 +1391,139 @@ describe("FileTree 文件树（FR-005）", () => {
         右键(行按名(host, "材料"))
 
         expect(项禁用("copy")).toBe(true)
+      })
+    })
+
+    /**
+     * 「文件路径」——把被右键那一行在**项目内**的路径放进剪贴板（2026-10-11 · 右键菜单第八项）。
+     *
+     * ## 用户要的是什么
+     *
+     * 「…单击右键弹出右键弹窗，选定『文件路径』按钮后，即复制该文件/文件夹的路径信息，此时我就可以把
+     * 路径粘贴到右栏的 AI 会话文本框中，为 AI 指定对应的文件/文件夹信息。」⇒ 复制的必须是**AI 能用**的形式：
+     * 项目内相对路径（用户裁定，备选是绝对路径）。因为会话的工作目录就是项目目录
+     * （`session-actions.ts:63` / `ai-session-slot.tsx:231`），中台那几支又对文件请求无条件按项目根锚定
+     * （`openhive-files.ts` 的头注）⇒ `资料/8·17/话单.csv` 这种写法贴进会话框**直接可用**；
+     * 绝对路径反而长、带盘符与空格歧义、还会泄露本机目录结构。
+     *
+     * ## 目录为什么要补尾斜杠
+     *
+     * 「这是一个目录」得由**路径本身**说清。上游 `fs.list` 对目录本来就这么标（`openhive-files.ts`
+     * 给目录补 `path.sep`，树里显示成 `资料\`）——这里沿用**仓里已有的记号**，不发明第二种写法
+     * （`#005-20`）。
+     *
+     * ## 本组为什么能读**真** toast
+     *
+     * 这一层新开了一个观测面：toast 落在 `document.body` 里，**读得到**（2026-10-11 探针：挂上
+     * `<ToastRegion v2={false} />` 之后 body 文本里就有 `已复制资料/8·17/话单.csv`）。所以本组
+     * **不 mock 任何模块**——判据走过 `showToast` → 上游 toast 组件的**真**那条路。为什么值得费这一步：
+     * 失败时「有没有告诉用户」与「有没有谎称成功」是**两条独立的判据**，而它们在本仓此前**没有观测面**
+     * （全仓此前没有任何一条用例断过 toast）。
+     *
+     * ⚠️ toast 的 store 是**模块级**的 ⇒ 每条用例之后必须 `toaster.clear()`：不清的话上一条的成功提示会
+     * 残到下一条里，让「有没有 error 提示」读成「上一轮剩下的」。这是 `#005-19`（作用对象是刚点的那一行、
+     * 不是残留）同一族问题在**屏幕之外**的那一半。
+     */
+    describe("「文件路径」把相对路径放进剪贴板", () => {
+      /** 挂一棵树**＋真 toast 区域**——本组要断提示，就得先把提示的落点挂起来。 */
+      const 挂带提示 = (element: () => JSX.Element) => mount(() => <><ToastRegion v2={false} />{element()}</>)
+
+      const 剪贴板 = navigator.clipboard as unknown as {
+        writeText(value: string): Promise<void>
+        readText(): Promise<string>
+      }
+
+      /** 哨兵：每条用例先把剪贴板写成它，「有没有真的写进去」才有判别力。 */
+      const 哨兵 = "哨兵：没被碰过才对"
+
+      /**
+       * 屏幕上那一类提示的全文（`success` / `error`），没有就 `null`。
+       *
+       * 断在**字符串**上、不把节点交给 `expect`（`#005-01`：红的实得值是节点会把整轮挂哑）。
+       */
+      const 提示文本 = (variant: "success" | "error") =>
+        document.body.querySelector<HTMLElement>(`[data-variant='${variant}']`)?.textContent ?? null
+
+      beforeEach(async () => {
+        await 剪贴板.writeText(哨兵)
+      })
+
+      afterEach(() => {
+        // 见上面文件头：store 是模块级的，不清就会串味到下一条用例。
+        toaster.clear()
+      })
+
+      test("右键一个**文件** ⇒ 剪贴板里是它在项目里的相对路径（可直接贴给会话框）", async () => {
+        const host = 挂带提示(() => <FileTree paths={树("资料/8·17/话单.csv")} />)
+        动作(host, "expand-all")?.click() // 默认全收缩（⑦-5）⇒ 深层那一行要先让它可见
+
+        右键(行按名(host, "话单.csv"))
+        点菜单项("copy-path")
+        await 歇一拍()
+
+        expect(await 剪贴板.readText()).toBe("资料/8·17/话单.csv")
+        expect(提示文本("success"), "复制成功要回一句话——否则用户不知道剪贴板里到底有没有东西").toContain("已复制")
+        expect(提示文本("success"), "提示里带上**复制了什么**，贴错之前能自己发现").toContain("资料/8·17/话单.csv")
+      })
+
+      test("右键一个**文件夹** ⇒ 尾上补一个斜杠，让路径自己说清「这是目录」", async () => {
+        const host = 挂带提示(() => <FileTree paths={树("资料/8·17/话单.csv")} />)
+        动作(host, "expand-all")?.click()
+
+        右键(行按名(host, "8·17"))
+        点菜单项("copy-path")
+        await 歇一拍()
+
+        expect(await 剪贴板.readText()).toBe("资料/8·17/")
+      })
+
+      /**
+       * 与「作用对象」那组同一条性质，但判据的**射程**不同：那组看的是回调收到了什么，这组看的是
+       * **剪贴板里最后落的是哪一个**——一个「拿第一次右键那个对象」的实现，回调那层可以全对，
+       * 这里才露出来（`#005-19`：「能开」与「开在谁身上」是两条独立判据）。
+       */
+      test("复制的是**刚右键那一行**，不是上一次的残留", async () => {
+        const host = 挂带提示(() => <FileTree paths={树("甲.md", "乙.md")} />)
+
+        右键(行按名(host, "甲.md"))
+        点菜单项("copy-path")
+        await 歇一拍()
+        expect(await 剪贴板.readText()).toBe("甲.md")
+
+        右键(行按名(host, "乙.md"))
+        点菜单项("copy-path")
+        await 歇一拍()
+
+        expect(await 剪贴板.readText(), "作用对象要跟着这一次的右键走").toBe("乙.md")
+      })
+
+      /**
+       * 失败路径。与 `workspace-entry.tsx:227`「成功不吵」那条先例**故意不同**（`#005-28`：那条理由的前提是
+       * 「动作之后屏幕就换了地方」，用户看得见结果；这里复制**不改变任何可见状态**——不吭声的话，
+       * 「复制成功了」与「复制压根没发生」在屏幕上**长得一模一样**）。
+       *
+       * 所以这条钉**两条独立判据**：① 说了「失败」；② **没**说「成功」、且盘上**没写脏**
+       * （哨兵还在）。只钉 ① 的话，一个「失败也弹成功提示」的实现照样绿。
+       */
+      test("写不进剪贴板 ⇒ 报一句失败、**不谎称成功**，也没往剪贴板里写东西", async () => {
+        const host = 挂带提示(() => <FileTree paths={树("笔记.md")} />)
+        const 原生 = navigator.clipboard
+        // 两条路都断掉：happy-dom 本来就没有 `execCommand`（`typeof === "undefined"`，2026-10-11 实测），
+        // 这里再把 `navigator.clipboard` 摘掉 ⇒ `复制文本` 只能回 false。
+        Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+        try {
+          右键(行按名(host, "笔记.md"))
+          点菜单项("copy-path")
+          await 歇一拍()
+
+          expect(提示文本("error"), "写不进去要说出来（否则「没复制成」与「复制成了」在屏幕上没区别）").not.toBeNull()
+          expect(提示文本("success"), "没成就不许报成").toBeNull()
+        } finally {
+          Object.defineProperty(navigator, "clipboard", { value: 原生, configurable: true })
+        }
+
+        // 还原之后回收看：一次都没写进去 ⇒ 哨兵原样还在（「不谎称成功」的第二半：盘上也要干净）。
+        expect(await 剪贴板.readText()).toBe(哨兵)
       })
     })
 
