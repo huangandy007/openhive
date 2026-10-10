@@ -375,7 +375,20 @@ export function FileTree(props: FileTreeProps) {
         )}
       </Show>
 
-      <ContextMenu>
+      {/* ⚠️ `modal={false}` **不是可选项**：默认 `modal: true` 会让 Kobalte 的 `createFocusScope`
+          在菜单开着时锁焦点，并在**菜单卸载那一刻**把焦点**归还**给「打开菜单时容器外的聚焦元素」
+          ——也就是被右键的那一行 `div[file-tree-row]`。实测焦点时间线（菜单 ⇒「重命名」）：
+          `inline-rename-input.tsx:40` 的 rAF 让输入条先拿到焦点，紧接着被菜单项的
+          `onFocusOut`(`7A3GDF4Y.jsx:146`) / `onFocusIn`(`QZDH5R5B.jsx:391`) **互抢两轮**，
+          最后 `7A3GDF4Y.jsx:113` 把焦点归还给那一行 ⇒ 输入条 blur ⇒ 就地改名「提交」时草稿
+          没变（同值）⇒ 自己收掉。**症状**：「走菜单的重命名/新建：输入条看得见、字进不去、
+          磁盘不动」，而工具栏那两条好好的。
+          同仓对照：`ai-session/session-list.tsx` 的 `<ContextMenu modal={false}>` 拿得到焦点。
+
+          ⚠️ 这一处是**竞态**，不是确定性失败：不加 `modal={false}` 时「菜单 ⇒ 新建」**多数时候坏、
+          偶尔碰巧好**（1ms 级胜负）。所以回归网里守护它的是 `file-tree-menu-focus-real.spec.ts`
+          的**重命名**那条（输入条会自杀，结构性、稳定红），新建那条在变异下可能**假绿**。 */}
+      <ContextMenu modal={false}>
         {/* 右键落在哪儿就算哪儿：这一层是**树区域**（行 ＋ 空态），工具栏**不在**里面——
             右键搜索框弹出「新建文件」是说不通的。「把菜单开出来」是 Kobalte 的事。 */}
         <ContextMenu.Trigger as="div" data-slot="file-tree-area" class="flex min-h-0 w-full min-w-0 flex-1 flex-col">
