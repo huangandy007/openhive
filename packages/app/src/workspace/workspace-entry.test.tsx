@@ -91,6 +91,20 @@ const railLabels = (host: HTMLElement) => entries(host).map((el) => el.getAttrib
 const currentModule = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-slot='rail-entry'][aria-current='page']")?.getAttribute("aria-label")
 
+/**
+ * 「左栏还开着吗」——同时也就是「还停在项目管理上吗」。
+ *
+ * ⚠️ 2026-10-11 起这两件事在 DOM 上是**同一个证据**：「项目管理」那颗从模块轴挪到了开关轴
+ * （它开关的是左栏，见 `rail.tsx` 的分流那段）⇒ 它读 `aria-pressed`、**不再有** `aria-current`。
+ * 于是 `currentModule()` 对 project **没有答案**（这是语义真的变了，不是取数取错了），本文件里
+ * 原先靠 `currentModule(host) === "项目管理"` 断「模块没被换走」的那几处一并改用本辅助
+ * （`#002-06` 的另一面：同一个判断，别让它在这里多出一份**另一套读法**）。
+ *
+ * `aria-pressed` 为真 ⟺ `module === "project"` **且** 左栏开关开着——左栏本就只在
+ * `module === "project"` 时渲染，两件事绑在一起，正是这几处要的那个合取。
+ */
+const 左栏开着 = (host: HTMLElement) => 入口(host, "项目管理").getAttribute("aria-pressed") === "true"
+
 const 入口 = (host: HTMLElement, label: string) => {
   const found = entries(host).find((el) => el.getAttribute("aria-label") === label)
   if (!found) throw new Error(`图标栏里没有「${label}」`)
@@ -129,7 +143,9 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
     expect(railLabels(host)).toEqual(["项目管理", "AI 资产", "AI 会话", "话单分析", "资金分析", "系统设置"])
     expect(host.querySelector("[data-slot='three-pane-center']")).not.toBeNull()
     expect(text(host, "center-content")).toBe("中栏内容")
-    expect(currentModule(host)).toBe("项目管理")
+    // ⚠️ 2026-10-11 起这一处的证据换成 `左栏开着()`（理由见它的注释）：`currentModule()` 读的是
+    // **模块轴**的 `aria-current`，而「项目管理」已挪到开关轴 ⇒ 模块没被换走由「左栏还在」证明。
+    expect(左栏开着(host)).toBe(true)
   })
 
   test("图标栏在三栏左侧（DESIGN §4.1：图标栏 → 三栏）", () => {
@@ -175,7 +191,8 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
 
     expect(开过).toBe(1)
     // 「不高亮」：高亮**不动**，仍在入口那一个业务模块上（不是变成「系统设置」）
-    expect(currentModule(host)).toBe("项目管理")
+    // ⚠️ 证据同下一条换成 `左栏开着()`：模块轴对 project **没有答案**了。
+    expect(左栏开着(host)).toBe(true)
     // 另一半：设置那颗自己**没有** `aria-current`（顺序按 `#004-14`：被测属性在前，伴随信号在后）
     expect(入口(host, "系统设置").getAttribute("aria-current")).toBeNull()
     // 伴随信号：左栏还在（旧行为下模块被换走 ⇒ 这一列消失）
@@ -187,7 +204,8 @@ describe("WorkspaceEntry 进入三栏工作台的入口", () => {
 
     入口(host, "系统设置").click()
 
-    expect(currentModule(host)).toBe("项目管理")
+    // ⚠️ 证据换成 `左栏开着()`（理由见它自己的注释）：模块轴对 project **没有答案**了。
+    expect(左栏开着(host)).toBe(true)
   })
 
   /**
@@ -2618,6 +2636,10 @@ describe("右栏（AI 会话）接进工作台（FR-010 出参）", () => {
  *    旧路（`module` 变成 `"ai-session"` ⇒ `left` 只在 `module === "project"` 时渲染 ⇒ 左栏整列消失，
  *    用户报的症状正是它）。
  *
+ * ⚠️ 2026-10-11 起 ② 那一半的**证据**换成 `左栏开着()`：`currentModule()` 读的是模块轴的
+ * `aria-current`，而「项目管理」那颗已挪到开关轴（开关的是左栏）⇒ 模块没被换走这件事，由
+ * 「左栏还在」直接证明（见下面那组的说明）。
+ *
  * 「中栏自动适应」不在这里断：中栏是 `flex-1 min-w-0`，右栏那块不渲染就自然吃满，属
  * `three-pane.test.tsx` 的几何（happy-dom 没有 CSS 引擎，量不出来）。
  */
@@ -2637,20 +2659,20 @@ describe("右栏（AI 会话）的乒乓开关（2026-10-10 用户下达）", ()
 
   test("点「AI 会话」⇒ 右栏连手柄一起收起；再点 ⇒ 回来。全程模块一个字不动", () => {
     const host = 开()
-    expect(currentModule(host)).toBe("项目管理")
+    expect(左栏开着(host)).toBe(true)
 
     入口(host, "AI 会话").click()
 
     expect(不存在(host, "[data-slot='three-pane-right']")).toBe(true)
     expect(不存在(host, "[data-slot='three-pane-right-group']")).toBe(true)
     // 右栏轴与模块轴**互不干扰**：收起不该顺手把左栏也弄没（旧路就是这么弄没的）
-    expect(currentModule(host)).toBe("项目管理")
+    expect(左栏开着(host)).toBe(true)
     expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
 
     入口(host, "AI 会话").click()
 
     expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toContain(标记)
-    expect(currentModule(host)).toBe("项目管理")
+    expect(左栏开着(host)).toBe(true)
   })
 
   test("点别的业务入口不影响右栏开合（2026-10-10 用户裁定「不动」）", () => {
@@ -2660,6 +2682,112 @@ describe("右栏（AI 会话）的乒乓开关（2026-10-10 用户下达）", ()
 
     expect(currentModule(host)).toBe("话单分析")
     expect(host.querySelector("[data-slot='three-pane-right']")?.textContent).toContain(标记)
+  })
+})
+
+/**
+ * 左栏（项目管理）的**乒乓开关**（2026-10-11 用户下达）。
+ *
+ * 用户原话：「点击『AI 会话』图标（高亮），右栏的 AI 会话界面会出现，再次点击（高亮消失），
+ * 右栏隐藏，中栏的宽度自动适应屏幕大小……我现在需要你实现图标栏的『项目管理』图标也实现这种
+ * 乒乓开关，控制显示或隐藏的是左栏，隐藏时中栏自动适应屏幕大小」。依据同样在设计文档里，不在
+ * 这次对话里：`docs/superpowers/specs/2026-09-11-项目管理-design.md:23`「**项目管理** ｜ **呼出左栏**
+ * （项目列表 / 会话 / 文件树 / MinIO）｜ 📁」、`archive/2026-08-17-openhive-design-v1.md:229`
+ * 「点图标呼出/收起对应侧栏；**高亮 = 当前展开**」——补的是**从没接上的那根线**：`ThreePane` 的
+ * `leftCollapsed` 在此之前**没有任何生产调用方**（与 `rightCollapsed` 在 2026-10-10 之前一样）。
+ *
+ * ⚠️ 这条链上**三半都要钉**，缺一半都过得去：
+ * ① 左栏真的**整根不在**——`three-pane-left` **与** `three-pane-left-group` 都要断（前者是栏本身、
+ *    后者是连 `ResizeHandle` 一起的包裹；只断前者的写法在「栏还在、只是空了」时照样绿）；
+ * ② 收起时**模块一个字都不动**（旧路的反例是「借切模块实现收起」）；
+ * ③ **从别的模块点它必须把模块切回来、且左栏一次到位地开着**——这颗与「AI 会话」那颗唯一的实质
+ *    差别就在这里：那颗不动模块轴，这颗**同时还是「进 project 模块」的入口**。少了 ③，一个
+ *    「只翻开关、不切模块」或「先关一次再关一次」的实现（点一下反而没把左栏叫出来）照样能过上前两条。
+ *
+ * 「中栏自动适应」不在这里断：中栏是 `flex-1 min-w-0`，左栏那块不渲染就自然吃满，属
+ * `three-pane.test.tsx` 的几何（happy-dom 没有 CSS 引擎，量不出来）；真几何证据在真栈
+ * `e2e/real-stack/sidebar-project-toggle-real.spec.ts`（量左栏盒宽与中栏宽）。
+ */
+describe("左栏（项目管理）的乒乓开关（2026-10-11 用户下达）", () => {
+  const 开 = () => mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+
+  test("默认展开：进门左栏就在（与改动前看到的样子一致）", () => {
+    const host = 开()
+
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
+    expect(不存在(host, "[data-slot='three-pane-left-group']")).toBe(false)
+    expect(左栏开着(host)).toBe(true)
+  })
+
+  test("点「项目管理」⇒ 左栏连手柄一起收起；再点 ⇒ 回来。全程模块一个字不动", () => {
+    const host = 开()
+    expect(左栏开着(host)).toBe(true)
+
+    入口(host, "项目管理").click()
+
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(true)
+    expect(不存在(host, "[data-slot='three-pane-left-group']")).toBe(true)
+    expect(左栏开着(host)).toBe(false)
+    // 模块轴**一个字不动**：中栏页没被换走（图标栏上「资金分析」那颗本来就不该亮）
+    expect(入口(host, "资金分析").getAttribute("aria-current")).toBeNull()
+
+    入口(host, "项目管理").click()
+
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
+    expect(不存在(host, "[data-slot='three-pane-left-group']")).toBe(false)
+    expect(左栏开着(host)).toBe(true)
+  })
+
+  test("从别的模块点「项目管理」：模块切回 project 且左栏**一次到位地开着**（不是先关一次）", () => {
+    const host = 开()
+
+    入口(host, "资金分析").click()
+    expect(currentModule(host)).toBe("资金分析")
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(true)
+    expect(左栏开着(host)).toBe(false)
+
+    入口(host, "项目管理").click()
+
+    // 三条都是「切回来了」的证据：模块轴让位 ＋ 左栏在 DOM 里 ＋ 它那颗开关亮着
+    expect(入口(host, "资金分析").getAttribute("aria-current")).toBeNull()
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
+    expect(左栏开着(host)).toBe(true)
+
+    // 再点一下是**收起**——「切回来」那一支只该在别的模块上生效，不能在 project 上再来一次
+    入口(host, "项目管理").click()
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(true)
+  })
+
+  test("切到别的模块：左栏让位，且「项目管理」那颗跟着灭（它亮 = 左栏开着）", () => {
+    const host = 开()
+
+    入口(host, "话单分析").click()
+
+    expect(currentModule(host)).toBe("话单分析")
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(true)
+    expect(左栏开着(host)).toBe(false)
+  })
+
+  /**
+   * 「先切回来」那一支**必须顺手把开关置真**（不是取反）。
+   *
+   * 走法：在 project 上收起（开关 = 关）→ 切到别的模块（此刻模块轴、开关轴**两轴都不满足**）
+   * → 再点「项目管理」。用户点它的意思是「我要左栏」；取反或干脆不动开关的实现，会让这一下
+   * 看上去「什么都没发生」（左栏本该回来却没回来）。
+   */
+  test("收起之后再离开模块、再点它：左栏照样回来（「先切回来」那一支顺手把开关置真）", () => {
+    const host = 开()
+
+    入口(host, "项目管理").click()
+    expect(左栏开着(host)).toBe(false)
+
+    入口(host, "资金分析").click()
+    expect(左栏开着(host)).toBe(false)
+
+    入口(host, "项目管理").click()
+
+    expect(不存在(host, "[data-slot='three-pane-left']")).toBe(false)
+    expect(左栏开着(host)).toBe(true)
   })
 })
 

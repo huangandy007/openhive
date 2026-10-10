@@ -247,19 +247,86 @@ describe("Rail 图标栏", () => {
   })
 
   /**
+   * **「项目管理」也不是纯模块了——它开关的是左栏**（2026-10-11 用户下达）。
+   *
+   * 出处与右栏那颗**同源**，早写死在设计文档里，不在这次对话里：
+   * `docs/superpowers/specs/2026-09-11-项目管理-design.md:23`「**项目管理** ｜ **呼出左栏**
+   * （项目列表 / 会话 / 文件树 / MinIO）｜ 📁」、`archive/2026-08-17-openhive-design-v1.md:229`
+   * 「点图标呼出/收起对应侧栏；**高亮 = 当前展开**」——本条补的是**从没接上的那根线**。
+   *
+   * ⚠️ 它比「AI 会话」那颗多一维：那颗**不动模块轴**，这颗**同时还是「进 project 模块」的入口**
+   * ⇒ 「不在 project 就先切回来、已在才乒乓」那层判断在 `workspace-entry.tsx`，**本文件这一层
+   * 只管一件事：它调开关、不调 `onSelect`**。
+   *
+   * 判据与「系统设置」那条**逐字同形**，两半都要断：**它调了开关** 且
+   * **`onSelect` 一个 id 都没收到**（后半才是「不再切模块」的那一半，只断前半会漏掉「两个都调」）。
+   */
+  test("点「项目管理」走 onToggleProject，不走 onSelect——它开关的是左栏", () => {
+    const picked: string[] = []
+    let 拨过 = 0
+    const host = mount(() => (
+      <Rail
+        onSelect={(id) => picked.push(id)}
+        onToggleProject={() => {
+          拨过 += 1
+        }}
+      />
+    ))
+
+    入口(host, "项目管理").click()
+
+    expect(拨过).toBe(1)
+    // 反证：`onSelect` 必须**一个都没收到**——尤其不是 "project"（旧行为就是它）
+    expect(picked).toEqual([])
+  })
+
+  test("省略 onToggleProject：点「项目管理」什么都不做——**不退回 onSelect**", () => {
+    const picked: string[] = []
+    const host = mount(() => <Rail onSelect={(id) => picked.push(id)} />)
+
+    入口(host, "项目管理").click()
+
+    // 退回 onSelect 的后果不是「没反应」，是「模块被写成 "project"」——而用户点的是「收起左栏」。
+    expect(picked).toEqual([])
+  })
+
+  /**
+   * 高亮跟 `projectOpen`（左栏在不在）走，**不跟 `active`（当前模块）走**。
+   *
+   * ⚠️ 反证那条是重点：`active` 传 `"project"` **再也点不亮它**——旧写法
+   * （`entry.id === props.active`）在这里会亮，而「亮着、左栏却关着」正是用户报的那个不一致。
+   */
+  test("「项目管理」的高亮跟 projectOpen 走，与 active 无关", () => {
+    // 开关没开、`active` 明说停在 project 模块上 ⇒ **不亮**（旧写法会亮）
+    const 旧路 = mount(() => <Rail active="project" onSelect={() => {}} />)
+    expect(亮着的(旧路)).toEqual([])
+
+    // 开关开着 ⇒ 亮，且**只有**那一颗
+    const 开 = mount(() => <Rail active="project" projectOpen onSelect={() => {}} />)
+    expect(亮着的(开)).toEqual(["项目管理"])
+
+    // 关着时真假读得出来（`false` 也是信息：左栏现在是收起的）
+    expect(入口(旧路, "项目管理").getAttribute("aria-pressed")).toBe("false")
+    expect(入口(开, "项目管理").getAttribute("aria-pressed")).toBe("true")
+  })
+
+  /**
    * 高亮走**另一条轴**：它跟 `aiSessionOpen`（右栏在不在）走，**不跟 `active`（当前模块）走**。
    *
-   * 于是屏幕上**两颗同时亮**是常态、不是画错了：模块轴上的「项目管理」＋ 右栏轴上的「AI 会话」
-   * ——设计文档那句「高亮 = 当前展开」管的是**各自那一栏**，两条轴本就独立。
+   * 于是屏幕上**几颗同时亮**是常态、不是画错了：模块轴上的一颗 ＋ 各栏开关——设计文档那句
+   * 「高亮 = 当前展开」管的是**各自那一栏**，几条轴本就独立。
+   *
+   * ⚠️ 2026-10-11 起「项目管理」那颗**也**从模块轴挪到了开关轴（它开关的是左栏）⇒ 本条改用
+   * 「资金分析」当模块轴那一颗；`active="project"` 从此**点不亮任何东西**，下一组用例钉它。
    */
   test("「AI 会话」的高亮跟 aiSessionOpen 走，与 active 无关；其余四颗不受它影响", () => {
     // 对照（右栏收起）＝ 省略 `aiSessionOpen`：五颗业务入口里只有模块轴那一颗亮
-    const 收起 = mount(() => <Rail active="project" onSelect={() => {}} />)
-    expect(亮着的(收起)).toEqual(["项目管理"])
+    const 收起 = mount(() => <Rail active="fund-analysis" onSelect={() => {}} />)
+    expect(亮着的(收起)).toEqual(["资金分析"])
 
-    // 右栏展开 ⇒ 多亮一颗，且**只有**那一颗——其余四颗的分支没被这条链带偏
-    const 展开 = mount(() => <Rail active="project" aiSessionOpen onSelect={() => {}} />)
-    expect(亮着的(展开)).toEqual(["项目管理", "AI 会话"])
+    // 右栏展开 ⇒ 多亮一颗，且**只有**那一颗——其余的分支没被这条链带偏
+    const 展开 = mount(() => <Rail active="fund-analysis" aiSessionOpen onSelect={() => {}} />)
+    expect(亮着的(展开)).toEqual(["AI 会话", "资金分析"])
 
     // 反证（旧路径已断）：`active` 传 "ai-session" **再也点不亮它**——`module` 不会、也不该
     // 再变成 "ai-session"。少了这一条，一个「两个条件都读」的写法照样能过上两条。
@@ -268,28 +335,36 @@ describe("Rail 图标栏", () => {
   })
 
   /**
-   * 两条轴的长相一样、**读法必须不一样**（`rail.tsx` 的 `toggle` 那段讲了为什么）。
+   * 几条轴的长相一样、**读法必须不一样**（`rail.tsx` 的 `toggle` 那段讲了为什么）。
    *
    * 这条不是洁癖：第一版把两颗都写成 `aria-current="page"`，实测**当场弄红了 4 条既有断言**
    * ——`workspace-entry.test.tsx` 的 `currentModule()` 按它取「当前模块」，而亮着的两颗里
    * 「AI 会话」在 DOM 里排在「话单分析 / 资金分析」**前面** ⇒ 切到资金分析之后它读回 `"AI 会话"`。
    * 对屏幕阅读器那一半同样成立：一个按钮不该说自己是「当前页」，它说的是「我按下了」。
+   *
+   * ⚠️ 2026-10-11 起「项目管理」那颗从模块轴挪到开关轴（开关的是**左栏**）⇒ 开关轴有两个成员
+   * （项目管理 / AI 会话），各读各自那个 prop；模块轴只剩「真正切中栏的那些」。
    */
-  test("两条轴长相一样、读法不同：模块轴 aria-current，右栏开关 aria-pressed", () => {
-    const host = mount(() => <Rail active="project" aiSessionOpen onSelect={() => {}} />)
-    const 模块 = 入口(host, "项目管理")
-    const 开关 = 入口(host, "AI 会话")
+  test("几条轴长相一样、读法不同：模块轴 aria-current，左栏／右栏开关各读 aria-pressed", () => {
+    const host = mount(() => <Rail active="fund-analysis" projectOpen aiSessionOpen onSelect={() => {}} />)
+    const 左开关 = 入口(host, "项目管理")
+    const 模块 = 入口(host, "资金分析")
+    const 右开关 = 入口(host, "AI 会话")
 
-    // 长相：两颗**都**亮（同一套选中态），别把「读法分开」读成「长相也分开了」
-    expect(亮着的(host)).toEqual(["项目管理", "AI 会话"])
+    // 长相：三颗**都**亮（同一套选中态），别把「读法分开」读成「长相也分开了」
+    expect(亮着的(host)).toEqual(["项目管理", "AI 会话", "资金分析"])
     // 读法
     expect(模块.getAttribute("aria-current")).toBe("page")
     expect(模块.getAttribute("aria-pressed")).toBeNull()
-    expect(开关.getAttribute("aria-current")).toBeNull()
-    expect(开关.getAttribute("aria-pressed")).toBe("true")
+    expect(左开关.getAttribute("aria-current")).toBeNull()
+    expect(左开关.getAttribute("aria-pressed")).toBe("true")
+    expect(右开关.getAttribute("aria-current")).toBeNull()
+    expect(右开关.getAttribute("aria-pressed")).toBe("true")
 
     // 收起时真假都要读得出来（`false` 也是信息：这一栏现在是关着的）
-    const 收起 = mount(() => <Rail active="project" onSelect={() => {}} />)
+    const 收起 = mount(() => <Rail active="fund-analysis" onSelect={() => {}} />)
+    expect(入口(收起, "项目管理").getAttribute("aria-pressed")).toBe("false")
+    expect(入口(收起, "项目管理").getAttribute("aria-current")).toBeNull()
     expect(入口(收起, "AI 会话").getAttribute("aria-pressed")).toBe("false")
     expect(入口(收起, "AI 会话").getAttribute("aria-current")).toBeNull()
   })

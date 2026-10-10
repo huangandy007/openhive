@@ -182,6 +182,48 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const [aiSessionOpen, setAiSessionOpen] = createSignal(true)
 
   /**
+   * 左栏（项目管理）开没开（2026-10-11 用户下达：图标栏那颗「项目管理」是它的乒乓开关）。
+   *
+   * **初值 `true`**（与右栏同一条裁定「默认展开」）：进门左栏就在 = 与改动之前**看到的样子一致**
+   * ——`initialModule` 是 `RAIL_ENTRIES[0].id`（＝ `"project"`），左栏今天本来就默认露着。
+   *
+   * ⚠️ 它与 `center.module()` 也是**两条轴**，但读的时候必须**合取**（见下面的 `左栏开着`）：
+   * 左栏只在 `module === "project"` 时渲染。只留模块轴 ⇒ 收不起来；只留开关轴 ⇒ 切到别的模块后
+   * 图标栏那颗还亮着，而左栏明明已经让位了。
+   *
+   * 状态落在这里而不是 `Rail` 里，理由与 `aiSessionOpen` 逐字相同：**读写方分属两个组件**
+   * （图标栏那颗是写方、`ThreePane` 的 `leftCollapsed` 是读方），只能落在共同祖先。
+   */
+  const [projectOpen, setProjectOpen] = createSignal(true)
+  /**
+   * 「左栏此刻开着吗」——**开关轴与模块轴的合取**（两轴各自的理由见上面那段）。
+   *
+   * 两处读它、必须同取一个值：喂给图标栏那颗的 `projectOpen`（高亮）与 `ThreePane` 的
+   * `leftCollapsed`（真的收不收）。各算一遍就是「亮着却收着」那类不一致的温床（`#002-06`）。
+   */
+  const 左栏开着 = () => center.module() === "project" && projectOpen()
+  /**
+   * 「项目管理」那一颗的动作（2026-10-11 用户下达）。
+   *
+   * ⚠️ 与「AI 会话」那颗**唯一的实质差别**：那颗**不是**任何模块（拨一下开关就行），这一颗
+   * **同时还是「进 project 模块」的入口**。不先切回来的话，用户在别的模块上点它只会把开关翻成
+   * 关，而左栏本来就因为模块不对而不在——点一下看上去「什么都没发生」（正是 `#006-16` 那类
+   * 「界面上走不到的路径」）。
+   *
+   * 「先切回来」那一支**顺手把开关置真**，不是取反：用户点它的意思是「我要左栏」。取反的后果
+   * 是「点一下反而把刚出现的左栏又关了」（本文件 `左栏（项目管理）的乒乓开关` 那组用例的第三条
+   * 钉的就是它）。
+   */
+  const 点项目管理 = () => {
+    if (center.module() !== "project") {
+      center.switchModule("project")
+      setProjectOpen(true)
+      return
+    }
+    setProjectOpen((open) => !open)
+  }
+
+  /**
    * 项目数据源（省略 = 一次都不发）。取一次存下来就够：应用里它是**开局定死**的
    * （`layout-new.tsx` 传的是常量），不值当为「会变的 prop」再写一层。
    */
@@ -589,12 +631,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       <div data-component="workspace-entry" class="flex-1 min-h-0 min-w-0 w-full flex">
         <Rail
           active={center.module()}
-          // ⚠️ 这颗收到的 id **永远不是** `"ai-session"`：「AI 会话」那一颗的出口在下面两条，
-          // 不经过这里（`rail.tsx` 里按 `AI_SESSION_ENTRY_ID` 分流）。故 `module` 不会再变成
-          // `"ai-session"`——那正是改动前「点它左栏消失」的成因。
+          // ⚠️ 这颗收到的 id **永远不是** `"project"` / `"ai-session"`：那两颗的出口在下面几条，
+          // 不经过这里（`rail.tsx` 里按 `PROJECT_ENTRY_ID` / `AI_SESSION_ENTRY_ID` 分流）。故
+          // `module` 不会再变成 `"ai-session"`——那正是改动前「点它左栏消失」的成因。
           onSelect={(id) => center.switchModule(id)}
-          // 右栏那颗乒乓开关（2026-10-10 用户下达）。高亮与出口是**同一条轴的两半**，
-          // 都喂给 `Rail` 的同一颗入口（见 `RailProps.aiSessionOpen`）。
+          // 左栏那颗乒乓开关（2026-10-11 用户下达）。高亮与出口是**同一条轴的两半**，都喂给同一颗
+          // 入口（见 `RailProps.projectOpen`）。⚠️ 喂的是 `左栏开着()`——与模块轴**合取过**的那个，
+          // 不是裸的 `projectOpen()`：否则切到别的模块后它还亮着（左栏已经让位了）。
+          projectOpen={左栏开着()}
+          onToggleProject={点项目管理}
+          // 右栏那颗乒乓开关（2026-10-10 用户下达）。同上一对的理由（见 `RailProps.aiSessionOpen`）。
           aiSessionOpen={aiSessionOpen()}
           onToggleAiSession={() => setAiSessionOpen((open) => !open)}
           // 「系统设置」那颗**不切模块**：它开对话框，动作由入口层注入（见本文件 `onOpenSettings`
@@ -606,8 +652,17 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             共用的一列）。今天只有「项目管理」有左栏内容，故先只认它——多认一个模块就要多一份内容，
             而「AI 资产」的左栏属 006 之后的事（见 state.md 的欠账表）。
             ⚠️ 条件必须落在 `left` **prop 本身**：包一层 `<Show>` 再传进去是错的——`ThreePane` 判的是
-            `props.left !== undefined`，`<Show>` 元素恒非 `undefined`，于是空态下会留下一条 280px 空栏。 */}
+            `props.left !== undefined`，`<Show>` 元素恒非 `undefined`，于是空态下会留下一条 280px 空栏。
+            ⚠️ 2026-10-11 起这一列有**两道门**：模块门（`left` 那个三元，管「这一列属于哪个模块」）＋
+            开关门（`leftCollapsed`，管「用户把它收起了没」，那颗「项目管理」图标就是它）。 */}
         <ThreePane
+          // 左栏那颗乒乓开关的**执行端**（2026-10-11 用户下达）：收起时 `ThreePane` 整块 `<Show>`
+          // 不渲染 ⇒ 左栏**连同 `ResizeHandle` 一起**让位，中栏是 `flex-1 min-w-0`，自然吃满——
+          // 「中栏宽度自动适应」不需要另写一行宽度逻辑（与右栏 `rightCollapsed` 逐字同因）。
+          // ⚠️ 它与 `left` 是**两个独立的门**（`有左栏 = props.left !== undefined && !props.leftCollapsed`），
+          // 而这里喂的是与模块轴合取过的 `左栏开着()`：`left` 那个三元已按模块判过一次，两者不会
+          // 打架（模块不对时 `left` 本身就是 `undefined`，收起与否都露不出来）。
+          leftCollapsed={!左栏开着()}
           left={
             center.module() === "project" ? (
               // 这一层 `relative` 是给面板当定位祖先的：面板按设计 §3 是**滑出**的浮层

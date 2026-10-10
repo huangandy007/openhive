@@ -1,7 +1,7 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show } from "solid-js"
-import { AI_SESSION_ENTRY_ID, RAIL_ENTRIES, SETTINGS_ENTRY, visibleEntries, type RailEntry } from "./entries"
+import { AI_SESSION_ENTRY_ID, PROJECT_ENTRY_ID, RAIL_ENTRIES, SETTINGS_ENTRY, visibleEntries, type RailEntry } from "./entries"
 
 /** 图标栏宽度（DESIGN.md §4.1：56px）。 */
 export const RAIL_WIDTH = 56
@@ -9,7 +9,10 @@ export const RAIL_WIDTH = 56
 export interface RailProps {
   /** 会话签到能力位；省略 = 尚未接签发方，不设限（语义见 `entries.ts`）。 */
   capabilities?: ReadonlySet<string>
-  /** 当前高亮入口的 id（= 左栏正停留的模块）。⚠️ **点不亮「AI 会话」那一颗**，见 `aiSessionOpen`。 */
+  /**
+   * 当前高亮入口的 id（= 左栏正停留的模块）。
+   * ⚠️ **点不亮「项目管理」与「AI 会话」那两颗**——它们各是左栏／右栏的开关，见下面两个 prop。
+   */
   active?: string
   /**
    * **业务**入口的出口（`id` ⇒ 切模块）。**「AI 会话」与底部「系统设置」都不走这里**，见下。
@@ -23,7 +26,7 @@ export interface RailProps {
    * 而 `left` 只在 `module === "project"` 时渲染 ⇒ **左栏整列被顺手弄没**，右栏却一动不动。
    * 依据在设计文档里（`entries.ts` 那个常量上引了两处原文：「呼出/收起右栏」「高亮 = 当前展开」）。
    *
-   * 省略 = 不亮（与「右栏不展开」同义）。⚠️ 于是**两颗同时亮是常态**：模块轴上的一颗 ＋ 这一颗。
+   * 省略 = 不亮（与「右栏不展开」同义）。⚠️ 于是**几颗同时亮是常态**：模块轴上的一颗 ＋ 各栏的开关。
    */
   aiSessionOpen?: boolean
   /**
@@ -33,6 +36,32 @@ export interface RailProps {
    * `"ai-session"`、左栏消失、右栏不动）。与 `onOpenSettings` 那条同一条规矩、同一个理由。
    */
   onToggleAiSession?: () => void
+
+  /**
+   * 「项目管理」那一颗（`PROJECT_ENTRY_ID`）的**开合态** = 左栏在不在（2026-10-11 用户下达）。
+   *
+   * **为什么它不走 `active`**：与 `aiSessionOpen` 同因——`active` 是「我在哪个业务模块」，这一条是
+   * 「左栏展开着没」。用户的期望是「高亮 = 这一栏此刻开着」（设计文档 v1:229 原话），两者混起来
+   * 就是「左栏收起了、它却还亮着」。
+   *
+   * ⚠️ **与右栏那颗的实质差别**：那一颗**不是**任何模块（拨一下就行），这一颗**同时还是「进
+   * project 模块」的入口** ⇒ 喂给它的值必须是**合取**：`module === "project" && 左栏开着`。
+   * 少了模块那一半，切到别的模块后它照旧亮着（左栏明明已经让位）；少了开关那一半，它收不起来。
+   * 那半句由 `workspace-entry.tsx` 的 `左栏开着()` 提供——**本组件不重算一遍**（`#002-06`）。
+   *
+   * 省略 = 不亮（与「左栏不展开」同义）。
+   */
+  projectOpen?: boolean
+  /**
+   * 「项目管理」那一颗的动作：**开关左栏**。
+   *
+   * 省略 = 点它什么都不做——**刻意不退回 `onSelect`**（退回就是改之前的样子：模块被写成
+   * `"project"`，而用户点的是「收起左栏」）。与「AI 会话」／「系统设置」同一条规矩、同一个理由。
+   *
+   * ⚠️ 「不在 project 就先切回来」那半句**不在这里**：`Rail` 只认「按了开关」，切模块是
+   * `workspace-entry.tsx` 的 `点项目管理` 那一支的事——两边各写一份就会分家。
+   */
+  onToggleProject?: () => void
   /**
    * 底部「系统设置」那颗的动作：**开设置对话框**（2026-10-09 用户下达的 #3）。
    *
@@ -55,7 +84,7 @@ function RailEntryButton(props: {
    * 这颗**是不是开关**（而不是「当前所在」）。
    *
    * 长相两条轴**一样**（浅金底 ＋ 左侧竖条 ＋ `--icon-base` 浅金），**读法不一样**：
-   * - 开关（「AI 会话」那颗）读 `aria-pressed` —— 它说的是「这一栏此刻开着」；
+   * - 开关（「项目管理」/「AI 会话」那两颗）读 `aria-pressed` —— 它说的是「这一栏此刻开着」；
    * - 其余读 `aria-current="page"` —— 它们说的是「我停在哪个业务模块」。
    *
    * ⚠️ **两条轴不能都写 `aria-current="page"`**（那是第一版写法，实测踩到）：
@@ -123,9 +152,12 @@ function RailEntryButton(props: {
 /**
  * 左侧图标栏（FR-002 / DESIGN.md §4.1）：顶部五个入口 + 底部「系统设置」。
  *
- * ⚠️ 顶部那五颗**不都是模块**：四个业务入口切模块（`onSelect`），「AI 会话」那一颗开关右栏
- * （`onToggleAiSession`，见 `RailProps.aiSessionOpen` 那段）。底部「系统设置」更不走 `onSelect`
- * ——它开对话框。**出口一共三种**，别按「五颗一个出口」读本文件。
+ * ⚠️ 顶部那五颗**不都是模块**：三个业务入口切模块（`onSelect`），「项目管理」那一颗开关**左栏**
+ * （`onToggleProject`）、「AI 会话」那一颗开关**右栏**（`onToggleAiSession`）。底部「系统设置」
+ * 更不走 `onSelect`——它开对话框。**出口一共四种**，别按「五颗一个出口」读本文件。
+ *
+ * ⚠️ 两颗开关另有一处**读法**上的差别（`RailEntryButton.toggle` 那段讲了为什么）：开关读
+ * `aria-pressed`、模块读 `aria-current="page"`——别看它们的长相一模一样就把读法并成一条。
  *
  * 只负责「显示哪些、点了通知谁」——入口可见性按 capability 过滤，但真正的鉴权在
  * 下游执行层（宪法 IV）。
@@ -144,18 +176,38 @@ export function Rail(props: RailProps) {
       <For each={visibleEntries(RAIL_ENTRIES, props.capabilities)}>
         {(entry) => {
           /*
-            「AI 会话」是这一列里**唯一**一颗不切模块的：它的高亮与出口都走另一条轴（右栏开合）。
-            这个判断**只写一次**（下面两处都用它）——两处各写一遍的话，改一处另一处会静默分家：
-            点它走开关、高亮却留在模块轴上（或反过来），两种都只是「看着有点怪」，不报错、不变红
-            （`LEARNINGS #002-06`）。
+            这一列里有两颗**不切模块**：高亮与出口都走各自那条开合轴（左栏／右栏）。两个判断各只
+            写一次、由下面那个函数**一次性交出三件东西**（`active` / `onSelect` / `toggle`）——
+            分在两处写的话，改一处另一处会静默分家：点它走开关、高亮却留在模块轴上（或反过来），
+            两种都只是「看着有点怪」，不报错、不变红（`LEARNINGS #002-06`）。
+
+            ⚠️ 三个分支必须**并列**（各 `return` 一次），不能叠成两条 `if` 各改一半：叠着写时第二个
+            `if` 会把第一个的判断覆盖掉，而症状只在「两颗开关同时在场」时才看得见。
+            ⚠️ 计算必须留在**函数里**、在 JSX 属性位置上调用：挪成一个先算好的常量会**丢掉响应性**
+            （`For` 的回调体对每个条目只跑一次，`props.projectOpen` 变了它不会重算——图标就再也
+            不会亮灭）。
           */
-          const 是右栏开关 = entry.id === AI_SESSION_ENTRY_ID
+          const 入口三件事 = () => {
+            if (entry.id === PROJECT_ENTRY_ID)
+              return {
+                active: props.projectOpen === true,
+                onSelect: () => props.onToggleProject?.(),
+                toggle: true,
+              }
+            if (entry.id === AI_SESSION_ENTRY_ID)
+              return {
+                active: props.aiSessionOpen === true,
+                onSelect: () => props.onToggleAiSession?.(),
+                toggle: true,
+              }
+            return { active: entry.id === props.active, onSelect: props.onSelect, toggle: false }
+          }
           return (
             <RailEntryButton
               entry={entry}
-              active={是右栏开关 ? props.aiSessionOpen === true : entry.id === props.active}
-              onSelect={是右栏开关 ? () => props.onToggleAiSession?.() : props.onSelect}
-              toggle={是右栏开关}
+              active={入口三件事().active}
+              onSelect={入口三件事().onSelect}
+              toggle={入口三件事().toggle}
             />
           )
         }}
