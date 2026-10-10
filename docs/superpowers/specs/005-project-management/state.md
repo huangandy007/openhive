@@ -3383,3 +3383,85 @@ happy-dom 量不出布局（`#006-06`），这条是唯一能钉住「不再隔�
 3. 「弹窗点遮罩关 / 按 Escape 关 ⇒ onDelete **一次都没喊**」目前只有**组件层**的「取消钮」守护着；
    遮罩与 Escape 两支走的是 `DialogV2` 自带机制，**没有单测**（`#006-14` 同族：横切机制无人验）。
    要收就补两条组件用例（点 `[data-component='dialog-overlay']` ／ 派一个 Escape）。本轮登记待裁。
+
+### ⑦ 五项交互优化 · 第 4 项：右键菜单点外关闭（2026-10-11 · 本轮）
+
+> 承接 ⑦-1 / ⑦-2 / ⑦-3 的头注：五条交互反馈**逐条、不跳步、不合并**。本节只记**第 4 条**。
+
+**现象（用户原话）**：「右键后呼出右键弹窗，但是不选择对应的选项，弹窗不消失。我希望的是 windows 风格，
+鼠标左键单击弹窗以外的地方时，弹窗消失。」
+
+**根因（① 步真栈探针实测；探针 `e2e/real-stack/context-menu-dismiss-probe.spec.ts` 已删，读数逐条记）**
+
+用户那句「以外」不是「菜单以外」那么简单——它是一条**几何**。探针三条落点同一次运行里的读数：
+
+| 落点（视口坐标） | 在触发器盒子里？ | 修复前菜单关不关 |
+|---|---|---|
+| 树内另一行 `(200,829)`（最上层 `div[file-tree-row]`） | **是** | **不关**（用户报的那一处） |
+| 工具栏搜索框 `(135,129)`（同一面板，在树区域上边界 145 之上） | 否 | 关 |
+| 树栏之外 `(395,413)`（最上层 `aside`） | 否 | 关 |
+
+而「触发器是谁」是**量出来的**，不是读文档读来的：`file-tree-region` 盒子 `{左:69,上:145,宽:262,高:696}`，
+往上 `closest` 到它那个 `[data-slot='context-menu-trigger']`，盒子**逐字相同**、`contains` 为真 ⇒
+**触发器就是整片树区域**。根因因此在 Kobalte 侧：`DismissableLayer` 默认
+`excludedElements={[context.triggerRef]}`（`chunk/LEK3K6R3.jsx:700`）把触发器**排除在「外面」之外**
+⇒ 在整片树里左键**一律不算点外面**，只有点到树栏之外才关。
+
+修复＝调用侧传 `excludedElements={[]}`（该 prop 未写进 Kobalte 的 `MenuContentBaseOptions`，但
+`{...others}` 排在它之后 ⇒ 调用方能覆盖；`packages/ui` 的包装层透传，`bun run typecheck` 实测通过）。
+**两处落点都改**：`project/file-tree.tsx` 与 `ai-session/session-list.tsx`（后者触发器是**整块会话列表**，同病）。
+
+**② 步的一个副产品：一条假红，根因在**测试环境**、不在被测物**（据实记，`#003-01`）
+
+新增的「左键点工具栏搜索框 ⇒ 也收掉」在**单跑时绿、整文件跑时红**，实得
+`data-expanded = [false]`——菜单压根没开住。逐层取证：
+
+1. 同步读（右键那一刻）：`data-expanded = [true]` ⇒ **菜单开出来了**；
+2. 一拍之后：`[false]` ⇒ 是**在这一拍里被关掉的**；
+3. 挂 `document` 上的 capture 事件录：`["focusin@body[]", "focusin@div[]"]`——比正常多出一次
+   `focusin@body`；
+4. **对照**：把上一条用例 `.skip` 掉重跑，事件录只剩 `["focusin@div[]"]`、`data-expanded = [true]`
+   ⇒ **被上一条用例污染**。
+
+根因：上一条用例**开着菜单**被卸载，拆菜单的收尾**晚一拍**去 `focus()` 一次 `document.body`
+（happy-dom 于是在 `body` 上派 `focusin`）。Kobalte 的 `createInteractOutside` 在 `document` 上
+capture 收 `focusin`（`chunk/MGQGUY64.jsx:41-46`），而 `body` 既不在菜单里也不在被豁免的触发器里
+⇒ 判成「焦点走到外面」⇒ 立刻 dismiss。**被测代码一字没改**，两种读数的差只来自上一条用例跑没跑。
+处置：`file-tree.test.tsx` 的 `afterEach` 改成**异步三步**（① 卸载 ② 让出一拍宏任务 ③ 再擦 body），
+把那个幽灵 `focusin` 消化在**没有菜单开着**的时候。改完 94 pass / 0 fail（修复前 93 pass / 1 fail，
+那 1 条正是缺陷本身）。
+
+**变异验证（逐处拆，据实记三类，`#003-03`）**
+
+| 拆哪一处 | 实得 |
+|---|---|
+| 组件层 `file-tree.tsx` 的 `excludedElements={[]}` | **只红 1 条**（「树内另一行」）；同组另 3 条**全绿** ⇒ 那 3 条**不是这条修复的守护者**（第 ③ 类：② 守的是边界的另一侧、③ 守的是过度关闭、④ 只钉「收掉之后还能用」），已把这句话写进该 spec 的文件头 |
+| 组件层 `session-list.tsx` 的同一处 | 第一条红、第二条绿（同样第 ③ 类，已写进文件头） |
+| 真栈 `context-menu-dismiss-real.spec.ts` | **恰红**：`① 树内另一行 点(200,829) 最上层=div[file-tree-row] ⇒ 菜单还开着=true` ⇒ `1 failed`；装回去 `1 passed`。⚠️ 判据 3、4 在变异下**没跑到**（第 2 条先红、用例中止）⇒ 未证明有牙 |
+
+**门禁**（**串行**，`#003-01`）：`tsgo -b` 全仓 typecheck **31/31 successful**；`packages/app` 组件套
+**798 pass / 0 fail**（＝ 基线 792 ＋ ⑥ 新增 4 ＋ 2）；单元套 **1094 pass / 0 fail**；改动 4 个文件的
+scoped oxlint **0 warnings / 0 errors**（130 rules）；`git diff --stat bun.lock` **为空**；真栈
+`context-menu-dismiss-real` **1 passed**（含修复前三处落点的前后对照读数）。
+
+**⑥ 步：同类落点逐个打勾**
+
+| 落点 | 前提成立？ | 处置 |
+|---|---|---|
+| `project/file-tree.tsx:507` 的 `ContextMenu.Content` | **成立**（触发器＝整片树区域，实测盒子逐字相同） | ✅ 已改 ＋ 4 条组件用例 ＋ 1 条真栈 spec |
+| `ai-session/session-list.tsx:328` 的同一处 | **成立**（触发器＝整块会话列表） | ✅ 已改 ＋ 2 条组件用例（用户裁定「连会话 pane 一起改」） |
+| `pages/layout/sidebar-project.tsx:150` | **不成立**——触发器是**单个按钮**（`<ContextMenu.Trigger as="button">`），点按钮之外本来就算「外面」 | ⬜ 上游文件（`src/pages/**`），本轮不动。⚠️ 但**「左键点触发器自己（那一行按钮）收不收菜单」这一支没验** ⇒ 登记待裁 |
+| `components/help-button.tsx`、`session/session-sortable-terminal-tab{,-v2}.tsx` | — | ⬜ 不在射程：只有 `onContextMenu` 回调（`preventDefault` / 开自己的菜单），不是 Kobalte `ContextMenu` |
+| `pages/home/home-projects-view.tsx` | — | ⬜ 不在射程：自己的 `createStore` 上下文菜单，不是 Kobalte `ContextMenu` |
+| `packages/ui/src/v2/components/menu-v2.tsx:196` 的 `MenuV2ContextContent` | — | ⬜ 上游 ui，且**仓内无调用方**（只有定义与 export）。⚠️ **将来有页面用 `MenuV2.Context.Content` 时，同一缺陷会在那儿复现**——那是个块级触发器的壳子 |
+
+**⛔ 缺口 / 挂账（`#002-02`）**
+
+1. **🔴 真栈 spec 仍未接线 CI**：`context-menu-dismiss-real.spec.ts`（以及本 feature 已有的 7 个真栈
+   spec）**只在有真栈（Playwright ＋ 内核 ＋ 前端）时跑**，本机是唯一读到过这些读数的机器。
+   要与既有的同一条缺口合账（⑦-1/⑦-2/⑦-3 都记过）。
+2. **🟡 `sidebar-project.tsx` 那一支没验**（见上表）：块级触发器与单按钮触发器的差别只是**触发面大小**，
+   「点在按钮自己身上」在 Kobalte 眼里仍不算外面 ⇒ 那一处**可能是同一族缺陷的另一种形态**，本轮没量。
+3. **🟡 组件层只有一条有牙**（变异记录）：其余三条是**边界**与**过度关闭**的判据，拆掉修复照样绿。
+   留着它们是对的（下一轮谁把 `excludedElements` 撤了、或引入「任何左键都关」的假修法时才看得出），
+   但**别把这一组的绿读成四层防护**——这句话已写进两个 spec 的文件头。

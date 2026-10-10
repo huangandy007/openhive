@@ -643,6 +643,84 @@ describe("SessionList 右键菜单（左栏）", () => {
 })
 
 /**
+ * 用户第 4 条（2026-10-11）：「右键后呼出右键弹窗，但是不选择对应的选项，弹窗不消失。
+ * 我希望的是 windows 风格，鼠标左键单击弹窗以外的地方时，弹窗消失。」
+ *
+ * ## 为什么这里也有一条（同一个修法落在**两个落点**上）
+ *
+ * 缺陷在 Kobalte 的 `DismissableLayer`：它默认把**触发器**排除在「外面」之外
+ * （`chunk/LEK3K6R3.jsx:700` 的 `excludedElements={[context.triggerRef]}`）。本组件与
+ * `file-tree.tsx` 都把**整块区域**当触发器（见上一条「右键作用面」）⇒ 在同一块区域里左键
+ * **一律不算点外面**。两处各传一次 `excludedElements={[]}`，也各有自己的一条用例
+ * （`LEARNINGS #005-12`：同一个修法落在 N 个落点上，就写 N 条用例——不是写一条把两处都过一遍）。
+ *
+ * 真栈读数（`file-tree` 那一侧的探针，`context-menu-dismiss-probe.spec.ts`）＝ 菜单开在
+ * `{左:201,上:478}`，左键点同一块区域里的另一行 ⇒ **菜单还开着**（缺陷）；点到区域之外才关。
+ *
+ * ⚠️ 判据读**状态属性** `data-expanded`，不读「节点在不在」——菜单关闭时 happy-dom 里
+ * 退场动画永不结束 ⇒ 节点一直在（`LEARNINGS #005-29`）。
+ *
+ * ## 变异记录（2026-10-11，拆掉本文件 `ContextMenu.Content excludedElements={[]}`，据实记三类）
+ *
+ * 实得：第一条红、第二条绿（`1 pass / 1 fail`）。⇒ 第二条**不是这条修复的守护者**
+ * （`LEARNINGS #003-03` 第 ③ 类）：它在修复前后都绿，守的是**过度关闭**那条独立失效路径。
+ * 与 `file-tree.test.tsx` 同组同形（同一条修法落两个落点 ⇒ 两处各一条有牙的用例，`#005-12`）。
+ */
+describe("SessionList 左键点菜单以外（用户第 4 条：Windows 习惯）", () => {
+  const 造 = () =>
+    挂({ directory: "/workspaces/u1/p1", sessions: [行("s1", "甲"), 行("s2", "乙")], currentID: "s1" })
+
+  /**
+   * 左键点一个元素——**必须发 `pointerdown`**，`.click()` 不够。
+   *
+   * Kobalte 判「点没点在外面」认的是 `document` 上 capture 的 `pointerdown`
+   * （`chunk/MGQGUY64.jsx:41-46`），合成一个 `.click()` 它收不到。
+   * ⚠️ 只发 `pointerdown`/`pointerup`、**不发 `click`**：这一组量的是「收不收菜单」这一件事，
+   * 别把「左键点了那一行 ⇒ 会话被选中」也搅进来（那是另一条判据，混在一起红了读不出是谁）。
+   */
+  const 左键点 = (el: HTMLElement | null | undefined) => {
+    if (!el) throw new Error("要左键点的那个元素不在——前提不成立（`#004-14`：先立前提再判果）")
+    for (const 类型 of ["pointerdown", "pointerup"])
+      el.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+  }
+
+  test("左键点列表里**另一行** ⇒ 菜单收掉——它就在触发器之内，正是缺陷那一处", async () => {
+    const { host } = 造()
+
+    右键(各行(host)[1])
+    await 冲刷()
+    // 前提先立住：不然下面读到的 `false` 可能是「菜单压根没开」而不是「点外面收掉了」（`#004-14`）。
+    expect(有菜单(), "前提：右键之后菜单得先开着").toBe(true)
+
+    左键点(各行(host)[0])
+    await 冲刷()
+
+    expect(有菜单(), "在列表里左键点一下，菜单就该收掉（Windows 习惯）").toBe(false)
+  })
+
+  /**
+   * 对照：**过度关闭**与「不关闭」是两条独立的失效路径，一条用例只能钉一条。
+   *
+   * 点在菜单**自己**（内容框，不是某个菜单项）上必须留着——把「任何左键都关」当成修法
+   * （例如直接监听 `document` 的 `pointerdown`）时，红的只有这一条。
+   */
+  test("左键点菜单**自己** ⇒ **不许**收掉——防「任何左键都关」的过度关闭", async () => {
+    const { host } = 造()
+
+    右键(各行(host)[1])
+    await 冲刷()
+    expect(有菜单()).toBe(true)
+
+    左键点(菜单内容())
+    await 冲刷()
+
+    expect(有菜单(), "点在菜单里面不是「点外面」").toBe(true)
+  })
+})
+
+/**
  * 行视觉规格（用户 2026-10-09 下达）：**行高 32px**、**文字垂直居中**、**编辑态整行灰底**。
  *
  * happy-dom 没有 CSS 引擎（`LEARNINGS #005-07`）⇒ 只能断 **类名集合**，而且要先 `split` 再判

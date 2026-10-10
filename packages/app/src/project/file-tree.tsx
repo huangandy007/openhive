@@ -493,7 +493,18 @@ export function FileTree(props: FileTreeProps) {
 
         {/* 设计 §6.2 的那张表——十项、四组、组间一个分隔符。顺序即表里的行序。 */}
         <ContextMenu.Portal>
-          <ContextMenu.Content>
+          {/* ⚠️ `excludedElements={[]}` **不是可选的**（用户第 4 条：左键点菜单以外的地方要收掉）。
+              Kobalte 的 `DismissableLayer` 默认把**触发器**排除在「外面」之外
+              （`chunk/LEK3K6R3.jsx:700`：`excludedElements={[context.triggerRef]}`）——而这里的
+              触发器是**整片树区域**（盒子与 `file-tree-region` 逐字相同，真栈实测
+              `{69,145,262,696}`，`context-menu-dismiss-probe.spec.ts` 读数落 `state.md` ⑦-④）
+              ⇒ 在树里任何地方左键都**不算点外面**，只有点到树栏之外才关（实测：工具栏搜索框
+              `(135,129)` 关、树内另一行 `(200,829)` 不关）。
+              传空数组把这份豁免撤掉：菜单项之外一律算外面。（该属性没写进 Kobalte 的
+              `MenuContentBaseOptions`，但它落在 `{...others}` 里、由本仓 `packages/ui` 的包装层
+              透传，`bun run typecheck` 实测通过；`LEARNINGS #005-22` 讲的 `data-slot` 被覆盖
+              是同一处 `{...rest}` 顺序的另一面。） */}
+          <ContextMenu.Content excludedElements={[]}>
              {/* 第一行：同工具栏「＋」 */}
             <菜单项
               action="create-file"

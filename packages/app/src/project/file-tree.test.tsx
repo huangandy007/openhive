@@ -309,9 +309,31 @@ describe("FileTree 文件树（FR-005）", () => {
    * Kobalte 的菜单 Portal 到 `document.body`、且关闭后**不卸载**（退场动画在 happy-dom 里
    * 永不结束）⇒ 不清就会串到下一条测试，而下面的 `菜单内容()` 查的是**整个 document**。
    */
-  afterEach(() => {
-    // 先卸载、再擦 body——顺序不能反（弹窗那条 100ms 定时器会被卸载一并清掉，见 `mount`）。
+  /**
+   * 三步，**顺序不能换**：① 先卸载 ② 让出一拍宏任务 ③ 再擦 body。
+   *
+   * ① 先卸载：弹窗那条 100ms 定时器挂在 `DialogProvider` 的 owner 上，不卸载就会在下一条
+   * 用例里开火（见 `mount`）。
+   *
+   * ② **为什么中间要空出一拍**（2026-10-11 实测，不是顺手加的）：上一条用例**开着菜单**被卸掉时，
+   * 拆掉菜单的收尾会**晚一拍**去 `focus()` 一次 `document.body`（happy-dom 于是在 `body` 上
+   * 派一个 `focusin`）。而 Kobalte 的 `createInteractOutside` 在 `document` 上 capture 收 `focusin`
+   * （`chunk/MGQGUY64.jsx:41-46`）——`body` 既不在菜单内容里、也不在被豁免的触发器里 ⇒ 判成
+   * **「焦点走到外面」⇒ 立刻 dismiss**。
+   *
+   * 于是受害的是**下一条用例**：它刚右键开出来的菜单会在同一拍里被这个幽灵事件关掉。
+   * 实测（只跑「点外面收掉」那组）：上一条**不跑**时事件录是 `["focusin@div[]"]`（只有菜单自己
+   * 拿焦点那次），菜单 `data-expanded` 停在 `true`；上一条**跑过**之后事件录多出 `focusin@body[]`，
+   * 菜单 `data-expanded` 变 `false`——而这两次被测的**代码一字没改**。
+   *
+   * 让出的这一拍把那个幽灵 `focusin` 消化在**没有菜单开着**的时候，事件落了空，下一条用例看到
+   * 的是干净的焦点账。（`LEARNINGS #003-01`：先怀疑测量，再怀疑被测物。）
+   *
+   * ③ 最后擦 body：Kobalte 的菜单 Portal 到 body 且关闭后不卸载，不清就串到下一条。
+   */
+  afterEach(async () => {
     while (挂过的.length) 挂过的.pop()!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     document.body.innerHTML = ""
   })
 
@@ -360,6 +382,23 @@ describe("FileTree 文件树（FR-005）", () => {
    */
   const 右键 = (el: HTMLElement | null | undefined) =>
     el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+
+  /**
+   * 左键点一个元素——真实的指针序列（`pointerdown` ＋ `pointerup`），**`.click()` 不够**。
+   *
+   * ⚠️ Kobalte 判「点没点在外面」认的是 **`document` 上 capture 的 `pointerdown`**
+   * （`dismissable-layer` → `createInteractOutside`，`MGQGUY64.jsx:105`），不是 `click`。
+   * 派 `.click()` 的话那层一个事件都收不到——而判据照样可能绿（它压根没测到那一层）。
+   *
+   * 元素找不到就**抛**：前提不成立时，要红在「前提」上，不要红在一个下游的空指针里。
+   */
+  const 左键点 = (el: HTMLElement | null | undefined) => {
+    if (!el) throw new Error("要左键点的那个元素不在——前提不成立（`#004-14`：先立前提再判果）")
+    for (const 类型 of ["pointerdown", "pointerup"])
+      el.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+  }
 
   /** 等一拍宏任务（Kobalte 有些收尾是 `setTimeout` 里做的，同步读会读到中间态）。 */
   const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
@@ -1049,6 +1088,97 @@ describe("FileTree 文件树（FR-005）", () => {
 
         expect(有菜单()).toBe(false)
         expect(收到).toEqual(["a.md"])
+      })
+    })
+
+    /**
+     * **用户第 4 条**的要害：「右键后呼出右键弹窗，但是不选择对应的选项，弹窗不消失。
+     * 我希望的是 windows 风格，鼠标左键单击弹窗以外的地方时，弹窗消失。」
+     *
+     * ⚠️ 这里的「以外」**不是**「消息菜单之外」那么简单——真栈读数（`context-menu-dismiss-probe.spec.ts`，
+     * 跑完即删，读数落 `state.md` ⑦-④）把它量成了一个盒子问题：
+     *
+     * | 落点 | 在触发器盒子里？ | 菜单关不关 |
+     * |---|---|---|
+     * | 树内另一行 `(200,829)` | **是**（触发器盒子 `{69,145,262,696}`，与树区域盒子**逐字相同**） | **不关**（缺陷） |
+     * | 工具栏搜索框 `(135,129)`（同一面板） | 否（在树区域上边界 145 之上） | 关 |
+     * | 树栏之外 `(395,413)` | 否 | 关 |
+     *
+     * 根因：`ContextMenu` 的**触发器就是整片树区域**，而 Kobalte 的 `DismissableLayer` 拿
+     * `excludedElements={[triggerRef]}` 把触发器**排除在「外面」之外**（`LEARNINGS #005-22` 之外的另一处
+     * 同族：那一条讲 `data-slot` 被覆盖，这一条讲**语义**被「触发器」这个词带偏）⇒ 在整片树里
+     * 左键**一律不算点外面**，只有点到树栏之外的工具栏/侧栏才关。
+     *
+     * 三条判据的**分界**不是随口的：① 是缺陷那一处；② 与 ① **同一面板、只差「在不在触发器里」**；
+     * ③ 防的是**过度关闭**（例如改成「任何 pointerdown 都关」的假修法）。
+     *
+     * ## 变异记录（2026-10-11，拆掉 `ContextMenu.Content excludedElements={[]}` 这一处，据实记三类）
+     *
+     * 实得：**只有 ① 红**（`3 pass / 1 fail`）。⇒ ② ③ ④ 三条**不是这条修复的守护者**
+     * （`LEARNINGS #003-03` 第 ③ 类，`#005-18` 的「假绿」要写进这个 spec 的文件头）：
+     * ② 在修复前后都关——它守的是**边界的另一侧**（「外面」必须照旧收），不是这一侧的缺陷；
+     * ③ 在修复前后都不关——它守的是**过度关闭**，而这次没有那种错法；
+     * ④ 只钉「收掉之后还能用」，左键那一步没收掉它也不红（它后面会重新右键另一行，菜单照样开）。
+     * **① 是唯一有牙的那条**——别把这一组的绿读成「四层防护」。
+     */
+    describe("点外面收掉（用户第 4 条：Windows 习惯）", () => {
+      test("左键点**树内另一行** ⇒ 菜单收掉——它就在触发器之内，正是缺陷那一处", async () => {
+        const host = mount(() => <FileTree paths={树("甲.md", "乙.md")} />)
+
+        右键(行按名(host, "甲.md"))
+        // `createInteractOutside` 的 pointerdown 监听是在 `setTimeout(…, 0)` 里注册的
+        // （`MGQGUY64.jsx:104`）——不等这一拍宏任务，下面派出去的事件它收不到。
+        await 歇一拍()
+        expect(有菜单(), "前提：右键之后菜单得先开着").toBe(true)
+
+        左键点(行按名(host, "乙.md"))
+        await 等到(() => !有菜单())
+
+        expect(有菜单(), "在树里左键点一下，菜单就该收掉（Windows 习惯）").toBe(false)
+      })
+
+      test("左键点**工具栏搜索框**（同一面板、触发器之外） ⇒ 也收掉——把边界钉成两条", async () => {
+        const host = mount(() => <FileTree paths={树("甲.md")} />)
+
+        右键(行按名(host, "甲.md"))
+        await 歇一拍()
+        expect(有菜单()).toBe(true)
+
+        左键点(槽(host, "file-tree-search"))
+        await 等到(() => !有菜单())
+
+        expect(有菜单(), "树区域之外（工具栏）左键应当收掉菜单").toBe(false)
+      })
+
+      test("左键点**菜单自己**（分隔符） ⇒ **不许**收掉——防「任何左键都关」的过度关闭", async () => {
+        const host = mount(() => <FileTree paths={树("甲.md")} />)
+
+        右键(行按名(host, "甲.md"))
+        await 歇一拍()
+        expect(有菜单()).toBe(true)
+
+        左键点(菜单内容()?.querySelector<HTMLElement>("[data-slot='context-menu-separator']"))
+        await 歇一拍()
+
+        expect(有菜单(), "点在菜单里面不是「点外面」，菜单必须还开着").toBe(true)
+      })
+
+      test("收掉之后，右键**另一行**照样能开、作用对象是那一行——「能关」不等于「关了还能用」", async () => {
+        const 收到: string[] = []
+        const host = mount(() => <FileTree paths={树("甲.md", "乙.md")} onCopy={(path) => 收到.push(path)} />)
+
+        右键(行按名(host, "甲.md"))
+        await 歇一拍()
+        左键点(行按名(host, "乙.md"))
+        await 等到(() => !有菜单())
+
+        右键(行按名(host, "乙.md"))
+        await 歇一拍()
+        expect(有菜单(), "收掉之后右键另一行必须还能开").toBe(true)
+        点菜单项("copy")
+        await 歇一拍()
+
+        expect(收到, "作用对象要跟着这一次的右键走，不是上一次的残留").toEqual(["乙.md"])
       })
     })
 

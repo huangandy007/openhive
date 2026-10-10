@@ -320,7 +320,12 @@ export function SessionList(props: SessionListProps): JSX.Element {
         </ContextMenu.Trigger>
 
         <ContextMenu.Portal>
-          <ContextMenu.Content>
+          {/* ⚠️ `excludedElements={[]}` 与 `file-tree.tsx` 是**同一条**（用户第 4 条：左键点菜单以外
+              的地方要收掉）：触发器是**整块会话列表**，而 Kobalte 的 `DismissableLayer` 默认把触发器
+              排除在「外面」之外（`chunk/LEK3K6R3.jsx:700`）⇒ 在列表里点任何一处都不算点外面。
+              两处**都**要改，不是改一处就够——`LEARNINGS #005-12`：同一个修法落在 N 个动作上，
+              就写 N 条用例；这里是同一个修法落在 N 个**落点**上。 */}
+          <ContextMenu.Content excludedElements={[]}>
             <ContextMenu.Item
               data-action="rename"
               // 「未接线」与「没有作用对象」是两条**独立**的禁用理由，合起来写进一个表达式即可，
