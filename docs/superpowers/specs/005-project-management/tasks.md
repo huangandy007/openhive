@@ -566,13 +566,17 @@
 |---|---|---|---|---|---|
 | ① | 「左栏文件 tab 页面，在空白处单击右键呼不出右键」 | `87decf7fca` | **T019**（左栏外壳）＋ **T007**（文件树） | `e2e/real-stack/file-tree-blank-menu-real.spec.ts`（4 条，真栈） | ✅ 那条同型挂账**已由 ⑤ 闭合** |
 | ② | 「新建有问题，重命名不成功」（右键菜单那条路径） | `db1a346da2` | **T008**（右键菜单） | `e2e/real-stack/file-tree-menu-focus-real.spec.ts`（2 条，真栈） | 全仓 `ContextMenu` 根用法 3 处已逐个判定，**无第三处同型** |
-| ③ | 「会话过期后新建失败」（用户贴的控制台全是 401） | `be7257e0b4` | **T018**（FE 半边的结论话） | 单测 12 条 ＋ `e2e/real-stack/file-tree-session-expired-real.spec.ts` | 🔴 **会话过期后没有重新登录入口**（页面不跳登录页）⇒ 跨模块改动，待裁定；另有 2 条小缺口见 `state.md` ③ |
+| ③ | 「会话过期后新建失败」（用户贴的控制台全是 401） | `be7257e0b4` | **T018**（FE 半边的结论话） | 单测 12 条 ＋ `e2e/real-stack/file-tree-session-expired-real.spec.ts` | ✅ **会话过期后没有重新登录入口**已被 ⑥ 闭合（2026-10-10）；另有 2 条小缺口见 `state.md` ③ |
 | ④ | 「新建的文件夹建完就看不见」 | `84ff47bd78` | **T018**（范围 ⑤「列文件」）＋ **T007** | 单测/组件共 +9 条 ＋ `e2e/real-stack/file-tree-empty-dir-real.spec.ts`（2 条，真栈） | 空目录 `originalPath` 丢了尾分隔符（今天无消费者）；`EmptyDir` story 进了 a11y 审计面但脚本未跑 |
 | ⑤ | （用户**未报**）① 的 ⑥ 步实测出「会话 tab 逐字同型」——空白处右键同样呼不出；**另查出 ① 没有的第二层**：region 不撑满时**菜单照开、作用对象却是上一次的残留** | 本轮 | **T019**（左栏外壳）＋ **T023**（会话列表） | 真栈 `e2e/real-stack/session-pane-blank-menu-real.spec.ts`（3 条）＋ 单元改 1 条（**原为空转**）、新增 1 条类名判据 | 🔴 `session-list.test.tsx` 那条「右键空白处」**从写下那天起就空转**（查 `session-list-body`，该名字被 `packages/ui` 覆盖、DOM 里从不存在）⇒ 本轮改成真用例；🔴 同一个洞在 `file-tree.tsx:398` 的 `data-slot="file-tree-area"` 上还在（今天无消费者，登记不动） |
+| ⑥ | （③ 的挂账，用户本轮点名要办）「会话过期后没有重登录出口」⇒ 方案由用户裁定为 **「401 自动重探身份」** | 本轮 | **T015**（登录门 / `AuthGate`）＋ **T018**（fork 外呼底座 `trySend`） | 单元 `src/project/openhive-fetch.test.ts`（新 3 条）＋ 组件 `src/auth/auth-gate.test.tsx`（+3）＋ 真栈 `e2e/real-stack/file-tree-session-expired-real.spec.ts`（判据 1 **从「横幅那句话」迁到「去路：出得来登录页」**） | 🔴 **上游出口的 401 仍无人处理**（真栈实测 `/api/health`、`/global/health` 也 401，走 `utils/server-protocol.ts` / `context/server-sync.tsx`——均非 fork 文件，改它们＝动上游高频文件，登记不动）；🟡 登录页不说原因（横幅随工作台卸载，实测 `[]`）；🟡 同一刻多个出口吃 401 ⇒ 重探多次（接缝刻意不去重）。三条均见 `state.md` ⑥ |
 
 **对既有 task 正文的影响**：
 
 - **T007 / T008 / T019 / T018** 的**出参**均未变——这四条改的都是「出参已声明、但落地时没走通」的地方
   （触发区盒高、菜单焦点归还、401 的结论话、空目录的清单条目），不新增功能面。
+- **T015（登录门）** 的**出参**同样未变：`view()` 的三分支、`LoginPage` 的入参、身份缝的写入时机都没动。
+  ⑥ 加的是**同一道门多了一个开合时机**（运行中吃到 401 ⇒ 重探），走的还是启动时那一个 `probeSession`
+  ——不是第二套身份判断。⚠️ 因此组件 `auth-gate.test.tsx` 的既有 17 条**不动**，新增 3 条（共 20）。
 - **T018 范围 ⑤「列文件」** 的完成判据要补一句：清单里除了文件路径，还要有**空目录**那条
   （带尾分隔符）——否则「新建文件夹」这个动作在界面上没有可见的果。见 `state.md` ④ 的改法表。
