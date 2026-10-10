@@ -121,6 +121,21 @@ describe("DualFileTree 上下双树（设计 §5）", () => {
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("data-type")).toBe("file")
   })
 
+  /**
+   * 下树的**建树规则与上树同一份**（2026-10-10）。
+   *
+   * 备份清单今天是**文件级**的（一条目录项都不会有），所以两处用同一个建树函数**结果相同**
+   * ——这条用例喂一个今天**不可能**的输入（带尾分隔符的目录项）来钉住那条一致性：哪天有人
+   * 把其中一处改回上游那个函数，两棵树会当场岔开，而症状是「同一个文件夹上树看得见、
+   * 下树看不见」——不报错、不变红（`LEARNINGS #006-14` 那类横切面）。
+   */
+  test("下树的建树规则与上树同一份：目录项（带尾分隔符）也画成目录行", () => {
+    const { host } = 挂({ open: true, backups: ["报告\\", "结论.docx"] })
+
+    expect(行(host, "minio", "报告")?.getAttribute("data-type")).toBe("directory")
+    expect(各行(host, "minio").map((el) => el.getAttribute("data-path"))).toEqual(["报告", "结论.docx"])
+  })
+
   test("下树只列 MinIO 上**有的**——沙箱里没备份的那两份不在下树（这正是双树要给的对照）", () => {
     const { host } = 挂({ open: true })
 

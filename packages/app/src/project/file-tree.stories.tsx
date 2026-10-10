@@ -11,10 +11,13 @@ import { FileTree } from "./file-tree"
  * （可点菜单项必须有可访问名称与角色）。只写「全部接线」那一档，就漏掉了 prod 今天真实的
  * 「半截菜单」状态。
  *
- * ## 路径是**叶路径**
+ * ## 路径是**叶路径**（外加一条例外：空目录）
  *
- * `paths` 的形状与上游 `buildFileTreeV2Model` 收的完全一致（`readonly string[]`），
- * 目录由模型自己建——所以这里给的是文件，不是目录（同 `file-tree.test.tsx` 的夹具）。
+ * `paths` 是 `readonly string[]`，**外层形状**与上游 `buildFileTreeV2Model` 收的相同，
+ * 但里面多了**一类值**：空目录（带尾分隔符，`资料\`——读侧 `openhive-files.ts` 补的，
+ * 建树那一半在 `./file-tree-model.ts`）。所以这里给的**大部分**是文件，不是目录
+ * （同 `file-tree.test.tsx` 的夹具）；`EmptyDir` 那一档专门喂空目录，因为那是一副
+ * **新的渲染形状**（一条没有孩子的目录行），没有 story 就没有审计面（`LEARNINGS #006-08`）。
  */
 export default {
   title: "App/OpenHive/FileTree",
@@ -29,6 +32,19 @@ export const Empty = {
   render: () => (
     <div class="flex h-80 w-72 flex-col">
       <FileTree paths={[]} />
+    </div>
+  ),
+}
+
+/**
+ * 空目录（2026-10-10）：`资料\` 那条是**空目录**——一条**没有孩子**的目录行。
+ * 它在磁盘上存在，但一个子路径都交不出来，所以名字只能由读侧自己补上（见文件头）。
+ * 这一档专门盯住它：图标是文件夹、有展开箭头、排在同一层的文件**前面**。
+ */
+export const EmptyDir = {
+  render: () => (
+    <div class="flex h-80 w-72 flex-col">
+      <FileTree paths={["资料\\", "话单.csv"]} draggable />
     </div>
   ),
 }

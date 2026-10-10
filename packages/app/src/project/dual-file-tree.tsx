@@ -3,7 +3,8 @@ import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { createMemo, createSignal, For, Show, splitProps } from "solid-js"
-import { buildFileTreeV2Model, flattenFileTreeV2 } from "@/components/file-tree-v2-model"
+import { flattenFileTreeV2 } from "@/components/file-tree-v2-model"
+import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileTree, type FileTreeProps } from "@/project/file-tree"
 
 /** 每层缩进（设计 §6.4 的 16px 层级缩进）——**与 `file-tree.tsx` 同值**：两棵树并排出现，缩进不一致会看得出来。 */
@@ -272,7 +273,11 @@ function MinioTree(props: {
 }) {
   /** 收起态**存反向**（收起集合而不是展开集合）：默认全展开是常态，空集合即默认（同 `file-tree.tsx`）。 */
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
-  const 模型 = createMemo(() => buildFileTreeV2Model(props.backups ?? []))
+  // 与上树（`file-tree.tsx`）**同一个建树函数**：下树这一侧的备份清单是**文件级**的
+  // （一条目录项都没有），所以今天两函数结果逐字相同——接上不是为了改变什么，是为了
+  // **不让同一份清单形状在两棵树上各有一套建树规则**（`LEARNINGS #002-06`：两套漂了不报错，
+  // 症状是「上树看得见、下树看不见」而看不出为什么）。
+  const 模型 = createMemo(() => buildProjectFileTreeModel(props.backups ?? []))
   const 行列表 = createMemo(() => flattenFileTreeV2(模型(), 展开))
 
   function 展开(path: string) {

@@ -3,11 +3,8 @@ import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
-import {
-  buildFileTreeV2Model,
-  flattenFileTreeV2,
-  type FileTreeV2Node,
-} from "@/components/file-tree-v2-model"
+import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v2-model"
+import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
@@ -74,8 +71,11 @@ const MENU_ITEM =
 
 export interface FileTreeProps {
   /**
-   * 树的路径清单——形状与上游 `buildFileTreeV2Model` 收的完全一致（`readonly string[]`），
+   * 树的路径清单——形状与上游 `buildFileTreeV2Model` 收的**同**（`readonly string[]`），
    * 故调用方不必先建树。省略 / 空都走空态（两者都是「今天没有东西可看」，不必在 UI 上区分）。
+   *
+   * ⚠️ 比上游多认一类值：**空目录**（`资料\`，带尾分隔符——`openhive-files.ts` 补的那种）。
+   * 建树的活落在 `@/project/file-tree-model`（不是上游那个函数），两种来源共用它。
    */
   paths?: readonly string[]
   /**
@@ -163,8 +163,12 @@ export interface FileTreeProps {
  *
  * 上游 `components/file-tree-v2.tsx` 要 `useFile()`（六层 provider），组件测试整个拖不进来。
  * D0-2 裁定「包一层、底座取 v2 **纯函数** model」——本组件底座就是
- * `components/file-tree-v2-model.ts` 的 `buildFileTreeV2Model` / `flattenFileTreeV2`（上游文件**一字未改**），
+ * `components/file-tree-v2-model.ts` 的 `flattenFileTreeV2`（上游文件**一字未改**），
  * 展开态由本组件自持，于是能像 `ProjectPanel` 一样脱 provider 单测。
+ *
+ * 建树那一半 2026-10-10 起落在 `@/project/file-tree-model`：上游的
+ * `buildFileTreeV2Model` 认不出**空目录**（它只从「这条路径还有下一段」认目录），
+ * 而空文件夹在树上是真实存在的（用户实报「新建的文件夹建完就看不见」）。那一层只补这一件事。
  *
  * ## 状态归属
  *
@@ -240,7 +244,7 @@ export function FileTree(props: FileTreeProps) {
   const 全部 = () => props.paths ?? []
   const 词 = () => keyword().trim().toLowerCase()
 
-  const 全模型 = createMemo(() => buildFileTreeV2Model(全部()))
+  const 全模型 = createMemo(() => buildProjectFileTreeModel(全部()))
   /** 路径 → 节点，只为「选中项是目录还是文件」这一问（落点要用）。 */
   const 节点表 = createMemo(() => {
     const map = new Map<string, FileTreeV2Node>()
@@ -258,7 +262,7 @@ export function FileTree(props: FileTreeProps) {
   /** 搜索态下模型只含命中项及其祖先 ⇒ 全部展开即「父级路径自动展开」（设计 §6.1 原话）。 */
   const 行列表 = createMemo(() => {
     const k = 词()
-    const 模型 = k ? buildFileTreeV2Model(全部().filter((path) => path.toLowerCase().includes(k))) : 全模型()
+    const 模型 = k ? buildProjectFileTreeModel(全部().filter((path) => path.toLowerCase().includes(k))) : 全模型()
     return flattenFileTreeV2(模型, k ? () => true : 展开)
   })
 

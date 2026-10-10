@@ -551,6 +551,40 @@ describe("FileTree 文件树（FR-005）", () => {
       ])
     })
 
+    /**
+     * **空文件夹**（2026-10-10，用户实报「新建的文件夹建完就看不见」）。
+     *
+     * 它在下游是一条**带尾分隔符**的路径（`资料\`，`openhive-files.ts` 补的那条）。本层要看见
+     * 三样，缺哪一样都是用户看得见的错：①**在**（不在 ⇒ 建完就消失）；②`data-type` 是
+     * `directory`（错成 file ⇒ 图标、展开箭头、落点全跟着错）；③排在文件**前面**（上游那条
+     * 「目录在前」的排序是在建节点时按 type 做掉的，翻 type 不重排的话它会掉进文件堆里）。
+     */
+    test("空目录是一条**目录行**：在、data-type=directory、有箭头、排在文件前", () => {
+      const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} />)
+
+      const 空目录行 = 行按名(host, "资料")
+      expect(空目录行?.getAttribute("data-type")).toBe("directory")
+      expect(箭头(空目录行)).toBeTruthy()
+      expect(路径(host)).toEqual(["资料", "话单.csv"])
+    })
+
+    /**
+     * 同一个 bug 的另一张脸：**落点**。`落点()` 靠 `节点表` 里的 `type` 判「选中项是不是目录」
+     * ——空目录若被当成文件，落点就算成**它的父目录**：用户在「资料」里点新建，文件落在项目根，
+     * 而界面上看起来一切正常（`#004-09`：判据错了不会有响声）。
+     */
+    test("选中**空目录** ⇒ 新建落点是它自己（不是它的父目录）", () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} onCreate={(i) => 记.push(i)} />)
+
+      行按名(host, "资料")?.click()
+      动作(host, "create")?.click()
+      按钮(host, "file-tree-create-file")?.click()
+      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+
+      expect(记).toEqual([{ kind: "file", parent: "资料", name: "新.md" }])
+    })
+
     test("未接线时 ＋ 本身是禁用态，下拉都打不开——不假装能建（今天确实没有接收方）", () => {
       const host = mount(() => <FileTree paths={树("a.txt")} />)
 
