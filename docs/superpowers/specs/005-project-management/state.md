@@ -2749,10 +2749,11 @@ Trigger 时它不跑，**菜单会开、作用对象却是上一次的残留**�
 `sidebar-project-switch-real.spec.ts`，`#006-02` 老账）；组件 **772 pass / 0 fail**；
 改动产品文件 oxlint **0 warnings / 0 errors**。
 
-**🔴 登记挂账（同类落点，用户未报 ⇒ 不动手）**：`ai-session/session-list.tsx:206` 的根
+**🔴 登记挂账（同类落点，用户未报 ⇒ 当场不动手）**：`ai-session/session-list.tsx:206` 的根
 `flex min-h-0 w-full flex-1 flex-col` 与本条同型，父级同样是那个不成 flex 容器的 `PANE`。
 真栈实测：会话页签 bottom = 841、列表根 bottom = 189 ⇒ **空白处右键同样呼不出菜单**
 （`e2e/real-stack/session-pane-blank-probe.spec.ts` 可复现）。
+⇒ ✅ **已于 ⑤ 闭合**（用户 2026-10-10 点头后开工；另查出本条没有的第二层，见 ⑤）。
 
 ### ② 右键菜单 ⇒ 重命名 / 新建 时输入条拿不到焦点（2026-10-10 · 已提交 `db1a346da2`）
 
@@ -2910,3 +2911,86 @@ resolve 401 POST /openhive/file/create      ⟵ 401 是 resolve 出来的，不�
    `node.path`），已写进 `file-tree-model.ts` 文件头。
 2. `EmptyDir` 这个新 story 挂在 storybook a11y 审计面上，但**本轮没跑那个审计脚本**（它是手工跑的
    重编排）⇒ 进面 ≠ 已审。
+
+### ⑤ 会话 pane 空白处右键呼不出菜单（2026-10-10 · 本轮）
+
+**现象（用户没报，是 ① 的 ⑥ 步实测出来的）**：① 的文件树那条修完之后按 `#002-06` 问「谁在按同一个
+前提做同一件事」，`session-pane-blank-probe.spec.ts` 真栈实测**会话 tab 逐字同型**：
+
+| | 会话 tab（修前） |
+|---|---|
+| `session-list-slot` bottom | 841 |
+| `session-list` 根 bottom | **189** |
+| 空白点(125,801) 最上层 | `div[session-list-slot]` ⇒ 菜单开 = **false** |
+
+**根因（**两层**，都得拆）**
+
+- **第一层**＝① 同一个：会话 pane 用的还是那个**不是 flex 容器**的 `PANE` ⇒ `session-list` 根的
+  `flex-1` 无剩余空间可分 ⇒ 空白落在 pane 上、不在触发区里。
+- **第二层（① 没有、为会话新查出来的）**：就算 pane 是 flex 容器，`session-list-region`
+  （`onContextMenu={记行}` 挂的那一层）也**没有 `flex-1`** ⇒ 空白落在 **`ContextMenu.Trigger`** 上
+  ⇒ **菜单照开**，而 `记行` 没跑 ⇒ **作用对象停在上一次的残留**。这不报错、也不变红（`#005-19`）。
+
+**改法（3 个文件，全是 fork 自有）**
+
+- `sidebar-tabs.tsx`：把 `PANE_FILES`（＝ `PANE` ＋ `flex flex-col`）**并回 `PANE`**，删掉那个常量。
+  合并后「文件」pane 的 class 串**逐字不变**（原来就是这两条拼出来的），会话 pane 得到同一份骨架。
+  不保留两个常量的理由：它们本来就会一样，留着就是同一件事的第二个说法（`#002-06`）。
+- `session-list.tsx`：按 `file-tree.tsx` 那一对**逐字镜像**（`#004-12`）——触发器
+  `flex min-h-0 w-full flex-1 flex-col`；region 接 `flex-1 min-h-0 overflow-y-auto px-1 pt-1`、
+  `onContextMenu` 留在它身上。**滚动容器从触发器下移到 region**，`px-1 pt-1` 一并搬过去
+  ⇒ 视觉逐像素不变、而空白点必然落在 `记行` 的射程里。
+- `session-list.test.tsx`：**改掉一条从头就在空转的用例**（见下），并新增一条类名判据。
+
+**🔴 顺带挖出的既有缺陷：`session-list.test.tsx` 那条「右键空白处 ⇒ 不动作、不误删」**
+**从写下那天起就是空转的**。它查 `[data-slot='session-list-body']`，而这个名字**在 DOM 里从不存在**
+——`packages/ui/src/components/context-menu.tsx:29-43` 的 `ContextMenuTrigger` 把
+`data-slot="context-menu-trigger"` **硬写在 `{...rest}` 之后**，调用方传的值被静默覆盖。于是
+`身子 = null` ⇒ 右键辅助函数 `el?.dispatchEvent(...)` 一个事件都没发 ⇒ 两个 `if (菜单项(...))`
+都不进 ⇒ 两条断言度量的是**什么都没做**。当场取证（注入临时日志后实得）
+`[取证] 身子 = null ； region存在 = true`、29 pass / 0 fail，随后还原探针。
+⇒ 改查 `session-list-region`、并把「菜单确实开了」写成**会炸的前提**（`#004-14`、`#005-22`）。
+
+**回归网**：新增真栈 spec `e2e/real-stack/session-pane-blank-menu-real.spec.ts`（3 条：无会话 /
+有会话（含「右键行 ⇒ 重命名可用」对照组）/ 30 场滚动）；单元层改 1 条为真、新增 1 条钉类名。
+组件层**钉不住**几何（happy-dom 无布局引擎，`#005-07`）。
+
+**变异验证（逐处拆，据实记三类，`#003-03`）**
+
+| 拆哪一处 | 恰红 | 假绿 / 另一类 |
+|---|---|---|
+| M1：`PANE` 的 `flex flex-col` | 真栈 **3/3 全红**（`列表根 bottom=189≠841`、最上层＝pane ⇒ 开=false、`槽滚 996/728` 标题行会滚走） | — |
+| M2：`session-list-region` 的 `flex-1 min-h-0` | 真栈 2 条红（「region 要撑满触发器」＋「右键空白 ⇒ 作用对象为无」，实测 `禁用=false`＝上一条会话的残留） | **①「菜单开不开」那两条照样绿**（实得最上层 `div[context-menu-trigger]` ⇒ 开=true）——这正是第二层缺陷的形态，靠新加的「作用对象」判据兜住；**②「30 场只有列表区滚」照样绿，而它绿得正确**：`overflow-y-auto` 让该子项 `min-height:auto` 归零 ⇒ 被 `flex-shrink` 压到容器高、在自己内部滚动 ⇒ 那条判据仍为真（`#005-23` 分诊表第四类） |
+| M2（单元层）| 新增的类名判据**恰红**（就红在 `flex-1` 上） | 那条「右键空白处」行为用例照样绿（行为没变，符合预期） |
+
+**门禁**（**串行**，`#003-01`）：`bun run typecheck`（仓库根，turbo）**31/31 successful**；`packages/app`
+单元 **1091 pass / 0 fail**；组件 **777 pass / 0 fail**（＝上一轮 776 ＋ 新增 1 条）；改动文件
+scoped oxlint **0 warnings / 0 errors**（当场的实测：`file-tree-empty-dir` 6 / `file-tree-blank-menu` 5 /
+`sidebar-session-nav` 6 / 本轮新 spec 6，全是同型 `no-unsafe-type-assertion`）；
+`bun.lock` **无污染**（`git diff --stat bun.lock` 为空）。
+
+**⑥ 步：同类落点逐个判（`grep -rn "ContextMenu.Trigger" / "onContextMenu"`，全仓 6 处消费点）**
+
+| 落点 | 前提成立？ | 处置 |
+|---|---|---|
+| `src/project/file-tree.tsx`（fork） | 成立 | ✅ ① 已修；本轮复核：触发器 ＋ region 那一对都在 |
+| `src/ai-session/session-list.tsx`（fork） | 成立（**第二层**也成立） | ✅ **本轮修** |
+| `src/project/sidebar-tabs.tsx`（fork） | 成立（两个 pane 同一常量） | ✅ **本轮修**（合并 `PANE_FILES` → `PANE`） |
+| `src/pages/layout/sidebar-project.tsx:97`（**上游**） | ⬜ 不成立 | 触发器 `as="button"` `size-10`，**没有**内层 `flex-1` 区域；每个项目一个自己的盒子 ⇒ 不存在「空白归谁」 |
+| `src/components/session/session-sortable-terminal-tab{,-v2}.tsx`（**上游**） | ⬜ 不成立 | `onContextMenu` 挂在**页签自身**，作用对象就是那个页签 |
+| `src/pages/home/home-projects-view.tsx:428`（fork 的主页定制） | ⬜ 不成立 | 只有 `preventDefault`，不是触发区 |
+| `src/components/help-button.tsx:65`（上游） | ⬜ 不成立 | 同上 |
+| `MenuV2` 各处（点击触发，非右键） | ⬜ 不成立 | 没有「空白归属」这回事 |
+| `packages/ui/**` | — | 上游，不碰 |
+
+**⛔ 缺口 / 挂账（`#002-02`）**
+
+1. 本轮的**真栈 3 条**是本机跑的真浏览器 ＋ 真内核；**CI 上跑不跑**这件事仍然没接线（与
+   ① ~ ④ 同一笔账）。
+2. `#005-22` 那条教训的**同一个洞**在 `file-tree.tsx:398` 上也在：调用方传的
+   `data-slot="file-tree-area"` **同样被 `packages/ui` 覆盖**（真栈实测该名字不存在）。今天**没有**
+   用例按这个名字查（`file-tree.test.tsx` 查的是 `file-tree-region`，那层是自己的、没被覆盖）
+   ⇒ 还没咬到人，**如实登记、本轮不动**。
+3. 会话 pane 与文件 pane 现在都是 `overflow-y-auto`（pane）＋ 子项 `overflow-y-auto`（region）
+   的**双层滚动容器**。今天内层先吸收、外层恒为 0（真栈实测 `槽滚 scrollHeight==clientHeight`），
+   但它不是「设计成两层」而是「照抄文件树那一对」的副作用 ⇒ 记在这里，将来若要收拢归一次。

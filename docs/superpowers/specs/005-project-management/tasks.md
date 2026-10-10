@@ -564,10 +564,11 @@
 
 | # | 现象（用户原话） | commit | 归属 | 回归网 | 同类落点 / 欠账 |
 |---|---|---|---|---|---|
-| ① | 「左栏文件 tab 页面，在空白处单击右键呼不出右键」 | `87decf7fca` | **T019**（左栏外壳）＋ **T007**（文件树） | `e2e/real-stack/file-tree-blank-menu-real.spec.ts`（4 条，真栈） | 🔴 `ai-session/session-list.tsx:206` **同型**（会话页签空白处同样呼不出）⇒ 用户未报、不动手，待裁定 |
+| ① | 「左栏文件 tab 页面，在空白处单击右键呼不出右键」 | `87decf7fca` | **T019**（左栏外壳）＋ **T007**（文件树） | `e2e/real-stack/file-tree-blank-menu-real.spec.ts`（4 条，真栈） | ✅ 那条同型挂账**已由 ⑤ 闭合** |
 | ② | 「新建有问题，重命名不成功」（右键菜单那条路径） | `db1a346da2` | **T008**（右键菜单） | `e2e/real-stack/file-tree-menu-focus-real.spec.ts`（2 条，真栈） | 全仓 `ContextMenu` 根用法 3 处已逐个判定，**无第三处同型** |
 | ③ | 「会话过期后新建失败」（用户贴的控制台全是 401） | `be7257e0b4` | **T018**（FE 半边的结论话） | 单测 12 条 ＋ `e2e/real-stack/file-tree-session-expired-real.spec.ts` | 🔴 **会话过期后没有重新登录入口**（页面不跳登录页）⇒ 跨模块改动，待裁定；另有 2 条小缺口见 `state.md` ③ |
 | ④ | 「新建的文件夹建完就看不见」 | `84ff47bd78` | **T018**（范围 ⑤「列文件」）＋ **T007** | 单测/组件共 +9 条 ＋ `e2e/real-stack/file-tree-empty-dir-real.spec.ts`（2 条，真栈） | 空目录 `originalPath` 丢了尾分隔符（今天无消费者）；`EmptyDir` story 进了 a11y 审计面但脚本未跑 |
+| ⑤ | （用户**未报**）① 的 ⑥ 步实测出「会话 tab 逐字同型」——空白处右键同样呼不出；**另查出 ① 没有的第二层**：region 不撑满时**菜单照开、作用对象却是上一次的残留** | 本轮 | **T019**（左栏外壳）＋ **T023**（会话列表） | 真栈 `e2e/real-stack/session-pane-blank-menu-real.spec.ts`（3 条）＋ 单元改 1 条（**原为空转**）、新增 1 条类名判据 | 🔴 `session-list.test.tsx` 那条「右键空白处」**从写下那天起就空转**（查 `session-list-body`，该名字被 `packages/ui` 覆盖、DOM 里从不存在）⇒ 本轮改成真用例；🔴 同一个洞在 `file-tree.tsx:398` 的 `data-slot="file-tree-area"` 上还在（今天无消费者，登记不动） |
 
 **对既有 task 正文的影响**：
 
