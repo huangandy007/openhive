@@ -570,6 +570,7 @@
 | ④ | 「新建的文件夹建完就看不见」 | `84ff47bd78` | **T018**（范围 ⑤「列文件」）＋ **T007** | 单测/组件共 +9 条 ＋ `e2e/real-stack/file-tree-empty-dir-real.spec.ts`（2 条，真栈） | 空目录 `originalPath` 丢了尾分隔符（今天无消费者）；`EmptyDir` story 进了 a11y 审计面但脚本未跑 |
 | ⑤ | （用户**未报**）① 的 ⑥ 步实测出「会话 tab 逐字同型」——空白处右键同样呼不出；**另查出 ① 没有的第二层**：region 不撑满时**菜单照开、作用对象却是上一次的残留** | 本轮 | **T019**（左栏外壳）＋ **T023**（会话列表） | 真栈 `e2e/real-stack/session-pane-blank-menu-real.spec.ts`（3 条）＋ 单元改 1 条（**原为空转**）、新增 1 条类名判据 | 🔴 `session-list.test.tsx` 那条「右键空白处」**从写下那天起就空转**（查 `session-list-body`，该名字被 `packages/ui` 覆盖、DOM 里从不存在）⇒ 本轮改成真用例；🔴 同一个洞在 `file-tree.tsx:398` 的 `data-slot="file-tree-area"` 上还在（今天无消费者，登记不动） |
 | ⑥ | （③ 的挂账，用户本轮点名要办）「会话过期后没有重登录出口」⇒ 方案由用户裁定为 **「401 自动重探身份」** | 本轮 | **T015**（登录门 / `AuthGate`）＋ **T018**（fork 外呼底座 `trySend`） | 单元 `src/project/openhive-fetch.test.ts`（新 3 条）＋ 组件 `src/auth/auth-gate.test.tsx`（+3）＋ 真栈 `e2e/real-stack/file-tree-session-expired-real.spec.ts`（判据 1 **从「横幅那句话」迁到「去路：出得来登录页」**） | 🔴 **上游出口的 401 仍无人处理**（真栈实测 `/api/health`、`/global/health` 也 401，走 `utils/server-protocol.ts` / `context/server-sync.tsx`——均非 fork 文件，改它们＝动上游高频文件，登记不动）；🟡 登录页不说原因（横幅随工作台卸载，实测 `[]`）；🟡 同一刻多个出口吃 401 ⇒ 重探多次（接缝刻意不去重）。三条均见 `state.md` ⑥ |
+| ⑦ | （用户一次下达的五条交互反馈之**第 1 条**）「新建文件、新建文件夹时，会在文件 Tab 页面的图标下方显示输入框……我希望还是以弹窗的方式进行交互更好」 | 本轮 | **T007**（文件树）＋ **T008**（右键菜单那条入口） | 新增组件 `src/project/file-create-dialog.tsx`（自包含）＋ 单测 `file-create-dialog.test.tsx`（9 条）；`file-tree.test.tsx` 9 条改写（`mount()` 补 `DialogProvider` ＋ 记账 `dispose`）；`workspace-entry.test.tsx` 3 条同改；`dual-file-tree.test.tsx` 的 `mount()` 补 `DialogProvider`（此前丢 `dispose`，一并收掉）；3 个真栈 spec 的定位改走弹窗（`file-tree-empty-dir-real` / `file-tree-menu-focus-real` / `file-tree-session-expired-real`） | 出参**一字未改**（仍 `onCreate({kind,parent,name})`）⇒ 三跳接线（`workspace-entry`→`dual-file-tree`→`FileTree`）**一行未动**。🔴 挂账：`file-tree-blank-menu-real.spec.ts` 第 4 条红——**基线同样红**（`git stash -u` 对照实测），既有账、非本轮引入，登记待裁；另见 `state.md` ⑦ 第 2/3 条 |
 
 **对既有 task 正文的影响**：
 
@@ -580,3 +581,8 @@
   ——不是第二套身份判断。⚠️ 因此组件 `auth-gate.test.tsx` 的既有 17 条**不动**，新增 3 条（共 20）。
 - **T018 范围 ⑤「列文件」** 的完成判据要补一句：清单里除了文件路径，还要有**空目录**那条
   （带尾分隔符）——否则「新建文件夹」这个动作在界面上没有可见的果。见 `state.md` ④ 的改法表。
+- **T007（文件树）** 的**出参**同样未变：`onCreate` 的入参与喊的时机（敲完名字才喊，不是点一下
+  入口就喊）逐字未变，换的只是「名字在哪儿问」——从**树上撑开的行内输入条**换成**模态弹窗**
+  （⑦）。⚠️ 因此它的**回归网口径**要跟着记一笔：树那一层量不到「名字值不值得交出去」这条判据
+  （树上那 9 条都喂干净名字），trim / 空名禁用两条钉在新组件 `file-create-dialog.test.tsx` 里
+  ——判据**只有一份**（`#002-06`）的代价，④-B 变异实测确认。

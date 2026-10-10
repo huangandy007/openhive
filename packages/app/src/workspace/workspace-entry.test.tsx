@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
@@ -48,10 +49,19 @@ import { WorkspaceEntry } from "./workspace-entry"
  */
 const 挂过的: Array<() => void> = []
 
+/**
+ * ⚠️ 外面套一层 `DialogProvider`（2026-10-11 起）：新建改成弹窗之后，`useDialog()` 在**没有
+ * Provider 时是抛错**（`context/dialog.tsx` 刻意如此），不套这一层，凡走到「新建」的用例会当场炸，
+ * 且炸的形状是「组件挂不上」而不是「弹窗没出来」——那是两回事。
+ *
+ * 同理 `render()` 的返回值必须留着：`useDialog().close()` 是**延迟 100ms** 才 `dispose()` 那棵
+ * 弹窗树的，那条定时器挂在 **Provider 的 owner** 上（`context/dialog.tsx` 的 `onCleanup`）——
+ * 所以 `afterEach` 必须先卸载、再擦 body（见下方 `afterEach`）。
+ */
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  挂过的.push(render(element, host))
+  挂过的.push(render(() => <DialogProvider>{element()}</DialogProvider>, host))
   return host
 }
 
@@ -1940,7 +1950,7 @@ function 找行(host: HTMLElement, name: string) {
 }
 
 /**
- * 树上的**内联输入条**（新建 / 重命名那两根，T018）。
+ * 树上的**内联输入条**（2026-10-11 起只剩重命名那一根——新建已改弹窗，见下方 `弹窗框` 一组）。
  *
  * 与 `file-tree.test.tsx` 里的同名辅助**刻意各写一份**：`LEARNINGS #004-11` —— 每个测试文件有
  * 自己的全局域，夹具不跨文件共享；跨文件 import 一个测试辅助反而会让两处的改动互相绊住。
@@ -1962,6 +1972,43 @@ const 条里打字 = (host: HTMLElement, slot: string, 值: string) => {
 /** 对输入条按一个键（Enter ＝ 交 / Escape ＝ 撤）。 */
 const 条里敲 = (el: HTMLElement, key: string) =>
   el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))
+
+/**
+ * ── 新建弹窗的探针（2026-10-11：新建从行内输入条改成弹窗）──────────────────
+ *
+ * 与右键菜单同理：弹窗是 `dialog.show()` 经 `Kobalte.Portal` 传送到 **`document.body`** 的
+ * （`context/dialog.tsx`），**不在** host 里 ⇒ 一律查 `document`。
+ *
+ * ⚠️ `dialog.show()` 里包着 `startTransition` ⇒ 弹窗**晚一拍**才落下来：点完入口要先
+ * `await 冲一遍()`（≥ 一拍）再查，同步查必然读到「还没有弹窗」。
+ *
+ * ⚠️ 输入框按 `TextInputV2` **自己的**槽位查，不按调用方传的 `data-slot`——它把
+ * `data-slot="text-input-v2-input"` 写在 `{...inputProps}` **之后**，调用方传的名字被静默覆盖
+ * （`LEARNINGS #005-22` 的 `ContextMenuTrigger` 同病）。
+ */
+const 弹窗框 = () => {
+  const el = document.body.querySelector<HTMLInputElement>("[data-slot='file-create-dialog'] input")
+  if (!el) throw new Error("新建弹窗没开——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  return el
+}
+
+/** 在弹窗的输入框里填一个名字。 */
+const 弹窗填 = (名: string) => {
+  const el = 弹窗框()
+  el.value = 名
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/** 提交弹窗（`ButtonV2 type="submit"` 在 happy-dom 里点不出一条 `submit`，故直接派发）。 */
+const 弹窗提交 = () => {
+  const form = document.body.querySelector<HTMLFormElement>("[data-slot='file-create-dialog']")
+  if (!form) throw new Error("新建弹窗没开——这条用例的前提不成立（`#004-14`）")
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+}
+
+/** 点弹窗里的「取消」。 */
+const 弹窗取消 = () =>
+  document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
 
 /** 树上的一个按钮槽位（`file-tree-action-*` / `file-tree-create-*` / `file-tree-delete-*`）。 */
 const 树按钮 = (host: HTMLElement, slot: string) =>
@@ -2018,7 +2065,7 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     expect(树按钮(host, "file-tree-action-rename")?.disabled).toBe(false)
   })
 
-  test("右键目录「新建文件夹」⇒ 输入条敲 Enter 才走 createEntry，带 kind / 落点 / 名字", async () => {
+  test("右键目录「新建文件夹」⇒ 弹窗里敲名字才走 createEntry，带 kind / 落点 / 名字", async () => {
     const { host, 假 } = await 开({ createEntry: async () => ({ kind: "done", path: "资料/子目录" }) })
 
     右键行(host, "资料")
@@ -2027,7 +2074,9 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     // 点了菜单还不够——名字还没问（T018：这一步改之前就发请求了，而那时它交不出 name）
     expect(假.建的条目).toEqual([])
 
-    条里敲(条里打字(host, "file-tree-create-input", "子目录"), "Enter")
+    await 冲一遍()
+    弹窗填("子目录")
+    弹窗提交()
     await 冲一遍()
 
     expect(假.建的条目).toEqual([["p1", "directory", "资料", "子目录"]])
@@ -2039,7 +2088,9 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
 
     右键行(host, "资料")
     点菜单项("create-file")
-    条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+    await 冲一遍()
+    弹窗填("新.md")
+    弹窗提交()
     await 冲一遍()
 
     expect(假.files.length).toBe(建前 + 1)
@@ -2094,12 +2145,14 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     expect(假.files.length).toBe(删前)
   })
 
-  test("新建输入条敲 Escape ⇒ 一个请求都不发", async () => {
+  test("新建弹窗点「取消」⇒ 一个请求都不发", async () => {
     const { host, 假 } = await 开({ createEntry: async () => ({ kind: "done", path: "资料/新.md" }) })
 
     右键行(host, "资料")
     点菜单项("create-file")
-    条里敲(条里打字(host, "file-tree-create-input", "建了一半"), "Escape")
+    await 冲一遍()
+    弹窗填("建了一半")
+    弹窗取消()
     await 冲一遍()
 
     expect(假.建的条目).toEqual([])

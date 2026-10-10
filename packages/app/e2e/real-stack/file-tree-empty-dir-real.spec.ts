@@ -137,10 +137,12 @@ test("**通过界面**新建一个文件夹 ⇒ 它建完就看得见（用户�
   // 什么都不选中 ⇒ 落点是项目根（工具栏那条路径）。真敲字：`fill` 绕开 keydown，而 Enter 是提交闸门。
   await page.locator("[data-slot='file-tree-action-create']").click()
   await page.locator("[data-slot='file-tree-create-dir']").click()
-  const 输入条 = page.locator("[data-slot='file-tree-create-input']")
-  await expect(输入条).toBeVisible()
-  await 输入条.type("八月的资料")
-  await 输入条.press("Enter")
+  // 2026-10-11 起名字在**弹窗**里问（原先那根行内输入条已撤）：输入框是 `TextInputV2` 的，
+  // 我们传的 `data-slot` 会被它自己那个覆盖（`LEARNINGS #005-22`），故按弹窗容器定位。
+  const 名字 = page.locator("[data-slot='file-create-dialog'] input")
+  await expect(名字).toBeVisible()
+  await 名字.fill("八月的资料")
+  await 名字.press("Enter")
 
   // ⚠️ 这一条断言就是用户那句话本身：「建完就看不见」⇒ **建完必须看得见**。
   // 不用 `waitForTimeout` 之后 count——那会把「最终看得见」和「当下看不见」混成一条判据。

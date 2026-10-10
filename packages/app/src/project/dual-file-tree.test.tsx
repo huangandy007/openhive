@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { DualFileTree } from "./dual-file-tree"
@@ -14,10 +15,27 @@ import { DualFileTree } from "./dual-file-tree"
  * 拿**裸 `Event`** 顶着。产品码里对 `dataTransfer` 一律用可选链（`event.dataTransfer?.setData`），
  * 所以在测试里连它都不必造——这正是那处可选链的存在理由之一。
  */
+/**
+ * ⚠️ 外面套一层 `DialogProvider`（2026-10-11）：上树就是 `FileTree` 本身，而它现在在函数体开头
+ * 调 `useDialog()` ——**没有 Provider 时是抛错**（`context/dialog.tsx` 刻意如此），于是不套这一层，
+ * 本文件 23 条会齐刷刷炸在「组件挂不上」，而不是某条判据变红。
+ *
+ * ⚠️ `render()` 的返回值**记账**（同 `file-tree.test.tsx` 那次）：`useDialog().close()` 是延迟
+ * 100ms 才 `dispose()` 弹窗树的，那条定时器挂在 Provider 的 owner 上 ⇒ 不卸载 Provider，
+ * 它会在**下一条用例**跑到一半时开火（`LEARNINGS #005-03`）。
+ */
+const 挂过的: Array<() => void> = []
+
+afterEach(() => {
+  // **先卸载、再清 body**（顺序要紧，同 `file-tree.test.tsx`）。
+  挂过的.splice(0).forEach((卸载) => 卸载())
+  document.body.innerHTML = ""
+})
+
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  挂过的.push(render(() => <DialogProvider>{element()}</DialogProvider>, host))
   return host
 }
 

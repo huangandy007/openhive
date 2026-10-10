@@ -3081,3 +3081,90 @@ scoped oxlint **0 warnings / 0 errors**（当场的实测：`file-tree-empty-dir
 3. **同时刻多个出口吃 401 ⇒ 重探多次**（接缝刻意不去重：多探几次得到同一结论，实测每条就是
    `/openhive/auth/me` 一条本机请求）。要收就收在门那一侧（它知道自己在探），本轮不动。
 4. 真栈这几条**在 CI 上跑不跑**仍未接线（与 ① ~ ⑤ 同一笔账）。
+
+### ⑦ 五项交互优化 · 第 1 项：新建改弹窗（2026-10-11 · 本轮）
+
+> ⚠️ **用户本轮一次下达了五条交互反馈**（新建改弹窗 / ＋ 改浮层菜单 / 删除改弹窗 / 右键点外关闭 /
+> 默认全收缩）。按「铁律」的**逐条、不跳步、不合并**，本节只记**第 1 条**；② ~ ⑤ 各自开工时另起小节。
+> 用户当场批准的设计与执行顺序（AskUserQuestion 四项回答：「照此执行」/「连会话 pane 一起改」/
+> 「自动展开（推荐）」/「要显示（推荐）」）见 `session.md`。
+
+**现象（用户原话）**：「新建文件、新建文件夹时，会在文件 Tab 页面的图标下方显示输入框……这与日常
+习惯不符，我希望还是以弹窗的方式进行交互更好。」
+
+**根因（① 步真栈探针实测，读数逐条记；探针 `e2e/real-stack/file-tab-interaction-probe.spec.ts` 已删）**
+
+| 点「＋」前 | 点「＋」后 | 选「新建文件」后 | 输入条开着时再点「＋」 |
+|---|---|---|---|
+| `{下拉:0, 项数:0, 输入条:0}` | `{下拉:1, 项数:2, 输入条:0}` | `{下拉:0, 输入条:1, 占位:"文件名"}` | **输入条静默消失** |
+
+⇒ 名字在**树上撑开的一根行内输入条**里问，而不是弹窗。第 4 列那格另揭出一条**既有缺陷**：
+兜底走的是 `就地改名输入` 的 `onBlur=提交`，空草稿被判成「取消」⇒ 用户以为点了「＋」没反应。
+⚠️ 这一格属 ② 的射程（＋ 的行为），本轮只登记、不顺手改。
+
+**改法（新增一个自包含组件，树那一侧只换「名字在哪儿问」）**
+
+- **新** `packages/app/src/project/file-create-dialog.tsx`：`useDialog()` ＋ v2 壳（`DialogV2` /
+  `DialogHeader` / `DialogBody` / `DialogFooter`，同 `components/dialog-edit-project-v2.tsx` 那一套）。
+  顶层挂载、点遮罩关、Escape 关、焦点陷阱四样都白拿（`auth/change-password.tsx` 的注释里记着
+  手搭 overlay 的代价）。**名字值不值得交出去**复用 `改名草稿`（`@/components/inline-rename-input`），
+  不在这里再写一份（`#002-06`）；新建这一支没有「原名」，传 `undefined`。
+- **改** `packages/app/src/project/file-tree.tsx`：函数体开头 `const dialog = useDialog()`；`新建()`
+  改成 `dialog.show(() => <FileCreateDialog …/>)`；**删掉** `新建中` 信号与那整块行内输入条。
+  **出参一字未改**：仍是 `props.onCreate({ kind, parent, name })`，`kind` / `parent` 仍由**入口**
+  （工具栏 ＋ / 右键菜单）定下、作为 prop 进弹窗，弹窗只回一个名字 ⇒ 接线方（`workspace-entry` →
+  `dual-file-tree` → `FileTree` 三跳）**一行都不用动**。
+- 落点写在弹窗里（`建在：<目录>`，根那一档写「项目根目录」而不是留空）：弹窗一盖，树就不在眼前了，
+  「选中目录 ⇒ 建在它里面 / 选中文件 ⇒ 建在它所在目录 / 没选 ⇒ 根」这条规则是**看不见**的。
+
+**回归网**：新增 `packages/app/src/project/file-create-dialog.test.tsx`（9 条：标题两档 / 落点两档 /
+空名与纯空白禁用 / 提交只交一个名字 / trim / 取消一次都不喊）；`file-tree.test.tsx` 的 9 条新建
+用例改成弹窗流程（＋ `mount()` 补 `DialogProvider` 并记账 `dispose`）；`workspace-entry.test.tsx`
+的 3 条同类用例同改；`dual-file-tree.test.tsx` 的 `mount()` 补 `DialogProvider` ＋ 记账
+（它此前**丢 dispose**，属 `#005-03` 那一类，本轮一并收掉）。
+
+**变异验证（逐处拆，据实记三类，`#003-03`）**
+
+| 拆哪一处 | 恰红 | 另一类（射程之外 / 绿得正确） |
+|---|---|---|
+| ④-A：拆掉弹窗（`新建()` 直接交一个空名字，即改之前那种「点完入口就发请求」的形状） | `file-tree.test.tsx` **9 条红**（那 9 条新建用例：弹窗不在 ⇒ 探针抛错）＋ `workspace-entry.test.tsx` **3 条红**；合计 12 | `file-create-dialog.test.tsx` **9 条全绿**——射程之外（它直接挂弹窗，不走 `新建()`） |
+| ④-B：把 `改名草稿(草稿(), undefined)` 换成裸 `草稿() \|\| undefined` | `file-create-dialog.test.tsx` **2 条红**（「只敲了空白 ⇒ 仍是禁用态」「两头带空白 ⇒ 交出去的是 trim 后的值」） | `file-tree.test.tsx` **87 条全绿**——如实记：树上那 9 条**都喂干净名字**，trim 这条判据**只钉在 dialog 那一层**（这正是「判据只写一份」的代价，也是它的意思） |
+
+**门禁**（**串行**，`#003-01`）：`packages/app` typecheck（`tsgo -b`）**净**；单元 **1094 pass / 0 fail**；
+组件 **789 pass / 0 fail**；改动文件 scoped oxlint（`bun run lint:openhive`）**0 命中**（该门总 36
+warnings / 0 errors，全是既有；其中一条 `no-floating-promises` 是本轮 `dialog.show(...)` 引入的，
+已按仓库惯例加 `void` ⇒ 从 37 降到 36）；`bun.lock` **无污染**（`git diff --stat bun.lock` 为空）；
+真栈 spec **串行**复跑：`file-tree-empty-dir-real.spec.ts` **2 passed**、
+`file-tree-menu-focus-real.spec.ts` **2 passed**、`file-tree-session-expired-real.spec.ts`
+**2 passed**。
+
+**⚠️ 一处本机实测踩到的坑（据实记，已修）**：`file-tree-menu-focus-real.spec.ts` 那条新建判据
+我改写时把焦点断言写成了**提交之后再取**（`expect(await 焦点在新建弹窗里(page), …)`），而提交
+（Enter）正是 `dialog.close()` ⇒ 弹窗随后被拆掉，「焦点还在弹窗里吗」**恒为 false**。红的样子很
+有迷惑性：**三条读数全对**（`焦点 = input[text-input-v2-input]`、`条里的字 = "菜单建的.csv"`、
+`磁盘 = [".git","菜单建的.csv","话单.csv"]`）而断言独红。改成**在对象还在的时候取、断言打在变量上**
+后 2 passed。⇒ 沉淀为 `LEARNINGS #005-26`。
+
+**⑥ 步：同类落点逐个打勾**
+
+| 落点 | 前提成立？ | 处置 |
+|---|---|---|
+| `file-tree.test.tsx` 的 `mount()` | 不成立 | ✅ 补 `DialogProvider` ＋ 记账 `dispose` |
+| `workspace-entry.test.tsx` 的 `mount()` | 不成立（3 条用例） | ✅ 同上 |
+| `dual-file-tree.test.tsx` 的 `mount()`（上树就是 `FileTree`） | 不成立（23 条齐炸） | ✅ 同上（顺带收掉它「丢 dispose」的老账） |
+| `file-tree.stories.tsx` / `dual-file-tree.stories.tsx` | **成立** | ⬜ 不改——`storybook/.storybook/preview.tsx` 的全局 `frame` 装饰器**早就套了 `DialogProvider`**（一开始按印象写了 `decorators`，读一眼后撤回） |
+| `app.tsx`（生产） | 成立 | ⬜ 不改 |
+| `e2e/real-stack/file-tree-empty-dir-real.spec.ts`（内联了 `file-tree-create-input`） | — | ✅ 改走弹窗探针 `[data-slot='file-create-dialog'] input` |
+| `e2e/real-stack/file-tree-session-expired-real.spec.ts` 的 `工具栏新建()` | — | ✅ 同上 |
+| `e2e/real-stack/file-tree-menu-focus-real.spec.ts`（判据 4） | — | ✅ 同上；头部「判据 4 不是 `modal={false}` 的守护者」那段补了一句**结构事实**（焦点改由弹窗的 `onOpenAutoFocus` 在菜单卸载之后点），并**如实声明本轮没重跑那个变异**、不写没实测过的话 |
+| `e2e/real-stack/file-tab-interaction-probe.spec.ts`（一次性探针） | — | ✅ 本轮结束即删（读数已落在上面的表里） |
+
+**⛔ 缺口 / 挂账（`#002-02`）**
+
+1. **🔴 `file-tree-blank-menu-real.spec.ts` 第 4 条红**（「空白右键后，菜单作用对象必须是『无』」）——
+   **不是本轮引入的**：按 `#006-02` 把改动 `git stash -u` 掉、在同一环境重跑，**基线同样 1 failed**
+   （读数逐字相同：`点(125,801) 最上层=span[file-tree-name]` ⇒ 那个「空白点」今天落在一行文件上）。
+   属既有账（① 那一轮补的判据，其取点前提被后来的布局改动破了）。本轮**不动**，登记待裁。
+2. `file-tree.tsx` 的 `data-slot="file-tree-area"` 仍是被 `packages/ui` 覆盖掉的那个名字（⑤ 登记的
+   同一个洞，今天无消费者）。未动。
+3. 两个 pane 的双层滚动容器、真栈 spec 在 CI 上跑不跑，均与 ① ~ ⑥ 同一笔账，未动。

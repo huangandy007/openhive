@@ -1,12 +1,30 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
 
+/**
+ * 挂一棵树——**外面套着 `DialogProvider`**（2026-10-11 起）。
+ *
+ * 新建 / 删除改走弹窗之后，`FileTree` 要用 `useDialog()`，而它在没有 Provider 时**抛错**
+ * （`context/dialog.tsx`：刻意的，不是静默 `undefined`）。app 里那层 Provider 挂在
+ * `app.tsx`，覆盖整个工作台；这里补上同一层，测试与真栈的组件树才是同一棵树。
+ *
+ * ⚠️ `render()` 返回的 dispose **必须记账**（`LEARNINGS #005-03` 的老账，这次换了个咬法）：
+ * 弹窗关闭是**延迟 100ms 卸载**的（`context/dialog.tsx` 的 `close`），那条定时器挂在
+ * `DialogProvider` 的 owner 上——**不卸载 Provider，它就会在下一条用例执行到一半时开火**，
+ * 去 `cleanNode` 一棵已经被 `afterEach` 抹掉的树，抛
+ * `Failed to execute 'removeChild' on 'Node'`，而且**记在下一条用例头上**（实测：红的是
+ * 「重命名输入条敲 Escape」那条，与弹窗毫无关系）。先卸载、再擦 body，定时器就被
+ * `onCleanup` 一并清掉了。
+ */
+const 挂过的: Array<() => void> = []
+
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  挂过的.push(render(() => <DialogProvider>{element()}</DialogProvider>, host))
   return host
 }
 
@@ -107,6 +125,43 @@ const 条里敲 = (el: HTMLElement, key: string) => {
   el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))
 }
 
+/**
+ * ── 弹窗的探针（新建 / 删除，2026-10-11）─────────────────────────────────────
+ *
+ * 与右键菜单同理：弹窗是 `dialog.show()` 传送到 `document.body` 的（`context/dialog.tsx` 的
+ * `Kobalte.Portal`），**不在** host 里 ⇒ 一律查 `document`，且 `afterEach` 必须清 body。
+ *
+ * ⚠️ `dialog.show()` 里那层 `startTransition` 让弹窗**晚一拍**才落下来 ⇒ 点完入口要先
+ * `await 歇一拍()` 再查，同步查必然读到「还没有弹窗」。
+ *
+ * ⚠️ 输入框按 **`TextInputV2` 自己的**槽位查，不按我们传的 `data-slot`：它把
+ * `data-slot="text-input-v2-input"` 写在 `{...inputProps}` **之后**，调用方传的名字被**静默覆盖**
+ * （`LEARNINGS #005-22` 的 `ContextMenuTrigger` 同病）。
+ */
+const 弹窗框 = () => {
+  const el = document.body.querySelector<HTMLInputElement>("[data-slot='file-create-dialog'] input")
+  if (!el) throw new Error("弹窗里没有输入框——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  return el
+}
+
+/** 在弹窗的输入框里填一个名字。 */
+const 弹窗填 = (名: string) => {
+  const el = 弹窗框()
+  el.value = 名
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+  return el
+}
+
+/** 提交弹窗里的表单（`ButtonV2 type="submit"` 在 happy-dom 里点不出一条 `submit`，故直接派发）。 */
+const 弹窗提交 = () => {
+  const form = document.body.querySelector<HTMLFormElement>("[data-slot='file-create-dialog']")
+  if (!form) throw new Error("弹窗里没有表单——这条用例的前提不成立（`#004-14`）")
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+}
+
+/** 有弹窗吗——断在**布尔**上（`#005-01`：实得值是节点会把整轮挂哑）。 */
+const 有新建弹窗 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
+
 /** 造路径数据——形状就是 `buildFileTreeV2Model` 收的那个 `readonly string[]`，不经任何后端。 */
 const 树 = (...paths: string[]) => paths
 
@@ -160,6 +215,8 @@ describe("FileTree 文件树（FR-005）", () => {
    * 永不结束）⇒ 不清就会串到下一条测试，而下面的 `菜单内容()` 查的是**整个 document**。
    */
   afterEach(() => {
+    // 先卸载、再擦 body——顺序不能反（弹窗那条 100ms 定时器会被卸载一并清掉，见 `mount`）。
+    while (挂过的.length) 挂过的.pop()!()
     document.body.innerHTML = ""
   })
 
@@ -460,76 +517,81 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     /**
-     * T018 把「点一下 ⇒ 当场建」改成了「点一下 ⇒ 落一根输入条，敲 Enter 才建」。
-     *
-     * 为什么非改不可：服务端的 `CREATE` 体里 `name` 是**必填**（`file.ts` 的 `CreateBody`），
-     * 「点一下」那一版交不出名字——改之前它喊给调用方的就是 `{ kind, parent }` 两样。
+     * T018 把「点一下 ⇒ 当场建」改成了「先问名字」（服务端的 `CREATE` 体里 `name` 是**必填**，
+     * `file.ts` 的 `CreateBody`）；2026-10-11 用户下达之后，问名字这一步从**行内输入条**换成了
+     * **弹窗**——所以这条用例的判据跟着换成「弹窗落下来、且一个回调都没喊」。
      */
-    test("点「新建文件」不立刻喊 onCreate——先落一根输入条（T018：名字得先问）", () => {
+    test("点「新建文件」不立刻喊 onCreate——落下一个弹窗（名字得先问）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
+      await 歇一拍()
 
       expect(记).toEqual([])
-      expect(无槽(host, "file-tree-create-input")).toBe(false)
+      expect(有新建弹窗()).toBe(true)
+      // 行内那根输入条**不在了**——弹窗换的就是它（用户原话：在图标下方显示输入框，与日常习惯不符）
+      expect(无槽(host, "file-tree-create-input-box")).toBe(true)
       // 下拉要收掉：一个「新建文件」还没填完，不该同时摆着两个入口
       expect(无槽(host, "file-tree-create-menu")).toBe(true)
     })
 
-    test("输入条敲 Enter ⇒ 才喊 onCreate，带上 kind / parent / name（未选中 ⇒ 落点是根）", () => {
+    test("弹窗里填名字并提交 ⇒ 才喊 onCreate，带上 kind / parent / name（未选中 ⇒ 落点是根）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
-      条里敲(条里打字(host, "file-tree-create-input", "话单.csv"), "Enter")
+      await 歇一拍()
+      弹窗填("话单.csv")
+      弹窗提交()
 
       expect(记).toEqual([{ kind: "file", parent: "", name: "话单.csv" }])
-      // 交完就收：一个已经建过的名字不该还摆在框里等第二次 Enter
-      expect(无槽(host, "file-tree-create-input")).toBe(true)
     })
 
     /**
      * 「新建文件夹」单独一条（`#005-12`：同一个修法落在 N 个动作上就写 N 条用例）。
      *
-     * 两个入口共用 `新建()` 与同一根输入条，**只有 `kind` 与那两句文案不同**——而 `kind` 正是
+     * 两个入口共用 `新建()` 与同一个弹窗，**只有 `kind` 与那句标题不同**——而 `kind` 正是
      * 服务端 `Schema.Literals(["file","directory"])` 要逐字对上的那一个（翻错当场 400）。
      */
-    test("「新建文件夹」⇒ kind 是 directory，占位也换成文件夹那句", () => {
+    test("「新建文件夹」⇒ kind 是 directory，弹窗标题也换成文件夹那句", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-dir")?.click()
+      await 歇一拍()
 
-      const 条 = 条里打字(host, "file-tree-create-input", "材料")
-      expect(条.getAttribute("placeholder")).toBe("文件夹名")
-      条里敲(条, "Enter")
+      expect(document.body.querySelector("[data-slot='dialog-header-title']")?.textContent?.trim()).toBe("新建文件夹")
+
+      弹窗填("材料")
+      弹窗提交()
 
       expect(记).toEqual([{ kind: "directory", parent: "", name: "材料" }])
     })
 
-    test("输入条敲 Escape ⇒ 什么都不喊，输入条收掉", () => {
+    test("点弹窗的「取消」⇒ 什么都不喊，弹窗收掉", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
-      条里敲(条里打字(host, "file-tree-create-input", "建了一半"), "Escape")
+      await 歇一拍()
+      弹窗填("建了一半")
+      document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
 
       expect(记).toEqual([])
-      expect(无槽(host, "file-tree-create-input")).toBe(true)
     })
 
     /**
      * 落点跟着选中走（`#005-12`：两个落点各钉一条；第三种「没选中 ⇒ 根」在上面那条用例里）。
      *
-     * 判据是**点下拉那一刻**定的落点，不是敲 Enter 那一刻——期间选中态若被改（这里没有），
-     * 落点不该跟着漂。`新建中` 存着 `parent` 正是为这件事。
+     * 判据是**点下拉那一刻**定的落点，不是提交那一刻——弹窗一开，用户改不了选中态（模态），
+     * 但落点仍然是在 `新建()` 里算好、作为 prop 交给弹窗的，弹窗自己不重算一遍。
      */
-    test("落点跟着选中走：选中目录 ⇒ 在它下面；选中文件 ⇒ 在它所在的目录下", () => {
+    test("落点跟着选中走：选中目录 ⇒ 在它下面；选中文件 ⇒ 在它所在的目录下", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("甲/乙/a.txt", "丙/x.txt")} onCreate={(i) => 记.push(i)} />)
 
@@ -537,13 +599,17 @@ describe("FileTree 文件树（FR-005）", () => {
       行按名(host, "乙")?.click()
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
-      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+      await 歇一拍()
+      弹窗填("新.md")
+      弹窗提交()
 
       // 选中文件「a.txt」⇒ 落点是它所在的目录「甲/乙」（不是文件自己）
       行按名(host, "a.txt")?.click()
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
-      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+      await 歇一拍()
+      弹窗填("新.md")
+      弹窗提交()
 
       expect(记).toEqual([
         { kind: "file", parent: "甲/乙", name: "新.md" },
@@ -573,14 +639,16 @@ describe("FileTree 文件树（FR-005）", () => {
      * ——空目录若被当成文件，落点就算成**它的父目录**：用户在「资料」里点新建，文件落在项目根，
      * 而界面上看起来一切正常（`#004-09`：判据错了不会有响声）。
      */
-    test("选中**空目录** ⇒ 新建落点是它自己（不是它的父目录）", () => {
+    test("选中**空目录** ⇒ 新建落点是它自己（不是它的父目录）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} onCreate={(i) => 记.push(i)} />)
 
       行按名(host, "资料")?.click()
       动作(host, "create")?.click()
       按钮(host, "file-tree-create-file")?.click()
-      条里敲(条里打字(host, "file-tree-create-input", "新.md"), "Enter")
+      await 歇一拍()
+      弹窗填("新.md")
+      弹窗提交()
 
       expect(记).toEqual([{ kind: "file", parent: "资料", name: "新.md" }])
     })
@@ -952,7 +1020,7 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual(["a.md"])
       })
 
-      test("右键一个**目录**建文件夹 ⇒ 落点就是它自己", () => {
+      test("右键一个**目录**建文件夹 ⇒ 落点就是它自己", async () => {
         const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
@@ -960,12 +1028,14 @@ describe("FileTree 文件树（FR-005）", () => {
 
         右键(行按名(host, "材料"))
         点菜单项("create-dir")
-        条里敲(条里打字(host, "file-tree-create-input", "子目录"), "Enter")
+        await 歇一拍()
+        弹窗填("子目录")
+        弹窗提交()
 
         expect(收到).toEqual([{ kind: "directory", parent: "材料", name: "子目录" }])
       })
 
-      test("右键一个**文件**建文件 ⇒ 落点是它所在的目录，不是文件自己", () => {
+      test("右键一个**文件**建文件 ⇒ 落点是它所在的目录，不是文件自己", async () => {
         const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
@@ -973,7 +1043,9 @@ describe("FileTree 文件树（FR-005）", () => {
 
         右键(行按名(host, "话单.csv"))
         点菜单项("create-file")
-        条里敲(条里打字(host, "file-tree-create-input", "笔记.md"), "Enter")
+        await 歇一拍()
+        弹窗填("笔记.md")
+        弹窗提交()
 
         expect(收到).toEqual([{ kind: "file", parent: "材料", name: "笔记.md" }])
       })
@@ -1058,7 +1130,7 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     describe("没有作用对象", () => {
-      test("树是空的时候右键仍能弹菜单：新建与上传可用（落在根），要对象的动作禁用", () => {
+      test("树是空的时候右键仍能弹菜单：新建与上传可用（落在根），要对象的动作禁用", async () => {
         const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
           <FileTree
@@ -1081,7 +1153,9 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(项禁用("copy")).toBe(true)
 
         点菜单项("create-file")
-        条里敲(条里打字(host, "file-tree-create-input", "话单.csv"), "Enter")
+        await 歇一拍()
+        弹窗填("话单.csv")
+        弹窗提交()
         expect(收到).toEqual([{ kind: "file", parent: "", name: "话单.csv" }])
       })
     })

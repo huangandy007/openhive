@@ -1,10 +1,12 @@
 import { createMemo, createSignal, For, Show } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v2-model"
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
+import { FileCreateDialog } from "@/project/file-create-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
@@ -80,11 +82,16 @@ export interface FileTreeProps {
   paths?: readonly string[]
   /**
    * 新建文件 / 文件夹。`parent` 是**落点目录**（`""` = 根）：选中目录 ⇒ 它自己，
-   * 选中文件 ⇒ 它所在的目录，什么都没选 ⇒ 根。`name` 是用户在**内联输入条**里敲的名字。
+   * 选中文件 ⇒ 它所在的目录，什么都没选 ⇒ 根。`name` 是用户在**弹窗**里敲的名字。
    *
-   * ⚠️ **点了「新建文件」不会立刻喊这个回调**（T018 起）：先落一根输入条（见 `新建中`），
-   * 敲 Enter 才把 `name` 一起喊出去。改之前是「点一下 ⇒ 服务端凭空建一个没名字的条目」——
-   * 那在建文件这件事上根本不成立（`file.ts` 的 `name` 是必填）。
+   * ⚠️ **点了「新建文件」不会立刻喊这个回调**（T018 起）：先问名字，敲定之后才把 `name` 一起
+   * 喊出去。改之前是「点一下 ⇒ 服务端凭空建一个没名字的条目」——那在建文件这件事上根本不成立
+   * （`file.ts` 的 `name` 是必填）。
+   *
+   * ⚠️ 问名字这一步 2026-10-11 从**行内输入条**换成了**弹窗**（`FileCreateDialog`，用户下达：
+   * 「在图标下方显示输入框……与日常习惯不符」）。换的只是「在哪儿问」——本回调的入参
+   * （`{ kind, parent, name }`）与喊的时机（用户确认那一下）**逐字未变** ⇒ 接线方
+   * （`dual-file-tree` → `workspace-entry`）一处都不用动。
    *
    * 省略 = 还没接线：**＋ 本身禁用**，下拉都打不开（同 T005 三个按钮、T006 两个新建键）。
    * 一个点了没反应的按钮是对用户的谎——「看起来能点」比「少个按钮」更难查。
@@ -204,20 +211,16 @@ export interface FileTreeProps {
  * 的地方，故没有沿用 T008 那句「接线即点亮」。
  */
 export function FileTree(props: FileTreeProps) {
+  /**
+   * 弹窗宿主（`app.tsx` 那层 `DialogProvider`）——新建走它。没有 Provider 时它会**抛错**
+   * （`context/dialog.tsx` 刻意如此，不是静默 `undefined`）：那条链要断就当场断。
+   */
+  const dialog = useDialog()
   const [keyword, setKeyword] = createSignal("")
   /** 收起态**存反向**（收起集合而不是展开集合）：默认全展开是常态，空集合即默认。 */
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   const [selected, setSelected] = createSignal<string>()
   const [createOpen, setCreateOpen] = createSignal(false)
-  /**
-   * 「正在建的那一条」——非空即**新建输入条开着**（T018）。存 `kind` 与 `parent` 而不是布尔：
-   * 输入条要拿它们说清两件事——**建的是文件还是文件夹**（决定占位文案）与**建在哪儿**——
-   * 而这两样在 `新建()` 那一刻就定了，之后没有第二个来源（若从 `selected()` 现算，
-   * 用户中途点一下别处，落点就跟着漂了）。
-   *
-   * 与 `createOpen`（＋ 的**下拉**）是两回事、先后发生：点「新建文件」⇒ 下拉收掉、本信号落下。
-   */
-  const [新建中, set新建中] = createSignal<{ kind: "file" | "directory"; parent: string }>()
   /**
    * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
    *
@@ -348,35 +351,6 @@ export function FileTree(props: FileTreeProps) {
             新建文件夹
           </button>
         </div>
-      </Show>
-
-      {/* 新建的**内联输入条**（T018）——点「新建文件 / 新建文件夹」之后落在这里（＋ 的正下方、
-          也就是那个下拉刚收掉的位置），敲 Enter 才把名字交出去。
-
-          ⚠️ 位置**在树之外**（与工具栏同层）：它的落点是 `新建中().parent`（点下拉那一刻定下的），
-          跟「现在选着哪一行」无关——所以它不该长在某一行里，那会读成「改这一行的名字」。 */}
-      <Show when={新建中()}>
-        {(中) => (
-          <div
-            data-slot="file-tree-create-input-box"
-            class="flex w-full min-w-0 flex-col gap-0.5 rounded-[4px] bg-v2-background-bg-layer-01 p-0.5"
-          >
-            <就地改名输入
-              槽位="file-tree-create-input"
-              可访问名称={中().kind === "directory" ? "新文件夹名称" : "新文件名称"}
-              占位={中().kind === "directory" ? "文件夹名" : "文件名"}
-              on提交={(name) => {
-                // 先把输入条收掉再喊回调：回调那侧会去发请求，若它同步失败（哨兵 / 抛错），
-                // 输入条已经不在，用户不会对着一个「填好了却没反应」的框发呆。
-                const 父目录 = 中().parent
-                const kind = 中().kind
-                set新建中(undefined)
-                props.onCreate?.({ kind, parent: 父目录, name })
-              }}
-              on取消={() => set新建中(undefined)}
-            />
-          </div>
-        )}
       </Show>
 
       {/* ⚠️ `modal={false}` **不是可选项**：默认 `modal: true` 会让 Kobalte 的 `createFocusScope`
@@ -638,16 +612,22 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 点「新建文件 / 新建文件夹」——**只是把输入条落下来**，一个请求都不发（T018）。
+   * 点「新建文件 / 新建文件夹」——**只是把弹窗开出来**，一个请求都不发（T018）。
    *
-   * 落点在**这一刻**算好并记进 `新建中`：之后用户再怎么点行、选中态怎么变，都不影响它
-   * （见 `新建中` 那条注释）。这也是本函数收 `path` 而不读 `selected()` 的原因——
+   * 落点在**这一刻**算好、作为 prop 交给弹窗：之后用户再怎么点行、选中态怎么变，都不影响它
+   * （弹窗是模态的，本来也点不到树）。这也是本函数收 `path` 而不读 `selected()` 的原因——
    * 工具栏从选中项取、菜单从右键对象取，规则同一份（同 `落点`）。
    */
   function 新建(kind: "file" | "directory", path: string | undefined) {
-    if (!props.onCreate) return
+    const 交 = props.onCreate
+    if (!交) return
     setCreateOpen(false)
-    set新建中({ kind, parent: 落点(path) })
+    const parent = 落点(path)
+    // `void`：`show()` 交回来的是 `startTransition` 那个返回值（不是真 promise，弹窗是**同步**
+    // 排进栈、下一拍渲染）。`no-floating-promises` 认的是形状，这里标一下「有意丢弃」。
+    void dialog.show(() => (
+      <FileCreateDialog kind={kind} parent={parent} onConfirm={(name) => 交({ kind, parent, name })} />
+    ))
   }
 
   /** 点重命名（工具栏 / 菜单）——同样只是把那一行换成输入条。 */

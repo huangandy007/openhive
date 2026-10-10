@@ -105,14 +105,16 @@ async function 弄坏会话(context: BrowserContext) {
   await context.addCookies([{ ...会话!, value: "伪造的已过期会话" }])
 }
 
-/** 工具栏 ＋ ⇒ 新建文件 ⇒ 填名 ⇒ Enter（用户实报那条路径）。 */
+/** 工具栏 ＋ ⇒ 新建文件 ⇒ 弹窗里填名 ⇒ Enter（用户实报那条路径）。 */
 async function 工具栏新建(page: Page, 名: string) {
   await page.locator("[data-slot='file-tree-action-create']").click()
   await page.locator("[data-slot='file-tree-create-file']").click()
-  const 输入条 = page.locator("[data-slot='file-tree-create-input']")
-  await expect(输入条).toBeVisible({ timeout: 5000 })
-  await 输入条.fill(名)
-  await 输入条.press("Enter")
+  // 2026-10-11 起名字在**弹窗**里问（原先那根行内输入条已撤）。输入框按弹窗容器定位：
+  // `TextInputV2` 会用自己的 `data-slot` 覆盖调用方传的那个（`LEARNINGS #005-22`）。
+  const 名字 = page.locator("[data-slot='file-create-dialog'] input")
+  await expect(名字).toBeVisible({ timeout: 5000 })
+  await 名字.fill(名)
+  await 名字.press("Enter")
   await page.waitForTimeout(1500)
 }
 

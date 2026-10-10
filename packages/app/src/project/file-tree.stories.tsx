@@ -19,6 +19,11 @@ import { FileTree } from "./file-tree"
  * （同 `file-tree.test.tsx` 的夹具）；`EmptyDir` 那一档专门喂空目录，因为那是一副
  * **新的渲染形状**（一条没有孩子的目录行），没有 story 就没有审计面（`LEARNINGS #006-08`）。
  */
+/**
+ * ⚠️ 这一组 story **不必**自己挂 `DialogProvider`（尽管 `FileTree` 现在调 `useDialog()`）：
+ * `storybook/.storybook/preview.tsx` 的全局 `frame` 装饰器已经套了一层（2026-10-11 实读核过）。
+ * 组件测试那边没有这一层，所以测试文件各自补（`file-tree.test.tsx` 顶部）。
+ */
 export default {
   title: "App/OpenHive/FileTree",
   id: "app-openhive-file-tree",

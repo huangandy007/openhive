@@ -34,7 +34,7 @@ import path from "path"
  * 1. 菜单 ⇒「重命名」⇒ `document.activeElement` 是 `input[file-tree-rename-input]`；
  * 2. **裸键盘**（不先 focus）敲进去的字在输入条里；
  * 3. Enter 之后**磁盘上真的改了名**；
- * 4. 菜单 ⇒「新建文件」同上，磁盘上真的多了一个文件。
+ * 4. 菜单 ⇒「新建文件」⇒ **弹窗**的输入框拿到焦点，字进得去，磁盘上真的多了一个文件。
  *
  * ## ⚠️ 判据 4 **不是** `modal={false}` 的守护者（2026-10-11 变异实测，据实记）
  *
@@ -47,6 +47,12 @@ import path from "path"
  *
  * ⇒ 判据 4 留着（它验证菜单⇒新建这条功能线，是正当的回归网），但**别拿它单独守护
  * `modal={false}`**——那个由判据 1-3 守（重命名输入条会自杀，结构性、稳定红）。
+ *
+ * ⚠️ **2026-10-11 起这一条更不是守护者了**（新建已改弹窗，行内输入条撤销）：焦点不再由那条路径
+ * 上的 rAF 拿去，而是由弹窗自己的 `onOpenAutoFocus` 在**菜单卸载之后**去点 `[autofocus]`——
+ * 于是「菜单抢回焦点」那一抢会被随后的一次聚焦盖掉。**本轮没有重跑无 `modal={false}` 那个变异**，
+ * 所以这里不写「改成弹窗后 judgement 4 就稳绿」这种没实测过的话；只记结构事实：判据 1-3 仍是
+ * `modal={false}` 的守护者，判据 4 只守护「菜单 ⇒ 新建这条线上，字进得去、盘上有东西」。
  *
  * ⚠️ 「裸键盘」是**要紧的**：Playwright 的 `.type()` / `.fill()` 会先把元素聚焦，
  * 于是「输入条在不在」与「字进不进得去」会分不出来（`LEARNINGS #006-18` 那一类：
@@ -105,6 +111,16 @@ const 焦点是 = (page: Page) =>
     if (!el) return "<没有焦点>"
     const slot = el.getAttribute("data-slot")
     return `${el.tagName.toLowerCase()}${slot ? `[${slot}]` : ""}`
+  })
+
+/**
+ * 焦点是不是落在**新建弹窗的输入框**里——按**我们自己的容器**认，不按 `TextInputV2` 自己的
+ * 槽位名认（`#003-05`：拿上游内部名字当判据，是假镜像——上游改个名，这条断言就跟着瞎了）。
+ */
+const 焦点在新建弹窗里 = (page: Page) =>
+  page.evaluate(() => {
+    const el = document.activeElement
+    return el !== null && el.closest("[data-slot='file-create-dialog']") !== null
   })
 
 /** 对某一行开右键菜单、点某个菜单项。 */
@@ -166,10 +182,16 @@ test("菜单 ⇒ 新建文件：输入条要拿到焦点，裸键盘的字要进
 
   await 走菜单(page, "话单.csv", "create-file")
 
-  const 输入条 = page.locator("[data-slot='file-tree-create-input']")
-  await expect(输入条, "新建输入条应当出现").toBeVisible({ timeout: 5000 })
+  // 2026-10-11 起名字在**弹窗**里问（原先那根行内输入条已撤）；输入框按弹窗容器定位——
+  // `TextInputV2` 会用自己的 `data-slot` 覆盖调用方传的那个（`LEARNINGS #005-22`）。
+  const 输入条 = page.locator("[data-slot='file-create-dialog'] input")
+  await expect(输入条, "新建弹窗的输入框应当出现").toBeVisible({ timeout: 5000 })
 
+  // ⚠️ 焦点这两条判据**必须当场取**（提交之后弹窗就收了，再问一次恒为 false）。
+  // 这是本轮实测踩到的：先写成「最后再 `await 焦点在新建弹窗里(page)`」，于是三条读数全对
+  // （焦点＝弹窗输入框、字进去了、盘上建出来了）而断言独独红——红的是**取数时机**。
   const 焦 = await 焦点是(page)
+  const 焦点落在弹窗里 = await 焦点在新建弹窗里(page)
   console.log(`[菜单⇒新建文件] 焦点 = ${焦}`)
 
   await page.keyboard.type("菜单建的.csv")
@@ -183,7 +205,7 @@ test("菜单 ⇒ 新建文件：输入条要拿到焦点，裸键盘的字要进
   const 磁盘 = readdirSync(乙.directory)
   console.log(`[菜单⇒新建文件] 磁盘 = ${JSON.stringify(磁盘)}`)
 
-  expect(焦, "焦点应在新建输入条上").toContain("file-tree-create-input")
+  expect(焦点落在弹窗里, "焦点应在新建弹窗的输入框上").toBe(true)
   expect(条里的字, "裸键盘的字应进到输入条里").toBe("菜单建的.csv")
   expect(磁盘, "磁盘上应当建出来").toContain("菜单建的.csv")
 })
