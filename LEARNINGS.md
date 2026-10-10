@@ -36,6 +36,21 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #005-28 · 2026-10-11 · decision-rethink · 005-project-management
+**一句话**：给新代码加参数时**理由不能只搬结论**——那条理由的前提（下游是**行内输入条**）与这一处（下游是**弹窗**）不是同一个东西，本轮**两臂各 5 轮**把它证伪、参数**加过又去掉**；且**被判为「竞态」的性质单次采样没有判别力**（我第一次恰好落进「偶尔好」那侧，差点推翻一条已实测的理由）。
+**应用范围**：任何「照旁边注释的先例加同一个参数」的场合；任何「多数时候坏、偶尔好」的缺陷；任何要判「一条已记录的理由在我这里还成不成立」的收尾。（与 `#005-18` 互补：那条讲变异假绿怎么分诊。）
+→ 全文见 `LEARNINGS-full.md`
+
+## #005-29 · 2026-10-11 · tool-quirk · 005-project-management
+**一句话**：`Presence` 等**退场动画**才摘节点，而组件测试**没样式表** ⇒ 节点**永不摘除**（`aria-expanded` 都变 `false` 了它还在）⇒ 「关没关」的判据要读**状态属性**（`data-expanded`），**不是「节点在不在」**。
+**应用范围**：任何断「浮层 / 弹窗关掉了」的 happy-dom / jsdom 用例；任何同一个文件里同一条性质存在**两个判法**（一个对一个错）的现场。
+→ 全文见 `LEARNINGS-full.md`
+
+## #005-30 · 2026-10-11 · tool-quirk · 005-project-management
+**一句话**：`modal: true` 的菜单让页面其余部分 **inert** ⇒ `locator.click()` 的 **actionability 检查永远不过**、卡死重试 ⇒ 量到的是 **Playwright 的规矩不是产品的行为**；量「真实指针点下去」要用 `page.mouse.click`（⚠️「卡死」本身是一次读数：目标被蒙住了）。
+**应用范围**：任何「点外面 / 点别处」的 e2e 判据；任何目标可能被模态层 / 遮罩 / `inert` 盖住的现场。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #005-27 · 2026-10-11 · pattern · 005-project-management
 **一句话**：给组件**新加一条挂载前提**（`FileTree` 开始调 `useDialog()`，缺 Provider **抛错**）⇒ ⑥ 步要找的是「**谁把它挂起来**」，不是「谁 import 它」——本轮四个 `mount()`（`file-tree` / `workspace-entry` / `dual-file-tree`，后者 **23 条齐炸**）＋ 三个真栈 spec 里各自内联的那根输入条定位都得跟着改；而**我以为要补的 storybook 其实早有**（`preview.tsx` 的全局 `frame` 装饰器已经套了一层 ⇒ 写进去的 `decorators` 又撤了回来）。补 Provider 的同时**必须**把 `render()` 的返回值记账、`afterEach` **先卸载再擦 body**（`close()` 延迟 100ms 拆弹窗树，那条定时器挂在 Provider 的 owner 上 ⇒ 会在**下一条用例**里开火）。
 **应用范围**：任何给组件加 `useXxx()` / `useContext` 型前提的改动（弹窗 / i18n / 主题 / 路由 / 数据源）；任何「测试全绿、真栈白屏」的现场。
@@ -61,7 +76,7 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 ## #005-22 · 2026-10-10 · tool-quirk · 005-project-management
 **一句话**：`packages/ui` 的 `ContextMenuTrigger` 把 `data-slot` **硬写在 `{...rest}` 之后** ⇒ 调用方传的 `data-slot` 被静默覆盖、**那个名字在 DOM 里从来不存在** ⇒ 一条查它的用例（`sc.querySelector("[data-slot='session-list-body']")` ＝ `null` ⇒ `右键(undefined)` 一个事件都不发）**从写下那天起就在空转**，而它一直绿。
-**应用范围**：任何 `querySelector` 一个**自己没在 DOM 里见过**的名字的场合；任何用第三方 / 上游组件当宿主、又指望挂自己 `data-*` 的地方（`file-tree.tsx` 的 `data-slot="file-tree-area"` 同病）。
+**应用范围**：任何 `querySelector` 一个**自己没在 DOM 里见过**的名字的场合；任何用第三方 / 上游组件当宿主、又指望挂自己 `data-*` 的地方（`file-tree.tsx` 的 `data-slot="file-tree-area"` 同病）。**2026-10-11 第二例**：`DropdownMenuItem` 同病（`data-slot` 写在 `{...rest}` 之后）；同一族里 `DropdownMenuContent` 包的是 `data-component`（不撞）、`DropdownMenuTrigger` 覆盖成 `dropdown-menu-trigger`（无人依赖）⇒ 处方是**先 `grep` 宿主源码里的 `data-slot=` 清单，撞了换一个宿主不占的名字**（本轮菜单项改 `data-create-kind`）。内容在该条末段的并入块。
 → 全文见 `LEARNINGS-full.md`
 
 ## #005-21 · 2026-10-10 · decision-rethink · 005-project-management

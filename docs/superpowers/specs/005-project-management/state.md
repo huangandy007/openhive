@@ -3168,3 +3168,116 @@ warnings / 0 errors，全是既有；其中一条 `no-floating-promises` 是本�
 2. `file-tree.tsx` 的 `data-slot="file-tree-area"` 仍是被 `packages/ui` 覆盖掉的那个名字（⑤ 登记的
    同一个洞，今天无消费者）。未动。
 3. 两个 pane 的双层滚动容器、真栈 spec 在 CI 上跑不跑，均与 ① ~ ⑥ 同一笔账，未动。
+
+### ⑦ 五项交互优化 · 第 2 项：＋ 改浮层菜单（2026-10-11 · 本轮）
+
+> 承接 ⑦-1 的头注：五条交互反馈**逐条、不跳步、不合并**。本节只记**第 2 条**。
+
+**现象（用户原话）**：「点击"+"新建图标,会同时新建文件、新建文件夹。这个在交互感觉上与 windows 习惯
+冲突，我们还是要在点击"+"新建图标时，滑出新建文件、新建文件夹的列表，用户选择对应的选项后走对应的
+新建链路。」
+
+**根因（① 步真栈探针实测；探针 `e2e/real-stack/create-plus-probe.spec.ts` 已删，读数逐条记）**
+
+功能层解释不通——**改之前那个下拉本来就「滑出两项、选了才走」**。所以这句抱怨在**形式层**：
+
+| 读数 | 旧实现（＋ 那两块**长在工具栏流里**） |
+|---|---|
+| 下拉的盒子 | `{上:145, 左:69, 宽:262, 高:54, 定位:"static"}` —— **与工具栏同宽（262）同左（69）**，且 `static` |
+| 树上首行的 y | **145 → 203**（点开就把整棵树往下推 **58px**） |
+| 点树里一行后 | 下拉**还在** |
+| 点树下方空白后 | 下拉**还在** |
+| 点工具栏搜索框后 | 下拉**还在**（只有 Escape 与「再点 ＋」才关） |
+
+⇒ 它读起来不像一个菜单，像「工具栏底下**多长出来两块内容**」，而且这两块**把树推下去、点哪儿都不走**。
+这正是「会同时新建文件、新建文件夹」这句抱怨的形式层解释：**两块并排摊在眼前**，不像「点 ＋ 滑出一个
+列表、我得挑一项」。
+
+**改法（换成仓库里已有的浮层组件，不自造浮层）**
+
+- **改** `packages/app/src/project/file-tree.tsx`：工具栏那颗 ＋ 从「`<button>` ＋ 一个自己管的
+  `createOpen` 信号 ＋ 流内两块」改成 **`DropdownMenu`**（`@opencode-ai/ui/dropdown-menu`，Kobalte
+  薄包装）：`DropdownMenu.Trigger` 就是那颗 ＋、`DropdownMenu.Content` 里两个 `DropdownMenu.Item`
+  （新建文件 / 新建文件夹）。**出参一字未改**：仍是 `props.onCreate({ kind, parent, name })`，
+  `kind` 由**菜单项**定、`parent` 仍是 `selected()`，**调用方一行都不用动**。
+- 顺带抽出一个 `工具钮` 组件（五颗钮共用：图标 / `aria-label` / `data-action` / 两种配色），
+  五颗钮的名字与顺序集中成 `工具栏五颗` 一个常量。
+- **删掉** `createOpen` 信号（开关归 Kobalte 自己管）与那两块流内内容。
+- ⚠️ **菜单项按 `data-create-kind` 定位，不用 `data-slot`**：`DropdownMenuItem` 把
+  `data-slot="dropdown-menu-item"` 写在 `{...rest}` **之后** ⇒ 调用方传的 `data-slot` 被**静默覆盖**、
+  那个名字在 DOM 里**从来不存在**（`#005-22` 同病，第二例）。`Content` 上的 `data-slot` 落得下
+  （它包的是 `data-component`，两个名字不撞）。
+- ⚠️ **`工具钮` 的 `{...rest}` 排在自定义属性之前**（与 `#005-22` 那个病**相反**且**必须**）：
+  `disabled` / `onClick` 要能从 `DropdownMenu.Trigger` 传来。`disabled` 自己也落一份，
+  因为 Kobalte `ButtonRoot` 的 `createTagName` 要等 `ref` 挂载后才认标签名（晚一拍）。
+
+**⚠️ `modal` 参数：本轮**加过又去掉**，过程与证据都记下来（这是本条最费功夫的一处）**
+
+初版照着本文件右键菜单那段注释加了 `modal={false}`，理由是「默认 `modal: true` 会在浮层**卸载那一刻**
+把焦点归还/抢走，与下游 `autofocus` 的弹窗互抢」。本轮**两臂对照把它证伪**：
+
+| 读数（同一份 spec、**每臂 5 轮**、只差 `modal` 一个变量） | `modal={false}` | Kobalte 默认 `true` |
+|---|---|---|
+| `activeElement` @ `+0ms` | `DIV[dropdown-menu-item]` | **`INPUT[fileName]`** |
+| `activeElement` @ `+100 / +400 / +1000ms` | **`BODY`**（5 轮全同） | **`INPUT[fileName]`**（5 轮全同） |
+| **裸键盘打进去的字**（`.fill()`/`.type()` 会先聚焦、判别力为零，`#005-17`） | 5/5 进得去 | 5/5 进得去 |
+| 点外面（树里一行 / 下方空白 / 搜索框，用**底层指针** `page.mouse.click`） | 三种都关 | 三种都关 |
+| 几何（上/左/宽/高/首行 y） | 145/255/128/65、首行恒 145 | **逐字一致** |
+
+⇒ 两臂的**用户级判据等价**（字都进得去、点外面都关、几何一致），而**默认臂的焦点更早更稳**
+（`+0ms` 起就在输入框，`modal={false}` 臂要到**打字那一刻**才补回来）。⇒ **去掉 `modal={false}`**，
+用 Kobalte 默认。那段被搬来的理由的**前提就不是同一个东西**：右键菜单那条链的下游是
+**行内输入条**（`inline-rename-input.tsx`，会被焦点归还机制自杀），这一处的下游是**弹窗**（自己管
+`autofocus`）。同仓对齐：全仓 10 处 `<DropdownMenu>`，**8 处不传 `modal`**。
+
+⚠️ 量「点外面关不关」**必须用 `page.mouse.click`**，不能用 `locator.click()`：`modal: true` 的菜单
+让页面其余部分 inert ⇒ `locator.click()` 的 actionability 检查**永远不过**、一路重试到超时（实测卡死
+在「点树里一行」那步）。量到的是 **Playwright 的规矩，不是产品的行为**。
+
+**回归网**：`file-tree.test.tsx` 新增 3 条（浮层挂到 `body` 上、不在 host 里 / 点浮层外面 ⇒ 收掉 /
+按 Escape ⇒ 收掉）；既有 6 处「点 ＋ ⇒ 点流内那块」的序列全换成 `点加号(host)` ＋ `点菜单行(kind)`。
+两条真栈 spec（`file-tree-empty-dir-real` / `file-tree-session-expired-real`）的菜单项定位从
+`[data-slot='file-tree-create-*']` 换成 `[data-create-kind='*']`。
+
+⚠️ **「菜单关没关」的判据是 `data-expanded`，不是「节点在不在」**：Kobalte 的 `Content` 外面套
+`Presence`，它等**退场动画** `animationend` 才摘节点，而组件测试**没加载样式表** ⇒ 节点**一直挂着**
+（实测关掉 800ms 后仍在，`data-expanded` 换成 `data-closed`）。按「节点在不在」判，红的样子长得像
+「点外面根本关不掉」——用一次性 scratch 探针定到根因后才改对的。
+
+**变异验证（逐处拆，据实记三类，`#003-03`）**
+
+| 拆哪一处 | 恰红 | 另一类 |
+|---|---|---|
+| A：去掉 `<DropdownMenu.Portal>` | `file-tree.test.tsx` **恰红 1 条**（「不在 host 里」那条结构判据） | 其余 88 条全绿——射程之外 |
+| B：`git stash push -- src/project/file-tree.tsx`（撤回旧实现） | **红同样的 9 条**（与初始 RED 集合逐条一致） | — |
+| C：给 `DropdownMenu` 加回 `modal={false}` | **89 条全绿** | **第三类「变异全绿」**：组件测试里这个参数**没有任何守护者**，它的后果只有在真栈量得出来（本次用一次性探针量了，读数在上表） |
+
+**门禁**（**串行**，`#003-01`）：`tsgo -b` 全仓 typecheck **31/31 successful**；`packages/app` 组件套
+**791 pass / 0 fail**；单元套 **1094 pass / 0 fail**；改动文件 scoped oxlint（四个文件）**12 warnings /
+0 errors，且 12 条全在两个 e2e spec 的「非本轮改动行」**（`file-tree.tsx` / `file-tree.test.tsx`
+**0 命中**；那 12 条是既有的 `no-useless-fallback-in-spread` / `no-unsafe-type-assertion`）；
+`bun.lock` 无污染；真栈三个 spec **串行**复跑
+（`file-tree-empty-dir-real` 2 / `file-tree-session-expired-real` 2 / `file-tree-menu-focus-real` 2）
+**6 passed**。
+
+**⑥ 步：同类落点逐个打勾**
+
+| 落点 | 前提成立？ | 处置 |
+|---|---|---|
+| 旧流内块的槽名 `file-tree-create-file` / `-dir` | — | ✅ 全仓清零 |
+| `createOpen` 信号 | — | ✅ 清零（grep 命中全是 `createOpencodeClient` 等无关名） |
+| 依赖 `data-slot="dropdown-menu-item"` 的别处（`session-header.tsx` / `index.css` / `prompt-project-selector.tsx`） | **不成立** | ⬜ 不改——那是**上游自己的**用法，无一依赖本链 |
+| `file-tree-action-create` 的落点 | 成立 | ⬜ 不改——`file-tree.test.tsx:806`、`workspace-entry.test.tsx:642/2060` 断的是 `disabled`，`工具钮` 已自己落这份；**全在已跑绿的两套里** |
+| 本仓另 9 处 `<DropdownMenu>`（含 `windows-app-menu.tsx` 的 `modal={false}`、`layout.tsx` 的 `modal={!sidebarHovering()}`） | **成立** | ⬜ 不改——各有自己的理由，不在本条射程 |
+
+**⛔ 缺口 / 挂账（`#002-02`）**
+
+1. **🔴 「浮层 ⇒ 弹窗 这一跳的焦点」今天没有常驻守护者**：量它的探针
+   （`e2e/real-stack/modal-focus-probe.spec.ts`）按「一次性探针跑完即删」的惯例删了，而组件测试对
+   `modal` **完全无感**（变异 C 全绿）。⇒ 若日后有人再给这处加 `modal={false}`（或上游改了 Kobalte
+   默认值），**没有任何门禁会红**。要收就落一条真栈 spec（判据：菜单项点下去之后 `+1000ms` 时
+   `activeElement` 必须是弹窗输入框），本轮不动、登记待裁。
+2. **默认臂下「菜单开着时 ＋ 自己也进不去（inert）」**：真实指针再点一次 ＋ 仍能关掉菜单（实测
+   连点 true→false），但 `locator.click()` 点不进去。本轮如实记，不当缺陷处理（模态菜单的正常行为）。
+3. `file-tree-blank-menu-real.spec.ts` 第 4 条红、`data-slot="file-tree-area"` 被覆盖、
+   两个 pane 的双层滚动容器、真栈 spec 在 CI 上跑不跑——**与 ⑦-1 第 1~3 条同一笔账**，本轮不动。

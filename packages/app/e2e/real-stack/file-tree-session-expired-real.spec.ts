@@ -108,7 +108,10 @@ async function 弄坏会话(context: BrowserContext) {
 /** 工具栏 ＋ ⇒ 新建文件 ⇒ 弹窗里填名 ⇒ Enter（用户实报那条路径）。 */
 async function 工具栏新建(page: Page, 名: string) {
   await page.locator("[data-slot='file-tree-action-create']").click()
-  await page.locator("[data-slot='file-tree-create-file']").click()
+  // 2026-10-11 起「＋」滑出的是**浮层**菜单（`DropdownMenu`）。菜单项按 `data-create-kind`
+  // 定位，**不按 `data-slot`**：`DropdownMenuItem` 把 `data-slot="dropdown-menu-item"` 写在
+  // `{...rest}` 之后，调用方传的名字会被静默覆盖（`LEARNINGS #005-22`）。
+  await page.locator("[data-create-kind='file']").click()
   // 2026-10-11 起名字在**弹窗**里问（原先那根行内输入条已撤）。输入框按弹窗容器定位：
   // `TextInputV2` 会用自己的 `data-slot` 覆盖调用方传的那个（`LEARNINGS #005-22`）。
   const 名字 = page.locator("[data-slot='file-create-dialog'] input")

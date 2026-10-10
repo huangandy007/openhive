@@ -1,5 +1,6 @@
-import { createMemo, createSignal, For, Show } from "solid-js"
+import { createMemo, createSignal, For, Show, splitProps, type JSX } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
@@ -12,8 +13,17 @@ import { 就地改名输入 } from "@/components/inline-rename-input"
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
 
+/**
+ * 工具栏上那**五颗钮**（搜索框不算）——顺序即设计 §6.1 的优先级，
+ * `图标` / `标签` / `禁用` / `点` 都按它取值。
+ */
+const 工具栏五颗 = ["collapse-all", "expand-all", "create", "rename", "delete"] as const
+
+/** 五颗钮里的一颗。 */
+type 工具栏动作 = (typeof 工具栏五颗)[number]
+
 /** 一份图标名映射，集中于此便于与设计 §6.1 的表格逐行对照。 */
-const 图标: Record<Exclude<FileTreeAction, "search">, "collapse" | "expand" | "plus" | "pencil-line" | "trash"> = {
+const 图标: Record<工具栏动作, "collapse" | "expand" | "plus" | "pencil-line" | "trash"> = {
   "collapse-all": "collapse",
   "expand-all": "expand",
   create: "plus",
@@ -220,7 +230,6 @@ export function FileTree(props: FileTreeProps) {
   /** 收起态**存反向**（收起集合而不是展开集合）：默认全展开是常态，空集合即默认。 */
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   const [selected, setSelected] = createSignal<string>()
-  const [createOpen, setCreateOpen] = createSignal(false)
   /**
    * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
    *
@@ -300,7 +309,7 @@ export function FileTree(props: FileTreeProps) {
           value={keyword()}
           onInput={(event) => setKeyword(event.currentTarget.value)}
         />
-        <For each={["collapse-all", "expand-all", "create", "rename", "delete"] as const}>
+        <For each={工具栏五颗}>
           {(action) => (
             /* 悬停提示（设计 §6.1 最后一条「悬停给 tooltip 提示动作名」）：五颗都只有一枚图形，
                文案与 `aria-label` 同源。
@@ -313,45 +322,64 @@ export function FileTree(props: FileTreeProps) {
                2026-10-09 真浏览器实测：`file-tree-action-create`（`disabled=true`）悬停 ⇒ 浮层「新建」、
                `…-delete` ⇒ 「删除」。（别按直觉写「禁用就不弹」——那是**没实测**的假前提。） */
             <TooltipV2 value={标签[action]} class="flex shrink-0">
-              <button
-                data-action={action}
-                data-slot={`file-tree-action-${action}`}
-                type="button"
-                aria-label={标签[action]}
-                class={action === "delete" && !禁用("delete") ? TOOL_BUTTON_DANGER : TOOL_BUTTON}
-                disabled={禁用(action)}
-                onClick={() => 点(action)}
+              <Show
+                when={action === "create"}
+                fallback={<工具钮 action={action} 禁用={禁用(action)} onClick={() => 点(action)} />}
               >
-                <Icon name={图标[action]} size="small" />
-              </button>
+                {/* ＋ 的浮层菜单（设计 §6.1「两项收进下拉，不占两个图标位」；2026-10-11 改形态）。
+                    改之前那两块**长在工具栏流里**：`position: static`、与工具栏同宽同左，点开就把树
+                    整体往下推 58px，且点界面任何地方都不关（真栈探针读数见 `state.md` ⑦-②）。
+                    用户原话是「**滑出**新建文件、新建文件夹的列表…走对应的新建链路」——功能上一版
+                    就对，错的是形式：它读起来像「树上多长出来两块内容」，不像一个菜单。
+
+                    ⚠️ 这里**不加** `modal={false}`，用 Kobalte 的默认 `modal: true`。理由不是口味，
+                    是量出来的 —— 曾经照着下面右键菜单那段注释加过 `modal={false}`（「默认会在卸载
+                    那一刻把焦点归还/抢走，与下游 `autofocus` 的弹窗互抢」），本轮**两臂对照把它证伪**：
+
+                    同一份 spec（`modal-focus-probe.spec.ts`，真栈、走完即删）、**每臂 5 轮**、
+                    只差 `modal` 这一个变量 —— 两臂的「裸键盘打进去的字」**都是 5/5 进得去**；
+                    而**默认臂的焦点更早更稳**：默认臂 `+0ms` 起 `activeElement` 就是
+                    `INPUT[fileName]`（5 轮一直如此），`modal={false}` 臂要到**打字那一刻**才补回来，
+                    `+100/+400/+1000ms` 一路读 `BODY`。
+
+                    「点外面就关」（树里一行 / 下方空白 / 搜索框，三种都实测关掉）与「不把树推下去」
+                    （首行 y 恒 145）**两臂逐字一致** —— 那些是 `DismissableLayer` 的事，跟 `modal`
+                    无关（这一点下面那段注释自己也写了）。
+
+                    ⇒ 右键菜单那段的前提是**行内输入条**（它的下游是 `inline-rename-input.tsx`，
+                    会被焦点归还机制自杀）；这一处的下游是**弹窗**（自己管 `autofocus`）。
+                    两条链的下游不是同一个东西，理由不能搬。
+
+                    ⚠️ 组件测试里这个参数**没有守护者**：变异（给 `DropdownMenu` 加回
+                    `modal={false}`）跑 89 条全绿。它只有在真栈里量得出来。
+
+                    同仓对齐：全仓 10 处 `<DropdownMenu>`，**8 处不传 `modal`**（用默认）；另两处各有
+                    自己的理由（`windows-app-menu.tsx` 传 `false`、`layout.tsx` 传
+                    `modal={!sidebarHovering()}`）。 */}
+                <DropdownMenu gutter={4} placement="bottom-start">
+                  <DropdownMenu.Trigger as={工具钮} action="create" 禁用={禁用("create")} disabled={禁用("create")} />
+                  <DropdownMenu.Portal>
+                    {/* `data-slot` 落下得了：`Content` 包的是 `data-component`，两个名字不撞 */}
+                    <DropdownMenu.Content data-slot="file-tree-create-menu">
+                      {/* ⚠️ 菜单项这里**只能用 `data-create-kind`**：`DropdownMenuItem` 把
+                          `data-slot="dropdown-menu-item"` 写在 `{...rest}` **之后** ⇒ 调用方传的
+                          `data-slot` 被静默覆盖，那个名字在 DOM 里从来不存在（`#005-22` 同病）。 */}
+                      <DropdownMenu.Item data-create-kind="file" onSelect={() => 新建("file", selected())}>
+                        <Icon name="open-file" size="small" />
+                        <DropdownMenu.ItemLabel>新建文件</DropdownMenu.ItemLabel>
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item data-create-kind="directory" onSelect={() => 新建("directory", selected())}>
+                        <Icon name="folder" size="small" />
+                        <DropdownMenu.ItemLabel>新建文件夹</DropdownMenu.ItemLabel>
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu>
+              </Show>
             </TooltipV2>
           )}
         </For>
       </div>
-
-      <Show when={createOpen()}>
-        {/* ＋ 的文件夹下拉（设计 §6.1：两项收进下拉，不占两个图标位） */}
-        <div data-slot="file-tree-create-menu" class="flex w-full min-w-0 flex-col gap-0.5 rounded-[4px] bg-v2-background-bg-layer-01 p-0.5">
-          <button
-            data-slot="file-tree-create-file"
-            type="button"
-            class={MENU_ITEM}
-            onClick={() => 新建("file", selected())}
-          >
-            <Icon name="open-file" size="small" />
-            新建文件
-          </button>
-          <button
-            data-slot="file-tree-create-dir"
-            type="button"
-            class={MENU_ITEM}
-            onClick={() => 新建("directory", selected())}
-          >
-            <Icon name="folder" size="small" />
-            新建文件夹
-          </button>
-        </div>
-      </Show>
 
       {/* ⚠️ `modal={false}` **不是可选项**：默认 `modal: true` 会让 Kobalte 的 `createFocusScope`
           在菜单开着时锁焦点，并在**菜单卸载那一刻**把焦点**归还**给「打开菜单时容器外的聚焦元素」
@@ -588,7 +616,9 @@ export function FileTree(props: FileTreeProps) {
   function 点(action: Exclude<FileTreeAction, "search">) {
     if (action === "collapse-all") return setCollapsed(new Set(节点表().keys()))
     if (action === "expand-all") return setCollapsed(new Set<string>())
-    if (action === "create") return setCreateOpen((open) => !open)
+    // 「＋」不在这儿：它现在是 `DropdownMenu.Trigger`，开关归 Kobalte 自己管
+    // （`menu-trigger` 收到 `pointerdown` 就 `context.toggle(true)`）——再在这儿存一份
+    // 「开没开」的信号，就是 `#002-06` 那句「同一个判断在两处各写一份」。
     const path = selected()
     if (!path) return // 没有作用对象就不动作（不猜「大概是指根」）
     if (action === "rename") return 改名(path)
@@ -621,7 +651,6 @@ export function FileTree(props: FileTreeProps) {
   function 新建(kind: "file" | "directory", path: string | undefined) {
     const 交 = props.onCreate
     if (!交) return
-    setCreateOpen(false)
     const parent = 落点(path)
     // `void`：`show()` 交回来的是 `startTransition` 那个返回值（不是真 promise，弹窗是**同步**
     // 排进栈、下一拍渲染）。`no-floating-promises` 认的是形状，这里标一下「有意丢弃」。
@@ -736,6 +765,39 @@ const 标签: Record<Exclude<FileTreeAction, "search">, string> = {
   create: "新建",
   rename: "重命名",
   delete: "删除",
+}
+
+/**
+ * 工具栏那**五颗钮共用的一份外形**（2026-10-11 抽出来）。
+ *
+ * 抽它只为「＋」那一颗：它得从光秃秃的 `<button>` 变成 `DropdownMenu.Trigger` 的**宿主**
+ * （`as={工具钮}`），而五颗钮的 `data-action` / `data-slot` / `aria-label` / 图标 / 禁用态配色
+ * **只有一份**——拆成两处写法就是 `#002-06` 那句「同一个判断在两处各写一份，然后各自长」。
+ *
+ * ⚠️ `{...rest}` 排在**自定义属性之前**，与 `#005-22` 里 `ContextMenuTrigger` 的顺序正好相反，
+ * 而且是**必须**的：Kobalte 往触发器上落的 `aria-expanded` / `aria-haspopup` / `onPointerDown`
+ * 是**它自己的契约**——盖掉 `onPointerDown` 菜单当场打不开；反过来 `data-slot` 必须我们说了算，
+ * 否则它会被 `DropdownMenuTrigger` 写成 `dropdown-menu-trigger`，「⑥ 步那批落点」全查不到。
+ *
+ * ⚠️ `disabled` 也由这里落（而不是交给 `ButtonRoot`）：`ButtonRoot` 认标签名是在挂载**之后**
+ * （`createTagName` 要等 `ref`），它写下的 `disabled` 会晚一拍、在禁用态上是个竞态；
+ * 我们自己写死，`禁用("create")` 是什么就是什么。
+ */
+function 工具钮(props: { action: 工具栏动作; 禁用: boolean; class?: string } & JSX.ButtonHTMLAttributes<HTMLButtonElement>) {
+  const [local, rest] = splitProps(props, ["action", "禁用", "class"])
+  return (
+    <button
+      {...rest}
+      type="button"
+      data-action={local.action}
+      data-slot={`file-tree-action-${local.action}`}
+      aria-label={标签[local.action]}
+      class={local.action === "delete" && !local.禁用 ? TOOL_BUTTON_DANGER : TOOL_BUTTON}
+      disabled={local.禁用}
+    >
+      <Icon name={图标[local.action]} size="small" />
+    </button>
+  )
 }
 
 /**

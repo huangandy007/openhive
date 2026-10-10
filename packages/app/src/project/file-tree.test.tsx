@@ -162,6 +162,86 @@ const 弹窗提交 = () => {
 /** 有弹窗吗——断在**布尔**上（`#005-01`：实得值是节点会把整轮挂哑）。 */
 const 有新建弹窗 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
 
+/**
+ * ── 「＋」那个浮层菜单的探针（2026-10-11）────────────────────────────────────
+ *
+ * 它与右键菜单、弹窗同为 `Kobalte.Portal` 传送到 body 的浮层（`@opencode-ai/ui/dropdown-menu`
+ * 的 `Content`），**不在** host 里 ⇒ 查 `document`。
+ *
+ * 「它**不在** host 里」本身就是要钉的判据：上一版的「下拉」是长在工具栏**流里**的一个
+ * `position: static` 块——真栈实测它把树整体往下推了 58px，且点界面任何地方都不关
+ * （`create-plus-probe.spec.ts` 读数，见 `state.md` ⑦-②）。浮层一旦进了 body，就不可能再
+ * 占树的布局。几何在 happy-dom 里量不出来（`#006-06`），这条结构判据是它在组件层的替身。
+ */
+const 浮层 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+
+/**
+ * 「＋」那个浮层菜单**开着吗**——断在布尔上（`#005-01`）。
+ *
+ * ⚠️ 判据是 **`data-expanded`**，**不是「节点在不在」**：Kobalte 的 `Content` 外面套着一层
+ * `Presence`，它等**退场动画**收尾才摘节点，而组件测试里一张样式表都没加载 ⇒ 那个
+ * `animationend` 永远不来 ⇒ 节点**一直挂着**。本次实测：关掉 800ms 后节点还在，只是从
+ * `data-expanded` 换成了 `data-closed`。拿「节点在不在」当「关没关」，会红成
+ * 「点外面根本关不掉」——**而那正是这一条要否掉的缺陷**，一个会让假红伪装成真缺陷的判据。
+ *
+ * 「关掉之后它在不在 host 里」是另一码事，由 `无槽(host, …)` 单独钉（结构判据）。
+ * 同文件里右键菜单那条 `有菜单()` 早就用的是 `data-expanded`，这里与它一致。
+ */
+const 菜单开着 = () => 浮层("file-tree-create-menu")?.hasAttribute("data-expanded") ?? false
+
+/**
+ * 菜单里的一行，按 `data-create-kind` 取。
+ *
+ * ⚠️ **不能用 `data-slot`**：`@opencode-ai/ui/dropdown-menu` 的 `DropdownMenuItem` 把
+ * `data-slot="dropdown-menu-item"` 写在 `{...rest}` **之后** ⇒ 调用方传的名字被**静默覆盖**，
+ * 那个名字在 DOM 里**从来不存在**（`#005-22` 的 `ContextMenuTrigger` 是同一个病：一条查它的
+ * 用例会从写下那天起空转）。换一个不在折衷名单里的属性名，它才原样落地。
+ * （`Content` 那边没这问题——它写的是 `data-component`，与 `data-slot` 不撞。）
+ */
+const 菜单行 = (kind: "file" | "directory") =>
+  document.body.querySelector<HTMLElement>(`[data-create-kind='${kind}']`)
+
+/**
+ * 点开工具栏的「＋」。
+ *
+ * ⚠️ Kobalte 的菜单触发器认的是 **`pointerdown`**，不是 `click`——`menu-trigger` 里写着
+ * `!disabled && e.pointerType !== "touch" && e.button === 0` 才 `context.toggle(true)`。
+ * 派一个真实的指针序列（同下面 `点菜单项` 的写法），别用 `.click()`。
+ */
+const 点加号 = (host: HTMLElement) => {
+  const el = 动作(host, "create")
+  if (!el) throw new Error("工具栏没有「＋」——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+
+/**
+ * 选中浮层菜单里的一行。
+ *
+ * ⚠️ 同理，选择发生在 **`pointerup`** 上（`menu-item-base` 的 `onPointerUp`：`e.button === 0`
+ * ⇒ `onSelect()`）；少了按下那一下，`createSelectableItem` 的前置不成立。
+ */
+const 点菜单行 = (kind: "file" | "directory") => {
+  const el = 菜单行(kind)
+  if (!el) throw new Error(`浮层菜单里没有「${kind}」那一行——前提不成立（\`#004-14\`）`)
+  for (const 类型 of ["pointerdown", "pointerup"])
+    el.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+
+/**
+ * 等浮层**收掉**——条件轮询，不是定时等待。
+ *
+ * ⚠️ 「关没关」不能用固定的一拍去断：Kobalte 的收起**不在同一次同步里**（菜单项的
+ * `closeOnSelect` 先排一个 `setTimeout(…, 0)`，`DismissableLayer` 那侧也有自己的收尾），
+ * 5ms 的定值碰的是「刚好够」还是「刚好不够」。本次实测它的**红法**是：判据一律读成
+ * `Received: false`（＝还开着），看着像「点外面根本关不掉」——**正是这一条要否掉的那个缺陷**。
+ * 一个会把「假红」伪装成「真缺陷」的定值必须换掉（`#006-17`：为被测属性搭的前置条件自己可能不成立）。
+ *
+ * 轮空也**不抛**：让下面那条断言去红，报出「等了两百毫秒它还开着」这个事实。
+ */
+const 等浮层收掉 = async () => {
+  for (let i = 0; i < 40 && 菜单开着(); i++) await new Promise((r) => setTimeout(r, 5))
+}
+
 /** 造路径数据——形状就是 `buildFileTreeV2Model` 收的那个 `readonly string[]`，不经任何后端。 */
 const 树 = (...paths: string[]) => paths
 
@@ -506,14 +586,73 @@ describe("FileTree 文件树（FR-005）", () => {
   })
 
   describe("新建 / 重命名 / 删除（FR-005 的前三项；T008 收复制/移动/上传/下载）", () => {
-    test("＋ 点开下拉，两项：新建文件 / 新建文件夹（设计 §6.1：下拉收纳，不占两个图标位）", () => {
+    /**
+     * 2026-10-11 换的形态：**从「流里的一个块」换成「body 上的浮层」**。
+     *
+     * 用户原话：「点击『+』新建图标时，滑出新建文件、新建文件夹的列表」——功能上一版就该是这样
+     * （点＋确实只出一个两项的列表），所以那句抱怨落在**形式**上：真栈探针量出上一版那个「下拉」
+     * 是 `position: static` 的**流内**块（与工具栏同宽同左、把树整体推下去 58px），而且点界面
+     * 任何地方都不关（只有 Esc 与再点＋）。它读起来像「树上多长出来两块内容」，不像「滑出一个菜单」。
+     *
+     * 这条钉的是**结构**：菜单挂在 `document.body` 上，不在 host 里 ⇒ 结构上不可能再占树的布局。
+     * 几何本身（首行 y 动不动）happy-dom 量不出来（`#006-06`），归真栈那条探针。
+     */
+    test("＋ 点开的是一个**浮层**菜单：挂到 body 上（不在 host 里），两项都在", async () => {
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={() => {}} />)
+      expect(菜单开着()).toBe(false)
+
+      点加号(host)
+      await 歇一拍()
+
+      // ① 它**不在** host 里——「不再把树推下去」在组件层的替身
       expect(无槽(host, "file-tree-create-menu")).toBe(true)
+      // ② 它确实在（浮层落在 body 上）
+      expect(菜单开着()).toBe(true)
+      // ③ 两项都在，文案不变
+      expect(菜单行("file")?.textContent?.trim()).toBe("新建文件")
+      expect(菜单行("directory")?.textContent?.trim()).toBe("新建文件夹")
+      // ④ 触发器**自己**认账（`aria-expanded` 由 Kobalte 写，不是我们另存一个信号）——
+      //    这条同时也是 TooltipV2 抑制气泡所看的那一个标记（`tooltip-v2.tsx` 的 `sync()`）
+      expect(动作(host, "create")?.getAttribute("aria-expanded")).toBe("true")
+    })
 
-      动作(host, "create")?.click()
+    /**
+     * 「点外面关」——用户第 4 条抱怨的是**右键菜单**，这条同一句抱怨落在「＋」上
+     * （真栈探针实测：上一版点树里一行、点空白、点搜索框，下拉**都还在**）。
+     *
+     * ⚠️ 外面那层监听是 `setTimeout(…, 0)` 之后才挂上的（`dismissable-layer` 的
+     * `createInteractOutside`）⇒ **开完一定要让一拍宏任务再点外面**，否则派出去的事件落在
+     * 「监听还没挂」的空窗里，看着像「点了也不关」，其实是这条用例自己抢跑。
+     */
+    test("点浮层外面 ⇒ 菜单收掉（Windows 习惯：左键单击别处就消失）", async () => {
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={() => {}} />)
+      点加号(host)
+      await 歇一拍()
+      expect(菜单开着()).toBe(true)
 
-      expect(文本(host, "file-tree-create-file")).toBe("新建文件")
-      expect(文本(host, "file-tree-create-dir")).toBe("新建文件夹")
+      // 点在**树里的一行**上——浮层之外的任何地方都算
+      行按名(host, "a.txt")?.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+      await 等浮层收掉()
+
+      expect(菜单开着()).toBe(false)
+    })
+
+    test("按 Escape ⇒ 菜单收掉（键盘也要出得去）", async () => {
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={() => {}} />)
+      点加号(host)
+      await 歇一拍()
+      expect(菜单开着()).toBe(true)
+
+      // Escape 关菜单是**焦点陷阱那一层**的事（`DismissableLayer` 的 `onEscapeKeyDown`），
+      // 所以从浮层**里面**派（菜单开着时焦点本来就在它身上）
+      ;(浮层("file-tree-create-menu") ?? document).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      )
+      await 等浮层收掉()
+
+      expect(菜单开着()).toBe(false)
     })
 
     /**
@@ -525,24 +664,27 @@ describe("FileTree 文件树（FR-005）", () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
 
       expect(记).toEqual([])
       expect(有新建弹窗()).toBe(true)
       // 行内那根输入条**不在了**——弹窗换的就是它（用户原话：在图标下方显示输入框，与日常习惯不符）
       expect(无槽(host, "file-tree-create-input-box")).toBe(true)
-      // 下拉要收掉：一个「新建文件」还没填完，不该同时摆着两个入口
-      expect(无槽(host, "file-tree-create-menu")).toBe(true)
+      // 浮层要收掉：一个「新建文件」还没填完，不该同时摆着两个入口
+      await 等浮层收掉()
+      expect(菜单开着()).toBe(false)
     })
 
     test("弹窗里填名字并提交 ⇒ 才喊 onCreate，带上 kind / parent / name（未选中 ⇒ 落点是根）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
       弹窗填("话单.csv")
       弹窗提交()
@@ -560,8 +702,9 @@ describe("FileTree 文件树（FR-005）", () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-dir")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("directory")
       await 歇一拍()
 
       expect(document.body.querySelector("[data-slot='dialog-header-title']")?.textContent?.trim()).toBe("新建文件夹")
@@ -576,8 +719,9 @@ describe("FileTree 文件树（FR-005）", () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
 
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
       弹窗填("建了一半")
       document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
@@ -597,16 +741,18 @@ describe("FileTree 文件树（FR-005）", () => {
 
       // 选中目录「乙」⇒ 落点是它自己
       行按名(host, "乙")?.click()
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
       弹窗填("新.md")
       弹窗提交()
 
       // 选中文件「a.txt」⇒ 落点是它所在的目录「甲/乙」（不是文件自己）
       行按名(host, "a.txt")?.click()
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
       弹窗填("新.md")
       弹窗提交()
@@ -644,8 +790,9 @@ describe("FileTree 文件树（FR-005）", () => {
       const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} onCreate={(i) => 记.push(i)} />)
 
       行按名(host, "资料")?.click()
-      动作(host, "create")?.click()
-      按钮(host, "file-tree-create-file")?.click()
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
       await 歇一拍()
       弹窗填("新.md")
       弹窗提交()
@@ -653,11 +800,15 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(记).toEqual([{ kind: "file", parent: "资料", name: "新.md" }])
     })
 
-    test("未接线时 ＋ 本身是禁用态，下拉都打不开——不假装能建（今天确实没有接收方）", () => {
+    test("未接线时 ＋ 本身是禁用态，浮层都打不开——不假装能建（今天确实没有接收方）", async () => {
       const host = mount(() => <FileTree paths={树("a.txt")} />)
 
       expect(按钮(host, "file-tree-action-create")?.disabled).toBe(true)
-      expect(无槽(host, "file-tree-create-menu")).toBe(true)
+      // 禁用态那颗派 `pointerdown` 也不许开——触发器的 `disabled` 是交给 Kobalte 的
+      // （`menu-trigger` 里 `!local.disabled` 才 `toggle`），不是靠我们自己拦一下
+      点加号(host)
+      await 歇一拍()
+      expect(菜单开着()).toBe(false)
     })
 
     test("未接线时重命名 / 删除是禁用态", () => {

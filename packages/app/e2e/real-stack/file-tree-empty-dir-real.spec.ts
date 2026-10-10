@@ -136,7 +136,10 @@ test("**通过界面**新建一个文件夹 ⇒ 它建完就看得见（用户�
 
   // 什么都不选中 ⇒ 落点是项目根（工具栏那条路径）。真敲字：`fill` 绕开 keydown，而 Enter 是提交闸门。
   await page.locator("[data-slot='file-tree-action-create']").click()
-  await page.locator("[data-slot='file-tree-create-dir']").click()
+  // 2026-10-11 起「＋」滑出的是**浮层**菜单（`DropdownMenu`）。菜单项按 `data-create-kind`
+  // 定位，**不按 `data-slot`**：`DropdownMenuItem` 把 `data-slot="dropdown-menu-item"` 写在
+  // `{...rest}` 之后，调用方传的名字会被静默覆盖（`LEARNINGS #005-22`）。
+  await page.locator("[data-create-kind='directory']").click()
   // 2026-10-11 起名字在**弹窗**里问（原先那根行内输入条已撤）：输入框是 `TextInputV2` 的，
   // 我们传的 `data-slot` 会被它自己那个覆盖（`LEARNINGS #005-22`），故按弹窗容器定位。
   const 名字 = page.locator("[data-slot='file-create-dialog'] input")
