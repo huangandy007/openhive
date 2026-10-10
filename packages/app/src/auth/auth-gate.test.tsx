@@ -16,6 +16,7 @@ import { render } from "solid-js/web"
 import { currentUser, setCurrentUser } from "@/workspace/current-user"
 import { AuthGate } from "./auth-gate"
 import { PATH, type AuthFetch, type Identity } from "./gateway"
+import { markSessionExpired } from "./session-expired"
 import { useAuthSession } from "./session-context"
 
 /** 刻意带 `mustChangePw: true`：它就是 T015 那条强制改密链的入口。 */
@@ -411,5 +412,67 @@ describe("T015 退出登录", () => {
     await flush()
 
     expect(有(host, "[data-component='login-page']")).toBe(true)
+  })
+})
+
+/**
+ * 会话在**运行中**没了（401，2026-10-10 用户下达的第 2 件）。
+ *
+ * 修之前：401 只在几个结论函数里被翻成一句「登录已过期，请重新登录」，够不到**唯一能处理它的
+ * 那一层**（这道门）。真栈实测：横幅说得对，界面一动不动（登录页 0、工作台 1、URL 停在 `/`）；
+ * 同一条坏 cookie 冷加载却出得来登录页 ⇒ 判据没坏，缺的是**第二次探查**。
+ *
+ * ⚠️ 触发者是**出口**（这里直接喊 `markSessionExpired()`——与外呼底座喊的是同一个函数），
+ * 不是顶栏、也不是某颗按钮：这一层只验「门听到之后做了什么」。「谁喊的」由两层各自钉——
+ * `project/openhive-fetch.test.ts` 钉「九个出口都会喊」，真栈
+ * `e2e/real-stack/file-tree-session-expired-real.spec.ts` 钉整条链。
+ *
+ * ⚠️ 判据是**重探的结论**，不是「喊了一声就进登录页」——中间那条对照用例就是为此存在的。
+ */
+describe("T015 登录门 · 运行中会话没了（401）", () => {
+  beforeEach(() => setCurrentUser(undefined))
+
+  test("某个出口吃到 401 ⇒ 重探 ⇒ 回到登录页，接线缝不再留人", async () => {
+    /** 内核此刻对「我是谁」的答案：先是本人（人已经在工作台上），之后换成没身份。 */
+    let 内核的答案: () => Response = () => json(不需改密)
+    const send = stub({ [PATH.me]: () => 内核的答案() })
+    const host = mount(send)
+    await flush()
+    expect(有(host, "[data-slot='workspace']"), "前提：先在工作台上").toBe(true)
+
+    // 出口吃到 401（例如文件树上点「新建」）——那一刻内核那边会话已经没了。
+    内核的答案 = () => new Response(null, { status: 401 })
+    markSessionExpired()
+    await flush()
+
+    expect(有(host, "[data-component='login-page']"), "过期之后必须给出登录入口").toBe(true)
+    expect(有(host, "[data-slot='workspace']")).toBe(false)
+    expect(currentUser(), "回了登录页就不能把上一个人的名字留在模块级接缝里").toBeUndefined()
+  })
+
+  test("对照：喊了一声、而重探说「你还是你」⇒ 留在工作台", async () => {
+    const send = stub({ [PATH.me]: json(不需改密) })
+    const host = mount(send)
+    await flush()
+
+    markSessionExpired()
+    await flush()
+
+    expect(有(host, "[data-slot='workspace']"), "一次 401 不等于身份没了——以重探的结论为准").toBe(true)
+    expect(有(host, "[data-component='login-page']")).toBe(false)
+  })
+
+  test("重探时网关不在（200 HTML）⇒ 留在工作台（本机开发不因此被赶出去）", async () => {
+    let 内核的答案: () => Response = () => json(不需改密)
+    const send = stub({ [PATH.me]: () => 内核的答案() })
+    const host = mount(send)
+    await flush()
+
+    // `bun run dev` 开关关着时网关一个端点都不注册，这条路径落到上游 SPA 的兜底（200 HTML）。
+    内核的答案 = () => html()
+    markSessionExpired()
+    await flush()
+
+    expect(有(host, "[data-slot='workspace']")).toBe(true)
   })
 })

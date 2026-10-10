@@ -12,15 +12,21 @@
  * 它同时是强制改密遮罩的宿主：遮罩**盖在**工作台上而不是把它换掉——换掉的话，
  * 改完密还得把整个工作台重建一遍，而且「稍后修改」就不再是「放行」而是「重进」。
  *
+ * **第四种情形（2026-10-10 补）：人已经站在工作台上，会话却在某个出口上没了（401）。**
+ * 这一层是全仓唯一能处理它的人（只有它知道当前显示哪一屏），所以由外呼底座把消息递进来
+ * （`./session-expired`），它做的是**再问一次**——与启动时同一个 `probeSession`，结论也由同一处
+ * `view()` 定。见 `onMount` 里那段。
+ *
  * ⚠️ 这不是安全边界。能改前端的人当然也能跳过它；真正的门禁在内核身份门 + 网关验签。
  */
 
-import { createEffect, createSignal, onMount, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { showToast } from "@/utils/toast"
 import { setCurrentUser } from "@/workspace/current-user"
 import { ChangePassword } from "./change-password"
 import { logout, probeSession, type AuthFetch, type Identity, type Session } from "./gateway"
 import { LoginPage } from "./login-page"
+import { onSessionExpired } from "./session-expired"
 import { AuthSessionProvider, type AuthSession } from "./session-context"
 
 export interface AuthGateProps {
@@ -38,7 +44,34 @@ export function AuthGate(props: ParentProps<AuthGateProps>) {
   /** 「稍后修改」按过了。内存态，刷新即失效（理由见 `change-password.tsx` 的文件头）。 */
   const [deferred, setDeferred] = createSignal(false)
 
-  onMount(async () => setSession(await probeSession(props.send)))
+  /**
+   * 问一次「我现在是谁」，把结论落进会话。
+   *
+   * **启动时与「某个出口吃到 401」时都走它**——两处是同一个问题，不写第二份判据
+   * （`LEARNINGS #002-06`）。区别只在「谁先开的口」：启动时是门自己问的，
+   * 之后是外呼底座转告的（`@/auth/session-expired`）。
+   */
+  const 重探 = async () => setSession(await probeSession(props.send))
+
+  onMount(() => {
+    void 重探()
+
+    /**
+     * 会话在**运行中**没了（2026-10-10 用户下达的第 2 件）。
+     *
+     * 修之前：401 只在几个结论函数里被翻成一句「登录已过期，请重新登录」，够不到**唯一能处理它的
+     * 这一层**。真栈实测：横幅说得对，而界面一动不动（登录页 0、工作台 1、URL 停在 `/`）；
+     * 同一条坏 cookie 冷加载却出得来登录页 ⇒ 判据没坏，缺的是**第二次探查**。
+     *
+     * ⚠️ **听见 ≠ 一定没身份了**：一次 401 可能只是一条链上的偶发（内核刚重启、会话正好在这一次
+     * 往返里被顶掉）。所以这里只负责**再问一次**，跳不跳登录页由 `view()` 依重探的结论定
+     * （`auth-gate.test.tsx` 那条「重探说『你还是你』⇒ 留在工作台」的对照用例钉的就是这件事）。
+     *
+     * `onCleanup` 不能省：接缝是模块级的，门卸载了它还挂着就会把后来的实例算进去。
+     * 与 `session-context.ts` 那条老话同一个理由（那条讲 context 能自己收回来，这条讲信号收不回来）。
+     */
+    onCleanup(onSessionExpired(() => void 重探()))
+  })
 
   // 每次身份落定都重喂一遍接线缝：顶栏的名字、管理员可见项都读它。
   // `undefined` 分支是**必须的**——登不进来时不能留着上一个人的身份。

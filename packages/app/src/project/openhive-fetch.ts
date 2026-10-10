@@ -8,7 +8,14 @@
  *
  * ⚠️ `@/auth/gateway` 里有一个同形的 `readBody`：那份属于身份那条链，本层**不 import 它**
  * （跨链借一个五行的函数不划算，而且会把项目这一侧栓到身份模块的改动上）。
+ *
+ * ⚠️ 但**报信口要 import**（`@/auth/session-expired` 的 `markSessionExpired`）：那不是借工具，
+ * 是**反方向**的一条消息——身份是这一侧认出来的（401），而能处理它的人（`AuthGate`）在上游那一头。
+ * 借它一个五行函数会把本层栓到身份模块上，而通报一句「没身份了」是本层**本来就欠着**的话
+ * （见 `SESSION_EXPIRED` 那条注释的末段：从前只说得出口，没有去路）。
  */
+
+import { markSessionExpired } from "@/auth/session-expired"
 
 /**
  * 本层唯一需要的外呼能力。窄到这个形状有三个好处：单元测试不必构造 `fetch`、
@@ -19,10 +26,30 @@ export type ForkFetch = (input: string, init?: RequestInit) => Promise<Response>
 /** 生产走它。**相对路径**：生产由内核托管前端、开发由 vite 的 `/openhive` 代理转走。 */
 export const defaultSend: ForkFetch = (input, init) => fetch(input, init)
 
-/** 外呼包一层：界面不该收到异常。失败一律 `undefined`，由调用方翻成结论。 */
+/**
+ * 外呼包一层：界面不该收到异常。失败一律 `undefined`，由调用方翻成结论。
+ *
+ * ## 401 在这里**喊一声**（2026-10-10 用户下达的第 2 件）
+ *
+ * 位置是刻意的：**所有 fork 外呼都过这一层**（实测 `grep -c 'await trySend('` = 10 处：
+ * 列目录、上传、下载、文件动作（新建／重命名／复制／删除共用一个落点）、项目动作、touch、
+ * 项目列表、建项目、成员列表、成员动作），而**认得出 401 的只有其中五处**——经三个结论函数
+ * （`outcomeOf` 覆盖上传与文件动作、`projectAction`、`createProject`、`memberAction`）；
+ * 另五处（列目录、下载、`touchProject`、`listProjects`、`listMembers`）把 401 与网络错一起咽掉。
+ * 接在这里才是「一处接线、所有出口共享」；接在结论函数里就是「谁记得谁接」——`LEARNINGS #002-06`
+ * 那条老账（同一个判断在两处各写一份，改一处漏一处不报错也不变红）在这里连「两处」都数不清。
+ *
+ * 顺带一个**必须是它**的理由：`handleLogout()` 之类的内核链**照常回 401/2xx**，本层不碰它；
+ * 而身份那条链（`probeSession` / `login` / `logout`）根本不走 `trySend`——所以「登录被拒」
+ * 那类 401 不会从这里发出去（详见 `@/auth/session-expired` 的文件头）。
+ *
+ * ⚠️ 返回值一个字不改：喊一声是**旁路**，这条链该 `undefined` 还是 `undefined`。
+ */
 export async function trySend(send: ForkFetch, input: string, init?: RequestInit): Promise<Response | undefined> {
   try {
-    return await send(input, init)
+    const response = await send(input, init)
+    if (isSessionExpired(response)) markSessionExpired()
+    return response
   } catch {
     return undefined
   }
@@ -75,9 +102,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
  * `resolve 401 POST /openhive/file/create`（同一刻横幅是「新建失败」）。所以「认不出来」是
  * 各层结论函数自己的事——`trySend` 那两个 `catch` 只吞「网络抛」与「体解不开」，与 401 无关。
  *
- * ⚠️ 说完这句话，**用户手上仍然没有登录入口**（过期时页面不跳登录页，URL 停在原处）：
- * 今天「重新登录」＝刷新页面（冷加载时 `AuthGate` 会探一次身份）。那个缺口是**另一条**
- * （缺的是恢复路径，不是这句话），登记在 `005/state.md` 的挂账表里。
+ * ## 这句话**不再**是这条链的尽头（2026-10-10 下半场）
+ *
+ * 上一版到这里就完了：话说得对，而**用户手上仍然没有登录入口**（过期时页面不跳登录页，
+ * URL 停在原处）。缺的不是措辞，是**恢复路径**——真栈实测：同一条坏 cookie 冷加载出得来
+ * 登录页，热着的一次却一动不动 ⇒ 判据没坏，缺的是「第二次探查」。
+ *
+ * 现在补上了：`trySend` 吃到 401 就喊一声（`markSessionExpired()`），登录门听见就去重探身份、
+ * 该切登录页就切。所以**这句话只是「当下这一屏」的说辞**，去路在门外那条线上；
+ * 两件事各归各：话住在这里，去路住在 `@/auth/session-expired` ↔ `auth-gate.tsx` 那条线上。
  */
 export const SESSION_EXPIRED = "登录已过期，请重新登录"
 
