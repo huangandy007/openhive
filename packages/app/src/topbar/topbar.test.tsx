@@ -210,12 +210,24 @@ describe("Topbar 顶栏", () => {
     expect(类集(根.className)).toContain("justify-between")
   })
 
-  test("品牌组内部的间距与调整前一致：三件之间 gap-1.5、左缩进 pl-1", () => {
+  /**
+   * 品牌组的左边距：`pl-4` = 16px（用户 2026-10-10 下达「整体向右移动 16px，目前紧靠左侧边缘」）。
+   *
+   * 落点是 `topbar-brand` **自己**的 `pl-4`，不是三件各自的间距——`gap-1.5` 那一半逐字未动，
+   * 加一次即整体右移（与右侧区 `pr-5` 同一条做法）。
+   *
+   * ⚠️ 断的是**类名集合**（`#006-22`）：`toContain("pl-1")` 在字符串上是子串匹配，会被
+   * `pl-1x` 之类满足。这里的 `类集` 先切成集合，是成员判定，不是子串判定。
+   *
+   * happy-dom 不跑布局（`#005-07`）⇒「真的移了 16px」只能去真浏览器量，本条钉的是**它的成因**。
+   */
+  test("品牌组的左边距是 16px（pl-4）、三件之间仍是 gap-1.5", () => {
     const host = mount(() => <Topbar user={张三} />)
     const 品牌 = host.querySelector<HTMLElement>("[data-slot='topbar-brand']")!
 
     expect(类集(品牌.className)).toContain("gap-1.5")
-    expect(类集(品牌.className)).toContain("pl-1")
+    expect(类集(品牌.className)).toContain("pl-4")
+    expect(类集(品牌.className)).not.toContain("pl-1")
   })
 
   test("右侧区四项的次序：主页 → 站内信 → 全屏 → 用户区", () => {

@@ -204,8 +204,13 @@ export function Topbar(props: TopbarProps) {
       data-tauri-drag-region
       class="flex min-w-0 flex-1 items-center justify-between"
     >
-      {/* 品牌组在最左：图形标 → 品牌名 → 品牌标签。**内部间距与调整前逐字相同**（`gap-1.5` + `pl-1`）。 */}
-      <span data-slot="topbar-brand" class="flex items-center gap-1.5 pl-1">
+      {/* 品牌组在最左：图形标 → 品牌名 → 品牌标签。**内部三件的间距与调整前逐字相同**（`gap-1.5`）。
+          `pl-4`（16px）＝ 用户 2026-10-10 下达的「整体向右移动 16px，目前紧靠左侧边缘，不美观」：
+          加在**这一层**（三件共处的那一层）而不是给图形标单独加左间距——加一次即整体右移。
+          与右侧区 `pr-5` 是同一条做法（那一侧是「整体左移 20px」）。
+          ⚠️ win32 上头部没有左侧内边距（`components/titlebar.tsx` 只在 macOS 上设 `padding-left`），
+          所以这 16px 在 Windows 上就是品牌组到窗口左缘的全部距离。 */}
+      <span data-slot="topbar-brand" class="flex items-center gap-1.5 pl-4">
         <BrandLogo logo={props.logo ?? BRAND_LOGO} />
         <span data-slot="topbar-brand-name" class="text-v2-text-text-base text-sm font-bold">
           {BRAND_NAME}
