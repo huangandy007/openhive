@@ -231,6 +231,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   /** 文件清单的重取代次：拨一下 ⇒ 上面那个 effect 重跑（它在读它）。 */
   const [清单重取, set清单重取] = createSignal(0)
   /**
+   * 「再取一次清单」——今天有三个出处：**自己的**文件动作办成后（`收下` / 上传）、以及用户
+   * 在右键菜单点「刷新」（T020+，2026-10-10）。三处都拨同一枚代次、走同一道闸；抽成名字是为了
+   * 让「这是一件事、只是有几种说法」显出来（`LEARNINGS #002-06`：照同一前提做同一件事的，别各写一份）。
+   *
+   * ⚠️ 它**够不着**外部改动（AI 写盘 / 别的进程）——那些没有回调可挂，只能靠用户手点「刷新」。
+   */
+  const 拨清单重取 = () => set清单重取((代次) => 代次 + 1)
+  /**
    * 成员动作（T021）那一对：界面上那一句话 ＋ 名单重取的代次。
    *
    * 与上面文件那一对**逐字同因**（`undefined` ＝ 没有话要说、拨一下 ⇒ 重取），所以不再各讲一遍。
@@ -299,11 +307,26 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 第三件不是假想的竞态：取文件要一层层走（`openhive-files.ts`），大目录慢得多，
    * 连点两下换项目就够触发。这道闸用 `onCleanup`（而不是上面那个代次计数器）是因为
    * **这里有一个响应式的键**——每次重跑，Solid 自己就会跑上一轮的清理。
+   *
+   * ⚠️ **清空只在「换了项目」那一趟做**（2026-10-10，「刷新」落地时收的尾）：上面那句「先清空」
+   * 的**本意是防串项目**，可这个 effect 还被 `清单重取` 拨着重跑（同项目重取）。无条件清空落在
+   * 同项目上，就会让树整片变「还没有文件」再长回来——对刚被 AI 改过文件、正盯着屏幕等的用户，
+   * 那看着像**文件全没了**。所以清空改由「`id` 与上一次不同」把门：换项目才清，同项目重取
+   * 保留旧清单、等新清单回来再换。
+   *
+   * 「上一次的 id」用哨兵起头（`undefined` 是「还没有当前项目」的**合法值**，拿它作初值会让
+   * 「进门第一次、且当时没有项目」那一趟被误读成「没换项目」而不清空）。哨兵只在这里活，
+   * 不进任何信号——它是**给前后两趟比对的私账**，不是界面状态。
    */
+  const 没取过 = Symbol("清单还没取过")
+  let 上次项目: string | undefined | typeof 没取过 = 没取过
   createEffect(() => {
     const id = currentProject()?.id
     清单重取() // 读一下：文件动作办成之后拨它，清单就跟着重取（T020）——同一道闸、两处触发
-    setProjectFiles(undefined)
+    if (id !== 上次项目) {
+      上次项目 = id
+      setProjectFiles(undefined)
+    }
     if (!id || !projectData) return
 
     let 作废 = false
@@ -424,7 +447,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return
     }
     set文件话(undefined)
-    set清单重取((代次) => 代次 + 1)
+    拨清单重取()
   }
 
   /** 开目标选择器（复制 / 移动共用）。**此刻一个请求都不发**——目标还没选。 */
@@ -474,7 +497,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     // ⚠️ 那句话只讲**其中一个**。不说清还有几个的话，界面会把「3 个里失败了 2 个」
     // 说成「失败了 1 个」——报一个数就得报准它（`LEARNINGS #003-04` 同族：写下的数要经得起复核）。
     set文件话(files.length === 1 ? (缘由 ?? "上传文件失败") : `${缘由 ?? "上传文件失败"}（这批 ${files.length} 个里 ${没成} 个没成功）`)
-    if (成了 > 0) set清单重取((代次) => 代次 + 1)
+    if (成了 > 0) 拨清单重取()
   }
 
   /**
@@ -776,7 +799,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   files={
                     <>
                       {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项。`onBackup` / `onRestore`
-                          仍不接 —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。 */}
+                          仍不接 —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。
+                          `onRefresh`（T020+，2026-10-10）：把「再取一次清单」那枚代次交给用户手拨
+                          ——AI 写盘这类**外部改动**今天没有回调可挂，只能手点。与建/改名/删一样
+                          **要有项目**才接线（没有项目时没有什么可刷的）。 */}
                       <DualFileTree
                         paths={projectFiles()}
                         backups={minioBackups()}
@@ -790,6 +816,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onUpload={选文件}
                         onDownload={(path) => void 下载(path)}
                         onDropFiles={(files, dir) => void 传(dir, files)}
+                        onRefresh={有项目() ? 拨清单重取 : undefined}
                       />
                       {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
                           排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树

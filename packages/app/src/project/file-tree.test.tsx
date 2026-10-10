@@ -395,6 +395,29 @@ describe("FileTree 文件树（FR-005）", () => {
 
   const 分隔符数 = () => 菜单内容()?.querySelectorAll("[data-slot='context-menu-separator']").length ?? 0
 
+  /**
+   * 右键菜单按**分隔符**切成组——每组是那一组里各项的 `data-action`（顺序即渲染顺序）。
+   *
+   * 取的是 `[data-action]` 与分隔符两支的**文档序**（不是 `children`）：菜单项落下来之前是否
+   * 又包了一层，本层不去假定；而「谁在谁前面」这件事，查询器的文档序说得准（同 `菜单动作` 的口径）。
+   */
+  const 菜单分组 = () => {
+    const 组: string[][] = []
+    let 这一组: string[] = []
+    const 序列 = 菜单内容()?.querySelectorAll<HTMLElement>("[data-action], [data-slot='context-menu-separator']")
+    for (const el of 序列 ?? []) {
+      if (el.getAttribute("data-slot") === "context-menu-separator") {
+        组.push(这一组)
+        这一组 = []
+        continue
+      }
+      const action = el.getAttribute("data-action")
+      if (action) 这一组.push(action)
+    }
+    组.push(这一组)
+    return 组
+  }
+
   const 项禁用 = (action: string) => 菜单项(action)?.getAttribute("aria-disabled") === "true"
 
   /**
@@ -1272,8 +1295,8 @@ describe("FileTree 文件树（FR-005）", () => {
       })
     })
 
-    describe("项齐备（设计 §6.2 的四组）", () => {
-      test("十一个动作齐备，顺序即设计表里的四行（第十一项是本仓加的，见下）", () => {
+    describe("项齐备（设计 §6.2 的四组 ＋ 本仓自己的一组）", () => {
+      test("十二个动作齐备，顺序即设计表里的四行、外加本仓最后那一组", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1281,12 +1304,9 @@ describe("FileTree 文件树（FR-005）", () => {
           // 第一行：新建文件 / 新建文件夹
           "create-file",
           "create-dir",
-          // 第二行：重命名 / 复制 / 文件路径 / 移动 / 删除
-          //          ⚠️ `copy-path` 是**本仓加的**（设计表那张十项表里没有它）——它是「复制路径」
-          //          这件事在文件树这一侧的入口，与「复制」（把文件复制到另一个目录）不是一回事。
+          // 第二行：重命名 / 复制 / 移动 / 删除（设计表原样）
           "rename",
           "copy",
-          "copy-path",
           "move",
           "delete",
           // 第三行：上传 / 下载
@@ -1295,17 +1315,24 @@ describe("FileTree 文件树（FR-005）", () => {
           // 第四行：备份到 MinIO / 从 MinIO 拉回
           "backup",
           "restore",
+          // 第五行：**本仓自己的一组**（2026-10-10 用户裁定）。这两项都不是设计表那十项里的：
+          //   `copy-path` = 把这一行的**路径**放进剪贴板（设计表里的 `copy` 复制的是**文件**，宾语不同）；
+          //   `refresh`   = 重取一次文件清单。
+          //   它们**从第二组挪出来**、自成一组落在最下——分组轴换成了**「动不动东西」**：
+          //   上面四组九项都会写盘或写云，这两项只是「看一眼」。
+          "copy-path",
+          "refresh",
         ])
       })
 
-      test("四组之间有三个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
+      test("五组之间有四个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
-        expect(分隔符数()).toBe(3)
+        expect(分隔符数()).toBe(4)
       })
 
-      test("每一项的文案就是设计表里那十个词（外加本仓那一个「文件路径」）", () => {
+      test("每一项的文案就是设计表里那十个词，外加本仓那两个", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1314,14 +1341,87 @@ describe("FileTree 文件树（FR-005）", () => {
           "新建文件夹",
           "重命名",
           "复制",
-          "文件路径",
           "移动",
           "删除",
           "上传",
           "下载",
           "备份到 MinIO",
           "从 MinIO 拉回",
+          "文件路径",
+          "刷新",
         ])
+      })
+    })
+
+    /**
+     * 第五组：**不改动任何东西**的两项（2026-10-10 用户下达）。
+     *
+     * 「刷新」要解决的问题：`workspace-entry.tsx` 那道重取的闸门（`清单重取`）**只由我们自己的
+     * 文件动作拨**（建/改名/删/复制/移动办成、上传成功）——AI 在沙箱里建了删了文件、别的进程动了盘，
+     * 界面**永远不会自己变**。这一项就是给用户一个手动拨它的入口。
+     */
+    describe("第五组：刷新（不改动任何东西的一项）", () => {
+      test("「文件路径」与「刷新」同组、落在菜单最下", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} onRefresh={() => {}} />)
+        右键(行按名(host, "a.md"))
+
+        expect(菜单分组().at(-1)).toEqual(["copy-path", "refresh"])
+        // 反证：`copy-path` **不再**与 `copy` 同组（它原先紧跟 `copy`，理由是「两个『复制』排一起
+        // 好分辨」）。少了这一条，一个「只把 `refresh` 追加在末尾、`copy-path` 留在原地」的实现
+        // 照样绿——而那没做到用户要的「两项同一个分组」。
+        expect(菜单分组().some((组) => 组.includes("copy") && 组.includes("copy-path"))).toBe(false)
+      })
+
+      test("点「刷新」走 onRefresh", () => {
+        let 刷过 = 0
+        const host = mount(() => (
+          <FileTree
+            paths={树("a.md")}
+            onRefresh={() => {
+              刷过 += 1
+            }}
+          />
+        ))
+        右键(行按名(host, "a.md"))
+
+        点菜单项("refresh")
+
+        expect(刷过).toBe(1)
+      })
+
+      /**
+       * **「刷新」不要作用对象**——它作用于**整份清单**，与「右键的是哪一行」无关。
+       *
+       * 判据必须钉**右键空白处**这一支（同 `file-tree.tsx` 的 `落点`：空白处正是「没有对象」
+       * 的那个现场）。对照组**同屏**给出：同一时刻 `复制`/`删除` 是禁用的——少了这个对照，
+       * 一个「把 `禁用: false` 写死」的实现也照样过。
+       */
+      test("右键**空白处**：要对象的项全禁用，只有「刷新」照常可用、点得动", () => {
+        const 刷了: string[] = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("a.md")}
+            onRefresh={() => 刷了.push("刷")}
+            onCopy={() => {}}
+            onDelete={() => {}}
+          />
+        ))
+
+        右键(槽(host, "file-tree-region"))
+
+        expect(项禁用("copy")).toBe(true)
+        expect(项禁用("delete")).toBe(true)
+        expect(项禁用("refresh")).toBe(false)
+
+        点菜单项("refresh")
+        expect(刷了).toEqual(["刷"])
+      })
+
+      test("省略 onRefresh ⇒ 「刷新」禁用（未接线即禁用，同其余各项）", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(项禁用("refresh")).toBe(true)
       })
     })
 

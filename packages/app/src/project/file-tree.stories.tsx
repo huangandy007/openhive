@@ -6,7 +6,7 @@ import { FileTree } from "./file-tree"
  *
  * ## 这一组 story 审计的是**工具栏 ＋ 右键菜单的可见面**
  *
- * 菜单里十项**各自独立接线**（一项一项地亮，不是全接上才一起亮）。所以「接了几条线」
+ * 菜单里十二项**各自独立接线**（一项一项地亮，不是全接上才一起亮）。所以「接了几条线」
  * 决定菜单里有几项能点、几项 `disabled`——而 axe 对「禁用项」与「可点项」的态度不同
  * （可点菜单项必须有可访问名称与角色）。只写「全部接线」那一档，就漏掉了 prod 今天真实的
  * 「半截菜单」状态。
@@ -54,7 +54,9 @@ export const EmptyDir = {
   ),
 }
 
-/** 未接线：路径给了，但**一个回调都没传** ⇒ ＋ 禁用、右键十项全灰。这是 prod 落地前的样子。 */
+/** 未接线：路径给了，但**一个回调都没传** ⇒ ＋ 禁用。右键**空白处**十二项全灰；
+ *  但右键**文件行**时「文件路径」仍亮——它不需要接线，只要那一行有条路径（`copy-path` 是
+ *  本组件内自己办的）。这是 prod 落地前的样子。 */
 export const NotWired = {
   render: () => (
     <div class="flex h-80 w-72 flex-col">
@@ -72,7 +74,8 @@ export const PartiallyWired = {
   ),
 }
 
-/** 全部接线（T020 之后）：菜单十项齐活，且文件行可拖（`draggable` 由容器按「有没有 onBackup」定）。 */
+/** 全部接线（T020 之后 ＋ 2026-10-10 的「刷新」）：菜单十二项齐活，且文件行可拖
+ *  （`draggable` 由容器按「有没有 onBackup」定）。 */
 export const FullyWired = {
   render: () => (
     <div class="flex h-80 w-72 flex-col">
@@ -88,6 +91,7 @@ export const FullyWired = {
         onDownload={() => {}}
         onBackup={() => {}}
         onRestore={() => {}}
+        onRefresh={() => {}}
         onDropFiles={() => {}}
       />
     </div>
