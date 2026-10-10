@@ -757,6 +757,121 @@ describe("T020 · 项目里的链接（junction / 符号链接）不是越界通
   )
 })
 
+/** 拒绝类回参的**最小形状**（`{ error: 一句话 }`）。字面量，同本文件 `Frozen` 的理。 */
+const Rejected = Schema.Struct({ error: Schema.String })
+
+/** 名字含 `:` 那句话（前提①）。字面量、不 import 生产常量（同 `FROZEN_MESSAGE` 的用法）。 */
+const NAME_ALIASED = "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）"
+
+/** 「这个名字建不出来」那句话（前提②：win32 非法字符报 `ENOENT`）。字面量，同上。 */
+const NAME_UNMAKABLE = "这个名字在系统里建不出来（含非法字符）"
+
+/** 「不许删项目根」那句话。字面量，同上。 */
+const ROOT_UNDELETABLE = "项目根不能删"
+
+/**
+ * T020 · **写盘用的名字**含 `:` ⇒ 拒（2026-10-10 补，由 T018 的 ⑥ 步落点清单翻出来）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * 与 T018 那三个出口**同一族根因**（见 `file.ts` 文件头「名字判据」那一节）：win32 上 `:`
+ * 是特殊字符。但两个入口的**发作机制不一样**，实测各是一条（2026-10-10 探针，`#003-04`）：
+ *
+ * | 入口 | 名字怎么被换掉的 | 少了守卫时的实得 |
+ * |---|---|---|
+ * | 复制 | `basename("sub/a:b")` 回 **`"a:b"`**（win32 `basename` 不切冒号）⇒ 被当 ADS 路径写 | `copyFile` 抛 **`EINVAL`**（不在 `CLIENT_FAILURES` 里）⇒ **500**，**且**目标侧宿主 `a` 已经落下 |
+ * | 移动 | 同上 | `rename` 抛 **`EINVAL`** ⇒ **500**；这一次盘上**什么都没多** |
+ * | 上传 | `basename("a:b")` 回 **`"b"`**——win32 `basename` 把 `a:` 当**盘符**吃掉 | `writeFile(P\b)` **成功** ⇒ **200**，盘上多出一个叫 **`b`** 的文件 |
+ *
+ * ⚠️ 上传那条是本组最值得记的一笔：名字在**写盘之前**就已经被换掉了，所以守卫必须判
+ * **`part.name` 原文**，不许判 `basename(part.name)`——后者回 `"b"`，是一条**看着安全**的值，
+ * 拿它去守正是这个洞本身（`#006-25`：镜像边界语义，不能只镜像主路径）。
+ *
+ * ⚠️ 三条**没有一条**红在「本来就会 400」上：钳住它们的是**副作用**（复制）与**被换掉的名字**
+ * （上传）；移动那条最弱、只红在状态码，而 `EINVAL` ⇒ 500 说明少了守卫时这甚至不是 400，
+ * 是**服务端错误**。
+ *
+ * ## 为什么图省事「直接发 `sub/a:b`」测不出来
+ *
+ * ⚠️ 那个路径根本不存在，`lstat` 自己就会回 400（「源文件不存在」），用例绿得毫无信息。
+ * 所以每条都**先用夹具造出那个病态源**（`writeFileSync(join(项目根,"sub","a:b"), …)`——
+ * 造的是**别人**留下的流，本产品的写出口已经拦住了这条路），再发请求。判据因此落在**盘上**：
+ * 请求之后 `readdirSync(项目根)` 里**不许**多出一个被换掉名字的条目。
+ *
+ * 三条对应三个动作（`#005-12`：同一个修法落在 N 个动作上就写 N 条用例，
+ * 不写成一条「把三个都过一遍」）。
+ */
+describe("T020 · 写盘用的名字含 `:` ⇒ 拒（与 T018 同一条根因）", () => {
+  /**
+   * 造出那个病态源：一个叫 `a:b` 的**备用数据流**（在 `readdir` 里显示为 `a`）。
+   *
+   * 这是 `#004-13` 的取向——「没有现成观测面」不等于「没有观测面」：本产品的写出口已经不
+   * 产生这种名字了，那就**在夹具里直接造**，把那个终态摆出来。
+   */
+  const 造病态源 = () => writeFileSync(path.join(项目根, "sub", "a:b"), "藏在数据流里的正文")
+
+  it.live(
+    "复制：源末段含 `:` ⇒ 400，项目根没多出那个被当成 ADS 宿主的 `a`",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造病态源()
+        const 根原样 = readdirSync(项目根).toSorted()
+
+        const response = yield* send(ALICE, 出口.copy, { path: "sub/a:b", dir: "" }, ALPHA)
+
+        // 副作用在前（`#004-14`）。少了守卫时实测：`copyFile` 先把宿主 `a` 落下（`P\a:b` 的
+        // 宿主），**再**抛 `EINVAL`——副作用发生在报错之前，所以「没多出 `a`」是真的在钳东西。
+        expect(readdirSync(项目根).toSorted()).toEqual(根原样)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+        // 断文案：证明这一发是被名字判据挡下的，不是被「源文件不存在」顺手挡下的。
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "移动：源末段含 `:` ⇒ 400，项目根没多出东西、那条流也没被搬走",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造病态源()
+        const 根原样 = readdirSync(项目根).toSorted()
+
+        const response = yield* send(ALICE, 出口.move, { path: "sub/a:b", dir: "" }, ALPHA)
+
+        // ⚠️ 这一条少了守卫时**只**红在状态码上（`rename` 抛 `EINVAL` ⇒ 500），盘上什么都不多
+        // ——与复制那条形状不同，别把两条的实得读成一样（`#003-03`：变异的三类据实记）。
+        expect(readdirSync(项目根).toSorted()).toEqual(根原样)
+        // 移动会把源删掉 ⇒ 「源还在」是这一条独有的副作用判据（复制那条删不掉源）。
+        expect(readdirSync(path.join(项目根, "sub")).toSorted()).toEqual(["a", "b.txt"])
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "上传：文件名含 `:` ⇒ 400，项目根没多出那个被盘符判定切出来的 `b`",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const 根原样 = readdirSync(项目根).toSorted()
+
+        const response = yield* upload(ALICE, "", "a:b", "偷渡的正文", ALPHA)
+
+        // 少了守卫时实测：`basename("a:b")` 把 `a:` 当盘符吃掉、回 `"b"` ⇒ `writeFile(P\b)`
+        // **成功**（⇒ 200）。名字在写盘**之前**就换了，所以这里断言的是 `b` 而不是 `a`。
+        expect(readdirSync(项目根).toSorted()).toEqual(根原样)
+        expect(existsSync(path.join(项目根, "b"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+})
+
 /**
  * ## 后端缺口补测（`backend-testing` skill · 步骤 3）
  *
@@ -1015,24 +1130,6 @@ describe("补测 · 项目头不是凭证：同一个 id 在别人手里够不�
  *   （它与 T018 的三项分开提交）。本组的两条 `:` 用例因此**只覆盖 T018 的三个出口**，
  *   不覆盖那两个 ⇒ 缺口写成缺口（`#002-02`）。
  */
-/** 拒绝类回参的**最小形状**（`{ error: 一句话 }`）。字面量，同本文件 `Frozen` 的理。 */
-const Rejected = Schema.Struct({ error: Schema.String })
-
-/**
- * 「不许删项目根」那句话。
- *
- * ⚠️ **字面量**、不 import 生产常量：断它只为证明这一发是被**那条守卫**挡下的，
- * 而不是被别的什么地方顺手挡下（同 `FROZEN_MESSAGE` 的用法）。import 过来就成了
- * 「生产改什么测试跟着改什么」，改名也测不出来（`LEARNINGS #003-05`）。
- */
-const ROOT_UNDELETABLE = "项目根不能删"
-
-/** 名字含 `:` 那句话（前提①）。字面量，同上。 */
-const NAME_ALIASED = "文件名里不能含 `:`（系统会把它当作数据流分隔符，落成另一个名字）"
-
-/** 「这个名字建不出来」那句话（前提②：win32 非法字符报 `ENOENT`）。字面量，同上。 */
-const NAME_UNMAKABLE = "这个名字在系统里建不出来（含非法字符）"
-
 describe("T018 · 新建 / 重命名 / 删除三个出口（FR-005）", () => {
   /** 建一个条目。`kind` 决定文件还是目录；`name` 是**单段名**。 */
   const 建 = (kind: "file" | "directory", dir: string, name: string, project?: string) =>

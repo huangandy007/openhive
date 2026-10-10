@@ -6,9 +6,10 @@ export * as OpenhiveFile from "./file"
  *
  * ⚠️ 两笔不在同一次落的：T020 落了前四个，T018（2026-10-10）补的后三个。后三个**逐字沿用**
  * 前四个的判据原语（`gate` / `inside` / `realInside` / `attempt` / `exists` / `Made` /
- * `badRequest`），一处新判据都没有——除下面那条**文件名**判据，它是后三个**才有**的问题
- * （前四个不接收「新名字」：复制 / 移动取源的末段、上传取客户端的 `filename`，
- * 那两个入口的同一条洞另行处置，见文件末「已知不覆盖」）。
+ * `badRequest`），一处新判据都没有——除下面那条**名字**判据。它由后三个引进（它们要接收
+ * 「新名字」），随后**回填**到前四个里的两个入口：`handleTransfer` / `handleUpload` 当时
+ * 各自拿 `basename(...)` 取名，而那两处的 `basename` 救不了场（`basename("a:b")` 在 win32 上
+ * 回 `"b"`——把名字换掉这件事**自己**）⇒ 同一条洞的两个入口，2026-10-10 一并堵上。
  *
  * ## 它填的是哪四个洞
  *
@@ -65,13 +66,13 @@ export * as OpenhiveFile from "./file"
  *   裸名，请求可以手造），`join(dir, name)` 直接就是一条 `../../` 越界通道。
  * - **越界一律 400，不 500**：路径越界 / 目标已存在 / 源不是普通文件，都是客户端的事。
  *   真故障（磁盘满之类）**不吞**——走 `Effect.die`，500 才看得见。
- * - **T018 的三项多一条：客户端给的「名字」必须真的是这个名字**（`usableName`）。
+ * - **客户端给的「名字」必须真的是这个名字**（`usableName` / `noColon`）。
  *   `inside()` 与 `isSafePathSegment` 都**不**管这件事，而不管的后果是**静默改名**——
  *   见下面那一节。
  *
- * ## 名字判据 `usableName`：为什么 `inside()` 不够（2026-10-10 实测）
+ * ## 名字判据 `usableName` / `noColon`：为什么 `inside()` 不够（2026-10-10 实测）
  *
- * win32 上 `:` 在路径里是**备用数据流（ADS）** 的分隔符。实测（探针，`LEARNINGS #003-04`）：
+ * win32 上 `:` 在路径里是**备用数据流（ADS）** 的分隔符，也是**盘符**标记。实测（探针，`LEARNINGS #003-04`）：
  *
  * - `writeFile(join(P, "sub", "a:b"), "偷渡内容", { flag: "wx" })` **成功**，
  *   而 `readdir(join(P, "sub"))` 只有 `["a"]` ⇒ 用户输入「a:b」，盘上多出一个叫 **`a`**
@@ -80,10 +81,24 @@ export * as OpenhiveFile from "./file"
  *   与「落下去还是不是这个名字」是**两个问题**（所以没并进那条判据：它还有 6 处
  *   userId / projectId 在用，那里不存在「名字」这回事）。
  * - `basename("\\…\\sub\\a:b")` 回 `"a:b"`（win32 的 `basename` 不切冒号）⇒ 事后摘不出来。
+ * - ⚠️ **`basename("a:b")` 回 `"b"`**——同一个 `basename`，同一个字符，**另一台机制**：它把
+ *   `a:` 当成**盘符**吃掉。⇒ 判据**必须吃原文**（`part.name`、`payload.value.path`），
+ *   拿 `basename(...)` 的结果去过判据是**拿被换掉的名字去守这件事本身**，永远绿。
  * - ⚠️ **`inside()` 只在一种情形下拦得住它**：`inside(P, "a:b")`（整个输入就是名字）——
  *   `resolve` 把 `a:b` 当成**盘符**解成 `a:\b`，`relative` 于是回一个绝对路径 ⇒ 判越界。
  *   但 `inside(P, "sub/a:b")` 回 `P\sub\a:b`（首段不是盘符）⇒ **放行**。
  *   ⇒ 名字拼进 `dir` 之后，`inside()` 就管不着它了。**这才是要另写一条判据的原因。**
+ *
+ * 两处前四个出口上的**发作形状**也各不相同（2026-10-10 实测，逐条用例在
+ * `openhive-file-ops.test.ts` 的「写盘用的名字含 `:`」那一组）：
+ *
+ * | 入口 | 少了判据时的实得 |
+ * |---|---|
+ * | `handleTransfer` 复制 | `copyFile` 抛 **`EINVAL`**（不在 `CLIENT_FAILURES` 里）⇒ **500**，**且**目标侧宿主 `a` 已经落下 |
+ * | `handleTransfer` 移动 | `rename` 抛 **`EINVAL`** ⇒ **500**；盘上**什么都没多** |
+ * | `handleUpload` | 名字在写盘**之前**就被换成 `b` ⇒ `writeFile` **成功**、回 **200**，盘上多个 `b` |
+ *
+ * ⚠️ 三个都**不是** 400 ⇒ 少了判据，「用户输了个怪名字」会以**服务端错误**或**静默改名**收场。
  *
  * 判据本体只挡**静默**的那一个字符（`:`）。其余 win32 非法字符（`"` `*` `?` `<` `>` `|`）
  * **不在这里挡**：实测它们当场报 `ENOENT`（**不是** `EINVAL`）⇒ 已经由下面那套「`ENOENT` ⇒ 400」
@@ -115,12 +130,7 @@ export * as OpenhiveFile from "./file"
  *   清洗仍在（头值里的裸 CR/LF 会破坏头，甚至让响应头被拆开），但它的正确性只有读代码一条路。
  * - **`inside` 对 UNC / 盘符写的判据没有独立用例**：win32 上 `relative` 遇到不同盘符会回一个
  *   绝对路径，`isAbsolute` 那一支因此是**活的**，但本套夹具造不出「另一个盘符」。
- * - **T020 的两个入口还带着同一条 `:` 洞**（2026-10-10 量出，**本次不修**）：`handleUpload` 的
- *   `basename(part.name)` 与 `handleTransfer` 的 `basename(payload.value.path)` 都摘不掉 `a:b`
- *   （实测 `basename` 不切冒号）⇒ 那两处对含 `:` 的输入仍会**静默改名**。根因与 `usableName`
- *   是同一个，修法就是「把同一条判据接到那两处」。**单列一笔**：它落在 T020 已交付的地界上，
- *   与 T018 这三项分开提交（同 `CLAUDE.md`「一个 PR 混合重构与新功能 ⇒ 拆开」）。
- * - **T018 的三项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
+ * - **七项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
  *   与中间件判的「项目在不在 / 冻没冻」不是同一件事——理由见上面「基准目录」那一节。
  * - **复制 / 移动 / 上传 / 下载四项不做目录递归**（范围裁定：单文件）。UI 侧对应地把这两项
  *   只画在文件行上。**T018 的删除是唯一的递归项**（用户 2026-10-10 裁定「支持删文件夹」）。
@@ -216,13 +226,27 @@ const bodyOf = <A>(request: HttpServerRequest.HttpServerRequest, schema: Schema.
   )
 
 /**
+ * 名字里**不许有 `:`**——win32 上它既是**盘符**标记，也是备用数据流（ADS）分隔符。
+ *
+ * 从 `usableName` 里**单独拎出来**，是因为两个入口判的**不是同一种东西**：
+ * `usableName` 判「客户端给的一段名字」（`create` / `rename` / `remove`，必须是不含分隔符的单段，
+ * 所以那一半的 `isSafePathSegment` 要留着）；`handleTransfer` / `handleUpload` 判的是
+ * 「客户端**原样送来**的那串」（一条路径 `sub/a:b` 是合法的，套不上 `isSafePathSegment`）。
+ * 而 `:` 这一条对两者都成立——`#006-25`：镜像边界语义，不能只镜像主路径。
+ *
+ * ⚠️ 两处都必须判**原文**，不许判 `basename(...)`：win32 上 `basename("a:b")` 回 **`"b"`**
+ * （把 `a:` 当盘符吃掉），是一条**看着安全**的值——拿它去守正是这个洞本身（实测见文件头）。
+ */
+const noColon = (name: string) => !name.includes(":")
+
+/**
  * 客户端给的名字**落下去还是不是这个名字**（判据本体与实测依据见文件头「名字判据」那一节）。
  *
  * 与 `User.isSafePathSegment` **不是**同一条：那条判「这段会不会把路径 `join` 出去」，这条判
  * 「写下去之后还是不是它」——所以是 `&&` 而不是并进去。`isSafePathSegment` 那一半照样要，
- * 空串 / `.` / `..` / 含分隔符由它拦（本判据只管 `:`）。
+ * 空串 / `.` / `..` / 含分隔符由它拦（`:` 那一半见 `noColon`）。
  */
-const usableName = (name: string) => User.isSafePathSegment(name) && !name.includes(":")
+const usableName = (name: string) => User.isSafePathSegment(name) && noColon(name)
 
 /** 路径的**末段**（`/` 分隔——客户端给的相对路径一律用 `/`，同文件树 `paths`）。 */
 const lastName = (path: string) => {
@@ -238,8 +262,8 @@ const lastName = (path: string) => {
  */
 const NAME_UNMAKABLE = "这个名字在系统里建不出来（含非法字符）"
 
-/** 名字里含 `:`——win32 会把它当数据流分隔符，**静默**落成另一个名字。 */
-const NAME_ALIASED = "文件名里不能含 `:`（系统会把它当作数据流分隔符，落成另一个名字）"
+/** 名字里含 `:`——win32 会把它当分隔符 / 盘符，**静默**落成另一个名字（两种机制见文件头）。 */
+const NAME_ALIASED = "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）"
 
 /** 不许删项目根。`inside()` 刻意放行 `rest === ""`，那一条对删除是灾难——见 `handleRemove`。 */
 const ROOT_UNDELETABLE = "项目根不能删"
@@ -407,6 +431,11 @@ function handleTransfer(
     const source = inside(project, payload.value.path)
     if (source === undefined) return badRequest("源路径越出项目目录")
 
+    // 名字判据：`:` 在 win32 上是盘符 / 流分隔符 ⇒ 这个名字**落下去就不是它**了，而下面
+    // `basename(源)` 取出来的正是那个被换掉的名字（实测：`copyFile` 抢在报错前把宿主落下）。
+    // 判**原文**而不是 `basename(原文)`——理由见 `noColon`。
+    if (!noColon(payload.value.path)) return badRequest(NAME_ALIASED)
+
     const targetDir = inside(project, payload.value.dir)
     if (targetDir === undefined) return badRequest("目标目录越出项目目录")
     const dirInfo = yield* Effect.promise(() => stat(targetDir).catch(() => undefined))
@@ -472,6 +501,11 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
 
     const part = form.get("file")
     if (!(part instanceof File)) return badRequest("表单里缺少名为 file 的文件字段")
+
+    // 名字判据，判 `part.name` **原文**：这一处尤其不能判 `basename(part.name)`——win32 上
+    // `basename("a:b")` 回 `"b"`，看着毫无问题，而它正是「名字已经被换掉」这件事本身。
+    // （实测：少了这一句，`a:b` 会以 `b` 的名字落盘并回 200。理由见 `noColon`。）
+    if (!noColon(part.name)) return badRequest(NAME_ALIASED)
 
     // **只取末段**：`filename` 是客户端说了算的字符串，直接 `join` 就是一条越界通道。
     const target = join(targetDir, basename(part.name))
