@@ -2752,7 +2752,8 @@ Trigger 时它不跑，**菜单会开、作用对象却是上一次的残留**�
 **🔴 登记挂账（同类落点，用户未报 ⇒ 当场不动手）**：`ai-session/session-list.tsx:206` 的根
 `flex min-h-0 w-full flex-1 flex-col` 与本条同型，父级同样是那个不成 flex 容器的 `PANE`。
 真栈实测：会话页签 bottom = 841、列表根 bottom = 189 ⇒ **空白处右键同样呼不出菜单**
-（`e2e/real-stack/session-pane-blank-probe.spec.ts` 可复现）。
+（当时的探针 `session-pane-blank-probe.spec.ts` 已随 ⑤ 的收尾删除——它没有断言，⑤ 的
+真栈 spec 把同一组读数变成了硬判据）。
 ⇒ ✅ **已于 ⑤ 闭合**（用户 2026-10-10 点头后开工；另查出本条没有的第二层，见 ⑤）。
 
 ### ② 右键菜单 ⇒ 重命名 / 新建 时输入条拿不到焦点（2026-10-10 · 已提交 `db1a346da2`）
@@ -2915,7 +2916,8 @@ resolve 401 POST /openhive/file/create      ⟵ 401 是 resolve 出来的，不�
 ### ⑤ 会话 pane 空白处右键呼不出菜单（2026-10-10 · 本轮）
 
 **现象（用户没报，是 ① 的 ⑥ 步实测出来的）**：① 的文件树那条修完之后按 `#002-06` 问「谁在按同一个
-前提做同一件事」，`session-pane-blank-probe.spec.ts` 真栈实测**会话 tab 逐字同型**：
+前提做同一件事」，探针 `session-pane-blank-probe.spec.ts` 真栈实测**会话 tab 逐字同型**
+（该探针已随本轮收尾删除，读数转成硬判据落进本轮的 `session-pane-blank-menu-real.spec.ts`）：
 
 | | 会话 tab（修前） |
 |---|---|

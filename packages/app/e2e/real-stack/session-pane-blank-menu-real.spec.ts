@@ -9,8 +9,9 @@ import path from "path"
  * ## 怎么来的
  *
  * 用户报的是**文件** tab（`file-tree-blank-menu-real.spec.ts` 钉的那一条）。修完之后按 ⑥ 步
- * grep「谁在按同一个前提做同一件事」（`LEARNINGS #002-06`），`session-pane-blank-probe.spec.ts`
- * 真栈实测出**会话** tab **逐字同型**（探针输出，非推演）：
+ * grep「谁在按同一个前提做同一件事」（`LEARNINGS #002-06`），当时的探针
+ * `session-pane-blank-probe.spec.ts`（无断言、只记读数，已随本轮收尾删除）真栈实测出
+ * **会话** tab **逐字同型**（探针输出，非推演）：
  *
  * | | 会话 tab |
  * |---|---|
