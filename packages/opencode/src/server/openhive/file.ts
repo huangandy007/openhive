@@ -1,7 +1,14 @@
 export * as OpenhiveFile from "./file"
 
 /**
- * 005 T020 · 文件树的**复制 / 移动 / 上传 / 下载**四个出口（FR-005）。
+ * 005 T020 ＋ T018 · 文件树的**复制 / 移动 / 上传 / 下载**（T020）与**新建 / 重命名 / 删除**
+ * （T018）共**七个**出口（FR-005）。
+ *
+ * ⚠️ 两笔不在同一次落的：T020 落了前四个，T018（2026-10-10）补的后三个。后三个**逐字沿用**
+ * 前四个的判据原语（`gate` / `inside` / `realInside` / `attempt` / `exists` / `Made` /
+ * `badRequest`），一处新判据都没有——除下面那条**文件名**判据，它是后三个**才有**的问题
+ * （前四个不接收「新名字」：复制 / 移动取源的末段、上传取客户端的 `filename`，
+ * 那两个入口的同一条洞另行处置，见文件末「已知不覆盖」）。
  *
  * ## 它填的是哪四个洞
  *
@@ -44,11 +51,12 @@ export * as OpenhiveFile from "./file"
  * ⚠️ 沙箱根那一层**不是「外面」**——同一用户的项目都并排住在那里。测试里那条「不带头 ⇒
  * 够得着兄弟项目」的用例（`openhive-file-ops.test.ts`）用的正是这个形状。
  *
- * ## 四项各自的规矩（都是「宁可拒，不许静默出事」）
+ * ## 七项共同的规矩（都是「宁可拒，不许静默出事」）
  *
- * - **只动普通文件**：源过 `lstat().isFile()`。目录不做（`tasks.md` 的范围就是「单文件」），
- *   符号链接也不做——`copyFile` **跟随**符号链接，源是一个指向沙箱外的链接时，越界发生在
- *   内核里，本模块的路径判据看不见。拒掉这一支，比事后审计便宜。
+ * - **只动普通文件 / 只动普通目录**：源过 `lstat()`（`isFile()` / `isDirectory()` 各按用途）。
+ *   符号链接两边都不算——`copyFile` **跟随**符号链接，源是一个指向沙箱外的链接时，越界发生在
+ *   内核里，本模块的路径判据看不见；`lstat` 下链接又**两者皆为 false**（实测），故它天然落在
+ *   两条支路之外，不必另写一条链接判据。拒掉这一支，比事后审计便宜。
  * - **目标存在就拒**（不用「覆盖」）：`fs.copyFile` **默认覆盖**，win32 的 `rename` 走
  *   `MOVEFILE_REPLACE_EXISTING`、**也默认覆盖**。两位都是「不报错地把用户的文件吃掉」。
  *   复制再加一道 `COPYFILE_EXCL`（预检与真写之间的竞态由它兜底）；**移动这一层没有对应的
@@ -57,6 +65,33 @@ export * as OpenhiveFile from "./file"
  *   裸名，请求可以手造），`join(dir, name)` 直接就是一条 `../../` 越界通道。
  * - **越界一律 400，不 500**：路径越界 / 目标已存在 / 源不是普通文件，都是客户端的事。
  *   真故障（磁盘满之类）**不吞**——走 `Effect.die`，500 才看得见。
+ * - **T018 的三项多一条：客户端给的「名字」必须真的是这个名字**（`usableName`）。
+ *   `inside()` 与 `isSafePathSegment` 都**不**管这件事，而不管的后果是**静默改名**——
+ *   见下面那一节。
+ *
+ * ## 名字判据 `usableName`：为什么 `inside()` 不够（2026-10-10 实测）
+ *
+ * win32 上 `:` 在路径里是**备用数据流（ADS）** 的分隔符。实测（探针，`LEARNINGS #003-04`）：
+ *
+ * - `writeFile(join(P, "sub", "a:b"), "偷渡内容", { flag: "wx" })` **成功**，
+ *   而 `readdir(join(P, "sub"))` 只有 `["a"]` ⇒ 用户输入「a:b」，盘上多出一个叫 **`a`**
+ *   的文件、内容藏在读不到的流里。**不报错、不越界**，只是名字被换掉了。
+ * - `isSafePathSegment("a:b")` 为 **true**——它判的是「这一段会不会把路径 `join` 出去」，
+ *   与「落下去还是不是这个名字」是**两个问题**（所以没并进那条判据：它还有 6 处
+ *   userId / projectId 在用，那里不存在「名字」这回事）。
+ * - `basename("\\…\\sub\\a:b")` 回 `"a:b"`（win32 的 `basename` 不切冒号）⇒ 事后摘不出来。
+ * - ⚠️ **`inside()` 只在一种情形下拦得住它**：`inside(P, "a:b")`（整个输入就是名字）——
+ *   `resolve` 把 `a:b` 当成**盘符**解成 `a:\b`，`relative` 于是回一个绝对路径 ⇒ 判越界。
+ *   但 `inside(P, "sub/a:b")` 回 `P\sub\a:b`（首段不是盘符）⇒ **放行**。
+ *   ⇒ 名字拼进 `dir` 之后，`inside()` 就管不着它了。**这才是要另写一条判据的原因。**
+ *
+ * 判据本体只挡**静默**的那一个字符（`:`）。其余 win32 非法字符（`"` `*` `?` `<` `>` `|`）
+ * **不在这里挡**：实测它们当场报 `ENOENT`（**不是** `EINVAL`）⇒ 已经由下面那套「`ENOENT` ⇒ 400」
+ * 的映射落成响亮失败，只是措辞另给一句（`NAME_UNMAKABLE`）。
+ *
+ * ⚠️ 这是 **win32 的安全边界**；POSIX 上 `a:b` 是合法文件名。**刻意不写平台分支**去「统一」它：
+ * 判据要挡的是「落下去不是这个名字」，而 `:` 在**哪一种**平台上都不会是「用户想要的那个名字」
+ * 的正当写法（真写了，文件拿回 Windows 客户端也用不了）。平台差异是实测出来的，不是设计出来的。
  *
  * ## 路径判据的写法（`inside`）
  *
@@ -80,25 +115,38 @@ export * as OpenhiveFile from "./file"
  *   清洗仍在（头值里的裸 CR/LF 会破坏头，甚至让响应头被拆开），但它的正确性只有读代码一条路。
  * - **`inside` 对 UNC / 盘符写的判据没有独立用例**：win32 上 `relative` 遇到不同盘符会回一个
  *   绝对路径，`isAbsolute` 那一支因此是**活的**，但本套夹具造不出「另一个盘符」。
- * - **四项都不做目录递归**（范围裁定：单文件）。UI 侧对应地把「复制 / 移动」只画在文件行上。
+ * - **T020 的两个入口还带着同一条 `:` 洞**（2026-10-10 量出，**本次不修**）：`handleUpload` 的
+ *   `basename(part.name)` 与 `handleTransfer` 的 `basename(payload.value.path)` 都摘不掉 `a:b`
+ *   （实测 `basename` 不切冒号）⇒ 那两处对含 `:` 的输入仍会**静默改名**。根因与 `usableName`
+ *   是同一个，修法就是「把同一条判据接到那两处」。**单列一笔**：它落在 T020 已交付的地界上，
+ *   与 T018 这三项分开提交（同 `CLAUDE.md`「一个 PR 混合重构与新功能 ⇒ 拆开」）。
+ * - **T018 的三项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
+ *   与中间件判的「项目在不在 / 冻没冻」不是同一件事——理由见上面「基准目录」那一节。
+ * - **复制 / 移动 / 上传 / 下载四项不做目录递归**（范围裁定：单文件）。UI 侧对应地把这两项
+ *   只画在文件行上。**T018 的删除是唯一的递归项**（用户 2026-10-10 裁定「支持删文件夹」）。
+ * - **重命名的「目标已存在」在竞态下有缝**：同 `move`，Node 没有「目标在就失败」的改名原语。
  */
 
 import { User } from "@opencode-ai/core/user"
 import { Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { access, copyFile, constants, lstat, readFile, realpath, rename, stat, writeFile } from "node:fs/promises"
+import { access, copyFile, constants, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
 
-/** 四个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
+/** 七个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
 export const PATH = {
   copy: `${PREFIX}/copy`,
   move: `${PREFIX}/move`,
   upload: `${PREFIX}/upload`,
   download: `${PREFIX}/download`,
+  /** T018 的三项。`create` 的 `kind` 分文件 / 目录（用户 2026-10-10 裁定「新建文件夹」也要）。 */
+  create: `${PREFIX}/create`,
+  rename: `${PREFIX}/rename`,
+  remove: `${PREFIX}/remove`,
 } as const
 
 const BAD_REQUEST = 400
@@ -126,7 +174,77 @@ const TransferBody = Schema.Struct({
   dir: Schema.String,
 })
 
-/** 三个写出口的成功回参：新文件**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
+/**
+ * 新建的请求体：`kind` 定文件还是目录，`dir` 是落在哪个**目录**里，`name` 是**单段名**。
+ *
+ * ⚠️ **`Schema.Literals(数组)`**，不是 `Literal`：Effect 4 的 `Literal(x)` 只收**一个**值，
+ * 多写的那些**被静默丢掉**——写成 `Literal("file", "directory")` 时 `kind: "directory"` 解不出来
+ * ⇒ 整个请求 400（实测：那一组 22 条里**只红「建目录」一条**，因为文件那半边恰好是第一个值）。
+ * 复数那条收的是**数组**（`Schema.Literals(["a","b"])`，同 `project.ts` 的 `PROJECT_TYPES`）。
+ * ⚠️ 本次是**踩了已知的一条**：`project.ts:230` 那处注记写的正是这个坑，而我先按「多值 = 变参」
+ * 写了一遍（`LEARNINGS #006-01`：前提可以错一半，只有用例会告诉你）。
+ */
+const CreateBody = Schema.Struct({
+  kind: Schema.Literals(["file", "directory"]),
+  dir: Schema.String,
+  name: Schema.String,
+})
+
+/** 重命名的请求体：`path` 是**源**（相对项目根），`name` 是**新的单段名**（不搬家）。 */
+const RenameBody = Schema.Struct({
+  path: Schema.String,
+  name: Schema.String,
+})
+
+/** 删除的请求体：`path` 是**相对项目根**的目标（可以是嵌套路径，删目录是递归的）。 */
+const RemoveBody = Schema.Struct({
+  path: Schema.String,
+})
+
+/**
+ * 解请求体：畸形 JSON 与形状不对**归成同一件事**（都是 400 ＋ 一句话）。
+ *
+ * 与 `member.ts` 的 `bodyOf` / `archive.ts` **逐字同款**——从 `handleTransfer` 里提出来的，
+ * 写第二、三、四处时才有理由提炼（`LEARNINGS #002-06`：同一个判断不许多处各写一份）。
+ */
+const bodyOf = <A>(request: HttpServerRequest.HttpServerRequest, schema: Schema.Codec<A>) =>
+  Effect.map(
+    request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    ),
+    (raw) => Schema.decodeUnknownOption(schema)(raw),
+  )
+
+/**
+ * 客户端给的名字**落下去还是不是这个名字**（判据本体与实测依据见文件头「名字判据」那一节）。
+ *
+ * 与 `User.isSafePathSegment` **不是**同一条：那条判「这段会不会把路径 `join` 出去」，这条判
+ * 「写下去之后还是不是它」——所以是 `&&` 而不是并进去。`isSafePathSegment` 那一半照样要，
+ * 空串 / `.` / `..` / 含分隔符由它拦（本判据只管 `:`）。
+ */
+const usableName = (name: string) => User.isSafePathSegment(name) && !name.includes(":")
+
+/** 路径的**末段**（`/` 分隔——客户端给的相对路径一律用 `/`，同文件树 `paths`）。 */
+const lastName = (path: string) => {
+  const cut = path.lastIndexOf("/")
+  return cut === -1 ? path : path.slice(cut + 1)
+}
+
+/**
+ * 名字在文件系统层**建不出来**（win32 非法字符，实测报 `ENOENT`）。
+ *
+ * 单独一句措辞：同是 `ENOENT`，在「新建」这一支**几乎只可能**是名字里有非法字符——因为
+ * 落点目录在上面已经 `stat` 过、确认是个目录了。
+ */
+const NAME_UNMAKABLE = "这个名字在系统里建不出来（含非法字符）"
+
+/** 名字里含 `:`——win32 会把它当数据流分隔符，**静默**落成另一个名字。 */
+const NAME_ALIASED = "文件名里不能含 `:`（系统会把它当作数据流分隔符，落成另一个名字）"
+
+/** 不许删项目根。`inside()` 刻意放行 `rest === ""`，那一条对删除是灾难——见 `handleRemove`。 */
+const ROOT_UNDELETABLE = "项目根不能删"
+
+/** 写出口的成功回参：新条目**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
 const Made = (path: string) => HttpServerResponse.jsonUnsafe({ path })
 
 export const routes = HttpRouter.use((router) =>
@@ -139,6 +257,10 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, "move"))
     yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
+    // T018 的三项。落在**同一个模块**里 ⇒ `server.ts` 一行不动（先例是 `archive.ts`）。
+    yield* router.add("POST", PATH.create, (request) => handleCreate(request, root))
+    yield* router.add("POST", PATH.rename, (request) => handleRename(request, root))
+    yield* router.add("POST", PATH.remove, (request) => handleRemove(request, root))
   }),
 )
 
@@ -278,10 +400,8 @@ function handleTransfer(
     if (typeof project !== "string") return project
 
     // 畸形 JSON ⇒ 400（客户端的事），同 `OpenhiveProject.handleCreate` 的处置。
-    const body = yield* request.json.pipe(
-      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
-    )
-    const payload = Schema.decodeUnknownOption(TransferBody)(body)
+    // ⚠️ 这四行 2026-10-10 提成了 `bodyOf`（T018 的三项要同一件事）——**行为逐字未变**。
+    const payload = yield* bodyOf(request, TransferBody)
     if (Option.isNone(payload)) return badRequest("请求体需要 path 与 dir 两个字符串")
 
     const source = inside(project, payload.value.path)
@@ -401,6 +521,158 @@ function handleDownload(request: HttpServerRequest.HttpServerRequest, root: stri
       contentType: "application/octet-stream",
       headers: { "content-disposition": disposition(basename(target)) },
     })
+  })
+}
+
+/**
+ * 新建（T018）：在 `dir` 下面造一个**空文件**或一个**空目录**。
+ *
+ * ⚠️ **目标路径走 `inside()` 拼，绝不用 `join()`**：`join(project, "sub", "a:b")` 在 win32 上
+ * 会静默写进备用数据流（实测）。但 `inside` **只**在「首段就是那个名字」时拦得住——`sub/a:b`
+ * 照样放行 ⇒ 真正的门是 `usableName`，这里两道都要（见文件头「名字判据」那一节）。
+ *
+ * ⚠️ 落点目录单独验三样：`inside` 在项目内、`stat` 是目录、`realInside` 真身在项目内。
+ * 第三样防的是「中间有一层是链接」——与 T020 的四项同因（实测见 `realInside` 的注释）。
+ */
+function handleCreate(request: HttpServerRequest.HttpServerRequest, root: string) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const payload = yield* bodyOf(request, CreateBody)
+    if (Option.isNone(payload)) return badRequest("请求体需要 kind、dir、name 三个字段")
+    const { kind, dir, name } = payload.value
+
+    // 名字这一道**必须最先**：它是唯一挡得住「静默改名」的那条。
+    if (!usableName(name)) return badRequest(NAME_ALIASED)
+
+    const targetDir = inside(project, dir)
+    if (targetDir === undefined) return badRequest("目标目录越出项目目录")
+    const dirInfo = yield* Effect.promise(() => stat(targetDir).catch(() => undefined))
+    if (dirInfo === undefined || !dirInfo.isDirectory()) return badRequest("目标目录不存在")
+    if (!(yield* realInside(project, targetDir))) return badRequest(LINK_ESCAPE)
+
+    const target = inside(project, dir === "" ? name : `${dir}/${name}`)
+    if (target === undefined) return badRequest("目标路径越出项目目录")
+
+    if (yield* exists(target)) return badRequest("这个位置已经有同名的东西了")
+
+    // 目录：`mkdir` **不递归**（落点目录刚验过、确实存在，多出来的层次一律是笔误）。
+    // 文件：`wx` = 已存在就失败、**不覆盖**（同复制 / 上传那两处一个口径——预检挡常规情形，
+    // 这个标志挡预检与真写之间那一瞬间）。
+    const failed = yield* attempt(() =>
+      kind === "directory" ? mkdir(target) : writeFile(target, "", { flag: "wx" }),
+    )
+    if (failed !== undefined) {
+      if (errorCode(failed) === "EEXIST") return badRequest("这个位置已经有同名的东西了")
+      // 落点目录上面已经 `stat` 过 ⇒ 这里的 `ENOENT` 几乎只可能是名字里有非法字符。
+      if (errorCode(failed) === "ENOENT") return badRequest(NAME_UNMAKABLE)
+      yield* Effect.die(failed)
+    }
+
+    return Made(relativePath(project, target))
+  })
+}
+
+/**
+ * 重命名（T018）：把 `path` 换成**同一目录**下的 `name`（**不搬家**——要搬是「移动」那个出口的事）。
+ *
+ * 目录也认（用户裁定「重命名」要用得到文件夹上）：`rename` 对目录是整棵搬走，那是平台语义。
+ */
+function handleRename(request: HttpServerRequest.HttpServerRequest, root: string) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const payload = yield* bodyOf(request, RenameBody)
+    if (Option.isNone(payload)) return badRequest("请求体需要 path 与 name 两个字段")
+    const { path: from, name } = payload.value
+
+    if (!usableName(name)) return badRequest(NAME_ALIASED)
+
+    const source = inside(project, from)
+    if (source === undefined) return badRequest("源路径越出项目目录")
+
+    // `lstat`：链接在它下面**两者皆 false**（实测）⇒ 链接自己落在这句之外，不必另写判据。
+    const info = yield* Effect.promise(() => lstat(source).catch(() => undefined))
+    if (info === undefined) return badRequest("源不存在")
+    if (!info.isFile() && !info.isDirectory()) return badRequest("这里只能重命名普通文件或目录")
+
+    // 源**所在目录**的真身也必须还在项目里：`link/密件.txt` 的末段是普通文件，露馅的是上面那层。
+    if (!(yield* realInside(project, dirname(source)))) return badRequest(LINK_ESCAPE)
+
+    // 目标 = **源所在目录** ＋ 新名。目录段由 `dirname(source)` 反推，而不是切 `from` 那个字符串
+    // ——后者遇到客户端发来的 `a\b.txt` 会把目标算到项目根，凭空搬一次家。
+    // `from` 是项目根本身时 `dirname` 落在项目外，`inside` 当场判越界（项目根不许重命名）。
+    const parentRel = relative(project, dirname(source)).replaceAll("\\", "/")
+    const target = inside(project, parentRel === "" ? name : `${parentRel}/${name}`)
+    if (target === undefined) return badRequest("目标路径越出项目目录")
+
+    if (yield* exists(target)) return badRequest("这个位置已经有同名的东西了")
+
+    const failed = yield* attempt(() => rename(source, target))
+    if (failed !== undefined) {
+      if (errorCode(failed) === "EEXIST") return badRequest("这个位置已经有同名的东西了")
+      // 「名字建不出来」与「源在这一瞬间被别人删了」在这一句里分不开 ⇒ 措辞两样都点到。
+      if (errorCode(failed) === "ENOENT") return badRequest(`${NAME_UNMAKABLE}，或源已经不在原处`)
+      yield* Effect.die(failed)
+    }
+
+    return Made(relativePath(project, target))
+  })
+}
+
+/**
+ * 删除（T018）：文件直接删，**目录递归删**（用户 2026-10-10 裁定「支持删文件夹」）。
+ *
+ * 两道别的出口没有的守卫：
+ *
+ * ① **项目根不许删**。`inside()` 刻意允许 `rest === ""`（往项目根上放东西是正常操作），
+ *    而那一条对**删除**是灾难：`rm(项目根, { recursive: true })` 会把整个项目清空，
+ *    而归档、成员、MinIO 备份那些记录都还指着它。判据比的是**解析后的路径**
+ *    （`absolute === project`），不是 `from === ""`——`"."` 与 `sub/..` 同样解析成项目根。
+ * ② **真身也要在项目里**（`realInside(所在目录)`）。少了它，`link/密件.txt`（`link` 是指向
+ *    兄弟项目的 junction）会把**兄弟项目的文件删掉**——`lstat` 看到的末段是普通文件，
+ *    露馅的只有上面那一层。
+ *
+ * `rm` 用 `{ recursive: true, force: false }`：`force: false` 让「不存在」成为**错误**
+ * （由上面那句 `lstat` 与下面那句 `ENOENT` 双保险），而不是静默成功。
+ * ⚠️ 递归**不跟随**链接：实测 `rm` 一个装着 junction 的目录只 unlink 链接本身、目标一个字节没少
+ * （探针③）——本组有一条用例把这个事实钉住。
+ */
+function handleRemove(request: HttpServerRequest.HttpServerRequest, root: string) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const payload = yield* bodyOf(request, RemoveBody)
+    if (Option.isNone(payload)) return badRequest("请求体需要 path")
+    const { path: from } = payload.value
+
+    const absolute = inside(project, from)
+    if (absolute === undefined) return badRequest("路径越出项目目录")
+
+    // ① 项目根。**排在名字守卫之前**：`from: ""` 的末段就是空串，先落到名字那条会回错话。
+    if (absolute === project) return badRequest(ROOT_UNDELETABLE)
+
+    // 名字守卫这里也要：`rm(P\sub\a:b)` 删掉的是那条**数据流**，而用户以为删了「a:b」。
+    if (!usableName(lastName(from))) return badRequest(NAME_ALIASED)
+
+    const info = yield* Effect.promise(() => lstat(absolute).catch(() => undefined))
+    if (info === undefined) return badRequest("找不到要删的东西")
+    // 链接两者皆 false ⇒ 「删链接」这件事本出口不做（同另外六项：链接不算项目内的条目）。
+    if (!info.isFile() && !info.isDirectory()) return badRequest("这里只能删普通文件或目录")
+
+    // ② 真身。
+    if (!(yield* realInside(project, dirname(absolute)))) return badRequest(LINK_ESCAPE)
+
+    const failed = yield* attempt(() => rm(absolute, { recursive: true, force: false }))
+    if (failed !== undefined) {
+      if (errorCode(failed) === "ENOENT") return badRequest("找不到要删的东西")
+      yield* Effect.die(failed)
+    }
+
+    return Made(relativePath(project, absolute))
   })
 }
 

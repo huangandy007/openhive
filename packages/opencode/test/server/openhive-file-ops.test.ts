@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
@@ -227,6 +227,10 @@ const 出口 = {
   move: "/openhive/file/move",
   upload: "/openhive/file/upload",
   download: "/openhive/file/download",
+  /** 2026-10-10 补的三个写出口（T018 那笔「新建 / 重命名 / 删除」）。 */
+  create: "/openhive/file/create",
+  rename: "/openhive/file/rename",
+  remove: "/openhive/file/remove",
 } as const
 
 /** 成功回参：新文件**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
@@ -948,6 +952,700 @@ describe("补测 · 项目头不是凭证：同一个 id 在别人手里够不�
         expect(readFileSync(path.join(项目根, "sub", "甲自己.txt"), "utf8")).toBe("甲的正文二")
         expect(甲上传.status).toBe(200)
         expect([乙复制.status, 乙移动.status, 乙上传.status, 乙下载.status]).toEqual([400, 400, 400, 400])
+      }),
+    30_000,
+  )
+})
+
+/**
+ * T018 那笔「新建 / 重命名 / 删除」（2026-10-10 补）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * T020 落了 copy / move / upload / download 四个出口之后，文件树的工具栏三颗（＋ / ✏️ / 🗑）
+ * 与右键菜单第一、二组里那几项**仍然是灰的**——`workspace-entry.tsx` 没接
+ * `onCreate` / `onRename` / `onDelete`，而后端**根本没有**这三个出口。本条补后端那三条。
+ *
+ * ## 观测面与判据次序：逐条同本文件前面那一套
+ *
+ * 一律读**磁盘**（`existsSync` / `readFileSync` / `statSync` / `readdirSync`），不读响应体；
+ * 「被拒」与「没副作用」**两条都写**（`#004-09`）；被测属性（副作用）排在前（`#004-14`）。
+ *
+ * ## 三条**实测**出来的前提（2026-10-10 探针；`#003-04`：先量再写，别复述）
+ *
+ * ① **`:` 在 win32 上是数据流（ADS）分隔符，而它一层一层地躲过两道既有的门**。
+ *    实测（两轮探针，第二轮把第一轮写错的那半边纠正了）：
+ *    - `resolve(P, "a:b")` ＝ **`a:\b`**（当成盘符，不是 `P\a:b`）⇒ `inside()` 判越界；
+ *      **但 `resolve(P, "sub/a:b")` ＝ `P\sub\a:b`，`relative` 回 `sub\a:b` ⇒ `inside()` 放行**。
+ *      ⇒ ⚠️ **`inside()` 只在「首段就是那个名字」时拦得住**（这一句是本条第一稿写错的地方：
+ *      原稿写「走 `inside()` 拼则当场判越界」，那只在 `dir === ""` 时成立）。
+ *    - `writeFile(join(P,"sub","a:b"), "偷渡内容", { flag: "wx" })` **成功**，而
+ *      `readdir(P\sub)` 只有 `["a"]` ⇒ 盘上多出一个叫 **`a`** 的文件、内容藏在读不到的流里。
+ *    - `isSafePathSegment("a:b")` ＝ **true**；`basename("…\\sub\\a:b")` ＝ **`"a:b"`**
+ *      （win32 的 `basename` 不切冒号）⇒ 事后都摘不出来。
+ *    ⇒ 所以另立一条名字判据（`file.ts` 的 `usableName`），**只挡 `:` 这一个字符**。
+ *    **本组 A 段四条用例把它钉在三个出口上**，判据都是「**盘上不许出现那个被截短的名字**」，
+ *    不是「回了 400」——因为「静默改名」的形态就是「400 之外的一切都对」。
+ *    ⚠️ 这是 win32 上的安全边界；POSIX 上 `a:b` 是合法文件名。**刻意不写平台分支**（理由见 `file.ts`）。
+ * ② **`"` `*` `?` `<` `>` `|` 与控制字符在 win32 上报 `ENOENT`**（不是 `EINVAL`）；
+ *    而 `con` / `CON.txt` / `a.` / 单个空格**建得出来**。⇒ 不做字符白名单，
+ *    靠已有的「`ENOENT` ⇒ 400」那条映射兜住，措辞另给一句（`file.ts` 的 `NAME_UNMAKABLE`）。
+ *    与 ① 的分工：这一条**响亮地失败**（ENOENT 当场抛），① 那一条**静默成功**——这是两者的分野。
+ * ③ **`lstat` 看链接：`isFile()` 与 `isDirectory()` **都**为 false、`isSymbolicLink()` 为 true**
+ *    ⇒ 链接天然落在「只动普通文件 / 只动目录」两条支路之外，不需要新写一条链接判据。
+ *    而递归 `rm` 一个**装着 junction 的目录**，实测**只 unlink 链接本身、目标一个字节没少**
+ *    （单独 `rm` 一个 junction 同样不碰目标）⇒ 本组有一条用例把这个事实钉住。
+ *
+ * ## 与「名字」无关、但删除这条链独有的两道守卫（B 段）
+ *
+ * 删除比别处多两个「不做就会出大事」的面，各有一条用例：
+ * - **项目根**：`inside()` 刻意放行 `rest === ""`，而 `rm(项目根, {recursive:true})` 会把整个项目
+ *   清空。判据落在**解析后的路径**上（`sub/..` 与 `.` 同样解析成项目根）⇒ 单有一条
+ *   `sub/..` 的用例把「判的是字符串还是解析后的值」分开。
+ * - **穿过链接删**：`link/密件.txt`（`link` = 指向兄弟项目的 junction）在 `lstat` 下末段是普通文件，
+ *   露馅的只有上面那一层 ⇒ 少一道 `realInside(所在目录)` 就会**把兄弟项目的文件删掉**。
+ *
+ * ## 已知不覆盖
+ *
+ * - **「目标已存在」在竞态下有缝**：`rename` 是「预检 ＋ 裸改名」，而 Node 没有
+ *   「目标在就失败」的改名原语（win32 还叠了 `MOVEFILE_REPLACE_EXISTING`）。同 T020 的
+ *   `move`，本机测不出并发那一瞬间。
+ * - **`:` 洞在 T020 的两个入口上还开着**（`handleUpload` 的 `basename(part.name)`、
+ *   `handleTransfer` 的 `basename(payload.value.path)`）——根因同一个，本次**没接**那条判据
+ *   （它与 T018 的三项分开提交）。本组的两条 `:` 用例因此**只覆盖 T018 的三个出口**，
+ *   不覆盖那两个 ⇒ 缺口写成缺口（`#002-02`）。
+ */
+/** 拒绝类回参的**最小形状**（`{ error: 一句话 }`）。字面量，同本文件 `Frozen` 的理。 */
+const Rejected = Schema.Struct({ error: Schema.String })
+
+/**
+ * 「不许删项目根」那句话。
+ *
+ * ⚠️ **字面量**、不 import 生产常量：断它只为证明这一发是被**那条守卫**挡下的，
+ * 而不是被别的什么地方顺手挡下（同 `FROZEN_MESSAGE` 的用法）。import 过来就成了
+ * 「生产改什么测试跟着改什么」，改名也测不出来（`LEARNINGS #003-05`）。
+ */
+const ROOT_UNDELETABLE = "项目根不能删"
+
+/** 名字含 `:` 那句话（前提①）。字面量，同上。 */
+const NAME_ALIASED = "文件名里不能含 `:`（系统会把它当作数据流分隔符，落成另一个名字）"
+
+/** 「这个名字建不出来」那句话（前提②：win32 非法字符报 `ENOENT`）。字面量，同上。 */
+const NAME_UNMAKABLE = "这个名字在系统里建不出来（含非法字符）"
+
+describe("T018 · 新建 / 重命名 / 删除三个出口（FR-005）", () => {
+  /** 建一个条目。`kind` 决定文件还是目录；`name` 是**单段名**。 */
+  const 建 = (kind: "file" | "directory", dir: string, name: string, project?: string) =>
+    send(ALICE, 出口.create, { kind, dir, name }, project ?? ALPHA)
+
+  const 改 = (源: string, name: string, project?: string) =>
+    send(ALICE, 出口.rename, { path: 源, name }, project ?? ALPHA)
+
+  const 删 = (源: string, project?: string) => send(ALICE, 出口.remove, { path: 源 }, project ?? ALPHA)
+
+  // ---------------------------------------------------------------- 新建
+
+  it.live(
+    "建文件 ⇒ 盘上真出现、内容为空、回参路径对，且旁边的 a.txt 一个字节没动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("file", "", "新文件.txt")
+
+        expect(existsSync(path.join(项目根, "新文件.txt"))).toBe(true)
+        // 「建出来了」与「建出来是个空文件」是两件事：后者才是「新建」的语义
+        // （对照：同一条链上的 copy 建出来的是**有内容**的，判据因此分得开）。
+        expect(readFileSync(path.join(项目根, "新文件.txt"), "utf8")).toBe("")
+        // 副作用边界：新建不许碰旁边那个已有的文件。
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("新文件.txt")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "建目录 ⇒ 盘上真出现一个**目录**，且它是空的",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("directory", "", "新文件夹")
+
+        // 只断 `existsSync` 的话，「建出来是个同名的空文件」照样绿 ⇒ 必须断类型。
+        expect(statSync(path.join(项目根, "新文件夹")).isDirectory()).toBe(true)
+        expect(readdirSync(path.join(项目根, "新文件夹"))).toEqual([])
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("新文件夹")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "建到子目录里 ⇒ 落在 sub/ 下、不在项目根、回参带目录段",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("file", "sub", "子里的.txt")
+
+        expect(readFileSync(path.join(项目根, "sub", "子里的.txt"), "utf8")).toBe("")
+        expect(existsSync(path.join(项目根, "子里的.txt"))).toBe(false)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("sub/子里的.txt")
+      }),
+    30_000,
+  )
+
+  /**
+   * **同名已存在 ⇒ 拒，且原文件一个字节都不许变**（数据安全）。
+   *
+   * 这条与 T020 复制那条同因：`writeFile` 默认覆盖，而「新建把用户已有的同名文件清成空」
+   * 是这个功能最坏的一种失败——不报错、用户以为只是建了个新的。
+   */
+  it.live(
+    "建文件时同名已存在 ⇒ 400，且原文件内容一字不变",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("file", "", "a.txt")
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "建目录时同名目录已存在 ⇒ 400，且那个目录**里面原来有什么还是什么**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("directory", "", "sub")
+
+        expect(readdirSync(path.join(项目根, "sub"))).toEqual(["b.txt"])
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **名字本身越界 ⇒ 一律拒，且沙箱根底下什么都没多出来**。
+   *
+   * 四个输入各是一次越界写法：`../` 上跳一层、`..` 落到项目根的父目录（= 沙箱根）、
+   * `/` 想多带一段、空串（`join(root, "")` 是**根本身**——`LEARNINGS` 里 `isSafePathSegment`
+   * 那条注释点名的第一种）。判据落在**沙箱根**（项目外面那一层），不是在项目里面找痕迹。
+   *
+   * ⚠️ 名字判据只有一条：`User.isSafePathSegment`（既有的隔离锚，**不新造**）。上面四条
+   * 正是它拦的四类，故本条同时是那条判据的回归网。
+   */
+  it.live(
+    "名字越界（../、..、含 /、空）⇒ 四条全 400，且沙箱根底下没多出任何东西",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const 沙箱根原样 = readdirSync(沙箱根).toSorted()
+
+        for (const name of ["../逃逸.txt", "..", "sub/走私.txt", ""]) {
+          const response = yield* 建("file", "", name)
+          expect(response.status).toBe(400)
+        }
+
+        expect(existsSync(path.join(沙箱根, "逃逸.txt"))).toBe(false)
+        expect(existsSync(path.join(项目根, "sub", "走私.txt"))).toBe(false)
+        expect(readdirSync(沙箱根).toSorted()).toEqual(沙箱根原样)
+      }),
+    30_000,
+  )
+
+  /**
+   * **不带头 ⇒ 拒，且够不着兄弟项目**（`tasks.md` T020「权限锚」那条，逐字同因）。
+   *
+   * ⚠️ 落点用**新名字**（`偷渡.txt`），不用重名——重名时「已存在」这道预检**自己**就会回 400，
+   * 断言绿得毫无信息（T020 第二轮审查 R2 抓的正是这个形状）。对照也另起一个名字。
+   */
+  it.live(
+    "不带头建文件 ⇒ 400，兄弟项目里没多出那个新文件；对照：带头（本人项目）⇒ 200",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        // 不带头时中间件给的基准是**沙箱根**，而兄弟项目就在它下面一层。
+        const 偷渡 = yield* send(ALICE, 出口.create, { kind: "file", dir: OTHER, name: "偷渡.txt" }, undefined)
+        // 对照：同一发法带头，落点在**本人项目**里、名字也不同。
+        const 正当 = yield* 建("file", "", "甲自建.txt")
+
+        expect(existsSync(path.join(沙箱根, OTHER, "偷渡.txt"))).toBe(false)
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        // 对照活着，「偷渡没出现」才有意义（`#004-08`）。
+        expect(existsSync(path.join(项目根, "甲自建.txt"))).toBe(true)
+        expect(正当.status).toBe(200)
+        expect(偷渡.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "乙带甲的项目 id 建文件 ⇒ 400，甲的项目里没多出那个文件",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(BOB, 出口.create, { kind: "file", dir: "", name: "乙插的.txt" }, ALPHA)
+
+        expect(existsSync(path.join(项目根, "乙插的.txt"))).toBe(false)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  // -------------------------------------------------------------- 重命名
+
+  it.live(
+    "重命名文件 ⇒ 新名出现、旧名消失、内容一致",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改("a.txt", "甲改名.txt")
+
+        expect(readFileSync(path.join(项目根, "甲改名.txt"), "utf8")).toBe(甲)
+        expect(existsSync(文件.甲)).toBe(false)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("甲改名.txt")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "重命名目录 ⇒ 目录整个搬过去、里面的文件跟着走、旧目录名没了",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改("sub", "资料")
+
+        expect(readFileSync(path.join(项目根, "资料", "b.txt"), "utf8")).toBe(乙)
+        expect(existsSync(path.join(项目根, "sub"))).toBe(false)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("资料")
+      }),
+    30_000,
+  )
+
+  /**
+   * **新名已存在 ⇒ 拒，且两边内容都不许变**。
+   *
+   * 与 T020「移动到已有同名文件」逐字同因：win32 的 `rename` 走 `MOVEFILE_REPLACE_EXISTING`，
+   * **默认覆盖**。少了「先看目标在不在」，被改名的文件会把目标**静默吃掉**。
+   */
+  it.live(
+    "重命名到已有同名 ⇒ 400，目标没被吃掉、源还在原地",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(path.join(项目根, "已存在.txt"), "已有的正文")
+
+        const response = yield* 改("a.txt", "已存在.txt")
+
+        expect(readFileSync(path.join(项目根, "已存在.txt"), "utf8")).toBe("已有的正文")
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **新名含 `/` ⇒ 拒**（重命名**不搬家**；要搬是「移动」那个出口的事）。
+   *
+   * 判据是名字那一条（`isSafePathSegment`），不是「目标已存在」——所以落点选一个**不存在**的
+   * 位置（`sub/走私.txt`），这样两种判据才分得开：若靠「已存在」兜，这条会红成 200。
+   */
+  it.live(
+    "新名含 / ⇒ 400（重命名不搬家），源还在、目标位置没被造出来",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改("a.txt", "sub/走私.txt")
+
+        expect(existsSync(path.join(项目根, "sub", "走私.txt"))).toBe(false)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **链接不是重命名的对象**——`lstat` 下它既非文件也非目录（前提③，实测）。
+   *
+   * ⚠️ 判据落在「链接还在不在」上：只断 400 的话，一道「先改名、再发现是链接」的实现照样绿。
+   */
+  it.live(
+    "重命名一个目录链接 ⇒ 400，链接还在原地、兄弟项目零改动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 改("link", "链接改名")
+
+        expect(existsSync(链)).toBe(true)
+        expect(existsSync(path.join(项目根, "链接改名"))).toBe(false)
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "不带头重命名 ⇒ 400，a.txt 还在原地",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.rename, { path: "a.txt", name: "偷渡.txt" }, undefined)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(existsSync(path.join(沙箱根, "偷渡.txt"))).toBe(false)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  // ---------------------------------------------------------------- 删除
+
+  it.live(
+    "删文件 ⇒ 盘上没了、旁边的 sub/b.txt 还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删("a.txt")
+
+        expect(existsSync(文件.甲)).toBe(false)
+        // 副作用边界：删一个不许连带删旁边那个。
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * **删目录是递归的**（用户 2026-10-10 裁定「支持删文件夹」）。
+   *
+   * 造两层嵌套再删外层：只删空目录的实现（`rmdir`）会在第一层就 `ENOTEMPTY`/`EPERM`，
+   * 而只删一层的实现会把 `inner` 留在盘上 ⇒ 两处都钉住。
+   */
+  it.live(
+    "删目录 ⇒ 连里面嵌套两层的内容一起没、其他文件不动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "资料", "inner"), { recursive: true })
+        writeFileSync(path.join(项目根, "资料", "inner", "deep.txt"), "深处的正文")
+
+        const response = yield* 删("资料")
+
+        expect(existsSync(path.join(项目根, "资料"))).toBe(false)
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * **项目根删不掉**——这是本组最要紧的一条。
+   *
+   * `inside()` 刻意允许 `rest === ""`（**落点**是项目根是正常操作：往根上放东西），
+   * 但那一条对**删除**来说是灾难：`rm(项目根, {recursive:true})` 会把整个项目清空，
+   * 而归档、成员、MinIO 备份那些记录都还指着它。
+   *
+   * 断的是**项目根与里面两个文件都还在**——只断 400 的话，一道「先递归删、再回 400」的
+   * 实现照样绿（`#004-09`：终点与副作用是两条判据）。
+   */
+  it.live(
+    "删项目根（path 为空）⇒ 400，且项目根与里面两个文件都还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删("")
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(statSync(项目根).isDirectory()).toBe(true)
+        expect(response.status).toBe(400)
+        // 断文案：证明这一发是被「不许删项目根」那条挡下的，不是被别的什么顺手挡下。
+        expect((yield* json(Rejected, response)).error).toBe(ROOT_UNDELETABLE)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "删一个不存在的东西 ⇒ 400（不是 500）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删("查无此物.txt")
+
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **递归删目录时，目录里的链接不会被跟进去**（前提③，探针实测）。
+   *
+   * 形状：`含链接/` 里放一个指向**兄弟项目**的 junction。删 `含链接` ⇒ 链接被 unlink、
+   * 兄弟项目里那份密件**必须还在**。这条是「递归」这个语义唯一的越界风险面。
+   */
+  it.live(
+    "删一个装着跨项目链接的目录 ⇒ 目录没了，链接指向的兄弟项目零改动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "含链接"), { recursive: true })
+        symlinkSync(path.join(沙箱根, OTHER), path.join(项目根, "含链接", "越界链"), "junction")
+
+        const response = yield* 删("含链接")
+
+        expect(existsSync(path.join(项目根, "含链接"))).toBe(false)
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "不带头删 ⇒ 400，兄弟项目那份密件还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.remove, { path: 文件.密相对 }, undefined)
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "路径上跳一层删兄弟项目的文件 ⇒ 400，那份密件还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删(`../${OTHER}/密件.txt`)
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "乙带甲的项目 id 删文件 ⇒ 400，甲的文件还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(BOB, 出口.remove, { path: "a.txt" }, ALPHA)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  // ------------------------------------------------ A 段：名字判据（`usableName`，前提①）
+
+  /**
+   * **同一道守卫，三个出口各钉一条**（`#005-12`：同一个修法落在 N 个动作上就写 N 条用例，
+   * 不写成一条「把三个都过一遍」）。
+   *
+   * 每一发的判据都是「**盘上不许出现那个被截短的名字**」，不是「回了 400」——「静默改名」的
+   * 形态恰恰是「除了名字不对，其它全都对」：`writeFile` 回了 undefined、`rm` 也回了 undefined。
+   *
+   * ⚠️ **落点必须在子目录里**（`dir: "sub"` / 源在 `sub`）：前提①量出 `inside()` 只在
+   * 「首段就是那个名字」时拦得住，`sub/a:b` 它是**放行**的——而那正是要覆盖的那一支。
+   * 放在项目根上测，挡下这一发的会是 `inside()` 而不是 `usableName`，用例就绿得毫无信息。
+   */
+  it.live(
+    "建文件时名字含 `:`（落点在子目录）⇒ 400，且盘上没多出一个被截短成 `a` 的文件",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("file", "sub", "a:b")
+
+        // 副作用在前（`#004-14`）：`sub` 底下原来只有 b.txt，之后也只许有 b.txt。
+        expect(readdirSync(path.join(项目根, "sub"))).toEqual(["b.txt"])
+        expect(existsSync(path.join(项目根, "sub", "a"))).toBe(false)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(response.status).toBe(400)
+        // 断文案：这一发是被 `usableName` 挡下的，不是被 `inside()` 顺手挡下的（那一条的
+        // 措辞是「越出项目目录」）。
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "建文件时名字含 `?`（win32 非法字符）⇒ 400，文案是「建不出来」那句，盘上什么都没多",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const 根原样 = readdirSync(项目根).toSorted()
+
+        const response = yield* 建("file", "", "a?b")
+
+        expect(readdirSync(项目根).toSorted()).toEqual(根原样)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NAME_UNMAKABLE)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "重命名成含 `:` 的新名（源在子目录）⇒ 400，源还在原名、盘上没多出 `a`",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改("sub/b.txt", "a:b")
+
+        expect(readdirSync(path.join(项目根, "sub"))).toEqual(["b.txt"])
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(existsSync(path.join(项目根, "sub", "a"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "删一个名字含 `:` 的路径 ⇒ 400，旁边的东西一个都没少",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删("sub/a:b")
+
+        expect(readdirSync(path.join(项目根, "sub"))).toEqual(["b.txt"])
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NAME_ALIASED)
+      }),
+    30_000,
+  )
+
+  // ------------------------------------- B 段：删除独有的两道守卫（项目根 / 穿过链接）
+
+  /**
+   * **判据落在「解析后的路径」，不是那个字符串**。
+   *
+   * `sub/..` 解析出来就是项目根——只判 `from === ""` 的实现会放它过去，然后
+   * `rm(项目根, { recursive: true })` 把整个项目清空。这条与上面那条「`path` 为空」合起来，
+   * 把两种写法分得开。
+   */
+  it.live(
+    "路径解析后就是项目根（`sub/..`）⇒ 400 且是那句话，项目根与两个文件都还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删("sub/..")
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(statSync(项目根).isDirectory()).toBe(true)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(ROOT_UNDELETABLE)
+      }),
+    30_000,
+  )
+
+  /**
+   * **穿过链接删**：`link` 是指向**兄弟项目**的 junction，`link/密件.txt` 在 `lstat` 下末段
+   * 是普通文件——露馅的只有上面那一层。少了 `realInside(所在目录)` 那一道，这句 `rm` 会把
+   * 兄弟项目的文件删掉，而本机一切「正常」。
+   */
+  it.live(
+    "删 `link/密件.txt`（穿过 junction）⇒ 400，兄弟项目那份密件一个字节没少",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 删("link/密件.txt")
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(readdirSync(path.join(沙箱根, OTHER))).toEqual(["密件.txt"])
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "删一个**文件符号链接** ⇒ 400，链接本身还在、它指向的密件也还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 删("链到密件.txt")
+
+        expect(existsSync(文件链)).toBe(true)
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "删一个**目录链接**（junction）⇒ 400，链接还在、兄弟项目零改动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 删("link")
+
+        expect(existsSync(链)).toBe(true)
+        expect(readdirSync(path.join(沙箱根, OTHER))).toEqual(["密件.txt"])
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **项目根也不能被重命名**。这条**不是**一条独立守卫：它落在 `dirname(项目根)` 跑到项目外、
+   * 由 `inside()` 判越界的组合上。写下来是为了把「项目根不会被搬走」这个结果钉住——
+   * 将来谁把目标那一句从 `inside` 换成 `join`，这条会红。
+   */
+  it.live(
+    "重命名项目根（path 为空）⇒ 400，项目根与两个文件都还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改("", "整个搬走")
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(statSync(项目根).isDirectory()).toBe(true)
+        expect(response.status).toBe(400)
       }),
     30_000,
   )
