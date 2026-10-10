@@ -2705,12 +2705,92 @@ T008 收尾时要给「复制／移动／上传／下载」找需求锚，才发
 
 ---
 
-## 加固轮（2026-10-10 ~ 10-11）
+## 加固轮（2026-10-10）
 
-> 本节按轮次追加。文件树那两条（①空白处右键呼不出菜单 ②菜单 ⇒ 输入条拿不到焦点）已分别落在
-> `87decf7fca` / `db1a346da2`，其完整记录随本轮文档回填一并补入（同一 `tasks.md` 同步项）。
+> 本节按轮次追加。**编号 ＝ 用户逐条下达的顺序**，每条都走完六步轨道（`CLAUDE.md`「加固/修 bug
+> 铁律」：①证据定根因 ②会红的用例 ③改到绿 ④变异验证 ⑤门禁 ⑥grep 同类落点）。
+>
+> ⚠️ 本节 ①② 两条的正文是**文档回填时补写**的（代码与真栈 spec 都早已落地，只是没当场落字）；
+> ③④ 是当场写的。四条的 commit 都在 2026-10-10 这一天。
 
-### ① 会话过期时横幅只说「新建失败」（2026-10-11 · 已提交 `be7257e0b4`）
+### ① 文件树空白处右键呼不出菜单（2026-10-10 · 已提交 `87decf7fca`）
+
+**现象（用户实报）**：「左栏文件 tab 页面，在空白处单击右键呼不出右键。」
+
+**根因（真栈实测，不推演）**：files pane（`sidebar-tabs.tsx` 的 `file-tree-slot`）只有 `flex-1`、
+**自身不是 flex 容器** ⇒ 里面 `dual-file-tree` 的 `flex-1` 无剩余空间可分 ⇒ 退化成「高度＝内容高」。
+实测：页签 `file-tree-slot` bottom = 841，而 `dual-file-tree` bottom = 185（空项目）/ 697（有文件）。
+
+⇒ 页签余下的空白归 `file-tree-slot`，**不在任何 `ContextMenu` 触发区的盒子里** ⇒ 右键冒不到触发器。
+
+**改法（4 处 class，只动 fork 自有文件）**：`sidebar-tabs.tsx` 新增 `PANE_FILES`（＝ `PANE` ＋
+`flex flex-col`），只给「文件」pane 用（`PANE` 一字未改 ⇒ 会话 pane 不受影响）；`file-tree.tsx` 的
+根 / `ContextMenu.Trigger` / `file-tree-region` 各补 `flex-1 min-h-0`，region 另接 `overflow-y-auto`。
+`dual-file-tree.tsx` / `sandbox-tree` **未改**——它们本就写着 `flex-1 min-h-0`。副作用是改善：
+滚动容器下移到 `file-tree-region` ⇒ 工具栏钉住、只有树滚。
+
+**回归网**：新增真栈 spec `file-tree-blank-menu-real.spec.ts`（4 条）。组件层**钉不住**这条——
+happy-dom 没有布局引擎，量不出 flex 高度（`#006-18`）。
+
+**变异验证**（逐处各拆一次）：
+
+| 拆哪一处 | 红的条数 |
+|---|---|
+| `PANE_FILES` 的 `flex flex-col` | 3 |
+| `file-tree-region` 的 `flex-1` | 2 |
+| `ContextMenu.Trigger` 的 `flex-1` | 4 |
+
+⚠️ 拆 `file-tree-region` 那次**不是恰红**（`#003-03` 第二类）：两条「菜单开不开」的用例照样绿，
+红的只有滚动那条 ⇒ 暴露出回归网漏了一条判据——`记对象`（定菜单作用对象）挂在 region 上，空白落到
+Trigger 时它不跑，**菜单会开、作用对象却是上一次的残留**。据此补了第 4 条（「右键空白 ⇒ 重命名须为
+禁用态」，带目录行对照组），补后该变异红 2 条。
+
+**门禁**：`packages/app` typecheck 净；`typecheck:e2e` 仅 2 条**既有**报错（未改动的
+`sidebar-project-switch-real.spec.ts`，`#006-02` 老账）；组件 **772 pass / 0 fail**；
+改动产品文件 oxlint **0 warnings / 0 errors**。
+
+**🔴 登记挂账（同类落点，用户未报 ⇒ 不动手）**：`ai-session/session-list.tsx:206` 的根
+`flex min-h-0 w-full flex-1 flex-col` 与本条同型，父级同样是那个不成 flex 容器的 `PANE`。
+真栈实测：会话页签 bottom = 841、列表根 bottom = 189 ⇒ **空白处右键同样呼不出菜单**
+（`e2e/real-stack/session-pane-blank-probe.spec.ts` 可复现）。
+
+### ② 右键菜单 ⇒ 重命名 / 新建 时输入条拿不到焦点（2026-10-10 · 已提交 `db1a346da2`）
+
+**现象（用户实报）**：「新建有问题，重命名不成功」——工具栏的 ＋ / ✏️ 两条都好，走**右键菜单**那两条
+则输入条看得见、**裸键盘的字进不去**、磁盘一动不动。
+
+**根因（真栈实测，不推演）**：`packages/ui` 的 `ContextMenu` 默认 `modal: true` ⇒ Kobalte 的
+`createFocusScope` 在菜单开着时锁焦点，并在**菜单卸载那一刻**把焦点归还给「打开菜单时容器外的聚焦
+元素」——被右键的那一行 `div[file-tree-row]`。焦点时间线（菜单 ⇒ 重命名）：
+
+```
+9027ms focus() → input[file-tree-rename-input]  ⟵ inline-rename-input.tsx:40
+9028ms focus() → div[context-menu-item]{rename} ⟵ onFocusOut / onFocusIn
+9050ms focus() → div[file-tree-row](path=话单.csv) ⟵ ★ 凶手
+⇒ 输入条 blur ⇒ 就地改名「提交」时草稿没变 ⇒ 自己收掉
+```
+
+同仓对照：`ai-session/session-list.tsx` 的 `<ContextMenu modal={false}>` 拿得到焦点。
+
+**改法**：`file-tree.tsx` 的 `<ContextMenu>` 加 `modal={false}`（**一行**）。
+
+**回归网**：新增真栈 spec `file-tree-menu-focus-real.spec.ts`（2 条），判据是**裸键盘**敲字 ＋ 磁盘真变
+（`.type()` 会先聚焦，分不出「输入条在」与「字进得去」）。
+
+**变异验证**（拆掉 `modal={false}`）——**不是恰红，是「另一类」**（`#003-03`）：重命名那条 **红**；
+新建那条 **假绿**！追加了**同一份 spec、同一套钩子、只差 `modal={false}`** 的对照，定性为**竞态**：
+`inline-rename-input.tsx:40` 的 rAF 与焦点陷阱的抢回相差 1ms 级，谁赢看调度 ⇒ 无 `modal={false}` 时
+「菜单⇒新建」多数坏、偶尔碰巧好。该 spec 文件头已据实写明「判据 4 不是 `modal={false}` 的守护者，
+别拿它单独守」。
+
+**⑥ 同类落点**：全仓 `ContextMenu` 根用法共 3 处 —— `session-list.tsx`（本就 `modal={false}`）、
+`sidebar-project.tsx`（**上游文件**，触发器是单个 button、菜单里没有要焦点的输入条 ⇒ 不同型）、
+`file-tree.tsx`（本次）。
+
+**门禁**：`packages/app` typecheck 净；组件 **772 pass / 0 fail**；改动产品文件 oxlint **0 warnings**；
+两条真栈回归网 **6 passed**。
+
+### ③ 会话过期时横幅只说「新建失败」（2026-10-10 · 已提交 `be7257e0b4`）
 
 **现象（用户实报）**：会话过期后点「新建」⇒ 红字横幅只写「新建失败」；重命名 / 删除 / 上传同理，
 **每个动作都回同一句话**。用户自己贴的控制台里 `GET /api/health`、`GET /global/health`、
@@ -2766,3 +2846,67 @@ resolve 401 POST /openhive/file/create      ⟵ 401 是 resolve 出来的，不�
    今天「重新登录」＝**手动刷新页面**（冷加载时 `AuthGate` 会探一次身份）。横幅那句话说的是真的，
    但**手上没有可点的东西**。根治要给外呼底座一个「身份没了 ⇒ 让 `AuthGate` 重探」的信号，
    属**跨模块改动**，本轮范围之外 ⇒ **待裁定**。
+
+### ④ 新建的空文件夹建完就看不见（2026-10-10 · 已提交 `84ff47bd78`）
+
+**现象（用户实报）**：「新建的文件夹建完就看不见」。
+
+**根因（真栈实测，不推演）**：上游 `GET /file?path=` 的体里**有**那条目录项 ——
+
+```
+{"name":"资料","path":"资料\\","type":"directory","ignored":false}
+```
+
+⇒ **服务端没藏**，丢在客户端**读侧**：`project/openhive-files.ts` 的 `walk()` 只 `files.push` 文件、
+目录只用来往下走；而上游 `buildFileTreeV2Model` 认目录的唯一依据是「这条路径**还有下一段**」
+（`components/file-tree-v2-model.ts:37` 把最后一段恒判 `file`）。
+一个没有文件的目录交不出任何子路径 ⇒ 两条合起来它**整个消失**。
+
+**改法三层**
+
+| 层 | 落点 | 做什么 |
+|---|---|---|
+| 读侧 | `project/openhive-files.ts` | 空目录**自己占一条**，原样带上游 `fs.list` 那个尾分隔符（`资料\`）。`walk` 改成**三态**：`undefined` ＝ 这一支走不成；`true`/`false` ＝ 走成了、这一支下面有没有`文件` |
+| 建树 | `project/file-tree-model.ts`（新） | 用**诱饵**（多喂一条 `<目录>/<占位>`）让上游按**中段**规则把它建成 directory —— type / children 键 / 排序**全由上游那一份规则说了算**，一行不复刻（`#002-06` / `#003-05`） |
+| 接线 | `file-tree.tsx` / `dual-file-tree.tsx` | 两棵树的建树入口都改接这个函数（`#002-06`：不让同一份清单形状在两棵树上各有一套建树规则） |
+
+判据是**「这一支下面有没有文件」**，不是「这一支贡献了几条清单项」—— 两者只在「只有空子目录的
+目录」上分得开（`资料\` 里只有一个空目录 `8·17\`），而那正是最容易漏的那种。
+
+**⑥ 步落点清单（`grep` 逐个打勾）**
+
+| 落点 | 处置 |
+|---|---|
+| `file-tree.tsx:247,265`、`dual-file-tree.tsx:280` | ✅ 已接 `buildProjectFileTreeModel` |
+| `target-picker.tsx` 的 `目录清单` | ⬜ **不改代码**——空目录那条在这里**碰巧**走通（归一后 `["资料",""]`，`pop()` 掉的是空段）。正因「碰巧对」才补了一条用例钉住 |
+| 上游 `components/file-tree-v2.tsx:138` | ⬜ **不动**（上游组件，吃的是上游 live 树的数据） |
+| `file-tree.stories.tsx` 的过期注释 | ✅ 已改，并补 `EmptyDir` 审计档（`#006-08`：新渲染形状要有审计面） |
+| `dual-file-tree.tsx:231,238`（`拼路径`/`父目录`） | ✅ 不受影响——吃的是归一后的 `node.path`（无尾分隔符），且空目录行不可拖 |
+| `workspace-entry.tsx:781,802` | ✅ 只喂 `paths` prop，无「按路径查清单」的逻辑 |
+| `components/file-tree.tsx` / `session-side-panel.tsx` / `review-diff-kinds.ts` | ⬜ 上游 / 会话链的路径切分，与本条无关 |
+
+**验证**
+
+- 真栈端到端（新增 `e2e/real-stack/file-tree-empty-dir-real.spec.ts`，2 条）**2 passed**：
+  空目录是一条 `data-type=directory` 的行、目录排在文件前、出口里那条 path 确实带尾分隔符，
+  以及**通过界面新建文件夹 ⇒ 建完就看得见**（用户原话那个动作）。这条是**唯一**把
+  「读侧 → 建树 → 渲染」三个环节同框的观测点 —— 单测喂手写清单、组件测试喂手写 `paths`，
+  两层的绿都建立在「清单里已经有空目录那条」这个**真栈上不成立的前提**（`#006-18`）。
+- **变异验证**（拆掉修复 ⇒ 用例必红）：
+  - 真栈：读侧不补空目录 ⇒ **恰红**，红的正是用户原话的形状（「资料」整行不存在）
+  - 单测 / 组件层共 7 处全部恰红，**无一处「拆掉仍绿」**；其中一处证明新用例的边际价值——
+    给 `目录清单` 加 `.filter(Boolean)` ⇒ **新用例红、既有用例全绿**
+  - 据实记一类：拆「读侧补空目录」时**组件层 0 红**（组件测试喂的是手写 `paths`，绕过了读侧）
+    ⇒ 分层清楚，不是漏网
+- **门禁**（**串行**，`#003-01`）：`packages/app` typecheck 净；单元 **1091 pass / 0 fail**；
+  组件 **776 pass / 0 fail**；改动文件 scoped oxlint **0 warnings / 0 errors**（新 e2e spec 的
+  6 warnings 与**已提交的同族 harness 同数同型**，`#004-12`）；`typecheck:e2e` 仅 2 条既有报错；
+  `bun.lock` **无污染**（`git diff --stat bun.lock` 为空）。
+
+**⛔ 缺口 / 挂账（`#002-02`）**
+
+1. 空目录节点的 `originalPath` 是 `"资料"`、清单里那条是 `"资料\\"`（**尾分隔符没了**：诱饵建出的
+   节点是归一后的形状）。**今天无消费者**（`originalPath` 是上游 live 树用的，fork 侧只用
+   `node.path`），已写进 `file-tree-model.ts` 文件头。
+2. `EmptyDir` 这个新 story 挂在 storybook a11y 审计面上，但**本轮没跑那个审计脚本**（它是手工跑的
+   重编排）⇒ 进面 ≠ 已审。
