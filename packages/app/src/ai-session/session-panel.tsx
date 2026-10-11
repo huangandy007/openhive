@@ -656,11 +656,21 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
                    ② `shrink-0` 让它自己不被 flex 收缩。撑高一条到 1500px 的对照实测：容器
                    `scrollHeight` 637 → **1876**、`maxScroll` **1239**（精确 = 1876-637）⇒ 真能滚。
 
-                   ⚠️ **不传 `classes`**（上游那两处都传了 `content: "… !overflow-visible"`）：实测
-                   **不需要**——内层高度一变成 auto，它的 `height:100%` 也跟着 auto，内容自然撑开、
-                   不溢出，那条 `overflow-y:auto` 就此惰性。少传一个 prop 就少一份与上游漂移的面。
-                   （另记一笔：`!overflow-visible` 这个类**当前是查不到的**——Tailwind v4 按需生成，
-                   实测 `.overflow-visible` 在、带 `!` 的变体不在 ⇒ 写了也未必生效。）
+                   ⚠️ **要传 `classes`**（2026-10-11 反转，用户报「提交后自己的消息被上一轮的回复挡住
+                   一部分」）。先前这里写「实测不需要」——前提是「内容不溢出」；前提已被实测推翻：
+                   思考行里那个 `TextReveal`（`travel={25}`）的 `leaving` span **静止态就带**
+                   `transform: translateY(25px)`（`ui/components/text-reveal.css`）⇒ 它挂在 track 下方
+                   25px，把自己的 `scrollHeight` 从 20 撑到 45（实测 `rev sh=45 ch=20`）；这 25px 在
+                   `overflow:visible` 的祖先链上一路落到**本轮自己的**滚动盒（实测
+                   `内 sh=143 ch=118 st=25`）⇒ 滚动盒被拉到底，把盒顶那 25px（用户气泡顶边）裁掉
+                   （实测气泡 `108..166`、本轮盒顶 `133`，那块屏幕被上一轮占着）。
+                   修法取**上游同款中和**——`enterprise/routes/share/[shareID].tsx` 与
+                   `session-ui/.../timeline-playground.stories.tsx` 都传 `content: "… !overflow-visible"`：
+                   本栏的滚动只由外层 `[data-slot="session-turns"]` 承担。
+                   ⚠️ 那个 `!` **不能省**：`session-turn.css` 那条是无层级的，utility 在
+                   `@layer utilities` 里，不带 `!important` 压不过它。（同处旧笔记说「带 `!` 的变体
+                   查不到」也已过期：实测本仓产物里 `.\!overflow-visible{overflow:visible !important}`
+                   **在**——上游那两处把它扫进来了。）
 
                    ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
                    真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
@@ -669,6 +679,7 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
                     sessionID={props.sessionID}
                     messageID={消息.id}
                     showReasoningSummaries={props.showReasoningSummaries}
+                    classes={{ content: "!overflow-visible" }}
                   />
                 </div>
               )}

@@ -417,6 +417,39 @@ describe("消息流（FR-010）", () => {
     ).toBe(false)
   })
 
+  test("每轮的内层滚动盒带上了 `!overflow-visible`（上游同款中和）：用户气泡被上一轮回复遮掉的那条", () => {
+    // ⚠️ 与上一条同型：断的是**结构**，不是几何（happy-dom 不跑布局）。
+    //
+    // 修的是什么（2026-10-11 真栈实测定的根因，用户报「提交后自己的消息被上一轮的回复挡住一部分」）：
+    // 思考行里那个 `TextReveal`（`travel={25}`）的 `leaving` span 静止态就带
+    // `transform: translateY(25px)`（`ui/components/text-reveal.css` 那行），**挂在 track 下方 25px**
+    // ⇒ 它把自己的 `scrollHeight` 从 20 撑到 45（实测 `rev sh=45 ch=20`）。
+    // 这 25px 在 `overflow:visible` 的祖先链上畅通无阻，一路落到**本轮自己的**滚动盒
+    // `[data-slot="session-turn-content"]`（`session-turn.css` 里写着 `overflow-y:auto`）
+    // ⇒ 实测 `sh=143 ch=118 st=25`：滚动盒被拉到盒底，把**盒顶那 25px**（正是用户气泡的顶边）
+    // 顶出盒外裁掉（实测气泡 `108..166` 而本轮盒顶 `133`）；屏幕上那块地方被上一轮占着。
+    //
+    // 修法＝把内层滚动盒中和掉，**本栏的滚动只由外层 `[data-slot="session-turns"]` 承担**。
+    // 这不是我们的发明：`SessionTurn` 的契约就是「内层是滚动盒、调用方按需中和」，上游两处
+    // 权威用法（`enterprise/routes/share/[shareID].tsx`、`session-ui/.../timeline-playground.stories.tsx`）
+    // 都传 `content: "… !overflow-visible"`。本仓此前**有意不传**（理由写着「实测不需要」——
+    // 那条理由的前提「内容不溢出」已被上面的实测推翻）。
+    //
+    // 判据的牙（变异）：把 `classes={{ content: "!overflow-visible" }}` 摘掉 ⇒ 本条红。
+    // ⚠️ 它**只**能证明「类传下去了」，证明不了「滚动真的停了」——后者是几何，本机唯一能出事实的
+    // 途径是真栈（本轮实测：加类前 `内 sh=143 st=25`、加类后 `内 sh=143 st=0` 且气泡回到 `133..191`）。
+    // 真栈 E2E **今天自动不了**：它需要 `session-turn-thinking` 在场，而那需要真模型流式输出
+    // （`e2e/real-stack/ai-session-real.spec.ts` 文件头已写明「本栈没有模型」）⇒ 记进缺口表。
+    const 宿主 = 挂会话(夹具数据(3))
+    const 内层 = [...宿主.querySelectorAll('[data-slot="session-turn-content"]')]
+    expect(内层.length).toBe(3)
+    expect(内层.map((盒) => 盒.classList.contains("!overflow-visible"))).toEqual([true, true, true])
+    // 对照：外层列表自己**不带**——否则上面那条可能是在断一个恒真的东西。
+    expect(
+      宿主.querySelector('[data-slot="session-turns"]')?.classList.contains("!overflow-visible"),
+    ).toBe(false)
+  })
+
   test("别会话的消息不进这一栏（本栏只认传进来的 `sessionID`）", () => {
     // 「切换会话」的**底层性质**就靠这条钉着：同一份 data 里有两场会话，右栏只渲染当前那一场。
     // 若哪天实现改成「把所有 session 的消息拼起来」（或忘了按 id 取），这条会红。
