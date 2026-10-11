@@ -116,6 +116,7 @@ git push origin main        # 推回私有仓库
 | `docs/superpowers/specs/openhive-DESIGN.md` | 视觉系统 6 节（Colors/Typography/Spacing/Components/Brand/Theme）；品牌资产见 `design-reference/figma-export/` |
 | `docs/superpowers/specs/001~010-*/` | 各 feature 的 spec / plan / tasks |
 | `docs/superpowers/specs/2026-09-*.md`（单模块 design） | 深挖某模块设计背景 / 备选方案时读（已被 spec 吸收） |
+| `CONFIG.md`（仓库根） | **改配置 / 换机器 / 上生产前读**：内核配置只认 `packages/opencode/.env`（bun 只从 cwd 加载 `.env*`、**不向上找** ⇒ 仓库根那三份对内核无效）；内核读的**全量变量表**（逐个 `file:line`）、优先级矩阵、零读取者的名字清单、自查命令。模板见 `packages/opencode/.env.example` |
 
 ## Behavioral Guidelines (Karpathy-Inspired)
 
