@@ -132,8 +132,11 @@ export * as OpenhiveFile from "./file"
  *   绝对路径，`isAbsolute` 那一支因此是**活的**，但本套夹具造不出「另一个盘符」。
  * - **七项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
  *   与中间件判的「项目在不在 / 冻没冻」不是同一件事——理由见上面「基准目录」那一节。
- * - **复制 / 移动 / 上传 / 下载四项不做目录递归**（范围裁定：单文件）。UI 侧对应地把这两项
- *   只画在文件行上。**T018 的删除是唯一的递归项**（用户 2026-10-10 裁定「支持删文件夹」）。
+ * - **复制 / 上传 / 下载三项不做目录递归**（范围裁定：单文件——复制目录要递归、还得回答
+ *   「深树里有一层是链接怎么办」，是另一轮的事）。UI 侧对应地**只把「复制」画在文件行上**。
+ *   ⚠️ **移动不在此列**（2026-10-11 起源可以是目录）：它**不需要**递归——`rename` 对目录
+ *   就是整棵搬走（平台语义），多出来的是两道守卫（`ROOT_UNMOVABLE` / `INTO_ITSELF`），
+ *   不是一趟遍历。**删除也递归**（用户 2026-10-10 裁定「支持删文件夹」）。
  * - **重命名的「目标已存在」在竞态下有缝**：同 `move`，Node 没有「目标在就失败」的改名原语。
  */
 
@@ -268,6 +271,21 @@ const NAME_ALIASED = "文件名里不能含 `:`（win32 会把它当作盘符或
 /** 不许删项目根。`inside()` 刻意放行 `rest === ""`，那一条对删除是灾难——见 `handleRemove`。 */
 const ROOT_UNDELETABLE = "项目根不能删"
 
+/**
+ * 不许移动 / 复制项目根。与 `ROOT_UNDELETABLE` 同一个位置、同一条理（`inside()` 放行
+ * `rest === ""`）。
+ *
+ * ⚠️ **它挡的不是安全，是措辞**（2026-10-11 变异实测）：撤掉这一句，`path: ""` **照样 400**
+ * ——项目根**包含**任何合法的目标目录，于是被下面那条 `INTO_ITSELF` 接住，回一句
+ * 「不能把一个目录搬到它自己或它自己的子目录里」。那句话不算错，但对着「用户什么都没做、
+ * 只是把根当成一项来搬」说它很费解；`dir` 非法或不存在时更是各自回另一句无关的话。
+ * ⇒ 这里提早给一句**说得准的**，不让它落到下游去猜。
+ */
+const ROOT_UNMOVABLE = "项目根不能移动"
+
+/** 目录不许搬进它自己（或自己的子目录）里——`rename` 对它是 `EINVAL`，会落成 500。 */
+const INTO_ITSELF = "不能把一个目录搬到它自己或它自己的子目录里"
+
 /** 写出口的成功回参：新条目**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
 const Made = (path: string) => HttpServerResponse.jsonUnsafe({ path })
 
@@ -324,7 +342,9 @@ function projectDirectoryOf(
  * 把客户端给的**相对路径**解析成 `base` **里面**的绝对路径；越界给 `undefined`。
  *
  * `base` 自身是允许的落点（`rest === ""`）——目标目录可以就是项目根，「在项目根上放东西」
- * 是正常操作。**源**那一侧不需要额外收紧：项目根本身是目录，会被 `isFile()` 挡掉。
+ * 是正常操作。**源**那一侧则要各自收紧：`rest === ""` 意味着「源就是项目根」，
+ * 而项目根**是个目录**——`isFile()` 那类判据挡得住复制、**挡不住移动**（2026-10-11 起移动认目录），
+ * 所以 `handleTransfer` 与 `handleRemove` 各自显式挡一句（`ROOT_UNMOVABLE` / `ROOT_UNDELETABLE`）。
  *
  * `\0` 单独挡：Node 的 fs 遇到它抛的是 `TypeError`（**不是**带 `code` 的 `ErrnoException`），
  * 混进下面那套错误映射里会变成 500。
@@ -431,6 +451,11 @@ function handleTransfer(
     const source = inside(project, payload.value.path)
     if (source === undefined) return badRequest("源路径越出项目目录")
 
+    // 项目根本身是**目录** ⇒ 放开目录这一支之后它会走到最后那句「目标已有同名文件」。
+    // **排在这里**（与 `handleRemove` 同款）：`payload.value.path` 为空串时，下面那条
+    // 名字判据取出来的末段是空串，先落名字那条会回错话。
+    if (source === project) return badRequest(ROOT_UNMOVABLE)
+
     // 名字判据：`:` 在 win32 上是盘符 / 流分隔符 ⇒ 这个名字**落下去就不是它**了，而下面
     // `basename(源)` 取出来的正是那个被换掉的名字（实测：`copyFile` 抢在报错前把宿主落下）。
     // 判**原文**而不是 `basename(原文)`——理由见 `noColon`。
@@ -443,10 +468,25 @@ function handleTransfer(
     // 词法上在项目里 ≠ 真身在项目里：中间有一层是链接就伸到外面去了——见 `realInside`。
     if (!(yield* realInside(project, targetDir))) return badRequest(LINK_ESCAPE)
 
-    // 源必须是**普通文件**：目录不在本出口的范围里；符号链接也不能放行——见文件头。
+    // 源必须是**普通文件**（复制）或**普通文件 / 普通目录**（移动）：符号链接两条都拒——
+    // `lstat` 下它既非文件也非目录（实测），故天然落在两支之外，不必另写一条链接判据。
+    // ⚠️ 复制仍只认文件：目录要递归复制、还得回答「深树里有一层是链接怎么办」，是另一轮的事
+    //    （裁定与理由见文件头）。移动则天然是整棵——`rename` 对目录就是平台语义。
     const info = yield* Effect.promise(() => lstat(source).catch(() => undefined))
     if (info === undefined) return badRequest("源文件不存在")
-    if (!info.isFile()) return badRequest("这里只能对普通文件做这项操作（目录与符号链接暂不支持）")
+    if (mode === "copy" && !info.isFile()) return badRequest("复制只能对普通文件做（目录与符号链接暂不支持）")
+    if (mode === "move" && !info.isFile() && !info.isDirectory()) return badRequest("移动只能对普通文件或目录做（符号链接不算）")
+
+    // 源是**目录**时，目标不许是它自己、也不许在它**内部**：把 `资料` 搬进 `资料/8·17` 是在给
+    // 文件系统出一个无理数——`rename` 抛 `EINVAL`，而 `EINVAL` **不在** `CLIENT_FAILURES` 里
+    // ⇒ 用户点了两下、报「服务端坏了」（500）。这条判据**必须在服务端**：UI 侧也会不画这种目标，
+    // 但前端不是安全边界。
+    //
+    // 判据**复用 `inside`**（不另写一套前缀比较）：把目标写成**相对源**的那串再过同一个原语——
+    // `resolve` 之后回得来就说明它在源里；`""`（目标就是源自己）同样算「在里面」。
+    // 目标在源外面时 `relative` 回 `..\…`（或另一个盘符的绝对路径），`inside` 当场判越界。
+    if (info.isDirectory() && inside(source, relative(source, targetDir)) !== undefined)
+      return badRequest(INTO_ITSELF)
     // ⚠️ `lstat(source)` 只看**最后一段**：`link/密件.txt` 的末段是普通文件，露馅的是上面那一层。
     if (!(yield* realInside(project, dirname(source)))) return badRequest(LINK_ESCAPE)
 

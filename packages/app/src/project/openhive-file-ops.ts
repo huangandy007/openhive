@@ -86,7 +86,10 @@ export type FileOpOutcome =
   | { kind: "failed"; message: string }
 
 const COPY_FAILED = "复制文件失败"
-const MOVE_FAILED = "移动文件失败"
+/** ⚠️ **不带「文件」二字**：移动自 2026-10-11 起也搬**目录**（用户裁定「右键文件夹 ⇒ 移动整棵树」），
+ *  而这句话是兜底文案（服务端没说出理由时用）。旁边 `COPY_FAILED` 留着「文件」是因为复制**仍**只认文件
+ *  ——两者的差别是真的差别，不是漏改（同 `CREATE_FAILED` / `RENAME_FAILED` / `REMOVE_FAILED` 的中性写法）。 */
+const MOVE_FAILED = "移动失败"
 const UPLOAD_FAILED = "上传文件失败"
 const CREATE_FAILED = "新建失败"
 const RENAME_FAILED = "重命名失败"
@@ -108,7 +111,14 @@ export async function copyFile(
   return transfer(PATH.copy, COPY_FAILED, projectId, path, dir, send)
 }
 
-/** 移动一个文件（FR-005）。与 `copyFile` **只差路径**——见测试文件头那条。 */
+/**
+ * 移动**一个文件，或一整棵目录**（FR-005）。与 `copyFile` **只差路径**——见测试文件头那条。
+ *
+ * 目录那一支是 **2026-10-11** 放开的（用户裁定「右键文件夹 ⇒ 移动整棵树」）：`rename` 对目录
+ * 本来就是整棵搬走（平台语义），所以这里**一个字都不用改**——路径照样那一个字符串、`dir` 照样是
+ * 目标目录。⚠️ 变的是**别处**：「能搬到哪儿」那份清单在源是目录时要剔掉源子树（`target-picker.tsx`
+ * 的 `源`），以及服务端多出来的两道守卫（`ROOT_UNMOVABLE` / `INTO_ITSELF`）。
+ */
 export async function moveFile(
   projectId: string,
   path: string,

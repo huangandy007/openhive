@@ -27,8 +27,10 @@ import { Icon } from "@opencode-ai/ui/icon"
  *
  * ## 可搬的目标**只有文件树里已经存在的目录**
  *
- * 服务端只搬单文件，而「往一个还不存在的目录里搬」本来也不成立（目标目录必须已经在那儿，
- * `file.ts` 会 `stat` 它）。所以清单从 `paths` 推、不给人一个「新建目录」的出口。
+ * 「往一个还不存在的目录里搬」本来也不成立——目标目录必须已经在那儿（`file.ts` 会 `stat` 它）。
+ * 所以清单从 `paths` 推、不给人一个「新建目录」的出口。这条与「服务端只搬单文件还是也搬目录」
+ * 无关：**那件事 2026-10-11 变了**（移动现在认目录），而这份清单的取法一个字没动——它列的本来
+ * 就是**目录**，与源是什么无关。
  */
 
 const ROW =
@@ -38,7 +40,10 @@ const ROW =
 const ROOT_LABEL = "项目根目录"
 
 export interface TargetPickerProps {
-  /** 正在搬运的那一项（树给的路径）。只用来**说清楚搬的是谁**，不参与任何判断。 */
+  /**
+   * 正在搬运的那一项（树给的路径）。**两处用途**：说清楚搬的是谁，以及——源是目录时——
+   * **把源自己与它下面的每一层从可选目标里剔掉**（见 `目录清单` 的 `源`）。
+   */
   path: string
   /** 这一次是复制还是移动。**只影响文案**——可选的目标两项完全一样。 */
   mode: "copy" | "move"
@@ -65,7 +70,7 @@ export function TargetPicker(props: TargetPickerProps) {
       </div>
 
       <div data-slot="target-picker-list" class="flex max-h-48 w-full min-w-0 flex-col overflow-y-auto">
-        <For each={目录清单(props.paths)}>
+        <For each={目录清单(props.paths, props.path)}>
           {(dir) => (
             <button
               data-slot="target-picker-target"
@@ -114,8 +119,20 @@ export function TargetPicker(props: TargetPickerProps) {
  *
  * 排序用 `.sort()` 的码位序、不用 `localeCompare`：后者随机器 locale 变
  * （`file-tree.test.tsx` 实测过本机是拼音序），而这份清单要能跨机比较。
+ *
+ * ## `源`：正在搬的那一项（2026-10-11，移动支持目录带来的）
+ *
+ * 传了它，就把**源自己与它下面的每一层**从清单里剔掉。少了这条，把 `资料` 搬进 `资料/8·17`
+ * 这条入口会**画在面板上**——服务端有一道判据把它挡成 400（`openhive/file.ts` 的 `INTO_ITSELF`），
+ * 但用户点了才被拒，而本项目的规矩是「不画点了必然失败的入口」。
+ *
+ * ⚠️ **这条剔除在 `copy` 下也无害**（调用侧不分模式地传 `path`）：源是文件时它**什么都不剔**
+ * ——文件路径本来就不在目录清单里（每个文件路径的最后一段都被 `pop()` 掉了）。
+ * 所以不需要「源是目录吗」这个判断，也就不需要第二份「谁算目录」的判据（`LEARNINGS #002-06`）。
+ *
+ * `源` 为空串（或省略）时**不剔任何东西**：空串是一切路径的前缀，拿它去剔会把整份清单清空。
  */
-export function 目录清单(paths: readonly string[] | undefined): readonly string[] {
+export function 目录清单(paths: readonly string[] | undefined, 源?: string): readonly string[] {
   const 目录 = new Set<string>()
   for (const path of paths ?? []) {
     const 段 = path.replaceAll("\\", "/").split("/")
@@ -127,5 +144,10 @@ export function 目录清单(paths: readonly string[] | undefined): readonly str
       目录.add(累积)
     }
   }
-  return ["", ...[...目录].sort()]
+
+  // 归一 + 去掉尾分隔符：源是从树上来的路径，可能与清单里的写法不同形（`#003-07`）。
+  // 空串 ⇒ `剔` 保持空 ⇒ 走下面那条「什么都不剔」。
+  const 剔 = (源 ?? "").replaceAll("\\", "/").replace(/\/+$/, "")
+  const 留 = 剔 === "" ? [...目录] : [...目录].filter((目录) => 目录 !== 剔 && !目录.startsWith(`${剔}/`))
+  return ["", ...留.sort()]
 }

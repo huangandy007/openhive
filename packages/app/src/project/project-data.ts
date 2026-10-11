@@ -68,7 +68,13 @@ export interface ProjectData {
    * `dir` 是目标**目录**（相对项目根，`""` ＝ 项目根），目标名由服务端取源的末段。
    */
   copy(projectId: string, path: string, dir: string): Promise<FileOpOutcome>
-  /** 把一个文件**移动**过去（同上，只有动作不同）。 */
+  /**
+   * 把**一个文件或一整棵目录**移动过去（同上，只有动作不同）。
+   *
+   * ⚠️ 与 `copy` **刻意不对称**（2026-10-11）：移动认目录（`rename` 对目录是整棵搬走），
+   * 复制仍只认普通文件。调用方那边因此多一条义务：源是目录时，目标清单要剔掉源子树。
+   */
+
   move(projectId: string, path: string, dir: string): Promise<FileOpOutcome>
   /** 从本地电脑上传**一个**文件（拖进来一批时调用方逐个发）。 */
   upload(projectId: string, dir: string, file: File): Promise<FileOpOutcome>

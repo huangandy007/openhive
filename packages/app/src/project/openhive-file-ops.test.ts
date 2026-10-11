@@ -192,10 +192,15 @@ describe("moveFile", () => {
     expect(sent.map((item) => [item.method, item.url])).toEqual([["POST", "/openhive/file/move"]])
   })
 
+  /**
+   * ⚠️ 钉的是「**移动**」这个动作名，不是「文件」那两个字——移动自 2026-10-11 起也搬**目录**，
+   * 所以兜底文案跟着去掉了「文件」（同 `CREATE_FAILED` / `RENAME_FAILED` / `REMOVE_FAILED` 的中性写法）。
+   * 这条仍然挡得住它要挡的那件事：文案里出现「复制」就红。
+   */
   test("失败文案是「移动」不是「复制」", async () => {
     const { send } = stub(() => 兜底页())
 
-    expect(await moveFile(PROJECT, "a.csv", "", send)).toEqual({ kind: "failed", message: "移动文件失败" })
+    expect(await moveFile(PROJECT, "a.csv", "", send)).toEqual({ kind: "failed", message: "移动失败" })
   })
 
   /** 401 那条**也**要各钉一条：它走的是与复制**同一支** 401，接反了不报错（同本文件头那条）。 */

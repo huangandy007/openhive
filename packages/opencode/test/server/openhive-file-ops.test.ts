@@ -101,6 +101,9 @@ const 项目根 = path.join(沙箱根, ALPHA)
 const 甲 = "甲的正文：一百二十三"
 const 乙 = "乙的正文"
 const 密 = "别的项目的密件"
+/** 第四份：**移动目录**那组的载体（2026-10-11）。单独一个名字，免得与上面三份混用后
+ *  「到底在断哪一份」说不清。 */
+const 话单 = "话单正文：主叫 13800000000，被叫 13900000000"
 
 const 文件 = {
   甲: path.join(项目根, "a.txt"),
@@ -235,6 +238,12 @@ const 出口 = {
 
 /** 成功回参：新文件**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
 const Made = Schema.Struct({ path: Schema.String })
+
+/**
+ * 400 回参的形状（`badRequest` 的体）。**判据是措辞**时用它——「拒了」有时不够：
+ * 同一个 400 可以由两条完全不同的理由给出，而只有一条是这次要钉的。
+ */
+const 出错 = Schema.Struct({ error: Schema.String })
 
 /** 发一个 JSON 体请求；`project` 给不给决定带不带头。 */
 const send = (subject: TokenSubject, url: string, body: unknown, project?: string) =>
@@ -376,6 +385,112 @@ describe("T020 · 带项目头时四项真能执行（FR-005）", () => {
 
         expect(existsSync(path.join(项目根, "sub", "sub"))).toBe(false)
         expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **移动一个目录 ⇒ 整棵树跟着搬**（2026-10-11 用户裁定「支持移动文件夹」）。
+   *
+   * ⚠️ 与上面那条复制**刻意不对称**：复制仍只认单文件（目录要递归复制、还得回答「深树里
+   * 有一层是链接怎么办」，是另一轮的事），移动则天然是整棵——`rename` 对目录就是平台语义
+   * （T018 的「重命名目录」用的同一个原语）。两边的非对称因此**不是漏改，是裁定**。
+   *
+   * 判据落在**里面那个文件的正文**上，不是「目标目录存在」：只断目录存在的话，一道
+   * 「建个空目录就返回」的实现照样绿（`LEARNINGS #004-09`：终点与副作用是两条判据）。
+   */
+  it.live(
+    "移动目录 资料/8·17 到根 ⇒ 连里面的话单一起到根、源消失、内容一致",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        // 前提**显式**造，不塞进公用夹具 `重置文件`：那是全文件共用的，动它等于给别的用例
+        // 悄悄加前提（`LEARNINGS #005-36`）。
+        mkdirSync(path.join(项目根, "资料", "8·17"), { recursive: true })
+        writeFileSync(path.join(项目根, "资料", "8·17", "话单.csv"), 话单)
+
+        const response = yield* send(ALICE, 出口.move, { path: "资料/8·17", dir: "" }, ALPHA)
+
+        expect(readFileSync(path.join(项目根, "8·17", "话单.csv"), "utf8")).toBe(话单)
+        expect(existsSync(path.join(项目根, "资料", "8·17"))).toBe(false)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("8·17")
+      }),
+    30_000,
+  )
+
+  /**
+   * **嵌套两层整体搬**：`rename` 搬的是**目录这个条目本身**，两层与一层是同一件事——但
+   * 「只搬走了第一层、里面的东西丢了」与「两层都对」在只看一层时长得一样，故深一层单独断。
+   */
+  it.live(
+    "移动一个嵌套两层的目录到 sub/ ⇒ 两层都到、源消失",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "资料", "8·17"), { recursive: true })
+        writeFileSync(path.join(项目根, "资料", "8·17", "话单.csv"), 话单)
+
+        const response = yield* send(ALICE, 出口.move, { path: "资料", dir: "sub" }, ALPHA)
+
+        expect(readFileSync(path.join(项目根, "sub", "资料", "8·17", "话单.csv"), "utf8")).toBe(话单)
+        expect(existsSync(path.join(项目根, "资料"))).toBe(false)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("sub/资料")
+      }),
+    30_000,
+  )
+
+  /**
+   * **目录不许搬进自己里面**（2026-10-11）。
+   *
+   * 少了这条判据，`rename` 抛的 `EINVAL` **不在** `CLIENT_FAILURES` 里 ⇒ 落成 **500**：
+   * 「用户点了两下」被报成「服务端坏了」。所以这条钉的是**状态码是 400 而不是 500**，
+   * 外加「源整棵没动、目标位置没被造出来」两条副作用（`#004-09`：终点与副作用分开断）。
+   *
+   * ⚠️ 目标取 `sub/inner/sub`——一个**本来就不存在**的位置。只断状态码的话，一道
+   * 「先 mkdir 再发现不对」的实现在这条判据下照样绿。
+   */
+  it.live(
+    "移动目录到它自己的子目录 ⇒ 400（不是 500），源原地没动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "sub", "inner"), { recursive: true })
+
+        const response = yield* send(ALICE, 出口.move, { path: "sub", dir: "sub/inner" }, ALPHA)
+
+        expect(readFileSync(文件.乙, "utf8")).toBe(乙)
+        expect(existsSync(path.join(项目根, "sub", "inner"))).toBe(true)
+        expect(existsSync(path.join(项目根, "sub", "inner", "sub"))).toBe(false)
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  /**
+   * **项目根本身不能移动**（2026-10-11）。
+   *
+   * ⚠️ **这条钉的是措辞，不是安全**（变异实测）：撤掉那句 `ROOT_UNMOVABLE`，本例**照样 400**
+   * ——项目根**包含**任何合法的目标目录，于是被 `INTO_ITSELF` 那条接住，回一句「不能把一个目录
+   * 搬到它自己或它自己的子目录里」。对着「用户只是把根当成一项来搬」说那句很费解，`dir` 非法或
+   * 不存在时更会各自滑到无关的措辞上（「目标目录越出项目目录」/「目标目录不存在」）。
+   * ⇒ 状态码在两条理由下都是 400，**分不开**，所以判据必须是那句话本身。
+   *
+   * 先例是 `handleRemove` 的 `ROOT_UNDELETABLE`：同一个位置、同一条理。
+   */
+  it.live(
+    "源是项目根 ⇒ 400，且理由是「不能移动」（不是从下游的措辞里猜出来的）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.move, { path: "", dir: "sub" }, ALPHA)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        expect(existsSync(path.join(项目根, "sub", "a.txt"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe("项目根不能移动")
       }),
     30_000,
   )
