@@ -23,6 +23,44 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #006-33 · 2026-10-12 · pitfall · 006-ai-session
+
+**现象 / 决策**：用户实报「右栏 AI 会话窗，输入提交后、模型输出完成之前，用户自己的消息被上一轮的回复
+挡住一部分」。看着像「上一轮的回复太靠下 / 覆盖层」，实际是**用户自己的那条气泡被自己的滚动盒裁掉了顶边**。
+
+**根因（真栈实测，非推断）**：思考行里的 `TextReveal`（`travel={25}`）那个 **`leaving` span 静止态就带
+`transform: translateY(25px)`**（`packages/ui/src/components/text-reveal.css` 那一行，`leaving` 渲染
+`old() ?? " "`、**始终存在**，不是只在切换的那一瞬）⇒ 它挂在 track 下方 25px，把自己的
+`scrollHeight` 从 20 撑到 45（实测 `rev sh=45 ch=20`）。这 25px 在 `overflow:visible` 的祖先链上一路
+落到**本轮自己的**滚动盒 `[data-slot="session-turn-content"]`（`session-ui/…/session-turn.css` 里写着
+`overflow-y:auto`）——实测 `内 sh=143 ch=118 st=25`。滚动盒被 autoscroll 拉到盒底 ⇒ **盒顶那 25px
+（正是用户气泡的顶边）被顶出盒外**：实测气泡 `108..166` 而本轮盒顶 `133`，`elementFromPoint` 命中的是
+上一轮的助手内容。`showReasoningSummaries=false` 时 `showThinking()` 恒真（`session-turn.tsx` 那段）
+⇒ **整个生成期间都在**，与用户说的「输出完成之前」吻合。
+
+**为什么三层测试全绿也抓不到**：**这是几何**——happy-dom / jsdom 不跑布局（`#005-07`），组件层与单测层
+都量不到「25px 溢出、盒顶裁切」；而真栈 E2E **今天自动不了**：要让它复现需要有思考行在场，那需要真模型
+流式输出，`e2e/real-stack/ai-session-real.spec.ts` 文件头已写明本栈没有模型。⇒ 只能靠**现场探针**：
+程序化提交一条真实 prompt（"从 1 数到 400"），再在浏览器里量几何；判「改没改对」用**现场 CSS 覆盖**
+把变量单独翻面（只把内层 `overflow-y` 归零 ⇒ `st 25→0`、气泡 `152..182`→`133..191`；改 `height:auto`
+三种写法**无效** ⇒ 118 的高度不是 `height:100%` 给的），这样把「根因是哪一个」与「修复有没有效」分开证。
+
+**应对**：① 判「这个装饰没副作用」之前先问**它在哪只盒子里**——`translate` / `mask` / 溢出可见的伪元素
+都计入**滚动容器的 scrollable overflow region**；一只 `overflow-y:auto` 的盒子**不需要有人去滚它**，
+只要有东西溢出，程序性 autoscroll 就会替它滚。② 症状是「**兄弟内容被裁、且裁的量刚好等于那个装饰性
+位移**」时，直接量那个滚动盒的 `scrollHeight - clientHeight` 与 `scrollTop`。③ 修法取**调用方中和**
+（`overflow-visible`），不改上游 CSS：本仓 `SessionTurn` 的契约就是「内层是滚动盒、调用方按需中和」，
+上游两处权威用法（enterprise 分享页、timeline-playground story）都传了同一个类；而本仓此前那句
+「实测不需要传」的注释**前提已被推翻**（它假设内容不溢出）。④ ⚠️ 那个 `!` **不能省**：`session-turn.css`
+那条规则**无层级**，utility 在 `@layer utilities` 里 ⇒ 不带 `!important` 压不过它。
+
+**应用范围**：任何「静态展示里挂着装饰性 transform / mask / 绝对位移」的组件被放进任何 `overflow-*`
+盒子（思考行 / 加载骨架 / 光标 / 徽标 / tooltip 的预留位）；任何「内容被裁 / 被盖住，而涉事元素看着都
+好好的」的现场（先怀疑**它所在的盒子**，不是它自己）；任何「这只盒子没人滚它」的假设；任何「只能真栈
+复现、而真栈又缺必要前置（真模型 / 真数据）」的视觉缺陷——用现场覆盖把变量单独翻面来证根因。
+
+---
+
 ## #005-46 · 2026-10-11 · pattern · 005-project-management
 
 **现象 / 决策**：这一步（下载文件夹 ⇒ 弹窗说「只能下载单个文件」并终止）的 ④ 变异，我**先写了预期**：
