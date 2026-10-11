@@ -506,6 +506,29 @@ describe("FileTree 文件树（FR-005）", () => {
 
       expect(动作(host, "search")?.tagName).toBe("INPUT")
     })
+
+    /**
+     * 2026-10-11 用户下达（图 `images/screen/2026-10-10_192210.png`）：「把文件 Tab 页面的搜索框
+     * 改成图里的样式」——**白底 ＋ 圆角 ＋ 左侧一枚放大镜**。
+     *
+     * ⚠️ 组件层**量不出外观**（happy-dom 没有 CSS 引擎，`#005-07`）：高度 / 圆角 / 底色 / 与钮对齐
+     * 这几条**一个字都读不到**，归真栈 spec `file-tree-search-appearance-real.spec.ts`。
+     * 这里钉的是**结构**那一半：换成了设计系统件、放大镜在、占位文字对。
+     */
+    test("搜索框换成了设计系统那颗输入框（TextInputV2）：左侧一枚放大镜 ＋ 占位「搜索文件」", () => {
+      const host = mount(() => <FileTree paths={树("a.txt")} />)
+
+      const 框 = 动作(host, "search")
+      // ① 外壳是设计系统件——`data-component` 由 TextInputV2 自己写死（同命令面板那颗）。
+      expect(框?.closest("[data-component='text-input-v2']"), "搜索框应当是设计系统的 TextInputV2").not.toBeNull()
+      // ② 放大镜在（`leadingIcon`）——v2 图标渲染成 `[data-slot='icon-svg']` 的 <svg>。
+      expect(
+        槽(host, "text-input-v2-leading-icon")?.querySelector("[data-slot='icon-svg']"),
+        "左侧应当有一枚放大镜图标",
+      ).not.toBeNull()
+      // ③ 占位文字搜的是**文件**，不是「项目」（那是左栏项目列表的事）。
+      expect(框?.getAttribute("placeholder")).toBe("搜索文件")
+    })
   })
 
   describe("展开 / 收起（设计 §6.1 的 ⊟ / ⊞）", () => {

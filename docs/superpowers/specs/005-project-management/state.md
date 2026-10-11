@@ -4089,3 +4089,127 @@ v2 把变体编进**类名**（`toast-v2--success`），根上**没有** `data-v
    用户没要求，未问。
 6. **🟡 M4 那条变异是噪声**（见 ④）：两颗开关共用一个 `toggle` 读法轴，拆一行造出产品从没存在过的中间态
    ⇒ 该处**本该整份撤回**。本轮只据实记，**没有**重做那次变异。
+
+### ⑦ 追加项 · 第 10 条：文件 tab 搜索框改成设计系统 `TextInputV2` 的样式（2026-10-11 · 本轮）
+
+> 承接 ⑦ 的头注：追加项**逐条、不跳步、不合并**。本节只记**第 10 条**。
+
+**用户原话**：「我想把项目管理 文件 Tab页面上的收搜框改成 `images/screen/2026-10-10_192210.png` 图片的样式。」
+
+**三个裁定（AskUserQuestion，逐条记）**
+
+| 岔口 | 用户选定 |
+|---|---|
+| 做法 | **复用设计系统 `TextInputV2`**（不是照图手搓一颗，也不动设计系统源码） |
+| 占位文字 | **「搜索文件」** |
+| 高度 | **保持 24px 与钮齐平**（不跟着设计系统的 28/32 两档走） |
+
+后续追加的一次追问「放大镜用 v1 还是 v2 图标 / 外观走真栈还是人工看」⇒ 用户答 **「V2；走真栈」**，
+并顺势要求「点放大镜＝敲回车」；**该要求当场被实测推翻**：这个搜索框**没有 Enter 处理**、设计 §6.1 是
+**「输入即过滤」**（边打边筛）⇒ 用户随即裁定 **「保持边打边筛，点击放大镜无需实现」**（放大镜是纯装饰）。
+📌 这一段是本条**唯一**一次「先说要做、后经实测撤销」的往返，据实记在此，免得后来人以为漏做了。
+
+**落地（生产改动只有一处，`packages/app/src/project/file-tree.tsx`）**
+
+- 工具栏那段从裸 `<input class={SEARCH_INPUT}>` 换成
+  `<div data-slot='file-tree-search' class='flex min-w-0 flex-1'><TextInputV2 … /></div>`。
+- `SEARCH_INPUT = "!h-6 !w-full"`——**只压两处尺寸**：`!h-6` 压设计系统写死的 `height:28px`、
+  `!w-full` 压它的 `width:280px`（尺寸由外面那层 `flex-1` 的壳说了算）。
+  **外观（白底 / 圆角 / 放大镜）一个字都没自己写**，全由设计系统那张样式表给。
+- 侵入方式仍是**「加」不是「改」**：`packages/ui` 与 `bunfig.toml` 一字未动。
+
+**两处「传下去会被盖掉」的坑（都是实测出来的，不是推的）**
+
+1. ⚠️ `data-slot` **不能**传给 `TextInputV2`：它在 `{...inputProps}` **之后**写死
+   `data-slot="text-input-v2-input"` ⇒ 外部传的名字**在 DOM 里从来不存在**（`#005-22` 的老账，
+   `ContextMenuTrigger` / `DropdownMenuItem` 之后**第三次**撞见）。实测指纹：传下去之后
+   `槽(host,"file-tree-search")` 读成 `null`、`左键点工具栏搜索框` 那条用例当场红
+   （`要左键点的那个元素不在`）。⇒ `data-slot` 挂到**自己包的那层壳**上。
+2. `data-action` / `aria-label` / `value` / `onInput` **不受影响**（宿主只写死 `data-slot` 这一个），
+   原样落在内部那个**真 `<input>`** 上 ⇒ 「必须是个真 INPUT」「按 `data-action` 取」这些既有钩子
+   **一个字都不用改**（⑥ 步的落点清单因此很短，见下）。
+
+**根因 / 判据分层（为什么必须两条腿）**
+
+`happy-dom` 没有 CSS 引擎（`#005-07` / `#006-22`）⇒ 组件层**读不到任何一个几何量**。
+所以判据分两处落，**各管各的**：
+
+| 层 | 文件 | 钉什么 |
+|---|---|---|
+| 组件 | `src/project/file-tree.test.tsx`（新增 1 条） | **结构**：换成了 `TextInputV2`（`closest("[data-component='text-input-v2']")`）、放大镜在、占位「搜索文件」 |
+| 真栈 | `e2e/real-stack/file-tree-search-appearance-real.spec.ts`（**新增 4 条**） | **几何 ＋ 样式**：24px、圆角 6px、底色 `rgb(252,252,252)`、底纹含 `linear-gradient`、放大镜 14×14 且 `<use>` 指的 sprite 符号在文档里、与五颗钮同高同中线 |
+
+**真栈 spec 的原始读数（2026-10-11 实跑，`4 passed (1.7m)`）**——留在这里备查，别只看结论：
+
+```
+件: { 宽: 131.5px→"131.5px" }   高: "24px"      圆角: "6px"
+钮 ×5: 高 24、中线 129（件的中线也是 129 ⇒ 齐平）
+镜: 14×14、中线 129    镜引: "#opencode-v2-icon-magnifying-glass"，引得到符号 = true
+件内图标数: 1          占位: "搜索文件"
+底色: "rgb(252, 252, 252)"    底纹: "linear-gradient(rgba(255,255,255,0.02) 0%, rgba(255,255,255,0) 100%), none"
+```
+
+底色那条**是钉死的前提、不是巧合**：oc-2 亮色 `v2-background-bg-base = #FCFCFC`、暗色是
+`var(--v2-grey-1100)`（`themes/oc-2.json`）⇒ spec 里显式 `test.use({ colorScheme: "light" })`，
+钉的是**亮底那一格**（用户给的图就是亮底）。
+
+**② 步先红**：`file-tree.test.tsx` 104 pass / 1 fail（`搜索框应当是设计系统的 TextInputV2 / Received: null`）；
+**③ 步到绿**：105 pass / 0 fail。真栈 spec 首跑 **3 passed / 1 failed**——见下面的 ④ 附记。
+
+**④ 变异验证（据实记三类，`#003-03`）**
+
+| 变异 | 拆哪一处 | 恰红 | 另一类（射程之外） |
+|---|---|---|---|
+| A | `SEARCH_INPUT` 去掉 `!h-6`（只留 `!w-full`） | 真栈「齐平」**恰红 1 条**：`Expected: 24 / Received: 28` | 组件层 **105 pass / 0 fail**——它是**看不见**这一条的；真栈其余 3 条不在同一次运行里 |
+| C | `leadingIcon` 的 `size="small"` → `"large"` | 真栈「放大镜」**恰红 1 条**：`Expected: 14 / Received: 20` | 组件层 **105 pass / 0 fail**（它只查「有个 `[data-slot='icon-svg']`」） |
+
+- 两次都按 `#005-40` 的纪律做的：**先 `cp` 备份**（`file-tree.tsx` 整份，58755 字节），
+  还原走 `cp` ＋ `cmp` 验逐字节相同，**没有**用 `git checkout --`（这份改动尚未入库）。
+- A 的**副产品读数**（值得记）：拆掉 `!h-6` 之后工具栏跟着**长到 28**，五颗钮仍是 24、
+  大家的**中线却仍然都是 131** ⇒ 「中线对齐」那条断言**抓不到**这一处，真正抓住它的是**高度**那条。
+  两条分开写是必要的，`#005-19`「能开」与「开在谁身上」的同族。
+- ⚠️ 本文件里**没有**用「整份撤回」：本轮两处变异都是**单行、单变量**，且不成对
+  （`#005-37` 那条讲的是「一个信号被两处读」才必须整份撤）。
+
+**⚠️ 真栈 spec 首跑那 1 条红：不是产品坏，是我 spec 自己的竞态**（`#005-26` 同族：读数全对、断言独红，
+先问「这条判据的射程里有我刚走的那一步吗」）
+
+首跑 `3 passed / 1 failed`，红的落点在 **`备好树` 的「等树上那三行」30s 超时**（`element(s) not found`），
+**不是任何一条外观断言**。根因：我的 helper 把「往真项目目录写三个文件」排在 `进项目`（切文件 tab）
+**之后**，而**文件清单是 pane 挂载那一刻取一次、之后不再看盘**——这正是 ⑦-8 要给右键菜单加一颗
+「刷新」的原因 ⇒ 写进去的文件**永远不回来**，读起来像偶发 flake。改成 **写文件在 `进项目` 之前**
+（`备好树(directory)` 不再接 `page`，另起 `等树(page)`）⇒ 复跑 **4 passed (1.7m)**。
+📌 顺带的旁证：`file-tree-copy-path-real.spec.ts` 头注里被记成「3 次里 1 次偶发」的那个 30s 超时，
+**形状与落点与本条完全相同**（同一个「先切 tab 再写盘」的顺序）。⚠️ 本轮**没有**去改那个文件、
+也**没有**把「它就是这个竞态」写成结论——只记形状相同，待裁。
+
+**⑤ 门禁（从受影响 package / 仓库根跑，`#004-10`）**
+
+| 门 | 命令 | 实得 |
+|---|---|---|
+| typecheck | `cd packages/app && bun run typecheck` | 退出码 **0** |
+| typecheck:e2e | `cd packages/app && bun run typecheck:e2e` | 退出码 **2**，**2 条 error 全在 `sidebar-project-switch-real.spec.ts`**（`git status` 里该文件**未修改** ⇒ 属既有、非本条引入）；**新 spec 0 条** |
+| 单测 | `cd packages/app && bun run test:unit` | **1100 pass / 0 fail** |
+| 组件测试 | `cd packages/app && bun run test:components` | **820 pass / 0 fail**（含 `dual-file-tree.test.tsx`——它读的正是 `[data-slot='file-tree-search']`） |
+| oxlint | 仓库根 `bunx oxlint <3 个文件>` | **0 error / 7 warning**，退出码 0。其中 6 条在新 spec 里，**全是抄 `file-tree-copy-path-real.spec.ts` 那套 harness 带来的同族 warning**（同族两个文件跑出 12 条）；1 条是 `file-tree.test.tsx:1554` 的既有 `as unknown as` |
+
+**⑥ 同类落点（grep 全量，逐个打勾）**
+
+| 落点 | 处置 |
+|---|---|
+| `SEARCH_INPUT` | 全仓 3 处，全在 `file-tree.tsx`（1 定义 ＋ 1 使用 ＋ 1 注释）✅ |
+| `data-slot='file-tree-search'` | 定义在 `file-tree.tsx:384`（那层**壳**）；消费者：`file-tree.test.tsx:1283`、`dual-file-tree.test.tsx:132/141`、`context-menu-dismiss-real.spec.ts:143`（只当探针打印）、新 spec —— **五处读的都是那层壳，改壳没动它，一处都不用改** ✅ |
+| `placeholder="搜索文件"` | 全仓 2 处：`file-tree.tsx`（`aria-label` ＋ `placeholder`）＋ 组件用例 ✅ |
+| 「还有谁在 toolbar 里用裸 `<input>` 当搜索框」 | 全仓 `TextInputV2` 的其余 20 余处**都在弹窗 / 表单里**（登录、改密码、命令面板、设置…），**工具栏里只有这一处**；用户只下达了文件 tab 这一处，**其余未动**（Surgical Changes） |
+
+**本条的挂账**
+
+1. **🟡 亮底 / 暗底只有亮底那一格有守护者**：暗色主题下同一个搜索框是深底，那条判据**没有**写
+   （写它得再起一次栈并切 `colorScheme`，用户没要求）。
+2. **🟡 「点放大镜执行查询」按裁定未做**（用户先要、后经实测撤销，见上）。放大镜**不可点**——
+   `leadingIcon` 渲染在 `<span data-slot="text-input-v2-leading-icon">` 里，是纯装饰。
+3. **🟡 组件层看不见这一条的任何几何量**（`#005-07`）：本轮两个变异都实测到「组件层 105 全绿、
+   真栈独红」⇒ 想动这两条 class 的人**只有真栈会拦**，别拿组件绿当证据。
+4. **🟡 `typecheck:e2e` 现在是红的**（2 条，在 `sidebar-project-switch-real.spec.ts`）：既有、非本条，
+   但**没有被任何门禁挡住**（`bun run typecheck` 不覆盖 `e2e/`）。登记待裁：要么修它，要么把它写进
+   门禁清单。

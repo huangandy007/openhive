@@ -4,6 +4,8 @@ import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
+import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
+import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v2-model"
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
@@ -85,8 +87,19 @@ const TOOL_BUTTON =
  */
 const TOOL_BUTTON_DANGER =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-state-fg-danger hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-state-fg-danger disabled:pointer-events-none disabled:text-v2-text-text-faint"
-const SEARCH_INPUT =
-  "h-6 min-w-0 flex-1 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
+/**
+ * 搜索框的**尺寸覆盖**（2026-10-11 用户下达：改成设计系统那颗输入框的样式，图 `images/screen/2026-10-10_192210.png`）。
+ *
+ * 外观（白底 / 圆角 / 放大镜）全部由设计系统 `TextInputV2` 自带，这里只压两处**尺寸**：
+ *
+ * - `!h-6`：设计系统只有 28px(`base`) / 32px(`large`) 两档，而工具栏那五颗钮是 **24px** ——
+ *   用户裁定「保持 24px 与钮齐平」，故用 `!` 覆盖它的高度（这是本组件唯一一处逆着设计系统默认写的地方）。
+ * - `!w-full`：组件默认 `width:280px`（给弹窗里单用备的），这里要它**撑满工具栏**——
+ *   外面包了一层 `flex-1` 的壳（见工具栏那段），宽度由那层决定。
+ *
+ * ⚠️ 这两条都是**class 覆盖**，不是在设计系统件上改源码（`CLAUDE.md` 定制化三原则：侵入是「加」不是「改」）。
+ */
+const SEARCH_INPUT = "!h-6 !w-full"
 const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
 /**
@@ -355,15 +368,30 @@ export function FileTree(props: FileTreeProps) {
     <div data-component="file-tree" class="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-1">
       {/* 设计 §6.1 的六入口，顺序即优先级：搜索 → ⊟ → ⊞ → ＋ → ✏️ → 🗑 */}
       <div data-slot="file-tree-toolbar" class="flex w-full min-w-0 items-center gap-0.5">
-        <input
-          data-action="search"
-          data-slot="file-tree-search"
-          aria-label="搜索文件"
-          placeholder="搜索"
-          class={SEARCH_INPUT}
-          value={keyword()}
-          onInput={(event) => setKeyword(event.currentTarget.value)}
-        />
+        {/* 搜索框（2026-10-11 用户下达：换成设计系统 `TextInputV2` 的样式）。
+            ⚠️ `data-action` / `data-slot` / `aria-label` / `value` / `onInput` 都**透传到内部那个真
+            `<input>`** 上——`TextInputV2` 只 `splitProps` 掉它自己那几个 prop，其余原样 spread 给 input
+            （同 `⑦-7` 记的 `ButtonV2` 那条 `{...rest}`）。所以「必须是个真 INPUT」「按 data-action 取」
+            这些既有钩子**一个字都不用改**。
+            ⚠️ `class` 走的是**外壳**（在 `splitProps` 的 local 名单里）——`SEARCH_INPUT` 压的是外壳的尺寸。
+            ⚠️ 外面包一层 `flex-1` 的壳：设计系统件的根是 `flex:none; width:280px`（给弹窗单用备的），
+            要它撑满工具栏得由这层决定宽度。
+            ⚠️ `data-slot='file-tree-search'` 挂在**这层壳**上、**不**透传给 input：`TextInputV2` 在
+            `{...inputProps}` **之后**写死自己的 `data-slot="text-input-v2-input"`，传下去会被覆盖掉
+            （`LEARNINGS #005-22` 那条 `data-slot` 被 `{...rest}` 盖住的老账）——实测过：传下去之后
+            `槽(host,"file-tree-search")` 读成 `null`，`左键点工具栏搜索框` 那条用例当场红。
+            `data-action` **不受影响**（宿主只写死 `data-slot` 这一个），故它留在真 input 上。 */}
+        <div data-slot="file-tree-search" class="flex min-w-0 flex-1">
+          <TextInputV2
+            data-action="search"
+            aria-label="搜索文件"
+            placeholder="搜索文件"
+            class={SEARCH_INPUT}
+            leadingIcon={<IconV2 name="magnifying-glass" size="small" />}
+            value={keyword()}
+            onInput={(event) => setKeyword(event.currentTarget.value)}
+          />
+        </div>
         <For each={工具栏五颗}>
           {(action) => (
             /* 悬停提示（设计 §6.1 最后一条「悬停给 tooltip 提示动作名」）：五颗都只有一枚图形，
