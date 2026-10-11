@@ -104,6 +104,8 @@ const 提交 = (
     sessionID: "ses_1",
     sessionDirectory: "/工作区/甲方/项目",
     session: 会话("build", { id: "gpt", providerID: "openai" }),
+    // 本栏认的模型（由 `model-selection.ts` 的 `当前模型键` 解出、`从键` 拆开）。
+    model: { providerID: "openai", modelID: "gpt" },
     serverSync: 假serverSync,
     ...夹具,
     ...输入,
@@ -221,27 +223,53 @@ describe("右栏提交一句话（T010 / FR-007 / US4 场景 1）", () => {
     expect(收到[0].agent).toBe("plan")
   })
 
-  test("model 取**会话**的，且字段名按被调方换过（`Session.model.id` → `modelID`）", async () => {
+  /**
+   * 模型由**调用方**解好传进来（`model-selection.ts` 的 `当前模型键` 一处解、一处测），
+   * 本模块只做一件事：把两截换成被调方要的字段名（`FollowupDraft.model = { providerID, modelID }`）。
+   *
+   * ⚠️ 与旧行为的分工差：旧代码在本模块里从 `session.model` 取（`Session.model.id` ⇒ `modelID`），
+   * 于是「本栏选的 vs 会话记的 vs 应用默认」这个判断就散在本模块与界面两处
+   * （`LEARNINGS #002-06`）。现在那个判断只在 `model-selection.ts` 里有一份。
+   */
+  test("本栏给的模型原样交给 draft（字段名按被调方）", async () => {
     const { 收到, api } = 造api()
+    // 会话记的是 anthropic —— 本栏给的是 openai，出去的就该是本栏那个（优先级由上游那一处解）。
     await 提交(
-      { text: "查一下", session: 会话("build", { id: "sonnet-5-5", providerID: "anthropic" }) },
+      { text: "帮我查这个账户的资金流向", session: 会话("build", { id: "sonnet", providerID: "anthropic" }) },
       { api, sync: 造sync().sync },
     )
 
-    expect(收到[0].model).toEqual({ providerID: "anthropic", modelID: "sonnet-5-5" })
+    expect(收到[0].model).toEqual({ providerID: "openai", modelID: "gpt" })
   })
 
   /**
-   * ⚠️ 会话还没记过 model 时**不传**，而不是编一个空对象：服务端 `input.model ?? …` 对
-   * `{providerID:"",modelID:""}` 是**真值**，会拿它去解析模型、当场报错；`undefined` 才会走回退链。
-   * 前端不镜像那条链（`LEARNINGS #002-06`）——「本栏不自选」的唯一正确表达就是**不传**。
+   * **F3 / F4 的收口判据**（2026-10-11 用户裁定「F3 本轮修掉」）。
+   *
+   * 旧行为：本栏在会话没记过 model 时传 `undefined`，而上游 `submit.ts` 那两条出口都假设它
+   * 必有值 —— 命令分支直接读 `.modelID`（F3，当场抛）、normal 分支
+   * `{ ...input.draft.model, variant }` 得 `{}`（F4，在服务端是**真值** ⇒ 把
+   * `input.model ?? ag.model ?? currentModel()` 的回退链顶掉 ⇒ 拿空对象去解析模型 ⇒ 报错）。
+   *
+   * 新行为：**本栏认不出任何模型 ⇒ 一个字都不发**（返回 `false`，正文留在框里）。
+   * 这条判据同时钉住两端：`false` 的回话（面板据此保留正文）＋ 两个出口都没被碰。
    */
-  test("会话还没记过 model ⇒ 两个字段都**不传**（交给服务端回退，不编空值）", async () => {
-    const { 收到, api } = 造api()
-    await 提交({ text: "查一下", session: 会话(undefined, undefined) }, { api, sync: 造sync().sync })
+  test("本栏一个模型都认不出 ⇒ **不发**（两个出口都没碰、回话是 `false`）", async () => {
+    const { 收到, 命令, api } = 造api()
+    const { 乐观, sync } = 造sync(["effect"])
 
-    expect(收到[0].model).toBeUndefined()
-    expect(收到[0].agent).toBeUndefined()
+    const 发了 = await 提交({ text: "/effect 帮我看看这段代码", model: undefined }, { api, sync })
+
+    expect(发了).toBe(false)
+    expect(收到.length).toBe(0)
+    expect(命令.length).toBe(0)
+    expect(乐观.length).toBe(0)
+  })
+
+  test("本栏认不出模型时，即使正文是普通一句话也不发（不是只挡命令那一条支）", async () => {
+    const { 收到, api } = 造api()
+
+    expect(await 提交({ text: "帮我查这个账户的资金流向", model: undefined }, { api, sync: 造sync().sync })).toBe(false)
+    expect(收到.length).toBe(0)
   })
 
   /**
@@ -337,26 +365,6 @@ describe("右栏提交一句话（T010 / FR-007 / US4 场景 1）", () => {
     expect(命令.length).toBe(0)
     expect(收到[0].text).toBe("/effect 帮我看看这段代码")
     expect(文本part(收到[0].legacyParts)).toEqual(["/effect 帮我看看这段代码"])
-  })
-
-  /**
-   * ⚠️ **已知缺陷哨兵**（`state.md` 缺口表 F3 挂着；`LEARNINGS #005-15`：「哨兵」是它的正当用途之一）。
-   *
-   * 命令分支构造入参时**解引用** `draft.model.modelID`（`components/prompt-input/submit.ts`），
-   * 而右栏在会话没记过 model 时**正是要传 `undefined`**（上面替身那段注释写了为什么不能编空对象）
-   * ⇒ 这一组合当场抛。**这不是期望行为**：哪天模型缺省被照料上（或右栏接上 `onNewSession`），
-   * 这条会红 —— 那时请连着本注释一起改，别把红的它当成「新发现的缺陷」。
-   *
-   * 钉「抛的是哪一句」而不是「反正抛了」：`modelID` 只出现在那一处解引用上。
-   */
-  test("⚠️ 已知缺陷：会话没记过 model ＋ 正文命中命令名 ⇒ 当场抛（F3，挂账中）", async () => {
-    const { api } = 造api()
-    await expect(
-      提交(
-        { text: "/effect 帮我看看这段代码", session: 会话(undefined, undefined) },
-        { api, sync: 造sync(["effect"]).sync },
-      ),
-    ).rejects.toThrow(/modelID/)
   })
 
   test("空白正文不提交（不发一条空 prompt、也不留一笔乐观插入）", async () => {

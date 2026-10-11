@@ -169,6 +169,15 @@ describe("T015 / FR-010 · 建会话", () => {
     // 于是路由变成 `/session/undefined`——一个**看着像建成了**的空会话页。
     await expect(建会话({ api: 出口.api, directory: "/proj/甲" })).rejects.toThrow("落库失败")
   })
+
+  test("③ 带模型时，`model` 按被调方的字段名跟在 `location` 后面（`ModelRef` 用 `id`）", async () => {
+    const 出口 = 造会话出口()
+    await 建会话({ api: 出口.api, directory: "/proj/甲", model: { providerID: "openai", modelID: "gpt" } })
+
+    // `ModelRef` 的字段名是 `id`，不是 `modelID`（`LEARNINGS #004-07`：按被调方的字段名打勾）——
+    // 与 `FollowupDraft.model.modelID` 不同名，两个上游形状就这么长。
+    expect(出口.建的[0]).toEqual({ location: { directory: "/proj/甲" }, model: { providerID: "openai", id: "gpt" } })
+  })
 })
 
 describe("T015 / FR-010 · 删会话", () => {

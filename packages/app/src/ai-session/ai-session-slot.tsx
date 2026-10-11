@@ -11,7 +11,7 @@ import { useProviders } from "@/hooks/use-providers"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
-import { 模型选项, 当前模型键 } from "./model-selection"
+import { 模型选项, 从键, 当前模型键 } from "./model-selection"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
 import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
@@ -192,6 +192,17 @@ export function AiSessionSlot(): JSX.Element {
     })
   }
 
+  /**
+   * 本栏现在认的模型（**对象**形态，给 `建会话` / `submitRightPanePrompt` 用）。
+   *
+   * ⚠️ 这是「键 → 对象」的**唯一一处**拆法（`从键`），只包一层：`当前模型键` 是唯一的判断
+   * （`LEARNINGS #002-06`——不要把「从键」的拆法在调用点各写一份）。
+   */
+  const 现在认的模型 = () => {
+    const 键 = 现在认的模型键()
+    return 键 ? 从键(键) : undefined
+  }
+
   /** 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。 */
   const 投影 = createMemo(() => projectCapabilities(MANIFESTS, center.module()))
 
@@ -261,6 +272,9 @@ export function AiSessionSlot(): JSX.Element {
               sessionID: 现在.sessionID,
               sessionDirectory: 现在.directory,
               session: 现在.sync.session.get(现在.sessionID),
+              // 模型的判断在 `model-selection.ts`（一处解、一处测）；本栏认不出时是 `undefined`，
+              // 那时 `submitRightPanePrompt` 一个字都不发（F3/F4 的收口）。
+              model: 现在认的模型(),
               api: 现在.api,
               serverSync: serverSync(),
               sync: 现在.sync,
@@ -292,7 +306,7 @@ export function AiSessionSlot(): JSX.Element {
             // ⇒ **当前项目选中了一个活跃项目时，会话落在它的目录里**；未选中 ⇒ 落沙箱根；
             // 选中的项目**已归档** ⇒ 当作没带、也落沙箱根（环境信号不构成归档意向，见那边文件头
             // 「第四笔裁定」）。⚠️ 别把上面那句读成「一律生效」——它的前提是**用户确实选了项目**。
-            建在途(() => 建会话({ api: 现在.api, directory: 现在.directory }))
+            建在途(() => 建会话({ api: 现在.api, directory: 现在.directory, model: 现在认的模型() }))
               ?.then((id) => {
                 const 去 = 会话路径(location.pathname, id)
                 if (去) navigate(去)

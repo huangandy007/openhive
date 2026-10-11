@@ -57,11 +57,28 @@ export interface 会话行 {
  *
  * ⚠️ `location.directory` **必须带**：`create` 的四个字段全可选（`V2SessionCreateData`），
  * 少传不会报错——只是会话落到 SDK 的默认目录，即**新建的会话跟民警当前这个项目不在一个目录里**。
- * `agent` / `model` 同样可选，本处**不传**：右栏没有选择器，新会话用默认 agent，与上游
+ * `agent` 可选，本处**不传**：右栏没有 agent 选择器，新会话用默认 agent，与上游
  * 会话页「新建」的语义一致（那边是从 prompt-input 的状态里取，右栏没有那份状态）。
+ * `model` **传**（2026-10-11）：新会话一出生就记着本栏选的模型，不再有「没记过 model」的
+ * 那一段窗口（F3/F4 收口的另一半）。
  */
-export async function 建会话(input: { api: 会话出口; directory: string }): Promise<string> {
-  const 会话 = await input.api.create({ location: { directory: input.directory } })
+export async function 建会话(input: {
+  api: 会话出口
+  directory: string
+  /**
+   * 新会话用的模型（`ModelRef`：**字段名是 `id`**，不是 `modelID` —— 这是被调方的形状，
+   * 与 `FollowupDraft.model.modelID` 不同名，`LEARNINGS #004-07`）。
+   *
+   * 传它就等于「新会话一出生就记着这个模型」⇒ 底栏那颗控件显示的、以及第一条消息带出去的
+   * 都是它（F3/F4 收口的另一半：新会话不再有「没记过 model」的那一段窗口）。
+   * 不传 ＝ 这一栏一个模型都认不出（`model-selection.ts` 的 `当前模型键` 回 `undefined`）。
+   */
+  model?: { providerID: string; modelID: string }
+}): Promise<string> {
+  const 会话 = await input.api.create({
+    location: { directory: input.directory },
+    ...(input.model ? { model: { providerID: input.model.providerID, id: input.model.modelID } } : {}),
+  })
   return 会话.id
 }
 
