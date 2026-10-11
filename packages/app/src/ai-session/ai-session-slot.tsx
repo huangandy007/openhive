@@ -8,6 +8,7 @@ import { usePermission } from "@/context/permission"
 import { SDKProvider } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync, type ServerSync } from "@/context/server-sync"
+import { useSettings } from "@/context/settings"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
@@ -203,6 +204,12 @@ function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
   // 底栏模型那一半。**它就是本轮改造的全部要点**：这一句在 `AiSessionSlot` 里取不到
   // （那一层没有 `LocalProvider`），所以本体才必须整个挪进来。
   const local = useLocal()
+  // 思考过程的显示开关。**就是主会话区读的那一个**（`message-timeline.tsx:1188` 的
+  // `settings.general.showReasoningSummaries()`）——右栏此前从未接过这根线，于是吃到了
+  // `SessionTurn` 的缺省 `true`、把思考全文铺满屏（2026-10-11 用户报的那个缺陷）。
+  // ⚠️ 只能在**这一层**读：`SessionPanel` 的测试 harness 没有 `SettingsProvider`，
+  // 在那边取会让那整个测试文件的每一处挂载当场抛（见 `session-panel.tsx` 该 prop 的注释）。
+  const 设置 = useSettings()
 
   const 源 = props.源
 
@@ -288,6 +295,13 @@ function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
           directory={态().directory}
           sessionID={态().sessionID}
           projection={投影()}
+          // 思考过程的显示开关：**读的就是主会话区读的那一个**（`message-timeline.tsx:1188`
+          // 的 `settings.general.showReasoningSummaries()`）。右栏此前从未接过这根线，于是
+          // 吃到了 `SessionTurn` 的缺省 `true`、把每轮思考全文铺满屏（2026-10-11 用户报的
+          // 那个缺陷：往上翻找之前的结论要先趟过一大片内心戏）。
+          // ⚠️ 只在这一层读：`SessionPanel` 的测试 harness 没有 `SettingsProvider`，在那边
+          // 取会让那整个测试文件的每一处挂载当场抛（见 `session-panel.tsx` 该 prop 的注释）。
+          showReasoningSummaries={设置.general.showReasoningSummaries()}
           // 底栏那颗钮：**原生那颗**（搜索 / 分组 / 滚动 / 管理模型），本组件只负责把它挂上。
           // 它自己从 `useLocal()` 里读「显示哪个、选中写哪」（`model-control.tsx` 文件头）。
           模型控件={<右栏模型控件 />}

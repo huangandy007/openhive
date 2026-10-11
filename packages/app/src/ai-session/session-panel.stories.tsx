@@ -121,6 +121,7 @@ export const Default = {
           // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={模型控件夹具}
+          showReasoningSummaries={false}
         />
       ))}
     </div>
@@ -143,6 +144,7 @@ export const MultiTurn = {
           // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={模型控件夹具}
+          showReasoningSummaries={false}
         />
       ))}
     </div>

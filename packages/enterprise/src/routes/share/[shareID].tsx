@@ -253,6 +253,9 @@ export default function () {
                                 <SessionTurn
                                   sessionID={data().sessionID}
                                   messageID={message.id}
+                                  // openhive 定制：公开分享页取不到设置上下文，固定按 app 默认值（false）
+                                  // 收起思考全文——否则 `SessionTurn` 的缺省 `true` 会把内心戏铺满公开链接。
+                                  showReasoningSummaries={false}
                                   classes={{
                                     root: "min-w-0 w-full relative",
                                     content: "flex flex-col justify-between !overflow-visible",
@@ -334,6 +337,8 @@ export default function () {
                                   <SessionTurn
                                     sessionID={data().sessionID}
                                     messageID={store.messageId ?? firstUserMessage()!.id!}
+                                    // openhive 定制：同上（公开分享页无设置上下文，按 app 默认收起思考全文）。
+                                    showReasoningSummaries={false}
                                     classes={{
                                       root: "grow",
                                       content: "flex flex-col justify-between",

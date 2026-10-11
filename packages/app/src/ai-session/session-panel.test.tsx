@@ -142,6 +142,48 @@ const 对话 = (轮数: number): SessionPanelData => {
   }
 }
 
+/**
+ * 一条 `reasoning`（思考）块。
+ *
+ * ⚠️ 上面两份夹具都**造不出这一支**：`夹具数据` / `对话` 的 part 表里只有 `text`
+ * ⇒「思考要不要落屏」这件事**在测试里压根没有观测面**，这正是右栏把思考全文铺出来的缺陷
+ * 能一路绿到用户肉眼报的原因（`LEARNINGS #006-08`：夹具绕开的那一支没有观测面）。
+ * 形状照上游 SSE 落的：一条助手消息先落 `reasoning`、再落 `text`。
+ */
+const 造思考块 = (id: string, messageID: string, 文本: string) =>
+  ({ id, messageID, sessionID: "ses_1", type: "reasoning", text: 文本 }) as Part
+
+/**
+ * 造一条**助手**消息（挂上 `parentID`）。
+ *
+ * ⚠️ `parentID` 不是装饰，是**必需的前提**：`session-turn.tsx:284` 用
+ * `item.parentID === msg.id` 认领助手消息 ⇒ 不挂时助手那条**一个块都不渲染**，
+ * 而症状是「夹具静默造出一个空助手」（观测面归零、断言恒空）。这正是本组第一版夹具
+ * 踩到的坑——与 `LEARNINGS #006-08` 同族（夹具绕开那一支 ⇒ 那一支没有观测面）。
+ * 既有夹具（`夹具数据` / `对话`）**都没有**这条：它们只数 turn 个数，用不到助手内容。
+ */
+const 造助手消息 = (id: string, parentID: string) =>
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码；理由同上。
+  ({ ...造消息(id, "ses_1", "assistant"), parentID }) as Message
+
+/**
+ * 一轮「问 ＋ 答」，且**助手那条里带一段思考**（供「思考显示跟随全局设置」那组用）。
+ */
+const 带思考的对话 = (): SessionPanelData => ({
+  session: [造会话("ses_1", "资金分析会话")],
+  session_status: {},
+  session_diff: {},
+  message: { ses_1: [造消息("usr_1", "ses_1", "user"), 造助手消息("ast_1", "usr_1")] },
+  part: {
+    usr_1: [造文本块("prt_1", "usr_1", "帮我看看这个账户")],
+    ast_1: [
+      造思考块("prt_think_1", "ast_1", "先查流水，再比对 IP 归属地……这段是思考，不该铺满屏"),
+      造文本块("prt_2", "ast_1", "结论：3 笔异常"),
+    ],
+  },
+  command: [],
+})
+
 /** 当前会话里 `session-turn` 根节点的个数。 */
 const 数turn = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-component="session-turn"]').length
 
@@ -241,6 +283,7 @@ const 摆右栏带命令 = (收到的: string[]) =>
         projection={空投影}
         斜杠内建命令={{ 选项: () => 内建夹具, 执行: (id) => void 收到的.push(id) }}
         模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+        showReasoningSummaries={false}
       />
     )),
   )
@@ -260,6 +303,7 @@ const 摆右栏 = () =>
         projection={空投影}
         斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
         模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+        showReasoningSummaries={false}
       />
     )),
   )
@@ -302,6 +346,7 @@ describe("右栏会话的 `DataProvider`（FR-010 / 计划 §② 的那道接线
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -321,6 +366,7 @@ describe("消息流（FR-010）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -410,6 +456,7 @@ describe("消息流（FR-010）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -454,6 +501,7 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -529,6 +577,7 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -566,6 +615,7 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -682,6 +732,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onSelectSession={(id) => 事件.push(`切到 ${id}`)}
           onNewSession={() => 事件.push("新建")}
           onRenameSession={(id, title) => 改名过.push([id, title])}
@@ -890,6 +941,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -945,6 +997,7 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
           projection={命令投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onSubmitPrompt={() => {}}
         />
       )),
@@ -1017,6 +1070,7 @@ describe("常用操作行 + 更多 skill 抽屉（T004 📥 / T006 📥 交来�
           projection={投影(能力集)}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -1126,6 +1180,7 @@ describe("点指令卡 ＝ 填入一句话（T009 / FR-007；T004 📥 那一笔
           projection={projectCapabilities([造清单([两张卡])], undefined)}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -1237,6 +1292,7 @@ describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -1343,6 +1399,7 @@ describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onDeleteSession={(id) => 事件.push(id)}
         />
       )),
@@ -1457,6 +1514,7 @@ describe("导出会话（T016 / FR-010）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
           onExportSession={(id) => 事件.push(id)}
         />
       )),
@@ -1691,6 +1749,7 @@ describe("`/` 面板的池子（两源）", () => {
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
         />
       )),
     )
@@ -1788,5 +1847,62 @@ describe("底栏模型控件", () => {
     const 宿主 = 摆右栏()
 
     expect(宿主.querySelectorAll('[aria-label="Choose model"]')).toHaveLength(0)
+  })
+})
+
+/**
+ * 思考过程的显示：**右栏跟随全局设置**（2026-10-11 用户报文）。
+ *
+ * 现场：右栏把每轮思考全文按 markdown 铺开 ⇒ 屏幕被「内心戏」占满，用户往上翻找之前的
+ * 结论要先趟过一大片。根因是**右栏这一处从未接线**——`session-panel.tsx` 调 `SessionTurn`
+ * 时没传 `showReasoningSummaries`，于是吃到上游默认值 `true`（`session-turn.tsx:332` 的
+ * `props.showReasoningSummaries ?? true`）⇒ `partState` 把 reasoning 判为 `"visible"`
+ * （同文件 `:109-112`）⇒ 整段展开。主会话区（`message-timeline.tsx:1188`）传了
+ * `settings.general.showReasoningSummaries()`（默认 `false`）⇒ 只显示「思考中… ＋ 首行标题」。
+ * **两块面从此同一条口径。**
+ *
+ * 缺口（如实记，`LEARNINGS #006-27`）：「设置 ↦ 这个 prop」那一条接线在
+ * `ai-session-slot.tsx`（该层挂不起来测），本组只钉**收到 prop 之后**的行为。
+ */
+describe("思考过程的显示：右栏跟随全局设置（showReasoningSummaries）", () => {
+  /**
+   * 摆一棵**带思考**的右栏，`showReasoningSummaries` 由参数给。
+   *
+   * ⚠️ 与 `摆右栏` 同源、只换夹具与这一个 prop（`#002-06`：同一个判断不要两处各写一份）。
+   */
+  const 摆带思考 = (showReasoningSummaries: boolean) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={带思考的对话()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={showReasoningSummaries}
+        />
+      )),
+    )
+
+  const 数思考 = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-component="reasoning-part"]').length
+  const 数回答 = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-component="text-part"]').length
+
+  test("设置关 ⇒ 右栏不铺思考全文（0 个 reasoning-part），而回答照旧落屏", () => {
+    const 宿主 = 摆带思考(false)
+
+    // 被测属性（放最前，`#004-14`：红时要先看到是哪条）。
+    expect(数思考(宿主), "设置关着，右栏还是把思考全文铺出来了").toBe(0)
+    // 只该藏思考，不该连回答一起藏——防「一关就把整条助手消息藏没」的假修。
+    expect(数回答(宿主), "连回答都被一起藏掉了").toBe(1)
+  })
+
+  test("设置开 ⇒ 思考全文照旧展开（反面：不是「一律不渲染思考」）", () => {
+    // ⚠️ 这条钉的是「设置开时行为与改前逐字相同」——防有人为了修这个缺陷把思考**无条件**藏掉。
+    // 它**不是**上面那条的守护者；真正的守护者是上面那条（拆掉 prop 传递后它会红）。
+    const 宿主 = 摆带思考(true)
+
+    expect(数思考(宿主), "设置开着，思考却没渲染（把思考一律藏掉了？）").toBe(1)
+    expect(数回答(宿主)).toBe(1)
   })
 })

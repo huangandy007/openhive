@@ -60,6 +60,20 @@ export interface SessionPanelProps {
    */
   projection: ReturnType<typeof projectCapabilities>
   /**
+   * 消息流里**要不要铺开思考过程**（下面转给 `SessionTurn` 的 `showReasoningSummaries`）。
+   *
+   * **必填**。理由同 `projection`：可选就等于「忘了传也没人红」，而忘传的后果正是本栏
+   * 2026-10-11 用户报的那个缺陷——右栏把每轮思考全文按 markdown 铺满屏，往上翻找之前的
+   * 结论要先趟过一大片内心戏（根因：`SessionTurn` 的入参缺省是 `true`，`session-turn.tsx:332`）。
+   *
+   * ⚠️ **本组件不自己读设置**（同 `斜杠内建命令` 那条的理）：本文件是全仓唯一一处能这么干的
+   * 地方——测试里只裹 `DialogProvider` / `FileComponentProvider`，在这里 `useSettings()` 会让
+   * 那整个测试文件的**每一处**挂载当场抛（`useSettings` ⇒ `SettingsProvider` ⇒ `usePlatform`，
+   * 要一整套 provider 链）。**判断由调用方解好喂进来**：`ai-session-slot.tsx` 读
+   * `settings.general.showReasoningSummaries()`，与主会话区（`message-timeline.tsx:1188`）同一个值。
+   */
+  showReasoningSummaries: boolean
+  /**
    * `/` 面板里属于**上游内建命令**的那一半（`useCommand()` 的 `slash` 命令）。
    *
    * 另一半（服务端命令表）本组件自己就有——就在 `props.data.command` 里。
@@ -651,7 +665,11 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
                    ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
                    真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
                 <div class="w-full shrink-0">
-                  <SessionTurn sessionID={props.sessionID} messageID={消息.id} />
+                  <SessionTurn
+                    sessionID={props.sessionID}
+                    messageID={消息.id}
+                    showReasoningSummaries={props.showReasoningSummaries}
+                  />
                 </div>
               )}
             </For>

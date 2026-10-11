@@ -59,6 +59,40 @@ test.use({
   ...(process.env.E2E_BROWSER ? { launchOptions: { executablePath: process.env.E2E_BROWSER } } : {}),
 })
 
+/**
+ * 一条**带思考**的会话：user 提问 → assistant 先 reasoning 后 text。
+ *
+ * 形状照 `session-timeline-collapse-state.spec.ts` 的 `userMessage` / `assistantMessage`
+ * （同族 harness，`#004-12`）——但注意 `mock-server.ts` 的 `currentMessage()` **只读**这几个字段
+ * （`info.role` / `id` / `time` / `agent` / `modelID` / `providerID`，以及 `part.type` / `part.text`），
+ * 所以这里的 `sessionID` / `messageID` / `parentID` 是为**读的人**留的：写清这条数据本来长什么样。
+ * `part.id` 不给（`currentMessage` 不读它，reasoning 那条在 DTO 里就没有 id）。
+ */
+const 带思考的消息 = () => [
+  {
+    info: { id: "msg_think_user", sessionID, role: "user", time: { created: 1700000000000 } },
+    parts: [{ type: "text", text: "帮我看看这个账户" }],
+  },
+  {
+    info: {
+      id: "msg_think_asst",
+      sessionID,
+      role: "assistant",
+      time: { created: 1700000001000 },
+      parentID: "msg_think_user",
+      modelID: "test",
+      providerID: "opencode",
+      agent: "build",
+      cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+    parts: [
+      { type: "reasoning", text: "先查流水、再比对 IP 归属地……这段是思考，不该铺满右栏" },
+      { type: "text", text: "结论：3 笔异常" },
+    ],
+  },
+]
+
 test("右栏在会话路由上从假后端契约里渲染出来", async ({ page }) => {
   const 后端请求: string[] = []
   page.on("request", (request) => {
@@ -99,7 +133,52 @@ test("右栏在会话路由上从假后端契约里渲染出来", async ({ page 
   expect(列表目录).toContain(directory)
 })
 
-async function setup(page: Page) {
+/**
+ * 思考全文的显示：`settings.general.showReasoningSummaries` 这根线**端到端**的观测面。
+ *
+ * ## 这条补的是哪个缺口
+ *
+ * 组件的两条测试（`session-panel.test.tsx` 的「思考过程的显示」那组）钉的是「**prop → 渲染**」；
+ * 缺口在**它前面一段**：`ai-session-slot.tsx` 读设置、把值喂给 `SessionPanel` 的那一行。实测
+ * 变异 M3（2026-10-11）：把那一行换成**写死的 `false`**，`tsgo -b` 与全部组件测试**照样全绿**
+ * ——「slot 真的读了设置」当时**没有任何自动判据**。这条就把它补上：从 `localStorage` 里的
+ * 设置出发，经真 `SettingsProvider` / 真 `AiSessionSlot` / 真 `SessionPanel` 到真 DOM。
+ *
+ * ## 为什么是假后端而不是真栈
+ *
+ * 被测性质**全在前端**（设置 → prop → 渲染），与内核会不会真思考**无关**；而真栈要造出
+ * 一个 reasoning part，得先接一个假模型服务器（`test/real-stack/serve.ts` 目前没有这个口子）
+ * ——那是为这条判据凭空造一套测试基建，换不来多一分的覆盖面。故按同族 spec 的既有 harness。
+ *
+ * ## 断言为什么是这个顺序
+ *
+ * 先等 `text-part` 落屏（**证明夹具真到了右栏**），再数 `reasoning-part`。反过来的话，
+ * 「0 个」在消息还没加载时**恒真**——那是一条永远绿的假判据（`#002-06`）。
+ */
+test("右栏思考全文：设置关 ⇒ 不铺（0 个 reasoning-part），而回答照旧落屏", async ({ page }) => {
+  await setup(page, { showReasoningSummaries: false, items: 带思考的消息() })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+
+  const 面板 = page.locator('[data-component="session-panel"]')
+  await expect(面板).toBeVisible()
+  // 先证明夹具到了（这条落了 ⇒ 消息真的过了一遍假后端到右栏）。
+  await expect(面板.locator('[data-component="text-part"]')).toHaveCount(1)
+  await expect(面板.locator('[data-component="text-part"]')).toContainText("结论：3 笔异常")
+  // 再数思考：设置关着，思考**一个字都不该铺**。
+  await expect(面板.locator('[data-component="reasoning-part"]')).toHaveCount(0)
+})
+
+test("右栏思考全文：设置开 ⇒ 照旧展开（反面，防「把思考一律藏掉」冒充修好了）", async ({ page }) => {
+  await setup(page, { showReasoningSummaries: true, items: 带思考的消息() })
+  await page.goto(`/server/${base64Encode(server)}/session/${sessionID}`)
+
+  const 面板 = page.locator('[data-component="session-panel"]')
+  await expect(面板).toBeVisible()
+  await expect(面板.locator('[data-component="text-part"]')).toHaveCount(1)
+  await expect(面板.locator('[data-component="reasoning-part"]')).toHaveCount(1)
+})
+
+async function setup(page: Page, options: { showReasoningSummaries?: boolean; items?: unknown[] } = {}) {
   await mockOpenCodeServer(page, {
     protocol: "v2",
     directory,
@@ -133,12 +212,21 @@ async function setup(page: Page) {
         time: { created: 1700000000000, updated: 1700000000000 },
       },
     ],
-    pageMessages: () => ({ items: [] }),
+    pageMessages: () => ({ items: options.items ?? [] }),
   })
 
   await page.addInitScript(
-    ({ directory, server, sessionID }) => {
-      localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
+    ({ directory, server, sessionID, showReasoningSummaries }) => {
+      localStorage.setItem(
+        "settings.v3",
+        JSON.stringify({
+          general: {
+            newLayoutDesigns: true,
+            // `undefined` 时**不写这个键**：默认那条用例要保持「用户从没碰过这个开关」的原样。
+            ...(showReasoningSummaries === undefined ? {} : { showReasoningSummaries }),
+          },
+        }),
+      )
       localStorage.setItem(
         "opencode.global.dat:server",
         JSON.stringify({
@@ -151,6 +239,6 @@ async function setup(page: Page) {
         JSON.stringify([{ type: "session", server, sessionId: sessionID }]),
       )
     },
-    { directory, server, sessionID },
+    { directory, server, sessionID, showReasoningSummaries: options.showReasoningSummaries },
   )
 }
