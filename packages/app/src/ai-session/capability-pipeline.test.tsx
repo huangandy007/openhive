@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { GENERIC_MODULE, type CapabilityManifest } from "./capabilities"
-import { skillCommands } from "./command-palette"
+import { 右栏斜杠命令, 右栏斜杠源 } from "./command-palette"
 import { ContextCards } from "./context-cards"
 import { projectCapabilities } from "./projection"
 import { SkillDrawer } from "./skill-drawer"
@@ -162,7 +162,7 @@ const 注入清单: CapabilityManifest[] = [资金清单, 话单清单, 通用�
  * 真装配：`清单 → projectCapabilities(清单, 模块()) → 两层真组件`。
  *
  * 两层都从**同一次投影**派生——模块一变，两层 DOM 一起动，这就是 SC-002 与 FR-006 要的「跟着换」。
- * ④ 那一支（`all`）**不走 DOM**：`skillCommands` 是纯函数，它的断言直接比返回值（下面 §C），
+ * ④ 那一支（`all`）**不走 DOM**：`右栏斜杠源` 是纯函数，它的断言直接比返回值（下面 §C），
  * 不必为了「也在树里」给它挂一层壳。
  */
 function 摆好(选项: { 模块: () => string | undefined; 上下文: () => string[] }) {
@@ -245,14 +245,26 @@ describe("指令卡投影链 · ③ 更多 skill 抽屉（projection.drawer → 
   })
 })
 
-describe("指令卡投影链 · ④ `/` 命令池（projection.all → skillCommands / FR-005）", () => {
+describe("指令卡投影链 · ④ `/` 命令池（projection.all → 右栏斜杠源 / FR-005）", () => {
   /**
    * 端到端那一段（→ 原生 `/` 弹层）**已在 `session-panel.test.tsx` 钉过**，这里不重写。
    * 本组只补它没有的那条：**池子跟着模块换**，且通用那份一直在。
-   * `skillCommands` 是纯函数 ⇒ 直接比返回值。
+   * `右栏斜杠源` 是纯函数 ⇒ 直接比返回值。
+   *
+   * ⚠️ 2026-10-11 之后 `skillCommands(投影.all)` 换成两源（服务端命令表 ＋ 上游内建）：
+   * 服务端命令表是**全局**的，不跟模块走；跟模块走的是 `已知中文名`（`title` 的中文覆盖）。
+   * 这里把 `服务端` 也从 `投影.all` 喂（测的是「投影 → 纯函数映射」这条链的形状与换模块的对照），
+   * 生产接线（`服务端 = props.data.command`）是 Task 2 的活，见 `session-panel.tsx`。
    */
-  const 池 = (模块: string) =>
-    skillCommands(projectCapabilities(注入清单, 模块).all).map((条) => `${条.label} → ${条.title}`)
+  const 池 = (模块: string) => {
+    const all = projectCapabilities(注入清单, 模块).all
+    const 源 = 右栏斜杠源({
+      服务端: all.map((条) => ({ name: 条.skill, description: 条.description })),
+      内建: [],
+      已知中文名: all.map((条) => ({ skill: 条.skill, name: 条.name })),
+    })
+    return 右栏斜杠命令(源).map((条) => `${条.label} → ${条.title}`)
+  }
 
   test("池子 = 当前模块 ＋ 通用：换模块只换模块那一半（FR-006）", () => {
     expect(池(资金)).toEqual(["/fund-link-analysis → 资金关联分析", "/research-note → 研判记录"])

@@ -1,8 +1,7 @@
 import type { PromptInputV2Suggestion } from "@opencode-ai/session-ui/v2/prompt-input/types"
-import type { SkillCapability } from "./capabilities"
 
 /**
- * `/` 命令面板（FR-005 / US3 场景 2 / DESIGN §4.7.4）——**本文件只有一个映射函数，没有浮层**。
+ * `/` 命令面板（FR-005 / US3 场景 2 / DESIGN §4.7.4）——**本文件只有三个纯函数，没有浮层**。
  *
  * ## 为什么这里没有 UI
  *
@@ -11,59 +10,150 @@ import type { SkillCapability } from "./capabilities"
  *
  * | 环节 | 原件（`packages/session-ui/src/v2/components/prompt-input/`） |
  * |---|---|
- * | 打 `/` 唤起 | `machine.ts` 的 `inputChanged`：正文匹配 `/^\/(\S*)$/` ⇒ `popover = { type: "command-inline" }`；正文非空时走 `openCommands()` 的 `command-menu` 支 |
+ * | 打 `/` 唤起 | `machine.ts` 的 `inputChanged`：正文匹配 `/^\/(\S*)$/` ⇒ `popover = { type: "command-inline" }` |
  * | 浮层形态 | `index.tsx` 的 `PromptInputV2Popover`——§4.7.4 那张表就是它 class 串的**逐字实况** |
- * | 模糊匹配 | `interaction.ts` 的 `commandList = useFilteredList({ filterKeys: ["trigger", "title"] })`（`fuzzysort`，真子序列） |
+ * | 模糊匹配 | `interaction.ts` 的 `commandList = useFilteredList({ filterKeys: ["trigger", "title"] })`（`fuzzysort`） |
  * | 数据源 | **唯一的空位**：controller 入参 `commands: Accessor<PromptInputV2Suggestion[]>` |
  *
- * 那个空位今天填的是上游自己的东西（`packages/app/src/components/prompt-input-v2.tsx` 里的
- * 「SDK 自定义命令 ＋ 内置斜杠命令」）。上游那个文件是**高频文件**（改它 = 每次同步上游都冲突，
- * 见 CLAUDE.md 的 Anti-Patterns），所以本函数**不碰它**——它是一份**并列的数据源**，接线由
- * T008 的右栏 Hero 输入完成（`session-panel.tsx` 把 `skillCommands(projectCapabilities(...).all)`
- * 传进 controller）。
+ * ## 池子的两源 = 原生那两源（2026-10-11 用户裁定「和原生完全一样」）
  *
- * ## 映射的形状取自上游
+ * 蓝本 `packages/app/src/components/prompt-input-v2.tsx` 的 `slashCommands()`（`:292-320`）：
+ * ① `sync().data.command`（**服务端命令全集**，真 skill 就在里面：`command/index.ts` 把
+ * `skill.all()` 每一条注册成 `source:"skill"` 的命令）；② `useCommand().options` 里带 `slash`
+ * 的内建。旧写法（只取本机 `MANIFESTS` 投影的 skill 清单）实测只有 **2 条**，而第 ① 源在
+ * 真栈里是 **118 条** —— 这就是「打 `/` 弹不出对应的命令」的根因。
  *
- * 上游 `prompt-input-v2.tsx` 的 `slashCommands()` 就是这件事的蓝本：
- * `{ id, trigger, title, description }` ⇒ `{ id, kind: "command", label: \`/${trigger}\`, trigger, title, description }`。
- * 本函数只换「数据从哪来」（skill 清单，取代 SDK 命令表），形状一字不改——形状一改，
- * `useFilteredList` 的 `filterKeys` 与 `machine.ts` 的 `suggestionSelected` 就都对不上了。
- *
- * ## 2026-10-07 裁定：`label` / `trigger` 取**连接键**，`title` 取**显示名**
- *
- * 三个候选（连接键 / 中文显示名 / 完全照上游 `title: item.name`）里选了第一个，依据是**实测**：
- *
- * 1. 原生弹层渲染的是 **`item.label`**（`index.tsx` 只画 `label` ＋ `description`，
- *    **`title` 根本不显示**），而选中后插进正文的也是 `label`（`machine.ts` 的
- *    `suggestionSelected` 走 `replaceTrigger`）⇒ `label` **一物二用**，做不出
- *    「显示中文名、插入连接键」；
- * 2. 插进正文的那个 token 会原样成为 **prompt 正文**，下游（T010/T011 的执行层）要能把它对回
- *    一个 skill。skill 的连接键就是它的寻址名（`capabilities.ts` 的 `SkillCapability.skill`，
- *    等于 `SKILL.md` 的 frontmatter `name`）——用显示名寻址等于**另起一套**、且会随 009 的
- *    文案漂；
- * 3. 民警**不必记英文**：`filterKeys` 含 `title`，打中文一样筛得到。列表里显示的是标识符，
- *    右侧跟着的是中文 `description`（原生就画）。
- *
- * ⚠️ `title` 填显示名（而不是照上游自定义命令那样填标识符）是**这条裁定的一部分**：
- * 它正是「打中文能搜到」的来源。`command-palette.test.tsx` 里有一条断言专门钉它，夹具刻意让
- * 连接键与显示名**不同值**（`fund-link-analysis` / 「资金关联分析」），好让这条断言今天就有牙
- * ——生产里两者同值（`MANIFESTS` 两条都是），差别要到 009 才显形（`LEARNINGS #004-13`）。
+ * ⚠️ `title` 是**唯一**与原生不同字的一处（2026-10-11 用户裁定「原生为底、已知 skill 叠中文名」）：
+ * 能对上号的 skill 用**中文显示名**，其余一律用命令名 —— 原生就是 `title: item.name`，而模糊匹配的
+ * `filterKeys` 是 `["trigger","title"]`、两个都是英文标识符 ⇒ 只照抄原生会让**民警打中文筛不到
+ * skill**。`id` / `label` / `trigger` / 次序一律不动，所以「池子和原生完全一样」这条裁定仍然成立；
+ * 偏离只有 `title` 这一个搜索字段，已记进设计文档缺口表 G10。
  *
  * ## 授权过滤
  *
- * **不做**（2026-10-07 裁定 U2 / 宪法 §四）：传进来的就是 `projectCapabilities(...).all`，
- * 「本机扫到的 skill 全集里属于当前模块的那部分」，不是「该用户有权的 skill」。
+ * **不做**（2026-10-07 裁定 U2 / 宪法 §四）：服务端命令表是「本机扫到的全集」，不是「该用户有权的」。
  * 前端隐藏既不阻止调用也不阻止越权——授权在执行层强制。
  */
-export function skillCommands(skills: readonly SkillCapability[]): PromptInputV2Suggestion[] {
-  return skills.map((条) => ({
-    // 前缀 `skill.` 只为可读——原生的 id 只是列表键（`useFilteredList` 的 `key`），
-    // 与 `custom.` / 内置命令的 id 不属于同一个命名空间就不会撞。
-    id: `skill.${条.skill}`,
+
+/** 服务端命令表里的一行（`sync().data.command` 的元素里本文件真读的两项）。 */
+export interface 服务端命令条 {
+  readonly name: string
+  readonly description?: string
+}
+
+/**
+ * 一条 skill 的**中文显示名**（`projection.all` 的元素里本文件真读的两项）。
+ *
+ * 收窄到两项、不从 `./projection` import 它的类型：本文件是纯函数、要被 `bun test` 直接跑，
+ * 收窄到真读的字段才看得出依赖（`LEARNINGS #004-07`）。`SkillCapability` 结构上满足这个形状
+ * ⇒ 调用方直接把它那支数组传进来即可。
+ */
+export interface 中文名条 {
+  readonly skill: string
+  readonly name: string
+}
+
+/**
+ * 上游内建命令的候选（`useCommand().options` 的元素里本文件真读的六项）。
+ *
+ * 形状照着 `CommandOption`（`packages/app/src/context/command.tsx:78`）**收窄**、不从那边 import：
+ * 本文件是纯函数、要被 `bun test` 直接跑，收窄到真读的字段才看得出依赖
+ * （`LEARNINGS #004-07`：按被调方真读的项打勾，不按调用方的直觉）。
+ */
+export interface 内建命令条 {
+  readonly id: string
+  readonly title: string
+  readonly description?: string
+  readonly slash?: string
+  readonly suggested?: boolean
+  readonly disabled?: boolean
+}
+
+/** 一支候选——与原生 `slashCommands()` 的元素同形（`type` 是「谁去执行它」的判据）。 */
+export interface 斜杠源条 {
+  readonly id: string
+  readonly trigger: string
+  readonly title: string
+  readonly description?: string
+  readonly type: "custom" | "builtin"
+}
+
+/**
+ * 两个源合成一份候选表。
+ *
+ * `suggested` 那一批用**字段**筛、不用 id 前缀筛：上游 `context/command.tsx:331-350` 把
+ * `suggested && !disabled` 的那几条**复制**了一份（`{...x, id: SUGGESTED_PREFIX + x.id}`）放进数组，
+ * 原件同时还在 ⇒ 按字段筛掉复制件，剩下的正是每一条的一份。
+ *
+ * ⚠️ **第三源是本机 skill 的中文名**（用户裁定 2026-10-11，理由见文件头）：只做 `title` 的覆盖，
+ * **不改 `id` / `trigger`**（那两样是身份与插入语义）。对不上号就有多少算多少——118 条里绝大多数
+ * 是上游内建与外机命令，本机只有那两条 skill 有中文名。
+ */
+export function 右栏斜杠源(input: {
+  服务端: readonly 服务端命令条[]
+  内建: readonly 内建命令条[]
+  已知中文名: readonly 中文名条[]
+}): 斜杠源条[] {
+  // 服务端命令名 ⇒ 中文显示名。这里**按 `skill` 字段**对号（`projection.all` 的 `.skill` 就是
+  // skill 名，而服务端把它注册成同名的命令——实现前已用真栈 `GET /command` 的清单核过这一条）。
+  const 中文名 = new Map(input.已知中文名.map((条) => [条.skill, 条.name]))
+  return [
+    ...input.服务端.map((item) => ({
+      id: `custom.${item.name}`,
+      trigger: item.name,
+      title: 中文名.get(item.name) ?? item.name,
+      description: item.description,
+      type: "custom" as const,
+    })),
+    ...input.内建
+      .filter((item): item is 内建命令条 & { slash: string } => !item.disabled && !item.suggested && !!item.slash)
+      .map((item) => ({
+        id: item.id,
+        trigger: item.slash,
+        title: item.title,
+        description: item.description,
+        type: "builtin" as const,
+      })),
+  ]
+}
+
+/**
+ * 候选表 → 原生浮层吃的 `PromptInputV2Suggestion`。
+ *
+ * 形状一字不改（`{ id, kind: "command", label: \`/${trigger}\`, trigger, title, description }`）：
+ * 一改，`useFilteredList` 的 `filterKeys` 与 `machine.ts` 的 `suggestionSelected` 就对不上了。
+ *
+ * ⚠️ **不给 `keybind`**：原生每项右侧会画键位提示，右栏不画（设计文档缺口表 G7）。
+ */
+export function 右栏斜杠命令(源: readonly 斜杠源条[]): PromptInputV2Suggestion[] {
+  return 源.map((item) => ({
+    id: item.id,
     kind: "command",
-    label: `/${条.skill}`,
-    trigger: 条.skill,
-    title: 条.name,
-    description: 条.description,
+    label: `/${item.trigger}`,
+    trigger: item.trigger,
+    title: item.title,
+    description: item.description,
   }))
+}
+
+/**
+ * 选中一条之后「要不要立刻执行、执行谁」——蓝本是原生 `prompt-input-v2.tsx:359-364` 的
+ * `onSuggestionSelect`：**custom 只插字**（回车时才走命令分支），**builtin 选中即执行**
+ * （`command.trigger(id, "slash")`，且上游 `interaction.ts:165-173` 会把刚插进去的那段正文清掉）。
+ *
+ * ⚠️ **必须在选中那一刻现读**「源」与「执行」，不能在建 controller 时算好：`commands` 是异步
+ * 填的（`server-sync.tsx` 的 `void loadCommands(...)`），建 controller 时那份候选还是空的
+ * ⇒ 冻住的闭包会让「先建会话、命令表后到」的现场永远选不动（`LEARNINGS #006-13` 的同族：
+ * 同一个数据两个时间点的写法）。
+ */
+export function 右栏选中命令(
+  源: readonly 斜杠源条[],
+  执行: (id: string) => void,
+): (item: PromptInputV2Suggestion) => (() => void) | void {
+  return (item) => {
+    if (item.kind !== "command") return
+    const 选中的 = 源.find((条) => 条.id === item.id)
+    if (!选中的 || 选中的.type === "custom") return
+    return () => 执行(选中的.id)
+  }
 }
