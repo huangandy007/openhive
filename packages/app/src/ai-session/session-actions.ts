@@ -71,7 +71,8 @@ export async function 建会话(input: {
    *
    * 传它就等于「新会话一出生就记着这个模型」⇒ 底栏那颗控件显示的、以及第一条消息带出去的
    * 都是它（F3/F4 收口的另一半：新会话不再有「没记过 model」的那一段窗口）。
-   * 不传 ＝ 这一栏一个模型都认不出（`model-selection.ts` 的 `当前模型键` 回 `undefined`）。
+   * 不传 ＝ 这一栏一个模型都认不出（`local.model.current()` 回 `undefined`，见
+   * `ai-session-slot.tsx` 的 `现在认的模型`）。
    */
   model?: { providerID: string; modelID: string }
 }): Promise<string> {

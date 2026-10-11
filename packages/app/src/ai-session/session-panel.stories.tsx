@@ -82,15 +82,22 @@ const 夹具数据 = (轮数 = 1): SessionPanelData => ({
 /** 一份**四层都空**的投影（`projection` 是必填——可选就等于「忘传也没人红」，而忘传的表现是「右栏空着」，与「这个模块还没有 skill」在界面上分不开）。 */
 const 空投影 = projectCapabilities([], undefined)
 
-/** 底栏模型选择器的假候选（storybook 不接真 provider，给两条看得见效果的）。 */
-const 模型控件夹具 = {
-  options: () => [
-    { id: "openai/gpt", label: "GPT", providerID: "openai" },
-    { id: "anthropic/sonnet", label: "Sonnet", providerID: "anthropic" },
-  ],
-  current: () => "openai/gpt",
-  onSelect: () => {},
-}
+/**
+ * 底栏模型控件的**占位元素**（2026-10-11 用户报缺陷后改造）。
+ *
+ * ⚠️ 它**不是**那个真控件：真控件是 `model-control.tsx` 的 `右栏模型控件`，要 `useLocal()`，
+ * 而 storybook 这一层没有那套 provider（同 `斜杠内建命令` 那一行的处境）。这里画一个样子相近的
+ * 占位钮，只为让底栏那一行**有东西**、版式看得出效果——**别把它当视觉验收**，真视觉看真栈。
+ */
+const 模型控件夹具 = (
+  <button
+    type="button"
+    class="group flex h-7 min-w-0 max-w-[220px] items-center gap-1.5 rounded-sm px-2 text-v2-text-text-base"
+  >
+    <span class="truncate leading-4">GPT</span>
+    <span class="flex shrink-0">▾</span>
+  </button>
+)
 
 export default {
   title: "App/OpenHive/AiSession/SessionPanel",

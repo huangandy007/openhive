@@ -53,7 +53,8 @@ export interface RightPaneSubmitInput {
    */
   session: Session | undefined
   /**
-   * 本栏现在认的模型（**由调用方解好**：`model-selection.ts` 的 `当前模型键` → `从键`）。
+   * 本栏现在认的模型（**由调用方解好**：上游 `local.model.current()`，拆成 `{providerID, modelID}`
+   * ——`ai-session-slot.tsx` 的 `现在认的模型`）。
    *
    * **必填但可为 `undefined`**（与上面的 `session` 同一个口径）：`undefined` 是「本栏一个都没认出」
    * 这个**事实**，而它不是「忘了传」——忘了传的话 typecheck 会红。
@@ -91,8 +92,8 @@ export async function submitRightPanePrompt(input: RightPaneSubmitInput): Promis
   /**
    * ⚠️ **F3 / F4 已修（2026-10-11 用户裁定「F3 本轮修掉」）**。
    *
-   * 修法一句话：**本栏恒给模型 ＋ 认不出就不发**。模型由调用方解好（`model-selection.ts` 的
-   * `当前模型键` → `从键`），这里只照 `FollowupDraft.model` 的形状原样交出去；本栏一个都
+   * 修法一句话：**本栏恒给模型 ＋ 认不出就不发**。模型由调用方解好（上游 `local.model.current()`
+   * ——`ai-session-slot.tsx` 的 `现在认的模型`），这里只照 `FollowupDraft.model` 的形状原样交出去；本栏一个都
    * 认不出时，上面那句 `if (!input.model) return false` 已经拦住——**一个字都不发**，
    * 正文留在框里（面板据此回填，`session-panel.tsx` 的 `onSubmit`）。
    *

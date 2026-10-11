@@ -1,27 +1,33 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
-import { createStore } from "solid-js/store"
 import { useCenterTabs } from "@/center/tab-context"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
+import { LocalProvider, useLocal } from "@/context/local"
 import { usePermission } from "@/context/permission"
+import { SDKProvider } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
-import { useServerSync } from "@/context/server-sync"
-import { useProviders } from "@/hooks/use-providers"
+import { useServerSync, type ServerSync } from "@/context/server-sync"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
-import { 模型选项, 从键, 当前模型键 } from "./model-selection"
+import { 右栏模型控件 } from "./model-control"
 import { projectCapabilities } from "./projection"
-import { createRightPaneSource } from "./right-pane-source"
+import { createRightPaneSource, type RightPaneSource } from "./right-pane-source"
 import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
 import { SessionDocks } from "./session-docks"
 import { SessionPanel } from "./session-panel"
 import { submitRightPanePrompt } from "./submit-prompt"
 
 /**
- * 右栏（AI 会话）的**生产组装**（T008 建、T010 接上提交）：把四份 context 接进
+ * 右栏（AI 会话）的**生产组装**（T008 建、T010 接上提交）：把 context 接进
  * `createRightPaneSource` + `SessionPanel`。
+ *
+ * **分两层**：外面这一层只干一件事——**给右栏挂上它自己要用的两套 provider**
+ * （`SDKProvider` ＋ `LocalProvider`，见下「右栏自挂两套 provider」）；里面 `右栏主体` 才是
+ * 本体。分开的理由不是好看：`useLocal()` 只能在 **`LocalProvider` 之内**取，而本体的十来处
+ * 回调、memo 全都要读它 ⇒ 本体必须整体挪进 provider 之内（同 `#005-27`：给组件加挂载前提时，
+ * 「谁把它挂起来」要一起改）。
  *
  * ## 几份 context 各自解决什么
  *
@@ -29,18 +35,42 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *   文件头）。
  * - `useServerSync()` → **会话数据**。`ServerSyncProvider` 由 `app.tsx` 的 `NewAppLayout`
  *   → `SelectedServerProviders` 提供，而 `NewLayout` 是它的后代 ⇒ 这一层**取得到**
- *   （⚠️ `SDKProvider` / `SyncProvider` **不在**这一层，见 `plan.md §②` 的更正）。
- * - `useServerSDK()` → **目录作用域的 `api`**（T010）。⚠️ 与上一条的更正同理，`SDKProvider`
+ *   （⚠️ `SDKProvider` / `LocalProvider` **原本不在**这一层，见下面那一节）。
+ * - `useServerSDK()` → **目录作用域的 `api`**（T010）。⚠️ 与上一条同理，`SDKProvider`
  *   在 shell 层取不到——但**它兜着的那两个工厂取得到**：`ensureDirSdkContext(目录)` 与
  *   `ensureDirSyncContext(目录)` 都是 `useServerSDK()` / `useServerSync()` 上的方法，而
  *   `DirectorySDK` / `DirectorySync` 这两个类型本来就是从它们反推出来的
- *   （`context/sdk.tsx` / `context/sync.tsx`）。⇒ 右栏**自己就能造出**目录作用域的 `api` / `sync`，
- *   不必等上游把 provider 提上来。
+ *   （`context/sdk.tsx` / `context/sync.tsx`）。⇒ 右栏**自己就能造出**目录作用域的 `api` / `sync`。
  * - `useCenterTabs()` → **当前模块**，用来算指令卡 / skill 的投影（`projectCapabilities`）。
  *   它由 `WorkspaceEntry` 自己建 ⇒ 本组件必须**创建在那个 provider 之内**（`right` 这个 prop
  *   收的是**访问器**而不是现成的元素，要的就是这条，见 `workspace-entry.tsx` 上那段注释）。
  * - `useLanguage()` / `showToast` → **提交失败时的回话**（T010）。`LanguageProvider` 在
  *   `app.tsx` 的很外层、`showToast` 是模块级函数 ⇒ 这一层都取得到。
+ *
+ * ## 右栏自挂两套 provider（2026-10-11 用户裁定「A. 右栏自挂 LocalProvider」）
+ *
+ * **为什么**：底栏那颗模型钮要的是**原生那颗**（搜索 / 分组 / 滚动 / 管理模型），而原生件不传
+ * `model` 时效法 `useLocal().model`（`dialog-select-model.tsx:280`）⇒ 右栏必须自己有一套
+ * `useLocal()`。这**不是**把上游的 provider 提上来（那要动 `app.tsx` / `layout-new.tsx`，是
+ * 「改」不是「加」），而是**在右栏槽内部再挂一层**——上游 `LocalProvider` 本来就是可以多层挂的
+ * 普通 context。
+ *
+ * ⚠️ **代价（据实记）**：中栏那一页在会话路由下**仍然挂着**（`center-content.tsx` 的
+ * `pageVisible` 只是藏了它，没有卸载）⇒ 同一场会话可能同时存在**两份** `LocalProvider`
+ * 实例。二者共用同一份 localStorage 账（`Persist.serverWorkspace(...)` 的 key 只由
+ * server scope ＋ 目录 ＋ 会话 id 决定），但**各自的 signal 是独立的** ⇒ 在右栏选中的模型，
+ * 藏起来的中栏那一份**要重新挂载才看得到**。今天中栏那一页在会话路由下**点不到**
+ * （它被藏了），所以这一条**没有实测后果**，但它是真实存在的分叉，记在这里备查。
+ *
+ * ⚠️ **`useParams()` 这一条是本方案的前提，已核到库源码**：`useLocal()` 的 `id()` 取
+ * `useParams().id`（`context/local.tsx:70`），决定「选中写进哪一场会话的账」。右栏虽然在 shell 层，
+ * 但 `useParams()` 读的是**路由器全局**那份 params（`@solidjs/router` 0.15.4 的
+ * `routing.js:130`：`export const useParams = () => useRouter().params`；同一个 `useRouter().location`
+ * 右栏今天已经在用了）⇒ 拿得到。⚠️ 这与 `route-session.ts` 文件头那句「拿不到 `:id` 这个路由
+ * 参数」**相反**——那句是对 `useParams()` 的误记（它真的拿不到的是**最近一层 `<Route>` 的**
+ * 上下文，那是 `useRoute()`；`useParams()` 不走那里）。本文件**不改** `route-session.ts`：它按
+ * URL 解析的做法仍然对、用例仍然绿，而它**不动**才是外科式的。（判据：真栈 T7——选中后重开页面
+ * 还在，等于 `saved.session[<本场 id>]` 真的落了盘。）
  *
  * ## ⚠️ 两个 `ensureDir*Context` 只能在**有 owner 的计算里**取
  *
@@ -96,21 +126,29 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    （`session-rename.test.tsx`），而「点提交那一刻**这一场的 id** 与哪个新名字被交出去」
  *    只有人读代码看得见——`session-panel.test.tsx` 钉的是「面板交出了 `props.sessionID` ＋ 那个
  *    标题」，钉不到这一句把它接到了 `重命名会话` 上。
+ * ⑨ **模型那一半**（2026-10-11 本轮）：「底栏那颗钮是**原生那颗**」这一条**在这个文件里**
+ *    同样只有人读代码看得见（`模型控件={<右栏模型控件 />}`）。它**不是**没有判据——判据在真栈
+ *    （`e2e/real-stack/right-pane-slash-and-model-real.spec.ts` 的 T3–T7：搜索框在不在、
+ *    过滤得动、滚得动、管理模型点得开、选中当场变 ＋ 重开页面还在），以及
+ *    `session-panel.test.tsx` 那条「喂进去的元素原样落在原生 `modelControl` 口上」。
+ *    本文件这一段（**有没有把 element 接对**）仍属缺口。
+ * ⑩ **本场模型的来源**（同上）：「`现在认的模型()` 取的是 `local.model.current()`」这件事，
+ *    以及它**按路由参数 `id` 记账**（不是全局一份 draft）——只有真栈 T7 钉得动。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
+/**
+ * 右栏那个「源」的类型（`createRightPaneSource` 的实参类型）。
+ *
+ * ⚠️ `createRightPaneSource<T>` 是**泛型**的，而 `ReturnType<typeof createRightPaneSource>` 会把 `T`
+ * 定成 `unknown`（实测：`tsgo` 当场红在「`unknown` 不能赋给 `SessionPanelData`」）——所以要**具名
+ * 实例化**。`T` 就是 `ensureDirSyncContext(目录).data` 的类型，这里**从被调方反推**
+ * （`#004-07`：按被调方的签名打勾），不自己复写一份 `data` 的形状。
+ */
+type 右栏源 = RightPaneSource<ReturnType<ServerSync["ensureDirSyncContext"]>["data"]>
+
 export function AiSessionSlot(): JSX.Element {
   const location = useLocation()
-  const navigate = useNavigate()
   const serverSync = useServerSync()
-  const serverSDK = useServerSDK()
-  const center = useCenterTabs()
-  const language = useLanguage()
-  // 待答闸门的「自动放行」筛法（`SessionDocks` 的 `autoResponds`）。`PermissionProvider` 挂在
-  // `app.tsx` 里、**在所有栏之上** ⇒ 右栏这一层拿得到（与 `useServerSync()` 同一层）。
-  const permission = usePermission()
-  // `/` 面板里属于上游内建命令的那一半。`CommandProvider` 挂在 `app.tsx` 的 `SharedProviders`
-  // （路由根），右栏在它下面 ⇒ 与 `usePermission()` 同一层拿得到。
-  const command = useCommand()
 
   const 源 = createRightPaneSource({
     pathname: () => location.pathname,
@@ -124,6 +162,49 @@ export function AiSessionSlot(): JSX.Element {
     // ⇒ 由 `createRightPaneSource` 用 `createMemo` 兜住（那文件头写明了实测）。
     dataFor: (目录) => serverSync().ensureDirSyncContext(目录).data,
   })
+
+  // 两套 provider 都要**一个目录**，而目录只在「三样齐了」时才有 ⇒ 用 `Show` 兜住，
+  // 免得给它们喂一个空串（那会让 `ensureDirSdkContext("")` 建一份没人要的上下文）。
+  // 三种「没有会话」的场合（首页 / 草稿页 / id 解不出来）这里什么都不渲染，`ThreePane`
+  // 那边因此**整根右栏都不在**（它判的是 `props.right !== undefined`）。
+  return (
+    <Show when={源.ready()?.directory}>
+      {(目录) => (
+        <SDKProvider directory={目录}>
+          <LocalProvider>
+            <右栏主体 源={源} />
+          </LocalProvider>
+        </SDKProvider>
+      )}
+    </Show>
+  )
+}
+
+/**
+ * 右栏本体。**必须挂在 `SDKProvider` / `LocalProvider` 之内**（`useLocal()` 的前置条件），
+ * 所以它不能跟 {@link AiSessionSlot} 合成一个组件——那一层 provider 正夹在两者之间。
+ *
+ * `源` 由外面建好传进来（它只依赖 `location` 与 `serverSync()`，两样在 provider 内外都取得到；
+ * 建在外面是为了让 provider 那一层能用 `源.ready()?.directory` 当挂载判据）。
+ */
+function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const serverSync = useServerSync()
+  const serverSDK = useServerSDK()
+  const center = useCenterTabs()
+  const language = useLanguage()
+  // 待答闸门的「自动放行」筛法（`SessionDocks` 的 `autoResponds`）。`PermissionProvider` 挂在
+  // `app.tsx` 里、**在所有栏之上** ⇒ 右栏这一层拿得到（与 `useServerSync()` 同一层）。
+  const permission = usePermission()
+  // `/` 面板里属于上游内建命令的那一半。`CommandProvider` 挂在 `app.tsx` 的 `SharedProviders`
+  // （路由根），右栏在它下面 ⇒ 与 `usePermission()` 同一层拿得到。
+  const command = useCommand()
+  // 底栏模型那一半。**它就是本轮改造的全部要点**：这一句在 `AiSessionSlot` 里取不到
+  // （那一层没有 `LocalProvider`），所以本体才必须整个挪进来。
+  const local = useLocal()
+
+  const 源 = props.源
 
   /**
    * 回话那一手要用的两件东西（`sync` 供乐观插入、`api` 供 `session.prompt`），
@@ -153,54 +234,22 @@ export function AiSessionSlot(): JSX.Element {
   })
 
   /**
-   * 已接入的 provider 清单（底栏模型的候选来源）。
-   *
-   * ⚠️ `useProviders` 内部 `useServerSync()` ＋ `useParams()`，两样右栏都够得着
-   * （`useParams` 走的是 `RouterContextObj`，由 `<Router>` 提供、不由 `<Route>` 提供
-   * ⇒ 在路由根的这一栏里是安全的）。
-   *
-   * ⚠️ 目录**跟着当前会话走**（`提交态()?.directory`）：目录作用域的 provider 目录要在
-   * 那只目录上有实例时才 ready（`selectProviderCatalog` 的 `explicit: true` 那支）。
-   */
-  const providers = useProviders(() => 提交态()?.directory)
-
-  /**
-   * 本栏「选过」的模型，**按会话记**（用户裁定「管这场会话，且记住」）。
-   *
-   * 两处记账不是重复（`LEARNINGS #002-06` 讲的不是这种）：这里记的是**界面上这一栏选了什么**
-   * （切会话回来立刻显示它），服务端记的是 `session.model`（发出去之后由
-   * `prompt.ts` 的 `createUserMessage` 写库，`setAgentModel`）。读的时候前者优先、
-   * 后者兜底 —— 唯一处解这个优先级的地方是 `model-selection.ts` 的 `当前模型键`。
-   */
-  const [选过的, 设置选过的] = createStore<Record<string, string>>({})
-
-  /**
-   * 这一栏现在认的模型键（`providerID/modelID` 串）。
-   *
-   * ⚠️ 优先级只有一处算（`当前模型键`：本栏选的 → 会话记的 → 应用默认），这里只把它包成
-   * 「没会话 ⇒ undefined」的访问器，喂给 `current`（`?? ""` 是原生件的形状要求，见下面）。
-   * ⚠️ `defaultModel()` 返回 `{ providerID, modelID } | null | undefined`（`context/data.tsx:8-11`），
-   * `?? undefined` 兜掉那个 `null`（Task 3 评审发现，`当前模型键` 的入参不收 `null`）。
-   */
-  const 现在认的模型键 = () => {
-    const 现在 = 提交态()
-    if (!现在) return undefined
-    return 当前模型键({
-      本栏选的: 选过的[现在.sessionID],
-      会话记的: 现在.sync.session.get(现在.sessionID)?.model,
-      应用默认: providers.defaultModel() ?? undefined,
-    })
-  }
-
-  /**
    * 本栏现在认的模型（**对象**形态，给 `建会话` / `submitRightPanePrompt` 用）。
    *
-   * ⚠️ 这是「键 → 对象」的**唯一一处**拆法（`从键`），只包一层：`当前模型键` 是唯一的判断
-   * （`LEARNINGS #002-06`——不要把「从键」的拆法在调用点各写一份）。
+   * ⚠️ 判断**只有一处**：上游 `local.model.current()`（`context/local.tsx:233`：
+   * 本场选的 → 本场 agent 默认 → 配置的 / 最近用过的 / 默认）。本函数只把那个「项」拆成
+   * 请求要的 `{providerID, modelID}` 两个字段——**不重算该显示哪个**（`#002-06`：同一个判断
+   * 不要两处各写一份）。这也是「底栏那颗钮显示什么」的**同一个来源**（`model-control.tsx`），
+   * 所以「钮上写的」与「发出去的」恒一致。
+   *
+   * ⚠️ 认不出时是 `undefined`，那时 `submitRightPanePrompt` 一个字都不发（F3/F4 的收口，
+   * 见 `#006-27`）；`建会话` 那边则是「不带模型建」，由服务端按会话默认走。
+   *
+   * ⚠️ **读的时刻**：本函数在**事件处理器里**被调用（提交 / 新建那一刻现读），不在渲染期预取。
    */
   const 现在认的模型 = () => {
-    const 键 = 现在认的模型键()
-    return 键 ? 从键(键) : undefined
+    const 项 = local.model.current()
+    return 项 ? { providerID: 项.provider.id, modelID: 项.id } : undefined
   }
 
   /** 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。 */
@@ -231,8 +280,6 @@ export function AiSessionSlot(): JSX.Element {
 
   // 三样齐了才渲染（`ready` 由 `right-pane-source` 守着），省得在这里写三个 `!`
   // ——那种 `!` 没有东西守着，改了 `data` 的来历就会悄悄说谎。
-  // 没有会话（首页 / 草稿页）时这里什么都不渲染，`ThreePane` 那边因此**整根右栏都不在**
-  // （它判的是 `props.right !== undefined`）。
   return (
     <Show when={提交态()}>
       {(态) => (
@@ -241,19 +288,9 @@ export function AiSessionSlot(): JSX.Element {
           directory={态().directory}
           sessionID={态().sessionID}
           projection={投影()}
-          模型控件={{
-            options: () => 模型选项(providers.connected()),
-            // ⚠️ 空串是**原生件的形状要求**（`current: Accessor<string>`）；候选为空、当前也没有时
-            // 触发器上就没有字（设计文档缺口表 G8）。
-            current: () => 现在认的模型键() ?? "",
-            // 选中 ⇒ 记在**这一场会话**上（然后 `onSubmitPrompt` 里随提交带出去，
-            // 服务端据此写 `session.model`）。
-            onSelect: (键) => {
-              const 现在 = 提交态()
-              if (!现在) return
-              设置选过的(现在.sessionID, 键)
-            },
-          }}
+          // 底栏那颗钮：**原生那颗**（搜索 / 分组 / 滚动 / 管理模型），本组件只负责把它挂上。
+          // 它自己从 `useLocal()` 里读「显示哪个、选中写哪」（`model-control.tsx` 文件头）。
+          模型控件={<右栏模型控件 />}
           斜杠内建命令={{
             选项: () => command.options,
             执行: (id) => command.trigger(id, "slash"),
@@ -272,8 +309,9 @@ export function AiSessionSlot(): JSX.Element {
               sessionID: 现在.sessionID,
               sessionDirectory: 现在.directory,
               session: 现在.sync.session.get(现在.sessionID),
-              // 模型的判断在 `model-selection.ts`（一处解、一处测）；本栏认不出时是 `undefined`，
-              // 那时 `submitRightPanePrompt` 一个字都不发（F3/F4 的收口）。
+              // 模型的判断只有一处（上游 `local.model.current()`，见上面那段注释）；
+              // 本栏认不出时是 `undefined`，那时 `submitRightPanePrompt` 一个字都不发
+              // （F3/F4 的收口）。
               model: 现在认的模型(),
               api: 现在.api,
               serverSync: serverSync(),

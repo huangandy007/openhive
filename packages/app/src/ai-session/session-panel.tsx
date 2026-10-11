@@ -6,7 +6,6 @@ import {
   type PromptInputV2Suggestion,
 } from "@opencode-ai/session-ui/v2/prompt-input"
 import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
-import type { PromptInputV2SelectControl } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
 import { createPromptInputV2Store } from "@opencode-ai/session-ui/v2/prompt-input/store"
 import { createAutoScroll } from "@opencode-ai/ui/hooks"
 import { For, Show, createEffect, createMemo, createSignal, on, type JSX } from "solid-js"
@@ -78,22 +77,27 @@ export interface SessionPanelProps {
    */
   斜杠内建命令: { 选项: () => readonly 内建命令条[]; 执行: (id: string) => void }
   /**
-   * 底部那一颗模型选择器（用户裁定 2026-10-11：「管这场会话，且记住」）。
+   * 底部那一颗模型选择器（用户裁定 2026-10-11：「管这场会话，且记住」，且**复用原生那颗**）。
    *
-   * **没有新控件**：形状就是上游 `PromptInputV2SelectControl`
-   * （`session-ui/v2/components/prompt-input/interaction.ts:22`），塞进 controller 的 `view.model`
-   * ⇒ 原生 `PromptInputV2` 的 `modelControl` fallback 会渲染**它自己的**
-   * `PromptInputV2ConfiguredSelect`（`index.tsx:228-244`）。上游传 `modelControl` 时用的是那颗
-   * 富弹层（`ModelSelectorPopoverV2`），那条路要一整套 `ModelState`
-   * （`dialog-select-model.tsx:280` 的 `input.model ?? useLocal().model`）⇒ 右栏取不到 `useLocal()`
-   * ⇒ 那条**实测否决**（设计文档 §3.2）。
+   * **收的是现成的元素**：本组件把它原样塞进原生 `PromptInputV2` 的 `modelControl` 口
+   * （`session-ui/v2/components/prompt-input/index.tsx:43`）——原生件**优先**渲染这个口，
+   * 没喂时才退回它自己那颗平铺的 `PromptInputV2ConfiguredSelect`（同文件 `:228-244`）。
+   * 生产喂进来的是 `model-control.tsx` 的 `右栏模型控件`（原生 `ModelSelectorPopoverV2`：
+   * 搜索 / 按 provider 分组 / 滚动 / 管理模型）。
+   *
+   * ⚠️ **为什么不是「传一个 `view.model` 让原生件自己画」**（那是 2026-10-11 之前的写法，
+   * 也是用户报的那个缺陷）：`view.model` 那条路走的是**平铺的单选列表**——没有搜索框、没有
+   * 滚动容器、没有「管理模型」。那颗富弹层要一整套 `ModelState`
+   * （`dialog-select-model.tsx:280` 的 `input.model ?? useLocal().model`），而 `useLocal()`
+   * 右栏原本挂不到（设计文档 §3.2 记的「实测否决」）⇒ 本轮改成**右栏自挂 `LocalProvider`**
+   * （用户裁定「A. 右栏自挂 LocalProvider」，接线在 `ai-session-slot.tsx`）。
    *
    * **必填**。理由同 `projection`：可选就等于「忘了传也没人红」，而忘传的表现是「底栏空着」。
    *
-   * ⚠️ 本组件**不解**「该显示哪个模型」——那是 `model-selection.ts` 的判断（`当前模型键`），
-   * 由调用方解好、以「键」的形式喂进来。本组件只把它转给原生件。
+   * ⚠️ 本组件**不解**「该显示哪个模型」——那是上游 `local.model.current()` 的判断，由调用方
+   * 解好、喂进来（`#002-06`：同一个判断不要两处各写一份）。本组件只把它转给原生件。
    */
-  模型控件: PromptInputV2SelectControl
+  模型控件: JSX.Element
   /**
    * 提交一句话。**真正发出去的是调用方**（T010 的 `submit-prompt.ts` 交给会话执行链）；
    * 本组件只负责交出去、并按回话决定**要不要清空输入框**。
@@ -394,8 +398,6 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
         },
         onStop: () => {},
       },
-      // 底栏那一颗。原生件在没传 `modelControl` 时会读这个位置（`index.tsx:230`）。
-      model: props.模型控件,
     },
   })
 
@@ -674,7 +676,9 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
 
         {/* Hero 输入：钉在底部（`shrink-0`）——「对话优先」的视觉中心，§4.7.5 的表就这一条。 */}
         <div data-slot="session-hero" class="w-full shrink-0 p-3">
-          <PromptInputV2 controller={controller} />
+          {/* 底栏那一颗模型钮：**原生口优先**——喂了 `modelControl` 就渲染它，没喂时才退回
+              原生件自己那颗平铺的 `PromptInputV2ConfiguredSelect`（`index.tsx:228-244`）。 */}
+          <PromptInputV2 controller={controller} modelControl={props.模型控件} />
         </div>
 
         {/* ③ 抽屉本体放在最后：它是 `absolute inset-0`，DOM 顺序决定同层级的覆盖先后。 */}

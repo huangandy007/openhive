@@ -104,7 +104,7 @@ const 提交 = (
     sessionID: "ses_1",
     sessionDirectory: "/工作区/甲方/项目",
     session: 会话("build", { id: "gpt", providerID: "openai" }),
-    // 本栏认的模型（由 `model-selection.ts` 的 `当前模型键` 解出、`从键` 拆开）。
+    // 本栏认的模型（由上游 `local.model.current()` 解出、拆成这两个字段）。
     model: { providerID: "openai", modelID: "gpt" },
     serverSync: 假serverSync,
     ...夹具,
@@ -224,12 +224,14 @@ describe("右栏提交一句话（T010 / FR-007 / US4 场景 1）", () => {
   })
 
   /**
-   * 模型由**调用方**解好传进来（`model-selection.ts` 的 `当前模型键` 一处解、一处测），
-   * 本模块只做一件事：把两截换成被调方要的字段名（`FollowupDraft.model = { providerID, modelID }`）。
+   * 模型由**调用方**解好传进来（上游 `local.model.current()` 一处解，`ai-session-slot.tsx` 的
+   * `现在认的模型` 一处拆），本模块只做一件事：把两截换成被调方要的字段名
+   * （`FollowupDraft.model = { providerID, modelID }`）。
    *
    * ⚠️ 与旧行为的分工差：旧代码在本模块里从 `session.model` 取（`Session.model.id` ⇒ `modelID`），
    * 于是「本栏选的 vs 会话记的 vs 应用默认」这个判断就散在本模块与界面两处
-   * （`LEARNINGS #002-06`）。现在那个判断只在 `model-selection.ts` 里有一份。
+   * （`LEARNINGS #002-06`）。现在那个判断只有上游 `local.model.current()` 一份
+   * （右栏底栏那颗钮显示的也是它 ⇒ 「钮上写的」与「发出去的」恒一致）。
    */
   test("本栏给的模型原样交给 draft（字段名按被调方）", async () => {
     const { 收到, api } = 造api()
