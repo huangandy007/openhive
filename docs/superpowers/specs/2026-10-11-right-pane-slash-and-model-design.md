@@ -126,7 +126,7 @@ const slashCommands = createMemo(() => [
 
 ### 3.2 ② 模型选择器 —— 复用原生那个控件，只补数据
 
-**控件**：用 app 侧既有的 `ModelSelectorPopoverV2`（`packages/app/src/components/dialog-select-model.tsx:225`）—— 原生 composer 用的就是它，这满足「和原生一样」。它通过 `PromptInputV2` **已有的** `modelControl` prop 注入 ⇒ **不改上游任何文件**。
+**控件：自建一个薄的**（**不复用** `ModelSelectorPopoverV2` —— 实测否决见 §4）。仍通过 `PromptInputV2` **已有的** `modelControl` prop 注入 ⇒ **不改上游任何文件**。长相照原生那一颗：`ButtonV2`（`variant="ghost-muted"`，高 `28px`）＋ `ProviderIcon` ＋ `chevron-down`，逐字照 `packages/app/src/components/prompt-input-v2.tsx:493-535`；点开是一个列出候选模型的浮层（`DropdownMenu`，⚠️ 挂 `data-*` 时按 `#005-22` 先查宿主源码里的 `data-slot=` 清单，别撞名）。
 
 **值**：
 
@@ -139,11 +139,10 @@ const slashCommands = createMemo(() => [
 
 **代价（据实写）**：选了但**没提交**就刷新页面 ⇒ 这次选择丢失，回到会话上一次记的值。这是「走服务端记」的必然代价，也正是裁定 #2 选择的形态。
 
-**待验（实现前必须先量，不许照推）**：
-1. `useProviders` 内部调 `useParams()`（`@solidjs/router`）；右栏在 **Route 之外**。传了 `directory` accessor 时 `dir()` 不会走 `params.dir`，但 `useParams()` 这一句**本身**会不会抛，**未实测**。
-2. `ModelSelectorPopoverV2` 的完整入参（它可能还要 agent / variant / 最近使用等上下文）**未读**。
+**上一版文档里挂着的两条待验，已量完（2026-10-11）**：
 
-> 这两条任一不成立，② 就退到「自建一个更薄的控件」——但那要重新评估；先量再说。
+1. **`useProviders` 在右栏安全 ✅** —— `useProviders` 里那句 `useParams()`（`hooks/use-providers.ts:22`）落到 `@solidjs/router@0.15.4` 的 `const useParams = () => useRouter().params`（`dist/routing.js:130`），而 `useRouter` 的卫兵查的是 **`RouterContextObj`**（`dist/routing.js:9`）—— 那是 `<Router>` 提供的，**不是 `<Route>`**。右栏住在 router root ⇒ 不抛。
+2. **`ModelSelectorPopoverV2` 不可复用 ❌** —— 它的 controller 第一行是 `const model = input.model ?? useLocal().model`（`components/dialog-select-model.tsx:280`），而 `model` 的类型是 `ReturnType<typeof useLocal>["model"]`（同文件 `:29`）。右栏没有 `LocalProvider` ⇒ **必须**喂一份 `ModelState` 才不碰 `useLocal`；而 `local.model` 有 `ready/current/recent/list/cycle/set/visible/setVisibility/variant{configured,selected,current,list,set}/…` 十几个成员，造一份完整的**就是把 `local.model` 抄一遍**（`#002-06`）。详见 §4。
 
 ### 3.3 ③ F3 —— 让那一格不可达，且不复制服务端的回退链
 
@@ -170,7 +169,7 @@ ai-session-slot.tsx
 
 session-panel.tsx
   ├─ useCommand()  ──► ① / 面板的池子（内建斜杠命令那半）
-  ├─ useProviders(目录) ──► ② 候选模型列表          ← 待验：useParams 在 Route 外
+  ├─ useProviders(目录) ──► ② 候选模型列表          ← 已验：右栏在 router root，取得到
   ├─ 模型信号 ──► ② 当前值；onSubmit 时交给 submit-prompt
   └─ PromptInputV2(controller, modelControl=…)      ← 上游已有该 prop
 
@@ -188,6 +187,7 @@ session-actions.ts
 
 | 备选 | 拒 |
 |---|---|
+| 复用 `ModelSelectorPopoverV2`（原生那颗控件） | 它的 controller 写着 `const model = input.model ?? useLocal().model`（`dialog-select-model.tsx:280`）⇒ 复用**必需要一份 `ModelState`**。而 `ModelState = ReturnType<typeof useLocal>["model"]`（同文件 `:29`）是个十几个成员的对象（`local.tsx:280-360`：`ready/current/recent/list/cycle/set/visible/setVisibility/variant{…}`）。**造一份完整的＝把 `local.model` 抄一遍**（`#002-06`）；造一份**残缺的再强转**＝给上游留一排运行时静默洞（上游哪天多动一个成员就炸，且不报错）。两条都不合仓训 ⇒ 改为自建一颗薄的（§3.2），只取它真正的数据源 `useProviders(目录)` 一个。 |
 | 把 `LocalProvider` 上提到能罩住右栏 | 上游文件（`packages/app/src/context/local.tsx` 与 `pages/directory-layout.tsx` 都在 `upstream/dev` 里）结构改动大 ＝ 与「最小化上游冲突」这条第一号约束正面对撞；且 `local.tsx:75-83` 的 `persisted` 是**按 (scope, 目录) 存的单份 localStorage**，右栏再挂一个实例就是**两个写入者写同一把钥匙**（后写覆盖先写）。**不做。** |
 | 右栏自建选择器并复算回退链 | `#002-06`：同一个判断两处各写一份。**不做。** |
 | 右栏第二个 `LocalProvider` 实例 | 同上，两个写入者。**不做。** |
@@ -233,8 +233,8 @@ session-actions.ts
 
 | # | 缺口 | 现状 |
 |---|---|---|
-| G1 | `useProviders()` 里的 `useParams()` 在 Route 之外会不会抛 | **未实测**；② 的前置条件 |
-| G2 | `ModelSelectorPopoverV2` 的完整入参 | **未读**；② 的前置条件 |
+| G1 | `useProviders()` 里的 `useParams()` 在 Route 之外会不会抛 | **已验：不抛**（`useRouter` 查的是 `<Router>` 提供的 `RouterContextObj`，右栏在 router root；见 §3.2）。**结论不变**：② 的候选列表就取 `useProviders(目录)` |
+| G2 | `ModelSelectorPopoverV2` 的完整入参 | **已验：不可复用**（它要一份完整的 `ModelState`，`dialog-select-model.tsx:280`）。**结论改变**：② 的控件改为自建一颗薄的（§3.2 / §4） |
 | G3 | 「选了没提交就刷新 ⇒ 丢」 | **接受**（裁定 #2 的必然代价），文档化即可 |
 | G4 | 真栈复现 F3（新会话第一条 `/命令`） | **未做**；实现期作为 ② 步的 RED 之一 |
 | G5 | `projection.all` 改成无消费者后的去留 | 本轮只标注，不删 |
