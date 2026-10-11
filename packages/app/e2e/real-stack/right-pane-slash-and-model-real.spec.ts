@@ -20,7 +20,7 @@ import path from "path"
  * （`deepseek/deepseek-flash`，默认是 `deepseek/deepseek-v4-pro`），**新开页面**（本栏
  * 「选过的」store 是内存态 ⇒ 一开页就空）落在这场上 ⇒ 底栏那颗钮显示这场会话里记的模型。
  * 变异验证在 ④ 步做：把 `ai-session-slot.tsx` 里 `会话记的:` 那一行拆掉 ⇒ T5 必须红
- * （回退到「应用默认」= `deepseek-v4-pro`，钮上不再有 `flash` 字样）。
+ * （回退到**空**——v1 下「应用默认」恒空（同 T3 注释 / F7），钮上同样没有 `flash` 字样。⚠️ 断言 `.toContain("flash")` 在「回退到某个默认模型」与「回退到空」两种情形下都成立，所以这条注释此前没让 T5 红、只是误导）。
  */
 
 const readStack = () =>
@@ -226,7 +226,7 @@ test("T5 · 会话记的模型：新开页面（本栏没选过）⇒ 底栏显�
 
   // **新开页面**：`选过的` 是 `AiSessionSlot` 里的内存 store（一开页就空）⇒ 三个模型源里只剩
   // 「会话记的」这一级能供模型。若这场会话的 `session.model` 没有记上，或「会话记的」这一级断了，
-  // 底栏就回退到「应用默认」= `deepseek-v4-pro`，钮上不会出现 `flash` 字样。
+  // 底栏就回退到**空**（v1 下「应用默认」恒空，见 T3 注释 / F7），钮上同样不会出现 `flash` 字样。
   await setup(page, 会话)
   await page.goto(`/server/${base64Encode(FRONT())}/session/${会话}`)
   const 面板 = page.locator('[data-component="session-panel"]')
@@ -239,7 +239,7 @@ test("T5 · 会话记的模型：新开页面（本栏没选过）⇒ 底栏显�
   const 当前名 = (await 钮.innerText()).trim()
   console.log(`【T5 会话记的】底栏显示「${当前名}」`)
   // `deepseek-flash` 的显示名是「DeepSeek V4.1 Flash」；即便候选清单滤掉了它（deprecated），
-  // 钮上会退回键 `deepseek/deepseek-flash` —— 两种形态都含 `flash`，而默认 `deepseek-v4-pro`
-  // （「DeepSeek V4 Pro」）不含。变异（拆掉 `会话记的:` 那一行）时这里必须红。
+  // 钮上会退回键 `deepseek/deepseek-flash` —— 两种形态都含 `flash`，而 v1 下「应用默认」恒空
+  // （见 T3 注释 / F7）：变异（拆掉 `会话记的:` 那一行）回退到**空名**、同样不含 `flash` ⇒ 这里必须红。
   expect(当前名.toLowerCase(), `会话记的模型没生效：显示「${当前名}」`).toContain("flash")
 })

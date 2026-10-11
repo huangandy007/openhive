@@ -274,3 +274,4 @@ session-actions.ts
 | G8 | 无任何已接入 provider 时，模型控件的候选为空、触发器文字为空串，且提交会被守卫挡下（返回 false、正文留在框里、**没有提示**） | 本机没有可复现的环境（不配 provider 连原生的底栏也是空的）⇒ 据实挂账，不写「已覆盖」 |
 | G9 | 「内建命令选中即执行」的**真执行**只在单元层钉（`右栏选中命令` 返回动作）＋ 组件层钉（spy 被调用）；真栈只钉到「池子里有内建」与「服务端命令选中后 token 留在框里」 | 真执行会在沙箱里跑 `/init` 这类有副作用的命令 ⇒ 真栈不跑 |
 | G10 | **唯一与原生不同字的一处**：`title`。能对上号的 skill 用中文显示名（用户裁定 2026-10-11，为保住「民警打中文搜得到」），其余用命令名 | `id`/`label`/`trigger`/次序与原生逐条一致 |
+| G11 | §3.2 值表第三级「应用默认」`useProviders(目录).defaultModel()` 在 **v1 下拿不到值**（`bootstrap.ts:234` 只传一参给 `normalizeProviderList`，v1 生成类型无 `defaultModel` 字段 ⇒ 恒 `undefined`）——新会话「本栏没选过 ＋ 会话没记过」时三级全空 ⇒ `submit-prompt.ts:89` 静默 `return false`（正文留框、零提示，民警打字回车无反应）；会话记过 model 时不受影响 | 视觉层见 `state.md` F7；功能后果即终审 I-1。**待用户裁定**（v1 兜底 / 可见提示 / 维持现状）；代码面本轮不修（改 `context/global-sync/**` 违 Global Constraint 1、在 `ai-session/**` 自复算违 §3.2） |
