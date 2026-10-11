@@ -82,6 +82,16 @@ const 夹具数据 = (轮数 = 1): SessionPanelData => ({
 /** 一份**四层都空**的投影（`projection` 是必填——可选就等于「忘传也没人红」，而忘传的表现是「右栏空着」，与「这个模块还没有 skill」在界面上分不开）。 */
 const 空投影 = projectCapabilities([], undefined)
 
+/** 底栏模型选择器的假候选（storybook 不接真 provider，给两条看得见效果的）。 */
+const 模型控件夹具 = {
+  options: () => [
+    { id: "openai/gpt", label: "GPT", providerID: "openai" },
+    { id: "anthropic/sonnet", label: "Sonnet", providerID: "anthropic" },
+  ],
+  current: () => "openai/gpt",
+  onSelect: () => {},
+}
+
 export default {
   title: "App/OpenHive/AiSession/SessionPanel",
   id: "app-openhive-ai-session-session-panel",
@@ -103,6 +113,7 @@ export const Default = {
           projection={空投影}
           // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={模型控件夹具}
         />
       ))}
     </div>
@@ -124,6 +135,7 @@ export const MultiTurn = {
           projection={空投影}
           // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={模型控件夹具}
         />
       ))}
     </div>

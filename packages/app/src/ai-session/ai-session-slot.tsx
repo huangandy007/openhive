@@ -1,14 +1,17 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
+import { createStore } from "solid-js/store"
 import { useCenterTabs } from "@/center/tab-context"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { usePermission } from "@/context/permission"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
+import { useProviders } from "@/hooks/use-providers"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
+import { 模型选项, 当前模型键 } from "./model-selection"
 import { projectCapabilities } from "./projection"
 import { createRightPaneSource } from "./right-pane-source"
 import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
@@ -149,6 +152,46 @@ export function AiSessionSlot(): JSX.Element {
     }
   })
 
+  /**
+   * 已接入的 provider 清单（底栏模型的候选来源）。
+   *
+   * ⚠️ `useProviders` 内部 `useServerSync()` ＋ `useParams()`，两样右栏都够得着
+   * （`useParams` 走的是 `RouterContextObj`，由 `<Router>` 提供、不由 `<Route>` 提供
+   * ⇒ 在路由根的这一栏里是安全的）。
+   *
+   * ⚠️ 目录**跟着当前会话走**（`提交态()?.directory`）：目录作用域的 provider 目录要在
+   * 那只目录上有实例时才 ready（`selectProviderCatalog` 的 `explicit: true` 那支）。
+   */
+  const providers = useProviders(() => 提交态()?.directory)
+
+  /**
+   * 本栏「选过」的模型，**按会话记**（用户裁定「管这场会话，且记住」）。
+   *
+   * 两处记账不是重复（`LEARNINGS #002-06` 讲的不是这种）：这里记的是**界面上这一栏选了什么**
+   * （切会话回来立刻显示它），服务端记的是 `session.model`（发出去之后由
+   * `prompt.ts` 的 `createUserMessage` 写库，`setAgentModel`）。读的时候前者优先、
+   * 后者兜底 —— 唯一处解这个优先级的地方是 `model-selection.ts` 的 `当前模型键`。
+   */
+  const [选过的, 设置选过的] = createStore<Record<string, string>>({})
+
+  /**
+   * 这一栏现在认的模型键（`providerID/modelID` 串）。
+   *
+   * ⚠️ 优先级只有一处算（`当前模型键`：本栏选的 → 会话记的 → 应用默认），这里只把它包成
+   * 「没会话 ⇒ undefined」的访问器，喂给 `current`（`?? ""` 是原生件的形状要求，见下面）。
+   * ⚠️ `defaultModel()` 返回 `{ providerID, modelID } | null | undefined`（`context/data.tsx:8-11`），
+   * `?? undefined` 兜掉那个 `null`（Task 3 评审发现，`当前模型键` 的入参不收 `null`）。
+   */
+  const 现在认的模型键 = () => {
+    const 现在 = 提交态()
+    if (!现在) return undefined
+    return 当前模型键({
+      本栏选的: 选过的[现在.sessionID],
+      会话记的: 现在.sync.session.get(现在.sessionID)?.model,
+      应用默认: providers.defaultModel() ?? undefined,
+    })
+  }
+
   /** 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。 */
   const 投影 = createMemo(() => projectCapabilities(MANIFESTS, center.module()))
 
@@ -187,6 +230,19 @@ export function AiSessionSlot(): JSX.Element {
           directory={态().directory}
           sessionID={态().sessionID}
           projection={投影()}
+          模型控件={{
+            options: () => 模型选项(providers.connected()),
+            // ⚠️ 空串是**原生件的形状要求**（`current: Accessor<string>`）；候选为空、当前也没有时
+            // 触发器上就没有字（设计文档缺口表 G8）。
+            current: () => 现在认的模型键() ?? "",
+            // 选中 ⇒ 记在**这一场会话**上（然后 `onSubmitPrompt` 里随提交带出去，
+            // 服务端据此写 `session.model`）。
+            onSelect: (键) => {
+              const 现在 = 提交态()
+              if (!现在) return
+              设置选过的(现在.sessionID, 键)
+            },
+          }}
           斜杠内建命令={{
             选项: () => command.options,
             执行: (id) => command.trigger(id, "slash"),

@@ -240,6 +240,7 @@ const 摆右栏带命令 = (收到的: string[]) =>
         sessionID="ses_1"
         projection={空投影}
         斜杠内建命令={{ 选项: () => 内建夹具, 执行: (id) => void 收到的.push(id) }}
+        模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
       />
     )),
   )
@@ -258,6 +259,7 @@ const 摆右栏 = () =>
         sessionID="ses_1"
         projection={空投影}
         斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
       />
     )),
   )
@@ -299,6 +301,7 @@ describe("右栏会话的 `DataProvider`（FR-010 / 计划 §② 的那道接线
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -317,6 +320,7 @@ describe("消息流（FR-010）", () => {
           sessionID={sessionID}
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -405,6 +409,7 @@ describe("消息流（FR-010）", () => {
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -448,6 +453,7 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -522,6 +528,7 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -558,6 +565,7 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -673,6 +681,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           sessionID={sessionID}
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onSelectSession={(id) => 事件.push(`切到 ${id}`)}
           onNewSession={() => 事件.push("新建")}
           onRenameSession={(id, title) => 改名过.push([id, title])}
@@ -880,6 +889,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -934,6 +944,7 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
           sessionID="ses_1"
           projection={命令投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onSubmitPrompt={() => {}}
         />
       )),
@@ -1005,6 +1016,7 @@ describe("常用操作行 + 更多 skill 抽屉（T004 📥 / T006 📥 交来�
           sessionID="ses_1"
           projection={投影(能力集)}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -1113,6 +1125,7 @@ describe("点指令卡 ＝ 填入一句话（T009 / FR-007；T004 📥 那一笔
           sessionID="ses_1"
           projection={projectCapabilities([造清单([两张卡])], undefined)}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -1223,6 +1236,7 @@ describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -1328,6 +1342,7 @@ describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
           sessionID={typeof sessionID === "function" ? sessionID() : sessionID}
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onDeleteSession={(id) => 事件.push(id)}
         />
       )),
@@ -1441,6 +1456,7 @@ describe("导出会话（T016 / FR-010）", () => {
           sessionID={sessionID}
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
           onExportSession={(id) => 事件.push(id)}
         />
       )),
@@ -1674,6 +1690,7 @@ describe("`/` 面板的池子（两源）", () => {
           sessionID="ses_1"
           projection={空投影}
           斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{ options: () => [], current: () => "", onSelect: () => {} }}
         />
       )),
     )
@@ -1709,5 +1726,83 @@ describe("`/` 面板的池子（两源）", () => {
     项!.click()
 
     expect(收到).toEqual(["session.new"])
+  })
+})
+
+/**
+ * 底栏模型控件（2026-10-11）——**没有新写一个字 UI**：走原生 `PromptInputV2` 的
+ * `view.model` 这一支（`session-ui/v2/components/prompt-input/index.tsx:228-244`，
+ * `props.modelControl` 没传时的 fallback），渲染的是上游自己的 `PromptInputV2ConfiguredSelect`
+ * （`:527-549`）。
+ *
+ * 本组钉三件：控件**在**、显示的是**当前**那一支、点开能选且**选中会回调**。
+ * 几何（坐在底栏哪一行、有没有被裁掉）归真栈（`#005-07`）。
+ *
+ * ## 三处「先量、别猜」的实测（2026-10-11）
+ *
+ * ① `aria-label` 的英文串：上游那颗触发器 `aria-label={i18n.t("ui.promptInput.chooseModel")}`
+ *    （`index.tsx:577`）；`useI18n()` 的 fallback `locale: () => "en"` 在组件测试里**生效**
+ *    （`ui/context/i18n.tsx` 的 `Context = createContext(fallback)`，`fallback.t` 直查 `en` 字典，
+ *    `en.ts:137` = `"Choose model"`）⇒ 断 `[aria-label="Choose model"]` 成立。
+ * ② 那颗模型钮在**按钮行**里（`prompt-input-v2` 表单下沿 `flex h-11` 那行，`index.tsx:198`），
+ *    是 `[data-component="prompt-input"]` 编辑器 div 的**兄弟**、不是它的子孙 ⇒ 从宿主查，
+ *    **不从编辑器查**（brief 里那条 `输入.querySelector` 的写法落在编辑器内、恒为空）。
+ * ③ 菜单项 `role`：`MenuV2.RadioItem` 包 Kobalte `DropdownMenu.RadioItem`（`menu-v2.tsx:101`）
+ *    ⇒ `role="menuitemradio"`。菜单内容在 `MenuV2.Portal` 里 ⇒ `document.body` 上找。
+ */
+describe("底栏模型控件", () => {
+  const 选项 = [
+    { id: "openai/gpt", label: "GPT", providerID: "openai" },
+    { id: "anthropic/sonnet", label: "Sonnet", providerID: "anthropic" },
+  ]
+  const 摆 = (当前: string, 收到的: string[]) =>
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={{
+            options: () => 选项,
+            current: () => 当前,
+            onSelect: (id) => void 收到的.push(id),
+          }}
+        />
+      )),
+    )
+
+  test("控件在 Hero 输入框里，显示**当前**那一支的名字", () => {
+    const 宿主 = 摆("openai/gpt", [])
+    const 钮 = 宿主.querySelector<HTMLElement>('[aria-label="Choose model"]')
+    expect(钮, "底栏没有模型控件").not.toBeNull()
+    expect(钮!.textContent).toContain("GPT")
+  })
+
+  test("当前是另一支 ⇒ 显示的就是那一支（不做自己的默认覆盖）", () => {
+    const 宿主 = 摆("anthropic/sonnet", [])
+
+    expect(宿主.querySelector('[aria-label="Choose model"]')!.textContent).toContain("Sonnet")
+  })
+
+  /**
+   * ⚠️ Kobalte 的菜单：触发器只认 **`pointerdown`**、菜单项只认 **`pointerup`**，`.click()` 不够
+   * （`session-list.test.tsx:80-88` / `file-tree.test.tsx:243-262` 两处实测，同一套配方）；
+   * 菜单内容在 **Portal** 里 ⇒ `document.body` 上找，不在宿主里（`common-cards.test.tsx:45`）。
+   */
+  test("点开 ⇒ 候选全在，选中另一支 ⇒ `onSelect` 收到它的 id", () => {
+    const 收到: string[] = []
+    const 宿主 = 摆("openai/gpt", 收到)
+
+    宿主
+      .querySelector('[aria-label="Choose model"]')!
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "" }))
+
+    const 项 = [...document.body.querySelectorAll('[role="menuitemradio"]')]
+    expect(项.map((el) => el.textContent?.trim())).toEqual(["GPT", "Sonnet"])
+
+    项[1].dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }))
+    expect(收到).toEqual(["anthropic/sonnet"])
   })
 })
