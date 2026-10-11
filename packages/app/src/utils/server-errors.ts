@@ -63,6 +63,28 @@ export function isSessionNotFoundError(error: unknown, sessionID: string) {
   return value._tag === "SessionNotFoundError" && value.sessionID === sessionID
 }
 
+/**
+ * 服务端的「这场会话不存在」**在两种协议下被交到手里的形状不同**，这一条认的是**体**那一支。
+ *
+ * 实测（2026-10-11，假后端 ＋ 真客户端）：
+ * - **v1**（部署跑的就是它）：`Error { cause: { status: 404, body: {name:"NotFoundError", data:{message}} } }`
+ *   ——状态码在 `cause.status` 上，谓词那一支其实用不着。
+ * - **v2**：404 是**已声明**状态，生成客户端走 `throw await json(response)` ⇒ 抛出来的就是
+ *   **裸体**（不是 `Error`、没有 `cause`、**没有状态码**）：
+ *   `{name:"NotFoundError", data:{message:"Session not found: ses_x"}}`。
+ *   实测打印见 `e2e/regression/right-pane-unavailable.spec.ts` 的文件头。
+ *
+ * 少了这一条，「这场会话是不是真的没了」在 v2 下**恒判否**——不报错、不变红，只是永远不清理
+ * （幽灵标签照旧每次刷新 404 一轮）。判据取 `name` 而不比对 `data.message`：调用方问的就是
+ * 「我这场会话在不在」，而 v1/v2 的文案格式将来都可能变（`sessionNotFoundMessage` 只绑定
+ * 客户端**自己合成**的那一支）。
+ */
+export function isSessionNotFoundBody(error: unknown) {
+  const unwrapped = unwrapNamedError(error)
+  if (typeof unwrapped !== "object" || unwrapped === null) return false
+  return (unwrapped as Record<string, unknown>).name === "NotFoundError"
+}
+
 function isConfigInvalidErrorLike(error: unknown): error is ConfigInvalidError {
   if (typeof error !== "object" || error === null) return false
   const o = error as Record<string, unknown>

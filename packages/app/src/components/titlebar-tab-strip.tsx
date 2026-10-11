@@ -19,6 +19,7 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { showToast } from "@/utils/toast"
 import { canStartTabDrag, isTabCloseTarget } from "./titlebar-tab-gesture"
 import { adjacentTabKey, mergeVisibleTabOrder } from "./titlebar-tab-order"
+import { 标签该剪 } from "./titlebar-tab-liveness"
 import type { Session } from "@opencode-ai/sdk/v2"
 
 function SessionTabSlot(props: {
@@ -91,7 +92,23 @@ function SessionTabEntry(props: {
       const ctx = props.serverCtx()
       return ctx ? { id: props.tab.sessionId, ctx } : null
     },
-    ({ id, ctx }) => ctx.sync.session.resolve(id).catch(() => undefined),
+    ({ id, ctx }) =>
+      ctx.sync.session.resolve(id).catch((error: unknown) => {
+        // 复探失败有两种完全不同的含义，**判据只能是状态码**（见 `utils/http-error.ts`）：
+        // - **404 ⇒ 这场会话真的不在了**（服务端 `NotFoundError`；归档那条链的中间件还会
+        //   特意放过不存在的会话、让 handler 自己回 404）⇒ **把这个标签自己收掉**。不收的话，
+        //   它每次刷新都会再探一次、再 404 一次——2026-10-11 用户报的那串 F12 报错就是
+        //   23 个这样的标签（全都指向已经消失的临时沙箱），而失败此前被这里静默吞掉。
+        //   ⚠️ 走 `removeSessionTab`（不是 `closeTab`）：这是**清理**不是用户关标签，
+        //   不该进「最近关闭」那份可以重新打开的名单（`context/tabs.tsx:250-252` 的注释
+        //   把这两条路的分别写明了）。
+        // - **403 / 没有状态码（断网、500）⇒ 一个都不许剪**：归档是**冻结不是删除**，
+        //   找回项目后这场会话要原样回来；断网更不是「会话没了」。剪了就是**静默**丢标签
+        //   ——用户唯一的反应是「我的会话哪去了」。判断本体与它的用例在
+        //   `titlebar-tab-liveness.ts` / `titlebar-tab-liveness.test.ts`。
+        if (标签该剪(error, id)) tabs.removeSessionTab({ server: props.tab.server, sessionId: id })
+        return undefined
+      }),
   )
   const session = createMemo(() => cachedSession() ?? loadedSession())
   const missingSession = createMemo(() => !!props.serverCtx() && !loadedSession.loading && !session())
