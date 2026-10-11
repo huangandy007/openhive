@@ -1843,6 +1843,111 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(收到).toEqual([{ kind: "file", parent: "", name: "话单.csv" }])
       })
     })
+
+    /**
+     * ── 下载：**文件夹 ⇒ 弹窗终止；单个文件 ⇒ 发行下载**（2026-10-11 用户下达）──────────────
+     *
+     * ## 改之前是什么样
+     *
+     * 右键文件夹，菜单里「下载」**是亮的**（禁用判据只到 `要对象`，没有类型那一条），点了白跑一次
+     * `GET /openhive/file/download?path=材料` —— 服务端 `!info.isFile()` ⇒ **400「文件不存在」**
+     * （`openhive/file.ts` 的 `handleDownload`），前端只能报一句「下载「材料」失败」：真相是
+     * 「文件夹不能下载」，界面说的是「失败」，民警不知道下一步该点哪儿。请求本身还进 F12。
+     *
+     * ## 为什么判据落在本组件
+     *
+     * 类型只有 `节点表` 知道（文件头那条注释立过：接收方手里只有一份**扁平的**清单）；而「下载」
+     * 也只有一个入口（`workspace-entry.tsx` 的 `onDownload`；上树走 `{...rest}`，下树没有下载）。
+     *
+     * ## 拦在「点了之后」，**不是**把菜单项置灰
+     *
+     * 置灰＝点了一点反应没有，而本仓的规矩是「一个点了没反应的项是对用户的谎」（见同文件
+     * `ProjectAnchor` 与「未接线即禁用」那组的注释）。用户要的是**说得出话**：拦下来、说清
+     * 「只能下载单个文件」。所以 `要对象` 那条禁用判据**一个字不动**。
+     *
+     * ⚠️ 弹窗是 `dialog.show()` 传送到 `document.body` 的（同新建 / 删除两组的坑）：查 `document`、
+     * 不查 `host`，且点完入口要 `await 歇一拍()`（`startTransition` 让弹窗晚一拍才落下来）。
+     */
+    describe("下载：文件夹 ⇒ 弹窗终止；单个文件 ⇒ 发行下载（2026-10-11 用户下达）", () => {
+      const 下载弹窗内 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+      /** 断在**布尔**上（`#005-01`：实得值是节点会把整轮挂哑）。 */
+      const 有下载弹窗 = () => 下载弹窗内("file-download-dialog") !== null
+
+      test("右键**文件夹**点「下载」⇒ 弹窗说清「只能下载单个文件」，且**一个请求都不发**（onDownload 一次都没被喊）", async () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv", "笔记.md")} onDownload={(path) => 收到.push(path)} />
+        ))
+
+        右键(行按名(host, "材料"))
+        // 前提：菜单**真的开了**。少了这一句，「点下载 ⇒ 弹窗」在「菜单压根没开、点了个不存在的项」
+        // 的实现下也照样成立（`#006-06`：一条恒真的判据等于没测）。
+        expect(有菜单()).toBe(true)
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(有下载弹窗(), "右键文件夹点「下载」应当开出一条弹窗").toBe(true)
+        expect(下载弹窗内("file-download-name")?.textContent?.trim()).toBe("材料")
+        expect(收到, "文件夹不发行下载——这一层一个请求都不该发出去").toEqual([])
+      })
+
+      test("弹窗**不在**文件树栏里（`dialog.show()` 传送进 body）——它不该占树的位置", async () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
+
+        右键(行按名(host, "材料"))
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(有下载弹窗()).toBe(true)
+        // 结构判据（几何在 happy-dom 里量不出来，`#006-06`）：浮层一旦进了 body，就不可能再占树的布局。
+        expect(无槽(host, "file-download-dialog")).toBe(true)
+      })
+
+      test("点「知道了」把弹窗收起来——**收起不等于下载**（onDownload 仍然一次都没喊）", async () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onDownload={(path) => 收到.push(path)} />
+        ))
+
+        右键(行按名(host, "材料"))
+        点菜单项("download")
+        await 歇一拍()
+
+        // 前置：弹窗**真的开出来了**（`#004-14`：先立前提再判果——少了这一句，「关掉也不下载」
+        // 在「压根没有弹窗」的实现下也成立）。
+        expect(有下载弹窗()).toBe(true)
+
+        下载弹窗内("file-download-ok")?.click()
+        await 等到(() => !有下载弹窗())
+
+        expect(有下载弹窗()).toBe(false)
+        expect(收到, "关弹窗 ≠ 下载：这条路上一次都不该喊").toEqual([])
+      })
+
+      test("右键**单个文件**点「下载」⇒ 不弹窗、照常发行下载（回调恰好收到那一条路径）", async () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onDownload={(path) => 收到.push(path)} />
+        ))
+        动作(host, "expand-all")?.click() // 默认全收缩 ⇒ 先全打开，深层那一行才右键得到（`#005-36` 的规矩）
+
+        右键(行按名(host, "话单.csv"))
+        expect(有菜单()).toBe(true)
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(有下载弹窗(), "单个文件不该被拦下").toBe(false)
+        expect(收到).toEqual(["材料/话单.csv"])
+      })
+
+      test("对着**目录**行的「下载」仍亮着——拦在点了之后，不是把它置灰", () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
+
+        右键(行按名(host, "材料"))
+
+        expect(项禁用("download")).toBe(false)
+      })
+    })
   })
 
   describe("删除二次确认 + 选中点亮 / 置灰（FR-006 / 设计 §6.1 / US2 AC2·AC4）", () => {

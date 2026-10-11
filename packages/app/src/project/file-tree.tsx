@@ -11,6 +11,7 @@ import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
+import { FileDownloadDialog } from "@/project/file-download-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
@@ -653,7 +654,7 @@ export function FileTree(props: FileTreeProps) {
               action="download"
               文案="下载"
               禁用={要对象(props.onDownload)}
-              onSelect={() => props.onDownload?.(菜单对象() ?? "")}
+              onSelect={() => 点下载(菜单对象())}
             />
             <ContextMenu.Separator />
             {/* 第四行：沙箱 ↔ MinIO（§6.3 拖拽 B 的替代入口） */}
@@ -748,6 +749,33 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
+   * 点「下载」——**先看类型，再决定发不发**（005 · 2026-10-11 用户下达）。
+   *
+   * 文件夹：开一条弹窗说清「只能下载单个文件」，**`props.onDownload` 一次都不喊**——用户要的
+   * 「终止下载」，落到实现上就是「那个请求根本不发出去」。改之前这一项对着目录是**发出去再被拒**
+   * （服务端 `!info.isFile()` ⇒ 400「文件不存在」），界面只能回一句「下载「材料」失败」：真相是
+   * 「文件夹不能下载」，界面说的是「失败」，民警不知道该点哪儿，而那次 400 还进 F12。
+   *
+   * ⚠️ **不把这一项置灰**：置灰＝点了一点反应都没有，而本仓的规矩是「一个点了没反应的项是对用户的
+   * 谎」（同 `ProjectAnchor` 与「未接线即禁用」那组）。用户要的是**说得出话**，所以菜单项那条
+   * `要对象(props.onDownload)` 一个字不动。
+   *
+   * ⚠️ **判据只做得了这一处**：`节点表` 长在本组件里，而接线那头（`workspace-entry` 的 `下载(path)`）
+   * 收到的是一份**扁平清单**、只知道路径不知道类型（同 `onUpload` 那段）。类型查不到时**当不是文件**
+   * 处理——弹窗说一句，好过按「大概是文件」发一个注定 400 的请求（同 `要文件`：不猜）。
+   */
+  function 点下载(path: string | undefined) {
+    const 交 = props.onDownload
+    if (!path || !交) return
+    if (节点表().get(path)?.type !== "file") {
+      // `void` 的理由同 `点删`（`show()` 交回来的是 `startTransition` 的返回值，不是真 promise）。
+      void dialog.show(() => <FileDownloadDialog path={path} />)
+      return
+    }
+    交(path)
+  }
+
+  /**
    * 点「新建文件 / 新建文件夹」——**只是把弹窗开出来**，一个请求都不发（T018）。
    *
    * 落点在**这一刻**算好、作为 prop 交给弹窗：之后用户再怎么点行、选中态怎么变，都不影响它
@@ -803,8 +831,9 @@ export function FileTree(props: FileTreeProps) {
    * 整棵搬走，用户裁定「支持移动文件夹」），所以「移动」回到 `要对象`。两项**刻意不对称**，
    * 直到复制也支持目录为止（`file-tree.test.tsx` 里那一组就是钉这条分家的线）。
    *
-   * ⚠️ 其余「要对象」的项**不**跟着走这条：下载/备份/拉回对着目录都是**说得出话**的
-   * （目录会被服务端拒掉，界面据此报一句），而复制在界面上会先弹一个「搬到哪儿」的面板
+   * ⚠️ 其余「要对象」的项**不**跟着走这条：备份/拉回对着目录是**说得出话**的（目录会被服务端
+   * 拒掉，界面据此报一句）；下载 2026-10-11 起改走 `点下载` 那条**前端拦截**（目录连请求都不发、
+   * 当场弹窗说「只能下载单个文件」，见该函数）；而复制在界面上会先弹一个「搬到哪儿」的面板
    * ——对着目录弹那个面板本身就是错的。
    */
   function 要文件(接: ((path: string) => void) | undefined) {
