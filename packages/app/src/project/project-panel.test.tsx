@@ -724,6 +724,59 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
 
     expect(文本(host, "project-panel-empty")).toBe("没有已归档的项目")
   })
+
+  /**
+   * ── 清单**取不到**（2026-10-11 用户实报）─────────────────────────────────
+   *
+   * ## 现场
+   *
+   * 用户报「只有一个项目时，新建会话图标与会话列表都不显示」，F12 里一条 `GET /openhive/project`
+   * 是 500（挂具的 PGlite 撞 `42P05`，见 `LEARNINGS #005-02`——那是夹具伪影，不是产品缺陷）。
+   * 但那条 500 撞出一件**真的产品行为**：`拉清单` 拿不到清单时**不写缝、不报错、不重试**，
+   * 于是 `projectList()` 永久停在 `undefined` ⇒ 左栏会话 tab 一体空白（`SessionList` 的 `directory`
+   * 由清单推出来），而**同一时刻项目面板会说一句假话**：「还没有项目」。
+   *
+   * 「取不到」与「一个都没有」是**两件事**（`project-list.ts` 文件头那句「`undefined` 与 `[]`
+   * 是两件事」的另一半）——把前者说成后者，民警会以为自己的项目没了。
+   *
+   * ## 判据
+   *
+   * 面板不认识 HTTP：它只管「有没有话要说、能不能再来一次」。把状态码翻成话是调用方的事
+   * （同 `onCreate` 的「回一句话」口径）——所以这里收的是两个 prop：`loadFailed` 与 `onRetryLoad`。
+   */
+  test("清单取不到 ⇒ 说一句话 ＋ 一颗重试钮，**不**说假话「还没有项目」", () => {
+    const host = mount(() => <ProjectPanel loadFailed onRetryLoad={() => {}} />)
+
+    expect(文本(host, "project-panel-load-failed")).toBe("项目清单没取到")
+    expect(无槽(host, "project-panel-retry")).toBe(false)
+    // 这一半才是缺陷本身：`projects` 是空的（`undefined`），旧写法会画出「还没有项目」。
+    expect(无槽(host, "project-panel-empty")).toBe(true)
+  })
+
+  test("取不到时仍然把手里那份旧清单画出来——失败不该把民警的项目从屏幕上抹走", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[私有("p1", "8·17专案", 1)]} loadFailed onRetryLoad={() => {}} />
+    ))
+
+    expect(文本(host, "project-panel-load-failed")).toBe("项目清单没取到")
+    expect(项目名(host)).toEqual(["8·17专案"])
+  })
+
+  test("点那颗重试钮 ⇒ 报告一次（重试就是再拉一次清单，面板自己不去认出口）", () => {
+    let 次数 = 0
+    const host = mount(() => <ProjectPanel loadFailed onRetryLoad={() => 次数++} />)
+
+    按钮(host, "project-panel-retry")?.click()
+
+    expect(次数).toBe(1)
+  })
+
+  test("没失败时看不到那句话——「取不到」不是常驻噪音", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 1)]} onRetryLoad={() => {}} />)
+
+    expect(无槽(host, "project-panel-load-failed")).toBe(true)
+    expect(无槽(host, "project-panel-retry")).toBe(true)
+  })
 })
 
 /**

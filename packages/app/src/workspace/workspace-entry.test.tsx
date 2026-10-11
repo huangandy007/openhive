@@ -10,7 +10,7 @@ import type { MemberEntry } from "@/project/member-panel"
 import { setMinioBackups } from "@/project/minio-backups"
 import { type ProjectData } from "@/project/project-data"
 import { setProjectFiles } from "@/project/project-files"
-import { projectList, setProjectList } from "@/project/project-list"
+import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
 import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
 import { setCurrentUser } from "./current-user"
@@ -81,6 +81,17 @@ afterEach(() => {
   挂过的.splice(0).forEach((卸载) => 卸载())
   document.body.innerHTML = ""
 })
+
+/**
+ * 「清单取不到」也是**模块级缝**，而它比 `projectList` 更容易串味：`projectList` 几乎每个用例
+ * 都会经 `拉清单` 被写一次；这一条**只有失败时才写**——留着上一条用例的 `true`，下一条
+ * 「没注入数据源」（压根不发请求、也就没人再写它）的用例会读到它，面板莫名其妙多出一句话。
+ * 那正是 `LEARNINGS #005-03` 的形状：缝没复位，红的/绿的是**毫不相干**的下一条。
+ *
+ * 只复位新加的这一条：`projectList` 今天没有泄漏症状，而顺手改一个与本轮无关的夹具行为，
+ * 会让别的用例的红绿跟着变（`CLAUDE.md` 的「只动自己碰过的地方」）。
+ */
+beforeEach(() => setProjectListFailed(undefined))
 
 const entries = (host: HTMLElement) => [
   ...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']"),
@@ -1486,6 +1497,94 @@ describe("项目数据接线（T018 出参）", () => {
 
     expect(路径们(host)).toContain("乙/话单.csv")
     expect(路径们(host)).not.toContain("甲/资料.csv")
+  })
+
+  /**
+   * ── 清单**取不到**（2026-10-11 用户实报）─────────────────────────────────
+   *
+   * ## 现场
+   *
+   * 用户报「只有一个项目时，新建会话图标与会话列表都不显示」；F12 里 `GET /openhive/project`
+   * 是 500（挂具的 PGlite 撞 `42P05`，见 `LEARNINGS #005-02`——那条是夹具伪影，生产走多连接池
+   * 撞不到）。但那条 500 撞出一件**真的产品行为**：
+   *
+   * `拉清单` 拿到 `undefined` 时**不写缝、不报错、也不重试**（`openhive-project.ts` 的
+   * `listProjects` 三态里的「取不到」那一态就此消失），于是 `projectList()` 永久停在 `undefined`
+   * ——左栏会话 tab 一体空白（那里要 `/session?directory=…`，而目录正是从清单推出来的），
+   * 项目面板说「还没有项目」。民警能拿到的两个读数**都是假的、且都不会再变**。
+   *
+   * ## 判据为什么必须落在这一层
+   *
+   * 出错的一线是**接线**：清单怎么进缝只有 `拉清单` 一处，而它同时被进门、建完、归档、找回
+   * 四个出口调用（`LEARNINGS #004-01`）。面板那一侧只认「有没有话要说、能不能再来一次」
+   * （组件测试钉三态各画什么），「失败长什么样」到不到得了面板，桩看不见（同 `#006-18` 的分工）。
+   */
+  test("清单取不到 ⇒ 缝里记下这件事，面板说一句话 ＋ 一颗重试钮，**不**说假话「还没有项目」", async () => {
+    const { data } = 假数据源({ list: async () => undefined })
+    const host = 挂(data)
+    await 冲一遍()
+
+    expect(projectListFailed()).toBe(true)
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-panel-load-failed")).toBe("项目清单没取到")
+    // 判「钮在不在」用**布尔**，不拿节点去 `toBeTruthy`（`LEARNINGS #005-01`：实得值是节点会挂哑）。
+    expect(不存在(host, "[data-slot='project-panel-retry']")).toBe(false)
+    // 这一半才是缺陷本身：清单是 `undefined`，没有这条改动时这里画的是「还没有项目」。
+    expect(text(host, "project-panel-empty")).toBeUndefined()
+  })
+
+  test("点重试 ⇒ 真的再拉一次清单；这次成了 ⇒ 那句话收起来、项目行出现（缝也翻回来）", async () => {
+    let 通了 = false
+    const { data, 记 } = 假数据源({ list: async () => (通了 ? [私有("p1", "8·17专案", 1)] : undefined) })
+    const host = 挂(data)
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-panel-load-failed")).toBe("项目清单没取到")
+
+    通了 = true
+    锚点按钮(host, "project-panel-retry")?.click()
+    await 冲一遍()
+
+    // 「真的再拉一次」与「只把提示抹掉」是两条独立判据（`注`：`记.list` 是前者的唯一证据）。
+    expect(记.list).toBe(2)
+    expect(projectListFailed()).toBe(false)
+    expect(text(host, "project-item-name")).toBe("8·17专案")
+    expect(text(host, "project-panel-load-failed")).toBeUndefined()
+  })
+
+  test("点重试之后、回话之前 ⇒ 那句「取不到」先收起来（「还没问回来」不是「取不到」）", async () => {
+    // ⚠️ 两态在界面上**正好相反**：前者什么都不该说，后者要说一句话。留着上一句不撤，
+    // 「重试了、界面毫无反应」这句话就变成假话的反面——界面在说「上一次没问到」，而问话正在路上。
+    let 第几次 = 0
+    let 放行: ((v: readonly ProjectEntry[] | undefined) => void) | undefined
+    const { data } = 假数据源({
+      list: () => {
+        第几次 += 1
+        if (第几次 === 1) return Promise.resolve(undefined)
+        return new Promise((resolve) => {
+          放行 = resolve
+        })
+      },
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    expect(text(host, "project-panel-load-failed")).toBe("项目清单没取到")
+
+    锚点按钮(host, "project-panel-retry")?.click()
+    await 冲一遍()
+
+    expect(text(host, "project-panel-load-failed")).toBeUndefined()
+
+    // 前置：上面那一句的缺席，必须真是「在途」而不是「压根没发第二次」——第二次请求已经出发
+    // （`第几次` 到 2）而回话还没来，才是这一条要说的那个中间态。
+    expect(第几次).toBe(2)
+
+    放行?.(undefined)
+    await 冲一遍()
+
+    expect(text(host, "project-panel-load-failed")).toBe("项目清单没取到")
   })
 })
 
@@ -2985,6 +3084,42 @@ describe("启动（挂载）时**还原**上次的「当前项目」（Task B ·
     // 前置：清单真的到了面板上——否则上面那两条在「压根没接线」时也是绿的（`#004-14`）。
     锚点按钮(host, "project-anchor-toggle")?.click()
     expect(text(host, "project-item-name")).toBe("8·17专案")
+  })
+
+  /**
+   * **第一次没拉到、点重试拉到了 ⇒ 还原照样发生**（2026-10-11）。
+   *
+   * 这条钉的是「那颗钮只用一半力气」那种半坏状态：还原挂在 `拉清单` 的**回话之后**，
+   * 而清单第一次是 `undefined` ⇒ `if (清单)` 不成立 ⇒ **那一步从来没执行过**。若重试只补拉清单、
+   * 不补还原，民警点完钮会看到「项目行回来了、锚点行还写着『未选择项目』、左栏会话 tab 空的」
+   * ——而左栏会话 tab 空正是用户实报的那个现象。
+   *
+   * ⚠️ 这一条与上面「存档那个项目还在 ⇒ 恢复」是**两条**，不是一条：那一条的清单**第一次就到位**，
+   * 所以它**测不出**「重试补没补」（`LEARNINGS #005-12`：同一个修法落在几个动作上就写几条）。
+   */
+  test("第一次没拉到、点重试拉到了 ⇒ 存档照样还原（那颗钮不能只用一半力气）", async () => {
+    摆出存档("prj_retry_0001")
+    expect(读cookie()).toBe("prj_retry_0001") // 前置：存档摆上了
+
+    let 通 = false
+    const { data, 记 } = 假数据源({
+      list: async () => (通 ? [私有("prj_retry_0001", "8·17专案", 1)] : undefined),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+
+    // 前置：第一次真的失败了（否则下面那句「还原」可能只是进场那次做的）。
+    expect(projectListFailed()).toBe(true)
+    expect(currentProject()).toBeUndefined()
+
+    通 = true
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    锚点按钮(host, "project-panel-retry")?.click()
+    await 冲一遍()
+
+    expect(记.list).toBe(2)
+    expect(currentProject()?.id).toBe("prj_retry_0001")
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
   })
 })
 

@@ -15,7 +15,7 @@ import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
 import { TargetPicker } from "@/project/target-picker"
 import { projectFiles, setProjectFiles } from "@/project/project-files"
-import { projectList, setProjectList } from "@/project/project-list"
+import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { projectMembers, setProjectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
 import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
@@ -239,12 +239,56 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   let 清单代次 = 0
   const 拉清单 = async (data: ProjectData) => {
     const 代 = ++清单代次
+    // 开问之前先清「取不到」：**「还没问回来」不是「取不到」**——两者在界面上正好相反
+    // （前者什么都不该说，后者要说一句话）。少了这一行，点重试之后那句提示会一直赖着，
+    // 直到回话才消失；写得再快一点就是「重试了、界面毫无反应」。同 `right-pane-source.ts:123`。
+    setProjectListFailed(undefined)
     const 清单 = await data.list()
     // 被新的一代顶掉 ⇒ **不写缝、也不交出去**：`onMount` 的还原拿这份清单判「存档还在不在」，
     // 交一份过期的清单出去，就会凭着一份**已经不成立**的名单去认领项目（同一道闸的另一半）。
     if (代 !== 清单代次) return undefined
     setProjectList(清单)
+    /*
+      清单没取到 ⇒ 把这件**事实**写进缝（2026-10-11 用户实报的那条 500 撞出来的产品行为）。
+
+      `openhive-project.ts` 的 `listProjects()` 三态里，两支都回 `undefined`：出口没挂上 / 网络错。
+      这一层**不区分**它们——面板要说的话与能做的手术是同一句、同一颗钮（再来一次），
+      把状态码翻成话是 `project-data.ts` 那一层的事，而它今天也翻不出更多花样。
+
+      ⚠️ 只在**这一处**写：`拉清单` 是清单的唯一写入方（进门、建完、归档、找回、重试都过它）；
+      在四个调用点各写一份就是 `LEARNINGS #004-01` 那种「谁记得谁接」。
+    */
+    setProjectListFailed(清单 === undefined)
     return 清单
+  }
+
+  /**
+   * 「拉一次清单，拉到了就按存档把上次的当前项目还原回来」——进场那一次与**重试**共用这一份。
+   *
+   * 为什么重试要走**同一个函数**、不是在钮上写一句 `拉清单` 就完事：清单第一次没拉到时，
+   * `onMount` 里那句「还原」**压根没执行过**（它挂在 `if (清单)` 后面）。只补拉清单不补还原的话，
+   * 民警点完重试会看到「项目行回来了、左栏会话还是空的、锚点行还写着未选择项目」——他点的那颗钮
+   * **只用一半的力气**，另一半（当初被那次 500 挡掉的那一步）没有人再去补，界面就永久停在
+   * 半坏的状态里。抄一份到钮上也不行：那就是「清单怎么进缝」的第二份写法
+   * （`LEARNINGS #002-06`），改一处忘一处。
+   *
+   * ⚠️ 这里**不判**「当前项目是不是还空着」：存档（cookie）与当前项目是**同时**写的
+   * （`setCurrentProject` 唯一的写入点），所以存档本来就是「民警最后选的那个」——重试顺手把它
+   * 拿去新清单里核一遍，是这条链本来的语义（不在清单里 / 已归档 ⇒ 清掉，见 `还原启动项目`
+   * 的三支），不是多余的副作用。
+   */
+  const 拉清单并还原 = async (data: ProjectData) => {
+    // ⚠️ 存档必须在**等之前**读（同步读）。挪到 `await` 后面看着更「新鲜」，实则是个陷阱：
+    // 清单回来的那一拍（这里要等一次往返），民警完全可能已经点了别的项目——而 `setCurrentProject`
+    // 是**同时**写信号与 cookie 的 ⇒ 那时读到的「存档」是**他刚点的那个**，再拿它去这份旧清单里核，
+    // 不在清单里就**清掉**，界面上就是「我刚点的项目自己弹回去了」。
+    // 实测（2026-10-11）：这一行挪到 `await` 后面，`workspace-entry.test.tsx` 立刻红两条——
+    // 「切当前项目 ⇒ 文件树跟着换」与「换项目那一刻先清空成员」。
+    const 存档 = 读项目cookie()
+    const 清单 = await 拉清单(data)
+    // 清单没回来（取不到，或被新的一代顶掉）⇒ 什么都不做：宁可停在「未选择」，也不凭一个此刻
+    // 验证不了的存档去认领（那会造出「锚点行挂着它、面板里却没有这一行」的悬空态）。
+    if (清单) 还原启动项目(存档, 清单)
   }
 
   /**
@@ -329,17 +373,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 上面那一半要用它；它本身也是左栏面板的数据（进门拉一次）。
    */
   onMount(() => {
-    const 存档 = 读项目cookie()
     if (!projectData) {
       // 没有数据源 ⇒ 判不了存档有没有效 ⇒ 不能还原；但也不能留着它与信号分叉（见上）。
       // 这里沿用裁定 B 的老行为清一次：此刻「清」与「不选」是同一个状态，没有信息可丢。
-      if (存档 !== undefined) setCurrentProject(undefined)
+      if (读项目cookie() !== undefined) setCurrentProject(undefined)
       return
     }
-    void (async () => {
-      const 清单 = await 拉清单(projectData)
-      if (清单) 还原启动项目(存档, 清单)
-    })()
+    void 拉清单并还原(projectData)
   })
 
   /**
@@ -715,6 +755,25 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     <ProjectPanel
                       projects={projectList()}
                       currentId={currentProject()?.id}
+                      /*
+                        清单取不到 ⇒ 面板说一句话 ＋ 一颗「重试」（2026-10-11）。
+
+                        重试走的是**进门那一次用的同一个函数**（`拉清单并还原`）：既补拉清单，
+                        也补上「按存档还原当前项目」那一步——那一步当初正是被这次失败挡掉的，
+                        不补的话钮只用一半力气（行回来了、左栏会话还是空的），见那个函数的注释。
+                        不另开一条「重试专用」的路：那等于把「清单怎么进缝」抄第二遍
+                        （`LEARNINGS #002-06`）。
+
+                        `void` 是刻意的：面板那颗钮的语义是「再来一次」，不是「等它出结果」
+                        ——结果由缝回流到面板（成了行会出现、没成那句话留着），钮不必再回一句话。
+                        **没数据源时照样接**（不像 `onCreate` 那样判 `projectData`）：重试要的是
+                        「再问一次」，而没有数据源时「取不到」根本不会成立（连请求都没发过），
+                        真实分支也走不到那儿。
+                      */
+                      loadFailed={projectListFailed()}
+                      onRetryLoad={
+                        projectData ? () => void 拉清单并还原(projectData) : undefined
+                      }
                       onOpen={(project) => {
                         // 「点一下直达」（设计 §3）：切当前项目并把面板收起来——留着它挡在
                         // 文件树前面，正是「直达」的反面。

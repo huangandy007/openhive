@@ -26,3 +26,22 @@ import type { ProjectEntry } from "./project-panel"
  * 让面板与接线**今天就能被测试驱动**（`workspace-entry.test.tsx` 正是这么验的）。
  */
 export const [projectList, setProjectList] = createSignal<readonly ProjectEntry[] | undefined>()
+
+/**
+ * 「**上一次**拉清单没拉到」（2026-10-11 用户实报）。`undefined` ＝ 还没问过 / 没失败
+ * ——与 `RightPaneSource.failure` 同一口径（那里写着：`undefined` **也包括**「还没问回来」，
+ * 那是 `pending`，与「失败」在界面上正好相反）。
+ *
+ * ## 为什么它是**第二个信号**，不是把 `projectList` 改成三态联合
+ *
+ * `undefined` 那条口径（还没有来源）在上面已经立住了，而且**别处在读它**（左栏会话 tab 的
+ * 目录就是从它推的）。把它换成一个联合类型，等于**逼所有读取点都改口**——「一份东西两个形状」
+ * 正是本仓反复记下的那种分叉（`LEARNINGS #004-02`）。多一个信号只多一个读者，谁需要谁读。
+ *
+ * ## 为什么必须有它（缺陷本体）
+ *
+ * 失败此前**没有任何出口**：`拉清单` 拿到 `undefined` 时不写缝、不报错、也不重试 ⇒
+ * `projectList()` 永久停在 `undefined`，左栏会话 tab 一体空白（它靠清单推目录），
+ * 而项目面板说「还没有项目」。用户能拿到的两个读数**都是假的、而且都不会再变**。
+ */
+export const [projectListFailed, setProjectListFailed] = createSignal<boolean | undefined>()

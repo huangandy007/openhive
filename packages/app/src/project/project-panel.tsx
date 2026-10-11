@@ -203,6 +203,30 @@ export interface ProjectPanelProps {
    *    与「别人拉我进去的」（member / 没有成员行）长得不一样。
    */
   onArchive?: ProjectActionCallback
+
+  /**
+   * 清单**取不到**（2026-10-11 用户实报）。省略 / `false` ＝ 没这回事。
+   *
+   * ## 「取不到」与「一个都没有」是两件事
+   *
+   * 同 `project-list.ts` 文件头那句「`undefined` ＝ 还没有来源，`[]` ＝ 来源说一个都没有」——
+   * 这里是它的**界面形态**。少了这一条，`projects` 为空时面板一律画「还没有项目」，
+   * 而**真相可能是我没问到**：民警手里有一堆项目，屏幕上却说他一个都没有。
+   * （同时左栏会话 tab 会一体空白——那里的目录由清单推出来。）
+   *
+   * ⚠️ 失败**不抹掉已经画出来的行**：手里那份旧清单可能过时，但把民警的项目从屏幕上拿掉
+   * 只会更糟（他正要点进去）。所以这一条是**加一句话**，不是**换一屏**。
+   */
+  loadFailed?: boolean
+
+  /**
+   * 「再来一次」（再来一次就是再拉一次清单）。省略 ＝ 那句话照说、钮是禁用态
+   * ——同「未接线即禁用」那条规矩（项目行不可点、锚点行三个按钮、`onCreate` 省略时禁用）。
+   *
+   * 面板不认识 HTTP：它只管「有没有话要说、能不能再来一次」，把状态码翻成话与翻成动作
+   * 都是调用方的事（同 `onCreate` 的回话口径）。
+   */
+  onRetryLoad?: () => void
 }
 
 /**
@@ -794,9 +818,17 @@ export function ProjectPanel(props: ProjectPanelProps) {
   const 最近 = () => 近况分组(活跃(), Date.now())
 
   const 空态 = (文案: string) => (
-    <div data-slot="project-panel-empty" class="px-2 py-3 text-[12px] text-v2-text-text-faint">
-      {文案}
-    </div>
+    /**
+     * ⚠️ 清单**取不到**时一律不画（2026-10-11）：那一刻「还没有项目 / 没有匹配的项目 /
+     * 没有已归档的项目」三句**全是假话**——民警手里可能有一堆项目，只是这一次没问到。
+     * 画在哪一句上都一样，所以闸设在**这里一处**，不设在四个 `fallback` 上
+     * （`LEARNINGS #004-01`：一个判定要落在所有出口都过的那一层）。
+     */
+    <Show when={!props.loadFailed}>
+      <div data-slot="project-panel-empty" class="px-2 py-3 text-[12px] text-v2-text-text-faint">
+        {文案}
+      </div>
+    </Show>
   )
 
   return (
@@ -979,6 +1011,39 @@ export function ProjectPanel(props: ProjectPanelProps) {
         （归档 / 找回的确认框一度也在这里，2026-10-11 改成弹窗后就不归这条管了。）
       */}
       <div data-slot="project-panel-body" role="tabpanel" class="flex min-h-0 min-w-0 flex-col overflow-y-auto">
+        {/*
+          清单取不到 ⇒ 一句话 ＋ 一颗「重试」（2026-10-11 用户实报）。
+
+          放在**列表区里面最上面**，不是当成整屏错误页：失败不抹掉已经画出来的行（见 `loadFailed`
+          的注释），所以它与列表**同屏**——上一条说「这次没问到」，下面是他手里那份旧清单。
+
+          为什么必须有这一行：`拉清单` 失败时既不写缝、也不报错、也不重试，`projectList()` 就永久
+          停在 `undefined`。那之后左栏会话 tab 一体空白（目录由清单推出来），而面板说「还没有项目」
+          ——用户唯一能拿到的读数就是这两句**都不会动**的假话，没有出口、也没有第二次机会。
+        */}
+        <Show when={props.loadFailed}>
+          <div
+            data-slot="project-panel-load-failed-row"
+            class="flex min-w-0 shrink-0 items-center gap-1 px-1.5 py-1 text-[12px] text-v2-text-text-muted"
+          >
+            {/* 那句话自己带一个槽位（不借用整行的）：整行的文本里还挂着「重试」两个字，
+                判据读整行就变成了「句子里夹着钮的标签」——那种断言得靠 `toContain` 才对得上，
+                而子串匹配正是 `LEARNINGS #006-22` 记下的那种「读起来像钉住了、其实没有」。 */}
+            <span data-slot="project-panel-load-failed" class="min-w-0 flex-1 truncate">
+              项目清单没取到
+            </span>
+            <button
+              type="button"
+              data-slot="project-panel-retry"
+              class={CREATE_BUTTON}
+              disabled={props.onRetryLoad === undefined}
+              onClick={() => props.onRetryLoad?.()}
+            >
+              重试
+            </button>
+          </div>
+        </Show>
+
         {/*
           搜索**盖住整个列表区**（三个 tab 的内容一条都不画）——搜索不是「第四个视图」，
           它是「换一个问题问同一份集合」。至于搜索框自己，仍旧在 tab 栏底下待着（它在列表区之外），
