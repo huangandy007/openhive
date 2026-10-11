@@ -2762,7 +2762,7 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 | **`待删` 是粘的（故意不修）**（T015 新增） | T015 / `session-panel.tsx` | 点过「删除」之后切走、再切回**同一场**会话，钮上那句「确认删除？」**还在**（第二下仍会删 ⇒ 仍是两次点击，不构成单点误删）。**故意不修**：修它要一个 `createEffect` 盯 `sessionID` 归零，为一次「多问一次」引一个 effect 不划算。⚠️ **没有断言守着**——已在 `session-panel.tsx` 的 `待删` doc 注释里自陈（`#005-15`：别让注释比断言强）。⚠️ 与它相对的那条**有**断言（P5：「确认态挂在哪一场上」，改用 `boolean` 会恰红） |
 | **F3：`/` 命令分支解引用 `model`** ✅ **已修（2026-10-11）** | 上游 `submit.ts` → T010 挂账 | `sendFollowupDraft` 的命令分支读 `input.draft.model.modelID`，而旧右栏在「会话没记过 model」时传 `undefined` ⇒ 组合起来当场抛 `Cannot read properties of undefined (reading 'modelID')`。**修法（Task 5，commit `4c8766147c`）**：右栏**恒给模型**（`submit-prompt.ts:124` 的 `model: input.model`）＋**认不出就不发**（`submit-prompt.ts:89` 的 `if (!input.model) return false`，正文留在框里）⇒ `draft.model` 不再是 `undefined`。**判据**：`submit-prompt.test.ts:234`（本栏给的模型原样交给 draft）＋ `:256` / `:268`（认不出 ⇒ 两个出口都没碰、回话 `false`）；**变异 M1**＝删守卫那一行 ⇒ 恰红 2，其一正是 F3 现场（`undefined is not an object (evaluating 'input.draft.model.modelID')`，栈落 `submit.ts:95`） |
 | **F4：`{...undefined, variant}` 是类型谎言** ✅ **已修（2026-10-11）** | 上游 `submit.ts` → T010 挂账（Minor） | normal 分支组 `Message` 时写 `model: { ...input.draft.model, variant }`，而 `draft.model` 就是 `undefined` ⇒ 展开得 `{}`。类型上 `Message.model` 必填 ⇒ **骗过了 typecheck**，又在服务端把 `input.model ?? ag.model ?? currentModel()` 的回退链顶掉。**与 F3 同根因、同一修法收口**（右栏恒给模型 ⇒ `draft.model` 不是 `undefined`；认不出就不发 ⇒ 根本到不了 normal 分支）。**判据**：`submit-prompt.test.ts:268`（认不出时普通一句话也不发）；**变异 M1** 里 F4 一侧 = normal 分支对 `undefined` 照发（`Expected: false` / `Received: true`） |
-| **F6：模型菜单「点开」那一半 happy-dom 盖不盖得住**（本轮新增） | `session-panel.test.tsx` 的「底栏模型控件」组 → 真栈 T3/T4 | **据实（2026-10-11 真栈实测）：happy-dom 下点得开**——触发器认 `pointerdown`、菜单项认 `pointerup`（`session-panel.test.tsx:1794-1807` 已钉「候选全在＋选中回调」）⇒ 「能开 / 候选 / 回调」组件层**已盖，不是缺口**。真栈补的是**几何与真数据**（T3 候选 > 0、T4 选中变钮、T5 会话记的模型） |
+| **F6：模型菜单「点开」那一半 happy-dom 盖不盖得住**（本轮新增） | `session-panel.test.tsx` 的「底栏模型控件」组 → 真栈 T3–T7 | ⚠️ **本行已在 2026-10-11 第二轮过期**（右栏改挂原生弹层）：fork 自造的平铺菜单连同它的三条单测**已删除**（`model-selection.ts` / `.test.ts`），`session-panel.test.tsx` 里那两条现在只钉「**喂进来的节点原样落在 Hero 输入框里**」与「**原生口优先**」——「候选 / 回调 / 菜单开得了」这些**不再由右栏自己负责**（换成了上游那颗原生控件，它的搜索/滚动/管理由 T3–T7 在真栈上量）。真栈补的仍是**几何与真数据**：T3 候选 14 条、T4 过滤 14→0→14→1、T5 滚动槽 `478/220` 且能选末条、T6 管理对话框、T7 记忆。**旧写的「T5 会话记的模型」那半句已退役**——右栏不再显示服务端 `session.model`（见「最后更新」2026-10-11 节） |
 | **F7：v1 下「应用默认」恒空 ⇒ 新会话「没选过＋没记过」时** 提交**静默不发**（**I-1**，终审 Important） | `bootstrap.ts` 的 v1 分支 → **待用户裁定（代码面本轮不修）** | **视觉只是表层**（新会话模型钮无字，T3 实测 `「」`）。**功能后果更重**：新会话在「本栏没选过 ＋ 会话没记过」时三级源全空 ⇒ `当前模型键` 回 `undefined` ⇒ `现在认的模型()` 是 `undefined` ⇒ `submitRightPanePrompt` 在 **`submit-prompt.ts:89` 当场 `return false`** ⇒ **正文留在框里、一个字都不发、零提示**——民警在全新会话打一句话按回车，界面上什么都不会发生，必须先手动从底栏挑一个模型。**证据链**（v1 部署栈里 `useProviders().defaultModel()` **恒 `undefined`**）：① `context/global-sync/bootstrap.ts:234` 调 `normalizeProviderList(result.data!)` **只传一参**（对照 v2 分支 `:242` 传三参，含 `defaultModel.data`）；② `context/global-sync/utils.ts:53` 签名 `normalizeProviderList(providers, models?, defaultModel?)` ⇒ 少传即不写 `defaultModel`；③ v1 生成类型里**根本没有** `defaultModel` 字段。**两条候选修法为何越界（勿重走）**：① 在 `context/global-sync/**` 给 v1 兜底 = 改上游高频文件（`bootstrap.ts`/`utils.ts` 历史全是上游编号），违反 Global Constraint 1；② 在 `ai-session/**` 自复算默认模型 = 设计文档 §3.2 明令否决（第三级必须取服务端归一化的 `defaultModel()` 单一来源，自算即 `#002-06`）。第三条（把「认不出」改成可见提示）是产品交互语义，须用户拍板。⚠️ 会话**记过** model 时不受影响（T5 钉着「会话记的」这一级照常显示）。 |
 | **F8：真栈没有一条用例走到「发送」这一步**（R6(a)，与 `#006-14` 同族） | `right-pane-slash-and-model-real.spec.ts` T1–T5 → 缺口（不补哨兵用例，控制器裁定） | T1–T5 **都不发送**，T2 甚至**显式断言「没发出去任何消息」** ⇒ 「右栏在部署栈里真的发得出一条消息」这件事，组件层与真栈层**都没有任何判据钉着**——这正是 I-1 能一直没被发现的守护缺口（横切行为「有没有活着的宿主」没人验）。**不补哨兵用例**：该行为的去留未定，先钉住会把可能很快被推翻的中间态焊进回归网；按 `#002-02` **写成缺口、不写成覆盖**。 |
 | **命令分支没有乐观插入、没有 busy** | 上游 `submit.ts` 的 `/` 分支 → T010 挂账 | normal 分支是 `batch(() => { setBusy(); add() })`；`/` 分支**既不 add 也不 setBusy**（`optimisticBusy` 未传 ⇒ `setBusy()` 是 no-op）⇒ **从 `/` 面板选 skill 回车，界面上零反馈**（消息流不动、忙碌态不亮），只能等服务端那条消息回环。⚠️ **不是右栏漏接**，是既有链在这个分支上的样子；已用一条断言把「不碰 `api.session.prompt`、不做乐观插入」**钉住**（免得它悄悄变） |
@@ -2808,6 +2808,96 @@ test` 起的是 **node** 里的 runner ⇒ 那条不兼容**不在这条路径�
 ---
 
 ## 最后更新
+
+2026-10-11（**右栏底栏模型选择器：改回原生弹层** —— 用户缺陷报告 ＋ 裁定 **A：右栏自挂 `LocalProvider`**）
+
+用户原话（缺陷报告）：右栏 AI 会话框底部的模型按钮**点开后列表无法滚动选择**，**没有「管理模型」和
+「搜索模型」**，「我希望的是**复用（不重复造轮子）** opencode 的原生功能」。设计文档见
+`docs/superpowers/specs/2026-10-11-right-pane-slash-and-model-design.md`（§3.2-bis 记了本轮被**推翻**的
+三个旧驳回理由，§8 是本轮的出参）。
+
+**根因（读码 ＋ 真栈对照）**：右栏走的从来不是原生那个模型控件，而是 fork 自造的平铺菜单——它
+（`packages/app/src/ai-session/model-selection.ts` ＋ `session-panel.tsx` 的 `模型控件`）只列了
+「本栏选过的 ＋ 当前」的**一小串**，既没有搜索框、也没有滚动容器、更没有管理入口。原生那颗
+（`ModelSelectorPopoverV2`，`components/dialog-select-model.tsx:225`）三样**全有**，但它只作为
+`PromptInputV2ModelControl`（**未导出**）的内部实现挂在**中栏**的输入框上。
+
+**改法：不改上游一行，把原生的那颗「平抄」一份挂到右栏**
+（用户裁定的 **A** ＝ 右栏自挂 `LocalProvider`，让 `useLocal()` 在右栏里可用）：
+
+- **新增** `packages/app/src/ai-session/model-control.tsx` —— `右栏模型控件`，内容**平抄**上游那个
+  未导出的控件，两处差别（去掉「未付费」支路；Tooltip 文案/键位在右栏现取）写在文件头。
+- **改** `ai-session-slot.tsx` —— 拆成「外层挂 `SDKProvider` ＋ `LocalProvider`」与「`右栏主体` 本体」
+  两层；`现在认的模型()` 改读 `local.model.current()`。
+- **删** `model-selection.ts` / `model-selection.test.ts` —— fork 自造的三个纯函数正是
+  「同一判断的第二处写法」（`#002-06`），原生 `useLocal()` 已经全有。
+- **改** `session-panel.tsx` —— `模型控件` 的类型 `PromptInputV2SelectControl` ⇒ **`JSX.Element`**；
+  controller 的 `view.model` 摘掉；`<PromptInputV2 controller modelControl={props.模型控件} />`。
+- **改** `session-panel.test.tsx` / `submit-prompt.ts` / `session-actions.ts` / `session-panel.stories.tsx`
+  —— 夹具与注释跟着换（storybook 那层没有 `LocalProvider` ⇒ 假控件换占位元素）。
+- **改** `packages/app/e2e/real-stack/right-pane-slash-and-model-real.spec.ts` —— T3–T7 判据整轮换成
+  **原生弹层的记号**（`[data-option-key]` / `[data-scrollable]` / `input[placeholder="Search models"]` /
+  `[data-option-key="action:manage"]`）＋ 三条条件等待。
+
+**真栈读数（本轮实测，隔离跑本条 spec）**
+
+```
+【T1 池子条数】126 条（自定义 118 / 内建 8）
+【T3 模型钮】当前显示「Select model」，候选 14 条
+【T4 过滤】全量 14 → 空词 0 → 还原 14 → 搜「Ling」1 条
+【T5 滚动槽】scrollHeight=478 clientHeight=220 overflowY=auto
+【T5 滚动选最后一条】「DeepSeek V4 Pro」 → 「DeepSeek V4.1 Flash」（末条「DeepSeek V4.1 Flash」）
+【T6 管理模型】对话框文案："Manage models\n\nCustomize which models appear in the model selector.…"
+【T7 记忆】「DeepSeek V4 Pro」 → 「DeepSeek V4.1 Flash」；重开页面仍是「DeepSeek V4.1 Flash」
+
+  7 passed (1.0m)
+```
+
+用户报的三件事逐条对上：**搜索框在**（T3/T4）、**滚得动且能选到末条**（T5）、**「管理模型」点开是
+原生那个对话框**（T6）。
+
+**门禁（串行、仓库根，`#003-01`）**
+
+```
+bun run typecheck     → Tasks: 31 successful, 31 total          (EXIT=0)
+packages/app 内 bun run test → 1115 / 41 / 814 pass，0 fail      (EXIT=0)
+bun run lint:openhive → Found 37 warnings and 0 errors
+git diff --stat bun.lock → 空
+```
+
+**④ 变异验证（据实记，`#003-03` 三类都记）**
+
+| 变异 | 实得 |
+|---|---|
+| **A**（`modelControl={undefined}`） | **恰红 1**，正是「喂进来的那个节点原样落在 Hero 输入框里」。⚠️ **同组第二条**（`喂了 modelControl ⇒ 原生那颗平铺控件一条都不渲染`）**照旧绿** ⇒ 据实记成**第③类：它不是那次改动的守护者**（上游那句 `Show` 的 fallback 还要 `view.model` 也在才画，而本轮已把 `view.model` 摘掉，两个分支都不画），并写进该用例的注释 |
+| **B**（整份退回：`modelControl` 不给 ＋ `view.model` 加回来） | **64 pass / 1 fail**（钝变异，读不出谁是谁的守护者） |
+| **C**（拿掉 `等候选到齐(page)`） | **冷启动那一跑天然红过**：`scrollHeight=50 clientHeight=50` ＋ 快照里滚动区只有 `No model results`。⚠️ **诚实的边界**：这是**时间窗**不是确定性缺陷 ⇒ 拿掉**不一定每次红**（暖跑会绿），**不能承诺「拿掉必红」** |
+
+**一条判据侧的红（不是产品缺陷）**：本轮 T5 曾红在 `scrollHeight=50 clientHeight=50`，根因是
+**右栏自己那份目录作用域 provider 目录还没就绪**（弹层停在 `No model results` 空态）就取了数 ⇒
+判据要在**候选到齐之后**再量。同窗口的**反向**形态也一并堵了：`await 候选项(page).count()` 这种
+**一次取值**不会重试，冷跑会读到 `0`。处置 ＝ 新增 `等候选到齐(page)` 并接到 T4/T5/T6 三处
+（`#005-29` 的同族处方：**等条件、不等时间**）。详见设计文档 §8.3-C 与 `LEARNINGS #006-31`。
+
+**本轮改动带来的语义变化（要说清楚）**：右栏那颗按钮**不再显示「服务端 `session.model` 记的」模型**
+——显示口径改回与中栏一致的 `local.model.current()`（本栏选的 → 本场 agent 默认 → 配置/最近/默认）。
+服务端**仍然写**（`session-actions.ts` 的落库没动），只是**不再参与显示**。这是对齐上游的代价，
+用户已知悉（设计文档 §3.2-bis）。
+
+**未查 / 未做的（如实挂账，不写成已修）**
+
+- **整目录真栈套件跑出 `7 failed / 41 passed (9.8m)`**：`ai-session-real.spec.ts` **6 条** ＋ 本 spec 的
+  T5 1 条。T5 那条已归因修掉（上表变异 C）。**`ai-session-real.spec.ts` 那 6 条本轮没查**——单跑本
+  spec 时 6/7 绿。**不写成「已知 flake」，也不写成「已修」**。
+- **冷启动窗未修**：目录级 provider 目录就绪前，钮上是占位文案（实测 3–5s）。上游目录作用域 catalog
+  的固有延迟；真栈判据已全部改成等条件不等时间。
+- **两份 `LocalProvider` 实例的 signal 独立**：右栏选中的模型，被藏起来的中栏那一份要**重挂**才看得到。
+  中栏在会话路由下**点不到**（只藏不卸）⇒ **无实测后果**，记在 `ai-session-slot.tsx` 文件头备查。
+- **`model-control.tsx` 没有单测**：它是平抄、没有自己的判断；观测面在真栈 T3–T7。据实记，不当成已覆盖。
+- **E2E 跑法**：本轮真栈用的是**仓库外**的复用配置（`%TEMP%/openhive-reuse-real-stack.config.mjs`，
+  指向已起好的前后端），**不是**仓库内的 `test:e2e`（mock 套件）；那条**本轮没跑**，如实记。
+
+---
 
 2026-10-09（**「当前项目」的目录通道：环境档 → 显式档** —— 用户开工前裁定 **方案 A**）
 
