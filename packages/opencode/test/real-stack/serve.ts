@@ -124,6 +124,16 @@ await pg.db.execute(sql`
   on conflict (id) do nothing
 `)
 
+// ⚠️ 种子是**直接种 SQL**（不走 `register.ts` → `createWorkspace`），所以 `workspaces/<userId>`
+// 这个目录**没人建**。但内核 `FileSystem` 层在 `Server.listen` 构造期就要
+// `fs.realPath(location.directory).pipe(Effect.orDie)`（`core/filesystem.ts:65`）——目录不存在
+// ⇒ 那一层**当场死掉**，之后一切经 `FileSystem` 的出口（`GET /api/command` 就是一条：命令清单的
+// skill 枚举要借 `FileSystem` 层）都 500（`PlatformError: NotFound: FileSystem.realPath …`）。
+// 生产里这个目录由 `register` 的 `createWorkspace` 建（`auth/workspace.ts:79`，同款
+// `recursive` ＋ `mode: 0o700`）；这里照它补上，与生产同形。不建的话右栏 `/` 面板与模型选择的
+// 真栈验收（`right-pane-slash-and-model-real.spec.ts`）第一步就 500。
+mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, ALICE.id), { recursive: true, mode: 0o700 })
+
 /**
  * 端口当默认 4096（= 上游 dev 默认，也是 `entry.tsx` 的 `getCurrentUrl()` 在 DEV 的默认目标）——
  * 于是「app 零配置就能连上这台内核」，编排里不用为前端再传一次端口。要并行多套栈时用 env 覆盖。
