@@ -32,7 +32,7 @@
 | 那两条是什么 | `/effect`、`/rtl-aware-development`（`MANIFESTS` 里那 2 条开发工具 skill） |
 | 弹层出现没有 | **出现了**（`[data-suggestion-id]` 有节点） |
 | 弹层几何 | 盒 `{x:1094, y:665, w:326, h:80}`，输入框盒 `{x:1094, y:753, w:326, h:60}`，视口 `1440×900` ⇒ 弹在输入框**正上方**、**完全在视口内** |
-| Hero 里的控件 | 只有 `prompt-attach`、`prompt-submit` —— **没有任何模型控件** |
+| Hero 里的控件 | 只有 `prompt-attach`、`prompt-submit` —— **没有任何模型控件**（落点已定位到 `view.model` 这道空位，见 §3.2） |
 
 同一个真栈上直接问内核 `GET /command?directory=…`：
 
@@ -84,7 +84,7 @@ const slashCommands = createMemo(() => [
 
 真栈实读 Hero 控件清单 = `prompt-attach` / `prompt-submit`，**没有第三个**。
 
-而右栏与原生在这一点上的差别是**结构性**的：原生 composer 把模型控件作为 `modelControl` **prop** 注入上游组件；右栏只传了 `controller`（`session-panel.tsx:286-290`），没有这个 prop ⇒ 底部那一整条控制栏在右栏**从来就不存在**。
+而右栏与原生在这一点上的差别是**结构性**的：原生 composer 把模型控件作为 `modelControl` **prop** 注入上游组件（`prompt-input-v2.tsx:61-75`）；右栏只传了 `controller`（`session-panel.tsx:612` 的 `<PromptInputV2 controller={controller} />`），没传 `modelControl`，**也没给 `view.model` 供数据**（`PromptInputV2` 在缺省 `modelControl` 时还有 `view.model` 这条 fallback，见 §3.2）⇒ 模型控件在右栏**从来不渲染**。
 
 ### 2.3 F3 崩溃：可达性是**代码级可证的**
 
@@ -126,7 +126,26 @@ const slashCommands = createMemo(() => [
 
 ### 3.2 ② 模型选择器 —— 复用原生那个控件，只补数据
 
-**控件：自建一个薄的**（**不复用** `ModelSelectorPopoverV2` —— 实测否决见 §4）。仍通过 `PromptInputV2` **已有的** `modelControl` prop 注入 ⇒ **不改上游任何文件**。长相照原生那一颗：`ButtonV2`（`variant="ghost-muted"`，高 `28px`）＋ `ProviderIcon` ＋ `chevron-down`，逐字照 `packages/app/src/components/prompt-input-v2.tsx:493-535`；点开是一个列出候选模型的浮层（`DropdownMenu`，⚠️ 挂 `data-*` 时按 `#005-22` 先查宿主源码里的 `data-slot=` 清单，别撞名）。
+**控件：不新建任何控件，走原生 `view.model` 这条 fallback（零新 UI）**。三条结论：
+
+1. **`ModelSelectorPopoverV2` 仍然否决**（理由不变）：它的 controller 第一行是 `const model = input.model ?? useLocal().model`（`components/dialog-select-model.tsx:260`）⇒ 复用**必需要一份完整的 `ModelState`**（`ReturnType<typeof useLocal>["model"]`，同文件 `:29`）＝ 把 `local.model` 抄一遍（`#002-06`）。详见 §4。
+2. **零新 UI、不改上游任何文件**：`PromptInputV2` 在 `props.modelControl` **缺省**时会用 `view.model` 渲染它自己的 `PromptInputV2ConfiguredSelect`（`packages/session-ui/src/v2/components/prompt-input/index.tsx:228-244`，逐字见下）。右栏只需给 `view.model` 供数据——`PromptInputV2SelectControl` 只要四项：`options` / `current` / `onSelect` / `keybind?`（同目录 `interaction.ts:22-27`）。
+
+   ```tsx
+   <Show
+     when={props.modelControl}
+     fallback={
+       <Show when={view.model} keyed>
+         {(control) => (
+           <PromptInputV2ConfiguredSelect title={i18n.t("ui.promptInput.chooseModel")} keybind={["Mod", "M"]} control={control} model />
+         )}
+       </Show>
+     }
+   >
+     {props.modelControl}
+   </Show>
+   ```
+3. **代价（据实写）**：拿到的是**扁平单选**——触发器 = 当前模型名 ＋ provider 图标 ＋ chevron-down，菜单 = 全部候选的 radio 列表（`PromptInputV2ConfiguredSelect`，`index.tsx:527-549`；`PromptInputV2Select`，`index.tsx:551-603`）；**不是**原生 `modelControl` 那颗带 provider 分组的富弹层（`ModelSelectorPopoverV2`）。
 
 **值**：
 
@@ -142,19 +161,28 @@ const slashCommands = createMemo(() => [
 **上一版文档里挂着的两条待验，已量完（2026-10-11）**：
 
 1. **`useProviders` 在右栏安全 ✅** —— `useProviders` 里那句 `useParams()`（`hooks/use-providers.ts:22`）落到 `@solidjs/router@0.15.4` 的 `const useParams = () => useRouter().params`（`dist/routing.js:130`），而 `useRouter` 的卫兵查的是 **`RouterContextObj`**（`dist/routing.js:9`）—— 那是 `<Router>` 提供的，**不是 `<Route>`**。右栏住在 router root ⇒ 不抛。
-2. **`ModelSelectorPopoverV2` 不可复用 ❌** —— 它的 controller 第一行是 `const model = input.model ?? useLocal().model`（`components/dialog-select-model.tsx:280`），而 `model` 的类型是 `ReturnType<typeof useLocal>["model"]`（同文件 `:29`）。右栏没有 `LocalProvider` ⇒ **必须**喂一份 `ModelState` 才不碰 `useLocal`；而 `local.model` 有 `ready/current/recent/list/cycle/set/visible/setVisibility/variant{configured,selected,current,list,set}/…` 十几个成员，造一份完整的**就是把 `local.model` 抄一遍**（`#002-06`）。详见 §4。
+2. **`ModelSelectorPopoverV2` 不可复用 ❌** —— 它的 controller 第一行是 `const model = input.model ?? useLocal().model`（`components/dialog-select-model.tsx:260`），而 `model` 的类型是 `ReturnType<typeof useLocal>["model"]`（同文件 `:29`）。右栏没有 `LocalProvider` ⇒ **必须**喂一份 `ModelState` 才不碰 `useLocal`；而 `local.model` 有 `ready/current/recent/list/cycle/set/visible/setVisibility/variant{configured,selected,current,list,set}/…` 十几个成员，造一份完整的**就是把 `local.model` 抄一遍**（`#002-06`）。详见 §4。
 
-### 3.3 ③ F3 —— 让那一格不可达，且不复制服务端的回退链
+### 3.3 ③ F3 与 F4 —— 让那两格不可达，且不复制服务端的回退链
+
+**同根因的两处落点，都在客户端上游 `packages/app/src/components/prompt-input/submit.ts`**（「右栏不传 model」，而上游那两处都假设它必有值）：
+
+| 落点 | 位置 | 读法 | 症状 |
+|---|---|---|---|
+| **F3** | 命令分支 `submit.ts:94-98`（`:95` 读 `input.draft.model.modelID`、`:96` 读 `providerID`） | `draft.model` 为 `undefined` 时**当场解引用** | 抛 `Cannot read properties of undefined (reading 'modelID')` |
+| **F4** | normal 分支 `submit.ts:136` `model: { ...input.draft.model, variant }` | `draft.model` 为 `undefined` 时展开得 `{}`（**真值**）⇒ 服务端 `input.model ?? ag.model ?? currentModel(…)` 的回退链被顶掉 ⇒ 拿空对象去 `provider.getModel(undefined, undefined)` | 报错（`state.md` 缺口表已登记为「类型谎言」） |
 
 三件事合起来做：
 
 1. **有值就传**：`draft.model = 本栏选择 ?? 会话已记的 model`。**无值仍然不传** —— 保留 `submit-prompt.ts:72-110` 那段「本栏不自选，缺省交服务端」的原设计，那一整段论证今天依然成立。
-2. **无值且正文会命中服务端命令 ⇒ 在 fork 边界拦下**：`return false` ＋ 一句 toast（「先选一个模型」）。把这一格从「上游解引用抛 `Cannot read properties of undefined`」变成「没发出去 ＋ 一句人话」。
+2. **无值且正文会命中服务端命令 ⇒ 在 fork 边界拦下**：`return false` ＋ 一句 toast（「先选一个模型」）。把 F3 从「上游解引用抛 `Cannot read properties of undefined`」变成「没发出去 ＋ 一句人话」；F4 那支同样**到不了**（在进 `submit.ts` 之前就回头）。
    - 依据：正文首段与 `props.data.command` 的比对是**纯字符串判断**，右栏做得了；拦截点就在 `submitRightPanePrompt`（fork 自己的文件）。
    - 这条**不吞异常**：没有 catch 上游，而是在调用上游**之前**就把语义补齐或明确拒绝。
 3. **右栏「＋ 新会话」带上当前选择**（若已选）：`session-actions.ts:63-64` 的 `建会话` 加一个可选 `model` 参数。
    - 触发这条改动的直接依据：该处注释写着「`agent` / `model` 同样可选，本处**不传**：**右栏没有选择器**」——**这条前提正是本轮推翻的**（`LEARNINGS #002-06`：谁在按同一个前提做同一件事）。
    - 效果：右栏建出来的会话**从出生起就有 model**，第 2 条兜底基本走不到。
+
+**⇒ 修法收敛成一句话：本栏恒有模型**（模型控件给出的「本栏选的 → 会话记的 → 应用默认」），**解析不出来就不发**（`submitRightPanePrompt` 在组 `draft`（`submit-prompt.ts:111`）之前 `return false`）。F3 与 F4 同时消失，且 `submit-prompt.ts` 里那两个 `as` 少掉一个（`model` 那处不再需要：`FollowupDraft.model` 是必填，而守卫之后 `input.model` 已被收窄）。
 
 **明确不做**：不在前端复算 `configuredModel ?? recentModel ?? defaultModel` 那条链 —— 那是服务端 `currentModel` 的判断在客户端的第二处写法（`#002-06`），`submit-prompt.ts:81-82` 已经论证过为什么不行，那段论证不因本轮而失效。
 
@@ -171,7 +199,7 @@ session-panel.tsx
   ├─ useCommand()  ──► ① / 面板的池子（内建斜杠命令那半）
   ├─ useProviders(目录) ──► ② 候选模型列表          ← 已验：右栏在 router root，取得到
   ├─ 模型信号 ──► ② 当前值；onSubmit 时交给 submit-prompt
-  └─ PromptInputV2(controller, modelControl=…)      ← 上游已有该 prop
+  └─ PromptInputV2(controller) —— view 里补 model（view.model 供数据）  ← 原生 fallback，零新 UI
 
 submit-prompt.ts（fork 边界）
   ├─ draft.model = 选择 ?? 会话记的                 ③-1
@@ -187,7 +215,7 @@ session-actions.ts
 
 | 备选 | 拒 |
 |---|---|
-| 复用 `ModelSelectorPopoverV2`（原生那颗控件） | 它的 controller 写着 `const model = input.model ?? useLocal().model`（`dialog-select-model.tsx:280`）⇒ 复用**必需要一份 `ModelState`**。而 `ModelState = ReturnType<typeof useLocal>["model"]`（同文件 `:29`）是个十几个成员的对象（`local.tsx:280-360`：`ready/current/recent/list/cycle/set/visible/setVisibility/variant{…}`）。**造一份完整的＝把 `local.model` 抄一遍**（`#002-06`）；造一份**残缺的再强转**＝给上游留一排运行时静默洞（上游哪天多动一个成员就炸，且不报错）。两条都不合仓训 ⇒ 改为自建一颗薄的（§3.2），只取它真正的数据源 `useProviders(目录)` 一个。 |
+| 复用 `ModelSelectorPopoverV2`（原生那颗控件） | 它的 controller 写着 `const model = input.model ?? useLocal().model`（`dialog-select-model.tsx:260`）⇒ 复用**必需要一份 `ModelState`**。而 `ModelState = ReturnType<typeof useLocal>["model"]`（同文件 `:29`）是个十几个成员的对象（`local.tsx:280-360`：`ready/current/recent/list/cycle/set/visible/setVisibility/variant{…}`）。**造一份完整的＝把 `local.model` 抄一遍**（`#002-06`）；造一份**残缺的再强转**＝给上游留一排运行时静默洞（上游哪天多动一个成员就炸，且不报错）。两条都不合仓训 ⇒ 不造新控件，改给 `view.model` 供数据、走原生 fallback（§3.2），只取它真正的数据源 `useProviders(目录)` 一个。 |
 | 把 `LocalProvider` 上提到能罩住右栏 | 上游文件（`packages/app/src/context/local.tsx` 与 `pages/directory-layout.tsx` 都在 `upstream/dev` 里）结构改动大 ＝ 与「最小化上游冲突」这条第一号约束正面对撞；且 `local.tsx:75-83` 的 `persisted` 是**按 (scope, 目录) 存的单份 localStorage**，右栏再挂一个实例就是**两个写入者写同一把钥匙**（后写覆盖先写）。**不做。** |
 | 右栏自建选择器并复算回退链 | `#002-06`：同一个判断两处各写一份。**不做。** |
 | 右栏第二个 `LocalProvider` 实例 | 同上，两个写入者。**不做。** |
@@ -234,8 +262,12 @@ session-actions.ts
 | # | 缺口 | 现状 |
 |---|---|---|
 | G1 | `useProviders()` 里的 `useParams()` 在 Route 之外会不会抛 | **已验：不抛**（`useRouter` 查的是 `<Router>` 提供的 `RouterContextObj`，右栏在 router root；见 §3.2）。**结论不变**：② 的候选列表就取 `useProviders(目录)` |
-| G2 | `ModelSelectorPopoverV2` 的完整入参 | **已验：不可复用**（它要一份完整的 `ModelState`，`dialog-select-model.tsx:280`）。**结论改变**：② 的控件改为自建一颗薄的（§3.2 / §4） |
+| G2 | `ModelSelectorPopoverV2` 的完整入参 | **已验：不可复用**（它要一份完整的 `ModelState`，`dialog-select-model.tsx:260`）。**结论改变**：② 不新建控件，给 `view.model` 供数据、走原生 fallback（§3.2 / §4） |
 | G3 | 「选了没提交就刷新 ⇒ 丢」 | **接受**（裁定 #2 的必然代价），文档化即可 |
 | G4 | 真栈复现 F3（新会话第一条 `/命令`） | **未做**；实现期作为 ② 步的 RED 之一 |
 | G5 | `projection.all` 改成无消费者后的去留 | 本轮只标注，不删 |
 | G6 | 服务端命令里 118 条是否会因目录不同而变 | 今天只量了一个目录；真栈验收用例**改成两侧各取一次数**，不写死 |
+| G7 | 内建命令的键位提示没搬过来（原生弹层每项右侧显示 `Mod+M` 这类键位，右栏不显示）——`右栏斜杠命令` 没给 `keybind` 字段 | 纯外观，真栈 spec 会读到实况 |
+| G8 | 无任何已接入 provider 时，模型控件的候选为空、触发器文字为空串，且提交会被守卫挡下（返回 false、正文留在框里、**没有提示**） | 本机没有可复现的环境（不配 provider 连原生的底栏也是空的）⇒ 据实挂账，不写「已覆盖」 |
+| G9 | 「内建命令选中即执行」的**真执行**只在单元层钉（`右栏选中命令` 返回动作）＋ 组件层钉（spy 被调用）；真栈只钉到「池子里有内建」与「服务端命令选中后 token 留在框里」 | 真执行会在沙箱里跑 `/init` 这类有副作用的命令 ⇒ 真栈不跑 |
+| G10 | **唯一与原生不同字的一处**：`title`。能对上号的 skill 用中文显示名（用户裁定 2026-10-11，为保住「民警打中文搜得到」），其余用命令名 | `id`/`label`/`trigger`/次序与原生逐条一致 |
