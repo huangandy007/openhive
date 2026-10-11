@@ -118,7 +118,7 @@ async function walk(
   let 有文件 = false
   for (const value of body) {
     const entry = readEntry(value)
-    if (!entry || entry.ignored) continue
+    if (!entry || entry.ignored || isGitMetadata(entry.path)) continue
     if (entry.type !== "directory") {
       files.push(entry.path)
       有文件 = true
@@ -130,6 +130,34 @@ async function walk(
     有文件 = 有文件 || 下面有文件
   }
   return 有文件
+}
+
+/**
+ * 这条**项目内的相对路径**是不是落在**项目根的 `.git`** 里——文件树里一律不显示。
+ *
+ * ## 为什么要有它（上游那份忽略规则里没有 `.git`）
+ *
+ * 建项目时无条件 `git init`（`packages/opencode/src/server/openhive/project.ts`），
+ * 而文件树的「隐掉」本来是借上游 `ignored` 那条路——**上游那份默认规则里没有 `.git`**
+ * （2026-10-11 实测 `ignore().ignores(".git/")` 为 `false`）⇒ 不补这一句，民警点开文件 Tab
+ * 看到的是一个 `.git` 目录，进得去，里面成千上万个对象文件；走树的代价也跟着来
+ * （每层目录一次往返）。
+ *
+ * ## 判据与服务端**逐字同形**（`packages/opencode/src/server/openhive/file.ts` 的 `inGit`）
+ *
+ * 那边拦的是**七个出口**（这一层拦不住任何一条直接构造的请求），两处的边界必须同一条：
+ * **整条路径的第一段**是 `.git`，**不分大小写**（win32 上 `.git` / `.GIT` / `.Git` 是同一个
+ * 目录）。「第一段」不是「任何一段」——嵌在项目里的 `资料\.git\`（解压进来的别人一份仓库）
+ * 是项目**内容**，与项目根那个版本库不是一回事，与服务端那条边界一致。
+ *
+ * ## ⚠️ 这里不是安全边界
+ *
+ * 拦住改动的是服务端那七项守卫。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』
+ * 替代权限校验」是禁止的——这里是**叠加**，不是替代：守卫先立着，客户端只是不画。
+ */
+function isGitMetadata(path: string): boolean {
+  const 首段 = path.split(/[\\/]/)[0] ?? ""
+  return 首段.toLowerCase() === ".git"
 }
 
 /**

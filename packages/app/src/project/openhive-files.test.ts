@@ -234,3 +234,90 @@ describe("listProjectFiles", () => {
     expect(await listProjectFiles(PROJECT, send)).toEqual(["笔记.md"])
   })
 })
+
+/**
+ * 2026-10-11 · **项目根的 `.git` 从文件树里隐掉**（用户裁定）。服务端那侧是**七项全堵**
+ * （`packages/opencode/src/server/openhive/file.ts` 的 `inGit`），这一层只是「别让民警看见、
+ * 别白走一趟」。
+ *
+ * ## 隐掉的**不只是「画面上不出现」**，更要紧的是**不去走它**
+ *
+ * `.git` 底下成千上万个对象文件，每层目录一次往返——一个民警建完项目点开文件 Tab，
+ * 要等它把 `.git/objects/ab/cd…` 全走完才收得了手。所以判据两头都钉（同上面 `ignored` 那条）：
+ * 清单里没有它，**且 `sent` 里没有 `.git` 那条 `?path=`**。
+ *
+ * ## ⚠️ 这一层**不是安全边界**
+ *
+ * 拦住改动的是服务端那七项守卫；这里显掉它拦不住任何一条直接构造的请求。
+ * `CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』替代权限校验」是禁止的——
+ * 这里**不是替代，是叠加**：服务端的守卫先立着，客户端只是不画。
+ *
+ * ## 判据与服务端的 `inGit` **逐字同形**：**整条路径的第一段**是 `.git`（不分大小写）
+ *
+ * 「第一段」不是「任何一段」：嵌在项目里的 `资料\.git\`（比如解压进来的一份别人给的仓库）
+ * 是项目**内容**的一部分，与项目根那个版本库不是一回事——服务端那条边界也是这么划的
+ * （那边有一条 `资料/.git` 照常可删的对照组）。两处边界必须同一条，否则「看得见却动不了」
+ * 或「动得了却看不见」。
+ */
+describe("项目根的 .git 从清单里隐掉", () => {
+  /**
+   * `ignored: false` 是**刻意**的：上游那份默认忽略规则里**没有 `.git`**
+   * （2026-10-11 实测 `ignore().ignores(".git/")` 为 `false`）——所以挡下它的**不能**是
+   * `ignored` 那条分支，必须另有一条判据。喂 `ignored: true` 的话这条用例在实现之前就绿了。
+   */
+  test(".git 目录既不进清单、也不往下走", async () => {
+    const { send, sent } = stub({ "": [目录(".git\\", ".git"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["笔记.md"])
+    // 替身没给 `.git\` 配路由 ⇒ 真走了的话那一层会抛 ⇒ 整份变 `undefined`。
+    expect(sent.map((item) => item.path)).toEqual([""])
+  })
+
+  /**
+   * 大小写同一份判据——**win32 上它们就是同一个目录**（服务端那条实测记录：`.git` / `.GIT` /
+   * `.Git` 三个写法 `lstat` 到同一个 inode）。用户能打出来的写法都得算。
+   */
+  test(".GIT 同样隐掉（win32 上它们是同一个目录）", async () => {
+    const { send, sent } = stub({ "": [目录(".GIT\\", ".GIT"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["笔记.md"])
+    expect(sent.map((item) => item.path)).toEqual([""])
+  })
+
+  /**
+   * 对照：判据是「**那一段等于** `.git`」，不是「凡 `.git` 开头」。
+   * 少了这条，`startsWith(".git")` 那种写法全绿（服务端那边同样立过这条对照组）。
+   */
+  test("`.gitignore` 照常出现（判据不是「凡 .git 开头」）", async () => {
+    const { send } = stub({ "": [文件(".gitignore", ".gitignore"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual([".gitignore", "笔记.md"])
+  })
+
+  /** 同上，目录那一侧：`.gitx\` 第一段不是 `.git` ⇒ 照常进清单、照常走进去。 */
+  test("`.gitx\\` 这个目录照常出现，且照常往下走", async () => {
+    const { send, sent } = stub({
+      "": [目录(".gitx\\", ".gitx")],
+      ".gitx\\": [文件(".gitx\\config", "config")],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual([".gitx\\config"])
+    expect(sent.map((item) => item.path)).toEqual(["", ".gitx\\"])
+  })
+
+  /**
+   * 边界：**第一段不是 `.git`** ⇒ 照常。嵌在项目里的 `资料\.git\` 是项目内容
+   * （解压进来的一份别人给的仓库），与项目根那个版本库不是一回事；服务端那条边界也是这么划的。
+   * 把判据放宽成「任何一段是 `.git`」的话，这一条会红——而它正是那条判据的守门人。
+   */
+  test("`资料\\.git\\` 照常出现、照常往下走（边界：只看第一段）", async () => {
+    const { send, sent } = stub({
+      "": [目录("资料\\", "资料")],
+      "资料\\": [目录("资料\\.git\\", ".git"), 文件("资料\\笔记.md", "笔记.md")],
+      "资料\\.git\\": [文件("资料\\.git\\config", "config")],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["资料\\.git\\config", "资料\\笔记.md"])
+    expect(sent.map((item) => item.path)).toEqual(["", "资料\\", "资料\\.git\\"])
+  })
+})

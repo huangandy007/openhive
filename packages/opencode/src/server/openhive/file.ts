@@ -363,6 +363,46 @@ const relativePath = (base: string, absolute: string) => relative(base, absolute
 /** 链接把落点带出了项目——四个调用点共用一句话，免得同一件事长出四种措辞。 */
 const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
 
+/** 碰到版本库元数据时回的那句话。八个调用点共用一句（同 `LINK_ESCAPE` 的理）。 */
+const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
+
+/**
+ * 这个**已经过 `inside()`** 的项目内绝对路径，是不是落在**项目根的 `.git`** 里
+ * （它自己，或它下面的任何一层）。
+ *
+ * ## 为什么要有这道判据（2026-10-11）
+ *
+ * 建项目时**无条件** `git init`（`project.ts:454`，紧跟那步 `resolve()` 少了它当场 `Effect.die`）
+ * ⇒ 每个项目里都有一个 `.git`。而文件树那条链认不出它：`handlers/file.ts` 的 `list` 拿
+ * `ignore()` 加的是项目根的 `.gitignore` / `.ignore`，**默认规则集里没有 `.git`**（实测：
+ * `ignore().ignores(".git/")` ⇒ `false`）⇒ 它连同内容一起被列出来、右键就能删 / 搬 / 建。
+ * 删掉它，这个项目不再是 git 仓库，而归档、备份那些记录还指着它。
+ *
+ * ## 为什么**不**写进 `inside()`
+ *
+ * `inside()` 是「在不在 `base` 里面」这一件事的原语，`handleTransfer` 里还有一次
+ * `inside(source, …)` 拿它判「目标在不在源里面」——把版本库这条塞进去，那句也会跟着多一层
+ * 与它无关的意思。而且这一处要回一句**说得准的话**（「越出项目目录」对着 `.git` 是假话：
+ * `.git` 明明就在项目里），共用 `inside()` 就只剩 `undefined` 一个出口，措辞没处长。
+ * ⇒ 一台判据（这一台）＋ 各落点各接一行，同 `realInside` 那种「一台函数 ＋ N 个调用点」。
+ *
+ * ## 判据的写法
+ *
+ * 比的是**相对项目根的第一段**，不是整串前缀：`.git/config` 与 `.git` 一样堵，
+ * 而 `资料/.git` 放行——项目根的 `.git` 才是这个项目的版本库（`project.ts` 就在那一层 init），
+ * 子目录里那个是用户自己资料里的普通目录，堵它是误伤。
+ *
+ * ⚠️ **不分大小写**（本机 win32 实测）：`.git` / `.GIT` / `.Git` 三个名字 `lstat` 回的都是
+ * 同一个目录、`.GIT/CONFIG` 读出来就是 `.git/config` 的正文；而 `realpath("…/.GIT")` 回的是
+ * `…\.GIT`（**原样保留调用方的大小写**，不规范化），所以「比真身」那条路挡不住它。
+ * POSIX 上 `.GIT` 本是另一个目录，这里**多堵一个名字**——同 `noColon` 那条「不写平台分支」
+ * 的取向：这个写法在**哪一种**平台上都不会是「用户想要的那个资料目录」的正当名字。
+ */
+function inGit(project: string, absolute: string): boolean {
+  const 首段 = relative(project, absolute).split(/[\\/]/)[0] ?? ""
+  return 首段.toLowerCase() === ".git"
+}
+
 /**
  * `existing`（**词法上**已由 `inside` 判过在 `project` 里）的**真身**是否也还在项目里。
  *
@@ -450,6 +490,7 @@ function handleTransfer(
 
     const source = inside(project, payload.value.path)
     if (source === undefined) return badRequest("源路径越出项目目录")
+    if (inGit(project, source)) return badRequest(GIT_LOCKED)
 
     // 项目根本身是**目录** ⇒ 放开目录这一支之后它会走到最后那句「目标已有同名文件」。
     // **排在这里**（与 `handleRemove` 同款）：`payload.value.path` 为空串时，下面那条
@@ -463,6 +504,7 @@ function handleTransfer(
 
     const targetDir = inside(project, payload.value.dir)
     if (targetDir === undefined) return badRequest("目标目录越出项目目录")
+    if (inGit(project, targetDir)) return badRequest(GIT_LOCKED)
     const dirInfo = yield* Effect.promise(() => stat(targetDir).catch(() => undefined))
     if (dirInfo === undefined || !dirInfo.isDirectory()) return badRequest("目标目录不存在")
     // 词法上在项目里 ≠ 真身在项目里：中间有一层是链接就伸到外面去了——见 `realInside`。
@@ -530,6 +572,7 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
     const dir = new URL(request.url, "http://localhost").searchParams.get("dir") ?? ""
     const targetDir = inside(project, dir)
     if (targetDir === undefined) return badRequest("目标目录越出项目目录")
+    if (inGit(project, targetDir)) return badRequest(GIT_LOCKED)
     const dirInfo = yield* Effect.promise(() => stat(targetDir).catch(() => undefined))
     if (dirInfo === undefined || !dirInfo.isDirectory()) return badRequest("目标目录不存在")
     if (!(yield* realInside(project, targetDir))) return badRequest(LINK_ESCAPE)
@@ -581,6 +624,7 @@ function handleDownload(request: HttpServerRequest.HttpServerRequest, root: stri
 
     const target = inside(project, path)
     if (target === undefined) return badRequest("路径越出项目目录")
+    if (inGit(project, target)) return badRequest(GIT_LOCKED)
 
     // `lstat` 而非 `stat`：**最后一段是链接**时 `stat` 会跟着链接看目标（实测：`stat(链).isFile()`
     // 为 true、`lstat(链).isSymbolicLink()` 为 true）⇒ 链接指向项目外就等于把那个文件读出来。
@@ -622,12 +666,14 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, root: string
 
     const targetDir = inside(project, dir)
     if (targetDir === undefined) return badRequest("目标目录越出项目目录")
+    if (inGit(project, targetDir)) return badRequest(GIT_LOCKED)
     const dirInfo = yield* Effect.promise(() => stat(targetDir).catch(() => undefined))
     if (dirInfo === undefined || !dirInfo.isDirectory()) return badRequest("目标目录不存在")
     if (!(yield* realInside(project, targetDir))) return badRequest(LINK_ESCAPE)
 
     const target = inside(project, dir === "" ? name : `${dir}/${name}`)
     if (target === undefined) return badRequest("目标路径越出项目目录")
+    if (inGit(project, target)) return badRequest(GIT_LOCKED)
 
     if (yield* exists(target)) return badRequest("这个位置已经有同名的东西了")
 
@@ -666,6 +712,7 @@ function handleRename(request: HttpServerRequest.HttpServerRequest, root: string
 
     const source = inside(project, from)
     if (source === undefined) return badRequest("源路径越出项目目录")
+    if (inGit(project, source)) return badRequest(GIT_LOCKED)
 
     // `lstat`：链接在它下面**两者皆 false**（实测）⇒ 链接自己落在这句之外，不必另写判据。
     const info = yield* Effect.promise(() => lstat(source).catch(() => undefined))
@@ -681,6 +728,7 @@ function handleRename(request: HttpServerRequest.HttpServerRequest, root: string
     const parentRel = relative(project, dirname(source)).replaceAll("\\", "/")
     const target = inside(project, parentRel === "" ? name : `${parentRel}/${name}`)
     if (target === undefined) return badRequest("目标路径越出项目目录")
+    if (inGit(project, target)) return badRequest(GIT_LOCKED)
 
     if (yield* exists(target)) return badRequest("这个位置已经有同名的东西了")
 
@@ -725,6 +773,7 @@ function handleRemove(request: HttpServerRequest.HttpServerRequest, root: string
 
     const absolute = inside(project, from)
     if (absolute === undefined) return badRequest("路径越出项目目录")
+    if (inGit(project, absolute)) return badRequest(GIT_LOCKED)
 
     // ① 项目根。**排在名字守卫之前**：`from: ""` 的末段就是空串，先落到名字那条会回错话。
     if (absolute === project) return badRequest(ROOT_UNDELETABLE)

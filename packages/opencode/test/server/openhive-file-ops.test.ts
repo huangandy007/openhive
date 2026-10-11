@@ -105,6 +105,18 @@ const 密 = "别的项目的密件"
  *  「到底在断哪一份」说不清。 */
 const 话单 = "话单正文：主叫 13800000000，被叫 13900000000"
 
+/**
+ * 项目里那个 **`.git`**（2026-10-11 的「七项全堵」那组）。
+ *
+ * ⚠️ 它**不是**某一组用例的私有前提，而是**每个真项目恒有**的东西：`project.ts:454` 建项目时
+ * 无条件 `git init --quiet <项目目录>`，紧跟的第 459 行还要 `resolve()` 出 `vcs` —— 没有它那个
+ * `Effect.die` 当场抛。所以夹具按**生产常态**种（`LEARNINGS #006-11`：真栈的种子要按生产常态种，
+ * 不是按建表默认值种）。里面的 `config` 是随便一个**有正文**的文件：判据要读得出「还在不在」。
+ */
+const 版本库 = path.join(项目根, ".git")
+const 版本库配置 = path.join(版本库, "config")
+const 版本库正文 = "版本库配置：不许碰"
+
 const 文件 = {
   甲: path.join(项目根, "a.txt"),
   乙: path.join(项目根, "sub", "b.txt"),
@@ -124,6 +136,8 @@ function 重置文件() {
   rmSync(沙箱根, { recursive: true, force: true })
   mkdirSync(path.join(项目根, "sub"), { recursive: true })
   mkdirSync(path.join(沙箱根, OTHER), { recursive: true })
+  mkdirSync(版本库, { recursive: true })
+  writeFileSync(版本库配置, 版本库正文)
   writeFileSync(文件.甲, 甲)
   writeFileSync(文件.乙, 乙)
   writeFileSync(文件.密, 密)
@@ -1858,6 +1872,296 @@ describe("T018 · 新建 / 重命名 / 删除三个出口（FR-005）", () => {
         expect(readFileSync(文件.乙, "utf8")).toBe(乙)
         expect(statSync(项目根).isDirectory()).toBe(true)
         expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+})
+
+/**
+ * **`.git` 七项全堵**（2026-10-11 用户裁定：「七项全堵，判据只写一份」）。
+ *
+ * ## 现象
+ *
+ * 项目目录在创建时被**无条件** `git init`（`project.ts:454`，紧跟的 `resolve()` 少了它当场
+ * `Effect.die`）⇒ 每个项目里都有一个 `.git`。而文件树那条链**认不出它**：`handlers/file.ts`
+ * 的 `list` 拿 `ignore()` 加的是项目根的 `.gitignore` / `.ignore`，**默认规则集里没有 `.git`**
+ * （本机实测：`ignore().ignores(".git/")` ⇒ `false`）⇒ `.git` 及其内容**照常列出来**，
+ * 右键就能删 / 搬 / 建。删掉它，这个项目就不再是 git 仓库，而归档、备份那些记录还指着它。
+ *
+ * ## 判据落在哪一层
+ *
+ * 七项出口**全部**经 `inside(project, …)` 解析客户端给的路径（共 9 个落点：复制 / 移动各两处
+ * ——源与目标目录，上传、下载、新建各一处，重命名、删除各一处）。守卫因此写成**一台纯函数**
+ * （`file.ts` 的 `inGit`）＋ 在 9 个落点上各接**一行**，不是七份判断（`LEARNINGS #002-06`：
+ * 同一个判断在两处各写一份，迟早漂）。同族先例是 `realInside`（链接那道守卫），也是「一台
+ * 函数 ＋ N 个调用点」。
+ *
+ * ## 「堵住了」与「没副作用」是两条判据（`#004-09`），排列按 `#004-14`
+ *
+ * 每条都是：**先断版本库整棵还在**（被测属性），再断状态码与那句话（伴随信号）。
+ */
+describe("`.git` 七项全堵（判据只写一份）", () => {
+  const 建 = (kind: "file" | "directory", dir: string, name: string) =>
+    send(ALICE, 出口.create, { kind, dir, name }, ALPHA)
+
+  const 改 = (源: string, name: string) => send(ALICE, 出口.rename, { path: 源, name }, ALPHA)
+
+  const 删 = (源: string) => send(ALICE, 出口.remove, { path: 源 }, ALPHA)
+
+  const 下载 = (path: string) =>
+    as(ALICE, `${出口.download}?path=${encodeURIComponent(path)}`, { headers: { [PROJECT_HEADER]: ALPHA } })
+
+  /** 版本库**整棵**还在（外壳 ＋ 里面那个文件），且正文一个字节没动。 */
+  const 版本库没动 = () => {
+    expect(statSync(版本库).isDirectory()).toBe(true)
+    expect(readFileSync(版本库配置, "utf8")).toBe(版本库正文)
+  }
+
+  /** 版本库那道门回的那句话。**字面量**——改文案必红是设计（同 `PROJECT_HEADER` 那条理）。 */
+  const 挡住了 = "项目里的 .git 是版本库的元数据，不许查看或改动"
+
+  it.live(
+    "删 .git ⇒ 400，版本库整棵还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删(".git")
+
+        // 整组里最重的一条：`rm` 是递归的，漏掉这道门就是把项目的版本库整个清掉。
+        版本库没动()
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /** **里面**的东西同一个待遇：「第一段是 `.git`」这条判据的另一半（少了它只堵得住外壳）。 */
+  it.live(
+    "删 .git/config ⇒ 400，那个文件还在、正文没变",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 删(".git/config")
+
+        版本库没动()
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "把 .git 改名 ⇒ 400，版本库还在原名底下",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 改(".git", "我的资料")
+
+        版本库没动()
+        expect(existsSync(path.join(项目根, "我的资料"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /** **源侧**：搬走与复制走是两条不同的后果（移动会让源消失），故各钉一条。 */
+  it.live(
+    "移动 .git 到 sub/ ⇒ 400，版本库原地不动、sub 里也没多出东西",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.move, { path: ".git", dir: "sub" }, ALPHA)
+
+        版本库没动()
+        expect(existsSync(path.join(项目根, "sub", ".git"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "复制 .git 到 sub/ ⇒ 400，sub 里没造出副本、版本库一个字节没动",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.copy, { path: ".git", dir: "sub" }, ALPHA)
+
+        版本库没动()
+        expect(existsSync(path.join(项目根, "sub", ".git"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /**
+   * **目标那一侧**：不是「源是 `.git`」而是「**要搬进** `.git` 里」。
+   *
+   * 与上面两条是**不同的落点**（`#004-01`：数底层函数被调用的地方，不是数已经写了守卫的地方）
+   * ——源侧堵住了，目标侧那一句照样可能漏。这条用**正常文件**当源，判据落在「它没被搬进去」。
+   */
+  it.live(
+    "把 a.txt 搬**进** .git ⇒ 400，a.txt 原地不动、版本库里没多出东西",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口.move, { path: "a.txt", dir: ".git" }, ALPHA)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe(甲)
+        版本库没动()
+        expect(readdirSync(版本库)).toEqual(["config"])
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "下载 .git/config ⇒ 400，正文一个字节都没交出去",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 下载(".git/config")
+
+        版本库没动()
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "上传进 .git ⇒ 400，版本库里没多出文件",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* upload(ALICE, ".git", "偷渡.txt", "偷渡的正文", ALPHA)
+
+        版本库没动()
+        expect(readdirSync(版本库)).toEqual(["config"])
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /** 新建**文件**与新建**目录**是同一句判据下的两支（`kind` 分岔在守卫**之后**）。 */
+  it.live(
+    "在 .git 里新建文件 ⇒ 400，版本库里没多出东西",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("file", ".git", "偷渡.txt")
+
+        版本库没动()
+        expect(readdirSync(版本库)).toEqual(["config"])
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /**
+   * **`kind: "directory"` 也走同一道门**：它与上一条共用那一行，但分支不同（`mkdir` 而不是
+   * `writeFile`）——只钉一支的话，将来把守卫挪到 `writeFile` 那一侧就会漏掉整个目录那一支。
+   */
+  it.live(
+    "在 .git 里新建目录 ⇒ 400，版本库里没多出东西",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 建("directory", ".git", "偷渡")
+
+        版本库没动()
+        expect(readdirSync(版本库)).toEqual(["config"])
+        expect(response.status).toBe(400)
+        expect((yield* json(出错, response)).error).toBe(挡住了)
+      }),
+    30_000,
+  )
+
+  /**
+   * **大小写变体也堵**（本机 win32 实测，2026-10-11）：`.git` / `.GIT` / `.Git` 三个名字
+   * `lstat` 回的都是同一个目录，`.GIT/CONFIG` 读出来就是 `.git/config` 的正文——而
+   * `realpath("…/.GIT")` 回的是 `…\.GIT`（**原样保留调用方的大小写**，不规范化），所以
+   * 「比真身」那条路挡不住它。判据只能是**不分大小写的字符串比较**。
+   * ⚠️ POSIX 上 `.GIT` 本是另一个目录，这里**多堵一个名字**：代价是「没人会拿 `.GIT` 当资料
+   * 目录」，收益是这台机器上唯一的真实缺口被堵死（同 `noColon` 那条「不写平台分支」的取向）。
+   *
+   * 顺带钉住**归一化**：`./.git` 与 `.git` 经 `resolve` 之后是同一段，绕不过去。
+   */
+  it.live(
+    "`.GIT` 与 `./.git` 同样被堵（win32 上它们就是同一个目录）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const 大写 = yield* 删(".GIT")
+        const 点斜 = yield* 删("./.git")
+
+        版本库没动()
+        expect([大写.status, 点斜.status]).toEqual([400, 400])
+        expect([(yield* json(出错, 大写)).error, (yield* json(出错, 点斜)).error]).toEqual([挡住了, 挡住了])
+      }),
+    30_000,
+  )
+
+  /**
+   * **对照：判据是「那一个目录」，不是「凡 `.git` 开头」**——少了这条，一道
+   * `startsWith(".git")` 的实现照样全绿，而它会把 `.gitignore` 一起锁死（`#005-19`：
+   * 「红得不够多」本身就是它在告诉你洞在哪）。
+   */
+  it.live(
+    "对照：.gitignore 与 .gitx 照常可删（判据不是「凡 .git 开头」）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(path.join(项目根, ".gitignore"), "node_modules/\n")
+        mkdirSync(path.join(项目根, ".gitx"))
+
+        const 删忽略 = yield* 删(".gitignore")
+        const 删别家 = yield* 删(".gitx")
+
+        expect(existsSync(path.join(项目根, ".gitignore"))).toBe(false)
+        expect(existsSync(path.join(项目根, ".gitx"))).toBe(false)
+        expect([删忽略.status, 删别家.status]).toEqual([200, 200])
+        版本库没动()
+      }),
+    30_000,
+  )
+
+  /**
+   * **边界：子目录里那个 `.git` 放行**——本判据只管**项目根下第一段**。
+   *
+   * 钉住它是因为「往哪边走」都有理由，不写下来下一个人会以为漏了：项目根的 `.git` 才是这个
+   * 项目的版本库（`project.ts:454` 就在那一层 init），`资料/.git` 是用户自己资料里的一个
+   * 普通目录；真去堵它，误伤的是用户。
+   */
+  it.live(
+    "边界：`资料/.git`（嵌套的那一层）照常可删——第一段不是 .git",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "资料", ".git"), { recursive: true })
+        writeFileSync(path.join(项目根, "资料", ".git", "随便.txt"), "用户自己的东西")
+
+        const response = yield* 删("资料/.git")
+
+        expect(existsSync(path.join(项目根, "资料", ".git"))).toBe(false)
+        expect(response.status).toBe(200)
+        版本库没动()
       }),
     30_000,
   )
