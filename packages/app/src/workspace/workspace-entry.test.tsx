@@ -1497,24 +1497,53 @@ const 面板页签 = (host: HTMLElement, id: string) =>
 const 面板报错 = (host: HTMLElement) => text(host, "project-panel-action-error")
 
 /**
- * 走一遍归档：滑出面板 → 「全部」tab → 点那一行的「归档」→ 点确认。
+ * 弹窗里那一颗键——**在 `document.body` 上找，不在 host 里**。
  *
- * ⚠️ 四步都要，少一步都不叫「归档过」：**点「归档」不交出去**（T023 的二次确认），
- * 少掉最后那下确认，测的就是「点了个按钮」而不是归档（`#004-14`：一条用例里既钉被测属性
+ * 弹窗是 `dialog.show()` **传送进 `document.body`** 的（`context/dialog.tsx` 的 `Kobalte.Portal`），
+ * 整个不在工作台那棵树里。照 host 选会选到 `null`，而 `?.click()` **不报错**——那这条用例就变成
+ * 「点了一个不存在的东西」还全绿（`LEARNINGS #005-19` 的「开在谁身上」）。
+ */
+const 弹窗键 = (slot: string) => document.body.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+
+/**
+ * 点弹窗里那颗确认键（归档 / 找回共用同一个槽位——它们是同一个弹窗）。
+ *
+ * 打开是**异步**的（`dialog.show()` 里那层 `startTransition` 让它晚一拍落下来），所以先等条件、
+ * 再点；等不到就**抛**，不写成 `?.click()`——「弹窗没开出来」必须响，不能静默变成「什么都没点」
+ * （`LEARNINGS #005-38`：辅助函数回 `undefined` 会让整条判据空转）。
+ */
+async function 点弹窗确认(动作: string) {
+  await 等到(() => 弹窗键("project-action-ok") !== null)
+  const 确认键 = 弹窗键("project-action-ok")
+  if (!确认键) throw new Error(`点「${动作}」之后弹窗没开出来：找不到 project-action-ok`)
+  确认键.click()
+}
+
+/**
+ * 走一遍归档：滑出面板 → 「全部」tab → 点那一行的「归档」→ 弹窗里点确认。
+ *
+ * ⚠️ 三步都要，少一步都不叫「归档过」：**点「归档」不交出去**（T023 的二次确认），
+ * 少掉弹窗里那下确认，测的就是「点了个按钮」而不是归档（`#004-14`：一条用例里既钉被测属性
  * 又钉伴随信号时，被测的排前面）。
  */
-function 点归档(host: HTMLElement) {
+async function 点归档(host: HTMLElement) {
   锚点按钮(host, "project-anchor-toggle")?.click()
   面板页签(host, "all")?.click()
   host.querySelector<HTMLButtonElement>("[data-slot='project-archive']")?.click()
-  host.querySelector<HTMLButtonElement>("[data-slot='project-archive-ok']")?.click()
+  await 点弹窗确认("归档")
 }
 
-/** 走一遍找回：「已归档」tab → 点那一行的「找回」。**找回没有二次确认**（不是破坏性动作）。 */
-function 点找回(host: HTMLElement) {
+/**
+ * 走一遍找回：「已归档」tab → 点那一行的「找回」→ 弹窗里点确认。
+ *
+ * ⚠️ 2026-10-11 起找回**也要问一句**了（用户下达：「通过弹窗进行交互，让用户选择『找回』、
+ * 『取消』」）——这条注释原先写着「找回没有二次确认」，那句话已经过期。
+ */
+async function 点找回(host: HTMLElement) {
   锚点按钮(host, "project-anchor-toggle")?.click()
   面板页签(host, "archived")?.click()
   host.querySelector<HTMLButtonElement>("[data-slot='project-restore']")?.click()
+  await 点弹窗确认("找回")
 }
 
 /**
@@ -1546,7 +1575,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     const host = 挂(data)
     await 冲一遍()
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     expect(记.归档的).toEqual(["p1"])
@@ -1570,7 +1599,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     // 压根没接线时也是绿的。
     expect(text(host, "project-anchor-name")).toBe("8·17专案")
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     expect(text(host, "project-anchor-name")).toBe("未选择项目")
@@ -1599,7 +1628,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("甲/资料.csv")
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     expect(路径们(host)).not.toContain("甲/资料.csv")
@@ -1615,7 +1644,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     setCurrentProject({ id: "p2", name: "9·03专案" })
     await 冲一遍()
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     // 前置：归档的确实是**另一个**项目（默认点的是「我的项目」组里第一行 = p1）。
@@ -1644,7 +1673,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     // 前置（`#002-02`）：挂上去了。
     expect(text(host, "project-anchor-name")).toBe("8·17专案")
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     expect(text(host, "project-anchor-name")).toBe("8·17专案")
@@ -1658,7 +1687,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     const host = 挂(data)
     await 冲一遍()
 
-    点归档(host)
+    await 点归档(host)
     await 冲一遍()
 
     expect(面板报错(host)).toBe("无权归档该项目")
@@ -1681,7 +1710,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     const host = 挂(data)
     await 冲一遍()
 
-    点找回(host)
+    await 点找回(host)
     await 冲一遍()
 
     expect(面板报错(host)).toBe("找回项目失败")
@@ -1699,7 +1728,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     const host = 挂(data)
     await 冲一遍()
 
-    点找回(host)
+    await 点找回(host)
     await 冲一遍()
 
     expect(记.找回的).toEqual(["p1"])
@@ -1733,7 +1762,7 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     expect(text(host, "project-anchor-name")).toBe("9·03专案")
 
     // 「已归档」tab 里只有 p1（p2 是活跃的）⇒ 找回的是**另一个**项目。
-    点找回(host)
+    await 点找回(host)
     await 冲一遍()
 
     expect(text(host, "project-anchor-name")).toBe("9·03专案")

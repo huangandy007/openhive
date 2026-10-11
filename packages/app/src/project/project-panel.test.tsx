@@ -1,14 +1,85 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
+import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import { ProjectPanel, type ProjectEntry } from "./project-panel"
+import { ProjectPanel, 近况分组, type ProjectEntry, type RecentGroup } from "./project-panel"
+
+/**
+ * 挂一块面板——**外面套着 `DialogProvider`**（2026-10-11 起）。
+ *
+ * 归档 / 找回改走弹窗之后，`ProjectPanel` 要用 `useDialog()`，而它在没有 Provider 时**抛错**
+ * （`context/dialog.tsx`：刻意的，不是静默 `undefined`）。app 里那层 Provider 挂在 `app.tsx`，
+ * 覆盖整个工作台；这里补上同一层，测试与真栈的组件树才是同一棵树（同 `file-tree.test.tsx`）。
+ *
+ * ⚠️ `render()` 返回的 dispose **必须记账**（`LEARNINGS #005-03`）：弹窗关闭是**延迟 100ms
+ * 卸载**的（`context/dialog.tsx` 的 `close`），那条定时器挂在 `DialogProvider` 的 owner 上
+ * ——**不卸载 Provider，它就会在下一条用例执行到一半时开火**，去 `cleanNode` 一棵已经被
+ * `afterEach` 抹掉的树（`file-tree.test.tsx` 顶部记着实测：红的是下一条**毫不相干**的用例）。
+ */
+const 挂过的: Array<() => void> = []
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  挂过的.push(render(() => <DialogProvider>{element()}</DialogProvider>, host))
   return host
+}
+
+/**
+ * 一条用例收工：**先卸载、再让一拍宏任务、最后擦 body**（顺序不能换，同 `file-tree.test.tsx`）。
+ *
+ * 弹窗是 `dialog.show()` **传送进 `document.body`** 的（`context/dialog.tsx` 的 `Kobalte.Portal`）
+ * ——不在 host 里 ⇒ 擦掉 host 是清不掉它的，不清就串到下一条。
+ */
+afterEach(async () => {
+  while (挂过的.length) 挂过的.pop()!()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  document.body.innerHTML = ""
+})
+
+/**
+ * ── 弹窗探针（2026-10-11 起）────────────────────────────────────────────
+ *
+ * 一律查 **`document`**、**不是 host**：弹窗是 `dialog.show()` **传送进 `document.body`** 的
+ * （`context/dialog.tsx` 的 `Kobalte.Portal`），**不在**面板那棵树里。
+ *
+ * ⚠️ 「有弹窗」与「弹窗不在面板里」是**两条独立判据**（`LEARNINGS #005-19` 的「开在谁身上」）：
+ * 只钉前者，一个把弹窗渲染回 host 里的实现照样全绿——而这条改动的**全部意义**正是
+ * 「确认不再长在面板里」。
+ */
+const 弹窗 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+const 有动作弹窗 = () => 弹窗("project-action-dialog") !== null
+/** 弹窗里某槽位的文字（`文本` 只查 host，弹窗不在 host 里）。 */
+const 弹窗文本 = (slot: string) => 弹窗(slot)?.textContent?.trim()
+
+/**
+ * 焦点在不在弹窗那颗「取消」上？——**返回布尔**，理由同 `焦点在输入框`（`LEARNINGS #005-01`：
+ * 红的实得值若是节点会把整轮测试挂哑）。
+ */
+const 焦点在弹窗取消 = () => document.activeElement === 弹窗("project-action-cancel")
+/** 点弹窗里那颗确认键——归档与找回**共用同一个槽位**（它们是同一个弹窗）。 */
+const 点弹窗确认 = () => 弹窗("project-action-ok")?.click()
+
+/**
+ * 让一拍。`dialog.show()` 里那层 `startTransition` 让弹窗**晚一拍**才落下来
+ * （同 `file-tree.test.tsx` 的 `歇一拍`），点完入口直接断「弹窗在不在」会读到 `false`。
+ */
+const 等一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+/**
+ * 轮询等到某条件成立——**不要**用固定延时等一个「稍后会发生的事」（`LEARNINGS #005-29`）。
+ *
+ * 关弹窗就是这么一件事：`close()` 之后真摘节点是**再等 100ms** 的事。超时返回**最后一次**的
+ * 实得值，让断言红在它自己身上，而不是红在一个超时异常里（同 `file-tree.test.tsx` 的 `等到`）。
+ */
+const 等到 = async (条件: () => boolean, 限时 = 1000) => {
+  const 起 = Date.now()
+  while (Date.now() - 起 < 限时) {
+    if (条件()) return true
+    await new Promise((resolve) => setTimeout(resolve, 16))
+  }
+  return 条件()
 }
 
 const 槽 = (host: HTMLElement, slot: string) => host.querySelector<HTMLElement>(`[data-slot='${slot}']`)
@@ -582,9 +653,9 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
     expect(按钮(host, "project-item")?.disabled).toBe(true)
   })
 
-  test("「已归档」tab 的项目带「找回」入口（设计 §3 / FR-009）", () => {
+  test("「已归档」tab 的项目带「找回」入口（设计 §3 / FR-009）", async () => {
     const 记: ProjectEntry[] = []
-    const 封存 = 归档(私有("p2", "封存专案", 1))
+    const 封存 = 我的(归档(私有("p2", "封存专案", 1)), "owner")
     // 块体、不回话（`ProjectActionCallback` 的回话集合里没有 `number`——`push` 那个返回值
     // 不是「给民警看的一句话」，写成表达式体是拿数组长度冒充回话）。
     const host = mount(() => (
@@ -598,6 +669,9 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
 
     页签(host, "archived")?.click()
     组(host, "archived")?.querySelector<HTMLButtonElement>("[data-slot='project-restore']")?.click()
+    await 等一拍()
+    点弹窗确认()
+    await 冲一遍()
 
     expect(记.map((p) => p.id)).toEqual(["p2"])
   })
@@ -609,11 +683,15 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
    * 正好长在归档组里 ⇒ 两边都没盖住。2026-10-07 席 B 审查抓出：调用方把 `onRestore` 包成
    * 一个**恒真的函数**之后，`ArchivedGroup` 的 `Show` 被永远点亮，而未接线时这里**照样全绿**。
    * 所以两侧都要断（`LEARNINGS #003-02`：修完一处要 grep 谁在按同一个前提做同一件事）。
+   *
+   * ⚠️ 归档那行必须是 **owner**（2026-10-11 起）：找回加了 owner 收口后，一个没有 `role` 的行
+   * **也不画**「找回」——那样下面第二条断言红得莫名其妙，红的其实不是「画在哪个 tab」
+   * （`LEARNINGS #006-17`：前置条件自己先不成立了）。
    */
   test("「找回」只在「已归档」tab 出现，不在活跃列表里（FR-009 是归档区的事）", () => {
     const host = mount(() => (
       <ProjectPanel
-        projects={[私有("p1", "活跃专案", 2), 归档(私有("p2", "封存专案", 1))]}
+        projects={[私有("p1", "活跃专案", 2), 我的(归档(私有("p2", "封存专案", 1)), "owner")]}
         onRestore={() => {}}
       />
     ))
@@ -649,6 +727,486 @@ describe("ProjectPanel 项目面板（FR-002）", () => {
 })
 
 /**
+ * 「最近」的时间分桶（**2026-10-11 用户下达**，借鉴 DeepSeek 的「今天 / 7 天内 / 30 天内」）。
+ *
+ * ## 为什么要有它
+ *
+ * 改之前「最近」是一条**扁平**的倒序清单。项目一多，这个 tab 就退化成「所有活跃项目按时间排」
+ * ——与「全部」的区别只剩排序，而使用者真正要找的是**「我这两天动过的」**那几件。
+ * 分桶把「多久以前」变成**一眼可见**的东西，而桶名本身就是一层筛选。
+ *
+ * ## 分桶的边界按**自然日**，不按「距今多少小时」
+ *
+ * 今天 00:01 访问的与此刻（同一天）在同一桶里；而 23:59 那一秒之差对使用者没有意义——他脑子里的
+ * 「昨天」是**日历上的昨天**。所以判据是**日差**（两个时刻各自所在自然日相差几天），不是 `now - t`。
+ *
+ * ## 桶是「算」出来的，`now` 从参数进
+ *
+ * `近况分组(entries, now)` 是**纯函数**（组件里那一处 `Date.now()` 只是取值），于是跨日 / 跨周 /
+ * 跨月边界都能在单测里**钉死**——不必等到某天正好跨周才发现分错了桶（`LEARNINGS #004-13`：
+ * 时序类判据要自己造出条件，别等）。
+ */
+describe("「最近」的时间分桶", () => {
+  /** 一个固定的「现在」——下面所有边界都由它推出来，与真实时钟无关。 */
+  const 基准 = new Date(2026, 5, 15, 10, 0, 0).getTime()
+  /** 从某个时刻往前推 N 个自然日（同一钟点；跨月由 `Date` 自己进位）。 */
+  const 往前 = (ms: number, 天: number) => {
+    const d = new Date(ms)
+    d.setDate(d.getDate() - 天)
+    return d.getTime()
+  }
+  /** 分组的桶键，**顺序即渲染顺序**。 */
+  const 桶 = (groups: RecentGroup[]) => groups.map((g) => g.key)
+  /** 分组里所有项目的名字（展平，按渲染顺序）。 */
+  const 项名 = (groups: RecentGroup[]) => groups.flatMap((g) => g.items.map((p) => p.name))
+  /** 一个时刻单独成组时，它落在哪个桶（边界用例都走这条）。 */
+  const 落桶 = (ms: number) => 桶(近况分组([私有("a", "A", ms)], 基准))
+
+  test("同一个自然日内都算「今天」——按日历切，不按 24 小时切", () => {
+    // 今天 00:00 与基准（今天 10:00）差 10 小时，但**同一个自然日**。
+    expect(落桶(new Date(2026, 5, 15, 0, 0, 0).getTime())).toEqual(["today"])
+  })
+
+  test("刚过子夜就是「昨天」⇒ 落到 7 天内（差一秒也是另一天）", () => {
+    expect(落桶(new Date(2026, 5, 14, 23, 59, 0).getTime())).toEqual(["week"])
+  })
+
+  test("7 天内**含第 7 天**，第 8 天落到 30 天内", () => {
+    expect(落桶(往前(基准, 7))).toEqual(["week"])
+    expect(落桶(往前(基准, 8))).toEqual(["month"])
+  })
+
+  test("30 天内**含第 30 天**，第 31 天落到「更早」", () => {
+    expect(落桶(往前(基准, 30))).toEqual(["month"])
+    expect(落桶(往前(基准, 31))).toEqual(["older"])
+  })
+
+  test("桶按固定顺序排：今天 → 7 天内 → 30 天内 → 更早（与传入顺序无关）", () => {
+    const groups = 近况分组(
+      [
+        私有("d", "更早的", 往前(基准, 40)),
+        私有("a", "今天的", 往前(基准, 0)),
+        私有("c", "上个月的", 往前(基准, 10)),
+        私有("b", "前几天的", 往前(基准, 3)),
+      ],
+      基准,
+    )
+
+    expect(桶(groups)).toEqual(["today", "week", "month", "older"])
+  })
+
+  test("同一个桶里按 lastAccessedAt 倒序（越近越靠上）", () => {
+    const groups = 近况分组(
+      [私有("a", "三天前", 往前(基准, 3)), 私有("b", "昨天", 往前(基准, 1)), 私有("c", "两天前", 往前(基准, 2))],
+      基准,
+    )
+
+    expect(桶(groups)).toEqual(["week"])
+    expect(项名(groups)).toEqual(["昨天", "两天前", "三天前"])
+  })
+
+  test("空桶不画——没有 30 天内的项目时，那个标题也不该在场", () => {
+    const groups = 近况分组([私有("a", "三天前", 往前(基准, 3)), 私有("b", "去年的", 往前(基准, 400))], 基准)
+
+    expect(桶(groups)).toEqual(["week", "older"])
+  })
+
+  test("一个项目也没有 ⇒ 一个桶也没有（不是四个空桶）", () => {
+    expect(近况分组([], 基准)).toEqual([])
+  })
+
+  /**
+   * 组件那一层：桶名**真的画成了组标题**（`data-group` 是机器读的身份，标签是给人读的）。
+   *
+   * 时间戳一律走**正午**：跑在 00:00:01 时，「现在减 1 分钟」会落到昨天 ⇒ 断「今天」会偶发假红。
+   */
+  test("「最近」tab 按桶分组画出来，组键与组名都对得上", () => {
+    const 正午 = (天前: number) => {
+      const d = new Date()
+      d.setHours(12, 0, 0, 0)
+      d.setDate(d.getDate() - 天前)
+      return d.getTime()
+    }
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[私有("a", "今天的", 正午(0)), 私有("b", "前几天的", 正午(3)), 私有("c", "去年的", 正午(400))]}
+      />
+    ))
+
+    expect(全槽(host, "project-group").map((el) => el.getAttribute("data-group"))).toEqual([
+      "today",
+      "week",
+      "older",
+    ])
+    expect(全槽(host, "project-group-label").map((el) => el.textContent?.trim())).toEqual([
+      "今天",
+      "7 天内",
+      "更早",
+    ])
+    expect(项目名(host)).toEqual(["今天的", "前几天的", "去年的"])
+  })
+})
+
+/**
+ * 「已归档」的截断与提示（**2026-10-11 用户下达**：「按时间倒序加载 50 条（最多），
+ * 但是可以通过搜索来进行查找」）。
+ *
+ * ## 为什么必须截断
+ *
+ * 「已归档」是三个 tab 里**唯一只涨不落**的一个：归档只进不出（找回是少数），它最终会变成
+ * 这份清单里最大的一堆。而它又**没有『最近』那样的天然入口**——民警找归档项目通常是**点名找**
+ * （「上次那个结了的案子」），不是「翻着看」。既然找法是点名的，就该让**搜索**承担它，
+ * 列表只负责「最近归档的那几条」。
+ *
+ * ## 50 这个数落在哪、不落在哪
+ *
+ * 落在**画**这一侧（`slice`）而不是取数那侧：出口 `handleList` 一次给全量，前端截断
+ * ——**这一轮刻意不改后端**（把取数分页留给真到 2000+ 才需要的那一轮，登记在 state 的挂账里）。
+ * 于是「还有多少」这个数是**算得出来的**，提示行才写得出确切数。
+ *
+ * ## 排序是这一批带出来的第二件事
+ *
+ * 改之前「已归档」**原样跟着 `projects` 的顺序走**（只 filter，不 sort）——于是它显示的顺序
+ * 其实是服务端那两条链并起来之后的顺序，谁都不该依赖。倒序既是「最近归档的在上」的直觉，
+ * 也是**截断的前提**：不排序就 slice，砍掉的是「传进来排在后面的」，与「多久以前」无关。
+ */
+describe("「已归档」的截断与提示", () => {
+  /** N 个已归档项目：`案0` 最新，`案{N-1}` 最旧（时间下标倒着来）。 */
+  const 一批归档 = (n: number) =>
+    Array.from({ length: n }, (_, i) => 归档(私有(`p${i}`, `案${i}`, 1000 - i)))
+
+  test("「已归档」按最近访问倒序，与传入顺序无关", () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[归档(私有("a", "A", 100)), 归档(私有("b", "B", 300)), 归档(私有("c", "C", 200))]}
+      />
+    ))
+
+    页签(host, "archived")?.click()
+
+    expect(项目名(host)).toEqual(["B", "C", "A"])
+  })
+
+  test("超过 50 条 ⇒ 只画 50 行，且砍掉的是最旧的那些（排序是截断的前提）", () => {
+    const host = mount(() => <ProjectPanel projects={一批归档(60)} />)
+
+    页签(host, "archived")?.click()
+
+    expect(行(host)).toHaveLength(50)
+    expect(项目名(host)[0]).toBe("案0")
+    expect(项目名(host)[49]).toBe("案49")
+    expect(项目名(host)).not.toContain("案59")
+  })
+
+  test("超过 50 条 ⇒ 提示行写出还剩多少个，并指向搜索（剩下的不是不见了，是换了个找法）", () => {
+    const host = mount(() => <ProjectPanel projects={一批归档(60)} />)
+
+    页签(host, "archived")?.click()
+
+    const 提示 = 文本(host, "project-archived-hint") ?? ""
+    expect(提示).toContain("10") // 60 - 50
+    expect(提示).toContain("搜索")
+  })
+
+  test("刚好 50 条 ⇒ 没有提示行（一条都没少，不该说「还有」）", () => {
+    const host = mount(() => <ProjectPanel projects={一批归档(50)} />)
+
+    页签(host, "archived")?.click()
+
+    expect(行(host)).toHaveLength(50)
+    expect(无槽(host, "project-archived-hint")).toBe(true)
+  })
+
+  test("50 条以内 ⇒ 全部画出来，也没有提示行", () => {
+    const host = mount(() => <ProjectPanel projects={一批归档(3)} />)
+
+    页签(host, "archived")?.click()
+
+    expect(项目名(host)).toEqual(["案0", "案1", "案2"])
+    expect(无槽(host, "project-archived-hint")).toBe(true)
+  })
+
+  /** 截断只咬「已归档」——「全部」与「最近」不设上限（它们各有各的收敛方式）。 */
+  test("截断不咬别的 tab：「全部」上 60 个活跃项目一条不少", () => {
+    const projects = Array.from({ length: 60 }, (_, i) => 私有(`p${i}`, `案${i}`, 1000 - i))
+    const host = mount(() => <ProjectPanel projects={projects} />)
+
+    页签(host, "all")?.click()
+
+    expect(行(host)).toHaveLength(60)
+  })
+})
+
+/**
+ * 项目搜索（**2026-10-11 用户下达**：「我们是不是要添加搜索项目的搜索入口，设置在哪里比较合适呢？」
+ * ——落点选在 **tab 栏**的放大镜：那里是面板里唯一「与三个 tab 平级」的位置，而搜索本身
+ * **不属于任何一个 tab**）。
+ *
+ * ## 搜索为什么不是「第四个 tab」
+ *
+ * 三个 tab 是**同一份集合的三个视图**（活跃 / 分组 / 归档），搜索不是第四个视图——它是**另一个问题**：
+ * 「我记得有那么个案子，它叫什么来着」。做成第四个 tab，它就得和另外三个抢同一行位置，而且
+ * 一旦切走就丢了搜索词；做成 tab 栏上的一个**开关**，它在哪个 tab 上都唤得出来，语义也对得上。
+ *
+ * ## 它和「已归档 50 条截断」是一对
+ *
+ * 截断那条提示行写着「请用搜索查找」——**这句承诺由这里兑现**。所以搜索**必须**能搜到被截掉的
+ * 那些（下面有一条专门钉它）：不搜全量的话，第 51 个之后的归档项目就**永远找不回来了**，
+ * 提示行也就成了一句谎。
+ *
+ * ## 命中的归档项不可点，但有「找回」
+ *
+ * 归档态下服务端 `frozen` 拒绝一切写入 ⇒ 点开也干不了活。所以结果里归档的那几行**整行不可点**、
+ * 带一个「已归档」标记（说明它为什么点不开），尾巴上给「找回」——**就地救回来**，
+ * 不必「先切到已归档 tab 再找一遍」。
+ */
+describe("项目搜索（2026-10-11 用户下达）", () => {
+  const 搜框 = (host: HTMLElement) => host.querySelector<HTMLInputElement>("[data-slot='project-search']")
+  /** 往搜索框里打字（同 `输入`：先设 value 再派 `input`）。 */
+  const 打字 = (host: HTMLElement, 值: string) => {
+    const el = 搜框(host)
+    if (!el) throw new Error("搜索框不在，打不了字")
+    el.value = 值
+    el.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+  /** 开搜索（点 tab 栏那颗放大镜）。 */
+  const 开搜索 = (host: HTMLElement) => 按钮(host, "project-search-toggle")?.click()
+
+  test("默认不占位，点放大镜才出现搜索框（设计：搜索挂在 tab 栏，不是第四个 tab）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    expect(无槽(host, "project-search")).toBe(true)
+
+    开搜索(host)
+
+    expect(无槽(host, "project-search")).toBe(false)
+  })
+
+  test("搜索框出现时就拿住焦点（点完直接能打字）", async () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    // 组件里聚焦要等一个微任务（同新建那行输入框的 `ref`）。
+    await Promise.resolve()
+
+    expect(document.activeElement === 搜框(host)).toBe(true)
+  })
+
+  test("输入一段字 ⇒ 只画匹配的项目（结果**跨 tab**：停在「最近」也搜得到已归档的）", () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[私有("p1", "8·17专案", 3), 私有("p2", "涉税案", 2), 归档(私有("p3", "8·17旧版", 1))]}
+      />
+    ))
+
+    开搜索(host)
+    打字(host, "8·17")
+
+    expect(项目名(host)).toEqual(["8·17专案", "8·17旧版"])
+  })
+
+  test("匹配是「包含」不是「等于」，且不分大小写（民警记不住全名）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[私有("p1", "Case Alpha", 3), 私有("p2", "别的", 2)]} />
+    ))
+
+    开搜索(host)
+    打字(host, "alpha")
+
+    expect(项目名(host)).toEqual(["Case Alpha"])
+  })
+
+  test("命中项按最近访问倒序（与传入顺序无关，结果才稳定）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[私有("p1", "专案甲", 100), 私有("p2", "专案乙", 300)]} />
+    ))
+
+    开搜索(host)
+    打字(host, "专案")
+
+    expect(项目名(host)).toEqual(["专案乙", "专案甲"])
+  })
+
+  test("没匹配上 ⇒ 空态说「没有匹配的项目」（不是「还没有项目」——那说的是另一件事）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    打字(host, "查无此案")
+
+    expect(项目名(host)).toEqual([])
+    expect(文本(host, "project-panel-empty")).toBe("没有匹配的项目")
+  })
+
+  /**
+   * **开了框但没打字 ≠ 在搜**（列表区的变化只由「有没有词」决定）。
+   *
+   * 这条是**变异找出来的缺口**（`#003-02` / `#005-18` 的老账换了个咬法）：把 `在搜` 从
+   * 「有词」改成「框开着」，上面整套里**一条都不红**——`清空搜索词` 那条手上只有一件项目，
+   * 「回到 tab 列表」与「显示全部项目」长得一模一样。差别得用一件**只在某个 tab 里才出现**
+   * 的东西才看得出来，所以这条停在「已归档」tab：没打字时它该**只**画归档的那一件，
+   * 而不是把活跃的一起端出来。
+   */
+  test("开了搜索框但一个字没打 ⇒ 列表照旧（不是「把全部项目都当结果」）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[私有("p1", "活跃专案", 2), 归档(私有("p2", "封存专案", 1))]} />
+    ))
+
+    页签(host, "archived")?.click()
+    // 前置：先证明这个 tab 上只有一件（否则下面「还是那件」可能只是碰巧）。
+    expect(项目名(host)).toEqual(["封存专案"])
+
+    开搜索(host)
+
+    expect(项目名(host)).toEqual(["封存专案"])
+  })
+
+  test("清空搜索词 ⇒ 回到原来的 tab 列表（不用关掉搜索框）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    打字(host, "查无此案")
+    expect(项目名(host)).toEqual([])
+
+    打字(host, "")
+
+    expect(项目名(host)).toEqual(["8·17专案"])
+  })
+
+  test("已归档的命中项带「已归档」标记（不然「为什么这行点不开」看不出来）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[归档(私有("p3", "8·17旧版", 1))]} />
+    ))
+
+    开搜索(host)
+    打字(host, "8·17")
+
+    expect(文本(host, "project-item-archived")).toBe("已归档")
+  })
+
+  test("活跃的命中项**不带**「已归档」标记（标记要有判别力，不能人人都有）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    打字(host, "8·17")
+
+    expect(无槽(host, "project-item-archived")).toBe(true)
+  })
+
+  test("活跃的命中项可点，报告的是那一项（搜索是「找到就走」，不是「找到还要切 tab」）", () => {
+    const 记: ProjectEntry[] = []
+    const 甲 = 私有("p1", "8·17专案", 3)
+    const host = mount(() => <ProjectPanel projects={[甲]} onOpen={(p) => 记.push(p)} />)
+
+    开搜索(host)
+    打字(host, "8·17")
+    行(host)[0]?.click()
+
+    expect(记.map((p) => p.id)).toEqual(["p1"])
+  })
+
+  test("已归档的命中项**不可点**——它那一行不是按钮（归档态下服务端拒绝一切写入）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[归档(私有("p3", "8·17旧版", 1))]} onOpen={() => {}} />
+    ))
+
+    开搜索(host)
+    打字(host, "8·17")
+
+    // 活跃行是 `button`（名字那一块），归档行是 `div`——tagName 就是「能不能点」的判据。
+    expect(行(host)[0]?.tagName).toBe("DIV")
+  })
+
+  /** 搜索里就地「找回」——不必「先切到已归档 tab 再找一遍」（用户 2026-10-11 点名的交互）。 */
+  test("已归档的命中项带「找回」，点了开弹窗、确认才交出去（owner 才画，同归档那条口径）", async () => {
+    const 记: ProjectEntry[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[归档(我的(私有("p3", "8·17旧版", 1), "owner"))]}
+        onRestore={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    开搜索(host)
+    打字(host, "8·17")
+    按钮(host, "project-restore")?.click()
+    await 等一拍()
+
+    // 先问一句，不立刻交出去——搜索这条路与「已归档」tab 那条走的是**同一个弹窗**。
+    expect(记).toEqual([])
+    expect(有动作弹窗()).toBe(true)
+
+    点弹窗确认()
+    await 冲一遍()
+
+    expect(记.map((p) => p.id)).toEqual(["p3"])
+  })
+
+  /**
+   * 收口要在**两个出口**上都成立（`LEARNINGS #005-12`：同一个修法落在 N 个动作上就写 N 条用例）。
+   *
+   * 「找回」的画点有两处——「已归档」tab 那一行、搜索命中那一行。只钉前者的话，一个把守卫
+   * 只接在 tab 那侧的实现照样全绿，而民警在搜索里能把共享项目找回走（那是服务端会拒的写入）。
+   */
+  test("搜索命中里 member 的行也不画「找回」（收口的第二个出口）", () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[归档(我的(共享("p3", "8·17旧版", 1, 3), "member"))]}
+        onRestore={() => {}}
+      />
+    ))
+
+    开搜索(host)
+    打字(host, "8·17")
+
+    expect(无槽(host, "project-restore")).toBe(true)
+  })
+
+  /**
+   * 截断只咬 tab、不咬搜索——**这是那行提示存在的全部意义**。
+   *
+   * 少了这一条，`slice(0,50)` 一扩到搜索路径上（或搜索复用了 `已归档()` 而不是全量），
+   * 第 51 个之后的归档项目就永远找不回来了，而提示行还写着「请用搜索查找」。
+   */
+  test("搜索能搜到第 50 条之外的已归档项目（截断只咬 tab）", () => {
+    const projects = Array.from({ length: 60 }, (_, i) => 归档(私有(`p${i}`, `案${i}`, 1000 - i)))
+    const host = mount(() => <ProjectPanel projects={projects} />)
+
+    开搜索(host)
+    打字(host, "案59")
+
+    expect(项目名(host)).toEqual(["案59"])
+  })
+
+  test("按 Esc ⇒ 收起搜索框，回到 tab 列表（改主意不用付出代价）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    打字(host, "查无此案")
+    搜框(host)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+
+    expect(无槽(host, "project-search")).toBe(true)
+    expect(项目名(host)).toEqual(["8·17专案"])
+  })
+
+  test("再点一次放大镜 ⇒ 收起，也把搜索词清掉（下次打开是干净的）", () => {
+    const host = mount(() => <ProjectPanel projects={[私有("p1", "8·17专案", 3)]} />)
+
+    开搜索(host)
+    打字(host, "查无此案")
+    开搜索(host)
+
+    expect(无槽(host, "project-search")).toBe(true)
+
+    开搜索(host)
+
+    expect(搜框(host)?.value).toBe("")
+    expect(项目名(host)).toEqual(["8·17专案"])
+  })
+})
+
+/**
  * 归档 / 找回的**接线与呈现**（T023 · FR-008 / FR-009）。
  *
  * 本 task 只做接线与呈现：判定（谁能归档、归档态下能做什么）**一份都不在这里**，
@@ -665,6 +1223,30 @@ describe("归档 / 找回的接线（T023）", () => {
     页签(host, "all")?.click()
     按钮(host, "project-archive")?.click()
   }
+
+  /** 切到「已归档」再点那一行尾巴上的「找回」。 */
+  const 点找回 = (host: HTMLElement) => {
+    页签(host, "archived")?.click()
+    按钮(host, "project-restore")?.click()
+  }
+
+  /**
+   * 点入口、**把弹窗等出来**、并且**当场确认它真的开了**。
+   *
+   * 前两件事的理由：`dialog.show()` 里那层 `startTransition` 让弹窗晚一拍才落下来，点完立刻
+   * 断「弹窗在不在」会读到 `false`——那是**读数读早了**，不是弹窗没开（`LEARNINGS #006-31`）。
+   *
+   * 第三件事是给**下面每条用例**兜底：不然「取消 ⇒ 什么都不发」这类用例会在弹窗压根不存在时
+   * **绿着通过**（没有弹窗 ⇒ 没有项目被交出去 ⇒ 断言全成立），而那正是 `#006-16` 说的
+   * 「守卫在界面上走不到，变异全绿」——先钉住「弹窗确实开了」，后面的判据才有对象。
+   */
+  const 开弹窗 = async (点入口: (host: HTMLElement) => void, host: HTMLElement) => {
+    点入口(host)
+    await 等一拍()
+    expect(有动作弹窗()).toBe(true)
+  }
+  const 开归档确认 = (host: HTMLElement) => 开弹窗(点归档, host)
+  const 开找回确认 = (host: HTMLElement) => 开弹窗(点找回, host)
 
   test("「全部」tab 上，owner 那一行带「归档」，且写明是归档哪一个（FR-008 的入口）", () => {
     const host = mount(() => (
@@ -726,16 +1308,44 @@ describe("归档 / 找回的接线（T023）", () => {
    *
    * ⚠️ 必须**切到「已归档」tab**才测得到：守卫在归档组里，不切过去它压根不渲染，这条就退化成
    * 一句废话（原来的「找回只在已归档 tab」那条正是这么退化的）。
+   *
+   * ⚠️ 角色必须是 **owner**（2026-10-11 起）：找回加了 owner 收口之后，一个没有 `role` 的行
+   * **同样**不画「找回」——那样这条就在拿「没有授权依据」冒充「没接线」，红绿都读不出你要的原因
+   * （`LEARNINGS #006-17`：为被测属性搭的前置条件自己先不成立了）。
    */
   test("没接线（没传 onRestore）⇒ 「已归档」tab 上谁都不画「找回」（同一个约定的第二个出口）", () => {
-    const host = mount(() => <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} />)
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} />
+    ))
 
     页签(host, "archived")?.click()
 
     expect(无槽(host, "project-restore")).toBe(true)
   })
 
-  test("点「归档」是先问一句，**不立刻交出去**（破坏性操作要二次确认）", () => {
+  /**
+   * 归档确认的**第一条**：它是弹窗，且**不长在面板里**。
+   *
+   * 「有弹窗」与「弹窗不在面板里」是**两条独立判据**（`LEARNINGS #005-19` 的「开在谁身上」）：
+   * 只钉前者，一个把确认条渲染回 host 里的实现照样全绿——而这条改动的**全部意义**正是
+   * 「确认不再长在面板里」（用户 2026-10-11 下达：「归档按钮被点击后，其交互为弹窗式交互」）。
+   *
+   * ⚠️ `弹窗()` 查的是 `document.body`，而 host **也在** body 里 ⇒ 单靠它证明不了「不在面板里」；
+   * 所以下面紧跟一条 `无槽(host, …)` 的**反向断言**，两条合起来才说得清这件事。
+   */
+  test("点「归档」开的是**弹窗**（传送进 body），面板里不再有内联确认条", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    点归档(host)
+
+    expect(await 等到(() => 有动作弹窗())).toBe(true)
+    expect(无槽(host, "project-action-dialog")).toBe(true)
+    expect(无槽(host, "project-archive-confirm")).toBe(true)
+  })
+
+  test("点「归档」是先问一句，**不立刻交出去**（破坏性操作要二次确认）", async () => {
     const 记: ProjectEntry[] = []
     const host = mount(() => (
       <ProjectPanel
@@ -746,20 +1356,20 @@ describe("归档 / 找回的接线（T023）", () => {
       />
     ))
 
-    点归档(host)
+    await 开归档确认(host)
 
     expect(记).toEqual([])
-    expect(无槽(host, "project-archive-confirm")).toBe(false)
+    expect(有动作弹窗()).toBe(true)
   })
 
-  test("确认条上写出归档的是哪一个项目（点确认前得看清对象）", () => {
+  test("弹窗上写出归档的是哪一个项目（点确认前得看清对象）", async () => {
     const host = mount(() => (
       <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
     ))
 
-    点归档(host)
+    await 开归档确认(host)
 
-    expect(文本(host, "project-archive-name")).toBe("8·17专案")
+    expect(弹窗文本("project-action-name")).toBe("8·17专案")
   })
 
   /**
@@ -767,20 +1377,52 @@ describe("归档 / 找回的接线（T023）", () => {
    * 「我点下去会失去什么、还能不能拿回来」。三件事各对应实现里一个真实的事实：
    * 备份先发生（T013 的次序保证）、本地那份真的没了、之后能找回（FR-009 存在）。
    */
-  test("确认文案说清三件事：先备份进 MinIO、本地这份删掉、之后能找回", () => {
+  test("归档弹窗说清三件事：先备份进 MinIO、本地这份删掉、之后能找回", async () => {
     const host = mount(() => (
       <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
     ))
 
-    点归档(host)
+    await 开归档确认(host)
 
-    const 文案 = 文本(host, "project-archive-confirm") ?? ""
+    const 文案 = 弹窗文本("project-action-dialog") ?? ""
     expect(文案).toContain("MinIO")
     expect(文案).toContain("删掉")
     expect(文案).toContain("找回")
   })
 
-  test("取消 ⇒ 确认条收掉，什么都不发（改主意不用付出代价）", () => {
+  /**
+   * 破坏性操作的默认焦点落在「取消」上（用户 2026-10-11 点名）。
+   *
+   * 这一条与「取消 ⇒ 什么都不发」是**两件事**：那条钉的是点取消的结果，这条钉的是
+   * 「连输入都不用给」——民警按一下回车（或者压根没看清就敲下去）不该把项目归档掉。
+   */
+  test("归档弹窗开出来时焦点就在「取消」上（破坏性操作，手快也不该确认）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    await 开归档确认(host)
+
+    expect(焦点在弹窗取消()).toBe(true)
+  })
+
+  /**
+   * 归档那颗确认键是**危险色**（`ButtonV2` 的 `data-variant`，`button-v2.tsx:22`）。
+   *
+   * 断的是属性、不是 `className` 串：Tailwind 类名断子串会假绿（`LEARNINGS #006-22`，
+   * `border-b` ⊂ `border-base` 那一族），而 `data-variant` 是 `ButtonV2` 自己算出来的值。
+   */
+  test("归档弹窗的确认键是危险色，不是中性的（这一下要毁掉本地那份）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    await 开归档确认(host)
+
+    expect(弹窗("project-action-ok")?.getAttribute("data-variant")).toBe("danger")
+  })
+
+  test("取消 ⇒ 弹窗收掉，什么都不发（改主意不用付出代价）", async () => {
     const 记: ProjectEntry[] = []
     const host = mount(() => (
       <ProjectPanel
@@ -791,14 +1433,18 @@ describe("归档 / 找回的接线（T023）", () => {
       />
     ))
 
-    点归档(host)
-    按钮(host, "project-archive-cancel")?.click()
+    await 开归档确认(host)
+    弹窗("project-action-cancel")?.click()
 
-    expect(无槽(host, "project-archive-confirm")).toBe(true)
+    /**
+     * ⚠️ 等条件、不等时间（`LEARNINGS #005-29` / `#005-33`）：`dialog.close()` 之后真摘节点是
+     * **再等 100ms** 的事，点完立刻断「弹窗没了」会红，而它读起来像「关不掉」。
+     */
+    expect(await 等到(() => !有动作弹窗())).toBe(true)
     expect(记).toEqual([])
   })
 
-  test("确认 ⇒ 交出去的是那一行项目本身，确认条同时收掉（不留一条挡住第二次点）", async () => {
+  test("确认 ⇒ 交出去的是那一行项目本身，弹窗同时收掉（不留一层挡住第二次点）", async () => {
     const 记: ProjectEntry[] = []
     const 甲 = 我的(私有("p1", "8·17专案", 3), "owner")
     const host = mount(() => (
@@ -810,12 +1456,12 @@ describe("归档 / 找回的接线（T023）", () => {
       />
     ))
 
-    点归档(host)
-    按钮(host, "project-archive-ok")?.click()
+    await 开归档确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(记).toEqual([甲])
-    expect(无槽(host, "project-archive-confirm")).toBe(true)
+    expect(await 等到(() => !有动作弹窗())).toBe(true)
   })
 
   /**
@@ -827,8 +1473,8 @@ describe("归档 / 找回的接线（T023）", () => {
       <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => "无权归档该项目"} />
     ))
 
-    点归档(host)
-    按钮(host, "project-archive-ok")?.click()
+    await 开归档确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(文本(host, "project-panel-action-error")).toBe("无权归档该项目")
@@ -840,8 +1486,8 @@ describe("归档 / 找回的接线（T023）", () => {
       <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
     ))
 
-    点归档(host)
-    按钮(host, "project-archive-ok")?.click()
+    await 开归档确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(无槽(host, "project-panel-action-error")).toBe(true)
@@ -861,25 +1507,168 @@ describe("归档 / 找回的接线（T023）", () => {
       />
     ))
 
-    点归档(host)
-    按钮(host, "project-archive-ok")?.click()
+    await 开归档确认(host)
+    点弹窗确认()
     await 冲一遍()
     expect(文本(host, "project-panel-action-error")).toBe("第一次没办成")
 
-    点归档(host)
-    按钮(host, "project-archive-ok")?.click()
+    await 开归档确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(无槽(host, "project-panel-action-error")).toBe(true)
   })
 
-  test("找回没办成 ⇒ 同一处报错（两个动作共一格，不各报一半）", async () => {
+  /**
+   * ── 找回（FR-009）──────────────────────────────────────────────────────
+   *
+   * 找回也走**同一个弹窗**（用户 2026-10-11：「通过弹窗进行交互，让用户选择『找回』、『取消』」）。
+   *
+   * 下面这一组刻意分成两块：**第一块**钉「它确实是个弹窗、形状对、说清了后果」，
+   * **第二块**钉「交出去之后出错落到哪一格」——两块钉的不是一回事，红了也好分诊。
+   */
+  test("点「找回」也开弹窗（与归档同一个），不是就地办掉", async () => {
+    const 记: ProjectEntry[] = []
     const host = mount(() => (
-      <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} onRestore={() => "找回项目失败"} />
+      <ProjectPanel
+        projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]}
+        onRestore={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    点找回(host)
+
+    expect(await 等到(() => 有动作弹窗())).toBe(true)
+    expect(无槽(host, "project-action-dialog")).toBe(true)
+    expect(记).toEqual([])
+  })
+
+  test("找回弹窗上写出的还是那一行项目", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
+    ))
+
+    await 开找回确认(host)
+
+    expect(弹窗文本("project-action-name")).toBe("封存专案")
+  })
+
+  /** 找回是**可逆**的那一侧，说清「找回后会回到哪儿」就够——别把它写成危险操作。 */
+  test("找回弹窗说清找回后回到哪里（不写那句「删掉」——它不删任何东西）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
+    ))
+
+    await 开找回确认(host)
+
+    const 文案 = 弹窗文本("project-action-dialog") ?? ""
+    expect(文案).toContain("找回")
+    expect(文案).toContain("全部")
+    expect(文案).not.toContain("删掉")
+  })
+
+  /**
+   * 找回那颗确认键**不是**危险色——同一个弹窗、两个动作，形状得跟着「这一步要不要毁东西」走。
+   *
+   * ⚠️ 这条与上面「归档是 danger」是**一对**：只钉归档那条的话，一个永远给 `danger` 的实现
+   * 照样全绿（两处写死同一个值），而民警在找回时会被吓一跳。
+   */
+  test("找回弹窗的确认键是中性的，不是危险色（它不毁东西）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
+    ))
+
+    await 开找回确认(host)
+
+    expect(弹窗("project-action-ok")?.getAttribute("data-variant")).toBe("neutral")
+  })
+
+  test("找回弹窗开出来时焦点也在「取消」上（同一个弹窗，同一个默认）", async () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
+    ))
+
+    await 开找回确认(host)
+
+    expect(焦点在弹窗取消()).toBe(true)
+  })
+
+  test("找回确认 ⇒ 交出去那一行，弹窗收掉", async () => {
+    const 记: ProjectEntry[] = []
+    const 甲 = 我的(归档(私有("p2", "封存专案", 1)), "owner")
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[甲]}
+        onRestore={(p) => {
+          记.push(p)
+        }}
+      />
+    ))
+
+    await 开找回确认(host)
+    点弹窗确认()
+    await 冲一遍()
+
+    expect(记).toEqual([甲])
+    expect(await 等到(() => !有动作弹窗())).toBe(true)
+  })
+
+  /**
+   * ── 找回收口：只有 owner 能找回（用户 2026-10-11 裁定「找回按 owner 收口」）──────────
+   *
+   * 判定**一份都不在这里**：读 `ProjectMembership.decide({archived: true, action: "restore"})`
+   * ——归档态下 `restore` 只有 owner 过（`membership.ts` 的 `if (input.archived)` 那一支）。
+   * 下面两条钉的是**范围**：member 不画、缺 role 不画。
+   *
+   * 缺 `role` 那条与 member 那条**必须分开**（同归档那两条的理由）：前者的危险写法是给个默认
+   * 角色（`?? "owner"` 直接放行），那等于「不知道」被当成「知道他是 owner」（`LEARNINGS #004-07`）。
+   */
+  test("member 的行不画「找回」（找回按 owner 收口，判定走 `decide`）", () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(归档(共享("p2", "串并案", 2, 3)), "member")]}
+        onRestore={() => {}}
+      />
     ))
 
     页签(host, "archived")?.click()
-    按钮(host, "project-restore")?.click()
+
+    expect(无槽(host, "project-restore")).toBe(true)
+  })
+
+  test("没有 role 的行不画「找回」（缺键 = 没有授权依据，不倒向任何角色）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} onRestore={() => {}} />
+    ))
+
+    页签(host, "archived")?.click()
+
+    expect(无槽(host, "project-restore")).toBe(true)
+  })
+
+  /** 反向的一条：owner **要**画。少了它，上面两条可以被一个「永远不画」的实现骗过。 */
+  test("owner 的行画「找回」（上两条的反向对照，不然「永远不画」也能全绿）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
+    ))
+
+    页签(host, "archived")?.click()
+
+    expect(文本(host, "project-restore")).toBe("找回")
+  })
+
+  test("找回没办成 ⇒ 同一处报错（两个动作共一格，不各报一半）", async () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]}
+        onRestore={() => "找回项目失败"}
+      />
+    ))
+
+    await 开找回确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(文本(host, "project-panel-action-error")).toBe("找回项目失败")
@@ -888,13 +1677,13 @@ describe("归档 / 找回的接线（T023）", () => {
   test("找回的回话是异步的（Promise）也等得到（同 onCreate 那条）", async () => {
     const host = mount(() => (
       <ProjectPanel
-        projects={[归档(私有("p2", "封存专案", 1))]}
+        projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]}
         onRestore={() => Promise.resolve("还是不行")}
       />
     ))
 
-    页签(host, "archived")?.click()
-    按钮(host, "project-restore")?.click()
+    await 开找回确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(文本(host, "project-panel-action-error")).toBe("还是不行")
@@ -902,14 +1691,37 @@ describe("归档 / 找回的接线（T023）", () => {
 
   test("找回办成了 ⇒ 不留错误文案（同一格的另一半）", async () => {
     const host = mount(() => (
-      <ProjectPanel projects={[归档(私有("p2", "封存专案", 1))]} onRestore={() => {}} />
+      <ProjectPanel projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]} onRestore={() => {}} />
     ))
 
-    页签(host, "archived")?.click()
-    按钮(host, "project-restore")?.click()
+    await 开找回确认(host)
+    点弹窗确认()
     await 冲一遍()
 
     expect(无槽(host, "project-panel-action-error")).toBe(true)
+  })
+
+  /**
+   * 找回那一侧的「取消」——归档那条已有，这条是**另一半**：同一个弹窗、同一个取消键，
+   * 走的是 `onRestore` 那条回路的守卫。只钉归档那条的话，一个「取消键只对归档有效」的
+   * 实现照样全绿，而民警在找回弹窗里点取消时项目已经被找回走了。
+   */
+  test("找回弹窗点取消 ⇒ 弹窗收掉，一次都不发（改主意不用付出代价）", async () => {
+    let 次数 = 0
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[我的(归档(私有("p2", "封存专案", 1)), "owner")]}
+        onRestore={() => {
+          次数 += 1
+        }}
+      />
+    ))
+
+    await 开找回确认(host)
+    弹窗("project-action-cancel")?.click()
+
+    expect(await 等到(() => !有动作弹窗())).toBe(true)
+    expect(次数).toBe(0)
   })
 })
 

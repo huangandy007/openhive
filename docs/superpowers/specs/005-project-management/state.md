@@ -4213,3 +4213,91 @@ v2 把变体编进**类名**（`toast-v2--success`），根上**没有** `data-v
 4. **🟡 `typecheck:e2e` 现在是红的**（2 条，在 `sidebar-project-switch-real.spec.ts`）：既有、非本条，
    但**没有被任何门禁挡住**（`bun run typecheck` 不覆盖 `e2e/`）。登记待裁：要么修它，要么把它写进
    门禁清单。
+
+### ⑦ 追加项 · 第 11 条：项目管理左栏四改（最近分桶 / 已归档 50 截断 / 搜索入口 / 归档·找回改弹窗 ＋ 找回按 owner 收口）（2026-10-11 · 本轮）
+
+**来源**：用户 2026-10-11 一口气下达七条，落在**同一个文件** `packages/app/src/project/project-panel.tsx`
+（＋新文件 `project-action-dialog.tsx` ＋两份受影响的测试）。**零后端改动**——`ProjectMembership.decide`
+那份判定早就在（T004 的产物），本轮**只是把它接上**（「找回按 owner 收口」，用户原话）。
+
+| 批次 | 用户下达（原话摘） | 落点 |
+|---|---|---|
+| A | 「最近」要能一眼看出「多久以前」 | 纯函数 `近况分组(entries, now)`（今天 / 7 天内 / 30 天内 / 更早）＋「最近」tab |
+| B | 「按时间倒序加载 50 条（最多），但是可以通过搜索来进行查找」 | `已归档上限 = 50` ＋ `已归档还有()` 提示行 |
+| C | 「我们是不是要添加搜索项目的搜索入口，设置在哪里比较合适呢？」 | tab 栏右侧放大镜 ＋ **盖住列表区**的结果区（全量、含已归档） |
+| D | 「归档按钮被我点击后，其交互为弹窗式交互」＋（找回）「通过弹窗进行交互，让用户选择『找回』、『取消』」＋「**找回按 owner 收口**」 | 新 `ProjectActionDialog`（一弹窗两动作）＋ `canRestore` |
+
+**② 红 → ③ 绿（逐批，`#005-12`：一个修法落在 N 个动作上就写 N 条用例）**
+
+| 批次 | ② RED（实得） | ③ GREEN（实得） |
+|---|---|---|
+| A | **57 pass / 8 fail**，八条全是新写的分桶用例（组件那条实得 `["recent"]`）。⚠️ 第一次红的**不是断言**、是 `SyntaxError: Export named '近况分组' not found`（模块解析错）⇒ 先补壳让符号存在、重跑才红在断言上（`#003-03`：红要红对地方） | **65 pass / 0 fail**（`project-panel.test.tsx`）；回归面 `workspace-entry.test.tsx` **120 pass / 0 fail** |
+| B | **68 pass / 3 fail**——另 3 条「不超过上限时不该有提示」是**对照面**、本来就绿（据实记，不当新增覆盖） | **71 pass / 0 fail** |
+| C | **15 条**红，全在 `describe("项目搜索（2026-10-11 用户下达）")` 里 | **86 pass / 0 fail**；随后按 ④ 逼出的缺口**补一条用例** ⇒ **87 pass**（补完先绿，再由变异证明它**唯一**听得见那条） |
+| D | **25 条**红（弹窗那一整套 ＋ owner 收口三连 ＋ 搜索命中里那个出口 ＋ 工作台那侧 7 条见下） | `project-panel.test.tsx` **101 pass / 0 fail**；`workspace-entry.test.tsx` **120 pass / 0 fail**（它先红了 **113 pass / 7 fail**——`点归档`/`点找回` 两个辅助还在点已删掉的 `project-archive-ok`，改成 `await 点弹窗确认(...)` 后转绿） |
+
+**④ 变异验证（九处。全部**手工改、手工改回**——实现尚未入库，绝不能用 `git checkout`，`#005-40`；三类据实记，`#003-03`）**
+
+| # | 拆掉什么（实改的那一行） | 实得红 | 定性 |
+|---|---|---|---|
+| A-1 | `if (差 <= 7) return "week"` ⇒ `<= 6` | **恰红 1**：`「最近」的时间分桶 > 7 天内含第 7 天，第 8 天落到 30 天内`（64 pass / 1 fail） | **①类**（恰红） |
+| B-1 | `已归档 = () => 已归档全().slice(0, 已归档上限)` ⇒ 去掉 `.slice(...)` | **红 2**：`只画 50 行，且砍掉的是最旧的那些` ＋ `提示行写出还剩多少个`（69 pass / 2 fail） | **②类**（红得比目标多一条）。⚠️ 不是噪声：截断与提示是**一对**，拆一样两样都塌 ⇒ 据实记「2」，不写「恰红 1」 |
+| C-1 | `在搜 = () => 搜词().length > 0` ⇒ `搜() !== undefined` | **恰红 1**：`开了搜索框但一个字没打 ⇒ 列表照旧`（86 pass / 1 fail） | **①类**——且这一条**是变异逼出来的补丁用例**：原来全套里**一条都不红**（`清空搜索词` 那条手上只有一件项目，「回到 tab 列表」与「显示全部项目」长得一样）⇒ 按 `#003-02` 把它补成显式判据 |
+| C-2 | `[...全部()]` ⇒ `[...全部().slice(0, 已归档上限)]`（让搜索也接到被截断的那份上） | **恰红 1**：`搜索能搜到第 50 条之外的已归档项目（截断只咬 tab）`（86 pass / 1 fail） | **①类** |
+| D-1 | `canRestore` 恒 `true`（把 owner 那道门整段拆掉） | **恰红 3**：member 两处（「已归档」tab ＋ 搜索命中）＋ 缺 role 一处（98 pass / 3 fail） | **①类** |
+| D-2 | `canRestore` 恒 `false`（**反向对照**：证明没有一条找回用例是空转的） | **红 14**，其中 **2 条是既有用例**（`「已归档」tab 的项目带「找回」入口`、`「找回」只在「已归档」tab 出现`）——它们**引用了这个前提却从没写下来**，属补前提的账（同 `#005-36`） | **②类**（据实记：14 里 2 条是补账，不是本条新写的用例） |
+| D-3 | 拆掉 `onRestore !== undefined &&`（只留 `canRestore`） | **恰红 1**：`没接线（没传 onRestore）⇒ 「已归档」tab 上谁都不画「找回」`（100 pass / 1 fail） | **①类** |
+| D-4 | 确认键的 `onClick` 换成空函数（按了不办） | **红 8**（「点确认 ⇒ 才交出去」那一半全塌） | **①类** |
+| D-5 | 找回弹窗的 `variant` 从 `neutral` 改成 `danger` | **恰红 1**：`找回弹窗的确认键是中性的，不是危险色（它不毁东西）`（100 pass / 1 fail） | **①类** |
+| D-6 | 去掉 `attr:` 前缀（退回 `<ButtonV2 autofocus>`） | **恰红 2**：归档与找回两条「焦点在取消上」（99 pass / 2 fail） | **①类** |
+
+**🧭 本轮最值钱的一条根因：焦点为什么不在「取消」上**（④ 里唯一一次「红得像产品坏」——先探针、不猜）
+
+两条焦点用例首跑全红。**没接受「happy-dom 聚不了焦」这个解释**，写了一次性探针（`tmp-focus-probe.test.tsx`，用完即删）逐项量：
+
+| 探针（happy-dom，2026-10-11 实测） | 实得 |
+|---|---|
+| 弹窗开了之后 `activeElement` | `dialog-close-button`（Kobalte 的「第一个可聚焦项」＝右上角关闭键） |
+| `<ButtonV2 autofocus>` 上 `getAttribute("autofocus")` | **`null`** |
+| 同一个取消键 `querySelector("[autofocus]")` | **命中 0** ⇒ `DialogV2` 的 `onOpenAutoFocus` 走 fallback |
+| 原生 `<button autofocus>`（Solid 编译期属性路径） | `getAttribute("autofocus") === ""`、焦点对 |
+| `<ButtonV2 attr:autofocus="">`（`attr:` 强制 `setAttribute`） | 属性在、`querySelector` 命中、**焦点落在取消** |
+| `TextInputV2 autofocus`（对照组） | `[autofocus]` 命中，落点 `text-input-v2-input` |
+
+⇒ 根因是 **`ButtonV2` 的 `splitProps → {...rest} → Kobalte Button` 把 `autofocus` 吃掉**（到不了 DOM 属性上），
+**与「happy-dom 能不能聚焦」无关**——聚焦本身是好用的。修法：`attr:autofocus=""`（`jsx.d.ts:184` 给所有元素
+都开了 `attr:*` 这一族键）。根因、三项实测与「为什么不沿用 `file-delete-dialog.tsx` 那个写法」逐字写在
+`project-action-dialog.tsx` 文件头「默认焦点」那段。
+
+**⑤ 门禁（仓库根跑，`#004-10`；**串行**，`#003-01`）**
+
+| 门 | 命令 | 实得 |
+|---|---|---|
+| typecheck | 仓库根 `bun run typecheck` | `Tasks: 31 successful, 31 total`、**exit 0**；`@opencode-ai/app` 这次 **cache miss、真跑**（`attr:autofocus` 过类型检查） |
+| 单测 | `cd packages/app && bun run test` 的 unit 段 | **1115 pass / 0 fail**（135 文件） |
+| browser 段 | 同上 | **41 pass / 0 fail**（14 文件） |
+| 组件段 | 同上 | **863 pass / 0 fail**（45 文件） |
+| 三个受影响套件 | `cd packages/app && bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/project-panel.test.tsx src/workspace/workspace-entry.test.tsx src/project/file-tree.test.tsx` | **326 pass / 0 fail** |
+| oxlint（本次 4 个文件） | `bunx oxlint --config .oxlintrc.json <那 4 个文件>` | **0 warnings / 0 errors**。首跑 **1 warning**（`[...全部().filter(…)].sort(…)` 的多余展开，`no-useless-spread`）⇒ **当场改掉**（`filter` 已经返回新数组） |
+| oxlint（全仓） | 仓库根 `bun run lint` | **5063 warnings / 1 error**、exit 1。那 **1 个 error 是上游既有**：`--format=github` 实测 `file=packages/session-ui/src/v2/components/prompt-input/index.tsx,line=163`（`LEARNINGS #001-02` 那条，裁定不私改）⇒ 判据是「**本次文件 0 命中**」，不是退出码 0 |
+| 行尾 | `git diff --check` | 空输出。⚠️ 首跑有 `LF will be replaced by CRLF` 警告：`workspace-entry.test.tsx` 被 `perl` 改写的那 9 行留下裸 LF（3047 行里 10 行无 `\r`）、新文件 `project-action-dialog.tsx` 整份 LF ⇒ 用 `node` **统一回 CRLF**（与工作区其余文件一致：`autocrlf=true` 检出即 CRLF）；复跑警告消失、`git diff --stat` 数字不变（git 两侧都归一化成 LF 再比 ⇒ 行尾从不进 diff，但会**每次 git 命令都刷一行警告**，故清掉） |
+| 锁文件 | `git diff --stat bun.lock` | 本轮**没跑过 `bun install`**，不适用（下次补跑时按 CLAUDE.md「锁文件污染」条款查） |
+
+**⑥ 同类落点（grep 全量，逐个打勾）**
+
+| 找什么 | 落点 | 处置 |
+|---|---|---|
+| 旧内联确认条 `project-archive-confirm` / `project-archive-name` | 全仓 `grep`：**生产代码 0 处**（只剩 3 处注释 ＋ 1 条**反向断言**「面板里没有它」） | ✅ 清干净 |
+| 「找回」的**画点** | `project-panel.tsx` 里只有两个消费者（「已归档」tab ＋ 搜索命中），且**共用同一个 `归档行` 组件** ⇒ 收口只写一遍 | ✅ |
+| `#002-06`「同一个判断散在几处」 | `canRestore` 只有一份、且**只照 `ProjectMembership.decide` 的结论画不画**（归档侧的 `canArchive` 同款） | ✅ |
+| **`<ButtonV2 … autofocus>`**（本轮的焦点缺陷**类**） | 全仓跨行扫描：**只有 2 处** ⇒ `project-action-dialog.tsx`（**已修**：`attr:autofocus=""`）＋ **`file-delete-dialog.tsx:72`（未修）** | ⚠️ 见挂账 1 |
+| 其余 `autofocus` 落点（20 余处） | 分三类：① **原生元素**（`<input>` / `<div>`，Solid 走属性路径，不受影响）；② **自身带 `autofocus` prop 的输入组件**（`TextInputV2` / `TextField` / `List search={{autofocus}}`）——`TextInputV2` **已实测**：`[autofocus]` 命中、落点 `text-input-v2-input`；③ **`<ButtonV2>`**（唯二两处，见上一行） | ✅ 分类完毕、不动 |
+| 「搜索/截断/分桶」有没有第二个实现 | 三个都在 `project-panel.tsx` 一处；搜索**不套**那 50 条截断（C-2 变异钉住） | ✅ |
+
+**本条的挂账**
+
+1. **🟡 `file-delete-dialog.tsx:72` 的 `<ButtonV2 autofocus>` 是本轮缺陷的**同类落点**，按「留在本轮范围外」**未修**——登记待裁（改法照抄 `attr:autofocus=""`，判据照抄本项目那两条焦点用例）。
+2. **🟡 真栈未跑**：归档 / 找回改弹窗这一整套**没有真栈判据**（happy-dom 量不到「点遮罩 / Escape / 右上角关闭键关掉时**不办**」的真实事件链与几何；`#005-07`）。本机跑不动真栈时按 `#002-02` 如实挂账，不写成已覆盖。
+3. **🟡 暗色主题下弹窗的危险色 / 中性色没有守护者**（同第 10 条挂账 1 的口径）。
+4. **🟡 `file-tree.test.tsx` 单独跑有 2 处 `DOMException: removeChild`**（收尾时序：`context/dialog.tsx` 那个 100ms 的 `dispose` 定时器撞上 happy-dom 拆窗），测试仍 **105 pass / 0 fail**；该文件与被测的 `file-tree.tsx` **本轮都没改**（`file-tree.test.tsx` 只 import `file-tree.tsx`，两条链不相交）⇒ **非本条引入**，如实登记。
+5. **✅ 已核对一致、未改**：`member-panel.tsx` 那句「已归档的项目 ⇒ 冻结，除 owner 的找回外任何动作都不成立（FR-010）」与本轮的 owner 收口**同一条口径**，无需联动改动。
