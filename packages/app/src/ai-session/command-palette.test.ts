@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import type { PromptInputV2Suggestion } from "@opencode-ai/session-ui/v2/prompt-input/types"
 import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条 } from "./command-palette"
 
 /**
@@ -94,11 +93,29 @@ describe("`/` 面板的池子", () => {
   /**
    * `suggested` 的那一批是**上游 `options` memo 自己复制出来的一份**（`context/command.tsx:331-350`：
    * `[...suggested.map(x => ({...x, id: 前缀 + x.id, category})), ...resolved]` —— 原件同时在数组里）。
-   * 原生用「id 有没有那个前缀」筛，我们用它身上现成的 `suggested` 标记筛——**同一件事**，
-   * 且不必把上游那个不导出的常量抄一份下来。
+   * 而且 `{...x}` 展开让**两件的 `suggested` 字段都是 `true`** ⇒ 只能按 **id 前缀**分辨哪份是复制件；
+   * 按字段筛会连原件一起删（原生 `prompt-input-v2.tsx:301` 就是按前缀筛）。
    */
-  test("`suggested` 的那一份（上游复制出来的同一条）不进池子", () => {
-    expect(右栏斜杠源({ 服务端: [], 内建: 内建({ id: "session.new", slash: "new", suggested: true }), 已知中文名: [] })).toEqual([])
+  test("`suggested` 的原件（id 无前缀、`suggested: true`、有 `slash`）进池子", () => {
+    const 源 = 右栏斜杠源({ 服务端: [], 内建: 内建({ id: "session.new", slash: "new", suggested: true }), 已知中文名: [] })
+    expect(源.map((条) => 条.id)).toEqual(["session.new"])
+  })
+
+  test("`suggested` 的复制件（id 带 `suggested.` 前缀）不进池子", () => {
+    const 源 = 右栏斜杠源({ 服务端: [], 内建: 内建({ id: "suggested.session.new", slash: "new", suggested: true }), 已知中文名: [] })
+    expect(源).toEqual([])
+  })
+
+  test("原件与复制件一起喂进去 ⇒ 恰好 1 条，且是原件（不是前缀件）", () => {
+    const 源 = 右栏斜杠源({
+      服务端: [],
+      内建: 内建(
+        { id: "session.new", slash: "new", suggested: true },
+        { id: "suggested.session.new", slash: "new", suggested: true },
+      ),
+      已知中文名: [],
+    })
+    expect(源.map((条) => 条.id)).toEqual(["session.new"])
   })
 
   test("两源的次序：服务端在前、内建在后（原生就是 `[...custom, ...builtin]`）", () => {

@@ -81,9 +81,10 @@ export interface 斜杠源条 {
 /**
  * 两个源合成一份候选表。
  *
- * `suggested` 那一批用**字段**筛、不用 id 前缀筛：上游 `context/command.tsx:331-350` 把
- * `suggested && !disabled` 的那几条**复制**了一份（`{...x, id: SUGGESTED_PREFIX + x.id}`）放进数组，
- * 原件同时还在 ⇒ 按字段筛掉复制件，剩下的正是每一条的一份。
+ * `suggested` 那一批按 **id 前缀**筛（对齐原生 `prompt-input-v2.tsx:301`）：上游
+ * `context/command.tsx:331-350` 的 `options` memo 对 suggested 命令既留**原件**又加一份**前缀复制件**
+ * （`{...x, id: SUGGESTED_PREFIX + x.id}`），而 `{...x}` 展开让**两件的 `suggested` 字段都是 `true`**
+ * ⇒ 只能按 **id 前缀**分辨哪份是复制件；按字段筛会连原件一起删。
  *
  * ⚠️ **第三源是本机 skill 的中文名**（用户裁定 2026-10-11，理由见文件头）：只做 `title` 的覆盖，
  * **不改 `id` / `trigger`**（那两样是身份与插入语义）。对不上号就有多少算多少——118 条里绝大多数
@@ -106,7 +107,7 @@ export function 右栏斜杠源(input: {
       type: "custom" as const,
     })),
     ...input.内建
-      .filter((item): item is 内建命令条 & { slash: string } => !item.disabled && !item.suggested && !!item.slash)
+      .filter((item): item is 内建命令条 & { slash: string } => !item.disabled && !item.id.startsWith("suggested.") && !!item.slash)
       .map((item) => ({
         id: item.id,
         trigger: item.slash,
@@ -141,19 +142,19 @@ export function 右栏斜杠命令(源: readonly 斜杠源条[]): PromptInputV2S
  * `onSuggestionSelect`：**custom 只插字**（回车时才走命令分支），**builtin 选中即执行**
  * （`command.trigger(id, "slash")`，且上游 `interaction.ts:165-173` 会把刚插进去的那段正文清掉）。
  *
- * ⚠️ **必须在选中那一刻现读**「源」与「执行」，不能在建 controller 时算好：`commands` 是异步
- * 填的（`server-sync.tsx` 的 `void loadCommands(...)`），建 controller 时那份候选还是空的
- * ⇒ 冻住的闭包会让「先建会话、命令表后到」的现场永远选不动（`LEARNINGS #006-13` 的同族：
- * 同一个数据两个时间点的写法）。
+ * ⚠️ **本函数不保证新鲜性**：它读的是**调用时传进来的那个数组**（`源`），不现读任何 store。
+ * 新鲜性由**调用侧**负责——Task 2 必须传 memo accessor 的结果、在**选中时刻**取，不要提前把
+ * 数组快照进来（服务端命令是异步到达的，见 `server-sync.tsx` 的 `void loadCommands(...)`；
+ * `LEARNINGS #006-13` 的同族：同一个数据两个时间点的写法）。
  */
 export function 右栏选中命令(
   源: readonly 斜杠源条[],
   执行: (id: string) => void,
 ): (item: PromptInputV2Suggestion) => (() => void) | void {
   return (item) => {
-    if (item.kind !== "command") return
+    if (item.kind !== "command") return undefined
     const 选中的 = 源.find((条) => 条.id === item.id)
-    if (!选中的 || 选中的.type === "custom") return
+    if (!选中的 || 选中的.type === "custom") return undefined
     return () => 执行(选中的.id)
   }
 }

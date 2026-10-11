@@ -258,11 +258,29 @@ describe("`/` 面板的池子", () => {
   /**
    * `suggested` 的那一批是**上游 `options` memo 自己复制出来的一份**（`context/command.tsx:331-350`：
    * `[...suggested.map(x => ({...x, id: 前缀 + x.id, category})), ...resolved]` —— 原件同时在数组里）。
-   * 原生用「id 有没有那个前缀」筛，我们用它身上现成的 `suggested` 标记筛——**同一件事**，
-   * 且不必把上游那个不导出的常量抄一份下来。
+   * 而且 `{...x}` 展开让**两件的 `suggested` 字段都是 `true`** ⇒ 只能按 **id 前缀**分辨哪份是复制件；
+   * 按字段筛会连原件一起删（原生 `prompt-input-v2.tsx:301` 就是按前缀筛）。
    */
-  test("`suggested` 的那一份（上游复制出来的同一条）不进池子", () => {
-    expect(右栏斜杠源({ 服务端: [], 内建: 内建({ id: "session.new", slash: "new", suggested: true }), 已知中文名: [] })).toEqual([])
+  test("`suggested` 的原件（id 无前缀、`suggested: true`、有 `slash`）进池子", () => {
+    const 源 = 右栏斜杠源({ 服务端: [], 内建: 内建({ id: "session.new", slash: "new", suggested: true }), 已知中文名: [] })
+    expect(源.map((条) => 条.id)).toEqual(["session.new"])
+  })
+
+  test("`suggested` 的复制件（id 带 `suggested.` 前缀）不进池子", () => {
+    const 源 = 右栏斜杠源({ 服务端: [], 内建: 内建({ id: "suggested.session.new", slash: "new", suggested: true }), 已知中文名: [] })
+    expect(源).toEqual([])
+  })
+
+  test("原件与复制件一起喂进去 ⇒ 恰好 1 条，且是原件（不是前缀件）", () => {
+    const 源 = 右栏斜杠源({
+      服务端: [],
+      内建: 内建(
+        { id: "session.new", slash: "new", suggested: true },
+        { id: "suggested.session.new", slash: "new", suggested: true },
+      ),
+      已知中文名: [],
+    })
+    expect(源.map((条) => 条.id)).toEqual(["session.new"])
   })
 
   test("两源的次序：服务端在前、内建在后（原生就是 `[...custom, ...builtin]`）", () => {
@@ -426,9 +444,10 @@ export interface 斜杠源条 {
 /**
  * 两个源合成一份候选表。
  *
- * `suggested` 那一批用**字段**筛、不用 id 前缀筛：上游 `context/command.tsx:331-350` 把
- * `suggested && !disabled` 的那几条**复制**了一份（`{...x, id: SUGGESTED_PREFIX + x.id}`）放进数组，
- * 原件同时还在 ⇒ 按字段筛掉复制件，剩下的正是每一条的一份。
+ * `suggested` 那一批按 **id 前缀**筛（对齐原生 `prompt-input-v2.tsx:301`）：上游
+ * `context/command.tsx:331-350` 的 `options` memo 对 suggested 命令既留**原件**又加一份**前缀复制件**
+ * （`{...x, id: SUGGESTED_PREFIX + x.id}`），而 `{...x}` 展开让**两件的 `suggested` 字段都是 `true`**
+ * ⇒ 只能按 **id 前缀**分辨哪份是复制件；按字段筛会连原件一起删。
  *
  * ⚠️ **第三源是本机 skill 的中文名**（用户裁定 2026-10-11，理由见文件头）：只做 `title` 的覆盖，
  * **不改 `id` / `trigger`**（那两样是身份与插入语义）。对不上号就有多少算多少——118 条里绝大多数
@@ -451,7 +470,7 @@ export function 右栏斜杠源(input: {
       type: "custom" as const,
     })),
     ...input.内建
-      .filter((item): item is 内建命令条 & { slash: string } => !item.disabled && !item.suggested && !!item.slash)
+      .filter((item): item is 内建命令条 & { slash: string } => !item.disabled && !item.id.startsWith("suggested.") && !!item.slash)
       .map((item) => ({
         id: item.id,
         trigger: item.slash,
