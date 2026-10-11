@@ -512,6 +512,29 @@ describe("项目面板接进左栏（FR-002 出参）", () => {
     ])
   })
 
+  test("面板槽自带高度上限（`max-h-[calc(100%-2.5rem)]`）且是 flex 容器——上限靠它才压得下面板（用户 2026-10-11 实报）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    锚点按钮(host, "project-anchor-toggle")?.click()
+
+    const 槽 = host.querySelector<HTMLElement>("[data-slot='project-panel-slot']")
+    /*
+      为什么断在这里：面板是**绝对定位的浮层**，它自己不知道屏幕到哪结束；能给出高度上限的
+      只有槽（`top-10` 是槽自己写下的偏移、`100%` 解析到 `relative h-full` 的侧栏）⇒ 少了
+      `max-h-[calc(100%-2.5rem)]`，列表就把面板撑破、超出部分被祖先 `overflow-y:hidden` 裁掉。
+      `flex flex-col` 是让上限**真的生效**的那一步（面板是 flex 子项，配它自己的 `min-h-0`）。
+
+      ⚠️ 断在类名 token 上、不断节点非空：happy-dom 没有布局引擎、量不出 CSS（`#005-07`），
+         所以视觉约定在这里只能落到 className 上。逐 token 用 Set 成员判断、**不用**
+         `toContain` 子串（`#006-22`：`flex` ⊂ `flex-col` 会假绿）。
+      ⚠️ 也不用 `expect(槽).toBeNull()` 那族断言——`#005-01`：happy-dom 里它会把整轮跑挂死。
+         槽取不到时下方三个 `has` 全为 false，自然会红。
+    */
+    const 类名集 = new Set((槽?.className ?? "").split(/\s+/).filter(Boolean))
+    expect(类名集.has("flex")).toBe(true)
+    expect(类名集.has("flex-col")).toBe(true)
+    expect(类名集.has("max-h-[calc(100%-2.5rem)]")).toBe(true)
+  })
+
   test("再点 ▾ 收起——它是开关，不是单程票", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
@@ -720,6 +743,21 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
     锚点按钮(host, "project-anchor-members")?.click()
 
     expect(成员面板开着(host)).toBe(false)
+  })
+
+  test("成员面板槽同样自带高度上限（`max-h-[calc(100%-2.5rem)]`）——同 `project-panel-slot` 那条的理由", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    setCurrentProject({ name: "8·17专案", memberCount: 3 })
+
+    锚点按钮(host, "project-anchor-members")?.click()
+
+    // 理由逐字同 `project-panel-slot` 那条：面板不知道屏幕到哪结束，能给出上限的只有槽。
+    // ⚠️ 逐 token Set 判断（`#006-22`：`flex` ⊂ `flex-col` 会假绿）；不写 `toBeNull()`（`#005-01`）。
+    const 槽 = host.querySelector<HTMLElement>("[data-slot='member-panel-slot']")
+    const 类名集 = new Set((槽?.className ?? "").split(/\s+/).filter(Boolean))
+    expect(类名集.has("flex")).toBe(true)
+    expect(类名集.has("flex-col")).toBe(true)
+    expect(类名集.has("max-h-[calc(100%-2.5rem)]")).toBe(true)
   })
 
   test("私有项目（没有 `memberCount`）连徽章都没有——没有成员管理这回事，就不给入口", () => {

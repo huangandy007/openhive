@@ -692,7 +692,25 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   onCreate={() => setPanelOpen(true)}
                 />
                 <Show when={panelOpen()}>
-                  <div data-slot="project-panel-slot" class="absolute inset-x-0 top-10 z-10 px-1">
+                  {/*
+                    槽**自己**给出高度上限（2026-10-11 用户实报「三个 tab 没有滚动条」）。
+
+                    ⚠️ 上限只能落在这里、落不在面板里：面板不知道自己在屏幕的哪一段，而槽知道
+                    ——`top-10`（2.5rem）是它自己写下的偏移，`100%` 解析到包含块
+                    （`project-sidebar`，`relative h-full`）的高度 ⇒ 两者一减就是「从面板顶到侧栏底」
+                    这段可用高度。`max-h-[calc(100%-2.5rem)]` 与 `top-10` **是同一个数**，改一个要改另一个。
+
+                    ⚠️ `flex flex-col` 是让上限**真的生效**的那一步：面板是 flex 子项，配它自己那条
+                    `min-h-0` 才压得下去。少了 `flex`，`max-h` 只是把槽的**盒子**截短，面板照样
+                    按内容高溢出（盒子里没有布局纪律去压缩子项）。
+
+                    ⚠️ 高度保持 `auto`（不用 `bottom-0`）：槽是**透明**的浮层，撑满整个侧栏会
+                    把下方文件树与输入条的点击**整片挡住**。内容高＋上限，挡住的面积就等于面板本身。
+                  */}
+                  <div
+                    data-slot="project-panel-slot"
+                    class="absolute inset-x-0 top-10 z-10 flex max-h-[calc(100%-2.5rem)] flex-col px-1"
+                  >
                     <ProjectPanel
                       projects={projectList()}
                       currentId={currentProject()?.id}
@@ -802,7 +820,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     `archived` 交给面板去问 `decide`（本层不重写规则，只把**事实**递过去）——
                     否则归档项目上会画出三颗点了必然被拒的按钮。 */}
                 <Show when={memberOpen()}>
-                  <div data-slot="member-panel-slot" class="absolute inset-x-0 top-10 z-10 px-1">
+                  {/*
+                    同 `project-panel-slot`：槽**自己**给出高度上限（用户 2026-10-11 实报「面板不滚」
+                    的**同款落点**）。面板是 `absolute` 浮层、不知道屏幕到哪结束；能算出「从面板顶到
+                    侧栏底」这段可用高度的只有槽——`top-10`（2.5rem）是它自己写下的偏移，`100%` 解析到
+                    `relative h-full` 的侧栏 ⇒ `max-h-[calc(100%-2.5rem)]` 与 `top-10` **是同一个数**，
+                    改一个要改另一个。`flex flex-col` 是让上限真的生效的那一步（配面板自己的 `min-h-0`）。
+                  */}
+                  <div data-slot="member-panel-slot" class="absolute inset-x-0 top-10 z-10 flex max-h-[calc(100%-2.5rem)] flex-col px-1">
                     <MemberPanel
                       projectName={currentProject()?.name}
                       members={projectMembers()}

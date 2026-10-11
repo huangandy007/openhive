@@ -548,7 +548,11 @@ export function ProjectPanel(props: ProjectPanelProps) {
   return (
     <div
       data-component="project-panel"
-      class="flex w-full min-w-0 flex-col gap-1 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
+      // ⚠️ `min-h-0` 不是装饰（2026-10-11 用户实报「三个 tab 没有滚动条」）：
+      // 本元素是挂载槽（`project-panel-slot`）的 **flex 子项**，而 flex 子项的自动最小高＝**内容高**
+      // ⇒ 不给它这一条，槽再怎么限高它也**压不下去**，列表照样把面板撑破、超出部分被祖先
+      // `three-pane-left-card{overflow-y:hidden}` 裁掉且滚不动（真栈实测 `wheel` 前后 `scrollTop` 恒 0）。
+      class="flex min-h-0 w-full min-w-0 flex-col gap-1 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
     >
       {/* 置顶：＋ 新建项目（私有 / 共享） */}
       <div data-slot="project-panel-create" class="flex items-center gap-1 px-1.5 py-0.5">
@@ -666,7 +670,20 @@ export function ProjectPanel(props: ProjectPanelProps) {
         </For>
       </div>
 
-      <div data-slot="project-panel-body" role="tabpanel" class="flex min-w-0 flex-col">
+      {/*
+        ⚠️ **列表区就是滚动容器**（2026-10-11 用户实报）：`overflow-y-auto` 让超出部分滚起来，
+        `min-h-0` 是它的前提——flex 子项的自动最小高＝内容高，少了它这一条 `overflow` 形同虚设
+        （盒子根本不会被压到内容高以下，于是永远不触发滚动）。
+
+        钉它的是 `project-panel.test.tsx` 的「列表区是滚动容器」那条；**真的滚得动**与
+        「面板底边落回容器内」由真栈量几何（本层 happy-dom 没有 CSS 引擎，`LEARNINGS #005-07`）。
+
+        为什么滚的是**这一层**而不是整块面板：它上面的「＋新建项目」行与 tab 栏是工具栏
+        （同 `session-list.tsx:244` 那条「标题行常驻」），下面的错误行与归档确认框是
+        「刚点过的那个动作」的回执——两者都不该被列表滚走。
+        （确认框尤其：它是面板里**唯一**能点「归档」的地方，滚走了就等于归档做不成。）
+      */}
+      <div data-slot="project-panel-body" role="tabpanel" class="flex min-h-0 min-w-0 flex-col overflow-y-auto">
         <Show when={tab() === "recent"}>
           <Show when={最近().length > 0} fallback={空态(EMPTY_ACTIVE)}>
             <Group

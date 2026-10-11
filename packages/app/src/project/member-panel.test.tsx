@@ -236,4 +236,30 @@ describe("MemberPanel 成员面板（FR-004 / US3 / 设计 §4）", () => {
       expect(按钮(host, "member-panel-leave")?.disabled).toBe(true)
     })
   })
+
+  describe("高度约束与滚动（用户 2026-10-11 实报「面板不滚」的**同款落点**）", () => {
+    /*
+      为什么成员面板也要这一组：它和项目面板是**同一个缺陷**——面板是 `absolute` 浮层，自己不
+      知道屏幕到哪结束；成员多了（行都是 `shrink-0`、不会被压扁）就把面板撑破，超出部分被祖先
+      `overflow-y:hidden` 裁掉**且滚不动**。项目面板那边 32 行必然触发，这边要成员足够多才显形，
+      所以是**潜在**的同一处 bug——⑧ 步「找谁在按同一个前提做同一件事」找出来的就是它。
+
+      ⚠️ happy-dom 没有布局引擎，量不出「真的滚得动」（`#005-07`）⇒ 这里只能钉类名 token；
+         「真的滚」由真栈量。逐 token 用 Set 判断、不用 `toContain`（`#006-22`：`flex` ⊂ `flex-col`）。
+    */
+    const 类名集 = (el: HTMLElement | null) => new Set((el?.className ?? "").split(/\s+/).filter(Boolean))
+
+    test("成员行装进**能滚的列表区**（`overflow-y-auto` ＋ `min-h-0`），且面板根也允许被压到内容高以下", () => {
+      const host = mount(() => <MemberPanel members={三成员} selfPoliceId="001" />)
+
+      const 根 = 类名集(host.querySelector<HTMLElement>("[data-component='member-panel']"))
+      const 体 = 类名集(槽(host, "member-panel-body"))
+      expect(体.has("overflow-y-auto")).toBe(true)
+      expect(体.has("min-h-0")).toBe(true)
+      expect(根.has("min-h-0")).toBe(true)
+      // ⚠️ `contains(… ?? null)`：行不存在时 `contains(null)` 为 false ⇒ 红；写成
+      //    `行?.closest(…) !== null` 则 `undefined !== null` 为 true ⇒ 反而**假绿**（`行内有` 那条注释同因）。
+      expect(槽(host, "member-panel-body")?.contains(行(host, "002") ?? null)).toBe(true)
+    })
+  })
 })

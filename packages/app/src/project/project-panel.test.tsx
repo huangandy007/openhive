@@ -1008,3 +1008,55 @@ describe("超期提醒的呈现（T024）", () => {
     expect(无槽(host, "project-archive")).toBe(true)
   })
 })
+
+/**
+ * 面板的高度约束与滚动（**2026-10-11 用户实报**：「最近 / 全部 / 已归档三个 tab 没有垂直滚动条」，
+ * 项目多到超出视口时列表末尾与归档确认框都够不着）。
+ *
+ * ## 根因（真栈实测，不是推断）
+ *
+ * 面板根元素**既无高度上限、也无滚动容器**；挂它的槽（`workspace-entry.tsx:695`）是
+ * `absolute inset-x-0 top-10`，**不限高** ⇒ 面板长到内容高（实测 32 行时 `h=1010`、底边
+ * `y=1095`，而视口只到 919）。唯一能滚的祖先 `three-pane-left-card` 是
+ * **`overflow-y: hidden`** ⇒ 超出的 176px 被**裁掉且滚不动**：真栈里 `page.mouse.wheel(0,800)`
+ * 前后 `scrollTop` 恒为 0，页面上没有任何一处能滚。归档确认框因此渲染在 `y=1094`，真人永远点不到
+ * （Playwright 点得着只是因为它能**程序化**滚动 `overflow:hidden` 的盒子 —— `LEARNINGS #005-30`：
+ * 那是工具的规矩，不是产品的行为）。
+ *
+ * ## 这一层能钉什么、不能钉什么
+ *
+ * ⚠️ happy-dom **没有 CSS 引擎**（本文件头那条），所以这里只能钉「**滚动容器**这件事在 DOM 上
+ * 留下的**记号**」——`overflow-y-auto` 与 `min-h-0` 两个 token 在不在。**真的滚得动**、面板底边
+ * 落回容器内、归档确认框落进视口，都由真栈 spec 量几何，**不在这一层**（`LEARNINGS #002-02`：
+ * 测不了的要写成缺口，不能写成覆盖）。
+ *
+ * ⚠️ 高度上限**不在这里**：它落在挂载槽上（那个盒子才知道自己
+ * `top-10`、包含块多高），故本组件测试看不到它 —— 组件测试钉「面板肯被压」，
+ * 槽钉「能压到多高」，两处各钉一半。
+ */
+describe("面板的高度约束与滚动（用户 2026-10-11 实报）", () => {
+  /**
+   * `className` 串 → token 集合。
+   *
+   * ⚠️ **必须逐 token 相等，不能用 `toContain`**：`min-h-0` 是 `min-h-0.5` 的**真前缀**，
+   * 子串匹配会被另一个真类名满足而**假绿**（`LEARNINGS #006-22`）。
+   */
+  const 类名集 = (el: HTMLElement | null) => new Set((el?.className ?? "").split(/\s+/).filter(Boolean))
+
+  test("列表区是滚动容器（`overflow-y-auto`），且面板根与列表区都允许被压到内容高以下（`min-h-0`）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[我的(私有("p1", "8·17专案", 3), "owner")]} onArchive={() => {}} />
+    ))
+
+    const 根 = 类名集(host.querySelector<HTMLElement>("[data-component='project-panel']"))
+    const 体 = 类名集(槽(host, "project-panel-body"))
+
+    // 被测属性先写：列表区自己就是滚动容器
+    expect(体.has("overflow-y-auto")).toBe(true)
+    // 光有 `overflow-y-auto` **不够**：flex 子项的自动最小高＝内容高，不给 `min-h-0` 就压不扁、
+    // 照样把面板撑破（这条正是「加了 overflow 却没生效」的那种半修）。
+    expect(体.has("min-h-0")).toBe(true)
+    // 根同理：它本身是槽的 flex 子项，不给 `min-h-0` 就在槽里压不下去。
+    expect(根.has("min-h-0")).toBe(true)
+  })
+})

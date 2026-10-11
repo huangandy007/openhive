@@ -107,8 +107,15 @@ export interface MemberPanelProps {
  */
 export const PERSON_GLYPH = "👤"
 
+/**
+ * 面板根。
+ *
+ * ⚠️ `min-h-0` 不是装饰（2026-10-11 用户实报「面板不滚」的**同款落点**，与 `project-panel` 同因）：
+ * 它是挂载槽的 **flex 子项**，而 flex 子项的自动最小高＝**内容高** ⇒ 不给它这一条，槽再怎么限高
+ * 它也压不下去，成员一多就把面板撑破、超出部分被祖先 `overflow-y:hidden` 裁掉且滚不动。
+ */
 const PANEL =
-  "flex w-full min-w-0 flex-col gap-1 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
+  "flex min-h-0 w-full min-w-0 flex-col gap-1 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
 
 const TITLE_ROW = "flex h-7 shrink-0 items-center gap-1 px-1.5 text-[13px] text-v2-text-text-base"
 
@@ -215,49 +222,55 @@ export function MemberPanel(props: MemberPanelProps): JSX.Element {
         成员（{成员().length}）
       </div>
 
-      <Show
-        when={成员().length > 0}
-        fallback={
-          <div data-slot="member-panel-empty" class="px-2 py-3 text-[12px] text-v2-text-text-faint">
-            还没有成员
-          </div>
-        }
-      >
-        <For each={成员()}>
-          {(m) => (
-            <div data-slot="member-row" data-police-id={m.policeId} class={ROW}>
-              <span aria-hidden="true">{PERSON_GLYPH}</span>
-              <span data-slot="member-name" class="min-w-0 truncate">
-                {m.name}
-              </span>
-              {/* 「本人」标记：自己得认得出自己（设计 §4：`张三（本人）`）。
-                  `m === 我()` 比的是**同一个对象引用**（两处都取自 props.members 的元素），
-                  所以它和权限反查 role 走的是同一个判断——改一处两处一起动。 */}
-              <Show when={m === 我()}>
-                <span data-slot="member-self" class={ROLE_LABEL}>
-                  （本人）
-                </span>
-              </Show>
-              <span data-slot="member-role" class={`ml-auto ${ROLE_LABEL}`}>
-                {m.role}
-              </span>
-              {/* [移除]：`decide` 说不成立就不画（含「目标是 owner」——否则项目会无主） */}
-              <Show when={能("remove", m.role)}>
-                <button
-                  type="button"
-                  data-slot="member-remove"
-                  aria-label={`移除 ${m.name}`}
-                  class={SMALL_BUTTON}
-                  disabled={props.onRemove === undefined}
-                  onClick={() => props.onRemove?.(m)}
-                >
-                  移除
-                </button>
-              </Show>
+      {/* 成员行装在**能滚的列表区**里（2026-10-11 用户实报「面板不滚」的同款落点）：行的
+          `h-7 shrink-0` 决定它们不会被压扁 ⇒ 必须有一个 `overflow-y-auto` 的盒子接住多出来的高度。
+          `min-h-0` 是让这个盒子在 flex 列里**真的能被压**的那一步（默认最小高＝内容高）。
+          标题 / 成员数 / 退出按钮留在盒子外——它们固定在上下两端，只有名单滚（同 `project-panel` 的版面）。 */}
+      <div data-slot="member-panel-body" class="flex min-h-0 min-w-0 flex-col gap-1 overflow-y-auto">
+        <Show
+          when={成员().length > 0}
+          fallback={
+            <div data-slot="member-panel-empty" class="px-2 py-3 text-[12px] text-v2-text-text-faint">
+              还没有成员
             </div>
-          )}
-        </For>
-      </Show>
+          }
+        >
+          <For each={成员()}>
+            {(m) => (
+              <div data-slot="member-row" data-police-id={m.policeId} class={ROW}>
+                <span aria-hidden="true">{PERSON_GLYPH}</span>
+                <span data-slot="member-name" class="min-w-0 truncate">
+                  {m.name}
+                </span>
+                {/* 「本人」标记：自己得认得出自己（设计 §4：`张三（本人）`）。
+                    `m === 我()` 比的是**同一个对象引用**（两处都取自 props.members 的元素），
+                    所以它和权限反查 role 走的是同一个判断——改一处两处一起动。 */}
+                <Show when={m === 我()}>
+                  <span data-slot="member-self" class={ROLE_LABEL}>
+                    （本人）
+                  </span>
+                </Show>
+                <span data-slot="member-role" class={`ml-auto ${ROLE_LABEL}`}>
+                  {m.role}
+                </span>
+                {/* [移除]：`decide` 说不成立就不画（含「目标是 owner」——否则项目会无主） */}
+                <Show when={能("remove", m.role)}>
+                  <button
+                    type="button"
+                    data-slot="member-remove"
+                    aria-label={`移除 ${m.name}`}
+                    class={SMALL_BUTTON}
+                    disabled={props.onRemove === undefined}
+                    onClick={() => props.onRemove?.(m)}
+                  >
+                    移除
+                  </button>
+                </Show>
+              </div>
+            )}
+          </For>
+        </Show>
+      </div>
 
       {/* [退出项目]：仅 member 看得到（owner 不能退群）；上边框把它和列表分开（设计 §4 的底部单独一行） */}
       <Show when={能("leave")}>
