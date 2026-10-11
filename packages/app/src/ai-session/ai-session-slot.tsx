@@ -5,16 +5,20 @@ import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { LocalProvider, useLocal } from "@/context/local"
 import { usePermission } from "@/context/permission"
+import { useServer } from "@/context/server"
 import { SDKProvider } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync, type ServerSync } from "@/context/server-sync"
 import { useSettings } from "@/context/settings"
+import { useTabs } from "@/context/tabs"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { 右栏模型控件 } from "./model-control"
 import { projectCapabilities } from "./projection"
+import { 右栏打不开的说法 } from "./right-pane-failure"
 import { createRightPaneSource, type RightPaneSource } from "./right-pane-source"
+import { 右栏打不开 } from "./right-pane-unavailable"
 import { 删除后去哪, 在途守卫, 导出会话, 建会话, 删会话, 重命名会话, 会话路径 } from "./session-actions"
 import { SessionDocks } from "./session-docks"
 import { SessionPanel } from "./session-panel"
@@ -135,6 +139,12 @@ import { submitRightPanePrompt } from "./submit-prompt"
  *    本文件这一段（**有没有把 element 接对**）仍属缺口。
  * ⑩ **本场模型的来源**（同上）：「`现在认的模型()` 取的是 `local.model.current()`」这件事，
  *    以及它**按路由参数 `id` 记账**（不是全局一份 draft）——只有真栈 T7 钉得动。
+ * ⑪ **「这场会话打不开」那张卡片的接线**（2026-10-11 本轮新增，修的是用户报的「整页空白」）：
+ *    「哪种失败 ⇒ 什么说法」在 `right-pane-failure.test.ts`、渲染在
+ *    `right-pane-unavailable.test.tsx`，而**这一段**（`源.failure()` 有值时把它画出来、
+ *    那颗钮接的是 `tabs.removeSessionTab`、没标签时不画钮）只有**假后端 spec** 钉得动：
+ *    `e2e/regression/right-pane-unavailable.spec.ts` 让假后端对 `GET /session/:id` 回 403，
+ *    真 `AiSessionSlot` ⇒ DOM 上必须读得到「项目已归档，请先找回」。本文件这一段仍属缺口。
  * 这几条错了都**不报错、不变红**，只有人读代码才看得见。
  */
 /**
@@ -150,6 +160,9 @@ type 右栏源 = RightPaneSource<ReturnType<ServerSync["ensureDirSyncContext"]>[
 export function AiSessionSlot(): JSX.Element {
   const location = useLocation()
   const serverSync = useServerSync()
+  const server = useServer()
+  const tabs = useTabs()
+  const language = useLanguage()
 
   const 源 = createRightPaneSource({
     pathname: () => location.pathname,
@@ -164,20 +177,46 @@ export function AiSessionSlot(): JSX.Element {
     dataFor: (目录) => serverSync().ensureDirSyncContext(目录).data,
   })
 
-  // 两套 provider 都要**一个目录**，而目录只在「三样齐了」时才有 ⇒ 用 `Show` 兜住，
-  // 免得给它们喂一个空串（那会让 `ensureDirSdkContext("")` 建一份没人要的上下文）。
-  // 三种「没有会话」的场合（首页 / 草稿页 / id 解不出来）这里什么都不渲染，`ThreePane`
+  // 「这场会话问不出来」那张卡片要的那两句（判断在 `right-pane-failure.ts`，渲染在
+  // `right-pane-unavailable.tsx`，这里只接线）：
+  // ① 说法——`t` 包一层箭头，不把 `language.t` 直接当值传（它是个绑在 context 上的方法）；
+  // ② 有没有标签可关——**没有就不画那颗钮**（点了没反应的钮是把「没路走」伪装成「可以试试」）。
+  //    判据同 `sessionHasOpenTab`（`context/tabs.tsx:45`）：同一个键 + 同一个会话 id。
+  const 有标签 = (sessionID: string) =>
+    tabs.store.some((tab) => tab.type === "session" && tab.server === server.key && tab.sessionId === sessionID)
+
+  // 三种「没有会话」的场合（首页 / 草稿页 / 路由里没有 id）这里什么都不渲染，`ThreePane`
   // 那边因此**整根右栏都不在**（它判的是 `props.right !== undefined`）。
+  //
+  // ⚠️ 第四种「有 id、但**取不到**」**不能**跟着一起静默（2026-10-11 用户报的那个缺陷）：
+  // 中栏那一页在会话路由下被 `pageVisible` 藏掉（`center-content.tsx` 的 `display:none`，
+  // 那是**故意的**——不藏就有两个输入框）⇒ 右栏再什么都不画，屏幕上就是**一个字都没有**，
+  // 而服务端特意写好给人看的那句「项目已归档，请先找回」到不了屏幕。所以这一支要说一句话。
+  // 它**排在前面**：失败与就绪互斥（失败 ⇒ 没有目录 ⇒ `ready` 为空），两条各画各的。
   return (
-    <Show when={源.ready()?.directory}>
-      {(目录) => (
-        <SDKProvider directory={目录}>
-          <LocalProvider>
-            <右栏主体 源={源} />
-          </LocalProvider>
-        </SDKProvider>
-      )}
-    </Show>
+    <>
+      <Show when={源.failure()}>
+        {(失) => (
+          <右栏打不开
+            说法={右栏打不开的说法(失().error, 失().sessionID, (key) => language.t(key))}
+            关闭标签={
+              有标签(失().sessionID)
+                ? () => tabs.removeSessionTab({ server: server.key, sessionId: 失().sessionID })
+                : undefined
+            }
+          />
+        )}
+      </Show>
+      <Show when={源.ready()?.directory}>
+        {(目录) => (
+          <SDKProvider directory={目录}>
+            <LocalProvider>
+              <右栏主体 源={源} />
+            </LocalProvider>
+          </SDKProvider>
+        )}
+      </Show>
+    </>
   )
 }
 

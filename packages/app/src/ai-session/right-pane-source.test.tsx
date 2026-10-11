@@ -146,6 +146,85 @@ describe("右栏解析链：路由 id → 目录 → 数据（T008 / 裁定 A′
     })
   })
 
+  /**
+   * 「不崩」只解决了一半——2026-10-11 用户报的缺陷正是**另一半**：会话取不到（403 / 404）时，
+   * 右栏「什么都不渲染」，屏幕上**一个字都没有**，只有 F12 里两条报错。
+   *
+   * ⇒ 失败**必须留在手里**，交给右栏去说一句人话（`right-pane-failure.ts` 解那句话，
+   * `right-pane-unavailable.tsx` 画出来）。
+   *
+   * ⚠️ 断的是**同一个错误对象**（`toBe`），不是「有个错误」：这条链中间隔着 promise 与
+   * 代次闸，任何一处若把失败换成 `undefined` 或另造一个空错，界面上都会变成一句没有线索的
+   * 空话——那正是本次要修的毛病换了张脸。
+   */
+  test("问目录失败 ⇒ 失败**可读**（右栏要拿它给人一句人话）", async () => {
+    await createRoot(async (dispose) => {
+      const 原错 = new Error("项目已归档，请先找回")
+      const 源 = 造源({
+        pathname: () => "/server/c2VydmVyMQ/session/ses_abc123",
+        directoryOf: async () => {
+          throw 原错
+        },
+      })
+
+      await 歇()
+
+      expect(源.failure()?.sessionID).toBe("ses_abc123")
+      expect(源.failure()?.error).toBe(原错)
+      expect(源.ready()).toBeUndefined()
+      dispose()
+    })
+  })
+
+  /**
+   * 「还没到」与「到不了」是**两种态**，界面上的写法相反（前者什么都不该画、后者要画一句话）。
+   * 少了这一条，一个「只要没目录就算失败」的写法照样能过上面那条用例——而它的后果是
+   * 每次换会话都先闪一下「打不开」（`LEARNINGS #004-09`：被拒与门在副作用之前是两条判据）。
+   */
+  test("解目录**期间** ⇒ 不算失败（别把「还没到」画成「打不开」）", async () => {
+    await createRoot(async (dispose) => {
+      const 甲 = 悬着<string | undefined>()
+      const 源 = 造源({
+        pathname: () => "/server/c2VydmVyMQ/session/ses_甲",
+        directoryOf: () => 甲.promise,
+      })
+
+      await 歇()
+
+      expect(源.failure()).toBeUndefined()
+
+      甲.交("/projects/资金案")
+      await 歇()
+      expect(源.failure()).toBeUndefined()
+      expect(源.ready()?.directory).toBe("/projects/资金案")
+      dispose()
+    })
+  })
+
+  test("换到下一场**成功**的会话 ⇒ 上一场的失败要清掉（别拿旧的失败吓人）", async () => {
+    await createRoot(async (dispose) => {
+      const [路径, set路径] = createSignal("/server/c2VydmVyMQ/session/ses_甲")
+      const 源 = 造源({
+        pathname: 路径,
+        directoryOf: async (id) => {
+          if (id === "ses_甲") throw new Error("项目已归档，请先找回")
+          return `/projects/${id}`
+        },
+      })
+
+      await 歇()
+      expect(源.failure()?.sessionID).toBe("ses_甲")
+
+      set路径("/server/c2VydmVyMQ/session/ses_乙")
+      await 歇()
+
+      // 这一条是「切走之后那句提示还赖在屏上」的守护者。
+      expect(源.failure()).toBeUndefined()
+      expect(源.ready()?.directory).toBe("/projects/ses_乙")
+      dispose()
+    })
+  })
+
   test("换会话 ⇒ 跟着换（同一份源，不是新建一个）", async () => {
     await createRoot(async (dispose) => {
       const [路径, set路径] = createSignal("/server/c2VydmVyMQ/session/ses_甲")

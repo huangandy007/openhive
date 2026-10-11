@@ -62,6 +62,19 @@ export interface RightPaneReady<T> {
   data: T
 }
 
+/**
+ * 「这场会话问不出来」——把失败**留在手里**，好让右栏说一句人话
+ * （`right-pane-failure.ts` 解那句话、`right-pane-unavailable.tsx` 画出来）。
+ *
+ * 为什么不在这里就解成文案：这一层不认识 `language`，而「哪种失败 ⇒ 哪句话」是一条有分支的
+ * 判断，它要与渲染分开测（`right-pane-failure.test.ts`）。
+ */
+export interface RightPaneFailure {
+  sessionID: string
+  /** 原样留着（同一个对象）：下游判 403 / 404 靠的是它身上的状态码，见 `utils/http-error.ts`。 */
+  error: unknown
+}
+
 export interface RightPaneSource<T> {
   /** 路由里那场会话。没有（首页 / 草稿页 / 旧布局形态）时为 `undefined`。 */
   sessionID: Accessor<string | undefined>
@@ -75,11 +88,21 @@ export interface RightPaneSource<T> {
    * `data() !== undefined` 的话，它只能靠 `!` 说服类型系统，而那句 `!` 没有任何东西守着。
    */
   ready: Accessor<RightPaneReady<T> | undefined>
+  /**
+   * 「问不出来」那一态：`undefined` ＝ 没失败（**也包括「还没问回来」**——那是 `pending`，
+   * 界面上什么都不该画，与「打不开」正好相反）。
+   *
+   * ⚠️ 2026-10-11 之前这里**没有**这一项，失败被静默吞进 `setDirectory(undefined)`：会话取不到
+   * （403 / 404）时右栏什么都不渲染、中栏那一页又被 `pageVisible` 藏掉 ⇒ **整页空白**，
+   * 而服务端那句「项目已归档，请先找回」到不了屏幕。这条就是那个缺陷的通道。
+   */
+  failure: Accessor<RightPaneFailure | undefined>
 }
 
 export function createRightPaneSource<T>(deps: RightPaneSourceDeps<T>): RightPaneSource<T> {
   const [sessionID, setSessionID] = createSignal<string | undefined>()
   const [directory, setDirectory] = createSignal<string | undefined>()
+  const [failure, setFailure] = createSignal<RightPaneFailure>()
 
   let 代次 = 0
 
@@ -89,18 +112,28 @@ export function createRightPaneSource<T>(deps: RightPaneSourceDeps<T>): RightPan
     setSessionID(id)
     // 没有会话就把目录清掉：留着上一场的目录，会得到一个「标题是新路由、内容是旧会话」的右栏，
     // 而这种错配在界面上看着像「缓存」，不像坏了。（`data` 由 `directory` 派生，跟着一起空。）
+    // 失败同理要清：切走之后还赖在屏上的那句「打不开」是假的。
     if (!id) {
       setDirectory(undefined)
+      setFailure(undefined)
       return
     }
+    // 开问之前先清失败：**「还没问回来」不是「打不开」**（两者在界面上相反——前者什么都不该画，
+    // 后者要画一句话）。少了这一行，换会话时会先闪一下上一场的那句提示。
+    setFailure(undefined)
     void deps.directoryOf(id).then(
       (dir) => {
         if (代 !== 代次) return
         setDirectory(dir)
       },
-      () => {
+      (error: unknown) => {
         // 问不到就问不到：右栏退回空态，绝不把整页带崩（它是常驻的一栏，崩了连中栏都看不见）。
+        //
+        // ⚠️ 但**失败本身不能丢**（2026-10-11）：此前这里只有 `setDirectory(undefined)`，
+        // 于是「打不开」在界面上长得与「首页 / 还没有会话」一模一样 ⇒ 整页空白、一个字都没有。
+        // 现在把它交给 `failure`，由右栏说一句人话（403 归档那句来自服务端，见 `http-error.ts`）。
         if (代 !== 代次) return
+        setFailure({ sessionID: id, error })
         setDirectory(undefined)
       },
     )
@@ -125,5 +158,5 @@ export function createRightPaneSource<T>(deps: RightPaneSourceDeps<T>): RightPan
     return { sessionID: id, directory: dir, data: 数据 }
   })
 
-  return { sessionID, directory, data, ready }
+  return { sessionID, directory, data, ready, failure }
 }
