@@ -151,8 +151,12 @@ const slashCommands = createMemo(() => [
 
 | 项 | 来源 |
 |---|---|
-| 当前值 | 本栏信号（用户本次选的） ?? `当前会话()?.model`（服务端记的；`session-panel.tsx:175` 已有 `当前会话()`） |
+| 当前值 | 三级：`本栏选的 → 会话记的 → 应用默认`（逐级定义见下表下） |
 | 候选列表 | `useProviders(目录)`（`packages/app/src/hooks/use-providers.ts:20`，走 `useServerSync()`，右栏同层可达） |
+
+- **本栏选的**：本栏信号（用户本次选的）。
+- **会话记的**：`当前会话()?.model`（服务端记的；`session-panel.tsx:175` 已有 `当前会话()`）。
+- **应用默认**：`useProviders(目录).defaultModel()` —— **服务端归一化后给出的那一份**（`NormalizedProviderListResponse.defaultModel`，形状 `{providerID, modelID}`；`packages/session-ui/src/context/data.tsx:8-11`）。右栏只**取**它，不自己推导。
 
 **「记住」怎么落地（裁定 #2）**：提交时把选中的模型随 `draft.model` 传给服务端；服务端在 `createUserMessage` 里比对并 `setAgentModel` **写回会话**（`prompt.ts:679-693`）⇒ 下次右栏打开这场会话，初值就是它。**不新增持久化、不新增 API、不动 provider 边界。**
 
@@ -170,7 +174,7 @@ const slashCommands = createMemo(() => [
 | 落点 | 位置 | 读法 | 症状 |
 |---|---|---|---|
 | **F3** | 命令分支 `submit.ts:94-98`（`:95` 读 `input.draft.model.modelID`、`:96` 读 `providerID`） | `draft.model` 为 `undefined` 时**当场解引用** | 抛 `Cannot read properties of undefined (reading 'modelID')` |
-| **F4** | normal 分支 `submit.ts:136` `model: { ...input.draft.model, variant }` | `draft.model` 为 `undefined` 时展开得 `{}`（**真值**）⇒ 服务端 `input.model ?? ag.model ?? currentModel(…)` 的回退链被顶掉 ⇒ 拿空对象去 `provider.getModel(undefined, undefined)` | 报错（`state.md` 缺口表已登记为「类型谎言」） |
+| **F4** | normal 分支 `submit.ts:136` `model: { ...input.draft.model, variant: input.draft.variant }` | `draft.model` 为 `undefined` 时展开得 `{}`（**真值**）⇒ 服务端 `input.model ?? ag.model ?? currentModel(…)` 的回退链被顶掉 ⇒ 拿空对象去 `provider.getModel(undefined, undefined)` | 报错（`state.md` 缺口表已登记为「类型谎言」） |
 
 三件事合起来做：
 
@@ -184,7 +188,7 @@ const slashCommands = createMemo(() => [
 
 **⇒ 修法收敛成一句话：本栏恒有模型**（模型控件给出的「本栏选的 → 会话记的 → 应用默认」），**解析不出来就不发**（`submitRightPanePrompt` 在组 `draft`（`submit-prompt.ts:111`）之前 `return false`）。F3 与 F4 同时消失，且 `submit-prompt.ts` 里那两个 `as` 少掉一个（`model` 那处不再需要：`FollowupDraft.model` 是必填，而守卫之后 `input.model` 已被收窄）。
 
-**明确不做**：不在前端复算 `configuredModel ?? recentModel ?? defaultModel` 那条链 —— 那是服务端 `currentModel` 的判断在客户端的第二处写法（`#002-06`），`submit-prompt.ts:81-82` 已经论证过为什么不行，那段论证不因本轮而失效。
+**明确不做**：不在前端**自己复算** `configuredModel ?? recentModel ?? defaultModel` 那条**链**（那条链 `local.tsx:180` 已经写着一份，再写就是同一判断的第二处写法，`#002-06`；`submit-prompt.ts:81-82` 已经论证过为什么不行，那段论证不因本轮而失效）。⚠️ **不**禁「取服务端归一化后的 `defaultModel()`」——那是 §3.2 值表里的「应用默认」，是单一来源、不是一条链。
 
 ### 3.4 接线总图
 
