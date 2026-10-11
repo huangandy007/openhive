@@ -10,7 +10,7 @@ import { createPromptInputV2Store } from "@opencode-ai/session-ui/v2/prompt-inpu
 import { createAutoScroll } from "@opencode-ai/ui/hooks"
 import { For, Show, createEffect, createMemo, createSignal, on, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import { skillCommands } from "./command-palette"
+import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条, type 服务端命令条 } from "./command-palette"
 import { CommonCards } from "./common-cards"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
@@ -25,7 +25,17 @@ import { SkillDrawer } from "./skill-drawer"
  * 而它的类型 `Data` **没有导出** ⇒ 用 `Parameters<typeof DataProvider>[0]` 反取，
  * 不自己复写一份（复写就是同一件事的两处写法，`LEARNINGS #002-06`）。
  */
-export type SessionPanelData = Parameters<typeof DataProvider>[0]["data"]
+export type SessionPanelData = Parameters<typeof DataProvider>[0]["data"] & {
+  /**
+   * 服务端命令表（`DirectorySync.data.command` 的元素）——`/` 面板的**第一源**。
+   *
+   * ⚠️ 为什么**加**这一项：会话原语的 `Data` 类型**没有** `command`（那是目录同步层另加的一笔，
+   * 见 `server-sync.tsx` 的 `setStore("command", commands)`），而本组件要读它。收窄到本文件
+   * 真读的两项（`name` / `description`），不从 `@opencode-ai/client` import 全型——`CommandInfo`
+   * 结构上满足这个形状 ⇒ 生产那边 `DirectorySync.data` 原样传进来即可（`LEARNINGS #004-07`）。
+   */
+  command: readonly 服务端命令条[]
+}
 
 export interface SessionPanelProps {
   /** 会话数据。生产由 `ai-session-slot.tsx` 从 `useServerSync()` 取、经 `dataFor` 注入，测试喂夹具。 */
@@ -49,6 +59,23 @@ export interface SessionPanelProps {
    * `input.changed`）——本组件把 `PromptInputV2` 原样挂上，这条约束由原生件承担，不在这里重写。
    */
   projection: ReturnType<typeof projectCapabilities>
+  /**
+   * `/` 面板里属于**上游内建命令**的那一半（`useCommand()` 的 `slash` 命令）。
+   *
+   * 另一半（服务端命令表）本组件自己就有——就在 `props.data.command` 里。
+   *
+   * **必填**。理由同 `projection`：可选就等于「忘了传也没人红」，而忘传的表现是
+   * 「`/` 面板里一条内建都没有」——那正是本栏 2026-10-11 之前的缺陷形状（池子里只有
+   * 本机 2 条开发工具 skill，而原生那条池子实测 118 条）。
+   *
+   * ⚠️ **`选项` 是 accessor 不是数组**：`useCommand().options` 是 memo（命令注册表随时可能变），
+   * 传值就会把「命令表后到」那一刻的现场冻住。
+   *
+   * ⚠️ **不在本组件里 `useCommand()`**：测试里只裹 `DialogProvider` / `FileComponentProvider`
+   * （见 `session-panel.test.tsx` 的 `原语环境`），在这里取 context 会让那一整个文件的**每一处**
+   * 挂载当场抛（`LEARNINGS #005-27`：给组件新加挂载前提时，要找的是「谁把它挂起来」）。
+   */
+  斜杠内建命令: { 选项: () => readonly 内建命令条[]; 执行: (id: string) => void }
   /**
    * 提交一句话。**真正发出去的是调用方**（T010 的 `submit-prompt.ts` 交给会话执行链）；
    * 本组件只负责交出去、并按回话决定**要不要清空输入框**。
@@ -276,16 +303,34 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   const 草稿操作 = createPromptInputV2Store(草稿)
 
   /**
-   * `/` 面板的数据源（T007 📤 的那一根线）：**投影的 `all` 那一支**再经 `skillCommands` 适配。
+   * `/` 面板的两个源（T007 📤 的那根线，2026-10-11 由「投影的 `all`」换成「服务端命令表 ＋ 上游内建」）：
    *
-   * 用 `createMemo` 而不是裸箭头：适配每次会**新造一个数组**，而 controller 底下是
+   * | 源 | 从哪来 | 为什么 |
+   * |---|---|---|
+   * | 服务端命令 | `props.data.command` | 真 skill 全集就在这里（`GET /command` 全量装进 `sync.data.command`） |
+   * | 上游内建 | `props.斜杠内建命令` | `command.options` 只有 `useCommand()` 拿得到，而那是本组件的**外面** |
+   *
+   * 用 `createMemo` 而不是裸箭头：两个函数每次会**新造一个数组**，而 controller 底下是
    * `useFilteredList`（`createResource`）——每次读都换新引用会把它的依赖搅乱。
    */
-  const 命令集 = createMemo<PromptInputV2Suggestion[]>(() => skillCommands(props.projection.all))
+  const 斜杠源 = createMemo(() =>
+    右栏斜杠源({
+      服务端: props.data.command,
+      内建: props.斜杠内建命令.选项(),
+      // 本机 skill 的中文显示名（只覆盖 `title`，见 `command-palette.ts` 文件头）。
+      // `projection` 这个 prop 因此**继续有活干**——不再只是「有没有传」的证据。
+      已知中文名: props.projection.all,
+    }),
+  )
+  const 命令集 = createMemo<PromptInputV2Suggestion[]>(() => 右栏斜杠命令(斜杠源()))
 
   const controller = createPromptInputV2Controller({
     store: 草稿,
     commands: 命令集,
+    // ⚠️ 这里**必须再包一层箭头**（不能写成 `右栏选中命令(斜杠源(), 执行)`）：那样 `斜杠源()`
+    // 在建 controller 那一刻就被读成了一份**值**，而命令表是异步填的 ⇒ 冻住的候选会让
+    // 「先建会话、命令表后到」的现场永远选不动内建命令。包一层之后，每次选中都现读。
+    onSuggestionSelect: (item) => 右栏选中命令(斜杠源(), props.斜杠内建命令.执行)(item),
     context: () => [],
     searchContextFiles: () => [],
     view: {

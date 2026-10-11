@@ -7,6 +7,7 @@ import { createSignal, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
 import { SessionPanel, type SessionPanelData } from "./session-panel"
+import { type 内建命令条 } from "./command-palette"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
 import { projectCapabilities } from "./projection"
 
@@ -113,6 +114,7 @@ const 夹具数据 = (条数 = 1): SessionPanelData => ({
     ses_1: Array.from({ length: 条数 }, (_, i) => 造消息(`msg_${i + 1}`, "ses_1")),
   },
   part: { msg_1: [造文本块("prt_1", "msg_1", "帮我看看这个账户")] },
+  command: [],
 })
 
 /**
@@ -136,6 +138,7 @@ const 对话 = (轮数: number): SessionPanelData => {
     session_diff: {},
     message: { ses_1: 消息 },
     part: 块,
+    command: [],
   }
 }
 
@@ -216,6 +219,31 @@ const 卡们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLElement>
  */
 const 空投影 = projectCapabilities([], undefined)
 
+/** 内建命令的夹具（形状照 `CommandOption` 里真读的那六项）。 */
+const 内建夹具: 内建命令条[] = [
+  { id: "session.new", title: "New session", slash: "new" },
+  { id: "session.hidden", title: "没有 slash 的", slash: undefined },
+]
+
+/**
+ * 带「内建命令」那一半的摆法。
+ *
+ * 本组件**取不到** `useCommand()`（测试里只裹 `DialogProvider` / `FileComponentProvider`），
+ * 所以这两件由调用方供料——`执行` 传 spy，好让「选中内建 ⇒ 它被调用」这条判据有牙。
+ */
+const 摆右栏带命令 = (收到的: string[]) =>
+  挂(() =>
+    原语环境(() => (
+      <SessionPanel
+        data={夹具数据()}
+        directory="/tmp/openhive-test"
+        sessionID="ses_1"
+        projection={空投影}
+        斜杠内建命令={{ 选项: () => 内建夹具, 执行: (id) => void 收到的.push(id) }}
+      />
+    )),
+  )
+
 /**
  * 摆一棵右栏（默认一场会话）。**模块级**——hover 面那组与版面那组都要用，
  * 两处各写一遍「右栏怎么摆」就会在有人改一处时静默分家（`LEARNINGS #002-06`；本文件里
@@ -224,7 +252,13 @@ const 空投影 = projectCapabilities([], undefined)
 const 摆右栏 = () =>
   挂(() =>
     原语环境(() => (
-      <SessionPanel data={夹具数据()} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+      <SessionPanel
+        data={夹具数据()}
+        directory="/tmp/openhive-test"
+        sessionID="ses_1"
+        projection={空投影}
+        斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+      />
     )),
   )
 
@@ -259,7 +293,13 @@ describe("右栏会话的 `DataProvider`（FR-010 / 计划 §② 的那道接线
   test("`SessionPanel` 自挂 `DataProvider` ⇒ 同样的 `SessionTurn` 渲染得出来", () => {
     const 宿主 = 挂(() =>
       原语环境(() => (
-        <SessionPanel data={夹具数据()} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -271,7 +311,13 @@ describe("消息流（FR-010）", () => {
   const 挂会话 = (data: SessionPanelData, sessionID = "ses_1") =>
     挂(() =>
       原语环境(() => (
-        <SessionPanel data={data} directory="/tmp/openhive-test" sessionID={sessionID} projection={空投影} />
+        <SessionPanel
+          data={data}
+          directory="/tmp/openhive-test"
+          sessionID={sessionID}
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -353,7 +399,13 @@ describe("消息流（FR-010）", () => {
     const [数据, 改数据] = createStore<SessionPanelData>(夹具数据(1))
     const 宿主 = 挂(() =>
       原语环境(() => (
-        <SessionPanel data={数据} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={数据}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -390,7 +442,13 @@ describe("消息流：一「轮」＝ 一条 user 消息（缺陷修复 · 右�
   const 挂对话 = (data: SessionPanelData) =>
     挂(() =>
       原语环境(() => (
-        <SessionPanel data={data} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={data}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -458,7 +516,13 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
   const 挂对话 = (data: SessionPanelData) =>
     挂(() =>
       原语环境(() => (
-        <SessionPanel data={data} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={data}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -493,6 +557,7 @@ describe("自动跟随底部（缺陷修复 · 2026-10-08 真栈肉眼报的）"
           directory="/tmp/openhive-test"
           sessionID="ses_1"
           projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -607,6 +672,7 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
           directory="/tmp/openhive-test"
           sessionID={sessionID}
           projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onSelectSession={(id) => 事件.push(`切到 ${id}`)}
           onNewSession={() => 事件.push("新建")}
           onRenameSession={(id, title) => 改名过.push([id, title])}
@@ -808,7 +874,13 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
     }
     const 宿主 = 挂(() =>
       原语环境(() => (
-        <SessionPanel data={混杂} directory="/tmp/openhive-test" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={混杂}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       )),
     )
 
@@ -821,20 +893,23 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
 })
 
 describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => {
-  // 这一组**不复写 T007 的断言**（`tasks.md` 的 T013 📤 也这么要求）：`skillCommands` 的适配形状
+  // 这一组**不复写 T007 的断言**（`tasks.md` 的 T013 📤 也这么要求）：两源合成与适配形状
   // 由 `command-palette.test.tsx` 钉着。这里钉的是**最后一公里**——右栏真的把注入进来的
-  // `commands` 交到了原生 controller 手上、且打 `/` 真的会开那个弹层。
+  // `commands`（服务端命令表 ＋ 上游内建）交到了原生 controller 手上、且打 `/` 真的会开那个弹层。
   const 两条能力: SkillCapability[] = [
     造能力("fund-link-analysis", "资金关联分析", "按账户拉资金往来的关联图"),
     造能力("call-record-analysis", "话单关联分析", "按号码拉通话频次的关联图"),
   ]
+  /** 服务端命令表（`data.command`）里与那两条能力同名的命令——只补被调方真读的 `name`。 */
+  const 两条服务端命令 = [{ name: "fund-link-analysis" }, { name: "call-record-analysis" }]
   /**
-   * 喂给面板的**投影结果**——走的是生产那条路（`projectCapabilities` → 面板内部再
-   * `skillCommands(投影.all)`）。
+   * 喂给面板的**投影结果**——它的 `all` 那两支继续有活干：给服务端命令提供**中文显示名**
+   * （`右栏斜杠源` 的第三源）。池子本身的**第一源**是 `data.command`（见上面 `摆好`）。
    *
-   * ⚠️ 期望值**不是**由实现算出来的：下面那两条 id 是**字面量**。若实现里把喂给 controller 的
-   * 那一支换掉（比如换成 `drawer` 或 `common`），断言会红（`LEARNINGS #004-02`：两个投影要有
-   * 一条故意会红的相等断言，别让两边各自长）。
+   * ⚠️ 期望值**不是**由实现算出来的：下面那两条 id 是**字面量**（`custom.` 前缀是 `右栏斜杠源`
+   * 给服务端命令编的 id）。若实现里把喂给 controller 的那一支换掉（比如换成 `drawer` 或
+   * `common`），断言会红（`LEARNINGS #004-02`：两个投影要有一条故意会红的相等断言，别让
+   * 两边各自长）。
    */
   const 命令投影 = projectCapabilities([{ module: GENERIC_MODULE, capabilities: 两条能力 }], undefined)
 
@@ -854,10 +929,11 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
     挂(() =>
       原语环境(() => (
         <SessionPanel
-          data={夹具数据()}
+          data={{ ...夹具数据(), command: 两条服务端命令 }}
           directory="/tmp/openhive-test"
           sessionID="ses_1"
           projection={命令投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onSubmitPrompt={() => {}}
         />
       )),
@@ -877,7 +953,7 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
     打字(宿主, "/")
     await 歇()
 
-    expect(列出的建议(宿主)).toEqual(["skill.fund-link-analysis", "skill.call-record-analysis"])
+    expect(列出的建议(宿主)).toEqual(["custom.fund-link-analysis", "custom.call-record-analysis"])
   })
 
   test("对照：打普通字 ⇒ 弹层**不开**（证明上一条不是「浮层恒开」也能过）", async () => {
@@ -895,7 +971,7 @@ describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => 
     打字(宿主, "/话单")
     await 歇()
 
-    expect(列出的建议(宿主)).toEqual(["skill.call-record-analysis"])
+    expect(列出的建议(宿主)).toEqual(["custom.call-record-analysis"])
   })
 })
 
@@ -928,6 +1004,7 @@ describe("常用操作行 + 更多 skill 抽屉（T004 📥 / T006 📥 交来�
           directory="/tmp/openhive-test"
           sessionID="ses_1"
           projection={投影(能力集)}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
         />
       )),
     )
@@ -1035,6 +1112,7 @@ describe("点指令卡 ＝ 填入一句话（T009 / FR-007；T004 📥 那一笔
           directory="/tmp/openhive-test"
           sessionID="ses_1"
           projection={projectCapabilities([造清单([两张卡])], undefined)}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
         />
       )),
     )
@@ -1144,6 +1222,7 @@ describe("提交一句话（T010 / FR-007 / US4 场景 1）", () => {
           directory="/tmp/openhive-test"
           sessionID="ses_1"
           projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onSubmitPrompt={onSubmitPrompt}
         />
       )),
@@ -1248,6 +1327,7 @@ describe("删除会话（T015 / FR-010 / US4 场景 2·二次确认）", () => {
           directory="/tmp/openhive-test"
           sessionID={typeof sessionID === "function" ? sessionID() : sessionID}
           projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onDeleteSession={(id) => 事件.push(id)}
         />
       )),
@@ -1360,6 +1440,7 @@ describe("导出会话（T016 / FR-010）", () => {
           directory="/tmp/openhive-test"
           sessionID={sessionID}
           projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
           onExportSession={(id) => 事件.push(id)}
         />
       )),
@@ -1564,5 +1645,69 @@ describe("右栏版面：顶栏分界线 ＋ 内容区左右留白", () => {
     const 根 = 摆右栏().querySelector<HTMLElement>('[data-component="session-panel"]')
     if (!根) throw new Error('没找到 [data-component="session-panel"]')
     expect(类集(根.className)).not.toContain("px-4")
+  })
+})
+
+/**
+ * `/` 面板的池子（2026-10-11）——旧的池子是 `projection.all`（本机 2 条开发工具 skill），
+ * 新的池子是「服务端命令 ＋ 上游内建」，两源都由外面喂进来（本组件取不到 context）。
+ *
+ * ⚠️ 本组只钉「池子里有什么」：浮层几何、滚动、模糊匹配归真栈
+ * （`e2e/real-stack/right-pane-slash-and-model-real.spec.ts`；`LEARNINGS #005-07`：
+ * happy-dom 没有 CSS 引擎）。
+ */
+describe("`/` 面板的池子（两源）", () => {
+  /** `useFilteredList` 底下是 `createResource`——结果**不是同步**就绪的（同 Hero 那组的 10ms）。 */
+  const 歇 = () => new Promise((r) => setTimeout(r, 10))
+
+  test("服务端命令进池子：`data.command` 的每一条都画出来了，`label` 带斜杠", async () => {
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={{
+            ...夹具数据(),
+            // ⚠️ 形状按被调方真读的两项（`name` / `description`）——`Data` 是巨型类型，
+            // 这里用收窄不是 `as`（同本文件既有口径）。
+            command: [{ name: "write-as-huzhou-gongan", description: "写湖州公安材料" }],
+          }}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
+      )),
+    )
+
+    打字(宿主, "/")
+    await 歇()
+    const 项 = [...宿主.querySelectorAll("[data-suggestion-id]")]
+
+    expect(项.map((el) => el.getAttribute("data-suggestion-id"))).toEqual(["custom.write-as-huzhou-gongan"])
+    expect(项[0].textContent).toContain("/write-as-huzhou-gongan")
+  })
+
+  test("上游内建命令也进池子（这是旧的 skill 池子从来没有的那一半）", async () => {
+    const 宿主 = 摆右栏带命令([])
+
+    打字(宿主, "/")
+    await 歇()
+    const id们 = [...宿主.querySelectorAll("[data-suggestion-id]")].map((el) => el.getAttribute("data-suggestion-id"))
+
+    // 没有 slash 的那条不进（`session.hidden`），带 slash 的进。
+    expect(id们).toEqual(["session.new"])
+  })
+
+  test("选中内建 ⇒ 调执行（选中即执行那一半）", async () => {
+    const 收到: string[] = []
+    const 宿主 = 摆右栏带命令(收到)
+
+    打字(宿主, "/")
+    await 歇()
+    const 项 = 宿主.querySelector<HTMLElement>('[data-suggestion-id="session.new"]')
+    expect(项, "内建那条没画出来").not.toBeNull()
+    // 浮层的条目是**原生** `v2/prompt-input` 的普通 `<button>`（不是 Kobalte 菜单项）⇒ `.click()` 就够。
+    项!.click()
+
+    expect(收到).toEqual(["session.new"])
   })
 })

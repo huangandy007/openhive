@@ -76,6 +76,7 @@ const 夹具数据 = (轮数 = 1): SessionPanelData => ({
       [造文本块(`prt_${i + 1}`, `msg_${i + 1}`, i % 2 === 0 ? "帮我看看这个账户的流水" : "已按账户聚合，共 3 笔可疑往来。")],
     ]),
   ),
+  command: [],
 })
 
 /** 一份**四层都空**的投影（`projection` 是必填——可选就等于「忘传也没人红」，而忘传的表现是「右栏空着」，与「这个模块还没有 skill」在界面上分不开）。 */
@@ -95,7 +96,14 @@ export const Default = {
   render: () => (
     <div style={{ width: "420px" }}>
       {原语环境(() => (
-        <SessionPanel data={夹具数据(1)} directory="/tmp/openhive-storybook" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={夹具数据(1)}
+          directory="/tmp/openhive-storybook"
+          sessionID="ses_1"
+          projection={空投影}
+          // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       ))}
     </div>
   ),
@@ -109,7 +117,14 @@ export const MultiTurn = {
   render: () => (
     <div style={{ width: "420px" }}>
       {原语环境(() => (
-        <SessionPanel data={夹具数据(6)} directory="/tmp/openhive-storybook" sessionID="ses_1" projection={空投影} />
+        <SessionPanel
+          data={夹具数据(6)}
+          directory="/tmp/openhive-storybook"
+          sessionID="ses_1"
+          projection={空投影}
+          // storybook 不接 `useCommand()`（它没有那个 provider）；要看真池子去真栈 spec。
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+        />
       ))}
     </div>
   ),

@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
 import { useCenterTabs } from "@/center/tab-context"
+import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { usePermission } from "@/context/permission"
 import { useServerSDK } from "@/context/server-sdk"
@@ -104,6 +105,9 @@ export function AiSessionSlot(): JSX.Element {
   // 待答闸门的「自动放行」筛法（`SessionDocks` 的 `autoResponds`）。`PermissionProvider` 挂在
   // `app.tsx` 里、**在所有栏之上** ⇒ 右栏这一层拿得到（与 `useServerSync()` 同一层）。
   const permission = usePermission()
+  // `/` 面板里属于上游内建命令的那一半。`CommandProvider` 挂在 `app.tsx` 的 `SharedProviders`
+  // （路由根），右栏在它下面 ⇒ 与 `usePermission()` 同一层拿得到。
+  const command = useCommand()
 
   const 源 = createRightPaneSource({
     pathname: () => location.pathname,
@@ -183,6 +187,10 @@ export function AiSessionSlot(): JSX.Element {
           directory={态().directory}
           sessionID={态().sessionID}
           projection={投影()}
+          斜杠内建命令={{
+            选项: () => command.options,
+            执行: (id) => command.trigger(id, "slash"),
+          }}
           // T010 / FR-007：Hero 输入框那一行正文，交给 `submit-prompt.ts`（它再交给
           // 上游的 `sendFollowupDraft`）。`sendFollowupDraft` **失败时会把异常抛回来**
           // ⇒ 这里必须接住：不接就是一条没人看的 unhandled rejection，而界面上只是
