@@ -178,10 +178,9 @@ const slashCommands = createMemo(() => [
 
 三件事合起来做：
 
-1. **有值就传**：`draft.model = 本栏选择 ?? 会话已记的 model`。**无值仍然不传** —— 保留 `submit-prompt.ts:72-110` 那段「本栏不自选，缺省交服务端」的原设计，那一整段论证今天依然成立。
-2. **无值且正文会命中服务端命令 ⇒ 在 fork 边界拦下**：`return false` ＋ 一句 toast（「先选一个模型」）。把 F3 从「上游解引用抛 `Cannot read properties of undefined`」变成「没发出去 ＋ 一句人话」；F4 那支同样**到不了**（在进 `submit.ts` 之前就回头）。
-   - 依据：正文首段与 `props.data.command` 的比对是**纯字符串判断**，右栏做得了；拦截点就在 `submitRightPanePrompt`（fork 自己的文件）。
-   - 这条**不吞异常**：没有 catch 上游，而是在调用上游**之前**就把语义补齐或明确拒绝。
+1. **本栏恒给**：`draft.model` ＝ 三级解析出来的那一支（本栏选的 → 会话记的 → 应用默认）。有值就把它原样交给 `submitRightPanePrompt`。
+2. **认不出就不发**：三级一个都解析不出来 ⇒ `submitRightPanePrompt` 在组 `draft` 之前就 `return false`（正文留在输入框里），**不是**「传 `undefined` 交给服务端缺省」——那条老路正是 F3/F4 的成因。这个分支只在「一个 provider 都没接入」时才走到（缺口表 G8）。
+   - 这条**不吞异常**：没有 catch 上游，而是在调用上游**之前**就把语义补齐（恒给）或明确拒绝（不发）。
 3. **右栏「＋ 新会话」带上当前选择**（若已选）：`session-actions.ts:63-64` 的 `建会话` 加一个可选 `model` 参数。
    - 触发这条改动的直接依据：该处注释写着「`agent` / `model` 同样可选，本处**不传**：**右栏没有选择器**」——**这条前提正是本轮推翻的**（`LEARNINGS #002-06`：谁在按同一个前提做同一件事）。
    - 效果：右栏建出来的会话**从出生起就有 model**，第 2 条兜底基本走不到。
@@ -206,8 +205,8 @@ session-panel.tsx
   └─ PromptInputV2(controller) —— view 里补 model（view.model 供数据）  ← 原生 fallback，零新 UI
 
 submit-prompt.ts（fork 边界）
-  ├─ draft.model = 选择 ?? 会话记的                 ③-1
-  └─ 无值且命中命令 ⇒ 拦下 + 回话                   ③-2
+  ├─ draft.model = 三级解析出来的那一支             ③-1
+  └─ 认不出 ⇒ 不发（return false）                  ③-2
 
 session-actions.ts
   └─ 建会话(…, model?)                              ③-3
@@ -236,7 +235,7 @@ session-actions.ts
 |---|---|---|
 | `session-panel.test.tsx` | 喂一份含 `data.command` 的假 data ⇒ `/` 面板里出现那些命令（今天只会出现 2 条投影） | 拆「池子来源」⇒ 红 |
 | 同上 | 选中**内建**项 ⇒ 触发 `command.trigger`；选中**服务端命令** ⇒ **只插文本**、不触发 | 拆任一半 ⇒ 各红一条 |
-| `submit-prompt.test.ts` | 哨兵那条「⚠️ 会话没记过 model ＋ 正文命中命令 ⇒ 当场抛」**改成**「拦下并回话」 | 拆拦截 ⇒ 红 |
+| `submit-prompt.test.ts` | 哨兵那条「⚠️ 会话没记过 model ＋ 正文命中命令 ⇒ 当场抛」**改成**「本栏一个模型都认不出 ⇒ **不发**（两个出口都没碰、回话是 `false`）」 | 拆守卫（删 `return false` 那行）⇒ 红 |
 | 同上 | 有选择 / 会话有 model ⇒ `draft.model` 就是它 | 拆取值 ⇒ 红 |
 | `session-actions.test.ts` | 带 model 建会话 ⇒ `api.create` 的载荷含该 model | 拆传参 ⇒ 红 |
 
