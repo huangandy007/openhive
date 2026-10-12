@@ -14,7 +14,8 @@ import { ContextCards } from "./context-cards"
  * spec.md US2 场景 2 与「无上下文时，上下文指令卡消失，不占空间」）。
  *
  * ⚠️ 本文件里**没有**「这个上下文从哪来」的断言：中栏今天没有任何右栏读得到的「选中」状态
- * （`CenterTabState` 只有 `tabs` / `active` / `module` 三个字段；`project/file-tree.tsx` 的选中行是
+ * （`CenterTabState` 里**没有「选中」这一项**——2026-10-12 起那五个字段是
+ * `panes` / `split` / `排列` / `activePane` / `module`；`project/file-tree.tsx` 的选中行是
  * **组件内部状态**），且 `MANIFESTS` 的 `cards` 全为空 ⇒ 生产里这一层今天必然不渲染。
  * 这是**缺口**，按 `LEARNINGS #002-02` 记在 `state.md`，**不写成「已覆盖」**。
  * 本文件证的是**机制**：喂一份上下文集合，它就该按契约浮出来。

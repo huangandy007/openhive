@@ -17,8 +17,9 @@ import { InstructionCardRow, type InstructionCardRowProps } from "./instruction-
  *
  * ## 上下文从哪来
  *
- * ⚠️ **今天谁都不喂它**：中栏没有任何右栏读得到的「选中」状态（`CenterTabState` 只有
- * `tabs` / `active` / `module`；`project/file-tree.tsx` 的选中行是组件内部状态），且
+ * ⚠️ **今天谁都不喂它**：中栏没有任何右栏读得到的「选中」状态（`CenterTabState` 里**没有「选中」这一项**——
+ * 2026-10-12 起那五个字段是 `panes` / `split` / `排列` / `activePane` / `module`；
+ * `project/file-tree.tsx` 的选中行是组件内部状态），且
  * `MANIFESTS` 的 `cards` 全为空 ⇒ **生产里这一层今天必然不渲染**。这是**缺口**（`state.md`
  * 缺口表按 `LEARNINGS #002-02` 记着），不是「已覆盖」。喂它是 F6（资金）/ F7（话单）落地的活。
  */
