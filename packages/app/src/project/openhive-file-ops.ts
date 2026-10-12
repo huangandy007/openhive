@@ -1,19 +1,19 @@
 /**
- * 005 T020／T018 · 文件树七个**写 / 拉**动作的薄客户端（`openhive-project` / `openhive-files` 的同族）。
+ * 005 T020／T018 · 文件树八个出口（五个写 ＋ 上传 ＋ 下载 ＋ stat）的薄客户端（`openhive-project` / `openhive-files` 的同族）。
  *
  * ## 与 `openhive-files.ts`（读）为什么是两个文件
  *
- * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的七条
+ * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的八条
  * 都是**一次请求一件事**。合在一个文件里，头注要同时讲两件不相干的事，而「目录谁说了算」
  * 那条（读那一侧的核心）会变得像是写这一侧也要遵守的规矩。
  *
- * ## 七个出口都是 fork 自己的裸路由，不在 SDK 里
+ * ## 八个出口都是 fork 自己的裸路由，不在 SDK 里
  *
- * `POST /openhive/file/{copy,move,upload,create,rename,remove}` ＋ `GET /openhive/file/download`
- * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这七个端点，
+ * `POST /openhive/file/{copy,move,upload,create,rename,remove}` ＋ `GET /openhive/file/download` ＋ `GET /openhive/file/stat`
+ * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这八个端点，
  * 类型化 SDK 里也就没有，故单写一层（同 `openhive-project.ts` 文件头那条）。
  *
- * ## 「哪个项目」只走 `x-openhive-project` 头，七项**都必须带**
+ * ## 「哪个项目」只走 `x-openhive-project` 头，八项**都必须带**
  *
  * T017 的 `project-location.ts` 拿这个头把工作目录钉到 `{沙箱根}/{userId}/{projectId}`，
  * **并把自己那个头摘掉**。头不在时它**原样放行**，工作目录退回**沙箱根**——而沙箱根是
@@ -54,6 +54,10 @@ export const PATH = {
   move: `${PREFIX}/move`,
   upload: `${PREFIX}/upload`,
   download: `${PREFIX}/download`,
+  /**
+   * 2026-10-12（第 8 个出口）：**只回大小，不读内容**（内核 `file.ts` 的 `handleStat`）。
+   */
+  stat: `${PREFIX}/stat`,
   /** T018 的三项。`create` 的 `kind` 分文件 / 目录（用户 2026-10-10 裁定「新建文件夹」也要）。 */
   create: `${PREFIX}/create`,
   rename: `${PREFIX}/rename`,
@@ -186,6 +190,40 @@ export async function downloadFile(
 }
 
 /**
+ * 某个文件有多大（字节）。`undefined` ＝ **问不到**（没身份 / 网络错 / 体里没有数字 / 出口没挂上）。
+ *
+ * ## 两条约定与同文件那几个出口逐字相同
+ *
+ * ① **必须带项目头**：不带时服务端的工作目录会退回**沙箱根**——那是所有项目的父目录，
+ *    够得着兄弟项目（本文件头注那条）。
+ * ② 取不到一律 `undefined`、**不抛**：调它的闸门要的是「问不到就放行」，
+ *    抛出去反而要在闸门里写 `try/catch`，把「问不到」与「有 bug」混成一条路。
+ *    （设计文档 §2 写的是「非 200 ⇒ 抛」，此处按上述理由改成 `undefined`——
+ *     对闸门可观测的行为相同，都在「放行」那一支。）
+ *
+ * ⚠️ 与同文件那几个动作出口不同，它**不返回 `FileOpOutcome`**：那里没有「服务端说得出
+ * 为什么」的用处（闸门对「400 文件不存在」与「请求压根没发出去」做**同一件事**），
+ * 把两种失败翻成一句话再丢掉纯是多余的一层。
+ */
+export async function statProjectFile(
+  projectId: string,
+  path: string,
+  send: FileOpsFetch = defaultSend,
+): Promise<number | undefined> {
+  const response = await trySend(send, `${PATH.stat}?${new URLSearchParams({ path })}`, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { [PROJECT_HEADER]: projectId },
+  })
+  if (!response?.ok) return undefined
+
+  const body = await readJson(response)
+  if (!isRecord(body)) return undefined
+  const size = body.size
+  return typeof size === "number" && Number.isFinite(size) ? size : undefined
+}
+
+/**
  * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
  *
  * `dir` 是落点**目录**（相对项目根，`""` ＝ 项目根），`name` 是**单段名**——两样都由文件树给
@@ -257,7 +295,7 @@ async function transfer(
 }
 
 /**
- * 一次 **JSON 体的 POST**——七个写出口里五条共用这一份（复制 / 移动 / 新建 / 重命名 / 删除），
+ * 一次 **JSON 体的 POST**——八个出口里五条（复制 / 移动 / 新建 / 重命名 / 删除）共用这一份，
  * 差别只有路径、体与失败文案。
  *
  * 提取的是那**六行字面量**（`method` / `credentials` / 两个头 / `JSON.stringify`）：五处各写一遍

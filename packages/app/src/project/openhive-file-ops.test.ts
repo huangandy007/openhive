@@ -1,5 +1,5 @@
 /**
- * 005 T020 · 文件树四个**写**动作的薄客户端（纯 HTTP 形状，无 DOM）。
+ * 005 T020 · 文件树八个出口的薄客户端（纯 HTTP 形状，无 DOM）。
  *
  * ## 为什么「复制 / 移动」共用一组用例，却仍要各钉一条
  *
@@ -27,6 +27,7 @@ import {
   moveFile,
   removeEntry,
   renameEntry,
+  statProjectFile,
   uploadFile,
   type FileOpsFetch,
 } from "./openhive-file-ops"
@@ -583,5 +584,103 @@ describe("removeEntry（T018 删除）", () => {
       kind: "failed",
       message: "删除失败",
     })
+  })
+})
+
+describe("statProjectFile", () => {
+  /** 本出口的成功体：**只有大小**（`file.ts` 的 `handleStat` 承诺过「只回大小，不读内容」）。 */
+  const 大小 = (size: number) =>
+    new Response(JSON.stringify({ size }), { headers: { "content-type": "application/json" } })
+  /** 「是我们发的 JSON，但里头没有能当大小用的数字」。 */
+  const 杂物 = (body: string) => new Response(body, { headers: { "content-type": "application/json" } })
+
+  test("发 GET /openhive/file/stat?path=…，带项目头与 cookie", async () => {
+    const { send, sent } = stub(() => 大小(123))
+
+    await statProjectFile(PROJECT, "资料/话单.csv", send)
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/stat?path=%E8%B5%84%E6%96%99%2F%E8%AF%9D%E5%8D%95.csv",
+        method: "GET",
+        project: PROJECT,
+        contentType: null,
+        credentials: "same-origin",
+        body: undefined,
+      },
+    ])
+  })
+
+  test("200 ⇒ 回字节数", async () => {
+    const { send } = stub(() => 大小(8986624))
+
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBe(8986624)
+  })
+
+  /**
+   * 非 200 一律 `undefined`——**不抛**。调它的闸门要的是「问不到就放行」，
+   * 抛出去就得在闸门里写 `try/catch`，把「问不到」与「程序有 bug」混成一条路。
+   * （设计文档 §2 写的是「非 200 ⇒ 抛」，此处据上述理由改成 `undefined`；
+   *  对闸门**可观测的行为相同**，都落在「放行」那一支。）
+   */
+  /**
+   * ⚠️ **这一条不是上面那道 `!response.ok` 判据的守护者**——拆掉那道判据它**照样绿**
+   * （这个体里本来就没有数字，放它过去也回 `undefined`）。见下面那条**刻意造出来的**用例。
+   */
+  test("400 ⇒ undefined", async () => {
+    const { send } = stub(() => 拒绝(400, "文件不存在"))
+
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBeUndefined()
+  })
+
+  /**
+   * 出口没挂上 ⇒ UI 的 `/*` 兜底回 **200 ＋ text/html**（同 `downloadFile` 那条）。
+   * 这个形状在本出口比在下载那条**更安静**：`readJson` 解不开 ⇒ `undefined` ⇒
+   * 闸门判「问不到」⇒ **放行**。「内核版本不对」在这里表现为「闸门不拦」，
+   * 而不是「拦错了」——这条钉的就是它落在放行那一支，而不是把一页 HTML 当成大小。
+   */
+  test("200 + HTML 兜底页（出口没挂上）⇒ undefined", async () => {
+    const { send } = stub(() => 兜底页())
+
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBeUndefined()
+  })
+
+  /** 体不成形的三条：字段不在了 / 它不是数字 / 压根解不开。 */
+  test("体里没有能当大小用的数字 ⇒ undefined", async () => {
+    const 没字段 = stub(() => 杂物('{"error":"你说呢"}'))
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", 没字段.send)).toBeUndefined()
+
+    const 是字符串 = stub(() => 杂物('{"size":"123"}'))
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", 是字符串.send)).toBeUndefined()
+
+    const 不是对象 = stub(() => 杂物('"123"'))
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", 不是对象.send)).toBeUndefined()
+
+    const 坏体 = stub(() => new Response("这不是 JSON"))
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", 坏体.send)).toBeUndefined()
+  })
+
+  /**
+   * ⚠️ 这一条的形状是**故意造的**（服务端不会在 4xx 里回 `size`），它存在的唯一理由是让
+   * 「非 200 ⇒ undefined」那道判据**有守护者**：拆掉那道判据、让 400 也往下走，
+   * **这一组里只有它会红**——旁边那条 `{"error":"文件不存在"}` 在变异下照样绿。
+   * （`#005-18` 第四问：变异跑出绿，先问「这条判据的射程里有我刚拆的那一行吗」。）
+   * 语义上它钉的是：**非 200 的体一概不信**，哪怕它长得像我们自己的回包。
+   */
+  test("400 ＋ 体里却有 size ⇒ 仍然 undefined（非 200 的体一概不信）", async () => {
+    const { send } = stub(
+      () => new Response(JSON.stringify({ size: 123 }), { status: 400, headers: { "content-type": "application/json" } }),
+    )
+
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBeUndefined()
+  })
+
+  /** ⚠️ 外呼自己抛（网络断）也不能往界面抛——闸门那一支要的是「放行」，不是「崩」。 */
+  test("外呼抛（网络断）⇒ undefined，不往界面抛", async () => {
+    const send: FileOpsFetch = async () => {
+      throw new Error("断网了")
+    }
+
+    expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBeUndefined()
   })
 })
