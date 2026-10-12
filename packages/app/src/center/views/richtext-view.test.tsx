@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
+import { 默认字号, 设阅读字号 } from "./reading-size"
 import { renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
 
 const 字节 = (s: string) => new TextEncoder().encode(s)
@@ -413,5 +414,115 @@ describe("图文视图 · 编辑与保存（2026-10-12）", () => {
 
     expect(h.问句()).toBeUndefined()
     expect(h.编辑框()).toBeNull()
+  })
+})
+
+/**
+ * 正文字号（2026-10-12 ③，用户实报「文字字号较小，不适合阅读」）。
+ *
+ * ⚠️ 这一组**量不了字号本身**：happy-dom 没有样式表、也没有排版引擎（`LEARNINGS #005-07`），
+ * 算出来的 `font-size` 只有真浏览器给得出 —— 那一半在
+ * `e2e/real-stack/richtext-reading-size-real.spec.ts`。这里钉的是**接线**：
+ * 钮点下去值有没有真的动、动到哪一档、有没有贴到根上（`index.css` 那条规则读的就是它）。
+ */
+describe("图文视图 · 正文字号（2026-10-12 ③）", () => {
+  /** `index.css` 那条规则读的变量；由视图的 effect 贴在根上。 */
+  const 根上的字号 = () => document.documentElement.style.getPropertyValue("--richtext-size")
+
+  // 档位是**跨用例活着的模块级状态**：不还原的话，点过 A+ 的用例会把下一条也顶到 18px 上。
+  beforeEach(() => 设阅读字号(默认字号))
+
+  test("一进视图就把默认档贴到根上（正文那两个面都读它）", async () => {
+    挂编辑器("第一行")
+    await 落定()
+
+    expect(根上的字号()).toBe("16px")
+  })
+
+  test("点 A+ ⇒ 18px；点 A- 一下回到默认 16px，再一下 ⇒ 14px", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+    const 点 = async (动作: string) => {
+      h.钮(动作)!.click()
+      await 落定()
+    }
+
+    await 点("larger")
+    expect(根上的字号()).toBe("18px")
+
+    // 18 往回**一下**就是默认档 16 —— 五档表里默认档的上一档正是它。
+    // 再往回一下必须到 **14**（不是又回到 16）：那才说明它是**逐档走**，而不是「一点就回默认」。
+    await 点("smaller")
+    expect(根上的字号()).toBe("16px")
+    await 点("smaller")
+    expect(根上的字号()).toBe("14px")
+  })
+
+  /**
+   * 到端点就置灰——最后一档再点是什么都不会发生的。
+   *
+   * ⚠️ 这里断的是**那颗钮是不是灰的**，不是「点灰的钮值不变」：`disabled` 的按钮在 happy-dom 里
+   * 连事件都不派，那种断言**永远绿**、拆掉任何守卫都不变红（`LEARNINGS #006-16`）。
+   * 「到端点就停」那条守卫本身在 `reading-size.test.ts` 里直接调 `步进` 钉着（那条走得到）。
+   */
+  test("到端点 ⇒ 对应的那颗置灰、另一颗可用", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+    const 点 = async (动作: string) => {
+      h.钮(动作)!.click()
+      await 落定()
+    }
+
+    await 点("larger")
+    await 点("larger")
+    await 点("larger") // 16 → 22
+    expect(根上的字号()).toBe("22px")
+    expect(h.钮("larger")!.disabled).toBe(true)
+    expect(h.钮("smaller")!.disabled).toBe(false)
+
+    await 点("smaller")
+    await 点("smaller")
+    await 点("smaller")
+    await 点("smaller") // 22 → 14
+    expect(根上的字号()).toBe("14px")
+    expect(h.钮("smaller")!.disabled).toBe(true)
+    expect(h.钮("larger")!.disabled).toBe(false)
+  })
+
+  /**
+   * 字号两颗钮**不挂在「底本到位没」那个 `Show` 里**：判成 binary（含 NUL / 非 UTF-8）的文件
+   * 不给编辑、不给保存，但**正文字号是读者的偏好**，跟这一份文件能不能改无关 ⇒ 它照样在。
+   */
+  test("判成 binary 的文件上，字号两颗钮照样在", async () => {
+    const host = mount(() => (
+      <RichtextView
+        path="/p/卷宗.docx"
+        load={async () => ({ type: "binary", content: "AAEC", encoding: "base64" })}
+        save={async () => ({ ok: true })}
+      />
+    ))
+    await 落定()
+
+    expect(host.querySelector("[data-action='edit']")).toBeNull()
+    expect(host.querySelector("[data-action='larger']")).not.toBeNull()
+    expect(host.querySelector("[data-action='smaller']")).not.toBeNull()
+  })
+
+  /**
+   * 编辑框**不再自带字号**，它跟着正文那一档走。
+   *
+   * ⚠️ 这一条是**快套里的绊线**，不是判据本身（真判据是真栈量出来的 computed `font-size`）：
+   * 它只挡一件事——有人在这儿又挂回一个 `text-[Npx]` / `leading-6`。字号 utility 在
+   * `@layer utilities` 里、排在 `index.css` 那条 components 规则之后，会把规则**整个盖掉**
+   * （还是静默的：编辑框看着还在，只是不跟着档位走）。
+   */
+  test("编辑框不再自带字号（跟着正文那一档走）", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+    h.钮("edit")!.click()
+    await 落定()
+
+    expect(h.编辑框()!.className).not.toContain("text-[13px]")
+    expect(h.编辑框()!.className).not.toContain("leading-6")
   })
 })

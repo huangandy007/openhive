@@ -1,9 +1,10 @@
 import DOMPurify from "dompurify"
 import { marked } from "marked"
-import { createSignal, Show } from "solid-js"
+import { createEffect, createSignal, Show } from "solid-js"
 import type { FileContent } from "@/center/file-content"
 import { extensionOf, type ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
+import { 阅读字号, 设阅读字号, 步进, 最大字号, 最小字号 } from "./reading-size"
 
 /**
  * 白名单只放 **Markdown 真能产出的**标签（外加 GFM 任务列表的 `input`）——比「先全放再删黑的」稳：
@@ -84,14 +85,17 @@ export const renderPlainText: BytesRenderer = async (bytes, container) => {
   container.appendChild(pre)
 }
 
-/** 编辑态的按钮。三处按钮长相一样，只有动作与文案不同。 */
-function 动作钮(props: { 动作: string; 文案: string; 点: () => void }) {
+/** 编辑态的按钮。几处按钮长相一样，只有动作与文案不同（`禁用` / `说明` 只有字号那两颗用）。 */
+function 动作钮(props: { 动作: string; 文案: string; 点: () => void; 禁用?: boolean; 说明?: string }) {
   return (
     <button
       type="button"
       data-action={props.动作}
       onClick={props.点}
-      class="flex h-7 cursor-pointer items-center rounded px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+      disabled={props.禁用}
+      aria-label={props.说明}
+      title={props.说明}
+      class="flex h-7 cursor-pointer items-center rounded px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-v2-text-text-muted"
     >
       {props.文案}
     </button>
@@ -138,6 +142,18 @@ const 存不上 = "保存文件失败"
  * 而「盘上现在是新正文」这件事要等那次重读回来才算数 ⇒ 这中间不让再进编辑态（编辑钮此时不渲染）。
  * 少了这一步，紧接着的第二次保存会拿**刚被自己改掉的旧底本**去比对，服务端判「文件被改过」
  * 而那句话是错的——它其实是我们自己刚存的。
+ *
+ * ## 2026-10-12 · 正文字号（③ 用户实报「文字字号较小，不适合阅读」）
+ *
+ * **正文有三个面**，`index.css` 的 `@layer components` 里**一条规则**管住其中两个：
+ * `.md` 预览（`marked` 渲出的 `<p>`…）与 `.txt` 预览（`<pre>`）——两者都长在
+ * `BinaryView` 那个 `[data-component="richtext-view"]` 容器里；第三个面是编辑框
+ * （`[data-slot="richtext-editor"]`，本视图自己画的）。值走 `--richtext-size` 这个 CSS 变量，
+ * 由下面那个 effect 贴在**根**上——理由在 effect 那段注释里。
+ *
+ * ⚠️ **两个面都不能再挂 `text-[Npx]` / `text-sm` 这类字号 utility**：utilities 层排在 components 层
+ * 之后，utility 会盖掉那条规则（本文件的编辑框就从 `text-[13px] leading-6` 里交出来了）。
+ * 三个面的真栈判据在 `e2e/real-stack/richtext-reading-size-real.spec.ts`（算出来的字号只有真浏览器量得到）。
  */
 export const RichtextView: ViewComponent = (props) => {
   /** 读回来那份**原样**（存盘时的底本）。`undefined` ＝ 还没读到 / 读不到 / 判成 binary。 */
@@ -153,6 +169,19 @@ export const RichtextView: ViewComponent = (props) => {
   const [存着, set存着] = createSignal(false)
 
   const 收到内容 = (内容: FileContent | undefined) => set底本(内容?.type === "text" ? 内容.content : undefined)
+
+  /**
+   * 字号**贴在根上**，由 `index.css` 那条规则读走。
+   *
+   * 为什么不在这两个面上各写一个 inline style：预览容器是 `BinaryView` 画的、不归本视图
+   * （改它＝往一个共用组件上加道具），而**一条规则管两个面**才不会「改了预览忘编辑框」。
+   * 为什么不给本视图包一层带变量的盒子：多一层盒就多一处「父级是什么」的约定，而这个视图的
+   * 兄弟关系（工具栏 `shrink-0` ＋ 内容区撑开）正是 `#005-16` 那族坑的高发地；
+   * 往根上贴 `--font-family-*` 也已是本仓的先例（`context/settings.tsx`）。
+   */
+  createEffect(() => {
+    document.documentElement.style.setProperty("--richtext-size", `${阅读字号()}px`)
+  })
 
   const 开始改 = () => {
     const 原样 = 底本()
@@ -226,6 +255,27 @@ export const RichtextView: ViewComponent = (props) => {
                 <动作钮 动作="edit" 文案="编辑" 点={开始改} />
               </Show>
             </Show>
+            {/*
+              字号两颗钮**不在**上面那个「底本到位没」的 `Show` 里：它调的是**读者**的偏好，
+              不是这一份文件的性质——二进制 / 还没读到的文件上也该调得动（它们同样有正文这一面）。
+              到端点就置灰：最后一档再点是什么都不会发生的，给一颗看着能按却没反应的钮不如给一颗灰的。
+            */}
+            <div data-slot="richtext-reading-size" class="ml-auto flex items-center gap-1">
+              <动作钮
+                动作="smaller"
+                文案="A-"
+                说明="把正文调小一号"
+                禁用={阅读字号() === 最小字号}
+                点={() => 设阅读字号(步进(阅读字号(), -1))}
+              />
+              <动作钮
+                动作="larger"
+                文案="A+"
+                说明="把正文调大一号"
+                禁用={阅读字号() === 最大字号}
+                点={() => 设阅读字号(步进(阅读字号(), 1))}
+              />
+            </div>
           </div>
           <Show when={说法()}>
             <div data-slot="richtext-editor-note" class="text-[12px] leading-5 text-v2-text-text-muted">
@@ -268,7 +318,7 @@ export const RichtextView: ViewComponent = (props) => {
             value={草稿()}
             onInput={(事件) => set草稿(事件.currentTarget.value)}
             spellcheck={false}
-            class="min-h-0 w-full flex-1 resize-none rounded-md border border-v2-border-border-strong bg-v2-background-bg-base p-3 font-sans text-[13px] leading-6 text-v2-text-text-base outline-none"
+            class="min-h-0 w-full flex-1 resize-none rounded-md border border-v2-border-border-strong bg-v2-background-bg-base p-3 font-sans text-v2-text-text-base outline-none"
           />
         </div>
       </Show>

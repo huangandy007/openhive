@@ -25,6 +25,27 @@
 }
 
 @layer components {
+  /*
+    中栏文档的正文（2026-10-12 用户实报「文字字号较小，不适合阅读」）。
+
+    改前的实得值由真栈量出：`.md` / `.txt` 的正文都是 **13px、行距 24px**——那 13px 是壳层的
+    `body` 铺的（真栈实测的链条：正文之上的中栏各层都只是**继承**它）。这里把「文档正文」这一档
+    单独抬出来，默认 16px、行距 1.75。
+
+    选择器覆盖正文的**三个面里的两个**：预览容器（`.md` 渲出的 `p/h1/table…` 与 `.txt` 的 `pre`
+    都长在里头）＋ 编辑框。第三个面是 `.md` 里 `marked` 自己产出的标签，它们**继承**容器这层，
+    所以不用各写一条（标题 / 列表 / 表格按相对关系自动跟着变）。
+    ⚠️ 挂在这两处的字号 utility（`text-[13px]` / `text-sm`）会**盖掉**这条——utilities 层在 components
+    层之后。要改字号请改这里的变量，别在元素上加 utility。
+    `--richtext-size` 由 `center/views/richtext-view.tsx` 的 effect 贴在根上（默认档 16px 见
+    `center/views/reading-size.ts`）。
+  */
+  [data-component="richtext-view"],
+  [data-slot="richtext-editor"] {
+    font-size: var(--richtext-size, 16px);
+    line-height: 1.75;
+  }
+
   [data-component="getting-started"] {
     container-type: inline-size;
     container-name: getting-started;
