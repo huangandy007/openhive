@@ -65,7 +65,7 @@ describe("模块动作打开中栏特有 tab（FR-010）", () => {
     const { center, host } = mountCenter("fund-analysis")
 
     expect(host.querySelectorAll("[data-slot='module-action']").length).toBe(2)
-    expect(center.tabs()).toEqual([])
+    expect(center.pane(0).tabs).toEqual([])
   })
 
   test("点模块动作：中栏打开该动作的 tab 并成为激活项", () => {
@@ -73,10 +73,10 @@ describe("模块动作打开中栏特有 tab（FR-010）", () => {
 
     触发(host, 明细)
 
-    expect(center.tabs()).toEqual([
+    expect(center.pane(0).tabs).toEqual([
       { module: "fund-analysis", title: 明细.title, path: 明细.content },
     ])
-    expect(center.active()).toBe(contentTabKey(center.tabs()[0]))
+    expect(center.pane(0).active).toBe(contentTabKey(center.pane(0).tabs[0]))
   })
 
   test("当前模块未定时不凭空开 tab：宁可不响应，也不给 tab 安一个假来源（FR-005）", () => {
@@ -84,7 +84,7 @@ describe("模块动作打开中栏特有 tab（FR-010）", () => {
 
     触发(host, 明细)
 
-    expect(center.tabs()).toEqual([])
+    expect(center.pane(0).tabs).toEqual([])
   })
 
   /** 需求守卫（非 RED 驱动）：去重是 `openContentTab` 的既有语义（T005 循环 2），此处只证它经动作这条路也成立。 */
@@ -95,8 +95,8 @@ describe("模块动作打开中栏特有 tab（FR-010）", () => {
     触发(host, 图谱)
     触发(host, 明细)
 
-    expect(center.tabs().map((tab) => tab.title)).toEqual([明细.title, 图谱.title])
-    expect(center.active()).toBe(contentTabKey(center.tabs()[0]))
+    expect(center.pane(0).tabs.map((tab) => tab.title)).toEqual([明细.title, 图谱.title])
+    expect(center.pane(0).active).toBe(contentTabKey(center.pane(0).tabs[0]))
   })
 
   /** 需求守卫（非 RED 驱动）：跨模块累积是 `openContentTab` + `switchModule` 的既有语义（T005/T010），此处只证来源模块跟着**触发时**的模块走。 */
@@ -107,7 +107,7 @@ describe("模块动作打开中栏特有 tab（FR-010）", () => {
     center.switchModule("cdr-analysis")
     触发(host, 图谱)
 
-    expect(center.tabs().map((tab) => [tab.module, tab.title])).toEqual([
+    expect(center.pane(0).tabs.map((tab) => [tab.module, tab.title])).toEqual([
       ["fund-analysis", 明细.title],
       ["cdr-analysis", 图谱.title],
     ])

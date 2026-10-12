@@ -154,7 +154,7 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
     await 开({ module: "project", title: "卷宗.pdf", path: "/p/卷宗.pdf" })
 
     expect(视图()?.getAttribute("data-path")).toBe("/p/卷宗.pdf")
-    expect(center.active()).toBe(contentTabKey({ module: "project", title: "卷宗.pdf", path: "/p/卷宗.pdf" }))
+    expect(center.pane(0).active).toBe(contentTabKey({ module: "project", title: "卷宗.pdf", path: "/p/卷宗.pdf" }))
   })
 
   test("关掉当前激活的 tab：视图退场，内容区交还调用方的页面", async () => {
@@ -468,7 +468,7 @@ describe("内容没变就不重建视图：切模块 / 关别的 tab / 重激活
     center.switchModule("cdr-analysis")
     await 落定()
 
-    expect(center.tabs()).toHaveLength(1) // FR-006：切模块不动已有 tab
+    expect(center.pane(0).tabs).toHaveLength(1) // FR-006：切模块不动已有 tab
     expect(计数.n).toBe(1) // 且当前视图不该被打断——内容一字未变，没有任何理由重挂
   })
 
@@ -499,5 +499,58 @@ describe("内容没变就不重建视图：切模块 / 关别的 tab / 重激活
     await 落定()
 
     expect(计数.n).toBe(1)
+  })
+})
+
+/**
+ * 分屏后 `CenterContent` 有 `pane` 了（2026-10-12）：同一棵树挂两份（pane 0 / 1），
+ * 每份只读**自己那一栏**的 `active` / `tabs`，于是各画各栏的激活 tab——左栏看甲、右栏看乙，
+ * 谁都不把谁的内容画出来。这一条正是「接口换成 `center.pane(pane)`」区别于旧
+ * `center.tabs()` 的意义所在：旧接口只有一个列表，两份都只能画同一个。
+ */
+describe("两栏各看各的：CenterContent 的 pane 隔离", () => {
+  test("挂两份 CenterContent（pane 0 / 1）⇒ 各画各栏的激活 tab", async () => {
+    // 会画出 path 的假视图：这里要断「左/右各自 textContent 里是谁」，而既有 `假视图` 只把
+    // path 写进 `data-path` 属性（本文件其余用例断的是属性），故另起一个把 path 画成文本的。
+    const registry = createViewRegistry()
+    registry.register({
+      extensions: [".md"],
+      load: async () => (props) => <div data-slot="视图">{props.path}</div>,
+    })
+    // `useCenterTabs()` 必须在 provider 之内（与 `setUp()` 同一条纪律），故探针组件放里层。
+    function 两栏() {
+      const center = useCenterTabs()
+      return (
+        <>
+          {/* 开两张：左栏甲、右栏乙。`open(tab, pane)` 显式给栏，免得依赖受焦态。 */}
+          <button
+            data-slot="备"
+            onClick={() => {
+              center.open({ module: "project", title: "甲.md", path: "甲.md" }, 0)
+              center.open({ module: "project", title: "乙.md", path: "乙.md" }, 1)
+            }}
+          />
+          <div data-slot="左">
+            <CenterContent pane={0} registry={registry} />
+          </div>
+          <div data-slot="右">
+            <CenterContent pane={1} registry={registry} />
+          </div>
+        </>
+      )
+    }
+    const 宿主 = mount(() => (
+      <CenterTabsProvider>
+        <两栏 />
+      </CenterTabsProvider>
+    ))
+    宿主.querySelector<HTMLElement>("[data-slot='备']")!.click()
+    await 落定()
+    const 左 = 宿主.querySelector<HTMLElement>("[data-slot='左']")!
+    const 右 = 宿主.querySelector<HTMLElement>("[data-slot='右']")!
+    expect(左.textContent).toContain("甲.md")
+    expect(左.textContent).not.toContain("乙.md")
+    expect(右.textContent).toContain("乙.md")
+    expect(右.textContent).not.toContain("甲.md")
   })
 })

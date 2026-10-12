@@ -1032,10 +1032,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         >
           {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
           <TabBar
-            tabs={center.tabs()}
-            active={center.active()}
-            onActivate={(key) => center.activate(key)}
-            onClose={(key) => center.close(key)}
+            tabs={center.pane(0).tabs}
+            active={center.pane(0).active}
+            onActivate={(key) => center.activate(key, 0)}
+            onClose={(key) => center.close(key, 0)}
           />
           {/* tab 栏下面就是内容区（FR-007 / DESIGN §4.5 的「中栏承载内容视图」）。
               没有可解析的激活 tab 时原样落回 `children`——即上游路由自己的页面，

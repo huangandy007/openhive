@@ -47,8 +47,8 @@ describe("中心 tab 响应式状态（FR-004 / FR-006）", () => {
     tabs.open(专案)
     tabs.open(话单)
 
-    expect(tabs.tabs().map((tab) => tab.title)).toEqual(["专案A", "话单.csv"])
-    expect(tabs.active()).toBe(contentTabKey(话单))
+    expect(tabs.pane(0).tabs.map((tab) => tab.title)).toEqual(["专案A", "话单.csv"])
+    expect(tabs.pane(0).active).toBe(contentTabKey(话单))
   })
 
   test("activate / close 经 context 生效并驱动视图", () => {
@@ -57,10 +57,10 @@ describe("中心 tab 响应式状态（FR-004 / FR-006）", () => {
     tabs.open(话单)
 
     tabs.activate(contentTabKey(专案))
-    expect(tabs.active()).toBe(contentTabKey(专案))
+    expect(tabs.pane(0).active).toBe(contentTabKey(专案))
 
     tabs.close(contentTabKey(专案))
-    expect(tabs.tabs().map((tab) => tab.title)).toEqual(["话单.csv"])
+    expect(tabs.pane(0).tabs.map((tab) => tab.title)).toEqual(["话单.csv"])
   })
 
   test("switchModule：只换当前模块，tabs 与激活态原样不动（FR-006 的单元级证据）", () => {
@@ -72,7 +72,7 @@ describe("中心 tab 响应式状态（FR-004 / FR-006）", () => {
     tabs.switchModule("fund-analysis")
 
     expect(tabs.module()).toBe("fund-analysis")
-    expect(tabs.tabs().map((tab) => tab.title)).toEqual(["专案A", "话单.csv"])
-    expect(tabs.active()).toBe(contentTabKey(专案))
+    expect(tabs.pane(0).tabs.map((tab) => tab.title)).toEqual(["专案A", "话单.csv"])
+    expect(tabs.pane(0).active).toBe(contentTabKey(专案))
   })
 })

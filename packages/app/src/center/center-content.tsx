@@ -10,6 +10,14 @@ export interface CenterContentProps {
   registry: ViewRegistry
   load?: LoadFileContent
   /**
+   * 这一份内容区属于哪一栏（`0` 左/上、`1` 右/下）。
+   *
+   * 省略 ＝ `0`：与引入本 prop 之前**逐字同行为**（那时中栏只有一栏）。
+   * ⚠️ 「还是同一份」那个比较器**不用**知道 pane：每个实例有自己的一份 `内容` 信号，
+   * 栏的隔离是天然的——这也是为什么 `ContentTab` 的身份不必把栏编进去（`tab-store.ts`）。
+   */
+  pane?: 0 | 1
+  /**
    * 调用方的页面（`children`）此刻**可不可以露出来**。省略 = 可以（与引入本 prop 之前逐字同行为）。
    *
    * **为什么需要它**：`children` 在生产里是**上游路由自己的页面**——在
@@ -90,9 +98,12 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
   const center = useCenterTabs()
   const [内容, set内容] = createSignal<中栏内容 | undefined>(undefined, { equals: 还是同一份 })
 
+  const 栏 = () => center.pane(props.pane ?? 0)
+
   createEffect(() => {
-    const key = center.active()
-    const tab = key ? center.tabs().find((candidate) => contentTabKey(candidate) === key) : undefined
+    const 本栏 = 栏()
+    const key = 本栏.active
+    const tab = key ? 本栏.tabs.find((candidate) => contentTabKey(candidate) === key) : undefined
 
     if (!tab) {
       set内容(undefined)
