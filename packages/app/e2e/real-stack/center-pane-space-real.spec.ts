@@ -222,3 +222,52 @@ test("关闭钮：小号 ×（笔画 8px）＋ 20px 命中区（用户裁定）"
   expect(g!.按钮宽, `关闭钮命中区应当是 20px，实得 ${g!.按钮宽}px`).toBe(20)
   expect(g!.按钮高, `关闭钮命中区应当是 20px，实得 ${g!.按钮高}px`).toBe(20)
 })
+
+/**
+ * 2026-10-12 · **打开的文件不能复制**（用户实报）。
+ *
+ * ## 根因（`pages/layout-new.tsx:87`）
+ *
+ * 工作区那一层挂着 `select-none`，白名单只开了 `[&_input]` / `[&_textarea]` /
+ * `[&_[contenteditable]]` 三处。中栏正文是**第四类**（文档），一个都不沾 ⇒ `user-select`
+ * 一路继承成 `none` ⇒ 选不中 ⇒ 复制无从谈起。修法是把文档容器加进那份白名单
+ * （`binary-view.tsx` 的内容容器加 `select-text`），**不动工作区那一行**。
+ *
+ * ## 为什么这条只在真栈量得到
+ *
+ * 它不是「类名挂对了没有」，而是**浏览器认不认**：`user-select: none` 是浏览器的行为，
+ * happy-dom 既没有样式表也没有选区引擎（`LEARNINGS #005-07`），那里只能断「类名里有
+ * `select-text`」——那是代理判据，落在 `center/views/binary-view.test.tsx`。
+ * 真正要证的是**拖一只鼠标划过正文、浏览器给出非空选区**，只有真浏览器给得出。
+ *
+ * ⚠️ 用 `page.mouse` 走**裸指针**，不用 `locator.dragTo` / `click`：后两者要先过
+ * Playwright 的 actionability 检查，而 `inert` / 遮罩会让它**卡死重试**——那时量到的是
+ * Playwright 的规矩，不是产品的行为（`LEARNINGS #005-30`）。
+ */
+async function 拖选正文(page: Page) {
+  const 段 = page.locator("[data-component='richtext-view'] p").first()
+  await 段.waitFor({ state: "visible", timeout: 30_000 })
+  const b = await 段.boundingBox()
+  const 正文 = (await 段.innerText()).trim()
+  if (!b) return { 选中: "", 正文 }
+  // 从这一行的左端拖到右端：横向拖拽不会越到别的行上去。
+  await page.mouse.move(b.x + 2, b.y + b.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(b.x + b.width - 2, b.y + b.height / 2, { steps: 10 })
+  await page.mouse.up()
+  const 选中 = (await page.evaluate(() => window.getSelection()?.toString() ?? "")).trim()
+  return { 选中, 正文 }
+}
+
+test("中栏正文能选中（选中了才谈得上复制）：拖选后浏览器给出非空选区", async ({ page, context }) => {
+  await 开一篇md(page, context, `选中复制·${Date.now()}`)
+  const { 选中, 正文 } = await 拖选正文(page)
+
+  expect(正文.length, "前提：正文里得有字可拖").toBeGreaterThan(0)
+  // 判据按「选中的字**都来自正文**」而不是「非空」：工作区里还有 tab 标题那类可读文本，
+  // 只断「非空」的话，选中一个别的词也算过（`LEARNINGS #005-19`：能选中 ≠ 选中了它该选中的）。
+  expect(选中.length, `拖过正文之后应当有选区，实得「${选中}」`).toBeGreaterThan(0)
+  // 整段包含，不逐字查：横向拖拽选中的必然是正文里**连着的一段**，而「整段都在正文里」
+  // 比「每个字都在正文里」更强——后者放得进「把正文的字打乱选中」那种情形（`#005-19` 的取向）。
+  expect(正文.includes(选中), `选中的应当是正文里连着的一段（正文「${正文}」、实得「${选中}」）`).toBe(true)
+})

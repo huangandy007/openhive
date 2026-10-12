@@ -168,8 +168,22 @@ export function BinaryView(props: BinaryViewProps) {
         `code-view.tsx` 的 `p-6`。
         ⚠️ 内边距写在**这个容器**上（而不是中栏那一层）：它自己 `overflow-auto`，
         留白要跟着它一起滚；写在外层会让滚动条与留白错位。
+
+        `select-text`（2026-10-12 用户实报「打开的文件现在不能复制」）：工作区那一层挂着
+        `select-none`（`layout-new.tsx:87`），白名单只开了输入类三处。**文档是第四类**——
+        正文挂在这个容器里，`user-select` 被一路继承成 `none` ⇒ 一个字都选不中 ⇒ 复制无从谈起。
+        这里把它翻回来，是**往那份白名单补一类**，不是推翻工作区那条规则：
+        tab 标题、侧栏那类界面文字仍随工作区不可选（它们不是文档）。
+        ⚠️ 落在**这个容器**上（而不是工作区那一行）：那一行是顶栏改造的定制行，
+        改它给同步上游多一个冲突点（`CLAUDE.md` 定制化三原则第 1 条）；而且这一层正好是
+        「文档内容」与「界面」的分界——以后新视图只要经这个壳，就自动接上。
       */}
-      <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto p-4" ref={container} />
+      <div
+        data-component={props.name}
+        data-state={state()}
+        class="w-full min-h-0 overflow-auto p-4 select-text"
+        ref={container}
+      />
       {/* 看不了的时候内容区得说话（FR-007 / US3 AC3）。提示与渲染结果**各占各的位置**：
           渲染器往容器里就地写 DOM，容器仍是那个容器、`data-state` 仍可观测，提示紧跟其后。 */}
       <Show when={降级原因(state())}>{(reason) => <DegradedView reason={reason()} name={文件名(props.path)} />}</Show>

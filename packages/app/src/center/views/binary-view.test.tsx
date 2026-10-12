@@ -317,6 +317,40 @@ describe("转到看不了的状态：先收干净容器，再画降级提示", (
 })
 
 /**
+ * 中栏打开的文档**要能选中、才能复制**（2026-10-12 用户实报：「打开的文件现在不能复制」）。
+ *
+ * ## 根因
+ *
+ * `pages/layout-new.tsx:87` 给整个工作区挂了 `select-none`，白名单只开了三处（`[&_input]` /
+ * `[&_textarea]` / `[&_[contenteditable]]`）。**文档是第四类**——它哪一种都不是，于是
+ * `user-select` 从工作区一路继承下来是 `none`，正文一个字都选不中，复制自然无从谈起。
+ *
+ * 修在那三个 whitelist 分支旁边（**往白名单里补第四类**），而不是去动工作区那一行：
+ * 那一行是顶栏改造的定制行，碰它给同步上游多加一个冲突点（`CLAUDE.md` 定制化三原则第 1 条）。
+ *
+ * ## 这条判据是**代理**，不是「真的能选中」
+ *
+ * happy-dom 不加载样式表、也没有布局引擎（`LEARNINGS #005-07` / `#006-33`）——
+ * `getComputedStyle(容器).userSelect` 在它这里量不出「到底是不是 none」。真判据（拖一只真鼠标
+ * 划过正文、读 `window.getSelection()`）只有真浏览器给得出，落在
+ * `e2e/real-stack/center-pane-space-real.spec.ts` 那条同名的选区用例上。
+ * 本层钉的是**接线**：那个容器上得挂着能把 `user-select` 翻回来的类。
+ *
+ * 按**整词**比（`split(/\s+/)`）而不是 `toContain("select-text")`：后者是子串匹配，
+ * 同族里任何一个以它开头的类名都会让它假绿（`LEARNINGS #006-22`）。
+ */
+describe("文档正文要能选中（用户实报：打开的文件不能复制）", () => {
+  test("内容容器挂着 select-text：把工作区那条 select-none 翻回来", async () => {
+    const host = mount(() => (
+      <BinaryView name="probe" path="/p/材料.md" load={async () => 内容([1])} render={async () => {}} />
+    ))
+    await 落定()
+
+    expect((视图(host)?.className ?? "").split(/\s+/)).toContain("select-text")
+  })
+})
+
+/**
  * 有些渲染器**持有需要归还的资源**——图片用 object URL（`URL.createObjectURL`）指向字节，
  * 不 `revokeObjectURL` 就整份占着内存直到页面关闭。民警一晚上翻几十张扫描件，这个漏是攒出来的。
  * 故渲染器可返回清理函数，由壳负责在**换内容前**与**卸载时**调用它。
