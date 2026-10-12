@@ -7,12 +7,14 @@
  *
  * ⚠️ 「受焦栏只读一次」这条性质**不是本组的守护者**（`#005-18` 第四问）：变异验证里把
  * `栏.开(tab)` 改成 `依赖.受焦栏().开(tab)`（开之前单独再读一次）**11 条全绿**——因为
- * 本组的 `受焦栏` 是替身，两次返回同一份对象，判定与动作「看着」仍在同一栏。真正的
- * 守护要一个「每次调用返回不同栏」的替身（接线层真栈才做得到），此处只钉住「三件事
- * 走的是同一次 `受焦栏()` 的返回值」这一**接口形状**，钉不住「实现只调一次」。
+ * 本组的 `受焦栏` 替身每次返回的是一份**新对象字面量**，但两次读到的对象**共享同一批
+ * 被捕获的状态**：`切到` / `开` push 进的是同一个 `切过` / `开过` 数组、`已有` 复用同一
+ * 份 `选项.已有`，所以「判定那一栏」与「开进那一栏」看着仍是同一栏。真正的守护要一个
+ * 「每次调用返回**状态各自独立**的不同栏」的替身（接线层真栈才做得到），此处只钉住
+ * 「三件事走的是同一次 `受焦栏()` 的返回值」这一**接口形状**，钉不住「实现只调一次」。
  */
 
-import { describe, expect, it } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { createOpenFile, 大小闸门, type 打开提醒 } from "./open-file"
 import type { ContentTab } from "./tab-store"
 
@@ -44,7 +46,7 @@ function 装(选项: { 已有?: readonly string[]; 大小?: number | undefined; 
 }
 
 describe("createOpenFile", () => {
-  it("① 这个文件已经在受焦栏开着 ⇒ 切过去，**不 stat、不弹窗**", async () => {
+  test("① 这个文件已经在受焦栏开着 ⇒ 切过去，**不 stat、不弹窗**", async () => {
     const t = 装({ 已有: ["project\n资料/话单.csv"], 大小: 99 * 兆 })
     await t.打开文件({ path: "资料/话单.csv", 标题: "话单.csv" })
     expect(t.切过).toEqual(["project\n资料/话单.csv"])
@@ -53,53 +55,53 @@ describe("createOpenFile", () => {
     expect(t.开过).toEqual([])
   })
 
-  it("② 大小 ≤ 阈值 ⇒ 直接开，**不弹窗**", async () => {
+  test("② 大小 ≤ 阈值 ⇒ 直接开，**不弹窗**", async () => {
     const t = 装({ 大小: 1 * 兆 })
     await t.打开文件({ path: "资料/话单.csv", 标题: "话单.csv" })
     expect(t.问过).toEqual([])
     expect(t.开过).toEqual([{ module: "project", title: "话单.csv", path: "资料/话单.csv" }])
   })
 
-  it("③ 超过阈值 ⇒ 先问一句，问的是**这个文件与它真实的大小**", async () => {
+  test("③ 超过阈值 ⇒ 先问一句，问的是**这个文件与它真实的大小**", async () => {
     const t = 装({ 大小: 87 * 兆, 答: false })
     await t.打开文件({ path: "卷宗扫描件.pdf", 标题: "卷宗扫描件.pdf" })
     expect(t.问过).toEqual([{ 文件: "卷宗扫描件.pdf", 字节: 87 * 兆 }])
   })
 
-  it("③ 用户按「仍然打开」⇒ 开", async () => {
+  test("③ 用户按「仍然打开」⇒ 开", async () => {
     const t = 装({ 大小: 87 * 兆, 答: true })
     await t.打开文件({ path: "卷宗扫描件.pdf", 标题: "卷宗扫描件.pdf" })
     expect(t.开过).toHaveLength(1)
   })
 
-  it("③ 用户按「取消」⇒ **一张 tab 都不开**（取消就是取消）", async () => {
+  test("③ 用户按「取消」⇒ **一张 tab 都不开**（取消就是取消）", async () => {
     const t = 装({ 大小: 87 * 兆, 答: false })
     await t.打开文件({ path: "卷宗扫描件.pdf", 标题: "卷宗扫描件.pdf" })
     expect(t.开过).toEqual([])
     expect(t.切过).toEqual([])
   })
 
-  it("④ stat 问不到 ⇒ **放行**（开），且不弹窗", async () => {
+  test("④ stat 问不到 ⇒ **放行**（开），且不弹窗", async () => {
     const t = 装({ 大小: undefined })
     await t.打开文件({ path: "卷宗扫描件.pdf", 标题: "卷宗扫描件.pdf" })
     expect(t.问过).toEqual([])
     expect(t.开过).toHaveLength(1)
   })
 
-  it("边界：表格 5 MB **恰好** ⇒ 不问（阈值算 ≤）", async () => {
+  test("边界：表格 5 MB **恰好** ⇒ 不问（阈值算 ≤）", async () => {
     const t = 装({ 大小: 大小闸门.表格 })
     await t.打开文件({ path: "a.csv", 标题: "a.csv" })
     expect(t.问过).toEqual([])
     expect(t.开过).toHaveLength(1)
   })
 
-  it("边界：表格 5 MB ＋ 1 字节 ⇒ 问", async () => {
+  test("边界：表格 5 MB ＋ 1 字节 ⇒ 问", async () => {
     const t = 装({ 大小: 大小闸门.表格 + 1 })
     await t.打开文件({ path: "a.csv", 标题: "a.csv" })
     expect(t.问过).toHaveLength(1)
   })
 
-  it("边界：其余格式 10 MB **恰好** ⇒ 不问；10 MB ＋ 1 ⇒ 问", async () => {
+  test("边界：其余格式 10 MB **恰好** ⇒ 不问；10 MB ＋ 1 ⇒ 问", async () => {
     const 恰好 = 装({ 大小: 大小闸门.其余 })
     await 恰好.打开文件({ path: "a.pdf", 标题: "a.pdf" })
     expect(恰好.问过).toEqual([])
@@ -110,14 +112,14 @@ describe("createOpenFile", () => {
     expect(超一点.问过).toHaveLength(1)
   })
 
-  it("按**扩展名**分档：`.CSV`（大写）也算表格那一档", async () => {
+  test("按**扩展名**分档：`.CSV`（大写）也算表格那一档", async () => {
     // 阈值 5 MB ⇒ 6 MB 的 .CSV 必须问；若分档只看小写，这里会静默不问。
     const t = 装({ 大小: 6 * 兆 })
     await t.打开文件({ path: "资料/话单.CSV", 标题: "话单.CSV" })
     expect(t.问过).toHaveLength(1)
   })
 
-  it("没有扩展名 / 点开头 ⇒ 走「其余」那一档（10 MB），不落空、不抛", async () => {
+  test("没有扩展名 / 点开头 ⇒ 走「其余」那一档（10 MB），不落空、不抛", async () => {
     const t = 装({ 大小: 6 * 兆 })
     await t.打开文件({ path: "资料/说明", 标题: "说明" })
     expect(t.问过).toEqual([])
