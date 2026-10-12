@@ -39,7 +39,8 @@ const 图标: Record<工具栏动作, "collapse" | "expand" | "plus" | "pencil-l
 
 /**
  * 右键菜单的标识——顺序与分组即 `2026-09-11-项目管理-design.md` §6.2 那张表的四行
- * （表里一行＝菜单里一组，组间一个分隔符），**外加本仓自己的一组**（见下）。
+ * （表里一行＝菜单里一组，组间一个分隔符），**外加本仓自己的两组**（最前的「打开」与最下的
+ * `copy-path` / `refresh`，各见其成员注释）。
  *
  * ⚠️ **`copy-path` 与 `refresh` 都不是设计表那十项里的**：
  *
@@ -56,6 +57,15 @@ const 图标: Record<工具栏动作, "collapse" | "expand" | "plus" | "pencil-l
  * 名字兜着——它叫「文件路径」，不叫「复制路径」。
  */
 export type FileTreeMenuItem =
+  /**
+   * 2026-10-12 追加的**第一组第一项**：打开（把这一行交给中栏）。
+   *
+   * 为什么自成一组、且压在菜单最上：它是 Windows 资源管理器、macOS 访达、几乎所有 IDE 里
+   * 右键文件时的**第一个动作**——「打开」排第一是跨平台的习惯，不是本仓发明的次序。它与
+   * 末尾第六组的 `copy-path` / `refresh` 一样**不写盘、不写云**（同属「看一眼」那一档），
+   * 差别只在它最常用、故由它领头、压到菜单最上。
+   */
+  | "open"
   | "create-file"
   | "create-dir"
   | "rename"
@@ -180,6 +190,18 @@ export interface FileTreeProps {
   onRestore?: (path: string) => void
 
   /**
+   * 打开一个**文件**（2026-10-12 用户下达）：把它交给中栏（新开一张 tab，或切到已开的那张）。
+   *
+   * ⚠️ **单击仍然是「选中」**（用户 2026-10-12 裁定）：单击在本组件里有既成含义（选中那一行，
+   * 供工具栏与右键菜单用），把「打开」压上去会让「想选中」变成「总是打开」。两个入口是
+   * **右键菜单第一项**与**文件行双击**。
+   *
+   * 本组件**不知道**中栏、更不知道「打开」之后发生什么（大小闸门、弹窗都在中栏那一侧）
+   * ——同「六个动作一律走 props」的口径：未接线即置灰。
+   */
+  onOpen?: (path: string) => void
+
+  /**
    * 刷新文件清单（本仓加的，2026-10-10 用户下达）——重取一遍「这个项目里有哪些文件」。
    *
    * ⚠️ **它不写任何东西**，只让接收方再取一次清单：AI 在沙箱里建/删了文件之后，界面今天
@@ -263,7 +285,8 @@ export interface FileTreeProps {
  * 设计表那十项里**八项接得上**：新建两项走 `onCreate`、重命名/删除走 T007 就有的回调、
  * 复制 / 移动 / 上传 / 下载走 T020 的四个回调。**只剩备份 / 拉回**没有接收方（T011/T012），
  * 按「未接线即禁用」置灰。菜单先把**入口与形状**做齐，接线只补 props，不改菜单结构——
- * T020 正是这样接的。本仓自己那两项里：`copy-path` **不出组件**（往剪贴板写，本组件内自己办）、
+ * T020 正是这样接的。本仓自己那三项里：`open` 走 `onOpen`（把这一行交给中栏，见它的 doc）、
+ * `copy-path` **不出组件**（往剪贴板写，本组件内自己办）、
  * `refresh` 走 `onRefresh`（谁接谁负责重取，见它的 doc）。
  *
  * ⚠️ **复制**多了一条类型上的禁用理由（`要文件`）：服务端复制只认单文件，对目录弹「搬到哪儿」
@@ -532,6 +555,7 @@ export function FileTree(props: FileTreeProps) {
                       classList={{ [ROW]: true, [ROW_SELECTED]: selected() === row.node.path }}
                       onClick={() => setSelected(row.node.path)}
                       onKeyDown={(event) => 按键(event, row.node.path, row.node.type)}
+                      onDblClick={() => 双击(row.node.path, row.node.type)}
                     >
                       <Show when={row.node.type === "directory"} fallback={<span class="w-4 shrink-0" />}>
                         {/* 悬停提示：箭头朝向只说得出「现在开/关着」，说不出点它做什么；文案与 `aria-label` 同源。
@@ -589,7 +613,8 @@ export function FileTree(props: FileTreeProps) {
         </ContextMenu.Trigger>
 
         {/* 设计 §6.2 的那张表——十项、四组、组间一个分隔符（顺序即表里的行序），
-            末尾再接本仓自己的一组两项（`copy-path` / `refresh`，共五组十二项）。 */}
+            最前接「打开」（2026-10-12 加的**第一组**），末尾再接本仓自己的一组两项
+            （`copy-path` / `refresh`）——共六组十三项。 */}
         <ContextMenu.Portal>
           {/* ⚠️ `excludedElements={[]}` **不是可选的**（用户第 4 条：左键点菜单以外的地方要收掉）。
               Kobalte 的 `DismissableLayer` 默认把**触发器**排除在「外面」之外
@@ -603,7 +628,16 @@ export function FileTree(props: FileTreeProps) {
               透传，`bun run typecheck` 实测通过；`LEARNINGS #005-22` 讲的 `data-slot` 被覆盖
               是同一处 `{...rest}` 顺序的另一面。） */}
           <ContextMenu.Content excludedElements={[]}>
-             {/* 第一行：同工具栏「＋」 */}
+            {/* 第一组（2026-10-12）：看一眼。它与末尾第六组的 copy-path / refresh 同为
+                「不写盘、不写云」的一项，只是最常用、故压到菜单最上。 */}
+            <菜单项
+              action="open"
+              文案="打开"
+              禁用={要文件(props.onOpen)}
+              onSelect={() => props.onOpen?.(菜单对象() ?? "")}
+            />
+            <ContextMenu.Separator />
+            {/* 第二组：同工具栏「＋」 */}
             <菜单项
               action="create-file"
               文案="新建文件"
@@ -617,7 +651,7 @@ export function FileTree(props: FileTreeProps) {
               onSelect={() => 新建("directory", 菜单对象())}
             />
             <ContextMenu.Separator />
-            {/* 第二行：完整文件操作 */}
+            {/* 第三组：完整文件操作 */}
             <菜单项
               action="rename"
               文案="重命名"
@@ -643,7 +677,7 @@ export function FileTree(props: FileTreeProps) {
               onSelect={() => 点删(菜单对象())}
             />
             <ContextMenu.Separator />
-            {/* 第三行：沙箱 ↔ 本地电脑（§6.3 拖拽 A 的替代入口） */}
+            {/* 第四组：沙箱 ↔ 本地电脑（§6.3 拖拽 A 的替代入口） */}
             <菜单项
               action="upload"
               文案="上传"
@@ -657,7 +691,7 @@ export function FileTree(props: FileTreeProps) {
               onSelect={() => 点下载(菜单对象())}
             />
             <ContextMenu.Separator />
-            {/* 第四行：沙箱 ↔ MinIO（§6.3 拖拽 B 的替代入口） */}
+            {/* 第五组：沙箱 ↔ MinIO（§6.3 拖拽 B 的替代入口） */}
             <菜单项
               action="backup"
               文案="备份到 MinIO"
@@ -671,7 +705,7 @@ export function FileTree(props: FileTreeProps) {
               onSelect={() => props.onRestore?.(菜单对象() ?? "")}
             />
             <ContextMenu.Separator />
-            {/* 第五组（本仓自己的一组，2026-10-10）：**不改动任何东西**的两项。
+            {/* 第六组（本仓自己的一组，2026-10-10）：**不改动任何东西**的两项。
                 上面四组九项都会写盘或写云；这两项一个只往剪贴板写、一个只重新取一遍。
                 因这个共同点另起一组、落在菜单**最下**（用户裁定）。
 
@@ -843,6 +877,18 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
+   * 双击一个**文件**行 ＝ 打开。
+   *
+   * 目录双击**什么都不做**：目录已经有单击（选中）与点箭头（开合）两个动作，
+   * 再挂一个只会让「双击目录」变成一个语义未定的手势（要展开还是要打开？谁都说得通，
+   * 于是谁都猜错一半）。要开合就点箭头、或键盘 ←/→。
+   */
+  function 双击(path: string, type: "file" | "directory") {
+    if (type !== "file") return
+    props.onOpen?.(path)
+  }
+
+  /**
    * 把某一行的路径放进剪贴板（菜单「文件路径」，第五组两项里的前一项）。
    *
    * 复制的是**项目内相对路径**（`资料/8·17/话单.csv`），因为会话的工作目录就是项目目录
@@ -976,7 +1022,7 @@ function 工具钮(props: { action: 工具栏动作; 禁用: boolean; class?: st
 
 /**
  * 一个右键菜单项。抽出来只为让上面那张「设计 §6.2 的表」一眼可读——
- * 十二项各写一整块同样的 JSX，分组与顺序就淹没在样板里了。禁用态由调用处各自给：
+ * 十三项各写一整块同样的 JSX，分组与顺序就淹没在样板里了。禁用态由调用处各自给：
  * 「未接线」与「没有作用对象」是**两条不同的理由**，混在一个函数里就看不出来了。
  */
 function 菜单项(props: {

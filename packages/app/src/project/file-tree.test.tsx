@@ -430,6 +430,10 @@ describe("FileTree 文件树（FR-005）", () => {
   const 右键 = (el: HTMLElement | null | undefined) =>
     el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
 
+  /** 双击一个元素——照 `右键` 抄：`dblclick` 冒泡到那一行，行上的 `onDblClick` 就开火。 */
+  const 双击 = (el: HTMLElement | null | undefined) =>
+    el?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+
   /**
    * 左键点一个元素——真实的指针序列（`pointerdown` ＋ `pointerup`），**`.click()` 不够**。
    *
@@ -1319,26 +1323,28 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     describe("项齐备（设计 §6.2 的四组 ＋ 本仓自己的一组）", () => {
-      test("十二个动作齐备，顺序即设计表里的四行、外加本仓最后那一组", () => {
+      test("十三个动作齐备，顺序即设计表里的四行、外加本仓最前与最后那两组", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
         expect(菜单动作()).toEqual([
-          // 第一行：新建文件 / 新建文件夹
+          // 第一组（2026-10-12）：打开——看一眼、交给中栏，压在菜单最上
+          "open",
+          // 第二组：新建文件 / 新建文件夹
           "create-file",
           "create-dir",
-          // 第二行：重命名 / 复制 / 移动 / 删除（设计表原样）
+          // 第三组：重命名 / 复制 / 移动 / 删除（设计表原样）
           "rename",
           "copy",
           "move",
           "delete",
-          // 第三行：上传 / 下载
+          // 第四组：上传 / 下载
           "upload",
           "download",
-          // 第四行：备份到 MinIO / 从 MinIO 拉回
+          // 第五组：备份到 MinIO / 从 MinIO 拉回
           "backup",
           "restore",
-          // 第五行：**本仓自己的一组**（2026-10-10 用户裁定）。这两项都不是设计表那十项里的：
+          // 第六组：**本仓自己的一组**（2026-10-10 用户裁定）。这两项都不是设计表那十项里的：
           //   `copy-path` = 把这一行的**路径**放进剪贴板（设计表里的 `copy` 复制的是**文件**，宾语不同）；
           //   `refresh`   = 重取一次文件清单。
           //   它们**从第二组挪出来**、自成一组落在最下——分组轴换成了**「动不动东西」**：
@@ -1348,18 +1354,19 @@ describe("FileTree 文件树（FR-005）", () => {
         ])
       })
 
-      test("五组之间有四个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
+      test("六组之间有五个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
-        expect(分隔符数()).toBe(4)
+        expect(分隔符数()).toBe(5)
       })
 
-      test("每一项的文案就是设计表里那十个词，外加本仓那两个", () => {
+      test("每一项的文案就是设计表里那十个词，外加本仓的「打开」与那两个", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
         expect(菜单文案()).toEqual([
+          "打开",
           "新建文件",
           "新建文件夹",
           "重命名",
@@ -1795,6 +1802,13 @@ describe("FileTree 文件树（FR-005）", () => {
         "backup",
         "restore",
       ]
+      /**
+       * 菜单里**全部十三项**（按渲染顺序）：`open` ＋ 设计 §6.2 十项 ＋ 本仓两项（`copy-path` / `refresh`）。
+       *
+       * ⚠️ 与 `十项` 的差别正是多了 `open` 与 `copy-path` / `refresh` 这三项：`copy-path` **不靠接线**
+       * （它只靠「右键有没有对象」），所以「只接 onOpen」的判据里它会**照旧可用**——断言要把它算进去。
+       */
+      const 全部十三项 = ["open", ...十项, "copy-path", "refresh"]
       /** 这些项里**还能点**的那些。 */
       const 还活着的 = (项: readonly string[]) => 项.filter((action) => !项禁用(action))
 
@@ -1810,6 +1824,23 @@ describe("FileTree 文件树（FR-005）", () => {
         右键(行按名(host, "a.md"))
 
         expect(还活着的(六个动作)).toEqual(["backup"])
+      })
+
+      test("只接 onOpen ⇒ 全部十三项里只有「打开」与「文件路径」可用（copy-path 不靠接线）", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} onOpen={() => {}} />)
+        右键(行按名(host, "a.md"))
+
+        // 「打开」这一项必须**真在菜单里**——不存在的项会被 `项禁用` 读成「亮」，这条会空转成假绿。
+        expect(菜单项("open") !== null, "「打开」这一项必须在菜单里").toBe(true)
+        expect(还活着的(全部十三项)).toEqual(["open", "copy-path"])
+      })
+
+      test("onOpen 省略 ⇒ 「打开」也是禁用态", () => {
+        const host = mount(() => <FileTree paths={树("a.md")} />)
+        右键(行按名(host, "a.md"))
+
+        expect(菜单项("open") !== null, "「打开」这一项必须在菜单里").toBe(true)
+        expect(项禁用("open")).toBe(true)
       })
     })
 
@@ -2163,6 +2194,49 @@ describe("FileTree 文件树（FR-005）", () => {
         null,
         null,
       ])
+    })
+  })
+
+  /**
+   * ── 「打开」（2026-10-12 用户下达）：右键菜单第一项 ＋ 文件行双击 ────────────────
+   *
+   * 两个入口、一个动作：把这一行的路径喊给 `onOpen`（交给中栏开 tab）。单击**仍然是选中**——
+   * 打开只挂在右键菜单第一项与**文件行**双击上；目录双击什么都不做（目录已有单击＝选中、
+   * 点箭头＝开合两个动作，再加一个语义未定的手势只会让人猜错一半）。
+   */
+  describe("打开", () => {
+    test("点「打开」⇒ onOpen 收到那一行的路径", async () => {
+      const 开过: string[] = []
+      const host = mount(() => (
+        <FileTree paths={树("a.md", "sub/b.md")} onOpen={(path) => 开过.push(path)} />
+      ))
+      右键(行按名(host, "a.md"))
+      await 歇一拍()
+      点菜单项("open")
+      expect(开过).toEqual(["a.md"])
+    })
+
+    test("双击**文件**行 ⇒ onOpen（同一条动作，两个入口）", async () => {
+      const 开过: string[] = []
+      const host = mount(() => <FileTree paths={树("a.md")} onOpen={(path) => 开过.push(path)} />)
+      双击(行按名(host, "a.md"))
+      await 歇一拍()
+      expect(开过).toEqual(["a.md"])
+    })
+
+    test("双击**目录**行 ⇒ 不喊 onOpen（目录的单击＝选中、点箭头＝开合，不再加第三个动作）", async () => {
+      const 开过: string[] = []
+      const host = mount(() => <FileTree paths={树("资料/a.md")} onOpen={(path) => 开过.push(path)} />)
+      双击(行按名(host, "资料"))
+      await 歇一拍()
+      expect(开过).toEqual([])
+    })
+
+    test("右键一个**目录** ⇒ 「打开」禁用（中栏没有能解析目录的视图）", () => {
+      const host = mount(() => <FileTree paths={树("资料/a.md")} onOpen={() => {}} />)
+      右键(行按名(host, "资料"))
+
+      expect(项禁用("open")).toBe(true)
     })
   })
 
