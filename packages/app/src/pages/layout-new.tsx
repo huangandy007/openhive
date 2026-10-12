@@ -21,6 +21,10 @@ import { useSettingsDialog } from "@/components/settings-dialog"
 // 工作台「项目」那件事的数据源在这里注入（1 行 import ＋ 1 个 prop，见 `@/project/project-data`
 // 文件头「为什么要有这一层」）。删掉这两处 = 面板/文件树退回「未接线即禁用」态。
 import { PROJECT_DATA } from "@/project/project-data"
+// ⚠️ openhive 定制（001/005，2026-10-12）：这是要保留的定制 —— 合并上游时两侧都留着。
+// 中栏视图读文件内容的取数出口在这里注入（1 行 import ＋ 1 个 prop，与 `PROJECT_DATA` 同一个范式）。
+// 为什么是个模块级常量而不是这里现写的箭头函数：见 `@/project/openhive-file-loader` 文件头。
+import { LOAD_PROJECT_FILE } from "@/project/openhive-file-loader"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
@@ -114,6 +118,7 @@ export default function NewLayout(props: ParentProps) {
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
         <WorkspaceEntry
           projectData={PROJECT_DATA}
+          loadFile={LOAD_PROJECT_FILE}
           // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
           // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
           // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的
