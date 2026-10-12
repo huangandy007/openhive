@@ -2,7 +2,7 @@ export * as OpenhiveFile from "./file"
 
 /**
  * 005 T020 ＋ T018 · 文件树的**复制 / 移动 / 上传 / 下载**（T020）与**新建 / 重命名 / 删除**
- * （T018）共**七个**出口（FR-005）。
+ * （T018）共**八个**出口（FR-005）。
  *
  * ⚠️ 两笔不在同一次落的：T020 落了前四个，T018（2026-10-10）补的后三个。后三个**逐字沿用**
  * 前四个的判据原语（`gate` / `inside` / `realInside` / `attempt` / `exists` / `Made` /
@@ -130,7 +130,7 @@ export * as OpenhiveFile from "./file"
  *   清洗仍在（头值里的裸 CR/LF 会破坏头，甚至让响应头被拆开），但它的正确性只有读代码一条路。
  * - **`inside` 对 UNC / 盘符写的判据没有独立用例**：win32 上 `relative` 遇到不同盘符会回一个
  *   绝对路径，`isAbsolute` 那一支因此是**活的**，但本套夹具造不出「另一个盘符」。
- * - **七项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
+ * - **八项都要求项目头在场**（同 T020）：判据是「`?directory=` 恰好是沙箱根下面一层」，
  *   与中间件判的「项目在不在 / 冻没冻」不是同一件事——理由见上面「基准目录」那一节。
  * - **复制 / 上传 / 下载三项不做目录递归**（范围裁定：单文件——复制目录要递归、还得回答
  *   「深树里有一层是链接怎么办」，是另一轮的事）。UI 侧对应地**只把「复制」画在文件行上**。
@@ -150,12 +150,20 @@ import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-wo
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
 
-/** 七个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
+/** 八个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
 export const PATH = {
   copy: `${PREFIX}/copy`,
   move: `${PREFIX}/move`,
   upload: `${PREFIX}/upload`,
   download: `${PREFIX}/download`,
+  /**
+   * 2026-10-12（第八个出口）：**只回大小，不读内容**。
+   *
+   * 为什么必须是新出口，而不是拿上游现成的用：上游文件组（`findText / findFile /
+   * findSymbol / list / content / status`）**没有一个回大小**，而最接近的 `content`
+   * 与我们的 `download` 都会 `readFile` —— 那正是闸门要在**读之前**躲开的那一下。
+   */
+  stat: `${PREFIX}/stat`,
   /** T018 的三项。`create` 的 `kind` 分文件 / 目录（用户 2026-10-10 裁定「新建文件夹」也要）。 */
   create: `${PREFIX}/create`,
   rename: `${PREFIX}/rename`,
@@ -299,6 +307,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, "move"))
     yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
+    // 2026-10-12：读**前**问一句大小（前端闸门，表格 5 MB / 其余 10 MB）。
+    yield* router.add("GET", PATH.stat, (request) => handleStat(request, root))
     // T018 的三项。落在**同一个模块**里 ⇒ `server.ts` 一行不动（先例是 `archive.ts`）。
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, root))
     yield* router.add("POST", PATH.rename, (request) => handleRename(request, root))
@@ -639,6 +649,41 @@ function handleDownload(request: HttpServerRequest.HttpServerRequest, root: stri
       contentType: "application/octet-stream",
       headers: { "content-disposition": disposition(basename(target)) },
     })
+  })
+}
+
+/**
+ * 问大小（2026-10-12 / FR-005 的前置闸门）：**只读元信息，不读内容**。
+ *
+ * ## 与 `handleDownload` 是**同一串守卫、逐条同序**
+ *
+ * `gate` → 取 `path` → `inside` → `inGit` → `lstat`（不是 `stat`）→ `realInside`。
+ * 两处判据必须同样严：这两条是同一个项目目录上的两个出口，松一档的那个就是别人的旁路
+ * （`LEARNINGS #004-09`：「被拒」与「门在副作用之前」是两条独立判据，这里连「拒绝」
+ * 本身都要两条出口同口径；`#004-01`：同一件事散在 N 个出口上时，逐个数、别只数写的那个）。
+ *
+ * ⚠️ 回应里**只有大小**，不带内容、不带类型、不带头像时间：本出口的用途单一，
+ * 多回一样就多一个「以后有人拿它当 list 用」的口子。
+ */
+function handleStat(request: HttpServerRequest.HttpServerRequest, root: string) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const path = new URL(request.url, "http://localhost").searchParams.get("path")
+    if (path === null) return badRequest("缺少 path")
+
+    const target = inside(project, path)
+    if (target === undefined) return badRequest("路径越出项目目录")
+    if (inGit(project, target)) return badRequest(GIT_LOCKED)
+
+    // `lstat` 而非 `stat`：最后一段是链接时 `stat` 会跟着看目标（同 `handleDownload` 那条注释
+    // 实测过的同一件事）⇒ 跟着看就等于把项目外那个文件的**大小**漏出去。
+    const info = yield* Effect.promise(() => lstat(target).catch(() => undefined))
+    if (info === undefined || !info.isFile()) return badRequest("文件不存在")
+    if (!(yield* realInside(project, dirname(target)))) return badRequest(LINK_ESCAPE)
+
+    return HttpServerResponse.jsonUnsafe({ size: info.size })
   })
 }
 

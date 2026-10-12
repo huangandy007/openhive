@@ -244,6 +244,8 @@ const 出口 = {
   move: "/openhive/file/move",
   upload: "/openhive/file/upload",
   download: "/openhive/file/download",
+  // 2026-10-12 第八个出口：读**前**问一句大小（FR-005 的闸门）。
+  stat: "/openhive/file/stat",
   /** 2026-10-10 补的三个写出口（T018 那笔「新建 / 重命名 / 删除」）。 */
   create: "/openhive/file/create",
   rename: "/openhive/file/rename",
@@ -2162,6 +2164,151 @@ describe("`.git` 七项全堵（判据只写一份）", () => {
         expect(existsSync(path.join(项目根, "资料", ".git"))).toBe(false)
         expect(response.status).toBe(200)
         版本库没动()
+      }),
+    30_000,
+  )
+})
+
+/**
+ * 第八个出口 `stat`（2026-10-12）：**只回大小，不读内容**。
+ *
+ * 这一组要钉的是**它不比 `download` 松**：两者是同一条链上的两个出口，`stat` 松一档
+ * 就等于给「读之前先问一句」这道闸门开了个旁路（`LEARNINGS #004-01`：数出口要数
+ * 「同一个判断散在几处」，而不是数「我已经写了几处」）。故下面逐条对着 `download`
+ * 那一组来，同样的输入要得同样的 400。
+ *
+ * ⚠️ 文案常量在这里**重新写字面量**、不从源码 import（`LEARNINGS #003-05`）：
+ * 它们是跨层的契约，测试里写死才能发现「生产把文案改了」。
+ */
+describe("openhive 文件出口 · stat（读前问大小）", () => {
+  const 项目头 = (project: string) => ({ [PROJECT_HEADER]: project })
+  const 问大小 = (project: string, path: string) =>
+    `${出口.stat}?${new URLSearchParams({ path })}`
+
+  // 与 `handleStat` / `handleDownload` 的文案逐字相同；测试里是**独立的一份**（见上）。
+  const NO_PROJECT = "这次文件操作没有指明项目（缺少 x-openhive-project 头）"
+  const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
+  const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
+  const 没这个文件 = "文件不存在"
+  const 越界 = "路径越出项目目录"
+
+  const Size = Schema.Struct({ size: Schema.Number })
+
+  it.live(
+    "普通文件 ⇒ 200 且回的是**真实字节数**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const response = yield* as(ALICE, 问大小(ALPHA, "a.txt"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(200)
+        const body = yield* json(Size, response)
+        // 与**盘上现在这一份**比，而不是与一个写死的数字比：夹具内容是活的。
+        expect(body.size).toBe(statSync(文件.甲).size)
+        expect(body.size).toBeGreaterThan(0)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "目录 ⇒ 400「文件不存在」（闸门只对文件说话）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const response = yield* as(ALICE, 问大小(ALPHA, "sub"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(没这个文件)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "不存在的路径 ⇒ 400「文件不存在」",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const response = yield* as(ALICE, 问大小(ALPHA, "没有这个.txt"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(没这个文件)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "越界（兄弟项目里真实存在的那份）⇒ 400「路径越出项目目录」",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        // 目标**真实存在**：否则这条用例在「文件本来就没有」上假绿。
+        // ⚠️ 路径必须带 `../`（同 download 越界那条的口径）：`文件.密相对` 是**相对沙箱根**
+        // 的写法，配 ALPHA 的项目头会落进 ALPHA 自己的目录里、被「文件不存在」接住，
+        // 而不是被「越界」接住。
+        expect(existsSync(文件.密)).toBe(true)
+        const response = yield* as(ALICE, 问大小(ALPHA, `../${OTHER}/密件.txt`), {
+          headers: 项目头(ALPHA),
+        })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(越界)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "最后一段是文件链接 ⇒ 400「文件不存在」（`lstat` 不跟链接看目标）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+        const response = yield* as(ALICE, 问大小(ALPHA, "链到密件.txt"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(没这个文件)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "中间一层是目录链接 ⇒ 400 LINK_ESCAPE 那句",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+        const response = yield* as(ALICE, 问大小(ALPHA, "link/密件.txt"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(LINK_ESCAPE)
+      }),
+    30_000,
+  )
+
+  it.live(
+    ".git 里的文件 ⇒ 400 GIT_LOCKED 那句",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        // 前提照 `download` 那组「下载 .git/config」的口径（`#004-12` 同族 harness 整段抄）：
+        // `重置文件()` 已经按生产常态造了 `.git`（含 `config`），这里不再另造。`inGit` 在
+        // `lstat` 之前就返回 ⇒ 得到 GIT_LOCKED 而不是「文件不存在」——这条判据的射程正是
+        // **守卫的先后顺序**（`#004-09`：「被拒」与「门在副作用之前」是两条独立判据）。
+        const response = yield* as(ALICE, 问大小(ALPHA, ".git/config"), { headers: 项目头(ALPHA) })
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(GIT_LOCKED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "不带头 ⇒ 400，且一个字节都没回（够不着任何项目）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const response = yield* as(ALICE, 问大小(ALPHA, "a.txt"))
+        expect(response.status).toBe(400)
+        // ⚠️ 体只能读一次（`response.json()` 读后即消费，再读报 `Body already used`），
+        // 所以「错误是 NO_PROJECT」与「回体里没有 size」两条判据用**同一份**原始 JSON：
+        // `Schema.Unknown` 是恒等解码（拿到原始对象），再拿 `Rejected` 纯解码出 `error`
+        // （解码是纯函数，不再读体，也避开 `as` 的窄化断言）。
+        const body = yield* json(Schema.Unknown, response)
+        expect(Schema.decodeUnknownSync(Rejected)(body).error).toBe(NO_PROJECT)
+        // 「没回大小」这一条也要钉：回体里不许混进一个 size 字段。
+        expect(JSON.stringify(body)).not.toContain("size")
       }),
     30_000,
   )
