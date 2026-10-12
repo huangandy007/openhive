@@ -304,6 +304,28 @@ describe("中栏 tab 与左栏模块切换的联动（FR-006）", () => {
 
     expect(激活模块()).toBe("project")
   })
+
+  /**
+   * 换项目清空中栏（2026-10-12 分屏追加）：左栏那棵树是**当前项目**的文件，中栏一张 tab 绑的是
+   * 一个**路径**——换了项目之后旧 tab 指向另一样东西，留着就像串项目（与文件清单那份 effect 的
+   * 「留着上一个项目的文件更糟」是同一个判断）。故「当前项目一变，中栏 tab 清空」与文件清单清空
+   * **同拍**发生（`workspace-entry.tsx` 里那份独立的 clear effect）。
+   */
+  test("换项目清空中栏：当前项目一变，中栏 tab 被清空", async () => {
+    setCurrentProject(undefined) // 信号与 cookie 一起归零（`current-project` 里那条注释）
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案, 话单]} />
+      </WorkspaceEntry>
+    ))
+    await 冲一遍()
+    expect(tabTitles(host)).toEqual(["专案A", "话单.csv"]) // 前置：两张 tab 确实开着
+
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    expect(tabTitles(host)).toEqual([]) // 换项目 ⇒ 中栏清空
+  })
 })
 
 const 明细动作: ModuleAction = { title: "明细 - 广州××公司", content: "detail:acct-4419" }

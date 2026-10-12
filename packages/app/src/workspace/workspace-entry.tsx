@@ -1,15 +1,17 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
-import { CenterContent } from "@/center/center-content"
+import { useBigFileAsk } from "@/center/big-file-dialog"
+import { CenterSplit } from "@/center/center-split"
 import type { LoadFileContent } from "@/center/file-content"
-import { TabBar } from "@/center/tab-bar"
+import { createOpenFile } from "@/center/open-file"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
+import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import { minioBackups } from "@/project/minio-backups"
-import type { FileOpOutcome } from "@/project/openhive-file-ops"
+import { statProjectFile, type FileOpOutcome } from "@/project/openhive-file-ops"
 import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
@@ -132,6 +134,29 @@ export function WorkspaceEntry(props: ParentProps<WorkspaceEntryProps>) {
 /** provider 之内的那一层——context 只能由 provider **下面**的组件消费。 */
 function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const center = useCenterTabs()
+  const 问大文件 = useBigFileAsk()
+  /**
+   * 左栏文件树的「打开」（2026-10-12）：闸门在 `center/open-file.ts`（纯模块、单测覆盖），
+   * 这里只把真实的四件依赖接上去。三条闭包**在每次调用时读一次 `activePane()`**，
+   * 保证「判已在栏里 / 切过去 / 开一张」落在同一栏（`打开文件的依赖.受焦栏` 的 doc）。
+   */
+  const 打开文件 = createOpenFile({
+    module: () => center.module() ?? "project",
+    受焦栏: () => {
+      const pane = center.activePane()
+      return {
+        已有: center.pane(pane).tabs.map(contentTabKey),
+        切到: (key) => center.activate(key, pane),
+        开: (tab) => center.open(tab, pane),
+      }
+    },
+    stat: (path) => {
+      const id = currentProject()?.id
+      if (!id) return Promise.resolve(undefined)
+      return statProjectFile(id, path)
+    },
+    dialog: 问大文件,
+  })
   /**
    * 项目面板开没开。**放在这里而不是面板里**：面板是「滑出」的浮层，开关它的按钮在锚点行上
    * （`▾` / `＋`），两者分属两个组件 ⇒ 状态只能落在共同祖先（本组件）里。
@@ -419,6 +444,35 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     void projectData.files(id).then((paths) => {
       if (!作废) setProjectFiles(paths)
     })
+  })
+
+  /**
+   * 当前项目变了就清空中栏（2026-10-12 分屏追加）。
+   *
+   * **为什么是独立的一份 effect，而不是塞进上面那份文件 effect 里**：`center.clear()` 是一次
+   * 对 center 状态的写，而写状态会同步触发一轮重渲染——若写在那份 effect 里，那次重渲染会把它
+   * **再跑一遍**，同一份 id 取两次文件（实测 `没有当前项目时不取文件` 红成 `["p1","p1"]`）。
+   * 单独一份 effect 只读 `currentProject()?.id`（`clear` 不写这个信号），就不会被自己的那次
+   * 写拨回去。
+   *
+   * **这份不用哨兵**（与上面那份不同）：哨兵管的是「进门第一趟、且当时没有项目」要不要把缝
+   * 清掉——`projectFiles` 是**模块级**信号，上一个实例可能留了货，必须清。而 `center` 由
+   * `CenterTabsProvider` **每次挂载新建**（本组件自己的 provider），一进来就是空的，没有
+   * 「上一个实例的货」可清。哨兵在这里只会让进门第一趟多写一次空状态——那正是把
+   * `module()` 这一族读口拨醒、重造左栏子树的元凶（见 `tab-context.tsx` 里 `module` 那个
+   * memo 的注释）。
+   *
+   * 「换项目」与「文件清单清空」本就是一个判断的两半（`LEARNINGS #002-06`）：上面那份清
+   * `setProjectFiles`、这份清 `center`，两半写在不同 effect 里，但**触发条件是同一行**
+   * （`currentProject()?.id` 变了）。
+   */
+  let 上次清栏: string | undefined = undefined
+  createEffect(() => {
+    const id = currentProject()?.id
+    if (id !== 上次清栏) {
+      上次清栏 = id
+      center.clear()
+    }
   })
 
   /**
@@ -957,6 +1011,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onDownload={(path) => void 下载(path)}
                         onDropFiles={(files, dir) => void 传(dir, files)}
                         onRefresh={有项目() ? 拨清单重取 : undefined}
+                        // 2026-10-12：右键第一项「打开」与文件行双击都走它。
+                        // 与其余各项同一口径——**要有项目**才接线（没有项目就没有可打开的文件）。
+                        onOpen={有项目() ? (path) => void 打开文件({ path, 标题: 末段(path) }) : undefined}
                       />
                       {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
                           排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树
@@ -1030,19 +1087,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           rightCollapsed={!aiSessionOpen()}
           right={props.right?.()}
         >
-          {/* 中栏顶部的内容视图 tab 栏（FR-004 / FR-005 / DESIGN §4.5） */}
-          <TabBar
-            tabs={center.pane(0).tabs}
-            active={center.pane(0).active}
-            onActivate={(key) => center.activate(key, 0)}
-            onClose={(key) => center.close(key, 0)}
-          />
-          {/* tab 栏下面就是内容区（FR-007 / DESIGN §4.5 的「中栏承载内容视图」）。
-              没有可解析的激活 tab 时原样落回 `children`——即上游路由自己的页面，
-              故 001 下（尚无模块动作）行为与本组件引入前完全一致。
-              `pageVisible` / `empty` 只在**会话路由**上改变这一档：那里中栏让位给右栏
-              （design-v2 §8.2「中栏看结果、右栏让 AI 干活」），页面照旧常驻、只是不露。 */}
-          <CenterContent
+          {/* 中栏：两栏 ＋ 一条可拖的隔板（2026-10-12 分屏）。几何与「谁在哪一栏」都在
+              `center-split.tsx` 里，本组件只把取数出口与上游页面注入进去。 */}
+          <CenterSplit
             registry={viewRegistry}
             load={props.loadFile}
             pageVisible={props.routePageVisible?.() ?? true}
@@ -1056,7 +1103,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             }
           >
             {props.children}
-          </CenterContent>
+          </CenterSplit>
         </ThreePane>
       </div>
     </>
