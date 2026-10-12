@@ -134,6 +134,43 @@ bun run dev:web    # 前端 :3000
 
 ---
 
+## 本机资源采样器（sysmon）
+
+怀疑「机器变卡 / 内存一直涨 / 磁盘被吃」时，用它取数——30 秒一采，写 CSV。
+
+```cmd
+D:\project\study\openhive\tools\sysmon\sysmon.cmd start
+D:\project\study\openhive\tools\sysmon\sysmon.cmd status
+D:\project\study\openhive\tools\sysmon\sysmon.cmd stop
+```
+
+| 动作 | 说明 |
+|---|---|
+| `start` | 后台起（分离进程，**活得过 Claude 会话，活不过重启**），日志落 `tools\sysmon\logs\sysmon-YYYY-MM-DD.csv`，每行写完立即 flush，保留 14 天 |
+| `status` | 还在不在 ＋ 最后一行读数 |
+| `stop` | 停 |
+
+⚠️ **脚本在「外层工作区」，不在本仓库**（`D:\project\study\openhive\tools\sysmon\`）——按工作区 `CLAUDE.md`
+「通用工具放本层、项目产物放仓库内」，它属跨项目可复用的本机工具。**换机器 / 新 clone 上没有它**，要自己拷一份。
+**没有开机自启**（不建计划任务，那是系统级改动）。
+
+**为什么必须事先在采**：Windows 在硬死机后会**清零** `FreePhysicalMemory`、提交量和页文件 `PeakUsage`
+⇒ 事后**取不回**「那一刻用了多少内存」。2026-10-12 12:55:30 本机那次死机（事件日志 `41` Kernel-Power，
+`BugcheckCode=0`，即**无蓝屏**的硬重置）就因为当时没有采样器，内存那一侧**永远查不清了**。
+
+每行记的列：`commitUsedMB/commitLimitMB`（真·内存耗尽判据）、`pfPeakMB`（页文件峰值，重启即清零）、
+`diskPct/diskQ`（任务管理器「磁盘」列那个口径）、`top6` 与 `ourRuntime`（谁在吃内存）。
+
+判读三条（都实际踩过）：
+
+| 现象 | 判据 |
+|---|---|
+| Bun「占了很多磁盘空间」 | 任务管理器那一列是**吞吐 MB/s，不是剩余容量**；且「内存不够 ⇒ 疯狂换页 ⇒ 磁盘 100% ⇒ 卡死」这条链里，高磁盘占用是**结果不是原因** |
+| Bun「没释放内存」 | 看**趋势**不看绝对值，要认得 GC 的落回（实测编排器 611 → 676 → 498 MB，涨完自己掉回去）。空闲基线：内核 ≈1.2–1.4 GB ＋ 编排器 ≈0.5 GB，全栈 ≈1.7 GB |
+| 空闲时还在写盘吗 | 日志大小那列两次采样不变 ⇒ **零写入**（实测 `diskPct=0, diskQ=0`） |
+
+---
+
 ## 已知噪音（不是缺陷）
 
 - **console 里成片 `404 /session/ses_...`**：浏览器 localStorage 里残留了**上一个沙箱**的会话标签，
