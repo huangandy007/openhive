@@ -71,8 +71,16 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
   const 是左右 = () => center.排列() === "左右"
   const 容器 = () =>
     `flex w-full min-h-0 min-w-0 flex-1 items-stretch ${是左右() ? "flex-row" : "flex-col"}`
-  /** 左/上那一栏：尺寸由信号给，故 `shrink-0`。 */
-  const 头栏 = () => `relative flex min-h-0 min-w-0 shrink-0 flex-col items-start ${是左右() ? "h-full" : "w-full"}`
+  /**
+   * 左/上那一栏。
+   *
+   * **分屏时**尺寸由信号给，故 `shrink-0`；**没分屏时它独占整栏**，故 `flex-1`。
+   * ⚠️ 少了未分屏那一支，它会被下面那个内联尺寸钉死在 `左右默认` / `上下默认` 上——
+   * 卡片右侧整块空着、正文按 480 折行（2026-10-12 用户实报「没有有效利用中栏的有效空间」；
+   * 真栈实测卡片 `1217px` 而这一栏 `480px`）。一行一列的两种情形都咬得到，故两支一起写。
+   */
+  const 头栏 = () =>
+    `relative flex min-h-0 min-w-0 flex-col items-start ${center.split() ? "shrink-0" : "flex-1"} ${是左右() ? "h-full" : "w-full"}`
   /** 右/下那一栏：吃剩下那块。 */
   const 尾栏 = () => `flex min-h-0 min-w-0 flex-1 flex-col items-start ${是左右() ? "h-full" : "w-full"}`
 
@@ -82,7 +90,8 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
         data-slot="center-pane"
         data-pane="0"
         class={头栏()}
-        style={是左右() ? { width: `${左右宽()}px` } : { height: `${上下高()}px` }}
+        // 未分屏时**不写内联尺寸**：写了就把这一栏钉死（见 `头栏` 的注释）。
+        style={center.split() ? (是左右() ? { width: `${左右宽()}px` } : { height: `${上下高()}px` }) : undefined}
         onMouseDown={() => center.focusPane(0)}
       >
         <TabBar

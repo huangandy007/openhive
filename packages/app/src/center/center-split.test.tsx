@@ -100,6 +100,31 @@ describe("CenterSplit", () => {
     expect(宿主.querySelectorAll("[data-slot='center-page']").length).toBe(2)
   })
 
+  /**
+   * 头栏的**内联尺寸**只在分屏时出现。
+   *
+   * ⚠️ 这条是**机制**，宽高的**数**在真栈量（文件头那条）：这里只钉「有没有把这一栏钉死」。
+   * 2026-10-12 用户实报「没有有效利用中栏的有效空间」——根因就是未分屏时它照样吃着
+   * `style={{ width: '480px' }}`：真栈实测卡片 `1217px`、这一栏 `480px`，右侧 737px 不属于任何一栏。
+   */
+  test("头栏的内联尺寸**只在分屏时**出现（未分屏时它得由 `flex-1` 吃满卡片）", async () => {
+    const 取栏 = (宿主: HTMLElement, p: 0 | 1) =>
+      宿主.querySelector<HTMLElement>(`[data-slot='center-pane'][data-pane='${p}']`)!
+    const 未分 = mount(() => (
+      <CenterTabsProvider>
+        <CenterSplit registry={空注册表} />
+      </CenterTabsProvider>
+    ))
+
+    expect(取栏(未分, 0).style.width).toBe("")
+    expect(取栏(未分, 0).style.height).toBe("")
+
+    // 分屏之后尺寸**必须**回来 —— 少了这一半，上面那两条在一个「压根不写尺寸」的实现下也全绿
+    // （`LEARNINGS #004-08`：断「没有」的用例得有一条「该有的时候真的有」当对照）。
+    const 分了 = await 备好("左右")
+    expect(取栏(分了, 0).style.width).toBe("480px")
+  })
+
   test("上下分屏 ⇒ 手柄是 vertical（术语只在这里翻一次）", async () => {
     const 宿主 = await 备好("上下")
     const 柄 = 宿主.querySelector<HTMLElement>("[data-component='resize-handle']")!
