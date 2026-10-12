@@ -1,7 +1,7 @@
 /**
  * 中栏视图读取文件内容的接缝（FR-007）。
  *
- * 视图**不自行取数**——取数由中栏注入（生产走 `sdk().client.file.read`，见 `pages/layout-new.tsx`），
+ * 视图**不自行取数**——取数由中栏注入（生产走 `LOAD_PROJECT_FILE`（→ `readProjectFile`，打上游 `GET /file/content`），见 `pages/layout-new.tsx` 的 `loadFile` 注入），
  * 视图只负责「字节 → 画面」。这样视图能被单独挂起来测，也不必被拖进整个应用 provider 组装。
  */
 

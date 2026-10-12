@@ -449,11 +449,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   /**
    * 当前项目变了就清空中栏（2026-10-12 分屏追加）。
    *
-   * **为什么是独立的一份 effect，而不是塞进上面那份文件 effect 里**：`center.clear()` 是一次
-   * 对 center 状态的写，而写状态会同步触发一轮重渲染——若写在那份 effect 里，那次重渲染会把它
-   * **再跑一遍**，同一份 id 取两次文件（实测 `没有当前项目时不取文件` 红成 `["p1","p1"]`）。
-   * 单独一份 effect 只读 `currentProject()?.id`（`clear` 不写这个信号），就不会被自己的那次
-   * 写拨回去。
+   * **为什么是独立的一份 effect，而不是塞进上面那份文件 effect 里**：`clear()` 内部要读一次
+   * center 的 `state`（`clear: () => setState(clearContentTabs(state()))`）——这次读**发生在
+   * effect 执行期**，会把本 effect 订阅到 `state`；紧接着 `setState` 就把它**再跑一次**（实测：
+   * 写进上面那份文件 effect ⇒ 同一份 id 取两次文件，`没有当前项目时不取文件` 红成 `["p1","p1"]`）。
+   * 单独一份 effect ＋ `上次清栏` 守门：即使被拨一次，`id` 已记过 ⇒ 收敛、不再动。
    *
    * **这份不用哨兵**（与上面那份不同）：哨兵管的是「进门第一趟、且当时没有项目」要不要把缝
    * 清掉——`projectFiles` 是**模块级**信号，上一个实例可能留了货，必须清。而 `center` 由

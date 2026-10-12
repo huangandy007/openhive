@@ -196,8 +196,8 @@ describe("分屏钮 / 收起钮", () => {
 
   test("不接 onSplit / onUnsplit ⇒ 栏尾一个钮都没有（DOM 与今天逐字相同）", () => {
     const 宿主 = mount(() => <TabBar tabs={四张} onActivate={() => {}} onClose={() => {}} availableWidth={580} />)
-    expect(宿主.querySelector("[data-slot='split-button']")).toBe(null)
-    expect(宿主.querySelector("[data-slot='unsplit-button']")).toBe(null)
+    expect(宿主.querySelector("[data-slot='split-button']") === null).toBe(true)
+    expect(宿主.querySelector("[data-slot='unsplit-button']") === null).toBe(true)
   })
 
   test("栏尾钮占的宽度真的被扣掉了：同样 4 张、同样 580px，接了分屏钮就少显示一张", () => {
@@ -249,7 +249,7 @@ describe("分屏钮 / 收起钮", () => {
     expect(受.firstElementChild!.getAttribute("data-focused")).toBe("true")
     expect(受.querySelector("[data-slot='tab-bar-focus-bar']")).not.toBe(null)
     const 未 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} />)
-    expect(未.firstElementChild!.getAttribute("data-focused")).toBe(null)
-    expect(未.querySelector("[data-slot='tab-bar-focus-bar']")).toBe(null)
+    expect(未.firstElementChild!.getAttribute("data-focused") === null).toBe(true)
+    expect(未.querySelector("[data-slot='tab-bar-focus-bar']") === null).toBe(true)
   })
 })

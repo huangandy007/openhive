@@ -73,7 +73,7 @@ const PROJECT_HEADER = "x-openhive-project"
 export type FileOpsFetch = ForkFetch
 
 /**
- * 三个写出口的三种结论。
+ * 六个出口共用的三种结论。
  *
  * `done` **带新路径**：服务端确实知道文件去哪儿了（它是搬的人），而这个值当场就有用
  * ——界面可以据此把话说明白。⚠️ 但它**不是**「界面该信的那份真相」：文件树的真相是**重取
@@ -298,7 +298,7 @@ async function transfer(
  * 一次 **JSON 体的 POST**——八个出口里五条（复制 / 移动 / 新建 / 重命名 / 删除）共用这一份，
  * 差别只有路径、体与失败文案。
  *
- * 提取的是那**六行字面量**（`method` / `credentials` / 两个头 / `JSON.stringify`）：五处各写一遍
+ * 提取的是那几样字面量（`method` / `credentials` / 两个头 / `JSON.stringify`）：五处各写一遍
  * 就是同一件事的第五份，而其中任何一处「顺手」少个 `credentials` 或忘了项目头，**都不报错**
  * ——只会让那一个动作静默落进别的目录（同 `openhive-project.ts` 的 `projectAction`）。
  *
@@ -362,7 +362,7 @@ function messageOf(body: unknown): string | undefined {
   return typeof error === "string" && error.length > 0 ? error : undefined
 }
 
-/** 三个写出口的成功回参：新文件相对项目根的路径（`file.ts` 的 `Made`）。 */
+/** 六个出口的成功回参：新条目相对项目根的路径（`file.ts` 的 `Made`）。 */
 function madePath(body: unknown): string | undefined {
   if (!isRecord(body)) return undefined
   return typeof body.path === "string" ? body.path : undefined

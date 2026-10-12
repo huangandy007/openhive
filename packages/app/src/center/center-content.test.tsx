@@ -442,7 +442,7 @@ describe("视图 chunk 悬着不回来：到点必须收手（挂起比失败更
  * 编辑器状态、PDF 的滚动位置一并归零。这些全都**静默**发生，测试看得见、民警只是觉得「卡了一下」。
  *
  * 触发源很隐蔽：`CenterTabsProvider` 每个动作都 `setState` 一个**新对象**，于是 `center-content.tsx`
- * 里那个读了 `center.tabs()` 的 effect 会为**任何**动作重跑，而 effect 里的 `set内容({...})` 写的是
+ * 里那个读了 `center.pane(props.pane ?? 0)` 的 effect 会为**任何**动作重跑，而 effect 里的 `set内容({...})` 写的是
  * 新字面量、`<Show keyed>` 又按引用比较 → 卸载重挂。下面三条按三种触发源分别钉住「内容没变就不许重建」。
  */
 describe("内容没变就不重建视图：切模块 / 关别的 tab / 重激活都打断不了它（FR-006 / SC-002）", () => {

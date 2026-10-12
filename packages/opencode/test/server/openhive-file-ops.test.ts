@@ -2201,7 +2201,12 @@ describe("openhive 文件出口 · stat（读前问大小）", () => {
         yield* 就绪()
         const response = yield* as(ALICE, 问大小(ALPHA, "a.txt"), { headers: 项目头(ALPHA) })
         expect(response.status).toBe(200)
-        const body = yield* json(Size, response)
+        // ⚠️ 体只能读一次，所以「成功回体只回 size」与「size 是真字节数」两条判据用**同一份**
+        // 原始 JSON：`Schema.Record(Schema.String, Schema.Unknown)` 读原始对象（值恒等、键全留），
+        // `Size` 解码会滤掉多余键、直接 `Object.keys` 就空转了（同「不带头」那条的口径）。
+        const raw = yield* json(Schema.Record(Schema.String, Schema.Unknown), response)
+        expect(Object.keys(raw)).toEqual(["size"])
+        const body = Schema.decodeUnknownSync(Size)(raw)
         // 与**盘上现在这一份**比，而不是与一个写死的数字比：夹具内容是活的。
         expect(body.size).toBe(statSync(文件.甲).size)
         expect(body.size).toBeGreaterThan(0)

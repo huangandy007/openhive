@@ -77,7 +77,7 @@ type 中栏内容 =
 /**
  * 「还是同一份内容吗」。**这不是省渲染的优化，是正确性的一部分。**
  *
- * 上游 `CenterTabsProvider` 每个动作都 `setState` 一个**新对象**，所以下面那个读了 `center.tabs()`
+ * 上游 `CenterTabsProvider` 每个动作都 `setState` 一个**新对象**，所以下面那个读了 `center.pane(props.pane ?? 0).tabs`
  * 的 effect 会为「关掉别的 tab」「切模块」这类**内容一字未变**的操作重跑。若 `内容` 用默认的 `===`
  * 比较，effect 里写入的新字面量永远算「变了」，`<Show keyed>` 就会把当前视图**卸载重挂**——文件字节
  * 重新拉一遍、渲染器重跑（pdfjs 重解析 / docx 重排版）、代码编辑器与 PDF 阅读位置归零。全静默发生，
