@@ -46,9 +46,22 @@
  */
 
 import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
+import type { FileContent } from "@/center/file-content"
 
 /** 上游那条出口的路径。**测试里写字面量、不 import 本常量**（`LEARNINGS #003-05`）。 */
 export const FILE_PATH = "/file"
+
+/**
+ * 读内容的出口（2026-10-12）。**走的是上游现成的那条**（`FilePaths.content = "/file/content"`）
+ * —— 后端一个字都不用改，本层只负责把「哪个项目」这个事实带上去。
+ *
+ * ⚠️ 为什么不能直接用 SDK 的 `client.file.read`：那条认的是**内核当前的工作目录**，
+ * 而我们手里只有**项目 id**。带上 `x-openhive-project` 让中间件把工作目录锚到那个项目，
+ * 与 `listProjectFiles` 是同一条链、同一个头。
+ *
+ * **测试里写字面量、不 import 本常量**（`LEARNINGS #003-05`）。
+ */
+export const CONTENT_PATH = "/file/content"
 
 /**
  * 客户端要说的那件事（`project-location.ts` 的契约）。**头名写字面量**：它是跨层的契约，
@@ -145,14 +158,14 @@ async function walk(
  *
  * ## 判据与服务端**逐字同形**（`packages/opencode/src/server/openhive/file.ts` 的 `inGit`）
  *
- * 那边拦的是**七个出口**（这一层拦不住任何一条直接构造的请求），两处的边界必须同一条：
+ * 那边拦的是**八个出口**（这一层拦不住任何一条直接构造的请求），两处的边界必须同一条：
  * **整条路径的第一段**是 `.git`，**不分大小写**（win32 上 `.git` / `.GIT` / `.Git` 是同一个
  * 目录）。「第一段」不是「任何一段」——嵌在项目里的 `资料\.git\`（解压进来的别人一份仓库）
  * 是项目**内容**，与项目根那个版本库不是一回事，与服务端那条边界一致。
  *
  * ## ⚠️ 这里不是安全边界
  *
- * 拦住改动的是服务端那七项守卫。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』
+ * 拦住改动的是服务端那八项守卫。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』
  * 替代权限校验」是禁止的——这里是**叠加**，不是替代：守卫先立着，客户端只是不画。
  */
 function isGitMetadata(path: string): boolean {
@@ -175,4 +188,35 @@ function readEntry(value: unknown): { path: string; type: "file" | "directory"; 
   if (typeof value.path !== "string" || value.path.length === 0) return undefined
   if (value.type !== "file" && value.type !== "directory") return undefined
   return { path: value.path, type: value.type, ignored: value.ignored === true }
+}
+
+/**
+ * 读一个文件的内容；读不到（不存在 / 没权限 / 体不是那个形状）一律 `undefined`。
+ *
+ * ⚠️ `FileContent` 只 import **类型**：`center/file-content` 里还有 `decodeBytes` 这样的
+ * 运行时东西，这里一个都不需要。视图那层要的字段就这两个（`type` / `content`），
+ * 多解一样就多一处「上游改了形状而这里不报错」的面。
+ */
+export async function readProjectFile(
+  projectId: string,
+  path: string,
+  send: ProjectFilesFetch = defaultSend,
+): Promise<FileContent | undefined> {
+  const response = await trySend(send, `${CONTENT_PATH}?${new URLSearchParams({ path })}`, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { [PROJECT_HEADER]: projectId },
+  })
+  if (!response?.ok) return undefined
+
+  const body = await readJson(response)
+  if (!isRecord(body)) return undefined
+  const type = body.type
+  if (type !== "text" && type !== "binary") return undefined
+  const content = body.content
+  if (typeof content !== "string") return undefined
+
+  const encoding = body.encoding === "base64" ? ("base64" as const) : undefined
+  const mimeType = typeof body.mimeType === "string" ? body.mimeType : undefined
+  return { type, content, ...(encoding ? { encoding } : {}), ...(mimeType ? { mimeType } : {}) }
 }

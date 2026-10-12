@@ -33,7 +33,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { listProjectFiles, type ProjectFilesFetch } from "./openhive-files"
+import { listProjectFiles, readProjectFile, type ProjectFilesFetch } from "./openhive-files"
 
 const PROJECT = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -236,7 +236,7 @@ describe("listProjectFiles", () => {
 })
 
 /**
- * 2026-10-11 · **项目根的 `.git` 从文件树里隐掉**（用户裁定）。服务端那侧是**七项全堵**
+ * 2026-10-11 · **项目根的 `.git` 从文件树里隐掉**（用户裁定）。服务端那侧是**八项全堵**
  * （`packages/opencode/src/server/openhive/file.ts` 的 `inGit`），这一层只是「别让民警看见、
  * 别白走一趟」。
  *
@@ -248,7 +248,7 @@ describe("listProjectFiles", () => {
  *
  * ## ⚠️ 这一层**不是安全边界**
  *
- * 拦住改动的是服务端那七项守卫；这里显掉它拦不住任何一条直接构造的请求。
+ * 拦住改动的是服务端那八项守卫；这里显掉它拦不住任何一条直接构造的请求。
  * `CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』替代权限校验」是禁止的——
  * 这里**不是替代，是叠加**：服务端的守卫先立着，客户端只是不画。
  *
@@ -319,5 +319,83 @@ describe("项目根的 .git 从清单里隐掉", () => {
 
     expect(await listProjectFiles(PROJECT, send)).toEqual(["资料\\.git\\config", "资料\\笔记.md"])
     expect(sent.map((item) => item.path)).toEqual(["", "资料\\", "资料\\.git\\"])
+  })
+})
+
+describe("readProjectFile", () => {
+  function 替身(answer: Response) {
+    const 收到: Array<{ url: string; path: string | null; project: string | null }> = []
+    const send: ProjectFilesFetch = async (input, init) => {
+      const url = new URL(input, "http://localhost")
+      收到.push({
+        url: input,
+        path: url.searchParams.get("path"),
+        project: new Headers(init?.headers).get("x-openhive-project"),
+      })
+      return answer
+    }
+    return { send, 收到 }
+  }
+
+  const 回 = (status: number, body: string) =>
+    new Response(body, { status, headers: { "content-type": "application/json" } })
+
+  test("打的是 /file/content?path=…，带项目头", async () => {
+    const { send, 收到 } = 替身(回(200, '{"type":"text","content":"甲的正文"}'))
+    await readProjectFile(PROJECT, "资料/甲.txt", send)
+    expect(收到).toEqual([
+      { url: "/file/content?path=%E8%B5%84%E6%96%99%2F%E7%94%B2.txt", path: "资料/甲.txt", project: PROJECT },
+    ])
+  })
+
+  test("200 的 text 体 ⇒ 原样交给视图那一层", async () => {
+    const { send } = 替身(回(200, '{"type":"text","content":"甲的正文"}'))
+    expect(await readProjectFile(PROJECT, "a.txt", send)).toEqual({ type: "text", content: "甲的正文" })
+  })
+
+  test("200 的 binary 体 ⇒ 连 encoding / mimeType 一起交出去（视图要 base64 那份）", async () => {
+    const { send } = 替身(回(200, '{"type":"binary","content":"QUJD","encoding":"base64","mimeType":"application/pdf"}'))
+    expect(await readProjectFile(PROJECT, "a.pdf", send)).toEqual({
+      type: "binary",
+      content: "QUJD",
+      encoding: "base64",
+      mimeType: "application/pdf",
+    })
+  })
+
+  /**
+   * ⚠️ **这一条不是 `!response.ok` 那道判据的守护者**——拆掉那道判据它**照样绿**
+   * （这个体里本来就没有 `type`，放它过去也回 `undefined`）。见下面那条**刻意造出来的**用例。
+   */
+  test("非 200 ⇒ undefined", async () => {
+    const { send } = 替身(回(400, '{"error":"文件不存在"}'))
+    expect(await readProjectFile(PROJECT, "a.txt", send)).toBeUndefined()
+  })
+
+  /**
+   * ⚠️ 形状是**故意造的**（服务端不会在 4xx 里回一份像样的内容），存在的唯一理由是让
+   * `!response.ok` 那道判据**有守护者**：拆掉它、让 400 也往下走，**这一组里只有它会红**。
+   * （`#005-18` 第四问：变异跑出绿，先问「这条判据的射程里有我刚拆的那一行吗」。）
+   * 语义上它钉的是：**非 200 的体一概不信**，哪怕它长得就是我们要的那份。
+   */
+  test("400 ＋ 体里却有一份像样的内容 ⇒ 仍然 undefined（非 200 的体一概不信）", async () => {
+    const { send } = 替身(回(400, '{"type":"text","content":"甲的正文"}'))
+    expect(await readProjectFile(PROJECT, "a.txt", send)).toBeUndefined()
+  })
+
+  test("体里 type/content 不是那两个字符串 ⇒ undefined（不猜、不硬塞）", async () => {
+    const 没类型 = 替身(回(200, '{"content":"甲的正文"}'))
+    expect(await readProjectFile(PROJECT, "a.txt", 没类型.send)).toBeUndefined()
+    const 类型不认识 = 替身(回(200, '{"type":"markdown","content":"x"}'))
+    expect(await readProjectFile(PROJECT, "a.txt", 类型不认识.send)).toBeUndefined()
+    const 内容不是串 = 替身(回(200, '{"type":"text","content":12}'))
+    expect(await readProjectFile(PROJECT, "a.txt", 内容不是串.send)).toBeUndefined()
+  })
+
+  test("外呼抛 ⇒ undefined", async () => {
+    const send: ProjectFilesFetch = async () => {
+      throw new Error("断网了")
+    }
+    expect(await readProjectFile(PROJECT, "a.txt", send)).toBeUndefined()
   })
 })
