@@ -27,8 +27,20 @@ viewRegistry.register({
   extensions: [".doc", ".docx"],
   load: async () => (await import("./document-view")).DocumentView,
 })
+/**
+ * 表格类扩展名（`.xls` / `.xlsx` / `.csv`）。
+ *
+ * **提成导出常量**是一个判据要求，不是整理洁癖（2026-10-12）：文件大小的**闸门**
+ * （`center/open-file.ts`）要按「是不是表格」分两档阈值（表格 5 MB、其余 10 MB），
+ * 而「哪些扩展名算表格」这件事**只能有一份**——注册表认它、闸门也认它。
+ * 两处各写一份数组，改一处漏一处**不报错、不变红**（`LEARNINGS #002-06`）。
+ *
+ * 登记处与 `代码扩展名` 同一形状（`readonly string[]`），故 `register` 直接收。
+ */
+export const 表格扩展名: readonly string[] = [".xls", ".xlsx", ".csv"]
+
 viewRegistry.register({
-  extensions: [".xls", ".xlsx", ".csv"],
+  extensions: 表格扩展名,
   load: async () => (await import("./sheet-view")).SheetView,
 })
 viewRegistry.register({
