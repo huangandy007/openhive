@@ -1,5 +1,6 @@
 import {
   createContext,
+  createMemo,
   createSignal,
   useContext,
   type Accessor,
@@ -66,8 +67,24 @@ export function CenterTabsProvider(props: ParentProps<{ initialModule?: string }
   // 只在挂载时读一次：进门停在哪个模块是初值，之后一律由 switchModule 改。
   const [state, setState] = createSignal<CenterTabState>({ ...空中栏(), module: props.initialModule })
 
+  /**
+   * `module` 是**独立的一条轴**（当前停留哪个模块），与 tab 开合 / 分屏 / 清空那些写**不共一根弦**。
+   *
+   * 为什么必须 memo（2026-10-12 实测，代价是一条别人文件里的红）：`state` 是**整份对象**一个
+   * signal，`module: () => state().module` 在**任何**写（开 tab、清空、分屏）下都会拨醒它的读口
+   * ——哪怕 `.module` 那串一个字没变。而 `workspace-entry.tsx` 的 `left` 那道门写的是
+   * `center.module() === "project" ? <左栏/> : undefined`：这个 getter **每读一次就可能新造一棵
+   * 左栏子树**（`three-pane.tsx` 里记着同一件事）。于是「清空一个本就空的 center」这种空写，
+   * 会让左栏子树被重造、那台隐藏文件选择器的 `ref` 指回**已摘除**的旧 input——之后点「上传」
+   * 点的是空气（`选文件` 里 `文件选择器?.click()` 落在 detached 节点上）。
+   *
+   * `createMemo` 只会在 `.module` **真的变了**时才通知下游（内部仍每次重算，但 `===` 相等就
+   * 不外传）。tab 开合 / 清空 / 分屏都不动 module ⇒ 左栏那道门不被重读 ⇒ 不重造子树。
+   */
+  const module = createMemo(() => state().module)
+
   const tabs: CenterTabs = {
-    module: () => state().module,
+    module,
     pane: (pane) => state().panes[pane],
     activePane: () => state().activePane,
     split: () => state().split,
