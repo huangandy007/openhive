@@ -17,6 +17,23 @@ const TABS: ContentTab[] = [
   { module: "fund-analysis", title: "流水.xlsx", path: "/p/fund.xlsx" },
 ]
 
+/** 分屏用例需要 4 张 tab 去凑「580 收成 3 张 / 扣 26 后收成 2 张」的边界。 */
+const 四张: ContentTab[] = [...TABS, { module: "cdr-analysis", title: "第二个话单.csv", path: "/p/cdr2.csv" }]
+
+const 歇一拍 = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 轮询等到某条件成立，超时就抛。**不等固定时长**（`LEARNINGS #006-31`：`waitForTimeout`
+ * 后面紧跟断言，既会假绿也会假红）。
+ */
+async function 等到(条件: () => boolean, 上限毫秒 = 1000) {
+  const 起 = Date.now()
+  while (!条件()) {
+    if (Date.now() - 起 > 上限毫秒) throw new Error("等到超时")
+    await 歇一拍()
+  }
+}
+
 const slots = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLElement>(`[data-slot='${name}']`)]
 const titles = (host: HTMLElement) => slots(host, "tab").map((el) => el.querySelector("[data-slot='tab-title']")?.textContent)
 
@@ -171,5 +188,68 @@ describe("TabBar 的悬停提示", () => {
     const host = mountBar({ availableWidth: 400 })
 
     expect(壳内(host, "tab-overflow")).toBe(1)
+  })
+})
+
+describe("分屏钮 / 收起钮", () => {
+  const [甲, 乙] = 四张
+
+  test("不接 onSplit / onUnsplit ⇒ 栏尾一个钮都没有（DOM 与今天逐字相同）", () => {
+    const 宿主 = mount(() => <TabBar tabs={四张} onActivate={() => {}} onClose={() => {}} availableWidth={580} />)
+    expect(宿主.querySelector("[data-slot='split-button']")).toBe(null)
+    expect(宿主.querySelector("[data-slot='unsplit-button']")).toBe(null)
+  })
+
+  test("栏尾钮占的宽度真的被扣掉了：同样 4 张、同样 580px，接了分屏钮就少显示一张", () => {
+    // 580 - 40(⋯) = 540 ⇒ 3 张；接分屏钮后 580 - 26 - 40 = 514 ⇒ 2 张。
+    const 不接 = mount(() => <TabBar tabs={四张} onActivate={() => {}} onClose={() => {}} availableWidth={580} />)
+    expect(不接.querySelectorAll("[data-slot='tab']").length).toBe(3)
+    const 接 = mount(() => (
+      <TabBar tabs={四张} onActivate={() => {}} onClose={() => {}} availableWidth={580} onSplit={() => {}} />
+    ))
+    expect(接.querySelectorAll("[data-slot='tab']").length).toBe(2)
+  })
+
+  test("少于两张 tab ⇒ 分屏钮 `aria-disabled`（置灰可见，不是藏起来），点了菜单不开", async () => {
+    const 宿主 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} onSplit={() => {}} />)
+    const 钮 = 宿主.querySelector<HTMLElement>("[data-slot='split-button']")!
+    expect(钮.getAttribute("aria-disabled")).toBe("true")
+    expect(钮.getAttribute("aria-label")).toBe("至少打开两个文件才能分屏")
+    钮.click()
+    await 歇一拍()
+    // 用 `=== null` 布尔比较而不是 `.toBe(null)`：那颗菜单若真开了，`querySelector` 会
+    // 返回一个 DOM 节点，`.toBe(null)` 红了会把 bun 的 pretty-printer 挂死（`LEARNINGS #005-01`）。
+    expect(宿主.querySelector("[data-slot='split-menu']") === null).toBe(true)
+  })
+
+  test("两张以上 ⇒ 点开菜单，两项，选「上下」⇒ onSplit('上下')", async () => {
+    const 选过: string[] = []
+    const 宿主 = mount(() => (
+      <TabBar tabs={[甲, 乙]} onActivate={() => {}} onClose={() => {}} onSplit={(排列) => 选过.push(排列)} />
+    ))
+    宿主.querySelector<HTMLElement>("[data-slot='split-button']")!.click()
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") !== null)
+    const 项 = 宿主.querySelectorAll("[data-slot='split-menu-item']")
+    expect(项.length).toBe(2)
+    expect(Array.from(项).map((n) => n.getAttribute("data-split"))).toEqual(["左右", "上下"])
+    宿主.querySelector<HTMLElement>("[data-slot='split-menu-item'][data-split='上下']")!.click()
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") === null)
+    expect(选过).toEqual(["上下"])
+  })
+
+  test("接 onUnsplit ⇒ 出现收起钮，点它 ⇒ onUnsplit()", () => {
+    let 次数 = 0
+    const 宿主 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} onUnsplit={() => 次数++} />)
+    宿主.querySelector<HTMLElement>("[data-slot='unsplit-button']")!.click()
+    expect(次数).toBe(1)
+  })
+
+  test("focused ⇒ 根带 data-focused ＋ 一条受焦条；不传 ⇒ 两样都没有", () => {
+    const 受 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} focused />)
+    expect(受.firstElementChild!.getAttribute("data-focused")).toBe("true")
+    expect(受.querySelector("[data-slot='tab-bar-focus-bar']")).not.toBe(null)
+    const 未 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} />)
+    expect(未.firstElementChild!.getAttribute("data-focused")).toBe(null)
+    expect(未.querySelector("[data-slot='tab-bar-focus-bar']")).toBe(null)
   })
 })

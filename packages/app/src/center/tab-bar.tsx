@@ -33,7 +33,30 @@ export interface TabBarProps {
    * （沿用 T008 给顶栏留 `titlebarRight` 注入缝的同一范式）。
    */
   availableWidth?: number
+  /**
+   * 分屏（2026-10-12）：这颗钮长在**栏尾**，点开是「左右分屏 / 上下分屏」两项。
+   *
+   * 省略 ＝ **不渲染**（既有宿主：storybook、以及不接分屏的用例，DOM 一字不动）。
+   * ⚠️ 少于两张 tab 时它**置灰可见**（`aria-disabled`）而不是藏起来：藏起来用户学不到
+   * 「这里能分屏、但要先有两个文件」（设计文档 §3.3 的取舍）。
+   */
+  onSplit?: (排列: "左右" | "上下") => void
+  /** 收起这一栏（只有右/下那一栏接）。省略 ＝ 不渲染。 */
+  onUnsplit?: () => void
+  /**
+   * 这一栏是不是**受焦栏**。
+   *
+   * ⚠️ 只在分屏时才有意义——调用方传 `center.split() && center.activePane() === p`。
+   * 单栏时画一条「这一栏受焦」的指示是噪音：它没有别处可选。
+   */
+  focused?: boolean
 }
+
+/**
+ * 栏尾那颗分屏钮占的宽度（`size-6` ＝ 24px ＋ 条内 `gap-0.5` ＝ 2px）。
+ * 只在**接了 `onSplit`** 时才从可用宽度里扣（见 `available()`）。
+ */
+const 栏尾钮宽 = 26
 
 function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; onClose: () => void }) {
   return (
@@ -110,7 +133,8 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
 export function TabBar(props: TabBarProps) {
   let strip: HTMLDivElement | undefined
   const [measured, setMeasured] = createSignal(0)
-  const [menuOpen, setMenuOpen] = createSignal(false)
+  // 同一时刻最多开一个下拉：溢出「⋯」与分屏钮的菜单共用一个状态。
+  const [菜单, setMenu] = createSignal<"overflow" | "split" | undefined>(undefined)
 
   onMount(() => {
     if (typeof ResizeObserver === "undefined" || !strip) return
@@ -121,22 +145,31 @@ export function TabBar(props: TabBarProps) {
 
   // `measured()` 为 0 = **还没量到**（首帧，或 happy-dom 这类无 CSS 引擎的环境），不是「宽度为零」。
   // 判成 0 会把全部 tab 一股脑塞进「⋯」——凭空隐藏比暂时多显示更糟，故当作「不限宽」先全显示。
-  const available = () => props.availableWidth ?? (measured() || Number.POSITIVE_INFINITY)
+  const available = () => {
+    const 总 = props.availableWidth ?? (measured() || Number.POSITIVE_INFINITY)
+    // 栏尾那颗分屏钮要占宽。**只在接了它的时候扣**：不接的宿主（既有用例 / storybook）
+    // 数字与今天逐字相同——那 26px 是真的被那颗钮吃掉的，不是账面上的。
+    return props.onSplit === undefined ? 总 : 总 - 栏尾钮宽
+  }
   const split = () => splitTabOverflow(props.tabs.length, available(), { tabWidth: TAB_WIDTH, overflowWidth: OVERFLOW_WIDTH })
   const visible = () => props.tabs.slice(0, split().visibleCount)
   const hidden = () => props.tabs.slice(split().visibleCount)
 
+  /** 够不够分屏：**至少两张** tab（设计文档 §3.3：中栏至少要已经有打开的两个 Tab 页面）。 */
+  const 够分屏 = () => props.tabs.length >= 2
+
   const activate = (tab: ContentTab) => {
     props.onActivate(contentTabKey(tab))
-    setMenuOpen(false)
+    setMenu(undefined)
   }
 
   return (
     <div
       ref={strip}
       data-component="tab-bar"
+      data-focused={props.focused ? "true" : undefined}
       style={{ height: `${TAB_HEIGHT}px` }}
-      class="flex w-full shrink-0 items-stretch gap-0.5 border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-1"
+      class="relative flex w-full shrink-0 items-stretch gap-0.5 border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-1"
     >
       <For each={visible()}>
         {(tab) => (
@@ -158,15 +191,15 @@ export function TabBar(props: TabBarProps) {
               type="button"
               data-slot="tab-overflow"
               aria-label={`还有 ${hidden().length} 个标签页`}
-              aria-expanded={menuOpen()}
-              onClick={() => setMenuOpen(!menuOpen())}
+              aria-expanded={菜单() === "overflow"}
+              onClick={() => setMenu(菜单() === "overflow" ? undefined : "overflow")}
               class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
             >
               {/* 原生图标集没有 ellipsis / more 一档，用字面字形 U+22EF 顶（同 §5.3 的线性风格） */}
               ⋯
             </button>
           </TooltipV2>
-          <Show when={menuOpen()}>
+          <Show when={菜单() === "overflow"}>
             <div
               data-slot="tab-overflow-menu"
               class="absolute top-full right-0 z-50 mt-1 flex min-w-40 flex-col rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
@@ -184,6 +217,72 @@ export function TabBar(props: TabBarProps) {
                 )}
               </For>
             </div>
+          </Show>
+        </div>
+      </Show>
+      {/* 受焦指示（2026-10-12）：沿用 tab 上那条激活条的语言（同族 `tab-active-bar`），
+          不新造视觉符号（设计文档 §3.3）。只读「受不受焦」这一个事实，不读鼠标。 */}
+      <Show when={props.focused}>
+        <span data-slot="tab-bar-focus-bar" class="absolute inset-x-0 bottom-0 h-0.5 bg-v2-background-bg-accent" />
+      </Show>
+      <Show when={props.onSplit !== undefined || props.onUnsplit !== undefined}>
+        <div class="relative ml-auto flex items-center gap-0.5">
+          <Show when={props.onSplit}>
+            <TooltipV2 value={够分屏() ? "分屏" : "至少打开两个文件才能分屏"} class="flex shrink-0">
+              <button
+                type="button"
+                data-slot="split-button"
+                aria-label={够分屏() ? "分屏" : "至少打开两个文件才能分屏"}
+                aria-disabled={够分屏() ? undefined : "true"}
+                onClick={() => {
+                  // 置灰态用 `aria-disabled` 而不是原生 `disabled`：原生 `disabled` 的元素
+                  // 收不到 hover，那句「至少打开两个文件才能分屏」就永远出不来
+                  // （`LEARNINGS #005-17` 的同族：可见而不响的控件要说得出为什么）。
+                  if (!够分屏()) return
+                  setMenu(菜单() === "split" ? undefined : "split")
+                }}
+                class="flex size-6 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
+              >
+                {/* 原生图标集里没有「分屏」这一档，用字面字形 U+25AB 顶（同 `⋯` 的先例） */}
+                ▫
+              </button>
+            </TooltipV2>
+          </Show>
+          <Show when={菜单() === "split" && props.onSplit}>
+            <div
+              data-slot="split-menu"
+              class="absolute top-full right-0 z-50 mt-1 flex min-w-28 flex-col rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-1 shadow-lg"
+            >
+              <For each={["左右", "上下"] as const}>
+                {(排列) => (
+                  <button
+                    type="button"
+                    data-slot="split-menu-item"
+                    data-split={排列}
+                    onClick={() => {
+                      setMenu(undefined)
+                      props.onSplit?.(排列)
+                    }}
+                    class="cursor-pointer truncate rounded px-2 py-1.5 text-left text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                  >
+                    {排列}分屏
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+          <Show when={props.onUnsplit}>
+            <TooltipV2 value="收起这一栏" class="flex shrink-0">
+              <button
+                type="button"
+                data-slot="unsplit-button"
+                aria-label="收起这一栏"
+                onClick={() => props.onUnsplit?.()}
+                class="shrink-0 cursor-pointer rounded px-2 py-1 text-[13px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+              >
+                收起
+              </button>
+            </TooltipV2>
           </Show>
         </div>
       </Show>
