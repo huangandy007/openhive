@@ -75,7 +75,7 @@ describe("BigFileDialog", () => {
         }
       />
     ))
-    ;(宿主.querySelector("[data-slot='开']") as HTMLElement).click()
+    宿主.querySelector<HTMLElement>("[data-slot='开']")!.click()
     await 歇一拍()
     const 文案 = document.querySelector("[data-slot='big-file-dialog-text']")?.textContent ?? ""
     expect(文案).toContain("卷宗扫描件.pdf")
@@ -93,9 +93,9 @@ describe("BigFileDialog", () => {
         }
       />
     ))
-    ;(宿主.querySelector("[data-slot='开']") as HTMLElement).click()
+    宿主.querySelector<HTMLElement>("[data-slot='开']")!.click()
     await 歇一拍()
-    ;(document.querySelector("[data-slot='big-file-open']") as HTMLElement).click()
+    document.querySelector<HTMLElement>("[data-slot='big-file-open']")!.click()
     await 歇一拍()
     expect(答案).toEqual([true])
   })
@@ -109,9 +109,9 @@ describe("BigFileDialog", () => {
         }
       />
     ))
-    ;(宿主.querySelector("[data-slot='开']") as HTMLElement).click()
+    宿主.querySelector<HTMLElement>("[data-slot='开']")!.click()
     await 歇一拍()
-    ;(document.querySelector("[data-slot='big-file-cancel']") as HTMLElement).click()
+    document.querySelector<HTMLElement>("[data-slot='big-file-cancel']")!.click()
     await 歇一拍()
     expect(答案).toEqual([false])
   })
@@ -129,7 +129,7 @@ describe("BigFileDialog", () => {
         }}
       />
     ))
-    ;(宿主.querySelector("[data-slot='开']") as HTMLElement).click()
+    宿主.querySelector<HTMLElement>("[data-slot='开']")!.click()
     await 歇一拍()
     外面!.close()
     // ⚠️ `close()` 是**两步**（状态立刻变、节点 100ms 后才 dispose，`LEARNINGS #005-33`）
@@ -147,9 +147,9 @@ describe("BigFileDialog", () => {
         }
       />
     ))
-    ;(宿主.querySelector("[data-slot='开']") as HTMLElement).click()
+    宿主.querySelector<HTMLElement>("[data-slot='开']")!.click()
     await 歇一拍()
-    ;(document.querySelector("[data-slot='big-file-open']") as HTMLElement).click()
+    document.querySelector<HTMLElement>("[data-slot='big-file-open']")!.click()
     await 歇一拍()
     // 等 `close()` 那条 100ms 的定时器真跑完、节点真的拆掉（`onCleanup` 就挂在它后面），
     // 再判「没有第二次 on答」——等**节点消失**这个可观测条件，不等固定时长。
