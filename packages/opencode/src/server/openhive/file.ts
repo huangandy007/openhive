@@ -37,7 +37,7 @@ export * as OpenhiveFile from "./file"
  * 同理**不重算** `join(root, userId)` 再去比：那等于把中间件那句 `join` 抄第二份
  * （`LEARNINGS #002-06`）。本模块问的是另一个问题——「**这次请求在不在一个项目里**」。
  *
- * ## 八个出口一律要求项目头在场（`tasks.md` T020 的「⚠️ 权限锚（**不新造判定**）」那条，安全判据）
+ * ## 九个出口一律要求项目头在场（`tasks.md` T020 的「⚠️ 权限锚（**不新造判定**）」那条，安全判据）
  *
  * 头缺失时中间件**原样放行**，工作目录退回**沙箱根** `join(root, userId)`——而沙箱根是
  * **所有项目的父目录**（每个项目是它下面的一层）。于是 `prj_other/密件.txt` 这条相对路径
@@ -47,7 +47,7 @@ export * as OpenhiveFile from "./file"
  *
  * ⚠️ 这条判据**不是**「再判一遍中间件判过的东西」：中间件拦的是「这个项目在不在、冻没冻」，
  * 本模块判的是「这次请求到底在不在项目里」。中间件**刻意**允许无头请求直通（那是大多数
- * 请求的正常路径），所以「不带头」在它那里**不是错误**、在八个出口这里**是**。
+ * 请求的正常路径），所以「不带头」在它那里**不是错误**、在九个出口这里**是**。
  *
  * ⚠️ 沙箱根那一层**不是「外面」**——同一用户的项目都并排住在那里。测试里那条「不带头 ⇒
  * 够得着兄弟项目」的用例（`openhive-file-ops.test.ts`）用的正是这个形状。
@@ -150,7 +150,7 @@ import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-wo
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
 
-/** 八个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
+/** 九个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
 export const PATH = {
   copy: `${PREFIX}/copy`,
   move: `${PREFIX}/move`,
@@ -164,6 +164,13 @@ export const PATH = {
    * 与我们的 `download` 都会 `readFile` —— 那正是闸门要在**读之前**躲开的那一下。
    */
   stat: `${PREFIX}/stat`,
+  /**
+   * 2026-10-12（第九个出口）：把中栏改过的正文**存回盘上**（`handleWrite`）。
+   *
+   * ⚠️ 它与另外八个**不同族**：那八个动的是**条目**（新建 / 搬走 / 删掉 / 读字节），
+   * 它动的是**一个已有文件的正文**。放同一个模块是因为守卫链逐条同序（见 `handleWrite`）。
+   */
+  write: `${PREFIX}/write`,
   /** T018 的三项。`create` 的 `kind` 分文件 / 目录（用户 2026-10-10 裁定「新建文件夹」也要）。 */
   create: `${PREFIX}/create`,
   rename: `${PREFIX}/rename`,
@@ -220,6 +227,19 @@ const RenameBody = Schema.Struct({
 /** 删除的请求体：`path` 是**相对项目根**的目标（可以是嵌套路径，删目录是递归的）。 */
 const RemoveBody = Schema.Struct({
   path: Schema.String,
+})
+
+/**
+ * 存盘的请求体：要写哪个文件、写什么、以及**打开时那份原文**。
+ *
+ * `base` 是这一条的**并发保护**，不是冗余字段：编辑发生在一个 `<textarea>` 里，而文件可能
+ * 在这段时间被别人（或别的会话）改过。客户端把「它打开时读到的那份」一并送上，服务端比对
+ * 盘上**现在**这份——不同就拒（见 `handleWrite`）。
+ */
+const WriteBody = Schema.Struct({
+  path: Schema.String,
+  content: Schema.String,
+  base: Schema.String,
 })
 
 /**
@@ -313,6 +333,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, root))
     yield* router.add("POST", PATH.rename, (request) => handleRename(request, root))
     yield* router.add("POST", PATH.remove, (request) => handleRemove(request, root))
+    // 2026-10-12（第九个出口）：把中栏改过的正文存回盘上（同属 T018 那一族，见 `handleWrite`）。
+    yield* router.add("POST", PATH.write, (request) => handleWrite(request, root))
   }),
 )
 
@@ -465,7 +487,7 @@ const attempt = (run: () => Promise<unknown>) =>
 const exists = (path: string) => Effect.promise(() => access(path).then(() => true, () => false))
 
 /**
- * 八个出口共用的那道闸：身份 ＋ **项目在场**。
+ * 九个出口共用的那道闸：身份 ＋ **项目在场**。
  *
  * 回的是 `string`（项目目录）或一个已经成形的响应——调用方 `typeof` 一判就能返回，
  * 不必把「401 还是 400」那套判断在七个 handler 里各写一遍。
@@ -841,6 +863,107 @@ function handleRemove(request: HttpServerRequest.HttpServerRequest, root: string
     }
 
     return Made(relativePath(project, absolute))
+  })
+}
+
+/**
+ * 客户端手上那份原文与盘上现在这份**不是同一份**时那句（2026-10-12，第九个出口）。
+ *
+ * 说清**三件事**：这份文件变过、我们**没有**覆盖、用户该做什么（关掉重开）。措辞里不出现
+ * 「冲突 / 版本 / 合并」这类词——那是工程师的话，而这句要念给不懂代码的民警听。
+ */
+const STALE = "这份文件在你打开之后被改过（可能有人在别处改过）。为避免覆盖别人的改动，请关掉重新打开再改。"
+
+/**
+ * 存盘（2026-10-12 · 用户实报「打开的文件现在不能复制，编辑，修改，和保存」的第三、四步）：
+ * 把中栏那个编辑框里的正文写回**项目里已存在的那个文件**。
+ *
+ * ## 守卫与同族的另外八个出口**逐条同序**
+ *
+ * `gate` → `inside` → `inGit` → `lstat`（**不是** `stat`）→ `realInside`（同 `handleStat` /
+ * `handleDownload` 那一串）。这不是抄一遍：这一层是**唯一**决定「这次写落在盘上哪儿」的地方，
+ * 松一档的出口就是别人的旁路（`LEARNINGS #004-01`：数「底层动作被调用的地方」，不是数
+ * 「已经有守卫的地方」）。
+ *
+ * ## 只改**已经存在的普通文件**（两条各自的理由）
+ *
+ * - **不存在 ⇒ 拒，不顺手建出来**。否则「打开了一个已被别人删掉的文件、按保存」会在盘上
+ *   凭空造一个新文件——用户以为在改旧文件，其实造了个新的（而他还看不到这个区别）。
+ *   要建新文件是 `create` 那个出口的事。
+ * - **最后一段是链接 ⇒ 拒**（`lstat` 而不是 `stat`，同 `handleStat` 那条实测注释）：跟着看
+ *   就等于经链接写进另一个文件/项目，而这一层的路径判据看不见那件事。
+ *
+ * ## 并发：比对 `base`，不同就**拒**，不写、不合并
+ *
+ * 比对的是「**读口交回来的那份**」：上游 `handlers/file.ts:116` 给客户端的正文是
+ * `TextDecoder("utf-8").decode(bytes).trim()`（BOM 被吃、首尾空白被削），所以这里的「现在这份」
+ * 必须用**同一套解码**算出来——拿**原始字节**去比会让每个「以换行结尾」的文件都假冲突
+ * （`LEARNINGS #006-25`：镜像的边界语义要对齐，不能只对齐主路径）。
+ *
+ * ## 写回去的是 `信封 ＋ content`，不是 `content`
+ *
+ * 读口削掉的那圈「信封」（BOM / 首尾空白 / 行尾风格）**是这个文件的形状**，不是噪声：
+ * 一次「打开→保存」把整个 .txt 的 CRLF 折成 LF，是别的工具也看得见的改动（git 上是整份 diff）。
+ * 故存回去时照原样裹上：BOM 按原样补、行尾按盘上多数派还原、首尾空白原样接回。
+ * 代价写在这里：**编辑框里首尾的空行看不见也改不动**（读口本来就削掉了它们）。
+ *
+ * ## 与 `FileMutation.writeIfUnchanged` 的关系（**刻意不用它**，别以为漏了）
+ *
+ * `packages/core/src/file-mutation.ts` 里那条做的正是同一个判断（读原文、比对、不同则抛
+ * `StaleContentError`），但它在本进程里**拿不到**：`grep -rn "FileMutation" src/` 在
+ * `packages/opencode/src` 下**零命中**（只有本文件头那条注释提过它）——用它得把 core 的服务树
+ * 整层接进 server，为一次「比一下字节」付一整棵 layer 的代价。**分叉是刻意的**，记在这里。
+ *
+ * ## 已知不覆盖
+ *
+ * - **「读现在这份 → 比对 → 写」之间有一瞬空隙**（同「移动的目标已存在」那条：Node 没有
+ *   「内容没变才写」的原语）。两个请求同时存同一个文件时，后到的那个可能盖掉先到的。
+ *   要真原子得对同一路径串行化——超出本出口的范围，登记为缺口（`#002-02`）。
+ * - **只读文件 / 无权限 ⇒ 500**：`EACCES` / `EPERM` 不在 `CLIENT_FAILURES` 里，走 `Effect.die`
+ *   （同另外七个出口的口径）。民警遇到的是「保存失败」，而服务端日志里那句才是真相。
+ */
+function handleWrite(request: HttpServerRequest.HttpServerRequest, root: string) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const payload = yield* bodyOf(request, WriteBody)
+    if (Option.isNone(payload)) return badRequest("请求体需要 path、content、base 三个字符串")
+    const { path: 路径, content, base } = payload.value
+
+    const target = inside(project, 路径)
+    if (target === undefined) return badRequest("路径越出项目目录")
+    if (inGit(project, target)) return badRequest(GIT_LOCKED)
+
+    const info = yield* Effect.promise(() => lstat(target).catch(() => undefined))
+    if (info === undefined) return badRequest("文件不存在")
+    if (!info.isFile()) return badRequest("这里只能改普通文件")
+    if (!(yield* realInside(project, dirname(target)))) return badRequest(LINK_ESCAPE)
+
+    const 原始 = yield* Effect.promise(() => readFile(target).catch(() => undefined))
+    if (原始 === undefined) return badRequest("文件读不出来")
+
+    // 与读口**同一套解码**（见上面那条注释）：畸形 UTF-8 落到替换字符上，对不上 `base` ⇒ 拒。
+    const 文本 = new TextDecoder("utf-8").decode(原始)
+    if (文本.trim() !== base) return badRequest(STALE)
+
+    // 「信封」＝ 读口削掉、而这次要原样裹回去的那一圈。
+    const 去头 = 文本.trimStart()
+    const 头 = 文本.slice(0, 文本.length - 去头.length)
+    const 尾 = 去头.slice(去头.trimEnd().length)
+    const 有BOM = 原始[0] === 0xef && 原始[1] === 0xbb && 原始[2] === 0xbf
+    const crlf数 = (文本.match(/\r\n/g) ?? []).length
+    const 裸lf数 = (文本.match(/\n/g) ?? []).length - crlf数
+    // `content.trim()`：与读口对齐（编辑框里首尾的空行本来就是它削掉的，见上面那条代价）。
+    const 正文 = content.trim()
+    // ⚠️ BOM 用转义写（"\ufeff"）：不敲字面字符——不可见字符进源码，下一个人 diff 时只会看到一个空格。
+    const BOM字符 = "\ufeff"
+    const 落盘 = (有BOM ? BOM字符 : "") + 头 + (crlf数 > 裸lf数 ? 正文.replace(/\r?\n/g, "\r\n") : 正文) + 尾
+
+    const failed = yield* attempt(() => writeFile(target, 落盘, "utf8"))
+    if (failed !== undefined) yield* Effect.die(failed)
+
+    return Made(relativePath(project, target))
   })
 }
 

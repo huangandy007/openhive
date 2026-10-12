@@ -250,6 +250,8 @@ const 出口 = {
   create: "/openhive/file/create",
   rename: "/openhive/file/rename",
   remove: "/openhive/file/remove",
+  /** 2026-10-12 第九个出口：把中栏改过的正文**存回盘上**（用户实报「打开的文件不能…修改、保存」）。 */
+  write: "/openhive/file/write",
 } as const
 
 /** 成功回参：新文件**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
@@ -2314,6 +2316,284 @@ describe("openhive 文件出口 · stat（读前问大小）", () => {
         expect(Schema.decodeUnknownSync(Rejected)(body).error).toBe(NO_PROJECT)
         // 「没回大小」这一条也要钉：回体里不许混进一个 size 字段。
         expect(JSON.stringify(body)).not.toContain("size")
+      }),
+    30_000,
+  )
+})
+
+/**
+ * 2026-10-12 · 第九个出口 **write**（用户实报「打开的文件现在不能复制，编辑，修改，和保存」）。
+ *
+ * ## 这一组要钉的三件事
+ *
+ * ① **真能存**：盘上的正文变了，回参是相对项目根的路径（`#004-08`：「没报错」不等于「执行了」）。
+ * ② **不改动地存回去 ⇒ 盘上字节逐字节不变**——本组最要紧的一条。读口（上游
+ *    `handlers/file.ts:116`）交回来的正文是 `TextDecoder("utf-8").decode(bytes).trim()`：
+ *    **BOM 被吃、首尾空白被削**；而 `<textarea>` 的取值（HTML 的「API value」）还会把 CRLF
+ *    折成 LF。原样存回去必须把这圈「信封」补回来，否则一次「打开→保存」就把用户的文件改了形状
+ *    ——win32 上整份 CRLF 变 LF 是别的工具也看得见的改动。
+ * ③ **守卫与同族七个出口逐条同序**（`gate` → `inside` → `inGit` → `lstat` → `realInside`）：
+ *    越界 / 不带头 / `.git` / 最后一段是链接 / 中间挂着链接，一律拒，**且另一侧一个字节都不许变**
+ *    （`#004-09`：「被拒」与「门在副作用之前」是两条独立判据）。
+ *
+ * ## `base` 一律走**真读口**拿（`读正文`）
+ *
+ * 客户端手上那句「打开时那份原文」就是从 `GET /file/content` 来的，夹具照那条路拿。自己按
+ * `decode().trim()` 手搓一份等于把契约抄第二遍：两边一起错，还测不出来（`#003-05` 同族）。
+ *
+ * ## 被拒的那几条，`base` 都必须是**对**的
+ *
+ * 否则红在 `STALE` 上、而真正该拦的那道守卫**没被走到**——所以每条都断**措辞**
+ * （`#005-47`：期望值恰好等于别的分支给的那句时，这条断言空转）。
+ */
+describe("openhive 文件出口 · write（打开的文件能改、能存）", () => {
+  const 项目头 = (project: string) => ({ [PROJECT_HEADER]: project })
+  const 出口写 = "/openhive/file/write"
+
+  // 与 `handleWrite` 的文案逐字相同；测试里是**独立的一份**（同上几组的口径）。
+  const STALE = "这份文件在你打开之后被改过（可能有人在别处改过）。为避免覆盖别人的改动，请关掉重新打开再改。"
+  const NO_PROJECT = "这次文件操作没有指明项目（缺少 x-openhive-project 头）"
+  const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
+  const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
+  const 没这个文件 = "文件不存在"
+  const 越界 = "路径越出项目目录"
+  const 只能改普通文件 = "这里只能改普通文件"
+
+  /** 存一份：`base` ＝ 打开时那份原文（客户端手上的那个）。 */
+  const 存 = (project: string, path: string, content: string, base: string) =>
+    send(ALICE, 出口写, { path, content, base }, project)
+
+  /**
+   * 走**真读口**（上游 `GET /file/content`，中栏预览读的就是它）拿一份文件的正文。
+   *
+   * ⚠️ 带项目头就够：中间件会把 `?directory=` 改写成项目目录（`project-location.ts:667`），
+   * 不必自己拼——拼一份就等于把那条改写抄第二遍。
+   */
+  const 读正文 = (path: string) =>
+    Effect.gen(function* () {
+      const response = yield* as(ALICE, `/file/content?${new URLSearchParams({ path })}`, {
+        headers: 项目头(ALPHA),
+      })
+      expect(response.status, `前提：读口要能读到 ${path}`).toBe(200)
+      const body = yield* json(Schema.Struct({ type: Schema.String, content: Schema.String }), response)
+      expect(body.type, `前提：${path} 在读口眼里是文本`).toBe("text")
+      return body.content
+    })
+
+  /** `<textarea>` 的取值把 CRLF 折成 LF（HTML 的 API value）——客户端送回来的就是这一形状。 */
+  const 换行归一 = (文本: string) => 文本.replace(/\r\n/g, "\n")
+
+  /** 带「信封」的一份：BOM ＋ 两行 CRLF ＋ 尾换行。三样都是**要活着回来的**。 */
+  const 旧正文 = "第一行\r\n第二行\r\n"
+  const 带信封 = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(旧正文, "utf8")])
+
+  it.live(
+    "写 a.txt ⇒ 盘上新正文、200、回参是相对项目根的路径",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 存(ALPHA, "a.txt", "改过的正文", 甲)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe("改过的正文")
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("a.txt")
+      }),
+    30_000,
+  )
+
+  /**
+   * **本组最要紧的一条**：打开→一个字不改→存回去，盘上必须逐字节不变。
+   *
+   * 判据落在**字节**上而不是「正文对不对」：`readFileSync(f, "utf8")` 会把 BOM 与 CRLF 的差别
+   * 一起读成「看着一样」——那样这条用例对「信封被写坏了」是瞎的。`Buffer` 的深比较才看得见。
+   *
+   * ⚠️ 所以「没写盘」与「写得一模一样」在这条判据下**看不出区别**（RED 态当场撞到：
+   * 出口还没挂上、前门回 200 ＋ HTML 时，这一条**绿着通过**——`LEARNINGS #005-38` 那种哑形态）。
+   * 故成功形状也照 `Made` 解一次：**前门那份 HTML 解不出 `{ path }`**，本出口的成功才解得出来。
+   * 「真的写盘了」那一半由下一条（改了中间一行 ⇒ 字节变了）钉住，两条合起来才关得上这个口子。
+   */
+  it.live(
+    "打开→不改一字→存回去 ⇒ 本出口报成功、且盘上**逐字节**不变（BOM / CRLF / 尾换行都是文件的一部分）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(文件.甲, 带信封)
+
+        const base = yield* 读正文("a.txt")
+        // 前提：读口交回来的那份确实是**削过**的（BOM 与尾换行都不在里面）。
+        // 少了这条前提，下面那条「字节不变」在两个方向上都可能是空的。
+        expect(base).toBe("第一行\r\n第二行")
+
+        const response = yield* 存(ALPHA, "a.txt", 换行归一(base), base)
+
+        expect(readFileSync(文件.甲)).toEqual(带信封)
+        expect(response.status).toBe(200)
+        expect((yield* json(Made, response)).path).toBe("a.txt")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "改了中间一行 ⇒ 正文变了、信封原样（BOM 与 CRLF 都还在）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(文件.甲, 带信封)
+
+        const base = yield* 读正文("a.txt")
+        const 新正文 = 换行归一(base).replace("第二行", "改过的第二行")
+
+        const response = yield* 存(ALPHA, "a.txt", 新正文, base)
+
+        expect(readFileSync(文件.甲).toString("utf8")).toBe("﻿第一行\r\n改过的第二行\r\n")
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * 并发保护：客户端手上那份与盘上现在这份不是同一份 ⇒ **拒，且盘上一字未变**。
+   *
+   * 「不写、不合并」是刻意的：合并两份正文要一套三方 diff 的语义，而这里没有可靠的三方
+   * ——让用户关掉重新打开一次，比替他猜哪边该赢便宜得多。
+   */
+  it.live(
+    "base 与盘上现在这份不符 ⇒ 400「被改过」，且盘上**一字未变**（没覆盖别人的改动）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const base = yield* 读正文("a.txt")
+        // 打开之后，别处把它改了。
+        writeFileSync(文件.甲, "别人改过的正文")
+
+        const response = yield* 存(ALPHA, "a.txt", "我改的正文", base)
+
+        expect(readFileSync(文件.甲, "utf8")).toBe("别人改过的正文")
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(STALE)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "目标是目录 ⇒ 400「这里只能改普通文件」，目录还在",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 存(ALPHA, "sub", "改过的正文", "x")
+
+        expect(statSync(path.join(项目根, "sub")).isDirectory()).toBe(true)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(只能改普通文件)
+      }),
+    30_000,
+  )
+
+  /**
+   * **不存在 ⇒ 拒，且不许顺手建出来**。少了这条，一道「直接 `writeFile`」的实现全绿
+   * ——而它会让「打开了一个已被别人删掉的文件、按保存」在盘上凭空造出一个新文件
+   * （用户以为在改旧文件，其实造了个新的）。
+   */
+  it.live(
+    "目标不存在 ⇒ 400「文件不存在」，且**那个位置后来也没有东西**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 存(ALPHA, "没有这个.txt", "正文", "")
+
+        expect(existsSync(path.join(项目根, "没有这个.txt"))).toBe(false)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(没这个文件)
+      }),
+    30_000,
+  )
+
+  it.live(
+    ".git 里 ⇒ 400 GIT_LOCKED，且版本库配置**一字未变**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 存(ALPHA, ".git/config", "把版本库改了", 版本库正文)
+
+        expect(readFileSync(版本库配置, "utf8")).toBe(版本库正文)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(GIT_LOCKED)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "越界（兄弟项目里真实存在的那份）⇒ 400「路径越出项目目录」，且那一份未变",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 存(ALPHA, `../${OTHER}/密件.txt`, "偷渡的正文", 密)
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(越界)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "最后一段是链接（指向兄弟项目的文件）⇒ 400，且**链接那头那份未变**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        // `base` 取链接**那头**那份的正文本体：与上面那组同一条理——错的值会让这条红在 STALE 上，
+        // 而真正该拦的那道 `lstat` 守卫**没被走到**。
+        const response = yield* 存(ALPHA, "链到密件.txt", "偷渡的正文", 密)
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(只能改普通文件)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "路径中间挂着一条指向兄弟项目的链接 ⇒ 400 LINK_ESCAPE，且**链接那头那份未变**",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 存(ALPHA, "link/密件.txt", "偷渡的正文", 密)
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(LINK_ESCAPE)
+      }),
+    30_000,
+  )
+
+  /**
+   * 不带头 ⇒ 中间件给的工作目录是**沙箱根**（所有项目的父目录）⇒ 兄弟项目那条相对路径当场可达。
+   * 与「不带头」那组同一个形状：判据是**项目在场**，不是「路径长什么样」。
+   */
+  it.live(
+    "不带头 ⇒ 400 NO_PROJECT，且兄弟项目那份**未变**（够不着任何项目）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* send(ALICE, 出口写, {
+          path: `${OTHER}/密件.txt`,
+          content: "偷渡的正文",
+          base: 密,
+        })
+
+        expect(readFileSync(文件.密, "utf8")).toBe(密)
+        expect(response.status).toBe(400)
+        expect((yield* json(Rejected, response)).error).toBe(NO_PROJECT)
       }),
     30_000,
   )
