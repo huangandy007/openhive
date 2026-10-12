@@ -238,7 +238,7 @@ const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
     return yield* openApp(url, { ...init, headers })
   })
 
-/** 四个出口的路径。**字面量**——它们是客户端契约（同 `PROJECT_HEADER` 的理）。 */
+/** 八个出口的路径。**字面量**——它们是客户端契约（同 `PROJECT_HEADER` 的理）。 */
 const 出口 = {
   copy: "/openhive/file/copy",
   move: "/openhive/file/move",
