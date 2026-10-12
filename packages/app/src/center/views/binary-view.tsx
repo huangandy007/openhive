@@ -160,7 +160,16 @@ export function BinaryView(props: BinaryViewProps) {
 
   return (
     <>
-      <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto" ref={container} />
+      {/*
+        `p-4`（16px）＝ 内容区的内边距，与 tab 栏文字的缩进同值（`tab-bar.tsx` 的 `px-1` ＋ tab 的 `px-3`）
+        ⇒ 正文左缘与正上方那个 tab 标题的左缘落在同一条竖线上。
+        没它时正文贴卡片左缘站（2026-10-12 用户实报「左侧 padding 没有设置」；真栈实测正文左缘
+        与卡片左缘同为 340）。同一片内容区的另外两张脸也都留着白：`degraded-view.tsx` /
+        `code-view.tsx` 的 `p-6`。
+        ⚠️ 内边距写在**这个容器**上（而不是中栏那一层）：它自己 `overflow-auto`，
+        留白要跟着它一起滚；写在外层会让滚动条与留白错位。
+      */}
+      <div data-component={props.name} data-state={state()} class="w-full min-h-0 overflow-auto p-4" ref={container} />
       {/* 看不了的时候内容区得说话（FR-007 / US3 AC3）。提示与渲染结果**各占各的位置**：
           渲染器往容器里就地写 DOM，容器仍是那个容器、`data-state` 仍可观测，提示紧跟其后。 */}
       <Show when={降级原因(state())}>{(reason) => <DegradedView reason={reason()} name={文件名(props.path)} />}</Show>
