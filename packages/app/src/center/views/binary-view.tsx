@@ -1,5 +1,5 @@
-import { createEffect, createSignal, onCleanup, Show } from "solid-js"
-import { decodeBytes, type LoadFileContent } from "@/center/file-content"
+import { createEffect, createSignal, onCleanup, Show, untrack } from "solid-js"
+import { decodeBytes, type FileContent, type LoadFileContent } from "@/center/file-content"
 import { DegradedView, type DegradedReason } from "@/center/degraded-view"
 import { 是哪种看不了 } from "./unsupported-format"
 
@@ -60,6 +60,18 @@ export interface BinaryViewProps {
   render: BytesRenderer
   /** 根元素上的 `data-component` 标识（T017 真实浏览器核对时的定位锚点）。 */
   name: string
+  /**
+   * 内容**读回来之后**回报一次（`undefined` = 没读到）。省略 = 没人关心。
+   *
+   * 存在的理由只有一条：可编辑的视图要拿「**读回来那份原样**」当存盘时的底本
+   * （服务端按它比对「盘上这份变过没有」，见 `@/center/file-content` 的 `SaveFileContent`）。
+   * 而**取数只发生在这一处**（`load` 由本壳调用）——让视图自己再读一遍就变成两次请求，
+   * 且两次之间盘上可能已经变了，底本与画面对不上。
+   *
+   * ⚠️ 只在**这一份还有效**时回报（迟到的、卸载后到点的一律不报）：否则切文件的瞬间
+   * 上一个文件的内容会把底本盖掉，而症状是「保存永远说文件被改过」——离现场很远。
+   */
+  onContent?: (content: FileContent | undefined) => void
 }
 
 /**
@@ -128,8 +140,15 @@ export function BinaryView(props: BinaryViewProps) {
 
     setState("pending")
     void (async () => {
-      const bytes = decodeBytes(load ? await load(path) : undefined)
+      const 内容 = load ? await load(path) : undefined
       if (!还在()) return
+      // 回报**在解字节之前**：可编辑的视图要的是**原样那份文本**（服务端的 `base` 判据就是这么
+      // 算的），不是解出来的字节。晚报一步也无害——顺序只是让「底本」早于画面就位。
+      // ⚠️ 必须 `untrack`：没有 `load` 时上面那次三目**不 await**，这句就落在 effect 的**同步**
+      // 段里——`props.onContent` 会被收进依赖图，调用方每换一次函数身份就重跑这个 effect
+      // （文件重读一遍、画面重画一遍），而那件事**不报错、只是变慢**。
+      untrack(() => props.onContent?.(内容))
+      const bytes = decodeBytes(内容)
       清空() // 无论这一份有没有内容，都先把上一份收干净
       if (!bytes) {
         setState("empty")

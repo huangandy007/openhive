@@ -25,6 +25,8 @@ import { PROJECT_DATA } from "@/project/project-data"
 // 中栏视图读文件内容的取数出口在这里注入（1 行 import ＋ 1 个 prop，与 `PROJECT_DATA` 同一个范式）。
 // 为什么是个模块级常量而不是这里现写的箭头函数：见 `@/project/openhive-file-loader` 文件头。
 import { LOAD_PROJECT_FILE } from "@/project/openhive-file-loader"
+// 存盘那一侧（2026-10-12，同一个范式的反方向）：改完的文档写回盘上。省略它 = 视图只读。
+import { SAVE_PROJECT_FILE } from "@/project/openhive-file-saver"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
@@ -119,6 +121,7 @@ export default function NewLayout(props: ParentProps) {
         <WorkspaceEntry
           projectData={PROJECT_DATA}
           loadFile={LOAD_PROJECT_FILE}
+          saveFile={SAVE_PROJECT_FILE}
           // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
           // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
           // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的

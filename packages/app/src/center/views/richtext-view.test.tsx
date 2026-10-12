@@ -111,3 +111,307 @@ describe("图文视图：按扩展名挑渲染器", () => {
     expect(host.querySelector("[data-component='richtext-view']")?.textContent).toContain("# 标题")
   })
 })
+
+/**
+ * 2026-10-12 · **打开的文件能改、能存**（用户实报的后半件）。
+ *
+ * ## 这一层钉的是「界面怎么收、怎么交」，不是「服务端收不收」
+ *
+ * 服务端那一侧（`/openhive/file/write` 的九道守卫、`base` 比对、信封还原）由
+ * `packages/opencode/test/server/openhive-file-ops.test.ts` 钉；本文件钉的是：
+ * 编辑框里放的是不是**读回来那份原样**、交出去的是不是**用户改过的那份与读回来那份分开的两个值**。
+ *
+ * ## 为什么「底本」与「草稿」要**分开**钉（`LEARNINGS #005-12`）
+ *
+ * `save(path, content, base)` 后两个参数都是字符串，**接反了不报错、类型也合法**：服务端会拿
+ * 「改过的新正文」去当「原来那份」比对 ⇒ 永远判「这份文件在你打开之后被改过」⇒ 一次也存不成。
+ * 所以有一条用例**逐字段**断言（且两个值故意取得不一样）。
+ *
+ * ## 保存失败时**必须留在编辑态**
+ *
+ * 服务端拒了（陈旧 / 越界 / 已归档）而界面翻回预览，等于把民警刚写的那段字**当着面丢掉**。
+ * 判据是两件事一起：**有一句话** ＋ **草稿还在**。
+ */
+
+/** 挂一次视图：脚本化的 `load`（按第几次调用给不同正文）＋ 记账的 `save`。 */
+function 挂编辑器(
+  正文: string | readonly string[],
+  选项: {
+    保存结果?: { ok: true } | { ok: false; message: string }
+    保存抛?: boolean
+    /** 让这一次保存在这里挂住（判「第一下还没回来时再点一下」用）。 */
+    保存等着?: () => Promise<void>
+    /** 让**某一次**读取在这里挂住（收到第几次读的序号，从 0 起）。 */
+    读等着?: (第几次: number) => Promise<void> | undefined
+  } = {},
+) {
+  const 序 = typeof 正文 === "string" ? [正文] : 正文
+  let 第几次 = 0
+  const 交出去的: Array<{ path: string; content: string; base: string }> = []
+  const host = mount(() => (
+    <RichtextView
+      path="/p/摘录.txt"
+      load={async () => {
+        const 本次 = 第几次++
+        const 门 = 选项.读等着?.(本次)
+        if (门) await 门
+        return { type: "text", content: 序[Math.min(本次, 序.length - 1)] }
+      }}
+      save={async (path, content, base) => {
+        交出去的.push({ path, content, base })
+        if (选项.保存等着) await 选项.保存等着()
+        if (选项.保存抛) throw new Error("断网了")
+        return 选项.保存结果 ?? { ok: true }
+      }}
+    />
+  ))
+  return {
+    host,
+    /** `load` 一共被调用了几次（判「存完有没有重新取数」用）。 */
+    读次数: () => 第几次,
+    交出去的,
+    编辑框: () => host.querySelector<HTMLTextAreaElement>("[data-slot='richtext-editor']"),
+    钮: (动作: string) => host.querySelector<HTMLButtonElement>(`[data-action='${动作}']`),
+    提示: () => host.querySelector("[data-slot='richtext-editor-note']")?.textContent?.trim(),
+    问句: () => host.querySelector("[data-slot='richtext-editor-confirm']")?.textContent?.trim(),
+    预览文字: () => host.querySelector("[data-component='richtext-view']")?.textContent ?? "",
+  }
+}
+
+/** 在编辑框里打字（`input` 事件才走框架那条路，直接改 `value` 不算）。 */
+function 打字(el: HTMLTextAreaElement, 值: string) {
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+describe("图文视图 · 编辑与保存（2026-10-12）", () => {
+  /**
+   * 没有 `save`（storybook、数据轴视图、以及不接存盘的宿主）⇒ **一条工具栏都不渲染**：
+   * 既有调用方的 DOM 一字不动，也就不可能有「点了编辑什么都没发生」这种半接上的状态。
+   */
+  test("没给 save ⇒ 工具栏不渲染（既有宿主 DOM 不变）", async () => {
+    const host = mount(() => <RichtextView path="/p/摘录.txt" load={async () => ({ type: "text", content: "甲" })} />)
+    await 落定()
+
+    expect(host.querySelector("[data-slot='richtext-editor-bar']")).toBeNull()
+    expect(host.querySelector("[data-component='richtext-view']")).not.toBeNull()
+  })
+
+  test("给了 save ⇒ 有工具栏；预览态下没有编辑框", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    expect(h.host.querySelector("[data-slot='richtext-editor-bar']")).not.toBeNull()
+    expect(h.编辑框()).toBeNull()
+    expect(h.钮("edit")).not.toBeNull()
+  })
+
+  /**
+   * 服务端判成 **binary** 的文件（含 NUL / 解不出 UTF-8 的那类）回的是 base64，**不 trim**。
+   * 拿它当底本与盘上那份（`TextDecoder` 解出来再 trim）对不上，一次也存不成；而**更糟的是**
+   * 真存下去，会把一个二进制文件按文本重写一遍——那是在毁数据，不是「存不上」。
+   * 所以这种文件工具栏虽在（它证明「这个视图是可编辑的那一族」），**一颗钮都没有**。
+   */
+  test("判成 binary 的文件不给改（一颗钮都没有）", async () => {
+    const host = mount(() => (
+      <RichtextView
+        path="/p/摘录.txt"
+        load={async () => ({ type: "binary", content: "AAEC", encoding: "base64" })}
+        save={async () => ({ ok: true })}
+      />
+    ))
+    await 落定()
+
+    expect(host.querySelector("[data-slot='richtext-editor-bar']")).not.toBeNull()
+    expect(host.querySelector("[data-action='edit']")).toBeNull()
+  })
+
+  test("点「编辑」⇒ 编辑框里是**读回来那份原样**（不 trim、不动一个字）", async () => {
+    const h = 挂编辑器("  第一行\n\n第三行  ")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+
+    expect(h.编辑框()?.value).toBe("  第一行\n\n第三行  ")
+  })
+
+  test("改完点「保存」⇒ 交出去的是（路径，改后的正文，读回来那份）三个分开的值", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.交出去的).toEqual([{ path: "/p/摘录.txt", content: "第二行", base: "第一行" }])
+  })
+
+  /**
+   * 存成功 ⇒ 回预览，且**预览里是新正文**——判据不能只是「回到预览了」：那样一条把
+   * 「重新取数」整段拆掉的实现照样绿（旧内容还挂在屏幕上，而民警以为存上了）。
+   * 所以这里让第二次 `load` 回「第二行」，再断预览里看得见它。
+   */
+  test("存成功 ⇒ 回预览，并**重新取一次数**（预览里是新正文）", async () => {
+    const h = 挂编辑器(["第一行", "第二行"])
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.编辑框()).toBeNull()
+    expect(h.读次数()).toBe(2)
+    expect(h.预览文字()).toContain("第二行")
+  })
+
+  /**
+   * 存成功之后、**重读盘上那份还没回来**的那一小段：编辑钮先不给。
+   *
+   * 少了这条，界面会拿**刚被自己改掉的旧底本**再进编辑态，紧接着的第二次保存撞服务端
+   * 「这份文件在你打开之后被改过」——那句话是错的，它是我们自己刚存的。
+   * 判据只能钉在**这个窗口里**（重读一回来钮就该回来），所以这里把第二次读取挂住。
+   */
+  test("存完、重读还没回来 ⇒ 编辑钮先不给", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((resolve) => (放行 = resolve))
+    const h = 挂编辑器(["第一行", "第二行"], { 读等着: (第几次) => (第几次 === 1 ? 闸门 : undefined) })
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.读次数()).toBe(2) // 第二次已经发出去了，只是还没回来
+    expect(h.钮("edit")).toBeNull()
+
+    放行()
+    await 落定()
+    expect(h.钮("edit")).not.toBeNull()
+  })
+
+  test("服务端拒了 ⇒ 留在编辑态、草稿还在、把那句话显示出来", async () => {
+    const 那句 = "这份文件在你打开之后被改过（可能有人在别处改过）。为避免覆盖别人的改动，请关掉重新打开再改。"
+    const h = 挂编辑器("第一行", { 保存结果: { ok: false, message: 那句 } })
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.提示()).toBe(那句)
+    expect(h.编辑框()?.value).toBe("第二行")
+  })
+
+  /**
+   * 连点两下「保存」（民警按下去没看见动静，很自然会再按一下）。
+   *
+   * ⚠️ 这条**不能**用「把钮置灰」来满足：`disabled` 的按钮在 happy-dom 里连事件都不派，
+   * 于是那句守卫**永远走不到**，变异拆掉它也不会红（`LEARNINGS #006-16`）。所以判据钉在
+   * **发出去几次**上：第二下必须撞在守卫上、当场返回——否则同一个 `base` 会发两次，
+   * 第二次必然撞服务端那句「这份文件被改过」，而**改动其实已经存上了**。
+   */
+  test("连点两下「保存」⇒ 只发一次（第一下还没回来时，第二下不算一次新的保存）", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((resolve) => (放行 = resolve))
+    const h = 挂编辑器("第一行", { 保存等着: () => 闸门 })
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.交出去的).toHaveLength(1)
+
+    放行()
+    await 落定()
+    expect(h.编辑框()).toBeNull() // 第一下照常收尾：回到预览
+  })
+
+  /** 存盘这件事自己抛（组网断了、替身写错）也要有话说：静默失败时民警按了保存就以为存上了。 */
+  test("存盘自己抛 ⇒ 有一句话，草稿不丢", async () => {
+    const h = 挂编辑器("第一行", { 保存抛: true })
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("save")!.click()
+    await 落定()
+
+    expect(h.提示()).toBeTruthy()
+    expect(h.编辑框()?.value).toBe("第二行")
+  })
+
+  test("改了还没存就点「取消」⇒ 先问一句，**不当场丢**", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("cancel")!.click()
+    await 落定()
+
+    expect(h.问句()).toContain("丢掉")
+    // 还没答 ⇒ 仍在编辑态，草稿还在（问句期间它一个字都不许少）
+    expect(h.编辑框()?.value).toBe("第二行")
+  })
+
+  test("问句里点「继续改」⇒ 回编辑态，草稿还在", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("cancel")!.click()
+    await 落定()
+    h.钮("keep")!.click()
+    await 落定()
+
+    expect(h.问句()).toBeUndefined()
+    expect(h.编辑框()?.value).toBe("第二行")
+  })
+
+  test("问句里点「丢掉」⇒ 回预览（草稿才真的没了）", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    打字(h.编辑框()!, "第二行")
+    h.钮("cancel")!.click()
+    await 落定()
+    h.钮("discard")!.click()
+    await 落定()
+
+    expect(h.编辑框()).toBeNull()
+    expect(h.预览文字()).toContain("第一行")
+  })
+
+  /** 一个字没改就点「取消」＝ 没什么可丢的，再问一句就是骚扰（设计文档 §4.6 的「不打扰」）。 */
+  test("没改就点「取消」⇒ 直接回预览，不问", async () => {
+    const h = 挂编辑器("第一行")
+    await 落定()
+
+    h.钮("edit")!.click()
+    await 落定()
+    h.钮("cancel")!.click()
+    await 落定()
+
+    expect(h.问句()).toBeUndefined()
+    expect(h.编辑框()).toBeNull()
+  })
+})

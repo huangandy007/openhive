@@ -27,6 +27,7 @@ import {
   moveFile,
   removeEntry,
   renameEntry,
+  saveFile,
   statProjectFile,
   uploadFile,
   type FileOpsFetch,
@@ -682,5 +683,97 @@ describe("statProjectFile", () => {
     }
 
     expect(await statProjectFile(PROJECT, "卷宗.pdf", send)).toBeUndefined()
+  })
+})
+
+/**
+ * 2026-10-12 · **第 9 个出口**：把中栏改过的正文存回盘上（用户实报「打开的文件不能复制，
+ * 编辑，修改，和保存」里的存盘那一半）。
+ *
+ * ## 三个字段**各是什么**必须逐条钉，不能只断「发了一条 POST」
+ *
+ * 服务端的 `WriteBody` 是 `{ path, content, base }` 三个字符串，少一个**当场 400**；
+ * 而 `content` 与 `base` 都是字符串——**接反了照样是合法请求**，只是语义全错：服务端会拿
+ * 「改过的新正文」去当「原来那份」比对，结果永远是「被改过 ⇒ 拒」，民警看到的是
+ * 「这份文件在你打开之后被改过」而**他刚打开**。这与 `rename`/`remove` 接反是同一类
+ * （`LEARNINGS #005-12`：同一类判据落在 N 个落点上就写 N 条）。
+ *
+ * ## 空正文是一次**合法**的编辑
+ *
+ * 把文件清空是民警做得出的一件事（起草时先清掉旧文）。写法上一不留神就是
+ * `if (!content) return failed` 那种「假值守卫」——所以单独钉一条。
+ */
+describe("saveFile（第 9 个出口：正文存回盘上）", () => {
+  test("发 POST /openhive/file/write，体是 { path, content, base }，带项目头与 cookie", async () => {
+    const { send, sent } = stub(() => 成功("资料/摘录.txt"))
+
+    await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/write",
+        method: "POST",
+        project: PROJECT,
+        contentType: "application/json",
+        credentials: "same-origin",
+        body: JSON.stringify({ path: "资料/摘录.txt", content: "第二行", base: "第一行" }),
+      },
+    ])
+  })
+
+  /** 空正文也要照发：清空一个文件是合法的一次编辑，不是「没内容可发」。 */
+  test("空正文照发（不是假值）", async () => {
+    const { send, sent } = stub(() => 成功("资料/摘录.txt"))
+
+    await saveFile(PROJECT, "资料/摘录.txt", "", "第一行", send)
+
+    expect(JSON.parse(String(sent[0]?.body))).toEqual({ path: "资料/摘录.txt", content: "", base: "第一行" })
+  })
+
+  test("200 且体里有 path ⇒ done，把路径带回去", async () => {
+    const { send } = stub(() => 成功("资料/摘录.txt"))
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "done",
+      path: "资料/摘录.txt",
+    })
+  })
+
+  /**
+   * 盘上那份被别处改过 ⇒ 400，**服务端那句话必须原样到民警眼前**：它说的是「怎么办」
+   * （关掉重新打开再改），换成兜底的「保存文件失败」就等于把唯一的指引扔了（同 `removeEntry` 那条）。
+   */
+  test("400（盘上这份被改过）⇒ rejected，服务端那句话原样带回", async () => {
+    const 那句 = "这份文件在你打开之后被改过（可能有人在别处改过）。为避免覆盖别人的改动，请关掉重新打开再改。"
+    const { send } = stub(() => 拒绝(400, 那句))
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "rejected",
+      message: 那句,
+    })
+  })
+
+  /**
+   * 出口没挂上 ⇒ 200 ＋ HTML，**不是 404**（同本文件头那条）。兜底页里没有 `path` ⇒ 不算办成
+   * ——否则界面会显示「已保存」而盘上一字未动（`LEARNINGS #005-38`：绿得没有反对意见的那种假绿）。
+   */
+  test("200 + HTML 兜底页（出口没挂上）⇒ failed，不算办成", async () => {
+    const { send } = stub(() => 兜底页())
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "failed",
+      message: "保存文件失败",
+    })
+  })
+
+  test("外呼抛（网络断）⇒ failed，不往界面抛", async () => {
+    const send: FileOpsFetch = async () => {
+      throw new Error("断网了")
+    }
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "failed",
+      message: "保存文件失败",
+    })
   })
 })

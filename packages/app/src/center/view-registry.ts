@@ -1,8 +1,8 @@
 import type { Component } from "solid-js"
-import type { LoadFileContent } from "./file-content"
+import type { LoadFileContent, SaveFileContent } from "./file-content"
 
 /**
- * 视图组件的入参：要渲染的是哪个文件、内容从哪取。
+ * 视图组件的入参：要渲染的是哪个文件、内容从哪取、改完往哪存。
  *
  * 内容**由中栏注入**（`load`）而不是视图自行去 `useFile()`：视图要能被单独挂起来测，
  * 不该被拖进整个应用 provider 组装。T004 预留的「内容自行读取」到此收口。
@@ -12,6 +12,15 @@ export interface ViewProps {
   path: string
   /** 取内容；省略 = 没有内容来源（数据轴视图自带内容时不需要它）。 */
   load?: LoadFileContent
+  /**
+   * 把正文存回盘上；省略 = **这个视图不可存**。
+   *
+   * 与 `load` 同一个注入点、同一条理由（视图不认得 SDK、不发请求）。
+   * ⚠️ 「给不给 `save`」是**两个视图的差别**，不是两种模式：Office / PDF 那族只读视图
+   * 压根不接它，也就不会有「点了编辑什么都没发生」这种半接上的状态（`richtext-view.tsx`
+   * 的工具栏渲染与否就只看它在不在）。
+   */
+  save?: SaveFileContent
 }
 
 /** 中栏内容视图组件。 */

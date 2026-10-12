@@ -26,7 +26,7 @@
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { createEffect, createSignal, Show, type JSX } from "solid-js"
 import { CenterContent } from "./center-content"
-import type { LoadFileContent } from "./file-content"
+import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { TabBar } from "./tab-bar"
 import { useCenterTabs } from "./tab-context"
 import type { ViewRegistry } from "./view-registry"
@@ -50,6 +50,8 @@ export interface CenterSplitProps {
   registry: ViewRegistry
   /** 中栏视图的取数出口（生产走 `LOAD_PROJECT_FILE`）。 */
   load?: LoadFileContent
+  /** 中栏视图的存盘出口（生产走 `SAVE_PROJECT_FILE`）。**两栏都给**：两栏都能开可改的文档。 */
+  save?: SaveFileContent
   /** 调用方页面此刻可不可以露（同 `CenterContent`，只有左/上那一栏承载它）。 */
   pageVisible?: boolean
   /** 「页面不露、也没有激活 tab」时的替身（只有左/上那一栏用）。 */
@@ -106,6 +108,7 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
           pane={0}
           registry={props.registry}
           load={props.load}
+          save={props.save}
           pageVisible={props.pageVisible}
           empty={props.empty}
         >
@@ -147,7 +150,7 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
           {/* ⚠️ 右栏**不承载** `children`（上游路由页面）：页面是「当前这条路」的那一页，
               画两份就是同一页在屏幕上出现两遍（同 `CenterContent` 里 `pageVisible` 那条注释
               防的是同一件事）。也不给 `empty`：那一栏空着就是空着，不必两处都说同一句话。 */}
-          <CenterContent pane={1} registry={props.registry} load={props.load} empty={undefined} />
+          <CenterContent pane={1} registry={props.registry} load={props.load} save={props.save} empty={undefined} />
         </div>
       </Show>
     </div>

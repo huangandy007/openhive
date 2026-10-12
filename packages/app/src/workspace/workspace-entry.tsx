@@ -1,7 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
 import { useBigFileAsk } from "@/center/big-file-dialog"
 import { CenterSplit } from "@/center/center-split"
-import type { LoadFileContent } from "@/center/file-content"
+import type { LoadFileContent, SaveFileContent } from "@/center/file-content"
 import { createOpenFile } from "@/center/open-file"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { contentTabKey } from "@/center/tab-store"
@@ -38,6 +38,13 @@ export interface WorkspaceEntryProps {
    * provider，属中栏视图那条线，不是 T018 的事。省略 = 视图拿不到内容（停在空态），但路由与 tab 照常。
    */
   loadFile?: LoadFileContent
+  /**
+   * 存文件正文的接缝（2026-10-12），`loadFile` 的**反方向**：改完的文档往盘上写。
+   *
+   * 同一个注入理由（应用入口注入、本组件不 import 生产实现）——省略 = 视图只读，
+   * 工具栏不渲染（`.md` / `.txt` 照常看，就是不能改）。
+   */
+  saveFile?: SaveFileContent
   /**
    * **项目这件事的数据源**（T018）：清单 / 新建 / 项目文件三条链都从它走。
    *
@@ -1092,6 +1099,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           <CenterSplit
             registry={viewRegistry}
             load={props.loadFile}
+            save={props.saveFile}
             pageVisible={props.routePageVisible?.() ?? true}
             empty={
               <div

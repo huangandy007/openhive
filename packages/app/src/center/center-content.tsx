@@ -1,7 +1,7 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX, type ParentProps } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { DegradedView, type DegradedReason } from "./degraded-view"
-import type { LoadFileContent } from "./file-content"
+import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { useCenterTabs } from "./tab-context"
 import { contentTabKey } from "./tab-store"
 import { extensionOf, type ViewComponent, type ViewRegistry } from "./view-registry"
@@ -9,6 +9,14 @@ import { extensionOf, type ViewComponent, type ViewRegistry } from "./view-regis
 export interface CenterContentProps {
   registry: ViewRegistry
   load?: LoadFileContent
+  /**
+   * 存盘出口（2026-10-12），与 `load` 同一个注入点、同一条注入理由。
+   *
+   * ⚠️ 它**不在**「还是同一份」那个比较器的字段里（见 `还是同一份`）：`save` 换一个身份
+   * 不该把视图卸载重挂——重挂会把编辑到一半的草稿一并丢掉。它按 `props` 那条响应式通道
+   * 传下去（`<Dynamic … save={props.save} />`），换实现不换视图实例。
+   */
+  save?: SaveFileContent
   /**
    * 这一份内容区属于哪一栏（`0` 左/上、`1` 右/下）。
    *
@@ -185,7 +193,7 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
       <Show when={内容()} keyed>
         {(current) =>
           current.kind === "view" ? (
-            <Dynamic component={current.Component} path={current.path} load={props.load} />
+            <Dynamic component={current.Component} path={current.path} load={props.load} save={props.save} />
           ) : (
             <DegradedView reason={current.reason} name={current.name} />
           )

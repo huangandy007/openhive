@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "bun:test"
 import { createSignal, onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
-import type { LoadFileContent } from "./file-content"
+import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { 加载上界, CenterContent } from "./center-content"
 import type { DegradedReason } from "./degraded-view"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
@@ -31,7 +31,13 @@ const 页面层 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-
  * 没有名字就分不清屏幕上的是新是旧。
  */
 const 命名视图 = (名字: string): ViewComponent => (props) => (
-  <div data-slot="视图" data-name={名字} data-path={props.path} data-has-load={String(Boolean(props.load))} />
+  <div
+    data-slot="视图"
+    data-name={名字}
+    data-path={props.path}
+    data-has-load={String(Boolean(props.load))}
+    data-has-save={String(Boolean(props.save))}
+  />
 )
 
 const 假视图 = 命名视图("假视图")
@@ -66,6 +72,8 @@ function setUp(
   options: {
     registry?: ViewRegistry
     load?: LoadFileContent
+    /** 存盘出口（`CenterContentProps.save`）。不传 = 没这个 prop（＝视图只读）。 */
+    save?: SaveFileContent
     页面组件?: Component
     /** 页面此刻露不露（`CenterContentProps.pageVisible`）。不传 = 没这个 prop。 */
     页面可见?: () => boolean
@@ -84,6 +92,7 @@ function setUp(
       <CenterContent
         registry={options.registry ?? 注册(".docx")}
         load={options.load}
+        save={options.save}
         pageVisible={options.页面可见?.()}
         empty={options.空态}
       >
@@ -125,6 +134,29 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
     await 开(专案)
 
     expect(视图()?.getAttribute("data-has-load")).toBe("true")
+  })
+
+  /**
+   * 存盘那股接缝（2026-10-12）也要**真的递到视图手上**——它是「能不能改」唯一的开关
+   * （`RichtextView` 就是按它在不在来决定工具栏渲不渲染），而这条路上有四跳
+   * （`layout-new` → `workspace-entry` → `CenterSplit` → 本组件 → `<Dynamic>`）；
+   * 任何一跳漏掉都**不报错、不变红**，症状只是「编辑钮不见了」（`LEARNINGS #006-27` 的形状）。
+   * 本用例钉的是**本组件这一跳**，其余三跳由真栈那条（改 → 存 → 重开看得见新正文）钉。
+   */
+  test("中栏把存盘接缝注入给视图（视图拿不到它就只能只读）", async () => {
+    const { 视图, 开 } = setUp({ load: async () => undefined, save: async () => ({ ok: true }) })
+
+    await 开(专案)
+
+    expect(视图()?.getAttribute("data-has-save")).toBe("true")
+  })
+
+  test("调用方不给存盘接缝 ⇒ 视图拿到的是空（DOM 与引入它之前逐字同形）", async () => {
+    const { 视图, 开 } = setUp({ load: async () => undefined })
+
+    await 开(专案)
+
+    expect(视图()?.getAttribute("data-has-save")).toBe("false")
   })
 
   test("扩展名没有归属：不渲染视图，改成给一条说得出原因的降级提示（T015）", async () => {

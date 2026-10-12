@@ -1,19 +1,19 @@
 /**
- * 005 T020／T018 · 文件树八个出口（五个写 ＋ 上传 ＋ 下载 ＋ stat）的薄客户端（`openhive-project` / `openhive-files` 的同族）。
+ * 005 T020／T018 · 文件树九个出口（六个写 ＋ 上传 ＋ 下载 ＋ stat）的薄客户端（`openhive-project` / `openhive-files` 的同族）。
  *
  * ## 与 `openhive-files.ts`（读）为什么是两个文件
  *
- * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的八条
+ * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的九条
  * 都是**一次请求一件事**。合在一个文件里，头注要同时讲两件不相干的事，而「目录谁说了算」
  * 那条（读那一侧的核心）会变得像是写这一侧也要遵守的规矩。
  *
- * ## 八个出口都是 fork 自己的裸路由，不在 SDK 里
+ * ## 九个出口都是 fork 自己的裸路由，不在 SDK 里
  *
- * `POST /openhive/file/{copy,move,upload,create,rename,remove}` ＋ `GET /openhive/file/download` ＋ `GET /openhive/file/stat`
- * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这八个端点，
+ * `POST /openhive/file/{copy,move,upload,create,rename,remove,write}` ＋ `GET /openhive/file/download` ＋ `GET /openhive/file/stat`
+ * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这九个端点，
  * 类型化 SDK 里也就没有，故单写一层（同 `openhive-project.ts` 文件头那条）。
  *
- * ## 「哪个项目」只走 `x-openhive-project` 头，八项**都必须带**
+ * ## 「哪个项目」只走 `x-openhive-project` 头，九项**都必须带**
  *
  * T017 的 `project-location.ts` 拿这个头把工作目录钉到 `{沙箱根}/{userId}/{projectId}`，
  * **并把自己那个头摘掉**。头不在时它**原样放行**，工作目录退回**沙箱根**——而沙箱根是
@@ -62,6 +62,11 @@ export const PATH = {
   create: `${PREFIX}/create`,
   rename: `${PREFIX}/rename`,
   remove: `${PREFIX}/remove`,
+  /**
+   * 2026-10-12（第 9 个出口）：把中栏改过的正文**存回盘上**（内核 `file.ts` 的 `handleWrite`）。
+   * ⚠️ 与本表另外八个**不同族**：它们动的是**条目**，它动的是**一个已有文件的正文**。
+   */
+  write: `${PREFIX}/write`,
 } as const
 
 /**
@@ -98,6 +103,8 @@ const UPLOAD_FAILED = "上传文件失败"
 const CREATE_FAILED = "新建失败"
 const RENAME_FAILED = "重命名失败"
 const REMOVE_FAILED = "删除失败"
+/** 存盘那一支的兜底文案（2026-10-12）。服务端说得出为什么时用它那句（见 `saveFile`）。 */
+const WRITE_FAILED = "保存文件失败"
 
 /**
  * 复制一个文件到**项目内的另一个目录**（FR-005）。
@@ -278,6 +285,31 @@ export async function removeEntry(
 }
 
 /**
+ * 把 `path` 那个**已存在的文件**的正文换成 `content`（2026-10-12 · 第 9 个出口）。
+ *
+ * ## `base` 是**读回来时那份正文**，与 `content` 是两个值、不能合并
+ *
+ * 服务端拿 `base` 比对「盘上这份在你打开之后变过没有」，不同就拒（400 ＋ 一句给人看的话）
+ * ——那是「不覆盖别人的改动」的唯一手段。⚠️ 两者都是字符串，**接反了照样是合法请求**：
+ * 服务端会拿改过的新正文去当原来那份比，结果永远判「被改过 ⇒ 拒」，而民警刚打开这个文件
+ * （同类错误形状见 `renameEntry` 那条注释；用例里逐字段钉住）。
+ *
+ * ## 拒绝理由**原样上交**
+ *
+ * 400 那句话是服务端看着**这次请求**说的（陈旧 / 越界 / `.git` 内 / 已归档），它说的正是
+ * 「怎么办」——换成兜底的「保存文件失败」就把唯一那句指引扔了（同 `removeEntry`）。
+ */
+export async function saveFile(
+  projectId: string,
+  path: string,
+  content: string,
+  base: string,
+  send: FileOpsFetch = defaultSend,
+): Promise<FileOpOutcome> {
+  return postJson(PATH.write, WRITE_FAILED, projectId, { path, content, base }, send)
+}
+
+/**
  * 复制 / 移动**共用一条**——HTTP 形状逐字相同（同前缀、同 `POST`、同 `{ path, dir }` 体、
  * 同 400/403 处置），只有路径与失败文案是各自的。分开写两份 = 把「怎么说清一次失败」复制
  * 两遍，而它正是最容易各改一半的那类（`LEARNINGS #002-06`，同 `openhive-project.ts` 的
@@ -295,11 +327,11 @@ async function transfer(
 }
 
 /**
- * 一次 **JSON 体的 POST**——八个出口里五条（复制 / 移动 / 新建 / 重命名 / 删除）共用这一份，
+ * 一次 **JSON 体的 POST**——九个出口里六条（复制 / 移动 / 新建 / 重命名 / 删除 / 存盘）共用这一份，
  * 差别只有路径、体与失败文案。
  *
- * 提取的是那几样字面量（`method` / `credentials` / 两个头 / `JSON.stringify`）：五处各写一遍
- * 就是同一件事的第五份，而其中任何一处「顺手」少个 `credentials` 或忘了项目头，**都不报错**
+ * 提取的是那几样字面量（`method` / `credentials` / 两个头 / `JSON.stringify`）：六处各写一遍
+ * 就是同一件事的第六份，而其中任何一处「顺手」少个 `credentials` 或忘了项目头，**都不报错**
  * ——只会让那一个动作静默落进别的目录（同 `openhive-project.ts` 的 `projectAction`）。
  *
  * ⚠️ **上传不走这里**：它发的是 `FormData`，而 `content-type` 一律不能手写（boundary 在里面，

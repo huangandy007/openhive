@@ -1,5 +1,7 @@
 import DOMPurify from "dompurify"
 import { marked } from "marked"
+import { createSignal, Show } from "solid-js"
+import type { FileContent } from "@/center/file-content"
 import { extensionOf, type ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
 
@@ -82,18 +84,194 @@ export const renderPlainText: BytesRenderer = async (bytes, container) => {
   container.appendChild(pre)
 }
 
+/** 编辑态的按钮。三处按钮长相一样，只有动作与文案不同。 */
+function 动作钮(props: { 动作: string; 文案: string; 点: () => void }) {
+  return (
+    <button
+      type="button"
+      data-action={props.动作}
+      onClick={props.点}
+      class="flex h-7 cursor-pointer items-center rounded px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+    >
+      {props.文案}
+    </button>
+  )
+}
+
+/** 存盘这件事**自己抛**（组网断了、出口写错）时那句兜底。服务端说得出为什么时用服务端那句。 */
+const 存不上 = "保存文件失败"
+
 /**
  * 图文视图（FR-007 的 ⑥ 图文混排：`.md` / `.txt`）。
  *
  * 两个扩展名**必须分开渲**：拿 Markdown 渲染一段话单，里面的 `#` `*` 会被吃掉变成标题和强调，
  * 内容就走样了。而渲染器拿不到路径（`BytesRenderer` 只有字节），所以由视图按扩展名挑渲染器
  * ——这个三元表达式在 Solid 里是响应式的，换文件会重新求值。
+ *
+ * ## 2026-10-12：能改、能存（用户实报「打开的文件不能编辑修改和保存」）
+ *
+ * ### 工具栏只在**给了 `save`** 时渲染
+ *
+ * `save` 从 `layout-new.tsx` 一路注入下来（`workspace-entry` → `CenterSplit` → `CenterContent`
+ * → 视图）。省略它的宿主（storybook、以及将来只读的宿主）DOM 一字不动，也就不存在
+ * 「点了编辑什么都没发生」这种半接上的状态。Office / PDF 那族视图压根不接这个口。
+ *
+ * ### 「底本」只有一条来路：`load` 读回来那份
+ *
+ * 服务端按 `base` 比对「你打开之后盘上这份被改过没有」（`packages/opencode/.../openhive/file.ts`
+ * 的 `handleWrite`），而它比对的是 `TextDecoder("utf-8").decode(盘上字节).trim()`——上读取出口
+ * 回的正是这个值（`handlers/file.ts` 的 `content`：`text.value.trim()`）。所以底本**直接用
+ * `load` 回来的 `content`，一个字都不动**：这里若顺手 trim 一下，或拿用户改过的正文去当底本，
+ * 服务端会永远判「这份文件被改过」⇒ 一次也存不成。
+ * ⚠️ 只有**判成 text** 的才给改：判成 binary 的（含 NUL / 非 UTF-8）回的是 base64，
+ * 拿它当底本与盘上那份对不上，而**更糟的是**存下去会把一个二进制文件按文本重写一遍
+ * ——那是在毁数据，不是「存不上」。所以那种文件的工具栏只剩一条空的带子，一颗钮都没有。
+ *
+ * ### 底本由**取数那一层**回报，不由本视图再读一遍
+ *
+ * `load` 只该被调一次（画面与底本必须是同一次读到的结果：读两次之间盘上可能已经变了）。
+ * 故走 `BinaryView` 的 `onContent` 回报口，见那个 prop 上那段注释。
+ *
+ * ### 存完之后底本**先作废**，等重读回来再给
+ *
+ * 存成功 ⇒ 回预览 ⇒ `BinaryView` 重挂、读第二次（这也是「预览里是新正文」的来路：不复用旧画面）。
+ * 而「盘上现在是新正文」这件事要等那次重读回来才算数 ⇒ 这中间不让再进编辑态（编辑钮此时不渲染）。
+ * 少了这一步，紧接着的第二次保存会拿**刚被自己改掉的旧底本**去比对，服务端判「文件被改过」
+ * 而那句话是错的——它其实是我们自己刚存的。
  */
-export const RichtextView: ViewComponent = (props) => (
-  <BinaryView
-    name="richtext-view"
-    path={props.path}
-    load={props.load}
-    render={extensionOf(props.path) === ".md" ? renderMarkdown : renderPlainText}
-  />
-)
+export const RichtextView: ViewComponent = (props) => {
+  /** 读回来那份**原样**（存盘时的底本）。`undefined` ＝ 还没读到 / 读不到 / 判成 binary。 */
+  const [底本, set底本] = createSignal<string | undefined>(undefined)
+  /** 编辑框里那份（用户手上正在改的）。与底本**是两个值**，别合并。 */
+  const [草稿, set草稿] = createSignal("")
+  const [改着, set改着] = createSignal(false)
+  /** 问着「丢掉吗」——问句期间草稿一个字节都不动。 */
+  const [问着, set问着] = createSignal(false)
+  /** 出错时那句话说给谁听（服务端拒绝的原因 / 我们的兜底）。 */
+  const [说法, set说法] = createSignal<string | undefined>(undefined)
+  /** 一次存盘在飞。**只在守卫里读**——见下面 `存` 的头一条注释。 */
+  const [存着, set存着] = createSignal(false)
+
+  const 收到内容 = (内容: FileContent | undefined) => set底本(内容?.type === "text" ? 内容.content : undefined)
+
+  const 开始改 = () => {
+    const 原样 = 底本()
+    if (原样 === undefined) return
+    set草稿(原样)
+    set说法(undefined)
+    set问着(false)
+    set改着(true)
+  }
+
+  const 存 = async () => {
+    // ⚠️ **重入守卫，不是优化**：第一下还没回来时再点一下（民警按了没看见动静很自然会再按），
+    // 两下会拿**同一个底本**各发一次——第二下必然撞服务端「这份文件被改过」，而那句话是错的
+    // （改动其实已经存上了）。守卫写在**事件处理器**里而不是把钮置灰：置灰的钮在 happy-dom
+    // 里连事件都不派，那句守卫就永远走不到、拆掉也不变红（`LEARNINGS #006-16`）。
+    if (存着()) return
+    const 原样 = 底本()
+    const 存盘 = props.save
+    if (原样 === undefined || !存盘) return
+    set存着(true)
+    set说法(undefined)
+    try {
+      const 结论 = await 存盘(props.path, 草稿(), 原样)
+      if (!结论.ok) {
+        // 服务端拒了：**留在编辑态、草稿保留**。翻回预览等于把民警刚写的那段字当着面丢掉。
+        set说法(结论.message)
+        return
+      }
+      set底本(undefined) // 见文件头「存完之后底本先作废」
+      set草稿("")
+      set问着(false)
+      set改着(false)
+    } catch (原因) {
+      // 这一支是「我们这边坏了」（替身写错、存盘口自己抛）。**不静默**：静默失败时民警
+      // 按了保存就以为存上了。原样记在控制台——界面那句要短。
+      console.warn(`[openhive] 存盘没走通（${props.path}）`, 原因)
+      set说法(存不上)
+    } finally {
+      set存着(false)
+    }
+  }
+
+  const 取消 = () => {
+    // 一个字没改 ⇒ 没什么可丢的，再问一句就是骚扰（设计文档 §4.6 的「不打扰」）。
+    if (草稿() === 底本()) {
+      set问着(false)
+      set改着(false)
+      return
+    }
+    set问着(true)
+  }
+
+  /** 问句里点「丢掉」——草稿到这里才真的没了。 */
+  const 丢掉 = () => {
+    set问着(false)
+    set草稿("")
+    set改着(false)
+  }
+
+  return (
+    <>
+      <Show when={props.save}>
+        {/* `shrink-0` ＋ 正常流：这条带子是内容区的**兄弟**，不是盖在上面的浮层
+            ——正文永远不会被工具栏压住。`px-4` 与内容区的 `p-4` 同值 ⇒ 钮的文字左缘
+            与正文左缘落在同一条竖线上（同 `binary-view.tsx` 那条注释）。 */}
+        <div data-slot="richtext-editor-bar" class="flex w-full shrink-0 flex-col gap-1 px-4 pt-3 pb-1">
+          <div class="flex items-center gap-1">
+            {/* ⚠️ 底本没到位时**一颗钮都不给**（见文件头那条 binary / 还没读到）。 */}
+            <Show when={底本() !== undefined}>
+              <Show when={!改着()} fallback={<><动作钮 动作="save" 文案="保存" 点={() => void 存()} /><动作钮 动作="cancel" 文案="取消" 点={取消} /></>}>
+                <动作钮 动作="edit" 文案="编辑" 点={开始改} />
+              </Show>
+            </Show>
+          </div>
+          <Show when={说法()}>
+            <div data-slot="richtext-editor-note" class="text-[12px] leading-5 text-v2-text-text-muted">
+              {说法()}
+            </div>
+          </Show>
+          <Show when={问着()}>
+            <div
+              data-slot="richtext-editor-confirm"
+              class="flex items-center gap-1 text-[12px] leading-5 text-v2-text-text-muted"
+            >
+              这段改动还没保存，确定丢掉吗？
+              <动作钮 动作="keep" 文案="继续改" 点={() => set问着(false)} />
+              <动作钮 动作="discard" 文案="丢掉" 点={丢掉} />
+            </div>
+          </Show>
+        </div>
+      </Show>
+      {/*
+        ⚠️ 编辑态**换掉**预览（`Show` 的 fallback），不是叠一层：退出编辑时 `BinaryView` 重挂、
+        于是自动重读一次盘上那份 —— 「预览里是新正文」是这么来的，不是另写一段刷新逻辑。
+        代价照实说：**每次进出编辑态都会重读一次文件**（一次 GET，几百字节），
+        换来的是「画面一定是盘上那份」这条不需要维护的保证。
+      */}
+      <Show
+        when={改着()}
+        fallback={
+          <BinaryView
+            name="richtext-view"
+            path={props.path}
+            load={props.load}
+            render={extensionOf(props.path) === ".md" ? renderMarkdown : renderPlainText}
+            onContent={收到内容}
+          />
+        }
+      >
+        <div class="flex w-full min-h-0 flex-1 flex-col p-4">
+          <textarea
+            data-slot="richtext-editor"
+            value={草稿()}
+            onInput={(事件) => set草稿(事件.currentTarget.value)}
+            spellcheck={false}
+            class="min-h-0 w-full flex-1 resize-none rounded-md border border-v2-border-border-strong bg-v2-background-bg-base p-3 font-sans text-[13px] leading-6 text-v2-text-text-base outline-none"
+          />
+        </div>
+      </Show>
+    </>
+  )
+}
