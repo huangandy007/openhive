@@ -171,3 +171,54 @@ test("正文不贴卡片左缘：内容区按设计留内边距", async ({ page,
     `正文左缘 ${g.正文左缘} 与卡片左缘 ${g.卡片!.x} 之间应当有 ${内容内边距}px 内边距`,
   ).toBe(内容内边距)
 })
+
+/**
+ * 2026-10-12 · 中栏 tab 的关闭钮：**小号 × ＋ 20px 命中区**（用户裁定，参考图
+ * `images/screen/2026-10-12_170529.png`）。
+ *
+ * ## 为什么「× 变小了」这条只在真栈量得到
+ *
+ * 小号与大号的 **`<svg>` 盒子一模一样**——两者都是那 20px 的 viewBox 盒，差别只写在**路径**里
+ * （`close` 跨 3.75→16.25、`close-small` 跨 6→14，`ui/src/components/icon.tsx`）。
+ * 组件测试没有布局引擎（`#005-07`/`#006-33`），只能断「用的是哪一枚图标」（那条在
+ * `center/tab-bar.test.tsx`，是**代理判据**）；笔画到底着了多少墨，只有真浏览器给得出。
+ *
+ * 取 **`<use>` 的 `getBBox()`**（被引用图形的用户坐标包围盒，**不含描边**）再按
+ * `svg 渲染宽 ÷ 20` 折成像素。⚠️ 不取 svg 盒的 `getBoundingClientRect()` —— 那个数对
+ * 大小号是同一个，会把这条判据变成空转的绿（同 `#005-47` 的「期望值恰好等于默认值」）。
+ */
+async function 量关闭钮(page: Page) {
+  return page.evaluate(() => {
+    const 按钮 = document.querySelector("[data-slot='tab'] [data-slot='tab-close']")
+    const svg = 按钮?.querySelector("svg")
+    const use = svg?.querySelector("use")
+    if (!按钮 || !svg || !use) return null
+    const b = 按钮.getBoundingClientRect()
+    const 盒 = svg.getBoundingClientRect()
+    const 用户 = (use as SVGGraphicsElement).getBBox()
+    /** viewBox 恒是 `0 0 20 20`（`icon.tsx:113` 的 `viewBox()`）。 */
+    const 比例 = 盒.width / 20
+    const 一位小数 = (值: number) => Math.round(值 * 10) / 10
+    return {
+      href: use.getAttribute("href"),
+      按钮宽: Math.round(b.width),
+      按钮高: Math.round(b.height),
+      笔画宽: 一位小数(用户.width * 比例),
+      笔画高: 一位小数(用户.height * 比例),
+    }
+  })
+}
+
+test("关闭钮：小号 ×（笔画 8px）＋ 20px 命中区（用户裁定）", async ({ page, context }) => {
+  await 开一篇md(page, context, `关闭钮·小号×·${Date.now()}`)
+  const g = await 量关闭钮(page)
+
+  expect(g, "应当在中栏 tab 上取到关闭钮").not.toBeNull()
+  expect(g!.href, "关闭钮该用 close-small（小号 ×）").toBe("#opencode-icon-close-small")
+  // `close-small` 跨 6→14 = 8 用户单位，盒 20px ⇒ 着墨 8px。
+  // 大号 `close` 是 3.75→16.25 = 12.5 单位 ⇒ 12.5px，离这条差得远，判别力够。
+  expect(g!.笔画宽, `× 的着墨宽应当是 8px（小号），实得 ${g!.笔画宽}px`).toBeLessThanOrEqual(8.4)
+  expect(g!.笔画宽, `× 的着墨宽不该小到看不见，实得 ${g!.笔画宽}px`).toBeGreaterThanOrEqual(7.6)
+  expect(g!.按钮宽, `关闭钮命中区应当是 20px，实得 ${g!.按钮宽}px`).toBe(20)
+  expect(g!.按钮高, `关闭钮命中区应当是 20px，实得 ${g!.按钮高}px`).toBe(20)
+})

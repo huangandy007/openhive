@@ -97,7 +97,7 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
             event.stopPropagation()
             props.onClose()
           }}
-          class="group flex size-4 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-v2-overlay-simple-overlay-hover"
+          class="group flex size-5 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-v2-overlay-simple-overlay-hover"
         >
           {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`：写在按钮上的 `text-v2-icon-*`
               到不了图标（`icon.css` 给图标自身写了 `color: var(--icon-base)`），不注入就静默恒灰、
@@ -111,7 +111,7 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
             data-slot="tab-close-icon"
             class="flex items-center [--icon-base:var(--v2-icon-icon-muted)] group-hover:[--icon-base:var(--v2-icon-icon-base)]"
           >
-            <Icon name="close" />
+            <Icon name="close-small" />
           </span>
         </button>
       </TooltipV2>

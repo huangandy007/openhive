@@ -127,6 +127,27 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
     expect(图标层?.querySelector("svg") != null).toBe(true)
   })
 
+  /**
+   * 关闭钮的**形状**：小号 × ＋ 够大的命中区（2026-10-12 用户裁定，参考图
+   * `images/screen/2026-10-12_170529.png`）。
+   *
+   * 判据取「用的是哪一枚图标」而不是类名子串——`LEARNINGS #006-22` 记着 `toContain("border-b")`
+   * 会被 `border-base` 满足那类假绿；图标身份写在 `<use>` 的 `href` 上（`opencode-icon-<name>`，
+   * `ui/src/components/icon.tsx:110`），是一条**整值**判据。
+   * `size-5` 同理按**整词**比：`size-5` 是 `size-50` 的子串。
+   *
+   * ⚠️ 这条**量不到**「× 真的变小了」——那是一条几何，happy-dom 没有布局引擎
+   * （`#005-07` / `#006-33`）。真实渲染尺寸由真栈那条几何核对管，别把这条读成已验证视觉。
+   */
+  test("关闭钮：图标是 close-small（小号 ×），按钮命中区 20px（size-5）", () => {
+    const host = mountBar()
+    const 按钮 = slots(host, "tab")[0]?.querySelector<HTMLElement>("[data-slot='tab-close']")
+    const 图标 = 按钮?.querySelector<HTMLElement>("[data-slot='tab-close-icon']")
+
+    expect(图标?.querySelector("use")?.getAttribute("href")).toBe("#opencode-icon-close-small")
+    expect((按钮?.className ?? "").split(/\s+/)).toContain("size-5")
+  })
+
   test("放不下：尾部 tab 不渲染，行末出现「⋯」（FR-005）", () => {
     const host = mountBar({ availableWidth: 400 })
 
