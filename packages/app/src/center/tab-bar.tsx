@@ -1,6 +1,7 @@
+import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { Icon, type IconProps } from "@opencode-ai/ui/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { RAIL_ENTRIES } from "../rail/entries"
 import { moduleColorVar } from "./module-color"
 import { splitTabOverflow } from "./tab-overflow"
@@ -59,6 +60,47 @@ export interface TabBarProps {
 const 栏尾钮宽 = 26
 
 function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; onClose: () => void }) {
+  let 标题: HTMLSpanElement | undefined
+  /**
+   * 标题此刻**真的**被 `max-w-44` 截了没有（2026-10-13 用户裁定：提示**只在被截断时**弹）。
+   *
+   * 「装不下」是**两个数**的比较：内容多宽（`scrollWidth`）与看得见多宽（`clientWidth`）。
+   * 这一条与上游 `components/server/server-row.tsx` 的 `truncated`、`components/titlebar-tab-nav.tsx`
+   * 的 `titleOverflowing` **同一个判法**——那两处也是「名字被截了才给提示」，照抄形状不另发明
+   * （`LEARNINGS #004-12`）。
+   *
+   * 初值与「量不到」都算**没截断**：不知道就不弹（宁可少弹，不可乱弹）。
+   */
+  const [被截断, set被截断] = createSignal(false)
+
+  /** 量一次。拿不到那个 span（还没挂上）就**保持上一次的结论**，不猜。 */
+  const 量 = () => {
+    const 节点 = 标题
+    if (!节点) return
+    set被截断(节点.scrollWidth > 节点.clientWidth)
+  }
+
+  createEffect(() => {
+    // 名字变了（同一条 tab 换了文件）要重量。⚠️ 只读不依赖：`量` 读的是 DOM 上的几何，
+    // 不是信号，所以这里不会因为 `被截断` 自己变化而重跑（那会是个自激的回路）。
+    props.tab.title
+    // 首帧那一次：DOM 已在，但浏览器还没排版 ⇒ 让一拍（microtask），量到的才是真宽度。
+    queueMicrotask(量)
+  })
+
+  onMount(() => {
+    /*
+      ⚠️ 两个环境前提，都不是洁癖：
+      ① happy-dom 里 `ResizeObserver` 就算存在，**回调也不触发**（`LEARNINGS #006-19`）⇒ 那里只有上面那条
+         effect 的量法在跑，几何恒 0/0、也就永远判「没截断」；
+      ② 上游 `server-row.tsx` 同款守卫也写在这里，照抄。
+      宽度变化（浏览器缩放、字体换掉、栏被拖宽）时重量：tab 是 `shrink-0 max-w-44`，宽度只随
+      **字体度量**变，故观察点取那个 span 自己。
+    */
+    if (typeof ResizeObserver !== "function") return
+    createResizeObserver([标题], 量)
+  })
+
   return (
     <div
       data-slot="tab"
@@ -81,9 +123,21 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
       >
         <Icon name={MODULE_ICONS[props.tab.module] ?? FALLBACK_ICON} />
       </span>
-      <span data-slot="tab-title" class="truncate">
-        {props.tab.title}
-      </span>
+      {/* 标题悬停提示（2026-10-13 用户实报「文件名较长时会被截断」）：**只在真的被截断时**弹
+          （同日用户裁定），文案就是文件名全名、不带目录。
+          ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），那一层从此**就是标题的父级** ⇒ 它必须接下
+          「可被压缩」这件事：`min-w-0`。**少了它这个功能根本不工作**——2026-10-13 真栈实测的链条：
+          壳一挂上，那层 `flex`（没有 `min-w-0`）作为 flex 项**拒绝收缩**（`min-width:auto`），标题当场
+          拿到全宽 ⇒ `ResizeObserver` 重量读出「内容宽 == 看得见宽」（实测 `381/381`）⇒ 判「放得下」
+          ⇒ 摘壳 ⇒ 停在「没壳」那一相、**提示再也不弹**。⚠️ 症状不是「布局坏了」（tab 仍是 176px、
+          标题看着还是省略号）而是「鼠标停上去什么都没发生」——所以守护者是本 spec 的 ②，
+          **不是** ⑤：⑤ 那两条子断言在这次变异下**照样绿**（实测，别把它当 `min-w-0` 的守护者）。
+          放得下时 `inactive` 让它**原样渲染 children、不套壳**（`tooltip-v2.tsx:87`）⇒ DOM 与从前一致。 */}
+      <TooltipV2 value={props.tab.title} class="flex min-w-0" inactive={!被截断()}>
+        <span data-slot="tab-title" ref={标题} class="truncate">
+          {props.tab.title}
+        </span>
+      </TooltipV2>
       {/* 悬停提示：关闭钮只有一枚 `×`，鼠标用户看不见 `aria-label`。
           ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故原先挂在按钮上的 `shrink-0`
           要由这层接过去——否则宽 tab 被 `max-w-44` 截断时，先被压掉的会是这颗按钮。 */}

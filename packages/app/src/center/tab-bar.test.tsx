@@ -212,6 +212,67 @@ describe("TabBar 的悬停提示", () => {
   })
 })
 
+/**
+ * 标题的悬停提示（2026-10-13 用户实报：「文件名较长时会被截断显示，用『…』」⇒ 悬停要能看到全名）。
+ * 用户同日裁定：**只在被截断时弹**，且**只给文件名、不带目录**。
+ *
+ * ⚠️ 本层能钉的到此为止：happy-dom **没有排版引擎**，`scrollWidth` / `clientWidth` 恒为 0
+ * （`LEARNINGS #006-06`），真实几何量不出来。所以这里把几何**喂**进去（`Object.defineProperty`
+ * 盖住那两个数）——钉的是「判定 ＋ 接线」；「真被截断时会弹、放得下时不弹」由真栈
+ * `e2e/real-stack/tab-title-tooltip-real.spec.ts` 钉（那里量的是真盒子）。
+ *
+ * 三条用例是一组：单看「没壳」那两条，在本层与「还没量到」长得一样（都回 0），
+ * 只有第二条先证明「壳能出现」，另两条的 0 才是在说「不该出现」（`LEARNINGS #005-47` 那族的反面）。
+ */
+describe("TabBar 的标题提示（只在被截断时弹）", () => {
+  /** 提示壳里装着标题的 tab 有几张——按 `data-component` 数，不按标题数（标题本来就在）。 */
+  const 标题在壳内 = (host: HTMLElement) =>
+    [...host.querySelectorAll("[data-component='tooltip-v2-trigger']")].filter(
+      (el) => el.querySelector("[data-slot='tab-title']") != null,
+    ).length
+
+  /**
+   * 给第 `序` 张 tab 的标题喂一组几何：`看得见` 与 `内容` 两个宽度（真环境里由排版引擎给，
+   * 本环境恒 0——所以只能自己定义上去）。
+   */
+  const 喂几何 = (host: HTMLElement, 序: number, 看得见: number, 内容: number) => {
+    const 标题 = slots(host, "tab-title")[序]
+    if (!标题) throw new Error(`没有第 ${序} 张 tab 的标题`)
+    Object.defineProperty(标题, "clientWidth", { value: 看得见, configurable: true })
+    Object.defineProperty(标题, "scrollWidth", { value: 内容, configurable: true })
+  }
+
+  const 喂给全部 = (host: HTMLElement, 看得见: number, 内容: number) => {
+    for (const 序 of [0, 1, 2]) 喂几何(host, 序, 看得见, 内容)
+  }
+
+  test("量不到几何（本环境就是 0/0）⇒ 一张都不给壳：「不知道」当「没截断」，不猜", async () => {
+    const host = mountBar()
+    await 歇一拍()
+
+    expect(标题在壳内(host)).toBe(0)
+  })
+
+  test("标题真的放不下 ⇒ 只有那一张套进壳（放得下的两张不套）", async () => {
+    const host = mountBar()
+    喂几何(host, 0, 80, 80)
+    喂几何(host, 1, 100, 260)
+    喂几何(host, 2, 80, 80)
+    await 歇一拍()
+
+    expect(标题在壳内(host)).toBe(1)
+  })
+
+  test("标题放得下 ⇒ 一张都不给壳（「只在被截断时弹」的守护者）", async () => {
+    const host = mountBar()
+    // 等宽的边界也算放得下：`scrollWidth === clientWidth` 是「正好装下」，不是「被截掉一点」。
+    喂给全部(host, 100, 100)
+    await 歇一拍()
+
+    expect(标题在壳内(host)).toBe(0)
+  })
+})
+
 describe("分屏钮 / 收起钮", () => {
   const [甲, 乙] = 四张
 
