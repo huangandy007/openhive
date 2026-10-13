@@ -1591,7 +1591,7 @@ describe("FileTree 文件树（FR-005）", () => {
         toaster.clear()
       })
 
-      test("右键一个**文件** ⇒ 剪贴板里是它在项目里的相对路径（可直接贴给会话框）", async () => {
+      test("右键一个**文件** ⇒ 剪贴板里是它在项目里的相对路径，且**不弹成功提示**", async () => {
         const host = 挂带提示(() => <FileTree paths={树("资料/8·17/话单.csv")} />)
         动作(host, "expand-all")?.click() // 默认全收缩（⑦-5）⇒ 深层那一行要先让它可见
 
@@ -1600,8 +1600,7 @@ describe("FileTree 文件树（FR-005）", () => {
         await 歇一拍()
 
         expect(await 剪贴板.readText()).toBe("资料/8·17/话单.csv")
-        expect(提示文本("success"), "复制成功要回一句话——否则用户不知道剪贴板里到底有没有东西").toContain("已复制")
-        expect(提示文本("success"), "提示里带上**复制了什么**，贴错之前能自己发现").toContain("资料/8·17/话单.csv")
+        expect(提示文本("success"), "复制成功**不再**弹提示（2026-10-13 用户裁定：那条提示遮住会话框、还要手动关）").toBeNull()
       })
 
       test("右键一个**文件夹** ⇒ 尾上补一个斜杠，让路径自己说清「这是目录」", async () => {
