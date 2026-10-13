@@ -96,19 +96,70 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
     expect(activated).toEqual([])
   })
 
-  test("按来源模块着色：模块图标取该模块的身份色，tab 上标出 data-module（FR-005）", () => {
+  test("按来源模块着色：tab 上标出 data-module，图标层取该模块的身份色（FR-005）", () => {
     const host = mountBar()
     const [项目, 话单] = slots(host, "tab")
 
     expect(项目?.getAttribute("data-module")).toBe("project")
     expect(话单?.getAttribute("data-module")).toBe("cdr-analysis")
-    // Icon 的着色来自继承的 --icon-base（见 icon.css），故由外层 wrapper 提供
-    expect(项目?.querySelector<HTMLElement>("[data-slot='tab-icon']")?.style.getPropertyValue("--icon-base")).toBe(
+    // ⚠️ 2026-10-13：写的是 `color` 而**不是** `--icon-base`。图标从 v1 `Icon` 换成了 `FileIcon`
+    //    （见下面两条用例），而 `FileIcon` 的 mono 变体画的是 `fill="currentColor"` 的遮罩矩形
+    //    ——它**不读** `--icon-base`（那是 `icon.css` 给 v1 `Icon` 定的规矩）。身份色改由这一层
+    //    的 `color` 直接给，见 `tab-bar.tsx` 里那段注释。
+    expect(项目?.querySelector<HTMLElement>("[data-slot='tab-icon']")?.style.getPropertyValue("color")).toBe(
       "var(--v2-avatar-bg-gray)",
     )
-    expect(话单?.querySelector<HTMLElement>("[data-slot='tab-icon']")?.style.getPropertyValue("--icon-base")).toBe(
+    expect(话单?.querySelector<HTMLElement>("[data-slot='tab-icon']")?.style.getPropertyValue("color")).toBe(
       "var(--v2-avatar-bg-blue)",
     )
+  })
+
+  /**
+   * 2026-10-13 用户实报：「在中栏打开的（左栏文件树里的）文件，其 tab 前面是个**文件夹**图标。」
+   *
+   * **根因**（读代码定的，不是猜）：tab 的图标取的是**来源模块**的图标（`tab-bar.tsx` 原来的
+   * `MODULE_ICONS` ← `RAIL_ENTRIES`），而「项目管理」那颗入口的图标正是 `folder`
+   * （`rail/entries.ts`）⇒ 用户停在项目管理模块，**每一张文件 tab 前面就都是一个文件夹**。
+   *
+   * 这不是代码写错——`openhive-DESIGN.md` §4.5 原来就写着「tab 结构 ＝ **模块图标** + 文件名」，
+   * 代码与规格是一致的。**是那条规格被用户改掉**：图标改按**文件类型**选（与左栏文件树用同一个
+   * `FileIcon`），颜色仍按来源模块（用户 2026-10-13 裁定）。
+   *
+   * 判据取「用的是哪一枚图标」——`FileIcon` 把文件类型编进 `<use>` 的 `href` 尾段
+   * （`ui/src/components/file-icon.tsx`，`${sprite}#${name}`），是一条**整值**判据；
+   * 不用类名子串（`LEARNINGS #006-22`：`toContain` 会被同名后缀满足）。
+   */
+  test("tab 的图标按**文件类型**选（与左栏文件树同一个 FileIcon），不再是来源模块的 folder", () => {
+    const 三种: ContentTab[] = [
+      { module: "project", title: "报告.md", path: "/p/报告.md" },
+      { module: "cdr-analysis", title: "话单.json", path: "/p/话单.json" },
+      { module: "project", title: "老卷宗.intent", path: "/p/老卷宗.intent" },
+    ]
+    const host = mountBar({ tabs: 三种 })
+    const 图标名 = (el?: HTMLElement) =>
+      el?.querySelector("[data-slot='tab-icon'] use")?.getAttribute("href")?.split("#").pop()
+
+    // `.md` / `.json` 都在 `FileIcon` 的登记表里，各得各的；`.intent` 没登记 ⇒ 落到通用文件图标。
+    expect([...slots(host, "tab")].map(图标名)).toEqual(["Markdown", "Json", "Document"])
+    // ⚠️ 两条**跨模块**的（project 与 cdr-analysis 各一）都在里面：这一条恰恰证明图标不再随模块走。
+    expect(slots(host, "tab").some((el) => 图标名(el)?.startsWith("Folder"))).toBe(false)
+  })
+
+  /**
+   * 用户裁定的**另一半**：形状换成文件类型，颜色仍按来源模块（FR-005 的着色不能丢）。
+   *
+   * ⚠️ 这里钉的是「喂给 FileIcon 的那个颜色」。**颜色真的落到像素上没有**是本条量**不到**的
+   * ——`FileIcon` 的 mono 变体画的是 `fill="currentColor"` 的遮罩矩形，`currentColor` 的解析
+   * 要 CSS 引擎，而 happy-dom 没有（`LEARNINGS #005-07` / `#006-33`）。那一条由真栈规格量
+   * （`e2e/real-stack/center-tab-icon-real.spec.ts`），别把本条读成已验证视觉。
+   */
+  test("文件图标按**单色**渲染（mono ⇒ currentColor），颜色仍取来源模块的身份色", () => {
+    const host = mountBar({ tabs: [{ module: "cdr-analysis", title: "话单.json", path: "/p/话单.json" }] })
+    const 图标层 = slots(host, "tab")[0]?.querySelector<HTMLElement>("[data-slot='tab-icon']")
+
+    expect(图标层?.style.getPropertyValue("color")).toBe("var(--v2-avatar-bg-blue)")
+    // mono 那一支的标记：`FileIcon` 画一个 `fill="currentColor"` 的遮罩矩形（见其源码）。
+    expect(图标层?.querySelector("svg[data-component='file-icon'] rect")?.getAttribute("fill")).toBe("currentColor")
   })
 
   /**

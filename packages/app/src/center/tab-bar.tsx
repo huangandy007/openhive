@@ -1,9 +1,9 @@
 import { createResizeObserver } from "@solid-primitives/resize-observer"
-import { Icon, type IconProps } from "@opencode-ai/ui/icon"
+import { FileIcon } from "@opencode-ai/ui/file-icon"
+import { Icon } from "@opencode-ai/ui/icon"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
-import { RAIL_ENTRIES } from "../rail/entries"
 import { moduleColorVar } from "./module-color"
 import { splitTabOverflow } from "./tab-overflow"
 import { contentTabKey, type ContentTab } from "./tab-store"
@@ -14,13 +14,6 @@ export const TAB_HEIGHT = 40
 const TAB_WIDTH = 180
 /** 行末「⋯」自身占宽。 */
 const OVERFLOW_WIDTH = 40
-
-/** 模块图标沿用图标栏那套（`entries.ts`），tab 上就不再另立一份选型。 */
-const MODULE_ICONS: Record<string, IconProps["name"]> = Object.fromEntries(
-  RAIL_ENTRIES.map((entry) => [entry.id, entry.icon] as const),
-)
-/** 未登记模块（F6/F7 新增、或上游带进来的 id）的兜底图标，与 `module-color.ts` 的兜底同义。 */
-const FALLBACK_ICON: IconProps["name"] = "folder"
 
 export interface TabBarProps {
   /** 已打开的 tab，顺序即显示顺序（FR-004 跨模块累积）。 */
@@ -116,13 +109,28 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
         {/* 激活态顶边条：除底色外再用「形状」表达（DESIGN §3.2 / §4.3），与 rail 的选中竖条同法 */}
         <span data-slot="tab-active-bar" class="absolute inset-x-0 top-0 h-0.5 bg-v2-background-bg-accent" />
       </Show>
-      {/* Icon 取的是继承来的 --icon-base（见 icon.css），故身份色必须由这层 wrapper 提供 */}
+      {/* ⚠️ **本仓定制（openhive，2026-10-13）**：图标改按**文件类型**选，不再按来源模块。
+          用户实报：「在中栏打开的（左栏文件树里的）文件，其 tab 前面是个文件夹图标」——
+          根因是原来取的是**模块图标**（`RAIL_ENTRIES` 那套），而「项目管理」那颗入口的图标
+          正是 `folder` ⇒ 停在项目管理模块时，**每一张文件 tab 前面都是一个文件夹**。
+
+          现在与左栏文件树用**同一个** `FileIcon`（`ui/components/file-icon`），按文件名 / 扩展名
+          选图标——单位是**文件**，看的就是「它是什么文件」。
+          ⚠️ 它**认得出没有扩展名的文件**（`readme` / `makefile` / `license` 都在它那张
+          `fileNames` 表里，认不出才回落到通用文件图标）⇒ 这里**不需要**「没扩展名就退回模块图标」
+          那支兜底；那支反而会给 `LICENSE`、`Makefile` 这类文件重新戴上文件夹。
+
+          ⚠️ **颜色仍按来源模块**（FR-005，用户 2026-10-13 裁定：形状换、颜色不换）。
+          `FileIcon` 的 mono 变体画的是 `fill="currentColor"` 的遮罩矩形——它**不读**
+          `--icon-base`（那是 `icon.css` 给 v1 `Icon` 定的规矩），所以身份色由这一层的 `color`
+          直接给。⚠️ 少了这个 `color`，图标在深色/浅色主题下都退回 `currentColor` 的继承值，
+          **不报错、不变红**，只是颜色不对。 */}
       <span
         data-slot="tab-icon"
         class="flex shrink-0 items-center"
-        style={{ "--icon-base": `var(${moduleColorVar(props.tab.module)})` }}
+        style={{ color: `var(${moduleColorVar(props.tab.module)})` }}
       >
-        <Icon name={MODULE_ICONS[props.tab.module] ?? FALLBACK_ICON} />
+        <FileIcon node={{ path: props.tab.path, type: "file" }} mono />
       </span>
       {/* 标题悬停提示（2026-10-13 用户实报「文件名较长时会被截断」）：**只在真的被截断时**弹
           （同日用户裁定），文案就是文件名全名、不带目录。
@@ -156,10 +164,10 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
         >
           {/* 图标颜色必须由这层 wrapper 注入 `--icon-base`：写在按钮上的 `text-v2-icon-*`
               到不了图标（`icon.css` 给图标自身写了 `color: var(--icon-base)`），不注入就静默恒灰、
-              连悬停提亮一起失效——与本文件的模块图标、rail、topbar 是同一套做法。
+              连悬停提亮一起失效——与本文件的 rail、topbar 是同一套做法。
 
               这里写**类**而不是内联 style：关闭按钮只有「默认 / 悬停」两档**固定**色，走类才有
-              `group-hover:` 提亮的余地。上面那个模块图标反过来用内联——因为它的色是
+              `group-hover:` 提亮的余地。左边那个文件图标反过来用内联——因为它的色是
               `moduleColorVar()` **运行时算出来**的身份色，拼不出类名。两处取舍不同是**这个区别**
               造成的（算得出来的只能内联，固定档位才轮到类），不是漏了一处。 */}
           <span
@@ -297,8 +305,9 @@ export function TabBar(props: TabBarProps) {
                 {/* ⚠️ **本仓定制（openhive，2026-10-13）**：上游这里用的是一段字面字形 `▫`（U+25AB）。
                     本仓换成原生 **v2** 图标集里的 `split`（外方框 ＋ 两条竖栏），照用户给的参考图
                     `images/screen/2026-10-12_170442.png`；同一族还有 `unified`（两条横栏）。
-                    ⚠️ 这是 **v2** 图标（`@opencode-ai/ui/v2/icon`）——与本文件下方模块图标走的
-                    v1 图标集（`@opencode-ai/ui/icon`）**不是同一套 sprite**，`split` 这个名字只在 v2 里有。 */}
+                    ⚠️ 这是 **v2** 图标（`@opencode-ai/ui/v2/icon`）——与本文件 tab 上那颗关闭钮走的
+                    v1 图标集（`@opencode-ai/ui/icon`）**不是同一套 sprite**，`split` 这个名字只在 v2 里有。
+                    （tab 前面那枚文件图标走的是第三套：`ui/components/file-icon` 的 sprite。） */}
                 <IconV2 name="split" />
               </button>
             </TooltipV2>
