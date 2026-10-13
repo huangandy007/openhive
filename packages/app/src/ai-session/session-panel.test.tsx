@@ -1939,3 +1939,72 @@ describe("思考过程的显示：右栏跟随全局设置（showReasoningSummar
     expect(数回答(宿主)).toBe(1)
   })
 })
+
+describe("拖文件 / 文件夹行到右栏会话框 ⇒ 自动填路径引用（005 · 2026-10-13 用户提出）", () => {
+  /**
+   * 在右栏会话框的表单上发一次**真实的** `drop`。
+   *
+   * ⚠️ happy-dom **没有 `DragEvent`** ⇒ `dataTransfer` 只能自己造一个替身，且只实现被测代码
+   * 真读的那一个方法 `getData("text/plain")`（替身只需喂到被测项）。载荷为 `undefined` 时
+   * 连 `dataTransfer` 都不给（模拟「没有 dataTransfer 的 drop」）。
+   *
+   * 发在**表单**上（不是编辑器上）：`interaction.ts` 的 `onDrop` 挂的就是表单那句 JSX，
+   * 且本用例要的正是「经右栏真正读的那道口进来」。
+   */
+  const 拖入 = (宿主: HTMLElement, 载荷: string | undefined) => {
+    const 表单 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input-v2"]')
+    if (!表单) throw new Error('没找到右栏会话框的表单（[data-component="prompt-input-v2"]）')
+    const 事件 = new Event("drop", { bubbles: true, cancelable: true })
+    Object.defineProperty(事件, "dataTransfer", {
+      value: 载荷 === undefined ? undefined : { getData: (型: string) => (型 === "text/plain" ? 载荷 : "") },
+    })
+    表单.dispatchEvent(事件)
+  }
+
+  /** 编辑器里当下的路径引用——读**DOM**（`data-mention` / `data-path`），不读 store。 */
+  const 读引用 = (宿主: HTMLElement) =>
+    [...宿主.querySelectorAll<HTMLElement>('[data-component="prompt-input"] [data-mention]')].map((节点) => ({
+      类型: 节点.dataset.mention,
+      路径: 节点.dataset.path,
+      字: 节点.textContent,
+    }))
+
+  test("拖一个文件行 ⇒ 会话框里出现引用，且指向的正是被拖的那个文件", () => {
+    const 宿主 = 摆右栏()
+
+    拖入(宿主, "file:报告.docx")
+
+    const 引用 = 读引用(宿主)
+    expect(引用.length, "拖完一个文件，会话框里一条引用都没出现").toBe(1)
+    // ⚠️ 只钉「有东西」不够：作用对象也得钉（`LEARNINGS #005-19`：能开 ≠ 开在谁身上）。
+    expect(引用[0]?.路径, "引用指向的不是被拖的那个文件").toBe("报告.docx")
+    expect(引用[0]?.字).toBe("@报告.docx")
+  })
+
+  test("拖一个文件夹行 ⇒ 尾斜杠留在引用里（文件夹与文件在会话框里分得开）", () => {
+    const 宿主 = 摆右栏()
+
+    拖入(宿主, "file:资金流水/")
+
+    expect(读引用(宿主)[0]?.路径, "文件夹的尾斜杠被吃掉了").toBe("资金流水/")
+  })
+
+  test("拖非 `file:` 载荷（从别处拖来的普通文字）⇒ 会话框不认、一个字都不插", () => {
+    const 宿主 = 摆右栏()
+
+    拖入(宿主, "报告.docx")
+
+    expect(读引用(宿主).length, "把一段普通文字当成了文件路径引用").toBe(0)
+  })
+
+  test("会话框里已打的字不被吞：引用追加在后面，原文照旧在", () => {
+    const 宿主 = 摆右栏()
+    打字(宿主, "帮我看看")
+
+    拖入(宿主, "file:报告.docx")
+
+    const 话 = 输入框里的话(宿主) ?? ""
+    expect(话.startsWith("帮我看看"), `已经打好的字被吞了或被挤到后面：${JSON.stringify(话)}`).toBe(true)
+    expect(读引用(宿主)[0]?.路径).toBe("报告.docx")
+  })
+})

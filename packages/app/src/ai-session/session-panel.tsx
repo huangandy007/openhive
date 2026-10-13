@@ -12,6 +12,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, type JSX } from 
 import { createStore } from "solid-js/store"
 import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条, type 服务端命令条 } from "./command-palette"
 import { CommonCards } from "./common-cards"
+import { 拖入路径 } from "./drop-reference"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
 import { 会话重命名输入 } from "./session-rename"
@@ -411,6 +412,26 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           })
         },
         onStop: () => {},
+      },
+      // 拖进来的「文件 / 文件夹行」⇒ 在光标处补一条 `@路径` 引用（005 · 2026-10-13 用户提出）。
+      //
+      // ⚠️ 落点为什么是 `view.onDrop` 而**不是** session-ui 的 `attachments`：本组件造 controller
+      // 时**没传 `attachments`**（那份是 `components/prompt-input-v2.tsx` 给会话页用的富控制器），
+      // 而 `interaction.ts` 的 `onDrop` 在 `attachments` 为空时才落到这里（`input.view.onDrop?.(event)`）
+      // ⇒ 上游那一支 `handleDrop` 在右栏**从来没被构造过**（2026-10-13：拖了没反应、一个字都不插）。
+      // 认载荷的判据在 `./drop-reference`，这里只管接线。
+      //
+      // ⚠️ 用 `草稿操作.addMention(...)` 而**不是** `controller.addPart(...)`：controller 的类型由
+      // 这个对象字面量推出来，在里面引用它就成**循环推断**（同下面 `取正文` 那条注释的顾虑）。而
+      // `addPart` 对 `type:"file"` 干的正是 `draft.addMention(part)`（`interaction.ts:84`）——
+      // 两个门面写的是同一个 store，等价、且不绕圈。
+      //
+      // 走表单自带的 `onDrop`（`index.tsx` 的 `<form>`）⇒ **只有落在会话框里的拖拽**才走到这儿，
+      // 拖到文件树上不会误插。
+      onDrop: (event) => {
+        const 路径 = 拖入路径(event.dataTransfer?.getData("text/plain"))
+        if (路径 === undefined) return
+        草稿操作.addMention({ type: "file", path: 路径, content: `@${路径}`, start: 0, end: 0 })
       },
     },
   })
