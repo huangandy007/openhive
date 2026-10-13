@@ -1,5 +1,6 @@
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { Icon, type IconProps } from "@opencode-ai/ui/icon"
+import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { RAIL_ENTRIES } from "../rail/entries"
@@ -209,9 +210,6 @@ export function TabBar(props: TabBarProps) {
   const visible = () => props.tabs.slice(0, split().visibleCount)
   const hidden = () => props.tabs.slice(split().visibleCount)
 
-  /** 够不够分屏：**至少两张** tab（设计文档 §3.3：中栏至少要已经有打开的两个 Tab 页面）。 */
-  const 够分屏 = () => props.tabs.length >= 2
-
   const activate = (tab: ContentTab) => {
     props.onActivate(contentTabKey(tab))
     setMenu(undefined)
@@ -282,23 +280,26 @@ export function TabBar(props: TabBarProps) {
       <Show when={props.onSplit !== undefined || props.onUnsplit !== undefined}>
         <div class="relative ml-auto flex items-center gap-0.5">
           <Show when={props.onSplit}>
-            <TooltipV2 value={够分屏() ? "分屏" : "至少打开两个文件才能分屏"} class="flex shrink-0">
+            {/* ⚠️ **本仓定制（openhive，2026-10-13）**：上游这里是「够分屏才可点」（`够分屏` =
+                `props.tabs.length >= 2`，不够时 `aria-disabled` 置灰、提示写「至少打开两个文件才能分屏」）。
+                本仓取消了这道闸——因为本仓的分屏**不搬 tab**（`tab-store.ts` 的 `splitPane`
+                「不动任何 tab，只把右栏露出来」）：右栏初来就是一个空栏，由用户切过去自己开文件，
+                所以「先有两个 tab」这个前提不成立，有一张（甚至一张没有）也照样能先把栏劈开。
+                提示语随之收成一句「分屏」。 */}
+            <TooltipV2 value="分屏" class="flex shrink-0">
               <button
                 type="button"
                 data-slot="split-button"
-                aria-label={够分屏() ? "分屏" : "至少打开两个文件才能分屏"}
-                aria-disabled={够分屏() ? undefined : "true"}
-                onClick={() => {
-                  // 置灰态用 `aria-disabled` 而不是原生 `disabled`：原生 `disabled` 的元素
-                  // 收不到 hover，那句「至少打开两个文件才能分屏」就永远出不来
-                  // （`LEARNINGS #005-17` 的同族：可见而不响的控件要说得出为什么）。
-                  if (!够分屏()) return
-                  setMenu(菜单() === "split" ? undefined : "split")
-                }}
+                aria-label="分屏"
+                onClick={() => setMenu(菜单() === "split" ? undefined : "split")}
                 class="flex size-6 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base"
               >
-                {/* 原生图标集里没有「分屏」这一档，用字面字形 U+25AB 顶（同 `⋯` 的先例） */}
-                ▫
+                {/* ⚠️ **本仓定制（openhive，2026-10-13）**：上游这里用的是一段字面字形 `▫`（U+25AB）。
+                    本仓换成原生 **v2** 图标集里的 `split`（外方框 ＋ 两条竖栏），照用户给的参考图
+                    `images/screen/2026-10-12_170442.png`；同一族还有 `unified`（两条横栏）。
+                    ⚠️ 这是 **v2** 图标（`@opencode-ai/ui/v2/icon`）——与本文件下方模块图标走的
+                    v1 图标集（`@opencode-ai/ui/icon`）**不是同一套 sprite**，`split` 这个名字只在 v2 里有。 */}
+                <IconV2 name="split" />
               </button>
             </TooltipV2>
           </Show>

@@ -292,16 +292,28 @@ describe("分屏钮 / 收起钮", () => {
     expect(接.querySelectorAll("[data-slot='tab']").length).toBe(2)
   })
 
-  test("少于两张 tab ⇒ 分屏钮 `aria-disabled`（置灰可见，不是藏起来），点了菜单不开", async () => {
+  /**
+   * 2026-10-13 用户裁定：**取消「至少两个文件才能分屏」这道闸**。
+   *
+   * 依据是产品实际形态——分屏**不会**把某个 tab 搬到右栏（`tab-store.ts` 的 `splitPane`
+   * 「不动任何 tab，只把右栏露出来」），右栏初来就是一个空栏、由用户自己切过去开文件。
+   * 于是「先有两个 tab」这个前提不成立：只有一张、甚至一张没有，也照样能先把栏劈开。
+   * 悬停提示随之收成一句「分屏」（原先是「至少打开两个文件才能分屏」）。
+   */
+  test("只有一张 tab 也能点开分屏菜单（不再置灰／不再有前提提示）", async () => {
     const 宿主 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} onSplit={() => {}} />)
     const 钮 = 宿主.querySelector<HTMLElement>("[data-slot='split-button']")!
-    expect(钮.getAttribute("aria-disabled")).toBe("true")
-    expect(钮.getAttribute("aria-label")).toBe("至少打开两个文件才能分屏")
+    expect(钮.getAttribute("aria-disabled") === null).toBe(true)
+    expect(钮.getAttribute("aria-label")).toBe("分屏")
     钮.click()
-    await 歇一拍()
-    // 用 `=== null` 布尔比较而不是 `.toBe(null)`：那颗菜单若真开了，`querySelector` 会
-    // 返回一个 DOM 节点，`.toBe(null)` 红了会把 bun 的 pretty-printer 挂死（`LEARNINGS #005-01`）。
-    expect(宿主.querySelector("[data-slot='split-menu']") === null).toBe(true)
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") !== null)
+    expect(宿主.querySelectorAll("[data-slot='split-menu-item']").length).toBe(2)
+  })
+
+  test("分屏钮用的是原生 v2 的 `split` 图标（不再是字面字形 ▫）", () => {
+    const 宿主 = mount(() => <TabBar tabs={[甲]} onActivate={() => {}} onClose={() => {}} onSplit={() => {}} />)
+    const 钮 = 宿主.querySelector<HTMLElement>("[data-slot='split-button']")!
+    expect(钮.querySelector("svg use")?.getAttribute("href")).toBe("#opencode-v2-icon-split")
   })
 
   test("两张以上 ⇒ 点开菜单，两项，选「上下」⇒ onSplit('上下')", async () => {
