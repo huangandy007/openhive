@@ -1,5 +1,5 @@
 import { createStore, reconcile } from "solid-js/store"
-import { type Accessor, batch, createEffect, createMemo, createRoot, getOwner, onCleanup } from "solid-js"
+import { type Accessor, batch, createEffect, createMemo, createRoot, getOwner, onCleanup, runWithOwner } from "solid-js"
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import type { ServerSDK } from "./server-sdk"
@@ -227,6 +227,11 @@ function createServerNotificationState(input: {
   const settings = input.settings
   const language = input.language
 
+  // ⚠️ **本仓定制（openhive，2026-10-13）**：上游这里没有这一行。本工厂在 `NotificationProvider`
+  // 的 `createRoot(...)` 回调内被调用 ⇒ 此刻的 owner 就是本状态自己的 root（`states` 里那个
+  // `dispose` 的入口）。`lookup` 需要它来承接下面那次 `onCleanup` 登记（理由见 `lookup`）。
+  const rootOwner = getOwner()
+
   const empty: Notification[] = []
 
   const currentDirectory = input.directory
@@ -316,7 +321,20 @@ function createServerNotificationState(input: {
 
   const lookup = async (directory: string, sessionID?: string) => {
     if (!sessionID) return undefined
-    const sync = serverSync().ensureDirSyncContext(directory)
+    // ⚠️ **本仓定制（openhive，2026-10-13）**：上游这一行是直接调用
+    // `serverSync().ensureDirSyncContext(directory)`。
+    //
+    // 为什么必须包在 `runWithOwner` 里：本函数由 `sdk.event.listen` 的**流回调**投递
+    // （`session.idle` / `session.error` 那两条），而事件回调里 `getOwner()` 是 `null`；那个读口
+    // （`server-sync.tsx` 的 `createRefCountMap`，`utils/refcount.ts`）**无条件**在返回闭包的
+    // 第一行登记一个 `onCleanup` ⇒ ① 控制台刷 `cleanups created outside a 'createRoot' or 'render'
+    // will never be run`（用户 F12 报的就是它）；② 登记不上的那个释放回调永不执行 ⇒
+    // 该目录的引用计数只增不减 ⇒ `remove`（`inner.disableMcp(dir)`）**永不跑**。
+    // 包上 owner 之后这次登记挂在**本状态的 root** 上：warning 消失，释放随本状态 `dispose` 一起跑。
+    //
+    // 真栈判据：`packages/app/e2e/real-stack/session-idle-oncleanup-real.spec.ts`
+    // （发一条消息 ⇒ `session.idle` ⇒ 控制台 0 条该告警；变异：拆掉本行 ⇒ 恰 1 条）。
+    const sync = runWithOwner(rootOwner, () => serverSync().ensureDirSyncContext(directory))!
     const session = sync.session.get(sessionID)
     if (session) return session
     return sync.session
