@@ -101,6 +101,27 @@ describe("CenterSplit", () => {
   })
 
   /**
+   * 2026-10-13 用户实报「分屏的隔线不明显，需要通过灰度颜色提高视觉识别」。
+   *
+   * 根因（读上游 `resize-handle.css` 定的，不是猜）：那条 `::after` 平时 `opacity: 0`，
+   * 只有 `:hover` / `:active` 才拉满 ⇒ `after:bg-*` 只给了**颜色**、没给**可见性**，
+   * 隔线在静止态压根不存在。修法从**调用方**补可见性（不动上游 CSS，第一号约束）：
+   * `after:opacity-100` 让它常显；hover 再从 `border-strong`（20% alpha）加深到实心灰
+   * `icon-muted`（#808080）——两步都是灰度，不碰品牌金（DESIGN 把品牌金限定在 logo /
+   * 图标 / 高亮 / 链接 / 选中态）。
+   *
+   * ⚠️ **本条只钉「这三个 utility 还在 class 里」**——「看不看得见」是视觉，happy-dom 没有
+   * CSS 引擎（`#005-07`），只有真栈量得到；这条的职责是防它们被人顺手删掉。
+   */
+  test("分屏手柄常显：class 带 `after:opacity-100`，hover 再从淡灰加深到实心灰", async () => {
+    const 宿主 = await 备好("左右")
+    const 柄 = 宿主.querySelector<HTMLElement>("[data-component='resize-handle']")!
+    expect(柄.className).toContain("after:opacity-100")
+    expect(柄.className).toContain("after:bg-v2-border-border-strong")
+    expect(柄.className).toContain("hover:after:bg-v2-icon-icon-muted")
+  })
+
+  /**
    * 头栏的**内联尺寸**只在分屏时出现。
    *
    * ⚠️ 这条是**机制**，宽高的**数**在真栈量（文件头那条）：这里只钉「有没有把这一栏钉死」。

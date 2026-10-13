@@ -117,8 +117,21 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
         <Show when={center.split()}>
           {/* ⚠️ 方向那两个词的**唯一**翻译处（文件头 ③）。`edge="end"`：
               左右分屏时手柄在下栏的左边缘、上下分屏时在上栏的下边缘（`resize-handle.css`）。
-              颜色从本侧给：上游 `::after` 没有 `background`，不传就 hover 也全透明
-              （同 `three-pane.tsx` 的 `手柄悬停色`）。 */}
+
+              ⚠️ **本仓定制（openhive，2026-10-13）**：颜色与可见性都从本侧给，上游 CSS 一字未动。
+              上游 `resize-handle.css` 有**两条**默认：① `::after` 没有 `background`（不传就全透明）；
+              ② `::after` 平时 `opacity: 0`，只有 `:hover` / `:active` 才拉满。
+              于是只传颜色（上游 `three-pane.tsx` 的写法）得到的是**一条只在鼠标移上去时才出现**的线
+              ——用户 2026-10-13 实报「隔线不明显」。这里把 ② 也补上：`after:opacity-100` 让它**常显**。
+
+              ⚠️ **`after:opacity-100` 不需要 `!`**：上游 `resize-handle.css` 是以
+              `@import "…/resize-handle.css" layer(components)` 进来的（`ui/styles/index.css`），
+              而 layer 序是 `theme, base, components, utilities`（`ui/styles/tailwind/index.css`）
+              ⇒ utilities 层压得住它，原样写即可。（同族反例：`LEARNINGS #006-33` 那处上游规则
+              **无层级**，压不住，才必须写 `!`。）
+
+              颜色全走**灰度**、不碰品牌金（DESIGN 把品牌金限定在 logo / 图标 / 高亮 / 链接 / 选中态）：
+              静止态 `border-strong`（20% alpha，浅色主题 ≈ #C2C2C2），hover 加深到实心灰 `icon-muted`（#808080）。 */}
           <ResizeHandle
             direction={是左右() ? "horizontal" : "vertical"}
             edge="end"
@@ -126,7 +139,7 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
             min={栏最小}
             max={是左右() ? 左右最大() : 上下最大()}
             onResize={是左右() ? set左右宽 : set上下高}
-            class="after:bg-v2-border-border-strong"
+            class="after:bg-v2-border-border-strong after:opacity-100 hover:after:bg-v2-icon-icon-muted"
           />
         </Show>
       </div>
