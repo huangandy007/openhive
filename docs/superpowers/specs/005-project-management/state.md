@@ -4301,3 +4301,52 @@ v2 把变体编进**类名**（`toast-v2--success`），根上**没有** `data-v
 3. **🟡 暗色主题下弹窗的危险色 / 中性色没有守护者**（同第 10 条挂账 1 的口径）。
 4. **🟡 `file-tree.test.tsx` 单独跑有 2 处 `DOMException: removeChild`**（收尾时序：`context/dialog.tsx` 那个 100ms 的 `dispose` 定时器撞上 happy-dom 拆窗），测试仍 **105 pass / 0 fail**；该文件与被测的 `file-tree.tsx` **本轮都没改**（`file-tree.test.tsx` 只 import `file-tree.tsx`，两条链不相交）⇒ **非本条引入**，如实登记。
 5. **✅ 已核对一致、未改**：`member-panel.tsx` 那句「已归档的项目 ⇒ 冻结，除 owner 的找回外任何动作都不成立（FR-010）」与本轮的 owner 收口**同一条口径**，无需联动改动。
+
+### 加固轮 · 拖第二个文件行进右栏会话框被静默吞掉（2026-10-13 · 已提交 `2b04c85967`）
+
+**现象（用户实报）**：文件 tab 拖一个文件 / 文件夹进右栏会话框能自动填路径引用，**拖第二个没有任何反应**。
+
+**根因（探针实测，不推演）**：`packages/session-ui/.../prompt-input/store.ts:76` 的 `addMention` 用
+`text.slice(0, cursor).lastIndexOf("@")` **反推要替换的范围**，其前提是**调用前用户刚敲了一个 `@`**
+（提示列表里选中那一刻，那个 `@` 就在光标左边）。拖拽这个入口没敲 `@` ⇒ **第二次**拖时，文本里唯一的
+`@` 是**上一次插进去的引用自己**（`@报告.docx` 的 content 以 `@` 开头）⇒ 范围被算成「从上次那个 `@`
+到光标」，**跨越了那个引用 part** ⇒ `insertMention` 里没有任何文本片段容纳得下它 ⇒ 原样返回 ⇒ 新引用
+被**静默丢弃**（只剩 cursor 被改坏）。第一次能成，只因为初始文本里没有 `@`。
+
+探针读数（连拖两次，同一份 store）：
+
+| 现场 | cursor | prompt |
+|---|---|---|
+| 初始 | 0 | `[text:]` |
+| 第 1 次后 | 9 | `[file:@报告.docx][text: ]` |
+| 第 2 次后 | 7 | `[file:@报告.docx][text: ]` ← **一字未变** |
+
+**修法**：调 `addMention` 前先 `草稿操作.addText("@")` 补一个紧贴光标的锚点，`lastIndexOf` 必然先找到
+它 ⇒ 范围正好是它自己 ⇒ 被替换成引用。仍走上游**同一个** `addMention`，不另写插入逻辑（`#005-20`）。
+落点在本仓的接线处（`ai-session/session-panel.tsx` 的 `onDrop`），**不碰上游 `store.ts`**。
+
+**判据 / 变异**：`session-panel.test.tsx`「连着拖第二个 ⇒ 两条引用都在，各自指向被拖的那个」
+（② 红 `Expected: 2 / Received: 1`；④ 拆掉补 `@` 那行 ⇒ **恰红该条**，另 72 条全绿 ⇒ `#003-03` 第一类）。
+⚠️ 既有的 4 条**单拖**用例**不是**这条缺陷的守护者（它们正好落在「文本里没有 `@`」的特例上）。
+
+**门禁**：根 `bun run typecheck` **31/31**；`packages/app` 组件 **952 pass / 0 fail**（比上轮 951 多 1 ＝ 新用例）；
+单测 **1195 pass / 0 fail**；根 `bun run lint` 本次两文件 **0 新增命中**（`test.tsx` 那两处是既有夹具的
+`as Message` / `as Part`）。
+
+**⑥ 同类落点（grep 全量，逐个打勾）**
+
+| 落点 | 判定 |
+|---|---|
+| `session-panel.tsx` 的 `onDrop` | **本次修** |
+| `session-ui/interaction.ts:147`（`mention.add` 命令） | 前提成立（用户敲 `@` 选候选）⇒ ✅ 不改 |
+| `session-ui/.../attachments.ts:186`（富控制器 `handleDrop`） | **同一缺陷**：认 `file:` 载荷后直接 `addPart` → `addMention`，同样没敲 `@`。会话页 / 新建会话页确实构造了 `attachments`（`prompt-input-v2.tsx:365`）⇒ 那两处**连着拖第二个文件也会被吞**。⚠️ 上游文件、本仓逐字未改（`git diff upstream/dev` 为空）⇒ **未改**，见挂账 |
+| `app/components/prompt-input/attachments.ts:196` | 前者同型（上游 drop 支）⇒ 未改 |
+| `app/components/prompt-input.tsx:605/609/621/639` | 选候选 ⇒ 前提成立 ✅ |
+| 三处起拖 `setData("text/plain","file:…")` | 只供载荷、不涉插入 ✅ |
+
+**本条的挂账**
+
+1. **🔴 会话页 / 新建会话页输入框的拖拽同型缺陷**（上游 `attachments` 的 drop 支，见上表）——**用户
+   2026-10-13 裁定不修**（理由：用得少，后期可能屏蔽）。⚠️ 该落点**未实测**，判据是从代码路径读出来的
+   （两个入口调的是同一个 `store.addMention`、同样没敲 `@`）；按 `#002-02` 记为缺口。要修的话改法与本次
+   同形（补 `@` 锚点），但落在上游文件上 ⇒ 需在「修好」与「少冲突」之间另裁。
