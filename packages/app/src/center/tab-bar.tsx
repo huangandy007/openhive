@@ -6,6 +6,7 @@ import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { moduleColorVar } from "./module-color"
+import { 会话改过, 清会话改过, 触发重载 } from "./session-edits"
 import { splitTabOverflow } from "./tab-overflow"
 import { contentTabKey, type ContentTab } from "./tab-store"
 
@@ -148,6 +149,21 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
           {props.tab.title}
         </span>
       </TooltipV2>
+      {/* 「这份文件被 AI 会话改过、中栏还停在旧版」的标记（2026-10-13 用户实报：「在中栏打开的
+          文件，如果该文件通过 AI 会话进行了修改，用户要如何知道呢」）。
+          同一句 `会话改过` 也决定「点它要不要重读」（见 `TabBar` 的 `activate`）——标记与动作
+          **同一个判据**，不会出现「亮着却点不动」或「没亮却换了内容」。
+
+          ⚠️ 画在标题**外面**、而不管标题截没截断：`max-w-44` 把长名字截成省略号时，这一枚仍要在
+          （用户要的正是「看不见全名也知道它变了」）。`shrink-0` 保它不被压掉。 */}
+      <Show when={会话改过(props.tab.path)}>
+        <span
+          data-slot="tab-edited-dot"
+          role="img"
+          aria-label="内容已在会话中更新"
+          class="size-1.5 shrink-0 rounded-full bg-v2-background-bg-accent"
+        />
+      </Show>
       {/* 悬停提示：关闭钮只有一枚 `×`，鼠标用户看不见 `aria-label`。
           ⚠️ `TooltipV2` 会插一层自己的 `<div>`（实测），故原先挂在按钮上的 `shrink-0`
           要由这层接过去——否则宽 tab 被 `max-w-44` 截断时，先被压掉的会是这颗按钮。 */}
@@ -255,7 +271,19 @@ export function TabBar(props: TabBarProps) {
   const visible = () => props.tabs.slice(0, split().visibleCount)
   const hidden = () => props.tabs.slice(split().visibleCount)
 
+  /**
+   * 激活一张 tab。**两条激活路径共用这一处**（栏里可见的 tab、以及溢出「⋯」菜单里的项）：
+   * 若这张文件被会话改过、中栏还停在旧版，就趁这一次点击把它**换新**——清掉圆点（用户看见了）
+   * 并请中栏重读（`触发重载` 让 `center-content.tsx` 的比较器放行 ⇒ 视图重挂重读）。
+   *
+   * ⚠️ 判据是 `会话改过(tab.path)`，与画圆点用的是**同一句**：这样「点了没换」与「换了没点」
+   * 都不可能发生。没被改过的 tab 走原路（`触发重载` 不动，`tab-bar.test.tsx` 有反面用例钉这条）。
+   */
   const activate = (tab: ContentTab) => {
+    if (会话改过(tab.path)) {
+      清会话改过(tab.path)
+      触发重载(tab.path)
+    }
     props.onActivate(contentTabKey(tab))
     setMenu(undefined)
   }
@@ -273,7 +301,7 @@ export function TabBar(props: TabBarProps) {
           <Tab
             tab={tab}
             active={contentTabKey(tab) === props.active}
-            onActivate={() => props.onActivate(contentTabKey(tab))}
+            onActivate={() => activate(tab)}
             onClose={() => props.onClose(contentTabKey(tab))}
           />
         )}

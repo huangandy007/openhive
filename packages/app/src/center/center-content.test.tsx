@@ -1,9 +1,10 @@
-import { describe, expect, test, vi } from "bun:test"
+import { beforeEach, describe, expect, test, vi } from "bun:test"
 import { createSignal, onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { 加载上界, CenterContent } from "./center-content"
 import type { DegradedReason } from "./degraded-view"
+import { 清空会话改过, 触发重载 } from "./session-edits"
 import { CenterTabsProvider, useCenterTabs, type CenterTabs } from "./tab-context"
 import { contentTabKey, type ContentTab } from "./tab-store"
 import { createViewRegistry, type ViewComponent, type ViewLoader, type ViewRegistry } from "./view-registry"
@@ -584,5 +585,69 @@ describe("两栏各看各的：CenterContent 的 pane 隔离", () => {
     expect(左.textContent).not.toContain("乙.md")
     expect(右.textContent).toContain("乙.md")
     expect(右.textContent).not.toContain("甲.md")
+  })
+})
+
+/**
+ * 「AI 改了中栏开着的文件 ⇒ 用户点带圆点的 tab ⇒ 中栏把盘上那份重读一遍」（2026-10-13 用户实报）。
+ *
+ * 这一份测的是**中栏这一侧**：`触发重载(path)` 之后，当前那份内容**重挂**（= 视图按同一个 `path`
+ * 重新取数，`BinaryView` 的注释里写着「`path` 不变就永不重读」）。tab 上画圆点、以及「点一下才
+ * 触发」在 `tab-bar.test.tsx` 里测——两件事分两个文件钉，别在一处合着测（`LEARNINGS #005-46`）。
+ *
+ * ⚠️ 判据只能靠**重挂次数**：`内容` signal 用 `还是同一份` 逐字段比较，`代` 变了才放行——
+ * 这是重挂唯一的外部可观测后果。
+ * ⚠️ 这条用例**钉的是 `center-content.tsx` 里那个「同步读 `当前重载代`」的写法**：若哪天有人把
+ * 它挪进 `load().then(...)` 里读，信号就不进依赖图 ⇒ 重载静默失效、而这条用例当场变红。
+ */
+describe("中栏重读：这份文件被会话改过、用户点了它（2026-10-13 用户实报）", () => {
+  beforeEach(() => 清空会话改过())
+
+  /** 一个会计数的假视图：`onMount` 每次挂载都跑，重挂必然现形（同上一组的写法）。 */
+  const 计数视图 = () => {
+    const 计数 = { n: 0 }
+    const View: ViewComponent = () => {
+      onMount(() => 计数.n++)
+      return <div data-slot="视图" />
+    }
+    return { View, 计数 }
+  }
+
+  /**
+   * ⚠️ 这是本组**唯一的守护者**：去掉 `还是同一份` 里的 `代` 比较、或把 `当前重载代` 挪进异步
+   * 回调，它立刻红。别把它当成「顺手多一条」删掉。
+   */
+  test("触发重载(这份路径) ⇒ 当前视图重挂一次（这就是「点一下换新」的机制）", async () => {
+    const { View, 计数 } = 计数视图()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => View })
+    const { 开 } = setUp({ registry })
+
+    await 开(专案)
+    expect(计数.n).toBe(1)
+
+    触发重载(专案.path)
+    await 落定()
+
+    expect(计数.n).toBe(2)
+  })
+
+  /**
+   * 反面：重载代**按路径分**。分屏时两栏各挂一份 `CenterContent`、都读这个信号；若当初做成
+   * 「一个全局计数」，用户点左栏那张 ⇒ 右栏那份**没被改过**的文档跟着重挂，正在编辑的草稿与
+   * 阅读位置一起丢（`#006-32` 的同一条：别顺手牵走用户的东西）。
+   */
+  test("触发重载的是**别人**的路径 ⇒ 当前视图一动不动", async () => {
+    const { View, 计数 } = 计数视图()
+    const registry = createViewRegistry()
+    registry.register({ extensions: [".docx"], load: async () => View })
+    const { 开 } = setUp({ registry })
+
+    await 开(专案)
+
+    触发重载("/p/别的文件.md")
+    await 落定()
+
+    expect(计数.n).toBe(1)
   })
 })

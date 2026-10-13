@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { contentTabKey, type ContentTab } from "./tab-store"
 import { TabBar } from "./tab-bar"
+import { 当前重载代, 清空会话改过, 记会话改过 } from "./session-edits"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -68,6 +69,55 @@ function mountBar(props: BarProps = {}) {
     />
   ))
 }
+
+/**
+ * 「中栏开着的文件被 AI 会话改了 ⇒ tab 上看得见，点一下才换新」（2026-10-13 用户实报）。
+ *
+ * 这一份测的是**接线**（登记处本身在 `session-edits.test.ts` 里测、中栏重挂在
+ * `center-content.test.tsx` 里测）。两条判据必须分开钉：① 圆点画没画 → 看
+ * `data-slot='tab-edited-dot'` 的**存在性**；② 点一下有没有请中栏重读 → 看 `当前重载代(path)`
+ * 的**变化**。少了 ② 就会写出「亮着圆点、点了没反应」；少了反面那条就会写成「点谁谁重读」。
+ *
+ * ⚠️ 登记处是**模块级状态、跨用例活着**（同 `views/reading-size.ts` 的 `阅读字号`）⇒ 每条用例
+ * 开头必须 `清空会话改过()`。
+ */
+describe("tab 上的「会话改过」圆点（2026-10-13 用户实报）", () => {
+  beforeEach(() => 清空会话改过())
+
+  const 圆点 = (host: HTMLElement) => slots(host, "tab-edited-dot")
+
+  test("正在看着的这张 tab 被会话改了 ⇒ 当场长出圆点；没被改的没有", () => {
+    const host = mountBar()
+
+    记会话改过(TABS[1].path)
+
+    expect(圆点(host)).toHaveLength(1)
+    expect(slots(host, "tab")[1]?.querySelector("[data-slot='tab-edited-dot']")).not.toBeNull()
+    expect(slots(host, "tab")[0]?.querySelector("[data-slot='tab-edited-dot']")).toBeNull()
+  })
+
+  test("点那张带圆点的 tab ⇒ 圆点消失，并且请中栏重读一次（重载代 +1），激活回调照常", () => {
+    const picked: string[] = []
+    const host = mountBar({ onActivate: (key) => picked.push(key) })
+    记会话改过(TABS[1].path)
+    const 前 = 当前重载代(TABS[1].path)
+
+    slots(host, "tab")[1]?.click()
+
+    expect(圆点(host)).toHaveLength(0)
+    expect(当前重载代(TABS[1].path)).toBe(前 + 1)
+    expect(picked).toEqual([contentTabKey(TABS[1])])
+  })
+
+  test("点一张没被改过的 tab ⇒ 不重读（重载代不动，别写成无条件重载）", () => {
+    const host = mountBar()
+    const 前 = 当前重载代(TABS[1].path)
+
+    slots(host, "tab")[0]?.click()
+
+    expect(当前重载代(TABS[1].path)).toBe(前)
+  })
+})
 
 describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
   test("按顺序渲染每个 tab：文件名在、各带一个关闭按钮", () => {

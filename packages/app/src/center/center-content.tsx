@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, Show, type JSX, type ParentProps
 import { Dynamic } from "solid-js/web"
 import { DegradedView, type DegradedReason } from "./degraded-view"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
+import { 当前重载代 } from "./session-edits"
 import { useCenterTabs } from "./tab-context"
 import { contentTabKey } from "./tab-store"
 import { extensionOf, type ViewComponent, type ViewRegistry } from "./view-registry"
@@ -79,7 +80,7 @@ export const 加载上界 = 15_000
  * 会翻回路由页 —— 屏幕上看着像「点错了」，而不是「这个文件看不了」）。
  */
 type 中栏内容 =
-  | { kind: "view"; Component: ViewComponent; path: string }
+  | { kind: "view"; Component: ViewComponent; path: string; 代: number }
   | { kind: "degraded"; reason: DegradedReason; name: string }
 
 /**
@@ -93,11 +94,19 @@ type 中栏内容 =
  *
  * 但「换了文件」必须**照旧**重建：两张同类型 tab 之间切换时组件是同一个，不重建它就不会按新 path
  * 重新取数。所以这里逐字段比，而不是一刀切「什么都不重建」。
+ *
+ * `代`（2026-10-13 用户实报「AI 改了中栏开着的文件，界面一点动静都没有」）：中栏的取数是
+ * **一次性**的（`BinaryView` 的 effect 只依赖 `path`，`path` 不变就永不重读）。要让用户点了带
+ * 圆点的 tab 之后看到盘上那份新的，就得让**同一个 path**也判成「换了」——`代` 就是这个会变的值
+ * （`session-edits.ts` 的 `当前重载代`，点 tab 时 +1）。重挂 ⇒ 视图重读，与「存成功后回预览」
+ * 走的是同一条机制，不新造刷新逻辑。⚠️ 它**只**该由用户点击推进（不自动重读），免得把编辑到
+ * 一半的草稿冲掉——这也是 `save` 故意不进比较器的那条理由（见 prop 上注释）。
  */
 function 还是同一份(a: 中栏内容 | undefined, b: 中栏内容 | undefined) {
   if (a === b) return true
   if (!a || !b) return false
-  if (a.kind === "view" && b.kind === "view") return a.Component === b.Component && a.path === b.path
+  if (a.kind === "view" && b.kind === "view")
+    return a.Component === b.Component && a.path === b.path && a.代 === b.代
   if (a.kind === "degraded" && b.kind === "degraded") return a.reason === b.reason && a.name === b.name
   return false
 }
@@ -117,6 +126,14 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
       set内容(undefined)
       return
     }
+
+    /**
+     * 这一份被要求重读了几次（`session-edits.ts`，用户点带圆点的 tab 时 +1）。**必须在这里同步读**：
+     * 下面的 `load().then(...)` 是**异步回调**，在它里面读信号**不进依赖图**（Solid 的动态作用域
+     * 只在 effect 同步执行期间跟踪）⇒ 这样写「重载」会**静默失效**（点了没反应），而且三层测试
+     * 全绿也抓不到——所以本文件在 `center-content.test.tsx` 里有一条专门钉它的用例。
+     */
+    const 代 = 当前重载代(tab.path)
 
     const extension = extensionOf(tab.path)
     const load = extension ? props.registry.resolve(extension) : undefined
@@ -158,7 +175,8 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
         clearTimeout(计时器)
         // 到点收过手之后 chunk 才回来：照样把内容补上——那个提示说的是「不再干等」，
         // 不是「这次一定看不了」。晚到的比永远不到强。
-        if (alive) set内容({ kind: "view", Component, path: tab.path })
+        // `代` 是 effect 顶上同步读下来的那一份（在异步回调里读信号不进依赖图，见那里的注释）。
+        if (alive) set内容({ kind: "view", Component, path: tab.path, 代 })
       },
       () => {
         // 失败与悬挂在这里合流：对民警是同一件事——**预览组件没到位**，说法也只该有一种。

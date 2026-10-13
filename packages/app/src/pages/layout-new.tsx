@@ -12,6 +12,10 @@ import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useCommand } from "@/context/command"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
+// ⚠️ openhive 定制（2026-10-13 用户实报）：这是要保留的定制 —— 合并上游时两侧都留着。
+// 「AI 会话改了中栏打开着的文件」⇒ 那张 tab 上打标记、点一下才换新。挂在**这一层**的
+// 理由（要 `useServerSDK()`，而 `WorkspaceEntry` 被测试裸挂、挂不了 provider）见那个模块的文件头。
+import { 监听会话改过 } from "@/center/session-edits-wiring"
 // ⚠️ openhive 定制（2026-10-09 #3 设置迁到 rail）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 图标栏底部「系统设置」那颗对话框的**动作在这里取**：`useSettingsDialog()` 要 `useParams()`
 // 与 `useDialog()`，只有**落在路由根之内**的这一层拿得到（`WorkspaceEntry` 被测试裸挂，读不了
@@ -62,6 +66,11 @@ export default function NewLayout(props: ParentProps) {
   const [state, setState] = createStore({ debugTools: true })
 
   createEffect(() => setV2Toast(true))
+
+  // ⚠️ openhive 定制（2026-10-13 用户实报）：这是要保留的定制 —— 合并上游时两侧都留着。
+  // 一条调用：订上内核的 `file.edited`（AI 改文件）⇒ 登记「这份被改过」（`@/center/session-edits`）。
+  // 只需落在 `ServerSDKProvider` 之内——`NewAppLayout` 已经保证了（见 `app.tsx` 的 `SelectedServerProviders`）。
+  监听会话改过()
 
   const update: TitlebarUpdate = {
     version: () => {
