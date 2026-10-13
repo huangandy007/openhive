@@ -65,17 +65,18 @@ import {
   defaultPassword,
   JWT_SECRET_ENV,
 } from "@opencode-ai/auth/policy"
+import { reissuedCookie } from "@opencode-ai/auth/renewal"
 import { sessionIdentity } from "@opencode-ai/auth/session"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import {
   jwtSecret,
   sessionCookie,
-  verifyToken,
+  verifySession,
   type SessionCookie,
-  type TokenSubject,
+  type VerifiedSession,
 } from "@opencode-ai/auth/token"
 import { Context, Effect, Option, Schema } from "effect"
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Headers, HttpEffect, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 
 export const PREFIX = "/openhive/auth"
 
@@ -194,15 +195,20 @@ export const layer = HttpRouter.middleware<{ requires: UserIdentity.Config; hand
         // 客户端自带什么头都得先扔掉（那是输入），能不能放进一个真的 id 另说——
         // 验不过就让它**保持没有**，门那边自然会 401，而不是拿客户端的头当身份。
         const stripped = Headers.remove(UserIdentity.HEADER)(request.headers)
-        const subject = yield* subjectOf(
+        const session = yield* sessionOf(
           UserIdentity.cookieValue(stripped.cookie, UserIdentity.COOKIE_NAME),
           secret,
         )
-        const headers = subject ? Headers.set(UserIdentity.HEADER, subject.id)(stripped) : stripped
+        const headers = session ? Headers.set(UserIdentity.HEADER, session.subject.id)(stripped) : stripped
 
         // 只有**认得出来的人**才算活跃。认不出就不刷——否则伪造的 Cookie 也能写别人的活跃时间，
         // 而那是把「谁在线」这条运维信号交给外人来写。
-        if (subject) yield* recordActivity(database, subject.id, throttleSeconds)
+        if (session) {
+          yield* recordActivity(database, session.subject.id, throttleSeconds)
+          // 活跃续期（2026-10-13）：同一层顺手把快到点的凭证换掉。同样只在**认得出来**时做——
+          // 伪造的 Cookie 不配换到一张是真的凭证。
+          yield* reissue(session, secret)
+        }
 
         return yield* Effect.provideService(
           effect,
@@ -240,15 +246,36 @@ function recordActivity(
 }
 
 /**
- * 验签取身份。`undefined` = 认不出（没带凭证 / 签名不符 / 过期 / 载荷缺字段），
- * 调用方据此**不注入**——它不区分原因，分辨「过期还是伪造」只对攻击者有用。
+ * 验签取回**会话**（身份 + 续期要用的 `exp` / `auth_time`）。`undefined` = 认不出（没带凭证 /
+ * 签名不符 / 过期 / 载荷缺字段），调用方据此**不注入**——它不区分原因，分辨「过期还是伪造」
+ * 只对攻击者有用。
  */
-function subjectOf(token: string | undefined, secret: string): Effect.Effect<TokenSubject | undefined> {
+function sessionOf(token: string | undefined, secret: string): Effect.Effect<VerifiedSession | undefined> {
   if (!token) return Effect.succeed(undefined)
   return Effect.tryPromise({
-    try: () => verifyToken(token, secret),
+    try: () => verifySession(token, secret),
     catch: () => undefined,
   }).pipe(Effect.match({ onFailure: () => undefined, onSuccess: (value) => value }))
+}
+
+/**
+ * 活跃续期（2026-10-13 用户裁定：滑动 ＋ 绝对上限 24h）。**该续就在这一次的响应上加一条
+ * `Set-Cookie`**，把凭证有效期往后推。
+ *
+ * 判定与 cookie 构造都在 `reissuedCookie`（`packages/auth/src/renewal.ts`，单测钉着）；这层只
+ * 负责把它挂到响应上——`appendPreResponseHandler` 拿得到本请求要发出去的那个响应对象
+ * （与 `authorization.ts:48` 挂 `www-authenticate` 同一个接法）。
+ * ⚠️ **必须在 `effect` 跑之前注册**：它改的是那次响应，响应出去之后再注册就没东西可改。
+ */
+function reissue(session: VerifiedSession, secret: string): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> {
+  return Effect.gen(function* () {
+    const now = nowSeconds()
+    const cookie = yield* Effect.promise(() => reissuedCookie(session, secret, now))
+    if (!cookie) return
+    yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+      Effect.succeed(HttpServerResponse.setHeader(response, "set-cookie", setCookieHeader(cookie))),
+    )
+  })
 }
 
 /**
@@ -354,7 +381,9 @@ function signedIn(result: LoginResult) {
  * 而这个函数是**这一层**自己的判据：哪天有人把路径加进豁免名单，这里还是关着的。
  */
 function caller(request: HttpServerRequest.HttpServerRequest, secret: string) {
-  return subjectOf(UserIdentity.cookieValue(request.headers.cookie, UserIdentity.COOKIE_NAME), secret)
+  return sessionOf(UserIdentity.cookieValue(request.headers.cookie, UserIdentity.COOKIE_NAME), secret).pipe(
+    Effect.map((session) => session?.subject),
+  )
 }
 
 /**

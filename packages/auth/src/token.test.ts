@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { sign } from "hono/jwt"
-import { JWT_SECRET_ENV, SESSION_COOKIE_NAME, TOKEN_TTL_SECONDS } from "./policy"
-import { WeakJwtSecretError, jwtSecret, sessionCookie, signToken, verifyToken } from "./token"
+import { JWT_SECRET_ENV, SESSION_ABSOLUTE_CAP_SECONDS, SESSION_COOKIE_NAME, TOKEN_TTL_SECONDS } from "./policy"
+import { WeakJwtSecretError, jwtSecret, sessionCookie, signToken, verifySession, verifyToken } from "./token"
 
 const SECRET = "test-secret"
 const SUBJECT = { id: "u1", policeNo: "000001", name: "张三", isAdmin: false }
@@ -36,10 +36,12 @@ describe("签发与校验", () => {
     expect((await verifyToken(token, SECRET)).id).toBe("u1")
   })
 
-  test("载荷字段名与 design-v2 §4.1 一致（线格式契约）", async () => {
+  test("载荷字段名与 design-v2 §4.1 一致（线格式契约）＋ 2026-10-13 增补的 auth_time", async () => {
     const payload = payloadOf(await signToken(SUBJECT, SECRET))
 
-    expect(Object.keys(payload).sort()).toEqual(["exp", "is_admin", "name", "police_no", "sub"])
+    // `auth_time` 是活跃续期加进来的（2026-10-13）：design-v2 §4.1 原文只列了前五个，
+    // 这里据实把第六个记进契约——它是「这次登录的时刻」，换发时沿用、不重置。
+    expect(Object.keys(payload).sort()).toEqual(["auth_time", "exp", "is_admin", "name", "police_no", "sub"])
     expect(payload.sub).toBe("u1")
     expect(payload.is_admin).toBe(false)
   })
@@ -50,6 +52,33 @@ describe("签发与校验", () => {
     const remaining = Number(payload.exp) - after(0)
     expect(remaining).toBeGreaterThan(TOKEN_TTL_SECONDS - 5)
     expect(remaining).toBeLessThanOrEqual(TOKEN_TTL_SECONDS)
+  })
+})
+
+describe("续发时的时刻（auth_time 沿用 ＋ 绝对上限夹取）", () => {
+  const NOW = 1_700_000_000
+
+  test("登录签发：auth_time = 签发时刻，exp = 那时 + 2 小时", async () => {
+    const payload = payloadOf(await signToken(SUBJECT, SECRET, { now: NOW }))
+
+    expect(payload.auth_time).toBe(NOW)
+    expect(payload.exp).toBe(NOW + TOKEN_TTL_SECONDS)
+  })
+
+  test("续发未到上限：auth_time 沿用旧值（不重置），exp = 现在 + 2 小时（滑动）", async () => {
+    const 登录时刻 = NOW - 3600 // 一小时前登录
+    const payload = payloadOf(await signToken(SUBJECT, SECRET, { authTime: 登录时刻, now: NOW }))
+
+    expect(payload.auth_time).toBe(登录时刻)
+    expect(payload.exp).toBe(NOW + TOKEN_TTL_SECONDS)
+  })
+
+  test("续发已近上限：exp 被夹在 authTime + 24 小时，不越过", async () => {
+    const 登录时刻 = NOW - (SESSION_ABSOLUTE_CAP_SECONDS - 600) // 上限落在「现在 + 10 分钟」
+    const payload = payloadOf(await signToken(SUBJECT, SECRET, { authTime: 登录时刻, now: NOW }))
+
+    expect(payload.auth_time).toBe(登录时刻)
+    expect(payload.exp).toBe(登录时刻 + SESSION_ABSOLUTE_CAP_SECONDS)
   })
 })
 
@@ -79,6 +108,38 @@ describe("校验拒绝伪造与过期", () => {
     const partial = await sign({ sub: "u1", exp: after(600) }, SECRET)
 
     expect(await failureOf(verifyToken(partial, SECRET))).toBeInstanceOf(Error)
+  })
+})
+
+describe("verifySession：连时刻一起取回（网关续期要用）", () => {
+  // ⚠️ 这一组要过 `verify`，而 `verify` 按**真实时钟**判过期——所以签发的时刻必须贴近现在，
+  // 不能像纯函数那组用固定的 `1_700_000_000`（那是 2023 年，签出来当下就过期）。
+  const NOW = after(0)
+
+  test("取回身份 + exp + auth_time", async () => {
+    const token = await signToken(SUBJECT, SECRET, { now: NOW })
+
+    const 验 = await verifySession(token, SECRET)
+
+    expect(验.subject.id).toBe("u1")
+    expect(验.exp).toBe(NOW + TOKEN_TTL_SECONDS)
+    expect(验.authTime).toBe(NOW)
+  })
+
+  test("旧凭证（部署前签的，没有 auth_time）：照旧认得出身份，authTime 为 undefined（⇒ 不续它）", async () => {
+    // 网关据此「认得出但续不了」——让旧凭证自然过期（最多 2h），不给出事的老凭证续命。
+    const 旧凭证 = await sign({ sub: "u1", police_no: "000001", name: "张三", is_admin: false, exp: after(600) }, SECRET)
+
+    const 验 = await verifySession(旧凭证, SECRET)
+
+    expect(验.subject.id).toBe("u1")
+    expect(验.authTime).toBeUndefined()
+  })
+
+  test("伪造 / 过期的凭证：与 verifyToken 同一条路，一律抛", async () => {
+    const 过期 = await sign({ sub: "u1", exp: after(-60) }, SECRET)
+
+    expect(await failureOf(verifySession(过期, SECRET))).toBeInstanceOf(Error)
   })
 })
 
@@ -125,5 +186,15 @@ describe("sessionCookie", () => {
   test("secure 由调用方决定，默认关（内网多为 HTTP，置 true 会让浏览器直接丢弃 Cookie）", () => {
     expect(sessionCookie("tok").options.secure).toBe(false)
     expect(sessionCookie("tok", { secure: true }).options.secure).toBe(true)
+  })
+
+  test("maxAge 默认 2 小时——登录那一次用它（不传即此值）", () => {
+    expect(sessionCookie("tok").options.maxAge).toBe(TOKEN_TTL_SECONDS)
+  })
+
+  test("续发时传剩余寿命：新 cookie 要与新 exp 同时到点，不能恒 2 小时", () => {
+    // 到绝对上限附近换发时，新凭证只活 600 秒；若 cookie 仍写 2 小时，浏览器会留着一个
+    // 内核已不认的凭证——症状是「明明还登着，却处处 401」。
+    expect(sessionCookie("tok", { maxAge: 600 }).options.maxAge).toBe(600)
   })
 })

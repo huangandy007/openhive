@@ -23,7 +23,12 @@ import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import type { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
-import { DEFAULT_PASSWORD_ENV, SESSION_COOKIE_NAME } from "@opencode-ai/auth/policy"
+import {
+  DEFAULT_PASSWORD_ENV,
+  SESSION_ABSOLUTE_CAP_SECONDS,
+  SESSION_COOKIE_NAME,
+  TOKEN_TTL_SECONDS,
+} from "@opencode-ai/auth/policy"
 import { registerUser, type RegisterInput } from "@opencode-ai/auth/register"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, withProductionDb } from "@opencode-ai/auth/test-support"
@@ -604,4 +609,173 @@ describe("T015 自助改密", () => {
     expect((await 裸(CHANGE_PASSWORD, post({ currentPassword: PW, newPassword: NEW_PASSWORD }))).status).toBe(401)
     expect((await 裸(ME)).status).toBe(401)
   })
+})
+
+/**
+ * 2026-10-13 · 活跃续期（用户裁定：**滑动续期 ＋ 绝对上限 24 小时**）。
+ *
+ * 判定与 cookie 构造的**算术**在 `packages/auth/src/renewal.test.ts` 用纯函数钉着；这一组守的是
+ * **接线**——「网关有没有把那张 cookie 真的挂到响应上」。这两件事分开测的理由见 `LEARNINGS #006-18`：
+ * 单测全绿不代表接线接上了，而接线的失效恰恰**只在真应用的路由栈里**才现形（挂错层、挂错时机、
+ * 响应出去之后才注册）。这里跑的是真应用（`HttpApiApp.routes`），中间件、次序、响应写回全是真的。
+ *
+ * ⚠️ **两条记法**（都是实测撞出来的）：
+ * ① 凭证要过 `verify`，而它按**真实时钟**判过期 ⇒ 时刻必须贴着「现在」签（`秒()`），
+ *    不能用固定时间戳（签出来当下就过期）。`现在` 在每个用例**开头现取**，免得文件跑久了过期。
+ * ② 时间线全用**相对量**（`剩 ~600 秒`），断言取区间（`> 阈值` / `≤ 上限`），
+ *    不断死一个秒——真栈从签名到发请求隔着几毫秒到几秒，断死一个值会 flaky（`LEARNINGS #006-31`）。
+ *
+ * ⚠️ **不覆盖**（缺口表，`#002-02`）：**部署前签发的旧凭证（没有 `auth_time`）不续发**这条，
+ * 真栈层没测——造一张没有 `auth_time` 的凭证要绕过 `signToken` 裸签，而 `hono/jwt` 不是本包
+ * 的声明依赖。该性质由 `renewal.test.ts`「旧凭证没有 auth_time ⇒ 不续」＋ `token.test.ts`
+ * 「旧凭证照旧认得出身份、authTime 为 undefined」两条单测合起来钉住，而网关那侧只剩
+ * `if (!cookie) return` 一句，不构成新的接缝风险。
+ */
+
+/** 「现在」的 Unix 秒——每个用例开头现取，见注释 ①。 */
+const 秒 = () => Math.floor(Date.now() / 1000)
+
+/** 带某 id 的凭证主体（`name` / `policeNo` 与 `withAccount` 种下的那行一致）。 */
+const subjectOf = (id: string): TokenSubject => ({ id, policeNo: POLICE_NO, name: "张三", isAdmin: false })
+
+/**
+ * 快到点的凭证：**剩 ~600 秒**（< 续发阈值 3600 ⇒ 该续），且 `authTime` 就在这一刻
+ * ⇒ 离绝对上限还远（换发能推满 2 小时）。
+ */
+const 快到点的凭证 = (id: string, now: number) => {
+  const 登录时刻 = now - (TOKEN_TTL_SECONDS - 600)
+  return signToken(subjectOf(id), SECRET, { authTime: 登录时刻, now: 登录时刻 })
+}
+
+/**
+ * 快到**绝对上限**的凭证：`authTime` 取成「上限落在 `现在 + 1800`」，凭证本身剩 ~600 秒
+ * ⇒ 是续发候选，但换发只能推到上限（1800 秒后），推不满 2 小时。
+ */
+const 近上限凭证 = (id: string, now: number) =>
+  signToken(subjectOf(id), SECRET, {
+    authTime: now - (SESSION_ABSOLUTE_CAP_SECONDS - 1800),
+    now: now - (TOKEN_TTL_SECONDS - 600),
+  })
+
+/** 正好**停在绝对上限**上的凭证：`exp` 与上限同时落在 `现在 + 900`。 */
+const 到顶凭证 = (id: string, now: number) =>
+  signToken(subjectOf(id), SECRET, {
+    authTime: now - (SESSION_ABSOLUTE_CAP_SECONDS - 900),
+    now: now - (TOKEN_TTL_SECONDS - 900),
+  })
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+/** 不验签、直接看凭证载荷——断言 `auth_time` / `exp` 的**线格式**（同 `token.test.ts` 的读法）。 */
+function payloadOf(token: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString())
+  if (!isRecord(parsed)) throw new Error("凭证载荷不是对象")
+  return parsed
+}
+
+/** 从 `Set-Cookie` 里取出**凭证值**（去掉 cookie 名与属性）。 */
+function tokenOf(response: Response): string {
+  const pair = cookieOf(response)
+  return pair.slice(pair.indexOf("=") + 1)
+}
+
+/** 从 `Set-Cookie` 里取 `Max-Age=` 的数值；没有这条 cookie 或没写 Max-Age 时为 null。 */
+function maxAgeOf(response: Response): number | null {
+  const header = response.headers.get("set-cookie")
+  if (!header) return null
+  const 命中 = /Max-Age=(\d+)/i.exec(header)
+  if (!命中?.[1]) return null
+  return Number(命中[1])
+}
+
+const 带 = (token: string, headers: Record<string, string> = {}) => ({
+  headers: { Cookie: `${SESSION_COOKIE_NAME}=${token}`, ...headers },
+})
+
+describe("活跃续期：网关把该续的凭证挂回响应（滑动 ＋ 绝对上限 24h）", () => {
+  test(
+    "还早（刚登录，剩满 2 小时）⇒ 不下发新 Cookie——不是每个请求都写 Set-Cookie",
+    () =>
+      withAccount(async ({ gateway }) => {
+        const cookie = cookieOf(await signIn(gateway))
+
+        const response = await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie } }))
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get("set-cookie")).toBeNull()
+      }),
+    30_000,
+  )
+
+  test(
+    "快到点（剩 ~10 分钟）⇒ 换发一张新 Cookie：值变了、活得更久，且新的这张当场能用",
+    () =>
+      withAccount(async ({ id, gateway }) => {
+        const cookie = await 快到点的凭证(id, 秒())
+
+        const response = await Effect.runPromise(gateway(ME, 带(cookie)))
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get("set-cookie")).not.toBeNull()
+        expect(tokenOf(response)).not.toBe(cookie)
+        // 换发推满滑动窗口（约 2 小时）——「新有效期 = 现在 + 2h」。
+        expect(maxAgeOf(response)).toBeGreaterThan(TOKEN_TTL_SECONDS - 60)
+
+        // 「换了」与「换的是张**能用的**」是两件事：拿新的再打一次，得 200。
+        const 再用 = await Effect.runPromise(gateway(ME, 带(tokenOf(response))))
+        expect(再用.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  test(
+    "换发**不重置** auth_time（绝对上限的锚点）——新凭证的 auth_time 仍是这次登录的时刻，exp 往后推",
+    () =>
+      withAccount(async ({ id, gateway }) => {
+        const now = 秒()
+        const 旧 = await 快到点的凭证(id, now)
+
+        const response = await Effect.runPromise(gateway(ME, 带(旧)))
+
+        const 新载荷 = payloadOf(tokenOf(response))
+        expect(新载荷.auth_time).toBe(payloadOf(旧).auth_time)
+        expect(Number(新载荷.exp)).toBeGreaterThan(Number(payloadOf(旧).exp))
+      }),
+    30_000,
+  )
+
+  test(
+    "快到绝对上限 ⇒ 仍换发，但新有效期被夹在 authTime + 24h（约 1800 秒，不是 2 小时）",
+    () =>
+      withAccount(async ({ id, gateway }) => {
+        const 旧 = await 近上限凭证(id, 秒())
+        const 上限 = Number(payloadOf(旧).auth_time) + SESSION_ABSOLUTE_CAP_SECONDS
+
+        const response = await Effect.runPromise(gateway(ME, 带(旧)))
+
+        expect(response.headers.get("set-cookie")).not.toBeNull()
+        const maxAge = maxAgeOf(response)
+        expect(maxAge).toBeGreaterThan(1700)
+        expect(maxAge).toBeLessThanOrEqual(1800)
+        // 新凭证的 exp 正好落在上限上——推不过它。
+        expect(Number(payloadOf(tokenOf(response)).exp)).toBe(上限)
+      }),
+    30_000,
+  )
+
+  test(
+    "已停在绝对上限 ⇒ 不再换发（换也延不了，省一条无意义的 Set-Cookie）",
+    () =>
+      withAccount(async ({ id, gateway }) => {
+        const cookie = await 到顶凭证(id, 秒())
+
+        const response = await Effect.runPromise(gateway(ME, 带(cookie)))
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get("set-cookie")).toBeNull()
+      }),
+    30_000,
+  )
 })

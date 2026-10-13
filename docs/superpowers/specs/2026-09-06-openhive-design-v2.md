@@ -171,7 +171,17 @@ user (
 > 因此**部署时必须配它**，且**不得**配成这个示例值。
 > 落点与证据见 `003-multi-tenant-isolation/tasks.md` 的 T020 段。
 
-- **登录**：校验密码 → 签发 JWT（`{ sub: userId, police_no, name, is_admin, exp }`，短期 2h）→ 网关下发 httpOnly Cookie。
+- **登录**：校验密码 → 签发 JWT（`{ sub: userId, police_no, name, is_admin, auth_time, exp }`，短期 2h）→ 网关下发 httpOnly Cookie。
+
+> ✏️ **裁定（2026-10-13，活跃续期落地时补）**：载荷比原式**多一个 `auth_time`**——「这次登录」的时刻
+> （Unix 秒）。加它是因为登录有效期从「签发即 2h 硬到期」改成了**滑动续期 ＋ 绝对上限**：每个**已认证**
+> 请求，凭证剩不足 1h 就换发一张、把「还有效到」推满 2h（`REISSUE_REMAINING_SECONDS = TTL / 2`，避免
+> 每请求都写 `Set-Cookie`）；但推不过 `auth_time + 24h`——**从登录那一刻起满 24 小时必须重新登录**。
+> 上限存在的理由只有一个：**被盗的 cookie 不能靠持续活跃永久续命**。`auth_time` 是这条上限的**锚点**，
+> 换发时**原样沿用、不重置**（重置它等于每次都重新给一个 24h 窗口，上限形同虚设）。
+> 部署前签发的旧凭证没有 `auth_time` ⇒ **认得出身份、但不再续发**，让它自然过期（最多 2h）——不能
+> 为多要一个字段就把当期在线的人全踢下线。判定算术与 cookie 构造见 `packages/auth/src/renewal.ts`
+> （纯函数，`renewal.test.ts` 钉着）；网关只负责把那张 cookie 挂上响应（`gateway.ts` 的 `reissue`）。
 - **敏感字段**：身份证号、联系电话**明文存储、明文展示**——它们本就是研判对象，屏蔽或加密会给研判分析带来不便。合规边界由 RBAC 权限控制（谁能看、看什么），而非对数据本身做脱敏或加密。
 - **opencode 边界**：关闭自身 Basic Auth（不设 `OPENCODE_SERVER_PASSWORD`），不碰密码逻辑；身份**以验签后的会话 JWT 为准**（2026-09-29 裁定 FR-002 走【甲】）。
   ⚠️ **勘误（2026-09-30）**：原文写「只认网关注入的 `X-User-ID`」——**「只认」这个词是错的**：明文头认不得，

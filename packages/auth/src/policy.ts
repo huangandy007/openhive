@@ -54,6 +54,23 @@ export const PASSWORD_HASH_ALGORITHM = "argon2id" as const
 /** 登录凭证有效期（秒）。2 小时。 */
 export const TOKEN_TTL_SECONDS = 2 * 60 * 60
 
+/**
+ * 一次登录的**绝对上限**（秒）。24 小时——2026-10-13 用户裁定。
+ *
+ * 滑动续期把「还有效到」一路往后推，但推不过这条线：从 `auth_time`（登录那一刻）起算满 24 小时，
+ * 无论中间多活跃都必须重新登录。存在的理由只有一个——**被盗的 cookie 不能靠持续活跃永久续命**。
+ * 没有它，纯滑动等于「一直用就一直有效」，一次泄漏就再也收不回来。
+ */
+export const SESSION_ABSOLUTE_CAP_SECONDS = 24 * 60 * 60
+
+/**
+ * 续期阈值（秒）：凭证**剩余**少于这么多才换发，取滑动窗口的一半（1 小时）。
+ *
+ * 为什么不每个请求都换：客户端是轮询的，每请求写一条 `Set-Cookie` 是纯噪音。用一半才换 ⇒
+ * 续一次管一小时，最坏每小时写一条。与 `recordActivity` 的节流同一个取向（都是把高频写压下来）。
+ */
+export const REISSUE_REMAINING_SECONDS = TOKEN_TTL_SECONDS / 2
+
 /** 多久没活跃就算僵尸账户（天）。design-v2 §4.3 定 90 天。 */
 export const ZOMBIE_INACTIVE_DAYS = 90
 
