@@ -431,6 +431,22 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
       onDrop: (event) => {
         const 路径 = 拖入路径(event.dataTransfer?.getData("text/plain"))
         if (路径 === undefined) return
+        // ⚠️ **本仓定制（openhive，2026-10-13）**：先补一个 `@` 当锚点，再调 `addMention`。
+        // 上游这两行只有 `addMention` 那一句。
+        //
+        // 为什么非补不可（用户实报「只能拖一个，拖第二个没反应」的根因）：`addMention` 用
+        // `text.slice(0, cursor).lastIndexOf("@")` **反推要替换的范围**（`store.ts:80-82`），
+        // 它成立的前提是**调用前用户刚敲了一个 @**（提示列表里选中那一刻，那个 @ 就在光标左边）。
+        // 拖拽这个入口没敲 @ ⇒ **第二次**拖时，文本里唯一的 @ 是**上一次插进去的引用自己**
+        // （`@报告.docx` 的 content 以 @ 开头）⇒ 范围被算成「从上次那个 @ 到光标」，**跨越了那个
+        // 引用 part** ⇒ `insertMention` 里没有任何文本片段容纳得下它 ⇒ 原样返回 ⇒ 新引用被**静默
+        // 丢弃**（用户看到的就是「拖第二个没有任何反应」）。第一次能成，只因为初始文本里没有 @。
+        //
+        // 补的这个 @ 紧贴光标，`lastIndexOf` 必然先找到它 ⇒ 范围正好是它自己 ⇒ 被替换成引用。
+        // 走的是上游**同一个** `addMention`（不另写一套插入，`LEARNINGS #005-20`），
+        // 于是两次、光标在文本中间、文本里原本就带 `@` 的形状全都成立。
+        // 判据：`session-panel.test.tsx` 的「连着拖第二个」。
+        草稿操作.addText("@")
         草稿操作.addMention({ type: "file", path: 路径, content: `@${路径}`, start: 0, end: 0 })
       },
     },
