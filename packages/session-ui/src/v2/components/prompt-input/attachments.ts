@@ -1,6 +1,7 @@
 import { onMount } from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import type { PromptInputV2Attachment, PromptInputV2Prompt } from "./types"
+import { droppedFileReference } from "./drop-reference"
 
 const accepted = [
   "image/png",
@@ -179,9 +180,12 @@ export function createPromptInputV2Attachments(
     if (input.isDialogActive()) return
     event.preventDefault()
     input.setDraggingType(null)
+    // 只有落点在会话框里时才把 `file:` 载荷当引用插（openhive 定制，2026-10-13 用户提出）：
+    // 同一个拖拽还能是「把文件拖到别处」（移动 / 备份），松手在树上时不该往输入框塞一条引用。
     const plainText = event.dataTransfer?.getData("text/plain")
-    if (plainText?.startsWith("file:")) {
-      const path = plainText.slice("file:".length)
+    const scope = input.editor()?.closest('[data-component="prompt-input-v2"]')
+    const path = droppedFileReference(plainText, event.target, scope)
+    if (path !== undefined) {
       input.focusEditor()
       input.addPart({ type: "file", path, content: `@${path}`, start: 0, end: 0 })
       return

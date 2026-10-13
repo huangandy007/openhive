@@ -2240,6 +2240,31 @@ describe("FileTree 文件树（FR-005）", () => {
   })
 
   /**
+   * 行的**可拖性**（设计 §6.3 拖拽 B 上树那侧；2026-10-13 扩成「拖路径引用」）。
+   *
+   * 本组件只交出「这一行可以拖」这一个事实；拖起来往哪儿去、放到谁身上，由容器判（见 `draggable` 注释）。
+   * 2026-10-13 用户提出：文件 tab 要能把行拖到右栏会话框、自动填路径——那条路与「备份到 MinIO」共用
+   * 这一次 `dragstart`，所以**目录行也要可拖**（用户原话：「文件夹也需要拖，就是对文件夹路径的引用」）。
+   */
+  describe("行可拖性", () => {
+    test("draggable 打开 ⇒ **文件与目录**行都可拖", () => {
+      // 用**顶层**行（目录 `资料` ＋ 文件 `笔记.md`），免得依赖「先展开」这个前提。
+      const host = mount(() => <FileTree paths={树("资料/话单.csv", "笔记.md")} draggable />)
+
+      expect(行按名(host, "笔记.md").getAttribute("draggable")).toBe("true")
+      expect(行按名(host, "资料").getAttribute("draggable")).toBe("true")
+    })
+
+    test("draggable 缺省 ⇒ 文件与目录行都不可拖（省略即禁用，这条没变）", () => {
+      const host = mount(() => <FileTree paths={树("资料/话单.csv", "笔记.md")} />)
+
+      // ⚠️ 布尔比较（`#005-01`：节点当实得值会把 bun 的失败打印器打崩）
+      expect(行按名(host, "笔记.md").getAttribute("draggable") === "true").toBe(false)
+      expect(行按名(host, "资料").getAttribute("draggable") === "true").toBe(false)
+    })
+  })
+
+  /**
    * 从桌面拖进来 ＝ 上传（设计 §6.3 拖拽 A 的「拖回」那一半）。
    *
    * 与上面那组右键菜单**同一条出口**：拖进来的落点也是「指针底下这一行」推出来的目录，

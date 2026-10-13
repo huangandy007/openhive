@@ -66,7 +66,8 @@ export const BackupsEmpty = {
   render: 受控({ open: true, backups: [] }),
 }
 
-/** 未接线：`onBackup` / `onRestore` 都不传 ⇒ 两棵树的行**都不可拖**（未接线即禁用）。 */
+/** 未接线：`onBackup` / `onRestore` 都不传 ⇒ **跨树那一放不落**（未接线即禁用）。
+ *  ⚠️ 上树的行仍**恒可拖**（拖出路径引用，2026-10-13 用户裁定）；下树的行不可拖。 */
 export const NotWired = {
   render: () => (
     <div class="flex h-96 w-72 flex-col">

@@ -232,14 +232,17 @@ export interface FileTreeProps {
   onDropFiles?: (files: readonly File[], dir: string) => void
 
   /**
-   * 行是否可拖（设计 §6.3 拖拽 B「沙箱 ↔ MinIO」里**上树**那一侧）。只有**文件行**会被标上
-   * `draggable`——§5 划的是「文件级」备份，把目录整个拖下去不是一个动作。
+   * 行是否可拖（设计 §6.3 拖拽 B「沙箱 ↔ MinIO」里**上树**那一侧；2026-10-13 起兼作「拖路径引用」）。
+   *
+   * **文件与目录行都会被标上** `draggable`（2026-10-13 用户裁定：从文件 tab 把行拖到右栏会话框、
+   * 自动填路径——拖目录是拖「文件夹路径的引用」，与「整目录备份」是两回事，别混）。
    *
    * 本组件**只**负责「让行可拖」；拖起来之后往哪儿去、放到谁身上，由**容器**
    * （`dual-file-tree.tsx`）在自己那层做事件委托——树不必知道「MinIO」这种东西存在
-   * （同「六个动作一律走 props」的口径）。
+   * （同「六个动作一律走 props」的口径）。payload 形状由容器定（`file:<相对路径>`）。
    *
-   * 省略 ＝ 不可拖。今天由 `DualFileTree` 按「有没有接 `onBackup`」决定（未接线即禁用）。
+   * 省略 ＝ 不可拖。`DualFileTree` 现在给**上树**恒传 `true`（行可拖与「备份有没有接线」**无关**：
+   * 拖出去的是引用，不是备份）；下树（MinIO）仍只文件可拖、且按「有没有接 `onRestore`」开关。
    */
   draggable?: boolean
 }
@@ -548,9 +551,10 @@ export function FileTree(props: FileTreeProps) {
                       // 每一行都可 Tab 到，而不是 roving tabindex——后者若不补齐 ↑↓ 区间导航，键盘用户反而
                       // 出不了这一行，比「多几个 Tab 停靠点」更糟。
                       tabindex="0"
-                      // 拖拽只在**文件**行上开（见 `draggable` 那条注释）。拖起来的 payload 与
-                      // 「放到哪棵树」都由容器判，这里只交出「这一行可以拖」这一个事实。
-                      draggable={props.draggable === true && row.node.type === "file"}
+                      // 行可拖 ＝ 由容器的 `draggable` 开关说了算（见那条注释）。**文件与目录都可拖**
+                      // （2026-10-13 用户裁定：目录也要拖出去当「文件夹路径的引用」）。拖起来往哪儿去、
+                      // 放到谁身上，仍由**容器**判；这里只交出「这一行可以拖」这一个事实。
+                      draggable={props.draggable === true}
                       style={{ "padding-left": `${row.level * INDENT_STEP}px` }}
                       classList={{ [ROW]: true, [ROW_SELECTED]: selected() === row.node.path }}
                       onClick={() => setSelected(row.node.path)}

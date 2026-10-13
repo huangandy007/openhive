@@ -41,11 +41,13 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
   onCollapse?: () => void
   /**
    * 拖上树 → 下树 ＝ **备份**（设计 §5.1 步骤 3），也用于右键菜单「备份到 MinIO」。
-   * 省略 ＝ 还没接线 ⇒ **行不可拖**（同 T005 三个按钮、T007 菜单六项、T019 会话空态的一贯口径：
-   * 「未接线即禁用」——一个拖了没反应的行同样是谎）。
+   * 省略 ＝ 还没接线 ⇒ **跨树那一放不落**（同 T005 三个按钮、T007 菜单六项的一贯口径：
+   * 「未接线即禁用」——一个拖了没反应的**动作**同样是谎）。⚠️ 2026-10-13 起，**行可拖**与这条
+   * **解耦**：上树的行恒可拖，拖出去的是**路径引用**（拖到右栏会话框自动填），不为「备份接没接」而变。
    */
   onBackup?: (path: string) => void
-  /** 拖下树 → 上树 ＝ **拉回沙箱**。覆盖沙箱里同名文件前先二次确认（见 `请求拉回`）。省略 ＝ 下树的行不可拖。 */
+  /** 拖下树 → 上树 ＝ **拉回沙箱**。覆盖沙箱里同名文件前先二次确认（见 `请求拉回`）。省略 ＝ 下树的行不可拖
+   * （下树另说：用户明示那棵不实现「拖出路径引用」，故这里仍是它**唯一**那道闸门）。 */
   onRestore?: (path: string) => void
 }
 
@@ -74,8 +76,10 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
  * ## 本组件今天在生产里是「半截」的
  *
  * `open` / `onCollapse` 是纯 UI，`workspace-entry.tsx` 接得上；而 `onBackup` / `onRestore`
- * 的**接收方不存在**（MinIO 的 HTTP 出口还没建，归 T022）⇒ 生产里这两个 prop 不传，
- * 于是行**不可拖**、下树也没有实际作用——与右键菜单第 9/10 项自 T008 起就禁用是同一件事。
+ * 的**接收方不存在**（MinIO 的 HTTP 出口还没建，归 T022）⇒ 生产里这两个 prop 不传，于是
+ * **跨树那一放不落**（备份 / 拉回走不通）、下树也没有实际作用——与右键菜单第 9/10 项自 T008
+ * 起就禁用是同一件事。⚠️ 但**行可拖**不再跟着它们：上树的行恒可拖（2026-10-13 用户裁定），
+ * 拖出去的是**路径引用**（拖到右栏会话框自动填），与「备份接没接」是两回事。
  * 组件这一侧的能力由 `dual-file-tree.test.tsx` 证明，接线缺口记在 `005/tasks.md` 的 T012 与 T022。
  */
 export function DualFileTree(props: DualFileTreeProps) {
@@ -121,7 +125,10 @@ export function DualFileTree(props: DualFileTreeProps) {
         classList={{ "relative flex min-h-0 w-full flex-col": true, "flex-1": !local.open }}
         style={local.open ? { height: `${上高()}px` } : undefined}
       >
-        <FileTree {...rest} draggable={local.onBackup !== undefined} />
+        {/* 上树的行**恒可拖**（2026-10-13 用户裁定）：拖出去的是**路径引用**（拖到右栏会话框自动填），
+            与「备份到 MinIO 有没有接线」是两回事——后者仍由 `可放` 那道闸门管（`onBackup` 没接就不落）。
+            下树（MinIO）另说：用户明示那棵不实现拖。 */}
+        <FileTree {...rest} draggable />
         {/* 收起态**连分隔条都不渲染**（不是隐藏）：没有两棵树，就没有可调的比例。 */}
         <Show when={local.open}>
           <ResizeHandle
@@ -211,10 +218,13 @@ export function DualFileTree(props: DualFileTreeProps) {
     const 位 = 定位(event)
     if (!位?.树 || !位.路径) return
     set拖源({ 树: 位.树, 路径: 位.路径 })
-    // 往 `dataTransfer` 里也放一份（与上游 `file-tree-v2.tsx` 是同一个 payload 形状 `file:<path>`），
-    // 但**判据不读它**（见 `拖源` 的注释）。两处 `?.` 是刻意的：happy-dom 里这个事件是裸 `Event`，
-    // 没有 `dataTransfer` —— 少了这两问，组件测试根本进不来。
-    event.dataTransfer?.setData("text/plain", `file:${位.路径}`)
+    // 往 `dataTransfer` 里也放一份（与上游 `file-tree-v2.tsx` 是同一个 payload 形状 `file:<path>`）：
+    // 会话框认这个载荷、把它插成一条文件引用（2026-10-13 用户提出）。**目录补尾斜杠**——沿用仓里
+    // 已有的记号让路径自己说清「这是目录」（同「复制路径」那处，`#005-20`），别发明第二种写法。
+    // 两处 `?.` 是刻意的：happy-dom 里这个事件是裸 `Event`，没有 `dataTransfer`——少了这两问，
+    // 组件测试根本进不来（这一处已由 `dual-file-tree.test.tsx` 的 `起拖载荷` 替身补上）。
+    const 引用 = 位.类型 === "directory" ? `${位.路径}/` : 位.路径
+    event.dataTransfer?.setData("text/plain", `file:${引用}`)
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy"
   }
 

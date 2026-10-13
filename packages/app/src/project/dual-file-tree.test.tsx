@@ -207,18 +207,52 @@ function 拖到(源: HTMLElement | null, 目标: HTMLElement | null) {
   拖(目标, "drop")
 }
 
+/**
+ * `起拖` 往 `dataTransfer` 里放的**引用载荷**（2026-10-13 用户提出）。
+ *
+ * 会话框认 `file:<项目内相对路径>` 这个形状、把它插成一条文件引用——所以这条载荷的形状是
+ * 「拖路径引用」这条链的**上游接口**，得钉住。`happy-dom` 没有 `DragEvent`、裸 `Event` 也没有
+ * `dataTransfer` ⇒ 用 `Object.defineProperty` 假一个只带 `setData` 的替身（同 `file-tree.test.tsx` 的 `拖入`）。
+ */
+function 起拖载荷(el: HTMLElement | null): string | undefined {
+  let 载荷: string | undefined
+  const event = new Event("dragstart", { bubbles: true })
+  Object.defineProperty(event, "dataTransfer", {
+    value: {
+      setData: (_type: string, data: string) => {
+        载荷 = data
+      },
+      effectAllowed: "",
+    },
+  })
+  el?.dispatchEvent(event)
+  return 载荷
+}
+
 describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下→上＝拉回）", () => {
-  test("(对照) 接了 onBackup 时**文件**行可拖、**目录**行不可拖（§5 划的是「文件级」）", () => {
+  test("上树的**文件与目录**行都可拖（目录也拖＝「文件夹路径的引用」，2026-10-13 用户裁定）；下树仍只文件可拖", () => {
     const { host } = 挂({ open: true })
 
     expect(行(host, "sandbox", "报告.docx")?.getAttribute("draggable")).toBe("true")
-    // ⚠️ 布尔比较，理由同 `不存在`（`#005-01`）
-    expect(行(host, "sandbox", "资金流水")?.getAttribute("draggable") === "true").toBe(false)
+    // 目录行也可拖（用户：「文件夹也需要拖，就是对文件夹路径的引用」）
+    expect(行(host, "sandbox", "资金流水")?.getAttribute("draggable")).toBe("true")
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable")).toBe("true")
     // ⚠️ **下树的目录行是另一处判据**（`MinioTree` 里那份 `type === "file"`），上面那条压不住它
     // ——它守的是 `file-tree.tsx`。M4 变异实测：把下树那处削掉，**19 条全绿**，正是缺了这一行。
     // 补它时变异体还挂着，所以它是正经的**先红后绿**（见 tasks.md 的 M4）。
     expect(行(host, "minio", "资金流水")?.getAttribute("draggable") === "true").toBe(false)
+  })
+
+  test("拖一个**文件** ⇒ 载荷是 `file:<相对路径>`（会话框按这个形状插引用）", () => {
+    const { host } = 挂({ open: true })
+
+    expect(起拖载荷(行(host, "sandbox", "报告.docx"))).toBe("file:报告.docx")
+  })
+
+  test("拖一个**目录** ⇒ 载荷尾部补一个斜杠，路径自己说清「这是目录」（同「复制路径」那条记号）", () => {
+    const { host } = 挂({ open: true })
+
+    expect(起拖载荷(行(host, "sandbox", "资金流水"))).toBe("file:资金流水/")
   })
 
   test("沙箱文件拖到下树的**目录**上 ⇒ onBackup 带「目标目录/文件名」（§5.2「落点精确到具体文件夹」）", () => {
@@ -318,10 +352,17 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     expect(拉回过).toEqual([])
   })
 
-  test("没接 onBackup / onRestore 时行**不可拖**（未接线即禁用——一个拖了没反应的行同样是谎）", () => {
+  /**
+   * ⚠️ 这条的前提在 2026-10-13 **翻了一面**：上树的行**恒可拖**，与「备份有没有接线」**解耦**
+   * （拖出去的是**路径引用**——文件 tab 要把行拖到右栏会话框，那条路与 onBackup 无关）。
+   * 下树仍按「有没有接 `onRestore`」开关（用户：MinIO 那棵不实现拖）。
+   *
+   * 于是「未接线即禁用」这句**在本组件里只对下树成立**了——别再拿它当上树的规则。
+   */
+  test("没接 onBackup / onRestore 时：**上树的行仍可拖**（拖的是引用，与备份接线无关），下树不可拖", () => {
     const host = mount(() => <DualFileTree paths={沙箱} backups={备份} open={true} />)
 
-    expect(行(host, "sandbox", "报告.docx")?.getAttribute("draggable") === "true").toBe(false)
+    expect(行(host, "sandbox", "报告.docx")?.getAttribute("draggable")).toBe("true")
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable") === "true").toBe(false)
   })
 

@@ -989,8 +989,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
 
                     ⚠️ `onBackup` / `onRestore` **刻意不接**：它们的接收方（MinIO 的 HTTP 出口）
-                    今天还不存在，归 T022。不接 ⇒ 行不可拖（「未接线即禁用」，与右键菜单第 9/10
-                    项自 T008 起就禁用是同一件事）。 */}
+                    今天还不存在，归 T022。不接 ⇒ **跨树那一放不落**（「未接线即禁用」，与右键菜单
+                    第 9/10 项自 T008 起就禁用是同一件事）。⚠️ 上树的行仍**恒可拖**（2026-10-13 用户
+                    裁定）：拖出的是**路径引用**（拖到右栏会话框自动填），不为备份接线而变。 */}
                 <SidebarTabs
                   active={sidebarTab()}
                   onSelect={setSidebarTab}
