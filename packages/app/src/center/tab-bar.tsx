@@ -1,3 +1,4 @@
+import { makeEventListener } from "@solid-primitives/event-listener"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
@@ -195,6 +196,10 @@ function Tab(props: { tab: ContentTab; active: boolean; onActivate: () => void; 
  */
 export function TabBar(props: TabBarProps) {
   let strip: HTMLDivElement | undefined
+  /** 溢出「⋯」那一区（触发钮 ＋ 它的菜单）——「点外面」判据里的「里面」。 */
+  let 溢出区: HTMLDivElement | undefined
+  /** 分屏钮那一区（触发钮 ＋ 它的菜单 ＋ 收起钮）。 */
+  let 分屏区: HTMLDivElement | undefined
   const [measured, setMeasured] = createSignal(0)
   // 同一时刻最多开一个下拉：溢出「⋯」与分屏钮的菜单共用一个状态。
   const [菜单, setMenu] = createSignal<"overflow" | "split" | undefined>(undefined)
@@ -204,6 +209,38 @@ export function TabBar(props: TabBarProps) {
     const observer = new ResizeObserver(() => setMeasured(strip?.clientWidth ?? 0))
     observer.observe(strip)
     onCleanup(() => observer.disconnect())
+  })
+
+  /**
+   * 「点外面就收」（2026-10-13 用户实报：分屏菜单点列表以外任何地方都不消失）。
+   *
+   * 两个菜单此前**只**靠「再点一次触发钮 / 选中某一项」关（都走 `setMenu`），点别处一直是开着的
+   * ——因为这里**根本没有**外部点击监听。补上：听 `document` 的 `pointerdown`（capture），
+   * 照本仓浮层的既有范式（`ui/src/components/popover.tsx:99`、`components/titlebar-tab-nav.tsx:163`），
+   * 落在**当前这个菜单所在那一区之外**就收。
+   *
+   * ⚠️ **触发钮所在的那一区算「里面」**（`#005-35`：触发器不是「外面」）。否则 pointerdown 先把
+   * 菜单收掉、紧跟的 click 又 toggle 开 ⇒ 变成「再点触发钮关不掉」。本文件有两条用例钉这条边界。
+   *
+   * `createEffect` 读 `菜单()`：一开一关各重挂一次监听；`onCleanup` 摘掉上一轮的（`#005-27`
+   * 那一族的收尾纪律——监听挂在 `document` 上，不摘就会跨用例残留）。
+   */
+  createEffect(() => {
+    const 开着 = 菜单()
+    if (!开着) return
+    const 区 = 开着 === "split" ? 分屏区 : 溢出区
+    const 摘 = makeEventListener(
+      document,
+      "pointerdown",
+      (event) => {
+        const 目标 = event.target
+        if (!(目标 instanceof Node)) return
+        if (区?.contains(目标)) return
+        setMenu(undefined)
+      },
+      { capture: true },
+    )
+    onCleanup(摘)
   })
 
   // `measured()` 为 0 = **还没量到**（首帧，或 happy-dom 这类无 CSS 引擎的环境），不是「宽度为零」。
@@ -242,7 +279,7 @@ export function TabBar(props: TabBarProps) {
         )}
       </For>
       <Show when={hidden().length > 0}>
-        <div class="relative flex items-center">
+        <div ref={溢出区} class="relative flex items-center">
           {/* 悬停提示：`⋯` 只有字形，说不出「还有几个」。
               `aria-expanded` 就挂在这颗按钮上，于是菜单一展开，`TooltipV2` 的 `sync()` 会顺带
               把提示压住——提示与下拉不同屏出现，正是想要的那条（免得两层浮层打架）。 */}
@@ -286,7 +323,7 @@ export function TabBar(props: TabBarProps) {
         <span data-slot="tab-bar-focus-bar" class="absolute inset-x-0 bottom-0 h-0.5 bg-v2-background-bg-accent" />
       </Show>
       <Show when={props.onSplit !== undefined || props.onUnsplit !== undefined}>
-        <div class="relative ml-auto flex items-center gap-0.5">
+        <div ref={分屏区} class="relative ml-auto flex items-center gap-0.5">
           <Show when={props.onSplit}>
             {/* ⚠️ **本仓定制（openhive，2026-10-13）**：上游这里是「够分屏才可点」（`够分屏` =
                 `props.tabs.length >= 2`，不够时 `aria-disabled` 置灰、提示写「至少打开两个文件才能分屏」）。

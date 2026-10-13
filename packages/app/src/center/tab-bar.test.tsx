@@ -34,6 +34,17 @@ async function 等到(条件: () => boolean, 上限毫秒 = 1000) {
   }
 }
 
+/**
+ * 在**页面别处**派一次 `pointerdown`——本仓浮层收「点外面」都听这个事件
+ * （`ui/src/components/popover.tsx:99`、`components/titlebar-tab-nav.tsx:163`）。
+ * 取 `document.body` 当目标：它在**任何**菜单容器之外，等价于「点空白处」。
+ */
+const 点外面 = () =>
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "" }))
+
+/** 在某元素上派一次 `pointerdown`——真栈里 `click` 之前总会先有它（本仓浮层听的就是它）。 */
+const 按下 = (el: HTMLElement) =>
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "" }))
 const slots = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLElement>(`[data-slot='${name}']`)]
 const titles = (host: HTMLElement) => slots(host, "tab").map((el) => el.querySelector("[data-slot='tab-title']")?.textContent)
 
@@ -221,6 +232,20 @@ describe("TabBar 中栏 tab 栏（FR-005 / DESIGN §4.5）", () => {
     expect(slots(host, "tab-overflow-menu")).toHaveLength(0)
   })
 
+  /**
+   * 2026-10-13 用户实报：「点分屏列表以外的区域，列表不消失」（同一缺陷也长在「⋯」菜单上）。
+   * 修法是给两个菜单都补上「点外面就收」——两条用例各钉一个菜单（`LEARNINGS #005-12`）。
+   */
+  test("点「⋯」菜单**以外**的任意位置 ⇒ 菜单收起（此前点外面不消失）", async () => {
+    const host = mountBar({ availableWidth: 400 })
+    slots(host, "tab-overflow")[0]?.click()
+    await 等到(() => slots(host, "tab-overflow-menu").length > 0)
+
+    点外面()
+
+    await 等到(() => slots(host, "tab-overflow-menu").length === 0)
+  })
+
   test("放得下：没有「⋯」，也不多渲染", () => {
     const host = mountBar()
 
@@ -380,6 +405,54 @@ describe("分屏钮 / 收起钮", () => {
     宿主.querySelector<HTMLElement>("[data-slot='split-menu-item'][data-split='上下']")!.click()
     await 等到(() => 宿主.querySelector("[data-slot='split-menu']") === null)
     expect(选过).toEqual(["上下"])
+  })
+
+  /**
+   * 「点外面就收」（2026-10-13 用户实报：分屏菜单点列表以外任何地方都不消失）。
+   *
+   * 下面是**三条一组**：
+   * - ① 点外面 ⇒ 收（这条是本次的 RED 驱动，改之前必红）；
+   * - ② 点**里面** ⇒ 不收（守卫：别收得过头，把「外面」的边界划到菜单自己身上）；
+   * - ③ 再点一次**触发钮** ⇒ 收（守卫 `#005-35` 那条取舍：触发钮所在那一区算「里面」）。
+   *   ②③ 改之前是**绿的**（那时根本没有监听）——它们的牙由变异验证给（见收尾记录），
+   *   不是 RED 驱动出来的，故照本文件既有写法标注（同 §「需求守卫」）。
+   */
+  const 开分屏菜单 = async (宿主: HTMLElement) => {
+    宿主.querySelector<HTMLElement>("[data-slot='split-button']")!.click()
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") !== null)
+  }
+  const 二张带分屏 = () =>
+    mount(() => <TabBar tabs={[甲, 乙]} onActivate={() => {}} onClose={() => {}} availableWidth={1000} onSplit={() => {}} />)
+
+  test("点分屏菜单**以外**的任意位置 ⇒ 菜单收起（用户实报：此前点外面不消失）", async () => {
+    const 宿主 = 二张带分屏()
+    await 开分屏菜单(宿主)
+
+    点外面()
+
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") === null)
+  })
+
+  test("需求守卫（非 RED 驱动）：点分屏菜单**里面**不收起——「外面」的边界是菜单与触发钮那一区", async () => {
+    const 宿主 = 二张带分屏()
+    await 开分屏菜单(宿主)
+
+    按下(宿主.querySelector<HTMLElement>("[data-slot='split-menu']")!)
+    await 歇一拍()
+
+    expect(宿主.querySelector("[data-slot='split-menu']")).not.toBeNull()
+  })
+
+  test("需求守卫（非 RED 驱动）：再点一次分屏钮 ⇒ 收起（触发钮不算外面，否则 pointerdown 关+click 开=关不掉）", async () => {
+    const 宿主 = 二张带分屏()
+    const 钮 = 宿主.querySelector<HTMLElement>("[data-slot='split-button']")!
+    await 开分屏菜单(宿主)
+
+    // 真栈里「点一下」＝ pointerdown ＋ 紧随的 click；两条都要派，才验得出「关不掉」那类缺陷。
+    按下(钮)
+    钮.click()
+
+    await 等到(() => 宿主.querySelector("[data-slot='split-menu']") === null)
   })
 
   test("接 onUnsplit ⇒ 出现收起钮，点它 ⇒ onUnsplit()", () => {
