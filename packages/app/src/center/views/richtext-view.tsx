@@ -69,8 +69,24 @@ export function sanitizeHtml(html: string): string {
 /** 服务端按 UTF-8 可解性判 text / binary，所以这里按 UTF-8 解——解不出的字节落成替换字符。 */
 const 解码 = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
 
+/**
+ * 容器上那个 `data-format` 记号 —— `index.css` 里给 `.md` 的元素级样式（标题分级、列表符号、
+ * 代码块底色…）是按它分流的。
+ *
+ * **两个渲染器都必须写**，两个理由：
+ * ① `.txt` 的正文本身就是一个 `<pre>`，而 `.md` 里同一个标签名是**代码块**——两个渲染器往同一只
+ *    容器里写，光看标签名分不出来；
+ * ② `BinaryView` 换文件时**不重挂容器**（它那个 effect 就地为新的 path 再跑一遍，只
+ *    `replaceChildren()`，**属性不会被清掉**）⇒ 记号必须每次渲染都重写，否则 `.md` 的样式会留在
+ *    随后打开的 `.txt` 正文上（`LEARNINGS #005-48` 同族：状态留在宿主身上、没人清）。
+ */
+const 标 = (format: "markdown" | "text", container: HTMLElement) => {
+  container.dataset.format = format
+}
+
 /** 把 Markdown 渲成 HTML 挂进容器。导出仅供测试直接驱动——生产路径是 `RichtextView`。 */
 export const renderMarkdown: BytesRenderer = async (bytes, container) => {
+  标("markdown", container)
   container.innerHTML = sanitizeHtml(await marked.parse(解码(bytes)))
 }
 
@@ -79,6 +95,7 @@ export const renderMarkdown: BytesRenderer = async (bytes, container) => {
  * 连转义都不必写。换行与缩进靠 `<pre>` 保住（话单摘录是一行一行对着看的）。
  */
 export const renderPlainText: BytesRenderer = async (bytes, container) => {
+  标("text", container)
   const pre = document.createElement("pre")
   pre.className = "font-sans whitespace-pre-wrap break-words"
   pre.textContent = 解码(bytes)
@@ -154,6 +171,14 @@ const 存不上 = "保存文件失败"
  * ⚠️ **两个面都不能再挂 `text-[Npx]` / `text-sm` 这类字号 utility**：utilities 层排在 components 层
  * 之后，utility 会盖掉那条规则（本文件的编辑框就从 `text-[13px] leading-6` 里交出来了）。
  * 三个面的真栈判据在 `e2e/real-stack/richtext-reading-size-real.spec.ts`（算出来的字号只有真浏览器量得到）。
+ *
+ * ## 2026-10-14 · `.md` 的元素级版面（用户实报「没有进行很好的渲染，一些格式展现不出来」）
+ *
+ * 上一段管「正文那一档多大」，`index.css` 里紧跟其后那一段管「标题 / 列表 / 表格长什么样」。
+ * 后者**只认带 `data-format="markdown"` 记号的容器**（两个渲染器各自写，见 `标`），因为 `.txt` 的
+ * 正文本身就是一个 `<pre>`、而 `.md` 里同一个标签名是**代码块**。判据在
+ * `e2e/real-stack/richtext-markdown-format-real.spec.ts`。编辑框是 `<textarea>`（编辑的是源文本、
+ * 没有渲染出的元素），不参与这一段。
  */
 export const RichtextView: ViewComponent = (props) => {
   /** 读回来那份**原样**（存盘时的底本）。`undefined` ＝ 还没读到 / 读不到 / 判成 binary。 */

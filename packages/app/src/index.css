@@ -46,6 +46,176 @@
     line-height: 1.75;
   }
 
+  /*
+    中栏 `.md` 预览的**元素级**样式（2026-10-14 用户实报「没有进行很好的渲染，一些格式展现不出来」）。
+    上一节管的是「正文那一档多大」，这一节管「标题 / 列表 / 表格长什么样」——两者是两件事。
+
+    **为什么这一整套得自己写。** `@opencode-ai/ui/styles/base.css`（等价 preflight）把 `h1..h6` 的
+    字号字重、`ul/ol` 的符号、`*` 的 margin / padding、`a` 的颜色与下划线、`table` 的框线**全清零**；
+    而上游把它救回来的那 385 行（`@opencode-ai/session-ui/src/components/markdown.css`）**每一条都嵌在
+    `[data-component="markdown"]` 里**——那是 AI 会话消息的容器，中栏预览挂的是
+    `[data-component="richtext-view"]`，一个选择器都命中不到。改前真栈实测（`getComputedStyle`）：
+    `h1` 与 `p` 逐项相同（16px / 字重 440 / 外边距 0）；`li` 的 `list-style` 是 `none`；
+    `table` / `th` / `td` 边框 0；`pre` 背景透明且内边距 0；`a` 的颜色就是正文黑、没有下划线。
+    判据在 `e2e/real-stack/richtext-markdown-format-real.spec.ts`（七个结构各一条）。
+
+    **为什么不直接复用 `markdown.css`。** 它是按**聊天密度**调的：容器 14px / 160%、`h1` 只有 17px
+    （消息流里标题不该喧宾夺主）。搬到这儿会盖掉上面刚定的 16px / 1.75，还拖进消息块专属的壳
+    （代码块头、复制钮、diff 高亮）。这里是**读文档**，不是一个消息气泡。
+
+    **尺寸一律用 `em`。** 正文那一档由上面的 `--richtext-size` 管，用户调字号时标题、间距、缩进要
+    **一起**跟着变——写死 px 就会在放大后露出「标题跟正文一样大」。真栈那份判据量的也是**关系**
+    （标题比正文大、两级之间还有差）而不是 px，同一个理由。
+
+    ⚠️ **`[data-format="markdown"]` 这个限定不能省。** `.txt` 预览的正文本身就是一个 `<pre>`，而
+    `.md` 里同一个标签名是**代码块**；两个渲染器往同一只容器里写（`BinaryView` 换文件时只
+    `replaceChildren()`、**容器不重挂**）。少了它，话单正文会被涂上代码块的底色与内边距，
+    而**别的判据一条都不会红**。记号由两个渲染器各自写（见 `center/views/richtext-view.tsx` 的 `标`）。
+  */
+  [data-component="richtext-view"][data-format="markdown"] {
+    /* 长链接 / 长单号不至于把容器撑出横向滚动条 */
+    overflow-wrap: break-word;
+  }
+
+  /* 容器自己已经有 `p-4` 的内边距了，首尾元素再顶一个外边距就空出一截 */
+  [data-component="richtext-view"][data-format="markdown"] > *:first-child {
+    margin-top: 0;
+  }
+  [data-component="richtext-view"][data-format="markdown"] > *:last-child {
+    margin-bottom: 0;
+  }
+
+  [data-component="richtext-view"][data-format="markdown"] p {
+    margin: 0 0 1em;
+  }
+
+  [data-component="richtext-view"][data-format="markdown"] h1,
+  [data-component="richtext-view"][data-format="markdown"] h2,
+  [data-component="richtext-view"][data-format="markdown"] h3,
+  [data-component="richtext-view"][data-format="markdown"] h4,
+  [data-component="richtext-view"][data-format="markdown"] h5,
+  [data-component="richtext-view"][data-format="markdown"] h6 {
+    margin: 1.75em 0 0.6em;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+  /* 六级各留一档：改档位时只要动这几行（正文字号另由 `--richtext-size` 管） */
+  [data-component="richtext-view"][data-format="markdown"] h1 {
+    font-size: 1.75em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] h2 {
+    font-size: 1.4em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] h3 {
+    font-size: 1.2em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] h4 {
+    font-size: 1.1em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] h5 {
+    font-size: 1em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] h6 {
+    font-size: 0.9em;
+    color: var(--v2-text-text-muted);
+  }
+
+  [data-component="richtext-view"][data-format="markdown"] ul,
+  [data-component="richtext-view"][data-format="markdown"] ol {
+    margin: 0 0 1em;
+    padding-inline-start: 1.5em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] ul {
+    list-style: disc;
+  }
+  [data-component="richtext-view"][data-format="markdown"] ol {
+    list-style: decimal;
+  }
+  [data-component="richtext-view"][data-format="markdown"] li {
+    margin-bottom: 0.35em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] li:last-child {
+    margin-bottom: 0;
+  }
+  /* GFM 任务列表：`marked` 产出 `<li><input type="checkbox">`，符号位让给那颗勾选框，
+     再把它拉回到正文字缘（否则勾选框会缩进到和文字对齐不上的位置） */
+  [data-component="richtext-view"][data-format="markdown"] li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-inline-start: -1.5em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] li > input[type="checkbox"] {
+    margin-inline-end: 0.4em;
+    accent-color: var(--v2-text-text-code-accent);
+  }
+
+  [data-component="richtext-view"][data-format="markdown"] blockquote {
+    margin: 0 0 1em;
+    padding-inline-start: 1em;
+    border-inline-start: 3px solid var(--v2-border-border-muted);
+    color: var(--v2-text-text-muted);
+  }
+  [data-component="richtext-view"][data-format="markdown"] blockquote > *:last-child {
+    margin-bottom: 0;
+  }
+
+  [data-component="richtext-view"][data-format="markdown"] pre {
+    margin: 0 0 1em;
+    padding: 0.75em 1em;
+    border-radius: 6px;
+    background: var(--v2-background-bg-layer-02);
+    overflow-x: auto;
+  }
+  [data-component="richtext-view"][data-format="markdown"] pre code {
+    font-size: 0.875em;
+  }
+  /* 行内代码：与上游同法取「正文色 8%」作底（不引入第七个 token），字色另给一档 */
+  [data-component="richtext-view"][data-format="markdown"] :not(pre) > code {
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+    font-size: 0.9em;
+    background: color-mix(in oklch, var(--v2-text-text-base) 8%, transparent);
+    color: var(--v2-text-text-code-accent);
+  }
+
+  /* `table` 用 `display: block` 让它自己横向滚（比整篇文档横向滚好读）。
+     代价：`border-collapse` 不生效（`base.css` 里那条作用在表格盒上），所以框线只能画**下边**——
+     画四边会两两叠成 2px。 */
+  [data-component="richtext-view"][data-format="markdown"] table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 0 0 1em;
+  }
+  [data-component="richtext-view"][data-format="markdown"] th,
+  [data-component="richtext-view"][data-format="markdown"] td {
+    padding: 0.5em 0.75em;
+    text-align: start;
+    vertical-align: top;
+    border-bottom: 1px solid var(--v2-border-border-muted);
+  }
+  [data-component="richtext-view"][data-format="markdown"] th {
+    background: var(--v2-background-bg-layer-02);
+    border-bottom-color: var(--v2-border-border-base);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* `base.css` 给 `a` 的是 `color: inherit; text-decoration: inherit; cursor: default`
+     ——文件里的链接因此在屏幕上与正文一模一样，还点不动（`cursor: default` 本身是个真缺陷） */
+  [data-component="richtext-view"][data-format="markdown"] a {
+    color: var(--text-interactive-base);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  /* `hr` 在 `base.css` 里已经是 1px 的线，缺的是上下留白（上游在聊天里把它整条隐掉了，
+     这里是读文档，分隔线看得见更好） */
+  [data-component="richtext-view"][data-format="markdown"] hr {
+    margin: 1.75em 0;
+    border-top-color: var(--v2-border-border-base);
+  }
+
   [data-component="getting-started"] {
     container-type: inline-size;
     container-name: getting-started;

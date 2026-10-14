@@ -30,6 +30,16 @@ describe("纯文本：原样显示，压根不经 HTML 解析", () => {
     expect(容器.querySelector("img")).toBeNull()
     expect(容器.textContent).toBe("<script>alert(1)</script><img src=x>")
   })
+
+  // 2026-10-14 · 正文的样式要按「容器里装的是什么」分开上：`.txt` 的正文本身就是一个 `<pre>`，
+  // 而 `.md` 里的 `<pre>` 是**代码块**——两个渲染器往同一只容器里写，光看标签名分不出来
+  // （`index.css` 那条 `[data-format="markdown"] pre` 就是靠这个记号咬住的）。
+  test("容器上留 `text` 记号（正文那一面不被代码块的样式咬到）", async () => {
+    const 容器 = document.createElement("div")
+    await renderPlainText(字节("第一行\n"), 容器)
+
+    expect(容器.getAttribute("data-format")).toBe("text")
+  })
 })
 
 /**
@@ -49,6 +59,14 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
     expect(容器.querySelector("strong")?.textContent).toBe("粗")
     expect(容器.querySelectorAll("li")).toHaveLength(2)
     expect(容器.querySelector("table")).not.toBeNull()
+  })
+
+  // 同 `纯文本` 那一组的样子，两个渲染器各报各的（见那边的说明）。
+  test("容器上留 `markdown` 记号（元素级样式只往这种容器上挂）", async () => {
+    const 容器 = document.createElement("div")
+    await renderMarkdown(字节("# 标题\n"), 容器)
+
+    expect(容器.getAttribute("data-format")).toBe("markdown")
   })
 
   test("raw HTML 里的事件处理器被摘掉（onerror 是文件内容，不是我们的代码）", async () => {
@@ -110,6 +128,33 @@ describe("图文视图：按扩展名挑渲染器", () => {
 
     expect(host.querySelector("[data-component='richtext-view'] h1")).toBeNull()
     expect(host.querySelector("[data-component='richtext-view']")?.textContent).toContain("# 标题")
+  })
+})
+
+/**
+ * 记号是**每次渲染都重写**的，不是「写上就不管了」。
+ *
+ * 为什么非要钉这一条：`BinaryView` 换文件时**不重挂容器**（它那个 effect 就地为新的 path 再跑
+ * 一遍，只 `replaceChildren()`——**属性不会被清掉**）。所以同一只容器可能先装 `.md`、后装 `.txt`：
+ * 记号要是只在 markdown 那一支写，换成 `.txt` 之后记号还挂着 `markdown` ⇒ 代码块的底色 / 内边距
+ * 落在话单正文上——**不报错、不变红**，只是那一屏变得不是它该有的样子（`LEARNINGS #005-48` 同族：
+ * 状态留在宿主身上、没人清）。
+ */
+describe("同一只容器先后装两种内容：记号以后写的为准", () => {
+  test("先 markdown 后纯文本 ⇒ 记号是 text", async () => {
+    const 容器 = document.createElement("div")
+    await renderMarkdown(字节("# 标题\n"), 容器)
+    await renderPlainText(字节("第一行\n"), 容器)
+
+    expect(容器.getAttribute("data-format")).toBe("text")
+  })
+
+  test("先纯文本后 markdown ⇒ 记号是 markdown", async () => {
+    const 容器 = document.createElement("div")
+    await renderPlainText(字节("第一行\n"), 容器)
+    await renderMarkdown(字节("# 标题\n"), 容器)
+
+    expect(容器.getAttribute("data-format")).toBe("markdown")
   })
 })
 
