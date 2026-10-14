@@ -589,6 +589,14 @@ function 点项(名: string) {
   )
   if (!项) throw new Error(`菜单里没有「${名}」这一项`)
   ;(项 as HTMLElement).click()
+```
+
+> ⚠️ 2026-10-15 勘误：**实测 `.click()` 触发不到 Kobalte 菜单项的 `onSelect`**（它的选择发生在
+> `pointerup`，`menu-item-base` 的 `onPointerUp`：`e.button === 0` ⇒ `onSelect()`）。实现里改走
+> `pointerdown` + `pointerup` 的真实指针序列（先例 `file-tree.test.tsx` 的 `点菜单项`），判据见
+> `LEARNINGS #006-37`。
+
+```tsx
 }
 
 describe("中栏右键菜单", () => {
@@ -633,6 +641,13 @@ describe("中栏右键菜单", () => {
     点项("发送到会话")
     expect(收到.length).toBe(0)
   })
+```
+
+> ⚠️ 2026-10-15 勘误：判据 8 的右键路在 spec §7 里是**「不发送 ＋ 提示」两半**，本 plan 只排了
+> 前半（`expect(收到.length).toBe(0)`）；**后半**（那句提示文案）已于任务 7b 补测（先例
+> `file-tree.test.tsx` 的 `挂带提示`：并排挂 `<ToastRegion v2={false} />`、断 `document.body.textContent`）。
+
+```tsx
 
   /**
    * 判据 7 的**前半**（不插入）已由 Task 1 的单测钉住（`发送到会话` 无收件口 ⇒
@@ -642,6 +657,13 @@ describe("中栏右键菜单", () => {
    * **没有任何断言**的用例 —— 它不会红、不会绿出信息，只是"跑过了"。本 skill 的评审规则
    * 点名这种形状是缺陷（a test that asserts nothing），本轮 plan 预检时按规则删掉了它。
    * 判据 7 的**后半**（那句提示文案）本机测不了，如实进缺口表 §8：真栈人眼确认（Task 6 Step 3）。
+```
+
+> ⚠️ 2026-10-15 勘误：**实测可测**。先例是 `file-tree.test.tsx` 的 `挂带提示`（并排挂
+> `<ToastRegion v2={false} />`、断 `document.body.textContent`）；该半已于任务 7a 补测，spec §8 里
+> **没有**这条缺口（`LEARNINGS #004-13`：不要把「本机做不了」当结论）。
+
+```tsx
    */
 })
 ```

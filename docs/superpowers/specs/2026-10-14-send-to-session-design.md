@@ -55,7 +55,7 @@
 | `packages/app/src/ai-session/send-to-session.ts` **（新）** | 接线盒：登记收件口 / 发送 / 行数上限判据（纯逻辑，可单测） |
 | `packages/app/src/ai-session/drop-reference.ts` | 加一个「载荷不是路径、但有内容」的判据（纯函数） |
 | `packages/app/src/ai-session/session-panel.tsx` | ① 挂载时登记收件口、卸载时收回（收件口 = `addText` + 聚焦）② `onDrop` 加一条**正文**分支 |
-| `packages/app/src/center/center-split.tsx` | 两个 `data-slot="center-pane"` 上各挂一个 `onContextMenu`（同一 handler）；渲染右键菜单组件 |
+| `packages/app/src/center/center-split.tsx` | `return` 把**整棵分屏**包进一层 `<内容菜单>`（`center-split.tsx:90`）；`onContextMenu` 与两层 `display: contents` 都在 `content-menu.tsx` 里（见该文件 28-33 行的 JSDoc）。⚠️ **2026-10-15 按实现勘误**（原写「两个 `data-slot="center-pane"` 上各挂一个 `onContextMenu`」与实现不符）：这样做是为了让 Trigger 不占 `data-slot='center-split'` 那个被真栈依赖的 div —— `LEARNINGS #005-22` |
 | `packages/app/src/center/content-menu.tsx` **（新）** | 右键菜单组件：**有选中才出**，含「复制」「发送到会话」 |
 
 ## 5. 数据流
@@ -98,6 +98,9 @@ export function 发送到会话(文本: string): 发送结果
 | 选区 > 50 行 | 不发送；提示「一次最多发 50 行，请少选点」 |
 | 拖拽载荷带 `text/html` | **只读 `text/plain`**，`text/html` 一概不看 |
 | 正文里含 `@` | 纯文本插入，**不**触发 mention（`addText` 不认 `@`；只有 `addMention` 才产引用） |
+| 选区是**全局**的（`window.getSelection()`），不绑定发起右键的那一栏 | 在左栏选中的文本、去中栏空白处右键，发的仍是那段。v1 **接受**：要绑栏就得自建选择模型，与 §9.1 同一条取舍 |
+| 两条路的空白处理不一致 | 右键那条 `.trim()` 之后为空 ⇒ 不接管（`content-menu.tsx:68`）；拖拽那条**原样**送。v1 **接受**（拖拽载荷来自浏览器，不会被空白噪声触发） |
+| 任何带 `text/plain` 的拖拽都会插正文 | 不只中栏：从其它应用拖一段纯文本进输入框，也走正文分支。v1 **接受**——这正是「拖文本进输入框」的正常期望；老路 `@文件` 只由**路径形状**认领 |
 
 **行数数法**：按 `\r\n|\r|\n` 拆，**末尾那个换行不算一行**——否则正好选 50 行会被算成 51、白拒。
 
@@ -135,7 +138,14 @@ export function 发送到会话(文本: string): 发送结果
 - **插入后焦点是否**真的**回到输入框并能直接打字**：组件层钉「`document.activeElement` 落在编辑器上」（2026-10-14 实测 happy-dom 的 `activeElement` 可用，故这里**有**自动化断言）；**真人指针下能不能接着打字**仍要真栈确认一次（判据：点完发送后**不先点输入框**、用裸键盘直接打字）。
 - **超大表的整份解析**：不在本轮（表格视图本身只铺前 1000 行 × 64 列）。
 - **生产 build 下「拖/右键 ⇒ 文本进输入框」这条链真跑通**（2026-10-14 真栈实测新增缺口）：本机唯一的真栈挂具（`packages/app/e2e/real-stack/stack.ts`）起的是 Vite **dev server**，`vite-plugin-solid` 在 serve 模式把 `solid-js` 解析到 `dist/dev.js`（`devComponent` ＋ `@solid-refresh`），而 `ready()` 在数据落定那一刻**同目录重算**一次 ⇒ `SessionPanel` **挂载两次**（探针实测 `面板挂载 序=1 → 序=2`），第二次的 `订阅会话输入` 把模块级收件口盖成**孤儿 store** ⇒ 两条插入判据在挂具下**恒红**（实测输入框文本 `""`）。生产 `solid.js` **无此包装**（源码读实）⇒ 预期单次挂载、这条链通；**但未真跑过生产 build 的 e2e** ⇒ 此开口**未闭合**，不写成已覆盖。`send-to-session-real.spec.ts` 把这两条标 `test.fixme()` 并在文件头注明根因，右键/对照/几何那几条照跑照绿。
-- **收件口指向孤儿时界面静默无出口**（`LEARNINGS #005-41` 第二问 / `#006-27` 形状）：若真出现「面板被挂两次」，`发送到会话` 仍返回 `{ok:true}`（收件口在、只是写进孤儿 store）⇒ **界面什么都不发生、无提示、无出口**。本条是伪影暴露出的**真实产品行为**，**登记为独立缺口观察，不在本轮修**。
+  > **闭合条件**：出现一条能在生产 `solid.js`（非 `dev.js`）下跑 e2e 的挂具（例如 `vite build` ＋ `vite preview`，或把挂具的 `resolve.conditions` 钉成生产那份）⇒ 摘掉 `test.fixme`、那两条必须转绿。在那之前，§7 判据 1 / 4 / 6 的**真栈那一栏记为未覆盖**；判据 6 / 9 的**组件层端到端已于 2026-10-15 闭合**（见 `session-panel.test.tsx` 那条「中栏右键 ⇒ 右栏输入框」用例），真栈只剩「原生拖拽 / 原生选区 / 裸键盘」三样非接缝的东西。
+- **收件口指向孤儿时界面静默无出口**（`LEARNINGS #005-41` 第二问 / `#006-27` 形状）：若真出现「面板被挂两次」，`发送到会话` 仍返回 `{ok:true}`（收件口在、只是写进孤儿 store）⇒ **界面什么都不发生、无提示、无出口**。本条是伪影暴露出的**真实产品行为**，**登记为独立排期项，不在本轮修**。
+  > **闭合条件（2026-10-15 最终评审复核后升级为排期项）**：满足其一即闭合 —— ① 生产侧出现**第二处**挂我们
+  > `SessionPanel` 的地方时**同批**做（评审已核实当前唯一：`packages/app/src/ai-session/ai-session-slot.tsx:24`；
+  > `packages/app/src/pages/session.tsx:2275` 挂的是**上游**会话页、不是我们的）；② 或把收件口改成**回布尔**
+  > （写不进去回 `false`），`发送到会话` 据此回 `{ok:false, 原因:"没有会话"}` ⇒ 民警看到「先在右栏开一个会话」
+  > 而不是静默（这条与登记先后顺序无关，是稳的那一半）；③ 或先实测双挂载下**谁先登记**，再加「收回时判身份 /
+  > 登记不覆盖」（未实测前不许上，否则可能把可见的那份挡在门外）。
 
 ## 9. 关键取舍记录
 
