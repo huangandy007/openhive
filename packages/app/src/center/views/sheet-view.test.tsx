@@ -74,6 +74,39 @@ describe("表格视图：字节 → 表格", () => {
     expect(host.textContent).toContain("姓名")
   })
 
+  /**
+   * 日期格按**表格显示的文本**给，不给内部序列号。
+   *
+   * 根因（探针实测，2026-10-14）：`sheet_to_json` 默认 `raw: true`，交回的是**原始值**；
+   * 而 SheetJS 把 CSV 里的 `2026-10-01` 认成日期（`t:"n"`、`v:46296`、同时算好 `w:"2026-10-01"`）
+   * ⇒ 原始值就是那个序列号，`String(46296)` ⇒ 民警看到的是一串没人看得懂的数。
+   */
+  test("CSV 里的日期按显示文本给，不给 Excel 序列号", async () => {
+    const host = 容器()
+
+    await renderSheet(new TextEncoder().encode("姓名,日期\n张三,2026-10-01\n"), host)
+
+    expect(host.textContent).toContain("2026-10-01")
+    expect(host.textContent).not.toContain("46296")
+  })
+
+  /**
+   * 真 `.xlsx` 的日期同理——这一支与 CSV 是**两条不同的路径**（CSV 靠 SheetJS 猜类型，
+   * xlsx 靠单元格自带格式），却吃同一个根因，**RED 态实得也一样**（两条都是 `姓名日期张三46296`）。
+   * 单独立一条是因为两条路径将来可能分化（比如有人给 CSV 单开一条支路）。
+   */
+  test("真 xlsx 里的日期按显示文本给，不给 Excel 序列号", async () => {
+    const host = 容器()
+
+    await renderSheet(工作簿字节([["姓名", "日期"], ["张三", new Date(Date.UTC(2026, 9, 1))]]), host)
+
+    // 只断「不吐序列号」，**不断**具体格式：显示成 `2026-10-01` 还是 `10/1/26`，取决于文件自己
+    // 带的日期格式（本夹具 SheetJS 给的是 `m/d/yy`，实得 `10/1/26`）。本视图的语义是「表里怎么
+    // 显示就怎么给」——在此规定一个具体格式就成了一条**错判据**（CSV 那条能断 `2026-10-01`，
+    // 是因为 CSV 没有格式信息、`w` 就是原文，那是另一回事）。
+    expect(host.textContent).not.toContain("46296")
+  })
+
   test("长短不一的行按最宽行补齐，表格不错位（真实表格大量是残缺行）", async () => {
     const host = 容器()
 

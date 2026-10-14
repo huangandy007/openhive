@@ -83,14 +83,26 @@ export const renderSheet: BytesRenderer = async (bytes, container) => {
 
   // `defval` + `blankrows` 一起保证**行宽对齐**：真实表格大量是残缺行（某行少几列、或有整行空），
   // 不补齐的话每行格数不一，列会串位。已用「临时摘掉这两个选项」验证过下方测试确实抓得住（收到 [3,2]）。
-  // 行类型显式写成「单元格联合的数组」而非 `unknown[]`：默认 `raw: true` 下 SheetJS 交回的单元格
-  // 就是这几种原始值（文本 / 数字 / 布尔 / `defval` 补的空），标出来 `String(cell)` 才有据可依——
-  // 否则 `unknown` 会被 lint 判为「可能拼出 `[object Object]`」。（注意 `sheet_to_json<T>` 的 `T`
-  // 是**行**类型，`header: 1` 下行本身是数组，漏掉外层 `[]` 会 typecheck 不过。）
-  const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(sheet, {
+  //
+  // `raw: false` **不可省**（2026-10-14，用户实报「日期显示的是一串数字」）：默认的 `raw: true`
+  // 交回的是**原始值**，把 SheetJS 已经算好的显示文本（`w`）丢掉。而日期在表格内部就是**数字
+  // 序列号**（CSV 里的 `2026-10-01` 解析为 `t:"n" v:46296`，真 xlsx 同理），于是 `String(cell)`
+  // 打出 `46296`。改用 `w` 之后：日期 → `2026-10-01`、百分比 → `12.50%`、千分位 → `1,200,000`
+  // ——**表里怎么显示就怎么给**，也正是中栏预览该有的语义。
+  //
+  // 代价（据实记）：xlsx 里**存成数字**的长数字（身份证 / 卡号）会显示成科学计数法（`1.10101E+17`）。
+  // 那类数据在 Excel 里本来就已丢了精度（只存 15 位有效数字，`…234` 存进去读回是 `…230`），
+  // 显式暴露比静默给一个看着像真的错号更安全——同本文件头「静默少给比卡死更危险」那条。
+  // ⚠️ CSV 不受此影响：SheetJS 把原始文本留在了 `w` 里，连精度都还回来了。
+  //
+  // 故行类型是「可空字符串」而非原先的「原始值联合」：`raw: false` 落进来的都是 `w`（字符串），
+  // `defval` 补的仍是 null。注意 `sheet_to_json<T>` 的 `T` 是**行**类型，`header: 1` 下行本身是数组，
+  // 漏掉外层 `[]` 会 typecheck 不过。
+  const rows = XLSX.utils.sheet_to_json<(string | null)[]>(sheet, {
     header: 1,
     defval: null,
     blankrows: true,
+    raw: false,
     range: 范围,
   })
 
@@ -110,8 +122,8 @@ export const renderSheet: BytesRenderer = async (bytes, container) => {
     const tr = document.createElement("tr")
     for (const cell of row) {
       const td = document.createElement("td")
-      // `== null` 一并盖住 null 与 undefined：`defval` 补的是 null，但没必要为此少一层保险。
-      td.textContent = cell == null ? "" : String(cell)
+      // `defval: null` 补的空格就是 null，显示成空；`raw: false` 落下来的都是字符串。
+      td.textContent = cell ?? ""
       tr.appendChild(td)
     }
     table.appendChild(tr)
