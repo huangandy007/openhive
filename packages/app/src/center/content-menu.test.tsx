@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { toaster } from "@opencode-ai/ui/toast"
 import { render } from "solid-js/web"
 import { 内容菜单 } from "./content-menu"
-import { 订阅会话输入 } from "@/ai-session/send-to-session"
+import { 发送失败提示, 订阅会话输入 } from "@/ai-session/send-to-session"
+import { ToastRegion } from "@/utils/toast"
 
 const 挂过的: Array<() => void> = []
 afterEach(() => {
@@ -9,12 +11,37 @@ afterEach(() => {
   document.body.innerHTML = ""
   // 接线盒是模块级状态 ⇒ 谁登记谁收回（同 Task 1 那条口径）。
   订阅会话输入(undefined)
+  // toast 的 store 是模块级 ⇒ 不清的话上一条的提示会残到下一条（同 file-tree 那条口径）。
+  toaster.clear()
 })
 
 function 挂(取选区: () => string) {
   const 宿主 = document.createElement("div")
   document.body.appendChild(宿主)
   挂过的.push(render(() => <内容菜单 取选区={取选区}><div data-slot="内容区">正文</div></内容菜单>, 宿主))
+  return 宿主
+}
+
+/**
+ * 挂一棵树 ＋ **真 toast 区域**——要断提示，就得先把提示的落点挂起来（订阅者要先在）。
+ * 配方见 `file-tree.test.tsx` 的 `挂带提示`：不 mock 任何模块，判据走 `showToast` → 真 toast 组件的真那条路。
+ */
+function 挂带提示(取选区: () => string) {
+  const 宿主 = document.createElement("div")
+  document.body.appendChild(宿主)
+  挂过的.push(
+    render(
+      () => (
+        <>
+          <ToastRegion v2={false} />
+          <内容菜单 取选区={取选区}>
+            <div data-slot="内容区">正文</div>
+          </内容菜单>
+        </>
+      ),
+      宿主,
+    ),
+  )
   return 宿主
 }
 
@@ -85,13 +112,30 @@ describe("中栏右键菜单", () => {
     expect(收到.length).toBe(0)
   })
 
+  /** 判据 7 的**后半**：右栏没开会话 ⇒ 屏幕弹那句提示（真 toast 组件那条路，配方见 `file-tree.test.tsx`）。 */
+  test("右栏没开会话 ⇒ 点「发送到会话」屏幕上出现提示", async () => {
+    // 不登记收件口（`订阅会话输入` 不调）⇒ 右栏没开会话。走 `挂带提示`（并排挂真 toast 区域）。
+    const 宿主 = 挂带提示(() => "张三\t1200")
+    右键(宿主)
+    await 落定()
+    点项("发送到会话")
+    await 落定()
+
+    // 断在**字符串**上、不把 DOM 节点交给 `expect`（`LEARNINGS #005-01`：红的实得值是节点会把整轮挂哑）。
+    expect(document.body.textContent ?? "").toContain(发送失败提示("没有会话"))
+  })
+
   /**
    * 判据 7 的**前半**（不插入）已由 Task 1 的单测钉住（`发送到会话` 无收件口 ⇒
    * `{ok:false, 原因:"没有会话"}`，且收件口一次都没被调）。
    *
-   * ⚠️ **这里刻意不写用例**：本来想加一条「右栏没开会话 ⇒ 点下去不抛」，但那是一条
+   * 判据 7 的**后半**（那句提示文案）已由本文件上面那条「右栏没开会话 ⇒ 点『发送到会话』
+   * 屏幕上出现提示」钉住——走 `showToast` → 真 toast 组件的真那条路（配方见
+   * `file-tree.test.tsx` 的 `挂带提示`：并排挂 `<ToastRegion v2={false} />`、断
+   * `document.body.textContent` 含 `发送失败提示("没有会话")`）。
+   *
+   * 历史说明（2026-10-14 plan 预检）：本来想加一条「右栏没开会话 ⇒ 点下去不抛」，但那是一条
    * **没有任何断言**的用例 —— 它不会红、不会绿出信息，只是"跑过了"。本 skill 的评审规则
-   * 点名这种形状是缺陷（a test that asserts nothing），本轮 plan 预检时按规则删掉了它。
-   * 判据 7 的**后半**（那句提示文案）本机测不了，如实进缺口表 §8：真栈人眼确认（Task 6 Step 3）。
+   * 点名这种形状是缺陷（a test that asserts nothing），按规则删掉了它。
    */
 })

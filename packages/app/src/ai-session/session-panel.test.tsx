@@ -3,14 +3,16 @@ import type { Message, Part, Session } from "@opencode-ai/sdk/v2"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { FileComponentProvider } from "@opencode-ai/ui/context/file"
 import { SessionTurn } from "@opencode-ai/session-ui/session-turn"
+import { toaster } from "@opencode-ai/ui/toast"
 import { createSignal, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
+import { ToastRegion } from "@/utils/toast"
 import { SessionPanel, type SessionPanelData } from "./session-panel"
 import { type 内建命令条 } from "./command-palette"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
 import { projectCapabilities } from "./projection"
-import { 发送到会话, 订阅会话输入 } from "./send-to-session"
+import { 发送失败提示, 发送到会话, 订阅会话输入 } from "./send-to-session"
 
 /**
  * 右栏「最小可用会话」（T008 / FR-010 / DESIGN §4.7.5）。
@@ -38,6 +40,8 @@ afterEach(() => {
   // ⚠️ **模块级收件口**是另一件事：组件卸载会经 `onCleanup` 收回它，但那要有 `onCleanup`
   // 真的跑过。这里兜底一次，保证**下一条用例**不会站在上一条的收件口上（同 Task 1 那条口径）。
   订阅会话输入(undefined)
+  // toast 的 store 是模块级 ⇒ 不清的话上一条的提示会残到下一条（同 file-tree 那条口径）。
+  toaster.clear()
 })
 
 /** 挂一棵树，返回宿主（本文件所有判据都在它上面取）。 */
@@ -45,6 +49,17 @@ function 挂(内容: () => JSX.Element): HTMLElement {
   const 宿主 = document.createElement("div")
   document.body.appendChild(宿主)
   挂过的.push(render(内容, 宿主))
+  return 宿主
+}
+
+/**
+ * 挂一棵树 ＋ **真 toast 区域**——要断提示，就得先把提示的落点挂起来（订阅者要先在）。
+ * 配方见 `file-tree.test.tsx` 的 `挂带提示`：不 mock 任何模块，判据走 `showToast` → 真 toast 组件的真那条路。
+ */
+function 挂带提示(内容: () => JSX.Element): HTMLElement {
+  const 宿主 = document.createElement("div")
+  document.body.appendChild(宿主)
+  挂过的.push(render(() => <><ToastRegion v2={false} />{内容()}</>, 宿主))
   return 宿主
 }
 
@@ -2028,6 +2043,30 @@ describe("拖文件 / 文件夹行到右栏会话框 ⇒ 自动填路径引用�
     拖入(宿主, 五十一行)
 
     expect((输入框里的话(宿主) ?? "").trim(), "超限的文本被插进去了").toBe("")
+  })
+
+  test("拖 51 行 ⇒ 屏幕上出现提示（判据 8 拖拽路的『提示』后半）", async () => {
+    // 走 `挂带提示`（并排挂真 toast 区域），其余与上面那条同型。
+    const 宿主 = 挂带提示(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
+        />
+      )),
+    )
+    const 五十一行 = Array.from({ length: 51 }, (_, i) => `第${i}行`).join("\r\n")
+
+    拖入(宿主, 五十一行)
+    await 歇()
+
+    // 断在**字符串**上、不把 DOM 节点交给 `expect`（`LEARNINGS #005-01`）。
+    expect(document.body.textContent ?? "").toContain(发送失败提示("行数超限"))
   })
 
   test("会话框里已打的字不被吞：引用追加在后面，原文照旧在", () => {
