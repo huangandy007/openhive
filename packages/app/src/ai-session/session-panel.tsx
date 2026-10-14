@@ -12,12 +12,14 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type 
 import { createStore } from "solid-js/store"
 import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条, type 服务端命令条 } from "./command-palette"
 import { CommonCards } from "./common-cards"
-import { 拖入路径 } from "./drop-reference"
+import { 拖入正文, 拖入路径 } from "./drop-reference"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
 import { SessionNav, type 可索引的一轮 } from "./session-nav"
 import { 会话重命名输入 } from "./session-rename"
+import { 发送到会话, 发送失败提示, 订阅会话输入 } from "./send-to-session"
 import { SkillDrawer } from "./skill-drawer"
+import { showToast } from "@/utils/toast"
 
 /**
  * 右栏会话槽收到的**会话数据**（计划 §「② 右栏会话的真实接入面」）。
@@ -547,28 +549,42 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
       // 走表单自带的 `onDrop`（`index.tsx` 的 `<form>`）⇒ **只有落在会话框里的拖拽**才走到这儿，
       // 拖到文件树上不会误插。
       onDrop: (event) => {
-        const 路径 = 拖入路径(event.dataTransfer?.getData("text/plain"))
-        if (路径 === undefined) return
-        // ⚠️ **本仓定制（openhive，2026-10-13）**：先补一个 `@` 当锚点，再调 `addMention`。
-        // 上游这两行只有 `addMention` 那一句。
-        //
-        // 为什么非补不可（用户实报「只能拖一个，拖第二个没反应」的根因）：`addMention` 用
-        // `text.slice(0, cursor).lastIndexOf("@")` **反推要替换的范围**（`store.ts:80-82`），
-        // 它成立的前提是**调用前用户刚敲了一个 @**（提示列表里选中那一刻，那个 @ 就在光标左边）。
-        // 拖拽这个入口没敲 @ ⇒ **第二次**拖时，文本里唯一的 @ 是**上一次插进去的引用自己**
-        // （`@报告.docx` 的 content 以 @ 开头）⇒ 范围被算成「从上次那个 @ 到光标」，**跨越了那个
-        // 引用 part** ⇒ `insertMention` 里没有任何文本片段容纳得下它 ⇒ 原样返回 ⇒ 新引用被**静默
-        // 丢弃**（用户看到的就是「拖第二个没有任何反应」）。第一次能成，只因为初始文本里没有 @。
-        //
-        // 补的这个 @ 紧贴光标，`lastIndexOf` 必然先找到它 ⇒ 范围正好是它自己 ⇒ 被替换成引用。
-        // 走的是上游**同一个** `addMention`（不另写一套插入，`LEARNINGS #005-20`），
-        // 于是两次、光标在文本中间、文本里原本就带 `@` 的形状全都成立。
-        // 判据：`session-panel.test.tsx` 的「连着拖第二个」。
-        草稿操作.addText("@")
-        草稿操作.addMention({ type: "file", path: 路径, content: `@${路径}`, start: 0, end: 0 })
+        // 只读 `text/plain`：真拖选还带一份 `text/html`，那份不看（会塞进 HTML 结构）。
+        const 载荷 = event.dataTransfer?.getData("text/plain")
+        const 路径 = 拖入路径(载荷)
+        if (路径 !== undefined) {
+          // ── 老路：文件 / 文件夹引用（005 · 2026-10-13）。一字不动。
+          // ⚠️ 下面那个 `addText("@")` 是**引用专有**的锚点（`addMention` 用 `lastIndexOf("@")`
+          // 反推范围）—— 正文路**不要**照抄它（正文走 `addText`，没有那套反推）。
+          草稿操作.addText("@")
+          草稿操作.addMention({ type: "file", path: 路径, content: `@${路径}`, start: 0, end: 0 })
+          return
+        }
+        // ── 新路：不是引用、但有内容 ⇒ 当正文插（2026-10-14）。走的是**同一个**接线盒动作，
+        // 于是 50 行上限也在这一处生效、不与右键路各判一份。
+        const 正文 = 拖入正文(载荷)
+        if (正文 === undefined) return
+        const 结果 = 发送到会话(正文)
+        if (!结果.ok) showToast(发送失败提示(结果.原因))
       },
     },
   })
+
+  /**
+   * 把「写进输入框」这个动作登记到跨栏接线盒（2026-10-14）。
+   *
+   * ⚠️ **登记与收回成对**：模块级状态跨用例活着，卸载不收回就会让**下一条用例**站在别人的
+   * 收件口上（同 `center/views/reading-size.ts` 那条口径）。
+   *
+   * ⚠️ 聚焦走 `controller.restoreFocus()`（`interaction.ts:340`），不自己找 DOM 去 focus。
+   * `focus.editor` 同名两物：**事件**在 `machine.ts:77` 只记 `state.focus`，**命令**在
+   * `interaction.ts:159` 才真聚焦——`dispatch({ type: "focus.editor" })` 只走前者、不聚焦；详见 task-3-report.md。
+   */
+  订阅会话输入((文本) => {
+    草稿操作.addText(文本)
+    controller.restoreFocus()
+  })
+  onCleanup(() => 订阅会话输入(undefined))
 
   /** 草稿正文。定义在 `controller` **之后**只为避开 TS 的循环推断；只在 `onSubmit` 被调时才求值。 */
   const 取正文 = () => controller.value()

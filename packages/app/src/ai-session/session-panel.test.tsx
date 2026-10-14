@@ -10,6 +10,7 @@ import { SessionPanel, type SessionPanelData } from "./session-panel"
 import { type 内建命令条 } from "./command-palette"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
 import { projectCapabilities } from "./projection"
+import { 发送到会话, 订阅会话输入 } from "./send-to-session"
 
 /**
  * 右栏「最小可用会话」（T008 / FR-010 / DESIGN §4.7.5）。
@@ -34,6 +35,9 @@ afterEach(() => {
   // ⚠️ 顺序：**先 dispose、再清 body**。反过来的话 dispose 会去碰已经摘掉的节点。
   while (挂过的.length) 挂过的.pop()!()
   document.body.innerHTML = ""
+  // ⚠️ **模块级收件口**是另一件事：组件卸载会经 `onCleanup` 收回它，但那要有 `onCleanup`
+  // 真的跑过。这里兜底一次，保证**下一条用例**不会站在上一条的收件口上（同 Task 1 那条口径）。
+  订阅会话输入(undefined)
 })
 
 /** 挂一棵树，返回宿主（本文件所有判据都在它上面取）。 */
@@ -2007,12 +2011,23 @@ describe("拖文件 / 文件夹行到右栏会话框 ⇒ 自动填路径引用�
     expect(读引用(宿主)[0]?.路径, "文件夹的尾斜杠被吃掉了").toBe("资金流水/")
   })
 
-  test("拖非 `file:` 载荷（从别处拖来的普通文字）⇒ 会话框不认、一个字都不插", () => {
+  test("拖一段普通文本（不是文件引用）⇒ 当正文插进会话框", () => {
     const 宿主 = 摆右栏()
 
-    拖入(宿主, "报告.docx")
+    拖入(宿主, "张三\t1200\r\n李四\t880\r\n")
 
-    expect(读引用(宿主).length, "把一段普通文字当成了文件路径引用").toBe(0)
+    expect(输入框里的话(宿主) ?? "", "普通文本没被当正文插进去").toContain("张三")
+    // 反面：也不许把它当引用（`#005-19`：能开 ≠ 开在谁身上）
+    expect(读引用(宿主).length, "普通文本被当成了文件路径引用").toBe(0)
+  })
+
+  test("拖超过 50 行 ⇒ 一个字都不插", () => {
+    const 宿主 = 摆右栏()
+    const 五十一行 = Array.from({ length: 51 }, (_, i) => `第${i}行`).join("\r\n")
+
+    拖入(宿主, 五十一行)
+
+    expect((输入框里的话(宿主) ?? "").trim(), "超限的文本被插进去了").toBe("")
   })
 
   test("会话框里已打的字不被吞：引用追加在后面，原文照旧在", () => {
@@ -2254,5 +2269,69 @@ describe("索引轨 / 快速跳转（2026-10-14 用户点名照 DeepSeek 的做�
     await 歇()
 
     expect(活跃序号(宿主)).toBe(2)
+  })
+})
+
+/**
+ * 中栏「发到会话」在**右栏这一头**的接线（2026-10-14）。
+ *
+ * ⚠️ 这一组测的是**模块级接线盒**（`send-to-session.ts`）⇒ 它在用例之间活着。
+ * 本文件底层已有 `afterEach` 收 `挂过的`，但收的是组件；收件口是**另一件事**。
+ * 每条用例自己开、本文件的 `afterEach` 兜底（见下方那条补充）。
+ */
+describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
+  test("挂上之后 ⇒ 收到的文本进输入框", () => {
+    const 宿主 = 摆右栏()
+
+    expect(发送到会话("张三\t1200")).toEqual({ ok: true })
+    expect(输入框里的话(宿主) ?? "").toContain("张三")
+  })
+
+  /**
+   * 判据 9：**逐字等于**所选内容 —— 不多一个 `@`、不少一字。
+   * ⚠️ 必须 `toBe` 全等，**不能**用 `toContain`：正文路若照抄文件引用那条的 `addText("@")`
+   * （见 `onDrop` 注释），`toContain("张三")` 照样绿 —— 那条断言是空转的。
+   * 变异：在登记的收件口里、`addText(文本)` **之前**加一句 `addText("@")` ⇒ 这条必红。
+   */
+  test("正文逐字进框：不多一个 `@`、不少一字", () => {
+    const 宿主 = 摆右栏()
+
+    发送到会话("张三\t1200")
+
+    expect(输入框里的话(宿主)).toBe("张三\t1200")
+  })
+
+  /**
+   * 判据 6 的前半：插完把焦点交还输入框（用户可直接接着打字）。
+   *
+   * ⚠️ `focus.editor` 在原生件里走 `requestAnimationFrame`
+   * （`session-ui/src/v2/components/prompt-input/interaction.ts:159`：
+   * `if (command.type === "focus.editor") requestAnimationFrame(() => editor?.focus())`）⇒
+   * **等条件、不等时间**（`LEARNINGS #006-31`）：happy-dom 的 rAF 什么时候跑、跑不跑，是它的事；
+   * 钉死「让一拍」等于把判据押在环境的调度细节上（`#006-19` 同族：API 在、回调不触发）。
+   *
+   * 被聚焦的元素已核实是**编辑器自己**：`data-component="prompt-input"` 挂在那个
+   * `contenteditable` 的 div 上（`prompt-input/index.tsx:147-157`），而 `editor` 正是它
+   * （ref 回调里 `controller.setEditor(element)`）⇒ 断言 `document.activeElement` 就是它。
+   *
+   * 若这条**等满轮数仍不成立**：那是 happy-dom 的 rAF 真不跑（环境），按缺口表口径把那半句挪到
+   * 真栈（Task 6 Step 3）人眼确认，**不要**留一条恒绿/恒红的用例充数。
+   */
+  test("插完之后 ⇒ 焦点落在输入框上", async () => {
+    const 宿主 = 摆右栏()
+    const 编辑器 = 宿主.querySelector('[data-component="prompt-input"]')
+
+    发送到会话("张三")
+    for (let i = 0; i < 50 && document.activeElement !== 编辑器; i++) await 歇()
+
+    // ⚠️ 比较**布尔**，不把节点喂给 `expect`（`LEARNINGS #005-01`：红了会把整轮挂死）
+    expect(document.activeElement === 编辑器, "焦点没交还给输入框").toBe(true)
+  })
+
+  test("卸载之后 ⇒ 收件口收回，发送报「没有会话」", () => {
+    摆右栏()
+    挂过的.pop()!() // 卸载这一棵——`afterEach` 就是这么收的（33-37 行）
+
+    expect(发送到会话("张三")).toEqual({ ok: false, 原因: "没有会话" })
   })
 })
