@@ -8,13 +8,14 @@ import {
 import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
 import { createPromptInputV2Store } from "@opencode-ai/session-ui/v2/prompt-input/store"
 import { createAutoScroll } from "@opencode-ai/ui/hooks"
-import { For, Show, createEffect, createMemo, createSignal, on, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条, type 服务端命令条 } from "./command-palette"
 import { CommonCards } from "./common-cards"
 import { 拖入路径 } from "./drop-reference"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
+import { SessionNav, type 可索引的一轮 } from "./session-nav"
 import { 会话重命名输入 } from "./session-rename"
 import { SkillDrawer } from "./skill-drawer"
 
@@ -235,6 +236,19 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   /** 这一刻名字那一格是「展示」还是「就地编辑」。 */
   const 在改名 = () => 改名中() === props.sessionID
 
+  /**
+   * 用户从**索引轨**（右缘那列短横）上点过的那一轮（2026-10-14，用户点名照 DeepSeek 的做法做
+   * 「在大段会话里快速翻回自己问过的那句话」）。
+   *
+   * 存 **id 不存对象**：轮次数组每次同步都可能重造，存对象要靠引用相等，而引用相等一旦失效
+   * **不报错、不变红**——症状是「点过的那枚短横在下一帧又变回最后一条」。与 `待删` / `改名中`
+   * 同一个形状、同一个理由。
+   *
+   * ⚠️ 它只记「用户点过谁」，**不跟滚动位置**：把当前轮绑在滚动位置上，用户手动往上翻两屏，
+   * 轨上的强调色就会乱跳——而这条信息（「我点的是这一条」）只在点击那一刻确定。
+   */
+  const [点过的那一轮, set点过的那一轮] = createSignal<string | undefined>(undefined)
+
   /** 当前那条会话。找不到（如 data 还没同步到）时退回显示 id，别渲染成空白。 */
   const 当前会话 = () => props.data.session.find((会话) => 会话.id === props.sessionID)
 
@@ -258,6 +272,16 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * 两者引用都稳（`data` 按目录缓存）⇒ 它不是每一帧都重算。
    */
   const 轮次 = createMemo(() => (props.data.message[props.sessionID] ?? []).filter((消息) => 消息.role === "user"))
+
+  /**
+   * 此刻算「当前」的那一轮：**用户点过的那一轮**；没点过（或那个 id 已经不在这一场里了）就退回
+   * **最后一条**。
+   *
+   * 那条 `?? 轮次().at(-1)` 的兜底就是用户原话里「最下面的（那枚）表示是最近的一次」——会话刚落
+   * 进来、用户还没点过任何一条时，「最近的一轮」就是当前。它也是「切了会话 / 发了新消息」之后
+   * 自动回到最新那条的机制（那两处只要把 `点过的那一轮` 清掉即可，见下面两处调用点）。
+   */
+  const 当前轮 = createMemo(() => 轮次().find((消息) => 消息.id === 点过的那一轮()) ?? 轮次().at(-1))
 
   // ── 自动跟随底部（缺陷修复 · 2026-10-08）────────────────────────────────────
   //
@@ -295,10 +319,101 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   createEffect(
     on(
       () => props.sessionID,
-      () => 自动跟随.resume(),
+      () => {
+        自动跟随.resume()
+        // 「点过的那一轮」是**这一场里**的一次选择 ⇒ 换会话时要清掉（不清也不会错太多：那个 id
+        // 在新一场里查不到，`当前轮` 会自己退回最后一条——但那是**靠 id 恰好不撞**兜住的，
+        // 而「切回来还能回到上次点的那条」并不是本功能要的东西）。
+        set点过的那一轮(undefined)
+      },
       { defer: true },
     ),
   )
+
+  // ── 索引轨 / 快速跳转（2026-10-14，用户点名照 DeepSeek 的做法做）────────────────────
+  //
+  // 轨本身在 `./session-nav.tsx`（一份自建件，理由见那个文件头）。本组件负责的是**接线**：
+  // 喂数据、量它离右缘多远、以及点下去之后把视野挪过去。
+
+  /**
+   * 这一栏的**滚动条宽度**（px）。喂给 `SessionNav` 的 `右偏移`，让那列短横落在滚动条**内侧**
+   * 的那条留白里。
+   *
+   * ⚠️ **必须量，不能拍一个数**：这个偏移的用途就是「别压在滚动条上」，而滚动条多宽是浏览器 /
+   * 系统的属性（实测本机 Chrome/win32 **15px**，换个缩放或换了 overlay 式滚动条就是 0）。
+   * 拍了数的坏法是「短横叠在滚动条上」——不报错、不变红，只能量（`LEARNINGS #006-23` 那一族）。
+   *
+   * ⚠️ **`offsetWidth - clientWidth` 就是滚动条**：`clientWidth` 扣掉了滚动条与边框，本元素没有
+   * 边框 ⇒ 这个差正好是滚动条的宽。而**横向**滚动条不会混进来：滚动盒的 `overflow-y-auto` 在
+   * `overflow-x: visible` 时会被算成 `auto`（两轴不能一 auto 一 visible），但内容都是块级定宽，
+   * 横向永远不出溢出条。
+   */
+  /**
+   * 会话滚动盒**自己的元素**。
+   *
+   * ⚠️ **必须自己留一份，不能去 `自动跟随.scrollRef` 上拿**：那个名字是 `createAutoScroll` 的
+   * **回调 ref 函数**（`packages/ui/src/hooks/create-auto-scroll.tsx:224`：
+   * `scrollRef: (el) => setStore("scrollRef", el)`），不是元素——元素被存在那个 hook 自己的
+   * `createStore` 里、**没有对外暴露**。读它去量尺寸，`offsetWidth` / `clientWidth` 都是
+   * `undefined`（⇒ 差是 `NaN`），读它去找锚点则是 `盒.querySelector is not a function`。
+   * 仓里已有一处**同样的手法**可抄：`pages/session.tsx:1570` 的 `setScrollRef` 也是「自己留一份
+   * （`scroller = el`）＋ 把元素喂给 `autoScroll.scrollRef(el)`」，两件事各归各。
+   *
+   * ⚠️ 而 `NaN` 那个错法**不报错**：`right: "NaNpx"` 是条非法 CSS，样式表**静默丢掉**它、属性
+   * 保持原值 ⇒ 界面上就是那列短横**永远停在初始偏移上**（实得：本用例读出 `"2px"`，
+   * 而装了 15px 假滚动条之后仍读 `"2px"`）。同族 `LEARNINGS #006-23`。
+   */
+  const [滚动盒, set滚动盒] = createSignal<HTMLDivElement | undefined>()
+
+  const [滚动条宽, set滚动条宽] = createSignal(0)
+
+  createEffect(() => {
+    // 读一下轮次：内容变长了就重量一次。真浏览器里滚动条**出现**那一刻会改 `clientWidth`、
+    // 从而惊动下面的 `ResizeObserver`；但那条路在无布局环境里走不到（`LEARNINGS #006-19`：
+    // happy-dom 的 `ResizeObserver` 回调不触发）⇒ 这一句是**另一条同等正当的触发**。
+    void 轮次()
+    const 盒 = 滚动盒()
+    if (!盒) return
+    const 量 = () => set滚动条宽(盒.offsetWidth - 盒.clientWidth)
+    量()
+    // ⚠️ 滚动条是**出现 / 消失**式的：内容长到装不下时它才占掉那 15px。而内容长高的时刻**不只有
+    // 「多了一轮」**——流式回答的过程中它一直在长（那一刻轮次没变）⇒ 只靠上面那句 `void 轮次()`
+    // 会量晚一步。观「盒子自己的尺寸」正好，因为滚动条一出现，`clientWidth` 当场就变。
+    const 观测 = new ResizeObserver(量)
+    观测.observe(盒)
+    onCleanup(() => 观测.disconnect())
+  })
+
+  /**
+   * 把视野挪到某一轮的用户气泡上（点索引那一枚/那一行时发生）。
+   *
+   * ⚠️ **不用 `scrollIntoView`**（这是本轮唯一一处「看起来更省事、其实会惹祸」的地方）：它会把
+   * **所有**可滚祖先一起滚——右栏外面还有中栏、还有整页，用户点一下右栏里的索引，中栏那份正在
+   * 看的文档会跟着跳（`LEARNINGS` 里反复记过「几何动作的作用对象是整条祖先链」）。
+   * ⇒ 本处只算**这一个盒子**要滚到哪：锚点与盒子顶边的**屏幕坐标差**就是「锚点现在在盒子里的
+   * 纵向位置」，把它加到当前 `scrollTop` 上，锚点就到盒子顶边了。
+   *
+   * ⚠️ 找锚点用 `[data-message]`（`session-turn.tsx` 挂在
+   * `[data-slot="session-turn-message-container"]` 上的那个记号），**不按轮次序号去数 DOM 子节点**：
+   * 子节点与轮次之间隔着内容包裹层、`<Show>`、以及上游随时可能加的东西，按序号数是一种
+   * 「假设 DOM 形状」的判据（`LEARNINGS #006-24`）。
+   */
+  function 滚到那一轮(id: string) {
+    const 盒 = 滚动盒()
+    if (!盒) return
+    const 锚 = 盒.querySelector<HTMLElement>(`[data-message="${CSS.escape(id)}"]`)
+    if (!锚) return
+    盒.scrollTo({
+      top: 盒.scrollTop + (锚.getBoundingClientRect().top - 盒.getBoundingClientRect().top),
+      behavior: "smooth",
+    })
+  }
+
+  /** 用户在索引轨上点了某一轮：那一轮成为「当前」，并把视野挪过去。 */
+  const 选一轮 = (消息: 可索引的一轮) => {
+    set点过的那一轮(消息.id)
+    滚到那一轮(消息.id)
+  }
 
   // ── Hero 输入（§4.7.5）─────────────────────────────────────────────────────
   //
@@ -402,6 +517,9 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           // ② 放在 `reset()` **之旁**——两者都是「交出去了」的收官动作，读起来是一件事。
           // 上游 `pages/session.tsx` 的 `onSubmit` 同样调 `resumeScroll()`（那边回调恒在，没有①那道门）。
           自动跟随.resume()
+          // 提交 ＝「我要看新的」⇒ 索引轨上那枚强调色也得跟着回到最新那条。少了这一句，用户点过
+          // 第 2 轮之后再发一条，视野在底部、而轨上高亮的还是第 2 轮（两处在说不同的话）。
+          set点过的那一轮(undefined)
           void 回话.then((发了) => {
             if (发了) return
             // 没发出去 ⇒ 把正文还回输入框。⚠️ 只在**用户还没打新字**时还：否则一次网络抖动
@@ -639,14 +757,29 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
             自身内边距」两件事，不强行拉齐。
             取 `px-4` 而非 `px-[16px]`：16px 正好落在 Tailwind 标度上（根字号 16px ⇒ 1rem），
             与同栏 `px-3` 同一写法；先前那版取字面值是因为 10px **不在**标度上。 */}
-        <div
-          ref={自动跟随.scrollRef}
-          data-slot="session-turns"
-          class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-4"
-          onScroll={自动跟随.handleScroll}
-          onClick={自动跟随.handleInteraction}
-        >
-          {/* 这一层是**自动跟随的观测面**，与下面那层（修「没有垂直滚动」的）是两件事，别合并。
+        {/* 这一层包壳是**索引轨的定位上下文**（2026-10-14）：轨 `absolute` 悬在右侧那条留白里
+            ——它**不许占会话的宽度**（用户 2026-10-14 定的形态），所以只能浮着，而浮着就得有个
+            `relative` 的爹。`min-h-0` / `flex-1` 两件都**必须**从下面的滚动盒上**抄一份过来**：
+            滚动盒自己还留着它们（它的类一个都没动），而中间多一层定高 flex 容器之后，高度要
+            经它传递；少了 `min-h-0`，内容一长就把整栏顶出去。
+
+            ⚠️ 轨是滚动盒的**兄弟、不是子元素**：放进滚动盒的话，`overflow-y: auto` 会连它一起裁
+            （两轴不能一 auto 一 visible ⇒ `overflow-x` 也被算成 auto），那颗往左弹出的面板一出
+            盒边就没了。 */}
+        <div class="relative flex min-h-0 w-full flex-1 flex-col">
+          {/* 两个 ref 都要接：`自动跟随.scrollRef` 是那套自动跟随**自己**的接入口（回调 ref，见
+              `滚动盒` 的注释），本组件另外留一份元素给自己量尺寸、找锚点。 */}
+          <div
+            ref={(元素: HTMLDivElement | undefined) => {
+              自动跟随.scrollRef(元素)
+              set滚动盒(元素)
+            }}
+            data-slot="session-turns"
+            class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-4"
+            onScroll={自动跟随.handleScroll}
+            onClick={自动跟随.handleInteraction}
+          >
+            {/* 这一层是**自动跟随的观测面**，与下面那层（修「没有垂直滚动」的）是两件事，别合并。
 
               `createAutoScroll` 靠 `createResizeObserver(contentRef)` 在**内容长高时**跟到底部，
               而 `ResizeObserver` 观测的是**元素自己的盒子**：本容器是 `flex-1`（高度确定）
@@ -664,10 +797,10 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
               ⚠️ 它**不加** `flex flex-col`：里面那层是有意让 `<For>` 生成的块级 div 自然堆叠的；
               多引入一个 flex 格式化上下文，等于给下面那段注释里已经量过的几何再加一个变量。
               本层对版面无影响（`w-full` 的块级 div 在 `w-full` 的块级父层里，宽度与之前逐字相同）。 */}
-          <div ref={自动跟随.contentRef} data-slot="session-turns-content" class="w-full shrink-0">
-            <For each={轮次()}>
-              {(消息) => (
-                /* 这一层 `<div>` **不是装饰**，是修「没有垂直滚动」的那一半（2026-10-08 真栈肉眼报的）。
+            <div ref={自动跟随.contentRef} data-slot="session-turns-content" class="w-full shrink-0">
+              <For each={轮次()}>
+                {(消息) => (
+                  /* 这一层 `<div>` **不是装饰**，是修「没有垂直滚动」的那一半（2026-10-08 真栈肉眼报的）。
 
                    `SessionTurn` 自带两条 CSS（在 `session-ui` 的样式表里，按属性选择器写，不是
                    Tailwind 类，所以从源码里看不见）：
@@ -711,17 +844,29 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
 
                    ⚠️ 几何判据**单测断不了**（happy-dom 不跑布局，`LEARNINGS #005-07`）——真判据在
                    真栈 E2E：「turn 高度 ≠ 容器高 / 条数」。本处只能断结构。 */
-                <div class="w-full shrink-0">
-                  <SessionTurn
-                    sessionID={props.sessionID}
-                    messageID={消息.id}
-                    showReasoningSummaries={props.showReasoningSummaries}
-                    classes={{ content: "!overflow-visible" }}
-                  />
-                </div>
-              )}
-            </For>
+                  <div class="w-full shrink-0">
+                    <SessionTurn
+                      sessionID={props.sessionID}
+                      messageID={消息.id}
+                      showReasoningSummaries={props.showReasoningSummaries}
+                      classes={{ content: "!overflow-visible" }}
+                    />
+                  </div>
+                )}
+              </For>
+            </div>
           </div>
+
+          {/* 索引轨（2026-10-14）。`右偏移` ＝ 实量的滚动条宽 ＋ 2px 缝：于是那一列短横整条落在
+              内容区右侧那条 **16px** 留白里（`px-4`），既不压滚动条、也不压正文（短横 14/12px <
+              16px）。那个 2 是**观感值**（让短横与滚动条之间留一线），量出来的那一半才是硬判据。 */}
+          <SessionNav
+            轮次={轮次()}
+            当前轮id={当前轮()?.id}
+            片段={(消息) => props.data.part[消息.id]}
+            右偏移={滚动条宽() + 2}
+            on选择={选一轮}
+          />
         </div>
 
         {/* 待答的闸门（权限 / 提问）。位置与理由见 prop 上那段注释。 */}

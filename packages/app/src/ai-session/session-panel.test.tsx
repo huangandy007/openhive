@@ -2034,3 +2034,207 @@ describe("拖文件 / 文件夹行到右栏会话框 ⇒ 自动填路径引用�
     expect(引用[1]?.路径, "第二条引用指错了对象").toBe("资金流水/")
   })
 })
+
+/**
+ * 索引轨 / 快速跳转（2026-10-14，用户点名照 DeepSeek 的做法做）。
+ *
+ * 用户报的痛点是：「AI 会话区域，用户的提问逐步增加、模型输出的内容也不断增加，这就带来了一个
+ * 用户困惑：不能在大量的信息中快速找到之前的用户输入和对应的模型输出内容。」
+ *
+ * 轨本身（短横 / 面板 / 悬停预览 / 点击回调）已经由 `session-nav.test.tsx` 单独钉住了。**这一组
+ * 只管本组件这边那一半**——数据喂得对不对、位置算得对不对、点下去之后视野动没动。
+ *
+ * ⚠️ 三条**本层量不到**的东西（`LEARNINGS #005-07`：happy-dom 不跑布局）：
+ * 「短横是不是真落在右侧那条留白里」「面板有没有被祖先裁掉」「滚过去之后自动跟随会不会把视野拽回来」
+ * ——这三条的真判据在真栈 `e2e/real-stack/session-nav-real.spec.ts`。本层不假装覆盖了它们。
+ */
+describe("索引轨 / 快速跳转（2026-10-14 用户点名照 DeepSeek 的做法做）", () => {
+  /**
+   * 摆一棵右栏，**会话 id 与数据都可由用例改**（切会话那条要它）。
+   *
+   * 与模块级的 `摆右栏` 的差别只有这一点：那个是「一场会话摆到死」的，测不了「换了会话会怎样」。
+   */
+  const 摆会话 = (data: SessionPanelData, 初会话 = "ses_1") => {
+    const [sessionID, setSessionID] = createSignal(初会话)
+    const [数据, set数据] = createSignal(data)
+    const 宿主 = 挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={数据()}
+          directory="/tmp/openhive-test"
+          sessionID={sessionID()}
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
+          onSubmitPrompt={() => Promise.resolve(true)}
+        />
+      )),
+    )
+    return { 宿主, setSessionID, set数据 }
+  }
+
+  const 轨 = (宿主: HTMLElement) => 宿主.querySelector<HTMLElement>('[data-slot="session-nav"]')
+  const 刻度 = (宿主: HTMLElement) =>
+    [...宿主.querySelectorAll<HTMLElement>('[data-slot="session-nav-tick"]')]
+  /**
+   * 带强调色的那一枚的**序号**（不在 / 一枚都不带 ⇒ `-1`）。
+   *
+   * 断**序号**而不是断某个 id：轨上只有 `data-active` 这一个记号，而序号恰好也是「第几轮」——
+   * 两个方向都能分辨（点第 2 枚有没有生效、清掉之后是不是回到了最后一条）。
+   */
+  const 活跃序号 = (宿主: HTMLElement) =>
+    刻度(宿主).findIndex((枚) => 枚.getAttribute("data-active") === "true")
+
+  const 滚动盒 = (宿主: HTMLElement) => {
+    const 盒 = 宿主.querySelector<HTMLElement>('[data-slot="session-turns"]')
+    if (!盒) throw new Error('没找到 `[data-slot="session-turns"]`（滚动容器换地方了？）')
+    return 盒
+  }
+
+  /**
+   * 给滚动盒装一副**假滚动条**（只假 `offsetWidth` / `clientWidth` 这两个读法）。
+   *
+   * ⚠️ **必须在挂载之后才装得上去**（元素还不存在时没有对象可定义），所以「量一次」那件事只能靠
+   * **再触发一次量**来观测（本组用「再来一轮」触发）。这与自动跟随那组的 `装假几何` 是同一个思路：
+   * 假的是它拿来算的**输入**，不是它算的**东西**（`LEARNINGS #006-08`）。
+   */
+  const 装滚动条宽 = (盒: HTMLElement, 宽: number) => {
+    Object.defineProperty(盒, "offsetWidth", { get: () => 400, configurable: true })
+    Object.defineProperty(盒, "clientWidth", { get: () => 400 - 宽, configurable: true })
+  }
+
+  /** 给一个元素装一副假矩形（只填 `滚到那一轮` 真读的那一项）。 */
+  const 装矩形 = (元素: Element, 顶: number) =>
+    Object.defineProperty(元素, "getBoundingClientRect", { value: () => ({ top: 顶 }), configurable: true })
+
+  /**
+   * 把滚动盒的 `scrollTo` 换成一个**只记账、不动**的空实现。
+   *
+   * 用来把「滚没滚」这件事从「强调色落在哪一枚」那几条判据里摘出去：不摘的话，那几条要先有一副
+   * 真几何才跑得起来，而它们想说的根本是另一件事（`LEARNINGS #005-19`：作用对象与「有没有发生」
+   * 是两条独立判据）。真正量「滚到哪」的是下面那条 ⑥。
+   */
+  const 静音滚动 = (盒: HTMLElement) =>
+    Object.defineProperty(盒, "scrollTo", { value: () => {}, configurable: true })
+
+  // ── 夹具：一场三轮、一场两轮（切会话那条要两场） ────────────────────────────────
+  const 两场多轮 = (): SessionPanelData => ({
+    session: [造会话("ses_1", "资金分析会话"), 造会话("ses_2", "话单分析会话")],
+    session_status: {},
+    session_diff: {},
+    message: {
+      ses_1: [造消息("usr_1", "ses_1"), 造消息("usr_2", "ses_1"), 造消息("usr_3", "ses_1")],
+      ses_2: [造消息("oth_1", "ses_2"), 造消息("oth_2", "ses_2")],
+    },
+    part: {
+      usr_1: [造文本块("prt_1", "usr_1", "第一问")],
+      usr_2: [造文本块("prt_2", "usr_2", "第二问")],
+      usr_3: [造文本块("prt_3", "usr_3", "第三问")],
+    },
+    command: [],
+  })
+
+  test("① 只有一轮 ⇒ 轨不出现；两轮起才出现（一轮的会话没什么可跳的）", () => {
+    expect(轨(摆会话(对话(1)).宿主)).toBe(null)
+    expect(轨(摆会话(对话(2)).宿主), "两轮就该出现了").not.toBe(null)
+  })
+
+  test("② 每一轮一枚短横，顺序就是时间顺序", () => {
+    expect(刻度(摆会话(对话(3)).宿主).length).toBe(3)
+  })
+
+  test("③ 轨是滚动盒的**兄弟**、同挂在那层包壳下（放进去会被 `overflow-y:auto` 连它一起裁）", () => {
+    const { 宿主 } = 摆会话(对话(2))
+    const 盒 = 滚动盒(宿主)
+    const 导航 = 轨(宿主)!
+
+    // 判据是**两件一起**：不落在滚动盒里（裁不掉），但和它同父（于是 `absolute` 的定位基准就是
+    // 滚动区那一块，而不是整根右栏——右栏上面还有会话行、下面还有输入框）。
+    expect(盒.contains(导航), "轨落进滚动盒里了 ⇒ 那颗往左弹的面板会被裁掉").toBe(false)
+    expect(导航.parentElement).toBe(盒.parentElement)
+  })
+
+  test("④ 默认「当前」是最后一条（用户原话：「最下面的表示最近的一次」）", () => {
+    expect(活跃序号(摆会话(对话(3)).宿主)).toBe(2)
+  })
+
+  test("⑤ 点第 2 枚 ⇒ 强调色落到**第 2 枚**上（不是第一枚、也不是最后一枚）", () => {
+    const { 宿主 } = 摆会话(对话(3))
+    静音滚动(滚动盒(宿主))
+
+    刻度(宿主)[1].click()
+
+    expect(活跃序号(宿主)).toBe(1)
+  })
+
+  test("⑥ 点某一枚 ⇒ 真把滚动盒滚到**那一轮**（锚点是 `[data-message]`，不是按序号数子节点）", () => {
+    const { 宿主 } = 摆会话(对话(3))
+    const 盒 = 滚动盒(宿主)
+
+    // 假几何：盒子此刻停在 100，盒顶在屏幕 200；第 2 轮那个气泡的顶边在屏幕 500。
+    // ⇒ 它现在在盒子里位于 500-200 = 300 处，而盒顶那条线对应 `scrollTop` ⇒ 要滚到 100+300。
+    let 位置 = 100
+    Object.defineProperty(盒, "scrollTop", {
+      get: () => 位置,
+      set: (值: number) => void (位置 = 值),
+      configurable: true,
+    })
+    装矩形(盒, 200)
+    装矩形(宿主.querySelector('[data-message="usr_2"]')!, 500)
+    const 滚过: Array<{ top?: number; behavior?: string }> = []
+    Object.defineProperty(盒, "scrollTo", {
+      value: (选项: { top?: number; behavior?: string }) => void 滚过.push(选项),
+      configurable: true,
+    })
+
+    刻度(宿主)[1].click()
+
+    expect(滚过).toEqual([{ top: 400, behavior: "smooth" }])
+  })
+
+  test("⑦ 右偏移 ＝ **实量**的滚动条宽 ＋ 2（不是一个拍出来的数）", async () => {
+    const { 宿主, set数据 } = 摆会话(对话(2))
+    const 盒 = 滚动盒(宿主)
+
+    // 没装假几何 ⇒ 量出来是 0 ⇒ 只剩那条 2px 的缝。
+    expect(轨(宿主)!.style.right).toBe("2px")
+
+    // 装一副「有 15px 滚动条」的几何，再来一轮让重量一次。**两句话都不能省**：只钉一边的话，
+    // 一个写死的字面量总能满足其中一句。
+    装滚动条宽(盒, 15)
+    set数据(对话(3))
+    await 歇()
+
+    expect(轨(宿主)!.style.right).toBe("17px")
+  })
+
+  test("⑧ 换会话 ⇒ 把「点过的」清掉（再切回来时强调色在最新那条，不在上次点的那条）", async () => {
+    const { 宿主, setSessionID } = 摆会话(两场多轮())
+    静音滚动(滚动盒(宿主))
+
+    刻度(宿主)[0].click()
+    expect(活跃序号(宿主), "先证「点得动」").toBe(0)
+
+    setSessionID("ses_2")
+    await 歇()
+    setSessionID("ses_1")
+    await 歇()
+
+    expect(活跃序号(宿主)).toBe(2)
+  })
+
+  test("⑨ 提交一句话 ⇒ 把「点过的」清掉（视野回底部了，强调色也得跟着回最新那条）", async () => {
+    const { 宿主 } = 摆会话(对话(3))
+    静音滚动(滚动盒(宿主))
+
+    刻度(宿主)[0].click()
+    expect(活跃序号(宿主), "先证「点得动」").toBe(0)
+
+    打字(宿主, "再查一下这个账户")
+    回车(宿主)
+    await 歇()
+
+    expect(活跃序号(宿主)).toBe(2)
+  })
+})
