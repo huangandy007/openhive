@@ -36,6 +36,46 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #006-39 · 2026-10-15 · tool-quirk · 006-ai-session
+**一句话**：真栈挂具起的是 Vite **dev server**（`vite-plugin-solid` serve 模式 → `solid-js` 解析到 `dist/dev.js`，
+`devComponent` ＋ `@solid-refresh`），而 `ready()` 在数据落定那一刻**同目录重算一次** ⇒ `SessionPanel` **挂载两次**
+⇒ 模块级 last-writer-wins 的**收件口**被第二次挂载盖成**孤儿 store 的闭包**（探针 `面板挂载 序=1 → 序=2`）。
+⇒ 同一份代码**组件层（走生产 `solid.js`）全绿、真栈红**——「组件层全绿」这次不是旁证，因为两者跑的**不是同一份
+`solid-js`**。应对：真栈上「组件层绿、真栈红」先问**挂具的构建模式与生产是不是同一个**；模块级单例接缝（收件口 / 注册表
+/ 缓存）在 dev 双重挂载下必然被 last-writer-wins 盖掉 ⇒ 判据要么跑**生产 build**、要么标成**未闭合开口**（本 feature
+标 `test.fixme` ＋ spec §8）。
+**应用范围**：任何真栈是否跑在 dev server 上的仓库；任何「组件层绿、真栈红」的收尾（`#003-06` 同族）；任何**模块级
+单例接缝**。
+→ 全文见 `LEARNINGS-full.md`
+
+## #006-38 · 2026-10-15 · pitfall · 006-ai-session
+**一句话**：`focus.editor` 在原生件里是**同名两物**——**事件**（`machine.ts:31`，`:77` 只把 `state.focus` 记成
+`"editor"`、**不推任何 command**）vs **命令**（`machine.ts:40` → `interaction.ts:159` 的 `editor?.focus()`）。
+`dispatch()` 发的是**事件** ⇒ 设计文档写的 `dispatch({type:"focus.editor"})` 是一行**什么都不做**的调用，读起来像在聚焦。
+应对：调 `dispatch` 前先确认那个名字是**事件还是命令**；判据是「有没有可观测的效果」，不是「代码写没写」（本 feature
+改用公开口 `controller.restoreFocus()`）。
+**应用范围**：任何「同名两物」（事件 / 命令、signal setter / action、props / state）；任何跨层 `dispatch`；任何「看着在
+做事、其实没做」的现场。
+→ 全文见 `LEARNINGS-full.md`
+
+## #006-37 · 2026-10-15 · tool-quirk · 006-ai-session
+**一句话**：Kobalte 的菜单项选择发生在 **`pointerup`**（`menu-item-base`：`e.button===0` 且未 disabled ⇒
+`onSelect()`），`.click()` 那条链**不含**用户 `onSelect` ⇒ 用 `.click()` 点菜单项**什么都不发生**、而用例**不报错**
+（若断的是「收到 0 条」则**恒绿空转**）。应对：派**真实指针序列** `pointerdown`＋`pointerup` 的 `PointerEvent`
+（先例 `file-tree.test.tsx` 的 `点菜单项`、`content-menu.test.tsx` 的 `点项`）。
+**应用范围**：任何用 Kobalte / Radix 的菜单 / 下拉 / 选项做组件测；任何「点了没反应」的 happy-dom 用例；任何「期望值
+恰好是 0 / 空」因而看不出没触发的断言（`#006-22` / `#005-47` 同族）。
+→ 全文见 `LEARNINGS-full.md`
+
+## #006-36 · 2026-10-15 · pattern · 006-ai-session
+**一句话**：动一个**行为**之前，先 `grep` 出**断言了这个旧行为**的既有用例（不是「谁借用了它」，那是 `#005-36`）——
+本 feature 那条「拖非 `file:` 载荷 ⇒ 一个字都不插」与新行为**正好相反**，必须**改写**（改成「拖普通文本 ⇒ 当正文插」，
+保留反面断言），不是被删、也不是被无视。三种去向逐个明说：① 冲突 ⇒ **改写**；② 只借前提 ⇒ 显式补前提；③ 性质不再成立
+⇒ **删**（写清原来守什么）。漏掉这一步的指纹：那条老用例**红了**，而你以为是自己改坏了。
+**应用范围**：任何「改一个已有行为」的改动（拖拽载荷 / 校验规则 / 默认动作 / 排序 / 过滤）；任何 TDD 里「新用例绿了、
+却有条老用例红了」的现场。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #005-52 · 2026-10-14 · arch · 005-project-management
 **一句话**：**上游那套元素级样式的作用域不是标签、是宿主**——preflight（`ui/styles/base.css`）把 `h1..h6` 字号、`ul` 符号、
 `a` 的颜色全清零（「看着没样式」的**前半**是它），而救回来的 385 行（`session-ui/…/markdown.css`）**每一条都嵌在
