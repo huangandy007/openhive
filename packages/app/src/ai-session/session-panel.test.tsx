@@ -8,6 +8,7 @@ import { createSignal, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
 import { ToastRegion } from "@/utils/toast"
+import { 内容菜单 } from "@/center/content-menu"
 import { SessionPanel, type SessionPanelData } from "./session-panel"
 import { type 内建命令条 } from "./command-palette"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
@@ -311,19 +312,25 @@ const 摆右栏带命令 = (收到的: string[]) =>
  * 摆一棵右栏（默认一场会话）。**模块级**——hover 面那组与版面那组都要用，
  * 两处各写一遍「右栏怎么摆」就会在有人改一处时静默分家（`LEARNINGS #002-06`；本文件里
  * 同一条纪律的既有落点是 `打字` / `回车` / `数容器`）。
+ *
+ * 可选 `额外`：与 `SessionPanel` **同挂一棵树**的额外内容（中栏右键那条端到端用——让
+ * `内容菜单` 与真 `SessionPanel` 在同一个模块域、同一棵树里），不传就照旧只摆右栏。
  */
-const 摆右栏 = () =>
+const 摆右栏 = (额外?: () => JSX.Element) =>
   挂(() =>
     原语环境(() => (
-      <SessionPanel
-        data={夹具数据()}
-        directory="/tmp/openhive-test"
-        sessionID="ses_1"
-        projection={空投影}
-        斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
-        模型控件={<button data-probe="模型控件">右栏这一颗</button>}
-        showReasoningSummaries={false}
-      />
+      <>
+        <SessionPanel
+          data={夹具数据()}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
+        />
+        {额外?.()}
+      </>
     )),
   )
 
@@ -2343,9 +2350,9 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
   /**
    * 判据 6 的前半：插完把焦点交还输入框（用户可直接接着打字）。
    *
-   * ⚠️ `focus.editor` 在原生件里走 `requestAnimationFrame`
-   * （`session-ui/src/v2/components/prompt-input/interaction.ts:159`：
-   * `if (command.type === "focus.editor") requestAnimationFrame(() => editor?.focus())`）⇒
+   * ⚠️ 插完聚焦走 `controller.restoreFocus()`（`session-panel.tsx:585`），其 rAF 在
+   * `session-ui/src/v2/components/prompt-input/interaction.ts:246-251`
+   * （`const restoreFocus = … => { requestAnimationFrame(() => editor?.focus()) }`）⇒
    * **等条件、不等时间**（`LEARNINGS #006-31`）：happy-dom 的 rAF 什么时候跑、跑不跑，是它的事；
    * 钉死「让一拍」等于把判据押在环境的调度细节上（`#006-19` 同族：API 在、回调不触发）。
    *
@@ -2364,6 +2371,61 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
     for (let i = 0; i < 50 && document.activeElement !== 编辑器; i++) await 歇()
 
     // ⚠️ 比较**布尔**，不把节点喂给 `expect`（`LEARNINGS #005-01`：红了会把整轮挂死）
+    expect(document.activeElement === 编辑器, "焦点没交还给输入框").toBe(true)
+  })
+
+  /**
+   * 判据 6 / 9 的**端到端**：中栏右键点「发送到会话」⇒（接线盒）⇒ 真 `SessionPanel` 的输入框
+   * ⇒ 焦点回输入框。上面那条「正文逐字进框」只钉了**右栏这一头**（直接调 `发送到会话`），
+   * `content-menu.test.tsx` 只钉了**中栏那一头**（收件口是手工 `订阅会话输入` 的替身）；这一条把
+   * 两头接起来，钉的是**一整条链**。
+   *
+   * ⚠️ 为什么组件层能成立（评审已核实，别重新论证）：`摆右栏` 挂的是真 `SessionPanel`、经
+   * `订阅会话输入` 登记的是**真收件口**；而 `内容菜单` import 的 `@/ai-session/send-to-session`
+   * 与本文件 import 的 `./send-to-session` 是**同一个模块实例**（同一模块域）⇒ 点菜单那一下
+   * 会走到右栏真正的 `addText` + `restoreFocus`。只有「原生拖拽 / 原生选区 / 裸键盘打字」三样
+   * 才真的需要浏览器。
+   *
+   * 变异：把 `content-menu.tsx` 里 `发送` 对 `发送到会话(这次的选区)` 的那次调用注释掉
+   * （`content-menu.tsx:58`）⇒ 「点之后文本逐字进框」那句必红（实得 `""`）——文本没经这条链
+   * 到不了输入框。
+   */
+  test("中栏右键 ⇒ 真收件口 ⇒ 真输入框 ⇒ 焦点回输入框", async () => {
+    const 宿主 = 摆右栏(() => (
+      <内容菜单 取选区={() => "张三\t1200"}>
+        <div data-slot="内容区">正文</div>
+      </内容菜单>
+    ))
+
+    // 点之前：真编辑器是空的——让「文本是经这条链来的」当场自明。
+    expect(输入框里的话(宿主)).toBe("")
+
+    // 在内容区上派一次右键（happy-dom 没有真实指针，直接派事件）。
+    宿主.querySelector("[data-slot='内容区']")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }),
+    )
+    await 歇()
+
+    // 点「发送到会话」那一项：**真实指针序列** `pointerdown` + `pointerup`，不能用 `.click()`——
+    // Kobalte 的选择发生在 `pointerup`，`.click()` 触发不到 `onSelect`（`LEARNINGS #006-37`）。
+    // 菜单渲染在 Portal（`document.body`）里，不在宿主里；找不到就**抛**，不静默（`#005-38`）。
+    const 项 = [...document.querySelectorAll<HTMLElement>("[data-slot='context-menu-item']")].find(
+      (el) => el.textContent?.includes("发送到会话"),
+    )
+    if (!项) throw new Error("菜单里没有「发送到会话」这一项")
+    for (const 类型 of ["pointerdown", "pointerup"])
+      项.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+    await 歇()
+
+    // 点之后：文本**逐字等于**所选内容——`toBe` 全等，不能用 `toContain`（正文路若多插一个 `@`，
+    // `toContain("张三")` 照样绿，`LEARNINGS #006-22` 同族）。
+    expect(输入框里的话(宿主)).toBe("张三\t1200")
+
+    // 焦点回到输入框（判据 6 的前半）：等条件、不等时间；比较**布尔**，不喂节点（`#005-01`）。
+    const 编辑器 = 宿主.querySelector('[data-component="prompt-input"]')
+    for (let i = 0; i < 50 && document.activeElement !== 编辑器; i++) await 歇()
     expect(document.activeElement === 编辑器, "焦点没交还给输入框").toBe(true)
   })
 
