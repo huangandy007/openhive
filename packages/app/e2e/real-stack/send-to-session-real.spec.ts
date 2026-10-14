@@ -12,8 +12,9 @@ import path from "path"
  * ② **右键**：中栏选中一段 ⇒ 右键 ⇒ 我们的菜单出现 ⇒ 点「发送到会话」⇒ 文本进输入框
  *    （`center/content-menu.tsx` 的 `ContextMenu`，读 `window.getSelection()`）。
  *
- * 另钉一条**对照**：没选中时右键 ⇒ 我们的菜单**不出现**（浏览器原生菜单照出——「复制」那份
- * 不能被我们吞掉，`LEARNINGS #006-32` 那条底线）。
+ * 另钉一条**对照**：没选中时右键 ⇒ 我们的菜单**不出现**（**我们不接管**——我们没拦原生菜单，
+ * 「复制」那份不该被我们吞，`LEARNINGS #006-32` 那条底线）。本用例**只**量我们的菜单不出现；
+ * 「原生菜单照出」是从 Kobalte 源码推出的（Task 4 已核），**本 spec 未直接量**。
  *
  * ## 为什么这一份落在真栈、而组件层（`session-panel.test.tsx` / `content-menu.test.tsx`）盖不住
  *
@@ -32,7 +33,9 @@ import path from "path"
  * `createComputation(() => untrack(...))`，导出组件再叠一层 `@solid-refresh` 的 `HMRComp`。
  * `ready()` 在 serverSync 数据落定那一刻**同目录重算一次**（`data` 引用变了、目录字符串不变）
  * ⇒ dev 下 `SessionPanel` **挂载两次**，第二次的 `订阅会话输入` 把模块级收件口盖成**孤儿 store
- * 的闭包**，可见编辑器读的是第一个 store ⇒ `发送到会话` 落在孤儿 store 上、输入框一个字不插。
+ * 的闭包**（收件口是 last-writer-wins 的模块级槽：`send-to-session.ts:31` 定义、`:47` 赋值；
+ * 订阅处 `session-panel.tsx:583-587`），可见编辑器读的是第一个 store ⇒ `发送到会话` 落在
+ * 孤儿 store 上、输入框一个字不插。
  * 这两条插入判据（拖 / 右键）在 dev 挂具下**恒红**——红的不是产品、是挂具伪影
  * （`LEARNINGS #005-41`：伪影是「故障来源不真」，不是「产品行为不用管」）⇒ 标 `test.fixme`
  * 入库，等 dev 双挂载被修掉、或挂具生产化之后转绿。
@@ -260,10 +263,11 @@ test.fixme("右键：选中 ⇒ 菜单出现 ⇒ 点发送到会话 ⇒ 文本�
   await expect(右栏输入(page), "不先点输入框、裸键盘接着打，字应当进去").toContainText("续")
 })
 
-test("对照：没选中时右键 ⇒ 我们的菜单不出现（原生菜单照出，复制没被吞）", async ({ page, context }) => {
+test("对照：没选中时右键 ⇒ 我们的菜单不出现（我们不接管，原生菜单不被吞）", async ({ page, context }) => {
   await 开表格(page, context, `发到会话·对照·${Date.now()}`)
 
-  // 没做过任何拖选，右击表格中间一格。我们的 handler 读到空选区 ⇒ stopPropagation ⇒ 原生菜单接管。
+  // 没做过任何拖选，右击表格中间一格。我们的 handler 读到空选区 ⇒ stopPropagation（不冒泡到
+  // Trigger）⇒ 我们没 preventDefault、**不接管**原生菜单（Kobalte 源码核实，见 Task 4）。
   const 中 = await 格(page, 1, 0).boundingBox()
   if (!中) throw new Error("表格没有盒")
   await page.mouse.click(Math.round(中.x + 中.width / 2), Math.round(中.y + 中.height / 2), { button: "right" })
