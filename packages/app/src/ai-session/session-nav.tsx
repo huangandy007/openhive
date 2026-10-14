@@ -85,9 +85,14 @@ export interface SessionNavProps {
 /**
  * 一条短横。**可点区域是整格**（见文件头），线只是它中间那一条。
  *
- * ⚠️ 宽度（14 / 12px）不是随手取的：右栏内容区两侧有 **16px** 留白（`session-panel.tsx` 的
- * `px-4`，用户 2026-10-08 定的那个数），而索引轨整列都落在这条留白里 —— 于是「短横压不压到
- * 正文」的判据就是**它比留白窄**。若哪天有人把 `px-4` 改小，这两条线要跟着改窄（`#003-05`）。
+ * ⚠️ 尺寸是**用户 2026-10-14 当场定的**（原：活跃 14×2、非活跃 12×1）：**长缩到 2/3、厚各 ＋1px**
+ * ⇒ 活跃 **9×3**、非活跃 **8×2**。（14 × ⅔ ≈ 9.33，取 9——它不在 Tailwind 标度上，故两条宽度都走
+ * 字面值 `w-[9px]` / `w-[8px]`；厚度 3px 同理走 `h-[3px]`，非活跃的 2px 正好是 `h-0.5`。）
+ *
+ * ⚠️ 宽度**不是随手取的**：右栏内容区右侧留白是 `session-panel.tsx` 的 `pr-7`（**28px**，
+ * 2026-10-14 由 16px 加上来的），索引轨整列都落在这条留白里 —— 「短横压不压到正文」的判据就是
+ * **它比留白窄**。两个数合起来给出**恒 17px** 的空隙（算法见 `session-panel.tsx` 的同类注释与
+ * 真栈判据 ①b）。⚠️ 留白与长度是**一件事的两半**：改一处必须连另一处一起核（`#003-05`）。
  */
 function 短横(props: { 活跃: boolean }) {
   return (
@@ -95,8 +100,8 @@ function 短横(props: { 活跃: boolean }) {
       data-slot="session-nav-tick-line"
       class="block rounded-full"
       classList={{
-        "h-0.5 w-3.5 bg-v2-background-bg-accent": props.活跃,
-        "h-px w-3 bg-v2-icon-icon-muted": !props.活跃,
+        "h-[3px] w-[9px] bg-v2-background-bg-accent": props.活跃,
+        "h-0.5 w-[8px] bg-v2-icon-icon-muted": !props.活跃,
       }}
     />
   )
@@ -198,10 +203,26 @@ export function SessionNav(props: SessionNavProps) {
 
         `my-auto` ＋ 上下都贴 0 ＝ **绝对定位的居中**（不用 `translate`：那一层包壳里还有别的
         绝对定位子节点，少一个变换就少一个要解释的东西）。
+
+        ⚠️ `z-30`（2026-10-14 改；原 `z-10`）——用户实报「索引列表没在最前面一层，输入输出区域的
+        内容层叠在上层、有列表数据被遮挡」。**根因不在面板自己写的 `z-20`**：宿主（`session-panel.tsx`
+        里那层 `relative` 包壳）与 `session-turns` 是**兄弟**，而 `session-turns` **没有** `z-index`
+        ⇒ 面板的 20/30 与外层比的是**这一层**的值；偏巧会话内容里有两处 `position: sticky;
+        z-index: 20` 是**对外真 20**（`session-ui` 的 `message-part.css:1221` 工具块折叠头、
+        `session-turn.css:104` 改动表头）⇒ 原来写 10，20 > 10，整个面板被那些吸顶条盖住
+        （真栈实测 `elementsFromPoint` 最上面是 `collapsible-trigger`）。
+
+        取 **30**：高于会话内容里所有常驻元素，低于真浮层。⑥ 步全仓点过一遍（按后缀筛出 `packages`
+        下的样式文件、在其中找 `z-index:`）：会话这一屏里最高是 **20**（上引两处；另有 `session-review-v2.css`
+        的 20 / 10），真浮层从 **50** 起（dialog / popover / hover-card 50、context-menu 100、
+        menu 与 select 60、toast 与 tooltip 1000）⇒ 30 落在**没人用的那一档**：面板压得住内容、
+        压不住弹窗。⚠️ `session-review.css:23` 有一条 **120**，那是**会话审查视图**的浮层，与右栏
+        不同屏、不共存（本件这一列只在会话屏），故不以它为界。判据在真栈
+        `e2e/real-stack/session-nav-real.spec.ts` 的「不被会话内容里的吸顶条盖住」那条。
       */}
       <div
         data-slot="session-nav"
-        class="z-10 my-auto w-4"
+        class="z-30 my-auto w-4"
         style={{
           position: "absolute",
           right: `${props.右偏移}px`,

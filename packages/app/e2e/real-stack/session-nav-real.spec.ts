@@ -192,6 +192,11 @@ const 量几何 = (page: Page) =>
       线右缘: 线.length ? Math.max(...右缘们(线)) : Number.NaN,
       线左缘: 线.length ? Math.min(...线.map((元素) => 元素.getBoundingClientRect().left)) : Number.NaN,
       刻度数: 线.length,
+      /** 每枚短横线的**真实**宽高（用户 2026-10-14 定的：长 ×2/3、厚 ＋1px）＋ 它是不是「当前」。 */
+      线们: 线.map((元素) => {
+        const r = 元素.getBoundingClientRect()
+        return { 宽: r.width, 高: r.height, 活跃: 元素.parentElement?.getAttribute("data-active") === "true" }
+      }),
       正文右缘: 气泡.length ? Math.max(...右缘们(气泡)) : Number.NaN,
     }
   })
@@ -275,6 +280,26 @@ test("索引轨（真栈）：落在滚动条内侧不压正文、悬停呼出�
     `短横不该压到正文上｜正文右缘=${几何.正文右缘} 线左缘=${几何.线左缘}`,
   ).toBeGreaterThanOrEqual(几何.正文右缘 - 1)
 
+  // ── ①b 留白与短横尺寸（用户 2026-10-14 实报「短横压住输入输出的内容」） ────────────
+  //
+  // 用户原话两点：**内容离右栏边缘的间距增大 12px**、**短横长度缩到 2/3、厚度 ＋1px**。
+  // 16 → 28px 的留白 ＋ 短横缩短（靠右对齐 ⇒ 左缘右移 5px）⇒ 内容与短横之间空出 **17px**
+  // （与滚动条宽度无关：短横右偏移 = 滚动条宽＋2，正文右缘 = 盒右−滚动条宽−28 ⇒ 恒差 17）。
+  expect(
+    几何.盒右 - 几何.滚动条宽 - 几何.正文右缘,
+    `正文右缘离盒右缘该是 28px（留白 16＋12）｜${JSON.stringify(几何)}`,
+  ).toBeCloseTo(28, 0)
+
+  const 活跃线 = 几何.线们.find((枚) => 枚.活跃)
+  const 非活跃线 = 几何.线们.filter((枚) => !枚.活跃)
+  // 14px × 2/3 ≈ 9.33 ⇒ 实现取 9（`toBeCloseTo(…, 0)` 容差 0.5，两值都收）
+  expect(活跃线?.宽, `当前那枚短横该是 9px 长（原 14 × 2/3）｜${JSON.stringify(几何.线们)}`).toBeCloseTo(9, 0)
+  expect(活跃线?.高, "当前那枚短横该是 3px 厚（原 2 ＋ 1）").toBeCloseTo(3, 0)
+  非活跃线.forEach((枚, i) => {
+    expect(枚.宽, `第 ${i + 1} 枚非活跃短横该是 8px 长（原 12 × 2/3）`).toBeCloseTo(8, 0)
+    expect(枚.高, `第 ${i + 1} 枚非活跃短横该是 2px 厚（原 1 ＋ 1）`).toBeCloseTo(2, 0)
+  })
+
   // ── ② 鼠标移到那一列上 ⇒ 索引面板出来，右缘与轨对齐（像从轨上展开） ──────────────
   await page.locator("[data-slot='session-nav']").hover()
   await expect(page.locator("[data-slot='session-nav-panel']")).toBeVisible({ timeout: 10_000 })
@@ -326,4 +351,118 @@ test("索引轨（真栈）：落在滚动条内侧不压正文、悬停呼出�
     `用户点了索引去看某一轮 ⇒ 新内容不该把视野拽回底部｜跳后 scrollTop=${跳后.scrollTop}` +
       `｜长高后 scrollTop=${之后.scrollTop} 距底=${之后.距底}`,
   ).toBeLessThan(4)
+})
+
+/**
+ * 把 `message-part.css:1221` 那条规则的**靶子结构**注进会话内容（`edit-tool > collapsible >
+ * collapsible-trigger[aria-expanded=true]`）。**注入的是产品自己的选择器结构**，喂给真浏览器的是
+ * 产品自己的 CSS —— 量的是真层叠，不是模拟。
+ *
+ * ⚠️ 本机没有模型 ⇒ 造不出**真**工具块（`noReply: true` 只落纯文本 part），所以只能这样把那条
+ * CSS 规则摆到台面上。代价是：这条判据**同时守着上游那条 CSS** —— 它若被改（选择器或 z 值），
+ * 下面那条前置断言（「注入头真的拿到了 sticky ＋ 正层级」）会红 ⇒ 提醒重新对齐（`#003-05`）。
+ */
+async function 注入吸顶折叠头(page: Page) {
+  await page.evaluate(() => {
+    const 内容 = document.querySelector<HTMLElement>('[data-slot="session-turns-content"]')
+    if (!内容) throw new Error("没找到 [data-slot='session-turns-content']")
+    const 块 = document.createElement("div")
+    块.setAttribute("data-component", "edit-tool")
+    块.innerHTML =
+      '<div data-component="collapsible" class="tool-collapsible">' +
+      '<div data-slot="collapsible-trigger" aria-expanded="true">（真实选择器结构的吸顶折叠头）</div>' +
+      "</div>"
+    内容.prepend(块)
+    // 滚到顶 ⇒ 吸顶条落回它 sticky 的常态位置（贴滚动盒顶），与居中的索引面板重叠。
+    const 盒 = document.querySelector<HTMLElement>('[data-slot="session-turns"]')
+    if (盒) 盒.scrollTop = 0
+  })
+}
+
+/**
+ * 「呼出的索引面板没在最前面一层」——用户 2026-10-14 实报的第二条。
+ *
+ * ## 根因（2026-10-14 实测坐定，不是猜）
+ *
+ * 面板自己写着 `z-index: 20`，可它挂在一个 `z-index: 10` ＋ `position: absolute` 的壳里
+ * （`position` 非 static ＋ `z-index` 非 auto ⇒ 浏览器把它当成一个 **stacking context**）
+ * ⇒ 面板**对外**只有 **10**。而会话内容里有**两种自带 20 层**的吸顶条，都在同一个层叠上下文里
+ * 跟它比：`message-part.css:1221`（编辑/写文件/打补丁工具块的折叠头）与 `session-turn.css:104`
+ * （本轮改动表头），都是 `position: sticky` ＋ `z-index: 20` ⇒ **20 > 10 ⇒ 盖住面板**。
+ * 实测（视口 1440×500）：注入头 `t=133..169`、面板 `t=155..283` ⇒ 重叠区取点，
+ * `elementsFromPoint` 最上面的是 `collapsible-trigger`，面板的行被压在下面。
+ *
+ * ## 修法（2026-10-14）
+ *
+ * 载体（`session-nav.tsx` 的 `session-nav`，即上面那层 `absolute`）的层级 **10 → 30**：
+ * 它才是与吸顶条同台比较的那一个（面板自己写多少都在它里面）。取 30 的边界见该文件注释
+ * （高于会话内容里所有常驻元素、低于真浮层）。修后同一取点实得 `最上=session-nav-row`、
+ * `最上是面板: true`（面板右缘同时因留白改动从 1400 移到 1388，重叠区随之右退）。
+ *
+ * ## 为什么 ① 段那条用例抓不到它
+ *
+ * 那条用例里的会话是内核 `noReply` 落的**纯文本**（本机没模型）⇒ 没有工具块 ⇒ 没有吸顶条。
+ * 用户真实会话里**有**（他提问时正被盖住的正是「部分内容」= 这两种吸顶条）。
+ */
+test("索引面板不被会话内容里的吸顶条盖住（真栈）", async ({ page }) => {
+  test.setTimeout(180_000)
+
+  await page.context().addCookies([{ name: "openhive_session", value: readStack().token, url: FRONT() }])
+  await 压矮(page)
+  const 会话 = await 建真会话(`层叠·${Date.now()}`)
+  await 落一轮(会话, `第一问·${Date.now()}`)
+  await 落一轮(会话, `第二问·${Date.now()}`)
+  await 落一轮(会话, `第三问·${Date.now()}`)
+
+  await setup(page, 会话)
+  await page.goto(`/server/${base64Encode(FRONT())}/session/${会话}`)
+  await expect(page.locator("[data-slot='session-turns'] [data-message]")).toHaveCount(3, { timeout: 30_000 })
+  await 长高一截(page, 800)
+  await 注入吸顶折叠头(page)
+  // 自动跟随的 `ResizeObserver` 可能把视野拉回底部 ⇒ 吸顶条就不在顶部了。等条件、不等时间
+  // （`#006-31`）：钉住「真滚到了顶」再往下量。
+  await expect
+    .poll(async () => page.evaluate(() => document.querySelector<HTMLElement>('[data-slot="session-turns"]')!.scrollTop), {
+      message: "前置：注入后该停在顶部（吸顶条才与面板重叠）",
+    })
+    .toBeLessThan(4)
+
+  await page.locator("[data-slot='session-nav']").hover()
+  await expect(page.locator("[data-slot='session-nav-panel']")).toBeVisible({ timeout: 10_000 })
+
+  const 探 = await page.evaluate(() => {
+    const 板 = document.querySelector<HTMLElement>('[data-slot="session-nav-panel"]')
+    const 头 = document.querySelector<HTMLElement>('[data-component="edit-tool"] [data-slot="collapsible-trigger"]')
+    if (!板 || !头) return { 有板: 板 !== null, 有头: 头 !== null }
+    const r = 板.getBoundingClientRect()
+    const h = 头.getBoundingClientRect()
+    const t = Math.max(r.top, h.top)
+    const b = Math.min(r.bottom, h.bottom)
+    const l = Math.max(r.left, h.left)
+    const rr = Math.min(r.right, h.right)
+    const 重叠 = b > t && rr > l
+    const cs = getComputedStyle(头)
+    // `elementsFromPoint` 给的是 `Element[]`（不是 `HTMLElement[]`）⇒ 下面读记号走 `getAttribute`，
+    // 不写 `as`（`no-unsafe-type-assertion`，也不该为了少一行把类型改窄）。
+    const 栈 = 重叠 ? document.elementsFromPoint((l + rr) / 2, (t + b) / 2) : []
+    return {
+      有板: true,
+      有头: true,
+      头层级: { z: cs.zIndex, pos: cs.position },
+      重叠,
+      重叠区: 重叠 ? { t, b, l, rr } : null,
+      最上: 栈.length
+        ? (栈[0].getAttribute("data-slot") ?? 栈[0].getAttribute("data-component") ?? 栈[0].tagName)
+        : null,
+      最上是面板: 栈.length > 0 ? 板.contains(栈[0]) : false,
+    }
+  })
+  console.log(`[层叠] 实得=${JSON.stringify(探)}`)
+  expect(探.有头, "注入的吸顶折叠头该在 DOM 里").toBe(true)
+  // 两条前置：诱饵**真的**拿到了产品 CSS 的层叠条件。少了它们，下面那条断言可能是空转
+  // （`#005-47` / `#006-17`：缺陷态下，你搭的前提自己可能不成立）。
+  expect(探.头层级?.pos, "前置：注入头得真拿到产品 CSS 的 position（否则本判据空转）").toBe("sticky")
+  expect(Number(探.头层级?.z), "前置：注入头得真拿到产品 CSS 的正层级（否则本判据空转）").toBeGreaterThan(0)
+  expect(探.重叠, "前置：吸顶条该与面板真有重叠区（否则「谁在上面」无从谈起）").toBe(true)
+  expect(探.最上是面板, `面板不该被会话内容里的吸顶条盖住｜最上面是 ${探.最上}｜${JSON.stringify(探)}`).toBe(true)
 })

@@ -756,7 +756,17 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
             ——只改坏了的那一层（外科手术）；它们比内容区窄 4px，那是「内容留白」与「工具条
             自身内边距」两件事，不强行拉齐。
             取 `px-4` 而非 `px-[16px]`：16px 正好落在 Tailwind 标度上（根字号 16px ⇒ 1rem），
-            与同栏 `px-3` 同一写法；先前那版取字面值是因为 10px **不在**标度上。 */}
+            与同栏 `px-3` 同一写法；先前那版取字面值是因为 10px **不在**标度上。
+
+            **2026-10-14 用户再加一条**：右侧 16 → **28px**（`pr-7`），左侧不动。右边那条留白
+            同时是索引轨站的走廊，而用户实报「短横压住了输入输出的内容」——真栈实测那一刻
+            正文右缘与短横左缘**正好相等（间隙 0）**，短横的可点格（16px 宽）还往正文里探 2px。
+            加 12px 之后：留白 28px ＋ 短横左缘因缩短（14→9，靠右对齐）右移 5px ⇒ 正文与短横
+            之间**恒空 17px**，且与滚动条宽度无关（短横右偏移 = 滚动条宽＋2、正文右缘 =
+            盒右 − 滚动条宽 − 28 ⇒ 差恒为 17）。判据在 `e2e/real-stack/session-nav-real.spec.ts`
+            的 ①b（量的是「盒右 − 滚动条宽 − 正文右缘 = 28」）。
+            ⚠️ 左右**故意不对称**（左 16 / 右 28）：右边多出来的 12px 是给轨让的走廊，不是排版
+            偏好，别为了「看着对称」把左边也加上去。 */}
         {/* 这一层包壳是**索引轨的定位上下文**（2026-10-14）：轨 `absolute` 悬在右侧那条留白里
             ——它**不许占会话的宽度**（用户 2026-10-14 定的形态），所以只能浮着，而浮着就得有个
             `relative` 的爹。`min-h-0` / `flex-1` 两件都**必须**从下面的滚动盒上**抄一份过来**：
@@ -775,7 +785,7 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
               set滚动盒(元素)
             }}
             data-slot="session-turns"
-            class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-4"
+            class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto pl-4 pr-7"
             onScroll={自动跟随.handleScroll}
             onClick={自动跟随.handleInteraction}
           >

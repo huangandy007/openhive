@@ -1702,6 +1702,9 @@ describe("hover 面：每一处各钉一条（Step 5 · F-01）", () => {
  * 2. 16px **只垫内容区**——顶栏那条 `layer-01` 灰底仍要铺满卡片全宽。
  * 3. 40px 是用户给的**数**，所以顶栏用 `h-10` **钉死**（而非「自然高度是多少算多少」）。
  *
+ * ⚠️ **2026-10-14 用户第三次改了口径**：右侧 16 → **28px**（左仍 16）⇒ 落地类是 `pl-4 pr-7`，
+ * 不再是 `px-4`。上面第 2 条的**落点**约束不变（仍只垫内容区），只是右侧的数变了。
+ *
  * ⚠️「文字贴边」的落点已定性（读源码，不是推断）：`session-turn.css` 的
  * `[data-component="session-turn"]` 与 `[data-slot="session-turn-message-content"]`
  * **都没有水平 padding**（整个文件只有 `padding-top` / `padding-bottom` 四条），而右栏的滚动区
@@ -1724,8 +1727,19 @@ describe("右栏版面：顶栏分界线 ＋ 内容区左右留白", () => {
     expect(类).toContain("border-v2-border-border-base")
   })
 
-  test("消息流左右各留 16px（输出文字不再贴边）", () => {
-    expect(类集(串(摆右栏(), "session-turns"))).toContain("px-4")
+  /**
+   * 2026-10-14 用户实报「短横（索引轨）压住了输入输出的内容」⇒ 右侧留白 16 → **28px**
+   * （`px-4` ⇒ `pl-4 pr-7`）。右边多出来的 12px 是**给索引轨让的走廊**：轨道浮在滚动条内侧，
+   * 短横能压到正文就说明它没落在留白里（真栈实测改前正文右缘与短横左缘**正好相等**，间隙 0）。
+   *
+   * ⚠️ 左右**故意不对称**（16 / 28）：别为了让这条断言看着顺眼把左边也加到 28。
+   * 两个数的合起来的效果（正文与短横之间**恒 17px**，与滚动条宽度无关）是几何 ⇒ 真判据在
+   * `e2e/real-stack/session-nav-real.spec.ts` 的 ①b（`LEARNINGS #005-07`：这里只能断 class 串）。
+   */
+  test("消息流左留 16px、右留 28px（输出文字不贴边，右边还给索引轨让出走廊）", () => {
+    const 类 = 类集(串(摆右栏(), "session-turns"))
+    expect(类).toContain("pl-4")
+    expect(类).toContain("pr-7")
   })
 
   /**
@@ -1744,14 +1758,18 @@ describe("右栏版面：顶栏分界线 ＋ 内容区左右留白", () => {
    * ⚠️ 但这不是「灰底铺满全宽」的**完整**判据：真正的几何（灰底到底铺到哪儿）happy-dom 量不出来
    * ——`LEARNINGS #005-07`。本组是那条真浏览器判据的**形状哨兵**，不是它的替代。
    */
-  test("对照：16px 不落在顶栏上——灰底仍要铺满卡片全宽", () => {
-    expect(类集(串(摆右栏(), "session-row"))).not.toContain("px-4")
+  test("对照：左右留白不落在顶栏上——灰底仍要铺满卡片全宽", () => {
+    const 类 = 类集(串(摆右栏(), "session-row"))
+    expect(类).not.toContain("pl-4")
+    expect(类).not.toContain("pr-7")
   })
 
-  test("对照：16px 也不落在外层容器上（否则整块内容一起内缩，顶栏灰底照样被截窄）", () => {
+  test("对照：左右留白也不落在外层容器上（否则整块内容一起内缩，顶栏灰底照样被截窄）", () => {
     const 根 = 摆右栏().querySelector<HTMLElement>('[data-component="session-panel"]')
     if (!根) throw new Error('没找到 [data-component="session-panel"]')
-    expect(类集(根.className)).not.toContain("px-4")
+    const 类 = 类集(根.className)
+    expect(类).not.toContain("pl-4")
+    expect(类).not.toContain("pr-7")
   })
 })
 
