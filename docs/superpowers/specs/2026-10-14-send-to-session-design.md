@@ -103,7 +103,9 @@ export function 发送到会话(文本: string): 发送结果
 
 ⚠️ **正文路不要补 `@` 锚点**。文件引用那条路上有个「第二次拖失效」的老坑（`addMention` 用 `lastIndexOf("@")` 反推范围，须先补 `@`）。正文走 `addText`，**没有那套反推**，照抄只会平白插入一个 `@`。这点要写进代码注释，免得后来人照抄。
 
-**插入后焦点**：调 `controller.dispatch({ type: "focus.editor" })` 把焦点交还输入框，用户可直接接着打字。
+**插入后焦点**：调 `controller.restoreFocus()` 把焦点交还输入框，用户可直接接着打字。
+（⚠️ 2026-10-15 勘误：本节原写 `controller.dispatch({ type: "focus.editor" })` —— **那是一行什么都不做的调用**，
+理由与实测见 §3 的「2026-10-14 勘误」；实现里用的是 `restoreFocus()`，见 `session-panel.tsx:585`。）
 
 ## 7. 测试与验收判据
 
