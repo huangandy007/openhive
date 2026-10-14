@@ -388,17 +388,29 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
 
   /**
    * 判据 6 的前半：插完把焦点交还输入框（用户可直接接着打字）。
-   * ⚠️ `focus.editor` 在原生件里走 `requestAnimationFrame` ⇒ 断言前让一拍。
-   * 若 happy-dom 的 rAF 不触发，这条会**假红**（环境问题，不是产品问题）——那就按缺口表的口径，
-   * 把它挪到真栈（Task 6 Step 3 顺带量「插完能不能直接打字」），**不要**留一条恒绿/恒红的用例充数。
+   *
+   * ⚠️ `focus.editor` 在原生件里走 `requestAnimationFrame`
+   * （`session-ui/src/v2/components/prompt-input/interaction.ts:159`：
+   * `if (command.type === "focus.editor") requestAnimationFrame(() => editor?.focus())`）⇒
+   * **等条件、不等时间**（`LEARNINGS #006-31`）：happy-dom 的 rAF 什么时候跑、跑不跑，是它的事；
+   * 钉死「让一拍」等于把判据押在环境的调度细节上（`#006-19` 同族：API 在、回调不触发）。
+   *
+   * 被聚焦的元素已核实是**编辑器自己**：`data-component="prompt-input"` 挂在那个
+   * `contenteditable` 的 div 上（`prompt-input/index.tsx:147-157`），而 `editor` 正是它
+   * （ref 回调里 `controller.setEditor(element)`）⇒ 断言 `document.activeElement` 就是它。
+   *
+   * 若这条**等满轮数仍不成立**：那是 happy-dom 的 rAF 真不跑（环境），按缺口表口径把那半句挪到
+   * 真栈（Task 6 Step 3）人眼确认，**不要**留一条恒绿/恒红的用例充数。
    */
   test("插完之后 ⇒ 焦点落在输入框上", async () => {
     const 宿主 = 摆右栏()
+    const 编辑器 = 宿主.querySelector('[data-component="prompt-input"]')
 
     发送到会话("张三")
-    await 歇()
+    for (let i = 0; i < 50 && document.activeElement !== 编辑器; i++) await 歇()
 
-    expect(document.activeElement).toBe(宿主.querySelector('[data-component="prompt-input"]'))
+    // ⚠️ 比较**布尔**，不把节点喂给 `expect`（`LEARNINGS #005-01`：红了会把整轮挂死）
+    expect(document.activeElement === 编辑器, "焦点没交还给输入框").toBe(true)
   })
 
   test("卸载之后 ⇒ 收件口收回，发送报「没有会话」", () => {
@@ -827,6 +839,10 @@ git commit -m "feat(center): 中栏内容右键菜单（复制 / 发送到会话
 
 真选中一段文字（`page.mouse` 拖选，或键盘 `Shift+方向键`）→ 右键 → 断言菜单出现（`[data-component='context-menu-content']`）→ 点「发送到会话」→ 断言文本进了输入框。
 另写一条**对照**：**不选中**时右键 ⇒ 断言我们的菜单**不出现**。
+
+**顺带量「插完能不能直接接着打字」**（缺口表 §8 点名要人眼确认的那条；组件层只钉到 `focus.editor` 被 dispatch，真实焦点归位只有这里量得到）：
+点完「发送到会话」之后，**不许先 `click()` 输入框**，直接用 **裸键盘** `page.keyboard.type("续")`，再断言输入框文本里出现了那个字。
+⚠️ **必须裸键盘**：`.type()` / `.fill()` 自己会先聚焦，那样量到的是 Playwright 的动作、不是焦点有没有归位（`LEARNINGS #005-17`：判别力为零）。
 
 - [ ] **Step 4: 跑这个 spec**
 
