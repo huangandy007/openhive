@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 拖入路径 } from "./drop-reference"
+import { 拖入正文, 拖入路径 } from "./drop-reference"
 
 /**
  * 拖进右栏会话框的「文件 / 文件夹路径引用」——纯判据（005 · 2026-10-13 用户提出）。
@@ -28,5 +28,26 @@ describe("拖入载荷 ⇒ 路径引用", () => {
 
   test("只有前缀、没有路径 ⇒ 不认（空引用等于什么都没拖）", () => {
     expect(拖入路径("file:")).toBeUndefined()
+  })
+})
+
+describe("拖入正文：不是文件引用、但有内容的那一段", () => {
+  test("表格拖选出来的制表符文本 ⇒ 原样交回（含换行）", () => {
+    expect(拖入正文("张三\t1200\r\n李四\t880\r\n")).toBe("张三\t1200\r\n李四\t880\r\n")
+  })
+
+  test("普通一句话 ⇒ 交回", () => {
+    expect(拖入正文("把这段问问")).toBe("把这段问问")
+  })
+
+  // 与 `拖入路径` 互斥：`file:` 那一路归它，这一路**不认**
+  test("`file:` 引用不认（那是 `拖入路径` 的活）", () => {
+    expect(拖入正文("file:报告.docx")).toBeUndefined()
+  })
+
+  test("没有载荷 / 空串 / 只有空白 ⇒ 不认", () => {
+    expect(拖入正文(undefined)).toBeUndefined()
+    expect(拖入正文("")).toBeUndefined()
+    expect(拖入正文("   \r\n\t ")).toBeUndefined()
   })
 })

@@ -35,3 +35,19 @@ export function 拖入路径(载荷: string | undefined): string | undefined {
   if (!路径) return undefined
   return 路径
 }
+
+/**
+ * 从拖拽载荷里取出**要当正文插入**的文本（2026-10-14 用户提出：中栏拖选一段内容发给 AI）。
+ *
+ * - 认：非空、且**不是** `file:` 引用 —— 引用那一路归 `拖入路径`，两条互斥。
+ * - 不认（返回 `undefined`）：载荷缺失 / 是 `file:` 引用 / 去掉空白后什么都不剩。
+ *
+ * ⚠️ 只读 `text/plain`（调用方取的就是这一份）：真拖选还会带一份 `text/html`
+ * （探针实测），那份一概不看——避免把一段 HTML 结构塞进会话框。
+ */
+export function 拖入正文(载荷: string | undefined): string | undefined {
+  if (载荷 === undefined) return undefined
+  if (载荷.startsWith(文件前缀)) return undefined
+  if (载荷.trim() === "") return undefined
+  return 载荷
+}
