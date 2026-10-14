@@ -389,11 +389,16 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
   /**
    * 判据 6 的前半：插完把焦点交还输入框（用户可直接接着打字）。
    *
-   * ⚠️ `focus.editor` 在原生件里走 `requestAnimationFrame`
-   * （`session-ui/src/v2/components/prompt-input/interaction.ts:159`：
-   * `if (command.type === "focus.editor") requestAnimationFrame(() => editor?.focus())`）⇒
+   * ⚠️ 聚焦那一步走 `requestAnimationFrame`
+   * （`session-ui/src/v2/components/prompt-input/interaction.ts:246-251` 的 `restoreFocus`）⇒
    * **等条件、不等时间**（`LEARNINGS #006-31`）：happy-dom 的 rAF 什么时候跑、跑不跑，是它的事；
    * 钉死「让一拍」等于把判据押在环境的调度细节上（`#006-19` 同族：API 在、回调不触发）。
+   *
+   * ⚠️ **`focus.editor` 这个名字在原生件里有「同名两物」**（Task 3 实施时实测踩到，见
+   * `task-3-report.md`）：一个**事件**（`machine.ts:31`，在 `machine.ts:77` 只把 `state.focus` 记成
+   * `"editor"`、**不推任何 command**）与一个**命令**（`machine.ts:40`，`interaction.ts:159` 才真的
+   * `editor?.focus()`）。`controller.dispatch({type:"focus.editor"})` 走的是**事件**那条 ⇒
+   * **它不聚焦**（读起来像在聚焦，实际什么都没做）⇒ 收件口里调的是 `controller.restoreFocus()`。
    *
    * 被聚焦的元素已核实是**编辑器自己**：`data-component="prompt-input"` 挂在那个
    * `contenteditable` 的 div 上（`prompt-input/index.tsx:147-157`），而 `editor` 正是它
@@ -462,12 +467,17 @@ import { showToast } from "@/utils/toast"
    * ⚠️ **登记与收回成对**：模块级状态跨用例活着，卸载不收回就会让**下一条用例**站在别人的
    * 收件口上（同 `center/views/reading-size.ts` 那条口径）。
    *
-   * ⚠️ 聚焦走 `controller.dispatch({ type: "focus.editor" })` —— 那是原生件自己在
-   * `index.tsx` 的 `onFocus` 里用的**同一个**口（`interaction.ts:159`），不自己找 DOM 去 focus。
+   * ⚠️ 聚焦走 `controller.restoreFocus()`（`interaction.ts:340` 暴露的公开口）——那是原生件
+   * 「历史回退之后把焦点还回去」用的**同一套**（内部 `requestAnimationFrame(() => editor?.focus())`），
+   * 不自己找 DOM 去 focus。
+   *
+   * ⚠️ **不要**改用 `controller.dispatch({ type: "focus.editor" })`——那读起来像在聚焦、实际**不聚焦**：
+   * 同名两物，`dispatch` 走的是**事件**（`machine.ts:77` 只记 `state.focus`、不推 command），
+   * 真聚焦的是**命令**那条（`interaction.ts:159`）。Task 3 实施时实测踩到（详见 `task-3-report.md`）。
    */
   订阅会话输入((文本) => {
     草稿操作.addText(文本)
-    controller.dispatch({ type: "focus.editor" })
+    controller.restoreFocus()
   })
   onCleanup(() => 订阅会话输入(undefined))
 ```
@@ -840,7 +850,7 @@ git commit -m "feat(center): 中栏内容右键菜单（复制 / 发送到会话
 真选中一段文字（`page.mouse` 拖选，或键盘 `Shift+方向键`）→ 右键 → 断言菜单出现（`[data-component='context-menu-content']`）→ 点「发送到会话」→ 断言文本进了输入框。
 另写一条**对照**：**不选中**时右键 ⇒ 断言我们的菜单**不出现**。
 
-**顺带量「插完能不能直接接着打字」**（缺口表 §8 点名要人眼确认的那条；组件层只钉到 `focus.editor` 被 dispatch，真实焦点归位只有这里量得到）：
+**顺带量「插完能不能直接接着打字」**（缺口表 §8 点名要人眼确认的那条；组件层钉的是 `document.activeElement` 真的落在编辑器上，这里是真人指针下的确认）：
 点完「发送到会话」之后，**不许先 `click()` 输入框**，直接用 **裸键盘** `page.keyboard.type("续")`，再断言输入框文本里出现了那个字。
 ⚠️ **必须裸键盘**：`.type()` / `.fill()` 自己会先聚焦，那样量到的是 Playwright 的动作、不是焦点有没有归位（`LEARNINGS #005-17`：判别力为零）。
 
