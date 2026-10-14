@@ -26,6 +26,7 @@
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { createEffect, createSignal, Show, type JSX } from "solid-js"
 import { CenterContent } from "./center-content"
+import { 内容菜单 } from "./content-menu"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { TabBar } from "./tab-bar"
 import { useCenterTabs } from "./tab-context"
@@ -87,85 +88,87 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
   const 尾栏 = () => `flex min-h-0 min-w-0 flex-1 flex-col items-start ${是左右() ? "h-full" : "w-full"}`
 
   return (
-    <div data-slot="center-split" class={容器()}>
-      <div
-        data-slot="center-pane"
-        data-pane="0"
-        class={头栏()}
-        // 未分屏时**不写内联尺寸**：写了就把这一栏钉死（见 `头栏` 的注释）。
-        style={center.split() ? (是左右() ? { width: `${左右宽()}px` } : { height: `${上下高()}px` }) : undefined}
-        onMouseDown={() => center.focusPane(0)}
-      >
-        <TabBar
-          tabs={center.pane(0).tabs}
-          active={center.pane(0).active}
-          onActivate={(key) => center.activate(key, 0)}
-          onClose={(key) => center.close(key, 0)}
-          focused={center.split() && center.activePane() === 0}
-          onSplit={(排列) => center.splitPane(排列)}
-        />
-        <CenterContent
-          pane={0}
-          registry={props.registry}
-          load={props.load}
-          save={props.save}
-          pageVisible={props.pageVisible}
-          empty={props.empty}
-        >
-          {props.children}
-        </CenterContent>
-        <Show when={center.split()}>
-          {/* ⚠️ 方向那两个词的**唯一**翻译处（文件头 ③）。`edge="end"`：
-              左右分屏时手柄在下栏的左边缘、上下分屏时在上栏的下边缘（`resize-handle.css`）。
-
-              ⚠️ **本仓定制（openhive，2026-10-13）**：颜色与可见性都从本侧给，上游 CSS 一字未动。
-              上游 `resize-handle.css` 有**两条**默认：① `::after` 没有 `background`（不传就全透明）；
-              ② `::after` 平时 `opacity: 0`，只有 `:hover` / `:active` 才拉满。
-              于是只传颜色（上游 `three-pane.tsx` 的写法）得到的是**一条只在鼠标移上去时才出现**的线
-              ——用户 2026-10-13 实报「隔线不明显」。这里把 ② 也补上：`after:opacity-100` 让它**常显**。
-
-              ⚠️ **`after:opacity-100` 不需要 `!`**：上游 `resize-handle.css` 是以
-              `@import "…/resize-handle.css" layer(components)` 进来的（`ui/styles/index.css`），
-              而 layer 序是 `theme, base, components, utilities`（`ui/styles/tailwind/index.css`）
-              ⇒ utilities 层压得住它，原样写即可。（同族反例：`LEARNINGS #006-33` 那处上游规则
-              **无层级**，压不住，才必须写 `!`。）
-
-              颜色全走**灰度**、不碰品牌金（DESIGN 把品牌金限定在 logo / 图标 / 高亮 / 链接 / 选中态）：
-              静止态 `border-strong`（20% alpha，浅色主题 ≈ #C2C2C2），hover 加深到实心灰 `icon-muted`（#808080）。 */}
-          <ResizeHandle
-            direction={是左右() ? "horizontal" : "vertical"}
-            edge="end"
-            size={是左右() ? 左右宽() : 上下高()}
-            min={栏最小}
-            max={是左右() ? 左右最大() : 上下最大()}
-            onResize={是左右() ? set左右宽 : set上下高}
-            class="after:bg-v2-border-border-strong after:opacity-100 hover:after:bg-v2-icon-icon-muted"
-          />
-        </Show>
-      </div>
-      <Show when={右栏挂过()}>
+    <内容菜单>
+      <div data-slot="center-split" class={容器()}>
         <div
           data-slot="center-pane"
-          data-pane="1"
-          class={尾栏()}
-          // `display:none` 而不是不渲染（文件头 ②）。
-          style={{ display: center.split() ? undefined : "none" }}
-          onMouseDown={() => center.focusPane(1)}
+          data-pane="0"
+          class={头栏()}
+          // 未分屏时**不写内联尺寸**：写了就把这一栏钉死（见 `头栏` 的注释）。
+          style={center.split() ? (是左右() ? { width: `${左右宽()}px` } : { height: `${上下高()}px` }) : undefined}
+          onMouseDown={() => center.focusPane(0)}
         >
           <TabBar
-            tabs={center.pane(1).tabs}
-            active={center.pane(1).active}
-            onActivate={(key) => center.activate(key, 1)}
-            onClose={(key) => center.close(key, 1)}
-            focused={center.split() && center.activePane() === 1}
-            onUnsplit={() => center.unsplitPane()}
+            tabs={center.pane(0).tabs}
+            active={center.pane(0).active}
+            onActivate={(key) => center.activate(key, 0)}
+            onClose={(key) => center.close(key, 0)}
+            focused={center.split() && center.activePane() === 0}
+            onSplit={(排列) => center.splitPane(排列)}
           />
-          {/* ⚠️ 右栏**不承载** `children`（上游路由页面）：页面是「当前这条路」的那一页，
-              画两份就是同一页在屏幕上出现两遍（同 `CenterContent` 里 `pageVisible` 那条注释
-              防的是同一件事）。也不给 `empty`：那一栏空着就是空着，不必两处都说同一句话。 */}
-          <CenterContent pane={1} registry={props.registry} load={props.load} save={props.save} empty={undefined} />
+          <CenterContent
+            pane={0}
+            registry={props.registry}
+            load={props.load}
+            save={props.save}
+            pageVisible={props.pageVisible}
+            empty={props.empty}
+          >
+            {props.children}
+          </CenterContent>
+          <Show when={center.split()}>
+            {/* ⚠️ 方向那两个词的**唯一**翻译处（文件头 ③）。`edge="end"`：
+                左右分屏时手柄在下栏的左边缘、上下分屏时在上栏的下边缘（`resize-handle.css`）。
+
+                ⚠️ **本仓定制（openhive，2026-10-13）**：颜色与可见性都从本侧给，上游 CSS 一字未动。
+                上游 `resize-handle.css` 有**两条**默认：① `::after` 没有 `background`（不传就全透明）；
+                ② `::after` 平时 `opacity: 0`，只有 `:hover` / `:active` 才拉满。
+                于是只传颜色（上游 `three-pane.tsx` 的写法）得到的是**一条只在鼠标移上去时才出现**的线
+                ——用户 2026-10-13 实报「隔线不明显」。这里把 ② 也补上：`after:opacity-100` 让它**常显**。
+
+                ⚠️ **`after:opacity-100` 不需要 `!`**：上游 `resize-handle.css` 是以
+                `@import "…/resize-handle.css" layer(components)` 进来的（`ui/styles/index.css`），
+                而 layer 序是 `theme, base, components, utilities`（`ui/styles/tailwind/index.css`）
+                ⇒ utilities 层压得住它，原样写即可。（同族反例：`LEARNINGS #006-33` 那处上游规则
+                **无层级**，压不住，才必须写 `!`。）
+
+                颜色全走**灰度**、不碰品牌金（DESIGN 把品牌金限定在 logo / 图标 / 高亮 / 链接 / 选中态）：
+                静止态 `border-strong`（20% alpha，浅色主题 ≈ #C2C2C2），hover 加深到实心灰 `icon-muted`（#808080）。 */}
+            <ResizeHandle
+              direction={是左右() ? "horizontal" : "vertical"}
+              edge="end"
+              size={是左右() ? 左右宽() : 上下高()}
+              min={栏最小}
+              max={是左右() ? 左右最大() : 上下最大()}
+              onResize={是左右() ? set左右宽 : set上下高}
+              class="after:bg-v2-border-border-strong after:opacity-100 hover:after:bg-v2-icon-icon-muted"
+            />
+          </Show>
         </div>
-      </Show>
-    </div>
+        <Show when={右栏挂过()}>
+          <div
+            data-slot="center-pane"
+            data-pane="1"
+            class={尾栏()}
+            // `display:none` 而不是不渲染（文件头 ②）。
+            style={{ display: center.split() ? undefined : "none" }}
+            onMouseDown={() => center.focusPane(1)}
+          >
+            <TabBar
+              tabs={center.pane(1).tabs}
+              active={center.pane(1).active}
+              onActivate={(key) => center.activate(key, 1)}
+              onClose={(key) => center.close(key, 1)}
+              focused={center.split() && center.activePane() === 1}
+              onUnsplit={() => center.unsplitPane()}
+            />
+            {/* ⚠️ 右栏**不承载** `children`（上游路由页面）：页面是「当前这条路」的那一页，
+                画两份就是同一页在屏幕上出现两遍（同 `CenterContent` 里 `pageVisible` 那条注释
+                防的是同一件事）。也不给 `empty`：那一栏空着就是空着，不必两处都说同一句话。 */}
+            <CenterContent pane={1} registry={props.registry} load={props.load} save={props.save} empty={undefined} />
+          </div>
+        </Show>
+      </div>
+    </内容菜单>
   )
 }
