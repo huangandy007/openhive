@@ -65,7 +65,7 @@
 | `packages/app/src/project/file-tree.tsx` | ① 两只新信号（选中集 / 锚点）② 行点击的 `Ctrl`/`Shift` 分流 ③ `data-selected` 的判据改到选中集 ④ 行加 `aria-selected`、容器加 `aria-multiselectable` ⑤ region 补 `onDragStart` / `onDragEnd` 委托 ⑥ `拖过` / `放开` 补同树分支 ＋ 落点高亮 ⑦ 新 prop `onMoveTo` ⑧ 拖拽三函数（`从桌面` / `指针行` / `落点`）**一字不改** |
 | `packages/app/src/project/file-move-report-dialog.tsx` **（新）** | 报告弹窗：壳照抄 `file-delete-dialog.tsx`；`data-slot="file-move-report-dialog"`；只读 `报告`、不自己取数 |
 | `packages/app/src/project/file-move-report-dialog.test.tsx` **（新）** | 弹窗三态（部分成 / 全败 / 只列成了的） |
-| `packages/app/src/workspace/workspace-entry.tsx` | ① `const dialog = useDialog()` ② `报告` 信号（+ `set报告`）③ `搬一批(dir, 路径们, mode)` ④ `搬()` 改成调 `搬一批` ⑤ 新 `搬多(目录, 路径们)` 接到 `onMoveTo` ⑥ 收尾处的 `报结果(报告值)`（＝ 写信号 ＋ `void dialog.show(...)`） |
+| `packages/app/src/workspace/workspace-entry.tsx` | ① `const dialog = useDialog()` ② `搬一批(dir, 路径们, mode)` ③ `搬()` 改成调 `搬一批` ④ `onMoveTo` 直接接 `搬一批` ⑤ `报结果(值)` ＝ `void dialog.show(() => <FileMoveReportDialog 报告={值} />)`（值关进闭包，不落信号） |
 | `packages/app/src/workspace/workspace-entry.test.tsx` | 改 1 条（`:2043`）、增一批（见 §7） |
 | `packages/app/src/project/file-tree.test.tsx` | 增一批（见 §7） |
 | `packages/app/src/project/dual-file-tree.tsx` | **预期一行不改** |
@@ -164,7 +164,7 @@ function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "mo
 全都没成    → 报结果(值)                                      // 不重取：磁盘一点没变，重取是空跑
 ```
 
-—— `报结果(值)` ＝ `set报告(值)` ＋ `void dialog.show(() => <FileMoveReportDialog 报告={值} />)`（`show()` 的范式同 `file-tree.tsx:786`）。`报告` 是信号、`报结果` 是动作，两者名字不同，读代码时不会混。
+—— `报结果(值)` ＝ `void dialog.show(() => <FileMoveReportDialog 报告={值} />)`（`show()` 的范式同 `file-tree.tsx:786`）。不养 `报告` 信号：弹窗是**只读的一次性快照**，值关进闭包、没有必要落在信号上，少一只没人读的状态。`报告` 是 `FileMoveReportDialog` 的 **prop 名**，不是信号，读代码时别把它当信号找。
 
 **`收下()` 一字不改**：它是**五个动作**（新建 / 重命名 / 删除 / 移动 / 复制）共用的结论口（`workspace-entry.tsx:588`，调用点 `:615` `:677` `:684` `:691` ＋ `传()` 的 `:638`）。把弹窗塞进它会**连带改掉另外三个动作的报告方式**，超出本次所指。故移动 / 复制从它分出来（自己写全两个分支），`收下` 保持原样给剩下三个用。⚠️ 这份「成功支两行」的重复是**有意的**，要在代码注释里写明理由，免得后来人「顺手合并」——合并的那一刻，新建 / 重命名 / 删除 的失败会一起变成弹窗。
 
@@ -231,7 +231,7 @@ function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "mo
 | 20 | 全部成功 ⇒ **没有弹窗**，且清单被重取一次 |
 | 21 | 一个成一个没成 ⇒ 弹窗出现，里面**同时**有成了的路径与没成的「路径 ＋ 原因」 |
 | 22 | 全都没成 ⇒ 弹窗出现，且**清单没被重取**（`假.files.length` 不变） |
-| 23 | 弹窗关掉之后再拖一次 ⇒ 弹窗**重新出现**（报告信号已清空 ⇒ 下一次是新的报告） |
+| 23 | 弹窗关掉之后再拖一次 ⇒ 弹窗**重新出现**（`dialog.show` 每次都是新的弹窗实例；判据的前置是「旧弹窗真的消失了」——`dialog.close()` 是两步：状态立刻、节点 100ms 后 `dispose`，`packages/ui/src/context/dialog.tsx:57`，这也是 F1 补 `等到` 的原因） |
 | 24 | 移动进行中再发起一次 ⇒ 第二次一个请求都不发 |
 | 25 | **右键 → 复制 → 目标 → 被拒 ⇒ 报告弹窗**（改写自 `workspace-entry.test.tsx:2043`）＋ 不重取清单 |
 | 26 | 右键 → 移动 → 成功 ⇒ 静默 ＋ 重取（既有用例保留，不得变红） |
@@ -280,6 +280,7 @@ oxlint（默认配置与 openhive 配置）
 - **一次拖几千行**：不测（树本身要先能铺出几千行）。
 - **非沙箱那棵下树（MinIO）不参与**：它的拖拽仍只有「跨树备份 / 拉回」两条语义。
 - **键盘多选**：不做 ⇒ 只用键盘的人今天仍只有单选（登记为下一步，与工具栏批量同一批）。
+- **一批里同时含某个目录与它的子孙**：`Shift` 连选可以把 `资料` 与 `资料/a.txt` 一起选中（父在可见行序里靠前）。`搬一批` 先搬 `资料`（`a.txt` 随之进了 `档案/资料/`），轮到 `资料/a.txt` 时源已不在原处 ⇒ 报告里出现一条「没成」。**无数据丢失**（那一条确实没被单独搬走），但会给不懂技术的用户一条看不懂的失败行。本轮**不修**——正确的修法是「起拖时剔掉『源是另一个源的子孙』的项」，那是**新加一条批组装规则 ＋ 它自己的 RED／变异周期**，不是补一处漏写的分支（与 F4 性质不同）。登记为下一步。同时记明：三套测试的落点已覆盖「部分成／全败／全成」，**没有**覆盖这个形状。
 
 ## 9. 关键取舍记录
 
