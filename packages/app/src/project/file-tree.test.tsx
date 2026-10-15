@@ -965,6 +965,23 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(行按路径(host, 序[2]).getAttribute("data-selected")).toBe("true")
     })
 
+    test("Shift 连选而还没锚点 ⇒ 以上一个焦点行（Ctrl 先点的那行）当锚点", () => {
+      const host = 挂全开(树三())
+      const 序 = 可见序(host)
+      if (序.length < 3) throw new Error(`可见行不足三行（实得 ${JSON.stringify(序)}）——这条用例的前提不成立`)
+
+      // Ctrl 点只拨成员资格、**不动锚点**（焦点行落到 序[0]）；随后 Shift 点 序[2] 时还没有锚点，
+      // `连选到` 的兜底取「上一个焦点行」＝ 序[0] ⇒ 应是 序[0]..序[2] 一整段，而不是只有 序[2]。
+      点行(host, 序[0], { ctrl: true })
+      点行(host, 序[2], { shift: true })
+
+      expect(序.slice(0, 3).map((p) => 行按路径(host, p).getAttribute("data-selected"))).toEqual([
+        "true",
+        "true",
+        "true",
+      ])
+    })
+
     test("没锚点时 Shift 点 ⇒ 退化成单击（连焦点行也没有的那种）", () => {
       const host = 挂全开(树三())
 

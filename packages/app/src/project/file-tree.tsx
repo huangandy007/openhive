@@ -485,9 +485,9 @@ export function FileTree(props: FileTreeProps) {
   /** 行被点了一下：按修饰键分流。三种手势都先把焦点行落到它身上。 */
   const 点行 = (path: string, event: MouseEvent) => {
     if (event.shiftKey) {
-      setSelected(path)
-      连选到(path)
-      return
+      连选到(path) // F4（最终评审 #4）：先连选、再落焦点行——顺序不能反：`连选到` 的兜底是
+      setSelected(path) // `锚点() ?? selected()`，先 `setSelected` 会把兜底读到的那一行换成刚 Shift
+      return // 点的这行 ⇒ 头 === 尾 ⇒ 结果恒 {该行}；先连选才读得到「上一个焦点行」当锚点。
     }
     if (event.ctrlKey || event.metaKey) {
       setSelected(path)
