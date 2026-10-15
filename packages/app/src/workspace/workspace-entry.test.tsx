@@ -2129,11 +2129,12 @@ describe("文件动作接进工作台（T020 出参）", () => {
   })
 
   test("一个成一个没成 ⇒ 弹窗同时列出两边", async () => {
-    const { host } = await 开全({
+    const { host, 假 } = await 开全({
       files: async () => ["资料/话单.csv", "资料/旧件.csv", "档案/占位.txt"],
       move: async (_id, path) =>
         path.endsWith("话单.csv") ? { kind: "done", path: "档案/话单.csv" } : { kind: "rejected", message: "目标已存在同名文件" },
     })
+    const 搬前 = 假.files.length
 
     点树行(host, "资料/话单.csv")
     点树行(host, "资料/旧件.csv", { ctrl: true })
@@ -2144,6 +2145,7 @@ describe("文件动作接进工作台（T020 出参）", () => {
     expect(报告文字()).toContain("资料/旧件.csv")
     expect(报告文字()).toContain("目标已存在同名文件")
     expect(报告文字()).toContain("档案/话单.csv")
+    expect(假.files.length, "部分成功也要重取清单——盘上真变了").toBe(搬前 + 1)
   })
 
   test("全都没成 ⇒ 弹窗出现，且清单没被重取", async () => {
