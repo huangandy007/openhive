@@ -25,6 +25,8 @@ import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { currentUser } from "./current-user"
 import { ThreePane } from "./three-pane"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { FileMoveReportDialog, type 搬报告 } from "@/project/file-move-report-dialog"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -347,6 +349,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * （同 T018 的 `onCreate` 「`undefined` = 收工」）。
    */
   const [文件话, set文件话] = createSignal<string>()
+  /**
+   * 弹窗宿主（`app.tsx` 那层 `DialogProvider`）——搬一批的失败报告走它。
+   *
+   * 本文件此前没有 `useDialog()`；挂载前提**没有增加**：`workspace-entry.test.tsx` 的挂具
+   * 自 2026-10-11 起就套着 `DialogProvider`（`useDialog()` 无 Provider 时**抛错**）。
+   */
+  const dialog = useDialog()
   /** 文件清单的重取代次：拨一下 ⇒ 上面那个 effect 重跑（它在读它）。 */
   const [清单重取, set清单重取] = createSignal(0)
   /**
@@ -600,19 +609,57 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     set待搬({ path, mode })
   }
 
-  /** 点了目标才真搬。 */
-  async function 搬(dir: string) {
-    const 目标 = 待搬()
+  /** 把一份报告交给弹窗。报告弹窗是**只读**的，它不自己取数。 */
+  function 报结果(值: 搬报告) {
+    void dialog.show(() => <FileMoveReportDialog 报告={值} />)
+  }
+
+  /**
+   * 把一批路径搬进 `dir`。**右键那条老路（`搬`）与拖拽那条新路共用这一份**——同一个动作的
+   * 两条入口不许各写一套（`LEARNINGS #002-06`）。
+   *
+   * 逐个 `await`、分开记账：服务端一次搬一个，「几个成了」这句话只有在这一层说得出来
+   * （与既有 `传()` 同一形状）。
+   *
+   * ## 为什么不复用 `收下()`
+   *
+   * `收下()` 是**五个动作**共用**的结论口（新建 / 重命名 / 删除 / 移动 / 复制）。把弹窗塞进
+   * 它会**连带改掉另外三个动作的报告方式**，超出本次所指 ⇒ 移动 / 复制从它分出来、自己写全
+   * 两个分支，`收下` 保持原样给剩下三个用。
+   * ⚠️ 下面「成功支那两行」与 `收下` 的重复是**有意的**，**不要顺手合并**——合并的那一刻，
+   * 新建 / 重命名 / 删除 的失败会一起变成弹窗（spec §5.3）。
+   */
+  async function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "move") {
     const id = currentProject()?.id
-    if (!目标 || !id || !projectData) return
+    if (!id || !projectData) return
+    if (搬忙()) return
     set搬忙(true)
-    const 结论 =
-      目标.mode === "copy"
-        ? await projectData.copy(id, 目标.path, dir)
-        : await projectData.move(id, 目标.path, dir)
+    const 成了: string[] = []
+    const 没成: Array<{ 路径: string; 原因: string }> = []
+    for (const path of 路径们) {
+      const 结论 = mode === "copy" ? await projectData.copy(id, path, dir) : await projectData.move(id, path, dir)
+      if (结论.kind === "done") 成了.push(结论.path)
+      // 逐个留原因（不像 `传()` 只留第一句）：报告弹窗要逐条说清**哪一个**没成、为什么。
+      else 没成.push({ 路径: path, 原因: 结论.message })
+    }
     set搬忙(false)
     set待搬(undefined)
-    收下(结论)
+
+    if (没成.length === 0) {
+      收下({ kind: "done", path: dir })
+      return
+    }
+    set文件话(undefined)
+    // 有成了的就得重取（盘上真变了）；全败**不重取**——磁盘一点没变，重取是空跑。
+    if (成了.length > 0) 拨清单重取()
+    报结果({ 标题: mode === "copy" ? "复制" : "移动", 成了, 没成 })
+  }
+
+  /** 点了目标选择器才真搬（右键那条老路）。拖拽那条新路直接调 `搬一批`。 */
+  async function 搬(dir: string) {
+    const 目标 = 待搬()
+    if (!目标) return
+    await 搬一批(dir, [目标.path], 目标.mode)
   }
 
   /**
@@ -1019,6 +1066,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onDownload={(path) => void 下载(path)}
                         onDropFiles={(files, dir) => void 传(dir, files)}
                         onRefresh={有项目() ? 拨清单重取 : undefined}
+                        // 2026-10-15：同树拖拽批量移动。与相邻的 onCopy/onMove **同一口径**
+                        // （不并 `有项目()`，由 `搬一批` 自己查 id）——拖动一时没有项目的树本来也没有行。
+                        onMoveTo={(路径们, dir) => void 搬一批(dir, 路径们, "move")}
                         // 2026-10-12：右键第一项「打开」与文件行双击都走它。
                         // 与其余各项同一口径——**要有项目**才接线（没有项目就没有可打开的文件）。
                         onOpen={有项目() ? (path) => void 打开文件({ path, 标题: 末段(path) }) : undefined}

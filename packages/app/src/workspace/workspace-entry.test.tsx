@@ -2039,17 +2039,170 @@ describe("文件动作接进工作台（T020 出参）", () => {
     expect(假.files.length).toBe(搬前 + 1)
   })
 
-  /** 被拒（目标已存在之类）⇒ 把服务端那句话留在界面上，**且不重取**——什么都没变，重取是空跑。 */
-  test("被拒 ⇒ 留下服务端那句话，且不重取清单", async () => {
-    const { host, 假 } = await 开({ copy: async () => ({ kind: "rejected", message: "目标已存在同名文件" }) })
+  /**
+   * `开()` ＋ **全展开**：本节新用例一律用它。
+   *
+   * ⚠️ 树默认全收缩（用户第 5 条）⇒ 不展开的话 `资料/话单.csv` 这一行压根不在树上，
+   * `行按路径` 会**抛**（那正是它的用处，`#005-38`）。**不许靠静默兜底蒙过去。**
+   */
+  async function 开全(剧本: Parameters<typeof 假数据源>[0] = {}) {
+    const r = await 开(剧本)
+    全展开(r.host)
+    return r
+  }
+
+  /** 同 Task 3 的辅助：happy-dom 没有 `DragEvent` ⇒ 裸 `Event` 顶着派。 */
+  function 同树拖(el: HTMLElement | null | undefined, type: "dragstart" | "dragover" | "drop" | "dragend") {
+    if (!el) throw new Error("拖拽落点不在——这条用例的前提不成立（`#004-14`）")
+    el.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }))
+  }
+
+  /**
+   * 按**路径**取树里的一行。找不到就**抛**。
+   *
+   * ⚠️ 名字**不能**叫 `树行`——`:660` 那个 `树行` 是**同名的数组版**（`(host) => ...[]`），
+   * 覆盖它会把整个文件里十余处既有调用一起改掉。也别用 `找行`（那个按**名字**找，
+   * 而名字在同一棵树里可能重名）。
+   */
+  const 行按路径 = (host: HTMLElement, path: string) => {
+    const 找到 = 树行(host).find((el) => el.getAttribute("data-path") === path)
+    if (!找到) throw new Error(`树里没有 ${path} 这一行——这条用例的前提不成立（#004-14）`)
+    return 找到
+  }
+
+  /** 点树里某一行，带修饰键（`.click()` 交不出 ctrlKey / shiftKey）。 */
+  const 点树行 = (host: HTMLElement, path: string, 修饰: { ctrl?: boolean } = {}) => {
+    行按路径(host, path).dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: 修饰.ctrl === true }),
+    )
+  }
+
+  /** 从某一行拖到某一行松手。 */
+  const 拖某行 = (host: HTMLElement, 起: string, 落: string) => {
+    同树拖(行按路径(host, 起), "dragstart")
+    同树拖(行按路径(host, 落), "dragover")
+    同树拖(行按路径(host, 落), "drop")
+    同树拖(行按路径(host, 起), "dragend")
+  }
+
+  /**
+   * 报告弹窗在不在。
+   *
+   * ⚠️ **它传送到 `document.body`，不在 `host` 里** ⇒ 不能用既有的 `不存在(host, …)`
+   * （那个查的是 `root`，恒 `true` —— 一条**恒绿空转**的判据，`#005-47` 的形状）。
+   * 返回**布尔**（`#005-01`：节点喂给 `expect` 红了会把整轮 `bun test` 挂死）。
+   */
+  const 有报告弹窗 = () => document.querySelector("[data-slot='file-move-report-dialog']") !== null
+
+  /** 弹窗里那两段列表的文字（弹窗传送到 `document.body`）。 */
+  const 报告文字 = () => document.body.textContent ?? ""
+
+  test("拖两行到一个文件夹 ⇒ 发了 2 次 move，参数逐条对得上", async () => {
+    const { host, 假 } = await 开全({
+      files: async () => ["资料/话单.csv", "资料/旧件.csv", "档案/占位.txt"],
+      move: async (_id, path, dir) => ({ kind: "done", path: `${dir}/${path.split("/").pop()}` }),
+    })
+
+    点树行(host, "资料/话单.csv")
+    点树行(host, "资料/旧件.csv", { ctrl: true })
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+
+    expect(假.移动的).toEqual([
+      ["p1", "资料/话单.csv", "档案"],
+      ["p1", "资料/旧件.csv", "档案"],
+    ])
+  })
+
+  test("全部成功 ⇒ 没有弹窗，且清单被重取一次", async () => {
+    const { host, 假 } = await 开全({
+      files: async () => ["资料/话单.csv", "档案/占位.txt"],
+      move: async () => ({ kind: "done", path: "档案/话单.csv" }),
+    })
+    const 搬前 = 假.files.length
+
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+
+    expect(有报告弹窗()).toBe(false)
+    expect(假.files.length).toBe(搬前 + 1)
+  })
+
+  test("一个成一个没成 ⇒ 弹窗同时列出两边", async () => {
+    const { host } = await 开全({
+      files: async () => ["资料/话单.csv", "资料/旧件.csv", "档案/占位.txt"],
+      move: async (_id, path) =>
+        path.endsWith("话单.csv") ? { kind: "done", path: "档案/话单.csv" } : { kind: "rejected", message: "目标已存在同名文件" },
+    })
+
+    点树行(host, "资料/话单.csv")
+    点树行(host, "资料/旧件.csv", { ctrl: true })
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+
+    expect(有报告弹窗()).toBe(true)
+    expect(报告文字()).toContain("资料/旧件.csv")
+    expect(报告文字()).toContain("目标已存在同名文件")
+    expect(报告文字()).toContain("档案/话单.csv")
+  })
+
+  test("全都没成 ⇒ 弹窗出现，且清单没被重取", async () => {
+    const { host, 假 } = await 开全({
+      move: async () => ({ kind: "rejected", message: "目标已存在同名文件" }),
+    })
+    const 搬前 = 假.files.length
+
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+
+    expect(有报告弹窗()).toBe(true)
+    expect(假.files.length).toBe(搬前)
+  })
+
+  test("弹窗关掉之后再拖一次 ⇒ 弹窗重新出现", async () => {
+    const { host } = await 开全({ move: async () => ({ kind: "rejected", message: "目标已存在同名文件" }) })
+
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+    document.body.querySelector<HTMLElement>("[data-slot='file-move-report-close']")!.click()
+    await 冲一遍()
+
+    拖某行(host, "资料/话单.csv", "档案")
+    await 冲一遍()
+
+    expect(有报告弹窗()).toBe(true)
+  })
+
+  test("移动进行中再发起一次 ⇒ 第二次一个请求都不发", async () => {
+    let 放行: (() => void) | undefined
+    const { host, 假 } = await 开全({
+      move: async () => {
+        await new Promise<void>((resolve) => (放行 = resolve))
+        return { kind: "done", path: "档案/话单.csv" }
+      },
+    })
+
+    拖某行(host, "资料/话单.csv", "档案")   // 挂在 await 上，`搬忙` 还没落回
+    拖某行(host, "资料/话单.csv", "档案")   // 第二次
+    放行?.()
+    await 冲一遍()
+
+    expect(假.移动的.length).toBe(1)
+  })
+
+  /** 被拒（目标已存在之类）⇒ 报告弹窗里出现服务端那句话，**且不重取**——什么都没变，重取是空跑。 */
+  test("被拒 ⇒ 弹窗里出现服务端那句话，且不重取清单", async () => {
+    const { host, 假 } = await 开全({ copy: async () => ({ kind: "rejected", message: "目标已存在同名文件" }) })
     const 搬前 = 假.files.length
 
     右键行(host, "话单.csv")
     点菜单项("copy")
     目标按钮(host, "档案")?.click()
-     await 冲一遍()
+    await 冲一遍()
 
-    expect(text(host, "file-op-message")).toBe("目标已存在同名文件")
+    expect(有报告弹窗()).toBe(true)
+    expect(document.body.textContent ?? "").toContain("目标已存在同名文件")
+    // 反面断言**继续留着**：盘上没变，清单就不该重取
     expect(假.files.length).toBe(搬前)
   })
 
