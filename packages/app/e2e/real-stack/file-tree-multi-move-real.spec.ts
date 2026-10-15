@@ -198,6 +198,8 @@ test("判据 31：拖到源自己身上 ⇒ 磁盘上一个都没动", async ({ 
   const 计数 = await 拖拽计数(page)
   console.log(`[非法落点] drag 计数 = ${JSON.stringify(计数)}`)
   console.log(`[非法落点] 资料/ = ${JSON.stringify(readdirSync(path.join(directory, "资料")))}`)
+  // 守卫的可观测效果：非法落点 ⇒ 我们不接管 ⇒ 浏览器不触发 drop（0）。守卫没了它变 1。
+  expect(计数.drop, "非法落点不该收到 drop——守卫没接管").toBe(0)
   // 「拖拽链是活的」这条观测：起拖真的发生过，这条判据才不是「什么都没做所以没动」的空转。
   expect(计数.dragstart, "dragstart 应当真的触发过").toBeGreaterThanOrEqual(1)
   expect(readdirSync(path.join(directory, "资料")), "非法落点不该动磁盘").toEqual(盘前)
