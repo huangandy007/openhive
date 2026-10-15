@@ -22,15 +22,22 @@ import path from "path"
  * `readdirSync` / `existsSync`（同 `file-tree-delete-dialog-real.spec.ts`）——界面说搬好了
  * 不算数，盘上真在那儿才算。
  *
- * ## 与 brief 的两处出入（都是 harness 修正，判据值一字未改）
+ * ## 与 brief 的四处出入（都是 harness 修正，判据值一字未改）
  *
- * ① 树默认**全收缩**（`#005-36`，用户第 5 条「默认全部收缩」）⇒ `资料/甲.csv` 这类深层行在
+ * ① brief 里两处 `拖行到行(...)` **缺 `await`**（判据 30 一处、判据 31 一处）：不 await 的话盘读会
+ *    跑在拖拽（含等落盘）之前——判据 30 恒读到「还没搬」、判据 31 恒读到「还没动」，全成空转。补上
+ *    `await`。
+ * ② 树默认**全收缩**（`#005-36`，用户第 5 条「默认全部收缩」）⇒ `资料/甲.csv` 这类深层行在
  *    `进项目` 之后**根本不在 DOM 里**，等多久都不出现（真栈快照实测：只有 `资料` / `档案` 两个
  *    折叠态 treeitem）。故判据 30 前置**先等顶层行出现、再点 `[data-action='expand-all']`、再等
  *    深层行**（顺序同 `send-to-session-real.spec.ts`；expand-all 点早了会落在空 `节点表` 上、
- *    白点），并把「等树出现」那几句前置放宽到 30s（`#006-31`：把就绪变成可等的条件）。
- * ② brief 里两处 `拖行到行(...)` **缺 `await`**：不 await 的话盘读会跑在拖拽（含 `waitForTimeout`）
- *    之前——判据 30 恒读到「还没搬」、判据 31 恒读到「还没动」，全成空转。补上 `await`。
+ *    白点）。
+ * ③ 「等树出现」那几句前置**放宽到 30s**（`#006-31`：把就绪变成可等的条件，别用 `waitForTimeout`
+ *    赌它好了没）。
+ * ④ brief 判据 31 写的是「拖到源自己身上」——但 `起 === 落` 是**零位移**，Chromium 根本不会起拖
+ *    （dragstart 一次都不发），那条判据从写下起就在空转。改成**真的位移**：按住源行 → 先移到另一行
+ *    （借道，触发 dragstart + dragover）→ 再移回源行松手，并加一条「dragstart ≥ 1」的观测钉住
+ *    「拖拽链是活的」。
  */
 
 const readStack = () =>
@@ -98,9 +105,40 @@ async function 拖行到行(page: Page, 起: string, 落: string) {
   // 多步移动：Chromium 要看到一次真正的位移才起拖（同 send-to-session-real.spec.ts 的 30 步）。
   await page.mouse.move(落盒.x + 落盒.width / 2, 落盒.y + 落盒.height / 2, { steps: 30 })
   await page.mouse.up()
-  // 落盘是异步的（请求 + 重取清单），给足时间再读盘。
-  await page.waitForTimeout(2000)
 }
+
+/**
+ * 裸指针把一行拖出去再拖回它自己身上松手（判据 31 用）。
+ *
+ * ⚠️ 不能 `起 === 落`：那是零位移，Chromium 压根不发 dragstart（`#006-16`：判据会空转）。
+ * 得先真的移到另一行（借道）触发起拖，再移回源行松手。
+ */
+async function 拖行回自己(page: Page, 起: string, 借道: string) {
+  const 起盒 = await 行(page, 起).boundingBox()
+  const 借盒 = await 行(page, 借道).boundingBox()
+  if (!起盒 || !借盒) throw new Error("行没有盒——这条用例的前提不成立")
+  const 起X = 起盒.x + 起盒.width / 2
+  const 起Y = 起盒.y + 起盒.height / 2
+  await page.mouse.move(起X, 起Y)
+  await page.mouse.down()
+  await page.mouse.move(借盒.x + 借盒.width / 2, 借盒.y + 借盒.height / 2, { steps: 20 })
+  await page.mouse.move(起X, 起Y, { steps: 20 })
+  await page.mouse.up()
+}
+
+/** 装一只拖拽事件计数器：capture 阶段把 document 上冒上来的 drag 事件各记一次。 */
+async function 装拖拽计数(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __拖拽计数?: Record<string, number> }
+    w.__拖拽计数 = { dragstart: 0, dragover: 0, drop: 0, dragend: 0 }
+    for (const k of ["dragstart", "dragover", "drop", "dragend"] as const) {
+      document.addEventListener(k, () => void (w.__拖拽计数![k] += 1), true)
+    }
+  })
+}
+
+const 拖拽计数 = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __拖拽计数: Record<string, number> }).__拖拽计数)
 
 function 种盘(directory: string) {
   mkdirSync(path.join(directory, "资料"), { recursive: true })
@@ -127,6 +165,17 @@ test("判据 30：拖两行到一个文件夹上松手 ⇒ 磁盘上那两个真
   await 行(page, "资料/乙.csv").click({ modifiers: ["Control"] })
   await 拖行到行(page, "资料/甲.csv", "档案")
 
+  // 落盘是异步的（请求 + 重取清单）⇒ 等条件不等时间（`#006-31`），别再 `waitForTimeout` 赌它好了。
+  await expect
+    .poll(
+      () => {
+        const 档案 = readdirSync(path.join(directory, "档案"))
+        return 档案.includes("甲.csv") && 档案.includes("乙.csv")
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true)
+
   const 磁盘 = readdirSync(path.join(directory, "档案"))
   console.log(`[多选拖拽] 档案/ = ${JSON.stringify(磁盘)}`)
   expect(磁盘, "甲应当真的搬进档案了").toContain("甲.csv")
@@ -141,10 +190,16 @@ test("判据 31：拖到源自己身上 ⇒ 磁盘上一个都没动", async ({ 
   await 进项目(page, context, id)
 
   await expect(行(page, "资料"), "源文件夹应当在树上").toBeVisible({ timeout: 30_000 })
+  await expect(行(page, "档案"), "借道的那一行应当在树上").toBeVisible({ timeout: 30_000 })
+  await 装拖拽计数(page)
   const 盘前 = readdirSync(path.join(directory, "资料"))
-  await 拖行到行(page, "资料", "资料")
+  await 拖行回自己(page, "资料", "档案")
 
+  const 计数 = await 拖拽计数(page)
+  console.log(`[非法落点] drag 计数 = ${JSON.stringify(计数)}`)
   console.log(`[非法落点] 资料/ = ${JSON.stringify(readdirSync(path.join(directory, "资料")))}`)
+  // 「拖拽链是活的」这条观测：起拖真的发生过，这条判据才不是「什么都没做所以没动」的空转。
+  expect(计数.dragstart, "dragstart 应当真的触发过").toBeGreaterThanOrEqual(1)
   expect(readdirSync(path.join(directory, "资料")), "非法落点不该动磁盘").toEqual(盘前)
   expect(existsSync(path.join(directory, "资料", "甲.csv")), "文件必须还在原处").toBe(true)
 })
