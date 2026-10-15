@@ -317,6 +317,26 @@ export function FileTree(props: FileTreeProps) {
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [selected, setSelected] = createSignal<string>()
   /**
+   * 多选集（2026-10-15 用户下达：同级多选后拖到目标文件夹＝批量移动）。
+   *
+   * ## 为什么不复用 `selected`
+   *
+   * `selected` 是**焦点行**，它今天有 7 个消费者（新建的 parent、工具栏禁用、Enter 打开…），
+   * 改它的语义会连带改那七处。这里**只加不减**：焦点行语义一字不动，多选集另养一只，
+   * 单击路径下两者恰好同值（`选中集 === {焦点行}`）⇒ 表现与今日**逐字相同**。
+   *
+   * ## 为什么存 `ReadonlySet`
+   *
+   * 「在不在里面」是唯一的问法（渲染高亮、起拖时判「这一行在不在批里」），
+   * 顺序由**可见行序**（`行列表()`）现算——集合本身不该记住一个会随折叠漂的顺序。
+   */
+  const [选中集, set选中集] = createSignal<ReadonlySet<string>>(new Set())
+  /**
+   * 连选的锚点（`Shift` 那一支的起点）。**单击与 Ctrl 点都不动它**——这是标准选择模型的规矩：
+   * 锚点只在「重新开始一段连选」时才换。
+   */
+  const [锚点, set锚点] = createSignal<string>()
+  /**
    * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
    *
    * 存**旧路径**而不是新名字：改名的唯一判据是「用户敲完之后的名字与原样不同吗」，那是
@@ -389,6 +409,72 @@ export function FileTree(props: FileTreeProps) {
     if (节点表().get(path)?.type === "directory") return path
     const index = path.lastIndexOf("/")
     return index === -1 ? "" : path.slice(0, index)
+  }
+
+  /**
+   * 单选：焦点行、选中集、锚点三样一起落到它身上。
+   *
+   * 单击与键盘回车/空格**共用这一份**——同一个动作不许两处各写一份（`LEARNINGS #002-06`）。
+   */
+  const 单选 = (path: string) => {
+    setSelected(path)
+    set选中集(new Set([path]))
+    set锚点(path)
+  }
+
+  /** Ctrl/⌘ 加选与取消：只拨这一行的成员资格。焦点行跟着走，**锚点不动**。 */
+  const 拨一位 = (path: string) => {
+    const 下一份 = new Set(选中集())
+    if (!下一份.delete(path)) 下一份.add(path)
+    set选中集(下一份)
+  }
+
+  /**
+   * `Shift` 连选：锚点到它之间**可见的**行（含两端）。
+   *
+   * 范围按 `行列表()` 取——**折叠着的子孙不在里面**，正是用户眼睛看到的那一段。
+   * 没有锚点时拿焦点行当锚点（并把它**升成**锚点，好让第二次 Shift 还连得上）；连焦点行也没有
+   * （刚挂载就被 Shift 点）就退化成单选。
+   */
+  const 连选到 = (path: string) => {
+    const 序 = 行列表().map((row) => row.node.path)
+    const 起 = 锚点() ?? selected()
+    const 头 = 起 === undefined ? -1 : 序.indexOf(起)
+    const 尾 = 序.indexOf(path)
+    if (头 === -1 || 尾 === -1) {
+      单选(path)
+      return
+    }
+    const [低, 高] = 头 <= 尾 ? [头, 尾] : [尾, 头]
+    set选中集(new Set(序.slice(低, 高 + 1)))
+    set锚点(起)
+  }
+
+  /** 行被点了一下：按修饰键分流。三种手势都先把焦点行落到它身上。 */
+  const 点行 = (path: string, event: MouseEvent) => {
+    if (event.shiftKey) {
+      setSelected(path)
+      连选到(path)
+      return
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelected(path)
+      拨一位(path)
+      return
+    }
+    单选(path)
+  }
+
+  /**
+   * 点在**行以外**的空白上：清空选中集与锚点，焦点行**不动**。
+   *
+   * 判据用 `指针行`（与右键共用那一份，`LEARNINGS #002-06`）而不是「点到谁身上」：行上的点击
+   * 会冒泡到这一层，靠 `指针行` 才分得开「点在行上」与「点在行之间的空白」。
+   */
+  const 点空白 = (event: MouseEvent) => {
+    if (指针行(event) !== undefined) return
+    set选中集(new Set<string>())
+    set锚点(undefined)
   }
 
   return (
@@ -522,6 +608,7 @@ export function FileTree(props: FileTreeProps) {
             data-slot="file-tree-region"
             class="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto"
             onContextMenu={记对象}
+            onClick={点空白}
             onDragOver={拖过}
             onDrop={放开}
           >
@@ -533,7 +620,12 @@ export function FileTree(props: FileTreeProps) {
                 </div>
               }
             >
-              <div data-slot="file-tree-body" role="tree" class="flex w-full min-w-0 flex-col">
+              <div
+                data-slot="file-tree-body"
+                role="tree"
+                aria-multiselectable="true"
+                class="flex w-full min-w-0 flex-col"
+              >
                 <For each={行列表()}>
                   {(row) => (
                     <div
@@ -541,7 +633,9 @@ export function FileTree(props: FileTreeProps) {
                       data-path={row.node.path}
                       data-type={row.node.type}
                       data-level={row.level}
-                      data-selected={selected() === row.node.path ? "true" : undefined}
+                      data-selected={选中集().has(row.node.path) ? "true" : undefined}
+                      // ARIA 那份要**恒有值**（`"false"` 是有效值），与 `data-selected` 同源不同形
+                      aria-selected={选中集().has(row.node.path) ? "true" : "false"}
                       // 展开态走 `aria-expanded`，不只靠箭头朝向（DESIGN §4.3：不单以图形传意）
                       aria-expanded={
                         row.node.type === "directory" ? (展开(row.node.path) ? "true" : "false") : undefined
@@ -556,8 +650,8 @@ export function FileTree(props: FileTreeProps) {
                       // 放到谁身上，仍由**容器**判；这里只交出「这一行可以拖」这一个事实。
                       draggable={props.draggable === true}
                       style={{ "padding-left": `${row.level * INDENT_STEP}px` }}
-                      classList={{ [ROW]: true, [ROW_SELECTED]: selected() === row.node.path }}
-                      onClick={() => setSelected(row.node.path)}
+                      classList={{ [ROW]: true, [ROW_SELECTED]: 选中集().has(row.node.path) }}
+                      onClick={(event) => 点行(row.node.path, event)}
                       onKeyDown={(event) => 按键(event, row.node.path, row.node.type)}
                       onDblClick={() => 双击(row.node.path, row.node.type)}
                     >
@@ -967,7 +1061,7 @@ export function FileTree(props: FileTreeProps) {
   function 按键(event: KeyboardEvent, path: string, type: "file" | "directory") {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault() // 空格默认会滚页面，这不是我们想要的
-      setSelected(path)
+      单选(path)
       return
     }
     if (type !== "directory") return

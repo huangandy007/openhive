@@ -96,6 +96,54 @@ const 行按名 = (host: HTMLElement, name: string) => {
   return 找到
 }
 
+/**
+ * 挂一棵树并把深层行**全展开**。
+ *
+ * ⚠️ 树默认**全收缩**（用户第 5 条，⑦-5）⇒ `资料/a.txt` 这类行压根不在树上，`行按名` 会**抛**
+ * （那正是它的用处，`#005-38`）。凡引用深层行的用例都得自己立这一步前提——本文件 `行按名`
+ * 上面那条规矩就是这么写的。**不许靠静默兜底蒙过去。**
+ *
+ * ⚠️ 展开**不改选中集**——本次新增的东西不掺进这一步里。
+ */
+function 挂全开(paths: readonly string[]) {
+  const host = mount(() => <FileTree paths={paths} />)
+  动作(host, "expand-all")?.click()
+  return host
+}
+
+/**
+ * 按**路径**取一行（不是按名字）。找不到就**抛**。
+ *
+ * 这一组用例一律用路径：`data-path` 是契约本身那个值（`file-tree.tsx` 的 `落点()` 与真栈定位器
+ * 都用它），而名字在同一棵树里可能重名、同层顺序又随 locale 变（`file-tree-v2-model` 用
+ * `localeCompare`）⇒ 按名找会写出「只在我这台机器上对」的断言。
+ */
+function 行按路径(host: HTMLElement, path: string) {
+  const 找到 = 行(host).find((el) => el.getAttribute("data-path") === path)
+  if (!找到) throw new Error(`这一行不在树上：找不到 ${path}，此刻可见的是 ${JSON.stringify(路径(host))}`)
+  return 找到
+}
+
+/**
+ * 点树里某一行，带修饰键。
+ *
+ * ⚠️ 走**原生派发**而不是 `.click()`：`.click()` 交不出 `ctrlKey` / `shiftKey`
+ * （`MouseEvent` 的构造参数在 `HTMLElement.click()` 里是写死的全 `false`）。
+ */
+function 点行(host: HTMLElement, path: string, 修饰: { ctrl?: boolean; shift?: boolean } = {}) {
+  行按路径(host, path).dispatchEvent(
+    new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: 修饰.ctrl === true,
+      shiftKey: 修饰.shift === true,
+    }),
+  )
+}
+
+/** 当前可见行的路径（滤掉 `null`，好让断言下标拿到的是 `string`）。 */
+const 可见序 = (host: HTMLElement) => 路径(host).filter((p): p is string => p !== null)
+
 /** 目录行的开合箭头（文件行没有）。开合归它，选中归行本身——见「展开 / 收起」那组最后一条。 */
 const 箭头 = (el: HTMLElement | undefined) => el?.querySelector<HTMLElement>("[data-slot='file-tree-chevron']")
 
@@ -792,6 +840,120 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(类).toContain("bg-[var(--v2-background-bg-accent-soft)]")
       expect(类).toContain("hover:bg-v2-overlay-simple-overlay-hover")
       expect(类).not.toContain("hover:bg-[var(--v2-background-bg-accent-soft)]")
+    })
+  })
+
+  /**
+   * 多选（spec §5.1 的联动表）。焦点行 `selected()` 的语义**一个字都没改**——它今天有 7 个消费者
+   * （新建的 parent、工具栏禁用、Enter 打开…），本次只**多**养了「选中集 / 锚点」两只信号。
+   *
+   * ⚠️ 一律断「带不带 `data-selected="true"`」：未选中的行**根本没有这个属性**
+   * （`file-tree.tsx` 写的是 `? "true" : undefined`），断 `="false"` 会断在一个从不存在的值上。
+   *
+   * ⚠️ 引用深层行（`资料/a.txt`）的用例一律先 `挂全开`——树默认全收缩，不展开那些行压根不在树上。
+   */
+  describe("多选（Ctrl 加选 / Shift 连选）", () => {
+    const 树三 = () => ["资料/a.txt", "资料/b.txt", "档案/c.txt"]
+
+    test("单击一行 ⇒ 只有它带 data-selected=\"true\"，其余行不带这个属性", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/a.txt")
+
+      expect(行按路径(host, "资料/a.txt").getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, "资料/b.txt").getAttribute("data-selected")).toBeNull()
+      expect(行按路径(host, "档案").getAttribute("data-selected")).toBeNull()
+    })
+
+    test("Ctrl 点第二行 ⇒ 两行都带 data-selected=\"true\"", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/a.txt")
+      点行(host, "资料/b.txt", { ctrl: true })
+
+      expect(行按路径(host, "资料/a.txt").getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, "资料/b.txt").getAttribute("data-selected")).toBe("true")
+    })
+
+    test("Ctrl 再点一次已选中的那行 ⇒ 它回到不带这个属性，其它行不动", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/a.txt")
+      点行(host, "资料/b.txt", { ctrl: true })
+      点行(host, "资料/b.txt", { ctrl: true })
+
+      expect(行按路径(host, "资料/b.txt").getAttribute("data-selected")).toBeNull()
+      expect(行按路径(host, "资料/a.txt").getAttribute("data-selected")).toBe("true")
+    })
+
+    test("点行之间的空白 ⇒ 所有行都不带这个属性", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/a.txt")
+      // 空白＝区域那一层自己（不是任何一行的子孙）
+      槽(host, "file-tree-region")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))
+
+      expect(行(host).filter((el) => el.getAttribute("data-selected") === "true").length).toBe(0)
+    })
+
+    test("Shift 点 ⇒ 锚点到它之间可见的行全选中（含两端）", () => {
+      const host = 挂全开(树三())
+      // ⚠️ 用**实际可见行序**构造：这一条判的是「锚点到它之间那一段」，写死一个顺序就把它绑死在
+      // 本机的 locale 上了（`file-tree-v2-model` 用 `localeCompare`，同层顺序跨机会变）。
+      const 序 = 可见序(host)
+      if (序.length < 4) throw new Error(`可见行不足四行（实得 ${JSON.stringify(序)}）——这条用例的前提不成立`)
+
+      点行(host, 序[0]!)
+      点行(host, 序[2]!, { shift: true })
+
+      expect(序.slice(0, 3).map((p) => 行按路径(host, p).getAttribute("data-selected"))).toEqual([
+        "true",
+        "true",
+        "true",
+      ])
+      expect(行按路径(host, 序[3]!).getAttribute("data-selected")).toBeNull()
+    })
+
+    test("Shift 连选之后再 Shift 一次 ⇒ 锚点不动（仍从第一次那个锚点起算）", () => {
+      const host = 挂全开(树三())
+      const 序 = 可见序(host)
+      if (序.length < 3) throw new Error(`可见行不足三行（实得 ${JSON.stringify(序)}）——这条用例的前提不成立`)
+
+      点行(host, 序[0]!)
+      点行(host, 序[1]!, { shift: true }) // 序[0]..序[1]
+      点行(host, 序[2]!, { shift: true }) // 仍是 序[0]..序[2]（锚点没跟着跑）
+
+      expect(行按路径(host, 序[0]!).getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, 序[2]!).getAttribute("data-selected")).toBe("true")
+    })
+
+    test("没锚点时 Shift 点 ⇒ 退化成单击（连焦点行也没有的那种）", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/b.txt", { shift: true })
+
+      expect(行(host).filter((el) => el.getAttribute("data-selected") === "true").length).toBe(1)
+      expect(行按路径(host, "资料/b.txt").getAttribute("data-selected")).toBe("true")
+    })
+
+    test("容器带 aria-multiselectable=\"true\"，行的 aria-selected 与 data-selected 同源", () => {
+      const host = 挂全开(树三())
+
+      点行(host, "资料/a.txt")
+
+      expect(槽(host, "file-tree-body")!.getAttribute("aria-multiselectable")).toBe("true")
+      expect(行按路径(host, "资料/a.txt").getAttribute("aria-selected")).toBe("true")
+      expect(行按路径(host, "资料/a.txt").getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, "资料/b.txt").getAttribute("aria-selected")).toBe("false")
+      expect(行按路径(host, "资料/b.txt").getAttribute("data-selected")).toBeNull()
+    })
+
+    test("回车选中同时也进选中集——键盘那条路与单击是同一个意思", () => {
+      const host = 挂全开(树三())
+
+      行按路径(host, "资料/a.txt").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+
+      expect(行按路径(host, "资料/a.txt").getAttribute("data-selected")).toBe("true")
     })
   })
 
