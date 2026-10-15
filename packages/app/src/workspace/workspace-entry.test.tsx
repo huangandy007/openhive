@@ -2169,6 +2169,13 @@ describe("文件动作接进工作台（T020 出参）", () => {
     document.body.querySelector<HTMLElement>("[data-slot='file-move-report-close']")!.click()
     await 冲一遍()
 
+    // F1（最终评审 #1）：`dialog.close()` 是**两步**——状态立刻变、节点 100ms 后才 `dispose`
+    // （`context/dialog.tsx:57`）。只 `await 冲一遍()` 等不到它，旧弹窗的节点还挂在 `document.body`
+    // 里 ⇒ `有报告弹窗()` 恒 true，这条判据**空转**（拖② 开没开新弹窗都回 true）。把「旧弹窗真的
+    // 消失了」变成可等的条件并断成前提（等条件不等时间，`#006-31`）。
+    await 等到(() => !有报告弹窗())
+    expect(有报告弹窗(), "前提：这一步真的把旧弹窗关掉了").toBe(false)
+
     拖某行(host, "资料/话单.csv", "档案")
     await 冲一遍()
 
