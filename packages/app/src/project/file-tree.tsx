@@ -1101,6 +1101,10 @@ export function FileTree(props: FileTreeProps) {
    * （`DualFileTree` 的跨树拖要监听冒泡上来的 `dragstart`——拦了它那双树就聋了，见 `dual-file-tree.tsx`）。
    */
   function 起拖(event: DragEvent) {
+    // F3（最终评审 #3）：注释承诺「省略 onMoveTo ＝ 同树拖拽不接管」就得真不接管。不判它，
+    // `draggable` 而无 `onMoveTo` 的树会把合法落点 preventDefault、光标显示可放，松手却什么都不
+    // 发生。守卫在 `起拖` ⇒ `拖源` 恒 undefined ⇒ `拖过`/`放开` 自然早退，不给禁止光标以外的反应。
+    if (!props.onMoveTo) return
     const path = 指针行(event)
     if (!path) return
     if (!选中集().has(path)) 单选(path)

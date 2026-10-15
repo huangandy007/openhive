@@ -2687,6 +2687,19 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(悬停.defaultPrevented).toBe(false)
     })
 
+    test("draggable 而无 onMoveTo ⇒ 合法落点也不接管（defaultPrevented 为 false）", () => {
+      // 刻意**不传** `onMoveTo`：prop 注释承诺「省略 ＝ 同树拖拽不接管」，就得真不接管。
+      // 只钉 `defaultPrevented === false`（`#005-19`：不接管 ≠ 接管了但没做事，分不开两种实现）；
+      // 它的牙由 F3 那次变异证明。
+      const host = mount(() => <FileTree paths={树("资料/话单.csv", "档案/占位.txt")} draggable />)
+      动作(host, "expand-all")?.click()
+
+      同树拖(行按路径(host, "资料/话单.csv"), "dragstart")
+      const 悬停 = 同树拖(行按路径(host, "档案"), "dragover")
+
+      expect(悬停.defaultPrevented).toBe(false)
+    })
+
     test("悬停合法落点时那一行带 data-drop-target=\"true\"；松手后清掉", () => {
       const { host } = 挂可搬(树三())
 
