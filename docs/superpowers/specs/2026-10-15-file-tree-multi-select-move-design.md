@@ -60,8 +60,8 @@
 
 | 文件 | 改什么 |
 |---|---|
-| `packages/app/src/project/file-tree-model.ts` | 新增纯函数 `能落到(源们: readonly string[], 目标: string): boolean` |
-| `packages/app/src/project/file-tree-model.test.ts` | `能落到` 的用例（合法 / 根 / 自己 / 子孙 / 原地） |
+| `packages/app/src/project/file-tree-dnd.ts` **（新）** | 纯函数 `能落到(源们: readonly string[], 目标: string): boolean`。⚠️ **2026-10-15 勘误**：本表原先写的是 `file-tree-model.ts`——那份是 005「空目录那一支」的专用模块（只有一个导出 `buildProjectFileTreeModel`，文件头整段在讲空目录诱饵），拖拽落点判据不属于它的职责；新开一个文件，职责单一，且新文件对上游**零冲突面**（第一号约束） |
+| `packages/app/src/project/file-tree-dnd.test.ts` **（新）** | `能落到` 的用例（合法 / 根 / 自己 / 子孙 / 原地 / 多源其一非法） |
 | `packages/app/src/project/file-tree.tsx` | ① 两只新信号（选中集 / 锚点）② 行点击的 `Ctrl`/`Shift` 分流 ③ `data-selected` 的判据改到选中集 ④ 行加 `aria-selected`、容器加 `aria-multiselectable` ⑤ region 补 `onDragStart` / `onDragEnd` 委托 ⑥ `拖过` / `放开` 补同树分支 ＋ 落点高亮 ⑦ 新 prop `onMoveTo` ⑧ 拖拽三函数（`从桌面` / `指针行` / `落点`）**一字不改** |
 | `packages/app/src/project/file-move-report-dialog.tsx` **（新）** | 报告弹窗：壳照抄 `file-delete-dialog.tsx`；`data-slot="file-move-report-dialog"`；只读 `报告`、不自己取数 |
 | `packages/app/src/project/file-move-report-dialog.test.tsx` **（新）** | 弹窗三态（部分成 / 全败 / 只列成了的） |
@@ -85,6 +85,7 @@
 
 - **焦点行语义逐字不变**——它今天有 7 个消费者（`file-tree.tsx:482` / `:486` 新建的 parent、`:544` / `:559` 渲染、`:752-753` 工具栏禁用、`:767` 工具栏取 path、`:970` Enter/空格），本次**一条都不改**。
 - **`data-selected` 与 `ROW_SELECTED` 类的判据从 `selected() === path` 改成 `选中集().has(path)`**。单击路径下 `选中集 === {它}` ⇒ **表现与今日逐字相同**（既有断言应当全绿）；多选时自动就有多行高亮，不必新造第二个类。
+  - ⚠️ **属性值域一个字都不改**（2026-10-15 按 `file-tree.tsx:544` 原文勘误）：今天写的是 `data-selected={选中 ? "true" : undefined}`——**未选中的行根本没有这个属性**，不是 `"false"`。判据一律断「带不带 `data-selected="true"`」，**不要断 `="false"`**（那会断在一个从不存在的值上）。
 - 单击是**最高频**的路径（不按修饰键），改判据后它一行都不差；这是选这条改法而不是「再养一个高亮类」的理由。
 - ⚠️ 代价（据实记）：`Ctrl` 取消选中一行之后，它仍是焦点行却**没有高亮**。v1 接受（焦点行剩下的可见作用只有键盘 `tabindex`）。
 - `Shift` 点而**还没有锚点**（刚刷新、或从没单击过）⇒ 锚点当**焦点行**；连焦点行也没有 ⇒ 就是它自己（退化成单击）。
@@ -195,12 +196,12 @@ function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "mo
 
 | # | 判据 |
 |---|---|
-| 1 | 单击一行 ⇒ 只有它 `data-selected="true"`（今日行为逐字不变） |
-| 2 | `Ctrl`（⌘）点第二行 ⇒ 两行都 `data-selected="true"` |
-| 3 | `Ctrl` 再点一次已选中的那行 ⇒ 它变 `"false"`，其它行的值不动 |
-| 4 | 点行之间空白 ⇒ 所有行 `data-selected="false"` |
+| 1 | 单击一行 ⇒ 只有它带 `data-selected="true"`，其余行**不带这个属性**（今日行为逐字不变） |
+| 2 | `Ctrl`（⌘）点第二行 ⇒ 两行都带 `data-selected="true"` |
+| 3 | `Ctrl` 再点一次已选中的那行 ⇒ 它**回到不带这个属性**，其它行不动 |
+| 4 | 点行之间空白 ⇒ 所有行都不带这个属性 |
 | 5 | `Shift` 点 ⇒ 锚点到它之间**可见的**行全选中（含两端）；折叠着的子孙不算 |
-| 6 | 容器 `aria-multiselectable="true"`；行的 `aria-selected` 与 `data-selected` 同值 |
+| 6 | 容器 `aria-multiselectable="true"`；行的 `aria-selected` 与 `data-selected` 同源 |
 | 7 | 从**已选中**的行起拖再放下 ⇒ `onMoveTo` 收到**整批**（按可见行序） |
 | 8 | 从**未选中**的行起拖再放下 ⇒ `onMoveTo` 只收到那一行，且那行当场成为唯一选中 |
 | 9 | 拖到**文件夹行**上松手 ⇒ 第二个参数是**那个文件夹自己的路径** |
@@ -215,7 +216,7 @@ function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "mo
 ⚠️ 判据 12–14 的写法必须**同时**钉两件事：`onMoveTo` 未被调 ＋ **`dragover` 没有被 `preventDefault`**。只钉前者的话，「不接管」与「接管了但发不出请求」两条实现分不开（`LEARNINGS #005-19`：能开与开在谁身上是两条判据）。
 ⚠️ 判据 12–14 的期望值是**计数器 0**，天然是「恒绿空转」的形状（`#006-22` / `#005-47` 同族）——必须先证明那条用例在**变异下会红**（拆掉 `能落到` 的对应分支），否则它就是空转。
 
-### 7.2 纯判据（`file-tree-model.test.ts`）
+### 7.2 纯判据（`file-tree-dnd.test.ts`）
 
 | # | 判据 |
 |---|---|
@@ -245,7 +246,7 @@ function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "mo
 | `workspace-entry.test.tsx:2043`「被拒 ⇒ 留下服务端那句话，且不重取清单」 | **改写** | 与新行为**正好相反**（载体从内联句改成弹窗）。改成「弹窗里出现那句 ＋ 不重取」；**保留反面断言**（`假.files.length` 不变那条继续留着） |
 | `:2134` 下载失败 ⇒ `file-op-message` | **保留** | 不在射程（下载不走 `收下`、也不走 `搬一批`） |
 | `:2479` 删除失败 ⇒ `file-op-message` | **保留** | `收下` 一字未改 |
-| `data-selected` 的全部既有断言 | ② 步前先 grep 出清单 | 判据从 `selected()` 改到 `选中集()`；**单击路径下逐字不变** ⇒ 预期全绿；若有断言「只有一行是 true」，逐条判行为变没变再定 |
+| `data-selected` 的全部既有断言 | ② 步前先 grep 出清单 | 判据从 `selected()` 改到 `选中集()`，**属性值域不变**（`"true"` / 无属性）；单击路径下逐字不变 ⇒ 预期全绿；若有断言「只有一行是 true」，逐条判行为变没变再定 |
 | `selected()` 的消费者断言（工具栏禁用 `:752`、Enter 打开 `:970`、新建 parent `:482`） | **保留** | 焦点行语义未动 |
 
 ### 7.5 真栈（`e2e/real-stack/`）
@@ -291,7 +292,7 @@ oxlint（默认配置与 openhive 配置）
 4. **落点在 `FileTree`、报告弹窗在接线层**：见 §3.1 / §3.2。
 5. **部分源不合法 ⇒ 整个手势不接管**，不做「能搬的先搬」：一次手势在磁盘上只该发生一件事；「三个文件夹里有两个搬进了第三个」几乎不是任何人的本意。
 6. **移动之后清空选中集**：移动后那些路径纷纷失效；要「只留没成的选中」就得把结果反传回树，多一条会漂的通道。清空是唯一可预测的收场（代价：想重试的用户得重选，而弹窗刚告诉了他哪几个没成）。
-7. **`selected()` 语义不变，`data-selected` 改判选中集**：单击是最高频路径，改判据后它逐字不变（`选中集 === {它}`）；多选高亮随之免费得到，不必养第二个类。代价见 §5.1。
+7. **`selected()` 语义不变，`data-selected` 改判选中集**：单击是最高频路径，改判据后它逐字不变（`选中集 === {它}`）；多选高亮随之免费得到，不必养第二个类。**属性值域也不改**（`"true"` / 无属性，见 §5.1 的勘误）。代价见 §5.1。
 8. **不写 `dataTransfer` payload、不设 `effectAllowed`**：沿用 `dual-file-tree.tsx:91-95` 已写下的理由——同页面内拖拽的判据是组件自己的信号，payload 只会在 happy-dom 里多一处立不住的依赖。
 9. **逐个 `await`、不并发**：与既有 `传()` 同一形状；一次手势的请求数可控，且「几个成了」这句话在这一层说得清。
 10. **判据里「不接管」必须同时钉「没发请求」与「没 `preventDefault`」**：只钉前者分不开两条实现（`#005-19`）。
