@@ -15,6 +15,7 @@ import { FileDownloadDialog } from "@/project/file-download-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
+import { 能落到 } from "./file-tree-dnd"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
@@ -232,6 +233,19 @@ export interface FileTreeProps {
   onDropFiles?: (files: readonly File[], dir: string) => void
 
   /**
+   * 同树批量移动（2026-10-15 用户下达）：把这一批路径搬进那个目录。收参数而不是收单个路径，
+   * 因为拖拽一次可能带上好几行；`目录` 用的是 `落点` 那套规则（目录 ⇒ 它自己、文件 ⇒ 它所在
+   * 的目录、空白 ⇒ 项目根 `""`）——与 `onUpload` / `onDropFiles` **同一套语言**。
+   *
+   * 本组件只交出「哪一批、往哪儿」，请求怎么发、失败怎么报都是**接收方**的事
+   * （同「六个动作一律走 props」的口径）。省略 ＝ 同树拖拽不接管（浏览器给禁止光标）。
+   *
+   * ⚠️ 它经 `DualFileTreeProps extends FileTreeProps` ＋ `{...rest}` 自动流到上树，
+   * `dual-file-tree.tsx` 一行不用改。
+   */
+  onMoveTo?: (路径们: readonly string[], 目录: string) => void
+
+  /**
    * 行是否可拖（设计 §6.3 拖拽 B「沙箱 ↔ MinIO」里**上树**那一侧；2026-10-13 起兼作「拖路径引用」）。
    *
    * **文件与目录行都会被标上** `draggable`（2026-10-13 用户裁定：从文件 tab 把行拖到右栏会话框、
@@ -336,6 +350,24 @@ export function FileTree(props: FileTreeProps) {
    * 锚点只在「重新开始一段连选」时才换。
    */
   const [锚点, set锚点] = createSignal<string>()
+  /**
+   * 正在被同树拖走的那一批路径（`undefined` = 没在拖）。只在 `dragstart` 立、`dragend`/有效落点
+   * 清——悬停阶段它**不变**，`拖过` 全靠它判「这是不是一次同树拖」。
+   *
+   * ⚠️ 别在 `dragstart` 里直接把它设成 `选中集`：一次拖拽可能带的是**没进选中集的一行**，
+   * `起拖` 会先 `单选` 把它补进去——所以这里的值是「拖那**一刻**的可见选中批」，不是一条活引用。
+   */
+  const [拖源, set拖源] = createSignal<readonly string[]>()
+  /**
+   * 悬停中、**本行可以被这一批落下**的那一行的路径（`undefined` = 悬停在行外空白＝项目根）。
+   * 落点判据见 `能落到`，这里只记「判过了、可以」的那一行。
+   */
+  const [悬停行, set悬停行] = createSignal<string>()
+  /**
+   * 悬停是否落在**行以外的空白**（＝项目根）。与 `悬停行` 互补：`undefined` 只表示「没悬在行上」，
+   * 而「悬在空白且合法」与「悬在空白但这次拖不合法」都要单独区分，所以得有一只布尔。
+   */
+  const [悬停根, set悬停根] = createSignal(false)
   /**
    * 「正在改名的那一行」的**旧路径**——非空即那一行的名字就地换成了输入条（T018）。
    *
@@ -608,8 +640,11 @@ export function FileTree(props: FileTreeProps) {
           <div
             data-slot="file-tree-region"
             class="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto"
+            data-drop-target={悬停根() ? "true" : undefined}
             onContextMenu={记对象}
             onClick={点空白}
+            onDragStart={起拖}
+            onDragEnd={拖完}
             onDragOver={拖过}
             onDrop={放开}
           >
@@ -635,6 +670,7 @@ export function FileTree(props: FileTreeProps) {
                       data-type={row.node.type}
                       data-level={row.level}
                       data-selected={选中集().has(row.node.path) ? "true" : undefined}
+                      data-drop-target={悬停行() === row.node.path ? "true" : undefined}
                       // ARIA 那份要**恒有值**（`"false"` 是有效值），与 `data-selected` 同源不同形
                       aria-selected={选中集().has(row.node.path) ? "true" : "false"}
                       // 展开态走 `aria-expanded`，不只靠箭头朝向（DESIGN §4.3：不单以图形传意）
@@ -1045,17 +1081,79 @@ export function FileTree(props: FileTreeProps) {
     return props.onDropFiles !== undefined && (event.dataTransfer?.types ?? []).includes("Files")
   }
 
+  /**
+   * 擦掉这一拍的高亮。悬停行与悬停根**成对清**（它们互为补集、且都由 `拖过` 一个入口写），
+   * 单独清哪一只都会留下一只「幽灵高亮」。
+   */
+  function 清悬停() {
+    set悬停行(undefined)
+    set悬停根(false)
+  }
+
+  /**
+   * `dragstart`：记下这一拖带走的**那一批路径**。
+   *
+   * 顺序是「先补进选中集、再取批」——`单选(path)` 之后 `选中集().has(path)` 恒真，
+   * 于是这一行必定进批；而「选中集里在**可见行**上的全部路径」跟在后面，自然凑成
+   * 「这一行 + 其它已选中行」的并集（`行列表()` 只吐可见行，折叠行不跟着走）。
+   *
+   * 不 `preventDefault`（本组件不需要自定义拖拽图像），也**不** `stopPropagation`
+   * （`DualFileTree` 的跨树拖要监听冒泡上来的 `dragstart`——拦了它那双树就聋了，见 `dual-file-tree.tsx`）。
+   */
+  function 起拖(event: DragEvent) {
+    const path = 指针行(event)
+    if (!path) return
+    if (!选中集().has(path)) 单选(path)
+    set拖源(
+      选中集().has(path)
+        ? 行列表()
+            .map((row) => row.node.path)
+            .filter((p) => 选中集().has(p))
+        : [path],
+    )
+  }
+
+  /** `dragend`：清掉拖源与悬停高亮——无论这次拖是有效落下、取消还是拖出窗外，都得擦干净。 */
+  function 拖完() {
+    set拖源(undefined)
+    清悬停()
+  }
+
   /** 悬停：**不 `preventDefault` 就不会触发 `drop`**（HTML5 拖拽的规矩，不是可选的优化）。 */
   function 拖过(event: DragEvent) {
-    if (从桌面(event)) event.preventDefault()
+    if (从桌面(event)) {
+      event.preventDefault()
+      return
+    }
+    const 源 = 拖源()
+    if (!源) return
+    const 行 = 指针行(event)
+    if (!能落到(源, 落点(行))) {
+      清悬停()
+      return
+    }
+    event.preventDefault()
+    set悬停行(行)
+    set悬停根(行 === undefined)
   }
 
   function 放开(event: DragEvent) {
-    if (!从桌面(event)) return
+    if (从桌面(event)) {
+      event.preventDefault()
+      const files = Array.from(event.dataTransfer?.files ?? [])
+      if (files.length === 0) return
+      props.onDropFiles?.(files, 落点(指针行(event)))
+      return
+    }
+    const 源 = 拖源()
+    if (!源) return
     event.preventDefault()
-    const files = Array.from(event.dataTransfer?.files ?? [])
-    if (files.length === 0) return
-    props.onDropFiles?.(files, 落点(指针行(event)))
+    const 目标 = 落点(指针行(event))
+    set拖源(undefined)
+    清悬停()
+    if (!能落到(源, 目标)) return
+    set选中集(new Set<string>())
+    props.onMoveTo?.(源, 目标)
   }
 
   /** 行上的键盘动作：回车 / 空格＝选中，←/→＝目录开合（与点箭头同一个意思）。 */

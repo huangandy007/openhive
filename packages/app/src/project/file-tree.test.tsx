@@ -357,6 +357,44 @@ function 拖入(
 }
 
 /**
+ * 派一次**同树**拖拽（`dragstart` / `dragover` / `drop` / `dragend`）。
+ *
+ * 与 `拖入` 分开：那条造的是**跨进程**拖拽（`dataTransfer.types` 含 `"Files"`，判据读 `files`），
+ * 这条走的是同树那一支——同树判据**不读 payload**（只认组件自己的信号），所以连 `dataTransfer`
+ * 都不必挂。产品码对 `dataTransfer` 一律可选链，正是为了这里进得来。
+ *
+ * 返回造出来的事件：`dragover` 那一条要判 `defaultPrevented`（不 `preventDefault` 就不会有 `drop`）。
+ */
+function 同树拖(el: HTMLElement | null | undefined, type: "dragstart" | "dragover" | "drop" | "dragend") {
+  if (!el) throw new Error("拖拽落点不在——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  el.dispatchEvent(event)
+  return event
+}
+
+/**
+ * 挂一棵**全展开**的树（同 Task 2 的 `挂全开`），并记下 `onMoveTo` 收到的每一批。
+ *
+ * ⚠️ **必须全展开**：树默认全收缩（用户第 5 条）⇒ `资料/a.txt` 这类深层行压根不在树上，
+ * `行按路径` 会**抛**。**不许靠静默兜底蒙过去**（`#005-38`）。
+ */
+function 挂可搬(paths: readonly string[]) {
+  const 收到: Array<[readonly string[], string]> = []
+  const host = mount(() => <FileTree paths={paths} draggable onMoveTo={(路径们, dir) => 收到.push([路径们, dir])} />)
+  动作(host, "expand-all")?.click()
+  return { host, 收到 }
+}
+
+/** **一次完整手势**：在某行起拖，落到某行（或 region）松手。 */
+function 拖到(host: HTMLElement, 起路径: string, 落点路径: string | undefined) {
+  同树拖(行按路径(host, 起路径), "dragstart")
+  const 落 = 落点路径 === undefined ? 槽(host, "file-tree-region") : 行按路径(host, 落点路径)
+  同树拖(落, "dragover")
+  同树拖(落, "drop")
+  同树拖(行按路径(host, 起路径), "dragend")
+}
+
+/**
  * 文件树（FR-005 / `2026-09-11-项目管理-design.md` §6）：工具栏 + 树本体。
  *
  * 与 `ProjectAnchor` / `ProjectPanel` 同口径——**受控组件**：路径由 `paths` prop 给、动作只喊
@@ -2536,6 +2574,154 @@ describe("FileTree 文件树（FR-005）", () => {
       const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDropFiles={() => {}} />)
 
       expect(拖入(行按名(host, "材料"), "dragover", { types: ["text/plain"], files: [] }).defaultPrevented).toBe(false)
+    })
+  })
+
+  /**
+   * 同树拖拽批量移动（spec §5.2）。
+   *
+   * ⚠️ 判据 12–14 的期望值是**计数器 0**，天生是「恒绿空转」的形状（`#005-47` / `#006-22` 同族）⇒
+   * 每条都必须先在变异下证明自己会红（见 Step 8），否则它就是一条什么都没测的用例。
+   */
+  describe("同树拖拽批量移动", () => {
+    const 树三 = () => ["资料/a.txt", "资料/b.txt", "档案/c.txt"]
+
+    test("从已选中的行起拖再放下 ⇒ onMoveTo 收到整批（按可见行序）", () => {
+      const { host, 收到 } = 挂可搬(树三())
+      点行(host, "资料/a.txt")
+      点行(host, "资料/b.txt", { ctrl: true })
+
+      拖到(host, "资料/a.txt", "档案")
+
+      expect(收到.length).toBe(1)
+      // 可见行序：资料 在它两个孩子之前 ⇒ 整批是 a 再 b
+      expect(收到[0][0]).toEqual(["资料/a.txt", "资料/b.txt"])
+      expect(收到[0][1]).toBe("档案")
+    })
+
+    test("从未选中的行起拖 ⇒ 只收到那一行，且那行当场成为唯一选中", () => {
+      const { host, 收到 } = 挂可搬(树三())
+      点行(host, "资料/a.txt")
+
+      // ⚠️ **「当场成为唯一选中」是 `dragstart` 那一拍的事实**，必须在 `drop` **之前**断：
+      // `放开` 在合法落点上会清空选中集（spec §5.3 / §9 取舍 6，同下面「落下之后选中集清空」那条）
+      // ⇒ 手势走完再看，带 `data-selected="true"` 的行是 **0** 行。原文把三句都排在 `drop` 之后，
+      // 与那条用例在**同一个实现下不可能同时绿**（2026-10-16 勘误，由 Task 3 实施者顶着 brief 停下发现）。
+      同树拖(行按路径(host, "档案"), "dragstart") // 直接拖「档案」这一行（它没被选中）
+      expect(行(host).filter((el) => el.getAttribute("data-selected") === "true").length).toBe(1)
+      expect(行按路径(host, "档案").getAttribute("data-selected")).toBe("true")
+      同树拖(行按路径(host, "资料"), "dragover")
+      同树拖(行按路径(host, "资料"), "drop")
+      同树拖(行按路径(host, "档案"), "dragend")
+
+      expect(收到[0][0]).toEqual(["档案"])
+    })
+
+    test("拖到文件夹行上松手 ⇒ 第二个参数是那个文件夹自己的路径", () => {
+      const { host, 收到 } = 挂可搬(树三())
+
+      // ⚠️ **落点必须是源不在的那个目录**：`资料/a.txt` 现在就住在 `资料` 里，
+      // `能落到` 第③条（`父目录(源) === 目标`）会命中 ⇒ `放开` 提前返回、`onMoveTo` 一次都不喊、
+      // `收到[0]` 是 `undefined`（正是下面「拖到源现在就在的那个目录」那条钉的事）。
+      // 原文写的落点就是 `资料` ⇒ **与那条用例对同一个手势给出相反期望**（2026-10-16 勘误）。
+      // 改后与下一条（目标是**文件行**）成两支对照：这一条的目标是**目录行**，回它**自己**的路径。
+      拖到(host, "资料/a.txt", "档案")
+
+      expect(收到[0][1]).toBe("档案")
+    })
+
+    test("拖到文件行上松手 ⇒ 第二个参数是那个文件的父目录", () => {
+      const { host, 收到 } = 挂可搬(树三())
+
+      拖到(host, "档案/c.txt", "资料/b.txt")
+
+      expect(收到[0][1]).toBe("资料")
+    })
+
+    test("拖到行之间的空白 ⇒ 第二个参数是 \"\"（项目根）", () => {
+      const { host, 收到 } = 挂可搬(树三())
+
+      拖到(host, "档案/c.txt", undefined)
+
+      expect(收到[0][1]).toBe("")
+    })
+
+    test("拖到源自己身上 ⇒ onMoveTo 一次没被调，且 dragover 没被 preventDefault", () => {
+      const { host, 收到 } = 挂可搬(树三())
+      const 源 = 行按路径(host, "资料")
+
+      同树拖(源, "dragstart")
+      const 悬停 = 同树拖(源, "dragover")
+      同树拖(源, "drop")
+      同树拖(源, "dragend")
+
+      expect(收到.length).toBe(0)
+      // 「不接管」与「接管了但发不出请求」是两条实现（`#005-19`）⇒ 这条判据必须一起钉
+      expect(悬停.defaultPrevented).toBe(false)
+    })
+
+    test("拖到源的子孙上 ⇒ 同「拖到自己」", () => {
+      // `挂可搬` 已经全展开 ⇒ `资料/8·17` 那一行就在树上，**不必再点一次箭头**
+      // （点了反而会把它收起来，`#005-38`：前提要么自己立、要么别动）。
+      const { host, 收到 } = 挂可搬(["资料/8·17/a.txt", "档案/c.txt"])
+
+      同树拖(行按路径(host, "资料"), "dragstart")
+      const 悬停 = 同树拖(行按路径(host, "资料/8·17"), "dragover")
+      同树拖(行按路径(host, "资料/8·17"), "drop")
+      同树拖(行按路径(host, "资料"), "dragend")
+
+      expect(收到.length).toBe(0)
+      expect(悬停.defaultPrevented).toBe(false)
+    })
+
+    test("拖到源现在就在的那个目录 ⇒ 同「拖到自己」", () => {
+      const { host, 收到 } = 挂可搬(树三())
+      const 源 = 行按路径(host, "资料/a.txt")
+
+      同树拖(源, "dragstart")
+      const 悬停 = 同树拖(行按路径(host, "资料"), "dragover")
+      同树拖(行按路径(host, "资料"), "drop")
+      同树拖(源, "dragend")
+
+      expect(收到.length).toBe(0)
+      expect(悬停.defaultPrevented).toBe(false)
+    })
+
+    test("悬停合法落点时那一行带 data-drop-target=\"true\"；松手后清掉", () => {
+      const { host } = 挂可搬(树三())
+
+      同树拖(行按路径(host, "资料/a.txt"), "dragstart")
+      同树拖(行按路径(host, "档案"), "dragover")
+
+      expect(行按路径(host, "档案").getAttribute("data-drop-target")).toBe("true")
+      expect(行按路径(host, "资料").getAttribute("data-drop-target")).toBeNull()
+
+      同树拖(行按路径(host, "档案"), "drop")
+      同树拖(行按路径(host, "资料/a.txt"), "dragend")
+
+      expect(行按路径(host, "档案").getAttribute("data-drop-target")).toBeNull()
+    })
+
+    test("落下之后选中集清空——那批路径多半已经不在原处了", () => {
+      const { host } = 挂可搬(树三())
+      点行(host, "资料/a.txt")
+      点行(host, "资料/b.txt", { ctrl: true })
+
+      拖到(host, "资料/a.txt", "档案")
+
+      expect(行(host).filter((el) => el.getAttribute("data-selected") === "true").length).toBe(0)
+    })
+
+    test("桌面拖文件进来 ⇒ 照旧 onDropFiles（新分支不吃老路）", () => {
+      const 收到: Array<[readonly string[], string]> = []
+      const host = mount(() => (
+        <FileTree paths={树三()} onDropFiles={(files, dir) => 收到.push([files.map((f) => f.name), dir])} />
+      ))
+      动作(host, "expand-all")?.click()
+
+      拖入(行按路径(host, "资料"), "drop", { files: [一件("甲.csv")] })
+
+      expect(收到).toEqual([[["甲.csv"], "资料"]])
     })
   })
 })
