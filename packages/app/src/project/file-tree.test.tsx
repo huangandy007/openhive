@@ -903,15 +903,15 @@ describe("FileTree 文件树（FR-005）", () => {
       const 序 = 可见序(host)
       if (序.length < 4) throw new Error(`可见行不足四行（实得 ${JSON.stringify(序)}）——这条用例的前提不成立`)
 
-      点行(host, 序[0]!)
-      点行(host, 序[2]!, { shift: true })
+      点行(host, 序[0])
+      点行(host, 序[2], { shift: true })
 
       expect(序.slice(0, 3).map((p) => 行按路径(host, p).getAttribute("data-selected"))).toEqual([
         "true",
         "true",
         "true",
       ])
-      expect(行按路径(host, 序[3]!).getAttribute("data-selected")).toBeNull()
+      expect(行按路径(host, 序[3]).getAttribute("data-selected")).toBeNull()
     })
 
     test("Shift 连选之后再 Shift 一次 ⇒ 锚点不动（仍从第一次那个锚点起算）", () => {
@@ -919,12 +919,12 @@ describe("FileTree 文件树（FR-005）", () => {
       const 序 = 可见序(host)
       if (序.length < 3) throw new Error(`可见行不足三行（实得 ${JSON.stringify(序)}）——这条用例的前提不成立`)
 
-      点行(host, 序[0]!)
-      点行(host, 序[1]!, { shift: true }) // 序[0]..序[1]
-      点行(host, 序[2]!, { shift: true }) // 仍是 序[0]..序[2]（锚点没跟着跑）
+      点行(host, 序[0])
+      点行(host, 序[1], { shift: true }) // 序[0]..序[1]
+      点行(host, 序[2], { shift: true }) // 仍是 序[0]..序[2]（锚点没跟着跑）
 
-      expect(行按路径(host, 序[0]!).getAttribute("data-selected")).toBe("true")
-      expect(行按路径(host, 序[2]!).getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, 序[0]).getAttribute("data-selected")).toBe("true")
+      expect(行按路径(host, 序[2]).getAttribute("data-selected")).toBe("true")
     })
 
     test("没锚点时 Shift 点 ⇒ 退化成单击（连焦点行也没有的那种）", () => {

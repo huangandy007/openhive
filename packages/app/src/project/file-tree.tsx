@@ -604,6 +604,7 @@ export function FileTree(props: FileTreeProps) {
               `preventDefault()` ＋ `stopPropagation()` 之后**不调用**外部传进来的那个），
               挂上去会**静默失效**：菜单照开，作用对象永远是「没有」。挂在内层：冒泡时我们先跑，
               它再接着开菜单。 */}
+          {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- `点空白` 是真动作（点行之间的空白清空选中集与锚点），不是观察；它的键盘等价物属于整个「键盘多选」（Ctrl 连选 / Shift 连选 / 键盘清空）那一件事，而本 feature 明确**不做**键盘多选（spec 已登记为本轮之外）；给这个 div 补一个空 `onKeyDown` 只是哄门、不是补能力。按本仓 `oxlint-disable-next-line -- 理由` 的惯例据实标注。 */}
           <div
             data-slot="file-tree-region"
             class="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto"
