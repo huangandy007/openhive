@@ -105,6 +105,17 @@ const 文案 = (slot: string) => document.body.querySelector(`[data-slot='${slot
 /** 新建弹窗还在不在。**布尔**，不是节点——见 `file-op-error.test.tsx` 顶部那条警告。 */
 const 弹窗在 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
 
+/**
+ * `useDialog().close()` 是两步：状态**立刻**变、节点 **~100ms 后**才 `dispose()`
+ * （`context/dialog.tsx:57` 的 `setTimeout`，`LEARNINGS #005-33`）。
+ * ⇒ 「弹窗还在吗」在 `setTimeout 0` 的窗里**恒真**，零判别力。
+ * 这个助手一直等到它**不见**为止（有界上限）；`false` = 整个窗口里它都没消失。
+ */
+const 等它没了 = async (上限 = 25) => {
+  for (let i = 0; i < 上限 && 弹窗在(); i++) await new Promise((r) => setTimeout(r, 20))
+  return !弹窗在()
+}
+
 describe("新建弹窗（FileCreateDialog）", () => {
   test("建文件 ⇒ 标题是「新建文件」", async () => {
     await 打开({ kind: "file", parent: "" })
@@ -202,12 +213,29 @@ describe("新建弹窗（FileCreateDialog）", () => {
 
     // 主判据：那句话在**弹窗里那一件**上（`FileOpError` 的根带 `data-slot="file-op-error"`）
     expect(文案("file-op-error") ?? "").toContain("目标目录不存在")
-    // 「不关」这条承诺的全部证据
+    // 这只是 flush 窗里「还在」，**不是**「不关」的证据——那个窗里旧实现（提交即 close）也还在；
+    // 「不关」的证据在下面那条「扛过 dispose 窗」的用例里。
     expect(弹窗在()).toBe(true)
     // 名字草稿留着：改一处就能再交一次，不必重开、重敲
     expect(框().value).toBe("新.md")
   })
 
+  test("没办成 ⇒ 过了 dispose 窗它**还在**（这才是「不关」的证据）", async () => {
+    await 打开({ kind: "file", parent: "资料", 回话: "目标目录不存在" })
+
+    填("新.md")
+    提交()
+
+    // 主判据：「不关」= 扛过那 ~100ms 的 dispose 窗之后它还开着。
+    // 只断一句 `弹窗在()` 是**空转**——旧实现（提交即 `close()`）在那个窗里也满足。
+    expect(await 等它没了()).toBe(false)
+  })
+
+  /**
+   * ⚠️ 这条用例在 happy-dom 里对「改没改」**没有判别力**——旧实现（提交即 `close()`）在
+   * dispose 窗内节点仍在 DOM，二次提交照样喊到回调（`LEARNINGS #005-33`）。它守的是
+   * 「失败后还能再交一次」这个行为本身，**不是**本改动的守护者。留着，但别让后来人高估它。
+   */
   test("没办成之后改个名字再交 ⇒ **会再发一次**（弹窗没关，所以这条链还在）", async () => {
     const 收到 = await 打开({ kind: "file", parent: "资料", 回话: "目标目录不存在" })
 
