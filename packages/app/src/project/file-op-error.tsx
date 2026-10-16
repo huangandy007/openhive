@@ -47,7 +47,8 @@ export function FileOpError(props: FileOpErrorProps): JSX.Element {
       // 屏幕阅读器在它冒出来时读一遍。不是模态、不需要焦点管理
       // （同 `workspace-entry.tsx` 那条内联 `file-op-message`）。
       role="alert"
-      // 样式与内联那条 `file-op-message` **逐字相同**（`workspace-entry.tsx:1095-1105`）：
+      // 样式与内联那条 `file-op-message` **逐字相同**（`workspace-entry.tsx` 里
+      // `data-slot="file-op-message"` 那条 `<Show>`）：
       // 同一句话在两种容器里的同一个样子，色值分家会让「同样是失败」看起来是两回事。
       class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] break-all text-v2-state-fg-danger"
     >

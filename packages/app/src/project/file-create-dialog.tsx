@@ -81,7 +81,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
       回话 = await props.onConfirm(name)
     } catch (err) {
       // 抛错 = 「我们这边坏了」。保住原注释那条理由：别让用户对着一个「填好了却没反应」的框。
-      // 这一支**不在本次射程内**，一个字不改它的行为。
+      // 这一支（**抛错**，不是上面那种「回话」失败）**不在本次射程内**，一个字不改它的行为。
       dialog.close()
       throw err
     } finally {
