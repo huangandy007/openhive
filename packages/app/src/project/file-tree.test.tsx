@@ -730,7 +730,7 @@ describe("FileTree 文件树（FR-005）", () => {
     test("落点是深层目录 ⇒ 提交之后**落点及其祖先链**都打开，别的目录不受牵连", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
       const host = mount(() =>
-        <FileTree paths={树("资料/8·17/c.txt", "别的/x.txt")} onCreate={(i) => 记.push(i)} />,
+        <FileTree paths={树("资料/8·17/c.txt", "别的/x.txt")} onCreate={(i) => { 记.push(i) }} />,
       )
       选中深层目录再全收起(host)
       expect(路径(host)).toEqual(["别的", "资料"]) // 前提：两支都收着、深层行看不见
@@ -749,7 +749,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("落点是根 ⇒ 一层都不展开——「展开落点」不是「随便开点什么」", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("资料/8·17/c.txt")} onCreate={(i) => { 记.push(i) }} />)
 
       // 不选中任何东西 ⇒ 落点＝项目根（既有约定，见「未选中 ⇒ 落点是根」那条）
       点加号(host)
@@ -1089,7 +1089,7 @@ describe("FileTree 文件树（FR-005）", () => {
      */
     test("点「新建文件」不立刻喊 onCreate——落下一个弹窗（名字得先问）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => { 记.push(i) }} />)
 
       点加号(host)
       await 歇一拍()
@@ -1107,7 +1107,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("弹窗里填名字并提交 ⇒ 才喊 onCreate，带上 kind / parent / name（未选中 ⇒ 落点是根）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => { 记.push(i) }} />)
 
       点加号(host)
       await 歇一拍()
@@ -1127,7 +1127,7 @@ describe("FileTree 文件树（FR-005）", () => {
      */
     test("「新建文件夹」⇒ kind 是 directory，弹窗标题也换成文件夹那句", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => { 记.push(i) }} />)
 
       点加号(host)
       await 歇一拍()
@@ -1144,7 +1144,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("点弹窗的「取消」⇒ 什么都不喊，弹窗收掉", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("a.txt")} onCreate={(i) => { 记.push(i) }} />)
 
       点加号(host)
       await 歇一拍()
@@ -1164,7 +1164,7 @@ describe("FileTree 文件树（FR-005）", () => {
      */
     test("落点跟着选中走：选中目录 ⇒ 在它下面；选中文件 ⇒ 在它所在的目录下", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("甲/乙/a.txt", "丙/x.txt")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("甲/乙/a.txt", "丙/x.txt")} onCreate={(i) => { 记.push(i) }} />)
       动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那两行才点得到
 
       // 选中目录「乙」⇒ 落点是它自己
@@ -1215,7 +1215,7 @@ describe("FileTree 文件树（FR-005）", () => {
      */
     test("选中**空目录** ⇒ 新建落点是它自己（不是它的父目录）", async () => {
       const 记: { kind: string; parent: string; name: string }[] = []
-      const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} onCreate={(i) => 记.push(i)} />)
+      const host = mount(() => <FileTree paths={树("资料\\", "话单.csv")} onCreate={(i) => { 记.push(i) }} />)
 
       行按名(host, "资料")?.click()
       点加号(host)
@@ -1263,8 +1263,8 @@ describe("FileTree 文件树（FR-005）", () => {
       const host = mount(() => (
         <FileTree
           paths={树("话单.csv", "资金.xlsx")}
-          onRename={(path, name) => 记.push(`改:${path}=>${name}`)}
-          onDelete={(path) => 记.push(`删:${path}`)}
+          onRename={(path, name) => { 记.push(`改:${path}=>${name}`) }}
+          onDelete={(path) => { 记.push(`删:${path}`) }}
         />
       ))
 
@@ -1293,7 +1293,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("重命名输入条敲 Escape ⇒ 不喊 onRename，那一行退回展示态", () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("资金.xlsx")} onRename={(p, n) => 记.push(`${p}=>${n}`)} />)
+      const host = mount(() => <FileTree paths={树("资金.xlsx")} onRename={(p, n) => { 记.push(`${p}=>${n}`) }} />)
 
       行按名(host, "资金.xlsx")?.click()
       按钮(host, "file-tree-action-rename")?.click()
@@ -1308,7 +1308,7 @@ describe("FileTree 文件树（FR-005）", () => {
     test("接了线但**没选中**任何项时，重命名 / 删除不回传——没有作用对象就不动作", () => {
       const 记: string[] = []
       const host = mount(() => (
-        <FileTree paths={树("话单.csv")} onRename={(p) => 记.push(p)} onDelete={(p) => 记.push(p)} />
+        <FileTree paths={树("话单.csv")} onRename={(p) => { 记.push(p) }} onDelete={(p) => { 记.push(p) }} />
       ))
 
       按钮(host, "file-tree-action-rename")?.click()
@@ -1891,7 +1891,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
       test("菜单「重命名」走的是工具栏那一个——两个入口同一件事：就地编辑那一行", () => {
         const 收到: string[] = []
-        const host = mount(() => <FileTree paths={树("a.md")} onRename={(path, name) => 收到.push(`${path}=>${name}`)} />)
+        const host = mount(() => <FileTree paths={树("a.md")} onRename={(path, name) => { 收到.push(`${path}=>${name}`) }} />)
 
         右键(行按名(host, "a.md"))
         点菜单项("rename")
@@ -1908,7 +1908,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
       test("删除走的是工具栏那个 onDelete（同样过二次确认，T009 起）", async () => {
         const 收到: string[] = []
-        const host = mount(() => <FileTree paths={树("a.md")} onDelete={(path) => 收到.push(path)} />)
+        const host = mount(() => <FileTree paths={树("a.md")} onDelete={(path) => { 收到.push(path) }} />)
 
         右键(行按名(host, "a.md"))
         点菜单项("delete")
@@ -1928,7 +1928,7 @@ describe("FileTree 文件树（FR-005）", () => {
       test("右键一个**目录**建文件夹 ⇒ 落点就是它自己", async () => {
         const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
-          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
+          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => { 收到.push(input) }} />
         ))
 
         右键(行按名(host, "材料"))
@@ -1943,7 +1943,7 @@ describe("FileTree 文件树（FR-005）", () => {
       test("右键一个**文件**建文件 ⇒ 落点是它所在的目录，不是文件自己", async () => {
         const 收到: { kind: string; parent: string; name: string }[] = []
         const host = mount(() => (
-          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => 收到.push(input)} />
+          <FileTree paths={树("材料/话单.csv")} onCreate={(input) => { 收到.push(input) }} />
         ))
         动作(host, "expand-all")?.click() // 默认全收缩（用户第 5 条）⇒ 先全打开，深层那一行才右键得到
 
@@ -2066,7 +2066,7 @@ describe("FileTree 文件树（FR-005）", () => {
         const host = mount(() => (
           <FileTree
             paths={树()}
-            onCreate={(input) => 收到.push(input)}
+            onCreate={(input) => { 收到.push(input) }}
             onUpload={() => {}}
             onCopy={() => {}}
           />
@@ -2275,7 +2275,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("点删除**不立刻**喊 onDelete，而是先出现确认弹窗（FR-006「MUST 二次确认」）", async () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => { 记.push(path) }} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
@@ -2297,7 +2297,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("点弹窗里的「取消」：弹窗消失，且 onDelete **一次都没**被喊", async () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => { 记.push(path) }} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
@@ -2316,7 +2316,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("点弹窗里的「删除」：这才喊 onDelete（带选中项路径），弹窗收掉", async () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => { 记.push(path) }} />)
 
       行按名(host, "话单.csv")?.click()
       动作(host, "delete")?.click()
@@ -2337,7 +2337,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("右键菜单里的「删除」走**同一个**确认弹窗——FR-006 说的是「文件删除」，不分入口", async () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => 记.push(path)} />)
+      const host = mount(() => <FileTree paths={树("话单.csv")} onDelete={(path) => { 记.push(path) }} />)
 
       右键(行按名(host, "话单.csv"))
       点菜单项("delete")
@@ -2350,7 +2350,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("菜单删除确认后喊的是**右键那一行**，不是选中项——「两套当前项」在确认流程里也一样（T008 的约定）", async () => {
       const 记: string[] = []
-      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={(path) => 记.push(path)} />)
+      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onDelete={(path) => { 记.push(path) }} />)
 
       行按名(host, "话单.csv")?.click() // 选中甲
       右键(行按名(host, "资金.xlsx")) // 右键乙
