@@ -53,7 +53,7 @@
 | `packages/app/src/project/file-delete-dialog.tsx` | 二次确认；失败时**不关**、就地报 | 改 |
 | `packages/app/src/project/file-delete-dialog.test.tsx` | 该弹窗自上线起**没有**组件测试（`ls` 过）⇒ 本次补上 | **新建** |
 | `packages/app/src/project/file-tree.tsx` | 三个回调的**契约**（`onCreate` / `onRename` / `onDelete`）＋「行话」落到那一行 | 改 |
-| `packages/app/src/project/file-tree.test.tsx` | 既有用例的**签名适配**（23 处）＋ 增行话判据 | 改 |
+| `packages/app/src/project/file-tree.test.tsx` | 既有用例的**签名适配**（23 处（实得 **22**，见 spec；控制器复跑取数命令实得 22））＋ 增行话判据 | 改 |
 | `packages/app/src/workspace/workspace-entry.tsx` | `收下()` 从「写共享信号」改成「**回**那句话」 | 改 |
 | `packages/app/src/workspace/workspace-entry.test.tsx` | 改写 1 条 ＋ 增 5 条 | 改 |
 | `packages/app/e2e/real-stack/file-op-error-real.spec.ts` | 真栈：目录被删掉的项目里点新建 ⇒ 弹窗不关、出现「目标目录不存在」 | **新建（若挂具做不出来，如实进缺口表，不写成已覆盖）** |
@@ -858,7 +858,7 @@ git commit -m "feat(project): 删除弹窗失败不关、就地报；补上该�
 
 **Files:**
 - Modify: `packages/app/src/project/file-tree.tsx`
-- Modify: `packages/app/src/project/file-tree.test.tsx`（23 处签名适配 ＋ 增 2 条）
+- Modify: `packages/app/src/project/file-tree.test.tsx`（23 处（实得 **22**，见 spec；控制器复跑取数命令实得 22）签名适配 ＋ 增 2 条）
 
 **Interfaces:**
 - Consumes: Task 1 的 `FileOpError`、Task 2/3 定下的回话约定
@@ -873,7 +873,7 @@ git commit -m "feat(project): 删除弹窗失败不关、就地报；补上该�
 2. **提交时照旧先退编辑态**（`set改名的(undefined)`）——`inline-rename-input.tsx:51-63` 那条**真栈实测**
    出来的「一次编辑只结一次账」守卫不放开。代价：名字会丢（重开预填的是旧名），**据实记**进 spec §9。
 
-- [ ] **Step 1: 先做 23 处签名适配（纯语法，不改任何判据）**
+- [ ] **Step 1: 先做 23 处（实得 **22**，见 spec；控制器复跑取数命令实得 22）签名适配（纯语法，不改任何判据）**
 
 新契约的返回类型是 `string | undefined | Promise<string | undefined> | void`。既有测试里那些
 **返回 `number`** 的箭头（`(i) => 记.push(i)`）落不进任何一支 ⇒ typecheck 会报
@@ -1114,7 +1114,7 @@ git add packages/app/src/project/file-tree.tsx packages/app/src/project/file-tre
 git commit -m "feat(project): 重命名失败的话落到被改名的那一行
 
 行话按路径存、只在仍存在的那一行上画；清单重取时清掉。就地改名输入组件一字不改
-（那条「一次编辑只结一次账」的真栈守卫不放开）。既有用例 23 处签名适配，判据未动。
+（那条「一次编辑只结一次账」的真栈守卫不放开）。既有用例 23 处（实得 **22**，见 spec；控制器复跑取数命令实得 22）签名适配，判据未动。
 这是要保留的定制。"
 ```
 
@@ -1430,7 +1430,7 @@ Expected：三行命中。
 理由：本仓已有先例、四处契约一致、且 `| void` 那一支让「不接线的调用方」与「只记不看回话的测试」
 不必改。⚠️ **据实记**：联合**收不下**返回 `number` 的箭头（2026-10-16 实测
 `./node_modules/.bin/tsc --noEmit --strict`：`error TS2322: Type 'number' is not assignable to type '…'`），
-故 `file-tree.test.tsx` 有 **23 处**签名适配。
+故 `file-tree.test.tsx` 有 **23 处**（实得 **22**，见 spec；控制器复跑取数命令实得 22）签名适配。
 ③ §7 表里 `file-create-dialog.test.tsx` 那行「预期一条不用改」⇒ 改为「**断言**一条不用改；
 但 harness 里那个箭头（`:39`）必须改（返回 `number` 落不进新契约）」。
 ④ §4 的 `file-delete-dialog.test.tsx` 那行补一句：它是**补既往空白**（该弹窗 2026-10-11 上线起没有测试）。
@@ -1518,7 +1518,7 @@ bunx oxlint packages/app/src
 bun --cwd packages/app run typecheck
 cd packages/app && bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts $(find src -name '*.test.tsx' | tr '\n' ' ')
 ```
-Expected：oxlint 0 error；typecheck 退出码 0；套件 **pass ≥ 1042 ＋ 新增条数（3＋3＋7＋2＋4 = 19）＝ 1061**，
+Expected：oxlint 0 error；typecheck 退出码 0；套件 **pass ≥ 1042 ＋ 新增条数（3＋3＋7＋2＋4 = 19）＝ 1061**（实得 **1063**——删除弹窗落地 8 条而非 7 条；该值是 `≥` 下限口径，不影响判据），
 `fail = 0`。**把三条的实得输出原样贴进报告**。
 
 - [ ] **Step 2: ⑥ 步落点清单——「谁在按同一个前提做同一件事」（`#002-06`）**

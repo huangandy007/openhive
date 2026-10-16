@@ -116,9 +116,11 @@ const SEARCH_INPUT = "!h-6 !w-full"
 /**
  * 一行。`min-h-6` 而不是 `h-6`、并允许换行：**重命名失败时那一行要长出一句话**
  * （`FileOpError` 带 `w-full` ⇒ 换到第二行、整行变高）。
- * ⚠️ 对**没有**失败话的行，两者算出来的高度逐字相同（`min-h-6` 的 24px ＋ 单行内容），
- * 故这不是一次视觉改动——那 24px 是既有真栈读数（`context-menu-dismiss-probe.spec.ts` 注释里的
- * 行坐标）赖以成立的前提，别拿掉 `min-h-6`。
+ * ⚠️ 对**没有**失败话的行，两者算出来的高度相同：单行内容不足 24px ⇒ `min-h-6` 与 `h-6`
+ * 都落到 24px（`#005-07`：happy-dom 量不了 CSS，这条是**推理**，不是实测）。故这不是一次
+ * 视觉改动——那 24px 是既有真栈读数（原 `context-menu-dismiss-probe.spec.ts` 注释里的行坐标，
+ * 该 spec 已删、读数收在 `docs/superpowers/specs/005-project-management/state.md`）赖以成立的
+ * 前提，别拿掉 `min-h-6`。
  */
 const ROW = "flex flex-wrap min-h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
@@ -772,11 +774,10 @@ export function FileTree(props: FileTreeProps) {
                       {/* 重命名失败的话落在**这一行**上（spec §3：失败回到发起它的那个面）。
                           ⚠️ 它是行的**子节点**（不是行的兄弟）——行的 `role="treeitem"` 里允许任意内容，
                           摆在 `role="tree"` 下当一个无角色的 `<div>` 则是无效的 ARIA 结构。
-                          `w-full` 让它自己占一整行（见 `ROW` 的 `flex-wrap`）。 */}
+                          占一整行靠的是 `FileOpError` 根自己那条 `w-full`（`file-op-error.tsx:53`），
+                          别在外面再包一层——见 `ROW` 的 `flex-wrap`。 */}
                       <Show when={行话()?.路径 === row.node.path}>
-                        <div class="w-full min-w-0">
-                          <FileOpError 话={行话()?.话 ?? ""} />
-                        </div>
+                        <FileOpError 话={行话()?.话 ?? ""} />
                       </Show>
                     </div>
                   )}

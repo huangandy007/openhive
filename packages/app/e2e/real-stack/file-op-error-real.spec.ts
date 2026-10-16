@@ -1,5 +1,5 @@
 import { expect, test, type Page, type BrowserContext } from "@playwright/test"
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs"
+import { existsSync, readFileSync, writeFileSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 
@@ -23,6 +23,14 @@ import path from "path"
  * 所以这条 spec 钉的不是「弹窗里有个报错件」（组件测试已经钉了），而是**整条链**：
  * 真内核建项目 ⇒ 盘上目录真被删 ⇒ 界面走工具栏新建 ⇒ 服务端 400「目标目录不存在」
  * ⇒ 那句话出现在**发起它的那个弹窗**里、且**弹窗不关**。
+ *
+ * ## ⚠️ 跑法前提：本 spec 会**删掉自己的项目目录**，勿在持久态上跑
+ *
+ * 它是全仓真栈 spec 里**唯一**这么干的一条。默认跑法（不设 `REAL_STACK_STATE_DIR`）跑在临时态、
+ * 随栈销毁，**无害**。但 `README.openhive.md` 教的正是「设 `REAL_STACK_STATE_DIR` 起持久栈」——
+ * 那种跑法下本 spec 会**长期**留下一条「目录已被删」的项目记录，点进去任何文件操作必 400
+ * （＝ 2026-10-16 那次实报的形态）；而本仓**没有**项目硬删出口（`PATH` 只有 `list`/`create`/
+ * `touch`，归档是另一个出口），清不掉。跑持久态时请给它自己的临时 `REAL_STACK_STATE_DIR`。
  */
 
 const readStack = () =>
@@ -120,7 +128,13 @@ test("项目目录被删掉之后新建 ⇒ 弹窗不关、就地报服务端原
   const 错误 = page.locator("[data-slot='file-create-dialog'] [data-slot='file-op-error']")
   await expect(错误, "失败话应当就地出现在弹窗里（弹窗不关）").toBeVisible({ timeout: 15_000 })
   await expect(错误, "就地报的应当是服务端那句原话").toContainText("目标目录不存在")
-  // 弹窗不关的独立一句：输入框还在（弹窗一关它就卸载了），名字也还在框里。
-  await expect(名字, "失败了弹窗不能关，名字还在框里").toBeVisible()
+  // ⚠️ 上面两句与下面 `toHaveValue` 都在 `close()` 的 **dispose 窗内**（~100ms，见下）——
+  // 一个「既 `set失败话` 又 `close()`」的实现也能过。故末段**过了窗再判一次**：
+  // `useDialog().close()` 是两步（`packages/ui/src/context/dialog.tsx:47-60`：`setClosing(true)`
+  // 立刻、`dispose()` 在 100ms 的 `setTimeout` 里），**真浏览器里同样有这个窗**
+  // （`LEARNINGS #005-33`；组件层用 `等它没了()` 有界轮询扛的正是它）。
   await expect(名字, "名字应当原样还在框里").toHaveValue("新文件.csv")
+  await page.waitForTimeout(300)
+  await expect(错误, "过了 dispose 窗，报错件应当还在（＝弹窗真没关）").toBeVisible()
+  await expect(名字, "过了 dispose 窗，输入框应当还在（＝弹窗真关）").toBeVisible()
 })

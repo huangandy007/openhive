@@ -1324,7 +1324,9 @@ describe("FileTree 文件树（FR-005）", () => {
      * （`workspace-entry`）画到**工具栏下方**，离用户点的那一行隔着一整棵树。
      */
     test("重命名没办成 ⇒ 原话出现在**那一行**上（行的子节点，不是工具栏下方）", async () => {
-      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onRename={() => "项目根不能删"} />)
+      // ⚠️ 台词用重命名的 `NAME_ALIASED` 原话，不是「项目根不能删」——那是**删除**的专有话
+      // （`ROOT_UNDELETABLE`，只由删除返回）；重命名真正会拒它的是 `NAME_ALIASED`（`openhive/file.ts:778`）。
+      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onRename={() => "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）"} />)
 
       行按名(host, "资金.xlsx")?.click()
       按钮(host, "file-tree-action-rename")?.click()
@@ -1333,7 +1335,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
       // `行按路径` 找不到就抛 ⇒ 这一句本身就钉住了「失败=路径没变、那一行还在」
       const 行 = 行按路径(host, "资金.xlsx")
-      expect(行.querySelector("[data-slot='file-op-error']")?.textContent ?? "").toContain("项目根不能删")
+      expect(行.querySelector("[data-slot='file-op-error']")?.textContent ?? "").toContain("文件名里不能含")
       // 反面：**别的行**上没有这句话（防「画到第一行去了」那种假绿）。
       // ⚠️ 写成布尔，**别**写 `expect(节点).toBeNull()`——`#005-01`：节点型断言红了会把整轮挂死。
       expect(行按路径(host, "话单.csv").querySelector("[data-slot='file-op-error']") === null).toBe(true)
@@ -1343,7 +1345,8 @@ describe("FileTree 文件树（FR-005）", () => {
       // 一条能换 `paths` 的挂具：`createSignal` 存 paths，重取时再赋一份**同内容的新数组**
       // （这正是 `workspace-entry` 重取清单的形状：同路径、新身份）。
       const [路径们, set路径们] = createSignal(树("话单.csv", "资金.xlsx"))
-      const host = mount(() => <FileTree paths={路径们()} onRename={() => "项目根不能删"} />)
+      // ⚠️ 同上一条：台词是重命名的 `NAME_ALIASED`，不是删除的「项目根不能删」（`ROOT_UNDELETABLE`，只由删除返回）。
+      const host = mount(() => <FileTree paths={路径们()} onRename={() => "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）"} />)
 
       行按名(host, "资金.xlsx")?.click()
       按钮(host, "file-tree-action-rename")?.click()
