@@ -37,23 +37,46 @@
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
-import { type JSX } from "solid-js"
+import { createSignal, Show, type JSX } from "solid-js"
+import { FileOpError } from "./file-op-error"
 
 export interface FileDeleteDialogProps {
   /** 要删的那一项的路径——用户得看得出对象（改之前那条横幅上的 `file-tree-delete-name` 同款）。 */
   path: string
-  /** 用户按下「删除」才喊；取消 / 点遮罩 / Escape / 右上角关闭**一次都不喊**。 */
-  onConfirm: () => void
+  /**
+   * 用户按下「删除」才喊；取消 / 点遮罩 / Escape / 右上角关闭**一次都不喊**。
+   *
+   * 回话约定（与 `ProjectPanel.onCreate` **逐字相同**）：**回一句字符串 = 没办成**，那句话就地
+   * 显示、弹窗**不关**；`undefined` / 不回 = 收工。
+   */
+  onConfirm: () => string | undefined | Promise<string | undefined> | void
 }
 
 export function FileDeleteDialog(props: FileDeleteDialogProps): JSX.Element {
   const dialog = useDialog()
+  /** 上一次没办成的那句话；`undefined` = 没话说。（本弹窗没有输入框 ⇒ 不存在「用户一动就过期」。） */
+  const [失败话, set失败话] = createSignal<string | undefined>()
+  /** 交出去之后、回话之前。「弹窗不关」新造出重发的洞 ⇒ 这段缝隙里「删除」是锁着的。 */
+  const [忙, set忙] = createSignal(false)
 
-  function 确定() {
-    // 先收弹窗再喊回调（同 `file-create-dialog` 的收尾顺序）：回调那侧会去发请求，若它同步失败
-    // （哨兵 / 抛错），弹窗已经不在，用户不会对着一个「按了却没反应」的框发呆。
-    dialog.close()
-    props.onConfirm()
+  async function 确定() {
+    if (忙()) return
+    set忙(true)
+    let 回话: string | undefined | void
+    try {
+      回话 = await props.onConfirm()
+    } catch (err) {
+      // 抛错 = 「我们这边坏了」，先收弹窗（保住原注释那条理由）。这一支不在本次射程内。
+      dialog.close()
+      throw err
+    } finally {
+      set忙(false)
+    }
+    if (typeof 回话 !== "string") {
+      dialog.close()
+      return
+    }
+    set失败话(回话)   // 不关：用户在同一个面上改一个别的（或原样再试一次）
   }
 
   return (
@@ -66,13 +89,14 @@ export function FileDeleteDialog(props: FileDeleteDialogProps): JSX.Element {
           <p class="min-w-0 text-[13px] text-v2-text-text-base">
             确定删除「<span data-slot="file-delete-name">{props.path}</span>」？
           </p>
+          <Show when={失败话()}>{(话) => <FileOpError 话={话()} />}</Show>
         </DialogBody>
         <DialogFooter>
           {/* `autofocus` 落在「取消」上（见文件头「默认焦点」那段）。 */}
           <ButtonV2 autofocus data-slot="file-delete-cancel" variant="neutral" onClick={() => dialog.close()}>
             取消
           </ButtonV2>
-          <ButtonV2 data-slot="file-delete-ok" variant="danger" onClick={确定}>
+          <ButtonV2 data-slot="file-delete-ok" variant="danger" disabled={忙()} onClick={() => void 确定()}>
             删除
           </ButtonV2>
         </DialogFooter>

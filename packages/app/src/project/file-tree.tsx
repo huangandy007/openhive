@@ -162,8 +162,8 @@ export interface FileTreeProps {
    * 省略 = 还没接线，按钮与菜单项都禁用。
    */
   onRename?: (path: string, name: string) => void
-  /** 删除**选中项**（工具栏）／**右键那一项**（菜单）。省略 = 还没接线，按钮与菜单项都禁用。（二次确认属 T009。） */
-  onDelete?: (path: string) => void
+  /** 删除**选中项**（工具栏）／**右键那一项**（菜单）。省略 = 还没接线，按钮与菜单项都禁用。回话约定同 `onCreate`。 */
+  onDelete?: (path: string) => string | undefined | Promise<string | undefined> | void
 
   /**
    * 设计 §6.2 第二～四组的那六个动作。**除上传外**一律收「被右键那个节点」的路径。
