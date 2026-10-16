@@ -136,5 +136,5 @@ test("项目目录被删掉之后新建 ⇒ 弹窗不关、就地报服务端原
   await expect(名字, "名字应当原样还在框里").toHaveValue("新文件.csv")
   await page.waitForTimeout(300)
   await expect(错误, "过了 dispose 窗，报错件应当还在（＝弹窗真没关）").toBeVisible()
-  await expect(名字, "过了 dispose 窗，输入框应当还在（＝弹窗真关）").toBeVisible()
+  await expect(名字, "过了 dispose 窗，输入框应当还在（＝弹窗真没关）").toBeVisible()
 })
