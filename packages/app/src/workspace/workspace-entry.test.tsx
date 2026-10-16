@@ -2419,6 +2419,20 @@ const 弹窗取消 = () =>
 const 删弹窗钮 = (slot: string) =>
   document.body.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
 
+/**
+ * `useDialog().close()` 是两步：状态**立刻**变、节点 **~100ms 后**才 `dispose()`
+ * （`context/dialog.tsx:57` 的 `setTimeout`，`LEARNINGS #005-33`）。
+ * ⇒ 「弹窗在不在」在 `setTimeout 0` 的窗里恒真，只看那个窗**什么也判不出**。
+ * 这个助手一直等到它**不见**为止（有界上限）；`true` = 它在窗口内消失了。
+ * （照抄 `file-delete-dialog.test.tsx` 里那个同名助手，`#004-12`。）
+ */
+const 等弹窗没 = async (上限 = 25) => {
+  for (let i = 0; i < 上限 && document.querySelector("[data-slot='file-delete-dialog']"); i++) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return !document.querySelector("[data-slot='file-delete-dialog']")
+}
+
 /** 树上的一个按钮槽位（`file-tree-action-*` / `file-tree-create-*` / `file-tree-delete-*`）。 */
 const 树按钮 = (host: HTMLElement, slot: string) =>
   host.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
@@ -2628,7 +2642,14 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     expect(假.改名的).toEqual([])
   })
 
-  test("删除被拒（项目根不能删）⇒ 留下服务端那句原话，且不重取清单", async () => {
+  /**
+   * ⚠️ **本条 2026-10-16 改写过**：改之前它断的是「那句话落在 `file-op-message`（工具栏下方）」，
+   * 与新行为**正好相反**（载体从内联句改成弹窗里的提示）。`LEARNINGS #005-36`：改一个行为之前，
+   * 先 `grep` 出**断言了这个旧行为**的既有用例，逐条明说去向——这里是**改写**，不是删。
+   *
+   * 反面断言（清单不重取）**继续留着**：盘上没变，重取是空跑。
+   */
+  test("删除被拒（项目根不能删）⇒ 弹窗**不关**、原话在弹窗里，且不重取清单", async () => {
     const { host, 假 } = await 开({ removeEntry: async () => ({ kind: "rejected", message: "项目根不能删" }) })
     const 删前 = 假.files.length
 
@@ -2638,8 +2659,15 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     删弹窗钮("file-delete-ok")?.click()
     await 冲一遍()
 
-    expect(text(host, "file-op-message")).toBe("项目根不能删")
-    expect(假.files.length).toBe(删前)
+    // 主判据：原话在**弹窗**里（不是工具栏下方那行内联）——落到 `file-delete-dialog` 里
+    // `file-op-error` 那一件上（弹窗传送到 `document.body`，用 `document.querySelector`，`#004-03`）。
+    const 弹窗话 = document.querySelector("[data-slot='file-delete-dialog'] [data-slot='file-op-error']")?.textContent ?? ""
+    expect(弹窗话).toContain("项目根不能删")
+    // 「弹窗不关」这条承诺的证据：有界轮询扛过 dispose 窗再判（旧实现——接线丢回话、弹窗照关——
+    // 在 500ms 上限内节点会消失，`等弹窗没()` 回 `true`，恰红）。
+    expect(await 等弹窗没()).toBe(false)
+    // 反面断言
+    expect(假.files.length, "没成的事不该刷成「好像变了」").toBe(删前)
   })
 
   test("新建弹窗点「取消」⇒ 一个请求都不发", async () => {

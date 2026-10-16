@@ -589,18 +589,33 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     projectList()?.find((项目) => 项目.id === currentProject()?.id)?.archived === true
 
   /**
-   * 一次文件动作的收尾：**办成** ⇒ 清话 ＋ 重取清单；**没办成** ⇒ 把服务端那句话留下。
+   * 一次文件动作的收尾：**办成** ⇒ 清话 ＋ 重取清单，回 `undefined`；
+   * **没办成** ⇒ **回**服务端那句话（一个字都不写进内联那行 `file-op-message`）。
    *
-   * 「重取」而不是「本地拼」：服务端回的新路径**只用来报一句话**，界面上的真相永远是重取那一份
-   * （同 T018 的「清单重拉，不把新行拼进旧清单」——拼出来的树跟磁盘没有对过账）。
+   * ## 为什么从「写共享信号」改成「回一句话」
+   *
+   * 改之前它把失败话写进 `文件话`，而 `文件话` 画在**工具栏下方**——那是「上传 / 下载」的
+   * 发起面，不是新建弹窗 / 删除弹窗 / 树里那一行的发起面。于是民警在弹窗里点了确定，
+   * 话掉到一棵树之外（2026-10-16 实报）。
+   *
+   * 现在报在哪儿由**各调用方**决定：`建条` / `改名条` / `删条` 把回话交回发起它的那个面；
+   * `搬一批` / `传` 的**成功支**只借这一步的重取清单，故 `void` 掉返回值。
+   *
+   * ⚠️ **不往这里塞弹窗**：它只回一句话。`2026-10-15-…-design.md:170` 那条「这份重复是有意的、
+   * 不要顺手合并」的警戒，前提是「把弹窗塞进 `收下` 会连带改掉另外三个动作的报告方式」——
+   * 本设计不塞弹窗，那条前提没了。
+   *
+   * 「重取」而不是「本地拼」：服务端回的新路径**只用来报一句话**，界面上的真相永远是重取那
+   * 一份（同 T018 的「清单重拉，不把新行拼进旧清单」）。
    */
-  function 收下(结论: FileOpOutcome) {
-    if (结论.kind !== "done") {
-      set文件话(结论.message)
-      return
-    }
+  async function 收下(结论: FileOpOutcome): Promise<string | undefined> {
+    // 只有 `done` 算办成；`rejected` 与 `failed` 都回那句话（**不按类别分形状**：
+    // `rejected` 里既有「可改一处再交」的 400，也有「重试永远撞同一道门」的 401 / 403，
+    // 见 spec §6 末段）。
+    if (结论.kind !== "done") return 结论.message
     set文件话(undefined)
     拨清单重取()
+    return undefined
   }
 
   /** 开目标选择器（复制 / 移动共用）。**此刻一个请求都不发**——目标还没选。 */
@@ -621,13 +636,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 逐个 `await`、分开记账：服务端一次搬一个，「几个成了」这句话只有在这一层说得出来
    * （与既有 `传()` 同一形状）。
    *
-   * ## 为什么不复用 `收下()`
+   * ## 全成那一支借 `收下()` 的重取清单
    *
-   * `收下()` 是**五个动作**共用**的结论口（新建 / 重命名 / 删除 / 移动 / 复制）。把弹窗塞进
-   * 它会**连带改掉另外三个动作的报告方式**，超出本次所指 ⇒ 移动 / 复制从它分出来、自己写全
-   * 两个分支，`收下` 保持原样给剩下三个用。
-   * ⚠️ 下面「成功支那两行」与 `收下` 的重复是**有意的**，**不要顺手合并**——合并的那一刻，
-   * 新建 / 重命名 / 删除 的失败会一起变成弹窗（spec §5.3）。
+   * `收下()` 是五个动作共用的结论口，但它**只回一句话、不画任何东西**（2026-10-16 改）。
+   * 所以这里可以放心借它的「办成 ⇒ 清话 ＋ 重取清单」，返回值 `void` 掉即可。
+   * **失败支仍各回各的面**：这里回报告弹窗，`传` 回内联那行（发起面不同，spec §3 的表）。
    */
   async function 搬一批(dir: string, 路径们: readonly string[], mode: "copy" | "move") {
     const id = currentProject()?.id
@@ -646,7 +659,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     set待搬(undefined)
 
     if (没成.length === 0) {
-      收下({ kind: "done", path: dir })
+      // 全成：借 `收下` 那一步的重取清单，返回值不用（移动 / 复制报在报告弹窗里，不在内联那行）。
+      void 收下({ kind: "done", path: dir })
       return
     }
     set文件话(undefined)
@@ -682,7 +696,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
 
     const 没成 = files.length - 成了
     if (没成 === 0) {
-      收下({ kind: "done", path: dir })
+      // 全成：借 `收下` 那一步的重取清单，返回值不用（移动 / 复制报在报告弹窗里，不在内联那行）。
+      void 收下({ kind: "done", path: dir })
       return
     }
     // ⚠️ 那句话只讲**其中一个**。不说清还有几个的话，界面会把「3 个里失败了 2 个」
@@ -720,22 +735,23 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   async function 建条(input: { kind: "file" | "directory"; parent: string; name: string }) {
     const id = currentProject()?.id
-    if (!id || !projectData) return
-    收下(await projectData.createEntry(id, input.kind, input.parent, input.name))
+    if (!id || !projectData) return undefined
+    // 把回话**原样**交回新建弹窗（`string` = 没办成 ⇒ 弹窗不关、就地报）。
+    return 收下(await projectData.createEntry(id, input.kind, input.parent, input.name))
   }
 
   /** 改名（T018）：`path` 是**旧路径**、`name` 是新名字——两样都由文件树给（它手里有节点表）。 */
   async function 改名条(path: string, name: string) {
     const id = currentProject()?.id
-    if (!id || !projectData) return
-    收下(await projectData.renameEntry(id, path, name))
+    if (!id || !projectData) return undefined
+    return 收下(await projectData.renameEntry(id, path, name))
   }
 
   /** 删除（T018）：文件直接删、**目录递归删**。二次确认在文件树那侧（FR-006），到这里已经确认过。 */
   async function 删条(path: string) {
     const id = currentProject()?.id
-    if (!id || !projectData) return
-    收下(await projectData.removeEntry(id, path))
+    if (!id || !projectData) return undefined
+    return 收下(await projectData.removeEntry(id, path))
   }
 
   /**
@@ -1057,9 +1073,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}
-                        onCreate={有项目() ? (input) => void 建条(input) : undefined}
-                        onRename={有项目() ? (path, name) => void 改名条(path, name) : undefined}
-                        onDelete={有项目() ? (path) => void 删条(path) : undefined}
+                        // 三个回调都把回话**原样**往回交（`string` = 没办成）：新建 / 删除由弹窗就地报，
+                        // 重命名由树报在**那一行**上。
+                        onCreate={有项目() ? (input) => 建条(input) : undefined}
+                        onRename={有项目() ? (path, name) => 改名条(path, name) : undefined}
+                        onDelete={有项目() ? (path) => 删条(path) : undefined}
                         onCopy={(path) => 要搬(path, "copy")}
                         onMove={(path) => 要搬(path, "move")}
                         onUpload={选文件}
