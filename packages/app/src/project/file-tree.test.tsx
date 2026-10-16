@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { toaster } from "@opencode-ai/ui/toast"
-import { type JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { ToastRegion } from "@/utils/toast"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
@@ -1315,6 +1315,47 @@ describe("FileTree 文件树（FR-005）", () => {
       按钮(host, "file-tree-action-delete")?.click()
 
       expect(记).toEqual([])
+    })
+
+    /**
+     * ── 重命名失败的话落在**那一行**上（2026-10-16）────────────────────
+     *
+     * 改之前：树的 `onRename` 是 `void`，失败与成功在树上长得一样 —— 那句话只可能由接线层
+     * （`workspace-entry`）画到**工具栏下方**，离用户点的那一行隔着一整棵树。
+     */
+    test("重命名没办成 ⇒ 原话出现在**那一行**上（行的子节点，不是工具栏下方）", async () => {
+      const host = mount(() => <FileTree paths={树("话单.csv", "资金.xlsx")} onRename={() => "项目根不能删"} />)
+
+      行按名(host, "资金.xlsx")?.click()
+      按钮(host, "file-tree-action-rename")?.click()
+      条里敲(条里打字(host, "file-tree-rename-input", "明细.xlsx"), "Enter")
+      await 歇一拍()
+
+      // `行按路径` 找不到就抛 ⇒ 这一句本身就钉住了「失败=路径没变、那一行还在」
+      const 行 = 行按路径(host, "资金.xlsx")
+      expect(行.querySelector("[data-slot='file-op-error']")?.textContent ?? "").toContain("项目根不能删")
+      // 反面：**别的行**上没有这句话（防「画到第一行去了」那种假绿）。
+      // ⚠️ 写成布尔，**别**写 `expect(节点).toBeNull()`——`#005-01`：节点型断言红了会把整轮挂死。
+      expect(行按路径(host, "话单.csv").querySelector("[data-slot='file-op-error']") === null).toBe(true)
+    })
+
+    test("清单重取（`paths` 换了一份）⇒ 那句行话收掉，不永久挂着", async () => {
+      // 一条能换 `paths` 的挂具：`createSignal` 存 paths，重取时再赋一份**同内容的新数组**
+      // （这正是 `workspace-entry` 重取清单的形状：同路径、新身份）。
+      const [路径们, set路径们] = createSignal(树("话单.csv", "资金.xlsx"))
+      const host = mount(() => <FileTree paths={路径们()} onRename={() => "项目根不能删"} />)
+
+      行按名(host, "资金.xlsx")?.click()
+      按钮(host, "file-tree-action-rename")?.click()
+      条里敲(条里打字(host, "file-tree-rename-input", "明细.xlsx"), "Enter")
+      await 歇一拍()
+      // 前提：先证那句话**在**（否则下面那句「没了」可能一直是没了的空转，`#006-17`）
+      expect(无槽(host, "file-op-error")).toBe(false)
+
+      set路径们(树("话单.csv", "资金.xlsx")) // 新数组、同内容
+      await 歇一拍()
+
+      expect(无槽(host, "file-op-error")).toBe(true)
     })
   })
 

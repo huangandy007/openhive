@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, splitProps, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, Show, splitProps, type JSX } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -12,6 +12,7 @@ import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
 import { FileDownloadDialog } from "@/project/file-download-dialog"
+import { FileOpError } from "./file-op-error"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
@@ -112,7 +113,14 @@ const TOOL_BUTTON_DANGER =
  * ⚠️ 这两条都是**class 覆盖**，不是在设计系统件上改源码（`CLAUDE.md` 定制化三原则：侵入是「加」不是「改」）。
  */
 const SEARCH_INPUT = "!h-6 !w-full"
-const ROW = "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+/**
+ * 一行。`min-h-6` 而不是 `h-6`、并允许换行：**重命名失败时那一行要长出一句话**
+ * （`FileOpError` 带 `w-full` ⇒ 换到第二行、整行变高）。
+ * ⚠️ 对**没有**失败话的行，两者算出来的高度逐字相同（`min-h-6` 的 24px ＋ 单行内容），
+ * 故这不是一次视觉改动——那 24px 是既有真栈读数（`context-menu-dismiss-probe.spec.ts` 注释里的
+ * 行坐标）赖以成立的前提，别拿掉 `min-h-6`。
+ */
+const ROW = "flex flex-wrap min-h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
 /**
  * **选中态**＝品牌浅金 `--v2-background-bg-accent-soft`（`DESIGN.md` §1.3「选中态」＝`#FEF3C7`，
@@ -159,9 +167,12 @@ export interface FileTreeProps {
    * ⚠️ 同样**不立刻喊**（T018 起）：先把那一行的名字就地换成输入条（见 `改名的`），
    * Enter 才把新名字喊出去。`path` 仍是**旧路径**——服务的责任是拿它反推所在目录（同 `renameEntry`）。
    *
+   * 回话约定（与 `ProjectPanel.onCreate` 逐字相同）：**回一句字符串 = 没办成**，那句话落在
+   * **被改名的这一行**上；`undefined` / 不回 = 收工。
+   *
    * 省略 = 还没接线，按钮与菜单项都禁用。
    */
-  onRename?: (path: string, name: string) => void
+  onRename?: (path: string, name: string) => string | undefined | Promise<string | undefined> | void
   /** 删除**选中项**（工具栏）／**右键那一项**（菜单）。省略 = 还没接线，按钮与菜单项都禁用。回话约定同 `onCreate`。 */
   onDelete?: (path: string) => string | undefined | Promise<string | undefined> | void
 
@@ -380,6 +391,19 @@ export function FileTree(props: FileTreeProps) {
    * 好把 `onRename(旧路径, 新名字)` 的两样凑齐。存新名字的中间态则要在本文件里再写一遍草稿判据。
    */
   const [改名的, set改名的] = createSignal<string>()
+  /**
+   * 「上一次重命名没办成」的那句话 ＋ 它属于**哪一行**（按**旧路径**记）。
+   *
+   * ## 为什么存**路径**而不是「当前那一行」
+   *
+   * 渲染时只在**当前仍存在**的那一行上画 —— 行没了，话自然不画，**不需要**在卸载时去清
+   * （少一处遗漏的机会）。显式清掉只发生在两处：① 该行**开始下一次改名**（见 `改名`）；
+   * ② **清单重取**（`props.paths` 换了新数据，见下面那个 `createEffect`）。两处都在本文件里，不跨层。
+   */
+  const [行话, set行话] = createSignal<{ 路径: string; 话: string }>()
+  // 清单换了新数据 ⇒ 上一轮那句话过期（树上的真相永远是重取那一份）。
+  // `defer: true`：挂载那一次不算「换了新数据」。
+  createEffect(on(() => props.paths, () => set行话(undefined), { defer: true }))
   /**
    * 右键点在哪个节点上（`undefined` = 没点在行上：空态、或行以外的空白）。
    *
@@ -735,13 +759,24 @@ export function FileTree(props: FileTreeProps) {
                           槽位="file-tree-rename-input"
                           可访问名称="条目名称"
                           原名={row.node.name}
-                          on提交={(name) => {
-                            // 先收编辑态再喊回调——同上面新建那条，理由一样。
+                          on提交={async (name) => {
+                            // 先收编辑态再喊回调——同上面新建那条，理由一样（`inline-rename-input.tsx`
+                            // 「一次编辑只结一次账」那条真栈实测出来的守卫不放开）。
                             set改名的(undefined)
-                            props.onRename?.(row.node.path, name)
+                            const 回话 = await props.onRename?.(row.node.path, name)
+                            if (typeof 回话 === "string") set行话({ 路径: row.node.path, 话: 回话 })
                           }}
                           on取消={() => set改名的(undefined)}
                         />
+                      </Show>
+                      {/* 重命名失败的话落在**这一行**上（spec §3：失败回到发起它的那个面）。
+                          ⚠️ 它是行的**子节点**（不是行的兄弟）——行的 `role="treeitem"` 里允许任意内容，
+                          摆在 `role="tree"` 下当一个无角色的 `<div>` 则是无效的 ARIA 结构。
+                          `w-full` 让它自己占一整行（见 `ROW` 的 `flex-wrap`）。 */}
+                      <Show when={行话()?.路径 === row.node.path}>
+                        <div class="w-full min-w-0">
+                          <FileOpError 话={行话()?.话 ?? ""} />
+                        </div>
                       </Show>
                     </div>
                   )}
@@ -978,8 +1013,9 @@ export function FileTree(props: FileTreeProps) {
     ))
   }
 
-  /** 点重命名（工具栏 / 菜单）——同样只是把那一行换成输入条。 */
+  /** 点重命名（工具栏 / 菜单）——同样只是把那一行换成输入条。**顺带清掉那一行上旧的失败话**。 */
   function 改名(path: string) {
+    set行话(undefined)
     set改名的(path)
   }
 
