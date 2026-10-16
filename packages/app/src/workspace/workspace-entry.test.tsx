@@ -2425,12 +2425,16 @@ const 删弹窗钮 = (slot: string) =>
  * ⇒ 「弹窗在不在」在 `setTimeout 0` 的窗里恒真，只看那个窗**什么也判不出**。
  * 这个助手一直等到它**不见**为止（有界上限）；`true` = 它在窗口内消失了。
  * （照抄 `file-delete-dialog.test.tsx` 里那个同名助手，`#004-12`。）
+ *
+ * ⚠️ `slot` **必填、不给默认值**：上面 `弹窗探针` 那段注释刚论证过「别做『查哪个都行』的助手，
+ * 那会让『弹窗开的是哪一个』这条判据消失」。给了默认值，将来某个新建弹窗的调用点漏传就会
+ * **静默地去等删除弹窗**（等错 ⇒ 立刻回 `true` ⇒ 判据红得莫名其妙）。必填则漏传是 typecheck 红。
  */
-const 等弹窗没 = async (上限 = 25) => {
-  for (let i = 0; i < 上限 && document.querySelector("[data-slot='file-delete-dialog']"); i++) {
+const 等弹窗没 = async (slot: string, 上限 = 25) => {
+  for (let i = 0; i < 上限 && document.querySelector(`[data-slot='${slot}']`); i++) {
     await new Promise((r) => setTimeout(r, 20))
   }
-  return !document.querySelector("[data-slot='file-delete-dialog']")
+  return !document.querySelector(`[data-slot='${slot}']`)
 }
 
 /** 树上的一个按钮槽位（`file-tree-action-*` / `file-tree-create-*` / `file-tree-delete-*`）。 */
@@ -2665,9 +2669,120 @@ describe("建 / 改名 / 删接进工作台（T018 出参）", () => {
     expect(弹窗话).toContain("项目根不能删")
     // 「弹窗不关」这条承诺的证据：有界轮询扛过 dispose 窗再判（旧实现——接线丢回话、弹窗照关——
     // 在 500ms 上限内节点会消失，`等弹窗没()` 回 `true`，恰红）。
-    expect(await 等弹窗没()).toBe(false)
+    expect(await 等弹窗没("file-delete-dialog")).toBe(false)
     // 反面断言
     expect(假.files.length, "没成的事不该刷成「好像变了」").toBe(删前)
+  })
+
+  /**
+   * 新建失败 ⇒ 弹窗**不关**、服务端原话在**弹窗里**、名字草稿还在。
+   *
+   * ⚠️ **两条判据的写法被控制器在派单前改过**（裁定 R10 / R12）：
+   * ① 原计划写 `document.body.textContent` —— 那是**整页**文本，弹窗就算关了也可能命中别处的字，
+   *    等于没有射程（`#004-03` / `#005-44`）。改成落到**弹窗里 `file-op-error` 那一件**上。
+   * ② 原计划写 `不存在(document.body, "[data-slot='file-create-dialog']")` —— 它在 `冲一遍()`
+   *    （≈0ms）那一刻判，而 `close()` 是**两步**的、节点 ~100ms 后才 `dispose()`（`#005-33`）
+   *    ⇒ **旧实现（提交即关）在那个窗里也满足**，这条断言恒绿空转（`#005-47` 同族）。
+   *    改用有界轮询 `等弹窗没`，它扛过 dispose 窗再判。
+   * ③ 「名字草稿还在」原计划只写在**标题**里、代码里没有 —— 标题比断言强就是一句不实的话
+   *    （`#004-03`）。补上断言。
+   */
+  test("新建没办成 ⇒ 弹窗**不关**、原话在弹窗里、名字草稿还在", async () => {
+    const { host, 假 } = await 开({ createEntry: async () => ({ kind: "rejected", message: "目标目录不存在" }) })
+
+    右键行(host, "资料")
+    点菜单项("create-file")
+    await 冲一遍()
+    弹窗填("新.md")
+    弹窗提交()
+    await 冲一遍()
+
+    // 主判据①：原话在**弹窗里那一件**上（弹窗传送到 `document.body` ⇒ 用 `document` 查）
+    const 弹窗话 = document.querySelector("[data-slot='file-create-dialog'] [data-slot='file-op-error']")?.textContent ?? ""
+    expect(弹窗话).toContain("目标目录不存在")
+    // 主判据②：「不关」的证据 = 扛过那 ~100ms 的 dispose 窗之后它还开着。
+    // ⚠️ 布尔，不是节点断言（`#005-01`：`expect(<节点>).toBeNull()` 红了会把整轮挂死）。
+    expect(await 等弹窗没("file-create-dialog")).toBe(false)
+    // 主判据③：名字草稿留着 —— 改一处就能再交，不必重开重敲
+    expect(弹窗框().value).toBe("新.md")
+    // ⚠️ **这一句只是前提、不是守护者**：把接线处的 `return` 拆掉（Step 4）它**不会红**
+    //    —— `void` 掉回话之后 `建条` 照样执行、请求照样发。见 Step 4 的据实记录。
+    expect(假.建的条目.length, "第一趟确实发出去了（前提，不是本改动的守护者）").toBe(1)
+  })
+
+  /**
+   * 失败之后再交一次 ⇒ **会再发**。这条守的是「弹窗没关」的下游后果：链路还活着。
+   *
+   * ⚠️ 与 `file-create-dialog.test.tsx:239` 那条同款、同**局限**：happy-dom 里旧实现（提交即
+   * `close()`）在 dispose 窗内节点仍在 DOM，二次提交照样喊到回调（`#005-33`）——它钉的是
+   * **行为本身**，不是本改动的守护者。留着，但别让后来人高估它。
+   */
+  test("新建没办成之后改个名字再交 ⇒ **会再发一次**（弹窗没关，这条链还在）", async () => {
+    const { host, 假 } = await 开({ createEntry: async () => ({ kind: "rejected", message: "目标目录不存在" }) })
+
+    右键行(host, "资料")
+    点菜单项("create-file")
+    await 冲一遍()
+    弹窗填("新.md")
+    弹窗提交()
+    await 冲一遍()
+    弹窗填("改过的.md")
+    弹窗提交()
+    await 冲一遍()
+
+    expect(假.建的条目).toEqual([
+      ["p1", "file", "资料", "新.md"],
+      ["p1", "file", "资料", "改过的.md"],
+    ])
+  })
+
+  /**
+   * 重命名失败 ⇒ 原话落在**被改名的那一行**上，工具栏下方那行内联**不出现**。
+   *
+   * ⚠️ 剧本那句拒绝话被控制器改过（裁定 R13）：原计划抄的是 `"项目根不能删"`——那是**删除**的
+   * 专有话（服务端 `ROOT_UNDELETABLE`，`openhive/file.ts:300`）。重命名真正会拒它的只有
+   * `NAME_ALIASED`（`file.ts:778` 的 `if (!usableName(name)) return badRequest(NAME_ALIASED)`）。
+   * 一句「重命名失败」配一句「根不能删」的话，读者判不出是**接线接反了**还是**随手写的**。
+   */
+  test("重命名没办成 ⇒ 原话落在**那一行**上，工具栏下方那行内联**不出现**", async () => {
+    const { host, 假 } = await 开({
+      renameEntry: async () => ({ kind: "rejected", message: "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）" }),
+    })
+
+    找行(host, "话单.csv").click()
+    树按钮(host, "file-tree-action-rename")?.click()
+    条里敲(条里打字(host, "file-tree-rename-input", "旧名.csv"), "Enter")
+    await 冲一遍()
+
+    // 主判据：话在**那一行**里（行元素带 `data-path`，`file-tree.tsx` 的 `file-tree-row`）
+    const 行 = host.querySelector<HTMLElement>("[data-slot='file-tree-row'][data-path='资料/话单.csv']")
+    expect(行?.querySelector("[data-slot='file-op-error']")?.textContent ?? "").toContain("文件名里不能含")
+    // 旧载体确实退场了（不是「两处都画」）。`file-op-message` 只在有话说时渲染 ⇒ 此处应为 `undefined`
+    expect(text(host, "file-op-message")).toBe(undefined)
+    expect(假.改名的.length).toBe(1)
+  })
+
+  /**
+   * 重命名办成 ⇒ 清单重取，那一行上**没有**话。
+   *
+   * ⚠️ 最后那句「清单重取」是控制器加上的（裁定 R14）：本节文件头 ③ 写着「办成 ⇒ 清单重取」，
+   * 而重命名这一支至今没有一条钉它（新建那条在 `:2594`）。不加的话本条与本文件 `:2613` 那条
+   * （同样断 `假.改名的`）几乎重复。
+   */
+  test("重命名办成 ⇒ 清单重取，行话不留在屏幕上", async () => {
+    const { host, 假 } = await 开({ renameEntry: async () => ({ kind: "done", path: "资料/新名.csv" }) })
+    const 改前 = 假.files.length
+
+    找行(host, "话单.csv").click()
+    树按钮(host, "file-tree-action-rename")?.click()
+    条里敲(条里打字(host, "file-tree-rename-input", "新名.csv"), "Enter")
+    await 冲一遍()
+
+    expect(假.改名的).toEqual([["p1", "资料/话单.csv", "新名.csv"]])
+    expect(假.files.length).toBe(改前 + 1)
+    // 办成 ⇒ 那一行干净。⚠️ 这是**伴随信号**，不是守护者：`行话` 只在失败支被设过，
+    // 所以它红不了（`#004-14`：一用例多断言时，安全/主属性排在前面）。
+    expect(text(host, "file-op-error")).toBe(undefined)
   })
 
   test("新建弹窗点「取消」⇒ 一个请求都不发", async () => {
