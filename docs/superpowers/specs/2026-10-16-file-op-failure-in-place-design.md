@@ -59,16 +59,16 @@
 
 | 文件 | 改什么 |
 |---|---|
-| `packages/app/src/project/file-op-error.tsx` **（新）** | 三处发起面共用的「就地报一句」：`data-slot="file-op-error"`、`role="alert"`、样式同既有 `file-op-message`（`workspace-entry.tsx:1095-1105`）。措辞组合**只在这里一处**（§6） |
+| `packages/app/src/project/file-op-error.tsx` **（新）** | 三处发起面共用的「就地报一句」：`data-slot="file-op-error"`、`role="alert"`、样式同既有 `file-op-message`（`workspace-entry.tsx` 里带 `data-slot="file-op-message"` 那一条）。措辞组合**只在这里一处**（§6） |
 | `packages/app/src/project/file-op-error.test.tsx` **（新）** | 原话照登 ＋ 通用那句在；`role="alert"` |
-| `packages/app/src/project/file-create-dialog.tsx` | ① `onConfirm` 改签名为 `(name: string) => Promise<string \| undefined>` ② `确定()` 改异步（§5.2）③ 新增 `失败话` / `忙` 两只信号 ④ `DialogBody` 里落点那行下面挂提示 ⑤ 输入变化清掉提示 |
+| `packages/app/src/project/file-create-dialog.tsx` | ① `onConfirm` 改签名为 `(name: string) => string \| undefined \| Promise<string \| undefined> \| void` ② `确定()` 改异步（§5.2）③ 新增 `失败话` / `忙` 两只信号 ④ `DialogBody` 里落点那行下面挂提示 ⑤ 输入变化清掉提示 |
 | `packages/app/src/project/file-create-dialog.test.tsx` | 增：失败 ⇒ 弹窗不关 ＋ 提示在 ＋ 草稿还在；输入变化 ⇒ 提示清掉；在飞时「确定」禁用。既有 9 条**预期一条不用改**（见 §7） |
-| `packages/app/src/project/file-delete-dialog.tsx` | 同款契约改动（`onConfirm: () => Promise<string \| undefined>`） |
+| `packages/app/src/project/file-delete-dialog.tsx` | 同款契约改动（`onConfirm: () => string \| undefined \| Promise<string \| undefined> \| void`）。⚠️ **它是补既往空白**：该弹窗 2026-10-11 上线起没有测试（§10） |
 | `packages/app/src/project/file-delete-dialog.test.tsx` **（新）** | 今天**没有**这个文件（`ls` 过）。至少四条：确认才喊 / 取消不喊 / 失败 ⇒ 不关 ＋ 提示在 / 再按一次会重发 |
-| `packages/app/src/project/file-tree.tsx` | ① `FileTreeProps.onRename` 改签名为 `(path, name) => Promise<string \| undefined>` ② 行内提交处（`:730` `就地改名输入` 的 `on提交`，`:737` 那一下）改异步：**照旧先退编辑态**，再 await，失败了把话落到那一行 ③ 新增「行话」信号 ＋ 行内渲染 `FileOpError` ④ `就地改名输入` 组件**一个字不改** |
+| `packages/app/src/project/file-tree.tsx` | ① `FileTreeProps.onCreate` / `onRename` / `onDelete` **三个 prop** 改签名为 `… => string \| undefined \| Promise<string \| undefined> \| void`（**三个都得改**，不只是 `onRename`——`FileCreateDialog` / `FileDeleteDialog` 的 `onConfirm` 由 `file-tree.tsx` 接线，回话要过这两只手）② 行内提交处（`就地改名输入` 的 `on提交`）改异步：**照旧先退编辑态**，再 await，失败了把话落到那一行 ③ 新增「行话」信号 ＋ 行内渲染 `FileOpError` ④ `就地改名输入` 组件**一个字不改** |
 | `packages/app/src/project/file-tree.test.tsx` | 增：重命名失败 ⇒ 那一行出现原话、工具栏下方那句**不出现**；成功 ⇒ 行话清掉 |
 | `packages/app/src/workspace/workspace-entry.tsx` | ① `收下` 改签名（§5.1）② `建条` / `改名条` / `删条` 改成 `return 收下(await …)` ③ `搬一批` 的两处成功支改 `void 收下({done})` ④ `传` 的失败支**一字不改** |
-| `packages/app/src/workspace/workspace-entry.test.tsx` | 改写 1 条（`:2631`），增若干（§7） |
+| `packages/app/src/workspace/workspace-entry.test.tsx` | 改写 1 条（『删除被拒 ⇒ 弹窗不关、就地报』那条），增 4 条（§7） |
 | `docs/superpowers/specs/2026-10-15-file-tree-multi-select-move-design.md` | `:34` 与 `:293` 两条「登记为下一步」改成「已由 2026-10-16 那轮结清」；`:239` 第 27 条「删除失败 ⇒ **仍**是 `file-op-message`」改成弹窗 |
 | `packages/app/src/project/project-data.ts` | **一行不改**（它本来就回 `FileOpOutcome`） |
 | `packages/app/src/project/openhive-file-ops.ts` | **一行不改** |
@@ -90,15 +90,17 @@ async function 收下(结论: FileOpOutcome): Promise<string | undefined>
 
 | 调用点 | 现状 | 去向 |
 |---|---|---|
-| `:724` `建条` | `收下(await createEntry(…))` | `return 收下(await …)` ⇒ 交回新建弹窗 |
-| `:731` `改名条` | `收下(await renameEntry(…))` | `return 收下(await …)` ⇒ 交回那一行 |
-| `:738` `删条` | `收下(await removeEntry(…))` | `return 收下(await …)` ⇒ 交回删除弹窗 |
-| `:649` `搬一批` 全成支 | `收下({kind:"done", path: dir})` | `void 收下(…)`（结果不用） |
-| `:685` `传` 全成支 | `收下({kind:"done", path: dir})` | `void 收下(…)`（结果不用） |
+| `建条` 里那个 `return 收下(await …)` | `收下(await createEntry(…))` | `return 收下(await …)` ⇒ 交回新建弹窗 |
+| `改名条` 里那个 `return 收下(await …)` | `收下(await renameEntry(…))` | `return 收下(await …)` ⇒ 交回那一行 |
+| `删条` 里那个 `return 收下(await …)` | `收下(await removeEntry(…))` | `return 收下(await …)` ⇒ 交回删除弹窗 |
+| `搬一批` 全成支那句 `void 收下({ kind: "done", path: dir })` | `收下({kind:"done", path: dir})` | `void 收下(…)`（结果不用） |
+| `传` 全成支那句 `void 收下({ kind: "done", path: dir })` | `收下({kind:"done", path: dir})` | `void 收下(…)`（结果不用） |
 
 `搬一批` / `传` 的**失败支一个字不改**（各回各的面：前者报告弹窗、后者内联）。
 
 ⚠️ **顺带结清** `2026-10-15-…-design.md:170` 那条「⚠️ 这份重复是**有意的**，不要顺手合并」：那条警戒的理由是「把弹窗塞进 `收下` 会连带改掉另外三个动作的报告方式」。本设计**不往 `收下` 里塞弹窗**，只让它**回一句话**、由各调用方决定报在哪 —— 那条警戒的前提没了，两处可以合成一处。
+
+⚠️ **据实记（2026-10-16 实施后，回话类型）**：三个 prop（`onCreate` / `onRename` / `onDelete`）与两个弹窗 `onConfirm` 的回话类型最终取的是**联合** `string | undefined | Promise<string | undefined> | void`（与 `ProjectPanel.onCreate` **逐字相同**），不是本 spec 早先写的严格 `Promise<string | undefined>`。理由：本仓已有先例、四处契约一致，且 `| void` 那一支让「不接线的调用方」与「只记不看回话的测试」不必改。⚠️ 联合**收不下**返回 `number` 的箭头（2026-10-16 实测 `./node_modules/.bin/tsc --noEmit --strict`：`error TS2322: Type 'number' is not assignable to type '…'`），故 `file-tree.test.tsx` 有 **22 处**箭头签名适配（`git diff f87a7ce35f -- packages/app/src/project/file-tree.test.tsx | grep "^-" | grep "=>"` 实得 22 条 expression-body → block-body）。
 
 ### 5.2 发起弹窗：`确定()` 的新收尾
 
@@ -111,7 +113,7 @@ async function 确定() {
   try {
     话 = await props.onConfirm(name)
   } catch (err) {
-    // 抛错 = 「我们这边坏了」。保住原注释那条理由（`file-create-dialog.tsx:65-66`）：
+    // 抛错 = 「我们这边坏了」。保住原注释那条理由（`file-create-dialog.tsx` 里 `确定()` 的 `catch` 支那句注释）：
     // 别让用户对着一个「填好了却没反应」的框。
     dialog.close()
     throw err
@@ -135,10 +137,10 @@ async function 确定() {
 
 ```ts
 // FileTreeProps
-onRename?: (path: string, name: string) => Promise<string | undefined>
+onRename?: (path: string, name: string) => string | undefined | Promise<string | undefined> | void
 ```
 
-行内提交处（`file-tree.tsx:730-739`）改成：
+行内提交处（`file-tree.tsx` 里 `就地改名输入` 的 `on提交` 那一段）改成：
 
 ```tsx
 on提交={async (name) => {
@@ -150,6 +152,7 @@ on提交={async (name) => {
 
 - **行话怎么存、什么时候清**：按**路径**存（`{ 路径, 话 }`），渲染时只在**当前仍存在**的那一行上画 —— 行没了，话自然不画，**不需要**在卸载时去清（少一处遗漏的机会）。显式清掉只发生在两处：① 该行**开始下一次改名**；② **清单重取成功**（树换了新数据）。两处都在树里，不跨层。
 - **`就地改名输入` 的 props 一个字不改**（`on提交: (新名: string) => void`）——异步与报错都发生在**调用方**这一侧。这条是刻意的：改了它就会连带动 `ai-session/session-rename.tsx:41` 那条链（⑥ 步落点，见 §8）。
+- **行话的渲染写法（实施注记，2026-10-16）**：行话的渲染**不能**写成 `<Show when={某布尔}>{(话) => …话()…}</Show>` —— **非 keyed** 的 `Show` 把**那个布尔的访问器**交给子函数，拿到的是 `Accessor<boolean>`，不是你的对象（计划文本就是这么写的：`when={行话()?.路径 === row.node.path}` 配 `话={话().话}`，**照抄编译不过**）。本实现取 `<Show when={行话()?.路径 === row.node.path}><div class="w-full min-w-0"><FileOpError 话={行话()?.话 ?? ""} /></div></Show>`（不进食子函数，直接读上一层的信号）。**这条只写进 spec**（计划文本是历史文档，不改它）。
 
 ## 6. 措辞
 
@@ -170,12 +173,12 @@ on提交={async (name) => {
 
 | 用例 | 去向 | 为什么 |
 |---|---|---|
-| `workspace-entry.test.tsx:2631` 删除被拒 ⇒ `file-op-message` = 「项目根不能删」 | **改写** | 与新行为**正好相反**（载体从内联句改成弹窗里的提示）。改成「弹窗**还在** ＋ 弹窗里出现那句原话」；**保留反面断言**（清单不重取那条 `假.files.length`） |
+| 『删除被拒 ⇒ 弹窗不关、就地报』那条（旧断言 `file-op-message` = 「项目根不能删」） | **改写** | 与新行为**正好相反**（载体从内联句改成弹窗里的提示）。改成「弹窗**扛过 dispose 窗还在**（有界轮询）＋ 弹窗里出现那句原话」；**保留反面断言**（清单不重取那条 `假.files.length`）。⚠️ 只查一次「还在」**恒真、零判别力**：`useDialog().close()` 是两步（状态立刻变、节点 ~100ms 后才 `dispose()`，`#005-33`）⇒ 旧实现（提交即关）在那个窗里也满足，必须扛过 dispose 窗再判 |
 | `:2313` 下载失败 ⇒ 内联 | **保留** | 不在射程（下载不走 `收下`，发起面是右键菜单） |
 | `:2203` 被拒 ⇒ 弹窗里出现服务端那句话 | **保留** | 移动 / 复制的，已经是对的 |
 | `openhive-file-ops.test.ts` 全部 | **保留** | `FileOpOutcome` 的归类判据不动 |
 | `inline-rename-input.test.tsx` 全部 | **保留** | 组件一字不动 |
-| `file-create-dialog.test.tsx` 全 9 条 | **预期一条不用改，但实施时逐条跑过** | `:138` / `:148` 断的是「回调收到了什么」，而 `props.onConfirm(name)` 在 `await` 之前**同步**被调用 ⇒ 读法不变。**若实得与此不符，据实改并记录** |
+| `file-create-dialog.test.tsx` 全 9 条 | **断言一条不用改，但 harness `触发器` 里那个 `onConfirm` 箭头必须改**（返回 `number` 落不进新契约；不是 `触发器` 声明那一行） | **『提交 ⇒ 交出去的只有一个名字』与『名字两头带空白 ⇒ 交出去的是 trim 后的值』** 两条断的是「回调收到了什么」，而 `props.onConfirm(name)` 在 `await` 之前**同步**被调用 ⇒ 读法不变。**若实得与此不符，据实改并记录** |
 
 **旧行为的洞（要新增用例）** —— 新建失败与重命名失败**今天没有任何用例守着**：
 
