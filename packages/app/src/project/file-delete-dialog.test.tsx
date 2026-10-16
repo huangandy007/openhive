@@ -10,7 +10,7 @@
  * ## 这一条最要紧的判据是「取消时**一次都不喊**」
  *
  * 破坏性动作的弹窗，「点遮罩 / 按 Escape / 点取消 / 点右上角关闭」四条出口**都必须不删**。
- * 这里只做得到前两条与「取消」（遮罩与 Escape 归 Kobalte 的 `DismissableLayer`，组件测试里
+ * 这里只做得到「取消」这一条（遮罩与 Escape 归 Kobalte 的 `DismissableLayer`，组件测试里
  * 够不着它的内部派发）——剩下的据实进 spec §10 缺口，**不写成已覆盖**。
  *
  * ## 「弹窗在不在」一律用 `等弹窗没` 助手（R5 / R8）
@@ -122,8 +122,11 @@ describe("FileDeleteDialog 删除二次确认弹窗", () => {
     await flush()
     await flush()
 
-    // 主判据：那句话**就地**（在 `FileOpError` 那一件上，`data-slot="file-op-error"`）显示
-    expect(document.body.textContent ?? "").toContain("项目根不能删")
+    // 主判据：那句话**就地**（在弹窗里的 `FileOpError` 那一件上，`data-slot="file-op-error"`）显示——
+    // 钉的是「三处发起面共用同一个提示件」这半截契约（与新建弹窗、文件树行共用 `FileOpError`）。
+    expect(
+      document.querySelector("[data-slot='file-delete-dialog'] [data-slot='file-op-error']")?.textContent ?? "",
+    ).toContain("项目根不能删")
     // 「不关」的证据在下面那条「扛过 dispose 窗」的用例里——这里的 flush 窗里旧实现（提交即
     // `close()`）也还在，只断 `弹窗在()).toBe(true)` 是空转（`LEARNINGS #005-33`）。
   })
