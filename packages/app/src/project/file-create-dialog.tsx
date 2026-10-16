@@ -39,33 +39,60 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { Field } from "@opencode-ai/ui/v2/field-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
-import { createSignal, type JSX } from "solid-js"
+import { Show, createSignal, type JSX } from "solid-js"
 import { 改名草稿 } from "@/components/inline-rename-input"
+import { FileOpError } from "./file-op-error"
 
 export interface FileCreateDialogProps {
   /** 建文件还是建文件夹——只决定标题与占位文案（服务端 `Schema.Literals(["file","directory"])`）。 */
   kind: "file" | "directory"
   /** **落点目录**（`""` ＝ 项目根）。规则与 `onCreate` 的 `parent` 同一份，在 `file-tree.tsx` 里算。 */
   parent: string
-  /** 用户确认后交出**已 trim**的名字；取消 / 关闭**一次都不喊**。 */
-  onConfirm: (name: string) => void
+  /**
+   * 回话约定（与 `ProjectPanel.onCreate` **逐字相同**，见 `project-panel.tsx:178-187`）：
+   * **回一句字符串 = 没办成**，那句话就地在弹窗里给民警看、弹窗**不关**；`undefined` / 不回 /
+   * `Promise<void>` = 收工（弹窗关掉）。
+   *
+   * 取消 / 关闭仍然**一次都不喊**。
+   */
+  onConfirm: (name: string) => string | undefined | Promise<string | undefined> | void
 }
 
 export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
   const dialog = useDialog()
   const [草稿, set草稿] = createSignal("")
+  /** 上一次没办成的那句话；`undefined` = 没话说。用户一动输入框就清掉（见 `onInput`）。 */
+  const [失败话, set失败话] = createSignal<string | undefined>()
+  /** 交出去之后、回话之前。这段缝隙里「确定」是锁着的（见 `确定`）。 */
+  const [忙, set忙] = createSignal(false)
 
   const 是文件夹 = () => props.kind === "directory"
   /** `undefined` ＝ 这份草稿还不值得交出去（空 / 只有空白）⇒ 「确定」禁用、提交直接返回。 */
   const 名字 = () => 改名草稿(草稿(), undefined)
 
-  function 确定() {
+  async function 确定() {
     const name = 名字()
-    if (name === undefined) return
-    // 先收弹窗再喊回调：回调那侧会去发请求，若它同步失败（哨兵 / 抛错），弹窗已经不在，
-    // 用户不会对着一个「填好了却没反应」的框发呆（同改之前那根行内输入条收尾的顺序）。
-    dialog.close()
-    props.onConfirm(name)
+    // `忙` 守卫：「弹窗不关」**新造**出一个旧形状不存在的洞——请求在飞时再按一次「确定」会
+    // **建两次**。改之前弹窗立刻关，这个洞不存在（spec §5.2 第 1 条）。
+    if (name === undefined || 忙()) return
+    set忙(true)
+    let 回话: string | undefined | void
+    try {
+      回话 = await props.onConfirm(name)
+    } catch (err) {
+      // 抛错 = 「我们这边坏了」。保住原注释那条理由：别让用户对着一个「填好了却没反应」的框。
+      // 这一支**不在本次射程内**，一个字不改它的行为。
+      dialog.close()
+      throw err
+    } finally {
+      set忙(false)
+    }
+    // 只有**字符串**算「有话要说」——`undefined` / `void` 都按收工处理（同 `project-panel.tsx:711`）。
+    if (typeof 回话 !== "string") {
+      dialog.close()
+      return
+    }
+    set失败话(回话)
   }
 
   return (
@@ -75,7 +102,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
         class="contents"
         onSubmit={(event) => {
           event.preventDefault()
-          确定()
+          void 确定()
         }}
       >
         <DialogHeader>
@@ -94,7 +121,10 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
               aria-label={是文件夹() ? "新文件夹名称" : "新文件名称"}
               placeholder={是文件夹() ? "文件夹名" : "文件名"}
               value={草稿()}
-              onInput={(event) => set草稿(event.currentTarget.value)}
+              onInput={(event) => {
+                set草稿(event.currentTarget.value)
+                set失败话(undefined)
+              }}
             />
           </Field>
           {/* 落点（用户 2026-10-11 裁定「要显示」）：弹窗盖住了树，「建在哪儿」就没有第二个地方
@@ -103,12 +133,15 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
           <p data-slot="file-create-parent" class="min-w-0 truncate text-[13px] text-v2-text-text-muted">
             建在：{props.parent || "项目根目录"}
           </p>
+          {/* 失败就地在弹窗里（spec §3：失败回到**发起它的那个面**）。
+              位置在落点那行下面、按钮上面——用户的眼睛本来就在这一带来回。 */}
+          <Show when={失败话()}>{(话) => <FileOpError 话={话()} />}</Show>
         </DialogBody>
         <DialogFooter>
           <ButtonV2 data-slot="file-create-cancel" type="button" variant="neutral" onClick={() => dialog.close()}>
             取消
           </ButtonV2>
-          <ButtonV2 data-slot="file-create-ok" type="submit" variant="contrast" disabled={名字() === undefined}>
+          <ButtonV2 data-slot="file-create-ok" type="submit" variant="contrast" disabled={名字() === undefined || 忙()}>
             确定
           </ButtonV2>
         </DialogFooter>

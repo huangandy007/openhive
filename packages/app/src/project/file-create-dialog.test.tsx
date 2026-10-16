@@ -30,13 +30,30 @@ afterEach(() => {
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-function 触发器(props: Omit<FileCreateDialogProps, "onConfirm"> & { 收到: string[] }): JSX.Element {
+/** 剧本：`回话` = 服务端每次回的那句话（`string` = 没办成）；`在飞` = 手工控回话时机的通道。 */
+interface 剧本 {
+  回话?: string
+  在飞?: Promise<string | undefined>
+}
+
+function 触发器(props: Omit<FileCreateDialogProps, "onConfirm"> & { 收到: string[] } & 剧本): JSX.Element {
   const dialog = useDialog()
   return (
     <button
       data-slot="open"
       onClick={() =>
-        dialog.show(() => <FileCreateDialog {...props} onConfirm={(name) => props.收到.push(name)} />)
+        dialog.show(() => (
+          <FileCreateDialog
+            {...props}
+            onConfirm={(name) => {
+              // 块体 ⇒ 返回 `void`，落在新契约的 `| void` 那一支上。
+              // （原来那个表达式体 `(name) => props.收到.push(name)` 返回 `number`——
+              //  `number` **落不进**新契约的联合类型，2026-10-16 用 `tsc --strict` 实测过。）
+              props.收到.push(name)
+              return props.在飞 ?? props.回话
+            }}
+          />
+        ))
       }
     >
       开
@@ -44,7 +61,7 @@ function 触发器(props: Omit<FileCreateDialogProps, "onConfirm"> & { 收到: s
   )
 }
 
-async function 打开(props: Omit<FileCreateDialogProps, "onConfirm">): Promise<string[]> {
+async function 打开(props: Omit<FileCreateDialogProps, "onConfirm"> & 剧本): Promise<string[]> {
   const 收到: string[] = []
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -84,6 +101,9 @@ const 提交 = () => {
 }
 
 const 文案 = (slot: string) => document.body.querySelector(`[data-slot='${slot}']`)?.textContent?.trim()
+
+/** 新建弹窗还在不在。**布尔**，不是节点——见 `file-op-error.test.tsx` 顶部那条警告。 */
+const 弹窗在 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
 
 describe("新建弹窗（FileCreateDialog）", () => {
   test("建文件 ⇒ 标题是「新建文件」", async () => {
@@ -161,5 +181,63 @@ describe("新建弹窗（FileCreateDialog）", () => {
     document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
 
     expect(收到).toEqual([])
+  })
+
+  /**
+   * ── 「失败回到发起它的那个面」（2026-10-16）────────────────────────
+   *
+   * 改之前：`确定()` **立刻** `dialog.close()`，服务端那句话落在**工具栏下方**的内联红字里
+   * （`workspace-entry.tsx` 的 `file-op-message`）——用户在弹窗里按了确定，话掉到一棵树之外，
+   * 既看不到名字还在不在、也不知道该不该重来（民警 2026-10-16 实报）。
+   * 改之后：回了字符串 ⇒ 弹窗**不关**、话就地在落点那行下面。
+   */
+
+  test("没办成 ⇒ 弹窗**不关**、服务端原话就地显示、名字草稿还在", async () => {
+    await 打开({ kind: "file", parent: "资料", 回话: "目标目录不存在" })
+
+    填("新.md")
+    提交()
+    await flush()
+    await flush()
+
+    // 主判据：那句话在**弹窗里那一件**上（`FileOpError` 的根带 `data-slot="file-op-error"`）
+    expect(文案("file-op-error") ?? "").toContain("目标目录不存在")
+    // 「不关」这条承诺的全部证据
+    expect(弹窗在()).toBe(true)
+    // 名字草稿留着：改一处就能再交一次，不必重开、重敲
+    expect(框().value).toBe("新.md")
+  })
+
+  test("没办成之后改个名字再交 ⇒ **会再发一次**（弹窗没关，所以这条链还在）", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "资料", 回话: "目标目录不存在" })
+
+    填("新.md")
+    提交()
+    await flush()
+    await flush()
+
+    填("改过的.md")
+    提交()
+    await flush()
+    await flush()
+
+    expect(收到).toEqual(["新.md", "改过的.md"])
+  })
+
+  test("在飞时再按一次「确定」⇒ 只发一次（这个洞是「弹窗不关」新造出来的）", async () => {
+    let 放行: ((话: string | undefined) => void) | undefined
+    // 一条**不自己兑现**的 promise 当剧本，由本用例手工放行
+    const 在飞 = new Promise<string | undefined>((resolve) => (放行 = resolve))
+    const 收到 = await 打开({ kind: "file", parent: "资料", 在飞 })
+
+    填("新.md")
+    提交()
+    提交() // 第二次：此刻回话还没到（`在飞` 尚未兑现）
+    await flush()
+    放行?.(undefined)
+    await flush()
+    await flush()
+
+    expect(收到).toEqual(["新.md"])
   })
 })

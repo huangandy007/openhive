@@ -148,7 +148,11 @@ export interface FileTreeProps {
    * 省略 = 还没接线：**＋ 本身禁用**，下拉都打不开（同 T005 三个按钮、T006 两个新建键）。
    * 一个点了没反应的按钮是对用户的谎——「看起来能点」比「少个按钮」更难查。
    */
-  onCreate?: (input: { kind: "file" | "directory"; parent: string; name: string }) => void
+  onCreate?: (input: { kind: "file" | "directory"; parent: string; name: string }) =>
+    | string
+    | undefined
+    | Promise<string | undefined>
+    | void
   /**
    * 重命名**选中项**（工具栏）／**右键那一项**（菜单），`name` 是**新的单段名**。
    *
@@ -964,10 +968,11 @@ export function FileTree(props: FileTreeProps) {
         onConfirm={(name) => {
           // 默认全收缩（用户第 5 条）之下，不打开落点这一条链，用户建完就**看不见自己刚建的东西**
           // ——所以提交那一刻先开链，再喊回调。
-          // ⚠️ 时机是「用户提交了」，不是「服务端回了成功」：`onCreate` 是 `void` 转发，组件既不知道
-          // 成没成、也不知道落库后的路径。这条取舍的代价只是「失败时多展开了几个目录」。
+          // ⚠️ 时机仍是「用户提交了」，不是「服务端回了成功」：这条取舍的代价只是「失败时多展开了
+          // 几个目录」。
           展开链(parent)
-          交({ kind, parent, name })
+          // 把回话**原样**交回弹窗（`string` = 没办成 ⇒ 弹窗不关、就地报）。
+          return 交({ kind, parent, name })
         }}
       />
     ))
