@@ -43,8 +43,9 @@ describe("FileOpError 失败提示件", () => {
   test("服务端那句原话**照登**（不改写、不加前缀）", () => {
     const host = 挂("项目根不能删")
 
-    // `toContain` 而不是 `toBe`：下面那半截通用话也在同一段文本里
-    expect(件(host)?.textContent ?? "").toContain("项目根不能删")
+    // 读**第一个 span**（`{props.话}`）的 `textContent` 恰等于「话」——`toContain` 是子串匹配，
+    // 实现给那句话加前缀/后缀照样绿（`LEARNINGS #006-22`）；`toBe` 才钉得住「一个字不改写」。
+    expect(件(host)?.querySelector("span")?.textContent ?? "").toBe("项目根不能删")
   })
 
   test("通用那句下一步在（与常量同源，不在这里再抄一遍字面量）", () => {
