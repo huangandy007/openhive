@@ -535,3 +535,66 @@ describe("文件级备份快照的新表面（008 T1）", () => {
     }
   })
 })
+
+/**
+ * 流式上传 / 下载（008 T2）：备份一个真项目目录时，文件可能很大，不能整份读进内存；
+ * 而「流式」一旦没有超时，卡住的源就会让归档链**无限期挂起**（005 X4-1 的同型，
+ * 只是从一次外呼挪到了一条流上）。
+ *
+ * 判据的三个面：
+ * - `putStream` 真的按 `size` 发出去、且**按块**报进度（不是最后一次性报总数）；
+ * - 源卡住超过 `idleTimeoutMs` ⇒ 抛 `StreamTimeoutError`（且**不能**被挂死在清理上）；
+ * - `getStream` 不存在 ⇒ `undefined`（与 `get` 同一条 404 语义），存在 ⇒ 分块读、报进度。
+ *
+ * ⚠️ 走文件头 harness（`开` / `第` / `抛了`），不在用例里再起一只 `s3`。
+ */
+describe("流式上传 / 下载（008 T2）", () => {
+  const 店 = () => 开({ userId: "007", projectId: "p-42" })
+
+  test("putStream：按 size 发 ContentLength，按块回调进度", async () => {
+    const store = 店()
+    const 进度: number[] = []
+    async function* 源() {
+      yield 编码("ab")
+      yield 编码("cde")
+    }
+
+    await store.putStream({ path: "blobs/aa/x", body: 源(), size: 5, onProgress: (n) => 进度.push(n) })
+
+    expect(第(0).method).toBe("PUT")
+    expect(第(0).key).toBe("007/p-42/blobs/aa/x")
+    expect(解码(第(0).body)).toBe("abcde")
+    // 两个块 ⇒ 两次回调、累计值：`[2, 5]`。写成 `[5]` 的实现（收完再报）会红。
+    expect(进度).toEqual([2, 5])
+  })
+
+  test("putStream：源卡住超过 idleTimeoutMs ⇒ 抛 StreamTimeoutError", async () => {
+    const store = 店()
+    async function* 卡住() {
+      yield 编码("ab")
+      await new Promise(() => {})
+    }
+
+    const 错 = await 抛了(() =>
+      store.putStream({ path: "blobs/aa/x", body: 卡住(), size: 5, idleTimeoutMs: 120 }),
+    )
+
+    // 钉错误本体：光「抛了」的话，任何别的失败（例如 abort 造出的 network error）都能过。
+    expect(错.name).toBe("StreamTimeoutError")
+  })
+
+  test("getStream：不存在 ⇒ undefined；存在 ⇒ 分块读并报进度", async () => {
+    const store = 店()
+    expect(await store.getStream({ path: "没有" })).toBeUndefined()
+
+    s3.seed("007/p-42/blobs/aa/x", "abcdef")
+    const 进度: number[] = []
+    const body = await store.getStream({ path: "blobs/aa/x", onProgress: (n) => 进度.push(n) })
+
+    expect(body).toBeDefined()
+    let 读回 = ""
+    for await (const chunk of body!) 读回 += 解码(chunk)
+    expect(读回).toBe("abcdef")
+    expect(进度.at(-1)).toBe(6)
+  })
+})

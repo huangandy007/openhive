@@ -1,5 +1,7 @@
 export * as Minio from "./minio"
 
+import { Readable } from "node:stream"
+
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -86,7 +88,86 @@ export interface Interface {
   readonly get: (input: { readonly path: string }) => Promise<Uint8Array | undefined>
   readonly list: (input?: { readonly prefix?: string }) => Promise<readonly Entry[]>
   readonly delete: (input: { readonly path: string }) => Promise<void>
-  // putStream / getStream 由 Task 2 追加
+  readonly putStream: (input: {
+    readonly path: string
+    readonly body: AsyncIterable<Uint8Array>
+    readonly size: number
+    readonly onProgress?: (bytes: number) => void
+    readonly idleTimeoutMs?: number
+  }) => Promise<void>
+  readonly getStream: (input: {
+    readonly path: string
+    readonly onProgress?: (bytes: number) => void
+    readonly idleTimeoutMs?: number
+  }) => Promise<AsyncIterable<Uint8Array> | undefined>
+}
+
+/** 流式传输的默认空闲超时（毫秒）——`idleTimeoutMs` 不给时用它。 */
+export const DEFAULT_IDLE_TIMEOUT_MS = 30_000
+
+/** 流式传输在 `idleTimeoutMs` 内没有新字节。 */
+export class StreamTimeoutError extends Error {
+  override readonly name = "StreamTimeoutError"
+}
+
+/** 等 `promise`，但超过 `ms` 没有结果就算「卡住」。 */
+async function withIdle<T>(promise: Promise<T>, ms: number, onStall: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const 超时 = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onStall()
+      reject(new StreamTimeoutError(`流式传输 ${ms}ms 没有新数据`))
+    }, ms)
+  })
+  try {
+    return await Promise.race([promise, 超时])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * `response.Body` 的静态类型是 SDK 的联合（Node 下 `IncomingMessage`、浏览器下 `Blob`），
+ * 只有前者能按异步流读——**先问再读**，不用 `as` 硬转（理由同 `get` 里那段 `Reflect.get`）。
+ */
+function isAsyncIterable(value: unknown): value is AsyncIterable<Uint8Array> {
+  return typeof value === "object" && value !== null && Symbol.asyncIterator in value
+}
+
+/**
+ * 给一个异步源套空闲超时；卡住时中止上游并抛 `StreamTimeoutError`。
+ *
+ * `onStall` 给调用方一个「**主动掐断这次外呼**」的钩子：只靠「源抛错」让 SDK 自己失败是不够的
+ * （见 `putStream` 里那段实测说明——`bun test` 下 SDK 会一直 pending）。
+ */
+async function* idleGuarded(
+  source: AsyncIterable<Uint8Array>,
+  idleMs: number,
+  onStall?: () => void,
+): AsyncGenerator<Uint8Array> {
+  const iterator = source[Symbol.asyncIterator]()
+  let stalled = false
+  try {
+    while (true) {
+      const next = await withIdle(iterator.next(), idleMs, () => {
+        stalled = true
+        onStall?.()
+        void iterator.return?.()
+      })
+      if (next.done) return
+      yield next.value
+    }
+  } finally {
+    /**
+     * ⚠️ 卡住时**不能 `await` `return()`**：async generator 停在 `await` 上时，`return()`
+     * 返回的 promise 要等那个 `await` 结束才 settle（2026-10-18 实测：`Promise.race` 300ms
+     * 仍读到 `return still pending`）⇒ 真去 await 就等于把正要抛出的 `StreamTimeoutError`
+     * 一起挂死，`putStream` 又变成无限期挂起（005 X4-1 的同一个症状）。
+     * 所以卡住那一路只发不收（`void`）；正常收尾仍 await，让上游的清理跑完。
+     */
+    if (stalled) void iterator.return?.()
+    else await iterator.return?.()
+  }
 }
 
 /** win32 的盘符（`C:`），只认开头——`a:C` 这种中段出现的不算。 */
@@ -166,6 +247,15 @@ export function makeStore(config: Config): Interface {
     // 不开这个，SDK 会把请求打到 `openhive.127.0.0.1` 这种不存在的域名上
     forcePathStyle: true,
     credentials: config.credentials,
+    /**
+     * ⚠️ **流式 body 不要 SDK 自动加校验和**（008 T2 实测）：
+     * SDK 3.933 的默认（`WHEN_SUPPORTED`）对**流** body 会套一层 **aws-chunked**
+     * （`<len>\r\n<chunk>\r\n…0\r\nx-amz-checksum-crc32:…`）——发到线上的就不是调用方给的
+     * 那几个字节了，而本模块的契约是「`putStream` 把源原样发出去」（夹具也只能按原样收）。
+     * 真 S3 / MinIO 认这层编码，但假端点不认 ⇒ 它会把 framing 当正文收下，且**不报错**。
+     * 内网 MinIO 不要求 PutObject 带校验和；需要时调用方自己给 `ChecksumAlgorithm`。
+     */
+    requestChecksumCalculation: "WHEN_REQUIRED",
   })
 
   const base =
@@ -189,9 +279,12 @@ export function makeStore(config: Config): Interface {
    *
    * **每个动作都从这里过**——边界只有一处（`#004-01`：数「做那件事的那一行」，别数「已经包了超时的那几行」）。
    */
-  const withTimeout = async <Out,>(run: (signal: AbortSignal) => Promise<Out>): Promise<Out> => {
+  const withTimeout = async <Out,>(
+    run: (signal: AbortSignal) => Promise<Out>,
+    limitMs = timeoutMs,
+  ): Promise<Out> => {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const timer = setTimeout(() => controller.abort(), limitMs)
     try {
       return await run(controller.signal)
     } finally {
@@ -211,6 +304,98 @@ export function makeStore(config: Config): Interface {
         client.send(new PutObjectCommand({ Bucket: config.bucket, Key: keyOf(path), Body: body }), { abortSignal }),
       )
     },
+
+    /**
+     * 流式上传：`Body` 是一条异步源，`ContentLength` 由调用方给（备份时就是文件的 `stat.size`）。
+     *
+     * ⚠️ **不引入 `@aws-sdk/lib-storage`**（`Upload`）：它会按 5 MB 分片走 multipart，
+     * 而 `fake-s3` 不支持分片上传（本机没有真 MinIO，见文件头）⇒ 那条路一行都验不到。
+     * 单次 `PutObject` ＋ 文件流 ＋ `ContentLength` 对**内网 MinIO** 是够的，且假端点能真收字节。
+     *
+     * ⚠️ **总上限不是 `timeoutMs`**：一次 5 GB 的上传本来就该跑很久，用 30 秒会把它当场掐死。
+     * 6 小时只是「别无限挂」的兜底；真正判「卡住」的是下面的空闲超时（`idleTimeoutMs`）。
+     */
+    putStream: async ({ path, body, size, onProgress, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS }) => {
+      let sent = 0
+      let stall: StreamTimeoutError | undefined
+      /**
+       * ⚠️ 空闲超时时**主动 abort 这次外呼**——不能只靠「body 流抛错」让 SDK 自己失败：
+       * 2026-10-18 实测（Bun 1.4.3），同一条路径在 `bun <脚本>` 下 `client.send` 会 reject，
+       * 而在 `bun test` 下它**一直 pending**（源已抛错、请求永不 settle）⇒ 又变成无限期挂起。
+       * abort 是 SDK 一定听得到的信号，两个运行器下都能收敛。
+       */
+      const 中断 = new AbortController()
+      async function* 计数(): AsyncGenerator<Uint8Array> {
+        try {
+          for await (const chunk of idleGuarded(body, idleTimeoutMs, () => 中断.abort())) {
+            sent += chunk.byteLength
+            onProgress?.(sent)
+            yield chunk
+          }
+        } catch (error) {
+          if (error instanceof StreamTimeoutError) stall = error
+          throw error
+        }
+      }
+      /**
+       * ⚠️ 必须挂一只（哪怕是空的）`error` 监听器：`Readable.from` 在源抛错时 emit `error`，
+       * 而这一拍没有别的监听者 ⇒ Node 把 EventEmitter 的 `error` 升级成 **uncaughtException**
+       * （2026-10-18 实测：Bun 1.4.3 下整条用例红，而 `putStream` 的 rejection 其实是对的）。
+       * 错误本身仍由 `client.send` rejection ＋ 下面的 `catch` 交回调用方——这里只是不让它
+       * **额外**炸一次进程。
+       */
+      const 流 = Readable.from(计数())
+      流.on("error", () => {})
+      try {
+        await withTimeout(
+          (abortSignal) =>
+            client.send(
+              new PutObjectCommand({
+                Bucket: config.bucket,
+                Key: keyOf(path),
+                Body: 流,
+                ContentLength: size,
+              }),
+              { abortSignal: AbortSignal.any([abortSignal, 中断.signal]) },
+            ),
+          6 * 60 * 60 * 1000,
+        )
+      } catch (error) {
+        /**
+         * SDK 会把流里的错误换成本名 `TimeoutError` 的壳（"An error was encountered in a
+         * non-retryable streaming request."）——不还原的话，调用方分不出「源卡住」与「网络错」，
+         * 而这两者的处置完全不同（前者可重试，后者要看凭据 / 端点）。
+         * 接口约定是抛 `StreamTimeoutError` 本体，所以按**起因**还原。
+         */
+        if (stall !== undefined) throw stall
+        throw error
+      }
+    },
+
+    /**
+     * 流式下载：头照常吃 `timeoutMs`；body 由调用方按需读，**读的每一步**吃空闲超时。
+     *
+     * 与 `get` 的差别：`get` 在回调里把 body 一次读完并套 `timeoutMs`（那是「取回一个小对象」）；
+     * 这里返回流，不替调用方收完——但「一步不动」仍要失败，否则 MinIO 半死时消费方无限期挂着。
+     */
+    getStream: ({ path, onProgress, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS }) =>
+      notFoundToUndefined(async () => {
+        const response = await withTimeout((abortSignal) =>
+          client.send(new GetObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), { abortSignal }),
+        )
+        const body = response.Body
+        if (body === undefined) throw new Error(`MinIO 对 ${JSON.stringify(path)} 回了空 body`)
+        if (!isAsyncIterable(body)) throw new Error(`MinIO 对 ${JSON.stringify(path)} 回了不可流的 body`)
+        let received = 0
+        async function* 计数(源: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+          for await (const chunk of idleGuarded(源, idleTimeoutMs)) {
+            received += chunk.byteLength
+            onProgress?.(received)
+            yield chunk
+          }
+        }
+        return 计数(body)
+      }),
 
     /**
      * ⚠️ 这条比别的动作多一层，两层都不能省（005 第二轮审查实测出来的）：
