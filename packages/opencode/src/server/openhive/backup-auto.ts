@@ -120,8 +120,8 @@ export function createAutoScheduler(deps: AutoSchedulerDeps): AutoScheduler {
   }
 }
 
-async function 用量(store: BackupStore): Promise<number> {
-  // spec §8.3：用量 = 命名空间下所有 blob 大小 + 所有 manifest 大小（`state.json` 可忽略）。
+/** spec §8.3：用量 = 命名空间下所有 blob 大小 + 所有 manifest 大小（`state.json` 可忽略）。 */
+export async function usageOf(store: BackupStore): Promise<number> {
   const blobs = await store.blobs()
   const listed = await store.manifests()
   return blobs.reduce((sum, blob) => sum + blob.size, 0) + listed.reduce((sum, entry) => sum + entry.size, 0)
@@ -131,7 +131,31 @@ async function 用量(store: BackupStore): Promise<number> {
 export async function contextStatus(store: BackupStore): Promise<{ usageBytes: number; autoPaused: boolean }> {
   const state = await store.readState()
   if (state !== undefined) return { usageBytes: state.usageBytes, autoPaused: state.autoPaused }
-  return { usageBytes: await 用量(store), autoPaused: false }
+  return { usageBytes: await usageOf(store), autoPaused: false }
+}
+
+/**
+ * 只改 state 的 `autoPaused` / `usageBytes`（自动备份的暂停与解除，spec §8.3）。
+ *
+ * `state.json` 是派生索引（spec §4.4）：写不进去不影响调用方——下一次备份 / 每日清扫会重建。
+ */
+export async function setAutoPaused(
+  store: BackupStore,
+  usageBytes: number,
+  autoPaused: boolean,
+): Promise<void> {
+  try {
+    const state = await store.readState()
+    await store.writeState({
+      version: STATE_VERSION,
+      usageBytes,
+      lastGcAt: state?.lastGcAt ?? 0,
+      autoPaused,
+      snapshots: state?.snapshots ?? [],
+    })
+  } catch {
+    // 同上：派生索引写失败不升级成业务失败。
+  }
 }
 
 async function 读全部清单(store: BackupStore): Promise<{ manifests: readonly Manifest[]; ok: boolean }> {
@@ -216,7 +240,7 @@ export async function syncState(store: BackupStore, options: { now: number; auto
   const 重建 = await rebuildSnapshots(store)
   const state: BackupState = {
     version: STATE_VERSION,
-    usageBytes: await 用量(store),
+    usageBytes: await usageOf(store),
     lastGcAt: options.now,
     autoPaused: options.autoPaused,
     snapshots: 重建.map((entry) => entry.summary),

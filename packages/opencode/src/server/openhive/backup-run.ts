@@ -87,6 +87,24 @@ export interface BackupInput {
   readonly previous?: Manifest
   readonly quotaBytes?: number
   readonly usageBytes?: number
+  /**
+   * HTTP 预检已经跑过的扫描 / 哈希结果（spec §8.3）：给了就**不再读一遍盘**。
+   * 预检公式与执行层共用同一次计算，避免「预检一套、执行另一套」（`#002-06`）。
+   */
+  readonly prepared?: PreparedBackup
+}
+
+/** 扫描 ＋ 哈希 ＋ 缺失 blob 计算的产物（`prepareBackup` 的返回值）。 */
+export interface PreparedBackup {
+  readonly files: readonly ManifestFile[]
+  readonly dirs: readonly string[]
+  readonly skipped: readonly ManifestSkip[]
+  readonly missing: ReadonlyMap<string, { readonly size: number; readonly path: string }>
+  readonly logicalBytes: number
+  readonly requiredBytes: number
+  readonly filesTotal: number
+  readonly filesDone: number
+  readonly bytesTotal: number
 }
 
 const 并发 = 4
@@ -278,8 +296,13 @@ async function hashFile(absolute: string): Promise<string> {
   return hash.digest("hex")
 }
 
-/** 备份。返回写进 MinIO 的 manifest。 */
-export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Manifest> {
+/**
+ * 扫描 ＋ 哈希 ＋ 缺失 blob / 配额需要量。
+ *
+ * HTTP 预检与执行层**共用这一段**（spec §8.3）：预检算过的结果通过 `BackupInput.prepared`
+ * 传给 `runBackup`，后者不再读一遍盘——否则「预检按一个公式、执行按另一个」迟早漂（`#002-06`）。
+ */
+export async function prepareBackup(deps: RunDeps, input: BackupInput): Promise<PreparedBackup> {
   const total = { filesTotal: 0, filesDone: 0, bytesTotal: 0, bytesDone: 0 }
   deps.report({ state: "scanning", progress: total })
   const 扫描 = await scanScope(deps.directory, input.scope, { maxFileBytes: deps.maxFileBytes })
@@ -319,24 +342,44 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
   }
 
   检查取消(deps)
-  if (input.previous && 树没变(input.previous, files, 扫描.dirs, input.scope)) throw new UnchangedError("自上次快照以来没有变化")
-
   const 已有 = new Set((await deps.store.blobs()).map((blob) => blob.hash))
   const 缺 = new Map<string, { size: number; path: string }>()
   for (const file of files) if (!已有.has(file.hash) && !缺.has(file.hash)) 缺.set(file.hash, { size: file.size, path: file.path })
 
-  const 计划上传字节 = [...缺.values()].reduce((sum, blob) => sum + blob.size, 0)
-  const 需要 = 计划上传字节 + estimateManifestBytes(files.reduce((sum, file) => sum + file.size, 0))
-  if (input.quotaBytes !== undefined && (input.usageBytes ?? 0) + 需要 > input.quotaBytes) {
-    throw new QuotaError(input.usageBytes ?? 0, 需要, input.quotaBytes)
+  const logicalBytes = files.reduce((sum, file) => sum + file.size, 0)
+  const requiredBytes = [...缺.values()].reduce((sum, blob) => sum + blob.size, 0) + estimateManifestBytes(logicalBytes)
+  return {
+    files,
+    dirs: 扫描.dirs,
+    skipped,
+    missing: 缺,
+    logicalBytes,
+    requiredBytes,
+    filesTotal: total.filesTotal,
+    filesDone: total.filesDone,
+    bytesTotal: total.bytesTotal,
+  }
+}
+
+/** 备份。返回写进 MinIO 的 manifest。 */
+export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Manifest> {
+  const 预 = input.prepared ?? (await prepareBackup(deps, input))
+  const files = [...预.files]
+  const skipped = [...预.skipped]
+
+  检查取消(deps)
+  if (input.previous && 树没变(input.previous, files, [...预.dirs], input.scope)) throw new UnchangedError("自上次快照以来没有变化")
+
+  if (input.quotaBytes !== undefined && (input.usageBytes ?? 0) + 预.requiredBytes > input.quotaBytes) {
+    throw new QuotaError(input.usageBytes ?? 0, 预.requiredBytes, input.quotaBytes)
   }
 
+  const total = { filesTotal: 预.filesTotal, filesDone: 预.filesDone, bytesTotal: 预.bytesTotal, bytesDone: 0 }
   deps.report({ state: "uploading", progress: { ...total } })
-  total.bytesDone = 0
   // 单个 blob 失败**不中止整轮**（spec §5.5：任一文件最终失败 ⇒ 记入 skipped，快照落 partial）：
   // 清掉半截对象、记下原因，其余 blob 继续。`changed-during-backup` 原样保留，其余归 `upload-failed`。
   const 上传失败 = new Map<string, SkipReason>()
-  await runPool([...缺.entries()], deps.concurrency ?? 并发, async ([hash, blob]) => {
+  await runPool([...预.missing.entries()], deps.concurrency ?? 并发, async ([hash, blob]) => {
     检查取消(deps)
     const 绝对 = join(deps.directory, ...blob.path.split("/"))
     try {
@@ -365,7 +408,7 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
     const reason = 上传失败.get(file.hash)
     if (reason) skipped.push({ path: file.path, reason })
   }
-  const 上传字节 = [...缺.entries()]
+  const 上传字节 = [...预.missing.entries()]
     .filter(([hash]) => !上传失败.has(hash))
     .reduce((sum, [, blob]) => sum + blob.size, 0)
   deps.report({ state: "committing", progress: { ...total } })
@@ -383,7 +426,7 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
     timezone: deps.timezone,
     status: skipped.length === 0 ? "complete" : "partial",
     files: 成功文件,
-    dirs: 扫描.dirs,
+    dirs: [...预.dirs],
     skipped,
     // files / bytes 必须按**剔完失败项之后**的 files 算：失败的文件既不在 files 里，
     // 它的字节也不能还留在 bytes 里（否则清单自己前后矛盾）。

@@ -48,7 +48,9 @@ import {
   collectGarbage,
   contextStatus,
   createAutoScheduler,
+  setAutoPaused,
   syncState,
+  usageOf,
   type AutoScheduler,
 } from "./backup-auto"
 import { sharedJobs, type JobRegistry } from "./backup-jobs"
@@ -66,10 +68,11 @@ import {
   NotFoundError,
   QuotaError,
   UnchangedError,
+  prepareBackup,
   runBackup,
   runPreview,
   runRestore,
-  scanScope,
+  type PreparedBackup,
 } from "./backup-run"
 import { openBackupStore, rebuildSnapshots, type BackupStore } from "./backup-store"
 
@@ -98,6 +101,8 @@ interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   readonly jobs: JobRegistry
   readonly scheduler: AutoScheduler
+  /** 容量上限（生产 = `QUOTA_BYTES`；测试注入小上限，spec §8.3 的公式不变）。 */
+  readonly quotaBytes: number
 }
 
 /**
@@ -179,7 +184,12 @@ type 授权结果 =
  * 3. 用户 id 不是合法路径段是**库里的数据坏了** ⇒ 抛（经 `Effect.promise` 变成 defect ⇒ 500），
  *    与「客户端递了个 `../x`」（400）分开——同 `archive.ts` 的处置。
  */
-async function authorize(user: User.Info, deps: Deps, projectId: string): Promise<授权结果> {
+async function authorize(
+  user: User.Info,
+  deps: Pick<Deps, "pg" | "minio" | "root">,
+  projectId: string,
+  options: { readonly allowArchived?: boolean } = {},
+): Promise<授权结果> {
   if (!User.isSafePathSegment(projectId)) {
     return { ok: false, response: badRequest("projectId 不是合法的路径段") }
   }
@@ -193,8 +203,12 @@ async function authorize(user: User.Info, deps: Deps, projectId: string): Promis
   // 非成员与「角色认不出」同一条守卫（安全方向相同：一律不放行）。
   if (actor === null) return { ok: false, response: forbidden("无权访问该项目的备份") }
 
+  // M-1：读端点（status / snapshots / snapshot / jobs）**允许**归档后查看；写动作一律冻结。
+  // 归档项目上用户仍能看到自己拍过什么，但任何会改数据 / 磁盘的动作都要先找回（验收 #39/#50）。
   const archived = (await archiveStatesOf(pg, [projectId])).get(projectId)?.archived ?? false
-  if (archived) return { ok: false, response: forbidden("项目已归档，备份不可用") }
+  if (archived && options.allowArchived !== true) {
+    return { ok: false, response: forbidden("项目已归档，请使用项目找回") }
+  }
 
   // 配置**放在授权之后**：未授权的人不该从「503 还是 403」读出这台机器的部署状态（spec §9.1）。
   if (Option.isNone(deps.minio)) return { ok: false, response: unavailable("MinIO 未配置，备份不可用") }
@@ -239,7 +253,8 @@ async function 上次基线(store: BackupStore): Promise<Manifest | undefined> {
  * 手动与自动**共用这一条链**：两边各写一份的话，「manifest 最后写」这条不变量迟早只留在其中一份里。
  */
 interface 拍一次输入 {
-  readonly deps: Deps
+  /** 只用到任务表（进度 / 取消）与审计库；不依赖调度器（自动备份的 `detect` 还没有它）。 */
+  readonly deps: Pick<Deps, "jobs" | "pg" | "quotaBytes">
   readonly store: BackupStore
   readonly userId: string
   readonly projectId: string
@@ -250,6 +265,8 @@ interface 拍一次输入 {
   readonly jobId?: string
   /** 用户在 409 `quota_exceeded` 上确认过「照拍」⇒ 跳过执行层的配额拒绝（spec §8.3）。 */
   readonly allowOverQuota?: boolean
+  /** HTTP 预检已经算过的扫描 / 哈希结果（I-4：执行层不再读一遍盘）。 */
+  readonly prepared?: PreparedBackup
 }
 
 async function 拍一次(input: 拍一次输入): Promise<Manifest> {
@@ -278,16 +295,17 @@ async function 拍一次(input: 拍一次输入): Promise<Manifest> {
       scope: input.scope,
       createdBy: input.userId,
       // 手动备份的 `allowOverQuota` 是「用户已确认」：不传上限 ⇒ 执行层不拒绝。
-      ...(input.allowOverQuota === true ? {} : { quotaBytes: QUOTA_BYTES }),
+      ...(input.allowOverQuota === true ? {} : { quotaBytes: deps.quotaBytes }),
       usageBytes,
       ...(previous === undefined ? {} : { previous }),
+      ...(input.prepared === undefined ? {} : { prepared: input.prepared }),
     },
   )
 
   // ① manifest 落盘 —— 从这一刻起「备份存在」。
   await store.writeManifest(manifest)
   // ② state 是派生索引（spec §4.4）：写失败不影响这次备份。
-  await 写状态(store, manifest, usageBytes)
+  await 写状态(store, manifest, deps.quotaBytes)
   // ③ 保留在**每个快照成功后**跑一次（spec §8.1）；只有真删了 manifest 才需要 GC（§8.4）。
   //    这里**不传** `isBusy`：此刻这条链自己的工作就是那个「活跃任务」。
   const 删 = await applyRetention(store, { now: Date.now(), timeZone: 时区() }).catch(() => [])
@@ -305,19 +323,36 @@ async function 拍一次(input: 拍一次输入): Promise<Manifest> {
     result: manifest.status === "partial" ? "partial" : "ok",
     durationMs: Date.now() - 开始,
   })
+  // ⑤ §9.4 结构化日志：字段**取自已写下的 totals**，不另算一份（避免与真实值漂移）。
+  //    阶段耗时未采（执行层没有分段计时）⇒ 只报总耗时。
+  console.info("[openhive-backup]", {
+    action: "backup",
+    kind: manifest.kind,
+    logicalBytes: manifest.totals.bytes,
+    uploadedBytes: manifest.totals.uploadedBytes,
+    dedupSavedBytes: manifest.totals.bytes - manifest.totals.uploadedBytes,
+    files: manifest.totals.files,
+    dirs: manifest.dirs.length,
+    skipped: manifest.totals.skipped,
+    durationMs: Date.now() - 开始,
+  })
 
   return manifest
 }
 
-async function 写状态(store: BackupStore, manifest: Manifest, usageBytesBefore: number): Promise<void> {
+async function 写状态(store: BackupStore, manifest: Manifest, quotaBytes: number): Promise<void> {
   try {
     const state = await store.readState()
-    const usageBytes = usageBytesBefore + manifest.totals.uploadedBytes
+    // 用量按 spec §8.3 的**同一口径**（blob ＋ manifest）现算。旧实现用
+    // `before + uploadedBytes`：漏掉 manifest 自身，与 `usageOf` 分成两个口径（`#002-06`）⇒
+    // 删快照后 `syncState` 一重算，读数反而变大（I-2 的用例当场抓到）。
+    const usageBytes = await usageOf(store)
     await store.writeState({
       version: STATE_VERSION,
       usageBytes,
       lastGcAt: state?.lastGcAt ?? 0,
-      autoPaused: state?.autoPaused === true || usageBytes > QUOTA_BYTES,
+      // M-2：统一 `>`（恰好等于上限不算越限）。
+      autoPaused: state?.autoPaused === true || usageBytes > quotaBytes,
       snapshots: [summaryOf(manifest), ...(state?.snapshots ?? []).filter((snapshot) => snapshot.id !== manifest.id)],
     })
   } catch {
@@ -326,7 +361,15 @@ async function 写状态(store: BackupStore, manifest: Manifest, usageBytesBefor
 }
 
 /** 备份任务的收尾（手动）。异常到码的映射与 spec §10.3 一致。 */
-async function 执行备份(deps: Deps, 我: 身份, store: BackupStore, scope: string, jobId: string, allowOverQuota: boolean) {
+async function 执行备份(
+  deps: Deps,
+  我: 身份,
+  store: BackupStore,
+  scope: string,
+  jobId: string,
+  allowOverQuota: boolean,
+  prepared: PreparedBackup,
+) {
   const 开始 = Date.now()
   try {
     const manifest = await 拍一次({
@@ -339,6 +382,7 @@ async function 执行备份(deps: Deps, 我: 身份, store: BackupStore, scope: 
       scope,
       jobId,
       allowOverQuota,
+      prepared,
     })
     deps.jobs.finish(jobId, "succeeded", { result: { snapshotId: manifest.id } })
     // spec §7.3：手动备份成功也拨动冷却起点，否则刚拍完又自动拍一张。
@@ -404,36 +448,98 @@ function handleBackup(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     // `authorize` 已经挡过未配置；这里只是让类型收窄（同一条口令，不另造文案）。
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
-    // 范围存在性检查 ＋ 字节估算共用一次扫描（`scanScope` 只读元数据）。
-    // 估算按**文件大小之和**，比去重后的真实上传量保守——宁可多问一次「要不要越限」。
-    const 估算 = yield* Effect.promise(async () => {
-      try {
-        const 扫描 = await scanScope(我.directory, scope)
-        return { ok: true as const, bytes: 扫描.files.reduce((sum, file) => sum + file.size, 0) }
-      } catch (error) {
-        if (error instanceof NotFoundError) return { ok: false as const }
-        throw error
-      }
-    })
-    if (!估算.ok) return badRequest("path 不存在")
-
-    const { usageBytes } = yield* Effect.promise(() => contextStatus(store))
-    if (payload.value.allowOverQuota !== true && usageBytes + 估算.bytes > QUOTA_BYTES) {
-      return conflict({
-        error: "本次备份会超出容量上限",
-        code: "quota_exceeded",
-        usageBytes,
-        limitBytes: QUOTA_BYTES,
-        requiredBytes: 估算.bytes,
-      })
-    }
-
-    // `start` 是单飞的**权威判定**（上面那些 await 之间别的请求可能已经起了任务）。
+    // 单飞锁**先拿**：预检本身要能取消（项目删除会收敛活跃任务），而且「两个请求都做完预检
+    // 才有一个 409」既慢又白读盘。`start` 是权威判定（spec §7.3 第一条）。
     const 起 = deps.jobs.start({ kind: "backup", userId: 我.user.id, projectId: 我.projectId, path: scope })
     if (起.resumed) return conflict({ error: "该项目已有任务在跑", code: "job_running", jobId: 起.job.id })
 
     const jobId = 起.job.id
-    void 执行备份(deps, 我, store, scope, jobId, payload.value.allowOverQuota === true)
+    const 开始 = Date.now()
+    // 预检：扫描 ＋ 哈希 ＋ 缺失 blob，按 spec §8.3 公式算 `requiredBytes`（I-4）。
+    // 结果经 `prepared` 传给执行层 ⇒ 不读第二遍盘。
+    const 预 = yield* Effect.promise(async () => {
+      try {
+        const prepared = await prepareBackup(
+          {
+            store,
+            directory: 我.directory,
+            projectId: 我.projectId,
+            ownerId: 我.user.id,
+            timezone: 时区(),
+            report: (patch: Partial<Job>) => deps.jobs.update(jobId, patch),
+            isCancelled: () => deps.jobs.get(jobId, 我.user.id)?.cancelRequested === true,
+          },
+          { kind: "manual", scope, createdBy: 我.user.id },
+        )
+        return { ok: true as const, prepared }
+      } catch (error) {
+        if (error instanceof NotFoundError || error instanceof CancelledError) return { ok: false as const, error }
+        // 意外错误同样要落终态：任务已经 `start`，锁不能泄漏（异常本身仍是 defect ⇒ 500）。
+        deps.jobs.finish(jobId, "failed", {
+          error: {
+            code: "backup_failed",
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+          },
+        })
+        throw error
+      }
+    })
+    if (!预.ok) {
+      if (预.error instanceof CancelledError) {
+        // 预检期间被取消 ⇒ 任务落终态、**不写 manifest**（spec §5.6）。
+        deps.jobs.finish(jobId, "cancelled")
+        yield* Effect.promise(() =>
+          记审计(deps, {
+            projectId: 我.projectId,
+            userId: 我.user.id,
+            action: "backup",
+            scope,
+            kind: "manual",
+            result: "cancelled",
+            durationMs: Date.now() - 开始,
+          }),
+        )
+        return json({ jobId }, ACCEPTED)
+      }
+      // spec §10.3：路径不存在归 400 bad_request（预检拒绝也要落终态，锁不能泄漏）。
+      deps.jobs.finish(jobId, "failed", {
+        error: { code: "path_not_found", message: 预.error.message, retryable: false },
+      })
+      return badRequest("path 不存在")
+    }
+
+    // 预检已经成功、锁已经占了：这一次读盘再失败同样要落终态（与 :475-486 同形）。
+    // 漏掉它 ⇒ `Effect.promise` 拒绝 ⇒ 500 且 `active` 键永不删除 ⇒ 该项目之后恒 409、
+    // 自动备份恒 `resumed`、取消无执行者、删除永远收敛不了（复审 fix round 2 阻断项）。
+    const { usageBytes } = yield* Effect.promise(async () => {
+      try {
+        return await contextStatus(store)
+      } catch (error) {
+        deps.jobs.finish(jobId, "failed", {
+          error: {
+            code: "backup_failed",
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+          },
+        })
+        throw error
+      }
+    })
+    if (payload.value.allowOverQuota !== true && usageBytes + 预.prepared.requiredBytes > deps.quotaBytes) {
+      deps.jobs.finish(jobId, "failed", {
+        error: { code: "quota_exceeded", message: "本次备份会超出容量上限", retryable: false },
+      })
+      return conflict({
+        error: "本次备份会超出容量上限",
+        code: "quota_exceeded",
+        usageBytes,
+        limitBytes: deps.quotaBytes,
+        requiredBytes: 预.prepared.requiredBytes,
+      })
+    }
+
+    void 执行备份(deps, 我, store, scope, jobId, payload.value.allowOverQuota === true, 预.prepared)
     return json({ jobId }, ACCEPTED)
   })
 }
@@ -464,7 +570,10 @@ function handleStatus(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isNone(user)) return unauthorized()
 
-    const 授权 = yield* Effect.promise(() => authorize(user.value, deps, 查询(request, "projectId")))
+    // M-1：读端点允许归档后查看（验收 #39/#50）。
+    const 授权 = yield* Effect.promise(() =>
+      authorize(user.value, deps, 查询(request, "projectId"), { allowArchived: true }),
+    )
     if (!授权.ok) return 授权.response
     const 我 = 授权.value
 
@@ -478,7 +587,7 @@ function handleStatus(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
       activeJob: deps.jobs.activeFor(我.user.id, 我.projectId) ?? null,
       lastSnapshot: last === undefined ? null : { id: last.id, size: last.size, lastModified: last.lastModified },
       usageBytes,
-      limitBytes: QUOTA_BYTES,
+      limitBytes: deps.quotaBytes,
       autoPaused,
     })
   })
@@ -489,7 +598,10 @@ function handleSnapshots(request: HttpServerRequest.HttpServerRequest, deps: Dep
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isNone(user)) return unauthorized()
 
-    const 授权 = yield* Effect.promise(() => authorize(user.value, deps, 查询(request, "projectId")))
+    // M-1：读端点允许归档后查看。
+    const 授权 = yield* Effect.promise(() =>
+      authorize(user.value, deps, 查询(request, "projectId"), { allowArchived: true }),
+    )
     if (!授权.ok) return 授权.response
     const 我 = 授权.value
 
@@ -499,13 +611,16 @@ function handleSnapshots(request: HttpServerRequest.HttpServerRequest, deps: Dep
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
     const state = yield* Effect.promise(() => store.readState())
-    const 摘要 =
-      state === undefined
-        ? (yield* Effect.promise(() => rebuildSnapshots(store))).map((entry) => entry.summary)
-        : state.snapshots
+    // M-4：`state.snapshots` 为空、而桶里**确有** manifest ⇒ 派生索引落后了（state 被清 / 旧版本
+    // 写的空数组），从 manifest 重建一次，别给用户一个假空列表。
+    const 需重建 =
+      state === undefined || (state.snapshots.length === 0 && (yield* Effect.promise(() => store.manifests())).length > 0)
+    const 摘要 = 需重建
+      ? (yield* Effect.promise(() => rebuildSnapshots(store))).map((entry) => entry.summary)
+      : state.snapshots
     const 命中 = 摘要.filter((snapshot) => 相交(snapshot.scope, path))
     const snapshots = 命中.slice(0, MANIFEST_LIST_LIMIT)
-    return json({ snapshots, truncated: 命中.length > snapshots.length, limitBytes: QUOTA_BYTES })
+    return json({ snapshots, truncated: 命中.length > snapshots.length, limitBytes: deps.quotaBytes })
   })
 }
 
@@ -514,7 +629,10 @@ function handleSnapshot(request: HttpServerRequest.HttpServerRequest, deps: Deps
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isNone(user)) return unauthorized()
 
-    const 授权 = yield* Effect.promise(() => authorize(user.value, deps, 查询(request, "projectId")))
+    // M-1：读端点允许归档后查看。
+    const 授权 = yield* Effect.promise(() =>
+      authorize(user.value, deps, 查询(request, "projectId"), { allowArchived: true }),
+    )
     if (!授权.ok) return 授权.response
     const 我 = 授权.value
 
@@ -546,29 +664,40 @@ function handleDeleteSnapshot(request: HttpServerRequest.HttpServerRequest, deps
     const store = storeOf(deps, 我.user.id, 我.projectId)
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
-    const manifest = yield* Effect.promise(() => store.readManifest(snapshotId).catch(() => undefined))
-    if (manifest === undefined) return notFound("恢复点不存在")
-
     const 开始 = Date.now()
-    yield* Effect.promise(async () => {
+    // I-2（spec §8.5）：删除**幂等**——manifest 不在也回 200，让「重复点删除 / 重试」收敛。
+    // 读它是 best-effort：只在时用它补审计字段。
+    const manifest = yield* Effect.promise(() => store.readManifest(snapshotId).catch(() => undefined))
+
+    const 删除 = yield* Effect.promise(async () => {
       try {
+        // S3 `DeleteObject` 对不存在的键也返回成功 ⇒ 天然幂等。
         await store.deleteManifest(snapshotId)
+        return { ok: true as const }
       } catch (error) {
-        await 记审计(deps, {
+        return { ok: false as const, error }
+      }
+    })
+    if (!删除.ok) {
+      yield* Effect.promise(() =>
+        记审计(deps, {
           projectId: 我.projectId,
           userId: 我.user.id,
           action: "delete_snapshot",
           snapshotId,
-          kind: manifest.kind,
-          files: manifest.totals.files,
-          bytes: manifest.totals.bytes,
+          ...(manifest === undefined
+            ? {}
+            : { kind: manifest.kind, files: manifest.totals.files, bytes: manifest.totals.bytes }),
           result: "failed",
           errorCode: "delete_failed",
           durationMs: Date.now() - 开始,
-        })
-        throw error
-      }
-      // 只删 manifest，blob 交给 GC（spec §8.2）。state 是派生索引，顺手摘掉、失败不管。
+        }),
+      )
+      throw 删除.error
+    }
+
+    yield* Effect.promise(async () => {
+      // state 是派生索引：先顺手摘掉（失败不管，下面 `syncState` 会整体重建）。
       try {
         const state = await store.readState()
         if (state !== undefined) {
@@ -580,18 +709,40 @@ function handleDeleteSnapshot(request: HttpServerRequest.HttpServerRequest, deps
       } catch {
         // 同上：state 坏了由下一次备份 / 每日清扫重建。
       }
-      await 记审计(deps, {
+
+      // 用量当场回落（验收：删一份快照 ⇒ `usageBytes` 变小），并按统一口径（`>`）判定自动暂停。
+      try {
+        const usageBytes = await usageOf(store)
+        await syncState(store, { now: 开始, autoPaused: usageBytes > deps.quotaBytes })
+      } catch {
+        // 派生索引写失败不升级成业务失败。
+      }
+
+      // GC 顺手清掉不再被引用的 blob（宽限期内的不会删，spec §8.4）。失败只记日志：
+      // 「删除」本身已经完成，不该因为 GC 失败回滚成错误。
+      try {
+        await collectGarbage(store, {
+          now: 开始,
+          isBusy: () => deps.jobs.activeFor(我.user.id, 我.projectId) !== undefined,
+        })
+      } catch (error) {
+        console.warn("[openhive-backup] 快照删除后的 GC 失败", error)
+      }
+    })
+
+    yield* Effect.promise(() =>
+      记审计(deps, {
         projectId: 我.projectId,
         userId: 我.user.id,
         action: "delete_snapshot",
         snapshotId,
-        kind: manifest.kind,
-        files: manifest.totals.files,
-        bytes: manifest.totals.bytes,
+        ...(manifest === undefined
+          ? {}
+          : { kind: manifest.kind, files: manifest.totals.files, bytes: manifest.totals.bytes }),
         result: "ok",
         durationMs: Date.now() - 开始,
-      })
-    })
+      }),
+    )
     return json({ deleted: true })
   })
 }
@@ -619,6 +770,8 @@ function handlePreview(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const scope = payload.value.path ?? ""
     if (!isSafeRelativePath(scope)) return badRequest("path 不是合法的相对路径")
+    // M-5：`snapshotId` 会拼进对象键 —— 与路径参数同一条校验，别让 `../` 穿出命名空间。
+    if (!isSafeRelativePath(payload.value.snapshotId)) return badRequest("snapshotId 不是合法的恢复点 id")
     const store = storeOf(deps, 我.user.id, 我.projectId)
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
@@ -728,6 +881,8 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const scope = payload.value.path ?? ""
     if (!isSafeRelativePath(scope)) return badRequest("path 不是合法的相对路径")
+    // M-5：同 preview，`snapshotId` 拼对象键前必须过同一道校验。
+    if (!isSafeRelativePath(payload.value.snapshotId)) return badRequest("snapshotId 不是合法的恢复点 id")
     const store = storeOf(deps, 我.user.id, 我.projectId)
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
@@ -794,6 +949,16 @@ async function 执行恢复(
       result: restore.cancelled ? "cancelled" : restore.failed.length > 0 ? "partial" : "ok",
       durationMs: Date.now() - 开始,
     })
+    // M-3 §9.4：计数**取自 `RestoreResult`**，不另算一份（阶段耗时未采，只报总耗时）。
+    console.info("[openhive-backup]", {
+      action: "restore",
+      restored: restore.restored.length,
+      overwritten: restore.overwritten.length,
+      keptBoth: restore.keptBoth.length,
+      skipped: restore.skipped.length,
+      failed: restore.failed.length,
+      durationMs: Date.now() - 开始,
+    })
   } catch (error) {
     if (error instanceof CancelledError) {
       deps.jobs.finish(jobId, "cancelled")
@@ -834,6 +999,12 @@ function handleJob(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     // 按 `userId` 过滤：别人的任务 id 猜到了也是 404（spec §10.2）。
     const job = deps.jobs.get(params.jobId ?? "", user.value.id)
     if (job === undefined) return notFound("任务不存在")
+
+    // M-1：读任务允许归档后查看；成员关系仍然要验（读到 job 不等于还有权看这个项目）。
+    const 授权 = yield* Effect.promise(() =>
+      authorize(user.value, deps, job.projectId, { allowArchived: true }),
+    )
+    if (!授权.ok) return 授权.response
     return json(job)
   })
 }
@@ -844,7 +1015,14 @@ function handleCancel(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     if (Option.isNone(user)) return unauthorized()
 
     const params = yield* HttpRouter.params
-    const 结果 = deps.jobs.cancel(params.jobId ?? "", user.value.id)
+    const job = deps.jobs.get(params.jobId ?? "", user.value.id)
+    if (job === undefined) return notFound("任务不存在")
+
+    // 取消是**写动作**：归档后一律冻结（验收 #39/#50，M-1）。
+    const 授权 = yield* Effect.promise(() => authorize(user.value, deps, job.projectId))
+    if (!授权.ok) return 授权.response
+
+    const 结果 = deps.jobs.cancel(job.id, user.value.id)
     if (结果 === "missing") return notFound("任务不存在")
     return json({ cancelling: 结果 === "cancelling" }, ACCEPTED)
   })
@@ -860,7 +1038,13 @@ function handleCancel(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
  * ⚠️ 保留 / GC 与备份/恢复**共用单飞锁**（spec §8.4）：有任务时**整轮跳过**——不删、不写 state。
  * 跳过判定同时传给 `applyRetention` / `collectGarbage`（那里再判一次，防检查与调用之间的竞态）。
  */
-async function 每日清扫(deps: Deps): Promise<void> {
+type 清扫依赖 = Pick<Deps, "root" | "minio" | "pg" | "jobs"> & {
+  readonly quotaBytes: number
+  /** 测试注入固定时刻；生产不传 ⇒ `Date.now()`。 */
+  readonly now?: number
+}
+
+export async function 每日清扫(deps: 清扫依赖): Promise<void> {
   if (Option.isNone(deps.minio)) return
   const pg = deps.pg()
   const result = await pg.execute(sql`SELECT DISTINCT project_id FROM auth.project_member`)
@@ -870,14 +1054,23 @@ async function 每日清扫(deps: Deps): Promise<void> {
     for (const member of members) {
       const store = storeOf(deps, member.userId, projectId)
       if (store === undefined) continue
-      const isBusy = () => deps.jobs.activeFor(member.userId, projectId) !== undefined
+      // 顶层守卫与函数内守卫各问一次（spec §8.4）。**中途**被拦也算整轮跳过：不写审计、
+      // 不写 state——否则会留下一条「删了 0 个」的假 ok 审计（fix round 2）。
+      let 中途被拦 = false
+      const isBusy = () => {
+        const busy = deps.jobs.activeFor(member.userId, projectId) !== undefined
+        if (busy) 中途被拦 = true
+        return busy
+      }
       if (isBusy()) continue
 
-      const now = Date.now()
+      const now = deps.now ?? Date.now()
       const 开始 = Date.now()
       try {
         await applyRetention(store, { now, timeZone: 时区(), isBusy })
         const 回收 = await collectGarbage(store, { now, isBusy })
+        // 顶层放行之后任务才出现 ⇒ retention / GC 被函数内守卫拦下，这一轮什么都没做。
+        if (中途被拦) continue
         await 记审计(deps, {
           projectId,
           userId: member.userId,
@@ -900,16 +1093,144 @@ async function 每日清扫(deps: Deps): Promise<void> {
         continue
       }
 
-      // 用量降回上限以下时自动解除暂停（spec §8.3）。
-      const 状态 = await syncState(store, { now, autoPaused: false }).catch(() => undefined)
-      if (状态 !== undefined && 状态.usageBytes > QUOTA_BYTES) {
-        await store.writeState({ ...状态, autoPaused: true }).catch(() => undefined)
+      // 用量降回上限以下时自动解除暂停；仍超限（统一 `>`）则置位（spec §8.3）。
+      try {
+        const 状态 = await syncState(store, { now, autoPaused: false })
+        if (状态.usageBytes > deps.quotaBytes) await setAutoPaused(store, 状态.usageBytes, true)
+      } catch {
+        // 派生索引写失败不升级成清扫失败。
       }
     }
   }
 }
 
-export const routes = HttpRouter.use((router) =>
+/** 自动备份执行器收到的输入（测试可注入假执行器观察取消，不碰生产执行层）。 */
+export interface DetectInput {
+  readonly store: BackupStore
+  readonly userId: string
+  readonly projectId: string
+  readonly directory: string
+  readonly kind: "auto"
+  readonly scope: string
+  readonly jobId: string
+  readonly report: (patch: Partial<Job>) => void
+  readonly isCancelled: () => boolean
+}
+
+export interface DetectDeps {
+  readonly root: string
+  readonly minio: Option.Option<MinioSettings>
+  readonly pg: OpenhivePg.Interface["pg"]
+  readonly jobs: JobRegistry
+  readonly quotaBytes: number
+  /** 测试注入的假执行器；生产默认 `拍一次`（`kind: "auto"`）。 */
+  readonly run?: (input: DetectInput) => Promise<Manifest>
+}
+
+/**
+ * 构造自动备份的 `detect`（spec §7.3 第一条 / §8.4）。
+ *
+ * **必须进共享单飞锁**：`activeFor` / `/cancel` / 手动 409 / 保留守卫全靠它。
+ * ⚠️ 每个出口（含异常）都要 `jobs.finish` —— 漏一条就是锁永久占用（下一个周期、手动备份全被 409）。
+ */
+export function makeDetect(deps: DetectDeps): (userId: string, projectId: string) => Promise<void> {
+  return async (userId, projectId) => {
+    const store = storeOf(deps, userId, projectId)
+    if (store === undefined) return
+
+    const { usageBytes, autoPaused } = await contextStatus(store)
+    // I-3 / M-2：只有**严格大于**上限才暂停。`autoPaused` 已置位时不重复写 state。
+    // ⚠️ 这里**不写**审计行：审计动作闭集只有 `backup|restore|preview|delete_snapshot|gc`
+    //    （spec §9.3，Task 11 控制器裁决）。
+    if (usageBytes > deps.quotaBytes) {
+      if (!autoPaused) await setAutoPaused(store, usageBytes, true)
+      return
+    }
+    // I-3：用量已降回 ⇒ 解除暂停，并**继续往下**正常检查（旧实现直接 return ⇒ 永不恢复）。
+    if (autoPaused) await setAutoPaused(store, usageBytes, false)
+
+    const 起 = deps.jobs.start({ kind: "backup", userId, projectId, path: "" })
+    // 已有任务（手动 / 恢复 / 预览）⇒ 本轮跳过，不是失败。
+    if (起.resumed) return
+    const jobId = 起.job.id
+    const 开始 = Date.now()
+
+    const 执行 =
+      deps.run ??
+      ((input: DetectInput) =>
+        拍一次({
+          deps: { jobs: deps.jobs, pg: deps.pg, quotaBytes: deps.quotaBytes },
+          store: input.store,
+          userId: input.userId,
+          projectId: input.projectId,
+          directory: input.directory,
+          kind: "auto",
+          scope: input.scope,
+          jobId: input.jobId,
+        }))
+
+    try {
+      const manifest = await 执行({
+        store,
+        userId,
+        projectId,
+        directory: projectDirectory(deps.root, userId, projectId),
+        kind: "auto",
+        scope: "",
+        jobId,
+        report: (patch) => deps.jobs.update(jobId, patch),
+        isCancelled: () => deps.jobs.get(jobId, userId)?.cancelRequested === true,
+      })
+      deps.jobs.finish(jobId, "succeeded", { result: { snapshotId: manifest.id } })
+    } catch (error) {
+      // 树没变 ⇒ 不是失败：下个周期照常检查。
+      if (error instanceof UnchangedError) {
+        deps.jobs.finish(jobId, "succeeded")
+        return
+      }
+      if (error instanceof CancelledError) {
+        deps.jobs.finish(jobId, "cancelled")
+        // 取消也要留审计：`拍一次` 只在成功路径写，取消是抛出来的。
+        await 记审计(
+          { pg: deps.pg },
+          {
+            projectId,
+            userId,
+            action: "backup",
+            scope: "",
+            kind: "auto",
+            result: "cancelled",
+            durationMs: Date.now() - 开始,
+          },
+        )
+        // 哨兵让调度器**保持** `lastAutoAt`（用户取消后不要每分钟又弹一次，spec §7.3）。
+        throw new AutoBackupCancelled()
+      }
+      if (error instanceof QuotaError) {
+        // 实际用量越限：暂停自动备份（spec §8.3），与「心跳时已越限」同一条落点。
+        deps.jobs.finish(jobId, "failed", {
+          error: { code: "quota_exceeded", message: error.message, retryable: false },
+        })
+        await setAutoPaused(store, error.usageBytes, true)
+        return
+      }
+      deps.jobs.finish(jobId, "failed", {
+        error: {
+          code: "backup_failed",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: true,
+        },
+      })
+      throw error
+    }
+  }
+}
+
+/**
+ * 备份路由。`quotaBytes` 参数只为测试注入小上限（I-4）：生产恒为 `QUOTA_BYTES`。
+ */
+export const routesWithQuota = (quotaBytes: number) =>
+  HttpRouter.use((router) =>
   Effect.gen(function* () {
     // ⚠️ **服务全在层构造期取**（同 `archive.ts` / `project.ts` 记过的实测约束）：
     // 请求 fiber 的 context 里没有 app 层服务。身份是唯一例外。
@@ -924,59 +1245,10 @@ export const routes = HttpRouter.use((router) =>
     const scheduler = createAutoScheduler({
       now: Date.now,
       isRunning: (userId, projectId) => jobs.activeFor(userId, projectId) !== undefined,
-      detect: async (userId, projectId) => {
-        const store = storeOf({ minio: 连接 }, userId, projectId)
-        if (store === undefined) return
-        const { usageBytes, autoPaused } = await contextStatus(store)
-        if (autoPaused || usageBytes >= QUOTA_BYTES) {
-          // 超限：**跳过**（spec §8.3）。`autoPaused` 已置位时不重复写 state。
-          // ⚠️ 这里**不写** `auto-backup-paused` 审计行：审计动作闭集只有
-          //    `backup|restore|preview|delete_snapshot|gc`（spec §9.3，Task 11 控制器裁决）。
-          if (!autoPaused) {
-            const state = await store.readState()
-            await store.writeState({
-              version: STATE_VERSION,
-              usageBytes,
-              lastGcAt: state?.lastGcAt ?? 0,
-              autoPaused: true,
-              snapshots: state?.snapshots ?? [],
-            })
-          }
-          return
-        }
-        try {
-          await 拍一次({
-            deps: { root: 根, minio: 连接, pg: 库, jobs, scheduler },
-            store,
-            userId,
-            projectId,
-            directory: projectDirectory(根, userId, projectId),
-            kind: "auto",
-            scope: "",
-          })
-        } catch (error) {
-          // 树没变 ⇒ 不是失败：下个周期照常检查。
-          if (error instanceof UnchangedError) return
-          // 取消 ⇒ 哨兵让调度器**保持** `lastAutoAt`（用户取消后不要每分钟又弹一次，spec §7.3）。
-          if (error instanceof CancelledError) throw new AutoBackupCancelled()
-          if (error instanceof QuotaError) {
-            // 实际用量越限：暂停自动备份（spec §8.3），与「心跳时已越限」同一条落点。
-            const state = await store.readState()
-            await store.writeState({
-              version: STATE_VERSION,
-              usageBytes: error.usageBytes,
-              lastGcAt: state?.lastGcAt ?? 0,
-              autoPaused: true,
-              snapshots: state?.snapshots ?? [],
-            })
-            return
-          }
-          throw error
-        }
-      },
+      detect: makeDetect({ root: 根, minio: 连接, pg: 库, jobs, quotaBytes }),
     })
 
-    const deps: Deps = { root: 根, minio: 连接, pg: 库, jobs, scheduler }
+    const deps: Deps = { root: 根, minio: 连接, pg: 库, jobs, scheduler, quotaBytes }
 
     const 心跳 = setInterval(() => {
       jobs.evict()
@@ -1003,4 +1275,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.job, (request) => handleJob(request, deps))
     yield* router.add("POST", PATH.cancel, (request) => handleCancel(request, deps))
   }),
-)
+  )
+
+/** 生产默认：上限取 spec §8.3 的 `QUOTA_BYTES`。 */
+export const routes = routesWithQuota(QUOTA_BYTES)

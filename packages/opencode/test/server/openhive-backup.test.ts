@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -16,10 +16,14 @@ import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { AnchorWorkspace } from "../../src/server/routes/instance/httpapi/middleware/anchor-workspace"
 import { userIdentityLayer } from "../../src/server/routes/instance/httpapi/middleware/user-identity"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
-import { OpenhiveArchive } from "../../src/server/openhive/archive"
+import { OpenhiveArchive, type MinioSettings } from "../../src/server/openhive/archive"
 import { OpenhiveBackup } from "../../src/server/openhive/backup"
 import { OpenhivePg } from "../../src/server/openhive/pg"
-import { QUOTA_BYTES, STATE_VERSION } from "../../src/server/openhive/backup-model"
+import { QUOTA_BYTES, STATE_VERSION, type Manifest } from "../../src/server/openhive/backup-model"
+import { sharedJobs } from "../../src/server/openhive/backup-jobs"
+import { CancelledError } from "../../src/server/openhive/backup-run"
+import { createAutoScheduler } from "../../src/server/openhive/backup-auto"
+import { snapshotIdOf } from "../../src/server/openhive/backup-rules"
 import { openBackupStore } from "../../src/server/openhive/backup-store"
 import { testEffect } from "../lib/effect"
 
@@ -63,6 +67,7 @@ const BOB: TokenSubject = { id: "660e8400-e29b-41d4-a716-446655440001", policeNo
 
 /** 出口路径（**客户端契约**，写**字面量**、**刻意不 import** 生产常量——`LEARNINGS #003-05`）。 */
 const PROJECT_PATH = "/openhive/project"
+const ARCHIVE = "/openhive/project/archive"
 const BACKUP = "/openhive/project/backup"
 const HEARTBEAT = "/openhive/project/backup/heartbeat"
 
@@ -70,6 +75,13 @@ const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-backup-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
 const WORKSPACE_ROOT = path.join(SANDBOX, "workspaces")
 const SHARED_ROOT = path.join(SANDBOX, "shared")
+
+/**
+ * 注入的小上限（fix round 1 · I-4）：生产 `QUOTA_BYTES` 是 10 GiB，本机造不出「逻辑大小之和
+ * 超过上限」的真实文件。`routesWithQuota(TEST_QUOTA)` 只换上限**数值**，spec §8.3 的公式
+ * （`缺失 blob 之和 + ceil(logicalBytes / 20)`）一个字不改——生产默认仍是 `QUOTA_BYTES`。
+ */
+const TEST_QUOTA = 1024 * 1024
 
 /** ⚠️ `OPENHIVE_DATA_ROOT` 只能走 `process.env`（理由见同族测试的同款注释）。 */
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
@@ -134,7 +146,7 @@ const OPEN: Record<string, string | undefined> = {
  * `MinioConfig` 是备份自己的配置服务；沙箱根复用 `AnchorWorkspace.Config`（只有一处定义）；
  * `OpenhivePg.layer` 是**模块级同一个值** ⇒ 与既有 openhive 出口共用同一个 PG 客户端。
  */
-const backupRoutes = OpenhiveBackup.routes.pipe(
+const backupRoutes = OpenhiveBackup.routesWithQuota(TEST_QUOTA).pipe(
   Layer.provide(OpenhiveArchive.MinioConfig.layer),
   Layer.provide(AnchorWorkspace.Config.layer),
   Layer.provide(OpenhivePg.layer),
@@ -230,6 +242,113 @@ const 新项目 = () =>
     return { projectId: project.id, directory }
   })
 
+const MINIO_SETTINGS: MinioSettings = {
+  endpoint: s3.endpoint,
+  bucket: s3.bucket,
+  accessKeyId: MINIO.OPENHIVE_MINIO_ACCESS_KEY,
+  secretAccessKey: MINIO.OPENHIVE_MINIO_SECRET_KEY,
+  useSSL: false,
+}
+
+const 连接 = Option.some(MINIO_SETTINGS)
+
+/** 与生产同一条拼法（`endpointOf` 在 `storeOf` 里做；这里直接给带协议的 endpoint）。 */
+const 存储 = (projectId: string) =>
+  openBackupStore({
+    endpoint: s3.endpoint,
+    bucket: s3.bucket,
+    credentials: {
+      accessKeyId: MINIO.OPENHIVE_MINIO_ACCESS_KEY,
+      secretAccessKey: MINIO.OPENHIVE_MINIO_SECRET_KEY,
+    },
+    userId: ALICE.id,
+    projectId,
+  })
+
+const StatusWire = Schema.Struct({
+  activeJob: Schema.NullOr(Schema.Struct({ id: Schema.String })),
+  usageBytes: Schema.Number,
+  limitBytes: Schema.Number,
+  autoPaused: Schema.Boolean,
+})
+
+const statusOf = (projectId: string) =>
+  Effect.gen(function* () {
+    const 响应 = yield* as(openApp, ALICE, `${BACKUP}/status?projectId=${projectId}`)
+    expect(响应.status).toBe(200)
+    return yield* json(StatusWire, 响应)
+  })
+
+/** 起一次手动备份并等到终态（成功链的公共前奏）。 */
+const 手动备份 = (projectId: string) =>
+  Effect.gen(function* () {
+    const 起 = yield* as(openApp, ALICE, BACKUP, 体({ projectId }))
+    expect(起.status).toBe(202)
+    const { jobId } = yield* json(Schema.Struct({ jobId: Schema.String }), 起)
+    return { jobId, job: yield* 等到终态(jobId) }
+  })
+
+/** 等 state 的 `autoPaused` 变成期望值（**等条件不等时间**，`#006-31`）。 */
+const 等暂停值 = (store: ReturnType<typeof 存储>, 期望: boolean) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 200; i += 1) {
+      const 态 = yield* Effect.promise(() => store.readState())
+      if (态?.autoPaused === 期望) return 态
+      yield* Effect.sleep("50 millis")
+    }
+    return yield* Effect.fail(new Error(`10 秒内 autoPaused 没有变成 ${期望}`))
+  })
+
+/** 一条被捕获的结构化日志（`console.info("[openhive-backup]", {...})`）。 */
+type 日志行 = { readonly 标签: unknown; readonly 载荷?: Record<string, unknown> }
+
+/** 等一条结构化日志出现（**等条件不等时间**；日志在终态之后才写的落点用它）。 */
+const 等日志 = (记录: readonly 日志行[], 取: (载荷: Record<string, unknown>) => boolean) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 200; i += 1) {
+      const 行 = 记录.find(
+        (entry) => entry.标签 === "[openhive-backup]" && entry.载荷 !== undefined && 取(entry.载荷),
+      )
+      if (行 !== undefined) return 行
+      yield* Effect.sleep("25 millis")
+    }
+    return yield* Effect.fail(new Error("10 秒内没有等到结构化日志"))
+  })
+
+/** 空树项目（建项目会 `git init` ⇒ 先删 `.git`，让「拍出来的是 0 文件快照」可观测）。 */
+const 空项目 = () =>
+  Effect.gen(function* () {
+    const created = yield* createAs(ALICE, {
+      name: `备份·空树·${Date.now()}·${crypto.randomUUID().slice(0, 6)}`,
+      type: "private",
+    })
+    const directory = path.join(WORKSPACE_ROOT, ALICE.id, created.id)
+    mkdirSync(directory, { recursive: true })
+    rmSync(path.join(directory, ".git"), { recursive: true, force: true })
+    return { projectId: created.id, directory }
+  })
+
+/** 一份合法的旧自动清单（每日清扫用例的输入）。 */
+function 旧自动清单(projectId: string, id: string, createdAt: number): Manifest {
+  return {
+    version: 1,
+    id,
+    projectId,
+    ownerId: ALICE.id,
+    kind: "auto",
+    scope: "",
+    createdAt,
+    createdBy: ALICE.id,
+    source: "auto",
+    timezone: "UTC",
+    status: "complete",
+    files: [],
+    dirs: [],
+    skipped: [],
+    totals: { files: 0, bytes: 0, uploadedBytes: 0, skipped: 0 },
+  }
+}
+
 const PreviewWire = Schema.Struct({
   counts: Schema.Struct({
     missing: Schema.Number,
@@ -244,6 +363,7 @@ const RestoreWire = Schema.Struct({
   keptBoth: Schema.Array(Schema.String),
   overwritten: Schema.Array(Schema.String),
   skipped: Schema.Array(Schema.String),
+  failed: Schema.Array(Schema.Struct({ path: Schema.String, reason: Schema.String })),
   cancelled: Schema.Boolean,
 })
 
@@ -426,40 +546,53 @@ describe("Task 11 · 授权三态与路径守卫", () => {
 })
 
 describe("Task 11 · 自动备份的暂停与冷却", () => {
-  it.live("state 已 autoPaused ⇒ 心跳不拍；同批未暂停的对照项目照常拍（证明机制是活的）", () =>
+  it.live("自动暂停后用量降到上限以下 ⇒ 下一次检查清空 autoPaused 并照常拍（spec §8.3 末条）", () =>
     Effect.gen(function* () {
-      const 暂停 = yield* 新项目()
-      const 对照 = yield* 新项目()
+      const project = yield* 新项目()
+      const store = 存储(project.projectId)
 
-      // 造「暂停、但用量已降回 0」的态：若实现只看用量、不看 autoPaused，就会照拍 ⇒ 红。
-      // 这也是真实序列——超限暂停后用户删掉恢复点，暂停标志保留到每日清扫（spec §8.3）。
-      yield* Effect.promise(async () => {
-        const store = openBackupStore({
-          endpoint: s3.endpoint,
-          bucket: s3.bucket,
-          credentials: { accessKeyId: MINIO.OPENHIVE_MINIO_ACCESS_KEY, secretAccessKey: MINIO.OPENHIVE_MINIO_SECRET_KEY },
-          userId: ALICE.id,
-          projectId: 暂停.projectId,
-        })
-        await store.writeState({
+      // 真实序列：超限暂停后用户删掉恢复点 ⇒ 用量降回 0、暂停标志还留着。
+      // 旧实现到这里就 `return`（标志保留到每日清扫）⇒ 一份都不拍、标志一直是 true（RED）。
+      yield* Effect.promise(() =>
+        store.writeState({
           version: STATE_VERSION,
           usageBytes: 0,
           lastGcAt: 0,
           autoPaused: true,
           snapshots: [],
-        })
-      })
+        }),
+      )
 
-      for (const project of [暂停, 对照]) {
-        const 响应 = yield* as(openApp, ALICE, HEARTBEAT, 体({ projectId: project.projectId }))
-        expect(响应.status).toBe(204)
-      }
+      expect((yield* as(openApp, ALICE, HEARTBEAT, 体({ projectId: project.projectId }))).status).toBe(204)
 
-      // 对照项目：自动快照真的出现了（「暂停项目没有快照」这条才有判别力）。
-      expect((yield* 等快照数(对照.projectId, 1))[0]?.kind).toBe("auto")
-      // 再给暂停项目一拍的时间，仍然一份都没有。
-      yield* Effect.sleep("500 millis")
-      expect((yield* 快照列表(暂停.projectId)).snapshots).toEqual([])
+      // 新判据：用量已降回 ⇒ 这一次检查真的拍了一张，并把暂停标志清空。
+      expect((yield* 等快照数(project.projectId, 1))[0]?.kind).toBe("auto")
+      yield* 等暂停值(store, false)
+    }),
+    30_000,
+  )
+
+  it.live("用量恰好等于上限（不是大于）⇒ 不暂停、照常拍（`>` 口径，M-2）", () =>
+    Effect.gen(function* () {
+      // 空树 ⇒ 计划字节为 0：`>` 口径下 `usage + 0 > quota` 不成立，应当照拍；
+      // 旧实现 `usageBytes >= QUOTA_BYTES` ⇒ 提前暂停、一份都不拍（RED）。
+      const project = yield* 空项目()
+      const store = 存储(project.projectId)
+      yield* Effect.promise(() =>
+        store.writeState({
+          version: STATE_VERSION,
+          // 应用侧注入的上限是 `TEST_QUOTA`（I-4），等号判据要对着**这个**上限量。
+          usageBytes: TEST_QUOTA,
+          lastGcAt: 0,
+          autoPaused: false,
+          snapshots: [],
+        }),
+      )
+
+      expect((yield* as(openApp, ALICE, HEARTBEAT, 体({ projectId: project.projectId }))).status).toBe(204)
+
+      expect((yield* 等快照数(project.projectId, 1))[0]?.kind).toBe("auto")
+      yield* 等暂停值(store, false)
     }),
     30_000,
   )
@@ -496,7 +629,9 @@ describe("Task 11 · 自动备份的暂停与冷却", () => {
         })
         await store.writeState({
           version: STATE_VERSION,
-          usageBytes: QUOTA_BYTES,
+          // M-2 统一 `>`：恰好等于上限**不算**越限（边界那条用例钉住等号），
+          // 所以这里要造「真越限」＝上限 + 1。上限取注入的 `TEST_QUOTA`。
+          usageBytes: TEST_QUOTA + 1,
           lastGcAt: 0,
           autoPaused: false,
           snapshots: [],
@@ -595,6 +730,560 @@ describe("Task 11 · 预览 / 恢复 / 删除恢复点", () => {
       expect((yield* 快照列表(project.projectId)).snapshots).toEqual([])
       const 再读 = yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?projectId=${project.projectId}`)
       expect(再读.status).toBe(404)
+    }),
+    30_000,
+  )
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix round 1（复审提交的 I-1…I-5 / M-1…M-5）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Fix round 1 · 自动备份进共享单飞锁（I-1 / §7.3）与取消（I-5.3）", () => {
+  it.live(
+    "自动备份进行中 activeFor 非空、手动 409；HTTP 取消 ⇒ cancelled ＋ 审计 cancelled ＋ lastAutoAt 保持",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* 新项目()
+        const 固定 = Date.now()
+        const scheduler = createAutoScheduler({
+          now: () => 固定,
+          isRunning: (userId, projectId) => sharedJobs.activeFor(userId, projectId) !== undefined,
+          // 注入一个「阻塞到收到取消」的假执行器：不 sleep 等时间，等条件（`#006-31`）。
+          detect: OpenhiveBackup.makeDetect({
+            root: WORKSPACE_ROOT,
+            minio: 连接,
+            pg: () => pg!.db,
+            jobs: sharedJobs,
+            quotaBytes: TEST_QUOTA,
+            run: async (input) => {
+              for (let i = 0; i < 400; i += 1) {
+                if (input.jobId !== undefined && sharedJobs.get(input.jobId, input.userId)?.cancelRequested === true) {
+                  throw new CancelledError("任务已取消")
+                }
+                await new Promise((resolve) => setTimeout(resolve, 25))
+              }
+              throw new Error("假执行器 10 秒内没等到取消")
+            },
+          }),
+        })
+
+        scheduler.heartbeat(ALICE.id, project.projectId)
+        const 跑 = scheduler.checkNow(ALICE.id, project.projectId)
+
+        // 等任务进表（旧实现 detect 从不 `jobs.start` ⇒ 永远是空，RED）。
+        let 任务ID = ""
+        for (let i = 0; i < 200; i += 1) {
+          const 活 = sharedJobs.activeFor(ALICE.id, project.projectId)
+          if (活 !== undefined) {
+            任务ID = 活.id
+            break
+          }
+          yield* Effect.sleep("25 millis")
+        }
+        expect(任务ID.length).toBeGreaterThan(0)
+        expect(sharedJobs.activeFor(ALICE.id, project.projectId)?.id).toBe(任务ID)
+
+        // HTTP 级并发：自动任务在跑时，手动备份必须撞单飞锁。
+        const 手动 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId }))
+        expect(手动.status).toBe(409)
+        expect((yield* json(Schema.Struct({ code: Schema.String }), 手动)).code).toBe("job_running")
+
+        // HTTP 取消 ⇒ 假执行器收到取消、detect 落终态。
+        const 取消 = yield* as(openApp, ALICE, `${BACKUP}/jobs/${任务ID}/cancel`, { method: "POST" })
+        expect(取消.status).toBe(202)
+        yield* Effect.promise(() => 跑)
+
+        const 终 = yield* 等到终态(任务ID)
+        expect(终.state).toBe("cancelled")
+        // 取消不得写 manifest（spec §5.6）。
+        expect((yield* 快照列表(project.projectId)).snapshots).toEqual([])
+
+        // 审计：action=backup、result=cancelled、kind=auto。
+        const 事件 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+        const 取消行 = 事件.find((event) => event.action === "backup" && event.result === "cancelled")
+        expect(取消行?.kind).toBe("auto")
+
+        // 取消 ⇒ `lastAutoAt` 保持（用户取消后不要每分钟又被弹一次，spec §7.3）。
+        expect(scheduler.entries().find((entry) => entry.projectId === project.projectId)?.lastAutoAt).toBe(固定)
+      }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · 删除恢复点幂等与用量同步（I-2 / §8.5）", () => {
+  it.live("同一 id 连删两次 ⇒ 两次都 200 deleted:true（幂等）", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      const 删 = () =>
+        as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?projectId=${project.projectId}`, { method: "DELETE" })
+
+      const 第一次 = yield* 删()
+      expect(第一次.status).toBe(200)
+      expect(yield* json(Schema.Struct({ deleted: Schema.Boolean }), 第一次)).toEqual({ deleted: true })
+
+      // 旧实现 manifest 不见了 ⇒ 404（RED）；幂等的语义是「目标状态已达成」。
+      const 第二次 = yield* 删()
+      expect(第二次.status).toBe(200)
+      expect(yield* json(Schema.Struct({ deleted: Schema.Boolean }), 第二次)).toEqual({ deleted: true })
+    }),
+    30_000,
+  )
+
+  it.live("两份快照删一份 ⇒ usageBytes 下降、state.snapshots 摘掉、lastGcAt 更新", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const 一 = yield* 手动备份(project.projectId)
+      const 二 = yield* 手动备份(project.projectId)
+      expect((yield* 快照列表(project.projectId)).snapshots).toHaveLength(2)
+
+      const store = 存储(project.projectId)
+      const 删前状态 = yield* Effect.promise(() => store.readState())
+      const 删前 = yield* statusOf(project.projectId)
+      const 删的ID = 一.job.result?.snapshotId ?? ""
+      expect(删的ID.length).toBeGreaterThan(0)
+      expect(二.job.result?.snapshotId).not.toBe(删的ID)
+
+      const 删 = yield* as(
+        openApp,
+        ALICE,
+        `${BACKUP}/snapshots/${删的ID}?projectId=${project.projectId}`,
+        { method: "DELETE" },
+      )
+      expect(删.status).toBe(200)
+
+      // ① 用量当场更新（不是等下一次备份 / 每日清扫才变）。
+      const 删后 = yield* statusOf(project.projectId)
+      expect(删后.usageBytes).toBeLessThan(删前.usageBytes)
+      // ② state.snapshots 不再含它。
+      const 删后状态 = yield* Effect.promise(() => store.readState())
+      expect(删后状态?.snapshots.some((snapshot) => snapshot.id === 删的ID)).toBe(false)
+      // ③ GC 跑过 ⇒ lastGcAt 前进（24h 宽限内 blob 不会被删，不断言 blob 消失）。
+      expect(删后状态?.lastGcAt ?? 0).toBeGreaterThan(删前状态?.lastGcAt ?? 0)
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · 归档项目读写分流（I-5.2 / M-1 / 验收 #39 #50）", () => {
+  const 归档 = (projectId: string) => as(openApp, ALICE, ARCHIVE, 体({ projectId }))
+
+  it.live("归档后读端点仍 200：status / snapshots / snapshot / jobs/{id}", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { jobId, job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      const q = `projectId=${project.projectId}`
+
+      const 归档响应 = yield* 归档(project.projectId)
+      expect(归档响应.status).toBe(200)
+
+      // 旧实现把「已归档」一律 403（连读都挡）⇒ 第一条就 RED。
+      const 读 = [
+        yield* as(openApp, ALICE, `${BACKUP}/status?${q}`),
+        yield* as(openApp, ALICE, `${BACKUP}/snapshots?${q}`),
+        yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?${q}`),
+        yield* as(openApp, ALICE, `${BACKUP}/jobs/${jobId}`),
+      ]
+      for (const 响应 of 读) expect(响应.status).toBe(200)
+    }),
+    30_000,
+  )
+
+  it.live("归档后写动作一律 403，文案逐字「项目已归档，请使用项目找回」", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { jobId, job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      const q = `projectId=${project.projectId}`
+
+      expect((yield* 归档(project.projectId)).status).toBe(200)
+
+      const 写 = [
+        yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId })),
+        yield* as(openApp, ALICE, `${BACKUP}/restore/preview`, 体({ projectId: project.projectId, snapshotId })),
+        yield* as(
+          openApp,
+          ALICE,
+          `${BACKUP}/restore`,
+          体({ projectId: project.projectId, snapshotId, decision: "overwrite" }),
+        ),
+        yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?${q}`, { method: "DELETE" }),
+        // 取消也是写动作：旧实现根本不看归档（直接 202）⇒ RED。
+        yield* as(openApp, ALICE, `${BACKUP}/jobs/${jobId}/cancel`, { method: "POST" }),
+      ]
+      for (const 响应 of 写) {
+        expect(响应.status).toBe(403)
+        expect(yield* json(Schema.Struct({ error: Schema.String }), 响应)).toEqual({
+          error: "项目已归档，请使用项目找回",
+        })
+      }
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · 非成员读端点（I-5.1）", () => {
+  it.live("BOB 对六个读端点一律 403（status / snapshots / snapshot / preview / restore / DELETE）", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      const q = `projectId=${project.projectId}`
+
+      const 读 = [
+        yield* as(openApp, BOB, `${BACKUP}/status?${q}`),
+        yield* as(openApp, BOB, `${BACKUP}/snapshots?${q}`),
+        yield* as(openApp, BOB, `${BACKUP}/snapshots/${snapshotId}?${q}`),
+        yield* as(openApp, BOB, `${BACKUP}/restore/preview`, 体({ projectId: project.projectId, snapshotId })),
+        yield* as(
+          openApp,
+          BOB,
+          `${BACKUP}/restore`,
+          体({ projectId: project.projectId, snapshotId, decision: "overwrite" }),
+        ),
+        yield* as(openApp, BOB, `${BACKUP}/snapshots/${snapshotId}?${q}`, { method: "DELETE" }),
+      ]
+      for (const 响应 of 读) {
+        expect(响应.status).toBe(403)
+        expect((yield* json(Schema.Struct({ code: Schema.String }), 响应)).code).toBe("forbidden")
+      }
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · snapshotId 路径守卫（M-5）", () => {
+  it.live("preview / restore 的 snapshotId 非法 ⇒ 400，与 GET/DELETE 同一条文案", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const 目标 = [
+        { url: `${BACKUP}/restore/preview`, body: { projectId: project.projectId, snapshotId: "../x" } },
+        {
+          url: `${BACKUP}/restore`,
+          body: { projectId: project.projectId, snapshotId: "../x", decision: "overwrite" },
+        },
+      ]
+      for (const 请求 of 目标) {
+        const 响应 = yield* as(openApp, ALICE, 请求.url, 体(请求.body))
+        // 旧实现把非法 id 折成「清单读不到」⇒ 404（RED）。
+        expect(响应.status).toBe(400)
+        expect(yield* json(Schema.Struct({ error: Schema.String, code: Schema.String }), 响应)).toEqual({
+          error: "snapshotId 不是合法的恢复点 id",
+          code: "bad_request",
+        })
+      }
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · 恢复点列表的边界态（M-4）", () => {
+  it.live("state.snapshots 为空但 manifest 有 ⇒ 列表回退重建，不返回空", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      yield* 手动备份(project.projectId)
+      const store = 存储(project.projectId)
+      const 态 = yield* Effect.promise(() => store.readState())
+      expect(态).toBeDefined()
+      // 防暂停分支写出 `snapshots: []` 的边界态（manifest 还在）。
+      yield* Effect.promise(() =>
+        store.writeState({
+          version: STATE_VERSION,
+          usageBytes: 态?.usageBytes ?? 0,
+          lastGcAt: 态?.lastGcAt ?? 0,
+          autoPaused: 态?.autoPaused ?? false,
+          snapshots: [],
+        }),
+      )
+
+      const 列 = yield* 快照列表(project.projectId)
+      // 旧实现直接信 state ⇒ 空数组（RED）。
+      expect(列.snapshots).toHaveLength(1)
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · §9.4 结构化日志（M-3）", () => {
+  it.live("备份成功打一条 action=backup，字段取 manifest.totals（不另算一份）", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const 原 = console.info
+      const 记录: 日志行[] = []
+      console.info = ((...args: unknown[]) => {
+        记录.push({
+          标签: args[0],
+          载荷:
+            typeof args[1] === "object" && args[1] !== null ? (args[1] as Record<string, unknown>) : undefined,
+        })
+      }) as typeof console.info
+      try {
+        const { job } = yield* 手动备份(project.projectId)
+        const snapshotId = job.result?.snapshotId ?? ""
+        const 明细 = yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?projectId=${project.projectId}`)
+        expect(明细.status).toBe(200)
+        const 清单 = yield* json(
+          Schema.Struct({
+            totals: Schema.Struct({
+              files: Schema.Number,
+              bytes: Schema.Number,
+              uploadedBytes: Schema.Number,
+              skipped: Schema.Number,
+            }),
+            dirs: Schema.Array(Schema.String),
+          }),
+          明细,
+        )
+
+        // 旧实现一条都不打（RED）。
+        const 行 = yield* 等日志(记录, (载荷) => 载荷.action === "backup")
+        expect(行.载荷).toMatchObject({
+          action: "backup",
+          kind: "manual",
+          logicalBytes: 清单.totals.bytes,
+          uploadedBytes: 清单.totals.uploadedBytes,
+          dedupSavedBytes: 清单.totals.bytes - 清单.totals.uploadedBytes,
+          files: 清单.totals.files,
+          dirs: 清单.dirs.length,
+          skipped: 清单.totals.skipped,
+        })
+        expect(typeof 行.载荷?.durationMs).toBe("number")
+      } finally {
+        console.info = 原
+      }
+    }),
+    30_000,
+  )
+
+  it.live("恢复终点打一条 action=restore，计数取 RestoreResult", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      writeFileSync(path.join(project.directory, "报告.docx"), "已经被改过")
+
+      const 原 = console.info
+      const 记录: 日志行[] = []
+      console.info = ((...args: unknown[]) => {
+        记录.push({
+          标签: args[0],
+          载荷:
+            typeof args[1] === "object" && args[1] !== null ? (args[1] as Record<string, unknown>) : undefined,
+        })
+      }) as typeof console.info
+      try {
+        const 起 = yield* as(
+          openApp,
+          ALICE,
+          `${BACKUP}/restore`,
+          体({ projectId: project.projectId, snapshotId, decision: "overwrite" }),
+        )
+        expect(起.status).toBe(202)
+        const 恢复任务 = yield* 等到终态((yield* json(Schema.Struct({ jobId: Schema.String }), 起)).jobId)
+        expect(恢复任务.state).toBe("succeeded")
+        const 结果 = 恢复任务.result?.restore
+
+        // 旧实现一条都不打（RED）；日志在终态之后才写，等条件。
+        const 行 = yield* 等日志(记录, (载荷) => 载荷.action === "restore")
+        expect(行.载荷).toMatchObject({
+          action: "restore",
+          restored: 结果?.restored.length,
+          overwritten: 结果?.overwritten.length,
+          keptBoth: 结果?.keptBoth.length,
+          skipped: 结果?.skipped.length,
+          failed: 结果?.failed.length,
+        })
+        expect(typeof 行.载荷?.durationMs).toBe("number")
+      } finally {
+        console.info = 原
+      }
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 1 · 手动配额预检按 §8.3 公式（I-4）", () => {
+  it.live("逻辑大小之和超上限、但缺失 blob 很小 ⇒ 不 409（去重后只算缺失）", () =>
+    Effect.gen(function* () {
+      const project = yield* 空项目()
+      writeFileSync(path.join(project.directory, "大文件.bin"), Buffer.alloc(700_000, 7))
+
+      const 一 = yield* 手动备份(project.projectId)
+      expect(一.job.state).toBe("succeeded")
+
+      // 第二次：logicalBytes = 700_000、missing = 0 ⇒ required = ceil(700_000 / 20) = 35_000。
+      // 而 `usage(≈700KB) + logical(700KB)` 已超 1 MiB ⇒ **旧的「用量 + 逻辑大小」判据会 409**（RED）。
+      const 二 = yield* 手动备份(project.projectId)
+      expect(二.job.state).toBe("succeeded")
+    }),
+    60_000,
+  )
+
+  it.live("真超限 ⇒ 409，`requiredBytes` 逐字等于 缺失 + ceil(logical/20)", () =>
+    Effect.gen(function* () {
+      const project = yield* 空项目()
+      writeFileSync(path.join(project.directory, "整块.bin"), Buffer.alloc(1_000_000, 9))
+
+      const 响应 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId }))
+      expect(响应.status).toBe(409)
+      const 回 = yield* json(
+        Schema.Struct({
+          code: Schema.String,
+          usageBytes: Schema.Number,
+          limitBytes: Schema.Number,
+          requiredBytes: Schema.Number,
+        }),
+        响应,
+      )
+      expect(回.code).toBe("quota_exceeded")
+      expect(回.usageBytes).toBe(0)
+      expect(回.limitBytes).toBe(TEST_QUOTA)
+      // 1_000_000 + ceil(1_000_000 / 20) = 1_050_000（逐字断言，不用「大于」）。
+      expect(回.requiredBytes).toBe(1_050_000)
+    }),
+    30_000,
+  )
+
+  it.live("`allowOverQuota: true` ⇒ 202 且任务成功", () =>
+    Effect.gen(function* () {
+      const project = yield* 空项目()
+      writeFileSync(path.join(project.directory, "整块.bin"), Buffer.alloc(1_000_000, 9))
+
+      const 起 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId, allowOverQuota: true }))
+      expect(起.status).toBe(202)
+      const { jobId } = yield* json(Schema.Struct({ jobId: Schema.String }), 起)
+      const job = yield* 等到终态(jobId)
+      expect(job.state).toBe("succeeded")
+    }),
+    60_000,
+  )
+})
+
+describe("Fix round 1 · 每日清扫的活跃任务守卫（I-5.5 / §8.4）", () => {
+  it.live("有活跃任务 ⇒ 一个 manifest 不删、不写 gc 审计；无任务 ⇒ 删过期 manifest 并写 gc 审计", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const store = 存储(project.projectId)
+      // 同一天、40 天前的两份 auto 快照（>30 天 ⇒ 周桶；同一周 ⇒ 只留最新那份）。
+      const 基准 = new Date()
+      基准.setDate(基准.getDate() - 40)
+      基准.setHours(12, 0, 0, 0)
+      const 旧时刻 = 基准.getTime()
+      const 新时刻 = 旧时刻 + 60 * 60 * 1000
+      const 旧ID = snapshotIdOf(旧时刻, "aaaaaa")
+      const 新ID = snapshotIdOf(新时刻, "bbbbbb")
+      yield* Effect.promise(async () => {
+        await store.writeManifest(旧自动清单(project.projectId, 旧ID, 旧时刻))
+        await store.writeManifest(旧自动清单(project.projectId, 新ID, 新时刻))
+      })
+
+      const 清扫 = () =>
+        Effect.promise(() =>
+          OpenhiveBackup.每日清扫({
+            root: WORKSPACE_ROOT,
+            minio: 连接,
+            pg: () => pg!.db,
+            jobs: sharedJobs,
+            quotaBytes: TEST_QUOTA,
+          }),
+        )
+
+      // ① 有活跃任务：整轮跳过（不删、不写 gc 审计）。
+      const 起 = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.projectId, path: "" })
+      yield* 清扫()
+      expect((yield* Effect.promise(() => store.manifests())).map((entry) => entry.id).sort()).toEqual(
+        [旧ID, 新ID].sort(),
+      )
+      const 有任务时审计 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+      expect(有任务时审计.some((event) => event.action === "gc")).toBe(false)
+
+      // ② 任务收敛之后再扫：过期那份被删，并写一条 gc 审计。
+      sharedJobs.finish(起.job.id, "cancelled")
+      yield* 清扫()
+      expect((yield* Effect.promise(() => store.manifests())).map((entry) => entry.id)).toEqual([新ID])
+      const 无任务时审计 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+      expect(无任务时审计.some((event) => event.action === "gc" && event.result === "ok")).toBe(true)
+    }),
+    30_000,
+  )
+})
+
+describe("Fix round 2 · 已占锁后的 MinIO 抖动（阻断项）", () => {
+  it.live("预检成功后读 state 抛错 ⇒ 500，且锁当场释放（同一项目再 POST 不是 409）", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      // 只让「读 state.json」失败：预检（扫描 / 哈希 / list blobs）照常通过，
+      // 于是失败恰好落在 `jobs.start` **之后**的那一次读上（`backup.ts:contextStatus`）。
+      s3.failOn(500, (request) => request.method === "GET" && request.key.endsWith("/state.json"))
+      try {
+        const 第一 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId }))
+        expect(第一.status).toBe(500)
+      } finally {
+        // `failWith(undefined)` 同时清掉 `failOn` 的条件（夹具文档写明）。
+        s3.failWith(undefined)
+      }
+
+      // 锁已释放：同一 (user, project) 再来一次应当被受理，而不是永久 409。
+      const 第二 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId }))
+      expect(第二.status).toBe(202)
+    }),
+    60_000,
+  )
+})
+
+describe("Fix round 2 · 每日清扫的 isBusy 透传（§8.4）", () => {
+  it.live("顶层检查通过、函数内检查拦截 ⇒ 一个 manifest 不删、不写 gc 审计", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const store = 存储(project.projectId)
+      // 两份 40 天前的 auto 快照（同一周 ⇒ 只留最新那份）——被拆掉透传守卫时会删掉旧的那份。
+      const 基准 = new Date()
+      基准.setDate(基准.getDate() - 40)
+      基准.setHours(12, 0, 0, 0)
+      const 旧时刻 = 基准.getTime()
+      const 新时刻 = 旧时刻 + 60 * 60 * 1000
+      const 旧ID = snapshotIdOf(旧时刻, "aaaaaa")
+      const 新ID = snapshotIdOf(新时刻, "bbbbbb")
+      yield* Effect.promise(async () => {
+        await store.writeManifest(旧自动清单(project.projectId, 旧ID, 旧时刻))
+        await store.writeManifest(旧自动清单(project.projectId, 新ID, 新时刻))
+      })
+
+      // 假注册表：**第一次**问「有任务吗」答没有（顶层守卫放行），之后每次都答有
+      // （`applyRetention` / `collectGarbage` 各自的函数内守卫拦截）。返回值用真任务对象，
+      // 形状不必再编。任务收尾放 finally，别污染同文件后续用例。
+      const 起 = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.projectId, path: "" })
+      let 问过 = 0
+      const 假注册表 = {
+        ...sharedJobs,
+        activeFor: () => {
+          问过 += 1
+          return 问过 === 1 ? undefined : 起.job
+        },
+      }
+      try {
+        yield* Effect.promise(() =>
+          OpenhiveBackup.每日清扫({
+            root: WORKSPACE_ROOT,
+            minio: 连接,
+            pg: () => pg!.db,
+            jobs: 假注册表,
+            quotaBytes: TEST_QUOTA,
+          }),
+        )
+      } finally {
+        sharedJobs.finish(起.job.id, "cancelled")
+      }
+
+      expect((yield* Effect.promise(() => store.manifests())).map((entry) => entry.id).sort()).toEqual(
+        [旧ID, 新ID].sort(),
+      )
+      const 审计 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+      // 中途出现任务 ⇒ 这一轮什么都没做，不该留下「删了 0 个」的假 ok 审计。
+      expect(审计.some((event) => event.action === "gc")).toBe(false)
     }),
     30_000,
   )
