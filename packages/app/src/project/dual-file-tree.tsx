@@ -6,6 +6,7 @@ import { createMemo, createSignal, For, Show, splitProps } from "solid-js"
 import { flattenFileTreeV2 } from "@/components/file-tree-v2-model"
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileTree, type FileTreeProps } from "@/project/file-tree"
+import type { BackupSnapshot } from "@/project/openhive-backup"
 
 /** 每层缩进（设计 §6.4 的 16px 层级缩进）——**与 `file-tree.tsx` 同值**：两棵树并排出现，缩进不一致会看得出来。 */
 const INDENT_STEP = 16
@@ -20,12 +21,25 @@ const 最小窗高 = 72
 
 const ROW =
   "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
-const 确认按钮 =
-  "flex h-6 shrink-0 items-center rounded-[4px] px-1.5 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
-/** 下树的空态两句**不同**文案——「没有来源」与「来源说了没有」不是一件事（同 `file-tree.tsx` 两个空态、同 `minio-backups.ts` 的 `undefined` / `[]` 之分）。 */
+/**
+ * 下树的空态**四句不同**文案——「没有来源」「来源说了没有」「还没选恢复点」「选中的恢复点里没有文件」
+ * 是四件事（同 `file-tree.tsx` 两个空态、同 `minio-backups.ts` 的 `undefined` / `[]` 之分）。
+ * 第四句很要紧：对着一个**已选中、但本身为空**的恢复点说「选一个恢复点查看文件」是假话。
+ */
 const EMPTY_NO_SOURCE = "备份清单未接入"
 const EMPTY_NONE = "还没有备份"
+const EMPTY_PICK = "选一个恢复点查看文件"
+const EMPTY_EMPTY = "这个恢复点里没有文件"
+const EMPTY_PAUSED = "已超出容量上限，自动备份已暂停"
+
+/** 用量显示（spec §11.2「已用 3.2 / 10 GB」）——只做给人看的粗粒度，不追求精确到字节。 */
+function 文件大小(bytes: number) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
 
 type 哪棵树 = "sandbox" | "minio"
 
@@ -49,9 +63,31 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
    * **解耦**：上树的行恒可拖，拖出去的是**路径引用**（拖到右栏会话框自动填），不为「备份接没接」而变。
    */
   onBackup?: (path: string) => void
-  /** 拖下树 → 上树 ＝ **拉回沙箱**。覆盖沙箱里同名文件前先二次确认（见 `请求拉回`）。省略 ＝ 下树的行不可拖
-   * （下树另说：用户明示那棵不实现「拖出路径引用」，故这里仍是它**唯一**那道闸门）。 */
+  /**
+   * 右键菜单「从 MinIO 拉回」——**继承自 `FileTree` 的同名 prop**（`file-tree.tsx` 的
+   * `onRestore?: (path: string) => void`），签名不能改：上树就是 `FileTree` 本身。
+   * 拖拽那条（需要带恢复点）是另一个名字，见 `onRestoreSnapshot`。
+   */
   onRestore?: (path: string) => void
+  /**
+   * 拖下树 → 上树 ＝ **从当前恢复点拉回**（2026-10-18）。收拖源原路径与恢复点 id；
+   * 冲突判断与三选一交给恢复对话框（Task 16），树里不再有内联确认条。
+   * 省略（或 `snapshotId` 为空）⇒ 下树的行不可拖。
+   */
+  onRestoreSnapshot?: (input: { snapshotId: string; path: string }) => void
+  /**
+   * 这个项目的恢复点清单（spec §11.2）。`undefined` ＝ 还没加载 / 没接数据源；
+   * `[]` ＝ 明确没有恢复点——两者不是一件事，空态各说各的。
+   */
+  snapshots?: readonly BackupSnapshot[]
+  /** 下树当前显示的恢复点。`undefined` ＝ 还没选 ⇒ 下树不可拖、空态提示先选一个。 */
+  snapshotId?: string
+  /** 切换恢复点（原生 `<select>`）。 */
+  onSelectSnapshot?: (id: string) => void
+  /** 删除当前恢复点（按钮本身不做二次确认，交给接线方）。 */
+  onDeleteSnapshot?: (id: string) => void
+  /** 容量用量（spec §11.2 标题行「已用 3.2 / 10 GB」）；`autoPaused` 另作暂停提示。 */
+  usage?: { readonly usedBytes: number; readonly limitBytes: number; readonly autoPaused: boolean }
 }
 
 /**
@@ -78,15 +114,25 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
  *
  * ## 本组件今天在生产里是「半截」的
  *
- * `open` / `onCollapse` 是纯 UI，`workspace-entry.tsx` 接得上；而 `onBackup` / `onRestore`
- * 的**接收方不存在**（MinIO 的 HTTP 出口还没建，归 T022）⇒ 生产里这两个 prop 不传，于是
- * **跨树那一放不落**（备份 / 拉回走不通）、下树也没有实际作用——与右键菜单第 9/10 项自 T008
- * 起就禁用是同一件事。⚠️ 但**行可拖**不再跟着它们：上树的行恒可拖（2026-10-13 用户裁定），
- * 拖出去的是**路径引用**（拖到右栏会话框自动填），与「备份接没接」是两回事。
- * 组件这一侧的能力由 `dual-file-tree.test.tsx` 证明，接线缺口记在 `005/tasks.md` 的 T012 与 T022。
+ * `open` / `onCollapse` 是纯 UI，`workspace-entry.tsx` 接得上；`onBackup` / `onRestore` /
+ * `onRestoreSnapshot` 的**接收方**归 Task 17 接线（文件级备份快照 feature）。⚠️ 但**行可拖**
+ * 不跟着它们：上树的行恒可拖（2026-10-13 用户裁定），拖出去的是**路径引用**（拖到右栏会话框
+ * 自动填），与「备份接没接」是两回事。组件这一侧的能力由 `dual-file-tree.test.tsx` 证明。
  */
 export function DualFileTree(props: DualFileTreeProps) {
-  const [local, rest] = splitProps(props, ["backups", "open", "onCollapse", "onBackup", "onRestore"])
+  const [local, rest] = splitProps(props, [
+    "backups",
+    "open",
+    "onCollapse",
+    "onBackup",
+    "onRestore",
+    "onRestoreSnapshot",
+    "snapshots",
+    "snapshotId",
+    "onSelectSnapshot",
+    "onDeleteSnapshot",
+    "usage",
+  ])
   /**
    * MinIO 窗口高度（px）。`undefined` ＝ 还没拖过 ⇒ 走**文件区高度的 1/3**（用户 2026-10-17 下达）。
    * 拖过一次之后就钉成像素值：用户定了多高就是多高，不该在左栏改宽时自己漂。
@@ -101,22 +147,12 @@ export function DualFileTree(props: DualFileTreeProps) {
   /**
    * 正在被拖的那一项（`undefined` ＝ 没有拖拽在进行）。
    *
-   * 判据用它而**不**用 `dataTransfer` 里的 payload：同一页面内的拖拽，组件自己就知道拖的是谁，
-   * 去读 `dataTransfer` 反而多一处会在 happy-dom 里立不住的依赖（那边没有 `DragEvent`）。
-   * payload 照放（见 `起拖`），但**没有一条断言依赖它**。
+   * 组件内部的落点判据用它而**不**用 `dataTransfer` 里的 payload：同一页面内的拖拽，组件自己
+   * 就知道拖的是谁，去读 `dataTransfer` 反而多一处会在 happy-dom 里立不住的依赖（那边没有
+   * `DragEvent`）。payload 是**给树以外的消费者**的（会话框 / 底部窄条），它的形状由
+   * `dual-file-tree.test.tsx` 的 `起拖载荷` 钉住（上树 `file:`、下树 `minio:`）。
    */
   const [拖源, set拖源] = createSignal<{ 树: 哪棵树; 路径: string }>()
-  /**
-   * 「待确认拉回」的那一项——非空即**确认条开着**（裁定 4A：拉回会盖掉沙箱里现行的那份）。
-   *
-   * 存**路径**而不是布尔：确认条上要写出「覆盖的是谁」，确认之后还得原样把路径喊回 `onRestore`。
-   *
-   * ⚠️ 这一条**不再**跟着 `file-tree.tsx` 的删除确认走（2026-10-11，⑦-③）：那边已经把二次确认
-   * 改成**弹窗**（`file-delete-dialog.tsx`），信号也随之取消（对象在开弹窗那一刻就交给弹窗了，
-   * 不必在本组件里记一份）。本文件这条**仍是内联条**，是本仓最后一条这种形态
-   * ——登记在 T022，尚未裁定。
-   */
-  const [待拉回, set待拉回] = createSignal<string>()
 
   // `relative` 是 MinIO 窗口（`MinioTree`）的定位祖先——2026-10-17 起它是**置顶浮层**，
   // 不再是上下双树里的第二段普通流（用户实报：窗口盖不住文件列表）。
@@ -138,52 +174,27 @@ export function DualFileTree(props: DualFileTreeProps) {
         {/* 上树的行**恒可拖**（2026-10-13 用户裁定）：拖出去的是**路径引用**（拖到右栏会话框自动填），
             与「备份到 MinIO 有没有接线」是两回事——后者仍由 `可放` 那道闸门管（`onBackup` 没接就不落）。
             下树（MinIO）另说：用户明示那棵不实现拖。 */}
-        <FileTree {...rest} draggable />
+        {/* `onBackup` / `onRestore` 在 `splitProps` 名单里 ⇒ 不在 `{...rest}` 里，**必须显式转发**：
+            右键菜单「备份到 MinIO」/「从 MinIO 拉回」的禁用判据直接看这两个 prop，
+            漏了它们菜单项永远是灰的（用户最初报的缺陷）。 */}
+        <FileTree {...rest} draggable onBackup={local.onBackup} onRestore={local.onRestore} />
       </div>
 
       <Show when={local.open}>
         <MinioTree
           backups={local.backups}
-          draggable={local.onRestore !== undefined}
+          snapshots={local.snapshots}
+          snapshotId={local.snapshotId}
+          usage={local.usage}
+          onSelectSnapshot={local.onSelectSnapshot}
+          onDeleteSnapshot={local.onDeleteSnapshot}
+          // 两个闸门一起判：没有恢复点就没有可拉的东西（spec §11.3 末条）。
+          draggable={local.onRestoreSnapshot !== undefined && local.snapshotId !== undefined}
           onCollapse={local.onCollapse}
           高度={窗高()}
           容器高={容器高}
           onResize={set窗高}
         />
-      </Show>
-
-      {/* 拉回的二次确认（裁定 4A）——**内联**一条，不用 `Dialog`：
-          树是用户眼睛已经在的地方，再叠一层跨模块的模态还得让人多解释一步「这是在拉回哪儿」。
-          `role="alert"` 让屏幕阅读器在条冒出来时读一遍（不是模态，不需要焦点管理）。
-
-          ⚠️ 原先这里写的是「同 T009 的删除确认」——**那句话已经不作数了**：2026-10-11（⑦-③）
-          删除确认改成了**弹窗**（`file-delete-dialog.tsx`，理由见那个文件头：内联条在真栈上是
-          钉在栏底的整栏宽横幅、落在树区域之外，与刚点的那一行隔了整棵树）。本文件这条**没跟着改**
-          （登记在 T022，用户尚未裁定），所以「内联」这个选择在本文件里**现在只剩自己撑着了**
-          ——再有人问「为什么不一并弹窗化」，别拿删除确认当先例。 */}
-      <Show when={待拉回()}>
-        {(path) => (
-          <div
-            data-slot="restore-confirm"
-            role="alert"
-            class="flex w-full min-w-0 items-center gap-1 rounded-[4px] bg-v2-background-bg-layer-01 px-1 py-0.5 text-[13px] text-v2-text-text-base"
-          >
-            <span class="min-w-0 truncate">
-              确定用 MinIO 上的版本覆盖「<span data-slot="restore-name">{path()}</span>」？
-            </span>
-            <button
-              data-slot="restore-cancel"
-              type="button"
-              class={确认按钮}
-              onClick={() => set待拉回(undefined)}
-            >
-              取消
-            </button>
-            <button data-slot="restore-ok" type="button" class={确认按钮} onClick={确认拉回}>
-              覆盖
-            </button>
-          </div>
-        )}
       </Show>
     </div>
   )
@@ -212,20 +223,27 @@ export function DualFileTree(props: DualFileTreeProps) {
     if (!源) return false
     const 位 = 定位(event)
     if (!位?.树 || 位.树 === 源.树) return false
-    return 源.树 === "sandbox" ? local.onBackup !== undefined : local.onRestore !== undefined
+    return 源.树 === "sandbox"
+      ? local.onBackup !== undefined
+      : local.onRestoreSnapshot !== undefined && local.snapshotId !== undefined
   }
 
   function 起拖(event: DragEvent) {
     const 位 = 定位(event)
     if (!位?.树 || !位.路径) return
     set拖源({ 树: 位.树, 路径: 位.路径 })
-    // 往 `dataTransfer` 里也放一份（与上游 `file-tree-v2.tsx` 是同一个 payload 形状 `file:<path>`）：
-    // 会话框认这个载荷、把它插成一条文件引用（2026-10-13 用户提出）。**目录补尾斜杠**——沿用仓里
-    // 已有的记号让路径自己说清「这是目录」（同「复制路径」那处，`#005-20`），别发明第二种写法。
+    // 载荷按树分流：上树是**本地路径引用** `file:<path>`（会话框认这个形状、把它插成一条文件
+    // 引用，2026-10-13 用户提出）；下树是**云上备份** `minio:<path>`（2026-10-18）——若仍写
+    // `file:`，会话框会把云上备份误当成本地路径引用。
+    // **目录补尾斜杠**——沿用仓里已有的记号让路径自己说清「这是目录」（同「复制路径」那处，
+    // `#005-20`），别发明第二种写法。
     // 两处 `?.` 是刻意的：happy-dom 里这个事件是裸 `Event`，没有 `dataTransfer`——少了这两问，
     // 组件测试根本进不来（这一处已由 `dual-file-tree.test.tsx` 的 `起拖载荷` 替身补上）。
     const 引用 = 位.类型 === "directory" ? `${位.路径}/` : 位.路径
-    event.dataTransfer?.setData("text/plain", `file:${引用}`)
+    event.dataTransfer?.setData(
+      "text/plain",
+      位.树 === "minio" ? `minio:${位.路径}` : `file:${引用}`,
+    )
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy"
   }
 
@@ -239,42 +257,17 @@ export function DualFileTree(props: DualFileTreeProps) {
     if (!可放(event)) return
     event.preventDefault()
     const 源 = 拖源()
-    const 位 = 定位(event)
     set拖源(undefined)
-    if (!源 || !位) return
-    const 目标 = 拼路径(位, 源.路径)
-    if (源.树 === "sandbox") local.onBackup?.(目标)
-    else 请求拉回(目标)
-  }
-
-  /** 落到哪个路径上：目录行＝它自己；文件行＝它所在的目录；空白（根以外的子树区域）＝根。 */
-  function 拼路径(位: { 路径?: string; 类型?: string }, 源路径: string) {
-    const 名 = 源路径.slice(源路径.lastIndexOf("/") + 1)
-    const 目录 = 位.类型 === "directory" ? (位.路径 ?? "") : 父目录(位.路径)
-    return 目录 ? `${目录}/${名}` : 名
-  }
-
-  function 父目录(path: string | undefined) {
-    if (!path) return ""
-    const index = path.lastIndexOf("/")
-    return index === -1 ? "" : path.slice(0, index)
-  }
-
-  /**
-   * 拉回前先看**沙箱里有没有同名**：没有 ⇒ 纯新增，没什么可破坏的，直接拉；有 ⇒ 覆盖沙箱现行
-   * 的那份，先确认（裁定 4A）。把「拦不拦」挂在**沙箱的实际内容**上，而不是「拉回这个动作」
-   * 上——同一个动作在两种情形下代价不同，拦法就该不同。
-   */
-  function 请求拉回(path: string) {
-    if (!(rest.paths ?? []).includes(path)) return local.onRestore?.(path)
-    set待拉回(path)
-  }
-
-  function 确认拉回() {
-    const path = 待拉回()
-    if (!path) return
-    set待拉回(undefined)
-    local.onRestore?.(path)
+    if (!源) return
+    // 落点**不参与**路径计算（2026-10-18 用户裁定：保持原路径）。
+    // 拖到哪个目录行都一样——备份的是被拖的那一项，不是「它到那儿之后的样子」。
+    if (源.树 === "sandbox") {
+      local.onBackup?.(源.路径)
+      return
+    }
+    // `snapshotId` 是 getter，先取到局部常量再判/用（别读两次、也别把非空断言请回来）。
+    const snapshotId = local.snapshotId
+    if (snapshotId !== undefined) local.onRestoreSnapshot?.({ snapshotId, path: 源.路径 })
   }
 }
 
@@ -289,6 +282,11 @@ export function DualFileTree(props: DualFileTreeProps) {
  */
 function MinioTree(props: {
   backups?: readonly string[]
+  snapshots?: readonly BackupSnapshot[]
+  snapshotId?: string
+  onSelectSnapshot?: (id: string) => void
+  onDeleteSnapshot?: (id: string) => void
+  usage?: { readonly usedBytes: number; readonly limitBytes: number; readonly autoPaused: boolean }
   draggable?: boolean
   onCollapse?: () => void
   /** 用户拖出来的高度（px）。`undefined` ＝ 还没拖过 ⇒ 默认文件区高度的 1/3。 */
@@ -363,6 +361,55 @@ function MinioTree(props: {
       >
         <Icon name="cloud-upload" size="small" class="shrink-0 [--icon-base:currentColor]" />
         <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-muted">MinIO 备份</span>
+        {/* 用量（spec §11.2「已用 3.2 / 10 GB」）：只做给人看的粗粒度，不追求精确到字节。
+            超限暂停时补一枚警告图标 ＋ 短文案；完整告警仍由底部窄条（`minio-bar-paused`）承担。 */}
+        <Show when={props.usage}>
+          {(usage) => (
+            <span data-slot="minio-tree-usage" class="shrink-0 text-[12px] text-v2-text-text-faint">
+              {`已用 ${文件大小(usage().usedBytes)} / ${文件大小(usage().limitBytes)}`}
+            </span>
+          )}
+        </Show>
+        <Show when={props.usage?.autoPaused}>
+          <Icon
+            name="warning"
+            size="small"
+            aria-label="自动备份已暂停"
+            class="shrink-0 text-v2-text-text-contrast [--icon-base:currentColor]"
+          />
+          <span data-slot="minio-tree-paused" class="shrink-0 text-[12px] text-v2-text-text-contrast">
+            自动备份已暂停
+          </span>
+        </Show>
+        {/* 恢复点选择器：v1 用原生 `<select>`（spec §11.2，避免再引入一套浮层）。
+            选项文案按 spec §11.7 必须含**时间、类型、文件数**。 */}
+        <select
+          data-slot="minio-tree-snapshot"
+          aria-label="选择恢复点"
+          class="h-6 min-w-0 max-w-[140px] shrink rounded-[4px] bg-transparent text-[12px] text-v2-text-text-muted"
+          value={props.snapshotId ?? ""}
+          onChange={(event) => props.onSelectSnapshot?.(event.currentTarget.value)}
+        >
+          <For each={props.snapshots ?? []}>
+            {(snapshot) => (
+              <option value={snapshot.id}>
+                {`${new Date(snapshot.createdAt).toLocaleString("zh-CN", { hour12: false })} · ${
+                  snapshot.kind === "auto" ? "自动" : "手动"
+                } · ${snapshot.totals.files} 个文件`}
+              </option>
+            )}
+          </For>
+        </select>
+        <button
+          data-slot="minio-tree-delete"
+          type="button"
+          aria-label="删除这个恢复点"
+          disabled={props.snapshotId === undefined}
+          onClick={() => props.snapshotId && props.onDeleteSnapshot?.(props.snapshotId)}
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-default"
+        >
+          <Icon name="trash" size="small" class="[--icon-base:currentColor]" />
+        </button>
         {/* 悬停提示：只剩一枚 `✕`——标题那行的「MinIO 备份」说的是**这棵树**，不是这颗按钮做什么。
             文案与 `aria-label` 同源。
             ⚠️ `TooltipV2` 插的那层 `<div>` 顶替了原先长在按钮上的 `shrink-0`（同 `file-tree.tsx`）。 */}
@@ -388,7 +435,19 @@ function MinioTree(props: {
               data-state="empty"
               class="px-1 py-2 text-[13px] text-v2-text-text-faint"
             >
-              {props.backups === undefined ? EMPTY_NO_SOURCE : EMPTY_NONE}
+              {/* 五支而不是四支（`R-6`）：`autoPaused` **不能排最前**——超限时哪怕有恢复点也要
+                  让人看见「有哪些恢复点」；而「已选恢复点、但它本身没有文件」不是「还没选」。 */}
+              {props.snapshots === undefined
+                ? EMPTY_NO_SOURCE
+                : props.snapshots.length === 0
+                  ? props.usage?.autoPaused
+                    ? EMPTY_PAUSED
+                    : EMPTY_NONE
+                  : props.snapshotId === undefined
+                    ? EMPTY_PICK
+                    : props.usage?.autoPaused
+                      ? `${EMPTY_EMPTY}（自动备份已暂停）`
+                      : EMPTY_EMPTY}
             </p>
           }
         >

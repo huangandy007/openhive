@@ -3,6 +3,7 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { DualFileTree } from "./dual-file-tree"
+import type { BackupSnapshot } from "./openhive-backup"
 
 /**
  * 上下双树（005 T012 / `2026-09-11-项目管理-design.md` §5）：上树＝沙箱、下树＝MinIO 备份
@@ -14,6 +15,9 @@ import { DualFileTree } from "./dual-file-tree"
  * happy-dom **也没有 `DragEvent`**（实探 20.12.0：`DataTransfer` 有、`DragEvent` 无）⇒ 拖拽一律
  * 拿**裸 `Event`** 顶着。产品码里对 `dataTransfer` 一律用可选链（`event.dataTransfer?.setData`），
  * 所以在测试里连它都不必造——这正是那处可选链的存在理由之一。
+ *
+ * ⚠️ `restore-confirm` 是**旧设计**（树内联确认条）：2026-10-18 起冲突判断移到恢复对话框，
+ * 该 `data-slot` 已从产品里消失。本文件只剩一条「它真的没了」的断言。
  */
 /**
  * ⚠️ 外面套一层 `DialogProvider`（2026-10-11）：上树就是 `FileTree` 本身，而它现在在函数体开头
@@ -26,9 +30,12 @@ import { DualFileTree } from "./dual-file-tree"
  */
 const 挂过的: Array<() => void> = []
 
-afterEach(() => {
-  // **先卸载、再清 body**（顺序要紧，同 `file-tree.test.tsx`）。
+afterEach(async () => {
+  // **先卸载、让出一拍、再清 body**（顺序要紧，同 `file-tree.test.tsx`）：
+  // 菜单开着被卸载时，Kobalte 的收尾会**晚一拍** `focus()` 一次 `document.body`，
+  // 而那个幽灵 `focusin` 会把**下一条**刚开出来的菜单当场关掉（`LEARNINGS #005-34`）。
   挂过的.splice(0).forEach((卸载) => 卸载())
+  await new Promise((resolve) => setTimeout(resolve, 0))
   document.body.innerHTML = ""
 })
 
@@ -89,25 +96,59 @@ const 沙箱 = ["资金流水/支付宝.xlsx", "资金流水/财付通.xlsx", "�
 /** 下树用的备份清单：只有子目录里的一份——**故意缺两份**，好量「下树只列 MinIO 上有的」。 */
 const 备份 = ["资金流水/支付宝.xlsx"]
 
-function 挂(选项: { open?: boolean; backups?: readonly string[] } = {}) {
+/** 一个恢复点夹具（Task 13 的 `BackupSnapshot`）——本文件只消费 id / kind / 时间 / 文件数。 */
+const 快照 = (id: string, kind: "manual" | "auto" = "manual", files = 1): BackupSnapshot => ({
+  id,
+  kind,
+  scope: "",
+  createdAt: Date.parse("2026-10-18T06:03:05Z"),
+  status: "complete",
+  totals: { files, bytes: 1024, uploadedBytes: 1024, skipped: 0 },
+})
+
+function 挂(
+  选项: {
+    open?: boolean
+    backups?: readonly string[]
+    snapshots?: readonly BackupSnapshot[]
+    snapshotId?: string | null
+    usage?: { usedBytes: number; limitBytes: number; autoPaused: boolean }
+  } = {},
+) {
   const [open, setOpen] = createSignal(选项.open ?? true)
   const 收起: number[] = []
   const 备份过: string[] = []
-  const 拉回过: string[] = []
+  /** 右键菜单那条「从 MinIO 拉回」（继承自 `FileTree` 的 `onRestore(path)`）。 */
+  const 右键拉回过: string[] = []
+  /** 拖拽那条（`onRestoreSnapshot({snapshotId, path})`）。 */
+  const 拉回过: Array<{ snapshotId: string; path: string }> = []
+  const 选过的恢复点: string[] = []
+  const 删过的恢复点: string[] = []
+  // `null` ＝ **显式「没有选中恢复点」**；不写这个键 ⇒ 默认 `"s-1"`，让既有拖拽用例不必逐条补参数。
+  const snapshotId = "snapshotId" in 选项 ? (选项.snapshotId ?? undefined) : "s-1"
+  // `snapshots` 的键在不在，决定「未接入（`undefined`）」与「有来源」——不能用 `??` 兜底，
+  // 那样「显式传 undefined 量空态」会退化成默认值（`#006-26`：取数处方本身要能分辨两种意图）。
+  const snapshots = "snapshots" in 选项 ? 选项.snapshots : [快照("s-1")]
   const host = mount(() => (
     <DualFileTree
       paths={沙箱}
       backups={选项.backups ?? 备份}
+      snapshots={snapshots}
+      snapshotId={snapshotId}
+      usage={选项.usage}
       open={open()}
       onCollapse={() => {
         收起.push(1)
         setOpen(false)
       }}
       onBackup={(path) => 备份过.push(path)}
-      onRestore={(path) => 拉回过.push(path)}
+      onRestore={(path) => 右键拉回过.push(path)}
+      onRestoreSnapshot={(input) => 拉回过.push(input)}
+      onSelectSnapshot={(id) => 选过的恢复点.push(id)}
+      onDeleteSnapshot={(id) => 删过的恢复点.push(id)}
     />
   ))
-  return { host, 收起, 备份过, 拉回过, setOpen }
+  return { host, 收起, 备份过, 右键拉回过, 拉回过, 选过的恢复点, 删过的恢复点, setOpen }
 }
 
 describe("DualFileTree 上下双树（设计 §5）", () => {
@@ -229,6 +270,26 @@ function 起拖载荷(el: HTMLElement | null): string | undefined {
   return 载荷
 }
 
+/**
+ * 右键一个元素——`contextmenu` 冒泡到 `FileTree` 的触发器上，菜单就开在指针处。
+ * 菜单 **Portal 到 `document.body`**，所以菜单内容要从 `document` 查、不在 `host` 里。
+ */
+const 右键 = (el: HTMLElement | null | undefined) =>
+  el?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+
+/**
+ * 点一个菜单项：Kobalte 的菜单项选择发生在 **`pointerup`**（`LEARNINGS #006-37`），
+ * `.click()` 那条链**不含** `onSelect` ⇒ 用 `.click()` 什么都不发生、而用例不报错。
+ */
+const 点菜单项 = (action: string) => {
+  const 项 = document.querySelector<HTMLElement>(`[data-component='context-menu-content'] [data-action='${action}']`)
+  for (const 类型 of ["pointerdown", "pointerup"] as const)
+    项?.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+
+/** 等一拍宏任务（菜单收尾是 `setTimeout` 里做的，紧接着再右键会读到中间态）。 */
+const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
+
 describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下→上＝拉回）", () => {
   test("上树的**文件与目录**行都可拖（目录也拖＝「文件夹路径的引用」，2026-10-13 用户裁定）；下树仍只文件可拖", () => {
     const { host } = 挂({ open: true })
@@ -255,39 +316,41 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     expect(起拖载荷(行(host, "sandbox", "资金流水"))).toBe("file:资金流水/")
   })
 
-  test("沙箱文件拖到下树的**目录**上 ⇒ onBackup 带「目标目录/文件名」（§5.2「落点精确到具体文件夹」）", () => {
+  test("沙箱文件拖到下树的**目录**上 ⇒ 备份的是**拖源原路径**（落点不参与，2026-10-18 用户裁定）", () => {
     const { host, 备份过 } = 挂({ open: true })
 
     拖到(行(host, "sandbox", "报告.docx"), 行(host, "minio", "资金流水"))
 
-    expect(备份过).toEqual(["资金流水/报告.docx"])
+    expect(备份过).toEqual(["报告.docx"])
   })
 
-  test("沙箱文件拖到下树的**空白处**（根）⇒ onBackup 带原文件名", () => {
+  test("沙箱文件拖到下树的**空白处**（根）⇒ 仍是拖源原路径，不被挪到根", () => {
     const { host, 备份过 } = 挂({ open: true })
     全展开上树(host) // 默认全收缩（用户第 5 条）⇒ 拖的源行在沙箱深一层
 
     拖到(行(host, "sandbox", "资金流水/财付通.xlsx"), 树(host, "minio"))
 
-    expect(备份过).toEqual(["财付通.xlsx"])
+    expect(备份过).toEqual(["资金流水/财付通.xlsx"])
+  })
+
+  test("沙箱**目录**拖到下树 ⇒ 回调收到目录自身路径", () => {
+    const { host, 备份过 } = 挂({ open: true })
+
+    拖到(行(host, "sandbox", "资金流水"), 行(host, "minio", "资金流水"))
+
+    expect(备份过).toEqual(["资金流水"])
   })
 
   /**
-   * ⚠️ 这条是**补的**，不是 RED-first 写出来的（实装当时已经对）。
-   *
-   * 起因是 M2 变异（把「目录行 ⇒ 目录自己」削成「一律取父目录」）红了 5 条，我回头数
-   * `拼路径` 的**分支覆盖面**，发现它有两个分支、而落点用例只压到了其中一半：
-   * 「目录行」压了 3 条、「空白（`位.路径` 为空）」压了 1 条，**「文件行」一条都没有**——
-   * 而文件行与空白在 `位.路径` 的取值上是**相反**的（前者有父目录、后者没有），
-   * 所以「空白那条绿着」证明不了「文件行也对」。按 `#004-01` 的口径：判据的**出口数**要数全，
-   * 这里是两个分支，补上第二个分支的用例（成牙证据见 tasks.md 的 M3，不冒充「先红后绿」）。
+   * 三种落点（目录行 / 文件行 / 空白根）**结果一致**——这正是「落点不参与」这条新语义的判据。
+   * 落点用例要**数全**出口（`#004-01`）：只压其中一种，另外两种被改回落点语义时不会红。
    */
-  test("拖到**文件行**上 ⇒ 落点仍是它所在的目录（文件行不是文件夹，§5.2 的落点是「具体文件夹」）", () => {
+  test("拖到**文件行**上 ⇒ 仍是拖源原路径（落点精确到哪个文件夹都不影响备份）", () => {
     const { host, 备份过 } = 挂({ open: true })
 
     拖到(行(host, "sandbox", "报告.docx"), 行(host, "minio", "资金流水/支付宝.xlsx"))
 
-    expect(备份过).toEqual(["资金流水/报告.docx"])
+    expect(备份过).toEqual(["报告.docx"])
   })
 
   test("备份**直接覆盖**，不弹确认（裁定 4A：盖的是自己那份旧备份，反复备份不该被拦）", () => {
@@ -300,46 +363,30 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     expect(不存在(槽(host, "restore-confirm"))).toBe(true)
   })
 
-  test("下拉回沙箱且沙箱**没有**同名 ⇒ 直接 onRestore（纯新增，没什么可破坏的）", () => {
+  /**
+   * 内联确认条（`restore-confirm` / `restore-name` / `restore-ok` / `restore-cancel`）是**旧设计**：
+   * 2026-10-18 起冲突判断移到恢复对话框（起预览任务时做），树里不再有这一条。
+   * 这里断「它真的没了」——同一条断言从「有没有冒确认条」改成了「这个文件已从产品里消失」。
+   */
+  test("下拉回沙箱 ⇒ `onRestoreSnapshot` 收到恢复点与拖源原路径；不再内联确认", () => {
     const { host, 拉回过 } = 挂({ open: true, backups: ["新文件.txt"] })
 
     拖到(行(host, "minio", "新文件.txt"), 树(host, "sandbox"))
 
-    expect(拉回过).toEqual(["新文件.txt"])
+    expect(拉回过).toEqual([{ snapshotId: "s-1", path: "新文件.txt" }])
     expect(不存在(槽(host, "restore-confirm"))).toBe(true)
   })
 
-  test("下拉回沙箱且沙箱**有**同名 ⇒ 不立刻喊，先弹确认（裁定 4A：这一步会盖掉沙箱里现行的那份）", () => {
-    const { host, 拉回过 } = 挂({ open: true }) // 备份与沙箱都有 资金流水/支付宝.xlsx
+  test("下树的行起拖载荷是 `minio:<path>`（云上备份不能被会话框误插成本地引用）", () => {
+    const { host } = 挂({ open: true })
 
-    拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水"))
-
-    expect(拉回过).toEqual([])
-    expect(不存在(槽(host, "restore-confirm"))).toBe(false)
+    expect(起拖载荷(行(host, "minio", "资金流水/支付宝.xlsx"))).toBe("minio:资金流水/支付宝.xlsx")
   })
 
-  test("确认后才真正喊 onRestore（确认条里写清楚覆盖的是谁）", () => {
-    const { host, 拉回过 } = 挂({ open: true })
-    拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水"))
+  test("恢复点未选中时下树**不可拖**（没有恢复点就没有可拉的东西）", () => {
+    const { host } = 挂({ open: true, snapshotId: null })
 
-    expect(
-      host.querySelector("[data-slot='restore-name']")?.textContent?.trim(),
-    ).toBe("资金流水/支付宝.xlsx")
-
-    槽(host, "restore-ok")?.click()
-
-    expect(拉回过).toEqual(["资金流水/支付宝.xlsx"])
-    expect(不存在(槽(host, "restore-confirm"))).toBe(true)
-  })
-
-  test("取消 ⇒ 什么都不发生（连确认条都收掉）", () => {
-    const { host, 拉回过 } = 挂({ open: true })
-    拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水"))
-
-    槽(host, "restore-cancel")?.click()
-
-    expect(拉回过).toEqual([])
-    expect(不存在(槽(host, "restore-confirm"))).toBe(true)
+    expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable") === "true").toBe(false)
   })
 
   test("同树内拖 ⇒ 两个回调都不喊（上树的行另可拖出浏览器，那是拖拽 A，不归本组件）", () => {
@@ -374,14 +421,136 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
    *
    * ⚠️ 这条也是**补的**，且是在变异体上补的 ⇒ 它是正经的**先红后绿**（见 tasks.md 的 M7）。
    */
-  test("没接线时**硬派**一次拖拽也不动作（`可放` 的方向判据挡在前面：连确认条都不冒）", () => {
-    const host = mount(() => <DualFileTree paths={沙箱} backups={备份} open={true} />)
+  test("没选恢复点时**硬派**一次下拉也不动作（`可放` 的 `snapshotId` 守卫挡在前面）", () => {
+    // `#005-25` 的迁移：旧观测点 `restore-confirm` 已从产品里消失（冲突判断移到恢复对话框）
+    // ⇒ 原来那条断言会变成**恒真空转**。新观测点改成回调本身：接线在、但恢复点空 ⇒ 一次都不喊。
+    const { host, 拉回过 } = 挂({ open: true, snapshotId: null })
 
-    // 特意挑**同名**那一对（备份与沙箱都有 `资金流水/支付宝.xlsx`）：事件若真能进来，
-    // `请求拉回` 会弹出确认条——那是这条路上唯一可见的产物，也是这条断言的观测面。
     拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水"))
 
-    expect(不存在(槽(host, "restore-confirm"))).toBe(true)
+    expect(拉回过).toEqual([])
+  })
+
+  /**
+   * R-0（用户最初报的缺陷）：`onBackup` / `onRestore` 是 `FileTree` 继承来的同名 prop，
+   * 右键菜单那两项的「未接线即禁用」直接看它们。`DualFileTree` 把它们留在 `splitProps` 名单里，
+   * 若不显式转发给上树 ⇒ 菜单项**永远是灰的**，而其它用例一条都不会红。这条专门钉那一行 JSX。
+   */
+  test("右键「备份到 MinIO」/「从 MinIO 拉回」真的走到上树的两个回调（不是灰的）", async () => {
+    const { host, 备份过, 右键拉回过 } = 挂({ open: true })
+
+    右键(行(host, "sandbox", "报告.docx"))
+    点菜单项("backup")
+    await 歇一拍()
+    右键(行(host, "sandbox", "报告.docx"))
+    点菜单项("restore")
+
+    expect(备份过).toEqual(["报告.docx"])
+    expect(右键拉回过).toEqual(["报告.docx"])
+  })
+})
+
+/**
+ * 恢复点选择器 / 删除 / 用量 / 空态（spec §11.2、§11.7）。
+ *
+ * 下树从「扁平路径清单」升级为「某个恢复点的文件树」：标题行要能切换恢复点、删当前恢复点，
+ * 并给出用量；空态按「未接入 / 没有备份 / 还没选恢复点 / 选中的恢复点里没有文件」分四类说话
+ * （`undefined` 与 `[]` 不是一件事，同 `minio-backups.ts` 的三态口径）。
+ */
+describe("DualFileTree 恢复点选择器与空态（spec §11.2）", () => {
+  const 空态 = (host: HTMLElement) => 槽(host, "minio-tree-empty")?.textContent?.trim()
+
+  test("选择器列出恢复点（时间 · 类型 · 文件数），切换 ⇒ onSelectSnapshot", () => {
+    const { host, 选过的恢复点 } = 挂({
+      open: true,
+      snapshots: [快照("s-2", "auto", 128), 快照("s-1", "manual", 24)],
+      snapshotId: "s-1",
+    })
+    const 选择器 = 槽(host, "minio-tree-snapshot")
+
+    expect(选择器?.tagName).toBe("SELECT")
+    expect(选择器?.getAttribute("aria-label")).toBe("选择恢复点")
+    const 选项 = [...(选择器?.querySelectorAll("option") ?? [])].map((el) => el.textContent?.trim() ?? "")
+    expect(选项.length).toBe(2)
+    expect(选项.some((文本) => 文本.includes("自动") && 文本.includes("128 个文件"))).toBe(true)
+    expect(选项.some((文本) => 文本.includes("手动") && 文本.includes("24 个文件"))).toBe(true)
+
+    if (选择器 instanceof HTMLSelectElement) {
+      选择器.value = "s-2"
+      选择器.dispatchEvent(new Event("change", { bubbles: true }))
+    }
+
+    expect(选过的恢复点).toEqual(["s-2"])
+  })
+
+  test("删除按钮删的是**当前选中**的恢复点；没选中时禁用", () => {
+    const { host, 删过的恢复点 } = 挂({ open: true, snapshotId: "s-1" })
+
+    槽(host, "minio-tree-delete")?.click()
+
+    expect(删过的恢复点).toEqual(["s-1"])
+
+    const 空的 = 挂({ open: true, snapshotId: null })
+    expect(槽(空的.host, "minio-tree-delete")?.hasAttribute("disabled")).toBe(true)
+  })
+
+  test("标题行显示用量；超限暂停时另有警告与文案", () => {
+    const { host } = 挂({
+      open: true,
+      usage: { usedBytes: 3.2 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: false },
+    })
+    expect(槽(host, "minio-tree-usage")?.textContent?.trim()).toBe("已用 3.2 GB / 10.0 GB")
+    expect(host.querySelector("[data-slot='minio-tree-paused']") == null).toBe(true)
+
+    const 暂停 = 挂({
+      open: true,
+      usage: { usedBytes: 11 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: true },
+    })
+    expect(槽(暂停.host, "minio-tree-paused")?.textContent?.trim()).toBe("自动备份已暂停")
+    expect(暂停.host.querySelector("[aria-label='自动备份已暂停']") == null).toBe(false)
+  })
+
+  test("空态：`undefined` ⇒ 备份清单未接入；`[]` ⇒ 还没有备份", () => {
+    const 未接入 = 挂({ open: true, backups: [], snapshots: undefined })
+    expect(空态(未接入.host)).toBe("备份清单未接入")
+
+    const 没有 = 挂({ open: true, backups: [], snapshots: [] })
+    expect(空态(没有.host)).toBe("还没有备份")
+  })
+
+  test("空态：超限暂停且**没有任何恢复点** ⇒ 已超出容量上限，自动备份已暂停", () => {
+    const { host } = 挂({
+      open: true,
+      backups: [],
+      snapshots: [],
+      usage: { usedBytes: 11 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: true },
+    })
+
+    expect(空态(host)).toBe("已超出容量上限，自动备份已暂停")
+  })
+
+  test("空态：有恢复点但还没选 ⇒ 选一个恢复点查看文件（不是「还没有备份」）", () => {
+    const { host } = 挂({ open: true, backups: [], snapshots: [快照("s-1")], snapshotId: null })
+
+    expect(空态(host)).toBe("选一个恢复点查看文件")
+  })
+
+  test("空态：选中了恢复点但它没有文件 ⇒ 说「这个恢复点里没有文件」（不是「选一个恢复点」）", () => {
+    const { host } = 挂({ open: true, backups: [], snapshots: [快照("s-1")], snapshotId: "s-1" })
+
+    expect(空态(host)).toBe("这个恢复点里没有文件")
+  })
+
+  test("空态：超限暂停时，选中了空的恢复点 ⇒ 仍报「没有文件」并附暂停说明", () => {
+    const { host } = 挂({
+      open: true,
+      backups: [],
+      snapshots: [快照("s-1")],
+      snapshotId: "s-1",
+      usage: { usedBytes: 11 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: true },
+    })
+
+    expect(空态(host)).toBe("这个恢复点里没有文件（自动备份已暂停）")
   })
 })
 
