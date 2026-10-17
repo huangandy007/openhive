@@ -559,11 +559,14 @@ describe("项目级维护（2026-10-16）：改名 / 清成员 / 清归档标记
   test("updateProjectName：只改 name，type 一个字不动", async () => {
     const db = await freshDb()
     await recordProject(db, { projectId: "p1", name: "旧名字", type: "shared" })
+    await recordProject(db, { projectId: "p2", name: "隔壁项目", type: "shared" })
 
     await updateProjectName(db, { projectId: "p1", name: "新名字" })
 
     const 行 = await 读meta(db, "p1")
     expect(行?.name).toBe("新名字")
+    // 对照：**只改这一个项目**——漏掉 where 会把 p2 一起改名，而只看 p1 时照样绿。
+    expect((await 读meta(db, "p2"))?.name).toBe("隔壁项目")
     // type 是**另一件事**（spec §4.1 的名字有两处、类型只有一处）——改名字顺手改了类型
     // 不会报错也不会变红，只有这条在。
     expect(行?.type).toBe("shared")
