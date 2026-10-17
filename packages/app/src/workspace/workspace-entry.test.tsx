@@ -4026,6 +4026,62 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
   })
 
+  test("起备份后切项目：旧任务的终态不会把新恢复点写进新项目（N-1）", async () => {
+    // 窗口在 `备份` 的两个 await 之间：发起时是 p-1，但成功支那次 `重取备份状态` 还没回来
+    // 用户就切走了。修复前 `跟备份任务` 在这两个 await **之后**才读 `currentProject()` ⇒ 它会
+    // 以 p-2 的身份跟进 p-1 的任务，终态把 p-1 的 `s-new` 选中到 p-2 上。
+    let 放回清单: (清单: readonly BackupSnapshot[]) => void = () => {}
+    const 备份后清单 = new Promise<readonly BackupSnapshot[]>((resolve) => {
+      放回清单 = resolve
+    })
+    let 清单次 = 0
+    let 放回任务: (job: BackupJob) => void = () => {}
+    const 任务终态 = new Promise<BackupJob>((resolve) => {
+      放回任务 = resolve
+    })
+    const { host, 假 } = await 开备份(
+      {
+        list: async () => [私有("p-1", "甲", 1), 私有("p-2", "乙", 2)],
+        snapshots: async (projectId) => {
+          if (projectId === "p-2") return [快照("s-2")]
+          清单次 += 1
+          // 进门那次立刻给；备份成功后的那次**挂着**——切项目的窗口就在这里。
+          return 清单次 === 1 ? [快照("s-old")] : 备份后清单
+        },
+        snapshotDetail: async (_projectId, snapshotId) =>
+          明细(快照(snapshotId), snapshotId === "s-2" ? ["资料/新项目.txt"] : ["资料/老.txt"]),
+        backup: async () => ({ jobId: "j-1" }),
+        job: async () => 任务终态,
+      },
+      "p-1",
+    )
+    await 等到(() => 快照选择器(host)?.value === "s-old")
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+    await 等到(() => 清单次 >= 2) // 备份已发起，成功支的重取挂住了
+
+    setCurrentProject({ id: "p-2", name: "乙" })
+    await 冲一遍()
+    await 等到(() => 快照选择器(host)?.value === "s-2")
+
+    // 旧项目那次重取这时才回来；`备份` 继续走到 `跟备份任务`（修复前会在这里读成 p-2）。
+    放回清单([快照("s-old")])
+    await 冲一遍()
+    // 任务终态：成功并带 `s-new`。修复后 `等任务` 的守卫在**进循环前**就发现项目换了，
+    // 根本不会去问 job；所以这里只等数据落定，不等「job 被问过」。
+    放回任务(任务("j-1", "succeeded", { result: { snapshotId: "s-new" } }))
+    await 睡(50)
+    await 冲一遍()
+    await 冲一遍()
+
+    // 新项目仍是它自己的 s-2：旧任务的新恢复点既没被取明细、也没被选中。
+    // 先钉「明细没被取」——那是写入发生的**直接证据**；选中项在清单里没有 s-new 时会被
+    // `<select>` 记成空串，单独看它读不出「写没写」。
+    expect(假.明细.some(([, snapshotId]) => snapshotId === "s-new")).toBe(false)
+    expect(快照选择器(host)?.value).toBe("s-2")
+    expect(树行按(host, "minio", "资料/老.txt") === null).toBe(true)
+  })
+
   test("拖下树文件回上树 ⇒ 先起预览；有冲突时弹恢复对话框", async () => {
     const 有冲突 = 预览([{ path: "资料/甲.txt", status: "different" }])
     const { host, 假 } = await 开备份({
@@ -4078,6 +4134,42 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.恢复的).toEqual([
       ["p-42", "s-1", "资料/甲.txt", "keep-both", '{"资料/甲.txt":"skip"}'],
     ])
+  })
+
+  test("全局决策透传：对话框里选「跳过」⇒ restoreBackup 收到 decision: \"skip\"（N-3）", async () => {
+    // 上一条只钉了逐条 `decisions`；接线层若把 `decision` 写死成默认的 `keep-both`，那条仍绿。
+    // 这里把**全局**拨到 skip（与默认值不同），判据直接落在传给接口的第一个决策量上。
+    const 有冲突 = 预览([{ path: "资料/甲.txt", status: "different" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"]) },
+          })
+        return undefined
+      },
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+    await 等到(() => document.body.querySelector("[data-slot='restore-confirm']") !== null)
+
+    const 全局 = document.body.querySelector<HTMLInputElement>(
+      "[data-slot='restore-decision'][value='skip']",
+    )
+    if (!全局) throw new Error("对话框里没有全局决策的 skip 单选项——这条用例的前提不成立（#004-14）")
+    全局.checked = true
+    全局.dispatchEvent(new Event("change", { bubbles: true }))
+    document.body.querySelector<HTMLElement>("[data-slot='restore-confirm']")!.click()
+
+    await 等到(() => 假.恢复的.length === 1)
+    expect(假.恢复的).toEqual([["p-42", "s-1", "资料/甲.txt", "skip", "{}"]])
   })
 
   test("type-mismatch 的默认 skip 由对话框补进 decisions，接线层原样透传（不再补一份）", async () => {
@@ -4389,6 +4481,50 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 等到(() => text(host, "minio-tree-empty") === "还没有备份")
     // 反向对照：它**不能**拨 `清单重取`（那条是项目文件清单）——拨了就等于每次删恢复点都重取一遍文件树。
     expect(假.files.length).toBe(1)
+  })
+
+  test("同项目两次重取乱序：旧回包不覆盖新清单（N-2）", async () => {
+    // 删除恢复点后的重取（#2）慢、`job_running` 支的重取（#3）后发先至。没有 `代 === 重取代次`
+    // 的话，#2 回来时会把已经不在的 s-1 清单写回去，连选中项都跳回去。
+    let 放回清单: (清单: readonly BackupSnapshot[]) => void = () => {}
+    const 慢清单 = new Promise<readonly BackupSnapshot[]>((resolve) => {
+      放回清单 = resolve
+    })
+    let 清单次 = 0
+    const { host, 假 } = await 开备份({
+      snapshots: async () => {
+        清单次 += 1
+        if (清单次 === 1) return [快照("s-1")]
+        // #2（删完的重取）挂着；#3（job_running 的重取）直接给新清单。
+        return 清单次 === 2 ? 慢清单 : [快照("s-2")]
+      },
+      snapshotDetail: async (_projectId, snapshotId) =>
+        明细(快照(snapshotId), snapshotId === "s-2" ? ["资料/乙.txt"] : ["资料/甲.txt"]),
+      deleteSnapshot: async () => true,
+      backup: async () => ({ code: "job_running", jobId: "j-9" }),
+    })
+    await 等到(() => 快照选择器(host)?.value === "s-1")
+
+    槽(host, "minio-tree-delete")?.click()
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+    await 等到(() => 清单次 >= 2) // #2 已发出、清单挂着
+    expect(假.删的恢复点).toEqual([["p-42", "s-1"]]) // 前置：删除确实办成了，重取才有意义
+
+    右键行(host, "报告.docx")
+    点菜单项("backup") // `job_running` 支 ⇒ 再取一次状态（#3）
+    await 等到(() => 快照选择器(host)?.value === "s-2")
+
+    // #2 这时才回来：它的清单已经过期，不得覆盖 #3 的 s-2。
+    放回清单([快照("s-1")])
+    await 冲一遍()
+    await 冲一遍()
+
+    expect(快照选择器(host)?.value).toBe("s-2")
+    expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
+    expect(树行按(host, "minio", "资料/乙.txt") !== null).toBe(true)
   })
 
   test("预览还没回来就切走项目 ⇒ 回包不落进新项目：不弹框、也不写文件话（F-8）", async () => {

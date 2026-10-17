@@ -912,11 +912,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 收尾两件：① `setBackupJob(undefined)` ⇒ 窄条回到空闲态（spec §11.5「完成：窄条回到空闲态」）；
    * ② **重取状态** ⇒ 用量与恢复点清单跟着变（恢复完成可能新增 / 改变快照）。
    */
-  const 等任务 = async (jobId: string) => {
-    const id = currentProject()?.id
-    const 代 = 备份代次
+  const 等任务 = async (jobId: string, 守: { id: string; 代: number }) => {
     /** 跨过 await 之后先问「还是同一个项目、同一个实例吗」——否则回包会落进新项目。 */
-    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
+    const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     for (let i = 0; i < 7_200; i += 1) {
       if (!还在()) return undefined
       const job = await projectData?.job(jobId)
@@ -959,15 +957,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     decisions: Record<string, RestoreDecision>,
   ) => {
     if (!projectData || currentProject()?.id !== id) return
-    const 代 = 备份代次
-    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
+    const 守 = { id, 代: 备份代次 }
+    const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const 恢复 = await projectData.restoreBackup(id, { ...input, decision, decisions })
     if (!还在()) return
     if (恢复 === undefined) {
       set文件话("恢复没能起起来")
       return
     }
-    const 结果 = await 等任务(恢复)
+    const 结果 = await 等任务(恢复, 守)
     // 任务跑完时项目已经切走 / 本实例已卸载 ⇒ 结果与那句话都不属于现在这个项目。
     if (!还在()) return
     const 结果体 = 结果?.result?.restore
@@ -994,15 +992,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   ) => {
     const id = currentProject()?.id
     if (!id || !projectData) return
-    const 代 = 备份代次
-    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
+    const 守 = { id, 代: 备份代次 }
+    const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const jobId = await projectData.previewRestore(id, input)
     if (!还在()) return
     if (jobId === undefined) {
       set文件话("预览没能起起来")
       return
     }
-    const job = await 等任务(jobId)
+    const job = await 等任务(jobId, 守)
     // 预览期间切走项目（或卸载）⇒ 既不能开对话框，也不能把「预览没取到」写到新项目上。
     if (!还在()) return
     const preview = job?.result?.preview
@@ -1037,6 +1035,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const 备份 = async (path: string) => {
     const id = currentProject()?.id
     if (!id || !projectData) return
+    // ⚠️ N-1：进函数**第一行**（任何 await 之前）就钉住项目与代次，一路交给 `等任务` /
+    // `跟备份任务`。晚到 `backup()` / 重取之后再读 `currentProject()`，可能已经是**另一个项目**
+    // ——旧任务的终态会把旧项目的 snapshotId 选中到新项目上。
+    const 守 = { id, 代: 备份代次 }
     const 起 = await projectData.backup(id, path, false)
     if (起 === undefined) {
       set文件话("备份没能起起来")
@@ -1069,7 +1071,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     set文件话(undefined)
     // 两件都要：重取让进度**立刻**进窄条（R-3.2），跟进任务让成功之后选中新恢复点（§11.5）。
     await 重取备份状态()
-    void 跟备份任务(起.jobId)
+    void 跟备份任务(起.jobId, 守)
   }
 
   /** 超限确认之后带 `allowOverQuota: true` 再试一次（spec §8.3）。 */
@@ -1077,6 +1079,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     dialog.close()
     const id = currentProject()?.id
     if (!id || !projectData) return
+    // 同 `备份`：任何 await 之前钉住项目与代次（N-1）。
+    const 守 = { id, 代: 备份代次 }
     const 起 = await projectData.backup(id, path, true)
     if (起 === undefined || "code" in 起) {
       set文件话("备份没能起起来")
@@ -1084,7 +1088,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     }
     set文件话(undefined)
     await 重取备份状态()
-    void 跟备份任务(起.jobId)
+    void 跟备份任务(起.jobId, 守)
   }
 
   /**
@@ -1116,14 +1120,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    *
    * 自动备份（服务端发起、本层没有 jobId）不抢用户选中项——本版只处理手动备份。
    */
-  const 跟备份任务 = async (jobId: string) => {
-    const id = currentProject()?.id
-    const 代 = 备份代次
-    if (id === undefined) return
+  const 跟备份任务 = async (jobId: string, 守: { id: string; 代: number }) => {
     try {
-      const job = await 等任务(jobId)
+      const job = await 等任务(jobId, 守)
       // 等任务跨了 await：项目切走 / 卸载后，这个 job 的新快照不属于现在的项目。
-      if (currentProject()?.id !== id || 代 !== 备份代次) return
+      // ⚠️ 守是**调用方进门第一行**捕获的那一对值（N-1）；在这里重新读 `currentProject()`
+      // 会把「已经切到新项目」这件事读成一个合法的守卫。
+      if (currentProject()?.id !== 守.id || 守.代 !== 备份代次) return
       const 快照 = job?.result?.snapshotId
       if (typeof 快照 !== "string") return
       await 选恢复点(快照)
