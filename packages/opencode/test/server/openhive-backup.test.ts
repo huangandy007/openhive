@@ -889,6 +889,53 @@ describe("Fix round 1 · 删除恢复点幂等与用量同步（I-2 / §8.5）",
   )
 })
 
+/**
+ * **删除占位锁也管删快照出口**（fix round 2 · F-2，spec §5.8 末条）。
+ *
+ * 项目删除持锁期间会 `dropBackups` 清空命名空间；此时删快照若照常走完，它末尾的
+ * `writeState` / `syncState` 会在**已清空的命名空间里重新造出 `state.json`**（孤儿对象）。
+ * 守位必须加在**任何副作用之前**：409 之外还要断「manifest 仍在、state 一字未改」。
+ */
+describe("Fix round 2 · 删除恢复点出口与删除占位锁（§5.8 末条）", () => {
+  it.live("删除占位（hold）期间 ⇒ DELETE /snapshots/{id} 回 409 job_running，且零副作用", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const { job } = yield* 手动备份(project.projectId)
+      const snapshotId = job.result?.snapshotId ?? ""
+      const q = `projectId=${project.projectId}`
+
+      // 前置：快照真的在（否则下面的「零副作用」是空转）。
+      expect((yield* 快照列表(project.projectId)).snapshots.some((snapshot) => snapshot.id === snapshotId)).toBe(
+        true,
+      )
+      const store = 存储(project.projectId)
+      const 删前状态 = yield* Effect.promise(() => store.readState())
+      expect(删前状态?.snapshots.some((snapshot) => snapshot.id === snapshotId)).toBe(true)
+
+      const 放 = sharedJobs.hold(ALICE.id, project.projectId)
+      expect(放, "占位应当拿到 release（此前没有持有者）").toBeDefined()
+      try {
+        const 响应 = yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?${q}`, { method: "DELETE" })
+        // 守卫未加时实得 200（RED）。
+        expect(响应.status).toBe(409)
+        expect(yield* json(Schema.Struct({ error: Schema.String, code: Schema.String }), 响应)).toMatchObject({
+          code: "job_running",
+        })
+
+        // 零副作用：manifest 没被删、state.json 没被重写（RED 实得 404 ＋ state 里少一条）。
+        expect((yield* as(openApp, ALICE, `${BACKUP}/snapshots/${snapshotId}?${q}`)).status).toBe(200)
+        expect((yield* 快照列表(project.projectId)).snapshots.some((snapshot) => snapshot.id === snapshotId)).toBe(
+          true,
+        )
+        expect(yield* Effect.promise(() => store.readState())).toEqual(删前状态)
+      } finally {
+        放?.()
+      }
+    }),
+    30_000,
+  )
+})
+
 describe("Fix round 1 · 归档项目读写分流（I-5.2 / M-1 / 验收 #39 #50）", () => {
   const 归档 = (projectId: string) => as(openApp, ALICE, ARCHIVE, 体({ projectId }))
 

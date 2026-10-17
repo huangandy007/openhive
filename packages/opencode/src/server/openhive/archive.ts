@@ -590,7 +590,7 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
         // ⚠️ 位置必须在任何副作用之前：删掉一个半备份的项目会留下永久孤儿 blob，
         // 删掉一个半恢复的项目会留下改了一半的树。
         const 静了 = yield* Effect.promise(() =>
-          quiesceProject(projectId, userIds, { timeoutMs: deps.quiesceTimeoutMs }),
+          quiesceProject(projectId, userIds, { registry: deps.jobs, timeoutMs: deps.quiesceTimeoutMs }),
         )
         if (!静了)
           return HttpServerResponse.jsonUnsafe(

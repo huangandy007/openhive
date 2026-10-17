@@ -670,6 +670,11 @@ function handleDeleteSnapshot(request: HttpServerRequest.HttpServerRequest, deps
     const store = storeOf(deps, 我.user.id, 我.projectId)
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
 
+    // 项目正在被删除（spec §5.8 的同一把锁）：这个出口末尾也会写 state，必须一起挡住。
+    // 不加 `activeFor`：运行中任务与删快照的并发是**既有行为**，这里只管删除占位。
+    if (deps.jobs.isHeld(我.user.id, 我.projectId))
+      return conflict({ error: "该项目正在被删除", code: "job_running" })
+
     const 开始 = Date.now()
     // I-2（spec §8.5）：删除**幂等**——manifest 不在也回 200，让「重复点删除 / 重试」收敛。
     // 读它是 best-effort：只在时用它补审计字段。
