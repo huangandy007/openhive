@@ -43,6 +43,25 @@ import type { FileOpOutcome } from "./openhive-file-ops"
 import { copyFile, createEntry, downloadFile, moveFile, removeEntry, renameEntry, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
 import { inviteMember, leaveProject, listMembers, removeMember } from "./openhive-members"
+import type {
+  BackupJob,
+  BackupSnapshot,
+  BackupSnapshotDetail,
+  BackupStatus,
+  RestoreDecision,
+} from "./openhive-backup"
+import {
+  backupHeartbeat,
+  backupProject,
+  backupStatus as readBackupStatus,
+  cancelTask,
+  deleteSnapshot as removeSnapshot,
+  listSnapshots,
+  previewRestore as startRestorePreview,
+  restoreBackup as startRestore,
+  snapshotDetail as readSnapshotDetail,
+  taskOf,
+} from "./openhive-backup"
 import type { MemberEntry } from "./member-panel"
 import type { NewProjectInput, ProjectEntry } from "./project-panel"
 
@@ -144,11 +163,42 @@ export interface ProjectData {
    * 调用点是 `workspace-entry` 的 `onOpen`。
    */
   touch(projectId: string): Promise<boolean>
+
+  // ── 备份 / 恢复（Task 13） ──────────────────────────────────────────────
+  // 十个方法都是转手（客户端在 `openhive-backup.ts`）；契约测试在同一个文件里按
+  // 「路径 / 方法 / 体逐字」钉住。⚠️ 这一组**都不带** `x-openhive-project` 头（见该文件头）。
+
+  /** 备份快照列表（`undefined` = 取不到，`[]` = 一个恢复点都没有）。 */
+  snapshots(projectId: string, path?: string): Promise<readonly BackupSnapshot[] | undefined>
+  /** 一个恢复点的完整清单（下树用它画行）。 */
+  snapshotDetail(projectId: string, snapshotId: string): Promise<BackupSnapshotDetail | undefined>
+  /** 起一次手动备份；409 时回 `{code:"job_running", jobId}`。 */
+  backup(
+    projectId: string,
+    path?: string,
+    allowOverQuota?: boolean,
+  ): Promise<{ jobId: string } | { code: string; jobId?: string } | undefined>
+  /** 备份状态（用量 / 暂停 / 正在跑的任务）。 */
+  backupStatus(projectId: string): Promise<BackupStatus | undefined>
+  /** 起一次恢复预览任务，回 jobId。 */
+  previewRestore(projectId: string, input: { snapshotId: string; path: string }): Promise<string | undefined>
+  /** 起一次恢复任务，回 jobId。 */
+  restoreBackup(
+    projectId: string,
+    input: { snapshotId: string; path: string; decision: RestoreDecision; decisions?: Record<string, RestoreDecision> },
+  ): Promise<string | undefined>
+  /** 删一个恢复点（只删 manifest）。 */
+  deleteSnapshot(projectId: string, snapshotId: string): Promise<boolean>
+  /** 取任务。⚠️ 名字带 `Job` 而不是 `task`：接口上已经有 `files` / `snapshots` 这类复数读口。 */
+  job(jobId: string): Promise<BackupJob | undefined>
+  cancelJob(jobId: string): Promise<boolean>
+  /** 「我还在这个项目里」心跳（自动备份的活跃判定）。 */
+  heartbeat(projectId: string): Promise<boolean>
 }
 
 /**
  * 生产用的那一个——每个方法各接各的客户端（`openhive-project` ×5 ＋ `openhive-files`
- * ＋ `openhive-file-ops` ×7 ＋ `openhive-members` ×4）。
+ * ＋ `openhive-file-ops` ×7 ＋ `openhive-members` ×4 ＋ `openhive-backup` ×10）。
  *
  * ⚠️ **一个都别接错**：接错了不报错、不变红，类型上也都合法（`archive` 与 `restore` 的签名
  * 一模一样，`invite` 与 `remove` 也是，`renameEntry` 与 `removeEntry` 只差一个参数，
@@ -175,4 +225,14 @@ export const PROJECT_DATA: ProjectData = {
   remove: (projectId, policeNo) => removeMember(projectId, policeNo),
   leave: (projectId) => leaveProject(projectId),
   touch: (projectId) => touchProject(projectId),
+  snapshots: (projectId, path) => listSnapshots(projectId, path),
+  snapshotDetail: (projectId, snapshotId) => readSnapshotDetail(projectId, snapshotId),
+  backup: (projectId, path, allowOverQuota) => backupProject(projectId, path, allowOverQuota),
+  backupStatus: (projectId) => readBackupStatus(projectId),
+  previewRestore: (projectId, input) => startRestorePreview(projectId, input),
+  restoreBackup: (projectId, input) => startRestore(projectId, input),
+  deleteSnapshot: (projectId, snapshotId) => removeSnapshot(projectId, snapshotId),
+  job: (jobId) => taskOf(jobId),
+  cancelJob: (jobId) => cancelTask(jobId),
+  heartbeat: (projectId) => backupHeartbeat(projectId),
 }

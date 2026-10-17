@@ -411,3 +411,183 @@ describe("项目级两件新接线（2026-10-16：改名 / 删除）", () => {
     expect(改[0]?.url).not.toBe(删[0]?.url)
   })
 })
+
+/**
+ * Task 13 · 备份 / 恢复的十个出口。
+ *
+ * 与上面各组**同一个理由**：这一层唯一的失效方式是接错。而这里接错的空间最大——十个方法里
+ * 有四组「只差路径 / 只差体里一个字段」（`previewRestore` vs `restoreBackup`、
+ * `snapshotDetail` vs `deleteSnapshot`、`backup` vs `heartbeat`…），类型上全合法。
+ *
+ * ⚠️ **不用文件头那只 `假服务`**：它按 `url.startsWith(前缀)` 匹配，而 `/openhive/project/backup`
+ * 是它自己所有子路径的前缀 ⇒ `/backup/status` 会命中 `/backup` 那条，且它表达不了 202 / 204。
+ * 这里的 `假备份` 按 **「方法 + pathname」精确** 匹配（查询串不参与），状态码由 route 给。
+ *
+ * ⚠️ 记录里**带上体**：R-4 要求「路径 / 方法 / 体逐字对上」，只记 URL 的话，接错体（比如把
+ * `path` 掉了、把 `decision` 写错）不报错也不变红。
+ */
+describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
+  function 假备份(
+    routes: Record<string, { status?: number; body: unknown }>,
+    记录: Array<{ method: string; url: string; body: unknown }>,
+  ) {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+      const method = (init?.method ?? "GET").toUpperCase()
+      const path = url.split("?")[0]
+      记录.push({ method, url, body: init?.body })
+      const hit = routes[`${method} ${path}`]
+      if (hit === undefined) {
+        return new Response(JSON.stringify({ error: "没有这条路径" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        })
+      }
+      return new Response(JSON.stringify(hit.body), {
+        status: hit.status ?? 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as typeof fetch
+  }
+
+  /** 一份**像真 manifest** 的恢复点清单（服务端 `handleSnapshot` 直回 manifest）。 */
+  const 清单 = {
+    version: 1,
+    id: "s-1",
+    projectId: "p-42",
+    ownerId: "u-1",
+    kind: "manual",
+    scope: "资料",
+    createdAt: 1_700_000_000_000,
+    createdBy: "020601",
+    source: { hostname: "pc-1" },
+    timezone: "Asia/Shanghai",
+    status: "complete",
+    files: [{ path: "资料/话单.csv", hash: "sha256:甲", size: 3, mtimeMs: 1_700_000_000_000 }],
+    dirs: ["资料"],
+    skipped: [{ path: "资料/锁", reason: "非普通文件" }],
+    totals: { files: 1, bytes: 3, uploadedBytes: 0, skipped: 1 },
+  }
+
+  test("十个出口的路径 / 方法 / 体逐字对上服务端契约", async () => {
+    const 记录: Array<{ method: string; url: string; body: unknown }> = []
+    假备份(
+      {
+        "POST /openhive/project/backup": { status: 202, body: { jobId: "j-1" } },
+        "GET /openhive/project/backup/jobs/j-1": { body: { id: "j-1", state: "succeeded" } },
+        "POST /openhive/project/backup/jobs/j-1/cancel": { status: 202, body: { cancelling: true } },
+        "GET /openhive/project/backup/snapshots": { body: { snapshots: [], truncated: false } },
+        "GET /openhive/project/backup/status": {
+          body: { usageBytes: 0, limitBytes: 1, autoPaused: false },
+        },
+        "GET /openhive/project/backup/snapshots/s-1": { body: 清单 },
+        "POST /openhive/project/backup/restore/preview": { status: 202, body: { jobId: "j-2" } },
+        "POST /openhive/project/backup/restore": { status: 202, body: { jobId: "j-3" } },
+        "DELETE /openhive/project/backup/snapshots/s-1": { body: { deleted: true } },
+        "POST /openhive/project/backup/heartbeat": { status: 204, body: undefined },
+      },
+      记录,
+    )
+
+    // ① 手动备份：202 + jobId；体里三个字段逐字（少了 `path` 就是「备份整个项目」，读起来却像在备份子目录）。
+    expect(await PROJECT_DATA.backup("p-42", "资料", false)).toEqual({ jobId: "j-1" })
+    expect(记录.at(-1)).toEqual({
+      method: "POST",
+      url: "/openhive/project/backup",
+      body: JSON.stringify({ projectId: "p-42", path: "资料", allowOverQuota: false }),
+    })
+
+    // ② 取任务。
+    expect((await PROJECT_DATA.job("j-1"))?.state).toBe("succeeded")
+    expect(记录.at(-1)).toEqual({
+      method: "GET",
+      url: "/openhive/project/backup/jobs/j-1",
+      body: undefined,
+    })
+
+    // ③ 取消：服务端实态是 **202**（`handleCancel` 回 ACCEPTED），不是 204。
+    expect(await PROJECT_DATA.cancelJob("j-1")).toBe(true)
+    expect(记录.at(-1)).toEqual({
+      method: "POST",
+      url: "/openhive/project/backup/jobs/j-1/cancel",
+      body: undefined,
+    })
+
+    // ④ 列表：**两个**查询参数——`path` 默认 `""`，URL 里因此带 `&path=`。
+    expect(await PROJECT_DATA.snapshots("p-42")).toEqual([])
+    expect(记录.at(-1)).toEqual({
+      method: "GET",
+      url: "/openhive/project/backup/snapshots?projectId=p-42&path=",
+      body: undefined,
+    })
+
+    // ⑤ 状态。
+    expect(await PROJECT_DATA.backupStatus("p-42")).toMatchObject({
+      usageBytes: 0,
+      limitBytes: 1,
+      autoPaused: false,
+    })
+    expect(记录.at(-1)).toEqual({
+      method: "GET",
+      url: "/openhive/project/backup/status?projectId=p-42",
+      body: undefined,
+    })
+
+    // ⑥ 恢复点清单：服务端直回 manifest，客户端收窄后关键字段还在（不 `toEqual` 整份——收窄允许丢字段）。
+    expect(await PROJECT_DATA.snapshotDetail("p-42", "s-1")).toMatchObject({
+      id: "s-1",
+      ownerId: "u-1",
+      kind: "manual",
+      scope: "资料",
+      files: [{ path: "资料/话单.csv" }],
+      dirs: ["资料"],
+      skipped: [{ path: "资料/锁", reason: "非普通文件" }],
+    })
+    expect(记录.at(-1)).toEqual({
+      method: "GET",
+      url: "/openhive/project/backup/snapshots/s-1?projectId=p-42",
+      body: undefined,
+    })
+
+    // ⑦ 恢复预览：202 ⇒ jobId；体逐字 `{ projectId, snapshotId, path }`。
+    expect(await PROJECT_DATA.previewRestore("p-42", { snapshotId: "s-1", path: "资料" })).toBe("j-2")
+    expect(记录.at(-1)).toEqual({
+      method: "POST",
+      url: "/openhive/project/backup/restore/preview",
+      body: JSON.stringify({ projectId: "p-42", snapshotId: "s-1", path: "资料" }),
+    })
+
+    // ⑧ 恢复：与预览**只差路径与一个 `decision`**——接反了类型合法，后果是「点了恢复，只出了张预览」。
+    expect(
+      await PROJECT_DATA.restoreBackup("p-42", {
+        snapshotId: "s-1",
+        path: "资料",
+        decision: "keep-both",
+      }),
+    ).toBe("j-3")
+    expect(记录.at(-1)).toEqual({
+      method: "POST",
+      url: "/openhive/project/backup/restore",
+      body: JSON.stringify({ projectId: "p-42", snapshotId: "s-1", path: "资料", decision: "keep-both" }),
+    })
+
+    // ⑨ 删恢复点：DELETE，`projectId` 在查询串；200 `{deleted:true}` ⇒ `true`。
+    expect(await PROJECT_DATA.deleteSnapshot("p-42", "s-1")).toBe(true)
+    expect(记录.at(-1)).toEqual({
+      method: "DELETE",
+      url: "/openhive/project/backup/snapshots/s-1?projectId=p-42",
+      body: undefined,
+    })
+
+    // ⑩ 心跳：204（走 `发` 的 `status === 204 ⇒ body undefined` 分支）⇒ `true`；体里只有 projectId。
+    expect(await PROJECT_DATA.heartbeat("p-42")).toBe(true)
+    expect(记录.at(-1)).toEqual({
+      method: "POST",
+      url: "/openhive/project/backup/heartbeat",
+      body: JSON.stringify({ projectId: "p-42" }),
+    })
+
+    // 十个出口各发了一次、没有多发：`at(-1)` 只证明「最后一条对」，漏掉一次调用它是看不出来的。
+    expect(记录).toHaveLength(10)
+  })
+})

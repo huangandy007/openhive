@@ -1223,6 +1223,19 @@ function 假数据源(
       记.触碰的.push(projectId)
       return 剧本.touch ? await 剧本.touch(projectId) : true
     },
+    // Task 13 的十个备份 / 恢复出口：`workspace-entry` 目前**不调用**它们（界面接线是后续 task），
+    // 这里补齐只是为了让这个替身满足 `ProjectData`。默认值按「取不到 / 没办成」给——
+    // 同上面几条的理由：一条没接剧本的路**不悄悄报成功**。
+    snapshots: async () => undefined,
+    snapshotDetail: async () => undefined,
+    backup: async () => undefined,
+    backupStatus: async () => undefined,
+    previewRestore: async () => undefined,
+    restoreBackup: async () => undefined,
+    deleteSnapshot: async () => false,
+    job: async () => undefined,
+    cancelJob: async () => false,
+    heartbeat: async () => false,
   }
   return { data, 记 }
 }
