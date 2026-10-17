@@ -105,7 +105,7 @@ interface ActionShape {
   readonly path: string
   /** 响应体里那个「自述成功」的字段名（`archived` / `renamed` / `deleted`）。 */
   readonly stateKey: "archived" | "renamed" | "deleted"
-  /** 那个字段**应当**等于什么——四个动作今天都是 `true`（归档也自述 `archived: true`）。 */
+  /** 那个字段**应当**等于什么——归档 / 改名 / 删除自述 `true`，找回自述 `archived: false`。 */
   readonly stateValue: boolean
   /** 失败（网络 / 非 2xx 且不是 400·403 / 体不成形 / 自述为假）时显示的那句话。 */
   readonly failed: string
