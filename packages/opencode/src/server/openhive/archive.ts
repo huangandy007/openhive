@@ -337,9 +337,10 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
     const archived = archives.get(projectId)?.archived ?? false
 
-    // ③ 判定：`decide` 里「归档 = 冻结」那一层让 `restore` 成为**已归档项目上唯一成立的动作**
-    //    （且要 owner）；反过来，**没归档**的项目落到 `RULES.restore`（那个函数恒 false）；
-    //    非成员/成员两条也都落空。三个方向合起来是一句话：只有「owner ＋ 已归档」放行。
+    // ③ 判定：`decide` 里「归档 = 冻结」那一层让 `restore` 与 `delete` 成为**已归档项目上
+    //    唯二成立的动作**（且都要 owner）；本出口取 `restore`。反过来，**没归档**的项目落到
+    //    `RULES.restore`（那个函数恒 false）；非成员/成员两条也都落空。三个方向合起来是
+    //    一句话：只有「owner ＋ 已归档」放行。
     if (!ProjectMembership.decide({ actor, action: "restore", target: null, archived })) return forbidden("无权找回该项目")
 
     // ④ 配置，同归档：**在授权之后**（否则非成员能从「503 还是 403」读出部署状态）。
