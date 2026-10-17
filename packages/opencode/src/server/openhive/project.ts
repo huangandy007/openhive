@@ -106,16 +106,19 @@ import {
   addMember,
   archiveStatesOf,
   memberCountsOf,
+  membersOf,
   membershipsOf,
   projectMetaOf,
   recordProject,
   rolesOf,
+  updateProjectName,
 } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { projectDirectory, SHARED_ROOT_ENV, sharedRoot } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { PROJECT_TYPES, ProjectExtTable, insertProjectExt, isStale, touchProjectExt } from "@opencode-ai/core/project/ext"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { User } from "@opencode-ai/core/user"
 import { Project } from "@/project/project"
@@ -145,6 +148,11 @@ export const PATH = {
   list: PREFIX,
   create: PREFIX,
   touch: `${PREFIX}/touch`,
+  /**
+   * 改名（2026-10-16）。住在**本文件**而不是 `archive.ts`：本地那份名字要 `project` 与
+   * `projectV2` 两个服务（本文件的 `Deps` 已经有它们），而 `archive.ts` 没有。
+   */
+  rename: `${PREFIX}/rename`,
 } as const
 
 /**
@@ -216,6 +224,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.list, () => handleList(deps))
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, deps))
     yield* router.add("POST", PATH.touch, (request) => handleTouch(request, deps))
+    yield* router.add("POST", PATH.rename, (request) => handleRename(request, deps))
   }),
 )
 
@@ -245,6 +254,30 @@ const CreateBody = Schema.Struct({
 const TouchBody = Schema.Struct({
   projectId: Schema.String,
 })
+
+/** 改名的请求体。`name` 是**已被前端 trim 过**的候选值——服务端**再 trim 一次**并判空（`handleRename` 第 ③ 步）。 */
+const RenameBody = Schema.Struct({
+  projectId: Schema.String,
+  name: Schema.String,
+})
+
+const FORBIDDEN = 403
+
+/**
+ * 403 —— **本文件自己的一份**（`archive.ts:235` 也有一份，那是刻意的）。
+ *
+ * ⚠️ 不 import `archive.ts` 那份的：`archive.ts` 顶层 `import { PREFIX } from "./project"`，
+ * 而 `project.ts` 若反过来 import `archive.ts` 就是**循环依赖**——ESM 下这类环会在
+ * 模块求值期撞 TDZ，而**撞的时机取决于谁先被加载**（不是每次都能复现，最难查的那种）。
+ *
+ * **为什么这次「各写一份」不违背 `LEARNINGS #002-06`**：那条管的是**判断**（同一件事的判定逻辑，
+ * 典型正是本 feature 里 `asRole` 那三份副本），而这两行是 **HTTP 辞汇**（一个状态码 ＋ 一个 JSON
+ * 形状），没有可漂的语义。真正的判断（`asRole` / `actorIn` / `decide`）已经收口在 core
+ * —— 那里才是那条教训的射程。
+ */
+function forbidden(message: string) {
+  return HttpServerResponse.jsonUnsafe({ error: message }, { status: FORBIDDEN })
+}
 
 const BAD_REQUEST = 400
 const UNAUTHORIZED = 401
@@ -517,6 +550,76 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
       ...(payload.value.type === "shared" ? { memberCount: 1 } : {}),
       lastAccessedAt,
     })
+  })
+}
+
+/**
+ * 改名（2026-10-16 spec §3/§7）。
+ *
+ * ## 为什么必须**两处一起写**（读 spec §4.1 之前别改这句）
+ *
+ * 名字存在两处，**读者不同**：owner 那条行读每用户 SQLite 的 `project.name`，
+ * 被邀成员那条影子行读 PG `auth.project_meta.name`（`handleList` 的两支，`:354` / `:391`）。
+ * 只写一处 ⇒「我改了，同事看到的还是旧的」——**不报错、不变红**，两个读者各读各的谁也发现不了。
+ *
+ * ## 次序：**PG 先、本地后**（计划裁定 R3）
+ *
+ * PG 写失败时本地还没动 ⇒ 用户重试即可收敛，**两处的名字始终一致**。
+ * 反过来（先写本地）一旦 PG 失败，两处就**永久分叉**，而没有任何东西会告诉你。
+ * ⚠️ 这条次序在成功路径上**不可观测**（变异 B 全绿）⇒ 它是**论证**，不是**测试**——
+ * 已写进 `state.md` 缺口表。
+ *
+ * ## 为什么用 `deps.project.update` 而不接上游 `PATCH /project/:projectID`
+ *
+ * 上游那条链（`Project.update` → `ProjectTable`）**一个字都不碰 `project_meta`**
+ * （spec §4.1 末段）、而且它服务于上游自己的 project 概念。这里复用的是**同一个服务函数**
+ * （`deps.project.update`，建项目第 ⑤ 步也调它），但出口是 fork 自己的。
+ */
+function handleRename(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return unauthorized()
+
+    // 畸形 JSON ⇒ 400（客户端的事，不是服务端故障），与 `handleCreate` 逐字同款。
+    const body = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const payload = Schema.decodeUnknownOption(RenameBody)(body)
+    if (Option.isNone(payload)) return badRequest("请求体要带 projectId 与 name")
+
+    const name = payload.value.name.trim()
+    if (!name) return badRequest("项目名不能为空")
+
+    const userId = user.value.id
+    if (!User.isSafePathSegment(userId)) return yield* Effect.die(new Error(`非法用户 id：${JSON.stringify(userId)}`))
+
+    const projectId = payload.value.projectId
+    // ⚠️ **这不是形式主义**（与 `handleArchive` 逐字同一条）：`projectId` 是**库里那一行的键**，
+    // 形状不正就根本不该走到读库那一步。改名不碰盘，但它与归档走的是同一条入口约定。
+    if (!User.isSafePathSegment(projectId)) return badRequest("projectId 不是合法的路径段")
+
+    const pg = deps.pg()
+    // ① 身份：库里有没有我这一行（**缺席 = 不是成员**，不是「member」）。
+    const members = yield* Effect.promise(() => membersOf(pg, projectId))
+    const actor = ProjectMembership.actorIn(members, userId)
+    // ② 归档态。⚠️ **键缺席 = 未归档**（`archiveStatesOf` 的口径）——写成 `?? true`
+    //    会让**所有新项目都改不了名**，而那时改名的四条用例全红、读起来像「权限坏了」。
+    const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
+    const archived = archives.get(projectId)?.archived ?? false
+
+    // ③ 判定（纯函数，在 core）。**排在两处写入之前**——`#004-09`：被拒与「门在副作用之前」
+    //    是两条独立判据，一条替代不了另一条（判定挪到写入之后时，非创建人那条用例的
+    //    「两处名字一字未动」会红，见本 task 的变异 D）。
+    if (!ProjectMembership.decide({ actor, action: "rename", target: null, archived }))
+      return forbidden("无权重命名该项目")
+
+    // ④ **先 PG**（成员读的那一份）。它失败 ⇒ 本地一个字未动，用户重试即可收敛。
+    yield* Effect.promise(() => updateProjectName(pg, { projectId, name }))
+    // ⑤ **后本地**（owner 读的那一份）。`ProjectV2.ID.make(...)` 这个包装照 `handleCreate`
+    //    第 ⑤ 步，**不能省**——那是建项目那一处已经验证过的形状（直接传字符串类型上就不对）。
+    yield* deps.project.update({ projectID: ProjectV2.ID.make(projectId), name })
+
+    return HttpServerResponse.jsonUnsafe({ projectId, name, renamed: true })
   })
 }
 
