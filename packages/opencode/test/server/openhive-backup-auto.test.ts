@@ -98,20 +98,22 @@ describe("backup store（MinIO 上的快照读写）", () => {
     expect(s3.requests).toHaveLength(0)
   })
 
-  test("manifests 的 id 切片正确（只列 .json.gz；多段形状的键待实现补形状过滤）", async () => {
+  test("manifests 只列合法 id（切片正确；后缀不符、多段形状的键都不列）", async () => {
     const s = store()
     const 甲 = "20261018T140305123Z-abcdef"
     const 乙 = "20261018T140305124Z-abcde1"
     await s.writeManifest(清单(甲))
     await s.writeManifest(清单(乙))
-    // 后缀不符的键必须被滤掉（这条守 `endsWith(MANIFEST_SUFFIX)`）。
+    // 后缀不符（守 `endsWith(MANIFEST_SUFFIX)`）。
     s3.seed("007/_openhive-backups/p-42/manifests/notes.txt", "x")
+    // 多段 id（守 `manifests()` 的 `SNAPSHOT_ID` 过滤，与 `blobs()` 的形状过滤对称）：
+    // 它过得了 `assertSafeSegment`、也 `endsWith(".json.gz")`，只有形状判据会拒。
+    // 不滤掉的话 `readManifest` / `deleteManifest` 拿到 `foo/bar` 会当场抛，GC 会被一个
+    // 外来键整轮中断（`#002-06`：同一个判断不能只在一处写）。
+    s3.seed("007/_openhive-backups/p-42/manifests/foo/bar.json.gz", "x")
     const 列出 = await s.manifests()
     expect(列出.map((entry) => entry.id)).toEqual([甲, 乙])
     expect(列出.map((entry) => entry.size)).toEqual([expect.any(Number), expect.any(Number)])
-    // ⚠️ 尚未覆盖：`manifests/foo/bar.json.gz`（多段 id）当前会被列成 `foo/bar`——
-    // 这条用例若种它就会红，说明 `manifests()` 只按后缀过滤、没有形状过滤。
-    // 修复轮 1 已把该发现写进报告，等实现授权后再把这条断言补成「只列两条合法 id」。
   })
 
   test("deleteManifest 真删：写 → 删 → 读回 undefined，DELETE 打在对的键上", async () => {

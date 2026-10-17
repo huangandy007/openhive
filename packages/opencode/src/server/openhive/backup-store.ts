@@ -92,13 +92,18 @@ export function openBackupStore(input: BackupStoreInput): BackupStore {
   return {
     manifests: async () => {
       const entries = await store.list({ prefix: MANIFEST_DIR })
-      return entries
-        .filter((entry) => entry.path.endsWith(MANIFEST_SUFFIX))
-        .map((entry) => ({
-          id: entry.path.slice(MANIFEST_DIR.length, -MANIFEST_SUFFIX.length),
-          size: entry.size,
-          lastModified: entry.lastModified,
-        }))
+      const 结果: { id: string; size: number; lastModified: number }[] = []
+      for (const entry of entries) {
+        if (!entry.path.endsWith(MANIFEST_SUFFIX)) continue
+        const id = entry.path.slice(MANIFEST_DIR.length, -MANIFEST_SUFFIX.length)
+        // ⚠️ 只按后缀过滤是不够的：`manifests/foo/bar.json.gz` 这种**多段 id** 会原样变成
+        // `foo/bar`，而 `readManifest` / `deleteManifest` 拿到它**当场抛**——一个外来键就能让
+        // 列表 / GC 整轮中断。形状判据与 `blobs()` 那一处对称（`#002-06`：同一个判断不该只
+        // 在一处写）；本层写出来的 id 只有 `SNAPSHOT_ID` 这一种形状，别的一律不是本层的。
+        if (!SNAPSHOT_ID.test(id)) continue
+        结果.push({ id, size: entry.size, lastModified: entry.lastModified })
+      }
+      return 结果
     },
 
     readManifest: async (id) => {
