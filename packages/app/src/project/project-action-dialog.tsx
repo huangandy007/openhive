@@ -55,8 +55,8 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { type JSX } from "solid-js"
 
-/** 这一问是为了哪件事。两个动作共用一条弹窗，差别全在这张表上。 */
-export type ProjectActionKind = "archive" | "restore"
+/** 这一问是为了哪件事。三个动作共用一条弹窗，差别全在这张表上。 */
+export type ProjectActionKind = "archive" | "restore" | "delete"
 
 export interface ProjectActionDialogProps {
   action: ProjectActionKind
@@ -88,6 +88,20 @@ const 文案 = {
     hint: "找回后它会回到「最近」与「全部」里。",
     ok: "找回",
     variant: "neutral",
+  },
+  /**
+   * 删除（2026-10-16 spec §8）。
+   *
+   * ⚠️ **不提聊天记录**（用户 2026-10-16 裁决 7）：这句话只说文件会删、找不回来。
+   * 它**不是假话**——它没有声称「所有数据都没了」；但**它是省略**（会话与消息仍在库里，
+   * spec §11 取舍 3）。那件事**必须对管理员写清楚**，不是对民警。
+   */
+  delete: {
+    title: "删除",
+    question: "确定删除",
+    hint: "项目里的文件会一并删掉，删了找不回来。",
+    ok: "删除",
+    variant: "danger",
   },
 } as const
 

@@ -1925,3 +1925,306 @@ describe("面板的高度约束与滚动（用户 2026-10-11 实报）", () => {
     expect(根.has("min-h-0")).toBe(true)
   })
 })
+
+/**
+ * ── 项目行 ⋯ 菜单 / 就地改名 / 删除确认（2026-10-16 spec §3/§8/§10）──────────────
+ *
+ * 行内 ⋯ 菜单的两个动作（改名 / 删除）与删除确认。`mount` / `等一拍` / `等到` / `弹窗` /
+ * `点弹窗确认` 复用本文件已有的；下面这组辅助（`指` / `行菜单钮` / `菜单项` / `改名框` /
+ * `打字` / `点弹窗取消`）是本 task 新加的。
+ */
+
+/**
+ * 点一颗钮，派**真实的指针序列**——`pointerdown` 开菜单、`pointerup` 选中项。
+ *
+ * ⚠️ 不能用 `.click()`：Kobalte 的菜单项选择发生在 **`pointerup`**（`menu-item-base`：
+ * `e.button === 0` 且未 disabled ⇒ `onSelect()`），而 `.click()` 派的那条链**不含**它
+ * ⇒ 点菜单项**什么都不发生**、而用例**不报错**（`LEARNINGS #006-37`）。
+ * 先例：`file-tree.test.tsx` 的 `点加号` / `点菜单项`。
+ */
+const 指 = (el: HTMLElement | null | undefined) => {
+  if (!el) throw new Error("指针目标不在——这条用例的前提不成立（`#004-14`：先立前提再判果）")
+  for (const 类型 of ["pointerdown", "pointerup"])
+    el.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+
+/**
+ * 把「这几次延时都排空」——`setTimeout(0)` → `requestAnimationFrame` → `setTimeout(0)`。
+ *
+ * ⚠️ 「就地改名」那条链上这是**必须**的两拍之一：菜单**开**那一刻 Kobalte 的 `tryAutoFocus`
+ * （延迟自动聚焦，`setTimeout 0`）会在点菜单项**之后**才把焦点抢回菜单内容（`LEARNINGS #006-31`：
+ * 等条件不等时间——`等到` 在菜单项一出现就同步返回，tryAutoFocus 还没落地）。点菜单项前先
+ * `冲刷` 一拍让它落地；点完再 `冲刷` 一拍让 `就地改名输入` 的 rAF 焦点赢下来。少了它，测的就变成
+ * 「开菜单与点菜单项落在同一个 tick」，是**挂具造出来的**时序，不是产品行为。
+ * 先例：`ai-session/session-list.test.tsx` 的 `冲刷`（同一段理由，同一段注释）。
+ */
+const 冲刷 = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** 某一行上那颗「⋯」（菜单触发器）。菜单 Portal 到 `document.body` ⇒ 内容要查 `document`。 */
+const 行菜单钮 = (host: HTMLElement, 名: string) =>
+  [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")]
+    .find((行) => 行.querySelector("[data-slot='project-item-name']")?.textContent?.trim() === 名)
+    ?.querySelector<HTMLElement>("[data-project-action='menu']")
+
+/** 菜单里某一项（**Portal 到 body**，不在 host 里）。 */
+const 菜单项 = (action: string) => document.body.querySelector<HTMLElement>(`[data-project-action='${action}']`)
+
+/** 某一行上那个就地改名输入框（编辑态才有）。 */
+const 改名框 = (host: HTMLElement, 名: string) =>
+  [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")]
+    .find((行) => 行.querySelector("[data-slot='project-rename-input']") !== null)
+    ?.querySelector<HTMLInputElement>("[data-slot='project-rename-input']")
+
+/** 往输入框里打字：Solid 的 `onInput` 读 `event.currentTarget.value` ⇒ 先落值再派事件。 */
+const 打字 = (el: HTMLInputElement, 值: string) => {
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/** 点弹窗里那颗「取消」（三个动作**共用同一个槽位**——它们是同一个弹窗）。 */
+const 点弹窗取消 = () => 弹窗("project-action-cancel")?.click()
+
+describe("项目行 ⋯ 菜单（spec §8 / §10 判据 8）", () => {
+  const 项目 = (over: Partial<ProjectEntry> = {}): ProjectEntry => ({
+    id: "p1",
+    name: "8·17专案",
+    type: "private",
+    lastAccessedAt: 1_759_600_000_000,
+    role: "owner",
+    ...over,
+  })
+
+  test("接了 onRename / onDelete ⇒ 那一行有 ⋯；菜单里两项：改名、删除", async () => {
+    const host = mount(() => <ProjectPanel projects={[项目()]} onRename={() => {}} onDelete={() => {}} />)
+
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("rename") !== null)
+
+    expect(菜单项("rename")?.textContent?.trim()).toBe("改名")
+    expect(菜单项("delete")?.textContent?.trim()).toBe("删除")
+  })
+
+  /**
+   * **未接线 ⇒ 不画**（本文件那条既有的约定：不给回调 ⇒ 那个动作不长出来）。
+   * 只钉「接了就有」会漏掉这一半——一个「总是画」的实现照样绿，而它给民警的是
+   * 两颗点了没反应的钮（本文件 `问归档` 那段注释逐字记着这条的理由）。
+   */
+  test("一个回调都不接 ⇒ 那一行**没有** ⋯", () => {
+    const host = mount(() => <ProjectPanel projects={[项目()]} />)
+    expect(行菜单钮(host, "8·17专案") === null).toBe(true)
+  })
+
+  /**
+   * **归档态下只有删除、没有改名**（`decide` 的归档分支：只对 owner 的 restore 与 delete 开口）。
+   * 这条同时是「面板不重写规则、只把事实交给 `decide`」的判据。
+   *
+   * ⚠️ 已归档的行只在「已归档」tab 或搜索结果里出现（默认「最近」tab 只画活跃项目），
+   * 所以先切到「已归档」tab——brief 原样用例没有这一步，会红在「前提不成立」上。
+   */
+  test("已归档的行：⋯ 里只有删除（改名在归档态下被拒）", async () => {
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目({ archived: true })]}
+        onRename={() => {}}
+        onDelete={() => {}}
+        onRestore={() => {}}
+      />
+    ))
+
+    页签(host, "archived")?.click()
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("delete") !== null)
+
+    expect(菜单项("rename") === null).toBe(true)
+    expect(菜单项("delete")?.textContent?.trim()).toBe("删除")
+  })
+
+  /**
+   * **member 看到的是「能不能」而不是「点了会怎样」**：非 owner 的 ⋯ 一项都不该有
+   * （spec §7：改名与删除都只有创建人能做）。
+   */
+  test("角色是 member ⇒ 那一行**没有** ⋯（两个动作都不是他能做的）", () => {
+    const host = mount(() => (
+      <ProjectPanel projects={[项目({ role: "member" })]} onRename={() => {}} onDelete={() => {}} />
+    ))
+    expect(行菜单钮(host, "8·17专案") === null).toBe(true)
+  })
+})
+
+describe("就地改名（spec §8 / §10 判据 9）", () => {
+  const 项目: ProjectEntry = {
+    id: "p1",
+    name: "8·17专案",
+    type: "private",
+    lastAccessedAt: 1_759_600_000_000,
+    role: "owner",
+  }
+
+  test("点「改名」⇒ 那一行的名字那格变输入框，**预填着原名**", async () => {
+    const host = mount(() => <ProjectPanel projects={[项目]} onRename={() => {}} onDelete={() => {}} />)
+
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("rename") !== null)
+    await 冲刷()
+    指(菜单项("rename"))
+    await 冲刷()
+
+    expect(改名框(host, "8·17专案")?.value).toBe("8·17专案")
+  })
+
+  test("回车 ⇒ `onRename` 收到**那一行**的项目与 trim 后的新名字", async () => {
+    const 收到: Array<[string, string]> = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目]}
+        onRename={(p, name) => {
+          收到.push([p.id, name])
+        }}
+        onDelete={() => {}}
+      />
+    ))
+
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("rename") !== null)
+    await 冲刷()
+    指(菜单项("rename"))
+    await 冲刷()
+    const 框 = 改名框(host, "8·17专案")
+    if (!框) throw new Error("改名框不在——前提不成立")
+    打字(框, "  8·17专案（改）  ")
+    框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+
+    expect(收到).toEqual([["p1", "8·17专案（改）"]])
+  })
+
+  /**
+   * **Esc 与空草稿都不提交**（判据 9 的后半句）——两条**分开**写：它们走的是同一条
+   * `on取消`，但**理由不同**（一个是用户反悔、一个是「清空名字不是一次改名」），
+   * 合成一条时只会在改一处时漏掉另一处（`LEARNINGS #005-12`：同一个修法落在 N 个入口就写 N 条）。
+   */
+  test("Esc ⇒ 一个回调都不喊，那一行退回展示态", async () => {
+    const 收到: unknown[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目]}
+        onRename={(...args) => {
+          收到.push(args)
+        }}
+        onDelete={() => {}}
+      />
+    ))
+
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("rename") !== null)
+    await 冲刷()
+    指(菜单项("rename"))
+    await 冲刷()
+    const 框 = 改名框(host, "8·17专案")
+    if (!框) throw new Error("改名框不在——前提不成立")
+    打字(框, "改到一半")
+    框.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    await 等一拍()
+
+    expect(收到).toEqual([])
+    expect(改名框(host, "8·17专案") === undefined).toBe(true)
+  })
+
+  test("空草稿回车 ⇒ 不提交（清空名字不是一次改名），那一行退回展示态", async () => {
+    const 收到: unknown[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目]}
+        onRename={(...args) => {
+          收到.push(args)
+        }}
+        onDelete={() => {}}
+      />
+    ))
+
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 菜单项("rename") !== null)
+    await 冲刷()
+    指(菜单项("rename"))
+    await 冲刷()
+    const 框 = 改名框(host, "8·17专案")
+    if (!框) throw new Error("改名框不在——前提不成立")
+    打字(框, "   ")
+    框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+    await 等一拍()
+
+    expect(收到).toEqual([])
+    expect(改名框(host, "8·17专案") === undefined).toBe(true)
+  })
+})
+
+describe("删除确认（spec §8 / §10 判据 10）", () => {
+  const 项目: ProjectEntry = {
+    id: "p1",
+    name: "甲项目",
+    type: "private",
+    lastAccessedAt: 1_759_600_000_000,
+    role: "owner",
+  }
+
+  test("点「删除」⇒ 开确认框，措辞是 spec §8 那两句（**不提聊天记录**）", async () => {
+    const host = mount(() => <ProjectPanel projects={[项目]} onRename={() => {}} onDelete={() => {}} />)
+
+    指(行菜单钮(host, "甲项目"))
+    await 等到(() => 菜单项("delete") !== null)
+    指(菜单项("delete"))
+    await 等一拍()
+
+    expect(有动作弹窗()).toBe(true)
+    expect(弹窗文本("project-action-name")).toBe("甲项目")
+    expect(弹窗文本("project-action-hint")).toBe("项目里的文件会一并删掉，删了找不回来。")
+  })
+
+  test("点「取消」⇒ `onDelete` **一个请求都不发**，弹窗关掉", async () => {
+    const 收到: unknown[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目]}
+        onRename={() => {}}
+        onDelete={(...args) => {
+          收到.push(args)
+        }}
+      />
+    ))
+
+    指(行菜单钮(host, "甲项目"))
+    await 等到(() => 菜单项("delete") !== null)
+    指(菜单项("delete"))
+    await 等一拍()
+    点弹窗取消()
+
+    expect(收到).toEqual([])
+    // ⚠️ 关弹窗是**两步**（状态立刻、节点 ~100ms 后 dispose，`LEARNINGS #005-33`）
+    // ⇒ 用有界轮询等它没了，不用固定延时。
+    await 等到(() => !有动作弹窗())
+  })
+
+  test("点确认 ⇒ `onDelete` 收到那一行项目", async () => {
+    const 收到: ProjectEntry[] = []
+    const host = mount(() => (
+      <ProjectPanel
+        projects={[项目]}
+        onRename={() => {}}
+        onDelete={(p) => {
+          收到.push(p)
+        }}
+      />
+    ))
+
+    指(行菜单钮(host, "甲项目"))
+    await 等到(() => 菜单项("delete") !== null)
+    指(菜单项("delete"))
+    await 等一拍()
+    点弹窗确认()
+
+    expect(收到.map((p) => p.id)).toEqual(["p1"])
+  })
+})

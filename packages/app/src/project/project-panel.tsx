@@ -1,7 +1,9 @@
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Icon } from "@opencode-ai/ui/icon"
-import { For, Show, createSignal } from "solid-js"
+import { For, Show, createSignal, splitProps, type JSX } from "solid-js"
+import { 就地改名输入 } from "@/components/inline-rename-input"
 import { MEMBER_GLYPH } from "./project-anchor"
 import { ProjectActionDialog, type ProjectActionKind } from "./project-action-dialog"
 
@@ -205,6 +207,19 @@ export interface ProjectPanelProps {
   onArchive?: ProjectActionCallback
 
   /**
+   * 改一个项目的名字（2026-10-16）。**交出去的是「哪一个 ＋ 新名字」**——与 `onArchive` /
+   * `onRestore` 不同（那两条只交「哪一个」）：改名的动作**内容**就是那个名字。
+   *
+   * 约定同另两条：**回一句字符串 = 没办成**（显示在面板最底下），`undefined` / 没回 = 收工。
+   */
+  onRename?: (project: ProjectEntry, name: string) => string | undefined | Promise<string | undefined> | void
+  /**
+   * 删一个项目（2026-10-16）。**破坏性、不可恢复**——所以面板先开一条确认（spec §8）。
+   * 同 `onArchive`：这里传出去的是「就这一个项目」，真正交出去发生在弹窗确认那一步。
+   */
+  onDelete?: ProjectActionCallback
+
+  /**
    * 清单**取不到**（2026-10-11 用户实报）。省略 / `false` ＝ 没这回事。
    *
    * ## 「取不到」与「一个都没有」是两件事
@@ -265,6 +280,30 @@ const canRestore = (project: ProjectEntry) =>
   ProjectMembership.decide({
     actor: project.role ?? null,
     action: "restore",
+    target: null,
+    archived: project.archived === true,
+  })
+
+/**
+ * 能不能改这一行的名字（2026-10-16 spec §7：只有创建人）。
+ *
+ * ⚠️ 与 `canArchive` / `canRestore` 是**同一条**「面板不重写规则、只把事实交给 `decide`」——
+ * 归档态下 `decide` 不给 rename 开口（理由见 `membership.ts`），所以已归档的行上这一项
+ * **自动**不出现，本函数不需要再判一次 `archived`。
+ */
+const canRename = (project: ProjectEntry) =>
+  ProjectMembership.decide({
+    actor: project.role ?? null,
+    action: "rename",
+    target: null,
+    archived: project.archived === true,
+  })
+
+/** 能不能删这一行（同 `canRename`）。⚠️ 归档态下**仍然可以**——spec §7：「已归档的项目也能删除」。 */
+const canDelete = (project: ProjectEntry) =>
+  ProjectMembership.decide({
+    actor: project.role ?? null,
+    action: "delete",
     target: null,
     archived: project.archived === true,
   })
@@ -487,23 +526,56 @@ function 活跃行(props: {
    * 所以这里传出去的是「把这个项目记下来」，真正交出去发生在确认那一步。
    */
   onAskArchive?: (project: ProjectEntry) => void
+  /** 这一行的「改名」被点了之后进来（`新名` 已 trim、且与原样不同——判据在 `就地改名输入` 里）。 */
+  onRename?: (project: ProjectEntry, 新名: string) => void
+  /** 这一行的「删除」被点了之后、**确认之前**（真正的执行在弹窗那一层）。 */
+  onAskDelete?: (project: ProjectEntry) => void
 }) {
+  /**
+   * 这一行**正在就地改名**——**行级**信号而不是面板级。
+   *
+   * 做成面板级（`createSignal<string | undefined>` 存「哪个 id 在改」）要多传一层 prop、
+   * 还要在清单重拉时对账「那个 id 还在不在」；而编辑态是**一次编辑的事**，它天然属于这一行。
+   */
+  const [在改名, set在改名] = createSignal(false)
   return (
-    <div data-slot="project-row" class={ITEM_ROW}>
-      <button
-        type="button"
-        data-slot="project-item"
-        data-current={props.current ? "true" : undefined}
-        class={ITEM_NAME_BUTTON}
-        classList={{
-          // 「当前项目」＝选中态：品牌浅金（理由见 `file-tree.tsx` 的 `ROW_SELECTED`，X5-1）。
-          "bg-[var(--v2-background-bg-accent-soft)] text-v2-text-text-base": props.current,
-        }}
-        disabled={props.onOpen === undefined}
-        onClick={() => props.onOpen?.(props.project)}
+    <div data-slot="project-row" class={`${ITEM_ROW} group/row`}>
+      <Show
+        when={在改名()}
+        fallback={
+          <button
+            type="button"
+            data-slot="project-item"
+            data-current={props.current ? "true" : undefined}
+            class={ITEM_NAME_BUTTON}
+            classList={{
+              "bg-[var(--v2-background-bg-accent-soft)] text-v2-text-text-base": props.current,
+            }}
+            disabled={props.onOpen === undefined}
+            onClick={() => props.onOpen?.(props.project)}
+          >
+            <ItemBody project={props.project} current={props.current} />
+          </button>
+        }
       >
-        <ItemBody project={props.project} current={props.current} />
-      </button>
+        {/*
+          就地改名（spec §8）：**整颗名字按钮被换掉**，不是把输入框塞进按钮里
+          ——`<button>` 里放 `<input>` 是非法嵌套。
+          复用 `就地改名输入`（**一个字不改**）：它带着「一次编辑只结一次账」那条真栈实测出来的守卫。
+        */}
+        <就地改名输入
+          槽位="project-rename-input"
+          可访问名称="项目名称"
+          原名={props.project.name}
+          on提交={(新名) => {
+            set在改名(false)
+            props.onRename?.(props.project, 新名)
+          }}
+          on取消={() => {
+            set在改名(false)
+          }}
+        />
+      </Show>
       {/* 超期提醒（T024）——**不是按钮**，只是把事实摆出来。判定分两层：
           ① 服务端说他超期了（`stale`，缺键 = 不提醒）；
           ② 提醒的是**能处置它的那个人**（`canArchive`，与「归档」按钮同一份 `decide`）。
@@ -532,6 +604,17 @@ function 活跃行(props: {
           归档
         </button>
       </Show>
+      <行菜单
+        project={props.project}
+        onRename={
+          props.onRename === undefined
+            ? undefined
+            : () => {
+                set在改名(true)
+              }
+        }
+        onAskDelete={props.onAskDelete}
+      />
     </div>
   )
 }
@@ -550,6 +633,8 @@ function 归档行(props: {
    * 所以这里传出去的是「就这一个项目」，真正交出去发生在弹窗确认那一步。
    */
   onRestore?: (project: ProjectEntry) => void
+  /** 已归档的行**也能删除**（spec §7）——它比找回更彻底，藏进 ⋯。 */
+  onAskDelete?: (project: ProjectEntry) => void
   /**
    * 画不画「已归档」标记。**默认不画**——「已归档」tab 里每一行都是归档的，标记是纯噪音。
    * 只有**搜索结果**那种活跃与归档混在一张单子上的场合才要它：那里「为什么这一行点不开」
@@ -558,34 +643,135 @@ function 归档行(props: {
   带归档标记?: boolean
 }) {
   return (
-    <div
-      data-slot="project-item"
-      data-current={props.current ? "true" : undefined}
-      class={ITEM_STATIC}
-    >
-      <ItemBody project={props.project} current={props.current} />
-      <Show when={props.带归档标记}>
-        <span
-          data-slot="project-item-archived"
-          class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-03 px-1 text-[11px] text-v2-text-text-muted"
-        >
-          已归档
-        </span>
-      </Show>
-      {/* 不给回调 ⇒ 不画（「未接线即禁用」）；给了回调也还要过 `decide`——归档态下只有 owner
-          能找回（用户 2026-10-11 裁定「找回按 owner 收口」，判定见 `canRestore`）。 */}
-      <Show when={props.onRestore !== undefined && canRestore(props.project)}>
-        <button
-          type="button"
-          data-slot="project-restore"
-          aria-label={`找回 ${props.project.name}`}
-          class={CREATE_BUTTON}
-          onClick={() => props.onRestore?.(props.project)}
-        >
-          找回
-        </button>
-      </Show>
+    // 与 `活跃行` 同一层壳（`data-slot="project-row"`）：⋯ 要挂在**行**上，而 `行菜单钮` 的
+    // 辅助按这个壳找行——没有它，已归档的行上那颗 ⋯ 就找不到了。
+    <div data-slot="project-row" class={`${ITEM_ROW} group/row`}>
+      <div
+        data-slot="project-item"
+        data-current={props.current ? "true" : undefined}
+        class={ITEM_STATIC}
+      >
+        <ItemBody project={props.project} current={props.current} />
+        <Show when={props.带归档标记}>
+          <span
+            data-slot="project-item-archived"
+            class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-03 px-1 text-[11px] text-v2-text-text-muted"
+          >
+            已归档
+          </span>
+        </Show>
+        {/* 不给回调 ⇒ 不画（「未接线即禁用」）；给了回调也还要过 `decide`——归档态下只有 owner
+            能找回（用户 2026-10-11 裁定「找回按 owner 收口」，判定见 `canRestore`）。 */}
+        <Show when={props.onRestore !== undefined && canRestore(props.project)}>
+          <button
+            type="button"
+            data-slot="project-restore"
+            aria-label={`找回 ${props.project.name}`}
+            class={CREATE_BUTTON}
+            onClick={() => props.onRestore?.(props.project)}
+          >
+            找回
+          </button>
+        </Show>
+        {/* ⚠️ 归档行**不传 `onRename`**：归档态下 `decide` 不给 rename 开口（`canRename` 恒 false）
+            ⇒ 传了也不会画。不传是**刻意的**：多传一个恒被过滤掉的回调，只会在读代码时误导人
+            以为「归档行也能改名」。 */}
+        <行菜单 project={props.project} onAskDelete={props.onAskDelete} />
+      </div>
     </div>
+  )
+}
+
+/**
+ * 「⋯」那一颗的宿主。
+ *
+ * ⚠️ 形状照 `file-tree.tsx` 的 `工具钮`（它是 `DropdownMenu.Trigger` 的宿主，见那个文件
+ * `:1236-1243` 的注释）：`DropdownMenuTrigger` 会给宿主加自己的 `data-*`，所以本组件
+ * **不设 `data-slot`**——只有 `data-project-action` 是我们自己的名字（见 `行菜单` 的注释）。
+ */
+function 菜单钮(props: JSX.ButtonHTMLAttributes<HTMLButtonElement>) {
+  const [local, rest] = splitProps(props, ["class", "children"])
+  return (
+    <button
+      type="button"
+      class={`hover-reveal flex shrink-0 cursor-pointer items-center rounded-[4px] px-1 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover group-hover/row:opacity-100 focus-within:opacity-100 ${local.class ?? ""}`}
+      {...rest}
+    >
+      ⋯
+    </button>
+  )
+}
+
+/**
+ * 一行尾巴上那颗「⋯」——**改名字与不可恢复的删除**的入口（2026-10-16 spec §3/§8）。
+ *
+ * ## 为什么是菜单而不是两颗常显钮
+ *
+ * spec §3 的原则一：**不可恢复的动作必须跟可恢复的动作长得不一样**——归档在行上是一颗常显钮
+ * （今天就这样），删除藏进 ⋯。形态不同是**刻意**的，不是布局巧合。
+ *
+ * ## 未接线 / 无权 ⇒ 整个菜单不画
+ *
+ * 与「归档 / 找回」同一条约定（`问归档` 那段注释）：不给回调 ⇒ 不画；给了回调也还要过 `decide`。
+ * 两样都不成立时**连 ⋯ 都不出现**——画一颗点开来空空的菜单是纯噪音。
+ *
+ * ## 槽位名为什么是 `data-project-action` 而不是 `data-slot`
+ *
+ * `DropdownMenuItem` 把 `data-slot` 写在 `{...rest}` **之后**（`LEARNINGS #005-22`）⇒
+ * 调用方传的 `data-slot` 会被静默覆盖、**那个名字在 DOM 里从来不存在**，而用例会一直绿着空转。
+ * 换一个宿主不占的名字（`data-project-action`），先例见 `file-tree.tsx` 的 `data-create-kind`。
+ *
+ * ## 视觉：悬停出现、**键盘聚焦也出现**（spec §8）
+ *
+ * `hover-reveal` 是全 app 的既有 utility（默认 `opacity-0`，`@media (hover:none)` 恒可见
+ * ⇒ 触屏也够得着）；配 `group-hover/row:opacity-100` ＋ `focus-within:opacity-100`
+ * ——后者是 spec §8「不做成鼠标专属」那半句的**唯一实现**（先例
+ * `pages/home/home-projects-view.tsx:474-495` 的 `group/project`）。
+ *
+ * ⚠️ **组件层量不出它可见不可见**（happy-dom 没有 CSS 引擎，`LEARNINGS #005-07`）——
+ * 本层的判据只能断「元素在不在」，**真的悬停会不会出现**归真栈（Task 9）。
+ */
+function 行菜单(props: {
+  project: ProjectEntry
+  /**
+   * 「改名」被点了。⚠️ **不带新名字**——菜单这一下只是**把这一行切成编辑态**，
+   * 名字还没被输入（真正带名字的那一层是 `活跃行` 的 `onRename`）。
+   * 同一个文件里有两个同名但不同形的 `onRename`，**刻意的**：`行菜单` 是「谁来接这个动作」，
+   * `活跃行` 是「新名字是多少」——把两件事合成一个签名，就会逼菜单项编一个假名字出来。
+   */
+  onRename?: () => void
+  onAskDelete?: (project: ProjectEntry) => void
+}) {
+  const 改名 = () => props.onRename !== undefined && canRename(props.project)
+  const 删除 = () => props.onAskDelete !== undefined && canDelete(props.project)
+  return (
+    <Show when={改名() || 删除()}>
+      {/* ⚠️ `modal={false}` **不是可选项**：默认 `modal: true` 让 Kobalte 的 `createFocusScope`
+          在菜单开着时**锁焦点**（`trapFocus`）——实测（focus 探针，2026-10-17）点「改名」后
+          `就地改名输入` 的 rAF 焦点刚落下（+121ms）就被焦点陷阱**当场**抢回菜单内容
+          （`project-row-menu`）⇒ 输入条 blur ⇒ 「提交」时草稿没变（同值）⇒ 自己收掉。
+          同 `file-tree.tsx` 右键菜单那段（`#005-28` 同族：下游不是同一个东西时理由要重验，不搬结论）。
+          ⚠️ 但「改名」这条链**另有**一处竞态在测试侧：菜单**开**那一刻的延迟自动聚焦
+          （`tryAutoFocus`，`setTimeout 0`）也抢焦点——那一处 `modal={false}` 管不着，靠用例
+          在点菜单项前先冲刷一拍（见 `project-panel.test.tsx` 的 `冲刷`）。 */}
+      <DropdownMenu gutter={4} placement="bottom-end" modal={false}>
+        <DropdownMenu.Trigger as={菜单钮} data-project-action="menu" aria-label={`${props.project.name} 的更多操作`} />
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content data-slot="project-row-menu">
+            <Show when={改名()}>
+              <DropdownMenu.Item data-project-action="rename" onSelect={() => props.onRename?.()}>
+                <DropdownMenu.ItemLabel>改名</DropdownMenu.ItemLabel>
+              </DropdownMenu.Item>
+            </Show>
+            <Show when={删除()}>
+              <DropdownMenu.Item data-project-action="delete" onSelect={() => props.onAskDelete?.(props.project)}>
+                <DropdownMenu.ItemLabel>删除</DropdownMenu.ItemLabel>
+              </DropdownMenu.Item>
+            </Show>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu>
+    </Show>
   )
 }
 
@@ -597,6 +783,8 @@ function Group(props: {
   currentId?: string
   onOpen?: (project: ProjectEntry) => void
   onAskArchive?: (project: ProjectEntry) => void
+  onRename?: (project: ProjectEntry, 新名: string) => void
+  onAskDelete?: (project: ProjectEntry) => void
 }) {
   return (
     <Show when={props.items.length > 0}>
@@ -611,6 +799,8 @@ function Group(props: {
               current={project.id === props.currentId}
               onOpen={props.onOpen}
               onAskArchive={props.onAskArchive}
+              onRename={props.onRename}
+              onAskDelete={props.onAskDelete}
             />
           )}
         </For>
@@ -624,6 +814,7 @@ function ArchivedGroup(props: {
   items: readonly ProjectEntry[]
   currentId?: string
   onRestore?: (project: ProjectEntry) => void
+  onAskDelete?: (project: ProjectEntry) => void
 }) {
   return (
     <Show when={props.items.length > 0}>
@@ -637,6 +828,7 @@ function ArchivedGroup(props: {
               project={project}
               current={project.id === props.currentId}
               onRestore={props.onRestore}
+              onAskDelete={props.onAskDelete}
             />
           )}
         </For>
@@ -729,21 +921,38 @@ export function ProjectPanel(props: ProjectPanelProps) {
   }
 
   /**
-   * **问一句再办**——归档与找回共用这一处（同一个弹窗、同一个「问完才交出去」的次序）。
+   * 把新名字交出去，等回话。与 `办` 同一条约定（字符串 = 没办成）。
    *
-   * 这一步**不是执行**：它只把弹窗开出来，真正交出去发生在用户按了确认键（`onConfirm`）那一刻。
-   * 之所以两个动作走同一条：它们要问的是**同一件事**（「你确定要动这一行吗」），差别只在后果
-   * ——写两处必然在改一处时漏掉另一处（`LEARNINGS #002-06`）。
+   * 与 `办` 分成两条而不是合成一条：`办` 交的是「一个动作」，这条交的是「一个动作 ＋ 一个值」
+   * ——合并要给它加一个可选的第二参，而那会让 `onArchive` / `onRestore` 的调用点也跟着长出一个
+   * 恒不传的位置（`LEARNINGS #002-06` 的取向：别为省一行把两件事塞进一个判定）。
+   */
+  const 办改名 = async (project: ProjectEntry, name: string) => {
+    set没办成(undefined)
+    const 回话 = await props.onRename?.(project, name)
+    if (typeof 回话 === "string") set没办成(回话)
+  }
+
+  /**
+   * 问一句再办（归档 / 找回 / 删除共用）。
    *
-   * 回调在 `onConfirm` 里**现读** `props`（不是开弹窗时捕获一份）：弹窗可能开着的时候调用方
-   * 重新接了线，那时该走的是新的那一份。
+   * ⚠️ 三个动作的接收方**在 `onConfirm` 里现读**（不是开弹窗时捕获一份）：弹窗可能开着的时候
+   * 调用方重新接了线，那时该走的是新的那一份。表写成 `Record<ProjectActionKind, …>` ⇒
+   * **将来加第四个动作时不补这一行是编译错误**（同 `RULES` 表那条理由）。
    */
   const 问动作 = (action: ProjectActionKind, project: ProjectEntry) => {
     void dialog.show(() => (
       <ProjectActionDialog
         action={action}
         projectName={project.name}
-        onConfirm={() => void 办(project, action === "archive" ? props.onArchive : props.onRestore)}
+        onConfirm={() => {
+          const 接: Record<ProjectActionKind, ProjectActionCallback | undefined> = {
+            archive: props.onArchive,
+            restore: props.onRestore,
+            delete: props.onDelete,
+          }
+          void 办(project, 接[action])
+        }}
       />
     ))
   }
@@ -770,6 +979,12 @@ export function ProjectPanel(props: ProjectPanelProps) {
    * 「谁画这一行」的判定没变，仍在 `归档行` 的 `canRestore` 上。
    */
   const 找回 = (project: ProjectEntry) => 问动作("restore", project)
+
+  /**
+   * 删除的入口（2026-10-16）。**上面那条规矩的第三个出口，同款三元**——`活跃行` / `归档行`
+   * 那侧写着「不给回调即不画」，所以这里同样**只在不为空时递下去**。
+   */
+  const 问删除 = (project: ProjectEntry) => 问动作("delete", project)
 
   /**
    * 搜索词（首尾空格不算数——民警手滑打出来的空格不该让结果空掉）。
@@ -1061,6 +1276,7 @@ export function ProjectPanel(props: ProjectPanelProps) {
                       project={project}
                       current={project.id === props.currentId}
                       onRestore={props.onRestore === undefined ? undefined : 找回}
+                      onAskDelete={props.onDelete === undefined ? undefined : 问删除}
                       带归档标记
                     />
                   ) : (
@@ -1068,6 +1284,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
                       project={project}
                       current={project.id === props.currentId}
                       onOpen={props.onOpen}
+                      onRename={props.onRename === undefined ? undefined : 办改名}
+                      onAskDelete={props.onDelete === undefined ? undefined : 问删除}
                     />
                   )
                 }
@@ -1089,6 +1307,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
                     items={g.items}
                     currentId={props.currentId}
                     onOpen={props.onOpen}
+                    onRename={props.onRename === undefined ? undefined : 办改名}
+                    onAskDelete={props.onDelete === undefined ? undefined : 问删除}
                   />
                 )}
               </For>
@@ -1106,6 +1326,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
                 currentId={props.currentId}
                 onOpen={props.onOpen}
                 onAskArchive={props.onArchive === undefined ? undefined : 问归档}
+                onRename={props.onRename === undefined ? undefined : 办改名}
+                onAskDelete={props.onDelete === undefined ? undefined : 问删除}
               />
               <Group
                 group="shared"
@@ -1114,6 +1336,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
                 currentId={props.currentId}
                 onOpen={props.onOpen}
                 onAskArchive={props.onArchive === undefined ? undefined : 问归档}
+                onRename={props.onRename === undefined ? undefined : 办改名}
+                onAskDelete={props.onDelete === undefined ? undefined : 问删除}
               />
             </Show>
           </Show>
@@ -1124,6 +1348,7 @@ export function ProjectPanel(props: ProjectPanelProps) {
                 items={已归档()}
                 currentId={props.currentId}
                 onRestore={props.onRestore === undefined ? undefined : 找回}
+                onAskDelete={props.onDelete === undefined ? undefined : 问删除}
               />
               {/* 被截掉的那些**不是不见了**，是换了个找法——不说这一句，民警只会以为项目丢了。
                   （`搜索` 就是 tab 栏上那颗放大镜，见上面的 tab 栏。） */}
