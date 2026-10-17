@@ -41,6 +41,9 @@ tsconfig.tsbuildinfo
 
 .superpowers/
 
+# 浏览器工具的本机产物 —— Playwright MCP 每开一次浏览器就往这里落 console-*.log / 截图
+.playwright-mcp/
+
 # Claude Code worktree 工作台 —— 每个都是整仓库的副本（GB 级），误提交会污染历史
 .claude/worktrees/
 /artifacts/
