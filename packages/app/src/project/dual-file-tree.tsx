@@ -10,10 +10,13 @@ import { FileTree, type FileTreeProps } from "@/project/file-tree"
 /** 每层缩进（设计 §6.4 的 16px 层级缩进）——**与 `file-tree.tsx` 同值**：两棵树并排出现，缩进不一致会看得出来。 */
 const INDENT_STEP = 16
 
-/** 上树高度上下限（设计 §5.2「按需调整两树比例」）。收起态不参与——那时上树占满。 */
-const 上树最小 = 72
-const 上树最大 = 480
-const 上树默认 = 180
+/**
+ * MinIO 窗口高度上下限（设计 §5.2「按需调整两树比例」，2026-10-17 起量的是**窗口自身**）。
+ *
+ * 默认高度不在这里——是**文件区高度的 1/3**（用户 2026-10-17 下达，见 `MinioTree` 的 `style`）：
+ * 写成比例而不是常量，窗口跟着左栏高度走，不必在别处再维护一个「默认高度」。
+ */
+const 最小窗高 = 72
 
 const ROW =
   "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
@@ -84,8 +87,17 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
  */
 export function DualFileTree(props: DualFileTreeProps) {
   const [local, rest] = splitProps(props, ["backups", "open", "onCollapse", "onBackup", "onRestore"])
-  /** 上树高度。**只有展开态读它**——收起态上树是 `flex-1`，这个数不参与排布。 */
-  const [上高, set上高] = createSignal(上树默认)
+  /**
+   * MinIO 窗口高度（px）。`undefined` ＝ 还没拖过 ⇒ 走**文件区高度的 1/3**（用户 2026-10-17 下达）。
+   * 拖过一次之后就钉成像素值：用户定了多高就是多高，不该在左栏改宽时自己漂。
+   */
+  const [窗高, set窗高] = createSignal<number>()
+  /**
+   * 窗口的定位祖先（`relative` 那层）。`容器高` 在**按下的那一刻**现量：分隔条的 `size` / `max`
+   * 都是 mousedown 时读的，读一个挂载时算好的旧值，窗口改过大小时会差一截。
+   */
+  let 根: HTMLDivElement | undefined
+  const 容器高 = () => 根?.clientHeight ?? 0
   /**
    * 正在被拖的那一项（`undefined` ＝ 没有拖拽在进行）。
    *
@@ -110,6 +122,7 @@ export function DualFileTree(props: DualFileTreeProps) {
   // 不再是上下双树里的第二段普通流（用户实报：窗口盖不住文件列表）。
   return (
     <div
+      ref={根}
       data-component="dual-file-tree"
       class="relative flex min-h-0 w-full flex-1 flex-col"
       // 拖拽的四个事件全在最外层这一层收——见文件头「为什么是委托」。
@@ -118,31 +131,14 @@ export function DualFileTree(props: DualFileTreeProps) {
       onDrop={放下}
       onDragEnd={() => set拖源(undefined)}
     >
-      {/* 上树。`relative` 是给分隔条当定位祖先——`resize-handle.css` 把柄写死为 `position: absolute`
-          且只按**包含块的边缘**定位（`edge="end"` ⇒ `inset-block-end: 0`），所以包裹的边界必须
-          就是上树的边界，柄才落在两树之间那条缝上（同 `three-pane.tsx` 的不变量）。 */}
-      <div
-        data-slot="sandbox-tree"
-        data-tree="sandbox"
-        classList={{ "relative flex min-h-0 w-full flex-col": true, "flex-1": !local.open }}
-        style={local.open ? { height: `${上高()}px` } : undefined}
-      >
+      {/* 上树**恒占满整片文件区**（它现在也是 MinIO 窗口后面的那层底）：窗口只盖住下面一部分，
+          露出来的地方必须是真树、能滚能点——所以这里不再按「两树比例」压高度，分隔条也挪到了
+          窗口自己的上沿（见 `MinioTree`）。 */}
+      <div data-slot="sandbox-tree" data-tree="sandbox" class="flex min-h-0 w-full flex-1 flex-col">
         {/* 上树的行**恒可拖**（2026-10-13 用户裁定）：拖出去的是**路径引用**（拖到右栏会话框自动填），
             与「备份到 MinIO 有没有接线」是两回事——后者仍由 `可放` 那道闸门管（`onBackup` 没接就不落）。
             下树（MinIO）另说：用户明示那棵不实现拖。 */}
         <FileTree {...rest} draggable />
-        {/* 收起态**连分隔条都不渲染**（不是隐藏）：没有两棵树，就没有可调的比例。 */}
-        <Show when={local.open}>
-          <ResizeHandle
-            data-slot="dual-tree-splitter"
-            direction="vertical"
-            edge="end"
-            size={上高()}
-            min={上树最小}
-            max={上树最大}
-            onResize={set上高}
-          />
-        </Show>
       </div>
 
       <Show when={local.open}>
@@ -150,6 +146,9 @@ export function DualFileTree(props: DualFileTreeProps) {
           backups={local.backups}
           draggable={local.onRestore !== undefined}
           onCollapse={local.onCollapse}
+          高度={窗高()}
+          容器高={容器高}
+          onResize={set窗高}
         />
       </Show>
 
@@ -292,6 +291,11 @@ function MinioTree(props: {
   backups?: readonly string[]
   draggable?: boolean
   onCollapse?: () => void
+  /** 用户拖出来的高度（px）。`undefined` ＝ 还没拖过 ⇒ 默认文件区高度的 1/3。 */
+  高度?: number
+  /** 文件区当下的高度（px）。**在 mousedown 那一刻现量**——见 `DualFileTree` 的同名注释。 */
+  容器高: () => number
+  onResize: (高: number) => void
 }) {
   /**
    * 收起态**存反向**（收起集合而不是展开集合）：默认全展开，空集合即默认。
@@ -329,9 +333,28 @@ function MinioTree(props: {
       //  - `absolute inset-0`：脱离普通流、盖满整片文件区（上树仍挂载在下面，收起时状态不丢）；
       //  - `z-20`：压过 `resize-handle.css` 里 z-index 10 的分隔条；
       //  - `bg-v2-background-bg-base`：**必须不透明**——透明浮层只是「什么都没盖」；
-      //  - `border-t`：上沿一条横线，与下方窄条（`minio-bar.tsx` 的 `border-t`）同色同线型。
-      class="absolute inset-0 z-20 flex min-h-0 w-full flex-col border-t border-v2-border-border-muted bg-v2-background-bg-base"
+      //  - `border-t`：上沿一条横线，与下方窄条（`minio-bar.tsx` 的 `border-t`）同色同线型；
+      //  - `inset-x-0 bottom-0` + 高度：窗口**锚在底部**（像从下面升起的抽屉），默认高度是
+      //    文件区高度的 **1/3**（2026-10-17 用户下达），上沿可拖（见下面那只分隔条）。
+      //    写比例不写常量：左栏高度变了窗口跟着走，不必再维护一份「默认高度」。
+      class="absolute inset-x-0 bottom-0 z-20 flex min-h-0 w-full flex-col border-t border-v2-border-border-muted bg-v2-background-bg-base"
+      style={{ height: props.高度 === undefined ? "33.3333%" : `${props.高度}px` }}
     >
+      {/* 上沿拖拽区（2026-10-17 用户补报：置顶改造后窗口上沿拖不动了）。`edge="start"` ⇒ 柄压在
+          **包含块的上沿**（`resize-handle.css` 的 `inset-block-start: 0` + `translateY(-50%)`）；
+          `size` 量的是**窗口高度**、`edge="start"` 的 delta 是「指针上移 ⇒ 变高」——所以往下拖，
+          窗口变矮、上沿跟着下去（正是用户要的方向）。`max` 取文件区高度：拖到顶即整片盖住。
+          ⚠️ `size` / `max` 必须在按下那一刻读（`props.容器高()` 是函数不是值）：写成挂载时的快照，
+          窗口在左栏改宽后就会差一截。 */}
+      <ResizeHandle
+        data-slot="dual-tree-splitter"
+        direction="vertical"
+        edge="start"
+        size={props.高度 ?? props.容器高() / 3}
+        min={最小窗高}
+        max={Math.max(最小窗高, props.容器高())}
+        onResize={props.onResize}
+      />
       {/* 树标题（设计 §5.2 下图那行「⬆ MinIO 备份（镜像沙箱路径） ✕」）。文案沿用 ④ 窄条的
           「MinIO 备份」——窄条展开后就是这行标题，两处换词会让「展开的是同一个东西」变得不明显。 */}
       <div

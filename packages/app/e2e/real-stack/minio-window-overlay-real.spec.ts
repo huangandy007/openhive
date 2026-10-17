@@ -4,13 +4,16 @@ import { tmpdir } from "os"
 import path from "path"
 
 /**
- * 2026-10-17 · **「MinIO 备份」窗口要有上沿横线，并且盖在文件列表之上（置顶）**。
+ * 2026-10-17 · **「MinIO 备份」窗口**：要有上沿横线、置顶盖住文件区、默认高度是文件区的 1/3、
+ * 上沿可拖拽调整高度。
  *
  * ## 用户实报（原话）
  *
- * 「点击后会显示『MinIO备份』的窗口，这里该窗口上沿需要添加一条横线（颜色，形态，样式与其下方的
+ * ①「点击后会显示『MinIO备份』的窗口，这里该窗口上沿需要添加一条横线（颜色，形态，样式与其下方的
  * 横线一致）。目前感觉不到它的上沿在哪里，同时这个『MinIO备份』的窗口需要置顶，否则无法遮挡
  * 文件Tab页面中的文件/文件夹的相关信息。」
+ * ②「『MinIO备份』的窗口现在无法通过在上沿，鼠标点击拖拽的方式往下移动，调整窗口的高度了。」
+ * ③「『MinIO备份』的窗口高度，默认为文件Tab页面的1/3。」
  *
  * ## 修之前的实测（2026-10-17，真栈 262px 宽左栏）
  *
@@ -22,10 +25,12 @@ import path from "path"
  * ## 判据
  *
  * ① 窗口**上沿的横线**与它**下方那条线**（底部 MinIO 窄条的 `border-top`）同宽、同线型、同色；
- * ② 窗口**置顶**：定位脱离普通流（absolute/fixed）、`z-index` 为正、底色不透明，
- *    且**文件列表那一点上最顶层的元素落在窗口里**（`elementFromPoint`——这是「遮住」的
- *    唯一直接证据，盒坐标重叠只是必要条件）；
- * ③ 窗口盖住整片文件区：窗口上沿不高于沙箱树的上沿。
+ * ② 窗口**置顶**：定位脱离普通流（absolute/fixed）、`z-index` 为正、底色不透明，且窗口正中
+ *    那一点上最顶层的元素落在窗口里（`elementFromPoint`——「遮住」的直接证据，盒坐标重叠
+ *    只是必要条件）；
+ * ③ 默认高度＝文件 Tab 页面高度的 **1/3**，锚在底部（底边钉住、上沿跟着高度走）；
+ * ④ 上沿可拖：往下拖 120px ⇒ 上沿下移 ≈120、高度缩短 ≈120，露出来的那一点回到文件树
+ *    （不再是窗口）。
  */
 
 const readStack = () =>
@@ -99,18 +104,16 @@ const 量窗口 = (page: Page) =>
     const 头 = q("[data-slot='minio-tree-header']")
     const 条 = q("[data-component='minio-bar']")
     const 沙 = q("[data-slot='sandbox-tree']")
-    const 首行 = q("[data-slot='sandbox-tree'] [data-slot='file-tree-row']")
+    // 文件 Tab 那一片区域（窗口的定位祖先）——「1/3」量的是它。
+    const 区 = q("[data-component='dual-file-tree']")
     const 窗样式 = 窗 ? getComputedStyle(窗) : null
-    const 首行盒 = 首行?.getBoundingClientRect() ?? null
-    const 命中 = 首行盒
-      ? document.elementFromPoint(首行盒.left + 首行盒.width / 2, 首行盒.top + 首行盒.height / 2)
-      : null
 
     return {
       窗: 盒(窗),
       头: 盒(头),
       条: 盒(条),
       沙: 盒(沙),
+      区: 盒(区),
       窗CSS: 窗样式
         ? {
             position: 窗样式.position,
@@ -139,17 +142,25 @@ const 量窗口 = (page: Page) =>
             色: getComputedStyle(条).borderTopColor,
           }
         : null,
-      // 「文件列表那一点上最顶层的是谁」——遮住的直接证据。
-      首行命中: 命中
-        ? {
-            tag: 命中.tagName,
-            槽: 命中.closest("[data-slot]")?.getAttribute("data-slot") ?? null,
-            在窗内: 命中.closest("[data-slot='minio-tree']") !== null,
-          }
-        : null,
-      首行在: 首行 !== null,
     }
   })
+
+/**
+ * 「这个视口坐标上最顶层的是谁」——**遮住 / 露出**的直接证据。
+ * 盒坐标重叠只是必要条件：透明或未置顶时，命中的仍是下面的文件行。
+ */
+const 点命中 = (page: Page, x: number, y: number) =>
+  page.evaluate(
+    ({ x, y }) => {
+      const 命中 = document.elementFromPoint(x, y)
+      return {
+        tag: 命中?.tagName ?? null,
+        槽: 命中?.closest("[data-slot]")?.getAttribute("data-slot") ?? null,
+        在窗内: 命中?.closest("[data-slot='minio-tree']") !== null,
+      }
+    },
+    { x: Math.round(x), y: Math.round(y) },
+  )
 
 test.use({ colorScheme: "light" })
 
@@ -170,12 +181,11 @@ test("MinIO 窗口：上沿横线与下方那条一致，且置顶盖住文件�
   const 读 = await 量窗口(page)
   console.log(`[MinIO窗口] ${JSON.stringify(读, null, 2)}`)
 
-  // 前提：窗口、标题、窄条、沙箱树、首行都在。
+  // 前提：窗口、标题、窄条、沙箱树都在。
   expect(读.窗, "MinIO 窗口应当在").not.toBeNull()
   expect(读.头, "MinIO 窗口标题应当在").not.toBeNull()
   expect(读.条, "底部 MinIO 窄条应当在").not.toBeNull()
   expect(读.沙, "沙箱树应当在").not.toBeNull()
-  expect(读.首行在, "文件列表首行应当在（挡住它的对象）").toBe(true)
 
   // ① 上沿横线与**下方那条线**（窄条的 border-top）同宽、同线型、同色。
   expect(读.窗上沿, "窗口应当有一条上沿横线，且与下方那条线完全一致").toEqual(读.条上沿)
@@ -189,10 +199,82 @@ test("MinIO 窗口：上沿横线与下方那条一致，且置顶盖住文件�
     /^rgba?\(\s*\d+,\s*\d+,\s*\d+\s*(?:,\s*1)?\)$/,
   )
 
-  // ③ 遮住的**直接证据**：文件首行那一点上，最顶层元素落在窗口里。
-  //    盒坐标重叠只是必要条件——文件行可能仍是命中目标（透明/未置顶时就是这样）。
-  expect(读.首行命中?.在窗内, "文件首行那一点上最顶层的元素应当属于 MinIO 窗口（即被它盖住）").toBe(true)
+  // ③ 默认高度＝文件 Tab 页面高度的 1/3（2026-10-17 用户下达）。
+  expect(读.区, "文件区应当在").not.toBeNull()
+  expect(Math.abs(读.窗!.高 - 读.区!.高 / 3), "窗口默认高度应当是文件区高度的 1/3").toBeLessThanOrEqual(2)
 
-  // ④ 窗口盖住整片文件区：它的上沿不高于沙箱树的上沿。
-  expect(读.窗!.上, "窗口上沿应当不高于沙箱树（整片文件区被覆盖）").toBeLessThanOrEqual(读.沙!.上)
+  // ④ 窗口落在文件区之内（与文件树区域重叠——「置顶遮挡」的空间前提）。
+  expect(读.窗!.上, "窗口应当落在文件区之内").toBeGreaterThanOrEqual(读.区!.上)
+  expect(读.窗!.下, "窗口应当落在文件区之内").toBeLessThanOrEqual(读.区!.下)
+
+  // ⑤ 遮住的**直接证据**：窗口正中的那一点上，最顶层元素落在窗口里。
+  //    盒坐标重叠只是必要条件——透明或未置顶时，命中的会是下面的文件行 / 容器。
+  const 中点 = await 点命中(page, (读.窗!.左 + 读.窗!.右) / 2, 读.窗!.上 + Math.round(读.窗!.高 / 2))
+  console.log(`[MinIO窗口·中点命中] ${JSON.stringify(中点)}`)
+  expect(中点.在窗内, "窗口正中的那一点上，最顶层元素应当属于 MinIO 窗口（即被它盖住）").toBe(true)
+})
+
+/**
+ * 2026-10-17 补报 · **窗口上沿要能拖拽调整高度**。
+ *
+ * 用户原话：「『MinIO备份』的窗口现在无法通过在上沿，鼠标点击拖拽的方式往下移动，调整窗口的
+ * 高度了。」——置顶改造（上一条）把窗口从普通流改成 `absolute inset-0` 之后，原先落在两树之间
+ * 那条分隔条被整片盖住、够不着了；而窗口自己又没有上沿拖拽区。
+ *
+ * ## 判据
+ *
+ * ① 抓窗口上沿往下拖 120px ⇒ 上沿下移 ≈120、高度缩短 ≈120；
+ * ② 底边全程不动（窗口锚在底部，读起来像从下面升起的抽屉）；
+ * ③ 露出来的地方**真的**看得见文件树：原先「文件首行」那一点此刻最顶层不再是 MinIO 窗口。
+ */
+test("MinIO 窗口：上沿可拖拽下移，窗口随之变矮并露出上方文件区", async ({ page, context }) => {
+  const 乙 = await 建真项目(`MinIO窗口·拖拽·${Date.now()}`)
+  备好树(乙.directory)
+  await 进项目(page, context, 乙.id)
+
+  await expect(page.locator("[data-slot='sandbox-tree'] [data-slot='file-tree-row']").first()).toBeVisible({
+    timeout: 30_000,
+  })
+  await page.locator("[data-component='minio-bar']").click()
+  await expect(page.locator("[data-slot='minio-tree']")).toBeVisible({ timeout: 10_000 })
+
+  const 前 = await 量窗口(page)
+  console.log(`[MinIO窗口·拖前] ${JSON.stringify(前, null, 2)}`)
+  expect(前.窗, "MinIO 窗口应当在").not.toBeNull()
+  expect(前.区, "文件区应当在").not.toBeNull()
+  // 前提：默认高度＝文件区高度的 1/3（2026-10-17 用户下达）。
+  expect(Math.abs(前.窗!.高 - 前.区!.高 / 3), "窗口默认高度应当是文件区高度的 1/3").toBeLessThanOrEqual(2)
+
+  const x = (前.窗!.左 + 前.窗!.右) / 2
+  // 上沿那一点：拖前应当被窗口盖住（它是窗口自己的一部分 / 上沿分隔条）。
+  const 露点Y = 前.窗!.上 + 10
+  expect((await 点命中(page, x, 露点Y)).在窗内, "拖前，上沿附近那一点应当属于窗口").toBe(true)
+
+  await page.mouse.move(x, 前.窗!.上)
+  await page.mouse.down()
+  await page.mouse.move(x, 前.窗!.上 + 120, { steps: 10 })
+  await page.mouse.up()
+
+  const 后 = await 量窗口(page)
+  console.log(`[MinIO窗口·拖后] ${JSON.stringify(后, null, 2)}`)
+
+  // ① 上沿下移、高度缩短，各 ≈120（容差 ±3px：像素取整）。
+  expect(后.窗!.上 - 前.窗!.上, "窗口上沿应当跟着指针下移 120px").toBeGreaterThanOrEqual(117)
+  expect(后.窗!.上 - 前.窗!.上, "窗口上沿应当跟着指针下移 120px").toBeLessThanOrEqual(123)
+  expect(前.窗!.高 - 后.窗!.高, "窗口高度应当缩短 120px").toBeGreaterThanOrEqual(117)
+  expect(前.窗!.高 - 后.窗!.高, "窗口高度应当缩短 120px").toBeLessThanOrEqual(123)
+
+  // ② 底边不动。
+  expect(后.窗!.下, "窗口底边应当钉在原地（锚在底部）").toBe(前.窗!.下)
+
+  // ③ 露出来了：原先被窗口盖住的那一点，此刻最顶层不再是 MinIO 窗口。
+  const 露点 = await 点命中(page, x, 露点Y)
+  console.log(`[MinIO窗口·露出点命中] ${JSON.stringify(露点)}`)
+  expect(露点.在窗内, "窗口变矮后，原先被盖住的那一点应当重新可见（不再属于窗口）").toBe(false)
+
+  // 结构判据：拖拽区就在窗口上沿（`dual-tree-splitter` 沿用原分隔条的槽名）。
+  await expect(
+    page.locator("[data-slot='minio-tree'] [data-slot='dual-tree-splitter']"),
+    "窗口上沿应当有一条可拖拽的分隔条",
+  ).toBeVisible({ timeout: 10_000 })
 })
