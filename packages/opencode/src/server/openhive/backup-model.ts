@@ -162,7 +162,11 @@ export interface RestorePreview {
 export interface RestoreResult {
   readonly restored: readonly string[]
   readonly keptBoth: readonly string[]
+  /** 目标原本是目录、按 `overwrite` 被整体替换成文件的路径（不算 `restored`）。 */
+  readonly overwritten: readonly string[]
   readonly skipped: readonly string[]
+  /** 本次**实际新建**的目录（清单里 scope 内、恢复前不存在的那些）。 */
+  readonly dirsCreated: readonly string[]
   readonly failed: readonly { readonly path: string; readonly reason: string }[]
   readonly cancelled: boolean
 }

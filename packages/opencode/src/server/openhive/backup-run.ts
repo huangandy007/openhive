@@ -7,8 +7,8 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { createReadStream, lstatSync, readdirSync, rmSync, type Stats } from "node:fs"
-import { chmod, lstat, mkdir, open, readdir, rename, rm, stat, utimes } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm, stat, utimes } from "node:fs/promises"
+import { dirname, join, relative } from "node:path"
 import {
   LOCAL_ONLY_LIMIT,
   MAX_FILE_BYTES,
@@ -75,6 +75,8 @@ export interface RunDeps {
   readonly concurrency?: number
   /** 测试注入的时钟；不传就是 `Date.now()`。 */
   readonly now?: () => number
+  /** 测试注入的改名（恢复的两步 rename 要可确定地制造失败）；不传就是 `node:fs/promises` 的 `rename`。 */
+  readonly renameFile?: (from: string, to: string) => Promise<void>
 }
 
 export interface BackupInput {
@@ -98,6 +100,60 @@ const 排序 = new Intl.Collator("zh-CN")
 
 function 检查取消(deps: RunDeps) {
   if (deps.isCancelled()) throw new CancelledError("任务已取消")
+}
+
+type 路径守卫结果 = "ok" | "symlink" | "unreadable"
+
+/**
+ * 沿相对路径**逐段**检查：已存在的前缀只要有一段是符号链接就拒；不存在的尾巴允许
+ * （调用方的 `mkdir` 会建真目录），再用 `realpath` 复核最深已存在前缀的真身
+ * 是否恰好等于「项目根真身 ＋ 相对尾段」——处理 win32 junction / 8.3 短名
+ * （同 `file.ts:461 realInside` 的写法）。任何取不到 realpath 的情形 fail-closed。
+ *
+ * ⚠️ 只 `lstat` 完整路径的最后一段**不够**：`资料` 是目录符号链接时，
+ * `lstat(<根>/资料/甲.txt)` 会穿过它，`mkdir` ＋ `rename` 就把文件写到项目外。
+ */
+async function 检查路径(directory: string, path: string): Promise<路径守卫结果> {
+  const 段 = path === "" ? [] : path.split("/")
+  const 真根 = await realpath(directory).catch(() => undefined)
+  if (真根 === undefined) return "unreadable"
+  let 最深存在 = directory
+  for (let i = 0; i < 段.length; i += 1) {
+    const 绝对 = join(directory, ...段.slice(0, i + 1))
+    let 信息: Stats
+    try {
+      信息 = await lstat(绝对)
+    } catch {
+      break // 不存在的尾巴：再深的段也不可能存在
+    }
+    if (信息.isSymbolicLink()) return "symlink"
+    最深存在 = 绝对
+    if (i < 段.length - 1 && !信息.isDirectory()) break // 中间是非目录：后面的路走不通
+  }
+  const 真路径 = await realpath(最深存在).catch(() => undefined)
+  if (真路径 === undefined) return "unreadable"
+  return 真路径 === join(真根, relative(directory, 最深存在)) ? "ok" : "symlink"
+}
+
+/** 被占用（win32 `EBUSY` / `EPERM`）时重试 3 次；别的错误原样抛。 */
+async function 重命名(
+  改名: (from: string, to: string) => Promise<void>,
+  from: string,
+  to: string,
+): Promise<void> {
+  let 最后: unknown
+  for (let 尝试 = 0; 尝试 < 3; 尝试 += 1) {
+    try {
+      await 改名(from, to)
+      return
+    } catch (error) {
+      最后 = error
+      const code =
+        typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined
+      if (code !== "EBUSY" && code !== "EPERM") throw error
+    }
+  }
+  throw 最后
 }
 
 async function runPool<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
@@ -127,6 +183,14 @@ export async function scanScope(
   options: { maxFileBytes?: number } = {},
 ): Promise<{ files: ScannedFile[]; dirs: string[]; skipped: ManifestSkip[] }> {
   if (!isSafeRelativePath(scope)) throw new Error(`非法范围：${JSON.stringify(scope)}`)
+  // 备份侧同一条洞：scope 指向链接内部时，读的是沙箱外的文件。根路径本身是链接
+  // （或中间段是链接）一律不读，按 skipped 记账；不存在的 scope 仍走下面的 NotFoundError。
+  if (scope !== "") {
+    const 守卫 = await 检查路径(directory, scope)
+    if (守卫 !== "ok") {
+      return { files: [], dirs: [], skipped: [{ path: scope, reason: 守卫 === "symlink" ? "symlink" : "unreadable" }] }
+    }
+  }
   const 上限 = options.maxFileBytes ?? MAX_FILE_BYTES
   const files: ScannedFile[] = []
   const dirs: string[] = []
@@ -371,6 +435,12 @@ export async function runPreview(deps: RunDeps, input: PreviewInput): Promise<Re
   const counts: Record<PreviewStatus, number> = { missing: 0, same: 0, different: 0, "type-mismatch": 0 }
   for (const file of 目标) {
     检查取消(deps)
+    // 中间段是符号链接 ⇒ 不能读（lstat 会穿过去，比出来的「same」是链接外那个文件的）。
+    if ((await 检查路径(deps.directory, file.path)) !== "ok") {
+      counts["type-mismatch"] += 1
+      if (entries.length < PREVIEW_LIMIT) entries.push({ path: file.path, status: "type-mismatch" })
+      continue
+    }
     const 绝对 = join(deps.directory, ...file.path.split("/"))
     let 本地: Stats | undefined
     try {
@@ -395,7 +465,14 @@ export async function runPreview(deps: RunDeps, input: PreviewInput): Promise<Re
   const 清单里 = new Set(目标.map((file) => file.path))
   const localOnly: string[] = []
   let 仅本地超限 = false
-  for (const file of (await scanScope(deps.directory, input.scope)).files) {
+  // 本地 scope 已被删时预览整轮不该抛：逐条都判 missing、localOnly 为空（spec §6.2）。
+  let 本地文件: ScannedFile[] = []
+  try {
+    本地文件 = (await scanScope(deps.directory, input.scope)).files
+  } catch (error) {
+    if (!(error instanceof NotFoundError)) throw error
+  }
+  for (const file of 本地文件) {
     if (清单里.has(file.path)) continue
     if (localOnly.length >= LOCAL_ONLY_LIMIT) {
       仅本地超限 = true
@@ -422,20 +499,43 @@ export interface RestoreInput {
   readonly decisions: Readonly<Record<string, RestoreDecision>>
 }
 
+function 清理恢复临时(目录: string) {
+  try {
+    for (const name of readdirSync(目录)) {
+      if (name.startsWith(".openhive-restore-")) rmSync(join(目录, name), { force: true })
+    }
+  } catch {
+    // 目录都不在了就没有临时文件要清；不升级成第二个错误。
+  }
+}
+
 /** 恢复。逐文件：临时文件 → 边写边校验 → rename 两次（spec §6.4）。 */
 export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<RestoreResult> {
   const 目标 = input.manifest.files.filter((file) => isPathInScope(input.scope, file.path))
   const restored: string[] = []
   const keptBoth: string[] = []
+  const overwritten: string[] = []
   const skipped: string[] = []
+  const dirsCreated: string[] = []
   const failed: { path: string; reason: string }[] = []
+  const 改名 = deps.renameFile ?? rename
   let cancelled = false
 
-  // 空目录先建（spec §6.4）
+  // 空目录先建（spec §6.4）。路径不合法 / 祖先有链接的目录一律不建（§9.5）。
   for (const dir of input.manifest.dirs) {
     if (!isPathInScope(input.scope, dir)) continue
+    if (!isSafeRelativePath(dir)) continue
+    if ((await 检查路径(deps.directory, dir)) !== "ok") continue
+    const 绝对 = join(deps.directory, ...dir.split("/"))
+    let 已存在 = false
     try {
-      await mkdir(join(deps.directory, ...dir.split("/")), { recursive: true })
+      已存在 = (await lstat(绝对)).isDirectory()
+    } catch {
+      已存在 = false
+    }
+    try {
+      await mkdir(绝对, { recursive: true })
+      if (!已存在) dirsCreated.push(dir)
     } catch {
       // 目录建不出来时具体文件会逐个失败，不在这里吞掉整个恢复。
     }
@@ -446,6 +546,16 @@ export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<Re
       cancelled = true
       break
     }
+    // §9.5：manifest 是不可信输入，写盘前再查一次路径形状（不合法 ⇒ 一个字节都不写）。
+    if (!isSafeRelativePath(file.path)) {
+      failed.push({ path: file.path, reason: "manifest-invalid" })
+      continue
+    }
+    // 中间段是符号链接 ⇒ 永远写不了（不受决策影响）。
+    if ((await 检查路径(deps.directory, file.path)) !== "ok") {
+      failed.push({ path: file.path, reason: "symlink" })
+      continue
+    }
     const 绝对 = join(deps.directory, ...file.path.split("/"))
     const 决定 = input.decisions[file.path] ?? input.global
     let 本地: Stats | undefined
@@ -455,25 +565,38 @@ export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<Re
       本地 = undefined
     }
 
-    // 不写穿符号链接；类型冲突只允许跳过（覆盖要先删用户目录，本版不给）。
+    // 目标存在且不是普通文件（spec §6.3 / §13.2#23）：
+    // 符号链接永远拒；目录在 overwrite 下整体替换，skip 下跳过，其余决策记 type-mismatch。
+    let 覆盖目录 = false
     if (本地 !== undefined && !本地.isFile()) {
-      failed.push({ path: file.path, reason: 本地.isSymbolicLink() ? "symlink" : "type-mismatch" })
-      continue
+      if (本地.isSymbolicLink()) {
+        failed.push({ path: file.path, reason: "symlink" })
+        continue
+      }
+      if (决定 === "skip") {
+        skipped.push(file.path)
+        continue
+      }
+      if (决定 !== "overwrite") {
+        failed.push({ path: file.path, reason: "type-mismatch" })
+        continue
+      }
+      覆盖目录 = true
     }
-    if (本地 !== undefined && 本地.size === file.size) {
+    if (本地 !== undefined && !覆盖目录 && 本地.size === file.size) {
       const 本地hash = await hashFile(绝对).catch(() => undefined)
       if (本地hash === file.hash) {
         skipped.push(file.path)
         continue
       }
     }
-    if (本地 !== undefined && 决定 === "skip") {
+    if (本地 !== undefined && !覆盖目录 && 决定 === "skip") {
       skipped.push(file.path)
       continue
     }
 
     let 目标路径 = file.path
-    if (本地 !== undefined && 决定 === "keep-both") {
+    if (本地 !== undefined && !覆盖目录 && 决定 === "keep-both") {
       目标路径 = keepBothName(file.path, input.manifest.createdAt, (candidate) => {
         try {
           lstatSync(join(deps.directory, ...candidate.split("/")))
@@ -484,6 +607,7 @@ export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<Re
       })
     }
     const 目标绝对 = join(deps.directory, ...目标路径.split("/"))
+    let 回滚失败 = false
     try {
       await mkdir(dirname(目标绝对), { recursive: true })
       const body = await deps.store.openBlob({ hash: file.hash })
@@ -508,34 +632,45 @@ export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<Re
       // 校验必须在 rename **之前**：内容不对时目标一个字都不该动。
       if (hash.digest("hex") !== file.hash || 收到 !== file.size) {
         await rm(临时, { force: true })
-        failed.push({ path: file.path, reason: "hash-mismatch" })
+        failed.push({ path: file.path, reason: "blob-corrupt" })
         continue
       }
-      // 只有「写回原路径的覆盖」才需要把旧文件挪开；keep-both 的目标是**新名字**，
-      // 旧文件原地不动（把 `目标绝对` 当旧文件挪会直接 ENOENT——brief 里的写法就有这一处）。
+      // 只有「写回原路径」才需要把旧文件 / 旧目录挪开；keep-both 的目标是**新名字**，
+      // 旧文件原地不动（把 `目标绝对` 当旧文件挪会直接 ENOENT）。
       const 旧 =
         本地 !== undefined && 目标路径 === file.path
           ? join(dirname(目标绝对), `.openhive-old-${randomUUID()}`)
           : undefined
-      if (旧) await rename(目标绝对, 旧)
-      await rename(临时, 目标绝对)
-      if (旧) await rm(旧, { force: true })
+      if (旧 !== undefined) await 重命名(改名, 目标绝对, 旧)
+      try {
+        await 重命名(改名, 临时, 目标绝对)
+      } catch (error) {
+        if (旧 === undefined) throw error
+        // 第二步失败 ⇒ 把旧文件 / 旧目录放回原路径（spec §6.4 第 8 步）。
+        try {
+          await 重命名(改名, 旧, 目标绝对)
+        } catch {
+          回滚失败 = true
+          // `.openhive-old-*` 保留在原处，路径写进 reason：不许静默丢用户文件。
+          failed.push({ path: file.path, reason: `rollback-failed:${旧}` })
+        }
+        if (回滚失败) {
+          清理恢复临时(dirname(目标绝对))
+          continue
+        }
+        throw error
+      }
+      if (旧 !== undefined) await rm(旧, { recursive: true, force: true })
       if (file.mode !== undefined && process.platform !== "win32") await chmod(目标绝对, file.mode)
       await utimes(目标绝对, file.mtimeMs / 1000, file.mtimeMs / 1000)
-      if (目标路径 === file.path) restored.push(file.path)
+      if (覆盖目录) overwritten.push(file.path)
+      else if (目标路径 === file.path) restored.push(file.path)
       else keptBoth.push(file.path)
     } catch (error) {
-      failed.push({ path: file.path, reason: error instanceof Error ? error.message : "unknown" })
-      // 临时文件兜底清理（本目录内所有本实现的临时文件；幂等，失败不升级成第二个错误）。
-      try {
-        for (const name of readdirSync(dirname(目标绝对))) {
-          if (name.startsWith(".openhive-restore-")) rmSync(join(dirname(目标绝对), name), { force: true })
-        }
-      } catch {
-        // 目录都不在了就没有临时文件要清；原错误已经记进 failed。
-      }
+      if (!回滚失败) failed.push({ path: file.path, reason: error instanceof Error ? error.message : "unknown" })
+      清理恢复临时(dirname(目标绝对))
     }
   }
 
-  return { restored, keptBoth, skipped, failed, cancelled }
+  return { restored, keptBoth, overwritten, skipped, dirsCreated, failed, cancelled }
 }

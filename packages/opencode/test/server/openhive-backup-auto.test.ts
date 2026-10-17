@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { createHash, randomUUID } from "node:crypto"
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3"
@@ -429,6 +439,71 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     expect(preview.counts).toEqual({ missing: 1, same: 0, different: 1, "type-mismatch": 1 })
   })
 
+  test("预览：同长同内容 ⇒ same（走哈希分支，不是只看大小）", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+
+    const { deps } = 依赖(directory)
+    const preview = await runPreview(deps, { manifest, scope: "" })
+    const 状态 = Object.fromEntries(preview.entries.map((entry) => [entry.path, entry.status]))
+    expect(状态["资料/甲.txt"]).toBe("same")
+    expect(状态["资料/乙.txt"]).toBe("same")
+    expect(状态["报告.docx"]).toBe("same")
+    expect(preview.counts).toEqual({ missing: 0, same: 3, different: 0, "type-mismatch": 0 })
+  })
+
+  test("预览：同长不同内容 ⇒ different（大小相同也走哈希）", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    // "aab" 与 "aaa" 同为 3 字节：大小比较看不出差别，只有哈希能判 different。
+    writeFileSync(join(directory, "资料", "甲.txt"), "aab")
+
+    const { deps } = 依赖(directory)
+    const preview = await runPreview(deps, { manifest, scope: "" })
+    const 状态 = Object.fromEntries(preview.entries.map((entry) => [entry.path, entry.status]))
+    expect(状态["资料/甲.txt"]).toBe("different")
+    expect(状态["资料/乙.txt"]).toBe("same")
+    expect(状态["报告.docx"]).toBe("same")
+  })
+
+  /** 把项目的 `资料` 目录搬到项目外、原位置换成符号链接。返回外部目录；符号链接不可用 ⇒ undefined。 */
+  function 换成链接(directory: string): string | undefined {
+    const 外部 = mkdtempSync(join(tmpdir(), "openhive-outside-"))
+    renameSync(join(directory, "资料"), join(外部, "资料"))
+    try {
+      symlinkSync(join(外部, "资料"), join(directory, "资料"), "dir")
+    } catch {
+      return undefined
+    }
+    return 外部
+  }
+
+  test("预览：中间段是符号链接 ⇒ type-mismatch（不读链接外部）", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    const 外部 = 换成链接(directory)
+    if (外部 === undefined) return
+
+    const { deps } = 依赖(directory)
+    const preview = await runPreview(deps, { manifest, scope: "" })
+    const 状态 = Object.fromEntries(preview.entries.map((entry) => [entry.path, entry.status]))
+    expect(状态["资料/甲.txt"]).toBe("type-mismatch")
+    expect(状态["资料/乙.txt"]).toBe("type-mismatch")
+  })
+
+  test("预览：本地 scope 被删 ⇒ 全部 missing、localOnly 为空（NotFound 兜住）", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "资料"), { recursive: true })
+
+    const { deps } = 依赖(directory)
+    const preview = await runPreview(deps, { manifest, scope: "资料" })
+    expect(preview.counts).toEqual({ missing: 2, same: 0, different: 0, "type-mismatch": 0 })
+    expect(preview.entries.map((entry) => entry.path)).toEqual(["资料/甲.txt", "资料/乙.txt"])
+    expect(preview.localOnly).toEqual([])
+    expect(preview.localOnlyTruncated).toBe(false)
+  })
+
   test("恢复：missing 直接恢复，same 跳过，different 按 keep-both 生成新名字", async () => {
     const directory = 造项目()
     const manifest = await 备一份(directory)
@@ -464,16 +539,46 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     expect(readFileSync(join(directory, "资料", "甲.txt"), "utf8")).toBe("again")
   })
 
-  test("恢复：类型冲突只能按 skip 处理（不删目录）", async () => {
+  test("恢复：类型冲突（目录）在 keep-both 下 ⇒ failed type-mismatch，不删目录", async () => {
     const directory = 造项目()
     const manifest = await 备一份(directory)
     rmSync(join(directory, "报告.docx"))
     mkdirSync(join(directory, "报告.docx"))
 
     const { deps } = 依赖(directory)
-    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    const result = await runRestore(deps, { manifest, scope: "", global: "keep-both", decisions: {} })
     expect(result.failed).toEqual([{ path: "报告.docx", reason: "type-mismatch" }])
     expect(statSync(join(directory, "报告.docx")).isDirectory()).toBe(true)
+  })
+
+  test("恢复：类型冲突（目录）在 skip 下 ⇒ skipped，不动目录", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    mkdirSync(join(directory, "报告.docx"))
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "skip", decisions: {} })
+    expect(result.skipped).toContain("报告.docx")
+    expect(result.failed).toEqual([])
+    expect(statSync(join(directory, "报告.docx")).isDirectory()).toBe(true)
+  })
+
+  test("恢复：目录 + overwrite ⇒ 目录被替换成文件、记入 overwritten", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    mkdirSync(join(directory, "报告.docx"))
+    writeFileSync(join(directory, "报告.docx", "里面.txt"), "x")
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.overwritten).toEqual(["报告.docx"])
+    expect(result.restored).toEqual([])
+    expect(statSync(join(directory, "报告.docx")).isFile()).toBe(true)
+    expect(readFileSync(join(directory, "报告.docx"), "utf8")).toBe("ccc")
+    // 旧目录整个被删掉，不留 `.openhive-old-*`。
+    expect(readdirSync(directory).some((name) => name.startsWith(".openhive-old-"))).toBe(false)
   })
 
   test("恢复：blob 缺失 ⇒ failed，不留下半截临时文件", async () => {
@@ -490,7 +595,7 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
   // 补充（brief 未列）：哈希校验必须在 rename **之前**拦下内容不对的 blob。
   // 没有这条时「删掉 `hash.digest(...) !== file.hash` 那一行」的变异全绿——即恢复了坏内容
   // 而回归网看不见（变异验证记录见 task-8-report）。
-  test("恢复：blob 内容与哈希对不上 ⇒ failed hash-mismatch，不写目标、不留临时文件", async () => {
+  test("恢复：blob 内容与哈希对不上 ⇒ failed blob-corrupt，不写目标、不留临时文件", async () => {
     const directory = 造项目()
     const manifest = await 备一份(directory)
     rmSync(join(directory, "报告.docx"))
@@ -501,13 +606,82 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
 
     const { deps } = 依赖(directory)
     const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
-    expect(result.failed).toEqual([{ path: "报告.docx", reason: "hash-mismatch" }])
+    expect(result.failed).toEqual([{ path: "报告.docx", reason: "blob-corrupt" }])
     expect(readdirSync(directory).some((name) => name.startsWith(".openhive-restore-"))).toBe(false)
     // 目标没有被写出来（半截 / 错内容的文件都不能落盘）。
     expect(() => readFileSync(join(directory, "报告.docx"), "utf8")).toThrow()
   })
 
-  test("恢复：不写穿符号链接", async () => {
+  // I1：第二步 rename 失败 ⇒ 把 `.openhive-old-*` 滚回原路径；原内容不能被吃掉。
+  test("恢复：第二次 rename 失败 ⇒ 回滚旧文件、原内容保留、不留临时文件", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    writeFileSync(join(directory, "报告.docx"), "changed")
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(
+      {
+        ...deps,
+        // 只让「临时文件 → 目标」这一次失败；第一步「目标 → .openhive-old」照常。
+        renameFile: async (from: string, to: string) => {
+          if (from.includes(".openhive-restore-")) throw new Error("rename-boom")
+          renameSync(from, to)
+        },
+      },
+      { manifest, scope: "", global: "overwrite", decisions: {} },
+    )
+    expect(result.failed).toContainEqual({ path: "报告.docx", reason: "rename-boom" })
+    expect(readFileSync(join(directory, "报告.docx"), "utf8")).toBe("changed")
+    expect(readdirSync(directory).some((name) => name.startsWith(".openhive-old-"))).toBe(false)
+    expect(readdirSync(directory).some((name) => name.startsWith(".openhive-restore-"))).toBe(false)
+  })
+
+  test("恢复：manifest 路径非法 ⇒ failed manifest-invalid，什么都不写", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    const 逃逸文件 = `../openhive-escape-${randomUUID()}.txt`
+    const 逃逸目录 = `../openhive-escape-dir-${randomUUID()}`
+    // 直接构造（绕过 store 的 validateManifest）：恢复这一层必须自己再查一次。
+    const 清单: Manifest = {
+      ...manifest,
+      files: [{ ...manifest.files[0], path: 逃逸文件 }],
+      dirs: [逃逸目录],
+    }
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest: 清单, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toEqual([{ path: 逃逸文件, reason: "manifest-invalid" }])
+    expect(() => readFileSync(join(directory, 逃逸文件), "utf8")).toThrow()
+    expect(() => statSync(join(directory, 逃逸目录))).toThrow()
+  })
+
+  test("恢复：中间段是符号链接 ⇒ failed symlink，且不写到链接外面", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    const 外部 = 换成链接(directory)
+    if (外部 === undefined) return
+    // 链接外面的内容与清单不同 ⇒ 没有祖先守卫时「覆盖」会写到项目外。
+    writeFileSync(join(外部, "资料", "甲.txt"), "changed")
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toContainEqual({ path: "资料/甲.txt", reason: "symlink" })
+    expect(readFileSync(join(外部, "资料", "甲.txt"), "utf8")).toBe("changed")
+  })
+
+  test("恢复：清单里的空目录被重建 ⇒ 记入 dirsCreated", async () => {
+    const directory = 造项目()
+    mkdirSync(join(directory, "空目录"))
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "空目录"), { recursive: true })
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "keep-both", decisions: {} })
+    expect(result.dirsCreated).toContain("空目录")
+    expect(statSync(join(directory, "空目录")).isDirectory()).toBe(true)
+  })
+
+  test("恢复：不写穿符号链接（最后一段）", async () => {
     const directory = 造项目()
     const manifest = await 备一份(directory)
     rmSync(join(directory, "报告.docx"))
@@ -520,5 +694,23 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     const { deps } = 依赖(directory)
     const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
     expect(result.failed).toEqual([{ path: "报告.docx", reason: "symlink" }])
+  })
+
+  // C1 的备份侧：scope 的**中间段**是符号链接时，不能把链接外面的东西读进 MinIO。
+  test("备份：scope 的中间段是符号链接 ⇒ 不读链接外部，记 skipped", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "openhive-backup-"))
+    const 外部 = mkdtempSync(join(tmpdir(), "openhive-outside-"))
+    mkdirSync(join(外部, "子"))
+    writeFileSync(join(外部, "子", "密.txt"), "secret")
+    try {
+      symlinkSync(外部, join(directory, "链接"), "dir")
+    } catch {
+      return
+    }
+
+    const { deps } = 依赖(directory)
+    const manifest = await runBackup(deps, { kind: "manual", scope: "链接/子", createdBy: "007" })
+    expect(manifest.files).toEqual([])
+    expect(manifest.skipped).toEqual([{ path: "链接/子", reason: "symlink" }])
   })
 })
