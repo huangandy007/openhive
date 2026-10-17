@@ -71,8 +71,8 @@ export interface FakeS3 {
   readonly bucket: string
   /** 按到达顺序记下的全部请求。 */
   readonly requests: readonly Recorded[]
-  /** 直接塞一个对象进去——`get` / `list` 的起点。 */
-  seed(key: string, body: string): void
+  /** 直接塞一个对象进去——`get` / `list` / `head` 的起点。`lastModified` 是 ISO 串（真 S3 的响应形态）。 */
+  seed(key: string, body: string, lastModified?: string): void
   /** 当前存在哪些键（给「delete 真的删了」当对照）。 */
   keys(): readonly string[]
   /**
@@ -133,7 +133,8 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
   // 搬进 `src/` 之后才显形的——`packages/opencode` 的 program 会连带 typecheck 它，
   // 而两边的 lib 面不一样（core 自己那份不报）。语义没变，只是把「这个数组一定在普通
   // ArrayBuffer 上」写明。
-  const objects = new Map<string, Uint8Array<ArrayBuffer>>()
+  // 每条对象带上 `lastModified`：`list` / `head` 的 `Entry` 要它，而它不能由夹具的「当前时间」编出来。
+  const objects = new Map<string, { readonly body: Uint8Array<ArrayBuffer>; readonly lastModified: string }>()
   const requests: Recorded[] = []
   let failure: number | undefined
   /** 失败态的条件（`failWith` 恒为 `undefined` ⇒ 之后的每个请求都失败）。 */
@@ -183,8 +184,8 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
         const contents = page
           .map(
             (candidate) =>
-              `<Contents><Key>${xmlEscape(candidate)}</Key><Size>${objects.get(candidate)?.length ?? 0}</Size>` +
-              `<LastModified>2026-10-06T00:00:00.000Z</LastModified><ETag>"fake"</ETag>` +
+              `<Contents><Key>${xmlEscape(candidate)}</Key><Size>${objects.get(candidate)?.body.length ?? 0}</Size>` +
+              `<LastModified>${objects.get(candidate)?.lastModified ?? "2026-10-06T00:00:00.000Z"}</LastModified><ETag>"fake"</ETag>` +
               `<StorageClass>STANDARD</StorageClass></Contents>`,
           )
           .join("")
@@ -201,11 +202,24 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
 
       switch (request.method) {
         case "PUT": {
-          objects.set(key, body)
+          objects.set(key, { body, lastModified: new Date().toISOString() })
           return new Response(null, { status: 200, headers: { etag: '"fake"' } })
         }
-        case "GET": {
+        case "HEAD": {
           const value = objects.get(key)
+          if (value === undefined) {
+            return new Response(null, { status: 404 })
+          }
+          return new Response(null, {
+            status: 200,
+            headers: {
+              "content-length": String(value.body.length),
+              "last-modified": new Date(value.lastModified).toUTCString(),
+            },
+          })
+        }
+        case "GET": {
+          const value = objects.get(key)?.body
           if (value === undefined) {
             return new Response(errorXml("NoSuchKey", "The specified key does not exist."), {
               status: 404,
@@ -233,7 +247,8 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
     endpoint: `http://localhost:${server.port}`,
     bucket,
     requests,
-    seed: (key, value) => void objects.set(key, new TextEncoder().encode(value)),
+    seed: (key, value, lastModified = "2026-10-06T00:00:00.000Z") =>
+      void objects.set(key, { body: new TextEncoder().encode(value), lastModified }),
     keys: () => [...objects.keys()].sort(),
     failWith: (status) => {
       failure = status

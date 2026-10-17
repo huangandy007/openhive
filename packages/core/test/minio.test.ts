@@ -220,14 +220,14 @@ describe("Minio 客户端（005 T011 / FR-007）", () => {
       s3.seed("007/p-99/同人别的项目.txt", "3")
       s3.seed("008/p-42/别人同名项目.txt", "4")
 
-      expect(await 店().list()).toEqual(["a.txt", "子目录/b.txt"])
+      expect((await 店().list()).map((entry) => entry.path)).toEqual(["a.txt", "子目录/b.txt"])
     })
 
     test("list 把前缀剥掉——窄接口的入参出参都不带前缀（minio.md §3）", async () => {
       s3.seed("007/p-42/子目录/b.txt", "2")
 
       // 剥没剥干净，看的就是「回给你的东西里没有 userId/projectId」
-      expect(await 店().list()).not.toContain("007/p-42/子目录/b.txt")
+      expect((await 店().list()).map((entry) => entry.path)).not.toContain("007/p-42/子目录/b.txt")
     })
 
     test("delete 真的删掉", async () => {
@@ -251,7 +251,7 @@ describe("Minio 客户端（005 T011 / FR-007）", () => {
       // ⚠️ 顺序是**真 S3 的顺序**（按键的字节序），不是「人觉得顺眼」的顺序：
       // `深` = U+6DF1 排在 `顶` = U+9876 前面。别照着中文语义去「修正」这两项——
       // 夹具是按整键排序的，改成别的顺序反而会让实装与真 MinIO 之间多出一个假差异。
-      expect(await 店().list()).toEqual(["深/两/层.txt", "顶层.txt"])
+      expect((await 店().list()).map((entry) => entry.path)).toEqual(["深/两/层.txt", "顶层.txt"])
     })
 
     /**
@@ -269,7 +269,11 @@ describe("Minio 客户端（005 T011 / FR-007）", () => {
       s3.seed("007/p-42/c.txt", "3")
 
       // 先钉被测属性：三条一条不少
-      expect(await 开({ userId: "007", projectId: "p-42" }).list()).toEqual(["a.txt", "b.txt", "c.txt"])
+      expect((await 开({ userId: "007", projectId: "p-42" }).list()).map((entry) => entry.path)).toEqual([
+        "a.txt",
+        "b.txt",
+        "c.txt",
+      ])
       // 再钉伴随信号：确实是**翻了页**才拿全的（一页最多 2 条，三条至少要两次）
       expect(s3.requests.length).toBe(2)
     })
@@ -425,6 +429,70 @@ describe("MinIO 外呼超时 · list 与 delete（005 后端缺口补测）", ()
       expect(错.message).not.toContain(兜底标记)
     } finally {
       void 黑洞.stop(true)
+    }
+  })
+})
+
+/**
+ * 文件级备份快照（008 T1）给窄接口加的表面：`namespace`、`head`、带 `prefix` 的 `list`
+ * 返回 `Entry`、以及更严的路径守卫。
+ *
+ * 为什么备份要一个**独立命名空间**：归档镜像写 `{userId}/{projectId}/`，而备份快照是另一件事——
+ * 两者的清单必须互不可见，否则归档收敛（`backupAll` 那条 `wanted`）会把快照对象删掉。
+ *
+ * 为什么 `list` 要带 `size` / `lastModified`：备份的增量判断要看它们，而不是只比路径集合。
+ *
+ * ⚠️ 这个 `describe` 里的用例都走文件头的 harness（`开` / `第` / `抛了` / `拒于门外`），
+ * 用的是 `beforeEach` 起的那只 `s3`——不要在里面再起一只，否则断言会对着错的服务端读数。
+ */
+describe("文件级备份快照的新表面（008 T1）", () => {
+  const 店 = () => 开({ userId: "007", projectId: "p-42" })
+
+  test("namespace 把前缀插在 userId 与 projectId 之间", async () => {
+    const store = 开({ userId: "007", projectId: "p-42", namespace: "_openhive-backups" })
+
+    await store.put({ path: "manifests/a.json.gz", body: 编码("x") })
+
+    expect(第(0).key).toBe("007/_openhive-backups/p-42/manifests/a.json.gz")
+  })
+
+  test("head：在 ⇒ 回条目，不在 ⇒ undefined，403 照旧上抛", async () => {
+    const store = 店()
+    s3.seed("007/p-42/笔记/a.txt", "abc", "2026-10-18T01:02:03.000Z")
+
+    expect(await store.head({ path: "笔记/a.txt" })).toEqual({
+      path: "笔记/a.txt",
+      size: 3,
+      lastModified: Date.parse("2026-10-18T01:02:03.000Z"),
+    })
+    expect(await store.head({ path: "笔记/没有.txt" })).toBeUndefined()
+
+    s3.failWith(403)
+    await 抛了(() => store.head({ path: "笔记/a.txt" }))
+  })
+
+  test("list：默认列出全部并带 size/lastModified；给了 prefix 只列那一支且路径相对前缀根", async () => {
+    const store = 店()
+    s3.seed("007/p-42/a.txt", "aa", "2026-10-18T00:00:00.000Z")
+    s3.seed("007/p-42/blobs/ab/abcdef", "bbb", "2026-10-18T02:00:00.000Z")
+    s3.seed("007/p-42/manifests/m1.json.gz", "c", "2026-10-18T03:00:00.000Z")
+
+    expect((await store.list()).map((entry) => entry.path)).toEqual([
+      "a.txt",
+      "blobs/ab/abcdef",
+      "manifests/m1.json.gz",
+    ])
+
+    const blobs = await store.list({ prefix: "blobs/" })
+    expect(blobs).toEqual([
+      { path: "blobs/ab/abcdef", size: 3, lastModified: Date.parse("2026-10-18T02:00:00.000Z") },
+    ])
+  })
+
+  test("路径守卫补上 NUL、`.` 段与空段", async () => {
+    const store = 店()
+    for (const path of ["a\u0000b", "a/./b", "a//b", "./a", "a/"]) {
+      await 拒于门外(store, () => store.put({ path, body: 编码("x") }))
     }
   })
 })

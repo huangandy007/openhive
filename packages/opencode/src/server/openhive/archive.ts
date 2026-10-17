@@ -586,7 +586,7 @@ async function dropBackups(deps: Deps, projectId: string, userIds: readonly stri
       credentials: { accessKeyId: settings.accessKeyId, secretAccessKey: settings.secretAccessKey },
       scope: { userId, projectId },
     })
-    for (const path of await store.list()) await store.delete({ path })
+    for (const entry of await store.list()) await store.delete({ path: entry.path })
   }
 }
 
@@ -715,8 +715,8 @@ async function backupAll(targets: readonly Target[], projectId: string, settings
 
     // 收敛：删掉「不在这份清单里」的旧对象（理由与次序见函数注释）。
     const wanted = new Set(files)
-    for (const path of await store.list()) {
-      if (!wanted.has(path)) await store.delete({ path })
+    for (const entry of await store.list()) {
+      if (!wanted.has(entry.path)) await store.delete({ path: entry.path })
     }
   }
 }
@@ -756,10 +756,11 @@ async function restoreAll(targets: readonly Target[], projectId: string, setting
       scope: { userId: target.userId, projectId },
     })
 
-    const paths = await store.list()
-    if (paths.length === 0) continue
+    const entries = await store.list()
+    if (entries.length === 0) continue
 
-    for (const path of paths) {
+    for (const entry of entries) {
+      const path = entry.path
       const body = await store.get({ path })
       if (body === undefined) throw new Error(`备份里列出的对象读不到：${JSON.stringify(path)}`)
       // 分隔符只在这里处理一次（`path` 是 `/` 归一的相对路径，`join` 按平台重拼），

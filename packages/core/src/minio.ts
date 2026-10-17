@@ -1,6 +1,13 @@
 export * as Minio from "./minio"
 
-import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3"
 
 /**
  * MinIO 客户端（005 T011 / FR-007 / `minio.md` §1 §3）。
@@ -27,10 +34,24 @@ import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectC
  * 观测面是 `packages/core/src/test-support/fake-s3.ts` 那个真 HTTP 端点。
  */
 
-/** 对象键的前两段：`{userId}/{projectId}/`，见 `minio.md` §1。 */
+/** 对象键的前两段：`{userId}/{projectId}/`；给了 `namespace` 就是 `{userId}/{namespace}/{projectId}/`。 */
 export interface Scope {
   readonly userId: string
   readonly projectId: string
+  /**
+   * 中间多插一段（文件级备份快照用 `_openhive-backups`）。
+   *
+   * 为什么要它：归档镜像写 `{userId}/{projectId}/`，而备份快照是**另一件事**——
+   * 两者的清单必须互不可见，否则归档收敛（`backupAll` 那条 `wanted`）会把快照对象删掉。
+   */
+  readonly namespace?: string
+}
+
+/** 一条对象。`path` 相对**store 前缀**，`lastModified` 是毫秒时间戳。 */
+export interface Entry {
+  readonly path: string
+  readonly size: number
+  readonly lastModified: number
 }
 
 export interface Credentials {
@@ -61,9 +82,11 @@ export interface Config {
 
 export interface Interface {
   readonly put: (input: { readonly path: string; readonly body: Uint8Array }) => Promise<void>
+  readonly head: (input: { readonly path: string }) => Promise<Entry | undefined>
   readonly get: (input: { readonly path: string }) => Promise<Uint8Array | undefined>
-  readonly list: () => Promise<readonly string[]>
+  readonly list: (input?: { readonly prefix?: string }) => Promise<readonly Entry[]>
   readonly delete: (input: { readonly path: string }) => Promise<void>
+  // putStream / getStream 由 Task 2 追加
 }
 
 /** win32 的盘符（`C:`），只认开头——`a:C` 这种中段出现的不算。 */
@@ -93,6 +116,14 @@ function assertSafeSegment(label: string, value: string): void {
   if (value.startsWith("/")) throw new Error(`对象键的${label}不能以「/」开头：${JSON.stringify(value)}`)
   if (DRIVE.test(value)) throw new Error(`对象键的${label}不能带盘符：${JSON.stringify(value)}`)
   if (value.split("/").includes("..")) throw new Error(`对象键的${label}不能含「..」：${JSON.stringify(value)}`)
+  if (value.includes("\u0000")) throw new Error(`对象键的${label}不能含 NUL：${JSON.stringify(value)}`)
+  const segments = value.split("/")
+  if (segments.some((segment) => segment.length === 0)) {
+    throw new Error(`对象键的${label}不能含空段或尾分隔符：${JSON.stringify(value)}`)
+  }
+  if (segments.some((segment) => segment === ".")) {
+    throw new Error(`对象键的${label}不能含「.」段：${JSON.stringify(value)}`)
+  }
 }
 
 /**
@@ -109,13 +140,14 @@ async function notFoundToUndefined<T>(action: () => Promise<T>): Promise<T | und
   try {
     return await action()
   } catch (error) {
-    if (error instanceof Error && error.name === "NoSuchKey") return undefined
+    if (error instanceof Error && (error.name === "NoSuchKey" || error.name === "NotFound")) return undefined
     throw error
   }
 }
 
 export function makeStore(config: Config): Interface {
   assertSafeSegment("userId", config.scope.userId)
+  if (config.scope.namespace !== undefined) assertSafeSegment("namespace", config.scope.namespace)
   assertSafeSegment("projectId", config.scope.projectId)
 
   const client = new S3Client({
@@ -128,7 +160,10 @@ export function makeStore(config: Config): Interface {
     credentials: config.credentials,
   })
 
-  const prefix = `${config.scope.userId}/${config.scope.projectId}/`
+  const base =
+    config.scope.namespace === undefined
+      ? `${config.scope.userId}/${config.scope.projectId}/`
+      : `${config.scope.userId}/${config.scope.namespace}/${config.scope.projectId}/`
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   /**
@@ -159,7 +194,7 @@ export function makeStore(config: Config): Interface {
   /** 唯一的键拼装点：**每个动作都从这里过**，所以边界只有一处（`#004-01`）。 */
   const keyOf = (path: string) => {
     assertSafeSegment("路径", path)
-    return `${prefix}${path}`
+    return `${base}${path}`
   }
 
   return {
@@ -218,7 +253,25 @@ export function makeStore(config: Config): Interface {
       ),
 
     /**
-     * 列出**本项目**的全部对象键，**剥掉前缀**（`minio.md` §3：窄接口的入参出参都不带前缀）。
+     * `HEAD` 一条对象：在 ⇒ `Entry`，不在 ⇒ `undefined`（`404` 的两种名字见 `notFoundToUndefined`）。
+     *
+     * 备份的增量判断要「这条对象的 size / lastModified 是什么」，而**不是**它的字节——
+     * 用 `get` 会把整个对象拉下来只为了看几个数字。
+     */
+    head: ({ path }) =>
+      notFoundToUndefined(async () => {
+        const response = await withTimeout((abortSignal) =>
+          client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: keyOf(path) }), { abortSignal }),
+        )
+        return {
+          path,
+          size: response.ContentLength ?? 0,
+          lastModified: response.LastModified?.getTime() ?? 0,
+        }
+      }),
+
+    /**
+     * 列出**本项目**的全部对象，**剥掉前缀**（`minio.md` §3：窄接口的入参出参都不带前缀）。
      *
      * ⚠️ **必须把分页走完**：`ListObjectsV2` 一次最多回 1000 条，超出时置 `IsTruncated`
      * 并给 `NextContinuationToken`。只发一次请求的写法**在小项目上永远绿**，项目文件过千就
@@ -230,22 +283,27 @@ export function makeStore(config: Config): Interface {
      * 合法耗时就越长（每页 1000 个对象）。这**是有界**的（不是 X4-1 那种无限挂起），所以不改；
      * 写在这里只为让这个上界是**已知**的，而不是哪天被当成 bug 重新发现一遍。
      */
-    list: async () => {
-      const keys: string[] = []
+    list: async (input) => {
+      const prefix = input?.prefix === undefined ? base : `${base}${input.prefix}`
+      const entries: Entry[] = []
       let token: string | undefined
       do {
         const response = await withTimeout((abortSignal) =>
-          client.send(
-            new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefix, ContinuationToken: token }),
-            { abortSignal },
-          ),
+          client.send(new ListObjectsV2Command({ Bucket: config.bucket, Prefix: prefix, ContinuationToken: token }), {
+            abortSignal,
+          }),
         )
         for (const item of response.Contents ?? []) {
-          if (item.Key !== undefined) keys.push(item.Key.slice(prefix.length))
+          if (item.Key === undefined) continue
+          entries.push({
+            path: item.Key.slice(base.length),
+            size: item.Size ?? 0,
+            lastModified: item.LastModified?.getTime() ?? 0,
+          })
         }
         token = response.IsTruncated === true ? response.NextContinuationToken : undefined
       } while (token !== undefined)
-      return keys
+      return entries
     },
 
     delete: async ({ path }) => {
