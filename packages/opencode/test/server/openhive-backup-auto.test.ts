@@ -80,12 +80,50 @@ describe("backup store（MinIO 上的快照读写）", () => {
     await expect(s.readManifest("20261018T140305123Z-abcdef")).rejects.toThrow()
   })
 
-  test("id / hash 不是合法形状 ⇒ 抛（键只能由合法段拼成，且一个请求都不发）", async () => {
+  // ⚠️ 这两条的输入**不能含 `..`**：`Minio.assertSafeSegment` 自己就会拒 `..` / 反斜杠 / 空段，
+  // 用那种输入即使把本地形状守卫整行删掉也照样红——看着在守本地守卫，实际一条都没测到
+  // （修复轮 1 的变异实测：删 `SNAPSHOT_ID` / `SHA256` 那两行，旧的 `../` 输入仍全绿）。
+  // 所以输入取「`assertSafeSegment` 会放行、只有本地形状正则会拒」的那一类：多段名、
+  // 大写 / 非 64 位 hash。
+  test("readManifest 收到多段 id ⇒ 抛（Minio 放行多段名，只有本地形状守卫会拒）", async () => {
     const s = store()
-    await expect(s.readManifest("../p-99/x")).rejects.toThrow()
-    await expect(s.deleteBlob("../../etc/passwd")).rejects.toThrow()
-    await expect(s.openBlob({ hash: "ab/../cd" })).rejects.toThrow()
+    await expect(s.readManifest("a/b")).rejects.toThrow(/形状不对/)
     expect(s3.requests).toHaveLength(0)
+  })
+
+  test("openBlob / deleteBlob 收到非 64 位小写 hash ⇒ 抛（同上）", async () => {
+    const s = store()
+    await expect(s.openBlob({ hash: "AB".repeat(32) })).rejects.toThrow(/形状不对/)
+    await expect(s.deleteBlob("ab/cd")).rejects.toThrow(/形状不对/)
+    expect(s3.requests).toHaveLength(0)
+  })
+
+  test("manifests 的 id 切片正确（只列 .json.gz；多段形状的键待实现补形状过滤）", async () => {
+    const s = store()
+    const 甲 = "20261018T140305123Z-abcdef"
+    const 乙 = "20261018T140305124Z-abcde1"
+    await s.writeManifest(清单(甲))
+    await s.writeManifest(清单(乙))
+    // 后缀不符的键必须被滤掉（这条守 `endsWith(MANIFEST_SUFFIX)`）。
+    s3.seed("007/_openhive-backups/p-42/manifests/notes.txt", "x")
+    const 列出 = await s.manifests()
+    expect(列出.map((entry) => entry.id)).toEqual([甲, 乙])
+    expect(列出.map((entry) => entry.size)).toEqual([expect.any(Number), expect.any(Number)])
+    // ⚠️ 尚未覆盖：`manifests/foo/bar.json.gz`（多段 id）当前会被列成 `foo/bar`——
+    // 这条用例若种它就会红，说明 `manifests()` 只按后缀过滤、没有形状过滤。
+    // 修复轮 1 已把该发现写进报告，等实现授权后再把这条断言补成「只列两条合法 id」。
+  })
+
+  test("deleteManifest 真删：写 → 删 → 读回 undefined，DELETE 打在对的键上", async () => {
+    const s = store()
+    const id = "20261018T140305123Z-abcdef"
+    await s.writeManifest(清单(id))
+    await s.deleteManifest(id)
+    expect(await s.readManifest(id)).toBeUndefined()
+    const 删除 = s3.requests.filter((request) => request.method === "DELETE")
+    expect(删除.map((request) => request.key)).toEqual([
+      "007/_openhive-backups/p-42/manifests/20261018T140305123Z-abcdef.json.gz",
+    ])
   })
 
   test("state 读写往返；坏了 ⇒ undefined（不阻断备份）", async () => {
