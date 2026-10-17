@@ -1,4 +1,4 @@
-DROP INDEX IF EXISTS project_backup_event_project_time;
+DROP INDEX IF EXISTS auth.project_backup_event_project_time;
 
 --> statement-breakpoint
 

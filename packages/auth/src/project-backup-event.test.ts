@@ -14,7 +14,7 @@ afterAll(async () => {
   await pg?.stop()
 })
 
-test("写一条审计：12 列逐字往返，created_at 是 Unix 秒", async () => {
+test("写一条审计：13 列（id + 12 数据列）逐字往返，created_at 是 Unix 秒", async () => {
   const before = Math.floor(Date.now() / 1000)
   await recordBackupEvent(pg.db, {
     projectId: "p-42",
@@ -44,10 +44,30 @@ test("写一条审计：12 列逐字往返，created_at 是 Unix 秒", async () 
     error_code: null,
     duration_ms: 12,
   })
-  // `id` / `created_at` 覆盖 12 列里的剩下两列：id 是 BIGSERIAL、created_at 是 **Unix 秒**。
+  // `id` / `created_at` 覆盖 13 列里的剩下两列：id 是 BIGSERIAL、created_at 是 **Unix 秒**。
+  // ⚠️ 必须是 `number`（不是 BigInt，也不是「能比较就放过」）：bun-sql 把 BIGINT 吐成 BigInt，
+  // 而 `1n > 0` / `1792263730n >= x` 都成立 ⇒ 只做大小比较的话「忘了转 number」是绿的空转。
+  expect(typeof rows[0]!.id).toBe("number")
+  expect(typeof rows[0]!.created_at).toBe("number")
   expect(rows[0]!.id).toBeGreaterThan(0)
   expect(rows[0]!.created_at).toBeGreaterThanOrEqual(before)
   expect(rows[0]!.created_at).toBeLessThanOrEqual(Math.floor(Date.now() / 1000))
+})
+
+test("失败结局：result 与 error_code 逐字落库", async () => {
+  await recordBackupEvent(pg.db, {
+    projectId: "p-failed",
+    userId: "009",
+    action: "backup",
+    result: "failed",
+    errorCode: "quota_exceeded",
+    durationMs: 7,
+  })
+  expect((await listBackupEvents(pg.db, "p-failed"))[0]).toMatchObject({
+    result: "failed",
+    error_code: "quota_exceeded",
+    duration_ms: 7,
+  })
 })
 
 test("可选字段缺省：scope 空串、kind/error_code 为 null、计数为 0", async () => {
