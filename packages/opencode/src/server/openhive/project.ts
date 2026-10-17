@@ -559,7 +559,8 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
  * ## 为什么必须**两处一起写**（读 spec §4.1 之前别改这句）
  *
  * 名字存在两处，**读者不同**：owner 那条行读每用户 SQLite 的 `project.name`，
- * 被邀成员那条影子行读 PG `auth.project_meta.name`（`handleList` 的两支，`:354` / `:391`）。
+ * 被邀成员那条影子行读 PG `auth.project_meta.name`（`handleList` 的两支：`ownEntries` 走本地
+ * `named.get`，影子行走 `meta.get` 兜底）。
  * 只写一处 ⇒「我改了，同事看到的还是旧的」——**不报错、不变红**，两个读者各读各的谁也发现不了。
  *
  * ## 次序：**PG 先、本地后**（计划裁定 R3）

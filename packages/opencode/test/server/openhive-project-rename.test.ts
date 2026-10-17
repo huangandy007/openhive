@@ -20,7 +20,8 @@ import { testEffect } from "../lib/effect"
  *
  * 名字存在两处（spec §4.1）：每用户 SQLite 的 `project.name`（**owner 读的那份**）与
  * PG `auth.project_meta.name`（**成员读的那份**）。只写一处 ⇒「我改了，同事看到的还是旧的」，
- * 而且**不报错、不变红**——`handleList` 里 owner 读本地、成员读 PG（`project.ts:354/391`），
+ * 而且**不报错、不变红**——`handleList` 里 owner 读本地、成员读 PG（`ownEntries` 的
+ * `named.get` 与影子行的 `meta.get` 兜底），
  * 两个读者各读各的，谁都不会发现另一半没变。
  *
  * 所以本文件的主判据是**两条**：① 本地那一份变了；② PG 那一份变了。
