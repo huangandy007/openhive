@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3"
 import { openBackupStore } from "../../src/server/openhive/backup-store"
+import { createJobRegistry, quiesceProject } from "../../src/server/openhive/backup-jobs"
 import type { Manifest } from "../../src/server/openhive/backup-model"
 
 /**
@@ -149,5 +150,74 @@ describe("backup store（MinIO 上的快照读写）", () => {
     expect(读回).toBe("abc")
     await s.deleteBlob("ab".repeat(32))
     expect(await s.blobs()).toEqual([])
+  })
+})
+
+describe("backup jobs（内存任务表、单飞与静默）", () => {
+  test("同一（用户×项目）单飞：第二个 start 回同一个任务并标 resumed", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const first = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    const second = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "资料" })
+    expect(first.resumed).toBe(false)
+    expect(second.resumed).toBe(true)
+    expect(second.job.id).toBe(first.job.id)
+  })
+
+  test("不同项目 / 不同用户互不阻塞", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const a = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    expect(registry.start({ kind: "backup", userId: "007", projectId: "p-99", path: "" }).resumed).toBe(false)
+    expect(registry.start({ kind: "backup", userId: "008", projectId: "p-42", path: "" }).resumed).toBe(false)
+    expect(registry.get(a.job.id, "007")?.state).toBe("queued")
+  })
+
+  test("get 按 userId 隔离：别人的任务 id 拿不到", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    expect(registry.get(job.id, "008")).toBeUndefined()
+    expect(registry.get(job.id, "007")?.id).toBe(job.id)
+  })
+
+  test("cancel：跑着的置标记，终态的报 done，不存在报 missing", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    // 别人的 id 取消不到（变异实测：删掉 `cancel` 里的 `job.userId !== userId` 时，brief 原用例全绿）。
+    expect(registry.cancel(job.id, "008")).toBe("missing")
+    expect(registry.cancel(job.id, "007")).toBe("cancelling")
+    expect(registry.get(job.id, "007")?.cancelRequested).toBe(true)
+    registry.finish(job.id, "cancelled")
+    expect(registry.cancel(job.id, "007")).toBe("done")
+    expect(registry.cancel("没有", "007")).toBe("missing")
+  })
+
+  test("终态超过 10 分钟被清掉；运行中的不清", () => {
+    let now = 1000
+    const registry = createJobRegistry({ now: () => now })
+    const a = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    const b = registry.start({ kind: "backup", userId: "007", projectId: "p-99", path: "" })
+    registry.finish(a.job.id, "succeeded")
+    // TTL 边界另一侧：还没到 10 分钟的终态任务必须留着（前端轮询要靠它）。
+    registry.evict()
+    expect(registry.get(a.job.id, "007")?.state).toBe("succeeded")
+    now += 10 * 60_000 + 1
+    registry.evict()
+    expect(registry.get(a.job.id, "007")).toBeUndefined()
+    expect(registry.get(b.job.id, "007")?.state).toBe("queued")
+    // 清掉之后同一个项目可以再起任务（单飞锁已释放）
+    expect(registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" }).resumed).toBe(false)
+  })
+
+  test("quiesceProject：先请求取消、等任务收敛；执行器不响应则以超时判失败", async () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    // 模拟执行器**响应取消**：150ms 后自己收尾。
+    setTimeout(() => registry.finish(job.id, "cancelled"), 150)
+    expect(await quiesceProject("p-42", ["007"], { registry, timeoutMs: 3000, pollMs: 20 })).toBe(true)
+    expect(registry.get(job.id, "007")?.state).toBe("cancelled")
+
+    // 模拟执行器**不响应取消**：永不 finish ⇒ 到上限回 false，且取消标记已经置上（它试过了）。
+    const 硬 = registry.start({ kind: "backup", userId: "008", projectId: "p-42", path: "" })
+    expect(await quiesceProject("p-42", ["008"], { registry, timeoutMs: 80, pollMs: 20 })).toBe(false)
+    expect(registry.get(硬.job.id, "008")?.cancelRequested).toBe(true)
   })
 })
