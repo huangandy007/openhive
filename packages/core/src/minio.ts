@@ -14,7 +14,7 @@ import {
  *
  * ## 它是什么、不是什么
  *
- * 一个**窄接口**（`minio.md` §3）：`put / get / list / delete` 四个动作，
+ * 一个**窄接口**（`minio.md` §3）：`put / get / head / list / delete` 五个动作，
  * **入参里不带桶名与前缀**——前缀由构造时的 `scope` 定死，调用者给不出也改不了。
  *
  * 这个收窄不是为了好看：它让 T012 / T013 的测试能在**边界**注入替身（替掉的是「对象存储」
@@ -127,20 +127,28 @@ function assertSafeSegment(label: string, value: string): void {
 }
 
 /**
- * `404 NoSuchKey` ⇒ `undefined`；**其余一律上抛**。
+ * `404 NoSuchKey` ⇒ `undefined`；**其余一律上抛**。`extraNames` 是**逐调用方**的补充
+ * （今天只有 `head` 用它认 `NotFound`，见下）。
  *
- * 只认 `NoSuchKey` 是对的，认「凡是 404」是错的：桶名写错时 S3 回的是 `NoSuchBucket`（也是 404），
+ * 默认只认 `NoSuchKey` 是对的，认「凡是 404」是错的：桶名写错时 S3 回的是 `NoSuchBucket`（也是 404），
  * 而那**不是**「这个文件没备份过」，是**配置错了**。把两者并成一个 `undefined`，用户会看到
  * 「没备份过」而不是「桶没了」——静默，且指向完全相反的处理方向。
+ * `GetObject` 的 404 带 XML body，SDK 把 `<Code>` 放进 `error.name`，所以 `NoSuchKey` 是可区分的
+ * （测试里那条 403 与这条 404 各钉一次）。
  *
- * 「找错形状」这件事只认一个 `name` 也够：本模块只对着 `@aws-sdk/client-s3` 一个实现，
- * 而它把 XML 里的 `<Code>` 直接放进 `error.name`（测试里那条 403 与这条 404 各钉一次）。
+ * ⚠️ **`head` 是已知的例外**（008 T1 审查实测）：HEAD 响应按 HTTP 规范不带 body，SDK 读不到
+ * `<Code>` ⇒ 任何 404 的 `error.name` 都是 `NotFound` ⇒ **missing key 与 missing bucket 不可区分**。
+ * 所以只有 `head` 额外认 `NotFound`，它对两者都回 `undefined`；**不能**把 `NotFound` 挪进默认集合，
+ * 否则 `get` 会把「反代 / 网关裸 404」也吞成「没备份过」。配置错误由 `list` / `put` 以显式错误暴露。
  */
-async function notFoundToUndefined<T>(action: () => Promise<T>): Promise<T | undefined> {
+async function notFoundToUndefined<T>(
+  action: () => Promise<T>,
+  extraNames: readonly string[] = [],
+): Promise<T | undefined> {
   try {
     return await action()
   } catch (error) {
-    if (error instanceof Error && (error.name === "NoSuchKey" || error.name === "NotFound")) return undefined
+    if (error instanceof Error && (error.name === "NoSuchKey" || extraNames.includes(error.name))) return undefined
     throw error
   }
 }
@@ -253,7 +261,11 @@ export function makeStore(config: Config): Interface {
       ),
 
     /**
-     * `HEAD` 一条对象：在 ⇒ `Entry`，不在 ⇒ `undefined`（`404` 的两种名字见 `notFoundToUndefined`）。
+     * `HEAD` 一条对象：在 ⇒ `Entry`，不在 ⇒ `undefined`。
+     *
+     * ⚠️ **缺键与缺桶都回 `undefined`**（008 T1 审查实测）：HEAD 无 body，SDK 认不出
+     * `NoSuchKey` / `NoSuchBucket`，404 的 `error.name` 一律是 `NotFound` ⇒ 两者**不可区分**。
+     * 这是 `head` 已知的代价；配置错误由 `list` / `put` 以显式错误暴露（见 `notFoundToUndefined`）。
      *
      * 备份的增量判断要「这条对象的 size / lastModified 是什么」，而**不是**它的字节——
      * 用 `get` 会把整个对象拉下来只为了看几个数字。
@@ -268,7 +280,7 @@ export function makeStore(config: Config): Interface {
           size: response.ContentLength ?? 0,
           lastModified: response.LastModified?.getTime() ?? 0,
         }
-      }),
+      }, ["NotFound"]),
 
     /**
      * 列出**本项目**的全部对象，**剥掉前缀**（`minio.md` §3：窄接口的入参出参都不带前缀）。

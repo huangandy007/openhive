@@ -163,6 +163,10 @@ describe("Minio 客户端（005 T011 / FR-007）", () => {
     test("scope 的 projectId 同理", () => {
       expect(() => 开({ userId: "007", projectId: "a/../../p-99" })).toThrow()
     })
+
+    test("scope 的 namespace 同理——只查 userId/projectId 会漏掉中间那段", () => {
+      expect(() => 开({ userId: "007", projectId: "p-42", namespace: "../p-99" })).toThrow()
+    })
   })
 
   describe("四个动作（minio.md §3 的窄接口：put / get / list / delete）", () => {
@@ -469,6 +473,41 @@ describe("文件级备份快照的新表面（008 T1）", () => {
 
     s3.failWith(403)
     await 抛了(() => store.head({ path: "笔记/a.txt" }))
+  })
+
+  /**
+   * 这条钉的是一个**已知行为**，不是期望行为：HEAD 响应按 HTTP 规范不带 body，SDK 读不到
+   * `<Code>` ⇒ 404 的 `error.name` 一律是 `NotFound` ⇒ **missing key 与 missing bucket 不可区分**。
+   *
+   * 它同时也钉住 `notFoundToUndefined` 的 `extraNames` 边界：`NotFound` 只给 `head`，
+   * 若把它挪进默认集合，下面那条 `get` 用例会红。
+   * 缺口登记见 task-1-report.md。
+   */
+  test("head 对 missing bucket 也回 undefined——HEAD 无 body，缺键与缺桶不可区分（已知行为）", async () => {
+    s3.stop()
+    s3 = startFakeS3({ bucket: "别的桶" })
+    const store = 店()
+
+    expect(await store.head({ path: "a.txt" })).toBeUndefined()
+  })
+
+  test("get 不吞「无 body 的 404」——反代 / 网关裸 404 与 missing key 不是一回事", async () => {
+    const 裸404 = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 404 }) })
+    try {
+      const store = Minio.makeStore({
+        endpoint: `http://127.0.0.1:${裸404.port}`,
+        bucket: "openhive",
+        credentials: 凭据,
+        scope: { userId: "007", projectId: "p-42" },
+      })
+
+      const 错 = await 抛了(() => store.get({ path: "a.txt" }))
+
+      // 钉住它确实是因为 SDK 把裸 404 报成 `NotFound` —— 被吞掉的正是这一种。
+      expect(错.name).toBe("NotFound")
+    } finally {
+      void 裸404.stop(true)
+    }
   })
 
   test("list：默认列出全部并带 size/lastModified；给了 prefix 只列那一支且路径相对前缀根", async () => {
