@@ -826,13 +826,23 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
-   * 备份状态请求的**代次**：换项目 / 连点重取时，早发出的那份回包不许写缝。
+   * **项目代次**：换项目 / 卸载 / 项目从清单消失时递增，作废一切在飞的回包。
    *
    * 与文件清单的 `清单代次` 同因（`#004-01`）：取状态是**多段**异步（状态 → 恢复点清单 →
    * 选中恢复点的明细），一段慢下来就会在用户已经切走之后落地。`onCleanup` 不够用——这里没有
    * 「每次重跑由 Solid 自动清理」的响应式键，重取还有**第二个出口**（起完备份 / 删完恢复点）。
+   *
+   * ⚠️ 它与下面的 `重取代次` 是**两个量**：重取本身（轮询 / 起完备份）不能推进项目代次，否则
+   * 正在 `等任务` 的那个长任务（预览动辄超过 1 秒）会被它自己的轮询判成「项目换了」而中止。
    */
   let 备份代次 = 0
+
+  /**
+   * **重取请求代次**：同一项目内，后发起的重取作废先前那一次的回包。
+   *
+   * 只保护「同一项目的两次重取谁先落地」，不参与「项目还在不在」的判断（那是 `备份代次`）。
+   */
+  let 重取代次 = 0
 
   /**
    * 重取**备份状态**：用量 ＋ 恢复点清单 ＋ 选中恢复点的文件清单。
@@ -848,24 +858,34 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const 重取备份状态 = async () => {
     const id = currentProject()?.id
     if (!id || !projectData) return
-    const 代 = ++备份代次
-    const 还有效 = () => 代 === 备份代次 && currentProject()?.id === id
+    const 代 = ++重取代次
+    const 项目代 = 备份代次
+    const 还有效 = () =>
+      代 === 重取代次 && 项目代 === 备份代次 && currentProject()?.id === id
     try {
       const 状态 = await projectData.backupStatus(id)
       if (!还有效()) return
-      // 展示口径是 `usedBytes`（`MinioBar` / `MinioTree` 的 prop），服务端给的是 `usageBytes`。
-      setBackupUsage(
-        状态
-          ? { usedBytes: 状态.usageBytes, limitBytes: 状态.limitBytes, autoPaused: 状态.autoPaused }
-          : undefined,
-      )
-      setBackupJob(状态?.activeJob ?? undefined)
+      // ⚠️ `undefined` 是「这次没问出来」，不是「服务端说没有任务」：只有拿到状态才写。
+      // 写成 `状态?.activeJob ?? undefined` 的话，一次网络抖动就会清掉 `backupJob` ⇒ 1 秒轮询
+      // 的 `在跑` 守卫当场失败，进度条消失且**再也不会回来**（三态见 `minio-backups` 文件头）。
+      if (状态 !== undefined) {
+        // 展示口径是 `usedBytes`（`MinioBar` / `MinioTree` 的 prop），服务端给的是 `usageBytes`。
+        setBackupUsage({
+          usedBytes: 状态.usageBytes,
+          limitBytes: 状态.limitBytes,
+          autoPaused: 状态.autoPaused,
+        })
+        setBackupJob(状态.activeJob ?? undefined)
+      }
 
       const 清单 = await projectData.snapshots(id)
       if (!还有效()) return
       setBackupSnapshots(清单)
       if (清单 === undefined) {
         // 取不到 ⇒ 下树回到「还不知道」（不是「还没有备份」——那两句意思相反）。
+        // 选中项也要一起清：留着旧 id，右键「从 MinIO 拉回」还能对一个界面上已经不在的
+        // 恢复点起预览（F-5）。
+        setBackupSnapshotId(undefined)
         setMinioBackups(undefined)
         return
       }
@@ -893,8 +913,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * ② **重取状态** ⇒ 用量与恢复点清单跟着变（恢复完成可能新增 / 改变快照）。
    */
   const 等任务 = async (jobId: string) => {
+    const id = currentProject()?.id
+    const 代 = 备份代次
+    /** 跨过 await 之后先问「还是同一个项目、同一个实例吗」——否则回包会落进新项目。 */
+    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
     for (let i = 0; i < 7_200; i += 1) {
+      if (!还在()) return undefined
       const job = await projectData?.job(jobId)
+      if (!还在()) return undefined
       if (job === undefined) return undefined
       setBackupJob(job)
       if (!在跑(job)) {
@@ -915,9 +941,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const 需确认 = (preview: BackupPreview): boolean => {
     if (preview.counts.different > 0 || preview.counts["type-mismatch"] > 0) return true
-    return [...preview.entries.map((entry) => entry.path), ...preview.localOnly].some((path) =>
-      path.split("/").includes(".git"),
-    )
+    // ⚠️ 只看 `entries`：`localOnly` 是「只在本地、不会被恢复」的那一份（spec §6.6），
+    // 拿它拦这次拖拽等于为一件不会发生的事问用户（F-6）。
+    return preview.entries.some((entry) => entry.path.split("/").includes(".git"))
   }
 
   /**
@@ -932,13 +958,18 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     decision: RestoreDecision,
     decisions: Record<string, RestoreDecision>,
   ) => {
-    if (!projectData) return
+    if (!projectData || currentProject()?.id !== id) return
+    const 代 = 备份代次
+    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
     const 恢复 = await projectData.restoreBackup(id, { ...input, decision, decisions })
+    if (!还在()) return
     if (恢复 === undefined) {
       set文件话("恢复没能起起来")
       return
     }
     const 结果 = await 等任务(恢复)
+    // 任务跑完时项目已经切走 / 本实例已卸载 ⇒ 结果与那句话都不属于现在这个项目。
+    if (!还在()) return
     const 结果体 = 结果?.result?.restore
     if (结果体 === undefined) {
       set文件话("恢复没有拿到结果")
@@ -963,12 +994,17 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   ) => {
     const id = currentProject()?.id
     if (!id || !projectData) return
+    const 代 = 备份代次
+    const 还在 = () => currentProject()?.id === id && 代 === 备份代次
     const jobId = await projectData.previewRestore(id, input)
+    if (!还在()) return
     if (jobId === undefined) {
       set文件话("预览没能起起来")
       return
     }
     const job = await 等任务(jobId)
+    // 预览期间切走项目（或卸载）⇒ 既不能开对话框，也不能把「预览没取到」写到新项目上。
+    if (!还在()) return
     const preview = job?.result?.preview
     if (preview === undefined) {
       set文件话("预览没取到")
@@ -1031,7 +1067,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return
     }
     set文件话(undefined)
+    // 两件都要：重取让进度**立刻**进窄条（R-3.2），跟进任务让成功之后选中新恢复点（§11.5）。
     await 重取备份状态()
+    void 跟备份任务(起.jobId)
   }
 
   /** 超限确认之后带 `allowOverQuota: true` 再试一次（spec §8.3）。 */
@@ -1046,6 +1084,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     }
     set文件话(undefined)
     await 重取备份状态()
+    void 跟备份任务(起.jobId)
   }
 
   /**
@@ -1065,6 +1104,31 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       setMinioBackups(明细?.files.map((file) => file.path) ?? undefined)
     } catch {
       // 同 `重取备份状态`：取不到就停在「还不知道」，不抛。
+    }
+  }
+
+  /**
+   * 跟住一个刚起的手动备份；成功就**选中新恢复点**（spec §11.5）。
+   *
+   * ⚠️ 光靠备份成功后的 `重取备份状态()` 不够：选中项规则会保留「旧 id 还在清单里」的那一个，
+   * 而新快照恰好是**追加**进去的 ⇒ 用户看到的仍是旧恢复点。服务端把新 id 写在终态 job 的
+   * `result.snapshotId` 里，这里把它取出来显式选中。
+   *
+   * 自动备份（服务端发起、本层没有 jobId）不抢用户选中项——本版只处理手动备份。
+   */
+  const 跟备份任务 = async (jobId: string) => {
+    const id = currentProject()?.id
+    const 代 = 备份代次
+    if (id === undefined) return
+    try {
+      const job = await 等任务(jobId)
+      // 等任务跨了 await：项目切走 / 卸载后，这个 job 的新快照不属于现在的项目。
+      if (currentProject()?.id !== id || 代 !== 备份代次) return
+      const 快照 = job?.result?.snapshotId
+      if (typeof 快照 !== "string") return
+      await 选恢复点(快照)
+    } catch {
+      // 后台跟进失败不打扰用户：窄条已回到空闲态，下一次进门会重取状态。
     }
   }
 
@@ -1144,6 +1208,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const 清单 = projectList()
     if (id === undefined || 清单 === undefined) return
     if (清单.some((项目) => 项目.id === id)) return
+    // 光清信号不够：此刻可能正有一份「旧项目」的请求在飞，而它的项目 id **没变**
+    // （`currentProject` 还是它）⇒ 不推进代次的话，它回来时 `还有效()` 仍成立、会把旧恢复点
+    // 写回并永久残留（F-3）。
+    备份代次 += 1
     清空备份信号()
   })
 
@@ -1473,8 +1541,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   sessions={props.sessions?.()}
                   files={
                     <>
-                      {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项。`onBackup` / `onRestore`
-                          仍不接 —— 它们的接收方（MinIO 的 HTTP 出口）归 T022。
+                      {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项 ＋ Task 17 的备份 / 恢复
+                          （接收方是 `@/project/minio-backups` 的 HTTP 出口）。
                           `onRefresh`（T020+，2026-10-10）：把「再取一次清单」那枚代次交给用户手拨
                           ——AI 写盘这类**外部改动**今天没有回调可挂，只能手点。与建/改名/删一样
                           **要有项目**才接线（没有项目时没有什么可刷的）。 */}
