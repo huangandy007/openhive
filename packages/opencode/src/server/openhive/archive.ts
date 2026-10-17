@@ -263,12 +263,21 @@ const UNAUTHORIZED = 401
 const FORBIDDEN = 403
 const UNAVAILABLE = 503
 
-function unauthorized() {
+/**
+ * 四个响应构造函数是**归档与文件级备份两个出口共用**的口径（`LEARNINGS #002-06`：同一条判断
+ * 不该在两处各写一份）。`code` 是 spec §10.3 要求的机器可读错误码；默认值与**加 `code` 之前**
+ * 的归档响应逐字一致（归档测试用 `Schema.Struct({ error })` 解码，多余字段被 Schema 忽略）。
+ *
+ * 2026-10-18（Task 11）：从模块私有改成 `export`——备份出口直接 import，不另抄一份状态码与文案。
+ * 401 不带 `code`（spec §10.3 该行是 `—`），所以 `unauthorized()` 保持空体。
+ * 【保留的定制 · 同步上游时不要丢】
+ */
+export function unauthorized() {
   return HttpServerResponse.empty({ status: UNAUTHORIZED })
 }
 
-function badRequest(message: string) {
-  return HttpServerResponse.jsonUnsafe({ error: message }, { status: BAD_REQUEST })
+export function badRequest(message: string, code = "bad_request") {
+  return HttpServerResponse.jsonUnsafe({ error: message, code }, { status: BAD_REQUEST })
 }
 
 /**
@@ -280,12 +289,12 @@ function badRequest(message: string) {
  * 文案按**方向**分（归档/找回），不按**身份**分：前者的差异是「我要做的事不同」，
  * 后者才会漏出「你是谁 / 这个项目在不在」。
  */
-function forbidden(message: string) {
-  return HttpServerResponse.jsonUnsafe({ error: message }, { status: FORBIDDEN })
+export function forbidden(message: string, code = "forbidden") {
+  return HttpServerResponse.jsonUnsafe({ error: message, code }, { status: FORBIDDEN })
 }
 
-function unavailable(message: string) {
-  return HttpServerResponse.jsonUnsafe({ error: message }, { status: UNAVAILABLE })
+export function unavailable(message: string, code = "minio_unconfigured") {
+  return HttpServerResponse.jsonUnsafe({ error: message, code }, { status: UNAVAILABLE })
 }
 
 function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
