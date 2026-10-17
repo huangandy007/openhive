@@ -565,8 +565,11 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
  *
  * ## 次序：**PG 先、本地后**（计划裁定 R3）
  *
- * PG 写失败时本地还没动 ⇒ 用户重试即可收敛，**两处的名字始终一致**。
- * 反过来（先写本地）一旦 PG 失败，两处就**永久分叉**，而没有任何东西会告诉你。
+ * PG 写失败时本地还没动 ⇒ 用户重试即可收敛。
+ * ⚠️ **但「两处始终一致」是假话**，残余窗口如实写在这里：PG 写成功、本地写失败 ⇒
+ * 两处**暂时分叉**（成员读到新名、owner 读到旧名），重试可收敛；两步**不是原子的**，
+ * 两人并发改名时最后一次写入者胜，中间态与最终态都可能短暂或持久分叉。
+ * 「先 PG 后本地」能保证的只有「**瞬时失败可重试收敛**」，不能保证任何时刻都一致。
  * ⚠️ 这条次序在成功路径上**不可观测**（变异 B 全绿）⇒ 它是**论证**，不是**测试**——
  * 已写进 `state.md` 缺口表。
  *
@@ -615,9 +618,12 @@ function handleRename(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
       return forbidden("无权重命名该项目")
 
     // ④ **先 PG**（成员读的那一份）。它失败 ⇒ 本地一个字未动，用户重试即可收敛。
+    //    ⚠️ 本步成功而 ⑤ 失败 ⇒ 两处**暂时分叉**（PG 新名、本地旧名），重试可收敛；
+    //    两步不原子，并发改名时最后一次写入者胜、中间态可能短暂分叉。见上方「次序」段。
     yield* Effect.promise(() => updateProjectName(pg, { projectId, name }))
     // ⑤ **后本地**（owner 读的那一份）。`ProjectV2.ID.make(...)` 这个包装照 `handleCreate`
     //    第 ⑤ 步，**不能省**——那是建项目那一处已经验证过的形状（直接传字符串类型上就不对）。
+    //    这一行失败不会回滚 ④ ⇒ 残余窗口见上方「次序」段（P-2 缺口表）。
     yield* deps.project.update({ projectID: ProjectV2.ID.make(projectId), name })
 
     return HttpServerResponse.jsonUnsafe({ projectId, name, renamed: true })

@@ -47,7 +47,8 @@ import type { MemberEntry } from "./member-panel"
 import type { NewProjectInput, ProjectEntry } from "./project-panel"
 
 /**
- * 界面要用到的五件事——**按「谁要用」定的，不是按后端有什么**（`LEARNINGS #004-07`）。
+ * 界面要用到的那几件事——**按「谁要用」定的，不是按后端有什么**（`LEARNINGS #004-07`）。
+ * （不写死数量：本接口随 feature 增补，写「五件事」「七件事」都会在下次扩展时变成假话。）
  *
  * `create` / `archive` / `restore` 交出去的都是**结论**而不是一句话：把「拒绝」与「失败」
  * 并成一句话的活不在这层做（那会让「你填得不对」和「我们这边坏了」长成一个样），

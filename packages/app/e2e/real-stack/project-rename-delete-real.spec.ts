@@ -103,7 +103,14 @@ async function 建会话(projectId: string, directory: string, title: string): P
   return ((await res.json()) as { data: { id: string } }).data.id
 }
 
-/** 列**项目内**会话（同一条 URL 的 GET）。当 oracle 用。 */
+/**
+ * 列**项目内**会话（同一条 URL 的 GET）。当 oracle 用。
+ *
+ * ⚠️ **这是 B 链（`GET /api/session?directory=`），不是产品的 A 链读路径**。
+ * 产品 app 走 A 链 `/session...`（spec §4.3 的 v1 协议）；B 链在下面这条用例里
+ * 只当「会话行还在」的独立观测面。产品读路径的强证据在路由测试的
+ * `GET /session/:sessionID/message`（`openhive-project-delete.test.ts` 的 A ⑥）。
+ */
 async function 列会话(projectId: string, directory: string) {
   return kernelJson(`/api/session?directory=${encodeURIComponent(directory)}`, {
     headers: { "x-openhive-project": projectId },
