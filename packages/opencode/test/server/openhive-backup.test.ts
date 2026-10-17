@@ -1252,16 +1252,20 @@ describe("Fix round 2 · 每日清扫的 isBusy 透传（§8.4）", () => {
         await store.writeManifest(旧自动清单(project.projectId, 新ID, 新时刻))
       })
 
-      // 假注册表：**第一次**问「有任务吗」答没有（顶层守卫放行），之后每次都答有
+      // 假注册表：**只对本项目**生效——`每日清扫` 枚举整个 `auth.project_member`（SQL 无
+      // `ORDER BY`），别的项目的 `activeFor` 必须照常答「没有」，否则本项目可能还没轮到就被
+      // 别的项目的计数耗掉（整文件下复核实测：前 9 次都是别的项目 ⇒ 用例空转）。
+      // 对本项目：**第一次**问「有任务吗」答没有（顶层守卫放行），之后每次都答有
       // （`applyRetention` / `collectGarbage` 各自的函数内守卫拦截）。返回值用真任务对象，
       // 形状不必再编。任务收尾放 finally，别污染同文件后续用例。
       const 起 = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.projectId, path: "" })
-      let 问过 = 0
+      let 本项目问过 = 0
       const 假注册表 = {
         ...sharedJobs,
-        activeFor: () => {
-          问过 += 1
-          return 问过 === 1 ? undefined : 起.job
+        activeFor: (_userId: string, projectId: string) => {
+          if (projectId !== project.projectId) return undefined
+          本项目问过 += 1
+          return 本项目问过 === 1 ? undefined : 起.job
         },
       }
       try {
