@@ -15,6 +15,7 @@ tmp
 dist
 ts-dist
 .turbo
+.astro
 **/.serena
 .serena/
 **/.omo
