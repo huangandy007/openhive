@@ -1,6 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {},
+  // 【这是要保留的定制】openhive / fork：不自动跟随官方版本更新。
+  // 需要同步上游时走本仓的 `git merge upstream/v1` 流程并跑门禁，而不是让运行时自动升级。
+  // 部署侧若未加载本项目的 `.opencode/`，改用 `OPENCODE_DISABLE_AUTOUPDATE=1` 达到同一效果。
+  "autoupdate": false,
   // 【这是要保留的定制】openhive / 006-ai-session T012（FR-009）：删除类动作强制人确认。
   // 闸门机制用的是上游工具层的 permission.ask（未改一行源码），这里只落**规则**：
   // 默认是 `"*": "allow"`，不写这一段的话 `rm -rf` 会一声不响地跑掉。
