@@ -17,8 +17,20 @@ import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3
 import { openBackupStore } from "../../src/server/openhive/backup-store"
 import { createJobRegistry, quiesceProject } from "../../src/server/openhive/backup-jobs"
 import { runBackup, runPreview, runRestore } from "../../src/server/openhive/backup-run"
-import { applyRetention, collectGarbage, contextStatus, createAutoScheduler } from "../../src/server/openhive/backup-auto"
-import { ACTIVE_WINDOW_MS, AUTO_COOLDOWN_MS, type Manifest } from "../../src/server/openhive/backup-model"
+import {
+  applyRetention,
+  AutoBackupCancelled,
+  collectGarbage,
+  contextStatus,
+  createAutoScheduler,
+  syncState,
+} from "../../src/server/openhive/backup-auto"
+import {
+  ACTIVE_WINDOW_MS,
+  AUTO_COOLDOWN_MS,
+  type Manifest,
+  type SnapshotSummary,
+} from "../../src/server/openhive/backup-model"
 
 /**
  * 文件级备份快照（spec `2026-10-18-file-backup-snapshot-design.md`）。
@@ -763,6 +775,29 @@ describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () 
     yield new TextEncoder().encode("x")
   }
 
+  /** 直接种一个 blob（可控制 `lastModified`；`putBlob` 只能取真实时钟）。 */
+  function seedBlob(hash: string, at: number, content = "x") {
+    s3.seed(`007/_openhive-backups/p-42/blobs/${hash.slice(0, 2)}/${hash}`, content, new Date(at).toISOString())
+  }
+
+  /** spec §8.3 的用量口径：blobs 字节 + manifest 列表大小之和。 */
+  async function 实际用量(s: ReturnType<typeof store>): Promise<number> {
+    const blobs = await s.blobs()
+    const listed = await s.manifests()
+    return blobs.reduce((sum, blob) => sum + blob.size, 0) + listed.reduce((sum, entry) => sum + entry.size, 0)
+  }
+
+  function 摘要(id: string, createdAt: number): SnapshotSummary {
+    return {
+      id,
+      kind: "auto",
+      scope: "",
+      createdAt,
+      status: "complete",
+      totals: { files: 0, bytes: 0, uploadedBytes: 0, skipped: 0 },
+    }
+  }
+
   test("调度：心跳后 tick 触发 detect；冷却期内不重复；30 分钟不活跃移出", async () => {
     let now = 0
     const 调过: string[] = []
@@ -811,6 +846,97 @@ describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () 
     expect(调过).toEqual(["x"])
   })
 
+  // I1（spec §7.3）：手动备份成功 / 恢复成功后由调用方调 `noteBackup`，
+  // 把 lastAutoAt 推到此刻，避免「刚手动拍完又自动拍一张」。
+  test("调度：noteBackup 把 lastAutoAt 推到此刻，冷却从这一刻重新计；不为未心跳项目建项", async () => {
+    let now = 0
+    const 调过: string[] = []
+    const scheduler = createAutoScheduler({
+      now: () => now,
+      isRunning: () => false,
+      detect: async () => {
+        调过.push("x")
+      },
+    })
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual(["x"])
+
+    // 首拍后 30 分钟：手动备份成功。
+    now += 30 * 60_000
+    scheduler.heartbeat("007", "p-42")
+    scheduler.noteBackup("007", "p-42")
+
+    // 从「首拍」起已过 1 小时 29 分 59 秒，但从「手动备份成功」起还差 1 毫秒 ⇒ 不能拍。
+    now += AUTO_COOLDOWN_MS - 1
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual(["x"])
+
+    now += 1
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual(["x", "x"])
+
+    // 没心跳过的项目：noteBackup 不制造入口。
+    scheduler.noteBackup("008", "p-99")
+    expect(scheduler.entries().map((entry) => `${entry.userId}/${entry.projectId}`)).toEqual(["007/p-42"])
+  })
+
+  // I2（spec §7.3）：取消 ⇒ 更新 lastAutoAt（避免取消后每分钟又被弹一次）；
+  // 普通失败 ⇒ 不更新（回滚），下个周期重试。
+  test("调度：取消保持 lastAutoAt（冷却内不再拍）；普通失败回滚，同一时刻可立即重试", async () => {
+    let now = 0
+    const 调过: string[] = []
+    let 模式: "ok" | "cancel" | "fail" = "cancel"
+    const scheduler = createAutoScheduler({
+      now: () => now,
+      isRunning: () => false,
+      detect: async () => {
+        if (模式 === "cancel") throw new AutoBackupCancelled()
+        if (模式 === "fail") throw new Error("boom")
+        调过.push("ok")
+      },
+    })
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual([])
+
+    // 取消 ⇒ lastAutoAt 停在 at=0；冷却期内不触发。
+    now += AUTO_COOLDOWN_MS - 1
+    模式 = "ok"
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual([])
+    expect(scheduler.entries()[0].lastAutoAt).toBe(0)
+
+    // 普通失败 ⇒ 回滚到 at - 冷却（不是 at）⇒ 同一时刻重试立刻可拍。
+    now += 1
+    模式 = "fail"
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual([])
+    expect(scheduler.entries()[0].lastAutoAt).toBe(now - AUTO_COOLDOWN_MS)
+
+    模式 = "ok"
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual(["ok"])
+  })
+
+  test("调度：entries 逐字投影四值（userId / projectId / lastSeenAt / lastAutoAt）", async () => {
+    let now = 100
+    const scheduler = createAutoScheduler({ now: () => now, isRunning: () => false, detect: async () => {} })
+    scheduler.heartbeat("007", "p-42")
+    expect(scheduler.entries()).toEqual([
+      { userId: "007", projectId: "p-42", lastSeenAt: 100, lastAutoAt: 100 - AUTO_COOLDOWN_MS },
+    ])
+    now = 5000
+    scheduler.heartbeat("007", "p-42")
+    expect(scheduler.entries()).toEqual([
+      { userId: "007", projectId: "p-42", lastSeenAt: 5000, lastAutoAt: 100 - AUTO_COOLDOWN_MS },
+    ])
+  })
+
   test("调度：任务在跑就跳过，不排队", async () => {
     let now = 0
     let 跑着 = true
@@ -830,21 +956,99 @@ describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () 
     expect(调过).toEqual(["x"])
   })
 
-  test("保留：超过 84 天且非最新的自动快照被删；最新保留；手动快照永不自动删", async () => {
+  // M7：直接钉「最新自动快照永远保留」——只放一份 100 天前的 auto 时它必须还在；
+  // 再放一份更新的 auto 后，那份超龄的旧快照才按 84 天规则被删。
+  test("保留：最新自动快照永远保留（即使超过 84 天）；出现更新的自动快照后旧超龄者被删；手动永不自动删", async () => {
     const s = store()
     const now = Date.now()
-    const 最新 = "20261018T115959000Z-aaaaaa"
-    const 超龄 = "20260725T120000000Z-bbbbbb"
-    const 手动 = "20260501T120000000Z-dddddd"
-    await s.writeManifest({ ...清单(最新), kind: "auto", source: "auto", createdAt: now - 1000, id: 最新 })
-    await s.writeManifest({ ...清单(超龄), kind: "auto", source: "auto", createdAt: now - 85 * 86400_000, id: 超龄 })
+    const 老auto = "20260710T120000000Z-aaaaaa"
+    const 手动 = "20260501T120000000Z-bbbbbb"
+    const 新auto = "20261018T115959000Z-cccccc"
+    await s.writeManifest({ ...清单(老auto), kind: "auto", source: "auto", createdAt: now - 100 * 86400_000, id: 老auto })
     await s.writeManifest({ ...清单(手动), createdAt: now - 120 * 86400_000, id: 手动 })
 
-    const 删 = await applyRetention(s, { now, timeZone: "Asia/Shanghai" })
-    expect(删).toEqual([超龄])
-    expect(await s.readManifest(超龄)).toBeUndefined()
-    expect(await s.readManifest(最新)).toBeDefined()
+    // 唯一一份 auto ⇒ 永远保留（哪怕超过 84 天）。
+    expect(await applyRetention(s, { now, timeZone: "Asia/Shanghai" })).toEqual([])
+    expect(await s.readManifest(老auto)).toBeDefined()
     expect(await s.readManifest(手动)).toBeDefined()
+
+    // 出现更新的 auto ⇒ 「最新」让位，旧的按 84 天规则删。
+    await s.writeManifest({ ...清单(新auto), kind: "auto", source: "auto", createdAt: now - 1000, id: 新auto })
+    expect(await applyRetention(s, { now, timeZone: "Asia/Shanghai" })).toEqual([老auto])
+    expect(await s.readManifest(老auto)).toBeUndefined()
+    expect(await s.readManifest(新auto)).toBeDefined()
+    expect(await s.readManifest(手动)).toBeDefined()
+  })
+
+  test("保留：删掉的快照同时从 state.snapshots 移除", async () => {
+    const s = store()
+    const now = Date.now()
+    const 新auto = "20261018T115959000Z-aaaaaa"
+    const 老auto = "20260710T120000000Z-bbbbbb"
+    await s.writeManifest({ ...清单(新auto), kind: "auto", source: "auto", createdAt: now - 1000, id: 新auto })
+    await s.writeManifest({ ...清单(老auto), kind: "auto", source: "auto", createdAt: now - 100 * 86400_000, id: 老auto })
+    await s.writeState({
+      version: 1,
+      usageBytes: 1,
+      lastGcAt: 0,
+      autoPaused: false,
+      snapshots: [摘要(老auto, now - 100 * 86400_000), 摘要(新auto, now - 1000)],
+    })
+
+    expect(await applyRetention(s, { now, timeZone: "Asia/Shanghai" })).toEqual([老auto])
+    expect((await s.readState())?.snapshots.map((snapshot) => snapshot.id)).toEqual([新auto])
+  })
+
+  // I3（spec §8.4）：保留 / GC 与备份/恢复共用单飞锁——有活跃任务时整轮跳过、不写 state。
+  test("保留：有活跃任务时整轮跳过（一个都不删、不写 state）", async () => {
+    const s = store()
+    const now = Date.now()
+    const 新auto = "20261018T115959000Z-aaaaaa"
+    const 老auto = "20260710T120000000Z-bbbbbb"
+    await s.writeManifest({ ...清单(新auto), kind: "auto", source: "auto", createdAt: now - 1000, id: 新auto })
+    await s.writeManifest({ ...清单(老auto), kind: "auto", source: "auto", createdAt: now - 100 * 86400_000, id: 老auto })
+    await s.writeState({
+      version: 1,
+      usageBytes: 777,
+      lastGcAt: 5,
+      autoPaused: false,
+      snapshots: [摘要(老auto, now - 100 * 86400_000), 摘要(新auto, now - 1000)],
+    })
+
+    expect(await applyRetention(s, { now, timeZone: "Asia/Shanghai", isBusy: () => true })).toEqual([])
+    expect(await s.readManifest(老auto)).toBeDefined()
+    const state = await s.readState()
+    expect(state?.usageBytes).toBe(777)
+    expect(state?.lastGcAt).toBe(5)
+    expect(state?.snapshots.map((snapshot) => snapshot.id)).toEqual([老auto, 新auto])
+  })
+
+  test("GC：有活跃任务时整轮跳过（blob 还在、state 不写）", async () => {
+    const s = store()
+    const now = Date.now()
+    seedBlob("b".repeat(64), now - 48 * 60 * 60_000)
+    await s.writeState({ version: 1, usageBytes: 777, lastGcAt: 5, autoPaused: false, snapshots: [] })
+
+    expect(await collectGarbage(s, { now, isBusy: () => true })).toEqual({ deleted: 0, bytes: 0 })
+    expect((await s.blobs()).map((blob) => blob.hash)).toEqual(["b".repeat(64)])
+    const state = await s.readState()
+    expect(state?.usageBytes).toBe(777)
+    expect(state?.lastGcAt).toBe(5)
+  })
+
+  // M1 / M2（spec §8.4）：`lastModified < now - 24h` 才删——恰好 24 小时整保留。
+  test("GC：24 小时宽限是严格小于——now-23h 保留、恰 now-24h 保留、now-24h-1ms 删除", async () => {
+    const s = store()
+    const now = Date.now()
+    const 近 = "a".repeat(64)
+    const 边界 = "b".repeat(64)
+    const 超界 = "c".repeat(64)
+    seedBlob(近, now - 23 * 60 * 60_000)
+    seedBlob(边界, now - 24 * 60 * 60_000)
+    seedBlob(超界, now - 24 * 60 * 60_000 - 1)
+
+    expect(await collectGarbage(s, { now })).toEqual({ deleted: 1, bytes: 1 })
+    expect((await s.blobs()).map((blob) => blob.hash).sort()).toEqual([近, 边界].sort())
   })
 
   test("GC：24 小时宽限内不删；超期且无引用才删；任一 manifest 坏了就整轮不删", async () => {
@@ -868,19 +1072,73 @@ describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () 
     expect(结果.deleted).toBe(1)
     expect((await s.blobs()).map((blob) => blob.hash)).toEqual(["a".repeat(64)])
 
-    // 放一份坏 manifest ⇒ fail-closed
+    // 放一份坏 manifest ⇒ fail-closed（也不写 state）
     s3.seed("007/_openhive-backups/p-42/manifests/20261018T130000000Z-cccccc.json.gz", "坏")
     await s.putBlob({ hash: "c".repeat(64), body: 源(), size: 1 })
+    const stateBefore = await s.readState()
     expect(await collectGarbage(s, { now: now + 50 * 60 * 60_000 })).toEqual({ deleted: 0, bytes: 0 })
+    expect(await s.readState()).toEqual(stateBefore)
   })
 
-  test("contextStatus：state 丢了就从 manifest 重建用量（blob 字节 + manifest 大小）", async () => {
+  // I4（spec §8.4 第 4 步）：GC 成功后当场回写 usageBytes / lastGcAt。
+  test("GC：完成后回写 state（usageBytes 等于实际、lastGcAt = now、保留 autoPaused）", async () => {
+    const s = store()
+    const now = Date.now()
+    const 引用 = "a".repeat(64)
+    const 孤儿 = "b".repeat(64)
+    await s.writeManifest({
+      ...清单("20261018T115959000Z-aaaaaa"),
+      files: [{ path: "a.txt", hash: 引用, size: 4, mtimeMs: 1 }],
+    })
+    seedBlob(引用, now - 48 * 60 * 60_000, "abcd")
+    seedBlob(孤儿, now - 48 * 60 * 60_000, "x")
+    await s.writeState({ version: 1, usageBytes: 999999, lastGcAt: 1, autoPaused: true, snapshots: [] })
+
+    expect(await collectGarbage(s, { now })).toEqual({ deleted: 1, bytes: 1 })
+    const state = await s.readState()
+    expect(state?.lastGcAt).toBe(now)
+    expect(state?.autoPaused).toBe(true)
+    expect(state?.usageBytes).toBe(await 实际用量(s))
+    expect(state!.usageBytes).toBeLessThan(999999)
+  })
+
+  // M6：用量的**两半**都要有牙——manifest 大小与 blob 字节各占一部分。
+  test("contextStatus：state 丢了 ⇒ 用量 = blob 字节 + manifest 大小（两半都算）", async () => {
     const s = store()
     await s.writeManifest(清单())
+    seedBlob("b".repeat(64), Date.now(), "xyz")
+    const blobTotal = (await s.blobs()).reduce((sum, blob) => sum + blob.size, 0)
+    const manifestTotal = (await s.manifests()).reduce((sum, entry) => sum + entry.size, 0)
+    expect(blobTotal).toBe(3)
+    expect(manifestTotal).toBeGreaterThan(0)
+
     const 状态 = await contextStatus(s)
     expect(状态.autoPaused).toBe(false)
-    // 只有一个 manifest、**没有 blob**：这个值 > 0 只能来自 manifest 那一部分
-    // （漏算 manifest 的实现会读出 0）。
-    expect(状态.usageBytes).toBeGreaterThan(0)
+    expect(状态.usageBytes).toBe(blobTotal + manifestTotal)
+  })
+
+  test("contextStatus：state 在就原样回读（不重算）", async () => {
+    const s = store()
+    await s.writeState({ version: 1, usageBytes: 12345, lastGcAt: 9, autoPaused: true, snapshots: [] })
+    expect(await contextStatus(s)).toEqual({ usageBytes: 12345, autoPaused: true })
+  })
+
+  // M5：syncState 的四个字段逐个钉。
+  test("syncState：lastGcAt = now、用量正确、snapshots 从 manifest 重建且按 createdAt 倒序", async () => {
+    const s = store()
+    const now = Date.now()
+    const 甲 = "20261018T115959000Z-aaaaaa"
+    const 乙 = "20261018T115958000Z-bbbbbb"
+    await s.writeManifest({ ...清单(甲), kind: "auto", source: "auto", createdAt: now - 1000, id: 甲 })
+    await s.writeManifest({ ...清单(乙), createdAt: now - 5000, id: 乙 })
+    seedBlob("b".repeat(64), now, "xyz")
+
+    const state = await syncState(s, { now, autoPaused: true })
+    expect(state.lastGcAt).toBe(now)
+    expect(state.autoPaused).toBe(true)
+    expect(state.snapshots.map((snapshot) => snapshot.id)).toEqual([甲, 乙])
+    expect(state.snapshots[0].kind).toBe("auto")
+    expect(state.usageBytes).toBe(await 实际用量(s))
+    expect(await s.readState()).toEqual(state)
   })
 })

@@ -15,7 +15,21 @@ import {
   type SnapshotSummary,
 } from "./backup-model"
 import { rebuildSnapshots, type BackupStore } from "./backup-store"
-import { referencedHashes, retentionKeepIds } from "./backup-rules"
+import { referencedHashes, retentionKeepIds, summaryOf } from "./backup-rules"
+
+/**
+ * `detect` 用它区分「取消」与「失败」（spec §7.3）：
+ * - 取消 ⇒ 更新 `lastAutoAt`，避免用户取消后每分钟又被弹一次；
+ * - 失败 ⇒ 不更新，下个周期重试。
+ *
+ * Task 11 的 `detect` 在任务被取消时抛这个哨兵。
+ */
+export class AutoBackupCancelled extends Error {
+  constructor() {
+    super("自动备份已取消")
+    this.name = "AutoBackupCancelled"
+  }
+}
 
 export interface AutoSchedulerDeps {
   readonly now: () => number
@@ -27,6 +41,8 @@ export interface AutoSchedulerDeps {
 
 export interface AutoScheduler {
   readonly heartbeat: (userId: string, projectId: string) => void
+  /** 手动备份成功 / 恢复成功后由调用方调用，避免刚手动拍完又自动拍（spec §7.3）。 */
+  readonly noteBackup: (userId: string, projectId: string) => void
   /** 文档化 no-op：脏标记不改变下一次检查的时机（仍受 1 小时冷却约束，spec §7.1）。 */
   readonly markDirty: (userId: string, projectId: string) => void
   readonly tick: () => Promise<void>
@@ -61,9 +77,9 @@ export function createAutoScheduler(deps: AutoSchedulerDeps): AutoScheduler {
     entry.lastAutoAt = at
     try {
       await deps.detect(userId, projectId)
-    } catch {
-      // 失败 ⇒ 不更新 lastAutoAt（spec §7.3），下个周期重试。
-      entry.lastAutoAt = at - 冷却
+    } catch (error) {
+      // 取消 ⇒ 保持 `at`（不重复弹）；失败 ⇒ 回滚，下个周期重试（spec §7.3）。
+      if (!(error instanceof AutoBackupCancelled)) entry.lastAutoAt = at - 冷却
     }
   }
 
@@ -75,6 +91,11 @@ export function createAutoScheduler(deps: AutoSchedulerDeps): AutoScheduler {
         // §7.1：项目打开时立即做一次检查 ⇒ 首拍必须绕过冷却。
         active.set(key, { lastSeenAt: now(), lastAutoAt: now() - 冷却 })
       } else entry.lastSeenAt = now()
+    },
+    noteBackup: (userId, projectId) => {
+      // 只刷新已有项的冷却起点：不新增项、不动 lastSeenAt（活动与否仍由心跳决定）。
+      const entry = active.get(键(userId, projectId))
+      if (entry !== undefined) entry.lastAutoAt = now()
     },
     // 脏标记保留为 no-op：下一次检查本来就按 tick 周期跑，而冷却（1 小时）才是约束项。
     markDirty: () => undefined,
@@ -127,26 +148,23 @@ async function 读全部清单(store: BackupStore): Promise<{ manifests: readonl
   return { manifests, ok: true }
 }
 
-/** 分级保留：删 manifest（不删 blob，交给 GC）。返回被删的快照 id。 */
+/**
+ * 分级保留：删 manifest（不删 blob，交给 GC）。返回被删的快照 id。
+ *
+ * `isBusy` 由调用方传「该项目有没有活跃任务」（spec §8.4：保留 / GC 与备份/恢复共用单飞锁）：
+ * 有任务时整轮跳过——**一个都不删、不写 state**。
+ */
 export async function applyRetention(
   store: BackupStore,
-  options: { now: number; timeZone: string },
+  options: { now: number; timeZone: string; isBusy?: () => boolean },
 ): Promise<readonly string[]> {
+  if (options.isBusy?.() === true) return []
   const listed = await store.manifests()
   const snapshots: SnapshotSummary[] = []
   for (const entry of listed) {
     try {
       const manifest = await store.readManifest(entry.id)
-      if (manifest) {
-        snapshots.push({
-          id: manifest.id,
-          kind: manifest.kind,
-          scope: manifest.scope,
-          createdAt: manifest.createdAt,
-          status: manifest.status,
-          totals: manifest.totals,
-        })
-      }
+      if (manifest) snapshots.push(summaryOf(manifest))
     } catch {
       // 坏 manifest 不动它：删不掉的判断与删错相比，后者代价大得多。
     }
@@ -163,14 +181,17 @@ export async function applyRetention(
 }
 
 /**
- * GC：删「没有任何 manifest 引用、且最后修改超过 `graceMs`」的 blob（spec §8.4）。
+ * GC：删「没有任何 manifest 引用、且最后修改严格早于 `now - 24h`」的 blob（spec §8.4）。
  *
  * **fail-closed**：任一 manifest 读不了，整轮一个都不删（不然可能删掉那份坏清单正引用的 blob）。
+ * 成功路径（含没有可删对象）末尾回写 state，让 `usageBytes` / `lastGcAt` 当场更新；
+ * fail-closed 与 `isBusy` 跳过时**不写** state。
  */
 export async function collectGarbage(
   store: BackupStore,
-  options: { now: number; graceMs?: number },
+  options: { now: number; graceMs?: number; isBusy?: () => boolean },
 ): Promise<{ deleted: number; bytes: number }> {
+  if (options.isBusy?.() === true) return { deleted: 0, bytes: 0 }
   const { manifests, ok } = await 读全部清单(store)
   if (!ok) return { deleted: 0, bytes: 0 }
   const 引用 = referencedHashes(manifests)
@@ -179,11 +200,14 @@ export async function collectGarbage(
   let bytes = 0
   for (const blob of await store.blobs()) {
     if (引用.has(blob.hash)) continue
-    if (blob.lastModified > options.now - 宽限) continue
+    // 严格小于：恰好 `now - 宽限` 的对象仍在宽限内（spec §8.4 的 `< now - 24 小时`）。
+    if (blob.lastModified >= options.now - 宽限) continue
     await store.deleteBlob(blob.hash)
     deleted += 1
     bytes += blob.size
   }
+  const state = await store.readState()
+  await syncState(store, { now: options.now, autoPaused: state?.autoPaused ?? false })
   return { deleted, bytes }
 }
 
