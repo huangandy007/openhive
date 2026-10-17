@@ -175,7 +175,7 @@ test("MinIO 窗口：上沿横线与下方那条一致，且置顶盖住文件�
   })
 
   // 点底部窄条 → 展开 MinIO 窗口（§5.1 步骤 2）。
-  await page.locator("[data-component='minio-bar']").click()
+  await page.locator("[data-slot='minio-bar-open']").click()
   await expect(page.locator("[data-slot='minio-tree']")).toBeVisible({ timeout: 10_000 })
 
   const 读 = await 量窗口(page)
@@ -235,7 +235,7 @@ test("MinIO 窗口：上沿可拖拽下移，窗口随之变矮并露出上方�
   await expect(page.locator("[data-slot='sandbox-tree'] [data-slot='file-tree-row']").first()).toBeVisible({
     timeout: 30_000,
   })
-  await page.locator("[data-component='minio-bar']").click()
+  await page.locator("[data-slot='minio-bar-open']").click()
   await expect(page.locator("[data-slot='minio-tree']")).toBeVisible({ timeout: 10_000 })
 
   const 前 = await 量窗口(page)

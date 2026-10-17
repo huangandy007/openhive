@@ -843,7 +843,7 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
 
 const 侧栏tab = (host: HTMLElement, key: "session" | "files") =>
   host.querySelector<HTMLButtonElement>(`[data-slot='sidebar-tab'][data-tab='${key}']`)
-const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-component='minio-bar']")
+const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-slot='minio-bar-open']")
 const 双树 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-component='dual-file-tree']")
 const 沙箱树 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-tree='sandbox']")
