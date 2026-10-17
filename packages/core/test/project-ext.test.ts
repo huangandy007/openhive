@@ -375,4 +375,44 @@ describe("ProjectExt", () => {
       ),
     ),
   )
+
+  describe("deleteByProjectID（2026-10-16 项目删除：清 project_ext 行）", () => {
+  it.effect("删掉这个项目的行；别的项目**整行原样**", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+          yield* seedProject(alice.db, "proj_d1").pipe(Effect.orDie)
+          yield* seedProject(alice.db, "proj_d2").pipe(Effect.orDie)
+          yield* insertExt(alice.db, { project_id: "proj_d1", type: "private" }).pipe(Effect.orDie)
+          yield* insertExt(alice.db, { project_id: "proj_d2", type: "private" }).pipe(Effect.orDie)
+
+          yield* ProjectExt.deleteByProjectID(alice.db, "proj_d1")
+
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_d1")).toBeUndefined()
+          // 对照：隔壁那行**整行原样**（同「touchProjectExt 只动这一行」那条的写法）——
+          // 写成「删全表」会连它一起清掉，而那样在只看本项目那一句下照样绿。
+          expect(yield* ProjectExt.findByProjectID(alice.db, "proj_d2")).toEqual({
+            project_id: "proj_d2",
+            type: "private",
+            project_type: "单案",
+            shared_directory: null,
+            last_accessed_at: 1700000000000,
+          })
+        }),
+      ),
+    ),
+  )
+
+  it.effect("本来就没有那一行 ⇒ 不抛错（可重入，同 touchProjectExt 的「零行是正常路径」）", () =>
+    withTmp((root) =>
+      withRouter(root, (router) =>
+        Effect.gen(function* () {
+          const alice = yield* router.forUser("alice")
+          yield* ProjectExt.deleteByProjectID(alice.db, "proj_根本没有")
+        }),
+      ),
+    ),
+  )
+  })
 })

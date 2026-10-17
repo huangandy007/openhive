@@ -194,6 +194,27 @@ export function touchProjectExt(db: Database, input: TouchProjectExtInput) {
 }
 
 /**
+ * 删掉一个项目的 `project_ext` 行（2026-10-16 项目删除，spec §6 ③）。
+ *
+ * ⚠️ **收裸 `db`，不是 Effect 服务**——同族的 `insertProjectExt` / `touchProjectExt` 都是这个形状
+ * （本文件只有读侧 `findByProjectID` 那一族走服务）。
+ *
+ * **删到 0 行不算错**（可重入）：第二次点删除时那一行已经不在了，那时抛错才是错的
+ * ——与 `removeMember`（auth 侧）同一条口径。
+ *
+ * ⚠️ **删的是「我的」登记行**：项目删除由创建人发起，而 `project_ext` 只对**创建人**存在
+ * （成员没有 `project_ext` 行，`ext.ts` 上面那段注释逐字写着）。成员的清单靠 PG 的
+ * `project_member` 产出，那一边由 `removeAllMembers` 负责。
+ */
+export function deleteByProjectID(db: Database, projectID: string) {
+  return db
+    .delete(ProjectExtTable)
+    .where(eq(ProjectExtTable.project_id, projectID))
+    .run()
+    .pipe(Effect.orDie)
+}
+
+/**
  * 建表迁移。`id` **不带上游那种时间戳前缀**，一眼可辨是 fork 产出的：
  * `applyOnly` 在**老库**上会用 `id.startsWith(\`${prefix}_\`)` 去匹配 `__drizzle_migrations` 的
  * 时间戳（`migration.ts` 那段 legacy 分支），拿一个上游样子的时间戳去撞它没有好处。
