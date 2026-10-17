@@ -387,6 +387,103 @@ export async function recordProject(db: ProjectMemberTarget, input: RecordProjec
   `)
 }
 
+export interface UpdateProjectNameInput {
+  readonly projectId: string
+  readonly name: string
+}
+
+/**
+ * 改写一个项目的**共享名字**（2026-10-16 项目改名）。
+ *
+ * ## 为什么需要它——`project_meta` 今天只有「建」
+ *
+ * 全仓对 `project_meta` 的写入点只有建项目时那一个 `insert`（`recordProject` 的注释逐字写着
+ * 「同一个 id 不会有第二次创建」），**没有 update / upsert**。于是「改名」这条链需要第二个写入点。
+ *
+ * ## 为什么只有名字这一列
+ *
+ * 这张表有 `name` 与 `type` 两列，而**类型不是这次要改的东西**（spec 只说改名）。
+ * 顺手把 `type` 一起写（`set name = …, type = …`）不会报错、不会变红——只有测试里那条
+ * 「type 一个字不动」在。**类型今天没有改名出口**，将来要加再单独裁定。
+ *
+ * ## `update` 而不是 upsert；命中 0 行**静默成功**（残差，如实记）
+ *
+ * 同 `markRestored` 的理由（上面那段）：走得到这里 = 调用方刚读过这一行 / 刚建过这一行
+ * ⇒ 那行必然在。写成 upsert 就等于允许「本来没有也行」，把「该改的那一行找不着」也静默算成成功。
+ * ⚠️ 但 `update` 命中 0 行时**它同样返回成功**，调用方分辨不出——真要防它得去数返回行数，
+ * 而那条形状在 PGlite 与生产 bun-sql 下是否一致**没验过**（`LEARNINGS #002-01` 咬的正是这条维度）
+ * ⇒ **不写没验过的判据**，作为残差记在 `state.md` 的缺口表。
+ */
+export async function updateProjectName(db: ProjectMemberTarget, input: UpdateProjectNameInput): Promise<void> {
+  await db.execute(sql`
+    update auth.project_meta
+    set name = ${input.name}
+    where project_id = ${input.projectId}
+  `)
+}
+
+export interface RemoveAllMembersInput {
+  readonly projectId: string
+}
+
+/**
+ * 把一个项目的**全部成员关系**删掉（2026-10-16 项目删除，spec §6 ①）。
+ *
+ * ⚠️ **不能只删发起人那一条**：本文件上面 `removeMember` 删的是「某人退出」那一条，而删除项目
+ * 要的是**整组消失**。只删自己那条的话，项目会从「我的项目」**降级成影子行**继续挂在
+ * 其他成员的清单上（影子行由 `membershipsOf` 产出，spec §6 ① 明写这一点，`project.ts:317-320`）。
+ *
+ * **删到 0 行算成功**（同 `removeMember` 的理由：可重入——第二次点删除时那几行已经不在了，
+ * 那时抛错才是错的）。**按 `project_id` 删，不按 `user_id`**：后者会连别的项目一起清掉。
+ */
+export async function removeAllMembers(db: ProjectMemberTarget, input: RemoveAllMembersInput): Promise<void> {
+  await db.execute(sql`
+    delete from auth.project_member
+    where project_id = ${input.projectId}
+  `)
+}
+
+export interface RemoveProjectArchiveInput {
+  readonly projectId: string
+}
+
+/**
+ * 删掉一个项目的**归档标记**（2026-10-16 项目删除，spec §6 ②）。
+ *
+ * 跨库**没有外键**（`0005_project_member.sql:33-37`）⇒ 项目本体消失时这张表不会跟着清，必须手工删。
+ * 留着它的后果不是「多一行垃圾」：一个 id 被复用时（今天不会，但不该指望）新项目会**一建出来就是已归档**。
+ *
+ * `delete` 而不是「翻成 `archived = false`」：`archived = false` 是**找回**那条链的语义
+ * （`markRestored`），而这里是「这一行不该存在了」。
+ * **删到 0 行算成功**——可重入。
+ */
+export async function removeProjectArchive(db: ProjectMemberTarget, input: RemoveProjectArchiveInput): Promise<void> {
+  await db.execute(sql`
+    delete from auth.project_archive
+    where project_id = ${input.projectId}
+  `)
+}
+
+export interface RemoveProjectMetaInput {
+  readonly projectId: string
+}
+
+/**
+ * 删掉一个项目的**共享名字 / 类型**行（2026-10-16 项目删除，spec §6 ②）。
+ *
+ * 跨库无外键（同 `removeProjectArchive`）。留着它的后果比归档标记那条更隐蔽：
+ * 项目本体（每用户 SQLite 的 `project_ext` / `project` 行）已经不在了，而这张表里还挂着一行
+ * 谁都读不到的名字——它不会出错、不会变红，只是**一直涨**。
+ *
+ * **删到 0 行算成功**——可重入。
+ */
+export async function removeProjectMeta(db: ProjectMemberTarget, input: RemoveProjectMetaInput): Promise<void> {
+  await db.execute(sql`
+    delete from auth.project_meta
+    where project_id = ${input.projectId}
+  `)
+}
+
 export interface MembershipOfUser {
   readonly projectId: string
   /** 加入时刻，Unix **秒**（`time_created`）。 */

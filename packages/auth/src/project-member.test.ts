@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
 import { getTableColumns, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
-import { migrate } from "./migrate"
+import { migrate, rowsOf } from "./migrate"
 import {
   addMember,
   archiveStatesOf,
+  markArchived,
   memberCountsOf,
   membershipsOf,
   membersOf,
@@ -14,7 +15,12 @@ import {
   projectMeta,
   projectMetaOf,
   recordProject,
+  removeAllMembers,
   removeMember,
+  removeProjectArchive,
+  removeProjectMeta,
+  updateProjectName,
+  type ProjectMemberTarget,
 } from "./project-member"
 
 /**
@@ -536,5 +542,80 @@ describe("project_meta / project_member · 读写辅助（006 的消费者）", 
       { projectId: "p2", timeCreated: 22 },
     ])
     expect(await membershipsOf(db, "u_nobody")).toEqual([])
+  })
+})
+
+/** 某项目的 `project_meta` 那一行（**裸 SQL**，不经被测对象——同本文件其它 oracle 的做法）。 */
+async function 读meta(db: ProjectMemberTarget, projectId: string) {
+  const result = await db.execute(sql`select name, type from auth.project_meta where project_id = ${projectId}`)
+  return rowsOf(result)[0]
+}
+
+describe("项目级维护（2026-10-16）：改名 / 清成员 / 清归档标记 / 清共享名字", () => {
+  /**
+   * **改名**——`project_meta.name` 今天**只有建项目时的那个 `insert`**，全仓没有 update
+   * （spec §4.1）。这条钉的是「第二个写入点」存在且**只改名字那一列**。
+   */
+  test("updateProjectName：只改 name，type 一个字不动", async () => {
+    const db = await freshDb()
+    await recordProject(db, { projectId: "p1", name: "旧名字", type: "shared" })
+
+    await updateProjectName(db, { projectId: "p1", name: "新名字" })
+
+    const 行 = await 读meta(db, "p1")
+    expect(行?.name).toBe("新名字")
+    // type 是**另一件事**（spec §4.1 的名字有两处、类型只有一处）——改名字顺手改了类型
+    // 不会报错也不会变红，只有这条在。
+    expect(行?.type).toBe("shared")
+  })
+
+  test("updateProjectName：命中 0 行时**不抛错**（残差，见函数注释）", async () => {
+    const db = await freshDb()
+    // 库里压根没有 p9 这一行——调用方分辨不出，这是如实记账的残差，不是「已覆盖」。
+    await expect(updateProjectName(db, { projectId: "p9", name: "随便" })).resolves.toBeUndefined()
+  })
+
+  /**
+   * **清成员**——删的是**所有**成员的，不只发起人（spec §6 ①：只删自己的登记、留着成员关系的话，
+   * 项目会从「我的项目」降级成影子行继续挂在列表上）。
+   */
+  test("removeAllMembers：一个项目的成员行**全体**删掉，别的项目一行不动", async () => {
+    const db = await freshDb()
+    await addUser(db, "u2", "010002")
+    await addMember(db, { projectId: "p1", userId: "u1", role: "owner", timeCreated: 1 })
+    await addMember(db, { projectId: "p1", userId: "u2", role: "member", timeCreated: 2 })
+    await addMember(db, { projectId: "p2", userId: "u1", role: "owner", timeCreated: 3 })
+
+    await removeAllMembers(db, { projectId: "p1" })
+
+    expect(await membersOf(db, "p1")).toEqual([])
+    // 对照：另一个项目**一行不动**——写成「删掉 user 的全部成员行」会连 p2 一起清掉，
+    // 而那样在只看 p1 的断言下**照样绿**。
+    expect((await membersOf(db, "p2")).map((m) => m.userId)).toEqual(["u1"])
+  })
+
+  test("removeAllMembers：项目本来就没有成员行 ⇒ 不抛错（可重入）", async () => {
+    const db = await freshDb()
+    await expect(removeAllMembers(db, { projectId: "p9" })).resolves.toBeUndefined()
+  })
+
+  test("removeProjectArchive：归档行删掉；没有那一行 ⇒ 不抛错（可重入）", async () => {
+    const db = await freshDb()
+    await markArchived(db, { projectId: "p1", archivedAt: 100 })
+
+    await removeProjectArchive(db, { projectId: "p1" })
+    expect(await archiveStatesOf(db, ["p1"])).toEqual(new Map())
+
+    await expect(removeProjectArchive(db, { projectId: "p1" })).resolves.toBeUndefined()
+  })
+
+  test("removeProjectMeta：共享名字行删掉；没有那一行 ⇒ 不抛错（可重入）", async () => {
+    const db = await freshDb()
+    await recordProject(db, { projectId: "p1", name: "甲项目", type: "private" })
+
+    await removeProjectMeta(db, { projectId: "p1" })
+    expect(await projectMetaOf(db, ["p1"])).toEqual(new Map())
+
+    await expect(removeProjectMeta(db, { projectId: "p1" })).resolves.toBeUndefined()
   })
 })
