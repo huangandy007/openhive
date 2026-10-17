@@ -4058,6 +4058,10 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 等到(() => 快照选择器(host)?.value === "s-old")
 
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+    // 正向前提：备份真的以 p-1 身份起了。少了这一句，「备份进门就 return」的变异下
+    // 整条用例会空转（后面的「没有 s-new」因为什么都没发生而恒真）（S-2）。
+    await 等到(() => 假.起的备份.length === 1)
+    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
     await 等到(() => 清单次 >= 2) // 备份已发起，成功支的重取挂住了
 
     setCurrentProject({ id: "p-2", name: "乙" })
@@ -4665,5 +4669,60 @@ describe("备份 / 恢复接线（Task 17）", () => {
       ["p-42", "报告.docx", false],
       ["p-42", "报告.docx", true],
     ])
+  })
+
+  test("超限框开在 p-1、切到 p-2 再点确认 ⇒ 不以新项目身份重试（S-1）", async () => {
+    // 框是 p-1 的；点确认时若现读 `currentProject()`，就会以 p-2 身份备份 p-1 的旧路径。
+    const { host, 假 } = await 开备份(
+      {
+        list: async () => [私有("p-1", "甲", 1), 私有("p-2", "乙", 2)],
+        snapshots: async () => [],
+        backup: async (_projectId, _path, allowOverQuota) =>
+          allowOverQuota ? { jobId: "j-1" } : { code: "quota_exceeded" },
+      },
+      "p-1",
+    )
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+    await 等到(() => document.body.querySelector("[data-kind='quota'] [data-slot='backup-confirm-ok']") !== null)
+    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
+
+    setCurrentProject({ id: "p-2", name: "乙" })
+    await 冲一遍()
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+    await 冲一遍()
+    await 冲一遍()
+
+    // 只有 p-1 那一次；任何以 p-2 身份起来的备份（尤其带 `true` 的）都是这条守的失败。
+    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
+  })
+
+  test("backup() 在飞时切项目，回包 quota_exceeded 不弹框、不写文案（S-1）", async () => {
+    type 备份回包 = Awaited<ReturnType<ProjectData["backup"]>>
+    let 放回: (回包: 备份回包) => void = () => {}
+    const 挂起的备份 = new Promise<备份回包>((resolve) => {
+      放回 = resolve
+    })
+    const { host, 假 } = await 开备份(
+      {
+        list: async () => [私有("p-1", "甲", 1), 私有("p-2", "乙", 2)],
+        snapshots: async () => [],
+        backup: async () => 挂起的备份,
+      },
+      "p-1",
+    )
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+    await 等到(() => 假.起的备份.length === 1)
+
+    setCurrentProject({ id: "p-2", name: "乙" })
+    await 冲一遍()
+    放回({ code: "quota_exceeded" })
+    await 冲一遍()
+    await 冲一遍()
+
+    // 回包属于 p-1：既不能在 p-2 上开超限框，也不能写一句不属于这里的话。
+    expect(document.body.querySelector("[data-kind='quota']") === null).toBe(true)
+    expect(text(host, "file-op-message") === undefined).toBe(true)
   })
 })

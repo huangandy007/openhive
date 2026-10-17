@@ -1039,7 +1039,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     // `跟备份任务`。晚到 `backup()` / 重取之后再读 `currentProject()`，可能已经是**另一个项目**
     // ——旧任务的终态会把旧项目的 snapshotId 选中到新项目上。
     const 守 = { id, 代: 备份代次 }
+    const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const 起 = await projectData.backup(id, path, false)
+    // ⚠️ S-1：`backup()` 可能跨过切项目 / 卸载。回包既不能变成新项目的文案，也不能把
+    // 超限框开在新项目上——**静默**返回（此刻用户已经在别处了，说什么都不属于这里）。
+    if (!还在()) return
     if (起 === undefined) {
       set文件话("备份没能起起来")
       return
@@ -1053,7 +1057,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             kind="quota"
             title="超出容量上限"
             message="本次备份将超出 10 GB 上限，自动备份会暂停，是否继续？（不会自动删旧恢复点）"
-            onConfirm={() => void 备份越限(path)}
+            onConfirm={() => void 备份越限(path, 守)}
             onCancel={() => dialog.close()}
           />
         ))
@@ -1074,14 +1078,18 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     void 跟备份任务(起.jobId, 守)
   }
 
-  /** 超限确认之后带 `allowOverQuota: true` 再试一次（spec §8.3）。 */
-  const 备份越限 = async (path: string) => {
+  /**
+   * 超限确认之后带 `allowOverQuota: true` 再试一次（spec §8.3）。
+   *
+   * ⚠️ S-1：守由**打开超限框的那次 `备份`**传入（它进门第一行捕获的 `{ id, 代 }`）。
+   * 在这里现读 `currentProject()` 会把「框开着期间用户切了项目」读成一个合法的守卫，
+   * 于是以新项目身份备份一个旧项目的路径。
+   */
+  const 备份越限 = async (path: string, 守: { id: string; 代: number }) => {
     dialog.close()
-    const id = currentProject()?.id
-    if (!id || !projectData) return
-    // 同 `备份`：任何 await 之前钉住项目与代次（N-1）。
-    const 守 = { id, 代: 备份代次 }
-    const 起 = await projectData.backup(id, path, true)
+    if (!projectData) return
+    if (currentProject()?.id !== 守.id || 守.代 !== 备份代次) return
+    const 起 = await projectData.backup(守.id, path, true)
     if (起 === undefined || "code" in 起) {
       set文件话("备份没能起起来")
       return
