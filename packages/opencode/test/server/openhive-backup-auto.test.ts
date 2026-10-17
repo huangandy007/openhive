@@ -207,6 +207,16 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
     expect(registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" }).resumed).toBe(false)
   })
 
+  // ⚠️ 不推时间、不调 `evict()`：那会走 `start` 的「陈旧入口自愈」分支，测不到 `finish` 的释放。
+  test("finish 后单飞锁立即释放：同一（用户×项目）马上能起新任务", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const first = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    registry.finish(first.job.id, "succeeded")
+    const second = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    expect(second.resumed).toBe(false)
+    expect(second.job.id).not.toBe(first.job.id)
+  })
+
   test("quiesceProject：先请求取消、等任务收敛；执行器不响应则以超时判失败", async () => {
     const registry = createJobRegistry({ now: () => 1000 })
     const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
