@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { MANIFEST_VERSION } from "../../src/server/openhive/backup-model"
 import {
   estimateManifestBytes,
   isExcluded,
@@ -6,6 +7,7 @@ import {
   isSafeRelativePath,
   keepBothName,
   snapshotIdOf,
+  validateManifest,
 } from "../../src/server/openhive/backup-rules"
 
 describe("isSafeRelativePath", () => {
@@ -31,6 +33,8 @@ describe("isExcluded", () => {
       "资料/d~",
       ".DS_Store",
       "资料/Thumbs.db",
+      "资料/desktop.ini",
+      "资料/.DS_Store",
       "desktop.ini",
       "~$报告.docx",
       ".openhive-restore-abc.tmp",
@@ -40,7 +44,8 @@ describe("isExcluded", () => {
     }
   })
   test("不排除 .git 本身与普通文件", () => {
-    for (const path of [".git", ".git/HEAD", ".git/objects/ab/cdef", "资料/报告.docx"]) {
+    // `资料/x.lock`：`.lock` 只在 `.git/` 下才是锁；根外的同名后缀是用户自己的文件，不能误伤。
+    for (const path of [".git", ".git/HEAD", ".git/objects/ab/cdef", "资料/报告.docx", "资料/x.lock"]) {
       expect(isExcluded(path), path).toBe(false)
     }
   })
@@ -79,6 +84,50 @@ describe("keepBothName", () => {
   })
   test("无扩展名与根目录", () => {
     expect(keepBothName("README", at, () => false)).toBe("README (MinIO 2026-10-18 14-03-05)")
+  })
+})
+
+describe("validateManifest", () => {
+  /**
+   * 合法基线。三条拒绝用例都只改它的一处，**先有一条基线通过**才能说明另外三条的
+   * `undefined` 是守卫生效，而不是夹具自己就过不了校验（否则三条全是空转）。
+   */
+  const 合法 = () => ({
+    version: MANIFEST_VERSION,
+    id: "20261018T140305123Z-a1b2c3",
+    projectId: "p1",
+    ownerId: "u1",
+    kind: "manual" as const,
+    scope: "",
+    createdAt: 1,
+    createdBy: "u1",
+    source: "manual" as const,
+    timezone: "Asia/Shanghai",
+    status: "complete" as const,
+    files: [{ path: "资料/a.txt", hash: "a".repeat(64), size: 3, mtimeMs: 1 }],
+    dirs: ["资料"],
+    skipped: [],
+    totals: { files: 1, bytes: 3, uploadedBytes: 3, skipped: 0 },
+  })
+  const 期望 = { projectId: "p1", ownerId: "u1" }
+
+  test("合法 manifest 原样通过（基线）", () => {
+    expect(validateManifest(合法(), 期望)).toEqual(合法())
+  })
+  test("files 里的路径过不了 isSafeRelativePath ⇒ undefined", () => {
+    const raw = 合法()
+    raw.files[0].path = "a/../../x"
+    expect(validateManifest(raw, 期望)).toBeUndefined()
+  })
+  test("hash 不是 64 位小写十六进制 ⇒ undefined", () => {
+    const raw = 合法()
+    raw.files[0].hash = "A".repeat(64) // 大写：形状对、字符集不对
+    expect(validateManifest(raw, 期望)).toBeUndefined()
+  })
+  test("projectId 与期望不符 ⇒ undefined", () => {
+    const raw = 合法()
+    raw.projectId = "p2"
+    expect(validateManifest(raw, 期望)).toBeUndefined()
   })
 })
 
