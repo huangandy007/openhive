@@ -1973,8 +1973,14 @@ const 行菜单钮 = (host: HTMLElement, 名: string) =>
 /** 菜单里某一项（**Portal 到 body**，不在 host 里）。 */
 const 菜单项 = (action: string) => document.body.querySelector<HTMLElement>(`[data-project-action='${action}']`)
 
-/** 某一行上那个就地改名输入框（编辑态才有）。 */
-const 改名框 = (host: HTMLElement, 名: string) =>
+/**
+ * 某一行上那个就地改名输入框（编辑态才有）。
+ *
+ * ⚠️ **不收 `名` 参数**：编辑态下名字那一格已被 `<就地改名输入>` 整颗换掉（`project-item-name`
+ * 那格不在 DOM 里），按名字取不到这一行 ⇒ 参数本来就没用。同一时刻只有一行在改名，
+ * 所以只按 `project-rename-input` 取第一行（`#005-44` 同族：改前那个 `名` 是空转的读口）。
+ */
+const 改名框 = (host: HTMLElement) =>
   [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")]
     .find((行) => 行.querySelector("[data-slot='project-rename-input']") !== null)
     ?.querySelector<HTMLInputElement>("[data-slot='project-rename-input']")
@@ -2073,7 +2079,7 @@ describe("就地改名（spec §8 / §10 判据 9）", () => {
     指(菜单项("rename"))
     await 冲刷()
 
-    expect(改名框(host, "8·17专案")?.value).toBe("8·17专案")
+    expect(改名框(host)?.value).toBe("8·17专案")
   })
 
   test("回车 ⇒ `onRename` 收到**那一行**的项目与 trim 后的新名字", async () => {
@@ -2093,7 +2099,7 @@ describe("就地改名（spec §8 / §10 判据 9）", () => {
     await 冲刷()
     指(菜单项("rename"))
     await 冲刷()
-    const 框 = 改名框(host, "8·17专案")
+    const 框 = 改名框(host)
     if (!框) throw new Error("改名框不在——前提不成立")
     打字(框, "  8·17专案（改）  ")
     框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
@@ -2123,14 +2129,14 @@ describe("就地改名（spec §8 / §10 判据 9）", () => {
     await 冲刷()
     指(菜单项("rename"))
     await 冲刷()
-    const 框 = 改名框(host, "8·17专案")
+    const 框 = 改名框(host)
     if (!框) throw new Error("改名框不在——前提不成立")
     打字(框, "改到一半")
     框.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     await 等一拍()
 
     expect(收到).toEqual([])
-    expect(改名框(host, "8·17专案") === undefined).toBe(true)
+    expect(改名框(host) === undefined).toBe(true)
   })
 
   test("空草稿回车 ⇒ 不提交（清空名字不是一次改名），那一行退回展示态", async () => {
@@ -2150,14 +2156,14 @@ describe("就地改名（spec §8 / §10 判据 9）", () => {
     await 冲刷()
     指(菜单项("rename"))
     await 冲刷()
-    const 框 = 改名框(host, "8·17专案")
+    const 框 = 改名框(host)
     if (!框) throw new Error("改名框不在——前提不成立")
     打字(框, "   ")
     框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
     await 等一拍()
 
     expect(收到).toEqual([])
-    expect(改名框(host, "8·17专案") === undefined).toBe(true)
+    expect(改名框(host) === undefined).toBe(true)
   })
 })
 

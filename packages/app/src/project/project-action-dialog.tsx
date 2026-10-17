@@ -103,7 +103,7 @@ const 文案 = {
     ok: "删除",
     variant: "danger",
   },
-} as const
+} as const satisfies Record<ProjectActionKind, unknown>
 
 export function ProjectActionDialog(props: ProjectActionDialogProps): JSX.Element {
   const dialog = useDialog()
