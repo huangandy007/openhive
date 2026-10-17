@@ -338,4 +338,16 @@ describe("T-rename · 项目改名（spec §10 判据 1）", () => {
     }),
     30_000,
   )
+
+  /** **边角：无身份 ⇒ 401**（守卫已在，此前没有判据钉它）。 */
+  it.live("无身份 ⇒ 401（改名出口）", () =>
+    Effect.gen(function* () {
+      const response = yield* openApp(RENAME_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "any-project", name: "新名字" }),
+      })
+      expect(response.status).toBe(401)
+    }),
+  )
 })

@@ -103,6 +103,7 @@ import {
   markArchived,
   markRestored,
   membersOf,
+  projectMetaOf,
   removeAllMembers,
   removeProjectArchive,
   removeProjectMeta,
@@ -438,8 +439,11 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
  * | 1 | ⑤ MinIO 备份（每个成员的 `<userId>/<projectId>/`） | ⚠️ **比 spec §6 的原序提前**——原序里它排在 ① 之后，而 ① 删掉 `project_member` 之后**第二次调用建不出目标清单** ⇒ 备份成永久孤儿、**可重入当场失效**（spec §6 自己要「可重入」，原序自相矛盾） |
  * | 2 | ④ 沙箱目录 ＋ 共享 bare 仓库 | 盘上的东西，删了不影响上面两步的判据 |
  * | 3 | ⑥ 快照 / worktree 残留（按 project id 分的父目录） | 同上 |
- * | 4 | ③ `project_ext` 行 ＋ ⑦ `project_directory` 行 | 「自己的账」——摘完这两样，项目**就从我的清单里消失了** |
- * | 5 | ① `project_member`（**全体**）＋ ② `project_archive` / `project_meta` | **最后**：这一步是「项目从所有人的清单里消失」那一下（spec §6 ①：只删自己的会降级成影子行） |
+ * | 4 | ③ `project_ext` 行 ＋ ⑦ `project_directory` 行 | 「自己的账」——摘完这两样**只是清掉我自己的局部账**：`project_member` 还在 ⇒ `handleList` 的 `joinedEntries` 仍会替我产出一行**影子行**，项目**没有**从我的清单里消失。项目真正从所有人清单消失发生在**第 5 步** |
+ * | 5 | ① `project_member`（**全体**）＋ ② `project_archive` / `project_meta` | **最后**：这一步才是「项目从所有人的清单里消失」那一下（spec §6 ①：只删自己的会降级成影子行） |
+ *
+ * ⚠️ 表里的 ①–⑦ 是 spec §6 的**清点编号**，不是执行序；执行序以上面「序」那一列为准：
+ * 读成员 → ⑤ → ④ → ⑥ → ③＋⑦ → ①＋②（计划裁定 R2）。
  *
  * ## 可重入（判据 6）
  *
@@ -447,19 +451,32 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
  * MinIO 的 `delete` 对不存在的键照抄真 S3 回 204（`fake-s3` 文件头）。第二次点删除是**空转**，
  * 不是错误。
  *
- * ## 授权门（2026-10-16 裁定 14）
+ * ## 授权门（2026-10-16 裁定 14 ＋ 2026-10-17 终审 Important-2）
  *
- * 判定写成 `members.length > 0 && !decide(...)`，**不是** brief 原稿的 `!decide(...)`：
- * 第一次删完 `project_member` 已空 ⇒ 第二次调用 `actor = null` ⇒ 裸 `!decide(...)` 会回 403，
- * **可重入当场失效**。带上前置后，「项目已删得没有成员」这条路跳过判定、空转放行——
- * 那是 spec §6 要的「可重入」，不是越权（能走到这一步的项目已经不存在了）。
+ * **成员为空时本函数不做任何全局副作用。** 旧写法是在空成员时跳过 owner 判定、继续往下删盘
+ * ——那是越权：`dropTrees` / `dropResidue` 无条件删 `/shared/<projectId>.git` 与全局
+ * `snapshot|worktree/<projectId>`，任何已登录用户知道 projectId 就能在「成员行被外部清空」时
+ * 删掉它们。裁定是 fail-closed，分两支（实现见处理器里的早退块）：
+ * - 项目**还在**（`project_meta` / `project_archive` 有行）⇒ 没有成员就无从判定 owner ⇒ **403**；
+ * - 项目**确实不在** ⇒ 视为已删过（可重入）⇒ 只收调用者自己那两行本地账（③＋⑦），
+ *   **不碰**备份 / 盘 / 全局残留 / 成员关系。
  *
- * ## 与归档的次序呼应
+ * 成员非空时判定才是 `members.length > 0 && !decide(...)`（前置那时必然成立）：
+ * 第一次删完 `project_member` 已空 ⇒ 第二次调用走的是上面「项目确实不在」那一支，
+ * 所以可重入**不靠**空转放行、靠的是「确认已删」之后再收自己的账。
  *
- * 归档的最后一步是 `markArchived`（「登记」最后写）；这里是**倒过来**：「登记」最先摘。
- * 两处是同一条取向的两面——**先摘账、后删盘**：中途失败时用户看到的是「已经删了」
- * （正确的方向），剩下的只是磁盘垃圾；反过来会留下一具「清单里有、点开 500」的僵尸
- * （那正是 2026-10-16 早上那个现场）。
+ * ## 与归档的次序对照：这里是**先删盘、后摘账**（计划裁定 R2）
+ *
+ * 归档最后一步是 `markArchived`（「登记」最后写）；删除**不是**它的镜像。
+ * 本函数的执行序是 读成员 → ⑤ 备份 → ④ 盘 → ⑥ 残留 → ③＋⑦ 自己的账 → ①＋② 成员与册页
+ * （代码 `:504-521` 逐行如此）。把 ① 提到 ⑤ 前面确实能让「先摘账后删盘」成立，
+ * 但那样**第二次调用建不出「哪些人的前缀要清」**（成员关系已经没了）⇒ ⑤ 不可重入，
+ * 与 spec §6 自己的「可重入」要求冲突（`LEARNINGS #007-01`）。所以以 R2 的次序为准。
+ *
+ * **这个次序的代价（如实记账，见 spec §11 缺口 19）**：盘在 ⑤/④/⑥ 已经**不可逆删除**，
+ * 之后 ③/⑦/①/② 任一失败 ⇒ 接口 500、用户看到「删除失败」但文件已经没了；
+ * ① 成功而 ② 失败 ⇒ 项目已从所有人清单消失、界面上没有入口重试。
+ * 两段都只能直打 HTTP 收敛，没有注入失败的接缝可测。
  */
 function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
@@ -488,7 +505,31 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
     const archived = archives.get(projectId)?.archived ?? false
 
-    // ── 判定（排在一切副作用之前；spec §7）。前置 `members.length > 0` 见函数头「授权门」。──
+    // ── 成员为空：**不做任何跨用户 / 全局副作用**（2026-10-17 终审 Important-2）──
+    //
+    // 旧的写法在这里跳过 owner 判定、直接往下走，而 `dropTrees` / `dropResidue` 是**无条件**
+    // 删 `/shared/<projectId>.git` 与全局 `snapshot|worktree/<projectId>` 的 ⇒ 任何已登录用户
+    // 只要知道 projectId，在「成员行被外部清空」或「项目已删但仍有 PG 残行」时就能删别人的目录。
+    //
+    // 裁定是 fail-closed：没有成员行就**无从判定 owner**。
+    // - 项目**还在**（`project_meta` 或 `project_archive` 有行）⇒ 403；
+    // - 项目**确实不在**（两张表都没有行）⇒ 视为已删过（可重入），**只收调用者自己那两行本地账**，
+    //   跳过 `dropBackups` / `dropTrees` / `dropResidue` / `removeAllMembers`。
+    //
+    // ⚠️ 「存在」的判据是「有行即有」：`projectMetaOf` / `archiveStatesOf` 都是
+    // 「没有那一行，键在 Map 里缺席」的口径 ⇒ `.size > 0` 即存在。
+    if (members.length === 0) {
+      const meta = yield* Effect.promise(() => projectMetaOf(pg, [projectId]))
+      if (meta.size > 0 || archives.size > 0) return forbidden("无权删除该项目")
+
+      yield* deleteByProjectID(deps.database.db, projectId)
+      yield* deps.directories.removeAll({ projectID: ProjectV2.ID.make(projectId) })
+      return HttpServerResponse.jsonUnsafe({ projectId, deleted: true })
+    }
+
+    // ── 判定（排在一切副作用之前；spec §7）。──
+    // 走到这里 `members.length > 0` **必然成立**（上面那条早退已经把空成员分流掉）——
+    // 保留这个前置只是让这一行的形状与它守着的语义逐字可读，不是可达分支。
     if (members.length > 0 && !ProjectMembership.decide({ actor, action: "delete", target: null, archived }))
       return forbidden("无权删除该项目")
 

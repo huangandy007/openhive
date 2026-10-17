@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect } from "bun:test"
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs"
+import { Database as Sqlite } from "bun:sqlite"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
+import { Global } from "@opencode-ai/core/global"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
@@ -82,10 +84,23 @@ const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_D
  */
 const s3: FakeS3 = startFakeS3()
 
+/**
+ * 测试在**全局数据目录**下造过的快照残留（Important-2 那条用例的观测面）。
+ * 产品路径是 `join(Global.Path.data, "snapshot", projectId)`——那是**真全局目录**，
+ * 不是本文件的沙箱 ⇒ 收尾必须逐个删，**绝不能**整目录 `rmSync(join(Global.Path.data, "snapshot"))`
+ * （那会删掉别的项目 / 别的用例的快照）。
+ */
+const 造的全局残留: string[] = []
+
 afterAll(restoreDefaultPassword)
 
 afterAll(() => {
   s3.stop()
+  for (const 残留 of 造的全局残留) {
+    try {
+      rmSync(残留, { recursive: true, force: true })
+    } catch {} // 同上：句柄可能仍被持有
+  }
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
   else process.env.OPENHIVE_DATA_ROOT = previousDataRoot
   try {
@@ -175,6 +190,25 @@ const projectDirOf = (userId: string, projectId: string) => path.join(WORKSPACE_
 /** 共享 bare 仓库（共享项目才有）。 */
 const bareOf = (projectId: string) => path.join(SHARED_ROOT, `${projectId}.git`)
 
+/**
+ * 发起者库里 `project_directory` 的行数（**直接读库文件**，不经 `ProjectDirectories`）。
+ *
+ * 这张表在路由测试里此前零命中：删除清的七处里 ⑦ 一直**没有观测面**。
+ * 表由上游 `Project.fromDirectory` 在建项目时写（`project.ts:495`），所以「建完项目 ⇒ 有行」
+ * 是前置条件，删除后应当归零。
+ */
+const 目录行数 = (projectId: string) => {
+  const db = new Sqlite(path.join(DATA_ROOT, ALICE.id, "opencode.db"), { readonly: true })
+  try {
+    const row = db
+      .query<{ n: number }, [string]>("select count(*) as n from project_directory where project_id = ?")
+      .get(projectId)
+    return row?.n ?? 0
+  } finally {
+    db.close()
+  }
+}
+
 /** PG 三表里某个项目的行数（**裸 SQL**，不经任何读侧函数）。 */
 const 三表行数 = (projectId: string) =>
   Effect.promise(async () => {
@@ -260,6 +294,8 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
         // ── 前置条件逐条**先证明成立**（`#002-02`：先证明机制活着，再钉被测那条）──
         expect(existsSync(projectDirOf(ALICE.id, project.id))).toBe(true)
         expect(existsSync(bareOf(project.id))).toBe(true)
+        // ⑦ 的观测面也要先证明「本来有」——否则「删完是 0」在一个本来就 0 的现场也成立。
+        expect(目录行数(project.id), "建项目之后 project_directory 应当有一行").toBeGreaterThan(0)
         // 删除前消息**真的读得出来**——否则「删除后读得出来」在一个本来就哑的现场也绿。
         const 读前 = yield* as(`/session/${会话ID}/message`)
         expect(读前.status).toBe(200)
@@ -284,6 +320,11 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
 
         // ④ spec §6 ②：PG 三表都清空了（成员关系**全体**删掉，不只发起人）。
         expect(yield* 三表行数(project.id)).toEqual({ 成员: 0, 归档: 0, 名字: 0 })
+
+        // ④b spec §6 ⑦：发起者库里的 `project_directory` 行也清掉了。
+        //    前置（「建项目时真有这一行」）在上面前置块里已经证过——
+        //    否则「删完是 0」在一个本来就 0 的现场也成立（`#005-47`）。
+        expect(目录行数(project.id), "删除后 project_directory 应当清零").toBe(0)
 
         // ⑤ 判据 4（**留底**，与上面五条方向相反）：会话行仍在、且**读得出来**。
         //    这是 spec §4.3 那条实测结论（目录删掉后读会话照样通）的判据化。
@@ -385,5 +426,85 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
       expect(yield* 三表行数(project.id)).toEqual({ 成员: 1, 归档: 0, 名字: 1 })
     }),
     30_000,
+  )
+
+  /**
+   * **成员行为空 ≠ 可以越权**（2026-10-17 终审 Important-2）。
+   *
+   * 旧的授权门写成 `members.length > 0 && !decide(...)`：成员为空时**跳过 owner 判定**、
+   * 随后 `dropTrees` / `dropResidue` **无条件**删全局目录 ⇒ 任何已登录用户只要知道 projectId，
+   * 在「成员行被外部清空」时就能删 `/shared/<id>.git` 与全局 `snapshot/<id>`。
+   *
+   * 裁定（fail-closed）：成员为空时**不做任何跨用户 / 全局副作用**——
+   * - 项目**还在**（`project_meta` 或 `project_archive` 有行）⇒ 无从判定 owner ⇒ **403**；
+   * - 项目**确实不在**（两张表都没有行）⇒ 视为已删过（可重入），**只收调用者自己那两行本地账**。
+   *
+   * 这条钉的是第一种：造出可观测的全局残留，外部清空成员行，**另一个已登录用户**来删。
+   * 断言四个面：403、bare 仓库仍在、snapshot 残留仍在、`project_meta` 行仍在。
+   *
+   * ⚠️ 四个面**都在同一条用例**里、且 403 排在最前：变异（拆掉存在性检查）会把红停在
+   * 状态码那一句，后面三句根本跑不到（`#005-46`）——报告里要据实写红在哪一句。
+   */
+  it.live("成员行被外部清空 ⇒ 非成员的删除请求回 403，全局 bare / snapshot 与 PG 行一个没动", () =>
+    Effect.gen(function* () {
+      const project = yield* 建项目("成员被清空的项目", "shared")
+
+      // ── 可观测的全局残留：路径拼法与产品逐字一致（`dropTrees` / `dropResidue`）──
+      const 快照残留 = path.join(Global.Path.data, "snapshot", project.id)
+      造的全局残留.push(快照残留)
+      mkdirSync(快照残留, { recursive: true })
+      writeFileSync(path.join(快照残留, "残留.txt"), "不该被删", "utf8")
+      writeFileSync(path.join(bareOf(project.id), "残留.txt"), "不该被删", "utf8")
+
+      // ── 前置逐条**先证明成立**（`#002-02`）──
+      expect(existsSync(快照残留)).toBe(true)
+      expect(existsSync(bareOf(project.id))).toBe(true)
+      expect(yield* 三表行数(project.id)).toEqual({ 成员: 1, 归档: 0, 名字: 1 })
+
+      // ── 模拟「成员行被外部清空」：直连 PGlite，绕过产品（造状态，不是绕过被测动作）──
+      yield* Effect.promise(() => pg!.db.execute(sql`delete from auth.project_member where project_id = ${project.id}`))
+      expect((yield* 三表行数(project.id)).成员, "前置：成员行真的空了").toBe(0)
+
+      // ── 被测动作：另一个人（有身份、不是成员）来删 ──
+      const response = yield* 删(BOB, project.id)
+
+      // ① 被测属性：fail-closed（没有成员就无从判定 owner）。
+      expect(response.status).toBe(403)
+      // ②③ 零全局副作用：两处磁盘残留都还在。
+      expect(existsSync(bareOf(project.id)), "共享 bare 仓库不该被删").toBe(true)
+      expect(existsSync(快照残留), "全局 snapshot 目录不该被删").toBe(true)
+      // ④ 也没有顺手把项目从所有人清单里抹掉。
+      expect(yield* 三表行数(project.id)).toEqual({ 成员: 0, 归档: 0, 名字: 1 })
+    }),
+    30_000,
+  )
+
+  /** **边角：无身份 ⇒ 401**（守卫已在，此前没有判据钉它）。 */
+  it.live("无身份 ⇒ 401（删除出口）", () =>
+    Effect.gen(function* () {
+      const response = yield* openApp(DELETE_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "any-project" }),
+      })
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  /** **边角：畸形体 / 非法 projectId ⇒ 400**（守卫已在，此前没有判据钉它）。 */
+  it.live("畸形体 / 缺字段 / 非法 projectId ⇒ 400（删除出口）", () =>
+    Effect.gen(function* () {
+      const 发 = (body: string) =>
+        as(DELETE_PATH, { method: "POST", headers: { "Content-Type": "application/json" }, body })
+
+      // 畸形 JSON：`request.json` 失败 ⇒ 400（不是 500）。
+      expect((yield* 发("{")).status).toBe(400)
+      // 合法 JSON、缺字段。
+      expect((yield* 发(JSON.stringify({}))).status).toBe(400)
+      // 合法字段、非法路径段（与 `handleArchive` 同一条 `isSafePathSegment`）。
+      for (const 非法 of ["../x", "a/b", "a\\b", ".", ".."]) {
+        expect((yield* 发(JSON.stringify({ projectId: 非法 }))).status, `projectId ${JSON.stringify(非法)}`).toBe(400)
+      }
+    }),
   )
 })
