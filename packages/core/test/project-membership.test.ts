@@ -130,11 +130,16 @@ describe("微信群模型 · 归档 / 找回（FR-008 / FR-009 / FR-010）", () 
     }
   })
 
-  test("归档后 owner 也只留找回（归档 = 冻结，见文件头）", () => {
+  test("归档后 owner 只留「找回」与「删除」（归档 = 冻结，见文件头）", () => {
     for (const action of ProjectMembership.PROJECT_ACTIONS) {
-      if (action === "restore") continue
+      // 归档态下**成立**的两个例外跳过（它们是同一条不变量的两个出口：找回把东西拉回来、
+      // 删除把项目整个拿掉——都不产生活儿，见 `frozen` 那条注释）。
+      if (action === "restore" || action === "delete") continue
       expect(ask("owner", action, { target: "member", archived: true })).toBe(false)
     }
+    // 跳过的两个要有**正面**断言——跳过本身不证明它们成立（`LEARNINGS #005-36`：借前提的绿不是守护）。
+    expect(ask("owner", "restore", { archived: true })).toBe(true)
+    expect(ask("owner", "delete", { archived: true })).toBe(true)
   })
 })
 
@@ -153,9 +158,12 @@ describe("T015 · 冻结（FR-010 的另一个出口：在项目里干活）", (
    * 写**取值断言**（`frozen(x) === !还有动作成立`）而不是比字符串/比常量：
    * 两个值由两条独立的路径算出来，**相等才是那条不变量本身**。
    */
-  test("冻结 ⟺ 归档态下没有任何非「找回」动作成立", () => {
+  test("冻结 ⟺ 归档态下除「找回」与「删除」之外没有动作成立", () => {
+    // 归档态下的两个例外（见上面那条）：它们都**不是**「在项目里干活」——
+    // 一个把文件拉回沙箱、一个把项目整份拿掉，两者都不依赖项目目录存在。
+    const 归档态例外 = new Set<ProjectMembership.ProjectAction>(["restore", "delete"])
     for (const archived of [true, false]) {
-      const 还有别的动作成立 = ProjectMembership.PROJECT_ACTIONS.filter((action) => action !== "restore").some(
+      const 还有别的动作成立 = ProjectMembership.PROJECT_ACTIONS.filter((action) => !归档态例外.has(action)).some(
         (action) =>
           [null, ...ProjectMembership.MEMBER_ROLES].some((actor) => ask(actor, action, { target: "member", archived })),
       )
@@ -189,6 +197,78 @@ describe("闭集（守卫型：多一项就红，不是「已知项都在就绿�
    */
   test("MEMBER_ROLES / PROJECT_ACTIONS 逐值相等", () => {
     expect([...ProjectMembership.MEMBER_ROLES]).toEqual(["owner", "member"])
-    expect([...ProjectMembership.PROJECT_ACTIONS]).toEqual(["invite", "remove", "leave", "archive", "restore"])
+    expect([...ProjectMembership.PROJECT_ACTIONS]).toEqual([
+      "invite",
+      "remove",
+      "leave",
+      "archive",
+      "restore",
+      "rename",
+      "delete",
+    ])
+  })
+})
+
+describe("项目级动作：改名 / 删除（2026-10-16 spec §7：两项都只有创建人能做）", () => {
+  test("未归档时：owner 可改名、可删除；member / 非成员 都不可", () => {
+    expect(ask("owner", "rename")).toBe(true)
+    expect(ask("member", "rename")).toBe(false)
+    expect(ask(null, "rename")).toBe(false)
+
+    expect(ask("owner", "delete")).toBe(true)
+    expect(ask("member", "delete")).toBe(false)
+    expect(ask(null, "delete")).toBe(false)
+  })
+
+  /**
+   * **已归档的项目也能删除**（spec §7）——但对 **member 仍然不行**。
+   *
+   * 只测 owner 那一侧会把「归档态下 delete 谁都放行」当成通过；只测 member 那一侧
+   * 又会把「归档态下 delete 谁都不行」当成通过。两侧一起测才是 spec §7 的整句话。
+   */
+  test("已归档时：owner 仍可删除；member 仍不可（归档态只对 owner 的 delete 开口）", () => {
+    expect(ask("owner", "delete", { archived: true })).toBe(true)
+    expect(ask("member", "delete", { archived: true })).toBe(false)
+    expect(ask(null, "delete", { archived: true })).toBe(false)
+  })
+
+  /**
+   * **改名在归档态下被拒**（方向是**收紧**，同文件头那段「归档 = 冻结」的读法）。
+   * spec §7 只给「已归档也能删」，没给「已归档也能改名」——归档项目的名字没有可作用的实体
+   * （要改就先找回）。谁将来放宽它，这条会红，逼人回来补理由。
+   */
+  test("已归档时：owner 也不可改名（归档 = 冻结，理由见文件头）", () => {
+    expect(ask("owner", "rename", { archived: true })).toBe(false)
+  })
+})
+
+describe("角色的闭集解码（`asRole` / `actorIn`——2026-10-16 从三份副本收口到这里）", () => {
+  /**
+   * 这两条钉的是**「库里的字符串 ⇒ 闭集成员」这一步不许放宽**：`project_member.role`
+   * 的 CHECK 与 `MEMBER_ROLES` 是同一份值的两处写法（文件头「镜像」），而这一层是
+   * 从**库里取出来的字符串**走到判定之前的唯一一道门。认不出必须是 `null`（= 视作非成员），
+   * **不是**「退化成 member / owner」——那是一次静默的越权（`LEARNINGS #003-05` 的取向）。
+   */
+  test("asRole：闭集内的取值认得，别的一律 null（含 undefined / 空串 / 大小写不同）", () => {
+    expect(ProjectMembership.asRole("owner")).toBe("owner")
+    expect(ProjectMembership.asRole("member")).toBe("member")
+    expect(ProjectMembership.asRole("admin")).toBe(null)
+    expect(ProjectMembership.asRole("Owner")).toBe(null)
+    expect(ProjectMembership.asRole("")).toBe(null)
+    expect(ProjectMembership.asRole(undefined)).toBe(null)
+  })
+
+  test("actorIn：在名单里 ⇒ 那个角色；不在名单里 / 认不出 ⇒ null", () => {
+    const 名单 = [
+      { userId: "u1", role: "owner" },
+      { userId: "u2", role: "member" },
+      { userId: "u3", role: "退休" },
+    ]
+    expect(ProjectMembership.actorIn(名单, "u1")).toBe("owner")
+    expect(ProjectMembership.actorIn(名单, "u2")).toBe("member")
+    // 角色认不出 ⇒ 视作非成员，**不是**当成 member
+    expect(ProjectMembership.actorIn(名单, "u3")).toBe(null)
+    expect(ProjectMembership.actorIn(名单, "u9")).toBe(null)
+    expect(ProjectMembership.actorIn([], "u1")).toBe(null)
   })
 })

@@ -61,9 +61,9 @@ export * as OpenhiveMember from "./member"
  *
  * ## 残差（如实记账，不假装覆盖）
  *
- * - **`asRole` / `actorIn` 与 `archive.ts` 的各一份**：两处都从 `MEMBER_ROLES` **取值**而不是
- *   重抄字面量，所以闭集变了两边一起变（漂的是「形状」不是「值」，风险比 `#003-05` 那类假镜像
- *   低一档）。没有提到共享模块，是因为那要动 T013/T014 已审过的文件——本次不动它。
+ * - ~~**`asRole` / `actorIn` 与 `archive.ts` 的各一份**~~ **已于 2026-10-16 收口**——
+ *   三者（这里两份、`archive.ts` 一份）搬进了 `@opencode-ai/core/project/membership`，
+ *   理由是「改名 / 删除」要第 4 份。闭集的解码器住在闭集旁边，`MEMBER_ROLES` 变了两边一起变。
  * - **「已在名单里」的预检只是把 500 翻成 400**：唯一保证仍然是库的主键
  *   `(project_id, user_id)`（并发下两次邀请都过预检、第二次撞 PK —— 那时会**回 500**，
  *   这是已知的、可接受的：预检的职责是给使用者一句话，不是当唯一性。
@@ -75,7 +75,7 @@ export * as OpenhiveMember from "./member"
 import { addMember, archiveStatesOf, membersOf, removeMember } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { userByPoliceNo, usersByIds } from "@opencode-ai/auth/user"
-import { MEMBER_ROLES, type MemberRole, ProjectMembership } from "@opencode-ai/core/project/membership"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { User } from "@opencode-ai/core/user"
 import { Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -176,22 +176,6 @@ const bodyOf = <A>(request: HttpServerRequest.HttpServerRequest, schema: Schema.
   )
 
 /**
- * 库里读出来的 `role` 是 `string`（列是 `text`）；闭集外的值一律当「**不是成员**」。
- *
- * fail-closed 的方向是刻意的：迁移的 CHECK 让闭集外的值今天写不进去，但那是**数据层**的事实，
- * 而这里一旦把未知 role 当成「有点像 owner」，就成了放行。判据与 `MEMBER_ROLES` 一致
- * 靠的是**取值**（`MEMBER_ROLES.find`），不是靠注释约定（`#003-05`：假镜像）。
- */
-function asRole(value: string | undefined): MemberRole | null {
-  return MEMBER_ROLES.find((role) => role === value) ?? null
-}
-
-/** 「**我**在这个项目里是什么身份」。缺席 ⇒ `null`（不是成员），不是「member」。 */
-function actorIn(members: readonly { userId: string; role: string }[], userId: string): MemberRole | null {
-  return asRole(members.find((member) => member.userId === userId)?.role)
-}
-
-/**
  * 业务 PG 的**客户端**（不是 `Deps.pg` 那个惰性取用函数——`Interface["pg"]` 是 `() => Client`，
  * 取一次、之后一路传客户端；`project.ts` / `archive.ts` 的 `const pg = deps.pg()` 是同一件事）。
  */
@@ -221,7 +205,7 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const pg = deps.pg()
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
     // 门：**成员身份**，与归档态无关（见文件头「冻结的是动作不是看见」）。
-    if (actorIn(members, user.value.id) === null) return forbidden("无权查看该项目的成员名单")
+    if (ProjectMembership.actorIn(members, user.value.id) === null) return forbidden("无权查看该项目的成员名单")
 
     // UUID → 警号 / 姓名的翻译（见文件头）。批量取，一次查询。
     const people = yield* Effect.promise(() => usersByIds(pg, members.map((member) => member.userId)))
@@ -249,7 +233,7 @@ function handleInvite(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
 
     const pg = deps.pg()
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    const actor = actorIn(members, user.value.id)
+    const actor = ProjectMembership.actorIn(members, user.value.id)
     const archived = yield* Effect.promise(() => archivedOf(pg, projectId))
 
     // ① 授权，**在解析警号之前**——顺序是判据（见文件头 ①）：反过来的话，非成员能拿
@@ -288,7 +272,7 @@ function handleRemove(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
 
     const pg = deps.pg()
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    const actor = actorIn(members, user.value.id)
+    const actor = ProjectMembership.actorIn(members, user.value.id)
     const archived = yield* Effect.promise(() => archivedOf(pg, projectId))
 
     // 目标**从本项目的成员里解析出来**——不是「按警号直接删」。两种写法都不会报错，
@@ -304,7 +288,7 @@ function handleRemove(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     // 而这是被 `DecisionInput` 的形状决定的，不是随手写的）。解析只读、无副作用 ⇒ 不违背
     // 「门在副作用之前」那一条。
     if (
-      !ProjectMembership.decide({ actor, action: "remove", target: asRole(targetMember.role), archived })
+      !ProjectMembership.decide({ actor, action: "remove", target: ProjectMembership.asRole(targetMember.role), archived })
     ) {
       return forbidden("无权移除成员")
     }
@@ -333,7 +317,7 @@ function handleLeave(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
 
     const pg = deps.pg()
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    const actor = actorIn(members, user.value.id)
+    const actor = ProjectMembership.actorIn(members, user.value.id)
     const archived = yield* Effect.promise(() => archivedOf(pg, projectId))
 
     if (!ProjectMembership.decide({ actor, action: "leave", target: null, archived })) {

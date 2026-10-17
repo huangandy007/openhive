@@ -74,8 +74,14 @@ export * as ProjectMembership from "./membership"
 export const MEMBER_ROLES = ["owner", "member"] as const
 export type MemberRole = (typeof MEMBER_ROLES)[number]
 
-/** 需要判定的动作闭集。加一个动作 = 归档态的「冻结」也自动覆盖它（测试按本数组遍历）。 */
-export const PROJECT_ACTIONS = ["invite", "remove", "leave", "archive", "restore"] as const
+/**
+ * 需要判定的动作闭集。加一个动作 = 归档态的「冻结」也自动覆盖它（测试按本数组遍历）。
+ *
+ * ⚠️ **顺序即取值**：本数组的顺序被 `packages/core/test/project-membership.test.ts` 的
+ * 闭集断言**逐值**钉住（多一项、少一项、换个位置都会红）。新增动作**追加在末尾**，
+ * 别插在中间——插中间会让那条断言红在一个看起来像是「顺序无关」的地方。
+ */
+export const PROJECT_ACTIONS = ["invite", "remove", "leave", "archive", "restore", "rename", "delete"] as const
 export type ProjectAction = (typeof PROJECT_ACTIONS)[number]
 
 export interface DecisionInput {
@@ -115,18 +121,27 @@ const RULES: Record<ProjectAction, (input: DecisionInput) => boolean> = {
   // FR-009 的入口：只有**已归档**的项目才谈得上找回，而 `decide` 上面那层已经把「未归档」挡掉了
   // （走得到这里 = 未归档）⇒ 恒不成立，由归档那一支独占。
   restore: () => false,
+  // spec §7（2026-10-16）：**改名只有创建人**——共享项目的名字是所有人共用的那一份
+  // （写 PG `project_meta`，spec §4.1），member 随手改会让别人莫名其妙。
+  rename: (input) => input.actor === "owner",
+  // spec §7：**删除只有创建人**——同一条规则，同一条理由；member 想走用现成的 `leave`。
+  delete: (input) => input.actor === "owner",
 }
 
 /**
  * 判定的**唯一**实现。
  *
  * 写成「先归档、后动作」两层而不是每个动作里各带一句 `!archived`：
- * 后者要写五个地方，**加第六个动作时没人会回来补**（`LEARNINGS #002-06` 的形状）。
+ * 后者要写七个地方，**加第八个动作时没人会回来补**（`LEARNINGS #002-06` 的形状）。
  * 这里只有一处，而 `RULES` 的键集由类型钉住。
  */
 export function decide(input: DecisionInput): boolean {
-  // 归档 = 冻结：唯一的出口是 owner 的找回（见文件头「归档态的读法」）。
-  if (input.archived) return input.action === "restore" && input.actor === "owner"
+  // 归档 = 冻结：出口是 owner 的找回（把文件拉回沙箱）与 owner 的删除（把项目整份拿掉）
+  // ——两者都不产生活儿、都不依赖项目目录存在（见文件头「归档态的读法」）。
+  // ⚠️ 删除是 2026-10-16 加的这个分支的**第二个**例外，理由是 spec §7 的
+  // 「已归档的项目也能删除」：不开口的话「删除找不回」这个承诺在已归档项目上不成立
+  // （备份还在 = 还能找回）。改名**不在此列**——归档项目的名字没有可作用的实体，先找回再改。
+  if (input.archived) return (input.action === "restore" || input.action === "delete") && input.actor === "owner"
   return RULES[input.action](input)
 }
 
@@ -156,4 +171,30 @@ export function decide(input: DecisionInput): boolean {
  */
 export function frozen(archived: boolean): boolean {
   return archived
+}
+
+/**
+ * 角色的**闭集解码**：把一个来自库里 / 请求体的字符串收成 `MemberRole`，认不出就是 `null`。
+ *
+ * ⚠️ 这个函数 2026-10-16 之前**有三份副本**（`server/openhive/archive.ts:250` 一份、
+ * `server/openhive/member.ts:185,190` 两份），因为「改名 / 删除」要第 4 份才收口到这里
+ * （`LEARNINGS #002-06`：同一个判断不许两处各写一份）。收口的理由也是实的：**闭集的解码器
+ * 该住在闭集旁边**——`MEMBER_ROLES` 在上面 20 行处，两者一起改才不会漂。
+ *
+ * 「认不出 ⇒ null」是**安全方向**：`null` 在 `decide` 里 = 非成员 ⇒ 什么都不能做。
+ * 反过来（认不出就当 member / owner）是一次静默越权。
+ */
+export function asRole(value: string | undefined): MemberRole | null {
+  return MEMBER_ROLES.find((role) => role === value) ?? null
+}
+
+/**
+ * 从一份成员名单里读「这个人在这条链上是什么身份」。
+ *
+ * 不在名单里、角色认不出，都是 `null`（同 `asRole` 的安全方向）。名单的形状**按调用点定**
+ * （`LEARNINGS #004-07`）：它要的只是「有 `userId` 和 `role` 两个字段」——
+ * `membersOf` 吐的形状与它逐字兼容。
+ */
+export function actorIn(members: readonly { userId: string; role: string }[], userId: string): MemberRole | null {
+  return asRole(members.find((member) => member.userId === userId)?.role)
 }

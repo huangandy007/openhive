@@ -101,7 +101,7 @@ export * as OpenhiveArchive from "./archive"
 import { archiveStatesOf, markArchived, markRestored, membersOf } from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { Minio } from "@opencode-ai/core/minio"
-import { MEMBER_ROLES, type MemberRole, ProjectMembership } from "@opencode-ai/core/project/membership"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { User } from "@opencode-ai/core/user"
 import { ConfigService } from "@/effect/config-service"
@@ -240,19 +240,6 @@ function unavailable(message: string) {
   return HttpServerResponse.jsonUnsafe({ error: message }, { status: UNAVAILABLE })
 }
 
-/**
- * 库里读出来的 `role` 是 `string`（列是 `text`）；闭集外的值一律当「**不是成员**」。
- *
- * fail-closed 的方向是刻意的：迁移的 CHECK 让闭集外的值今天写不进去，但那是**数据层**的事实，
- * 而这里一旦把未知 role 当成「有点像 owner」，就成了放行。判据要与 `MEMBER_ROLES` 一致，
- * 靠的是**判定函数只认这两个值**，不是靠注释约定（`#003-05`：假镜像）。
- */
-function asRole(value: string | undefined): MemberRole | null {
-  // 判据从 `MEMBER_ROLES` **取**，不在这里重抄一遍字面量：抄一份 = 闭集的第三处拷贝，
-  // 而它漂了不会报错、不会变红（`#002-06`：同一个判断别在两处各写一份）。
-  return MEMBER_ROLES.find((role) => role === value) ?? null
-}
-
 function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* Effect.serviceOption(User.Service)
@@ -277,7 +264,7 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     const pg = deps.pg()
     // ① 身份：库里有没有我这一行（**缺席 = 不是成员**，不是「member」）。
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    const actor = asRole(members.find((member) => member.userId === userId)?.role)
+    const actor = ProjectMembership.asRole(members.find((member) => member.userId === userId)?.role)
     // ② 归档态：归档 = 冻结（`ProjectMembership` 文件头的「归档态的读法」）⇒ owner 再归档一次也不成立。
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
     const archived = archives.get(projectId)?.archived ?? false
@@ -346,7 +333,7 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const pg = deps.pg()
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    const actor = asRole(members.find((member) => member.userId === userId)?.role)
+    const actor = ProjectMembership.asRole(members.find((member) => member.userId === userId)?.role)
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
     const archived = archives.get(projectId)?.archived ?? false
 
