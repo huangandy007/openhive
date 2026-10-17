@@ -637,8 +637,11 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
 
   /**
    * F-4（fix round 1）：Task 17 的 `备份()` 按 `"code" in 结果` 分支——409 的两种码必须从这里
-   * 原样交出去：`job_running` 带 `jobId`，`quota_exceeded` **不带** `jobId` 这个键
-   *（`toEqual` 会连「多一个值为 undefined 的键」一起判，正是这条契约要挡的）。
+   * 原样交出去：`job_running` 带 `jobId`，`quota_exceeded` **不带** `jobId` 这个键。
+   *
+   * ⚠️ 「键不存在」**不能**靠 `toEqual` 钉：bun 的 `toEqual` 会忽略值为 `undefined` 的键
+   *（fix round 3 实测：无条件带 `jobId: undefined` 时 `toEqual` 仍绿）。`toEqual` 只钉值，
+   * 键不存在由 `Object.hasOwn` 单独钉。
    */
   test("backupProject：409 job_running ⇒ code 与 jobId 原样交回", async () => {
     const 记录: Array<{ method: string; url: string; body: unknown }> = []
@@ -667,6 +670,9 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
       记录,
     )
 
-    expect(await PROJECT_DATA.backup("p-42", "资料")).toEqual({ code: "quota_exceeded" })
+    const 结果 = await PROJECT_DATA.backup("p-42", "资料")
+
+    expect(结果).toEqual({ code: "quota_exceeded" })
+    expect(Object.hasOwn(结果 ?? {}, "jobId")).toBe(false)
   })
 })
