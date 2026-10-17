@@ -206,3 +206,85 @@ export function validateManifest(
     totals,
   }
 }
+
+/** 按服务器时区把一个时刻切成小时 / 天 / ISO 周三个桶（spec §8.1）。 */
+export function zoneOf(at: number, timeZone: string): { hour: string; day: string; week: string } {
+  // en-CA 的日期段天然是 `YYYY-MM-DD`（与 ISO 同形）；h23 让午夜是 `00` 而不是 `24`。
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(at)
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value ?? "00"
+  const day = `${pick("year")}-${pick("month")}-${pick("day")}`
+  // 周桶按 ISO 周（周一为首日）。日期算术放在 UTC 里做，避开本机时区与夏令时。
+  const date = new Date(`${day}T00:00:00Z`)
+  const 周一 = new Date(date)
+  const 星期 = (date.getUTCDay() + 6) % 7 // 周一＝0
+  周一.setUTCDate(date.getUTCDate() - 星期)
+  const 周一串 = 周一.toISOString().slice(0, 10)
+  return { hour: `${day}T${pick("hour")}`, day, week: 周一串 }
+}
+
+const 二十四小时 = 24 * 3600_000
+const 三十天 = 30 * 86400_000
+const 八十四天 = 84 * 86400_000
+
+/**
+ * 分级保留（spec §8.1），只作用于 `kind: "auto"`：
+ * - 最新自动快照**永远**保留（哪怕超过 84 天，否则长期不用的项目会一张不剩）；
+ * - 最近 24 小时按小时桶、1–30 天按天桶、31–84 天按 ISO 周桶，各留最新一条；
+ * - 超过 84 天、且不是最新那条 ⇒ 不在保留集里（删）；
+ * - 手动快照**不参与**自动删除（A7：用户主动拍的东西不能悄悄没了）。
+ *
+ * 返回值是「留下的 id」；调用方删掉其余自动快照。容量超限只暂停自动备份，**不**在这里删旧快照。
+ */
+export function retentionKeepIds(snapshots: readonly SnapshotSummary[], now: number, timeZone: string): Set<string> {
+  const kept = new Set<string>()
+  // 降序：同一个桶里先遇到的就是最新那条；「最新自动快照」的兜底也取第一条。
+  const autos = snapshots
+    .filter((snapshot) => snapshot.kind === "auto")
+    .slice()
+    .sort((a, b) => b.createdAt - a.createdAt)
+  const 最新 = autos[0]
+  if (最新) kept.add(最新.id)
+
+  const hours = new Set<string>()
+  const days = new Set<string>()
+  const weeks = new Set<string>()
+  for (const snapshot of autos) {
+    const age = now - snapshot.createdAt
+    if (age > 八十四天) break // 已降序：更老的不必再看
+    const zone = zoneOf(snapshot.createdAt, timeZone)
+    // 三档按**年龄**分层，每档只在自己的桶里留最新一条。同一小时里的第二条不能再掉进
+    // 「天」桶复活——否则「每小时留一张」名不副实，24 小时内的快照会被两份规则各留一遍。
+    if (age <= 二十四小时) {
+      if (hours.has(zone.hour)) continue
+      hours.add(zone.hour)
+      kept.add(snapshot.id)
+      continue
+    }
+    if (age <= 三十天) {
+      if (days.has(zone.day)) continue
+      days.add(zone.day)
+      kept.add(snapshot.id)
+      continue
+    }
+    if (weeks.has(zone.week)) continue
+    weeks.add(zone.week)
+    kept.add(snapshot.id)
+  }
+
+  for (const snapshot of snapshots) if (snapshot.kind === "manual") kept.add(snapshot.id)
+  return kept
+}
+
+/** 全部 manifest 引用到的 blob 哈希（GC 的唯一「谁还在用」判据，spec §8.4）。 */
+export function referencedHashes(manifests: readonly Manifest[]): Set<string> {
+  const hashes = new Set<string>()
+  for (const manifest of manifests) for (const file of manifest.files) hashes.add(file.hash)
+  return hashes
+}

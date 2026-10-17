@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test"
-import { MANIFEST_VERSION } from "../../src/server/openhive/backup-model"
+import { MANIFEST_VERSION, type SnapshotSummary } from "../../src/server/openhive/backup-model"
 import {
   estimateManifestBytes,
   isExcluded,
   isPathInScope,
   isSafeRelativePath,
   keepBothName,
+  referencedHashes,
+  retentionKeepIds,
   snapshotIdOf,
   validateManifest,
+  zoneOf,
 } from "../../src/server/openhive/backup-rules"
 
 describe("isSafeRelativePath", () => {
@@ -135,4 +138,78 @@ test("estimateManifestBytes 向上取整", () => {
   expect(estimateManifestBytes(0)).toBe(0)
   expect(estimateManifestBytes(1)).toBe(1)
   expect(estimateManifestBytes(21)).toBe(2)
+})
+
+describe("zoneOf", () => {
+  test("按给定时区切桶：UTC 傍晚 ≠ 上海的同一天", () => {
+    // 16:30Z ⇒ 上海 2026-10-19 00:30（周一）。用 UTC 切会得到 18 日 16 点，两条都错。
+    expect(zoneOf(Date.parse("2026-10-18T16:30:00.000Z"), "Asia/Shanghai")).toEqual({
+      hour: "2026-10-19T00",
+      day: "2026-10-19",
+      week: "2026-10-19",
+    })
+  })
+  test("周桶按 ISO 周（周一为首日）", () => {
+    // 2026-10-18 是周日 ⇒ 所在 ISO 周从 12 日（周一）起。
+    const zone = zoneOf(Date.parse("2026-10-18T12:00:00.000Z"), "Asia/Shanghai")
+    expect(zone).toEqual({ hour: "2026-10-18T20", day: "2026-10-18", week: "2026-10-12" })
+  })
+})
+
+describe("retentionKeepIds", () => {
+  const tz = "Asia/Shanghai"
+  // 取 12:30Z（上海 20:30）而不是整点：整点减 10 分钟会掉进上一个小时桶，
+  // 与下面「同一小时两条」的用例名不符（那个桶边界不是这条用例要测的东西）。
+  const now = Date.parse("2026-10-18T12:30:00.000Z")
+
+  function 摘要(id: string, at: number): SnapshotSummary {
+    return {
+      id,
+      kind: "auto",
+      scope: "",
+      createdAt: at,
+      status: "complete",
+      totals: { files: 1, bytes: 1, uploadedBytes: 1, skipped: 0 },
+    }
+  }
+
+  test("最新自动快照永远保留，哪怕它已经超过 84 天", () => {
+    const old = now - 100 * 86400_000
+    expect(retentionKeepIds([摘要("old", old)], now, tz).has("old")).toBe(true)
+  })
+
+  test("最近 24 个不同小时各留最新的一条", () => {
+    const 同一小时两条 = [摘要("b", now), 摘要("a", now - 10 * 60_000)]
+    expect([...retentionKeepIds(同一小时两条, now, tz)]).toEqual(["b"])
+  })
+
+  test("超过 84 天且不是最新的自动快照被删", () => {
+    const snapshots = [摘要("new", now), 摘要("old", now - 85 * 86400_000)]
+    expect(retentionKeepIds(snapshots, now, tz).has("old")).toBe(false)
+  })
+
+  test("1–30 天按天留最新一张", () => {
+    // 两条都在上海 10-17 这一天、都超过 24 小时：按天桶只留较新的那条。
+    const 同一天 = [摘要("近", now - 25 * 3600_000), 摘要("远", now - 26 * 3600_000)]
+    expect([...retentionKeepIds(同一天, now, tz)]).toEqual(["近"])
+  })
+
+  test("31–84 天按 ISO 周留最新一张", () => {
+    // now-40 与 now-41 天同属 2026-09-07 那一周（周一为首日）。
+    const 同一周 = [摘要("近", now - 40 * 86400_000), 摘要("远", now - 41 * 86400_000)]
+    expect([...retentionKeepIds(同一周, now, tz)]).toEqual(["近"])
+  })
+
+  test("手动快照不参与自动删除", () => {
+    const manual = { ...摘要("manual", now - 200 * 86400_000), kind: "manual" as const }
+    expect(retentionKeepIds([manual, 摘要("auto", now)], now, tz).has("manual")).toBe(true)
+  })
+})
+
+describe("referencedHashes", () => {
+  test("把所有 manifest 的 files.hash 并起来", () => {
+    const a = { files: [{ hash: "a".repeat(64) }] }
+    const b = { files: [{ hash: "b".repeat(64) }] }
+    expect([...referencedHashes([a as never, b as never])]).toEqual(["a".repeat(64), "b".repeat(64)])
+  })
 })
