@@ -600,6 +600,28 @@ async function dropBackups(deps: Deps, projectId: string, userIds: readonly stri
 }
 
 /**
+ * 删一棵目录，对 win32 的**暂时性**失败重试。
+ *
+ * 实测（2026-10-18）：`openhive-project-delete.test.ts` 用例 A 偶发 500，栈顶是
+ * `EBUSY: resource busy or locked, rm '...workspaces\<alice>\<projectId>'`——上一个用例
+ * 打开的句柄还没被系统收干净。`rm(..., { force: true })` **不吞 EBUSY**。只重试这一类
+ * 暂时性错误码；其它错误原样抛，别把真实故障拖成 1 秒延迟后仍然失败却看不出原因。
+ */
+async function 删目录(path: string): Promise<void> {
+  const 暂时性 = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EMFILE"])
+  for (let 次 = 0; ; 次 += 1) {
+    try {
+      await rm(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const 码 = (error as NodeJS.ErrnoException).code ?? ""
+      if (次 >= 20 || !暂时性.has(码)) throw error
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+}
+
+/**
  * ④ 删盘：每个成员的沙箱项目目录 ＋ 共享 bare 仓库（spec §6 ④）。
  *
  * `rm` 用 `{ recursive: true, force: true }` —— `force` 就是**可重入**那一半
@@ -610,9 +632,9 @@ async function dropBackups(deps: Deps, projectId: string, userIds: readonly stri
  */
 async function dropTrees(deps: Deps, projectId: string, userIds: readonly string[]): Promise<void> {
   for (const userId of userIds) {
-    await rm(join(deps.root, userId, projectId), { recursive: true, force: true })
+    await 删目录(join(deps.root, userId, projectId))
   }
-  await rm(join(deps.shared, `${projectId}.git`), { recursive: true, force: true })
+  await 删目录(join(deps.shared, `${projectId}.git`))
 }
 
 /**
@@ -628,7 +650,7 @@ async function dropTrees(deps: Deps, projectId: string, userIds: readonly string
  */
 async function dropResidue(projectId: string): Promise<void> {
   for (const 源 of ["snapshot", "worktree"]) {
-    await rm(join(Global.Path.data, 源, projectId), { recursive: true, force: true })
+    await 删目录(join(Global.Path.data, 源, projectId))
   }
 }
 
@@ -730,9 +752,14 @@ async function backupAll(targets: readonly Target[], projectId: string, settings
   }
 }
 
-/** ② 全员释放沙箱目录。`force` 让「本来就不存在」不抛——与 `filesUnder` 的跳过口径一致。 */
+/**
+ * ② 全员释放沙箱目录。`force` 让「本来就不存在」不抛——与 `filesUnder` 的跳过口径一致。
+ *
+ * 走 `删目录`（不是裸 `rm`）：与 `dropTrees` / `dropResidue` 同一条 win32 重试路径
+ * （`#002-06`：同类落点一起处理）。
+ */
 async function releaseAll(targets: readonly Target[]): Promise<void> {
-  for (const target of targets) await rm(target.directory, { recursive: true, force: true })
+  for (const target of targets) await 删目录(target.directory)
 }
 
 /**
