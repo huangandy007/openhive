@@ -17,7 +17,8 @@ import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3
 import { openBackupStore } from "../../src/server/openhive/backup-store"
 import { createJobRegistry, quiesceProject } from "../../src/server/openhive/backup-jobs"
 import { runBackup, runPreview, runRestore } from "../../src/server/openhive/backup-run"
-import type { Manifest } from "../../src/server/openhive/backup-model"
+import { applyRetention, collectGarbage, contextStatus, createAutoScheduler } from "../../src/server/openhive/backup-auto"
+import { ACTIVE_WINDOW_MS, AUTO_COOLDOWN_MS, type Manifest } from "../../src/server/openhive/backup-model"
 
 /**
  * 文件级备份快照（spec `2026-10-18-file-backup-snapshot-design.md`）。
@@ -712,5 +713,174 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     const manifest = await runBackup(deps, { kind: "manual", scope: "链接/子", createdBy: "007" })
     expect(manifest.files).toEqual([])
     expect(manifest.skipped).toEqual([{ path: "链接/子", reason: "symlink" }])
+  })
+})
+
+/**
+ * T9：自动备份调度（spec §7）、分级保留（§8.1）、GC（§8.4）与 state 同步。
+ *
+ * 调度器是**纯内存**的（单实例假设 §7.5）：用例只喂时钟与两个回调，不碰网络。
+ * 保留 / GC / 状态这三节用真 HTTP 假 S3（同上面几节），观测面是「请求打在哪 / 读回来什么」。
+ */
+describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () => {
+  let s3: FakeS3
+  beforeEach(() => {
+    s3 = startFakeS3()
+  })
+  afterEach(() => s3.stop())
+
+  const store = () =>
+    openBackupStore({
+      endpoint: s3.endpoint,
+      bucket: s3.bucket,
+      credentials: { accessKeyId: "k", secretAccessKey: "s" },
+      userId: "007",
+      projectId: "p-42",
+    })
+
+  /** 默认**手动**快照：手动快照永远不参加自动删除（spec §8.1），保留用例必须显式改成 `auto`。 */
+  function 清单(id = "20261018T140305123Z-abcdef"): Manifest {
+    return {
+      version: 1,
+      id,
+      projectId: "p-42",
+      ownerId: "007",
+      kind: "manual",
+      scope: "",
+      createdAt: Date.parse("2026-10-18T14:03:05.123Z"),
+      createdBy: "007",
+      source: "manual",
+      timezone: "Asia/Shanghai",
+      status: "complete",
+      files: [{ path: "a.txt", hash: "a".repeat(64), size: 3, mtimeMs: 1 }],
+      dirs: [],
+      skipped: [],
+      totals: { files: 1, bytes: 3, uploadedBytes: 3, skipped: 0 },
+    }
+  }
+
+  async function* 源() {
+    yield new TextEncoder().encode("x")
+  }
+
+  test("调度：心跳后 tick 触发 detect；冷却期内不重复；30 分钟不活跃移出", async () => {
+    let now = 0
+    const 调过: string[] = []
+    const scheduler = createAutoScheduler({
+      now: () => now,
+      isRunning: () => false,
+      detect: async (userId, projectId) => {
+        调过.push(`${userId}/${projectId}`)
+      },
+    })
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.tick()
+    expect(调过).toEqual(["007/p-42"])
+
+    // 前端每 60 秒心跳一次（spec §7.1），活跃窗才是 30 分钟——不在每次 tick 前心跳的话，
+    // 1 小时的冷却永远等不到下一个活跃周期（入口 30 分钟就被移除了）。
+    now += AUTO_COOLDOWN_MS - 1
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.tick()
+    expect(调过).toEqual(["007/p-42"])
+
+    now += 1
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.tick()
+    expect(调过).toEqual(["007/p-42", "007/p-42"])
+
+    // 停止心跳 ⇒ 超过 30 分钟移出表。
+    now += ACTIVE_WINDOW_MS + 1
+    await scheduler.tick()
+    expect(scheduler.entries()).toEqual([])
+  })
+
+  // 项目打开时立即检查（spec §7.1）——这条同时钉住「新建项的首拍不被冷却挡住」：
+  // 若初始化成 `lastAutoAt: 0`，`now = 0` 时 `0 - 0 >= 1h` 不成立 ⇒ 这里一条都不会触发。
+  test("调度：心跳后 checkNow 立即检查（首拍不被冷却挡住）", async () => {
+    const 调过: string[] = []
+    const scheduler = createAutoScheduler({
+      now: () => 0,
+      isRunning: () => false,
+      detect: async () => {
+        调过.push("x")
+      },
+    })
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.checkNow("007", "p-42")
+    expect(调过).toEqual(["x"])
+  })
+
+  test("调度：任务在跑就跳过，不排队", async () => {
+    let now = 0
+    let 跑着 = true
+    const 调过: string[] = []
+    const scheduler = createAutoScheduler({
+      now: () => now,
+      isRunning: () => 跑着,
+      detect: async () => {
+        调过.push("x")
+      },
+    })
+    scheduler.heartbeat("007", "p-42")
+    await scheduler.tick()
+    expect(调过).toEqual([])
+    跑着 = false
+    await scheduler.tick()
+    expect(调过).toEqual(["x"])
+  })
+
+  test("保留：超过 84 天且非最新的自动快照被删；最新保留；手动快照永不自动删", async () => {
+    const s = store()
+    const now = Date.now()
+    const 最新 = "20261018T115959000Z-aaaaaa"
+    const 超龄 = "20260725T120000000Z-bbbbbb"
+    const 手动 = "20260501T120000000Z-dddddd"
+    await s.writeManifest({ ...清单(最新), kind: "auto", source: "auto", createdAt: now - 1000, id: 最新 })
+    await s.writeManifest({ ...清单(超龄), kind: "auto", source: "auto", createdAt: now - 85 * 86400_000, id: 超龄 })
+    await s.writeManifest({ ...清单(手动), createdAt: now - 120 * 86400_000, id: 手动 })
+
+    const 删 = await applyRetention(s, { now, timeZone: "Asia/Shanghai" })
+    expect(删).toEqual([超龄])
+    expect(await s.readManifest(超龄)).toBeUndefined()
+    expect(await s.readManifest(最新)).toBeDefined()
+    expect(await s.readManifest(手动)).toBeDefined()
+  })
+
+  test("GC：24 小时宽限内不删；超期且无引用才删；任一 manifest 坏了就整轮不删", async () => {
+    const s = store()
+    // ⚠️ `putBlob` 的 `lastModified` 取**真实时钟**：基准不能写死成一个过去的日子，
+    // 否则「宽限内不删」那条断言会依赖墙上时间（今天恰好晚于写死值就直接假红）。
+    const now = Date.now()
+    const manifest = {
+      ...清单("20261018T115959000Z-aaaaaa"),
+      files: [{ path: "a.txt", hash: "a".repeat(64), size: 1, mtimeMs: 1 }],
+    }
+    await s.writeManifest(manifest)
+    await s.putBlob({ hash: "a".repeat(64), body: 源(), size: 1 })
+    await s.putBlob({ hash: "b".repeat(64), body: 源(), size: 1 })
+
+    // 两个 blob 都是「刚写的」⇒ 宽限内，不删
+    expect(await collectGarbage(s, { now })).toEqual({ deleted: 0, bytes: 0 })
+
+    // 时间推到 25 小时后：引用的 a 保留，无引用的 b 删除
+    const 结果 = await collectGarbage(s, { now: now + 25 * 60 * 60_000 })
+    expect(结果.deleted).toBe(1)
+    expect((await s.blobs()).map((blob) => blob.hash)).toEqual(["a".repeat(64)])
+
+    // 放一份坏 manifest ⇒ fail-closed
+    s3.seed("007/_openhive-backups/p-42/manifests/20261018T130000000Z-cccccc.json.gz", "坏")
+    await s.putBlob({ hash: "c".repeat(64), body: 源(), size: 1 })
+    expect(await collectGarbage(s, { now: now + 50 * 60 * 60_000 })).toEqual({ deleted: 0, bytes: 0 })
+  })
+
+  test("contextStatus：state 丢了就从 manifest 重建用量（blob 字节 + manifest 大小）", async () => {
+    const s = store()
+    await s.writeManifest(清单())
+    const 状态 = await contextStatus(s)
+    expect(状态.autoPaused).toBe(false)
+    // 只有一个 manifest、**没有 blob**：这个值 > 0 只能来自 manifest 那一部分
+    // （漏算 manifest 的实现会读出 0）。
+    expect(状态.usageBytes).toBeGreaterThan(0)
   })
 })
