@@ -15,6 +15,7 @@ import {
   type Manifest,
   type ManifestFile,
   type ManifestSkip,
+  type SkipReason,
   type SnapshotKind,
 } from "./backup-model"
 import { estimateManifestBytes, isExcluded, isPathInScope, isSafeRelativePath, snapshotIdOf } from "./backup-rules"
@@ -74,6 +75,13 @@ export interface BackupInput {
 
 const 并发 = 4
 
+/**
+ * 路径排序用**固定 locale**，不用裸 `localeCompare`：后者跟随宿主默认 locale（本机 zh-CN 下
+ * `甲 < 乙`，en-US 下按 UCA 隐式权重反而 `乙 < 甲`）⇒ manifest 顺序会随宿主机漂移，`树没变`
+ * 的按下标比较在换宿主后恒判「变了」。spec §5.2 要求排序后写入（确定性）。
+ */
+const 排序 = new Intl.Collator("zh-CN")
+
 function 检查取消(deps: RunDeps) {
   if (deps.isCancelled()) throw new CancelledError("任务已取消")
 }
@@ -81,7 +89,8 @@ function 检查取消(deps: RunDeps) {
 async function runPool<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
   let next = 0
   let failed: unknown
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  // `limit <= 0` 时不能静默不传（那会假装成功）；至少起一个 runner。
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     while (true) {
       const index = next++
       if (index >= items.length) return
@@ -169,13 +178,13 @@ export async function scanScope(
     await 走(scope, info)
   }
 
-  files.sort((a, b) => a.path.localeCompare(b.path))
-  dirs.sort((a, b) => a.localeCompare(b))
-  skipped.sort((a, b) => a.path.localeCompare(b.path))
+  files.sort((a, b) => 排序.compare(a.path, b.path))
+  dirs.sort((a, b) => 排序.compare(a, b))
+  skipped.sort((a, b) => 排序.compare(a.path, b.path))
   return { files, dirs, skipped }
 }
 
-async function hashFile(file: ScannedFile, absolute: string): Promise<string> {
+async function hashFile(absolute: string): Promise<string> {
   const before = await stat(absolute)
   const hash = createHash("sha256")
   await new Promise<void>((resolve, reject) => {
@@ -215,7 +224,7 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
       hash = 旧.hash
     } else {
       try {
-        hash = await hashFile(file, 绝对)
+        hash = await hashFile(绝对)
       } catch (error) {
         skipped.push({
           path: file.path,
@@ -238,14 +247,17 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
   const 缺 = new Map<string, { size: number; path: string }>()
   for (const file of files) if (!已有.has(file.hash) && !缺.has(file.hash)) 缺.set(file.hash, { size: file.size, path: file.path })
 
-  const 上传字节 = [...缺.values()].reduce((sum, blob) => sum + blob.size, 0)
-  const 需要 = 上传字节 + estimateManifestBytes(files.reduce((sum, file) => sum + file.size, 0))
+  const 计划上传字节 = [...缺.values()].reduce((sum, blob) => sum + blob.size, 0)
+  const 需要 = 计划上传字节 + estimateManifestBytes(files.reduce((sum, file) => sum + file.size, 0))
   if (input.quotaBytes !== undefined && (input.usageBytes ?? 0) + 需要 > input.quotaBytes) {
     throw new QuotaError(input.usageBytes ?? 0, 需要, input.quotaBytes)
   }
 
   deps.report({ state: "uploading", progress: { ...total } })
   total.bytesDone = 0
+  // 单个 blob 失败**不中止整轮**（spec §5.5：任一文件最终失败 ⇒ 记入 skipped，快照落 partial）：
+  // 清掉半截对象、记下原因，其余 blob 继续。`changed-during-backup` 原样保留，其余归 `upload-failed`。
+  const 上传失败 = new Map<string, SkipReason>()
   await runPool([...缺.entries()], deps.concurrency ?? 并发, async ([hash, blob]) => {
     检查取消(deps)
     const 绝对 = join(deps.directory, ...blob.path.split("/"))
@@ -261,11 +273,23 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
       })
     } catch (error) {
       await deps.store.deleteBlob(hash).catch(() => undefined)
-      throw error
+      上传失败.set(
+        hash,
+        error instanceof Error && error.message === "changed-during-backup" ? "changed-during-backup" : "upload-failed",
+      )
     }
   })
 
   检查取消(deps)
+  // 失败 blob 引用的**所有**文件都从 files 剔除并记 skipped（同 hash 可能对应多个路径）。
+  const 成功文件 = files.filter((file) => !上传失败.has(file.hash))
+  for (const file of files) {
+    const reason = 上传失败.get(file.hash)
+    if (reason) skipped.push({ path: file.path, reason })
+  }
+  const 上传字节 = [...缺.entries()]
+    .filter(([hash]) => !上传失败.has(hash))
+    .reduce((sum, [, blob]) => sum + blob.size, 0)
   deps.report({ state: "committing", progress: { ...total } })
   const at = deps.now?.() ?? Date.now()
   const manifest: Manifest = {
@@ -280,10 +304,17 @@ export async function runBackup(deps: RunDeps, input: BackupInput): Promise<Mani
     source: input.kind,
     timezone: deps.timezone,
     status: skipped.length === 0 ? "complete" : "partial",
-    files,
+    files: 成功文件,
     dirs: 扫描.dirs,
     skipped,
-    totals: { files: files.length, bytes: total.bytesTotal, uploadedBytes: 上传字节, skipped: skipped.length },
+    // files / bytes 必须按**剔完失败项之后**的 files 算：失败的文件既不在 files 里，
+    // 它的字节也不能还留在 bytes 里（否则清单自己前后矛盾）。
+    totals: {
+      files: 成功文件.length,
+      bytes: 成功文件.reduce((sum, file) => sum + file.size, 0),
+      uploadedBytes: 上传字节,
+      skipped: skipped.length,
+    },
   }
   return manifest
 }

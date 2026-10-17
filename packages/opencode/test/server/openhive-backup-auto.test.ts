@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -363,6 +364,30 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
       runBackup(deps, { kind: "manual", scope: "", createdBy: "007", quotaBytes: 1, usageBytes: 0 }),
     ).rejects.toMatchObject({ name: "QuotaError" })
     expect(await deps.store.blobs()).toEqual([])
+  })
+
+  test("上传失败 ⇒ 剔除该文件、记 skipped、落 partial，且不留半截 blob", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    const 失败hash = createHash("sha256").update("ccc").digest("hex")
+    const 内层 = deps.store
+    // 只让 `报告.docx`（内容 "ccc"）的 blob 上传失败；其余透传。
+    const 包一层 = {
+      ...内层,
+      putBlob: async (input: Parameters<typeof 内层.putBlob>[0]) => {
+        if (input.hash === 失败hash) throw new Error("boom")
+        return 内层.putBlob(input)
+      },
+    }
+    const manifest = await runBackup({ ...deps, store: 包一层 }, { kind: "manual", scope: "", createdBy: "007" })
+
+    expect(manifest.status).toBe("partial")
+    expect(manifest.files.map((file) => file.path)).not.toContain("报告.docx")
+    expect(manifest.skipped).toContainEqual({ path: "报告.docx", reason: "upload-failed" })
+    // totals 按剔完失败项之后的 files 算（2 个文件 6 字节；只上传成功两个 blob）。
+    expect(manifest.totals).toEqual({ files: 2, bytes: 6, uploadedBytes: 6, skipped: 1 })
+    // 半截对象被清掉，不留在存储里。
+    expect((await 内层.blobs()).some((blob) => blob.hash === 失败hash)).toBe(false)
   })
 
   test("自动备份：树没变 ⇒ UnchangedError（不产生新快照）", async () => {
