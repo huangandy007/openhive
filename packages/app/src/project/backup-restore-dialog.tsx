@@ -45,6 +45,13 @@ const 按钮 =
 export function RestoreDialog(props: RestoreDialogProps): JSX.Element {
   const [决策, set决策] = createSignal<RestoreDecision>("keep-both")
   const [逐条, set逐条] = createSignal<Record<string, RestoreDecision>>({})
+  /** `.git` 内部路径的额外确认（spec §6.4）；只查快照条目与 localOnly，不查磁盘。 */
+  const [已确认git, set已确认git] = createSignal(false)
+
+  const 涉git = () => {
+    const 路径 = [...(props.preview?.entries ?? []).map((entry) => entry.path), ...(props.preview?.localOnly ?? [])]
+    return 路径.some((path) => path === ".git" || path.startsWith(".git/"))
+  }
 
   /** 冲突行才可逐条改判：`different` 三选一，`type-mismatch` 覆盖 / 跳过。 */
   const 可逐条 = (): Array<BackupPreviewEntry & { readonly status: "different" | "type-mismatch" }> =>
@@ -84,6 +91,18 @@ export function RestoreDialog(props: RestoreDialogProps): JSX.Element {
               <p data-slot="restore-local-only" class="text-[12px] text-v2-text-text-faint">
                 {`只在本地、不会被删除：${preview().localOnly.join("、")}${preview().localOnlyTruncated ? " …" : ""}`}
               </p>
+            </Show>
+
+            <Show when={涉git()}>
+              <label data-slot="restore-git-warning" class="flex items-start gap-2 text-[12px] text-v2-text-text-muted">
+                <input
+                  data-slot="restore-git-ack"
+                  type="checkbox"
+                  checked={已确认git()}
+                  onChange={(event) => set已确认git(event.currentTarget.checked)}
+                />
+                恢复 .git 内部文件可能让仓库状态不一致
+              </label>
             </Show>
 
             <div class="flex flex-col gap-1">
@@ -158,7 +177,7 @@ export function RestoreDialog(props: RestoreDialogProps): JSX.Element {
         <button
           data-slot="restore-confirm"
           type="button"
-          disabled={props.busy || props.preview === undefined}
+          disabled={props.busy || props.preview === undefined || (涉git() && !已确认git())}
           class={按钮}
           onClick={() => props.onConfirm({ decision: 决策(), decisions: 汇总逐条() })}
         >
