@@ -109,7 +109,7 @@ async function 建会话(projectId: string, directory: string, title: string): P
  * ⚠️ **这是 B 链（`GET /api/session?directory=`），不是产品的 A 链读路径**。
  * 产品 app 走 A 链 `/session...`（spec §4.3 的 v1 协议）；B 链在下面这条用例里
  * 只当「会话行还在」的独立观测面。产品读路径的强证据在路由测试的
- * `GET /session/:sessionID/message`（`openhive-project-delete.test.ts` 的 A ⑥）。
+ * `GET /session/:sessionID/message`（`openhive-project-delete.test.ts` 的 A ⑤）。
  */
 async function 列会话(projectId: string, directory: string) {
   return kernelJson(`/api/session?directory=${encodeURIComponent(directory)}`, {
