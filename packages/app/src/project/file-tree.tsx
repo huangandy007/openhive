@@ -749,10 +749,15 @@ export function FileTree(props: FileTreeProps) {
                       />
                       {/* 改名态就地换掉**名字那一格**（T018）：图钉、箭头、缩进都还在原处，
                           用户看得见自己在改哪一行。图标与箭头不重画——它们与名字是同一行的三个独立格子。 */}
+                      {/* ⚠️ 名字那格上的 `flex-1` 不能省（2026-10-17 用户实报）：行的 `flex-wrap` 是给
+                          `FileOpError` 占整行用的，而名字是 `nowrap` 的、`auto` basis 让它的假设尺寸
+                          等于整串文字的宽度 ⇒ 长名会**被换到第二行**（图标与名字上下分家，行高 24→44px）。
+                          `flex-1`（basis 0）让它先按「可压缩」参与第一行的排布，再用 `truncate` 收成
+                          省略号。`min-w-0` 仍然要——basis 0 也要能缩到 0。 */}
                       <Show
                         when={改名的() === row.node.path}
                         fallback={
-                          <span data-slot="file-tree-name" class="min-w-0 truncate">
+                          <span data-slot="file-tree-name" class="min-w-0 flex-1 truncate">
                             <高亮 name={row.node.name} keyword={词()} />
                           </span>
                         }
