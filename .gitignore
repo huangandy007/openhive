@@ -13,8 +13,10 @@ node_modules
 playground
 tmp
 dist
+dist-node
 ts-dist
 .turbo
+.typecheck-profiles
 **/.serena
 .serena/
 **/.omo
@@ -26,11 +28,13 @@ Session.vim
 a.out
 target
 .scripts
+.cache
 .direnv/
 
 # Local dev files
 opencode-dev
 UPCOMING_CHANGELOG.md
+RELEASE_REVIEW.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
@@ -39,3 +43,4 @@ tsconfig.tsbuildinfo
 
 # Claude Code worktree 工作台 —— 每个都是整仓库的副本（GB 级），误提交会污染历史
 .claude/worktrees/
+/artifacts/
