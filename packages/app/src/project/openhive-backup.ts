@@ -74,7 +74,7 @@ export interface BackupJob {
 }
 
 export interface BackupStatus {
-  readonly activeJob: BackupJob | null
+  readonly activeJob: BackupJob | undefined
   readonly lastSnapshot: { readonly id: string; readonly size: number; readonly lastModified: number } | null
   readonly usageBytes: number
   readonly limitBytes: number
@@ -183,8 +183,11 @@ export async function backupStatus(
   return {
     // `activeJob` 由服务端直接给 Job（`backup.ts` 的 `contextStatus`）——这里收窄到「有 id」即可，
     // 逐字段抄一遍 `BackupJob` 没有增益：任务详情另有 `taskOf` 那条出口。
-    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 形状是服务端 `Job`（backup-model.ts），这里只判了「有没有 id」是为了不复制一份联合类型判定。
-    activeJob: isRecord(body.activeJob) ? (body.activeJob as unknown as BackupJob) : null,
+    activeJob:
+      isRecord(body.activeJob) && typeof body.activeJob.id === "string"
+        ? // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 形状是服务端 `Job`（backup-model.ts），这里只判了「有没有 id」是为了不复制一份联合类型判定。
+          (body.activeJob as unknown as BackupJob)
+        : undefined,
     lastSnapshot:
       isRecord(body.lastSnapshot) && typeof body.lastSnapshot.id === "string"
         ? {

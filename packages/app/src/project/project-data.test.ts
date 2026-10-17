@@ -460,7 +460,7 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
     scope: "资料",
     createdAt: 1_700_000_000_000,
     createdBy: "020601",
-    source: { hostname: "pc-1" },
+    source: "manual",
     timezone: "Asia/Shanghai",
     status: "complete",
     files: [{ path: "资料/话单.csv", hash: "sha256:甲", size: 3, mtimeMs: 1_700_000_000_000 }],
@@ -476,7 +476,9 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
         "POST /openhive/project/backup": { status: 202, body: { jobId: "j-1" } },
         "GET /openhive/project/backup/jobs/j-1": { body: { id: "j-1", state: "succeeded" } },
         "POST /openhive/project/backup/jobs/j-1/cancel": { status: 202, body: { cancelling: true } },
-        "GET /openhive/project/backup/snapshots": { body: { snapshots: [], truncated: false } },
+        "GET /openhive/project/backup/snapshots": {
+          body: { snapshots: [], truncated: false, limitBytes: 10737418240 },
+        },
         "GET /openhive/project/backup/status": {
           body: { usageBytes: 0, limitBytes: 1, autoPaused: false },
         },
@@ -589,5 +591,61 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
 
     // 十个出口各发了一次、没有多发：`at(-1)` 只证明「最后一条对」，漏掉一次调用它是看不出来的。
     expect(记录).toHaveLength(10)
+  })
+
+  /**
+   * F-1（fix round 1）：`activeJob` 只判「是对象」时，`{}` 会被当成一个任务交出去——而注释写的
+   * 是「收窄到有 id 即可」。这里钉住「没有 id ⇒ 当作没有任务」，且**不抛**。
+   */
+  test("backupStatus：activeJob 没有 id ⇒ 当作没有任务（不抛，也不交出空对象）", async () => {
+    const 记录: Array<{ method: string; url: string; body: unknown }> = []
+    假备份(
+      {
+        "GET /openhive/project/backup/status": {
+          body: { activeJob: {}, usageBytes: 0, limitBytes: 1, autoPaused: false },
+        },
+      },
+      记录,
+    )
+
+    const 状态 = await PROJECT_DATA.backupStatus("p-42")
+
+    expect(状态).toBeDefined()
+    expect(状态?.activeJob).toBeUndefined()
+  })
+
+  /**
+   * F-4（fix round 1）：Task 17 的 `备份()` 按 `"code" in 结果` 分支——409 的两种码必须从这里
+   * 原样交出去：`job_running` 带 `jobId`，`quota_exceeded` **不带** `jobId` 这个键
+   *（`toEqual` 会连「多一个值为 undefined 的键」一起判，正是这条契约要挡的）。
+   */
+  test("backupProject：409 job_running ⇒ code 与 jobId 原样交回", async () => {
+    const 记录: Array<{ method: string; url: string; body: unknown }> = []
+    假备份(
+      {
+        "POST /openhive/project/backup": {
+          status: 409,
+          body: { error: "已有一个备份任务在跑", code: "job_running", jobId: "j-9" },
+        },
+      },
+      记录,
+    )
+
+    expect(await PROJECT_DATA.backup("p-42", "资料")).toEqual({ code: "job_running", jobId: "j-9" })
+  })
+
+  test("backupProject：409 quota_exceeded（无 jobId）⇒ 返回值里没有 jobId 这个键", async () => {
+    const 记录: Array<{ method: string; url: string; body: unknown }> = []
+    假备份(
+      {
+        "POST /openhive/project/backup": {
+          status: 409,
+          body: { error: "备份空间不足", code: "quota_exceeded" },
+        },
+      },
+      记录,
+    )
+
+    expect(await PROJECT_DATA.backup("p-42", "资料")).toEqual({ code: "quota_exceeded" })
   })
 })
