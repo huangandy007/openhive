@@ -366,15 +366,29 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
   /**
    * 内联确认条（`restore-confirm` / `restore-name` / `restore-ok` / `restore-cancel`）是**旧设计**：
    * 2026-10-18 起冲突判断移到恢复对话框（起预览任务时做），树里不再有这一条。
-   * 这里断「它真的没了」——同一条断言从「有没有冒确认条」改成了「这个文件已从产品里消失」。
+   * 「它真的没了」只在上一条（备份覆盖）里断一次；本用例只守回调形状。
    */
-  test("下拉回沙箱 ⇒ `onRestoreSnapshot` 收到恢复点与拖源原路径；不再内联确认", () => {
+  test("下拉回沙箱 ⇒ `onRestoreSnapshot` 收到恢复点与拖源原路径", () => {
     const { host, 拉回过 } = 挂({ open: true, backups: ["新文件.txt"] })
 
     拖到(行(host, "minio", "新文件.txt"), 树(host, "sandbox"))
 
     expect(拉回过).toEqual([{ snapshotId: "s-1", path: "新文件.txt" }])
-    expect(不存在(槽(host, "restore-confirm"))).toBe(true)
+  })
+
+  /**
+   * spec §11.3：冲突判断**交给恢复对话框**（起预览任务时做），树**不得**再拦截。
+   * 旧行为（沙箱有同名 ⇒ 树里弹内联确认、回调为空）已按 amend 删除——那条性质**反向**了，
+   * 回归网必须钉住正向：同名也照常把 `{snapshotId, path}` 交出去。
+   * （fixture 里 `资金流水/支付宝.xlsx` 两棵树都有。）
+   */
+  test("沙箱里有同名的文件：树不再拦（冲突交给恢复对话框），仍照常交 {snapshotId, path}", () => {
+    const { host, 拉回过 } = 挂({ open: true })
+    全展开上树(host) // 默认全收缩 ⇒ 沙箱那一行得先展开才够得到
+
+    拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水/支付宝.xlsx"))
+
+    expect(拉回过).toEqual([{ snapshotId: "s-1", path: "资金流水/支付宝.xlsx" }])
   })
 
   test("下树的行起拖载荷是 `minio:<path>`（云上备份不能被会话框误插成本地引用）", () => {
@@ -386,7 +400,11 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
   test("恢复点未选中时下树**不可拖**（没有恢复点就没有可拉的东西）", () => {
     const { host } = 挂({ open: true, snapshotId: null })
 
-    expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable") === "true").toBe(false)
+    const 行元素 = 行(host, "minio", "资金流水/支付宝.xlsx")
+    // 先证行在（`#005-38` / `#005-47`：行不存在时 `undefined !== "true"` 照样绿）。
+    // ⚠️ 别用 `toBeNull()`——在本仓会把整轮挂死（`#005-01`）。
+    expect(行元素 === null).toBe(false)
+    expect(行元素?.getAttribute("draggable")).not.toBe("true")
   })
 
   test("同树内拖 ⇒ 两个回调都不喊（上树的行另可拖出浏览器，那是拖拽 A，不归本组件）", () => {
@@ -481,6 +499,24 @@ describe("DualFileTree 恢复点选择器与空态（spec §11.2）", () => {
     }
 
     expect(选过的恢复点).toEqual(["s-2"])
+  })
+
+  test("恢复点选择器回显当前 snapshotId", () => {
+    const { host } = 挂({ open: true, snapshotId: "s-1" })
+
+    expect(host.querySelector<HTMLSelectElement>("[data-slot='minio-tree-snapshot']")?.value).toBe("s-1")
+  })
+
+  test("选项文案在 scope 非空时带作用范围（同一分钟的两个恢复点要分得开）", () => {
+    const { host } = 挂({
+      open: true,
+      snapshots: [快照("s-1", "manual", 3), { ...快照("s-3", "manual", 5), scope: "资料" }],
+      snapshotId: "s-1",
+    })
+    const 选项 = [...(槽(host, "minio-tree-snapshot")?.querySelectorAll("option") ?? [])]
+    const 带范围 = 选项.find((el) => el.textContent?.includes("5 个文件"))
+
+    expect(带范围?.textContent?.includes("· 资料")).toBe(true)
   })
 
   test("删除按钮删的是**当前选中**的恢复点；没选中时禁用", () => {

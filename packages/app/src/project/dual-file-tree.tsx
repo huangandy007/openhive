@@ -393,9 +393,11 @@ function MinioTree(props: {
           <For each={props.snapshots ?? []}>
             {(snapshot) => (
               <option value={snapshot.id}>
+                {/* 文案含**时间 · 类型 · 文件数**（spec §11.7）；`scope` 非空时追加作用范围——
+                    同一分钟、不同选中项的两个恢复点否则看起来一模一样（spec §11.2）。 */}
                 {`${new Date(snapshot.createdAt).toLocaleString("zh-CN", { hour12: false })} · ${
                   snapshot.kind === "auto" ? "自动" : "手动"
-                } · ${snapshot.totals.files} 个文件`}
+                } · ${snapshot.totals.files} 个文件${snapshot.scope ? ` · ${snapshot.scope}` : ""}`}
               </option>
             )}
           </For>
