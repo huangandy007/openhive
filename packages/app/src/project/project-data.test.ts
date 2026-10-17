@@ -596,6 +596,9 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
   /**
    * F-1（fix round 1）：`activeJob` 只判「是对象」时，`{}` 会被当成一个任务交出去——而注释写的
    * 是「收窄到有 id 即可」。这里钉住「没有 id ⇒ 当作没有任务」，且**不抛**。
+   *
+   * 回退的值是 **`null`**、不是 `undefined`：服务端契约是 `Job | null`
+   *（`backup.ts` 的 `contextStatus`），「没有任务」在线上就是 `null`。
    */
   test("backupStatus：activeJob 没有 id ⇒ 当作没有任务（不抛，也不交出空对象）", async () => {
     const 记录: Array<{ method: string; url: string; body: unknown }> = []
@@ -611,7 +614,25 @@ describe("PROJECT_DATA 的备份 / 恢复绑定（Task 13）", () => {
     const 状态 = await PROJECT_DATA.backupStatus("p-42")
 
     expect(状态).toBeDefined()
-    expect(状态?.activeJob).toBeUndefined()
+    expect(状态?.activeJob).toBeNull()
+  })
+
+  /** 服务端明确说「没有任务」时就是 `null`——收窄不能把它翻成 `undefined`。 */
+  test("backupStatus：服务端回 activeJob: null ⇒ 原样是 null", async () => {
+    const 记录: Array<{ method: string; url: string; body: unknown }> = []
+    假备份(
+      {
+        "GET /openhive/project/backup/status": {
+          body: { activeJob: null, usageBytes: 0, limitBytes: 1, autoPaused: false },
+        },
+      },
+      记录,
+    )
+
+    const 状态 = await PROJECT_DATA.backupStatus("p-42")
+
+    expect(状态).toBeDefined()
+    expect(状态?.activeJob).toBeNull()
   })
 
   /**
