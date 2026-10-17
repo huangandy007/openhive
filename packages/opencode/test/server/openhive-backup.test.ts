@@ -14,8 +14,6 @@ import { type FakeS3, startFakeS3 } from "@opencode-ai/core/test-support/fake-s3
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { AnchorWorkspace } from "../../src/server/routes/instance/httpapi/middleware/anchor-workspace"
-import { userIdentityLayer } from "../../src/server/routes/instance/httpapi/middleware/user-identity"
-import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { OpenhiveArchive, type MinioSettings } from "../../src/server/openhive/archive"
 import { OpenhiveBackup } from "../../src/server/openhive/backup"
 import { OpenhivePg } from "../../src/server/openhive/pg"
@@ -43,12 +41,12 @@ import { testEffect } from "../lib/effect"
  * `Connection closed`**（随后自愈）。所以「MinIO 没配 ⇒ 503」那条住在
  * `openhive-backup-unconfigured.test.ts`，本文件只建这一个 app。
  *
- * ## 本文件**自己**把 `OpenhiveBackup.routes` 合进应用
+ * ## 路由接线：Task 12 起走生产应用
  *
- * Task 11 只产出 `routes`，`server.ts` 的接线是 Task 12 的事。若直接抄 `HttpApiApp.routes`，
- * 本文件会在「出口没挂上」之外多红一层「Task 12 还没做」——RED 的根因就说不清了。
- * 于是这里用 `Layer.merge` 把备份层与既有应用并起来，`Layer.provide` 与 Task 12 将写的那几行
- * 逐项一致（少供一个服务是**层构造期炸**，不是静默回退）。
+ * Task 11 时本文件用 `Layer.merge(HttpApiApp.routes, backupRoutes)` 自己并了一层；Task 12 把
+ * `OpenhiveBackup.routes` 挂进了 `server.ts` 的同一个 `Layer.mergeAll` 与顶层 provide 链，
+ * 再 merge 就是同一批路由注册两次（实测 `Method 'POST' already declared for route
+ * '/openhive/project/backup'`）。现在只把**测试上限**经 `createRoutes` 的第二个参数注入。
  *
  * ## 「未挂载」在本应用里**不是 404**
  *
@@ -142,23 +140,21 @@ const OPEN: Record<string, string | undefined> = {
 }
 
 /**
- * 备份层与应用层并起来。三层 `Layer.provide` 与 Task 12 将写进 `server.ts` 的那几行同源：
- * `MinioConfig` 是备份自己的配置服务；沙箱根复用 `AnchorWorkspace.Config`（只有一处定义）；
- * `OpenhivePg.layer` 是**模块级同一个值** ⇒ 与既有 openhive 出口共用同一个 PG 客户端。
+ * Task 12 起备份路由已由 `server.ts` 挂进生产应用（顶层 provide 链包住，含身份门）。
+ * 本文件只需要把**上限**换掉：`createRoutes` 的第二个参数就是为此留的
+ * （`routesWithQuota` 只换数值，spec §8.3 的公式一个字不改）。
+ *
+ * ⚠️ **不再 `Layer.merge(HttpApiApp.routes, backupRoutes)`**：那会让同一批路由注册两次
+ * （层构造期 `Method 'POST' already declared for route '/openhive/project/backup'`）。
+ * 身份也不用再单独供——顶层链里的 `userIdentityLayer` 已经包住全部路由。
  */
 const backupRoutes = OpenhiveBackup.routesWithQuota(TEST_QUOTA).pipe(
   Layer.provide(OpenhiveArchive.MinioConfig.layer),
   Layer.provide(AnchorWorkspace.Config.layer),
   Layer.provide(OpenhivePg.layer),
-  // Task 12 接线时，这几道全局中间件在 `server.ts` 顶层 provide 链里、包住**所有**路由；
-  // 本文件单独合并备份层，所以要把**同一个** `userIdentityLayer` 值也供在备份层上——
-  // 复刻「请求期注入 `User`」这一环。不供它 ⇒ 备份路由拿不到身份，一律 401（实测）。
-  Layer.provide(
-    userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer), Layer.provide(DatabaseRouter.layer())),
-  ),
 )
 
-const appRoutes = Layer.merge(HttpApiApp.routes, backupRoutes)
+const appRoutes = HttpApiApp.createRoutes(undefined, backupRoutes)
 
 function realApp(env: Record<string, string | undefined>) {
   const handler = HttpRouter.toWebHandler(appRoutes.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env)))), {

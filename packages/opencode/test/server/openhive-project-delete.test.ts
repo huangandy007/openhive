@@ -12,6 +12,8 @@ import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { type FakeS3, startFakeS3 } from "@opencode-ai/core/test-support/fake-s3"
+import { Minio } from "@opencode-ai/core/minio"
+import { sharedJobs } from "../../src/server/openhive/backup-jobs"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -122,6 +124,9 @@ const OPEN: Record<string, string | undefined> = {
   OPENHIVE_MINIO_BUCKET: s3.bucket,
   OPENHIVE_MINIO_ACCESS_KEY: "test-access-key",
   OPENHIVE_MINIO_SECRET_KEY: "test-secret-key",
+  // ⚠️ 只影响本文件（`OPEN` 是 `ConfigProvider` 的一份快照）：删除流程等任务收敛的上限
+  // 生产默认 30 秒；这里压到 120ms，否则「任务不响应取消 ⇒ 409」那条要跑 30 秒。
+  OPENHIVE_BACKUP_QUIESCE_TIMEOUT_MS: "120",
 }
 
 const openApp = (() => {
@@ -489,6 +494,110 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
         body: JSON.stringify({ projectId: "any-project" }),
       })
       expect(response.status).toBe(401)
+    }),
+  )
+
+  /**
+   * **备份命名空间也要清**（spec §6 ⑤ 的第二支，2026-10-18）。
+   *
+   * 备份快照写在 `{userId}/_openhive-backups/{projectId}/`，与归档镜像 `{userId}/{projectId}/`
+   * 是**两个独立前缀**。只清后者 ⇒ 项目删了、快照还在，且用户再也看不到它（永久孤儿）。
+   *
+   * ⚠️ 前置「种进去之后看得到」必须成立（`#005-47`）：否则「删完为空」在一个本来就空的现场也成立。
+   */
+  it.live(
+    "删除项目：连 `_openhive-backups` 命名空间一起清掉",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* 建项目(`备份快照残留·${Date.now()}`, "private")
+
+        // **前置**：往备份命名空间里种一个对象。直接走存储接口是**夹具**（构造输入），
+        // 不是 oracle——断言读的仍是假 S3 收到的键。
+        const 快照 = Minio.makeStore({
+          endpoint: s3.endpoint,
+          bucket: s3.bucket,
+          credentials: { accessKeyId: "test-access-key", secretAccessKey: "test-secret-key" },
+          scope: { userId: ALICE.id, projectId: project.id, namespace: "_openhive-backups" },
+        })
+        yield* Effect.promise(() => 快照.put({ path: "state.json", body: new TextEncoder().encode("{}") }))
+        // 前置真的成立（`#005-47`：不作这一条，「删完为空」在一个本来就空的现场也成立）。
+        expect(
+          s3.keys().some((key) => key.includes("_openhive-backups") && key.includes(project.id)),
+          "种进备份命名空间之后，假 S3 上应当看得到这个键",
+        ).toBe(true)
+
+        const response = yield* 删(ALICE, project.id)
+        expect(response.status).toBe(200)
+
+        // 被测：备份命名空间里的键一个不剩（与归档镜像前缀是两个独立前缀，删项目时两边都要清）。
+        expect(s3.keys().filter((key) => key.includes("_openhive-backups") && key.includes(project.id))).toEqual([])
+      }),
+    60_000,
+  )
+
+  /** **spec §5.8 末条**：项目删除要先收敛该项目上的任务（等它收在 `cancelled`）。 */
+  it.live("删除项目：备份任务还在跑 ⇒ 先请求取消并等它收敛，收敛后才删", () =>
+    Effect.gen(function* () {
+      const project = yield* 建项目(`备份收敛·等·${Date.now()}`, "private")
+
+      // 造一个**真的**活动任务（同一个 `sharedJobs` 实例——`backup.ts` 与删除共用）。
+      const { job } = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
+      // 模拟执行器响应取消：30ms 后自己收尾（quiesce 的默认轮询是 100ms ⇒ 第一次轮询就能看到终态）。
+      setTimeout(() => sharedJobs.finish(job.id, "cancelled"), 30)
+
+      const response = yield* 删(ALICE, project.id)
+      expect(response.status, "任务收敛之后删除应当成功").toBe(200)
+
+      // 被测：删除**等到了**那个任务收敛，而且它收在 `cancelled`（不是被硬删后还在跑）。
+      expect(sharedJobs.get(job.id, ALICE.id)?.state).toBe("cancelled")
+      // 删除真的发生了（否则「等到了」和「删掉了」没有同一条证据）。
+      const 列 = yield* as(PROJECT_PATH)
+      const 清单 = yield* json(Schema.Array(Entry), 列)
+      expect(清单.some((行) => 行.id === project.id)).toBe(false)
+    }),
+    60_000,
+  )
+
+  /** **spec §5.8 末条的另一半**：等不到就**报错且不删任何东西**——不强行删。 */
+  it.live("删除项目：任务不响应取消 ⇒ 409，项目一个字节都不动", () =>
+    Effect.gen(function* () {
+      const project = yield* 建项目(`备份收敛·超时·${Date.now()}`, "private")
+
+      // 这个任务永不 finish ⇒ quiesce 到上限（本文件把上限压到 120ms，见 `OPEN`）回 false。
+      const { job } = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
+      try {
+        const response = yield* 删(ALICE, project.id)
+        expect(response.status).toBe(409)
+        const 体 = yield* json(Schema.Struct({ code: Schema.String }), response)
+        expect(体.code).toBe("job_running")
+
+        // ⚠️ **不强行删**是这条用例的另一半：项目仍在清单里、目录仍在盘上。
+        const 列 = yield* as(PROJECT_PATH)
+        const 清单 = yield* json(Schema.Array(Entry), 列)
+        expect(清单.some((行) => 行.id === project.id), "409 之后项目必须还在").toBe(true)
+      } finally {
+        // 释放单飞锁，否则同一（用户×项目）在别的用例里永远起不来。
+        sharedJobs.finish(job.id, "cancelled")
+      }
+    }),
+    60_000,
+  )
+
+  /**
+   * **真应用冒烟**：备份出口经真实 `HttpApiApp.routes` 可达、且身份接线没漏。
+   *
+   * 钉的是「路由 ＋ 身份」——不是业务行为：没挂路由时该路径落进 SPA 兜底（`200 + text/html`），
+   * 所以**光断状态码区分不出来**；同时钉 `content-type` 必须是 JSON。
+   */
+  it.live("真应用冒烟：备份状态出口已挂载、身份接线通了（不是 401 / 404）", () =>
+    Effect.gen(function* () {
+      const project = yield* 建项目(`备份冒烟·${Date.now()}`, "private")
+      const response = yield* as(`/openhive/project/backup/status?projectId=${project.id}`)
+
+      expect(response.headers.get("content-type") ?? "").toContain("application/json")
+      expect(response.status).not.toBe(401)
+      expect(response.status).not.toBe(404)
+      expect([200, 400]).toContain(response.status)
     }),
   )
 

@@ -126,6 +126,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
+import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
@@ -298,8 +299,20 @@ const app = LayerNode.group([
   PtyTicket.node,
 ])
 
+/**
+ * `backupRoutes` 只为测试注入（`openhive-backup.test.ts` 用 `routesWithQuota(TEST_QUOTA)`
+ * 把上限压到 1 MiB——10 GiB 的本机造不出来）。生产调用不传，恒为下面这个默认值。
+ * 【保留的定制 · 同步上游时不要丢】—— openhive 文件级备份（2026-10-18）。
+ */
+const defaultBackupRoutes = OpenhiveBackup.routes.pipe(
+  Layer.provide(OpenhiveArchive.MinioConfig.layer),
+  Layer.provide(AnchorWorkspace.Config.layer),
+  Layer.provide(OpenhivePg.layer),
+)
+
 export function createRoutes(
   corsOptions?: CorsOptions,
+  backupRoutes = defaultBackupRoutes,
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   const locationServiceMapV2 = buildLocationServiceMap()
 
@@ -352,6 +365,12 @@ export function createRoutes(
       // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（006 删除）。
       Layer.provide(AppNodeBuilderV1.build(ProjectDirectories.node)),
     ),
+    // openhive 文件级备份快照（2026-10-18）：备份 / 恢复点 / 预览 / 恢复 / 任务。
+    // 配置与归档那条**共用两份服务**（`MinioConfig` / `AnchorWorkspace.Config`），另加
+    // `OpenhivePg.layer`（授权要读 `auth.project_member` / `auth.project_archive`）。
+    // 默认值见 `defaultBackupRoutes`（只为测试注入留了一个参数）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 文件级备份（2026-10-18）。
+    backupRoutes,
     // openhive 文件操作出口（005 T020）：复制 / 移动 / 上传 / 下载（FR-005）。
     // 沙箱根**复用**同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义）——本模块要用它
     // 判「这次请求在不在一个项目里」（`?directory=` 相对沙箱根恰好一层）。

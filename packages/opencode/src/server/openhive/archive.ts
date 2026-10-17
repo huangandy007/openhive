@@ -125,6 +125,8 @@ import { lstatSync } from "node:fs"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { quiesceProject } from "./backup-jobs"
+import { BACKUP_NAMESPACE } from "./backup-model"
 import { OpenhivePg } from "./pg"
 import { PREFIX, SharedRootConfig } from "./project"
 
@@ -216,6 +218,8 @@ interface Deps {
    * `yield* ProjectDirectories.Service`（请求 fiber 的 context 里没有 app 层服务）。
    */
   readonly directories: ProjectDirectories.Interface
+  /** 删除前等待备份/恢复任务收敛的上限（毫秒）。默认 30 秒（spec §5.8「有上限」）。 */
+  readonly quiesceTimeoutMs: number
 }
 
 /**
@@ -236,6 +240,10 @@ export const routes = HttpRouter.use((router) =>
     const shared = yield* SharedRootConfig
     const database = yield* Database.Service
     const directories = yield* ProjectDirectories.Service
+    // ⚠️ 必须与其它配置**同一时点**取（层构造期）——请求期取不到 app 层服务/配置。
+    const quiesceTimeoutMs = yield* EffectConfig.number("OPENHIVE_BACKUP_QUIESCE_TIMEOUT_MS").pipe(
+      EffectConfig.withDefault(30_000),
+    )
 
     const deps: Deps = {
       root: config.root,
@@ -244,6 +252,7 @@ export const routes = HttpRouter.use((router) =>
       pg: openhivePg.pg,
       database,
       directories,
+      quiesceTimeoutMs,
     }
 
     yield* router.add("POST", PATH.archive, (request) => handleArchive(request, deps))
@@ -552,6 +561,18 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     }
     const userIds = members.map((member) => member.userId)
 
+    // ── 0.5 把该项目上所有成员的任务收敛掉（spec §5.8 末条）──
+    //   备份 / 预览 / 恢复与删除共用同一张任务表（`sharedJobs`）；锁被占用时**先请求取消**、
+    //   有上限地等它收敛；等不到就**报错且不删任何东西**——而不是强行删。
+    //   ⚠️ 位置必须在任何副作用之前：删掉一个半备份的项目会留下永久孤儿 blob，
+    //   删掉一个半恢复的项目会留下改了一半的树。
+    const 静了 = yield* Effect.promise(() => quiesceProject(projectId, userIds, { timeoutMs: deps.quiesceTimeoutMs }))
+    if (!静了)
+      return HttpServerResponse.jsonUnsafe(
+        { error: "备份/恢复任务仍在进行，请稍后重试", code: "job_running" },
+        { status: 409 },
+      )
+
     // ── 1. ⑤ MinIO 备份（**先于**成员关系的删除；见上面那张表）──
     yield* Effect.promise(() => dropBackups(deps, projectId, userIds))
     // ── 2. ④ 沙箱目录 ＋ bare 仓库 ──
@@ -588,14 +609,26 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
 async function dropBackups(deps: Deps, projectId: string, userIds: readonly string[]): Promise<void> {
   if (Option.isNone(deps.minio)) return
   const settings = deps.minio.value
+  const credentials = { accessKeyId: settings.accessKeyId, secretAccessKey: settings.secretAccessKey }
   for (const userId of userIds) {
-    const store = Minio.makeStore({
+    // ① 归档镜像前缀
+    const 镜像 = Minio.makeStore({
       endpoint: endpointOf(settings),
       bucket: settings.bucket,
-      credentials: { accessKeyId: settings.accessKeyId, secretAccessKey: settings.secretAccessKey },
+      credentials,
       scope: { userId, projectId },
     })
-    for (const entry of await store.list()) await store.delete({ path: entry.path })
+    for (const entry of await 镜像.list()) await 镜像.delete({ path: entry.path })
+
+    // ② 备份快照命名空间（2026-10-18）：与镜像严格分开的两个前缀，删除时两个都要清。
+    //    漏掉这一支，项目删了、快照还在，且用户再也看不到它（永久孤儿）。
+    const 快照 = Minio.makeStore({
+      endpoint: endpointOf(settings),
+      bucket: settings.bucket,
+      credentials,
+      scope: { userId, projectId, namespace: BACKUP_NAMESPACE },
+    })
+    for (const entry of await 快照.list()) await 快照.delete({ path: entry.path })
   }
 }
 
