@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3"
 import { openBackupStore } from "../../src/server/openhive/backup-store"
 import { createJobRegistry, quiesceProject } from "../../src/server/openhive/backup-jobs"
-import { runBackup } from "../../src/server/openhive/backup-run"
+import { runBackup, runPreview, runRestore } from "../../src/server/openhive/backup-run"
 import type { Manifest } from "../../src/server/openhive/backup-model"
 
 /**
@@ -397,5 +397,128 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     await expect(
       runBackup(deps, { kind: "auto", scope: "", createdBy: "007", previous: first }),
     ).rejects.toMatchObject({ name: "UnchangedError" })
+  })
+
+  /**
+   * T8：预览与恢复。
+   *
+   * ⚠️ 恢复的产出顺序是 **manifest 的顺序**（`runBackup` 按固定 locale 排序：`报告.docx`
+   * 先于 `资料/*`），不是按恢复动作的先后重排——判据按 manifest 读，别为了让「读起来顺」
+   * 去给结果排序（那会让判据与实现的排序口径分家，换 locale 时谁也说不清该红哪条）。
+   */
+  async function 备一份(directory: string): Promise<Manifest> {
+    const { deps } = 依赖(directory)
+    return runBackup(deps, { kind: "manual", scope: "", createdBy: "007" })
+  }
+
+  test("预览：missing / same / different / type-mismatch 四种状态", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    // 改一个、删一个、把一个文件变成目录
+    writeFileSync(join(directory, "资料", "甲.txt"), "changed")
+    rmSync(join(directory, "资料", "乙.txt"))
+    rmSync(join(directory, "报告.docx"))
+    mkdirSync(join(directory, "报告.docx"))
+
+    const { deps } = 依赖(directory)
+    const preview = await runPreview(deps, { manifest, scope: "" })
+    const 状态 = Object.fromEntries(preview.entries.map((entry) => [entry.path, entry.status]))
+    expect(状态["资料/甲.txt"]).toBe("different")
+    expect(状态["资料/乙.txt"]).toBe("missing")
+    expect(状态["报告.docx"]).toBe("type-mismatch")
+    expect(preview.counts).toEqual({ missing: 1, same: 0, different: 1, "type-mismatch": 1 })
+  })
+
+  test("恢复：missing 直接恢复，same 跳过，different 按 keep-both 生成新名字", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    writeFileSync(join(directory, "资料", "甲.txt"), "changed")
+    rmSync(join(directory, "资料", "乙.txt"))
+    rmSync(join(directory, "报告.docx"))
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "keep-both", decisions: {} })
+    // manifest 顺序：`报告.docx` 在 `资料/乙.txt` 之前（见本节开头关于顺序的说明）。
+    expect(result.restored).toEqual(["报告.docx", "资料/乙.txt"])
+    expect(result.keptBoth).toEqual(["资料/甲.txt"])
+    expect(readFileSync(join(directory, "资料", "乙.txt"), "utf8")).toBe("bbb")
+    expect(readFileSync(join(directory, "报告.docx"), "utf8")).toBe("ccc")
+    expect(readFileSync(join(directory, "资料", "甲.txt"), "utf8")).toBe("changed")
+    const 目录 = readdirSync(join(directory, "资料"))
+    expect(目录.some((name) => name.startsWith("甲 (MinIO "))).toBe(true)
+  })
+
+  test("恢复：overwrite 覆盖；skip 不动", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    writeFileSync(join(directory, "资料", "甲.txt"), "changed")
+
+    const { deps } = 依赖(directory)
+    const 覆盖 = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(覆盖.restored).toContain("资料/甲.txt")
+    expect(readFileSync(join(directory, "资料", "甲.txt"), "utf8")).toBe("aaa")
+
+    writeFileSync(join(directory, "资料", "甲.txt"), "again")
+    const 跳过 = await runRestore(deps, { manifest, scope: "", global: "skip", decisions: {} })
+    expect(跳过.skipped).toContain("资料/甲.txt")
+    expect(readFileSync(join(directory, "资料", "甲.txt"), "utf8")).toBe("again")
+  })
+
+  test("恢复：类型冲突只能按 skip 处理（不删目录）", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    mkdirSync(join(directory, "报告.docx"))
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toEqual([{ path: "报告.docx", reason: "type-mismatch" }])
+    expect(statSync(join(directory, "报告.docx")).isDirectory()).toBe(true)
+  })
+
+  test("恢复：blob 缺失 ⇒ failed，不留下半截临时文件", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    const { deps } = 依赖(directory)
+    await deps.store.deleteBlob(manifest.files.find((file) => file.path === "报告.docx")!.hash)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toEqual([{ path: "报告.docx", reason: "blob-missing" }])
+    expect(readdirSync(directory).some((name) => name.startsWith(".openhive-restore-"))).toBe(false)
+  })
+
+  // 补充（brief 未列）：哈希校验必须在 rename **之前**拦下内容不对的 blob。
+  // 没有这条时「删掉 `hash.digest(...) !== file.hash` 那一行」的变异全绿——即恢复了坏内容
+  // 而回归网看不见（变异验证记录见 task-8-report）。
+  test("恢复：blob 内容与哈希对不上 ⇒ failed hash-mismatch，不写目标、不留临时文件", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    const 坏hash = manifest.files.find((file) => file.path === "报告.docx")!.hash
+    // 键对、**长度也对**（原内容 "ccc" 与 "xxx" 都是 3 字节）、只有内容不对：
+    // 这样 `收到 !== file.size` 拦不住它，唯一能拦的是哈希比较——否则这条用例测不到哈希校验。
+    s3.seed(`007/_openhive-backups/p-42/blobs/${坏hash.slice(0, 2)}/${坏hash}`, "xxx")
+
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toEqual([{ path: "报告.docx", reason: "hash-mismatch" }])
+    expect(readdirSync(directory).some((name) => name.startsWith(".openhive-restore-"))).toBe(false)
+    // 目标没有被写出来（半截 / 错内容的文件都不能落盘）。
+    expect(() => readFileSync(join(directory, "报告.docx"), "utf8")).toThrow()
+  })
+
+  test("恢复：不写穿符号链接", async () => {
+    const directory = 造项目()
+    const manifest = await 备一份(directory)
+    rmSync(join(directory, "报告.docx"))
+    // win32 建符号链接要管理员；不可用就跳过（如实记缺口，不写成覆盖）
+    try {
+      symlinkSync(join(directory, "资料"), join(directory, "报告.docx"), "dir")
+    } catch {
+      return
+    }
+    const { deps } = 依赖(directory)
+    const result = await runRestore(deps, { manifest, scope: "", global: "overwrite", decisions: {} })
+    expect(result.failed).toEqual([{ path: "报告.docx", reason: "symlink" }])
   })
 })

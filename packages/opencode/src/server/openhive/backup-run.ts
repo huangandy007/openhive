@@ -5,20 +5,34 @@
  * 文件边界检查；取消或失败**不写 manifest** ⇒ 不会留下「半份备份看起来像完整备份」。
  */
 
-import { createHash, randomBytes } from "node:crypto"
-import { createReadStream, type Stats } from "node:fs"
-import { lstat, readdir, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { createHash, randomBytes, randomUUID } from "node:crypto"
+import { createReadStream, lstatSync, readdirSync, rmSync, type Stats } from "node:fs"
+import { chmod, lstat, mkdir, open, readdir, rename, rm, stat, utimes } from "node:fs/promises"
+import { dirname, join } from "node:path"
 import {
+  LOCAL_ONLY_LIMIT,
   MAX_FILE_BYTES,
+  PREVIEW_LIMIT,
   type Job,
   type Manifest,
   type ManifestFile,
   type ManifestSkip,
+  type PreviewStatus,
+  type RestoreDecision,
+  type RestorePreview,
+  type RestorePreviewEntry,
+  type RestoreResult,
   type SkipReason,
   type SnapshotKind,
 } from "./backup-model"
-import { estimateManifestBytes, isExcluded, isPathInScope, isSafeRelativePath, snapshotIdOf } from "./backup-rules"
+import {
+  estimateManifestBytes,
+  isExcluded,
+  isPathInScope,
+  isSafeRelativePath,
+  keepBothName,
+  snapshotIdOf,
+} from "./backup-rules"
 import type { BackupStore } from "./backup-store"
 
 export class CancelledError extends Error {
@@ -339,4 +353,189 @@ function 树没变(previous: Manifest, files: readonly ManifestFile[], dirs: rea
     if (a.path !== b.path || a.size !== b.size || a.mtimeMs !== b.mtimeMs || a.hash !== b.hash) return false
   }
   return previous.dirs.length === dirs.length && previous.dirs.every((dir, index) => dir === dirs[index])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 预览与恢复（spec §6）
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PreviewInput {
+  readonly manifest: Manifest
+  readonly scope: string
+}
+
+/** 预览：逐文件比对并列出「仅本地」。条数有上限（spec §6.2）。 */
+export async function runPreview(deps: RunDeps, input: PreviewInput): Promise<RestorePreview> {
+  const 目标 = input.manifest.files.filter((file) => isPathInScope(input.scope, file.path))
+  const entries: RestorePreviewEntry[] = []
+  const counts: Record<PreviewStatus, number> = { missing: 0, same: 0, different: 0, "type-mismatch": 0 }
+  for (const file of 目标) {
+    检查取消(deps)
+    const 绝对 = join(deps.directory, ...file.path.split("/"))
+    let 本地: Stats | undefined
+    try {
+      本地 = await lstat(绝对)
+    } catch {
+      counts.missing += 1
+      if (entries.length < PREVIEW_LIMIT) entries.push({ path: file.path, status: "missing" })
+      continue
+    }
+    let status: PreviewStatus
+    // 符号链接（不论指向哪里）与目录都算类型冲突：恢复时既不写穿、也不删目录。
+    if (!本地.isFile()) status = "type-mismatch"
+    else if (本地.size !== file.size) status = "different"
+    else {
+      const 本地hash = await hashFile(绝对).catch(() => undefined)
+      status = 本地hash === file.hash ? "same" : "different"
+    }
+    counts[status] += 1
+    if (entries.length < PREVIEW_LIMIT) entries.push({ path: file.path, status })
+  }
+
+  const 清单里 = new Set(目标.map((file) => file.path))
+  const localOnly: string[] = []
+  let 仅本地超限 = false
+  for (const file of (await scanScope(deps.directory, input.scope)).files) {
+    if (清单里.has(file.path)) continue
+    if (localOnly.length >= LOCAL_ONLY_LIMIT) {
+      仅本地超限 = true
+      break
+    }
+    localOnly.push(file.path)
+  }
+
+  return {
+    snapshotId: input.manifest.id,
+    scope: input.scope,
+    counts,
+    entries,
+    truncated: 目标.length > entries.length,
+    localOnly,
+    localOnlyTruncated: 仅本地超限,
+  }
+}
+
+export interface RestoreInput {
+  readonly manifest: Manifest
+  readonly scope: string
+  readonly global: RestoreDecision
+  readonly decisions: Readonly<Record<string, RestoreDecision>>
+}
+
+/** 恢复。逐文件：临时文件 → 边写边校验 → rename 两次（spec §6.4）。 */
+export async function runRestore(deps: RunDeps, input: RestoreInput): Promise<RestoreResult> {
+  const 目标 = input.manifest.files.filter((file) => isPathInScope(input.scope, file.path))
+  const restored: string[] = []
+  const keptBoth: string[] = []
+  const skipped: string[] = []
+  const failed: { path: string; reason: string }[] = []
+  let cancelled = false
+
+  // 空目录先建（spec §6.4）
+  for (const dir of input.manifest.dirs) {
+    if (!isPathInScope(input.scope, dir)) continue
+    try {
+      await mkdir(join(deps.directory, ...dir.split("/")), { recursive: true })
+    } catch {
+      // 目录建不出来时具体文件会逐个失败，不在这里吞掉整个恢复。
+    }
+  }
+
+  for (const file of 目标) {
+    if (deps.isCancelled()) {
+      cancelled = true
+      break
+    }
+    const 绝对 = join(deps.directory, ...file.path.split("/"))
+    const 决定 = input.decisions[file.path] ?? input.global
+    let 本地: Stats | undefined
+    try {
+      本地 = await lstat(绝对)
+    } catch {
+      本地 = undefined
+    }
+
+    // 不写穿符号链接；类型冲突只允许跳过（覆盖要先删用户目录，本版不给）。
+    if (本地 !== undefined && !本地.isFile()) {
+      failed.push({ path: file.path, reason: 本地.isSymbolicLink() ? "symlink" : "type-mismatch" })
+      continue
+    }
+    if (本地 !== undefined && 本地.size === file.size) {
+      const 本地hash = await hashFile(绝对).catch(() => undefined)
+      if (本地hash === file.hash) {
+        skipped.push(file.path)
+        continue
+      }
+    }
+    if (本地 !== undefined && 决定 === "skip") {
+      skipped.push(file.path)
+      continue
+    }
+
+    let 目标路径 = file.path
+    if (本地 !== undefined && 决定 === "keep-both") {
+      目标路径 = keepBothName(file.path, input.manifest.createdAt, (candidate) => {
+        try {
+          lstatSync(join(deps.directory, ...candidate.split("/")))
+          return true
+        } catch {
+          return false
+        }
+      })
+    }
+    const 目标绝对 = join(deps.directory, ...目标路径.split("/"))
+    try {
+      await mkdir(dirname(目标绝对), { recursive: true })
+      const body = await deps.store.openBlob({ hash: file.hash })
+      if (body === undefined) {
+        failed.push({ path: file.path, reason: "blob-missing" })
+        continue
+      }
+      const 临时 = join(dirname(目标绝对), `.openhive-restore-${randomUUID()}.tmp`)
+      const hash = createHash("sha256")
+      let 收到 = 0
+      const 句柄 = await open(临时, "w")
+      try {
+        for await (const chunk of body) {
+          hash.update(chunk)
+          收到 += chunk.byteLength
+          await 句柄.write(chunk)
+        }
+        await 句柄.sync()
+      } finally {
+        await 句柄.close()
+      }
+      // 校验必须在 rename **之前**：内容不对时目标一个字都不该动。
+      if (hash.digest("hex") !== file.hash || 收到 !== file.size) {
+        await rm(临时, { force: true })
+        failed.push({ path: file.path, reason: "hash-mismatch" })
+        continue
+      }
+      // 只有「写回原路径的覆盖」才需要把旧文件挪开；keep-both 的目标是**新名字**，
+      // 旧文件原地不动（把 `目标绝对` 当旧文件挪会直接 ENOENT——brief 里的写法就有这一处）。
+      const 旧 =
+        本地 !== undefined && 目标路径 === file.path
+          ? join(dirname(目标绝对), `.openhive-old-${randomUUID()}`)
+          : undefined
+      if (旧) await rename(目标绝对, 旧)
+      await rename(临时, 目标绝对)
+      if (旧) await rm(旧, { force: true })
+      if (file.mode !== undefined && process.platform !== "win32") await chmod(目标绝对, file.mode)
+      await utimes(目标绝对, file.mtimeMs / 1000, file.mtimeMs / 1000)
+      if (目标路径 === file.path) restored.push(file.path)
+      else keptBoth.push(file.path)
+    } catch (error) {
+      failed.push({ path: file.path, reason: error instanceof Error ? error.message : "unknown" })
+      // 临时文件兜底清理（本目录内所有本实现的临时文件；幂等，失败不升级成第二个错误）。
+      try {
+        for (const name of readdirSync(dirname(目标绝对))) {
+          if (name.startsWith(".openhive-restore-")) rmSync(join(dirname(目标绝对), name), { force: true })
+        }
+      } catch {
+        // 目录都不在了就没有临时文件要清；原错误已经记进 failed。
+      }
+    }
+  }
+
+  return { restored, keptBoth, skipped, failed, cancelled }
 }
