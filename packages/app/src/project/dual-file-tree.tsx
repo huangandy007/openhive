@@ -106,10 +106,12 @@ export function DualFileTree(props: DualFileTreeProps) {
    */
   const [待拉回, set待拉回] = createSignal<string>()
 
+  // `relative` 是 MinIO 窗口（`MinioTree`）的定位祖先——2026-10-17 起它是**置顶浮层**，
+  // 不再是上下双树里的第二段普通流（用户实报：窗口盖不住文件列表）。
   return (
     <div
       data-component="dual-file-tree"
-      class="flex min-h-0 w-full flex-1 flex-col"
+      class="relative flex min-h-0 w-full flex-1 flex-col"
       // 拖拽的四个事件全在最外层这一层收——见文件头「为什么是委托」。
       onDragStart={起拖}
       onDragOver={悬停}
@@ -318,7 +320,18 @@ function MinioTree(props: {
   }
 
   return (
-    <div data-slot="minio-tree" data-tree="minio" class="flex min-h-0 w-full flex-1 flex-col">
+    <div
+      data-slot="minio-tree"
+      data-tree="minio"
+      // 置顶浮层（2026-10-17 用户实报）：「MinIO 备份」窗口要**盖住**文件 Tab 里的文件/文件夹信息。
+      // 修之前它只是上下双树里的第二段普通流（`position: static`、无底色、无上边框）：与文件列表
+      // 不重叠 ⇒ 遮不住东西，上沿也「感觉不到在哪里」。
+      //  - `absolute inset-0`：脱离普通流、盖满整片文件区（上树仍挂载在下面，收起时状态不丢）；
+      //  - `z-20`：压过 `resize-handle.css` 里 z-index 10 的分隔条；
+      //  - `bg-v2-background-bg-base`：**必须不透明**——透明浮层只是「什么都没盖」；
+      //  - `border-t`：上沿一条横线，与下方窄条（`minio-bar.tsx` 的 `border-t`）同色同线型。
+      class="absolute inset-0 z-20 flex min-h-0 w-full flex-col border-t border-v2-border-border-muted bg-v2-background-bg-base"
+    >
       {/* 树标题（设计 §5.2 下图那行「⬆ MinIO 备份（镜像沙箱路径） ✕」）。文案沿用 ④ 窄条的
           「MinIO 备份」——窄条展开后就是这行标题，两处换词会让「展开的是同一个东西」变得不明显。 */}
       <div
