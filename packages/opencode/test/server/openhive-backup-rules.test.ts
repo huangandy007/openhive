@@ -200,6 +200,35 @@ describe("retentionKeepIds", () => {
     expect([...retentionKeepIds(同一周, now, tz)]).toEqual(["近"])
   })
 
+  test("小时 / 天 / 周三层各有独占条目，不是「只留最新一条」", () => {
+    // 每一层都必须有「同一桶里的第二条」，否则删掉那一层也不会红：
+    // - h1/h2：同一本地日、不同小时（删小时层 ⇒ h2 落入天桶被去重）；
+    // - d2/d3：同一 ISO 周（删天层 ⇒ d3 落入周桶被去重）；
+    // - w40/w47：两个不同 ISO 周的周桶条目（删周层 ⇒ 两条都不留）。
+    // now＝上海 10-18 20:30；d2/d3 是 10-16/10-15（同属 10-12 那一周）；w40/w47 是 09-08/09-01。
+    const snapshots = [
+      摘要("now", now),
+      摘要("h1", now - 3600_000),
+      摘要("h2", now - 2 * 3600_000),
+      摘要("d2", now - 2 * 86400_000),
+      摘要("d3", now - 3 * 86400_000),
+      摘要("w40", now - 40 * 86400_000),
+      摘要("w47", now - 47 * 86400_000),
+    ]
+    expect([...retentionKeepIds(snapshots, now, tz)].sort()).toEqual(["d2", "d3", "h1", "h2", "now", "w40", "w47"])
+  })
+
+  test("天桶按用户时区分桶：UTC 同一天、上海跨两天", () => {
+    // 距 now 24.5h / 25h：UTC 下都在 10-17（只留一条）；上海下 24.5h 前是 10-18 00:00、
+    // 25h 前是 10-17 23:30（分属两天，两条都留）。用天桶而不是小时桶：UTC+8 下小时边界
+    // 只整体平移，区分不了两种时区。
+    const 跨日 = Date.parse("2026-10-18T16:30:00.000Z")
+    const snapshots = [摘要("新", 跨日 - 24.5 * 3600_000), 摘要("旧", 跨日 - 25 * 3600_000)]
+    const kept = retentionKeepIds(snapshots, 跨日, tz)
+    expect(kept.has("新")).toBe(true)
+    expect(kept.has("旧")).toBe(true)
+  })
+
   test("手动快照不参与自动删除", () => {
     const manual = { ...摘要("manual", now - 200 * 86400_000), kind: "manual" as const }
     expect(retentionKeepIds([manual, 摘要("auto", now)], now, tz).has("manual")).toBe(true)
