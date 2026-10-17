@@ -98,9 +98,22 @@ export * as OpenhiveArchive from "./archive"
  * `test/server/openhive-project-restore.test.ts` 的「下载失败 ⇒ 归档行没动」那条。
  */
 
-import { archiveStatesOf, markArchived, markRestored, membersOf } from "@opencode-ai/auth/project-member"
+import {
+  archiveStatesOf,
+  markArchived,
+  markRestored,
+  membersOf,
+  removeAllMembers,
+  removeProjectArchive,
+  removeProjectMeta,
+} from "@opencode-ai/auth/project-member"
 import { nowSeconds } from "@opencode-ai/auth/time"
+import { Database } from "@opencode-ai/core/database/database"
+import { Global } from "@opencode-ai/core/global"
 import { Minio } from "@opencode-ai/core/minio"
+import { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectDirectories } from "@opencode-ai/core/project/directories"
+import { deleteByProjectID } from "@opencode-ai/core/project/ext"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { User } from "@opencode-ai/core/user"
@@ -112,13 +125,22 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { OpenhivePg } from "./pg"
-import { PREFIX } from "./project"
+import { PREFIX, SharedRootConfig } from "./project"
 
 /**
  * 两个出口的路径。`PREFIX` 从 `./project` **import**，不重抄 `/openhive/project` 字面量
  * （`#002-06`：同一个值别在两处各写一份——那两个前缀漂了就是「列表在一个前缀、归档在另一个」）。
  */
-export const PATH = { archive: `${PREFIX}/archive`, restore: `${PREFIX}/restore` } as const
+export const PATH = {
+  archive: `${PREFIX}/archive`,
+  restore: `${PREFIX}/restore`,
+  /**
+   * 删除（2026-10-16）。住在**本文件**而不是 `project.ts`：删除要 `MinIO`（清备份）与
+   * 成员名单读法（清成员关系），本文件的 `Deps` 已经有它们；而它**顺带**需要共享根
+   * （删 `/shared/<id>.git`）——那一项由 `server.ts` 多给一行 `Layer.provide` 补上。
+   */
+  delete: `${PREFIX}/delete`,
+} as const
 
 /** `minio.md` §4 的五个变量（**凭据不入仓库**，见该文档同节）。 */
 export const MINIO_ENDPOINT_ENV = "OPENHIVE_MINIO_ENDPOINT"
@@ -179,9 +201,20 @@ export class MinioConfig extends ConfigService.Service<MinioConfig>()("@opencode
 interface Deps {
   /** 沙箱根（`AnchorWorkspace.Config`，与 T018 建项目用的是**同一个**——沙箱根只有一处定义）。 */
   readonly root: string
+  /** 共享根——删 `/shared/<projectId>.git` 要用（spec §6 ④；归档**不动**它，`archive.ts:88` 是反例）。 */
+  readonly shared: string
   readonly minio: Option.Option<MinioSettings>
   /** 业务 PG 客户端（**共享的那个**，T015 收口：`./pg` 的文件头讲了为什么三个模块要共用一个）。 */
   readonly pg: OpenhivePg.Interface["pg"]
+  /** 每用户库——`project_ext` 的按项目删除要它（`deleteByProjectID` 收裸 `db`）。 */
+  readonly database: Database.Interface
+  /**
+   * `project_directory` 的按项目删除。
+   * ⚠️ 存的是**接口实例**、不是 tag：本文件的服务**全在层构造期取**（见 `routes` 上面那段注释），
+   * 请求期只 `yield* deps.directories.removeAll(...)`——**不要**在处理器里写
+   * `yield* ProjectDirectories.Service`（请求 fiber 的 context 里没有 app 层服务）。
+   */
+  readonly directories: ProjectDirectories.Interface
 }
 
 /**
@@ -196,11 +229,25 @@ export const routes = HttpRouter.use((router) =>
     const config = yield* AnchorWorkspace.Config
     const minio = yield* MinioConfig
     const openhivePg = yield* OpenhivePg.Service
+    // 2026-10-16 项目删除新增的三个：共享根（删 `/shared/<projectId>.git`，spec §6 ④）与
+    // 每用户库的两样（`project_ext` / `project_directory` 的按项目删除，spec §6 ③⑦）。
+    // ⚠️ **全在构造期取**——同本文件上面那段注释记的实测约束。
+    const shared = yield* SharedRootConfig
+    const database = yield* Database.Service
+    const directories = yield* ProjectDirectories.Service
 
-    const deps: Deps = { root: config.root, minio: minio.connection, pg: openhivePg.pg }
+    const deps: Deps = {
+      root: config.root,
+      shared: shared.root,
+      minio: minio.connection,
+      pg: openhivePg.pg,
+      database,
+      directories,
+    }
 
     yield* router.add("POST", PATH.archive, (request) => handleArchive(request, deps))
     yield* router.add("POST", PATH.restore, (request) => handleRestore(request, deps))
+    yield* router.add("POST", PATH.delete, (request) => handleDelete(request, deps))
   }),
 )
 
@@ -365,6 +412,173 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     return HttpServerResponse.jsonUnsafe({ projectId, archived: false })
   })
+}
+
+/**
+ * 删除一个项目（2026-10-16 spec §5「拿掉登记」＋ §6「清哪几处、顺序、可重入」）。
+ *
+ * ## ⛔ 禁令：**绝不删每用户库里的 `project` 行**（`ProjectTable`）
+ *
+ * `session.project_id` 是 `NOT NULL` ＋ `ON DELETE CASCADE`（`packages/core/src/session/sql.ts:26-29`）
+ * ⇒ **删项目行 = 会话被数据库连带删掉**，与用户 2026-10-16 的裁决 2（「只删项目、聊天记录留着」）
+ * 正面冲突。**留它与留底是一回事**（spec §5 路 C）。
+ * 本函数**一处都不碰** `ProjectTable`——要加东西时先回来读这三行。
+ *
+ * ⚠️ 可执行判据（2026-10-16 实测）：`grep -rn "ProjectTable" packages/opencode/src/server/openhive/`
+ * 只命中**注释**（本函数头这一段 ＋ `project.ts` 头那段「上游 `Project.update` → `ProjectTable`」），
+ * **没有一行代码**对 `ProjectTable` 做 `delete` / `remove`。判「有没有代码碰它」的可靠命令是
+ * `grep -rn "ProjectTable" src/server/openhive/ | grep -vE '^\s*(\*|//)'` ⇒ 空。
+ * （别写成「`ProjectTable` 命中 0 行」——本注释自己就会把 0 变成 3，`#006-26`。）
+ *
+ * ## 清什么（spec §6 的①–⑦，次序按计划裁定 R2 调整过）
+ *
+ * | 序 | 清什么 | 为什么在这个位置 |
+ * |---|---|---|
+ * | 0 | 读成员名单（`membersOf`） | **一切的前提**：成员关系一旦删掉就重建不出「哪些人的前缀要清」 |
+ * | 1 | ⑤ MinIO 备份（每个成员的 `<userId>/<projectId>/`） | ⚠️ **比 spec §6 的原序提前**——原序里它排在 ① 之后，而 ① 删掉 `project_member` 之后**第二次调用建不出目标清单** ⇒ 备份成永久孤儿、**可重入当场失效**（spec §6 自己要「可重入」，原序自相矛盾） |
+ * | 2 | ④ 沙箱目录 ＋ 共享 bare 仓库 | 盘上的东西，删了不影响上面两步的判据 |
+ * | 3 | ⑥ 快照 / worktree 残留（按 project id 分的父目录） | 同上 |
+ * | 4 | ③ `project_ext` 行 ＋ ⑦ `project_directory` 行 | 「自己的账」——摘完这两样，项目**就从我的清单里消失了** |
+ * | 5 | ① `project_member`（**全体**）＋ ② `project_archive` / `project_meta` | **最后**：这一步是「项目从所有人的清单里消失」那一下（spec §6 ①：只删自己的会降级成影子行） |
+ *
+ * ## 可重入（判据 6）
+ *
+ * **每一处都容忍「已经不在了」**：`rm -rf` 用 `force: true`、删行用 `delete`（命中 0 行不抛错）、
+ * MinIO 的 `delete` 对不存在的键照抄真 S3 回 204（`fake-s3` 文件头）。第二次点删除是**空转**，
+ * 不是错误。
+ *
+ * ## 授权门（2026-10-16 裁定 14）
+ *
+ * 判定写成 `members.length > 0 && !decide(...)`，**不是** brief 原稿的 `!decide(...)`：
+ * 第一次删完 `project_member` 已空 ⇒ 第二次调用 `actor = null` ⇒ 裸 `!decide(...)` 会回 403，
+ * **可重入当场失效**。带上前置后，「项目已删得没有成员」这条路跳过判定、空转放行——
+ * 那是 spec §6 要的「可重入」，不是越权（能走到这一步的项目已经不存在了）。
+ *
+ * ## 与归档的次序呼应
+ *
+ * 归档的最后一步是 `markArchived`（「登记」最后写）；这里是**倒过来**：「登记」最先摘。
+ * 两处是同一条取向的两面——**先摘账、后删盘**：中途失败时用户看到的是「已经删了」
+ * （正确的方向），剩下的只是磁盘垃圾；反过来会留下一具「清单里有、点开 500」的僵尸
+ * （那正是 2026-10-16 早上那个现场）。
+ */
+function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    // ── 取身份 / 解析体 / 两道守卫：与 `handleArchive` **逐条同形**（同一条 `ProjectIdBody`、
+    //    同一句文案、同一条 `isSafePathSegment`）——两处口径漂了不会报错，只会让一个出口能塞
+    //    `../x`、另一个不能（`#002-06`）。
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return unauthorized()
+
+    const raw = yield* request.json.pipe(
+      Effect.match({ onFailure: () => undefined as unknown, onSuccess: (value) => value as unknown }),
+    )
+    const payload = Schema.decodeUnknownOption(ProjectIdBody)(raw)
+    if (Option.isNone(payload)) return badRequest("请求体要带 projectId")
+
+    const projectId = payload.value.projectId
+    if (!User.isSafePathSegment(projectId)) return badRequest("projectId 不是合法的路径段")
+
+    const userId = user.value.id
+    if (!User.isSafePathSegment(userId)) return yield* Effect.die(new Error(`非法用户 id：${JSON.stringify(userId)}`))
+
+    const pg = deps.pg()
+    // ── 0. 读成员名单（**必须在删任何东西之前**；见上面那张表的第 0 行）──
+    const members = yield* Effect.promise(() => membersOf(pg, projectId))
+    const actor = ProjectMembership.actorIn(members, userId)
+    const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
+    const archived = archives.get(projectId)?.archived ?? false
+
+    // ── 判定（排在一切副作用之前；spec §7）。前置 `members.length > 0` 见函数头「授权门」。──
+    if (members.length > 0 && !ProjectMembership.decide({ actor, action: "delete", target: null, archived }))
+      return forbidden("无权删除该项目")
+
+    // 成员 id 也要当路径段用（`dropTrees` 拿它拼沙箱路径）⇒ 与请求入参同一条判据。
+    // 同 `handleArchive`：失败是 **die（500）**而不是 400（是库里的数据坏了），且**先全部判完再动手**。
+    for (const member of members) {
+      if (!User.isSafePathSegment(member.userId)) {
+        yield* Effect.die(new Error(`项目 ${projectId} 的成员 id 不是合法路径段：${JSON.stringify(member.userId)}`))
+      }
+    }
+    const userIds = members.map((member) => member.userId)
+
+    // ── 1. ⑤ MinIO 备份（**先于**成员关系的删除；见上面那张表）──
+    yield* Effect.promise(() => dropBackups(deps, projectId, userIds))
+    // ── 2. ④ 沙箱目录 ＋ bare 仓库 ──
+    yield* Effect.promise(() => dropTrees(deps, projectId, userIds))
+    // ── 3. ⑥ 快照 / worktree 残留 ──
+    yield* Effect.promise(() => dropResidue(projectId))
+    // ── 4. ③ `project_ext` ＋ ⑦ `project_directory` ──
+    //    ⚠️ `deps.database.db` / `deps.directories` 都是**构造期取到的**（见 `Deps` 的注释）——
+    //    这里不写 `yield* Database.Service`，也不写 `Effect.provideService`。
+    yield* deleteByProjectID(deps.database.db, projectId)
+    //    ⚠️ `removeAll` 的入参是**带 brand 的** `ProjectSchema.ID`（`./directories.ts` 的
+    //    `RemoveAllInput`）⇒ 这里必须 `.make(...)`，不能直接把裸串塞进去。
+    yield* deps.directories.removeAll({ projectID: ProjectV2.ID.make(projectId) })
+    // ── 5. ① 成员关系（**全体**，不只是我这一行）＋ ② 归档标记 / 共享名字 ──
+    //    这一步是「项目从所有人的清单里消失」那一下；前面的失败重试到这里都还是空转（可重入）。
+    yield* Effect.promise(() => removeAllMembers(pg, { projectId }))
+    yield* Effect.promise(() => removeProjectArchive(pg, { projectId }))
+    yield* Effect.promise(() => removeProjectMeta(pg, { projectId }))
+
+    return HttpServerResponse.jsonUnsafe({ projectId, deleted: true })
+  })
+}
+
+/**
+ * ⑤ 清一个项目的 MinIO 备份：**逐成员前缀、逐键删**（spec §6 ⑤）。
+ *
+ * ⚠️ **MinIO 没配（`Option.isNone`）时直接返回**——删除**不因为 MinIO 没配而不可用**
+ * （与归档 / 找回不同：那两条**没有** MinIO 就干不了活，删除没有备份照样删得掉）。
+ * 若这里也回 503，「MinIO 没配的部署上项目永远删不掉」——那不是设计要的。
+ *
+ * 用 `list()` ＋ `delete({path})`（`Minio.Interface` 已有 delete，spec §6 末「待实施时核实」
+ * 的第一条已核实），**不是**整桶清空：同一桶里还有别的项目、别的用户的键。
+ */
+async function dropBackups(deps: Deps, projectId: string, userIds: readonly string[]): Promise<void> {
+  if (Option.isNone(deps.minio)) return
+  const settings = deps.minio.value
+  for (const userId of userIds) {
+    const store = Minio.makeStore({
+      endpoint: endpointOf(settings),
+      bucket: settings.bucket,
+      credentials: { accessKeyId: settings.accessKeyId, secretAccessKey: settings.secretAccessKey },
+      scope: { userId, projectId },
+    })
+    for (const path of await store.list()) await store.delete({ path })
+  }
+}
+
+/**
+ * ④ 删盘：每个成员的沙箱项目目录 ＋ 共享 bare 仓库（spec §6 ④）。
+ *
+ * `rm` 用 `{ recursive: true, force: true }` —— `force` 就是**可重入**那一半
+ * （目录不在 = 正常路径，不是错误）。bare 仓库同理：**私有项目没有它**，那也是正常路径。
+ *
+ * ⚠️ 与 `releaseAll`（归档那条链）**刻意不合并**：归档删的是**成员沙箱**、且**不碰** bare
+ * （`archive.ts:88` 逐字写着）；删除两者都删。同一个函数名字下藏两种语义，正是 `#002-06` 的坑。
+ */
+async function dropTrees(deps: Deps, projectId: string, userIds: readonly string[]): Promise<void> {
+  for (const userId of userIds) {
+    await rm(join(deps.root, userId, projectId), { recursive: true, force: true })
+  }
+  await rm(join(deps.shared, `${projectId}.git`), { recursive: true, force: true })
+}
+
+/**
+ * ⑥ 删「按项目 id 分的残留目录」（spec §6 ⑥）：快照与 worktree 两个父目录。
+ *
+ * 路径**逐字**取自它们的生产者：
+ * - 快照：`snapshot/index.ts:71` 的 `path.join(Global.Path.data, "snapshot", ctx.project.id, Hash.fast(ctx.worktree))`
+ *   ⇒ 按项目 id 的那一层正是 `join(Global.Path.data, "snapshot", projectId)`；
+ * - worktree：`worktree/index.ts:208` 的 `pathSvc.join(Global.Path.data, "worktree", ctx.project.id)` ⇒ 同理。
+ *
+ * `Global.Path` 是**模块级纯值常量**（`core/src/global.ts`）⇒ 可以 import，不必走服务。
+ * `force: true` 同 `dropTrees`——不在 = 正常路径。
+ */
+async function dropResidue(projectId: string): Promise<void> {
+  for (const 源 of ["snapshot", "worktree"]) {
+    await rm(join(Global.Path.data, 源, projectId), { recursive: true, force: true })
+  }
 }
 
 interface Target {

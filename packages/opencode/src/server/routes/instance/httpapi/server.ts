@@ -60,6 +60,7 @@ import { Npm } from "@opencode-ai/core/npm"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
+import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -342,6 +343,16 @@ export function createRoutes(
       // 与建/列项目**共用同一个**业务 PG 客户端（005 T015，理由见上面那一项）。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
       Layer.provide(OpenhivePg.layer),
+      // 2026-10-16 项目删除（006）：删除要删 `/shared/<projectId>.git`（spec §6 ④），
+      // 共享根走 `OpenhiveProject.SharedRootConfig`（沙箱根只有一处定义，共享根也只有一处——
+      // 复用 `OpenhiveProject` 的同一个 Config 服务，不另造一个）。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（006 删除）。
+      Layer.provide(OpenhiveProject.SharedRootConfig.layer),
+      // 删除要按项目 id 删 `project_directory` 行（spec §6 ⑦），走 `ProjectDirectories.removeAll`。
+      // ⚠️ 它**不是** `app` 组里的顶层成员（`Project.node` / `ProjectCopy.node` 只是把它当 dep 嵌在
+      // 自己层内），所以这里**必须**单独供一层——不供就是层构造期 `Service not found`。
+      // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（006 删除）。
+      Layer.provide(AppNodeBuilderV1.build(ProjectDirectories.node)),
     ),
     // openhive 文件操作出口（005 T020）：复制 / 移动 / 上传 / 下载（FR-005）。
     // 沙箱根**复用**同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义）——本模块要用它
