@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { startFakeS3, type FakeS3 } from "@opencode-ai/core/test-support/fake-s3"
 import { openBackupStore } from "../../src/server/openhive/backup-store"
 import { createJobRegistry, quiesceProject } from "../../src/server/openhive/backup-jobs"
+import { runBackup } from "../../src/server/openhive/backup-run"
 import type { Manifest } from "../../src/server/openhive/backup-model"
 
 /**
@@ -229,5 +233,144 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
     const 硬 = registry.start({ kind: "backup", userId: "008", projectId: "p-42", path: "" })
     expect(await quiesceProject("p-42", ["008"], { registry, timeoutMs: 80, pollMs: 20 })).toBe(false)
     expect(registry.get(硬.job.id, "008")?.cancelRequested).toBe(true)
+  })
+})
+
+/**
+ * T7：备份执行链（扫描 → 哈希 → 上传 → 返回 manifest）。
+ *
+ * ⚠️ `runBackup` **只返回** manifest，**不写**它（manifest-last：由调用方写，取消 / 失败
+ * 才不会留下半份清单）。所以本节的用例若要观察「持久化之后读回来是什么」，得**代调用方**
+ * 调一次 `store.writeManifest`——那一步顺带证明 `runBackup` 产出的 `projectId` / `ownerId`
+ * 过得了 store 的归属校验。
+ */
+describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
+  let s3: FakeS3
+  beforeEach(() => {
+    s3 = startFakeS3()
+  })
+  afterEach(() => s3.stop())
+
+  const store = () =>
+    openBackupStore({
+      endpoint: s3.endpoint,
+      bucket: s3.bucket,
+      credentials: { accessKeyId: "k", secretAccessKey: "s" },
+      userId: "007",
+      projectId: "p-42",
+    })
+
+  function 造项目(): string {
+    const root = mkdtempSync(join(tmpdir(), "openhive-backup-"))
+    mkdirSync(join(root, "资料"), { recursive: true })
+    writeFileSync(join(root, "资料", "甲.txt"), "aaa")
+    writeFileSync(join(root, "资料", "乙.txt"), "bbb")
+    writeFileSync(join(root, "报告.docx"), "ccc")
+    return root
+  }
+
+  function 依赖(directory: string) {
+    const 进度: string[] = []
+    return {
+      进度,
+      deps: {
+        store: store(),
+        directory,
+        projectId: "p-42",
+        ownerId: "007",
+        timezone: "Asia/Shanghai",
+        report: (patch: { state?: string }) => 进度.push(String(patch.state)),
+        isCancelled: () => false,
+      },
+    }
+  }
+
+  test("备份：blob 全部上传后返回完整 manifest；按内容寻址去重；files 按路径排序", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    const manifest = await runBackup(deps, { kind: "manual", scope: "", createdBy: "007" })
+
+    expect(manifest.files.map((file) => file.path)).toEqual(["报告.docx", "资料/甲.txt", "资料/乙.txt"])
+    expect(deps.store.blobs).toBeDefined()
+
+    // runBackup 只返回、不写清单（manifest-last）。这里代调用方写一次，再读回来核对。
+    await deps.store.writeManifest(manifest)
+    expect(await deps.store.readManifest(manifest.id)).toEqual(manifest)
+    // 三个文件、三个不同内容 ⇒ 三个 blob
+    expect((await deps.store.blobs()).length).toBe(3)
+    expect(manifest.totals).toEqual({ files: 3, bytes: 9, uploadedBytes: 9, skipped: 0 })
+  })
+
+  test("同一内容只上传一次（去重）", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "openhive-backup-"))
+    writeFileSync(join(directory, "a.txt"), "same")
+    writeFileSync(join(directory, "b.txt"), "same")
+    const { deps } = 依赖(directory)
+    const manifest = await runBackup(deps, { kind: "manual", scope: "", createdBy: "007" })
+    expect(manifest.totals.files).toBe(2)
+    expect((await deps.store.blobs()).length).toBe(1)
+    expect(manifest.totals.uploadedBytes).toBe(4)
+  })
+
+  test("排除名单生效，且记进 skipped", async () => {
+    const directory = 造项目()
+    writeFileSync(join(directory, "资料", "x.tmp"), "tmp")
+    const { deps } = 依赖(directory)
+    const manifest = await runBackup(deps, { kind: "manual", scope: "", createdBy: "007" })
+    expect(manifest.skipped).toEqual([{ path: "资料/x.tmp", reason: "excluded" }])
+    expect(manifest.files.some((file) => file.path.endsWith(".tmp"))).toBe(false)
+  })
+
+  test("按选中项备份：目录子树只含它自己", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    const manifest = await runBackup(deps, { kind: "manual", scope: "资料", createdBy: "007" })
+    expect(manifest.files.map((file) => file.path)).toEqual(["资料/甲.txt", "资料/乙.txt"])
+    expect(manifest.dirs).toEqual(["资料"])
+  })
+
+  test("范围不存在 ⇒ NotFoundError", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    await expect(runBackup(deps, { kind: "manual", scope: "没有", createdBy: "007" })).rejects.toMatchObject({
+      name: "NotFoundError",
+    })
+  })
+
+  test("取消 ⇒ CancelledError，且不写 manifest", async () => {
+    const directory = 造项目()
+    let 取消 = false
+    const { deps } = 依赖(directory)
+    const manifestCountBefore = (await deps.store.manifests()).length
+    // manifest-last：runBackup 不写清单，先代调用方写一份，作为「取消前后不新增」的基线。
+    const 完成 = await runBackup({ ...deps, isCancelled: () => 取消 }, { kind: "manual", scope: "", createdBy: "007" })
+    await deps.store.writeManifest(完成)
+    expect((await deps.store.manifests()).length).toBe(manifestCountBefore + 1)
+
+    取消 = true
+    await expect(
+      runBackup({ ...deps, isCancelled: () => 取消 }, { kind: "manual", scope: "资料", createdBy: "007" }),
+    ).rejects.toMatchObject({
+      name: "CancelledError",
+    })
+    expect((await deps.store.manifests()).length).toBe(manifestCountBefore + 1)
+  })
+
+  test("超配额 ⇒ QuotaError，且一个 blob 都不传", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    await expect(
+      runBackup(deps, { kind: "manual", scope: "", createdBy: "007", quotaBytes: 1, usageBytes: 0 }),
+    ).rejects.toMatchObject({ name: "QuotaError" })
+    expect(await deps.store.blobs()).toEqual([])
+  })
+
+  test("自动备份：树没变 ⇒ UnchangedError（不产生新快照）", async () => {
+    const directory = 造项目()
+    const { deps } = 依赖(directory)
+    const first = await runBackup(deps, { kind: "auto", scope: "", createdBy: "007" })
+    await expect(
+      runBackup(deps, { kind: "auto", scope: "", createdBy: "007", previous: first }),
+    ).rejects.toMatchObject({ name: "UnchangedError" })
   })
 })
