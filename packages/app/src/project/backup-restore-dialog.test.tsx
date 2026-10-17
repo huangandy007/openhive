@@ -219,6 +219,53 @@ test("嵌套 .git 条目（子目录里的仓库 / 子模块）同样触发提�
   expect(确认.disabled).toBe(false)
 })
 
+test("localOnly 里的嵌套 .git 路径同样触发提示与门控（不只看 entries）", () => {
+  const host = mount(() => (
+    <RestoreDialog
+      preview={{ ...预览, localOnly: ["子目录/.git/config"] }}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+    />
+  ))
+  expect(host.querySelector("[data-slot='restore-git-warning']")?.textContent).toContain(
+    "恢复 .git 内部文件可能让仓库状态不一致",
+  )
+  expect(host.querySelector<HTMLButtonElement>("[data-slot='restore-confirm']")!.disabled).toBe(true)
+})
+
+test("只像 .git 的路径（.gitignore / x.git/y）不算命中", () => {
+  const host = mount(() => (
+    <RestoreDialog
+      preview={{
+        ...预览,
+        entries: [
+          ...预览.entries,
+          { path: "a/.gitignore", status: "different" as const },
+          { path: "x.git/y", status: "different" as const },
+        ],
+      }}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+    />
+  ))
+  expect(host.querySelector("[data-slot='restore-git-warning']") === null).toBe(true)
+  expect(host.querySelector<HTMLButtonElement>("[data-slot='restore-confirm']")!.disabled).toBe(false)
+})
+
+test("路径恰为 .git（裸目录本身）也命中", () => {
+  const host = mount(() => (
+    <RestoreDialog
+      preview={{ ...预览, entries: [...预览.entries, { path: ".git", status: "different" as const }] }}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+    />
+  ))
+  expect(host.querySelector("[data-slot='restore-git-warning']")?.textContent).toContain(
+    "恢复 .git 内部文件可能让仓库状态不一致",
+  )
+  expect(host.querySelector<HTMLButtonElement>("[data-slot='restore-confirm']")!.disabled).toBe(true)
+})
+
 test("不含 .git 条目：提示不出现、确认钮可用", () => {
   const host = mount(() => <RestoreDialog preview={预览} onCancel={() => {}} onConfirm={() => {}} />)
   expect(host.querySelector("[data-slot='restore-git-warning']") === null).toBe(true)
