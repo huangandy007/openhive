@@ -9,6 +9,7 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
+  type S3ClientConfig,
 } from "@aws-sdk/client-s3"
 
 /**
@@ -80,6 +81,16 @@ export interface Config {
    * 测试把它调小（几百毫秒）到「黑洞端点」上验；生产用默认值。
    */
   readonly timeoutMs?: number
+  /**
+   * 可选日志器，原样交给 `S3Client`。
+   *
+   * 为什么要有：SDK 的 retry middleware 在**流式请求**失败时会 `warn`
+   * （`An error was encountered in a non-retryable streaming request.`），
+   * 而它的默认 logger 是 NoOp ⇒ 那句话**退到 `console`**（`@smithy/core` 的
+   * `retryMiddleware` 里写死的分支）。测试要干净输出时，只给那条用例传静默器；
+   * **产品里不全局关**——生产上那行 warn 是有用的线索。
+   */
+  readonly logger?: S3ClientConfig["logger"]
 }
 
 export interface Interface {
@@ -135,24 +146,20 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<Uint8Array> {
 }
 
 /**
- * 给一个异步源套空闲超时；卡住时中止上游并抛 `StreamTimeoutError`。
+ * 给一个异步源套空闲超时；卡住时抛 `StreamTimeoutError`。
  *
- * `onStall` 给调用方一个「**主动掐断这次外呼**」的钩子：只靠「源抛错」让 SDK 自己失败是不够的
- * （见 `putStream` 里那段实测说明——`bun test` 下 SDK 会一直 pending）。
+ * ⚠️ 这里**不负责**掐断外呼：`iterator.return()` 只收上游，而真正让 SDK 的
+ * in-flight 请求 settle 的是调用方在 `catch` 里的 `AbortController.abort()`
+ * （见 `putStream` 里那段实测说明）。两件事分开，是因为**非超时的源错误**
+ * 也走同一条 abort——把它挂在这里的「超时」分支上就漏了那一半。
  */
-async function* idleGuarded(
-  source: AsyncIterable<Uint8Array>,
-  idleMs: number,
-  onStall?: () => void,
-): AsyncGenerator<Uint8Array> {
+async function* idleGuarded(source: AsyncIterable<Uint8Array>, idleMs: number): AsyncGenerator<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]()
   let stalled = false
   try {
     while (true) {
       const next = await withIdle(iterator.next(), idleMs, () => {
         stalled = true
-        onStall?.()
-        void iterator.return?.()
       })
       if (next.done) return
       yield next.value
@@ -164,6 +171,7 @@ async function* idleGuarded(
      * 仍读到 `return still pending`）⇒ 真去 await 就等于把正要抛出的 `StreamTimeoutError`
      * 一起挂死，`putStream` 又变成无限期挂起（005 X4-1 的同一个症状）。
      * 所以卡住那一路只发不收（`void`）；正常收尾仍 await，让上游的清理跑完。
+     * 卡住路径上只在这里收一次——定时器回调里再收一次是重复动作（008 T2 修复轮 1）。
      */
     if (stalled) void iterator.return?.()
     else await iterator.return?.()
@@ -256,6 +264,7 @@ export function makeStore(config: Config): Interface {
      * 内网 MinIO 不要求 PutObject 带校验和；需要时调用方自己给 `ChecksumAlgorithm`。
      */
     requestChecksumCalculation: "WHEN_REQUIRED",
+    logger: config.logger,
   })
 
   const base =
@@ -317,23 +326,36 @@ export function makeStore(config: Config): Interface {
      */
     putStream: async ({ path, body, size, onProgress, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS }) => {
       let sent = 0
-      let stall: StreamTimeoutError | undefined
       /**
-       * ⚠️ 空闲超时时**主动 abort 这次外呼**——不能只靠「body 流抛错」让 SDK 自己失败：
+       * 源那一侧的错——**任何**错（空闲超时、磁盘 EIO、`onProgress` 自己抛……），不只是超时。
+       * 包一层对象是为了让收尾的 `throw` 分得清「留住过」与「留住的值恰好是 `undefined`」。
+       */
+      let 源错: { readonly error: unknown } | undefined
+      /**
+       * ⚠️ 源一出错就**主动 abort 这次外呼**——不能只靠「body 流抛错」让 SDK 自己失败：
        * 2026-10-18 实测（Bun 1.4.3），同一条路径在 `bun <脚本>` 下 `client.send` 会 reject，
        * 而在 `bun test` 下它**一直 pending**（源已抛错、请求永不 settle）⇒ 又变成无限期挂起。
        * abort 是 SDK 一定听得到的信号，两个运行器下都能收敛。
+       *
+       * 只挂在超时分支上是不够的（修复轮 1）：磁盘坏了 / `onProgress` 抛错时源同样已经死了，
+       * 不 abort 就一样挂到 6 小时兜底，而最终抛哪个错还取决于微任务谁先跑。
        */
       const 中断 = new AbortController()
       async function* 计数(): AsyncGenerator<Uint8Array> {
         try {
-          for await (const chunk of idleGuarded(body, idleTimeoutMs, () => 中断.abort())) {
+          for await (const chunk of idleGuarded(body, idleTimeoutMs)) {
             sent += chunk.byteLength
             onProgress?.(sent)
             yield chunk
           }
         } catch (error) {
-          if (error instanceof StreamTimeoutError) stall = error
+          /**
+           * ⚠️ 顺序不能换：**先留住起因，再 abort，再抛**。
+           * abort 会让 `client.send` 立刻以 `AbortError` 失败，外层 `catch` 随后只看得见
+           * 那个 `AbortError`——起因不先存下，「为什么断的」当场丢失。
+           */
+          源错 = { error }
+          中断.abort()
           throw error
         }
       }
@@ -363,11 +385,12 @@ export function makeStore(config: Config): Interface {
       } catch (error) {
         /**
          * SDK 会把流里的错误换成本名 `TimeoutError` 的壳（"An error was encountered in a
-         * non-retryable streaming request."）——不还原的话，调用方分不出「源卡住」与「网络错」，
-         * 而这两者的处置完全不同（前者可重试，后者要看凭据 / 端点）。
-         * 接口约定是抛 `StreamTimeoutError` 本体，所以按**起因**还原。
+         * non-retryable streaming request."），我们自己的 abort 又会换来一个 `AbortError`
+         * ——不还原的话，调用方分不出「源出了什么错」与「网络 / 凭据 / 我们自己掐的」，
+         * 而它们的处置完全不同（源错要重读磁盘或改调用方代码，网络错要看端点）。
+         * 接口约定是抛源错误本体，所以只要源先出过错，就按**起因**还原。
          */
-        if (stall !== undefined) throw stall
+        if (源错 !== undefined) throw 源错.error
         throw error
       }
     },

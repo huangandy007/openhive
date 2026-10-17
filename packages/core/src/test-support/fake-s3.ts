@@ -61,6 +61,14 @@ export interface Recorded {
   readonly bucket: string
   /** 去掉桶名之后的**对象键**（已解码，形如 `007/p-42/a b.txt`）。 */
   readonly key: string
+  /**
+   * 请求头 `content-length`（没有就是 `null`）。
+   *
+   * 为什么要记它：`putStream` 的契约是「按调用方给的 `size` 发 `ContentLength`」，
+   * 而**body 到没到**证明不了这件事——删掉 `ContentLength` 后 SDK 会退回 chunked，
+   * 同一个键、同一批字节、同一个进度，只有这个头会变。判据必须落在它上面。
+   */
+  readonly contentLength: string | null
   /** 请求体。`GET` / `DELETE` 恒为空。 */
   readonly body: Uint8Array
 }
@@ -73,6 +81,15 @@ export interface FakeS3 {
   readonly requests: readonly Recorded[]
   /** 直接塞一个对象进去——`get` / `list` / `head` 的起点。`lastModified` 是 ISO 串（真 S3 的响应形态）。 */
   seed(key: string, body: string, lastModified?: string): void
+  /**
+   * 让这个键的 `GET` 回一个**发得出一块、永不结束**的响应体。
+   *
+   * 为什么要它：`getStream` 的空闲超时只在「读下一步」上触发，必须有一个真卡住的
+   * 下行 body 才验得到——`seed` 的对象总是整份就绪，那种现场造不出来。
+   * 先发一块是刻意的：纯黑洞会在「收响应头」那一步挂住，验到的是 `timeoutMs`，
+   * 不是本用例要验的那条空闲超时。
+   */
+  stallGet(key: string): void
   /** 当前存在哪些键（给「delete 真的删了」当对照）。 */
   keys(): readonly string[]
   /**
@@ -136,6 +153,8 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
   // 每条对象带上 `lastModified`：`list` / `head` 的 `Entry` 要它，而它不能由夹具的「当前时间」编出来。
   const objects = new Map<string, { readonly body: Uint8Array<ArrayBuffer>; readonly lastModified: string }>()
   const requests: Recorded[] = []
+  /** 哪些键的 `GET` 要回「发一块就再也不动」的 body（`stallGet`）。 */
+  const stalledGets = new Set<string>()
   let failure: number | undefined
   /** 失败态的条件（`failWith` 恒为 `undefined` ⇒ 之后的每个请求都失败）。 */
   let shouldFail: ((request: Recorded) => boolean) | undefined
@@ -150,7 +169,15 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
       const key = segments.slice(1).map(decodeURIComponent).join("/")
       const body = request.method === "PUT" ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array()
 
-      const record: Recorded = { method: request.method, path: url.pathname, query: url.searchParams, bucket: requestBucket, key, body }
+      const record: Recorded = {
+        method: request.method,
+        path: url.pathname,
+        query: url.searchParams,
+        bucket: requestBucket,
+        key,
+        contentLength: request.headers.get("content-length"),
+        body,
+      }
       requests.push(record)
 
       // ⚠️ 失败态**记进请求表之后**才判：失败的请求也要留下痕迹（「外呼到没到」本身是判据）。
@@ -219,6 +246,17 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
           })
         }
         case "GET": {
+          if (stalledGets.has(key)) {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode("half"))
+                  // 刻意不 close：客户端读第二块时会一直等，空闲超时才有东西可验
+                },
+              }),
+              { status: 200 },
+            )
+          }
           const value = objects.get(key)?.body
           if (value === undefined) {
             return new Response(errorXml("NoSuchKey", "The specified key does not exist."), {
@@ -249,6 +287,7 @@ export function startFakeS3(options: { bucket?: string; pageSize?: number } = {}
     requests,
     seed: (key, value, lastModified = "2026-10-06T00:00:00.000Z") =>
       void objects.set(key, { body: new TextEncoder().encode(value), lastModified }),
+    stallGet: (key) => void stalledGets.add(key),
     keys: () => [...objects.keys()].sort(),
     failWith: (status) => {
       failure = status

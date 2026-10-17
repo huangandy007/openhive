@@ -25,8 +25,19 @@ const 凭据 = { accessKeyId: "test-key", secretAccessKey: "test-secret" }
 const 编码 = (text: string) => new TextEncoder().encode(text)
 const 解码 = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
 
-const 开 = (scope: Minio.Scope) =>
-  Minio.makeStore({ endpoint: s3.endpoint, bucket: "openhive", credentials: 凭据, scope })
+/** 开一个 store；`extra` 只给个别用例加料（例如给 SDK 传静默 logger），不改变默认行为。 */
+const 开 = (scope: Minio.Scope, extra: Partial<Minio.Config> = {}) =>
+  Minio.makeStore({ endpoint: s3.endpoint, bucket: "openhive", credentials: 凭据, scope, ...extra })
+
+/**
+ * 静默日志器——只给「流式传输失败」那几条用例用。
+ *
+ * 为什么需要：`@smithy/core` 的 retry middleware 对流式请求失败会 `warn`
+ * （`An error was encountered in a non-retryable streaming request.`），
+ * 而当 logger 是 NoOp 时它**退到 `console`** ⇒ 测试输出里多一行与断言无关的噪声。
+ * 只在这一处传静默器、**不在产品里全局关**：生产上那行 warn 是有用的线索。
+ */
+const 静默日志 = { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined }
 
 /** 取第 n 个到达的请求——没到就当场说清楚，不让断言去猜 `undefined`。 */
 function 第(n: number) {
@@ -566,10 +577,12 @@ describe("流式上传 / 下载（008 T2）", () => {
     expect(解码(第(0).body)).toBe("abcde")
     // 两个块 ⇒ 两次回调、累计值：`[2, 5]`。写成 `[5]` 的实现（收完再报）会红。
     expect(进度).toEqual([2, 5])
+    // 少了这一条，删掉 `ContentLength: size` 仍然全绿（SDK 会退回 chunked，字节照到）。
+    expect(第(0).contentLength).toBe("5")
   })
 
   test("putStream：源卡住超过 idleTimeoutMs ⇒ 抛 StreamTimeoutError", async () => {
-    const store = 店()
+    const store = 开({ userId: "007", projectId: "p-42" }, { logger: 静默日志 })
     async function* 卡住() {
       yield 编码("ab")
       await new Promise(() => {})
@@ -581,6 +594,28 @@ describe("流式上传 / 下载（008 T2）", () => {
 
     // 钉错误本体：光「抛了」的话，任何别的失败（例如 abort 造出的 network error）都能过。
     expect(错.name).toBe("StreamTimeoutError")
+  })
+
+  /**
+   * 非超时的源错误（磁盘 EIO / `onProgress` 抛）与「卡住」走的是**同一条 abort 路径**。
+   *
+   * 为什么非钉不可（008 T2 审查）：abort 原先只挂在 `StreamTimeoutError` 那一路 ⇒
+   * 源自己抛错时 in-flight 请求**永不 settle**，一路挂到 6 小时兜底；而且最终抛哪个错误
+   * 还取决于「源错误」与「abort 错误」谁先落到微任务队列——不确定。
+   * 判据是「2 秒内以**源错误本体** reject」：兜底标记出现即说明它还在挂。
+   */
+  test("putStream：源抛非超时错误 ⇒ 立刻以该错误 reject，不挂到 6 小时兜底", async () => {
+    const store = 开({ userId: "007", projectId: "p-42" }, { logger: 静默日志 })
+    async function* 坏了() {
+      yield 编码("ab")
+      throw new Error("磁盘坏了")
+    }
+
+    const 错 = await 抛了(() =>
+      快过(store.putStream({ path: "blobs/aa/x", body: 坏了(), size: 5, idleTimeoutMs: 120 }), 2000),
+    )
+
+    expect(错.message).toBe("磁盘坏了")
   })
 
   test("getStream：不存在 ⇒ undefined；存在 ⇒ 分块读并报进度", async () => {
@@ -596,5 +631,30 @@ describe("流式上传 / 下载（008 T2）", () => {
     for await (const chunk of body!) 读回 += 解码(chunk)
     expect(读回).toBe("abcdef")
     expect(进度.at(-1)).toBe(6)
+  })
+
+  /**
+   * 下行 body 卡住（MinIO 发得出头、发不完 body）。
+   *
+   * 为什么非钉不可（008 T2 审查）：`getStream` 返回的是**惰性流**，空闲超时挂在
+   * 「读下一步」上——去掉 `idleGuarded` 后现有用例全绿，而消费方会无限期挂在
+   * 第二块上（005 X4-1 的同型，只是从 `get` 挪到了流式读）。
+   */
+  test("getStream：下行 body 卡住超过 idleTimeoutMs ⇒ 抛 StreamTimeoutError", async () => {
+    const store = 店()
+    s3.stallGet("007/p-42/blobs/aa/slow")
+    const body = await store.getStream({ path: "blobs/aa/slow", idleTimeoutMs: 120 })
+    expect(body).toBeDefined()
+
+    const 错 = await 抛了(() =>
+      快过(
+        (async () => {
+          for await (const chunk of body!) void 解码(chunk)
+        })(),
+        2000,
+      ),
+    )
+
+    expect(错.name).toBe("StreamTimeoutError")
   })
 })
