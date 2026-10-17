@@ -996,15 +996,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           : undefined
                       }
                       /*
-                        改名（2026-10-16）。办成之后只做一件事：**清单重拉**。
+                        改名（2026-10-16）。办成之后：**清单重拉 ＋ 按存档把当前项目从新清单里重导回来**。
 
-                        为什么不就地改 `currentProject()` 里的名字：清单重拉会把它一并带回来
-                        （`拉清单并还原` 那条路径），而就地改会造出**两处名字来源**——
-                        面板读清单、锚点行读 `currentProject()`，改一处漏一处时就出现
-                        「面板上新名字、左栏锚点上旧名字」，且不报错（`LEARNINGS #004-02`
-                        的取向：一份判定不要长出两个投影）。
-                        ⚠️ 重拉回来之前那一小段缝里，锚点行显示的可能还是旧名——那是**收敛中**
-                        的中间态，不是错误。
+                        为什么走 `拉清单并还原` 而不是只 `拉清单`：`拉清单` 只写 `projectList` /
+                        `projectListFailed`，**从不写 `currentProject`**——改名的要是**当前项目**，
+                        只拉清单会让面板显示新名、锚点行（读 `currentProject()?.name`）**永久停在
+                        旧名**，直到重新点开或整页刷新（评审 Important，2026-10-16）。
+                        为什么不就地改 `currentProject()` 里的名字：就地改会造出**两处名字来源**——
+                        面板读清单、锚点行读 `currentProject()`，改一处漏一处时就出现「面板上新名字、
+                        左栏锚点上旧名字」且不报错（`LEARNINGS #004-02`：一份判定不要长出两个投影）。
+                        所以「重导」仍走 `还原启动项目` 这一条既有的唯一出口，不另开第二份真相。
 
                         没办成 ⇒ 把服务端那句话原样交回去（同 `onArchive`：`rejected` 与 `failed`
                         两支都带 `message`，接线这一层不需要、也不该分开看）。
@@ -1014,7 +1015,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           ? async (project, name) => {
                               const 结论 = await projectData.rename(project.id, name)
                               if (结论.kind !== "done") return 结论.message
-                              await 拉清单(projectData)
+                              await 拉清单并还原(projectData)
                               return undefined
                             }
                           : undefined

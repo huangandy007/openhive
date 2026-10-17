@@ -1256,6 +1256,54 @@ function 起个名(host: HTMLElement, name: string) {
 }
 
 /**
+ * ── 项目行 ⋯ 菜单 / 就地改名（2026-10-16 修复轮 1）────────────────
+ *
+ * 行内 ⋯ 菜单的「改名 / 删除」走这组辅助。照 `project-panel.test.tsx` 的 `指` / `冲刷` /
+ * `行菜单钮` / `改名框` / `打字` 整段抄来（`LEARNINGS #004-12`：同族 harness 抄、只换判据点），
+ * 只改两个名字：本文件的 `菜单项` 已被文件树右键菜单占掉，这里叫 `项目菜单项`；`打字` 与
+ * `条里打字` 是同一件事、但查法不同（就地改名输入框不是按 slot 直接取——编辑态下名字那格被
+ * 整颗换掉），各留各的。
+ */
+
+/** 点一颗钮，派真实指针序列——`pointerdown` 开菜单、`pointerup` 选中项（`#006-37`，不能用 `.click()`）。 */
+const 指 = (el: HTMLElement | null | undefined) => {
+  if (!el) throw new Error("指针目标不在——这条用例的前提不成立（`#004-14`）")
+  for (const 类型 of ["pointerdown", "pointerup"])
+    el.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+
+/**
+ * 把「这几次延时都排空」——`setTimeout(0)` → `requestAnimationFrame` → `setTimeout(0)`。
+ * Kobalte 菜单开那一刻的 `tryAutoFocus` 是**延迟**的，点菜单项前先冲一拍让它落地（`#006-31`）。
+ */
+const 冲刷 = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** 某一行上那颗「⋯」（菜单触发器）。菜单 Portal 到 `document.body` ⇒ 内容查 `document`。 */
+const 行菜单钮 = (host: HTMLElement, 名: string) =>
+  [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")]
+    .find((行) => 行.querySelector("[data-slot='project-item-name']")?.textContent?.trim() === 名)
+    ?.querySelector<HTMLElement>("[data-project-action='menu']")
+
+/** 项目行菜单里某一项（Portal 到 `document.body`，不在 host 里）。 */
+const 项目菜单项 = (action: string) => document.body.querySelector<HTMLElement>(`[data-project-action='${action}']`)
+
+/** 某一行上那个就地改名输入框（编辑态才有；同一时刻只有一行在改名）。 */
+const 改名框 = (host: HTMLElement) =>
+  [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")]
+    .find((行) => 行.querySelector("[data-slot='project-rename-input']") !== null)
+    ?.querySelector<HTMLInputElement>("[data-slot='project-rename-input']")
+
+/** 往输入框里打字：Solid 的 `onInput` 读 `event.currentTarget.value` ⇒ 先落值再派事件。 */
+const 打字 = (el: HTMLInputElement, 值: string) => {
+  el.value = 值
+  el.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/**
  * 上面几节验的都是「缝里的数据画不画得出来」；这一节验的是**谁把数据写进缝里**。
  *
  * 在此之前（T006 - T019）缝里**没有写入方**——所以上面每一节的空态都是真话，也确实没什么可接。
@@ -1901,6 +1949,88 @@ describe("归档 / 找回接进工作台（T023 出参）", () => {
     await 冲一遍()
 
     expect(text(host, "project-anchor-name")).toBe("9·03专案")
+  })
+})
+
+/**
+ * 改名 / 删除接进工作台（2026-10-16 修复轮 1）。
+ *
+ * 归档 / 找回那一节验的是「办成之后做什么」；这一节验的是**改名这条链上的另一半**——
+ * 改名**当前项目**之后，锚点行（读 `currentProject()?.name`）也要跟着变新名。
+ *
+ * 根因（评审 Important）：`拉清单` 只写 `projectList` / `projectListFailed`，**从不写
+ * `currentProject`**；唯一「按清单回灌 currentProject」的机制是 `还原启动项目`，它只被
+ * `拉清单并还原` 调用。改名当前项目后若只 `拉清单`，面板显示新名、锚点行永久停在旧名。
+ */
+describe("改名 / 删除接进工作台（2026-10-16 修复轮 1）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+  })
+
+  test("改名当前项目 ⇒ 锚点行跟着变新名（不靠整页刷新）", async () => {
+    let 清单: readonly ProjectEntry[] = [我的(私有("p1", "8·17专案", 1))]
+    const { data, 记 } = 假数据源({
+      list: async () => 清单,
+      // 改名成功：把清单换成**新名**的行，再回 `done`——「还原」要从这份新清单里重导当前项目。
+      rename: async () => {
+        清单 = [我的(私有("p1", "8·17专案（改）", 2))]
+        return { kind: "done" }
+      },
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`）：先证明它挂上去过——否则「变了」在压根没接线时无从谈起。
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 项目菜单项("rename") !== null)
+    await 冲刷()
+    指(项目菜单项("rename"))
+    await 冲刷()
+    const 框 = 改名框(host)
+    if (!框) throw new Error("改名框不在——前提不成立")
+    打字(框, "8·17专案（改）")
+    框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+    await 冲一遍()
+
+    // 被测属性在前（`#004-14`）：既钉「交给了数据源」，也钉「锚点行跟着变」。
+    expect(记.改名的项目).toEqual([["p1", "8·17专案（改）"]])
+    expect(text(host, "project-anchor-name")).toBe("8·17专案（改）")
+  })
+
+  /**
+   * 删除**当前项目** ⇒ 锚点变「未选择项目」（关闭变异 ② 的缺口：`onDelete` 里那句
+   * `setCurrentProject(undefined)` 此前没有任何组件用例钉住）。
+   */
+  test("删除当前项目 ⇒ 锚点变「未选择项目」（不可恢复，清了才回得来）", async () => {
+    const { data, 记 } = 假数据源({
+      list: async () => [我的(私有("p1", "8·17专案", 1))],
+      deleteProject: async () => ({ kind: "done" }),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "8·17专案" })
+    await 冲一遍()
+
+    // 前置（`#002-02`）：先证明它挂上去过。
+    expect(text(host, "project-anchor-name")).toBe("8·17专案")
+
+    锚点按钮(host, "project-anchor-toggle")?.click()
+    指(行菜单钮(host, "8·17专案"))
+    await 等到(() => 项目菜单项("delete") !== null)
+    await 冲刷()
+    指(项目菜单项("delete"))
+    await 点弹窗确认("删除")
+    await 冲一遍()
+
+    expect(记.删的项目).toEqual(["p1"])
+    expect(text(host, "project-anchor-name")).toBe("未选择项目")
   })
 })
 
