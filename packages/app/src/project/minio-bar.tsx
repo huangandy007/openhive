@@ -34,8 +34,9 @@ export interface MinioBarProps {
   /** 用量与自动备份暂停态（展示口径：`usedBytes`，非 `BackupStatus.usageBytes`，见接入缝注释）。 */
   usage?: { readonly usedBytes: number; readonly limitBytes: number; readonly autoPaused: boolean }
   /**
-   * 正在跑的任务。**终态任务不要传**——`succeeded / failed / cancelled` 会在注册表里留 10 分钟；
+   * 当前任务——**可以传终态任务**：`succeeded / failed / cancelled` 会在注册表里留 10 分钟，
    * 本组件用 `在跑()` 自己挡住（spec §11.5「完成：窄条回到空闲态」），传了也不会画出进度线。
+   * 调用方**不要再写一份终态判断**——两份判断迟早漂（`#002-06`）。
    */
   job?: BackupJob
   /**
@@ -74,7 +75,7 @@ export function MinioBar(props: MinioBarProps): JSX.Element {
   /** 进行中的任务；终态与 `undefined` 都得到 `undefined`（终态窄条回到空闲态）。 */
   const 当前任务 = (): BackupJob | undefined => {
     const job = props.job
-    return job !== undefined && 在跑(job) ? job : undefined
+    return 在跑(job) ? job : undefined
   }
 
   return (
@@ -102,6 +103,7 @@ export function MinioBar(props: MinioBarProps): JSX.Element {
               {/* 不确定态**不写 width**：那是假装知道百分比（spec：「不是假百分比」）。
                   动效只做视觉提示——happy-dom 量不了动画，判据落在 `data-indeterminate` 上。 */}
               <span
+                data-slot="minio-bar-progress-fill"
                 class={
                   比() === undefined
                     ? "block h-full w-full animate-pulse bg-v2-text-text-base"
@@ -204,10 +206,11 @@ function 阶段(job: BackupJob): string {
       return job.progress.filesTotal > 0
         ? `正在扫描文件…（已发现 ${job.progress.filesTotal} 个）`
         : "正在扫描文件…"
+    // 数量全未知时不留「正在校验」这种半句——省略号说明「还在走，只是还不知道量」。
     case "hashing":
-      return `正在校验${数量(job)}`
+      return 数量(job) === "" ? "正在校验…" : `正在校验${数量(job)}`
     case "uploading":
-      return `正在备份${数量(job)}`
+      return 数量(job) === "" ? "正在备份…" : `正在备份${数量(job)}`
     // spec 的「收尾：正在写入恢复点…」那一行没有数量——照字面，不编。
     case "committing":
       return "正在写入恢复点…"

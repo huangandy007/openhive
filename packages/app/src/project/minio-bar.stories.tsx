@@ -5,8 +5,9 @@ import { MinioBar } from "./minio-bar"
  * MinIO 常驻窄条（005 T004 · 设计 §2 ④ / §5.1 步骤 1）。
  *
  * story 的存在理由是让 axe 照得到它（同 `project-anchor.stories.tsx` 的说明）。
- * 这条窄条**整条就是一个 `<button>`**，所以它的可访问名称（`aria-label` / 文本内容）
- * 正是 axe 会查的东西——`count` 的三档则是「有名字但语义不同」的三种状态。
+ * 自 2026-10-18 起窄条是 `<div role="group">` ＋ 主按钮（spec §11.5：进度态要放取消钮，
+ * 不能嵌套 `<button>`）——axe 会查的是主按钮的可访问名称与分组语义；`count` 的三档则是
+ * 「有名字但语义不同」的三种状态。
  */
 export default {
   title: "App/OpenHive/MinioBar",

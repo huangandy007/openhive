@@ -101,6 +101,26 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     expect(线?.classList.contains("h-0.5")).toBe(true)
   })
 
+  /**
+   * F-1 的**显示侧**：`百分比` 在 `bytesTotal > 0` 时按字节算。
+   *
+   * 这条在服务端修复前也能绿——服务端「hashing 期间 `bytesDone` 真的在走」由
+   * `packages/opencode/test/server/openhive-backup-auto.test.ts` 的
+   * 「hashing 阶段按文件推进已处理字节」那条守。两条合起来才是完整的「校验阶段不钉在 0%」。
+   */
+  test("校验阶段的进度线按已处理字节走（hashing 1200/3400 ⇒ 35%）", () => {
+    const host = mount(() => (
+      <MinioBar
+        onOpen={() => {}}
+        job={任务("hashing", { filesTotal: 128, filesDone: 45, bytesTotal: 3400, bytesDone: 1200 })}
+      />
+    ))
+
+    const 线 = host.querySelector("[role='progressbar']")
+    expect(线?.getAttribute("aria-valuenow")).toBe("35")
+    expect(槽(host, "minio-bar-progress-fill")?.style.width).toBe("35%")
+  })
+
   test("扫描阶段：data-indeterminate 为 true，没有 aria-valuenow，也不画假百分比", () => {
     const host = mount(() => (
       <MinioBar
@@ -160,6 +180,14 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     expect(文本(host, "minio-bar-stage")).toBe("正在扫描文件…（已发现 87 个）")
   })
 
+  test("数量全未知时阶段文案带省略号：`正在校验…` / `正在备份…`（不留半句）", () => {
+    const 校验 = mount(() => <MinioBar onOpen={() => {}} job={任务("hashing")} />)
+    const 备份 = mount(() => <MinioBar onOpen={() => {}} job={任务("uploading")} />)
+
+    expect(文本(校验, "minio-bar-stage")).toBe("正在校验…")
+    expect(文本(备份, "minio-bar-stage")).toBe("正在备份…")
+  })
+
   test("排队中不带数量（spec 的「排队中」是一句状态，不是一个进度）", () => {
     const host = mount(() => (
       <MinioBar onOpen={() => {}} job={任务("queued", { filesTotal: 128, filesDone: 0, bytesTotal: 10, bytesDone: 0 })} />
@@ -183,6 +211,17 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     expect(钮?.getAttribute("aria-label")).toBe("取消备份")
     钮!.click()
     expect(点过).toEqual(["cancel"])
+  })
+
+  test("恢复任务的取消钮读作「取消恢复」（spec §11.7 的两种可读名）", () => {
+    const host = mount(() => (
+      <MinioBar
+        onOpen={() => {}}
+        job={{ id: "j", kind: "restore", state: "restoring", progress: { filesTotal: 2, filesDone: 1, bytesTotal: 0, bytesDone: 0 } }}
+      />
+    ))
+
+    expect(槽(host, "minio-bar-cancel")?.getAttribute("aria-label")).toBe("取消恢复")
   })
 
   test("没有任务时没有取消钮——空闲态不是「能取消的空闲态」", () => {

@@ -332,12 +332,18 @@ export async function prepareBackup(deps: RunDeps, input: BackupInput): Promise<
           reason: error instanceof Error && error.message === "changed-during-backup" ? "changed-during-backup" : "unreadable",
         })
         total.filesDone += 1
+        // `bytesDone` 是「**已处理**的源文件字节」，不是「已上传」：明确跳过的文件也算处理过。
+        // 上传阶段另建 `total`（`bytesDone: 0`，只计新上传 blob）——增量备份百分比偏低是接受的语义。
+        total.bytesDone += file.size
         deps.report({ progress: { ...total } })
         continue
       }
     }
     files.push({ path: file.path, hash, size: file.size, mtimeMs: file.mtimeMs, mode: file.mode })
     total.filesDone += 1
+    // 命中缓存（auto 的 size/mtime 未变）走的也是这一支：它同样算「已处理字节」，
+    // 否则校验阶段的字节进度会一直钉在 0（窄条在 `bytesTotal > 0` 时按字节算百分比）。
+    total.bytesDone += file.size
     deps.report({ progress: { ...total } })
   }
 

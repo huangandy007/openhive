@@ -28,6 +28,7 @@ import {
 import {
   ACTIVE_WINDOW_MS,
   AUTO_COOLDOWN_MS,
+  type Job,
   type Manifest,
   type SnapshotSummary,
 } from "../../src/server/openhive/backup-model"
@@ -337,7 +338,8 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
   }
 
   function 依赖(directory: string) {
-    const 进度: string[] = []
+    // 既收阶段也收进度：F-1 要钉「hashing 期间 `bytesDone` 真的在走」，只收 `state` 看不见它。
+    const 进度: Partial<Job>[] = []
     return {
       进度,
       deps: {
@@ -346,7 +348,7 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
         projectId: "p-42",
         ownerId: "007",
         timezone: "Asia/Shanghai",
-        report: (patch: { state?: string }) => 进度.push(String(patch.state)),
+        report: (patch: Partial<Job>) => 进度.push(patch),
         isCancelled: () => false,
       },
     }
@@ -366,6 +368,33 @@ describe("backup run（扫描 / 哈希 / 上传 / 返回清单）", () => {
     // 三个文件、三个不同内容 ⇒ 三个 blob
     expect((await deps.store.blobs()).length).toBe(3)
     expect(manifest.totals).toEqual({ files: 3, bytes: 9, uploadedBytes: 9, skipped: 0 })
+  })
+
+  /**
+   * F-1（Task 14 fix round 1）：hashing 阶段不能只推进文件数。
+   *
+   * 窄条在 `bytesTotal > 0` 时按字节算百分比（`minio-bar.tsx` 的 `百分比`）；`prepareBackup`
+   * 若只加 `filesDone`，整个校验阶段会钉在 0%，阶段文案写成「0 B/3.4 GiB」——与 spec §11.5
+   * 的「校验中 … 1.2/3.4 GB」不符。这里钉的是**服务端那半**（显示侧另有一条客户端用例）。
+   */
+  test("hashing 阶段按文件推进已处理字节：中间 0 < bytesDone < bytesTotal，最后一次上报收满", async () => {
+    const directory = 造项目() // 3 个文件、各 3 B ⇒ bytesTotal = 9
+    const { deps, 进度 } = 依赖(directory)
+    await runBackup(deps, { kind: "manual", scope: "", createdBy: "007" })
+
+    const 起 = 进度.findIndex((patch) => patch.state === "hashing")
+    expect(起).toBeGreaterThanOrEqual(0)
+    // hashing 段 = 从 `state:"hashing"` 那条起，到下一条带 state 的上报（uploading）之前。
+    const 止 = 进度.findIndex((patch, index) => index > 起 && patch.state !== undefined)
+    const 段 = 进度.slice(起, 止 === -1 ? undefined : 止).flatMap((patch) => (patch.progress ? [patch.progress] : []))
+
+    // 前置：这一段真的有多于一条进度（否则「中间态」无从谈起）。
+    expect(段.length).toBeGreaterThanOrEqual(2)
+    // 前置：bytesTotal 非零——不然下面那个不等式在恒零夹具上也会「成立」，等于空转。
+    expect(段[0].bytesTotal).toBe(9)
+
+    expect(段.some((p) => p.bytesDone > 0 && p.bytesDone < p.bytesTotal)).toBe(true)
+    expect(段.at(-1)!.bytesDone).toBe(段.at(-1)!.bytesTotal)
   })
 
   test("同一内容只上传一次（去重）", async () => {
