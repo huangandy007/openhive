@@ -10,7 +10,19 @@ import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject 
 import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
-import { minioBackups } from "@/project/minio-backups"
+import {
+  backupJob,
+  backupSnapshotId,
+  backupSnapshots,
+  backupUsage,
+  minioBackups,
+  在跑,
+  setBackupJob,
+  setBackupSnapshotId,
+  setBackupSnapshots,
+  setBackupUsage,
+  setMinioBackups,
+} from "@/project/minio-backups"
 import { statProjectFile, type FileOpOutcome } from "@/project/openhive-file-ops"
 import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
@@ -26,7 +38,11 @@ import { Rail } from "@/rail/rail"
 import { currentUser } from "./current-user"
 import { ThreePane } from "./three-pane"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
+import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
+import { RestoreDialog } from "@/project/backup-restore-dialog"
 import { FileMoveReportDialog, type 搬报告 } from "@/project/file-move-report-dialog"
+import type { BackupPreview, RestoreDecision } from "@/project/openhive-backup"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -787,6 +803,350 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     void 传(上传落点(), files)
   }
 
+  // ─── 备份 / 恢复接线（Task 17，2026-10-18） ───────────────────────────────────────
+  //
+  // 这一段的职责只有一件：把 Task 13 的十个 HTTP 出口、Task 15 的双树、Task 16 的恢复对话框
+  // **接到一起**。口径全部来自 `2026-10-18-file-backup-snapshot-design.md` §5.1 / §6 / §8 / §11：
+  //   · 需求唯一来源：spec（最高）；缺口 / 结构以两份 amend 为准（见 task-17 报告「权威顺序」）。
+  //   · 五个信号（恢复点清单 / 选中恢复点 / 用量 / 任务 / 下树路径）都是**模块级**的，换项目
+  //     必须清——留着上一个项目的货看起来像「串项目」（同 `projectFiles` 的既有口径）。
+
+  /**
+   * 把五个备份信号清成「还不知道」（`undefined`）。
+   *
+   * ⚠️ 三个态不能混：`undefined` ＝ 不知道、`[]` ＝ 明确没有、有值 ＝ 有。清空只能写 `undefined`
+   * ——写 `[]` 是在替后端回答一个它还没回答的问题（`@/project/minio-backups` 文件头）。
+   */
+  const 清空备份信号 = () => {
+    setBackupSnapshots(undefined)
+    setBackupSnapshotId(undefined)
+    setBackupUsage(undefined)
+    setBackupJob(undefined)
+    setMinioBackups(undefined)
+  }
+
+  /**
+   * 备份状态请求的**代次**：换项目 / 连点重取时，早发出的那份回包不许写缝。
+   *
+   * 与文件清单的 `清单代次` 同因（`#004-01`）：取状态是**多段**异步（状态 → 恢复点清单 →
+   * 选中恢复点的明细），一段慢下来就会在用户已经切走之后落地。`onCleanup` 不够用——这里没有
+   * 「每次重跑由 Solid 自动清理」的响应式键，重取还有**第二个出口**（起完备份 / 删完恢复点）。
+   */
+  let 备份代次 = 0
+
+  /**
+   * 重取**备份状态**：用量 ＋ 恢复点清单 ＋ 选中恢复点的文件清单。
+   *
+   * 三处必须提到组件作用域（amend R-3）：进门那一趟、`等任务` 收尾、`删恢复点` 办成后。
+   *
+   * ⚠️ 删恢复点后的重取**只能走这一条**，不能拨 `拨清单重取`——那条是**项目文件**清单，
+   * 拨它等于每次删一个云上恢复点都重取一遍沙箱文件树（两件事，两个来源）。
+   *
+   * 选中项规则：上一次选中的恢复点还在新清单里就留着（轮询不跳选中项）；否则落到最新一条
+   * （spec §11.2 的默认）。`undefined` ⇒ 下树明确空。
+   */
+  const 重取备份状态 = async () => {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    const 代 = ++备份代次
+    const 还有效 = () => 代 === 备份代次 && currentProject()?.id === id
+    try {
+      const 状态 = await projectData.backupStatus(id)
+      if (!还有效()) return
+      // 展示口径是 `usedBytes`（`MinioBar` / `MinioTree` 的 prop），服务端给的是 `usageBytes`。
+      setBackupUsage(
+        状态
+          ? { usedBytes: 状态.usageBytes, limitBytes: 状态.limitBytes, autoPaused: 状态.autoPaused }
+          : undefined,
+      )
+      setBackupJob(状态?.activeJob ?? undefined)
+
+      const 清单 = await projectData.snapshots(id)
+      if (!还有效()) return
+      setBackupSnapshots(清单)
+      if (清单 === undefined) {
+        // 取不到 ⇒ 下树回到「还不知道」（不是「还没有备份」——那两句意思相反）。
+        setMinioBackups(undefined)
+        return
+      }
+      const 选中 = backupSnapshotId()
+      const 目标 = 选中 !== undefined && 清单.some((snapshot) => snapshot.id === 选中) ? 选中 : 清单[0]?.id
+      if (目标 !== 选中) setBackupSnapshotId(目标)
+      if (目标 === undefined) {
+        setMinioBackups([])
+        return
+      }
+      const 明细 = await projectData.snapshotDetail(id, 目标)
+      if (!还有效() || backupSnapshotId() !== 目标) return
+      setMinioBackups(明细?.files.map((file) => file.path) ?? undefined)
+    } catch {
+      // 网络层抛错按「取不到」处理：信号留在调用前的态（通常是清空后的 `undefined`），
+      // 但**绝不**把异常漏成未处理的 rejection——它会变成整页的 unhandled error。
+    }
+  }
+
+  /**
+   * 起一个任务并等它跑完（预览 / 恢复共用，amend R-5）。
+   *
+   * 轮询间隔 1 秒；`job()` 第一轮就回终态时**不必等满 1 秒**（amend S-4，测试不必碰真实定时器）。
+   * 收尾两件：① `setBackupJob(undefined)` ⇒ 窄条回到空闲态（spec §11.5「完成：窄条回到空闲态」）；
+   * ② **重取状态** ⇒ 用量与恢复点清单跟着变（恢复完成可能新增 / 改变快照）。
+   */
+  const 等任务 = async (jobId: string) => {
+    for (let i = 0; i < 7_200; i += 1) {
+      const job = await projectData?.job(jobId)
+      if (job === undefined) return undefined
+      setBackupJob(job)
+      if (!在跑(job)) {
+        setBackupJob(undefined)
+        await 重取备份状态()
+        return job
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+    }
+    return undefined
+  }
+
+  /**
+   * 预览里有没有「必须先问用户」的东西（spec §6.1 / §6.4）。
+   *
+   * `missing` / `same` 不会覆盖任何本地内容 ⇒ 不必拦；`different` / `type-mismatch` 会动用户
+   * 现有文件 ⇒ 要三选一。`.git` 内部路径另有确认（spec §6.4）⇒ 即使全是 `same` 也要问。
+   */
+  const 需确认 = (preview: BackupPreview): boolean => {
+    if (preview.counts.different > 0 || preview.counts["type-mismatch"] > 0) return true
+    return [...preview.entries.map((entry) => entry.path), ...preview.localOnly].some((path) =>
+      path.split("/").includes(".git"),
+    )
+  }
+
+  /**
+   * 真发恢复请求并等它跑完，然后把结果说成一句话、重取项目文件清单。
+   *
+   * `decision` / `decisions` **原样**来自 `RestoreDialog`——`type-mismatch` 的默认 `skip` 已在
+   * 对话框里补进 `decisions`（`backup-restore-dialog.tsx` 文件头），本层不再二次加工。
+   */
+  const 跑恢复 = async (
+    id: string,
+    input: { snapshotId: string; path: string },
+    decision: RestoreDecision,
+    decisions: Record<string, RestoreDecision>,
+  ) => {
+    if (!projectData) return
+    const 恢复 = await projectData.restoreBackup(id, { ...input, decision, decisions })
+    if (恢复 === undefined) {
+      set文件话("恢复没能起起来")
+      return
+    }
+    const 结果 = await 等任务(恢复)
+    const 结果体 = 结果?.result?.restore
+    if (结果体 === undefined) {
+      set文件话("恢复没有拿到结果")
+      return
+    }
+    set文件话(
+      `恢复完成：恢复 ${结果体.restored.length}，保留两者 ${结果体.keptBoth.length}，跳过 ${结果体.skipped.length}，失败 ${结果体.failed.length}`,
+    )
+    拨清单重取()
+  }
+
+  /**
+   * 从 MinIO 拉回一条路径（§6.1 的两个入口共用）：**先预览**，再决定要不要问。
+   *
+   * - 拖拽入口（`{ 必定确认: false }`）：全部 `missing` / `same` 且不涉 `.git` ⇒ **直接恢复**，
+   *   不弹框（spec §6.1 末句「全部缺失或相同则无需确认」）。
+   * - 右键入口（`{ 必定确认: true }`）：spec §6.1 第一入口就是「打开恢复对话框」，一律问。
+   */
+  const 拉回 = async (
+    input: { snapshotId: string; path: string },
+    选项: { 必定确认?: boolean } = {},
+  ) => {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    const jobId = await projectData.previewRestore(id, input)
+    if (jobId === undefined) {
+      set文件话("预览没能起起来")
+      return
+    }
+    const job = await 等任务(jobId)
+    const preview = job?.result?.preview
+    if (preview === undefined) {
+      set文件话("预览没取到")
+      return
+    }
+    if (!选项.必定确认 && !需确认(preview)) {
+      await 跑恢复(id, input, "keep-both", {})
+      return
+    }
+    void dialog.show(() => (
+      <RestoreDialog
+        preview={preview}
+        busy={在跑(backupJob())}
+        onCancel={() => dialog.close()}
+        onConfirm={({ decision, decisions }) => {
+          dialog.close()
+          void 跑恢复(id, input, decision, decisions)
+        }}
+      />
+    ))
+  }
+
+  /**
+   * 起一次手动备份（右键与拖拽共用，spec §5.1）。落点**不参与**路径计算——备份的是被拖的
+   * 那一项，保持原路径。
+   *
+   * ⚠️ 成功支必须 `await 重取备份状态()`：只清 `文件话` 的话，`backupJob` 永远空着，而 1 秒
+   * 轮询的守卫是 `在跑(backupJob())` ⇒ **永远不轮询**、窄条永远不显示进度（amend R-3 的死锁）。
+   */
+  const 备份 = async (path: string) => {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    const 起 = await projectData.backup(id, path, false)
+    if (起 === undefined) {
+      set文件话("备份没能起起来")
+      return
+    }
+    if ("code" in 起) {
+      if (起.code === "quota_exceeded") {
+        // spec §8.3：409 `quota_exceeded` ⇒ 先说清后果，再让用户选。
+        set文件话(undefined)
+        void dialog.show(() => (
+          <确认框
+            kind="quota"
+            title="超出容量上限"
+            message="本次备份将超出 10 GB 上限，自动备份会暂停，是否继续？（不会自动删旧恢复点）"
+            onConfirm={() => void 备份越限(path)}
+            onCancel={() => dialog.close()}
+          />
+        ))
+        return
+      }
+      if (起.code === "job_running") {
+        // spec §11.6：同一项目已有任务在跑 ⇒ 说一句「已接上进度」，并把状态取回来。
+        set文件话("这个项目正在备份，已接上当前进度")
+        await 重取备份状态()
+        return
+      }
+      set文件话("备份没能起起来")
+      return
+    }
+    set文件话(undefined)
+    await 重取备份状态()
+  }
+
+  /** 超限确认之后带 `allowOverQuota: true` 再试一次（spec §8.3）。 */
+  const 备份越限 = async (path: string) => {
+    dialog.close()
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    const 起 = await projectData.backup(id, path, true)
+    if (起 === undefined || "code" in 起) {
+      set文件话("备份没能起起来")
+      return
+    }
+    set文件话(undefined)
+    await 重取备份状态()
+  }
+
+  /**
+   * 切恢复点（下树 `<select>`）：先改选中项、把下树置「还不知道」，再取那个恢复点的明细。
+   *
+   * 陈旧回包丢弃：切走项目、或用户又拨了另一个恢复点 ⇒ 这份回包作废（与 `重取备份状态`
+   * 同一道防线；这里不共用代次，因为判据是**这两个值本身**，比代次更直接）。
+   */
+  const 选恢复点 = async (snapshotId: string) => {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    setBackupSnapshotId(snapshotId)
+    setMinioBackups(undefined)
+    try {
+      const 明细 = await projectData.snapshotDetail(id, snapshotId)
+      if (currentProject()?.id !== id || backupSnapshotId() !== snapshotId) return
+      setMinioBackups(明细?.files.map((file) => file.path) ?? undefined)
+    } catch {
+      // 同 `重取备份状态`：取不到就停在「还不知道」，不抛。
+    }
+  }
+
+  /**
+   * 删除恢复点（spec §8.5：**先确认后调用**）。
+   *
+   * 这里只负责**开确认框**；真删在 `执行删恢复点`。两条用例分别钉「确认前没调」与「确认后调了」
+   * ——合成一条的话，变异只会把红停在最先撞倒的那句上（`#005-46`）。
+   */
+  const 删恢复点 = (snapshotId: string) => {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    void dialog.show(() => (
+      <确认框
+        kind="delete-snapshot"
+        title="删除这个恢复点？"
+        message="删除后不可恢复；项目里的文件不受影响。"
+        onConfirm={() => void 执行删恢复点(id, snapshotId)}
+        onCancel={() => dialog.close()}
+      />
+    ))
+  }
+
+  const 执行删恢复点 = async (id: string, snapshotId: string) => {
+    dialog.close()
+    if (!projectData) return
+    const 成 = await projectData.deleteSnapshot(id, snapshotId)
+    if (!成) {
+      set文件话("恢复点没删掉")
+      return
+    }
+    set文件话(undefined)
+    await 重取备份状态()
+  }
+
+  /**
+   * 进门 / 换项目：**同步**取一次状态并发一次心跳，之后 60 秒心跳 ＋ 1 秒轮询（仅在跑时）。
+   *
+   * ⚠️ 首 tick 一律走**同步调用**、不依赖 60s / 1s 定时器（amend S-4）：定时器只负责「之后」，
+   * 让测试与首屏都不必等一个真实周期。
+   *
+   * ⚠️ 轮询守卫是 `在跑(backupJob())`，不是 `backupJob() !== undefined`：终态任务会在服务端
+   * 注册表里留 10 分钟（spec §8.4），「有任务」不等于「任务在跑」（amend R-3）。
+   */
+  createEffect(() => {
+    const id = currentProject()?.id
+    备份代次 += 1 // 换项目 ⇒ 上一轮还在飞的请求作废
+    清空备份信号()
+    if (!id || !projectData) return
+
+    void 重取备份状态()
+    void projectData.heartbeat(id)
+    const 心跳 = setInterval(() => void projectData.heartbeat(id), 60_000)
+    const 轮询 = setInterval(() => {
+      if (!在跑(backupJob())) return
+      void 重取备份状态()
+    }, 1_000)
+    onCleanup(() => {
+      备份代次 += 1
+      clearInterval(心跳)
+      clearInterval(轮询)
+    })
+  })
+
+  /**
+   * 当前项目**从清单里消失**（被删 / 被归档 / 被移出）时清空五个备份信号。
+   *
+   * 与上面那份 effect 是**两条触发**：那份看 `currentProject` 变没变，这份看「当前项目还在不在
+   * 清单里」——删项目那条链**不会**保证先清当前项目（面板可能还没来得及），少了这份，旧项目的
+   * 恢复点会留在界面上，看起来像「删了还在」。
+   *
+   * ⚠️ 只用既有清单 `projectList()`，不新造第二份判断（`#002-06`）；清单还没取到
+   * （`undefined`）时**不动**——「还没问」不是「已经没了」。
+   */
+  createEffect(() => {
+    const id = currentProject()?.id
+    const 清单 = projectList()
+    if (id === undefined || 清单 === undefined) return
+    if (清单.some((项目) => 项目.id === id)) return
+    清空备份信号()
+  })
+
   return (
     <>
       {/* 图标栏是**三栏之外**的独立一列（DESIGN §4.1：图标栏 56px → 左项目侧栏 280px → 中 → 右），
@@ -1100,10 +1460,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     （`DualFileTree` 也因此只把**下树**放进 `<Show>`，上树恒挂载）。
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
 
-                    ⚠️ `onBackup` / `onRestore` **刻意不接**：它们的接收方（MinIO 的 HTTP 出口）
-                    今天还不存在，归 T022。不接 ⇒ **跨树那一放不落**（「未接线即禁用」，与右键菜单
-                    第 9/10 项自 T008 起就禁用是同一件事）。⚠️ 上树的行仍**恒可拖**（2026-10-13 用户
-                    裁定）：拖出的是**路径引用**（拖到右栏会话框自动填），不为备份接线而变。 */}
+                    ⚠️ 自 Task 17（2026-10-18）起 `onBackup` / `onRestore` **接上了**：拖沙箱行到下树
+                    ＝ 起备份（原路径，spec §5.1）；拖下树行回沙箱 ＝ 先预览、有冲突才问（spec §6.1）。
+                    两者都要**有项目**才接线（没有项目就没有可备份的东西），与相邻各项同一口径。
+                    ⚠️ 上树的行仍**恒可拖**（2026-10-13 用户裁定）：拖出的是**路径引用**（拖到右栏
+                    会话框自动填），不为备份接线而变。 */}
                 <SidebarTabs
                   active={sidebarTab()}
                   onSelect={setSidebarTab}
@@ -1122,6 +1483,28 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}
+                        // Task 17：恢复点清单 / 选中项 / 用量 → 下树（spec §11.2）。
+                        snapshots={backupSnapshots()}
+                        snapshotId={backupSnapshotId()}
+                        usage={backupUsage()}
+                        onSelectSnapshot={(snapshotId) => void 选恢复点(snapshotId)}
+                        onDeleteSnapshot={(snapshotId) => 删恢复点(snapshotId)}
+                        // 备份 / 恢复两条入口（§5.1 / §6.1）。`onRestore` 与 `onRestoreSnapshot`
+                        // 是**两个**名字：右键需要「当前恢复点」，拖拽那条自己带恢复点。
+                        onBackup={有项目() ? (path) => void 备份(path) : undefined}
+                        onRestore={
+                          有项目()
+                            ? (path) => {
+                                const snapshotId = backupSnapshotId()
+                                if (snapshotId === undefined) {
+                                  set文件话("先在下树里选一个恢复点")
+                                  return
+                                }
+                                void 拉回({ snapshotId, path }, { 必定确认: true })
+                              }
+                            : undefined
+                        }
+                        onRestoreSnapshot={有项目() ? (input) => void 拉回(input) : undefined}
                         // 三个回调都把回话**原样**往回交（`string` = 没办成）：新建 / 删除由弹窗就地报，
                         // 重命名由树报在**那一行**上。
                         onCreate={有项目() ? (input) => 建条(input) : undefined}
@@ -1192,9 +1575,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     不展开的话，用户点这一下等于点了个空（T019 时 2② 还没实现，就是这个半截态）。 */}
                 <MinioBar
                   count={minioBackups()?.length}
+                  usage={backupUsage()}
+                  job={backupJob()}
                   onOpen={() => {
                     setSidebarTab("files")
                     setDualOpen(true)
+                  }}
+                  onCancel={() => {
+                    const job = backupJob()
+                    if (!job || !projectData) return
+                    void projectData.cancelJob(job.id).then(() => 重取备份状态())
                   }}
                 />
               </div>
@@ -1257,4 +1647,49 @@ function 存到本地(blob: Blob, name: string) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
+}
+
+/**
+ * 本文件局部的二次确认框（超限备份 / 删除恢复点共用，Task 17）。
+ *
+ * 为什么不是 `window.confirm`：happy-dom 下它会把整轮挂死（没有人去点原生框）；浏览器原生框
+ * 也与 DESIGN 的视觉不是一套。为什么留在本文件：本仓**没有**现成的 `ConfirmDialog`
+ * （amend R-6），这两处是目前唯一的消费者——按「单次使用不抽象」先不建公共组件。
+ *
+ * `data-kind` 是判据的抓手：两种确认的按钮文案相同（继续），只有 `kind` 能分开「问的是哪件事」。
+ */
+function 确认框(props: {
+  kind: "quota" | "delete-snapshot"
+  title: string
+  message: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <DialogV2 class="w-[min(28rem,calc(100vw-3rem))]">
+      <div data-component="backup-confirm" data-kind={props.kind} class="contents">
+        <DialogHeader>
+          <DialogTitle>{props.title}</DialogTitle>
+        </DialogHeader>
+        <DialogBody class="px-4 pt-4 pb-2">
+          <p data-slot="backup-confirm-message" class="w-full min-w-0 text-[13px] text-v2-text-text-muted">
+            {props.message}
+          </p>
+        </DialogBody>
+        <DialogFooter>
+          <ButtonV2 data-slot="backup-confirm-cancel" variant="neutral" onClick={() => props.onCancel()}>
+            取消
+          </ButtonV2>
+          <ButtonV2
+            attr:autofocus=""
+            data-slot="backup-confirm-ok"
+            variant="contrast"
+            onClick={() => props.onConfirm()}
+          >
+            继续
+          </ButtonV2>
+        </DialogFooter>
+      </div>
+    </DialogV2>
+  )
 }

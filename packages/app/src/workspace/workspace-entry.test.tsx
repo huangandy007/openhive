@@ -7,7 +7,14 @@ import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { currentProject, setCurrentProject } from "@/project/current-project"
 import type { MemberEntry } from "@/project/member-panel"
-import { setMinioBackups } from "@/project/minio-backups"
+import {
+  setBackupJob,
+  setBackupSnapshotId,
+  setBackupSnapshots,
+  setBackupUsage,
+  setMinioBackups,
+} from "@/project/minio-backups"
+import type { BackupJob, BackupPreview, BackupSnapshot, BackupSnapshotDetail } from "@/project/openhive-backup"
 import { type ProjectData } from "@/project/project-data"
 import { setProjectFiles } from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
@@ -1103,6 +1110,16 @@ function 假数据源(
       | "remove"
       | "leave"
       | "touch"
+      | "snapshots"
+      | "snapshotDetail"
+      | "backup"
+      | "backupStatus"
+      | "previewRestore"
+      | "restoreBackup"
+      | "deleteSnapshot"
+      | "job"
+      | "cancelJob"
+      | "heartbeat"
     >
   > = {},
 ) {
@@ -1126,6 +1143,19 @@ function 假数据源(
     移除的: [] as Array<[string, string]>,
     退的: [] as string[],
     触碰的: [] as string[],
+    // Task 17（2026-10-18）备份 / 恢复接线的八本账。**顺序即「同一条链上的先后」**：
+    // 进门心跳 → 取恢复点 → 取明细 → 起备份 / 起预览 / 起恢复 → 删恢复点 / 取消任务。
+    心跳: [] as string[],
+    恢复点: [] as string[],
+    明细: [] as Array<[string, string]>,
+    // `[项目, 路径, allowOverQuota]`——第三个量是**超限重试**那一路唯一能看出来的差别。
+    起的备份: [] as Array<[string, string, boolean]>,
+    预览的: [] as Array<[string, string, string]>,
+    // `[项目, 恢复点, 路径, decision, JSON.stringify(decisions)]`：判据要**逐字**比对
+    // 「恢复对话框交回来的两个量」，JSON 串让 `decisions` 能在 `toEqual` 里直接比。
+    恢复的: [] as Array<[string, string, string, string, string]>,
+    删的恢复点: [] as Array<[string, string]>,
+    取消的: [] as string[],
   }
   const data: ProjectData = {
     list: async () => {
@@ -1223,19 +1253,54 @@ function 假数据源(
       记.触碰的.push(projectId)
       return 剧本.touch ? await 剧本.touch(projectId) : true
     },
-    // Task 13 的十个备份 / 恢复出口：`workspace-entry` 目前**不调用**它们（界面接线是后续 task），
-    // 这里补齐只是为了让这个替身满足 `ProjectData`。默认值按「取不到 / 没办成」给——
-    // 同上面几条的理由：一条没接剧本的路**不悄悄报成功**。
-    snapshots: async () => undefined,
-    snapshotDetail: async () => undefined,
-    backup: async () => undefined,
-    backupStatus: async () => undefined,
-    previewRestore: async () => undefined,
-    restoreBackup: async () => undefined,
-    deleteSnapshot: async () => false,
-    job: async () => undefined,
-    cancelJob: async () => false,
-    heartbeat: async () => false,
+    // Task 13 的十个备份 / 恢复出口（Task 17 起 `workspace-entry` 必须真的调用它们）。
+    // 默认值按「取不到 / 没办成」给——同上面几条的理由：一条没接剧本的路**不悄悄报成功**。
+    // ⚠️ `heartbeat` 是**例外**（amend R-2）：它的返回值在界面上一个字都不显示，唯一的消费者
+    // 就是记账断言本身，默认报失败只会把「接没接上」搅浑 ⇒ 默认 `true`。
+    snapshots: async (projectId, path) => {
+      记.恢复点.push(projectId)
+      return 剧本.snapshots ? await 剧本.snapshots(projectId, path) : undefined
+    },
+    snapshotDetail: async (projectId, snapshotId) => {
+      记.明细.push([projectId, snapshotId])
+      return 剧本.snapshotDetail ? await 剧本.snapshotDetail(projectId, snapshotId) : undefined
+    },
+    backup: async (projectId, path, allowOverQuota) => {
+      记.起的备份.push([projectId, path ?? "", allowOverQuota ?? false])
+      return 剧本.backup ? await 剧本.backup(projectId, path, allowOverQuota) : undefined
+    },
+    backupStatus: async (projectId) => {
+      return 剧本.backupStatus ? await 剧本.backupStatus(projectId) : undefined
+    },
+    previewRestore: async (projectId, input) => {
+      记.预览的.push([projectId, input.snapshotId, input.path])
+      return 剧本.previewRestore ? await 剧本.previewRestore(projectId, input) : undefined
+    },
+    restoreBackup: async (projectId, input) => {
+      记.恢复的.push([
+        projectId,
+        input.snapshotId,
+        input.path,
+        input.decision,
+        JSON.stringify(input.decisions ?? {}),
+      ])
+      return 剧本.restoreBackup ? await 剧本.restoreBackup(projectId, input) : undefined
+    },
+    deleteSnapshot: async (projectId, snapshotId) => {
+      记.删的恢复点.push([projectId, snapshotId])
+      return 剧本.deleteSnapshot ? await 剧本.deleteSnapshot(projectId, snapshotId) : false
+    },
+    job: async (jobId) => {
+      return 剧本.job ? await 剧本.job(jobId) : undefined
+    },
+    cancelJob: async (jobId) => {
+      记.取消的.push(jobId)
+      return 剧本.cancelJob ? await 剧本.cancelJob(jobId) : false
+    },
+    heartbeat: async (projectId) => {
+      记.心跳.push(projectId)
+      return 剧本.heartbeat ? await 剧本.heartbeat(projectId) : true
+    },
   }
   return { data, 记 }
 }
@@ -3661,5 +3726,466 @@ describe("中栏让位：`routePageVisible` 决定 children 露不露", () => {
 
     expect(页面层(host)?.style.display).toBe("none")
     expect(text(host, "center-empty")).toContain("右栏")
+  })
+})
+
+/**
+ * 备份 / 恢复接线（Task 17，2026-10-18）。
+ *
+ * 上一节（T012）验的是**双树组件自己**会拖、会显示；这一节验的是**那根线**：
+ * `workspace-entry` 有没有把 Task 13 的十个 HTTP 出口、Task 15 的双树、Task 16 的恢复对话框
+ * 接到一起——也就是用户最初实报的那个缺陷（「备份到 MinIO / 从 MinIO 拉回」永远是灰的）修没修掉。
+ *
+ * 判据一律落在**数据源收到了什么**（`记.*`）与**界面上看得见什么**（行 / 槽 / 对话框）上，
+ * 不落在「代码写了没有」上：接线这类事，代码看着像接上了、实际参数错一位，界面照样安静。
+ *
+ * ⚠️ 每条用例前都把**五个备份信号清空**（`@/project/minio-backups`）：它们是模块级的，
+ * 上一个实例 / 上一条用例的货会漏进来（`LEARNINGS #005-03`）。`setCurrentProject(undefined)`
+ * 同时清 cookie——`onMount` 的「按存档还原」才不会把上一条的项目认领回来。
+ */
+describe("备份 / 恢复接线（Task 17）", () => {
+  beforeEach(() => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+    setMinioBackups(undefined)
+    setBackupSnapshots(undefined)
+    setBackupSnapshotId(undefined)
+    setBackupUsage(undefined)
+    setBackupJob(undefined)
+  })
+
+  /** 指定那棵树里的一行（`data-tree` 把两棵树的同名行分开）。 */
+  const 树行按 = (host: HTMLElement, 哪棵: "sandbox" | "minio", path: string) =>
+    host.querySelector<HTMLElement>(
+      `[data-tree='${哪棵}'] [data-slot='file-tree-row'][data-path='${path}']`,
+    )
+
+  const 槽 = (host: HTMLElement, slot: string) => host.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+
+  /** 下树那颗恢复点 `<select>`（`querySelector<HTMLSelectElement>` 一次收窄，免掉类型断言）。 */
+  const 快照选择器 = (host: HTMLElement) =>
+    host.querySelector<HTMLSelectElement>("[data-slot='minio-tree-snapshot']")
+
+  /**
+   * 跨树拖一个文件。
+   *
+   * happy-dom 没有 `DragEvent`，而 `DualFileTree` 的委托**只看冒泡的事件与落点**（它不读
+   * `dataTransfer`，那是给树以外的消费者看的）⇒ 裸 `Event` 足够。`dragover` 不能省：
+   * 组件不 `preventDefault` 就不认「可以放」，后面那条 `drop` 也不会有接收方。
+   */
+  function 拖到(源: HTMLElement | null, 目标: HTMLElement | null) {
+    for (const [el, type] of [
+      [源, "dragstart"],
+      [目标, "dragover"],
+      [目标, "drop"],
+    ] as const)
+      el?.dispatchEvent(new Event(type, { bubbles: true }))
+  }
+
+  /** 点 ④ 窄条展开下树（MinioBar 的 `onOpen` 只做这一件事之外还切 tab，两件一起做）。 */
+  const 开双树 = (host: HTMLElement) => 槽(host, "minio-bar-open")?.click()
+
+  /** 等一段**真实时间**——只给「终态不轮询」那条用（理由写在那条用例里）。 */
+  const 睡 = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+  const 快照 = (id: string, kind: "manual" | "auto" = "manual", files = 1): BackupSnapshot => ({
+    id,
+    kind,
+    scope: "",
+    createdAt: 1_765_000_000_000,
+    status: "complete",
+    totals: { files, bytes: 10, uploadedBytes: 10, skipped: 0 },
+  })
+
+  const 明细 = (snapshot: BackupSnapshot, paths: readonly string[]): BackupSnapshotDetail => ({
+    ...snapshot,
+    projectId: "p-42",
+    ownerId: "u-1",
+    files: paths.map((path) => ({ path, hash: "h", size: 10, mtimeMs: 1 })),
+    dirs: [],
+    skipped: [],
+  })
+
+  const 任务 = (id: string, state: BackupJob["state"], extra: Partial<BackupJob> = {}): BackupJob => ({
+    id,
+    kind: "backup",
+    state,
+    progress: { filesTotal: 0, filesDone: 0, bytesTotal: 0, bytesDone: 0 },
+    ...extra,
+  })
+
+  const 状态 = (activeJob: BackupJob | null = null, usageBytes = 0) => ({
+    activeJob,
+    lastSnapshot: null,
+    usageBytes,
+    limitBytes: 10 * 1024 ** 3,
+    autoPaused: false,
+  })
+
+  /** 一份预览——`entries` 是唯一输入，四个计数**由它算**，不手写（手写就会与条目对不上）。 */
+  const 预览 = (entries: BackupPreview["entries"]): BackupPreview => {
+    const 数 = (status: string) => entries.filter((entry) => entry.status === status).length
+    return {
+      snapshotId: "s-1",
+      scope: "",
+      counts: {
+        missing: 数("missing"),
+        same: 数("same"),
+        different: 数("different"),
+        "type-mismatch": 数("type-mismatch"),
+      },
+      entries,
+      truncated: false,
+      localOnly: [],
+      localOnlyTruncated: false,
+    }
+  }
+
+  const 恢复结果 = (restored: readonly string[]) => ({
+    restored,
+    keptBoth: [],
+    skipped: [],
+    failed: [],
+    cancelled: false,
+  })
+
+  /**
+   * 把一条完整的「进项目 → 开双树 → 上树已经有行」前置铺好。
+   *
+   * 剧本里没写的那几本账，用**与产品同一套三态**的默认值：`snapshots` / `snapshotDetail` /
+   * `backupStatus` 都是「取不到」（`undefined`），`heartbeat` 是 `true`（见 `假数据源` 的注释）。
+   */
+  async function 开备份(剧本: Parameters<typeof 假数据源>[0] = {}, 项目id = "p-42") {
+    const { data, 记 } = 假数据源({
+      list: async () => [私有(项目id, "8·17专案", 1)],
+      files: async () => ["资料/甲.txt", "报告.docx"],
+      ...剧本,
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: 项目id, name: "8·17专案" })
+    await 冲一遍()
+    开双树(host)
+    await 等到(() => 树行按(host, "sandbox", "报告.docx") !== null)
+    全展开(host)
+    return { host, 假: 记 }
+  }
+
+  test("进门：发一次心跳 ＋ 取恢复点，下树显示最新恢复点的文件", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+    })
+
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    expect(假.心跳).toEqual(["p-42"])
+    expect(假.恢复点).toEqual(["p-42"])
+    // 选中项落在**第一条**恢复点上（右键「从 MinIO 拉回」要靠它），所以明细也取了它。
+    expect(假.明细).toEqual([["p-42", "s-1"]])
+  })
+
+  test("拖沙箱文件到下树 ⇒ backup(项目, 原路径, false)——落点不参与路径计算", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      backup: async () => ({ jobId: "j-1" }),
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+
+    await 等到(() => 假.起的备份.length === 1)
+    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+  })
+
+  test("起完备份立刻重取状态 ⇒ 进度接进窄条（不靠 1 秒轮询）", async () => {
+    // ⚠️ 这条钉的是 `备份` 成功支里那句 `await 重取备份状态()`：只清 `文件话` 的话，
+    // `backupJob` 永远空着、1 秒轮询的 `在跑` 守卫永远进不去 ⇒ 窄条永远停在空闲态。
+    let 起过 = false
+    const 运行中 = 任务("j-1", "uploading", {
+      progress: { filesTotal: 2, filesDone: 1, bytesTotal: 10, bytesDone: 5 },
+    })
+    const { host } = await 开备份({
+      snapshots: async () => [],
+      backup: async () => {
+        起过 = true
+        return { jobId: "j-1" }
+      },
+      backupStatus: async () => 状态(起过 ? 运行中 : null),
+    })
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+
+    await 等到(() => 槽(host, "minio-bar-progress") !== null)
+    expect(槽(host, "minio-bar-progress") === null).toBe(false)
+  })
+
+  test("拖下树文件回上树 ⇒ 先起预览；有冲突时弹恢复对话框", async () => {
+    const 有冲突 = 预览([{ path: "资料/甲.txt", status: "different" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      // 第一轮就回终态：`等任务` 不必等真实 1 秒（amend S-4）。
+      job: async (jobId) =>
+        jobId === "job-preview"
+          ? 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
+          : undefined,
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+
+    await 等到(() => document.body.querySelector("[data-component='backup-restore-dialog']") !== null)
+    expect(假.预览的).toEqual([["p-42", "s-1", "资料/甲.txt"]])
+  })
+
+  test("恢复对话框点确认 ⇒ restoreBackup 收到 {snapshotId, path, decision, decisions}（逐字）", async () => {
+    const 有冲突 = 预览([{ path: "资料/甲.txt", status: "different" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"]) },
+          })
+        return undefined
+      },
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+    await 等到(() => document.body.querySelector("[data-slot='restore-confirm']") !== null)
+
+    document.body.querySelector<HTMLElement>("[data-slot='restore-confirm']")!.click()
+
+    await 等到(() => 假.恢复的.length === 1)
+    // 对话框默认「保留两者」；没有逐条改判 ⇒ `decisions` 是空表（`type-mismatch` 才会自动补 skip）。
+    expect(假.恢复的).toEqual([["p-42", "s-1", "资料/甲.txt", "keep-both", "{}"]])
+  })
+
+  test("预览全是 missing / same ⇒ 不弹对话框、直接恢复（spec §6.1 拖拽入口）", async () => {
+    const 无冲突 = 预览([{ path: "资料/甲.txt", status: "missing" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 无冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"]) },
+          })
+        return undefined
+      },
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+
+    await 等到(() => 假.恢复的.length === 1)
+    expect(假.恢复的[0]).toEqual(["p-42", "s-1", "资料/甲.txt", "keep-both", "{}"])
+    // 反向对照：这条链**不该**冒出确认框（「直接恢复」这四个字就是判据）。
+    expect(document.body.querySelector("[data-component='backup-restore-dialog']") === null).toBe(true)
+  })
+
+  test("切恢复点 ⇒ 重取那个恢复点的明细，下树换成它的文件", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1"), 快照("s-2")],
+      snapshotDetail: async (_projectId, snapshotId) =>
+        明细(快照(snapshotId), snapshotId === "s-1" ? ["资料/甲.txt"] : ["资料/乙.txt"]),
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    const 选择器 = 快照选择器(host)
+    if (!选择器) throw new Error("下树里没有恢复点选择器——这条用例的前提不成立（#004-14）")
+    选择器.value = "s-2"
+    选择器.dispatchEvent(new Event("change", { bubbles: true }))
+
+    await 等到(() => 树行按(host, "minio", "资料/乙.txt") !== null)
+    expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
+    expect(假.明细).toEqual([
+      ["p-42", "s-1"],
+      ["p-42", "s-2"],
+    ])
+  })
+
+  test("切换项目 ⇒ 五个备份信号清空：旧项目的文件 / 用量不再留在界面上", async () => {
+    const { host, 假 } = await 开备份(
+      {
+        // ⚠️ 必须**覆盖** `开备份` 的默认清单：不包含 p-2 的话，下面那个「项目从清单里消失」的
+        // 守卫会立刻把信号清掉——那是另一条链，会把这条的判据搅成「怎么清都对」。
+        list: async () => [私有("p-1", "甲", 1), 私有("p-2", "乙", 2)],
+        snapshots: async (projectId) => (projectId === "p-1" ? [快照("s-1")] : []),
+        snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+        backupStatus: async (projectId) => (projectId === "p-1" ? 状态(null, 100) : undefined),
+      },
+      "p-1",
+    )
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    expect(槽(host, "minio-tree-usage") === null).toBe(false) // 前置：旧项目的用量确实在
+
+    setCurrentProject({ id: "p-2", name: "乙" })
+
+    await 等到(() => text(host, "minio-tree-empty") === "还没有备份")
+    // 旧项目的行与用量都没了（`minioBackups` / `backupUsage` 被清成「还不知道」再取成空）。
+    expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
+    expect(槽(host, "minio-tree-usage") === null).toBe(true)
+    expect(text(host, "minio-tree-empty")).toBe("还没有备份")
+    expect(假.心跳).toEqual(["p-1", "p-2"])
+  })
+
+  test("当前项目从清单里消失（被删 / 归档）⇒ 清空备份信号，旧恢复点不留在界面上", async () => {
+    // R-4.6 的第二条触发：`currentProject` **没变**，变的是「它还在不在清单里」。
+    // 删项目那条链只重拉清单、不保证先清当前项目 ⇒ 少了这份守卫，界面会一直挂着已删项目的恢复点。
+    const { host } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    setProjectList([])
+
+    await 等到(() => text(host, "minio-tree-empty") === "备份清单未接入")
+    expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
+  })
+
+  test("右键「备份到 MinIO」⇒ backup(项目, 原路径, false)——菜单项不再是灰的", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [],
+      backup: async () => ({ jobId: "j-1" }),
+    })
+    await 等到(() => 假.恢复点.length >= 1)
+
+    右键行(host, "报告.docx")
+    点菜单项("backup")
+
+    await 等到(() => 假.起的备份.length === 1)
+    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+  })
+
+  test("右键「从 MinIO 拉回」：有选中恢复点 ⇒ 用当前恢复点起预览", async () => {
+    const 有冲突 = 预览([{ path: "报告.docx", status: "different" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      job: async (jobId) =>
+        jobId === "job-preview"
+          ? 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
+          : undefined,
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    右键行(host, "报告.docx")
+    点菜单项("restore")
+
+    await 等到(() => 假.预览的.length === 1)
+    expect(假.预览的).toEqual([["p-42", "s-1", "报告.docx"]])
+  })
+
+  test("右键「从 MinIO 拉回」：没有选中恢复点 ⇒ 说一句、一个接口都不调（spec §11.3）", async () => {
+    const { host, 假 } = await 开备份({ snapshots: async () => [] })
+    await 等到(() => 假.恢复点.length >= 1)
+
+    右键行(host, "报告.docx")
+    点菜单项("restore")
+    await 冲一遍()
+
+    expect(假.预览的).toEqual([])
+    expect(text(host, "file-op-message")).toBe("先在下树里选一个恢复点")
+  })
+
+  test("删除恢复点：只出确认框，deleteSnapshot 还没调用", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+    })
+    await 等到(() => 快照选择器(host)?.value === "s-1")
+
+    槽(host, "minio-tree-delete")?.click()
+    await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") !== null)
+
+    // 两条独立判据：① 确认框出来了；② 还没删（先确认后调用，spec §8.5）。
+    expect(document.body.querySelector("[data-kind='delete-snapshot']")?.textContent ?? "").toContain(
+      "删除这个恢复点？",
+    )
+    expect(假.删的恢复点).toEqual([])
+  })
+
+  test("删除恢复点：确认后才调用，并把恢复点清单重取一遍（项目文件清单不跟着拨）", async () => {
+    let 删过 = false
+    const { host, 假 } = await 开备份({
+      snapshots: async () => (删过 ? [] : [快照("s-1")]),
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      deleteSnapshot: async () => {
+        删过 = true
+        return true
+      },
+    })
+    await 等到(() => 快照选择器(host)?.value === "s-1")
+    expect(假.files.length).toBe(1) // 前置：项目文件清单只取过一次
+
+    槽(host, "minio-tree-delete")?.click()
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+
+    await 等到(() => 假.删的恢复点.length === 1)
+    expect(假.删的恢复点).toEqual([["p-42", "s-1"]])
+    // 删除后的重取是**备份状态**那条链：恢复点清单再取一次（初始 1 ＋ 删后 1）。
+    await 等到(() => 假.恢复点.length === 2)
+    await 等到(() => text(host, "minio-tree-empty") === "还没有备份")
+    // 反向对照：它**不能**拨 `清单重取`（那条是项目文件清单）——拨了就等于每次删恢复点都重取一遍文件树。
+    expect(假.files.length).toBe(1)
+  })
+
+  test("终态任务不轮询：1 秒后再不重取恢复点", async () => {
+    // ⚠️ 这条是**唯一**一条按真实时间等的用例：轮询间隔就是 1 秒，而判据是「1 秒之后**没有**
+    // 发生第二件事」——没有可等的「条件」，只能等时间（`#006-31` 的例外，理由就写在判据本身）。
+    // 终态任务会在注册表里留 10 分钟，所以「任务存在 ≠ 在跑」：`在跑()` 才是守卫。
+    const { 假 } = await 开备份({
+      snapshots: async () => [],
+      backupStatus: async () => 状态(任务("j-done", "succeeded")),
+    })
+    await 等到(() => 假.恢复点.length >= 1)
+    const 初 = 假.恢复点.length
+
+    await 睡(1_300)
+
+    expect(假.恢复点.length).toBe(初)
+  })
+
+  test("超限 409 ⇒ 弹确认框；确认后带 allowOverQuota=true 重试", async () => {
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [],
+      backup: async (_projectId, _path, allowOverQuota) =>
+        allowOverQuota ? { jobId: "j-1" } : { code: "quota_exceeded" },
+    })
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+
+    await 等到(() => document.body.querySelector("[data-kind='quota'] [data-slot='backup-confirm-ok']") !== null)
+    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(document.body.querySelector("[data-kind='quota']")?.textContent ?? "").toContain("10 GB")
+
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+
+    await 等到(() => 假.起的备份.length === 2)
+    expect(假.起的备份).toEqual([
+      ["p-42", "报告.docx", false],
+      ["p-42", "报告.docx", true],
+    ])
   })
 })
