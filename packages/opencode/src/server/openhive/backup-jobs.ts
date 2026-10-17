@@ -17,8 +17,21 @@ export interface StartJobInput {
   readonly snapshotId?: string
 }
 
+/**
+ * `start` 的结果。**判别字段是 `resumed`**：
+ * - `resumed: false` ⇒ 新任务；
+ * - `resumed: true` ＋ `job` ⇒ 已有任务（同款单飞）；
+ * - `resumed: true` ＋ `job: undefined` ⇒ 项目正被删除流程**占位**（`hold`），没有任务可给。
+ *
+ * 第三种情况下调用方**只能回 409、不能给 `jobId`**——给一个不存在的 id 会让客户端去轮询一个
+ * 永远查不到的任务。
+ */
+export type StartResult =
+  | { readonly resumed: false; readonly job: Job }
+  | { readonly resumed: true; readonly job: Job | undefined }
+
 export interface JobRegistry {
-  readonly start: (input: StartJobInput) => { readonly job: Job; readonly resumed: boolean }
+  readonly start: (input: StartJobInput) => StartResult
   readonly get: (id: string, userId: string) => Job | undefined
   readonly activeFor: (userId: string, projectId: string) => Job | undefined
   readonly update: (id: string, patch: Partial<Job>) => void
@@ -29,6 +42,16 @@ export interface JobRegistry {
     extra?: { readonly error?: JobError; readonly result?: unknown },
   ) => void
   readonly evict: (now?: number) => void
+  /**
+   * 删除期间的占位锁（spec §5.8 末条「项目删除要拿同一把锁」）。
+   * 返回 `release`；同一 `(userId, projectId)` 已有持有者 ⇒ `undefined`。
+   *
+   * ⚠️ **不与活动任务冲突**：删除流程先 `hold`（挡住**新**任务）再 `quiesceProject`
+   * （取消**旧**任务）。反过来做会有一个「等旧任务收敛 ⇒ 新任务又起来」的窗口。
+   */
+  readonly hold: (userId: string, projectId: string) => (() => void) | undefined
+  /** 该项目当前是否被删除流程占位（`start` 会因此回 409；保留 / GC 因此跳过）。 */
+  readonly isHeld: (userId: string, projectId: string) => boolean
 }
 
 const 终态: ReadonlySet<JobState> = new Set(["succeeded", "failed", "cancelled"])
@@ -39,6 +62,8 @@ export function createJobRegistry(options: { now?: () => number; ttlMs?: number 
   const jobs = new Map<string, Job>()
   /** 单飞键 ⇒ 任务 id。终态时删。 */
   const active = new Map<string, string>()
+  /** 删除占位键 ⇒ 令牌。release 只在「当前令牌还是我」时删（防旧 release 擦掉新持有者的锁）。 */
+  const 占位 = new Map<string, object>()
   const 键 = (userId: string, projectId: string) => `${userId}/${projectId}`
 
   const registry: JobRegistry = {
@@ -49,6 +74,8 @@ export function createJobRegistry(options: { now?: () => number; ttlMs?: number 
         if (job !== undefined) return { job, resumed: true }
         active.delete(键(input.userId, input.projectId))
       }
+      // 没有活动任务、但项目正被删除占位 ⇒ 挡住**新**任务（没有 jobId 可给）。
+      if (占位.has(键(input.userId, input.projectId))) return { resumed: true, job: undefined }
       const at = now()
       const job: Job = {
         id: randomUUID(),
@@ -116,6 +143,19 @@ export function createJobRegistry(options: { now?: () => number; ttlMs?: number 
         jobs.delete(id)
       }
     },
+
+    hold: (userId, projectId) => {
+      const key = 键(userId, projectId)
+      if (占位.has(key)) return undefined
+      const 令牌 = {}
+      占位.set(key, 令牌)
+      return () => {
+        // 令牌判定：只在「当前令牌还是我」时删——旧 release 不能擦掉新持有者的锁。
+        if (占位.get(key) === 令牌) 占位.delete(key)
+      }
+    },
+
+    isHeld: (userId, projectId) => 占位.has(键(userId, projectId)),
   }
 
   return registry

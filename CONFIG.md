@@ -88,6 +88,7 @@ Z = from.env.local        ← .env.local 更大
 | 变量 | 定义处 | 管什么 |
 |---|---|---|
 | `OPENHIVE_MINIO_ENDPOINT` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY` / `_USE_SSL` | `packages/opencode/src/server/openhive/archive.ts:124-128` | 归档 / 找回。⚠️ **五项整份配齐才算配**，缺一项 ⇒ 归档接口回 **503「MinIO 未配置」** |
+| `OPENHIVE_BACKUP_QUIESCE_TIMEOUT_MS` | `packages/opencode/src/server/openhive/archive.ts:249-251` | 项目删除前等待备份/恢复任务收敛的上限（毫秒），默认 **30000**；等不到 ⇒ 删除回 409 `job_running` 且**一个字节都不动**。测试覆盖：`packages/opencode/test/server/openhive-project-delete.test.ts` 把它压到 120ms 造超时 |
 | `AUTH_JWT_SECRET` | `packages/auth/src/policy.ts:67` | JWT 签名密钥（要求 ≥ 32 字符） |
 | `OPENHIVE_REQUIRE_USER_ID` | `packages/opencode/src/server/user-identity.ts:48` | 是否强制身份 |
 | `OPENHIVE_DATA_ROOT` | `packages/core/src/database/router.ts:31` | 数据根目录 |

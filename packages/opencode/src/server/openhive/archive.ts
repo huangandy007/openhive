@@ -125,7 +125,7 @@ import { lstatSync } from "node:fs"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
-import { quiesceProject } from "./backup-jobs"
+import { quiesceProject, sharedJobs, type JobRegistry } from "./backup-jobs"
 import { BACKUP_NAMESPACE } from "./backup-model"
 import { OpenhivePg } from "./pg"
 import { PREFIX, SharedRootConfig } from "./project"
@@ -220,6 +220,11 @@ interface Deps {
   readonly directories: ProjectDirectories.Interface
   /** 删除前等待备份/恢复任务收敛的上限（毫秒）。默认 30 秒（spec §5.8「有上限」）。 */
   readonly quiesceTimeoutMs: number
+  /**
+   * 与 `backup.ts` **同一个**任务表实例：删除要 `hold`（挡新任务）、`quiesce`（取消旧任务）。
+   * 各自建表会让删除看不见正在跑的备份（`backup-jobs.ts:130` 的注释就是这条约束）。
+   */
+  readonly jobs: JobRegistry
 }
 
 /**
@@ -253,6 +258,7 @@ export const routes = HttpRouter.use((router) =>
       database,
       directories,
       quiesceTimeoutMs,
+      jobs: sharedJobs,
     }
 
     yield* router.add("POST", PATH.archive, (request) => handleArchive(request, deps))
@@ -561,38 +567,62 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     }
     const userIds = members.map((member) => member.userId)
 
-    // ── 0.5 把该项目上所有成员的任务收敛掉（spec §5.8 末条）──
-    //   备份 / 预览 / 恢复与删除共用同一张任务表（`sharedJobs`）；锁被占用时**先请求取消**、
-    //   有上限地等它收敛；等不到就**报错且不删任何东西**——而不是强行删。
-    //   ⚠️ 位置必须在任何副作用之前：删掉一个半备份的项目会留下永久孤儿 blob，
-    //   删掉一个半恢复的项目会留下改了一半的树。
-    const 静了 = yield* Effect.promise(() => quiesceProject(projectId, userIds, { timeoutMs: deps.quiesceTimeoutMs }))
-    if (!静了)
+    // ── 0.4 先拿住删除锁（spec §5.8 末条）：先挡**新**任务，再取消**旧**任务。──
+    //   锁粒度是 (userId × projectId)，任务可能属于任一成员 ⇒ 逐个成员都要占住。
+    //   ⚠️ **次序不能反**：先 quiesce 再 hold 会留下「等旧任务收敛 ⇒ 新任务又起来」的窗口。
+    const 放锁 = userIds.map((userId) => deps.jobs.hold(userId, projectId))
+    if (放锁.some((放) => 放 === undefined)) {
+      // 已经有另一场删除在跑：把**这一场**拿到的那些还回去（已持有的那把不是我的，不能放）。
+      for (const 放 of 放锁) 放?.()
       return HttpServerResponse.jsonUnsafe(
-        { error: "备份/恢复任务仍在进行，请稍后重试", code: "job_running" },
+        { error: "该项目正在被删除", code: "job_running" },
         { status: 409 },
       )
+    }
 
-    // ── 1. ⑤ MinIO 备份（**先于**成员关系的删除；见上面那张表）──
-    yield* Effect.promise(() => dropBackups(deps, projectId, userIds))
-    // ── 2. ④ 沙箱目录 ＋ bare 仓库 ──
-    yield* Effect.promise(() => dropTrees(deps, projectId, userIds))
-    // ── 3. ⑥ 快照 / worktree 残留 ──
-    yield* Effect.promise(() => dropResidue(projectId))
-    // ── 4. ③ `project_ext` ＋ ⑦ `project_directory` ──
-    //    ⚠️ `deps.database.db` / `deps.directories` 都是**构造期取到的**（见 `Deps` 的注释）——
-    //    这里不写 `yield* Database.Service`，也不写 `Effect.provideService`。
-    yield* deleteByProjectID(deps.database.db, projectId)
-    //    ⚠️ `removeAll` 的入参是**带 brand 的** `ProjectSchema.ID`（`./directories.ts` 的
-    //    `RemoveAllInput`）⇒ 这里必须 `.make(...)`，不能直接把裸串塞进去。
-    yield* deps.directories.removeAll({ projectID: ProjectV2.ID.make(projectId) })
-    // ── 5. ① 成员关系（**全体**，不只是我这一行）＋ ② 归档标记 / 共享名字 ──
-    //    这一步是「项目从所有人的清单里消失」那一下；前面的失败重试到这里都还是空转（可重入）。
-    yield* Effect.promise(() => removeAllMembers(pg, { projectId }))
-    yield* Effect.promise(() => removeProjectArchive(pg, { projectId }))
-    yield* Effect.promise(() => removeProjectMeta(pg, { projectId }))
+    // ── 0.5 quiesce ＋ 全部副作用：整段包进 `Effect.ensuring` ──
+    //   200 / 409 / 抛错 / 中断**每一条出口**都必须释放占位锁。漏一条，这个项目之后
+    //   `start` 永远回「被删除占位挡住」——备份 / 预览 / 恢复全部 409，而界面上看不出原因。
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        // 备份 / 预览 / 恢复与删除共用同一张任务表（`sharedJobs`）；锁被占用时**先请求取消**、
+        // 有上限地等它收敛；等不到就**报错且不删任何东西**——而不是强行删。
+        // ⚠️ 位置必须在任何副作用之前：删掉一个半备份的项目会留下永久孤儿 blob，
+        // 删掉一个半恢复的项目会留下改了一半的树。
+        const 静了 = yield* Effect.promise(() =>
+          quiesceProject(projectId, userIds, { timeoutMs: deps.quiesceTimeoutMs }),
+        )
+        if (!静了)
+          return HttpServerResponse.jsonUnsafe(
+            { error: "备份/恢复任务仍在进行，请稍后重试", code: "job_running" },
+            { status: 409 },
+          )
 
-    return HttpServerResponse.jsonUnsafe({ projectId, deleted: true })
+        // ── 1. ⑤ MinIO 备份（**先于**成员关系的删除；见上面那张表）──
+        yield* Effect.promise(() => dropBackups(deps, projectId, userIds))
+        // ── 2. ④ 沙箱目录 ＋ bare 仓库 ──
+        yield* Effect.promise(() => dropTrees(deps, projectId, userIds))
+        // ── 3. ⑥ 快照 / worktree 残留 ──
+        yield* Effect.promise(() => dropResidue(projectId))
+        // ── 4. ③ `project_ext` ＋ ⑦ `project_directory` ──
+        //    ⚠️ `deps.database.db` / `deps.directories` 都是**构造期取到的**（见 `Deps` 的注释）——
+        //    这里不写 `yield* Database.Service`，也不写 `Effect.provideService`。
+        yield* deleteByProjectID(deps.database.db, projectId)
+        //    ⚠️ `removeAll` 的入参是**带 brand 的** `ProjectSchema.ID`（`./directories.ts` 的
+        //    `RemoveAllInput`）⇒ 这里必须 `.make(...)`，不能直接把裸串塞进去。
+        yield* deps.directories.removeAll({ projectID: ProjectV2.ID.make(projectId) })
+        // ── 5. ① 成员关系（**全体**，不只是我这一行）＋ ② 归档标记 / 共享名字 ──
+        //    这一步是「项目从所有人的清单里消失」那一下；前面的失败重试到这里都还是空转（可重入）。
+        yield* Effect.promise(() => removeAllMembers(pg, { projectId }))
+        yield* Effect.promise(() => removeProjectArchive(pg, { projectId }))
+        yield* Effect.promise(() => removeProjectMeta(pg, { projectId }))
+
+        return HttpServerResponse.jsonUnsafe({ projectId, deleted: true })
+      }),
+      Effect.sync(() => {
+        for (const 放 of 放锁) 放?.()
+      }),
+    )
   })
 }
 

@@ -499,6 +499,32 @@ describe("Task 11 · 备份成功链（202 ＋ 轮询 ＋ 恢复点清单与文�
     }),
     30_000,
   )
+
+  /**
+   * **删除期间的占位锁**（Task 12 fix round 1 · I-2，spec §5.8 末条）：项目删除会 `hold` 住
+   * 每个成员 × 项目，挡住**新**任务。此时 `start` 回 `resumed` 但没有任务对象 ⇒ 409 响应体
+   * **不带 `jobId`**（客户端 `jobId?` 本来就是可选，不给它一个假的去轮询）。
+   */
+  it.live("删除占位（hold）期间 ⇒ POST /backup 回 409，响应体不带 jobId", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const 放 = sharedJobs.hold(ALICE.id, project.projectId)
+      expect(放, "占位应当拿到 release（此前没有持有者）").toBeDefined()
+      try {
+        const 响应 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: project.projectId }))
+        expect(响应.status).toBe(409)
+        const 响应体 = yield* json(
+          Schema.Struct({ code: Schema.String, jobId: Schema.optional(Schema.String) }),
+          响应,
+        )
+        expect(响应体.code).toBe("job_running")
+        expect(响应体.jobId, "被删除占位挡住时不该给出 jobId").toBeUndefined()
+      } finally {
+        放?.()
+      }
+    }),
+    30_000,
+  )
 })
 
 describe("Task 11 · 授权三态与路径守卫", () => {
@@ -1197,7 +1223,7 @@ describe("Fix round 1 · 每日清扫的活跃任务守卫（I-5.5 / §8.4）", 
       expect(有任务时审计.some((event) => event.action === "gc")).toBe(false)
 
       // ② 任务收敛之后再扫：过期那份被删，并写一条 gc 审计。
-      sharedJobs.finish(起.job.id, "cancelled")
+      sharedJobs.finish(起.job!.id, "cancelled")
       yield* 清扫()
       expect((yield* Effect.promise(() => store.manifests())).map((entry) => entry.id)).toEqual([新ID])
       const 无任务时审计 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
@@ -1275,7 +1301,7 @@ describe("Fix round 2 · 每日清扫的 isBusy 透传（§8.4）", () => {
           }),
         )
       } finally {
-        sharedJobs.finish(起.job.id, "cancelled")
+        sharedJobs.finish(起.job!.id, "cancelled")
       }
 
       expect((yield* Effect.promise(() => store.manifests())).map((entry) => entry.id).sort()).toEqual(

@@ -188,7 +188,7 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
     const second = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "资料" })
     expect(first.resumed).toBe(false)
     expect(second.resumed).toBe(true)
-    expect(second.job.id).toBe(first.job.id)
+    expect(second.job!.id).toBe(first.job!.id)
   })
 
   test("不同项目 / 不同用户互不阻塞", () => {
@@ -196,25 +196,68 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
     const a = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
     expect(registry.start({ kind: "backup", userId: "007", projectId: "p-99", path: "" }).resumed).toBe(false)
     expect(registry.start({ kind: "backup", userId: "008", projectId: "p-42", path: "" }).resumed).toBe(false)
-    expect(registry.get(a.job.id, "007")?.state).toBe("queued")
+    expect(registry.get(a.job!.id, "007")?.state).toBe("queued")
+  })
+
+  // ── 删除期间的占位锁（spec §5.8 末条「项目删除要拿同一把锁」，Task 12 fix round 1 · I-2）──
+
+  test("hold：占位后 start 回 resumed 且没有 job；释放后能起新任务", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const 放 = registry.hold("007", "p-42")
+    expect(放).toBeDefined()
+    expect(registry.isHeld("007", "p-42")).toBe(true)
+
+    const 被挡 = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    expect(被挡.resumed).toBe(true)
+    expect(被挡.job).toBeUndefined()
+
+    放?.()
+    expect(registry.isHeld("007", "p-42")).toBe(false)
+    const 新 = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
+    expect(新.resumed).toBe(false)
+    expect(新.job).toBeDefined()
+  })
+
+  test("hold：同一键第二次占位回 undefined；不同项目 / 不同用户互不影响", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    expect(registry.hold("007", "p-42")).toBeDefined()
+    expect(registry.hold("007", "p-42")).toBeUndefined()
+    expect(registry.hold("007", "p-99"), "不同项目互不影响").toBeDefined()
+    expect(registry.hold("008", "p-42"), "不同用户互不影响").toBeDefined()
+    expect(registry.isHeld("008", "p-42")).toBe(true)
+  })
+
+  test("hold：旧 release 不擦新持有者的锁（令牌判定）", () => {
+    const registry = createJobRegistry({ now: () => 1000 })
+    const 甲 = registry.hold("007", "p-42")
+    甲?.()
+    const 乙 = registry.hold("007", "p-42")
+    expect(乙).toBeDefined()
+
+    // 甲的 release 可以重复调用，但当前令牌已不是它 ⇒ 不能删掉乙的锁。
+    甲?.()
+    expect(registry.isHeld("007", "p-42")).toBe(true)
+
+    乙?.()
+    expect(registry.isHeld("007", "p-42")).toBe(false)
   })
 
   test("get 按 userId 隔离：别人的任务 id 拿不到", () => {
     const registry = createJobRegistry({ now: () => 1000 })
     const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
-    expect(registry.get(job.id, "008")).toBeUndefined()
-    expect(registry.get(job.id, "007")?.id).toBe(job.id)
+    expect(registry.get(job!.id, "008")).toBeUndefined()
+    expect(registry.get(job!.id, "007")?.id).toBe(job!.id)
   })
 
   test("cancel：跑着的置标记，终态的报 done，不存在报 missing", () => {
     const registry = createJobRegistry({ now: () => 1000 })
     const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
     // 别人的 id 取消不到（变异实测：删掉 `cancel` 里的 `job.userId !== userId` 时，brief 原用例全绿）。
-    expect(registry.cancel(job.id, "008")).toBe("missing")
-    expect(registry.cancel(job.id, "007")).toBe("cancelling")
-    expect(registry.get(job.id, "007")?.cancelRequested).toBe(true)
-    registry.finish(job.id, "cancelled")
-    expect(registry.cancel(job.id, "007")).toBe("done")
+    expect(registry.cancel(job!.id, "008")).toBe("missing")
+    expect(registry.cancel(job!.id, "007")).toBe("cancelling")
+    expect(registry.get(job!.id, "007")?.cancelRequested).toBe(true)
+    registry.finish(job!.id, "cancelled")
+    expect(registry.cancel(job!.id, "007")).toBe("done")
     expect(registry.cancel("没有", "007")).toBe("missing")
   })
 
@@ -223,14 +266,14 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
     const registry = createJobRegistry({ now: () => now })
     const a = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
     const b = registry.start({ kind: "backup", userId: "007", projectId: "p-99", path: "" })
-    registry.finish(a.job.id, "succeeded")
+    registry.finish(a.job!.id, "succeeded")
     // TTL 边界另一侧：还没到 10 分钟的终态任务必须留着（前端轮询要靠它）。
     registry.evict()
-    expect(registry.get(a.job.id, "007")?.state).toBe("succeeded")
+    expect(registry.get(a.job!.id, "007")?.state).toBe("succeeded")
     now += 10 * 60_000 + 1
     registry.evict()
-    expect(registry.get(a.job.id, "007")).toBeUndefined()
-    expect(registry.get(b.job.id, "007")?.state).toBe("queued")
+    expect(registry.get(a.job!.id, "007")).toBeUndefined()
+    expect(registry.get(b.job!.id, "007")?.state).toBe("queued")
     // 清掉之后同一个项目可以再起任务（单飞锁已释放）
     expect(registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" }).resumed).toBe(false)
   })
@@ -239,24 +282,24 @@ describe("backup jobs（内存任务表、单飞与静默）", () => {
   test("finish 后单飞锁立即释放：同一（用户×项目）马上能起新任务", () => {
     const registry = createJobRegistry({ now: () => 1000 })
     const first = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
-    registry.finish(first.job.id, "succeeded")
+    registry.finish(first.job!.id, "succeeded")
     const second = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
     expect(second.resumed).toBe(false)
-    expect(second.job.id).not.toBe(first.job.id)
+    expect(second.job!.id).not.toBe(first.job!.id)
   })
 
   test("quiesceProject：先请求取消、等任务收敛；执行器不响应则以超时判失败", async () => {
     const registry = createJobRegistry({ now: () => 1000 })
     const { job } = registry.start({ kind: "backup", userId: "007", projectId: "p-42", path: "" })
     // 模拟执行器**响应取消**：150ms 后自己收尾。
-    setTimeout(() => registry.finish(job.id, "cancelled"), 150)
+    setTimeout(() => registry.finish(job!.id, "cancelled"), 150)
     expect(await quiesceProject("p-42", ["007"], { registry, timeoutMs: 3000, pollMs: 20 })).toBe(true)
-    expect(registry.get(job.id, "007")?.state).toBe("cancelled")
+    expect(registry.get(job!.id, "007")?.state).toBe("cancelled")
 
     // 模拟执行器**不响应取消**：永不 finish ⇒ 到上限回 false，且取消标记已经置上（它试过了）。
     const 硬 = registry.start({ kind: "backup", userId: "008", projectId: "p-42", path: "" })
     expect(await quiesceProject("p-42", ["008"], { registry, timeoutMs: 80, pollMs: 20 })).toBe(false)
-    expect(registry.get(硬.job.id, "008")?.cancelRequested).toBe(true)
+    expect(registry.get(硬.job!.id, "008")?.cancelRequested).toBe(true)
   })
 })
 

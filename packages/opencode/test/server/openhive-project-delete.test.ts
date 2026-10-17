@@ -543,13 +543,13 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
       // 造一个**真的**活动任务（同一个 `sharedJobs` 实例——`backup.ts` 与删除共用）。
       const { job } = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
       // 模拟执行器响应取消：30ms 后自己收尾（quiesce 的默认轮询是 100ms ⇒ 第一次轮询就能看到终态）。
-      setTimeout(() => sharedJobs.finish(job.id, "cancelled"), 30)
+      setTimeout(() => sharedJobs.finish(job!.id, "cancelled"), 30)
 
       const response = yield* 删(ALICE, project.id)
       expect(response.status, "任务收敛之后删除应当成功").toBe(200)
 
       // 被测：删除**等到了**那个任务收敛，而且它收在 `cancelled`（不是被硬删后还在跑）。
-      expect(sharedJobs.get(job.id, ALICE.id)?.state).toBe("cancelled")
+      expect(sharedJobs.get(job!.id, ALICE.id)?.state).toBe("cancelled")
       // 删除真的发生了（否则「等到了」和「删掉了」没有同一条证据）。
       const 列 = yield* as(PROJECT_PATH)
       const 清单 = yield* json(Schema.Array(Entry), 列)
@@ -558,10 +558,37 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
     60_000,
   )
 
-  /** **spec §5.8 末条的另一半**：等不到就**报错且不删任何东西**——不强行删。 */
+  /**
+   * **spec §5.8 末条的另一半**：等不到就**报错且不删任何东西**——不强行删。
+   *
+   * ⚠️ 「零副作用」必须**看得见**（Task 12 fix round 1 · I-1）：旧写法只断「清单里还有」，
+   * 而清单是 PG 行的投影——把 quiesce 块整体移到 `dropResidue` 之后，删盘与清桶**照样发生**，
+   * 这条用例却 11 pass / 0 fail。现在逐面种出可被删的东西并**逐条先证明它本来在**：
+   * 沙箱目录 ＋ 文件、共享 bare 仓库、`_openhive-backups` 命名空间里的对象。
+   * 共享项目才有 bare（私有项目断它恒真空转，`#005-47`）。
+   */
   it.live("删除项目：任务不响应取消 ⇒ 409，项目一个字节都不动", () =>
     Effect.gen(function* () {
-      const project = yield* 建项目(`备份收敛·超时·${Date.now()}`, "private")
+      const project = yield* 建项目(`备份收敛·超时·${Date.now()}`, "shared")
+
+      // ── 造出「删得掉的东西」：盘上一个文件 ＋ 备份命名空间一个对象 ──
+      writeFileSync(path.join(projectDirOf(ALICE.id, project.id), "话单.csv"), "主叫,被叫\n138,139\n", "utf8")
+      const 快照 = Minio.makeStore({
+        endpoint: s3.endpoint,
+        bucket: s3.bucket,
+        credentials: { accessKeyId: "test-access-key", secretAccessKey: "test-secret-key" },
+        scope: { userId: ALICE.id, projectId: project.id, namespace: "_openhive-backups" },
+      })
+      yield* Effect.promise(() => 快照.put({ path: "state.json", body: new TextEncoder().encode("{}") }))
+
+      // ── 前置逐条**先证明成立**（`#002-02`：先证明机制活着，再钉被测那条）──
+      expect(existsSync(projectDirOf(ALICE.id, project.id))).toBe(true)
+      expect(existsSync(path.join(projectDirOf(ALICE.id, project.id), "话单.csv"))).toBe(true)
+      expect(existsSync(bareOf(project.id))).toBe(true)
+      expect(
+        s3.keys().some((key) => key.includes("_openhive-backups") && key.includes(project.id)),
+        "前置：备份命名空间里应当看得到那个键",
+      ).toBe(true)
 
       // 这个任务永不 finish ⇒ quiesce 到上限（本文件把上限压到 120ms，见 `OPEN`）回 false。
       const { job } = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
@@ -571,14 +598,51 @@ describe("T-delete · 项目删除（spec §10 判据 3 / 4 / 7）", () => {
         const 体 = yield* json(Schema.Struct({ code: Schema.String }), response)
         expect(体.code).toBe("job_running")
 
-        // ⚠️ **不强行删**是这条用例的另一半：项目仍在清单里、目录仍在盘上。
+        // ⚠️ **不强行删**：409 之后逐面断言「一个字节都没动」。
+        expect(existsSync(projectDirOf(ALICE.id, project.id)), "409 之后沙箱目录必须还在").toBe(true)
+        expect(existsSync(path.join(projectDirOf(ALICE.id, project.id), "话单.csv")), "沙箱里的文件必须还在").toBe(
+          true,
+        )
+        expect(existsSync(bareOf(project.id)), "共享 bare 仓库必须还在").toBe(true)
+        expect(
+          s3.keys().some((key) => key.includes("_openhive-backups") && key.includes(project.id)),
+          "备份命名空间里的对象必须还在",
+        ).toBe(true)
+        // 项目仍在清单里（原有那条保留）。
         const 列 = yield* as(PROJECT_PATH)
         const 清单 = yield* json(Schema.Array(Entry), 列)
         expect(清单.some((行) => 行.id === project.id), "409 之后项目必须还在").toBe(true)
       } finally {
         // 释放单飞锁，否则同一（用户×项目）在别的用例里永远起不来。
-        sharedJobs.finish(job.id, "cancelled")
+        sharedJobs.finish(job!.id, "cancelled")
       }
+    }),
+    60_000,
+  )
+
+  /**
+   * **删除期间拿的占位锁必须在每条出口释放**（Task 12 fix round 1 · I-2）。
+   *
+   * 409 是删除流程里**唯一**会在持有占位锁时返回的分支；这条证明 `Effect.ensuring` 真的跑了：
+   * 409 收敛、旧任务收尾之后，同一（用户×项目）还能起**新**任务（`resumed === false`）。
+   * ⚠️ 若只剩「项目仍在清单里」，删掉 `Effect.ensuring` 会全绿——那时占位锁永久不放，
+   * 这个项目再也备份不了，而界面上什么异常都看不到。
+   */
+  it.live("删除项目：409 之后占位锁已释放，同一项目还能起新任务", () =>
+    Effect.gen(function* () {
+      const project = yield* 建项目(`删除锁释放·${Date.now()}`, "private")
+
+      const { job } = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
+      try {
+        expect((yield* 删(ALICE, project.id)).status).toBe(409)
+      } finally {
+        sharedJobs.finish(job!.id, "cancelled")
+      }
+      expect(sharedJobs.isHeld(ALICE.id, project.id), "409 之后占位锁必须已经释放").toBe(false)
+
+      const 再起 = sharedJobs.start({ kind: "backup", userId: ALICE.id, projectId: project.id, path: "" })
+      expect(再起.resumed, "占位锁释放后应当能起新任务").toBe(false)
+      if (再起.job !== undefined) sharedJobs.finish(再起.job.id, "cancelled")
     }),
     60_000,
   )

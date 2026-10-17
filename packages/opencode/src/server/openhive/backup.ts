@@ -451,7 +451,13 @@ function handleBackup(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     // 单飞锁**先拿**：预检本身要能取消（项目删除会收敛活跃任务），而且「两个请求都做完预检
     // 才有一个 409」既慢又白读盘。`start` 是权威判定（spec §7.3 第一条）。
     const 起 = deps.jobs.start({ kind: "backup", userId: 我.user.id, projectId: 我.projectId, path: scope })
-    if (起.resumed) return conflict({ error: "该项目已有任务在跑", code: "job_running", jobId: 起.job.id })
+    // 「被删除占位挡住」时没有任务可给 ⇒ 响应体**不带 `jobId`**（客户端本就把它当可选）。
+    if (起.resumed)
+      return conflict({
+        error: "该项目已有任务在跑",
+        code: "job_running",
+        ...(起.job === undefined ? {} : { jobId: 起.job.id }),
+      })
 
     const jobId = 起.job.id
     const 开始 = Date.now()
@@ -723,7 +729,9 @@ function handleDeleteSnapshot(request: HttpServerRequest.HttpServerRequest, deps
       try {
         await collectGarbage(store, {
           now: 开始,
-          isBusy: () => deps.jobs.activeFor(我.user.id, 我.projectId) !== undefined,
+          // 删除期间也不能碰这个项目：GC 回写 `state.json` 会造出孤儿。
+          isBusy: () =>
+            deps.jobs.activeFor(我.user.id, 我.projectId) !== undefined || deps.jobs.isHeld(我.user.id, 我.projectId),
         })
       } catch (error) {
         console.warn("[openhive-backup] 快照删除后的 GC 失败", error)
@@ -785,7 +793,12 @@ function handlePreview(request: HttpServerRequest.HttpServerRequest, deps: Deps)
       path: scope,
       snapshotId: manifest.id,
     })
-    if (起.resumed) return conflict({ error: "该项目已有任务在跑", code: "job_running", jobId: 起.job.id })
+    if (起.resumed)
+      return conflict({
+        error: "该项目已有任务在跑",
+        code: "job_running",
+        ...(起.job === undefined ? {} : { jobId: 起.job.id }),
+      })
 
     const jobId = 起.job.id
     void 执行预览(deps, 我, store, manifest, scope, jobId)
@@ -896,7 +909,12 @@ function handleRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps)
       path: scope,
       snapshotId: manifest.id,
     })
-    if (起.resumed) return conflict({ error: "该项目已有任务在跑", code: "job_running", jobId: 起.job.id })
+    if (起.resumed)
+      return conflict({
+        error: "该项目已有任务在跑",
+        code: "job_running",
+        ...(起.job === undefined ? {} : { jobId: 起.job.id }),
+      })
 
     const jobId = 起.job.id
     const 全局: RestoreDecision = payload.value.decision ?? "keep-both"
@@ -1058,7 +1076,9 @@ export async function 每日清扫(deps: 清扫依赖): Promise<void> {
       // 不写 state——否则会留下一条「删了 0 个」的假 ok 审计（fix round 2）。
       let 中途被拦 = false
       const isBusy = () => {
-        const busy = deps.jobs.activeFor(member.userId, projectId) !== undefined
+        // 删除占位期间同一件事：保留 / GC 都不能碰这个项目（`state.json` 回写会造出孤儿）。
+        const busy =
+          deps.jobs.activeFor(member.userId, projectId) !== undefined || deps.jobs.isHeld(member.userId, projectId)
         if (busy) 中途被拦 = true
         return busy
       }
@@ -1244,7 +1264,9 @@ export const routesWithQuota = (quotaBytes: number) =>
 
     const scheduler = createAutoScheduler({
       now: Date.now,
-      isRunning: (userId, projectId) => jobs.activeFor(userId, projectId) !== undefined,
+      // 删除占位期间调度器也不能起新任务（否则会往已清过的命名空间里重新落 blob）。
+      isRunning: (userId, projectId) =>
+        jobs.activeFor(userId, projectId) !== undefined || jobs.isHeld(userId, projectId),
       detect: makeDetect({ root: 根, minio: 连接, pg: 库, jobs, quotaBytes }),
     })
 
