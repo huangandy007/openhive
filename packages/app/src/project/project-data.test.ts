@@ -369,3 +369,45 @@ describe("PROJECT_DATA 的访问记账绑定（T024）", () => {
     ])
   })
 })
+
+describe("项目级两件新接线（2026-10-16：改名 / 删除）", () => {
+  test("rename 打到 /openhive/project/rename，体里带 projectId 与 name", async () => {
+    const 发出 = 假服务({
+      "/openhive/project/rename": { projectId: "p1", name: "新名字", renamed: true },
+    })
+
+    const 结论 = await PROJECT_DATA.rename("p1", "新名字")
+
+    expect(结论).toEqual({ kind: "done" })
+    expect(发出[0]?.url).toBe("/openhive/project/rename")
+    expect(发出[0]?.method).toBe("POST")
+    expect(JSON.parse(String(发出[0]?.体))).toEqual({ projectId: "p1", name: "新名字" })
+  })
+
+  test("deleteProject 打到 /openhive/project/delete，体里只有 projectId", async () => {
+    const 发出 = 假服务({
+      "/openhive/project/delete": { projectId: "p1", deleted: true },
+    })
+
+    const 结论 = await PROJECT_DATA.deleteProject("p1")
+
+    expect(结论).toEqual({ kind: "done" })
+    expect(发出[0]?.url).toBe("/openhive/project/delete")
+    expect(发出[0]?.method).toBe("POST")
+    expect(JSON.parse(String(发出[0]?.体))).toEqual({ projectId: "p1" })
+  })
+
+  /**
+   * ⚠️ **两条动作互相接反**是这一层唯一的失效方式（文件头那段）：`rename` 与 `deleteProject`
+   * 的签名差一个 `name`、路径差一个词，接反了类型上完全合法。上面两条各断路径就是为这件事。
+   * 这里再补一条**交叉**断言：同一个项目的两个动作，路径**必须不同**。
+   */
+  test("改名与删除打的是**两个不同**的路径（接反了不报错，只有这条在）", async () => {
+    const 改 = 假服务({ "/openhive/project/rename": { projectId: "p1", name: "新名字", renamed: true } })
+    await PROJECT_DATA.rename("p1", "新名字")
+    const 删 = 假服务({ "/openhive/project/delete": { projectId: "p1", deleted: true } })
+    await PROJECT_DATA.deleteProject("p1")
+
+    expect(改[0]?.url).not.toBe(删[0]?.url)
+  })
+})

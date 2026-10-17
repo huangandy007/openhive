@@ -1088,6 +1088,8 @@ function 假数据源(
       | "create"
       | "archive"
       | "restore"
+      | "rename"
+      | "deleteProject"
       | "files"
       | "createEntry"
       | "renameEntry"
@@ -1111,6 +1113,8 @@ function 假数据源(
     建的: [] as Array<NewProjectInput>,
     归档的: [] as string[],
     找回的: [] as string[],
+    改名的项目: [] as Array<[string, string]>,
+    删的项目: [] as string[],
     建的条目: [] as Array<[string, string, string, string]>,
     改名的: [] as Array<[string, string, string]>,
     删的: [] as Array<[string, string]>,
@@ -1142,6 +1146,16 @@ function 假数据源(
     restore: async (projectId) => {
       记.找回的.push(projectId)
       return 剧本.restore ? await 剧本.restore(projectId) : { kind: "failed", message: "没有剧本" }
+    },
+    // 2026-10-16 项目改名 / 删除。同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
+    // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
+    rename: async (projectId, name) => {
+      记.改名的项目.push([projectId, name])
+      return 剧本.rename ? await 剧本.rename(projectId, name) : { kind: "failed", message: "没有剧本" }
+    },
+    deleteProject: async (projectId) => {
+      记.删的项目.push(projectId)
+      return 剧本.deleteProject ? await 剧本.deleteProject(projectId) : { kind: "failed", message: "没有剧本" }
     },
     files: async (projectId) => {
       记.files.push(projectId)

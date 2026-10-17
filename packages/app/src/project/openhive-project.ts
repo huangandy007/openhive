@@ -47,6 +47,10 @@ export const PATH = {
   archive: `${PREFIX}/archive`,
   restore: `${PREFIX}/restore`,
   touch: `${PREFIX}/touch`,
+  /** 改名（2026-10-16）。 */
+  rename: `${PREFIX}/rename`,
+  /** 删除（2026-10-16）。 */
+  delete: `${PREFIX}/delete`,
 } as const
 
 /** 新建项目的入参 —— 与内核那条 `POST` 的体**逐字对应**（`{ name, type }`，没有第三项）。 */
@@ -84,64 +88,93 @@ export type ProjectActionOutcome =
 
 const ARCHIVE_FAILED = "归档项目失败"
 const RESTORE_FAILED = "找回项目失败"
+const RENAME_FAILED = "重命名项目失败"
+const DELETE_FAILED = "删除项目失败"
 
 /**
- * 归档（FR-008）与找回（FR-009）**共用一条**——两者的 HTTP 形状逐字相同（同路径前缀、
- * 同 `POST`、同 `{ projectId }` 体、同 400 / 403 文案约定），只有**路径**与**服务端自述的
- * 那个 `archived`** 是各自的。分开写两份 = 把「怎么说清一次失败」这条逻辑复制两遍，
- * 而它正是最容易各改一半的那类（`LEARNINGS #002-06`）。
+ * 一个项目级动作的**形状**——四个动作（归档 / 找回 / 改名 / 删除）共用这一张表。
  *
- * ⚠️ **判据是「体能当 JSON 解，且服务端自述的那个状态就是我要的那个」**，不是「状态码 200」：
- * 出口没挂上时这条路径落进 UI 的 `/*` 兜底、回 **200 ＋ `text/html`**（本文件头那条实测）。
- * 只看状态码 ⇒ 「内核是旧版本」被读成「归档好了」，而界面会**照常重拉清单**、项目照旧在「全部」里
- * ⇒ 民警以为点坏了（`LEARNINGS #002-02` 的取向：这条判据必须真跑过那条路径）。
+ * ⚠️ 之所以抽成表而不是写四个函数：四条的**请求形状、失败分类、成功判据逐字同形**
+ * （都是 `POST` ＋ `{projectId, …}` ＋ 一个布尔自述），差别只有三个字符串
+ * （路径、那个字段叫什么、应当等于什么）。写成四份就是 `LEARNINGS #002-06` 那句话本身。
+ *
+ * `stateKey` / `stateValue` 让「服务端**自述**这个动作成了」这条判据在四个动作上**同形**——
+ * 少了它，一个「只回 200、什么都没干」的实现会在四个动作里全绿。
  */
-async function projectAction(
-  path: string,
-  expected: boolean,
-  failed: string,
-  projectId: string,
-  send: ForkFetch,
-): Promise<ProjectActionOutcome> {
-  const response = await trySend(send, path, {
+interface ActionShape {
+  readonly path: string
+  /** 响应体里那个「自述成功」的字段名（`archived` / `renamed` / `deleted`）。 */
+  readonly stateKey: "archived" | "renamed" | "deleted"
+  /** 那个字段**应当**等于什么——四个动作今天都是 `true`（归档也自述 `archived: true`）。 */
+  readonly stateValue: boolean
+  /** 失败（网络 / 非 2xx 且不是 400·403 / 体不成形 / 自述为假）时显示的那句话。 */
+  readonly failed: string
+  /** 请求体里除 `projectId` 之外还要带的字段（改名要 `name`；其余两个没有）。 */
+  readonly extra?: Readonly<Record<string, string>>
+}
+
+async function projectAction(shape: ActionShape, projectId: string, send: ForkFetch): Promise<ProjectActionOutcome> {
+  const response = await trySend(send, shape.path, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ projectId }),
+    body: JSON.stringify({ projectId, ...shape.extra }),
   })
-  if (!response) return { kind: "failed", message: failed }
-
-  // 401（会话过期）排在最前：先问身份，再问这一步行不行（理由与文案见
-  // `openhive-fetch.ts` 的 `SESSION_EXPIRED`；`outcomeOf` 那边同款同因）。
+  // 发不出去（网络层）——不是「服务端说你不行」，是「我们这边没问到」。
+  if (!response) return { kind: "failed", message: shape.failed }
+  // 会话过期：与 400 / 403 分开——它要的是「重新登录」，不是「你填得不对」。
   if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
-
-  // 400（体不合法）与 403（无权的那个动作）都**带着服务端那句话**——照 T018 的处置：
-  // 前端不自己改写措辞，它不知道是哪一条规则挡下的。
+  // 400 / 403 是**服务端有话要说**（规则挡下了）：把它的原话带出去，不自己改写措辞
+  // ——前端不知道是哪一条规则挡下的（同 T018 的 400 那条）。
   if (response.status === 400 || response.status === 403) {
     const body = await readJson(response)
-    return { kind: "rejected", message: messageOf(body) ?? failed }
+    return { kind: "rejected", message: messageOf(body) ?? shape.failed }
   }
-  if (!response.ok) return { kind: "failed", message: failed }
-
+  if (!response.ok) return { kind: "failed", message: shape.failed }
   const body = await readJson(response)
-  if (!isRecord(body) || body.archived !== expected) return { kind: "failed", message: failed }
+  // 体不成形 / 字段缺席 / 字段是假 ⇒ **一律 failed**。响应 200 不等于这件事办成了：
+  // 「未挂载」在本应用里落进 SPA 兜底、回 200 + text/html（本文件头的表），
+  // 那时 `readJson` 给 `undefined` ⇒ 这一句就是拦它的地方。
+  if (!isRecord(body) || body[shape.stateKey] !== shape.stateValue) return { kind: "failed", message: shape.failed }
   return { kind: "done" }
 }
 
-/** 归档一个项目（FR-008）。破坏性：沙箱文件先备份进 MinIO、本地那份删掉——**二次确认在界面那侧**。 */
-export async function archiveProject(
-  projectId: string,
-  send: ForkFetch = defaultSend,
-): Promise<ProjectActionOutcome> {
-  return projectAction(PATH.archive, true, ARCHIVE_FAILED, projectId, send)
+/** 归档一个项目（FR-008）。**判据在 `projectAction`**：服务端自述 `archived: true` 才算成。 */
+export async function archiveProject(projectId: string, send: ForkFetch = defaultSend): Promise<ProjectActionOutcome> {
+  return projectAction({ path: PATH.archive, stateKey: "archived", stateValue: true, failed: ARCHIVE_FAILED }, projectId, send)
 }
 
-/** 找回一个已归档的项目（FR-009）：把 MinIO 上的备份下载回沙箱，`archived` 翻回 false。 */
-export async function restoreProject(
+/** 找回一个已归档的项目（FR-009）。服务端自述 `archived: false` 才算成。 */
+export async function restoreProject(projectId: string, send: ForkFetch = defaultSend): Promise<ProjectActionOutcome> {
+  return projectAction({ path: PATH.restore, stateKey: "archived", stateValue: false, failed: RESTORE_FAILED }, projectId, send)
+}
+
+/**
+ * 改一个项目的名字（2026-10-16）。服务端自述 `renamed: true` 才算成。
+ *
+ * ⚠️ `name` **不在这里 trim**：判据在**调用方**（`就地改名输入` 的 `改名草稿`）——它同时管
+ * 「空草稿不算改」「没改不算改」两件事，在这里再判一遍就是两处各写一份（`LEARNINGS #002-06`）。
+ * 服务端**仍会**再 trim 一次并判空（`handleRename`），那是**服务端自己的**守卫，不是这条的重复。
+ */
+export async function renameProject(
   projectId: string,
+  name: string,
   send: ForkFetch = defaultSend,
 ): Promise<ProjectActionOutcome> {
-  return projectAction(PATH.restore, false, RESTORE_FAILED, projectId, send)
+  return projectAction(
+    { path: PATH.rename, stateKey: "renamed", stateValue: true, failed: RENAME_FAILED, extra: { name } },
+    projectId,
+    send,
+  )
+}
+
+/**
+ * 删一个项目（2026-10-16）。服务端自述 `deleted: true` 才算成。
+ *
+ * ⚠️ **不可恢复**（spec §1 裁决 1）——确认框那一层在面板上，这层只管发请求。
+ */
+export async function deleteProject(projectId: string, send: ForkFetch = defaultSend): Promise<ProjectActionOutcome> {
+  return projectAction({ path: PATH.delete, stateKey: "deleted", stateValue: true, failed: DELETE_FAILED }, projectId, send)
 }
 
 /**

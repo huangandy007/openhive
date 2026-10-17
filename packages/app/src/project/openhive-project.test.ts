@@ -26,7 +26,15 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { archiveProject, createProject, listProjects, restoreProject, touchProject } from "./openhive-project"
+import {
+  archiveProject,
+  createProject,
+  deleteProject,
+  listProjects,
+  renameProject,
+  restoreProject,
+  touchProject,
+} from "./openhive-project"
 import type { ForkFetch } from "./openhive-fetch"
 import type { ProjectEntry } from "./project-panel"
 
@@ -556,5 +564,81 @@ describe("touchProject（T024）", () => {
 
     expect(await touchProject("p1", 坏.send)).toBe(false)
     expect(await touchProject("p1", 断.send)).toBe(false)
+  })
+})
+
+describe("renameProject（2026-10-16：项目改名）", () => {
+  test("发的是 POST /openhive/project/rename，体里带 projectId 与 name", async () => {
+    const { send, sent } = stub(json({ projectId: "p1", name: "新名字", renamed: true }))
+
+    const 结论 = await renameProject("p1", "新名字", send)
+
+    expect(结论).toEqual({ kind: "done" })
+    expect(sent[0]?.path).toBe("/openhive/project/rename")
+    expect(sent[0]?.method).toBe("POST")
+    expect(sent[0]?.credentials).toBe("same-origin")
+    expect(sent[0]?.contentType).toBe("application/json")
+    expect(sent[0]?.body).toEqual({ projectId: "p1", name: "新名字" })
+  })
+
+  /**
+   * ⚠️ **响应体里的状态字段是判据的一部分**：这条链要的是「服务端**自述**改名成功」。
+   * 一个只回 200 而体里 `renamed` 是 `false` / 压根没有这个字段的实现，
+   * 在这里必须红——否则「静默没改名」会被当成功（同族 `archive` 那条的 `archived` 判据）。
+   */
+  test("200 但体里没有自述成功 ⇒ failed（不是 done）", async () => {
+    const { send } = stub(json({ projectId: "p1", name: "新名字" }))
+    expect(await renameProject("p1", "新名字", send)).toEqual({ kind: "failed", message: "重命名项目失败" })
+  })
+
+  test("400 ⇒ rejected，并把服务端那句话原样带出来", async () => {
+    const { send } = stub(json({ error: "项目名不能为空" }, 400))
+    expect(await renameProject("p1", " ", send)).toEqual({ kind: "rejected", message: "项目名不能为空" })
+  })
+
+  test("403 ⇒ rejected（无权改这个项目）", async () => {
+    const { send } = stub(json({ error: "无权重命名该项目" }, 403))
+    expect(await renameProject("p1", "新名字", send)).toEqual({ kind: "rejected", message: "无权重命名该项目" })
+  })
+
+  test("未挂载（200 + text/html）⇒ failed，**不是** done", async () => {
+    const { send } = stub(html())
+    expect(await renameProject("p1", "新名字", send)).toEqual({ kind: "failed", message: "重命名项目失败" })
+  })
+})
+
+describe("deleteProject（2026-10-16：项目删除）", () => {
+  test("发的是 POST /openhive/project/delete，体里只有 projectId", async () => {
+    const { send, sent } = stub(json({ projectId: "p1", deleted: true }))
+
+    const 结论 = await deleteProject("p1", send)
+
+    expect(结论).toEqual({ kind: "done" })
+    expect(sent[0]?.path).toBe("/openhive/project/delete")
+    expect(sent[0]?.method).toBe("POST")
+    expect(sent[0]?.credentials).toBe("same-origin")
+    expect(sent[0]?.body).toEqual({ projectId: "p1" })
+  })
+
+  test("200 但体里没有自述成功 ⇒ failed", async () => {
+    const { send } = stub(json({ projectId: "p1" }))
+    expect(await deleteProject("p1", send)).toEqual({ kind: "failed", message: "删除项目失败" })
+  })
+
+  /**
+   * ⚠️ **`deleted: false` 也必须红**——不能只断「字段在不在」。
+   *
+   * 这条与上面那条是**两条**判据：上面钉「字段缺席」，这条钉「字段存在但值是 false」。
+   * 只写一条时，另一个形状会从缝里过去（`LEARNINGS #005-47`：期望值恰好等于下游默认值时，
+   * 那条断言从来没被代码满足过）。
+   */
+  test("200 但 deleted 是 false ⇒ failed", async () => {
+    const { send } = stub(json({ projectId: "p1", deleted: false }))
+    expect(await deleteProject("p1", send)).toEqual({ kind: "failed", message: "删除项目失败" })
+  })
+
+  test("403 ⇒ rejected（无权删这个项目）", async () => {
+    const { send } = stub(json({ error: "无权删除该项目" }, 403))
+    expect(await deleteProject("p1", send)).toEqual({ kind: "rejected", message: "无权删除该项目" })
   })
 })

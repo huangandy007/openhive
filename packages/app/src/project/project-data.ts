@@ -30,7 +30,15 @@
  */
 
 import type { CreateProjectOutcome, ProjectActionOutcome } from "./openhive-project"
-import { archiveProject, createProject, listProjects, restoreProject, touchProject } from "./openhive-project"
+import {
+  archiveProject,
+  createProject,
+  deleteProject,
+  listProjects,
+  renameProject,
+  restoreProject,
+  touchProject,
+} from "./openhive-project"
 import type { FileOpOutcome } from "./openhive-file-ops"
 import { copyFile, createEntry, downloadFile, moveFile, removeEntry, renameEntry, uploadFile } from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
@@ -61,6 +69,20 @@ export interface ProjectData {
   archive(projectId: string): Promise<ProjectActionOutcome>
   /** 找回一个已归档的项目（FR-009）。 */
   restore(projectId: string): Promise<ProjectActionOutcome>
+  /**
+   * 改一个项目的名字（2026-10-16）。**两处名字一起改**是服务端的事（本层只管转发）——
+   * 但「两处」这件事在这里值得留一句话：接错了（只发一次请求）不报错、不变红，
+   * 而后果是「我改了，同事看到的还是旧的」。
+   */
+  rename(projectId: string, name: string): Promise<ProjectActionOutcome>
+  /**
+   * 删一个项目（2026-10-16）。**不可恢复**。
+   *
+   * ⚠️ 名字带 `Project` 后缀：同一个接口上 `remove` 已经是**移除一位成员**了
+   * （`remove(projectId, policeNo)`），两个 `remove` 并排摆着是下一个人接错线的现成入口
+   * （同 `createEntry` 那条注释的道理）。
+   */
+  deleteProject(projectId: string): Promise<ProjectActionOutcome>
   /** 取某个项目的全部文件路径（`undefined` = 取不到，`[]` = 一个文件都没有）。 */
   files(projectId: string): Promise<readonly string[] | undefined>
   /**
@@ -137,6 +159,8 @@ export const PROJECT_DATA: ProjectData = {
   create: (input) => createProject(input),
   archive: (projectId) => archiveProject(projectId),
   restore: (projectId) => restoreProject(projectId),
+  rename: (projectId, name) => renameProject(projectId, name),
+  deleteProject: (projectId) => deleteProject(projectId),
   files: (projectId) => listProjectFiles(projectId),
   copy: (projectId, path, dir) => copyFile(projectId, path, dir),
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
