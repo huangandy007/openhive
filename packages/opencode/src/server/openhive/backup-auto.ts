@@ -41,7 +41,7 @@ export interface AutoSchedulerDeps {
 
 export interface AutoScheduler {
   readonly heartbeat: (userId: string, projectId: string) => void
-  /** 手动备份成功 / 恢复成功后由调用方调用，避免刚手动拍完又自动拍（spec §7.3）。 */
+  /** 手动备份成功后由调用方调用，避免刚手动拍完又自动拍（spec §7.3）。恢复走 `markDirty`。 */
   readonly noteBackup: (userId: string, projectId: string) => void
   /** 文档化 no-op：脏标记不改变下一次检查的时机（仍受 1 小时冷却约束，spec §7.1）。 */
   readonly markDirty: (userId: string, projectId: string) => void

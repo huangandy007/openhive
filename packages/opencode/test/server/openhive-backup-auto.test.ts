@@ -1102,6 +1102,18 @@ describe("backup auto（自动调度 / 分级保留 / GC / 状态同步）", () 
     expect(state!.usageBytes).toBeLessThan(999999)
   })
 
+  // fix round 2：日常清扫**多数时候 deleted === 0**。没有可删对象、也没有 state 时，
+  // 这一轮仍要建立 / 推进 state，否则运维与界面会误判「GC 很久没跑」。
+  test("GC：没有可删对象（deleted === 0）也回写 state，lastGcAt 照常推进", async () => {
+    const s = store()
+    const now = Date.now()
+    expect(await collectGarbage(s, { now })).toEqual({ deleted: 0, bytes: 0 })
+    const state = await s.readState()
+    expect(state).toBeDefined()
+    expect(state?.lastGcAt).toBe(now)
+    expect(state?.usageBytes).toBe(0)
+  })
+
   // M6：用量的**两半**都要有牙——manifest 大小与 blob 字节各占一部分。
   test("contextStatus：state 丢了 ⇒ 用量 = blob 字节 + manifest 大小（两半都算）", async () => {
     const s = store()
