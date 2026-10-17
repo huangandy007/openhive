@@ -50,7 +50,7 @@ export function RestoreDialog(props: RestoreDialogProps): JSX.Element {
 
   const 涉git = () => {
     const 路径 = [...(props.preview?.entries ?? []).map((entry) => entry.path), ...(props.preview?.localOnly ?? [])]
-    return 路径.some((path) => path === ".git" || path.startsWith(".git/"))
+    return 路径.some((path) => path.split("/").includes(".git"))
   }
 
   /** 冲突行才可逐条改判：`different` 三选一，`type-mismatch` 覆盖 / 跳过。 */

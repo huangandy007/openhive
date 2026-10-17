@@ -202,6 +202,23 @@ test("含 .git 条目：提示出现、确认钮受勾选门控", () => {
   expect(收).toEqual([{ decision: "keep-both", decisions: {} }])
 })
 
+test("嵌套 .git 条目（子目录里的仓库 / 子模块）同样触发提示与门控", () => {
+  const host = mount(() => (
+    <RestoreDialog
+      preview={{ ...预览, entries: [...预览.entries, { path: "子目录/.git/config", status: "different" as const }] }}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+    />
+  ))
+  expect(host.querySelector("[data-slot='restore-git-warning']")?.textContent).toContain(
+    "恢复 .git 内部文件可能让仓库状态不一致",
+  )
+  const 确认 = host.querySelector<HTMLButtonElement>("[data-slot='restore-confirm']")!
+  expect(确认.disabled).toBe(true)
+  host.querySelector<HTMLInputElement>("[data-slot='restore-git-ack']")!.click()
+  expect(确认.disabled).toBe(false)
+})
+
 test("不含 .git 条目：提示不出现、确认钮可用", () => {
   const host = mount(() => <RestoreDialog preview={预览} onCancel={() => {}} onConfirm={() => {}} />)
   expect(host.querySelector("[data-slot='restore-git-warning']") === null).toBe(true)
