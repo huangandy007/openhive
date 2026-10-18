@@ -6,10 +6,14 @@ import path from "path"
 /**
  * 2026-10-18 · **文件级备份快照**的真栈端到端（Task 18）。
  *
- * 判据来源：spec §13.4 的 ②③⑥⑨（备份 ⇒ 改盘上原文 ⇒ 拖回 ⇒ 覆盖 / 保留两者），
- * 以及用户最初实报的「右键菜单『备份到 MinIO』是灰的」——那条缺陷只有在**点 → 真内核 →
- * 真 MinIO** 这条链上才谈得上「修好了」：组件层能证明 `onBackup` 传下去了，证明不了
- * 按钮在真浏览器里真的可点、内核真的把 blob 写进了 MinIO、恢复真的把内容写回了盘。
+ * 判据来源：spec §13.4 的第 1（部分：建项目 + 写嵌套文件）、2（右键**文件**行备份）、
+ * 4（MinIO 窗口出现恢复点）、5（改写本地文件）、6（预览 + 覆盖）、7（以直读磁盘字节替代
+ * 内核文件接口）、9（冲突保留两者）条；第 3（进度条 `aria-valuenow`）、8（拖到 MinIO 另一
+ * 目录行）、10（取消）、11（刷新接上任务）条未覆盖，第 1 条的二进制 / 空目录 / `.git` 也未覆盖。
+ *
+ * 另：用户最初实报的「右键菜单『备份到 MinIO』是灰的」是必须覆盖的落地判据——那条缺陷只有在
+ * **点 → 真内核 → 真 MinIO** 这条链上才谈得上「修好了」：组件层能证明 `onBackup` 传下去了，
+ * 证明不了按钮在真浏览器里真的可点、内核真的把 blob 写进了 MinIO、恢复真的把内容写回了盘。
  *
  * ## 为什么必须落真栈
  *
@@ -127,8 +131,43 @@ async function 打开到(page: Page, 路径: string) {
   await expect(上树行(page, 路径)).toBeVisible({ timeout: 30_000 })
 }
 
+/**
+ * 等进项目时心跳拍的**自动**备份跑完。
+ *
+ * 进项目立刻发一次心跳 ⇒ 服务端起一个自动备份（整个项目骨架，21 件）。它还在跑时点
+ * 「备份到 MinIO」，服务端按 spec §11.6 回 `job_running`，前端只说一句「这个项目正在备份，
+ * 已接上当前进度」——**不会**再起手动快照（真栈实得：选择器停在「自动 · 21 个文件」，60 秒
+ * 等不到「手动」）。这不是缺陷，是既定语义；判据测的是「点备份 ⇒ 手动恢复点出现」，
+ * 所以挂具先把这一个等完。
+ *
+ * 判据是「清单里已经有自动快照 且 当前没有在跑的任务」——只看 `activeJob` 有个空窗：
+ * 心跳请求可能还没落地，那一刻它也是 `null`。
+ */
+async function 等自动备份跑完(项目id: string) {
+  const 是记录 = (值: unknown): 值 is Record<string, unknown> =>
+    typeof 值 === "object" && 值 !== null && !Array.isArray(值)
+  await expect
+    .poll(
+      async () => {
+        const 状态 = await kernelJson(`/openhive/project/backup/status?projectId=${encodeURIComponent(项目id)}`)
+        if (状态.status !== 200 || !是记录(状态.body)) return "unknown"
+        const 任务 = 状态.body.activeJob
+        if (任务 !== null && 任务 !== undefined) return "running"
+        const 清单 = await kernelJson(
+          `/openhive/project/backup/snapshots?projectId=${encodeURIComponent(项目id)}&path=`,
+        )
+        if (清单.status !== 200 || !是记录(清单.body) || !Array.isArray(清单.body.snapshots)) return "waiting"
+        return 清单.body.snapshots.some((份) => 是记录(份) && 份.kind === "auto") ? "idle" : "waiting"
+      },
+      { timeout: 60_000 },
+    )
+    .toBe("idle")
+}
+
 /** 右键 `路径` → 点「备份到 MinIO」→ 展开下树 → 等恢复点里出现这一行。 */
-async function 备份并打开下树(page: Page, 路径: string) {
+async function 备份并打开下树(page: Page, 项目id: string, 路径: string) {
+  // 自动备份还在跑时点「备份」会落到 `job_running`（不产生手动快照）⇒ 先等它跑完。
+  await 等自动备份跑完(项目id)
   await 上树行(page, 路径).click({ button: "right" })
   const 备份项 = page.locator("[data-action='backup']")
   // 用户最初报的缺陷就是这一项是灰的（`onBackup` 没接上）⇒ 先钉「它可点」，
@@ -162,7 +201,7 @@ test("备份 → 改原文 → 拖回并「覆盖本地」⇒ 内容回到备份
 
   await 进项目(page, context, 甲.id)
   await 打开到(page, "资料/甲.txt")
-  await 备份并打开下树(page, "资料/甲.txt")
+  await 备份并打开下树(page, 甲.id, "资料/甲.txt")
 
   // 改掉盘上原文——恢复的判据就是「它回到备份时那一版」。
   writeFileSync(path.join(甲.directory, "资料", "甲.txt"), "改过\n")
@@ -192,7 +231,7 @@ test("备份 → 改原文 → 拖回并默认「保留两者」⇒ 原文仍在
 
   await 进项目(page, context, 乙.id)
   await 打开到(page, "资料/甲.txt")
-  await 备份并打开下树(page, "资料/甲.txt")
+  await 备份并打开下树(page, 乙.id, "资料/甲.txt")
 
   writeFileSync(path.join(乙.directory, "资料", "甲.txt"), "改过\n")
 
