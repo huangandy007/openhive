@@ -399,7 +399,7 @@ function 横幅(props: {
   const 显示列数 = () => Math.min(props.meta.totalCols, props.mode === "preview" ? 规模.预览列数 : 规模.全量列上限)
   return (
     <>
-      <Show when={props.mode === "preview"}>
+      <Show when={props.mode === "preview" && !props.error}>
         <p
           data-slot="sheet-preview-banner"
           class="w-full border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-3 py-1 text-11-regular text-v2-text-text-muted"
