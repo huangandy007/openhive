@@ -78,6 +78,17 @@ describe("日期文本", () => {
     })
     expect(从UTC日期(new Date(Date.UTC(2026, 9, 1)))).toEqual({ text: "2026-10-01", 含时间: false })
   })
+
+  test("JS Date 走 UTC getter：与进程时区无关", () => {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具：只实现 从UTC日期 读取的 getter，故意让 UTC 与本地取值不同（TZ 无关）。
+    const 假 = {
+      getUTCFullYear: () => 2026, getUTCMonth: () => 0, getUTCDate: () => 2,
+      getUTCHours: () => 3, getUTCMinutes: () => 4, getUTCSeconds: () => 5,
+      getFullYear: () => 1999, getMonth: () => 11, getDate: () => 31,
+      getHours: () => 23, getMinutes: () => 59, getSeconds: () => 59,
+    } as unknown as Date
+    expect(从UTC日期(假)).toEqual({ text: "2026-01-02 03:04:05", 含时间: true })
+  })
 })
 
 describe("列类型推断", () => {
