@@ -1275,3 +1275,65 @@ bun run lint
   - “手动超配额需确认、自动暂停”写死；
   - “归档项目禁用文件级恢复”写死。
 - **安全**：客户端不传 userId；manifest 当不可信输入；路径逐段校验；不跟随符号链接；审计不含内容。
+
+---
+
+## 18. 实施偏差与缺口（2026-10-18 收尾）
+
+> 本节按 Task 19 派单裁决（`task-19-brief-amend.md` A-2/A-3）落在设计稿自身，不另建 state.md。
+> 证据来源：`.superpowers/sdd/2026-10-18-file-backup-snapshot/progress.md` 与各 `task-N-report.md`。
+> 口径：「计划」指 `docs/superpowers/plans/2026-10-18-file-backup-snapshot.md`；「实际」以代码与本轮实得为准。
+
+### 18.1 实施偏差
+
+| 任务 | 计划怎么写 | 实际怎么做 | 为什么 |
+|---|---|---|---|
+| Task 2 | 流式上传 stall 时 `await iterator.return()` | 不 await，直接 abort in-flight 请求 | `return()` 自身可能挂在同一个坏连接上；abort 才能保证退出。另有 `requestChecksumCalculation: WHEN_REQUIRED`（SDK 默认会多算一遍校验和） |
+| Task 3 | `isExcluded` 的精确名单只比较完整路径 | 精确名单同时比较 `path` 与 `name` | 计划自带用例要求 `资料/Thumbs.db` 为 true；只扩大 `.DS_Store` / `Thumbs.db` / `desktop.ini` 三项系统垃圾名，不含业务数据类 |
+| Task 4 | 保留按 fall-through：先落小时桶，满了再往大桶丢 | 按年龄严格分层（小时 / 天 / 周互斥） | fall-through 会让同一小时的多条快照被丢进天桶「复活」；变异实得 `["b","a"]`。用例 `now` 由 12:00Z 改 12:30Z，避开上海时区上一小时桶 |
+| Task 5 | `readState` 用 `Uint8Array#toString("utf8")`；`blobs()` 切片不剥分片目录；实现 `useSSL` | 改 `TextDecoder`；切片补剥分片目录；不实装 `useSSL` | 前者是计划片段里的真 bug；`endpoint` 已由 `endpointOf` 归一，唯一生产调用点不传 `useSSL` |
+| Task 7 | 上传失败直接抛；排序用 `localeCompare`；`totals.bytes` 取扫描总量；`runBackup` 自己写 manifest | 按 spec §5.5 记 `upload-failed`、落 partial、同 hash 一并跳过；排序 pin `Intl.Collator("zh-CN")`；`totals` 按留存 files 求和；不写 manifest（调用方 Task 11 写） | 直接抛会让 `upload-failed` 成为死枚举；`localeCompare` 随宿主 locale 漂移、违反「确定性」；总量与剔除失败项后的文件自相矛盾；manifest-last 是提交阶段的性质。**§5.5 的 3 次重试 + 1s/2s/4s 退避仍未实现**（见缺口表） |
+| Task 8 | keep-both 把旧文件 `rename` 成新名字；只校验最后一段链接；第二次 rename 失败不回滚；type-mismatch 一律失败；失败码 `hash-mismatch` | 先搬走旧文件再写新名字；预览 / 恢复 / `scanScope` 根都拒绝中间段符号链接；第二次 rename 失败回滚 + 3 次 EBUSY/EPERM 重试；type-mismatch 提供「覆盖」并记 `overwritten`；失败码统一 `blob-corrupt`；`RestoreResult` 补 `overwritten` / `dirsCreated` | 原 rename 目标已存在 ⇒ ENOENT（计划片段真 bug）；`lstat` 只不跟随最后一段，中间段是链接会写穿沙箱（spec §6.4 明文）；不回滚会让用户原路径消失；spec §6.3/§6.5 明确要求 |
+| Task 9 | 活跃项带 `dirty`，`checkNow` 读它 | 删除 `dirty`，`markDirty` 保留为文档化 no-op；`lastAutoAt` 初始化为 `now() - 冷却`；补 `noteBackup`、`AutoBackupCancelled`、`isBusy`、GC 末尾回写 state | `dirty` 无读者，变化检测已由 `UnchangedError` 承担（YAGNI）；初值 0 会让首拍检查不成立；手动备份成功后必须刷新冷却（spec §7.3） |
+| Task 10 | 把 `scope/kind/files/bytes/result/error_code/duration_ms` 压进 `detail JSONB`，action 用连字符 | 按 spec §9.3 改成 12 列 typed 表，action 用下划线集，`result` 必填；原地改迁移 0007 | spec 是权威；AC-F5-19「取消 / 失败各写一行」需要列承载。0007 尚未在任何环境应用，不新增 0008 |
+| Task 11 | 自动备份只检查、不占单飞锁；删除恢复点不幂等；配额暂停后不自动解除 | 自动备份也 `jobs.start`；二次 DELETE 返回 200 并 `syncState` + GC；`usageBytes <= 上限` 时清 `autoPaused`；抽 `prepareBackup` 供预检与备份共用；读端点对归档项目 200；`jobs.start` 后 `contextStatus` 抛错先 `finish` 再 rethrow | spec §7.3「自动与手动共用单飞锁」、§8.5 幂等、§8.3 解除暂停、§11.1 #50 归档只读可见；锁提前后新增的永久占锁路径是本次修复自带的缺陷，必须一并堵住 |
+| Task 12 | 项目删除只 `quiesce`，不持锁 | `JobRegistry` 加令牌式 `hold` / `isHeld`；`start` 返回 `job \| undefined`；对全体成员逐个 hold，`Effect.ensuring` 释放；`server.ts` 的 `createRoutes` 加测试用第二参数；删恢复点出口也补 `isHeld` | spec §5.8 要求「拿同一把锁」；锁粒度是用户×项目、任务可能属任一成员；删恢复点与项目删除并发可在清空后的命名空间重造孤儿 `state.json` |
+| Task 13 | 测试骨架按 `{状态,体}` 序列写；`cancel` mock 用 204 | 新写本地 `假备份`（方法 + pathname 精确匹配）；cancel mock 用 202；`activeJob` 保持 `\| null` | 仓库真 `假服务` 返回体本身、恒 200；服务端 `cancel` 回 ACCEPTED（202），204 会让客户端判 false；wire 契约是 `null`，收窄成 `undefined` 是替身 / 生产形状漂移 |
+| Task 14 | 窄条根从 `<button>` 改 `<div>`；进度线在底部、不确定态给 8%；hashing 阶段只递增文件数 | 同步改两处 e2e 的点击目标；进度线顶部 2px、不确定态不加假百分比、阶段文案带数量；hashing 成功 / skip 两支都累加 `bytesDone` | 点 div 不会触发内层 `onOpen`，不改 e2e 则用例静默失效；spec §11.5 要求真实字节文案。`uploading` 阶段只计新上传 blob（增量备份到不了 100%）裁定为可接受语义并登记 |
+| Task 15 | 拖到 MinIO 目录行时「复制到鼠标所在目录」；`onRestore` 直接改签名 | 拖拽保持原路径、走 `onRestoreSnapshot`；`onRestore` 保留旧签名并转发给上树 `FileTree`；删除快照的确认框移到 Task 17 | spec 明确「保持原路径」；拖拽语义与普通 `onRestore` 是两条契约；确认框需要接线层才能弹 |
+| Task 16 | 未提 `.git` 路径 | 涉 `.git` 时渲染警告 + 勾选确认，确认钮门控；`.git` 判定按路径段 `split("/").includes(".git")` | spec §6.4「用户确认后才继续」；只匹配根级 `.git` 会漏掉嵌套仓库 |
+| Task 17 | 只提「项目代次」；异步回包直接写当前项目；删除恢复点无确认 | 拆成项目代次 + 请求代次；`跟备份任务` / `备份越限` 在第一行捕获项目并在调用点传入，await 后再校验；删除恢复点先弹确认；恢复框由接线层套 `DialogV2` | 只捕获「项目」不捕获「代次」挡不住旧项目回包写进同名新项目；await 后再读当前项目会让旧任务把旧 snapshotId 写进新项目；spec §8.5/§11.2 要求删除前确认 |
+| Task 18 | 真栈用例假定恢复框可直接点 | 在接线点（`workspace-entry.tsx` 的 `拉回`）套 `DialogV2`，`RestoreDialog` 本体不动；挂具先等自动备份跑完；`E2E_BROWSER` 指向 `chromium-1234`，端口改 3011/4712 | 裸 `div` 落在 `pointer-events: none` 的弹窗层里，真浏览器整块不可点（产品缺陷，非挂具问题）；进项目心跳的自动备份在跑时手动备份会按设计落 `job_running`；3010/4711 被残留栈占用 |
+
+### 18.2 缺口表
+
+> 「本机能否验」= 本机现有工具链（假 S3 / 组件测 / Playwright 真栈）能否在不改产品代码的前提下补出判据。
+
+| 来源 | 缺口 | 本机能否验 | 何时补 |
+|---|---|---|---|
+| Task 2 | 非超时源错误不 abort，挂在 6 小时兜底；stall 用例已静默 SDK 告警但覆盖薄 | 部分（需故障注入） | 后续加固轮 / 真实网络故障复盘时 |
+| Task 3 | `validateManifest` 其余拒绝分支（version / id 形状 / kind / scope / status / dirs / skipped / totals）无独立判据；`ownerId` 半条守卫无独立用例 | 能（纯补测） | 下次触碰 manifest 校验时 |
+| Task 5 | `fake-s3.seed` 只收字符串并重编码 ⇒ 二进制（gzip）经它种入会被破坏；`rebuildSnapshots` 零覆盖；`manifests()` 静默跳过坏条目 | 能（改挂具 / 补测） | 下一次改 store 或挂具时 |
+| Task 7 | spec §5.3/§5.5 的「3 次重试 + 1s/2s/4s 退避」**仍未实现**；§5.7「取消时 abort 当前流」只在 blob 之间检查；symlink / too-large / unreadable / changed-during-backup / 自动复用哈希无用例；排序 pin 了 `zh-CN` Collator | 重试与取消需改产品代码（本机可验）；其余能补测 | **部署前必须补重试**（§5.5 明文）；取消改造与其余用例随加固轮 |
+| Task 8 | M1 取消不 abort 当前流；M2 恢复串行（spec 写并发 4）；M3 `reason` 直取 message；M4 兜底清理范围偏大；M5–M8 弱断言 / 缺用例；**C2 PARTIAL**：`scope=""` 且项目根整体缺失时标签不准、不重建根 | 部分能；C2 生产不可达（内核启动期要求沙箱根存在） | C2 已 park；其余随整支复审 / 下次恢复改造 |
+| Task 9 | M9 静默 catch 无日志（Task 11 已补审计，仍需说明）；M11 分桶时区取自调用方而非 manifest；GC 的 state 读写在删除之后、坏 / 无 state 无用例；`isBusy` 是快照式查询 | 能（补测 / 小改接口） | 加固轮 |
+| Task 11 | 每日清扫 `isBusy` 无 HTTP 可达路径；`/status`、`/cancel`、手动 409 `quota_exceeded` + `allowOverQuota`、恢复冲突分支无 HTTP 用例 | 能（补 HTTP 用例） | 加固轮 |
+| Task 12 | 多实例不共享单飞锁；hold 与 quiesce 的先后次序无直接判据（单线程造不出窗口） | 多实例不能；次序判据需并发挂具 | 上多实例前（PG 咨询锁 / 任务队列）；次序判据随并发测试挂具 |
+| Task 13 | 客户端拒绝态（400 / 401 / 403 / 404 / 5xx）无契约断言 | 能 | 界面接线补齐 / 加固轮 |
+| Task 14 | `previewing` / `restoring` 数量未知时无省略号；skip 分支 `bytesDone += file.size` 无用例守护；uploading 阶段 `bytesDone` 只计新上传 blob（增量备份到不了 100%，已裁定为可接受语义） | 前两项能补测；第三项为语义裁定 | 加固轮；第三项不补 |
+| Task 15 | 真栈布局未量；组件测 `歇一拍` 固定 5ms | 真栈主链两条已由 Task 18 验；布局细节与其他交互仍可补 e2e | 后续 e2e 扩展 |
+| Task 16 | `preview` 变化不重置决策 / 勾选（接线层每次新开，既定裁定） | 语义接受，不补 | — |
+| Task 17 | **N-4** 空闲期发现不了自动备份（1s 轮询被「在跑」短路、心跳 204 无体）⇒「自动备份中…」窄条态当前不可达；60s 心跳周期 / 取消 / `job_running` 只有组件层判据；**O-1** `备份越限` 失败文案可写到新项目中栏（请求本身正确）；**O-2** `file-op-message` 某条断言在变异下恒真（核心缺陷由 `:4725` 守住） | N-4 需设计改动；O-1 / O-2 能补 | 加固轮 |
+| Task 18 | spec §13.4 第 3 / 8 / 10 / 11 条与第 1 条的二进制 / 空目录 / `.git` 未覆盖；真实桶策略、多实例、跨用户隔离、删除项目清命名空间、审计行未验；自动备份的触发 / 去重 / 每小时一次未作为判据 | 部分能（补 e2e）；部署级不能 | e2e 扩展；部署级随 D-13 |
+
+### 18.3 「本机验不了」清单
+
+| 项 | 为什么本机验不了 | 何时 / 在哪补 |
+|---|---|---|
+| 真 MinIO 的桶策略 / STS / `${aws:username}` | 本机 MinIO 的桶策略与生产不同，STS 未配置 | D-13 部署验收 |
+| 多实例下的单飞锁 | 本机只跑单进程，两把内存锁互不可见 | 上多实例前（PG 咨询锁或任务队列） |
+| win32 无管理员权限时的符号链接不写穿 | 本机当前账户可建符号链接；用例在无权限环境会自动跳过 | CI 或 Linux 上补 |
+| 桶生命周期（`AbortIncompleteMultipartUpload`） | 本版不使用 multipart | 不适用（引入 multipart 时再补） |
+| 5 GB 以上单文件 | 造数与上传耗时过长，本机不现实 | 目标环境（部署验收） |
+
+补充：Task 18 真栈在修复后实得 `2 passed (51.1s)`（备份 → 改 → 拉回覆盖；恢复对话框可点并落盘）。真栈**已验**的部分只到这两条主链；上表中标「部署级不能」的项仍以 Task 18 报告为准，不得当作已覆盖。
