@@ -144,6 +144,63 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     expect(host.querySelector("[role='progressbar']")?.getAttribute("data-indeterminate")).toBe("false")
   })
 
+  /**
+   * 2026-10-18 用户反馈：不确定态的进度线只有一条 `animate-pulse` 的满宽条，**看起来像假死**。
+   * 改成一段亮条循环滑动（「还在动」），仍然不写 `width` / `aria-valuenow`（不伪造百分比）。
+   * happy-dom 没有动画引擎，判据落在 `data-motion` 与 `minio-bar-marquee` 记号上。
+   */
+  test("不确定态顶部是循环滑动的亮条：data-motion=marquee、仍然不写 width", () => {
+    const host = mount(() => (
+      <MinioBar onOpen={() => {}} job={任务("restoring", { filesTotal: 0, filesDone: 0, bytesTotal: 0, bytesDone: 0 })} />
+    ))
+
+    const 填充 = 槽(host, "minio-bar-progress-fill")
+    expect(填充?.getAttribute("data-motion")).toBe("marquee")
+    expect(填充?.classList.contains("minio-bar-marquee")).toBe(true)
+    expect(填充?.getAttribute("style")).toBeNull()
+  })
+
+  test("确定态顶部是按比例填充的条，不挂滑动动效", () => {
+    const host = mount(() => (
+      <MinioBar onOpen={() => {}} job={任务("uploading", { filesTotal: 1, filesDone: 0, bytesTotal: 10, bytesDone: 5 })} />
+    ))
+
+    const 填充 = 槽(host, "minio-bar-progress-fill")
+    expect(填充?.getAttribute("data-motion")).toBe("fill")
+    expect(填充?.classList.contains("minio-bar-marquee")).toBe(false)
+    expect(填充?.style.width).toBe("50%")
+  })
+
+  /**
+   * 阶段行只有一句「正在恢复」时，界面像假死；前面加一颗 12px 旋转圆环。
+   * 圆环对读屏隐身（可读的名字仍是那句话，不多念一个图形名）。
+   */
+  test("阶段文字前有一颗旋转圆环，只在进行中出现、且对读屏隐身", () => {
+    const 运行中 = mount(() => (
+      <MinioBar onOpen={() => {}} job={任务("restoring", { filesTotal: 0, filesDone: 0, bytesTotal: 0, bytesDone: 0 })} />
+    ))
+    const 空闲 = mount(() => <MinioBar onOpen={() => {}} />)
+
+    const 环 = 槽(运行中, "minio-bar-spinner")
+    expect(环?.getAttribute("aria-hidden")).toBe("true")
+    expect(环?.classList.contains("minio-bar-spinner")).toBe(true)
+    // 圆环没有文字，阶段行读出来仍是那句话（预览：「◌ 正在恢复」）。
+    expect(文本(运行中, "minio-bar-stage")).toBe("正在恢复")
+    expect(无槽(空闲, "minio-bar-spinner")).toBe(true)
+  })
+
+  /**
+   * happy-dom **量不到动画**（没有样式表与动画引擎，`#005-07`）——这里只守「动效定义还在」，
+   * 证明不了浏览器真的在动；实际动效由真栈肉眼/计算样式验收，缺口不冒充已覆盖。
+   */
+  test("动效定义落在组件自己的 CSS 里：滑动与旋转两个 keyframes、reduced-motion 会关掉", async () => {
+    const css = await Bun.file(new URL("./minio-bar.css", import.meta.url)).text()
+
+    expect(css).toContain("@keyframes minio-bar-marquee")
+    expect(css).toContain("@keyframes minio-bar-spin")
+    expect(css).toContain("prefers-reduced-motion")
+  })
+
   test("进度线在窄条**顶部**：它是根节点的第一个孩子，排在主行之前", () => {
     const host = mount(() => (
       <MinioBar onOpen={() => {}} job={任务("uploading", { filesTotal: 1, filesDone: 0, bytesTotal: 10, bytesDone: 5 })} />

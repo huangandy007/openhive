@@ -1,0 +1,62 @@
+/*
+ * MinIO 窄条的动作（2026-10-18）。
+ *
+ * 不确定进度时顶部是一段**循环滑动**的亮条；阶段行前有一颗 12px 旋转圆环。
+ * 两者都只是「还在动」的信号——不写 width、不写 aria-valuenow，不伪造百分比（spec §11.5）。
+ * 之前不确定态只有一条满宽的 animate-pulse，看起来像假死（用户反馈）。
+ *
+ * 放在组件自己的 CSS 里（先例：components/dialog-command-palette-v2.css），
+ * 跟着窄条一起走，不进 index.css 的全局面。
+ */
+
+[data-slot="minio-bar-progress-fill"][data-motion="marquee"] {
+  width: 30%;
+  transform: translateX(-100%);
+  animation: minio-bar-marquee 1.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* 起点在轨道左侧之外，终点在右侧之外：整段亮条循环穿过一次。 */
+@keyframes minio-bar-marquee {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(333.333%);
+  }
+}
+
+[data-slot="minio-bar-spinner"] {
+  display: block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in srgb, var(--v2-icon-icon-muted) 30%, transparent);
+  border-top-color: var(--v2-icon-icon-muted);
+  animation: minio-bar-spin 0.67s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes minio-bar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/*
+ * 减少动态偏好：滑动条退回「满宽淡色」（整条都亮 = 不知道进度，不会被读成 30%），
+ * 圆环停转。信息（阶段文字 / 数量）不受影响。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="minio-bar-progress-fill"][data-motion="marquee"] {
+    width: 100%;
+    transform: none;
+    animation: none;
+    opacity: 0.5;
+  }
+
+  [data-slot="minio-bar-spinner"] {
+    animation: none;
+  }
+}

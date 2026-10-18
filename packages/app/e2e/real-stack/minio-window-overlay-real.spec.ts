@@ -278,3 +278,54 @@ test("MinIO 窗口：上沿可拖拽下移，窗口随之变矮并露出上方�
     "窗口上沿应当有一条可拖拽的分隔条",
   ).toBeVisible({ timeout: 10_000 })
 })
+
+/**
+ * 2026-10-18 用户反馈：备份 / 恢复时底部窄条只有一句「正在恢复」，**像假死**。
+ * 改成「顶部亮条循环滑动 ＋ 阶段文字前 12px 旋转圆环」（`minio-bar.css`）。
+ *
+ * happy-dom **量不到动画**（没有样式表与动画引擎，`#005-07`）⇒ 组件层只能钉记号
+ * （`data-motion="marquee"` / `minio-bar-spinner`，见 `minio-bar.test.tsx`）。
+ * 「CSS 真的装进应用、选择器真的命中」只有真浏览器答得了——这条补的就是那一半。
+ *
+ * ⚠️ 真任务（骨架 21 件）跑得太快，抓不到活的任务态；这里落一份**与组件同记号**的探针：
+ * 组件层钉「不确定态真的渲染这些记号」，这里钉「这些记号真的挂上动画」，两条合起来才完整。
+ */
+test("MinIO 窄条的动效在真浏览器里真的在动：滑动亮条与旋转圆环", async ({ page, context }) => {
+  const 丙 = await 建真项目(`MinIO窄条·动效·${Date.now()}`)
+  备好树(丙.directory)
+  await 进项目(page, context, 丙.id)
+
+  // 前提：窄条真的渲染了（它所在的模块被求值 ⇒ 它的 CSS import 才会被 Vite 注入）。
+  await expect(page.locator("[data-slot='minio-bar-open']")).toBeVisible({ timeout: 30_000 })
+
+  const 动 = await page.evaluate(() => {
+    const 试 = document.createElement("div")
+    // 轨道给一个确定的 300px：亮条宽度是轨道的 30%（由 `minio-bar.css` 给）。
+    试.innerHTML =
+      '<span style="display:block;width:300px;height:2px">' +
+      '<span data-slot="minio-bar-progress-fill" data-motion="marquee" class="minio-bar-marquee block h-full"></span>' +
+      "</span>" +
+      '<span data-slot="minio-bar-spinner" class="minio-bar-spinner"></span>'
+    document.body.appendChild(试)
+    const 条 = 试.querySelector("[data-slot='minio-bar-progress-fill']")!
+    const 环 = 试.querySelector("[data-slot='minio-bar-spinner']")!
+    const 条样式 = getComputedStyle(条)
+    const 环样式 = getComputedStyle(环)
+    const 读 = {
+      条动画: 条样式.animationName,
+      条时长: 条样式.animationDuration,
+      条宽: Math.round(条.getBoundingClientRect().width),
+      环动画: 环样式.animationName,
+      环宽: Math.round(环.getBoundingClientRect().width),
+    }
+    试.remove()
+    return 读
+  })
+  console.log(`[MinIO窄条动效] ${JSON.stringify(动)}`)
+
+  expect(动.条动画, "滑动亮条应当真的在动（CSS 已装进应用）").toBe("minio-bar-marquee")
+  expect(动.条时长, "一轮滑动 1.2s（`minio-bar.css` 的规格）").toBe("1.2s")
+  expect(动.条宽, "亮条宽度是轨道的 30%——宽度由 CSS 给，不是 utility 猜的").toBe(90)
+  expect(动.环动画, "旋转圆环应当真的在转（CSS 已装进应用）").toBe("minio-bar-spin")
+  expect(动.环宽, "圆环是 12px（spec §11.5）").toBe(12)
+})

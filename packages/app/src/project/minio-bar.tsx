@@ -1,5 +1,6 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { Show, type JSX } from "solid-js"
+import "./minio-bar.css"
 import type { BackupJob } from "./openhive-backup"
 import { 格式化字节 } from "./format-bytes"
 import { 在跑 } from "./minio-backups"
@@ -105,15 +106,18 @@ export function MinioBar(props: MinioBarProps): JSX.Element {
               aria-valuenow={比() ?? undefined}
               data-indeterminate={比() === undefined ? "true" : "false"}
               aria-label="备份进度"
-              class="block h-0.5 w-full bg-v2-overlay-simple-overlay-hover"
+              class="relative block h-0.5 w-full overflow-hidden bg-v2-overlay-simple-overlay-hover"
             >
               {/* 不确定态**不写 width**：那是假装知道百分比（spec：「不是假百分比」）。
-                  动效只做视觉提示——happy-dom 量不了动画，判据落在 `data-indeterminate` 上。 */}
+                  动效改由 `minio-bar.css` 的 `data-motion="marquee"` 承担——一段亮条循环滑动，
+                  比原来的满宽 `animate-pulse` 更能说明「还在动」（2026-10-18 用户反馈）。
+                  happy-dom 量不了动画，判据落在 `data-motion` / `minio-bar-marquee` 记号上。 */}
               <span
                 data-slot="minio-bar-progress-fill"
+                data-motion={比() === undefined ? "marquee" : "fill"}
                 class={
                   比() === undefined
-                    ? "block h-full w-full animate-pulse bg-v2-text-text-base"
+                    ? "minio-bar-marquee block h-full bg-v2-text-text-base"
                     : "block h-full bg-v2-text-text-base transition-[width]"
                 }
                 style={比() === undefined ? undefined : { width: `${比()}%` }}
@@ -165,7 +169,12 @@ export function MinioBar(props: MinioBarProps): JSX.Element {
 
       <Show when={当前任务()}>
         {(job) => (
-          <span data-slot="minio-bar-stage" class="px-2 py-0.5 text-[12px] text-v2-text-text-faint">
+          <span
+            data-slot="minio-bar-stage"
+            class="flex items-center gap-1.5 px-2 py-0.5 text-[12px] text-v2-text-text-faint"
+          >
+            {/* 只有一句话时界面像假死——圆环说明「还在走」。对读屏隐身：可读的名字仍是那句话。 */}
+            <span data-slot="minio-bar-spinner" aria-hidden="true" class="minio-bar-spinner" />
             {阶段(job())}
           </span>
         )}
