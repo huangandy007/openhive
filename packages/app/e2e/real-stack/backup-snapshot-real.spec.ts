@@ -164,6 +164,18 @@ async function 等自动备份跑完(项目id: string) {
     .toBe("idle")
 }
 
+/**
+ * 关掉手工备份的结果弹窗（2026-10-18 用户下达：结果改成弹窗）。
+ *
+ * ⚠️ 它带**模态遮罩**：不关掉，后面任何点击都会被 `dialog-overlay` 接走——真栈实测的指纹是
+ * `expand-all` 一直 retry、报「overlay intercepts pointer events」（读起来像按钮坏了）。
+ */
+async function 关掉备份结果(page: Page) {
+  await expect(page.locator("[data-slot='task-result-title']")).toHaveText("备份完成", { timeout: 60_000 })
+  await page.locator("[data-slot='task-result-close']").click()
+  await expect(page.locator("[data-slot='task-result']")).toBeHidden({ timeout: 10_000 })
+}
+
 /** 右键 `路径` → 点「备份到 MinIO」→ 展开下树 → 等恢复点里出现这一行。 */
 async function 备份并打开下树(page: Page, 项目id: string, 路径: string) {
   // 自动备份还在跑时点「备份」会落到 `job_running`（不产生手动快照）⇒ 先等它跑完。
@@ -174,6 +186,8 @@ async function 备份并打开下树(page: Page, 项目id: string, 路径: strin
   // 再点。灰着点下去不会报错，只会什么都不发生。
   await expect(备份项, "「备份到 MinIO」在真浏览器里必须可点").toBeEnabled({ timeout: 10_000 })
   await 备份项.click()
+  // 备份到终态会弹结果弹窗；模态遮罩会挡住后面的每一次点击。
+  await 关掉备份结果(page)
 
   await page.locator("[data-slot='minio-bar-open']").click()
   await expect(page.locator("[data-slot='minio-tree']")).toBeVisible({ timeout: 10_000 })
@@ -182,7 +196,8 @@ async function 备份并打开下树(page: Page, 项目id: string, 路径: strin
   // 21 个文件），它里面**也有**同一个路径——自动恢复点还选中时，这一行就已经满足了判据，
   // 而它排在滚动区外（实测 y=1198 > 视口 900），拖拽的指针落在视口外 ⇒ 一个 drag 事件都不发。
   // 钉「选择器已经落到刚拍的那份**手动**恢复点」（Task 17 的 `跟备份任务` 会显式选中新快照），
-  // 再等行——此时快照里只有这一个文件，行就在窗口顶部。
+  // 再等行。⚠️ 2026-10-18 起手动备份**整项目** ⇒ 快照里不再只有这一个文件；行排在哪儿
+  // 不重要（`拖到` 会先把它滚进视口）。
   // 恢复点选择器自 2026-10-18 起是**胶囊 ＋ 下拉**（不是原生 `<select>`）：当前项回显在触发器里
   // （时间 ＋ 类型徽标 ＋ 文件数），`data-snapshot-picker` 是它自己的记号——`DropdownMenu.Trigger`
   // 会覆盖调用方的 `data-slot`（`LEARNINGS #005-22`）。
@@ -219,14 +234,78 @@ test("备份 → 改原文 → 拖回并「覆盖本地」⇒ 内容回到备份
   await page.locator("[data-slot='restore-confirm']").click()
 
   await expect(page.locator("[data-component='backup-restore-dialog']")).toBeHidden({ timeout: 60_000 })
-  // 恢复结果自 2026-10-18 起不再挤进 `file-op-message`（那一行恒红，成功看着也像报错）——
-  // 判据跟着搬到**结果条**上（`#005-25`：修的是行为，观测点要迁到最终可观测处）。
-  await expect(page.locator("[data-slot='restore-result-text']")).toContainText("恢复完成", { timeout: 60_000 })
+  // 恢复结果自 2026-10-18 起走**弹窗**（不再挤进 `file-op-message` 那条恒红通道，也不再是
+  // 底部内联条）——判据跟着搬到弹窗标题上（`#005-25`：观测点要迁到最终可观测处）。
+  await expect(page.locator("[data-slot='task-result-title']")).toHaveText("恢复完成", { timeout: 60_000 })
 
   // 界面说完成不算数——盘上真回到备份时那一版才算。
   await expect
     .poll(() => readFileSync(path.join(甲.directory, "资料", "甲.txt"), "utf8"), { timeout: 30_000 })
     .toBe("备份时\n")
+})
+
+/**
+ * 2026-10-18 用户下达：下树的**目录行也可拖**，拖目录 ＝ 按目录路径整棵子树拉回。
+ *
+ * 判据只能落真栈：组件层断的是 `draggable` 属性（happy-dom 对合成事件不看它），
+ * 「Chromium 里真的拖得起来」只有这条链量得到。两份文件都改过再拉回——若只恢复了一份，
+ * 第二份的 poll 会红。
+ */
+test("备份目录 → 两份都改 → 拖 MinIO 目录回沙箱 ⇒ 整棵子树都回到备份时那一版", async ({ page, context }) => {
+  const 丙 = await 建真项目(`备份快照·目录·${Date.now()}`)
+  mkdirSync(path.join(丙.directory, "资料"), { recursive: true })
+  writeFileSync(path.join(丙.directory, "资料", "甲.txt"), "备份时甲\n")
+  writeFileSync(path.join(丙.directory, "资料", "乙.txt"), "备份时乙\n")
+  // 根目录这份**不在右键的「资料」里**：它是「手动备份整项目」的判别物（见下面的断言）。
+  writeFileSync(path.join(丙.directory, "账目.txt"), "根目录\n")
+
+  await 进项目(page, context, 丙.id)
+  await 打开到(page, "资料/甲.txt")
+
+  // 右键**目录行**备份整个目录（与上一条的「文件行」成对）。
+  await 等自动备份跑完(丙.id)
+  await 上树行(page, "资料").click({ button: "right" })
+  const 备份项 = page.locator("[data-action='backup']")
+  await expect(备份项, "「备份到 MinIO」在真浏览器里必须可点").toBeEnabled({ timeout: 10_000 })
+  await 备份项.click()
+  // 备份到终态会弹结果弹窗；模态遮罩会挡住后面的每一次点击。
+  await 关掉备份结果(page)
+
+  await page.locator("[data-slot='minio-bar-open']").click()
+  await expect(page.locator("[data-slot='minio-tree']")).toBeVisible({ timeout: 10_000 })
+  const 选择器 = page.locator("[data-snapshot-picker]")
+  await expect.poll(async () => (await 选择器.textContent()) ?? "", { timeout: 60_000 }).toContain("手动")
+
+  // 2026-10-18 用户裁定：手动备份**一律整项目**（旧口径按右键项收窄，用户回看时以为文件丢了）。
+  // 判别物是根目录那份——它不在右键的「资料」里；按旧口径它**不会**出现在这份手动快照的
+  // 下树里。这条判据只有真栈量得到（组件层只看得见 `backup()` 的入参）。
+  await expect(下树行(page, "账目.txt"), "手动快照应当包含整项目，而不只是右键的那一项").toBeVisible({
+    timeout: 60_000,
+  })
+  await expect(下树行(page, "资料")).toBeVisible({ timeout: 60_000 })
+  await page.locator("[data-slot='minio-tree-expand-all']").click()
+  await expect(下树行(page, "资料/甲.txt")).toBeVisible({ timeout: 60_000 })
+  await expect(下树行(page, "资料/乙.txt")).toBeVisible({ timeout: 60_000 })
+
+  writeFileSync(path.join(丙.directory, "资料", "甲.txt"), "改过甲\n")
+  writeFileSync(path.join(丙.directory, "资料", "乙.txt"), "改过乙\n")
+
+  // 源是**目录行**本身（不需要展开子文件）；落点仍是上树的目录行。
+  await 拖到(page, 下树行(page, "资料"), 上树行(page, "资料"))
+
+  await expect(page.locator("[data-component='backup-restore-dialog']")).toBeVisible({ timeout: 60_000 })
+  await page.locator("[data-slot='restore-decision'][value='overwrite']").check()
+  await page.locator("[data-slot='restore-confirm']").click()
+
+  await expect(page.locator("[data-component='backup-restore-dialog']")).toBeHidden({ timeout: 60_000 })
+  await expect(page.locator("[data-slot='task-result-title']")).toHaveText("恢复完成", { timeout: 60_000 })
+
+  await expect
+    .poll(() => readFileSync(path.join(丙.directory, "资料", "甲.txt"), "utf8"), { timeout: 30_000 })
+    .toBe("备份时甲\n")
+  await expect
+    .poll(() => readFileSync(path.join(丙.directory, "资料", "乙.txt"), "utf8"), { timeout: 30_000 })
+    .toBe("备份时乙\n")
 })
 
 test("备份 → 改原文 → 拖回并默认「保留两者」⇒ 原文仍在 ＋ 多出一份备份时的那版", async ({ page, context }) => {
@@ -250,9 +329,9 @@ test("备份 → 改原文 → 拖回并默认「保留两者」⇒ 原文仍在
   await page.locator("[data-slot='restore-confirm']").click()
 
   await expect(page.locator("[data-component='backup-restore-dialog']")).toBeHidden({ timeout: 60_000 })
-  // 恢复结果自 2026-10-18 起不再挤进 `file-op-message`（那一行恒红，成功看着也像报错）——
-  // 判据跟着搬到**结果条**上（`#005-25`：修的是行为，观测点要迁到最终可观测处）。
-  await expect(page.locator("[data-slot='restore-result-text']")).toContainText("恢复完成", { timeout: 60_000 })
+  // 恢复结果自 2026-10-18 起走**弹窗**（不再挤进 `file-op-message` 那条恒红通道，也不再是
+  // 底部内联条）——判据跟着搬到弹窗标题上（`#005-25`：观测点要迁到最终可观测处）。
+  await expect(page.locator("[data-slot='task-result-title']")).toHaveText("恢复完成", { timeout: 60_000 })
 
   // 新名字形如 `甲 (MinIO 2026-10-18 14-03-05).txt`（`backup-rules.ts` 的 `keepBothName`）。
   const 目录 = path.join(乙.directory, "资料")

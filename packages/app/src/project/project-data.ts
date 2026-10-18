@@ -40,7 +40,17 @@ import {
   touchProject,
 } from "./openhive-project"
 import type { FileOpOutcome } from "./openhive-file-ops"
-import { copyFile, createEntry, downloadFile, moveFile, removeEntry, renameEntry, uploadFile } from "./openhive-file-ops"
+import {
+  copyFile,
+  createEntry,
+  downloadFile,
+  moveFile,
+  removeEntry,
+  renameEntry,
+  uploadFile,
+  type DownloadOptions,
+  type UploadOptions,
+} from "./openhive-file-ops"
 import { listProjectFiles } from "./openhive-files"
 import { inviteMember, leaveProject, listMembers, removeMember } from "./openhive-members"
 import type {
@@ -118,15 +128,18 @@ export interface ProjectData {
    */
 
   move(projectId: string, path: string, dir: string): Promise<FileOpOutcome>
-  /** 从本地电脑上传**一个**文件（拖进来一批时调用方逐个发）。 */
-  upload(projectId: string, dir: string, file: File): Promise<FileOpOutcome>
+  /**
+   * 从本地电脑上传**一个**文件（拖进来一批时调用方逐个发）。
+   * `options.onProgress` 是弹窗的百分比来源；`signal` 是「取消」。
+   */
+  upload(projectId: string, dir: string, file: File, options?: UploadOptions): Promise<FileOpOutcome>
   /**
    * 取一个文件的**字节**（`undefined` = 取不到）。
    *
    * 只到「字节」为止——**存盘不在这层做**：那是 DOM 的事（`URL.createObjectURL` ＋
    * `<a download>`），而这一层要能在没有 DOM 的单测里跑。存盘落点见 `workspace-entry.tsx`。
    */
-  download(projectId: string, path: string): Promise<Blob | undefined>
+  download(projectId: string, path: string, options?: DownloadOptions): Promise<Blob | undefined>
   /**
    * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
    *
@@ -215,8 +228,8 @@ export const PROJECT_DATA: ProjectData = {
   files: (projectId) => listProjectFiles(projectId),
   copy: (projectId, path, dir) => copyFile(projectId, path, dir),
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
-  upload: (projectId, dir, file) => uploadFile(projectId, dir, file),
-  download: (projectId, path) => downloadFile(projectId, path),
+  upload: (projectId, dir, file, options) => uploadFile(projectId, dir, file, options),
+  download: (projectId, path, options) => downloadFile(projectId, path, options),
   createEntry: (projectId, kind, dir, name) => createEntry(projectId, kind, dir, name),
   renameEntry: (projectId, path, name) => renameEntry(projectId, path, name),
   removeEntry: (projectId, path) => removeEntry(projectId, path),

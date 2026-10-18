@@ -40,7 +40,16 @@
  * 而 Chrome 的 `DownloadURL` 需要一条**真 HTTP URL**、带不了 `x-openhive-project` 头。
  */
 
-import { defaultSend, isRecord, isSessionExpired, readJson, SESSION_EXPIRED, trySend, type ForkFetch } from "./openhive-fetch"
+import {
+  defaultSend,
+  isRecord,
+  isSessionExpired,
+  noteStatus,
+  readJson,
+  SESSION_EXPIRED,
+  trySend,
+  type ForkFetch,
+} from "./openhive-fetch"
 
 /** 与内核 `OpenhiveFile.PATH` 逐字对应（`packages/opencode/src/server/openhive/file.ts`）。 */
 export const PREFIX = "/openhive/file"
@@ -76,6 +85,113 @@ export const PATH = {
 const PROJECT_HEADER = "x-openhive-project"
 
 export type FileOpsFetch = ForkFetch
+
+/**
+ * 一次传输的字节进度。`total === 0` ＝ **总量未知**（不是「零字节」）——界面据此退回
+ * 「已传 X」的不确定态，而不是画一条恒满的条。
+ */
+export interface TransferProgress {
+  loaded: number
+  total: number
+}
+
+/**
+ * 上传那条链的发送边界。比 `FileOpsFetch` 多一个 `onProgress`：**只有 XHR 报得出上传字节进度**
+ * （`fetch` ＋ `FormData` 没有 upload 事件），而这一层不该知道调用方用的是哪一条。
+ */
+export interface UploadInit extends RequestInit {
+  /** 上传只发 multipart（见 `uploadFile`）。收窄是为了让 `XhrLike.send` 不必再断言一次。 */
+  body?: FormData
+  onProgress?: (progress: TransferProgress) => void
+}
+
+export type UploadFetch = (input: string, init?: UploadInit) => Promise<Response | undefined>
+
+/**
+ * XHR **真正用到的那几个成员**。写成窄接口而不是 `as XMLHttpRequest`：单元测试的替身
+ * 停在这条边界上（`LEARNINGS #002-03`），不必伪造整个平台对象。
+ */
+export interface XhrLike {
+  withCredentials: boolean
+  status: number
+  responseText: string
+  // 参数用平台的 `ProgressEvent`（不是自造的窄形状）：`XMLHttpRequest` 要能直接传进来，
+  // 而 `strictFunctionTypes` 下两者的形参是**逆变**的——窄形状会让真 XHR 在这一步就不合法。
+  upload: { onprogress: ((event: ProgressEvent) => void) | null }
+  onload: ((event: ProgressEvent) => void) | null
+  onerror: ((event: ProgressEvent) => void) | null
+  onabort: ((event: ProgressEvent) => void) | null
+  open(method: string, url: string): void
+  setRequestHeader(name: string, value: string): void
+  send(body?: FormData): void
+  abort(): void
+  getResponseHeader(name: string): string | null
+}
+
+/**
+ * 把**一次上传**发出去，并把 XHR 的形状翻成 `Response`（与 fetch 那条链同一个下游）。
+ *
+ * ## 为什么非 XHR 不可
+ *
+ * `fetch` ＋ `FormData` **报不出上传进度**（没有 upload 事件），弹窗里的百分比就没有来源。
+ * 换 XHR 的代价是这一层多一条发送路径，所以：
+ * ① 401 的「喊一声」不在这里写第二份判断——`uploadFile` 拿回响应后走 `noteStatus`
+ *   （`openhive-fetch.ts`，与 `trySend` 同一处，`LEARNINGS #002-06`）；
+ * ② 头 / cookie / 体逐项照抄 fetch 那条：`content-type` **一律不设**（boundary 由平台带）。
+ *
+ * ## 中断
+ *
+ * `signal` 一响就 `abort()`，结果 `undefined`——与「网络错」同一个结论：调用方分不出、也不需要
+ * 分出（用户取消时界面直接关窗，不报错）。
+ */
+export function sendViaXhr(xhr: XhrLike, input: string, init: UploadInit = {}): Promise<Response | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (value: Response | undefined) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    if (init.signal?.aborted) {
+      settle(undefined)
+      return
+    }
+
+    xhr.open(init.method ?? "GET", input)
+    if (init.credentials === "same-origin" || init.credentials === "include") xhr.withCredentials = true
+    new Headers(init.headers).forEach((value, name) => xhr.setRequestHeader(name, value))
+
+    xhr.upload.onprogress = (event) =>
+      init.onProgress?.({ loaded: event.loaded, total: event.lengthComputable ? event.total : 0 })
+    xhr.onload = () => settle(responseOf(xhr))
+    xhr.onerror = () => settle(undefined)
+    xhr.onabort = () => settle(undefined)
+    init.signal?.addEventListener("abort", () => xhr.abort(), { once: true })
+
+    xhr.send(init.body)
+  })
+}
+
+/**
+ * 生产的上传发送层。**先生成 XHR、再交给 `sendViaXhr`**——替身因此能只实现 `XhrLike`
+ * 那一条边界，而不必让本层知道怎么造平台对象。
+ */
+export const defaultUploadSend: UploadFetch = (input, init) => sendViaXhr(new XMLHttpRequest(), input, init)
+
+/** XHR 的状态与体 → `Response`；`status === 0`（没走到 HTTP）当作「没取到」。 */
+function responseOf(xhr: XhrLike): Response | undefined {
+  if (xhr.status === 0) return undefined
+  const contentType = xhr.getResponseHeader("content-type")
+  const headers = contentType === null ? undefined : { "content-type": contentType }
+  // 204/205/304 不许带体（`new Response(body, ...)` 会当场抛）。
+  const noBody = xhr.status === 204 || xhr.status === 205 || xhr.status === 304
+  try {
+    return new Response(noBody ? null : xhr.responseText, { status: xhr.status, headers })
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * 六个出口共用的三种结论。
@@ -147,22 +263,45 @@ export async function moveFile(
  * `multipart/form-data` 会把 boundary 弄丢 ⇒ 服务端 `formData()` 当场解不开。而这条错
  * **在替身里看不见**（同一个 `FormData` 对象，两种写法都「成功」）——只有真发一次才知道。
  */
+export interface UploadOptions {
+  /** 默认 `defaultUploadSend`（XHR）。替身从这个口进（单测不需要平台对象）。 */
+  send?: UploadFetch
+  onProgress?: (progress: TransferProgress) => void
+  /** 取消：一响就中断这一枪，结论是 `failed`（界面按用户主动取消处理，不报错）。 */
+  signal?: AbortSignal
+}
+
 export async function uploadFile(
   projectId: string,
   dir: string,
   file: File,
-  send: FileOpsFetch = defaultSend,
+  options: UploadOptions = {},
 ): Promise<FileOpOutcome> {
+  const { send = defaultUploadSend, onProgress, signal } = options
   const form = new FormData()
   form.set("file", file)
 
-  const response = await trySend(send, `${PATH.upload}?${new URLSearchParams({ dir })}`, {
+  // ⚠️ 不走 `trySend`：它只包 fetch 形状的 `ForkFetch`，而这里默认是 XHR（唯一报得出上传进度的
+  // 路径）。401 的喊话因此由下面 `noteStatus` 补上——与 `trySend` 共用同一处判断（`#002-06`）。
+  const response = await sendQuietly(send, `${PATH.upload}?${new URLSearchParams({ dir })}`, {
     method: "POST",
     credentials: "same-origin",
     headers: { [PROJECT_HEADER]: projectId },
     body: form,
+    onProgress,
+    signal,
   })
+  noteStatus(response)
   return outcomeOf(response, UPLOAD_FAILED)
+}
+
+/** 外呼包一层：界面不该收到异常（同 `trySend` 的那半条，区别只是发送层的形状）。 */
+async function sendQuietly(send: UploadFetch, input: string, init: UploadInit): Promise<Response | undefined> {
+  try {
+    return await send(input, init)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -177,23 +316,82 @@ export async function uploadFile(
  * `handleDownload` 每条成功响应都带它），也正是浏览器拿它当「存盘」而不是「打开」的唯一依据。
  * ⚠️ **不按 `content-type` 判**：项目里本来就可能有 `.html` 文件，那是合法内容。
  */
+export interface DownloadOptions {
+  send?: FileOpsFetch
+  onProgress?: (progress: TransferProgress) => void
+  /** 取消：交给 `fetch` 中断那条流，结论 `undefined`（界面按用户主动取消处理，不报错）。 */
+  signal?: AbortSignal
+}
+
 export async function downloadFile(
   projectId: string,
   path: string,
-  send: FileOpsFetch = defaultSend,
+  options: DownloadOptions = {},
 ): Promise<Blob | undefined> {
+  const { send = defaultSend, onProgress, signal } = options
   const response = await trySend(send, `${PATH.download}?${new URLSearchParams({ path })}`, {
     credentials: "same-origin",
     headers: { [PROJECT_HEADER]: projectId },
+    signal,
   })
   if (!response?.ok) return undefined
   if (response.headers.get("content-disposition") === null) return undefined
 
   try {
-    return await response.blob()
+    // 先报一次 `{ loaded: 0, total }`：弹窗要**当场**拿到总量才知道画不画百分比
+    // （`Content-Length` 不是本出口承诺过的头，拿不到就用 `stat` 兜底）。
+    const total = await downloadTotal(response, projectId, path, send)
+    onProgress?.({ loaded: 0, total })
+
+    // `body` 为 `null` 只出现在无体响应（204 之类）；本出口成功时必有体，保底当空文件。
+    if (response.body === null) return await response.blob()
+
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let loaded = 0
+    for (;;) {
+      if (signal?.aborted) {
+        await reader.cancel()
+        return undefined
+      }
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      loaded += value.byteLength
+      onProgress?.({ loaded, total })
+    }
+    // 拼成一块**自己的** `Uint8Array` 再交 Blob：TS 5.8 起 `Uint8Array<ArrayBufferLike>` 不是
+    // `BlobPart`（可能挂在 `SharedArrayBuffer` 上），而 `new Uint8Array(长度)` 是 `ArrayBuffer` 背板。
+    const 全部 = new Uint8Array(loaded)
+    let 位移 = 0
+    for (const 块 of chunks) {
+      全部.set(块, 位移)
+      位移 += 块.byteLength
+    }
+    return new Blob([全部])
   } catch {
     return undefined
   }
+}
+
+/**
+ * 这次下载的**总字节数**（`0` ＝ 未知）。
+ *
+ * `Content-Length` 优先——它是这次响应自己的事。缺失时问 `stat` 出口：那是「百分比」唯一的
+ * 兜底来源，而 `stat` 本来就是已挂上的第 8 个出口，不必让服务端为下载多承诺一个头。
+ */
+async function downloadTotal(
+  response: Response,
+  projectId: string,
+  path: string,
+  send: FileOpsFetch,
+): Promise<number> {
+  const declared = response.headers.get("content-length")
+  if (declared !== null) {
+    const size = Number(declared)
+    if (Number.isFinite(size) && size >= 0) return size
+  }
+  return (await statProjectFile(projectId, path, send)) ?? 0
 }
 
 /**

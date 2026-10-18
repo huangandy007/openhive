@@ -23,7 +23,7 @@ import {
   setBackupUsage,
   setMinioBackups,
 } from "@/project/minio-backups"
-import { statProjectFile, type FileOpOutcome } from "@/project/openhive-file-ops"
+import { statProjectFile, type FileOpOutcome, type TransferProgress } from "@/project/openhive-file-ops"
 import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
@@ -42,8 +42,9 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { RestoreDialog } from "@/project/backup-restore-dialog"
 import { FileMoveReportDialog, type 搬报告 } from "@/project/file-move-report-dialog"
-import { RestoreResultBar } from "@/project/restore-result-bar"
-import type { BackupPreview, BackupRestoreResult, RestoreDecision } from "@/project/openhive-backup"
+import { FileTransferDialog, type FileTransferState } from "@/project/file-transfer-dialog"
+import { TaskResultDialog, type TaskResult } from "@/project/task-result-dialog"
+import type { BackupPreview, RestoreDecision } from "@/project/openhive-backup"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -367,19 +368,19 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const [文件话, set文件话] = createSignal<string>()
   /**
-   * 上一次恢复的结果（2026-10-18）。
-   *
-   * 从 `文件话` 里**分出来**：那一行是危险色的失败通道，而一次完全成功的恢复不该长得像报错
-   * （`restore-result-bar.tsx` 文件头）。结果不自动消失，用户点 ✕ 才清。
-   */
-  const [恢复结果, set恢复结果] = createSignal<BackupRestoreResult>()
-  /**
    * 弹窗宿主（`app.tsx` 那层 `DialogProvider`）——搬一批的失败报告走它。
    *
    * 本文件此前没有 `useDialog()`；挂载前提**没有增加**：`workspace-entry.test.tsx` 的挂具
    * 自 2026-10-11 起就套着 `DialogProvider`（`useDialog()` 无 Provider 时**抛错**）。
    */
   const dialog = useDialog()
+  /**
+   * 传输弹窗的状态（`undefined` ＝ 没有在显示）。运行中与完成态是**同一个弹窗**
+   * （用户裁定：成功停在弹窗、点「关闭」才收）。
+   */
+  const [传输, set传输] = createSignal<FileTransferState>()
+  /** 这一次传输的中断句柄；`undefined` ＝ 没有在跑的传输。 */
+  let 传输控: AbortController | undefined
   /** 文件清单的重取代次：拨一下 ⇒ 上面那个 effect 重跑（它在读它）。 */
   const [清单重取, set清单重取] = createSignal(0)
   /**
@@ -701,29 +702,113 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
+   * 开一张传输弹窗，并记下「这一次」的中断句柄。
+   *
+   * ⚠️ `onClose`（Esc / 点遮罩 / 右上角 ×）走的是**和「取消」同一条**收尾：用户裁定
+   * 「取消即关窗、不报错」，而「窗关了、传输还在后台偷偷继续」不是取消。
+   * `show()` 的第二参**只有** Esc / 遮罩 / 关闭按钮会走到；取消按钮走 `onCancel`，两者同归宿。
+   */
+  function 开传输(初: FileTransferState, 控: AbortController) {
+    传输控 = 控
+    set传输(初)
+    void dialog.show(
+      () => <FileTransferDialog state={传输() ?? 初} onCancel={() => 收传输(true)} onClose={() => 收传输(false)} />,
+      () => 收传输(true),
+    )
+  }
+
+  /**
+   * 收窗：`中断` 为真时同时掐掉那一枪。
+   *
+   * 可重入：`收传输` 自己调 `dialog.close()` 时，dialog 会回头调 `show` 注册的 `onClose`
+   * （`context/dialog.tsx:48`）——第二次进来时 `传输控` 已清空、`close()` 也被它自己的锁挡住，
+   * 不会把同一枪 abort 两遍、也不会把窗关两次。
+   */
+  function 收传输(中断: boolean) {
+    const 控 = 传输控
+    传输控 = undefined
+    if (中断 && 控 && !控.signal.aborted) 控.abort()
+    set传输(undefined)
+    dialog.close()
+  }
+
+  /**
    * 上传一批文件到某个目录。**逐个发**：服务端一次只收一个（`file.ts` 的 `handleUpload`），
    * 而「几个成了、几个没成」这句话只有在这一层说得出来。
+   *
+   * ## 弹窗与取消（2026-10-18）
+   *
+   * 运行中一张模态弹窗，百分比来自**当前文件**的字节进度；批量时另给「第 i / N 个」。
+   * 取消 / Esc / 点遮罩都中断**当前这一枪**并关窗（用户裁定），已经传完的文件保留——
+   * 服务端本来就是一次一个，中断只作用于正在飞的那一个。
    */
   async function 传(dir: string, files: readonly File[]) {
     const id = currentProject()?.id
     if (!id || !projectData || files.length === 0) return
     set搬忙(true)
+    set文件话(undefined)
+
+    const 控 = new AbortController()
+    const 总数 = files.length
     let 成了 = 0
+    let 字节 = 0
     let 缘由: string | undefined
-    for (const file of files) {
-      const 结论 = await projectData.upload(id, dir, file)
-      if (结论.kind === "done") 成了 += 1
+
+    // 初始态先画出来：点完「上传」到第一块数据之间不该是空白等待。
+    开传输(
+      {
+        kind: "running",
+        action: "上传",
+        name: files[0].name,
+        progress: { loaded: 0, total: files[0].size },
+        ...(总数 > 1 ? { batch: { index: 1, total: 总数 } } : {}),
+      },
+      控,
+    )
+
+    for (const [序, file] of files.entries()) {
+      if (控.signal.aborted) break
+      const 报进度 = (项: TransferProgress) => {
+        // 取消之后还在飞的那几块不许把弹窗状态写回来（否则 `收传输` 清掉的状态又活了）。
+        if (控.signal.aborted) return
+        set传输({
+          kind: "running",
+          action: "上传",
+          name: file.name,
+          progress: 项,
+          ...(总数 > 1 ? { batch: { index: 序 + 1, total: 总数 } } : {}),
+        })
+      }
+      报进度({ loaded: 0, total: file.size })
+      const 结论 = await projectData.upload(id, dir, file, { signal: 控.signal, onProgress: 报进度 })
+      // 取消 ⇒ **一个字的错都不报**（用户裁定「关窗、不报错」）。
+      if (控.signal.aborted) break
+      if (结论.kind === "done") {
+        成了 += 1
+        字节 += file.size
+      }
       // 只留**第一句**：一批文件失败的原因常常是同一个，逐条堆出来会是一面墙。
       else 缘由 ??= 结论.message
     }
     set搬忙(false)
 
-    const 没成 = files.length - 成了
-    if (没成 === 0) {
-      // 全成：借 `收下` 那一步的重取清单，返回值不用（移动 / 复制报在报告弹窗里，不在内联那行）。
-      void 收下({ kind: "done", path: dir })
+    // 取消：弹窗已由 `收传输` 收掉；已传上去的那几个要出现在树里，所以只拨清单。
+    if (控.signal.aborted) {
+      if (成了 > 0) 拨清单重取()
       return
     }
+
+    const 没成 = files.length - 成了
+    if (没成 === 0) {
+      // 全成：借 `收下` 那一步的重取清单（移动 / 复制报在报告弹窗里，不在内联那行）。
+      void 收下({ kind: "done", path: dir })
+      // **停在弹窗**（用户裁定）：让「传了几个、多大」留在屏幕上，点「关闭」才收。
+      set传输({ kind: "done", action: "上传", files: 成了, bytes: 字节 })
+      return
+    }
+
+    // 失败不在这里弹第二张脸：关窗，落回文件树下方那行内联红字（沿用既有口径）。
+    收传输(false)
     // ⚠️ 那句话只讲**其中一个**。不说清还有几个的话，界面会把「3 个里失败了 2 个」
     // 说成「失败了 1 个」——报一个数就得报准它（`LEARNINGS #003-04` 同族：写下的数要经得起复核）。
     set文件话(files.length === 1 ? (缘由 ?? "上传文件失败") : `${缘由 ?? "上传文件失败"}（这批 ${files.length} 个里 ${没成} 个没成功）`)
@@ -741,12 +826,27 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const id = currentProject()?.id
     if (!id || !projectData) return
     set文件话(undefined)
-    const blob = await projectData.download(id, path)
+    const 控 = new AbortController()
+    const 名 = 末段(path)
+    开传输({ kind: "running", action: "下载", name: 名, progress: { loaded: 0, total: 0 } }, 控)
+
+    const blob = await projectData.download(id, path, {
+      signal: 控.signal,
+      onProgress: (项) => {
+        if (控.signal.aborted) return
+        set传输({ kind: "running", action: "下载", name: 名, progress: 项 })
+      },
+    })
+    // 取消 ⇒ 不报错、不落盘（弹窗已由 `收传输` 收掉）。
+    if (控.signal.aborted) return
     if (!blob) {
+      收传输(false)
       set文件话(`下载「${path}」失败`)
       return
     }
-    存到本地(blob, 末段(path))
+    存到本地(blob, 名)
+    // 停在弹窗（同上传）：摘要用**实际取回的字节数**，不是 stat 的估值。
+    set传输({ kind: "done", action: "下载", files: 1, bytes: blob.size })
   }
 
   /**
@@ -940,6 +1040,19 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
+   * 一次手工备份 / 恢复有了结果（或压根没起起来）⇒ **开弹窗**（2026-10-18 用户下达）。
+   *
+   * 只接三样入口：`跑恢复`、`备份` / `备份越限`、`跟备份任务`——它们都只有一个「按键的人」。
+   * 自动备份不经过这里，故不会凭空弹窗打断。窄条里的进行中进度 / 取消也不动。
+   */
+  const 报任务结果 = (result: TaskResult) => {
+    // 弹窗已把这一次说清 ⇒ 底栏那行**上一次**动作的旧话不再成立（新一次起手时也会清，这里再清
+    // 一次是防「失败 → 再试 → 弹窗说了新结果、底栏还挂着旧话」）。
+    set文件话(undefined)
+    void dialog.show(() => <TaskResultDialog result={result} />)
+  }
+
+  /**
    * 预览里有没有「必须先问用户」的东西（spec §6.1 / §6.4）。
    *
    * `missing` / `same` 不会覆盖任何本地内容 ⇒ 不必拦；`different` / `type-mismatch` 会动用户
@@ -966,27 +1079,24 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     decisions: Record<string, RestoreDecision>,
   ) => {
     if (!projectData || currentProject()?.id !== id) return
-    // 上一次的结果属于上一次动作——新一次恢复起手就把它撤掉，别让旧结论在进度期间挂在树上。
-    set恢复结果(undefined)
     const 守 = { id, 代: 备份代次 }
     const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const 恢复 = await projectData.restoreBackup(id, { ...input, decision, decisions })
     if (!还在()) return
     if (恢复 === undefined) {
-      set文件话("恢复没能起起来")
+      报任务结果({ kind: "not-started", action: "恢复", message: "恢复没能起起来" })
       return
     }
     const 结果 = await 等任务(恢复, 守)
     // 任务跑完时项目已经切走 / 本实例已卸载 ⇒ 结果与那句话都不属于现在这个项目。
     if (!还在()) return
-    const 结果体 = 结果?.result?.restore
-    if (结果体 === undefined) {
-      set文件话("恢复没有拿到结果")
+    if (结果 === undefined) {
+      报任务结果({ kind: "not-started", action: "恢复", message: "恢复没有拿到结果" })
       return
     }
-    // 结果走**自己的**结果条，不再塞进 `文件话`：那一行恒为危险色，一次成功的恢复会看着像报错。
-    // 分色 / 零值折叠 / 失败详情都在 `restore-result-bar.tsx`。
-    set恢复结果(结果体)
+    // 结果走**弹窗**（2026-10-18 用户下达）：分色 / 零值折叠 / 失败详情都在
+    // `task-result-dialog.tsx`。没拿到 `result.restore` 也照实弹——标题会按终态说清是哪一种。
+    报任务结果({ kind: "restore", job: 结果 })
     拨清单重取()
   }
 
@@ -1008,7 +1118,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const jobId = await projectData.previewRestore(id, input)
     if (!还在()) return
     if (jobId === undefined) {
-      set文件话("预览没能起起来")
+      报任务结果({ kind: "not-started", action: "恢复", message: "预览没能起起来" })
       return
     }
     const job = await 等任务(jobId, 守)
@@ -1016,7 +1126,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     if (!还在()) return
     const preview = job?.result?.preview
     if (preview === undefined) {
-      set文件话("预览没取到")
+      报任务结果({ kind: "not-started", action: "恢复", message: "预览没取到" })
       return
     }
     if (!选项.必定确认 && !需确认(preview)) {
@@ -1070,13 +1180,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
-   * 起一次手动备份（右键与拖拽共用，spec §5.1）。落点**不参与**路径计算——备份的是被拖的
-   * 那一项，保持原路径。
+   * 起一次手动备份（右键与拖拽共用）。
+   *
+   * **一律整项目**（2026-10-18 用户裁定）：右键哪一行、从哪一行拖，只决定用户从哪个入口进来，
+   * **不再收窄快照范围**——按选中项拍出来的「局部恢复点」会让用户在回看时只看到项目的一部分，
+   * 误以为自己丢了文件。服务端 `path: ""` 即整项目（spec §3.2）。
    *
    * ⚠️ 成功支必须 `await 重取备份状态()`：只清 `文件话` 的话，`backupJob` 永远空着，而 1 秒
    * 轮询的守卫是 `在跑(backupJob())` ⇒ **永远不轮询**、窄条永远不显示进度（amend R-3 的死锁）。
    */
-  const 备份 = async (path: string) => {
+  const 备份 = async () => {
     const id = currentProject()?.id
     if (!id || !projectData) return
     // ⚠️ N-1：进函数**第一行**（任何 await 之前）就钉住项目与代次，一路交给 `等任务` /
@@ -1086,7 +1199,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     // F-1：请求飞行期间先抢读任务——预检期也要看得见进度、点得到取消。回包后立刻停手。
     let 预检 = true
-    const 请求 = projectData.backup(id, path, false)
+    const 请求 = projectData.backup(id, "", false)
     void 盯上预检任务(守, () => 预检)
     const 起 = await 请求
     预检 = false
@@ -1094,7 +1207,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     // 超限框开在新项目上——**静默**返回（此刻用户已经在别处了，说什么都不属于这里）。
     if (!还在()) return
     if (起 === undefined) {
-      set文件话("备份没能起起来")
+      报任务结果({ kind: "not-started", action: "备份", message: "备份没能起起来" })
       return
     }
     if ("code" in 起) {
@@ -1106,7 +1219,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
             kind="quota"
             title="超出容量上限"
             message="本次备份将超出 10 GB 上限，自动备份会暂停，是否继续？（不会自动删旧恢复点）"
-            onConfirm={() => void 备份越限(path, 守)}
+            onConfirm={() => void 备份越限(守)}
             onCancel={() => dialog.close()}
           />
         ))
@@ -1124,7 +1237,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         set文件话("项目正在删除，请稍后重试")
         return
       }
-      set文件话("备份没能起起来")
+      报任务结果({ kind: "not-started", action: "备份", message: "备份没能起起来" })
       return
     }
     set文件话(undefined)
@@ -1138,20 +1251,22 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    *
    * ⚠️ S-1：守由**打开超限框的那次 `备份`**传入（它进门第一行捕获的 `{ id, 代 }`）。
    * 在这里现读 `currentProject()` 会把「框开着期间用户切了项目」读成一个合法的守卫，
-   * 于是以新项目身份备份一个旧项目的路径。
+   * 于是以新项目身份跑一次旧项目的备份。
+   *
+   * 口径同 `备份`：**整项目**（`path: ""`），不继承任何选中项。
    */
-  const 备份越限 = async (path: string, 守: { id: string; 代: number }) => {
+  const 备份越限 = async (守: { id: string; 代: number }) => {
     dialog.close()
     if (!projectData) return
     if (currentProject()?.id !== 守.id || 守.代 !== 备份代次) return
     // G-1：与 `备份()` 同形——请求飞行期间先抢读任务，预检期也要看得见进度、点得到取消。
     let 预检 = true
-    const 请求 = projectData.backup(守.id, path, true)
+    const 请求 = projectData.backup(守.id, "", true)
     void 盯上预检任务(守, () => 预检)
     const 起 = await 请求
     预检 = false
     if (起 === undefined || "code" in 起) {
-      set文件话("备份没能起起来")
+      报任务结果({ kind: "not-started", action: "备份", message: "备份没能起起来" })
       return
     }
     set文件话(undefined)
@@ -1195,7 +1310,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       // ⚠️ 守是**调用方进门第一行**捕获的那一对值（N-1）；在这里重新读 `currentProject()`
       // 会把「已经切到新项目」这件事读成一个合法的守卫。
       if (currentProject()?.id !== 守.id || 守.代 !== 备份代次) return
-      const 快照 = job?.result?.snapshotId
+      // 没有终态任务（轮询没拿到）也要说一声：用户按了「备份」，不能什么都没发生。
+      if (job === undefined) {
+        报任务结果({ kind: "not-started", action: "备份", message: "备份没有拿到结果" })
+        return
+      }
+      // 成功 / 失败 / 取消都弹（2026-10-18 用户下达）；自动备份不经过这里。
+      报任务结果({ kind: "backup", job })
+      const 快照 = job.result?.snapshotId
       if (typeof 快照 !== "string") return
       await 选恢复点(快照)
     } catch {
@@ -1605,7 +1727,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
 
                     ⚠️ 自 Task 17（2026-10-18）起 `onBackup` / `onRestore` **接上了**：拖沙箱行到下树
-                    ＝ 起备份（原路径，spec §5.1）；拖下树行回沙箱 ＝ 先预览、有冲突才问（spec §6.1）。
+                    ＝ 起备份（**整项目**，2026-10-18 用户裁定）；拖下树行回沙箱 ＝ 先预览、有冲突才问（spec §6.1）。
                     两者都要**有项目**才接线（没有项目就没有可备份的东西），与相邻各项同一口径。
                     ⚠️ 上树的行仍**恒可拖**（2026-10-13 用户裁定）：拖出的是**路径引用**（拖到右栏
                     会话框自动填），不为备份接线而变。 */}
@@ -1635,7 +1757,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onDeleteSnapshot={(snapshotId) => 删恢复点(snapshotId)}
                         // 备份 / 恢复两条入口（§5.1 / §6.1）。`onRestore` 与 `onRestoreSnapshot`
                         // 是**两个**名字：右键需要「当前恢复点」，拖拽那条自己带恢复点。
-                        onBackup={有项目() ? (path) => void 备份(path) : undefined}
+                        // 一律整项目（2026-10-18 用户裁定）：组件仍把被点 / 被拖的路径交上来，
+                        // 但备份**不按它收窄**——局部恢复点会让用户误以为文件丢了。
+                        onBackup={有项目() ? () => void 备份() : undefined}
                         onRestore={
                           有项目()
                             ? (path) => {
@@ -1683,12 +1807,6 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                             onCancel={() => set待搬(undefined)}
                           />
                         )}
-                      </Show>
-                      {/* 上一次恢复的结果（2026-10-18 用户裁定）：成功中性 ＋ ✓、失败只红计数，
-                          失败详情就地展开。**不占**下面那条失败通道——那一行是危险色，成功进那里
-                          会变成「做好了也报错」。不自动消失，点 ✕ 清。 */}
-                      <Show when={恢复结果()}>
-                        {(结果) => <RestoreResultBar result={结果()} onDismiss={() => set恢复结果(undefined)} />}
                       </Show>
                       {/* 那句话（`undefined` ＝ 没有话要说）。`role="alert"` 让屏幕阅读器在条冒出来时
                           读一遍（不是模态，不需要焦点管理——同上面两条内联确认）。 */}

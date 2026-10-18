@@ -69,6 +69,28 @@ function 类型名(kind: BackupSnapshot["kind"]): string {
   return kind === "auto" ? "自动" : "手动"
 }
 
+/**
+ * 历史遗留的**局部恢复点**（2026-10-18 起手动备份一律整项目，`scope` 恒为 `""`）。
+ *
+ * 旧口径按右键 / 拖拽的选中项收窄快照范围 ⇒ 这些恢复点在下树里**只列当时那部分文件**。
+ * 不标出来，用户回看时会以为项目丢了文件（2026-10-18 用户实报）。
+ */
+function 是局部(snapshot: BackupSnapshot | undefined): boolean {
+  return snapshot !== undefined && snapshot.scope !== ""
+}
+
+/** 「局部」徽标——只挂在历史遗留的恢复点上（新建的恢复点不会出现）。 */
+function 局部徽标() {
+  return (
+    <span
+      data-slot="minio-tree-snapshot-partial"
+      class="shrink-0 rounded-[10px] border border-v2-border-border-muted px-1.5 text-[10px] text-v2-state-fg-warning"
+    >
+      局部
+    </span>
+  )
+}
+
 type 哪棵树 = "sandbox" | "minio"
 
 export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
@@ -89,6 +111,9 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
    * 省略 ＝ 还没接线 ⇒ **跨树那一放不落**（同 T005 三个按钮、T007 菜单六项的一贯口径：
    * 「未接线即禁用」——一个拖了没反应的**动作**同样是谎）。⚠️ 2026-10-13 起，**行可拖**与这条
    * **解耦**：上树的行恒可拖，拖出去的是**路径引用**（拖到右栏会话框自动填），不为「备份接没接」而变。
+   *
+   * ⚠️ `path` 只说明**用户从哪一项进来**——2026-10-18 用户裁定手动备份**一律整项目**，
+   * 接线层（`workspace-entry.tsx` 的 `备份`）不再拿它收窄快照范围。
    */
   onBackup?: (path: string) => void
   /**
@@ -201,7 +226,8 @@ export function DualFileTree(props: DualFileTreeProps) {
       <div data-slot="sandbox-tree" data-tree="sandbox" class="flex min-h-0 w-full flex-1 flex-col">
         {/* 上树的行**恒可拖**（2026-10-13 用户裁定）：拖出去的是**路径引用**（拖到右栏会话框自动填），
             与「备份到 MinIO 有没有接线」是两回事——后者仍由 `可放` 那道闸门管（`onBackup` 没接就不落）。
-            下树（MinIO）另说：用户明示那棵不实现拖。 */}
+            下树（MinIO）的行拖回沙箱＝拉回：文件与**目录**都可拖（目录按整棵子树，2026-10-18 用户下达）；
+            闸门是「接了口 ＋ 选了恢复点」，与行的类型无关。 */}
         {/* `onBackup` / `onRestore` 在 `splitProps` 名单里 ⇒ 不在 `{...rest}` 里，**必须显式转发**：
             右键菜单「备份到 MinIO」/「从 MinIO 拉回」的禁用判据直接看这两个 prop，
             漏了它们菜单项永远是灰的（用户最初报的缺陷）。 */}
@@ -288,7 +314,8 @@ export function DualFileTree(props: DualFileTreeProps) {
     set拖源(undefined)
     if (!源) return
     // 落点**不参与**路径计算（2026-10-18 用户裁定：保持原路径）。
-    // 拖到哪个目录行都一样——备份的是被拖的那一项，不是「它到那儿之后的样子」。
+    // 拖到哪个目录行都一样；而且 2026-10-18 起**手动备份一律整项目**——这里交上去的路径
+    // 只标记「从哪一项进来」，接线层不会再拿它收窄快照范围。
     if (源.树 === "sandbox") {
       local.onBackup?.(源.路径)
       return
@@ -315,6 +342,11 @@ function MinioTree(props: {
   onSelectSnapshot?: (id: string) => void
   onDeleteSnapshot?: (id: string) => void
   usage?: { readonly usedBytes: number; readonly limitBytes: number; readonly autoPaused: boolean }
+  /**
+   * 行可拖回沙箱。调用方传的是「接了口 ＋ 选了恢复点」的结论（见 `DualFileTree` 那处）。
+   * 文件与**目录**都按这一道闸门（2026-10-18 用户下达）；拖目录 ＝ 按目录路径整棵子树拉回，
+   * 本组件只负责把路径原样交回外层，不再按行类型分流。
+   */
   draggable?: boolean
   onCollapse?: () => void
   /** 用户拖出来的高度（px）。`undefined` ＝ 还没拖过 ⇒ 默认文件区高度的 1/3。 */
@@ -459,7 +491,8 @@ function MinioTree(props: {
 
       {/* 恢复点选择（spec §11.2 / §11.7）：**通栏胶囊 ＋ 下拉**，替换原生 `<select>`。
           原生控件在 28px 高、140px 宽里把「时间 · 类型 · 文件数」压成半截，且没法在每一项里
-          放「删除」。两项文案：第一行时间＋类型，第二行文件数（＋作用范围）。 */}
+          放「删除」。下拉项**一行**：`时间  类型 · N 个文件 · 作用范围`（2026-10-18 用户下达：
+          两行太高，恢复点多了列表要翻半天）。 */}
       <div
         data-slot="minio-tree-snapshots"
         class="flex shrink-0 items-center gap-1 border-b border-v2-border-border-muted px-1 py-1"
@@ -494,6 +527,7 @@ function MinioTree(props: {
                   <span data-slot="minio-tree-snapshot-kind" class={徽标(当前().kind)}>
                     {类型名(当前().kind)}
                   </span>
+                  <Show when={是局部(当前())}>{局部徽标()}</Show>
                   <span class="min-w-0 flex-1 truncate text-[11px] text-v2-text-text-faint">
                     {`${当前().totals.files} 个文件${当前().scope ? ` · ${当前().scope}` : ""}`}
                   </span>
@@ -505,7 +539,9 @@ function MinioTree(props: {
           <DropdownMenu.Portal>
             <DropdownMenu.Content
               data-slot="minio-tree-snapshot-menu"
-              class="z-30 max-h-64 min-w-[15rem] overflow-y-auto rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-base shadow-lg"
+              // 定宽（不是 `min-w`）：一行里那个 `truncate` 要有**上界**才截得住——否则长作用范围
+              // 会把菜单撑得任意宽，「一行」反而变成一条很长的行（2026-10-18）。
+              class="z-30 max-h-64 w-[20rem] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-base shadow-lg"
             >
               <For each={props.snapshots ?? []}>
                 {(snapshot) => (
@@ -515,18 +551,18 @@ function MinioTree(props: {
                     onSelect={() => props.onSelectSnapshot?.(snapshot.id)}
                     class="flex w-full items-center gap-2 px-2 py-1.5 text-left outline-none data-[highlighted]:bg-v2-overlay-simple-overlay-hover data-[selected]:bg-v2-background-bg-layer-01"
                   >
-                    <div class="flex min-w-0 flex-1 flex-col">
-                      <div class="flex items-center gap-1.5">
-                        <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-base">
-                          {时间戳(snapshot.createdAt)}
-                        </span>
-                        <span class={徽标(snapshot.kind)}>{类型名(snapshot.kind)}</span>
-                      </div>
-                      {/* 第二行：文件数（＋作用范围）。作用范围非空时必带——同一分钟、不同选中项的
-                          两个恢复点否则看起来一模一样（spec §11.2）。 */}
-                      <div class="min-w-0 truncate text-[11px] text-v2-text-text-faint">
+                    {/* 一行到底（2026-10-18 用户下达）：时间、类型、文件数（＋作用范围）。
+                        作用范围非空时必带——同一分钟、不同选中项的两个恢复点否则看起来一模一样
+                        （spec §11.2），故它跟着文件数一起**截断**，不换行。 */}
+                    <div data-slot="minio-tree-snapshot-item-body" class="flex min-w-0 flex-1 items-center gap-1.5">
+                      <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-base">
+                        {时间戳(snapshot.createdAt)}
+                      </span>
+                      <span class={徽标(snapshot.kind)}>{类型名(snapshot.kind)}</span>
+                      <Show when={是局部(snapshot)}>{局部徽标()}</Show>
+                      <span class="min-w-0 truncate text-[11px] text-v2-text-text-faint">
                         {`${snapshot.totals.files} 个文件${snapshot.scope ? ` · ${snapshot.scope}` : ""}`}
-                      </div>
+                      </span>
                     </div>
                     {/* 删除**跟着这一项**（2026-10-18 用户裁定）：点它删的是这份恢复点，
                         不是「先选中、再去别处删」。三处 `stopPropagation` 不是洁癖 ——
@@ -569,6 +605,20 @@ function MinioTree(props: {
         </DropdownMenu>
       </div>
 
+      {/* 历史遗留的**局部恢复点**（2026-10-18 起手动备份一律整项目）：下树只列它当时那部分
+          文件。不把「其余文件不在其中、拉回也不会删它们」说出来，用户会以为项目丢了文件
+          （2026-10-18 用户实报）。新建的恢复点 `scope` 恒为 `""` ⇒ 这条不会出现。 */}
+      <Show when={props.snapshots?.find((snapshot) => snapshot.id === props.snapshotId && 是局部(snapshot))}>
+        {(局部) => (
+          <p
+            data-slot="minio-tree-partial-hint"
+            class="shrink-0 border-b border-v2-border-border-muted px-2 py-1 text-[11px] leading-snug text-v2-state-fg-warning"
+          >
+            {`这是旧版本留下的局部恢复点：只包含「${局部().scope}」下的文件，项目里其余文件不在其中（拉回不会删除它们）。`}
+          </p>
+        )}
+      </Show>
+
       <div class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-1 pt-1">
         <Show
           when={行列表().length > 0}
@@ -604,7 +654,10 @@ function MinioTree(props: {
                   data-path={row.node.path}
                   data-type={row.node.type}
                   data-level={row.level}
-                  draggable={props.draggable === true && row.node.type === "file"}
+                  // 文件与目录都可拖（2026-10-18 用户下达）：拖目录 ＝ 按目录路径整棵子树拉回。
+                  // 闸门只有 `props.draggable` 一处（接了恢复口 ＋ 选了恢复点），别在这里再按类型分流
+                  // ——两处判据会漂（`#002-06`）。
+                  draggable={props.draggable === true}
                   // 传**布尔**不传字符串：Solid 的 `aria-expanded` 只收 `"true" | "false" | boolean`
                   // （`String(…)` 会被 tsgo 顶回来），与 `file-tree.tsx` 同一写法。
                   aria-expanded={row.node.type === "directory" ? 展开(row.node.path) : undefined}

@@ -28,10 +28,15 @@ import {
   removeEntry,
   renameEntry,
   saveFile,
+  sendViaXhr,
   statProjectFile,
   uploadFile,
   type FileOpsFetch,
+  type TransferProgress,
+  type UploadFetch,
+  type XhrLike,
 } from "./openhive-file-ops"
+import { onSessionExpired } from "@/auth/session-expired"
 
 const PROJECT = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -85,6 +90,25 @@ const 过期 = () => new Response(null, { status: 401 })
 /** 下载成功那条的形状：字节 ＋ `Content-Disposition`（本出口承诺过它，见下）。 */
 const 附件 = (内容: string) =>
   new Response(内容, { headers: { "content-disposition": `attachment; filename="话单.csv"` } })
+
+/** 与 `附件` 同形，但体是**分块流**——流式读取的进度判据要它。 */
+const 附件流 = (块: readonly string[], contentLength?: string) => {
+  const 编码 = new TextEncoder()
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const 段 of 块) controller.enqueue(编码.encode(段))
+        controller.close()
+      },
+    }),
+    {
+      headers: {
+        "content-disposition": `attachment; filename="话单.csv"`,
+        ...(contentLength === undefined ? {} : { "content-length": contentLength }),
+      },
+    },
+  )
+}
 
 /**
  * 从请求体里取出那个文件。**先 `instanceof` 判形状再取**，不写 `(body as FormData).get(...)`
@@ -222,7 +246,7 @@ describe("uploadFile", () => {
   test("发 POST /openhive/file/upload?dir=…，体是 FormData，带项目头", async () => {
     const { send, sent } = stub(() => 成功("资料/话单.csv"))
 
-    await uploadFile(PROJECT, "资料", 文件(), send)
+    await uploadFile(PROJECT, "资料", 文件(), { send })
 
     const [第一条] = sent
     expect([第一条.method, 第一条.url, 第一条.project, 第一条.credentials]).toEqual([
@@ -243,7 +267,7 @@ describe("uploadFile", () => {
   test("不自己设 content-type（boundary 由平台带上）", async () => {
     const { send, sent } = stub(() => 成功())
 
-    await uploadFile(PROJECT, "", 文件(), send)
+    await uploadFile(PROJECT, "", 文件(), { send })
 
     expect(sent[0].contentType).toBeNull()
   })
@@ -251,7 +275,7 @@ describe("uploadFile", () => {
   test("dir 为空（传到项目根）⇒ 走 ?dir=", async () => {
     const { send, sent } = stub(() => 成功())
 
-    await uploadFile(PROJECT, "", 文件(), send)
+    await uploadFile(PROJECT, "", 文件(), { send })
 
     expect(sent[0].url).toBe("/openhive/file/upload?dir=")
   })
@@ -260,7 +284,7 @@ describe("uploadFile", () => {
   test("带路径的文件名原样交出去（改名是服务端的事）", async () => {
     const { send, sent } = stub(() => 成功())
 
-    await uploadFile(PROJECT, "", new File(["甲"], "../../话单.csv"), send)
+    await uploadFile(PROJECT, "", new File(["甲"], "../../话单.csv"), { send })
 
     expect(体里的文件(sent[0].body).name).toBe("../../话单.csv")
   })
@@ -268,7 +292,7 @@ describe("uploadFile", () => {
   test("400 ⇒ rejected（例如目标已有同名）", async () => {
     const { send } = stub(() => 拒绝(400, "目标位置已经有同名文件"))
 
-    expect(await uploadFile(PROJECT, "", 文件(), send)).toEqual({
+    expect(await uploadFile(PROJECT, "", 文件(), { send })).toEqual({
       kind: "rejected",
       message: "目标位置已经有同名文件",
     })
@@ -278,7 +302,7 @@ describe("uploadFile", () => {
   test("401（会话过期）⇒ rejected，话说成「登录已过期」", async () => {
     const { send } = stub(() => 过期())
 
-    expect(await uploadFile(PROJECT, "资料", 文件(), send)).toEqual({
+    expect(await uploadFile(PROJECT, "资料", 文件(), { send })).toEqual({
       kind: "rejected",
       message: "登录已过期，请重新登录",
     })
@@ -289,7 +313,150 @@ describe("uploadFile", () => {
       throw new Error("连不上")
     }
 
-    expect(await uploadFile(PROJECT, "", 文件(), send)).toEqual({ kind: "failed", message: "上传文件失败" })
+    expect(await uploadFile(PROJECT, "", 文件(), { send })).toEqual({ kind: "failed", message: "上传文件失败" })
+  })
+
+  /**
+   * 字节进度是这一轮（2026-10-18）新增的**唯一**用途：弹窗里的百分比。
+   * 钉两件事——回调被交到发送层（`init.onProgress`）、发上来的两次数值原样上交。
+   */
+  test("onProgress：上传层报几次数，就原样交几次（loaded / total）", async () => {
+    const 进度: TransferProgress[] = []
+    const send: UploadFetch = async (_input, init) => {
+      init?.onProgress?.({ loaded: 2, total: 4 })
+      init?.onProgress?.({ loaded: 4, total: 4 })
+      return 成功()
+    }
+
+    await uploadFile(PROJECT, "", 文件(), { send, onProgress: (项) => 进度.push(项) })
+
+    expect(进度).toEqual([
+      { loaded: 2, total: 4 },
+      { loaded: 4, total: 4 },
+    ])
+  })
+
+  /**
+   * 上传换 XHR 之后，401 的「喊一声」不能再依赖 `trySend`（它只包 fetch）。
+   * 这条钉的是「另一条发送路径也得喊」——否则会话过期时上传会静默失败，门那边永远不知道。
+   */
+  test("401 ⇒ 走同一条报信口喊一声「没身份了」", async () => {
+    let 喊了 = 0
+    const 退订 = onSessionExpired(() => (喊了 += 1))
+
+    try {
+      expect(await uploadFile(PROJECT, "", 文件(), { send: async () => 过期() })).toEqual({
+        kind: "rejected",
+        message: "登录已过期，请重新登录",
+      })
+    } finally {
+      退订()
+    }
+
+    expect(喊了).toBe(1)
+  })
+})
+
+/**
+ * XHR 那一层单独钉：它是**唯一**能拿到上传字节进度的手段（`fetch` + `FormData` 报不了）。
+ * 假货只实现 `XhrLike` 那几个成员——不必 `as XMLHttpRequest`（`#002-03`：替身停在边界上）。
+ */
+class 假Xhr implements XhrLike {
+  method = ""
+  url = ""
+  withCredentials = false
+  headers: Record<string, string> = {}
+  sentBody: unknown
+  aborted = false
+  status = 200
+  responseText = '{"path":"话单.csv"}'
+  upload: XhrLike["upload"] = { onprogress: null }
+  onload: ((event: ProgressEvent) => void) | null = null
+  onerror: ((event: ProgressEvent) => void) | null = null
+  onabort: ((event: ProgressEvent) => void) | null = null
+
+  open(method: string, url: string) {
+    this.method = method
+    this.url = url
+  }
+  setRequestHeader(name: string, value: string) {
+    this.headers[name] = value
+  }
+  send(body: FormData) {
+    this.sentBody = body
+  }
+  abort() {
+    this.aborted = true
+    this.onabort?.(new ProgressEvent("abort"))
+  }
+  getResponseHeader() {
+    return "application/json"
+  }
+}
+
+describe("sendViaXhr", () => {
+  const 体 = () => {
+    const form = new FormData()
+    form.set("file", new File(["甲"], "话单.csv"))
+    return form
+  }
+
+  test("方法 / 头 / cookie / 体交给 XHR；onload 时把状态与体包成 Response", async () => {
+    const xhr = new 假Xhr()
+    const form = 体()
+
+    const 结果 = sendViaXhr(xhr, "/openhive/file/upload?dir=", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "x-openhive-project": PROJECT },
+      body: form,
+    })
+    xhr.onload?.(new ProgressEvent("load"))
+
+    const response = await 结果
+    expect([xhr.method, xhr.url, xhr.withCredentials]).toEqual(["POST", "/openhive/file/upload?dir=", true])
+    expect(xhr.headers["x-openhive-project"]).toBe(PROJECT)
+    // 不自己设 content-type：boundary 由平台带上（同上传那条老判据）。
+    expect(xhr.headers["content-type"]).toBeUndefined()
+    expect(xhr.sentBody).toBe(form)
+    expect(response?.status).toBe(200)
+    expect(await response?.json()).toEqual({ path: "话单.csv" })
+  })
+
+  test("upload.onprogress ⇒ onProgress（lengthComputable=false 时 total=0）", async () => {
+    const xhr = new 假Xhr()
+    const 进度: TransferProgress[] = []
+
+    const 结果 = sendViaXhr(xhr, "/x", { method: "POST", body: 体(), onProgress: (项) => 进度.push(项) })
+    xhr.upload.onprogress?.(new ProgressEvent("progress", { lengthComputable: true, loaded: 3, total: 9 }))
+    xhr.upload.onprogress?.(new ProgressEvent("progress", { lengthComputable: false, loaded: 4, total: 0 }))
+    xhr.onload?.(new ProgressEvent("load"))
+    await 结果
+
+    expect(进度).toEqual([
+      { loaded: 3, total: 9 },
+      { loaded: 4, total: 0 },
+    ])
+  })
+
+  test("signal 一响 ⇒ xhr.abort()，结果 undefined", async () => {
+    const xhr = new 假Xhr()
+    const 控 = new AbortController()
+
+    const 结果 = sendViaXhr(xhr, "/x", { method: "POST", body: 体(), signal: 控.signal })
+    控.abort()
+
+    expect(xhr.aborted).toBe(true)
+    expect(await 结果).toBeUndefined()
+  })
+
+  test("网络错 ⇒ undefined（不抛）", async () => {
+    const xhr = new 假Xhr()
+
+    const 结果 = sendViaXhr(xhr, "/x", { method: "POST", body: 体() })
+    xhr.onerror?.(new ProgressEvent("error"))
+
+    expect(await 结果).toBeUndefined()
   })
 })
 
@@ -297,7 +464,7 @@ describe("downloadFile", () => {
   test("发 GET /openhive/file/download?path=…，带项目头与 cookie", async () => {
     const { send, sent } = stub(() => new Response("甲"))
 
-    await downloadFile(PROJECT, "资料/话单.csv", send)
+    await downloadFile(PROJECT, "资料/话单.csv", { send })
 
     expect(sent).toEqual([
       {
@@ -314,7 +481,7 @@ describe("downloadFile", () => {
   test("200 ＋ Content-Disposition ⇒ 拿回字节（Blob）", async () => {
     const { send } = stub(() => 附件("甲"))
 
-    const blob = await downloadFile(PROJECT, "话单.csv", send)
+    const blob = await downloadFile(PROJECT, "话单.csv", { send })
 
     expect(blob).toBeInstanceOf(Blob)
     expect(await blob?.text()).toBe("甲")
@@ -327,7 +494,7 @@ describe("downloadFile", () => {
   test("400 ⇒ undefined", async () => {
     const { send } = stub(() => 拒绝(400, "文件不存在"))
 
-    expect(await downloadFile(PROJECT, "没有的.csv", send)).toBeUndefined()
+    expect(await downloadFile(PROJECT, "没有的.csv", { send })).toBeUndefined()
   })
 
   /**
@@ -341,15 +508,15 @@ describe("downloadFile", () => {
   test("200 + HTML 兜底页（出口没挂上）⇒ undefined", async () => {
     const { send } = stub(() => 兜底页())
 
-    expect(await downloadFile(PROJECT, "话单.csv", send)).toBeUndefined()
+    expect(await downloadFile(PROJECT, "话单.csv", { send })).toBeUndefined()
   })
 
   /** 对照：带上那个头就照收——否则上面那条会退化成「永远为真的话」（`#003-03` 第②类）。 */
   test("有头就有字节、没头就 undefined：一条对照钉住这条判据是活的", async () => {
     const { send } = stub((url) => (url.searchParams.get("path") === "有.csv" ? 附件("甲") : 兜底页()))
 
-    expect(await (await downloadFile(PROJECT, "有.csv", send))?.text()).toBe("甲")
-    expect(await downloadFile(PROJECT, "没有.csv", send)).toBeUndefined()
+    expect(await (await downloadFile(PROJECT, "有.csv", { send }))?.text()).toBe("甲")
+    expect(await downloadFile(PROJECT, "没有.csv", { send })).toBeUndefined()
   })
 
   test("网络抛 ⇒ undefined", async () => {
@@ -357,7 +524,88 @@ describe("downloadFile", () => {
       throw new Error("连不上")
     }
 
-    expect(await downloadFile(PROJECT, "话单.csv", send)).toBeUndefined()
+    expect(await downloadFile(PROJECT, "话单.csv", { send })).toBeUndefined()
+  })
+
+  /**
+   * 流式读取（2026-10-18）后才有真百分比。判据两截：**读出来的字节仍然对**，
+   * 以及**每次读到一块都报一次**（含开头那次 `loaded=0`，弹窗靠它当场拿到总量）。
+   */
+  test("边读边报进度：总量取 Content-Length，最后拼回完整字节", async () => {
+    const 进度: TransferProgress[] = []
+
+    const blob = await downloadFile(PROJECT, "话单.csv", {
+      send: async () => 附件流(["aa", "bb"], "4"),
+      onProgress: (项) => 进度.push(项),
+    })
+
+    expect(await blob?.text()).toBe("aabb")
+    expect(进度).toEqual([
+      { loaded: 0, total: 4 },
+      { loaded: 2, total: 4 },
+      { loaded: 4, total: 4 },
+    ])
+  })
+
+  /**
+   * `Content-Length` 不是本出口承诺过的头（服务端只承诺 `Content-Disposition`），
+   * 拿不到时用**已在的** `stat` 出口问大小——那是「百分比」唯一的兜底来源。
+   */
+  test("没有 Content-Length ⇒ 用 /openhive/file/stat 的总大小兜底", async () => {
+    const 进度: TransferProgress[] = []
+    const send: FileOpsFetch = async (input) => {
+      if (input.startsWith("/openhive/file/stat")) {
+        return new Response(JSON.stringify({ size: 4 }), { headers: { "content-type": "application/json" } })
+      }
+      return 附件流(["aa", "bb"])
+    }
+
+    await downloadFile(PROJECT, "话单.csv", { send, onProgress: (项) => 进度.push(项) })
+
+    expect(进度.at(-1)).toEqual({ loaded: 4, total: 4 })
+  })
+
+  test("流读到一半断了 ⇒ undefined（不抛）", async () => {
+    const send: FileOpsFetch = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error("断"))
+          },
+        }),
+        { headers: { "content-disposition": 'attachment; filename="话单.csv"' } },
+      )
+
+    expect(await downloadFile(PROJECT, "话单.csv", { send })).toBeUndefined()
+  })
+
+  test("signal 中断 ⇒ undefined（不是「失败」那句话），且信号**真的交给了传输层**", async () => {
+    const 控 = new AbortController()
+    let 送出的信号: AbortSignal | null | undefined
+    let 流控!: ReadableStreamDefaultController<Uint8Array>
+    const 流 = new ReadableStream<Uint8Array>({
+      start(controller) {
+        流控 = controller
+        controller.enqueue(new TextEncoder().encode("a"))
+      },
+    })
+    const send: FileOpsFetch = async (_input, init) => {
+      送出的信号 = init?.signal
+      return new Response(流, {
+        headers: { "content-disposition": 'attachment; filename="话单.csv"', "content-length": "2" },
+      })
+    }
+
+    const 结果 = downloadFile(PROJECT, "话单.csv", { send, signal: 控.signal })
+    // 让第一块先被读到，再中断——这才测的是「读到一半」。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    控.abort()
+    流控.error(new DOMException("Aborted", "AbortError"))
+
+    expect(await 结果).toBeUndefined()
+    // 「读到一半取消」有两半：本层的循环守卫，**以及**那一枪本身被 abort。
+    // 只钉前一半的话，真栈上网络请求会继续跑到天荒地老而单测全绿。
+    expect(送出的信号).toBe(控.signal)
   })
 })
 

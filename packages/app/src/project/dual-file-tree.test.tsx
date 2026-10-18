@@ -317,7 +317,7 @@ const 点菜单项 = (action: string) => {
 const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
 
 describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下→上＝拉回）", () => {
-  test("上树的**文件与目录**行都可拖（目录也拖＝「文件夹路径的引用」，2026-10-13 用户裁定）；下树仍只文件可拖", () => {
+  test("上树、下树的**文件与目录**行都可拖（2026-10-18 用户下达：下树目录按整棵子树拉回）", () => {
     const { host } = 挂({ open: true })
     全展开下树(host) // 下树默认全收缩 ⇒ 文件行要打开才在
 
@@ -325,10 +325,12 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     // 目录行也可拖（用户：「文件夹也需要拖，就是对文件夹路径的引用」）
     expect(行(host, "sandbox", "资金流水")?.getAttribute("draggable")).toBe("true")
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable")).toBe("true")
-    // ⚠️ **下树的目录行是另一处判据**（`MinioTree` 里那份 `type === "file"`），上面那条压不住它
-    // ——它守的是 `file-tree.tsx`。M4 变异实测：把下树那处削掉，**19 条全绿**，正是缺了这一行。
-    // 补它时变异体还挂着，所以它是正经的**先红后绿**（见 tasks.md 的 M4）。
-    expect(行(host, "minio", "资金流水")?.getAttribute("draggable") === "true").toBe(false)
+    /*
+     * ⚠️ **下树的目录行是另一处判据**（`MinioTree` 里那份 `type === "file"`），上面那条压不住它。
+     * 2026-10-18 用户下达「下树目录也可以拖」⇒ 这条从「不可拖」翻成「可拖」；翻面后旧实现
+     * 仍然会让它红（`row.node.type === "file"` 把目录行关死）。
+     */
+    expect(行(host, "minio", "资金流水")?.getAttribute("draggable")).toBe("true")
   })
 
   test("拖一个**文件** ⇒ 载荷是 `file:<相对路径>`（会话框按这个形状插引用）", () => {
@@ -405,6 +407,20 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
   })
 
   /**
+   * 拖目录 ＝ 按**该目录的路径**整棵子树拉回（2026-10-18 用户下达）。
+   *
+   * 与上面那条成对：只放开可拖、不把路径原样交出去的话，「拖目录」就会退化成拖不动
+   * （或者更糟：交出一个错的子路径）。落点不参与（同 2026-10-18 裁定）。
+   */
+  test("拖下树的**目录**回沙箱 ⇒ `onRestoreSnapshot` 收到恢复点与目录自身路径", () => {
+    const { host, 拉回过 } = 挂({ open: true })
+
+    拖到(行(host, "minio", "资金流水"), 树(host, "sandbox"))
+
+    expect(拉回过).toEqual([{ snapshotId: "s-1", path: "资金流水" }])
+  })
+
+  /**
    * spec §11.3：冲突判断**交给恢复对话框**（起预览任务时做），树**不得**再拦截。
    * 旧行为（沙箱有同名 ⇒ 树里弹内联确认、回调为空）已按 amend 删除——那条性质**反向**了，
    * 回归网必须钉住正向：同名也照常把 `{snapshotId, path}` 交出去。
@@ -431,11 +447,15 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     const { host } = 挂({ open: true, snapshotId: null })
     全展开下树(host) // 默认全收缩 ⇒ 文件行要打开才在
 
-    const 行元素 = 行(host, "minio", "资金流水/支付宝.xlsx")
+    const 文件行 = 行(host, "minio", "资金流水/支付宝.xlsx")
     // 先证行在（`#005-38` / `#005-47`：行不存在时 `undefined !== "true"` 照样绿）。
     // ⚠️ 别用 `toBeNull()`——在本仓会把整轮挂死（`#005-01`）。
-    expect(行元素 === null).toBe(false)
-    expect(行元素?.getAttribute("draggable")).not.toBe("true")
+    expect(文件行 === null).toBe(false)
+    expect(文件行?.getAttribute("draggable")).not.toBe("true")
+    // 2026-10-18 起下树的**目录行也可拖** ⇒ 同一道闸门必须也管住它（`#004-01`：数全出口）。
+    const 目录行 = 行(host, "minio", "资金流水")
+    expect(目录行 === null).toBe(false)
+    expect(目录行?.getAttribute("draggable")).not.toBe("true")
   })
 
   test("同树内拖 ⇒ 两个回调都不喊（上树的行另可拖出浏览器，那是拖拽 A，不归本组件）", () => {
@@ -452,7 +472,8 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
   /**
    * ⚠️ 这条的前提在 2026-10-13 **翻了一面**：上树的行**恒可拖**，与「备份有没有接线」**解耦**
    * （拖出去的是**路径引用**——文件 tab 要把行拖到右栏会话框，那条路与 onBackup 无关）。
-   * 下树仍按「有没有接 `onRestore`」开关（用户：MinIO 那棵不实现拖）。
+   * 下树的闸门是「接了 `onRestoreSnapshot` **且**选了恢复点」（spec §11.3 末条）——
+   * 本用例两样都没给 ⇒ 文件行与目录行都不可拖。
    *
    * 于是「未接线即禁用」这句**在本组件里只对下树成立**了——别再拿它当上树的规则。
    */
@@ -632,7 +653,29 @@ describe("DualFileTree 恢复点选择器与空态（spec §11.2）", () => {
     expect(选过的恢复点).toEqual(["s-2"])
   })
 
-  test("菜单项第二行在 scope 非空时带作用范围（同一分钟的两个恢复点要分得开）", async () => {
+  test("菜单项**一行显示**：时间 / 类型 / 文件数是一排 span，没有第二行（2026-10-18 用户下达）", async () => {
+    const { host } = 挂({
+      open: true,
+      snapshots: [快照("s-1", "manual", 24)],
+      snapshotId: "s-1",
+    })
+
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const 体 = 菜单项("s-1")?.querySelector<HTMLElement>("[data-slot='minio-tree-snapshot-item-body']")
+    // 「一行」在 happy-dom 里没有排版可量（`#005-07`）⇒ 钉结构：**一个横排容器、三段直系文字、
+    // 没有第二层的块容器**（旧的两行版有两只 `<div>`：外壳 `flex-col` ＋ 内层时间行）。
+    expect(体?.className.split(/\s+/).includes("flex")).toBe(true)
+    expect(体?.className.split(/\s+/).includes("flex-col")).toBe(false)
+    expect(体?.querySelectorAll("div").length).toBe(0)
+    expect(Array.from(体?.children ?? []).map((el) => el.tagName)).toEqual(["SPAN", "SPAN", "SPAN"])
+    expect(体?.children[0]?.textContent?.trim()).not.toBe("")
+    expect(体?.children[1]?.textContent?.trim()).toBe("手动")
+    expect(体?.children[2]?.textContent?.trim()).toBe("24 个文件")
+  })
+
+  test("菜单项在 scope 非空时带作用范围（同一分钟的两个恢复点要分得开）", async () => {
     const { host } = 挂({
       open: true,
       snapshots: [快照("s-1", "manual", 3), { ...快照("s-3", "manual", 5), scope: "资料" }],
@@ -643,6 +686,40 @@ describe("DualFileTree 恢复点选择器与空态（spec §11.2）", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(菜单项("s-3")?.textContent).toContain("5 个文件 · 资料")
+  })
+
+  /**
+   * 2026-10-18 用户实报：「按选中项拍的快照」回看时看不到项目全部文件，用户以为文件丢了。
+   * 新口径已改成一律整项目（`workspace-entry.tsx` 的 `备份`），但**历史遗留的局部恢复点还在**
+   * ——它们必须自己说明白，否则同一个误解照样成立。
+   */
+  test("历史遗留的局部恢复点：触发器与菜单项带「局部」徽标，下树说清「只含某范围、拉回不删其余」", async () => {
+    const { host } = 挂({
+      open: true,
+      snapshots: [{ ...快照("s-1", "manual", 5), scope: "资料" }],
+      snapshotId: "s-1",
+    })
+
+    const 触发器 = 恢复点选择器(host)
+    expect(槽(触发器, "minio-tree-snapshot-partial")?.textContent?.trim()).toBe("局部")
+
+    const 说明 = 槽(host, "minio-tree-partial-hint")?.textContent ?? ""
+    expect(说明).toContain("局部恢复点")
+    expect(说明).toContain("资料")
+    expect(说明).toContain("拉回不会删除")
+
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(
+      菜单项("s-1")?.querySelector("[data-slot='minio-tree-snapshot-partial']")?.textContent?.trim(),
+    ).toBe("局部")
+  })
+
+  test("整项目恢复点（新口径：scope 为空）不带「局部」徽标，也没有那段说明", () => {
+    const { host } = 挂({ open: true, snapshotId: "s-1" }) // 夹具 `快照()` 的 scope 是 ""
+
+    expect(不存在(槽(host, "minio-tree-snapshot-partial"))).toBe(true)
+    expect(不存在(槽(host, "minio-tree-partial-hint"))).toBe(true)
   })
 
   test("删除**跟着具体那一项**：删 s-2 就删 s-2，与当前选中无关", async () => {

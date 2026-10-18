@@ -48,11 +48,25 @@ export const defaultSend: ForkFetch = (input, init) => fetch(input, init)
 export async function trySend(send: ForkFetch, input: string, init?: RequestInit): Promise<Response | undefined> {
   try {
     const response = await send(input, init)
-    if (isSessionExpired(response)) markSessionExpired()
+    noteStatus(response)
     return response
   } catch {
     return undefined
   }
+}
+
+/**
+ * 「这个响应没身份了 ⇒ 喊一声」。**fetch 与 XHR 两条发送路径共用这一处**。
+ *
+ * 上传换 XHR 之后（2026-10-18，`fetch` 拿不到字节进度）多了一条发送路径：它不经过 `trySend`，
+ * 若在这里之外再写一遍 `if (isSessionExpired(...)) markSessionExpired()`，就正是 `LEARNINGS #002-06`
+ * 那条「同一个判断在两处各写一份」——XHR 那侧漏一次，会话过期就静默无声。
+ *
+ * 单个响应被喊两次（`trySend` 一次、调用方一次）没有影响：`markSessionExpired` 的契约就是
+ * 「多喊几次、订阅方重探几次、结论一致」（见 `@/auth/session-expired` 的注释）。
+ */
+export function noteStatus(response: Response | undefined): void {
+  if (isSessionExpired(response)) markSessionExpired()
 }
 
 /**

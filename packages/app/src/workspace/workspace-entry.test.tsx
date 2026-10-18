@@ -132,6 +132,13 @@ const 入口 = (host: HTMLElement, label: string) => {
 const text = (root: HTMLElement, slot: string) => root.querySelector(`[data-slot='${slot}']`)?.textContent?.trim()
 
 /**
+ * 弹窗里的槽：`dialog.show()` 把内容 Portal 到 **`document.body`**，不在挂载 host 里
+ * （结果弹窗、确认框、恢复对话框都走这条路）。按 host 查只会读到 `null`，红成「弹窗没开」。
+ */
+const 页面槽 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
+const 文本在页 = (slot: string) => 页面槽(slot)?.textContent?.trim() ?? ""
+
+/**
  * 某选择器**不存在**吗？——返回**布尔**，不是节点。
  *
  * ⚠️ 不能图省事写成 `expect(host.querySelector("[data-…]")).toBeNull()`：**那条断言红了会把整轮
@@ -1234,13 +1241,13 @@ function 假数据源(
     },
     // 记的是**文件名**不是 `File` 对象本身：断言里要比的是名字，换成对象会让 `toEqual` 在两个
     // 内容相同的 `File` 上判假。
-    upload: async (projectId, dir, file) => {
+    upload: async (projectId, dir, file, options) => {
       记.传的.push([projectId, dir, file.name])
-      return 剧本.upload ? await 剧本.upload(projectId, dir, file) : { kind: "failed", message: "没有剧本" }
+      return 剧本.upload ? await 剧本.upload(projectId, dir, file, options) : { kind: "failed", message: "没有剧本" }
     },
-    download: async (projectId, path) => {
+    download: async (projectId, path, options) => {
       记.下的.push([projectId, path])
-      return 剧本.download ? await 剧本.download(projectId, path) : undefined
+      return 剧本.download ? await 剧本.download(projectId, path, options) : undefined
     },
     // T021 的四个成员动作。前三条同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
     // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
@@ -2549,6 +2556,171 @@ describe("文件动作接进工作台（T020 出参）", () => {
 
     expect(text(host, "file-op-message")).toContain("话单.csv")
     expect(存了).toBe(0)
+  })
+
+  /**
+   * 传输弹窗（2026-10-18 用户裁定）。这一组钉的是**接线**：
+   * `onProgress` 真的被交到了数据源手里、结果真的落到弹窗上、取消真的中断了那一枪。
+   * 弹窗自己的画法在 `file-transfer-dialog.test.tsx` 里钉（那边裸挂在真壳上）。
+   */
+  test("上传：弹窗显示字节进度；成功后停在「上传完成」，点「关闭」才收", async () => {
+    let 放行: (() => void) | undefined
+    const { host } = await 开({
+      upload: async (_id, _dir, file, options) => {
+        options?.onProgress?.({ loaded: 1, total: 4 })
+        await new Promise<void>((resolve) => (放行 = resolve))
+        return { kind: "done", path: file.name }
+      },
+    })
+    const 落点 = 树行(host).find((el) => el.getAttribute("data-path") === "资料") ?? null
+
+    拖入(落点, [new File(["abcd"], "话单.csv")])
+    await 等到(() => 文本在页("file-transfer-percent") === "25%")
+
+    expect(文本在页("file-transfer-title")).toBe("正在上传")
+    expect(文本在页("file-transfer-name")).toBe("话单.csv")
+
+    放行?.()
+    await 等到(() => 文本在页("file-transfer-title") === "上传完成")
+
+    // 成功**不自动关**（用户裁定）：摘要留在屏幕上，点「关闭」才收。
+    expect(页面槽("file-transfer-dialog") !== null).toBe(true)
+    expect(文本在页("file-transfer-summary")).toBe("1 个文件 · 4 B")
+
+    页面槽("file-transfer-close")?.click()
+    expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+  })
+
+  test("上传中点「取消」⇒ 打断这一枪、关窗、不报错；已经传完的那个留在清单里", async () => {
+    let 第二枪: AbortSignal | undefined
+    // 起过几枪：取消之后**不许再起下一枪**（第三件还在队列里）。
+    const 起过: string[] = []
+    const { host, 假 } = await 开({
+      upload: async (_id, _dir, file, options) => {
+        起过.push(file.name)
+        if (file.name !== "乙.csv") return { kind: "done", path: file.name }
+        第二枪 = options?.signal
+        await new Promise<void>((resolve) =>
+          options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+        )
+        return { kind: "failed", message: "上传文件失败" }
+      },
+    })
+    const 落点 = 树行(host).find((el) => el.getAttribute("data-path") === "资料") ?? null
+    const 重取前 = 假.files.length
+
+    拖入(落点, [new File(["a"], "甲.csv"), new File(["b"], "乙.csv"), new File(["c"], "丙.csv")])
+    await 等到(() => 第二枪 !== undefined)
+
+    页面槽("file-transfer-cancel")?.click()
+
+    expect(第二枪?.aborted).toBe(true)
+    expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+    // 取消不是失败：内联红字一个字都不出现。
+    expect(text(host, "file-op-message")).toBeUndefined()
+    // 队列里剩下的那个一个字都没发（取消是「停下」，不是「跳过这一个」）。
+    expect(起过).toEqual(["甲.csv", "乙.csv"])
+    // 已传完的那个要出现在树里——服务端一次一个，中断只作用于正在飞的那一枪。
+    await 等到(() => 假.files.length > 重取前)
+  })
+
+  test("Esc 与「取消」同一条语义：中断那一枪并关窗", async () => {
+    let 信号: AbortSignal | undefined
+    const { host } = await 开({
+      upload: async (_id, _dir, _file, options) => {
+        信号 = options?.signal
+        await new Promise<void>((resolve) =>
+          options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+        )
+        return { kind: "failed", message: "上传文件失败" }
+      },
+    })
+    const 落点 = 树行(host).find((el) => el.getAttribute("data-path") === "资料") ?? null
+
+    拖入(落点, [new File(["a"], "话单.csv")])
+    await 等到(() => 信号 !== undefined)
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+
+    expect(信号?.aborted).toBe(true)
+    expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+    expect(text(host, "file-op-message")).toBeUndefined()
+  })
+
+  test("上传失败 ⇒ 关窗、落回内联红字（失败不在弹窗里另弹一张脸）", async () => {
+    const { host } = await 开({ upload: async () => ({ kind: "rejected", message: "磁盘满了" }) })
+    const 落点 = 树行(host).find((el) => el.getAttribute("data-path") === "资料") ?? null
+
+    拖入(落点, [new File(["a"], "话单.csv")])
+    await 等到(() => text(host, "file-op-message") !== undefined)
+
+    expect(text(host, "file-op-message")).toContain("磁盘满了")
+    expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+  })
+
+  test("下载：弹窗显示字节进度；完成后停在「下载完成」", async () => {
+    let 放行: (() => void) | undefined
+    const { host } = await 开({
+      download: async (_id, _path, options) => {
+        options?.onProgress?.({ loaded: 2, total: 8 })
+        await new Promise<void>((resolve) => (放行 = resolve))
+        return new Blob(["abcd"])
+      },
+    })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同上面两条：只替换与还原。
+    const 原create = URL.createObjectURL
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同上。
+    const 原click = HTMLAnchorElement.prototype.click
+    URL.createObjectURL = () => "blob:openhive-test"
+    HTMLAnchorElement.prototype.click = () => {}
+    try {
+      右键行(host, "话单.csv")
+      点菜单项("download")
+      await 等到(() => 文本在页("file-transfer-percent") === "25%")
+
+      expect(文本在页("file-transfer-title")).toBe("正在下载")
+
+      放行?.()
+      await 等到(() => 文本在页("file-transfer-title") === "下载完成")
+      expect(文本在页("file-transfer-summary")).toBe("1 个文件 · 4 B")
+    } finally {
+      URL.createObjectURL = 原create
+      HTMLAnchorElement.prototype.click = 原click
+    }
+  })
+
+  test("下载中点「取消」⇒ 中断、不存盘、不报错", async () => {
+    let 信号: AbortSignal | undefined
+    const { host } = await 开({
+      download: async (_id, _path, options) => {
+        信号 = options?.signal
+        await new Promise<void>((resolve) =>
+          options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+        )
+        return undefined
+      },
+    })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前。
+    const 原create = URL.createObjectURL
+    let 存了 = 0
+    URL.createObjectURL = () => {
+      存了 += 1
+      return "blob:openhive-test"
+    }
+    try {
+      右键行(host, "话单.csv")
+      点菜单项("download")
+      await 等到(() => 信号 !== undefined)
+
+      页面槽("file-transfer-cancel")?.click()
+
+      expect(信号?.aborted).toBe(true)
+      expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+      expect(text(host, "file-op-message")).toBeUndefined()
+      expect(存了).toBe(0)
+    } finally {
+      URL.createObjectURL = 原create
+    }
   })
 })
 
@@ -4027,7 +4199,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.明细).toEqual([["p-42", "s-1"]])
   })
 
-  test("拖沙箱文件到下树 ⇒ backup(项目, 原路径, false)——落点不参与路径计算", async () => {
+  test("拖沙箱文件到下树 ⇒ backup(项目, \"\", false)——一律整项目，选中项不收窄快照范围", async () => {
     const { host, 假 } = await 开备份({
       snapshots: async () => [快照("s-1")],
       snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
@@ -4038,7 +4210,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
 
     await 等到(() => 假.起的备份.length === 1)
-    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-42", "", false]])
   })
 
   test("起完备份立刻重取状态 ⇒ 进度接进窄条（不靠 1 秒轮询）", async () => {
@@ -4179,7 +4351,56 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(当前恢复点(host)).toBe("s-new")
     expect(树行按(host, "minio", "资料/老.txt") === null).toBe(true)
     // 前置：快照 id 真的来自终态 job（不是碰巧清单第一项被默认选中）——进门时它选的是 s-old。
-    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-42", "", false]])
+  })
+
+  test("手动备份到终态 ⇒ 弹窗报「备份完成」与文件数（2026-10-18 用户下达）", async () => {
+    const { host } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      backup: async () => ({ jobId: "j-1" }),
+      job: async (jobId) =>
+        jobId === "j-1"
+          ? 任务("j-1", "succeeded", {
+              kind: "backup",
+              progress: { filesTotal: 3, filesDone: 3, bytesTotal: 2048, bytesDone: 2048 },
+              result: { snapshotId: "s-1" },
+            })
+          : undefined,
+    })
+    await 等到(() => 当前恢复点(host) === "s-1")
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+
+    // 结果走**弹窗**（Portal 到 document.body），不再在底栏内联。
+    await 等到(() => 文本在页("task-result-title") === "备份完成")
+    expect(文本在页("task-result-text")).toBe("3 个文件 · 2.0 KB")
+    expect(页面槽("task-result")?.closest("[data-slot='dialog-content']") !== null).toBe(true)
+    expect(text(host, "file-op-message") === undefined).toBe(true)
+
+    页面槽("task-result-close")?.click()
+    await 等到(() => 页面槽("task-result") === null)
+    expect(页面槽("task-result") === null).toBe(true)
+  })
+
+  test("手动备份失败 ⇒ 弹窗说「备份失败」与服务端给的原因", async () => {
+    const { host } = await 开备份({
+      snapshots: async () => [],
+      backup: async () => ({ jobId: "j-1" }),
+      job: async (jobId) =>
+        jobId === "j-1"
+          ? 任务("j-1", "failed", {
+              kind: "backup",
+              error: { code: "upload_failed", message: "对象存储连不上", retryable: true },
+            })
+          : undefined,
+    })
+    await 等到(() => 树行按(host, "sandbox", "报告.docx") !== null)
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+
+    await 等到(() => 文本在页("task-result-title") === "备份失败")
+    expect(文本在页("task-result-text")).toBe("对象存储连不上")
+    expect(页面槽("task-result")?.getAttribute("role")).toBe("alert")
   })
 
   test("起备份后切项目：旧任务的终态不会把新恢复点写进新项目（N-1）", async () => {
@@ -4217,7 +4438,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     // 正向前提：备份真的以 p-1 身份起了。少了这一句，「备份进门就 return」的变异下
     // 整条用例会空转（后面的「没有 s-new」因为什么都没发生而恒真）（S-2）。
     await 等到(() => 假.起的备份.length === 1)
-    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-1", "", false]])
     await 等到(() => 清单次 >= 2) // 备份已发起，成功支的重取挂住了
 
     setCurrentProject({ id: "p-2", name: "乙" })
@@ -4463,6 +4684,39 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(document.body.querySelector("[data-component='backup-restore-dialog']") === null).toBe(true)
   })
 
+  /**
+   * 拖**目录** ＝ 按目录路径整棵子树拉回（2026-10-18 用户下达）。
+   *
+   * 与上面那条文件用例成对：若下树把目录行的路径写错（例如退化成目录里某个文件），
+   * 预览与恢复都只会覆盖一份——而这在界面上看不出来（结果条照样说「恢复完成」）。
+   */
+  test("拖下树的**目录**回上树 ⇒ 预览与恢复拿到的都是目录自身路径", async () => {
+    const 无冲突 = 预览([{ path: "资料/甲.txt", status: "missing" }])
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 无冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"]) },
+          })
+        return undefined
+      },
+    })
+    await 等到下树行(host, "资料/甲.txt")
+
+    拖到(树行按(host, "minio", "资料"), 树行按(host, "sandbox", "资料"))
+
+    await 等到(() => 假.恢复的.length === 1)
+    expect(假.预览的).toEqual([["p-42", "s-1", "资料"]])
+    expect(假.恢复的[0]).toEqual(["p-42", "s-1", "资料", "keep-both", "{}"])
+  })
+
   test("恢复完成文案分列替换目录与新建空目录（F-2）", async () => {
     // 服务端 `runRestore` 早已返回 `overwritten` / `dirsCreated`；客户端类型与文案漏了它们，
     // 于是「目录被文件替换」这类结果被说成「恢复 0 失败 0」——用户看不出发生了什么。
@@ -4487,15 +4741,23 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
-    await 等到(() => text(host, "restore-result-text")?.includes("恢复完成") === true)
-    expect(text(host, "restore-result-text")).toBe("恢复完成：恢复 1 个文件 · 替换 1 个目录 · 新建 1 个空目录")
-    // 成功走 `role="status"` 的结果条；**不进**那条恒红、`role="alert"` 的失败通道
+    // 结果走**弹窗**（2026-10-18 用户下达）：它被 Portal 到 `document.body`，不在 host 里。
+    await 等到(() => 文本在页("task-result-title") === "恢复完成")
+    expect(文本在页("task-result-text")).toBe("恢复 1 个文件 · 替换 1 个目录 · 新建 1 个空目录")
+    // 成功走 `role="status"`；**不进**那条恒红、`role="alert"` 的失败通道
     // （2026-10-18 之前正是后者：一次完全成功的恢复长得像报错）。
-    expect(槽(host, "restore-result")?.getAttribute("role")).toBe("status")
+    expect(页面槽("task-result")?.getAttribute("role")).toBe("status")
+    expect(页面槽("task-result")?.closest("[data-slot='dialog-content']") !== null).toBe(true)
     expect(text(host, "file-op-message") === undefined).toBe(true)
+
+    // 关掉结果弹窗再收尾：留到下一条用例会让它残在 `document.body` 里，也会让 Provider 卸载时
+    // 对已被 Kobalte 摘走的节点再 `removeChild`（`LEARNINGS #005-27` 的同族噪声）。
+    页面槽("task-result-close")?.click()
+    await 等到(() => 页面槽("task-result") === null)
+    expect(页面槽("task-result") === null).toBe(true)
   })
 
-  test("恢复有失败：结果条只把**失败计数**标红，详情逐条列 path / reason", async () => {
+  test("恢复有失败：弹窗只把**失败计数**标红，失败项直接列 path / reason", async () => {
     const 无冲突 = 预览([{ path: "资料/甲.txt", status: "missing" }])
     const { host } = await 开备份({
       snapshots: async () => [快照("s-1")],
@@ -4519,16 +4781,19 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
-    await 等到(() => text(host, "restore-result-text")?.includes("项失败") === true)
-    expect(槽(host, "restore-result")?.getAttribute("role")).toBe("alert")
-    expect(text(host, "restore-result-failed-count")).toBe("1 项失败")
+    await 等到(() => 文本在页("task-result-failed-count") === "1 项失败")
+    expect(页面槽("task-result")?.getAttribute("role")).toBe("alert")
     // 「只红计数」：计数转危险色，整句不转（旧实现整句都红，成功失败长得一样）。
-    expect(槽(host, "restore-result-failed-count")?.className).toContain("text-v2-state-fg-danger")
-    expect(槽(host, "restore-result-text")?.className ?? "").not.toContain("text-v2-state-fg-danger")
+    expect(页面槽("task-result-failed-count")?.className).toContain("text-v2-state-fg-danger")
+    expect(页面槽("task-result-text")?.className ?? "").not.toContain("text-v2-state-fg-danger")
 
-    槽(host, "restore-result-details")?.click()
-    expect(text(host, "restore-result-detail-path")).toBe("资料/甲.txt")
-    expect(text(host, "restore-result-detail-reason")).toBe("permission denied")
+    // 失败项**不用再点「详情」**：弹窗里直接摊开（2026-10-18 用户下达）。
+    expect(文本在页("task-result-detail-path")).toBe("资料/甲.txt")
+    expect(文本在页("task-result-detail-reason")).toBe("permission denied")
+
+    页面槽("task-result-close")?.click()
+    await 等到(() => 页面槽("task-result") === null)
+    expect(页面槽("task-result") === null).toBe(true)
   })
 
   test("全 same ＋ localOnly 里只有 .git ⇒ 直接恢复、不弹框（localOnly 不会被恢复，spec §6.6）", async () => {
@@ -4668,7 +4933,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(当前恢复点(host)).toBe("")
   })
 
-  test("右键「备份到 MinIO」⇒ backup(项目, 原路径, false)——菜单项不再是灰的", async () => {
+  test("右键「备份到 MinIO」⇒ backup(项目, \"\", false)——菜单项不再是灰的", async () => {
     const { host, 假 } = await 开备份({
       snapshots: async () => [],
       backup: async () => ({ jobId: "j-1" }),
@@ -4679,7 +4944,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     点菜单项("backup")
 
     await 等到(() => 假.起的备份.length === 1)
-    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-42", "", false]])
   })
 
   test("右键「从 MinIO 拉回」：有选中恢复点 ⇒ 用当前恢复点起预览", async () => {
@@ -4908,7 +5173,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 等到(() => text(host, "file-op-message")?.includes("正在备份") === true)
     // 同一分支必须**再取一次状态**：起没起来是一回事，界面上要接上那个已在跑的任务。
     await 等到慢(() => 假.恢复点.length > 初)
-    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-42", "", false]])
   })
 
   test("删除占位 409（不带 jobId）⇒ 说「项目正在删除」，不冒充备份、也不重取（整支复审 F-5）", async () => {
@@ -4990,15 +5255,15 @@ describe("备份 / 恢复接线（Task 17）", () => {
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
 
     await 等到(() => document.body.querySelector("[data-kind='quota'] [data-slot='backup-confirm-ok']") !== null)
-    expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-42", "", false]])
     expect(document.body.querySelector("[data-kind='quota']")?.textContent ?? "").toContain("10 GB")
 
     document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
 
     await 等到(() => 假.起的备份.length === 2)
     expect(假.起的备份).toEqual([
-      ["p-42", "报告.docx", false],
-      ["p-42", "报告.docx", true],
+      ["p-42", "", false],
+      ["p-42", "", true],
     ])
   })
 
@@ -5041,8 +5306,8 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 等到(() => 假.起的备份.length === 2)
     await 等到慢(() => 假.恢复点.length >= 2)
     expect(假.起的备份).toEqual([
-      ["p-42", "报告.docx", false],
-      ["p-42", "报告.docx", true],
+      ["p-42", "", false],
+      ["p-42", "", true],
     ])
   })
 
@@ -5060,7 +5325,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
     await 等到(() => document.body.querySelector("[data-kind='quota'] [data-slot='backup-confirm-ok']") !== null)
-    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-1", "", false]])
 
     setCurrentProject({ id: "p-2", name: "乙" })
     await 冲一遍()
@@ -5069,7 +5334,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 冲一遍()
 
     // 只有 p-1 那一次；任何以 p-2 身份起来的备份（尤其带 `true` 的）都是这条守的失败。
-    expect(假.起的备份).toEqual([["p-1", "报告.docx", false]])
+    expect(假.起的备份).toEqual([["p-1", "", false]])
   })
 
   test("backup() 在飞时切项目，回包 quota_exceeded 不弹框、不写文案（S-1）", async () => {

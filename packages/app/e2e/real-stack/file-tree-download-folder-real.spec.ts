@@ -145,7 +145,7 @@ test("右键**文件夹**点「下载」⇒ 弹窗说清「只能下载单个文
   expect(existsSync(path.join(甲.directory, "资料", "8·17", "话单.csv")), "拦截不该动盘上的东西").toBe(true)
 })
 
-test("右键**单个文件**点「下载」⇒ 不开弹窗，请求照旧发出去（给上一条的「0 次」装上牙齿）", async ({
+test("右键**单个文件**点「下载」⇒ 不出现「拦截」弹窗，请求照旧发出去（给上一条的「0 次」装上牙齿）", async ({
   page,
   context,
 }) => {
@@ -164,6 +164,14 @@ test("右键**单个文件**点「下载」⇒ 不开弹窗，请求照旧发出
     .toBeGreaterThan(0)
   expect(decodeURIComponent(下载请求[0]!), "请求应当带着被点的那一项").toContain("path=话单.csv")
 
-  // 而且**没有**被拦：文件这一支一个弹窗都不该有。
+  // 而且**没有**被拦：文件这一支不该有 `file-download-dialog`（那张「只能下载单个文件」的）。
   await expect(弹窗(page), "单个文件不该被拦成弹窗").toBeHidden()
+
+  // 传输本身另有**一张**弹窗（2026-10-18 用户裁定）：下载完成后停在「下载完成」，
+  // 点「关闭」才收。它和「拦截」弹窗是两个槽位，`弹窗(page)` 那个过滤式判据对它是恒 Hidden 的。
+  const 传输 = page.locator("[data-slot='file-transfer-dialog']")
+  await expect(传输, "单个文件下载应当开传输弹窗").toBeVisible({ timeout: 15_000 })
+  await expect(传输.locator("[data-slot='file-transfer-title']")).toHaveText("下载完成")
+  await 传输.locator("[data-slot='file-transfer-close']").click()
+  await expect(传输, "点「关闭」后传输弹窗应当收起来").toBeHidden()
 })
