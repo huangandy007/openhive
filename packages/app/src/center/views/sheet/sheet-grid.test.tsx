@@ -72,7 +72,6 @@ const 行号 = (row: HTMLElement) => row.querySelector<HTMLElement>('[role="rowh
  * 等一个元素出现。Kobalte 的 portal 浮层不是同步渲染的：点完触发器立刻查会读到 null
  * （`LEARNINGS #006-31`：判据读早了）。后续打开列清单 / 筛选浮层的用例都用它。
  */
-// oxlint-disable-next-line no-unused-vars -- 后续任务的浮层用例会用（本任务暂无浮层）。
 const 等元素 = async <T extends HTMLElement>(找: () => T | null, timeout = 1000): Promise<T> => {
   const start = Date.now()
   for (;;) {
@@ -237,6 +236,66 @@ describe("列宽交互", () => {
     } finally {
       dispose()
       host.remove()
+    }
+  })
+})
+
+describe("列显示/隐藏", () => {
+  test("隐藏单列后不渲染该列，计数更新", () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 隐藏 = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-hide-column"]')
+      隐藏!.click()
+
+      expect(表头(host)?.querySelector('[data-column="1"]')).toBeNull()
+      expect(数据行(host)[0]?.querySelectorAll('[role="gridcell"]')).toHaveLength(1)
+      expect(host.querySelector('[role="grid"]')?.getAttribute("aria-colcount")).toBe("1")
+      expect(host.textContent).toContain("显示 1 / 2 列")
+    } finally {
+      卸()
+    }
+  })
+
+  test("全部隐藏：空态 + 全部显示", () => {
+    const { host, 卸 } = 挂()
+    try {
+      表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-hide-column"]')!.click()
+      表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-hide-column"]')!.click()
+
+      expect(host.querySelector('[data-slot="sheet-no-columns"]')).not.toBeNull()
+      const 全部显示 = [...host.querySelectorAll("button")].find((button) => button.textContent === "全部显示")
+      全部显示!.click()
+      expect(host.querySelector('[role="grid"]')).not.toBeNull()
+      expect(host.querySelector('[role="grid"]')?.getAttribute("aria-colcount")).toBe("2")
+    } finally {
+      卸()
+    }
+  })
+
+  test("全部列清单：打开、取消勾选、搜索、全部显示", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 列按钮 = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("列"))
+      列按钮!.click()
+
+      const 清单 = await 等元素(() => document.querySelector<HTMLElement>('[data-slot="sheet-column-list"]'))
+      const 金额项 = [...清单.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) =>
+        input.closest("label")?.textContent?.includes("金额"),
+      )
+      金额项!.click()
+      expect(host.querySelector('[data-column="1"]')).toBeNull()
+
+      const 搜索 = 清单.querySelector<HTMLInputElement>('input[data-slot="sheet-column-search"]')!
+      搜索.value = "姓"
+      搜索.dispatchEvent(new Event("input", { bubbles: true }))
+      expect(清单.textContent).toContain("姓名")
+      expect(清单.textContent).not.toContain("金额")
+
+      const 全部 = [...清单.querySelectorAll("button")].find((button) => button.textContent === "全部显示")
+      全部!.click()
+      expect(host.querySelector('[role="grid"]')?.getAttribute("aria-colcount")).toBe("2")
+    } finally {
+      卸()
     }
   })
 })

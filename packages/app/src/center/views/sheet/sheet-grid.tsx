@@ -235,6 +235,15 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
         loadedRows={props.store.loadedRows()}
         filteredRows={显示行().length}
         onToggleHeader={set首行是表头}
+        onToggleColumn={(index, hidden) => set列(index, "hidden", hidden)}
+        onShowAllColumns={() => 列.forEach((_, index) => set列(index, "hidden", false))}
+        onResetColumns={() =>
+          列.forEach((column, index) => {
+            const start = 首行是表头() ? 1 : 0
+            const 样本 = props.store.rows.slice(start, start + 200).map((row) => row[index] ?? null)
+            set列(index, "width", 估算列宽(column.name, 样本))
+          })
+        }
       />
       <Show
         when={可见列().length > 0}

@@ -1,4 +1,5 @@
-import { Show, type JSX } from "solid-js"
+import { createSignal, For, Show, type JSX } from "solid-js"
+import { Popover } from "@opencode-ai/ui/popover"
 import type { ColumnType, SheetMeta } from "./sheet-model"
 
 export const 表头高 = 32
@@ -73,9 +74,55 @@ export interface SheetControlsProps {
   loadedRows: number
   filteredRows: number
   onToggleHeader(value: boolean): void
+  onToggleColumn(index: number, hidden: boolean): void
+  onShowAllColumns(): void
+  onResetColumns(): void
 }
 
-/** 工具栏骨架。列清单/筛选条/查找条在后续任务补。 */
+/** 全部列复选清单：搜索列名、全部显示、重置列宽。 */
+function 列清单(props: {
+  columns: 列状态[]
+  onToggle(index: number, hidden: boolean): void
+  onShowAll(): void
+  onReset(): void
+}) {
+  const [搜索, set搜索] = createSignal("")
+  const 过滤后 = () => props.columns.filter((column) => column.name.toLowerCase().includes(搜索().trim().toLowerCase()))
+  return (
+    <div data-slot="sheet-column-list" class="max-h-80 w-64 overflow-auto p-2">
+      <input
+        data-slot="sheet-column-search"
+        class="mb-2 w-full rounded border border-v2-border-border-muted px-2 py-1 text-12-regular"
+        placeholder="搜索列名"
+        value={搜索()}
+        onInput={(event) => set搜索(event.currentTarget.value)}
+      />
+      <div class="mb-2 flex gap-2">
+        <button type="button" class="text-12-regular underline" onClick={() => props.onShowAll()}>
+          全部显示
+        </button>
+        <button type="button" class="text-12-regular underline" onClick={() => props.onReset()}>
+          重置列宽
+        </button>
+      </div>
+      <For each={过滤后()}>
+        {(column) => (
+          <label class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-12-regular hover:bg-v2-overlay-simple-overlay-hover">
+            <input
+              type="checkbox"
+              checked={!column.hidden}
+              onChange={(event) => props.onToggle(column.index, !event.currentTarget.checked)}
+            />
+            <span class="text-v2-text-text-muted">{column.letter}</span>
+            <span class="truncate">{column.name}</span>
+          </label>
+        )}
+      </For>
+    </div>
+  )
+}
+
+/** 工具栏：表头开关、列清单、行数摘要。筛选条/查找条在后续任务补。 */
 export function SheetControls(props: SheetControlsProps): JSX.Element {
   const 数据总行 = () => Math.max(0, props.meta.totalRows - (props.headerIsFirstRow ? 1 : 0))
   return (
@@ -95,6 +142,24 @@ export function SheetControls(props: SheetControlsProps): JSX.Element {
       <span class="text-12-regular text-v2-text-text-muted" data-slot="sheet-row-summary">
         筛选后 {props.filteredRows} 行 / 共 {数据总行()} 行
       </span>
+      <Popover
+        trigger={
+          <button
+            type="button"
+            data-slot="sheet-columns-trigger"
+            class="rounded px-2 py-1 text-12-regular hover:bg-v2-overlay-simple-overlay-hover"
+          >
+            列（显示 {props.columns.filter((column) => !column.hidden).length} / {props.columns.length} 列）
+          </button>
+        }
+      >
+        <列清单
+          columns={props.columns}
+          onToggle={(index, hidden) => props.onToggleColumn(index, hidden)}
+          onShowAll={() => props.onShowAllColumns()}
+          onReset={() => props.onResetColumns()}
+        />
+      </Popover>
     </div>
   )
 }
