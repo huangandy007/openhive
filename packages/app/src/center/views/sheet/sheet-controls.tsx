@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Popover } from "@opencode-ai/ui/popover"
-import type { Cell, ColumnType, SheetMeta, 列筛选 } from "./sheet-model"
+import { 规模, type Cell, type ColumnType, type SheetMeta, type 列筛选 } from "./sheet-model"
 
 export const 表头高 = 32
 
@@ -239,6 +239,7 @@ export interface SheetControlsProps {
   onRemoveFilter(index: number): void
   onClearFilters(): void
   find: 查找状态
+  error?: string
   onFindQuery(query: string): void
   onFindNext(delta: 1 | -1): void
   onCloseFind(): void
@@ -381,6 +382,67 @@ function 查找条(props: {
   )
 }
 
+/**
+ * 规模分层横幅：预览截断、全量列截断、多工作表、解析中断、加载进度。
+ * 数字一律读 `meta` / `规模` / `loadedRows`，不写死（`LEARNINGS #006-29`）。
+ */
+function 横幅(props: {
+  meta: SheetMeta
+  mode: "full" | "preview"
+  truncated: { rows: number; cols: number }
+  loadedRows: number
+  headerIsFirstRow: boolean
+  error?: string
+}) {
+  const 数据总行 = () => Math.max(0, props.meta.totalRows - (props.headerIsFirstRow ? 1 : 0))
+  const 显示行数 = () => (props.mode === "preview" ? Math.min(规模.预览行数, 数据总行()) : 数据总行())
+  const 显示列数 = () => Math.min(props.meta.totalCols, props.mode === "preview" ? 规模.预览列数 : 规模.全量列上限)
+  return (
+    <>
+      <Show when={props.mode === "preview"}>
+        <p
+          data-slot="sheet-preview-banner"
+          class="w-full border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-3 py-1 text-11-regular text-v2-text-text-muted"
+        >
+          表较大，当前只显示前 {显示行数()} 行 × {显示列数()} 列（原表共 {props.meta.totalRows} 行 × {props.meta.totalCols} 列）。排序、筛选、查找只作用于当前显示的数据；完整数据请从文件树下载后用 Excel/WPS 查看。
+        </p>
+      </Show>
+      <Show when={props.mode === "full" && props.truncated.cols > 0}>
+        <p
+          data-slot="sheet-column-truncated"
+          class="w-full border-b border-v2-border-border-muted px-3 py-1 text-11-regular text-v2-text-text-muted"
+        >
+          原表共 {props.meta.totalCols} 列，当前只显示前 {显示列数()} 列。
+        </p>
+      </Show>
+      <Show when={props.meta.sheetNames.length > 1}>
+        <p
+          data-slot="sheet-multi-sheet"
+          class="w-full border-b border-v2-border-border-muted px-3 py-1 text-11-regular text-v2-text-text-muted"
+        >
+          工作簿共 {props.meta.sheetNames.length} 张表，当前仅显示：{props.meta.sheetName}。
+        </p>
+      </Show>
+      <Show when={props.error}>
+        <p
+          data-slot="sheet-parse-error"
+          class="w-full border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-3 py-1 text-11-regular text-v2-text-text-muted"
+        >
+          解析中断，当前仅显示前 {Math.max(0, props.loadedRows - (props.headerIsFirstRow ? 1 : 0))} 行。重新打开可再试。
+        </p>
+      </Show>
+      <Show when={props.mode === "full" && !props.error && props.loadedRows < props.meta.totalRows}>
+        <p
+          data-slot="sheet-progress"
+          class="w-full border-b border-v2-border-border-muted px-3 py-1 text-11-regular text-v2-text-text-muted"
+        >
+          已加载 {Math.max(0, props.loadedRows - (props.headerIsFirstRow ? 1 : 0))} 行 / 共 {数据总行()} 行…
+        </p>
+      </Show>
+    </>
+  )
+}
+
 /** 工具栏：表头开关、列清单、行数摘要、筛选条、查找条。 */
 export function SheetControls(props: SheetControlsProps): JSX.Element {
   const 数据总行 = () => Math.max(0, props.meta.totalRows - (props.headerIsFirstRow ? 1 : 0))
@@ -419,6 +481,14 @@ export function SheetControls(props: SheetControlsProps): JSX.Element {
           onReset={() => props.onResetColumns()}
         />
       </Popover>
+      <横幅
+        meta={props.meta}
+        mode={props.mode}
+        truncated={props.truncated}
+        loadedRows={props.loadedRows}
+        headerIsFirstRow={props.headerIsFirstRow}
+        error={props.error}
+      />
       <筛选条
         columns={props.columns}
         filters={props.filters}

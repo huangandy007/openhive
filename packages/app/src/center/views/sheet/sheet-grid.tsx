@@ -147,6 +147,15 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     return result
   })
 
+  // 零数据优先于筛选无结果（两者同时成立时说明表本身就是空的）；解析中断时保留已加载行，不出空态。
+  const 空态 = () => {
+    if (props.store.error()) return undefined
+    if (首行是表头() && 已载行数() <= 1) return "这张表没有数据"
+    if (!首行是表头() && 已载行数() === 0) return "这张表没有数据"
+    if (filters().length > 0 && 显示行().length === 0) return "没有符合筛选条件的行"
+    return undefined
+  }
+
   const [查找开, set查找开] = createSignal(false)
   const [查找词, set查找词] = createSignal("")
   const [查找序号, set查找序号] = createSignal(0)
@@ -304,6 +313,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
         truncated={props.store.truncated}
         loadedRows={props.store.loadedRows()}
         filteredRows={显示行().length}
+        error={props.store.error()}
         onToggleHeader={set首行是表头}
         onToggleColumn={(index, hidden) => set列(index, "hidden", hidden)}
         onShowAllColumns={() => 列.forEach((_, index) => set列(index, "hidden", false))}
@@ -450,16 +460,20 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
               </For>
             </div>
           </div>
-          <Show when={filters().length > 0 && 显示行().length === 0}>
-            <div
-              data-slot="sheet-filter-empty"
-              class="flex items-center justify-center gap-2 p-6 text-13-regular text-v2-text-text-muted"
-            >
-              没有符合筛选条件的行。
-              <button type="button" class="underline" onClick={() => setFilters([])}>
-                清除筛选
-              </button>
-            </div>
+          <Show when={空态()}>
+            {(文案) => (
+              <div
+                data-slot={文案() === "没有符合筛选条件的行" ? "sheet-filter-empty" : "sheet-empty"}
+                class="flex items-center justify-center gap-2 p-6 text-13-regular text-v2-text-text-muted"
+              >
+                {文案()}
+                <Show when={文案() === "没有符合筛选条件的行"}>
+                  <button type="button" class="underline" onClick={() => setFilters([])}>
+                    清除筛选
+                  </button>
+                </Show>
+              </div>
+            )}
           </Show>
         </div>
       </Show>

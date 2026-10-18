@@ -645,3 +645,59 @@ describe("查找", () => {
     }
   })
 })
+
+describe("横幅与空态", () => {
+  test("预览档：写出原表总数与截断范围", () => {
+    const store = createSheetStore(
+      元({ totalRows: 2000, totalCols: 100, preview: [["姓名", "金额"], ["张三", "1"]] }),
+      "preview",
+      { rows: 1998, cols: 36 },
+    )
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(() => <SheetGrid store={store} />, host)
+    const 横幅 = host.querySelector('[data-slot="sheet-preview-banner"]')?.textContent ?? ""
+    expect(横幅).toContain("2000")
+    expect(横幅).toContain("前 1000 行")
+    expect(横幅).toContain("64 列")
+    expect(横幅).toContain("Excel/WPS")
+    dispose()
+    host.remove()
+  })
+
+  test("全量档列截断：明说前 N 列", () => {
+    const store = createSheetStore(元({ totalCols: 300 }), "full", { rows: 0, cols: 44 })
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(() => <SheetGrid store={store} />, host)
+    expect(host.querySelector('[data-slot="sheet-column-truncated"]')?.textContent).toContain("前 256 列")
+    dispose()
+    host.remove()
+  })
+
+  test("多工作表：写明总表数与当前表名", () => {
+    const store = createSheetStore(元({ sheetNames: ["明细", "汇总"] }), "full", { rows: 0, cols: 0 })
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(() => <SheetGrid store={store} />, host)
+    const 文案 = host.querySelector('[data-slot="sheet-multi-sheet"]')?.textContent ?? ""
+    expect(文案).toContain("共 2 张表")
+    expect(文案).toContain("明细")
+    dispose()
+    host.remove()
+  })
+
+  test("首屏后解析中断：保留行 + 明说只显示前 N 行", () => {
+    const { host, store, 卸 } = 挂()
+    store.setError("解析线程崩溃")
+    expect(数据行(host).length).toBeGreaterThan(0)
+    expect(host.querySelector('[data-slot="sheet-parse-error"]')?.textContent).toContain("解析中断")
+    卸()
+  })
+
+  test("零数据行：这张表没有数据", () => {
+    const { host, 卸 } = 挂(元({ totalRows: 1, preview: [["姓名", "金额"]] }))
+    expect(host.querySelector('[data-slot="sheet-empty"]')?.textContent).toContain("这张表没有数据")
+    卸()
+  })
+})
