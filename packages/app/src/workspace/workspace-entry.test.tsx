@@ -4103,6 +4103,25 @@ describe("备份 / 恢复接线（Task 17）", () => {
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
     await 等到(() => document.body.querySelector("[data-component='backup-restore-dialog']") !== null)
+    /*
+     * **结构守卫**（Task 18 fix round 1 的 N-1）：恢复框必须长在可交互的弹窗壳里。
+     *
+     * `dialog.show()` 挂出的层是 `pointer-events: none`；可交互面是 `DialogV2` 的
+     * `[data-slot='dialog-content']` 槽（`pointer-events: auto` 挂在它的祖先
+     * `[data-slot='dialog-container']` 上、由它继承，见 `dialog-v2.css:29`）。裸挂在层里的
+     * 弹窗在真浏览器里点不到——那正是本 fix round 修掉的产品缺陷。
+     *
+     * ⚠️ happy-dom 判不了 `pointer-events`（`#005-07`），这条**只守「壳还在」**；
+     * 「点得到」由真栈 e2e（`backup-snapshot-real.spec.ts`）守。
+     * ⚠️ 不写 `expect(节点).toBeNull()`（`#005-01`：红了会把整轮 `bun test` 挂死），
+     * 这里断布尔值。
+     */
+    const 恢复框 = document.body.querySelector<HTMLElement>("[data-component='backup-restore-dialog']")
+    if (!恢复框) throw new Error("恢复对话框没挂上——这条用例的前提不成立（#004-14）")
+    expect(
+      恢复框.closest("[data-slot='dialog-content']") !== null,
+      "恢复框必须在 DialogV2 的可交互壳里（拆掉 <DialogV2> ⇒ 这条应当红）",
+    ).toBe(true)
     expect(假.预览的).toEqual([["p-42", "s-1", "资料/甲.txt"]])
   })
 
