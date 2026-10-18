@@ -4855,6 +4855,50 @@ describe("备份 / 恢复接线（Task 17）", () => {
     ])
   })
 
+  test("超限重试（手动备份第二入口）预检期同样有进度、可取消；回包后正常跟进（G-1）", async () => {
+    // `备份越限` 同样 `await projectData.backup(..., true)`，超限确认后大项目的预检也在 HTTP
+    // 请求内。F-1 只接了 `备份()` 这个入口；同一个修法落在两个动作上，要两条用例（`#005-12`）。
+    let 放回请求: (值: { jobId: string }) => void = () => {}
+    const 请求 = new Promise<{ jobId: string }>((resolve) => {
+      放回请求 = resolve
+    })
+    let 重试过 = false
+    const 运行中 = 任务("j-2", "hashing")
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [],
+      backup: async (_projectId, _path, allowOverQuota) => {
+        if (!allowOverQuota) return { code: "quota_exceeded" }
+        重试过 = true
+        return 请求
+      },
+      backupStatus: async () => 状态(重试过 ? 运行中 : null),
+      job: async (jobId) => 任务(jobId, "succeeded", { result: { snapshotId: "s-new" } }),
+    })
+
+    拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
+    await 等到(() => document.body.querySelector("[data-kind='quota'] [data-slot='backup-confirm-ok']") !== null)
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+
+    // 第二次请求还挂着（没有 202、没有 jobId）——进度与取消钮必须已经出现。
+    await 等到(() => 槽(host, "minio-bar-progress") !== null)
+    expect(槽(host, "minio-bar-progress") === null).toBe(false)
+    expect(text(host, "minio-bar-stage")).toBe("正在校验…")
+    const 取消 = 槽(host, "minio-bar-cancel")
+    if (!取消) throw new Error("超限重试的预检期没有取消钮——这条用例的前提不成立（#004-14）")
+    取消.click()
+    await 等到(() => 假.取消的.length === 1)
+    expect(假.取消的).toEqual(["j-2"])
+
+    // 回包 202 之后既有行为照旧：重取状态、跟进任务。
+    放回请求({ jobId: "j-2" })
+    await 等到(() => 假.起的备份.length === 2)
+    await 等到慢(() => 假.恢复点.length >= 2)
+    expect(假.起的备份).toEqual([
+      ["p-42", "报告.docx", false],
+      ["p-42", "报告.docx", true],
+    ])
+  })
+
   test("超限框开在 p-1、切到 p-2 再点确认 ⇒ 不以新项目身份重试（S-1）", async () => {
     // 框是 p-1 的；点确认时若现读 `currentProject()`，就会以 p-2 身份备份 p-1 的旧路径。
     const { host, 假 } = await 开备份(

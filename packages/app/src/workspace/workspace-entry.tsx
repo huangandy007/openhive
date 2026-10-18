@@ -1042,16 +1042,20 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const 盯上预检任务 = async (守: { id: string; 代: number }, 仍在预检: () => boolean) => {
     const 还有效 = () => 仍在预检() && currentProject()?.id === 守.id && 守.代 === 备份代次
-    for (let i = 0; i < 10; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      if (!还有效() || !projectData) return
-      const 状态 = await projectData.backupStatus(守.id)
-      if (!还有效()) return
-      const job = 状态?.activeJob ?? undefined
-      if (在跑(job)) {
-        setBackupJob(job)
-        return
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        if (!还有效() || !projectData) return
+        const 状态 = await projectData.backupStatus(守.id)
+        if (!还有效()) return
+        const job = 状态?.activeJob ?? undefined
+        if (在跑(job)) {
+          setBackupJob(job)
+          return
+        }
       }
+    } catch {
+      // G-2：抢读失败不打扰用户，1 秒轮询在任务就绪后自会接管。
     }
   }
 
@@ -1130,7 +1134,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     dialog.close()
     if (!projectData) return
     if (currentProject()?.id !== 守.id || 守.代 !== 备份代次) return
-    const 起 = await projectData.backup(守.id, path, true)
+    // G-1：与 `备份()` 同形——请求飞行期间先抢读任务，预检期也要看得见进度、点得到取消。
+    let 预检 = true
+    const 请求 = projectData.backup(守.id, path, true)
+    void 盯上预检任务(守, () => 预检)
+    const 起 = await 请求
+    预检 = false
     if (起 === undefined || "code" in 起) {
       set文件话("备份没能起起来")
       return
