@@ -2,6 +2,7 @@ import { untrack } from "solid-js"
 import { render } from "solid-js/web"
 import type { ViewComponent } from "@/center/view-registry"
 import { 当前重载代 } from "@/center/session-edits"
+import { currentProject } from "@/project/current-project"
 import { BinaryView, type RenderCleanup } from "./binary-view"
 import { 规模, type 解析限制 } from "./sheet/sheet-model"
 import { 解析表格 } from "./sheet/sheet-parse"
@@ -108,7 +109,14 @@ export const SheetView: ViewComponent = (props) => (
     load={props.load}
     render={(bytes, container) =>
       renderSheet(bytes, container, {
-        缓存键: 缓存键(props.path, untrack(() => 当前重载代(props.path))),
+        // 项目身份必须在键里：换项目会把重载代重置为 0（`清空会话改过`），只按 path+代
+        // 做键会让项目 B 的同相对路径文件命中项目 A 的数据。项目与代都用 `untrack` 读，
+        // 不把它们挂进 render 回调外层的响应式依赖。
+        缓存键: 缓存键(
+          untrack(() => currentProject()?.id ?? ""),
+          props.path,
+          untrack(() => 当前重载代(props.path)),
+        ),
       })
     }
   />

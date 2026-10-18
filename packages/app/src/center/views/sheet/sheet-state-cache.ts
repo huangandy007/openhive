@@ -11,8 +11,8 @@ export interface SheetCacheData {
 const ui = new Map<string, SheetUiState>()
 const data = new Map<string, SheetCacheData>()
 
-/** 键 = 路径 + 重载代。重载后旧缓存自动失配。 */
-export const 缓存键 = (path: string, 代: number) => `${path}\n${代}`
+/** 键 = 项目身份 + 路径 + 重载代。换项目或重载后旧缓存自动失配。 */
+export const 缓存键 = (项目: string, path: string, 代: number) => `${项目}\n${path}\n${代}`
 
 export function 读UI状态(key: string): SheetUiState | undefined {
   const value = ui.get(key)
@@ -63,4 +63,16 @@ export function 写数据(key: string, value: SheetCacheData): boolean {
 
 export function 清空数据(): void {
   data.clear()
+}
+
+/**
+ * 换项目时一次清掉两份缓存（UI 状态 + 解析数据）。
+ *
+ * 键里已经有了项目身份，正常不会再串台；这里再清一遍是防止换回旧项目时**读到换项目前**的
+ * 旧数据（那可能是另一个会话/另一次落盘的内容）。两个 Map 必须一起清——只清一份时，
+ * 另一份仍会让同路径的 tab 显示出不属于当前项目的内容。
+ */
+export function 清空表格缓存(): void {
+  清空UI状态()
+  清空数据()
 }

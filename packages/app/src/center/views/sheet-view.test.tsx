@@ -4,6 +4,7 @@ import { render } from "solid-js/web"
 import * as XLSX from "xlsx"
 import type { FileContent } from "@/center/file-content"
 import { 清空会话改过 } from "@/center/session-edits"
+import { setCurrentProject } from "@/project/current-project"
 import { 加密的Office容器 } from "./__fixtures__/office"
 import { 清空UI状态, 清空数据 } from "./sheet/sheet-state-cache"
 import { 列上界, 行上界, 是加密工作簿, renderSheet, SheetView } from "./sheet-view"
@@ -111,6 +112,8 @@ beforeEach(() => {
   清空会话改过()
   清空UI状态()
   清空数据()
+  // 模块级信号跨用例活着：不归零会让「换项目」用例继承上一条的项目身份。
+  setCurrentProject(undefined)
 })
 
 describe("表格视图：字节 → 网格", () => {
@@ -268,6 +271,40 @@ describe("表格视图接进通用壳", () => {
     expect(降级?.getAttribute("data-reason")).toBe("encrypted")
     expect(降级?.textContent).toContain("密码")
     expect(降级?.textContent).not.toContain("损坏")
+  })
+
+  test("换项目后同相对路径不串台：重新解析并显示新项目的内容", async () => {
+    // 跨项目串台的根因：键只含 path+重载代，而换项目会把重载代重置为 0（`清空会话改过`）
+    // ⇒ 项目乙打开同相对路径时命中项目甲的数据缓存，且**不解析本次字节**。
+    const 路径 = "/p/同名.xlsx"
+    const 甲字节 = 工作簿字节([["姓名"], ["甲项目数据"]])
+    const 乙字节 = 工作簿字节([["姓名"], ["乙项目数据"]])
+
+    setCurrentProject({ id: "项目甲", name: "甲" })
+    const 第一 = 容器()
+    const 卸第一 = render(() => <SheetView path={路径} load={async () => 二进制内容(甲字节)} />, 第一)
+    const 第二 = 容器()
+    let 卸第二: (() => void) | undefined
+    try {
+      await 等状态(第一, "ready")
+      await 等条件(() => 第一.textContent?.includes("甲项目数据") ?? false, "甲项目内容")
+      // 等 onDone 把数据缓存写进去（否则第二次本就不会命中，用例会假绿）。
+      await 等条件(
+        () => 第一.querySelector('[data-slot="sheet-grid"]')?.getAttribute("data-loaded-rows") === "2",
+        "甲项目解析完成",
+      )
+      await new Promise((r) => setTimeout(r, 30))
+
+      setCurrentProject({ id: "项目乙", name: "乙" })
+      卸第二 = render(() => <SheetView path={路径} load={async () => 二进制内容(乙字节)} />, 第二)
+      await 等状态(第二, "ready")
+      await 等条件(() => 第二.textContent?.includes("乙项目数据") ?? false, "乙项目内容")
+      expect(第二.textContent).not.toContain("甲项目数据")
+    } finally {
+      卸第二?.()
+      第一.remove()
+      第二.remove()
+    }
   })
 
   test("切走再回来：列宽从模块级缓存恢复", async () => {

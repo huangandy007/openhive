@@ -4,6 +4,7 @@ import { useServerSDK } from "@/context/server-sdk"
 import { currentProject } from "@/project/current-project"
 import { projectList } from "@/project/project-list"
 import { 归一事件路径, 清空会话改过, 记会话改过 } from "./session-edits"
+import { 清空表格缓存 } from "./views/sheet/sheet-state-cache"
 
 /**
  * 把「内核说这个文件被改了」接进登记处（2026-10-13 用户实报）。
@@ -43,7 +44,13 @@ export function 监听会话改过() {
    */
   createEffect<string | undefined>((上一个目录) => {
     const 目录 = 本目录()
-    if (上一个目录 !== undefined && 上一个目录 !== 目录) 清空会话改过()
+    if (上一个目录 !== undefined && 上一个目录 !== 目录) {
+      清空会话改过()
+      // 表格缓存键里含项目身份，换项目后本来就不会误命中；但换**回**旧项目时，
+      // 旧键仍会指向上次落盘的内容（可能已被另一个会话改过）⇒ 换项目一律清掉，
+      // 让下一次打开重新解析，而不是拿换项目前的数据冒充当前项目的字节。
+      清空表格缓存()
+    }
     return 目录
   })
 
