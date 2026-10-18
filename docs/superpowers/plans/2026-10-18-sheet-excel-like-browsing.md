@@ -370,7 +370,10 @@ export function 从文本日期(value: string): { text: string; 含时间: boole
 const 数字形 = /^-?(?:(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?$/
 
 /**
- * 列类型推断（只看样本，全列一致才下结论）。
+ * 列类型推断（只看样本）。
+ * - 日期/时间：**≥80%** 的非空采样可识别为日期/时间 ⇒ 该列按日期处理（spec §6.5）；
+ *   这些日期中含时间的比例 >0 ⇒ `datetime`。
+ * - 数字：仍要求 **100%**（spec 未放宽）。
  * 日期排在数字后判：规范串里带 `-`/`/`，不会被数字形误吃。
  */
 export function 推断列类型(cells: readonly Cell[]): ColumnType {
@@ -392,7 +395,7 @@ export function 推断列类型(cells: readonly Cell[]): ColumnType {
     }
   }
   if (有值 === 0) return "text"
-  if (日期 === 有值) return 时间 > 0 ? "datetime" : "date"
+  if (日期 / 有值 >= 0.8) return 时间 > 0 ? "datetime" : "date"
   if (数字 === 有值) return "number"
   return "text"
 }

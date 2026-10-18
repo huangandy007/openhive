@@ -40,8 +40,6 @@ export interface 解析限制 {
   分块行数: number
 }
 
-export const 默认解析限制: 解析限制 = 规模
-
 /**
  * 解析端交回的元信息。
  * - `preview` 是**原始行**（含首行），不是数据行；行号 = `startRow + 原始行下标 + 1`。
@@ -149,7 +147,10 @@ export function 从文本日期(value: string): { text: string; 含时间: boole
 const 数字形 = /^-?(?:(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?$/
 
 /**
- * 列类型推断（只看样本，全列一致才下结论）。
+ * 列类型推断（只看样本）。
+ * - 日期/时间：**≥80%** 的非空采样可识别为日期/时间 ⇒ 该列按日期处理（spec §6.5）；
+ *   这些日期中含时间的比例 >0 ⇒ `datetime`。
+ * - 数字：仍要求 **100%**（spec 未放宽，别顺手按 80% 改）。
  * 日期排在数字后判：规范串里带 `-`/`/`，不会被数字形误吃。
  */
 export function 推断列类型(cells: readonly Cell[]): ColumnType {
@@ -171,7 +172,7 @@ export function 推断列类型(cells: readonly Cell[]): ColumnType {
     }
   }
   if (有值 === 0) return "text"
-  if (日期 === 有值) return 时间 > 0 ? "datetime" : "date"
+  if (日期 / 有值 >= 0.8) return 时间 > 0 ? "datetime" : "date"
   if (数字 === 有值) return "number"
   return "text"
 }
@@ -191,7 +192,9 @@ export function 判档(
   limits: Pick<解析限制, "全量行上限" | "全量格上限"> = 规模,
 ): 档位 {
   const 数据行 = Math.max(0, totalRows - 1)
-  return 数据行 > limits.全量行上限 || totalRows * totalCols > limits.全量格上限 ? "preview" : "full"
+  // 两个操作数同一口径：都按数据行算。格数 = 数据行 × 列数，**表头不算数据格**。
+  // 之前用 totalRows * totalCols 会把表头那一行也算进 400 万格，与「行上限不含表头」不一致。
+  return 数据行 > limits.全量行上限 || 数据行 * totalCols > limits.全量格上限 ? "preview" : "full"
 }
 
 const 中文比较 = new Intl.Collator("zh-Hans-CN", { numeric: true })
@@ -206,6 +209,8 @@ function 数值(text: string): number | undefined {
 /**
  * 单列排序。返回的是**原始行下标**的新顺序，不改行数据。
  * 空值无论升/降都排最后；数字按数值、日期按规范串字典序、文本按中文 Collator。
+ * 日期列里那不到 20% 的不可解析值（`N/A` / `待补` 等）**不参与字典序**，也恒排最后——
+ * 它们没有日期键，混进比较会让 `desc` 把它们拉到最前面，看起来像「最近的日期」。
  * Array.prototype.sort 在 ES2019 起稳定，符合「排序稳定」。
  */
 export function 排序行(
@@ -215,15 +220,27 @@ export function 排序行(
   dir: "asc" | "desc",
   type: ColumnType,
 ): number[] {
+  const 是日期 = type === "date" || type === "datetime"
+  const 日期键 = (index: number) => {
+    const value = rows[index]?.[column] ?? ""
+    return 从文本日期(value)?.text
+  }
   const 有值: number[] = []
+  const 无法解析: number[] = []
   const 空值: number[] = []
   for (const index of indices) {
     const value = rows[index]?.[column] ?? null
     if (value === null || value.trim() === "") 空值.push(index)
+    else if (是日期 && 日期键(index) === undefined) 无法解析.push(index)
     else 有值.push(index)
   }
   const 符号 = dir === "asc" ? 1 : -1
   const 比较 = (a: number, b: number) => {
+    if (是日期) {
+      const 左 = 日期键(a) ?? ""
+      const 右 = 日期键(b) ?? ""
+      return (左 < 右 ? -1 : 左 > 右 ? 1 : 0) * 符号
+    }
     const 左 = rows[a]?.[column] ?? ""
     const 右 = rows[b]?.[column] ?? ""
     if (type === "number") {
@@ -231,12 +248,9 @@ export function 排序行(
       const 右数 = 数值(右)
       if (左数 !== undefined && 右数 !== undefined) return (左数 - 右数) * 符号
     }
-    if (type === "date" || type === "datetime") {
-      return (左 < 右 ? -1 : 左 > 右 ? 1 : 0) * 符号
-    }
     return 中文比较.compare(左, 右) * 符号
   }
-  return [...有值.sort(比较), ...空值]
+  return [...有值.sort(比较), ...无法解析, ...空值]
 }
 
 export type 列筛选 =
