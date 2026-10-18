@@ -195,7 +195,6 @@ export function 判档(
 }
 
 const 中文比较 = new Intl.Collator("zh-Hans-CN", { numeric: true })
-const 数字文本 = /^-?(?:(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?$/
 
 /** 数字列排序键：去千分位/百分号/空白；解析不了返回 undefined。 */
 function 数值(text: string): number | undefined {
@@ -225,8 +224,8 @@ export function 排序行(
   }
   const 符号 = dir === "asc" ? 1 : -1
   const 比较 = (a: number, b: number) => {
-    const 左 = rows[a][column] as string
-    const 右 = rows[b][column] as string
+    const 左 = rows[a]?.[column] ?? ""
+    const 右 = rows[b]?.[column] ?? ""
     if (type === "number") {
       const 左数 = 数值(左)
       const 右数 = 数值(右)
@@ -257,6 +256,8 @@ function 命中筛选(filter: 列筛选, value: Cell): boolean {
       return !blank && value.toLowerCase() === filter.text.toLowerCase()
     case "values":
       return (blank && filter.includeBlank) || (!blank && filter.values.includes(value))
+    default:
+      return false
   }
 }
 

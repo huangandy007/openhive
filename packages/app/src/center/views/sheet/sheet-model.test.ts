@@ -18,7 +18,6 @@ import {
   筛选行,
   type 列筛选,
   type Cell,
-  type ColumnType,
 } from "./sheet-model"
 
 describe("列标", () => {
