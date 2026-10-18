@@ -4732,6 +4732,28 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
   })
 
+  test("删除占位 409（不带 jobId）⇒ 说「项目正在删除」，不冒充备份、也不重取（整支复审 F-5）", async () => {
+    // 409 有两个来源：已有任务在跑（带 jobId，可接上进度）与项目删除占位（不带 jobId）。
+    // 旧实现一律说「这个项目正在备份」并重取——对删除占位是句假话，还白取一遍清单。
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [],
+      backup: async () => ({ code: "job_running" }),
+    })
+    await 等到(() => 假.恢复点.length >= 1)
+    const 初 = 假.恢复点.length
+
+    右键行(host, "报告.docx")
+    点菜单项("backup")
+
+    await 等到(() => text(host, "file-op-message") === "项目正在删除，请稍后重试")
+    // 旧实现实得「这个项目正在备份，已接上当前进度」（RED）——删除占位不是一次备份。
+    expect(text(host, "file-op-message")).toBe("项目正在删除，请稍后重试")
+    await 冲一遍()
+    await 冲一遍()
+    // 没有任务可接 ⇒ 不该为这件事再取一遍恢复点。
+    expect(假.恢复点.length).toBe(初)
+  })
+
   test("点窄条「取消」⇒ 对当前任务调 cancelJob(job.id)", async () => {
     const 运行中 = 任务("j-1", "uploading", {
       progress: { filesTotal: 2, filesDone: 1, bytesTotal: 10, bytesDone: 5 },

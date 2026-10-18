@@ -1098,9 +1098,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         return
       }
       if (起.code === "job_running") {
-        // spec §11.6：同一项目已有任务在跑 ⇒ 说一句「已接上进度」，并把状态取回来。
-        set文件话("这个项目正在备份，已接上当前进度")
-        await 重取备份状态()
+        // 409 有两个来源（整支复审 F-5）：① 同一项目已有任务在跑（带 `jobId`）⇒ spec §11.6
+        // 说一句「已接上进度」并取回状态；② **项目删除占位**（不带 `jobId`）⇒ 没有任务可接，
+        // 说实情、也不重取（重取只会白打一趟）。
+        if (起.jobId !== undefined) {
+          set文件话("这个项目正在备份，已接上当前进度")
+          await 重取备份状态()
+          return
+        }
+        set文件话("项目正在删除，请稍后重试")
         return
       }
       set文件话("备份没能起起来")
