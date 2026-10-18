@@ -535,6 +535,17 @@ describe("查找", () => {
     输入.dispatchEvent(new Event("input", { bubbles: true }))
     await new Promise((r) => setTimeout(r, 250))
     expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toContain("0 个")
+
+    // 只断言「0 个」时，搜索压根没跑也满足（`#005-47`）。恢复姓名列后必须立刻命中，
+    // 这条同时钉住「可见列变化会重跑去抖搜索」。
+    host.querySelector<HTMLElement>('[data-slot="sheet-columns-trigger"]')!.click()
+    const 清单 = await 等元素(() => document.querySelector<HTMLElement>('[data-slot="sheet-column-list"]'))
+    const 姓名项 = [...清单.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) =>
+      input.closest("label")?.textContent?.includes("姓名"),
+    )
+    姓名项!.click()
+    await new Promise((r) => setTimeout(r, 250))
+    expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toBe("第 1 / 共 1 个")
     卸()
   })
 
@@ -544,6 +555,21 @@ describe("查找", () => {
     输入.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     expect(host.querySelector('[data-slot="sheet-find"]')).toBeNull()
     卸()
+  })
+
+  test("焦点在查找条按钮上时 Esc 也关闭", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      await 打开查找(host)
+      const 下一处 = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "下一处",
+      )!
+      下一处.click()
+      下一处.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+      expect(host.querySelector('[data-slot="sheet-find"]')).toBeNull()
+    } finally {
+      卸()
+    }
   })
 
   test("Ctrl+F 只在网格内聚焦时接管", () => {

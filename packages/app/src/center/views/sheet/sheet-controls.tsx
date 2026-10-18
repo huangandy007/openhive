@@ -339,6 +339,11 @@ function 查找条(props: {
       <div
         data-slot="sheet-find"
         class="flex flex-wrap items-center gap-2 border-b border-v2-border-border-muted px-3 py-1"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return
+          event.preventDefault()
+          props.onClose()
+        }}
       >
         <input
           ref={输入}
@@ -348,10 +353,7 @@ function 查找条(props: {
           value={props.find.query}
           onInput={(event) => props.onQuery(event.currentTarget.value)}
           onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault()
-              props.onClose()
-            } else if (event.key === "Enter") {
+            if (event.key === "Enter") {
               event.preventDefault()
               props.onNext(event.shiftKey ? -1 : 1)
             }
