@@ -1,136 +1,115 @@
-import * as XLSX from "xlsx"
+import { untrack } from "solid-js"
+import { render } from "solid-js/web"
 import type { ViewComponent } from "@/center/view-registry"
-import { BinaryView, type BytesRenderer } from "./binary-view"
-import { 需要密码 } from "./unsupported-format"
+import { 当前重载代 } from "@/center/session-edits"
+import { BinaryView, type RenderCleanup } from "./binary-view"
+import { 规模, type 解析限制 } from "./sheet/sheet-model"
+import { 解析表格 } from "./sheet/sheet-parse"
+import { createSheetStore, SheetGrid, type SheetUiState } from "./sheet/sheet-grid"
+import { 缓存键, 读UI状态, 写UI状态, 读数据, 写数据, 数据格数 } from "./sheet/sheet-state-cache"
 
-/**
- * 铺进 DOM 的行 / 列上界。
- *
- * 表格是**一格一个 DOM 节点**铺的（`<td>`），所以「表有多大」直接等于「页面上有多少节点」。
- * 公安那边的表动辄十万行话单，不看上界地铺下去就是把标签页卡死。超出的部分**明说截断**，
- * 不静默少给（静默少给＝民警拿着前 1000 行当整份数据用，比卡死更危险）。
- *
- * 数值是权衡后的取舍：1000 × 64 = 6.4 万个格子，是浏览器铺表还能交互的量级；列 64 覆盖得住
- * 话单/资金表常见的三四十列。**整份解析**（含超大表）是另一个量级的活儿，已登记在 state.md
- * 的承接任务里（移进 Worker + 超时 terminate），不在本轮。
- */
-export const 行上界 = 1000
-export const 列上界 = 64
+export { 行上界, 列上界, 是加密工作簿 } from "./sheet/sheet-model"
 
-/**
- * 把工作簿的第一张工作表铺成 HTML 表格。
- *
- * `codepage: 65001` 不可省：`.csv` 这类**没有 zip 头**的文本，SheetJS 默认按 Latin-1 解，
- * 中文会变成「å§å」这类乱码（探针实测）。公安数据大量是中文 CSV，不设它整类都不可用。
- * 对真 `.xlsx`/`.xls` 无影响（探针已验：zip 路径自带编码声明，不读这个值）。
- * 副作用：SheetJS 会往 stderr 打一行「Codepage tables are not loaded」——那是它的可选码页表
- * 没随包发布，UTF-8 这条路径不依赖它，结果正确。
- */
-/**
- * SheetJS 交回的这个失败，是不是在说「这份工作簿锁着」。
- *
- * **为什么按消息认**：SheetJS 认得出加密，却没有自己的错误类型（全是一句话的 `Error`），
- * 调用方只能按词认。放宽到 `password` 而不是只认 `password-protected`，是因为它的抛出点
- * 不止一个说法：`File is password-protected`（`:20062` BIFF 的 FilePass / `:20501` `/encryption` 流
- * / `:26832` ECMA-376 加密包）、`File is password-protected: ECMA-376 Extensible`（`:10754`）、
- * 以及 Numbers 的 `Unsupported password protection`（`:25472`，**不含** `password-protected`
- * 那段词，只认它就漏过去了）。
- *
- * 认错的代价是不对称的：漏认 → 落 `error`「这个文件打不开 · 可能已经损坏」，让民警去怀疑一份
- * 好文件；多认 → 得先有一句带 `password` 的非加密失败才谈得上（SheetJS 里没有这种说法）。
- *
- * ⚠️ **不要**改用「见到 OLE2 魔数（`D0 CF 11 E0`）就当加密」来偷懒：加密的 Office 与老 `.doc`、
- * 老 `.xls` **都是** OLE2，魔数根本分不开这两类（`document-view` 那边分得开是因为它进容器认
- * **流名**；这里分得开是靠 SheetJS 自己交回的说法）。⚠️ 也别拿「SheetJS 读得了老 `.doc`」当
- * 理由——实测（探针）读不了：它只找 `Workbook`/`Book` 流，喂 WordDocument 抛
- * `Cannot find Workbook stream`。理由错了的注释比没有更坏，它会被后来人当依据去改代码。
- */
-export function 是加密工作簿(原因: unknown): boolean {
-  return 原因 instanceof Error && /password/i.test(原因.message)
+export interface SheetRenderOptions {
+  缓存键?: string
+  limits?: 解析限制
+  /** 测试用：跳过 Worker。生产不传。 */
+  强制主线程?: boolean
 }
 
-export const renderSheet: BytesRenderer = async (bytes, container) => {
-  let book: XLSX.WorkBook
+function 挂载(
+  container: HTMLElement,
+  store: ReturnType<typeof createSheetStore>,
+  初始: SheetUiState | undefined,
+  保存: ((state: SheetUiState) => void) | undefined,
+): RenderCleanup {
+  return render(() => <SheetGrid store={store} initial={初始} onChange={保存} />, container)
+}
+
+/**
+ * `renderSheet` 自己比 `BytesRenderer` 多一个可选参数（限制注入 / 强制主线程），
+ * 且返回的 cleanup 恒存在。这个类型既能在 `BinaryView` 的 `render` 槽位直接赋值，
+ * 又允许测试传第三参（若标成 `BytesRenderer`，测试传三参会 TS 报错）。
+ */
+export type SheetRenderer = (
+  bytes: Uint8Array<ArrayBuffer>,
+  container: HTMLElement,
+  options?: SheetRenderOptions,
+) => Promise<RenderCleanup>
+
+/**
+ * 字节 → 网格。
+ *
+ * 先用 `解析表格` 等首屏 meta（加密/损坏会在这里 reject，交给 BinaryView 的壳分档）；
+ * meta 一到就挂载网格并 resolve，后续 chunk 由 store 追加——**不等全量**。
+ * 返回的 cleanup 卸载 Solid 根并终止解析/Worker。
+ */
+export const renderSheet: SheetRenderer = async (bytes, container, options) => {
+  const key = options?.缓存键
+  const 初始 = key ? 读UI状态(key) : undefined
+  const 保存 = key ? (state: SheetUiState) => 写UI状态(key, state) : undefined
+  const 缓存 = key ? 读数据(key) : undefined
+
+  if (缓存) {
+    const store = createSheetStore(缓存.meta, 缓存.mode, 缓存.truncated)
+    const 首屏行数 = 缓存.meta.preview.length
+    if (缓存.rows.length > 首屏行数) store.appendChunk(首屏行数, 缓存.rows.slice(首屏行数))
+    const dispose = 挂载(container, store, 初始, 保存)
+    return () => dispose()
+  }
+
+  let store: ReturnType<typeof createSheetStore> | undefined
+  let dispose: RenderCleanup | undefined
+  let 已挂载 = false
+
+  const 任务 = 解析表格(
+    bytes,
+    {
+      onMeta(meta) {
+        store = createSheetStore(meta, "full", { rows: 0, cols: 0 })
+        dispose = 挂载(container, store, 初始, 保存)
+        已挂载 = true
+      },
+      onChunk(start, rows) {
+        store?.appendChunk(start, rows)
+      },
+      onDone(mode, truncated) {
+        store?.setDone(mode, truncated)
+        if (!store || !key) return
+        const 数据 = { meta: store.meta, rows: [...store.rows], mode, truncated }
+        if (数据格数(数据.rows) <= 规模.缓存格上限) 写数据(key, 数据)
+      },
+      onError(_kind, message) {
+        if (!已挂载) return // ready 会 reject，交给 renderSheet 抛出
+        store?.setError(message)
+      },
+    },
+    { limits: options?.limits, 强制主线程: options?.强制主线程 },
+  )
+
   try {
-    book = XLSX.read(bytes, { type: "array", codepage: 65001 })
+    await 任务.ready
   } catch (原因) {
-    // 加密的工作簿**单独认出来**：真加密的 Office 文件不是 zip，而是 OLE2 复合文档
-    // （头 `D0 CF 11 E0`）——加密信息是容器里的**流**（老一代 `/encryption`，现代 ECMA-376 是
-    // `/EncryptionInfo` + `/EncryptedPackage`），SheetJS 见到就抛（见 `是加密工作簿`）。
-    // 落 `error` 会显示「这个文件打不开 · 可能已经损坏」——文件一点没坏、只是锁着，
-    // 民警该做的是去要密码（机制见 `unsupported-format.ts`）。
-    if (是加密工作簿(原因)) {
-      throw 需要密码("工作簿是加密的，SheetJS 报 password 一类的话")
-    }
+    任务.cancel()
+    dispose?.()
     throw 原因
   }
-  // 不做「有没有工作表」的判空：探针查实零工作表的工作簿造不出来（SheetJS 写出时自己抛
-  // `Workbook is empty`），而读垃圾字节也总会得到 `SheetNames: ["Sheet1"]` —— 那是条死代码。
-  const sheet = book.Sheets[book.SheetNames[0]]
 
-  // 表本身的尺寸从 `!ref`（形如 `A1:BL99999`）读，**在铺之前**读——铺完再数行数就晚了。
-  const 全范围 = XLSX.utils.decode_range(sheet["!ref"] ?? "A1")
-  const 总行 = 全范围.e.r - 全范围.s.r + 1
-  const 总列 = 全范围.e.c - 全范围.s.c + 1
-  const 截了行 = 总行 > 行上界
-  const 截了列 = 总列 > 列上界
-  // `range` 交回 SheetJS 去裁：只喂前 上界 行/列，而不是全铺完再在 DOM 这边丢——
-  // 后者照样要把整张表物化成 JS 数组，白花一次大表的内存。
-  const 范围 = {
-    s: { r: 全范围.s.r, c: 全范围.s.c },
-    e: { r: Math.min(全范围.e.r, 全范围.s.r + 行上界 - 1), c: Math.min(全范围.e.c, 全范围.s.c + 列上界 - 1) },
+  return () => {
+    任务.cancel()
+    dispose?.()
   }
-
-  // `defval` + `blankrows` 一起保证**行宽对齐**：真实表格大量是残缺行（某行少几列、或有整行空），
-  // 不补齐的话每行格数不一，列会串位。已用「临时摘掉这两个选项」验证过下方测试确实抓得住（收到 [3,2]）。
-  //
-  // `raw: false` **不可省**（2026-10-14，用户实报「日期显示的是一串数字」）：默认的 `raw: true`
-  // 交回的是**原始值**，把 SheetJS 已经算好的显示文本（`w`）丢掉。而日期在表格内部就是**数字
-  // 序列号**（CSV 里的 `2026-10-01` 解析为 `t:"n" v:46296`，真 xlsx 同理），于是 `String(cell)`
-  // 打出 `46296`。改用 `w` 之后：日期 → `2026-10-01`、百分比 → `12.50%`、千分位 → `1,200,000`
-  // ——**表里怎么显示就怎么给**，也正是中栏预览该有的语义。
-  //
-  // 代价（据实记）：xlsx 里**存成数字**的长数字（身份证 / 卡号）会显示成科学计数法（`1.10101E+17`）。
-  // 那类数据在 Excel 里本来就已丢了精度（只存 15 位有效数字，`…234` 存进去读回是 `…230`），
-  // 显式暴露比静默给一个看着像真的错号更安全——同本文件头「静默少给比卡死更危险」那条。
-  // ⚠️ CSV 不受此影响：SheetJS 把原始文本留在了 `w` 里，连精度都还回来了。
-  //
-  // 故行类型是「可空字符串」而非原先的「原始值联合」：`raw: false` 落进来的都是 `w`（字符串），
-  // `defval` 补的仍是 null。注意 `sheet_to_json<T>` 的 `T` 是**行**类型，`header: 1` 下行本身是数组，
-  // 漏掉外层 `[]` 会 typecheck 不过。
-  const rows = XLSX.utils.sheet_to_json<(string | null)[]>(sheet, {
-    header: 1,
-    defval: null,
-    blankrows: true,
-    raw: false,
-    range: 范围,
-  })
-
-  if (截了行 || 截了列) {
-    const 砍掉 = [截了行 ? `前 ${行上界} 行` : undefined, 截了列 ? `前 ${列上界} 列` : undefined]
-    const 提示 = document.createElement("p")
-    // 配色走 v2 语义 token（`text-12-regular` 只是字号/字重那一档的既有工具类，不带颜色）。
-    // 本 feature 自己的文案一律不用 v1 的 `text-text-weak`——那是上游遗留口径。
-    提示.dataset.slot = "sheet-truncated"
-    提示.className = "mb-2 text-12-regular text-v2-text-text-muted"
-    提示.textContent = `表太大，这里只显示${砍掉.filter(Boolean).join(" × ")}（原表共 ${总行} 行 × ${总列} 列）。`
-    container.appendChild(提示)
-  }
-
-  const table = document.createElement("table")
-  for (const row of rows) {
-    const tr = document.createElement("tr")
-    for (const cell of row) {
-      const td = document.createElement("td")
-      // `defval: null` 补的空格就是 null，显示成空；`raw: false` 落下来的都是字符串。
-      td.textContent = cell ?? ""
-      tr.appendChild(td)
-    }
-    table.appendChild(tr)
-  }
-  container.appendChild(table)
 }
 
 export const SheetView: ViewComponent = (props) => (
-  <BinaryView name="sheet-view" path={props.path} load={props.load} render={renderSheet} />
+  <BinaryView
+    name="sheet-view"
+    path={props.path}
+    load={props.load}
+    render={(bytes, container) =>
+      renderSheet(bytes, container, {
+        缓存键: 缓存键(props.path, untrack(() => 当前重载代(props.path))),
+      })
+    }
+  />
 )

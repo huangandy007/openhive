@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Popover } from "@opencode-ai/ui/popover"
-import { 规模, type Cell, type ColumnType, type SheetMeta, type 列筛选 } from "./sheet-model"
+import { type Cell, type ColumnType, type SheetMeta, type 列筛选 } from "./sheet-model"
 
 export const 表头高 = 32
 
@@ -384,7 +384,9 @@ function 查找条(props: {
 
 /**
  * 规模分层横幅：预览截断、全量列截断、多工作表、解析中断、加载进度。
- * 数字一律读 `meta` / `规模` / `loadedRows`，不写死（`LEARNINGS #006-29`）。
+ * 数字一律读 `meta` / `truncated` / `loadedRows`，不写死（`LEARNINGS #006-29`）。
+ * 显示行列数从 `truncated` 实值反推：解析端交回的截断量就是「实际没物化多少」，
+ * 读全局 `规模` 常量会在注入自定义 `limits` 时报出与画面不符的数字。
  */
 function 横幅(props: {
   meta: SheetMeta
@@ -395,8 +397,9 @@ function 横幅(props: {
   error?: string
 }) {
   const 数据总行 = () => Math.max(0, props.meta.totalRows - (props.headerIsFirstRow ? 1 : 0))
-  const 显示行数 = () => (props.mode === "preview" ? Math.min(规模.预览行数, 数据总行()) : 数据总行())
-  const 显示列数 = () => Math.min(props.meta.totalCols, props.mode === "preview" ? 规模.预览列数 : 规模.全量列上限)
+  const 显示行数 = () =>
+    Math.max(0, props.meta.totalRows - props.truncated.rows - (props.headerIsFirstRow ? 1 : 0))
+  const 显示列数 = () => Math.max(0, props.meta.totalCols - props.truncated.cols)
   return (
     <>
       <Show when={props.mode === "preview" && !props.error}>
@@ -404,7 +407,7 @@ function 横幅(props: {
           data-slot="sheet-preview-banner"
           class="w-full border-b border-v2-border-border-muted bg-v2-background-bg-layer-02 px-3 py-1 text-11-regular text-v2-text-text-muted"
         >
-          表较大，当前只显示前 {显示行数()} 行 × {显示列数()} 列（原表共 {props.meta.totalRows} 行 × {props.meta.totalCols} 列）。排序、筛选、查找只作用于当前显示的数据；完整数据请从文件树下载后用 Excel/WPS 查看。
+          表较大，当前只显示前 {显示行数()} 行 × 前 {显示列数()} 列（原表共 {props.meta.totalRows} 行 × {props.meta.totalCols} 列）。排序、筛选、查找只作用于当前显示的数据；完整数据请从文件树下载后用 Excel/WPS 查看。
         </p>
       </Show>
       <Show when={props.mode === "full" && props.truncated.cols > 0}>

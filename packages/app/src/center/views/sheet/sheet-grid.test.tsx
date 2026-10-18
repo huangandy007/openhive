@@ -651,7 +651,7 @@ describe("横幅与空态", () => {
     const store = createSheetStore(
       元({ totalRows: 2000, totalCols: 100, preview: [["姓名", "金额"], ["张三", "1"]] }),
       "preview",
-      { rows: 1998, cols: 36 },
+      { rows: 999, cols: 36 },
     )
     const host = document.createElement("div")
     document.body.appendChild(host)
@@ -702,7 +702,7 @@ describe("横幅与空态", () => {
   })
 
   test("预览档解析中断：不并显截断横幅", () => {
-    const store = createSheetStore(元({ totalRows: 2000 }), "preview", { rows: 1998, cols: 36 })
+    const store = createSheetStore(元({ totalRows: 2000 }), "preview", { rows: 999, cols: 36 })
     const host = document.createElement("div")
     document.body.appendChild(host)
     const dispose = render(() => <SheetGrid store={store} />, host)
