@@ -161,6 +161,46 @@ describe("解析：xlsx", () => {
     expect(c.meta[0].preview.every((row) => row.length === 2)).toBe(true)
   })
 
+  test("CSV：晚出现的宽列计入 totalCols，末块不丢列", async () => {
+    const 行 = ["a,b"]
+    for (let i = 1; i <= 200; i++) 行.push(`r${i},x`)
+    for (let i = 201; i <= 249; i++) 行.push(`r${i},x,z`)
+    const c = 收集()
+    await 解析工作簿(
+      new TextEncoder().encode(行.join("\n") + "\n"),
+      c.回调,
+      小限制({
+        首屏行数: 200,
+        预览行数: 1000,
+        预览列数: 64,
+        全量行上限: 1000,
+        全量格上限: 4_000_000,
+        全量列上限: 256,
+        分块行数: 100,
+      }),
+    )
+    expect(c.meta[0].totalRows).toBe(250)
+    expect(c.meta[0].totalCols).toBe(3)
+    expect(c.meta[0].preview).toHaveLength(201)
+    expect(c.chunks).toHaveLength(1)
+    expect(c.chunks[0].start).toBe(201)
+    expect(c.chunks[0].rows).toHaveLength(49)
+    expect(c.chunks[0].rows.at(-1)).toEqual(["r249", "x", "z"])
+    expect(c.done).toEqual([["full", { rows: 0, cols: 0 }]])
+  })
+
+  test("CSV：未配对的字面引号不吞后续行", async () => {
+    const c = 收集()
+    await 解析工作簿(
+      new TextEncoder().encode('name,size\nmonitor,27"\nkeyboard,15"\n'),
+      c.回调,
+      小限制({ 首屏行数: 1 }),
+    )
+    expect(c.meta[0].totalRows).toBe(3)
+    expect(c.meta[0].preview).toHaveLength(2)
+    expect(c.chunks).toEqual([{ start: 2, rows: [["keyboard", '15"']] }])
+  })
+
   test("加密工作簿：onError(kind=password)", async () => {
     // 复用既有夹具；路径从 test 文件出发。
     const { 加密的Office容器 } = await import("../__fixtures__/office")

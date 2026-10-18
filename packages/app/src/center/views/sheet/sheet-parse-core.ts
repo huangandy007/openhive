@@ -35,38 +35,68 @@ const 是OLE2 = (bytes: Uint8Array) =>
 /** 文本分支：CSV/TSV 没有 zip/OLE2 头。 */
 const 是文本 = (bytes: Uint8Array) => !是Zip(bytes) && !是OLE2(bytes)
 
-function 数行(text: string): number {
-  if (!text) return 0
-  let lines = 1
-  let quoted = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (ch === '"') {
-      if (quoted && text[i + 1] === '"') i++
-      else quoted = !quoted
-    } else if (!quoted && ch === "\n") lines++
-    else if (!quoted && ch === "\r" && text[i + 1] !== "\n") lines++
-  }
-  if (!quoted && (text.endsWith("\n") || text.endsWith("\r"))) lines--
-  return Math.max(0, lines)
-}
-
-/** 首行列数粗估：逗号/制表符都数，引号里的分隔符跳过。仅用于分档，不用于最终列数。 */
-function 数列数(text: string): number {
-  const end = text.search(/\r|\n/)
-  const line = end === -1 ? text : text.slice(0, end)
+/**
+ * 全文一次扫描：行数（引号内换行不算）+ 最大列数（每行逗号/制表符计数取大者）。
+ * CSV 引号规则：只有**字段起始处**（行首或紧跟分隔符）的 `"` 才是开引号；
+ * 字段中间的 `"`（如 `27"`）按普通字符处理，不会吞掉后续行。
+ */
+function 扫描文本(text: string): { 行数: number; 列数: number } {
+  if (!text) return { 行数: 0, 列数: 1 }
+  let 行数 = 1
+  let 列数 = 1
   let commas = 0
   let tabs = 0
   let quoted = false
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    if (ch === '"') {
-      if (quoted && line[i + 1] === '"') i++
-      else quoted = !quoted
-    } else if (!quoted && ch === ",") commas++
-    else if (!quoted && ch === "\t") tabs++
+  let 字段起始 = true
+
+  const 结束行 = () => {
+    列数 = Math.max(列数, Math.max(commas, tabs) + 1)
+    commas = 0
+    tabs = 0
+    字段起始 = true
   }
-  return Math.max(commas, tabs) + 1
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') i++ // "" 转义
+        else {
+          quoted = false
+          字段起始 = false
+        }
+      }
+      continue
+    }
+    if (ch === '"' && 字段起始) {
+      quoted = true
+      continue
+    }
+    if (ch === "\n" || (ch === "\r" && text[i + 1] !== "\n")) {
+      结束行()
+      行数++
+    } else if (ch === "\r") {
+      // \r\n：跳过 \n，按一次换行结束
+      i++
+      结束行()
+      行数++
+    } else if (ch === ",") {
+      commas++
+      字段起始 = true
+    } else if (ch === "\t") {
+      tabs++
+      字段起始 = true
+    } else {
+      字段起始 = false
+    }
+  }
+
+  if (!quoted && (text.endsWith("\n") || text.endsWith("\r"))) {
+    行数--
+  } else {
+    结束行()
+  }
+  return { 行数: Math.max(0, 行数), 列数 }
 }
 
 /**
@@ -236,8 +266,8 @@ async function 解析文本(
   limits: 解析限制,
 ): Promise<void> {
   const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/^\uFEFF/, "")
-  const 行数 = 数行(text)
-  const 粗列数 = 数列数(text)
+  // 全文扫描先于任何 meta 发送：晚出现的宽列也要计入 totalCols，不能只信首读 201 行。
+  const { 行数, 列数: 粗列数 } = 扫描文本(text)
   const 首屏本 = XLSX.read(bytes, {
     type: "array",
     codepage: 65001,
