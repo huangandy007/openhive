@@ -275,8 +275,7 @@ describe("列显示/隐藏", () => {
   test("全部列清单：打开、取消勾选、搜索、全部显示", async () => {
     const { host, 卸 } = 挂()
     try {
-      const 列按钮 = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("列"))
-      列按钮!.click()
+      host.querySelector<HTMLElement>('[data-slot="sheet-columns-trigger"]')!.click()
 
       const 清单 = await 等元素(() => document.querySelector<HTMLElement>('[data-slot="sheet-column-list"]'))
       const 金额项 = [...清单.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) =>
@@ -294,6 +293,27 @@ describe("列显示/隐藏", () => {
       const 全部 = [...清单.querySelectorAll("button")].find((button) => button.textContent === "全部显示")
       全部!.click()
       expect(host.querySelector('[role="grid"]')?.getAttribute("aria-colcount")).toBe("2")
+    } finally {
+      卸()
+    }
+  })
+
+  test("重置列宽回到初始估算宽度", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[1]).toBe("64px")
+
+      const handle = 表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')
+      handle!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 260 }))
+      window.dispatchEvent(new MouseEvent("pointerup"))
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[1]).toBe("124px")
+
+      host.querySelector<HTMLElement>('[data-slot="sheet-columns-trigger"]')!.click()
+      const 清单 = await 等元素(() => document.querySelector<HTMLElement>('[data-slot="sheet-column-list"]'))
+      const 重置 = [...清单.querySelectorAll("button")].find((button) => button.textContent === "重置列宽")
+      重置!.click()
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[1]).toBe("64px")
     } finally {
       卸()
     }
