@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onMount, Show, untrack, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createVirtualizer } from "@tanstack/solid-virtual"
 import {
@@ -185,22 +185,33 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     else setSort(undefined)
   }
 
+  // 拖拽的 window 监听在 pointerup/pointercancel 时拆；组件若在拖拽中途卸载，
+  // 靠这个句柄在 onCleanup 里拆（`onCleanup` 必须在组件 setup 期注册，不能放进事件回调）。
+  let 停止拖拽: (() => void) | undefined
+  onCleanup(() => 停止拖拽?.())
+
   const 开始拖列宽 = (event: PointerEvent, index: number) => {
     event.preventDefault()
     event.stopPropagation()
+    停止拖拽?.()
     const 起点 = event.clientX
     const 起始 = 列[index].width
     const move = (moveEvent: PointerEvent) => set列(index, "width", 拖拽后列宽(起始, moveEvent.clientX - 起点))
-    const up = () => {
+    const stop = () => {
       window.removeEventListener("pointermove", move)
-      window.removeEventListener("pointerup", up)
+      window.removeEventListener("pointerup", stop)
+      window.removeEventListener("pointercancel", stop)
+      if (停止拖拽 === stop) 停止拖拽 = undefined
     }
     window.addEventListener("pointermove", move)
-    window.addEventListener("pointerup", up)
+    window.addEventListener("pointerup", stop)
+    window.addEventListener("pointercancel", stop)
+    停止拖拽 = stop
   }
 
   const 自适应 = (index: number) => {
-    const 样本 = props.store.rows.slice(1, 1001).map((row) => row[index] ?? null)
+    const 起点 = 首行是表头() ? 1 : 0
+    const 样本 = props.store.rows.slice(起点, 起点 + 1000).map((row) => row[index] ?? null)
     set列(index, "width", 估算列宽(列[index].name, 样本))
   }
 

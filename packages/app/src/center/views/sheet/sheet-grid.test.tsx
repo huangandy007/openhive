@@ -150,3 +150,55 @@ describe("网格骨架", () => {
     卸()
   })
 })
+
+describe("列宽交互", () => {
+  test("拖拽列边界：宽度按位移变化，所有行共用同一模板", () => {
+    const { host, 卸 } = 挂()
+    try {
+      const handle = 表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')
+      expect(handle).not.toBeNull()
+      const 前 = 表头(host)?.style.gridTemplateColumns
+
+      handle!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 260 }))
+      window.dispatchEvent(new MouseEvent("pointerup"))
+
+      const 后 = 表头(host)?.style.gridTemplateColumns
+      expect(后).not.toBe(前)
+      expect(后).toContain("px")
+      expect(数据行(host)[0]?.style.gridTemplateColumns).toBe(后!)
+    } finally {
+      卸()
+    }
+  })
+
+  test("双击边界按内容自适应，且受 64–320 初始钳制", () => {
+    const { host, 卸 } = 挂()
+    try {
+      const handle = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-col-resize"]')
+      handle!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+      // 金额列内容 "1200" 宽 28 + 16 = 44 ⇒ 钳到 64
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[2]).toBe("64px")
+    } finally {
+      卸()
+    }
+  })
+
+  test("宽度变化写进 onChange 的状态", () => {
+    let 最后: any
+    const store = createSheetStore(元(), "full", { rows: 0, cols: 0 })
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(() => <SheetGrid store={store} onChange={(state) => (最后 = state)} />, host)
+    try {
+      const handle = host.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')!
+      handle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 250 }))
+      window.dispatchEvent(new MouseEvent("pointerup"))
+      expect(最后.columns[0].width).toBeGreaterThan(64)
+    } finally {
+      dispose()
+      host.remove()
+    }
+  })
+})
