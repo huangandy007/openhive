@@ -1013,15 +1013,17 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return
     }
     void dialog.show(() => (
-      <RestoreDialog
-        preview={preview}
-        busy={在跑(backupJob())}
-        onCancel={() => dialog.close()}
-        onConfirm={({ decision, decisions }) => {
-          dialog.close()
-          void 跑恢复(id, input, decision, decisions)
-        }}
-      />
+      <DialogV2 class="w-[min(34rem,calc(100vw-3rem))]">
+        <RestoreDialog
+          preview={preview}
+          busy={在跑(backupJob())}
+          onCancel={() => dialog.close()}
+          onConfirm={({ decision, decisions }) => {
+            dialog.close()
+            void 跑恢复(id, input, decision, decisions)
+          }}
+        />
+      </DialogV2>
     ))
   }
 
