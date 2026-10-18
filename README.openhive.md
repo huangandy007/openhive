@@ -5,7 +5,7 @@
 
 ## 前提
 
-- 包管理器 **bun 1.3.14**（根 `package.json` 的 `packageManager` pin 值）：`bun --version`
+- 包管理器 **bun 1.4.2**（根 `package.json` 的 `packageManager` pin 值）：`bun --version`
 - 依赖已装：`bun install`
   - ⚠️ 跑完**必查** `git diff --stat bun.lock` 应为空——本机 `~/.npmrc` 指向镜像源，bun 会把锁文件里
     一列空串填成镜像 URL。被污染就 `git checkout -- bun.lock` 还原。详见 `CLAUDE.md`「锁文件污染」。
