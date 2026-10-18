@@ -28,8 +28,8 @@ function 挂载(
 
 /**
  * `renderSheet` 自己比 `BytesRenderer` 多一个可选参数（限制注入 / 强制主线程），
- * 且返回的 cleanup 恒存在。这个类型既能在 `BinaryView` 的 `render` 槽位直接赋值，
- * 又允许测试传第三参（若标成 `BytesRenderer`，测试传三参会 TS 报错）。
+ * 且返回的 cleanup 恒存在。这个类型可赋值给 `BinaryView` 的 `render` 槽位；当前经包装箭头传入
+ * （补缓存键），并允许测试传第三参（若标成 `BytesRenderer`，测试传三参会 TS 报错）。
  */
 export type SheetRenderer = (
   bytes: Uint8Array<ArrayBuffer>,

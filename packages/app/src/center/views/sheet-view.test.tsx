@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import * as XLSX from "xlsx"
@@ -10,7 +10,9 @@ import { 列上界, 行上界, 是加密工作簿, renderSheet, SheetView } from
 
 // 组件测试一律走主线程解析：Bun 里 `Worker` 存在，但 Vite 的 worker 入口转换不在这条链上，
 // 真起一个 Worker 会让用例依赖运行时细节。`解析表格` 以 `typeof Worker === "undefined"` 判降级，
-// 这里显式抹掉即可（生产不受影响，测试文件不进打包）。
+// 这里显式抹掉即可（生产不受影响，测试文件不进打包）。**文件结束必须还原**：这是进程级全局，
+// 同进程里别的测试文件不该继承这份垫片。
+const 原Worker = globalThis.Worker
 // @ts-expect-error 测试垫片
 globalThis.Worker = undefined
 
@@ -27,10 +29,12 @@ if (!("ResizeObserver" in globalThis)) {
 // ⚠️ happy-dom 没有布局，`offsetWidth/offsetHeight` 恒 0。@tanstack/virtual-core 首帧用这两个值
 // 覆盖 `initialRect`（`dist/esm/index.js` 的 `getRect`）⇒ 不垫这一下，虚拟列表渲染 **0 行**，
 // 「网格里出现单元格文本」的断言会假红（其实是环境没视口）。与 `sheet-grid.test.tsx` 同一垫片。
-for (const [属性, 尺寸] of [
+const 视口尺寸 = [
   ["offsetWidth", 800],
   ["offsetHeight", 600],
-] as const) {
+] as const
+const 原视口描述符 = 视口尺寸.map(([属性]) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, 属性))
+for (const [属性, 尺寸] of 视口尺寸) {
   Object.defineProperty(HTMLElement.prototype, 属性, {
     configurable: true,
     get(this: HTMLElement) {
@@ -38,6 +42,16 @@ for (const [属性, 尺寸] of [
     },
   })
 }
+
+afterAll(() => {
+  globalThis.Worker = 原Worker
+  视口尺寸.forEach(([属性], index) => {
+    const 原描述符 = 原视口描述符[index]
+    // 原来没有自有描述符就删掉，别在原型上留一个假 getter。
+    if (原描述符) Object.defineProperty(HTMLElement.prototype, 属性, 原描述符)
+    else Reflect.deleteProperty(HTMLElement.prototype, 属性)
+  })
+})
 
 function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuffer> {
   const book = XLSX.utils.book_new()
@@ -256,25 +270,36 @@ describe("表格视图接进通用壳", () => {
     expect(降级?.textContent).not.toContain("损坏")
   })
 
-  test("切走再回来：列宽/筛选从模块级缓存恢复", async () => {
+  test("切走再回来：列宽从模块级缓存恢复", async () => {
     // 同一个 path 重新挂载，缓存键含当前重载代（两条都是 0）。
     const bytes = 工作簿字节([["姓名", "金额"], ["张三", "1200"]])
     const load = async () => 二进制内容(bytes)
+    const 列宽串 = (host: HTMLElement) =>
+      host.querySelector<HTMLElement>('[data-slot="sheet-header"]')?.style.gridTemplateColumns ?? ""
+    // 首列 = 行号列 56px + 数据列（模板串以空格分隔）。
+    const 首列宽 = (host: HTMLElement) => 列宽串(host).split(" ")[1]
 
     const 第一 = mount(() => <SheetView path="/p/缓存.xlsx" load={load} />)
     await 等状态(第一, "ready")
+    const 拖拽前 = 列宽串(第一)
+    // 初始列宽 = max(64, 「姓名」文本宽 26 + 16)。
+    expect(首列宽(第一)).toBe("64px")
+
     const 拖拽 = 第一.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')!
     拖拽.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }))
     window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300 }))
     window.dispatchEvent(new MouseEvent("pointerup"))
-    const 宽度 = 第一.querySelector<HTMLElement>('[data-slot="sheet-header"]')?.style.gridTemplateColumns
+    const 宽度 = 列宽串(第一)
+    // 直接钉到预期 px：只比「两次相等」的话，拖拽接线静默失效（两次都是默认值）也会绿。
+    expect(宽度).not.toBe(拖拽前)
+    expect(首列宽(第一)).toBe("164px")
 
     // 模拟切 Tab：卸载视图
     ;[...第一.querySelectorAll<HTMLElement>("[data-component='sheet-view']")].forEach((el) => el.replaceChildren())
     // 直接重新挂载同一个 path，读缓存
     const 第二 = mount(() => <SheetView path="/p/缓存.xlsx" load={load} />)
     await 等状态(第二, "ready")
-    expect(第二.querySelector<HTMLElement>('[data-slot="sheet-header"]')?.style.gridTemplateColumns).toBe(宽度)
+    expect(列宽串(第二)).toBe(宽度)
   })
 })
 
