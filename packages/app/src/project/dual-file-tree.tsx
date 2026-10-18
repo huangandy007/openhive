@@ -1,4 +1,5 @@
 import { Icon } from "@opencode-ai/ui/icon"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
@@ -6,6 +7,7 @@ import { createMemo, createSignal, For, Show, splitProps } from "solid-js"
 import { flattenFileTreeV2 } from "@/components/file-tree-v2-model"
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileTree, type FileTreeProps } from "@/project/file-tree"
+import { 格式化字节 } from "@/project/format-bytes"
 import type { BackupSnapshot } from "@/project/openhive-backup"
 
 /** 每层缩进（设计 §6.4 的 16px 层级缩进）——**与 `file-tree.tsx` 同值**：两棵树并排出现，缩进不一致会看得出来。 */
@@ -22,6 +24,17 @@ const 最小窗高 = 72
 const ROW =
   "flex h-6 min-w-0 w-full shrink-0 cursor-pointer items-center gap-1 rounded-[4px] px-1 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
+/** 标题行里图标钮的公共尺寸——与 `file-tree.tsx` 的 `TOOL_BUTTON` 同形（同一种钮不该两种高矮）。 */
+const 工具钮 =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+
+/** 恢复点类型徽标：手动比自动更「重」一点——它是一次用户动作，自动只是后台在跑。 */
+function 徽标(kind: BackupSnapshot["kind"]): string {
+  return kind === "auto"
+    ? "shrink-0 rounded-[10px] border border-v2-border-border-muted px-1.5 text-[10px] text-v2-text-text-faint"
+    : "shrink-0 rounded-[10px] border border-v2-border-border-muted px-1.5 text-[10px] text-v2-text-text-base"
+}
+
 /**
  * 下树的空态**四句不同**文案——「没有来源」「来源说了没有」「还没选恢复点」「选中的恢复点里没有文件」
  * 是四件事（同 `file-tree.tsx` 两个空态、同 `minio-backups.ts` 的 `undefined` / `[]` 之分）。
@@ -33,12 +46,27 @@ const EMPTY_PICK = "选一个恢复点查看文件"
 const EMPTY_EMPTY = "这个恢复点里没有文件"
 const EMPTY_PAUSED = "已超出容量上限，自动备份已暂停"
 
-/** 用量显示（spec §11.2「已用 3.2 / 10 GB」）——只做给人看的粗粒度，不追求精确到字节。 */
-function 文件大小(bytes: number) {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
+/**
+ * 「什么时候该把用量摆出来」——**只有快满的时候**（2026-10-18 用户裁定，`minio-keep-first-box.html`）。
+ *
+ * 5.9 MB / 10 GB 是 0.06%，它不是「我正在看什么」的信息；80% 才是「你会不会爆」的决策点。
+ * 与窄条的 `minio-bar-paused` 分工不同：那条说「已经暂停了」，这条只说「快满了」。
+ */
+const 用量告警线 = 0.8
+
+function 该报用量(usage: { usedBytes: number; limitBytes: number } | undefined): boolean {
+  return usage !== undefined && usage.limitBytes > 0 && usage.usedBytes / usage.limitBytes >= 用量告警线
+}
+
+/** 恢复点的「月-日 时:分」（选择器与列表项共用；同一分钟的两份要看得出先后）。 */
+function 时间戳(ms: number): string {
+  const d = new Date(ms)
+  const 补 = (n: number) => String(n).padStart(2, "0")
+  return `${补(d.getMonth() + 1)}-${补(d.getDate())} ${补(d.getHours())}:${补(d.getMinutes())}`
+}
+
+function 类型名(kind: BackupSnapshot["kind"]): string {
+  return kind === "auto" ? "自动" : "手动"
 }
 
 type 哪棵树 = "sandbox" | "minio"
@@ -296,15 +324,15 @@ function MinioTree(props: {
   onResize: (高: number) => void
 }) {
   /**
-   * 收起态**存反向**（收起集合而不是展开集合）：默认全展开，空集合即默认。
+   * 展开态**存展开集合**：空集合即默认 = **全部收缩**（2026-10-18 用户下达，与上树对齐）。
    *
-   * ⚠️ 与上树（`file-tree.tsx`）**故意相反**，不是漏改：上树自 2026-10-11 起默认**全收缩**
-   * （用户第 5 条「开始进入文件 Tab 页面时，默认全部收缩」），这里维持默认全展开。两条理由的前提不同
-   * （`LEARNINGS #005-28`）：第 5 条讲的是**沙箱树**的初始态（深了摊开一屏放不下几条），
-   * 而这棵是**只读的云上备份镜像**、用途是跟沙箱对照着看，一屏本来就短。裁定与落点表见
-   * `docs/superpowers/specs/005-project-management/state.md` ⑦ 第 5 条。
+   * ⚠️ 这一条**推翻了** 2026-10-17 的旧裁定（当时写的是「本树维持默认全展开，因为它是只读镜像、
+   * 一屏本来就短」）。旧理由的前提是「窗口一屏装得下」——而真栈里一份 30 个文件的恢复点，
+   * 摊开后光顶层之外还有两层，窗口默认只占文件区 1/3，全展开等于一进来就滚到看不见结构。
+   * 用户看的是**进入时的第一眼**：先给骨架（顶层目录），要细看再「全部展开」。
+   * 旧注释已按 `LEARNINGS #005-43` 一并改写，不留「注释说全展开、代码全收缩」的分裂。
    */
-  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   // 与上树（`file-tree.tsx`）**同一个建树函数**：下树这一侧的备份清单是**文件级**的
   // （一条目录项都没有），所以今天两函数结果逐字相同——接上不是为了改变什么，是为了
   // **不让同一份清单形状在两棵树上各有一套建树规则**（`LEARNINGS #002-06`：两套漂了不报错，
@@ -313,12 +341,28 @@ function MinioTree(props: {
   const 行列表 = createMemo(() => flattenFileTreeV2(模型(), 展开))
 
   function 展开(path: string) {
-    return !collapsed().has(path)
+    return expanded().has(path)
   }
   function 切换(path: string) {
-    const next = new Set(collapsed())
+    const next = new Set(expanded())
     if (!next.delete(path)) next.add(path)
-    setCollapsed(next)
+    setExpanded(next)
+  }
+  /**
+   * 「全部展开」只放**目录**进集合（同上树 `file-tree.tsx:932-939`）：文件行不读这个集合，
+   * 把文件路径塞进去是死数据；而「展开所有目录」按字面就该只有目录。
+   *
+   * 目录集合来自**建树之后**的模型，不是 `backups`：备份清单是文件级的，目录是合成出来的
+   * ——直接遍历 `backups` 会一个目录都取不到（那会让这颗钮静默变成 no-op）。
+   */
+  function 全部展开() {
+    setExpanded(
+      new Set(
+        flattenFileTreeV2(模型(), () => true)
+          .filter((row) => row.node.type === "directory")
+          .map((row) => row.node.path),
+      ),
+    )
   }
 
   return (
@@ -353,65 +397,50 @@ function MinioTree(props: {
         max={Math.max(最小窗高, props.容器高())}
         onResize={props.onResize}
       />
-      {/* 树标题（设计 §5.2 下图那行「⬆ MinIO 备份（镜像沙箱路径） ✕」）。文案沿用 ④ 窄条的
-          「MinIO 备份」——窄条展开后就是这行标题，两处换词会让「展开的是同一个东西」变得不明显。 */}
+      {/* 标题行（2026-10-18 用户裁定保留第一版设计，只做三件事）：
+          ① 加「全部收缩 / 全部展开」两颗（镜像上树 `file-tree.tsx:575-587`：同一套图标、同一套文案、
+             **同样带 tooltip**，顺序沿用上树——先收缩、后展开）；
+          ② 用量只在 `≥80%` 时出现（`该报用量`），平时不占位；
+          ③ 🗑 离开这一行（它删的是「哪一份恢复点」，搬进恢复点下拉、跟着那一项走）。
+          「自动备份已暂停」也从这里撤了——那条完整告警归窄条（`minio-bar-paused`），
+          窗口只说自己是什么、里面有什么。 */}
       <div
         data-slot="minio-tree-header"
         class="flex h-7 shrink-0 items-center gap-1 border-b border-v2-border-border-muted px-1"
       >
         <Icon name="cloud-upload" size="small" class="shrink-0 [--icon-base:currentColor]" />
         <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-muted">MinIO 备份</span>
-        {/* 用量（spec §11.2「已用 3.2 / 10 GB」）：只做给人看的粗粒度，不追求精确到字节。
-            超限暂停时补一枚警告图标 ＋ 短文案；完整告警仍由底部窄条（`minio-bar-paused`）承担。 */}
-        <Show when={props.usage}>
+        <TooltipV2 value="全部收缩" class="flex shrink-0">
+          <button
+            data-slot="minio-tree-collapse-all"
+            type="button"
+            aria-label="全部收缩"
+            class={工具钮}
+            onClick={() => setExpanded(new Set())}
+          >
+            <Icon name="collapse" size="small" class="[--icon-base:currentColor]" />
+          </button>
+        </TooltipV2>
+        <TooltipV2 value="全部展开" class="flex shrink-0">
+          <button
+            data-slot="minio-tree-expand-all"
+            type="button"
+            aria-label="全部展开"
+            class={工具钮}
+            onClick={全部展开}
+          >
+            <Icon name="expand" size="small" class="[--icon-base:currentColor]" />
+          </button>
+        </TooltipV2>
+        {/* 用量（spec §11.2「已用 3.2 / 10 GB」）：**只在快满时**出现并转警告色。
+            平时它回答的是「我在看什么」——答案不是数字。 */}
+        <Show when={该报用量(props.usage) ? props.usage : undefined}>
           {(usage) => (
-            <span data-slot="minio-tree-usage" class="shrink-0 text-[12px] text-v2-text-text-faint">
-              {`已用 ${文件大小(usage().usedBytes)} / ${文件大小(usage().limitBytes)}`}
+            <span data-slot="minio-tree-usage" class="shrink-0 text-[12px] text-v2-state-fg-warning">
+              {`${格式化字节(usage().usedBytes)} / ${格式化字节(usage().limitBytes)}`}
             </span>
           )}
         </Show>
-        <Show when={props.usage?.autoPaused}>
-          <Icon
-            name="warning"
-            size="small"
-            aria-label="自动备份已暂停"
-            class="shrink-0 text-v2-text-text-contrast [--icon-base:currentColor]"
-          />
-          <span data-slot="minio-tree-paused" class="shrink-0 text-[12px] text-v2-text-text-contrast">
-            自动备份已暂停
-          </span>
-        </Show>
-        {/* 恢复点选择器：v1 用原生 `<select>`（spec §11.2，避免再引入一套浮层）。
-            选项文案按 spec §11.7 必须含**时间、类型、文件数**。 */}
-        <select
-          data-slot="minio-tree-snapshot"
-          aria-label="选择恢复点"
-          class="h-6 min-w-0 max-w-[140px] shrink rounded-[4px] bg-transparent text-[12px] text-v2-text-text-muted"
-          value={props.snapshotId ?? ""}
-          onChange={(event) => props.onSelectSnapshot?.(event.currentTarget.value)}
-        >
-          <For each={props.snapshots ?? []}>
-            {(snapshot) => (
-              <option value={snapshot.id}>
-                {/* 文案含**时间 · 类型 · 文件数**（spec §11.7）；`scope` 非空时追加作用范围——
-                    同一分钟、不同选中项的两个恢复点否则看起来一模一样（spec §11.2）。 */}
-                {`${new Date(snapshot.createdAt).toLocaleString("zh-CN", { hour12: false })} · ${
-                  snapshot.kind === "auto" ? "自动" : "手动"
-                } · ${snapshot.totals.files} 个文件${snapshot.scope ? ` · ${snapshot.scope}` : ""}`}
-              </option>
-            )}
-          </For>
-        </select>
-        <button
-          data-slot="minio-tree-delete"
-          type="button"
-          aria-label="删除这个恢复点"
-          disabled={props.snapshotId === undefined}
-          onClick={() => props.snapshotId && props.onDeleteSnapshot?.(props.snapshotId)}
-          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-default"
-        >
-          <Icon name="trash" size="small" class="[--icon-base:currentColor]" />
-        </button>
         {/* 悬停提示：只剩一枚 `✕`——标题那行的「MinIO 备份」说的是**这棵树**，不是这颗按钮做什么。
             文案与 `aria-label` 同源。
             ⚠️ `TooltipV2` 插的那层 `<div>` 顶替了原先长在按钮上的 `shrink-0`（同 `file-tree.tsx`）。 */}
@@ -420,12 +449,124 @@ function MinioTree(props: {
             data-slot="minio-tree-collapse"
             type="button"
             aria-label="收起 MinIO 备份"
-            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+            class={工具钮}
             onClick={() => props.onCollapse?.()}
           >
             <Icon name="close" size="small" class="[--icon-base:currentColor]" />
           </button>
         </TooltipV2>
+      </div>
+
+      {/* 恢复点选择（spec §11.2 / §11.7）：**通栏胶囊 ＋ 下拉**，替换原生 `<select>`。
+          原生控件在 28px 高、140px 宽里把「时间 · 类型 · 文件数」压成半截，且没法在每一项里
+          放「删除」。两项文案：第一行时间＋类型，第二行文件数（＋作用范围）。 */}
+      <div
+        data-slot="minio-tree-snapshots"
+        class="flex shrink-0 items-center gap-1 border-b border-v2-border-border-muted px-1 py-1"
+      >
+        <DropdownMenu gutter={4} placement="bottom-start">
+          {/* ⚠️ 用 `data-snapshot-picker` 而不是 `data-slot`：`DropdownMenu.Trigger`
+              把 `data-slot="dropdown-menu-trigger"` 硬写在 `{...rest}` **之后**
+              （`packages/ui/src/components/dropdown-menu.tsx:34`），调用方传的 `data-slot`
+              会被静默覆盖、那个名字在 DOM 里根本不存在（`LEARNINGS #005-22`）。
+              `Content` 只加 `data-component`，故那边的 `data-slot` 留得住。 */}
+          <DropdownMenu.Trigger
+            data-snapshot-picker=""
+            // 当前选中项的 id 回显在触发器上：这是「我选的是哪一份」唯一的机器可读记号
+            // （原生 `<select>` 的 `.value` 随控件一起退场，判据与读屏名都改挂在这里）。
+            // ⚠️ 名字**不能**也叫 `data-snapshot-id`：菜单项与触发器会同时存在于 `document.body`，
+            // 一个未加限定的 `querySelector("[data-snapshot-id='s-1']")` 会先命中触发器
+            // （它排在 Portal 之前），拿到的是一颗没有 🗑 的节点（`#005-22` 的同族）。
+            data-current-snapshot={props.snapshotId ?? ""}
+            aria-label="选择恢复点"
+            disabled={(props.snapshots?.length ?? 0) === 0}
+            class="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-2 text-left text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-default"
+          >
+            <Show
+              when={props.snapshots?.find((snapshot) => snapshot.id === props.snapshotId)}
+              fallback={<span class="min-w-0 flex-1 truncate text-v2-text-text-faint">选择恢复点</span>}
+            >
+              {(当前) => (
+                <>
+                  <span data-slot="minio-tree-snapshot-time" class="shrink-0 tabular-nums text-v2-text-text-base">
+                    {时间戳(当前().createdAt)}
+                  </span>
+                  <span data-slot="minio-tree-snapshot-kind" class={徽标(当前().kind)}>
+                    {类型名(当前().kind)}
+                  </span>
+                  <span class="min-w-0 flex-1 truncate text-[11px] text-v2-text-text-faint">
+                    {`${当前().totals.files} 个文件${当前().scope ? ` · ${当前().scope}` : ""}`}
+                  </span>
+                </>
+              )}
+            </Show>
+            <Icon name="chevron-down" size="small" class="ml-auto shrink-0 [--icon-base:currentColor]" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              data-slot="minio-tree-snapshot-menu"
+              class="z-30 max-h-64 min-w-[15rem] overflow-y-auto rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-base shadow-lg"
+            >
+              <For each={props.snapshots ?? []}>
+                {(snapshot) => (
+                  <DropdownMenu.Item
+                    data-snapshot-id={snapshot.id}
+                    data-selected={snapshot.id === props.snapshotId ? "true" : undefined}
+                    onSelect={() => props.onSelectSnapshot?.(snapshot.id)}
+                    class="flex w-full items-center gap-2 px-2 py-1.5 text-left outline-none data-[highlighted]:bg-v2-overlay-simple-overlay-hover data-[selected]:bg-v2-background-bg-layer-01"
+                  >
+                    <div class="flex min-w-0 flex-1 flex-col">
+                      <div class="flex items-center gap-1.5">
+                        <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-base">
+                          {时间戳(snapshot.createdAt)}
+                        </span>
+                        <span class={徽标(snapshot.kind)}>{类型名(snapshot.kind)}</span>
+                      </div>
+                      {/* 第二行：文件数（＋作用范围）。作用范围非空时必带——同一分钟、不同选中项的
+                          两个恢复点否则看起来一模一样（spec §11.2）。 */}
+                      <div class="min-w-0 truncate text-[11px] text-v2-text-text-faint">
+                        {`${snapshot.totals.files} 个文件${snapshot.scope ? ` · ${snapshot.scope}` : ""}`}
+                      </div>
+                    </div>
+                    {/* 删除**跟着这一项**（2026-10-18 用户裁定）：点它删的是这份恢复点，
+                        不是「先选中、再去别处删」。三处 `stopPropagation` 不是洁癖 ——
+                        Kobalte 在 **`pointerup`** 上选中菜单项（`LEARNINGS #006-37`），
+                        不拦的话点 🗑 会顺带把这一项选上（那正是 `dual-file-tree.test.tsx` 里
+                        「点删除不选中」那条钉住的性质）。 */}
+                    <Show when={props.onDeleteSnapshot}>
+                      <TooltipV2 value="删除这个恢复点" class="flex shrink-0">
+                        <button
+                          data-slot="minio-tree-delete"
+                          // 不挂 `data-snapshot-id`：它与所在菜单项同名，而 🗑 是菜单项的子树 ⇒
+                          // 任何按 id 取节点的查询都可能先命中这颗钮（`#005-22` 同族）。
+                          type="button"
+                          aria-label={`删除恢复点 ${时间戳(snapshot.createdAt)}（${类型名(snapshot.kind)}）`}
+                          class="flex h-5 w-5 items-center justify-center rounded-[4px] text-v2-text-text-faint hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-state-fg-danger"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onPointerUp={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            props.onDeleteSnapshot?.(snapshot.id)
+                          }}
+                        >
+                          <Icon name="trash" size="small" class="[--icon-base:currentColor]" />
+                        </button>
+                      </TooltipV2>
+                    </Show>
+                    <Show when={snapshot.id === props.snapshotId}>
+                      <Icon
+                        name="check"
+                        size="small"
+                        aria-label="当前恢复点"
+                        class="shrink-0 text-v2-text-text-base [--icon-base:currentColor]"
+                      />
+                    </Show>
+                  </DropdownMenu.Item>
+                )}
+              </For>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu>
       </div>
 
       <div class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-1 pt-1">

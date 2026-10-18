@@ -1,6 +1,7 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { Show, type JSX } from "solid-js"
 import type { BackupJob } from "./openhive-backup"
+import { 格式化字节 } from "./format-bytes"
 import { 在跑 } from "./minio-backups"
 
 /**
@@ -40,7 +41,12 @@ export interface MinioBarProps {
    */
   job?: BackupJob
   /**
-   * 点窄条。本 task 接的是设计 §5.1 步骤 2 **①**（若在「会话」tab 则切到「文件」tab）。
+   * 下树窗口当前是否展开（2026-10-18）。只影响右侧箭头朝向：窄条是同一个窗口的
+   * **页脚**，它得说得出「点一下是开还是关」（`›` 收着 / `⌄` 开着）。
+   */
+  expanded?: boolean
+  /**
+   * 点窄条：**开合那个窗口**。不传时只切 tab（设计 §5.1 步骤 2 **①**）。
    * 省略 = 禁用（同 `ProjectAnchor` 三按钮的口径：没接线就不假装能点）。
    */
   onOpen?: () => void
@@ -64,7 +70,8 @@ export interface MinioBarProps {
  * 2. 不确定时**不画假百分比**（无 `aria-valuenow`、无 `width`，只做动效）；
  * 3. 终态不画进度线 / 取消钮——`在跑()` 管住（见接入缝注释）。
  *
- * 阶段文案带数量，按 spec 的字面行：「正在备份 45/128 · 1.2/3.4 GB」（本仓 `格式()` 出 GiB）。
+ * 阶段文案带数量，按 spec 的字面行：「正在备份 45/128 · 1.2/3.4 GB」——单位自 2026-10-18 起
+ * 与全仓共用 `格式化字节()`（MB / GB，1 位小数），不再自成一个 GiB 口径。
  *
  * ## 图标取 `cloud-upload`，不是设计字面的 `⬆`
  *
@@ -129,19 +136,16 @@ export function MinioBar(props: MinioBarProps): JSX.Element {
           </span>
           <span data-slot="minio-bar-label">{LABEL}</span>
           {/* `!== undefined` 不能写成 `<Show when={props.count} keyed>`：后者的判据是**真假**，
-              于是 `0` 会被当成「没有」——而「明确 0 项」恰恰是要显示出来的那一态。 */}
-          {props.count !== undefined && <span data-slot="minio-bar-count">{`· ${props.count} 项`}</span>}
-          <Show when={props.usage}>
-            {(usage) => (
-              <span data-slot="minio-bar-usage" data-state={用量态(usage())}>
-                {`${格式(usage().usedBytes)} / ${格式(usage().limitBytes)}`}
-              </span>
-            )}
-          </Show>
-          {/* 设计 §2 / §5.1 的 `▸`：展开的提示。今天点它只会切到「文件」tab（§5.1①），
-              真正展开双树是 T012 的事——箭头先立在它将来该在的位置上。 */}
+              于是 `0` 会被当成「没有」——而「明确 0 个文件」恰恰是要显示出来的那一态。
+              量词自 2026-10-18 统一成「个文件」：恢复点选择器、结果条都这么说，同一件事只有一个说法。 */}
+          {props.count !== undefined && <span data-slot="minio-bar-count">{`· ${props.count} 个文件`}</span>}
+          {/* 用量**不在窄条出现**（2026-10-18 用户裁定）：窗口标题行才是它唯一的家，且只在
+              `已用 / 上限 ≥ 80%` 时亮出并转警告色。窄条常驻但不重复数字——两份「已用」是
+              同一条信息的两张脸，而它们曾经还给出两个不同的数（`#006-29` 的口径问题）。
+              超限暂停那条告警仍留在下方（`minio-bar-paused`）：那是「你需要知道」，不是「用掉多少」。 */}
+          {/* 设计 §2 / §5.1 的 `▸`：窗口的开合把手。展开时翻成 `⌄`——同一颗箭头说明「再点一下会怎样」。 */}
           <span data-slot="minio-bar-chevron" aria-hidden="true" class={`${ICON_WRAP} ml-auto`}>
-            <Icon name="chevron-right" size="small" />
+            <Icon name={props.expanded ? "chevron-down" : "chevron-right"} size="small" />
           </span>
         </button>
         <Show when={当前任务()}>
@@ -231,21 +235,11 @@ function 阶段(job: BackupJob): string {
   return 未知
 }
 
-/** ` 45/128 · 1.2 GiB/3.4 GiB`；未知的那一项整段不出现（不留「0/0」）。 */
+/** ` 45/128 · 1.2 GB/3.4 GB`；未知的那一项整段不出现（不留「0/0」）。 */
 function 数量(job: BackupJob): string {
   let 串 = ""
   if (job.progress.filesTotal > 0) 串 += ` ${job.progress.filesDone}/${job.progress.filesTotal}`
-  if (job.progress.bytesTotal > 0) 串 += ` · ${格式(job.progress.bytesDone)}/${格式(job.progress.bytesTotal)}`
+  if (job.progress.bytesTotal > 0)
+    串 += ` · ${格式化字节(job.progress.bytesDone)}/${格式化字节(job.progress.bytesTotal)}`
   return 串
-}
-
-function 用量态(usage: { usedBytes: number; limitBytes: number }): "normal" | "warning" {
-  return usage.limitBytes > 0 && usage.usedBytes / usage.limitBytes >= 0.8 ? "warning" : "normal"
-}
-
-function 格式(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MiB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KiB`
-  return `${bytes} B`
 }

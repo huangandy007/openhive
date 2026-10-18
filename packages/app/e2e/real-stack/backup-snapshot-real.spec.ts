@@ -183,10 +183,14 @@ async function 备份并打开下树(page: Page, 项目id: string, 路径: strin
   // 而它排在滚动区外（实测 y=1198 > 视口 900），拖拽的指针落在视口外 ⇒ 一个 drag 事件都不发。
   // 钉「选择器已经落到刚拍的那份**手动**恢复点」（Task 17 的 `跟备份任务` 会显式选中新快照），
   // 再等行——此时快照里只有这一个文件，行就在窗口顶部。
-  const 选择器 = page.locator("[data-slot='minio-tree-snapshot']")
-  await expect
-    .poll(async () => (await 选择器.locator("option:checked").textContent()) ?? "", { timeout: 60_000 })
-    .toContain("手动")
+  // 恢复点选择器自 2026-10-18 起是**胶囊 ＋ 下拉**（不是原生 `<select>`）：当前项回显在触发器里
+  // （时间 ＋ 类型徽标 ＋ 文件数），`data-snapshot-picker` 是它自己的记号——`DropdownMenu.Trigger`
+  // 会覆盖调用方的 `data-slot`（`LEARNINGS #005-22`）。
+  const 选择器 = page.locator("[data-snapshot-picker]")
+  await expect.poll(async () => (await 选择器.textContent()) ?? "", { timeout: 60_000 }).toContain("手动")
+  // 下树自 2026-10-18 起**默认全收缩**：先等顶层目录出现（数据到了，展开才动得了），再展开。
+  await expect(下树行(page, 路径.split("/")[0] ?? 路径)).toBeVisible({ timeout: 60_000 })
+  await page.locator("[data-slot='minio-tree-expand-all']").click()
   await expect(下树行(page, 路径)).toBeVisible({ timeout: 60_000 })
 }
 
@@ -215,7 +219,9 @@ test("备份 → 改原文 → 拖回并「覆盖本地」⇒ 内容回到备份
   await page.locator("[data-slot='restore-confirm']").click()
 
   await expect(page.locator("[data-component='backup-restore-dialog']")).toBeHidden({ timeout: 60_000 })
-  await expect(page.locator("[data-slot='file-op-message']")).toContainText("恢复完成", { timeout: 60_000 })
+  // 恢复结果自 2026-10-18 起不再挤进 `file-op-message`（那一行恒红，成功看着也像报错）——
+  // 判据跟着搬到**结果条**上（`#005-25`：修的是行为，观测点要迁到最终可观测处）。
+  await expect(page.locator("[data-slot='restore-result-text']")).toContainText("恢复完成", { timeout: 60_000 })
 
   // 界面说完成不算数——盘上真回到备份时那一版才算。
   await expect
@@ -244,7 +250,9 @@ test("备份 → 改原文 → 拖回并默认「保留两者」⇒ 原文仍在
   await page.locator("[data-slot='restore-confirm']").click()
 
   await expect(page.locator("[data-component='backup-restore-dialog']")).toBeHidden({ timeout: 60_000 })
-  await expect(page.locator("[data-slot='file-op-message']")).toContainText("恢复完成", { timeout: 60_000 })
+  // 恢复结果自 2026-10-18 起不再挤进 `file-op-message`（那一行恒红，成功看着也像报错）——
+  // 判据跟着搬到**结果条**上（`#005-25`：修的是行为，观测点要迁到最终可观测处）。
+  await expect(page.locator("[data-slot='restore-result-text']")).toContainText("恢复完成", { timeout: 60_000 })
 
   // 新名字形如 `甲 (MinIO 2026-10-18 14-03-05).txt`（`backup-rules.ts` 的 `keepBothName`）。
   const 目录 = path.join(乙.directory, "资料")

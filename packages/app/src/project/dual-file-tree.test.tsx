@@ -83,6 +83,29 @@ const 全展开上树 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-action='expand-all']")?.click()
 
 /**
+ * 点下树（`MinioTree`）的「全部展开」。
+ *
+ * 下树自 2026-10-18 起**默认全收缩**（用户下达，与上树对齐）⇒ 备份清单里深一层的行
+ * （`资金流水/支付宝.xlsx`）挂载时看不见。凡是够那一行的用例都要先打开。
+ *
+ * ⚠️ 同 `全展开上树`：这条补的是**前提**，不是判据。它自己由「默认全收缩 / 全部展开 / 全部收缩」
+ * 三条用例守着（本文件 `DualFileTree 展开态` 那一组）。
+ */
+const 全展开下树 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>("[data-slot='minio-tree-expand-all']")?.click()
+
+/**
+ * 恢复点选择器（下拉触发器）。
+ *
+ * ⚠️ **不能按 `data-slot` 找**：`DropdownMenu.Trigger` 把 `data-slot="dropdown-menu-trigger"`
+ * 硬写在 `{...rest}` 之后（`packages/ui/src/components/dropdown-menu.tsx:34`），调用方传的
+ * `data-slot` 被静默覆盖、那个名字在 DOM 里**从来不存在**（`LEARNINGS #005-22`）。
+ * 组件侧因此改用它自己的记号 `data-snapshot-picker`。
+ */
+const 恢复点选择器 = (root: ParentNode | null) =>
+  root?.querySelector<HTMLElement>("[data-snapshot-picker]") ?? null
+
+/**
  * 「这个东西不存在」——断在**布尔**上，绝不写 `expect(槽(...)).toBeNull()`。
  *
  * ⚠️ `LEARNINGS #005-01`：实测值若是**被 Solid 渲染过的节点**，红了会把整轮 `bun test` **崩掉**
@@ -192,6 +215,7 @@ describe("DualFileTree 上下双树（设计 §5）", () => {
 
   test("下树**镜像沙箱路径结构**：目录由 key 里的路径派生，不是列出来的（§5.2）", () => {
     const { host } = 挂({ open: true })
+    全展开下树(host) // 默认全收缩 ⇒ 深一层的文件行要打开才在
 
     expect(行(host, "minio", "资金流水")?.getAttribute("data-type")).toBe("directory")
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("data-type")).toBe("file")
@@ -214,6 +238,7 @@ describe("DualFileTree 上下双树（设计 §5）", () => {
 
   test("下树只列 MinIO 上**有的**——沙箱里没备份的那两份不在下树（这正是双树要给的对照）", () => {
     const { host } = 挂({ open: true })
+    全展开下树(host) // 「不在」要在**展开之后**量：收缩态本来就什么都不在（否则这条恒真）
 
     expect(不存在(行(host, "minio", "资金流水/财付通.xlsx"))).toBe(true)
     expect(不存在(行(host, "minio", "报告.docx"))).toBe(true)
@@ -221,6 +246,7 @@ describe("DualFileTree 上下双树（设计 §5）", () => {
 
   test("已备份的文件行标 ✓，目录行不标（§5.2「已备份标 ✓」）", () => {
     const { host } = 挂({ open: true })
+    全展开下树(host) // 默认全收缩 ⇒ 文件行要打开才在
 
     expect(不存在(槽(行(host, "minio", "资金流水/支付宝.xlsx"), "minio-tree-check"))).toBe(false)
     expect(不存在(槽(行(host, "minio", "资金流水"), "minio-tree-check"))).toBe(true)
@@ -293,6 +319,7 @@ const 歇一拍 = () => new Promise((resolve) => setTimeout(resolve, 5))
 describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下→上＝拉回）", () => {
   test("上树的**文件与目录**行都可拖（目录也拖＝「文件夹路径的引用」，2026-10-13 用户裁定）；下树仍只文件可拖", () => {
     const { host } = 挂({ open: true })
+    全展开下树(host) // 下树默认全收缩 ⇒ 文件行要打开才在
 
     expect(行(host, "sandbox", "报告.docx")?.getAttribute("draggable")).toBe("true")
     // 目录行也可拖（用户：「文件夹也需要拖，就是对文件夹路径的引用」）
@@ -347,6 +374,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
    */
   test("拖到**文件行**上 ⇒ 仍是拖源原路径（落点精确到哪个文件夹都不影响备份）", () => {
     const { host, 备份过 } = 挂({ open: true })
+    全展开下树(host) // 下树默认全收缩 ⇒ 落点那条文件行要打开才在
 
     拖到(行(host, "sandbox", "报告.docx"), 行(host, "minio", "资金流水/支付宝.xlsx"))
 
@@ -385,6 +413,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
   test("沙箱里有同名的文件：树不再拦（冲突交给恢复对话框），仍照常交 {snapshotId, path}", () => {
     const { host, 拉回过 } = 挂({ open: true })
     全展开上树(host) // 默认全收缩 ⇒ 沙箱那一行得先展开才够得到
+    全展开下树(host) // 下树同理：默认全收缩 ⇒ MinIO 那一行也得先展开
 
     拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水/支付宝.xlsx"))
 
@@ -393,12 +422,14 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
 
   test("下树的行起拖载荷是 `minio:<path>`（云上备份不能被会话框误插成本地引用）", () => {
     const { host } = 挂({ open: true })
+    全展开下树(host) // 默认全收缩 ⇒ 文件行要打开才在
 
     expect(起拖载荷(行(host, "minio", "资金流水/支付宝.xlsx"))).toBe("minio:资金流水/支付宝.xlsx")
   })
 
   test("恢复点未选中时下树**不可拖**（没有恢复点就没有可拉的东西）", () => {
     const { host } = 挂({ open: true, snapshotId: null })
+    全展开下树(host) // 默认全收缩 ⇒ 文件行要打开才在
 
     const 行元素 = 行(host, "minio", "资金流水/支付宝.xlsx")
     // 先证行在（`#005-38` / `#005-47`：行不存在时 `undefined !== "true"` 照样绿）。
@@ -409,6 +440,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
 
   test("同树内拖 ⇒ 两个回调都不喊（上树的行另可拖出浏览器，那是拖拽 A，不归本组件）", () => {
     const { host, 备份过, 拉回过 } = 挂({ open: true })
+    全展开下树(host) // 下树默认全收缩 ⇒ 源行要打开才在
 
     拖到(行(host, "sandbox", "报告.docx"), 行(host, "sandbox", "资金流水"))
     拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "minio", "资金流水"))
@@ -426,6 +458,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
    */
   test("没接 onBackup / onRestore 时：**上树的行仍可拖**（拖的是引用，与备份接线无关），下树不可拖", () => {
     const host = mount(() => <DualFileTree paths={沙箱} backups={备份} open={true} />)
+    全展开下树(host) // 下树默认全收缩 ⇒ 文件行要打开才在
 
     expect(行(host, "sandbox", "报告.docx")?.getAttribute("draggable")).toBe("true")
     expect(行(host, "minio", "资金流水/支付宝.xlsx")?.getAttribute("draggable") === "true").toBe(false)
@@ -443,6 +476,7 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
     // `#005-25` 的迁移：旧观测点 `restore-confirm` 已从产品里消失（冲突判断移到恢复对话框）
     // ⇒ 原来那条断言会变成**恒真空转**。新观测点改成回调本身：接线在、但恢复点空 ⇒ 一次都不喊。
     const { host, 拉回过 } = 挂({ open: true, snapshotId: null })
+    全展开下树(host) // 默认全收缩 ⇒ 源行要打开才在
 
     拖到(行(host, "minio", "资金流水/支付宝.xlsx"), 行(host, "sandbox", "资金流水"))
 
@@ -469,81 +503,217 @@ describe("DualFileTree 拖拽（设计 §5.1 步骤 3：上→下＝备份、下
 })
 
 /**
+ * 下树的展开态（2026-10-18 用户下达：**默认全部收缩**，与上树对齐）。
+ *
+ * 这条推翻了 2026-10-17 的旧裁定（「只读镜像、一屏本来就短 ⇒ 维持全展开」）。旧注释已改写，
+ * 判据留在这里：默认进来看不见子目录里的文件；两颗钮分别放/收**所有目录**。
+ */
+describe("DualFileTree 下树的展开态（默认全收缩 / 全部展开 / 全部收缩）", () => {
+  test("默认只看得见顶层：子目录里的文件行不在", () => {
+    const { host } = 挂({ open: true })
+
+    expect(不存在(行(host, "minio", "资金流水"))).toBe(false)
+    expect(不存在(行(host, "minio", "资金流水/支付宝.xlsx"))).toBe(true)
+  })
+
+  test("「全部展开」把所有**目录**放进展开集合（含多层）", () => {
+    const { host } = 挂({ open: true, backups: ["甲/乙/丙.txt", "丁.txt"] })
+
+    expect(不存在(行(host, "minio", "甲/乙/丙.txt"))).toBe(true)
+    全展开下树(host)
+
+    // 三层：合成目录 甲、甲/乙，最后才是文件
+    expect(行(host, "minio", "甲")?.getAttribute("aria-expanded")).toBe("true")
+    expect(行(host, "minio", "甲/乙")?.getAttribute("aria-expanded")).toBe("true")
+    expect(不存在(行(host, "minio", "甲/乙/丙.txt"))).toBe(false)
+    expect(不存在(行(host, "minio", "丁.txt"))).toBe(false)
+  })
+
+  test("「全部收缩」回到初始：只剩顶层", () => {
+    const { host } = 挂({ open: true })
+    全展开下树(host)
+    expect(不存在(行(host, "minio", "资金流水/支付宝.xlsx"))).toBe(false)
+
+    槽(host, "minio-tree-collapse-all")?.click()
+
+    expect(不存在(行(host, "minio", "资金流水/支付宝.xlsx"))).toBe(true)
+    expect(不存在(行(host, "minio", "资金流水"))).toBe(false)
+  })
+
+  test("单行箭头仍可各自开合：默认「展开」，点一次变「收起」", () => {
+    const { host } = 挂({ open: true })
+    const 箭头 = () => 槽(行(host, "minio", "资金流水"), "minio-tree-chevron")
+
+    expect(箭头()?.getAttribute("aria-label")).toBe("展开")
+    箭头()?.click()
+    expect(箭头()?.getAttribute("aria-label")).toBe("收起")
+  })
+})
+
+/**
  * 恢复点选择器 / 删除 / 用量 / 空态（spec §11.2、§11.7）。
  *
- * 下树从「扁平路径清单」升级为「某个恢复点的文件树」：标题行要能切换恢复点、删当前恢复点，
- * 并给出用量；空态按「未接入 / 没有备份 / 还没选恢复点 / 选中的恢复点里没有文件」分四类说话
- * （`undefined` 与 `[]` 不是一件事，同 `minio-backups.ts` 的三态口径）。
+ * 2026-10-18 起选择器从原生 `<select>` 换成**通栏胶囊 ＋ 下拉**：28px 高的原生控件把
+ * 「时间 · 类型 · 文件数」压成半截，且没法在每一项里放删除。空态仍按「未接入 / 没有备份 /
+ * 还没选恢复点 / 选中的恢复点里没有文件」分四类说话。
  */
 describe("DualFileTree 恢复点选择器与空态（spec §11.2）", () => {
   const 空态 = (host: HTMLElement) => 槽(host, "minio-tree-empty")?.textContent?.trim()
 
-  test("选择器列出恢复点（时间 · 类型 · 文件数），切换 ⇒ onSelectSnapshot", () => {
+  /** 菜单项**Portal 到 body**（同 `file-tree.test.tsx`），所以从 `document` 查。 */
+  const 菜单 = () => document.body.querySelector<HTMLElement>("[data-slot='minio-tree-snapshot-menu']")
+  // 限定在菜单内容里取：触发器与菜单项同处 `document.body`，未限定的查询会先命中触发器
+  // （`#005-22` 同族：两个节点共用一个名字）。
+  const 菜单项 = (id: string) =>
+    document.body
+      .querySelector<HTMLElement>("[data-slot='minio-tree-snapshot-menu']")
+      ?.querySelector<HTMLElement>(`[data-snapshot-id='${id}']`) ?? null
+
+  /** 点开恢复点下拉：Kobalte 的菜单触发器认 **`pointerdown`**（`#006-37`），`.click()` 不够。 */
+  const 点开恢复点 = (host: HTMLElement) => {
+    const 触发器 = 恢复点选择器(host)
+    if (!触发器) throw new Error("恢复点触发器不在——前提不成立（`#004-14`）")
+    for (const 类型 of ["pointerdown", "pointerup"] as const)
+      触发器.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+  }
+
+  /** 点菜单项：选择发生在 **`pointerup`**（`#006-37`）。 */
+  const 点菜单项 = (el: HTMLElement | null) => {
+    if (!el) throw new Error("菜单项不在——前提不成立（`#004-14`）")
+    for (const 类型 of ["pointerdown", "pointerup"] as const)
+      el.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+  }
+
+  /**
+   * 点菜单项里的 🗑：真实一指 **三下都到**（`pointerdown` / `pointerup` / `click`）。
+   * 删除接在 `click` 上（同普通按钮），少这一下就只走了「阻止选中」那一半、删除压根没发生
+   * ——那条红会读起来像「删除不跟着这一项」，实际是**没点到**。
+   */
+  const 点删除 = (el: HTMLElement | null) => {
+    点菜单项(el)
+    el?.click()
+  }
+
+  test("触发器回显当前恢复点（时间 ＋ 类型 ＋ 文件数）", () => {
+    const { host } = 挂({ open: true, snapshotId: "s-1" })
+
+    const 触发器 = 恢复点选择器(host)
+    expect(触发器?.getAttribute("aria-label")).toBe("选择恢复点")
+    expect(槽(触发器, "minio-tree-snapshot-time")?.textContent?.trim()).not.toBe("")
+    expect(槽(触发器, "minio-tree-snapshot-kind")?.textContent?.trim()).toBe("手动")
+    expect(触发器?.textContent).toContain("1 个文件")
+  })
+
+  test("下拉列出全部恢复点（时间 · 类型 · 文件数），点某一项 ⇒ onSelectSnapshot", async () => {
     const { host, 选过的恢复点 } = 挂({
       open: true,
       snapshots: [快照("s-2", "auto", 128), 快照("s-1", "manual", 24)],
       snapshotId: "s-1",
     })
-    const 选择器 = 槽(host, "minio-tree-snapshot")
 
-    expect(选择器?.tagName).toBe("SELECT")
-    expect(选择器?.getAttribute("aria-label")).toBe("选择恢复点")
-    const 选项 = [...(选择器?.querySelectorAll("option") ?? [])].map((el) => el.textContent?.trim() ?? "")
-    expect(选项.length).toBe(2)
-    expect(选项.some((文本) => 文本.includes("自动") && 文本.includes("128 个文件"))).toBe(true)
-    expect(选项.some((文本) => 文本.includes("手动") && 文本.includes("24 个文件"))).toBe(true)
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    if (选择器 instanceof HTMLSelectElement) {
-      选择器.value = "s-2"
-      选择器.dispatchEvent(new Event("change", { bubbles: true }))
-    }
+    expect(菜单() != null).toBe(true)
+    expect(菜单项("s-2")?.textContent).toContain("自动")
+    expect(菜单项("s-2")?.textContent).toContain("128 个文件")
+    expect(菜单项("s-1")?.textContent).toContain("手动")
+    expect(菜单项("s-1")?.textContent).toContain("24 个文件")
+    // 当前项带 ✓（`aria-label` 与 `data-selected` 同源，读屏与眼睛看到的是同一件事）
+    expect(菜单项("s-1")?.getAttribute("data-selected")).toBe("true")
+    expect(菜单项("s-1")?.querySelector("[aria-label='当前恢复点']") != null).toBe(true)
+
+    点菜单项(菜单项("s-2"))
 
     expect(选过的恢复点).toEqual(["s-2"])
   })
 
-  test("恢复点选择器回显当前 snapshotId", () => {
-    const { host } = 挂({ open: true, snapshotId: "s-1" })
-
-    expect(host.querySelector<HTMLSelectElement>("[data-slot='minio-tree-snapshot']")?.value).toBe("s-1")
-  })
-
-  test("选项文案在 scope 非空时带作用范围（同一分钟的两个恢复点要分得开）", () => {
+  test("菜单项第二行在 scope 非空时带作用范围（同一分钟的两个恢复点要分得开）", async () => {
     const { host } = 挂({
       open: true,
       snapshots: [快照("s-1", "manual", 3), { ...快照("s-3", "manual", 5), scope: "资料" }],
       snapshotId: "s-1",
     })
-    const 选项 = [...(槽(host, "minio-tree-snapshot")?.querySelectorAll("option") ?? [])]
-    const 带范围 = 选项.find((el) => el.textContent?.includes("5 个文件"))
 
-    expect(带范围?.textContent?.includes("· 资料")).toBe(true)
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(菜单项("s-3")?.textContent).toContain("5 个文件 · 资料")
   })
 
-  test("删除按钮删的是**当前选中**的恢复点；没选中时禁用", () => {
-    const { host, 删过的恢复点 } = 挂({ open: true, snapshotId: "s-1" })
+  test("删除**跟着具体那一项**：删 s-2 就删 s-2，与当前选中无关", async () => {
+    const { host, 删过的恢复点 } = 挂({
+      open: true,
+      snapshots: [快照("s-2", "auto", 128), 快照("s-1", "manual", 24)],
+      snapshotId: "s-1",
+    })
 
-    槽(host, "minio-tree-delete")?.click()
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    点删除(菜单项("s-2")?.querySelector("[data-slot='minio-tree-delete']") ?? null)
 
-    expect(删过的恢复点).toEqual(["s-1"])
-
-    const 空的 = 挂({ open: true, snapshotId: null })
-    expect(槽(空的.host, "minio-tree-delete")?.hasAttribute("disabled")).toBe(true)
+    expect(删过的恢复点).toEqual(["s-2"])
   })
 
-  test("标题行显示用量；超限暂停时另有警告与文案", () => {
-    const { host } = 挂({
+  /**
+   * ⚠️ 这条盯的是 Kobalte 的一个真实陷阱：菜单项选择发生在 **`pointerup`**
+   * （`#006-37`），而 🗑 长在菜单项**里面**——不拦那一下，点删除会**顺带把这一项选上**。
+   * 实现里三处 `stopPropagation` 就是为它写的；`pointerup` 这一处少了，下面那条
+   * 「一个都不选」当场红。
+   */
+  test("点 🗑 不会顺带选中那一项", async () => {
+    const { host, 选过的恢复点, 删过的恢复点 } = 挂({
+      open: true,
+      snapshots: [快照("s-2", "auto", 128), 快照("s-1", "manual", 24)],
+      snapshotId: "s-1",
+    })
+
+    点开恢复点(host)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    点删除(菜单项("s-2")?.querySelector("[data-slot='minio-tree-delete']") ?? null)
+
+    expect(删过的恢复点).toEqual(["s-2"])
+    expect(选过的恢复点).toEqual([])
+  })
+
+  test("没有恢复点时触发器禁用；没有一个恢复点被选中时写「选择恢复点」", () => {
+    const 没有 = 挂({ open: true, snapshots: [], snapshotId: null })
+    expect(恢复点选择器(没有.host)?.hasAttribute("disabled")).toBe(true)
+
+    const 未选 = 挂({ open: true, snapshots: [快照("s-1")], snapshotId: null })
+    expect(恢复点选择器(未选.host)?.textContent).toContain("选择恢复点")
+  })
+
+  /**
+   * 用量只在 `已用 / 上限 ≥ 80%` 时出现（2026-10-18 用户裁定）——平时它不是「我在看什么」。
+   * 超限暂停的**完整告警**归窄条（`minio-bar-paused`），窗口标题行不再重复。
+   */
+  test("用量：未到 80% 不出现；到 80% 出现并转警告色", () => {
+    const 平时 = 挂({
       open: true,
       usage: { usedBytes: 3.2 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: false },
     })
-    expect(槽(host, "minio-tree-usage")?.textContent?.trim()).toBe("已用 3.2 GB / 10.0 GB")
-    expect(host.querySelector("[data-slot='minio-tree-paused']") == null).toBe(true)
+    expect(不存在(槽(平时.host, "minio-tree-usage"))).toBe(true)
 
-    const 暂停 = 挂({
+    const 快满 = 挂({
+      open: true,
+      usage: { usedBytes: 8.4 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: false },
+    })
+    expect(槽(快满.host, "minio-tree-usage")?.textContent?.trim()).toBe("8.4 GB / 10.0 GB")
+    expect(槽(快满.host, "minio-tree-usage")?.className).toContain("text-v2-state-fg-warning")
+  })
+
+  test("「自动备份已暂停」不再挂在窗口标题行（完整告警归窄条）", () => {
+    const { host } = 挂({
       open: true,
       usage: { usedBytes: 11 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: true },
     })
-    expect(槽(暂停.host, "minio-tree-paused")?.textContent?.trim()).toBe("自动备份已暂停")
-    expect(暂停.host.querySelector("[aria-label='自动备份已暂停']") == null).toBe(false)
+
+    expect(不存在(槽(host, "minio-tree-paused"))).toBe(true)
   })
 
   test("空态：`undefined` ⇒ 备份清单未接入；`[]` ⇒ 还没有备份", () => {
@@ -610,12 +780,43 @@ describe("DualFileTree 的悬停提示", () => {
     expect(壳内(host, "minio-tree-collapse")).toBe(1)
   })
 
-  test("下树的目录箭头在提示壳内，且可访问名随开合变（收起 / 展开）", () => {
+  /**
+   * 2026-10-18 用户点名的「悬停提示补全」：标题行两颗新钮（全部收缩 / 全部展开）
+   * 与上树 `file-tree.tsx` 同形——**只画图标的钮，悬停必须说得出它做什么**。
+   * 文案与 `aria-label` 同源，所以这一处同时钉住了读屏名。
+   */
+  test("标题行「全部收缩 / 全部展开」两颗钮都在提示壳内，且各有可访问名", () => {
+    const { host } = 挂({ open: true })
+
+    expect(壳内(host, "minio-tree-collapse-all")).toBe(1)
+    expect(壳内(host, "minio-tree-expand-all")).toBe(1)
+    expect(槽(host, "minio-tree-collapse-all")?.getAttribute("aria-label")).toBe("全部收缩")
+    expect(槽(host, "minio-tree-expand-all")?.getAttribute("aria-label")).toBe("全部展开")
+  })
+
+  test("下树的目录箭头在提示壳内，且可访问名随开合变（默认收缩 ⇒ 「展开」）", () => {
     const { host } = 挂({ open: true })
     const 箭头 = 槽(行(host, "minio", "资金流水"), "minio-tree-chevron")
 
     // 断在布尔上（`#005-01`：实得值若是节点，红了会把整轮测试挂哑）
     expect(箭头?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
-    expect(箭头?.getAttribute("aria-label")).toBe("收起")
+    // 2026-10-18 起默认全收缩 ⇒ 第一眼看着的箭头说的是「展开」；点开之后翻成「收起」
+    // （翻面由上面 `DualFileTree 下树的展开态` 里那条用例守）。
+    expect(箭头?.getAttribute("aria-label")).toBe("展开")
+  })
+
+  test("恢复点下拉每一项里的 🗑 也在提示壳内（菜单 Portal 到 body，故查 document）", async () => {
+    const { host } = 挂({ open: true })
+
+    const 触发器 = 恢复点选择器(host)
+    for (const 类型 of ["pointerdown", "pointerup"] as const)
+      触发器?.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const 删除 = document.body.querySelector<HTMLElement>("[data-slot='minio-tree-delete']")
+    expect(删除?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
+    expect(删除?.getAttribute("aria-label")).toContain("删除恢复点")
   })
 })

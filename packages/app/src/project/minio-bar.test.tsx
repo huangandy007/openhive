@@ -45,20 +45,20 @@ describe("MinioBar MinIO 常驻窄条（设计 §2 ④ / §5.1）", () => {
     expect(无槽(host, "minio-bar-count")).toBe(true)
   })
 
-  test("有来源时补上「· N 项」，且排在标签**之后**（设计 §5.1 的语序：MinIO 备份 · 2 项）", () => {
+  test("有来源时补上「· N 个文件」，且排在标签**之后**（设计 §5.1 的语序：MinIO 备份 · 2 个文件）", () => {
     const host = mount(() => <MinioBar count={2} />)
 
-    expect(文本(host, "minio-bar-count")).toBe("· 2 项")
+    expect(文本(host, "minio-bar-count")).toBe("· 2 个文件")
     const 顺序 = [...(条(host)?.querySelectorAll("[data-slot]") ?? [])].map((el) =>
       el.getAttribute("data-slot"),
     )
     expect(顺序.indexOf("minio-bar-label")).toBeLessThan(顺序.indexOf("minio-bar-count"))
   })
 
-  test("明确 0 项时**照样显示**「· 0 项」——`undefined`（不知道）与 `0`（明确没有）不是一回事", () => {
+  test("明确 0 个文件时**照样显示**——`undefined`（不知道）与 `0`（明确没有）不是一回事", () => {
     const host = mount(() => <MinioBar count={0} />)
 
-    expect(文本(host, "minio-bar-count")).toBe("· 0 项")
+    expect(文本(host, "minio-bar-count")).toBe("· 0 个文件")
   })
 
   test("点它喊 onOpen（本 task 接的是 §5.1 步骤 2①；2② 展开双树归 T012）", () => {
@@ -153,7 +153,7 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     expect(根?.firstElementChild?.getAttribute("role")).toBe("progressbar")
   })
 
-  test("阶段文案带数量：`正在备份 45/128 · 1.2 GiB/3.4 GiB`（spec §11.5 的字面行）", () => {
+  test("阶段文案带数量：`正在备份 45/128 · 1.2 GB/3.4 GB`（spec §11.5 的字面行）", () => {
     const host = mount(() => (
       <MinioBar
         onOpen={() => {}}
@@ -169,7 +169,7 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     const 文案 = 文本(host, "minio-bar-stage")
     expect(文案).toContain("正在备份")
     expect(文案).toContain("45/128")
-    expect(文案).toContain("1.2 GiB/3.4 GiB")
+    expect(文案).toContain("1.2 GB/3.4 GB")
   })
 
   test("扫描阶段用「（已发现 N 个）」形态（spec §11.5：正在扫描文件…（已发现 87 个））", () => {
@@ -246,23 +246,40 @@ describe("MinioBar 进度面（spec §11.5：顶部 2px 进度线、阶段带数
     })
   }
 
-  test("用量：超过 80% 进入告警态；暂停自动备份时出提示", () => {
+  /**
+   * 用量**只在窗口标题行**（2026-10-18 用户裁定，见 `minio-keep-first-box.html`）。
+   *
+   * 窄条常驻，但它不重复数字：曾经两处各写一份，还对同一份 `usedBytes` 给出了
+   * `5.9 MB` 与 `6 MiB` 两个不同的值。判据是「窄条上根本没有这个槽」——不是「值不对」。
+   */
+  test("窄条**不显示用量**——数字只有窗口标题行一个家", () => {
     const host = mount(() => (
       <MinioBar onOpen={() => {}} usage={{ usedBytes: 9 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: true }} />
     ))
 
-    expect(槽(host, "minio-bar-usage")?.getAttribute("data-state")).toBe("warning")
-    expect(文本(host, "minio-bar-usage")).toBe("9.0 GiB / 10.0 GiB")
-    expect(槽(host, "minio-bar-paused")).not.toBeNull()
+    expect(无槽(host, "minio-bar-usage")).toBe(true)
+    expect(无槽(host, "minio-bar-paused")).toBe(false)
   })
 
-  test("用量：未到 80% 是常态；没暂停就不出提示", () => {
+  test("没暂停就不出提示（告警只在真发生时出现，不是常驻装饰）", () => {
     const host = mount(() => (
       <MinioBar onOpen={() => {}} usage={{ usedBytes: 7 * 1024 ** 3, limitBytes: 10 * 1024 ** 3, autoPaused: false }} />
     ))
 
-    expect(槽(host, "minio-bar-usage")?.getAttribute("data-state")).toBe("normal")
     expect(无槽(host, "minio-bar-paused")).toBe(true)
+  })
+
+  test("箭头随窗口开合翻向：收起 `chevron-right` / 展开 `chevron-down`", () => {
+    const 收 = mount(() => <MinioBar onOpen={() => {}} />)
+    const 开 = mount(() => <MinioBar onOpen={() => {}} expanded />)
+
+    // `Icon` 把图标名落在 `data-name` 上（`packages/ui/src/components/icon.tsx`）；读不到就退回类名。
+    const 箭名 = (host: HTMLElement) => {
+      const 箭 = 槽(host, "minio-bar-chevron")
+      return 箭?.querySelector("[data-name]")?.getAttribute("data-name") ?? 箭?.innerHTML ?? ""
+    }
+    expect(箭名(收)).toContain("chevron-right")
+    expect(箭名(开)).toContain("chevron-down")
   })
 })
 

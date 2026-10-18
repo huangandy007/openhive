@@ -42,7 +42,8 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { RestoreDialog } from "@/project/backup-restore-dialog"
 import { FileMoveReportDialog, type 搬报告 } from "@/project/file-move-report-dialog"
-import type { BackupPreview, RestoreDecision } from "@/project/openhive-backup"
+import { RestoreResultBar } from "@/project/restore-result-bar"
+import type { BackupPreview, BackupRestoreResult, RestoreDecision } from "@/project/openhive-backup"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -365,6 +366,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * （同 T018 的 `onCreate` 「`undefined` = 收工」）。
    */
   const [文件话, set文件话] = createSignal<string>()
+  /**
+   * 上一次恢复的结果（2026-10-18）。
+   *
+   * 从 `文件话` 里**分出来**：那一行是危险色的失败通道，而一次完全成功的恢复不该长得像报错
+   * （`restore-result-bar.tsx` 文件头）。结果不自动消失，用户点 ✕ 才清。
+   */
+  const [恢复结果, set恢复结果] = createSignal<BackupRestoreResult>()
   /**
    * 弹窗宿主（`app.tsx` 那层 `DialogProvider`）——搬一批的失败报告走它。
    *
@@ -958,6 +966,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     decisions: Record<string, RestoreDecision>,
   ) => {
     if (!projectData || currentProject()?.id !== id) return
+    // 上一次的结果属于上一次动作——新一次恢复起手就把它撤掉，别让旧结论在进度期间挂在树上。
+    set恢复结果(undefined)
     const 守 = { id, 代: 备份代次 }
     const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const 恢复 = await projectData.restoreBackup(id, { ...input, decision, decisions })
@@ -974,9 +984,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       set文件话("恢复没有拿到结果")
       return
     }
-    set文件话(
-      `恢复完成：恢复 ${结果体.restored.length}，保留两者 ${结果体.keptBoth.length}，替换目录 ${结果体.overwritten.length}，新建空目录 ${结果体.dirsCreated.length}，跳过 ${结果体.skipped.length}，失败 ${结果体.failed.length}`,
-    )
+    // 结果走**自己的**结果条，不再塞进 `文件话`：那一行恒为危险色，一次成功的恢复会看着像报错。
+    // 分色 / 零值折叠 / 失败详情都在 `restore-result-bar.tsx`。
+    set恢复结果(结果体)
     拨清单重取()
   }
 
@@ -1674,6 +1684,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           />
                         )}
                       </Show>
+                      {/* 上一次恢复的结果（2026-10-18 用户裁定）：成功中性 ＋ ✓、失败只红计数，
+                          失败详情就地展开。**不占**下面那条失败通道——那一行是危险色，成功进那里
+                          会变成「做好了也报错」。不自动消失，点 ✕ 清。 */}
+                      <Show when={恢复结果()}>
+                        {(结果) => <RestoreResultBar result={结果()} onDismiss={() => set恢复结果(undefined)} />}
+                      </Show>
                       {/* 那句话（`undefined` ＝ 没有话要说）。`role="alert"` 让屏幕阅读器在条冒出来时
                           读一遍（不是模态，不需要焦点管理——同上面两条内联确认）。 */}
                       <Show when={文件话()}>
@@ -1711,9 +1727,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   count={minioBackups()?.length}
                   usage={backupUsage()}
                   job={backupJob()}
+                  // 窄条是窗口的**页脚**：箭头得说得出再点一下是开还是关（2026-10-18）。
+                  expanded={dualOpen()}
                   onOpen={() => {
+                    // ① 拨回文件 tab（MinIO 是文件操作）；② 开合窗口。
+                    // 若刚才不在文件页（比如停在会话 tab），这一下是「去文件页并打开」——
+                    // 不 toggle：此时 `dualOpen` 的旧值用户根本没看见，按旧值反着做会点出个空。
+                    const 本来在文件页 = sidebarTab() === "files"
                     setSidebarTab("files")
-                    setDualOpen(true)
+                    setDualOpen(本来在文件页 ? !dualOpen() : true)
                   }}
                   onCancel={() => {
                     const job = backupJob()

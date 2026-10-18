@@ -977,7 +977,7 @@ describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T0
 
     setMinioBackups(["笔记.md", "资料/话单.csv"])
 
-    expect(text(host, "minio-bar-count")).toBe("· 2 项")
+    expect(text(host, "minio-bar-count")).toBe("· 2 个文件")
   })
 })
 
@@ -1023,6 +1023,21 @@ describe("上下双树接进左栏（T012 出参）", () => {
     expect(不存在(host, "[data-tree='minio']")).toBe(false)
   })
 
+  test("窄条是窗口的开合钮：再点一次收起，箭头跟着翻向（2026-10-18）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    const 箭头 = () =>
+      host.querySelector("[data-slot='minio-bar-chevron']")?.querySelector("use")?.getAttribute("href") ?? ""
+
+    窄条(host)?.click()
+    expect(不存在(host, "[data-tree='minio']")).toBe(false) // 前置：第一次是打开
+    expect(箭头()).toContain("chevron-down")
+
+    窄条(host)?.click()
+
+    expect(不存在(host, "[data-tree='minio']")).toBe(true)
+    expect(箭头()).toContain("chevron-right")
+  })
+
   test("点下树标题的 ✕ ⇒ 收回默认窄条态（设计 §5.1 步骤 4）", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
     窄条(host)?.click()
@@ -1043,7 +1058,7 @@ describe("上下双树接进左栏（T012 出参）", () => {
     expect(不存在(host, "[data-tree='minio']")).toBe(false)
   })
 
-  test("下树走接入缝：缝里写进备份清单，下树才列得出来", () => {
+  test("下树走接入缝：缝里写进备份清单，下树才列得出来", async () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
     窄条(host)?.click()
     // 前置：今天没有写入方 ⇒ 下树是「未接入」空态（不是「还没有备份」——那两句意思相反）
@@ -1051,9 +1066,9 @@ describe("上下双树接进左栏（T012 出参）", () => {
 
     setMinioBackups(["资料/话单.csv"])
 
-    expect(
-      不存在(host, "[data-tree='minio'] [data-slot='file-tree-row'][data-path='资料/话单.csv']"),
-    ).toBe(false)
+    // 下树自 2026-10-18 起默认**全收缩**：深层行要等数据落地后再展开才出现——所以走
+    // `等到下树行`（它把「点全部展开」放进轮询条件里），而不是同步断言那一行不存在。
+    await 等到下树行(host, "资料/话单.csv")
   })
 })
 
@@ -2555,6 +2570,34 @@ describe("文件动作接进工作台（T020 出参）", () => {
 const 全展开 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-action='expand-all']")?.click()
 
+/**
+ * 点下树（MinIO）的「全部展开」。
+ *
+ * 下树自 2026-10-18 起**默认全收缩**（用户下达，与上树对齐）⇒ 备份清单里深一层的行
+ * （`资料/甲.txt`）挂载时看不见。同 `全展开`：这是补**前提**，不是判据——默认值那件事由
+ * `dual-file-tree.test.tsx` 的「下树的展开态」一组守着。
+ */
+const 全展开下树 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>("[data-slot='minio-tree-expand-all']")?.click()
+
+/**
+ * 等下树某一行出现。
+ *
+ * 两个前提叠在一起，所以**不能**写成「先等一下、再点一次展开」：① 备份明细是异步来的；
+ * ② 展开集合按路径记，数据还没到时点「全部展开」等于展开一棵空树。把点击放进轮询条件里，
+ * 数据一到、下一次轮询就展开得动了。
+ */
+async function 等到下树行(host: HTMLElement, path: string) {
+  const 树行按 = () =>
+    host.querySelector<HTMLElement>(
+      `[data-tree='minio'] [data-slot='file-tree-row'][data-path='${path}']`,
+    )
+  await 等到(() => {
+    全展开下树(host)
+    return 树行按() !== null
+  })
+}
+
 /** 树里某一行（按名字找）。找不到就**抛**——找不到还往下走，红会落在断言上（`#004-14`）。 */
 function 找行(host: HTMLElement, name: string) {
   const 找一遍 = () =>
@@ -3763,9 +3806,67 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
   const 槽 = (host: HTMLElement, slot: string) => host.querySelector<HTMLElement>(`[data-slot='${slot}']`)
 
-  /** 下树那颗恢复点 `<select>`（`querySelector<HTMLSelectElement>` 一次收窄，免掉类型断言）。 */
-  const 快照选择器 = (host: HTMLElement) =>
-    host.querySelector<HTMLSelectElement>("[data-slot='minio-tree-snapshot']")
+  /**
+   * 下树的恢复点选择器（2026-10-18 起是**通栏胶囊 ＋ 下拉**，不是原生 `<select>`）。
+   *
+   * ⚠️ 记号是 `data-snapshot-picker`，不是 `data-slot`：`DropdownMenu.Trigger` 会把调用方的
+   * `data-slot` 覆盖成 `dropdown-menu-trigger`（`LEARNINGS #005-22`）。
+   */
+  const 快照选择器 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-snapshot-picker]")
+
+  /**
+   * 当前选中的恢复点 id（`""` ＝ 还没选）——原生 `<select>` 的 `.value` 的替代读数。
+   * ⚠️ 触发器上的记号是 `data-current-snapshot`，**不是** `data-snapshot-id`：后者是菜单项的
+   * 记号，两者会同时存在于 `document.body` 里（`#005-22` 同族）。
+   */
+  const 当前恢复点 = (host: HTMLElement) => 快照选择器(host)?.getAttribute("data-current-snapshot") ?? ""
+
+  /**
+   * 下拉里的某一项（菜单 Portal 到 `document.body`）。
+   * 必须限定在菜单内容里取——触发器也带着同一份 id 概念，未限定的查询会先命中它。
+   */
+  const 快照项 = (id: string) =>
+    document.body
+      .querySelector<HTMLElement>("[data-slot='minio-tree-snapshot-menu']")
+      ?.querySelector<HTMLElement>(`[data-snapshot-id='${id}']`) ?? null
+
+  /**
+   * 点开恢复点下拉：Kobalte 的菜单触发器认 **`pointerdown`**（`LEARNINGS #006-37`），
+   * `.click()` 不够。菜单内容渲染在 Portal 里，要等一拍才查得到。
+   */
+  async function 点开快照下拉(host: HTMLElement) {
+    const 触发器 = 快照选择器(host)
+    if (!触发器) throw new Error("下树里没有恢复点选择器——这条用例的前提不成立（#004-14）")
+    for (const 类型 of ["pointerdown", "pointerup"] as const)
+      触发器.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+    await 冲一遍()
+  }
+
+  /** 选一个恢复点：菜单项的选择发生在 **`pointerup`**（`#006-37`）。 */
+  async function 选恢复点(host: HTMLElement, id: string) {
+    await 点开快照下拉(host)
+    const 项 = 快照项(id)
+    if (!项) throw new Error(`下拉里没有恢复点 ${id}——这条用例的前提不成立（#004-14）`)
+    for (const 类型 of ["pointerdown", "pointerup"] as const)
+      项.dispatchEvent(
+        new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+      )
+    await 冲一遍()
+  }
+
+  /**
+   * 点某一项里的 🗑（删的是**那一项**，2026-10-18 起不再挂在标题行）。
+   * 删除接在 `click` 上；`stopPropagation` 保证这一下不会顺带选中该项。
+   */
+  async function 点删恢复点(host: HTMLElement, id = "s-1") {
+    await 点开快照下拉(host)
+    const 删 = 快照项(id)?.querySelector<HTMLElement>("[data-slot='minio-tree-delete']")
+    if (!删) throw new Error(`恢复点 ${id} 那一项里没有删除钮——前提不成立（#004-14）`)
+    删.click()
+    await 冲一遍()
+  }
 
   /**
    * 跨树拖一个文件。
@@ -3873,7 +3974,12 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
   const 恢复结果 = (
     restored: readonly string[],
-    extra: { overwritten?: readonly string[]; dirsCreated?: readonly string[] } = {},
+    extra: {
+      overwritten?: readonly string[]
+      dirsCreated?: readonly string[]
+      failed?: readonly { path: string; reason: string }[]
+      cancelled?: boolean
+    } = {},
   ) => ({
     restored,
     keptBoth: [],
@@ -3913,7 +4019,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
     })
 
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     expect(假.心跳).toEqual(["p-42"])
     expect(假.恢复点).toEqual(["p-42"])
@@ -3927,7 +4033,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
       backup: async () => ({ jobId: "j-1" }),
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
 
@@ -3977,7 +4083,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       backupStatus: async () => 状态(起过 ? 运行中 : null),
       job: async (jobId) => 任务(jobId, "succeeded", { result: { snapshotId: "s-new" } }),
     })
-    await 等到(() => 快照选择器(host)?.value === "s-old")
+    await 等到(() => 当前恢复点(host) === "s-old")
 
     右键行(host, "报告.docx")
     点菜单项("backup")
@@ -3994,8 +4100,8 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     // 回包 202 之后既有行为照旧：跟进任务、选中新恢复点。
     放回请求({ jobId: "j-1" })
-    await 等到慢(() => 快照选择器(host)?.value === "s-new")
-    expect(快照选择器(host)?.value).toBe("s-new")
+    await 等到慢(() => 当前恢复点(host) === "s-new")
+    expect(当前恢复点(host)).toBe("s-new")
   })
 
   test("状态取不到（undefined）不清空进行中的任务：一次抖动后进度条仍在（F-4）", async () => {
@@ -4061,15 +4167,16 @@ describe("备份 / 恢复接线（Task 17）", () => {
           : 任务("j-1", "succeeded", { result: { snapshotId: "s-new" } })
       },
     })
-    await 等到(() => 快照选择器(host)?.value === "s-old")
-    expect(树行按(host, "minio", "资料/老.txt") !== null).toBe(true) // 前置：进门选中旧恢复点
+    await 等到(() => 当前恢复点(host) === "s-old")
+    // 前置：进门选中旧恢复点。下树默认全收缩 ⇒ 深层行要展开才在 DOM 里（`等到下树行` 会点）。
+    await 等到下树行(host, "资料/老.txt")
 
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
 
     // job 第一轮 running（进度进窄条）⇒ 1 秒后 succeeded；随后应选中 s-new 并取它的明细。
-    await 等到慢(() => 快照选择器(host)?.value === "s-new")
-    await 等到(() => 树行按(host, "minio", "资料/新.txt") !== null)
-    expect(快照选择器(host)?.value).toBe("s-new")
+    await 等到慢(() => 当前恢复点(host) === "s-new")
+    await 等到下树行(host, "资料/新.txt")
+    expect(当前恢复点(host)).toBe("s-new")
     expect(树行按(host, "minio", "资料/老.txt") === null).toBe(true)
     // 前置：快照 id 真的来自终态 job（不是碰巧清单第一项被默认选中）——进门时它选的是 s-old。
     expect(假.起的备份).toEqual([["p-42", "报告.docx", false]])
@@ -4104,7 +4211,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       },
       "p-1",
     )
-    await 等到(() => 快照选择器(host)?.value === "s-old")
+    await 等到(() => 当前恢复点(host) === "s-old")
 
     拖到(树行按(host, "sandbox", "报告.docx"), 槽(host, "minio-tree"))
     // 正向前提：备份真的以 p-1 身份起了。少了这一句，「备份进门就 return」的变异下
@@ -4115,7 +4222,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     setCurrentProject({ id: "p-2", name: "乙" })
     await 冲一遍()
-    await 等到(() => 快照选择器(host)?.value === "s-2")
+    await 等到(() => 当前恢复点(host) === "s-2")
 
     // 旧项目那次重取这时才回来；`备份` 继续走到 `跟备份任务`（修复前会在这里读成 p-2）。
     放回清单([快照("s-old")])
@@ -4131,7 +4238,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     // 先钉「明细没被取」——那是写入发生的**直接证据**；选中项在清单里没有 s-new 时会被
     // `<select>` 记成空串，单独看它读不出「写没写」。
     expect(假.明细.some(([, snapshotId]) => snapshotId === "s-new")).toBe(false)
-    expect(快照选择器(host)?.value).toBe("s-2")
+    expect(当前恢复点(host)).toBe("s-2")
     expect(树行按(host, "minio", "资料/老.txt") === null).toBe(true)
   })
 
@@ -4147,7 +4254,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
           ? 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
           : undefined,
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
@@ -4192,7 +4299,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
     await 等到(() => document.body.querySelector("[data-slot='restore-confirm']") !== null)
 
@@ -4228,7 +4335,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
     await 等到(() => document.body.querySelector("[data-slot='restore-confirm']") !== null)
 
@@ -4264,7 +4371,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
     await 等到(() => document.body.querySelector("[data-slot='restore-confirm']") !== null)
 
@@ -4288,7 +4395,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
           ? 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 含git } })
           : undefined,
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
@@ -4318,7 +4425,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
@@ -4346,7 +4453,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
@@ -4376,13 +4483,52 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
-    await 等到(() => text(host, "file-op-message")?.includes("恢复完成") === true)
-    expect(text(host, "file-op-message")).toContain("替换目录 1")
-    expect(text(host, "file-op-message")).toContain("新建空目录 1")
+    await 等到(() => text(host, "restore-result-text")?.includes("恢复完成") === true)
+    expect(text(host, "restore-result-text")).toBe("恢复完成：恢复 1 个文件 · 替换 1 个目录 · 新建 1 个空目录")
+    // 成功走 `role="status"` 的结果条；**不进**那条恒红、`role="alert"` 的失败通道
+    // （2026-10-18 之前正是后者：一次完全成功的恢复长得像报错）。
+    expect(槽(host, "restore-result")?.getAttribute("role")).toBe("status")
+    expect(text(host, "file-op-message") === undefined).toBe(true)
+  })
+
+  test("恢复有失败：结果条只把**失败计数**标红，详情逐条列 path / reason", async () => {
+    const 无冲突 = 预览([{ path: "资料/甲.txt", status: "missing" }])
+    const { host } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 无冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: {
+              restore: 恢复结果([], { failed: [{ path: "资料/甲.txt", reason: "permission denied" }] }),
+            },
+          })
+        return undefined
+      },
+    })
+    await 等到下树行(host, "资料/甲.txt")
+
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+
+    await 等到(() => text(host, "restore-result-text")?.includes("项失败") === true)
+    expect(槽(host, "restore-result")?.getAttribute("role")).toBe("alert")
+    expect(text(host, "restore-result-failed-count")).toBe("1 项失败")
+    // 「只红计数」：计数转危险色，整句不转（旧实现整句都红，成功失败长得一样）。
+    expect(槽(host, "restore-result-failed-count")?.className).toContain("text-v2-state-fg-danger")
+    expect(槽(host, "restore-result-text")?.className ?? "").not.toContain("text-v2-state-fg-danger")
+
+    槽(host, "restore-result-details")?.click()
+    expect(text(host, "restore-result-detail-path")).toBe("资料/甲.txt")
+    expect(text(host, "restore-result-detail-reason")).toBe("permission denied")
   })
 
   test("全 same ＋ localOnly 里只有 .git ⇒ 直接恢复、不弹框（localOnly 不会被恢复，spec §6.6）", async () => {
@@ -4406,7 +4552,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return undefined
       },
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
 
@@ -4421,14 +4567,11 @@ describe("备份 / 恢复接线（Task 17）", () => {
       snapshotDetail: async (_projectId, snapshotId) =>
         明细(快照(snapshotId), snapshotId === "s-1" ? ["资料/甲.txt"] : ["资料/乙.txt"]),
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
-    const 选择器 = 快照选择器(host)
-    if (!选择器) throw new Error("下树里没有恢复点选择器——这条用例的前提不成立（#004-14）")
-    选择器.value = "s-2"
-    选择器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 选恢复点(host, "s-2")
 
-    await 等到(() => 树行按(host, "minio", "资料/乙.txt") !== null)
+    await 等到下树行(host, "资料/乙.txt")
     expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
     expect(假.明细).toEqual([
       ["p-42", "s-1"],
@@ -4446,11 +4589,13 @@ describe("备份 / 恢复接线（Task 17）", () => {
         snapshots: async (projectId) =>
           projectId === "p-1" ? [快照("s-1")] : new Promise<never>(() => {}),
         snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
-        backupStatus: async (projectId) => (projectId === "p-1" ? 状态(null, 100) : undefined),
+        // 用量给到 **90%**：自 2026-10-18 起低于 80% 不显示（用户的裁定），而这条用例拿
+        // 「用量确实画出来了」当前置——喂 100 字节会让前置恒假、红在前提上（`#006-17`）。
+        backupStatus: async (projectId) => (projectId === "p-1" ? 状态(null, 9 * 1024 ** 3) : undefined),
       },
       "p-1",
     )
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
     expect(槽(host, "minio-tree-usage") === null).toBe(false) // 前置：旧项目的用量确实在
 
     setCurrentProject({ id: "p-2", name: "乙" })
@@ -4489,7 +4634,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     expect(树行按(host, "minio", "资料/旧.txt") === null).toBe(true)
     expect(text(host, "minio-tree-empty")).toBe("还没有备份")
-    expect(快照选择器(host)?.value ?? "").toBe("")
+    expect(当前恢复点(host)).toBe("")
   })
 
   test("当前项目从清单里消失（被删 / 归档）⇒ 清空信号并作废在飞请求：迟到的旧恢复点不写回", async () => {
@@ -4520,7 +4665,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 冲一遍()
 
     expect(树行按(host, "minio", "资料/旧.txt") === null).toBe(true)
-    expect(快照选择器(host)?.value ?? "").toBe("")
+    expect(当前恢复点(host)).toBe("")
   })
 
   test("右键「备份到 MinIO」⇒ backup(项目, 原路径, false)——菜单项不再是灰的", async () => {
@@ -4548,7 +4693,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
           ? 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 有冲突 } })
           : undefined,
     })
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     右键行(host, "报告.docx")
     点菜单项("restore")
@@ -4574,9 +4719,9 @@ describe("备份 / 恢复接线（Task 17）", () => {
       snapshots: async () => [快照("s-1")],
       snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
     })
-    await 等到(() => 快照选择器(host)?.value === "s-1")
+    await 等到(() => 当前恢复点(host) === "s-1")
 
-    槽(host, "minio-tree-delete")?.click()
+    await 点删恢复点(host)
     await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") !== null)
 
     // 两条独立判据：① 确认框出来了；② 还没删（先确认后调用，spec §8.5）。
@@ -4596,10 +4741,10 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return true
       },
     })
-    await 等到(() => 快照选择器(host)?.value === "s-1")
+    await 等到(() => 当前恢复点(host) === "s-1")
     expect(假.files.length).toBe(1) // 前置：项目文件清单只取过一次
 
-    槽(host, "minio-tree-delete")?.click()
+    await 点删恢复点(host)
     await 等到(
       () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
     )
@@ -4630,9 +4775,9 @@ describe("备份 / 恢复接线（Task 17）", () => {
       },
       "p-1",
     )
-    await 等到(() => 快照选择器(host)?.value === "s-1")
+    await 等到(() => 当前恢复点(host) === "s-1")
 
-    槽(host, "minio-tree-delete")?.click()
+    await 点删恢复点(host)
     await 等到(
       () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
     )
@@ -4669,9 +4814,9 @@ describe("备份 / 恢复接线（Task 17）", () => {
       deleteSnapshot: async () => true,
       backup: async () => ({ code: "job_running", jobId: "j-9" }),
     })
-    await 等到(() => 快照选择器(host)?.value === "s-1")
+    await 等到(() => 当前恢复点(host) === "s-1")
 
-    槽(host, "minio-tree-delete")?.click()
+    await 点删恢复点(host)
     await 等到(
       () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
     )
@@ -4681,16 +4826,18 @@ describe("备份 / 恢复接线（Task 17）", () => {
 
     右键行(host, "报告.docx")
     点菜单项("backup") // `job_running` 支 ⇒ 再取一次状态（#3）
-    await 等到(() => 快照选择器(host)?.value === "s-2")
+    await 等到(() => 当前恢复点(host) === "s-2")
 
     // #2 这时才回来：它的清单已经过期，不得覆盖 #3 的 s-2。
     放回清单([快照("s-1")])
     await 冲一遍()
     await 冲一遍()
 
-    expect(快照选择器(host)?.value).toBe("s-2")
+    expect(当前恢复点(host)).toBe("s-2")
+    // 先等新清单那一行出现（`等到下树行` 会点「全部展开」）：树默认全收缩，不展开的话
+    // 「甲.txt 不在」是被**折叠**满足的，不是被「旧回包没覆盖」满足的（`#006-17`）。
+    await 等到下树行(host, "资料/乙.txt")
     expect(树行按(host, "minio", "资料/甲.txt") === null).toBe(true)
-    expect(树行按(host, "minio", "资料/乙.txt") !== null).toBe(true)
   })
 
   test("预览还没回来就切走项目 ⇒ 回包不落进新项目：不弹框、也不写文件话（F-8）", async () => {
@@ -4710,7 +4857,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       },
       "p-1",
     )
-    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+    await 等到下树行(host, "资料/甲.txt")
 
     拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
     await 等到(() => 假.预览的.length === 1)
@@ -4814,9 +4961,9 @@ describe("备份 / 恢复接线（Task 17）", () => {
         return true
       },
     })
-    await 等到(() => 快照选择器(host)?.value === "s-1")
+    await 等到(() => 当前恢复点(host) === "s-1")
 
-    槽(host, "minio-tree-delete")?.click()
+    await 点删恢复点(host)
     await 等到(
       () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
     )
