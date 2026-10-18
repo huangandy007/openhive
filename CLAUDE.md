@@ -178,7 +178,16 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-##  LEARNINGS 自动加载
-@LEARNINGS.md
-每次会话开始,先吸收下方教训沉淀;实现新 feature 时若命中相关 type /
-应用范围,主动避坑并明示"本次绕开 LEARNINGS #001-04"（`#001-04` = 条目号，见各条标题）。
+##  LEARNINGS 自动加载（三层）
+
+@LEARNINGS-CORE.md
+
+**只加载 CORE 层**（检索纪律 + 最新条目 + 场景路由表）。教训本体按需取：
+
+| 文件 | 角色 | 何时读 |
+|---|---|---|
+| `LEARNINGS-CORE.md` | 常驻层 | 每次会话自动加载（上方） |
+| `LEARNINGS.md` | 索引（全部条目的摘要 + 应用范围） | `grep -A 6 '^## #006-27' LEARNINGS.md` |
+| `LEARNINGS-full.md` | 正文（完整推演、变异记录） | `grep -A 60 '^## #006-27' LEARNINGS-full.md` |
+
+**纪律**：任务命中 CORE 的路由表 ⇒ **动手前先 grep**，并在回复里明示「参考了 `#006-27`」或「本次绕开 `#001-04`」——没有明示视为没读过。收尾时把命中的条目号写进提交信息。
