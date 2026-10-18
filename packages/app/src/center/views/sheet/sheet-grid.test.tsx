@@ -219,9 +219,8 @@ describe("滚动位置恢复", () => {
   // 首屏 201 行内容高 = 表头 32 + 201 × 28；分块追加后按 store.rows.length 现算。
   const 视口量 = (store: ReturnType<typeof createSheetStore>) => () => ({ 内容高: 32 + store.rows.length * 28 })
 
-  test("首屏内容不足时保持待恢复，分块够长后恢复 scrollTop；回写不是钳位值", async () => {
-    let 最后: SheetUiState | undefined
-    const { host, store, 卸 } = 挂(大元(), 初始(14000), (state) => (最后 = state))
+  test("首屏内容不足时保持待恢复，分块够长后恢复 scrollTop", async () => {
+    const { host, store, 卸 } = 挂(大元(), 初始(14000))
     try {
       const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
       const 视口 = 造滚动视口(scroll, 视口量(store))
@@ -235,8 +234,8 @@ describe("滚动位置恢复", () => {
         Array.from({ length: 500 }, (_, i) => [`补${i}`, String(i)]),
       )
       await 等到(() => 视口.读().top === 14000, "分块后恢复到 14000")
-      // 程序设置滚动若触发 onScroll，也不得把钳位值写回缓存/onChange。
-      expect(最后?.scrollTop).toBe(14000)
+      // scroll 垫片不派发 scroll 事件，这里无法证明「恢复期不把钳位值写回缓存」；
+      // 该路径由真栈用例（解析中滚 14000 → 切 Tab 回来仍 14000）覆盖，见设计文档 §14.1。
     } finally {
       卸()
     }
@@ -770,6 +769,7 @@ describe("查找", () => {
         表头列,
         [...Array(列数 - 1).fill("x"), "远端目标"],
         ["近端目标", ...Array(列数 - 1).fill("x")],
+        [...Array(4).fill("x"), "中段目标", ...Array(列数 - 5).fill("x")],
       ],
       columnTypes: Array.from({ length: 列数 }, () => "text" as const),
     })
@@ -827,6 +827,36 @@ describe("查找", () => {
       const 视口 = 装宽表视口(host, store, 列数)
       await 输入查找(host, "近端目标")
       expect(视口.读().left, "目标已在视口内时不应横向滚动").toBe(0)
+    } finally {
+      卸()
+    }
+  })
+
+  test("命中已完整可见的中段列：scrollLeft 保持原值", async () => {
+    const { meta, initial, 列数 } = 宽表()
+    const { host, store, 卸 } = 挂(meta, initial)
+    try {
+      const 视口 = 装宽表视口(host, store, 列数)
+      // 预置到中段：视口内容区 [1000, 1800]；第 4 列 x = 56 + 4×300 = 1256..1556 整格可见。
+      视口.设({ left: 1000 })
+      await 输入查找(host, "中段目标")
+      // 若误走居中逻辑，目标会变成 1256 + 150 - (800 + 56) / 2 = 978。
+      expect(视口.读().left, "目标已完整可见时不得再横向移动").toBe(1000)
+    } finally {
+      卸()
+    }
+  })
+
+  test("命中列被冻结行号列遮住时仍横向滚入视口", async () => {
+    const { meta, initial, 列数 } = 宽表()
+    const { host, store, 卸 } = 挂(meta, initial)
+    try {
+      const 视口 = 装宽表视口(host, store, 列数)
+      // scrollLeft=20 时第 0 列（x=56..356）头 36px 压在冻结行号列（内容坐标 20..76）下面，
+      // 不得判成「已可见」；应滚回 0 让它完整露出。
+      视口.设({ left: 20 })
+      await 输入查找(host, "近端目标")
+      expect(视口.读().left, "被行号列遮住的命中格必须滚入视口").toBe(0)
     } finally {
       卸()
     }

@@ -276,10 +276,12 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     if (位置 < 0) return // 隐藏列不占位，也无需横向滚动
     const 起点 = 规模.行号列宽 + 可见.slice(0, 位置).reduce((sum, column) => sum + column.width, 0)
     const 右 = 起点 + 可见[位置].width
-    // 已完整落在视口内 ⇒ 不动 scrollLeft（左侧命中不该被无谓带动）。
-    if (起点 >= element.scrollLeft && 右 <= element.scrollLeft + element.clientWidth) return
+    // 冻结行号列贴在视口左侧、盖住内容坐标 [scrollLeft, scrollLeft + 行号列宽)：
+    // 可见左界要从它右缘算起，否则命中格头几像素会被压在行号列下面仍被判「已可见」。
+    const 可见左 = element.scrollLeft + 规模.行号列宽
+    if (起点 >= 可见左 && 右 <= element.scrollLeft + element.clientWidth) return
     const 最大左 = Math.max(0, element.scrollWidth - element.clientWidth)
-    const 目标 = 起点 + 可见[位置].width / 2 - element.clientWidth / 2
+    const 目标 = 起点 + 可见[位置].width / 2 - (element.clientWidth + 规模.行号列宽) / 2
     element.scrollLeft = Math.max(0, Math.min(最大左, 目标))
   }
 
