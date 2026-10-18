@@ -112,6 +112,13 @@ export interface BackupPreview {
   }
   readonly entries: readonly BackupPreviewEntry[]
   readonly truncated: boolean
+  /**
+   * 本次恢复的**完整目标集合**里有没有 `.git` 内部路径（服务端 `RestorePreview.gitAffected`）。
+   *
+   * `entries` 有 2000 条上限：`.git/config` 排在第 2001 位时这里看不到它，但确认不能因此被绕过
+   * （spec §6.4 / 整支复审 M-1）。缺字段（老服务端）按 `false` 收窄。
+   */
+  readonly gitAffected: boolean
   readonly localOnly: readonly string[]
   readonly localOnlyTruncated: boolean
 }
@@ -318,19 +325,27 @@ export async function taskOf(jobId: string, send: ForkFetch = defaultSend): Prom
   if (res.status !== 200 || !isRecord(res.body) || typeof res.body.id !== "string") return undefined
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 服务端直接回 `Job`（backup-model.ts）；逐字段抄一份会多一个漂点，而这里唯一要判的是「这是不是一个任务」。
   const job = res.body as unknown as BackupJob
+  const preview = job.result?.preview
   const restore = job.result?.restore
-  if (restore === undefined) return job
-  // 老服务端（`overwritten` / `dirsCreated` 加上之前）不回这两项；界面文案直接读 `.length`，
-  // 缺字段会当场抛。收窄点放在这里，缺了按 `[]` 兜底。
+  if (preview === undefined && restore === undefined) return job
+  // 老服务端缺字段在这里收窄：① 预览的 `gitAffected` 按 `false`（新字段，见 `BackupPreview`）；
+  // ② 恢复的 `overwritten` / `dirsCreated` 缺了按 `[]`（文案直接读 `.length`，缺了会当场抛）。
   return {
     ...job,
     result: {
       ...job.result,
-      restore: {
-        ...restore,
-        overwritten: Array.isArray(restore.overwritten) ? restore.overwritten : [],
-        dirsCreated: Array.isArray(restore.dirsCreated) ? restore.dirsCreated : [],
-      },
+      ...(preview === undefined
+        ? {}
+        : { preview: { ...preview, gitAffected: preview.gitAffected === true } }),
+      ...(restore === undefined
+        ? {}
+        : {
+            restore: {
+              ...restore,
+              overwritten: Array.isArray(restore.overwritten) ? restore.overwritten : [],
+              dirsCreated: Array.isArray(restore.dirsCreated) ? restore.dirsCreated : [],
+            },
+          }),
     },
   }
 }

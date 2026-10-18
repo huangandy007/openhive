@@ -352,6 +352,10 @@ const PreviewWire = Schema.Struct({
     different: Schema.Number,
     "type-mismatch": Schema.Number,
   }),
+  entries: Schema.Array(Schema.Struct({ path: Schema.String, status: Schema.String })),
+  // 整支复审 fix 1（F-6）新增：按**完整**目标集合判定 `.git`。`optional` 让旧实现
+  // （不回这个字段）仍能解码，RED 才落在「期望 true、实得 undefined」上。
+  gitAffected: Schema.optional(Schema.Boolean),
 })
 
 const RestoreWire = Schema.Struct({
@@ -782,6 +786,58 @@ describe("整支复审 fix 1 · 删除非法快照 id（M-3）", () => {
       expect(删后.length).toBe(删前.length)
     }),
     30_000,
+  )
+})
+
+/**
+ * **`.git` 确认必须对完整目标集合判定**（整支复审 fix 1 · M-1）。
+ *
+ * 预览的 `entries` 有 2000 条上限；客户端旧实现只看截断后的 `entries` 判 `.git`，
+ * 一份大快照里 `.git/config` 排在第 2001 位就能绕过 spec §6.4 的确认。服务端在遍历
+ * **全部** `目标` 时置 `gitAffected`，与截断无关。
+ */
+describe("整支复审 fix 1 · .git 确认按完整目标集合判定（M-1）", () => {
+  it.live("2001 个文件、.git/config 排在最后 ⇒ entries 截到 2000，但 gitAffected 仍为 true", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const store = 存储(project.projectId)
+      const at = Date.now()
+      const id = snapshotIdOf(at, "abcdef")
+      // 前 2000 条都落在不存在的目录里：`检查路径` 放行、`lstat` 失败 ⇒ missing（不读内容）。
+      const 填充 = Array.from({ length: 2000 }, (_, i) => ({
+        path: `填充/${String(i).padStart(4, "0")}.txt`,
+        hash: "0".repeat(64),
+        size: 1,
+        mtimeMs: at,
+      }))
+      const manifest: Manifest = {
+        version: 1,
+        id,
+        projectId: project.projectId,
+        ownerId: ALICE.id,
+        kind: "manual",
+        scope: "",
+        createdAt: at,
+        createdBy: ALICE.id,
+        source: "manual",
+        timezone: "UTC",
+        status: "complete",
+        files: [...填充, { path: ".git/config", hash: "1".repeat(64), size: 1, mtimeMs: at }],
+        dirs: [],
+        skipped: [],
+        totals: { files: 2001, bytes: 2001, uploadedBytes: 2001, skipped: 0 },
+      }
+      yield* Effect.promise(() => store.writeManifest(manifest))
+
+      const job = yield* 预览(project.projectId, id)
+      const preview = job.result?.preview
+      // 截断本身看得见（`truncated` 的另一面）：`.git/config` 不在列出的一千条…两千条里。
+      expect(preview?.entries.length).toBe(2000)
+      expect(preview?.entries.some((entry) => entry.path === ".git/config")).toBe(false)
+      // 旧实现不回这个字段（实得 undefined）；按完整目标集合判定才是 true（RED）。
+      expect(preview?.gitAffected).toBe(true)
+    }),
+    60_000,
   )
 })
 

@@ -49,6 +49,9 @@ export function RestoreDialog(props: RestoreDialogProps): JSX.Element {
   const [已确认git, set已确认git] = createSignal(false)
 
   const 涉git = () => {
+    // 服务端按**完整目标集合**判的 `gitAffected` 优先（`entries` 有 2000 条上限，`.git` 可能被截掉，
+    // 整支复审 M-1）；既有扫描保留：老服务端缺字段，且 `localOnly` 不进服务端那份集合。
+    if (props.preview?.gitAffected === true) return true
     const 路径 = [...(props.preview?.entries ?? []).map((entry) => entry.path), ...(props.preview?.localOnly ?? [])]
     return 路径.some((path) => path.split("/").includes(".git"))
   }

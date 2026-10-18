@@ -3851,6 +3851,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
   const 预览 = (
     entries: BackupPreview["entries"],
     localOnly: readonly string[] = [],
+    gitAffected = false,
   ): BackupPreview => {
     const 数 = (status: string) => entries.filter((entry) => entry.status === status).length
     return {
@@ -3864,6 +3865,7 @@ describe("备份 / 恢复接线（Task 17）", () => {
       },
       entries,
       truncated: false,
+      gitAffected,
       localOnly,
       localOnlyTruncated: false,
     }
@@ -4294,6 +4296,36 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(
       document.body.querySelector("[data-component='backup-restore-dialog']") === null,
     ).toBe(false)
+  })
+
+  test("预览 entries 里看不到 .git、但 gitAffected 为真 ⇒ 拖拽入口同样弹框并警告（整支复审 F-6）", async () => {
+    // `entries` 上限 2000 条：`.git/config` 排在第 2001 位时界面上看不到它，只有服务端按
+    // **完整目标集合**判的 `gitAffected` 记得住。旧实现只看 `entries` ⇒ 直接恢复，绕过确认。
+    const 截断的 = 预览([{ path: "资料/甲.txt", status: "missing" }], [], true)
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 截断的 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"]) },
+          })
+        return undefined
+      },
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+
+    await 等到(() => document.body.querySelector("[data-slot='restore-git-warning']") !== null)
+    // 弹了框、出现了 `.git` 警告，且**没有**直接起恢复（旧实现实得 `假.恢复的` 已有一条；RED）。
+    expect(document.body.querySelector("[data-component='backup-restore-dialog']") === null).toBe(false)
+    expect(假.恢复的).toEqual([])
   })
 
   test("预览全是 missing / same ⇒ 不弹对话框、直接恢复（spec §6.1 拖拽入口）", async () => {

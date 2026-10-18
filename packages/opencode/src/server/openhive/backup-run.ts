@@ -477,12 +477,20 @@ export interface PreviewInput {
   readonly scope: string
 }
 
+/** 路径任一段是 `.git`（含裸目录本身）。前端同形判定见 `workspace-entry.tsx` 的 `需确认` / 恢复对话框的 `涉git`。 */
+function 是git路径(path: string): boolean {
+  return path.split("/").includes(".git")
+}
+
 /** 预览：逐文件比对并列出「仅本地」。条数有上限（spec §6.2）。 */
 export async function runPreview(deps: RunDeps, input: PreviewInput): Promise<RestorePreview> {
   const 目标 = input.manifest.files.filter((file) => isPathInScope(input.scope, file.path))
   const entries: RestorePreviewEntry[] = []
   const counts: Record<PreviewStatus, number> = { missing: 0, same: 0, different: 0, "type-mismatch": 0 }
+  // `.git` 必须按**全部**目标判（spec §6.4）：`entries` 只有 2000 条，截断之后再看就晚了（M-1）。
+  let gitAffected = false
   for (const file of 目标) {
+    if (是git路径(file.path)) gitAffected = true
     检查取消(deps)
     // 中间段是符号链接 ⇒ 不能读（lstat 会穿过去，比出来的「same」是链接外那个文件的）。
     if ((await 检查路径(deps.directory, file.path)) !== "ok") {
@@ -536,6 +544,7 @@ export async function runPreview(deps: RunDeps, input: PreviewInput): Promise<Re
     counts,
     entries,
     truncated: 目标.length > entries.length,
+    gitAffected,
     localOnly,
     localOnlyTruncated: 仅本地超限,
   }

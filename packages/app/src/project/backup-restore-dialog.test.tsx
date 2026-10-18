@@ -48,6 +48,8 @@ const 预览 = {
     { path: "改.txt", status: "different" as const },
   ],
   truncated: false,
+  // 默认不涉 `.git`；`涉git` 的用例各自覆盖。
+  gitAffected: false,
   localOnly: ["本地才有.txt"],
   localOnlyTruncated: false,
 }

@@ -939,9 +939,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const 需确认 = (preview: BackupPreview): boolean => {
     if (preview.counts.different > 0 || preview.counts["type-mismatch"] > 0) return true
-    // ⚠️ 只看 `entries`：`localOnly` 是「只在本地、不会被恢复」的那一份（spec §6.6），
-    // 拿它拦这次拖拽等于为一件不会发生的事问用户（F-6）。
-    return preview.entries.some((entry) => entry.path.split("/").includes(".git"))
+    // ⚠️ `localOnly` 是「只在本地、不会被恢复」的那一份（spec §6.6），拿它拦这次拖拽等于为一件
+    // 不会发生的事问用户。`.git` 以服务端的 `gitAffected` 为准（按**完整目标集合**判，不受
+    // `entries` 的 2000 条上限影响，整支复审 M-1）；既有扫描保留，兼容老服务端缺字段。
+    return preview.gitAffected || preview.entries.some((entry) => entry.path.split("/").includes(".git"))
   }
 
   /**

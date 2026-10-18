@@ -155,6 +155,13 @@ export interface RestorePreview {
   readonly counts: Record<PreviewStatus, number>
   readonly entries: readonly RestorePreviewEntry[]
   readonly truncated: boolean
+  /**
+   * 本次恢复的**完整目标集合**里有没有 `.git` 内部路径（spec §6.4）。
+   *
+   * 与 `entries` 的 2000 条上限**无关**：客户端只看 `entries` 的话，`.git/config` 排在第
+   * 2001 位就能绕过确认（整支复审 M-1）。前端同形判定见 `workspace-entry.tsx` 的 `需确认`。
+   */
+  readonly gitAffected: boolean
   readonly localOnly: readonly string[]
   readonly localOnlyTruncated: boolean
 }
