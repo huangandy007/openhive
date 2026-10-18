@@ -414,3 +414,55 @@ describe("列显示/隐藏", () => {
     }
   })
 })
+
+describe("排序", () => {
+  const 首行 = (host: HTMLElement) => 数据行(host)[0]
+
+  test("点列头升序→降序→取消，行号始终是原始号", () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 金额头 = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-sort"]')!
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("王五")
+      expect(行号(首行(host)!)).toBe("4")
+      expect(表头(host)?.textContent).toContain("▲")
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("张三")
+      expect(行号(首行(host)!)).toBe("2")
+      expect(表头(host)?.textContent).toContain("▼")
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("张三")
+      expect(行号(首行(host)!)).toBe("2")
+      expect(表头(host)?.textContent).not.toContain("▲")
+      expect(表头(host)?.textContent).not.toContain("▼")
+    } finally {
+      卸()
+    }
+  })
+
+  test("排序与筛选叠加：先筛后排", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 漏斗 = 表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-filter"]')!
+      漏斗.click()
+      const 浮层 = await 等元素(() => document.querySelector<HTMLElement>('[data-slot="column-filter"][data-column="0"]'))
+      const 包含 = [...浮层.querySelectorAll("label")].find((item) => item.textContent?.trim() === "包含")
+      包含!.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
+      const 输入 = await 等元素(() => 浮层.querySelector<HTMLInputElement>('[data-slot="column-filter-text"]'))
+      输入.value = "李"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      const 金额头 = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-sort"]')!
+      金额头.click()
+      expect(数据行(host)).toHaveLength(1)
+      expect(首行(host)?.textContent).toContain("李四")
+      expect(行号(首行(host)!)).toBe("3")
+    } finally {
+      卸()
+    }
+  })
+})
