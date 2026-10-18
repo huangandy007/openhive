@@ -6,12 +6,14 @@ import {
   拖拽后列宽,
   列标,
   规模,
-  排序行,
+   排序行,
   筛选行,
+  查找命中,
   type Cell,
   type ColumnType,
   type SheetMeta,
   type 列筛选,
+  type 查找命中项,
 } from "./sheet-model"
 import { SheetControls, 表头格, 表头高, type 列状态 } from "./sheet-controls"
 
@@ -145,6 +147,12 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     return result
   })
 
+  const [查找开, set查找开] = createSignal(false)
+  const [查找词, set查找词] = createSignal("")
+  const [查找序号, set查找序号] = createSignal(0)
+  const [查找结果, set查找结果] = createSignal<查找命中项[]>([])
+  const [查找在筛选外, set查找在筛选外] = createSignal(false)
+
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     get count() {
       return 显示行().length
@@ -159,11 +167,73 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     },
   })
 
+  const onFindKey = (event: KeyboardEvent) => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return
+    const root = scrollEl()
+    const active = document.activeElement
+    if (active && active !== document.body && !root?.contains(active)) return
+    event.preventDefault()
+    set查找开(true)
+  }
+
   onMount(() => {
     const element = scrollEl()
-    if (!element) return
-    element.scrollTop = props.initial?.scrollTop ?? 0
-    element.scrollLeft = props.initial?.scrollLeft ?? 0
+    if (element) {
+      element.scrollTop = props.initial?.scrollTop ?? 0
+      element.scrollLeft = props.initial?.scrollLeft ?? 0
+    }
+    window.addEventListener("keydown", onFindKey)
+  })
+  onCleanup(() => window.removeEventListener("keydown", onFindKey))
+
+  const 滚到行 = (row: number) => {
+    const at = 显示行().indexOf(row)
+    if (at >= 0) virtualizer.scrollToIndex(at, { align: "center" })
+  }
+
+  createEffect(() => {
+    const query = 查找词()
+    props.store.rowsVersion()
+    // ⚠️ 依赖必须在 effect 体内读、在定时器里用（定时器里的读不参与追踪，
+    // 否则「隐藏列/新分块」不会触发重算）。
+    const columns = 可见列().map((column) => column.index)
+    const rows = 全部数据行()
+    const timer = setTimeout(() => {
+      const result = 查找命中(props.store.rows, rows, columns, query)
+      set查找结果(result)
+      set查找序号(0)
+      if (result[0]) 滚到行(result[0].row)
+    }, 150)
+    onCleanup(() => clearTimeout(timer))
+  })
+
+  const 当前命中 = createMemo(() => 查找结果()[查找序号()])
+
+  createEffect(() => {
+    const hit = 当前命中()
+    set查找在筛选外(!!hit && !显示行().includes(hit.row))
+  })
+
+  const 下一处 = (delta: 1 | -1) => {
+    const total = 查找结果().length
+    if (!total) return
+    const next = (查找序号() + delta + total) % total
+    set查找序号(next)
+    const hit = 查找结果()[next]
+    滚到行(hit.row)
+  }
+
+  const 关闭查找 = () => {
+    set查找开(false)
+    set查找词("")
+    set查找结果([])
+    set查找序号(0)
+  }
+
+  const 命中键 = createMemo(() => new Set(查找结果().map((hit) => `${hit.row}:${hit.col}`)))
+  const 当前键 = createMemo(() => {
+    const hit = 当前命中()
+    return hit ? `${hit.row}:${hit.col}` : ""
   })
 
   const 当前状态 = (): SheetUiState => ({
@@ -247,6 +317,19 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
         filters={filters()}
         onRemoveFilter={(index) => setFilters((当前) => 当前.filter((_, i) => i !== index))}
         onClearFilters={() => setFilters([])}
+        find={{
+          open: 查找开(),
+          query: 查找词(),
+          index: 查找序号(),
+          total: 查找结果().length,
+          hiddenHit: 查找在筛选外(),
+        }}
+        onFindQuery={(query) => {
+          set查找开(true)
+          set查找词(query)
+        }}
+        onFindNext={下一处}
+        onCloseFind={关闭查找}
       />
       <Show
         when={可见列().length > 0}
@@ -348,7 +431,13 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
                             <div
                               role="gridcell"
                               title={value() ?? ""}
-                              class={`truncate border-r border-b border-v2-border-border-muted px-2 py-0 leading-7 text-12-regular text-v2-text-text-base ${右对齐 ? "text-right" : "text-left"}`}
+                              class={`truncate border-r border-b border-v2-border-border-muted px-2 py-0 leading-7 text-12-regular text-v2-text-text-base ${右对齐 ? "text-right" : "text-left"} ${
+                                当前键() === `${原始行()}:${column.index}`
+                                  ? "bg-v2-background-bg-layer-02 ring-1 ring-inset ring-v2-border-border-strong"
+                                  : 命中键().has(`${原始行()}:${column.index}`)
+                                    ? "bg-v2-overlay-simple-overlay-hover"
+                                    : ""
+                              }`}
                             >
                               {value() ?? ""}
                             </div>

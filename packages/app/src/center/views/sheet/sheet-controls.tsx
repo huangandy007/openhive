@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Popover } from "@opencode-ai/ui/popover"
 import type { Cell, ColumnType, SheetMeta, 列筛选 } from "./sheet-model"
 
@@ -215,6 +215,14 @@ export function 表头格(props: 表头格Props): JSX.Element {
   )
 }
 
+export interface 查找状态 {
+  open: boolean
+  query: string
+  index: number
+  total: number
+  hiddenHit: boolean
+}
+
 export interface SheetControlsProps {
   meta: SheetMeta
   columns: 列状态[]
@@ -230,6 +238,10 @@ export interface SheetControlsProps {
   filters: 列筛选[]
   onRemoveFilter(index: number): void
   onClearFilters(): void
+  find: 查找状态
+  onFindQuery(query: string): void
+  onFindNext(delta: 1 | -1): void
+  onCloseFind(): void
 }
 
 /** 筛选条：每条条件一枚可单独删除的标签，外加「清除全部」。隐藏列的条件照常列出并标注。 */
@@ -311,7 +323,63 @@ function 列清单(props: {
   )
 }
 
-/** 工具栏：表头开关、列清单、行数摘要。筛选条/查找条在后续任务补。 */
+/** 查找条：输入去抖后的命中计数、上/下一处、筛选外提示。 */
+function 查找条(props: {
+  find: 查找状态
+  onQuery(query: string): void
+  onNext(delta: 1 | -1): void
+  onClose(): void
+}) {
+  let 输入: HTMLInputElement | undefined
+  createEffect(() => {
+    if (props.find.open) queueMicrotask(() => 输入?.focus())
+  })
+  return (
+    <Show when={props.find.open}>
+      <div
+        data-slot="sheet-find"
+        class="flex flex-wrap items-center gap-2 border-b border-v2-border-border-muted px-3 py-1"
+      >
+        <input
+          ref={输入}
+          data-slot="sheet-find-input"
+          class="w-56 rounded border border-v2-border-border-muted px-2 py-1 text-12-regular"
+          placeholder="查找（已加载数据、可见列）"
+          value={props.find.query}
+          onInput={(event) => props.onQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault()
+              props.onClose()
+            } else if (event.key === "Enter") {
+              event.preventDefault()
+              props.onNext(event.shiftKey ? -1 : 1)
+            }
+          }}
+        />
+        <span data-slot="sheet-find-count" class="text-12-regular text-v2-text-text-muted">
+          {props.find.total ? `第 ${props.find.index + 1} / 共 ${props.find.total} 个` : "共 0 个"}
+        </span>
+        <button type="button" class="text-12-regular underline" onClick={() => props.onNext(-1)}>
+          上一处
+        </button>
+        <button type="button" class="text-12-regular underline" onClick={() => props.onNext(1)}>
+          下一处
+        </button>
+        <button type="button" class="text-12-regular underline" onClick={() => props.onClose()}>
+          关闭
+        </button>
+        <Show when={props.find.hiddenHit}>
+          <span data-slot="sheet-find-hidden" class="text-11-regular text-v2-text-text-muted">
+            该命中已被筛选隐藏
+          </span>
+        </Show>
+      </div>
+    </Show>
+  )
+}
+
+/** 工具栏：表头开关、列清单、行数摘要、筛选条、查找条。 */
 export function SheetControls(props: SheetControlsProps): JSX.Element {
   const 数据总行 = () => Math.max(0, props.meta.totalRows - (props.headerIsFirstRow ? 1 : 0))
   return (
@@ -354,6 +422,20 @@ export function SheetControls(props: SheetControlsProps): JSX.Element {
         filters={props.filters}
         onRemove={(index) => props.onRemoveFilter(index)}
         onClear={() => props.onClearFilters()}
+      />
+      <button
+        type="button"
+        data-slot="sheet-find-trigger"
+        class="rounded px-2 py-1 text-12-regular hover:bg-v2-overlay-simple-overlay-hover"
+        onClick={() => props.onFindQuery(props.find.query)}
+      >
+        查找
+      </button>
+      <查找条
+        find={props.find}
+        onQuery={(query) => props.onFindQuery(query)}
+        onNext={(delta) => props.onFindNext(delta)}
+        onClose={() => props.onCloseFind()}
       />
     </div>
   )

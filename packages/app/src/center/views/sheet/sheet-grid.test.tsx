@@ -504,3 +504,118 @@ describe("排序", () => {
     }
   })
 })
+
+describe("查找", () => {
+  const 打开查找 = async (host: HTMLElement) => {
+    const 按钮 = [...host.querySelectorAll("button")].find((button) => button.textContent === "查找")
+    按钮!.click()
+    return 等元素(() => host.querySelector<HTMLInputElement>('[data-slot="sheet-find-input"]'))
+  }
+
+  test("输入去抖后显示命中计数；下一处切换", async () => {
+    const { host, 卸 } = 挂()
+    const 输入 = await 打开查找(host)
+    输入.value = "张"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 250))
+    expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toBe("第 1 / 共 1 个")
+
+    输入.value = "行"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 250))
+    expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toContain("共 0 个")
+    卸()
+  })
+
+  test("隐藏列不搜", async () => {
+    const { host, 卸 } = 挂()
+    表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-hide-column"]')!.click()
+    const 输入 = await 打开查找(host)
+    输入.value = "张"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 250))
+    expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toContain("0 个")
+    卸()
+  })
+
+  test("Esc 关闭查找条", async () => {
+    const { host, 卸 } = 挂()
+    const 输入 = await 打开查找(host)
+    输入.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    expect(host.querySelector('[data-slot="sheet-find"]')).toBeNull()
+    卸()
+  })
+
+  test("Ctrl+F 只在网格内聚焦时接管", () => {
+    const { host, 卸 } = 挂()
+    const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
+    scroll.focus()
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }))
+    expect(host.querySelector('[data-slot="sheet-find"]')).not.toBeNull()
+    卸()
+  })
+
+  test("Ctrl+F 在网格外聚焦时不接管", () => {
+    const { host, 卸 } = 挂()
+    const 外部 = document.createElement("input")
+    document.body.appendChild(外部)
+    try {
+      外部.focus()
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }))
+      expect(host.querySelector('[data-slot="sheet-find"]')).toBeNull()
+    } finally {
+      外部.remove()
+      卸()
+    }
+  })
+
+  test("多处命中时下一处循环回绕", async () => {
+    const { host, 卸 } = 挂(
+      元({ preview: [["姓名", "金额"], ["张三", "1200"], ["张三丰", "300"], ["王五", "50"]] }),
+    )
+    try {
+      const 输入 = await 打开查找(host)
+      输入.value = "张"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 250))
+      const 计数 = () => host.querySelector('[data-slot="sheet-find-count"]')?.textContent
+      const 下一处 = () => [...host.querySelectorAll("button")].find((button) => button.textContent === "下一处")!
+
+      expect(计数()).toBe("第 1 / 共 2 个")
+      下一处().click()
+      expect(计数()).toBe("第 2 / 共 2 个")
+      下一处().click()
+      expect(计数()).toBe("第 1 / 共 2 个")
+    } finally {
+      卸()
+    }
+  })
+
+  test("筛选外的命中给出提示", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      // 走真实筛选浮层把「张」筛掉，只留「李四」；查找仍应在已加载数据里看到张三。
+      const 漏斗 = 表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-filter"]')!
+      漏斗.click()
+      const 浮层 = await 等元素(() =>
+        document.querySelector<HTMLElement>('[data-slot="column-filter"][data-column="0"]'),
+      )
+      const 包含 = [...浮层.querySelectorAll("label")].find((item) => item.textContent?.trim() === "包含")
+      包含!.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
+      const 筛选输入 = await 等元素(() => 浮层.querySelector<HTMLInputElement>('[data-slot="column-filter-text"]'))
+      筛选输入.value = "李"
+      筛选输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+      expect(数据行(host)).toHaveLength(1)
+
+      const 输入 = await 打开查找(host)
+      输入.value = "张"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 250))
+      expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toBe("第 1 / 共 1 个")
+      expect(host.querySelector('[data-slot="sheet-find-hidden"]')).not.toBeNull()
+    } finally {
+      卸()
+    }
+  })
+})
