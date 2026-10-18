@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import { createSheetStore, SheetGrid, type SheetUiState } from "./sheet-grid"
-import type { SheetMeta } from "./sheet-model"
+import { 列标, type SheetMeta } from "./sheet-model"
 
 // happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
 if (!("ResizeObserver" in globalThis)) {
@@ -48,11 +48,11 @@ function 元(over: Partial<SheetMeta> = {}): SheetMeta {
   }
 }
 
-function 挂(meta = 元(), initial?: SheetUiState) {
+function 挂(meta = 元(), initial?: SheetUiState, onChange?: (state: SheetUiState) => void) {
   const store = createSheetStore(meta, "full", { rows: 0, cols: 0 })
   const host = document.createElement("div")
   document.body.appendChild(host)
-  const dispose = render(() => <SheetGrid store={store} initial={initial} />, host)
+  const dispose = render(() => <SheetGrid store={store} initial={initial} onChange={onChange} />, host)
   return {
     host,
     store,
@@ -61,6 +61,59 @@ function 挂(meta = 元(), initial?: SheetUiState) {
       dispose()
       host.remove()
     },
+  }
+}
+
+/**
+ * happy-dom 没有布局：`scrollTop/scrollLeft` 既不钳位、`scrollHeight/clientHeight` 也恒 0
+ * （`LEARNINGS #006-33`）。滚动的「内容不够高 ⇒ 赋值被钳位」这条真实行为只能自己装一个：
+ * 覆盖实例属性，按 `量()` 现算内容高度/宽度，赋值时按浏览器口径夹在 [0, 可滚范围]。
+ */
+function 造滚动视口(
+  scroll: HTMLElement,
+  量: () => { 内容高: number; 内容宽?: number; 视口高?: number; 视口宽?: number },
+) {
+  let top = 0
+  let left = 0
+  const 视口高 = () => 量().视口高 ?? 600
+  const 视口宽 = () => 量().视口宽 ?? 800
+  const 最大顶 = () => Math.max(0, 量().内容高 - 视口高())
+  const 最大左 = () => Math.max(0, (量().内容宽 ?? 0) - 视口宽())
+  Object.defineProperties(scroll, {
+    clientHeight: { configurable: true, get: 视口高 },
+    clientWidth: { configurable: true, get: 视口宽 },
+    scrollHeight: { configurable: true, get: () => 量().内容高 },
+    scrollWidth: { configurable: true, get: () => 量().内容宽 ?? 0 },
+    scrollTop: {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => {
+        top = Math.max(0, Math.min(value, 最大顶()))
+      },
+    },
+    scrollLeft: {
+      configurable: true,
+      get: () => left,
+      set: (value: number) => {
+        left = Math.max(0, Math.min(value, 最大左()))
+      },
+    },
+  })
+  return {
+    读: () => ({ top, left }),
+    设: (下一: { top?: number; left?: number }) => {
+      if (下一.top !== undefined) scroll.scrollTop = 下一.top
+      if (下一.left !== undefined) scroll.scrollLeft = 下一.left
+    },
+  }
+}
+
+const 等到 = async (条件: () => boolean, 说明: string, timeout = 2000) => {
+  const 起 = Date.now()
+  for (;;) {
+    if (条件()) return
+    if (Date.now() - 起 > timeout) throw new Error(`等条件超时：${说明}`)
+    await new Promise((r) => setTimeout(r, 10))
   }
 }
 
@@ -147,6 +200,66 @@ describe("网格骨架", () => {
     expect(host.querySelector("img")).toBeNull()
     expect(host.textContent).toContain("<img src=x onerror=alert(1)>")
     卸()
+  })
+})
+
+describe("滚动位置恢复", () => {
+  const 大元 = () =>
+    元({
+      totalRows: 1001,
+      preview: Array.from({ length: 201 }, (_, i) => (i === 0 ? ["姓名", "金额"] : [`第${i}行`, String(i)])),
+    })
+  const 初始 = (top: number): SheetUiState => ({
+    headerIsFirstRow: true,
+    columns: [],
+    filters: [],
+    scrollTop: top,
+    scrollLeft: 0,
+  })
+  // 首屏 201 行内容高 = 表头 32 + 201 × 28；分块追加后按 store.rows.length 现算。
+  const 视口量 = (store: ReturnType<typeof createSheetStore>) => () => ({ 内容高: 32 + store.rows.length * 28 })
+
+  test("首屏内容不足时保持待恢复，分块够长后恢复 scrollTop；回写不是钳位值", async () => {
+    let 最后: SheetUiState | undefined
+    const { host, store, 卸 } = 挂(大元(), 初始(14000), (state) => (最后 = state))
+    try {
+      const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
+      const 视口 = 造滚动视口(scroll, 视口量(store))
+      // 等挂载首帧的恢复尝试跑完：201 行时最大可滚 ≈ 5060 < 14000 ⇒ 不能判定「位置丢了」，
+      // 必须保持待恢复而不是把钳位后的 5060 写进去（这份断言就是钉这一点的）。
+      await new Promise((r) => setTimeout(r, 50))
+      expect(视口.读().top).toBe(0)
+
+      store.appendChunk(
+        201,
+        Array.from({ length: 500 }, (_, i) => [`补${i}`, String(i)]),
+      )
+      await 等到(() => 视口.读().top === 14000, "分块后恢复到 14000")
+      // 程序设置滚动若触发 onScroll，也不得把钳位值写回缓存/onChange。
+      expect(最后?.scrollTop).toBe(14000)
+    } finally {
+      卸()
+    }
+  })
+
+  test("待恢复期间用户主动滚动 ⇒ 取消待恢复，后续分块不再把位置拉回", async () => {
+    const { host, store, 卸 } = 挂(大元(), 初始(14000))
+    try {
+      const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
+      const 视口 = 造滚动视口(scroll, 视口量(store))
+      视口.设({ top: 3000 })
+      scroll.dispatchEvent(new Event("scroll"))
+      expect(视口.读().top).toBe(3000)
+
+      store.appendChunk(
+        201,
+        Array.from({ length: 500 }, (_, i) => [`补${i}`, String(i)]),
+      )
+      await new Promise((r) => setTimeout(r, 100))
+      expect(视口.读().top, "用户主动滚动后，分块完成不得把位置拉回 14000").toBe(3000)
+    } finally {
+      卸()
+    }
   })
 })
 
@@ -640,6 +753,80 @@ describe("查找", () => {
       await new Promise((r) => setTimeout(r, 250))
       expect(host.querySelector('[data-slot="sheet-find-count"]')?.textContent).toBe("第 1 / 共 1 个")
       expect(host.querySelector('[data-slot="sheet-find-hidden"]')).not.toBeNull()
+    } finally {
+      卸()
+    }
+  })
+
+  /** 宽表夹具：10 列 × 300px（总宽 3056 > 容器 800），第 0 列与第 9 列各放一个可查的目标。 */
+  function 宽表() {
+    const 列数 = 10
+    const 表头列 = Array.from({ length: 列数 }, (_, i) => `列${i}`)
+    const meta = 元({
+      totalRows: 3,
+      totalCols: 列数,
+      header: 表头列,
+      preview: [
+        表头列,
+        [...Array(列数 - 1).fill("x"), "远端目标"],
+        ["近端目标", ...Array(列数 - 1).fill("x")],
+      ],
+      columnTypes: Array.from({ length: 列数 }, () => "text" as const),
+    })
+    const initial: SheetUiState = {
+      headerIsFirstRow: true,
+      columns: Array.from({ length: 列数 }, (_, i) => ({
+        index: i,
+        letter: 列标(i),
+        name: `列${i}`,
+        type: "text" as const,
+        width: 300,
+        hidden: false,
+      })),
+      filters: [],
+      scrollTop: 0,
+      scrollLeft: 0,
+    }
+    return { meta, initial, 列数 }
+  }
+
+  const 装宽表视口 = (host: HTMLElement, store: ReturnType<typeof createSheetStore>, 列数: number) => {
+    const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
+    return 造滚动视口(scroll, () => ({ 内容高: 32 + store.rows.length * 28, 内容宽: 56 + 300 * 列数 }))
+  }
+
+  const 输入查找 = async (host: HTMLElement, 词: string) => {
+    const 输入 = await 打开查找(host)
+    输入.value = 词
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 250))
+  }
+
+  test("命中远端列：横向滚入视口", async () => {
+    const { meta, initial, 列数 } = 宽表()
+    const { host, store, 卸 } = 挂(meta, initial)
+    try {
+      const 视口 = 装宽表视口(host, store, 列数)
+      await 输入查找(host, "远端目标")
+
+      const { left } = 视口.读()
+      expect(left, "命中第 9 列时应横向滚动").toBeGreaterThan(0)
+      // 列几何：x = 行号列宽 56 + Σ 前序列宽（9 × 300）；命中格必须整格落在视口内。
+      const x = 56 + 300 * (列数 - 1)
+      expect(left).toBeLessThanOrEqual(x)
+      expect(x + 300).toBeLessThanOrEqual(left + 800)
+    } finally {
+      卸()
+    }
+  })
+
+  test("命中左侧列：scrollLeft 不被无谓改动", async () => {
+    const { meta, initial, 列数 } = 宽表()
+    const { host, store, 卸 } = 挂(meta, initial)
+    try {
+      const 视口 = 装宽表视口(host, store, 列数)
+      await 输入查找(host, "近端目标")
+      expect(视口.读().left, "目标已在视口内时不应横向滚动").toBe(0)
     } finally {
       卸()
     }

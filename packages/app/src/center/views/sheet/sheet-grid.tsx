@@ -185,19 +185,102 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     set查找开(true)
   }
 
-  onMount(() => {
-    const element = scrollEl()
-    if (element) {
-      element.scrollTop = props.initial?.scrollTop ?? 0
-      element.scrollLeft = props.initial?.scrollLeft ?? 0
+  /**
+   * 待恢复的滚动位置。大表挂载时只有首屏 201 行（`sheet-view` 的 >20 万格不缓存也会重解析），
+   * 内容还不够高 ⇒ 此时直接赋值会被浏览器钳位；把钳位值写回缓存就把真实位置永久丢了。
+   * 所以先记账，等分块让目标位置可达后再应用一次。
+   */
+  const 初始滚动顶 = props.initial?.scrollTop ?? 0
+  const 初始滚动左 = props.initial?.scrollLeft ?? 0
+  let 待恢复: { top?: number; left?: number } | undefined =
+    初始滚动顶 > 0 || 初始滚动左 > 0
+      ? {
+          top: 初始滚动顶 > 0 ? 初始滚动顶 : undefined,
+          left: 初始滚动左 > 0 ? 初始滚动左 : undefined,
+        }
+      : undefined
+  /** 程序设置滚动期间为 true：此时到来的 scroll 事件不得被当成用户主动滚动。 */
+  let 正在恢复 = false
+  let 恢复帧: number | undefined
+
+  const 尝试恢复 = (element: HTMLDivElement) => {
+    if (!待恢复) return
+    const 可滚顶 = Math.max(0, element.scrollHeight - element.clientHeight)
+    const 可滚左 = Math.max(0, element.scrollWidth - element.clientWidth)
+    let 应用顶: number | undefined
+    let 应用左: number | undefined
+    if (待恢复.top !== undefined && 可滚顶 >= 待恢复.top) {
+      应用顶 = 待恢复.top
+      delete 待恢复.top
     }
+    if (待恢复.left !== undefined && 可滚左 >= 待恢复.left) {
+      应用左 = 待恢复.left
+      delete 待恢复.left
+    }
+    if (待恢复.top === undefined && 待恢复.left === undefined) 待恢复 = undefined
+    if (应用顶 === undefined && 应用左 === undefined) return
+    正在恢复 = true
+    if (应用顶 !== undefined) element.scrollTop = 应用顶
+    if (应用左 !== undefined) element.scrollLeft = 应用左
+    // 程序赋值引发的 scroll 事件在本帧内到达；下一帧再放开，用户之后的滚动才算主动滚动。
+    requestAnimationFrame(() => {
+      正在恢复 = false
+    })
+  }
+
+  const 安排恢复 = () => {
+    if (!待恢复 || 恢复帧 !== undefined) return
+    恢复帧 = requestAnimationFrame(() => {
+      恢复帧 = undefined
+      const element = scrollEl()
+      if (element && 待恢复) 尝试恢复(element)
+    })
+  }
+
+  const 取消待恢复 = () => {
+    待恢复 = undefined
+    if (恢复帧 !== undefined) {
+      cancelAnimationFrame(恢复帧)
+      恢复帧 = undefined
+    }
+  }
+
+  onMount(() => {
+    // 首帧后尝试一次：内容已够高（小表/命中缓存的大表）就原位恢复；不够高则继续等分块。
+    if (待恢复) 安排恢复()
     window.addEventListener("keydown", onFindKey)
   })
-  onCleanup(() => window.removeEventListener("keydown", onFindKey))
+  onCleanup(() => {
+    window.removeEventListener("keydown", onFindKey)
+    if (恢复帧 !== undefined) cancelAnimationFrame(恢复帧)
+  })
+
+  // 分块追加 / setDone 都推进 rowsVersion：每次推进都再看看目标位置是否已可达。
+  createEffect(() => {
+    props.store.rowsVersion()
+    if (待恢复) 安排恢复()
+  })
 
   const 滚到行 = (row: number) => {
     const at = 显示行().indexOf(row)
     if (at >= 0) virtualizer.scrollToIndex(at, { align: "center" })
+  }
+
+  /** 纵向滚到命中行后，把命中列也带进视口（spec §7.4「命中项滚动到视口」）。 */
+  const 滚到命中 = (hit: 查找命中项) => {
+    滚到行(hit.row)
+    const element = scrollEl()
+    if (!element) return
+    const 可见 = 可见列()
+    const 位置 = 可见.findIndex((column) => column.index === hit.col)
+    if (位置 < 0) return // 隐藏列不占位，也无需横向滚动
+    const 起点 = 规模.行号列宽 + 可见.slice(0, 位置).reduce((sum, column) => sum + column.width, 0)
+    const 右 = 起点 + 可见[位置].width
+    // 已完整落在视口内 ⇒ 不动 scrollLeft（左侧命中不该被无谓带动）。
+    if (起点 >= element.scrollLeft && 右 <= element.scrollLeft + element.clientWidth) return
+    const 最大左 = Math.max(0, element.scrollWidth - element.clientWidth)
+    const 目标 = 起点 + 可见[位置].width / 2 - element.clientWidth / 2
+    element.scrollLeft = Math.max(0, Math.min(最大左, 目标))
   }
 
   createEffect(() => {
@@ -211,7 +294,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
       const result = 查找命中(props.store.rows, rows, columns, query)
       set查找结果(result)
       set查找序号(0)
-      if (result[0]) 滚到行(result[0].row)
+      if (result[0]) 滚到命中(result[0])
     }, 150)
     onCleanup(() => clearTimeout(timer))
   })
@@ -229,7 +312,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     const next = (查找序号() + delta + total) % total
     set查找序号(next)
     const hit = 查找结果()[next]
-    滚到行(hit.row)
+    滚到命中(hit)
   }
 
   const 关闭查找 = () => {
@@ -363,7 +446,13 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
           ref={setScrollEl}
           data-slot="sheet-scroll"
           class="min-h-0 flex-1 overflow-auto"
-          onScroll={(event) => setScroll({ top: event.currentTarget.scrollTop, left: event.currentTarget.scrollLeft })}
+          onScroll={(event) => {
+            // 恢复赋值引发的 scroll 不是用户主动滚动：既不写缓存，也不取消待恢复目标。
+            if (正在恢复) return
+            // 用户主动滚动 ⇒ 放弃待恢复，别在后续分块落地时把用户拽回旧位置。
+            if (待恢复) 取消待恢复()
+            setScroll({ top: event.currentTarget.scrollTop, left: event.currentTarget.scrollLeft })
+          }}
         >
           {/* ARIA 的 rowcount 含表头行；数据行从第 2 行起。行号列里显示的仍是原始 Excel 行号。 */}
           <div

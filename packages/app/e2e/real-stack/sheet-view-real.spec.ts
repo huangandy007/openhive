@@ -605,6 +605,20 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
   await expect(进度横幅, "滚动检查期间解析应仍未结束").toBeVisible()
   console.log("[实测] 解析期间滚动 2000px：生效（滚动前后进度横幅均在）")
 
+  // 滚动位置恢复（spec §8.1）：等分块够长（≥600 行，可滚范围 > 14000）后滚到 14000，
+  // 切走再切回，等全量落地后应原位恢复——首屏只有 201 行时不能把钳位后的值写回缓存。
+  await expect
+    .poll(async () => Number(await 网格(page).getAttribute("data-loaded-rows")), { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(600)
+  await 滚到(page, { top: 14_000 })
+  await 下一帧(page)
+  const 切走前位置 = await page.evaluate(() => {
+    const element = document.querySelector("[data-slot='sheet-scroll']")
+    return element instanceof HTMLElement ? element.scrollTop : -1
+  })
+  expect(切走前位置, "切走前应真的滚到 14000").toBe(14_000)
+  console.log(`[实测] 切走前滚动位置：${切走前位置}px（已载 ≥600 行）`)
+
   // 切走（卸载并 cancel 解析），再切回来（重新解析）仍能打开。
   await page.locator("[data-slot='tab']", { hasText: "纪要.md" }).click()
   await expect(page.locator("[data-component='richtext-view']")).toBeVisible({ timeout: 15_000 })
@@ -612,7 +626,22 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
   await expect(表头(page)).toBeVisible({ timeout: 60_000 })
   await expect(page.locator("[data-slot='sheet-parse-error']")).toHaveCount(0)
   await 等全量(page)
-  console.log("[实测] 切走再切回：表格重新打开且全量加载完成，无解析错误横幅")
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const element = document.querySelector("[data-slot='sheet-scroll']")
+          return element instanceof HTMLElement ? Math.abs(element.scrollTop - 14_000) : Number.MAX_SAFE_INTEGER
+        }),
+      { timeout: 30_000, message: "切回后应恢复到切走前的 14000px（容差 ±1）" },
+    )
+    .toBeLessThanOrEqual(1)
+  const 切回后位置 = await page.evaluate(() => {
+    const element = document.querySelector("[data-slot='sheet-scroll']")
+    return element instanceof HTMLElement ? element.scrollTop : -1
+  })
+  expect(Math.abs(切回后位置 - 14_000), `切回后滚动位置应恢复（实得 ${切回后位置}）`).toBeLessThanOrEqual(1)
+  console.log(`[实测] 切走再切回：全量后滚动位置恢复为 ${切回后位置}px（目标 14000，容差 ±1），无解析错误横幅`)
 })
 
 test("10万+ 行 CSV：预览档横幅写明总数与截断范围", async ({ page, context }) => {
