@@ -1,35 +1,67 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import * as XLSX from "xlsx"
 import type { FileContent } from "@/center/file-content"
+import { 清空会话改过 } from "@/center/session-edits"
+import { setCurrentProject } from "@/project/current-project"
 import { 加密的Office容器 } from "./__fixtures__/office"
+import { 清空UI状态, 清空数据 } from "./sheet/sheet-state-cache"
 import { 列上界, 行上界, 是加密工作簿, renderSheet, SheetView } from "./sheet-view"
 
-/**
- * 用 SheetJS 自己造一份**真 xlsx 字节**当夹具——不是手搓的假数据，走的是完整 zip/OOXML 往返。
- *
- * 直接喂给 `Uint8Array` 而不写 `as ArrayBuffer`：`XLSX.write` 在 SheetJS 自己的 d.ts 里
- * 声明就是 `any`（`types/index.d.ts:34`，无 `type: "array"` 的可用重载），断言只是把 `any`
- * 换个说法，还会招 lint 的 `no-unsafe-type-assertion`。构造器本就收 ArrayBufferLike，`any` 直接过。
- */
+// 组件测试一律走主线程解析：Bun 里 `Worker` 存在，但 Vite 的 worker 入口转换不在这条链上，
+// 真起一个 Worker 会让用例依赖运行时细节。`解析表格` 以 `typeof Worker === "undefined"` 判降级，
+// 这里显式抹掉即可（生产不受影响，测试文件不进打包）。**文件结束必须还原**：这是进程级全局，
+// 同进程里别的测试文件不该继承这份垫片。
+const 原Worker = globalThis.Worker
+// @ts-expect-error 测试垫片
+globalThis.Worker = undefined
+
+// happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
+if (!("ResizeObserver" in globalThis)) {
+  // 测试垫片；happy-dom 的全局类型已声明 ResizeObserver，赋值无需抑制。
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// ⚠️ happy-dom 没有布局，`offsetWidth/offsetHeight` 恒 0。@tanstack/virtual-core 首帧用这两个值
+// 覆盖 `initialRect`（`dist/esm/index.js` 的 `getRect`）⇒ 不垫这一下，虚拟列表渲染 **0 行**，
+// 「网格里出现单元格文本」的断言会假红（其实是环境没视口）。与 `sheet-grid.test.tsx` 同一垫片。
+const 视口尺寸 = [
+  ["offsetWidth", 800],
+  ["offsetHeight", 600],
+] as const
+const 原视口描述符 = 视口尺寸.map(([属性]) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, 属性))
+for (const [属性, 尺寸] of 视口尺寸) {
+  Object.defineProperty(HTMLElement.prototype, 属性, {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.dataset?.slot === "sheet-scroll" ? 尺寸 : 0
+    },
+  })
+}
+
+afterAll(() => {
+  globalThis.Worker = 原Worker
+  视口尺寸.forEach(([属性], index) => {
+    const 原描述符 = 原视口描述符[index]
+    // 原来没有自有描述符就删掉，别在原型上留一个假 getter。
+    if (原描述符) Object.defineProperty(HTMLElement.prototype, 属性, 原描述符)
+    else Reflect.deleteProperty(HTMLElement.prototype, 属性)
+  })
+})
+
 function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuffer> {
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(表), 名)
   return new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" }))
 }
 
-/**
- * 造一份**加密**的工作簿：OLE2 复合文档 + `/encryption` 流。
- *
- * 用**老一代**那条流名（`/encryption`）而不是现代 OOXML 的 `/EncryptionInfo`+`/EncryptedPackage`：
- * 这条是本视图走得到的那条路——SheetJS 看见它就抛 `File is password-protected`
- * （`xlsx.mjs:20501`），而本视图正是靠它的说法判加密的。夹具形状与 `__fixtures__/office.ts`
- * 同一份实现，两处不各造一个（现代那条流名由 `document-view` 的用例覆盖）。
- */
 const 加密工作簿 = () => 加密的Office容器(["/encryption"])
 
-/** 逐字节拼串再 btoa——真 xlsx 有一万多字节，`String.fromCharCode(...bytes)` 会爆栈。 */
 function 二进制内容(bytes: Uint8Array): FileContent {
   let 串 = ""
   for (const byte of bytes) 串 += String.fromCharCode(byte)
@@ -43,202 +75,268 @@ function mount(element: () => JSX.Element) {
   return host
 }
 
-/** 让「load → decode → render」整条异步链跑完。 */
-const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
-
 function 容器() {
   const host = document.createElement("div")
   document.body.appendChild(host)
   return host
 }
 
-describe("表格视图：字节 → 表格", () => {
-  test("真 xlsx 字节渲染成表格，单元格文本落到表里", async () => {
+const 等状态 = async (host: HTMLElement, 目标: string) => {
+  for (let i = 0; i < 300; i++) {
+    const 视图 = host.querySelector<HTMLElement>("[data-component='sheet-view']")
+    if (视图?.getAttribute("data-state") === 目标) return 视图
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  const 视图 = host.querySelector<HTMLElement>("[data-component='sheet-view']")
+  throw new Error(`没等到 data-state=${目标}，实得 ${视图?.getAttribute("data-state")}`)
+}
+
+/**
+ * `renderSheet` 在**首屏 meta** 就 resolve（不等全量）。档位/截断/分块都在
+ * `onDone` 之后才到，所以任何读预览/列截断横幅、`data-loaded-rows` 的断言都必须等，
+ * 不能 `await renderSheet(...)` 后立刻读（`LEARNINGS #006-31`：判据读早了）。
+ */
+const 等条件 = async (条件: () => boolean, 说明: string) => {
+  for (let i = 0; i < 300; i++) {
+    if (条件()) return
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error(`等条件超时：${说明}`)
+}
+
+const 网格 = (host: HTMLElement) => host.querySelector('[role="grid"]')
+const 表头 = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="sheet-header"]')
+const 数据行 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[data-slot="sheet-row"]')]
+
+beforeEach(() => {
+  清空会话改过()
+  清空UI状态()
+  清空数据()
+  // 模块级信号跨用例活着：不归零会让「换项目」用例继承上一条的项目身份。
+  setCurrentProject(undefined)
+})
+
+describe("表格视图：字节 → 网格", () => {
+  test("旧导出不变：行上界 1000、列上界 64", () => {
+    expect(行上界).toBe(1000)
+    expect(列上界).toBe(64)
+  })
+
+  test("真 xlsx 字节渲染成网格，单元格文本落到表里", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节([["姓名", "金额"], ["张三", 1200]]), host)
-
-    expect(host.querySelector("table")).not.toBeNull()
+    await renderSheet(工作簿字节([["姓名", "金额"], ["张三", 1200]]), host, { 强制主线程: true })
+    expect(网格(host)).not.toBeNull()
     expect(host.textContent).toContain("张三")
     expect(host.textContent).toContain("1200")
   })
 
-  // 探针查实：SheetJS 对「无 zip 头的文本」按 Latin-1 解，中文 CSV 会变成「å§å」这类乱码。
-  // 公安数据大量是中文 CSV，这条不是锦上添花——不修的话 .csv 这一整类都是废的。
-  test("UTF-8 中文 CSV 不作乱码（.csv 也归表格这一类）", async () => {
+  test("UTF-8 中文 CSV 不作乱码", async () => {
     const host = 容器()
-
-    await renderSheet(new TextEncoder().encode("姓名,金额\n张三,1200\n"), host)
-
+    await renderSheet(new TextEncoder().encode("姓名,金额\n张三,1200\n"), host, { 强制主线程: true })
     expect(host.textContent).toContain("张三")
     expect(host.textContent).toContain("姓名")
   })
 
-  /**
-   * 日期格按**表格显示的文本**给，不给内部序列号。
-   *
-   * 根因（探针实测，2026-10-14）：`sheet_to_json` 默认 `raw: true`，交回的是**原始值**；
-   * 而 SheetJS 把 CSV 里的 `2026-10-01` 认成日期（`t:"n"`、`v:46296`、同时算好 `w:"2026-10-01"`）
-   * ⇒ 原始值就是那个序列号，`String(46296)` ⇒ 民警看到的是一串没人看得懂的数。
-   */
-  test("CSV 里的日期按显示文本给，不给 Excel 序列号", async () => {
+  test("CSV 日期按规范串给，不给序列号", async () => {
     const host = 容器()
-
-    await renderSheet(new TextEncoder().encode("姓名,日期\n张三,2026-10-01\n"), host)
-
+    await renderSheet(new TextEncoder().encode("姓名,日期\n张三,2026-10-01\n"), host, { 强制主线程: true })
     expect(host.textContent).toContain("2026-10-01")
     expect(host.textContent).not.toContain("46296")
   })
 
-  /**
-   * 真 `.xlsx` 的日期同理——这一支与 CSV 是**两条不同的路径**（CSV 靠 SheetJS 猜类型，
-   * xlsx 靠单元格自带格式），却吃同一个根因，**RED 态实得也一样**（两条都是 `姓名日期张三46296`）。
-   * 单独立一条是因为两条路径将来可能分化（比如有人给 CSV 单开一条支路）。
-   */
-  test("真 xlsx 里的日期按显示文本给，不给 Excel 序列号", async () => {
+  test("真 xlsx 日期按规范串给，不给序列号", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节([["姓名", "日期"], ["张三", new Date(Date.UTC(2026, 9, 1))]]), host)
-
-    // 只断「不吐序列号」，**不断**具体格式：显示成 `2026-10-01` 还是 `10/1/26`，取决于文件自己
-    // 带的日期格式（本夹具 SheetJS 给的是 `m/d/yy`，实得 `10/1/26`）。本视图的语义是「表里怎么
-    // 显示就怎么给」——在此规定一个具体格式就成了一条**错判据**（CSV 那条能断 `2026-10-01`，
-    // 是因为 CSV 没有格式信息、`w` 就是原文，那是另一回事）。
+    await renderSheet(
+      工作簿字节([["姓名", "日期"], ["张三", new Date(Date.UTC(2026, 9, 1))]]),
+      host,
+      { 强制主线程: true },
+    )
+    expect(host.textContent).toContain("2026-10-01")
     expect(host.textContent).not.toContain("46296")
   })
 
-  test("长短不一的行按最宽行补齐，表格不错位（真实表格大量是残缺行）", async () => {
+  test("长短不一的行按最宽行补齐，列不错位", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节([["姓名", "金额", "备注"], ["张三", 1200]]), host)
-
-    const 每行格数 = [...host.querySelectorAll("tr")].map((tr) => tr.querySelectorAll("td").length)
-    expect(每行格数).toEqual([3, 3])
+    await renderSheet(工作簿字节([["姓名", "金额", "备注"], ["张三", 1200]]), host, { 强制主线程: true })
+    // 行号列也有一个 `role="columnheader"`，这里只数数据列（带 `data-column` 的表头格）。
+    expect(表头(host)?.querySelectorAll('[role="columnheader"][data-column]').length).toBe(3)
+    expect(数据行(host)[0]?.querySelectorAll('[role="gridcell"]').length).toBe(3)
   })
 
-  test("文件读不出表格结构：渲染器抛错（由壳落 error，不在这里静默吞掉）", async () => {
+  test("文件读不出表格结构：渲染器抛错", async () => {
     const host = 容器()
-
-    // 探针查实：这不是「随便喂点垃圾」——SheetJS 对多数垃圾会**当成 CSV 成功解析**。
-    // 只有带 PK 头的残缺 zip 才真抛 `Unsupported ZIP file`，即「看着像 xlsx 但坏了」，
-    // 也正是一个下载中断的表格文件的真实样子。
-    await expect(renderSheet(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), host)).rejects.toThrow()
-    expect(host.querySelector("table")).toBeNull()
+    await expect(
+      renderSheet(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), host, { 强制主线程: true }),
+    ).rejects.toThrow()
+    expect(网格(host)).toBeNull()
   })
 
-  test("单元格里的 HTML 当文本，不是当结构（文件内容是不可信输入）", async () => {
+  test("单元格里的 HTML 当文本", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节([["<img src=x onerror=alert(1)>"]]), host)
-
+    await renderSheet(工作簿字节([["<img src=x onerror=alert(1)>"]]), host, { 强制主线程: true })
     expect(host.querySelector("img")).toBeNull()
     expect(host.textContent).toContain("<img src=x onerror=alert(1)>")
   })
 
-  test("超长表：只铺前 行上界 行，并明说是截断（不许悄悄少给）", async () => {
-    const 表 = Array.from({ length: 行上界 + 5 }, (_, i) => [`第${i}行`])
+  test("预览档：只物化前 3 行 × 2 列，并明说原表总数与截断范围", async () => {
+    const 表 = [["A", "B", "C"], ...Array.from({ length: 5 }, (_, i) => [`第${i}行`, String(i), "x"])]
     const host = 容器()
-
-    await renderSheet(工作簿字节(表), host)
-
-    expect(host.querySelectorAll("tr").length).toBe(行上界)
-    expect(host.textContent).toContain(`第${行上界 - 1}行`) // 最后一条该在的
-    expect(host.textContent).not.toContain(`第${行上界}行`) // 第一条该被砍的
-    expect(host.textContent).toContain("只显示前")
-
-    // 提示是**我们自己的**文案（不是文件里的内容），配色走 v2 语义 token——与 T015 的降级面板、
-    // T016 的代码视图同一套。v1 的 `text-text-weak` 是上游遗留口径，本 feature 的视图不用它。
-    const 提示 = host.querySelector<HTMLElement>('[data-slot="sheet-truncated"]')
-    expect(提示?.className ?? "").toContain("text-v2-text-text-muted")
-    expect(提示?.className ?? "").not.toContain("text-text-weak")
+    await renderSheet(工作簿字节(表), host, {
+      强制主线程: true,
+      limits: {
+        首屏行数: 1,
+        预览行数: 3,
+        预览列数: 2,
+        全量行上限: 2,
+        全量格上限: 100,
+        全量列上限: 2,
+        分块行数: 2,
+      },
+    })
+    await 等条件(() => host.textContent?.includes("原表共 6 行 × 3 列") ?? false, "预览档横幅")
+    expect(host.textContent).toContain("前 3 行")
+    expect(host.textContent).toContain("前 2 列")
+    await 等条件(
+      () => host.querySelector<HTMLElement>('[data-slot="sheet-grid"]')?.getAttribute("data-loaded-rows") === "4",
+      "预览档物化 4 行（表头 + 3 数据行）",
+    )
   })
 
-  test("超宽表：只铺前 列上界 列，并明说是截断", async () => {
-    const 表 = [Array.from({ length: 列上界 + 3 }, (_, i) => `列${i}`)]
+  test("全量档列截断：明说前 2 列", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节(表), host)
-
-    expect([...host.querySelectorAll("tr")].map((tr) => tr.querySelectorAll("td").length)).toEqual([列上界])
-    expect(host.textContent).not.toContain(`列${列上界}`)
-    expect(host.textContent).toContain("只显示前")
+    await renderSheet(工作簿字节([["A", "B", "C"], ["1", "2", "3"]]), host, {
+      强制主线程: true,
+      limits: {
+        首屏行数: 10,
+        预览行数: 10,
+        预览列数: 2,
+        全量行上限: 100,
+        全量格上限: 1000,
+        全量列上限: 2,
+        分块行数: 2,
+      },
+    })
+    await 等条件(() => host.textContent?.includes("前 2 列") ?? false, "全量档列截断横幅")
+    expect(host.textContent).not.toContain("前 3 列")
   })
 
-  test("刚好到上界不算截断：不出提示（提示一旦泛滥就等于没有）", async () => {
+  test("加密的工作簿：渲染器抛错，由壳落「需要密码」", async () => {
     const host = 容器()
-
-    await renderSheet(工作簿字节([Array.from({ length: 列上界 }, (_, i) => `列${i}`)]), host)
-
-    expect(host.textContent).not.toContain("只显示前")
+    await expect(renderSheet(加密工作簿(), host, { 强制主线程: true })).rejects.toThrow(/加密/)
+    expect(网格(host)).toBeNull()
   })
 
-  /**
-   * 加密的工作簿：SheetJS **认得出**（它自己抛 `File is password-protected`），
-   * 故由渲染器分类成「需要密码」那一档，别在这里静默吞掉。
-   *
-   * 注意**不能**用「见到 OLE2 魔数就当加密」来偷懒：加密的工作簿与老 `.doc`/老 `.xls`
-   * **都是** OLE2，魔数分不开（`document-view.tsx` 分得开是因为它进容器认**流名**，路子不同）。
-   * 这里分得开，靠的是 SheetJS 自己交回的说法。
-   */
-  test("加密的工作簿：渲染器抛错，由壳落「需要密码」（不静默吞掉）", async () => {
-    const host = 容器()
-
-    await expect(renderSheet(加密工作簿(), host)).rejects.toThrow(/加密/)
-    expect(host.querySelector("table")).toBeNull()
-  })
-
-  test("多张工作表：铺第一张（表格视图不给工作表切换，见源码注释）", async () => {
+  test("多张工作表：只渲染第一张，并写明共 N 张", async () => {
     const book = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["第一张的格子"]]), "第一张")
     XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["第二张的格子"]]), "第二张")
     const host = 容器()
-
-    await renderSheet(new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" })), host)
-
+    await renderSheet(new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" })), host, {
+      强制主线程: true,
+    })
     expect(host.textContent).toContain("第一张的格子")
     expect(host.textContent).not.toContain("第二张的格子")
+    expect(host.textContent).toContain("共 2 张表")
+  })
+
+  test("cleanup 卸载网格", async () => {
+    const host = 容器()
+    const cleanup = await renderSheet(工作簿字节([["姓名"], ["张三"]]), host, { 强制主线程: true })
+    expect(网格(host)).not.toBeNull()
+    cleanup()
+    expect(网格(host)).toBeNull()
   })
 })
 
-describe("表格视图接进通用壳（FR-007 的 .xls/.xlsx/.csv）", () => {
-  const 视图 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-component='sheet-view']")
-
+describe("表格视图接进通用壳", () => {
   test("读不到文件：停在 empty，不渲染表格", async () => {
     const host = mount(() => <SheetView path="/p/没.xlsx" load={async () => undefined} />)
-
-    await 落定()
-
-    expect(视图(host)?.getAttribute("data-state")).toBe("empty")
-    expect(host.querySelector("table")).toBeNull()
+    await 等状态(host, "empty")
+    expect(网格(host)).toBeNull()
   })
 
-  test("拿到真表格字节：表格长在视图里，状态 ready", async () => {
+  test("拿到真表格字节：网格长在视图里，状态 ready", async () => {
     const host = mount(() => (
       <SheetView path="/p/名单.xlsx" load={async () => 二进制内容(工作簿字节([["姓名"], ["张三"]]))} />
     ))
-
-    await 落定()
-
-    expect(视图(host)?.getAttribute("data-state")).toBe("ready")
-    expect(host.querySelector("[data-component='sheet-view'] table")).not.toBeNull()
-    expect(视图(host)?.textContent).toContain("张三")
+    await 等状态(host, "ready")
+    expect(网格(host)).not.toBeNull()
+    expect(host.textContent).toContain("张三")
   })
 
-  /**
-   * 加密的 .xlsx/.xls 落 `encrypted`，**不能落 `error`**——理由同 `.doc` / XMind 8 / 压缩方式：
-   * 文件一点没坏，说成「这个文件打不开 · 可能已经损坏」就是让民警去怀疑一份好文件。
-   */
   test("加密的工作簿：落「需要密码」，不说文件损坏", async () => {
     const host = mount(() => <SheetView path="/p/账册.xlsx" load={async () => 二进制内容(加密工作簿())} />)
-
-    await 落定()
-
-    expect(视图(host)?.getAttribute("data-state")).toBe("encrypted")
+    await 等状态(host, "encrypted")
     const 降级 = host.querySelector("[data-component='degraded-view']")
     expect(降级?.getAttribute("data-reason")).toBe("encrypted")
     expect(降级?.textContent).toContain("密码")
-    // 「损坏」是 error 那一档的说法——一份锁着的文件不该被说成这样
     expect(降级?.textContent).not.toContain("损坏")
+  })
+
+  test("换项目后同相对路径不串台：重新解析并显示新项目的内容", async () => {
+    // 跨项目串台的根因：键只含 path+重载代，而换项目会把重载代重置为 0（`清空会话改过`）
+    // ⇒ 项目乙打开同相对路径时命中项目甲的数据缓存，且**不解析本次字节**。
+    const 路径 = "/p/同名.xlsx"
+    const 甲字节 = 工作簿字节([["姓名"], ["甲项目数据"]])
+    const 乙字节 = 工作簿字节([["姓名"], ["乙项目数据"]])
+
+    setCurrentProject({ id: "项目甲", name: "甲" })
+    const 第一 = 容器()
+    const 卸第一 = render(() => <SheetView path={路径} load={async () => 二进制内容(甲字节)} />, 第一)
+    const 第二 = 容器()
+    let 卸第二: (() => void) | undefined
+    try {
+      await 等状态(第一, "ready")
+      await 等条件(() => 第一.textContent?.includes("甲项目数据") ?? false, "甲项目内容")
+      // 等 onDone 把数据缓存写进去（否则第二次本就不会命中，用例会假绿）。
+      await 等条件(
+        () => 第一.querySelector('[data-slot="sheet-grid"]')?.getAttribute("data-loaded-rows") === "2",
+        "甲项目解析完成",
+      )
+      await new Promise((r) => setTimeout(r, 30))
+
+      setCurrentProject({ id: "项目乙", name: "乙" })
+      卸第二 = render(() => <SheetView path={路径} load={async () => 二进制内容(乙字节)} />, 第二)
+      await 等状态(第二, "ready")
+      await 等条件(() => 第二.textContent?.includes("乙项目数据") ?? false, "乙项目内容")
+      expect(第二.textContent).not.toContain("甲项目数据")
+    } finally {
+      卸第二?.()
+      第一.remove()
+      第二.remove()
+    }
+  })
+
+  test("切走再回来：列宽从模块级缓存恢复", async () => {
+    // 同一个 path 重新挂载，缓存键含当前重载代（两条都是 0）。
+    const bytes = 工作簿字节([["姓名", "金额"], ["张三", "1200"]])
+    const load = async () => 二进制内容(bytes)
+    const 列宽串 = (host: HTMLElement) =>
+      host.querySelector<HTMLElement>('[data-slot="sheet-header"]')?.style.gridTemplateColumns ?? ""
+    // 首列 = 行号列 56px + 数据列（模板串以空格分隔）。
+    const 首列宽 = (host: HTMLElement) => 列宽串(host).split(" ")[1]
+
+    const 第一 = mount(() => <SheetView path="/p/缓存.xlsx" load={load} />)
+    await 等状态(第一, "ready")
+    const 拖拽前 = 列宽串(第一)
+    // 初始列宽 = max(64, 「姓名」文本宽 26 + 16)。
+    expect(首列宽(第一)).toBe("64px")
+
+    const 拖拽 = 第一.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')!
+    拖拽.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }))
+    window.dispatchEvent(new MouseEvent("pointermove", { clientX: 300 }))
+    window.dispatchEvent(new MouseEvent("pointerup"))
+    const 宽度 = 列宽串(第一)
+    // 直接钉到预期 px：只比「两次相等」的话，拖拽接线静默失效（两次都是默认值）也会绿。
+    expect(宽度).not.toBe(拖拽前)
+    expect(首列宽(第一)).toBe("164px")
+
+    // 模拟切 Tab：卸载视图
+    ;[...第一.querySelectorAll<HTMLElement>("[data-component='sheet-view']")].forEach((el) => el.replaceChildren())
+    // 直接重新挂载同一个 path，读缓存
+    const 第二 = mount(() => <SheetView path="/p/缓存.xlsx" load={load} />)
+    await 等状态(第二, "ready")
+    expect(列宽串(第二)).toBe(宽度)
   })
 })
 

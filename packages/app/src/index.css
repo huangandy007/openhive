@@ -519,3 +519,26 @@
     }
   }
 }
+
+/* openhive 表格阅读器（本仓定制；不碰上游全局 table 规则） */
+[data-component="sheet-view"] {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+[data-component="sheet-view"] [data-slot="sheet-grid"] {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  flex-direction: column;
+}
+
+[data-component="sheet-view"] [data-slot="sheet-scroll"] {
+  scrollbar-gutter: stable;
+  outline: none;
+}
