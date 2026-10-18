@@ -178,6 +178,8 @@ async function 等全量(page: Page) {
           const 总 = g.getAttribute("data-total-rows")
           // 属性缺失时不能落进 `Number(null) - Number(null) === 0` 的假通过。
           if (载 === null || 总 === null) return Number.MAX_SAFE_INTEGER
+          // 两个属性都在但都是 "0" 时，0 - 0 同样会假通过；总行数必须 > 0。
+          if (Number(总) <= 0) return Number.MAX_SAFE_INTEGER
           return Number(载) - Number(总)
         }),
       { timeout: 90_000, message: "50k 行应当在全量档加载完" },
@@ -590,6 +592,7 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
   // 滚动断言必须发生在解析进行中：进度横幅只在 loadedRows < totalRows 时渲染。
   const 进度横幅 = page.locator("[data-slot='sheet-progress']")
   await expect(进度横幅, "进度横幅应当可见——否则下面的滚动测的是「加载后」").toBeVisible()
+  expect(Number(解析中.载入), "滚动时必须仍在解析中（已载 < 总数）").toBeLessThan(Number(解析中.总数))
 
   // 解析期间滚动列表（早于全量完成也应响应）。
   await 滚到(page, { top: 2_000 })
@@ -658,15 +661,6 @@ test("分屏同文件：右栏挂载时继承列宽，之后不实时同步", as
   await 展开(page)
   await 打开表格(page, "卷宗/小表.xlsx")
 
-  // 先在左栏改列宽，再分屏打开同一文件：右栏应读到当时的缓存状态。
-  const 柄 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
-  const 框 = await 柄.boundingBox()
-  expect(框, "左栏第 0 列应有拖拽热区").not.toBeNull()
-  await page.mouse.move(框!.x + 框!.width / 2, 框!.y + 框!.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(框!.x + 框!.width / 2 + 120, 框!.y + 框!.height / 2, { steps: 6 })
-  await page.mouse.up()
-
   const 读两栏 = () =>
     page.evaluate(() => {
       const 读 = (pane: string) => {
@@ -676,7 +670,20 @@ test("分屏同文件：右栏挂载时继承列宽，之后不实时同步", as
       }
       return { 左: 读("0"), 右: 读("1") }
     })
+
+  // 先在左栏改列宽，再分屏打开同一文件：右栏应读到当时的缓存状态。
+  // ⚠️ 必须先钉住「拖拽真的改变了左栏」——否则右栏即使没继承缓存，
+  // 只要两栏都停在默认宽度，`挂载后.右 === 拖后左.左` 也会空转通过。
+  const 拖前左 = await 读两栏()
+  const 柄 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
+  const 框 = await 柄.boundingBox()
+  expect(框, "左栏第 0 列应有拖拽热区").not.toBeNull()
+  await page.mouse.move(框!.x + 框!.width / 2, 框!.y + 框!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(框!.x + 框!.width / 2 + 120, 框!.y + 框!.height / 2, { steps: 6 })
+  await page.mouse.up()
   const 拖后左 = await 读两栏()
+  expect(拖后左.左, "第一次拖拽必须真的改变左栏列宽（否则继承判据会空转）").not.toBe(拖前左.左)
 
   await page.locator("[data-slot='split-button']").click()
   await page.locator("[data-slot='split-menu-item'][data-split='左右']").click()
@@ -687,8 +694,12 @@ test("分屏同文件：右栏挂载时继承列宽，之后不实时同步", as
   await expect(page.locator("[data-pane='0'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
   await expect(page.locator("[data-pane='1'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
   const 挂载后 = await 读两栏()
+  expect(挂载后.左, "分屏后左栏应保持拖后的列宽").toBe(拖后左.左)
   expect(挂载后.右, "右栏挂载时应继承左栏已保存的列宽（§8.1 共享缓存条目）").toBe(拖后左.左)
-  console.log(`[实测] 分屏同文件：左栏拖后「${拖后左.左}」；右栏挂载后「${挂载后.右}」`)
+  console.log(
+    `[实测] 分屏同文件：拖前左「${拖前左.左}」→ 拖后左「${拖后左.左}」；` +
+      `分屏后左「${挂载后.左}」右「${挂载后.右}」`,
+  )
 
   // 两栏都挂载后再拖左栏：右栏不跟随（共享是「挂载时读取」，不是实时同步）。
   const 柄2 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
