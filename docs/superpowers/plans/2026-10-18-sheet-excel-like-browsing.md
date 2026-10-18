@@ -71,7 +71,7 @@
   - `type ColumnType = "text" | "number" | "date" | "datetime"`
   - `interface SheetMeta`（字段见下）
   - `const 规模`、`const 行上界`、`const 列上界`
-  - `interface 解析限制`、`const 默认解析限制`
+  - `interface 解析限制`
   - `列标(index): string`
   - `文本宽(text): number`
   - `估算列宽(header, samples): number`
@@ -260,8 +260,6 @@ export interface 解析限制 {
   全量列上限: number
   分块行数: number
 }
-
-export const 默认解析限制: 解析限制 = 规模
 
 /**
  * 解析端交回的元信息。
@@ -493,9 +491,9 @@ describe("判档", () => {
     expect(判档(100_002, 10)).toBe("preview")
   })
 
-  test("400 万格是边界：=400 万全量，>400 万预览", () => {
-    expect(判档(40_001, 100)).toBe("preview") // 4,000,100 格 > 400 万 ⇒ 预览
-    expect(判档(40_000, 100)).toBe("full") // 4,000,000 格 = 400 万 ⇒ 全量
+  test("400 万数据格是边界（不含表头）：=400 万全量，>400 万预览", () => {
+    expect(判档(40_001, 100)).toBe("full") // 40,000 数据行 × 100 = 4,000,000 格 = 400 万 ⇒ 全量
+    expect(判档(40_001, 101)).toBe("preview") // 40,000 × 101 = 4,040,000 格 > 400 万 ⇒ 预览
   })
 
   test("行数没超但格数超，也预览（200 列 × 9 万行）", () => {
@@ -600,7 +598,8 @@ export function 判档(
   limits: Pick<解析限制, "全量行上限" | "全量格上限"> = 规模,
 ): 档位 {
   const 数据行 = Math.max(0, totalRows - 1)
-  return 数据行 > limits.全量行上限 || totalRows * totalCols > limits.全量格上限 ? "preview" : "full"
+  // 行、格同口径：格数按数据格计（不含表头）。
+  return 数据行 > limits.全量行上限 || 数据行 * totalCols > limits.全量格上限 ? "preview" : "full"
 }
 
 const 中文比较 = new Intl.Collator("zh-Hans-CN", { numeric: true })
