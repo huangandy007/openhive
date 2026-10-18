@@ -184,3 +184,114 @@ export function 推断列类型(cells: readonly Cell[]): ColumnType {
 export function 是加密工作簿(原因: unknown): boolean {
   return 原因 instanceof Error && /password/i.test(原因.message)
 }
+
+export function 判档(
+  totalRows: number,
+  totalCols: number,
+  limits: Pick<解析限制, "全量行上限" | "全量格上限"> = 规模,
+): 档位 {
+  const 数据行 = Math.max(0, totalRows - 1)
+  return 数据行 > limits.全量行上限 || totalRows * totalCols > limits.全量格上限 ? "preview" : "full"
+}
+
+const 中文比较 = new Intl.Collator("zh-Hans-CN", { numeric: true })
+const 数字文本 = /^-?(?:(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?%?$/
+
+/** 数字列排序键：去千分位/百分号/空白；解析不了返回 undefined。 */
+function 数值(text: string): number | undefined {
+  const cleaned = text.replace(/[,%\s]/g, "")
+  const value = Number(cleaned)
+  return Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * 单列排序。返回的是**原始行下标**的新顺序，不改行数据。
+ * 空值无论升/降都排最后；数字按数值、日期按规范串字典序、文本按中文 Collator。
+ * Array.prototype.sort 在 ES2019 起稳定，符合「排序稳定」。
+ */
+export function 排序行(
+  rows: readonly Cell[][],
+  indices: readonly number[],
+  column: number,
+  dir: "asc" | "desc",
+  type: ColumnType,
+): number[] {
+  const 有值: number[] = []
+  const 空值: number[] = []
+  for (const index of indices) {
+    const value = rows[index]?.[column] ?? null
+    if (value === null || value.trim() === "") 空值.push(index)
+    else 有值.push(index)
+  }
+  const 符号 = dir === "asc" ? 1 : -1
+  const 比较 = (a: number, b: number) => {
+    const 左 = rows[a][column] as string
+    const 右 = rows[b][column] as string
+    if (type === "number") {
+      const 左数 = 数值(左)
+      const 右数 = 数值(右)
+      if (左数 !== undefined && 右数 !== undefined) return (左数 - 右数) * 符号
+    }
+    if (type === "date" || type === "datetime") {
+      return (左 < 右 ? -1 : 左 > 右 ? 1 : 0) * 符号
+    }
+    return 中文比较.compare(左, 右) * 符号
+  }
+  return [...有值.sort(比较), ...空值]
+}
+
+export type 列筛选 =
+  | { kind: "values"; column: number; values: readonly string[]; includeBlank: boolean }
+  | { kind: "contains"; column: number; text: string }
+  | { kind: "equals"; column: number; text: string }
+  | { kind: "blank"; column: number }
+
+function 命中筛选(filter: 列筛选, value: Cell): boolean {
+  const blank = value === null || value.trim() === ""
+  switch (filter.kind) {
+    case "blank":
+      return blank
+    case "contains":
+      return !blank && value.toLowerCase().includes(filter.text.toLowerCase())
+    case "equals":
+      return !blank && value.toLowerCase() === filter.text.toLowerCase()
+    case "values":
+      return (blank && filter.includeBlank) || (!blank && filter.values.includes(value))
+  }
+}
+
+/** 多列 AND；隐藏列的条件照常生效（调用方保留列下标即可）。 */
+export function 筛选行(
+  rows: readonly Cell[][],
+  indices: readonly number[],
+  filters: readonly 列筛选[],
+): number[] {
+  if (filters.length === 0) return [...indices]
+  return indices.filter((index) =>
+    filters.every((filter) => 命中筛选(filter, rows[index]?.[filter.column] ?? null)),
+  )
+}
+
+export interface 查找命中项 {
+  row: number
+  col: number
+}
+
+/** 在已加载数据上查找；`indices` 调用方传全部数据行，`columns` 只传可见列。 */
+export function 查找命中(
+  rows: readonly Cell[][],
+  indices: readonly number[],
+  columns: readonly number[],
+  query: string,
+): 查找命中项[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return []
+  const result: 查找命中项[] = []
+  for (const row of indices) {
+    for (const col of columns) {
+      const value = rows[row]?.[col]
+      if (value && value.toLowerCase().includes(needle)) result.push({ row, col })
+    }
+  }
+  return result
+}

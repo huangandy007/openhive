@@ -12,6 +12,13 @@ import {
   规模,
   行上界,
   列上界,
+  判档,
+  查找命中,
+  排序行,
+  筛选行,
+  type 列筛选,
+  type Cell,
+  type ColumnType,
 } from "./sheet-model"
 
 describe("列标", () => {
@@ -124,5 +131,107 @@ describe("认「加密的工作簿」的说法", () => {
     expect(是加密工作簿(new Error("Unsupported ZIP file"))).toBe(false)
     expect(是加密工作簿("File is password-protected")).toBe(false)
     expect(是加密工作簿(undefined)).toBe(false)
+  })
+})
+
+const 行 = (): Cell[][] => [
+  ["姓名", "金额", "日期"],
+  ["张三", "1,200", "2026-10-01"],
+  ["李四", "300", "2026-09-30"],
+  ["王五", "", "2026-10-02"],
+  ["赵六", "50", ""],
+]
+
+describe("判档", () => {
+  test("10 万数据行（不含表头）是边界：=10 万全量，>10 万预览", () => {
+    expect(判档(100_001, 10)).toBe("full")
+    expect(判档(100_002, 10)).toBe("preview")
+  })
+
+  test("400 万格是边界：=400 万全量，>400 万预览", () => {
+    expect(判档(40_001, 100)).toBe("preview") // 4,000,100 格 > 400 万 ⇒ 预览
+    expect(判档(40_000, 100)).toBe("full") // 4,000,000 格 = 400 万 ⇒ 全量
+  })
+
+  test("行数没超但格数超，也预览（200 列 × 9 万行）", () => {
+    expect(判档(90_001, 200)).toBe("preview")
+  })
+
+  test("限制可注入，测试不用造 10 万行", () => {
+    expect(判档(5, 1, { 全量行上限: 2, 全量格上限: 100 })).toBe("preview")
+  })
+})
+
+describe("排序", () => {
+  const rows = 行()
+  const 全部 = [1, 2, 3, 4]
+
+  test("数字按数值，空值恒最后（升/降都一样）", () => {
+    const 升 = 排序行(rows, 全部, 1, "asc", "number")
+    expect(升).toEqual([4, 2, 1, 3]) // 50, 300, 1200, 空
+    const 降 = 排序行(rows, 全部, 1, "desc", "number")
+    expect(降).toEqual([1, 2, 4, 3]) // 1200, 300, 50, 空
+  })
+
+  test("日期按规范串字典序", () => {
+    expect(排序行(rows, 全部, 2, "asc", "date")).toEqual([2, 1, 3, 4])
+  })
+
+  test("文本按中文 Collator，稳定", () => {
+    const 文本 = 排序行(rows, [1, 2, 3, 4], 0, "asc", "text")
+    expect(文本.map((i) => rows[i][0])).toEqual(["李四", "王五", "张三", "赵六"])
+  })
+
+  test("原始行下标不丢：排序只重排下标", () => {
+    const 结果 = 排序行(rows, 全部, 1, "asc", "number")
+    expect(结果).toHaveLength(4)
+    expect(new Set(结果)).toEqual(new Set(全部))
+  })
+})
+
+describe("筛选", () => {
+  const rows = 行()
+  const 全部 = [1, 2, 3, 4]
+
+  test("无筛选返回全部", () => {
+    expect(筛选行(rows, 全部, [])).toEqual(全部)
+  })
+
+  test("多列 AND", () => {
+    const filters: 列筛选[] = [
+      { kind: "contains", column: 0, text: "张" },
+      { kind: "contains", column: 1, text: "200" },
+    ]
+    expect(筛选行(rows, 全部, filters)).toEqual([1])
+    expect(筛选行(rows, 全部, [{ kind: "contains", column: 0, text: "张" }, { kind: "equals", column: 1, text: "300" }])).toEqual([])
+  })
+
+  test("包含/等于大小写不敏感；为空只命中空值", () => {
+    expect(筛选行(rows, 全部, [{ kind: "equals", column: 1, text: "1200" }])).toEqual([]) // 原值是 "1,200"
+    expect(筛选行(rows, 全部, [{ kind: "contains", column: 1, text: "1,2" }])).toEqual([1])
+    expect(筛选行(rows, 全部, [{ kind: "blank", column: 1 }])).toEqual([3])
+  })
+
+  test("值清单过滤（精确匹配）+ 空白开关", () => {
+    expect(筛选行(rows, 全部, [{ kind: "values", column: 0, values: ["张三", "李四"], includeBlank: false }])).toEqual([1, 2])
+    expect(筛选行(rows, 全部, [{ kind: "values", column: 1, values: ["300"], includeBlank: true }])).toEqual([2, 3])
+  })
+})
+
+describe("查找", () => {
+  const rows = 行()
+  const 全部 = [1, 2, 3, 4]
+
+  test("只搜给定列，大小写不敏感，返回原始行下标", () => {
+    expect(查找命中(rows, 全部, [0], "张")).toEqual([{ row: 1, col: 0 }])
+    expect(查找命中(rows, 全部, [1], "1,2")).toEqual([{ row: 1, col: 1 }])
+  })
+
+  test("隐藏列不搜：调用方只传可见列", () => {
+    expect(查找命中(rows, 全部, [], "张")).toEqual([])
+  })
+
+  test("空词返回空", () => {
+    expect(查找命中(rows, 全部, [0], "   ")).toEqual([])
   })
 })
