@@ -50,15 +50,21 @@ const 等 = async (fn: () => boolean, timeout = 3000) => {
   }
 }
 
+interface 假Worker请求 {
+  id: number
+  bytes: ArrayBuffer
+  limits: 解析限制
+}
+
 class 假Worker implements WorkerLike {
   static 最后: 假Worker
-  posted: any
+  posted!: 假Worker请求
   terminated = false
   listeners = new Map<string, Set<(event: any) => void>>()
   constructor() {
     假Worker.最后 = this
   }
-  postMessage(message: unknown) {
+  postMessage(message: 假Worker请求) {
     this.posted = message
   }
   addEventListener(type: string, listener: (event: any) => void) {
@@ -73,6 +79,9 @@ class 假Worker implements WorkerLike {
   }
   发(data: unknown) {
     for (const listener of this.listeners.get("message") ?? []) listener({ data })
+  }
+  发错误(message?: string) {
+    for (const listener of this.listeners.get("error") ?? []) listener({ message })
   }
 }
 
@@ -109,6 +118,21 @@ describe("解析客户端：主线程降级", () => {
     await task.ready
     expect(c.meta?.header).toEqual(["姓名"])
   })
+
+  test("Worker 异步崩溃（meta 前）自动降级主线程", async () => {
+    const c = 收集()
+    const task = 解析表格(工作簿字节([["姓名"], ["张三"], ["李四"], ["王五"]]), c.回调, {
+      创建Worker: () => new 假Worker(),
+      limits: 小限制,
+    })
+    const worker = 假Worker.最后
+    worker.发错误("worker crashed")
+    await task.ready
+    expect(c.事件[0]).toBe("meta")
+    await 等(() => c.事件.includes("done"))
+    expect(c.事件.at(-1)).toBe("done")
+    expect(worker.terminated).toBe(true)
+  })
 })
 
 describe("解析客户端：Worker 协议", () => {
@@ -117,7 +141,7 @@ describe("解析客户端：Worker 协议", () => {
     const task = 解析表格(工作簿字节([["姓名"]]), c.回调, { 创建Worker: () => new 假Worker(), limits: 小限制 })
     const worker = 假Worker.最后
     expect(worker.posted.limits).toEqual(小限制)
-    const id = worker.posted.id as number
+    const id = worker.posted.id
 
     worker.发({ type: "meta", id: id + 1, meta: { header: ["旧"] } })
     expect(c.事件).toEqual([])
@@ -147,7 +171,7 @@ describe("解析客户端：Worker 协议", () => {
     const c = 收集()
     const task = 解析表格(工作簿字节([["姓名"]]), c.回调, { 创建Worker: () => new 假Worker(), limits: 小限制 })
     const worker = 假Worker.最后
-    const id = worker.posted.id as number
+    const id = worker.posted.id
     task.cancel()
     worker.发({ type: "meta", id, meta: { header: ["姓名"] } })
     expect(c.事件).toEqual([])
