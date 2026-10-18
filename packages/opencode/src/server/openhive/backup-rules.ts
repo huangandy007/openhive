@@ -100,6 +100,15 @@ export function summaryOf(manifest: Manifest): SnapshotSummary {
 const SNAPSHOT_ID = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
 const SHA256 = /^[0-9a-f]{64}$/
 
+/**
+ * 快照 id 形状（spec §4.6）。删除出口先按它判一次：`abc` 是**合法相对路径**、却不是快照 id，
+ * 旧实现会一路走到 `store.deleteManifest` 拼键抛错 ⇒ 500 ＋ 一条 failed 审计；格式错应与
+ * `GET /snapshots/{id}` 同口径回 404（`backup-store.ts` 的私有正则与这里同形，只用来拼键）。
+ */
+export function isSnapshotId(id: string): boolean {
+  return SNAPSHOT_ID.test(id)
+}
+
 function 是记录(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }

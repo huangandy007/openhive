@@ -62,7 +62,7 @@ import {
   type Manifest,
   type RestoreDecision,
 } from "./backup-model"
-import { isPathInScope, isSafeRelativePath, summaryOf } from "./backup-rules"
+import { isPathInScope, isSafeRelativePath, isSnapshotId, summaryOf } from "./backup-rules"
 import {
   CancelledError,
   NotFoundError,
@@ -669,6 +669,9 @@ function handleDeleteSnapshot(request: HttpServerRequest.HttpServerRequest, deps
     if (!isSafeRelativePath(snapshotId)) return badRequest("snapshotId 不是合法的恢复点 id")
     const store = storeOf(deps, 我.user.id, 我.projectId)
     if (store === undefined) return unavailable("MinIO 未配置，备份不可用")
+    // 形状判在 `unavailable` 之后、任何副作用之前：与 `GET /snapshots/{id}` 同口径（401 → 400 → 403
+    // → 503 → 404）。`abc` 是合法相对路径但不是快照 id——放它过去会让拼键抛错 ⇒ 500 ＋ 失败审计。
+    if (!isSnapshotId(snapshotId)) return notFound("恢复点不存在")
 
     // 项目正在被删除（spec §5.8 的同一把锁）：这个出口末尾也会写 state，必须一起挡住。
     // 不加 `activeFor`：运行中任务与删快照的并发是**既有行为**，这里只管删除占位。

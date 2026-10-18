@@ -757,6 +757,34 @@ describe("Task 11 · 预览 / 恢复 / 删除恢复点", () => {
   )
 })
 
+/**
+ * **删除非法快照 id 回 404，不 500、不写失败审计**（整支复审 fix 1 · M-3）。
+ *
+ * `..%2Fx` 这类路径形状由 `isSafeRelativePath` 挡成 400；但 `abc` 是**合法的相对路径**、
+ * 却不是快照 id 的形状 ⇒ `store.deleteManifest` 拼键时抛错 ⇒ 旧实现 500 并落一条
+ * `result:"failed"` 的审计。格式错不是一次失败的删除，应与 `GET /snapshots/{id}` 同口径回 404。
+ */
+describe("整支复审 fix 1 · 删除非法快照 id（M-3）", () => {
+  it.live("DELETE /snapshots/abc ⇒ 404，且审计行数不变", () =>
+    Effect.gen(function* () {
+      const project = yield* 新项目()
+      const 删前 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+      const 响应 = yield* as(openApp, ALICE, `${BACKUP}/snapshots/abc?projectId=${project.projectId}`, {
+        method: "DELETE",
+      })
+      // 旧实现实得 500（拼键抛错）＋ 一条 failed 审计（RED）。
+      expect(响应.status).toBe(404)
+      expect(yield* json(Schema.Struct({ error: Schema.String, code: Schema.String }), 响应)).toEqual({
+        error: "恢复点不存在",
+        code: "not_found",
+      })
+      const 删后 = yield* Effect.promise(() => listBackupEvents(pg!.db, project.projectId))
+      expect(删后.length).toBe(删前.length)
+    }),
+    30_000,
+  )
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fix round 1（复审提交的 I-1…I-5 / M-1…M-5）
 // ─────────────────────────────────────────────────────────────────────────────
