@@ -77,7 +77,7 @@ git push origin main        # 推回私有仓库
 - 前端：**SolidJS 1.9.10**（非 React）+ Vite 7.1.4 + Tailwind CSS v4（`@tailwindcss/vite` 4.1.11）。
 - 后端：Hono 4.10.7 + Effect 4.0.0-beta.83 + Drizzle ORM 1.0.0-rc.2。
 - AI：`ai` 6.0.168（Vercel AI SDK）。
-- 工具链：oxlint 1.60.0、turbo 2.10.2、TypeScript 5.8.2；包管理器 `bun@1.3.14`。
+- 工具链：oxlint 1.60.0、turbo 2.10.2、TypeScript 5.8.2；包管理器 `bun@1.4.2`。
 - 上游通用贡献约定见 `AGENTS.md`（本文件只补充 fork 特有约束，不重复）。
 - 注意：根 `package.json` 的 `name` 仍是 `"opencode"`（品牌名尚未落配置，属待处理的品牌化事项）。
 
