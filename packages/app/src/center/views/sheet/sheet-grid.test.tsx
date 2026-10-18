@@ -421,30 +421,64 @@ describe("排序", () => {
   test("点列头升序→降序→取消，行号始终是原始号", () => {
     const { host, 卸 } = 挂()
     try {
-      const 金额头 = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-sort"]')!
+      // 箭头断言必须限定到被排序列：整表头 textContent 会掩盖「每列都画箭头」的回归。
+      const 金额列头 = () => 表头(host)?.querySelector<HTMLElement>('[data-column="1"]')
+      const 金额头 = 金额列头()?.querySelector<HTMLElement>('[data-slot="sheet-sort"]')!
 
       金额头.click()
       expect(首行(host)?.textContent).toContain("王五")
       expect(行号(首行(host)!)).toBe("4")
-      expect(表头(host)?.textContent).toContain("▲")
+      expect(金额列头()?.textContent).toContain("▲")
 
       金额头.click()
       expect(首行(host)?.textContent).toContain("张三")
       expect(行号(首行(host)!)).toBe("2")
-      expect(表头(host)?.textContent).toContain("▼")
+      expect(金额列头()?.textContent).toContain("▼")
 
       金额头.click()
       expect(首行(host)?.textContent).toContain("张三")
       expect(行号(首行(host)!)).toBe("2")
-      expect(表头(host)?.textContent).not.toContain("▲")
-      expect(表头(host)?.textContent).not.toContain("▼")
+      expect(金额列头()?.textContent).not.toContain("▲")
+      expect(金额列头()?.textContent).not.toContain("▼")
+    } finally {
+      卸()
+    }
+  })
+
+  test("非单调数据：三次点击分别命中升序/降序/取消", () => {
+    const { host, 卸 } = 挂(
+      元({ preview: [["姓名", "金额"], ["李四", "300"], ["张三", "1200"], ["王五", "50"]] }),
+    )
+    try {
+      // 三种态的首行两两不同（王五 / 张三 / 李四），才能把降序与取消从默认顺序里区分出来。
+      const 金额列头 = () => 表头(host)?.querySelector<HTMLElement>('[data-column="1"]')
+      const 金额头 = 金额列头()?.querySelector<HTMLElement>('[data-slot="sheet-sort"]')!
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("王五")
+      expect(行号(首行(host)!)).toBe("4")
+      expect(金额列头()?.textContent).toContain("▲")
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("张三")
+      expect(行号(首行(host)!)).toBe("3")
+      expect(金额列头()?.textContent).toContain("▼")
+
+      金额头.click()
+      expect(首行(host)?.textContent).toContain("李四")
+      expect(行号(首行(host)!)).toBe("2")
+      expect(金额列头()?.textContent).not.toContain("▲")
+      expect(金额列头()?.textContent).not.toContain("▼")
     } finally {
       卸()
     }
   })
 
   test("排序与筛选叠加：先筛后排", async () => {
-    const { host, 卸 } = 挂()
+    // 筛选后保留两行（张三 / 张四，原顺序），删掉排序时顺序会停在原顺序 ⇒ 用例必红。
+    const { host, 卸 } = 挂(
+      元({ preview: [["姓名", "金额"], ["张三", "1200"], ["张四", "300"], ["王五", "50"]] }),
+    )
     try {
       const 漏斗 = 表头(host)?.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-filter"]')!
       漏斗.click()
@@ -452,15 +486,19 @@ describe("排序", () => {
       const 包含 = [...浮层.querySelectorAll("label")].find((item) => item.textContent?.trim() === "包含")
       包含!.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
       const 输入 = await 等元素(() => 浮层.querySelector<HTMLInputElement>('[data-slot="column-filter-text"]'))
-      输入.value = "李"
+      输入.value = "张"
       输入.dispatchEvent(new Event("input", { bubbles: true }))
       ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
 
       const 金额头 = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-sort"]')!
       金额头.click()
-      expect(数据行(host)).toHaveLength(1)
-      expect(首行(host)?.textContent).toContain("李四")
+      expect(数据行(host)).toHaveLength(2)
+      expect(首行(host)?.textContent).toContain("张四")
       expect(行号(首行(host)!)).toBe("3")
+      expect(数据行(host).map((row) => row.querySelectorAll('[role="gridcell"]')[0]?.textContent)).toEqual([
+        "张四",
+        "张三",
+      ])
     } finally {
       卸()
     }
