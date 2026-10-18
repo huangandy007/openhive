@@ -185,7 +185,7 @@ type 回包 =
 
 ### 5.3 解析策略
 
-1. **首屏解析**：`XLSX.read(bytes, { sheetRows: 1001, cellNF: true, cellDates: true, codepage: 65001 })`；
+1. **首屏解析**：`XLSX.read(bytes, { sheetRows: 1001, cellNF: true, codepage: 65001 })`（**不要 `cellDates: true`**，理由见 §6.5 的探针记录）；
    - 用 `!fullref`（若存在）读原表真实范围；同时用 `!ref` 取首屏范围；
    - 首屏已经拿全（总行 ≤ 1001）时，不再二次解析；
    - 小表一次解析完成，避免无谓开销。
@@ -263,11 +263,16 @@ type 回包 =
 - 列级类型推断：某列 ≥80% 的非空采样单元格可识别为日期/时间 ⇒ 该列按日期处理；
 - 格式：有时间分量 → `yyyy-MM-dd HH:mm:ss`；纯日期 → `yyyy-MM-dd`；
 - 转换路径（**不做时区平移**）：
-  - JS `Date` → 用本地 getter 取年月日时分秒；
-  - Excel 序列号 → `XLSX.SSF.parse_date_code`；
-  - 文本 → 正则拆分年月日时分秒，**禁止** `new Date("YYYY-MM-DD")`（会按 UTC 解释）；
+  - **主路径：Excel 序列号** → `XLSX.SSF.parse_date_code(serial)` 直接得到 `{y,m,d,H,M,S}` 墙上时间分量；读取参数保持默认 `cellDates: false`，避免 JS `Date` 的时区语义；
+  - JS `Date`（防御性分支，正常情况下不会出现）→ 用 UTC getter 取分量（与 SheetJS 的存储口径一致）；
+  - 文本（SheetJS 未识别成日期时）→ 正则拆分年月日时分秒，**禁止** `new Date("YYYY-MM-DD")`（会按 UTC 解释）；
 - 无法识别为日期的文本原样显示，不猜；
 - 日期列右对齐。
+
+> **探针实测（2026-10-18，本机 bun + xlsx）**：
+> - `sheetRows: 1001` 在 `.xlsx` 与 `.xls`（biff8）上都保留 `!fullref`：`!ref=A1:B1001`、`!fullref=A1:B1500`；CSV 无 `!fullref`（但 CSV 解析便宜，可全量读后计数）。
+> - `cellDates: true` 时，xlsx 日期格读回 `t:"d"`、`v` 的 UTC 时刻等于墙上时间（时区语义含糊）；改为默认 `cellDates: false` 后，日期格是 `t:"n"`、`v:46296.354166…`，`XLSX.SSF.parse_date_code` 交回 `{y:2026,m:10,d:1,H:8,M:30,S:0}`——正是墙上时间。
+> - CSV 的 `2026-10-01 08:30:00` 同样落成序列号，且 `w` 保留原文；因此主路径对 CSV / xlsx 统一。
 
 ---
 
