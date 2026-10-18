@@ -240,6 +240,101 @@ describe("列宽交互", () => {
   })
 })
 
+describe("筛选", () => {
+  async function 打开筛选(host: HTMLElement, column: number) {
+    const 漏斗 = 表头(host)?.querySelector<HTMLElement>(`[data-column="${column}"] [data-slot="sheet-col-filter"]`)
+    漏斗!.click()
+    // 按列号找**这一列**的浮层：上一条浮层即使还没退场，也不会被误读（`LEARNINGS #005-34`）。
+    return 等元素(() =>
+      document.querySelector<HTMLElement>(`[data-slot="column-filter"][data-column="${column}"]`),
+    )
+  }
+
+  /** 浮层默认是「值」清单；要按文本拟条件得先切到「包含」。 */
+  async function 设为包含(浮层: HTMLElement) {
+    const label = [...浮层.querySelectorAll("label")].find((item) => item.textContent?.trim() === "包含")
+    label!.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
+    return 等元素(() => 浮层.querySelector<HTMLInputElement>('[data-slot="column-filter-text"]'))
+  }
+
+  test("包含筛选：只剩命中行，摘要更新；清除恢复", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 浮层 = await 打开筛选(host, 0)
+      const 输入 = await 设为包含(浮层)
+      输入.value = "张"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      expect(数据行(host)).toHaveLength(1)
+      expect(数据行(host)[0]?.textContent).toContain("张三")
+      expect(host.textContent).toContain("筛选后 1 行 / 共 3 行")
+      expect(host.querySelector('[data-slot="sheet-filter-chips"]')?.textContent).toContain("姓名")
+
+      ;[...host.querySelectorAll("button")].find((button) => button.textContent === "清除全部")!.click()
+      expect(数据行(host)).toHaveLength(3)
+    } finally {
+      卸()
+    }
+  })
+
+  test("多列 AND", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 浮层 = await 打开筛选(host, 0)
+      const 输入 = await 设为包含(浮层)
+      输入.value = "张"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      const 浮层2 = await 打开筛选(host, 1)
+      const 输入2 = await 设为包含(浮层2)
+      输入2.value = "300"
+      输入2.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层2.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      expect(数据行(host)).toHaveLength(0)
+      expect(host.querySelector('[data-slot="sheet-filter-empty"]')).not.toBeNull()
+    } finally {
+      卸()
+    }
+  })
+
+  test("筛选空态 + 清除筛选", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 浮层 = await 打开筛选(host, 0)
+      const 输入 = await 设为包含(浮层)
+      输入.value = "不存在"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      expect(host.querySelector('[data-slot="sheet-filter-empty"]')?.textContent).toContain("没有符合筛选")
+      ;[...host.querySelectorAll("button")].find((button) => button.textContent === "清除筛选")!.click()
+      expect(数据行(host)).toHaveLength(3)
+    } finally {
+      卸()
+    }
+  })
+
+  test("隐藏列上的筛选保留并标注", async () => {
+    const { host, 卸 } = 挂()
+    try {
+      const 浮层 = await 打开筛选(host, 1)
+      const 输入 = await 设为包含(浮层)
+      输入.value = "300"
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      ;[...浮层.querySelectorAll("button")].find((button) => button.textContent === "应用")!.click()
+
+      表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-hide-column"]')!.click()
+      expect(数据行(host)).toHaveLength(1)
+      expect(host.querySelector('[data-slot="sheet-filter-chips"]')?.textContent).toContain("该列已隐藏")
+    } finally {
+      卸()
+    }
+  })
+})
+
 describe("列显示/隐藏", () => {
   test("隐藏单列后不渲染该列，计数更新", () => {
     const { host, 卸 } = 挂()

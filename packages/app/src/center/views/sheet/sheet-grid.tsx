@@ -109,7 +109,7 @@ function 初始列(meta: SheetMeta, saved?: SheetUiState): 列状态[] {
 export function SheetGrid(props: SheetGridProps): JSX.Element {
   const [首行是表头, set首行是表头] = createSignal(props.initial?.headerIsFirstRow ?? true)
   const [列, set列] = createStore(初始列(props.store.meta, props.initial))
-  const [filters] = createSignal(props.initial?.filters ?? [])
+  const [filters, setFilters] = createSignal(props.initial?.filters ?? [])
   const [sort, setSort] = createSignal(props.initial?.sort)
   const [scroll, setScroll] = createSignal({ top: props.initial?.scrollTop ?? 0, left: props.initial?.scrollLeft ?? 0 })
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement>()
@@ -244,6 +244,9 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
             set列(index, "width", 估算列宽(column.name, 样本))
           })
         }
+        filters={filters()}
+        onRemoveFilter={(index) => setFilters((当前) => 当前.filter((_, i) => i !== index))}
+        onClearFilters={() => setFilters([])}
       />
       <Show
         when={可见列().length > 0}
@@ -294,10 +297,19 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
                   <表头格
                     column={column}
                     sort={sort()?.column === column.index ? sort() : undefined}
+                    filter={filters().find((filter) => filter.column === column.index)}
+                    rows={props.store.rows}
+                    start={首行是表头() ? 1 : 0}
                     onSort={() => 切换排序(column.index)}
                     onHide={() => set列(column.index, "hidden", true)}
                     onResizeStart={(event) => 开始拖列宽(event, column.index)}
                     onAutoFit={() => 自适应(column.index)}
+                    onApplyFilter={(filter) =>
+                      setFilters((当前) => {
+                        const 其余 = 当前.filter((item) => item.column !== column.index)
+                        return filter ? [...其余, filter] : 其余
+                      })
+                    }
                   />
                 )}
               </For>
@@ -349,6 +361,17 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
               </For>
             </div>
           </div>
+          <Show when={filters().length > 0 && 显示行().length === 0}>
+            <div
+              data-slot="sheet-filter-empty"
+              class="flex items-center justify-center gap-2 p-6 text-13-regular text-v2-text-text-muted"
+            >
+              没有符合筛选条件的行。
+              <button type="button" class="underline" onClick={() => setFilters([])}>
+                清除筛选
+              </button>
+            </div>
+          </Show>
         </div>
       </Show>
     </div>
