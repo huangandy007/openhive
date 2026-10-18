@@ -3949,6 +3949,47 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(槽(host, "minio-bar-progress") === null).toBe(false)
   })
 
+  test("预检期（backup 还没回包）就能看到进度与取消钮；回包后仍选中新恢复点（F-1）", async () => {
+    // `POST /backup` 在回 202 之前同步跑完扫描 + 哈希 + blob 枚举（大项目几十秒到数分钟）。
+    // 这段时间客户端没有 jobId，但任务已在服务端跑 ⇒ 不抢读的话窄条一直空着：没进度、没取消。
+    let 放回请求: (值: { jobId: string }) => void = () => {}
+    const 请求 = new Promise<{ jobId: string }>((resolve) => {
+      放回请求 = resolve
+    })
+    let 起过 = false
+    const 运行中 = 任务("j-1", "hashing")
+    const { host, 假 } = await 开备份({
+      snapshots: async () => (起过 ? [快照("s-new"), 快照("s-old")] : [快照("s-old")]),
+      snapshotDetail: async (_projectId, snapshotId) =>
+        明细(快照(snapshotId), snapshotId === "s-new" ? ["资料/新.txt"] : ["资料/老.txt"]),
+      backup: async () => {
+        起过 = true
+        return 请求
+      },
+      backupStatus: async () => 状态(起过 ? 运行中 : null),
+      job: async (jobId) => 任务(jobId, "succeeded", { result: { snapshotId: "s-new" } }),
+    })
+    await 等到(() => 快照选择器(host)?.value === "s-old")
+
+    右键行(host, "报告.docx")
+    点菜单项("backup")
+
+    // 请求还挂着（没有 202、没有 jobId）——进度与取消钮必须已经出现。
+    await 等到(() => 槽(host, "minio-bar-progress") !== null)
+    expect(槽(host, "minio-bar-progress") === null).toBe(false)
+    expect(text(host, "minio-bar-stage")).toBe("正在校验…")
+    const 取消 = 槽(host, "minio-bar-cancel")
+    if (!取消) throw new Error("预检期没有取消钮——这条用例的前提不成立（#004-14）")
+    取消.click()
+    await 等到(() => 假.取消的.length === 1)
+    expect(假.取消的).toEqual(["j-1"])
+
+    // 回包 202 之后既有行为照旧：跟进任务、选中新恢复点。
+    放回请求({ jobId: "j-1" })
+    await 等到慢(() => 快照选择器(host)?.value === "s-new")
+    expect(快照选择器(host)?.value).toBe("s-new")
+  })
+
   test("状态取不到（undefined）不清空进行中的任务：一次抖动后进度条仍在（F-4）", async () => {
     // `backupStatus` 的 `undefined` 是「这次没问出来」，不是「服务端说没有任务」。把它当成后者
     // 会把 `backupJob` 清掉 ⇒ 1 秒轮询的 `在跑` 守卫当场失败、进度条消失且**再也不会回来**。

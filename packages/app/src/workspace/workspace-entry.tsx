@@ -1028,6 +1028,33 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
+   * 预检期抢读任务（整支复审 I-1 / F-1）。
+   *
+   * `POST /backup` 在回 202 `{jobId}` **之前**同步跑完扫描 + 逐文件 sha256 + blob 枚举
+   * （大项目几十秒到数分钟）。这段时间客户端手里没有 jobId，但服务端任务已经 `jobs.start`
+   * 且阶段已上报 ⇒ 不抢读的话窄条一直空着：没有进度、没有取消钮，1 秒轮询的 `在跑` 守卫
+   * 永远为假。这里在请求飞行期间每 200ms 读一次状态，接上在跑的任务就收手（之后由既有
+   * 1 秒轮询接管），最多 10 次（约 2 秒）——**有界**，不造第二套轮询。
+   *
+   * 只写 `backupJob`（与 `重取备份状态` 同一个信号）；`仍在预检` 由调用方在请求回包时翻成
+   * `false`，避免迟到的抢读覆盖成功支刚写下的状态。
+   */
+  const 盯上预检任务 = async (守: { id: string; 代: number }, 仍在预检: () => boolean) => {
+    const 还有效 = () => 仍在预检() && currentProject()?.id === 守.id && 守.代 === 备份代次
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      if (!还有效() || !projectData) return
+      const 状态 = await projectData.backupStatus(守.id)
+      if (!还有效()) return
+      const job = 状态?.activeJob ?? undefined
+      if (在跑(job)) {
+        setBackupJob(job)
+        return
+      }
+    }
+  }
+
+  /**
    * 起一次手动备份（右键与拖拽共用，spec §5.1）。落点**不参与**路径计算——备份的是被拖的
    * 那一项，保持原路径。
    *
@@ -1042,7 +1069,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     // ——旧任务的终态会把旧项目的 snapshotId 选中到新项目上。
     const 守 = { id, 代: 备份代次 }
     const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
-    const 起 = await projectData.backup(id, path, false)
+    // F-1：请求飞行期间先抢读任务——预检期也要看得见进度、点得到取消。回包后立刻停手。
+    let 预检 = true
+    const 请求 = projectData.backup(id, path, false)
+    void 盯上预检任务(守, () => 预检)
+    const 起 = await 请求
+    预检 = false
     // ⚠️ S-1：`backup()` 可能跨过切项目 / 卸载。回包既不能变成新项目的文案，也不能把
     // 超限框开在新项目上——**静默**返回（此刻用户已经在别处了，说什么都不属于这里）。
     if (!还在()) return
