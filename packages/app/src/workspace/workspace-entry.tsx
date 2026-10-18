@@ -974,7 +974,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return
     }
     set文件话(
-      `恢复完成：恢复 ${结果体.restored.length}，保留两者 ${结果体.keptBoth.length}，跳过 ${结果体.skipped.length}，失败 ${结果体.failed.length}`,
+      `恢复完成：恢复 ${结果体.restored.length}，保留两者 ${结果体.keptBoth.length}，替换目录 ${结果体.overwritten.length}，新建空目录 ${结果体.dirsCreated.length}，跳过 ${结果体.skipped.length}，失败 ${结果体.failed.length}`,
     )
     拨清单重取()
   }

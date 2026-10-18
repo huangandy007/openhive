@@ -3869,12 +3869,18 @@ describe("备份 / 恢复接线（Task 17）", () => {
     }
   }
 
-  const 恢复结果 = (restored: readonly string[]) => ({
+  const 恢复结果 = (
+    restored: readonly string[],
+    extra: { overwritten?: readonly string[]; dirsCreated?: readonly string[] } = {},
+  ) => ({
     restored,
     keptBoth: [],
+    overwritten: [],
     skipped: [],
+    dirsCreated: [],
     failed: [],
     cancelled: false,
+    ...extra,
   })
 
   /**
@@ -4316,6 +4322,35 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.恢复的[0]).toEqual(["p-42", "s-1", "资料/甲.txt", "keep-both", "{}"])
     // 反向对照：这条链**不该**冒出确认框（「直接恢复」这四个字就是判据）。
     expect(document.body.querySelector("[data-component='backup-restore-dialog']") === null).toBe(true)
+  })
+
+  test("恢复完成文案分列替换目录与新建空目录（F-2）", async () => {
+    // 服务端 `runRestore` 早已返回 `overwritten` / `dirsCreated`；客户端类型与文案漏了它们，
+    // 于是「目录被文件替换」这类结果被说成「恢复 0 失败 0」——用户看不出发生了什么。
+    const 无冲突 = 预览([{ path: "资料/甲.txt", status: "missing" }])
+    const { host } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      previewRestore: async () => "job-preview",
+      restoreBackup: async () => "job-restore",
+      job: async (jobId) => {
+        if (jobId === "job-preview")
+          return 任务("job-preview", "succeeded", { kind: "preview", result: { preview: 无冲突 } })
+        if (jobId === "job-restore")
+          return 任务("job-restore", "succeeded", {
+            kind: "restore",
+            result: { restore: 恢复结果(["资料/甲.txt"], { overwritten: ["x"], dirsCreated: ["y"] }) },
+          })
+        return undefined
+      },
+    })
+    await 等到(() => 树行按(host, "minio", "资料/甲.txt") !== null)
+
+    拖到(树行按(host, "minio", "资料/甲.txt"), 树行按(host, "sandbox", "资料/甲.txt"))
+
+    await 等到(() => text(host, "file-op-message")?.includes("恢复完成") === true)
+    expect(text(host, "file-op-message")).toContain("替换目录 1")
+    expect(text(host, "file-op-message")).toContain("新建空目录 1")
   })
 
   test("全 same ＋ localOnly 里只有 .git ⇒ 直接恢复、不弹框（localOnly 不会被恢复，spec §6.6）", async () => {

@@ -119,7 +119,11 @@ export interface BackupPreview {
 export interface BackupRestoreResult {
   readonly restored: readonly string[]
   readonly keptBoth: readonly string[]
+  /** 目标原本是目录、按 `overwrite` 被整体替换成文件的路径（服务端 `RestoreResult.overwritten`）。 */
+  readonly overwritten: readonly string[]
   readonly skipped: readonly string[]
+  /** 本次实际新建的目录（服务端 `RestoreResult.dirsCreated`）。 */
+  readonly dirsCreated: readonly string[]
   readonly failed: readonly { readonly path: string; readonly reason: string }[]
   readonly cancelled: boolean
 }
@@ -313,7 +317,22 @@ export async function taskOf(jobId: string, send: ForkFetch = defaultSend): Prom
   })
   if (res.status !== 200 || !isRecord(res.body) || typeof res.body.id !== "string") return undefined
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 服务端直接回 `Job`（backup-model.ts）；逐字段抄一份会多一个漂点，而这里唯一要判的是「这是不是一个任务」。
-  return res.body as unknown as BackupJob
+  const job = res.body as unknown as BackupJob
+  const restore = job.result?.restore
+  if (restore === undefined) return job
+  // 老服务端（`overwritten` / `dirsCreated` 加上之前）不回这两项；界面文案直接读 `.length`，
+  // 缺字段会当场抛。收窄点放在这里，缺了按 `[]` 兜底。
+  return {
+    ...job,
+    result: {
+      ...job.result,
+      restore: {
+        ...restore,
+        overwritten: Array.isArray(restore.overwritten) ? restore.overwritten : [],
+        dirsCreated: Array.isArray(restore.dirsCreated) ? restore.dirsCreated : [],
+      },
+    },
+  }
 }
 
 export async function cancelTask(jobId: string, send: ForkFetch = defaultSend): Promise<boolean> {
