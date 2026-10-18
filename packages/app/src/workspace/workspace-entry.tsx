@@ -1200,7 +1200,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const 执行删恢复点 = async (id: string, snapshotId: string) => {
     dialog.close()
     if (!projectData) return
-    const 成 = await projectData.deleteSnapshot(id, snapshotId)
+    // 与 `跑恢复` / `备份` 同形：`deleteSnapshot` 跨了 await，切走项目（或卸载）之后
+    // 这次回包不能把「恢复点没删掉」写到新项目的中栏上（整支复审 F-4）。
+    const 守 = { id, 代: 备份代次 }
+    const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
+    const 成 = await projectData.deleteSnapshot(守.id, snapshotId)
+    if (!还在()) return
     if (!成) {
       set文件话("恢复点没删掉")
       return

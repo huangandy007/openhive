@@ -4582,6 +4582,41 @@ describe("备份 / 恢复接线（Task 17）", () => {
     expect(假.files.length).toBe(1)
   })
 
+  test("删除请求回包前切走项目 ⇒ 失败文案不落到新项目（整支复审 F-4）", async () => {
+    // `deleteSnapshot` 跨了 await：切走项目之后，旧项目那次删除的失败结果不能把
+    // 「恢复点没删掉」写到新项目的中栏上（与 `跑恢复` / `备份` 同形，进门捕获 `{ id, 代 }`）。
+    let 放回删: (成: boolean) => void = () => {}
+    const 挂起的删 = new Promise<boolean>((resolve) => {
+      放回删 = resolve
+    })
+    const { host, 假 } = await 开备份(
+      {
+        list: async () => [私有("p-1", "甲", 1), 私有("p-2", "乙", 2)],
+        snapshots: async () => [快照("s-1")],
+        snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+        deleteSnapshot: async () => 挂起的删,
+      },
+      "p-1",
+    )
+    await 等到(() => 快照选择器(host)?.value === "s-1")
+
+    槽(host, "minio-tree-delete")?.click()
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+    await 等到(() => 假.删的恢复点.length === 1)
+
+    setCurrentProject({ id: "p-2", name: "乙" })
+    await 冲一遍()
+    放回删(false)
+    await 冲一遍()
+    await 冲一遍()
+
+    // 无守卫时实得「恢复点没删掉」写在新项目的中栏上（RED）。
+    expect(text(host, "file-op-message") === undefined).toBe(true)
+  })
+
   test("同项目两次重取乱序：旧回包不覆盖新清单（N-2）", async () => {
     // 删除恢复点后的重取（#2）慢、`job_running` 支的重取（#3）后发先至。没有 `代 === 重取代次`
     // 的话，#2 回来时会把已经不在的 s-1 清单写回去，连选中项都跳回去。
