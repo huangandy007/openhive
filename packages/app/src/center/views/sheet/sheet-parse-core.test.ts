@@ -15,21 +15,36 @@ function 收集(): {
   chunks: { start: number; rows: (string | null)[][] }[]
   done: Parameters<解析回调["onDone"]>[]
   errors: Parameters<解析回调["onError"]>[]
+  事件: string[]
 } {
   const meta: Parameters<解析回调["onMeta"]>[0][] = []
   const chunks: { start: number; rows: (string | null)[][] }[] = []
   const done: Parameters<解析回调["onDone"]>[] = []
   const errors: Parameters<解析回调["onError"]>[] = []
+  const 事件: string[] = []
   return {
     meta,
     chunks,
     done,
     errors,
+    事件,
     回调: {
-      onMeta: (m) => meta.push(m),
-      onChunk: (start, rows) => chunks.push({ start, rows }),
-      onDone: (...args) => done.push(args),
-      onError: (...args) => errors.push(args),
+      onMeta: (m) => {
+        meta.push(m)
+        事件.push("meta")
+      },
+      onChunk: (start, rows) => {
+        chunks.push({ start, rows })
+        事件.push("chunk")
+      },
+      onDone: (...args) => {
+        done.push(args)
+        事件.push("done")
+      },
+      onError: (...args) => {
+        errors.push(args)
+        事件.push("error")
+      },
     },
   }
 }
@@ -60,6 +75,37 @@ describe("解析：xlsx", () => {
     expect(c.chunks.map((x) => x.start)).toEqual([3])
     expect(c.chunks[0].rows).toEqual([["王五", "300"], ["赵六", "400"]])
     expect(c.done).toEqual([["full", { rows: 0, cols: 0 }]])
+    expect(c.事件[0]).toBe("meta")
+    expect(c.事件.indexOf("meta")).toBeLessThan(c.事件.indexOf("chunk"))
+    expect(c.事件.at(-1)).toBe("done")
+  })
+
+  test("全量档：首屏只回 201 行，事件顺序 meta → chunk → done", async () => {
+    const 表 = [["序号", "值"], ...Array.from({ length: 250 }, (_, i) => [String(i + 1), `值${i + 1}`])]
+    const c = 收集()
+    await 解析工作簿(
+      工作簿字节(表),
+      c.回调,
+      小限制({
+        首屏行数: 200,
+        预览行数: 1000,
+        预览列数: 64,
+        全量行上限: 1000,
+        全量格上限: 4_000_000,
+        全量列上限: 256,
+        分块行数: 100,
+      }),
+    )
+    expect(c.errors).toEqual([])
+    expect(c.meta[0].totalRows).toBe(251)
+    expect(c.meta[0].preview).toHaveLength(201) // 表头 + 200 数据行
+    expect(c.chunks).toHaveLength(1) // 201..250
+    expect(c.chunks[0].start).toBe(201)
+    expect(c.chunks[0].rows).toHaveLength(50)
+    expect(c.done[0][0]).toBe("full")
+    expect(c.事件[0]).toBe("meta")
+    expect(c.事件.indexOf("meta")).toBeLessThan(c.事件.indexOf("chunk"))
+    expect(c.事件.at(-1)).toBe("done")
   })
 
   test("小表一次解析拿全：不回 chunk", async () => {
@@ -101,6 +147,18 @@ describe("解析：xlsx", () => {
     const c = 收集()
     await 解析工作簿(new TextEncoder().encode("姓名,日期\n张三,2026-10-01 08:30:00\n"), c.回调, 小限制())
     expect(c.meta[0].preview).toEqual([["姓名", "日期"], ["张三", "2026-10-01 08:30:00"]])
+  })
+
+  test("CSV：引号内换行不算新行，总数与预览无幽灵行", async () => {
+    const c = 收集()
+    const text = '姓名,备注\n张三,"第一行\n第二行"\n\n李四,ok\n'
+    await 解析工作簿(new TextEncoder().encode(text), c.回调, 小限制({ 首屏行数: 10 }))
+    expect(c.meta[0].totalRows).toBe(4) // 表头 + 张三 + 空白行 + 李四
+    expect(c.meta[0].preview).toHaveLength(4)
+    expect(c.meta[0].preview[1]).toEqual(["张三", "第一行\n第二行"])
+    expect(c.meta[0].preview[2]).toEqual([null, null])
+    expect(c.meta[0].preview[3]).toEqual(["李四", "ok"])
+    expect(c.meta[0].preview.every((row) => row.length === 2)).toBe(true)
   })
 
   test("加密工作簿：onError(kind=password)", async () => {

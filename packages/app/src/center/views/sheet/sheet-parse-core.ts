@@ -38,11 +38,16 @@ const 是文本 = (bytes: Uint8Array) => !是Zip(bytes) && !是OLE2(bytes)
 function 数行(text: string): number {
   if (!text) return 0
   let lines = 1
+  let quoted = false
   for (let i = 0; i < text.length; i++) {
-    if (text[i] === "\n") lines++
-    else if (text[i] === "\r" && text[i + 1] !== "\n") lines++
+    const ch = text[i]
+    if (ch === '"') {
+      if (quoted && text[i + 1] === '"') i++
+      else quoted = !quoted
+    } else if (!quoted && ch === "\n") lines++
+    else if (!quoted && ch === "\r" && text[i + 1] !== "\n") lines++
   }
-  if (text.endsWith("\n") || text.endsWith("\r")) lines--
+  if (!quoted && (text.endsWith("\n") || text.endsWith("\r"))) lines--
   return Math.max(0, lines)
 }
 
@@ -172,39 +177,50 @@ async function 解析二进制(
   const displayedCols = Math.min(totalCols, mode === "preview" ? limits.预览列数 : limits.全量列上限)
 
   const 首屏已全 = totalRows <= limits.首屏行数 + 1
-  let preview = 取行(
-    firstSheet,
-    全范围.s.r,
-    全范围.s.c,
+  // 首屏先发：meta 必须在后续（可能的全量）读取之前送出，网格才能先挂载。
+  const 已发首屏 = 发送(
+    callbacks,
+    first.SheetNames,
+    sheetName,
+    全范围,
+    totalRows,
+    totalCols,
     displayedCols,
-    Math.min(totalRows, limits.首屏行数 + 1),
+    取行(firstSheet, 全范围.s.r, 全范围.s.c, displayedCols, Math.min(totalRows, limits.首屏行数 + 1)),
+    limits,
   )
-  let 数据源 = firstSheet
-
-  if (mode === "preview" && !首屏已全) {
-    // 预览档只多读 1001 行，不读全量。
-    const 预览本 = XLSX.read(bytes, {
-      type: "array",
-      codepage: 65001,
-      cellNF: true,
-      sheetRows: limits.预览行数 + 1,
-    })
-    数据源 = 预览本.Sheets[sheetName]
-    preview = 取行(数据源, 全范围.s.r, 全范围.s.c, displayedCols, Math.min(totalRows, limits.预览行数 + 1))
-  } else if (mode === "full" && !首屏已全) {
-    await 让出() // 先让首屏有机会画出来，再全量解析
-    数据源 = XLSX.read(bytes, { type: "array", codepage: 65001, cellNF: true }).Sheets[sheetName]
-  }
-
-  const 已发首屏 = 发送(callbacks, first.SheetNames, sheetName, 全范围, totalRows, totalCols, displayedCols, preview, limits)
 
   if (mode === "preview") {
-    if (preview.length > 已发首屏) callbacks.onChunk(已发首屏, preview.slice(已发首屏))
+    let 已物化 = 已发首屏
+    if (!首屏已全) {
+      // 预览档只多读 1001 行，不读全量。
+      const 预览本 = XLSX.read(bytes, {
+        type: "array",
+        codepage: 65001,
+        cellNF: true,
+        sheetRows: limits.预览行数 + 1,
+      })
+      const preview = 取行(
+        预览本.Sheets[sheetName],
+        全范围.s.r,
+        全范围.s.c,
+        displayedCols,
+        Math.min(totalRows, limits.预览行数 + 1),
+      )
+      已物化 = preview.length
+      if (preview.length > 已发首屏) callbacks.onChunk(已发首屏, preview.slice(已发首屏))
+    }
     callbacks.onDone("preview", {
-      rows: Math.max(0, totalRows - Math.max(已发首屏, preview.length)),
+      rows: Math.max(0, totalRows - 已物化),
       cols: Math.max(0, totalCols - displayedCols),
     })
     return
+  }
+
+  let 数据源 = firstSheet
+  if (!首屏已全) {
+    await 让出() // 首屏 meta 已交出，再全量解析
+    数据源 = XLSX.read(bytes, { type: "array", codepage: 65001, cellNF: true }).Sheets[sheetName]
   }
 
   for (let start = 已发首屏; start < totalRows; start += limits.分块行数) {
@@ -222,37 +238,63 @@ async function 解析文本(
   const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/^\uFEFF/, "")
   const 行数 = 数行(text)
   const 粗列数 = 数列数(text)
-  const 初判 = 判档(行数, 粗列数, limits)
-  const 预读行数 = 初判 === "preview" ? limits.预览行数 + 1 : undefined
-  const book = XLSX.read(bytes, {
+  const 首屏本 = XLSX.read(bytes, {
     type: "array",
     codepage: 65001,
     cellNF: true,
-    ...(预读行数 ? { sheetRows: 预读行数 } : {}),
+    sheetRows: limits.首屏行数 + 1,
   })
-  const sheetName = book.SheetNames[0]
-  const sheet = book.Sheets[sheetName]
+  const sheetName = 首屏本.SheetNames[0]
+  const sheet = 首屏本.Sheets[sheetName]
   const range = XLSX.utils.decode_range(sheet["!ref"] ?? "A1")
   const totalRows = 行数
   const totalCols = Math.max(粗列数, range.e.c - range.s.c + 1)
   const mode = 判档(totalRows, totalCols, limits)
   const displayedCols = Math.min(totalCols, mode === "preview" ? limits.预览列数 : limits.全量列上限)
-  let 数据源 = sheet
-  if (mode === "full" && 初判 === "preview") {
-    // 粗估列数把引号里的逗号算多了，实际是全量档：补一次全量读。
-    await 让出()
-    数据源 = XLSX.read(bytes, { type: "array", codepage: 65001, cellNF: true }).Sheets[sheetName]
-  }
-  const preview = 取行(数据源, range.s.r, range.s.c, displayedCols, Math.min(totalRows, Math.max(limits.首屏行数 + 1, mode === "preview" ? limits.预览行数 + 1 : 0)))
-  const 已发首屏 = 发送(callbacks, book.SheetNames, sheetName, range, totalRows, totalCols, displayedCols, preview, limits)
+  const 首屏已全 = totalRows <= limits.首屏行数 + 1
+  // 首屏先发：meta 必须在后续（可能的全量）读取之前送出，网格才能先挂载。
+  const 已发首屏 = 发送(
+    callbacks,
+    首屏本.SheetNames,
+    sheetName,
+    range,
+    totalRows,
+    totalCols,
+    displayedCols,
+    取行(sheet, range.s.r, range.s.c, displayedCols, Math.min(totalRows, limits.首屏行数 + 1)),
+    limits,
+  )
 
   if (mode === "preview") {
-    if (preview.length > 已发首屏) callbacks.onChunk(已发首屏, preview.slice(已发首屏))
+    let 已物化 = 已发首屏
+    if (!首屏已全) {
+      const 预览本 = XLSX.read(bytes, {
+        type: "array",
+        codepage: 65001,
+        cellNF: true,
+        sheetRows: limits.预览行数 + 1,
+      })
+      const preview = 取行(
+        预览本.Sheets[sheetName],
+        range.s.r,
+        range.s.c,
+        displayedCols,
+        Math.min(totalRows, limits.预览行数 + 1),
+      )
+      已物化 = preview.length
+      if (preview.length > 已发首屏) callbacks.onChunk(已发首屏, preview.slice(已发首屏))
+    }
     callbacks.onDone("preview", {
-      rows: Math.max(0, totalRows - Math.max(已发首屏, preview.length)),
+      rows: Math.max(0, totalRows - 已物化),
       cols: Math.max(0, totalCols - displayedCols),
     })
     return
+  }
+
+  let 数据源 = sheet
+  if (!首屏已全) {
+    await 让出() // 首屏 meta 已交出，再全量解析
+    数据源 = XLSX.read(bytes, { type: "array", codepage: 65001, cellNF: true }).Sheets[sheetName]
   }
 
   for (let start = 已发首屏; start < totalRows; start += limits.分块行数) {
