@@ -173,8 +173,12 @@ async function 等全量(page: Page) {
       async () =>
         page.evaluate(() => {
           const g = document.querySelector("[data-slot='sheet-grid']")
-          if (!(g instanceof HTMLElement)) return -1
-          return Number(g.getAttribute("data-loaded-rows")) - Number(g.getAttribute("data-total-rows"))
+          if (!(g instanceof HTMLElement)) return Number.MAX_SAFE_INTEGER
+          const 载 = g.getAttribute("data-loaded-rows")
+          const 总 = g.getAttribute("data-total-rows")
+          // 属性缺失时不能落进 `Number(null) - Number(null) === 0` 的假通过。
+          if (载 === null || 总 === null) return Number.MAX_SAFE_INTEGER
+          return Number(载) - Number(总)
         }),
       { timeout: 90_000, message: "50k 行应当在全量档加载完" },
     )
@@ -349,9 +353,12 @@ function 造两表(): Uint8Array {
   return new Uint8Array(写出(簿))
 }
 
-/** 造一份夹具（同名文件已存在就复用）；返回写盘后的绝对路径。 */
-function 备夹具(目录: string, 名字: string, 造: () => string | Uint8Array): string {
-  const 文件 = path.join(tmpdir(), `openhive-sheet-real-${名字}`)
+/**
+ * 造一份夹具（同参数文件已存在就复用）；返回写盘后的绝对路径。
+ * `指纹` 把生成参数写进缓存名——改了行数/列数就不会静默复用旧夹具。
+ */
+function 备夹具(目录: string, 名字: string, 指纹: string, 造: () => string | Uint8Array): string {
+  const 文件 = path.join(tmpdir(), `openhive-sheet-real-${名字}-${指纹}`)
   try {
     readFileSync(文件)
   } catch {
@@ -370,10 +377,10 @@ test.beforeAll(async () => {
   const 目录 = path.join(项目.directory, "卷宗")
   mkdirSync(目录, { recursive: true })
 
-  备夹具(目录, "大表.xlsx", () => 造大表(50_000, 40))
-  备夹具(目录, "超大.csv", () => 造大CSV(100_001))
-  备夹具(目录, "两表.xlsx", 造两表)
-  备夹具(目录, "小表.xlsx", () => 造小表(20))
+  备夹具(目录, "大表.xlsx", "50000x40", () => 造大表(50_000, 40))
+  备夹具(目录, "超大.csv", "100001", () => 造大CSV(100_001))
+  备夹具(目录, "两表.xlsx", "2sheets", 造两表)
+  备夹具(目录, "小表.xlsx", "20rows", () => 造小表(20))
   writeFileSync(path.join(目录, "纪要.md"), "# 纪要\n\n第一行\n")
 
   机器 = `${cpus()[0]?.model ?? "未知 CPU"} × ${cpus().length} / 内存 ${Math.round(totalmem() / 1024 ** 3)} GB / ${process.platform}`
@@ -397,7 +404,7 @@ test("5万行×40列：首屏、前 200 行、粘性表头、冻结行号", asyn
   await expect(网格(page)).toHaveAttribute("data-mode", "full")
   await expect(数据行(page).first()).toBeVisible()
   console.log(
-    `[实测] 表头出现时已载行数：${await 网格(page).getAttribute("data-loaded-rows")}（首屏应 ≥201，即表头 + 200 数据行）`,
+    `[实测] 表头出现后已载行数：${await 网格(page).getAttribute("data-loaded-rows")}（首屏档目标为表头 + 前 200 数据行 = 201）`,
   )
 
   // 纵向滚 500 行：表头还在容器顶部。
@@ -448,19 +455,24 @@ test("5万行×40列：列宽拖拽跟手、双击自适应", async ({ page, con
   const 前 = await 读列宽(page)
   expect(前.length, "表头的 grid-template-columns 应能解析出行号 + 40 列").toBe(41)
 
-  const { 半程, 终点 } = await 拖列宽(page, 1, 100)
-  const 起始宽 = 前[2]
-  const 半程宽 = 半程[2]
-  const 终点宽 = 终点[2]
-  expect(Math.abs(半程宽 - 起始宽 - 50), `拖到一半时列宽应跟手 +50（起始 ${起始宽} → 半程 ${半程宽}）`).toBeLessThanOrEqual(1)
-  expect(Math.abs(终点宽 - 起始宽 - 100), `拖完应 +100（起始 ${起始宽} → 终点 ${终点宽}）`).toBeLessThanOrEqual(1)
-  console.log(`[实测] 列宽拖拽：${起始宽}px → 半程 ${半程宽}px → 终点 ${终点宽}px`)
+  // 拖 5 列（计划要求 5 列），每列拖完立刻双击自适应复原：
+  // 既保证后续列的拖拽热区仍在视口内（累加 +500px 会把它推出右边界），
+  // 也用同一列自己的初始估算宽做「回内容宽」判据（计划要求 ≥3 个边界）。
+  const 拖后宽: number[] = []
+  const 自适应宽: number[] = []
+  for (let 列 = 1; 列 <= 5; 列 += 1) {
+    const 起始宽 = (await 读列宽(page))[列 + 1]
+    const { 半程, 终点 } = await 拖列宽(page, 列, 100)
+    expect(Math.abs(半程[列 + 1] - 起始宽 - 50), `第 ${列} 列拖到一半应跟手 +50（起始 ${起始宽} → 半程 ${半程[列 + 1]}）`).toBeLessThanOrEqual(1)
+    expect(Math.abs(终点[列 + 1] - 起始宽 - 100), `第 ${列} 列拖完应 +100（起始 ${起始宽} → 终点 ${终点[列 + 1]}）`).toBeLessThanOrEqual(1)
+    拖后宽.push(终点[列 + 1])
 
-  await page.locator("[data-column='1'] [data-slot='sheet-col-resize']").dblclick()
-  const 自适应后 = await 读列宽(page)
-  const 自适应宽 = 自适应后[2]
-  expect(终点宽 - 自适应宽, `双击边界应自适应回内容宽度（拖后 ${终点宽} → 自适应 ${自适应宽}）`).toBeGreaterThan(10)
-  console.log(`[实测] 双击自适应：${终点宽}px → ${自适应宽}px`)
+    await page.locator(`[data-column='${列}'] [data-slot='sheet-col-resize']`).dblclick()
+    const 宽 = (await 读列宽(page))[列 + 1]
+    expect(Math.abs(宽 - 起始宽), `第 ${列} 列双击应回内容宽（拖后 ${终点[列 + 1]} → 自适应 ${宽}；初始估算 ${起始宽}）`).toBeLessThanOrEqual(1)
+    自适应宽.push(宽)
+  }
+  console.log(`[实测] 列宽拖拽（5 列，各 +100px）：${自适应宽.map((v, i) => `${v}→${拖后宽[i]}→${v}px`).join(" / ")}`)
 })
 
 test("5万行×40列：排序/筛选/查找耗时与主线程 JS 堆；切走 Worker 终止", async ({ page, context }) => {
@@ -486,7 +498,8 @@ test("5万行×40列：排序/筛选/查找耗时与主线程 JS 堆；切走 Wo
 
   // Worker 在解析完成后仍然存活（要等切走才终止）。
   const 开表后Worker = (await 量Worker(context)).filter(是表格Worker)
-  expect(开表后Worker.length, "解析完成后表格 Worker 应仍存活（由 view cleanup 终止）").toBeGreaterThanOrEqual(1)
+  // 开表前已断言为 0；全量后必须恰好 1 个——2 个意味着 dev 双重挂载（LEARNINGS #006-39）。
+  expect(开表后Worker.length, "解析完成后表格 Worker 应仍存活且只有 1 个（由 view cleanup 终止）").toBe(1)
   console.log(`[实测] 表格打开且全量解析完毕后，dedicated worker 数：${开表后Worker.length}`)
 
   // 排序是「降 → 升 → 取消」三态循环：前两次各量一次；第 3 次量之前先空点
@@ -574,6 +587,10 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
     `[实测] 表头出现时：已载 ${解析中.载入} / 共 ${解析中.总数}，进度横幅${解析中.有进度横幅 ? "在" : "已消失（首屏后解析已结束，未捕捉到解析中窗口）"}`,
   )
 
+  // 滚动断言必须发生在解析进行中：进度横幅只在 loadedRows < totalRows 时渲染。
+  const 进度横幅 = page.locator("[data-slot='sheet-progress']")
+  await expect(进度横幅, "进度横幅应当可见——否则下面的滚动测的是「加载后」").toBeVisible()
+
   // 解析期间滚动列表（早于全量完成也应响应）。
   await 滚到(page, { top: 2_000 })
   await 下一帧(page)
@@ -582,7 +599,8 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
     return element instanceof HTMLElement ? element.scrollTop : -1
   })
   expect(滚动后, "解析期间滚动应当生效").toBe(2_000)
-  console.log(`[实测] ${解析中.有进度横幅 ? "解析期间" : "加载后"}滚动 2000px：生效`)
+  await expect(进度横幅, "滚动检查期间解析应仍未结束").toBeVisible()
+  console.log("[实测] 解析期间滚动 2000px：生效（滚动前后进度横幅均在）")
 
   // 切走（卸载并 cancel 解析），再切回来（重新解析）仍能打开。
   await page.locator("[data-slot='tab']", { hasText: "纪要.md" }).click()
@@ -597,7 +615,11 @@ test("解析期间可滚动，切走再回来还能打开", async ({ page, conte
 test("10万+ 行 CSV：预览档横幅写明总数与截断范围", async ({ page, context }) => {
   await 进项目(page, context, 项目.id)
   await 展开(page)
-  await 打开表格(page, "卷宗/超大.csv")
+  const 打开 = await 打开表格(page, "卷宗/超大.csv")
+  console.log(
+    `[实测] 10 万行 CSV（预览档）双击→表头出现：${打开.毫秒} ms` +
+      `（${打开.有确认弹窗 ? "含点「仍然打开」与" : "含"}取字节；按设计只物化 1001 行，不做全量解析）`,
+  )
 
   const 网格属性 = await 网格(page).evaluate((element) => ({
     mode: element.getAttribute("data-mode"),
@@ -631,19 +653,19 @@ test("两张工作表：只显示第一张，并写明共 2 张表", async ({ pa
   console.log(`[实测] 多表横幅：「${(await 横幅.textContent())?.trim()}」`)
 })
 
-test("分屏同文件：记录列宽是否在左右两栏同步（spec §8.1 说共享）", async ({ page, context }) => {
+test("分屏同文件：右栏挂载时继承列宽，之后不实时同步", async ({ page, context }) => {
   await 进项目(page, context, 项目.id)
   await 展开(page)
   await 打开表格(page, "卷宗/小表.xlsx")
 
-  await page.locator("[data-slot='split-button']").click()
-  await page.locator("[data-slot='split-menu-item'][data-split='左右']").click()
-  const 右栏 = page.locator("[data-slot='center-pane'][data-pane='1']")
-  await expect(右栏).toBeVisible()
-  await 右栏.click()
-  await 行(page, "卷宗/小表.xlsx").dblclick()
-  await expect(page.locator("[data-pane='0'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
-  await expect(page.locator("[data-pane='1'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
+  // 先在左栏改列宽，再分屏打开同一文件：右栏应读到当时的缓存状态。
+  const 柄 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
+  const 框 = await 柄.boundingBox()
+  expect(框, "左栏第 0 列应有拖拽热区").not.toBeNull()
+  await page.mouse.move(框!.x + 框!.width / 2, 框!.y + 框!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(框!.x + 框!.width / 2 + 120, 框!.y + 框!.height / 2, { steps: 6 })
+  await page.mouse.up()
 
   const 读两栏 = () =>
     page.evaluate(() => {
@@ -654,19 +676,30 @@ test("分屏同文件：记录列宽是否在左右两栏同步（spec §8.1 说
       }
       return { 左: 读("0"), 右: 读("1") }
     })
+  const 拖后左 = await 读两栏()
 
-  const 拖前 = await 读两栏()
-  const 柄 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
-  const 框 = await 柄.boundingBox()
-  expect(框, "左栏第 0 列应有拖拽热区").not.toBeNull()
-  await page.mouse.move(框!.x + 框!.width / 2, 框!.y + 框!.height / 2)
+  await page.locator("[data-slot='split-button']").click()
+  await page.locator("[data-slot='split-menu-item'][data-split='左右']").click()
+  const 右栏 = page.locator("[data-slot='center-pane'][data-pane='1']")
+  await expect(右栏).toBeVisible()
+  await 右栏.click()
+  await 行(page, "卷宗/小表.xlsx").dblclick()
+  await expect(page.locator("[data-pane='0'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator("[data-pane='1'] [data-slot='sheet-header']")).toBeVisible({ timeout: 30_000 })
+  const 挂载后 = await 读两栏()
+  expect(挂载后.右, "右栏挂载时应继承左栏已保存的列宽（§8.1 共享缓存条目）").toBe(拖后左.左)
+  console.log(`[实测] 分屏同文件：左栏拖后「${拖后左.左}」；右栏挂载后「${挂载后.右}」`)
+
+  // 两栏都挂载后再拖左栏：右栏不跟随（共享是「挂载时读取」，不是实时同步）。
+  const 柄2 = page.locator("[data-pane='0'] [data-column='0'] [data-slot='sheet-col-resize']")
+  const 框2 = await 柄2.boundingBox()
+  expect(框2, "左栏第 0 列应仍有拖拽热区").not.toBeNull()
+  await page.mouse.move(框2!.x + 框2!.width / 2, 框2!.y + 框2!.height / 2)
   await page.mouse.down()
-  await page.mouse.move(框!.x + 框!.width / 2 + 120, 框!.y + 框!.height / 2, { steps: 6 })
+  await page.mouse.move(框2!.x + 框2!.width / 2 + 60, 框2!.y + 框2!.height / 2, { steps: 4 })
   await page.mouse.up()
-  const 拖后 = await 读两栏()
-
-  console.log(`[实测] 分屏同文件：拖前 左「${拖前.左}」右「${拖前.右}」；拖后 左「${拖后.左}」右「${拖后.右}」`)
-  expect(拖后.左, "左栏自身应当变了").not.toBe(拖前.左)
-  // 这里**只记录**不判定：§8.1 的「共享」是否含实时同步，由实测结果回到 spec 里说清。
-  console.log(`[实测] 右栏${拖后.右 === 拖前.右 ? "未跟随左栏实时变化" : "跟随了左栏实时变化"}`)
+  const 再拖后 = await 读两栏()
+  expect(再拖后.左, "左栏自身应当再次变化").not.toBe(挂载后.左)
+  expect(再拖后.右, "右栏不应跟随左栏实时变化").toBe(挂载后.右)
+  console.log(`[实测] 再次拖左栏后：左「${再拖后.左}」右「${再拖后.右}」（右栏未跟随）`)
 })
