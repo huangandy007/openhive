@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import { createSheetStore, SheetGrid } from "./sheet-grid"
+import { createSheetStore, SheetGrid, type SheetUiState } from "./sheet-grid"
 import type { SheetMeta } from "./sheet-model"
 
 // happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
@@ -48,11 +48,11 @@ function 元(over: Partial<SheetMeta> = {}): SheetMeta {
   }
 }
 
-function 挂(meta = 元()) {
+function 挂(meta = 元(), initial?: SheetUiState) {
   const store = createSheetStore(meta, "full", { rows: 0, cols: 0 })
   const host = document.createElement("div")
   document.body.appendChild(host)
-  const dispose = render(() => <SheetGrid store={store} />, host)
+  const dispose = render(() => <SheetGrid store={store} initial={initial} />, host)
   return {
     host,
     store,
@@ -173,12 +173,50 @@ describe("列宽交互", () => {
   })
 
   test("双击边界按内容自适应，且受 64–320 初始钳制", () => {
-    const { host, 卸 } = 挂()
+    // 初始态把金额列设为 200px：若双击没接线，宽度会停在 200，不会误判为绿
+    // （`LEARNINGS #005-47`：默认值满足断言会假绿）。
+    const 初始: SheetUiState = {
+      headerIsFirstRow: true,
+      columns: [{ index: 1, letter: "B", name: "金额", type: "number", width: 200, hidden: false }],
+      filters: [],
+      scrollTop: 0,
+      scrollLeft: 0,
+    }
+    const { host, 卸 } = 挂(元(), 初始)
     try {
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[2]).toBe("200px")
       const handle = 表头(host)?.querySelector<HTMLElement>('[data-column="1"] [data-slot="sheet-col-resize"]')
       handle!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
       // 金额列内容 "1200" 宽 28 + 16 = 44 ⇒ 钳到 64
       expect(表头(host)?.style.gridTemplateColumns?.split(" ")[2]).toBe("64px")
+    } finally {
+      卸()
+    }
+  })
+
+  test("初始列在首行不是表头时从第 0 行取样", () => {
+    const 长格 = "1".repeat(50)
+    const 初始: SheetUiState = {
+      headerIsFirstRow: false,
+      columns: [],
+      filters: [],
+      scrollTop: 0,
+      scrollLeft: 0,
+    }
+    const { host, 卸 } = 挂(
+      元({
+        totalRows: 3,
+        preview: [
+          ["张三", 长格],
+          ["李四", "300"],
+          ["王五", "50"],
+        ],
+      }),
+      初始,
+    )
+    try {
+      // 首行是数据行：50 个字符宽 350 + 16 ⇒ 钳到 320；旧实现从第 1 行取样只得 64。
+      expect(表头(host)?.style.gridTemplateColumns?.split(" ")[2]).toBe("320px")
     } finally {
       卸()
     }

@@ -83,7 +83,9 @@ export interface SheetGridProps {
 }
 
 function 初始列(meta: SheetMeta, saved?: SheetUiState): 列状态[] {
-  const 样本 = meta.preview.slice(1, 201)
+  // 与「自适应」同一前提：首行是表头才跳过第 0 行；否则第 0 行也是数据。
+  const 起点 = (saved?.headerIsFirstRow ?? true) ? 1 : 0
+  const 样本 = meta.preview.slice(起点, 起点 + 200)
   return Array.from({ length: meta.header.length }, (_, index) => {
     const 存过 = saved?.columns.find((column) => column.index === index)
     const letter = 列标(meta.startCol + index)
