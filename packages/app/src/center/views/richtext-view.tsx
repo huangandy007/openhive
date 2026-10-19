@@ -1,11 +1,33 @@
 import DOMPurify from "dompurify"
 import { marked } from "marked"
-import { createEffect, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, Show } from "solid-js"
 import { decodeBytes, type FileContent, type LoadFileContent } from "@/center/file-content"
 import { extensionOf, type ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
 import { 阅读字号, 设阅读字号, 步进, 最大字号, 最小字号 } from "./reading-size"
-import { 引用路径 } from "./richtext/richtext-path"
+import {
+  取草稿,
+  改草稿,
+  开始编辑,
+  立即保存,
+  切预览,
+  记盘上版本,
+  载入盘上版本,
+  登记出口,
+} from "./richtext/draft-store"
+import {
+  包裹,
+  切行首,
+  插入代码块,
+  插入分隔线,
+  插入表格,
+  插入引用,
+  type 编辑动作,
+  type 编辑快照,
+} from "./richtext/markdown-actions"
+import { 编辑工具栏, 工具栏钮 } from "./richtext-toolbar"
+import { 引用文件选择, 图片扩展 } from "./richtext/file-picker"
+import { 相对引用, 引用路径 } from "./richtext/richtext-path"
 
 /**
  * 白名单只放 **Markdown 真能产出的**标签（外加 GFM 任务列表的 `input`）——比「先全放再删黑的」稳：
@@ -104,6 +126,9 @@ export function 造Markdown渲染器(选项: { path?: string; load?: LoadFileCon
     // 仍然要拦住（否则整页跳走）。但也不能提到 `marked.parse` 之前——解析抛错时
     // 监听会留在容器上没人摘。
     const 点击 = (事件: MouseEvent) => {
+      // 慢图窗口里可能同时挂着 A/B 两份渲染的监听（`BinaryView` 换内容前才调清理）；
+      // 前一个已经 `preventDefault` 并开过标签页了，后一个再跑一遍会开两个。
+      if (事件.defaultPrevented) return
       const 链接 = (事件.target as Element | null)?.closest("a")
       if (!链接) return
       const href = 链接.getAttribute("href")
@@ -187,198 +212,183 @@ export const renderPlainText: BytesRenderer = async (bytes, container) => {
   container.appendChild(pre)
 }
 
-/** 编辑态的按钮。几处按钮长相一样，只有动作与文案不同（`禁用` / `说明` 只有字号那两颗用）。 */
-function 动作钮(props: { 动作: string; 文案: string; 点: () => void; 禁用?: boolean; 说明?: string }) {
-  return (
-    <button
-      type="button"
-      data-action={props.动作}
-      onClick={props.点}
-      disabled={props.禁用}
-      aria-label={props.说明}
-      title={props.说明}
-      class="flex h-7 cursor-pointer items-center rounded px-2 text-[13px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-v2-text-text-muted"
-    >
-      {props.文案}
-    </button>
-  )
-}
-
-/** 存盘这件事**自己抛**（组网断了、出口写错）时那句兜底。服务端说得出为什么时用服务端那句。 */
-const 存不上 = "保存文件失败"
-
 /**
- * 图文视图（FR-007 的 ⑥ 图文混排：`.md` / `.txt`）。
+ * 图文视图（`.md` / `.txt`）。
  *
- * 两个扩展名**必须分开渲**：拿 Markdown 渲染一段话单，里面的 `#` `*` 会被吃掉变成标题和强调，
- * 内容就走样了。而渲染器拿不到路径（`BytesRenderer` 只有字节），所以由视图按扩展名挑渲染器
- * ——这个三元表达式在 Solid 里是响应式的，换文件会重新求值。
+ * ## 2026-10-19：从「按一下编辑」改成「永远可编辑的记事本」
  *
- * ## 2026-10-12：能改、能存（用户实报「打开的文件不能编辑修改和保存」）
+ * 用户实报四条：换文件 / 分屏会丢没保存的字、点保存就退出编辑态、没有自动保存、没有
+ * Markdown 编辑功能。前三条是同一个根因：草稿与保存状态长在**组件**上，而中栏换文件是
+ * **重挂**组件。现在草稿按路径存在 `draft-store`，组件重挂不影响它；保存成功也不再退出
+ * 编辑态（要回预览请点「预览」）。
  *
- * ### 工具栏只在**给了 `save`** 时渲染
+ * ## 底本只有一条来路
  *
- * `save` 从 `layout-new.tsx` 一路注入下来（`workspace-entry` → `CenterSplit` → `CenterContent`
- * → 视图）。省略它的宿主（storybook、以及将来只读的宿主）DOM 一字不动，也就不存在
- * 「点了编辑什么都没发生」这种半接上的状态。Office / PDF 那族视图压根不接这个口。
+ * 预览里的 `BinaryView` 读回来的文本经 `收到内容` 交给 `记盘上版本`；保存成功后用**服务端
+ * 回包里的 base**，不再自己拿 `content.trim()` 算（CRLF 文件上那会假冲突）。
  *
- * ### 「底本」只有一条来路：`load` 读回来那份
+ * ## 二进制文件仍然不给改
  *
- * 服务端按 `base` 比对「你打开之后盘上这份被改过没有」（`packages/opencode/.../openhive/file.ts`
- * 的 `handleWrite`），而它比对的是 `TextDecoder("utf-8").decode(盘上字节).trim()`——上读取出口
- * 回的正是这个值（`handlers/file.ts` 的 `content`：`text.value.trim()`）。所以底本**直接用
- * `load` 回来的 `content`，一个字都不动**：这里若顺手 trim 一下，或拿用户改过的正文去当底本，
- * 服务端会永远判「这份文件被改过」⇒ 一次也存不成。
- * ⚠️ 只有**判成 text** 的才给改：判成 binary 的（含 NUL / 非 UTF-8）回的是 base64，
- * 拿它当底本与盘上那份对不上，而**更糟的是**存下去会把一个二进制文件按文本重写一遍
- * ——那是在毁数据，不是「存不上」。所以那种文件的工具栏只剩一条空的带子，一颗钮都没有。
- *
- * ### 底本由**取数那一层**回报，不由本视图再读一遍
- *
- * `load` 只该被调一次（画面与底本必须是同一次读到的结果：读两次之间盘上可能已经变了）。
- * 故走 `BinaryView` 的 `onContent` 回报口，见那个 prop 上那段注释。
- *
- * ### 存完之后底本**先作废**，等重读回来再给
- *
- * 存成功 ⇒ 回预览 ⇒ `BinaryView` 重挂、读第二次（这也是「预览里是新正文」的来路：不复用旧画面）。
- * 而「盘上现在是新正文」这件事要等那次重读回来才算数 ⇒ 这中间不让再进编辑态（编辑钮此时不渲染）。
- * 少了这一步，紧接着的第二次保存会拿**刚被自己改掉的旧底本**去比对，服务端判「文件被改过」
- * 而那句话是错的——它其实是我们自己刚存的。
- *
- * ## 2026-10-12 · 正文字号（③ 用户实报「文字字号较小，不适合阅读」）
- *
- * **正文有三个面**，`index.css` 的 `@layer components` 里**一条规则**管住其中两个：
- * `.md` 预览（`marked` 渲出的 `<p>`…）与 `.txt` 预览（`<pre>`）——两者都长在
- * `BinaryView` 那个 `[data-component="richtext-view"]` 容器里；第三个面是编辑框
- * （`[data-slot="richtext-editor"]`，本视图自己画的）。值走 `--richtext-size` 这个 CSS 变量，
- * 由下面那个 effect 贴在**根**上——理由在 effect 那段注释里。
- *
- * ⚠️ **两个面都不能再挂 `text-[Npx]` / `text-sm` 这类字号 utility**：utilities 层排在 components 层
- * 之后，utility 会盖掉那条规则（本文件的编辑框就从 `text-[13px] leading-6` 里交出来了）。
- * 三个面的真栈判据在 `e2e/real-stack/richtext-reading-size-real.spec.ts`（算出来的字号只有真浏览器量得到）。
- *
- * ## 2026-10-14 · `.md` 的元素级版面（用户实报「没有进行很好的渲染，一些格式展现不出来」）
- *
- * 上一段管「正文那一档多大」，`index.css` 里紧跟其后那一段管「标题 / 列表 / 表格长什么样」。
- * 后者**只认带 `data-format="markdown"` 记号的容器**（两个渲染器各自写，见 `标`），因为 `.txt` 的
- * 正文本身就是一个 `<pre>`、而 `.md` 里同一个标签名是**代码块**。判据在
- * `e2e/real-stack/richtext-markdown-format-real.spec.ts`。编辑框是 `<textarea>`（编辑的是源文本、
- * 没有渲染出的元素），不参与这一段。
+ * `load` 判成 binary 的文件不建草稿：拿 base64 当正文存回去是在毁数据，不是「存不上」。
  */
 export const RichtextView: ViewComponent = (props) => {
-  /** 读回来那份**原样**（存盘时的底本）。`undefined` ＝ 还没读到 / 读不到 / 判成 binary。 */
-  const [底本, set底本] = createSignal<string | undefined>(undefined)
-  /** 编辑框里那份（用户手上正在改的）。与底本**是两个值**，别合并。 */
-  const [草稿, set草稿] = createSignal("")
-  const [改着, set改着] = createSignal(false)
-  /** 问着「丢掉吗」——问句期间草稿一个字节都不动。 */
-  const [问着, set问着] = createSignal(false)
-  /** 出错时那句话说给谁听（服务端拒绝的原因 / 我们的兜底）。 */
-  const [说法, set说法] = createSignal<string | undefined>(undefined)
-  /** 一次存盘在飞。**只在守卫里读**——见下面 `存` 的头一条注释。 */
-  const [存着, set存着] = createSignal(false)
+  /** 这份文件是不是可编辑的文本（binary / 还没读到 ⇒ false）。 */
+  const [可编辑, set可编辑] = createSignal(取草稿(props.path) !== undefined)
+  const [选文件, set选文件] = createSignal<"image" | "attachment" | undefined>()
+  let 框: HTMLTextAreaElement | undefined
 
-  const 收到内容 = (内容: FileContent | undefined) => set底本(内容?.type === "text" ? 内容.content : undefined)
+  const 项 = () => (props.save ? 取草稿(props.path) : undefined)
+  const 改着 = () => 项()?.mode === "edit"
 
-  /**
-   * 字号**贴在根上**，由 `index.css` 那条规则读走。
-   *
-   * 为什么不在这两个面上各写一个 inline style：预览容器是 `BinaryView` 画的、不归本视图
-   * （改它＝往一个共用组件上加道具），而**一条规则管两个面**才不会「改了预览忘编辑框」。
-   * 为什么不给本视图包一层带变量的盒子：多一层盒就多一处「父级是什么」的约定，而这个视图的
-   * 兄弟关系（工具栏 `shrink-0` ＋ 内容区撑开）正是 `#005-16` 那族坑的高发地；
-   * 往根上贴 `--font-family-*` 也已是本仓的先例（`context/settings.tsx`）。
-   */
+  createEffect(() => {
+    登记出口(props.path, { save: props.save, load: props.load })
+  })
+
   createEffect(() => {
     document.documentElement.style.setProperty("--richtext-size", `${阅读字号()}px`)
   })
 
-  const 开始改 = () => {
-    const 原样 = 底本()
-    if (原样 === undefined) return
-    set草稿(原样)
-    set说法(undefined)
-    set问着(false)
-    set改着(true)
+  /** 预览那一侧读回来的盘上版本（`BinaryView` 只在这一态挂载）。 */
+  const 收到内容 = (内容: FileContent | undefined) => {
+    const 文本 = 内容?.type === "text" ? 内容.content : undefined
+    set可编辑(文本 !== undefined)
+    if (文本 === undefined) return
+    记盘上版本(props.path, { content: 文本, base: 文本 })
   }
 
-  const 存 = async () => {
-    // ⚠️ **重入守卫，不是优化**：第一下还没回来时再点一下（民警按了没看见动静很自然会再按），
-    // 两下会拿**同一个底本**各发一次——第二下必然撞服务端「这份文件被改过」，而那句话是错的
-    // （改动其实已经存上了）。守卫写在**事件处理器**里而不是把钮置灰：置灰的钮在 happy-dom
-    // 里连事件都不派，那句守卫就永远走不到、拆掉也不变红（`LEARNINGS #006-16`）。
-    if (存着()) return
-    const 原样 = 底本()
-    const 存盘 = props.save
-    if (原样 === undefined || !存盘) return
-    set存着(true)
-    set说法(undefined)
-    try {
-      const 结论 = await 存盘(props.path, 草稿(), 原样)
-      if (!结论.ok) {
-        // 服务端拒了：**留在编辑态、草稿保留**。翻回预览等于把民警刚写的那段字当着面丢掉。
-        set说法(结论.message)
-        return
-      }
-      set底本(undefined) // 见文件头「存完之后底本先作废」
-      set草稿("")
-      set问着(false)
-      set改着(false)
-    } catch (原因) {
-      // 这一支是「我们这边坏了」（替身写错、存盘口自己抛）。**不静默**：静默失败时民警
-      // 按了保存就以为存上了。原样记在控制台——界面那句要短。
-      console.warn(`[openhive] 存盘没走通（${props.path}）`, 原因)
-      set说法(存不上)
-    } finally {
-      set存着(false)
+  const 渲染器 = createMemo<BytesRenderer>(() =>
+    extensionOf(props.path) === ".md" ? 造Markdown渲染器({ path: props.path, load: props.load }) : renderPlainText,
+  )
+
+  const 开始 = () => {
+    const 当前 = 项()
+    if (!当前) return
+    开始编辑(props.path, { content: 当前.content, base: 当前.base })
+  }
+
+  /** 把纯函数的结论写回 store，并把焦点与选区交还编辑框。 */
+  const 落结论 = (结论: 编辑快照) => {
+    const 框引用 = 框
+    改草稿(props.path, 结论.value, { start: 结论.start, end: 结论.end })
+    queueMicrotask(() => {
+      框引用?.focus()
+      框引用?.setSelectionRange(结论.start, 结论.end)
+    })
+  }
+
+  const 快照 = (): 编辑快照 | undefined => {
+    const 当前 = 项()
+    const 框引用 = 框
+    if (!当前 || !框引用) return undefined
+    return { value: 当前.content, start: 框引用.selectionStart, end: 框引用.selectionEnd }
+  }
+
+  const 做动作 = (动作: 编辑动作) => {
+    const 前 = 快照()
+    if (!前) return
+    if (动作 === "hr") return 落结论(插入分隔线(前))
+    if (动作 === "code-block") return 落结论(插入代码块(前))
+    if (动作 === "table") return 落结论(插入表格(前))
+    if (动作 === "bold" || 动作 === "italic" || 动作 === "strike" || 动作 === "code" || 动作 === "link") {
+      return 落结论(包裹(前, 动作))
     }
+    落结论(切行首(前, 动作))
   }
 
-  const 取消 = () => {
-    // 一个字没改 ⇒ 没什么可丢的，再问一句就是骚扰（设计文档 §4.6 的「不打扰」）。
-    if (草稿() === 底本()) {
-      set问着(false)
-      set改着(false)
+  const 插引用 = (路径: string, 类型: "image" | "attachment") => {
+    set选文件(undefined)
+    const 前 = 快照()
+    if (!前) return
+    // 文件树 / 文件选择弹层给的是**项目根相对**路径；写进 Markdown 前换成
+    // 「相对当前文件所在目录」的写法，否则预览会按当前目录再拼一层（见 `相对引用`）。
+    落结论(插入引用(前, 类型, 相对引用(props.path, 路径)))
+  }
+
+  /**
+   * 撤销 / 重做交给浏览器的原生栈（`execCommand`）：textarea 的撤销历史由浏览器维护，
+   * 自己再存一份会和输入法、粘贴、拖放打架。`execCommand` 在真浏览器里会派发 `input`，
+   * 这里再同步一次是为了在它不派发的环境里也不丢状态。
+   */
+  const 同步框 = () => {
+    const 框引用 = 框
+    if (!框引用) return
+    改草稿(props.path, 框引用.value, { start: 框引用.selectionStart, end: 框引用.selectionEnd })
+  }
+  const 撤销 = () => {
+    框?.focus()
+    document.execCommand?.("undo")
+    同步框()
+  }
+  const 重做 = () => {
+    框?.focus()
+    document.execCommand?.("redo")
+    同步框()
+  }
+
+  const 按键 = (事件: KeyboardEvent) => {
+    if (!(事件.ctrlKey || 事件.metaKey)) return
+    const 键 = 事件.key.toLowerCase()
+    if (键 === "s") {
+      事件.preventDefault()
+      // 用户按的保存是**明确动作**：冲突态下也照存（仍会被服务端判 STALE，但那是用户的意图）。
+      void 立即保存(props.path, true)
       return
     }
-    set问着(true)
-  }
-
-  /** 问句里点「丢掉」——草稿到这里才真的没了。 */
-  const 丢掉 = () => {
-    set问着(false)
-    set草稿("")
-    set改着(false)
+    // Ctrl/Cmd+Z / Shift+Z **不拦截**（spec §7.3）：textarea 的原生撤销栈比我们自己的可靠，
+    // 撤销后浏览器会派 `input`，`onInput` 顺手把新值同步进 store。
+    if (键 === "b") {
+      事件.preventDefault()
+      做动作("bold")
+      return
+    }
+    if (键 === "i") {
+      事件.preventDefault()
+      做动作("italic")
+      return
+    }
+    if (键 === "k") {
+      事件.preventDefault()
+      做动作("link")
+    }
   }
 
   return (
     <>
       <Show when={props.save}>
-        {/* `shrink-0` ＋ 正常流：这条带子是内容区的**兄弟**，不是盖在上面的浮层
-            ——正文永远不会被工具栏压住。`px-4` 与内容区的 `p-4` 同值 ⇒ 钮的文字左缘
-            与正文左缘落在同一条竖线上（同 `binary-view.tsx` 那条注释）。 */}
         <div data-slot="richtext-editor-bar" class="flex w-full shrink-0 flex-col gap-1 px-4 pt-3 pb-1">
-          <div class="flex items-center gap-1">
-            {/* ⚠️ 底本没到位时**一颗钮都不给**（见文件头那条 binary / 还没读到）。 */}
-            <Show when={底本() !== undefined}>
-              <Show when={!改着()} fallback={<><动作钮 动作="save" 文案="保存" 点={() => void 存()} /><动作钮 动作="cancel" 文案="取消" 点={取消} /></>}>
-                <动作钮 动作="edit" 文案="编辑" 点={开始改} />
-              </Show>
+          <div class="flex items-start gap-1">
+            <Show when={可编辑()}>
+              <编辑工具栏
+                模式={改着() ? "edit" : "preview"}
+                markdown={extensionOf(props.path) === ".md"}
+                状态={项()?.status ?? "clean"}
+                提示={项()?.message}
+                savedAt={项()?.savedAt}
+                动作={做动作}
+                编辑={开始}
+                保存={() => void 立即保存(props.path, true)}
+                重试={() => void 立即保存(props.path, true)}
+                预览={() => void 切预览(props.path)}
+                载入盘上={() => void 载入盘上版本(props.path)}
+                图片={() => set选文件("image")}
+                附件={() => set选文件("attachment")}
+                撤销={撤销}
+                重做={重做}
+              />
             </Show>
             {/*
-              字号两颗钮**不在**上面那个「底本到位没」的 `Show` 里：它调的是**读者**的偏好，
-              不是这一份文件的性质——二进制 / 还没读到的文件上也该调得动（它们同样有正文这一面）。
-              到端点就置灰：最后一档再点是什么都不会发生的，给一颗看着能按却没反应的钮不如给一颗灰的。
+              字号两颗钮不在「可编辑」的 Show 里：它调的是**读者**的偏好，不是这份文件的性质
+              ——二进制 / 还没读到的文件上也该调得动。
             */}
-            <div data-slot="richtext-reading-size" class="ml-auto flex items-center gap-1">
-              <动作钮
+            <div data-slot="richtext-reading-size" class="ml-auto flex shrink-0 items-center gap-1">
+              <工具栏钮
                 动作="smaller"
                 文案="A-"
                 说明="把正文调小一号"
                 禁用={阅读字号() === 最小字号}
                 点={() => 设阅读字号(步进(阅读字号(), -1))}
               />
-              <动作钮
+              <工具栏钮
                 动作="larger"
                 文案="A+"
                 说明="把正文调大一号"
@@ -387,28 +397,30 @@ export const RichtextView: ViewComponent = (props) => {
               />
             </div>
           </div>
-          <Show when={说法()}>
+          {/*
+            冲突那句话单独一行：它不是状态栏的一句灰字，而是「盘上已经不同」的告知
+            ——继续打字不会解除它，只有「载入盘上版本」能。
+          */}
+          <Show when={项()?.status === "conflict"}>
             <div data-slot="richtext-editor-note" class="text-[12px] leading-5 text-v2-text-text-muted">
-              {说法()}
+              {项()?.message}
             </div>
           </Show>
-          <Show when={问着()}>
-            <div
-              data-slot="richtext-editor-confirm"
-              class="flex items-center gap-1 text-[12px] leading-5 text-v2-text-text-muted"
-            >
-              这段改动还没保存，确定丢掉吗？
-              <动作钮 动作="keep" 文案="继续改" 点={() => set问着(false)} />
-              <动作钮 动作="discard" 文案="丢掉" 点={丢掉} />
+          <Show when={项()?.status === "error"}>
+            <div data-slot="richtext-editor-note" class="text-[12px] leading-5 text-v2-text-text-muted">
+              {项()?.message}
             </div>
+          </Show>
+          <Show when={选文件()}>
+            {(类型) => (
+              <引用文件选择 类型={类型()} 选好={(路径) => 插引用(路径, 类型())} 关掉={() => set选文件(undefined)} />
+            )}
           </Show>
         </div>
       </Show>
       {/*
-        ⚠️ 编辑态**换掉**预览（`Show` 的 fallback），不是叠一层：退出编辑时 `BinaryView` 重挂、
-        于是自动重读一次盘上那份 —— 「预览里是新正文」是这么来的，不是另写一段刷新逻辑。
-        代价照实说：**每次进出编辑态都会重读一次文件**（一次 GET，几百字节），
-        换来的是「画面一定是盘上那份」这条不需要维护的保证。
+        ⚠️ 编辑态仍然**换掉**预览：预览由 `BinaryView` 画，它只在预览态挂载、只在那一态读盘。
+        草稿在 store 里，所以「换掉」不再意味着丢字。
       */}
       <Show
         when={改着()}
@@ -417,7 +429,7 @@ export const RichtextView: ViewComponent = (props) => {
             name="richtext-view"
             path={props.path}
             load={props.load}
-            render={extensionOf(props.path) === ".md" ? renderMarkdown : renderPlainText}
+            render={渲染器()}
             onContent={收到内容}
           />
         }
@@ -425,8 +437,40 @@ export const RichtextView: ViewComponent = (props) => {
         <div class="flex w-full min-h-0 flex-1 flex-col p-4">
           <textarea
             data-slot="richtext-editor"
-            value={草稿()}
-            onInput={(事件) => set草稿(事件.currentTarget.value)}
+            ref={(el) => {
+              框 = el
+              const 选区 = 项()?.selection ?? { start: 0, end: 0 }
+              // `value` 是动态属性、在 ref 之后才落到元素上；在这里直接设选区会被随后的
+              // `el.value = …` 冲掉（光标落到末尾）。等这一轮 props 应用完再交还选区。
+              queueMicrotask(() => {
+                el.focus()
+                el.setSelectionRange(选区.start, 选区.end)
+              })
+            }}
+            value={项()?.content ?? ""}
+            onInput={(事件) => {
+              const el = 事件.currentTarget
+              改草稿(props.path, el.value, { start: el.selectionStart, end: el.selectionEnd })
+            }}
+            onSelect={(事件) => {
+              const el = 事件.currentTarget
+              const 当前 = 项()
+              if (!当前) return
+              改草稿(props.path, 当前.content, { start: el.selectionStart, end: el.selectionEnd })
+            }}
+            onKeyDown={按键}
+            onDragOver={(事件) => 事件.preventDefault()}
+            onDrop={(事件) => {
+              事件.preventDefault()
+              // 左栏文件树给的载荷是 `file:<项目内路径>`（`file-tree.tsx`），**不是** `File` 对象
+              // ——树上的文件本来就在项目里，不存在「从本机拖进来」这回事，读 `files` 只会拿到空。
+              const 载荷 = 事件.dataTransfer?.getData("text/plain") ?? ""
+              if (!载荷.startsWith("file:")) return
+              const 路径 = 载荷.slice("file:".length)
+              if (路径 === "") return
+              // 只插引用、不写盘：上传是 P1。
+              插引用(路径, 图片扩展.has(extensionOf(路径) ?? "") ? "image" : "attachment")
+            }}
             spellcheck={false}
             class="min-h-0 w-full flex-1 resize-none rounded-md border border-v2-border-border-strong bg-v2-background-bg-base p-3 font-sans text-v2-text-text-base outline-none"
           />
