@@ -336,6 +336,9 @@ export const RichtextView: ViewComponent = (props) => {
     }
     // Ctrl/Cmd+Z / Shift+Z **不拦截**（spec §7.3）：textarea 的原生撤销栈比我们自己的可靠，
     // 撤销后浏览器会派 `input`，`onInput` 顺手把新值同步进 store。
+    // `.txt` 不是 Markdown 文档：b / i / k 这些写标记的快捷键不生效，也不拦默认行为。
+    // 判据与工具栏的 `markdown` prop 是同一口径（扩展名为 `.md`）。
+    if (extensionOf(props.path) !== ".md") return
     if (键 === "b") {
       事件.preventDefault()
       做动作("bold")
@@ -437,6 +440,7 @@ export const RichtextView: ViewComponent = (props) => {
         <div class="flex w-full min-h-0 flex-1 flex-col p-4">
           <textarea
             data-slot="richtext-editor"
+            aria-label="文档正文"
             ref={(el) => {
               框 = el
               const 选区 = 项()?.selection ?? { start: 0, end: 0 }
@@ -468,6 +472,11 @@ export const RichtextView: ViewComponent = (props) => {
               if (!载荷.startsWith("file:")) return
               const 路径 = 载荷.slice("file:".length)
               if (路径 === "") return
+              // 目录的载荷带尾分隔符（`file:卷宗/资料/`）——目录不是文件，插成引用预览必然
+              // 按目录路径去读、读不到。
+              if (/[\\/]$/.test(路径)) return
+              // `.txt` 不插 Markdown 引用（与工具栏 `markdown` prop 同一口径）。
+              if (extensionOf(props.path) !== ".md") return
               // 只插引用、不写盘：上传是 P1。
               插引用(路径, 图片扩展.has(extensionOf(路径) ?? "") ? "image" : "attachment")
             }}

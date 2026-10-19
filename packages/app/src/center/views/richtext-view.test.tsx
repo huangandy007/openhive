@@ -685,6 +685,20 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
     expect(h.钮("image")).toBeNull()
   })
 
+  // `.txt` 上不执行 Markdown 动作：快捷键也不该往正文里写标记（与工具栏同一口径）。
+  test(".txt 上 Ctrl+B 不插入 Markdown 标记", async () => {
+    const h = 挂编辑器("纯文本", { 路径: "/p/摘录.txt" })
+    await 落定()
+    h.钮("edit")!.click()
+    await 落定()
+    h.编辑框()!.setSelectionRange(0, 3)
+
+    h.编辑框()!.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true }))
+    await 落定()
+
+    expect(h.编辑框()?.value).toBe("纯文本")
+  })
+
   test("停手后自动保存（不用点保存）", async () => {
     设自动保存参数({ 延迟: 5, 上限: 50 })
     const h = 挂编辑器("第一行")
@@ -712,6 +726,7 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
     await 落定()
 
     expect(h.交出去的).toHaveLength(1)
+    expect(h.交出去的[0]).toEqual({ path: "/p/摘录.md", content: "第二行", base: "第一行" })
   })
 
   test("Ctrl+K 插入链接占位", async () => {
@@ -744,6 +759,24 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
 
     // 当前文件是 `/p/摘录.md` ⇒ 从 `p/` 出发到项目根的 `卷宗/附件/图.png` 要退一层。
     expect(h.编辑框()?.value).toBe("正文![图](../卷宗/附件/图.png)")
+  })
+
+  // 目录不是文件：左栏拖目录时载荷带尾分隔符（`file:卷宗/资料/`），插成引用预览必然读不到。
+  test("拖入目录 ⇒ 不插入（目录不是文件）", async () => {
+    const h = 挂编辑器("正文")
+    await 落定()
+    h.钮("edit")!.click()
+    await 落定()
+    const 框 = h.编辑框()!
+    框.focus()
+    框.setSelectionRange(2, 2)
+
+    const 事件 = new Event("drop", { bubbles: true, cancelable: true })
+    Object.defineProperty(事件, "dataTransfer", { value: { getData: () => "file:卷宗/资料/" } })
+    框.dispatchEvent(事件)
+    await 落定()
+
+    expect(h.编辑框()?.value).toBe("正文")
   })
 
   test("STALE ⇒ 冲突态、保留我的字、给「载入盘上版本」", async () => {
@@ -864,8 +897,8 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
     }
   })
 
-  // 按工具栏钮不许把焦点从编辑框抢走：焦点一跑，选区在 `click` 之前就塌了。
-  test("工具栏按钮 mousedown 阻止默认（保住编辑框焦点与选区）", async () => {
+  // 只断 `defaultPrevented`：这条不声称验证焦点/选区（那要真浏览器，见 LEARNINGS #005-32 同族）。
+  test("工具栏按钮 mousedown 阻止默认", async () => {
     const h = 挂编辑器("第一行")
     await 落定()
     h.钮("edit")!.click()
