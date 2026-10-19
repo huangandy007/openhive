@@ -424,11 +424,15 @@ test("预览里点相对链接 ⇒ 不整页跳走", async ({ page, context }) =
 
 /**
  * 「撤销钮真的回退」——`execCommand("undo")` 之后不把 textarea 的值同步回 store 的实现在这里红。
- * ⚠️ 用的是真键盘打字（`fill` 不产生撤销历史）；撤销分组由浏览器定，若这条偶发红，
- * 先重跑确认，再按 spec §13 退回 store 内历史栈（那一版不需要 execCommand）。
+ *
+ * ⚠️ 打字用 **ASCII**，不用中文。Playwright 的 `keyboard.type` 对 CJK 是**逐字** `insertText`
+ * （模拟输入法提交），Chromium 把每个字算作一个撤销单元：打「追加」后撤销一次只退「加」。
+ * 这不是产品缺陷——裸 textarea、零回写时同样如此（2026-10-19 对照实测）。用连续 ASCII
+ * 字符时浏览器会把它们并成一组，一次撤销回到原值；工具栏插入后 store 未同步的实现在这里红。
+ * ⚠️ `fill` 不产生撤销历史，必须真键盘打字。
  */
 test("撤销钮真的把刚打的字退回去", async ({ page, context }) => {
-  await 开一篇md(page, context, `编辑·撤销·${Date.now()}`)
+  const 甲 = await 开一篇md(page, context, `编辑·撤销·${Date.now()}`)
   await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
   await 点钮(page, "edit")
   const 框 = page.locator("[data-slot='richtext-editor']")
@@ -436,11 +440,14 @@ test("撤销钮真的把刚打的字退回去", async ({ page, context }) => {
   await page.keyboard.press("Control+End")
   const 原值 = await 框.inputValue()
 
-  await page.keyboard.type("追加")
-  await expect(框).toHaveValue(原值 + "追加")
+  await page.keyboard.type("ab")
+  await expect(框).toHaveValue(原值 + "ab")
 
   await 点钮(page, "undo")
   await expect(框).toHaveValue(原值, { timeout: 10_000 })
+
+  // 撤销也必须回到 store：只退 DOM 的实现会被自动保存把刚撤掉的字再写回盘上。
+  await expect.poll(() => 读盘(甲.文件).toString("utf8"), { timeout: 15_000 }).not.toContain("ab")
 })
 
 /**
