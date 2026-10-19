@@ -16,6 +16,16 @@ import {
 const 等 = (毫秒: number) => new Promise((r) => setTimeout(r, 毫秒))
 const 选 = (start: number, end = start) => ({ start, end })
 
+/** 轮询等条件成立；返回是否在超时前成立。用于「等一个可观察的闸门」，不用魔法睡眠。 */
+async function 直到(条件: () => boolean, 超时 = 500): Promise<boolean> {
+  const 起 = Date.now()
+  while (!条件()) {
+    if (Date.now() - 起 > 超时) return false
+    await 等(2)
+  }
+  return true
+}
+
 beforeEach(() => {
   清空草稿()
   设自动保存参数(undefined)
@@ -64,6 +74,21 @@ describe("草稿状态", () => {
 
     expect(取草稿("a.md")?.status).toBe("clean")
   })
+
+  test("已有未保存草稿时再次开始编辑：只切 mode，不拿新初始值覆盖", () => {
+    记盘上版本("a.md", { content: "盘上", base: "盘上" })
+    expect(取草稿("a.md")?.mode).toBe("preview")
+    开始编辑("a.md", { content: "盘上", base: "盘上" })
+    改草稿("a.md", "我改的", 选(3))
+
+    开始编辑("a.md", { content: "别的版本", base: "别的底本" })
+
+    const 项 = 取草稿("a.md")!
+    expect(项.mode).toBe("edit")
+    expect(项.content).toBe("我改的")
+    expect(项.已存).toBe("盘上")
+    expect(项.status).toBe("dirty")
+  })
 })
 
 describe("自动保存", () => {
@@ -99,7 +124,7 @@ describe("自动保存", () => {
     await 等(20)
 
     const 项 = 取草稿("a.md")!
-    expect(收到[0]!.content).toBe("甲\n\n")
+    expect(收到[0].content).toBe("甲\n\n")
     expect(项.content).toBe("甲\n\n")
     expect(项.base).toBe("甲")
     expect(项.status).toBe("clean")
@@ -108,25 +133,38 @@ describe("自动保存", () => {
     expect(收到).toHaveLength(1)
   })
 
-  test("一直不停手也不会超过上限：延迟 1000 / 上限 20 ⇒ 20ms 内就存", async () => {
-    设自动保存参数({ 延迟: 1000, 上限: 20 })
-    const { save, 收到 } = 装存盘({ ok: true, base: "改过" })
+  test("一直不停手也不会超过上限：上限从第一笔改动算起，且只存一次", async () => {
+    设自动保存参数({ 延迟: 1000, 上限: 100 })
+    const { save, 收到 } = 装存盘(({ content }) => ({ ok: true, base: content }))
     登记出口("a.md", { save })
     开始编辑("a.md", { content: "原文", base: "原文" })
-    改草稿("a.md", "改过", 选(2))
 
-    await 等(40)
+    const 起 = Date.now()
+    let 最新 = "原文"
+    for (let i = 0; i < 8; i++) {
+      最新 = `改${i}`
+      改草稿("a.md", 最新, 选(最新.length))
+      await 等(10)
+    }
 
+    // 若每次击键都把「首改」重置，保存会被推到停手后 100ms（约 180ms），轮询会超时。
+    expect(await 直到(() => 收到.length > 0, 160)).toBe(true)
+    expect(Date.now() - 起).toBeLessThan(160)
     expect(收到).toHaveLength(1)
+    expect(收到[0].content).toBe(最新)
+
+    await 等(100)
+    expect(收到).toHaveLength(1)
+    expect(取草稿("a.md")?.status).toBe("clean")
   })
 
   test("保存在飞时继续打字 ⇒ 回包不把新字判成已保存，随后再存一次", async () => {
     设自动保存参数({ 延迟: 5, 上限: 50 })
     let 放行!: () => void
     const 闸门 = new Promise<void>((r) => (放行 = r))
-    const 收到: string[] = []
-    const save: SaveFileContent = async (_path, content) => {
-      收到.push(content)
+    const 收到: 交[] = []
+    const save: SaveFileContent = async (path, content, base) => {
+      收到.push({ path, content, base })
       if (收到.length === 1) await 闸门
       return { ok: true, base: content }
     }
@@ -140,7 +178,9 @@ describe("自动保存", () => {
     await 第一
     await 等(20)
 
-    expect(收到).toEqual(["乙", "丙"])
+    expect(收到.map((项) => 项.content)).toEqual(["乙", "丙"])
+    // 第二笔必须拿第一笔回包的 base 去比对，不能还拿旧的 "甲"。
+    expect(收到[1].base).toBe("乙")
     expect(取草稿("a.md")?.status).toBe("clean")
     expect(取草稿("a.md")?.content).toBe("丙")
   })
@@ -166,38 +206,118 @@ describe("自动保存", () => {
     expect(await 二).toBe(true)
   })
 
-  test("清空草稿会取消定时器：之后一个请求都不发", async () => {
+  test("清空草稿会取消定时器：旧定时器不许存新项目的草稿", async () => {
     设自动保存参数({ 延迟: 5, 上限: 50 })
-    const { save, 收到 } = 装存盘({ ok: true, base: "改过" })
+    const { save, 收到 } = 装存盘({ ok: true, base: "旧改" })
     登记出口("a.md", { save })
-    开始编辑("a.md", { content: "原文", base: "原文" })
-    改草稿("a.md", "改过", 选(2))
+    开始编辑("a.md", { content: "旧", base: "旧" })
+    改草稿("a.md", "旧改", 选(1))
 
     清空草稿()
+
+    // 新项目同路径的草稿：故意改成 dirty，并把新定时器排到 1000ms 之外。
+    // 这样 20ms 内唯一可能发请求的就是没被取消的旧定时器。
+    设自动保存参数({ 延迟: 1000, 上限: 5000 })
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "新", base: "新" })
+    改草稿("a.md", "新改", 选(1))
+
     await 等(20)
 
     expect(收到).toHaveLength(0)
-    expect(取草稿("a.md")).toBeUndefined()
+    expect(取草稿("a.md")?.content).toBe("新改")
+    expect(取草稿("a.md")?.status).toBe("dirty")
   })
 
-  test("清空草稿作废在飞的回包：回包到了也不许把表写回来", async () => {
+  test("清空草稿作废在飞的回包：新项目同路径的草稿不许被旧回包覆盖", async () => {
     let 放行!: () => void
     const 闸门 = new Promise<void>((r) => (放行 = r))
-    const { save } = 装存盘(async () => {
-      await 闸门
-      return { ok: true, base: "乙" }
-    })
+    let 第几次 = 0
+    const save: SaveFileContent = async (_path, content) => {
+      第几次++
+      if (第几次 === 1) await 闸门
+      return { ok: true, base: `回包-${content}` }
+    }
     登记出口("a.md", { save })
-    开始编辑("a.md", { content: "甲", base: "甲" })
-    改草稿("a.md", "乙", 选(1))
+    开始编辑("a.md", { content: "旧项目", base: "旧底本" })
+    改草稿("a.md", "旧项目改", 选(2))
 
     const 存 = 立即保存("a.md")
     清空草稿()
+
+    // 新项目同路径也做一次保存：清空后操作序从 1 重新开始，
+    // 与旧保存捕获的序号相同——此时**只有代次**能认出旧回包。
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "新项目", base: "新底本" })
+    改草稿("a.md", "新项目改", 选(2))
+    expect(await 立即保存("a.md")).toBe(true)
+
     放行()
     await 存
     await 等(0)
 
-    expect(取草稿("a.md")).toBeUndefined()
+    expect(取草稿("a.md")).toMatchObject({
+      content: "新项目改",
+      base: "回包-新项目改",
+      已存: "新项目改",
+      status: "clean",
+    })
+  })
+
+  test("清空后旧保存的 finally 不许删掉新项目的在飞保存", async () => {
+    const 收到: 交[] = []
+    const 门: Array<() => void> = []
+    const save: SaveFileContent = async (path, content, base) => {
+      收到.push({ path, content, base })
+      await new Promise<void>((r) => 门.push(r))
+      return { ok: true, base: content }
+    }
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "旧", base: "旧" })
+    改草稿("a.md", "旧改", 选(1))
+    const 旧存 = 立即保存("a.md")
+    expect(await 直到(() => 收到.length === 1, 500)).toBe(true)
+
+    清空草稿()
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "新", base: "新" })
+    改草稿("a.md", "新改", 选(1))
+    const 新存 = 立即保存("a.md")
+    expect(await 直到(() => 收到.length === 2, 500)).toBe(true)
+
+    // 放行旧保存；它已属于上一代，回包作废，且 finally 不许删掉新保存那条在飞记录。
+    门[0]()
+    await 旧存
+
+    const 新存叠 = 立即保存("a.md")
+    await 等(0)
+    expect(收到).toHaveLength(2) // 新保存仍在飞，叠的那一下必须等着，不许并发第三笔
+
+    门[1]()
+    expect(await 新存).toBe(true)
+    expect(await 新存叠).toBe(true)
+    expect(收到).toHaveLength(2)
+  })
+
+  test("存盘同步抛错 ⇒ 只失败一次，不死循环，也不留下已完成的在飞", async () => {
+    let 调用 = 0
+    const save: SaveFileContent = () => {
+      调用++
+      throw new Error("同步炸了")
+    }
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+
+    const 结论 = await Promise.race([立即保存("a.md"), 等(100).then(() => "超时" as const)])
+    expect(结论).toBe(false)
+    expect(调用).toBe(1)
+    expect(取草稿("a.md")?.status).toBe("error")
+
+    // 在飞已清干净：再调一次是新的尝试，而不是 await 一个已完成的 Promise 后递归。
+    const 再一次 = await Promise.race([立即保存("a.md"), 等(100).then(() => "超时" as const)])
+    expect(再一次).toBe(false)
+    expect(调用).toBe(2)
   })
 })
 
@@ -260,9 +380,7 @@ describe("拒绝与冲突", () => {
   })
 
   test("载入盘上版本：重新 load，正文与底本都换成盘上那份", async () => {
-    let 第几次 = 0
     const save: SaveFileContent = async () => {
-      第几次++
       return { ok: false, message: "被改过", code: "STALE" }
     }
     登记出口("a.md", {
@@ -278,6 +396,86 @@ describe("拒绝与冲突", () => {
     expect(取草稿("a.md")).toMatchObject({
       content: "盘上那份",
       base: "盘上那份",
+      status: "clean",
+    })
+  })
+
+  test("conflict 且没有未保存的字时：非强制保存不洗白，强制可以", async () => {
+    const { save } = 装存盘({ ok: false, message: "被改过", code: "STALE" })
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+    await 立即保存("a.md")
+    expect(取草稿("a.md")?.status).toBe("conflict")
+
+    // 用户把字撤回到已存的内容：冲突本身不许因此消失。
+    改草稿("a.md", "甲", 选(1))
+    expect(取草稿("a.md")?.status).toBe("conflict")
+    expect(取草稿("a.md")?.content).toBe(取草稿("a.md")?.已存)
+
+    expect(await 立即保存("a.md")).toBe(false)
+    expect(取草稿("a.md")?.status).toBe("conflict")
+
+    expect(await 立即保存("a.md", true)).toBe(true)
+    expect(取草稿("a.md")?.status).toBe("clean")
+  })
+
+  test("载入盘上版本：清空换项目后旧 load 回包不许覆盖新草稿", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((r) => (放行 = r))
+    登记出口("a.md", {
+      load: async () => {
+        await 闸门
+        return { type: "text", content: "旧项目盘上" }
+      },
+    })
+    开始编辑("a.md", { content: "旧", base: "旧" })
+    改草稿("a.md", "旧改", 选(1))
+
+    const 载 = 载入盘上版本("a.md")
+    清空草稿()
+
+    // 新项目同路径也做一次保存：清空后操作序从 1 重新开始，
+    // 与旧 load 捕获的序号相同——此时**只有代次**能认出旧回包。
+    登记出口("a.md", { save: async (_path, content) => ({ ok: true, base: `回包-${content}` }) })
+    开始编辑("a.md", { content: "新项目", base: "新底本" })
+    改草稿("a.md", "新项目改", 选(2))
+    expect(await 立即保存("a.md")).toBe(true)
+
+    放行()
+    expect(await 载).toBe(false)
+    expect(取草稿("a.md")).toMatchObject({
+      content: "新项目改",
+      base: "回包-新项目改",
+      已存: "新项目改",
+      status: "clean",
+      mode: "edit",
+    })
+  })
+
+  test("更晚开始的保存作废先前 load 的回包", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((r) => (放行 = r))
+    登记出口("a.md", {
+      save: async (_path, content) => ({ ok: true, base: `${content}-底本` }),
+      load: async () => {
+        await 闸门
+        return { type: "text", content: "盘上旧" }
+      },
+    })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+
+    const 载 = 载入盘上版本("a.md")
+    expect(await 立即保存("a.md", true)).toBe(true)
+
+    // 保存已经落定；此后放行更早开始的 load，它不许把状态改回去。
+    放行()
+    expect(await 载).toBe(false)
+    expect(取草稿("a.md")).toMatchObject({
+      content: "乙",
+      base: "乙-底本",
+      已存: "乙",
       status: "clean",
     })
   })
@@ -325,5 +523,34 @@ describe("预览与盘上版本", () => {
 
     expect(取草稿("a.md")?.status).toBe("conflict")
     expect(取草稿("a.md")?.content).toBe("我改的")
+  })
+
+  test("切预览要等在飞保存，并把撤销后的正文再存一次", async () => {
+    设自动保存参数({ 延迟: 5, 上限: 50 })
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((r) => (放行 = r))
+    const 收到: 交[] = []
+    const save: SaveFileContent = async (path, content, base) => {
+      收到.push({ path, content, base })
+      if (收到.length === 1) await 闸门
+      return { ok: true, base: content }
+    }
+    登记出口("a.md", { save })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+    expect(await 直到(() => 收到.length === 1, 500)).toBe(true)
+
+    // 撤销回甲：content === 已存，状态回 clean，但第一笔保存还在飞。
+    改草稿("a.md", "甲", 选(1))
+    expect(取草稿("a.md")?.status).toBe("clean")
+
+    const 切 = 切预览("a.md")
+    放行()
+    expect(await 切).toBe(true)
+
+    expect(收到).toHaveLength(2)
+    expect(收到[1]).toEqual({ path: "a.md", content: "甲", base: "乙" })
+    expect(取草稿("a.md")?.mode).toBe("preview")
+    expect(取草稿("a.md")?.status).toBe("clean")
   })
 })

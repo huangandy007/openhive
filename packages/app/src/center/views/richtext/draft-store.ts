@@ -55,6 +55,11 @@ const 定时器 = new Map<string, ReturnType<typeof setTimeout>>()
 /** 第一笔「与底本不同」的时刻——「上限」从它算起，不是从最后一次击键算起。 */
 const 首改 = new Map<string, number>()
 const 在飞 = new Map<string, Promise<boolean>>()
+/**
+ * 按路径的操作序号：**更晚开始的操作**（保存 / 载入）会作废更早那些的回包。
+ * 全局代次只管「清空换项目」，管不了同一项目里「load 与 save 交错」。
+ */
+const 操作序 = new Map<string, number>()
 let 延迟 = 800
 let 上限 = 5000
 /** `清空草稿()` 之后，上一代的回包一律作废（换项目时在飞的保存不许写回来）。 */
@@ -90,6 +95,13 @@ function 清定时器(path: string): void {
   if (计时 !== undefined) clearTimeout(计时)
   定时器.delete(path)
   首改.delete(path)
+}
+
+/** 取一个「从现在开始」的操作序号；同一路径上更晚开始的操作会得到更大的号。 */
+function 取序(path: string): number {
+  const 序 = (操作序.get(path) ?? 0) + 1
+  操作序.set(path, 序)
+  return 序
 }
 
 /** 按「停手 800ms、最长 5s」排一次自动保存。conflict 与预览态不排。 */
@@ -165,9 +177,12 @@ export function 改草稿(path: string, content: string, selection: { start: num
  * 守卫就永远走不到、拆掉也不变红（`LEARNINGS #006-16`）。
  */
 export async function 立即保存(path: string, 强制 = false): Promise<boolean> {
+  const 代 = 代次
   const 飞的 = 在飞.get(path)
   if (飞的) {
     const 成 = await 飞的
+    // 等的时候换了项目：这份回包与新项目无关。
+    if (代 !== 代次) return false
     const 项 = 取草稿(path)
     if (!项 || 项.content === 项.已存) return 成
     return 立即保存(path, 强制)
@@ -176,6 +191,10 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
   const 项 = 取草稿(path)
   if (!项) return false
 
+  // 冲突只能由用户明确点「重试 / 保存」穿透；定时器与切预览都走非强制，不许悄悄覆盖。
+  // ⚠️ 必须排在「没有未保存的字」短路之前：否则切预览会把 conflict 悄悄洗成 clean。
+  if (项.status === "conflict" && !强制) return false
+
   if (项.content === 项.已存) {
     if (项.status !== "clean") {
       改表(path, (旧) => 旧 && { ...旧, status: "clean", message: undefined })
@@ -183,26 +202,30 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
     return true
   }
 
-  // 冲突只能由用户明确点「重试 / 保存」穿透；定时器与切预览都走非强制，不许悄悄覆盖。
-  if (项.status === "conflict" && !强制) return false
-
   const save = 出口表.get(path)?.save
   if (!save) {
     改表(path, (旧) => 旧 && { ...旧, status: "error", message: "现在没有存盘出口，改动只在这台机器的内存里。" })
     return false
   }
 
+  const 序 = 取序(path)
   清定时器(path)
-  const 代 = 代次
   const 存的内容 = 项.content
   const 存底本 = 项.base
 
   改表(path, (旧) => 旧 && { ...旧, status: "saving", message: undefined })
 
-  const 任务 = (async () => {
+  // 先声明再赋值：`finally` 里要拿它比对身份，写成初始化表达式会在类型层触发 TDZ
+  // （运行期不会——save 已经被推到微任务里，赋值一定先完成）。
+  let 任务!: Promise<boolean>
+  任务 = (async () => {
     try {
-      const 结论 = await save(path, 存的内容, 存底本)
-      if (代 !== 代次) return false
+      // 先让出一个微任务：保证 `任务` 已赋值、`在飞.set` 已完成。
+      // 否则 `save` 同步抛错时 finally 会在赋值前跑，`任务` 落进 TDZ。
+      const 结论 = await Promise.resolve().then(() => save(path, 存的内容, 存底本))
+      // 回包要同时认「同一代」与「仍是这条路径上最新的操作」：
+      // 清空换项目（代次）与同一项目里更晚的 load / save（操作序）都会作废它。
+      if (代 !== 代次 || 操作序.get(path) !== 序) return false
       if (!结论.ok) {
         改表(path, (旧) =>
           旧 && {
@@ -231,19 +254,21 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
       })
       return true
     } catch (原因) {
-      if (代 === 代次) {
+      if (代 === 代次 && 操作序.get(path) === 序) {
         console.warn(`[openhive] 存盘没走通（${path}）`, 原因)
         改表(path, (旧) => 旧 && { ...旧, status: "error", message: "保存文件失败" })
       }
       return false
     } finally {
-      在飞.delete(path)
+      // 只删自己的那条：清空换项目后，旧保存的 finally 不许误删新项目同路径的在飞记录。
+      if (在飞.get(path) === 任务) 在飞.delete(path)
     }
   })()
 
   在飞.set(path, 任务)
   const 成 = await 任务
 
+  if (代 !== 代次) return 成
   const 后 = 取草稿(path)
   if (后 && 后.status === "dirty") 排(path)
   return 成
@@ -251,14 +276,17 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
 
 /** 显式切预览：先冲刷，存成功才切。失败留在编辑态（字一个都不丢）。 */
 export async function 切预览(path: string): Promise<boolean> {
+  const 代 = 代次
   const 项 = 取草稿(path)
   if (!项) return true
-  if (项.content !== 项.已存 || 项.status !== "clean") {
+  // 在飞也算「还没冲刷完」：哪怕正文已经撤回到已存，在飞那笔回包还会改状态。
+  if (项.content !== 项.已存 || 项.status !== "clean" || 在飞.has(path)) {
     const 成 = await 立即保存(path)
+    if (代 !== 代次) return false
     if (!成) return false
   }
   const 后 = 取草稿(path)
-  if (!后 || 后.status !== "clean") return false
+  if (代 !== 代次 || !后 || 后.status !== "clean") return false
   改表(path, (旧) => 旧 && { ...旧, mode: "preview" })
   return true
 }
@@ -302,7 +330,17 @@ export function 记盘上版本(path: string, 盘上: { content: string; base: s
 export async function 载入盘上版本(path: string): Promise<boolean> {
   const load = 出口表.get(path)?.load
   if (!load) return false
-  const 内容 = await load(path)
+  const 代 = 代次
+  const 序 = 取序(path)
+  let 内容
+  try {
+    内容 = await load(path)
+  } catch (原因) {
+    console.warn(`[openhive] 读取盘上版本没走通（${path}）`, 原因)
+    return false
+  }
+  // 读的过程中可能换了项目，或用户又点了一次保存 / 载入：这份回包已经过期。
+  if (代 !== 代次 || 操作序.get(path) !== 序) return false
   if (内容?.type !== "text") return false
   清定时器(path)
   // 读口回来的 content 正是服务端比对用的 base（BOM / 首尾空白已削、CRLF 保留）。
@@ -328,6 +366,7 @@ export function 清空草稿(): void {
   定时器.clear()
   首改.clear()
   在飞.clear()
+  操作序.clear()
   出口表.clear()
   set表(new Map())
 }
