@@ -7,6 +7,34 @@ import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView, sa
 const 字节 = (s: string) => new TextEncoder().encode(s)
 const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+/**
+ * `URL.createObjectURL` / `revokeObjectURL` 的替身：只记账，不真的建 blob URL。
+ * 连 blob 的 `type` 一起记下来——判「落进 `<img>` 的确实是图片」用得上。
+ */
+function 替身ObjectURL() {
+  const 原建 = URL.createObjectURL
+  const 原销 = URL.revokeObjectURL
+  const 建过: string[] = []
+  const 销过: string[] = []
+  const 类型们: string[] = []
+  URL.createObjectURL = (对象: Blob | MediaSource) => {
+    const url = `blob:openhive-${建过.length}`
+    建过.push(url)
+    类型们.push((对象 as Blob).type)
+    return url
+  }
+  URL.revokeObjectURL = (url: string) => 销过.push(url)
+  return {
+    建过,
+    销过,
+    类型们,
+    还原: () => {
+      URL.createObjectURL = 原建
+      URL.revokeObjectURL = 原销
+    },
+  }
+}
+
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -106,16 +134,7 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
   })
 
   test("相对图片路径经 load 取字节，换成 object URL；清理时 revoke", async () => {
-    const 原建 = URL.createObjectURL
-    const 原销 = URL.revokeObjectURL
-    const 建过: string[] = []
-    const 销过: string[] = []
-    URL.createObjectURL = () => {
-      const url = `blob:openhive-${建过.length}`
-      建过.push(url)
-      return url
-    }
-    URL.revokeObjectURL = (url: string) => 销过.push(url)
+    const 替身 = 替身ObjectURL()
     try {
       const 容器 = document.createElement("div")
       const 取过: string[] = []
@@ -129,11 +148,13 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
 
       expect(取过).toEqual(["卷宗/附件/图.png"])
       expect(容器.querySelector("img")?.getAttribute("src")).toBe("blob:openhive-0")
+      expect(替身.类型们).toEqual(["image/png"])
+      // 不是建完就销：图在画面上要一直显示到卸载为止。
+      expect(替身.销过).toEqual([])
       清理?.()
-      expect(销过).toEqual(["blob:openhive-0"])
+      expect(替身.销过).toEqual(["blob:openhive-0"])
     } finally {
-      URL.createObjectURL = 原建
-      URL.revokeObjectURL = 原销
+      替身.还原()
     }
   })
 
@@ -141,16 +162,50 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
     const 容器 = document.createElement("div")
     await 造Markdown渲染器({
       path: "卷宗/纪要.md",
-      load: async () => undefined,
+      load: async () => {
+        throw new Error("读不到")
+      },
     })(字节("正文\n\n![图](没有.png)"), 容器)
 
     expect(容器.textContent).toContain("正文")
     expect(容器.querySelector("img")).not.toBeNull()
   })
 
+  test("图片字节解不出来时也不把整篇文档打成渲染失败", async () => {
+    const 容器 = document.createElement("div")
+    await 造Markdown渲染器({
+      path: "卷宗/纪要.md",
+      load: async () => ({ type: "binary", content: "!!!", encoding: "base64", mimeType: "image/png" }),
+    })(字节("正文\n\n![图](坏图.png)"), 容器)
+
+    expect(容器.textContent).toContain("正文")
+    expect(容器.querySelector("img")).not.toBeNull()
+  })
+
+  test("mimeType 不是 image/* 时按扩展名回退（服务端类型笼统不该让图丢掉）", async () => {
+    const 替身 = 替身ObjectURL()
+    try {
+      const 容器 = document.createElement("div")
+      const 清理 = await 造Markdown渲染器({
+        path: "卷宗/纪要.md",
+        load: async () => ({
+          type: "binary",
+          content: "AAEC",
+          encoding: "base64",
+          mimeType: "application/octet-stream",
+        }),
+      })(字节("![图](附件/图.png)"), 容器)
+
+      expect(容器.querySelector("img")?.getAttribute("src")).toBe("blob:openhive-0")
+      expect(替身.类型们).toEqual(["image/png"])
+      清理?.()
+    } finally {
+      替身.还原()
+    }
+  })
+
   test("相对链接不整页跳走（点一下只拦默认行为）", async () => {
     const 容器 = document.createElement("div")
-    容器.addEventListener("click", (事件) => 事件.preventDefault())
     const 清理 = await 造Markdown渲染器({ path: "卷宗/纪要.md" })(字节("[别的文档](另一个.md)"), 容器)
     const 链接 = 容器.querySelector("a")!
 
@@ -159,6 +214,75 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
 
     expect(事件.defaultPrevented).toBe(true)
     清理?.()
+  })
+
+  test("空 href 也算相对链接：拦住跳转（`[x]()` 不让整页刷走）", async () => {
+    const 容器 = document.createElement("div")
+    await 造Markdown渲染器({ path: "卷宗/纪要.md" })(字节("[x]()"), 容器)
+    const 链接 = 容器.querySelector("a")!
+
+    const 事件 = new MouseEvent("click", { bubbles: true, cancelable: true })
+    链接.dispatchEvent(事件)
+
+    expect(事件.defaultPrevented).toBe(true)
+  })
+
+  test("图片还在读的时候点链接，也不整页跳走（监听不晚于图片加载）", async () => {
+    const 容器 = document.createElement("div")
+    // 永不 settle：模拟慢盘 / 慢网络。此刻渲染 Promise 还没交回清理函数。
+    const 渲染 = 造Markdown渲染器({ path: "卷宗/纪要.md", load: () => new Promise<undefined>(() => {}) })(
+      字节("![图](附件/图.png)\n\n[别的文档](另一个.md)"),
+      容器,
+    )
+    await 落定()
+    const 链接 = 容器.querySelector("a")!
+    const 事件 = new MouseEvent("click", { bubbles: true, cancelable: true })
+    链接.dispatchEvent(事件)
+
+    expect(事件.defaultPrevented).toBe(true)
+    void 渲染
+  })
+
+  test("带协议的链接在新标签页打开（noopener,noreferrer），不当场跳走", async () => {
+    const 原开 = window.open
+    const 开过: Array<[string | undefined, string | undefined, string | undefined]> = []
+    window.open = (url?: string | URL, target?: string, features?: string) => {
+      开过.push([url?.toString(), target, features])
+      return null
+    }
+    try {
+      const 容器 = document.createElement("div")
+      await 造Markdown渲染器({ path: "卷宗/纪要.md" })(字节("[外站](https://example.test/x)"), 容器)
+      const 链接 = 容器.querySelector("a")!
+      const 事件 = new MouseEvent("click", { bubbles: true, cancelable: true })
+      链接.dispatchEvent(事件)
+
+      expect(事件.defaultPrevented).toBe(true)
+      expect(开过).toEqual([["https://example.test/x", "_blank", "noopener,noreferrer"]])
+    } finally {
+      window.open = 原开
+    }
+  })
+
+  test("页内锚点放行（`#` 交给浏览器，不算相对链接）", async () => {
+    const 原开 = window.open
+    let 开过 = 0
+    window.open = () => {
+      开过++
+      return null
+    }
+    try {
+      const 容器 = document.createElement("div")
+      await 造Markdown渲染器({ path: "卷宗/纪要.md" })(字节("[锚](#小节)"), 容器)
+      const 链接 = 容器.querySelector("a")!
+      const 事件 = new MouseEvent("click", { bubbles: true, cancelable: true })
+      链接.dispatchEvent(事件)
+
+      expect(事件.defaultPrevented).toBe(false)
+      expect(开过).toBe(0)
+    } finally {
+      window.open = 原开
+    }
   })
 })
 

@@ -100,17 +100,14 @@ export function 造Markdown渲染器(选项: { path?: string; load?: LoadFileCon
     标("markdown", container)
     container.innerHTML = sanitizeHtml(await marked.parse(解码(bytes)))
 
-    // cleanup 可能在 `load` 还在飞的时候跑（切文件 / 切模式）。没有这个标志，晚到的回包会
-    // 往已经摘掉的 DOM 上写 src、并留下一个永远没人 revoke 的 object URL。
-    const 状态 = { 活着: true }
-    const 回收: string[] = []
-    if (选项.path && 选项.load) await 装图片(container, 选项.path, 选项.load, 回收, 状态)
-
+    // 点击监听必须在**图片加载之前**挂上：图片可能读得很慢，那个窗口里用户点链接
+    // 仍然要拦住（否则整页跳走）。但也不能提到 `marked.parse` 之前——解析抛错时
+    // 监听会留在容器上没人摘。
     const 点击 = (事件: MouseEvent) => {
       const 链接 = (事件.target as Element | null)?.closest("a")
       if (!链接) return
       const href = 链接.getAttribute("href")
-      if (!href || href.startsWith("#")) return // 页内锚点交给浏览器
+      if (href === null || href.startsWith("#")) return // 页内锚点交给浏览器
       事件.preventDefault()
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
         window.open(href, "_blank", "noopener,noreferrer")
@@ -122,8 +119,11 @@ export function 造Markdown渲染器(选项: { path?: string; load?: LoadFileCon
     }
     container.addEventListener("click", 点击)
 
+    const 回收: string[] = []
+    // 迟到的渲染（图片还没回来就被换掉）由 `BinaryView` 的 token 分支负责 revoke。
+    if (选项.path && 选项.load) await 装图片(container, 选项.path, 选项.load, 回收)
+
     return () => {
-      状态.活着 = false
       container.removeEventListener("click", 点击)
       for (const url of 回收) URL.revokeObjectURL(url)
     }
@@ -148,7 +148,6 @@ async function 装图片(
   当前文件: string,
   load: LoadFileContent,
   回收: string[],
-  状态: { 活着: boolean },
 ): Promise<void> {
   const 图们 = [...container.querySelectorAll<HTMLImageElement>("img[src]")]
   await Promise.all(
@@ -159,20 +158,16 @@ async function 装图片(
       if (!路径) return
       // 一张图读不到只影响它自己（见函数上那条注释）。
       const 内容 = await load(路径).catch(() => undefined)
-      if (!状态.活着) return
       const 字节 = decodeBytes(内容)
       if (!字节) return
       const 下缀 = 路径.slice(路径.lastIndexOf(".")).toLowerCase()
       // 落点必须是图片：`decodeBytes` 能解出字节的也可能是被误判成 binary 的文本，
       // 塞进 `<img>` 只会让整篇多一个破图（spec §13 风险表）。
-      const 类型 = 内容?.mimeType ?? 图片类型[下缀]
+      // 服务端给的 `mimeType` 笼统（如 application/octet-stream）时按扩展名回退。
+      const 类型 = 内容?.mimeType?.startsWith("image/") ? 内容.mimeType : 图片类型[下缀]
       if (!类型 || !类型.startsWith("image/")) return
 
       const url = URL.createObjectURL(new Blob([字节], { type: 类型 }))
-      if (!状态.活着) {
-        URL.revokeObjectURL(url)
-        return
-      }
       回收.push(url)
       img.src = url
       img.removeAttribute("srcset")
