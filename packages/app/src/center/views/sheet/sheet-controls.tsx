@@ -4,6 +4,8 @@ import { type Cell, type ColumnType, type SheetMeta, type 列筛选 } from "./sh
 
 export const 表头高 = 32
 
+export type 列对齐 = "left" | "center" | "right"
+
 export interface 列状态 {
   index: number
   letter: string
@@ -11,6 +13,7 @@ export interface 列状态 {
   type: ColumnType
   width: number
   hidden: boolean
+  align: 列对齐
 }
 
 export interface 表头格Props {
@@ -23,6 +26,7 @@ export interface 表头格Props {
   onHide(): void
   onResizeStart(event: PointerEvent): void
   onAutoFit(): void
+  onAlign(align: 列对齐): void
   onApplyFilter(filter: 列筛选 | undefined): void
 }
 
@@ -31,6 +35,7 @@ export interface 列筛选浮层Props {
   rows: readonly Cell[][]
   start: number
   initial?: 列筛选
+  onAlign(align: 列对齐): void
   onApply(filter: 列筛选 | undefined): void
 }
 
@@ -71,6 +76,27 @@ export function 列筛选浮层(props: 列筛选浮层Props): JSX.Element {
 
   return (
     <div data-slot="column-filter" data-column={props.column.index} class="w-72 p-2">
+      <div class="mb-2 flex items-center gap-1 border-b border-v2-border-border-muted pb-2 text-12-regular">
+        <span class="mr-1 text-v2-text-text-muted">对齐</span>
+        <For each={[["left", "左"], ["center", "中"], ["right", "右"]] as const}>
+          {([value, label]) => (
+            <button
+              type="button"
+              data-slot="sheet-col-align"
+              data-align={value}
+              aria-pressed={props.column.align === value}
+              class={`rounded px-2 py-0.5 ${
+                props.column.align === value
+                  ? "bg-v2-background-bg-layer-02 text-v2-text-text-base"
+                  : "text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              }`}
+              onClick={() => props.onAlign(value)}
+            >
+              {label}
+            </button>
+          )}
+        </For>
+      </div>
       <div class="mb-2 flex flex-wrap gap-2 text-12-regular">
         <label>
           <input type="radio" name="filter-mode" checked={模式() === "values"} onChange={() => set模式("values")} /> 值
@@ -187,6 +213,7 @@ export function 表头格(props: 表头格Props): JSX.Element {
           rows={props.rows}
           start={props.start}
           initial={props.filter}
+          onAlign={(align) => props.onAlign(align)}
           onApply={(filter) => {
             props.onApplyFilter(filter)
             set筛选开(false)

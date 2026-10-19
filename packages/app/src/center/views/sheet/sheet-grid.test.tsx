@@ -291,7 +291,7 @@ describe("列宽交互", () => {
     // （`LEARNINGS #005-47`：默认值满足断言会假绿）。
     const 初始: SheetUiState = {
       headerIsFirstRow: true,
-      columns: [{ index: 1, letter: "B", name: "金额", type: "number", width: 200, hidden: false }],
+      columns: [{ index: 1, letter: "B", name: "金额", type: "number", width: 200, hidden: false, align: "right" }],
       filters: [],
       scrollTop: 0,
       scrollLeft: 0,
@@ -350,6 +350,52 @@ describe("列宽交互", () => {
       expect(最后.columns[0].width).toBeGreaterThan(64)
     } finally {
       dispose()
+      host.remove()
+    }
+  })
+})
+
+describe("列对齐", () => {
+  const 格 = (row: HTMLElement, index: number) => row.querySelectorAll<HTMLElement>('[role="gridcell"]')[index]
+
+  /** 对齐入口长在列筛选浮层里：打开漏斗 → 点「中」/「左」/「右」。 */
+  async function 打开并选对齐(host: HTMLElement, column: number, align: "left" | "center" | "right") {
+    const 漏斗 = 表头(host)?.querySelector<HTMLElement>(`[data-column="${column}"] [data-slot="sheet-col-filter"]`)
+    漏斗!.click()
+    const 浮层 = await 等元素(() =>
+      document.querySelector<HTMLElement>(`[data-slot="column-filter"][data-column="${column}"]`),
+    )
+    const 按钮 = await 等元素(() =>
+      浮层.querySelector<HTMLElement>(`[data-slot="sheet-col-align"][data-align="${align}"]`),
+    )
+    按钮.click()
+    return 浮层
+  }
+
+  test("默认按类型：文本左对齐、数字右对齐（与改造前一致）", () => {
+    const { host, 卸 } = 挂()
+    const row = 数据行(host)[0]
+    expect(格(row, 0).className).toContain("text-left")
+    expect(格(row, 1).className).toContain("text-right")
+    卸()
+  })
+
+  test("浮层里选居中：数据格变 text-center，写进 UI 状态，重新挂载按存过的恢复", async () => {
+    let 最后: SheetUiState | undefined
+    const { host, 卸 } = 挂(元(), undefined, (state) => (最后 = state))
+    try {
+      await 打开并选对齐(host, 0, "center")
+      expect(格(数据行(host)[0], 0).className).toContain("text-center")
+      expect(最后?.columns[0].align).toBe("center")
+
+      卸()
+      const 再挂 = 挂(元(), 最后)
+      try {
+        expect(格(数据行(再挂.host)[0], 0).className).toContain("text-center")
+      } finally {
+        再挂.卸()
+      }
+    } finally {
       host.remove()
     }
   })
@@ -785,6 +831,7 @@ describe("查找", () => {
         type: "text" as const,
         width: 300,
         hidden: false,
+        align: "left" as const,
       })),
       filters: [],
       scrollTop: 0,

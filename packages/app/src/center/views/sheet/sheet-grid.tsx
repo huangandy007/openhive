@@ -15,7 +15,7 @@ import {
   type 列筛选,
   type 查找命中项,
 } from "./sheet-model"
-import { SheetControls, 表头格, 表头高, type 列状态 } from "./sheet-controls"
+import { SheetControls, 表头格, 表头高, type 列对齐, type 列状态 } from "./sheet-controls"
 
 export interface SheetStore {
   readonly meta: SheetMeta
@@ -92,11 +92,12 @@ function 初始列(meta: SheetMeta, saved?: SheetUiState): 列状态[] {
     const 存过 = saved?.columns.find((column) => column.index === index)
     const letter = 列标(meta.startCol + index)
     const name = meta.header[index] || letter
+    const type = meta.columnTypes[index] ?? ("text" as ColumnType)
     return {
       index,
       letter,
       name,
-      type: meta.columnTypes[index] ?? ("text" as ColumnType),
+      type,
       width:
         存过?.width ??
         估算列宽(
@@ -104,9 +105,15 @@ function 初始列(meta: SheetMeta, saved?: SheetUiState): 列状态[] {
           样本.map((row) => row[index] ?? null),
         ),
       hidden: 存过?.hidden ?? false,
+      // 默认与数字/日期列的历史右对齐一致；此后一律以用户选过的 `align` 为准。
+      align: 存过?.align ?? (type === "number" || type === "date" || type === "datetime" ? "right" : "left"),
     }
   })
 }
+
+/** Tailwind 的类名必须整串出现，不能靠模板拼 `text-${align}`（构建期扫不到）。 */
+const 对齐类 = (align: 列对齐) =>
+  align === "center" ? "text-center" : align === "right" ? "text-right" : "text-left"
 
 export function SheetGrid(props: SheetGridProps): JSX.Element {
   const [首行是表头, set首行是表头] = createSignal(props.initial?.headerIsFirstRow ?? true)
@@ -500,6 +507,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
                     onHide={() => set列(column.index, "hidden", true)}
                     onResizeStart={(event) => 开始拖列宽(event, column.index)}
                     onAutoFit={() => 自适应(column.index)}
+                    onAlign={(align) => set列(column.index, "align", align)}
                     onApplyFilter={(filter) =>
                       setFilters((当前) => {
                         const 其余 = 当前.filter((item) => item.column !== column.index)
@@ -538,13 +546,11 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
                           // ⚠️ 必须是 getter：排序/筛选/分块会让同一个行位换内容，写成 `const value = ...`
                           // 只在建 DOM 时读一次，之后不会更新（`LEARNINGS #005-48`：读口要读整份/现读）。
                           const value = () => props.store.rows[原始行()]?.[column.index] ?? null
-                          const 右对齐 =
-                            column.type === "number" || column.type === "date" || column.type === "datetime"
                           return (
                             <div
                               role="gridcell"
                               title={value() ?? ""}
-                              class={`truncate border-r border-b border-v2-border-border-muted px-2 py-0 leading-7 text-12-regular text-v2-text-text-base ${右对齐 ? "text-right" : "text-left"} ${
+                              class={`truncate border-r border-b border-v2-border-border-muted px-2 py-0 leading-7 text-12-regular text-v2-text-text-base ${对齐类(column.align)} ${
                                 当前键() === `${原始行()}:${column.index}`
                                   ? "bg-v2-background-bg-layer-02 ring-1 ring-inset ring-v2-border-border-strong"
                                   : 命中键().has(`${原始行()}:${column.index}`)

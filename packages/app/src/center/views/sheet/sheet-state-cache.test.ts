@@ -14,7 +14,7 @@ import type { SheetUiState } from "./sheet-grid"
 
 const 状态 = (n: number): SheetUiState => ({
   headerIsFirstRow: true,
-  columns: [{ index: 0, letter: "A", name: "姓名", type: "text", width: 100 + n, hidden: false }],
+  columns: [{ index: 0, letter: "A", name: "姓名", type: "text", width: 100 + n, hidden: false, align: "left" }],
   filters: [],
   sort: undefined,
   scrollTop: n,
