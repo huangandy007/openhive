@@ -20,7 +20,8 @@ export function 引用文件选择(props: {
 }) {
   const [找, set找] = createSignal("")
   const 候选 = createMemo(() => {
-    const 全部 = projectFiles() ?? []
+    // 目录在文件树里要可见，但不能被插入 Markdown——在两个分支的共同入口过滤掉。
+    const 全部 = (projectFiles() ?? []).filter((路径) => !/[\\/]$/.test(路径))
     const 过滤 =
       props.类型 === "image" ? 全部.filter((路径) => 图片扩展.has(extensionOf(路径) ?? "")) : 全部
     const 词 = 找().trim().toLowerCase()
@@ -37,6 +38,7 @@ export function 引用文件选择(props: {
           data-slot="richtext-file-search"
           value={找()}
           onInput={(事件) => set找(事件.currentTarget.value)}
+          aria-label={props.类型 === "image" ? "搜索项目里的图片" : "搜索项目里的文件"}
           placeholder={props.类型 === "image" ? "搜索项目里的图片" : "搜索项目里的文件"}
           class="h-7 min-w-0 flex-1 rounded bg-transparent px-2 text-[13px] text-v2-text-text-base outline-none"
         />
@@ -44,6 +46,7 @@ export function 引用文件选择(props: {
           type="button"
           data-slot="richtext-file-cancel"
           onClick={props.关掉}
+          onMouseDown={(事件) => 事件.preventDefault()}
           class="flex h-7 cursor-pointer items-center rounded px-2 text-[13px] text-v2-text-text-muted hover:text-v2-text-text-base"
         >
           取消
@@ -57,6 +60,7 @@ export function 引用文件选择(props: {
               data-slot="richtext-file-option"
               data-path={路径}
               onClick={() => props.选好(路径)}
+              onMouseDown={(事件) => 事件.preventDefault()}
               class="flex w-full cursor-pointer items-center rounded px-2 py-1 text-left text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
             >
               {路径}
