@@ -893,6 +893,12 @@ describe("T020 · 项目里的链接（junction / 符号链接）不是越界通
 /** 拒绝类回参的**最小形状**（`{ error: 一句话 }`）。字面量，同本文件 `Frozen` 的理。 */
 const Rejected = Schema.Struct({ error: Schema.String })
 
+/** 写出口的成功回参：新路径 ＋ **下一次保存该用的底本**。 */
+const 写成了 = Schema.Struct({ path: Schema.String, base: Schema.String })
+
+/** 带机器码的拒绝（目前只有陈旧这一条要机器认）。 */
+const 带码的拒绝 = Schema.Struct({ error: Schema.String, code: Schema.String })
+
 /** 名字含 `:` 那句话（前提①）。字面量、不 import 生产常量（同 `FROZEN_MESSAGE` 的用法）。 */
 const NAME_ALIASED = "文件名里不能含 `:`（win32 会把它当作盘符或数据流分隔符，落成另一个名字）"
 
@@ -2351,7 +2357,6 @@ describe("openhive 文件出口 · write（打开的文件能改、能存）", (
   const 出口写 = "/openhive/file/write"
 
   // 与 `handleWrite` 的文案逐字相同；测试里是**独立的一份**（同上几组的口径）。
-  const STALE = "这份文件在你打开之后被改过（可能有人在别处改过）。为避免覆盖别人的改动，请关掉重新打开再改。"
   const NO_PROJECT = "这次文件操作没有指明项目（缺少 x-openhive-project 头）"
   const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
   const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
@@ -2434,6 +2439,35 @@ describe("openhive 文件出口 · write（打开的文件能改、能存）", (
     30_000,
   )
 
+  /**
+   * 回包里的 `base` 必须是**盘上那份**（CRLF 也按盘上的来），不能是客户端送来的 LF。
+   * 少了它，客户端只能拿 `content.trim()` 猜底本——CRLF 文件第二次保存必然假冲突
+   * （`LEARNINGS #006-25`：镜像的边界语义要对齐）。
+   */
+  it.live(
+    "成功回参带 base：它是**盘上**那份（CRLF 按盘上），且拿它直接再存一次必须成功",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(文件.甲, 带信封)
+
+        const base = yield* 读正文("a.txt")
+        const 新正文 = 换行归一(base).replace("第二行", "改过的第二行")
+        const response = yield* 存(ALPHA, "a.txt", 新正文, base)
+
+        expect(response.status).toBe(200)
+        const 结论 = yield* json(写成了, response)
+        expect(结论.path).toBe("a.txt")
+        expect(结论.base).toBe("第一行\r\n改过的第二行")
+        expect(结论.base).not.toBe(新正文) // 送出去的是 LF；回来的底本必须是盘上的 CRLF
+
+        // 闭环：客户端下一次就送这个 base（正文仍是 LF 那一份）。
+        const 再存 = yield* 存(ALPHA, "a.txt", 新正文, 结论.base)
+        expect(再存.status).toBe(200)
+      }),
+    30_000,
+  )
+
   it.live(
     "改了中间一行 ⇒ 正文变了、信封原样（BOM 与 CRLF 都还在）",
     () =>
@@ -2471,7 +2505,7 @@ describe("openhive 文件出口 · write（打开的文件能改、能存）", (
 
         expect(readFileSync(文件.甲, "utf8")).toBe("别人改过的正文")
         expect(response.status).toBe(400)
-        expect((yield* json(Rejected, response)).error).toBe(STALE)
+        expect((yield* json(带码的拒绝, response)).code).toBe("STALE")
       }),
     30_000,
   )

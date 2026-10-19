@@ -184,8 +184,11 @@ function unauthorized() {
   return HttpServerResponse.empty({ status: UNAUTHORIZED })
 }
 
-function badRequest(message: string) {
-  return HttpServerResponse.jsonUnsafe({ error: message }, { status: BAD_REQUEST })
+function badRequest(message: string, code?: string) {
+  return HttpServerResponse.jsonUnsafe(
+    code === undefined ? { error: message } : { error: message, code },
+    { status: BAD_REQUEST },
+  )
 }
 
 /**
@@ -314,8 +317,9 @@ const ROOT_UNMOVABLE = "项目根不能移动"
 /** 目录不许搬进它自己（或自己的子目录）里——`rename` 对它是 `EINVAL`，会落成 500。 */
 const INTO_ITSELF = "不能把一个目录搬到它自己或它自己的子目录里"
 
-/** 写出口的成功回参：新条目**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
-const Made = (path: string) => HttpServerResponse.jsonUnsafe({ path })
+/** 写出口的成功回参：新条目**相对项目根**的路径；写正文时再带上新的底本。 */
+const Made = (path: string, base?: string) =>
+  HttpServerResponse.jsonUnsafe(base === undefined ? { path } : { path, base })
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -945,7 +949,7 @@ function handleWrite(request: HttpServerRequest.HttpServerRequest, root: string)
 
     // 与读口**同一套解码**（见上面那条注释）：畸形 UTF-8 落到替换字符上，对不上 `base` ⇒ 拒。
     const 文本 = new TextDecoder("utf-8").decode(原始)
-    if (文本.trim() !== base) return badRequest(STALE)
+    if (文本.trim() !== base) return badRequest(STALE, "STALE")
 
     // 「信封」＝ 读口削掉、而这次要原样裹回去的那一圈。
     const 去头 = 文本.trimStart()
@@ -963,7 +967,9 @@ function handleWrite(request: HttpServerRequest.HttpServerRequest, root: string)
     const failed = yield* attempt(() => writeFile(target, 落盘, "utf8"))
     if (failed !== undefined) yield* Effect.die(failed)
 
-    return Made(relativePath(project, target))
+    // ⚠️ `落盘.trim()` 与读口同一套解码（`handlers/file.ts` 的 `text.value.trim()`）：
+    // BOM 与首尾空白都被吃掉、CRLF 原样留着。客户端下一次拿它当 `base` 才对得上。
+    return Made(relativePath(project, target), 落盘.trim())
   })
 }
 
