@@ -440,8 +440,18 @@ describe("拒绝与冲突", () => {
     })
   })
 
-  test("conflict 且没有未保存的字时：非强制保存不洗白，强制可以", async () => {
-    const { save } = 装存盘({ ok: false, message: "被改过", code: "STALE" })
+  /**
+   * I1（2026-10-19 复审）：冲突态下用户把字撤回到 `已存`，`content === 已存` 成立——
+   * 但那时**不许**把冲突洗成 clean。「重试 / Ctrl+S」是用户的明确动作，**必须**照常发一次
+   * 请求，由服务端决定成功还是再 STALE；只有非强制（自动保存 / 切预览）才发都不发。
+   */
+  test("conflict 且没有未保存的字时：非强制不发请求；强制照常发，由服务端定夺", async () => {
+    const 回包: 存盘结论[] = [
+      { ok: false, message: "被改过", code: "STALE" },
+      { ok: false, message: "还是被改过", code: "STALE" },
+      { ok: true, base: "盘上新底本" },
+    ]
+    const { save, 收到 } = 装存盘(() => 回包.shift()!)
     登记出口("a.md", { save })
     开始编辑("a.md", { content: "甲", base: "甲" })
     改草稿("a.md", "乙", 选(1))
@@ -453,11 +463,26 @@ describe("拒绝与冲突", () => {
     expect(取草稿("a.md")?.status).toBe("conflict")
     expect(取草稿("a.md")?.content).toBe(取草稿("a.md")?.已存)
 
+    // 非强制：连请求都不发（自动保存 / 切预览不许穿透冲突）。
     expect(await 立即保存("a.md")).toBe(false)
+    expect(收到).toHaveLength(1)
     expect(取草稿("a.md")?.status).toBe("conflict")
 
+    // 强制：必须真的发一次；服务端回 STALE ⇒ 状态仍是 conflict。
+    expect(await 立即保存("a.md", true)).toBe(false)
+    expect(收到).toHaveLength(2)
+    expect(收到[1]).toEqual({ path: "a.md", content: "甲", base: "甲" })
+    expect(取草稿("a.md")?.status).toBe("conflict")
+
+    // 再强制一次：服务端这回成功 ⇒ clean，底本换成回包那份。
     expect(await 立即保存("a.md", true)).toBe(true)
-    expect(取草稿("a.md")?.status).toBe("clean")
+    expect(收到).toHaveLength(3)
+    expect(取草稿("a.md")).toMatchObject({
+      content: "甲",
+      已存: "甲",
+      base: "盘上新底本",
+      status: "clean",
+    })
   })
 
   test("载入盘上版本：清空换项目后旧 load 回包不许覆盖新草稿", async () => {

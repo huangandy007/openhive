@@ -199,7 +199,8 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
     // 等的时候换了项目：这份回包与新项目无关。
     if (代 !== 代次) return false
     const 项 = 取草稿(path)
-    if (!项 || 项.content === 项.已存) return 成
+    // 与下面那条短路同一口径：冲突态下「正文==已存」不代表没有待办——强制保存仍要发出去。
+    if (!项 || (项.content === 项.已存 && 项.status !== "conflict")) return 成
     return 立即保存(path, 强制)
   }
 
@@ -210,7 +211,10 @@ export async function 立即保存(path: string, 强制 = false): Promise<boolea
   // ⚠️ 必须排在「没有未保存的字」短路之前：否则切预览会把 conflict 悄悄洗成 clean。
   if (项.status === "conflict" && !强制) return false
 
-  if (项.content === 项.已存) {
+  // ⚠️ `conflict` 排除在外：用户把字撤回到 `已存` 不等于冲突解决了。此时强制保存必须真的
+  // 发一次请求，由服务端决定成功还是再 STALE（2026-10-19 复审 I1）——否则「盘上已变」被吞掉、
+  // 界面假 clean，继续编辑后下一次保存又会撞。
+  if (项.content === 项.已存 && 项.status !== "conflict") {
     if (项.status !== "clean") {
       改表(path, (旧) => 旧 && { ...旧, status: "clean", message: undefined })
     }
