@@ -331,17 +331,23 @@ export async function 载入盘上版本(path: string): Promise<boolean> {
   const load = 出口表.get(path)?.load
   if (!load) return false
   const 代 = 代次
+  // 失败的载入把序号还回去：否则它会顶掉在飞保存的序号，保存回包被作废、草稿卡在 saving。
+  const 旧序 = 操作序.get(path) ?? 0
   const 序 = 取序(path)
   let 内容
   try {
     内容 = await load(path)
   } catch (原因) {
+    if (代 === 代次 && 操作序.get(path) === 序) 操作序.set(path, 旧序)
     console.warn(`[openhive] 读取盘上版本没走通（${path}）`, 原因)
     return false
   }
   // 读的过程中可能换了项目，或用户又点了一次保存 / 载入：这份回包已经过期。
   if (代 !== 代次 || 操作序.get(path) !== 序) return false
-  if (内容?.type !== "text") return false
+  if (内容?.type !== "text") {
+    操作序.set(path, 旧序)
+    return false
+  }
   清定时器(path)
   // 读口回来的 content 正是服务端比对用的 base（BOM / 首尾空白已削、CRLF 保留）。
   改表(

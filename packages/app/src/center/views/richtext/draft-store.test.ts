@@ -135,11 +135,15 @@ describe("自动保存", () => {
 
   test("一直不停手也不会超过上限：上限从第一笔改动算起，且只存一次", async () => {
     设自动保存参数({ 延迟: 1000, 上限: 100 })
-    const { save, 收到 } = 装存盘(({ content }) => ({ ok: true, base: content }))
+    let 派发时刻 = 0
+    const { save, 收到 } = 装存盘(({ content }) => {
+      派发时刻 = Date.now()
+      return { ok: true, base: content }
+    })
     登记出口("a.md", { save })
     开始编辑("a.md", { content: "原文", base: "原文" })
 
-    const 起 = Date.now()
+    const 首改 = Date.now()
     let 最新 = "原文"
     for (let i = 0; i < 8; i++) {
       最新 = `改${i}`
@@ -147,9 +151,10 @@ describe("自动保存", () => {
       await 等(10)
     }
 
-    // 若每次击键都把「首改」重置，保存会被推到停手后 100ms（约 180ms），轮询会超时。
-    expect(await 直到(() => 收到.length > 0, 160)).toBe(true)
-    expect(Date.now() - 起).toBeLessThan(160)
+    // 用 save 被调用的真实时刻做基准，不受「循环本身被调度拖慢」影响：
+    // 正确实现约在首改 + 100ms 派发；若每次击键重置「首改」，会被推到约首改 + 180ms。
+    expect(await 直到(() => 收到.length > 0, 300)).toBe(true)
+    expect(派发时刻 - 首改).toBeLessThanOrEqual(130)
     expect(收到).toHaveLength(1)
     expect(收到[0].content).toBe(最新)
 
@@ -475,6 +480,70 @@ describe("拒绝与冲突", () => {
     expect(取草稿("a.md")).toMatchObject({
       content: "乙",
       base: "乙-底本",
+      已存: "乙",
+      status: "clean",
+    })
+  })
+
+  test("保存回包要被更晚开始的载入作废", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((r) => (放行 = r))
+    let 存已发 = false
+    登记出口("a.md", {
+      save: async (_path, content) => {
+        存已发 = true
+        await 闸门
+        return { ok: true, base: `${content}-保存回包` }
+      },
+      load: async () => ({ type: "text", content: "盘上新版本" }),
+    })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+
+    // 保存先发（挂起）。
+    const 存 = 立即保存("a.md")
+    expect(await 直到(() => 存已发, 500)).toBe(true)
+
+    // 载入后发但先完成，把草稿换成盘上那份并置 clean。
+    expect(await 载入盘上版本("a.md")).toBe(true)
+    expect(取草稿("a.md")?.content).toBe("盘上新版本")
+
+    // 放行保存：它的回包属于更早的操作，不许覆盖载入建立的状态。
+    放行()
+    expect(await 存).toBe(false)
+    expect(取草稿("a.md")).toMatchObject({
+      content: "盘上新版本",
+      base: "盘上新版本",
+      已存: "盘上新版本",
+      status: "clean",
+    })
+  })
+
+  test("载入失败不许消耗操作序：在飞保存的回包仍要生效", async () => {
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((r) => (放行 = r))
+    let 存已发 = false
+    登记出口("a.md", {
+      save: async (_path, content) => {
+        存已发 = true
+        await 闸门
+        return { ok: true, base: `${content}-保存回包` }
+      },
+      // 非 text 是「载入失败」的一种；它不该把在飞保存的操作序顶掉。
+      load: async () => ({ type: "binary", content: "AA==" }),
+    })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "乙", 选(1))
+
+    const 存 = 立即保存("a.md")
+    expect(await 直到(() => 存已发, 500)).toBe(true)
+    expect(await 载入盘上版本("a.md")).toBe(false)
+
+    放行()
+    expect(await 存).toBe(true)
+    expect(取草稿("a.md")).toMatchObject({
+      content: "乙",
+      base: "乙-保存回包",
       已存: "乙",
       status: "clean",
     })
