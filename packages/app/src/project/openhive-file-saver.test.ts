@@ -36,11 +36,17 @@ describe("createSaveProjectFile", () => {
   test("当前项目在场 ⇒ 走写出口，带项目头，三个字段各就各位", async () => {
     setCurrentProject({ id: PROJECT, name: "8·17 案" })
     const { send, 收到 } = 替身(
-      new Response('{"path":"资料/甲.txt"}', { status: 200, headers: { "content-type": "application/json" } }),
+      new Response('{"path":"资料/甲.txt","base":"改后的正文"}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
     )
     const save = createSaveProjectFile(send)
 
-    expect(await save("资料/甲.txt", "改后的正文", "读回来那份")).toEqual({ ok: true })
+    expect(await save("资料/甲.txt", "改后的正文", "读回来那份")).toEqual({
+      ok: true,
+      base: "改后的正文",
+    })
     expect(收到).toHaveLength(1)
     expect(收到[0].url).toBe("/openhive/file/write")
     expect(收到[0].method).toBe("POST")
@@ -48,6 +54,34 @@ describe("createSaveProjectFile", () => {
     // ⚠️ `base` 必须**逐字**是调用方给的那份：它是服务端比对「盘上这份变过没有」的依据，
     // 这一层要是顺手 trim 一下或换成 `content`，比对就永远不成立（同 `openhive-file-ops.test.ts`）。
     expect(JSON.parse(String(收到[0].body))).toEqual({ path: "资料/甲.txt", content: "改后的正文", base: "读回来那份" })
+  })
+
+  test("回包没带 base（旧内核）⇒ 用 content.trim() 兜底，不把保存判失败", async () => {
+    setCurrentProject({ id: PROJECT, name: "8·17 案" })
+    const { send } = 替身(
+      new Response('{"path":"资料/甲.txt"}', { status: 200, headers: { "content-type": "application/json" } }),
+    )
+
+    expect(await createSaveProjectFile(send)("资料/甲.txt", "  改后的正文  ", "读回来那份")).toEqual({
+      ok: true,
+      base: "改后的正文",
+    })
+  })
+
+  test("拒绝时把 code 透传给视图", async () => {
+    setCurrentProject({ id: PROJECT, name: "8·17 案" })
+    const { send } = 替身(
+      new Response(JSON.stringify({ error: "被改过", code: "STALE" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    )
+
+    expect(await createSaveProjectFile(send)("资料/甲.txt", "改后的正文", "读回来那份")).toEqual({
+      ok: false,
+      message: "被改过",
+      code: "STALE",
+    })
   })
 
   /**

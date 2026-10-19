@@ -145,7 +145,7 @@ describe("中栏内容区：激活的 tab → 扩展名 → 视图注册表 → 
    * 本用例钉的是**本组件这一跳**，其余三跳由真栈那条（改 → 存 → 重开看得见新正文）钉。
    */
   test("中栏把存盘接缝注入给视图（视图拿不到它就只能只读）", async () => {
-    const { 视图, 开 } = setUp({ load: async () => undefined, save: async () => ({ ok: true }) })
+    const { 视图, 开 } = setUp({ load: async () => undefined, save: async () => ({ ok: true, base: "" }) })
 
     await 开(专案)
 

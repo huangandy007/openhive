@@ -183,7 +183,7 @@ describe("同一只容器先后装两种内容：记号以后写的为准", () =
 function 挂编辑器(
   正文: string | readonly string[],
   选项: {
-    保存结果?: { ok: true } | { ok: false; message: string }
+    保存结果?: { ok: true; base: string } | { ok: false; message: string }
     保存抛?: boolean
     /** 让这一次保存在这里挂住（判「第一下还没回来时再点一下」用）。 */
     保存等着?: () => Promise<void>
@@ -207,7 +207,7 @@ function 挂编辑器(
         交出去的.push({ path, content, base })
         if (选项.保存等着) await 选项.保存等着()
         if (选项.保存抛) throw new Error("断网了")
-        return 选项.保存结果 ?? { ok: true }
+        return 选项.保存结果 ?? { ok: true, base: "" }
       }}
     />
   ))
@@ -263,7 +263,7 @@ describe("图文视图 · 编辑与保存（2026-10-12）", () => {
       <RichtextView
         path="/p/摘录.txt"
         load={async () => ({ type: "binary", content: "AAEC", encoding: "base64" })}
-        save={async () => ({ ok: true })}
+        save={async () => ({ ok: true, base: "" })}
       />
     ))
     await 落定()
@@ -543,7 +543,7 @@ describe("图文视图 · 正文字号（2026-10-12 ③）", () => {
       <RichtextView
         path="/p/卷宗.docx"
         load={async () => ({ type: "binary", content: "AAEC", encoding: "base64" })}
-        save={async () => ({ ok: true })}
+        save={async () => ({ ok: true, base: "" })}
       />
     ))
     await 落定()

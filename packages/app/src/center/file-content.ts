@@ -40,7 +40,19 @@ export type LoadFileContent = (path: string) => Promise<FileContent | undefined>
  * 本文件从第一天起就是**视图与取数之间的那道缝**（见文件头）：视图不该被别层的形状绑住。
  * 折这一道写在 `@/project/openhive-file-saver`（挨着它折的那个 `FileOpOutcome`）。
  */
-export type SaveFileResult = { ok: true } | { ok: false; message: string }
+/**
+ * 存一份文件的正文——成没成的**两种**结论。
+ *
+ * 成功时 `base` 是服务端回报的**落盘后的新底本**（与读口同一套 trim / CRLF 口径）。
+ * 客户端**不许**用 `content.trim()` 自己算：CRLF 文件上算出来的是 LF，下一次保存会被
+ * 服务端判成「这份文件被改过」（假冲突）。旧内核不回 `base` 时由
+ * `openhive-file-saver` 回退到 `content.trim()`，那是降级、不是正路。
+ *
+ * 失败时的 `code` 是机器可读的原因（目前只有 `STALE`）；`message` 仍是给人看的那句话。
+ */
+export type SaveFileResult =
+  | { ok: true; base: string }
+  | { ok: false; message: string; code?: string }
 
 /**
  * 把一份文件的正文存回盘上。

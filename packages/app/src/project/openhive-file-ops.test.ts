@@ -73,6 +73,8 @@ const 成功 = (path = "资料/话单.csv") =>
   new Response(JSON.stringify({ path }), { headers: { "content-type": "application/json" } })
 const 拒绝 = (status: number, message: string) =>
   new Response(JSON.stringify({ error: message }), { status, headers: { "content-type": "application/json" } })
+const 带底本 = (path: string, base: string) =>
+  new Response(JSON.stringify({ path, base }), { headers: { "content-type": "application/json" } })
 /** 出口没挂上：UI 的 `/*` 兜底。 */
 const 兜底页 = () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } })
 /**
@@ -979,6 +981,41 @@ describe("saveFile（第 9 个出口：正文存回盘上）", () => {
   })
 
   test("200 且体里有 path ⇒ done，把路径带回去", async () => {
+    const { send } = stub(() => 成功("资料/摘录.txt"))
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "done",
+      path: "资料/摘录.txt",
+    })
+  })
+
+  test("200 且带 base ⇒ done 把新底本一起带回去", async () => {
+    const { send } = stub(() => 带底本("资料/摘录.txt", "第二行\r\n第三行"))
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行\n第三行", "第一行", send)).toEqual({
+      kind: "done",
+      path: "资料/摘录.txt",
+      base: "第二行\r\n第三行",
+    })
+  })
+
+  test("400 带 code ⇒ rejected 把机器码一起带回去", async () => {
+    const { send } = stub(
+      () =>
+        new Response(JSON.stringify({ error: "被改过", code: "STALE" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+    )
+
+    expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({
+      kind: "rejected",
+      message: "被改过",
+      code: "STALE",
+    })
+  })
+
+  test("200 但没 base（旧内核）⇒ done 不带 base，不伪造", async () => {
     const { send } = stub(() => 成功("资料/摘录.txt"))
 
     expect(await saveFile(PROJECT, "资料/摘录.txt", "第二行", "第一行", send)).toEqual({

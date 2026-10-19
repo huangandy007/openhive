@@ -206,8 +206,8 @@ function responseOf(xhr: XhrLike): Response | undefined {
  * 去改文件名（同 `openhive-project.ts`）。
  */
 export type FileOpOutcome =
-  | { kind: "done"; path: string }
-  | { kind: "rejected"; message: string }
+  | { kind: "done"; path: string; base?: string }
+  | { kind: "rejected"; message: string; code?: string }
   | { kind: "failed"; message: string }
 
 const COPY_FAILED = "复制文件失败"
@@ -574,7 +574,11 @@ async function outcomeOf(response: Response | undefined, failed: string): Promis
     const body = await readJson(response)
     // 服务端说了为什么就用它那句，没说（空体）才用兜底文案——前端不自己改写措辞，
     // 它不知道是哪一条规则挡下的（同 `openhive-project.ts`）。
-    return { kind: "rejected", message: messageOf(body) ?? failed }
+    return {
+      kind: "rejected",
+      message: messageOf(body) ?? failed,
+      ...(codeOf(body) === undefined ? {} : { code: codeOf(body)! }),
+    }
   }
   if (!response.ok) return { kind: "failed", message: failed }
 
@@ -582,7 +586,8 @@ async function outcomeOf(response: Response | undefined, failed: string): Promis
   const path = madePath(body)
   // 200 但没有 `path` ⇒ **不算办成**：调用方会以为文件去了某处，而服务端一个字都没说。
   if (path === undefined) return { kind: "failed", message: failed }
-  return { kind: "done", path }
+  const base = madeBase(body)
+  return base === undefined ? { kind: "done", path } : { kind: "done", path, base }
 }
 
 /** 服务端拒绝时那句 `{ error }`。非字符串 / 空串 / 压根没有，都当「没说」。 */
@@ -596,4 +601,17 @@ function messageOf(body: unknown): string | undefined {
 function madePath(body: unknown): string | undefined {
   if (!isRecord(body)) return undefined
   return typeof body.path === "string" ? body.path : undefined
+}
+
+/** 写出口成功时带回来的新底本。没有（旧内核 / 别的出口）就不带。 */
+function madeBase(body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined
+  return typeof body.base === "string" ? body.base : undefined
+}
+
+/** 拒绝时的机器码（目前只有 `STALE`）。非字符串 / 空串都当「没说」。 */
+function codeOf(body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined
+  const code = body.code
+  return typeof code === "string" && code.length > 0 ? code : undefined
 }

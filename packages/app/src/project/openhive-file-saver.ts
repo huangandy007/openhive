@@ -36,7 +36,13 @@ export function createSaveProjectFile(send: FileOpsFetch = defaultSend): SaveFil
     const id = currentProject()?.id
     if (id === undefined) return { ok: false, message: 没项目 }
     const 结论 = await saveFile(id, path, content, base, send)
-    return 结论.kind === "done" ? { ok: true } : { ok: false, message: 结论.message }
+    if (结论.kind !== "done") {
+      const code = 结论.kind === "rejected" ? 结论.code : undefined
+      return { ok: false, message: 结论.message, ...(code === undefined ? {} : { code }) }
+    }
+    // 旧内核不回 base：回退到 content.trim()。⚠️ 这是**降级**——CRLF 文件上它会让
+    // 下一次保存假冲突。新内核总会回 base，这条只在「前端新、内核旧」时走到。
+    return { ok: true, base: 结论.base ?? content.trim() }
   }
 }
 
