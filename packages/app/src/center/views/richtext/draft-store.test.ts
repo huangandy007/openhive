@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import type { SaveFileContent, SaveFileResult } from "@/center/file-content"
+import type { LoadFileContent, SaveFileContent, SaveFileResult } from "@/center/file-content"
 import {
   取草稿,
   改草稿,
@@ -483,6 +483,58 @@ describe("拒绝与冲突", () => {
       base: "盘上新底本",
       status: "clean",
     })
+  })
+
+  /**
+   * I2（2026-10-19 复审）：`载入盘上版本` 是冲突解决通道里唯一的出路，三条失败支路都
+   * 说一句话——只 `console.warn` 会把用户困在冲突态里反复点。
+   */
+  const 造冲突 = async (出口: { load?: LoadFileContent }) => {
+    const { save } = 装存盘({ ok: false, message: "被改过", code: "STALE" })
+    登记出口("a.md", { save })
+    if (出口.load) 登记出口("a.md", { load: 出口.load })
+    开始编辑("a.md", { content: "甲", base: "甲" })
+    改草稿("a.md", "我改的", 选(3))
+    await 立即保存("a.md")
+    expect(取草稿("a.md")?.status).toBe("conflict")
+    // 冲突说明本来就有；判据要的是「失败之后**换成了**另一句」，不是「有一句」。
+    return 取草稿("a.md")!.message
+  }
+
+  const 断言失败仍冲突 = (初说明: string | undefined) => {
+    const 项 = 取草稿("a.md")!
+    expect(项.message).toBeTruthy()
+    expect(项.message).not.toBe(初说明)
+    expect(项.status).toBe("conflict")
+    expect(项.content).toBe("我改的")
+  }
+
+  test("载入盘上版本失败：没有读取出口 ⇒ 有提示、仍是 conflict、正文不动", async () => {
+    const 初说明 = await 造冲突({})
+
+    expect(await 载入盘上版本("a.md")).toBe(false)
+
+    断言失败仍冲突(初说明)
+  })
+
+  test("载入盘上版本失败：load 抛错 ⇒ 有提示、仍是 conflict、正文不动", async () => {
+    const 初说明 = await 造冲突({
+      load: async () => {
+        throw new Error("读不到")
+      },
+    })
+
+    expect(await 载入盘上版本("a.md")).toBe(false)
+
+    断言失败仍冲突(初说明)
+  })
+
+  test("载入盘上版本失败：读回来不是文本 ⇒ 有提示、仍是 conflict、正文不动", async () => {
+    const 初说明 = await 造冲突({ load: async () => ({ type: "binary", content: "AA==" }) })
+
+    expect(await 载入盘上版本("a.md")).toBe(false)
+
+    断言失败仍冲突(初说明)
   })
 
   test("载入盘上版本：清空换项目后旧 load 回包不许覆盖新草稿", async () => {

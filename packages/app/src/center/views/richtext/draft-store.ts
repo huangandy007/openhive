@@ -351,7 +351,12 @@ export function 记盘上版本(path: string, 盘上: { content: string; base: s
 /** 冲突时用户选「载入盘上版本」：重新读一次，把草稿换成盘上那份。 */
 export async function 载入盘上版本(path: string): Promise<boolean> {
   const load = 出口表.get(path)?.load
-  if (!load) return false
+  if (!load) {
+    // I2：冲突解决通道里唯一的出路，失败必须说话——只 `console.warn` 会把用户困在冲突态。
+    // 只写 `message`：`status` 与 `content` 一律不动（spec：取不到就不动草稿、只报错）。
+    改表(path, (旧) => 旧 && { ...旧, message: "现在没有读取出口，草稿未动。" })
+    return false
+  }
   const 代 = 代次
   // 失败的载入把序号还回去：否则它会顶掉在飞保存的序号，保存回包被作废、草稿卡在 saving。
   const 旧序 = 操作序.get(path) ?? 0
@@ -360,7 +365,10 @@ export async function 载入盘上版本(path: string): Promise<boolean> {
   try {
     内容 = await load(path)
   } catch (原因) {
-    if (代 === 代次 && 操作序.get(path) === 序) 操作序.set(path, 旧序)
+    if (代 === 代次 && 操作序.get(path) === 序) {
+      操作序.set(path, 旧序)
+      改表(path, (旧) => 旧 && { ...旧, message: `读取盘上版本失败，草稿未动：${原因 instanceof Error ? 原因.message : String(原因)}` })
+    }
     console.warn(`[openhive] 读取盘上版本没走通（${path}）`, 原因)
     return false
   }
@@ -368,6 +376,7 @@ export async function 载入盘上版本(path: string): Promise<boolean> {
   if (代 !== 代次 || 操作序.get(path) !== 序) return false
   if (内容?.type !== "text") {
     操作序.set(path, 旧序)
+    改表(path, (旧) => 旧 && { ...旧, message: "读取盘上版本失败，草稿未动：读回来的不是文本。" })
     return false
   }
   清定时器(path)
