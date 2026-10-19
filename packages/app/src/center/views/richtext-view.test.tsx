@@ -4,7 +4,7 @@ import { render } from "solid-js/web"
 import { setProjectFiles } from "@/project/project-files"
 import { 默认字号, 设阅读字号 } from "./reading-size"
 import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
-import { 清空草稿, 设自动保存参数 } from "./richtext/draft-store"
+import { 取草稿, 清空草稿, 设自动保存参数 } from "./richtext/draft-store"
 
 const 字节 = (s: string) => new TextEncoder().encode(s)
 const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -651,6 +651,41 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
     await new Promise((r) => setTimeout(r, 30))
 
     expect(交出去的).toEqual(["切走前打的字"])
+  })
+
+  /**
+   * C1（2026-10-19 复审）：读口回来的正文保留 CRLF，而 `<textarea>` 的 API value / 选区是
+   * **LF 坐标**（HTML 规范）。`快照` 若拿 store 的 CRLF 正文拼 DOM 的 LF 选区，加粗会落在
+   * 换行符中间且把 `\r` 留在正文里——随后自动保存把损坏文本写盘。
+   *
+   * 判据落在两处：**textarea 的值**与 **store 的正文**（自动保存送出去的就是后一份）。
+   */
+  test("CRLF 正文：选中第二行点粗体 ⇒ 标记落在第二行，正文与 store 同为 LF", async () => {
+    const h = 挂编辑器("甲\r\n乙\r\n丙")
+    await 落定()
+    h.钮("edit")!.click()
+    await 落定()
+
+    const 框 = h.编辑框()!
+    // 选区坐标按**真浏览器**的口径给：`<textarea>` 的 value 是 LF，第二行「乙」在 2..3。
+    // ⚠️ happy-dom 不做 HTML 规范里那条 CRLF → LF 归一（实测它把 `\r\n` 原样留在 value 里），
+    // 所以这里不断言修复前的 value 形状——那是真栈那条用例的判据。本环境只钉「同一个数字
+    // 在 store 的 CRLF 正文上会切到换行符里」这件事。
+    框.setSelectionRange(2, 3)
+
+    h.钮("bold")!.click()
+    await 落定()
+
+    expect(h.编辑框()?.value).toBe("甲\n**乙**\n丙")
+    expect(取草稿("/p/摘录.md")?.content).toBe("甲\n**乙**\n丙")
+
+    // 再点一次拆掉（选区回到「乙」上，坐标 4..5）。
+    h.编辑框()!.setSelectionRange(4, 5)
+    h.钮("bold")!.click()
+    await 落定()
+
+    expect(h.编辑框()?.value).toBe("甲\n乙\n丙")
+    expect(取草稿("/p/摘录.md")?.content).toBe("甲\n乙\n丙")
   })
 
   test("工具栏加粗再点一次 ⇒ 拆掉（切换语义）", async () => {

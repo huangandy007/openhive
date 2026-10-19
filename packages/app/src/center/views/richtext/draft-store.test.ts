@@ -56,6 +56,21 @@ describe("草稿状态", () => {
     })
   })
 
+  /**
+   * C1（2026-10-19 复审）：`<textarea>` 的选区是 **LF 坐标**（HTML 规范把 CRLF 折成 LF），
+   * 而读口交回来的正文保留 CRLF。正文若原样留在 store 里，工具栏动作会把两者拼在一起。
+   * ⇒ 正文与 `已存` 一律归一成 LF；`base` 是**并发比对口径**，保持服务端原样（CRLF）。
+   */
+  test("开始编辑：正文与已存归一成 LF，base 保持服务端原样", () => {
+    开始编辑("a.md", { content: "甲\r\n乙", base: "甲\r\n乙" })
+
+    expect(取草稿("a.md")).toMatchObject({
+      content: "甲\n乙",
+      已存: "甲\n乙",
+      base: "甲\r\n乙",
+    })
+  })
+
   test("只移光标不算改；正文变了才 dirty", () => {
     开始编辑("a.md", { content: "原文", base: "原文" })
 
@@ -384,6 +399,26 @@ describe("拒绝与冲突", () => {
     expect(取草稿("a.md")?.status).toBe("clean")
   })
 
+  test("载入盘上版本：正文与已存归一成 LF，base 保持服务端原样（CRLF）", async () => {
+    登记出口("a.md", {
+      save: async () => ({ ok: false, message: "被改过", code: "STALE" }),
+      load: async () => ({ type: "text", content: "盘上\r\n原文" }),
+    })
+    开始编辑("a.md", { content: "甲\r\n乙", base: "甲\r\n乙" })
+    改草稿("a.md", "乙", 选(1))
+    await 立即保存("a.md")
+    expect(取草稿("a.md")?.status).toBe("conflict")
+
+    expect(await 载入盘上版本("a.md")).toBe(true)
+
+    expect(取草稿("a.md")).toMatchObject({
+      content: "盘上\n原文",
+      已存: "盘上\n原文",
+      base: "盘上\r\n原文",
+      status: "clean",
+    })
+  })
+
   test("载入盘上版本：重新 load，正文与底本都换成盘上那份", async () => {
     const save: SaveFileContent = async () => {
       return { ok: false, message: "被改过", code: "STALE" }
@@ -581,6 +616,27 @@ describe("预览与盘上版本", () => {
 
     expect(取草稿("a.md")?.content).toBe("甲2")
     expect(取草稿("a.md")?.base).toBe("甲2")
+  })
+
+  test("记盘上版本：正文与已存归一成 LF，base 保持服务端原样（CRLF）", () => {
+    const 盘上 = "甲\r\n乙\r\n丙"
+    记盘上版本("a.md", { content: 盘上, base: 盘上 })
+
+    expect(取草稿("a.md")).toMatchObject({
+      content: "甲\n乙\n丙",
+      已存: "甲\n乙\n丙",
+      base: 盘上,
+    })
+
+    // 预览 clean 覆盖那条分支也要归一；底本仍是服务端原样。
+    const 新盘上 = "甲\r\n丁"
+    记盘上版本("a.md", { content: 新盘上, base: 新盘上 })
+
+    expect(取草稿("a.md")).toMatchObject({
+      content: "甲\n丁",
+      已存: "甲\n丁",
+      base: 新盘上,
+    })
   })
 
   test("编辑态的底本变了 ⇒ conflict（别人的改动不静默盖掉）", () => {

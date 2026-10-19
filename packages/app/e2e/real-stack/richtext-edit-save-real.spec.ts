@@ -246,6 +246,49 @@ test("改一处存回去 ⇒ 盘上是「新正文 ＋ 原样信封」（BOM / C
 })
 
 /**
+ * C1（2026-10-19 复审）：CRLF 文件上「选中一段 → 点粗体」曾经把 store 的 CRLF 正文与
+ * textarea 的 LF 选区拼在一起，改错位置并在自动保存后写盘。
+ *
+ * 这一条走**真 `<textarea>`**：选区由 DOM 给（LF 坐标），落盘的字节由内核按**盘上原文**
+ * 的行尾风格还原。三件事一起钉：只有目标行被包裹、盘上仍然**全部是 CRLF**、没有任何裸 LF。
+ */
+test("CRLF 文件：选中第二行点粗体后保存 ⇒ 盘上仍是全 CRLF，且只有目标行被包裹", async ({ page, context }) => {
+  const 甲 = await 开一篇md(page, context, `编辑·CRLF·${Date.now()}`)
+  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await 点钮(page, "edit")
+
+  const 框 = page.locator("[data-slot='richtext-editor']")
+  // textarea 的 value 是 LF 坐标（HTML 规范）：「# 纪要\n\n第一行」。
+  const 坐标 = await 框.evaluate((el) => {
+    const t = el as HTMLTextAreaElement
+    const 值 = t.value
+    const 起 = 值.indexOf("第一行")
+    t.focus()
+    t.setSelectionRange(起, 起 + "第一行".length)
+    return { 起, 值 }
+  })
+  expect(坐标.值, "textarea 里应当是 LF 口径的读回正文").toBe("# 纪要\n\n第一行")
+
+  await 点钮(page, "bold")
+  await expect(框).toHaveValue("# 纪要\n\n**第一行**")
+  await 点钮(page, "save")
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "clean", {
+    timeout: 30_000,
+  })
+
+  const 实得 = 读盘(甲.文件)
+  // 逐字节比：BOM ＋ 全 CRLF 的正文 ＋ 尾部空行；只有「第一行」被 ** 包住。
+  expect(实得, "盘上实得：" + JSON.stringify(实得.toString("utf8"))).toEqual(
+    Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("# 纪要\r\n\r\n**第一行**\r\n\r\n\r\n", "utf8")]),
+  )
+  const 文本 = 实得.toString("utf8")
+  expect(
+    (文本.match(/\r\n/g) ?? []).length,
+    `盘上不许有裸 LF（实得：${JSON.stringify(文本)}）`,
+  ).toBe((文本.match(/\n/g) ?? []).length)
+})
+
+/**
  * 民警的原话是「打开的文件不能**编辑**」——所以得有一条**真的拿键盘打字**的用例。
  *
  * ⚠️ 上一条用的是 `.fill()`：它**先聚焦再直接置值**（`LEARNINGS #005-17`），所以它绿着也

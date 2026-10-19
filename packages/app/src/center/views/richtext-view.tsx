@@ -280,7 +280,10 @@ export const RichtextView: ViewComponent = (props) => {
     const 当前 = 项()
     const 框引用 = 框
     if (!当前 || !框引用) return undefined
-    return { value: 当前.content, start: 框引用.selectionStart, end: 框引用.selectionEnd }
+    // `value` 必须取自 DOM：`selectionStart/End` 是 `<textarea>` 的**规范化值**（LF）里的
+    // 坐标，而 store 的正文也是 LF（见 `draft-store` 的 `正文口径`）。取 `当前.content`
+    // 在 CRLF 文件上会让正文与选区不同坐标（2026-10-19 复审 C1）。
+    return { value: 框引用.value, start: 框引用.selectionStart, end: 框引用.selectionEnd }
   }
 
   const 做动作 = (动作: 编辑动作) => {
@@ -458,9 +461,9 @@ export const RichtextView: ViewComponent = (props) => {
             }}
             onSelect={(事件) => {
               const el = 事件.currentTarget
-              const 当前 = 项()
-              if (!当前) return
-              改草稿(props.path, 当前.content, { start: el.selectionStart, end: el.selectionEnd })
+              if (!项()) return
+              // 正文与选区都取 DOM：同一个坐标口径（LF），与 `快照` 一致。
+              改草稿(props.path, el.value, { start: el.selectionStart, end: el.selectionEnd })
             }}
             onKeyDown={按键}
             onDragOver={(事件) => 事件.preventDefault()}

@@ -50,6 +50,19 @@ interface 出口 {
   load?: LoadFileContent
 }
 
+/**
+ * 正文口径：store 里的正文**一律 LF**。
+ *
+ * 读口交回来的正文保留盘上的行尾风格（CRLF），而 `<textarea>` 的 API value / 选区是 **LF
+ * 坐标**（HTML 规范把 CRLF 折成 LF）。两者混用，工具栏动作会把 store 的 CRLF 正文与 DOM 的
+ * LF 偏移拼在一起——加粗落进换行符中间、行首动作改错行，随后自动保存把损坏文本写盘
+ * （2026-10-19 复审 C1）。
+ *
+ * `base` **不归一**：它是并发比对口径，服务端比的是「盘上原文 vs base」，两边都必须是
+ * 磁盘上的形状。行尾保真由 `base` 与服务端负责（写口按盘上原文的行尾风格还原）。
+ */
+const 正文口径 = (文本: string) => 文本.replace(/\r\n?/g, "\n")
+
 const 出口表 = new Map<string, 出口>()
 const 定时器 = new Map<string, ReturnType<typeof setTimeout>>()
 /** 第一笔「与底本不同」的时刻——「上限」从它算起，不是从最后一次击键算起。 */
@@ -134,11 +147,13 @@ function 排(path: string): void {
 export function 开始编辑(path: string, 初始: { content: string; base: string }): void {
   改表(path, (旧) => {
     if (旧) return { ...旧, mode: "edit" }
+    const 正文 = 正文口径(初始.content)
     return {
       path,
-      content: 初始.content,
+      content: 正文,
+      // `base` 保持服务端原样（CRLF）：它是并发比对口径，见 `正文口径`。
       base: 初始.base,
-      已存: 初始.content,
+      已存: 正文,
       mode: "edit",
       status: "clean",
       selection: { start: 0, end: 0 },
@@ -299,24 +314,27 @@ export async function 切预览(path: string): Promise<boolean> {
  * - 编辑态：底本一致就什么都不做；**底本变了 ⇒ conflict**，绝不静默拿盘上版本盖掉用户手里的字。
  */
 export function 记盘上版本(path: string, 盘上: { content: string; base: string }): void {
+  // 正文一律 LF（见 `正文口径`）；`base` 保持服务端原样。
+  const 正文 = 正文口径(盘上.content)
   改表(path, (旧) => {
     if (!旧) {
       return {
         path,
-        content: 盘上.content,
+        content: 正文,
         base: 盘上.base,
-        已存: 盘上.content,
+        已存: 正文,
         mode: "preview",
         status: "clean",
         // 从预览进编辑时没有「上次的光标」，落到正文末尾（spec §7.2）；放 0 会让用户
         // 一点编辑就从第一个字开始背对刚才在看的地方。
-        selection: { start: 盘上.content.length, end: 盘上.content.length },
+        selection: { start: 正文.length, end: 正文.length },
       }
     }
     if (旧.mode === "preview" && 旧.status === "clean") {
-      if (旧.content === 盘上.content && 旧.base === 盘上.base) return 旧
-      return { ...旧, content: 盘上.content, base: 盘上.base, 已存: 盘上.content }
+      if (旧.content === 正文 && 旧.base === 盘上.base) return 旧
+      return { ...旧, content: 正文, base: 盘上.base, 已存: 正文 }
     }
+    // conflict 判定只比 `base`：那是「盘上变了没有」的口径，与正文归不归一无关。
     if (旧.base === 盘上.base) return 旧
     return {
       ...旧,
@@ -349,15 +367,17 @@ export async function 载入盘上版本(path: string): Promise<boolean> {
     return false
   }
   清定时器(path)
-  // 读口回来的 content 正是服务端比对用的 base（BOM / 首尾空白已削、CRLF 保留）。
+  // 读口回来的 content 正是服务端比对用的 base（BOM / 首尾空白已削、CRLF 保留）⇒ `base` 用
+  // 它原样，正文按 `正文口径` 归一（见 `正文口径`）。
+  const 正文 = 正文口径(内容.content)
   改表(
     path,
     (旧) =>
       旧 && {
         ...旧,
-        content: 内容.content,
+        content: 正文,
         base: 内容.content,
-        已存: 内容.content,
+        已存: 正文,
         status: "clean",
         message: undefined,
       },
