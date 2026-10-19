@@ -16,6 +16,7 @@ import {
   type 查找命中项,
 } from "./sheet-model"
 import { SheetControls, 表头格, 表头高, type 列对齐, type 列状态 } from "./sheet-controls"
+import { 拖拽选区, 选区转TSV } from "./sheet-drag"
 
 export interface SheetStore {
   readonly meta: SheetMeta
@@ -295,6 +296,19 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     element.scrollLeft = Math.max(0, Math.min(最大左, 目标))
   }
 
+  /**
+   * 拖选单元格 → 右栏会话框：用 TSV 覆盖浏览器默认的 `text/plain`。
+   * 默认载荷按块级元素换行（每格一行），一行数据被拆成多行（2026-10-19 用户实测反馈）。
+   * 矩形推导与序列化都在 `sheet-drag.ts`；这里只负责在 dragstart 这一拍写载荷。
+   */
+  const onDragStart = (event: DragEvent) => {
+    const root = 滚动元素
+    if (!root) return
+    const 矩形 = 拖拽选区(root, window.getSelection(), 显示行(), 可见列().map((column) => column.index))
+    if (!矩形) return
+    event.dataTransfer?.setData("text/plain", 选区转TSV(props.store.rows, 矩形.行, 矩形.列))
+  }
+
   createEffect(() => {
     const query = 查找词()
     props.store.rowsVersion()
@@ -467,6 +481,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
           }}
           data-slot="sheet-scroll"
           class="min-h-0 flex-1 overflow-auto"
+          onDragStart={onDragStart}
           onScroll={(event) => {
             // 恢复赋值引发的 scroll 不是用户主动滚动：既不写缓存，也不取消待恢复目标。
             if (正在恢复) return
@@ -549,6 +564,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
                           return (
                             <div
                               role="gridcell"
+                              data-col={column.index}
                               title={value() ?? ""}
                               class={`truncate border-r border-b border-v2-border-border-muted px-2 py-0 leading-7 text-12-regular text-v2-text-text-base ${对齐类(column.align)} ${
                                 当前键() === `${原始行()}:${column.index}`

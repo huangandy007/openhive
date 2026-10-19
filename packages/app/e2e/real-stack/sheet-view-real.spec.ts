@@ -433,6 +433,36 @@ test("5万行×40列：首屏、前 200 行、粘性表头、冻结行号", asyn
   expect(滚后窗口.数, `虚拟滚动应只渲染窗口内的行，实得 ${滚后窗口.数} 行`).toBeLessThan(100)
   console.log(`[实测] 滚到第 500 个数据行后：首行 data-row=${滚后窗口.首}，渲染 ${滚后窗口.数} 行`)
 
+  // 拖选两行两列 → dragstart 写出的 `text/plain` 必须是一行数据一条（字段用制表符）。
+  // 用**真浏览器 Range** 造选区：happy-dom 造不出真实 `intersectsNode`，组件测试只能垫假 Range，
+  // 矩形推导的真语义只有真栈能验。`DataTransfer` 也是真实例，读到的就是右栏会收到的载荷。
+  const 拖拽载荷 = await page.evaluate(() => {
+    const 行们 = [...document.querySelectorAll("[data-slot='sheet-row']")]
+    const 首行 = 行们[0]
+    const 次行 = 行们[1]
+    if (!(首行 instanceof HTMLElement) || !(次行 instanceof HTMLElement)) return null
+    const 格 = (row: HTMLElement, col: number) => row.querySelector<HTMLElement>(`[role='gridcell'][data-col='${col}']`)
+    const 起 = 格(首行, 0)
+    const 止 = 格(次行, 1)
+    if (!起 || !止) return null
+    const range = document.createRange()
+    range.setStart(起.firstChild ?? 起, 0)
+    range.setEnd(止.firstChild ?? 止, 止.textContent?.length ?? 0)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    const 载荷 = new DataTransfer()
+    document
+      .querySelector("[data-slot='sheet-scroll']")
+      ?.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: 载荷 }))
+    return 载荷.getData("text/plain")
+  })
+  expect(拖拽载荷, "dragstart 应写出 text/plain 载荷").not.toBeNull()
+  const 载荷行 = 拖拽载荷!.split("\n")
+  expect(载荷行, `拖拽载荷应一行数据一条，实得 ${JSON.stringify(拖拽载荷)}`).toHaveLength(2)
+  for (const line of 载荷行) expect(line.split("\t"), `字段应以制表符分隔，实得 ${JSON.stringify(line)}`).toHaveLength(2)
+  console.log(`[实测] 拖选两行两列的 text/plain 载荷：${JSON.stringify(拖拽载荷)}`)
+
   const 竖向 = await page.evaluate(() => {
     const 滚 = document.querySelector("[data-slot='sheet-scroll']")
     const 头 = document.querySelector("[data-slot='sheet-header']")

@@ -401,6 +401,50 @@ describe("列对齐", () => {
   })
 })
 
+describe("拖拽选区", () => {
+  test("拖到右栏的载荷是 TSV：一行数据一条、字段用制表符、不带表头", () => {
+    const { host, 卸 } = 挂()
+    const 原选区 = window.getSelection
+    try {
+      const 滚动 = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
+      const 行们 = 数据行(host)
+      const 格 = (row: HTMLElement, index: number) => row.querySelectorAll<HTMLElement>('[role="gridcell"]')[index]
+      // 模拟「从张三行拖到李四行、两列」的线性选区：行元素与各自的格都被覆盖。
+      const 选中 = new Set<Node>([
+        行们[0],
+        行们[1],
+        格(行们[0], 0),
+        格(行们[0], 1),
+        格(行们[1], 0),
+        格(行们[1], 1),
+      ])
+      Object.defineProperty(window, "getSelection", {
+        configurable: true,
+        writable: true,
+        value: () => ({
+          rangeCount: 1,
+          isCollapsed: false,
+          getRangeAt: () => ({ intersectsNode: (node: Node) => 选中.has(node) }),
+        }),
+      })
+      let 载荷: string | undefined
+      const event = new Event("dragstart", { bubbles: true, cancelable: true })
+      Object.defineProperty(event, "dataTransfer", {
+        value: {
+          setData: (type: string, value: string) => {
+            if (type === "text/plain") 载荷 = value
+          },
+        },
+      })
+      滚动.dispatchEvent(event)
+      expect(载荷).toBe("张三\t1200\n李四\t300")
+    } finally {
+      Object.defineProperty(window, "getSelection", { configurable: true, writable: true, value: 原选区 })
+      卸()
+    }
+  })
+})
+
 describe("筛选", () => {
   async function 打开筛选(host: HTMLElement, column: number) {
     const 漏斗 = 表头(host)?.querySelector<HTMLElement>(`[data-column="${column}"] [data-slot="sheet-col-filter"]`)
