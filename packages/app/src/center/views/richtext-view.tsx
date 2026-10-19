@@ -1,10 +1,11 @@
 import DOMPurify from "dompurify"
 import { marked } from "marked"
 import { createEffect, createSignal, Show } from "solid-js"
-import type { FileContent } from "@/center/file-content"
+import { decodeBytes, type FileContent, type LoadFileContent } from "@/center/file-content"
 import { extensionOf, type ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
 import { 阅读字号, 设阅读字号, 步进, 最大字号, 最小字号 } from "./reading-size"
+import { 引用路径 } from "./richtext/richtext-path"
 
 /**
  * 白名单只放 **Markdown 真能产出的**标签（外加 GFM 任务列表的 `input`）——比「先全放再删黑的」稳：
@@ -84,10 +85,99 @@ const 标 = (format: "markdown" | "text", container: HTMLElement) => {
   container.dataset.format = format
 }
 
-/** 把 Markdown 渲成 HTML 挂进容器。导出仅供测试直接驱动——生产路径是 `RichtextView`。 */
-export const renderMarkdown: BytesRenderer = async (bytes, container) => {
-  标("markdown", container)
-  container.innerHTML = sanitizeHtml(await marked.parse(解码(bytes)))
+/**
+ * 造一个 Markdown 渲染器。
+ *
+ * 不给 `path` / `load` 时就是原来的纯渲染（只读宿主、单元测试用它）。给了之后多两件事：
+ * ① 相对图片路径经 `load` 取字节、换成 object URL（`<img src="附件/图.png">` 原样交给浏览器会
+ *    去请求前门，而不是项目文件）；清理函数负责 revoke。
+ * ② 点相对链接**不整页跳走**——这个工作区是一张 SPA，跳到别处等于把民警正在做的事丢了。
+ *
+ * 图片取不到**不许**让整篇渲染失败：一篇纪要配图丢了，剩下几千字还得能看。
+ */
+export function 造Markdown渲染器(选项: { path?: string; load?: LoadFileContent } = {}): BytesRenderer {
+  return async (bytes, container) => {
+    标("markdown", container)
+    container.innerHTML = sanitizeHtml(await marked.parse(解码(bytes)))
+
+    // cleanup 可能在 `load` 还在飞的时候跑（切文件 / 切模式）。没有这个标志，晚到的回包会
+    // 往已经摘掉的 DOM 上写 src、并留下一个永远没人 revoke 的 object URL。
+    const 状态 = { 活着: true }
+    const 回收: string[] = []
+    if (选项.path && 选项.load) await 装图片(container, 选项.path, 选项.load, 回收, 状态)
+
+    const 点击 = (事件: MouseEvent) => {
+      const 链接 = (事件.target as Element | null)?.closest("a")
+      if (!链接) return
+      const href = 链接.getAttribute("href")
+      if (!href || href.startsWith("#")) return // 页内锚点交给浏览器
+      事件.preventDefault()
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+        window.open(href, "_blank", "noopener,noreferrer")
+        return
+      }
+      // 相对链接的基准是「当前文件所在目录」，不是页面 URL——打开它要另一条路由，
+      // 这里先不猜：拦住跳转，控制台留一句。
+      console.warn(`[openhive] 预览里的相对链接没有打开（${href}）`)
+    }
+    container.addEventListener("click", 点击)
+
+    return () => {
+      状态.活着 = false
+      container.removeEventListener("click", 点击)
+      for (const url of 回收) URL.revokeObjectURL(url)
+    }
+  }
+}
+
+/** 既有的纯渲染入口：只读宿主与单测继续用它。 */
+export const renderMarkdown: BytesRenderer = 造Markdown渲染器()
+
+const 图片类型: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".svg": "image/svg+xml",
+}
+
+async function 装图片(
+  container: HTMLElement,
+  当前文件: string,
+  load: LoadFileContent,
+  回收: string[],
+  状态: { 活着: boolean },
+): Promise<void> {
+  const 图们 = [...container.querySelectorAll<HTMLImageElement>("img[src]")]
+  await Promise.all(
+    图们.map(async (img) => {
+      const href = img.getAttribute("src")
+      if (!href) return
+      const 路径 = 引用路径(当前文件, href)
+      if (!路径) return
+      // 一张图读不到只影响它自己（见函数上那条注释）。
+      const 内容 = await load(路径).catch(() => undefined)
+      if (!状态.活着) return
+      const 字节 = decodeBytes(内容)
+      if (!字节) return
+      const 下缀 = 路径.slice(路径.lastIndexOf(".")).toLowerCase()
+      // 落点必须是图片：`decodeBytes` 能解出字节的也可能是被误判成 binary 的文本，
+      // 塞进 `<img>` 只会让整篇多一个破图（spec §13 风险表）。
+      const 类型 = 内容?.mimeType ?? 图片类型[下缀]
+      if (!类型 || !类型.startsWith("image/")) return
+
+      const url = URL.createObjectURL(new Blob([字节], { type: 类型 }))
+      if (!状态.活着) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      回收.push(url)
+      img.src = url
+      img.removeAttribute("srcset")
+    }),
+  )
 }
 
 /**

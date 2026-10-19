@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { 默认字号, 设阅读字号 } from "./reading-size"
-import { renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
+import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
 
 const 字节 = (s: string) => new TextEncoder().encode(s)
 const 落定 = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -103,6 +103,62 @@ describe("Markdown：渲染成 HTML，且按白名单净化", () => {
 
     expect(净).not.toContain("<form")
     expect(净).not.toContain("action")
+  })
+
+  test("相对图片路径经 load 取字节，换成 object URL；清理时 revoke", async () => {
+    const 原建 = URL.createObjectURL
+    const 原销 = URL.revokeObjectURL
+    const 建过: string[] = []
+    const 销过: string[] = []
+    URL.createObjectURL = () => {
+      const url = `blob:openhive-${建过.length}`
+      建过.push(url)
+      return url
+    }
+    URL.revokeObjectURL = (url: string) => 销过.push(url)
+    try {
+      const 容器 = document.createElement("div")
+      const 取过: string[] = []
+      const 清理 = await 造Markdown渲染器({
+        path: "卷宗/纪要.md",
+        load: async (path) => {
+          取过.push(path)
+          return { type: "binary", content: "AAEC", encoding: "base64", mimeType: "image/png" }
+        },
+      })(字节("![图](附件/图.png)"), 容器)
+
+      expect(取过).toEqual(["卷宗/附件/图.png"])
+      expect(容器.querySelector("img")?.getAttribute("src")).toBe("blob:openhive-0")
+      清理?.()
+      expect(销过).toEqual(["blob:openhive-0"])
+    } finally {
+      URL.createObjectURL = 原建
+      URL.revokeObjectURL = 原销
+    }
+  })
+
+  test("图片取不到时不把整篇文档打成渲染失败（剩下的正文还在）", async () => {
+    const 容器 = document.createElement("div")
+    await 造Markdown渲染器({
+      path: "卷宗/纪要.md",
+      load: async () => undefined,
+    })(字节("正文\n\n![图](没有.png)"), 容器)
+
+    expect(容器.textContent).toContain("正文")
+    expect(容器.querySelector("img")).not.toBeNull()
+  })
+
+  test("相对链接不整页跳走（点一下只拦默认行为）", async () => {
+    const 容器 = document.createElement("div")
+    容器.addEventListener("click", (事件) => 事件.preventDefault())
+    const 清理 = await 造Markdown渲染器({ path: "卷宗/纪要.md" })(字节("[别的文档](另一个.md)"), 容器)
+    const 链接 = 容器.querySelector("a")!
+
+    const 事件 = new MouseEvent("click", { bubbles: true, cancelable: true })
+    链接.dispatchEvent(事件)
+
+    expect(事件.defaultPrevented).toBe(true)
+    清理?.()
   })
 })
 
