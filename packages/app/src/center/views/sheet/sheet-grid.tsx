@@ -114,7 +114,10 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
   const [filters, setFilters] = createSignal(props.initial?.filters ?? [])
   const [sort, setSort] = createSignal(props.initial?.sort)
   const [scroll, setScroll] = createSignal({ top: props.initial?.scrollTop ?? 0, left: props.initial?.scrollLeft ?? 0 })
+  /** 交给虚拟器的滚动手柄：必须等元素插入文档后（见下方 ref 注释）。 */
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement>()
+  /** 组件内其余逻辑用的同一个元素：ref 当拍就有，不必等微任务。 */
+  let 滚动元素: HTMLDivElement | undefined
 
   const 可见列 = createMemo(() => 列.filter((column) => !column.hidden))
   const 模板 = createMemo(
@@ -178,7 +181,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
 
   const onFindKey = (event: KeyboardEvent) => {
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return
-    const root = scrollEl()
+    const root = 滚动元素
     const active = document.activeElement
     if (active && active !== document.body && !root?.contains(active)) return
     event.preventDefault()
@@ -232,7 +235,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     if (!待恢复 || 恢复帧 !== undefined) return
     恢复帧 = requestAnimationFrame(() => {
       恢复帧 = undefined
-      const element = scrollEl()
+      const element = 滚动元素
       if (element && 待恢复) 尝试恢复(element)
     })
   }
@@ -269,7 +272,7 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
   /** 纵向滚到命中行后，把命中列也带进视口（spec §7.4「命中项滚动到视口」）。 */
   const 滚到命中 = (hit: 查找命中项) => {
     滚到行(hit.row)
-    const element = scrollEl()
+    const element = 滚动元素
     if (!element) return
     const 可见 = 可见列()
     const 位置 = 可见.findIndex((column) => column.index === hit.col)
@@ -445,7 +448,16 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
         }
       >
         <div
-          ref={setScrollEl}
+          // ⚠️ 必须等元素插入文档后再交给虚拟器。Solid 用 `<template>` 克隆生成节点，克隆件在插入前
+          // `ownerDocument.defaultView` 为 null（2026-10-19 真栈实测）；TanStack 在这一刻记下
+          // scrollElement 后，`_willUpdate` 见元素没变就不再重挂 ResizeObserver / scroll 监听 ⇒
+          // 虚拟器永远停在 `initialRect` 的 600px（≈30 行），滚动时渲染窗口不动。微任务在本次渲染
+          // （含插入、收养）之后才跑，此时 `defaultView` 已是窗口（`LEARNINGS #005-48` 同族：
+          // ref 拿到的是未挂载节点）。
+          ref={(el) => {
+            滚动元素 = el
+            queueMicrotask(() => setScrollEl(el))
+          }}
           data-slot="sheet-scroll"
           class="min-h-0 flex-1 overflow-auto"
           onScroll={(event) => {

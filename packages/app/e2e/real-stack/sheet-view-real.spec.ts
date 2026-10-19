@@ -417,6 +417,22 @@ test("5万行×40列：首屏、前 200 行、粘性表头、冻结行号", asyn
     .toBeGreaterThanOrEqual(600)
   await 滚到(page, { top: 500 * 28 })
   await 下一帧(page)
+
+  // 虚拟滚动的**本质**是「渲染窗口跟着滚动位置前移」；只断 `scrollTop` 变没变，浏览器里行
+  // 仍钉在 1–30 也会全绿（2026-10-19 实测：41578 行全载、滚动条全长，但首行永远是 1）。
+  // 等条件不等时间：滚到第 500 个数据行后，渲染窗口里必须出现 `data-row=501`。
+  // ⚠️ 用一条属性选择器直接找行；`数据行(page).locator("[data-row='501']")` 找的是行的**后代**，
+  // 永远为 0（一次假红，2026-10-19 实得窗口 493–532 却 count=0）。
+  await expect
+    .poll(async () => page.locator("[data-slot='sheet-row'][data-row='501']").count(), { timeout: 5_000 })
+    .toBeGreaterThan(0)
+  const 滚后窗口 = await page.evaluate(() => {
+    const 行们 = [...document.querySelectorAll("[data-slot='sheet-row']")]
+    return { 首: 行们[0]?.getAttribute("data-row") ?? null, 数: 行们.length }
+  })
+  expect(滚后窗口.数, `虚拟滚动应只渲染窗口内的行，实得 ${滚后窗口.数} 行`).toBeLessThan(100)
+  console.log(`[实测] 滚到第 500 个数据行后：首行 data-row=${滚后窗口.首}，渲染 ${滚后窗口.数} 行`)
+
   const 竖向 = await page.evaluate(() => {
     const 滚 = document.querySelector("[data-slot='sheet-scroll']")
     const 头 = document.querySelector("[data-slot='sheet-header']")

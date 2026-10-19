@@ -246,6 +246,9 @@ describe("滚动位置恢复", () => {
     try {
       const scroll = host.querySelector<HTMLElement>('[data-slot="sheet-scroll"]')!
       const 视口 = 造滚动视口(scroll, 视口量(store))
+      // 虚拟器在 ref 的微任务里才接管滚动元素（`sheet-grid.tsx` 的 ref 注释）；真实用户
+      // 滚动不可能发生在渲染当拍。等一拍再模拟，才对应现实时序。
+      await new Promise((r) => setTimeout(r, 0))
       视口.设({ top: 3000 })
       scroll.dispatchEvent(new Event("scroll"))
       expect(视口.读().top).toBe(3000)
