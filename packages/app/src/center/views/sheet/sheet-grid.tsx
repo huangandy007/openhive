@@ -306,7 +306,9 @@ export function SheetGrid(props: SheetGridProps): JSX.Element {
     if (!root) return
     const 矩形 = 拖拽选区(root, window.getSelection(), 显示行(), 可见列().map((column) => column.index))
     if (!矩形) return
-    event.dataTransfer?.setData("text/plain", 选区转TSV(props.store.rows, 矩形.行, 矩形.列))
+    // 表头取表格里显示的那一份列名，与用户眼前一致（含「首行是表头」开关后的结果）。
+    const 表头 = 矩形.列.map((index) => 列[index]?.name ?? "")
+    event.dataTransfer?.setData("text/plain", 选区转TSV(props.store.rows, 矩形.行, 矩形.列, 表头))
   }
 
   createEffect(() => {

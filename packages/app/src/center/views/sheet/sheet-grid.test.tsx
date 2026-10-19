@@ -402,7 +402,7 @@ describe("列对齐", () => {
 })
 
 describe("拖拽选区", () => {
-  test("拖到右栏的载荷是 TSV：一行数据一条、字段用制表符、不带表头", () => {
+  test("拖到右栏的载荷是 TSV：第一行是字段名，其后一行数据一条", () => {
     const { host, 卸 } = 挂()
     const 原选区 = window.getSelection
     try {
@@ -437,7 +437,7 @@ describe("拖拽选区", () => {
         },
       })
       滚动.dispatchEvent(event)
-      expect(载荷).toBe("张三\t1200\n李四\t300")
+      expect(载荷).toBe("姓名\t金额\n张三\t1200\n李四\t300")
     } finally {
       Object.defineProperty(window, "getSelection", { configurable: true, writable: true, value: 原选区 })
       卸()

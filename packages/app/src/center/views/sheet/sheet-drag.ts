@@ -18,13 +18,18 @@ const 清洗单元格 = (value: Cell | undefined) => (value ?? "").replace(/[\t\
  * @param rows 原始行数据（`store.rows`），下标是原始行号
  * @param 行   选中的原始行号（显示序由调用方排好）
  * @param 列   选中的列号（按显示序）
+ * @param 表头 所选列的字段名（与 `列` 一一对应）。给了就占第一行——模型靠它知道
+ *             每个字段是什么，不用猜；不给则保持纯数据载荷。
  */
 export function 选区转TSV(
   rows: readonly (readonly Cell[])[],
   行: readonly number[],
   列: readonly number[],
+  表头?: readonly string[],
 ): string {
-  return 行.map((row) => 列.map((col) => 清洗单元格(rows[row]?.[col])).join("\t")).join("\n")
+  const 数据行 = 行.map((row) => 列.map((col) => 清洗单元格(rows[row]?.[col])).join("\t"))
+  if (!表头) return 数据行.join("\n")
+  return [表头.map((name) => 清洗单元格(name)).join("\t"), ...数据行].join("\n")
 }
 
 /** 选区只需要这两下：判断节点是否被选中、是否为空。 */

@@ -459,9 +459,11 @@ test("5万行×40列：首屏、前 200 行、粘性表头、冻结行号", asyn
   })
   expect(拖拽载荷, "dragstart 应写出 text/plain 载荷").not.toBeNull()
   const 载荷行 = 拖拽载荷!.split("\n")
-  expect(载荷行, `拖拽载荷应一行数据一条，实得 ${JSON.stringify(拖拽载荷)}`).toHaveLength(2)
+  // 表头行 + 两条数据：模型靠第一行知道每个字段是什么。
+  expect(载荷行, `拖拽载荷应为「表头 + 两行数据」，实得 ${JSON.stringify(拖拽载荷)}`).toHaveLength(3)
+  expect(载荷行[0], "第一行应是所选两列的字段名").toBe("编号\t类别")
   for (const line of 载荷行) expect(line.split("\t"), `字段应以制表符分隔，实得 ${JSON.stringify(line)}`).toHaveLength(2)
-  console.log(`[实测] 拖选两行两列的 text/plain 载荷：${JSON.stringify(拖拽载荷)}`)
+  console.log(`[实测] 拖选两行两列的 text/plain 载荷（含表头）：${JSON.stringify(拖拽载荷)}`)
 
   const 竖向 = await page.evaluate(() => {
     const 滚 = document.querySelector("[data-slot='sheet-scroll']")
