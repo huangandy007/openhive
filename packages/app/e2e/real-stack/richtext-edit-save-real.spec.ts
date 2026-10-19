@@ -135,12 +135,24 @@ async function 进项目(page: Page, context: BrowserContext, id: string) {
 const 行 = (page: Page, 路径: string) =>
   page.locator(`[data-slot='sandbox-tree'] [data-slot='file-tree-row'][data-path='${路径}']`)
 
-/** 备一个项目、一篇 md（带信封地写到盘上），并在中栏把它打开。 */
-async function 开一篇md(page: Page, context: BrowserContext, 项目名: string) {
+/**
+ * 备一个项目、一篇 md（带信封地写到盘上），并在中栏把它打开。
+ *
+ * `同目录另写` 的键是**相对 `卷宗/` 的文件名**，值是要写的字节。必须**在 `进项目` 之前**
+ * 写盘：文件树只在启动时与文件动作后取清单，页面跑起来之后往里塞文件它看不见；而
+ * `page.reload()` 会清掉内存里的草稿，测「切文件草稿还在」时不能用重载来刷树。
+ */
+async function 开一篇md(
+  page: Page,
+  context: BrowserContext,
+  项目名: string,
+  同目录另写: Record<string, Buffer | string> = {},
+) {
   const 甲 = await 建真项目(项目名)
   const 目录 = path.join(甲.directory, "卷宗")
   mkdirSync(目录, { recursive: true })
   writeFileSync(path.join(目录, "纪要.md"), 带信封)
+  for (const [名, 内容] of Object.entries(同目录另写)) writeFileSync(path.join(目录, 名), 内容)
 
   await 进项目(page, context, 甲.id)
   // ⚠️ 顺序不能换：`expand-all` 要等树**先落到 DOM 上**才有东西可展开（同 `center-pane-space-real`）。
@@ -167,7 +179,10 @@ const 界面 = (page: Page) =>
       编辑框值: 编?.value ?? null,
       有编辑: 钮("edit"),
       有保存: 钮("save"),
-      有取消: 钮("cancel"),
+      有预览: 钮("preview"),
+      有重试: 钮("retry"),
+      有载入盘上: 钮("load-disk"),
+      状态: document.querySelector("[data-slot='richtext-save-state']")?.getAttribute("data-status") ?? null,
       说明: document.querySelector("[data-slot='richtext-editor-note']")?.textContent?.trim() ?? null,
       预览: document.querySelector("[data-component='richtext-view']")?.textContent ?? "",
     }
@@ -217,10 +232,12 @@ test("改一处存回去 ⇒ 盘上是「新正文 ＋ 原样信封」（BOM / C
   await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n第二行")
   await 点钮(page, "save")
 
-  // 等**可观测的完成**：回预览 ＋ 预览里是新正文（预览是新正文这件事本身就是「重新读了一次」）。
-  await expect(page.locator("[data-slot='richtext-editor']")).toBeHidden({ timeout: 30_000 })
-  await expect(page.locator("[data-component='richtext-view']")).toContainText("第二行", { timeout: 30_000 })
-  await expect(page.locator("[data-slot='richtext-editor-note']")).toBeHidden()
+  // 等**可观测的完成**：状态回 clean（保存回包已经落到 store），而不是等界面退出编辑态。
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "clean", {
+    timeout: 30_000,
+  })
+  await expect(page.locator("[data-slot='richtext-editor']")).toBeVisible()
+  await expect(page.locator("[data-slot='richtext-editor']")).toHaveValue(/# 纪要\n\n第二行/)
 
   expect(
     读盘(甲.文件),
@@ -251,7 +268,10 @@ test("编辑态里裸键盘打进去的字真的进得去，也真的存回盘�
   await expect(框, "裸键盘打进去的字应当出现在编辑框里").toHaveValue(/补一句/)
 
   await 点钮(page, "save")
-  await expect(page.locator("[data-component='richtext-view']")).toContainText("补一句", { timeout: 30_000 })
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "clean", {
+    timeout: 30_000,
+  })
+  await expect(框).toHaveValue(/补一句/)
 
   expect(
     读盘(甲.文件),
@@ -262,13 +282,10 @@ test("编辑态里裸键盘打进去的字真的进得去，也真的存回盘�
 })
 
 /**
- * 存完之后**工具栏回到「只有编辑」那一档**，而不是停在编辑态或半路。
- *
- * 这条看着像琐事，钉的却是 `底本` 的**作废窗口**：存成功之后 `BinaryView` 重挂、读第二次，
- * 在它回来之前编辑钮**先不给**（`richtext-view.tsx` 的「存完之后底本先作废」）。停在这一档上
- * 才对；停在「编辑钮已经给了、而底本还是旧的」上，紧接的第二次保存会撞一句**错的**冲突话。
+ * 存完**留在编辑态**（2026-10-19 用户裁定：保存不再是「退出编辑」的同义词）。
+ * 判据三件一起：编辑框还在、保存钮还在、状态回 clean。
  */
-test("存完 ⇒ 回预览、编辑钮回来", async ({ page, context }) => {
+test("存完 ⇒ 留在编辑态、状态显示已保存", async ({ page, context }) => {
   await 开一篇md(page, context, `编辑·收尾·${Date.now()}`)
 
   await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
@@ -276,13 +293,154 @@ test("存完 ⇒ 回预览、编辑钮回来", async ({ page, context }) => {
   await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n第二行")
   await 点钮(page, "save")
 
-  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "clean", {
+    timeout: 30_000,
+  })
   const 现在 = await 界面(page)
-  expect(现在.编辑框在).toBe(false)
-  expect(现在.有保存, "回预览之后不该还挂着「保存」").toBe(false)
-  // ⚠️ 这里**不**断「那句『丢掉吗』没留着」：本流程从没点过「取消」，`问着` 恒为 false ⇒ 那条
-  // 断言在这一路上**永远为真**，是一条空转的绿（`LEARNINGS #005-47`）。那句话由真正走得过去的
-  // 组件用例钉（`richtext-view.test.tsx` 的「改了还没存就点取消 / 继续改 / 丢掉」三条）。
+  expect(现在.编辑框在).toBe(true)
+  expect(现在.有保存).toBe(true)
+  expect(现在.有编辑).toBe(false)
+})
+
+/**
+ * 用户实报的第三条：没有自动保存。停手后不等点按钮，盘上就该有新字。
+ */
+test("停手后自动保存：不点保存，盘上也会出现新字", async ({ page, context }) => {
+  const 甲 = await 开一篇md(page, context, `编辑·自动·${Date.now()}`)
+  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await 点钮(page, "edit")
+  await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n自动保存进来的")
+
+  await expect
+    .poll(() => 读盘(甲.文件).toString("utf8"), { timeout: 15_000 })
+    .toContain("自动保存进来的")
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "clean")
+  expect(await page.locator("[data-slot='richtext-editor']").isVisible()).toBe(true)
+})
+
+/**
+ * 用户实报的第一条：去开别的文件，回来没保存的字全没了。
+ * 这一条必须**真的换 tab 再换回来**——组件重挂之后字还在，才说明草稿在组件之外。
+ */
+test("打了字去开另一篇、再切回来 ⇒ 没保存的字还在", async ({ page, context }) => {
+  // 另一篇必须在开页前就写进盘：开页后重载会清掉内存草稿，这条就测不到东西了。
+  await 开一篇md(page, context, `编辑·切回·${Date.now()}`, { "另一篇.md": "# 另一篇\n" })
+
+  await 点钮(page, "edit")
+  await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n切走之前的字")
+
+  await 行(page, "卷宗/另一篇.md").dblclick()
+  await expect(page.locator("[data-component='richtext-view']")).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator("[data-slot='richtext-editor']")).toBeHidden()
+
+  // 中栏 tab 的定位口径见 `center-session-edit-real.spec.ts`（`data-slot='tab'` + 文件名）。
+  await page.locator("[data-slot='tab']").filter({ hasText: "纪要.md" }).click()
+  await expect(page.locator("[data-slot='richtext-editor']")).toHaveValue(/切走之前的字/, { timeout: 30_000 })
+})
+
+/**
+ * 盘上被别人改了 ⇒ 保存不许覆盖，界面进冲突态并给「载入盘上版本」。
+ */
+test("盘上被改过 ⇒ 保存进冲突态，点「载入盘上版本」换成盘上那份", async ({ page, context }) => {
+  const 甲 = await 开一篇md(page, context, `编辑·冲突·${Date.now()}`)
+  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await 点钮(page, "edit")
+
+  // 打开之后、第一次保存之前，别处把盘上那份改了（这就是服务端 `base` 比的「变了没有」）。
+  writeFileSync(甲.文件, "# 纪要\n\n别人改的\n", "utf8")
+
+  await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n我改的")
+  await page.keyboard.press("Control+s")
+
+  await expect(page.locator("[data-slot='richtext-save-state']")).toHaveAttribute("data-status", "conflict", {
+    timeout: 30_000,
+  })
+  await expect(page.locator("[data-action='retry']")).toBeVisible()
+  await expect(page.locator("[data-action='load-disk']")).toBeVisible()
+  await expect(page.locator("[data-slot='richtext-editor']")).toHaveValue(/我改的/)
+
+  await 点钮(page, "load-disk")
+  await expect(page.locator("[data-slot='richtext-editor']")).toHaveValue(/别人改的/, { timeout: 30_000 })
+})
+
+/**
+ * 保存不再退出编辑态之后，「回预览」是一条显式动作：先存、再切。
+ */
+test("点「预览」⇒ 保存后回预览，预览里是新正文", async ({ page, context }) => {
+  const 甲 = await 开一篇md(page, context, `编辑·预览·${Date.now()}`)
+  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await 点钮(page, "edit")
+  await page.locator("[data-slot='richtext-editor']").fill("# 纪要\n\n预览里的新正文")
+  await 点钮(page, "preview")
+
+  await expect(page.locator("[data-component='richtext-view']")).toContainText("预览里的新正文", { timeout: 30_000 })
+  expect(await page.locator("[data-slot='richtext-editor']").isVisible()).toBe(false)
+  await expect
+    .poll(() => 读盘(甲.文件).toString("utf8"), { timeout: 15_000 })
+    .toContain("预览里的新正文")
+})
+
+/**
+ * 预览里的项目内图片必须**真的显示出来**：`<img src="图.png">` 原样交给浏览器会去请求
+ * 应用前门（404），`naturalWidth` 恒 0——这正是补丁要证明的事（spec §8.2）。
+ */
+test("预览里的项目内图片经 load 取字节后真的画出来（naturalWidth > 0）", async ({ page, context }) => {
+  // 1×1 的合法 PNG。
+  const 一像素 = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  )
+  await 开一篇md(page, context, `编辑·图片·${Date.now()}`, {
+    "图.png": 一像素,
+    "带图.md": "# 图\n\n![图](图.png)\n",
+  })
+
+  await 行(page, "卷宗/带图.md").dblclick()
+  const 图 = page.locator("[data-component='richtext-view'] img")
+  await expect(图).toBeVisible({ timeout: 30_000 })
+  await expect
+    .poll(() => 图.evaluate((el) => (el as HTMLImageElement).naturalWidth), { timeout: 15_000 })
+    .toBeGreaterThan(0)
+})
+
+/**
+ * 预览里点**相对链接**不许把整个工作区导航走——那会把正在做的事（草稿、tab、会话）全丢。
+ */
+test("预览里点相对链接 ⇒ 不整页跳走", async ({ page, context }) => {
+  await 开一篇md(page, context, `编辑·链接·${Date.now()}`, {
+    "另一篇.md": "# 另一篇\n",
+    "带链.md": "# 链\n\n[另一篇](另一篇.md)\n",
+  })
+
+  await 行(page, "卷宗/带链.md").dblclick()
+  await expect(page.locator("[data-component='richtext-view'] a")).toBeVisible({ timeout: 30_000 })
+  const 原址 = page.url()
+
+  await page.locator("[data-component='richtext-view'] a").click()
+  await page.waitForTimeout(300)
+
+  expect(page.url()).toBe(原址)
+})
+
+/**
+ * 「撤销钮真的回退」——`execCommand("undo")` 之后不把 textarea 的值同步回 store 的实现在这里红。
+ * ⚠️ 用的是真键盘打字（`fill` 不产生撤销历史）；撤销分组由浏览器定，若这条偶发红，
+ * 先重跑确认，再按 spec §13 退回 store 内历史栈（那一版不需要 execCommand）。
+ */
+test("撤销钮真的把刚打的字退回去", async ({ page, context }) => {
+  await 开一篇md(page, context, `编辑·撤销·${Date.now()}`)
+  await expect(page.locator("[data-action='edit']")).toBeVisible({ timeout: 30_000 })
+  await 点钮(page, "edit")
+  const 框 = page.locator("[data-slot='richtext-editor']")
+  await 框.click()
+  await page.keyboard.press("Control+End")
+  const 原值 = await 框.inputValue()
+
+  await page.keyboard.type("追加")
+  await expect(框).toHaveValue(原值 + "追加")
+
+  await 点钮(page, "undo")
+  await expect(框).toHaveValue(原值, { timeout: 10_000 })
 })
 
 /**
