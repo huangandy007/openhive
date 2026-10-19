@@ -5,6 +5,7 @@ import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
+import { 取草稿, 开始编辑 } from "@/center/views/richtext/draft-store"
 import { currentProject, setCurrentProject } from "@/project/current-project"
 import type { MemberEntry } from "@/project/member-panel"
 import {
@@ -339,6 +340,24 @@ describe("中栏 tab 与左栏模块切换的联动（FR-006）", () => {
     await 冲一遍()
 
     expect(tabTitles(host)).toEqual([]) // 换项目 ⇒ 中栏清空
+  })
+
+  test("换项目也清空草稿：旧项目没保存的正文不跟着串到新项目", async () => {
+    setCurrentProject(undefined)
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <OpenTabs tabs={[专案]} />
+      </WorkspaceEntry>
+    ))
+    await 冲一遍()
+
+    开始编辑("卷宗/纪要.md", { content: "旧项目里没保存的字", base: "旧原文" })
+    expect(取草稿("卷宗/纪要.md")?.content).toBe("旧项目里没保存的字")
+
+    setCurrentProject({ id: "p2", name: "另一个案子" })
+    await 冲一遍()
+
+    expect(取草稿("卷宗/纪要.md")).toBeUndefined()
   })
 })
 

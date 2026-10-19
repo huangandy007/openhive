@@ -6,6 +6,7 @@ import { createOpenFile } from "@/center/open-file"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
+import { 清空草稿 } from "@/center/views/richtext/draft-store"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
@@ -512,6 +513,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const id = currentProject()?.id
     if (id !== 上次清栏) {
       上次清栏 = id
+      // 草稿按**路径**存，而路径只在项目内唯一：换了项目还留着旧草稿，下一次打开同名文件
+      // 会看到上一个案子的字（用户实报「串项目」的同族）。与 `center.clear()` 同一拍。
+      清空草稿()
       center.clear()
     }
   })
