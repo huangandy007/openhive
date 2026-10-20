@@ -11,7 +11,8 @@ import { readZipEntries, readZipText } from "./zip-entries"
  *
  * 这条路上有三件事只有真栈证得了：
  * ① 服务端真的产出了一个**可解压的 zip**（组件测试只到 Blob 为止）；
- * ② `Content-Length` / `x-openhive-file-count` 与真实字节对得上；
+ * ② `x-openhive-file-count` 与包内条目数对得上（落到弹窗摘要）；`Content-Length` 本文件不断言，
+ *    由内核用例 `test/server/openhive-file-ops.test.ts` 守；
  * ③ 浏览器真的按 `Content-Disposition` 给出的名字落盘（`<a download>` 那一跳）。
  *
  * ## zip 用本地读取器解析
