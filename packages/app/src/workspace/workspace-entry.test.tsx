@@ -2750,6 +2750,141 @@ describe("文件动作接进工作台（T020 出参）", () => {
       URL.createObjectURL = 原create
     }
   })
+
+  /**
+   * 打包下载（2026-10-20）。
+   *
+   * 两条判据缺一不可：**交给数据源的是什么**（项目 id / 选中集 / 包名）与**结果怎么落到界面**。
+   * 只验后者的话，一个「包名算错、zip 内容也对不上」的实现照样绿。
+   */
+  test("右键文件夹点「下载」⇒ 打包下载：包名、选中集、落盘与完成摘要都对", async () => {
+    const { host, 假 } = await 开({
+      downloadArchive: async () => ({
+        kind: "done",
+        blob: new Blob(["abcd"]),
+        files: 2,
+        bytes: 4,
+      }),
+    })
+    const 存下来的: Array<{ href: string; download: string }> = []
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 只替换与还原，不调用原函数。
+    const 原create = URL.createObjectURL
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同上；`click` 靠 `this`。
+    const 原click = HTMLAnchorElement.prototype.click
+    URL.createObjectURL = () => "blob:openhive-test"
+    HTMLAnchorElement.prototype.click = function () {
+      存下来的.push({ href: this.href, download: this.download })
+    }
+    try {
+      右键行(host, "资料")
+      点菜单项("download")
+
+      // 前置：这一枪真的走到了数据源（否则后面的摘要可能在「没发请求」的实现上也绿）。
+      await 等到(() => 假.打包的.length === 1)
+      await 等到(() => 文本在页("file-transfer-title") === "下载完成")
+
+      expect(假.打包的).toEqual([["p1", ["资料"], "资料.zip"]])
+      expect(存下来的).toEqual([{ href: "blob:openhive-test", download: "资料.zip" }])
+      expect(文本在页("file-transfer-summary")).toBe("2 个文件 · 4 B")
+    } finally {
+      URL.createObjectURL = 原create
+      HTMLAnchorElement.prototype.click = 原click
+    }
+  })
+
+  test("Ctrl 选中两项后右键已选中的行 ⇒ 交出去的是整个选中集，包名是项目名+时间戳", async () => {
+    const { host, 假 } = await 开全({
+      downloadArchive: async () => ({ kind: "done", blob: new Blob(["a"]), files: 2, bytes: 1 }),
+    })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前。
+    const 原create = URL.createObjectURL
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前。
+    const 原click = HTMLAnchorElement.prototype.click
+    URL.createObjectURL = () => "blob:openhive-test"
+    HTMLAnchorElement.prototype.click = () => {}
+    try {
+      // `开全` 已展开整棵树；`点树行` 是本节既有助手（`行按路径` 找不到会抛）。
+      点树行(host, "资料/话单.csv")
+      点树行(host, "档案/旧件.csv", { ctrl: true })
+
+      右键行(host, "话单.csv")
+      expect(菜单项("download")?.textContent?.trim()).toBe("下载选中的 2 项")
+      点菜单项("download")
+
+      await 等到(() => 假.打包的.length === 1)
+      // 等这一次真的走完（落盘 + 完成态）再收尾：`打包的` 在数据源**入口**就记下了，
+      // 抢在续跑之前结束会把一次真实的 `<a>.click()` 漏到后面的用例里（本文件按顺序跑）。
+      await 等到(() => 文本在页("file-transfer-title") === "下载完成")
+      const [项目, 选中集, 名] = 假.打包的[0]
+      expect(项目).toBe("p1")
+      expect(选中集).toEqual(["资料/话单.csv", "档案/旧件.csv"])
+      expect(名).toMatch(/^8·17专案-\d{8}-\d{4}\.zip$/)
+    } finally {
+      URL.createObjectURL = 原create
+      HTMLAnchorElement.prototype.click = 原click
+    }
+  })
+
+  test("整包被拒 ⇒ 关窗、服务端那句话落到内联红字、一个文件都不落盘", async () => {
+    const { host } = await 开({
+      downloadArchive: async () => ({
+        kind: "rejected",
+        message: "「资料/链到密件.txt」不是普通文件或文件夹（链接、设备文件不进包）",
+      }),
+    })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前。
+    const 原create = URL.createObjectURL
+    let 存了 = 0
+    URL.createObjectURL = () => {
+      存了 += 1
+      return "blob:openhive-test"
+    }
+    try {
+      右键行(host, "资料")
+      点菜单项("download")
+      await 等到(() => text(host, "file-op-message") !== undefined)
+
+      expect(text(host, "file-op-message")).toContain("链到密件.txt")
+      expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+      expect(存了).toBe(0)
+    } finally {
+      URL.createObjectURL = 原create
+    }
+  })
+
+  test("打包中点「取消」⇒ 中断、不存盘、不报错", async () => {
+    let 信号: AbortSignal | undefined
+    const { host } = await 开({
+      downloadArchive: async (_id, _paths, _name, options) => {
+        信号 = options?.signal
+        await new Promise<void>((resolve) =>
+          options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+        )
+        return { kind: "failed", message: "打包下载失败" }
+      },
+    })
+    // oxlint-disable-next-line typescript-eslint/unbound-method -- 同前。
+    const 原create = URL.createObjectURL
+    let 存了 = 0
+    URL.createObjectURL = () => {
+      存了 += 1
+      return "blob:openhive-test"
+    }
+    try {
+      右键行(host, "资料")
+      点菜单项("download")
+      await 等到(() => 信号 !== undefined)
+
+      页面槽("file-transfer-cancel")?.click()
+
+      expect(信号?.aborted).toBe(true)
+      expect(await 等弹窗没("file-transfer-dialog")).toBe(true)
+      expect(text(host, "file-op-message")).toBeUndefined()
+      expect(存了).toBe(0)
+    } finally {
+      URL.createObjectURL = 原create
+    }
+  })
 })
 
 /**

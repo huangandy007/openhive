@@ -7,6 +7,7 @@ import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
 import { 清空草稿 } from "@/center/views/richtext/draft-store"
+import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
@@ -851,6 +852,44 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     存到本地(blob, 名)
     // 停在弹窗（同上传）：摘要用**实际取回的字节数**，不是 stat 的估值。
     set传输({ kind: "done", action: "下载", files: 1, bytes: blob.size })
+  }
+
+  /**
+   * 打包下载：文件夹 / 多选 → 一个 zip（2026-10-20）。
+   *
+   * 与 `下载` 同一套弹窗与取消语义；差别只在数据源那一枪与结果形状：
+   * - 包名在**这一刻**由纯函数算好（`now` 在这里给），服务端不解析它；
+   * - 完成态的 `files` 来自响应的 `x-openhive-file-count`，`bytes` 用**实际取回**的 blob 大小。
+   *
+   * ⚠️ 取消判据仍看 `signal.aborted`，不看返回值：数据源在中断时可能回 `failed`
+   * （它不知道用户是主动取消还是网络断），而界面对「用户取消」的处理是**什么都不说**。
+   */
+  async function 打包下载(paths: readonly string[], kind: ArchiveKind) {
+    const 项目 = currentProject()
+    // `CurrentProject.id` 是**可选**的（`current-project.ts`）：只判 `!项目` 不够，`项目.id` 仍是
+    // `string | undefined`、给 `downloadArchive` 过不了类型门。判它才是「真的有项目可打包」。
+    if (!项目?.id || !projectData) return
+    set文件话(undefined)
+    const 控 = new AbortController()
+    const 名 = archiveName(项目.name, paths, kind, new Date())
+    开传输({ kind: "running", action: "下载", name: 名, progress: { loaded: 0, total: 0 } }, 控)
+
+    const 结果 = await projectData.downloadArchive(项目.id, paths, 名, {
+      signal: 控.signal,
+      onProgress: (项) => {
+        if (控.signal.aborted) return
+        set传输({ kind: "running", action: "下载", name: 名, progress: 项 })
+      },
+    })
+    // 取消 ⇒ 不报错、不落盘（弹窗已由 `收传输` 收掉）。
+    if (控.signal.aborted) return
+    if (结果.kind !== "done") {
+      收传输(false)
+      set文件话(结果.message)
+      return
+    }
+    存到本地(结果.blob, 名)
+    set传输({ kind: "done", action: "下载", files: 结果.files, bytes: 结果.blob.size })
   }
 
   /**
@@ -1786,6 +1825,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onMove={(path) => 要搬(path, "move")}
                         onUpload={选文件}
                         onDownload={(path) => void 下载(path)}
+                        onArchive={(paths, kind) => void 打包下载(paths, kind)}
                         onDropFiles={(files, dir) => void 传(dir, files)}
                         onRefresh={有项目() ? 拨清单重取 : undefined}
                         // 2026-10-15：同树拖拽批量移动。与相邻的 onCopy/onMove **同一口径**
