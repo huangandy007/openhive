@@ -1566,6 +1566,29 @@ Refs: #002-06"
         expect(包).toEqual([])
       })
 
+      test("选中两项后右键**未选中的文件夹** ⇒ 只打这个文件夹，不带上选中集", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("甲.csv", "乙.csv", "丙/丁.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
+        ))
+        动作(host, "expand-all")?.click()
+
+        点行(host, "甲.csv")
+        点行(host, "乙.csv", { ctrl: true })
+        右键(行按名(host, "丙"))
+        expect(下载文案()).toBe("下载")
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(包).toEqual([[["丙"], "folder"]])
+        expect(单).toEqual([])
+      })
+
       test("文件夹没接 onArchive ⇒ 「下载」置灰（点了没反应的项是对用户的谎）", () => {
         const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
 
@@ -1583,10 +1606,16 @@ Refs: #002-06"
         expect(项禁用("download")).toBe(true)
       })
 
-      test("旧「无法下载文件夹」弹窗不再可达（连 import 都不在了）", async () => {
-        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onArchive={() => {}} />)
+      test("旧「无法下载文件夹」弹窗不再可达（不是空转绿：先证明菜单真的开了）", async () => {
+        // ⚠️ 两个回调都要挂：只挂 `onArchive` 的话，旧实现的 `点下载` 在 `!onDownload` 时
+        // 提前返回、旧弹窗根本开不出来——这条用例在改动前就是绿的（空转绿，`#006-06`）。
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} onArchive={() => {}} />
+        ))
 
         右键(行按名(host, "材料"))
+        expect(有菜单()).toBe(true)
+        expect(项禁用("download")).toBe(false)
         点菜单项("download")
         await 歇一拍()
 
@@ -1604,7 +1633,7 @@ cd packages/app
 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-tree.test.tsx
 ```
 
-Expected: 新组 **7 条中 4 红**（文件夹仍开旧弹窗；多选文案与交出选中集不成立；文件夹未接 `onArchive` 时未置灰；旧弹窗仍可达）。另外 3 条（单文件、右键未选中行、单文件未接 `onDownload`）改动前**已是绿**——它们钉的是「单文件行为不变」，红绿都不许变。记下实得输出。
+Expected: 新组 **8 条中 5 红**（文件夹仍开旧弹窗；多选文案与交出选中集不成立；文件夹未接 `onArchive` 时未置灰；右键未选中的文件夹仍开旧弹窗；旧弹窗仍可达——最后这条已同时挂两个回调，旧实现下会真的开窗）。另外 3 条改动前**已是绿**：单文件、右键未选中文件行、单文件未接 `onDownload`，它们钉的是「单文件行为不变」。记下实得输出。
 
 - [ ] **Step 3: 改组件**
 
@@ -1647,14 +1676,19 @@ import type { ArchiveKind } from "@/project/archive-name"
    * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
    * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
    */
+  /** 「右键这一行属于一次多选打包」——文案与分流共用这一处，别写两遍（`#002-06`）。 */
+  const 是选中集 = (path: string) => {
+    const 批 = 选中集()
+    return 批.size > 1 && 批.has(path)
+  }
+
   const 判下载目标 = (
     path: string,
   ):
     | { kind: "file"; path: string }
     | { kind: "folder"; paths: readonly string[] }
     | { kind: "selection"; paths: readonly string[] } => {
-    const 批 = 选中集()
-    if (批.size > 1 && 批.has(path)) return { kind: "selection", paths: [...批] }
+    if (是选中集(path)) return { kind: "selection", paths: [...选中集()] }
     if (节点表().get(path)?.type === "file") return { kind: "file", path }
     return { kind: "folder", paths: [path] }
   }
@@ -1662,8 +1696,7 @@ import type { ArchiveKind } from "@/project/archive-name"
   /** 菜单文案：只有「右键行在选中集里且多选」时才带 N。 */
   const 下载文案 = () => {
     const path = 菜单对象()
-    const 批 = 选中集()
-    return path !== undefined && 批.size > 1 && 批.has(path) ? `下载选中的 ${批.size} 项` : "下载"
+    return path !== undefined && 是选中集(path) ? `下载选中的 ${选中集().size} 项` : "下载"
   }
 
   /** 菜单禁用：单文件看 `onDownload`，其余看 `onArchive`。 */
@@ -1743,7 +1776,7 @@ import type { ArchiveKind } from "@/project/archive-name"
 grep -rn "file-download-dialog\|FileDownloadDialog" packages/app/src packages/app/e2e
 ```
 
-Expected: 无输出（① 已删掉唯一那处 import）。**有输出就不能删**——先按输出逐个处理，再执行：
+Expected: **只剩字符串引用，没有 import**：`file-tree.test.tsx` 里新用例的 `querySelector("[data-slot='file-download-dialog']")` 断言，以及 `e2e/real-stack/file-tree-download-folder-real.spec.ts` 的 3 处选择器/注释（Task 7 整份重写）。这两处不构成依赖；**任何 `import` 或其它源码引用都必须先处理**。确认后再执行：
 
 ```bash
 git rm packages/app/src/project/file-download-dialog.tsx
@@ -1768,7 +1801,7 @@ cd packages/app
 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-tree.test.tsx
 ```
 
-Expected: 新组 7 pass；该文件其余全绿（尤其「下载仍亮着」那条已被新组取代，不应残留旧断言）。
+Expected: 新组 8 pass；该文件其余全绿（尤其「下载仍亮着」那条已被新组取代，不应残留旧断言）。
 
 - [ ] **Step 5: 变异验证**
 

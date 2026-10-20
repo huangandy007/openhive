@@ -433,6 +433,12 @@ export function FileTree(props: FileTreeProps) {
     return map
   })
 
+  /** 右键的这行是不是「多选里的那一行」——判目标与菜单文案共用这一份判据（`#002-06`）。 */
+  const 是选中集 = (path: string) => {
+    const 批 = 选中集()
+    return 批.size > 1 && 批.has(path)
+  }
+
   /**
    * 「点下载」这一次到底作用于什么。
    *
@@ -443,12 +449,6 @@ export function FileTree(props: FileTreeProps) {
    * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
    * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
    */
-  /** 右键的这行是不是「多选里的那一行」——判目标与菜单文案共用这一份判据（`#002-06`）。 */
-  const 是选中集 = (path: string) => {
-    const 批 = 选中集()
-    return 批.size > 1 && 批.has(path)
-  }
-
   const 判下载目标 = (
     path: string,
   ):
