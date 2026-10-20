@@ -2741,6 +2741,9 @@ describe("打包下载（POST /openhive/file/archive）", () => {
   test("Windows 解不出的名字：反斜杠与归一化后的 `..` 段都必须拒", () => {
     expect(解不开("../../evil.txt")).toBe(true)
     expect(解不开("资料/..\\..\\evil.txt")).toBe(true)
+    // 以 `\` 开头的名字归一后会成为绝对条目 `/evil.txt`；绝对条目必须拒。
+    expect(解不开("/evil.txt")).toBe(true)
+    expect(解不开("\\evil.txt")).toBe(true)
     // 对照：点号开头的正常名字不误伤。
     expect(解不开("资料/..notes.txt")).toBe(false)
     expect(解不开("资料/8·17/话单.csv")).toBe(false)

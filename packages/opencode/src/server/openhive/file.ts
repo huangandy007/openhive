@@ -2,7 +2,7 @@ export * as OpenhiveFile from "./file"
 
 /**
  * 005 T020 ＋ T018 · 文件树的**复制 / 移动 / 上传 / 下载**（T020）与**新建 / 重命名 / 删除**
- * （T018）共**八个**出口（FR-005）。
+ * （T018）共**十个**出口（FR-005）。
  *
  * ⚠️ 两笔不在同一次落的：T020 落了前四个，T018（2026-10-10）补的后三个。后三个**逐字沿用**
  * 前四个的判据原语（`gate` / `inside` / `realInside` / `attempt` / `exists` / `Made` /
@@ -291,9 +291,9 @@ const 名字解不出 = (path: string) => `「${path}」的名字在 Windows 上
  * 判**整条**而不是末段：顶层直接选中的文件可能带几层没被单独遍历过的父目录名。
  */
 export const 解不开 = (path: string) =>
-  // `..` 段单独挡：顶层名字里的 `\` 已被 `relativePath` 归一成 `/`，
-  // `..\..\evil.txt` 到这一步只剩合法的 `../../evil.txt` 形状（zip-slip）。
-  path.split("/").some((段) => 段 === ".." || WINDOWS_ILLEGAL.test(段))
+  // 绝对条目单独挡：名字以 `\` 开头时归一后会是 `/evil.txt`（absolute zip-slip）。
+  // `..` 段同理——`..\..\evil.txt` 归一后只剩 `../../evil.txt` 这个形状。
+  path.startsWith("/") || path.split("/").some((段) => 段 === ".." || WINDOWS_ILLEGAL.test(段))
 
 /**
  * `useCompressionStream` 在 zip.js 2.7.62 的声明里挂在 `WorkerConfiguration` 上，而
@@ -460,8 +460,14 @@ function inside(base: string, input: string): string | undefined {
   return target
 }
 
-/** 绝对路径 → 项目根相对、`/` 分隔（回参形状，也是前端重拉清单后的路径形状）。 */
-const relativePath = (base: string, absolute: string) => relative(base, absolute).replaceAll("\\", "/")
+/**
+ * 绝对路径 → 项目根相对、`/` 分隔（回参形状，也是前端重拉清单后的路径形状）。
+ *
+ * 只把**平台分隔符**换成 `/`，不用 `replaceAll("\\", "/")`：POSIX 上文件名里的 `\`
+ * 是正文字符，不是分隔符——归一它会把 `\evil.txt` 变成绝对条目 `/evil.txt`、
+ * 把 `a\b.txt` 静默改成 `a/b.txt`（`解不开` 因此也失去判据）。
+ */
+const relativePath = (base: string, absolute: string) => relative(base, absolute).split(sep).join("/")
 
 /** 链接把落点带出了项目——各出口共用一句话，免得同一件事长出多种措辞。 */
 const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"

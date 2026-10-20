@@ -13,7 +13,7 @@
  * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这十个端点，
  * 类型化 SDK 里也就没有，故单写一层（同 `openhive-project.ts` 文件头那条）。
  *
- * ## 「哪个项目」只走 `x-openhive-project` 头，九项**都必须带**
+ * ## 「哪个项目」只走 `x-openhive-project` 头，十项**都必须带**
  *
  * T017 的 `project-location.ts` 拿这个头把工作目录钉到 `{沙箱根}/{userId}/{projectId}`，
  * **并把自己那个头摘掉**。头不在时它**原样放行**，工作目录退回**沙箱根**——而沙箱根是
@@ -73,7 +73,7 @@ export const PATH = {
   remove: `${PREFIX}/remove`,
   /**
    * 2026-10-12（第 9 个出口）：把中栏改过的正文**存回盘上**（内核 `file.ts` 的 `handleWrite`）。
-   * ⚠️ 与本表另外八个**不同族**：它们动的是**条目**，它动的是**一个已有文件的正文**。
+   * ⚠️ 与本表另外九个**不同族**：它们动的是**条目**，它动的是**一个已有文件的正文**。
    */
   write: `${PREFIX}/write`,
   /** 2026-10-20（第 10 个出口）：打包下载（内核 `file.ts` 的 `handleArchive`）。 */
