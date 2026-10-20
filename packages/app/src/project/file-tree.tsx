@@ -11,7 +11,7 @@ import { flattenFileTreeV2, type FileTreeV2Node } from "@/components/file-tree-v
 import { buildProjectFileTreeModel } from "@/project/file-tree-model"
 import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
-import { FileDownloadDialog } from "@/project/file-download-dialog"
+import type { ArchiveKind } from "@/project/archive-name"
 import { FileOpError } from "./file-op-error"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
@@ -204,6 +204,13 @@ export interface FileTreeProps {
    */
   onUpload?: (dir: string) => void
   onDownload?: (path: string) => void
+  /**
+   * 打包下载（2026-10-20）：交出去的是**选中集**，不是单个路径。
+   *
+   * `kind` 由本层判（它手里有 `节点表`）：`folder` ＝ 右键的就是一个文件夹；`selection` ＝ 右键的
+   * 是选中集里的一行、且选中集大于 1。接收方只负责算名字与发请求。
+   */
+  onArchive?: (paths: readonly string[], kind: ArchiveKind) => void
   onBackup?: (path: string) => void
   onRestore?: (path: string) => void
 
@@ -317,7 +324,8 @@ export interface FileTreeProps {
  * ## 右键菜单的接线状态
  *
  * 设计表那十项里**八项接得上**：新建两项走 `onCreate`、重命名/删除走 T007 就有的回调、
- * 复制 / 移动 / 上传 / 下载走 T020 的四个回调。**只剩备份 / 拉回**没有接收方（T011/T012），
+ * 复制 / 移动 / 上传走 T020 的回调；下载 2026-10-20 起按目标分两路（单文件 `onDownload`、
+ * 文件夹 / 多选 `onArchive`）。**只剩备份 / 拉回**没有接收方（T011/T012），
  * 按「未接线即禁用」置灰。菜单先把**入口与形状**做齐，接线只补 props，不改菜单结构——
  * T020 正是这样接的。本仓自己那三项里：`open` 走 `onOpen`（把这一行交给中栏，见它的 doc）、
  * `copy-path` **不出组件**（往剪贴板写，本组件内自己办）、
@@ -424,6 +432,43 @@ export function FileTree(props: FileTreeProps) {
     for (const list of 全模型().children.values()) for (const node of list) map.set(node.path, node)
     return map
   })
+
+  /**
+   * 「点下载」这一次到底作用于什么。
+   *
+   * 规则（设计 §4.1 / §7.1）：
+   * - 右键的行**在选中集里**且选中集 > 1 ⇒ 整个选中集（`selection`）；
+   * - 否则只看右键这一行：文件 ⇒ `file`（走原单文件下载）；文件夹 ⇒ `folder`。
+   *
+   * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
+   * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
+   */
+  const 判下载目标 = (
+    path: string,
+  ):
+    | { kind: "file"; path: string }
+    | { kind: "folder"; paths: readonly string[] }
+    | { kind: "selection"; paths: readonly string[] } => {
+    const 批 = 选中集()
+    if (批.size > 1 && 批.has(path)) return { kind: "selection", paths: [...批] }
+    if (节点表().get(path)?.type === "file") return { kind: "file", path }
+    return { kind: "folder", paths: [path] }
+  }
+
+  /** 菜单文案：只有「右键行在选中集里且多选」时才带 N。 */
+  const 下载文案 = () => {
+    const path = 菜单对象()
+    const 批 = 选中集()
+    return path !== undefined && 批.size > 1 && 批.has(path) ? `下载选中的 ${批.size} 项` : "下载"
+  }
+
+  /** 菜单禁用：单文件看 `onDownload`，其余看 `onArchive`。 */
+  function 要下载() {
+    const path = 菜单对象()
+    if (!path) return true
+    if (判下载目标(path).kind === "file") return !props.onDownload
+    return !props.onArchive
+  }
 
   const 展开 = (path: string) => expanded().has(path)
   const 切换 = (path: string) => {
@@ -866,8 +911,8 @@ export function FileTree(props: FileTreeProps) {
             />
             <菜单项
               action="download"
-              文案="下载"
-              禁用={要对象(props.onDownload)}
+              文案={下载文案()}
+              禁用={要下载()}
               onSelect={() => 点下载(菜单对象())}
             />
             <ContextMenu.Separator />
@@ -963,30 +1008,21 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 点「下载」——**先看类型，再决定发不发**（005 · 2026-10-11 用户下达）。
+   * 点「下载」——**先判目标，再决定喊谁**（2026-10-20）。
    *
-   * 文件夹：开一条弹窗说清「只能下载单个文件」，**`props.onDownload` 一次都不喊**——用户要的
-   * 「终止下载」，落到实现上就是「那个请求根本不发出去」。改之前这一项对着目录是**发出去再被拒**
-   * （服务端 `!info.isFile()` ⇒ 400「文件不存在」），界面只能回一句「下载「材料」失败」：真相是
-   * 「文件夹不能下载」，界面说的是「失败」，民警不知道该点哪儿，而那次 400 还进 F12。
+   * 单文件仍走 `onDownload`（行为逐字不变）；文件夹与多选走 `onArchive`。
+   * 类型判断只在本层做得了：`节点表` 长在这里，而接线那头只有一份扁平清单。
    *
-   * ⚠️ **不把这一项置灰**：置灰＝点了一点反应都没有，而本仓的规矩是「一个点了没反应的项是对用户的
-   * 谎」（同 `ProjectAnchor` 与「未接线即禁用」那组）。用户要的是**说得出话**，所以菜单项那条
-   * `要对象(props.onDownload)` 一个字不动。
-   *
-   * ⚠️ **判据只做得了这一处**：`节点表` 长在本组件里，而接线那头（`workspace-entry` 的 `下载(path)`）
-   * 收到的是一份**扁平清单**、只知道路径不知道类型（同 `onUpload` 那段）。类型查不到时**当不是文件**
-   * 处理——弹窗说一句，好过按「大概是文件」发一个注定 400 的请求（同 `要文件`：不猜）。
+   * ⚠️ 未接线时菜单项已被 `要下载` 置灰；这里再判一次是兜底，不让「点了没反应」变成静默空转。
    */
   function 点下载(path: string | undefined) {
-    const 交 = props.onDownload
-    if (!path || !交) return
-    if (节点表().get(path)?.type !== "file") {
-      // `void` 的理由同 `点删`（`show()` 交回来的是 `startTransition` 的返回值，不是真 promise）。
-      void dialog.show(() => <FileDownloadDialog path={path} />)
+    if (!path) return
+    const 目标 = 判下载目标(path)
+    if (目标.kind === "file") {
+      props.onDownload?.(目标.path)
       return
     }
-    交(path)
+    props.onArchive?.(目标.paths, 目标.kind)
   }
 
   /**
@@ -1048,8 +1084,8 @@ export function FileTree(props: FileTreeProps) {
    * 直到复制也支持目录为止（`file-tree.test.tsx` 里那一组就是钉这条分家的线）。
    *
    * ⚠️ 其余「要对象」的项**不**跟着走这条：备份/拉回对着目录是**说得出话**的（目录会被服务端
-   * 拒掉，界面据此报一句）；下载 2026-10-11 起改走 `点下载` 那条**前端拦截**（目录连请求都不发、
-   * 当场弹窗说「只能下载单个文件」，见该函数）；而复制在界面上会先弹一个「搬到哪儿」的面板
+   * 拒掉，界面据此报一句）；下载 2026-10-20 起由 `要下载` 单独判（单文件看 `onDownload`、
+   * 文件夹 / 多选看 `onArchive`，见该函数）；而复制在界面上会先弹一个「搬到哪儿」的面板
    * ——对着目录弹那个面板本身就是错的。
    */
   function 要文件(接: ((path: string) => void) | undefined) {

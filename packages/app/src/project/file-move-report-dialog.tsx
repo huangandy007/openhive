@@ -33,7 +33,7 @@ export interface FileMoveReportDialogProps {
  * `useDialog()` ＋ v2 的 `DialogV2/DialogHeader/DialogBody/DialogFooter`（同
  * `file-delete-dialog.tsx`）：顶层挂载、点遮罩关闭、Escape 关闭、右上角关闭键、**焦点陷阱**
  * 五样都白拿——手搭一层 overlay 就得自己操心。`attr:autofocus=""` 而非 `autofocus`：
- * prop 形态落不成 DOM 属性，判据钉不住（同 `file-download-dialog.tsx`）。
+ * prop 形态落不成 DOM 属性，判据钉不住。
  *
  * ## 全成那一条**不会**开到这儿
  *

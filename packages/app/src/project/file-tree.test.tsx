@@ -2135,108 +2135,126 @@ describe("FileTree 文件树（FR-005）", () => {
       })
     })
 
-    /**
-     * ── 下载：**文件夹 ⇒ 弹窗终止；单个文件 ⇒ 发行下载**（2026-10-11 用户下达）──────────────
-     *
-     * ## 改之前是什么样
-     *
-     * 右键文件夹，菜单里「下载」**是亮的**（禁用判据只到 `要对象`，没有类型那一条），点了白跑一次
-     * `GET /openhive/file/download?path=材料` —— 服务端 `!info.isFile()` ⇒ **400「文件不存在」**
-     * （`openhive/file.ts` 的 `handleDownload`），前端只能报一句「下载「材料」失败」：真相是
-     * 「文件夹不能下载」，界面说的是「失败」，民警不知道下一步该点哪儿。请求本身还进 F12。
-     *
-     * ## 为什么判据落在本组件
-     *
-     * 类型只有 `节点表` 知道（文件头那条注释立过：接收方手里只有一份**扁平的**清单）；而「下载」
-     * 也只有一个入口（`workspace-entry.tsx` 的 `onDownload`；上树走 `{...rest}`，下树没有下载）。
-     *
-     * ## 拦在「点了之后」，**不是**把菜单项置灰
-     *
-     * 置灰＝点了一点反应没有，而本仓的规矩是「一个点了没反应的项是对用户的谎」（见同文件
-     * `ProjectAnchor` 与「未接线即禁用」那组的注释）。用户要的是**说得出话**：拦下来、说清
-     * 「只能下载单个文件」。所以 `要对象` 那条禁用判据**一个字不动**。
-     *
-     * ⚠️ 弹窗是 `dialog.show()` 传送到 `document.body` 的（同新建 / 删除两组的坑）：查 `document`、
-     * 不查 `host`，且点完入口要 `await 歇一拍()`（`startTransition` 让弹窗晚一拍才落下来）。
-     */
-    describe("下载：文件夹 ⇒ 弹窗终止；单个文件 ⇒ 发行下载（2026-10-11 用户下达）", () => {
-      const 下载弹窗内 = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot='${slot}']`)
-      /** 断在**布尔**上（`#005-01`：实得值是节点会把整轮挂哑）。 */
-      const 有下载弹窗 = () => 下载弹窗内("file-download-dialog") !== null
+    describe("下载：单文件发行下载；文件夹 / 多选走打包（2026-10-20）", () => {
+      /** 右键菜单里「下载」那一项的文案（动态：多选时带 N）。 */
+      const 下载文案 = () => 菜单项("download")?.textContent?.trim()
 
-      test("右键**文件夹**点「下载」⇒ 弹窗说清「只能下载单个文件」，且**一个请求都不发**（onDownload 一次都没被喊）", async () => {
-        const 收到: string[] = []
+      test("右键**单个文件** ⇒ 只喊 onDownload，onArchive 一次都不喊", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
         const host = mount(() => (
-          <FileTree paths={树("材料/话单.csv", "笔记.md")} onDownload={(path) => 收到.push(path)} />
+          <FileTree
+            paths={树("材料/话单.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
         ))
-
-        右键(行按名(host, "材料"))
-        // 前提：菜单**真的开了**。少了这一句，「点下载 ⇒ 弹窗」在「菜单压根没开、点了个不存在的项」
-        // 的实现下也照样成立（`#006-06`：一条恒真的判据等于没测）。
-        expect(有菜单()).toBe(true)
-        点菜单项("download")
-        await 歇一拍()
-
-        expect(有下载弹窗(), "右键文件夹点「下载」应当开出一条弹窗").toBe(true)
-        expect(下载弹窗内("file-download-name")?.textContent?.trim()).toBe("材料")
-        expect(收到, "文件夹不发行下载——这一层一个请求都不该发出去").toEqual([])
-      })
-
-      test("弹窗**不在**文件树栏里（`dialog.show()` 传送进 body）——它不该占树的位置", async () => {
-        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
-
-        右键(行按名(host, "材料"))
-        点菜单项("download")
-        await 歇一拍()
-
-        expect(有下载弹窗()).toBe(true)
-        // 结构判据（几何在 happy-dom 里量不出来，`#006-06`）：浮层一旦进了 body，就不可能再占树的布局。
-        expect(无槽(host, "file-download-dialog")).toBe(true)
-      })
-
-      test("点「知道了」把弹窗收起来——**收起不等于下载**（onDownload 仍然一次都没喊）", async () => {
-        const 收到: string[] = []
-        const host = mount(() => (
-          <FileTree paths={树("材料/话单.csv")} onDownload={(path) => 收到.push(path)} />
-        ))
-
-        右键(行按名(host, "材料"))
-        点菜单项("download")
-        await 歇一拍()
-
-        // 前置：弹窗**真的开出来了**（`#004-14`：先立前提再判果——少了这一句，「关掉也不下载」
-        // 在「压根没有弹窗」的实现下也成立）。
-        expect(有下载弹窗()).toBe(true)
-
-        下载弹窗内("file-download-ok")?.click()
-        await 等到(() => !有下载弹窗())
-
-        expect(有下载弹窗()).toBe(false)
-        expect(收到, "关弹窗 ≠ 下载：这条路上一次都不该喊").toEqual([])
-      })
-
-      test("右键**单个文件**点「下载」⇒ 不弹窗、照常发行下载（回调恰好收到那一条路径）", async () => {
-        const 收到: string[] = []
-        const host = mount(() => (
-          <FileTree paths={树("材料/话单.csv")} onDownload={(path) => 收到.push(path)} />
-        ))
-        动作(host, "expand-all")?.click() // 默认全收缩 ⇒ 先全打开，深层那一行才右键得到（`#005-36` 的规矩）
+        动作(host, "expand-all")?.click() // 默认全收缩（`#005-36`）
 
         右键(行按名(host, "话单.csv"))
         expect(有菜单()).toBe(true)
+        expect(下载文案()).toBe("下载")
         点菜单项("download")
         await 歇一拍()
 
-        expect(有下载弹窗(), "单个文件不该被拦下").toBe(false)
-        expect(收到).toEqual(["材料/话单.csv"])
+        expect(单).toEqual(["材料/话单.csv"])
+        // 单文件不许被打包。
+        expect(包).toEqual([])
       })
 
-      test("对着**目录**行的「下载」仍亮着——拦在点了之后，不是把它置灰", () => {
+      test("右键**文件夹** ⇒ 只喊 onArchive([路径], \"folder\")，onDownload 一次都不喊", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("材料/话单.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
+        ))
+
+        右键(行按名(host, "材料"))
+        expect(有菜单()).toBe(true)
+        expect(下载文案()).toBe("下载")
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(包).toEqual([[["材料"], "folder"]])
+        // 文件夹不许走单文件下载。
+        expect(单).toEqual([])
+      })
+
+      test("Ctrl 选中两项后右键**已选中**的行 ⇒ 文案「下载选中的 2 项」，交出整个选中集", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("甲.csv", "乙.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
+        ))
+
+        点行(host, "甲.csv")
+        点行(host, "乙.csv", { ctrl: true })
+        右键(行按名(host, "甲.csv"))
+        expect(有菜单()).toBe(true)
+        expect(下载文案()).toBe("下载选中的 2 项")
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(包).toEqual([[["甲.csv", "乙.csv"], "selection"]])
+        expect(单).toEqual([])
+      })
+
+      test("选中两项后右键**未选中**的那一行 ⇒ 文案仍是「下载」，只作用于右键那一行", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("甲.csv", "乙.csv", "丙.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
+        ))
+
+        点行(host, "甲.csv")
+        点行(host, "乙.csv", { ctrl: true })
+        右键(行按名(host, "丙.csv"))
+        expect(下载文案()).toBe("下载")
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(单).toEqual(["丙.csv"])
+        // 未选中的行不许把别人的选中集带上。
+        expect(包).toEqual([])
+      })
+
+      test("文件夹没接 onArchive ⇒ 「下载」置灰（点了没反应的项是对用户的谎）", () => {
         const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
 
         右键(行按名(host, "材料"))
 
-        expect(项禁用("download")).toBe(false)
+        expect(项禁用("download")).toBe(true)
+      })
+
+      test("单文件没接 onDownload ⇒ 「下载」置灰", () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onArchive={() => {}} />)
+        动作(host, "expand-all")?.click()
+
+        右键(行按名(host, "话单.csv"))
+
+        expect(项禁用("download")).toBe(true)
+      })
+
+      test("旧「无法下载文件夹」弹窗不再可达（连 import 都不在了）", async () => {
+        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onArchive={() => {}} />)
+
+        右键(行按名(host, "材料"))
+        点菜单项("download")
+        await 歇一拍()
+
+        expect(document.body.querySelector("[data-slot='file-download-dialog']")).toBe(null)
       })
     })
   })
