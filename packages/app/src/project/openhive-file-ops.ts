@@ -76,6 +76,8 @@ export const PATH = {
    * ⚠️ 与本表另外八个**不同族**：它们动的是**条目**，它动的是**一个已有文件的正文**。
    */
   write: `${PREFIX}/write`,
+  /** 2026-10-20（第 10 个出口）：打包下载（内核 `file.ts` 的 `handleArchive`）。 */
+  archive: `${PREFIX}/archive`,
 } as const
 
 /**
@@ -338,40 +340,62 @@ export async function downloadFile(
   if (response.headers.get("content-disposition") === null) return undefined
 
   try {
-    // 先报一次 `{ loaded: 0, total }`：弹窗要**当场**拿到总量才知道画不画百分比
-    // （`Content-Length` 不是本出口承诺过的头，拿不到就用 `stat` 兜底）。
     const total = await downloadTotal(response, projectId, path, send)
-    onProgress?.({ loaded: 0, total })
-
-    // `body` 为 `null` 只出现在无体响应（204 之类）；本出口成功时必有体，保底当空文件。
-    if (response.body === null) return await response.blob()
-
-    const reader = response.body.getReader()
-    const chunks: Uint8Array[] = []
-    let loaded = 0
-    for (;;) {
-      if (signal?.aborted) {
-        await reader.cancel()
-        return undefined
-      }
-      const { done, value } = await reader.read()
-      if (done) break
-      chunks.push(value)
-      loaded += value.byteLength
-      onProgress?.({ loaded, total })
-    }
-    // 拼成一块**自己的** `Uint8Array` 再交 Blob：TS 5.8 起 `Uint8Array<ArrayBufferLike>` 不是
-    // `BlobPart`（可能挂在 `SharedArrayBuffer` 上），而 `new Uint8Array(长度)` 是 `ArrayBuffer` 背板。
-    const 全部 = new Uint8Array(loaded)
-    let 位移 = 0
-    for (const 块 of chunks) {
-      全部.set(块, 位移)
-      位移 += 块.byteLength
-    }
-    return new Blob([全部])
+    return await readBlobWithProgress(response, total, { onProgress, signal })
   } catch {
     return undefined
   }
+}
+
+/**
+ * 把响应体读成 Blob，边读边报进度。**两条下载链共用这一份**（单文件 / 打包）。
+ *
+ * 返回值 `undefined` 只有一种来源：`signal` 在读的中途响了。调用方那边「取消」的判据是
+ * `signal.aborted`，所以这里**不另造一个字**（避免同一件事长出两种说法）。
+ */
+async function readBlobWithProgress(
+  response: Response,
+  total: number,
+  options: { onProgress?: (progress: TransferProgress) => void; signal?: AbortSignal },
+): Promise<Blob | undefined> {
+  const { onProgress, signal } = options
+  // 先报一次 `{ loaded: 0, total }`：弹窗要**当场**拿到总量才知道画不画百分比。
+  onProgress?.({ loaded: 0, total })
+
+  // `body` 为 `null` 只出现在无体响应（204 之类）；成功时必有体，保底当空文件。
+  if (response.body === null) return await response.blob()
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+  for (;;) {
+    if (signal?.aborted) {
+      await reader.cancel()
+      return undefined
+    }
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    loaded += value.byteLength
+    onProgress?.({ loaded, total })
+  }
+  // 拼成一块**自己的** `Uint8Array` 再交 Blob：TS 5.8 起 `Uint8Array<ArrayBufferLike>` 不是
+  // `BlobPart`（可能挂在 `SharedArrayBuffer` 上），而 `new Uint8Array(长度)` 是 `ArrayBuffer` 背板。
+  const 全部 = new Uint8Array(loaded)
+  let 位移 = 0
+  for (const 块 of chunks) {
+    全部.set(块, 位移)
+    位移 += 块.byteLength
+  }
+  return new Blob([全部])
+}
+
+/** 这次响应自己声明的字节数；没有 / 不是有限非负数 ⇒ `undefined`。 */
+function declaredLength(response: Response): number | undefined {
+  const declared = response.headers.get("content-length")
+  if (declared === null) return undefined
+  const size = Number(declared)
+  return Number.isFinite(size) && size >= 0 ? size : undefined
 }
 
 /**
@@ -386,12 +410,81 @@ async function downloadTotal(
   path: string,
   send: FileOpsFetch,
 ): Promise<number> {
-  const declared = response.headers.get("content-length")
-  if (declared !== null) {
-    const size = Number(declared)
-    if (Number.isFinite(size) && size >= 0) return size
-  }
+  const declared = declaredLength(response)
+  if (declared !== undefined) return declared
   return (await statProjectFile(projectId, path, send)) ?? 0
+}
+
+const ARCHIVE_FAILED = "打包下载失败"
+
+/**
+ * 打包下载的结论。**三种**，比单文件那两态多一个 `rejected`：服务端拒绝时那句话点名了
+ * 是哪一条不合格（链接 / 读不出 / 超限），民警要照着它去处理，不能被兜底文案吃掉。
+ */
+export type ArchiveOutcome =
+  | { kind: "done"; blob: Blob; files: number; bytes: number }
+  | { kind: "rejected"; message: string }
+  | { kind: "failed"; message: string }
+
+/** 服务端承诺的包内普通文件数（`x-openhive-file-count`）；不是有限非负整数 ⇒ `undefined`。 */
+function archiveCount(response: Response): number | undefined {
+  const raw = response.headers.get("x-openhive-file-count")
+  if (raw === null) return undefined
+  const count = Number(raw)
+  return Number.isInteger(count) && count >= 0 ? count : undefined
+}
+
+/**
+ * 把选中的文件夹 / 多选条目打成**一个** zip 取回来（设计 §5 / §7.3）。
+ *
+ * ## 成功判据**三条全要**
+ *
+ * ① `content-disposition` 在；② `content-type` 是 `application/zip`；③ `x-openhive-file-count`
+ * 是有限数字。三条都是本出口承诺过的头，也是「出口没挂上 ⇒ UI 兜底回 200＋HTML」的唯一防线：
+ * `Response.blob()` 对 HTML 一样成功，少一条就会把网页存成 `.zip`。
+ *
+ * ## 进度只用 `Content-Length`
+ *
+ * 打包出口**承诺**它（内存成包、长度精确）；不再退到 `stat`——那条路问的是**单个文件**的大小，
+ * 对着一次打包请求问不出东西。拿不到就按「总量未知」画不确定态。
+ */
+export async function downloadArchive(
+  projectId: string,
+  paths: readonly string[],
+  name: string,
+  options: DownloadOptions = {},
+): Promise<ArchiveOutcome> {
+  const { send = defaultSend, onProgress, signal } = options
+  const response = await trySend(send, PATH.archive, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", [PROJECT_HEADER]: projectId },
+    body: JSON.stringify({ paths, name }),
+    signal,
+  })
+
+  if (!response) return { kind: "failed", message: ARCHIVE_FAILED }
+  if (isSessionExpired(response)) return { kind: "rejected", message: SESSION_EXPIRED }
+
+  if (response.status === 400 || response.status === 403) {
+    const body = await readJson(response)
+    return { kind: "rejected", message: messageOf(body) ?? ARCHIVE_FAILED }
+  }
+  if (!response.ok) return { kind: "failed", message: ARCHIVE_FAILED }
+
+  const files = archiveCount(response)
+  const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase()
+  if (response.headers.get("content-disposition") === null) return { kind: "failed", message: ARCHIVE_FAILED }
+  if (contentType !== "application/zip") return { kind: "failed", message: ARCHIVE_FAILED }
+  if (files === undefined) return { kind: "failed", message: ARCHIVE_FAILED }
+
+  try {
+    const blob = await readBlobWithProgress(response, declaredLength(response) ?? 0, { onProgress, signal })
+    if (blob === undefined) return { kind: "failed", message: ARCHIVE_FAILED }
+    return { kind: "done", blob, files, bytes: blob.size }
+  } catch {
+    return { kind: "failed", message: ARCHIVE_FAILED }
+  }
 }
 
 /**

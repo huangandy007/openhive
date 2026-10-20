@@ -23,6 +23,7 @@ import { describe, expect, test } from "bun:test"
 import {
   copyFile,
   createEntry,
+  downloadArchive,
   downloadFile,
   moveFile,
   removeEntry,
@@ -106,6 +107,38 @@ const 附件流 = (块: readonly string[], contentLength?: string) => {
     {
       headers: {
         "content-disposition": `attachment; filename="话单.csv"`,
+        ...(contentLength === undefined ? {} : { "content-length": contentLength }),
+      },
+    },
+  )
+}
+
+/** 打包成功那条的形状：zip 字节 ＋ 三个承诺过的头（设计 §5）。 */
+const 压缩包 = (内容 = "PKZIP", files = 2) =>
+  new Response(内容, {
+    headers: {
+      "content-type": "application/zip",
+      "content-disposition": `attachment; filename="资料.zip"`,
+      "x-openhive-file-count": String(files),
+      "content-length": String(new TextEncoder().encode(内容).byteLength),
+    },
+  })
+
+/** 同形，但体是分块流——进度那条要用它。 */
+const 压缩包流 = (块: readonly string[], contentLength?: string) => {
+  const 编码 = new TextEncoder()
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const 段 of 块) controller.enqueue(编码.encode(段))
+        controller.close()
+      },
+    }),
+    {
+      headers: {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="资料.zip"`,
+        "x-openhive-file-count": "2",
         ...(contentLength === undefined ? {} : { "content-length": contentLength }),
       },
     },
@@ -607,6 +640,145 @@ describe("downloadFile", () => {
     expect(await 结果).toBeUndefined()
     // 「读到一半取消」有两半：本层的循环守卫，**以及**那一枪本身被 abort。
     // 只钉前一半的话，真栈上网络请求会继续跑到天荒地老而单测全绿。
+    expect(送出的信号).toBe(控.signal)
+  })
+})
+
+describe("downloadArchive", () => {
+  const 路径们 = ["资料/话单.csv", "账目/报销.xlsx"]
+
+  test("发 POST /openhive/file/archive，带项目头、JSON 体与 signal", async () => {
+    const { send, sent } = stub(() => 压缩包())
+    const 控 = new AbortController()
+
+    await downloadArchive(PROJECT, 路径们, "资料.zip", { send, signal: 控.signal })
+
+    expect(sent).toEqual([
+      {
+        url: "/openhive/file/archive",
+        method: "POST",
+        project: PROJECT,
+        contentType: "application/json",
+        credentials: "same-origin",
+        body: JSON.stringify({ paths: 路径们, name: "资料.zip" }),
+      },
+    ])
+  })
+
+  test("成功 ⇒ done，带字节、文件数与字节数；进度先报 0 再逐块报", async () => {
+    const 进度: TransferProgress[] = []
+
+    const 结果 = await downloadArchive(PROJECT, 路径们, "资料.zip", {
+      send: async () => 压缩包流(["PK", "ZIP"], "5"),
+      onProgress: (项) => 进度.push(项),
+    })
+
+    expect(结果.kind).toBe("done")
+    if (结果.kind !== "done") return
+    expect(await 结果.blob.text()).toBe("PKZIP")
+    expect(结果.files).toBe(2)
+    expect(结果.bytes).toBe(5)
+    expect(进度).toEqual([
+      { loaded: 0, total: 5 },
+      { loaded: 2, total: 5 },
+      { loaded: 5, total: 5 },
+    ])
+  })
+
+  /**
+   * 成功判据三条**全要**（设计 §7.3）。缺任何一条都可能是「出口没挂上、UI 兜底回 200＋HTML」，
+   * 而 `Response.blob()` 对 HTML 一样成功 ⇒ 不拦的话会把一个网页存成 `资料.zip`。
+   */
+  test("缺 Content-Disposition / content-type 不是 zip / 缺文件数 ⇒ 一律 failed", async () => {
+    const 缺处置 = new Response("PKZIP", {
+      headers: { "content-type": "application/zip", "x-openhive-file-count": "2" },
+    })
+    const 不是zip = new Response("PKZIP", {
+      headers: { "content-disposition": 'attachment; filename="资料.zip"', "x-openhive-file-count": "2" },
+    })
+    const 缺计数 = new Response("PKZIP", {
+      headers: {
+        "content-type": "application/zip",
+        "content-disposition": 'attachment; filename="资料.zip"',
+      },
+    })
+
+    for (const response of [缺处置, 不是zip, 缺计数]) {
+      const 结果 = await downloadArchive(PROJECT, 路径们, "资料.zip", { send: async () => response })
+      expect(结果).toEqual({ kind: "failed", message: "打包下载失败" })
+    }
+  })
+
+  test("200 + HTML 兜底页（出口没挂上）⇒ failed", async () => {
+    const 结果 = await downloadArchive(PROJECT, 路径们, "资料.zip", { send: async () => 兜底页() })
+
+    expect(结果).toEqual({ kind: "failed", message: "打包下载失败" })
+  })
+
+  test("400 ⇒ rejected，服务端那句话原样交回", async () => {
+    const 结果 = await downloadArchive(PROJECT, 路径们, "资料.zip", {
+      send: async () => 拒绝(400, "「资料/链到密件.txt」不是普通文件或文件夹（链接、设备文件不进包）"),
+    })
+
+    expect(结果).toEqual({
+      kind: "rejected",
+      message: "「资料/链到密件.txt」不是普通文件或文件夹（链接、设备文件不进包）",
+    })
+  })
+
+  test("403 ⇒ rejected（已归档那道门）；401 ⇒ rejected 且是会话过期那句话", async () => {
+    const 归档 = await downloadArchive(PROJECT, 路径们, "资料.zip", {
+      send: async () => 拒绝(403, "项目已归档，请先找回"),
+    })
+    const 过期 = await downloadArchive(PROJECT, 路径们, "资料.zip", { send: async () => new Response(null, { status: 401 }) })
+
+    expect(归档).toEqual({ kind: "rejected", message: "项目已归档，请先找回" })
+    expect(过期.kind).toBe("rejected")
+    if (过期.kind !== "rejected") return
+    expect(过期.message).toContain("登录")
+  })
+
+  test("500 ⇒ failed；网络抛 ⇒ failed", async () => {
+    const 五百 = await downloadArchive(PROJECT, 路径们, "资料.zip", {
+      send: async () => new Response("坏了", { status: 500 }),
+    })
+    const 抛: FileOpsFetch = async () => {
+      throw new Error("连不上")
+    }
+    const 断 = await downloadArchive(PROJECT, 路径们, "资料.zip", { send: 抛 })
+
+    expect(五百).toEqual({ kind: "failed", message: "打包下载失败" })
+    expect(断).toEqual({ kind: "failed", message: "打包下载失败" })
+  })
+
+  test("读到一半取消 ⇒ failed；信号真的交给了传输层", async () => {
+    const 控 = new AbortController()
+    let 送出的信号: AbortSignal | null | undefined
+    let 流控!: ReadableStreamDefaultController<Uint8Array>
+    const 流 = new ReadableStream<Uint8Array>({
+      start(controller) {
+        流控 = controller
+        controller.enqueue(new TextEncoder().encode("PK"))
+      },
+    })
+    const send: FileOpsFetch = async (_input, init) => {
+      送出的信号 = init?.signal
+      return new Response(流, {
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="资料.zip"',
+          "x-openhive-file-count": "2",
+          "content-length": "5",
+        },
+      })
+    }
+
+    const 结果 = downloadArchive(PROJECT, 路径们, "资料.zip", { send, signal: 控.signal })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    控.abort()
+    流控.error(new DOMException("Aborted", "AbortError"))
+
+    expect(await 结果).toEqual({ kind: "failed", message: "打包下载失败" })
     expect(送出的信号).toBe(控.signal)
   })
 })
