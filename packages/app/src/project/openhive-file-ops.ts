@@ -1,16 +1,16 @@
 /**
- * 005 T020／T018 · 文件树九个出口（六个写 ＋ 上传 ＋ 下载 ＋ stat）的薄客户端（`openhive-project` / `openhive-files` 的同族）。
+ * 005 T020／T018 · 文件树十个出口（六个写 ＋ 上传 ＋ 下载 ＋ stat ＋ 打包）的薄客户端（`openhive-project` / `openhive-files` 的同族）。
  *
  * ## 与 `openhive-files.ts`（读）为什么是两个文件
  *
- * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的九条
+ * 读那条链要**一层层走目录**（上游 `GET /file` 只回一层），形状是一台小状态机；本文件的十条
  * 都是**一次请求一件事**。合在一个文件里，头注要同时讲两件不相干的事，而「目录谁说了算」
  * 那条（读那一侧的核心）会变得像是写这一侧也要遵守的规矩。
  *
- * ## 九个出口都是 fork 自己的裸路由，不在 SDK 里
+ * ## 十个出口都是 fork 自己的裸路由，不在 SDK 里
  *
- * `POST /openhive/file/{copy,move,upload,create,rename,remove,write}` ＋ `GET /openhive/file/download` ＋ `GET /openhive/file/stat`
- * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这九个端点，
+ * `POST /openhive/file/{copy,move,upload,create,rename,remove,write,archive}` ＋ `GET /openhive/file/download` ＋ `GET /openhive/file/stat`
+ * （`packages/opencode/src/server/openhive/file.ts`）——上游 `api.ts` 里没有这十个端点，
  * 类型化 SDK 里也就没有，故单写一层（同 `openhive-project.ts` 文件头那条）。
  *
  * ## 「哪个项目」只走 `x-openhive-project` 头，九项**都必须带**
@@ -618,7 +618,7 @@ async function transfer(
 }
 
 /**
- * 一次 **JSON 体的 POST**——九个出口里六条（复制 / 移动 / 新建 / 重命名 / 删除 / 存盘）共用这一份，
+ * 一次 **JSON 体的 POST**——十个出口里六条（复制 / 移动 / 新建 / 重命名 / 删除 / 存盘）共用这一份，
  * 差别只有路径、体与失败文案。
  *
  * 提取的是那几样字面量（`method` / `credentials` / 两个头 / `JSON.stringify`）：六处各写一遍

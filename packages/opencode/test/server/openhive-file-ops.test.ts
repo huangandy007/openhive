@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
@@ -11,6 +11,7 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { 解不开 } from "../../src/server/openhive/file"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -259,7 +260,7 @@ const asOn = (app: ReturnType<typeof realApp>, subject: TokenSubject, url: strin
 const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
   asOn(openApp, subject, url, init)
 
-/** 八个出口的路径。**字面量**——它们是客户端契约（同 `PROJECT_HEADER` 的理）。 */
+/** 十个出口的路径。**字面量**——它们是客户端契约（同 `PROJECT_HEADER` 的理）。 */
 const 出口 = {
   copy: "/openhive/file/copy",
   move: "/openhive/file/move",
@@ -2730,6 +2731,21 @@ describe("openhive 文件出口 · write（打开的文件能改、能存）", (
 })
 
 describe("打包下载（POST /openhive/file/archive）", () => {
+  /**
+   * 名字判据是纯函数：win32 造不出带 `\` 的文件名（`\` 是分隔符），
+   * 所以这里直接钉判据本体；POSIX 内核上的整链复现记在缺口表（`#002-02`）。
+   *
+   * `../../evil.txt` 不是手写的坏输入：POSIX 上名为 `..\..\evil.txt` 的文件经
+   * `relativePath` 归一后**就是**这个形状，zip 条目会变成路径穿越（zip-slip）。
+   */
+  test("Windows 解不出的名字：反斜杠与归一化后的 `..` 段都必须拒", () => {
+    expect(解不开("../../evil.txt")).toBe(true)
+    expect(解不开("资料/..\\..\\evil.txt")).toBe(true)
+    // 对照：点号开头的正常名字不误伤。
+    expect(解不开("资料/..notes.txt")).toBe(false)
+    expect(解不开("资料/8·17/话单.csv")).toBe(false)
+  })
+
   it.live(
     "单个文件夹：目录条目、空目录、中文名、计数与 Content-Length 都对",
     () =>

@@ -269,8 +269,13 @@ interface ArchiveLimits {
 const ARCHIVE_EMPTY = "打包需要至少一个路径"
 const ARCHIVE_ROOT = "不能打包项目根"
 const ARCHIVE_FALLBACK = "打包.zip"
-/** Windows 解压不出的字符。**不带 `g`**：带 `g` 的 `RegExp.test` 会带 `lastIndex` 状态。 */
-const WINDOWS_ILLEGAL = /[<>:"|?*\u0000-\u001f]/
+/**
+ * Windows 解压不出的字符。**不带 `g`**：带 `g` 的 `RegExp.test` 会带 `lastIndex` 状态。
+ *
+ * `\` 也在内：POSIX 上文件名可以带它，而 Windows 解压器把它当分隔符——
+ * `..\..\evil.txt` 会在解压目录之外落盘（zip-slip）。
+ */
+const WINDOWS_ILLEGAL = /[<>:"|?*\\\u0000-\u001f]/
 
 const 超文件数 = (actual: number, limit: number) =>
   `这次要打 ${actual} 个文件，超过上限 ${limit}（OPENHIVE_ARCHIVE_MAX_FILES）`
@@ -278,14 +283,17 @@ const 超字节数 = (actual: number, limit: number) =>
   `这次要打 ${actual} 字节，超过上限 ${limit}（OPENHIVE_ARCHIVE_MAX_BYTES）`
 const 不是普通条目 = (path: string) => `「${path}」不是普通文件或文件夹（链接、设备文件不进包）`
 const 读不出来 = (path: string) => `「${path}」读不出来`
-const 名字解不出 = (path: string) => `「${path}」的名字在 Windows 上解压不出来（含 : * ? " < > | 等字符）`
+const 名字解不出 = (path: string) => `「${path}」的名字在 Windows 上解压不出来（含 : * ? " < > | \\ 等字符）`
 
 /**
  * 整条相对路径里任何一段命中 Windows 非法字符 ⇒ 解压不出来。
  *
  * 判**整条**而不是末段：顶层直接选中的文件可能带几层没被单独遍历过的父目录名。
  */
-const 解不开 = (path: string) => path.split("/").some((段) => WINDOWS_ILLEGAL.test(段))
+export const 解不开 = (path: string) =>
+  // `..` 段单独挡：顶层名字里的 `\` 已被 `relativePath` 归一成 `/`，
+  // `..\..\evil.txt` 到这一步只剩合法的 `../../evil.txt` 形状（zip-slip）。
+  path.split("/").some((段) => 段 === ".." || WINDOWS_ILLEGAL.test(段))
 
 /**
  * `useCompressionStream` 在 zip.js 2.7.62 的声明里挂在 `WorkerConfiguration` 上，而

@@ -13,7 +13,8 @@ import { readZipEntries, readZipText } from "./zip-entries"
  * ① 服务端真的产出了一个**可解压的 zip**（组件测试只到 Blob 为止）；
  * ② `x-openhive-file-count` 与包内条目数对得上（落到弹窗摘要）；`Content-Length` 本文件不断言，
  *    由内核用例 `test/server/openhive-file-ops.test.ts` 守；
- * ③ 浏览器真的按 `Content-Disposition` 给出的名字落盘（`<a download>` 那一跳）。
+ * ③ 浏览器真的按**客户端算出的包名**落盘（`<a download>` 那一跳）。服务端的
+ *    `Content-Disposition` 只做兜底：设计 §5 明说前端不解析它，两者同名是契约而非因果。
  *
  * ## zip 用本地读取器解析
  *
@@ -81,6 +82,21 @@ function 数打包请求(page: Page) {
     if (u.port === String(readStack().front) && u.pathname.endsWith("/openhive/file/archive")) {
       请求.push({ method: r.method(), body: r.postData() })
     }
+  })
+  return 请求
+}
+
+/**
+ * 数**真发出去**的单文件下载请求（同 `数打包请求` 的端口判据）。
+ *
+ * 恢复旧 spec 的那条回归：`§13.9` 要求单文件行为逐字不变，组件层证明不了
+ * 「请求真的从前门发出去」。
+ */
+function 数下载请求(page: Page) {
+  const 请求: string[] = []
+  page.on("request", (r) => {
+    const u = new URL(r.url())
+    if (u.port === String(readStack().front) && u.pathname.endsWith("/openhive/file/download")) 请求.push(u.search)
   })
   return 请求
 }
@@ -175,4 +191,31 @@ test("Ctrl 选中两个文件后右键已选中的行 ⇒ `下载选中的 2 项
 
   const 传输 = page.locator("[data-slot='file-transfer-dialog']")
   await expect(传输.locator("[data-slot='file-transfer-summary']")).toHaveText(/^2 个文件 · /)
+})
+
+/**
+ * 旧 spec 的单文件回归，原样保住（设计 §13.9「单文件行为逐字不变」）。
+ *
+ * 本条**不**走打包出口：判据是「没有任何 `/openhive/file/archive` 请求」＋
+ * 「`/openhive/file/download` 带着被点那一项」＋「传输弹窗停在完成态」。
+ */
+test("右键单个文件点「下载」⇒ 走原来的单文件出口，不打包", async ({ page, context }) => {
+  const 丙 = await 建真项目(`单文件回归${Date.now()}`)
+  writeFileSync(path.join(丙.directory, "话单.csv"), "主叫,被叫\n138,139\n")
+
+  await 进项目(page, context, 丙.id)
+  await expect(行(page, "话单.csv")).toBeVisible({ timeout: 30_000 })
+
+  const 打包请求 = 数打包请求(page)
+  const 下载请求 = 数下载请求(page)
+  await 右键点下载(page, "话单.csv")
+
+  await expect
+    .poll(() => 下载请求.length, { timeout: 15_000 })
+    .toBeGreaterThan(0)
+  expect(decodeURIComponent(下载请求[0]!), "请求应当带着被点的那一项").toContain("path=话单.csv")
+  expect(打包请求, "单文件不该走打包出口").toEqual([])
+
+  const 传输 = page.locator("[data-slot='file-transfer-dialog']")
+  await expect(传输.locator("[data-slot='file-transfer-title']")).toHaveText("下载完成", { timeout: 15_000 })
 })
