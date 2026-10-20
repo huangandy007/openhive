@@ -37,7 +37,7 @@ export * as OpenhiveFile from "./file"
  * 同理**不重算** `join(root, userId)` 再去比：那等于把中间件那句 `join` 抄第二份
  * （`LEARNINGS #002-06`）。本模块问的是另一个问题——「**这次请求在不在一个项目里**」。
  *
- * ## 九个出口一律要求项目头在场（`tasks.md` T020 的「⚠️ 权限锚（**不新造判定**）」那条，安全判据）
+ * ## 十个出口一律要求项目头在场（`tasks.md` T020 的「⚠️ 权限锚（**不新造判定**）」那条，安全判据）
  *
  * 头缺失时中间件**原样放行**，工作目录退回**沙箱根** `join(root, userId)`——而沙箱根是
  * **所有项目的父目录**（每个项目是它下面的一层）。于是 `prj_other/密件.txt` 这条相对路径
@@ -47,7 +47,7 @@ export * as OpenhiveFile from "./file"
  *
  * ⚠️ 这条判据**不是**「再判一遍中间件判过的东西」：中间件拦的是「这个项目在不在、冻没冻」，
  * 本模块判的是「这次请求到底在不在项目里」。中间件**刻意**允许无头请求直通（那是大多数
- * 请求的正常路径），所以「不带头」在它那里**不是错误**、在九个出口这里**是**。
+ * 请求的正常路径），所以「不带头」在它那里**不是错误**、在十个出口这里**是**。
  *
  * ⚠️ 沙箱根那一层**不是「外面」**——同一用户的项目都并排住在那里。测试里那条「不带头 ⇒
  * 够得着兄弟项目」的用例（`openhive-file-ops.test.ts`）用的正是这个形状。
@@ -141,16 +141,24 @@ export * as OpenhiveFile from "./file"
  */
 
 import { User } from "@opencode-ai/core/user"
-import { Effect, Option, Schema } from "effect"
+import { Config as EffectConfig, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { access, copyFile, constants, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
+import { access, copyFile, constants, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import {
+  Uint8ArrayReader,
+  Uint8ArrayWriter,
+  ZipWriter,
+  type WorkerConfiguration,
+  type ZipWriterConstructorOptions,
+} from "@zip.js/zip.js"
+import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
 
-/** 九个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
+/** 十个出口的路径。写成表，调用方（与测试）按名字引用，不各自抄字符串。 */
 export const PATH = {
   copy: `${PREFIX}/copy`,
   move: `${PREFIX}/move`,
@@ -175,6 +183,8 @@ export const PATH = {
   create: `${PREFIX}/create`,
   rename: `${PREFIX}/rename`,
   remove: `${PREFIX}/remove`,
+  /** 2026-10-20（第十个出口）：把选中的文件夹 / 多选条目打成**一个** zip（设计 §5）。 */
+  archive: `${PREFIX}/archive`,
 } as const
 
 const BAD_REQUEST = 400
@@ -244,6 +254,45 @@ const WriteBody = Schema.Struct({
   content: Schema.String,
   base: Schema.String,
 })
+
+/** 打包的请求体：`paths` 是相对项目根的选中集（去重与展开都在服务端做），`name` 由前端算好。 */
+const ArchiveBody = Schema.Struct({
+  paths: Schema.Array(Schema.String),
+  name: Schema.String,
+})
+
+interface ArchiveLimits {
+  maxFiles: number
+  maxBytes: number
+}
+
+const ARCHIVE_EMPTY = "打包需要至少一个路径"
+const ARCHIVE_ROOT = "不能打包项目根"
+const ARCHIVE_FALLBACK = "打包.zip"
+/** Windows 解压不出的字符。**不带 `g`**：带 `g` 的 `RegExp.test` 会带 `lastIndex` 状态。 */
+const WINDOWS_ILLEGAL = /[<>:"|?*\u0000-\u001f]/
+
+const 超文件数 = (actual: number, limit: number) =>
+  `这次要打 ${actual} 个文件，超过上限 ${limit}（OPENHIVE_ARCHIVE_MAX_FILES）`
+const 超字节数 = (actual: number, limit: number) =>
+  `这次要打 ${actual} 字节，超过上限 ${limit}（OPENHIVE_ARCHIVE_MAX_BYTES）`
+const 不是普通条目 = (path: string) => `「${path}」不是普通文件或文件夹（链接、设备文件不进包）`
+const 读不出来 = (path: string) => `「${path}」读不出来`
+const 名字解不出 = (path: string) => `「${path}」的名字在 Windows 上解压不出来（含 : * ? " < > | 等字符）`
+
+/**
+ * 整条相对路径里任何一段命中 Windows 非法字符 ⇒ 解压不出来。
+ *
+ * 判**整条**而不是末段：顶层直接选中的文件可能带几层没被单独遍历过的父目录名。
+ */
+const 解不开 = (path: string) => path.split("/").some((段) => WINDOWS_ILLEGAL.test(段))
+
+/**
+ * `useCompressionStream` 在 zip.js 2.7.62 的声明里挂在 `WorkerConfiguration` 上，而
+ * `ZipWriterConstructorOptions` 没有继承它（运行期读的就是这个键，见 `zip-writer.js`）。
+ * 用**那个类型**接一次，避免一个与运行期无关的 `as`。
+ */
+const ZIP_OPTIONS: ZipWriterConstructorOptions & WorkerConfiguration = { useCompressionStream: true }
 
 /**
  * 解请求体：畸形 JSON 与形状不对**归成同一件事**（都是 400 ＋ 一句话）。
@@ -326,6 +375,14 @@ export const routes = HttpRouter.use((router) =>
     const config = yield* AnchorWorkspace.Config
     // 构造期取、请求期用（同 `project.ts`：请求 fiber 的 context 里没有 app 层服务）。
     const root = config.root
+    // 打包下载的两道容量闸（设计 §6.1）。必须与其它配置**同一时点**取——请求期取不到
+    // app 层配置（`archive.ts` 记过的实测约束）。
+    const 打包上限: ArchiveLimits = {
+      maxFiles: yield* EffectConfig.number("OPENHIVE_ARCHIVE_MAX_FILES").pipe(EffectConfig.withDefault(5000)),
+      maxBytes: yield* EffectConfig.number("OPENHIVE_ARCHIVE_MAX_BYTES").pipe(
+        EffectConfig.withDefault(512 * 1024 * 1024),
+      ),
+    }
 
     yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, "copy"))
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, "move"))
@@ -339,6 +396,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.remove, (request) => handleRemove(request, root))
     // 2026-10-12（第九个出口）：把中栏改过的正文存回盘上（同属 T018 那一族，见 `handleWrite`）。
     yield* router.add("POST", PATH.write, (request) => handleWrite(request, root))
+    // 2026-10-20（第十个出口）：打包下载。整包失败、零字节（设计 §4.4）。
+    yield* router.add("POST", PATH.archive, (request) => handleArchive(request, root, 打包上限))
   }),
 )
 
@@ -491,7 +550,7 @@ const attempt = (run: () => Promise<unknown>) =>
 const exists = (path: string) => Effect.promise(() => access(path).then(() => true, () => false))
 
 /**
- * 九个出口共用的那道闸：身份 ＋ **项目在场**。
+ * 十个出口共用的那道闸：身份 ＋ **项目在场**。
  *
  * 回的是 `string`（项目目录）或一个已经成形的响应——调用方 `typeof` 一判就能返回，
  * 不必把「401 还是 400」那套判断在七个 handler 里各写一遍。
@@ -674,6 +733,137 @@ function handleDownload(request: HttpServerRequest.HttpServerRequest, root: stri
     return HttpServerResponse.uint8Array(bytes, {
       contentType: "application/octet-stream",
       headers: { "content-disposition": disposition(basename(target)) },
+    })
+  })
+}
+
+/**
+ * 打包下载：把选中的顶层条目递归成一个 zip（设计 §4–§6）。
+ *
+ * ## 守卫链与 `handleDownload` 逐条同序
+ *
+ * `gate` → `inside` → 项目根 → `inGit` → `lstat`（**不跟链接**）→ `realInside`。
+ * 多出来的只有三样：容量闸、去重、递归。
+ *
+ * ## 三条容易写错的判据
+ *
+ * ① **顶层显式选中的不看 ignore**：用户点的是它，跳过它等于「点了却说没有」。
+ *    ignore 只作用于**递归出来的子项**（与文件树「看得见才下得到」同口径）。
+ * ② **`lstat` 不是 `stat`**：`stat` 会跟随最后一段的链接，等于把项目外的文件读进包。
+ * ③ **整包失败**：任何一条坏条目都直接 400 返回，**不跳过**。对办案材料，
+ *    「看起来完整、实际缺件」比「下载失败」危险得多（设计 §4.4）。
+ *
+ * ⚠️ `.git` 的递归守卫在当前 API 下**不可达**（顶层 `.git` 已被 `inGit` 拒，而 `inGit` 只认
+ * 相对项目根的第一段；子目录里的 `.git` 是用户自己的普通目录，放行）。留着它是纵深防御，
+ * 不是一条已覆盖的分支（`#002-02`）。
+ */
+function handleArchive(
+  request: HttpServerRequest.HttpServerRequest,
+  root: string,
+  limits: ArchiveLimits,
+) {
+  return Effect.gen(function* () {
+    const project = yield* gate(request, root)
+    if (typeof project !== "string") return project
+
+    const parsed = yield* bodyOf(request, ArchiveBody)
+    if (Option.isNone(parsed)) return badRequest("请求体格式不对")
+    const { paths, name } = parsed.value
+    if (paths.length === 0) return badRequest(ARCHIVE_EMPTY)
+    if (paths.length > limits.maxFiles) return badRequest(超文件数(paths.length, limits.maxFiles))
+
+    // ── 顶层：一次一条，逐条复用单文件下载那串守卫 ──────────────────────────────
+    const 候选 = new Map<string, string>()
+    for (const path of paths) {
+      const target = inside(project, path)
+      if (target === undefined) return badRequest("路径越出项目目录")
+      if (target === project) return badRequest(ARCHIVE_ROOT)
+      if (inGit(project, target)) return badRequest(GIT_LOCKED)
+
+      const info = yield* Effect.promise(() => lstat(target).catch(() => undefined))
+      if (info === undefined) return badRequest(`「${path}」不存在`)
+      if (!info.isFile() && !info.isDirectory()) return badRequest(不是普通条目(path))
+      if (!(yield* realInside(project, dirname(target)))) return badRequest(LINK_ESCAPE)
+
+      // Map 去重：同一个相对路径选两次只打一次（`paths` 可能从上一次的选中集原样带来）。
+      候选.set(relativePath(project, target), target)
+    }
+
+    // ── 去重：祖先与后代同时选中时只留祖先（设计 §4.2） ────────────────────────
+    const 排序后 = [...候选].sort((左, 右) => {
+      const 深 = 左[0].split("/").length - 右[0].split("/").length
+      return 深 !== 0 ? 深 : 左[0].localeCompare(右[0])
+    })
+    const 顶层: Array<{ 相对: string; 绝对: string }> = []
+    for (const [相对, 绝对] of 排序后) {
+      if (顶层.some((已选) => 相对.startsWith(`${已选.相对}/`))) continue
+      顶层.push({ 相对, 绝对 })
+    }
+
+    // ── ignore：与上游 `handlers/file.ts` 同口径（根 `.gitignore` ＋ `.ignore`） ──
+    const 忽略 = ignore()
+    for (const 规则文件 of [".gitignore", ".ignore"]) {
+      const 文本 = yield* Effect.promise(() => readFile(join(project, 规则文件), "utf8").catch(() => undefined))
+      if (文本 !== undefined) 忽略.add(文本)
+    }
+
+    const writer = new ZipWriter(new Uint8ArrayWriter(), ZIP_OPTIONS)
+    let files = 0
+    let bytes = 0
+
+    /** 递归一条。回 `undefined` ＝ 通过；回字符串 ＝ 那句要原样交给民警的话。 */
+    const 走 = (相对: string, 绝对: string): Effect.Effect<string | undefined> =>
+      Effect.gen(function* () {
+        const info = yield* Effect.promise(() => lstat(绝对).catch(() => undefined))
+        if (info === undefined) return 读不出来(相对)
+        // 链接（最后一段）在 `lstat` 下既不是 file 也不是 directory ⇒ 从这里出局。
+        if (!info.isFile() && !info.isDirectory()) return 不是普通条目(相对)
+
+        if (info.isFile()) {
+          if (解不开(相对)) return 名字解不出(相对)
+          if (files + 1 > limits.maxFiles) return 超文件数(files + 1, limits.maxFiles)
+          const data = yield* Effect.promise(() => readFile(绝对).catch(() => undefined))
+          if (data === undefined) return 读不出来(相对)
+          if (bytes + data.byteLength > limits.maxBytes) return 超字节数(bytes + data.byteLength, limits.maxBytes)
+          yield* Effect.promise(() => writer.add(相对, new Uint8ArrayReader(data)))
+          files += 1
+          bytes += data.byteLength
+          return undefined
+        }
+
+        if (解不开(相对)) return 名字解不出(相对)
+        // 目录自身也要验真身：顶层可能是 junction（词法在项目内、真身在外面）。
+        if (!(yield* realInside(project, 绝对))) return LINK_ESCAPE
+        yield* Effect.promise(() => writer.add(`${相对}/`, undefined, { directory: true }))
+
+        const 小孩 = yield* Effect.promise(() => readdir(绝对, { withFileTypes: true }).catch(() => undefined))
+        if (小孩 === undefined) return 读不出来(相对)
+        const 排好 = [...小孩].sort((左, 右) => 左.name.localeCompare(右.name))
+        for (const 项 of 排好) {
+          const 孩子相对 = `${相对}/${项.name}`
+          const 孩子绝对 = join(绝对, 项.name)
+          if (inGit(project, 孩子绝对)) continue
+          // 判据是**项目根相对**的整条路径（上游 `handlers/file.ts` 同口径）。只喂末段的话，
+          // `甲/忽略.txt` 这种带目录的规则永远匹配不上，而别处的同名文件反被误伤。
+          if (忽略.ignores(`${孩子相对}${项.isDirectory() ? "/" : ""}`)) continue
+          const 失败 = yield* 走(孩子相对, 孩子绝对)
+          if (失败 !== undefined) return 失败
+        }
+        return undefined
+      })
+
+    for (const { 相对, 绝对 } of 顶层) {
+      const 失败 = yield* 走(相对, 绝对)
+      if (失败 !== undefined) return badRequest(失败)
+    }
+
+    const zip = yield* Effect.promise(() => writer.close())
+    return HttpServerResponse.uint8Array(zip, {
+      contentType: "application/zip",
+      headers: {
+        "content-disposition": disposition(name.length > 0 ? name : ARCHIVE_FALLBACK),
+        "x-openhive-file-count": String(files),
+      },
     })
   })
 }

@@ -3,6 +3,7 @@ import { Database as Sqlite } from "bun:sqlite"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import { TextWriter, Uint8ArrayReader, ZipReader } from "@zip.js/zip.js"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
@@ -144,6 +145,20 @@ function 重置文件() {
 }
 
 /**
+ * 打包那一组的夹具：两层目录、一个空目录、中文名、另一个顶层目录（设计 §9.2）。
+ *
+ * 不并进 `重置文件`：它只服务这一组，而 `重置文件` 是**整个文件**共用的那份——
+ * 往里加东西等于给其余两百多条用例改前提（`#006-17`）。
+ */
+function 造打包夹具() {
+  mkdirSync(path.join(项目根, "资料", "8·17"), { recursive: true })
+  mkdirSync(path.join(项目根, "资料", "空"), { recursive: true })
+  mkdirSync(path.join(项目根, "账目"), { recursive: true })
+  writeFileSync(path.join(项目根, "资料", "8·17", "话单.csv"), "主叫,被叫\n138,139\n")
+  writeFileSync(path.join(项目根, "账目", "报销.xlsx"), "假装的表格")
+}
+
+/**
  * 项目**里面**放两个链接，都指向兄弟项目（`docs` 里的「符号链接不越界」那组用）。
  *
  * ⚠️ **不是每个用例都造**（只有那一组调）：链接是这次要钉的东西，摆在公用夹具里会让
@@ -229,14 +244,20 @@ const json = <A>(schema: Schema.Codec<A>, response: Response) =>
   Effect.map(Effect.promise(() => response.json()), (body: unknown) => Schema.decodeUnknownSync(schema)(body))
 
 /**
- * 以某人的身份发一个请求；项目头**在场 / 不在场**由调用方决定（这是本文件的一半判据）。
+ * 以某人的身份、对**指定的那个 app** 发一个请求。
+ *
+ * `as` 那半是它的生产替身之外最常见的一支；`asOn` 存在的唯一理由是「换一份配置再建一个 app」
+ * （容量闸那两条用例必须这样做：配置在层构造期取，见 `archive.ts` 的实测约束）。
  */
-const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
+const asOn = (app: ReturnType<typeof realApp>, subject: TokenSubject, url: string, init: RequestInit = {}) =>
   Effect.gen(function* () {
     const headers = new Headers(init.headers)
     for (const [key, value] of Object.entries(cookie(yield* token(subject)))) headers.set(key, value)
-    return yield* openApp(url, { ...init, headers })
+    return yield* app(url, { ...init, headers })
   })
+
+const as = (subject: TokenSubject, url: string, init: RequestInit = {}) =>
+  asOn(openApp, subject, url, init)
 
 /** 八个出口的路径。**字面量**——它们是客户端契约（同 `PROJECT_HEADER` 的理）。 */
 const 出口 = {
@@ -252,6 +273,8 @@ const 出口 = {
   remove: "/openhive/file/remove",
   /** 2026-10-12 第九个出口：把中栏改过的正文**存回盘上**（用户实报「打开的文件不能…修改、保存」）。 */
   write: "/openhive/file/write",
+  /** 2026-10-20 第十个出口：把选中的文件夹 / 多选条目打成**一个** zip（设计 §5）。 */
+  archive: "/openhive/file/archive",
 } as const
 
 /** 成功回参：新文件**相对项目根**的路径（`/` 分隔，与文件树 `paths` 同一形状）。 */
@@ -263,9 +286,59 @@ const Made = Schema.Struct({ path: Schema.String })
  */
 const 出错 = Schema.Struct({ error: Schema.String })
 
+interface 解开的包 {
+  bytes: Uint8Array
+  entries: Array<{ name: string; directory: boolean; text: string }>
+}
+
+/**
+ * 把响应体当 zip 读回来。**先立前提再判果**：状态码不是 200 时直接把体带进异常，
+ * 免得后面每一条断言都红在一句「entries 是空的」上（`#004-14`）。
+ */
+async function 读包(response: Response): Promise<解开的包> {
+  if (response.status !== 200) throw new Error(`不是 zip：${response.status} ${await response.text()}`)
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  const reader = new ZipReader(new Uint8ArrayReader(bytes))
+  try {
+    const entries = await reader.getEntries()
+    return {
+      bytes,
+      entries: await Promise.all(
+        entries.map(async (entry) => ({
+          name: entry.filename,
+          directory: entry.directory === true,
+          text: entry.directory === true ? "" : await entry.getData!(new TextWriter()),
+        })),
+      ),
+    }
+  } finally {
+    await reader.close()
+  }
+}
+
 /** 发一个 JSON 体请求；`project` 给不给决定带不带头。 */
 const send = (subject: TokenSubject, url: string, body: unknown, project?: string) =>
   as(subject, url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(project === undefined ? {} : { [PROJECT_HEADER]: project }),
+    },
+    body: JSON.stringify(body),
+  })
+
+/** 发一次打包请求；`project` 默认就是 ALPHA（本组九成用例都带它）。 */
+const 送打包 = (subject: TokenSubject, body: unknown, project: string | undefined = ALPHA) =>
+  send(subject, 出口.archive, body, project)
+
+/** 换一份配置建的 app 也能发打包请求（容量闸那两条要用）。 */
+const 送打包On = (
+  app: ReturnType<typeof realApp>,
+  subject: TokenSubject,
+  body: unknown,
+  project: string | undefined = ALPHA,
+) =>
+  asOn(app, subject, 出口.archive, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1075,21 +1148,21 @@ const Frozen = Schema.Struct({ error: Schema.String })
 const FROZEN_MESSAGE = "项目已归档，请先找回"
 
 /**
- * **归档＝冻结（FR-010）要落在 `file.ts` 的四个出口上**（005 后端缺口补测）。
+ * **归档＝冻结（FR-010）要落在 `file.ts` 的五个出口上**（005 后端缺口补测）。
  *
  * 这一条此前**零断言**（两次 grep 实测 2026-10-07）：`openhive-project-frozen.test.ts` 把冻结
- * 钉在**建会话两条链**与**上游文件树 `GET /file`** 上，而这四个出口是**另外四扇门**
+ * 钉在**建会话两条链**与**上游文件树 `GET /file`** 上，而这五个出口是**另外五扇门**
  * （`LEARNINGS #004-01`：要数的是「做那件事的那一行」有几个）。
  *
  * 实现侧**是对的**——冻结由 `middleware/project-location.ts` 的第一道门统一落地（头在场且查得到
- * `project_ext` 行 ⇒ 查 `auth.project_archive` ⇒ 403），四个出口都过这道门。所以这组补的是
+ * `project_ext` 行 ⇒ 查 `auth.project_archive` ⇒ 403），五个出口都过这道门。所以这组补的是
  * **覆盖**，不是修 bug：RED 不是靠写测试造出来的，而是靠**变异**证明它咬得住
  * （去掉门里那次 `isArchived` ⇒ 这几条红，见 `state.md` 的补测记录）。
  *
  * ⚠️ 判据一律断**副作用在前、状态码在后**（`#004-14`）：只断 403 的话，一道「先写盘、
  * 再发现归档了」的实现照样绿。
  */
-describe("补测 · 归档＝冻结（FR-010）落在文件四出口", () => {
+describe("补测 · 归档＝冻结（FR-010）落在文件五出口", () => {
   /**
    * **对照**（`#004-08`：「没报错」不等于「执行了」，同族：**「全 403」也可能是这条链本来就不通**）。
    *
@@ -1111,19 +1184,20 @@ describe("补测 · 归档＝冻结（FR-010）落在文件四出口", () => {
   )
 
   /**
-   * 归档之后四个出口**全拒**，且项目里**一个字节都没动**。
+   * 归档之后五个出口**全拒**，且项目里**一个字节都没动**。
    *
-   * 四个一起发是照本文件「不带头」那组的先例（四扇门一条用例）：每扇门的落点各写一条断言，
+   * 五个一起发是照本文件「不带头」那组的先例（四扇门一条用例）：每扇门的落点各写一条断言，
    * 状态码合并成一条数组断言——红了能看出是哪一个。
    *
-   * 四条副作用判据各自对应一发：
+   * 五条副作用判据各自对应一发：
    * - 复制 / 移动 ⇒ `sub/a.txt` **没被造出来**（两条都会造同一个位置，故一条断言即可，
    *   但要**两发都发**：它们是两扇不同的门）；
    * - 上传 ⇒ `sub/偷渡.txt` 没出现（**新名**，见「不带头」那组对判别力的注解）；
-   * - 下载 ⇒ 没拿到那段字节，且源文件内容原样。
+   * - 下载 ⇒ 没拿到那段字节，且源文件内容原样；
+   * - 打包 ⇒ 没拿到 zip（`content-disposition` 为空）。
    */
   it.live(
-    "归档后：复制 / 移动 / 上传 / 下载全部 403，且项目里一个字节都没动",
+    "归档后：复制 / 移动 / 上传 / 下载 / 打包全部 403，且项目里一个字节都没动",
     () =>
       Effect.gen(function* () {
         const 项目 = yield* 备好项目(冻结的项目, true)
@@ -1134,15 +1208,20 @@ describe("补测 · 归档＝冻结（FR-010）落在文件四出口", () => {
         const 下载 = yield* as(ALICE, `${出口.download}?path=a.txt`, {
           headers: { [PROJECT_HEADER]: 冻结的项目 },
         })
+        const 打包 = yield* send(ALICE, 出口.archive, { paths: ["a.txt"], name: "a.zip" }, 冻结的项目)
 
         // 被测属性（副作用）在前（`#004-14`）。
         expect(existsSync(path.join(项目, "sub", "a.txt"))).toBe(false)
         expect(existsSync(path.join(项目, "sub", "偷渡.txt"))).toBe(false)
         expect(readFileSync(path.join(项目, "a.txt"), "utf8")).toBe(甲)
         expect(下载.headers.get("content-disposition")).toBe(null)
-        // 断文案：证明这四条 403 是**归档那道门**回的，不是别的什么地方顺手回的。
+        expect(打包.headers.get("content-disposition")).toBe(null)
+        // 断文案：证明这五条 403 是**归档那道门**回的，不是别的什么地方顺手回的。
         expect((yield* json(Frozen, 复制)).error).toBe(FROZEN_MESSAGE)
-        expect([复制.status, 移动.status, 上传.status, 下载.status]).toEqual([403, 403, 403, 403])
+        expect((yield* json(Frozen, 打包)).error).toBe(FROZEN_MESSAGE)
+        expect([复制.status, 移动.status, 上传.status, 下载.status, 打包.status]).toEqual([
+          403, 403, 403, 403, 403,
+        ])
       }),
     30_000,
   )
@@ -2628,6 +2707,262 @@ describe("openhive 文件出口 · write（打开的文件能改、能存）", (
         expect(readFileSync(文件.密, "utf8")).toBe(密)
         expect(response.status).toBe(400)
         expect((yield* json(Rejected, response)).error).toBe(NO_PROJECT)
+      }),
+    30_000,
+  )
+})
+
+describe("打包下载（POST /openhive/file/archive）", () => {
+  it.live(
+    "单个文件夹：目录条目、空目录、中文名、计数与 Content-Length 都对",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造打包夹具()
+
+        const response = yield* 送打包(ALICE, { paths: ["资料"], name: "资料.zip" })
+        const { bytes, entries } = yield* Effect.promise(() => 读包(response))
+
+        // 被测属性（包内容）在前，状态码在后（`#004-14`）。
+        expect(entries.map((e) => e.name).sort()).toEqual(
+          ["资料/", "资料/8·17/", "资料/8·17/话单.csv", "资料/空/"].sort(),
+        )
+        expect(entries.find((e) => e.name === "资料/8·17/话单.csv")?.text).toBe("主叫,被叫\n138,139\n")
+        expect(entries.find((e) => e.name === "资料/8·17/话单.csv")?.directory).toBe(false)
+        expect(entries.find((e) => e.name === "资料/空/")?.directory).toBe(true)
+
+        // 头的契约（设计 §5）。
+        expect(response.headers.get("content-type")).toContain("application/zip")
+        expect(response.headers.get("x-openhive-file-count")).toBe("1")
+        expect(Number(response.headers.get("content-length"))).toBe(bytes.byteLength)
+        const disposition = response.headers.get("content-disposition") ?? ""
+        expect(decodeURIComponent(disposition.split("''")[1] ?? "")).toBe("资料.zip")
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "多选两个不同目录的文件：包内保留相对项目根的完整路径",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造打包夹具()
+
+        const response = yield* 送打包(ALICE, {
+          paths: ["资料/8·17/话单.csv", "账目/报销.xlsx"],
+          name: "8·17专案-20261020-0905.zip",
+        })
+        const { entries } = yield* Effect.promise(() => 读包(response))
+
+        expect(entries.map((e) => e.name).sort()).toEqual(["账目/报销.xlsx", "资料/8·17/话单.csv"].sort())
+        expect(entries.find((e) => e.name === "账目/报销.xlsx")?.text).toBe("假装的表格")
+        expect(response.headers.get("x-openhive-file-count")).toBe("2")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "祖先 + 后代同时选中：后代只出现一次",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造打包夹具()
+
+        const response = yield* 送打包(ALICE, {
+          paths: ["资料", "资料/8·17/话单.csv"],
+          name: "资料.zip",
+        })
+        const { entries } = yield* Effect.promise(() => 读包(response))
+
+        expect(entries.filter((e) => e.name === "资料/8·17/话单.csv")).toHaveLength(1)
+        expect(response.headers.get("x-openhive-file-count")).toBe("1")
+      }),
+    30_000,
+  )
+
+  it.live(
+    ".gitignore / .ignore 按项目根相对路径匹配：同名的另一个文件不被误伤",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "甲"), { recursive: true })
+        mkdirSync(path.join(项目根, "乙"), { recursive: true })
+        writeFileSync(path.join(项目根, "甲", "忽略.txt"), "该被跳过")
+        writeFileSync(path.join(项目根, "乙", "忽略.txt"), "不该被跳过")
+        writeFileSync(path.join(项目根, "乙", "别的.txt"), "该被 .ignore 跳过")
+        writeFileSync(path.join(项目根, ".gitignore"), "甲/忽略.txt\n")
+        writeFileSync(path.join(项目根, ".ignore"), "乙/别的.txt\n")
+
+        const response = yield* 送打包(ALICE, { paths: ["甲", "乙"], name: "全部.zip" })
+        const { entries } = yield* Effect.promise(() => 读包(response))
+        const 名字 = entries.map((e) => e.name)
+
+        // 判别力在「同名但不同目录」：只按末段匹配的实现会把 `乙/忽略.txt` 一起丢掉。
+        expect(名字).not.toContain("甲/忽略.txt")
+        expect(名字).toContain("乙/忽略.txt")
+        expect(名字).not.toContain("乙/别的.txt")
+        expect(名字).toContain("甲/")
+        expect(名字).toContain("乙/")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "项目根方向的一批坏顶层：根 / 越界 / 不存在 / 空列表，各自 400 且零 zip 字节",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const 根 = yield* 送打包(ALICE, { paths: [""], name: "x.zip" })
+        const 越界 = yield* 送打包(ALICE, { paths: [`../${OTHER}/密件.txt`], name: "x.zip" })
+        const 没有 = yield* 送打包(ALICE, { paths: ["没有这个文件.txt"], name: "x.zip" })
+        const 空 = yield* 送打包(ALICE, { paths: [], name: "x.zip" })
+
+        // 先钉「一个 zip 都没成形」，再逐条读那句给人看的话。
+        expect([根, 越界, 没有, 空].map((r) => r.headers.get("content-disposition"))).toEqual([
+          null,
+          null,
+          null,
+          null,
+        ])
+        expect((yield* json(出错, 根)).error).toBe("不能打包项目根")
+        expect((yield* json(出错, 越界)).error).toBe("路径越出项目目录")
+        expect((yield* json(出错, 没有)).error).toContain("没有这个文件.txt")
+        expect((yield* json(出错, 空)).error).toBe("打包需要至少一个路径")
+        expect([根.status, 越界.status, 没有.status, 空.status]).toEqual([400, 400, 400, 400])
+      }),
+    30_000,
+  )
+
+  it.live(
+    "项目根的 .git：400，且不回 zip 字节",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const response = yield* 送打包(ALICE, { paths: [".git"], name: "x.zip" })
+
+        expect(response.headers.get("content-disposition")).toBe(null)
+        expect((yield* json(出错, response)).error).toBe(
+          "项目里的 .git 是版本库的元数据，不许查看或改动",
+        )
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "经过目录链接的路径：400，不读兄弟项目的文件",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造链接()
+
+        const response = yield* 送打包(ALICE, { paths: ["link/密件.txt"], name: "x.zip" })
+
+        expect(response.headers.get("content-disposition")).toBe(null)
+        expect((yield* json(出错, response)).error).toBe(
+          "这个位置经过链接指向了项目外面（链接不算项目内的路径）",
+        )
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "文件夹里混着文件符号链接：400 点名那个路径，整包失败",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "资料"), { recursive: true })
+        symlinkSync(文件.密, path.join(项目根, "资料", "链到密件.txt"), "file")
+
+        const response = yield* 送打包(ALICE, { paths: ["资料"], name: "资料.zip" })
+
+        expect(response.headers.get("content-disposition")).toBe(null)
+        expect((yield* json(出错, response)).error).toContain("资料/链到密件.txt")
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "顶层是符号链接：400，不跟随",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        symlinkSync(文件.密, path.join(项目根, "链到密件.txt"), "file")
+
+        const response = yield* 送打包(ALICE, { paths: ["链到密件.txt"], name: "x.zip" })
+
+        expect(response.headers.get("content-disposition")).toBe(null)
+        expect((yield* json(出错, response)).error).toContain("链到密件.txt")
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "超过 OPENHIVE_ARCHIVE_MAX_FILES：400，消息含实际值与上限（原始列表 / 遍历两处都拦）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        mkdirSync(path.join(项目根, "多"), { recursive: true })
+        writeFileSync(path.join(项目根, "多", "1.txt"), "1")
+        writeFileSync(path.join(项目根, "多", "2.txt"), "2")
+        writeFileSync(path.join(项目根, "多", "3.txt"), "3")
+        const 小 = realApp({ ...OPEN, OPENHIVE_ARCHIVE_MAX_FILES: "2" })
+
+        const 列表 = yield* 送打包On(小, ALICE, { paths: ["多", "a.txt", "sub/b.txt"], name: "x.zip" })
+        const 遍历 = yield* 送打包On(小, ALICE, { paths: ["多"], name: "多.zip" })
+
+        expect([列表.status, 遍历.status]).toEqual([400, 400])
+        expect((yield* json(出错, 列表)).error).toContain("超过上限 2")
+        const 遍历留言 = (yield* json(出错, 遍历)).error
+        expect(遍历留言).toContain("3")
+        expect(遍历留言).toContain("2")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "超过 OPENHIVE_ARCHIVE_MAX_BYTES：400，消息含实际字节与上限",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        writeFileSync(path.join(项目根, "大.txt"), "0123456789abcdefghij") // 20 字节
+        const 小 = realApp({ ...OPEN, OPENHIVE_ARCHIVE_MAX_BYTES: "10" })
+        // 本文件已有一个 `openApp`，上一条容量闸用例又建了一个；这一个是**第三个** app，
+        // 它的第一条请求会在首查撞上 `#002-02` 记过的平台缺陷（见 `openhive-project-archive.test.ts`
+        // 文件头：除进程第一条 HTTP 请求外，新 app 的首条 PG 查询会撞一次、随后自愈）。
+        // 吞掉这一发再发真请求——判据仍落在真请求上。
+        yield* 送打包On(小, ALICE, { paths: ["大.txt"], name: "warm.zip" })
+
+        const response = yield* 送打包On(小, ALICE, { paths: ["大.txt"], name: "大.zip" })
+
+        expect(response.headers.get("content-disposition")).toBe(null)
+        const 留言 = (yield* json(出错, response)).error
+        expect(留言).toContain("20")
+        expect(留言).toContain("10")
+        expect(response.status).toBe(400)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "匿名请求：401 空体（打包也是项目出口，身份先于一切）",
+    () =>
+      Effect.gen(function* () {
+        // `openApp` 回的是 **Effect**（不是 Promise）——直接 `yield*`，别再包一层 `Effect.promise`。
+        const response = yield* openApp(出口.archive, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: ["a.txt"], name: "x.zip" }),
+        })
+
+        expect(yield* Effect.promise(() => response.text())).toBe("")
+        expect(response.status).toBe(401)
       }),
     30_000,
   )
