@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-20-file-archive-download-design.md`
 
-**对设计文档的一处修订（Task 4 同步落文档）:** 设计 §7.3 写的接口方法是 `ProjectData.archive(projectId, paths, name, options)`，但同一个接口上 `archive(projectId)` 已经是「归档项目」（`packages/app/src/project/project-data.ts:99`），两个签名直接冲突。实现统一叫 **`downloadArchive`**；设计文档 §7.3 与 §14 那两行在 Task 4 一并改掉。
+**对设计文档的一处修订（Task 4 同步落文档）:** 设计 §7.3 写的接口方法是 `ProjectData.archive(projectId, paths, name, options)`，但同一个接口上 `archive(projectId)` 已经是「归档项目」（见 `packages/app/src/project/project-data.ts` 的 `archive` 方法），两个签名直接冲突。实现统一叫 **`downloadArchive`**；设计文档 §7.3 与 §14 那两行在 Task 4 一并改掉。
 
 ## Global Constraints
 
@@ -1229,7 +1229,7 @@ cd packages/app
 bun test --conditions=solid --only-failures --preload ./happydom.ts src/project/openhive-file-ops.test.ts
 ```
 
-Expected: `downloadArchive` 那组 9 pass；`downloadFile` 那组原样全绿（提炼读流没改行为）。
+Expected: `downloadArchive` 那组 8 pass（Step 1 实际列了 8 条）；`downloadFile` 那组原样全绿（提炼读流没改行为）。
 
 - [ ] **Step 5: 变异验证**
 
@@ -1278,7 +1278,7 @@ Refs: #002-06 #003-03"
 `downloadArchive`；`project-data.test.ts` 逐项钉住接线（防止 `downloadArchive` 接到 `download`）。
 
 ⚠️ **不叫 `archive`**：同一个接口上 `archive(projectId)` 已经是「归档项目」
-（`project-data.ts:99`），两个签名直接冲突。实现与文档统一用 `downloadArchive`。
+（见 `project-data.ts` 里的 `archive` 方法），两个签名直接冲突。实现与文档统一用 `downloadArchive`。
 ```
 
 §7.4 流程里
@@ -1430,7 +1430,7 @@ cd packages/app
 bun test --conditions=solid --only-failures --preload ./happydom.ts src/project/project-data.test.ts
 ```
 
-Expected: 新增那条 pass；该文件其余全绿。
+Expected: 新增那条 pass；该文件其余与基线一致。⚠️ 本机已知基线红：`project-data.test.ts` 有 2 条既有失败（`upload 走上传那条出口…` / `download 走下载那条出口…`），在**未改动的 `multi-tenant` HEAD** 上用同一 Bun 1.4.3 同样复现，与本 feature 无关；不修，判据是「既有红不增加」。
 
 顺带做一次受影响 package 的类型检查（`workspace-entry.test.tsx` 的假数据源必须已经满足接口）：
 
@@ -1604,7 +1604,7 @@ cd packages/app
 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-tree.test.tsx
 ```
 
-Expected: 新组 6 条全红（`onArchive` 还没这个 prop；文件夹仍开旧弹窗）。记下实得输出。
+Expected: 新组 **7 条中 4 红**（文件夹仍开旧弹窗；多选文案与交出选中集不成立；文件夹未接 `onArchive` 时未置灰；旧弹窗仍可达）。另外 3 条（单文件、右键未选中行、单文件未接 `onDownload`）改动前**已是绿**——它们钉的是「单文件行为不变」，红绿都不许变。记下实得输出。
 
 - [ ] **Step 3: 改组件**
 
@@ -1768,7 +1768,7 @@ cd packages/app
 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-tree.test.tsx
 ```
 
-Expected: 新组 6 pass；该文件其余全绿（尤其「下载仍亮着」那条已被新组取代，不应残留旧断言）。
+Expected: 新组 7 pass；该文件其余全绿（尤其「下载仍亮着」那条已被新组取代，不应残留旧断言）。
 
 - [ ] **Step 5: 变异验证**
 
@@ -2384,7 +2384,7 @@ bun test --conditions=solid --only-failures --preload ./happydom.ts src/project/
 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-tree.test.tsx src/workspace/workspace-entry.test.tsx
 ```
 
-Expected: 两条命令都全绿。
+Expected: 两条命令都与基线一致。⚠️ 已知基线红 2 条（`project-data.test.ts` 的 upload / download 绑定），在未改动的 HEAD 上同样复现（Bun 1.4.3）；判据是「新增用例全绿、既有红不增加」。其余文件必须全绿。
 
 - [ ] **Step 4: oxlint（两条都跑）**
 

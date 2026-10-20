@@ -301,7 +301,7 @@ export async function downloadArchive(
 `downloadArchive`；`project-data.test.ts` 逐项钉住接线（防止 `downloadArchive` 接到 `download`）。
 
 ⚠️ **不叫 `archive`**：同一个接口上 `archive(projectId)` 已经是「归档项目」
-（`project-data.ts:99`），两个签名直接冲突。实现与文档统一用 `downloadArchive`。
+（见 `project-data.ts` 里的 `archive` 方法），两个签名直接冲突。实现与文档统一用 `downloadArchive`。
 
 ### 7.4 `workspace-entry`
 
