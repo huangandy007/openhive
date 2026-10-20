@@ -1146,6 +1146,7 @@ function 假数据源(
       | "move"
       | "upload"
       | "download"
+      | "downloadArchive"
       | "members"
       | "invite"
       | "remove"
@@ -1180,6 +1181,8 @@ function 假数据源(
     移动的: [] as Array<[string, string, string]>,
     传的: [] as Array<[string, string, string]>,
     下的: [] as Array<[string, string]>,
+    // `[项目, 选中集（原样）, 包名]`。选中集存成数组：断言要**逐项**比顺序。
+    打包的: [] as Array<[string, readonly string[], string]>,
     邀请的: [] as Array<[string, string]>,
     移除的: [] as Array<[string, string]>,
     退的: [] as string[],
@@ -1267,6 +1270,12 @@ function 假数据源(
     download: async (projectId, path, options) => {
       记.下的.push([projectId, path])
       return 剧本.download ? await 剧本.download(projectId, path, options) : undefined
+    },
+    downloadArchive: async (projectId, paths, name, options) => {
+      记.打包的.push([projectId, [...paths], name])
+      return 剧本.downloadArchive
+        ? await 剧本.downloadArchive(projectId, paths, name, options)
+        : { kind: "failed", message: "没有剧本" }
     },
     // T021 的四个成员动作。前三条同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
     // 悄悄报成功，会让「接线根本没接上」看起来是绿的。

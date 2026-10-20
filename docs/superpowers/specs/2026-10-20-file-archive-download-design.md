@@ -297,8 +297,11 @@ export async function downloadArchive(
 - 读流、报进度、abort 的逻辑与 `downloadFile` 共用：从 `downloadFile` 里提一个内部函数，
   两条下载链都调它，不写第二份。
 
-`ProjectData` 接口增加 `archive(projectId, paths, name, options)`，`PROJECT_DATA` 接
-`downloadArchive`；`project-data.test.ts` 逐项钉住接线（防止 `archive` 接到 `download`）。
+`ProjectData` 接口增加 `downloadArchive(projectId, paths, name, options)`，`PROJECT_DATA` 接
+`downloadArchive`；`project-data.test.ts` 逐项钉住接线（防止 `downloadArchive` 接到 `download`）。
+
+⚠️ **不叫 `archive`**：同一个接口上 `archive(projectId)` 已经是「归档项目」
+（`project-data.ts:99`），两个签名直接冲突。实现与文档统一用 `downloadArchive`。
 
 ### 7.4 `workspace-entry`
 
@@ -314,7 +317,7 @@ async function 打包下载(paths: readonly string[], kind: "folder" | "selectio
 id / projectName 取自 currentProject()
 zip 名 = archiveName(projectName, paths, kind, new Date())
 开传输（action: "下载"，name: zip 名，progress {0,0}）
-await projectData.archive(id, paths, zip 名, { signal, onProgress })
+await projectData.downloadArchive(id, paths, zip 名, { signal, onProgress })
 取消 → 直接返回（弹窗已由收传输关掉）
 done → 存到本地(blob, zip 名)；完成态 { files, bytes: blob.size }
 rejected / failed → 收传输(false)；set文件话(message)
@@ -456,7 +459,7 @@ onArchive={(paths, kind) => void 打包下载(paths, kind)}
 | `packages/app/src/project/openhive-file-ops.ts` | fork 自有 | 新增 `downloadArchive`，提炼共用读流函数 |
 | `packages/app/src/project/file-tree.tsx` | fork 自有 | 新增 `onArchive`、动态文案、删拦截分支 |
 | `packages/app/src/project/workspace-entry.tsx` | fork 自有 | 新增 `打包下载` 与接线 |
-| `packages/app/src/project/project-data.ts` | fork 自有 | 新增 `archive` |
+| `packages/app/src/project/project-data.ts` | fork 自有 | 新增 `downloadArchive`（不叫 `archive`：与「归档项目」撞名） |
 | `packages/app/src/project/archive-name.ts` | 新增 | 命名纯函数 |
 | `packages/app/src/project/file-download-dialog.tsx` | fork 自有 | 删除（本次造成孤儿） |
 | `packages/app/e2e/real-stack/file-tree-download-folder-real.spec.ts` | fork 自有 | 重写 |

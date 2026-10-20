@@ -186,6 +186,40 @@ describe("PROJECT_DATA 的文件动作绑定（T020）", () => {
       ["GET", "/openhive/file/download?path=%E8%AF%9D%E5%8D%95.csv", "p1"],
     ])
   })
+
+  /**
+   * 打包下载（2026-10-20）。
+   *
+   * 失效方式与 `download` 只差一个出口：接成下载那条 ⇒ 一次打包变成一次单文件下载
+   * （还必然 400），类型上完全合法。所以这条**钉到 URL、方法与体**三样。
+   */
+  test("downloadArchive 走打包那条出口，把 zip 字节与文件数交回来", async () => {
+    const 发出 = 假服务({
+      "/openhive/file/archive": new Response("PKZIP", {
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": `attachment; filename="资料.zip"`,
+          "x-openhive-file-count": "2",
+        },
+      }),
+    })
+
+    const 结果 = await PROJECT_DATA.downloadArchive("p1", ["资料", "账目.xlsx"], "资料.zip")
+
+    expect(结果.kind).toBe("done")
+    if (结果.kind !== "done") return
+    expect(await 结果.blob.text()).toBe("PKZIP")
+    expect(结果.files).toBe(2)
+    expect(结果.bytes).toBe(5)
+    expect(发出.map((r) => [r.method, r.url, r.项目头, r.体])).toEqual([
+      [
+        "POST",
+        "/openhive/file/archive",
+        "p1",
+        JSON.stringify({ paths: ["资料", "账目.xlsx"], name: "资料.zip" }),
+      ],
+    ])
+  })
 })
 
 /**

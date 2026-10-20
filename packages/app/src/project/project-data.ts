@@ -43,11 +43,13 @@ import type { FileOpOutcome } from "./openhive-file-ops"
 import {
   copyFile,
   createEntry,
+  downloadArchive,
   downloadFile,
   moveFile,
   removeEntry,
   renameEntry,
   uploadFile,
+  type ArchiveOutcome,
   type DownloadOptions,
   type UploadOptions,
 } from "./openhive-file-ops"
@@ -141,6 +143,18 @@ export interface ProjectData {
    */
   download(projectId: string, path: string, options?: DownloadOptions): Promise<Blob | undefined>
   /**
+   * 把选中的文件夹 / 多选条目打成**一个** zip（2026-10-20）。
+   *
+   * ⚠️ **不叫 `archive`**：同一个接口上 `archive(projectId)` 已经是「归档项目」（见上方），
+   * 两个签名直接冲突。`downloadArchive` 与 `download` 并排，名字也说得清它返回的是什么。
+   */
+  downloadArchive(
+    projectId: string,
+    paths: readonly string[],
+    name: string,
+    options?: DownloadOptions,
+  ): Promise<ArchiveOutcome>
+  /**
    * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
    *
    * ⚠️ 名字带 `Entry` 后缀：同一个接口上 `create` 已经是**建项目**了。两个「create」并排摆着，
@@ -230,6 +244,7 @@ export const PROJECT_DATA: ProjectData = {
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
   upload: (projectId, dir, file, options) => uploadFile(projectId, dir, file, options),
   download: (projectId, path, options) => downloadFile(projectId, path, options),
+  downloadArchive: (projectId, paths, name, options) => downloadArchive(projectId, paths, name, options),
   createEntry: (projectId, kind, dir, name) => createEntry(projectId, kind, dir, name),
   renameEntry: (projectId, path, name) => renameEntry(projectId, path, name),
   removeEntry: (projectId, path) => removeEntry(projectId, path),
