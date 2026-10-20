@@ -2735,13 +2735,14 @@ describe("打包下载（POST /openhive/file/archive）", () => {
    * 名字判据是纯函数：win32 造不出带 `\` 的文件名（`\` 是分隔符），
    * 所以这里直接钉判据本体；POSIX 内核上的整链复现记在缺口表（`#002-02`）。
    *
-   * `../../evil.txt` 不是手写的坏输入：POSIX 上名为 `..\..\evil.txt` 的文件经
-   * `relativePath` 归一后**就是**这个形状，zip 条目会变成路径穿越（zip-slip）。
+   * `../../evil.txt` 是判据兜底：旧 `relativePath` 会把名字里的 `\` 全换成 `/`，
+   * `..\..\evil.txt` 因此变成这个形状（zip-slip）。现在 `relativePath` 只换**平台**
+   * 分隔符，这类名字先由反斜杠判据拒；`..` 段与绝对条目仍各自守一道。
    */
-  test("Windows 解不出的名字：反斜杠与归一化后的 `..` 段都必须拒", () => {
+  test("Windows 解不出的名字：反斜杠、绝对条目与 `..` 段都必须拒", () => {
     expect(解不开("../../evil.txt")).toBe(true)
     expect(解不开("资料/..\\..\\evil.txt")).toBe(true)
-    // 以 `\` 开头的名字归一后会成为绝对条目 `/evil.txt`；绝对条目必须拒。
+    // 绝对条目（任何来源）与以 `\` 开头的名字都必须拒。
     expect(解不开("/evil.txt")).toBe(true)
     expect(解不开("\\evil.txt")).toBe(true)
     // 对照：点号开头的正常名字不误伤。
