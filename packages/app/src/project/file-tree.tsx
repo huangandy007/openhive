@@ -443,14 +443,19 @@ export function FileTree(props: FileTreeProps) {
    * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
    * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
    */
+  /** 右键的这行是不是「多选里的那一行」——判目标与菜单文案共用这一份判据（`#002-06`）。 */
+  const 是选中集 = (path: string) => {
+    const 批 = 选中集()
+    return 批.size > 1 && 批.has(path)
+  }
+
   const 判下载目标 = (
     path: string,
   ):
     | { kind: "file"; path: string }
     | { kind: "folder"; paths: readonly string[] }
     | { kind: "selection"; paths: readonly string[] } => {
-    const 批 = 选中集()
-    if (批.size > 1 && 批.has(path)) return { kind: "selection", paths: [...批] }
+    if (是选中集(path)) return { kind: "selection", paths: [...选中集()] }
     if (节点表().get(path)?.type === "file") return { kind: "file", path }
     return { kind: "folder", paths: [path] }
   }
@@ -458,8 +463,7 @@ export function FileTree(props: FileTreeProps) {
   /** 菜单文案：只有「右键行在选中集里且多选」时才带 N。 */
   const 下载文案 = () => {
     const path = 菜单对象()
-    const 批 = 选中集()
-    return path !== undefined && 批.size > 1 && 批.has(path) ? `下载选中的 ${批.size} 项` : "下载"
+    return path !== undefined && 是选中集(path) ? `下载选中的 ${选中集().size} 项` : "下载"
   }
 
   /** 菜单禁用：单文件看 `onDownload`，其余看 `onArchive`。 */

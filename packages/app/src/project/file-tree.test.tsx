@@ -2230,6 +2230,29 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(包).toEqual([])
       })
 
+      test("选中两项后右键**未选中**的文件夹 ⇒ 只打包该文件夹，onDownload 一次都不喊", async () => {
+        const 单: string[] = []
+        const 包: Array<[readonly string[], string]> = []
+        const host = mount(() => (
+          <FileTree
+            paths={树("丙/丁.csv", "甲.csv", "乙.csv")}
+            onDownload={(path) => 单.push(path)}
+            onArchive={(paths, kind) => 包.push([paths, kind])}
+          />
+        ))
+
+        点行(host, "甲.csv")
+        点行(host, "乙.csv", { ctrl: true })
+        右键(行按名(host, "丙"))
+        expect(有菜单()).toBe(true)
+        点菜单项("download")
+        await 歇一拍()
+
+        // 未选中的文件夹只作用于自己——不许把选中集带过来，也不许走单文件下载。
+        expect(包).toEqual([[["丙"], "folder"]])
+        expect(单).toEqual([])
+      })
+
       test("文件夹没接 onArchive ⇒ 「下载」置灰（点了没反应的项是对用户的谎）", () => {
         const host = mount(() => <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} />)
 
@@ -2248,13 +2271,21 @@ describe("FileTree 文件树（FR-005）", () => {
       })
 
       test("旧「无法下载文件夹」弹窗不再可达（连 import 都不在了）", async () => {
-        const host = mount(() => <FileTree paths={树("材料/话单.csv")} onArchive={() => {}} />)
+        // ⚠️ 两个回调都挂上：只挂 `onArchive` 的话，旧实现的 `点下载` 在 `!onDownload` 时早退，
+        // 这条会**恒绿**（`#003-03` ③：变异全绿＝用例没测到东西）。
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onDownload={() => {}} onArchive={() => {}} />
+        ))
 
         右键(行按名(host, "材料"))
+        // 先立前提：菜单真的开了、这一项真的可点——否则「点了没弹窗」可能只是没点到。
+        expect(有菜单()).toBe(true)
+        expect(项禁用("download")).toBe(false)
         点菜单项("download")
         await 歇一拍()
 
-        expect(document.body.querySelector("[data-slot='file-download-dialog']")).toBe(null)
+        // 断在**布尔**上（`#005-01`：实得值是节点会把整轮挂哑——实测这条在变异下确实挂死）。
+        expect(document.body.querySelector("[data-slot='file-download-dialog']") === null).toBe(true)
       })
     })
   })
