@@ -822,6 +822,10 @@ function handleArchive(
         if (info.isFile()) {
           if (解不开(相对)) return 名字解不出(相对)
           if (files + 1 > limits.maxFiles) return 超文件数(files + 1, limits.maxFiles)
+          // 读前预检：`info.size` 已经在手，先按它拦。否则一个超过上限的大文件会先被
+          // `readFile` 整个读进内存——容量闸反倒成了内存崩溃入口。下面的读后复检保留，兜 TOCTOU：
+          // 预检与读之间文件可能长大，也可能读到的是另一种字节数（`#002-02`）。
+          if (bytes + info.size > limits.maxBytes) return 超字节数(bytes + info.size, limits.maxBytes)
           const data = yield* Effect.promise(() => readFile(绝对).catch(() => undefined))
           if (data === undefined) return 读不出来(相对)
           if (bytes + data.byteLength > limits.maxBytes) return 超字节数(bytes + data.byteLength, limits.maxBytes)
@@ -1072,7 +1076,7 @@ const STALE = "这份文件在你打开之后被改过（可能有人在别处�
  * 存盘（2026-10-12 · 用户实报「打开的文件现在不能复制，编辑，修改，和保存」的第三、四步）：
  * 把中栏那个编辑框里的正文写回**项目里已存在的那个文件**。
  *
- * ## 守卫与同族的另外八个出口**逐条同序**
+ * ## 守卫与同族的另外九个出口**逐条同序**
  *
  * `gate` → `inside` → `inGit` → `lstat`（**不是** `stat`）→ `realInside`（同 `handleStat` /
  * `handleDownload` 那一串）。这不是抄一遍：这一层是**唯一**决定「这次写落在盘上哪儿」的地方，

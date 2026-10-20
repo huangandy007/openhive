@@ -306,8 +306,8 @@ async function 读包(response: Response): Promise<解开的包> {
       entries: await Promise.all(
         entries.map(async (entry) => ({
           name: entry.filename,
-          directory: entry.directory === true,
-          text: entry.directory === true ? "" : await entry.getData!(new TextWriter()),
+          directory: entry.directory ?? false,
+          text: entry.directory ? "" : await entry.getData!(new TextWriter()),
         })),
       ),
     }
@@ -345,6 +345,23 @@ const 送打包On = (
       ...(project === undefined ? {} : { [PROJECT_HEADER]: project }),
     },
     body: JSON.stringify(body),
+  })
+
+/**
+ * 容量闸那两条用例的**预热**：它们是本文件里的第二、第三个 app，而除进程第一条 HTTP 请求外，
+ * 新 app 的**首条 PG 查询**会撞一次平台缺陷、随后自愈（见 `openhive-project-archive.test.ts`
+ * 文件头）。第一发**只为翻过这个缺陷**，状态不参与断言（第二个 app 上它会是 400，第三个 app
+ * 上它会是 500——两种都见过，见报告实测）；第二发才是判据。
+ *
+ * 预热用 `paths: []`：它是 **必然 400** 的一条（空列表在任何读写之前就被判掉）。第二发
+ * 「必须 400」的断言不能省——否则预热哪天静默坏成 500，真请求仍会绿着通过
+ * （`#005-18` 假绿四问）。它不碰磁盘，与用例自己的前提无关。
+ */
+const 预热 = (app: ReturnType<typeof realApp>) =>
+  Effect.gen(function* () {
+    yield* 送打包On(app, ALICE, { paths: [], name: "warm.zip" })
+    const response = yield* 送打包On(app, ALICE, { paths: [], name: "warm.zip" })
+    expect(response.status, "前提：预热请求本身要回 400（空列表）").toBe(400)
   })
 
 /**
@@ -2809,6 +2826,25 @@ describe("打包下载（POST /openhive/file/archive）", () => {
   )
 
   it.live(
+    "显式选中的顶层条目不看 ignore：被 .gitignore 的文件夹本身仍进包",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造打包夹具()
+        // 规则命中的正是顶层那一条：用户是在文件树里**主动点**了它，
+        // 「跳过它」等于「点了却说没有」。ignore 只作用于递归出来的子项。
+        writeFileSync(path.join(项目根, ".gitignore"), "资料/\n")
+
+        const response = yield* 送打包(ALICE, { paths: ["资料"], name: "资料.zip" })
+        const { entries } = yield* Effect.promise(() => 读包(response))
+
+        expect(entries.map((e) => e.name)).toContain("资料/")
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  it.live(
     "项目根方向的一批坏顶层：根 / 越界 / 不存在 / 空列表，各自 400 且零 zip 字节",
     () =>
       Effect.gen(function* () {
@@ -2913,6 +2949,7 @@ describe("打包下载（POST /openhive/file/archive）", () => {
         writeFileSync(path.join(项目根, "多", "2.txt"), "2")
         writeFileSync(path.join(项目根, "多", "3.txt"), "3")
         const 小 = realApp({ ...OPEN, OPENHIVE_ARCHIVE_MAX_FILES: "2" })
+        yield* 预热(小)
 
         const 列表 = yield* 送打包On(小, ALICE, { paths: ["多", "a.txt", "sub/b.txt"], name: "x.zip" })
         const 遍历 = yield* 送打包On(小, ALICE, { paths: ["多"], name: "多.zip" })
@@ -2933,11 +2970,7 @@ describe("打包下载（POST /openhive/file/archive）", () => {
         yield* 就绪()
         writeFileSync(path.join(项目根, "大.txt"), "0123456789abcdefghij") // 20 字节
         const 小 = realApp({ ...OPEN, OPENHIVE_ARCHIVE_MAX_BYTES: "10" })
-        // 本文件已有一个 `openApp`，上一条容量闸用例又建了一个；这一个是**第三个** app，
-        // 它的第一条请求会在首查撞上 `#002-02` 记过的平台缺陷（见 `openhive-project-archive.test.ts`
-        // 文件头：除进程第一条 HTTP 请求外，新 app 的首条 PG 查询会撞一次、随后自愈）。
-        // 吞掉这一发再发真请求——判据仍落在真请求上。
-        yield* 送打包On(小, ALICE, { paths: ["大.txt"], name: "warm.zip" })
+        yield* 预热(小)
 
         const response = yield* 送打包On(小, ALICE, { paths: ["大.txt"], name: "大.zip" })
 
