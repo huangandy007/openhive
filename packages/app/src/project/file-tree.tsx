@@ -143,6 +143,21 @@ export interface FileTreeProps {
    */
   paths?: readonly string[]
   /**
+   * 清单**取数**的状态（2026-10-21 用户实报「打开大项目 2.9 秒里一直显示『还没有文件』」）。
+   *
+   * `paths` 的 `undefined` 今天同时意味着「加载中 / 取不到 / 没项目」三件事，而空态把它们
+   * 一律说成「还没有文件」——那 2.9 秒是在**说谎**。接收方知道真相，就由它说：
+   *
+   * - `"loading"` ⇒ 「正在加载文件…」；
+   * - `"failed"` ⇒ 「文件清单加载失败」＋ 重试（`onRetry`）。
+   *
+   * ⚠️ **有一份旧清单时不遮它**（见下面那个空态 fallback 的渲染优先级）——刷新是「再取一遍」，
+   * 不是「把树抹掉」。省略 = 维持原空态（`paths` 省略 / `[]` 都是「还没有文件」）。
+   */
+  status?: "loading" | "failed"
+  /** 取不到时那颗「重试」——只在本组件**没有旧清单**且 `status === "failed"` 时出现。省略 = 不画那颗钮。 */
+  onRetry?: () => void
+  /**
    * 新建文件 / 文件夹。`parent` 是**落点目录**（`""` = 根）：选中目录 ⇒ 它自己，
    * 选中文件 ⇒ 它所在的目录，什么都没选 ⇒ 根。`name` 是用户在**弹窗**里敲的名字。
    *
@@ -730,9 +745,34 @@ export function FileTree(props: FileTreeProps) {
             <Show
               when={行列表().length > 0}
               fallback={
-                <div data-slot="file-tree-empty" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
-                  {词() ? EMPTY_SEARCH : EMPTY_TREE}
-                </div>
+                // 优先级：**旧清单 > 加载中 > 取不到 > 确实空**。
+                // 前两条都要「有旧清单就不遮」——刷新失败 / 刷新中把整棵树抹成一句话，
+                // 等于每点一次刷新就丢一次视野（见 `FileTreeProps.status`）。
+                props.status === "loading" ? (
+                  <div data-slot="file-tree-loading" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+                    正在加载文件…
+                  </div>
+                ) : props.status === "failed" ? (
+                  <div class="flex items-center gap-2 px-1 py-2">
+                    <div data-slot="file-tree-failed" class="text-[13px] text-v2-text-text-faint">
+                      文件清单加载失败
+                    </div>
+                    <Show when={props.onRetry}>
+                      <button
+                        data-slot="file-tree-retry"
+                        type="button"
+                        class="h-6 shrink-0 rounded-[4px] px-2 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                        onClick={() => props.onRetry?.()}
+                      >
+                        重试
+                      </button>
+                    </Show>
+                  </div>
+                ) : (
+                  <div data-slot="file-tree-empty" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+                    {词() ? EMPTY_SEARCH : EMPTY_TREE}
+                  </div>
+                )
               }
             >
               <div

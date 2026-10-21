@@ -131,7 +131,7 @@ async function walk(
   let 有文件 = false
   for (const value of body) {
     const entry = readEntry(value)
-    if (!entry || entry.ignored || isGitMetadata(entry.path)) continue
+    if (!entry || entry.ignored || isHiddenRoot(entry.path)) continue
     if (entry.type !== "directory") {
       files.push(entry.path)
       有文件 = true
@@ -146,31 +146,38 @@ async function walk(
 }
 
 /**
- * 这条**项目内的相对路径**是不是落在**项目根的 `.git`** 里——文件树里一律不显示。
+ * 项目根下**不画、也不往下走**的目录：版本库（`.git`）与运行时安装根（`.opencode`）。
  *
- * ## 为什么要有它（上游那份忽略规则里没有 `.git`）
+ * ## 为什么要有它（上游那份忽略规则里两个都不认）
  *
- * 建项目时无条件 `git init`（`packages/opencode/src/server/openhive/project.ts`），
- * 而文件树的「隐掉」本来是借上游 `ignored` 那条路——**上游那份默认规则里没有 `.git`**
- * （2026-10-11 实测 `ignore().ignores(".git/")` 为 `false`）⇒ 不补这一句，民警点开文件 Tab
- * 看到的是一个 `.git` 目录，进得去，里面成千上万个对象文件；走树的代价也跟着来
- * （每层目录一次往返）。
+ * - `.git`：建项目时无条件 `git init`（`packages/opencode/src/server/openhive/project.ts`），
+ *   而上游默认忽略规则里**没有 `.git`**（2026-10-11 实测 `ignore().ignores(".git/")` 为
+ *   `false`）⇒ 不补这一句，民警点开文件 Tab 看到的就是一个进得去的 `.git`，里面成千上万个
+ *   对象文件。
+ * - `.opencode`：插件 / 技能的安装根（`packages/opencode/src/plugin/install.ts` 的
+ *   `path.join(root, ".opencode")`），底下是 `node_modules/`。2026-10-21 真栈实测
+ *   「业务梳理01」：整份清单 314 个目录 / 3933 个文件 / 2268ms，其中 `.opencode\` 一个子树
+ *   就占 **304 个目录 / 3873 个文件 / 2181ms（96%）**；真实业务目录只有 ~10 个、~79ms。
  *
- * ## 判据与服务端**逐字同形**（`packages/opencode/src/server/openhive/file.ts` 的 `inGit`）
+ * 两者都是「项目根的基础设施」，不是民警要看的文件；更要紧的是**走它的代价**：每层目录一次
+ * 往返，三千多个文件就是几秒钟——用户实报的「打开项目要等几秒」主要就是这一条。
  *
- * 那边拦的是**八个出口**（这一层拦不住任何一条直接构造的请求），两处的边界必须同一条：
- * **整条路径的第一段**是 `.git`，**不分大小写**（win32 上 `.git` / `.GIT` / `.Git` 是同一个
- * 目录）。「第一段」不是「任何一段」——嵌在项目里的 `资料\.git\`（解压进来的别人一份仓库）
- * 是项目**内容**，与项目根那个版本库不是一回事，与服务端那条边界一致。
+ * ## 判据：**整条路径的第一段**，**不分大小写**
+ *
+ * 「第一段」不是「任何一段」——嵌在项目内容里的 `资料\.git\` / `资料\.opencode\`（解压进来
+ * 的别人一份仓库 / 配置）是项目**内容**，与根上那个不是一回事。`.git` 那一半与服务端
+ * `packages/opencode/src/server/openhive/file.ts` 的 `inGit` **逐字同形**（那边拦八个出口，
+ * 两处边界必须同一条，否则「看得见却动不了」）；`.opencode` 没有服务端对应守卫（见下）。
  *
  * ## ⚠️ 这里不是安全边界
  *
- * 拦住改动的是服务端那八项守卫。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』
- * 替代权限校验」是禁止的——这里是**叠加**，不是替代：守卫先立着，客户端只是不画。
+ * 拦住改动的是服务端那八个守卫；`.opencode` 服务端**没有**守卫，本函数拦不住任何一条直接
+ * 构造的请求。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』替代权限校验」是禁止的
+ * ——这里是**叠加**（对 `.git`）／纯粹省一趟走树（对 `.opencode`），不是替代。
  */
-function isGitMetadata(path: string): boolean {
-  const 首段 = path.split(/[\\/]/)[0] ?? ""
-  return 首段.toLowerCase() === ".git"
+function isHiddenRoot(path: string): boolean {
+  const 首段 = (path.split(/[\\/]/)[0] ?? "").toLowerCase()
+  return 首段 === ".git" || 首段 === ".opencode"
 }
 
 /**

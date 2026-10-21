@@ -30,7 +30,7 @@ import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
 import { TargetPicker } from "@/project/target-picker"
-import { projectFiles, setProjectFiles } from "@/project/project-files"
+import { 文件清单请求, projectFiles, setProjectFiles } from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { projectMembers, setProjectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
@@ -470,23 +470,65 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 「进门第一次、且当时没有项目」那一趟被误读成「没换项目」而不清空）。哨兵只在这里活，
    * 不进任何信号——它是**给前后两趟比对的私账**，不是界面状态。
    */
+  /**
+   * 清单的取数状态——**「还没有答案」与「答案是没有」不同一句话**（2026-10-21 用户实报）。
+   *
+   * 真栈实测：点项目后 **6ms** 就显示「还没有文件」，数据 **2930ms** 才到。那 2.9 秒里
+   * `projectFiles()` 是 `undefined`（取数没回来），旧空态把它当成了「确实没有文件」。
+   *
+   * 四态：`idle`（没有项目）/ `loading`（正在取）/ `ready`（取到了）/ `failed`（取不到）。
+   * 交给树时只有 `loading` / `failed` 两句话，`idle` 与 `ready` 都传 `undefined`（走原空态 / 画树）。
+   */
+  const [文件清单态, set文件清单态] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
   const 没取过 = Symbol("清单还没取过")
   let 上次项目: string | undefined | typeof 没取过 = 没取过
+  /**
+   * 已发出（或已决定不发）的那一份清单是哪一趟要的：`项目 id + 重取代次`。
+   *
+   * 换项目 / 用户拨 `清单重取` ⇒ 这个键变 ⇒ 取；同一项目切页签、开关目标选择器 ⇒ 键不变 ⇒ 不重复取。
+   * `undefined`（还没决定过）与任何键都不等，所以按需取数的第一趟一定取得上。
+   */
+  let 上次取的清单: string | undefined
   createEffect(() => {
     const id = currentProject()?.id
-    清单重取() // 读一下：文件动作办成之后拨它，清单就跟着重取（T020）——同一道闸、两处触发
+    const 重取 = 清单重取() // 读一下：文件动作办成之后拨它，清单就跟着重取（T020）——同一道闸、两处触发
+    /**
+     * **按需取数**（2026-10-21）：文件页签看得见、目标选择器开着、或组件外有人明确要
+     * （`project-files.ts` 的 `请求文件清单`，Markdown 的引用文件选择器）才发请求。
+     *
+     * 默认页签就是「文件」⇒ 打开项目那一下照旧取；省掉的是「停在会话页签切项目」那一路。
+     */
+    const 要看 = sidebarTab() === "files" || 待搬() !== undefined || 文件清单请求() > 0
+
     if (id !== 上次项目) {
       上次项目 = id
       setProjectFiles(undefined)
+      set文件清单态(id ? "loading" : "idle")
     }
-    if (!id || !projectData) return
+    if (!id || !projectData) {
+      set文件清单态("idle")
+      return
+    }
+    if (!要看) return
+
+    const 这一份 = `${id}\n${重取}`
+    if (这一份 === 上次取的清单) return
+    上次取的清单 = 这一份
 
     let 作废 = false
     onCleanup(() => {
       作废 = true
     })
     void projectData.files(id).then((paths) => {
-      if (!作废) setProjectFiles(paths)
+      if (作废) return
+      if (paths === undefined) {
+        // 取不到：**有旧清单就留着**（刷新失败不能把已有的树抹掉——同 `FileTreeProps.status`
+        // 的「旧清单优先」）；没有才如实说「取不到」，并让树给出重试。
+        set文件清单态(projectFiles() === undefined ? "failed" : "ready")
+        return
+      }
+      setProjectFiles(paths)
+      set文件清单态("ready")
     })
   })
 
@@ -1811,6 +1853,18 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           **要有项目**才接线（没有项目时没有什么可刷的）。 */}
                       <DualFileTree
                         paths={projectFiles()}
+                        // 「正在取 / 取不到」两句话（2026-10-21）：`paths` 的 `undefined` 自己也
+                        // 说不清是哪种，只有本组件知道——交给树去说（`FileTreeProps.status`）。
+                        status={
+                          文件清单态() === "loading"
+                            ? "loading"
+                            : 文件清单态() === "failed"
+                              ? "failed"
+                              : undefined
+                        }
+                        // 取不到时那颗重试：与右键菜单里的「刷新」是**同一枚代次**（`拨清单重取`）——
+                        // 「再取一遍」只有一个意思，不该有第二条路（`#002-06`）。
+                        onRetry={有项目() ? 拨清单重取 : undefined}
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}

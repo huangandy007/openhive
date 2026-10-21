@@ -1,6 +1,6 @@
-import { createMemo, createSignal, For, Show } from "solid-js"
+import { createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { extensionOf } from "@/center/view-registry"
-import { projectFiles } from "@/project/project-files"
+import { 请求文件清单, projectFiles } from "@/project/project-files"
 
 /**
  * 从**当前项目的文件清单**里挑一个，插成引用。
@@ -19,6 +19,11 @@ export function 引用文件选择(props: {
   关掉: () => void
 }) {
   const [找, set找] = createSignal("")
+  /**
+   * 按需取数（2026-10-21）：文件清单只在「有人要看」时才取，而本选择器**看不见左栏页签**
+   * ——用户停「会话」页签打开它时，清单可能还没取过。挂载即拨一下，免得把它饿成空列表。
+   */
+  onMount(请求文件清单)
   const 候选 = createMemo(() => {
     // 目录在文件树里要可见，但不能被插入 Markdown——在两个分支的共同入口过滤掉。
     const 全部 = (projectFiles() ?? []).filter((路径) => !/[\\/]$/.test(路径))

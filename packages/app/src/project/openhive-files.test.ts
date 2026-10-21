@@ -322,6 +322,76 @@ describe("项目根的 .git 从清单里隐掉", () => {
   })
 })
 
+/**
+ * 2026-10-21 · **项目根的 `.opencode` 也从文件树里隐掉**。
+ *
+ * ## 为什么要隐它（实测，不是一个「看着碍眼」的偏好）
+ *
+ * `.opencode` 是插件 / 技能的安装根（`packages/opencode/src/plugin/install.ts` 的
+ * `path.join(root, ".opencode")`），底下是 `node_modules/` 与 `package.json`。
+ * 真栈实测「业务梳理01」：整份清单 **314 个目录 / 3933 个文件 / 2268ms**，其中
+ * `.opencode\` 一个子树就占 **304 个目录 / 3873 个文件 / 2181ms（96%）**；真实业务目录
+ * 只有 ~10 个、~79ms。用户实报的「打开项目要等几秒」主要就是它。
+ *
+ * 民警要看的从来不是插件依赖树；隐掉它既省掉那条路，也不会让人以为文件没了。
+ *
+ * ## 判据与 `.git` **同一条**
+ *
+ * 整条路径的**第一段**是 `.opencode`（不分大小写；win32 上 `.OPENCODE` 与它是同一个目录）。
+ * 不是「凡 `.opencode` 开头」，也不是「任何一段」——嵌在项目内容里的 `资料\.opencode\` 照常。
+ *
+ * ## ⚠️ 同样**不是**安全边界
+ *
+ * 服务端没有为它加任何守卫：`.opencode` 里的东西该读得到仍读得到、该改得动仍改得动。
+ * 这里只是**不画、也不往下走**（同 `.git` 那一节的口径，`CLAUDE.md` 的 Anti-Patterns）。
+ */
+describe("项目根的 .opencode 从清单里隐掉", () => {
+  test(".opencode 目录既不进清单、也不往下走", async () => {
+    const { send, sent } = stub({ "": [目录(".opencode\\", ".opencode"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["笔记.md"])
+    // 替身没给 `.opencode\` 配路由 ⇒ 真走了的话那一层会抛 ⇒ 整份变 `undefined`。
+    expect(sent.map((item) => item.path)).toEqual([""])
+  })
+
+  test(".OPENCODE 同样隐掉（win32 上它们是同一个目录）", async () => {
+    const { send, sent } = stub({ "": [目录(".OPENCODE\\", ".OPENCODE"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["笔记.md"])
+    expect(sent.map((item) => item.path)).toEqual([""])
+  })
+
+  /** 对照：判据是「那一段**等于** `.opencode`」，不是「凡 `.opencode` 开头」。 */
+  test("`.opencode.json` 照常出现（判据不是「凡 .opencode 开头」）", async () => {
+    const { send } = stub({ "": [文件(".opencode.json", ".opencode.json"), 文件("笔记.md", "笔记.md")] })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual([".opencode.json", "笔记.md"])
+  })
+
+  /** 同上，目录那一侧：`.opencodex\` 第一段不是 `.opencode` ⇒ 照常进清单、照常走进去。 */
+  test("`.opencodex\\` 这个目录照常出现，且照常往下走", async () => {
+    const { send, sent } = stub({
+      "": [目录(".opencodex\\", ".opencodex")],
+      ".opencodex\\": [文件(".opencodex\\config", "config")],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual([".opencodex\\config"])
+    expect(sent.map((item) => item.path)).toEqual(["", ".opencodex\\"])
+  })
+
+  /** 边界：**第一段不是 `.opencode`** ⇒ 照常（项目内容，不是运行时安装根）。 */
+  test("`资料\\.opencode\\` 照常出现、照常往下走（边界：只看第一段）", async () => {
+    const { send, sent } = stub({
+      "": [目录("资料\\", "资料")],
+      "资料\\": [目录("资料\\.opencode\\", ".opencode"), 文件("资料\\笔记.md", "笔记.md")],
+      "资料\\.opencode\\": [文件("资料\\.opencode\\config", "config")],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["资料\\.opencode\\config", "资料\\笔记.md"])
+    expect(sent.map((item) => item.path)).toEqual(["", "资料\\", "资料\\.opencode\\"])
+  })
+})
+
 describe("readProjectFile", () => {
   function 替身(answer: Response) {
     const 收到: Array<{ url: string; path: string | null; project: string | null }> = []

@@ -8,11 +8,31 @@ import { createSignal } from "solid-js"
  * 应用入口（或以后的模块动作）往缝里写。
  *
  * `| undefined` 与 `[]` 说的**不是**一件事，别合并：
- * - `undefined` = 取不到（还没选项目，或那一趟取数失败了）；
+ * - `undefined` = 还不知道（还没选项目 / 正在取 / 那一趟取数失败了）；
  * - `[]` = 取到了，这个项目一个文件都没有。
+ *
+ * ⚠️ `undefined` 的**三种成因**只有写入方（`workspace-entry.tsx`）分得清，所以「正在加载」
+ * 与「取不到」那两句话也由它说（`文件清单态` → `FileTreeProps.status`）——本缝不重复存一份
+ * 会与它漂移的状态（`LEARNINGS #002-06`）。
  *
  * 写入方只有一个：`workspace-entry.tsx` 的 `拉清单`（T018 落地，走 `ProjectData.files`）。
  * 文件动作办成之后（复制 / 移动 / 上传）它会被**再拨一次**——见那里的 `清单重取`
  * （T020）：树上的位置换了靠的是重取，不是就地改这份数组。
  */
 export const [projectFiles, setProjectFiles] = createSignal<readonly string[] | undefined>()
+
+/**
+ * 「现在就要清单」的拨号（2026-10-21，按需取数）。
+ *
+ * 起因：文件清单过去**无条件**在换项目时取，可停「会话」页签的用户一眼都看不到那棵树，
+ * 却要陪它等（真栈实测 314 次目录请求 / 2268ms，96% 花在 `.opencode\` 上）。
+ * 于是取数改成「文件页签可见 / 目标选择器开着 / 有人明确要」时才发。
+ *
+ * 本文件之外唯一一个**看不到页签**的消费者是 Markdown 的引用文件选择器
+ * （`center/views/richtext/file-picker.tsx`）——它一挂载就拨一下，免得按需取数把它饿成空列表。
+ * 拨一次之后本会话就按「有人要」处理（计数器不回零：它记的是「有没有人要过」，不是「此刻是否要」）。
+ */
+export const [文件清单请求, set文件清单请求] = createSignal(0)
+
+/** 拨一下「现在就要清单」。 */
+export const 请求文件清单 = () => set文件清单请求((次数) => 次数 + 1)

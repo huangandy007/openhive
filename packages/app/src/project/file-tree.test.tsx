@@ -1426,6 +1426,63 @@ describe("FileTree 文件树（FR-005）", () => {
   })
 
   /**
+   * 三态（2026-10-21）：**「还没有答案」与「答案是没有」不是同一句话**。
+   *
+   * 起因是用户实报「打开大项目，从选项目到文件 Tab 出数据要 2.9 秒，期间一直显示『还没有文件』」
+   * ——那 2.9 秒里 `paths` 是 `undefined`（取数还没回来），而空态把它当成了「确实没有文件」。
+   *
+   * 三个态：
+   * - `loading`：还没有答案，正在取；
+   * - `failed`：取不到（网络 / 服务端）——**不是**「一个文件都没有」，且必须给出重试；
+   * - 不传：维持原来的空态（`paths` 省略 / `[]` 都是「还没有文件」）。
+   *
+   * ⚠️ **旧清单优先**：已经有一份清单时，加载中 / 取不到都**不遮住**它。刷新是「再取一遍」，
+   * 把整棵树抹成一句「正在加载」等于让用户每点一次刷新就丢一次视野。
+   */
+  describe("三态：加载中 / 取不到 / 确实空", () => {
+    test("`status='loading'` ＋ 没有路径 ⇒ 说「正在加载」，不能说「还没有文件」", () => {
+      const host = mount(() => <FileTree status="loading" />)
+
+      expect(文本(host, "file-tree-loading")).toBe("正在加载文件…")
+      expect(无槽(host, "file-tree-empty")).toBe(true)
+      expect(行(host).length).toBe(0)
+    })
+
+    test("`status='failed'` ＋ 没有路径 ⇒ 说「取不到」并给重试；点重试喊 onRetry", () => {
+      let 重试 = 0
+      const host = mount(() => <FileTree status="failed" onRetry={() => (重试 += 1)} />)
+
+      expect(文本(host, "file-tree-failed")).toBe("文件清单加载失败")
+      expect(无槽(host, "file-tree-empty")).toBe(true)
+
+      const 钮 = 按钮(host, "file-tree-retry")
+      expect(钮?.textContent?.trim()).toBe("重试")
+      钮?.click()
+      expect(重试).toBe(1)
+    })
+
+    test("已经有一份旧清单时，加载中 / 取不到都**不遮住**它——刷新不该把树整棵抹掉", () => {
+      const 加载中 = mount(() => <FileTree paths={树("甲/a.txt")} status="loading" />)
+      const 取不到 = mount(() => <FileTree paths={树("甲/a.txt")} status="failed" onRetry={() => {}} />)
+
+      expect(路径(加载中)).toEqual(["甲"])
+      expect(无槽(加载中, "file-tree-loading")).toBe(true)
+      expect(路径(取不到)).toEqual(["甲"])
+      expect(无槽(取不到, "file-tree-failed")).toBe(true)
+    })
+
+    test("不传 `status` ⇒ 仍然是原来的空态，且不出现加载 / 失败槽", () => {
+      const 无来源 = mount(() => <FileTree />)
+      const 空来源 = mount(() => <FileTree paths={树()} />)
+
+      expect(文本(无来源, "file-tree-empty")).toBe("还没有文件")
+      expect(文本(空来源, "file-tree-empty")).toBe("还没有文件")
+      expect(无槽(无来源, "file-tree-loading")).toBe(true)
+      expect(无槽(空来源, "file-tree-failed")).toBe(true)
+    })
+  })
+
+  /**
    * 右键菜单（设计 §6.2）。
    *
    * ## 菜单不在 `host` 里

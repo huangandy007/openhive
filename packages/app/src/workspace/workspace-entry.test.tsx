@@ -18,7 +18,7 @@ import {
 } from "@/project/minio-backups"
 import type { BackupJob, BackupPreview, BackupSnapshot, BackupSnapshotDetail } from "@/project/openhive-backup"
 import { type ProjectData } from "@/project/project-data"
-import { setProjectFiles } from "@/project/project-files"
+import { 请求文件清单, set文件清单请求, setProjectFiles } from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
 import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
@@ -103,7 +103,13 @@ afterEach(() => {
  * 只复位新加的这一条：`projectList` 今天没有泄漏症状，而顺手改一个与本轮无关的夹具行为，
  * 会让别的用例的红绿跟着变（`CLAUDE.md` 的「只动自己碰过的地方」）。
  */
-beforeEach(() => setProjectListFailed(undefined))
+beforeEach(() => {
+  setProjectListFailed(undefined)
+  // 「有人要过清单」也是模块级缝（`#005-03`）：上一条用例拨过的话，下一条停在「会话」页签的
+  // 用例会直接取数——而它要证明的正是「不取」。放在**全局**这一处，因为本文件有 6 个 describe
+  // 各自复位自己那几条缝，漏掉任何一个都会让红绿取决于用例顺序。
+  set文件清单请求(0)
+})
 
 const entries = (host: HTMLElement) => [
   ...host.querySelectorAll<HTMLElement>("[data-slot='rail-entry']"),
@@ -1643,6 +1649,126 @@ describe("项目数据接线（T018 出参）", () => {
   })
 
   /**
+   * 文件清单的三态（2026-10-21 用户实报：打开大项目 2.9 秒里一直显示「还没有文件」）。
+   *
+   * 真栈实测那两个数：`file-tree-empty` 在点击后 **6ms** 就出现，数据 **2930ms** 才到；
+   * 而 `listProjectFiles` 的 314 次目录请求里 96% 花在 `.opencode\` 上（P0-② 另治）。
+   * 这一组钉的是**说法**：没答案时说「正在加载」，取不到时说「取不到」并给重试。
+   */
+  test("清单还没回来 ⇒ 树说「正在加载文件…」，不说「还没有文件」", async () => {
+    const 放行: Array<(v: readonly string[] | undefined) => void> = []
+    const { data } = 假数据源({ files: () => new Promise((resolve) => 放行.push(resolve)) })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+
+    expect(text(host, "file-tree-loading")).toBe("正在加载文件…")
+    // 对照（`#002-02`）：问的是同一个问题，答案必须**相反**——否则这条只证明「有个槽」。
+    expect(text(host, "file-tree-empty")).toBeUndefined()
+
+    放行.shift()?.(["资料/话单.csv"])
+    await 冲一遍()
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
+    expect(路径们(host)).toContain("资料/话单.csv")
+    expect(text(host, "file-tree-loading")).toBeUndefined()
+  })
+
+  test("清单取不到 ⇒ 说「文件清单加载失败」并给重试；点重试再取，回来之后树就长出来", async () => {
+    let 第几次 = 0
+    const { data, 记 } = 假数据源({
+      files: async () => {
+        第几次 += 1
+        return 第几次 === 1 ? undefined : ["资料/话单.csv"]
+      },
+    })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+
+    expect(text(host, "file-tree-failed")).toBe("文件清单加载失败")
+    expect(text(host, "file-tree-empty")).toBeUndefined()
+    expect(记.files).toEqual(["p1"])
+
+    host.querySelector<HTMLButtonElement>("[data-slot='file-tree-retry']")?.click()
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1", "p1"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
+    expect(路径们(host)).toContain("资料/话单.csv")
+    expect(text(host, "file-tree-failed")).toBeUndefined()
+  })
+
+  /**
+   * 按需取数（2026-10-21）：文件清单只在**有人要看它**的时候取。
+   *
+   * 默认页签是「文件」，所以这条对「打开项目」那一下没有改变；它省掉的是**停在「会话」页签
+   * 切项目**那一路——那条路今天照样跑整棵文件树，而用户一眼都看不到它。
+   */
+  test("停在「会话」页签切项目 ⇒ 不取文件清单；切回「文件」页签 ⇒ 补取一次", async () => {
+    const { data, 记 } = 假数据源({ files: async () => ["资料/话单.csv"] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    // 立前提：先把页签切到「会话」。找不到就**抛**——页签没切过去的话，下面那条「没取」
+    // 会变成一条永远绿的空断言（`#005-38`）。
+    const 会话页 = host.querySelector<HTMLElement>("[data-slot='sidebar-tab'][data-tab='session']")
+    if (!会话页) throw new Error("左栏找不到「会话」页签——前提没立住")
+    会话页.click()
+    await 冲一遍()
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    expect(记.files).toEqual([])
+
+    host.querySelector<HTMLElement>("[data-slot='sidebar-tab'][data-tab='files']")?.click()
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1"])
+    全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
+    expect(路径们(host)).toContain("资料/话单.csv")
+  })
+
+  /**
+   * 组件外那个消费者：Markdown 的引用文件选择器（`center/views/richtext/file-picker.tsx`）。
+   * 它看不见左栏页签，按需取数可能把它饿成空列表 ⇒ 它一挂载就拨 `请求文件清单()`。
+   * 这里直接拨那一枚——测的是**那条缝**，不是选择器的长相。
+   */
+  test("组件外有人要清单 ⇒ 拨一下就把清单取来（哪怕停「会话」页签）", async () => {
+    const { data, 记 } = 假数据源({ files: async () => ["资料/话单.csv"] })
+    const host = 挂(data)
+    await 冲一遍()
+
+    host.querySelector<HTMLElement>("[data-slot='sidebar-tab'][data-tab='session']")?.click()
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    expect(记.files).toEqual([])
+
+    请求文件清单()
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1"])
+  })
+
+  test("同一项目来回切页签 ⇒ 不重复取清单（已经取到的那份不会因为看了一眼会话就过期）", async () => {
+    const { data, 记 } = 假数据源({ files: async () => ["资料/话单.csv"] })
+    const host = 挂(data)
+
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    expect(记.files).toEqual(["p1"])
+
+    host.querySelector<HTMLElement>("[data-slot='sidebar-tab'][data-tab='session']")?.click()
+    await 冲一遍()
+    host.querySelector<HTMLElement>("[data-slot='sidebar-tab'][data-tab='files']")?.click()
+    await 冲一遍()
+
+    expect(记.files).toEqual(["p1"])
+  })
+
+  /**
    * 进门那一次清单**迟到**时，不许把刚建好的新项目抹掉。
    *
    * 写这个缝的有**两个出口**（进门拉一次、建完重拉一次），这条测的是两者乱序。成因不是假想的：
@@ -3137,6 +3263,33 @@ describe("「刷新」接进工作台（2026-10-10 用户下达）", () => {
     放行?.() // 别把挂起的 promise 留给下一条用例
     await 冲一遍()
     expect(路径们(host)).toContain("资料/话单.csv")
+  })
+
+  /**
+   * 刷新**失败** ⇒ 旧清单留着（2026-10-21）。
+   *
+   * 与上一条同因：失败也只是「再取一遍」的一趟，不该因为这一趟没成，就把已经看得见的树抹掉、
+   * 改说「还没有文件」。**没有旧清单**时失败才说「取不到」并给重试——那一条在
+   * 「三态」那一节（`清单取不到 ⇒ …`）。两条合起来才是完整的分支：成 / 失败 × 有 / 无旧清单。
+   */
+  test("刷新失败 ⇒ 旧清单留着，树不变成空态、也不报「加载失败」", async () => {
+    let 第几趟 = 0
+    const { host } = await 开({
+      files: async () => {
+        第几趟 += 1
+        return 第几趟 === 1 ? ["资料/话单.csv"] : undefined
+      },
+    })
+    全展开(host)
+    expect(路径们(host), "前置：旧清单已经在屏幕上").toContain("资料/话单.csv")
+
+    右键行(host, "话单.csv")
+    点菜单项("refresh")
+    await 冲一遍()
+
+    expect(路径们(host), "刷新没成，旧行必须还在").toContain("资料/话单.csv")
+    expect(text(host, "file-tree-failed")).toBeUndefined()
+    expect(text(host, "file-tree-empty")).toBeUndefined()
   })
 })
 
