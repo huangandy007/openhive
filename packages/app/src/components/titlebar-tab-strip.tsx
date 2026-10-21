@@ -17,9 +17,12 @@ import { useTabs } from "@/context/tabs"
 import { createTabPromptState } from "@/context/prompt"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { showToast } from "@/utils/toast"
+import { httpStatus } from "@/utils/http-error"
+import { projectList } from "@/project/project-list"
 import { canStartTabDrag, isTabCloseTarget } from "./titlebar-tab-gesture"
 import { adjacentTabKey, mergeVisibleTabOrder } from "./titlebar-tab-order"
 import { 标签该剪 } from "./titlebar-tab-liveness"
+import { 冻结判定, 清单判定 } from "./titlebar-tab-archive"
 import type { Session } from "@opencode-ai/sdk/v2"
 
 function SessionTabSlot(props: {
@@ -90,7 +93,17 @@ function SessionTabEntry(props: {
   const [loadedSession] = createResource(
     () => {
       const ctx = props.serverCtx()
-      return ctx ? { id: props.tab.sessionId, ctx } : null
+      if (!ctx) return null
+      // 已知冻结 ⇒ **不发请求**（2026-10-21：「归档的项目越来越多，403 不是越来越多呀？」）。
+      // 判据是 `titlebar-tab-archive.ts` 那一份：清单说归档，或上次复探已经撞过 403。
+      // 冻结**不是剪标签**——标签照旧显示（title 来自持久化），找回后清单一变就会恢复复探。
+      const 判 = 冻结判定({
+        清单: projectList(),
+        目录: tabs.info[props.id]?.directory,
+        已标记: tabs.isFrozen(props.id),
+      })
+      if (判.frozen) return null
+      return { id: props.tab.sessionId, ctx }
     },
     ({ id, ctx }) =>
       ctx.sync.session.resolve(id).catch((error: unknown) => {
@@ -107,6 +120,9 @@ function SessionTabEntry(props: {
         //   ——用户唯一的反应是「我的会话哪去了」。判断本体与它的用例在
         //   `titlebar-tab-liveness.ts` / `titlebar-tab-liveness.test.ts`。
         if (标签该剪(error, id)) tabs.removeSessionTab({ server: props.tab.server, sessionId: id })
+        // 403 是**归档**（`project-location.ts`）：标签留着，但记住「别再问」——
+        // 不记的话每次刷新都要为它再撞一次，归档项目越多红字越多（见 `titlebar-tab-archive.ts`）。
+        else if (httpStatus(error) === 403) tabs.markFrozen(props.id)
         return undefined
       }),
   )
@@ -177,7 +193,15 @@ function SessionTabEntry(props: {
         session={session}
         fallbackTitle={persisted()?.title ?? (missingSession() ? language.t("session.tab.unknown") : undefined)}
         onRename={rename}
-        onNavigate={props.onNavigate}
+        onNavigate={(el) => {
+          // 冻结的标签点不开：进去也是整页 403（服务端那句话本身就是「请先找回」）。
+          // 这里只是**提前把答案说出来**，不替服务端做任何授权判断。
+          if (tabs.isFrozen(props.id)) {
+            showToast({ variant: "error", title: "项目已归档，请先找回" })
+            return
+          }
+          props.onNavigate(el)
+        }}
         onClose={props.onClose}
       />
     </Show>
@@ -244,6 +268,27 @@ export function TitlebarTabStrip(props: {
   const [visibility, setVisibility] = createStore<Record<string, boolean>>({})
   const visibleTabs = createMemo(() => props.tabs.filter((tab) => tab.type === "draft" || visibility[tabKey(tab)]))
   const visibleTabIds = () => visibleTabs().map(tabKey)
+
+  const tabs = useTabs()
+  /**
+   * 清单回来一次，就把每个标签的「冻结记忆」与它对一遍：
+   * - 说归档 ⇒ 记上——本机归档当场生效，连一次请求都不用发；
+   * - 说活跃 ⇒ 清掉——项目找回后，标签自动恢复复探（「冻结不是删除」）。
+   *
+   * ⚠️ 这里用 `清单判定` 而不是 `冻结判定`：后者要读冻结标记，而本 effect 会写它，
+   * 读了自己写的东西就会自己触发自己。读侧（复探前的 source）才用 `冻结判定`。
+   */
+  createEffect(() => {
+    const 清单 = projectList()
+    if (!清单) return
+    for (const tab of props.tabs) {
+      if (tab.type !== "session") continue
+      const key = tabKey(tab)
+      const 判 = 清单判定(清单, tabs.info[key]?.directory)
+      if (判 === "archived") tabs.markFrozen(key)
+      else if (判 === "active") tabs.clearFrozen(key)
+    }
+  })
 
   command.register("titlebar-tab-cycle", () => [
     {

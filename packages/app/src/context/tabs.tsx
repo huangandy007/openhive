@@ -3,7 +3,7 @@ import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createStore, produce } from "solid-js/store"
 import { Persist, persisted, removePersisted, draftPersistedKeys } from "@/utils/persist"
 import { ServerConnection, useServer } from "./server"
-import { createEffect, getOwner, onCleanup, startTransition } from "solid-js"
+import { createEffect, getOwner, onCleanup, startTransition, untrack } from "solid-js"
 import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { usePlatform } from "./platform"
 import { uuid } from "@/utils/uuid"
@@ -66,6 +66,15 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     )
     const [recent, setRecent, , recentReady] = persisted(Persist.window("tabs.recent"), createStore<RecentTab>({}))
     const [info, setInfo] = persisted(Persist.window("tabs.info"), createStore<Record<string, TabInfo>>({}))
+    /**
+     * 「这个标签上次复探撞到 403（项目已归档）」的记忆——**只记事实、不猜**，见
+     * `components/titlebar-tab-archive.ts` 的文件头。
+     *
+     * 为什么要持久化：403 只在**请求之后**才知道；不记下来的话，每次刷新都要为归档项目的
+     * 每个标签再撞一次（用户 2026-10-21：「以后归档的项目越来越多，403 不是越来越多呀？」）。
+     * 解除记在标签条那边（清单说找回 / 标签被删），本文件只负责存。
+     */
+    const [frozen, setFrozen] = persisted(Persist.window("tabs.frozen"), createStore<Record<string, true>>({}))
     const [closed, setClosed, , closedReady] = persisted(Persist.window("tabs.closed"), createStore<ClosedTab[]>([]))
 
     const params = useParams()
@@ -107,7 +116,32 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       }
     }
 
+    /**
+     * 读冻结标记。**响应式**：复探的 `createResource` 源读它，清掉之后要能自动重探。
+     */
+    const isFrozen = (key: string) => frozen[key] !== undefined
+    /**
+     * 写侧（复探撞 403、清单说归档）用 `untrack` 读旧值：这些调用点常在 effect 里跑，
+     * 响应式地读会把自己写出去的东西读回来，多触发一轮。判定本体在
+     * `components/titlebar-tab-archive.ts`，这里只负责存。
+     */
+    const markFrozen = (key: string) => {
+      if (untrack(() => frozen[key]) !== undefined) return
+      setFrozen(key, true)
+    }
+    const clearFrozen = (key: string) => {
+      if (untrack(() => frozen[key]) === undefined) return
+      setFrozen(
+        produce((draft) => {
+          delete draft[key]
+        }),
+      )
+    }
+
     const removeInfo = (key: string) => {
+      // 标签没了，那条「归档、别再探」的记忆也该跟着走——否则同一个 key 以后再开出来
+      // （会话恢复、重新打开）会继承一条已经无主的冻结标记，标签就一直不探、永远停在空态。
+      clearFrozen(key)
       if (!info[key]) return
       setInfo(
         produce((draft) => {
@@ -277,6 +311,12 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
           navigateTab(entry.tab)
         })
       },
+      /** 这个标签是否已被记为「归档、别再探」。接线在 `components/titlebar-tab-strip.tsx`。 */
+      isFrozen,
+      /** 复探撞到 403 时记一笔（归档 = 冻结不是删除：标签留着，只是不再问）。 */
+      markFrozen,
+      /** 清单说该项目已找回、或标签被删时清掉——清完下一轮会重新复探。 */
+      clearFrozen,
       removeSessionTab(input: Omit<SessionTab, "type">) {
         updateClosed((stack) => removeClosedTabs(stack, input.server, [input.sessionId]))
         const index = store.findIndex(
