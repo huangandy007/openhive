@@ -47,6 +47,7 @@ import { FileMoveReportDialog, type 搬报告 } from "@/project/file-move-report
 import { FileTransferDialog, type FileTransferState } from "@/project/file-transfer-dialog"
 import { TaskResultDialog, type TaskResult } from "@/project/task-result-dialog"
 import type { BackupPreview, RestoreDecision } from "@/project/openhive-backup"
+import { showToast } from "@/utils/toast"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -1382,27 +1383,48 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
         kind="delete-snapshot"
         title="删除这个恢复点？"
         message="删除后不可恢复；项目里的文件不受影响。"
-        onConfirm={() => void 执行删恢复点(id, snapshotId)}
+        pendingText="正在删除…"
+        // 返回 Promise：`确认框` 靠它把「正在删除…」撑到回包（2026-10-21 用户反馈：
+        // 点完删除框一关、屏幕上什么都没变，分不清「还在删」和「压根没删」）。
+        onConfirm={() => 执行删恢复点(id, snapshotId)}
         onCancel={() => dialog.close()}
       />
     ))
   }
 
   const 执行删恢复点 = async (id: string, snapshotId: string) => {
-    dialog.close()
-    if (!projectData) return
+    if (!projectData) {
+      dialog.close()
+      showToast({ variant: "error", title: "恢复点没删掉", description: "项目还没准备好，请稍后再试" })
+      return
+    }
     // 与 `跑恢复` / `备份` 同形：`deleteSnapshot` 跨了 await，切走项目（或卸载）之后
-    // 这次回包不能把「恢复点没删掉」写到新项目的中栏上（整支复审 F-4）。
+    // 这次回包不能把结果写到新项目的界面上（整支复审 F-4）。
     const 守 = { id, 代: 备份代次 }
     const 还在 = () => currentProject()?.id === 守.id && 守.代 === 备份代次
     const 成 = await projectData.deleteSnapshot(守.id, snapshotId)
-    if (!还在()) return
+    // 用户已经切走 ⇒ 静默收框；此刻说什么都不属于新项目。
+    if (!还在()) {
+      dialog.close()
+      return
+    }
     if (!成) {
-      set文件话("恢复点没删掉")
+      dialog.close()
+      // 失败只在动作点说（中栏那行离 MinIO 窗口太远，用户看不到）；原因拿不到——
+      // `deleteSnapshot` 把 409 / 503 / 网络都折成 `false`，能说的只有「重试」。
+      showToast({ variant: "error", title: "恢复点没删掉", description: "请稍后再试；若一直失败，可能是 MinIO 暂时不可用" })
       return
     }
     set文件话(undefined)
+    // 先刷新清单**再**关框：关框那一刻界面上那一行必须已经没了，否则又回到「框关了、
+    // 屏幕原样」的老样子（用户看到的仍是「没变化」）。
     await 重取备份状态()
+    if (!还在()) {
+      dialog.close()
+      return
+    }
+    dialog.close()
+    showToast({ variant: "success", title: "恢复点已删除" })
   }
 
   /**
@@ -1975,14 +1997,32 @@ function 存到本地(blob: Blob, name: string) {
  * （amend R-6），这两处是目前唯一的消费者——按「单次使用不抽象」先不建公共组件。
  *
  * `data-kind` 是判据的抓手：两种确认的按钮文案相同（继续），只有 `kind` 能分开「问的是哪件事」。
+ *
+ * `onConfirm` 可以返回 Promise：返回了就把框留在原地、把主按钮切成「进行中」，等它落定
+ * 才让调用方自己 `dialog.close()`。这条是 2026-10-21 用户反馈的直接产物——删除恢复点
+ * 在服务端同步跑 GC（实测 500 个文件 806ms，真 MinIO 更久），旧实现回包**之前**就关框，
+ * 屏幕退回原样 ⇒ 用户分不清「还在删」与「压根没删」。
+ *
+ * 超限确认走的是同步分支（`onConfirm` 返回 `void`）：那条路的进度在 MinIO 窄条上，
+ * 不必在这里重复一次 pending。
  */
 function 确认框(props: {
   kind: "quota" | "delete-snapshot"
   title: string
   message: string
-  onConfirm: () => void
+  onConfirm: () => void | Promise<void>
+  /** 回包前主按钮的字。省略 ⇒ 不切 pending（同步动作）。 */
+  pendingText?: string
   onCancel: () => void
 }) {
+  const [进行中, set进行中] = createSignal(false)
+  const 确认 = () => {
+    if (进行中()) return
+    const 结果 = props.onConfirm()
+    if (结果 === undefined || props.pendingText === undefined) return
+    set进行中(true)
+    void 结果.finally(() => set进行中(false))
+  }
   return (
     <DialogV2 class="w-[min(28rem,calc(100vw-3rem))]">
       <div data-component="backup-confirm" data-kind={props.kind} class="contents">
@@ -1995,16 +2035,22 @@ function 确认框(props: {
           </p>
         </DialogBody>
         <DialogFooter>
-          <ButtonV2 data-slot="backup-confirm-cancel" variant="neutral" onClick={() => props.onCancel()}>
+          <ButtonV2
+            data-slot="backup-confirm-cancel"
+            variant="neutral"
+            disabled={进行中()}
+            onClick={() => props.onCancel()}
+          >
             取消
           </ButtonV2>
           <ButtonV2
             attr:autofocus=""
             data-slot="backup-confirm-ok"
-            variant="contrast"
-            onClick={() => props.onConfirm()}
+            variant={进行中() ? "loading" : "contrast"}
+            disabled={进行中()}
+            onClick={确认}
           >
-            继续
+            {进行中() ? props.pendingText : "继续"}
           </ButtonV2>
         </DialogFooter>
       </div>

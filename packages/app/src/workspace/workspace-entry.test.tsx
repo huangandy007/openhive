@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
+import { toaster } from "@opencode-ai/ui/toast"
 import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
@@ -21,6 +22,7 @@ import { setProjectFiles } from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
 import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
+import { ToastRegion } from "@/utils/toast"
 import { setCurrentUser } from "./current-user"
 import { WorkspaceEntry } from "./workspace-entry"
 
@@ -88,6 +90,8 @@ afterEach(() => {
   // 只清 `innerHTML` 摘不掉订阅——那一半正是本文件的假红来源（见 `mount` 的注释）。
   挂过的.splice(0).forEach((卸载) => 卸载())
   document.body.innerHTML = ""
+  // toast 的 store 是模块级的 ⇒ 不清的话上一条的提示会残到下一条（配方同 `file-tree.test.tsx`）。
+  toaster.clear()
 })
 
 /**
@@ -1355,7 +1359,13 @@ function 假数据源(
   return { data, 记 }
 }
 
-const 挂 = (data: ProjectData) => mount(() => <WorkspaceEntry projectData={data}>中栏</WorkspaceEntry>)
+const 挂 = (data: ProjectData) =>
+  mount(() => (
+    <>
+      <ToastRegion v2={false} />
+      <WorkspaceEntry projectData={data}>中栏</WorkspaceEntry>
+    </>
+  ))
 
 /**
  * 树里各行的 `data-path`。
@@ -4207,6 +4217,29 @@ describe("备份 / 恢复接线（Task 17）", () => {
   }
 
   /**
+   * 屏幕上那一类提示的全文（`success` / `error`），没有就 `null`。
+   *
+   * 断在**字符串**上、不把节点交给 `expect`（`#005-01`）；配方同 `file-tree.test.tsx` 的
+   * `提示文本`——`挂` 已经并排挂了真 `<ToastRegion>`，`showToast` 走的是真那条路。
+   */
+  const 提示文本 = (variant: "success" | "error") =>
+    document.body.querySelector<HTMLElement>(`[data-variant='${variant}']`)?.textContent ?? null
+
+  /**
+   * 框**真的开着**（用户还看得见）。
+   *
+   * ⚠️ 不能只数节点：Kobalte 在退场动画期间把内容留在 DOM 里，而 happy-dom 永远等不到动效结束
+   * （同 `afterEach` 注释里的右键菜单）⇒ 「已经 `dialog.close()`、正在退场」会被数成「还开着」。
+   * 判据落在 Content 的 `data-closed` 上（Kobalte 在 `open=false` 的**同一拍**写的）。
+   */
+  const 框开着 = (kind: string) => {
+    const 内容 = document.body
+      .querySelector<HTMLElement>(`[data-kind='${kind}']`)
+      ?.closest("[data-slot='dialog-content']")
+    return 内容 !== null && 内容 !== undefined && !内容.hasAttribute("data-closed")
+  }
+
+  /**
    * 跨树拖一个文件。
    *
    * happy-dom 没有 `DragEvent`，而 `DualFileTree` 的委托**只看冒泡的事件与落点**（它不读
@@ -5160,6 +5193,104 @@ describe("备份 / 恢复接线（Task 17）", () => {
       "删除这个恢复点？",
     )
     expect(假.删的恢复点).toEqual([])
+
+    // 收尾：把框关掉。留着它会在卸载时与 Kobalte 的退场计时器打架（下一条用例开头会读到
+    // happy-dom 的 `removeChild` DOMException，是**上一条**的残留、不是产品行为）。
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-cancel']")?.click()
+    await 冲一遍()
+  })
+
+  test("删除恢复点：回包之前确认框不关，主按钮显示「正在删除…」", async () => {
+    // 2026-10-21 用户真栈反馈：「点了删除没变化也没提示，不知道是没删还是还在跑」。
+    // DELETE 在服务端同步跑 GC（实测 500 个文件 806ms，真 MinIO 更久）⇒ 回包前若把框一关、
+    // 清单原样留在屏幕上，「还在删」与「压根没删」长得一模一样。
+    let 放回删: (成: boolean) => void = () => {}
+    const 挂起的删 = new Promise<boolean>((resolve) => {
+      放回删 = resolve
+    })
+    const { host, 假 } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      deleteSnapshot: async () => 挂起的删,
+    })
+    await 等到(() => 当前恢复点(host) === "s-1")
+
+    await 点删恢复点(host)
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+    await 冲一遍()
+
+    // ① 框还开着（不是「节点还在退场」）；② 按钮说得出「正在删」；③ 再点不会发第二次。
+    expect(框开着("delete-snapshot")).toBe(true)
+    const 钮 = document.body.querySelector<HTMLButtonElement>("[data-slot='backup-confirm-ok']")
+    expect(钮?.textContent ?? "").toContain("正在删除…")
+    expect(钮?.disabled).toBe(true)
+    钮?.click()
+    await 冲一遍()
+    expect(假.删的恢复点.length).toBe(1)
+
+    放回删(true)
+    await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") === null)
+  })
+
+  test("删除恢复点：办成后先刷新清单再关框，并弹「恢复点已删除」", async () => {
+    // 关框那一刻清单必须已经刷新——否则框没了、那一行还在，用户看到的仍是「没变化」。
+    let 放回清单: (清单: readonly BackupSnapshot[]) => void = () => {}
+    const 慢清单 = new Promise<readonly BackupSnapshot[]>((resolve) => {
+      放回清单 = resolve
+    })
+    let 清单次 = 0
+    const { host, 假 } = await 开备份({
+      snapshots: async () => {
+        清单次 += 1
+        return 清单次 === 1 ? [快照("s-1")] : 慢清单
+      },
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      deleteSnapshot: async () => true,
+    })
+    await 等到(() => 当前恢复点(host) === "s-1")
+
+    await 点删恢复点(host)
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+    await 等到(() => 假.删的恢复点.length === 1)
+    await 等到(() => 清单次 === 2) // 删除已回包，重取清单还挂着
+
+    // RED（修前）：实现在回包前就 `dialog.close()` ⇒ 这里框已经关了，屏幕上清单还停在旧的。
+    expect(框开着("delete-snapshot")).toBe(true)
+    // 还没刷新完，先别宣布「已删除」（`#006-29`：状态文案不能跑在事实前面）。
+    expect(提示文本("success")).toBeNull()
+
+    放回清单([])
+    await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") === null)
+    await 等到(() => text(host, "minio-tree-empty") === "还没有备份")
+    expect(提示文本("success") ?? "").toContain("恢复点已删除")
+  })
+
+  test("删除恢复点：失败要当场说清（error 提示），不只写在中栏那行", async () => {
+    // 失败原因客户端只拿到布尔值（409 / 503 / 网络都折成 `false`），说不了细节，但**必须**
+    // 在动作点上吭声——中栏那行离 MinIO 窗口很远，用户根本不知道刚才那一下怎么了。
+    const { host } = await 开备份({
+      snapshots: async () => [快照("s-1")],
+      snapshotDetail: async () => 明细(快照("s-1"), ["资料/甲.txt"]),
+      deleteSnapshot: async () => false,
+    })
+    await 等到(() => 当前恢复点(host) === "s-1")
+
+    await 点删恢复点(host)
+    await 等到(
+      () => document.body.querySelector("[data-kind='delete-snapshot'] [data-slot='backup-confirm-ok']") !== null,
+    )
+    document.body.querySelector<HTMLElement>("[data-slot='backup-confirm-ok']")!.click()
+
+    await 等到(() => 提示文本("error") !== null)
+    expect(提示文本("error") ?? "").toContain("恢复点没删掉")
+    // 一次动作一条反馈：框要收回，不叠两层。
+    await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") === null)
   })
 
   test("删除恢复点：确认后才调用，并把恢复点清单重取一遍（项目文件清单不跟着拨）", async () => {
@@ -5221,8 +5352,10 @@ describe("备份 / 恢复接线（Task 17）", () => {
     await 冲一遍()
     await 冲一遍()
 
-    // 无守卫时实得「恢复点没删掉」写在新项目的中栏上（RED）。
-    expect(text(host, "file-op-message") === undefined).toBe(true)
+    // 无守卫时实得一条「恢复点没删掉」的 error 提示（RED）——用户已经切走，说什么都不属于这里。
+    expect(提示文本("error")).toBeNull()
+    // 框也得收回：不能把一个「正在删除…」的框晾在已经切走的项目上。
+    await 等到(() => document.body.querySelector("[data-kind='delete-snapshot']") === null)
   })
 
   test("同项目两次重取乱序：旧回包不覆盖新清单（N-2）", async () => {
