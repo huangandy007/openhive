@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import {
   会话改过,
+  事件改动,
   当前重载代,
   归一事件路径,
   清会话改过,
   清空会话改过,
   触发重载,
+  看见改过,
   记会话改过,
 } from "./session-edits"
 
@@ -125,5 +127,121 @@ describe("内核事件路径 → 中栏相对路径（口径对齐）", () => {
    */
   test("win32：带目录的文件 ⇒ 相对路径里的分隔符折成正斜杠（与中栏 tab 的 path 同形）", () => {
     expect(归一事件路径("D:\\ws\\u1\\p2", "D:\\ws\\u1\\p2", "D:\\ws\\u1\\p2\\卷宗\\纪要.md")).toBe("卷宗/纪要.md")
+  })
+})
+
+/**
+ * 「一条服务端事件 ⇒ 本项目的哪些文件被改了」（2026-10-23）。
+ *
+ * ## 为什么需要第二个信号源（用户实报：Excel 改了**连圆点都没有**）
+ *
+ * `file.edited` 只由 `edit` / `write` / `apply_patch` 三个工具发——它们只会写**文本**。
+ * 民警让 AI「改这份 Excel」，模型走的是 `bash` ＋ 脚本（python/pandas/openpyxl），
+ * 盘上真变了，事件一条都没有 ⇒ 圆点、重读、冲突提示全都无从谈起（每一种二进制格式都这样）。
+ *
+ * 内核的 `message.part.updated` 里有一条 `patch` 分片：每条助手消息收尾时由快照（git）
+ * 算出「这一轮盘上到底变了哪些文件」，**与用什么工具写的无关**（`snapshot.patch()`，
+ * 路径已绝对化、分隔符已折成 `/`）。openhive 建项目时必 `git init`（`server/openhive/project.ts`），
+ * 故每个项目都有这条信号。
+ *
+ * 本组钉的就是「从这两种事件里认出本项目的改动」。**不钉**「事件真到浏览器」——
+ * 那是真栈用例的事（`e2e/real-stack/center-session-edit-real.spec.ts` 那一族）。
+ */
+describe("服务端事件 → 本项目的改动路径（两种信号源：file.edited ＋ patch 分片）", () => {
+  const 目录 = "/workspaces/u1/p2"
+
+  test("file.edited：与以前同一条口径（绝对路径 → 项目相对路径）", () => {
+    expect(事件改动(目录, 目录, { type: "file.edited", properties: { file: `${目录}/卷宗/纪要.md` } })).toEqual([
+      "卷宗/纪要.md",
+    ])
+  })
+
+  test("patch 分片：改的是脚本写的 xlsx ⇒ 一样认得出（`file.edited` 覆盖不到的那条）", () => {
+    expect(
+      事件改动(目录, 目录, {
+        type: "message.part.updated",
+        properties: {
+          part: { type: "patch", hash: "abc", files: [`${目录}/报表/资金流水.xlsx`] },
+        },
+      }),
+    ).toEqual(["报表/资金流水.xlsx"])
+  })
+
+  test("patch 分片：一次列多个文件 ⇒ 逐条归一（顺序照原样，去重交给登记处）", () => {
+    expect(
+      事件改动(目录, 目录, {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            type: "patch",
+            hash: "abc",
+            files: [`${目录}/甲.md`, `${目录}/卷宗/丙.pdf`],
+          },
+        },
+      }),
+    ).toEqual(["甲.md", "卷宗/丙.pdf"])
+  })
+
+  test("别的分片（text / step-finish…）⇒ 一个都不登记", () => {
+    expect(
+      事件改动(目录, 目录, {
+        type: "message.part.updated",
+        properties: { part: { type: "text", text: "改好了" } },
+      }),
+    ).toEqual([])
+  })
+
+  test("形状不对（patch 没有 files / 事件没有 properties）⇒ 空，而不是抛错", () => {
+    expect(
+      事件改动(目录, 目录, { type: "message.part.updated", properties: { part: { type: "patch" } } }),
+    ).toEqual([])
+    expect(事件改动(目录, 目录, { type: "file.edited", properties: undefined })).toEqual([])
+  })
+
+  test("不关心的事件类型 ⇒ 空", () => {
+    expect(事件改动(目录, 目录, { type: "session.idle", properties: { sessionID: "s1" } })).toEqual([])
+  })
+
+  test("还没选项目 ⇒ 一条都不登记（两个信号源都走同一道闸）", () => {
+    expect(事件改动(目录, undefined, { type: "file.edited", properties: { file: `${目录}/甲.md` } })).toEqual([])
+  })
+})
+
+/**
+ * 「用户看见这份文件了」的**唯一**判断点（`#005-24`：同一个判断只写一份）。
+ *
+ * 两个入口都会走到它：点带圆点的 tab（`tab-bar.tsx`）、从左栏文件树打开一份**已经开着**的
+ * 文件（`open-file.ts` 那条「切过去」）。后者曾经只切不重读 ⇒ 圆点不消、内容不换。
+ */
+describe("看见改过（点开一份被会话改过的文件）", () => {
+  // 重载代也是模块级状态：不清的话「记过 / 没记过」两条用例会互相借数
+  // （上一条把甲.md 的代抬到 1，下一条从头断言就假红）。
+  beforeEach(() => {
+    清空会话改过()
+  })
+
+  test("记过 ⇒ 圆点收掉，并请中栏重读一次", () => {
+    记会话改过("甲.md")
+
+    看见改过("甲.md")
+
+    expect(会话改过("甲.md")).toBe(false)
+    expect(当前重载代("甲.md")).toBe(1)
+  })
+
+  test("没记过 ⇒ 什么都不动（反面：点谁谁重读是错的，会冲掉别人的草稿）", () => {
+    看见改过("乙.md")
+
+    expect(当前重载代("乙.md")).toBe(0)
+    expect(会话改过("乙.md")).toBe(false)
+  })
+
+  test("同一条路径再点一次 ⇒ 代不再涨（幂等；圆点已经收掉了）", () => {
+    记会话改过("甲.md")
+    看见改过("甲.md")
+
+    看见改过("甲.md")
+
+    expect(当前重载代("甲.md")).toBe(1)
   })
 })

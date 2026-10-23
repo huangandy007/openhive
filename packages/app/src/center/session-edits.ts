@@ -69,6 +69,22 @@ export function 清会话改过(路径: string): void {
 }
 
 /**
+ * 「用户把这份文件**摆到眼前**了」——收圆点 ＋ 请中栏重读，判断只此一份（`#005-24`）。
+ *
+ * 两个入口都走这里：
+ * - 点带圆点的 tab（`tab-bar.tsx` 的 `activate`）；
+ * - 从左栏文件树双击一份**已经开着**的文件（`open-file.ts` 的「切过去」分支）——2026-10-23
+ *   补的：那条分支过去只切不重读 ⇒ 圆点不消、中栏还是旧内容（用户实报）。
+ *
+ * 没记过就什么都不做：重读是有代价的（丢草稿、丢阅读位置），不能「点谁谁重读」。
+ */
+export function 看见改过(路径: string): void {
+  if (!会话改过(路径)) return
+  清会话改过(路径)
+  触发重载(路径)
+}
+
+/**
  * 「这一份被要求重读了几次」——**按路径分**。
  *
  * 中栏的 `内容` signal 用一个逐字段比较器决定「还是同一份吗」（`center-content.tsx` 的
@@ -147,4 +163,52 @@ export function 归一事件路径(事件目录: string, 本目录: string | und
   if (归一.normalizeDir(本目录) !== "") return undefined
   const 相对 = 归一.normalizeDir(文件)
   return 相对 === "" ? undefined : 相对
+}
+
+/**
+ * 一条服务端事件 ⇒ **本项目**里被改动的文件（中栏相对路径；没有就是空数组）。两个信号源：
+ *
+ * | 事件 | 谁发 | 覆盖什么 |
+ * |---|---|---|
+ * | `file.edited` | `edit` / `write` / `apply_patch` 三个工具 | **只有它们自己写的文本** |
+ * | `message.part.updated`（`part.type === "patch"`） | 每条助手消息收尾时的快照 | 这一轮盘上**所有**变化，与用什么工具无关 |
+ *
+ * 2026-10-23 用户实报「Excel 改完**连圆点都没有**」：AI 改 xlsx 走的是 `bash` ＋ 脚本，
+ * 没有 `file.edited` ——事件源覆盖不到，圆点就永远不亮。`patch` 分片是内核用 git 快照算出来的
+ * （`snapshot.patch()`，openhive 建项目时必 `git init`），脚本写的、库写的、删了再建的都在里面；
+ * 分片里的路径已绝对化（`path.join(worktree, x)`，分隔符已折成 `/`），故与 `file.edited`
+ * 走**同一个** `归一事件路径`，不另写一份口径。
+ *
+ * `properties` 按 `unknown` 读：这里要认的是**线上的形状**，不是某个版本的 TS 类型
+ * （`LEARNINGS #006-27`：拿设计时的类型验部署里的协议，会漏掉「字段根本不在」）。
+ */
+export function 事件改动(事件目录: string, 本目录: string | undefined, 事件: { type: string; properties: unknown }): string[] {
+  if (本目录 === undefined) return []
+
+  if (事件.type === "file.edited") {
+    const 文件 = 字段(事件.properties, "file")
+    if (typeof 文件 !== "string") return []
+    const 相对 = 归一事件路径(事件目录, 本目录, 文件)
+    return 相对 === undefined ? [] : [相对]
+  }
+
+  if (事件.type === "message.part.updated") {
+    const 分片 = 字段(事件.properties, "part")
+    if (字段(分片, "type") !== "patch") return []
+    const 文件们 = 字段(分片, "files")
+    if (!Array.isArray(文件们)) return []
+    return 文件们
+      .filter((项): 项 is string => typeof 项 === "string")
+      .map((项) => 归一事件路径(事件目录, 本目录, 项))
+      .filter((项): 项 is string => 项 !== undefined)
+  }
+
+  return []
+}
+
+/** 从 `unknown` 里按名字取一个顶层字段（不是对象 ⇒ `undefined`）。 */
+function 字段(值: unknown, 名: string): unknown {
+  if (typeof 值 !== "object" || 值 === null) return undefined
+  for (const [键, 值项] of Object.entries(值)) if (键 === 名) return 值项
+  return undefined
 }

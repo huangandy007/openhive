@@ -1053,3 +1053,85 @@ describe("图文视图 · 正文字号（2026-10-12 ③）", () => {
     expect(h.编辑框()!.className).not.toContain("leading-6")
   })
 })
+
+/**
+ * 编辑态下**重挂**（点一张带圆点的 tab ＝ 中栏请它重读）时，盘上可能已经被 AI 改过（2026-10-23）。
+ *
+ * 预览态的重读由 `BinaryView` 负责，它读回来经 `收到内容` 交给 `记盘上版本`；可**编辑态下
+ * `BinaryView` 根本没挂载**——谁都没去读盘，于是：
+ * - 用户对着旧草稿继续写，完全不知道盘上已经变了；
+ * - 直到某次保存撞上服务端 `STALE`，才发现自己一直在改一份过期的底本。
+ *
+ * 判据只有两条，且必须**同时**成立：① 说清楚「盘上变了」；② **一个字都不许少**。
+ * 只钉 ① 会放过「载入盘上版本」式的静默覆盖；只钉 ② 会放过「什么都不说、下次保存才炸」。
+ */
+describe("编辑态 · 点带圆点的 tab（重挂）⇒ 盘上已经变了", () => {
+  const 挂文档 = (盘上: string, 读次数: { 次数: number }) => {
+    const 交出去的: Array<{ path: string; content: string; base: string }> = []
+    const 挂的 = 挂一次(() => (
+      <RichtextView
+        path="/p/摘录.md"
+        load={async () => {
+          读次数.次数 += 1
+          return { type: "text", content: 盘上 }
+        }}
+        save={async (path, content, base) => {
+          交出去的.push({ path, content, base })
+          return { ok: true, base: content }
+        }}
+      />
+    ))
+    return {
+      host: 挂的.host,
+      释放: 挂的.释放,
+      编辑框: () => 挂的.host.querySelector<HTMLTextAreaElement>("[data-slot='richtext-editor']"),
+      状态: () =>
+        挂的.host.querySelector<HTMLElement>("[data-slot='richtext-save-state']")?.getAttribute("data-status"),
+      提示: () => 挂的.host.querySelector("[data-slot='richtext-editor-note']")?.textContent?.trim(),
+      交出去的,
+    }
+  }
+
+  test("盘上被改过 ⇒ 报「被改过」，用户手里的字原样留着，且**没有**被自动存回去", async () => {
+    // 关掉自动保存：这条要量的不是定时器，别让它在断言前把字存了。
+    设自动保存参数({ 延迟: 100000 })
+
+    const 一 = 挂文档("原文", { 次数: 0 })
+    await 落定()
+    一.host.querySelector<HTMLButtonElement>("[data-action='edit']")!.click()
+    await 落定()
+    打字(一.编辑框()!, "我改了一半")
+    一.释放()
+
+    // 重挂 ＝ 用户点了那张带圆点的 tab（`center-content` 的 keyed Show 换掉整个组件）。
+    const 二 = 挂文档("AI 写的新正文", { 次数: 0 })
+    await 落定()
+
+    expect(二.编辑框()?.value, "用户打的字一个字都不许少").toBe("我改了一半")
+    expect(二.状态(), "盘上已经不同 ⇒ 必须是 conflict，而不是假装 clean").toBe("conflict")
+    expect(二.提示()).toContain("被改过")
+    expect(二.交出去的, "冲突态下不许自动存（那会盖掉盘上那份）").toEqual([])
+    二.释放()
+  })
+
+  test("盘上没变 ⇒ 什么都不说（不打扰正在写的用户），字也还在", async () => {
+    设自动保存参数({ 延迟: 100000 })
+
+    const 一 = 挂文档("原文", { 次数: 0 })
+    await 落定()
+    一.host.querySelector<HTMLButtonElement>("[data-action='edit']")!.click()
+    await 落定()
+    打字(一.编辑框()!, "我改了一半")
+    一.释放()
+
+    const 读次数 = { 次数: 0 }
+    const 二 = 挂文档("原文", 读次数)
+    await 落定()
+
+    expect(读次数.次数, "编辑态重挂必须读一次盘（否则永远不知道盘上变没变）").toBe(1)
+    expect(二.编辑框()?.value).toBe("我改了一半")
+    expect(二.状态()).toBe("dirty")
+    expect(二.提示()).toBeUndefined()
+    二.释放()
+  })
+})

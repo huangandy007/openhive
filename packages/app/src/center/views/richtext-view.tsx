@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify"
 import { marked } from "marked"
-import { createEffect, createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
 import { decodeBytes, type FileContent, type LoadFileContent } from "@/center/file-content"
 import { extensionOf, type ViewComponent } from "@/center/view-registry"
 import { BinaryView, type BytesRenderer } from "./binary-view"
@@ -255,6 +255,37 @@ export const RichtextView: ViewComponent = (props) => {
     if (文本 === undefined) return
     记盘上版本(props.path, { content: 文本, base: 文本 })
   }
+
+  /**
+   * 编辑态下重挂时**自己读一次盘**（2026-10-23）。
+   *
+   * 中栏「点带圆点的 tab ⇒ 重读」靠的是把视图整个重挂（`center-content` 的 keyed Show）。
+   * 预览态重挂后 `BinaryView` 会去读盘、经 `收到内容` 交给 `记盘上版本`；可**编辑态下
+   * `BinaryView` 根本不挂载**（见下面渲染处那条注释）⇒ 没有任何人去读盘：
+   * 用户对着旧草稿继续写、不知道盘上已被 AI 改过，直到某次保存撞上 `STALE` 才发现。
+   *
+   * 读回来交给同一个 `记盘上版本`：底本没变就什么都不做；变了就置 `conflict`
+   * （说清楚 + 给「载入盘上版本」），**绝不静默拿盘上版本盖掉用户手里的字**。
+   *
+   * 只在编辑态读：预览态由 `BinaryView` 读，别读两遍。
+   */
+  onMount(() => {
+    const path = props.path
+    if (取草稿(path)?.mode !== "edit") return
+    void Promise.resolve(props.load?.(path))
+      .then((内容) => {
+        const 文本 = 内容?.type === "text" ? 内容.content : undefined
+        if (文本 === undefined) return
+        // 读回来之前可能换过项目（草稿被清空）或已切回预览：这份回包就过期了，
+        // 不能拿它往一份新的 / 别人的草稿上写（`LEARNINGS #008-03` 的同一条）。
+        if (取草稿(path)?.mode !== "edit") return
+        记盘上版本(path, { content: 文本, base: 文本 })
+      })
+      .catch((原因) => {
+        // 读口约定「读不到给 undefined」；抛错说明发生了约定之外的事，要说一句，不吞。
+        console.warn(`[openhive] 编辑态重读盘上版本没走通（${path}）`, 原因)
+      })
+  })
 
   const 渲染器 = createMemo<BytesRenderer>(() =>
     extensionOf(props.path) === ".md" ? 造Markdown渲染器({ path: props.path, load: props.load }) : renderPlainText,

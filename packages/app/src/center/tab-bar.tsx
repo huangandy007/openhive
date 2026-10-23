@@ -6,7 +6,7 @@ import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { moduleColorVar } from "./module-color"
-import { 会话改过, 清会话改过, 触发重载 } from "./session-edits"
+import { 会话改过, 看见改过 } from "./session-edits"
 import { splitTabOverflow } from "./tab-overflow"
 import { contentTabKey, type ContentTab } from "./tab-store"
 
@@ -276,14 +276,12 @@ export function TabBar(props: TabBarProps) {
    * 若这张文件被会话改过、中栏还停在旧版，就趁这一次点击把它**换新**——清掉圆点（用户看见了）
    * 并请中栏重读（`触发重载` 让 `center-content.tsx` 的比较器放行 ⇒ 视图重挂重读）。
    *
-   * ⚠️ 判据是 `会话改过(tab.path)`，与画圆点用的是**同一句**：这样「点了没换」与「换了没点」
-   * 都不可能发生。没被改过的 tab 走原路（`触发重载` 不动，`tab-bar.test.tsx` 有反面用例钉这条）。
+   * ⚠️ 判据（「被改过没有」）只在 `看见改过` 里写一份：从左栏文件树打开一份**已经开着**的文件
+   * 走的是另一条路（`open-file.ts`），那条路也喊它。没被改过的 tab 走原路
+   * （`触发重载` 不动，`tab-bar.test.tsx` 有反面用例钉这条）。
    */
   const activate = (tab: ContentTab) => {
-    if (会话改过(tab.path)) {
-      清会话改过(tab.path)
-      触发重载(tab.path)
-    }
+    看见改过(tab.path)
     props.onActivate(contentTabKey(tab))
     setMenu(undefined)
   }

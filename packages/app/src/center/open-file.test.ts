@@ -25,6 +25,7 @@ function 装(选项: { 已有?: readonly string[]; 大小?: number | undefined; 
   const 开过: ContentTab[] = []
   const 切过: string[] = []
   const 问过: 打开提醒[] = []
+  const 看过: string[] = []
   let stat次数 = 0
   const 打开文件 = createOpenFile({
     module: () => "project",
@@ -33,6 +34,7 @@ function 装(选项: { 已有?: readonly string[]; 大小?: number | undefined; 
       切到: (key) => 切过.push(key),
       开: (tab) => 开过.push(tab),
     }),
+    看见改过: (path) => 看过.push(path),
     stat: async () => {
       stat次数 += 1
       return 选项.大小
@@ -42,7 +44,7 @@ function 装(选项: { 已有?: readonly string[]; 大小?: number | undefined; 
       return 选项.答 ?? false
     },
   })
-  return { 打开文件, 开过, 切过, 问过, stat次数: () => stat次数 }
+  return { 打开文件, 开过, 切过, 问过, 看过, stat次数: () => stat次数 }
 }
 
 describe("createOpenFile", () => {
@@ -53,6 +55,28 @@ describe("createOpenFile", () => {
     expect(t.stat次数()).toBe(0)
     expect(t.问过).toEqual([])
     expect(t.开过).toEqual([])
+  })
+
+  /**
+   * 2026-10-23 用户实报的第二个入口：**AI 改过一份已经开着的文件，用户从左栏文件树双击它**
+   * ——圆点不消、中栏还是旧内容。根因是这条分支只 `切到`，没有走「用户看见新内容了」那一步
+   * （点 tab 那条路走了）。
+   *
+   * 判「改没改过」**不在这里**：那是 `session-edits.ts` 的 `看见改过` 自己判的（那边有反面
+   * 用例）。本模块若也判一遍，两处口径迟早漂开（`#005-24`）——所以这里钉的是「切过去之前
+   * 恰好交出去一次」。
+   */
+  test("① 已经开着 ⇒ 先「看见改过」（收圆点 ＋ 请中栏重读），再切过去", async () => {
+    const t = 装({ 已有: ["project\n资料/话单.csv"] })
+    await t.打开文件({ path: "资料/话单.csv", 标题: "话单.csv" })
+    expect(t.看过).toEqual(["资料/话单.csv"])
+    expect(t.切过).toEqual(["project\n资料/话单.csv"])
+  })
+
+  test("① 新开的文件（不在栏里）⇒ 不走「看见改过」（它是新挂载，本来就读盘）", async () => {
+    const t = 装({ 大小: 1 * 兆 })
+    await t.打开文件({ path: "资料/话单.csv", 标题: "话单.csv" })
+    expect(t.看过).toEqual([])
   })
 
   test("② 大小 ≤ 阈值 ⇒ 直接开，**不弹窗**", async () => {

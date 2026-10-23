@@ -3,6 +3,7 @@ import { useBigFileAsk } from "@/center/big-file-dialog"
 import { CenterSplit } from "@/center/center-split"
 import type { LoadFileContent, SaveFileContent } from "@/center/file-content"
 import { createOpenFile } from "@/center/open-file"
+import { 看见改过 } from "@/center/session-edits"
 import { CenterTabsProvider, useCenterTabs } from "@/center/tab-context"
 import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
@@ -186,6 +187,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return statProjectFile(id, path)
     },
     dialog: 问大文件,
+    看见改过,
   })
   /**
    * 项目面板开没开。**放在这里而不是面板里**：面板是「滑出」的浮层，开关它的按钮在锚点行上

@@ -66,6 +66,13 @@ export interface 打开文件的依赖 {
   stat: (path: string) => Promise<number | undefined>
   /** 超阈值时问用户。 */
   dialog: 问用户
+  /**
+   * 「用户看见这份文件了」（收圆点 ＋ 请中栏重读；没被改过就什么都不做）。
+   *
+   * 只有**已经在栏里开着**那条分支会用到：新开的 tab 本来就会挂载并读盘，不需要谁去请它重读。
+   * 判断本身不在这里（`session-edits.ts` 的 `看见改过` 一份），这里只是接线。
+   */
+  看见改过: (path: string) => void
 }
 
 /** 某个路径走哪一档阈值。判据与 `view-registry` 认视图时**同一个** `extensionOf`（不另写一份）。 */
@@ -85,7 +92,11 @@ export function createOpenFile(依赖: 打开文件的依赖) {
     const key = contentTabKey(tab)
 
     // ① 已经在**这一栏**开着 ⇒ 切过去就完事：内容早就读过，既不问大小也不弹窗。
+    //    ⚠️ 但「早就读过」不等于「还是盘上那份」：AI 会话可能已经改过它（tab 上亮着圆点）。
+    //    过去这里只切不重读 ⇒ 用户从文件树双击重新打开，圆点不消、中栏还是旧内容
+    //    （2026-10-23 用户实报）。收圆点 ＋ 请重读与点 tab 走同一个 `看见改过`。
     if (栏.已有.includes(key)) {
+      依赖.看见改过(文件.path)
       栏.切到(key)
       return
     }
