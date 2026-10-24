@@ -2330,6 +2330,17 @@ const 目标按钮 = (host: HTMLElement, dir: string) =>
 /** 那台隐藏的文件选择器。 */
 const 文件选择器 = (host: HTMLElement) => host.querySelector<HTMLInputElement>("input[type='file']")
 
+/** 那台隐藏的**文件夹**选择器：与文件选择器是两台（`webkitdirectory`），按 `data-slot` 找。 */
+const 文件夹选择器 = (host: HTMLElement) =>
+  host.querySelector<HTMLInputElement>("input[data-slot='file-op-folder-input']")
+
+/** 让一个 `File` 带上浏览器给的相对路径（happy-dom 的 `File` 没有这个字段）。 */
+function 带相对路径(name: string, 相对: string): File {
+  const file = new File(["甲"], name)
+  Object.defineProperty(file, "webkitRelativePath", { value: 相对 })
+  return file
+}
+
 /**
  * 从桌面拖一批文件到某个元素上。
  *
@@ -2667,6 +2678,129 @@ describe("文件动作接进工作台（T020 出参）", () => {
       ["p1", "资料", "甲.csv"],
       ["p1", "资料", "乙.csv"],
     ])
+  })
+
+  /**
+   * 上传文件夹（2026-10-24 用户下达：右键上传只能选文件，不能选文件夹）。
+   *
+   * 判据分三截，缺一不可：
+   * ① 打开的是**另一台** `webkitdirectory` 选择器；
+   * ② 服务端不递归建目录 ⇒ 相对路径里的子目录**先建、浅的在前**；
+   * ③ 每个文件按相对路径落到各自目录（不是全塞进落点）。
+   */
+  test("点「上传文件夹」⇒ 打开目录选择器；按相对路径先建目录、再逐个上传", async () => {
+    const { host, 假 } = await 开({
+      createEntry: async () => ({ kind: "done", path: "" }),
+      upload: async (_id, _dir, file) => ({ kind: "done", path: file.name }),
+    })
+    const 器 = 文件夹选择器(host)
+    if (!器) throw new Error("文件夹选择器不在——这条用例的前提不成立")
+    expect(器.hasAttribute("webkitdirectory")).toBe(true)
+    let 打开了 = 0
+    器.addEventListener("click", () => (打开了 += 1))
+
+    右键行(host, "资料") // 右键一个**目录** ⇒ 传到它自己
+    点菜单项("upload-folder")
+
+    expect(打开了).toBe(1)
+
+    Object.defineProperty(器, "files", {
+      value: [带相对路径("账单.xlsx", "卷宗/账单.xlsx"), 带相对路径("说明.docx", "卷宗/附件/说明.docx")],
+    })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等到(() => 假.传的.length === 2)
+
+    // 浅的在前：父目录必须先存在（服务端 create 不递归）
+    expect(假.建的条目).toEqual([
+      ["p1", "directory", "资料", "卷宗"],
+      ["p1", "directory", "资料/卷宗", "附件"],
+    ])
+    expect(假.传的).toEqual([
+      ["p1", "资料/卷宗", "账单.xlsx"],
+      ["p1", "资料/卷宗/附件", "说明.docx"],
+    ])
+  })
+
+  test("上传文件夹：清单里已有的子目录不再新建（重复上传同一文件夹不该被「已有同名」挡住）", async () => {
+    const { host, 假 } = await 开({
+      // 「资料/卷宗」由这一条子路径带出来 —— 它已经存在
+      files: async () => ["资料/卷宗/旧件.pdf"],
+      createEntry: async () => ({ kind: "done", path: "" }),
+      upload: async (_id, _dir, file) => ({ kind: "done", path: file.name }),
+    })
+    const 器 = 文件夹选择器(host)
+    if (!器) throw new Error("文件夹选择器不在——这条用例的前提不成立")
+
+    右键行(host, "资料")
+    点菜单项("upload-folder")
+
+    Object.defineProperty(器, "files", { value: [带相对路径("账单.xlsx", "卷宗/账单.xlsx")] })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等到(() => 假.传的.length === 1)
+
+    expect(假.建的条目).toEqual([])
+    expect(假.传的).toEqual([["p1", "资料/卷宗", "账单.xlsx"]])
+  })
+
+  test("上传文件夹：取不到文件清单 ⇒ 留一句话，一个请求都不发", async () => {
+    const { host, 假 } = await 开({
+      files: async () => undefined,
+      createEntry: async () => ({ kind: "done", path: "" }),
+      upload: async () => ({ kind: "done", path: "" }),
+    })
+    const 器 = 文件夹选择器(host)
+    if (!器) throw new Error("文件夹选择器不在——这条用例的前提不成立")
+
+    // 清单取不到 ⇒ 树是空的，右键空白处（落点＝根）；这条判的是「没清单就不动手」
+    const 区域 = host.querySelector<HTMLElement>("[data-slot='file-tree-region']")
+    if (!区域) throw new Error("文件树区域不在——这条用例的前提不成立")
+    区域.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+    点菜单项("upload-folder")
+
+    Object.defineProperty(器, "files", { value: [带相对路径("账单.xlsx", "卷宗/账单.xlsx")] })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等到(() => 文本在页("file-op-message").includes("取不到文件清单"))
+
+    expect(假.建的条目).toEqual([])
+    expect(假.传的).toEqual([])
+  })
+
+  test("上传文件夹：空文件夹（浏览器一个文件都不给）⇒ 留一句话，一个请求都不发", async () => {
+    const { host, 假 } = await 开({
+      createEntry: async () => ({ kind: "done", path: "" }),
+      upload: async () => ({ kind: "done", path: "" }),
+    })
+    const 器 = 文件夹选择器(host)
+    if (!器) throw new Error("文件夹选择器不在——这条用例的前提不成立")
+
+    右键行(host, "资料")
+    点菜单项("upload-folder")
+
+    Object.defineProperty(器, "files", { value: [] as File[] })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等到(() => 文本在页("file-op-message").includes("空文件夹"))
+
+    expect(假.建的条目).toEqual([])
+    expect(假.传的).toEqual([])
+  })
+
+  test("上传文件夹：建目录失败 ⇒ 就地报那句话，一个文件都不上传", async () => {
+    const { host, 假 } = await 开({
+      createEntry: async () => ({ kind: "rejected", message: "目标位置已经有同名的东西了" }),
+      upload: async () => ({ kind: "done", path: "" }),
+    })
+    const 器 = 文件夹选择器(host)
+    if (!器) throw new Error("文件夹选择器不在——这条用例的前提不成立")
+
+    右键行(host, "资料")
+    点菜单项("upload-folder")
+
+    Object.defineProperty(器, "files", { value: [带相对路径("账单.xlsx", "卷宗/账单.xlsx")] })
+    器.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等到(() => 文本在页("file-op-message").includes("建不出文件夹"))
+
+    expect(文本在页("file-op-message")).toContain("资料/卷宗")
+    expect(假.传的).toEqual([])
   })
 
   /**

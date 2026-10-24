@@ -1641,7 +1641,7 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     describe("项齐备（设计 §6.2 的四组 ＋ 本仓自己的一组）", () => {
-      test("十三个动作齐备，顺序即设计表里的四行、外加本仓最前与最后那两组", () => {
+      test("十四个动作齐备，顺序即设计表里的四行、外加本仓最前与最后那两组", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1656,8 +1656,9 @@ describe("FileTree 文件树（FR-005）", () => {
           "copy",
           "move",
           "delete",
-          // 第四组：上传 / 下载
+          // 第四组：上传（文件 / 文件夹）与下载
           "upload",
+          "upload-folder",
           "download",
           // 第五组：备份到 MinIO / 从 MinIO 拉回
           "backup",
@@ -1679,7 +1680,7 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(分隔符数()).toBe(5)
       })
 
-      test("每一项的文案就是设计表里那十个词，外加本仓的「打开」与那两个", () => {
+      test("每一项的文案就是设计表里那十个词，外加本仓的「打开」「上传文件夹」与那两个", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
@@ -1692,6 +1693,7 @@ describe("FileTree 文件树（FR-005）", () => {
           "移动",
           "删除",
           "上传",
+          "上传文件夹",
           "下载",
           "备份到 MinIO",
           "从 MinIO 拉回",
@@ -2102,6 +2104,48 @@ describe("FileTree 文件树（FR-005）", () => {
 
         expect(收到).toEqual([""])
       })
+
+      /**
+       * 上传**文件夹**（2026-10-24 用户下达）收的落点与 `onUpload` **逐字相同**：
+       * 右键目录 ⇒ 它自己、右键文件 ⇒ 它所在的目录、空白 ⇒ 根。两条入口共用同一套「往哪儿放」，
+       * 不在接收方各写一份（`LEARNINGS #002-06`）。
+       */
+      test("右键一个**目录**并上传文件夹 ⇒ 传到它自己", () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onUploadFolder={(dir) => 收到.push(dir)} />
+        ))
+
+        右键(行按名(host, "材料"))
+        点菜单项("upload-folder")
+
+        expect(收到).toEqual(["材料"])
+      })
+
+      test("右键一个**文件**并上传文件夹 ⇒ 传到它所在的目录", () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onUploadFolder={(dir) => 收到.push(dir)} />
+        ))
+        动作(host, "expand-all")?.click()
+
+        右键(行按名(host, "话单.csv"))
+        点菜单项("upload-folder")
+
+        expect(收到).toEqual(["材料"])
+      })
+
+      test("空白处上传文件夹 ⇒ 传到项目根", () => {
+        const 收到: string[] = []
+        const host = mount(() => (
+          <FileTree paths={树("材料/话单.csv")} onUploadFolder={(dir) => 收到.push(dir)} />
+        ))
+
+        右键(槽(host, "file-tree-region"))
+        点菜单项("upload-folder")
+
+        expect(收到).toEqual([""])
+      })
     })
 
 
@@ -2120,12 +2164,14 @@ describe("FileTree 文件树（FR-005）", () => {
         "restore",
       ]
       /**
-       * 菜单里**全部十三项**（按渲染顺序）：`open` ＋ 设计 §6.2 十项 ＋ 本仓两项（`copy-path` / `refresh`）。
+       * 菜单里**全部十四项**（按渲染顺序）：`open` ＋ 设计 §6.2 十项 ＋ `upload-folder`
+       * ＋ 本仓两项（`copy-path` / `refresh`）。
        *
-       * ⚠️ 与 `十项` 的差别正是多了 `open` 与 `copy-path` / `refresh` 这三项：`copy-path` **不靠接线**
-       * （它只靠「右键有没有对象」），所以「只接 onOpen」的判据里它会**照旧可用**——断言要把它算进去。
+       * ⚠️ 与 `十项` 的差别正是多了 `open`、`upload-folder` 与 `copy-path` / `refresh` 这四项：
+       * `copy-path` **不靠接线**（它只靠「右键有没有对象」），所以「只接 onOpen」的判据里它
+       * 会**照旧可用**——断言要把它算进去。
        */
-      const 全部十三项 = ["open", ...十项, "copy-path", "refresh"]
+      const 全部十四项 = ["open", ...十项, "upload-folder", "copy-path", "refresh"]
       /** 这些项里**还能点**的那些。 */
       const 还活着的 = (项: readonly string[]) => 项.filter((action) => !项禁用(action))
 
@@ -2134,6 +2180,8 @@ describe("FileTree 文件树（FR-005）", () => {
         右键(行按名(host, "a.md"))
 
         expect(还活着的(十项)).toEqual([])
+        // 「上传文件夹」是本仓加的一项（2026-10-24），同样受「未接线即禁用」约束
+        expect(项禁用("upload-folder")).toBe(true)
       })
 
       test("只接了备份 ⇒ 只有「备份到 MinIO」可用，其余五项仍禁用", () => {
@@ -2143,13 +2191,13 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(还活着的(六个动作)).toEqual(["backup"])
       })
 
-      test("只接 onOpen ⇒ 全部十三项里只有「打开」与「文件路径」可用（copy-path 不靠接线）", () => {
+      test("只接 onOpen ⇒ 全部十四项里只有「打开」与「文件路径」可用（copy-path 不靠接线）", () => {
         const host = mount(() => <FileTree paths={树("a.md")} onOpen={() => {}} />)
         右键(行按名(host, "a.md"))
 
         // 「打开」这一项必须**真在菜单里**——不存在的项会被 `项禁用` 读成「亮」，这条会空转成假绿。
         expect(菜单项("open") !== null, "「打开」这一项必须在菜单里").toBe(true)
-        expect(还活着的(全部十三项)).toEqual(["open", "copy-path"])
+        expect(还活着的(全部十四项)).toEqual(["open", "copy-path"])
       })
 
       test("onOpen 省略 ⇒ 「打开」也是禁用态", () => {

@@ -75,6 +75,7 @@ export type FileTreeMenuItem =
   | "move"
   | "delete"
   | "upload"
+  | "upload-folder"
   | "download"
   | "backup"
   | "restore"
@@ -218,6 +219,16 @@ export interface FileTreeProps {
    * `LEARNINGS #002-06` 那种会各漂一半的两份。
    */
   onUpload?: (dir: string) => void
+  /**
+   * 上传**整个文件夹**（2026-10-24 用户下达：右键上传只能选文件）。
+   *
+   * `dir` 的规则与 `onUpload` **逐字相同**（右键目录 ⇒ 它自己、右键文件 ⇒ 它所在的目录、
+   * 空白 ⇒ 根）：两条入口问的都是「往哪儿放」，落点规则只能有一份（`LEARNINGS #002-06`）。
+   *
+   * 本组件只交出落点——文件夹里有什么、要建哪些子目录、每个文件发几次请求，都是接收方的事。
+   * 省略 ＝ 该项禁用（同其余各项「未接线即置灰」的口径）。
+   */
+  onUploadFolder?: (dir: string) => void
   onDownload?: (path: string) => void
   /**
    * 打包下载（2026-10-20）：交出去的是**选中集**，不是单个路径。
@@ -952,6 +963,13 @@ export function FileTree(props: FileTreeProps) {
               文案="上传"
               禁用={!props.onUpload}
               onSelect={() => props.onUpload?.(落点(菜单对象()))}
+            />
+            {/* 2026-10-24：右键上传只能选文件，不能选文件夹（用户实报）。落点规则与上面逐字相同。 */}
+            <菜单项
+              action="upload-folder"
+              文案="上传文件夹"
+              禁用={!props.onUploadFolder}
+              onSelect={() => props.onUploadFolder?.(落点(菜单对象()))}
             />
             <菜单项
               action="download"

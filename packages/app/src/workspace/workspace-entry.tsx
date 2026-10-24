@@ -11,6 +11,7 @@ import { 清空草稿 } from "@/center/views/richtext/draft-store"
 import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
+import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
 import { MinioBar } from "@/project/minio-bar"
 import {
@@ -407,6 +408,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   const [上传落点, set上传落点] = createSignal("")
   /** 那台隐藏的文件选择器（拖进来那条路不用它，两条入口都落在同一个 `传` 上）。 */
   let 文件选择器: HTMLInputElement | undefined
+  /** 那台隐藏的**文件夹**选择器（`webkitdirectory`，2026-10-24）。与文件选择器是两个 `input`。 */
+  let 文件夹选择器: HTMLInputElement | undefined
 
   /**
    * 进门：**还原**上次的「当前项目」，并拉一次清单。
@@ -783,23 +786,85 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   }
 
   /**
-   * 上传一批文件到某个目录。**逐个发**：服务端一次只收一个（`file.ts` 的 `handleUpload`），
-   * 而「几个成了、几个没成」这句话只有在这一层说得出来。
+   * 上传一批文件到**同一个目录**（右键「上传」的文件选择器 ＋ 从桌面拖进来）。
+   *
+   * 两条入口都折成同一张任务表，真正的发送在 `传一批`——「几个成了、几个没成」这句话
+   * 只有一份判断（`LEARNINGS #005-24`）。
+   */
+  async function 传(dir: string, files: readonly File[]) {
+    await 传一批(files.map((file): FolderUploadTask => ({ file, dir, 显示名: file.name })))
+  }
+
+  /**
+   * 上传**一整个文件夹**（2026-10-24 用户下达：右键上传只能选文件）。
+   *
+   * 浏览器交出来的是一份扁平的 `File` 清单（每个带 `webkitRelativePath`），而服务端：
+   * **一次只收一个文件**、**落点目录必须已存在**、**`create` 不递归**。所以顺序是：
+   * 先按相对路径算出要建哪些目录（浅的在前）→ 一个个建 → 再逐个上传（`传一批`）。
+   *
+   * 目录是否已存在**现取一份清单**再判：界面上的那份不知道 AI 在沙箱里建过什么，而重复建
+   * 一个已有目录会被服务端回「已经有同名的东西了」，整批上传会在这里无谓地停下。
+   *
+   * 口径（用户裁定）：**保留所选文件夹本身**——在「资料」下上传「卷宗」，得到「资料/卷宗/…」。
+   */
+  async function 传文件夹(落点: string, files: readonly File[]) {
+    const id = currentProject()?.id
+    if (!id || !projectData) return
+    set文件话(undefined)
+
+    if (files.length === 0) {
+      // 空文件夹：`webkitdirectory` 一个文件都交不出来，目录本身也就无从创建（浏览器的限制）。
+      set文件话("选中的文件夹里没有文件（空文件夹传不上去）")
+      return
+    }
+
+    const 清单 = await projectData.files(id)
+    if (清单 === undefined) {
+      set文件话("取不到文件清单，没有开始上传")
+      return
+    }
+
+    const 计划 = folderUploadPlan(落点, files, 清单)
+    if (计划.要建的目录.length > 0) {
+      set搬忙(true)
+      for (const dir of 计划.要建的目录) {
+        const { parent, name } = 拆目录(dir)
+        const 结论 = await projectData.createEntry(id, "directory", parent, name)
+        if (结论.kind !== "done") {
+          set搬忙(false)
+          // 目录没建出来就**一个文件都不传**：落到不存在的目录只会得到 N 句「目标目录不存在」，
+          // 把真正的第一处失败埋掉。
+          set文件话(`建不出文件夹「${dir}」：${结论.message}`)
+          return
+        }
+      }
+      set搬忙(false)
+    }
+
+    await 传一批(计划.任务)
+  }
+
+  /**
+   * 上传一张任务表（每项自带落点目录）。**逐个发**：服务端一次只收一个（`file.ts` 的
+   * `handleUpload`），而「几个成了、几个没成」这句话只有在这一层说得出来。
    *
    * ## 弹窗与取消（2026-10-18）
    *
    * 运行中一张模态弹窗，百分比来自**当前文件**的字节进度；批量时另给「第 i / N 个」。
    * 取消 / Esc / 点遮罩都中断**当前这一枪**并关窗（用户裁定），已经传完的文件保留——
    * 服务端本来就是一次一个，中断只作用于正在飞的那一个。
+   *
+   * `显示名` 只在弹窗里用：文件夹上传时带路径（`卷宗/附件/说明.docx`），不同子目录里的
+   * 同名文件才分得清。
    */
-  async function 传(dir: string, files: readonly File[]) {
+  async function 传一批(任务: readonly FolderUploadTask[]) {
     const id = currentProject()?.id
-    if (!id || !projectData || files.length === 0) return
+    if (!id || !projectData || 任务.length === 0) return
     set搬忙(true)
     set文件话(undefined)
 
     const 控 = new AbortController()
-    const 总数 = files.length
+    const 总数 = 任务.length
     let 成了 = 0
     let 字节 = 0
     let 缘由: string | undefined
@@ -809,23 +874,24 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       {
         kind: "running",
         action: "上传",
-        name: files[0].name,
-        progress: { loaded: 0, total: files[0].size },
+        name: 任务[0].显示名,
+        progress: { loaded: 0, total: 任务[0].file.size },
         ...(总数 > 1 ? { batch: { index: 1, total: 总数 } } : {}),
       },
       控,
     )
 
-    for (const [序, file] of files.entries()) {
+    for (const [序, 项] of 任务.entries()) {
       if (控.signal.aborted) break
-      const 报进度 = (项: TransferProgress) => {
+      const { file, dir, 显示名 } = 项
+      const 报进度 = (进度: TransferProgress) => {
         // 取消之后还在飞的那几块不许把弹窗状态写回来（否则 `收传输` 清掉的状态又活了）。
         if (控.signal.aborted) return
         set传输({
           kind: "running",
           action: "上传",
-          name: file.name,
-          progress: 项,
+          name: 显示名,
+          progress: 进度,
           ...(总数 > 1 ? { batch: { index: 序 + 1, total: 总数 } } : {}),
         })
       }
@@ -848,10 +914,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
       return
     }
 
-    const 没成 = files.length - 成了
+    const 没成 = 任务.length - 成了
     if (没成 === 0) {
       // 全成：借 `收下` 那一步的重取清单（移动 / 复制报在报告弹窗里，不在内联那行）。
-      void 收下({ kind: "done", path: dir })
+      void 收下({ kind: "done", path: 任务[0].dir })
       // **停在弹窗**（用户裁定）：让「传了几个、多大」留在屏幕上，点「关闭」才收。
       set传输({ kind: "done", action: "上传", files: 成了, bytes: 字节 })
       return
@@ -861,7 +927,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     收传输(false)
     // ⚠️ 那句话只讲**其中一个**。不说清还有几个的话，界面会把「3 个里失败了 2 个」
     // 说成「失败了 1 个」——报一个数就得报准它（`LEARNINGS #003-04` 同族：写下的数要经得起复核）。
-    set文件话(files.length === 1 ? (缘由 ?? "上传文件失败") : `${缘由 ?? "上传文件失败"}（这批 ${files.length} 个里 ${没成} 个没成功）`)
+    set文件话(任务.length === 1 ? (缘由 ?? "上传文件失败") : `${缘由 ?? "上传文件失败"}（这批 ${任务.length} 个里 ${没成} 个没成功）`)
     if (成了 > 0) 拨清单重取()
   }
 
@@ -997,6 +1063,27 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     const files = Array.from(器.files ?? [])
     器.value = ""
     void 传(上传落点(), files)
+  }
+
+  /**
+   * 右键「上传文件夹」：落点规则与「上传」**逐字相同**（树给的是目录），只是开的是另一台
+   * `webkitdirectory` 选择器。
+   */
+  function 选文件夹(dir: string) {
+    set上传落点(dir)
+    文件夹选择器?.click()
+  }
+
+  /**
+   * 目录选择器回来：先按相对路径建子目录，再逐个上传（`传文件夹`）。
+   *
+   * 同样**清空 `value`**：不清的话同一个文件夹连选两次不会触发 `change`（同 `选中` 那段）。
+   */
+  function 选中文件夹(event: { currentTarget: HTMLInputElement }) {
+    const 器 = event.currentTarget
+    const files = Array.from(器.files ?? [])
+    器.value = ""
+    void 传文件夹(上传落点(), files)
   }
 
   // ─── 备份 / 恢复接线（Task 17，2026-10-18） ───────────────────────────────────────
@@ -1902,6 +1989,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onCopy={(path) => 要搬(path, "copy")}
                         onMove={(path) => 要搬(path, "move")}
                         onUpload={选文件}
+                        onUploadFolder={选文件夹}
                         onDownload={(path) => void 下载(path)}
                         onArchive={(paths, kind) => void 打包下载(paths, kind)}
                         onDropFiles={(files, dir) => void 传(dir, files)}
@@ -1954,6 +2042,23 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         multiple
                         hidden
                         onChange={选中}
+                      />
+                      {/* 「上传文件夹」的入口（2026-10-24 用户下达）：`webkitdirectory` 让系统
+                          选择器只认目录，交出来的每个 `File` 带 `webkitRelativePath`。
+                          与上面那台**必须是两个 `input`**——`webkitdirectory` 一旦挂上就只能选目录，
+                          文件上传那台不能受影响。 */}
+                      <input
+                        data-slot="file-op-folder-input"
+                        // `webkitdirectory` 不在 `InputHTMLAttributes` 的类型里（Solid 的 `attr:*`
+                        // 只开给组件、没开给原生元素）⇒ 走 ref 写属性。写属性的效果与写在标签上一致。
+                        ref={(el) => {
+                          文件夹选择器 = el
+                          el.setAttribute("webkitdirectory", "")
+                        }}
+                        type="file"
+                        multiple
+                        hidden
+                        onChange={选中文件夹}
                       />
                     </>
                   }
