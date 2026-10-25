@@ -397,6 +397,38 @@
 > 圆角**沿用原生 10px**（本节即 §3.1 那行「右栏对话 Hero 输入」的口径：原生外壳是 `rounded-xl`，
 > 它落不到 12~16px 而不动上游）。**不**新增 app 级 CSS 覆盖——少一处将来会漂的联姻。
 
+### 4.8 AI 资产 · 左栏纯导航
+
+「AI 资产」是第一个**模块级页面**的左栏内容（D0-3）：左栏只做导航，**永不列资产行**；
+浏览与查找在中栏（卡片网格 / 全局搜索归 T006）。本节只写左栏的长相与状态。
+
+| 项 | 规范 |
+|---|---|
+| 栏宽 | 沿用三栏左栏 280px（§4.1），不为资产另设宽度 |
+| 栏底 | 白底卡片（`ThreePane` 的 `bg-v2-background-bg-base` + 10px 圆角）；内部 `px-2 py-3`、`overflow-y-auto` |
+| 字号 | 分类行 / Tab 14px（§3.2「左栏导航 14px 小字，弱化」）；空间筛选 12px |
+| 行高 | Tab 与分类行 `py-1.5`（约 32px） |
+| 分组顺序 | ① 空间筛选 ② 类型 Tab ③ 业务分类折叠列表 |
+| 空间筛选 | 全局 / 部门 / 个人，多选，**默认全选**；文案取自 `ASSET_VISIBILITY_LABELS` |
+| 类型 Tab | Skill / MCP / 知识库，**默认 Skill**；顺序与文案取自 `ASSET_TYPES` / `ASSET_TYPE_LABELS` |
+| 分类来源 | `@opencode-ai/asset-service/categories` 的 `ASSET_CATEGORY_SEED`，按 `order` 升序；**前端不得硬编码分类** |
+| 分类数量 | 本期**不显示角标**：T005 没有资产数据源，画数字就是造数据；T006 接入中栏数据后补 |
+| 展开 | 同时最多展开一个分类（单开手风琴），默认展开 `order` 最小的那一项；展开态只表示「这是当前分类」，节点下**不列资产** |
+| 选中态 | `bg-[var(--v2-background-bg-accent-soft)]` + `text-v2-text-text-base`（§1.3 浅金选中） |
+| 未选中 | `text-v2-text-text-muted`；hover `hover:bg-v2-overlay-simple-overlay-hover` |
+| 箭头 | `chevron-right`（收起）/ `chevron-down`（展开），`size="small"`，`text-v2-icon-icon-muted` |
+| 无障碍 | 空间筛选按钮 `aria-pressed`；类型 `role="tablist"` + `aria-selected`；分类按钮 `aria-expanded` |
+| 资产项 | **左栏永不渲染资产行**；判据：不存在 `data-slot="asset-item"` |
+
+行为约定：
+
+- 进入「AI 资产」⇒ 左栏换成导航；中栏走**模块级视图**，文件 tab 保留在状态里但不可见
+  （T006 在该视图里落卡片网格）。
+- 切换空间 / 类型 / 分类只改筛选条件，不改当前模块，也不动中栏已开的 tab。
+- 右栏投影**不随进入 AI 资产改变**：仍停在进入前的业务模块（design §1.5 / D0-6）；
+  「AI 资产」本身不产生指令卡投影。
+- 「项目管理」图标在 AI 资产下**不高亮**：它只代表项目左栏的开关，不代表「左栏这一列开着」。
+
 ---
 
 ## 5. Brand

@@ -1,11 +1,30 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T005 待开工（Phase 3 三条前端任务 T005 ∥ T006 ∥ T007，依赖 T003）。开工前**先裁定 D0-6**
-（006 `capabilities.ts` 字段扩充、异步供数、右栏投影的 `projectionModule`）——它阻塞 T005，
-不阻塞已完成的后端任务。
+T006 待开工（Phase 3：中栏资产网格与搜索；与 T007 可并行）。T005 已交付左栏纯导航与两处接线。
 
 ## 已完成
+- **T005** 左栏纯导航（空间筛选 + 三 Tab + 业务分类折叠）+ 模块级页面接线（FR-002 / D0-3 / D0-6）
+  - `ai-assets/filter.ts`：空间多选（默认全选）、类型 Tab（默认 Skill）、分类单开手风琴；
+    分类行来自 `asset-service/categories` 的 seed，按 `order` 排序，前端不硬编码（5 用例）
+  - `ai-assets/asset-nav.tsx`：`role="group"` 空间筛选、`role="tablist"` 类型 Tab、分类按钮
+    `aria-expanded` + chevron-right/down；**永不渲染资产行**（7 用例）
+  - `workspace/workspace-view.ts`：「模块 → 视图」纯函数，`ai-assets` 走模块级页面（3 用例）
+  - `workspace-entry.tsx`：左栏内容按视图分派（项目侧栏 / `AssetNav`），中栏在 AI 资产下换成
+    占位 `[data-slot="asset-center"]`（文件 tab 状态保留、仅不渲染）；「项目管理」图标在 AI 资产下
+    不亮（`projectOpen` 仍代表项目左栏）
+  - `ai-session/projection-module.tsx` + `ai-session-slot.tsx`：右栏投影改读 **最近一个业务模块**
+    （进入 AI 资产不换投影，离开后继续跟随）；无 Provider 时退回当前模块，与改动前逐字相同
+    （4 用例）
+  - DESIGN.md 新增 §4.8「AI 资产 · 左栏纯导航」；D0-14 三处目录清单同步加 `ai-assets`
+  - 门禁实测：`test:components` 1324 pass / 0 fail；`test:unit` 1178 pass / 27 fail / 19 errors，
+    **与 HEAD 基线逐条相同**（1170 pass / 27 fail / 19 errors，均 `jsxDEV` 与 T020 上传下载旧红）；
+    `typecheck` 136 errors，**与 HEAD 基线错误集合逐一相同**（`diff` 为空），T005 文件 0 errors；
+    `lint:openhive` 0 errors / 67 warnings（新文件 0 warnings）
+  - 变异验证：拆掉 AI 资产左栏分支 ⇒ 集成用例红 2 条（左栏换导航、三组齐备）；
+    去掉投影「`ai-assets` 不覆盖记忆」守卫 ⇒ 红 2 条（`projection-module` 停在业务模块、
+    集成投影探针），拆完即还原
+
 - **T004** RBAC 授权 + 三级空间 + 授权组（FR-006 / FR-007）
   - 迁移 `0010_role_type.sql`（＋配对的 `.down.sql`）：`auth.role.role_type`
     （闭集 `normal` / `group`，默认 `normal`，CHECK 名 `role_type_check`），带中文 `COMMENT`
@@ -51,10 +70,11 @@ T005 待开工（Phase 3 三条前端任务 T005 ∥ T006 ∥ T007，依赖 T003
 
 ## 阻塞项
 - **D0-15（内容）**：分类 seed 是可审阅初稿，正式词条仍需业务管理员确认。
-- **D0-6**：006 `capabilities.ts` 的字段扩充与「资产服务 → 右栏清单」供数方式未定，**T005 前**需裁定
-  （T003 只提供 `listAssets` 作投影数据源，未提供 `GET /assets/capabilities`、未扩 `SkillCapability`、
-  未改 `projectionModule`）。
+- **D0-6（已裁定，投影部分已落地）**：006 `capabilities.ts` 字段扩充与「资产服务 → 右栏清单」
+  供数方式仍未定——T005 只按裁定做了**投影模块记忆**的最小修复；`listAssets` 作投影数据源、
+  `GET /assets/capabilities`、`SkillCapability` 扩充留待 T007 / T017。
+- **前端中栏占位**：AI 资产中栏目前是 `[data-slot="asset-center"]` 空态文案，T006 换成资产网格。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T004 完成）
+2026-10-25（T005 完成）

@@ -1,6 +1,5 @@
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createMemo, Show, type JSX } from "solid-js"
-import { useCenterTabs } from "@/center/tab-context"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { LocalProvider, useLocal } from "@/context/local"
@@ -16,6 +15,7 @@ import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
 import { 右栏模型控件 } from "./model-control"
 import { projectCapabilities } from "./projection"
+import { useProjectionModule } from "./projection-module"
 import { 右栏打不开的说法 } from "./right-pane-failure"
 import { createRightPaneSource, type RightPaneSource } from "./right-pane-source"
 import { 右栏打不开 } from "./right-pane-unavailable"
@@ -232,7 +232,7 @@ function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
   const navigate = useNavigate()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()
-  const center = useCenterTabs()
+  const projectionModule = useProjectionModule()
   const language = useLanguage()
   // 待答闸门的「自动放行」筛法（`SessionDocks` 的 `autoResponds`）。`PermissionProvider` 挂在
   // `app.tsx` 里、**在所有栏之上** ⇒ 右栏这一层拿得到（与 `useServerSync()` 同一层）。
@@ -298,8 +298,15 @@ function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
     return 项 ? { providerID: 项.provider.id, modelID: 项.id } : undefined
   }
 
-  /** 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。 */
-  const 投影 = createMemo(() => projectCapabilities(MANIFESTS, center.module()))
+  /**
+   * 投影**只算一份**：四层内容同出一次投影，不给「模块 A 的卡 ＋ 模块 B 的命令」留缝。
+   *
+   * ⚠️ 读 `projectionModule()` 而不是 `center.module()`（009 T005 / D0-6）：进入「AI 资产」会
+   * 把模块串换成 `ai-assets`，而它不是业务分析模块，直接读会让右栏三张指令卡整块空掉。
+   * `useProjectionModule()` 记的是**进入前的业务模块**；没有 Provider 时退回当前模块，
+   * 与改动前逐字相同（`ai-session-slot` 的单挂载测试不受影响）。
+   */
+  const 投影 = createMemo(() => projectCapabilities(MANIFESTS, projectionModule()))
 
   /**
    * 失败那一句话。**只有一处**——提交 / 新建 / 删除三条路都要说同一句

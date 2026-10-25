@@ -3,6 +3,7 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { toaster } from "@opencode-ai/ui/toast"
 import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
+import { useProjectionModule } from "@/ai-session/projection-module"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
@@ -129,8 +130,10 @@ const currentModule = (host: HTMLElement) =>
  * 原先靠 `currentModule(host) === "项目管理"` 断「模块没被换走」的那几处一并改用本辅助
  * （`#002-06` 的另一面：同一个判断，别让它在这里多出一份**另一套读法**）。
  *
- * `aria-pressed` 为真 ⟺ `module === "project"` **且** 左栏开关开着——左栏本就只在
- * `module === "project"` 时渲染，两件事绑在一起，正是这几处要的那个合取。
+ * `aria-pressed` 为真 ⟺ `module === "project"` **且** 项目左栏开关开着，正是这几处要的那个合取。
+ *
+ * ⚠️ 009 T005 起它**不再等价于「左栏露着」**：AI 资产的左栏同样露着，但这颗必须灭
+ * （它表示「我在项目管理」，不是「左边有栏」）。判「左栏露着」请读 `[data-slot='three-pane-left']`。
  */
 const 左栏开着 = (host: HTMLElement) => 入口(host, "项目管理").getAttribute("aria-pressed") === "true"
 
@@ -5950,5 +5953,77 @@ describe("备份 / 恢复接线（Task 17）", () => {
     // 回包属于 p-1：既不能在 p-2 上开超限框，也不能写一句不属于这里的话。
     expect(document.body.querySelector("[data-kind='quota']") === null).toBe(true)
     expect(text(host, "file-op-message") === undefined).toBe(true)
+  })
+})
+
+/**
+ * AI 资产工作台（009 T005 / D0-3 / D0-6）。
+ *
+ * 三条轴各钉一次：**左栏换内容**（不是换模块就整列消失）、**中栏走模块级视图**（文件 tab 保留
+ * 在状态里但不可见）、**右栏投影不换**（仍停在进入前的业务模块）。
+ */
+describe("AI 资产工作台（009 T005）", () => {
+  const 进入 = (host: HTMLElement) => 入口(host, "AI 资产").click()
+
+  test("点「AI 资产」⇒ 左栏换成纯导航；项目侧栏让位、左栏仍在、项目管理那颗不高亮", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    expect(host.querySelector("[data-component='project-sidebar']")).not.toBeNull()
+
+    进入(host)
+
+    expect(currentModule(host)).toBe("AI 资产")
+    expect(host.querySelector("[data-component='asset-nav']")).not.toBeNull()
+    expect(不存在(host, "[data-component='project-sidebar']")).toBe(true)
+    expect(host.querySelector("[data-slot='three-pane-left']")).not.toBeNull()
+    // 「项目管理」那颗只代表项目左栏的开关 ⇒ AI 资产下必须灭（左栏开着不代表项目左栏开着）。
+    expect(左栏开着(host)).toBe(false)
+  })
+
+  test("左栏导航三组齐备，且**不列资产行**", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    进入(host)
+
+    expect(host.querySelectorAll("[data-slot='asset-space']").length).toBe(3)
+    expect(host.querySelectorAll("[data-slot='asset-type-tab']").length).toBe(3)
+    expect(host.querySelectorAll("[data-slot='asset-category']").length).toBe(9)
+    expect(host.querySelectorAll("[data-slot='asset-item']").length).toBe(0)
+  })
+
+  test("中栏走模块级视图：注入的页面让位；切回项目后它回来（状态没被清空）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry>
+        <div data-slot="center-content">中栏内容</div>
+      </WorkspaceEntry>
+    ))
+    expect(text(host, "center-content")).toBe("中栏内容")
+
+    进入(host)
+
+    expect(host.querySelector("[data-slot='asset-center']")).not.toBeNull()
+    expect(不存在(host, "[data-slot='center-content']")).toBe(true)
+
+    // 点「项目管理」= 切回 project 并开左栏（既有语义）⇒ 中栏的注入页面照旧可用。
+    入口(host, "项目管理").click()
+    expect(text(host, "center-content")).toBe("中栏内容")
+  })
+
+  test("进入 AI 资产不换右栏投影：停在进入前的业务模块，离开后继续跟随", () => {
+    const 投影探针 = () => {
+      const 投影 = useProjectionModule()
+      return <div data-slot="projection-probe">{投影() ?? "无"}</div>
+    }
+    const host = mount(() => <WorkspaceEntry right={() => <投影探针 />}>中栏</WorkspaceEntry>)
+    const 读 = () => text(host, "projection-probe")
+
+    expect(读()).toBe("project")
+
+    入口(host, "资金分析").click()
+    expect(读()).toBe("fund-analysis")
+
+    进入(host)
+    expect(读()).toBe("fund-analysis")
+
+    入口(host, "话单分析").click()
+    expect(读()).toBe("cdr-analysis")
   })
 })

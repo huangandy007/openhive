@@ -1,4 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
+import { AssetNav } from "@/ai-assets/asset-nav"
+import { createAssetFilter } from "@/ai-assets/filter"
+import { ProjectionModuleProvider } from "@/ai-session/projection-module"
 import { useBigFileAsk } from "@/center/big-file-dialog"
 import { CenterSplit } from "@/center/center-split"
 import type { LoadFileContent, SaveFileContent } from "@/center/file-content"
@@ -41,6 +44,7 @@ import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
 import { currentUser } from "./current-user"
 import { ThreePane } from "./three-pane"
+import { workspaceView } from "./workspace-view"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
@@ -229,8 +233,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * **初值 `true`**（用户同日裁定「默认展开」）：进门右栏就在 = 与改动之前**看到的样子一致**，
    * 也让会话路由（中栏在那里让位给右栏）不会一进去就是空白。点一下收起、再点呼出。
    *
-   * **与 `center.module()` 是两条轴**，刻意分开：模块轴管「我在哪个业务模块」（决定左栏露不露、
-   * 指令卡投影按哪个模块算），这条只管右栏这一栏的开合。合着用正是改动前的毛病——点它把
+   * **与 `center.module()` 是两条轴**，刻意分开：模块轴管「我在哪个业务模块」（决定左栏放什么、
+   * 指令卡投影按哪个**业务**模块算——009 起投影走 `projectionModule()` 的记忆，见那边注释），
+   * 这条只管右栏这一栏的开合。合着用正是改动前的毛病——点它把
    * `module` 换成 `"ai-session"`，左栏（只在 `module === "project"` 时渲染）**整列消失**，
    * 右栏却一动不动。语义与出处见 `rail/rail.tsx` 的 `RailProps.aiSessionOpen`。
    *
@@ -245,28 +250,53 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * **初值 `true`**（与右栏同一条裁定「默认展开」）：进门左栏就在 = 与改动之前**看到的样子一致**
    * ——`initialModule` 是 `RAIL_ENTRIES[0].id`（＝ `"project"`），左栏今天本来就默认露着。
    *
-   * ⚠️ 它与 `center.module()` 也是**两条轴**，但读的时候必须**合取**（见下面的 `左栏开着`）：
-   * 左栏只在 `module === "project"` 时渲染。只留模块轴 ⇒ 收不起来；只留开关轴 ⇒ 切到别的模块后
-   * 图标栏那颗还亮着，而左栏明明已经让位了。
+   * ⚠️ 它与 `center.module()` 也是**两条轴**，但读的时候必须**合取**（见下面的 `项目左栏开着`）：
+   * 项目视图的左栏只在 `module === "project"` 时渲染。只留模块轴 ⇒ 收不起来；只留开关轴 ⇒ 切到别的
+   * 模块后图标栏那颗还亮着，而左栏明明已经让位了。
+   *
+   * 009 T005 起它**只管项目视图**：AI 资产的左栏是另一份内容（`AssetNav`），不受这颗开关支配。
    *
    * 状态落在这里而不是 `Rail` 里，理由与 `aiSessionOpen` 逐字相同：**读写方分属两个组件**
    * （图标栏那颗是写方、`ThreePane` 的 `leftCollapsed` 是读方），只能落在共同祖先。
    */
   const [projectOpen, setProjectOpen] = createSignal(true)
   /**
-   * 「左栏此刻开着吗」——**开关轴与模块轴的合取**（两轴各自的理由见上面那段）。
+   * AI 资产左栏的筛选状态（009 T005 / DESIGN §4.8）：空间多选、类型 Tab、单开手风琴。
    *
-   * 两处读它、必须同取一个值：喂给图标栏那颗的 `projectOpen`（高亮）与 `ThreePane` 的
-   * `leftCollapsed`（真的收不收）。各算一遍就是「亮着却收着」那类不一致的温床（`#002-06`）。
+   * 落在这里而不是 `AssetNav` 里：T006 的中栏要按**同一份筛选**取数，两者分属两个组件
+   * ⇒ 状态只能落在共同祖先（与 `panelOpen` / `sidebarTab` 同因）。
    */
-  const 左栏开着 = () => center.module() === "project" && projectOpen()
+  const assetFilter = createAssetFilter()
+  /**
+   * 左栏此刻装的是**哪个视图**（009 T005）。
+   *
+   * 2026-10-25 前这里只有「`module === "project"` 才有左栏」一条判据。009 起「AI 资产」是
+   * **模块级页面**（D0-3 用户裁定），也要占同一列左栏、内容换成 `AssetNav` ⇒ 把「模块 → 视图」
+   * 收成纯函数 `workspaceView()`（可单测），本组件只按它分派内容。
+   */
+  const 视图 = () => workspaceView(center.module())
+  /**
+   * 「项目管理那颗图标亮不亮」——**开关轴与模块轴的合取**（两轴各自的理由见上面那段）。
+   *
+   * ⚠️ 它只代表**项目视图的左栏**：AI 资产进来后左栏同样露着，但那颗图标**不该亮**
+   * （`workspace-entry.test.tsx` 的 T005 第一条钉的就是 `aria-pressed=false`）——它表示的
+   * 是「我在项目管理」，不是「左边有栏」。
+   */
+  const 项目左栏开着 = () => 视图() === "project" && projectOpen()
+  /**
+   * 「左栏这一列露不露」——两个视图共用的一列（`2026-09-11-项目管理-design.md` §2）。
+   *
+   * 两处读它、必须同取一个值：`ThreePane` 的 `leftCollapsed`（真的收不收）与它自己的
+   * `left` 槽（放什么）。各算一遍就是「亮着却收着」那类不一致的温床（`#002-06`）。
+   */
+  const 左栏可见 = () => 视图() === "ai-assets" || 项目左栏开着()
   /**
    * 「项目管理」那一颗的动作（2026-10-11 用户下达）。
    *
    * ⚠️ 与「AI 会话」那颗**唯一的实质差别**：那颗**不是**任何模块（拨一下开关就行），这一颗
    * **同时还是「进 project 模块」的入口**。不先切回来的话，用户在别的模块上点它只会把开关翻成
-   * 关，而左栏本来就因为模块不对而不在——点一下看上去「什么都没发生」（正是 `#006-16` 那类
-   * 「界面上走不到的路径」）。
+   * 关，而**项目左栏**本来就因为模块不对而不在（009 起 AI 资产占着同一列，但那是另一份内容）
+   * ——点一下看上去「什么都没发生」（正是 `#006-16` 那类「界面上走不到的路径」）。
    *
    * 「先切回来」那一支**顺手把开关置真**，不是取反：用户点它的意思是「我要左栏」。取反的后果
    * 是「点一下反而把刚出现的左栏又关了」（本文件 `左栏（项目管理）的乒乓开关` 那组用例的第三条
@@ -1610,7 +1640,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
   })
 
   return (
-    <>
+    // 右栏投影模块的记忆（009 T005 / D0-6）：进入「AI 资产」后右栏仍按**进入前**的业务模块投影。
+    // 挂在最外层是为了让 `props.right`（`AiSessionSlot` 由 `ThreePane` 惰性创建）也落在作用域内
+    // ——Solid 的 context 按 owner 树传递，后创建的后代照样读得到。
+    <ProjectionModuleProvider>
       {/* 图标栏是**三栏之外**的独立一列（DESIGN §4.1：图标栏 56px → 左项目侧栏 280px → 中 → 右），
           故不能塞进 `ThreePane` 的 `left` 槽（那是左项目侧栏，005 T005 起交给 `ProjectAnchor`）。
           外层这层行容器因此必需：挂载点 `<main>`（layout-new.tsx）是 `flex-col`，
@@ -1623,9 +1656,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           // `module` 不会再变成 `"ai-session"`——那正是改动前「点它左栏消失」的成因。
           onSelect={(id) => center.switchModule(id)}
           // 左栏那颗乒乓开关（2026-10-11 用户下达）。高亮与出口是**同一条轴的两半**，都喂给同一颗
-          // 入口（见 `RailProps.projectOpen`）。⚠️ 喂的是 `左栏开着()`——与模块轴**合取过**的那个，
+          // 入口（见 `RailProps.projectOpen`）。⚠️ 喂的是 `项目左栏开着()`——与模块轴**合取过**的那个，
           // 不是裸的 `projectOpen()`：否则切到别的模块后它还亮着（左栏已经让位了）。
-          projectOpen={左栏开着()}
+          // 009 T005：AI 资产下左栏照旧露着，但这颗**不亮**（它表示「我在项目管理」）。
+          projectOpen={项目左栏开着()}
           onToggleProject={点项目管理}
           // 右栏那颗乒乓开关（2026-10-10 用户下达）。同上一对的理由（见 `RailProps.aiSessionOpen`）。
           aiSessionOpen={aiSessionOpen()}
@@ -1635,23 +1669,23 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           onOpenSettings={props.onOpenSettings}
           capabilities={props.capabilities}
         />
-        {/* 左栏按模块开关（`2026-09-11-项目管理-design.md` §2：左栏是「项目管理 / AI 资产」两入口
-            共用的一列）。今天只有「项目管理」有左栏内容，故先只认它——多认一个模块就要多一份内容，
-            而「AI 资产」的左栏属 006 之后的事（见 state.md 的欠账表）。
+        {/* 左栏按模块分内容（`2026-09-11-项目管理-design.md` §2：左栏是「项目管理 / AI 资产」两入口
+            共用的一列）。009 T005 起两个入口都有内容：项目视图是项目侧栏，AI 资产是 `AssetNav`。
             ⚠️ 条件必须落在 `left` **prop 本身**：包一层 `<Show>` 再传进去是错的——`ThreePane` 判的是
             `props.left !== undefined`，`<Show>` 元素恒非 `undefined`，于是空态下会留下一条 280px 空栏。
-            ⚠️ 2026-10-11 起这一列有**两道门**：模块门（`left` 那个三元，管「这一列属于哪个模块」）＋
-            开关门（`leftCollapsed`，管「用户把它收起了没」，那颗「项目管理」图标就是它）。 */}
+            ⚠️ 2026-10-11 起这一列有**两道门**：内容门（`left` 的三元，管「这一列放什么」）＋
+            开关门（`leftCollapsed`，管「用户把它收起了没」）。开关门只归**项目视图**。 */}
         <ThreePane
           // 左栏那颗乒乓开关的**执行端**（2026-10-11 用户下达）：收起时 `ThreePane` 整块 `<Show>`
           // 不渲染 ⇒ 左栏**连同 `ResizeHandle` 一起**让位，中栏是 `flex-1 min-w-0`，自然吃满——
           // 「中栏宽度自动适应」不需要另写一行宽度逻辑（与右栏 `rightCollapsed` 逐字同因）。
           // ⚠️ 它与 `left` 是**两个独立的门**（`有左栏 = props.left !== undefined && !props.leftCollapsed`），
-          // 而这里喂的是与模块轴合取过的 `左栏开着()`：`left` 那个三元已按模块判过一次，两者不会
-          // 打架（模块不对时 `left` 本身就是 `undefined`，收起与否都露不出来）。
-          leftCollapsed={!左栏开着()}
+          // 而这里喂的是 `左栏可见()`：AI 资产恒露（左栏是它的唯一导航），项目视图才受开关支配。
+          leftCollapsed={!左栏可见()}
           left={
-            center.module() === "project" ? (
+            视图() === "ai-assets" ? (
+              <AssetNav filter={assetFilter} />
+            ) : 视图() === "project" ? (
               // 这一层 `relative` 是给面板当定位祖先的：面板按设计 §3 是**滑出**的浮层
               // （「点项目名 ▾ 滑出」），不能挤掉下面 §2 的 ②tab / ③文件树。
               // 代价：左栏的第一层从「锚点行」变成这个容器——`workspace-entry.test.tsx` 里
@@ -2103,27 +2137,41 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           rightCollapsed={!aiSessionOpen()}
           right={props.right?.()}
         >
-          {/* 中栏：两栏 ＋ 一条可拖的隔板（2026-10-12 分屏）。几何与「谁在哪一栏」都在
-              `center-split.tsx` 里，本组件只把取数出口与上游页面注入进去。 */}
-          <CenterSplit
-            registry={viewRegistry}
-            load={props.loadFile}
-            save={props.saveFile}
-            pageVisible={props.routePageVisible?.() ?? true}
-            empty={
-              <div
-                data-slot="center-empty"
-                class="flex w-full flex-1 items-center justify-center px-6 text-center text-[13px] text-v2-text-text-faint"
-              >
-                从左侧选择文件查看，或在右栏让 AI 生成成果
-              </div>
-            }
-          >
-            {props.children}
-          </CenterSplit>
+          {/* 中栏。业务模块下是「两栏 ＋ 一条可拖的隔板」（2026-10-12 分屏）：几何与「谁在哪一栏」
+              都在 `center-split.tsx` 里，本组件只把取数出口与上游页面注入进去。
+              AI 资产是**模块级页面**（D0-3）——文件 tab 那套（`CenterSplit`）整块让位，但 tab
+              状态不丢（只是不渲染，`center` 里的 tabs 原封不动），切回项目管理时照旧。
+              T006 把这块占位换成资产网格与搜索。 */}
+          {视图() === "ai-assets" ? (
+            <div
+              data-slot="asset-center"
+              class="flex h-full w-full items-center justify-center px-6 text-center"
+            >
+              <p data-slot="asset-center-empty" class="text-[13px] text-v2-text-text-muted">
+                从左侧选择业务分类，浏览 AI 资产
+              </p>
+            </div>
+          ) : (
+            <CenterSplit
+              registry={viewRegistry}
+              load={props.loadFile}
+              save={props.saveFile}
+              pageVisible={props.routePageVisible?.() ?? true}
+              empty={
+                <div
+                  data-slot="center-empty"
+                  class="flex w-full flex-1 items-center justify-center px-6 text-center text-[13px] text-v2-text-text-faint"
+                >
+                  从左侧选择文件查看，或在右栏让 AI 生成成果
+                </div>
+              }
+            >
+              {props.children}
+            </CenterSplit>
+          )}
         </ThreePane>
       </div>
-    </>
+    </ProjectionModuleProvider>
   )
 }
 
