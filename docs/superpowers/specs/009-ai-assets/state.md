@@ -1,9 +1,26 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T008 已交付（生命周期流转），等待用户审阅。下一任务 T009（审核两道关，依赖 T008）。
+T009 已交付（审核两道关），等待用户审阅。下一任务 T010（站内信通知，依赖 T008）。
 
 ## 已完成
+- **T009** 审核两道关（业务审核 / 技术发布分离）（FR-005 / design §3.3）
+  - `review.ts`：`TRANSITION_REQUIRED_PERMS`（author→write / business_reviewer→review /
+    system_admin→admin）＋ `authorizeTransition(viewer, asset, grants, action)`：
+    角色由 `effectivePermissions()` 派生，未知动作抛 `unknown_action`，无权限抛
+    `actor_not_allowed` 且消息写明缺的权限
+  - `service.ts`：`TransitionAssetInput` 删除 `actor`，改收 `viewer` + 可选 `grants`
+    （省略时 `grantsFor(db, viewer.userId)`）；授权判定在**任何文件操作与写库之前**
+  - 两道关互不蕴含：`admin` 不蕴含 `review`，`review` 不蕴含 `write`（本轮用 13 条新用例钉住）
+  - 文档：新增 `review.md`（映射 / 为何不自报角色 / 残差 / 变异记录）；
+    `authorization.md` 与 `lifecycle.md` 的入口口径同步
+  - 门禁实测：`asset-service` 117 pass / 0 fail（+13：纯逻辑 10 + 流转集成 3）；
+    `tsgo --noEmit` 0 errors；`oxlint` 0 errors / 6 warnings（均为既有告警）；`bun.lock` 无 diff
+  - 变异验证（拆完即还原）：`authorizeTransition` 改成直接取 `actors[0]` ⇒ 红 8；
+    `grants` 兜底改成 `[]`（不查库）⇒ 红 1
+  - 已知残差：同一人显式同时持有 `review` + `admin` 仍可连过两关（FR-005 的口径是「权限互不
+    蕴含」，更强的人员分离需 010 审计日志记录每步审核人）
+
 - **T008** 生命周期状态机流转（提交 / 审核 / 发布 / 迭代 / 下线 / 归档）（FR-004 / D0-7）
   - `lifecycle.ts`：转移表新增 `storage` 物理动作（`none` / `copy_to_pending` /
     `move_pending_to_publish` / `move_publish_to_archive`）；错误码扩到资产不存在、
@@ -145,9 +162,9 @@ T008 已交付（生命周期流转），等待用户审阅。下一任务 T009�
 - **资产列表数据源（T006 已留缝、未接真源）**：中栏网格吃
   `WorkspaceEntry.assets?: () => readonly AssetMetadata[]`，省略即空态。`/assets` 的列表 HTTP
   接口尚未落，`pages/layout-new.tsx` 也还没注入 ⇒ **真栈上资产页今天只有空态**；
-  接线在 T017 与后端列表接口一并做（T008 只落了生命周期服务，未加 HTTP 出口）。
+  接线在 T017 与后端列表接口一并做（T008 / T009 只落了服务层，未加 HTTP 出口）。
   `AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T008 完成）
+2026-10-25（T009 完成）

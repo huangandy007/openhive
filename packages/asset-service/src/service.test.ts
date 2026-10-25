@@ -240,6 +240,17 @@ describe("storeAsset · 提交 / 复制", () => {
 })
 
 describe("transitionAsset · 生命周期流转（T008）", () => {
+  /**
+   * T009 起，流转入口只收「我是谁」+ 授权行，角色由 `authorizeTransition()` 派生。
+   * 这几条授权是**显式传入**的：既让用例专注于流转本身，也让 `raceOnUpdate` 的
+   * `execute` 计数保持「第 2 次 = 生命周期 update」（不额外插一条 `grantsFor` 查询）。
+   */
+  const 作者 = { userId: "u1", department: "经侦支队" }
+  const 业务管理员 = { userId: "u2", department: "法制支队" }
+  const 系统管理员 = { userId: "u3", department: "科信支队" }
+  const 审 = [{ resourceType: "skill", resourceId: "asset_1", perm: "review" }]
+  const 管 = [{ resourceType: "skill", resourceId: "asset_1", perm: "admin" }]
+
   const 发布目录 = (root: string) =>
     publishDirectory(root, "skill", { visibility: "department", department: "经侦支队" }, "asset_1")
   const 待审目录 = (root: string) => pendingDirectory(root, "asset_1")
@@ -263,7 +274,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "submit_review",
-      actor: "author",
+      viewer: 作者,
+      grants: [],
       sourceDirectory: source,
       now: 2_000,
     })
@@ -272,7 +284,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "approve_business",
-      actor: "business_reviewer",
+      viewer: 业务管理员,
+      grants: 审,
       now: 2_001,
     })
     await transitionAsset({
@@ -280,7 +293,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "publish_tech",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 2_002,
     })
   }
@@ -314,7 +328,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "submit_review",
-      actor: "author",
+      viewer: 作者,
+      grants: [],
       sourceDirectory: source,
       now: 2_000,
     })
@@ -327,7 +342,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "approve_business",
-      actor: "business_reviewer",
+      viewer: 业务管理员,
+      grants: 审,
       now: 2_001,
     })
     expect(approved.status).toBe("pending_tech")
@@ -338,7 +354,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "publish_tech",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 2_002,
     })
     expect(published.status).toBe("published")
@@ -358,7 +375,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "submit_review",
-      actor: "author",
+      viewer: 作者,
+      grants: [],
       sourceDirectory: source,
       now: 2_000,
     })
@@ -369,7 +387,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "reject_business",
-        actor: "business_reviewer",
+        viewer: 业务管理员,
+        grants: 审,
         reason: "   ",
         now: 2_001,
       }),
@@ -382,7 +401,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "reject_business",
-      actor: "business_reviewer",
+      viewer: 业务管理员,
+      grants: 审,
       reason: "只适用于本专案，不可泛化",
       now: 2_002,
     })
@@ -403,7 +423,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "start_iteration",
-      actor: "author",
+      viewer: 作者,
+      grants: [],
       sourceDirectory: source,
       now: 3_000,
     })
@@ -418,7 +439,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "publish_iteration",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 3_001,
     })
     expect(republished.status).toBe("published")
@@ -440,7 +462,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "take_offline",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 4_000,
     })
     expect(offline.status).toBe("offline")
@@ -452,7 +475,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "bring_online",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 4_001,
     })
     expect(online.status).toBe("published")
@@ -472,7 +496,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "archive",
-      actor: "system_admin",
+      viewer: 系统管理员,
+      grants: 管,
       now: 5_000,
     })
     expect(archived.status).toBe("archived")
@@ -486,7 +511,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "take_offline",
-        actor: "system_admin",
+        viewer: 系统管理员,
+        grants: 管,
         now: 5_001,
       }),
     )
@@ -507,7 +533,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "approve_business",
-        actor: "author",
+        viewer: 作者,
+        grants: [],
         now: 2_000,
       }),
     )
@@ -519,7 +546,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "publish_tech",
-        actor: "system_admin",
+        viewer: 系统管理员,
+        grants: 管,
         now: 2_001,
       }),
     )
@@ -540,7 +568,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "submit_review",
-        actor: "author",
+        viewer: 作者,
+        grants: [],
         now: 2_000,
       }),
     )
@@ -562,7 +591,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "submit_review",
-        actor: "author",
+        viewer: 作者,
+        grants: [],
         sourceDirectory: source,
         now: 2_000,
       }),
@@ -586,7 +616,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "submit_review",
-        actor: "author",
+        viewer: 作者,
+        grants: [],
         sourceDirectory: source,
         now: 2_000,
       }),
@@ -609,7 +640,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       root,
       assetId: "asset_1",
       action: "start_iteration",
-      actor: "author",
+      viewer: 作者,
+      grants: [],
       sourceDirectory: source,
       now: 3_000,
     })
@@ -621,7 +653,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         root,
         assetId: "asset_1",
         action: "publish_iteration",
-        actor: "system_admin",
+        viewer: 系统管理员,
+        grants: 管,
         now: 3_001,
       }),
     )
@@ -630,6 +663,171 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
     expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
     expect((await assetById(db, "asset_1"))?.status).toBe("offline")
+  })
+
+  test("两道关分离：作者不能自审，业务管理员不能发布，系统管理员不能业务审核", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      viewer: 作者,
+      grants: [],
+      sourceDirectory: source,
+      now: 2_000,
+    })
+
+    // 第一道关：作者（write）过不了业务审核。
+    const selfReview = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "approve_business",
+        viewer: 作者,
+        grants: [],
+        now: 2_001,
+      }),
+    )
+    expect(codeOf(selfReview)).toBe("actor_not_allowed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("in_review")
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      viewer: 业务管理员,
+      grants: 审,
+      now: 2_002,
+    })
+
+    // 第二道关：审内容的人不能发布（admin 不蕴含 review 的镜像）。
+    const reviewerPublish = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        viewer: 业务管理员,
+        grants: 审,
+        now: 2_003,
+      }),
+    )
+    expect(codeOf(reviewerPublish)).toBe("actor_not_allowed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
+
+    // 管理的人不能回头补业务审核；授权先于状态判定，错误码不是 invalid_source。
+    const adminReview = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "approve_business",
+        viewer: 系统管理员,
+        grants: 管,
+        now: 2_004,
+      }),
+    )
+    expect(codeOf(adminReview)).toBe("actor_not_allowed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+
+    const published = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_tech",
+      viewer: 系统管理员,
+      grants: 管,
+      now: 2_005,
+    })
+    expect(published.status).toBe("published")
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("省略 grants 时从真库取授权（grantsFor 接线）：组授权 review 即可过业务关", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+
+    await db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values ('u2', '010002', '乙民警', 'x', 'x', 'x', '法制支队', 'x', 0, 'h', 0)
+    `)
+    await db.execute(sql`insert into auth.role (id, name, role_type) values ('g_review', '业务审核组', 'group')`)
+    await db.execute(sql`insert into auth.user_role (user_id, role_id) values ('u2', 'g_review')`)
+    await db.execute(sql`
+      insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+      values ('g_review', 'skill', 'asset_1', 'review')
+    `)
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      viewer: 作者,
+      grants: [],
+      sourceDirectory: source,
+      now: 2_000,
+    })
+
+    const approved = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      viewer: 业务管理员,
+      now: 2_001,
+    })
+    expect(approved.status).toBe("pending_tech")
+
+    // 同一条路径对没有授权的用户仍要拦住（取到的空授权不能变成放行）。
+    const stranger = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        viewer: { userId: "u9", department: "经侦支队" },
+        now: 2_002,
+      }),
+    )
+    expect(codeOf(stranger)).toBe("actor_not_allowed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+  })
+
+  test("没有任何权限的人不能提交别人的草稿：授权判定在搬文件之前", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "越权提交")
+    await seedSkill(db)
+
+    const stranger = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "submit_review",
+        viewer: { userId: "u9", department: "经侦支队" },
+        grants: [],
+        sourceDirectory: source,
+        now: 2_000,
+      }),
+    )
+
+    expect(codeOf(stranger)).toBe("actor_not_allowed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("draft")
+    expect(await exists(待审目录(root))).toBe(false)
   })
 })
 

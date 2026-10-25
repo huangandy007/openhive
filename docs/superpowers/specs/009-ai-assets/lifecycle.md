@@ -3,14 +3,14 @@
 - **状态**：已落地（T008）
 - **代码**：`packages/asset-service/src/lifecycle.ts`（转移表·纯函数）、`service.ts`（`transitionAsset` 编排）、`asset.ts`（`updateAssetLifecycle` 条件更新）、`storage.ts`（`replaceDirectory`）
 - **适用**：Skill 的 7 状态机（FR-004）；MCP / 知识库的简化生命周期不在本任务
-- **不在本文件**：两道关的鉴权编排（T009）、站内信（T010）、迭代文件替换的产品交互、`/assets` HTTP 接口（未落）
+- **不在本文件**：两道关的鉴权编排（T009，见 `review.md`）、站内信（T010）、迭代文件替换的产品交互、`/assets` HTTP 接口（未落）
 
 ## 1. 结论
 
 | 项 | 约定 |
 |---|---|
 | 状态机真相 | `SKILL_TRANSITIONS` 一张表：状态、动作、角色、审核关、**物理动作**（`storage`） |
-| 编排入口 | `transitionAsset({ db, root, assetId, action, actor, reason?, sourceDirectory?, now? })` |
+| 编排入口 | `transitionAsset({ db, root, assetId, action, viewer, grants?, reason?, sourceDirectory?, now? })`；角色由 T009 从授权行派生（`review.md`） |
 | 适用范围 | **只接 Skill**。MCP / 知识库抛 `unsupported_asset_type`，不套错的状态表 |
 | 元数据写入 | 条件更新：`where id = ? and status = 期望值`；落空 ⇒ 抛 `concurrent_transition` |
 | 写入次序 | **文件先、元数据后**；写库失败按 `storage` 回滚文件 |

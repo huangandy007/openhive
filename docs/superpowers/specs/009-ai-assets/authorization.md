@@ -2,8 +2,8 @@
 
 - **状态**：已落地（T004）
 - **代码**：`packages/asset-service/src/authorization.ts`；迁移 `packages/auth/src/migrations/0010_role_type.sql`
-- **判定入口**：`effectivePermissions()` / `canReadAsset()`（T009、T011、T017 从这里接）
-- **不在本文件**：状态机流转（T008）、两道关的流转编排（T009）、MCP 三层授权（T014）、收藏排序（T011）
+- **判定入口**：`effectivePermissions()` / `canReadAsset()`（T011、T017 从这里接；T009 已接，见 `review.md`）
+- **不在本文件**：状态机流转（T008）、两道关的流转编排（T009，见 `review.md`）、MCP 三层授权（T014）、收藏排序（T011）
 
 ## 1. 结论
 

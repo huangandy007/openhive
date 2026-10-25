@@ -1,3 +1,4 @@
+import { grantsFor, type GrantRow } from "@opencode-ai/auth/rbac"
 import {
   assertValidAssetMetadata,
   assetById,
@@ -6,14 +7,15 @@ import {
   updateAssetLifecycle,
   type AssetTarget,
 } from "./asset"
+import type { AssetViewer } from "./authorization"
 import {
   AssetTransitionError,
   applySkillTransition,
-  type ActorRole,
   type AppliedSkillTransition,
   type SkillAction,
 } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
+import { authorizeTransition } from "./review"
 import {
   archiveDirectory,
   assertWithinRoot,
@@ -180,7 +182,13 @@ export interface TransitionAssetInput {
   readonly root: string
   readonly assetId: string
   readonly action: SkillAction
-  readonly actor: ActorRole
+  /**
+   * 发起人视角。**不收 `actor`**：角色由 `authorizeTransition()` 从授权行派生，
+   * 调用方只能声明「我是谁」（T009）。
+   */
+  readonly viewer: AssetViewer
+  /** 省略时从库里取（`grantsFor`）。测试 / 批处理可预取后传入，省一次查询。 */
+  readonly grants?: readonly GrantRow[]
   readonly reason?: string
   /** 提交审核 / 发起迭代的源目录（作者沙箱里的当前版本）；其他动作不需要。 */
   readonly sourceDirectory?: string
@@ -238,8 +246,12 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     )
   }
 
+  // 授权判定在**任何副作用之前**：过不了关就一个文件都不搬（`#004-09`）。
+  const grants = input.grants ?? (await grantsFor(db, input.viewer.userId))
+  const actor = authorizeTransition(input.viewer, asset, grants, input.action)
+
   const applied = applySkillTransition(asset.status, input.action, {
-    actor: input.actor,
+    actor,
     reason: input.reason,
   })
   const now = input.now ?? Math.floor(Date.now() / 1000)
