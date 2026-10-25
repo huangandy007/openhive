@@ -83,6 +83,18 @@ export interface McpServerNaming {
    * {@link namingConflicts}；调用方**必须先跑一次那个函数**、有冲突就**拒绝建会话**。
    */
   readonly toolPattern: string
+  /**
+   * **内建 server**（009 T014）：不按 `role_resource` 判，工具与资源两条规则都恒 `allow`。
+   *
+   * 为什么需要：治理 server 不是资产，没有资产 id 可授（它是 openhive 自己的三个工具）。
+   * 第①层只做 **server 级**过滤，分不出同一个 server 里的不同工具；所以这里放行整个 server，
+   * **动作级**校验留给 server 内的第③层（`governance.ts` → `authorizeTransition`）。
+   *
+   * ⚠️ 这个标记是**逐 server** 的，不是「有内建就整批放行」；也不按名字猜——名字相同但没带
+   * 这个标记的 server 仍走授权行（`openhive-access-mcp.test.ts` 的对照用例钉着）。
+   * 谁给这个标记（`BUILTIN_MCP_SERVERS`）与信任边界见 `@opencode-ai/auth/builtin-mcp`。
+   */
+  readonly builtin?: boolean
 }
 
 /**
@@ -176,11 +188,14 @@ export function sessionRuleset(
   }
 
   // ② mcp：每个 server 两条同向规则（工具前缀 + 资源 pattern）。方向和授权行一致。
+  //    内建 server（`builtin: true`）不看授权行：它不是资产，动作级校验在 server 内（第③层）。
   for (const naming of mcp ?? []) {
-    const granted = grants.some(
-      (grant) =>
-        grant.resourceType === "mcp" && grant.resourceId === naming.server && grant.perm === AccessRbac.READ,
-    )
+    const granted =
+      naming.builtin === true ||
+      grants.some(
+        (grant) =>
+          grant.resourceType === "mcp" && grant.resourceId === naming.server && grant.perm === AccessRbac.READ,
+      )
     const action = granted ? "allow" : "deny"
     rules.push({ permission: naming.toolPattern, pattern: "*", action })
     rules.push({ permission: "read", pattern: `mcp:${naming.server}:*`, action })

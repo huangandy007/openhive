@@ -1,5 +1,6 @@
 export * as OpenhiveAccess from "./access"
 
+import { BUILTIN_MCP_SERVERS } from "@opencode-ai/auth/builtin-mcp"
 import { connect } from "@opencode-ai/auth/db"
 import { grantsFor } from "@opencode-ai/auth/rbac"
 import { AccessSession } from "@opencode-ai/core/access/session"
@@ -18,6 +19,26 @@ import { Effect } from "effect"
  * 那个镜像**消掉**，而不是复刻一份。
  */
 const toolPatternOf = (server: string) => McpCatalog.toolName(server, "") + "*"
+
+/**
+ * `Config.mcp` 的键 → core 要的 `McpServerNaming[]`（T014）。
+ *
+ * 抽成纯函数是为了**能单独验**「内建标记从哪来」：整条 `capabilityFor` 要在真应用里跑，
+ * 而真应用的依赖面很大；这一段是「配置键 → 名字 + 标记」，不需要 Effect / 建库就能钉住。
+ *
+ * `builtin` 只认共享名单里的**精确名字**（`BUILTIN_MCP_SERVERS.includes`），不做前缀匹配——
+ * 否则 `openhive-governance-copy` 这种名字就能蹭到放行。名单的信任边界见
+ * `@opencode-ai/auth/builtin-mcp` 的文件头。
+ */
+export function mcpServerNaming(
+  mcp: Readonly<Record<string, unknown>> | undefined,
+): AccessSession.McpServerNaming[] {
+  return Object.keys(mcp ?? {}).map((server) => ({
+    server,
+    toolPattern: toolPatternOf(server),
+    builtin: BUILTIN_MCP_SERVERS.includes(server),
+  }))
+}
 
 /**
  * T006 · **接线**：按身份取授权行（FR-004）。
@@ -82,10 +103,7 @@ export function capabilityFor() {
   return (userId: string): Effect.Effect<PermissionV1.Ruleset, never, Config.Service> =>
     Effect.gen(function* () {
       const config = yield* Config.Service
-      const servers = Object.keys((yield* config.get()).mcp ?? {}).map((server) => ({
-        server,
-        toolPattern: toolPatternOf(server),
-      }))
+      const servers = mcpServerNaming((yield* config.get()).mcp)
 
       // 🔴 C1（2026-10-05）：名单里两个 server 的工具名前缀互相覆盖 ⇒ **拒绝建会话**。
       //

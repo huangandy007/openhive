@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
 import { AccessRbac } from "@opencode-ai/core/access/rbac"
 import { AccessSession } from "@opencode-ai/core/access/session"
 import { evaluate as evaluateV1, Permission } from "../../src/permission"
@@ -199,6 +200,44 @@ describe("T007 · mcp 授权行 → 会话规则集（连接级，FR-005/FR-006�
    * ⇒ 调用方必须在建会话**之前**跑判定并**拒绝**（fail-closed，见
    * `packages/opencode/src/server/openhive/access.ts`）。这条测试钉的是「不拒绝就会这样」。
    */
+  /**
+   * **内建 server（009 T014）**：治理 server 不是资产，没有 `role_resource` 行可授。
+   * 它靠 `McpServerNaming.builtin = true` 在第①层恒 allow；**动作级**校验在 server 内第③层
+   * （建草稿要账号有效、提交要该资产 `write`、发布要 `admin`）。
+   *
+   * 与上一条的碰撞判定不冲突：名字仍进 `namingConflicts` 的名单（它可能和某个资产 server
+   * 撞前缀），只是授权方向不再看授权行。
+   */
+  it("内建治理 server：零授权也放行工具与资源（第①层只到 server 级）", () => {
+    const GOVERNANCE: AccessSession.McpServerNaming = {
+      server: GOVERNANCE_MCP_SERVER,
+      toolPattern: "openhive-governance_*",
+      builtin: true,
+    }
+    const ruleset = rulesetOf([], [GOVERNANCE])
+
+    expect(evaluateV1("openhive-governance_create_skill_draft", "*", ruleset).action).toBe("allow")
+    expect(evaluateV1("openhive-governance_publish_skill", "*", ruleset).action).toBe("allow")
+    expect(evaluateV1("read", "mcp:openhive-governance:any", ruleset).action).toBe("allow")
+    // 别的 server 不受影响：内建是**逐个 server** 的标记，不是「有内建就整批放行」。
+    expect(evaluateV1(FUND_QUERY, "*", rulesetOf([], [GOVERNANCE, FUND_DB])).action).toBe("deny")
+  })
+
+  /**
+   * **对照**：core 只认 `builtin` 标记，不认名字。否则「把任意 local MCP 改名成
+   * `openhive-governance`」就能白拿 allow——那是把一个配置键变成放行后门。
+   */
+  it("对照：名字相同但没有 builtin 标记 ⇒ 仍按授权拒", () => {
+    const NAMED_BUT_NOT_BUILTIN: AccessSession.McpServerNaming = {
+      server: GOVERNANCE_MCP_SERVER,
+      toolPattern: "openhive-governance_*",
+    }
+    const ruleset = rulesetOf([], [NAMED_BUT_NOT_BUILTIN])
+
+    expect(evaluateV1("openhive-governance_create_skill_draft", "*", ruleset).action).toBe("deny")
+    expect(evaluateV1("read", "mcp:openhive-governance:any", ruleset).action).toBe("deny")
+  })
+
   it("🔴 前缀碰撞：同一份授权，配置键序一换结论就翻（所以调用方必须 fail-closed 拒绝）", () => {
     const FUND: AccessSession.McpServerNaming = { server: "fund.db", toolPattern: "fund_db_*" }
     const PROD: AccessSession.McpServerNaming = { server: "fund.db.prod", toolPattern: "fund_db_prod_*" }

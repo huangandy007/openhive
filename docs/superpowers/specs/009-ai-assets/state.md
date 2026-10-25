@@ -1,10 +1,33 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T013 已交付（Skill 制作入口），等待用户审阅。下一任务 T014（MCP 授权三层 + 数据隔离
-四环，依赖 T004）。
+T014 已交付（MCP 授权三层 + 数据隔离四环；RLS 以契约交付），等待用户审阅。下一任务
+T015（详情页「▶ 执行此 skill」填入右栏输入框，依赖 T007）。
 
 ## 已完成
+- **T014** MCP 授权三层（授权 / 下发 / 身份）+ 数据隔离四环（FR-009）
+  - 验收口径按 D0-12 与用户裁定：**前三环在本仓实测**；第四环（服务端 RLS）以接口契约 +
+    外部验收清单交付，**明确记「RLS 未在本仓验证」**
+  - 第②环 `asset-service/src/downlink.ts`：`buildUserMcpConfig()` 纯函数，出「这个用户的
+    `mcp` 段」。条件是 `type=mcp` ∧ `isAssetUsable` ∧ `role_resource` 里真有
+    `(mcp, 资产 id, read)`（空间可见不够：连接详情含静态凭据）；键 = 资产 id（与
+    `resource_id` 同一把钥匙）；确定性键序；六种失败码在产出前抛出。**不写 `opencode.json`**
+    ——本仓没有写入器，业务连接清单（`connections`）留成显式入参
+  - 第③环：remote 注入 `X-User-ID`、local 注入 `USER_ID`，连接清单里的同名值（含大小写变体）
+    一律覆盖；不改入参、不共享数组引用。fixture 真子进程证明连接身份与 `_meta` 都到达
+  - 治理 server 注册为**内建**：共享常量 `packages/auth/src/builtin-mcp.ts`
+    （`GOVERNANCE_MCP_SERVER` / `BUILTIN_MCP_SERVERS`）→ `mcpServerNaming()` 精确名字打标 →
+    `sessionRuleset` 第①层整体放行、动作级仍在第③层（提交 `write` / 发布 `admin`）；
+    `-copy` 这类蹭名字的 server 走授权行（对照用例）
+  - 用例：`downlink.test.ts` 17 条、`openhive-access-builtin-wiring.test.ts` 3 条、
+    `openhive-access-mcp.test.ts` 新增 2 条；五组变异（A–E）红点据实记录
+  - 门禁：asset-service **187 pass / 0 fail**；auth **286 pass / 3 skip / 0 fail**；
+    core access **25 pass / 0 fail**；opencode 三个文件 **16 pass / 2 fail**（两条均为既有
+    `openai@6.39.1` 缺 `version.mjs` 的环境错误，与改动无关）；四包 typecheck 0 errors；
+    oxlint 9 文件 0/0；`bun.lock` 无 diff
+  - 详见 `mcp-downlink.md`
+
+- **T013** Skill 制作入口（右栏 AI 对话生成 skill 落沙箱）（FR-008 / design §5.1）
 - **T013** Skill 制作入口（右栏 AI 对话生成 skill 落沙箱）（FR-008 / design §5.1）
   - `governance.ts` 新增第三个工具 `create_skill_draft`：把已落到作者沙箱的 skill 登记为
     草稿资产。skill 文件由模型用普通写工具生成——FR-008 明确「入口 = 右栏 AI 对话，无需
@@ -255,9 +278,18 @@ T013 已交付（Skill 制作入口），等待用户审阅。下一任务 T014�
   接线在 T017 与后端列表接口一并做（T008 / T009 只落了服务层，未加 HTTP 出口）。
   `AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
-- **治理 MCP server 尚未注册**：T012 / T013 已交付 server 与三个工具
-  （create_skill_draft / submit_skill_for_review / publish_skill），但没有任何配置把
-  `mcp-main.ts` 写进用户的 `mcp` 段 ⇒ 模型今天还看不到它们。下发 / 授权归 T014。
+- **没有 `opencode.json` 写入器（T014 留下的主缺口）**：`buildUserMcpConfig()` 只产出「这个
+  用户应该拿到哪段 `mcp` 配置」，本仓**没有任何代码把它写进用户的 `opencode.json`**——写到哪、
+  谁触发、并发怎么处理都没定。治理 server 与已授权 MCP 资产因此在**部署侧接线之前**仍不会
+  出现在模型的工具清单里。
+- **🔴 RLS 未在本仓验证（D0-12 / 用户裁定）**：数据隔离第四环（服务端行级过滤）本仓既无业务
+  MCP server、也无业务表与策略；`mcp-downlink.md` §6 交付的是接口契约（C1–C8）＋外部验收清单
+  （8 条），归 F6/F7 与后续业务 server 执行。**不得在任何报告里写成「RLS 已覆盖」。**
+- **业务 MCP 连接清单无常存储**：`connections` 是 `buildUserMcpConfig` 的显式入参，没有配置表 /
+  管理端写入路径。
+- **端到端接线用例被环境挡住**：`openhive-access-mcp-wiring.test.ts`（真应用里配置 → capability）
+  因 `openai@6.39.1` 缺 `version.mjs` 跑不起来；T014 以纯函数用例
+  （`openhive-access-builtin-wiring.test.ts`）替代，缺口如实记录（`#002-02`）。
 
 ## 最后更新
-2026-10-25（T013 完成）
+2026-10-25（T014 完成）

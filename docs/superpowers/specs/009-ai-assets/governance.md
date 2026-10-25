@@ -1,12 +1,12 @@
 # 资产治理 MCP server（009 T012 / T013 · FR-004 / FR-008）
 
-- **状态**：已落地（T012 提交 / 发布；T013 制作入口）；**尚未下发 / 注册**（归 T014）
+- **状态**：已落地（T012 提交 / 发布；T013 制作入口；**T014 已下发 / 注册为内建 server**）
 - **代码**：`packages/asset-service/src/governance.ts`（工具与协议）、
   `packages/asset-service/src/service.ts` 的 `createDraftAsset`（草稿登记）、
   `packages/asset-service/src/mcp-main.ts`（stdio 入口）
 - **适用**：模型代民警执行「登记草稿」「提交审核」「技术发布」三个动作
-- **不在本文件**：生命周期与两道关（T008 / T009）、MCP 授权三层与下发（T014）、
-  站内信（T010，本 server 经 `transitionAsset` 自动触发）
+- **不在本文件**：生命周期与两道关（T008 / T009）、MCP 授权三层的**下发与身份**
+  （T014，见 `mcp-downlink.md`）、站内信（T010，本 server 经 `transitionAsset` 自动触发）
 
 ## 1. 结论
 
@@ -60,8 +60,9 @@ D0-9 实测：opencode 包只有 MCP **客户端**，`src/mcp/` 是 client 模�
 
 **为什么入口没有前端控件**：FR-008 / design §5.1 明确「入口 = 右栏 AI 对话，无需专门入口」。
 文件由模型在工作区里用普通写工具生成；本工具补的是模型做不了的两件事——按身份落作者 /
-部门、把元数据写进资产库。今天它要等 T014 注册 / 下发后才出现在模型的工具清单里；在那之前
-「对话生成文件」已经可用，「登记资产」这一半要等 T014 打通。
+部门、把元数据写进资产库。T014 起它随每个用户的 `mcp` 段恒下发并注册为**内建 server**
+（`BUILTIN_MCP_SERVERS`），因此在模型工具清单里可见；在此之前的「对话生成文件」那一半
+一直可用，「登记资产」这一半由 T014 打通。
 
 **为什么草稿不走 `storeAsset`**：`storeAsset` 是「复制沙箱 → 共享根 + 写元数据」。草稿的
 存储约定相反：停在作者沙箱，`assetLocation("draft")` 明确返回 `undefined`。硬套会先造一份
@@ -98,12 +99,20 @@ D0-9 实测：opencode 包只有 MCP **客户端**，`src/mcp/` 是 client 模�
 
 | 层 | 位置 | 今天的状态 |
 |---|---|---|
-| ① 工具清单过滤 | opencode capability（`AccessSession.sessionRuleset`） | 已有机制；治理 server **尚未注册**，模型今天看不到这两个工具（T014） |
-| ② 工具执行守卫 | opencode 侧执行器 | 同上 |
+| ① 工具清单过滤 | opencode capability（`AccessSession.sessionRuleset`） | **内建放行**（T014）：`BUILTIN_MCP_SERVERS` 精确命中 ⇒ 该 server 的工具与资源两条规则恒 `allow`，不看 `role_resource` |
+| ② 工具执行守卫 | opencode 侧执行器 | 同上（第①层已放行整个 server，这一层对它不再有区分作用） |
 | ③ server 内硬拦 | 本文件 | 已落地：无身份 / 停用 / 无权限都在**副作用之前**拒绝 |
 
 第③层是 T012 真正交付的东西。它不依赖前两层是否可靠：即使模型幻觉出一次调用，
 也会拿到 `actor_not_allowed`，资产状态与文件都不动。
+
+**为什么第①层要给它开一个「内建」口子**（T014）：治理 server **不是资产**，没有资产 id 可写进
+`role_resource`；而第①层只能做 **server 级**过滤，分不出同一 server 里的不同工具。若照资产型
+server 那样「无 `(mcp, <id>, read)` 授权就 deny」，这个 server 会对**所有人**不可见——包括管
+理员。所以给了显式标记（`McpServerNaming.builtin`），第①层恒放行整个 server，**动作级**判定
+留在第③层（提交需 `write`、发布需 `admin`）。标记只认共享名单 `BUILTIN_MCP_SERVERS`
+（`packages/auth/src/builtin-mcp.ts`）里的**精确名字**，不做前缀匹配——`openhive-governance-copy`
+这种蹭名字的 server 仍走授权行，用例钉着（`openhive-access-mcp.test.ts` 的对照条）。
 
 **部门从库里取**（`auth.user.dept`），不听参数——否则调用方可以自报部门去蹭部门空间。
 
@@ -111,7 +120,8 @@ D0-9 实测：opencode 包只有 MCP **客户端**，`src/mcp/` 是 client 模�
 
 | 项 | 现状 | 后续 |
 |---|---|---|
-| 注册 / 下发 | 没有任何 `opencode.json` 把本 server 写进 `mcp` 段；`create_skill_draft` 模型今天也看不见 | T014（MCP 授权三层：授权 / 下发 / 身份） |
+| 注册 / 下发 | T014 已交付**生成器**（`downlink.ts` 恒产出本 server 的 `mcp` 条目）＋第①层内建放行；但本仓仍**没有写 `opencode.json` 的写入器**，部署侧接线在外 | 部署侧接线；见 `mcp-downlink.md` §5 |
+| 内建名单的信任边界 | 名单是代码常量，不是配置；若某天改成可配置，配置可写 = 可放行任意 server（而那已等于任意本地进程执行） | 保持常量；见 `builtin-mcp.ts` 文件头 |
 | stdio 入口未测 | `mcp-main.ts` 需要真进程 + 真 PG；PGlite 夹具不允许同实例第二个客户端 | 真 PG 环境冒烟；缺口按 `#002-02` 记 |
 | 重复登记 | 同一源目录调两次 `create_skill_draft` 会得到两份草稿（资产表没有「同作者同名」约束） | 产品定「同名覆盖 / 并存」后再加约束，不在这里猜 |
 | 建草稿的权限门槛 | 只要求账号有效（`status = 1`）；没有「作者角色」总闸——`write` 今天是**按资产**授予的，资产还不存在时无处可判 | 若要限制，先定义全局创作权限；发布仍由 `admin` 把住 |
