@@ -9,8 +9,9 @@ import { join } from "node:path"
 // `project` 是 005 T005 加的（项目锚点行，`workspace-entry.tsx` 直接 import）。
 // `ai-session` 是 006 T002 加的（skill 能力清单旁路清单 `capabilities.ts`；随后 T003–T008 在此落指令卡与右栏会话）。
 // `ai-assets` 是 009 T005 加的（AI 资产左栏导航与筛选状态，`workspace-entry.tsx` 直接 import）。
+// `governance` 是 010 T001 加的（治理后台全屏视图，`layout-new.tsx` 直接 import）。
 // 测试名刻意不带数目——数目是「会随编辑而变的值」，加一个目录就得回头改名字。
-const moduleDirs = ["rail", "center", "topbar", "workspace", "project", "auth", "ai-session", "ai-assets"]
+const moduleDirs = ["rail", "center", "topbar", "workspace", "project", "auth", "ai-session", "ai-assets", "governance"]
 
 describe("openhive 模块目录骨架", () => {
   test("模块目录均已就位", () => {

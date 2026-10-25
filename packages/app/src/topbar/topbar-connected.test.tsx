@@ -49,7 +49,10 @@ const 管理员: Identity = { ...民警, name: "李四", policeNo: "010001", isA
  * ⚠️ `session` 收的是**值**而不是现成的元素——同 `auth-gate.test.tsx` 里那条注释：在测试体里
  * **调用**一个读 context 的组件，`useContext` 会取不到（那一刻没有 owner）。
  */
-async function 挂上(identity?: Identity): Promise<{ host: HTMLElement; 退出次数: () => number }> {
+async function 挂上(
+  identity?: Identity,
+  onOpenGovernance?: () => void,
+): Promise<{ host: HTMLElement; 退出次数: () => number }> {
   let 次数 = 0
   const 会话: AuthSession = { identity, signOut: async () => void 次数++ }
   const host = document.createElement("div")
@@ -60,7 +63,7 @@ async function 挂上(identity?: Identity): Promise<{ host: HTMLElement; 退出�
       () => (
         <DialogProvider>
           <AuthSessionProvider value={会话}>
-            <TopbarConnected host={host} />
+            <TopbarConnected host={host} onOpenGovernance={onOpenGovernance} />
           </AuthSessionProvider>
         </DialogProvider>
       ),
@@ -135,15 +138,12 @@ describe("顶栏接线 · 用户区下拉", () => {
   })
 
   /**
-   * 对照（**本轮最有信息量的一条**）：「用户管理」**是管理员可见的菜单项，但本轮刻意不接线**
-   * （后端没有对应的管理端点，见 `user-menu-actions.ts` 的文件头）。它必须在界面上**看得见、
-   * 点了没反应**——而不是被悄悄删掉、也不是弹一个空壳窗。
-   *
-   * 判据写「点了什么都没发生」而不是「它被移除了」：用户下达的是「下拉三项」，第四项的存在
-   * 是既成事实，删它属于改需求。哪天有人给它接上线，这条会红，逼他回来回答「接到哪」。
+   * 第四项（010 T001）：管理员点「用户管理」⇒ 交给外壳打开治理后台。
+   * 这里只钉「喊了一声」，进去之后长什么样由 `governance/console.test.tsx` 钉。
    */
-  test("对照：管理员的「用户管理」看得见，但点了什么都不发生", async () => {
-    const { host, 退出次数 } = await 挂上(管理员)
+  test("管理员的「用户管理」⇒ 调 onOpenGovernance，不开弹窗、不退出", async () => {
+    let 打开次数 = 0
+    const { host, 退出次数 } = await 挂上(管理员, () => void 打开次数++)
 
     展开下拉(host)
     expect(可见项(host)).toEqual(["个人信息", "修改密码", "用户管理", "退出登录"])
@@ -151,8 +151,18 @@ describe("顶栏接线 · 用户区下拉", () => {
     点项(host, "用户管理")
     await flush()
 
+    expect(打开次数).toBe(1)
     expect(有("[data-component='dialog']")).toBe(false)
     expect(退出次数()).toBe(0)
+  })
+
+  /** 对照：普通民警的下拉里根本没有「用户管理」（界面收敛；鉴权仍在服务端）。 */
+  test("对照：普通民警的下拉没有「用户管理」", async () => {
+    const { host } = await 挂上(民警)
+
+    展开下拉(host)
+
+    expect(可见项(host)).toEqual(["个人信息", "修改密码", "退出登录"])
   })
 
   /**

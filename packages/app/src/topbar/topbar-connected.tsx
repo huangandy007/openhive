@@ -19,12 +19,12 @@
  * 故 `#006-14` 那条纪律适用——「横切机制在新出口上生效」是推断，「真栈上它生效」是事实，
  * 收尾必须去真栈点一遍（见 `state.md` 的验收记录）。
  *
- * ## 「用户管理」为什么不在这里
+ * ## 「用户管理」在这里干什么
  *
- * 它是管理员可见的第四项，但**本轮刻意不接线**：内核网关只有 `/login`、`/me`、
- * `/change-password`、`/logout` 四条（`packages/opencode/src/server/openhive/gateway.ts`），
- * 没有任何管理端点，接了也是个点不动的空壳。判据落在 `user-menu-actions.ts`（映射函数对
- * `"admin"` 返回 `undefined`，且那条清单有「只有它未接线」的报警断言）。
+ * 010 T001 起它接治理后台：本层只负责**喊一声** `props.onOpenGovernance?.()`，
+ * 「覆盖层怎么盖、背景怎么 inert、焦点怎么回」全在 `@/governance/console-host`。
+ * 入口可见性仍由 `visibleUserMenuItems(..., isAdmin)` 收敛；**服务端授权在 T003/T015**，
+ * 前端隐藏不是鉴权（宪法 IV）。
  */
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -42,6 +42,8 @@ export interface TopbarConnectedProps {
   host?: HTMLElement | null
   homeActive?: boolean
   onOpenHome?: () => void
+  /** 「用户管理」⇒ 打开治理后台。省略 = 裸挂场景，点了只关菜单。 */
+  onOpenGovernance?: () => void
   /** 测试注入用；省略 = 真 `fetch`。只影响改密弹窗。 */
   send?: AuthFetch
 }
@@ -68,11 +70,14 @@ export function TopbarConnected(props: TopbarConnectedProps): JSX.Element {
       case "打开修改密码":
         void dialog.show(() => <ChangePasswordDialog send={props.send} />)
         return
+      case "打开治理后台":
+        props.onOpenGovernance?.()
+        return
       case "退出登录":
         // **不弹确认框**（用户 2026-10-09 的裁定：点一下直接退）。界面怎么变由 `AuthGate` 负责。
         void session?.signOut()
         return
-      // 其余一律**什么都不做**：`用户菜单动作` 对「用户管理」与一切不认识的 id 都回 `undefined`，
+      // 其余一律**什么都不做**：`用户菜单动作` 对不认识的 id 回 `undefined`，
       // 而 `switch(undefined)` 不匹配任何一条 ⇒ 落到函数末尾。不写 `default: return` 是因为那行
       // 与「什么都不写」逐字同义。
     }

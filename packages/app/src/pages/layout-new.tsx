@@ -1,5 +1,5 @@
 import { useLocation } from "@solidjs/router"
-import { createEffect, Suspense, type ParentProps } from "solid-js"
+import { createEffect, createSignal, Suspense, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 // ⚠️ openhive 定制（006 修复）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 中栏在会话路由上让位给右栏，判据（`routeSessionID`）在下面 `routePageVisible` 那处用。
@@ -10,6 +10,9 @@ import { DebugBar } from "@/components/debug-bar"
 import { TabsInfoPopup } from "@/components/help-button"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useCommand } from "@/context/command"
+// ⚠️ openhive 定制（010 T001）：这是要保留的定制 —— 合并上游时两侧都留着。
+// 治理后台是盖在三栏工作区上的一层；工作区不卸载，关掉后回到原来的 tab 与滚动位置。
+import { GovernanceConsoleHost } from "@/governance/console-host"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 // ⚠️ openhive 定制（2026-10-13 用户实报）：这是要保留的定制 —— 合并上游时两侧都留着。
@@ -64,6 +67,9 @@ export default function NewLayout(props: ParentProps) {
   const openSettings = useSettingsDialog()
   const titlebarHost = useTitlebarHostMount()
   const [state, setState] = createStore({ debugTools: true })
+  // ⚠️ openhive 定制（010 T001）：这是要保留的定制。开合状态放在外壳这一层，
+  // 顶栏只负责喊「打开」，覆盖层只负责画与关（`@/governance/console-host`）。
+  const [治理后台, 设治理后台] = createSignal(false)
 
   createEffect(() => setV2Toast(true))
 
@@ -125,39 +131,46 @@ export default function NewLayout(props: ParentProps) {
         host={titlebarHost()}
         homeActive={layout.route().type === "home"}
         onOpenHome={() => command.trigger("home.toggle")}
+        // ⚠️ openhive 定制（010 T001）：用户下拉「用户管理」⇒ 打开治理后台。
+        onOpenGovernance={() => 设治理后台(true)}
       />
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
-        <WorkspaceEntry
-          projectData={PROJECT_DATA}
-          loadFile={LOAD_PROJECT_FILE}
-          saveFile={SAVE_PROJECT_FILE}
-          // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
-          // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
-          // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的
-          // `CenterTabsProvider` 之内（`AiSessionSlot` 要按当前模块算投影）。理由与注意事项见
-          // `workspace-entry.tsx` 的 `right` prop 上那段注释。
-          right={() => <AiSessionSlot />}
-          // ⚠️ openhive 定制（2026-10-08）：这是要保留的定制 —— 合并上游时两侧都留着。
-          // 左栏「会话」tab 在这里挂进 `SidebarTabs` 的会话 pane：列出**当前项目目录**下的会话，
-          // 与右栏**共用同一份目录缓存槽**（两边都走 `ensureDirSyncContext(目录)`）。
-          // 同样**传访问器**（与上面 `right` 逐条同因）。判据与缺口见
-          // `ai-session/sidebar-sessions.tsx` 的文件头。
-          sessions={() => <SidebarSessions />}
-          // ⚠️ openhive 定制（006 修复）：这是要保留的定制 —— 合并上游时两侧都留着。
-          // 中栏**只在会话路由上**让位：`children` 在那条路由下就是 `pages/session.tsx`
-          // （一页完整的 AI 会话），中栏再露一遍 = 屏幕上两个输入框、两条消息流，且都在真发消息。
-          // 判据只有这一行，且**只在这里算**——`WorkspaceEntry` 被测试裸挂（无 Router），
-          // 在它里面读 location 会当场抛（见那个 prop 上的注释）。
-          // `routeSessionID` 只认生产那一种形态（`/server/<key>/session/<id>`），其余路由一律
-          // `undefined` ⇒ 中栏照旧露上游页面，行为与加这一行之前逐字相同。
-          routePageVisible={() => routeSessionID(location.pathname) === undefined}
-          // ⚠️ openhive 定制（2026-10-09 #3 设置迁到 rail）：这是要保留的定制。
-          // 图标栏底部那颗「系统设置」的动作——在本层取（要 Router ＋ DialogProvider），
-          // 往里只传值（`WorkspaceEntry` 不读 Router）。
-          onOpenSettings={openSettings}
-        >
-          <Suspense>{props.children}</Suspense>
-        </WorkspaceEntry>
+        {/* ⚠️ openhive 定制（010 T001）：这是要保留的定制 —— 合并上游时两侧都留着。
+            治理后台盖在工作区之上，工作区**不卸载**（关掉后回到原来的三栏与已开的 tab）。
+            打开期间背景 `inert` + `aria-hidden`、关闭后焦点回顶栏，全在 host 里。 */}
+        <GovernanceConsoleHost open={治理后台()} onClose={() => 设治理后台(false)}>
+          <WorkspaceEntry
+            projectData={PROJECT_DATA}
+            loadFile={LOAD_PROJECT_FILE}
+            saveFile={SAVE_PROJECT_FILE}
+            // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
+            // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
+            // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的
+            // `CenterTabsProvider` 之内（`AiSessionSlot` 要按当前模块算投影）。理由与注意事项见
+            // `workspace-entry.tsx` 的 `right` prop 上那段注释。
+            right={() => <AiSessionSlot />}
+            // ⚠️ openhive 定制（2026-10-08）：这是要保留的定制 —— 合并上游时两侧都留着。
+            // 左栏「会话」tab 在这里挂进 `SidebarTabs` 的会话 pane：列出**当前项目目录**下的会话，
+            // 与右栏**共用同一份目录缓存槽**（两边都走 `ensureDirSyncContext(目录)`）。
+            // 同样**传访问器**（与上面 `right` 逐条同因）。判据与缺口见
+            // `ai-session/sidebar-sessions.tsx` 的文件头。
+            sessions={() => <SidebarSessions />}
+            // ⚠️ openhive 定制（006 修复）：这是要保留的定制 —— 合并上游时两侧都留着。
+            // 中栏**只在会话路由上**让位：`children` 在那条路由下就是 `pages/session.tsx`
+            // （一页完整的 AI 会话），中栏再露一遍 = 屏幕上两个输入框、两条消息流，且都在真发消息。
+            // 判据只有这一行，且**只在这里算**——`WorkspaceEntry` 被测试裸挂（无 Router），
+            // 在它里面读 location 会当场抛（见那个 prop 上的注释）。
+            // `routeSessionID` 只认生产那一种形态（`/server/<key>/session/<id>`），其余路由一律
+            // `undefined` ⇒ 中栏照旧露上游页面，行为与加这一行之前逐字相同。
+            routePageVisible={() => routeSessionID(location.pathname) === undefined}
+            // ⚠️ openhive 定制（2026-10-09 #3 设置迁到 rail）：这是要保留的定制。
+            // 图标栏底部那颗「系统设置」的动作——在本层取（要 Router ＋ DialogProvider），
+            // 往里只传值（`WorkspaceEntry` 不读 Router）。
+            onOpenSettings={openSettings}
+          >
+            <Suspense>{props.children}</Suspense>
+          </WorkspaceEntry>
+        </GovernanceConsoleHost>
       </main>
       {import.meta.env.DEV && state.debugTools && <DebugBar inline />}
       <TabsInfoPopup />
