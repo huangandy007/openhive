@@ -10,7 +10,7 @@
 | B2 | 真 PG 数据层（约束 / 序列化 / 迁移） | `backend-testing` | ✅ 已补（见 §2） |
 | B3 | 真并发 / 竞态原子性 | `backend-testing` | ✅ 已补，**并修掉一个真缺陷**（见 §3） |
 | B4 | stdio 真进程 MCP 入口 | `backend-testing` | ✅ 已补（见 §4） |
-| F1 | L3 运行期 a11y（axe） | `frontend-testing` | 待办 |
+| F1 | L3 运行期 a11y（axe） | `frontend-testing` | ⚠️ story 已补（12 条 × 双主题）；审计**红 5 格**，按护栏 HALT（见 §7） |
 | — | HTTP 出口层越权 | — | 🔧 无接口，无被测对象 |
 | — | L2 视觉基线 / L4 多视口 | `frontend-testing` | ⚠️ 需人审裁决 |
 
@@ -188,4 +188,67 @@ DB 状态: published
 | RLS / DB GRANT | 策略不在本仓（`mcp-downlink.md` §6），本机也没有可跑的策略对象 |
 | HTTP 出口层越权 | 接口尚未落地，无被测对象 |
 | L2 视觉基线 / L4 多视口 | 机器只能出 diff，基线裁决需人审 |
-| 前端运行期 a11y（F1） | 待办（见上表） |
+| 前端运行期 a11y（F1） | story 已补、审计已跑，但**红**（5 条真违例，见 §7）；护栏要求 HALT，缺陷回交 TDD / 设计裁定，本文件**不得**写成已覆盖 |
+
+## 7. F1 · 前端运行期 a11y（L3，`frontend-testing`）
+
+### 做了什么
+
+给 5 个 ai-assets 组件补 story（仓库既有 `packages/storybook` glob 自动收录；不新增依赖、
+不碰 `bun.lock`），再用仓库既有的真浏览器审计脚本跑：
+
+```bash
+# 先起 storybook
+bun --cwd packages/storybook storybook --port 6017 --ci --no-open
+# 再跑（必须用 node，不能用 bun——脚本文件头有实测理由）
+cd packages/app && node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/AiAssets"
+```
+
+| 文件 | story | 为什么是这些态 |
+|---|---|---|
+| `asset-story-fixtures.ts` | —（公共夹具） | 形状逐字对齐 `AssetMetadata`，不自造字段（`#002-06`） |
+| `asset-nav.stories.tsx` | 默认 / 收窄 | 选中态（浅金底）与普通态是两套对比度组合 |
+| `asset-card.stories.tsx` | 已发布 / 已下线 | 卡片自己是 `role="listitem"`，必须套 `role="list"`（真实使用形状） |
+| `asset-search.stories.tsx` | 空 / 有搜索词 | 有值时多出「清除搜索」独立按钮 |
+| `asset-grid.stories.tsx` | 有资产 / 空列表 / 搜索无命中 | 虚拟滚动只在真浏览器出内容；空态是另一段 DOM |
+| `asset-detail.stories.tsx` | 已发布 skill / 无评分 / 知识库 | 执行按钮只对 skill 渲染；无评分走另一套文案 |
+
+`index.json` 实得 12 条 story；审计 24 格（× light / dark）：**19 ✅ / 5 ❌，EXIT=1**。
+
+### 红在哪（实得，serious · color-contrast）
+
+| 格 | 节点 | 前景 / 背景 | 实测 | 需要 |
+|---|---|---|---|---|
+| detail--已发布skill [light] | 介绍面板两个 `<h3>`（是什么 / 标签） | `text-text-faint` #808080 / `bg-base` #FCFCFC | **3.85:1** | 4.5:1 |
+| detail--无评分 [light] | 同上 | 同上 | 3.85:1 | 4.5:1 |
+| detail--知识库 [light] | 同上 | 同上 | 3.85:1 | 4.5:1 |
+| nav--默认 [dark] | 空间按钮 ×3、类型 Tab(skill)、展开分类「情报研判」 | `text-text-base`（dark=#fafafa）/ `bg-accent-soft` #FEF3C7 | **1.07:1** | 4.5:1 |
+| nav--收窄 [dark] | `data-space=department`、Tab(mcp) | 同上 | 1.07:1 | 4.5:1 |
+
+### 根因（token 级，已核到定义处）
+
+1. **dark 缺 `accent-soft` 覆盖**：`packages/ui/src/v2/styles/theme.css` 的
+   `[data-color-scheme="dark"]` 段（410 行起）**没有** `--v2-background-bg-accent-soft`，
+   于是 dark 回落到 `:root` 的浅黄 `#FEF3C7`；而 `--v2-text-text-base` 在 dark 是 `--v2-grey-100`
+   `#fafafa` ⇒ 浅字浅底。与 [[dark-theme-selected-state-contrast]] 同一类缺陷（005/006 已记）。
+2. **light 的 `text-faint` 偏浅**：`--v2-text-text-faint` = `--v2-grey-600` `#808080`，落在
+   `bg-base` `#FCFCFC` 上 3.85:1；12px 常规字重需要 4.5:1。
+
+### 影响面（`#002-06`：同一前提的其它落点）
+
+- `bg-[var(--v2-background-bg-accent-soft)]`（选中态）：`rail`、`ai-session/instruction-cards`、
+  `skill-drawer`、`session-list`、`project/*`、`file-tree`、`ai-assets/*` —— **dark 下同一条缺陷**。
+- `text-v2-text-text-faint`：24 个文件（多为 12–13px 小字）；light 下只要底面是 `bg-base`
+  就同样是 3.85:1。
+
+### 为什么停在这里（护栏）
+
+`frontend-testing` 明文：**发现真 bug 要 HALT，回交 `superpowers:test-driven-development`，
+本 skill 不自行改产品码**；断言不可弱化（不得给 color-contrast 加白名单）。本次两条都是
+**设计裁定**问题，不是补测能定的：
+
+- dark 选中态：给 `accent-soft` 加 dark 覆盖，还是给选中态换文字色？
+- `text-faint`：调 token 值，还是规定「faint 只用于 ≥18px / 非必需文本」？
+
+**结论口径**：L3 的**观测面已补齐**（12 条 story 落地，审计可重复跑、可当门禁）；但
+**a11y 本身未通过**，不得写成「已覆盖」。
