@@ -27,6 +27,23 @@ export type ActorRole = (typeof ACTOR_ROLES)[number]
 export const REVIEW_GATES = ["business_review", "technical_publish"] as const
 export type ReviewGate = (typeof REVIEW_GATES)[number]
 
+/**
+ * 转移的物理动作（T008）。只写「搬什么」，不写路径——路径由 `service.ts` 按
+ * `storage.ts` 的约定算，两边都不各自猜一份。
+ *
+ * - `copy_to_pending`：从作者沙箱复制新内容到 `pending/`（提交审核 / 发起迭代）；
+ * - `move_pending_to_publish`：`pending/` → 发布目录（技术发布 / 迭代发布）；
+ * - `move_publish_to_archive`：发布目录 → `archive/`（归档）；
+ * - `none`：只改元数据（审核通过 / 驳回 / 下线 / 上线）。
+ */
+export const STORAGE_INTENTS = [
+  "none",
+  "copy_to_pending",
+  "move_pending_to_publish",
+  "move_publish_to_archive",
+] as const
+export type StorageIntent = (typeof STORAGE_INTENTS)[number]
+
 export interface SkillTransition {
   action: SkillAction
   from: readonly AssetStatus[]
@@ -35,6 +52,7 @@ export interface SkillTransition {
   actors: readonly ActorRole[]
   /** 触发前必须满足的审核关；迭代发布同时要求两道关。 */
   gates: readonly ReviewGate[]
+  storage: StorageIntent
   requiresReason?: boolean
 }
 
@@ -45,6 +63,7 @@ export const SKILL_TRANSITIONS = [
     to: "in_review",
     actors: ["author"],
     gates: [],
+    storage: "copy_to_pending",
   },
   {
     action: "approve_business",
@@ -52,6 +71,7 @@ export const SKILL_TRANSITIONS = [
     to: "pending_tech",
     actors: ["business_reviewer"],
     gates: ["business_review"],
+    storage: "none",
   },
   {
     action: "reject_business",
@@ -59,6 +79,7 @@ export const SKILL_TRANSITIONS = [
     to: "draft",
     actors: ["business_reviewer"],
     gates: ["business_review"],
+    storage: "none",
     requiresReason: true,
   },
   {
@@ -67,6 +88,7 @@ export const SKILL_TRANSITIONS = [
     to: "published",
     actors: ["system_admin"],
     gates: ["technical_publish"],
+    storage: "move_pending_to_publish",
   },
   {
     action: "start_iteration",
@@ -74,6 +96,7 @@ export const SKILL_TRANSITIONS = [
     to: "iterating",
     actors: ["author"],
     gates: [],
+    storage: "copy_to_pending",
   },
   {
     action: "publish_iteration",
@@ -81,6 +104,7 @@ export const SKILL_TRANSITIONS = [
     to: "published",
     actors: ["system_admin"],
     gates: ["business_review", "technical_publish"],
+    storage: "move_pending_to_publish",
   },
   {
     action: "take_offline",
@@ -88,6 +112,7 @@ export const SKILL_TRANSITIONS = [
     to: "offline",
     actors: ["system_admin"],
     gates: [],
+    storage: "none",
   },
   {
     action: "bring_online",
@@ -95,6 +120,7 @@ export const SKILL_TRANSITIONS = [
     to: "published",
     actors: ["author", "system_admin"],
     gates: ["technical_publish"],
+    storage: "none",
   },
   {
     action: "archive",
@@ -102,6 +128,7 @@ export const SKILL_TRANSITIONS = [
     to: "archived",
     actors: ["system_admin"],
     gates: [],
+    storage: "move_publish_to_archive",
   },
 ] as const satisfies readonly SkillTransition[]
 
@@ -110,6 +137,10 @@ export type TransitionErrorCode =
   | "invalid_source"
   | "actor_not_allowed"
   | "reason_required"
+  | "asset_not_found"
+  | "unsupported_asset_type"
+  | "source_directory_required"
+  | "concurrent_transition"
 
 export class AssetTransitionError extends Error {
   constructor(
@@ -132,6 +163,7 @@ export interface AppliedSkillTransition {
   to: AssetStatus
   action: SkillAction
   actor: ActorRole
+  storage: StorageIntent
   reason?: string
 }
 
@@ -181,6 +213,7 @@ export function applySkillTransition(
     to: transition.to,
     action,
     actor: request.actor,
+    storage: transition.storage,
     ...(reason === "" ? {} : { reason }),
   }
 }

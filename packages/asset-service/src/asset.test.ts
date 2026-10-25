@@ -10,6 +10,7 @@ import {
   deleteAsset,
   insertAsset,
   listAssets,
+  updateAssetLifecycle,
 } from "./asset"
 import {
   ASSET_STATUSES,
@@ -254,5 +255,43 @@ describe("资产仓储（T003）", () => {
     expect(await deleteAsset(db, "missing")).toBe(false)
     expect(await deleteAsset(db, "asset_1")).toBe(true)
     expect(await assetById(db, "asset_1")).toBeUndefined()
+  })
+})
+
+describe("生命周期列的条件更新（T008）", () => {
+  test("期望状态不匹配 ⇒ 返回 undefined，行一个字节都不动", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "in_review" }))
+
+    const updated = await updateAssetLifecycle(db, "asset_1", {
+      expectedStatus: "draft",
+      status: "archived",
+      version: 9,
+      updatedAt: 5_000,
+      publishedAt: null,
+      archivedAt: 5_000,
+    })
+
+    expect(updated).toBeUndefined()
+    expect(await assetById(db, "asset_1")).toEqual(metadata({ status: "in_review" }))
+  })
+
+  test("命中时只改生命周期列，内容字段原样返回", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "pending_tech", version: 2, publishedAt: null }))
+
+    const updated = await updateAssetLifecycle(db, "asset_1", {
+      expectedStatus: "pending_tech",
+      status: "published",
+      version: 2,
+      updatedAt: 5_000,
+      publishedAt: 5_000,
+      archivedAt: null,
+    })
+
+    expect(updated).toEqual(
+      metadata({ status: "published", version: 2, updatedAt: 5_000, publishedAt: 5_000 }),
+    )
+    expect(await assetById(db, "asset_1")).toEqual(updated)
   })
 })

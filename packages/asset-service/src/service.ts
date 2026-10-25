@@ -3,8 +3,16 @@ import {
   assetById,
   deleteAsset,
   insertAsset,
+  updateAssetLifecycle,
   type AssetTarget,
 } from "./asset"
+import {
+  AssetTransitionError,
+  applySkillTransition,
+  type ActorRole,
+  type AppliedSkillTransition,
+  type SkillAction,
+} from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import {
   archiveDirectory,
@@ -13,6 +21,7 @@ import {
   pendingDirectory,
   publishDirectory,
   removeDirectory,
+  replaceDirectory,
 } from "./storage"
 
 /**
@@ -154,4 +163,177 @@ export async function discardAsset(input: DiscardAssetInput): Promise<boolean> {
   if (location !== undefined) await removeDirectory(root, location)
 
   return true
+}
+
+/** 这些动作把资产送进「可用」：发布目录已在位，发布时间刷新为本次。 */
+const PUBLISHING_ACTIONS: ReadonlySet<SkillAction> = new Set([
+  "publish_tech",
+  "publish_iteration",
+  "bring_online",
+])
+
+/** 发起迭代 = 新版本在途，版本号 +1（design §2.4）。 */
+const VERSION_BUMPING_ACTIONS: ReadonlySet<SkillAction> = new Set(["start_iteration"])
+
+export interface TransitionAssetInput {
+  readonly db: AssetTarget
+  readonly root: string
+  readonly assetId: string
+  readonly action: SkillAction
+  readonly actor: ActorRole
+  readonly reason?: string
+  /** 提交审核 / 发起迭代的源目录（作者沙箱里的当前版本）；其他动作不需要。 */
+  readonly sourceDirectory?: string
+  /** Unix 秒；测试注入固定时间，生产省略取当前。 */
+  readonly now?: number
+}
+
+/** 一次已落地的文件步骤；`commit` 清理备份，`rollback` 把文件退回原样。 */
+interface StorageStep {
+  commit?(): Promise<void>
+  rollback(): Promise<void>
+}
+
+/**
+ * 生命周期流转（T008 / FR-004）：状态机校验 → 文件迁移 → 元数据条件更新 → 回滚/收尾。
+ *
+ * ## 为什么文件先、元数据后
+ *
+ * 元数据是**对外可读**的那一侧：先写库再搬文件，前端会在「已发布」状态下找不到文件；
+ * 先搬文件再写库，写库失败还能把文件搬回去。反过来没有任何回滚手段——库里已经是新状态，
+ * 文件却是旧的。
+ *
+ * ## 每一步的残差
+ *
+ * - 复制类（提交 / 发起迭代）：写库失败 ⇒ 删掉本次复制出来的 `pending/`。源在作者沙箱，
+ *   删掉不丢内容。
+ * - 移动类（技术发布 / 迭代发布 / 归档）：写库失败 ⇒ 把新目录搬回源位置；迭代发布额外把
+ *   旧版备份放回目标（`replaceDirectory` 保留备份到 `commit()`）。
+ * - **驳回不删 `pending/`**：design §2.2 的物理动作是空，作者沙箱的源仍在；下次提交会覆盖
+ *   （`replace: true`）。删掉反而多一步不可回滚的破坏性操作。
+ * - **下线不搬目录**（与 design §2.2 的「移出发布目录」不同）：T003 已裁定「下线不搬目录、
+ *   旧版仍可见」，可用性由 `isAssetUsable()` 判。真正的「不可用」要靠下发清单按状态过滤
+ *   （T014），不能靠目录位置——否则下线资产的使用者通知点回去就是 404。
+ *
+ * ## 并发
+ *
+ * 元数据更新带 `status = 期望值` 条件。读到的状态是「发起本次流转时的现状」，条件更新落空
+ * 说明期间有人改过状态 ⇒ 抛 `concurrent_transition` 并回滚文件，**不覆盖别人的结果**。
+ * （`#007-01`：每步幂等 ≠ 整体可重入；这里不假装重试能收敛，只保证不把两份写入搅在一起。）
+ *
+ * ## 类型边界
+ *
+ * 7 状态机只适用于 Skill（design §2.0）；MCP / 知识库的简化生命周期未在本任务实现，
+ * 显式抛 `unsupported_asset_type`，不套一张错的状态表。
+ */
+export async function transitionAsset(input: TransitionAssetInput): Promise<AssetMetadata> {
+  const { db, root, assetId } = input
+
+  const asset = await assetById(db, assetId)
+  if (!asset) throw new AssetTransitionError("asset_not_found", `资产不存在：${assetId}`)
+  if (asset.type !== "skill") {
+    throw new AssetTransitionError(
+      "unsupported_asset_type",
+      `${asset.type} 不走 Skill 7 状态机：${assetId}`,
+    )
+  }
+
+  const applied = applySkillTransition(asset.status, input.action, {
+    actor: input.actor,
+    reason: input.reason,
+  })
+  const now = input.now ?? Math.floor(Date.now() / 1000)
+
+  const step = await prepareStorageStep(root, asset, applied, input.sourceDirectory)
+
+  try {
+    const updated = await updateAssetLifecycle(db, asset.id, {
+      expectedStatus: asset.status,
+      status: applied.to,
+      version: VERSION_BUMPING_ACTIONS.has(applied.action) ? asset.version + 1 : asset.version,
+      updatedAt: now,
+      publishedAt: PUBLISHING_ACTIONS.has(applied.action) ? now : asset.publishedAt,
+      archivedAt: applied.action === "archive" ? now : asset.archivedAt,
+    })
+    if (updated === undefined) {
+      throw new AssetTransitionError(
+        "concurrent_transition",
+        `资产 ${asset.id} 的状态已被并发修改，未执行 ${applied.action}`,
+      )
+    }
+
+    if (step?.commit !== undefined) await step.commit()
+    return updated
+  } catch (error) {
+    if (step !== undefined) {
+      try {
+        await step.rollback()
+      } catch (rollbackError) {
+        // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
+        throw new AggregateError(
+          [error, rollbackError],
+          `资产 ${asset.id} 的 ${applied.action} 失败，且文件回滚未完成`,
+          { cause: error },
+        )
+      }
+    }
+    throw error
+  }
+}
+
+/**
+ * 按转移表里的 `storage` 落文件步骤。抛错都发生在**写库之前**——文件没搬成就不该改状态。
+ */
+async function prepareStorageStep(
+  root: string,
+  asset: AssetMetadata,
+  applied: AppliedSkillTransition,
+  sourceDirectory: string | undefined,
+): Promise<StorageStep | undefined> {
+  switch (applied.storage) {
+    case "none":
+      return undefined
+
+    case "copy_to_pending": {
+      if (sourceDirectory === undefined) {
+        throw new AssetTransitionError(
+          "source_directory_required",
+          `${applied.action} 需要作者沙箱里的源目录`,
+        )
+      }
+      const target = pendingDirectory(root, asset.id)
+      assertWithinRoot(root, target, "待审目录")
+      await copyDirectory(sourceDirectory, target, { replace: true })
+      return { rollback: () => removeDirectory(root, target) }
+    }
+
+    case "move_pending_to_publish": {
+      const source = pendingDirectory(root, asset.id)
+      const target = publishDirectory(
+        root,
+        asset.type,
+        { visibility: asset.visibility, department: asset.department },
+        asset.id,
+      )
+      const replacement = await replaceDirectory(source, target)
+      return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
+    }
+
+    case "move_publish_to_archive": {
+      const source = publishDirectory(
+        root,
+        asset.type,
+        { visibility: asset.visibility, department: asset.department },
+        asset.id,
+      )
+      const target = archiveDirectory(root, asset.id)
+      const replacement = await replaceDirectory(source, target)
+      return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
+    }
+
+    default: {
+      const intent: never = applied.storage
+      throw new Error(`未知存储动作：${String(intent)}`)
+    }
+  }
 }

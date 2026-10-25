@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
-import { assetById, insertAsset } from "./asset"
+import { assetById, insertAsset, type AssetTarget } from "./asset"
+import { AssetTransitionError } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
-import { assetLocation, discardAsset, storeAsset } from "./service"
+import { assetLocation, discardAsset, storeAsset, transitionAsset } from "./service"
 import { archiveDirectory, pendingDirectory, publishDirectory } from "./storage"
 
 /**
@@ -235,6 +236,400 @@ describe("storeAsset · 提交 / 复制", () => {
     expect(error.message).toContain("目标目录已存在")
     expect(await readFile(join(target, "SKILL.md"), "utf8")).toBe("旧内容")
     expect(await assetById(db, "asset_1")).toBeUndefined()
+  })
+})
+
+describe("transitionAsset · 生命周期流转（T008）", () => {
+  const 发布目录 = (root: string) =>
+    publishDirectory(root, "skill", { visibility: "department", department: "经侦支队" }, "asset_1")
+  const 待审目录 = (root: string) => pendingDirectory(root, "asset_1")
+
+  function codeOf(error: Error): string | undefined {
+    return error instanceof AssetTransitionError ? error.code : undefined
+  }
+
+  async function seedSkill(
+    db: ProductionDb["db"],
+    overrides: Partial<AssetMetadata> = {},
+  ): Promise<void> {
+    await insertAsset(db, metadata({ status: "draft", ...overrides }))
+  }
+
+  /** 走真实主路径到「已发布」，各步时间戳固定。 */
+  async function publishToV1(db: ProductionDb["db"], root: string, source: string): Promise<void> {
+    await seedSkill(db)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      actor: "author",
+      sourceDirectory: source,
+      now: 2_000,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      actor: "business_reviewer",
+      now: 2_001,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_tech",
+      actor: "system_admin",
+      now: 2_002,
+    })
+  }
+
+  /**
+   * 让第 2 次 `execute`（= 生命周期 update）之前先有别人改掉状态。
+   *
+   * 不 mock 数据库：它仍走真 PG，只是把「并发写入先落地」这件确定的事排在 update 前面，
+   * 于是条件更新命中 0 行——这正是并发时唯一能观察到的真实形态（`#005-13`）。
+   */
+  async function raceOnUpdate(real: AssetTarget, before: SQL): Promise<AssetTarget> {
+    let calls = 0
+    return {
+      execute(query) {
+        calls += 1
+        if (calls !== 2) return real.execute(query)
+        return Promise.resolve(real.execute(before)).then(() => real.execute(query))
+      },
+    }
+  }
+
+  test("主路径：提交 → 业务通过 → 技术发布，文件随状态迁移", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+
+    const submitted = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      actor: "author",
+      sourceDirectory: source,
+      now: 2_000,
+    })
+    expect(submitted.status).toBe("in_review")
+    expect(submitted.updatedAt).toBe(2_000)
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
+
+    const approved = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      actor: "business_reviewer",
+      now: 2_001,
+    })
+    expect(approved.status).toBe("pending_tech")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
+
+    const published = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_tech",
+      actor: "system_admin",
+      now: 2_002,
+    })
+    expect(published.status).toBe("published")
+    expect(published.publishedAt).toBe(2_002)
+    expect(await exists(待审目录(root))).toBe(false)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("驳回回草稿：必须带理由，已提交的文件留在 pending 等下次覆盖", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      actor: "author",
+      sourceDirectory: source,
+      now: 2_000,
+    })
+
+    const missingReason = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "reject_business",
+        actor: "business_reviewer",
+        reason: "   ",
+        now: 2_001,
+      }),
+    )
+    expect(codeOf(missingReason)).toBe("reason_required")
+    expect((await assetById(db, "asset_1"))?.status).toBe("in_review")
+
+    const rejected = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "reject_business",
+      actor: "business_reviewer",
+      reason: "只适用于本专案，不可泛化",
+      now: 2_002,
+    })
+    expect(rejected.status).toBe("draft")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("迭代：版本 +1、旧版继续可用；新版本发布后替换旧版", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    await writeSkill(source, "v2")
+    const iterating = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      actor: "author",
+      sourceDirectory: source,
+      now: 3_000,
+    })
+    expect(iterating.status).toBe("iterating")
+    expect(iterating.version).toBe(2)
+    expect(iterating.publishedAt).toBe(2_002)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
+
+    const republished = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_iteration",
+      actor: "system_admin",
+      now: 3_001,
+    })
+    expect(republished.status).toBe("published")
+    expect(republished.version).toBe(2)
+    expect(republished.publishedAt).toBe(3_001)
+    expect(await exists(待审目录(root))).toBe(false)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v2")
+  })
+
+  test("下线只改状态、不搬目录；重新上线刷新发布时间", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    const offline = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "take_offline",
+      actor: "system_admin",
+      now: 4_000,
+    })
+    expect(offline.status).toBe("offline")
+    expect(offline.publishedAt).toBe(2_002)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+
+    const online = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "bring_online",
+      actor: "system_admin",
+      now: 4_001,
+    })
+    expect(online.status).toBe("published")
+    expect(online.publishedAt).toBe(4_001)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("归档：目录移到 archive，终态不能再流转", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    const archived = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "archive",
+      actor: "system_admin",
+      now: 5_000,
+    })
+    expect(archived.status).toBe("archived")
+    expect(archived.archivedAt).toBe(5_000)
+    expect(await exists(发布目录(root))).toBe(false)
+    expect(await readFile(join(archiveDirectory(root, "asset_1"), "SKILL.md"), "utf8")).toBe("v1")
+
+    const again = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "take_offline",
+        actor: "system_admin",
+        now: 5_001,
+      }),
+    )
+    expect(codeOf(again)).toBe("invalid_source")
+    expect(await assetById(db, "asset_1")).toEqual(archived)
+  })
+
+  test("越权 / 非法源状态：元数据与文件都不动", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await seedSkill(db, { status: "in_review" })
+    await mkdir(待审目录(root), { recursive: true })
+    await writeFile(join(待审目录(root), "SKILL.md"), "审核中")
+
+    const unauthorized = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "approve_business",
+        actor: "author",
+        now: 2_000,
+      }),
+    )
+    expect(codeOf(unauthorized)).toBe("actor_not_allowed")
+
+    const invalidSource = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        actor: "system_admin",
+        now: 2_001,
+      }),
+    )
+    expect(codeOf(invalidSource)).toBe("invalid_source")
+
+    expect((await assetById(db, "asset_1"))?.status).toBe("in_review")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("审核中")
+  })
+
+  test("提交与发起迭代必须给源目录：缺了先报错，不碰库也不建目录", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await seedSkill(db)
+
+    const missing = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "submit_review",
+        actor: "author",
+        now: 2_000,
+      }),
+    )
+    expect(codeOf(missing)).toBe("source_directory_required")
+    expect((await assetById(db, "asset_1"))?.status).toBe("draft")
+    expect(await exists(待审目录(root))).toBe(false)
+  })
+
+  test("MCP / 知识库不走 Skill 7 状态机", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "mcp 配置")
+    await seedSkill(db, { type: "mcp" })
+
+    const error = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "submit_review",
+        actor: "author",
+        sourceDirectory: source,
+        now: 2_000,
+      }),
+    )
+    expect(codeOf(error)).toBe("unsupported_asset_type")
+    expect((await assetById(db, "asset_1"))?.status).toBe("draft")
+    expect(await exists(待审目录(root))).toBe(false)
+  })
+
+  test("并发改状态：条件更新落空 ⇒ 复制出来的文件被收回，别人的状态不被覆盖", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+
+    const racing = await raceOnUpdate(db, sql`update auth.asset set status = 'offline' where id = 'asset_1'`)
+    const error = await failure(() =>
+      transitionAsset({
+        db: racing,
+        root,
+        assetId: "asset_1",
+        action: "submit_review",
+        actor: "author",
+        sourceDirectory: source,
+        now: 2_000,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("concurrent_transition")
+    expect(await exists(待审目录(root))).toBe(false)
+    expect((await assetById(db, "asset_1"))?.status).toBe("offline")
+  })
+
+  test("迭代发布时并发改状态：旧版本与新版 pending 一起回滚", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+    await writeSkill(source, "v2")
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      actor: "author",
+      sourceDirectory: source,
+      now: 3_000,
+    })
+
+    const racing = await raceOnUpdate(db, sql`update auth.asset set status = 'offline' where id = 'asset_1'`)
+    const error = await failure(() =>
+      transitionAsset({
+        db: racing,
+        root,
+        assetId: "asset_1",
+        action: "publish_iteration",
+        actor: "system_admin",
+        now: 3_001,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("concurrent_transition")
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
+    expect((await assetById(db, "asset_1"))?.status).toBe("offline")
   })
 })
 

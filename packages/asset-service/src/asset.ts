@@ -264,6 +264,49 @@ export async function listAssets(
   return rows.map(toMetadata)
 }
 
+/** 生命周期列的一次条件写入（T008）。 */
+export interface AssetLifecycleUpdate {
+  /** 只有库里仍是这个状态才写——并发改状态时更新落空，而不是覆盖别人的结果。 */
+  readonly expectedStatus: AssetStatus
+  readonly status: AssetStatus
+  readonly version: number
+  readonly updatedAt: number
+  readonly publishedAt: number | null
+  readonly archivedAt: number | null
+}
+
+/**
+ * 条件更新生命周期列：`where id = ? and status = expectedStatus`。
+ *
+ * 返回更新后的完整元数据；**状态已不是期望值时返回 `undefined`**，一个字段都不改。
+ * 用条件更新而不是「先查再写」：两条语句之间别人改了状态，先查后写会把别人的结果覆盖掉，
+ * 而这里落空正好让调用方回滚文件并报并发（`service.ts` 的 `transitionAsset`）。
+ *
+ * 只写生命周期列：名称 / 描述 / 标签等内容字段由编辑路径负责，互不覆盖。
+ */
+export async function updateAssetLifecycle(
+  db: AssetTarget,
+  id: string,
+  update: AssetLifecycleUpdate,
+): Promise<AssetMetadata | undefined> {
+  if (!Number.isInteger(update.version) || update.version < 1) {
+    throw new Error(`非法资产版本号：${String(update.version)}`)
+  }
+
+  const rows = rowsOf(await db.execute(sql`
+    update auth.asset set
+      status = ${update.status},
+      version = ${update.version},
+      updated_at = ${update.updatedAt},
+      published_at = ${update.publishedAt},
+      archived_at = ${update.archivedAt}
+    where id = ${id} and status = ${update.expectedStatus}
+    returning ${COLUMNS}
+  `))
+  const [row] = rows
+  return row === undefined ? undefined : toMetadata(row)
+}
+
 /**
  * 按 id 删除元数据；删到返回 `true`，本来就没有返回 `false`。
  *

@@ -304,6 +304,98 @@ export async function moveDirectory(
 }
 
 /**
+ * 一次「源目录替换目标目录」的句柄（T008）。
+ *
+ * 与 `moveDirectory(..., { replace: true })` 的区别只有一条：**旧版不立刻删**。
+ * 迭代发布是「文件先换、元数据后写」——如果写库失败（并发改状态 / 库抖动），
+ * 调用方需要把旧版放回去；旧版已经删掉就只能报一个「回滚不了」。
+ *
+ * 生命周期：`commit()` 删备份（元数据已确认写入）；`rollback()` 把新版退回源、旧版放回目标。
+ * 两个方法都只生效一次，重复调用是空操作。
+ */
+export interface DirectoryReplacement {
+  /** 替换前目标的备份路径；目标原本不存在时为 `undefined`。 */
+  readonly backup: string | undefined
+  commit(): Promise<void>
+  rollback(): Promise<void>
+}
+
+/**
+ * 用源目录替换目标目录，**旧版保留在备份路径直到 `commit()`**。
+ *
+ * 目标原本不存在时不产生备份；源不存在在动目标之前就抛错。
+ * 替换本身走 `moveDirectory`（同卷 rename / 跨卷复制后删源，`EXDEV` 语义一致）。
+ */
+export async function replaceDirectory(
+  source: string,
+  target: string,
+): Promise<DirectoryReplacement> {
+  const sourcePath = resolve(source)
+  const targetPath = resolve(target)
+  if (sourcePath === targetPath) throw new Error("源目录与目标目录相同")
+  if (isInside(sourcePath, targetPath)) throw new Error("目标目录不能位于源目录内")
+  if (isInside(targetPath, sourcePath)) throw new Error("源目录不能位于目标目录内")
+
+  const sourceInfo = await statOrNull(sourcePath)
+  if (!sourceInfo) throw new Error(`源目录不存在：${source}`)
+  if (!sourceInfo.isDirectory()) throw new Error(`源不是目录：${source}`)
+
+  const targetInfo = await statOrNull(targetPath)
+  if (targetInfo && !targetInfo.isDirectory()) throw new Error(`目标路径不是目录：${target}`)
+
+  await ensureDir(dirname(targetPath))
+  const backup =
+    targetInfo === null ? undefined : join(dirname(targetPath), `.${basename(targetPath)}.bak-${randomUUID()}`)
+
+  if (backup !== undefined) await rename(targetPath, backup)
+
+  try {
+    await moveDirectory(sourcePath, targetPath)
+  } catch (error) {
+    if (backup !== undefined) {
+      try {
+        await rename(backup, targetPath)
+      } catch (restoreError) {
+        // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
+        throw new AggregateError([error, restoreError], `目录替换失败且旧版恢复失败：${target}`, {
+          cause: error,
+        })
+      }
+    }
+    throw error
+  }
+
+  let settled = false
+
+  return {
+    backup,
+    async commit() {
+      if (settled) return
+      settled = true
+      if (backup !== undefined) await rm(backup, { recursive: true, force: true })
+    },
+    async rollback() {
+      if (settled) return
+      settled = true
+      const errors: unknown[] = []
+      try {
+        await moveDirectory(targetPath, sourcePath)
+      } catch (error) {
+        errors.push(error)
+      }
+      if (backup !== undefined) {
+        try {
+          await rename(backup, targetPath)
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, `目录替换回滚失败：${target}`)
+    },
+  }
+}
+
+/**
  * 删除资产根内的目录。已不存在时不报错（重复删除安全）。
  *
  * 删除**不是**授权边界（storage.md §5）：调用方必须先做完 RBAC / 生命周期判断，

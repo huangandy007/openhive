@@ -137,6 +137,20 @@ describe("Skill 7 状态机（FR-004 / D0-7）", () => {
     ])
   })
 
+  test("每个转移的物理动作写在转移表里，不在调用处另起一套 if（T008）", () => {
+    expect(SKILL_TRANSITIONS.map((transition) => [transition.action, transition.storage])).toEqual([
+      ["submit_review", "copy_to_pending"],
+      ["approve_business", "none"],
+      ["reject_business", "none"],
+      ["publish_tech", "move_pending_to_publish"],
+      ["start_iteration", "copy_to_pending"],
+      ["publish_iteration", "move_pending_to_publish"],
+      ["take_offline", "none"],
+      ["bring_online", "none"],
+      ["archive", "move_publish_to_archive"],
+    ])
+  })
+
   test("只有已发布与迭代中可用于执行", () => {
     expect(isAssetUsable("published")).toBe(true)
     expect(isAssetUsable("iterating")).toBe(true)

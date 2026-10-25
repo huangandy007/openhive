@@ -52,6 +52,7 @@
 | `publishDirectory(root, type, scope, assetId)` | 全局或部门发布目录；拒绝 `personal` |
 | `archiveDirectory(root, assetId)` | `{root}/archive/{assetId}` |
 | `ensureDir(dir)` | `mkdir -p`，重复调用不报错 |
+| `replaceDirectory(source, target)` | 源替换目标，**旧版保留为备份直到 `commit()`**；`rollback()` 把新版退回源、旧版放回目标（T008） |
 | `assertSafeSegment(value, label)` | 拒绝空串、`.`、`..`、首尾空白、尾点、路径分隔符、Windows 保留名 |
 
 路径段校验不是洁癖：`assetId` / 部门名最终都会直接拼进共享卷路径，放行 `..` 等于允许写出资产根。

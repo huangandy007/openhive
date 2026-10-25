@@ -17,6 +17,7 @@ import {
   pendingDirectory,
   publishDirectory,
   removeDirectory,
+  replaceDirectory,
 } from "./storage"
 
 const roots: string[] = []
@@ -279,6 +280,60 @@ describe("目录移动（T003）", () => {
 
     expect(await readTree(target)).toEqual({ "SKILL.md": "cross-volume", "references/a.txt": "a" })
     expect(await stat(source).then(() => true, () => false)).toBe(false)
+  })
+})
+
+describe("目录替换（T008：先留备份，确认后再删）", () => {
+  test("替换后目标是新内容；备份保留到 commit 才删", async () => {
+    const root = tempRoot()
+    const source = join(root, "pending", "asset_1")
+    const target = join(root, "global", "skills", "asset_1")
+    await writeTree(source, { "SKILL.md": "新版" })
+    await writeTree(target, { "SKILL.md": "旧版" })
+
+    const replacement = await replaceDirectory(source, target)
+
+    expect(await readTree(target)).toEqual({ "SKILL.md": "新版" })
+    expect(await stat(source).then(() => true, () => false)).toBe(false)
+    expect(replacement.backup).toBeDefined()
+    expect(await readTree(replacement.backup!)).toEqual({ "SKILL.md": "旧版" })
+
+    await replacement.commit()
+
+    expect(await stat(replacement.backup!).then(() => true, () => false)).toBe(false)
+    expect(await leftovers(dirname(target))).toEqual([])
+  })
+
+  test("回滚：新版退回源，旧版回到目标", async () => {
+    const root = tempRoot()
+    const source = join(root, "pending", "asset_1")
+    const target = join(root, "global", "skills", "asset_1")
+    await writeTree(source, { "SKILL.md": "新版" })
+    await writeTree(target, { "SKILL.md": "旧版" })
+
+    const replacement = await replaceDirectory(source, target)
+    await replacement.rollback()
+
+    expect(await readTree(target)).toEqual({ "SKILL.md": "旧版" })
+    expect(await readTree(source)).toEqual({ "SKILL.md": "新版" })
+    expect(await leftovers(dirname(target))).toEqual([])
+  })
+
+  test("目标原本不存在时没有备份；源不存在先抛错、不动目标", async () => {
+    const root = tempRoot()
+    const source = join(root, "pending", "asset_1")
+    const target = join(root, "archive", "asset_1")
+    await writeTree(source, { "SKILL.md": "内容" })
+
+    const replacement = await replaceDirectory(source, target)
+    expect(replacement.backup).toBeUndefined()
+    await replacement.commit()
+    expect(await readTree(target)).toEqual({ "SKILL.md": "内容" })
+
+    const missing = join(root, "pending", "missing")
+    const missingError = await failure(() => replaceDirectory(missing, join(root, "archive", "missing")))
+    expect(missingError.message).toContain("源目录不存在")
+    expect(await stat(join(root, "archive", "missing")).then(() => true, () => false)).toBe(false)
   })
 })
 

@@ -1,9 +1,31 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T007 已交付（详情四 tab），等待用户审阅。下一任务 T008（生命周期状态机流转，依赖 T003）。
+T008 已交付（生命周期流转），等待用户审阅。下一任务 T009（审核两道关，依赖 T008）。
 
 ## 已完成
+- **T008** 生命周期状态机流转（提交 / 审核 / 发布 / 迭代 / 下线 / 归档）（FR-004 / D0-7）
+  - `lifecycle.ts`：转移表新增 `storage` 物理动作（`none` / `copy_to_pending` /
+    `move_pending_to_publish` / `move_publish_to_archive`）；错误码扩到资产不存在、
+    非 Skill、缺源目录、并发流转
+  - `service.ts`：`transitionAsset` 编排——状态机校验 → 文件迁移 → 元数据条件更新；
+    写库失败按物理动作回滚（复制类删副本；移动类搬回；迭代发布用备份恢复旧版）；
+    回滚失败抛 `AggregateError`
+  - `asset.ts`：`updateAssetLifecycle` 条件更新（`where id = ? and status = 期望值`），
+    落空返回 `undefined` ⇒ 抛 `concurrent_transition`，不覆盖别人的状态
+  - `storage.ts`：`replaceDirectory` —— 源替换目标、旧版保留到 `commit()`，
+    `rollback()` 新版退回源 + 旧版放回目标
+  - 刻意口径：驳回不动 `pending/`（下次提交覆盖）；下线不搬目录（沿用 T003 裁定，
+    见 `lifecycle.md` §4）；`start_iteration` 版本号 +1；发布时间在发布/重新上线时刷新
+  - 文档：新增 `lifecycle.md`（流转表 / 次序与补偿 / 并发 / 已知残差）；`storage.md` helper 表补
+    `replaceDirectory`
+  - 门禁实测：`asset-service` 104 pass / 0 fail（+37：转移表 1 + 目录替换 3 + 条件更新 2 +
+    流转编排 10，其余为原有用例）；`tsgo --noEmit` 0 errors；`oxlint` 0 errors / 6 warnings
+    （均为既有的测试文件告警）；`bun.lock` 无 diff
+  - 变异验证（拆完即还原）：`publish_tech` 的物理动作改 `none` ⇒ 红 6；去掉条件更新的
+    `status` 守卫 ⇒ 红 3；去掉写库失败回滚 ⇒ 红 2；去掉版本 +1 ⇒ 红 1；
+    目录替换回滚不恢复备份 ⇒ 红 2
+
 - **T007** 详情 tab（介绍 / 注意事项 / 评价 / 版本）（FR-003 / DESIGN §4.10）
   - `ai-assets/asset-detail.tsx`：头部固定（名称 / 空间·状态徽章 / 作者 / 评分 / 收藏 / 使用次数，
     tab 切换不重建）＋ 四 tab（默认介绍）；`role="tablist"` / `tab` / `tabpanel`，
@@ -123,8 +145,9 @@ T007 已交付（详情四 tab），等待用户审阅。下一任务 T008（生
 - **资产列表数据源（T006 已留缝、未接真源）**：中栏网格吃
   `WorkspaceEntry.assets?: () => readonly AssetMetadata[]`，省略即空态。`/assets` 的列表 HTTP
   接口尚未落，`pages/layout-new.tsx` 也还没注入 ⇒ **真栈上资产页今天只有空态**；
-  接线在 T008 / T017 与后端列表接口一并做。`AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
+  接线在 T017 与后端列表接口一并做（T008 只落了生命周期服务，未加 HTTP 出口）。
+  `AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T006 完成）
+2026-10-25（T008 完成）
