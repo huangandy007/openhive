@@ -672,7 +672,28 @@ git branch --show-current                                        # worktree-feat
 
 ---
 
-## 未定项清单（**开工前先裁定**）
+## 已裁定（2026-10-25，用户批准「按推荐」）
+
+> 这十条**不再是建议，是开工依据**。原始问题保留在下一节，供审计。
+
+| # | 裁定 |
+|---|---|
+| **U1 + U8** | `auth.user.is_admin` 继续作**系统管理员**总开关；**业务专家**用 RBAC 表达——资源类型新增 `governance`，以 `review`（内容审核）/ `write`（数据项目授权）授权。管理员接口统一挂 `/openhive/admin/*`，**一个守卫**按「路由 → 所需 perm」表判定；**不新增** `biz_admin` 布尔。代价：`packages/core/src/access/rbac.ts` 的资源闭集与 DB CHECK 同步加值（两处，写注释）。 |
+| **U2** | 治理后台走**独立路由页 `/governance`**（全屏）：进入时隐藏三栏、保留顶栏与登录态；**不**塞 `ContentTab`、**不**加 `center.module()` 分支。 |
+| **U3** | 先补 `openhive-DESIGN.md` **§4.8 治理后台**（表格 / 组织树 / 表单 / 危险操作 / 空态）视觉规格，用户审后再写 UI；**不参考**不存在的 `figma-export/`。 |
+| **U4** | 010 补最小接口：`GET /assets`（按 capability 过滤）+ `POST /assets/:id/transition`（审核 / 发布 / 下架），挂治理守卫，直接调 `asset-service` 的 `transitionAsset`；**不另造状态机**。 |
+| **U5** | 新建 `auth.audit_log`（谁 / 何时 / 动作 / 对象 / 结果 / 详情）+ 写入 helper；治理守卫记 **AccessDenied**；`GET /audit` 检索。管理写操作**鉴权通过后、业务动作前**同步写；保留期先 **180 天**并挂缺口。 |
+| **U6** | 独立 **SQLite 聚合库**（路径 `OPENHIVE_ANALYTICS_DB`）+ 水位表 + 按 `syncEvent.id` 幂等 upsert。T004 只做「抽取器 + 表 + 真文件测试」，T009 只读；**不做实时、不做跨库 join**。 |
+| **U7** | **一张自引用表** `auth.org(id, parent_id, level, name)`（level ∈ org/dept/section）+ `auth.user.dept_id`（可空）；旧三列保留、按名字回填并标 deprecated；009 的 `/assets/dept/*` 在**同一版**迁到部门 id。 |
+| **U9** | 先落 `auth.data_source`（类型 / 连接信息 / 更新频率 / 负责人 / 血缘 JSON）+ connector 接口占位；**不与** 009 的 MCP 连接清单强行合表，除非开工时核出形状完全吻合；009 挂账保留。 |
+| **U10** | 装 `node-gyp`（全局），重跑 `bun install --frozen-lockfile`，`bun.lock` 必须无 diff；执行结果见本次会话报告。 |
+
+**仍要在对应 task 开工前复核**：U6（T004 前）、U7（T006 前）、U4（T007 前）、U5（T010 前）、U9（T012 前）。
+复核方式：按裁定写出该 task 的**完成判据**给用户确认，再动手。
+
+---
+
+## 未定项清单（**2026-10-25 已按推荐裁定**，以下保留原始问题供审计）
 
 | # | 事项 | 今天的事实（已实测） | 需要你定什么 |
 |---|---|---|---|
