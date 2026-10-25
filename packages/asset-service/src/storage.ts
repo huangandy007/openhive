@@ -1,5 +1,6 @@
-import { mkdir } from "node:fs/promises"
-import { join } from "node:path"
+import { randomUUID } from "node:crypto"
+import { cp, mkdir, rename, rm, stat } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { AssetType, AssetVisibility } from "./metadata"
 
 /** 资产共享根的变量名；与 `OPENHIVE_WORKSPACE_ROOT` / `OPENHIVE_SHARED_ROOT` 同构。 */
@@ -90,4 +91,225 @@ export function publishDirectory(
 /** 建目录，已存在不报错（重复调用安全）。 */
 export async function ensureDir(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o755 })
+}
+
+/**
+ * 路径必须落在资产根**内部**（不含根本身）。
+ *
+ * 删除 / 替换这类破坏性操作前调用：`assetId` / 部门名已经逐段校验过，这里再对拼好的
+ * 整条路径做一次归一化校验，挡住 `..`、绝对路径、同前缀兄弟目录（`/assets-evil`）与跨盘路径。
+ */
+export function assertWithinRoot(root: string, candidate: string, label = "路径"): string {
+  const rootPath = resolve(root)
+  const targetPath = resolve(candidate)
+  const relativePath = relative(rootPath, targetPath)
+  if (
+    relativePath === "" ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error(`非法${label}：${candidate} 不在资产根 ${root} 内`)
+  }
+  return targetPath
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined
+  const code = Reflect.get(error, "code")
+  return typeof code === "string" ? code : undefined
+}
+
+async function statOrNull(path: string) {
+  try {
+    return await stat(path)
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null
+    throw error
+  }
+}
+
+function isInside(parent: string, child: string): boolean {
+  const relativePath = relative(resolve(parent), resolve(child))
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  )
+}
+
+/**
+ * 把源目录复制到目标父目录下的**暂存目录**，返回暂存路径。
+ *
+ * 为什么先复制到暂存目录：目标目录的替换必须是「要么旧版、要么完整新版」。
+ * 直接往目标里写会留下「目录存在但内容不全」的窗口（storage.md §4）。
+ *
+ * `dereference: true`：skill 目录里的符号链接不能原样带进共享卷——链接指向作者沙箱，
+ * 发布后那条路径对别人不存在。复制内容而不是复制链接。
+ */
+async function stageDirectory(source: string, target: string): Promise<string> {
+  const sourceInfo = await stat(source)
+  if (!sourceInfo.isDirectory()) throw new Error(`源不是目录：${source}`)
+
+  const parent = dirname(target)
+  await ensureDir(parent)
+  const staging = join(parent, `.${basename(target)}.tmp-${randomUUID()}`)
+  try {
+    await cp(source, staging, {
+      recursive: true,
+      dereference: true,
+      errorOnExist: true,
+      force: false,
+    })
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true })
+    throw error
+  }
+  return staging
+}
+
+export interface CommitDirectoryOptions {
+  /** 目标已存在时是否替换；默认 false（宁可不写，也不静默覆盖）。 */
+  replace?: boolean
+}
+
+/**
+ * 把暂存目录提交到目标位置。
+ *
+ * 同卷 `rename` 是原子替换：
+ * 1. 目标已存在且允许替换 ⇒ 先 `rename(target, backup)`；
+ * 2. `rename(staging, target)`；
+ * 3. 成功后删备份；失败则把备份 `rename` 回目标。
+ *
+ * ⚠️ **刻意不先检查暂存目录是否存在**：检查会把这个函数变成「缺失即早退」，
+ * 从而永远走不到「备份已挪走、改名失败、再恢复」这条回滚路径。提交失败时由
+ * `rename` 自己报 ENOENT，回滚逻辑因此可以被真实用例覆盖（`storage.test.ts`
+ * 的「提交失败时把旧版恢复回目标」）。
+ */
+export async function commitStagedDirectory(
+  staging: string,
+  target: string,
+  options: CommitDirectoryOptions = {},
+): Promise<void> {
+  const parent = dirname(target)
+  await ensureDir(parent)
+
+  const stagingInfo = await statOrNull(staging)
+  if (stagingInfo && !stagingInfo.isDirectory()) {
+    await rm(staging, { recursive: true, force: true })
+    throw new Error(`暂存路径不是目录：${staging}`)
+  }
+
+  const existing = await statOrNull(target)
+  if (existing && !existing.isDirectory()) {
+    if (stagingInfo) await rm(staging, { recursive: true, force: true })
+    throw new Error(`目标路径不是目录：${target}`)
+  }
+
+  const backup = join(parent, `.${basename(target)}.bak-${randomUUID()}`)
+  let movedExisting = false
+
+  if (existing) {
+    if (!options.replace) {
+      if (stagingInfo) await rm(staging, { recursive: true, force: true })
+      throw new Error(`目标目录已存在：${target}`)
+    }
+    try {
+      await rename(target, backup)
+    } catch (error) {
+      if (stagingInfo) await rm(staging, { recursive: true, force: true })
+      throw error
+    }
+    movedExisting = true
+  }
+
+  try {
+    await rename(staging, target)
+  } catch (error) {
+    if (movedExisting) {
+      try {
+        await rename(backup, target)
+      } catch (restoreError) {
+        // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
+        throw new AggregateError([error, restoreError], `目标目录替换失败且旧版恢复失败：${target}`, {
+          cause: error,
+        })
+      }
+    }
+    await rm(staging, { recursive: true, force: true })
+    throw error
+  }
+
+  if (movedExisting) await rm(backup, { recursive: true, force: true })
+}
+
+export interface CopyDirectoryOptions extends CommitDirectoryOptions {}
+
+/**
+ * 复制目录：暂存 → 提交。
+ *
+ * 跨卷安全：暂存目录建在**目标父目录**里，所以 `staging -> target` 这一步永远同卷；
+ * 源目录与目标不在同一卷只影响 `cp`，`cp` 本来就会逐文件复制。
+ */
+export async function copyDirectory(
+  source: string,
+  target: string,
+  options: CopyDirectoryOptions = {},
+): Promise<void> {
+  const sourcePath = resolve(source)
+  const targetPath = resolve(target)
+  if (sourcePath === targetPath) throw new Error("源目录与目标目录相同")
+  if (isInside(sourcePath, targetPath)) throw new Error("目标目录不能位于源目录内")
+
+  const staging = await stageDirectory(sourcePath, targetPath)
+  await commitStagedDirectory(staging, targetPath, options)
+}
+
+/**
+ * 移动目录：优先同卷 `rename`；跨卷（`EXDEV`）退化为「复制到目标卷 → 删源」。
+ *
+ * 目标已存在时走 `copyDirectory` 的替换流程；复制成功后**才**删源目录。
+ * 若删源失败，目标已是完整新版、源目录仍在（重复执行会再次替换，整体可重入），
+ * 这是跨卷移动无法做到单步原子的残差，调用方需要知道。
+ */
+export async function moveDirectory(
+  source: string,
+  target: string,
+  options: CopyDirectoryOptions = {},
+): Promise<void> {
+  const sourcePath = resolve(source)
+  const targetPath = resolve(target)
+  if (sourcePath === targetPath) throw new Error("源目录与目标目录相同")
+  if (isInside(sourcePath, targetPath)) throw new Error("目标目录不能位于源目录内")
+  if (isInside(targetPath, sourcePath)) throw new Error("源目录不能位于目标目录内")
+
+  const sourceInfo = await statOrNull(sourcePath)
+  if (!sourceInfo) throw new Error(`源目录不存在：${source}`)
+  if (!sourceInfo.isDirectory()) throw new Error(`源不是目录：${source}`)
+
+  await ensureDir(dirname(targetPath))
+
+  if (!(await statOrNull(targetPath))) {
+    try {
+      await rename(sourcePath, targetPath)
+      return
+    } catch (error) {
+      if (errorCode(error) !== "EXDEV") throw error
+    }
+  }
+
+  await copyDirectory(sourcePath, targetPath, options)
+  await rm(sourcePath, { recursive: true, force: true })
+}
+
+/**
+ * 删除资产根内的目录。已不存在时不报错（重复删除安全）。
+ *
+ * 删除**不是**授权边界（storage.md §5）：调用方必须先做完 RBAC / 生命周期判断，
+ * 这里只负责路径安全与幂等。
+ */
+export async function removeDirectory(root: string, target: string): Promise<void> {
+  assertWithinRoot(root, target, "删除路径")
+  await rm(target, { recursive: true, force: true })
 }

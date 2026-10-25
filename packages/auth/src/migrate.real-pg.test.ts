@@ -28,6 +28,7 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
 
       expect(tables).toEqual([
         "_migration",
+        "asset",
         "project_archive",
         "project_backup_event",
         "project_member",

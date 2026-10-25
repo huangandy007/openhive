@@ -109,6 +109,8 @@ Windows 上 `rename` 不能覆盖已存在的非空目录，且文件被占用�
 
 ## 7. 验证记录
 
+### T002（路径约定）
+
 - `bun test`（`packages/asset-service`）：**28 pass / 0 fail / 75 expect()**。
 - `bun run typecheck`（`packages/asset-service`）：退出 0。
 - 变异验证：
@@ -117,9 +119,29 @@ Windows 上 `rename` 不能覆盖已存在的非空目录，且文件被占用�
   3. 只删 `value === ".."` 这一行**没有**变红：尾部点号检查 `value.endsWith(".")` 仍然拦住 `..`，
      属纵深防御，不是用例失效；因此第二组换成整体拆掉校验。
 
+### T003（复制 / 移动 / 删除原语 + 服务编排）
+
+- `bun test`（`packages/asset-service`）：**62 pass / 0 fail / 164 expect()**。
+- `bun test`（`packages/auth`）：**282 pass / 3 skip / 0 fail**。
+- 真 PG（`bun run --filter @opencode-ai/auth test:real-pg`）：**2 pass / 0 fail**——
+  0009 迁移在真实例上建表成功、记账完整、二次运行 no-op。
+- `bun run typecheck`（`asset-service` / `auth`）：退出 0。
+- oxlint（仓库根跑全仓 1 处 error，属**既有**问题：`packages/app/e2e/a11y/storybook-axe-audit.ts`
+  的 `no-unnecessary-type-assertion`，与 009 无关）；改动文件单独跑 **0 warning / 0 error**。
+- 变异验证（逐条拆掉，实得变红条数与用例名）：
+  1. 拆掉 `storeAsset` 的写库失败补偿 ⇒ 恰红「写库失败要补偿」1 条。
+  2. 拆掉 `commitStagedDirectory` 的回滚（备份不 rename 回目标）⇒ 恰红「提交失败时把旧版恢复回目标」1 条。
+  3. 把 `assertWithinRoot` 改成直接返回 ⇒ 恰红 4 条：`storeAsset` 越界、根外删除、根本身、
+     同前缀兄弟目录与 `..`。
+- 三条指定路径的用例落点：中途失败（提交回滚、写库补偿、删源失败残差）、重复执行
+  （替换幂等、删除幂等）、目标已存在（不替换 / 替换两种）。
+- 跨卷 `EXDEV`：本机 `tmpdir()` 在 C:、目标建在 D:，用例**真实执行**并通过；
+  单卷 CI 上该条 `skipIf`，不算已覆盖。
+
 ## 8. 未覆盖 / 后续
 
 - 部门 id 化与目录迁移（依赖部门表，010）。
-- 跨卷 `EXDEV` 的真实用例（T003，在本机需构造不同卷路径）。
+- 跨卷 `EXDEV` 在单卷 CI 上只有 skip，没有等价判据。
 - 共享卷多副本并发写的锁（当前明确只允许单写者）。
 - skill 发现路径如何指向 `/assets/...`（D0-5，不属于 T002）。
+- 跨存储对账（复制成功、写库前进程崩溃 ⇒ 孤儿目录；等 T005 有投影出口后接对账）。

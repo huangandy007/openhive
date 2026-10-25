@@ -1,4 +1,6 @@
+export * from "./asset"
 export * from "./categories"
 export * from "./lifecycle"
 export * from "./metadata"
+export * from "./service"
 export * from "./storage"

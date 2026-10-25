@@ -13,6 +13,10 @@
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "tsgo --noEmit"
   },
+  "dependencies": {
+    "@opencode-ai/auth": "workspace:*",
+    "drizzle-orm": "catalog:"
+  },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",

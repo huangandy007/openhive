@@ -104,6 +104,10 @@
     "packages/asset-service": {
       "name": "@opencode-ai/asset-service",
       "version": "1.18.29",
+      "dependencies": {
+        "@opencode-ai/auth": "workspace:*",
+        "drizzle-orm": "catalog:",
+      },
       "devDependencies": {
         "@tsconfig/bun": "catalog:",
         "@types/bun": "catalog:",
