@@ -60,16 +60,25 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
 function 挂(列表: readonly AssetMetadata[]) {
   const filter = createAssetFilter()
   const [搜索词, set搜索词] = createSignal("")
+  const 打开过: string[] = []
   const host = document.createElement("div")
   document.body.appendChild(host)
   const dispose = render(
-    () => <AssetGrid filter={filter} search={搜索词} assets={() => 列表} />,
+    () => (
+      <AssetGrid
+        filter={filter}
+        search={搜索词}
+        assets={() => 列表}
+        onOpen={(asset) => 打开过.push(asset.id)}
+      />
+    ),
     host,
   )
   return {
     host,
     filter,
     set搜索词,
+    打开过,
     卸: () => {
       dispose()
       host.remove()
@@ -112,14 +121,19 @@ describe("资产卡片", () => {
     }
   })
 
-  test("卡片是静态条目（T007 才接点击）：有 listitem 角色、没有按钮语义", () => {
-    const { host, 卸 } = 挂([资产()])
+  test("卡片是列表项，内层真按钮负责打开详情（T007）", () => {
+    const { host, 打开过, 卸 } = 挂([资产({ id: "a" })])
     try {
       const card = 卡片(host)[0]
       expect(card.getAttribute("role")).toBe("listitem")
-      expect(card.getAttribute("role")).not.toBe("button")
       expect(card.getAttribute("tabindex")).toBeNull()
       expect(host.querySelector('[role="list"]')).not.toBeNull()
+
+      const 按钮 = card.querySelector<HTMLButtonElement>('[data-slot="asset-card-open"]')
+      expect(按钮?.tagName).toBe("BUTTON")
+      expect(按钮?.getAttribute("aria-label")).toBe("查看资产：资金流向研判")
+      按钮!.click()
+      expect(打开过).toEqual(["a"])
     } finally {
       卸()
     }

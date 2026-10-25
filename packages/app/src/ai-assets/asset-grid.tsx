@@ -22,6 +22,8 @@ export interface AssetGridProps {
    * `/assets` 的 HTTP 接口还没落（见 `state.md` 的已知缺口），由应用入口接上真实来源后自然有值。
    */
   readonly assets?: () => readonly AssetMetadata[]
+  /** 打开详情（T007）：点卡片时把整份元数据交给中栏，由它决定详情怎么呈现。 */
+  readonly onOpen: (asset: AssetMetadata) => void
 }
 
 export function AssetGrid(props: AssetGridProps): JSX.Element {
@@ -117,7 +119,9 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                       gap: `${卡片行距}px`,
                     }}
                   >
-                    <For each={本行()}>{(asset) => <AssetCard asset={asset} />}</For>
+                    <For each={本行()}>
+                      {(asset) => <AssetCard asset={asset} onOpen={props.onOpen} />}
+                    </For>
                   </div>
                 )
               }}

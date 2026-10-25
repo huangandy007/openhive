@@ -6051,12 +6051,12 @@ describe("AI 资产工作台（009 T005）", () => {
 })
 
 /**
- * AI 资产中栏（009 T006）：搜索 + 卡片网格，左栏与中栏**共享同一份筛选**。
+ * AI 资产中栏（009 T006 / T007）：搜索 + 卡片网格 + 详情面板，左栏与中栏**共享同一份筛选**。
  *
  * 数据走 `assets` 注入缝（`/assets` 接口未落，见 `state.md`）——这里注入夹具，
  * 顺带钉住「不注入时不造假数据」。
  */
-describe("AI 资产中栏（009 T006）", () => {
+describe("AI 资产中栏（009 T006 / T007）", () => {
   const 进入 = (host: HTMLElement) => 入口(host, "AI 资产").click()
 
   function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
@@ -6178,5 +6178,94 @@ describe("AI 资产中栏（009 T006）", () => {
 
     expect(卡片(host)).toHaveLength(0)
     expect(text(host, "asset-empty")).toBe("没有符合条件的资产")
+  })
+
+  const 浏览区 = (host: HTMLElement) =>
+    host.querySelector<HTMLElement>("[data-slot='asset-center-browse']")!
+  const 打开卡 = (host: HTMLElement, 名称: string) => {
+    const card = 卡片(host).find((el) => el.textContent?.includes(名称))
+    expect(card).toBeDefined()
+    card!.querySelector<HTMLButtonElement>("[data-slot='asset-card-open']")!.click()
+  }
+
+  test("点卡片 ⇒ 详情面板替换网格，头部与四 tab 就位，焦点落在返回", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [资产({ id: "a", name: "技能甲", description: "甲的做法", tags: ["甲"] })]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    expect(浏览区(host).classList.contains("hidden")).toBe(false)
+
+    打开卡(host, "技能甲")
+
+    expect(浏览区(host).classList.contains("hidden")).toBe(true)
+    expect(text(host, "asset-detail-name")).toBe("技能甲")
+    expect(text(host, "asset-detail-description")).toBe("甲的做法")
+    expect(host.querySelectorAll("[data-slot='asset-detail-tab']")).toHaveLength(4)
+    expect(document.activeElement).toBe(host.querySelector("[data-slot='asset-detail-back']"))
+  })
+
+  test("详情切 tab：注意事项带不确定性标注，评价 / 版本各有内容", () => {
+    const host = mount(() => (
+      <WorkspaceEntry assets={() => [资产({ id: "a", name: "技能甲", version: 2 })]}>中栏</WorkspaceEntry>
+    ))
+    进入(host)
+    打开卡(host, "技能甲")
+
+    host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='precautions']")!.click()
+    expect(text(host, "asset-detail-uncertainty")).toContain("必须经过人工复核")
+
+    host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='reviews']")!.click()
+    expect(text(host, "asset-detail-review-summary")).toContain("暂无评分")
+
+    host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='versions']")!.click()
+    expect(text(host, "asset-detail-version")).toBe("v2")
+  })
+
+  test("点第二张卡打开的是第二张，不是第一张", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    打开卡(host, "技能乙")
+    expect(text(host, "asset-detail-name")).toBe("技能乙")
+  })
+
+  test("返回 ⇒ 网格回来、搜索词保留、焦点归还原卡片", async () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [
+          资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
+          资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
+        ]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    const 输入 = host.querySelector<HTMLInputElement>("[data-slot='asset-search-input']")!
+    输入.value = "fund"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    expect(卡片(host)).toHaveLength(1)
+
+    打开卡(host, "FundFlow")
+    host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-back']")!.click()
+    // 焦点归还排在微任务里（等 Solid 把浏览区重新显示出来），等一拍再看。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(浏览区(host).classList.contains("hidden")).toBe(false)
+    expect(host.querySelector("[data-slot='asset-detail']")).toBeNull()
+    expect(输入.value).toBe("fund")
+    expect(卡片(host)).toHaveLength(1)
+    expect(document.activeElement).toBe(
+      卡片(host)[0].querySelector("[data-slot='asset-card-open']"),
+    )
   })
 })
