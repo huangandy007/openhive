@@ -1,10 +1,31 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T011 已交付（授权 vs 收藏分离），等待用户审阅。下一任务 T012（资产治理 MCP server，
-依赖 T003 + T004）。
+T012 已交付（资产治理 MCP server），等待用户审阅。下一任务 T013（Skill 制作入口，
+依赖 T003）。
 
 ## 已完成
+- **T012** 资产治理 MCP server（submit_skill_for_review / publish_skill）（FR-004 / design §2.5 §3.6）
+  - `governance.ts`：低层 MCP `Server` + 两个工具；工具名 → 动作**写死**
+    （submit_review / publish_tech），不开放 `action` 参数
+  - 身份：`_meta["openhive/user"]`；缺失 ⇒ `identity_required`，查 `auth.user`
+    不存在 ⇒ `user_not_found`、`status != 1` ⇒ `user_disabled`；部门从库里取，不听参数
+  - capability：直接调 `transitionAsset` → `authorizeTransition()`（提交需 write、
+    发布需 admin）；拒绝发生在任何文件操作之前；`review` 不蕴含 `admin`、作者不派生管理权
+  - 源目录边界：只收相对路径，相对 MCP 进程 cwd 解析后必须仍在 cwd 内（绝对路径 /
+    `..` ⇒ `source_outside_workspace`），挡住「把任意系统目录复制成已提交 skill」
+  - `mcp-main.ts`：stdio 入口（`connect(process.env)` + `assetsRoot` + `process.cwd()`）
+  - 依赖：`packages/asset-service` 新增 `@modelcontextprotocol/sdk@1.29.0`；
+    `bun.lock` 仅 +1 行 workspace 依赖（`bun install --frozen-lockfile` 通过，无镜像污染）
+  - 文档：新增 `governance.md`（工具语义 / 身份分层 / 残差 / 变异 / 同类落点）
+  - 门禁实测：`asset-service` **163 pass / 0 fail**（+11：协议 2 + 提交 6 + 发布 3，
+    全部走真 MCP 客户端 / 服务器 in-memory 握手）；`tsgo --noEmit` 0 errors；
+    oxlint（改动文件）0 warnings / 0 errors
+  - 变异验证（拆完即还原）：忽略 `_meta` 恒用 u1 ⇒ 红 3（#003-03 第②类，据实记）；
+    注入假 admin 授权 ⇒ 红 2；去掉源目录边界 ⇒ 红 1；发布映射成 approve_business ⇒ 红 2
+  - 已知残差：**尚未注册 / 下发**（T014）；`mcp-main.ts` 需真进程 + 真 PG，本机未测；
+    工具只流转已存在资产（登记归 T013）；无审计；`USER_META_KEY` 跨包靠注释保持一致
+
 - **T011** 授权 vs 收藏分离（收藏只影响抽屉排序）（FR-007 / design §1.3 §1.5）
   - 迁移 `0012_asset_preferences.sql`（＋ `.down.sql`）：`auth.asset_favorite`
     （个人偏好，主键 `(user_id, asset_id)`）、`auth.asset_usage`（每用户每资产一行
@@ -211,6 +232,8 @@ T011 已交付（授权 vs 收藏分离），等待用户审阅。下一任务 T
   接线在 T017 与后端列表接口一并做（T008 / T009 只落了服务层，未加 HTTP 出口）。
   `AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
+- **治理 MCP server 尚未注册**：T012 已交付 server 与两个工具，但没有任何配置把
+  `mcp-main.ts` 写进用户的 `mcp` 段 ⇒ 模型今天还看不到这两个工具。下发 / 授权归 T014。
 
 ## 最后更新
-2026-10-25（T011 完成）
+2026-10-25（T012 完成）

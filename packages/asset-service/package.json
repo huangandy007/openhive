@@ -14,6 +14,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@opencode-ai/auth": "workspace:*",
     "drizzle-orm": "catalog:"
   },

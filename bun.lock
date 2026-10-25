@@ -106,6 +106,7 @@
       "name": "@opencode-ai/asset-service",
       "version": "1.18.29",
       "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0",
         "@opencode-ai/auth": "workspace:*",
         "drizzle-orm": "catalog:",
       },

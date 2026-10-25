@@ -1,0 +1,323 @@
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { sql } from "drizzle-orm"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
+import { insertAsset } from "./asset"
+import { createGovernanceServer, GOVERNANCE_TOOL_NAMES } from "./governance"
+import type { AssetMetadata } from "./metadata"
+
+/**
+ * 009 T012 · 资产治理 MCP server（submit_skill_for_review / publish_skill）。
+ *
+ * 判据分四块：
+ * ① 协议面：`tools/list` 只暴露两个治理工具；
+ * ② 身份：`_meta["openhive/user"]` 缺失 / 用户不存在 / 已停用 ⇒ 一律拒，且资产状态不动；
+ * ③ capability：没有对应权限就调不动（提交需写、发布需管），且失败发生在文件操作之前；
+ * ④ 路径：源目录必须相对、且落在 MCP 进程的工作目录内，越界不复制。
+ */
+
+const databases: ProductionDb[] = []
+const closers: Array<() => Promise<void>> = []
+const tempDirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(closers.splice(0).map((close) => close()))
+  await Promise.all(databases.splice(0).map((database) => database.stop()))
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+})
+
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  tempDirs.push(dir)
+  return dir
+}
+
+async function freshDb(): Promise<ProductionDb["db"]> {
+  const database = await startProductionDb()
+  databases.push(database)
+  await migrate(database.db)
+  for (const [id, name, dept, status] of [
+    ["u1", "甲民警", "经侦支队", 1],
+    ["u2", "乙民警", "法制支队", 1],
+    ["u3", "丙民警", "科信支队", 0], // 停用账号：不能借 MCP 继续干活
+  ] as const) {
+    await database.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values (${id}, ${`0100${id.slice(1)}`}, ${name}, 'x', 'x', 'x', ${dept}, 'x', ${status}, 'h', 0)
+    `)
+  }
+  return database.db
+}
+
+function metadata(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
+  return {
+    id: "asset_1",
+    name: "资金流水分析",
+    type: "skill",
+    description: "按账户汇总流水",
+    icon: "skill",
+    category: "intelligence",
+    tags: ["资金"],
+    ownerId: "u1",
+    ownerName: "甲民警",
+    department: "经侦支队",
+    visibility: "department",
+    version: 1,
+    status: "draft",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    publishedAt: null,
+    archivedAt: null,
+    ...overrides,
+  }
+}
+
+async function grant(
+  db: ProductionDb["db"],
+  userId: string,
+  perm: string,
+  assetId = "asset_1",
+): Promise<void> {
+  const roleId = `role_${userId}_${perm}_${assetId}`
+  await db.execute(sql`insert into auth.role (id, name, role_type) values (${roleId}, ${roleId}, 'group')`)
+  await db.execute(sql`insert into auth.user_role (user_id, role_id) values (${userId}, ${roleId})`)
+  await db.execute(sql`
+    insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+    values (${roleId}, 'skill', ${assetId}, ${perm})
+  `)
+}
+
+interface Harness {
+  readonly db: ProductionDb["db"]
+  readonly root: string
+  readonly sourceRoot: string
+  readonly client: Client
+}
+
+async function harness(options: { sourceRoot?: string } = {}): Promise<Harness> {
+  const db = await freshDb()
+  const root = await tempDir("gov-assets-")
+  const sourceRoot = options.sourceRoot ?? (await tempDir("gov-source-"))
+
+  const server = createGovernanceServer({ db, root, sourceRoot })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0" }, { capabilities: {} })
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
+  closers.push(async () => {
+    await client.close()
+    await server.close()
+  })
+
+  return { db, root, sourceRoot, client }
+}
+
+async function call(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  userId?: string,
+): Promise<{ isError: boolean; text: string }> {
+  const params: Record<string, unknown> = { name, arguments: args }
+  if (userId !== undefined) params._meta = { "openhive/user": userId }
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- SDK 的 callTool 入参是联合类型，测试按名字分派
+  const result = (await client.callTool(params as never)) as {
+    isError?: boolean
+    content: Array<{ type: string; text?: string }>
+  }
+  return { isError: result.isError === true, text: result.content[0]?.text ?? "" }
+}
+
+async function statusOf(db: ProductionDb["db"], assetId = "asset_1"): Promise<string> {
+  const [row] = rowsOf(await db.execute(sql`select status from auth.asset where id = ${assetId}`))
+  return String(row!.status)
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function prepareSource(sourceRoot: string, name = "skill-src"): Promise<string> {
+  const directory = join(sourceRoot, name)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, "SKILL.md"), "# 资金流水分析\n")
+  return name
+}
+
+describe("tools/list", () => {
+  test("只暴露两个治理工具，名称与出参约定的常量一致", async () => {
+    const { client } = await harness()
+    const { tools } = await client.listTools()
+
+    expect(tools.map((tool) => tool.name)).toEqual([...GOVERNANCE_TOOL_NAMES])
+    expect(GOVERNANCE_TOOL_NAMES).toEqual(["submit_skill_for_review", "publish_skill"])
+    for (const tool of tools) expect(tool.description?.length ?? 0).toBeGreaterThan(10)
+  })
+
+  test("两个工具都把 assetId 标成必填（模型不能凭名字猜）", async () => {
+    const { client } = await harness()
+    const { tools } = await client.listTools()
+
+    for (const tool of tools) {
+      const schema = tool.inputSchema as { required?: string[] }
+      expect(schema.required).toContain("assetId")
+    }
+  })
+})
+
+describe("submit_skill_for_review", () => {
+  test("作者提交自己的草稿：复制到 pending、状态进 in_review、源目录保留", async () => {
+    const { db, root, sourceRoot, client } = await harness()
+    await insertAsset(db, metadata())
+    const source = await prepareSource(sourceRoot)
+
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: source }, "u1")
+
+    expect(result.isError).toBe(false)
+    expect(JSON.parse(result.text)).toMatchObject({
+      ok: true,
+      assetId: "asset_1",
+      action: "submit_review",
+      status: "in_review",
+    })
+    expect(await statusOf(db)).toBe("in_review")
+    expect(await readFile(join(root, "pending", "asset_1", "SKILL.md"), "utf8")).toContain("资金流水分析")
+    expect(await exists(join(sourceRoot, source, "SKILL.md"))).toBe(true)
+  })
+
+  test("没有身份（_meta 缺失）：拒绝，资产状态不动", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata())
+
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." })
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("identity_required")
+    expect(await statusOf(db)).toBe("draft")
+  })
+
+  test("用户不存在：拒绝；已停用账号同样拒绝", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata())
+
+    const unknown = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." }, "nobody")
+    expect(unknown.isError).toBe(true)
+    expect(unknown.text).toContain("user_not_found")
+
+    const disabled = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." }, "u3")
+    expect(disabled.isError).toBe(true)
+    expect(disabled.text).toContain("user_disabled")
+    expect(await statusOf(db)).toBe("draft")
+  })
+
+  test("不是作者也没有写授权：actor_not_allowed，且文件一个都没复制（门在副作用之前）", async () => {
+    const { db, root, sourceRoot, client } = await harness()
+    await insertAsset(db, metadata())
+    const source = await prepareSource(sourceRoot)
+
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: source }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("actor_not_allowed")
+    expect(result.text).toContain("write")
+    expect(await statusOf(db)).toBe("draft")
+    expect(await exists(join(root, "pending", "asset_1"))).toBe(false)
+  })
+
+  test("源目录越界（绝对路径 / ../）：拒绝，状态不动", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata())
+
+    const absolute = await call(
+      client,
+      "submit_skill_for_review",
+      { assetId: "asset_1", sourceDirectory: "D:/somewhere/else" },
+      "u1",
+    )
+    expect(absolute.isError).toBe(true)
+    expect(absolute.text).toContain("source_outside_workspace")
+
+    const parent = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "../outside" }, "u1")
+    expect(parent.isError).toBe(true)
+    expect(parent.text).toContain("source_outside_workspace")
+    expect(await statusOf(db)).toBe("draft")
+  })
+
+  test("缺少源目录 / 资产不存在 / 非 skill：各给明确错误码", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata())
+    await insertAsset(db, metadata({ id: "asset_mcp", type: "mcp", name: "资金 MCP" }))
+
+    const missing = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "u1")
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toContain("invalid_arguments")
+
+    const unknown = await call(client, "submit_skill_for_review", { assetId: "nope", sourceDirectory: "." }, "u1")
+    expect(unknown.isError).toBe(true)
+    expect(unknown.text).toContain("asset_not_found")
+
+    const wrongType = await call(client, "submit_skill_for_review", { assetId: "asset_mcp", sourceDirectory: "." }, "u1")
+    expect(wrongType.isError).toBe(true)
+    expect(wrongType.text).toContain("unsupported_asset_type")
+  })
+})
+
+describe("publish_skill", () => {
+  test("系统管理员发布待发布资产：pending 移到发布目录、状态进 published", async () => {
+    const { db, root, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech" }))
+    await mkdir(join(root, "pending", "asset_1"), { recursive: true })
+    await writeFile(join(root, "pending", "asset_1", "SKILL.md"), "# 资金流水分析\n")
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(false)
+    expect(JSON.parse(result.text)).toMatchObject({ ok: true, action: "publish_tech", status: "published" })
+    expect(await statusOf(db)).toBe("published")
+    expect(await readFile(join(root, "dept", "经侦支队", "skills", "asset_1", "SKILL.md"), "utf8")).toContain(
+      "资金流水分析",
+    )
+    expect(await exists(join(root, "pending", "asset_1"))).toBe(false)
+  })
+
+  test("只有 review 权限：发布被拒（审 ≠ 管），状态与文件都不动", async () => {
+    const { db, root, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech" }))
+    await mkdir(join(root, "pending", "asset_1"), { recursive: true })
+    await grant(db, "u2", "review")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("actor_not_allowed")
+    expect(result.text).toContain("admin")
+    expect(await statusOf(db)).toBe("pending_tech")
+    expect(await exists(join(root, "pending", "asset_1"))).toBe(true)
+  })
+
+  test("作者本人没有 admin：同样不能发布（作者身份不派生管理权）", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech" }))
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u1")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("actor_not_allowed")
+    expect(await statusOf(db)).toBe("pending_tech")
+  })
+})
