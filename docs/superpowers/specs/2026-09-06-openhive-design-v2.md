@@ -721,11 +721,11 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 | 治理动作 | 物理操作 |
 |---|---|
-| 提交审核 | 复制 skill 文件夹到 `/assets/pending/{name}/`，元数据登记「待审核」 |
+| 提交审核 | 复制 skill 文件夹到 `/assets/pending/{assetId}/`，元数据登记「待审核」 |
 | 审核 | 业务专家在治理后台打开待审区 skill，看内容、试跑、评可泛化性，通过/驳回 |
-| 发布 | 复制到 `/assets/{global,dept/{deptId}}/skills/{name}/`，让目标用户 `skills.paths` 挂上该目录；**不动作者沙箱原始文件**（迭代仍在沙箱原文件上改） |
+| 发布 | 复制到 `/assets/{global,dept/{department}}/skills/{assetId}/`，让目标用户 `skills.paths` 挂上该目录；**不动作者沙箱原始文件**（迭代仍在沙箱原文件上改） |
 | 授权/收藏 | 用 opencode 已有 `Permission.evaluate("skill", name, …)` 控制「扫到但未授权」也不可用 |
-| 发起迭代 | 新版本复制到 `/assets/pending/{name}/`，旧版保留发布目录（继续可用） |
+| 发起迭代 | 新版本复制到 `/assets/pending/{assetId}/`，旧版保留发布目录（继续可用） |
 | 新版本发布 | 先删旧 + 复制新（或临时目录 + 原子 rename），替换发布目录 |
 | 下线 | 把文件夹移出发布目录（或从 paths 摘除），扫不到即失效 |
 
@@ -733,9 +733,11 @@ fund_transaction (id, account_id, trade_time, amount, counterparty_acct,
 
 | 资产层级 | 物理位置 | opencode 怎么扫到 |
 |---|---|---|
-| 全局 | `/assets/global/skills/{name}/` | 所有用户 `skills.paths` 含该目录 |
-| 部门 | `/assets/dept/{deptId}/skills/{name}/` | 该部门用户 `skills.paths` 含该目录 |
+| 全局 | `/assets/global/skills/{assetId}/` | 所有用户 `skills.paths` 含该目录 |
+| 部门 | `/assets/dept/{department}/skills/{assetId}/` | 该部门用户 `skills.paths` 含该目录 |
 | 个人 | 用户沙箱项目 `.opencode/skill/` | opencode 原生项目目录扫描，无需配置 |
+
+> 009 T002 定稿：目录按**资产 id** 命名（显示名可改，路径不漂）；部门目录当前用部门名，部门 id 化与目录迁移待 010。完整约定见 `009-ai-assets/storage.md`。
 
 - **`skills.paths` 在 openhive 里不用管理员手填**：登录/下发 config 时，系统按「用户所属部门 + 是否有全局」自动拼好写入该用户的 opencode.json。
 - **不用 `OPENCODE_CONFIG_DIR` 指全局**：它同时改变 `opencode.json` 的读取位置，副作用太大，统一用 `skills.paths` 更纯净。

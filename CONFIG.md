@@ -102,6 +102,10 @@ Z = from.env.local        ← .env.local 更大
 | `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO` | `packages/auth/src/policy.ts:109` | 引导首个管理员；**不设 = 零影响**（不连库） |
 | `OPENHIVE_ACTIVITY_THROTTLE_SECONDS` | `packages/auth/src/policy.ts:79` | 活跃度上报节流 |
 
+> **资产服务（009）**：`OPENHIVE_ASSETS_ROOT` 由 `packages/asset-service/src/storage.ts:6` 读取，
+> 生产默认 `/assets`；当前尚未挂进内核进程，挂载后与内核共用 `packages/opencode/.env`。
+> 开发机的显式取值、目录布局与共享卷约定见 `docs/superpowers/specs/009-ai-assets/storage.md`。
+
 ### 动态读的（名字不在源码里）
 
 | 变量 | 机制 |

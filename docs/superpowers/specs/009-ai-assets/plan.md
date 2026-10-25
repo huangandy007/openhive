@@ -65,7 +65,7 @@ packages/app/src/
 │   └── asset-detail.tsx            # 详情 tab（介绍/注意事项/评价/版本）
 ```
 
-> 物理存放约定（design-v2 §11.6）：`/assets/pending/{name}/`（待审）、`/assets/global/skills/{name}/`、`/assets/dept/{deptId}/skills/{name}/`、`/assets/archive/{name}/`；作者沙箱 `/workspaces/{authorId}/{project}/`（草稿）。
+> 物理存放约定（design-v2 §11.6）：`/assets/pending/{assetId}/`（待审）、`/assets/global/skills/{assetId}/`、`/assets/dept/{department}/skills/{assetId}/`、`/assets/archive/{assetId}/`；作者沙箱 `/workspaces/{authorId}/{project}/`（草稿）。部门目录当前用部门名，部门 id 化与迁移待 010；完整约定见 `storage.md`。
 
 **Structure Decision**: 资产服务独立（负责建目录/复制/状态机），opencode 内核只被动扫描 skill 目录加载；前端 `app/ai-assets/` 承载浏览。
 
