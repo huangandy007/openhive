@@ -25,10 +25,12 @@ import {
   archiveDirectory,
   assertWithinRoot,
   copyDirectory,
+  MissingSourceDirectoryError,
   pendingDirectory,
   publishDirectory,
   removeDirectory,
   replaceDirectory,
+  type DirectoryReplacement,
 } from "./storage"
 
 /**
@@ -345,6 +347,9 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   const step = await prepareStorageStep(root, asset, applied, input.sourceDirectory)
 
   let updated: AssetMetadata
+  // 条件更新落空之后才知道有没有「另一个写者已经完成同一流转」；它决定 catch 里
+  // 是收尾（commit）还是回滚（rollback）——见 catch 里的说明。
+  let 他人已落地 = false
   try {
     const result = await updateAssetLifecycle(db, asset.id, {
       expectedStatus: asset.status,
@@ -355,9 +360,16 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       archivedAt: applied.action === "archive" ? now : asset.archivedAt,
     })
     if (result === undefined) {
+      // 当前状态已经是本调用的目标态 ⇒ 另一个写者完成了**同一条**流转：
+      // 目标目录里放的是它已提交的结果，不是本调用搬过去的（真栈实测：Windows 上
+      // 两条并发 `rename` 同一源到同一目标**都**回成功，输家以为自己搬了、其实没有）。
+      // 这时回滚会把别人的结果搬回 pending，落成「库里 published、文件在 pending」。
+      他人已落地 = (await assetById(db, asset.id))?.status === applied.to
       throw new AssetTransitionError(
         "concurrent_transition",
-        `资产 ${asset.id} 的状态已被并发修改，未执行 ${applied.action}`,
+        他人已落地
+          ? `资产 ${asset.id} 的 ${applied.action} 已由并发请求完成，本请求未重复执行`
+          : `资产 ${asset.id} 的状态已被并发修改，未执行 ${applied.action}`,
       )
     }
     updated = result
@@ -366,12 +378,13 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   } catch (error) {
     if (step !== undefined) {
       try {
-        await step.rollback()
+        if (他人已落地) await step.commit?.()
+        else await step.rollback()
       } catch (rollbackError) {
         // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
         throw new AggregateError(
           [error, rollbackError],
-          `资产 ${asset.id} 的 ${applied.action} 失败，且文件回滚未完成`,
+          `资产 ${asset.id} 的 ${applied.action} 失败，且文件收尾未完成`,
           { cause: error },
         )
       }
@@ -393,6 +406,31 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   }
 
   return updated
+}
+
+/**
+ * 状态机内的「源目录 → 目标目录」，把「源已不存在」翻成状态机错误码。
+ *
+ * 源不存在不是存储层内部错误：元数据说这一步该搬、文件却已经被搬走，说明另一个并发
+ * 流转先一步完成了搬移。把 `MissingSourceDirectoryError` 原样抛出去，MCP / 前端拿到
+ * 的是一个既没有 `code`、也没有可操作语义的内部异常（真栈实测：`源目录不存在：…`）。
+ */
+async function moveWithinTransition(
+  source: string,
+  target: string,
+  action: SkillAction,
+): Promise<DirectoryReplacement> {
+  try {
+    return await replaceDirectory(source, target)
+  } catch (error) {
+    if (error instanceof MissingSourceDirectoryError) {
+      throw new AssetTransitionError(
+        "invalid_source",
+        `${action} 的源目录已不存在（可能已被并发流转搬走）：${source}`,
+      )
+    }
+    throw error
+  }
 }
 
 /**
@@ -429,7 +467,7 @@ async function prepareStorageStep(
         { visibility: asset.visibility, department: asset.department },
         asset.id,
       )
-      const replacement = await replaceDirectory(source, target)
+      const replacement = await moveWithinTransition(source, target, applied.action)
       return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
     }
 
@@ -441,7 +479,7 @@ async function prepareStorageStep(
         asset.id,
       )
       const target = archiveDirectory(root, asset.id)
-      const replacement = await replaceDirectory(source, target)
+      const replacement = await moveWithinTransition(source, target, applied.action)
       return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
     }
 

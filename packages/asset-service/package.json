@@ -11,6 +11,7 @@
   },
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",
+    "test:real-pg": "bun run script/test-real-pg.ts",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {

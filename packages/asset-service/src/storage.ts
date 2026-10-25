@@ -267,6 +267,20 @@ export async function copyDirectory(
 }
 
 /**
+ * 源目录不存在（`moveDirectory` / `replaceDirectory` 的前置检查）。
+ *
+ * 为什么要类型而不是只靠消息：并发流转时另一个写者可能已经把源目录搬走，
+ * 编排层要把它翻成状态机错误码（`invalid_source`），而不是把 fs 异常原样抛给
+ * 模型 / 前端。消息保持原样（`源目录不存在：<路径>`），既有断言不用改。
+ */
+export class MissingSourceDirectoryError extends Error {
+  constructor(source: string) {
+    super(`源目录不存在：${source}`)
+    this.name = "MissingSourceDirectoryError"
+  }
+}
+
+/**
  * 移动目录：优先同卷 `rename`；跨卷（`EXDEV`）退化为「复制到目标卷 → 删源」。
  *
  * 目标已存在时走 `copyDirectory` 的替换流程；复制成功后**才**删源目录。
@@ -285,7 +299,7 @@ export async function moveDirectory(
   if (isInside(targetPath, sourcePath)) throw new Error("源目录不能位于目标目录内")
 
   const sourceInfo = await statOrNull(sourcePath)
-  if (!sourceInfo) throw new Error(`源目录不存在：${source}`)
+  if (!sourceInfo) throw new MissingSourceDirectoryError(source)
   if (!sourceInfo.isDirectory()) throw new Error(`源不是目录：${source}`)
 
   await ensureDir(dirname(targetPath))
@@ -337,7 +351,7 @@ export async function replaceDirectory(
   if (isInside(targetPath, sourcePath)) throw new Error("源目录不能位于目标目录内")
 
   const sourceInfo = await statOrNull(sourcePath)
-  if (!sourceInfo) throw new Error(`源目录不存在：${source}`)
+  if (!sourceInfo) throw new MissingSourceDirectoryError(source)
   if (!sourceInfo.isDirectory()) throw new Error(`源不是目录：${source}`)
 
   const targetInfo = await statOrNull(targetPath)

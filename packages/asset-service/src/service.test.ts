@@ -666,6 +666,58 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect((await assetById(db, "asset_1"))?.status).toBe("offline")
   })
 
+  test("并发写者已完成同一流转：条件更新落空不回滚目标目录（不搬走别人的结果）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await seedSkill(db, { status: "pending_tech" })
+    await mkdir(待审目录(root), { recursive: true })
+    await writeFile(join(待审目录(root), "SKILL.md"), "v1")
+
+    // 模拟真并发：另一个写者已把**同一流转**落库（状态已是本调用的目标态），
+    // 本调用的条件更新因此落空。真 PG 上这条路径另有 `real-pg.test.ts` 守（两条真连接）。
+    const racing = await raceOnUpdate(db, sql`update auth.asset set status = 'published' where id = 'asset_1'`)
+    const error = await failure(() =>
+      transitionAsset({
+        db: racing,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        viewer: 系统管理员,
+        grants: 管,
+        now: 2_000,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("concurrent_transition")
+    // 关键：本调用搬过去的文件不能被「回滚」搬回 pending——那等于抹掉并发写者已提交的结果
+    // （真栈实测：Windows 上两条并发 rename 都回成功，输家以为自己搬了、其实没有）。
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+    expect(await exists(待审目录(root))).toBe(false)
+    expect((await assetById(db, "asset_1"))?.status).toBe("published")
+  })
+
+  test("待发布目录已被并发搬走：抛 invalid_source，不把 fs 异常原样抛给调用方", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await seedSkill(db, { status: "pending_tech" })
+    // 故意不建 pending 目录：它已被另一次并发流转搬进了发布目录。
+
+    const error = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        viewer: 系统管理员,
+        grants: 管,
+        now: 2_000,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("invalid_source")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+  })
+
   test("两道关分离：作者不能自审，业务管理员不能发布，系统管理员不能业务审核", async () => {
     const db = await freshDb()
     const root = tempRoot()
