@@ -1,10 +1,33 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T012 已交付（资产治理 MCP server），等待用户审阅。下一任务 T013（Skill 制作入口，
-依赖 T003）。
+T013 已交付（Skill 制作入口），等待用户审阅。下一任务 T014（MCP 授权三层 + 数据隔离
+四环，依赖 T004）。
 
 ## 已完成
+- **T013** Skill 制作入口（右栏 AI 对话生成 skill 落沙箱）（FR-008 / design §5.1）
+  - `governance.ts` 新增第三个工具 `create_skill_draft`：把已落到作者沙箱的 skill 登记为
+    草稿资产。skill 文件由模型用普通写工具生成——FR-008 明确「入口 = 右栏 AI 对话，无需
+    专门入口」，本次**不加任何前端控件**
+  - 判据都在副作用之前：身份（`_meta` → `auth.user` 档案，作者 / 部门不听参数）→ 源目录
+    必须是相对路径且解析后仍在 cwd 内 → 目录里有 `SKILL.md` 且 frontmatter 有非空 `name`
+    → 写库；任何一步失败都不产生资产行
+  - `service.ts` 新增 `createDraftAsset()`：正式元数据校验（含业务分类 seed）+ `insertAsset`，
+    **不复制文件**。草稿的存储约定是停在作者沙箱（`assetLocation("draft")` = undefined），
+    硬套 `storeAsset` 会先造一份没人读取的共享副本
+  - 返回 `assetId` / `skillName` / `next`；用例钉住「制作 → 提交」用同一个 assetId 串链
+  - 文档：`governance.md` 增加第三工具语义、残差、9 条变异、同类落点
+  - 门禁实测：`asset-service` **170 pass / 0 fail**（+7）；`tsgo --noEmit` 0 errors；
+    oxlint（改动文件）0 warnings / 0 errors；`bun.lock` 无 diff（零新依赖）
+  - 变异验证（拆完即还原）：`skillNameOf` 不读文件 ⇒ 红 2（成功用例的 skillName +
+    文件判据）；制作入口忽略 `_meta` ⇒ 红 1；收模型自报 department ⇒ 红 1；草稿写成
+    published ⇒ 红 2；去掉分类 seed 校验 ⇒ 红 1；共用边界检查（制作 + 提交）⇒ 红 2
+  - 已知残差：工具要等 T014 注册 / 下发后才出现在模型清单；同一源目录重复调用会产生两份
+    草稿；建草稿没有全局「作者角色」门槛（`write` 按资产授予，资产尚不存在时无处可判）；
+    frontmatter 只做最小解析，权威解析仍在内核 `ConfigMarkdown.parse`；`mcp-main.ts` 仍需
+    真进程 + 真 PG 冒烟
+
+- **T012** 资产治理 MCP server（submit_skill_for_review / publish_skill）（FR-004 / design §2.5 §3.6）
 - **T012** 资产治理 MCP server（submit_skill_for_review / publish_skill）（FR-004 / design §2.5 §3.6）
   - `governance.ts`：低层 MCP `Server` + 两个工具；工具名 → 动作**写死**
     （submit_review / publish_tech），不开放 `action` 参数
@@ -232,8 +255,9 @@ T012 已交付（资产治理 MCP server），等待用户审阅。下一任务 
   接线在 T017 与后端列表接口一并做（T008 / T009 只落了服务层，未加 HTTP 出口）。
   `AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
-- **治理 MCP server 尚未注册**：T012 已交付 server 与两个工具，但没有任何配置把
-  `mcp-main.ts` 写进用户的 `mcp` 段 ⇒ 模型今天还看不到这两个工具。下发 / 授权归 T014。
+- **治理 MCP server 尚未注册**：T012 / T013 已交付 server 与三个工具
+  （create_skill_draft / submit_skill_for_review / publish_skill），但没有任何配置把
+  `mcp-main.ts` 写进用户的 `mcp` 段 ⇒ 模型今天还看不到它们。下发 / 授权归 T014。
 
 ## 最后更新
-2026-10-25（T012 完成）
+2026-10-25（T013 完成）

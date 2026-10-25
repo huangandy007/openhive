@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from "node:path"
+import { readFile } from "node:fs/promises"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import {
   CallToolRequestSchema,
@@ -8,20 +9,27 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
-import type { AssetTarget } from "./asset"
+import { AssetMetadataError, type AssetTarget } from "./asset"
 import type { AssetViewer } from "./authorization"
+import { ASSET_CATEGORY_SEED } from "./categories"
 import { AssetTransitionError, type SkillAction } from "./lifecycle"
+import { ASSET_VISIBILITIES, type AssetVisibility } from "./metadata"
 import { AssetNotificationError } from "./notify"
-import { transitionAsset } from "./service"
+import { createDraftAsset, transitionAsset } from "./service"
 
 /**
- * 资产治理 MCP server（009 T012，FR-004 / design §2.5 §3.6）。
+ * 资产治理 MCP server（009 T012 / T013，FR-004 / FR-008）。
  *
- * ## 两个工具，动作定死
+ * ## 三个工具
  *
- * `submit_skill_for_review` = `submit_review`，`publish_skill` = `publish_tech`。
- * 模型只能选这两个动作；把「提交」和「发布」做成自由参数（例如 `transition(action)`）
- * 等于把状态机的选择权交给模型，幻觉一次就能跳关。
+ * 流转工具的动作**定死**：`submit_skill_for_review` = `submit_review`，
+ * `publish_skill` = `publish_tech`。模型只能选这两个动作；把「提交」和「发布」做成
+ * 自由参数（例如 `transition(action)`）等于把状态机的选择权交给模型，幻觉一次就能跳关。
+ *
+ * `create_skill_draft`（T013）负责把「右栏对话里刚生成到沙箱的 skill」登记成资产草稿，
+ * 补齐 T012 只流转已有资产留下的上游缺口。它**不写 skill 文件**：文件由模型在工作区里
+ * 用普通写工具生成（FR-008 的入口就是对话本身，没有专门入口）；这里只做两件模型做不了
+ * 的事——按身份落作者 / 部门，把元数据写进资产库。
  *
  * ## 身份与 capability
  *
@@ -55,11 +63,18 @@ import { transitionAsset } from "./service"
 /** 与 `packages/opencode/src/mcp/openhive-identity.ts` 的 `USER_META_KEY` 逐字一致。 */
 export const USER_META_KEY = "openhive/user"
 
-export const GOVERNANCE_TOOL_NAMES = ["submit_skill_for_review", "publish_skill"] as const
+export const GOVERNANCE_TOOL_NAMES = [
+  "submit_skill_for_review",
+  "publish_skill",
+  "create_skill_draft",
+] as const
 export type GovernanceToolName = (typeof GOVERNANCE_TOOL_NAMES)[number]
 
+/** 会触发状态机流转的工具（创建草稿不走流转）。 */
+type TransitionToolName = Exclude<GovernanceToolName, "create_skill_draft">
+
 /** 工具名 → 生命周期动作。 */
-const ACTION_OF: Record<GovernanceToolName, SkillAction> = {
+const ACTION_OF: Record<TransitionToolName, SkillAction> = {
   submit_skill_for_review: "submit_review",
   publish_skill: "publish_tech",
 }
@@ -98,6 +113,38 @@ const TOOLS: readonly Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "create_skill_draft",
+    description:
+      "把已经生成到作者工作区内的 skill 登记成资产草稿（draft），返回后续提交审核用的 assetId。" +
+      "只在 SKILL.md 已写好之后调用；作者与部门由调用身份决定，不能传。" +
+      "本工具不生成也不复制文件：skill 文件由你在工作区里直接编写。" +
+      `业务分类必须取以下 id：${ASSET_CATEGORY_SEED.map((item) => `${item.id}（${item.name}）`).join(" / ")}。`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "资产显示名（中文，给人看的名称；不是 SKILL.md 的 name）" },
+        description: { type: "string", description: "一句话用途，会显示在资产卡片上" },
+        category: { type: "string", description: "业务分类 id（见工具描述里的清单）" },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选标签；不要重复、不要空串",
+        },
+        visibility: {
+          type: "string",
+          enum: [...ASSET_VISIBILITIES],
+          description: "可见范围，默认 personal；department 的部门取调用者档案",
+        },
+        sourceDirectory: {
+          type: "string",
+          description: "作者工作区内的相对路径，目录里必须有带 frontmatter name 的 SKILL.md",
+        },
+      },
+      required: ["name", "description", "category", "sourceDirectory"],
+      additionalProperties: false,
+    },
+  },
 ]
 
 /** 工具侧可识别的失败（与 `AssetTransitionError` 同一形状：有 `code`）。 */
@@ -133,13 +180,26 @@ function stringArg(args: Record<string, unknown>, key: string): string | undefin
   return typeof value === "string" && value.trim() !== "" ? value : undefined
 }
 
-/** 身份 → 授权判定用的视角。部门从库里取，不信调用方。 */
-async function viewerOf(db: AssetTarget, userId: string): Promise<AssetViewer> {
-  const rows = rowsOf(await db.execute(sql`select dept, status from auth.user where id = ${userId}`))
+interface LoadedUser {
+  readonly id: string
+  readonly name: string
+  readonly department: string
+}
+
+/**
+ * 调用者档案：姓名 / 部门从库里取，**不信调用方**——否则模型可以自报部门去蹭部门空间，
+ * 也可以把资产作者写成别人。
+ */
+async function userOf(db: AssetTarget, userId: string): Promise<LoadedUser> {
+  const rows = rowsOf(await db.execute(sql`select name, dept, status from auth.user where id = ${userId}`))
   const row = rows[0]
   if (row === undefined) throw new GovernanceError("user_not_found", `用户不存在：${userId}`)
   if (Number(row.status) !== 1) throw new GovernanceError("user_disabled", `用户已停用：${userId}`)
-  return { userId, department: String(row.dept) }
+  return { id: userId, name: String(row.name), department: String(row.dept) }
+}
+
+function viewerOf(user: LoadedUser): AssetViewer {
+  return { userId: user.id, department: user.department }
 }
 
 /**
@@ -159,6 +219,66 @@ function resolveSourceDirectory(sourceRoot: string, value: string): string {
     throw new GovernanceError("source_outside_workspace", `源目录越出工作区：${value}`)
   }
   return resolved
+}
+
+const SKILL_FILE = "SKILL.md"
+
+/**
+ * 从 SKILL.md 的 frontmatter 里取 `name`。
+ *
+ * 只做最小解析（首个 `---` 块里的 `name:` 行），不引 YAML 依赖：制作入口需要的只是
+ * 「这确实是一份 opencode 认得的 skill」这一条判据，不是完整的 YAML 语义。取不到就返回
+ * `undefined`，由调用方拒绝——**不拿目录名或显示名兜底**，那会让一份坏文件被登记成资产。
+ */
+function frontmatterName(content: string): string | undefined {
+  const withoutBom = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
+  const normalized = withoutBom.replace(/\r\n/g, "\n")
+  if (!normalized.startsWith("---\n")) return undefined
+  const end = normalized.indexOf("\n---", 3)
+  if (end === -1) return undefined
+
+  for (const line of normalized.slice(4, end).split("\n")) {
+    const match = /^name\s*:\s*(.+?)\s*$/.exec(line)
+    if (match === null) continue
+    const raw = match[1]!
+    const value =
+      (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
+        ? raw.slice(1, -1).trim()
+        : raw.trim()
+    return value === "" ? undefined : value
+  }
+  return undefined
+}
+
+/** 读源目录里的 SKILL.md 并返回 frontmatter 的 skill 名；缺失 / 无 frontmatter 都拒绝。 */
+async function skillNameOf(directory: string): Promise<string> {
+  let content: string
+  try {
+    content = await readFile(join(directory, SKILL_FILE), "utf8")
+  } catch {
+    throw new GovernanceError("skill_file_not_found", `源目录里没有 ${SKILL_FILE}：${directory}`)
+  }
+  const name = frontmatterName(content)
+  if (name === undefined) {
+    throw new GovernanceError("skill_frontmatter_invalid", `${SKILL_FILE} 缺少 frontmatter name：${directory}`)
+  }
+  return name
+}
+
+/** 可选标签：缺省由调用方补 `[]`；给了就必须是字符串数组。 */
+function stringArrayArg(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const result: string[] = []
+  for (const item of value) {
+    if (typeof item !== "string") return undefined
+    result.push(item)
+  }
+  return result
+}
+
+function visibilityArg(value: unknown): AssetVisibility | undefined {
+  if (typeof value !== "string") return undefined
+  return ASSET_VISIBILITIES.find((candidate) => candidate === value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -183,7 +303,7 @@ function isGovernanceToolName(name: string): name is GovernanceToolName {
 
 async function runTool(
   deps: GovernanceDeps,
-  name: GovernanceToolName,
+  name: TransitionToolName,
   args: Record<string, unknown>,
   meta: unknown,
 ): Promise<CallToolResult> {
@@ -202,7 +322,7 @@ async function runTool(
     sourceDirectory = raw
   }
 
-  const viewer = await viewerOf(deps.db, userIdOf(meta))
+  const user = await userOf(deps.db, userIdOf(meta))
   const source = sourceDirectory === undefined ? undefined : resolveSourceDirectory(deps.sourceRoot, sourceDirectory)
 
   try {
@@ -211,7 +331,7 @@ async function runTool(
       root: deps.root,
       assetId,
       action,
-      viewer,
+      viewer: viewerOf(user),
       ...(source === undefined ? {} : { sourceDirectory: source }),
     })
     return textResult({
@@ -243,6 +363,72 @@ async function runTool(
 }
 
 /**
+ * 制作入口的工具实现：先确认「沙箱里真有一份 skill」，再登记元数据。
+ *
+ * 顺序刻意如此——文件判据在写库之前，路径判据在碰库之前（`#004-09`）。所有拒绝路径
+ * 都不产生资产行，测试逐条断言 `auth.asset` 仍为 0 行。
+ *
+ * `department` 即使被传进来也不收：`additionalProperties: false` 只是给模型的提示，
+ * SDK 不会替我们校验；作者与部门一律取 `auth.user` 的档案。
+ */
+async function runCreateDraft(
+  deps: GovernanceDeps,
+  args: Record<string, unknown>,
+  meta: unknown,
+): Promise<CallToolResult> {
+  const name = stringArg(args, "name")
+  const description = stringArg(args, "description")
+  const category = stringArg(args, "category")
+  const sourceDirectory = stringArg(args, "sourceDirectory")
+  if (name === undefined || description === undefined || category === undefined || sourceDirectory === undefined) {
+    return errorResult(
+      "invalid_arguments",
+      "create_skill_draft 需要非空的 name / description / category / sourceDirectory",
+    )
+  }
+
+  const tags = args.tags === undefined ? [] : stringArrayArg(args.tags)
+  if (tags === undefined) return errorResult("invalid_arguments", "tags 必须是字符串数组")
+
+  let visibility: AssetVisibility = "personal"
+  if (args.visibility !== undefined) {
+    const parsed = visibilityArg(args.visibility)
+    if (parsed === undefined) {
+      return errorResult("invalid_arguments", `visibility 必须是 ${ASSET_VISIBILITIES.join(" / ")} 之一`)
+    }
+    visibility = parsed
+  }
+
+  try {
+    const user = await userOf(deps.db, userIdOf(meta))
+    const source = resolveSourceDirectory(deps.sourceRoot, sourceDirectory)
+    const skillName = await skillNameOf(source)
+    const asset = await createDraftAsset({
+      db: deps.db,
+      owner: user,
+      name,
+      description,
+      category,
+      tags,
+      visibility,
+    })
+    return textResult({
+      ok: true,
+      assetId: asset.id,
+      name: asset.name,
+      skillName,
+      status: asset.status,
+      visibility: asset.visibility,
+      next: "用 submit_skill_for_review 提交审核（assetId + 同一个 sourceDirectory）",
+    })
+  } catch (error) {
+    if (error instanceof AssetMetadataError) return errorResult("invalid_arguments", error.message)
+    if (error instanceof GovernanceError) return errorResult(error.code, error.message)
+    return errorResult("tool_failed", error instanceof Error ? error.message : String(error))
+  }
+}
+
+/**
  * 建一个治理 MCP server（不碰 env / stdio，便于用 in-memory transport 测）。
  *
  * 生产入口见 `mcp-main.ts`：`connect(process.env)` + `assetsRoot(process.env)` +
@@ -262,7 +448,11 @@ export function createGovernanceServer(deps: GovernanceDeps): Server {
       return errorResult("unknown_tool", `未知工具：${name}`)
     }
     try {
-      return await runTool(deps, name, request.params.arguments ?? {}, request.params._meta)
+      const args = request.params.arguments ?? {}
+      if (name === "create_skill_draft") {
+        return await runCreateDraft(deps, args, request.params._meta)
+      }
+      return await runTool(deps, name, args, request.params._meta)
     } catch (error) {
       if (error instanceof GovernanceError) return errorResult(error.code, error.message)
       return errorResult("tool_failed", error instanceof Error ? error.message : String(error))

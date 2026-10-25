@@ -12,13 +12,14 @@ import { createGovernanceServer, GOVERNANCE_TOOL_NAMES } from "./governance"
 import type { AssetMetadata } from "./metadata"
 
 /**
- * 009 T012 · 资产治理 MCP server（submit_skill_for_review / publish_skill）。
+ * 009 T012 / T013 · 资产治理 MCP server（提交 / 发布 / 制作入口）。
  *
- * 判据分四块：
- * ① 协议面：`tools/list` 只暴露两个治理工具；
+ * 判据分五块：
+ * ① 协议面：`tools/list` 暴露三个治理工具，必填字段各自钉住；
  * ② 身份：`_meta["openhive/user"]` 缺失 / 用户不存在 / 已停用 ⇒ 一律拒，且资产状态不动；
  * ③ capability：没有对应权限就调不动（提交需写、发布需管），且失败发生在文件操作之前；
- * ④ 路径：源目录必须相对、且落在 MCP 进程的工作目录内，越界不复制。
+ * ④ 路径：源目录必须相对、且落在 MCP 进程的工作目录内，越界不复制；
+ * ⑤ 制作入口：只有沙箱里真有带 frontmatter 的 SKILL.md 才登记草稿，作者 / 部门取自身份。
  */
 
 const databases: ProductionDb[] = []
@@ -158,24 +159,263 @@ async function prepareSource(sourceRoot: string, name = "skill-src"): Promise<st
   return name
 }
 
+/** 制作入口生成的 skill：带 frontmatter 的 SKILL.md（opencode 只认这种）。 */
+async function prepareSkillSource(
+  sourceRoot: string,
+  name = "fund-analysis",
+  frontmatter = `---
+name: ${name}
+description: 按账户汇总资金流水
+---
+
+# 资金流水分析
+`,
+): Promise<string> {
+  const directory = join(sourceRoot, name)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, "SKILL.md"), frontmatter)
+  return name
+}
+
+async function assetCount(db: ProductionDb["db"]): Promise<number> {
+  const [row] = rowsOf(await db.execute(sql`select count(*)::int as count from auth.asset`))
+  return Number(row!.count)
+}
+
+async function rowOf(db: ProductionDb["db"], assetId: string): Promise<Record<string, unknown>> {
+  const [row] = rowsOf(await db.execute(sql`select * from auth.asset where id = ${assetId}`))
+  return row!
+}
+
+/** 读制作入口的返回；字段缺失就当场抛（不让 `as` 把测试的断言力悄悄拿走）。 */
+function createdAsset(text: string): { assetId: string; skillName: string } {
+  const value: unknown = JSON.parse(text)
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("assetId" in value) ||
+    typeof value.assetId !== "string" ||
+    !("skillName" in value) ||
+    typeof value.skillName !== "string"
+  ) {
+    throw new Error(`create_skill_draft 返回形状不对：${text}`)
+  }
+  return { assetId: value.assetId, skillName: value.skillName }
+}
+
 describe("tools/list", () => {
-  test("只暴露两个治理工具，名称与出参约定的常量一致", async () => {
+  test("暴露三个治理工具，名称与出参约定的常量一致", async () => {
     const { client } = await harness()
     const { tools } = await client.listTools()
 
     expect(tools.map((tool) => tool.name)).toEqual([...GOVERNANCE_TOOL_NAMES])
-    expect(GOVERNANCE_TOOL_NAMES).toEqual(["submit_skill_for_review", "publish_skill"])
+    expect(GOVERNANCE_TOOL_NAMES).toEqual([
+      "submit_skill_for_review",
+      "publish_skill",
+      "create_skill_draft",
+    ])
     for (const tool of tools) expect(tool.description?.length ?? 0).toBeGreaterThan(10)
   })
 
-  test("两个工具都把 assetId 标成必填（模型不能凭名字猜）", async () => {
+  test("提交 / 发布把 assetId 标成必填；制作入口不收 assetId，收名称与源目录", async () => {
     const { client } = await harness()
     const { tools } = await client.listTools()
+    const byName = new Map(tools.map((tool) => [tool.name, tool]))
 
-    for (const tool of tools) {
-      const schema = tool.inputSchema as { required?: string[] }
+    for (const name of ["submit_skill_for_review", "publish_skill"]) {
+      const schema = byName.get(name)!.inputSchema as { required?: string[] }
       expect(schema.required).toContain("assetId")
     }
+
+    const create = byName.get("create_skill_draft")!.inputSchema as { required?: string[] }
+    expect(create.required).toEqual(
+      expect.arrayContaining(["name", "description", "category", "sourceDirectory"]),
+    )
+    expect(create.required).not.toContain("assetId")
+  })
+})
+
+describe("create_skill_draft", () => {
+  test("把 AI 落盘的 skill 登记成草稿：作者 / 部门取自库，文件不复制进共享根", async () => {
+    const { db, root, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      {
+        name: "资金流水分析",
+        description: "按账户汇总流水，标出异常进出",
+        category: "intelligence",
+        tags: ["资金", "流水"],
+        sourceDirectory: source,
+      },
+      "u1",
+    )
+
+    expect(result.isError).toBe(false)
+    expect(JSON.parse(result.text)).toMatchObject({ ok: true, status: "draft" })
+    const payload = createdAsset(result.text)
+    expect(payload.skillName).toBe("fund-analysis")
+    expect(payload.assetId).toMatch(/^asset_/)
+
+    const row = await rowOf(db, payload.assetId)
+    expect(row).toMatchObject({
+      name: "资金流水分析",
+      type: "skill",
+      description: "按账户汇总流水，标出异常进出",
+      category: "intelligence",
+      owner_id: "u1",
+      owner_name: "甲民警",
+      department: "经侦支队",
+      visibility: "personal",
+      status: "draft",
+      version: 1,
+      favorite_count: 0,
+      usage_count: 0,
+      published_at: null,
+      archived_at: null,
+    })
+    expect(row.tags).toEqual(["资金", "流水"])
+
+    // 草稿停在作者沙箱：共享根里没有它的目录，源文件也没被动过。
+    expect(await exists(join(root, source))).toBe(false)
+    expect(await exists(join(sourceRoot, source, "SKILL.md"))).toBe(true)
+  })
+
+  test("登记完就能用同一个 assetId 提交审核（制作 → 提交是一条链）", async () => {
+    const { db, root, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const created = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "按账户汇总流水", category: "intelligence", sourceDirectory: source },
+      "u1",
+    )
+    const { assetId } = createdAsset(created.text)
+
+    const submitted = await call(
+      client,
+      "submit_skill_for_review",
+      { assetId, sourceDirectory: source },
+      "u1",
+    )
+
+    expect(submitted.isError).toBe(false)
+    expect(await statusOf(db, assetId)).toBe("in_review")
+    expect(await readFile(join(root, "pending", assetId, "SKILL.md"), "utf8")).toContain("fund-analysis")
+  })
+
+  test("department 可见范围：部门取调用者档案，不听参数", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      {
+        name: "资金流水分析",
+        description: "按账户汇总流水",
+        category: "intelligence",
+        sourceDirectory: source,
+        visibility: "department",
+        department: "法制支队", // 模型自报的部门必须被忽略
+      },
+      "u1",
+    )
+
+    expect(result.isError).toBe(false)
+    const { assetId } = createdAsset(result.text)
+    const row = await rowOf(db, assetId)
+    expect(row.visibility).toBe("department")
+    expect(row.department).toBe("经侦支队")
+  })
+
+  test("元数据不合法：拒绝且一行都不写", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const cases: Array<Record<string, unknown>> = [
+      { name: "", description: "x", category: "intelligence", sourceDirectory: source },
+      { name: "资金流水分析", description: "", category: "intelligence", sourceDirectory: source },
+      { name: "资金流水分析", description: "x", category: "no-such-category", sourceDirectory: source },
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source, visibility: "public" },
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source, tags: ["资金", "资金"] },
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source, tags: [""] },
+    ]
+
+    for (const args of cases) {
+      const result = await call(client, "create_skill_draft", args, "u1")
+      expect(result.isError).toBe(true)
+      expect(result.text).toContain("invalid_arguments")
+    }
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("身份缺失 / 用户不存在 / 已停用：拒绝且一行都不写", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+    const args = { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source }
+
+    const missing = await call(client, "create_skill_draft", args)
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toContain("identity_required")
+
+    const unknown = await call(client, "create_skill_draft", args, "nobody")
+    expect(unknown.isError).toBe(true)
+    expect(unknown.text).toContain("user_not_found")
+
+    const disabled = await call(client, "create_skill_draft", args, "u3")
+    expect(disabled.isError).toBe(true)
+    expect(disabled.text).toContain("user_disabled")
+
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("源目录越界（绝对路径 / ../）：拒绝且一行都不写", async () => {
+    const { db, client } = await harness()
+    const base = { name: "资金流水分析", description: "x", category: "intelligence" }
+
+    const absolute = await call(
+      client,
+      "create_skill_draft",
+      { ...base, sourceDirectory: "D:/somewhere/else" },
+      "u1",
+    )
+    expect(absolute.isError).toBe(true)
+    expect(absolute.text).toContain("source_outside_workspace")
+
+    const parent = await call(client, "create_skill_draft", { ...base, sourceDirectory: "../outside" }, "u1")
+    expect(parent.isError).toBe(true)
+    expect(parent.text).toContain("source_outside_workspace")
+
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("源目录里没有 SKILL.md / frontmatter 没有 name：拒绝且一行都不写", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const base = { name: "资金流水分析", description: "x", category: "intelligence" }
+
+    const empty = join(sourceRoot, "empty")
+    await mkdir(empty, { recursive: true })
+    await writeFile(join(empty, "notes.md"), "只有笔记\n")
+
+    const missing = await call(client, "create_skill_draft", { ...base, sourceDirectory: "empty" }, "u1")
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toContain("skill_file_not_found")
+
+    const invalid = await prepareSkillSource(sourceRoot, "no-frontmatter", "# 没有 frontmatter\n")
+    const noFrontmatter = await call(
+      client,
+      "create_skill_draft",
+      { ...base, sourceDirectory: invalid },
+      "u1",
+    )
+    expect(noFrontmatter.isError).toBe(true)
+    expect(noFrontmatter.text).toContain("skill_frontmatter_invalid")
+
+    expect(await assetCount(db)).toBe(0)
   })
 })
 

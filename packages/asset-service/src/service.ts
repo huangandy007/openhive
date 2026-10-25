@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto"
 import { grantsFor, type GrantRow } from "@opencode-ai/auth/rbac"
 import {
+  AssetMetadataError,
   assertValidAssetMetadata,
   assetById,
   deleteAsset,
@@ -8,6 +10,8 @@ import {
   type AssetTarget,
 } from "./asset"
 import type { AssetViewer } from "./authorization"
+import { isKnownCategory } from "./categories"
+import type { AssetVisibility } from "./metadata"
 import {
   AssetTransitionError,
   applySkillTransition,
@@ -129,6 +133,81 @@ export async function storeAsset(input: StoreAssetInput): Promise<AssetMetadata>
     throw error
   }
 
+  return metadata
+}
+
+export interface CreateDraftAssetInput {
+  readonly db: AssetTarget
+  /** 作者档案；生产由 MCP 身份查 `auth.user` 得到，**不收调用方自报值**。 */
+  readonly owner: {
+    readonly id: string
+    readonly name: string
+    readonly department: string
+  }
+  readonly name: string
+  readonly description: string
+  /** 业务分类 id，必须在 `categories.ts` 的 seed 里。 */
+  readonly category: string
+  readonly tags?: readonly string[]
+  /** 默认个人空间：草稿不该先对全单位可见。 */
+  readonly visibility?: AssetVisibility
+  readonly icon?: string
+  /** 测试注入；生产省略由服务生成稳定 id。 */
+  readonly id?: string
+  /** Unix 秒；测试注入固定时间，生产省略取当前。 */
+  readonly now?: number
+}
+
+/**
+ * 建一份 Skill 草稿元数据（009 T013，FR-008）。
+ *
+ * ## 为什么没有走 `storeAsset`
+ *
+ * `storeAsset` 的职责是「把作者沙箱里的文件复制进共享根 + 写元数据」。草稿的存储约定相反：
+ * 它**停在作者沙箱**，`assetLocation("draft")` 明确返回 `undefined`，共享根里不该有
+ * 它的目录。硬套 `storeAsset` 会先复制一份没人读取的目录，再给后来的提交留下两份源。
+ *
+ * 这里走的仍是资产服务的**正式写入路径**：先按 `validateAssetMetadata` 校验（含业务分类
+ * 字典），再 `insertAsset`。不是手拼 SQL，也不伪造作者 / 部门 / 状态。
+ *
+ * ## 不检查同名重复
+ *
+ * `auth.asset` 没有「同作者同名」约束，同名 skill 在不同目录下可以共存。这个函数因此
+ * 每次调用都新建一行；重复调用会产生两份草稿（`state.md` 记为残差，等产品定「同名覆盖
+ * 还是并存」后再加约束，不在这里猜）。
+ */
+export async function createDraftAsset(input: CreateDraftAssetInput): Promise<AssetMetadata> {
+  if (!isKnownCategory(input.category)) {
+    throw new AssetMetadataError([{ field: "category", message: `未知业务分类：${input.category}` }])
+  }
+
+  const now = input.now ?? Math.floor(Date.now() / 1000)
+  const metadata: AssetMetadata = {
+    id: input.id ?? `asset_${randomUUID()}`,
+    name: input.name,
+    type: "skill",
+    description: input.description,
+    icon: input.icon ?? "🧩",
+    category: input.category,
+    tags: input.tags ?? [],
+    ownerId: input.owner.id,
+    ownerName: input.owner.name,
+    department: input.owner.department,
+    visibility: input.visibility ?? "personal",
+    version: 1,
+    status: "draft",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: now,
+    updatedAt: now,
+    publishedAt: null,
+    archivedAt: null,
+  }
+
+  await insertAsset(input.db, metadata)
   return metadata
 }
 
