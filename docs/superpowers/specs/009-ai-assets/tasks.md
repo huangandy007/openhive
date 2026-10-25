@@ -64,7 +64,7 @@
 
 ## Phase 5: US3 权限 + US4 Skill 制作（P1）
 
-- [ ] T011 [BE] 实现授权 vs 收藏分离（收藏只影响抽屉排序）[FR-007] [T004] [出参：收藏不改授权]
+- [x] T011 [BE] 实现授权 vs 收藏分离（收藏只影响抽屉排序）[FR-007] [T004] [出参：收藏不改授权]
 - [ ] T012 [BE] 实现「资产治理 MCP server」（submit_skill_for_review / publish_skill，capability 鉴权）[FR-004] [T003][T004] [出参：工具驱动提交/发布]
 - [ ] T013 [INT] 实现 Skill 制作入口（右栏 AI 对话生成 skill）[FR-008] [T003] [出参：自然语言生成 skill 落沙箱]
 

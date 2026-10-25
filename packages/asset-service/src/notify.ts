@@ -3,6 +3,7 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { AppliedSkillTransition, SkillAction } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
+import { favoriteUsers } from "./preferences"
 
 /**
  * 资产状态变化的站内信通知（009 T010，FR-004 / design §2.6）。
@@ -18,12 +19,20 @@ import type { AssetMetadata } from "./metadata"
  * 设计明确要求：新资产发布**不通知全体**，让民警在资产工作区主动发现（避免通知轰炸）。
  * 所以这里没有「全单位」收件人，只有作者 / 授权人。
  *
+ * ## 「使用者」= 收藏者（T011 补齐）
+ *
+ * 下线 / 重新上线推给**收藏过这份资产的人**（`auth.asset_favorite`，T011 落地）。
+ * 设计原文是「使用者（收藏 / 最近用过）」；「最近用过」这一半**暂不纳入**：设计没有
+ * 定义「最近」的时间窗（7 天？30 天？），凭空取一个数字就是把产品决策埋进代码。
+ * 等产品给出窗口后，`auth.asset_usage` 已有逐用户 `last_used_at`，加一条查询即可。
+ *
  * ## 已知残差
  *
- * - 「下线 / 重新上线 → 使用者（收藏 / 最近用过）」中的使用者解析不出来：当前没有
- *   收藏明细与使用明细（计数是缓存列），T011 落收藏后回来补。现在只通知作者。
  * - 通知没有已读状态（`read_at`）、没有去重键、失败不重试：前两项属站内信面板，
  *   重试要先有 outbox / 对账，不在 T010 造一个看起来可靠的空壳。
+ * - 收藏者可能**当前已无权读取**该资产（授权撤销后收藏行仍在）：通知正文只含资产名，
+ *   不含任何内容细节，且资产下线 / 上线的消息本身不构成权限泄漏；但若未来正文要带
+ *   内容摘要，必须先过滤收件人。
  */
 
 /** 能跑 SQL 的句柄（形状同 `AssetTarget` / `GrantTarget`）。 */
@@ -31,16 +40,18 @@ export interface NotificationTarget {
   execute(query: SQL): PromiseLike<unknown>
 }
 
-/** 收件人来源。`reviewers` = 持有该资产 `review` 授权的人；`admins` 同理（`admin`）。 */
-export type RecipientKind = "author" | "reviewers" | "admins"
+/**
+ * 收件人来源。
+ * - `reviewers` / `admins`：持有该资产 `review` / `admin` 授权的人；
+ * - `favoriters`：收藏过该资产的「使用者」（T011）。
+ */
+export type RecipientKind = "author" | "reviewers" | "admins" | "favoriters"
 
 /**
  * 每个动作推给谁（design §2.6 的表格）。
  *
- * 两个空数组是**刻意的**，不是漏配：
- * - `start_iteration`：作者自己发起的，通知自己只会制造噪音；
- * - `bring_online`：设计推给「使用者」，但当前没有收藏 / 使用明细（T011），
- *   宁可零收件人，也不凭空造一个收件人列表。
+ * `start_iteration` 的空数组是**刻意的**，不是漏配：作者自己发起的，
+ * 通知自己只会制造噪音。
  */
 export const TRANSITION_RECIPIENTS: Record<SkillAction, readonly RecipientKind[]> = {
   submit_review: ["reviewers"],
@@ -49,8 +60,8 @@ export const TRANSITION_RECIPIENTS: Record<SkillAction, readonly RecipientKind[]
   publish_tech: ["author"],
   start_iteration: [],
   publish_iteration: ["author"],
-  take_offline: ["author"],
-  bring_online: [],
+  take_offline: ["author", "favoriters"],
+  bring_online: ["favoriters"],
   archive: ["author"],
 }
 
@@ -121,6 +132,9 @@ export async function resolveNotificationRecipients(
   if (kinds.includes("admins")) {
     for (const userId of await grantHolders(db, notice.asset, "admin")) recipients.add(userId)
   }
+  if (kinds.includes("favoriters")) {
+    for (const userId of await favoriteUsers(db, notice.asset.id)) recipients.add(userId)
+  }
 
   recipients.delete(notice.actorId)
   return [...recipients]
@@ -155,12 +169,13 @@ function messageOf(notice: AssetTransitionNotice): { title: string; body: string
         title: "skill 已下线",
         body: reason === "" ? `${name} 已下线。` : `${name} 已下线。原因：${reason}`,
       }
+    case "bring_online":
+      return { title: "skill 已重新上线", body: `${name} 已重新上线，可以继续使用。` }
     case "archive":
       return { title: "skill 已归档", body: `${name} 已归档。` }
-    // 两个动作没有收件人（见 TRANSITION_RECIPIENTS）；这里返回什么都写不进库。
+    // 没有收件人（见 TRANSITION_RECIPIENTS）；返回什么都写不进库。
     case "start_iteration":
-    case "bring_online":
-      return { title: "skill 状态变化", body: `${name} 已${notice.applied.action}。` }
+      return { title: "skill 状态变化", body: `${name} 已开始迭代。` }
     default: {
       const action: never = notice.applied.action
       throw new Error(`未知生命周期动作：${String(action)}`)

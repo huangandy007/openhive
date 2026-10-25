@@ -31,8 +31,8 @@
 | `publish_tech` | 作者 | 「skill 已发布」 |
 | `start_iteration` | **无** | 作者自己发起的，通知自己只会制造噪音 |
 | `publish_iteration` | 作者 | 「skill 新版本已发布」/ 含版本号 |
-| `take_offline` | 作者（设计另含「使用者」，见 §4） | 「skill 已下线」/ 有原因时附原因 |
-| `bring_online` | **无**（设计推给「使用者」，当前解析不出来，见 §4） | — |
+| `take_offline` | 作者 + 收藏者（「使用者」的第一半，见 §4） | 「skill 已下线」/ 有原因时附原因 |
+| `bring_online` | 收藏者（作者没收藏就不通知） | 「skill 已重新上线」/ 可以继续使用 |
 | `archive` | 作者 | 「skill 已归档」 |
 
 解析只认**该资产**的授权行：`resource_type = asset.type` 且 `resource_id = asset.id`。
@@ -55,7 +55,8 @@
 
 | 项 | 现状 | 后续 |
 |---|---|---|
-| 下线 / 重新上线通知「使用者」 | 当前只有收藏数 / 使用次数的缓存列，**没有明细**，解析不出具体用户；下线只通知作者，重新上线零收件人 | T011 落收藏明细后补；使用明细更晚 |
+| 「使用者」中的「最近用过」 | T011 已补**收藏者**（`auth.asset_favorite`）；`auth.asset_usage.last_used_at` 也有明细了，但设计没定义「最近」的时间窗，**不擅自取 7 天 / 30 天** | 产品给出窗口后，在 `favoriteUsers` 旁加一条 `recentUsers(assetId, since)` |
+| 收藏者可能已无权读取该资产 | 收藏行不随授权撤销而消失；通知只含资产名，不含内容摘要，不构成内容泄漏 | 若正文要带内容摘要，必须先按 `canReadAsset()` 过滤收件人 |
 | 已读状态 | 表里没有 `read_at`；未读红点与「标记已读」属站内信面板 | design-v2 §8.3 的独立 feature |
 | 重试 / outbox | 通知失败不重试，也没有投递记账 | 与资产对账一起考虑；不现在造假可靠 |
 | 站内信读取接口 | 无（表已按收件箱查询形状建索引） | 站内信面板 feature |
@@ -63,10 +64,12 @@
 
 ## 5. 用例与变异验证
 
-- 新增用例：`notify.test.ts` 14 条（CHECK 防漂移、收件人矩阵 9 条、内容快照与级联 2 条、
-  空矩阵 1 条、别资产隔离 1 条）；`service.test.ts` 2 条（全链路通知到人、通知失败语义）。
-- 全量：`packages/asset-service` 133 pass / 0 fail；`packages/auth` 286 pass / 3 skip / 0 fail
-  （含 0011 迁移与中文注释全覆盖）；`tsgo --noEmit` 0 errors；oxlint 0 errors / 6 warnings（均为既有告警）。
+- 新增用例：`notify.test.ts` 17 条（CHECK 防漂移 1、收件人矩阵 14、内容快照与级联 2；
+  其中 3 条为 T011 追加：下线通知收藏者、重新上线只通知收藏者、别资产收藏者隔离）；
+  `service.test.ts` 2 条（全链路通知到人、通知失败语义）。
+- 全量（T011 后）：`packages/asset-service` 152 pass / 0 fail；`packages/auth` 286 pass /
+  3 skip / 0 fail（含 0011 / 0012 迁移与中文注释全覆盖）；`tsgo --noEmit` 0 errors；
+  oxlint 0 errors（改动文件）。
 - 变异（拆完即还原）：
 
 | 拆掉什么 | 红在哪 | 条数 |
@@ -74,3 +77,4 @@
 | `submit_review` 的收件人改成 `["author"]` | 提交只通知审核人 / 只认 review·admin / 服务层全链路通知 | 3 |
 | 去掉发起人排除（`recipients.delete(actorId)`） | 发起人是唯一收件人时不发 | 1 |
 | 去掉 `AssetNotificationError` 包装 | 通知写库失败语义 | 1 |
+| `bring_online` 的收件人改回 `[]`（T011） | 矩阵口径 / 重新上线只通知收藏者 | 2 |

@@ -7,6 +7,7 @@ import { insertAsset } from "./asset"
 import { SKILL_ACTIONS, type AppliedSkillTransition, type SkillAction } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import { notifyAssetTransition, TRANSITION_RECIPIENTS } from "./notify"
+import { addFavorite } from "./preferences"
 
 /**
  * 009 T010 · 站内信通知（状态变化推送到人）。
@@ -238,7 +239,7 @@ describe("收件人矩阵（design §2.6）", () => {
     expect((await rows(db))[0]!.body).toContain("第 2 版")
   })
 
-  test("作者自己发起的动作为空、重新上线的「使用者」暂无可解析来源", async () => {
+  test("开始迭代没有收件人；重新上线没有收藏者时也是零条", async () => {
     const db = await freshDb()
     await insertAsset(db, metadata({ status: "published" }))
 
@@ -246,9 +247,43 @@ describe("收件人矩阵（design §2.6）", () => {
     expect(await notify(db, "bring_online", { actorId: "u1" })).toBe(0)
     expect(await rows(db)).toEqual([])
 
-    // 矩阵本身写清楚「为什么是空」，别让后来的人以为是漏配。
+    // 矩阵本身写清楚「为什么是空 / 为什么是收藏者」，别让后来的人以为是漏配。
     expect(TRANSITION_RECIPIENTS.start_iteration).toEqual([])
-    expect(TRANSITION_RECIPIENTS.bring_online).toEqual([])
+    expect(TRANSITION_RECIPIENTS.bring_online).toEqual(["favoriters"])
+  })
+
+  test("下线：作者 + 收藏者都收到；发起人若恰好也收藏了则被排除", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "published" }))
+    await addFavorite(db, { userId: "u1", assetId: "asset_1" }) // 作者收藏了自己的
+    await addFavorite(db, { userId: "u2", assetId: "asset_1" })
+    await addFavorite(db, { userId: "u3", assetId: "asset_1" })
+
+    // u3（管理员）下线：作者 u1 与收藏者 u2 收到，发起人 u3 被排除。
+    expect(await notify(db, "take_offline", { actorId: "u3" })).toBe(2)
+    expect((await rows(db)).map((row) => row.recipient_id)).toEqual(["u1", "u2"])
+  })
+
+  test("重新上线：只通知收藏者，不通知作者（作者没收藏就不该收到）", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "offline" }))
+    await addFavorite(db, { userId: "u2", assetId: "asset_1" })
+
+    expect(await notify(db, "bring_online", { actorId: "u3" })).toBe(1)
+    const [row] = await rows(db)
+    expect(row!.recipient_id).toBe("u2")
+    expect(row!.title).toBe("skill 已重新上线")
+    expect(row!.body).toContain("可以继续使用")
+  })
+
+  test("别的资产的收藏者不会串到本资产的通知里", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "published" }))
+    await insertAsset(db, metadata({ id: "asset_2", name: "话单碰撞", status: "published" }))
+    await addFavorite(db, { userId: "u3", assetId: "asset_2" })
+
+    expect(await notify(db, "take_offline", { actorId: "u2" })).toBe(1)
+    expect((await rows(db)).map((row) => row.recipient_id)).toEqual(["u1"])
   })
 
   test("没有授权人 ⇒ 零条通知，不抛错（不能因没人可通知让流转失败）", async () => {

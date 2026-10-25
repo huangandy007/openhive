@@ -1,9 +1,38 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T010 已交付（站内信通知），等待用户审阅。下一任务 T011（授权 vs 收藏分离，依赖 T004）。
+T011 已交付（授权 vs 收藏分离），等待用户审阅。下一任务 T012（资产治理 MCP server，
+依赖 T003 + T004）。
 
 ## 已完成
+- **T011** 授权 vs 收藏分离（收藏只影响抽屉排序）（FR-007 / design §1.3 §1.5）
+  - 迁移 `0012_asset_preferences.sql`（＋ `.down.sql`）：`auth.asset_favorite`
+    （个人偏好，主键 `(user_id, asset_id)`）、`auth.asset_usage`（每用户每资产一行
+    `last_used_at`）；两表外键均级联删除；每表每列中文注释；`asset_id` 单列索引供
+    「谁收藏 / 谁用过」解析
+  - `preferences.ts`：`addFavorite` / `removeFavorite`（一条数据修改 CTE，插入成功才
+    改 `favorite_count`；幂等、计数不为负）、`isFavorite` / `favoriteAssetIds`、
+    `recordUsage`（upsert 最近使用 + `usage_count + 1`）/ `lastUsedAtOf` / `favoriteUsers`
+  - `orderForDrawer()`：抽屉组内排序，固定比较链「最近使用倒序 → 使用次数倒序 →
+    收藏优先 → id 升序」；排序不过滤、不改入参；设计里「收藏加持 / 收藏低频排后」的
+    口径张力在 `preferences.md` §3 写明并标为待确认
+  - **授权判定未动**：收藏不是 `effectivePermissions()` / `canReadAsset()` 的输入；
+    用例钉住「收藏了个人资产仍读不到」「收藏了别的部门的资产仍读不到」「收藏人仍过不了审核关」
+  - `notify.ts`：下线 = 作者 + 收藏者；重新上线 = 收藏者（作者没收藏就不通知）；
+    新增「skill 已重新上线」文案；T010 残差里的「使用者」第一半已补齐
+  - 文档：新增 `preferences.md`（分离口径 / 排序规则 / API / 残差 / 变异）；`notification.md`
+    的矩阵与残差同步
+  - 门禁实测：`asset-service` **152 pass / 0 fail**（+19：偏好 16 + 通知 3）；
+    `auth` **286 pass / 3 skip / 0 fail**（含 0012 迁移、中文注释全覆盖）；
+    `tsgo --noEmit` 两个 package 均 0 errors；oxlint（改动文件）0 warnings / 0 errors；
+    `bun.lock` 无 diff
+  - 变异验证（拆完即还原）：重复收藏 `do nothing` 改 `do update` ⇒ 红 1；
+    收藏提到使用次数之前 ⇒ 红 1；去掉最近使用比较 ⇒ 红 1；
+    `bring_online` 改回 `[]` ⇒ 红 2；`canReadAsset` 无条件放行 ⇒ 红 2
+  - 已知残差：收藏按钮与抽屉排序接线等资产 HTTP 接口（T017）；`favoriteAssetIds()` 是原始
+    清单、列出前须过滤 `canReadAsset()`；用户注销后 `favorite_count` 缓存漂移待对账；
+    「最近用过」的通知时间窗设计未定义；本机未跑 `test:real-pg`（默认 skip）
+
 - **T010** 站内信通知（状态变化推送到人，🧩 资产标签）（FR-004 / design §2.6）
   - 迁移 `0011_asset_notification.sql`（＋ `.down.sql`）：`auth.asset_notification`
     一行一人；收件人与资产名写入时快照；`action` CHECK 与 `SKILL_ACTIONS` 双向比对；
@@ -184,4 +213,4 @@ T010 已交付（站内信通知），等待用户审阅。下一任务 T011（�
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T010 完成）
+2026-10-25（T011 完成）
