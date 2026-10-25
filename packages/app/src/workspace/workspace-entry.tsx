@@ -1,4 +1,6 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
+import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { AssetCenter } from "@/ai-assets/asset-center"
 import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
 import { ProjectionModuleProvider } from "@/ai-session/projection-module"
@@ -143,6 +145,17 @@ export interface WorkspaceEntryProps {
    * 什么也不打开。语义与代价见 `rail/rail.tsx` 的 `RailProps.onOpenSettings`。
    */
   onOpenSettings?: () => void
+  /**
+   * **AI 资产的列表数据源**（009 T006）。
+   *
+   * 与 `projectData` 同一条规矩：**注入而不 import 生产实现**——`/assets` 的 HTTP 接口今天
+   * 还没落（见 `docs/superpowers/specs/009-ai-assets/state.md` 的已知缺口），本组件若自己去取，
+   * 组件测试就再也跑不成离线。省略 = 空列表（`AssetGrid` 显示「没有符合条件的资产」），
+   * **不放假数据**把界面撑满（`metadata.ts` 的计数注释：后续写入方必须填真值）。
+   *
+   * 形状是访问器：接口接上后，数据变化要能让网格跟着刷新，传现成数组会冻在首帧。
+   */
+  assets?: () => readonly AssetMetadata[]
 }
 
 /**
@@ -2141,16 +2154,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               都在 `center-split.tsx` 里，本组件只把取数出口与上游页面注入进去。
               AI 资产是**模块级页面**（D0-3）——文件 tab 那套（`CenterSplit`）整块让位，但 tab
               状态不丢（只是不渲染，`center` 里的 tabs 原封不动），切回项目管理时照旧。
-              T006 把这块占位换成资产网格与搜索。 */}
+              T006 起这里是搜索 + 卡片网格；`assetFilter` 与左栏**共享同一份**（左栏点了类型/分类，
+              网格立刻按它筛），数据来自 `props.assets` 这条注入缝。 */}
           {视图() === "ai-assets" ? (
-            <div
-              data-slot="asset-center"
-              class="flex h-full w-full items-center justify-center px-6 text-center"
-            >
-              <p data-slot="asset-center-empty" class="text-[13px] text-v2-text-text-muted">
-                从左侧选择业务分类，浏览 AI 资产
-              </p>
-            </div>
+            <AssetCenter filter={assetFilter} assets={props.assets} />
           ) : (
             <CenterSplit
               registry={viewRegistry}

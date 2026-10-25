@@ -429,6 +429,33 @@
   「AI 资产」本身不产生指令卡投影。
 - 「项目管理」图标在 AI 资产下**不高亮**：它只代表项目左栏的开关，不代表「左栏这一列开着」。
 
+### 4.9 AI 资产 · 中栏卡片网格与全局搜索
+
+中栏在 AI 资产下是**模块级页面**（§4.8 / D0-3）：搜索框常驻顶部，下面是卡片网格。
+网格按**行**虚拟滚动——只渲染视口内的行，资产再多也不把 DOM 撑爆。
+
+| 项 | 规范 |
+|---|---|
+| 搜索框 | 高度 36px；`rounded-[10px]`；`border border-v2-border-border-muted`；白底；左内嵌 `search` 图标 16px；字号 14px |
+| 搜索占位 | `搜索资产（名称 / 描述 / 标签）`；有内容时右侧出现清除按钮（`x`，`aria-label="清除搜索"`） |
+| 搜索匹配 | 名称 / 描述 / 标签，**含子串、忽略大小写**；与左栏筛选是**交集**（空间 ∧ 类型 ∧ 分类 ∧ 搜索） |
+| 网格容器 | 占满中栏剩余高度，`overflow-y-auto`；内边距 16px；行间 / 列间 12px |
+| 列宽 | 卡片最小 240px，`repeat(列数, minmax(0, 1fr))`；列数 = `floor((容器宽 + 12) / (240 + 12))`，至少 1 列 |
+| 卡片尺寸 | **固定高 132px**（虚拟滚动按固定行高计算的前提）；白底 `bg-v2-background-bg-base` ＋ `shadow-[var(--v2-elevation-raised)]` ＋ `border border-v2-border-border-muted`；**16px 圆角**（§3.1 大内容卡档） |
+| 卡片内容 | ① 六边形图标 32px（浅金底，内嵌按类型图标；`clip-path` 画形，图标集无 `hexagon`，§5.3）② 名称 14px / 600，单行截断 ③ 描述 12px 弱化，**两行截断** ④ 底部徽章：空间（`ASSET_VISIBILITY_LABELS`）＋ 状态（`ASSET_STATUS_LABELS`），11px |
+| 徽章 | 中性底色 `bg-v2-background-bg-layer-02` ＋ `text-v2-text-text-muted`；圆角 4px；`px-1.5 py-0.5` |
+| 空结果 | 居中一行 13px 弱化文案「没有符合条件的资产」；不画插画、不造数量 |
+| 虚拟滚动 | 行高 = 卡片 132px ＋ 行距 12px；overscan 2 行；滚动容器本身承载滚动（不套第二层滚动盒，`#006-30`） |
+| 无障碍 | 搜索框 `aria-label="搜索资产"`；网格 `role="list"`，每张卡 `role="listitem"` |
+| 卡片交互 | T006 **只渲染**（静态 `div`），不挂 `role="button"` / `tabindex`——详情 tab 是 T007，没接就不装成可点 |
+
+数据约定：
+
+- 前端只认 `AssetMetadata`（`@opencode-ai/asset-service/metadata` 的**纯类型**，不 import 带 DB 的入口）。
+- T006 的数据源是**注入的访问器**（`assets?: () => readonly AssetMetadata[]`，默认空数组）：
+  目前没有 `/assets` HTTP 路由，真实接线留待后续集成任务；空数组时显示空结果文案，不造样例数据。
+- 左栏筛选状态与中栏共用同一份（`createAssetFilter()` 落在 `WorkspaceEntry`），中栏**不另算一套**。
+
 ---
 
 ## 5. Brand

@@ -1,9 +1,33 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T006 待开工（Phase 3：中栏资产网格与搜索；与 T007 可并行）。T005 已交付左栏纯导航与两处接线。
+T006 已交付（中栏卡片网格 + 全局搜索），等待用户审阅。下一任务 T007（资产详情抽屉，依赖 T006）。
 
 ## 已完成
+- **T006** 中栏卡片网格（虚拟滚动）+ 全局搜索（FR-003 / DESIGN §4.9）
+  - `ai-assets/grid-model.ts`：`AssetQuery` 三组筛选 ∧ 搜索的**纯函数**交集；搜索口径
+    名称 / 描述 / 标签，子串 + 忽略大小写 + 去首尾空格；`网格列数`（240px 最小卡宽 + 12px
+    列距，至少 1 列）；常量 `卡片高 132` / `卡片行距 12`（8 用例）
+  - `ai-assets/asset-search.tsx`：36px 高、`aria-label="搜索资产"`、清除按钮
+    `aria-label="清除搜索"`（点后焦点留在输入框）；受控，值由中栏持有（3 用例）
+  - `ai-assets/asset-card.tsx`：**精简四件**——六边形图标（`clip-path`，图标集无 hexagon，
+    按类型取 `brain` / `mcp` / `folder`）、单行名称、两行描述、空间/状态徽章（文案取字典）；
+    静态条目（`role="listitem"`，无按钮语义 / 无 tabindex，点击留 T007）
+  - `ai-assets/asset-grid.tsx`：**按行虚拟滚动**（`@tanstack/solid-virtual`，行高 144、
+    overscan 2，单一滚动容器 `#006-30`）；列数按容器宽实时算（`ResizeObserver`）；
+    行容器 `role="presentation"`，`listitem` 直挂 `role="list"`；空态「没有符合条件的资产」
+  - `ai-assets/asset-center.tsx`：搜索词落在这层（不属于左栏筛选、也不进接入缝），
+    `filter` 与左栏共享同一份
+  - `workspace-entry.tsx`：中栏占位换成 `AssetCenter`；新增注入缝
+    `assets?: () => readonly AssetMetadata[]`（省略 = 空态，**不造假数据**）
+  - DESIGN.md 新增 §4.9「AI 资产 · 中栏卡片网格与全局搜索」
+  - 门禁实测：`test:components` 1341 pass / 0 fail（T005 后 +17：组件 12 + 集成 5）；
+    `test:unit` 1186 pass / 27 fail / 19 errors（+8 = 新增 `grid-model` 用例，红集与 T005
+    记录的旧红相同：`jsxDEV` 与 T020 上传下载）；`tsgo -b --force` 0 errors；
+    `lint:openhive` 0 errors / 67 warnings（新文件 0 warnings）；`bun.lock` 无 diff
+  - 变异验证：拆搜索谓词 ⇒ 红 4（纯逻辑 1 + 组件 2 + 集成 1）；拆类型筛选 ⇒ 红 5（3 + 1 + 1）；
+    拆虚拟化（`overscan: 9999`）⇒ 红 2；拆 `assets` 注入接线 ⇒ 集成红 4；均拆完即还原
+
 - **T005** 左栏纯导航（空间筛选 + 三 Tab + 业务分类折叠）+ 模块级页面接线（FR-002 / D0-3 / D0-6）
   - `ai-assets/filter.ts`：空间多选（默认全选）、类型 Tab（默认 Skill）、分类单开手风琴；
     分类行来自 `asset-service/categories` 的 seed，按 `order` 排序，前端不硬编码（5 用例）
@@ -73,8 +97,11 @@ T006 待开工（Phase 3：中栏资产网格与搜索；与 T007 可并行）�
 - **D0-6（已裁定，投影部分已落地）**：006 `capabilities.ts` 字段扩充与「资产服务 → 右栏清单」
   供数方式仍未定——T005 只按裁定做了**投影模块记忆**的最小修复；`listAssets` 作投影数据源、
   `GET /assets/capabilities`、`SkillCapability` 扩充留待 T007 / T017。
-- **前端中栏占位**：AI 资产中栏目前是 `[data-slot="asset-center"]` 空态文案，T006 换成资产网格。
+- **资产列表数据源（T006 已留缝、未接真源）**：中栏网格吃
+  `WorkspaceEntry.assets?: () => readonly AssetMetadata[]`，省略即空态。`/assets` 的列表 HTTP
+  接口尚未落，`pages/layout-new.tsx` 也还没注入 ⇒ **真栈上资产页今天只有空态**；
+  接线在 T008 / T017 与后端列表接口一并做。`AssetGrid` 的列数 / 行高按真容器量，接口接上后无需改。
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T005 完成）
+2026-10-25（T006 完成）

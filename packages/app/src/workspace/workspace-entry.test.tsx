@@ -3,6 +3,8 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { toaster } from "@opencode-ai/ui/toast"
 import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
+import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { ASSET_CATEGORY_ROWS } from "@/ai-assets/filter"
 import { useProjectionModule } from "@/ai-session/projection-module"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
@@ -40,6 +42,26 @@ import { WorkspaceEntry } from "./workspace-entry"
  */
 // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 夹具，不是产品码：`happyDOM` 长在 happy-dom 自己的 `Window` 上（`DetachedWindowAPI`），而 TS 的全局 `window` 是 lib.dom 那个 `Window`——没有可收窄的交集（理由与取数方式同 `current-project.test.ts` 那一句）。
 ;(window as unknown as { happyDOM: { setURL: (url: string) => void } }).happyDOM.setURL("http://localhost/")
+
+/**
+ * **AI 资产网格的视口垫片**（009 T006）。
+ *
+ * happy-dom 没有布局，`offsetWidth/offsetHeight` 恒 0；`@tanstack/virtual-core` 首帧用它们覆盖
+ * `initialRect`，不垫就会渲染 0 张卡——那会让「中栏有网格」的集成断言红得像产品坏了，
+ * 其实是环境没视口（同 `asset-grid.test.tsx` 文件头那段，两处各自安装、互不影响）。
+ * 只认资产网格的滚动槽，其余元素仍返回 0。
+ */
+for (const [属性, 尺寸] of [
+  ["offsetWidth", 800],
+  ["offsetHeight", 600],
+] as const) {
+  Object.defineProperty(HTMLElement.prototype, 属性, {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.dataset?.slot === "asset-grid-viewport" ? 尺寸 : 0
+    },
+  })
+}
 
 /**
  * 挂一个 `WorkspaceEntry`，并把卸载函数**记账**——`afterEach` 里逐个卸载（T021 实测补上）。
@@ -6025,5 +6047,136 @@ describe("AI 资产工作台（009 T005）", () => {
 
     入口(host, "话单分析").click()
     expect(读()).toBe("cdr-analysis")
+  })
+})
+
+/**
+ * AI 资产中栏（009 T006）：搜索 + 卡片网格，左栏与中栏**共享同一份筛选**。
+ *
+ * 数据走 `assets` 注入缝（`/assets` 接口未落，见 `state.md`）——这里注入夹具，
+ * 顺带钉住「不注入时不造假数据」。
+ */
+describe("AI 资产中栏（009 T006）", () => {
+  const 进入 = (host: HTMLElement) => 入口(host, "AI 资产").click()
+
+  function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
+    return {
+      id: "asset-1",
+      name: "资金流向研判",
+      type: "skill",
+      description: "按账户汇总资金往来",
+      icon: "skill",
+      category: ASSET_CATEGORY_ROWS[0].id,
+      tags: ["资金"],
+      ownerId: "u1",
+      ownerName: "张三",
+      department: "经侦支队",
+      visibility: "global",
+      version: 1,
+      status: "published",
+      favoriteCount: 0,
+      usageCount: 0,
+      rating: 0,
+      ratingCount: 0,
+      feedbackCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      publishedAt: 1,
+      archivedAt: null,
+      ...over,
+    }
+  }
+
+  const 卡片 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>("[data-slot='asset-card']")]
+  const 卡片名 = (host: HTMLElement) => 卡片(host).map((card) => card.textContent ?? "")
+
+  test("中栏是搜索框 + 网格：注入的资产按默认筛选出现在卡片里", () => {
+    const host = mount(() => (
+      <WorkspaceEntry assets={() => [资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })]}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+
+    expect(host.querySelector("[data-slot='asset-search']")).not.toBeNull()
+    expect(host.querySelector("[data-slot='asset-search-input']")?.getAttribute("aria-label")).toBe("搜索资产")
+    expect(host.querySelector("[data-slot='asset-grid']")).not.toBeNull()
+    expect(卡片(host)).toHaveLength(2)
+    expect(卡片名(host).join()).toContain("技能甲")
+  })
+
+  test("左栏点类型 ⇒ 中栏跟着换（同一份筛选，不是各建一份）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [
+          资产({ id: "a", name: "技能甲", type: "skill" }),
+          资产({ id: "b", name: "MCP 乙", type: "mcp" }),
+        ]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    expect(卡片名(host)).toHaveLength(1)
+    expect(卡片名(host)[0]).toContain("技能甲")
+
+    host.querySelector<HTMLElement>("[data-slot='asset-type-tab'][data-type='mcp']")!.click()
+
+    expect(卡片(host)).toHaveLength(1)
+    expect(卡片名(host)[0]).toContain("MCP 乙")
+  })
+
+  test("左栏换分类 ⇒ 中栏只剩该分类", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [
+          资产({ id: "a", name: "第一类", category: ASSET_CATEGORY_ROWS[0].id }),
+          资产({ id: "b", name: "第二类", category: ASSET_CATEGORY_ROWS[1].id }),
+        ]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    expect(卡片(host)).toHaveLength(1)
+    expect(卡片名(host)[0]).toContain("第一类")
+
+    host
+      .querySelector<HTMLElement>(`[data-slot='asset-category'][data-category='${ASSET_CATEGORY_ROWS[1].id}']`)!
+      .click()
+
+    expect(卡片(host)).toHaveLength(1)
+    expect(卡片名(host)[0]).toContain("第二类")
+  })
+
+  test("搜索框过滤中栏；清空恢复全部", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        assets={() => [
+          资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
+          资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
+        ]}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    进入(host)
+    const 输入 = host.querySelector<HTMLInputElement>("[data-slot='asset-search-input']")!
+
+    输入.value = "fund"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    expect(卡片(host)).toHaveLength(1)
+    expect(卡片名(host)[0]).toContain("FundFlow")
+
+    host.querySelector<HTMLButtonElement>("[data-slot='asset-search-clear']")!.click()
+    expect(卡片(host)).toHaveLength(2)
+  })
+
+  test("不注入数据源 ⇒ 空态，不造假卡", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    进入(host)
+
+    expect(卡片(host)).toHaveLength(0)
+    expect(text(host, "asset-empty")).toBe("没有符合条件的资产")
   })
 })
