@@ -691,7 +691,7 @@ git branch --show-current                                        # worktree-feat
 |---|---|
 | **U1 + U8** | `auth.user.is_admin` 继续作**系统管理员**总开关；**业务专家**用 RBAC 表达——资源类型新增 `governance`，以 `review`（内容审核）/ `write`（数据项目授权）授权。管理员接口统一挂 `/openhive/admin/*`，**一个守卫**按「路由 → 所需 perm」表判定；**不新增** `biz_admin` 布尔。代价：`packages/core/src/access/rbac.ts` 的资源闭集与 DB CHECK 同步加值（两处，写注释）。 |
 | **U2** | 治理后台走**独立路由页 `/governance`**（全屏）：进入时隐藏三栏、保留顶栏与登录态；**不**塞 `ContentTab`、**不**加 `center.module()` 分支。 |
-| **U3** | 先补 `openhive-DESIGN.md` **§4.8 治理后台**（表格 / 组织树 / 表单 / 危险操作 / 空态）视觉规格，用户审后再写 UI；**不参考**不存在的 `figma-export/`。 |
+| **U3** | 先补 `openhive-DESIGN.md` **§4.11 治理后台**（表格 / 组织树 / 表单 / 危险操作 / 空态）视觉规格，用户审后再写 UI；**不参考**不存在的 `figma-export/`。⚠️ 原写 §4.8 是旧编号——009 已占用 §4.8–§4.10。 |
 | **U4** | 010 补最小接口：`GET /assets`（按 capability 过滤）+ `POST /assets/:id/transition`（审核 / 发布 / 下架），挂治理守卫，直接调 `asset-service` 的 `transitionAsset`；**不另造状态机**。 |
 | **U5** | 新建 `auth.audit_log`（谁 / 何时 / 动作 / 对象 / 结果 / 详情）+ 写入 helper；治理守卫记 **AccessDenied**；`GET /audit` 检索。管理写操作**鉴权通过后、业务动作前**同步写；保留期先 **180 天**并挂缺口。 |
 | **U6** | 独立 **SQLite 聚合库**（路径 `OPENHIVE_ANALYTICS_DB`）+ 水位表 + 按 `syncEvent.id` 幂等 upsert。T004 只做「抽取器 + 表 + 真文件测试」，T009 只读；**不做实时、不做跨库 join**。 |
@@ -710,7 +710,7 @@ git branch --show-current                                        # worktree-feat
 |---|---|---|---|
 | **U1** | **服务端门禁**（D0-1） | 三条管理员能力在服务层都在、HTTP 端点零、`isAdmin` 零授权分支 | 门禁放路由层统一一处还是逐 handler？业务专家怎么放行？ |
 | **U2** | **治理后台挂载方式**（D0-2） | `app/governance/` 不存在；「用户管理」点了没反应；无三栏切换模式 | 路由页 / 覆盖层 / 独立 view？切进去时三栏保留还是卸载？ |
-| **U3** | **视觉规格来源**（D0-2） | `figma-export/` 不存在；DESIGN.md 无治理后台章节 | 用户给规格 / 先补 DESIGN.md 一节 / 用 009 的 ai-assets 样式延伸 |
+| **U3** | **视觉规格来源**（D0-2） | `figma-export/` 不存在；DESIGN.md 无治理后台章节（补在 **§4.11**） | 用户给规格 / 先补 DESIGN.md 一节 / 用 009 的 ai-assets 样式延伸 |
 | **U4** | **资产 HTTP 出口**（D0-3） | `/assets` 列表接口不存在；资产页真栈只有空态 | 010 补 / 退回 009 残差 / T007 先做只读空态 |
 | **U5** | **审计存储与埋点**（D0-5） | 零表、零检索、零埋点，只有一条注释 | 表放哪、记哪些动作、同步还是异步、越权怎么落 |
 | **U6** | **分析库落点**（D0-7） | 无 analytics 模块；`SyncEvent` 只有事件桥 | 库/schema、增量键、幂等口径、看板读哪 |
