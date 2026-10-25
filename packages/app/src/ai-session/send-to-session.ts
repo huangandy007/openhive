@@ -7,6 +7,10 @@
  * 组件，中栏喊一嗓子右栏听不见。右栏挂上时把「把这段文本写进输入框」这个动作**登记**在这里，
  * 中栏要发的时候取来代写。
  *
+ * 009 T015 起**资产详情页**（`ai-assets/asset-detail.tsx`）也走这里：点「▶ 让 AI 助手执行此
+ * skill」把一句指令**替换**进输入框。它带来的方向 `ai-assets → ai-session` 与 `center → ai-session`
+ * 同向（`center/session-edits-wiring.ts` 先例），不构成环。
+ *
  * ## 为什么不用 Provider
  *
  * 加 Provider 会给一串既有测试加挂载前提（`LEARNINGS #005-27`：给组件加 `useXxx()` 前提会让
@@ -25,10 +29,22 @@
 /** 一次最多能发多少行（用户 2026-10-14 拍板：50）。 */
 export const 行数上界 = 50
 
+/**
+ * 写进输入框的两种方式。
+ *
+ * - `追加`：中栏拖 / 右键来的**内容**（表格行、正文），插在光标处；
+ * - `替换`：详情页「▶ 让 AI 助手执行此 skill」来的**指令**（009 T015）。与右栏指令卡
+ *   「点卡片 = 填入一句话」同一个语义（`input.changed` 也是替换）——追加会拼出
+ *   「我原来写的半句请使用「…」这个 skill：…」这种谁也读不通的句子。
+ *
+ * 两种方式共用同一个收件口：跨栏接缝只该有一条（`LEARNINGS #002-06`）。
+ */
+export type 写入方式 = "追加" | "替换"
+
 export type 发送结果 = { ok: true } | { ok: false; 原因: "没有会话" | "行数超限" }
 
 /** 当前登记的收件口。`undefined` = 右栏没开会话。 */
-let 收件口: ((文本: string) => void) | undefined
+let 收件口: ((文本: string, 方式: 写入方式) => void) | undefined
 
 /**
  * 数一段文本有几行。
@@ -43,8 +59,13 @@ export function 数行(文本: string): number {
   return 行.length
 }
 
-/** 右栏输入框挂上时传一个收件口；卸载时传 `undefined` 收回。 */
-export function 订阅会话输入(收: ((文本: string) => void) | undefined): void {
+/**
+ * 右栏输入框挂上时传一个收件口；卸载时传 `undefined` 收回。
+ *
+ * 收件口收「文本 + 方式」两个参数：既有的 `(文本) => …` 替身照样能传（少一个参数不影响
+ * 赋值兼容），只是它就看不到方式了——真收件口必须按方式分派（`session-panel.tsx`）。
+ */
+export function 订阅会话输入(收: ((文本: string, 方式: 写入方式) => void) | undefined): void {
   收件口 = 收
 }
 
@@ -53,11 +74,12 @@ export function 订阅会话输入(收: ((文本: string) => void) | undefined):
  *
  * 顺序（设计 §5.3）：**先查收件口 → 再查行数 → 最后才调收件口**。右栏都没开，说什么行数。
  * 超限时**不调用收件口**——「一个字符都不插」是这条判据的重点，不是「返回值是 false」。
+ * 行数上限对两种写入方式**同一条判据**：它管的是「一次塞多少行」，与追加/替换无关。
  */
-export function 发送到会话(文本: string): 发送结果 {
+export function 发送到会话(文本: string, 方式: 写入方式 = "追加"): 发送结果 {
   if (!收件口) return { ok: false, 原因: "没有会话" }
   if (数行(文本) > 行数上界) return { ok: false, 原因: "行数超限" }
-  收件口(文本)
+  收件口(文本, 方式)
   return { ok: true }
 }
 

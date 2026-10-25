@@ -1,10 +1,14 @@
 import { Icon } from "@opencode-ai/ui/icon"
+import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid-js"
 import {
   ASSET_STATUS_LABELS,
   ASSET_VISIBILITY_LABELS,
   type AssetMetadata,
 } from "@opencode-ai/asset-service/metadata"
+import { 发送到会话, 发送失败提示 } from "@/ai-session/send-to-session"
+import { showToast } from "@/utils/toast"
+import { 执行skill指令 } from "./execute-skill"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 
 /**
@@ -20,8 +24,13 @@ import { 六边形裁切, 资产类型图标 } from "./asset-visual"
  * 今天没有数据源；「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意
  * 事项缺失时显式说明「尚未填写」。
  *
- * ⚠️ 收藏按钮属 T011、「▶ 执行此 skill」属 T015：未接线**不渲染**——写一个按下去什么也不发生
- * 的按钮，就是把不可达状态装成可达（`#008-04`）。
+ * ⚠️ 收藏按钮属 T011：未接线**不渲染**——写一个按下去什么也不发生的按钮，就是把不可达状态
+ * 装成可达（`#008-04`）。
+ *
+ * **「▶ 让 AI 助手执行此 skill」**（T015 / FR-010）：只对 **skill 资产**渲染（文案写的就是
+ * skill，MCP / 知识库上没有「执行」这回事）。点击把这句指令**以「替换」方式**送进右栏输入框
+ * ——与指令卡「点卡片 = 填入一句话」同一个语义；右栏没开会话时弹「先在右栏开一个会话」，
+ * 不静默（`send-to-session` 的 `发送失败提示`）。
  */
 export const 详情Tab列表 = [
   { id: "intro", label: "介绍" },
@@ -165,6 +174,17 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
     标签按钮.get(目标)?.focus()
   }
 
+  /**
+   * T015：把「执行此 skill」这句话替换进右栏输入框。
+   *
+   * 只透传、不在这里判断右栏开没开：判据与提示文案都住在 `send-to-session`（`#002-06`——
+   * 同一个判断两处各写一份，改一处就静默分家）。
+   */
+  const 执行skill = () => {
+    const 结果 = 发送到会话(执行skill指令(props.asset), "替换")
+    if (!结果.ok) showToast(发送失败提示(结果.原因))
+  }
+
   const 键盘切换 = (event: KeyboardEvent, index: number) => {
     const 总数 = 详情Tab列表.length
     let 下一个 = -1
@@ -230,6 +250,18 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
               <span data-slot="asset-detail-usage">{props.asset.usageCount} 次使用</span>
             </div>
           </div>
+          <Show when={props.asset.type === "skill"}>
+            <ButtonV2
+              type="button"
+              size="small"
+              variant="contrast"
+              data-slot="asset-detail-execute"
+              class="shrink-0"
+              onClick={执行skill}
+            >
+              ▶ 让 AI 助手执行此 skill
+            </ButtonV2>
+          </Show>
         </div>
       </header>
 

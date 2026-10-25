@@ -576,12 +576,18 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * ⚠️ **登记与收回成对**：模块级状态跨用例活着，卸载不收回就会让**下一条用例**站在别人的
    * 收件口上（同 `center/views/reading-size.ts` 那条口径）。
    *
+   * 两种方式按语义分派（009 T015）：内容（拖选 / 右键）走 `addText` 插在光标处；指令
+   * （「▶ 让 AI 助手执行此 skill」）走 `setText` 整句替换——与指令卡 `onPick` 的
+   * `input.changed` 同义。`setText` 是上游 store 自己的门面（`store.ts`），不手写第二份
+   * 「清空再写」（`#002-06`）。
+   *
    * ⚠️ 聚焦走 `controller.restoreFocus()`（`interaction.ts:340`），不自己找 DOM 去 focus。
    * `focus.editor` 同名两物：**事件**在 `machine.ts:77` 只记 `state.focus`，**命令**在
    * `interaction.ts:159` 才真聚焦——`dispatch({ type: "focus.editor" })` 只走前者、不聚焦；详见 task-3-report.md。
    */
-  订阅会话输入((文本) => {
-    草稿操作.addText(文本)
+  订阅会话输入((文本, 方式) => {
+    if (方式 === "替换") 草稿操作.setText(文本)
+    else 草稿操作.addText(文本)
     controller.restoreFocus()
   })
   onCleanup(() => 订阅会话输入(undefined))

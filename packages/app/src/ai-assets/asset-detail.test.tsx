@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { toaster } from "@opencode-ai/ui/toast"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { 订阅会话输入, type 写入方式 } from "@/ai-session/send-to-session"
+import { ToastRegion } from "@/utils/toast"
 import { ASSET_CATEGORY_ROWS } from "./filter"
 import { AssetDetail, 详情Tab列表 } from "./asset-detail"
 
@@ -253,6 +256,82 @@ describe("详情各 tab 内容", () => {
       expect(文本(host, "asset-detail-published")).toBe("发布于 2026-10-18")
     } finally {
       卸()
+    }
+  })
+})
+
+/**
+ * 009 T015 · 「▶ 让 AI 助手执行此 skill」（FR-010 / 2026-09-12 设计 §1.4）。
+ *
+ * 判据是**中栏这一头**：点按钮 ⇒ 指令经接线盒（`send-to-session`）出门，且方式是「替换」。
+ * 右栏那一头（真输入框收到替换后的文本）在 `session-panel.test.tsx` 里钉。
+ *
+ * ⚠️ 接线盒是**模块级**状态 ⇒ 每条用例自己登记、`afterEach` 收回（`#005-03` 同型）。
+ */
+describe("「▶ 让 AI 助手执行此 skill」（T015）", () => {
+  afterEach(() => {
+    订阅会话输入(undefined)
+    toaster.clear()
+  })
+
+  const 执行按钮 = (host: HTMLElement) =>
+    host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-execute"]')
+
+  test("技能资产：头部主按钮在，点它把「skill 名 + 做什么」以「替换」方式送进右栏", () => {
+    const 收到: Array<{ 文本: string; 方式: 写入方式 }> = []
+    订阅会话输入((文本, 方式) => 收到.push({ 文本, 方式 }))
+    const { host, 卸 } = 挂()
+    try {
+      const 按钮 = 执行按钮(host)
+      if (!按钮) throw new Error("详情头部没有「▶ 让 AI 助手执行此 skill」按钮")
+      expect(按钮.textContent).toBe("▶ 让 AI 助手执行此 skill")
+
+      按钮.click()
+
+      expect(收到).toEqual([
+        { 文本: "请使用「资金流向研判」这个 skill：按账户汇总资金往来", 方式: "替换" },
+      ])
+    } finally {
+      卸()
+    }
+  })
+
+  test("非 skill 资产（MCP / 知识库）不渲染这颗按钮——它的文案只对 skill 成立", () => {
+    for (const type of ["mcp", "knowledge_base"] as const) {
+      const { host, 卸 } = 挂({ type })
+      try {
+        expect(执行按钮(host) === null, `${type} 资产上不该有「执行此 skill」按钮`).toBe(true)
+      } finally {
+        卸()
+      }
+    }
+  })
+
+  test("右栏没有会话 ⇒ 弹「先在右栏开一个会话」，不静默吞掉", async () => {
+    // 接线盒此刻没有收件口（afterEach 已收回）⇒ 走「没有会话」那条失败路。
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(
+      () => (
+        <>
+          <ToastRegion v2={false} />
+          <AssetDetail asset={资产()} onBack={() => {}} />
+        </>
+      ),
+      host,
+    )
+    try {
+      const 按钮 = 执行按钮(host)
+      if (!按钮) throw new Error("详情头部没有「▶ 让 AI 助手执行此 skill」按钮")
+      按钮.click()
+
+      // 等条件、不等时间（`#006-31`）：提示是异步插进 body 的。
+      const 有提示 = () => (document.body.textContent ?? "").includes("先在右栏开一个会话")
+      for (let i = 0; i < 50 && !有提示(); i++) await new Promise((r) => setTimeout(r, 0))
+      expect(有提示(), "点按钮时右栏没开会话，界面上没有任何提示").toBe(true)
+    } finally {
+      dispose()
+      host.remove()
     }
   })
 })
