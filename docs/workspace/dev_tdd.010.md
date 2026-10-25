@@ -94,7 +94,18 @@ error: install script from "tree-sitter-powershell" exited with 1
 | 主检出同名包 | 有 `build/` 产物；本工作台**没有** |
 
 **不许**用 `--ignore-scripts` / 跳过安装「想办法让它过」，也**不要**因此去改业务代码。
-要么由用户裁定装 `node-gyp`，要么先避开依赖该原生模块的测试，并在报告里如实写。
+
+**2026-10-25 跟进（U10 已执行）**：全局装了 `node-gyp`（v12.4.0），但本机**没有 Visual Studio 的
+「Desktop development with C++」**，原生重建仍失败（`gyp ERR! find VS`）。核实后结论：
+
+- `packages/opencode/src/tool/shell.ts:325` 用的是包里的 **`tree-sitter-powershell.wasm`**
+  （983 KB，实测存在），**不是**原生 `build/`；本次失败的是 `postinstall` 的 `node-gyp-build`
+  回退，**不影响该代码路径**。
+- 重新解包后**再跑一次** `bun install --frozen-lockfile` ⇒ **EXIT=0**（不再重跑该脚本），
+  `bun.lock` 无 diff。
+- 因此：**本工作台可用**；**新建** worktree 首次安装仍会报一次这个错，**不要** `--ignore-scripts`
+  绕过，也不要为此改业务代码；要么装 VS Build Tools（重、需用户点头），要么按上面的
+  「wasm 不受影响」记录缺口。
 
 ### 0.4 陈旧锁体检
 
@@ -686,7 +697,7 @@ git branch --show-current                                        # worktree-feat
 | **U6** | 独立 **SQLite 聚合库**（路径 `OPENHIVE_ANALYTICS_DB`）+ 水位表 + 按 `syncEvent.id` 幂等 upsert。T004 只做「抽取器 + 表 + 真文件测试」，T009 只读；**不做实时、不做跨库 join**。 |
 | **U7** | **一张自引用表** `auth.org(id, parent_id, level, name)`（level ∈ org/dept/section）+ `auth.user.dept_id`（可空）；旧三列保留、按名字回填并标 deprecated；009 的 `/assets/dept/*` 在**同一版**迁到部门 id。 |
 | **U9** | 先落 `auth.data_source`（类型 / 连接信息 / 更新频率 / 负责人 / 血缘 JSON）+ connector 接口占位；**不与** 009 的 MCP 连接清单强行合表，除非开工时核出形状完全吻合；009 挂账保留。 |
-| **U10** | 装 `node-gyp`（全局），重跑 `bun install --frozen-lockfile`，`bun.lock` 必须无 diff；执行结果见本次会话报告。 |
+| **U10** | 已执行：全局 `node-gyp` v12.4.0 装好；原生重建仍因**缺 Visual Studio C++ 工具**失败，但代码只用包里 **wasm**（`shell.ts:325`），故不受影响；再跑 `bun install` ⇒ EXIT=0、`bun.lock` 无 diff。**新建 worktree 首次安装仍会报一次**，按 Step 0.3 处置。 |
 
 **仍要在对应 task 开工前复核**：U6（T004 前）、U7（T006 前）、U4（T007 前）、U5（T010 前）、U9（T012 前）。
 复核方式：按裁定写出该 task 的**完成判据**给用户确认，再动手。
