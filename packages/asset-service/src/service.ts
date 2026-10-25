@@ -15,6 +15,7 @@ import {
   type SkillAction,
 } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
+import { AssetNotificationError, notifyAssetTransition } from "./notify"
 import { authorizeTransition } from "./review"
 import {
   archiveDirectory,
@@ -229,6 +230,12 @@ interface StorageStep {
  * 说明期间有人改过状态 ⇒ 抛 `concurrent_transition` 并回滚文件，**不覆盖别人的结果**。
  * （`#007-01`：每步幂等 ≠ 整体可重入；这里不假装重试能收敛，只保证不把两份写入搅在一起。）
  *
+ * ## 通知（T010）
+ *
+ * 流转提交后按 design §2.6 写站内信（`notify.ts`）。通知失败**不回滚状态**：此时文件与
+ * 元数据都已经落到新状态，倒回文件只会更不一致。抛 `AssetNotificationError`，
+ * 消息里明确「流转已生效」，调用方据此区分「流转失败」与「只是通知没写进去」。
+ *
  * ## 类型边界
  *
  * 7 状态机只适用于 Skill（design §2.0）；MCP / 知识库的简化生命周期未在本任务实现，
@@ -258,8 +265,9 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
 
   const step = await prepareStorageStep(root, asset, applied, input.sourceDirectory)
 
+  let updated: AssetMetadata
   try {
-    const updated = await updateAssetLifecycle(db, asset.id, {
+    const result = await updateAssetLifecycle(db, asset.id, {
       expectedStatus: asset.status,
       status: applied.to,
       version: VERSION_BUMPING_ACTIONS.has(applied.action) ? asset.version + 1 : asset.version,
@@ -267,15 +275,15 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       publishedAt: PUBLISHING_ACTIONS.has(applied.action) ? now : asset.publishedAt,
       archivedAt: applied.action === "archive" ? now : asset.archivedAt,
     })
-    if (updated === undefined) {
+    if (result === undefined) {
       throw new AssetTransitionError(
         "concurrent_transition",
         `资产 ${asset.id} 的状态已被并发修改，未执行 ${applied.action}`,
       )
     }
+    updated = result
 
     if (step?.commit !== undefined) await step.commit()
-    return updated
   } catch (error) {
     if (step !== undefined) {
       try {
@@ -291,6 +299,21 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     }
     throw error
   }
+
+  // 通知在流转**提交之后**写（T010）。失败不能回滚已生效的状态——那会让文件与元数据
+  // 一起倒回，而库里已经是新状态；所以只把「流转成功、通知失败」显式告诉调用方。
+  try {
+    await notifyAssetTransition(db, {
+      asset: updated,
+      applied,
+      actorId: input.viewer.userId,
+      now,
+    })
+  } catch (error) {
+    throw new AssetNotificationError(updated.id, applied.action, error)
+  }
+
+  return updated
 }
 
 /**

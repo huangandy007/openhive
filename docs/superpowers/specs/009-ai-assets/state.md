@@ -1,9 +1,26 @@
 # 实施进度 · AI 资产（Skill / MCP / 知识库）
 
 ## 当前任务
-T009 已交付（审核两道关），等待用户审阅。下一任务 T010（站内信通知，依赖 T008）。
+T010 已交付（站内信通知），等待用户审阅。下一任务 T011（授权 vs 收藏分离，依赖 T004）。
 
 ## 已完成
+- **T010** 站内信通知（状态变化推送到人，🧩 资产标签）（FR-004 / design §2.6）
+  - 迁移 `0011_asset_notification.sql`（＋ `.down.sql`）：`auth.asset_notification`
+    一行一人；收件人与资产名写入时快照；`action` CHECK 与 `SKILL_ACTIONS` 双向比对；
+    资产 / 用户外键均级联删除（避免死链与阻塞账号清理）；每列中文注释
+  - `notify.ts`：`TRANSITION_RECIPIENTS` 收件人矩阵（design §2.6）；收件人从**库里的授权行**
+    解析（`role_resource` → `user_role`），去重并排除发起人；批量插入；无收件人返回 0 不抛错
+  - `service.ts`：流转提交后写通知；通知失败抛 `AssetNotificationError`
+    （`code = "notification_failed"`，消息写明流转已生效），**不回滚状态**
+  - 刻意口径：发布不广播；`start_iteration` 不通知（作者自己发起）；`bring_online` 零收件人
+    （「使用者」需收藏 / 使用明细，T011 后补）；下线当前只通知作者
+  - 文档：新增 `notification.md`（矩阵 / 失败语义 / 残差 / 变异记录）
+  - 门禁实测：`asset-service` 133 pass / 0 fail（+16：通知 14 + 服务集成 2）；
+    `auth` 286 pass / 3 skip / 0 fail（含 0011 迁移、中文注释全覆盖、真 PG 表清单已更新）；
+    `tsgo --noEmit` 0 errors；`oxlint` 0 errors / 6 warnings（均为既有告警）；`bun.lock` 无 diff
+  - 变异验证（拆完即还原）：`submit_review` 收件人改成 author ⇒ 红 3；
+    去掉发起人排除 ⇒ 红 1；去掉 `AssetNotificationError` 包装 ⇒ 红 1
+
 - **T009** 审核两道关（业务审核 / 技术发布分离）（FR-005 / design §3.3）
   - `review.ts`：`TRANSITION_REQUIRED_PERMS`（author→write / business_reviewer→review /
     system_admin→admin）＋ `authorizeTransition(viewer, asset, grants, action)`：
@@ -167,4 +184,4 @@ T009 已交付（审核两道关），等待用户审阅。下一任务 T010（�
 - **部门 id 化**：发布目录当前用部门名；部门表与稳定 id 待 010，届时迁移 `/assets/dept/*`。
 
 ## 最后更新
-2026-10-25（T009 完成）
+2026-10-25（T010 完成）

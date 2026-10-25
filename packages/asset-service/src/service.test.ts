@@ -4,12 +4,13 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql, type SQL } from "drizzle-orm"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { assetById, insertAsset, type AssetTarget } from "./asset"
 import { AssetTransitionError } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
+import { AssetNotificationError } from "./notify"
 import { assetLocation, discardAsset, storeAsset, transitionAsset } from "./service"
 import { archiveDirectory, pendingDirectory, publishDirectory } from "./storage"
 
@@ -828,6 +829,98 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(codeOf(stranger)).toBe("actor_not_allowed")
     expect((await assetById(db, "asset_1"))?.status).toBe("draft")
     expect(await exists(待审目录(root))).toBe(false)
+  })
+
+  test("状态变化通知到人（T010）：提交通知审核人，通过通知作者 + 管理员，发布通知作者", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db)
+
+    for (const [id, name, dept] of [
+      ["u2", "乙民警", "法制支队"],
+      ["u3", "丙民警", "科信支队"],
+    ] as const) {
+      await db.execute(sql`
+        insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+        values (${id}, ${`0100${id.slice(1)}`}, ${name}, 'x', 'x', 'x', ${dept}, 'x', 0, 'h', 0)
+      `)
+    }
+    for (const [roleId, userId, perm] of [
+      ["g_review", "u2", "review"],
+      ["g_admin", "u3", "admin"],
+    ] as const) {
+      await db.execute(sql`insert into auth.role (id, name, role_type) values (${roleId}, ${roleId}, 'group')`)
+      await db.execute(sql`insert into auth.user_role (user_id, role_id) values (${userId}, ${roleId})`)
+      await db.execute(sql`
+        insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+        values (${roleId}, 'skill', 'asset_1', ${perm})
+      `)
+    }
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      viewer: 作者,
+      sourceDirectory: source,
+      now: 2_000,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      viewer: 业务管理员,
+      now: 2_001,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_tech",
+      viewer: 系统管理员,
+      now: 2_002,
+    })
+
+    const rows = rowsOf(
+      await db.execute(sql`
+        select recipient_id, action from auth.asset_notification
+        order by created_at, action, recipient_id
+      `),
+    ).map((row) => [String(row.recipient_id), String(row.action)])
+
+    expect(rows).toEqual([
+      ["u2", "submit_review"],
+      ["u1", "approve_business"],
+      ["u3", "approve_business"],
+      ["u1", "publish_tech"],
+    ])
+  })
+
+  test("通知写库失败：流转已生效，抛 AssetNotificationError（不回滚状态）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await seedSkill(db, { status: "in_review" })
+    await db.execute(sql`drop table auth.asset_notification`)
+
+    const error = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "approve_business",
+        viewer: 业务管理员,
+        grants: 审,
+        now: 2_000,
+      }),
+    )
+
+    if (!(error instanceof AssetNotificationError)) throw new Error(`期望 AssetNotificationError，得到：${error}`)
+    expect(error.code).toBe("notification_failed")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
   })
 })
 

@@ -3,7 +3,7 @@
 - **状态**：已落地（T008）
 - **代码**：`packages/asset-service/src/lifecycle.ts`（转移表·纯函数）、`service.ts`（`transitionAsset` 编排）、`asset.ts`（`updateAssetLifecycle` 条件更新）、`storage.ts`（`replaceDirectory`）
 - **适用**：Skill 的 7 状态机（FR-004）；MCP / 知识库的简化生命周期不在本任务
-- **不在本文件**：两道关的鉴权编排（T009，见 `review.md`）、站内信（T010）、迭代文件替换的产品交互、`/assets` HTTP 接口（未落）
+- **不在本文件**：两道关的鉴权编排（T009，见 `review.md`）、站内信（T010，见 `notification.md`）、迭代文件替换的产品交互、`/assets` HTTP 接口（未落）
 
 ## 1. 结论
 
@@ -20,6 +20,7 @@
 | 驳回 | `in_review → draft`，必须带理由；**不动文件**（沙箱源仍在，下次提交覆盖 pending） |
 | 下线 | **不搬目录**（见 §4 残差）；可用性由 `isAssetUsable()` 判 |
 | 并发 | 不覆盖别人的状态；文件回滚后把并发错误抛给调用方 |
+| 通知 | 流转提交后按 design §2.6 写站内信；通知失败不回滚状态，抛 `AssetNotificationError`（`notification.md`） |
 
 ## 2. 流转表（状态 + 物理动作）
 
