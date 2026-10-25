@@ -28,9 +28,24 @@ import { rowsOf } from "./migrate"
  * 打真库验证（重复授权被拒、未知 perm 被拒、外键拦住悬空引用）。
  */
 
+/**
+ * 角色类型（009 T004，FR-006）。闭集与 `0010_role_type.sql` 的 `role_type_check` 是同
+ * 一份值的两处写法，`rbac.test.ts` 把 DB 里的 CHECK 定义读出来逐值比对。
+ *
+ * - `normal`：普通角色（存量角色、以及「角色为主 + 用户例外」里的例外角色）。
+ * - `group`：授权组（design §3.4，跨部门定向授权）。
+ *
+ * ⚠️ 它**只是标记**，不是判定输入：`grantsFor()` 只 join `user_role` / `role_resource`。
+ * 授权组的效力来自「组被授权的资产行」，不来自这一列本身。
+ */
+export const ROLE_TYPES = ["normal", "group"] as const
+export type RoleType = (typeof ROLE_TYPES)[number]
+
 export const role = authSchema.table("role", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  /** 默认 `normal`：加列对存量角色是「全部归为普通角色」，不改变任何现有授权。 */
+  roleType: text("role_type").notNull().default("normal"),
 })
 
 export const userRole = authSchema.table("user_role", {

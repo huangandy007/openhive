@@ -48,7 +48,7 @@
 ## Phase 2: Foundational（资产服务 + 权限）
 
 - [x] T003 [BE] 实现资产服务（metadata + storage：复制/删除/rename）[FR-001] [T001][T002] [出参：资产可提交/复制/删除]
-- [ ] T004 [BE] 实现 RBAC 授权 + 三级空间 + 授权组（role_type='group'）[FR-006][FR-007] [T001] [出参：授权组可定向授权]
+- [x] T004 [BE] 实现 RBAC 授权 + 三级空间 + 授权组（role_type='group'）[FR-006][FR-007] [T001] [出参：授权组可定向授权]
 
 ## Phase 3: US1 资产浏览（P1）
 

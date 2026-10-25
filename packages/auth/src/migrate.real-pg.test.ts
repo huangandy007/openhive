@@ -58,6 +58,19 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
         `),
       )
       expect(String(commented?.comment)).toContain("警号")
+
+      // 0010（009 T004）加列 + 中文注释：PGlite 那条只证明文件内容写对了，
+      // 这一条证明真实例把 `ALTER TABLE … ADD COLUMN … CHECK` 与 `COMMENT ON COLUMN` 都收下了。
+      const [roleType] = rowsOf(
+        await db.execute(sql`
+          select col_description(c.oid, a.attnum) as comment
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          join pg_attribute a on a.attrelid = c.oid
+          where n.nspname = 'auth' and c.relname = 'role' and a.attname = 'role_type'
+        `),
+      )
+      expect(String(roleType?.comment)).toContain("授权组")
     })
   })
 

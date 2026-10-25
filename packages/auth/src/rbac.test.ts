@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { PGlite } from "@electric-sql/pglite"
 import { getTableColumns, sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/pglite"
-import { migrate } from "./migrate"
-import { grantsFor, role, roleResource, userRole } from "./rbac"
+import { migrate, rowsOf } from "./migrate"
+import { ROLE_TYPES, grantsFor, role, roleResource, userRole } from "./rbac"
 
 /**
  * T004 · RBAC 三张表（FR-007）。
@@ -200,6 +200,86 @@ describe("RBAC 表 · 真库（PGlite，走生产驱动那套迁移）", () => {
     })
 
     expect(await grantsFor(db, "' or '1'='1")).toEqual([])
+  })
+})
+
+/**
+ * 009 T004 · `role_type`（授权组 = `role_type='group'` 的自定义 role）。
+ *
+ * 这一列的存在本身就是 T004 的**前置事实**：加它之前 `auth.role` 只有 `id/name`，
+ * 「授权组」在库里**无处标记**。这里钉三件事：
+ * ① 默认值是 `normal`（存量角色与普通自定义角色不因加列而改变语义）；
+ * ② 闭集在**数据层**（拼错的 `superuser` 不能静静躺进表里）；
+ * ③ 闭集的 TS 常量 `ROLE_TYPES` 与 DB 的 CHECK **逐值一致**（假的镜像比没有镜像更危险）。
+ */
+describe("role_type · 角色类型（009 T004）", () => {
+  const literalsOf = (definition: string): string[] =>
+    [...definition.matchAll(/'([^']*)'/g)].map((match) => match[1]!).sort()
+
+  test("不写 role_type ⇒ 默认 'normal'；显式 'group' 原样存下", async () => {
+    const db = await freshDb()
+
+    // 走原始 SQL 写普通角色：存量代码与迁移都不该被「新列 NOT NULL」逼着显式赋值。
+    await db.execute(sql`insert into auth.role (id, name) values ('r_plain', '普通角色')`)
+    await db.insert(role).values({ id: "r_group", name: "电诈专案组", roleType: "group" })
+
+    const rows = rowsOf(await db.execute(sql`select id, role_type from auth.role order by id`))
+    expect(rows).toEqual([
+      { id: "r_group", role_type: "group" },
+      { id: "r_plain", role_type: "normal" },
+    ])
+  })
+
+  test("未知 role_type ⇒ 被 CHECK 拒（闭集钉在数据上）", async () => {
+    const db = await freshDb()
+
+    // 不走 drizzle 的 values()：`RoleType` 是联合类型，写 `superuser` 会在编译期就被拦下，
+    // 而这条要问的是**库**是否也拦——只有原始 SQL 到得了那一层。
+    const error = await failure(() =>
+      db.execute(sql`insert into auth.role (id, name, role_type) values ('r_bad', '坏角色', 'superuser')`),
+    )
+
+    expect(error.message).toMatch(/role_type_check/)
+  })
+
+  test("防漂移：DB 的 role_type 闭集与 ROLE_TYPES 逐值一致", async () => {
+    const db = await freshDb()
+
+    const rows = rowsOf(
+      await db.execute(sql`
+        select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'role_type_check'
+      `),
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(literalsOf(String(rows[0]!.def))).toEqual([...ROLE_TYPES].sort())
+  })
+
+  /**
+   * 「授权组」不是名字约定，是 `role_type` 的值：拿组名去判会在改名时静默失效
+   * （`D0-4` 的裁定原文）。这条把「普通角色 + group 授权行」与「group 角色」的
+   * `grantsFor` 结果**放在一起比**——两者都得回授权行，因为判定只看 `user_role` /
+   * `role_resource`，不看组名；`role_type` 只回答「这是不是一个授权组」。
+   */
+  test("普通角色与授权组都能取回授权行：role_type 不参与判定，只标记组", async () => {
+    const db = await freshDb()
+    await db.insert(role).values([
+      { id: "r_normal", name: "普通角色" },
+      { id: "r_group", name: "跨部门专案组", roleType: "group" },
+    ])
+    await db.insert(userRole).values([
+      { userId: "u1", roleId: "r_normal" },
+      { userId: "u1", roleId: "r_group" },
+    ])
+    await db.insert(roleResource).values([
+      { roleId: "r_normal", resourceType: "skill", resourceId: "a_normal", perm: "read" },
+      { roleId: "r_group", resourceType: "skill", resourceId: "a_group", perm: "read" },
+    ])
+
+    expect(await grantsFor(db, "u1")).toEqual([
+      { resourceType: "skill", resourceId: "a_group", perm: "read" },
+      { resourceType: "skill", resourceId: "a_normal", perm: "read" },
+    ])
   })
 })
 

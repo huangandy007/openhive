@@ -1,4 +1,5 @@
 export * from "./asset"
+export * from "./authorization"
 export * from "./categories"
 export * from "./lifecycle"
 export * from "./metadata"
