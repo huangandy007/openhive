@@ -22,6 +22,7 @@ import {
   parseReadyLine,
   PORT_ENV,
   readyConfigPatch,
+  readyHandler,
   spawnGovernanceMcp,
   supervise,
   type Launched,
@@ -97,7 +98,14 @@ function deferred<T>() {
 }
 
 function scripted(scripts: ReadonlyArray<{ port?: number; exitBeforeReady?: boolean }>) {
-  const handles: Array<{ ready: ReturnType<typeof deferred<number>>; exited: ReturnType<typeof deferred<void>>; stops: number }> = []
+  const handles: Array<{
+    ready: ReturnType<typeof deferred<number>>
+    exited: ReturnType<typeof deferred<void>>
+    /** `stop()` 被调用的次数（**总是**计数，包括已退出后的调用）。 */
+    stopCalls: number
+    /** 其中真正生效的次数（已退出后的调用是 no-op，与真实 `stop()` 一致）。 */
+    stops: number
+  }> = []
   /** `supervise` 每轮传给 `launch` 的端口实参（钉住「重启沿用上一次端口」）。 */
   const ports: Array<number | undefined> = []
   let index = 0
@@ -106,7 +114,7 @@ function scripted(scripts: ReadonlyArray<{ port?: number; exitBeforeReady?: bool
     const script = scripts[index++]!
     const ready = deferred<number>()
     const exited = deferred<void>()
-    const record = { ready, exited, stops: 0 }
+    const record = { ready, exited, stopCalls: 0, stops: 0 }
     handles.push(record)
     // 与 `spawnGovernanceMcp` 一致：`ready` 在没人 await 时也别变成 unhandled rejection。
     ready.promise.catch(() => undefined)
@@ -123,6 +131,9 @@ function scripted(scripts: ReadonlyArray<{ port?: number; exitBeforeReady?: bool
       ready: ready.promise,
       exited: exited.promise,
       stop: () => {
+        // **总是记调用**：否则「误调了 stop()」在断言里是空的（`#005-18` 假绿）。
+        // 已退出后的调用只是 no-op（真实 `stop()` 此时也不发信号），故单独记生效次数。
+        record.stopCalls += 1
         if (exitedAlready) return
         exitedAlready = true
         record.stops += 1
@@ -218,6 +229,8 @@ describe("supervise", () => {
       ),
     )
 
+    // 超时分支显式 stop 一次 + `acquireRelease` 收尾再调一次；第二次是 no-op（子进程已退出）。
+    expect(handles[0]!.stopCalls).toBe(2)
     expect(handles[0]!.stops).toBe(1)
     expect(failures[0]).toContain("超时")
     expect(readyPorts).toEqual([4102])
@@ -232,7 +245,7 @@ describe("supervise", () => {
    * 而且直接 `await child.ready` 的拒绝会变成 Effect defect，把监督器整个打死。
    */
   test("就绪前退出 ⇒ 报「就绪前退出」而不是超时，退避后重启", async () => {
-    const { launch, handles, ports } = scripted([{ exitBeforeReady: true }, { port: 4103 }])
+    const { launch, handles } = scripted([{ exitBeforeReady: true }, { port: 4103 }])
     const failures: string[] = []
     const readyPorts: number[] = []
     const sleeps: number[] = []
@@ -255,7 +268,9 @@ describe("supervise", () => {
       ),
     )
 
-    // 已退出的进程不再 kill（真实 `stop()` 也如此）。
+    // 退出分支自己**不调** `stop()`：唯一的调用来自 `acquireRelease` 的无条件收尾，
+    // 且因进程已退出而只是 no-op（`stops === 0`）。fake 对每次调用都计数，所以这条不空转。
+    expect(handles[0]!.stopCalls).toBe(1)
     expect(handles[0]!.stops).toBe(0)
     expect(failures[0]).toContain("就绪前退出")
     expect(failures[0]).not.toContain("超时")
@@ -302,6 +317,50 @@ describe("supervise", () => {
     // 不带归零应是 1000/2000/4000/8000；第 3 轮跑了 96s ⇒ 归零，第 4 轮回到 2000。
     expect(sleeps.slice(0, 4)).toEqual([1000, 2000, 1000, 2000])
     expect(ports.slice(0, 4)).toEqual([undefined, 4201, 4202, 4203])
+  })
+
+  /**
+   * `updateGlobal` 写盘失败走 `Effect.orDie`（**defect**，错误通道恒为 `never`）。普通 `catch`
+   * 收不到 defect，监督器纤维会跟着一起死、子进程再也不会被拉起；`readyHandler` 用
+   * `catchCause` 记 WARN 后继续——本用例用「下一轮仍会启动」当判据。
+   */
+  test("onReady 写配置 defect（orDie）⇒ 监督器不死，退避后仍起下一轮", async () => {
+    const { launch, handles } = scripted([{ port: 4301 }, { port: 4302 }])
+    const readyCalls: number[] = []
+    const failures: string[] = []
+    const sleeps: number[] = []
+    const readOnlyConfig = {
+      // 模拟容器里配置目录只读：`Effect.orDie` 后的形态就是 defect。
+      updateGlobal: () => Effect.die(new Error("EROFS: read-only file system")),
+    }
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            supervise({
+              launch,
+              onReady: (port) =>
+                Effect.sync(() => void readyCalls.push(port)).pipe(
+                  Effect.flatMap(() => readyHandler(readOnlyConfig, port)),
+                ),
+              onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
+              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              startTimeoutMs: 200,
+            }),
+          )
+          yield* Effect.promise(() => until(() => readyCalls.length === 1, "首轮 onReady"))
+          handles[0]!.exited.resolve()
+          // defect 若把纤维打死，这里永远不会到 2，`until` 会以等待超时红。
+          yield* Effect.promise(() => until(() => readyCalls.length === 2, "defect 后仍起第二轮"))
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
+    )
+
+    expect(readyCalls).toEqual([4301, 4302])
+    expect(sleeps[0]).toBe(1000)
+    expect(failures[0]).toContain("退出")
   })
 })
 
@@ -350,13 +409,15 @@ describe("createTreeStopper", () => {
     ])
   })
 
-  test("win32：taskkill /T /F，一次且幂等", () => {
+  test("win32：stop 幂等（taskkill 一次）；force 兜底再试一次最強杀", () => {
     const killed: number[] = []
     const stopper = createTreeStopper(4244, { platform: "win32", taskkill: (pid) => void killed.push(pid) })
     stopper.stop()
     stopper.stop()
-    stopper.force()
     expect(killed).toEqual([4244])
+    // `process.on("exit")` 兜底：`stop()` 那次 taskkill 若静默失败，这里必须再试一次。
+    stopper.force()
+    expect(killed).toEqual([4244, 4244])
   })
 
   test("pid 未知（spawn 失败）⇒ 什么都不做", () => {

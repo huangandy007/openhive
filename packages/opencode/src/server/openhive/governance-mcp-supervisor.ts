@@ -183,9 +183,9 @@ export function createTreeStopper(pid: number | undefined, deps: ProcessTreeDeps
     },
     force: () => {
       if (forced || pid === undefined) return
+      // `force()` 是 `process.on("exit")` 的同步兜底：`stop()` 那次 `taskkill` 若静默失败，
+      // 这里**总是**再发一次最强杀（win32 再来一遍 `/T /F`），不因已 stop 就跳过。
       if (platform === "win32") {
-        // win32 的 `stop()` 本身就是 `/T /F` 强杀，已经收过就不再重复。
-        if (stopped) return
         forced = true
         taskkill(pid)
         return
@@ -371,6 +371,23 @@ export function readyConfigPatch(port: number) {
   }
 }
 
+/**
+ * 就绪回调：写全局配置。`updateGlobal` 写盘走 `Effect.orDie`（**defect**，错误通道是 `never`），
+ * 普通 `catch` 收不到——必须 `catchCause`，否则配置目录只读（容器常见）时监督器纤维整个死掉，
+ * 子进程再也不会被拉起。抽成函数是为了能用「updateGlobal 直接 die」的桩钉住这一点。
+ */
+export function readyHandler(
+  config: Pick<Config.Interface, "updateGlobal">,
+  port: number,
+): Effect.Effect<void> {
+  return config.updateGlobal(readyConfigPatch(port)).pipe(
+    Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
+    Effect.catchCause((cause) =>
+      Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }),
+    ),
+  )
+}
+
 /** 生产层：读 env 决定起不起、把就绪端口写进全局配置。 */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -392,15 +409,7 @@ export const layer = Layer.effectDiscard(
             cwd: process.env[ENTRY_DIR_ENV],
             ...(port === undefined ? {} : { port }),
           }),
-        onReady: (port) =>
-          config.updateGlobal(readyConfigPatch(port)).pipe(
-            Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
-            // `updateGlobal` 写盘走 `Effect.orDie`（defect，普通 `catch` 收不到）：配置目录只读
-            // （容器常见）时不能让监督器纤维整个死掉，否则子进程再也不会被拉起。
-            Effect.catchCause((cause) =>
-              Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }),
-            ),
-          ),
+        onReady: (port) => readyHandler(config, port),
         onFailure: (reason) => Effect.logWarning(reason),
         sleep: (ms) => Effect.sleep(ms),
         startTimeoutMs: START_TIMEOUT_MS,
