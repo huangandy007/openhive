@@ -156,6 +156,22 @@ export interface WorkspaceEntryProps {
    * 形状是访问器：接口接上后，数据变化要能让网格跟着刷新，传现成数组会冻在首帧。
    */
   assets?: () => readonly AssetMetadata[]
+  /**
+   * **取数失败的原因**（T017）：有值就在资产中栏上方挂一条提示（`AssetCenter` 的 `loadError`）。
+   *
+   * 单独一条而不是塞进 `assets`：失败与「没有资产」是两件事，混成一件用户会以为资产丢了。
+   */
+  loadError?: () => string | undefined
+  /**
+   * **进入 AI 资产视图时通知外面去拉一次**（T017）。
+   *
+   * 为什么需要这条回调而不是在挂载时拉一次：用户刚发布完就切过来，挂载时拉的清单里没有它——
+   * 「刚发布却看不见」正是本轮要修的病，换成「刷新页面才看得见」等于没修。
+   *
+   * **只在视图变成 `ai-assets` 时触发**（每次进入都触发，含从别处切回来）；本组件自己不取数，
+   * 与 `assets` 的同一条规矩：注入而不 import 生产实现，组件测试仍然离线。
+   */
+  onAssetsOpen?: () => void
 }
 
 /**
@@ -288,6 +304,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 收成纯函数 `workspaceView()`（可单测），本组件只按它分派内容。
    */
   const 视图 = () => workspaceView(center.module())
+  /**
+   * T017：**进入** AI 资产视图就通知外面拉一次（含从别处切回来、含首帧就停在这里）。
+   *
+   * 停在别的视图时不触发——不是懒加载优化，是「切过来时拿到的必须是最新的一版」：
+   * 只在挂载时拉一次的话，发布完再切过来看到的仍是旧清单。
+   */
+  createEffect(() => {
+    if (视图() !== "ai-assets") return
+    props.onAssetsOpen?.()
+  })
   /**
    * 「项目管理那颗图标亮不亮」——**开关轴与模块轴的合取**（两轴各自的理由见上面那段）。
    *
@@ -2157,7 +2183,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               T006 起这里是搜索 + 卡片网格；`assetFilter` 与左栏**共享同一份**（左栏点了类型/分类，
               网格立刻按它筛），数据来自 `props.assets` 这条注入缝。 */}
           {视图() === "ai-assets" ? (
-            <AssetCenter filter={assetFilter} assets={props.assets} />
+            <AssetCenter filter={assetFilter} assets={props.assets} loadError={props.loadError} />
           ) : (
             <CenterSplit
               registry={viewRegistry}

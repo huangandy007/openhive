@@ -42,14 +42,22 @@ export interface AssetFilter {
 /**
  * 一次挂载一份筛选状态。
  *
- * 空间默认**全选**（design §1.1「多选，默认全部」）；类型默认 Skill（三个 Tab 的第一项）；
- * 分类默认展开 `order` 最小的那一项（design §1.1「默认展开当前分类」——没有更多用户状态时，
- * 第一项就是当前的默认分类）。
+ * 空间默认**全选**（design §1.1「多选，默认全部」）；类型默认 Skill（三个 Tab 的第一项）。
+ *
+ * ## 分类默认**不展开**（T017 裁定，2026-10-27）
+ *
+ * 009 的原口径是「默认展开 `order` 最小的那一项」。**改掉了**，理由是实测出来的：
+ * 真栈上已发布的「湖州公安风格领导讲话稿」属于「内勤文字」，而默认展开的是「情报研判」——
+ * 用户点进「AI 资产」看到的是一片空态，随后报「AI 资产里面看不到」。分类是**收窄**手段，
+ * 使用面的第一屏必须是「我能用的东西」；默认收窄等于把没落在第一类的资产全藏起来。
+ *
+ * 代价：左栏一进来没有展开项。点一项就收窄、再点它回到「全部」——与空间全选、搜索留空
+ * 是同一种「默认不筛」的姿态。若产品以后要「默认落在某类」，改这一行即可。
  */
 export function createAssetFilter(): AssetFilter {
   const [spaces, setSpaces] = createSignal<readonly AssetVisibility[]>([...ASSET_VISIBILITIES])
   const [type, setType] = createSignal<AssetType>(ASSET_TYPES[0])
-  const [category, setCategory] = createSignal<string | undefined>(ASSET_CATEGORY_ROWS[0]?.id)
+  const [category, setCategory] = createSignal<string | undefined>(undefined)
 
   return {
     spaces,

@@ -3,6 +3,7 @@ import { createEffect, createSignal, Suspense, type ParentProps } from "solid-js
 import { createStore } from "solid-js/store"
 // ⚠️ openhive 定制（006 修复）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 中栏在会话路由上让位给右栏，判据（`routeSessionID`）在下面 `routePageVisible` 那处用。
+import { createAssetCatalog } from "@/ai-assets/asset-catalog"
 import { AiSessionSlot } from "@/ai-session/ai-session-slot"
 import { SidebarSessions } from "@/ai-session/sidebar-sessions"
 import { routeSessionID } from "@/ai-session/route-session"
@@ -70,6 +71,11 @@ export default function NewLayout(props: ParentProps) {
   // ⚠️ openhive 定制（010 T001）：这是要保留的定制。开合状态放在外壳这一层，
   // 顶栏只负责喊「打开」，覆盖层只负责画与关（`@/governance/console-host`）。
   const [治理后台, 设治理后台] = createSignal(false)
+  // ⚠️ openhive 定制（T017）：这是要保留的定制 —— 合并上游时两侧都留着。
+  // AI 资产使用面的数据源在**这一层**建：拉取要走同源 HTTP（`@/ai-assets/asset-catalog-api`），
+  // 而 `WorkspaceEntry` 被组件测试裸挂，不能自己 import 生产实现（见它 `assets` prop 的注释）。
+  // 什么时候拉由 `onAssetsOpen` 说（进入资产视图时），本层只把三样东西传下去。
+  const 资产目录 = createAssetCatalog()
 
   createEffect(() => setV2Toast(true))
 
@@ -169,6 +175,12 @@ export default function NewLayout(props: ParentProps) {
             // 图标栏底部那颗「系统设置」的动作——在本层取（要 Router ＋ DialogProvider），
             // 往里只传值（`WorkspaceEntry` 不读 Router）。
             onOpenSettings={openSettings}
+            // ⚠️ openhive 定制（T017）：这是要保留的定制。
+            // 资产清单 ＋ 取数失败原因 ＋ 「进入资产视图了，去拉一次」。三样都传访问器（与 `right`
+            // 同因：切换视图/重试成功后要能变）。拉取时机见 `asset-catalog.ts` 文件头。
+            assets={资产目录.assets}
+            loadError={资产目录.error}
+            onAssetsOpen={资产目录.refresh}
           >
             <Suspense>{props.children}</Suspense>
           </WorkspaceEntry>

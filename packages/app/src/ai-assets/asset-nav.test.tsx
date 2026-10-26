@@ -92,16 +92,20 @@ describe("AI 资产左栏导航", () => {
     expect(filter.type()).toBe("mcp")
   })
 
-  test("业务分类：按 seed 顺序渲染，默认只展开第一项，箭头随之翻向", () => {
+  test("业务分类：按 seed 顺序渲染，**默认一个都不展开**（T017 裁定，见 `filter.ts` 的头注）", () => {
     const host = mount()
     const 分类 = 槽(host, "asset-category")
 
     expect(分类.map((el) => el.textContent?.trim())).toEqual(ASSET_CATEGORY_ROWS.map((行) => 行.name))
-    expect(分类.map((el) => el.getAttribute("aria-expanded"))).toEqual(
-      ASSET_CATEGORY_ROWS.map((_, index) => (index === 0 ? "true" : "false")),
-    )
+    // 默认「不筛分类」：一进来就收窄到第一类，会把落在别类的已发布资产全藏起来——
+    // 那正是用户报「AI 资产里面看不到」的现场。
+    expect(分类.map((el) => el.getAttribute("aria-expanded"))).toEqual(ASSET_CATEGORY_ROWS.map(() => "false"))
+    expect(分类.every((el) => 箭名(el).includes("chevron-right"))).toBe(true)
+
+    // 点一项才收窄；箭头跟着翻。
+    分类[0]?.click()
+    expect(分类[0]?.getAttribute("aria-expanded")).toBe("true")
     expect(箭名(分类[0])).toContain("chevron-down")
-    expect(箭名(分类[1])).toContain("chevron-right")
   })
 
   test("单开手风琴：点第二项 ⇒ 第一项收起、第二项展开；再点它 ⇒ 全部收起", () => {

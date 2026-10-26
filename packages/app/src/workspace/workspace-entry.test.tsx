@@ -6051,6 +6051,36 @@ describe("AI 资产工作台（009 T005）", () => {
 })
 
 /**
+ * T017 接线：**进入** AI 资产视图才通知外面拉取，且每次进入都通知。
+ *
+ * 为什么不是「挂载时拉一次」：用户刚发布完就切过来，挂载时拉的清单里没有它——
+ * 「刚发布却看不见」正是本轮要修的病；换成「刷新页面才看得见」等于没修。
+ */
+describe("AI 资产取数接线（T017）", () => {
+  test("挂在项目管理时不通知；点「AI 资产」通知一次；切走再切回来再通知一次", () => {
+    const 次数: number[] = []
+    const host = mount(() => <WorkspaceEntry onAssetsOpen={() => 次数.push(次数.length)}>中栏</WorkspaceEntry>)
+
+    // 默认停在项目管理：没人要资产，就不该有请求。
+    expect(次数.length).toBe(0)
+
+    入口(host, "AI 资产").click()
+    expect(次数.length).toBe(1)
+
+    入口(host, "项目管理").click()
+    expect(次数.length).toBe(1)
+
+    入口(host, "AI 资产").click()
+    expect(次数.length).toBe(2)
+  })
+
+  test("省略 onAssetsOpen：点「AI 资产」不崩（注入缝是可选的）", () => {
+    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    expect(() => 入口(host, "AI 资产").click()).not.toThrow()
+  })
+})
+
+/**
  * AI 资产中栏（009 T006 / T007）：搜索 + 卡片网格 + 详情面板，左栏与中栏**共享同一份筛选**。
  *
  * 数据走 `assets` 注入缝（`/assets` 接口未落，见 `state.md`）——这里注入夹具，
@@ -6138,15 +6168,20 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       </WorkspaceEntry>
     ))
     进入(host)
-    expect(卡片(host)).toHaveLength(1)
-    expect(卡片名(host)[0]).toContain("第一类")
+    // 默认**不筛分类**（T017 裁定）：两类都在，第一屏就是「我能用的东西」。
+    expect(卡片(host)).toHaveLength(2)
 
-    host
-      .querySelector<HTMLElement>(`[data-slot='asset-category'][data-category='${ASSET_CATEGORY_ROWS[1].id}']`)!
-      .click()
+    const 第二类 = host.querySelector<HTMLElement>(
+      `[data-slot='asset-category'][data-category='${ASSET_CATEGORY_ROWS[1].id}']`,
+    )!
+    第二类.click()
 
     expect(卡片(host)).toHaveLength(1)
     expect(卡片名(host)[0]).toContain("第二类")
+
+    // 再点一次 ⇒ 收起分类、回到全部（与空间全选、搜索留空同一种姿态）。
+    第二类.click()
+    expect(卡片(host)).toHaveLength(2)
   })
 
   test("搜索框过滤中栏；清空恢复全部", () => {

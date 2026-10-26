@@ -10,12 +10,14 @@ import { ASSET_CATEGORY_ROWS, createAssetFilter } from "./filter"
  * 分类行必须与 `asset-service` 的 seed 同源——前端硬编码一份就是两处真相（`LEARNINGS #002-06`）。
  */
 describe("AI 资产筛选状态", () => {
-  test("默认：三个空间全选、类型 Skill、展开 order 最小的分类", () => {
+  test("默认：三个空间全选、类型 Skill、**不展开任何分类**（T017 裁定，见 `filter.ts` 头注）", () => {
     const filter = createAssetFilter()
 
     expect(filter.spaces()).toEqual([...ASSET_VISIBILITIES])
     expect(filter.type()).toBe("skill")
-    expect(filter.category()).toBe(ASSET_CATEGORY_ROWS[0]?.id)
+    // 默认收窄到第一类会把落在别类的已发布资产全藏起来——用户报的就是这个现场。
+    expect(filter.category()).toBeUndefined()
+    expect(ASSET_CATEGORY_ROWS.length).toBeGreaterThan(0)
   })
 
   test("空间多选：点一下取消、再点恢复，顺序恒按 ASSET_VISIBILITIES", () => {

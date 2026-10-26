@@ -20,6 +20,13 @@ import type { AssetFilter } from "./filter"
 export interface AssetCenterProps {
   readonly filter: AssetFilter
   readonly assets?: () => readonly AssetMetadata[]
+  /**
+   * 取数失败的原因（T017）。有值就**在网格上方挂一条提示**——失败不能长成空列表：
+   * 「没有符合条件的资产」与「服务连不上」是两件事，混成一件用户会以为资产丢了。
+   *
+   * 形状是访问器（与 `assets` 同因）：重试成功后要能消失。
+   */
+  readonly loadError?: () => string | undefined
 }
 
 export function AssetCenter(props: AssetCenterProps): JSX.Element {
@@ -57,6 +64,17 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
         <div class="px-4 pt-4">
           <AssetSearch value={搜索词()} onInput={set搜索词} />
         </div>
+        <Show when={props.loadError?.()}>
+          {(原因) => (
+            <div
+              data-slot="asset-load-error"
+              role="alert"
+              class="mx-4 mt-3 rounded-md border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2 text-[13px] text-v2-text-text-muted"
+            >
+              {原因()}
+            </div>
+          )}
+        </Show>
         <AssetGrid filter={props.filter} search={搜索词} assets={props.assets} onOpen={打开} />
       </div>
 
