@@ -689,8 +689,14 @@ resourceReadWithIdentity.instance(
 
       yield* promptWithResourcePart(READ_ALLOWED)
 
+      // `.instance` 的 harness 提供了实例 ⇒ 出站 `_meta` 里除身份外还有目录。
+      // 断言完整对象（不用 objectContaining）：多带一个键也要看得见。
+      const instance = yield* TestInstance
       expect(identifiedResourceRead.calls).toHaveLength(1)
-      expect(identifiedResourceRead.calls[0]).toEqual({ "openhive/user": ALICE.id })
+      expect(identifiedResourceRead.calls[0]).toEqual({
+        "openhive/user": ALICE.id,
+        "openhive/directory": instance.directory,
+      })
     }),
   30_000,
 )

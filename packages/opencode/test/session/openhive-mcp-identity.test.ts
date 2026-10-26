@@ -23,6 +23,7 @@ import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Effect, Layer } from "effect"
 import { testEffect } from "../lib/effect"
+import { requireInstance } from "../fixture/fixture"
 
 /**
  * T007（FR-005）：**MCP 查询带身份**——链 A 调 MCP 时，请求体里带上「这次调用是谁发的」。
@@ -412,7 +413,13 @@ withIdentityPrompt.instance("带身份 ⇒ MCP prompt 命令取模板时 `getPro
     expect(identifiedPrompts).toHaveLength(1)
     expect(identifiedPrompts[0].client).toBe("fund")
     expect(identifiedPrompts[0].name).toBe("brief")
-    expect(identifiedPrompts[0].meta).toEqual({ "openhive/user": ALICE.id })
+    // 本条用 `.instance`（不是 `.effect`）⇒ harness 经 `InstanceStore.provide` 给了 InstanceRef，
+    // 所以 `_meta` 里**本该**多带目录。断言写完整对象（不用 objectContaining）：多带一个键也要看得见。
+    const instance = yield* requireInstance
+    expect(identifiedPrompts[0].meta).toEqual({
+      "openhive/user": ALICE.id,
+      "openhive/directory": instance.directory,
+    })
   }),
   { git: true },
 )

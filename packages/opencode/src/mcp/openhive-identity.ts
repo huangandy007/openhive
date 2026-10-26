@@ -1,5 +1,6 @@
 import { User } from "@opencode-ai/core/user"
 import { Effect, Option } from "effect"
+import { InstanceRef } from "@/effect/instance-ref"
 
 /**
  * 【这是要保留的定制】openhive 模块：**MCP 调用带用户身份**（004 · T007 · FR-005）。
@@ -8,9 +9,13 @@ import { Effect, Option } from "effect"
  *
  * ## 做什么
  *
- * 把「这次 MCP 调用是谁发的」放进 MCP 请求的 `_meta`，键为 {@link USER_META_KEY}：
+ * 把「这次 MCP 调用是谁发的、在哪个项目里」放进 MCP 请求的 `_meta`，键为
+ * {@link USER_META_KEY} 与 {@link DIRECTORY_META_KEY}：
  *
- *     { "openhive/user": "<user id>" }
+ *     { "openhive/user": "<user id>", "openhive/directory": "<当前实例的项目目录>" }
+ *
+ * 目录键只在有实例上下文时带（非 HTTP 入口 / CLI 没有实例就只带身份）——**不编一个默认目录**，
+ * 与「没身份就不带身份」同一条理由。
  *
  * 上游 opencode 完全不知道这件事；`_meta` 是 MCP 协议为这种带外信息留的字段，自定义键合法
  * （`CallToolRequestParamsSchema` / `ReadResourceRequestParamsSchema` 的 `_meta` 都是
@@ -50,17 +55,27 @@ import { Effect, Option } from "effect"
  */
 export const USER_META_KEY = "openhive/user"
 
+/** 调用方（内核）声明的「当前项目目录」；服务端据此判沙箱边界（不信任值本身，见 asset-service）。 */
+export const DIRECTORY_META_KEY = "openhive/directory"
+
 /** 出站 MCP 请求的 `_meta`。形状交给调用方（上游 `convertTool` / `readResource` 认 `Record<string, unknown>`）。 */
 export type Meta = Readonly<Record<string, unknown>>
 
 /**
  * 本次请求的用户身份，包成 MCP `_meta`。没有 `User.Service` 时给 `undefined`（= 不注入）。
+ * 有实例上下文时再附带 {@link DIRECTORY_META_KEY}（当前项目目录）；没有实例就只带身份。
  *
  * 调用点（`session/tools.ts`）在 `resolve` 期取一次、供该请求的所有 MCP 出口共用：
  * server 工具（`convertTool` → `tools/call`）与资源工具（`MCP.readResource`）走的是**同一份**
  * 身份，不各取一次——两处各取一次是 `LEARNINGS #003-05` 说的假镜像形状。
  */
 export const userMeta = (): Effect.Effect<Meta | undefined> =>
-  Effect.map(Effect.serviceOption(User.Service), (user) =>
-    Option.isSome(user) ? { [USER_META_KEY]: user.value.id } : undefined,
-  )
+  Effect.gen(function* () {
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return undefined
+    const instance = yield* InstanceRef
+    return {
+      [USER_META_KEY]: user.value.id,
+      ...(instance === undefined ? {} : { [DIRECTORY_META_KEY]: instance.directory }),
+    }
+  })
