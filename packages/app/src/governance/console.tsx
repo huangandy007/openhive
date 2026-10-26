@@ -11,9 +11,11 @@
  */
 
 import { Icon } from "@opencode-ai/ui/icon"
-import { For, Show, createMemo, createSignal, onMount } from "solid-js"
+import { For, Match, Show, Switch, createMemo, createSignal, onMount } from "solid-js"
 import type { AccountApi } from "./account-api"
 import { AccountManage } from "./account-manage"
+import type { OrgApi } from "./org-api"
+import { OrgTree } from "./org-tree"
 import { filterGovernanceSections, GOVERNANCE_SECTIONS, type GovernanceSection } from "./sections"
 
 export interface GovernanceConsoleProps {
@@ -23,6 +25,8 @@ export interface GovernanceConsoleProps {
   capabilities?: ReadonlySet<string>
   /** 账号管理接口（T005）。省略 = 账号页显示占位（还没接线）。 */
   accountApi?: AccountApi
+  /** 组织架构接口（T006）。省略 = 组织页显示占位（还没接线）。 */
+  orgApi?: OrgApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
 }
@@ -139,13 +143,7 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
           }
         >
           {(section) => (
-            <Show when={props.accountApi} fallback={<占位 section={section()} />}>
-              {(api) => (
-                <Show when={section().id === "account-manage"} fallback={<占位 section={section()} />}>
-                  <AccountManage api={api()} selfId={props.selfId} />
-                </Show>
-              )}
-            </Show>
+            <页面 section={section()} accountApi={props.accountApi} orgApi={props.orgApi} selfId={props.selfId} />
           )}
         </Show>
       </main>
@@ -153,7 +151,35 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
   )
 }
 
-/** 还没接入的板块：只说明「这一页尚未接入」，不画假表格（T006–T012 各自接）。 */
+/**
+ * 按板块 id 挑真实内容；没接线或还没接入的板块一律落到占位。
+ *
+ * 每页的接口是**独立可省略**的：T005 接了账号、T006 接了组织，其余七页仍占位——
+ * 一处没接线不该把已经接好的页也藏起来。
+ */
+function 页面(props: {
+  section: GovernanceSection
+  accountApi?: AccountApi
+  orgApi?: OrgApi
+  selfId?: string
+}) {
+  return (
+    <Switch fallback={<占位 section={props.section} />}>
+      <Match when={props.section.id === "account-manage"}>
+        <Show when={props.accountApi} fallback={<占位 section={props.section} />}>
+          {(api) => <AccountManage api={api()} selfId={props.selfId} />}
+        </Show>
+      </Match>
+      <Match when={props.section.id === "org-tree"}>
+        <Show when={props.orgApi} fallback={<占位 section={props.section} />}>
+          {(api) => <OrgTree api={api()} />}
+        </Show>
+      </Match>
+    </Switch>
+  )
+}
+
+/** 还没接入的板块：只说明「这一页尚未接入」，不画假表格（T007–T012 各自接）。 */
 function 占位(props: { section: GovernanceSection }) {
   return (
     <section class="mt-6 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-raised)]">

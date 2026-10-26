@@ -129,6 +129,7 @@ import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
+import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
@@ -389,6 +390,10 @@ export function createRoutes(
       Layer.provide(AnchorWorkspace.Config.layer),
       Layer.provide(OpenhivePg.layer),
     ),
+    // openhive 组织架构出口（010 T006）：三级树 / 建节点 / 改名 / 删除 / 从账号导入（FR-005）。
+    // 只读业务 PG——树没有沙箱目录，改名级联也只改 `auth.user` 的三列文本。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T006）。
+    OpenhiveGovernanceOrg.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

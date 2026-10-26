@@ -23,7 +23,20 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
   const root = document.createElement("div")
   document.body.appendChild(root)
-  挂过的.push(render(() => <GovernanceConsole onClose={props.onClose} capabilities={props.capabilities} />, root))
+  挂过的.push(
+    render(
+      () => (
+        <GovernanceConsole
+          onClose={props.onClose}
+          capabilities={props.capabilities}
+          accountApi={props.accountApi}
+          orgApi={props.orgApi}
+          selfId={props.selfId}
+        />
+      ),
+      root,
+    ),
+  )
   return root
 }
 
@@ -62,6 +75,44 @@ describe("治理后台 · 全屏骨架", () => {
     expect(root.querySelector("[data-slot='governance-console']")?.getAttribute("data-section")).toBe("org-tree")
     expect(当前项(root)?.textContent?.trim()).toBe("组织架构")
     expect(页标题(root)).toBe("组织架构")
+  })
+
+  test("接了组织接口 ⇒「组织架构」页是真的树，不是占位（T006 接线）", async () => {
+    let 读树 = 0
+    const root = 挂上({
+      orgApi: {
+        tree: async () => {
+          读树 += 1
+          return {
+            kind: "ok",
+            value: [
+              {
+                id: "n1",
+                parentId: null,
+                level: 1 as const,
+                name: "甲单位",
+                path: ["甲单位"],
+                childCount: 0,
+                accountCount: 0,
+                createdAt: 1_700_000_000,
+              },
+            ],
+          }
+        },
+        create: async () => ({ kind: "failed", message: "本用例不建节点" }),
+        rename: async () => ({ kind: "failed", message: "本用例不改名" }),
+        remove: async () => ({ kind: "failed", message: "本用例不删" }),
+        importFromAccounts: async () => ({ kind: "failed", message: "本用例不导入" }),
+      },
+    })
+    await flush()
+
+    导航项(root)[1].click()
+    await flush()
+    await flush()
+
+    expect(读树).toBe(1)
+    expect(root.querySelector('[data-slot="org-row"][data-id="n1"]')).not.toBeNull()
   })
 
   test("返回工作台 ⇒ 调 onClose", async () => {

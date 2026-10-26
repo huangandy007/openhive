@@ -133,6 +133,31 @@ describe("connect", () => {
       }
     }, 20_000)
   })
+
+  /**
+   * 连接池上限（`PG_POOL_MAX`）。
+   *
+   * 存在的理由只有一个：**PGlite 夹具把多条连接汇进同一个 PG 会话**，而预编译语句是会话级的、
+   * `bun-sql` 的缓存却是连接级的 ⇒ 池里第二条连接再准备同一句带参 SQL 就 `42P05`
+   * （`test-support.ts` 的 T021 实测，010 T006 的改名用例当场撞上）。
+   * 夹具下的被测代码只有一条连接，这个残差就不存在了。
+   *
+   * 生产不必配它——不配就是驱动默认值。
+   */
+  describe("连接池上限（PG_POOL_MAX）", () => {
+    test("不配 ⇒ 用驱动默认值（10）", () => {
+      expect(connect(complete).$client.options.max).toBe(10)
+    })
+
+    test("PG_POOL_MAX=1 ⇒ 池里只留一条连接", () => {
+      expect(connect({ ...complete, PG_POOL_MAX: "1" }).$client.options.max).toBe(1)
+    })
+
+    test("非正整数 ⇒ 构造期点名报错，不静默退回默认值", () => {
+      expect(() => connect({ ...complete, PG_POOL_MAX: "0" })).toThrow("PG_POOL_MAX")
+      expect(() => connect({ ...complete, PG_POOL_MAX: "abc" })).toThrow("PG_POOL_MAX")
+    })
+  })
 })
 
 describe("PG 工具链", () => {

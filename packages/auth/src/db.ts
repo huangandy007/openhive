@@ -57,10 +57,32 @@ const CONNECTION_TIMEOUT_SECONDS = 3
  * 也合宪法 §I「能改配置就不改核心逻辑」。已记进 `D-05` 那张待办。
  */
 export function connect(env: Record<string, string | undefined> = process.env) {
+  const max = poolMaxOf(env)
   return drizzle({
     connection: {
       url: resolveDatabaseUrl(env),
       connectionTimeout: CONNECTION_TIMEOUT_SECONDS,
+      ...(max === undefined ? {} : { max }),
     },
   })
+}
+
+/**
+ * 连接池上限（`PG_POOL_MAX`）。不配 ⇒ 驱动默认值（10）。**生产一般不需要配它。**
+ *
+ * 它存在的理由在测试侧：PGlite 夹具把**多条连接汇进同一个 PG 会话**（预编译语句是会话级的），
+ * 而 `bun-sql` 的语句缓存是**连接级**的 ⇒ 池里第二条连接再准备同一句**带参** SQL，
+ * 服务端报 `42P05 duplicate_prepared_statement`（`test-support.ts` 的 T021 实测，
+ * 010 T006 的改名用例当场撞上：`db.transaction()` 从池里独占一条连接，事务之后的
+ * `authorizeGovernance` 就换了连接重新准备）。配 `1` 让被测代码只持一条连接，
+ * 形状回到「一个进程、一条连接」，夹具残差随之消失。
+ *
+ * 非法值**构造期就抛**，不静默退回默认值——那会让「配了却没生效」变成一个查不出的假绿。
+ */
+function poolMaxOf(env: Record<string, string | undefined>): number | undefined {
+  const raw = env.PG_POOL_MAX
+  if (raw === undefined || raw === "") return undefined
+  const max = Number(raw)
+  if (!Number.isInteger(max) || max < 1) throw new Error(`PG_POOL_MAX 必须是正整数：${raw}`)
+  return max
 }

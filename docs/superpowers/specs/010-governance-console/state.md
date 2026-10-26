@@ -1,9 +1,62 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T005 已交付（axe 1 格红，按护栏 HALT，等设计裁定）。**下一项 T006**（组织架构），等用户 `next`。
+T006 已交付（axe 新增 8 格全绿）。**下一项 T007**（AI 资产治理），等用户 `next`。
+T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 
 ## 已完成
+
+- **T006** 组织架构（FR-005）
+  - 新增迁移 `packages/auth/src/migrations/0014_org_node.sql`（＋ `.down.sql`）：
+    **一张自引用表** `auth.org_node`（`level` 显式 1/2/3；`(parent_id IS NULL) = (level = 1)`；
+    同级同名用**表达式唯一索引** `coalesce(parent_id, '')`——NULL 互不相等，不套 coalesce 能建出两个根同名）。
+    六个字段全带中文注释（`comments.test.ts` 先红后绿，0008 起的硬约束）
+  - 新增 `packages/auth/src/org-tree.ts`：`listNodes`（`path` / `childCount` / `accountCount` 由两张
+    group-by 映射补齐）、`createNode`、`renameNode`（**同一事务**里改节点名 ＋ 级联
+    `auth.user` 的 org/dept/section 三列文本，停用账号也改）、`deleteNode`（先判有下级、再判有账号）、
+    `importFromAccounts`（显式、幂等：同父同名复用已有节点，只补缺的层级）
+  - 新增 `packages/opencode/src/server/openhive/governance-org.ts`：5 条路由
+    （tree / nodes / rename / delete / import）。每请求**先** `authorizeGovernance`（`org-tree` 的
+    read / write），**排在读体之前**（`#004-09`）；错误映射 400 名/层级、409 同名/非空/有账号、404 不存在。
+    接线 `server.ts`（只吃 `OpenhivePg.layer`，不碰沙箱）
+  - **PGlite 夹具的 `42P05` 根因**（本轮最花时间的一处）：7 条路由用例 500，日志里是
+    `prepared statement "Pselect … from auth.user where id = $1$0" already exists`。
+    根因是**夹具**把多条连接汇进同一个 PG 会话（预编译语句是会话级的），而 `bun-sql` 的语句缓存是
+    连接级的：`db.transaction()` 从池里独占第二条连接后，下一条带参查询重新准备同名语句 ⇒ 42P05。
+    真 PG 每会话独立，生产不受影响。修法是**配置优先**的可选旋钮 `PG_POOL_MAX`（`db.ts` 的
+    `poolMaxOf`），测试里设 `1` 让被测代码只持一条连接；生产不配 ⇒ 驱动默认 10。
+    该旋钮另有 3 条单测（不配 / 配 1 / 非正整数报错）
+  - 新增前端 `governance/org-api.ts`（同 `account-api` 范式：同源路径、可注入 send、Outcome 三态、
+    严格解析、10s 超时）、`governance/org-tree.tsx`（左树右详情；行内新增/改名 Enter·Esc；
+    新节点建好即进改名态；删除有**两条禁用原因**：有下级 / 有账号；确认框；读树带**代次守卫**）。
+    选中态用中性 `layer-02` ＋ 2px 品牌金左边框，**不用** `accent-soft`（009 实测 dark 1.07–1.99:1）。
+    `console.tsx` 改为 `Switch/占位` 分派，`console-host.tsx` / `console-connected.tsx` 接线
+  - 测试新增 **61 条**：`auth/src/org-tree.test.ts` 19（PGlite 真库）、
+    `auth/src/db.test.ts` 3（PG_POOL_MAX）、`opencode/test/server/openhive-governance-org.test.ts` 14、
+    `app/src/governance/org-api.test.ts` 9、`org-tree.test.tsx` 15、`console.test.tsx` 1（接线）；
+    另有 4 条 story（有数据 / 空 / 错误 / 确认框打开态）
+  - 变异 M1–M6（后端，均实得红并还原）：① 改名不级联账号 ⇒ 对应用例红；② 去掉同级同名守卫 ⇒ 撞名用例红；
+    ③ 去掉删除的账号守卫 ⇒ 有账号可删；④ 放开三级上限 ⇒ 第四级能建；⑤ 导入不幂等 ⇒ 第二次重复建；
+    ⑥ 移除测试里的 `PG_POOL_MAX=1` ⇒ **恰好原 7 条路由用例复现 500 / 42P05**（证明该旋钮是承重的，
+    不是为绿而绿）。前端 F1–F4（实得红并还原）：① 去掉 `orgApi` 接线 ⇒ console 接线用例 1 红；
+    ② 去掉代次守卫 ⇒ 代次用例 1 红；③ `删除原因` 恒 `undefined` ⇒ 删除守卫用例 1 红；
+    ④ 建完不自动进改名态 ⇒ 新增用例 1 红
+  - 门禁实得：`packages/auth` 全量 **336 pass / 3 skip / 0 fail**（339 条 / 27 文件 / 296s；
+    首个全量跑出 `comments.test` 1 红，补注释后本轮三个受影响文件 **33 pass / 0 fail**，再全量复跑即上数）；
+    `packages/opencode` 路由（org ＋ accounts）**40 pass / 0 fail**；
+    `packages/app` 治理 8 文件 **78 pass / 0 fail**、`test:components` 全量 **1409 pass / 0 fail**；
+    根 `bun run typecheck` **32/32 successful**；`bun run lint:openhive` **0 error / 67 warning**
+    （governance 目录 **0 条**）；`git diff --stat bun.lock` **无输出**
+  - **axe 实得**（2026-10-26）：`node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/Governance"`
+    （8 story × 浅/深 = **16 格**）⇒ **15 ✅ / 1 ❌**。新增的 org-tree 四 story × 两主题 **8 格全 0 违例**，
+    含确认框打开态（Kobalte Portal 子树）。唯一红仍是 T005 「有数据 [light]」的 3 个 accent 标签
+    （3.11:1），按护栏维持 HALT，不重报为新缺口。复跑同日用 `--port 6018`
+    （6017 被 009 工作台的 storybook 占着）＋ `STORYBOOK_URL=http://127.0.0.1:6018`
+  - **缺口**：① 跨行的「子级 = 父级 + 1」只有服务层，DB 只挡了「根必须是 1 级」那一半（要触发器才行）；
+    ② 账号与节点的关联是**同路径文本**，改名级联在同一事务里改三列，但 `analytics` 的 org 是抽取时点
+    快照，历史不追溯；③ 没有「移动节点 / 调层级 / 同级排序」动作（T006 范围只到增删改）；
+    ④ `importFromAccounts` 按文本建树：中间层级为空串的账号会被跳过，同名不同义会合并成同一节点；
+    ⑤ 治理壳 `console.tsx` 仍无 story（同 T005 缺口）；⑥ **真栈未跑**（同 009 的 `openai@6.39.1` 缺口）
 
 - **T005** 账号管理（FR-004 / US2；003 的 T022 录入 ＋ T024 停用的触发者）
   - 新增 `packages/auth/src/account-admin.ts`（**读面**）：`listAccounts`（q 命中警号/姓名/单位/部门/科室，
