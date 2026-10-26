@@ -565,11 +565,17 @@ async function prepareStorageStep(
       const replacement = await moveWithinTransition(source, target, applied.action)
       return {
         commit: async () => {
-          await replacement.commit()
-          // 写库已成功，旧范围副本才删：写库失败时 rollback 不碰它（旧状态与旧目录仍一致）。
-          // 删除失败**不能**把已完成的发布翻成错误：那会让调用方收到 500 且跳过站内信，
-          // 而库里其实已经是新状态。旧副本是上一版的残留，删除属尽力而为——
-          // 残留旧目录是「可被告知的缺陷」，失败响应是「谎报」，取前者。
+          // 写库已成功，这里的收尾都是「尽力而为」：失败不能让一次已完成的流转回 500，
+          // 那会同时跳过站内信（notify 在 try 之后）。残留的备份 / 旧范围目录是
+          // 可被告知的缺陷，失败响应是谎报——取前者。
+          // （`replaceDirectory.commit()` 先把 `settled` 置真再删备份，删备份失败时
+          // rollback 已是空操作，裸错误只会冒成 500。）
+          try {
+            await replacement.commit()
+          } catch {
+            // 有意吞掉：见上。
+          }
+          // 写库失败时 rollback 不碰旧范围目录（旧状态与旧目录仍一致），所以到这里才删。
           if (旧目录 !== undefined) {
             try {
               await removeDirectory(root, 旧目录)
@@ -586,7 +592,17 @@ async function prepareStorageStep(
       const source = sharedDirectoryOf(root, asset)
       const target = archiveDirectory(root, asset.id)
       const replacement = await moveWithinTransition(source, target, applied.action)
-      return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
+      return {
+        commit: async () => {
+          // 同样是写库后的纯清理：删备份失败不能让已完成的归档回 500（见上一条分支）。
+          try {
+            await replacement.commit()
+          } catch {
+            // 有意吞掉：见上。
+          }
+        },
+        rollback: () => replacement.rollback(),
+      }
     }
 
     default: {
