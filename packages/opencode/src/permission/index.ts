@@ -1,11 +1,13 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceRef } from "@/effect/instance-ref"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
 import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { OpenhiveAuditDenied } from "./openhive-audit-denied"
 
 export const Event = PermissionV1.Event
 
@@ -73,6 +75,22 @@ const layer = Layer.effect(
         const rule = evaluate(request.permission, pattern, ruleset, approved)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
+          // 【保留的定制】010 T010（FR-009「全部拒绝留痕」）：工具拒绝写一行治理审计。
+          // 尽力而为——函数自身永不抛，审计故障不允许改变「拒绝」这个结局。
+          // 身份与连接从哪来见 `openhive-audit-denied.ts` 文件头；同步等待是为了
+          // 「拒绝与留痕同生共死」（最坏情况是 PG 不可达时多等一次连接超时）。
+          const instance = yield* InstanceRef
+          yield* Effect.promise(() =>
+            OpenhiveAuditDenied.记工具拒绝({
+              directory: instance?.directory,
+              sessionID: request.sessionID,
+              permission: request.permission,
+              patterns: request.patterns,
+              ...(request.tool === undefined
+                ? {}
+                : { messageID: request.tool.messageID, callID: request.tool.callID }),
+            }),
+          )
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
           })

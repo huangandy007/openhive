@@ -50,13 +50,15 @@ import { AssetNotificationError } from "@opencode-ai/asset-service/notify"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
 import { transitionAsset } from "@opencode-ai/asset-service/service"
 import { assetsRoot, MissingSourceDirectoryError } from "@opencode-ai/asset-service/storage"
-import { authorizeGovernance, governanceGrants } from "@opencode-ai/auth/governance"
+import { governanceGrants } from "@opencode-ai/auth/governance"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { GrantRow } from "@opencode-ai/auth/rbac"
 import { User } from "@opencode-ai/core/user"
 import { sql } from "drizzle-orm"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { OpenhiveAudit } from "./audit"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 /** 板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -130,9 +132,30 @@ function forbidden(message = "没有资产治理权限") {
 /** 请求期取身份（`Option.none` = 无凭证）。 */
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）。 */
+/** 本板块的记账方法（`board` 焊在闭包里）。 */
+const 记账 = OpenhiveAudit.板块(BOARD)
+
+/** 本模块的审计基底（板块已由 `板块()` 焊住）。 */
+type 审计基底 = Pick<OpenhiveAudit.板块审计输入, "action" | "targetType" | "targetId">
+
+/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）；拒绝当场留痕（`governance-authz.ts`）。 */
 function 有权(deps: Deps, userId: string, perm: "read" | "write" | "review" | "admin") {
-  return Effect.promise(() => authorizeGovernance(deps.pg(), { userId, board: BOARD, perm }))
+  return GovernanceAuthz.进(deps, userId, BOARD, perm)
+}
+
+/** 记一笔失败结局 ＋ 回同一个错误响应（与账号 / 组织出口同形）。 */
+function 失败(
+  deps: Deps,
+  userId: string,
+  base: 审计基底,
+  status: number,
+  message: string,
+  field?: string,
+  extra?: Record<string, unknown>,
+) {
+  return 记账.记失败(deps, userId, base, { status, message, ...(field === undefined ? {} : { field }) }, extra).pipe(
+    Effect.as(fail(status, message, field)),
+  )
 }
 
 function 是状态(value: string): value is AssetStatus {
@@ -172,31 +195,43 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
     // 授权排在读取请求体之前（`#004-09`）。
-    if (!(yield* 有权(deps, user.value.id, "read"))) return forbidden()
+    if (!(yield* 有权(deps, userId, "read"))) return forbidden()
 
+    // 解析出 `transition` 之前的失败，`targetId` 还是 null（还不知道对象是谁）。
+    const 未知对象 = { action: "asset.transition", targetType: "asset", targetId: null } as const
     const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    if (!isRecord(body)) return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "请求体不是 JSON 对象")
 
     const action = body["action"]
-    if (typeof action !== "string" || action === "") return fail(BAD_REQUEST, "缺少 action")
+    if (typeof action !== "string" || action === "") {
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "缺少 action")
+    }
     const 动 = 治理动作(action)
     if (!动) {
-      if (作者动作(action)) return fail(BAD_REQUEST, `${action} 是作者动作，不在治理后台执行`)
-      return fail(BAD_REQUEST, `未知生命周期动作：${action}`)
+      if (作者动作(action)) {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `${action} 是作者动作，不在治理后台执行`)
+      }
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `未知生命周期动作：${action}`)
     }
 
     const reason = body["reason"]
-    if (reason !== undefined && typeof reason !== "string") return fail(BAD_REQUEST, "reason 必须是字符串")
+    if (reason !== undefined && typeof reason !== "string") {
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "reason 必须是字符串", undefined, { transition: 动 })
+    }
 
     const params = yield* HttpRouter.params
     const assetId = params.id ?? ""
+    const base = { action: "asset.transition", targetType: "asset", targetId: assetId } as const
+    // 资产流转的审计要能回答「哪个生命周期动作」——只在 `action` 列写 `asset.transition` 不够。
+    const 补充 = { transition: 动 } as const
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
-    if (!asset) return fail(NOT_FOUND, `资产不存在：${assetId}`)
+    if (!asset) return yield* 失败(deps, userId, base, NOT_FOUND, `资产不存在：${assetId}`, undefined, 补充)
 
-    const department = yield* 取部门(deps, user.value.id)
-    const grants = yield* 合成授权行(deps, user.value.id, asset.type, asset.id)
-    const viewer = { userId: user.value.id, department }
+    const department = yield* 取部门(deps, userId)
+    const grants = yield* 合成授权行(deps, userId, asset.type, asset.id)
+    const viewer = { userId, department }
 
     // 授权先于「类型 / 状态」判定（`#004-09` 在资产层的落点）：`transitionAsset()` 先查类型、
     // 再查授权，于是只有 read 的人对一份 MCP 资产会拿到 400 而不是 403——那 200 毫秒的差别
@@ -208,7 +243,7 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
         catch: (error) => error,
       }),
     )
-    if (Result.isFailure(预检)) return yield* 翻译(预检.failure)
+    if (Result.isFailure(预检)) return yield* 翻译(预检.failure, deps, userId, base, 补充)
 
     const result = yield* Effect.result(
       Effect.tryPromise({
@@ -225,15 +260,28 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
         catch: (error) => error,
       }),
     )
-    if (Result.isSuccess(result)) return ok({ asset: result.success })
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, {
+        ...base,
+        result: "ok",
+        detail: { transition: 动, ...(reason === undefined ? {} : { reason }) },
+      })
+      return ok({ asset: result.success })
+    }
 
     const error = result.failure
     if (error instanceof AssetNotificationError) {
       // 流转已生效、通知没写进去：回 200 ＋ notice，不回 500（文件头最后一段）。
+      // 审计同样记 `ok`——状态确实变了，`notice` 说明附带损伤。
       const updated = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+      yield* 记账.记(deps, userId, {
+        ...base,
+        result: "ok",
+        detail: { transition: 动, notice: error.message },
+      })
       return ok({ asset: updated, notice: error.message })
     }
-    return yield* 翻译(error)
+    return yield* 翻译(error, deps, userId, base, 补充)
   })
 }
 
@@ -318,8 +366,15 @@ export function 映射错误(
   return undefined
 }
 
-function 翻译(error: unknown) {
+/** 领域错误 → 状态码；承认得出的 4xx 都留一行 failed/denied（403 记 denied），认不出的继续炸（500）。 */
+function 翻译(
+  error: unknown,
+  deps: Deps,
+  userId: string,
+  base: 审计基底,
+  extra?: Record<string, unknown>,
+) {
   const mapped = 映射错误(error)
-  if (mapped) return Effect.succeed(fail(mapped.status, mapped.message, mapped.field))
+  if (mapped) return 失败(deps, userId, base, mapped.status, mapped.message, mapped.field, extra)
   return Effect.die(error)
 }

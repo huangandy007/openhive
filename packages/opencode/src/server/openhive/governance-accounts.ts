@@ -35,7 +35,6 @@ export * as OpenhiveGovernanceAccounts from "./governance-accounts"
  */
 
 import { accountById, listAccounts, type AccountQuery } from "@opencode-ai/auth/account-admin"
-import { authorizeGovernance } from "@opencode-ai/auth/governance"
 import { resetPassword } from "@opencode-ai/auth/password"
 import { defaultPassword } from "@opencode-ai/auth/policy"
 import {
@@ -50,6 +49,8 @@ import { User } from "@opencode-ai/core/user"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "@/server/routes/instance/httpapi/middleware/anchor-workspace"
+import { OpenhiveAudit } from "./audit"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 /** 板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -133,10 +134,30 @@ function notFound() {
 /** 请求期取身份（`Option.none` = 无凭证）。 */
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）。 */
+/** 本板块的记账方法（`board` 焊在闭包里，写路由共用一份实现）。 */
+const 记账 = OpenhiveAudit.板块(BOARD)
+
+/** 本模块的审计基底（板块已由 `板块()` 焊住）。 */
+type 审计基底 = Pick<OpenhiveAudit.板块审计输入, "action" | "targetType" | "targetId">
+
+/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）；拒绝当场留痕（`governance-authz.ts`）。 */
 function 有权(deps: Deps, userId: string, perm: "read" | "write") {
-  return Effect.promise(() =>
-    authorizeGovernance(deps.pg(), { userId, board: BOARD, perm }),
+  return GovernanceAuthz.进(deps, userId, BOARD, perm)
+}
+
+/**
+ * 记一笔失败结局 ＋ 回同一个错误响应。
+ *
+ * 收成一个函数是为了「记的 400 与回的 400 永远是同一句话」——两处各写一遍，某天改了一处
+ * 就是审计说一套、界面看另一套。
+ */
+function 失败(deps: Deps, userId: string, base: 审计基底, status: number, message: string, field?: string) {
+  return 记账.记失败(deps, userId, base, { status, message, ...(field === undefined ? {} : { field }) }).pipe(
+    Effect.as(
+      field === undefined
+        ? fail(status, message)
+        : HttpServerResponse.jsonUnsafe({ error: message, field }, { status }),
+    ),
   )
 }
 
@@ -175,11 +196,13 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
     // 授权排在解析与校验**之前**：民警递非法载荷必须拿 403，而不是 400（见文件头第 2 条）。
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
+    const base = { action: "account.create", targetType: "user" } as const
     const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
     const input = 录入入参(body)
 
     const result = yield* Effect.result(
@@ -189,14 +212,22 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
         catch: (error) => error,
       }),
     )
-    if (Result.isSuccess(result)) return ok({ id: result.success.id }, CREATED)
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, {
+        ...base,
+        targetId: result.success.id,
+        result: "ok",
+        detail: { policeNo: input.policeNo },
+      })
+      return ok({ id: result.success.id }, CREATED)
+    }
 
     const error = result.failure
     if (error instanceof MissingFieldError) {
-      return HttpServerResponse.jsonUnsafe({ error: error.message, field: error.field }, { status: BAD_REQUEST })
+      return yield* 失败(deps, userId, base, BAD_REQUEST, error.message, error.field)
     }
-    if (error instanceof DuplicatePoliceNoError) return fail(CONFLICT, "该警号已录入")
-    if (error instanceof InvalidStatusError) return fail(BAD_REQUEST, error.message)
+    if (error instanceof DuplicatePoliceNoError) return yield* 失败(deps, userId, base, CONFLICT, "该警号已录入")
+    if (error instanceof InvalidStatusError) return yield* 失败(deps, userId, base, BAD_REQUEST, error.message)
     return yield* Effect.die(error)
   })
 }
@@ -205,14 +236,19 @@ function handlePassword(request: HttpServerRequest.HttpServerRequest, deps: Deps
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
     const params = yield* HttpRouter.params
     const id = params.id ?? ""
+    // ⚠️ `detail` 只记「重置了谁的密码」，**绝不记口令本身**（判据见 T010 的用例）：
+    // 审计表是只增不改的，写进去的口令没有任何手段收回。
+    const base = { action: "account.reset_password", targetType: "user", targetId: id } as const
     const target = yield* Effect.promise(() => accountById(deps.pg(), id))
-    if (!target) return notFound()
+    if (!target) return yield* 失败(deps, userId, base, NOT_FOUND, "账号不存在")
 
     yield* Effect.promise(() => resetPassword(deps.pg(), id, defaultPassword(process.env)))
+    yield* 记账.记(deps, userId, { ...base, result: "ok" })
     return empty()
   })
 }
@@ -221,14 +257,18 @@ function handleDisable(request: HttpServerRequest.HttpServerRequest, deps: Deps)
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
     const params = yield* HttpRouter.params
     const id = params.id ?? ""
-    if (id === user.value.id) return fail(BAD_REQUEST, "不能停用当前登录的账号")
-    if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) return notFound()
+    const base = { action: "account.disable", targetType: "user", targetId: id } as const
+    if (id === userId) return yield* 失败(deps, userId, base, BAD_REQUEST, "不能停用当前登录的账号")
+    if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) {
+      return yield* 失败(deps, userId, base, NOT_FOUND, "账号不存在")
+    }
 
-    return yield* 停用(deps, [id], NO_CONTENT)
+    return yield* 停用(deps, userId, [id], "account.disable", NO_CONTENT)
   })
 }
 
@@ -236,21 +276,25 @@ function handleBatchDisable(request: HttpServerRequest.HttpServerRequest, deps: 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
+    const base = { action: "account.batch_disable", targetType: "user", targetId: null } as const
     const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
     const ids = id列表(body)
-    if (!ids) return fail(BAD_REQUEST, "ids 必须是账号 id 数组")
-    if (ids.length === 0) return fail(BAD_REQUEST, "请选择要停用的账号")
-    if (ids.includes(user.value.id)) return fail(BAD_REQUEST, "不能停用当前登录的账号")
+    if (!ids) return yield* 失败(deps, userId, base, BAD_REQUEST, "ids 必须是账号 id 数组")
+    if (ids.length === 0) return yield* 失败(deps, userId, base, BAD_REQUEST, "请选择要停用的账号")
+    if (ids.includes(userId)) return yield* 失败(deps, userId, base, BAD_REQUEST, "不能停用当前登录的账号")
 
     // 先查齐再动：有一个不存在就整批 404，不留「停了一半」。
     for (const id of ids) {
-      if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) return notFound()
+      if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) {
+        return yield* 失败(deps, userId, base, NOT_FOUND, "账号不存在")
+      }
     }
 
-    return yield* 停用(deps, ids, 200, ids.length)
+    return yield* 停用(deps, userId, ids, "account.batch_disable", 200, ids.length)
   })
 }
 
@@ -258,13 +302,18 @@ function handleEnable(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
     const params = yield* HttpRouter.params
     const id = params.id ?? ""
-    if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) return notFound()
+    const base = { action: "account.enable", targetType: "user", targetId: id } as const
+    if (!(yield* Effect.promise(() => accountById(deps.pg(), id)))) {
+      return yield* 失败(deps, userId, base, NOT_FOUND, "账号不存在")
+    }
 
     yield* Effect.promise(() => restoreAccount(deps.pg(), id))
+    yield* 记账.记(deps, userId, { ...base, result: "ok" })
     return empty()
   })
 }
@@ -277,15 +326,29 @@ function handleEnable(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
  * id 是幂等 no-op，而「点了 3 个、处理了 3 个」比「其中 1 个本来就已经停用」更像管理员要的
  * 回答。这个口径与 `disableAccounts` 的注释一致。
  */
-function 停用(deps: Deps, ids: string[], 成功状态: number, disabled?: number) {
+function 停用(
+  deps: Deps,
+  userId: string,
+  ids: string[],
+  action: "account.disable" | "account.batch_disable",
+  成功状态: number,
+  disabled?: number,
+) {
   return Effect.gen(function* () {
     const result = yield* Effect.result(
       Effect.tryPromise({ try: () => disableAccounts(deps.pg(), ids), catch: (error) => error }),
     )
-    if (Result.isSuccess(result)) return disabled === undefined ? empty() : ok({ disabled }, 成功状态)
+    if (Result.isSuccess(result)) {
+      // **每个账号一行**：审计要回答「某人把哪几个号停了」，一行带 ids 数组答不了这个问题
+      // （筛选、计数、按对象追溯都会变成字符串匹配）。
+      for (const id of ids) {
+        yield* 记账.记(deps, userId, { action, targetType: "user", targetId: id, result: "ok" })
+      }
+      return disabled === undefined ? empty() : ok({ disabled }, 成功状态)
+    }
 
     const mapped = 停用失败(result.failure)
-    if (mapped) return fail(mapped.status, mapped.message)
+    if (mapped) return yield* 失败(deps, userId, { action, targetType: "user", targetId: null }, mapped.status, mapped.message)
     return yield* Effect.die(result.failure)
   })
 }

@@ -46,7 +46,6 @@ export * as OpenhiveGovernanceProjects from "./governance-projects"
  */
 
 import { archiveStatesOf, membersOf, projectMetaOf, projectOverviews, removeMember } from "@opencode-ai/auth/project-member"
-import { authorizeGovernance } from "@opencode-ai/auth/governance"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { usersByIds } from "@opencode-ai/auth/user"
 import { User } from "@opencode-ai/core/user"
@@ -55,6 +54,8 @@ import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { archiveProject, MinioConfig, type MinioSettings } from "./archive"
+import { OpenhiveAudit } from "./audit"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 /** 治理板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -122,9 +123,27 @@ function forbidden() {
 /** 请求期取身份（`Option.none` = 无凭证）。 */
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 每请求查一次治理授权（不缓存：改授权应立即生效，同 `governance-assets.ts`）。 */
+/** 本板块的记账方法（`board` 焊在闭包里）。 */
+const 记账 = OpenhiveAudit.板块(BOARD)
+
+/** 本模块的审计基底（板块已由 `板块()` 焊住）。 */
+type 审计基底 = Pick<OpenhiveAudit.板块审计输入, "action" | "targetType" | "targetId">
+
+/** 每请求查一次治理授权（不缓存：改授权应立即生效，同 `governance-assets.ts`）；拒绝当场留痕。 */
 function 有权(deps: Deps, userId: string, perm: "read" | "admin") {
-  return Effect.promise(() => authorizeGovernance(deps.pg(), { userId, board: BOARD, perm }))
+  return GovernanceAuthz.进(deps, userId, BOARD, perm)
+}
+
+/** 记一笔失败结局 ＋ 回同一个错误响应（与账号 / 组织出口同形）。 */
+function 失败(
+  deps: Deps,
+  userId: string,
+  base: 审计基底,
+  status: number,
+  message: string,
+  extra?: Record<string, unknown>,
+) {
+  return 记账.记失败(deps, userId, base, { status, message }, extra).pipe(Effect.as(fail(status, message)))
 }
 
 /** 路径段守卫（与 `archive.ts` / `anchor-workspace.ts` **同一条**判据，不是各写一份）。 */
@@ -223,29 +242,41 @@ function handleRemove(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
     // 授权排在读体之前（`#004-09`）：畸形 JSON 也必须先拿 403。
-    if (!(yield* 有权(deps, user.value.id, "admin"))) return forbidden()
+    if (!(yield* 有权(deps, userId, "admin"))) return forbidden()
 
     const projectId = yield* 项目Id
-    if (!是路径段(projectId)) return fail(BAD_REQUEST, "projectId 不是合法的路径段")
+    const base = { action: "project.remove_member", targetType: "project", targetId: projectId } as const
+    if (!是路径段(projectId)) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "projectId 不是合法的路径段")
+    }
 
     const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
     const targetId = body["userId"]
-    if (typeof targetId !== "string" || targetId === "") return fail(BAD_REQUEST, "缺少 userId")
+    if (typeof targetId !== "string" || targetId === "") {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "缺少 userId")
+    }
+    const 补充 = { memberId: targetId } as const
 
     const pg = deps.pg()
     // 归档 = 冻结（`ProjectMembership` 文件头的「归档态的读法」）：成员名单在归档项目上不可改。
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
-    if (archives.get(projectId)?.archived ?? false) return fail(CONFLICT, "项目已归档，成员名单已冻结")
+    if (archives.get(projectId)?.archived ?? false) {
+      return yield* 失败(deps, userId, base, CONFLICT, "项目已归档，成员名单已冻结", 补充)
+    }
 
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
     const target = members.find((member) => member.userId === targetId)
-    if (!target) return fail(NOT_FOUND, `成员不在这个项目里：${targetId}`)
+    if (!target) return yield* 失败(deps, userId, base, NOT_FOUND, `成员不在这个项目里：${targetId}`, 补充)
     // 兜底撤销的边界（文件头「兜底 ≠ 撤掉 owner」）：owner 调离请归档。
-    if (target.role === "owner") return fail(CONFLICT, "不能撤销项目创建人；创建人调离请归档该项目")
+    if (target.role === "owner") {
+      return yield* 失败(deps, userId, base, CONFLICT, "不能撤销项目创建人；创建人调离请归档该项目", 补充)
+    }
 
     yield* Effect.promise(() => removeMember(pg, { projectId, userId: targetId }))
+    yield* 记账.记(deps, userId, { ...base, result: "ok", detail: 补充 })
     return ok({ projectId, removed: targetId })
   })
 }
@@ -254,24 +285,31 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "admin"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "admin"))) return forbidden()
 
     const projectId = yield* 项目Id
-    if (!是路径段(projectId)) return fail(BAD_REQUEST, "projectId 不是合法的路径段")
+    const base = { action: "project.archive", targetType: "project", targetId: projectId } as const
+    if (!是路径段(projectId)) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "projectId 不是合法的路径段")
+    }
 
     const pg = deps.pg()
     // 存在性：没有成员行 = 这个项目没有可归档的对象（也兜住了拼错的 id）。
     const members = yield* Effect.promise(() => membersOf(pg, projectId))
-    if (members.length === 0) return fail(NOT_FOUND, `项目不存在：${projectId}`)
+    if (members.length === 0) return yield* 失败(deps, userId, base, NOT_FOUND, `项目不存在：${projectId}`)
 
     const archives = yield* Effect.promise(() => archiveStatesOf(pg, [projectId]))
-    if (archives.get(projectId)?.archived ?? false) return fail(CONFLICT, "项目已归档")
+    if (archives.get(projectId)?.archived ?? false) return yield* 失败(deps, userId, base, CONFLICT, "项目已归档")
 
     // 配置**在授权与状态之后**：未授权 / 已归档的人不该从 503 读出部署信息（`archive.ts` ④）。
-    if (Option.isNone(deps.minio)) return fail(UNAVAILABLE, "MinIO 未配置，归档不可用")
+    if (Option.isNone(deps.minio)) {
+      return yield* 失败(deps, userId, base, UNAVAILABLE, "MinIO 未配置，归档不可用")
+    }
     const settings = deps.minio.value
 
     yield* Effect.promise(() => archiveProject({ root: deps.root, minio: settings, pg }, projectId))
+    yield* 记账.记(deps, userId, { ...base, result: "ok", detail: { memberCount: members.length } })
     return ok({ projectId, archived: true })
   })
 }

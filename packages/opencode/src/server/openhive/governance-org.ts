@@ -32,10 +32,11 @@ import {
   renameNode,
   type NewNodeInput,
 } from "@opencode-ai/auth/org-tree"
-import { authorizeGovernance } from "@opencode-ai/auth/governance"
 import { User } from "@opencode-ai/core/user"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { OpenhiveAudit } from "./audit"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 /** 板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -101,9 +102,12 @@ function forbidden() {
 /** 请求期取身份（`Option.none` = 无凭证）。 */
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）。 */
+/** 本板块的记账方法（`board` 焊在闭包里，12 条写路由共用一份实现）。 */
+const 记账 = OpenhiveAudit.板块(BOARD)
+
+/** 每请求查一次治理授权（不缓存进会话：改授权应立即生效）；拒绝当场留痕（`governance-authz.ts`）。 */
 function 有权(deps: Deps, userId: string, perm: "read" | "write") {
-  return Effect.promise(() => authorizeGovernance(deps.pg(), { userId, board: BOARD, perm }))
+  return GovernanceAuthz.进(deps, userId, BOARD, perm)
 }
 
 function handleTree(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
@@ -121,17 +125,27 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
     // 授权排在读取请求体之前：民警递非法载荷必须拿 403，而不是 400（文件头）。
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
+    const base = { action: "org.create", targetType: "org_node" } as const
     const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
     const input = 建节点入参(body)
-    if (!input) return fail(BAD_REQUEST, "parentId 必须是字符串或 null")
+    if (!input) return yield* 失败(deps, userId, base, BAD_REQUEST, "parentId 必须是字符串或 null")
 
     const result = yield* 执行(() => createNode(deps.pg(), input))
-    if (Result.isSuccess(result)) return ok(result.success, CREATED)
-    return yield* 翻译(result.failure)
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, {
+        ...base,
+        targetId: result.success.id,
+        result: "ok",
+        detail: { name: result.success.name },
+      })
+      return ok(result.success, CREATED)
+    }
+    return yield* 翻译(result.failure, deps, userId, base)
   })
 }
 
@@ -139,18 +153,23 @@ function handleRename(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
-
-    const body = yield* 读取体(request)
-    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
     const params = yield* HttpRouter.params
     const id = params.id ?? ""
+    const base = { action: "org.rename", targetType: "org_node", targetId: id } as const
+
+    const body = yield* 读取体(request)
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
     const name = typeof body["name"] === "string" ? body["name"] : ""
 
     const result = yield* 执行(() => renameNode(deps.pg(), id, name))
-    if (Result.isSuccess(result)) return HttpServerResponse.empty({ status: NO_CONTENT })
-    return yield* 翻译(result.failure)
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, { ...base, result: "ok", detail: { name } })
+      return HttpServerResponse.empty({ status: NO_CONTENT })
+    }
+    return yield* 翻译(result.failure, deps, userId, base)
   })
 }
 
@@ -158,12 +177,19 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
     const params = yield* HttpRouter.params
-    const result = yield* 执行(() => deleteNode(deps.pg(), params.id ?? ""))
-    if (Result.isSuccess(result)) return HttpServerResponse.empty({ status: NO_CONTENT })
-    return yield* 翻译(result.failure)
+    const id = params.id ?? ""
+    const base = { action: "org.delete", targetType: "org_node", targetId: id } as const
+
+    const result = yield* 执行(() => deleteNode(deps.pg(), id))
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, { ...base, result: "ok" })
+      return HttpServerResponse.empty({ status: NO_CONTENT })
+    }
+    return yield* 翻译(result.failure, deps, userId, base)
   })
 }
 
@@ -171,12 +197,32 @@ function handleImport(deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
-    if (!(yield* 有权(deps, user.value.id, "write"))) return forbidden()
+    const userId = user.value.id
+    if (!(yield* 有权(deps, userId, "write"))) return forbidden()
 
+    const base = { action: "org.import", targetType: null, targetId: null } as const
     const result = yield* 执行(() => importFromAccounts(deps.pg()))
-    if (Result.isSuccess(result)) return ok(result.success)
-    return yield* 翻译(result.failure)
+    if (Result.isSuccess(result)) {
+      yield* 记账.记(deps, userId, { ...base, result: "ok", detail: { created: result.success.created } })
+      return ok(result.success)
+    }
+    return yield* 翻译(result.failure, deps, userId, base)
   })
+}
+
+/** 本模块的审计基底（板块已由 `板块()` 焊住）。 */
+type 审计基底 = Pick<OpenhiveAudit.板块审计输入, "action" | "targetType" | "targetId">
+
+/**
+ * 记一笔失败结局 ＋ 回同一个错误响应。
+ *
+ * 收成一个函数是为了「记的 400 与回的 400 永远是同一句话」——两处各写一遍，某天改了一处
+ * 就是审计说一套、界面看另一套。
+ */
+function 失败(deps: Deps, userId: string, base: 审计基底, status: number, message: string, field?: string) {
+  return 记账
+    .记失败(deps, userId, base, { status, message, ...(field === undefined ? {} : { field }) })
+    .pipe(Effect.as(fail(status, message, field)))
 }
 
 /** 把领域错误翻成状态码 ＋ 给人看的一句话；认不出的继续炸（500），不吞。 */
@@ -192,9 +238,10 @@ export function 映射错误(
   return undefined
 }
 
-function 翻译(error: unknown) {
+/** 领域错误 → 状态码；**承认得出的 4xx 都留一行 failed/denied**，认不出的继续炸（500，不记）。 */
+function 翻译(error: unknown, deps: Deps, userId: string, base: 审计基底) {
   const mapped = 映射错误(error)
-  if (mapped) return Effect.succeed(fail(mapped.status, mapped.message, mapped.field))
+  if (mapped) return 失败(deps, userId, base, mapped.status, mapped.message, mapped.field)
   return Effect.die(error)
 }
 

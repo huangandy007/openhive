@@ -39,7 +39,6 @@ export * as OpenhiveGovernanceUsage from "./governance-usage"
  */
 
 import { Analytics } from "@/governance/analytics"
-import { authorizeGovernance } from "@opencode-ai/auth/governance"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { usersByIds } from "@opencode-ai/auth/user"
 import { dataRoot } from "@opencode-ai/core/database/router"
@@ -47,6 +46,7 @@ import { User } from "@opencode-ai/core/user"
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 /** 治理板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -107,9 +107,9 @@ function forbidden() {
 /** 请求期取身份（`Option.none` = 无凭证）。 */
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 每请求查一次治理授权（不缓存：改授权应立即生效，同其他治理出口）。 */
+/** 每请求查一次治理授权（不缓存：改授权应立即生效）；拒绝当场留痕（`governance-authz.ts`）。 */
 function 有权(deps: Deps, userId: string) {
-  return Effect.promise(() => authorizeGovernance(deps.pg(), { userId, board: BOARD, perm: "read" }))
+  return GovernanceAuthz.进(deps, userId, BOARD, "read")
 }
 
 /**
