@@ -27,6 +27,7 @@ import {
   copyDirectory,
   MissingSourceDirectoryError,
   pendingDirectory,
+  PersonalAssetDirectoryError,
   publishDirectory,
   removeDirectory,
   replaceDirectory,
@@ -434,6 +435,31 @@ async function moveWithinTransition(
 }
 
 /**
+ * 资产的共享发布目录，把「个人资产没有共享目录」翻成状态机错误码。
+ *
+ * 与 `moveWithinTransition` 同一个理由：存储层的前置检查是**业务前提**，不是内部故障。
+ * 裸 `Error` 到出口会变成 500，失败也不会留下审计（010 真栈实得）。
+ */
+function sharedDirectoryOf(root: string, asset: AssetMetadata): string {
+  try {
+    return publishDirectory(
+      root,
+      asset.type,
+      { visibility: asset.visibility, department: asset.department },
+      asset.id,
+    )
+  } catch (error) {
+    if (error instanceof PersonalAssetDirectoryError) {
+      throw new AssetTransitionError(
+        "personal_asset_not_shared",
+        `个人资产不进入共享空间：${asset.id}（需先把可见范围改为部门 / 全局）`,
+      )
+    }
+    throw error
+  }
+}
+
+/**
  * 按转移表里的 `storage` 落文件步骤。抛错都发生在**写库之前**——文件没搬成就不该改状态。
  */
 async function prepareStorageStep(
@@ -461,23 +487,13 @@ async function prepareStorageStep(
 
     case "move_pending_to_publish": {
       const source = pendingDirectory(root, asset.id)
-      const target = publishDirectory(
-        root,
-        asset.type,
-        { visibility: asset.visibility, department: asset.department },
-        asset.id,
-      )
+      const target = sharedDirectoryOf(root, asset)
       const replacement = await moveWithinTransition(source, target, applied.action)
       return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
     }
 
     case "move_publish_to_archive": {
-      const source = publishDirectory(
-        root,
-        asset.type,
-        { visibility: asset.visibility, department: asset.department },
-        asset.id,
-      )
+      const source = sharedDirectoryOf(root, asset)
       const target = archiveDirectory(root, asset.id)
       const replacement = await moveWithinTransition(source, target, applied.action)
       return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }

@@ -330,6 +330,29 @@ describe("T007 · 审核与发布动作", () => {
     }),
   )
 
+  it.live("个人可见范围的资产发布 ⇒ 409（不是 500），库里状态与 pending 目录零副作用", () =>
+    Effect.gen(function* () {
+      const id = "asset-personal-0001"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({ id, name: "个人讲话稿", status: "pending_tech", visibility: "personal", updatedAt: 1_100 }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const response = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech" })
+      // 个人资产没有共享发布目录：这是业务前提不成立，不是内部故障（010 真栈实得 500 的回归）。
+      expect(response.status).toBe(409)
+      expect((yield* json(ErrorResponse, response)).error).toContain("个人资产")
+
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("pending_tech")
+      expect(有文件(join(ASSETS_ROOT, "pending", id, "SKILL.md"))).toBe(true)
+    }),
+  )
+
   it.live("驳回必须带理由：缺理由 ⇒ 400 field=reason；带了 ⇒ 200 回草稿，pending 目录仍在", () =>
     Effect.gen(function* () {
       const 缺理由 = yield* post(EXPERT, transitionUrl(IDS.reject), { action: "reject_business" })

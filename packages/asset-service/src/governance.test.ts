@@ -638,6 +638,20 @@ describe("publish_skill", () => {
     expect(await exists(join(root, "pending", "asset_1"))).toBe(true)
   })
 
+  test("个人可见范围：发布被拒且给出可操作错误码（不是 tool_failed），文件与状态都不动", async () => {
+    const { db, root, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech", visibility: "personal" }))
+    await mkdir(join(root, "pending", "asset_1"), { recursive: true })
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("personal_asset_not_shared")
+    expect(await statusOf(db)).toBe("pending_tech")
+    expect(await exists(join(root, "pending", "asset_1"))).toBe(true)
+  })
+
   test("作者本人没有 admin：同样不能发布（作者身份不派生管理权）", async () => {
     const { db, client } = await harness()
     await insertAsset(db, metadata({ status: "pending_tech" }))

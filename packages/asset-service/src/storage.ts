@@ -58,6 +58,19 @@ export type PublishScope = {
 }
 
 /**
+ * 个人资产没有共享发布目录（`publishDirectory` 的前置检查）。
+ *
+ * 为什么要类型而不是只靠消息：这不是存储层内部故障，而是「元数据已经决定了这个动作不成立」
+ * 的业务前提。编排层要把它翻成状态机错误码，出口才能回 409；裸 `Error` 只能变成 500。
+ */
+export class PersonalAssetDirectoryError extends Error {
+  constructor() {
+    super("个人资产不发布：请保留在作者沙箱")
+    this.name = "PersonalAssetDirectoryError"
+  }
+}
+
+/**
  * 已发布目录：
  * - 全局 `/assets/global/{skills,mcp,knowledge-base}/{assetId}`
  * - 部门 `/assets/dept/{department}/{skills,mcp,knowledge-base}/{assetId}`
@@ -83,7 +96,7 @@ export function publishDirectory(
     return join(root, "dept", department, typeDirectory, assertSafeSegment(assetId, "资产 id"))
   }
   if (visibility === "personal") {
-    throw new Error("个人资产不发布：请保留在作者沙箱")
+    throw new PersonalAssetDirectoryError()
   }
   throw new Error(`未知可见范围：${visibilityName}`)
 }

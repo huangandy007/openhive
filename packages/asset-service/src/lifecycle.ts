@@ -141,6 +141,8 @@ export type TransitionErrorCode =
   | "unsupported_asset_type"
   | "source_directory_required"
   | "concurrent_transition"
+  /** 个人资产没有共享发布目录：要发布，得先把可见范围改成部门 / 全局。 */
+  | "personal_asset_not_shared"
 
 export class AssetTransitionError extends Error {
   constructor(

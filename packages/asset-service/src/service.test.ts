@@ -603,6 +603,54 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await exists(待审目录(root))).toBe(false)
   })
 
+  test("个人可见范围的资产发布：给领域错误码，不漏出存储层的裸 Error（出口才能翻成 409）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db, { visibility: "personal" })
+
+    // 提交与业务审核都不碰共享目录，「个人」资产能一路走到「待技术发布」——这条路径现实中可达。
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_review",
+      viewer: 作者,
+      grants: [],
+      sourceDirectory: source,
+      now: 2_000,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "approve_business",
+      viewer: 业务管理员,
+      grants: 审,
+      now: 2_001,
+    })
+
+    const error = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "publish_tech",
+        viewer: 系统管理员,
+        grants: 管,
+        now: 2_002,
+      }),
+    )
+    // 裸 Error 没有 code ⇒ HTTP 出口认不出 ⇒ 500（010 真栈实得）。业务前提必须带 code。
+    expect(codeOf(error)).toBe("personal_asset_not_shared")
+    expect(error.message).toContain("个人资产")
+
+    // 拒绝发生在写库与搬文件之前：状态与待审目录都保持原样。
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
   test("并发改状态：条件更新落空 ⇒ 复制出来的文件被收回，别人的状态不被覆盖", async () => {
     const db = await freshDb()
     const root = tempRoot()
