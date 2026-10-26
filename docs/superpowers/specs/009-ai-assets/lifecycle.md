@@ -76,7 +76,7 @@
 |---|---|---|
 | **下线不搬目录** | design §2.2 写「移出发布目录」，但 T002/T003 的目录布局没有 offline 位置，T003 已裁定「下线不搬目录、旧版仍可见」。T008 沿用该裁定 | 真正的「不可用」靠下发清单按状态过滤（T014）；不能靠目录位置，否则下线通知点回去就是 404 |
 | 内核可能仍加载下线资产 | opencode 内核按目录被动扫描；下线资产仍在发布目录 | T014 生成 `skills.paths` 时排除 `offline` |
-| 个人资产发布 | `publishDirectory` 拒绝 `personal`；`transitionAsset` 让这个错误显式抛出 | 发布前需先把可见范围改成 global/dept（编辑路径未落） |
+| 个人资产发布 | `publishDirectory` 拒绝 `personal`；发布时由发布者选定 department / global（`2026-10-26-skill-publish-visibility-design.md`） | 个人资产必须补选共享范围；部门为空时只能发全局 |
 | MCP / 知识库生命周期 | 未实现，显式 `unsupported_asset_type` | 按 design §2.0 的简化流程另做，不硬塞 7 状态机 |
 | 驳回后的 pending 副本 | 保留，下次提交以 `replace: true` 覆盖 | 可接受；删除是不可回滚操作，不在此刻做 |
 | 跨存储崩溃窗口 | 见 §3.3 | 对账脚本（T005 后接） |
