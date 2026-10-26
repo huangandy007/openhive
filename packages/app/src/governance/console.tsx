@@ -82,6 +82,8 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
     <div
       data-slot="governance-console"
       data-section={选中()?.id ?? "none"}
+      // 本页属于「配置 / 审核 / 查看」哪一类（FR-012）。纯钩子，不改视觉。
+      data-governance-kind={选中()?.kind ?? "none"}
       class="absolute inset-0 z-20 flex bg-v2-background-bg-base"
     >
       <nav

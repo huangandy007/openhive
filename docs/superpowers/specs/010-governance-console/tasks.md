@@ -305,7 +305,48 @@
 
 ## Phase 7: 收尾 + 测试（P1）
 
-- [ ] T013 [FE·新增] 实现治理后台只承载「配置 + 审核 + 查看」的边界 [FR-012] [T001] [出参：后台不接入民警分析]
+- [x] T013 [FE·新增] 实现治理后台只承载「配置 + 审核 + 查看」的边界 [FR-012] [T001] [出参：后台不接入民警分析]
+  - **交付（2026-10-26）**：FR-012 从「一句 spec 文字」变成**会红的三道缝**。
+    ① **注册表闭集**：`sections.ts` 新增 `GOVERNANCE_KINDS = ["config", "review", "view"] as const`，
+    `治理页类别` 由它派生，`GovernanceSection.kind` 必填——**闭集里没有「分析」**，往导航表加分析页
+    得先改这个常量，`sections.test.ts` 当场红。八页归类：账号管理 / 组织架构 / 模板库 / 数据项目权限 /
+    数据源配置 = `config`（5），AI 资产治理 = `review`（1），用量成本 / 审计日志 = `view`（2）。
+    ② **DOM 钩子**：`console.tsx` 根节点 `data-governance-kind`（跟随选中项）。**纯钩子，无视觉改动、
+    不加 story**——FR-012 是范围约束，不是视觉需求。
+    ③ **代码图守卫** `governance-boundary.test.ts`（读源码、仿 `workspace/design-token-refs.test.ts`）：
+    治理目录不得 import 分析面（`@/ai-session` / `@/workspace` / `@/center` / `@/components/prompt-input*`，
+    相对路径解析后按「去扩展名前缀」判落点）；`src/workspace/**` 不得 import `@/governance`；
+    全应用**只有** `pages/layout-new.tsx` 引治理后台。带正向自检（扫到 >100 文件且含治理 / 工作区 /
+    分析面已知文件），防「空集合上永远绿」（`#005-47`）。
+    ④ **运行时边界** `console-boundary.test.tsx`：八页**全部接线**（省略接口会回落占位，DOM 太小 → 假绿），
+    逐页断言「本页根 `[data-slot=<id>][data-section=<id>]` 存在（正向可达）＋ `data-governance-kind`
+    等于注册表 ＋ console 子树里分析标记命中 0」；另钉 console 与工作区**两棵互不包含的子树**、
+    打开时工作区 `inert` ＋ `aria-hidden`、关闭后解禁。
+  - 测试新增 **11 条**：`sections.test.ts` +3、`governance-boundary.test.ts` 4、`console-boundary.test.tsx` 4。
+  - 变异（均实得红并还原）：M1 `audit-log.tsx` 加 `import "@/ai-session/session-list"` ⇒ 图守卫 1 红
+    （实得 `governance/audit-log.tsx → @/ai-session/session-list`）；M2 `workspace-entry.tsx` 加
+    `import "@/governance/sections"` ⇒ 图守卫 **2 红**（反向 + 唯一接线点，实得引入者多出
+    `workspace/workspace-entry.tsx`）；M3 console 内容区插一个 `data-slot="session-list"` 的 div ⇒
+    运行时负向断言红（`Expected: 0 / Received: 1`）；M4 某页 `kind` 改 `"analysis"`（`as` 绕过类型）⇒
+    注册表 **2 红**（闭集 + 逐项归类，实得 `asset-governance=analysis`）；M5 删 `data-governance-kind` ⇒
+    运行时红（`Expected: "config" / Received: null`）；M6 把 console 挪进工作区盒子 ⇒ 结构断言红
+    （`工作区.contains(console)` 实得 `true`）。
+  - 门禁实得：根 `bun run typecheck` **32/32 successful**；另在 `packages/app` 直跑 `tsgo -b` **exit=0**
+    （turbo 报 cache hit 时以直跑为准）；app `test:components` **1494 pass / 0 fail**（含本 task 8）；
+    `test:unit` **1292 pass / 27 fail / 19 error**——与 010 既有基线**同数**（state.md T001/T003 记的
+    同一批 `jsxDEV` 预载问题 ＋ `project-data` 2 条，失败文件全未触碰，治理文件 0 fail）；oxlint 本批
+    **5 文件 0 warning / 0 error**；`git diff --stat bun.lock` **无输出**。
+  - **axe：本 task 无视觉改动、未新增 story，未跑**（不谎称跑过）。如需 8 格复验，说一声即跑。
+  - **同类落点（`#002-06`，逐个查过）**：`GovernanceSection` 字面量只有 `sections.ts` 与 `sections.test.ts`
+    一处测试夹具（已补 `kind`）；`GOVERNANCE_SECTIONS` 的消费者只有 `console.tsx` 与两个测试；
+    `@/governance` 的引入者只有 `pages/layout-new.tsx`（已被测试钉住）；「配置 · 审核 · 查看」文案在
+    `console.tsx` 两处（导航头 + 页头副标题）都是静态文案，本 task 未动；服务端板块闭集
+    （`auth/governance.ts`）与 FE 的 `kind` 是两套东西，不需要同步。
+  - **缺口**：① 图守卫是**静态 import 图**，挡不住「页内手写一个聊天框」或「运行时把别处的 DOM 搬进来」
+    ——后者由运行时断言与真栈验收兜，前者只能靠审阅；② 若有人把分析组件**复制**进 `governance/` 目录，
+    路径守卫判不出来（按目录判定，不看内容）；③ `data-governance-kind` 只是钩子，**界面无视觉区分**
+    （页头副标题仍是静态「配置 · 审核 · 查看」）；④ 运行时断言依赖 happy-dom 的 `inert` 属性存在性，
+    不验证浏览器里真的不可聚焦（真栈未跑）；⑤ **真栈未跑**。
 - [ ] T014 [BE] 写测试：两类管理员分权（各见各的功能，互不越界）[SC-002] [T003] [出参：分权测试通过]
 - [ ] T015 [BE] 写测试：**越权（BFLA）——普通民警凭证调管理员能力被拒**（**003 移交**，2026-10-01）
   [FR-013][SC-005]（**FR-013 / SC-005 是本 task 落地时补进 spec.md 的**——原文没有这条要求，
@@ -353,5 +394,5 @@
 共 **15** 条任务（T001–T015），符合 12–18 条范围。
 > 数法：T001–T014 是本 feature 原有的；**T015 是 2026-10-01 从 F3（003 的 T016）接收的移交**。
 > 复算命令：`grep -c '^- \[[x ]\] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**
-> （2026-10-26 T012 交付后：未勾 **3** ＝ T013–T015）。
+> （2026-10-26 T013 交付后：未勾 **2** ＝ T014–T015）。
 > 这个数字随拆分与移交而变（`LEARNINGS #002-06`），改了任务就回来重算一次。

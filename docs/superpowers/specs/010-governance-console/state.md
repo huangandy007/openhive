@@ -1,14 +1,26 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T012 已交付（数据源配置：注册 ＋ connector 接口 ＋ 血缘；axe 8 格 ＋ 浮层 2 格全绿）。
-**下一项 T013**（治理后台边界：只承载「配置 ＋ 审核 ＋ 查看」，FR-012），等用户 `next`。
+T013 已交付（治理后台边界：注册表闭集 ＋ 代码图守卫 ＋ 运行时边界；无视觉改动、未跑 axe）。
+**下一项 T014**（两类管理员分权测试，SC-002），等用户 `next`。
 待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
 ② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
 #198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
 
 ## 已完成
 
+- **T013** 治理后台只承载「配置 ＋ 审核 ＋ 查看」（FR-012 / SC-004）——一笔提交
+  - `sections.ts`：`GOVERNANCE_KINDS = ["config","review","view"]` 闭集（**无「分析」**）＋ 每项必填 `kind`；
+    归类 配置 5 / 审核 1 / 查看 2；`console.tsx` 根加 `data-governance-kind`（**纯钩子、无视觉改动**）
+  - 新 `governance-boundary.test.ts`（源码 import 图守卫）：治理不得 import 分析面、
+    `src/workspace` 不得 import governance、全应用唯一接线点 `pages/layout-new.tsx`；带正向自检防空转
+  - 新 `console-boundary.test.tsx`：八页全接线逐页钉「页面真的在 ＋ 类别一致 ＋ 分析标记命中 0」，
+    另钉两棵互不包含的子树 / 打开时工作区 `inert` ＋ `aria-hidden` / 关闭后解禁
+  - 测试新增 **11 条**；变异 M1–M6 均实得红并还原
+  - 门禁：typecheck 32/32（app 直跑 `tsgo -b` exit=0）；components 1494 pass / 0 fail；
+    unit 1292 pass / 27 fail（既有基线同数）；oxlint 5 文件 0 warning / 0 error；`bun.lock` 0 行
+  - **axe 未跑**（无视觉改动、未加 story，如实记）
+  - **缺口**：静态图挡不住手写聊天框 / 运行时搬 DOM；分析组件复制进 governance 判不出；`kind` 界面无视觉区分；真栈未跑
 - **T012** 数据源配置（FR-011 / US6）——一笔提交
   - 迁移 `0017_data_source.sql` ＋ down：`auth.data_source`（int4 秒；kind/frequency/status 三个闭集 CHECK、
     名字 1..100 / 地址 ≤500 / 负责人 ≤50；**没有任何秘密列**，`information_schema` 断言钉住）＋
