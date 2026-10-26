@@ -19,6 +19,7 @@ const IDENTITY = {
   name: "张三",
   isAdmin: false,
   mustChangePw: true,
+  governance: [] as string[],
 }
 
 /** 替身记下的**发出的请求**——这是本层对外契约里唯一值得断言的部分。 */
@@ -200,6 +201,24 @@ describe("T015 会话探查：三态", () => {
     const { send } = stub(json(IDENTITY))
 
     expect(await probeSession(send)).toEqual({ kind: "signed-in", identity: IDENTITY })
+  })
+
+  test("010 T003 governance：服务端给的板块数组带进身份；缺字段 / 非字符串项 ⇒ 收窄为空（fail-closed）", async () => {
+    const 带板块 = { ...IDENTITY, governance: ["asset-governance", "template-lib"] }
+    const 第一份 = stub(json(带板块))
+    expect(await probeSession(第一份.send)).toEqual({ kind: "signed-in", identity: 带板块 })
+
+    // 「还没升级的服务端」不回这个字段：按「没有任何治理板块」处理，**不是**「不过滤」。
+    const { governance: _省略, ...没有该字段 } = IDENTITY
+    const 第二份 = stub(json(没有该字段))
+    expect(await probeSession(第二份.send)).toEqual({ kind: "signed-in", identity: IDENTITY })
+
+    // 数组里有杂质（数字 / 对象）就丢掉那几项，不让它们变成导航键。
+    const 掺了杂质 = stub(json({ ...IDENTITY, governance: ["audit-log", 42, { id: "x" }] }))
+    expect(await probeSession(掺了杂质.send)).toEqual({
+      kind: "signed-in",
+      identity: { ...IDENTITY, governance: ["audit-log"] },
+    })
   })
 
   /**

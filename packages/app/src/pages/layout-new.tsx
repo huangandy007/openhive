@@ -12,7 +12,7 @@ import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useCommand } from "@/context/command"
 // ⚠️ openhive 定制（010 T001）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 治理后台是盖在三栏工作区上的一层；工作区不卸载，关掉后回到原来的 tab 与滚动位置。
-import { GovernanceConsoleHost } from "@/governance/console-host"
+import { GovernanceConsoleConnected } from "@/governance/console-connected"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 // ⚠️ openhive 定制（2026-10-13 用户实报）：这是要保留的定制 —— 合并上游时两侧都留着。
@@ -135,10 +135,12 @@ export default function NewLayout(props: ParentProps) {
         onOpenGovernance={() => 设治理后台(true)}
       />
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
-        {/* ⚠️ openhive 定制（010 T001）：这是要保留的定制 —— 合并上游时两侧都留着。
+        {/* ⚠️ openhive 定制（010 T001 / T003）：这是要保留的定制 —— 合并上游时两侧都留着。
             治理后台盖在工作区之上，工作区**不卸载**（关掉后回到原来的三栏与已开的 tab）。
-            打开期间背景 `inert` + `aria-hidden`、关闭后焦点回顶栏，全在 host 里。 */}
-        <GovernanceConsoleHost open={治理后台()} onClose={() => 设治理后台(false)}>
+            打开期间背景 `inert` + `aria-hidden`、关闭后焦点回顶栏，全在 host 里；
+            「这个管理员能看见哪几个板块」由 connected 层从会话身份里取
+            （`@/governance/console-connected`）——本层不碰板块 id。 */}
+        <GovernanceConsoleConnected open={治理后台()} onClose={() => 设治理后台(false)}>
           <WorkspaceEntry
             projectData={PROJECT_DATA}
             loadFile={LOAD_PROJECT_FILE}
@@ -170,7 +172,7 @@ export default function NewLayout(props: ParentProps) {
           >
             <Suspense>{props.children}</Suspense>
           </WorkspaceEntry>
-        </GovernanceConsoleHost>
+        </GovernanceConsoleConnected>
       </main>
       {import.meta.env.DEV && state.debugTools && <DebugBar inline />}
       <TabsInfoPopup />

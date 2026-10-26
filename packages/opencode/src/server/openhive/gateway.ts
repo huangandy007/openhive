@@ -65,6 +65,7 @@ import {
   defaultPassword,
   JWT_SECRET_ENV,
 } from "@opencode-ai/auth/policy"
+import { governanceBoards, governanceGrants } from "@opencode-ai/auth/governance"
 import { reissuedCookie } from "@opencode-ai/auth/renewal"
 import { sessionIdentity } from "@opencode-ai/auth/session"
 import { nowSeconds } from "@opencode-ai/auth/time"
@@ -341,7 +342,13 @@ function handleLogin(
       try: () => login(database(), credentials.value, secret),
       catch: (cause) => cause,
     }).pipe(
-      Effect.map(signedIn),
+      // `signedIn` 要查一次治理授权（见它自己的注释），所以是 effectful 的一步。
+      Effect.flatMap((result) =>
+        Effect.tryPromise({
+          try: () => signedIn(result, database),
+          catch: (cause) => cause,
+        }),
+      ),
       // 只有一种错误能预期到（`login()` 的文档契约：账号不存在与密码错误抛同一个类型、
       // 同一句消息）。别的错误一律是**缺陷**——交给应用的错误层呈现，不要在这里
       // 编一句好听的话把它盖住。
@@ -356,8 +363,21 @@ function handleLogin(
   })
 }
 
-/** 登录成功的响应体。**逐字段列出**，不把 `LoginResult` 直接透传——它身上还有 `token`。 */
-function signedIn(result: LoginResult) {
+/**
+ * 登录成功的响应体。**逐字段列出**，不把 `LoginResult` 直接透传——它身上还有 `token`。
+ *
+ * 010 T003 起多一个 `governance`：前端登录后的身份**只来自这里**（`AuthGate` 的 `signIn`），
+ * 不在拿不到 `/me` 的时候靠刷新补。少这一个字段，管理员刚登进来会看见一个空后台
+ * （导航按空集过滤，一块都不显示）——而那不是权限算错，是签发的身份少了一维。
+ *
+ * 与 `sessionIdentity()` **同一个投影函数**（`governanceBoards`），不是照抄一份过滤逻辑：
+ * 两处各写一份的话，`is_admin` 这道总开关迟早只有一处生效（`LEARNINGS #002-06`）。
+ */
+async function signedIn(result: LoginResult, database: () => ReturnType<typeof connect>) {
+  const isAdmin = result.subject.isAdmin
+  const grants = isAdmin ? await governanceGrants(database(), result.subject.id) : []
+  const governance = governanceBoards(grants, isAdmin)
+
   return HttpServerResponse.jsonUnsafe(
     {
       id: result.subject.id,
@@ -365,6 +385,7 @@ function signedIn(result: LoginResult) {
       name: result.subject.name,
       isAdmin: result.subject.isAdmin,
       mustChangePw: result.mustChangePw,
+      governance,
     },
     { headers: { "set-cookie": setCookieHeader(result.cookie) } },
   )

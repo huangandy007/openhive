@@ -40,6 +40,14 @@ export interface Identity {
   name: string
   isAdmin: boolean
   mustChangePw: boolean
+  /**
+   * 治理后台里**这个人能进的板块 id**（010 T003）。服务端算、服务端发；
+   * 前端只拿它过滤导航（`@/governance/console-connected`）。
+   *
+   * ⚠️ **不是授权凭证**：管理动作由服务端每请求判（`authorizeGovernance`），
+   * 这个数组改大只能多看见几项，点进去也做不成事。
+   */
+  governance: string[]
 }
 
 /**
@@ -206,6 +214,11 @@ function readIdentity(body: unknown): Identity | undefined {
     name: body.name,
     isAdmin: body.isAdmin === true,
     mustChangePw: body.mustChangePw === true,
+    // 缺字段 / 不是数组 ⇒ `[]`：对「还没升级的服务端」按「没有任何治理板块」处理，
+    // 也就是 fail-closed。反过来（缺字段就不过滤）会让老服务端前端的后台全露。
+    governance: Array.isArray(body.governance)
+      ? body.governance.filter((board): board is string => typeof board === "string")
+      : [],
   }
 }
 

@@ -39,6 +39,7 @@ const 民警: Identity = {
   name: "张三",
   isAdmin: false,
   mustChangePw: false,
+  governance: [],
 }
 
 const 管理员: Identity = { ...民警, name: "李四", policeNo: "010001", isAdmin: true }

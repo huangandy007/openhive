@@ -188,8 +188,14 @@ describe("SC-003 验收 · 授权与收藏分离（T017）", () => {
       )
     }
 
-    // 收藏只写个人偏好两表之一，不写授权行
-    const [资源授权] = rowsOf(await db.execute(sql`select count(*)::int as count from auth.role_resource`))
+    // 收藏只写个人偏好两表之一，不写授权行。
+    // ⚠️ 010 T003 起 `role_resource` 里有迁移种的**治理模板行**（`resource_type='governance'`），
+    // 它们不是资产授权 ⇒ 只数资产那一侧，否则这条会因无关的种子红（判据本来也不是「整表空」）。
+    const [资源授权] = rowsOf(
+      await db.execute(
+        sql`select count(*)::int as count from auth.role_resource where resource_type <> 'governance'`,
+      ),
+    )
     expect(资源授权?.count).toBe(0)
   })
 

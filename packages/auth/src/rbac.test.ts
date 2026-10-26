@@ -223,7 +223,13 @@ describe("role_type · 角色类型（009 T004）", () => {
     await db.execute(sql`insert into auth.role (id, name) values ('r_plain', '普通角色')`)
     await db.insert(role).values({ id: "r_group", name: "电诈专案组", roleType: "group" })
 
-    const rows = rowsOf(await db.execute(sql`select id, role_type from auth.role order by id`))
+    // ⚠️ 只取本用例建的两个角色：`auth.role` 里还有**迁移种的**治理模板
+    // （0013_governance 的 `gov-system-admin` / `gov-business-expert`）。整表比对会把
+    // 「本用例想问的默认值」变成「迁移种了几行」——那条断言会随无关变更红，
+    // 而它本来要钉的是「不写 role_type 也不会被 NOT NULL 逼着赋值」。
+    const rows = rowsOf(
+      await db.execute(sql`select id, role_type from auth.role where id in ('r_group', 'r_plain') order by id`),
+    )
     expect(rows).toEqual([
       { id: "r_group", role_type: "group" },
       { id: "r_plain", role_type: "normal" },

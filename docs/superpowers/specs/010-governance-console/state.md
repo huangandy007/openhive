@@ -1,9 +1,43 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T002 已交付。**下一项 T003**（管理员分权落码：`is_admin` + RBAC 权限矩阵），等用户 `next`。
+T003 已交付。**下一项 T004**（分析库：event 表增量抽取 → 用量/成本），等用户 `next`。
 
 ## 已完成
+
+- **T003** 管理员分权落码（FR-003；T002 的矩阵进代码）
+  - 新增 `packages/auth/src/governance.ts`：`GOVERNANCE_BOARDS`（八板块，与前端
+    `sections.ts` 逐字对账）、四动作、两张模板常量；`governanceGrants()` / `governanceBoards()` /
+    `authorizeGovernance()`
+  - 新增迁移 `0013_governance.sql`（+ `.down.sql`）：`role_resource` CHECK 加 `'governance'`、
+    种两张模板角色（10 + 6 = 16 行授权），并覆盖 0008 里过时的列注释；不给人挂模板
+  - `sessionIdentity` 增 `governance: GovernanceBoard[]`（`is_admin` 总开关在
+    `governanceBoards()` 内一刀切断；非管理员不取行）
+  - 网关登录响应与 `/me` 都带 `governance`（同一投影）；app `Identity` 增
+    `governance: string[]`（缺字段 / 非字符串项 ⇒ `[]`，fail-closed）；新增
+    `governance/console-connected.tsx` 把身份投影成导航能力集，`layout-new` 改挂它
+  - core `RESOURCE_TYPES` 加 `'governance'`（`resolve()` 不产任何工具规则）；asset-service
+    镜像断言语义改为 `ASSET_TYPES ∪ {governance}`；四处整表断言收窄到本用例建的行
+  - 文档：`authorization.md` §5.3 改成「治理动作立即 / 导航刷新 / AI 工具等下一次建会话」
+    三分；§6 定下模板分配归 `account-manage.write` + 目标 `is_admin=1`（落 T005）
+  - 测试实得：`auth` 全量 **300 pass / 3 skip / 0 fail**，治理文件 **14 pass**；
+    `asset-service` 全量 **209 pass / 4 skip / 0 fail**；opencode gateway **27 pass**、
+    闭集 **1 pass**；core access-rbac **9 pass**；app `test:components` **1377 pass / 0 fail**、
+    `test:unit` 1201 pass / 27 fail（与 T001 既有基线一致，失败文件
+    `file-tree/ comments/ terminal/ project-data(2)/ persist/ submit/ child-store` 与
+    6 条 `(unnamed)`，均未触碰）
+  - 变异 M1–M5 均实得红并还原：
+    ① `governanceBoards` 去掉 `if (!isAdmin) return []` ⇒ 新补的直接用例红
+    （发现并补上该分支的覆盖缺口）；② 删业务专家 `asset-governance/read` 种子 ⇒ 模板对账 +
+    可见板块 + 网关 `/me` 等 5 条红；③ core `RESOURCE_TYPES` 去掉 `governance` ⇒ 闭集红；
+    ④ 接线层不读身份 / `readIdentity` 恒回 `[]` ⇒ 各 2 条与 1 条红；
+    ⑤ 迁移 CHECK 少 `governance` ⇒ 种子插入违反 CHECK，12 条红
+  - 门禁：触碰包强制 typecheck **5/5 successful、0 cached、0 error**；oxlint **0 error /
+    1 warning**（`layout-new.tsx:85` 上游既有 `consistent-return`，非本轮改动）；
+    `git diff --stat bun.lock` **无输出**
+  - **缺口**：`authorizeGovernance()` 尚无生产消费者（T005–T012 的写动作接它）；
+    「把别人提升为管理员 / 分配模板」没有路径与 UI（T005）；**真栈未跑**（009 的
+    `openai@6.39.1` 缺口，同 T001）
 
 - **T002** 两类管理员分权权限矩阵（FR-003）
   - 新增 `authorization.md`：八板块 × 四动作（`read`/`write`/`review`/`admin`）× 两类管理员，
@@ -49,4 +83,4 @@ T002 已交付。**下一项 T003**（管理员分权落码：`is_admin` + RBAC 
 （无）
 
 ## 最后更新
-2026-10-26（T001 / T002 交付）
+2026-10-26（T003 交付）

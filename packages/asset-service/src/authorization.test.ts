@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
+import { GOVERNANCE_RESOURCE_TYPE } from "@opencode-ai/auth/governance"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { grantsFor, type GrantRow } from "@opencode-ai/auth/rbac"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
@@ -215,6 +216,12 @@ describe("四类权限（FR-006 / design §3.3）", () => {
   })
 })
 
+/**
+ * ⚠️ 010 T003 起：`auth.role` / `auth.role_resource` 里多了一组**迁移种的治理模板行**
+ * （`0013_governance.sql` 的两张模板、`resource_type='governance'`）。所以本 describe 里的
+ * 整表断言一律**收窄到本用例自己建的行**——判据是「这次调用写了/没写什么」，
+ * 不是「库里总共有几行」（后者会随无关迁移红，而它本来要钉的不是数量）。
+ */
 describe("授权组（FR-006 / D0-4）", () => {
   test("建授权组写 role_type='group'；不写 role_type 的角色默认 'normal'", async () => {
     const db = await freshDb()
@@ -222,7 +229,9 @@ describe("授权组（FR-006 / D0-4）", () => {
     await createAuthorizationGroup(db, { id: "g_taskforce", name: "电诈专案组" })
     await db.execute(sql`insert into auth.role (id, name) values ('r_plain', '普通角色')`)
 
-    const rows = rowsOf(await db.execute(sql`select id, role_type from auth.role order by id`))
+    const rows = rowsOf(
+      await db.execute(sql`select id, role_type from auth.role where id in ('g_taskforce', 'r_plain') order by id`),
+    )
     expect(rows).toEqual([
       { id: "g_taskforce", role_type: "group" },
       { id: "r_plain", role_type: "normal" },
@@ -261,7 +270,11 @@ describe("授权组（FR-006 / D0-4）", () => {
 
     await grantAssetToGroup(db, { groupId: "g_taskforce", assetId: "a_mcp", perm: "read" })
 
-    const rows = rowsOf(await db.execute(sql`select resource_type, resource_id from auth.role_resource`))
+    const rows = rowsOf(
+      await db.execute(
+        sql`select resource_type, resource_id from auth.role_resource where role_id = 'g_taskforce'`,
+      ),
+    )
     expect(rows).toEqual([{ resource_type: "mcp", resource_id: "a_mcp" }])
   })
 
@@ -275,7 +288,10 @@ describe("授权组（FR-006 / D0-4）", () => {
     )
 
     expect(error.message).toContain("不是授权组")
-    expect(rowsOf(await db.execute(sql`select role_id from auth.role_resource`))).toEqual([])
+    // 只问「r_normal 名下有没有被写行」——整表已经有治理模板的种子行，不能拿空数组当「没写」。
+    expect(
+      rowsOf(await db.execute(sql`select role_id from auth.role_resource where role_id = 'r_normal'`)),
+    ).toEqual([])
   })
 
   test("授权组不存在 ⇒ 拒绝", async () => {
@@ -298,7 +314,9 @@ describe("授权组（FR-006 / D0-4）", () => {
     )
 
     expect(error.message).toContain("资产不存在")
-    expect(rowsOf(await db.execute(sql`select role_id from auth.role_resource`))).toEqual([])
+    expect(
+      rowsOf(await db.execute(sql`select role_id from auth.role_resource where role_id = 'g_taskforce'`)),
+    ).toEqual([])
   })
 
   test("未知权限动作 ⇒ 在碰库之前拒绝", async () => {
@@ -311,7 +329,9 @@ describe("授权组（FR-006 / D0-4）", () => {
     )
 
     expect(error.message).toContain("未知资产权限")
-    expect(rowsOf(await db.execute(sql`select role_id from auth.role_resource`))).toEqual([])
+    expect(
+      rowsOf(await db.execute(sql`select role_id from auth.role_resource where role_id = 'g_taskforce'`)),
+    ).toEqual([])
   })
 
   test("空白的组 id / 名称 / 成员 id ⇒ 拒绝", async () => {
@@ -338,13 +358,19 @@ describe("授权组（FR-006 / D0-4）", () => {
   })
 
   /**
-   * 闭集镜像：DB 的 `role_resource` CHECK ⇔ 资产侧的 `ASSET_TYPES` / `ASSET_PERMS`。
+   * 闭集镜像：DB 的 `role_resource` CHECK ⇔ 资产侧的 `ASSET_TYPES` / `ASSET_PERMS`
+   * **＋ 治理板块那一个类型**。
    *
    * core 侧那份镜像（`openhive-rbac-closed-set.test.ts`）挂在 `packages/opencode`；
    * 资产服务够不着 core，所以在**消费这四个 perm 的地方**再钉一次。两边都不是「多写一份
    * 判据」，而是同一个 CHECK 的两个读者——资产服务读错值时不会报错、只会静默少一条权限。
+   *
+   * ⚠️ 010 T003 起闭集**不再是 ASSET_TYPES 本身**：同一张表还承载治理后台的授权行
+   * （`resource_type = 'governance'`，`0013_governance.sql`）。治理板块**不是资产**，
+   * 所以这里写成 `ASSET_TYPES ∪ {governance}`，而不是把 `'governance'` 塞进 `ASSET_TYPES`
+   * （那会让资产列表 / 校验凭空多出一个「治理板块」类型，见 `metadata.test.ts` 那条）。
    */
-  test("防漂移：role_resource 的 resource_type / perm 闭集与 ASSET_TYPES / ASSET_PERMS 逐值一致", async () => {
+  test("防漂移：role_resource 的 resource_type 闭集 = ASSET_TYPES ∪ {governance}；perm 闭集 = ASSET_PERMS", async () => {
     const db = await freshDb()
 
     const rows = rowsOf(
@@ -359,7 +385,9 @@ describe("授权组（FR-006 / D0-4）", () => {
       [...definition.matchAll(/'([^']*)'/g)].map((match) => match[1]!).sort()
 
     expect(rows).toHaveLength(2)
-    expect(literalsOf(definitions.get("role_resource_resource_type_check")!)).toEqual([...ASSET_TYPES].sort())
+    expect(literalsOf(definitions.get("role_resource_resource_type_check")!)).toEqual(
+      [...ASSET_TYPES, GOVERNANCE_RESOURCE_TYPE].sort(),
+    )
     expect(literalsOf(definitions.get("role_resource_perm_check")!)).toEqual([...ASSET_PERMS].sort())
   })
 })

@@ -14,6 +14,8 @@ import { GovernanceConsole } from "./console"
 export interface GovernanceConsoleHostProps {
   open: boolean
   onClose?: () => void
+  /** 当前身份被授予的板块 id；省略 = 不过滤（裸挂用），空集 = 一项不留。 */
+  capabilities?: ReadonlySet<string>
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
   children?: JSX.Element
 }
@@ -51,7 +53,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
         {props.children}
       </div>
       <Show when={props.open}>
-        <GovernanceConsole onClose={关闭} />
+        <GovernanceConsole onClose={关闭} capabilities={props.capabilities} />
       </Show>
     </div>
   )

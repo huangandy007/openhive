@@ -26,6 +26,7 @@ const 需改密: Identity = {
   name: "张三",
   isAdmin: false,
   mustChangePw: true,
+  governance: [],
 }
 const 不需改密: Identity = { ...需改密, mustChangePw: false }
 

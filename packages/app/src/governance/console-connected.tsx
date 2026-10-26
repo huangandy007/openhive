@@ -1,0 +1,42 @@
+/**
+ * 治理后台的接线层（010 T003 / FR-003）。
+ *
+ * 把「当前身份」翻译成「导航可见的板块」，其余全交给 `GovernanceConsoleHost`。
+ * 单独一层而不是塞进 `layout-new`：身份只有 `useAuthSession()` 这一条来源，
+ * 而那条 context 只在登录门下面（`AuthGate`）存在——本层是唯一该读它的地方，
+ * `layout-new` 因此不用再知道「板块 id 从哪来」。
+ *
+ * ⚠️ **这里只做显示收敛，不是授权**（宪法 §IV / FR-013）：服务端的门是
+ * `authorizeGovernance()`，每个管理动作自己查库；把 `governance` 改大只能多看见几项，
+ * 点进去也做不成事（T005–T012 的端点逐条挡）。
+ */
+
+import { createMemo, type JSX } from "solid-js"
+import { useAuthSession } from "@/auth/session-context"
+import { GovernanceConsoleHost } from "./console-host"
+
+export interface GovernanceConsoleConnectedProps {
+  open: boolean
+  onClose?: () => void
+  /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
+  children?: JSX.Element
+}
+
+export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProps) {
+  const 会话 = useAuthSession()
+
+  /**
+   * 身份没有 ⇒ **空集**，而不是「省略 = 不过滤」。
+   *
+   * `AuthGate` 的第三种启动结局是 `unavailable`（网关不在），那时界面照常放行但**没有身份**。
+   * 把没有身份当成「还没接签发方、全部放行」会让一个连服务端都够不着的界面把八项全画出来；
+   * 空集则退到覆盖层的空态——两句话都说清了：没身份、也没有可用功能。
+   */
+  const 能力 = createMemo(() => new Set(会话?.identity?.governance ?? []))
+
+  return (
+    <GovernanceConsoleHost open={props.open} onClose={props.onClose} capabilities={能力()}>
+      {props.children}
+    </GovernanceConsoleHost>
+  )
+}

@@ -19,6 +19,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import type { connect } from "@opencode-ai/auth/db"
@@ -178,7 +179,8 @@ const withAccount = <T>(fn: (seeded: { id: string; gateway: Gateway }) => Promis
 /**
  * 比 `withAccount` 多两样，都是 T015 的用例自己要的：
  * ① **库本身**——「账号被停用」那条得先把账号停掉，走 `disableAccounts` 而不是在测试里拼 SQL
- *    （`packages/opencode` 没有 drizzle 依赖，也不该为了改一行数据去引一个）；
+ *    （auth 已有公开函数时就走它：另拼一份 SQL 等于把「怎么停账号」在测试里再写一遍，
+ *    `LEARNINGS #002-06`。010 T003 的模板分配没有公开函数，那一条才直接写库）；
  * ② **第二个账号**——「身份只从会话取」要有一个具体的人可以瞄准，只靠「没被改到」证明不了什么。
  */
 const withAccounts = <T>(
@@ -438,7 +440,50 @@ describe("T015 会话自查 /me", () => {
           name: "张三",
           isAdmin: false,
           mustChangePw: true,
+          // 010 T003：普通民警没有治理板块 ⇒ 空数组（不是缺字段）。前端据此把导航清空。
+          governance: [],
         })
+      }),
+    30_000,
+  )
+
+  test(
+    "010 T003 两类管理员各见各的板块：/me 与登录响应是同一份（导航按它收敛）",
+    () =>
+      withAccounts(async ({ db, 甲, 乙, gateway }) => {
+        // 今天没有「分配模板」的公开接口（T005 的账号管理页才落），夹具直接写库。
+        // 这不构成对实现的旁路：被测的是「库里有什么 ⇒ 身份里回什么」。
+        await db.execute(sql`update auth.user set is_admin = 1 where id in (${甲}, ${乙})`)
+        await db.execute(
+          sql`insert into auth.user_role (user_id, role_id) values (${甲}, 'gov-system-admin'), (${乙}, 'gov-business-expert')`,
+        )
+
+        const 登录甲 = await signIn(gateway, POLICE_NO, PW)
+        const cookie甲 = cookieOf(登录甲)
+
+        const 登录乙 = await signIn(gateway, OTHER_POLICE_NO, PW)
+        const cookie乙 = cookieOf(登录乙)
+
+        const 系统管理员板块 = [
+          "account-manage",
+          "org-tree",
+          "asset-governance",
+          "usage-cost",
+          "audit-log",
+          "data-source",
+        ]
+        const 业务专家板块 = ["asset-governance", "template-lib", "data-project-perm"]
+
+        // 响应体只读一次：先各读一份，后面 /me 用 Cookie 另开请求。
+        expect(await 登录甲.json()).toMatchObject({ governance: 系统管理员板块 })
+        expect(await 登录乙.json()).toMatchObject({ governance: 业务专家板块 })
+
+        // 登录响应与 /me **逐值相同**：两边走同一个投影（`governanceBoards`），
+        // 也就是说「登进来能看见」与「刷新后能看见」不可能分家。
+        const 自查甲 = await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie甲 } }))
+        const 自查乙 = await Effect.runPromise(gateway(ME, { headers: { Cookie: cookie乙 } }))
+        expect(await 自查甲.json()).toMatchObject({ governance: 系统管理员板块 })
+        expect(await 自查乙.json()).toMatchObject({ governance: 业务专家板块 })
       }),
     30_000,
   )

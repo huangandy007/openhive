@@ -31,9 +31,15 @@ import type { Permission } from "@opencode-ai/schema/permission"
  */
 
 /**
- * 资源类型（design-v2 §14.3：`resource_type ∈ {skill, mcp, knowledge_base}`）。
- * 这三个值是**DB 里 CHECK 约束钉住的**（见 `packages/auth/src/migrations/0004_rbac.sql`），
- * 这里复述一份是为了让 core 侧的类型与那个约束同名、同值。
+ * 资源类型（design-v2 §14.3 的三类 ＋ 010 加的治理板块）。
+ * 这些值是**DB 里 CHECK 约束钉住的**（`0004_rbac.sql` 建约束、`0013_governance.sql` 加
+ * `'governance'`），这里复述一份是为了让 core 侧的类型与那个约束同名、同值。
+ *
+ * ⚠️ `'governance'` 与另外三个**不同类**：它不是资产，是治理后台的板块（`resource_id` =
+ * 板块 id、`perm` = 四动作里的一个）。它出现在这张表里，只为两件事：
+ * ① DB 闭集与 core 的值对得上（上面的防漂移断言）；② `resolve()` 对**未映射**类型整条跳过
+ * （`TOOL_OF` 里没有它）⇒ 治理行**不会**投影出任何工具规则，也进不了 `session.permission`
+ * 的 allow 一侧。别给它补一条 `TOOL_OF`——那会把「能不能进治理页」变成「AI 能不能调某个工具」。
  *
  * ⚠️ 写成**运行时的数组**、类型由它导出（而不是裸联合）：这份值有两处写法（这里 ＋ SQL 的
  * CHECK），`LEARNINGS #003-05` 要求镜像**写成能被惊醒的样子**——防漂移断言要拿得到值才写得出来。
@@ -41,7 +47,7 @@ import type { Permission } from "@opencode-ai/schema/permission"
  * 钉住这条镜像的是 `packages/opencode/test/server/openhive-rbac-closed-set.test.ts`
  * （全仓只有 `packages/opencode` 同时看得见 auth 的库与 core 的值，见本文件头部）。
  */
-export const RESOURCE_TYPES = ["skill", "mcp", "knowledge_base"] as const
+export const RESOURCE_TYPES = ["skill", "mcp", "knowledge_base", "governance"] as const
 export type ResourceType = (typeof RESOURCE_TYPES)[number]
 
 /**

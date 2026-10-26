@@ -135,6 +135,11 @@ describe("RBAC 判定：授权行 → 工具断言 ruleset", () => {
     expect(AccessRbac.resolve([grant("knowledge_base", "kb-1", "read")])).toEqual(mcp)
     expect(mcp.every((rule) => rule.resource !== "fund-db")).toBe(true)
 
+    // 010 T003：`'governance'` 进了 `RESOURCE_TYPES`（DB 闭集与 core 对齐），但**不是**工具类型。
+    // 即便 perm 是 read，治理行也一条 allow 都不产——后台的门是 `authorizeGovernance()`，
+    // 不是 AI 工具鉴权。这条断言防的是「有人顺手把 governance 补进 TOOL_OF」。
+    expect(AccessRbac.resolve([grant("governance", "account-manage", "read")])).toEqual(mcp)
+
     // 且表里那张「资源类型 → 工具名」的对照今天只认 skill 一行。
     expect(Object.keys(AccessRbac.TOOL_OF)).toEqual(["skill"])
 

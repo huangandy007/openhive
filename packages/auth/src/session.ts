@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm"
-import { type UserAccountTarget, user } from "./user"
+import { governanceBoards, governanceGrants, type GovernanceBoard, type GovernanceTarget } from "./governance"
+import { user } from "./user"
 
 /**
  * 会话自查（003 T015）：从**已经验签的** userId 读出「这个人现在是谁」。
@@ -29,15 +30,25 @@ export interface SessionIdentity {
   name: string
   isAdmin: boolean
   mustChangePw: boolean
+  /**
+   * 治理后台里**这个人能进的板块 id**（010 T003）。非管理员恒为 `[]`——
+   * 总开关 `is_admin` 在 `governanceBoards()` 里一刀切断，前端只拿它做导航收敛。
+   *
+   * ⚠️ **它不是授权凭证**：每个管理动作仍由服务端 `authorizeGovernance()` 每请求查库判定
+   * （FR-013）。把这份数组删掉或改大，只能改变「看得见什么」，改不了「做得了什么」。
+   */
+  governance: GovernanceBoard[]
 }
 
 export async function sessionIdentity(
-  db: UserAccountTarget,
+  db: GovernanceTarget,
   userId: string,
 ): Promise<SessionIdentity | undefined> {
   const [record] = await db.select().from(user).where(eq(user.id, userId))
   if (!record) return undefined
   if (record.status !== 1) return undefined
+
+  const isAdmin = record.isAdmin === 1
 
   return {
     id: record.id,
@@ -45,7 +56,10 @@ export async function sessionIdentity(
     name: record.name,
     // 两个 `=== 1` 与 `login.ts` 里构造 `TokenSubject` 的读法一致：列是 integer，
     // 而 `0` / `1` 在这里是**取值**不是布尔。
-    isAdmin: record.isAdmin === 1,
+    isAdmin,
     mustChangePw: record.mustChangePw === 1,
+    // 非管理员连取行这次查询都不发（少一次往返）；总开关交给 `governanceBoards` 判——
+    // 这里**不再自带一个三元**，否则「is_admin 切断」就有两处判定（`#002-06`）。
+    governance: governanceBoards(isAdmin ? await governanceGrants(db, userId) : [], isAdmin),
   }
 }
