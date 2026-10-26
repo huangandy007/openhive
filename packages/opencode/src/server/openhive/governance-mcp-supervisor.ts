@@ -46,6 +46,18 @@ export const COMMAND_ENV = "OPENHIVE_GOVERNANCE_MCP_CMD"
 /** `off` ⇒ 显式关掉（`ENTRY_DIR_ENV` 已能关，这个给「设了目录但这次不想起」用）。 */
 export const DISABLE_ENV = "OPENHIVE_GOVERNANCE_MCP"
 export const PORT_ENV = "OPENHIVE_GOVERNANCE_MCP_PORT"
+
+/**
+ * 首启端口：缺省 / 非整数 / 超出 1..65535 ⇒ 0（系统分配）。
+ * 只挡 `NaN` 是不够的——`-1`、`70000` 会被原样下发，子进程 `Bun.serve` 抛 `RangeError` 后起不来，
+ * 监督器则按「检查 PG_*」永久退避，把配置错误伪装成运行时故障。
+ */
+export function firstPortOf(env: Record<string, string | undefined>): number {
+  const raw = env[PORT_ENV]
+  if (raw === undefined || raw.trim() === "") return 0
+  const port = Number(raw)
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 0
+}
 export const START_TIMEOUT_MS = 15_000
 export const MAX_BACKOFF_MS = 60_000
 /** 稳定跑过这么久再崩 ⇒ 退避计数归零（否则「起—崩—起」永远是 1s）。 */
@@ -514,10 +526,10 @@ export const layer = Layer.effectDiscard(
 
     const config = yield* Config.Service
     // 全局配置目录由 `@opencode-ai/core/global` 在加载时建好；配置文件由 `updateGlobal` 自己创建。
-    // 首启端口在这里读**一次**：`OPENHIVE_GOVERNANCE_MCP_PORT` 非数字 / 缺省 ⇒ 0（系统分配）。
+    // 首启端口在这里读**一次**：`OPENHIVE_GOVERNANCE_MCP_PORT` 非法 / 缺省 ⇒ 0（见 `firstPortOf`）。
     // 之后每轮沿用上一轮**回报**的端口——已下发的配置才不会指向死端口；显式端口被占则由子进程
     // 起不来（spec §6）走退避重启，而不是悄悄换号。
-    const firstPort = Number(process.env[PORT_ENV]) || 0
+    const firstPort = firstPortOf(process.env)
 
     yield* startSupervision({
       launch: (port) =>

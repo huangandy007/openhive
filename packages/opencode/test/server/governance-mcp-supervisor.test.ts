@@ -23,6 +23,7 @@ import {
   OpenhiveGovernanceMcp,
   parseReadyLine,
   PORT_ENV,
+  firstPortOf,
   readyConfigPatch,
   readyHandler,
   spawnGovernanceMcp,
@@ -67,6 +68,19 @@ describe("env 名契约", () => {
   // 两侧（监督器 / asset-service）各持一份字面量、不能 import 对方，所以逐字钉住。
   test("PORT_ENV 逐字是 OPENHIVE_GOVERNANCE_MCP_PORT", () => {
     expect(PORT_ENV).toBe("OPENHIVE_GOVERNANCE_MCP_PORT")
+  })
+})
+
+describe("firstPortOf", () => {
+  test("合法端口透传，缺省 / 非整数 / 越界一律 0", () => {
+    expect(firstPortOf({ [PORT_ENV]: "41234" })).toBe(41234)
+    expect(firstPortOf({})).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "" })).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "abc" })).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "0" })).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "-1" })).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "70000" })).toBe(0)
+    expect(firstPortOf({ [PORT_ENV]: "80.5" })).toBe(0)
   })
 })
 
