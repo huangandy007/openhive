@@ -5,25 +5,32 @@
  * （`gov-business-expert`，3 板块）各见各的功能、互不越界。**普通民警 vs 管理员**是 FR-013，
  * 按 `tasks.md` 的分工归 T015，本文件不覆盖。
  *
- * 四件事：
- * ① **可见面**：`/me` 回给两人的板块集——各自恰好、交集只有 AI 资产治理、并集是全部八页；
- * ② **读矩阵**：8 板块 × 2 身份 = 16 个请求；期望网格在测试里写成**字面量**（`#003-05`：
- *    客户端契约不跟着实现漂）；
- * ③ **写矩阵**：五个有**板级**写出口的板块逐格打——专家撞账号 / 组织 / 数据源，管理员撞
+ * 三件事：
+ * ① **读矩阵**：8 板块 × 2 身份 = 16 个请求；期望网格在测试里写成**字面量**（`#003-05`：
+ *    客户端契约不跟着实现漂）。放行格断言 **200**——「非 403」会放过 500（`#005-47`）；
+ * ② **写矩阵**：五个有**板级**写出口的板块逐格打——专家撞账号 / 组织 / 数据源，管理员撞
  *    模板库 / 数据项目权限。`assets` 的写是**资产级**授权（板级只有 read 门槛），不属板级
  *    分权，明确排除；`usage-cost` / `audit-log` 没有写出口；
- * ④ **被拒之后**：越权写递的是**合法载荷**，仍拿 403（授权在解析之前，`#004-09`）⇒ 库里
+ * ③ **被拒之后**：越权写递的是**合法载荷**，仍拿 403（授权在解析之前，`#004-09`）⇒ 库里
  *    没多出那一行 ＋ 每个越权动作各留一条 `governance.denied`（写动作的 `detail.perm`
  *    必须记 `write`，不是 `read`）。
+ *
+ * ## 可见面（`/me`）为什么在 `openhive-governance-visibility.test.ts`
+ *
+ * 不是拆分洁癖：`/me` 走**网关池**、治理出口走**治理池**，两个客户端在同一 PGlite 实例上
+ * 准备同一句 `select … from auth.user where id = $1` 会撞 `42P05`（`test-support.ts:67`
+ * 的夹具硬约束），表现为「本文件第一个治理读请求 500」。本文件交付时正是因此漏了一格假绿：
+ * 当时放行格写的是「非 403」，500 混了过去。现在两边分文件、各用一套夹具实例。
  *
  * ## 为什么另起一份矩阵文件，而不收进各板块自己的测试
  *
  * 各板块的测试保证「这一格没被人动坏」；矩阵保证「**格子之间的关系**没被同时动坏」——
- * 比如把模板库从专家挪给管理员，两边的各自测试可能都还绿（期望跟着改了），但交集不再
- * 只有 AI 资产治理、并集不再覆盖八页。关系断言只有放在一张表里才写得出来。
+ * 比如把模板库从专家挪给管理员，两边的各自测试可能都还绿（期望跟着改了）。板块集层面的
+ * 关系断言（交集只有 AI 资产治理、并集覆盖八页）在 `openhive-governance-visibility.test.ts`；
+ * 本文件守的是**出口层面的可达性**：谁能读到、谁读不到，谁能写、谁写不进去。
  *
- * 本文件自带 401 自查：矩阵里的「非 403」若因为认证整体失效而变成「人人 401」，
- * 正向对照会先红，不会把「门都不在」误读成「分权对了」。
+ * 本文件自带 401 自查：矩阵里的放行格若因为认证整体失效而变成「人人 401」，
+ * 会先红，不会把「门都不在」误读成「分权对了」。
  */
 
 import { afterAll, beforeAll, describe, expect } from "bun:test"
@@ -31,7 +38,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql } from "drizzle-orm"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -70,7 +77,6 @@ const PROJECTS = "/openhive/governance/projects"
 const USAGE = "/openhive/governance/usage-cost"
 const AUDIT_LOG = "/openhive/governance/audit-log"
 const SOURCES = "/openhive/governance/data-sources"
-const ME = "/openhive/auth/me"
 
 /** 八页全集，顺序跟导航注册表一致（`src/governance/sections.ts`）。 */
 const 全部板块 = [
@@ -194,19 +200,6 @@ const post = (subject: TokenSubject | null, url: string, body?: unknown) =>
     ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   })
 
-/** 会话回包只取 `governance` 一段：多出来的字段（比如把 `token` 顺带透出去）不该管这里。 */
-const 会话自查 = Schema.Struct({ governance: Schema.optional(Schema.Array(Schema.String)) })
-
-/** 会话回包的 `governance` 数组（`/me` 与登录响应同一份投影，这里读 `/me`）。 */
-const 板块集 = (subject: TokenSubject) =>
-  Effect.gen(function* () {
-    const response = yield* get(subject, ME)
-    expect(response.status).toBe(200)
-    expect(response.headers.get("content-type") ?? "").toContain("application/json")
-    const body = yield* Effect.promise(() => response.text())
-    return Schema.decodeUnknownSync(会话自查)(JSON.parse(body)).governance ?? []
-  })
-
 /** 裸 SQL 数库里的行（不经被测对象）。 */
 const 库行数 = (表: string, where: string) =>
   Effect.promise(async () => {
@@ -242,24 +235,6 @@ const 账号载荷 = (policeNo: string) => ({
 
 const 不存在项目 = "00000000-0000-4000-8000-000000000000"
 
-describe("T014 · 可见面（导航收敛）", () => {
-  it.live("/me 给两类管理员各自的板块集：交集只有 AI 资产治理、并集是全部八页", () =>
-    Effect.gen(function* () {
-      const 甲 = yield* 板块集(ADMIN)
-      const 乙 = yield* 板块集(EXPERT)
-
-      expect(甲).toEqual([...系统管理员期望.boards])
-      expect(乙).toEqual([...业务专家期望.boards])
-
-      // 关系断言：各自数组「改了但看起来还像」时，这两条先红。
-      const 交集 = 甲.filter((id) => 乙.includes(id))
-      expect(交集).toEqual(["asset-governance"])
-      const 并集 = [...new Set([...甲, ...乙])].sort()
-      expect(并集).toEqual([...全部板块].sort())
-    }),
-  )
-})
-
 describe("T014 · 读矩阵（8 板块 × 2 管理员）", () => {
   it.live("无凭证 ⇒ 401：矩阵的「非 403」不能是「人人 401」的假绿", () =>
     Effect.gen(function* () {
@@ -274,8 +249,9 @@ describe("T014 · 读矩阵（8 板块 × 2 管理员）", () => {
         for (const board of 全部板块) {
           const response = yield* get(subject, 读出口[board])
           const 应放行 = boards.includes(board)
-          if (应放行) expect({ 板块: board, 非403: response.status !== 403 }).toEqual({ 板块: board, 非403: true })
-          else expect({ 板块: board, 状态: response.status }).toEqual({ 板块: board, 状态: 403 })
+          // 放行格必须是 **200**，不是「非 403」：500 也满足「非 403」，那是本文件交付时曾漏过
+          // 一格的假绿（`#005-47`）。读出口的成功态只有 200 一种。
+          expect({ 板块: board, 状态: response.status }).toEqual({ 板块: board, 状态: 应放行 ? 200 : 403 })
         }
       }),
     )

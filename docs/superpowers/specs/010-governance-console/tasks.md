@@ -353,6 +353,7 @@
   - ① **可见面**：两身份 `/me` 的 `governance` 分别 `toEqual` 各自的**恰好** 6 / 3 项；再加两条
     关系断言——**交集恰好 `["asset-governance"]`**、**并集恰好八页全集**。各板块文件只保证「这一格
     没坏」，关系断言才能抓住「一边加一页、另一边删一页」这种两边各自看起来都对的漂移。
+    ⚠️ **交付后修正**：这一组已**拆到** `openhive-governance-visibility.test.ts`（原因见文末「T014 补正」）。
   - ② **读矩阵**：8 板块 × 2 身份 = **16 个 HTTP 请求**；期望网格写成**字面量**（`#003-05`，不 import
     生产矩阵）。附 401 自查（无凭证 ⇒ 401），防「门都不在」被读成「分权对了」。
   - ③ **写矩阵**：五个**板级**写出口——专家撞 `POST accounts` / `POST org/nodes` / `POST data-sources`，
@@ -366,7 +367,8 @@
   - **正向对照不是装饰**：「一律 403」也会让 ③ 前三格全绿。故每个写出口在**有权的一侧**再打一次：
     管理员建账号 / 部门 / 数据源 = 201，专家建模板 = 201，专家归档不存在项目 = **404**（门已过、
     只是对象不在，404 ≠ 403）。
-  - 测试 **8 条**（`it.live`），48 个 `expect`。夹具：真 PG（`startProductionDb` ＋ `migrate`）＋
+  - 测试 **7 条**（`it.live`；交付时为 8 条，可见面拆走后剩 7 条），40 个 `expect`（交付时 48）
+    ＋ 拆出去的可见面 **2 条 / 9 expect**。夹具：真 PG（`startProductionDb` ＋ `migrate`）＋
     真应用（`HttpApiApp` ＋ `ConfigProvider` 注入 OPEN 环境）＋ Cookie 身份；`PG_POOL_MAX=1` 与同族
     文件一致（PGlite socket 合并连接，第二条连接再准备同名语句撞 `42P05`，见 `pg.ts` 文件头）。
     该参数是本 task 实测**需要**的：未设时第 4 个写请求起 `[openhive-audit] 审计写入失败` ⇒ 500。
@@ -380,7 +382,8 @@
     M4 `进()` 不记 `governance.denied` ⇒ 审计留痕 1 红（`有留痕` 实得 **false**）；
     M5 拆掉 accounts create 的写门 ⇒ 写矩阵 1 红（403→**201**）＋ 无副作用 1 红（**0→1**）＋
     审计留痕 1 红（**3 红**）。
-  - 门禁实得：本文件 **8 pass / 0 fail**；12 个治理/网关文件一起跑 **174 pass / 0 fail**（57s）；
+  - 门禁实得：本文件 **7 pass / 0 fail**（交付时 8 pass；补正后重跑 7 pass / 0 fail），
+    可见面文件 **2 pass / 0 fail**；12 个治理/网关文件一起跑 **174 pass / 0 fail**（57s，交付时；含补正前的 8 条）；
     `packages/opencode` 直跑 `tsgo --noEmit` **exit=0**；根 `bun run typecheck` **32/32 successful**；
     oxlint 本文件 **0 warning / 0 error**（首轮 3 warning 已修：`as` 断言改 Schema 解码、
     去掉两处多余的 `!`）；`git diff --stat bun.lock` **无输出**。
@@ -395,6 +398,19 @@
     不在此文件；③ 不含 FR-013（T015）；④ **真栈未跑**；⑤ 12 文件并行跑时观察到既有的
     `[openhive-audit] 审计写入失败` warn（**0 fail**，本文件单独跑无；属多文件同进程的 PGlite 争用，
     非本 task 引入）。
+  - **T014 补正（2026-10-26，T015 开工时发现并另起提交）**：**上记「8 pass」里有一格假绿**。
+    现象：把读矩阵的放行断言从「非 403」改成 **200** 后，系统管理员 `account-manage` **实得 500**。
+    根因（探针实得，非推测）：`/me` 走网关池、治理出口走治理池；同一 PGlite 实例上两个客户端
+    准备同一句 `select … from "auth"."user" where "auth"."user"."id" = $1`，服务端报
+    `42P05 duplicate_prepared_statement`，表现为**本进程第一个治理读请求 500**
+    （`test-support.ts:67` 的夹具硬约束；`PG_POOL_MAX=1` 只限「每池一条连接」，管不了跨池）。
+    为什么之前没红：放行格写的是 `status !== 403`，**500 也满足**（`#005-47` 类假绿）。
+    修法（生产代码零改动）：① 放行格断言改成 **200**；② 可见面 `/me` 拆到
+    `openhive-governance-visibility.test.ts`（只走网关池，自带无凭证 401 自查）；
+    ③ 本文件不再调 `/me`。
+    变异实得：M6 把 `/me` 请求加回本文件读矩阵 ⇒ `板块=account-manage` 期望 **200** / 实得 **500**，
+    1 红；M7 在同一次变异下把断言换回交付时的「非 403」⇒ **7 pass / 0 fail**（假绿复现）。
+    两条都还原后重跑：本文件 **7 pass / 0 fail（40 expect）**、可见面 **2 pass / 0 fail（9 expect）**。
 - [ ] T015 [BE] 写测试：**越权（BFLA）——普通民警凭证调管理员能力被拒**（**003 移交**，2026-10-01）
   [FR-013][SC-005]（**FR-013 / SC-005 是本 task 落地时补进 spec.md 的**——原文没有这条要求，
   只有 FR-001「仅管理员可见」，那是**入口**不是**门禁**。任务要有 spec 撑着，故一并补上）

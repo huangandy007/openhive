@@ -9,10 +9,12 @@ T014 已交付（两类管理员分权验收矩阵：可见面 ＋ 8×2 读矩�
 
 ## 已完成
 
-- **T014** 两类管理员分权验收矩阵（SC-002 / T003）——一笔提交，**只加测试、生产代码零改动**
-  - 新 `packages/opencode/test/server/openhive-governance-split.test.ts`，8 条 `it.live`
-  - ① `/me` 两身份**恰好** 6 / 3 项 ＋ **交集只有 `asset-governance`** ＋ **并集八页全集**（关系断言）
-  - ② 读矩阵 8 板块 × 2 身份 = 16 请求，期望网格写字面量（`#003-05`）＋ 401 自查
+- **T014** 两类管理员分权验收矩阵（SC-002 / T003）——**两笔提交**，**只加测试、生产代码零改动**
+  - 新 `packages/opencode/test/server/openhive-governance-split.test.ts`（7 条 `it.live`）
+    ＋ `openhive-governance-visibility.test.ts`（2 条，交付后补正拆出）
+  - ① 可见面（`/me`）：两身份**恰好** 6 / 3 项 ＋ **交集只有 `asset-governance`** ＋ **并集八页全集**
+    （关系断言）＋ 无凭证 401 自查
+  - ② 读矩阵 8 板块 × 2 身份 = 16 请求，期望网格写字面量（`#003-05`）；放行格断言 **200**
   - ③ 写矩阵：专家撞账号 / 组织 / 数据源，管理员撞模板库 / 数据项目权限，**合法载荷**仍 403（`#004-09`）；
     `assets` 的写是资产级授权，排除；`usage-cost` / `audit-log` 无写出口
   - ④ 四个建行类越权写之后目标行数 = 0（正面对照行 = 1）；五个板块各留 `governance.denied`，
@@ -21,10 +23,17 @@ T014 已交付（两类管理员分权验收矩阵：可见面 ＋ 8×2 读矩�
     专家归档不存在项目 = 404
   - 变异 M1–M5 在**最终版本**上逐条重跑，均实得红并还原（M5 ⇒ 3 红：写矩阵 403→201、
     无副作用 0→1、审计留痕缺）
-  - 门禁：本文件 8 pass / 0 fail；12 个治理/网关文件 174 pass / 0 fail；opencode `tsgo --noEmit` exit=0；
-    根 typecheck 32/32；oxlint 0 warning / 0 error；`bun.lock` 无 diff
-  - **缺口**：每板块只取一条代表写出口；`assets` 资产级授权归 T007；不含 FR-013（T015）；真栈未跑；
-    12 文件并行跑时观察到既有 `[openhive-audit] 审计写入失败` warn（0 fail，本文件单独跑无）
+  - **⚠️ 补正（T015 开工时发现）**：交付时读矩阵放行格写的是「非 403」，**放过了一个 500**
+    （`#005-47` 假绿）。根因：`/me` 网关池与治理池在同一 PGlite 实例准备同一句 SQL ⇒ `42P05`，
+    本进程第一个治理读请求 500。修法：断言改 **200** ＋ 可见面拆独立文件（只走网关池）。
+    变异 M6 复现 500（期望 200 / 实得 500），M7 换回「非 403」⇒ 全绿（假绿复现）。
+  - 门禁（补正后重跑）：split **7 pass / 0 fail（40 expect）**、visibility **2 pass / 0 fail（9 expect）**；
+    交付时 12 个治理/网关文件 **174 pass / 0 fail**；opencode `tsgo --noEmit` exit=0；
+    根 typecheck **32/32**；oxlint 两文件 0 warning / 0 error；`bun.lock` 无 diff
+  - **缺口**：每板块只取一条代表写出口；`assets` 资产级授权归 T007；不含 FR-013（T015，本轮接着做）；
+    真栈未跑；12 文件并行跑时观察到既有 `[openhive-audit] 审计写入失败` warn
+    （0 fail，本文件单独跑无）；拆分让「可见面 ＋ 治理出口同进程」这一场景**没有任何测试覆盖**
+    ——那是夹具的 `42P05` 硬约束，真机上不存在（真 PG 每连接独立 prepared statement）
 - **T013** 治理后台只承载「配置 ＋ 审核 ＋ 查看」（FR-012 / SC-004）——一笔提交
   - `sections.ts`：`GOVERNANCE_KINDS = ["config","review","view"]` 闭集（**无「分析」**）＋ 每项必填 `kind`；
     归类 配置 5 / 审核 1 / 查看 2；`console.tsx` 根加 `data-governance-kind`（**纯钩子、无视觉改动**）
