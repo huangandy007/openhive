@@ -325,7 +325,11 @@ export async function moveDirectory(
       if ((await statOrNull(targetPath)) === null) throw new MissingSourceDirectoryError(source)
       return
     } catch (error) {
-      if (errorCode(error) !== "EXDEV") throw error
+      const code = errorCode(error)
+      // 源在 stat 与 rename 之间被并发搬走时 rename 抛 ENOENT：与落地校验同一语义，
+      // 交给调用方翻成 invalid_source（409），不要让裸 fs 错误冒成 500。
+      if (code === "ENOENT") throw new MissingSourceDirectoryError(source)
+      if (code !== "EXDEV") throw error
     }
   }
 
