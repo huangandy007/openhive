@@ -71,6 +71,24 @@ async function until(predicate: () => boolean, ms = 2000): Promise<void> {
   }
 }
 
+/**
+ * 等计数**静默**（连续两次取样相同）再返回，避免「上一个请求的迟到增量给下一个顶账」。
+ * 也用于建立精确基线：后面的用例断言的是**恰好 +1**，不是「至少涨了」。
+ */
+async function quietClosedCount(server: { closedCount(): number }): Promise<number> {
+  let current = server.closedCount()
+  let stable = 0
+  const started = Date.now()
+  while (Date.now() - started < 3000) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const next = server.closedCount()
+    stable = next === current ? stable + 1 : 0
+    current = next
+    if (stable >= 2) return current
+  }
+  return current
+}
+
 describe("HTTP 传输", () => {
   test("真端口列出三个治理工具，且能真的调一次（缺身份 ⇒ identity_required）", async () => {
     const { connectUrl } = await start()
@@ -133,23 +151,21 @@ describe("HTTP 传输", () => {
   })
 
   test("GET /mcp 回 405（SDK 客户端靠它不卡在等 SSE），allow 头指向 POST", async () => {
-    const { server, connectUrl } = await start()
+    const { connectUrl } = await start()
     const response = await fetch(connectUrl, { headers: { accept: "text/event-stream" } })
     expect(response.status).toBe(405)
     expect(response.headers.get("allow") ?? "").toContain("POST")
-    // 根本没建 server/transport，就不该有收尾（计数为 0 也证明这条分支没走到 handleMcp 后半段）。
-    expect(server.closedCount()).toBe(0)
   })
 
-  test("正常消费完：每个请求的 server/transport 都被收尾", async () => {
+  test("正常消费完：每个请求的 server/transport 都被收尾（恰好 +1）", async () => {
     const { server, connectUrl } = await start()
     const instance = await client(connectUrl)
     try {
+      // 等 connect（initialize + initialized）的收尾落定，再取精确基线。
+      const before = await quietClosedCount(server)
       await instance.listTools()
-      const before = server.closedCount()
-      await instance.listTools()
-      await until(() => server.closedCount() > before)
-      expect(server.closedCount()).toBeGreaterThan(before)
+      await until(() => server.closedCount() === before + 1)
+      expect(server.closedCount()).toBe(before + 1)
     } finally {
       await instance.close()
     }

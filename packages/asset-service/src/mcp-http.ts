@@ -134,8 +134,9 @@ async function handleMcp(deps: GovernanceHttpDeps, request: Request, onClose: ()
   const close = (): void => {
     if (closed) return
     closed = true
-    onClose()
-    void closeQuietly(server, transport)
+    // 计数在**收尾真正完成之后**才 +1（`closeQuietly` 内部已各自 catch，不会 reject）：
+    // 若先自增，把下一行的清理删掉计数照样涨，`closedCount()` 就只证明「进了 close()」。
+    void closeQuietly(server, transport).finally(onClose)
   }
   try {
     await server.connect(transport)
