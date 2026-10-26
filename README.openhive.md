@@ -14,11 +14,21 @@
 
 ## 方式一（推荐）：同源真全栈
 
-一条命令起**真内核 ＋ 真 PG ＋ 同源前门**，前端 HMR 原生可用，**能调试登录页 / 项目 / 权限 / 会话落库**。
+一条命令起**真内核 ＋ 真 PostgreSQL ＋ 同源前门**，前端 HMR 原生可用，**能调试登录页 / 项目 / 权限 / 会话落库**。
+
+> ### ⚠️ 2026-10-26 起的定规：本机开发**不再用 PGlite**，一律连远端 PostgreSQL
+>
+> 目的：让本地验收尽量贴近生产形态。当前连的是 **`openhive_dev`**（连接参数在内核 cwd 的
+> `packages/opencode/.env` / `.env.local`，见下方「连远端 PostgreSQL」节）。
+>
+> - 起栈命令**必须带 `REAL_STACK_DB=remote`**；漏了它 `serve.ts:140` 会回退到 `pglite`，
+>   栈照起、页面照开，**只是数据库悄悄换成了本地 PGlite**——所以每次起栈都核对 `STACK_READY` 的 `db` 字段。
+> - PGlite 只剩 **Playwright 的 real-stack 用例**还在用：`playwright.real-stack.config.ts` 把
+>   `REAL_STACK_DB` 显式钉回 `pglite`（隔离，避免用例写远端库），与这条本机约定互不影响。
 
 ```bash
 cd packages/app
-bun e2e/real-stack/stack.ts
+REAL_STACK_STATE_DIR="$TEMP/openhive-real-stack-state" REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
 ```
 
 一个进程干两件事（编排器 `packages/app/e2e/real-stack/stack.ts`）：
@@ -27,30 +37,31 @@ bun e2e/real-stack/stack.ts
 |---|---|---|
 | **Vite 前门** | **http://127.0.0.1:3010** | ← **浏览器开这个**。页面与模块图由 Vite 原生服务，HMR 原生工作 |
 | 真内核 | http://127.0.0.1:4711 | `Server.listen` 真 TCP socket，与 `cli/cmd/serve.ts` 同源 |
-| 真 PG | 随机端口 | PGlite 经 TCP 暴露（`startProductionDb`）。**默认随栈创建、随栈销毁**（内存实例）；设了 `REAL_STACK_STATE_DIR` 则**落盘**，见下 |
+| 真 PostgreSQL | 远端（默认 `8.136.21.218:35432/openhive_dev`） | 起栈时带 `REAL_STACK_DB=remote` 才连它，并**向上迁移到最新**、种 `020601` / `020600` 两个账号。数据落在**远端库**，本地只剩沙箱 / workspaces |
 
 端口可用环境变量覆盖（并行跑多套栈时用）：
 
 ```bash
-REAL_STACK_KERNEL_PORT=4712 REAL_STACK_FRONT_PORT=3011 bun e2e/real-stack/stack.ts
+REAL_STACK_KERNEL_PORT=4712 REAL_STACK_FRONT_PORT=3011 REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
 ```
 
-### 开发时让数据落盘（`REAL_STACK_STATE_DIR`）
+### 沙箱落盘（`REAL_STACK_STATE_DIR`）
 
-默认起栈用**临时目录 ＋ 内存 PG**，**一停栈就没**——手动验收「退出再登录，项目 / 会话还在不在」
-走不通。设一个目录就切成**落盘态**：
+数据库的持久性已由远端 `openhive_dev` 保证；这个变量管的是**沙箱与工作区**——不设就用
+`mkdtempSync` 临时目录，**一停栈就没**，手动验收「退出再登录，文件还在不在」走不通。设一个目录即可：
 
 ```bash
-REAL_STACK_STATE_DIR="$TEMP/openhive-dev-state" bun e2e/real-stack/stack.ts
+REAL_STACK_STATE_DIR="$TEMP/openhive-real-stack-state" REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
 ```
 
 设了之后：
 
 - **三个根都指到它**：`<目录>/data`（每用户 SQLite）、`<目录>/workspaces`、`<目录>/shared`；
-- **PGlite 落 `<目录>/pg`**（实测 `@electric-sql/pglite@0.5.8`：`new PGlite(dir)` 关闭后重开，数据还在）；
-- **停栈不删**该目录 ⇒ 再起时项目 / 会话 / 成员 / 账号都还在，用同一套凭据能登录进来。
+- **停栈不删**该目录 ⇒ 再起时沙箱里的文件还在；
+- 仅当走 `pglite` 模式（Playwright E2E）时，PGlite 才落 `<目录>/pg`
+  （实测 `@electric-sql/pglite@0.5.8`：`new PGlite(dir)` 关闭后重开，数据还在）。
 
-**不设 ⇒ 与之前逐字一致**（`mkdtempSync` 临时目录 ＋ 内存 PG ＋ 停栈删），CI / E2E 零变化。
+**不设 ⇒ 与之前逐字一致**（`mkdtempSync` 临时沙箱 ＋ 停栈删；`pglite` 模式下连同内存库一起销毁），CI / E2E 零变化。
 
 ⚠️ 反过来：**设了它再跑 E2E**，Playwright 的 `webServer` 会把它继承下去（`stack.ts` 用
 `{ ...process.env }` 起内核）⇒ 那一次 E2E 跑在**落盘库**上、状态跨次累积（上一次留下的项目 / 会话都在）。
@@ -67,13 +78,14 @@ STACK_READY {"kernel":4711,"front":3010}
 并把交接物写进 `%TEMP%\openhive-real-stack.json`（**固定路径，不落仓库**），内含本次的
 `kernel` 端口、`sandbox` 目录、`token`，以及给人用的 `policeNo` / `name` / `password`。
 
-### 手动验收时连远端 PostgreSQL（可选）
+### 连远端 PostgreSQL（**本机默认，必带 `REAL_STACK_DB=remote`**）
 
-默认的 PGlite 是**本机夹具**。想验证「数据真的落远端 PG」时，显式加 `REAL_STACK_DB=remote`：
+不带这个变量，`serve.ts:140` 会走 `pglite`（本地夹具）——**页面照样能开，只是库不是你以为了那个**。
+所以本机起栈固定带上它：
 
 ```bash
 cd packages/app
-REAL_STACK_STATE_DIR="$TEMP/openhive-dev-state" REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
+REAL_STACK_STATE_DIR="$TEMP/openhive-real-stack-state" REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
 ```
 
 - 连接参数**不在真栈脚本里**，而是内核 cwd（`packages/opencode`）的 `.env` / `.env.local` 里的
