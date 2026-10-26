@@ -1,9 +1,58 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T004 已交付。**下一项 T005**（账号管理），等用户 `next`。
+T005 已交付（axe 1 格红，按护栏 HALT，等设计裁定）。**下一项 T006**（组织架构），等用户 `next`。
 
 ## 已完成
+
+- **T005** 账号管理（FR-004 / US2；003 的 T022 录入 ＋ T024 停用的触发者）
+  - 新增 `packages/auth/src/account-admin.ts`（**读面**）：`listAccounts`（q 命中警号/姓名/单位/部门/科室，
+    `%` `_` `\` 当字面量；status 筛选；僵尸筛选；page/pageSize 夹取；全局统计与 `matched` 分开算）、
+    `accountById`（多吐 `idCard` / `phone`）。列表项**键集合**断言不含 PII 与 `password_hash`；
+    `zombieOnly` 的 id 集合与 `findZombieAccounts` **逐值对账**（`#002-06`：同一条规则三处实现）
+  - 新增 `packages/opencode/src/server/openhive/governance-accounts.ts`：7 条路由
+    （list / detail / create / password / disable / enable / batch-disable）。每请求查
+    `authorizeGovernance`（read / write），**排在解析、校验、建目录、落库之前**（`#004-09`）；
+    录入走 `provisionUser`（不调 `registerUser`——否则留「能登录却没沙箱」的账号）；
+    不能停用自己（单条 400、批量**整批** 400）；`LastAdminError` → 409「系统至少保留一个管理员」
+  - 接线 `server.ts`：与项目出口共用 `AnchorWorkspace.Config`（沙箱根）与 `OpenhivePg`
+  - 新增前端 `governance/account-api.ts`（同源路径、可注入 fetch、Outcome 三态 ok/rejected/failed、
+    严格解析、10s 超时）、`governance/account-manage.tsx`（统计卡 / 搜索 / 僵尸开关 / 表格 + 分页 /
+    空·加载·错误三态 / 录入抽屉 / 详情抽屉 / 重置与停用确认 / 批量停用；列表请求带**代次守卫**，
+    await 之后不读旧上下文——`#008-03`）；`console.tsx` / `console-host.tsx` /
+    `console-connected.tsx` 接线（未注入 api 时回落占位）
+  - 测试新增 **69 条**：`auth/src/account-admin.test.ts` 13（PGlite 真库）、
+    `opencode/test/server/openhive-governance-accounts.test.ts` 26、
+    `app/src/governance/account-api.test.ts` 14、`app/src/governance/account-manage.test.tsx` 16；
+    另有 4 条 story（有数据 / 空 / 错误 / 确认框打开态）
+  - 变异 M1–M8（均实得红并还原）：① 删录入授权 ⇒ 3 红；② 授权挪到 `provisionUser` **之后**
+    ⇒ 2 红（`Expected: 0 / Received: 1` 行数）。**这条第一次拆法没红**——把授权挪到「解析之后、
+    副作用之前」仍然全绿（非法载荷本就被校验挡成 400），改成「副作用之后」才红，属于变异设计纠错；
+    ③ 僵尸筛选去掉 `status = 1` ⇒ 1 红；④ 删「不能停用自己」⇒ 400 变 204 ＋ 3 条连锁红；
+    ⑤ 批量只停第一个 id ⇒ 1 红；⑥ `provisionUser` 换 `registerUser` ⇒ 1 红（沙箱目录不存在）；
+    ⑦ 前端自己那行不 `disabled` ⇒ 1 红；⑧ 去掉重置确认 ⇒ 1 红（确认框永不出现，等到超时）
+  - 门禁实得：`packages/auth` 全量 **314 pass / 3 skip / 0 fail**（265s，`bun test`）；
+    `packages/opencode` 路由 **26 pass / 0 fail**；`packages/app` 治理四个文件 **53 pass / 0 fail**、
+    `test:components` 全量 **1393 pass / 0 fail**；根 `bun run typecheck` **32/32 successful**；
+    `bun run lint:openhive` **0 error / 67 warning**（无一条落在本轮文件）；
+    `git diff --stat bun.lock` **无输出**
+  - **缺口**：① **axe 红 1 格**（见下，HALT）；② `LastAdminError` 经本路由**不可达**
+    （自己不能停用先挡下），映射只做了单测；③ `disableAccounts` 守卫的 **TOCTOU 窗口从本条起可达**
+    （两个管理员同时互停可归零），未加锁；④ 没有「编辑账号 / 提升管理员 / 分配模板」动作；
+    ⑤ 治理壳 `console.tsx` 没有 story；⑥ **真栈未跑**（同 009 的 `openai@6.39.1` 缺口）；
+    ⑦ 批量停用的 `disabled` 报的是「本次处理条数」，不是「状态真的翻转的条数」
+  - **axe 实得**（2026-10-26）：`node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/Governance"`
+    （4 story × 浅/深 = 8 格）⇒ **7 ✅ / 1 ❌，EXIT=1**。红在 light「有数据」：
+    3 个 `<span data-component="tag" data-variant="accent">启用</span>`，
+    前景 `--v2-text-text-contrast`=#FCFCFC / 底 `--v2-background-bg-accent`=#D97706 ⇒ **3.11:1**
+    （11px / 530 需 4.5:1）。根因是 **token 组合**（品牌金配近白字），不是布局；
+    #1C1A18 深字压同底为 **5.45:1**。按护栏 **HALT：未改视觉、未加白名单、不弱化断言**。
+    候选裁定（等用户定）：A. 状态标签改用 DESIGN §1.3 的语义状态色
+    （启用 = `--v2-state-bg-success` / `--v2-state-fg-success`，停用 = 中性）；
+    B. 保留金色强调，accent 标签在 light 改用深字（需新增局部前景 token）；
+    C. 记入已知缺陷（与 009 F1 的 5 格同列），不改。
+    复跑提示：6017 当时被 009 工作台的 storybook 占着，本次用
+    `--port 6018` ＋ `STORYBOOK_URL=http://127.0.0.1:6018`
 
 - **T004** 分析库（FR-008；event 表增量抽取 → 用量/成本）
   - 新增 `packages/opencode/src/governance/analytics.ts`（约 420 行）：

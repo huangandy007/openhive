@@ -12,6 +12,8 @@
 
 import { Icon } from "@opencode-ai/ui/icon"
 import { For, Show, createMemo, createSignal, onMount } from "solid-js"
+import type { AccountApi } from "./account-api"
+import { AccountManage } from "./account-manage"
 import { filterGovernanceSections, GOVERNANCE_SECTIONS, type GovernanceSection } from "./sections"
 
 export interface GovernanceConsoleProps {
@@ -19,6 +21,10 @@ export interface GovernanceConsoleProps {
   onClose?: () => void
   /** 当前身份被授予的能力集；省略 = 签发方未接（T003 之前），不过滤。 */
   capabilities?: ReadonlySet<string>
+  /** 账号管理接口（T005）。省略 = 账号页显示占位（还没接线）。 */
+  accountApi?: AccountApi
+  /** 当前登录账号 id：自己那行不能停用。 */
+  selfId?: string
 }
 
 export function GovernanceConsole(props: GovernanceConsoleProps) {
@@ -133,12 +139,25 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
           }
         >
           {(section) => (
-            <section class="mt-6 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-raised)]">
-              <p class="text-sm text-v2-text-text-muted">「{section().label}」页面将在后续任务接入。</p>
-            </section>
+            <Show when={props.accountApi} fallback={<占位 section={section()} />}>
+              {(api) => (
+                <Show when={section().id === "account-manage"} fallback={<占位 section={section()} />}>
+                  <AccountManage api={api()} selfId={props.selfId} />
+                </Show>
+              )}
+            </Show>
           )}
         </Show>
       </main>
     </div>
+  )
+}
+
+/** 还没接入的板块：只说明「这一页尚未接入」，不画假表格（T006–T012 各自接）。 */
+function 占位(props: { section: GovernanceSection }) {
+  return (
+    <section class="mt-6 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-raised)]">
+      <p class="text-sm text-v2-text-text-muted">「{props.section.label}」页面将在后续任务接入。</p>
+    </section>
   )
 }

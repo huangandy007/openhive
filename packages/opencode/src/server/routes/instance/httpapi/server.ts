@@ -128,6 +128,7 @@ import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
+import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
@@ -379,6 +380,15 @@ export function createRoutes(
     // 所以本模块**一个字都不用写**，也就不会漂成两份）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T020）。
     OpenhiveFile.routes.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+    // openhive 账号管理出口（010 T005）：列表 / 详情 / 录入 / 重置 / 停用 / 启用 / 批量停用（FR-004）。
+    // 沙箱根与项目出口共用同一个 `AnchorWorkspace.Config`（`provisionUser` 要在这里建目录——
+    // 两处漂了就是「账号建在 A、文件树去 B 找」）；业务 PG 与上面几项共用同一个实例
+    // （它们读同一批 `auth.user` / `auth.role_resource` 行，理由见 T015 那条）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T005）。
+    OpenhiveGovernanceAccounts.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

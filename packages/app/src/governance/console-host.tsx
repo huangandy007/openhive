@@ -9,6 +9,7 @@
  */
 
 import { Show, createEffect, type JSX } from "solid-js"
+import type { AccountApi } from "./account-api"
 import { GovernanceConsole } from "./console"
 
 export interface GovernanceConsoleHostProps {
@@ -16,6 +17,10 @@ export interface GovernanceConsoleHostProps {
   onClose?: () => void
   /** 当前身份被授予的板块 id；省略 = 不过滤（裸挂用），空集 = 一项不留。 */
   capabilities?: ReadonlySet<string>
+  /** 账号管理接口（T005）。省略 = 该页显示占位（裸挂 / 还没接线）。 */
+  accountApi?: AccountApi
+  /** 当前登录账号 id：自己那行不能停用。 */
+  selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
   children?: JSX.Element
 }
@@ -53,7 +58,12 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
         {props.children}
       </div>
       <Show when={props.open}>
-        <GovernanceConsole onClose={关闭} capabilities={props.capabilities} />
+        <GovernanceConsole
+          onClose={关闭}
+          capabilities={props.capabilities}
+          accountApi={props.accountApi}
+          selfId={props.selfId}
+        />
       </Show>
     </div>
   )

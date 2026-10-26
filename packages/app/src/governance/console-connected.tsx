@@ -13,6 +13,7 @@
 
 import { createMemo, type JSX } from "solid-js"
 import { useAuthSession } from "@/auth/session-context"
+import { createAccountApi } from "./account-api"
 import { GovernanceConsoleHost } from "./console-host"
 
 export interface GovernanceConsoleConnectedProps {
@@ -34,8 +35,20 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
    */
   const 能力 = createMemo(() => new Set(会话?.identity?.governance ?? []))
 
+  /**
+   * 账号管理接口（T005）。模块内建一次即可：它只是「把同源路径 ＋ 超时 交给 fetch」的薄壳，
+   * 无状态、无连接池。`selfId` 取身份 id——自己那行的停用按钮据此 disabled。
+   */
+  const 账号接口 = createAccountApi()
+
   return (
-    <GovernanceConsoleHost open={props.open} onClose={props.onClose} capabilities={能力()}>
+    <GovernanceConsoleHost
+      open={props.open}
+      onClose={props.onClose}
+      capabilities={能力()}
+      accountApi={账号接口}
+      selfId={会话?.identity?.id}
+    >
       {props.children}
     </GovernanceConsoleHost>
   )

@@ -66,9 +66,16 @@
 
 ## Phase 3: US2 账号 + 组织（P1）
 
-- [ ] T005 [P] [FE·新增] 实现账号管理（用户列表 + 录入 + 重置 + 停用 + 僵尸清理）[FR-004] [T003] [出参：账号管理功能可用]
+- [x] T005 [P] [FE·新增] 实现账号管理（用户列表 + 录入 + 重置 + 停用 + 僵尸清理）[FR-004] [T003] [出参：账号管理功能可用]
   - 📥 **本条是 003 的 T022（录入）/ T024（停用）的接收方**——**动手前先读文件头那笔移交**
     （录入调 `provisionUser` 不调 `registerUser` / `LastAdminError` 要有消费方 / 守卫的 TOCTOU 窗口）。
+  - ✅ 交付（2026-10-26）：后端出口 `governance-accounts.ts`（7 条路由，授权排在一切副作用之前）
+    ＋ 读面 `auth/account-admin.ts`（真库测）＋ 前端 `account-api.ts` / `account-manage.tsx`
+    （含录入抽屉、详情、重置/停用确认、批量停用、僵尸开关）＋ 4 条 story。测试实得：
+    auth 全量 **314 pass / 3 skip / 0 fail**、路由 **26 pass / 0 fail**、app 治理 **53 pass**
+    （其中 T005 新增 30 条）、app 组件全量 **1393 pass / 0 fail**；变异 M1–M8 均实得红并还原。
+  - ⚠️ **axe 红 1 格**（light，「启用」标签 `Tag variant="accent"` 3.11:1 < 4.5:1）——
+    按护栏 HALT，**未改视觉**，等设计裁定（详见 `state.md` 的缺口 ①）。
 - [ ] T006 [P] [FE·新增] 实现组织架构（org/dept/section 三级树增删改）[FR-005] [T003] [出参：组织树增删改]
 
 ## Phase 4: US3 资产治理 + US4 数据项目（P1）
