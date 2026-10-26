@@ -1,13 +1,26 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T010 已交付（审计日志检索；axe 新增 8 格全绿）。**下一项 T011**（模板库，FR-010），等用户 `next`。
+T011 已交付（模板库；axe 新增 8 格全绿）。**下一项 T012**（数据源配置，FR-011），等用户 `next`。
 待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
 ② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
 #198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
 
 ## 已完成
 
+- **T011** 模板库（FR-010 / US6）——一笔提交
+  - 迁移 `0016_template.sql` ＋ down：`auth.template`（int4 秒；五个 CHECK 与 TS 常量逐字相同；
+    **局部唯一索引 `(kind, name) WHERE status='active'`** ⇒ 停用后同名可重建）
+  - 表规则全在 `packages/auth/src/template.ts`（trim 名字/范围、正文不 trim；`23505` ⇒ 撞名；
+    编辑只动 active 行；停用幂等且第二次不刷 `updated_at`）；路由 `governance-templates.ts` 四条
+  - 审计 `template.create/update/disable`（闭集 17 条）＋ `ACTION_LABELS` 三行
+  - 前端 `template-api.ts` ＋ `template-lib.tsx` ＋ 共用 `overlay.tsx` ＋ 4 story ＋ 三层接线
+  - 测试新增 **51 条**（auth 15 / 路由 14 / 前端 7＋13＋2）；变异 M1–M7 均实得红并还原
+  - **M5 假绿已修**：停用幂等的路由用例原本只比 `updatedAt`，两次同秒 ⇒ 变异后仍绿；改为「第二个专家点、
+    比 `updatedBy`」后重放 ⇒ 两层各 1 红
+  - 门禁：typecheck 32/32；oxlint 17 文件 **13 warning / 0 error**（全属既有基线族）；`bun.lock` 0 行
+  - **axe 8 格全绿 / 0 违例 / 几何失格 0**
+  - **缺口**：停用不可逆（无启用入口）；正文自由文本无 schema；无消费者读模板；真栈未跑
 - **T010** 审计日志检索（FR-009 / US5）——两笔提交（T010a 底座＋埋点 / T010b 检索＋前端）
   - **底座** `packages/auth/src/audit.ts`：`AUDIT_RESULTS` / `AUDIT_ACTIONS` 闭集、
     `recordAuditEvent`、`listAuditEvents`（**共用筛选** ＋ `total` 分页 ＋ ILIKE 转义）；

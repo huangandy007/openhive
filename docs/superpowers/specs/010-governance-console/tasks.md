@@ -191,7 +191,53 @@
 
 ## Phase 6: US6 模板 + 数据源（P2）
 
-- [ ] T011 [FE·新增] 实现模板库（报告模板/图谱样式/报表口径）[FR-010] [T003] [出参：模板可配置]
+- [x] T011 [FE·新增] 实现模板库（报告模板/图谱样式/报表口径）[FR-010] [T003] [出参：模板可配置]
+  - 交付：
+    - **迁移**：`packages/auth/src/migrations/0016_template.sql`（`auth.template`：text id、**int4 秒**、
+      `scope`/`content` 缺省 `''`、`status` 缺省 `'active'`；五个 CHECK 与 TS 常量逐字相同——名字 1..100
+      / 范围 ≤200 / 正文 ≤20000 / kind、status 闭集；`CREATE UNIQUE INDEX template_active_name_idx
+      ON auth.template (kind, name) WHERE status = 'active'` ＋ `template_kind_updated_idx`）＋ `.down.sql`。
+    - **表规则全在** `packages/auth/src/template.ts`：`listTemplates`（只 active、`updated_at desc, name asc`、
+      `LEFT JOIN auth.user` 取更新人姓名/警号）／`createTemplate`（名字与范围**修剪**、正文不修剪；`23505`
+      → `TemplateNameTakenError`）／`updateTemplate`（`coalesce` 部分更新、`where id = … and status = 'active'`）
+      ／`disableTemplate`（幂等：`changed` 由 `returning` 行数决定）。路由与前端只翻译，一条规则都不重写（`#002-06`）。
+    - **出口**：`server/openhive/governance-templates.ts` 四条（`GET` 列表带 `?kind=`、`POST` 新建 201、
+      `POST /:id` 编辑、`POST /:id/disable` 停用），`server.ts` 注册；**授权先于读体**（`#004-09`）。
+    - **审计**：`AUDIT_ACTIONS` 增 `template.create` / `template.update` / `template.disable`（闭集 17 条）；
+      前端 `ACTION_LABELS` 同步三行。成功行记 `{kind,name}` / `{name,fields}` / `{name,changed}`，
+      4xx 记 `result: failed`，无权者由 `governance-authz` 记 `governance.denied`。
+    - **前端**：`template-api.ts`（严格逐字段解析、10s 超时、三态 outcome）＋ `template-lib.tsx`（分段控件 /
+      表格 / 抽屉 / 危险确认）＋ `overlay.tsx`（**共用的** `浮层`，DESIGN §4.11.4 几何）＋ 4 条 story ＋
+      `console*.tsx` 三处接线（未注入 ⇒ 占位）。抽屉里**没有类型选择器**：类型取自当前分段（避免两个真相）。
+  - **停用不可逆，确认框必须说出来**：v1 只有停用、无启用入口，文案写「无法恢复启用（v1 没有启用入口）」
+    ＋「停用后同名可以重新新建」——后者不写，人会以为停用把名字也占死了。
+  - 测试新增 **51 条**：`@opencode-ai/auth` `template.test.ts` 15；opencode `openhive-governance-templates.test.ts`
+    14（真 PGlite ＋ 真 app：401/403 矩阵含**系统管理员对 template-lib 无权限**这一格、授权先于读体、
+    400/409/404、kind 过滤、停用后同名可重建、连停两次幂等、三个审计动作与 failed 行、读列表不落行）；
+    app `template-api.test.ts` 7、`template-lib.test.tsx` 13、`console.test.tsx` +2。
+  - 变异（均实得红并还原）：M1 授权挪到读体之后 ⇒ **1 红**（`Expected: 403 / Received: 400`）；
+    M2 删 kind 过滤 ⇒ **auth 1 ＋ 路由 1 红**；M3 拆 `23505` 映射 ⇒ **auth 2 ＋ 路由 2 红**；
+    M4 停用改 `select`、不写状态 ⇒ **auth 3 ＋ 路由 3 红**；M6 保存成功后不刷新 ⇒ **1 红**；
+    M7 文案改回「可以重新启用」⇒ **1 红**。
+  - **M5 暴露一条假绿（`#005-47` / `#005-18`）**：去掉 `disable` 的 `and status = 'active'` 后，auth 层 1 红，
+    但**路由层 0 红**——那条用例只比 `updatedAt`，而两次调用落在**同一秒**。补硬判据：第二次由**另一个专家**
+    （新增 `EXPERT2`）点，断言 `updatedBy` 仍是第一位专家；重放 M5 ⇒ 两层各 **1 红**
+    （`Expected: "cccccccc-…" / Received: "eeeeeeee-…"`）。
+  - 门禁实得：根 `bun run typecheck` **32/32 successful**；auth `template.test.ts` **15 pass**；opencode 路由
+    **14 pass**；app `template-api.test.ts` **7 pass**、`template-lib.test.tsx` ＋ `console.test.tsx` **29 pass**；
+    oxlint 本批 **17 文件 13 warning / 0 error**——13 条全落在既有基线族（`await-thenable` 9、
+    `no-unsafe-type-assertion` 2、`no-base-to-string` 2，同族在 `org-tree.ts` / `org-tree.test.ts` 里既有），
+    本轮**新引入的 2 条**（未用 import、多余类型实参）已清掉；`git diff --stat bun.lock` **无输出**。
+  - **axe：8 格全绿、0 违例、几何 0 格失格**（`有数据/空/错误/停用确认` × light/dark；实得命令输出在提交信息里）。
+    **未动断言、未加白名单、未改 token。**
+  - **同类落点（`#002-06`，逐个查过）**：`org-tree.tsx` / `account-manage.tsx` / `ai-assets` / `project-perm`
+    各自内联的 460px 浮层仍在——本轮新增共用 `overlay.tsx` 时**没有**回头改它们（Surgical Changes），
+    文件头写明「后续迁移」；`console*.tsx` 三层注入的模式与既有四个板块一致，未改。
+  - **缺口**：① **停用不可逆**（v1 无启用入口，只能改库）；② 正文是**自由文本**、无按类型的结构化 schema
+    （消费者不存在，拒绝为没人读的字段写校验）；③ **无消费者**读取模板（报告/图谱/口径都还没有读它的代码）；
+    ④ **真栈未跑**（只有真 PGlite ＋ 真 app ＋ storybook 真 Chromium 的 axe）；⑤ 组件层首轮无红证据，
+    红由变异 M6/M7 提供；⑥ `no-base-to-string` 两处落在 `template.ts` 的 join 列（类型上是 `unknown`），
+    与邻文件同族、未新开写法。
 - [ ] T012 [INT] 实现数据源配置（注册 + connector 接口 + 血缘）[FR-011] [T003] [出参：数据源注册 + connector 接口]
 
 ## Phase 7: 收尾 + 测试（P1）
@@ -244,5 +290,5 @@
 共 **15** 条任务（T001–T015），符合 12–18 条范围。
 > 数法：T001–T014 是本 feature 原有的；**T015 是 2026-10-01 从 F3（003 的 T016）接收的移交**。
 > 复算命令：`grep -c '^- \[[x ]\] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**
-> （2026-10-26 T010 交付后：未勾 **5** ＝ T011–T015）。
+> （2026-10-26 T011 交付后：未勾 **4** ＝ T012–T015）。
 > 这个数字随拆分与移交而变（`LEARNINGS #002-06`），改了任务就回来重算一次。

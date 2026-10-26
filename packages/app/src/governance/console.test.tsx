@@ -34,6 +34,7 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           assetApi={props.assetApi}
           projectApi={props.projectApi}
           usageApi={props.usageApi}
+          templateApi={props.templateApi}
           selfId={props.selfId}
         />
       ),
@@ -237,6 +238,56 @@ describe("治理后台 · 全屏骨架", () => {
 
     expect(读次数).toBe(1)
     expect(root.querySelector('[data-slot="usage-row"][data-key="湖州市局"]')).not.toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
+  })
+
+  test("没接模板库接口 ⇒ 该页回落占位（不白屏、不画假表）", async () => {
+    const root = 挂上({ capabilities: new Set(["template-lib"]) })
+    await flush()
+
+    expect(页标题(root)).toBe("模板库")
+    expect(root.querySelector('[data-slot="template-row"]')).toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).toContain("将在后续任务接入")
+  })
+
+  test("接了模板库接口 ⇒「模板库」页真的拉列表，不是占位（T011 接线）", async () => {
+    let 读次数 = 0
+    const root = 挂上({
+      capabilities: new Set(["template-lib"]),
+      templateApi: {
+        list: async (kind) => {
+          读次数 += 1
+          return {
+            kind: "ok",
+            value: [
+              {
+                id: "t1",
+                kind: kind ?? "report",
+                name: "资金分析报告",
+                scope: "全单位",
+                content: "# 一、案情",
+                status: "active" as const,
+                createdBy: "u-甲",
+                createdAt: 1_700_000_000,
+                updatedBy: "u-甲",
+                updatedAt: 1_759_000_000,
+                updatedByName: "甲专家",
+                updatedByPoliceNo: "940001",
+              },
+            ],
+          }
+        },
+        create: async () => ({ kind: "failed", message: "不该被调用" }),
+        update: async () => ({ kind: "failed", message: "不该被调用" }),
+        disable: async () => ({ kind: "failed", message: "不该被调用" }),
+      },
+    })
+    await flush()
+    await flush()
+
+    expect(读次数).toBe(1)
+    expect(root.querySelector('[data-slot="template-row"]')).not.toBeNull()
+    expect(root.querySelector('[data-slot="template-name"]')?.textContent).toBe("资金分析报告")
     expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
   })
 

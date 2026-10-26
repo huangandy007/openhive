@@ -133,6 +133,7 @@ import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
+import { OpenhiveGovernanceTemplates } from "@/server/openhive/governance-templates"
 import { OpenhiveGovernanceUsage } from "@/server/openhive/governance-usage"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
@@ -426,6 +427,12 @@ export function createRoutes(
     // 若记进同一张表，翻页本身会让 total 一直涨，永远翻不到底（见该模块文件头）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T010b）。
     OpenhiveGovernanceAudit.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 模板库出口（010 T011）：报告模板 / 图谱样式 / 报表口径的列表 / 新建 / 编辑 / 停用（FR-010）。
+    // 板块 `template-lib` **只在业务专家手里**（系统管理员模板里没有这一行，见该模块文件头）；
+    // 表规则全在 `@opencode-ai/auth/template`，本层只做身份、授权、载荷收窄、错误翻译。
+    // 只供业务 PG。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T011）。
+    OpenhiveGovernanceTemplates.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

@@ -68,6 +68,9 @@ export const AUDIT_ACTIONS = [
   "asset.transition",
   "project.remove_member",
   "project.archive",
+  "template.create",
+  "template.update",
+  "template.disable",
   "tool.denied",
   "governance.denied",
 ] as const

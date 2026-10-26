@@ -15,6 +15,7 @@ import type { AuditApi } from "./audit-log-api"
 import { GovernanceConsole } from "./console"
 import type { OrgApi } from "./org-api"
 import type { ProjectApi } from "./project-api"
+import type { TemplateApi } from "./template-api"
 import type { UsageApi } from "./usage-cost-api"
 
 export interface GovernanceConsoleHostProps {
@@ -34,6 +35,8 @@ export interface GovernanceConsoleHostProps {
   usageApi?: UsageApi
   /** 审计日志接口（T010）。省略 = 该页显示占位。 */
   auditApi?: AuditApi
+  /** 模板库接口（T011）。省略 = 该页显示占位。 */
+  templateApi?: TemplateApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
@@ -82,6 +85,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           projectApi={props.projectApi}
           usageApi={props.usageApi}
           auditApi={props.auditApi}
+          templateApi={props.templateApi}
           selfId={props.selfId}
         />
       </Show>

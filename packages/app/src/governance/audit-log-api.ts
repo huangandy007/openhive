@@ -34,7 +34,7 @@ export const RESULT_LABELS: Record<AuditResult, string> = {
 
 /**
  * 动作的中文文案。键集合与内核 `AUDIT_ACTIONS` 逐字相同；顺序即筛选下拉的顺序
- * （按板块分组：账号 → 组织 → 资产 → 项目 → 越权）。
+ * （按板块分组：账号 → 组织 → 资产 → 项目 → 模板 → 越权）。
  *
  * 表格显示时用 `动作文案()` 回落——库里可能有一行是**旧版本**写的动作词（词表只会加不会删），
  * 未知动作原样显示比显示空白有用。
@@ -52,6 +52,9 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   "asset.transition": "资产流转",
   "project.remove_member": "移除项目成员",
   "project.archive": "归档项目",
+  "template.create": "新建模板",
+  "template.update": "编辑模板",
+  "template.disable": "停用模板",
   "tool.denied": "工具越权",
   "governance.denied": "板块越权",
 }
