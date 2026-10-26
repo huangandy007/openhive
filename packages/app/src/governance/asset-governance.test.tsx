@@ -54,7 +54,12 @@ const 样本: readonly AssetRow[] = [
 
 interface 记录 {
   readonly list: AssetQuery[]
-  readonly transition: Array<{ readonly id: string; readonly action: GovernanceAction; readonly reason?: string }>
+  readonly transition: Array<{
+    readonly id: string
+    readonly action: GovernanceAction
+    readonly reason?: string
+    readonly visibility?: "department" | "global"
+  }>
 }
 
 /** 默认替身：按 `query.status` 过滤假数据（与服务端的过滤语义一致）。 */
@@ -71,9 +76,15 @@ function 假后端(
       记录.list.push(query)
       return 应答(query)
     },
-    transition: async (id, action, reason) => {
-      记录.transition.push(reason === undefined ? { id, action } : { id, action, reason })
+    transition: async (id, action, reason, visibility) => {
+      记录.transition.push({
+        id,
+        action,
+        ...(reason === undefined ? {} : { reason }),
+        ...(visibility === undefined ? {} : { visibility }),
+      })
       const 原行 = 样本.find((row) => row.id === id) ?? 资产(id)
+      // 原实现回 `pending_tech`；假后端只被断言「记下了什么」，不改它。
       return { kind: "ok", value: { asset: { ...原行, status: "pending_tech" } } }
     },
     ...覆写,
@@ -99,6 +110,12 @@ function 按钮(selector: string): HTMLButtonElement {
 
 function 点击(selector: string) {
   按钮(selector).click()
+}
+
+function 点单选(selector: string) {
+  const 目标 = 有(selector)
+  if (!(目标 instanceof HTMLInputElement)) throw new Error(`不是单选：${selector}`)
+  目标.click()
 }
 
 function 选状态(value: string) {
@@ -240,6 +257,47 @@ describe("资产治理页 · 审核动作", () => {
     await 等到(() => 记录.transition.length === 1)
 
     expect(记录.transition[0]).toEqual({ id: "a1", action: "reject_business", reason: "规则只适用于本专案" })
+  })
+})
+
+describe("资产治理页 · 发布范围", () => {
+  test("个人资产发布：无默认范围、发布按钮禁用，选了全局才能提交并带上范围", async () => {
+    const 个人待发布 = 资产("p1", { name: "个人讲话稿", status: "pending_tech", visibility: "personal" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [个人待发布] }))
+    挂上(api)
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    expect(文章("[data-slot='asset-publish-hint']")).toContain("个人可见")
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
+    expect(有("[data-slot='asset-publish-scope-department']")).not.toBeNull()
+
+    点单选("[data-slot='asset-publish-scope-global']")
+    await 等到(() => !按钮("[data-slot='asset-confirm-submit']").disabled)
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+
+    expect(记录.transition[0]).toEqual({ id: "p1", action: "publish_tech", visibility: "global" })
+  })
+
+  test("部门资产发布：预选本部门，可直接提交", async () => {
+    const 部门待发布 = 资产("p2", { name: "部门工具", status: "pending_tech", visibility: "department" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [部门待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    const 本部门 = 有("[data-slot='asset-publish-scope-department']")
+    expect(本部门 instanceof HTMLInputElement && 本部门.checked).toBe(true)
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
+
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+    expect(记录.transition[0]).toEqual({ id: "p2", action: "publish_tech", visibility: "department" })
   })
 })
 

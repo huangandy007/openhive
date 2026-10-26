@@ -112,10 +112,12 @@ describe("资产客户端 · 流转", () => {
     const { send, calls } = 替身(() => json({ asset: 资产("a1", { status: "published" }) }))
 
     await createAssetApi(send).transition("a1", "publish_tech", undefined, "department")
+    await createAssetApi(send).transition("a1", "publish_tech", undefined, "global")
     await createAssetApi(send).transition("a1", "publish_tech")
 
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ action: "publish_tech", visibility: "department" }))
-    expect(calls[1]?.init?.body).toBe(JSON.stringify({ action: "publish_tech" }))
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ action: "publish_tech", visibility: "global" }))
+    expect(calls[2]?.init?.body).toBe(JSON.stringify({ action: "publish_tech" }))
   })
 
   test("回包缺 asset / asset 形状不对 ⇒ failed", async () => {

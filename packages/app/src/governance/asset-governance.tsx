@@ -134,6 +134,8 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [确认, 设确认] = createSignal<{ readonly row: AssetRow; readonly action: GovernanceAction }>()
   const [理由, 设理由] = createSignal("")
   const [理由错误, 设理由错误] = createSignal<string>()
+  const [发布范围, 设发布范围] = createSignal<"department" | "global">()
+  const [范围错误, 设范围错误] = createSignal<string>()
   const [动作错误, 设动作错误] = createSignal<string>()
   const [处理中, 设处理中] = createSignal(false)
 
@@ -168,6 +170,8 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设动作错误(undefined)
     设理由("")
     设理由错误(undefined)
+    设范围错误(undefined)
+    设发布范围(row.visibility === "personal" ? undefined : row.visibility)
     设确认({ row, action })
   }
 
@@ -175,6 +179,8 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设确认(undefined)
     设动作错误(undefined)
     设理由错误(undefined)
+    设范围错误(undefined)
+    设发布范围(undefined)
   }
 
   async function 提交() {
@@ -186,11 +192,22 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       设理由错误("请填写驳回理由")
       return
     }
+    const 选范围 = 是发布动作(目标.action)
+    if (选范围 && 发布范围() === undefined) {
+      设范围错误("请选择发布范围")
+      return
+    }
 
     设处理中(true)
     设动作错误(undefined)
     设理由错误(undefined)
-    const out = await props.api.transition(目标.row.id, 目标.action, 需要理由 ? 理由值 : undefined)
+    设范围错误(undefined)
+    const out = await props.api.transition(
+      目标.row.id,
+      目标.action,
+      需要理由 ? 理由值 : undefined,
+      选范围 ? 发布范围() : undefined,
+    )
     设处理中(false)
 
     if (out.kind !== "ok") {
@@ -210,6 +227,12 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   }
 
   const 需要理由 = () => 确认()?.action === "reject_business"
+  const 是发布动作 = (action: GovernanceAction) => action === "publish_tech" || action === "publish_iteration"
+  /** 发布要选范围：个人资产无默认、必须显式选；部门 / 全局预选原范围，仍可改。 */
+  const 需要选范围 = () => {
+    const 目标 = 确认()
+    return 目标 !== undefined && 是发布动作(目标.action)
+  }
   /** 确认框的标题 / 说明 / 提交按钮文案都从同一个信号派生，避免三处各读一次、时机不同。 */
   const 确认标题 = () => {
     const 目标 = 确认()
@@ -415,6 +438,54 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                 {确认说明文字()}
               </p>
 
+              <Show when={需要选范围()}>
+                <fieldset class="flex flex-col gap-2" data-slot="asset-publish-scope">
+                  <legend class="text-[12px] text-v2-text-text-muted">发布范围</legend>
+                  <Show when={确认()?.row.visibility === "personal"}>
+                    <p data-slot="asset-publish-hint" class="text-[12px] text-v2-text-text-muted">
+                      这份资产当前是个人可见，请选择发布范围
+                    </p>
+                  </Show>
+                  <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                    <input
+                      data-slot="asset-publish-scope-department"
+                      type="radio"
+                      name="asset-publish-scope"
+                      value="department"
+                      checked={发布范围() === "department"}
+                      disabled={处理中()}
+                      onChange={() => {
+                        设发布范围("department")
+                        设范围错误(undefined)
+                      }}
+                    />
+                    <span>本部门{确认()?.row.department ? `（${确认()?.row.department}）` : ""}</span>
+                  </label>
+                  <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                    <input
+                      data-slot="asset-publish-scope-global"
+                      type="radio"
+                      name="asset-publish-scope"
+                      value="global"
+                      checked={发布范围() === "global"}
+                      disabled={处理中()}
+                      onChange={() => {
+                        设发布范围("global")
+                        设范围错误(undefined)
+                      }}
+                    />
+                    <span>全局</span>
+                  </label>
+                  <Show when={范围错误()}>
+                    {(message) => (
+                      <span data-slot="asset-scope-error" role="alert" class="text-[12px] text-v2-state-fg-danger">
+                        {message()}
+                      </span>
+                    )}
+                  </Show>
+                </fieldset>
+              </Show>
+
               <Show when={需要理由()}>
                 <label class="flex flex-col gap-1">
                   <span class="text-[12px] text-v2-text-text-muted">驳回理由（必填）</span>
@@ -454,7 +525,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                 data-slot="asset-confirm-submit"
                 type="button"
                 variant={确认()?.action === "reject_business" ? "danger" : "contrast"}
-                disabled={处理中()}
+                disabled={处理中() || (需要选范围() && 发布范围() === undefined)}
                 onClick={() => void 提交()}
               >
                 {处理中() ? "处理中…" : 提交文案()}

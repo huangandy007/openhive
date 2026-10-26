@@ -93,8 +93,11 @@ export type AssetOutcome<T> =
 export interface AssetApi {
   list(query?: AssetQuery): Promise<AssetOutcome<readonly AssetRow[]>>
   /**
-   * 流转一份资产。`reason` 只在 `reject_business` 上是必填；
+   * 流转一份资产。`reason` 只在 `reject_business` 上是必填——其它动作也可以带（不是驳回专属）；
    * 发布类动作可带 `visibility`（本部门 / 全局），个人资产发布时必填。
+   *
+   * 回包里的 `notice` **只**出现在「状态已变、站内信没写进去」那条罕见路径上：有就提示用户，
+   * 但动作本身已经生效，不要当成失败。
    *
    * 刻意**不**新造 `PublishScope` 这个名字：`asset-service/storage.ts` 里已经有一个同名的
    * 存储入参类型（`{visibility, department}`），两个意思不同、不该同名。
