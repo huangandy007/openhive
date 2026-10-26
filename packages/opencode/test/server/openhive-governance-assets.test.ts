@@ -378,7 +378,9 @@ describe("T007 · 审核与发布动作", () => {
 
       const 未知 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "world" })
       expect(未知.status).toBe(400)
-      expect((yield* json(ErrorResponse, 未知)).error).toContain("未知可见范围")
+      const 未知体 = yield* json(ErrorResponse, 未知)
+      expect(未知体.error).toContain("未知可见范围")
+      expect(未知体.field).toBe("visibility")
 
       const 个人 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "personal" })
       expect(个人.status).toBe(400)
@@ -400,6 +402,35 @@ describe("T007 · 审核与发布动作", () => {
       })
       expect(越界.status).toBe(400)
       expect((yield* json(ErrorResponse, 越界)).error).toContain("不接受可见范围")
+    }),
+  )
+
+  it.live("个人资产选「本部门」但部门为空 ⇒ 409，状态与 pending 目录零副作用", () =>
+    Effect.gen(function* () {
+      const id = "asset-scope-nodep-0004"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({
+            id,
+            name: "无部门资源",
+            status: "pending_tech",
+            visibility: "personal",
+            department: "",
+            updatedAt: 1_100,
+          }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const response = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "department" })
+
+      expect(response.status).toBe(409)
+      expect((yield* json(ErrorResponse, response)).error).toContain("没有部门信息")
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("pending_tech")
+      expect(有文件(join(ASSETS_ROOT, "pending", id, "SKILL.md"))).toBe(true)
     }),
   )
 
