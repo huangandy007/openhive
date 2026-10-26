@@ -114,6 +114,11 @@ const TOOLS: readonly Tool[] = [
       type: "object",
       properties: {
         assetId: { type: "string", description: "资产 id（不是 skill 显示名）" },
+        visibility: {
+          type: "string",
+          enum: ["department", "global"],
+          description: "发布范围：department（作者所在部门）或 global；个人资产必须传",
+        },
       },
       required: ["assetId"],
       additionalProperties: false,
@@ -358,6 +363,19 @@ async function runTool(
     sourceDirectory = raw
   }
 
+  let visibility: "department" | "global" | undefined
+  const 声明范围 = args["visibility"]
+  if (声明范围 !== undefined) {
+    if (name !== "publish_skill") {
+      // 与 HTTP 出口同一条取向：不静默忽略调用方传错的参数。
+      return errorResult("invalid_arguments", `${name} 不接受 visibility（只有 publish_skill 可以选）`)
+    }
+    if (声明范围 !== "department" && 声明范围 !== "global") {
+      return errorResult("invalid_arguments", "visibility 必须是 department / global 之一")
+    }
+    visibility = 声明范围
+  }
+
   const user = await userOf(deps.db, userIdOf(meta))
   const source =
     sourceDirectory === undefined
@@ -372,6 +390,7 @@ async function runTool(
       action,
       viewer: viewerOf(user),
       ...(source === undefined ? {} : { sourceDirectory: source }),
+      ...(visibility === undefined ? {} : { visibility }),
     })
     return textResult({
       ok: true,

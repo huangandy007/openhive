@@ -662,4 +662,49 @@ describe("publish_skill", () => {
     expect(result.text).toContain("actor_not_allowed")
     expect(await statusOf(db)).toBe("pending_tech")
   })
+
+  test("个人资产带 visibility=department 可发布：元数据与目录一起变", async () => {
+    const { db, root, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech", visibility: "personal" }))
+    await mkdir(join(root, "pending", "asset_1"), { recursive: true })
+    await writeFile(join(root, "pending", "asset_1", "SKILL.md"), "# 个人稿\n")
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1", visibility: "department" }, "u2")
+
+    expect(result.isError).toBe(false)
+    const [row] = rowsOf(await db.execute(sql`select visibility from auth.asset where id = 'asset_1'`))
+    expect(row?.visibility).toBe("department")
+    // 部门目录是 `dept/`（`storage.ts:75-76,96`），不是 `department/`。
+    expect(await exists(join(root, "dept", "经侦支队", "skills", "asset_1", "SKILL.md"))).toBe(true)
+  })
+
+  test("发布范围不是 department / global ⇒ invalid_arguments", async () => {
+    const { db, client, root } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech", visibility: "personal" }))
+    await mkdir(join(root, "pending", "asset_1"), { recursive: true })
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1", visibility: "world" }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("invalid_arguments")
+  })
+
+  test("提交审核不接受发布范围：visibility 被拒而不是静默忽略", async () => {
+    const { db, sourceRoot, client } = await harness()
+    await insertAsset(db, metadata())
+    const source = await prepareSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "submit_skill_for_review",
+      { assetId: "asset_1", sourceDirectory: source, visibility: "department" },
+      "u1",
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("invalid_arguments")
+    expect(await statusOf(db)).toBe("draft")
+  })
 })
