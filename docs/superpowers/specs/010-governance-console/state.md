@@ -1,14 +1,33 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T014 已交付（两类管理员分权验收矩阵：可见面 ＋ 8×2 读矩阵 ＋ 5 板级写矩阵 ＋ 无副作用 ＋ 拒绝留痕）。
-**下一项 T015**（越权 BFLA：普通民警凭证调管理员能力被拒，FR-013 / SC-005），等用户 `next`。
+**T015 已交付**（越权 BFLA：普通民警凭证调管理员三条能力被拒 ＋ 管理员正向放行）。
+**010 的 15 条任务全部勾选**（`grep -c '^- \[ \] T0'` = 0）。**等用户指示下一步**（是否收尾/合并）。
 待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
 ② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
 #198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
 
 ## 已完成
 
+- **T015** 越权 BFLA：普通民警凭证调管理员能力被拒（FR-013 / SC-005，003 移交）——一笔提交，
+  **只加测试、生产代码零改动**
+  - 新 `packages/opencode/test/server/openhive-governance-bfla.test.ts`，6 条 `it.live` / 53 expect
+  - **身份有效用响应证明**：同一出口同一载荷，无凭证 **401** / 民警凭证 **403**（不调 `/me`，
+    避开网关池 × 治理池的 `42P05` 夹具硬约束）
+  - **三条能力各双向**：录入（403 ＋ 库 0 行 ／ 201 ＋ 库 1 行）、重置密码（403 ＋ 哈希与改密标记
+    一字不动 ／ 204 ＋ 哈希换掉 ＋ 置 1）、停用（403 ＋ 仍启用 ／ 204 ＋ 已停用）；
+    403 附判据：`application/json` ＋ 文案含「没有」
+  - **`is_admin` / `status` 直击**：有 `gov-system-admin` 全部授权行但 `is_admin=0` 的民警、
+    `status=0` 的已停用管理员——三条同样 403，目标账号前后 `toEqual`（无这组的话，删掉
+    `is_admin` 判断三条用例仍全绿，本 task 的存在理由就测不到）
+  - **拒绝留痕**：民警 ≥3 条 `governance.denied`（`detail.perm=write`），管理员 0 条
+  - 变异 M1–M5（含 M4a/b/c）：M1 4 红、M2 2 红、M3 2 红、M4a **不红**（第二层
+    `governanceBoards` 兜住，纵深防御）、M4b/M4c 各 1 红、M5 1 红；全部还原，
+    `git diff --stat packages/opencode/src packages/auth/src` 无输出
+  - 门禁：本文件 6 pass / 0 fail；14 个治理/网关文件 181 pass / 0 fail；opencode `tsgo --noEmit`
+    exit=0；根 typecheck 32/32；oxlint 0 warning / 0 error；`bun.lock` 无 diff
+  - **缺口**：只打账号板块；其余七板块共用同一道 `进()`（grep 实得唯一）但未逐板块用非管理员再打；
+    `assets` 资产级授权归 T007；真栈未跑；「停用即立即失效」仍靠凭证 TTL（既有缺口）
 - **T014** 两类管理员分权验收矩阵（SC-002 / T003）——**两笔提交**，**只加测试、生产代码零改动**
   - 新 `packages/opencode/test/server/openhive-governance-split.test.ts`（7 条 `it.live`）
     ＋ `openhive-governance-visibility.test.ts`（2 条，交付后补正拆出）
