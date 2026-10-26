@@ -126,6 +126,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
+import { OpenhiveAssets } from "@/server/openhive/assets"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
@@ -406,6 +407,11 @@ export function createRoutes(
     // `process.env.OPENHIVE_ASSETS_ROOT` 每请求读一次，与 009 的出口同一个约定。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T007）。
     OpenhiveGovernanceAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 使用面资产出口（T017）：「我能用的已发布资产」。与上面那条治理出口**不是一套**：
+    // 那条给管理员看全量、进门要板块授权；这条给普通民警，只要登录，且逐条过 009 的
+    // `canReadAsset()`（可见性规则只有那一份）。资产根不读——列表不碰磁盘。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产使用面（T017）。
+    OpenhiveAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 数据项目权限出口（010 T008）：全部项目 / 名单 / 兜底撤销成员 / 兜底归档（FR-007）。
     // 授权是治理板块的 `data-project-perm`（**不是** 005 的成员身份 `decide`——管理员按定义不是
     // 项目成员，见该模块文件头）；写动作复用 `removeMember` 与 `archiveProject`。
