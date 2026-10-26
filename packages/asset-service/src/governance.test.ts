@@ -528,6 +528,23 @@ describe("submit_skill_for_review", () => {
     expect(wrongType.isError).toBe(true)
     expect(wrongType.text).toContain("unsupported_asset_type")
   })
+
+  test("提交审核不接受发布范围：由服务层判 visibility_not_applicable（不静默忽略）", async () => {
+    const { db, sourceRoot, client } = await harness()
+    await insertAsset(db, metadata())
+    const source = await prepareSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "submit_skill_for_review",
+      { assetId: "asset_1", sourceDirectory: source, visibility: "department" },
+      "u1",
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("visibility_not_applicable")
+    expect(await statusOf(db)).toBe("draft")
+  })
 })
 
 describe("调用目录（_meta openhive/directory）", () => {
@@ -689,22 +706,5 @@ describe("publish_skill", () => {
 
     expect(result.isError).toBe(true)
     expect(result.text).toContain("invalid_arguments")
-  })
-
-  test("提交审核不接受发布范围：visibility 被拒而不是静默忽略", async () => {
-    const { db, sourceRoot, client } = await harness()
-    await insertAsset(db, metadata())
-    const source = await prepareSource(sourceRoot)
-
-    const result = await call(
-      client,
-      "submit_skill_for_review",
-      { assetId: "asset_1", sourceDirectory: source, visibility: "department" },
-      "u1",
-    )
-
-    expect(result.isError).toBe(true)
-    expect(result.text).toContain("invalid_arguments")
-    expect(await statusOf(db)).toBe("draft")
   })
 })

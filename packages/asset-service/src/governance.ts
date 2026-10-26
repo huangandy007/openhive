@@ -366,10 +366,8 @@ async function runTool(
   let visibility: "department" | "global" | undefined
   const 声明范围 = args["visibility"]
   if (声明范围 !== undefined) {
-    if (name !== "publish_skill") {
-      // 与 HTTP 出口同一条取向：不静默忽略调用方传错的参数。
-      return errorResult("invalid_arguments", `${name} 不接受 visibility（只有 publish_skill 可以选）`)
-    }
+    // 闭集在工具层校验（与 HTTP 出口同一道门）；「哪些动作能选范围」由服务层判
+    // （`withPublishScope` ⇒ `visibility_not_applicable`），此处不按工具名另立一份判定。
     if (声明范围 !== "department" && 声明范围 !== "global") {
       return errorResult("invalid_arguments", "visibility 必须是 department / global 之一")
     }
