@@ -38,6 +38,13 @@ export interface GovernanceHttpDeps {
 export interface GovernanceHttpServer {
   readonly port: number
   readonly hostname: string
+  /**
+   * 测试缝：已跑过的收尾次数（正常流完 / 消费方取消 / 异常路径各计一次）。
+   *
+   * 收尾本身没有可观察的外部效果，不给这个只读计数，「删掉收尾也全绿」就没法被发现。
+   * 生产只用来断言；调用它没有副作用。
+   */
+  closedCount(): number
   stop(): Promise<void>
 }
 
@@ -71,8 +78,11 @@ async function closeQuietly(server: Server, transport: WebStandardStreamableHTTP
  * 不能在 `handleRequest` 返回后立刻关——`response.body` 可能还是未消费的 SSE 流，
  * 提前 `close()` 会让客户端收到半截响应。这里手动泵：读到最后一块（`done`）才收尾，
  * 消费方中途取消（`cancel`）也收尾。无 body 的响应（如 202）当场收尾。
+ *
+ * 导出是为了单测两条出口（正常流完 / 中途取消）：真实请求里 SDK 的 SSE 流会**在客户端
+ * 取消之前**就已在服务端发完，HTTP 层造不出「cancel 掉还没结束的流」，只能直接测这个函数。
  */
-function closeAfterBody(response: Response, close: () => void): Response {
+export function closeAfterBody(response: Response, close: () => void): Response {
   const body = response.body
   if (body === null) {
     close()
@@ -96,33 +106,53 @@ function closeAfterBody(response: Response, close: () => void): Response {
     },
     cancel() {
       close()
-      void reader.cancel()
+      // 上游取消已经失败（对端可能早断了），这里没有可补救的动作；挂个 catch 只为
+      // 不把它变成未处理拒绝——**不吞业务错误**，业务错误走 `pull` 的 catch 传下去。
+      void reader.cancel().catch(() => {})
     },
   })
   return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers })
 }
 
-async function handleMcp(deps: GovernanceHttpDeps, request: Request): Promise<Response> {
+/**
+ * 处理一次 `/mcp` 请求。
+ *
+ * 收尾（`closeQuietly`）必须**每次请求恰好一次**：无状态形态下 server + transport 是每请求
+ * 新建的，没有别处会关它。三条出口都走同一个 `close()`：
+ * ① 响应体流完 / 消费方取消（`closeAfterBody`）；
+ * ② `connect` 或 `handleRequest` 抛出 ⇒ 收尾后**原样抛出**（不吞：Bun 回 500，调用方看得见）；
+ * ③ 无 body 的响应（如 202）当场收尾。
+ */
+async function handleMcp(deps: GovernanceHttpDeps, request: Request, onClose: () => void): Promise<Response> {
   if (request.method === "GET") {
     // 无状态模式没有可回放的事件流，SDK 要求 GET 回 405（否则客户端会卡在等 SSE）。
     return new Response(null, { status: 405, headers: { allow: "POST" } })
   }
   const server = createGovernanceServer(deps)
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-  await server.connect(transport)
-  const response = await transport.handleRequest(request)
   let closed = false
-  return closeAfterBody(response, () => {
+  const close = (): void => {
     if (closed) return
     closed = true
+    onClose()
     void closeQuietly(server, transport)
-  })
+  }
+  try {
+    await server.connect(transport)
+    const response = await transport.handleRequest(request)
+    return closeAfterBody(response, close)
+  } catch (error) {
+    // 不吞异常：这里只补上「已创建的 server + transport 要收掉」，然后把原错误抛出去。
+    close()
+    throw error
+  }
 }
 
 export function startGovernanceHttp(
   deps: GovernanceHttpDeps,
   options: { hostname?: string; port?: number } = {},
 ): GovernanceHttpServer {
+  let closed = 0
   const server = Bun.serve({
     hostname: options.hostname ?? DEFAULT_HOSTNAME,
     port: options.port ?? 0,
@@ -132,12 +162,15 @@ export function startGovernanceHttp(
       // 只是 liveness：不探 DB、不反映依赖健康度（监督器据此判断「进程还在」）。
       if (url.pathname === HEALTH_PATH) return new Response("ok")
       if (url.pathname !== MCP_PATH) return jsonError(404, { error: "not_found" })
-      return handleMcp(deps, request)
+      return handleMcp(deps, request, () => {
+        closed += 1
+      })
     },
   })
   return {
     port: server.port ?? 0,
     hostname: server.hostname ?? options.hostname ?? DEFAULT_HOSTNAME,
+    closedCount: () => closed,
     stop: () => server.stop(true),
   }
 }

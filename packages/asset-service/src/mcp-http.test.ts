@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { GOVERNANCE_TOOL_NAMES } from "./governance"
-import { DEFAULT_HOSTNAME, READY_PREFIX, readyLine, startGovernanceHttp } from "./mcp-http"
+import { closeAfterBody, DEFAULT_HOSTNAME, READY_PREFIX, readyLine, startGovernanceHttp } from "./mcp-http"
 
 /**
  * 治理 MCP 的 HTTP 传输（单进程形态）。
@@ -61,6 +61,14 @@ async function call(instance: Client, params: Record<string, unknown>): Promise<
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
+}
+
+/** 收尾发生在响应流的最后一个 microtask 之后，断言前给它一点时间（不是掩盖失败：超时仍红）。 */
+async function until(predicate: () => boolean, ms = 2000): Promise<void> {
+  const started = Date.now()
+  while (!predicate() && Date.now() - started < ms) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 describe("HTTP 传输", () => {
@@ -125,10 +133,64 @@ describe("HTTP 传输", () => {
   })
 
   test("GET /mcp 回 405（SDK 客户端靠它不卡在等 SSE），allow 头指向 POST", async () => {
-    const { connectUrl } = await start()
+    const { server, connectUrl } = await start()
     const response = await fetch(connectUrl, { headers: { accept: "text/event-stream" } })
     expect(response.status).toBe(405)
     expect(response.headers.get("allow") ?? "").toContain("POST")
+    // 根本没建 server/transport，就不该有收尾（计数为 0 也证明这条分支没走到 handleMcp 后半段）。
+    expect(server.closedCount()).toBe(0)
+  })
+
+  test("正常消费完：每个请求的 server/transport 都被收尾", async () => {
+    const { server, connectUrl } = await start()
+    const instance = await client(connectUrl)
+    try {
+      await instance.listTools()
+      const before = server.closedCount()
+      await instance.listTools()
+      await until(() => server.closedCount() > before)
+      expect(server.closedCount()).toBeGreaterThan(before)
+    } finally {
+      await instance.close()
+    }
+  })
+
+  /**
+   * 真实请求里造不出「cancel 掉还没结束的流」：SDK 的 SSE 响应在服务端就发完了，客户端
+   * cancel 时收尾早已发生（实测：cancel 前 `closedCount` 已 +1）。取消出口只能直接测
+   * `closeAfterBody`——否则这条分支永远没有用例（删掉它也没有任何红）。
+   */
+  test("closeAfterBody：流正常流完只收尾一次，中途 cancel 也收尾一次", async () => {
+    const encoder = new TextEncoder()
+
+    const doneSource = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("ok"))
+        controller.close()
+      },
+    })
+    const normalCloses: number[] = []
+    const normal = closeAfterBody(new Response(doneSource), () => normalCloses.push(1))
+    expect(await new Response(normal.body).text()).toBe("ok")
+    expect(normalCloses).toHaveLength(1)
+
+    // 不关闭的流 = SSE 长连接；消费方取消应触发收尾。
+    const openSource = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("first"))
+      },
+    })
+    let cancelCloses = 0
+    const cancelled = closeAfterBody(new Response(openSource), () => {
+      cancelCloses += 1
+    })
+    const reader = cancelled.body?.getReader()
+    expect(reader).toBeDefined()
+    if (reader === undefined) return
+    const first = await reader.read()
+    expect(first.done).toBe(false)
+    await reader.cancel()
+    expect(cancelCloses).toBe(1)
   })
 
   test("默认只绑 loopback：DEFAULT_HOSTNAME 与实际绑定一致", async () => {
