@@ -54,6 +54,11 @@ export default defineConfig({
     {
       // 真内核 ＋ 真 PG ＋ 同源前门（一个 bun 进程，见 `stack.ts`）。
       command: `bun run ${fileURLToPath(new URL("./stack.ts", import.meta.url))}`,
+      // 显式钉回 PGlite：即使外壳环境里带着 `REAL_STACK_DB=remote`（手动验收用的），
+      // E2E 也绝不能打到远端库——那些用例会建项目、改名、发布资产，不隔离就会互相污染。
+      // Playwright 会把这里的值**叠加**在 `process.env` 之上（webServerPlugin 的
+      // `{ ...process.env, ...options.env }`），所以只写这一项即可。
+      env: { REAL_STACK_DB: "pglite" },
       url: `http://127.0.0.1:${FRONT_PORT}/`,
       reuseExistingServer: false,
       timeout: 180_000,

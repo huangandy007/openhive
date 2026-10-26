@@ -67,6 +67,23 @@ STACK_READY {"kernel":4711,"front":3010}
 并把交接物写进 `%TEMP%\openhive-real-stack.json`（**固定路径，不落仓库**），内含本次的
 `kernel` 端口、`sandbox` 目录、`token`，以及给人用的 `policeNo` / `name` / `password`。
 
+### 手动验收时连远端 PostgreSQL（可选）
+
+默认的 PGlite 是**本机夹具**。想验证「数据真的落远端 PG」时，显式加 `REAL_STACK_DB=remote`：
+
+```bash
+cd packages/app
+REAL_STACK_STATE_DIR="$TEMP/openhive-dev-state" REAL_STACK_DB=remote bun e2e/real-stack/stack.ts
+```
+
+- 连接参数**不在真栈脚本里**，而是内核 cwd（`packages/opencode`）的 `.env` / `.env.local` 里的
+  `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_PASSWORD` / `PG_DATABASE`（bun 自动加载，`.env.local` 优先）；
+- 起栈时会对该库**向上迁移到最新**，并种 `020601` / `020600` 两个账号（已存在则跳过）；
+- **护栏**：库名必须以 `_dev` / `_test` 结尾，否则拒绝启动；确要连别的库才设 `REAL_STACK_ALLOW_ANY_DB=1`；
+- `STACK_READY` 里的 `db` 字段会显示实际目标（如 `8.136.21.218:35432/openhive_dev`），不含口令；
+- **只影响手动起栈**：Playwright 的 real-stack 配置会把 `REAL_STACK_DB` 显式钉回 `pglite`，
+  即使外壳环境里带着这个变量也不会打到远端库。
+
 ### 登录凭据
 
 `serve.ts` 会种一个**已启用、已改过密的普通用户**：

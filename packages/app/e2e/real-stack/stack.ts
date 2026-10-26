@@ -49,7 +49,7 @@ const appDir = path.resolve(import.meta.dir, "../..")
 const log = (line: string) => process.stdout.write(`${line}\n`)
 
 /** 起真内核，读它的 `READY {...}` 行（含真 token 与内核实际端口）。 */
-function startKernel(): Promise<{ kernel: number; token: string; sandbox: string; alice: string }> {
+function startKernel(): Promise<{ kernel: number; token: string; sandbox: string; alice: string; db: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(["bun", "run", "test/real-stack/serve.ts"], {
       cwd: opencodeDir,
@@ -122,7 +122,7 @@ writeFileSync(
   STACK_FILE,
   JSON.stringify({ ...stack, front: FRONT_PORT, stackFile: STACK_FILE }, null, 2),
 )
-log(`STACK_READY ${JSON.stringify({ kernel: stack.kernel, front: FRONT_PORT })}`)
+log(`STACK_READY ${JSON.stringify({ kernel: stack.kernel, front: FRONT_PORT, db: stack.db })}`)
 
 // 挂住等 Playwright 拆栈（`webServer` 的进程被 kill 时，`process.on("exit")` 收内核子进程）。
 await new Promise(() => {})

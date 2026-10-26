@@ -2,9 +2,9 @@
 /**
  * 006 局部前后端联调 · **真栈的提供者侧**（`fullstack-slice-testing` 步骤 1「起真栈」）。
  *
- * 这个脚本只做一件事：把**真内核**（`Server.listen`，真 TCP socket）＋**真 PG**（PGlite 经
- * TCP 暴露）＋**真 seed**（`auth.user` 一行）以**可复现**的方式拉活，然后打印一行机器可读的
- * `READY {...}` 给编排器读端口，再挂住等 SIGTERM。
+ * 这个脚本只做一件事：把**真内核**（`Server.listen`，真 TCP socket）＋**真 PG**（默认 PGlite 经
+ * TCP 暴露；`REAL_STACK_DB=remote` 时改为远端 PostgreSQL）＋**真 seed**（`auth.user` 一行）以
+ * **可复现**的方式拉活，然后打印一行机器可读的 `READY {...}` 给编排器读端口，再挂住等 SIGTERM。
  *
  * ## 为什么是「真 socket」而不是测试里那套 `HttpRouter.toWebHandler`
  *
@@ -32,6 +32,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
+import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { hashPassword } from "@opencode-ai/auth/password"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -109,10 +110,46 @@ const restorePassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_
 
 const log = (line: string) => process.stdout.write(`${line}\n`)
 
+/**
+ * 数据库模式：默认 `pglite`（E2E / 隔离验收，与今天逐字一致）；
+ * 显式 `REAL_STACK_DB=remote` 才连**远端 PostgreSQL**（手动验收用）。
+ *
+ * 为什么必须是显式开关、不能靠「检测到 PG_* 就切」：本脚本由 `stack.ts` 以
+ * `cwd=packages/opencode` spawn，bun 会自动加载该目录的 `.env` / `.env.local`——
+ * 于是 `.env.local` 里的 `PG_*` **在两种模式下都在** process.env 里。若按「有 PG_* 就用远端」，
+ * Playwright 的 real-stack 用例会整批打到远端库上（写入、改名、发布资产都不再隔离）。
+ */
+const DB_MODE = process.env.REAL_STACK_DB === "remote" ? "remote" : "pglite"
+
+/**
+ * 远端模式的安全护栏：**只允许 `_dev` / `_test` 结尾的库名**。
+ *
+ * 本脚本会跑迁移（向上）并种账号，都是写操作。`.env.local` 与生产 `.env` 共用同一套
+ * `PG_*` 变量名，一个手滑就会把真栈指到生产库上。真要连别的库，显式设
+ * `REAL_STACK_ALLOW_ANY_DB=1`——让「越过护栏」成为一个看得见的动作。
+ */
+function remoteTargetOf(env: Record<string, string | undefined>): string {
+  const missing = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"].filter((key) => !env[key])
+  if (missing.length > 0) {
+    throw new Error(
+      `REAL_STACK_DB=remote 需要 ${missing.join(", ")}；请在内核 cwd（packages/opencode）的 .env / .env.local 里配好`,
+    )
+  }
+  const database = env.PG_DATABASE!
+  if (!/_dev$|_test$/.test(database) && env.REAL_STACK_ALLOW_ANY_DB !== "1") {
+    throw new Error(`拒绝把真栈指向库 "${database}"：库名必须以 _dev 或 _test 结尾（或显式设 REAL_STACK_ALLOW_ANY_DB=1）`)
+  }
+  return `${env.PG_HOST}:${env.PG_PORT}/${database}`
+}
+
+// 护栏在任何副作用（迁移 / 种子 / 起监听）之前就判，别等库都写了才报。
+const REMOTE_TARGET = DB_MODE === "remote" ? remoteTargetOf(process.env) : undefined
+
 // 落盘态把 PGlite 的 dataDir 指到 `<状态目录>/pg`（实测过会真落盘，见 `test-support.ts` 的 JSDoc）；
-// 临时态不传 ⇒ 内存实例，与今天逐字一致。
-const pg = await startProductionDb({ dataDir: STATE_DIR ? path.join(SANDBOX, "pg") : undefined })
-await migrate(pg.db)
+// 临时态不传 ⇒ 内存实例，与今天逐字一致。远端模式不起 PGlite，也不覆盖 process.env 里的 PG_*。
+const pglite = DB_MODE === "pglite" ? await startProductionDb({ dataDir: STATE_DIR ? path.join(SANDBOX, "pg") : undefined }) : undefined
+const db = pglite?.db ?? connect(process.env)
+await migrate(db)
 // ⚠️ 两列都**必须显式种**，两处默认值都会把界面锁住：
 //
 // - `status` 必须是 **1**（启用）。这一列在 `packages/auth` 里是 `integer` 取值而非布尔：
@@ -139,7 +176,7 @@ await migrate(pg.db)
 //   给新账号发的是同一个值），于是「警号 ＋ 一行口令」就能从登录页进来。
 const PASSWORD = DEPLOYED_DEFAULT_PASSWORD
 const PASSWORD_HASH = await hashPassword(PASSWORD)
-await pg.db.execute(sql`
+await db.execute(sql`
   insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, must_change_pw, password_hash, created_at)
   values (${ALICE.id}, ${ALICE.policeNo}, ${ALICE.name}, 'x', 'x', 'x', 'x', 'x', 1, 0, ${PASSWORD_HASH}, 0)
   on conflict (id) do nothing
@@ -148,12 +185,12 @@ await pg.db.execute(sql`
 // 管理员：`is_admin = 1` ＋ `status = 1` ＋ `must_change_pw = 0`（三列都会把后台锁住，理由同 ALICE），
 // 再把人挂上已种好的 `gov-system-admin` 模板（16 行授权由 `0013_governance.sql` 提供）。
 // `on conflict do nothing` 让**落盘态重起**时不重复挂角色（PK 是 `(user_id, role_id)`）。
-await pg.db.execute(sql`
+await db.execute(sql`
   insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, must_change_pw, password_hash, created_at)
   values (${管理员.id}, ${管理员.policeNo}, ${管理员.name}, 'x', 'x', 'x', 'x', 'x', 1, 1, 0, ${PASSWORD_HASH}, 0)
   on conflict (id) do nothing
 `)
-await pg.db.execute(sql`
+await db.execute(sql`
   insert into auth.user_role (user_id, role_id) values (${管理员.id}, 'gov-system-admin')
   on conflict do nothing
 `)
@@ -197,6 +234,8 @@ log(
   `READY ${JSON.stringify({
     kernel: listener.port,
     sandbox: SANDBOX,
+    // 让消费者一眼看出这次连的是哪个库；远端目标只写 host/port/db，**不含口令**。
+    db: REMOTE_TARGET ?? "pglite",
     alice: ALICE.id,
     policeNo: ALICE.policeNo,
     name: ALICE.name,
@@ -217,8 +256,9 @@ async function stop(code: number) {
   try {
     await listener.stop()
   } catch {}
+  // 远端模式没有 PGlite 句柄；连接池随 `process.exit` 一起结束。
   try {
-    await pg.stop()
+    await pglite?.stop()
   } catch {}
   restorePassword()
   for (const [key, value] of previous) {
