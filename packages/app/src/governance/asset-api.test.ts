@@ -108,6 +108,16 @@ describe("资产客户端 · 流转", () => {
     if (out.kind === "ok") expect(out.value.notice).toBe("流转已生效，但站内信通知写入失败")
   })
 
+  test("带可见范围时体是 { action, visibility }；不带时体里没有这个键", async () => {
+    const { send, calls } = 替身(() => json({ asset: 资产("a1", { status: "published" }) }))
+
+    await createAssetApi(send).transition("a1", "publish_tech", undefined, "department")
+    await createAssetApi(send).transition("a1", "publish_tech")
+
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ action: "publish_tech", visibility: "department" }))
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ action: "publish_tech" }))
+  })
+
   test("回包缺 asset / asset 形状不对 ⇒ failed", async () => {
     for (const 坏 of [{}, { asset: null }, { asset: { ...资产("a1"), version: "1" } }, { assets: [] }]) {
       const out = await createAssetApi(替身(() => json(坏)).send).transition("a1", "publish_tech")

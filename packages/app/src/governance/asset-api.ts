@@ -93,10 +93,18 @@ export type AssetOutcome<T> =
 export interface AssetApi {
   list(query?: AssetQuery): Promise<AssetOutcome<readonly AssetRow[]>>
   /**
-   * 流转一份资产。`reason` 只在 `reject_business` 上是必填；其他动作可带说明。
-   * 回包里的 `notice` 只出现在「状态已变、站内信没写进去」那条罕见路径上。
+   * 流转一份资产。`reason` 只在 `reject_business` 上是必填；
+   * 发布类动作可带 `visibility`（本部门 / 全局），个人资产发布时必填。
+   *
+   * 刻意**不**新造 `PublishScope` 这个名字：`asset-service/storage.ts` 里已经有一个同名的
+   * 存储入参类型（`{visibility, department}`），两个意思不同、不该同名。
    */
-  transition(id: string, action: GovernanceAction, reason?: string): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
+  transition(
+    id: string,
+    action: GovernanceAction,
+    reason?: string,
+    visibility?: "department" | "global",
+  ): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
 }
 
 /** 只用到的那一小片 `fetch`（类型与 `GovernanceFetch` 逐字相同，便于注入同一个替身）。 */
@@ -241,11 +249,15 @@ export function 列表地址(query: AssetQuery = {}): string {
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
     list: (query) => 请求(send, 列表地址(query), undefined, 列表),
-    transition: (id, action, reason) =>
+    transition: (id, action, reason, visibility) =>
       请求(send, PATH.transition(id), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(reason === undefined ? { action } : { action, reason }),
+        body: JSON.stringify({
+          action,
+          ...(reason === undefined ? {} : { reason }),
+          ...(visibility === undefined ? {} : { visibility }),
+        }),
       }, 流转结果),
   }
 }
