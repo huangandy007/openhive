@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
 
 /**
@@ -29,6 +29,9 @@ import { Config } from "@/config/config"
  *   `#010-03`：只杀包装进程会留下占端口的子进程。**注意**：本机（win32）实测 `bun` 是包装器、
  *   脚本在孙进程；Linux 上的进程形态**未验证**，别把「单进程」当结论。
  * - 重启时**沿用上一次的端口**，已下发的配置就不会指向死端口。
+ * - `layer` 对**首次就绪（配置写入）有界等待**（默认 15s）：`MCP.state` 在首个请求建实例时就把
+ *   配置读走、按目录缓存后不再重读，晚写等于该实例永久缺治理工具。超时则 WARN 放行（不卡启动），
+ *   后台继续退避重试。同进程只挂载一次（两份 routes 图不会再起第二个进程）。
  *
  * ⚠️ 已知边界：子进程重启后，**已建立的实例**（`InstanceState` 里缓存的 MCP state）不会重建
  * 客户端——新会话正常，老会话要等下次实例初始化。记在 `docs/superpowers/specs/009-ai-assets/state.md`。
@@ -374,19 +377,96 @@ export function readyConfigPatch(port: number) {
 /**
  * 就绪回调：写全局配置。`updateGlobal` 写盘走 `Effect.orDie`（**defect**，错误通道是 `never`），
  * 普通 `catch` 收不到——必须 `catchCause`，否则配置目录只读（容器常见）时监督器纤维整个死掉，
- * 子进程再也不会被拉起。抽成函数是为了能用「updateGlobal 直接 die」的桩钉住这一点。
+ * 子进程再也不会被拉起。返回 `true` 表示**配置确已写入**（首次就绪等待据此放行）。
+ * 抽成函数是为了能用「updateGlobal 直接 die」的桩钉住这一点。
  */
 export function readyHandler(
   config: Pick<Config.Interface, "updateGlobal">,
   port: number,
-): Effect.Effect<void> {
+): Effect.Effect<boolean> {
   return config.updateGlobal(readyConfigPatch(port)).pipe(
     Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
+    Effect.map(() => true),
     Effect.catchCause((cause) =>
-      Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }),
+      Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }).pipe(
+        Effect.map(() => false),
+      ),
     ),
   )
 }
+
+function waitFirstReady(ready: Promise<void>, timeoutMs: number): Promise<"ready" | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs)
+    timer.unref()
+  })
+  return Promise.race([ready.then((): "ready" => "ready"), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+export interface StartupDeps {
+  readonly launch: (port: number | undefined) => Launched
+  /** 返回 `true` = 全局配置已写入；只有 `true` 才放行 `layer`。 */
+  readonly onReady: (port: number) => Effect.Effect<boolean>
+  readonly onFailure: (reason: string) => Effect.Effect<void>
+  readonly sleep: (ms: number) => Effect.Effect<void>
+  readonly startTimeoutMs: number
+  /** 首次就绪最多等多久；超时 WARN 后放行，后台继续退避重试。默认与启动超时一致。 */
+  readonly firstReadyTimeoutMs?: number
+  readonly now?: () => number
+}
+
+/**
+ * 挂载监督器，并**有界等待首次就绪（配置写入）**。
+ *
+ * 为什么必须等：`MCP.state` 在首个请求建实例时就把全局配置读走了、按目录缓存且此后不重读
+ *（`mcp/index.ts:501-505`）。若 `layer` 起完进程立刻返回，实例会在子进程就绪前建好，
+ * 该实例**永久**缺 `openhive-governance`——构造次序对 ≠ 就绪次序对。
+ *
+ * 超时（默认 15s）就 WARN 放行：子进程起不来不能把内核启动卡死，后台继续退避重试；
+ * 已经建好的实例仍会缺配置（已知缺口，重启/新实例恢复）。
+ */
+export const startSupervision = (deps: StartupDeps): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    let settle: (() => void) | undefined
+    const firstReady = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    yield* Effect.forkScoped(
+      supervise({
+        launch: deps.launch,
+        onReady: (port) =>
+          deps.onReady(port).pipe(
+            Effect.tap((written) =>
+              Effect.sync(() => {
+                if (written) settle?.()
+              }),
+            ),
+            Effect.map(() => undefined),
+          ),
+        onFailure: deps.onFailure,
+        sleep: deps.sleep,
+        startTimeoutMs: deps.startTimeoutMs,
+        ...(deps.now === undefined ? {} : { now: deps.now }),
+      }),
+    )
+
+    const timeoutMs = deps.firstReadyTimeoutMs ?? START_TIMEOUT_MS
+    const outcome = yield* Effect.promise(() => waitFirstReady(firstReady, timeoutMs))
+    if (outcome === "timeout") {
+      yield* Effect.logWarning(`治理 MCP ${timeoutMs}ms 内未就绪：内核先放行，后台继续退避重试`)
+    }
+  })
+
+/**
+ * 进程级「已挂载」标记：`createRoutes()` 每次构建都会重建层，同进程两份 routes 图
+ *（TUI worker 的 `worker.ts:42` 与 `:56`）都设了 env 就会起 2 个 MCP。
+ * 标记只认进程生命周期，**不随 scope 释放**（容器内稳态就该只有一份）。
+ * 测试不走 `layer`（`startSupervision` 不经过这里），故无跨用例污染。
+ */
+let mounted = false
 
 /** 生产层：读 env 决定起不起、把就绪端口写进全局配置。 */
 export const layer = Layer.effectDiscard(
@@ -397,24 +477,24 @@ export const layer = Layer.effectDiscard(
       yield* Effect.logWarning(`治理 MCP 未启动：${plan.reason}`)
       return
     }
+    if (mounted) return
+    mounted = true
 
     const config = yield* Config.Service
     // 全局配置目录由 `@opencode-ai/core/global` 在加载时建好；配置文件由 `updateGlobal` 自己创建。
 
-    yield* Effect.forkScoped(
-      supervise({
-        launch: (port) =>
-          spawnGovernanceMcp({
-            command: plan.command,
-            cwd: process.env[ENTRY_DIR_ENV],
-            ...(port === undefined ? {} : { port }),
-          }),
-        onReady: (port) => readyHandler(config, port),
-        onFailure: (reason) => Effect.logWarning(reason),
-        sleep: (ms) => Effect.sleep(ms),
-        startTimeoutMs: START_TIMEOUT_MS,
-      }),
-    )
+    yield* startSupervision({
+      launch: (port) =>
+        spawnGovernanceMcp({
+          command: plan.command,
+          cwd: process.env[ENTRY_DIR_ENV],
+          ...(port === undefined ? {} : { port }),
+        }),
+      onReady: (port) => readyHandler(config, port),
+      onFailure: (reason) => Effect.logWarning(reason),
+      sleep: (ms) => Effect.sleep(ms),
+      startTimeoutMs: START_TIMEOUT_MS,
+    })
   }),
 )
 

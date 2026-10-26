@@ -24,6 +24,7 @@ import {
   readyConfigPatch,
   readyHandler,
   spawnGovernanceMcp,
+  startSupervision,
   supervise,
   type Launched,
 } from "@/server/openhive/governance-mcp-supervisor"
@@ -343,6 +344,7 @@ describe("supervise", () => {
               onReady: (port) =>
                 Effect.sync(() => void readyCalls.push(port)).pipe(
                   Effect.flatMap(() => readyHandler(readOnlyConfig, port)),
+                  Effect.map(() => undefined),
                 ),
               onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
@@ -566,6 +568,85 @@ describe("spawnGovernanceMcp", () => {
       else process.env.OPENHIVE_TEST_TICKS = previous
       await fs.rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("startSupervision（首次就绪有界等待）", () => {
+  /** 假 launch：ready 延迟 `delayMs` 才兑现；`stop()` 兑现 exited 让 scope 能收尾。 */
+  const delayedLaunch = (delayMs: number, port: number) => {
+    const launches: Array<number | undefined> = []
+    const launch = (input?: number): Launched => {
+      launches.push(input)
+      let resolveExit: (() => void) | undefined
+      const exited = new Promise<void>((resolve) => {
+        resolveExit = resolve
+      })
+      const ready = new Promise<number>((resolve) => {
+        setTimeout(() => resolve(port), delayMs)
+      })
+      return { ready, exited, stop: () => resolveExit?.() }
+    }
+    return { launch, launches }
+  }
+
+  test("首次就绪前不返回：onReady（配置写入）之后 layer 才完成", async () => {
+    const { launch } = delayedLaunch(120, 4401)
+    const events: string[] = []
+    let readyAt = 0
+
+    await Effect.runPromise(
+      Effect.scoped(
+        startSupervision({
+          launch,
+          onReady: (port) =>
+            Effect.sync(() => {
+              events.push(`ready:${port}`)
+              readyAt = Date.now()
+              return true
+            }),
+          onFailure: () => Effect.void,
+          sleep: () => Effect.void,
+          startTimeoutMs: 2_000,
+          firstReadyTimeoutMs: 1_000,
+        }),
+      ),
+    )
+    // 事件顺序就是判据：没有等待时这里只会有 `layer-done`（首个请求会读到旧配置）。
+    const completedAt = Date.now()
+    events.push("layer-done")
+    expect(events).toEqual(["ready:4401", "layer-done"])
+    expect(completedAt).toBeGreaterThanOrEqual(readyAt)
+  })
+
+  test("就绪永不 resolve ⇒ 注入的短超时后仍完成（不把内核启动卡死）", async () => {
+    const started = Date.now()
+    const events: string[] = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        startSupervision({
+          launch: () => {
+            let resolveExit: (() => void) | undefined
+            const exited = new Promise<void>((resolve) => {
+              resolveExit = resolve
+            })
+            return { ready: new Promise<number>(() => {}), exited, stop: () => resolveExit?.() }
+          },
+          onReady: () =>
+            Effect.sync(() => {
+              events.push("ready")
+              return true
+            }),
+          onFailure: () => Effect.void,
+          sleep: () => Effect.void,
+          startTimeoutMs: 10_000,
+          firstReadyTimeoutMs: 60,
+        }),
+      ),
+    )
+
+    expect(events).toEqual([])
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })
 
