@@ -347,7 +347,54 @@
     路径守卫判不出来（按目录判定，不看内容）；③ `data-governance-kind` 只是钩子，**界面无视觉区分**
     （页头副标题仍是静态「配置 · 审核 · 查看」）；④ 运行时断言依赖 happy-dom 的 `inert` 属性存在性，
     不验证浏览器里真的不可聚焦（真栈未跑）；⑤ **真栈未跑**。
-- [ ] T014 [BE] 写测试：两类管理员分权（各见各的功能，互不越界）[SC-002] [T003] [出参：分权测试通过]
+- [x] T014 [BE] 写测试：两类管理员分权（各见各的功能，互不越界）[SC-002] [T003] [出参：分权测试通过]
+  - **交付** `packages/opencode/test/server/openhive-governance-split.test.ts`（**只加测试**，生产代码零改动）。
+    范围严格按本文件头部的分工：只测「两类管理员**之间**」；普通民警 vs 管理员（FR-013）归 T015。
+  - ① **可见面**：两身份 `/me` 的 `governance` 分别 `toEqual` 各自的**恰好** 6 / 3 项；再加两条
+    关系断言——**交集恰好 `["asset-governance"]`**、**并集恰好八页全集**。各板块文件只保证「这一格
+    没坏」，关系断言才能抓住「一边加一页、另一边删一页」这种两边各自看起来都对的漂移。
+  - ② **读矩阵**：8 板块 × 2 身份 = **16 个 HTTP 请求**；期望网格写成**字面量**（`#003-05`，不 import
+    生产矩阵）。附 401 自查（无凭证 ⇒ 401），防「门都不在」被读成「分权对了」。
+  - ③ **写矩阵**：五个**板级**写出口——专家撞 `POST accounts` / `POST org/nodes` / `POST data-sources`，
+    管理员撞 `POST templates` / `POST projects/:id/archive` / `POST projects/:id/members/remove`；
+    全部递**合法载荷**仍得 403（授权在解析之前，`#004-09`）。`assets` 的写是**资产级**授权（板级只有
+    read），不属板级分权，明确排除；`usage-cost` / `audit-log` 无写出口。
+  - ④ **被拒之后**：四个建行类越权写之后 `auth.user` / `auth.org_node` / `auth.data_source` /
+    `auth.template` 里**目标行数 = 0**（配正向对照行 = 1，否则「不存在」也可能是夹具没生效）；
+    五个板块 × 拒绝各留一条 `governance.denied`，`detail like '%"perm":"write"%'`（数据项目权限记
+    `admin`）——拒绝留痕不是「写了就算」，**动作要记对**。
+  - **正向对照不是装饰**：「一律 403」也会让 ③ 前三格全绿。故每个写出口在**有权的一侧**再打一次：
+    管理员建账号 / 部门 / 数据源 = 201，专家建模板 = 201，专家归档不存在项目 = **404**（门已过、
+    只是对象不在，404 ≠ 403）。
+  - 测试 **8 条**（`it.live`），48 个 `expect`。夹具：真 PG（`startProductionDb` ＋ `migrate`）＋
+    真应用（`HttpApiApp` ＋ `ConfigProvider` 注入 OPEN 环境）＋ Cookie 身份；`PG_POOL_MAX=1` 与同族
+    文件一致（PGlite socket 合并连接，第二条连接再准备同名语句撞 `42P05`，见 `pg.ts` 文件头）。
+    该参数是本 task 实测**需要**的：未设时第 4 个写请求起 `[openhive-audit] 审计写入失败` ⇒ 500。
+  - 变异（在**最终版本**文件上逐条重跑，实得红并还原）：
+    M1 种子里给业务专家加 `account-manage/read` ⇒ 可见面 1 红（交集）+ 专家读矩阵 1 红
+    （实得 `板块=account-manage` 期望 403 / 实得 **200**）；
+    M2 `authorizeGovernance` 跳过「进门要 read」⇒ 读矩阵 **2 红**（管理员 `template-lib` 403→**200**、
+    专家 `account-manage` 403→**200**；写矩阵仍绿——写权是第二跳，两层各自有效）；
+    M3 种子里删 `gov-system-admin` 的 `data-source/write` ⇒ 正向对照 1 红（期望 201 / 实得 **403**）
+    ＋ 依赖它的「正面对照行 = 1」1 红（实得 **0**）；
+    M4 `进()` 不记 `governance.denied` ⇒ 审计留痕 1 红（`有留痕` 实得 **false**）；
+    M5 拆掉 accounts create 的写门 ⇒ 写矩阵 1 红（403→**201**）＋ 无副作用 1 红（**0→1**）＋
+    审计留痕 1 红（**3 红**）。
+  - 门禁实得：本文件 **8 pass / 0 fail**；12 个治理/网关文件一起跑 **174 pass / 0 fail**（57s）；
+    `packages/opencode` 直跑 `tsgo --noEmit` **exit=0**；根 `bun run typecheck` **32/32 successful**；
+    oxlint 本文件 **0 warning / 0 error**（首轮 3 warning 已修：`as` 断言改 Schema 解码、
+    去掉两处多余的 `!`）；`git diff --stat bun.lock` **无输出**。
+  - **同类落点（`#002-06`，逐个查过）**：① `grep -c EXPERT` 在账号测试与审计日志测试里各 **0**——
+    这两格此前**从未**用业务专家身份打过，本文件补上；② `governance.denied` 的生产写入点**唯一**
+    （`governance-authz.ts`）；③ `governanceBoards(` 的调用点只有 session / `authorizeGovernance` /
+    gateway 三处，同一投影；④ 板级门共 **17 处**（`有权(…, "read"|"write"|"admin")`），矩阵每板块
+    取一条代表写出口，其余写出口由各板块文件自己的用例覆盖（未重复造）。
+  - **缺口**：① 写矩阵每板块只取**一条代表**写出口，账号的 password / disable / enable / batch-disable、
+    组织的 rename / delete / import、模板的 edit / disable、数据源的 update / 血缘**没有**在矩阵里
+    再打一遍（各板块文件有）；② `assets` 的资产级授权（review/admin 投影、作者动作 400）属 T007，
+    不在此文件；③ 不含 FR-013（T015）；④ **真栈未跑**；⑤ 12 文件并行跑时观察到既有的
+    `[openhive-audit] 审计写入失败` warn（**0 fail**，本文件单独跑无；属多文件同进程的 PGlite 争用，
+    非本 task 引入）。
 - [ ] T015 [BE] 写测试：**越权（BFLA）——普通民警凭证调管理员能力被拒**（**003 移交**，2026-10-01）
   [FR-013][SC-005]（**FR-013 / SC-005 是本 task 落地时补进 spec.md 的**——原文没有这条要求，
   只有 FR-001「仅管理员可见」，那是**入口**不是**门禁**。任务要有 spec 撑着，故一并补上）
@@ -394,5 +441,5 @@
 共 **15** 条任务（T001–T015），符合 12–18 条范围。
 > 数法：T001–T014 是本 feature 原有的；**T015 是 2026-10-01 从 F3（003 的 T016）接收的移交**。
 > 复算命令：`grep -c '^- \[[x ]\] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**
-> （2026-10-26 T013 交付后：未勾 **2** ＝ T014–T015）。
+> （2026-10-26 T014 交付后：未勾 **1** ＝ T015）。
 > 这个数字随拆分与移交而变（`LEARNINGS #002-06`），改了任务就回来重算一次。
