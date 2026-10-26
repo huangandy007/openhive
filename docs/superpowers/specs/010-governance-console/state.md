@@ -3,9 +3,21 @@
 ## 当前任务
 **T015 已交付**（越权 BFLA：普通民警凭证调管理员三条能力被拒 ＋ 管理员正向放行）。
 **010 的 15 条任务全部勾选**（`grep -c '^- \[ \] T0'` = 0）。**等用户指示下一步**（是否收尾/合并）。
-待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
-② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
-#198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
+### 收尾补测（2026-10-26）
+
+① ~~T005 的 axe 1 格红~~ **已修（2026-10-26）**：复测 axe 原文是 **3.18:1**
+（`#ffffff` 压品牌金 `#D97706`，11px/常规），不是此前记的 3.11；根因是 accent 标签把
+`--v2-text-text-contrast`（语义＝深色对比面上的浅色字）用在了亮底上。改 `badge-v2.css`
+一处配对为 `--v2-text-text-base` 后，`App/OpenHive/Governance` 全部 32 story × 明暗 2 主题
+**64 格全绿、0 条违例**（`node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/Governance"` exit=0）；
+变异（拆回原 token）立刻回到 3.18:1，实证是用例在红、不是断言放宽。
+
+待裁定（不属于某个进行中 task）：② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、
+`--v2-state-fg-success` #198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；
+本轮按 A 案在本页绕开，token 本身未动。
+③ 另发现一处**疑似同类**（不在 010 范围、未动）：`packages/app/src/project/file-tree.tsx` 的
+`<mark class="bg-transparent text-v2-text-text-contrast">` —— 透明底 ＋ near-white 字，浅色主题下
+搜索命中文字可能不可见；无 CSS 配对、无测试守着（`file-tree.test.tsx` 只断言文案）。
 
 ## 已完成
 
@@ -523,4 +535,4 @@
 （无）
 
 ## 最后更新
-2026-10-26（T008 交付）
+2026-10-26（收尾：真栈联调 S1 ＋ axe 全绿 ＋ e2e 收集范围修正）
