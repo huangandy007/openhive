@@ -9,7 +9,17 @@ const reuse = !process.env.CI
 const workers = Number(process.env.PLAYWRIGHT_WORKERS ?? (process.env.CI ? 5 : 0)) || undefined
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: process.env.OPENCODE_PERFORMANCE === "1" ? "performance/**/*.test.ts" : "performance/**",
+  /**
+   * `real-stack/**` 必须挡在外面（2026-10-26 实测）：那 40 个 spec 读的是
+   * `tmpdir()/openhive-real-stack.json`，要求**真内核 ＋ 真 PG** 已经在 `3010` 上；
+   * 而本份配置的 `webServer` 只起一个**空 Vite**（后端由各 spec 自己 mock 掉）。
+   * 混在一起时 `bun run test:e2e` 会把它们一并收集（改动前：226 条里 115 条属真栈，
+   * 都会红）——真栈有自己的配置：`e2e/real-stack/playwright.config.ts`。
+   */
+  testIgnore: [
+    process.env.OPENCODE_PERFORMANCE === "1" ? "performance/**/*.test.ts" : "performance/**",
+    "real-stack/**",
+  ],
   outputDir: "./e2e/test-results",
   timeout: 60_000,
   expect: {
