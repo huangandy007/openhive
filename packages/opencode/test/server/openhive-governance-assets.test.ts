@@ -330,6 +330,79 @@ describe("T007 · 审核与发布动作", () => {
     }),
   )
 
+  it.live("个人资产发布时带可见范围 ⇒ 200；库、文件、审计一起落地", () =>
+    Effect.gen(function* () {
+      const id = "asset-personal-scope-0001"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({ id, name: "个人讲话稿", status: "pending_tech", visibility: "personal", updatedAt: 1_100 }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const response = yield* post(ADMIN, transitionUrl(id), {
+        action: "publish_tech",
+        visibility: "department",
+      })
+
+      expect(response.status).toBe(200)
+      expect((yield* json(TransitionResponse, response)).asset.visibility).toBe("department")
+      // 部门目录是 `dept/`（`storage.ts:96`）。
+      expect(有文件(join(ASSETS_ROOT, "dept", "基座部门", "skills", id, "SKILL.md"))).toBe(true)
+      expect(有文件(join(ASSETS_ROOT, "pending", id))).toBe(false)
+
+      // `detail` 是 text 列（0015 迁移），不是 jsonb：先在 SQL 里转 jsonb 取键，顺序无关。
+      const [审计] = rowsOf(
+        yield* Effect.promise(() =>
+          db.execute(
+            sql`select detail::jsonb->>'visibility' as visibility from auth.audit_event where target_id = ${id} order by id desc limit 1`,
+          ),
+        ),
+      )
+      expect(审计?.["visibility"]).toBe("department")
+    }),
+  )
+
+  it.live("发布范围参数不合法 ⇒ 400；个人资产不带范围仍 409", () =>
+    Effect.gen(function* () {
+      const id = "asset-personal-scope-0002"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      yield* Effect.promise(() =>
+        insertAsset(db, 资产({ id, name: "个人讲话稿二", status: "pending_tech", visibility: "personal", updatedAt: 1_100 })),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const 未知 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "world" })
+      expect(未知.status).toBe(400)
+      expect((yield* json(ErrorResponse, 未知)).error).toContain("未知可见范围")
+
+      const 个人 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "personal" })
+      expect(个人.status).toBe(400)
+      expect((yield* json(ErrorResponse, 个人)).error).toContain("部门或全局")
+
+      const 缺省 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech" })
+      expect(缺省.status).toBe(409)
+
+      // 非发布动作带范围：服务层拒绝，出口翻 400。
+      // 用**本用例自建**的资产，不借共享夹具（`IDS.review` 会被别的用例改成 pending_tech，
+      // 那时先撞 `invalid_source`）。
+      const 越界ID = "asset-scope-out-0003"
+      yield* Effect.promise(() =>
+        insertAsset(db, 资产({ id: 越界ID, name: "越界参数", status: "in_review", updatedAt: 1_100 })),
+      )
+      const 越界 = yield* post(EXPERT, transitionUrl(越界ID), {
+        action: "approve_business",
+        visibility: "global",
+      })
+      expect(越界.status).toBe(400)
+      expect((yield* json(ErrorResponse, 越界)).error).toContain("不接受可见范围")
+    }),
+  )
+
   it.live("个人可见范围的资产发布 ⇒ 409（不是 500），库里状态与 pending 目录零副作用", () =>
     Effect.gen(function* () {
       const id = "asset-personal-0001"

@@ -221,6 +221,18 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "reason 必须是字符串", undefined, { transition: 动 })
     }
 
+    // 可见范围闭集在出口收窄：客户端传的词是否合法不归库的 CHECK 管（与 list 的 status 同理）。
+    const visibility = body["visibility"]
+    if (visibility !== undefined) {
+      if (visibility === "personal") {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "发布范围必须是部门或全局", "visibility")
+      }
+      if (visibility !== "department" && visibility !== "global") {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `未知可见范围：${JSON.stringify(visibility)}`, "visibility")
+      }
+    }
+    const 范围 = visibility === "department" || visibility === "global" ? visibility : undefined
+
     const params = yield* HttpRouter.params
     const assetId = params.id ?? ""
     const base = { action: "asset.transition", targetType: "asset", targetId: assetId } as const
@@ -256,6 +268,7 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
             viewer,
             grants,
             ...(reason === undefined ? {} : { reason }),
+            ...(范围 === undefined ? {} : { visibility: 范围 }),
           }),
         catch: (error) => error,
       }),
@@ -264,7 +277,11 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       yield* 记账.记(deps, userId, {
         ...base,
         result: "ok",
-        detail: { transition: 动, ...(reason === undefined ? {} : { reason }) },
+        detail: {
+          transition: 动,
+          ...(reason === undefined ? {} : { reason }),
+          ...(范围 === undefined ? {} : { visibility: 范围 }),
+        },
       })
       return ok({ asset: result.success })
     }
@@ -339,9 +356,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 把领域错误翻成状态码 ＋ 给人看的一句话；认不出的继续炸（500），不吞。
  *
- * 409 覆盖四种「状态 / 配置 / 文件不允许」：`invalid_source`（当前状态不能做这个动作）、
- * `concurrent_transition`（别人先改了）、源目录缺失（文件与库不一致，需要人看一眼），
- * 以及 `personal_asset_not_shared`（个人资产没有共享发布目录，先把可见范围改成部门 / 全局）。
+ * 409 覆盖五种「状态 / 配置 / 文件不允许」：`invalid_source`（当前状态不能做这个动作）、
+ * `concurrent_transition`（别人先改了）、源目录缺失（文件与库不一致，需要人看一眼）、
+ * `personal_asset_not_shared`（个人资产没有共享发布目录，先把可见范围改成部门 / 全局），
+ * 以及 `department_missing`（资产没有部门却选了本部门，只能发布为全局或先补部门）。
  */
 export function 映射错误(
   error: unknown,
@@ -356,11 +374,13 @@ export function 映射错误(
         return { status: BAD_REQUEST, message: error.message, field: "reason" }
       case "unknown_action":
       case "unsupported_asset_type":
+      case "visibility_not_applicable":
         return { status: BAD_REQUEST, message: error.message }
       case "invalid_source":
       case "concurrent_transition":
       case "source_directory_required":
       case "personal_asset_not_shared":
+      case "department_missing":
         return { status: CONFLICT, message: error.message }
     }
   }
