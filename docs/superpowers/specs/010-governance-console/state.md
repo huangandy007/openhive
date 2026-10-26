@@ -1,11 +1,56 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T008 已交付（axe 新增 8 格全绿）。**下一项 T009**（用量 / 成本看板，FR-008；读接口接 T004 的
-`analytics.report`），等用户 `next`。
+T009 已交付（axe 新增 8 格全绿）。**下一项 T010**（审计日志检索，FR-009；依赖 T003），等用户 `next`。
 T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 
 ## 已完成
+
+- **T009** 用量 / 成本看板（FR-008 / US5）
+  - 后端新增 `packages/opencode/src/server/openhive/governance-usage.ts`，一条只读出口：
+    `GET /openhive/governance/usage-cost?from=&to=&groupBy=org|model|user`。板块 `usage-cost`，
+    只授**系统管理员** `read`（业务专家在 `auth/src/governance.ts` 没有这一格）；授权排在
+    参数解析之前（`#004-09`，未授权者递 `from=abc` 拿 403 而不是 400）
+  - `packages/opencode/src/governance/analytics.ts` 的 `GroupBy` 增 `"user"`（键 `user_id`）——纯增量，
+    分组 SQL 不抄第二份；姓名由出口用 `usersByIds` 翻（分析库仍不依赖 auth）
+  - **抽取先于报表**：`analytics.ts` 的 `report` docstring 把次序交给调用方，所以出口固定
+    `extractAll → report`；反过来会让首次打开永远空、第二次突然有数。v1 无调度器，每次读都同步
+    抽一遍（幂等靠主键 ＋ 游标）
+  - **两个「根」没有混用**（实测确认）：`AnchorWorkspace.Config.root` 是**沙箱根**
+    （`OPENHIVE_WORKSPACE_ROOT`），分析库与每用户 SQLite 的根是 `dataRoot(process.env)`
+    （`OPENHIVE_DATA_ROOT`）。出口因此**不取** `AnchorWorkspace`；混用会让所有用户「缺库」⇒
+    `collected:false` 且**不报错**（该模块文件头写明了这个坑）
+  - 判定：窗口左闭右开 `[from,to)`；缺省近 30 天、按单位；`collected:false` ⇒ 卡片与水位显示「—」
+    并说明原因（不是 0）；`user` 标签「姓名（警号）」，账号被清理回落 `已注销用户（前 8 位）`
+    （历史成本不抹、行不隐藏）；停用账号仍参与抽取（成本已经付过，没有新事件只是因为没新会话）
+  - 前端新增 `governance/usage-cost-api.ts`（严格解析 ＋ 401/403/400/5xx/网络五路 outcome）与
+    `governance/usage-cost.tsx`（7/30/90 天 × 单位/模型/人员，切换即重拉，窗口在 await **之前**
+    算好 ＋ 代次守卫 `#008-03`）；4 条 story（有数据 / 窗口内无记录 / 尚未抽取 / 错误）；
+    `console.tsx` / `console-host.tsx` / `console-connected.tsx` 接线（未注入 ⇒ 回落占位）
+  - 测试新增 **30 条**：`opencode/test/server/openhive-governance-usage.test.ts` 12（真 PGlite ＋ 假源库；
+    身份矩阵、抽取先于报表、幂等、窗口边界、三种分组、已注销回落、空数据根、缺省窗口、400 族）、
+    `app/src/governance/usage-cost-api.test.ts` 8、`usage-cost.test.tsx` 8、
+    `console.test.tsx` +2（接线 / 回落占位）
+  - 后端变异 B1–B5（均实得红并还原）：① 拆授权闸门 ⇒ **2 红**；② 只报表不抽取 ⇒ **5 红**；
+    ③ 窗口右端取闭（`to+1`）⇒ **6 红**；④ 不做姓名翻译 ⇒ **1 红**；⑤ `KEY_OF.user` 读 org ⇒ **1 红**
+  - 前端变异 F1–F4（均实得红并还原）：① `collected:false` 照画 0 ⇒ **1 红**；② 拆代次守卫 ⇒ **1 红**；
+    ③ 切分组不重拉 ⇒ **2 红**；④ 去掉金额格式化 ⇒ **1 红**
+  - 门禁实得：opencode `analytics+usage` **27 pass / 0 fail**；app 治理 **143 pass / 0 fail**（14 文件）；
+    `test:components` 全量 **1443 pass / 0 fail**；根 `bun run typecheck` **32/32 successful**；
+    oxlint（本轮新前端文件＋改动文件）**0 warning / 0 error**；`git diff --stat bun.lock` **无输出**
+  - **axe 实得（两轮，据实记）**：首轮 4 条 story × 浅/深 = 8 格中 **4 格红**（全是 dark，
+    `serious · color-contrast`），落在我新加的工具条选中钮——我照 `console.tsx` 导航项用了
+    `accent-soft`，**违反 T006 已定的规矩**（`org-tree.tsx` 文件头：浅金底实测 1.07–1.99:1），
+    等于自己造了一个已知缺陷的新落点。改成 T006 的方案（中性 `layer-02` 底 ＋ 金色**描边**）后
+    复跑 ⇒ **8 ✅ / 0 ❌、0 违例、几何 0 格**；**未动断言、未加白名单、未改 token**。
+    已知红仍是 T005「有数据 [light]」3 个 accent 标签（3.11:1），按护栏维持 HALT
+  - **缺口**：① **无调度器** ⇒ 每次读同步抽取，占事件循环；并发 GET 各自抽一遍（幂等但重复做功）；
+    ② 单个用户源库读穿（文件损坏 / 非 SQLite）会让整个请求 500——`extractAll` 只对「缺库」容错，
+    没有逐用户隔离；③ `org` 是**抽取时快照**，组织调整不追溯历史（T004 既有口径）；
+    ④ 治理壳 `console.tsx` 仍无 story（同 T005–T008）；⑤ **真栈未跑**（同 009 的 `openai@6.39.1`
+    缺口）；⑥ `packages/app` 的 `test:unit` 仍是那 **27 fail**（既有 `jsxDEV` 预载问题 ＋
+    project-data 两条，与 T009 无关）
+
 
 - **T008** 数据项目权限（FR-007 / US4）
   - 后端新增 `packages/opencode/src/server/openhive/governance-projects.ts`，四条出口：

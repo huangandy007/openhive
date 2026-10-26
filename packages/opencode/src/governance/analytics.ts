@@ -276,7 +276,11 @@ export function extractAll(input: ExtractAllInput): ExtractAllResult {
   return { scanned, inserted, skipped, missing }
 }
 
-export type GroupBy = "org" | "model"
+/**
+ * 分组维度。`user` 是 T009 加的（FR-008 的「**谁**调了多少」）——纯增量：键是 `user_id`，
+ * 姓名由调用方翻（分析库不依赖 auth，见文件头「组织口径」）。
+ */
+export type GroupBy = "org" | "model" | "user"
 
 export interface ReportInput {
   readonly analytics: Database
@@ -312,6 +316,7 @@ export interface Report {
 const KEY_OF: Record<GroupBy, string> = {
   org: "coalesce(nullif(org, ''), '未标注')",
   model: "coalesce(nullif(model_id, ''), '未知模型')",
+  user: "coalesce(nullif(user_id, ''), '未知用户')",
 }
 
 /**

@@ -21,6 +21,8 @@ import type { OrgApi } from "./org-api"
 import { OrgTree } from "./org-tree"
 import type { ProjectApi } from "./project-api"
 import { filterGovernanceSections, GOVERNANCE_SECTIONS, type GovernanceSection } from "./sections"
+import type { UsageApi } from "./usage-cost-api"
+import { UsageCost } from "./usage-cost"
 
 export interface GovernanceConsoleProps {
   /** 「返回工作台」。省略 = 只关覆盖层的空操作（测试/裸挂用）。 */
@@ -35,6 +37,8 @@ export interface GovernanceConsoleProps {
   assetApi?: AssetApi
   /** 数据项目权限接口（T008）。省略 = 数据项目页显示占位（还没接线）。 */
   projectApi?: ProjectApi
+  /** 用量/成本看板接口（T009）。省略 = 用量页显示占位（还没接线）。 */
+  usageApi?: UsageApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
 }
@@ -157,6 +161,7 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
               orgApi={props.orgApi}
               assetApi={props.assetApi}
               projectApi={props.projectApi}
+              usageApi={props.usageApi}
               selfId={props.selfId}
             />
           )}
@@ -170,7 +175,7 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
  * 按板块 id 挑真实内容；没接线或还没接入的板块一律落到占位。
  *
  * 每页的接口是**独立可省略**的：T005 接了账号、T006 接了组织、T007 接了 AI 资产、
- * T008 接了数据项目权限，其余四页仍占位——一处没接线不该把已经接好的页也藏起来。
+ * T008 接了数据项目权限、T009 接了用量看板，其余三页仍占位——一处没接线不该把已经接好的页也藏起来。
  */
 function 页面(props: {
   section: GovernanceSection
@@ -178,6 +183,7 @@ function 页面(props: {
   orgApi?: OrgApi
   assetApi?: AssetApi
   projectApi?: ProjectApi
+  usageApi?: UsageApi
   selfId?: string
 }) {
   return (
@@ -200,6 +206,11 @@ function 页面(props: {
       <Match when={props.section.id === "data-project-perm"}>
         <Show when={props.projectApi} fallback={<占位 section={props.section} />}>
           {(api) => <DataProjectPerm api={api()} />}
+        </Show>
+      </Match>
+      <Match when={props.section.id === "usage-cost"}>
+        <Show when={props.usageApi} fallback={<占位 section={props.section} />}>
+          {(api) => <UsageCost api={api()} />}
         </Show>
       </Match>
     </Switch>

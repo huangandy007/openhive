@@ -33,6 +33,7 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           orgApi={props.orgApi}
           assetApi={props.assetApi}
           projectApi={props.projectApi}
+          usageApi={props.usageApi}
           selfId={props.selfId}
         />
       ),
@@ -202,6 +203,52 @@ describe("治理后台 · 全屏骨架", () => {
 
     expect(页标题(root)).toBe("数据项目权限")
     expect(root.querySelector('[data-slot="project-row"]')).toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).toContain("将在后续任务接入")
+  })
+
+  test("接了用量接口 ⇒「用量成本」页是真的看板，不是占位（T009 接线）", async () => {
+    let 读次数 = 0
+    const root = 挂上({
+      usageApi: {
+        report: async () => {
+          读次数 += 1
+          return {
+            kind: "ok",
+            value: {
+              collected: true,
+              watermark: 1_759_000_000_000,
+              from: 1_758_700_000_000,
+              to: 1_759_000_000_000,
+              groupBy: "org",
+              metrics: { calls: 1234, totalTokens: 5678, estimatedCost: 12.34, activeOrgs: 3 },
+              rows: [
+                { key: "湖州市局", label: "湖州市局", calls: 1234, inputTokens: 3200, outputTokens: 1500, cost: 12.34 },
+              ],
+            },
+          }
+        },
+      },
+    })
+    await flush()
+
+    root.querySelector<HTMLButtonElement>('[data-slot="governance-nav"] button[data-section="usage-cost"]')!.click()
+    await flush()
+    await flush()
+
+    expect(读次数).toBe(1)
+    expect(root.querySelector('[data-slot="usage-row"][data-key="湖州市局"]')).not.toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
+  })
+
+  test("没接用量接口 ⇒ 该页回落占位（不白屏、不画假数）", async () => {
+    const root = 挂上()
+    await flush()
+
+    root.querySelector<HTMLButtonElement>('[data-slot="governance-nav"] button[data-section="usage-cost"]')!.click()
+    await flush()
+
+    expect(页标题(root)).toBe("用量成本")
+    expect(root.querySelector('[data-slot="usage-row"]')).toBeNull()
     expect(root.querySelector('[data-slot="governance-content"]')?.textContent).toContain("将在后续任务接入")
   })
 

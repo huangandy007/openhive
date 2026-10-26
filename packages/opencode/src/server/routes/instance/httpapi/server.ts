@@ -132,6 +132,7 @@ import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-account
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
+import { OpenhiveGovernanceUsage } from "@/server/openhive/governance-usage"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
@@ -413,6 +414,12 @@ export function createRoutes(
       Layer.provide(OpenhiveArchive.MinioConfig.layer),
       Layer.provide(OpenhivePg.layer),
     ),
+    // openhive 用量/成本看板出口（010 T009）：一条只读报表（FR-008）。
+    // 数据来自 T004 的分析库；本模块**不取** `AnchorWorkspace.Config`——分析库与每用户 SQLite
+    // 的根是 `OPENHIVE_DATA_ROOT`，不是沙箱根（混用会让抽取永远「缺库」且不报错，见该模块文件头）。
+    // 只供业务 PG（授权查询 ＋ `auth.user` 名册）；分析库句柄按请求开关，不进层。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T009）。
+    OpenhiveGovernanceUsage.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

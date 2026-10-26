@@ -112,7 +112,30 @@
 
 ## Phase 5: US5 用量 + 审计（P2）
 
-- [ ] T009 [FE·新增] 实现用量/成本看板（谁调了多少模型/token/成本分摊）[FR-008] [T004] [出参：看板展示用量]
+- [x] T009 [P] [FE·新增] 实现用量/成本看板（谁调了多少模型/token/成本分摊）[FR-008] [T004] [出参：看板展示用量]
+  - 交付：内核一条只读出口（`governance-usage.ts`：`GET /openhive/governance/usage-cost?from=&to=&groupBy=`）
+    ＋ T004 的 `GroupBy` 增 `"user"`（纯增量：键是 `user_id`，姓名由出口翻）＋ 前端
+    `usage-cost-api.ts` / `usage-cost.tsx` ＋ 4 条 story；接线 `console.tsx` / `console-host.tsx` /
+    `console-connected.tsx`。
+  - **抽取先于报表**（T004 `report` 的 docstring 把次序交给调用方）：每次读都 `extractAll → report`，
+    幂等靠主键 ＋ 游标；v1 无调度器，同步 SQLite 扫增量占事件循环，记入缺口。
+  - **两个「根」没有混用**（实测过）：抽取按 `dataRoot(process.env)`（`OPENHIVE_DATA_ROOT`）拼
+    `{userId}/opencode.db`，**不是** `AnchorWorkspace.Config.root`（沙箱根）——混用会让所有用户
+    都「缺库」⇒ `collected:false` 且不报错。出口因此不取 `AnchorWorkspace`。
+  - 判定：`collected:false` ⇒ 四张卡片与水位全显示「—」并说明原因（不是 0）；窗口左闭右开；
+    分组 `org`/`model`/`user`，`user` 标签「姓名（警号）」，账号已清理回落 `已注销用户（前 8 位）`
+    （历史成本不抹掉，行不隐藏）；停用账号仍参与抽取（成本已经付过）。
+  - 测试新增 30 条（后端 12 / usage-cost-api 8 / 组件 8 / console 接线 2）。
+    变异 B1 拆授权闸门 ⇒ 2 红；B2 不抽取只报表 ⇒ 5 红；B3 窗口右端取闭（`to+1`）⇒ 6 红；
+    B4 不做姓名翻译 ⇒ 1 红；B5 `KEY_OF.user` 读 org ⇒ 1 红；F1 `collected:false` 画 0 ⇒ 1 红；
+    F2 拆代次守卫 ⇒ 1 红；F3 切分组不重拉 ⇒ 2 红；F4 去掉金额格式化 ⇒ 1 红。全部还原。
+  - 门禁：opencode `analytics+usage` 27 pass、app 治理 143 pass（14 文件）、`test:components` 全量
+    1443 pass、根 typecheck 32/32、oxlint 本批 0 warning；`bun.lock` **0 行**。
+  - **axe 首轮 8 格中 4 格红**（4 条 story 的 dark 格，`serious · color-contrast`），落点是工具条
+    选中钮——我照 `console.tsx` 的导航项用了 `accent-soft`，**违反 T006 已定的规矩**
+    （`org-tree.tsx` 文件头：浅金底实测 1.07–1.99:1）。改为 T006 的方案（中性 `layer-02` 底 ＋
+    金色描边）后**复跑 8 格全绿、0 违例**；未动断言、未加白名单、未改 token。
+    已知红仍是 T005「有数据 [light]」3 个 accent 标签（等视觉裁定）。
 - [ ] T010 [FE·新增] 实现审计日志检索（谁/何时/调了什么，含越权记录）[FR-009] [T003] [出参：审计检索可用]
 
 ## Phase 6: US6 模板 + 数据源（P2）
