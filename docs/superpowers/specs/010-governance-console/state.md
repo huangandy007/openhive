@@ -1,9 +1,40 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T003 已交付。**下一项 T004**（分析库：event 表增量抽取 → 用量/成本），等用户 `next`。
+T004 已交付。**下一项 T005**（账号管理），等用户 `next`。
 
 ## 已完成
+
+- **T004** 分析库（FR-008；event 表增量抽取 → 用量/成本）
+  - 新增 `packages/opencode/src/governance/analytics.ts`（约 420 行）：
+    `analyticsPath(env)`（`OPENHIVE_ANALYTICS_DB` 优先，默认 `{OPENHIVE_DATA_ROOT}/analytics.db`）、
+    `open(path)`（自建最小 schema，不跑 opencode 全量迁移）、`extractUser` / `extractAll`、
+    `report`
+  - 事实表 `usage_fact` 一行 = 一个 `step.ended`，主键 `(user_id, event_id)`；
+    `INSERT OR IGNORE` 保幂等；游标 `analytics_cursor` 按事件 id 升序，**最后写**
+  - 事件类型从 `EventManifest.Durable` 按前缀派生（不写死 `.2`）；模型归属先查批内
+    `step.started` 映射、跨轮再回查源库；`org` 由调用方传入并快照
+  - 报表：窗口 `[from, to)`、`groupBy: "org" | "model"`、4 项指标
+    （`totalTokens` 口径 = 输入 + 输出；成本 6 位小数）、`collected` / `watermark`
+  - 新增测试 `packages/opencode/test/governance/analytics.test.ts` **15 条**
+    （路径 / 建表幂等 / 抽取 / 幂等 / 崩溃窗口重扫 / 游标 / 跨轮模型回查 / 脏数据 /
+    缺库 / extractAll / 窗口边界 / 分组 / token 口径 / collected / 类型派生）
+  - 变异 M1–M7 均实得红并还原：
+    ① 游标 `>`→`>=` ⇒ 幂等 + 游标 + 回查 3 条红；② `INSERT OR IGNORE`→`INSERT` ⇒
+    **首次没红**（第二次扫 0 条，根本没触到）⇒ 先补「游标未落盘时重扫」用例再变异，
+    实得 `UNIQUE constraint failed`；③ 删回查 ⇒ model_id 变 null；④ 窗口上界 `<=` ⇒
+    边界用例红；⑤ 去掉「未标注」兜底 ⇒ key 变空串；⑥ `totalTokens` 漏 output ⇒ 60→40；
+    ⑦ 活跃单位不过滤空串 ⇒ 2→3
+  - 门禁实得：`bun test test/governance/analytics.test.ts` **15 pass / 0 fail**；
+    `packages/opencode` `bun run typecheck` **exit 0**；oxlint **0 warning / 0 error**；
+    `git diff --stat bun.lock` **无输出**
+  - 文档：`CONFIG.md` §3 与 `packages/opencode/.env.example` 增 `OPENHIVE_ANALYTICS_DB`
+  - **缺口**：① `extractUser` / `report` 尚无生产消费者（T009 的读接口接线，与 T003 同型）；
+    ② 同步 SQLite 会占住 Effect 事件循环，MVP 规模可接受，接线时记风险；③ 首抽扫表
+    （event 表无 `type` 单列索引，`schema.gen.ts` 是上游生成物，不加索引）；④ `org` 是
+    抽取时点快照，组织调整不追溯历史；⑤ 测试夹具是**手写的最小 event DDL**（只含
+    id/type/data），core 的 DDL 若改这三列形状本文件不会红；⑥ **真栈未跑**（同 009 的
+    `openai@6.39.1` 缺口）
 
 - **T003** 管理员分权落码（FR-003；T002 的矩阵进代码）
   - 新增 `packages/auth/src/governance.ts`：`GOVERNANCE_BOARDS`（八板块，与前端
@@ -83,4 +114,4 @@ T003 已交付。**下一项 T004**（分析库：event 表增量抽取 → 用�
 （无）
 
 ## 最后更新
-2026-10-26（T003 交付）
+2026-10-26（T004 交付）

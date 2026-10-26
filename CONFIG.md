@@ -94,6 +94,7 @@ Z = from.env.local        ← .env.local 更大
 | `AUTH_JWT_SECRET` | `packages/auth/src/policy.ts:67` | JWT 签名密钥（要求 ≥ 32 字符） |
 | `OPENHIVE_REQUIRE_USER_ID` | `packages/opencode/src/server/user-identity.ts:48` | 是否强制身份 |
 | `OPENHIVE_DATA_ROOT` | `packages/core/src/database/router.ts:31` | 数据根目录 |
+| `OPENHIVE_ANALYTICS_DB` | `packages/opencode/src/governance/analytics.ts:55` | 分析库（用量/成本）SQLite 文件路径；默认 `{OPENHIVE_DATA_ROOT}/analytics.db`。⚠️ **当前尚无生产消费者**（010 T009 接线前只有测试调用） |
 | `OPENHIVE_WORKSPACE_ROOT` | `packages/auth/src/workspace.ts:13`、`packages/core/src/quota/disk-quota.ts:33` | 沙箱根 |
 | `OPENHIVE_SHARED_ROOT` | `packages/auth/src/workspace.ts:33` | 共享根 |
 | `OPENHIVE_MAX_SANDBOX_BYTES` | `packages/core/src/quota/disk-quota.ts:39` | 沙箱配额 |
