@@ -23,6 +23,36 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #010-04 · 2026-10-27 · pitfall · 010-governance-console
+
+**现象 / 决策**：真栈落盘态从 `%TEMP%\openhive-real-stack-state` 换到 `D:\openhive-stack-state`
+（`REAL_STACK_STATE_DIR`），**文件搬了、库里的绝对路径没搬**：每用户
+`data\<userId>\opencode.db` 中 `session.directory`（19 行）、`project.worktree`（13 行）、
+`project_directory.directory`（12 行）仍指着旧根。左栏会话列表的目录来自「当前项目行」
+（= 新根 `D:\…\<projectId>`），拿它去问 `GET /session?directory=…`，内核按目录精确匹配 ⇒ 0 条
+⇒ 会话 tab 恒显示「暂无会话」。
+
+迷惑之处：前端三态（`sessionsLoaded === undefined` 才算未问过；`[]` 才空）逻辑都对，
+`sessionsLoaded` 也确实被置了 `true`，`loadSessions` 没报错、没 toast —— 看上去像「列表坏了」。
+**决定性证据**：同一个 projectId，用新根问 **0 条**、用旧根问 **4 条**；再走生产出口
+（左栏「新建会话」）建一条，它落在**新根**且立刻出现在列表里 —— 读链路和写链路本身都没坏，
+坏的是「新写的落新根、旧的还指着旧根」。
+
+**应对**：
+
+1. **先分「没数据」还是「找错地方」**：同一 id 分别用两个根 `GET /session?directory=`，条数一比即知；
+   再建一条新会话看它落在哪个根，判断写入侧是否也错。别先怀疑组件状态机——先把「按什么目录问」打出来。
+2. **换根 = 三件事，缺一不算搬完**：搬文件（`workspaces/`）、搬库（`data/`）、**改写库里的绝对路径**。
+   改完按表列残留计数，必须归 0；迁移脚本写成幂等（旧前缀命中 0 行即无事）。
+3. **只改结构性列**：`session.directory` / `project.worktree` / `project.sandboxes` /
+   `project_directory.directory`。`event.data`（330 行）/ `part.data`（201 行）里的旧前缀是**历史内容**，
+   改它＝伪造历史，明确不动。
+4. 动手顺序：先停栈并确认子进程也死了（`#010-03`）→ 备份 `data/` → 灌库 → 改路径 → 用 `cp -rn` 补文件
+   （不覆盖新文件）→ 重启 → 复验。
+
+**应用范围**：任何换落盘位置的栈 / 服务（真栈、CI 缓存、state 目录、容器卷迁移）；任何把**绝对路径入库**
+的存储设计——路径一旦进库，搬家就必须同时改库，而查询侧通常只按新路径查，症状全落在「列表为空」上。
+
 ## #010-03 · 2026-10-26 · tool-quirk · 010-governance-console
 
 **现象 / 决策**：想给治理后台补 axe 审计，`curl :6017/index.json` 说 `427` 条、**一条 Governance 都没有**，
