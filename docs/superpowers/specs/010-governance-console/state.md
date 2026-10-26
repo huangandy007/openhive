@@ -1,10 +1,64 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T009 已交付（axe 新增 8 格全绿）。**下一项 T010**（审计日志检索，FR-009；依赖 T003），等用户 `next`。
-T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
+T010 已交付（审计日志检索；axe 新增 8 格全绿）。**下一项 T011**（模板库，FR-010），等用户 `next`。
+待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
+② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
+#198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
 
 ## 已完成
+
+- **T010** 审计日志检索（FR-009 / US5）——两笔提交（T010a 底座＋埋点 / T010b 检索＋前端）
+  - **底座** `packages/auth/src/audit.ts`：`AUDIT_RESULTS` / `AUDIT_ACTIONS` 闭集、
+    `recordAuditEvent`、`listAuditEvents`（**共用筛选** ＋ `total` 分页 ＋ ILIKE 转义）；
+    `migrations/0015_audit_event.sql` 建 `auth.audit_event`（`occurred_at` 是 **int4 秒**）。
+    内核 `server/openhive/audit.ts` 三个记录口：`写一行`（抛）/ `尽力记`（**永不抛**，失败只
+    `console.warn`）/ `记治理`（按板块给出 `{记, 记失败}`）
+  - **埋点**：`governance-authz.ts` 的 403 记 `governance.denied`；账号 / 组织 / 资产 / 项目 / 用量
+    五个出口的写动作逐个记；工具越权记 `tool.denied`（接在 `permission/index.ts` 的 deny 分支，
+    记录器自身永不抛——记录失败不能把该拒的调用变成放行）
+  - **检索出口** `server/openhive/governance-audit.ts`：
+    `GET /openhive/governance/audit-log?from=&to=&actor=&action=&result=&q=&page=&pageSize=`。
+    **授权排在参数解析之前**（`#004-09`：民警递 `from=abc` 拿 403 而不是 400）；
+    **时间单位是秒**（与 `usage-cost` 的毫秒口径**故意不同**，两边文件头都写明）；**缺省近 7 天**、
+    窗口 **`[from, to)`**；`action` / `result` 只认闭集，未知值 400（不是静默回落默认值）
+  - **审计不审计自己**：读这条出口不落审计行——记进同一张表会让翻页本身涨 `total`，管理员永远翻不到底
+  - 前端 `governance/audit-log-api.ts`（严格解析、snake→camel、401/403/400/5xx/网络五路 outcome）
+    ＋ `governance/audit-log.tsx`（筛选条 / 只读表格 / 行内展开 JSON / 复制 / 分页 / 空·加载·错误三态，
+    窗口在 await **之前**算好 ＋ 代次守卫 `#008-03`，**无编辑删除入口**）＋ 4 条 story
+    （有数据 / 空 / 错误 / 详情展开）＋ `console.tsx` / `console-host.tsx` / `console-connected.tsx` 接线
+  - 测试新增 **78 条**：`auth` `audit.test.ts` 9；opencode `openhive-governance-audit.test.ts` 8、
+    `permission/openhive-audit-denied.test.ts` 9、`openhive-governance-audit-log.test.ts` 21（真 PGlite、
+    8 天前/1 小时前/1 分钟前三行夹具、权限矩阵、400 族、缺省 7 天窗口、半开区间、四类筛选、
+    `%` 按字面量、分页与「读不落行」）、app `audit-log-api.test.ts` 15、`audit-log.test.tsx` 16
+  - T010b 变异（均实得红并还原）：S1 授权挪到解析之后 ⇒ **1 红**；S2 缺省窗口改 30 天 ⇒ **3 红**；
+    S3 丢掉结果筛选 ⇒ **1 红**；C1 前端默认天数改 30 ⇒ **2 红**；C2 详情永不渲染 ⇒ **2 红**；
+    C3 下一页传同一页 ⇒ **1 红**；C4 加载时清空数据 ⇒ **1 红**；C5 语义色挪回文字层 ⇒ **1 红**。
+    T010a 的变异记录见提交 `43fbb08984`
+  - 门禁实得：根 `bun run typecheck` **32/32 successful**；opencode 治理 **121 pass / 0 fail**（9 文件）；
+    app 治理 **174 pass / 0 fail**（16 文件）；oxlint 本批 **11 文件 0 warning / 0 error**；
+    `git diff --stat bun.lock` 无输出。（根 `bun run lint` 有既有基线 **5219 warning / 1 error**，
+    不在本批文件内）
+  - **axe 实得（两轮，据实记）**：4 条 story × 浅/深 = 8 格，首轮 **2 格红**
+    （`有数据 [light]` / `详情展开 [light]`，`serious · color-contrast`）。真 Chromium ＋ axe 读数：
+    `#198b43 / #fcfcfc` = **4.25:1**、`#cb9f34 / #fcfcfc` = **2.39:1**（要求 4.5:1）——
+    低的是 **token 本身**（浅色取 `green-800` / `yellow-800`），不是布局、不是类名拼错。
+    按用户裁定走 **A 案**：语义色**只上在图标**上、文字一律 `text-v2-text-text-base`（16.91:1），
+    依据 DESIGN §4.11.7「颜色只作辅助」＋ `Icon` 自带 `aria-hidden`（冗余图形不设 3:1 门槛）。
+    并补一条结构性用例钉住它（颜色在图标层、文字层不含 `text-v2-state-fg-`）。
+    复跑 ⇒ **8 ✅ / 0 ❌、0 违例、几何 0 格**；**未动断言、未加白名单、未改 token**
+  - **同类落点（`#002-06`，查过、本轮都不动）**：`dual-file-tree.tsx:87/471/615` 也把
+    `text-v2-state-fg-warning` 当文字色（浅色同病，story 没画到那段）；`file-transfer-dialog.tsx:153`
+    只给 `aria-hidden` 图标上色（不受影响）；其余 `text-v2-state-fg-success` 都在
+    `bg-v2-state-bg-success` 底色块上（不受影响）。另：**008 的 `dual-file-tree--backups-not-wired /
+    backups-empty` 浅色两格已红**（`text-v2-text-text-faint` 13px），是既有红
+  - **缺口**：① 备份事件（008 `backup.*`）**没有**并入审计视图；② 治理**读**动作不记（含审计出口自身，
+    理由见上）；③ `Permission.ask` 钩子只覆盖链 A，**那一行接线本身没有测试盯着**；④ **无留存 / 归档
+    策略**（表只增）；⑤ 工具拒绝记录是**同步等待** PG，PG 不可达时最坏等 3s 连接超时；
+    ⑥ **真栈未跑**；⑦ 组件层**实现前未观察到红**（首轮跑错 flag，得到的是 `jsxDEV` 报错），
+    红证据由变异 C1–C5 提供；⑧ 后端实现后**首轮**曾出现 4 条失败（涉 `tool.denied` 行与 total），
+    随后**连续 4 次复跑稳定 21 pass**，根因未定位
+
 
 - **T009** 用量 / 成本看板（FR-008 / US5）
   - 后端新增 `packages/opencode/src/server/openhive/governance-usage.ts`，一条只读出口：

@@ -136,7 +136,58 @@
     （`org-tree.tsx` 文件头：浅金底实测 1.07–1.99:1）。改为 T006 的方案（中性 `layer-02` 底 ＋
     金色描边）后**复跑 8 格全绿、0 违例**；未动断言、未加白名单、未改 token。
     已知红仍是 T005「有数据 [light]」3 个 accent 标签（等视觉裁定）。
-- [ ] T010 [FE·新增] 实现审计日志检索（谁/何时/调了什么，含越权记录）[FR-009] [T003] [出参：审计检索可用]
+- [x] T010 [FE·新增] 实现审计日志检索（谁/何时/调了什么，含越权记录）[FR-009] [T003] [出参：审计检索可用]
+  - 交付（**两笔提交**：T010a 审计底座＋埋点，T010b 检索出口＋前端）：
+    - **底座**：`packages/auth/src/audit.ts`（`AUDIT_RESULTS` / `AUDIT_ACTIONS` 闭集、`recordAuditEvent`
+      、`listAuditEvents` 共用筛选 ＋ 总数分页）＋ `migrations/0015_audit_event.sql`（`auth.audit_event`，
+      `occurred_at` 是 **int4 秒**）；内核 `server/openhive/audit.ts` 三个记录口——`写一行`（抛）
+      / `尽力记`（**永不抛**，失败只 `console.warn`）/ `记治理`（按板块取 `{记, 记失败}`）。
+    - **埋点**：`governance-authz.ts` 的 403 记 `governance.denied`；账号 / 组织 / 资产 / 项目 / 用量
+      五个出口的写动作逐个记；工具越权记 `tool.denied`。
+    - **检索**：`server/openhive/governance-audit.ts` 一条只读出口
+      `GET /openhive/governance/audit-log?from=&to=&actor=&action=&result=&q=&page=&pageSize=`；
+      前端 `audit-log-api.ts`（严格解析、snake→camel、五路 outcome）＋ `audit-log.tsx`（筛选条 / 表格 /
+      行内展开 / 复制 / 分页 / 空加载错误三态）＋ 4 条 story ＋ `console*.tsx` 三处接线（未注入 ⇒ 占位）。
+  - **审计不审计自己**：读这条出口**不落审计行**。把它记进同一张表会让翻页本身涨 `total`，管理员永远
+    翻不到底——同一条边界也管住 T010a 的「治理读动作不记」。
+  - **授权先于参数解析**（`#004-09`）：民警递 `from=abc&result=bogus` 必须 403，不是 400——否则 400/403
+    的差别就是「这个端点吃什么参数」的探针。
+  - **时间单位是秒、缺省近 7 天、窗口左闭右开**（DESIGN §4.11.7）。前端与 `usage-cost` 的毫秒口径
+    **故意不同**，两边文件头都写明了，误传毫秒会让窗口落到五万年后的空集而界面看起来只是「没有记录」。
+  - **越权记录 fail-closed**：`permission/index.ts` 的 deny 分支调用记录器，记录器自身**永不抛**
+    （记录失败不能把一次该拒的调用变成放行）。
+  - 测试新增 **78 条**：`@opencode-ai/auth` `audit.test.ts` 9；opencode `openhive-governance-audit.test.ts` 8、
+    `permission/openhive-audit-denied.test.ts` 9、`openhive-governance-audit-log.test.ts` 21（真 PGlite、
+    8 天前/1 小时前/1 分钟前三行夹具、权限矩阵、400 族、缺省窗口、半开区间、四类筛选、分页与「读不落行」）、
+    app `audit-log-api.test.ts` 15、`audit-log.test.tsx` 16。
+  - T010b 变异（均实得红并还原）：S1 授权挪到解析之后 ⇒ **1 红**；S2 缺省窗口改 30 天 ⇒ **3 红**；
+    S3 丢掉结果筛选 ⇒ **1 红**；C1 前端默认天数改 30 ⇒ **2 红**；C2 详情永不渲染 ⇒ **2 红**；
+    C3 下一页传同一页 ⇒ **1 红**；C4 加载时清空数据 ⇒ **1 红**；C5 语义色挪回文字层 ⇒ **1 红**。
+    T010a 的变异记录见提交 `43fbb08984` 的提交信息。
+  - 门禁实得：根 `bun run typecheck` **32/32 successful**；opencode 治理 **121 pass**（9 文件）；
+    app 治理 **174 pass**（16 文件）；oxlint 本批 **11 文件 0 warning / 0 error**；
+    `git diff --stat bun.lock` 无输出。（根 `bun run lint` 有既有基线 **5219 warning / 1 error**，
+    不在本批文件内，据实记。）
+  - **axe：首轮 8 格中 2 格红**（`有数据 [light]` / `详情展开 [light]`，`serious · color-contrast`），
+    落点是**我给结果文字上的语义色**。真 Chromium ＋ axe 实测：`#198b43 / #fcfcfc` = **4.25:1**、
+    `#cb9f34 / #fcfcfc` = **2.39:1**（要求 4.5:1）——低的是 **token 本身**（浅色取 `green-800` /
+    `yellow-800`），不是布局。按用户裁定走 A 案：**语义色只上在图标上、文字一律正文色**
+    （`text-v2-text-text-base`，16.91:1），依据 DESIGN §4.11.7「颜色只作辅助」＋ `Icon` 自带
+    `aria-hidden`（冗余图形，WCAG 1.4.11 不设 3:1 门槛）。复跑 ⇒ **8 ✅ / 0 ❌、0 违例**；
+    **未动断言、未加白名单、未改 token**。
+  - **同类落点（`#002-06`，逐个查过、本轮都不动）**：`dual-file-tree.tsx:87/471/615` 也把
+    `text-v2-state-fg-warning` 当**文字**色（浅色下同一个病，对应 story 恰好没画到那段）；
+    `file-transfer-dialog.tsx:153` 只给 `aria-hidden` 图标上色（不受影响）；其余 `text-v2-state-fg-success`
+    都落在 `bg-v2-state-bg-success` 的底色块上（不受影响）。另撞见 **008 的
+    `dual-file-tree--backups-not-wired / backups-empty` 浅色两格已红**（`text-v2-text-text-faint` 13px）
+    ——是本特性之外的既有红，一并记入待裁定。
+  - **缺口**：① 备份事件（008 `backup.*`）**没有**并入审计视图；② 治理**读**动作不记（含审计出口自身，
+    理由见上）；③ `Permission.ask` 钩子只覆盖链 A（`permission/index.ts` 的 deny 分支），
+    **那一行接线本身没有测试盯着**；④ **无留存 / 归档策略**（表只增）；⑤ 工具拒绝记录是**同步等待**
+    PG，PG 不可达时最坏等 3s 连接超时（挡在工具调用前）；⑥ **真栈未跑**；⑦ 组件层**实现前未观察到红**
+    （首轮用了错 flag，跑出来是 `jsxDEV` 报错），红证据由变异 C1–C5 提供，据实记；
+    ⑧ 后端实现后**首轮**曾出现 4 条失败（涉 `tool.denied` 行与 total），随后**连续 4 次复跑稳定 21 pass**，
+    根因未定位，留作复核点。
 
 ## Phase 6: US6 模板 + 数据源（P2）
 
@@ -192,5 +243,6 @@
 
 共 **15** 条任务（T001–T015），符合 12–18 条范围。
 > 数法：T001–T014 是本 feature 原有的；**T015 是 2026-10-01 从 F3（003 的 T016）接收的移交**。
-> 复算命令：`grep -c '^- \[ \] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**。
+> 复算命令：`grep -c '^- \[[x ]\] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**
+> （2026-10-26 T010 交付后：未勾 **5** ＝ T011–T015）。
 > 这个数字随拆分与移交而变（`LEARNINGS #002-06`），改了任务就回来重算一次。

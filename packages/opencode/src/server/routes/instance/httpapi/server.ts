@@ -130,6 +130,7 @@ import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
+import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
 import { OpenhiveGovernanceUsage } from "@/server/openhive/governance-usage"
@@ -420,6 +421,11 @@ export function createRoutes(
     // 只供业务 PG（授权查询 ＋ `auth.user` 名册）；分析库句柄按请求开关，不进层。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T009）。
     OpenhiveGovernanceUsage.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 审计日志检索出口（010 T010b）：一条只读检索（FR-009）。
+    // 只供业务 PG（审计表在 `auth` schema）；本模块**不审计自己**——「谁看了审计日志」
+    // 若记进同一张表，翻页本身会让 total 一直涨，永远翻不到底（见该模块文件头）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T010b）。
+    OpenhiveGovernanceAudit.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。
