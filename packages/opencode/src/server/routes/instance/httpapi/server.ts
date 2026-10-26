@@ -131,6 +131,7 @@ import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
+import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-source"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
 import { OpenhiveGovernanceTemplates } from "@/server/openhive/governance-templates"
@@ -433,6 +434,12 @@ export function createRoutes(
     // 只供业务 PG。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T011）。
     OpenhiveGovernanceTemplates.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 数据源配置出口（010 T012）：注册 / 编辑 / 列表 / 血缘（FR-011）。
+    // 板块 `data-source` **只授系统管理员**（业务专家那一行是空的，见该模块文件头）；
+    // connector 只留接口（`@opencode-ai/auth/connector`），**没有**「测试连接」这类假按钮。
+    // 只供业务 PG。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T012）。
+    OpenhiveGovernanceDataSource.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

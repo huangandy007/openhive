@@ -35,6 +35,7 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           projectApi={props.projectApi}
           usageApi={props.usageApi}
           templateApi={props.templateApi}
+          dataSourceApi={props.dataSourceApi}
           selfId={props.selfId}
         />
       ),
@@ -289,6 +290,60 @@ describe("治理后台 · 全屏骨架", () => {
     expect(root.querySelector('[data-slot="template-row"]')).not.toBeNull()
     expect(root.querySelector('[data-slot="template-name"]')?.textContent).toBe("资金分析报告")
     expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
+  })
+
+  test("接了数据源接口 ⇒「数据源配置」页真的拉列表，不是占位（T012 接线）", async () => {
+    let 读次数 = 0
+    const root = 挂上({
+      capabilities: new Set(["data-source"]),
+      dataSourceApi: {
+        list: async () => {
+          读次数 += 1
+          return {
+            kind: "ok",
+            value: [
+              {
+                id: "s1",
+                name: "话单库",
+                kind: "database" as const,
+                endpoint: "pg://10.0.0.8:5432/cdr",
+                frequency: "daily" as const,
+                owner: "科信支队 张三",
+                status: "active" as const,
+                lastSyncedAt: null,
+                createdBy: "u-甲",
+                createdAt: 1_700_000_000,
+                updatedBy: "u-甲",
+                updatedAt: 1_759_000_000,
+              },
+            ],
+          }
+        },
+        lineage: async () => ({ kind: "failed", message: "本用例不读血缘" }),
+        create: async () => ({ kind: "failed", message: "本用例不注册" }),
+        update: async () => ({ kind: "failed", message: "本用例不改" }),
+      },
+    })
+    await flush()
+
+    root.querySelector<HTMLButtonElement>('[data-slot="governance-nav"] button[data-section="data-source"]')!.click()
+    await flush()
+    await flush()
+
+    expect(读次数).toBe(1)
+    expect(root.querySelector("[data-slot='data-source-row']")?.getAttribute("data-id")).toBe("s1")
+    // connector 未落地：最近同步必须是「—」，不能编一个时间。
+    expect(root.querySelector("[data-slot='data-source-last-synced']")?.textContent?.trim()).toBe("—")
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
+  })
+
+  test("没接数据源接口 ⇒ 该页回落占位（不白屏、不画假表）", async () => {
+    const root = 挂上({ capabilities: new Set(["data-source"]) })
+    await flush()
+
+    expect(页标题(root)).toBe("数据源配置")
+    expect(root.querySelector("[data-slot='data-source-row']")).toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).toContain("将在后续任务接入")
   })
 
   test("没接用量接口 ⇒ 该页回落占位（不白屏、不画假数）", async () => {

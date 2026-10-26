@@ -17,6 +17,7 @@ import { createAccountApi } from "./account-api"
 import { createAssetApi } from "./asset-api"
 import { createAuditApi } from "./audit-log-api"
 import { GovernanceConsoleHost } from "./console-host"
+import { createDataSourceApi } from "./data-source-api"
 import { createOrgApi } from "./org-api"
 import { createProjectApi } from "./project-api"
 import { createTemplateApi } from "./template-api"
@@ -65,6 +66,9 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
   /** 模板库接口（T011）：同上，无状态薄壳，模块内建一次。 */
   const 模板接口 = createTemplateApi()
 
+  /** 数据源配置接口（T012）：同上，无状态薄壳，模块内建一次。 */
+  const 数据源接口 = createDataSourceApi()
+
   return (
     <GovernanceConsoleHost
       open={props.open}
@@ -77,6 +81,7 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
       usageApi={用量接口}
       auditApi={审计接口}
       templateApi={模板接口}
+      dataSourceApi={数据源接口}
       selfId={会话?.identity?.id}
     >
       {props.children}

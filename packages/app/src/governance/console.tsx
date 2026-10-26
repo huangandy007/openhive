@@ -19,6 +19,8 @@ import { AssetGovernance } from "./asset-governance"
 import type { AuditApi } from "./audit-log-api"
 import { AuditLog } from "./audit-log"
 import { DataProjectPerm } from "./data-project-perm"
+import type { DataSourceApi } from "./data-source-api"
+import { DataSource } from "./data-source"
 import type { OrgApi } from "./org-api"
 import { OrgTree } from "./org-tree"
 import type { ProjectApi } from "./project-api"
@@ -47,6 +49,8 @@ export interface GovernanceConsoleProps {
   auditApi?: AuditApi
   /** 模板库接口（T011）。省略 = 模板页显示占位（还没接线）。 */
   templateApi?: TemplateApi
+  /** 数据源配置接口（T012）。省略 = 数据源页显示占位（还没接线）。 */
+  dataSourceApi?: DataSourceApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
 }
@@ -172,6 +176,7 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
               usageApi={props.usageApi}
               auditApi={props.auditApi}
               templateApi={props.templateApi}
+              dataSourceApi={props.dataSourceApi}
               selfId={props.selfId}
             />
           )}
@@ -185,7 +190,8 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
  * 按板块 id 挑真实内容；没接线或还没接入的板块一律落到占位。
  *
  * 每页的接口是**独立可省略**的：T005 接了账号、T006 接了组织、T007 接了 AI 资产、
- * T008 接了数据项目权限、T009 接了用量看板、T010 接了审计日志、T011 接了模板库，其余仍占位——
+ * T008 接了数据项目权限、T009 接了用量看板、T010 接了审计日志、T011 接了模板库、
+ * T012 接了数据源配置——八页到齐。省略某一页的接口只会让那一页回落占位，
  * 一处没接线不该把已经接好的页也藏起来。
  */
 function 页面(props: {
@@ -197,6 +203,7 @@ function 页面(props: {
   usageApi?: UsageApi
   auditApi?: AuditApi
   templateApi?: TemplateApi
+  dataSourceApi?: DataSourceApi
   selfId?: string
 }) {
   return (
@@ -236,11 +243,16 @@ function 页面(props: {
           {(api) => <TemplateLib api={api()} />}
         </Show>
       </Match>
+      <Match when={props.section.id === "data-source"}>
+        <Show when={props.dataSourceApi} fallback={<占位 section={props.section} />}>
+          {(api) => <DataSource api={api()} />}
+        </Show>
+      </Match>
     </Switch>
   )
 }
 
-/** 还没接入的板块：只说明「这一页尚未接入」，不画假表格（T007–T012 各自接）。 */
+/** 还没接线（或接口被省略）的板块：只说明「这一页尚未接入」，不画假表格。 */
 function 占位(props: { section: GovernanceSection }) {
   return (
     <section class="mt-6 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-6 shadow-[var(--v2-elevation-raised)]">

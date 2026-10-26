@@ -55,6 +55,8 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   "template.create": "新建模板",
   "template.update": "编辑模板",
   "template.disable": "停用模板",
+  "data-source.create": "注册数据源",
+  "data-source.update": "编辑数据源",
   "tool.denied": "工具越权",
   "governance.denied": "板块越权",
 }

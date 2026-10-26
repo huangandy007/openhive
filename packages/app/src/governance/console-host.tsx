@@ -13,6 +13,7 @@ import type { AccountApi } from "./account-api"
 import type { AssetApi } from "./asset-api"
 import type { AuditApi } from "./audit-log-api"
 import { GovernanceConsole } from "./console"
+import type { DataSourceApi } from "./data-source-api"
 import type { OrgApi } from "./org-api"
 import type { ProjectApi } from "./project-api"
 import type { TemplateApi } from "./template-api"
@@ -37,6 +38,8 @@ export interface GovernanceConsoleHostProps {
   auditApi?: AuditApi
   /** 模板库接口（T011）。省略 = 该页显示占位。 */
   templateApi?: TemplateApi
+  /** 数据源配置接口（T012）。省略 = 该页显示占位。 */
+  dataSourceApi?: DataSourceApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
@@ -86,6 +89,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           usageApi={props.usageApi}
           auditApi={props.auditApi}
           templateApi={props.templateApi}
+          dataSourceApi={props.dataSourceApi}
           selfId={props.selfId}
         />
       </Show>

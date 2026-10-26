@@ -1,13 +1,31 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T011 已交付（模板库；axe 新增 8 格全绿）。**下一项 T012**（数据源配置，FR-011），等用户 `next`。
+T012 已交付（数据源配置：注册 ＋ connector 接口 ＋ 血缘；axe 8 格 ＋ 浮层 2 格全绿）。
+**下一项 T013**（治理后台边界：只承载「配置 ＋ 审核 ＋ 查看」，FR-012），等用户 `next`。
 待裁定（都不属于某个进行中 task）：① T005 的 axe 1 格红（accent 标签 3.11:1）；
 ② **浅色主题低对比 token**——`--v2-state-fg-warning` #cb9f34 = 2.39:1、`--v2-state-fg-success`
 #198b43 = 4.25:1、`--v2-text-text-faint` 13px（008 两格已红）；本轮按 A 案在本页绕开，token 本身未动。
 
 ## 已完成
 
+- **T012** 数据源配置（FR-011 / US6）——一笔提交
+  - 迁移 `0017_data_source.sql` ＋ down：`auth.data_source`（int4 秒；kind/frequency/status 三个闭集 CHECK、
+    名字 1..100 / 地址 ≤500 / 负责人 ≤50；**没有任何秘密列**，`information_schema` 断言钉住）＋
+    `data_source_name_idx` **全局唯一**（无删除 ⇒ 停用行仍占名）；`auth.data_source_lineage`
+    （双列 PK ＋ 自指 CHECK ＋ 双 FK CASCADE）
+  - 表规则全在 `packages/auth/src/data-source.ts`（修剪、撞名、缺上游点名、成环用「从 id 沿下游可达上游」
+    的递归 CTE、**校验完才删旧边**、事务里「插入 ＋ 设上游」）；`connector.ts` **只有接口**
+  - 出口 `governance-data-source.ts` 四条（列表 / 注册 201 / 血缘 GET / 编辑 POST）；
+    授权先于读体（`#004-09`）；读出口不落审计；血缘写入走编辑的 `upstreamIds`（未给 = 不动）
+  - 审计 `data-source.create/update`（闭集 **19** 条）＋ `ACTION_LABELS` 两行；detail **不记连接地址**
+  - 前端 `data-source-api.ts` ＋ `data-source.tsx`（表格六列 / 抽屉 / 血缘浮层 / 最近同步恒「—」）
+    ＋ 4 story ＋ 三层接线；抽屉里**没有口令框、没有「测试连接」**；编辑**没动勾选就不发 `upstreamIds`**
+  - 测试新增 **57 条**（auth 20 / 路由 13 / 前端 8＋14＋2）；变异 M1–M6 均实得红并还原
+    （M1 首版挪得不够深、未红，据实记）
+  - 门禁：typecheck 32/32；oxlint 16 文件 **21 warning / 0 error**（全属两个既有基线族）；`bun.lock` 0 行
+  - **axe 8 格全绿 / 0 违例**；另跑浮层本身（Portal 在 `#storybook-root` 之外）`axe.run(body)` ⇒ 浅/深各 0
+  - **缺口**：connector 无实现 / 无消费者；最近同步恒「—」；无删除；数据源无消费者；真栈未跑
 - **T011** 模板库（FR-010 / US6）——一笔提交
   - 迁移 `0016_template.sql` ＋ down：`auth.template`（int4 秒；五个 CHECK 与 TS 常量逐字相同；
     **局部唯一索引 `(kind, name) WHERE status='active'`** ⇒ 停用后同名可重建）

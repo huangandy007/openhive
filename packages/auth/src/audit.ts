@@ -71,6 +71,8 @@ export const AUDIT_ACTIONS = [
   "template.create",
   "template.update",
   "template.disable",
+  "data-source.create",
+  "data-source.update",
   "tool.denied",
   "governance.denied",
 ] as const

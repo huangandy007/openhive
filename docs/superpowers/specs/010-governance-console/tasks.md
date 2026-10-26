@@ -238,7 +238,70 @@
     ④ **真栈未跑**（只有真 PGlite ＋ 真 app ＋ storybook 真 Chromium 的 axe）；⑤ 组件层首轮无红证据，
     红由变异 M6/M7 提供；⑥ `no-base-to-string` 两处落在 `template.ts` 的 join 列（类型上是 `unknown`），
     与邻文件同族、未新开写法。
-- [ ] T012 [INT] 实现数据源配置（注册 + connector 接口 + 血缘）[FR-011] [T003] [出参：数据源注册 + connector 接口]
+- [x] T012 [INT] 实现数据源配置（注册 + connector 接口 + 血缘）[FR-011] [T003] [出参：数据源注册 + connector 接口]
+  - 交付：
+    - **迁移**：`packages/auth/src/migrations/0017_data_source.sql` —— `auth.data_source`（text id；`endpoint`/`owner`
+      缺省 `''`、`frequency` 缺省 `'manual'`、`status` 缺省 `'active'`、`last_synced_at` **int4 秒、可空**；
+      CHECK：kind ∈ database/file/api、frequency ∈ manual/hourly/daily/weekly、status ∈ active/disabled、
+      名字 1..100 / 地址 ≤500 / 负责人 ≤50。**没有任何秘密列**——连接串账号口令一律不落库，由测试里
+      `information_schema` 那条断言钉住）＋ `CREATE UNIQUE INDEX data_source_name_idx (name)`（全局唯一：
+      没有删除，停用行仍占名）＋ `data_source_name_order_idx`；`auth.data_source_lineage(upstream_id,
+      downstream_id)` 双列 PK ＋ 自指 CHECK ＋ 双 FK `ON DELETE CASCADE` ＋ downstream 索引 ＋ `.down.sql`。
+    - **表规则全在** `packages/auth/src/data-source.ts`：`listDataSources`（含停用、`name asc`）／
+      `createDataSource`（事务：插入 ＋ 设上游）／`updateDataSource`（`coalesce` 部分更新；**给了
+      `upstreamIds` 才动边**）／`getDataSourceLineage`（上游 = `downstream_id` 侧，下游 = `upstream_id` 侧）／
+      `设上游`（去重 → 自指 → 缺上游（单条 `IN` 查、点名第一个缺的）→ 成环（**从 id 沿下游能走到这条上游**
+      才成环，`union` 的递归 CTE）；**校验全做完才删旧边**，整体替换）。七个领域错误。
+    - **connector 只留接口**：`packages/auth/src/connector.ts`（`ConnectorConfig` / `ProbeResult` /
+      `SyncResult` / `DataSourceConnector` 一个 `probe` 一个 `sync`），**无实现、无注册表、无消费者**。
+    - **出口**：`server/openhive/governance-data-source.ts` 四条（`GET` 列表 / `POST` 注册 201 /
+      `GET /:id` 血缘 / `POST /:id` 编辑），`server.ts` 注册；**授权先于读体**（`#004-09`）；
+      血缘**写入走编辑抽屉的 `upstreamIds`**（未给 = 不动，`[]` = 清空），`GET` 只读；
+      读出口**不落审计**（同 T010 口径）。
+    - **审计**：`AUDIT_ACTIONS` 增 `data-source.create` / `data-source.update`（闭集 **19** 条）；
+      前端 `ACTION_LABELS` 同步两行；`detail` 只记 `{name,kind}` / `{name,fields}`，**不记连接地址**。
+    - **前端**：`data-source-api.ts`（三态 outcome、逐列严格解析、`lastSyncedAt` 为 null **原样保留**、
+      10s 超时、路径字面量）＋ `data-source.tsx`（表格六列 ＋ 操作、注册/编辑抽屉、血缘浮层、
+      最近同步恒「—」、空态「还没有登记数据源」/「尚未登记血缘」）＋ 4 条 story ＋ `console*.tsx` 三处接线
+      （未注入 ⇒ 占位）。
+  - **抽屉里没有口令框，也没有「测试连接」**：v1 只收非秘密的连接地址/库名；connector 未落地，
+    点「测试连接」必然骗人。两件事各有一条测试钉住（`input[type=password]` 为 0、按钮文案里没有「测试连接」）。
+  - **编辑「没动勾选就不发 `upstreamIds`」**：预填是一次 `await`，回包晚到或失败时若照样提交会把已登记
+    的上游清空。抽屉只在用户动过上游勾选后才把 `upstreamIds` 放进 patch；晚到的预填整包丢掉（代次守卫，`#008-03`）。
+  - 测试新增 **57 条**：`@opencode-ai/auth` `data-source.test.ts` 20（真 PGlite：缺省值 / 三个超长 /
+    全局唯一含停用行 / 部分更新保留 created_* / 两个方向血缘 / 缺上游回滚 / 自指 / 成环回滚中文名一起 / 整体替换 vs
+    `[]` 清空 / 去重 / `information_schema` 无秘密列）；opencode `openhive-governance-data-source.test.ts` 13
+    （真 PGlite ＋ 真 app：401、业务专家 403、只读角色能读不能写、授权先于读体、201、400 字段族 / 409 / 404、
+    血缘三条门且无半截行、两条审计动作与 failed 行、读接口不落行）；app `data-source-api.test.ts` 8、
+    `data-source.test.tsx` 14、`console.test.tsx` +2。
+  - 变异（均实得红并还原）：M1 授权挪到载荷收窄之后 ⇒ **路由 1 红**（`Expected: 403 / Received: 400`）——
+    第一版只挪到「读取体之后」**未红**（读取体本身不拒绝，400 来自收窄），据实记；
+    M2 删成环检查 ⇒ **auth 1 ＋ 路由 1 红**；M3 不删旧边 ⇒ **auth 1 红**
+    （`duplicate key value violates unique constraint "data_source_lineage_pkey"`）；
+    M4 下游查询方向反转 ⇒ **auth 1 红**；M5 `lastSyncedAt` null 渲染假时间 ⇒ **app 页 2 红**
+    （`Expected: "—" / Received: "2026-10-26 06:26"`）；M6 编辑无脑发 `upstreamIds` ⇒ **app 页 1 红**。
+  - 门禁实得：根 `bun run typecheck` **32/32 successful**；auth `data-source.test.ts` **20 pass**
+    （连跑 template/org-tree 共 54 pass）；opencode 三个治理路由文件 **35 pass**（本 task 13）；
+    app governance 单测 **91 pass**、组件 **129 pass**（含本 task 40）；oxlint 本批 **16 文件 21 warning / 0 error**
+    ——21 条全落两个既有基线族（`await-thenable` 9、`no-unsafe-type-assertion` 12，同族在 `template.ts` /
+    `org-tree.test.ts` 里既有），本轮新引入的 3 条（未用参数、2 条多余断言）已清掉；`git diff --stat bun.lock` **无输出**。
+  - **axe：8 格全绿、0 违例**（`有数据/空/错误/血缘` × light/dark）。**未动断言、未加白名单、未改 token。**
+    另加一次**浮层本身**的审计：Kobalte Portal 把 `governance-lineage` 渲染在 `#storybook-root` **之外**，
+    标准脚本的作用域扫不到它 ⇒ 另跑 `axe.run(document.body)`，light/dark **各 0 违例**（实得）；
+    同时确认第 4 条 story 真把浮层点开了（上游「在逃人员接口 接口」/ 本数据源「话单库 数据库」/
+    下游「资金交易明细 文件」）。第一版 story 在 `queueMicrotask` 里点血缘按钮**点不到**（行要等 list
+    回包才渲染）——改成 50ms 轮询等按钮出现（实测打开）。
+  - **同类落点（`#002-06`，逐个查过）**：板块 id `data-source` 在 `auth/governance.ts` 闭集、授角色矩阵、
+    `sections.ts`、两侧测试里**早已一致**（T002 落的），本 task 只加 `BOARD` 常量一处；审计动作清单**只有**
+    内核 `AUDIT_ACTIONS` 与前端 `ACTION_LABELS` 两处，都已补且顺序与内核一致；迁移目录无「最新版本号」
+    枚举点（`migrate.test.ts` 用注入目录）；全仓无其它模块消费 `DATA_SOURCE_*` 闭集。
+  - **缺口**：① connector **只有接口**——没有实现、没有注册表、没有消费者；「测试连接」故意不渲染
+    （有测试钉住）；② **最近同步恒「—」**（`last_synced_at` 无写入者），「有值则格式化」那条分支只有单测覆盖，
+    真栈永远走不到；③ **没有删除**（也没有「清空秘密」——秘密根本不存在，迁移测试钉住没有这类列）；
+    ④ 数据源**没有消费者**（分析链路还没读它）；⑤ **真栈未跑**（只有真 PGlite ＋ 真 app ＋ storybook
+    真 Chromium 的 axe）；⑥ 组件层实现前未观察到红，红由变异 M5/M6 提供；⑦ 编辑抽屉血缘预填失败时
+    只提示「已有的上游血缘没取到」，**没有重试按钮**（关掉重开即重试）；⑧ 血缘只展开**一级**（DESIGN 口径），
+    没有递归图。
 
 ## Phase 7: 收尾 + 测试（P1）
 
@@ -290,5 +353,5 @@
 共 **15** 条任务（T001–T015），符合 12–18 条范围。
 > 数法：T001–T014 是本 feature 原有的；**T015 是 2026-10-01 从 F3（003 的 T016）接收的移交**。
 > 复算命令：`grep -c '^- \[[x ]\] T0' docs/superpowers/specs/010-governance-console/tasks.md` → **15**
-> （2026-10-26 T011 交付后：未勾 **4** ＝ T012–T015）。
+> （2026-10-26 T012 交付后：未勾 **3** ＝ T013–T015）。
 > 这个数字随拆分与移交而变（`LEARNINGS #002-06`），改了任务就回来重算一次。
