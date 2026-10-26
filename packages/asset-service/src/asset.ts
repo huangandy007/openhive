@@ -273,6 +273,8 @@ export interface AssetLifecycleUpdate {
   readonly updatedAt: number
   readonly publishedAt: number | null
   readonly archivedAt: number | null
+  /** 发布时选定的可见范围；省略表示不改。 */
+  readonly visibility?: AssetVisibility
 }
 
 /**
@@ -299,7 +301,8 @@ export async function updateAssetLifecycle(
       version = ${update.version},
       updated_at = ${update.updatedAt},
       published_at = ${update.publishedAt},
-      archived_at = ${update.archivedAt}
+      archived_at = ${update.archivedAt},
+      visibility = coalesce(${update.visibility ?? null}, visibility)
     where id = ${id} and status = ${update.expectedStatus}
     returning ${COLUMNS}
   `))

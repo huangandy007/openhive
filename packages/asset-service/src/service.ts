@@ -260,6 +260,46 @@ const PUBLISHING_ACTIONS: ReadonlySet<SkillAction> = new Set([
 /** 发起迭代 = 新版本在途，版本号 +1（design §2.4）。 */
 const VERSION_BUMPING_ACTIONS: ReadonlySet<SkillAction> = new Set(["start_iteration"])
 
+/** 只有发布类动作可以选可见范围：其它动作带了就是调用方理解错了（不静默忽略）。 */
+const SCOPE_SELECTING_ACTIONS: ReadonlySet<SkillAction> = new Set(["publish_tech", "publish_iteration"])
+
+/**
+ * 解析这次流转的可见范围，返回**生效后**的 metadata（发布时可能替换 `visibility`）。
+ *
+ * 个人资产没有共享发布目录：发布必须由发布者选一个共享范围（设计 §2），否则仍是
+ * `personal_asset_not_shared`（409）。发布者可以覆盖作者原先选的部门 / 全局。
+ */
+function withPublishScope(
+  asset: AssetMetadata,
+  applied: AppliedSkillTransition,
+  requested: AssetVisibility | undefined,
+): AssetMetadata {
+  if (!SCOPE_SELECTING_ACTIONS.has(applied.action)) {
+    if (requested !== undefined) {
+      throw new AssetTransitionError(
+        "visibility_not_applicable",
+        `${applied.action} 不接受可见范围（只有发布类动作可以选）`,
+      )
+    }
+    return asset
+  }
+
+  const 范围 = requested ?? asset.visibility
+  if (范围 === "personal") {
+    throw new AssetTransitionError(
+      "personal_asset_not_shared",
+      `个人资产不进入共享空间：${asset.id}（发布时请选择本部门或全局）`,
+    )
+  }
+  if (范围 === "department" && asset.department.trim() === "") {
+    throw new AssetTransitionError(
+      "department_missing",
+      `资产 ${asset.id} 没有部门信息：请发布为全局，或先补部门`,
+    )
+  }
+  return 范围 === asset.visibility ? asset : { ...asset, visibility: 范围 }
+}
+
 export interface TransitionAssetInput {
   readonly db: AssetTarget
   readonly root: string
@@ -275,6 +315,8 @@ export interface TransitionAssetInput {
   readonly reason?: string
   /** 提交审核 / 发起迭代的源目录（作者沙箱里的当前版本）；其他动作不需要。 */
   readonly sourceDirectory?: string
+  /** 发布类动作（技术发布 / 迭代发布）的可见范围；省略沿用资产现状。 */
+  readonly visibility?: AssetVisibility
   /** Unix 秒；测试注入固定时间，生产省略取当前。 */
   readonly now?: number
 }
@@ -345,7 +387,10 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   })
   const now = input.now ?? Math.floor(Date.now() / 1000)
 
-  const step = await prepareStorageStep(root, asset, applied, input.sourceDirectory)
+  // 范围解析在授权之后、任何文件搬运之前（`#004-09`）。
+  const 生效 = withPublishScope(asset, applied, input.visibility)
+
+  const step = await prepareStorageStep(root, 生效, applied, input.sourceDirectory)
 
   let updated: AssetMetadata
   // 条件更新落空之后才知道有没有「另一个写者已经完成同一流转」；它决定 catch 里
@@ -359,6 +404,7 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       updatedAt: now,
       publishedAt: PUBLISHING_ACTIONS.has(applied.action) ? now : asset.publishedAt,
       archivedAt: applied.action === "archive" ? now : asset.archivedAt,
+      ...(生效.visibility === asset.visibility ? {} : { visibility: 生效.visibility }),
     })
     if (result === undefined) {
       // 当前状态已经是本调用的目标态 ⇒ 另一个写者完成了**同一条**流转：

@@ -143,6 +143,10 @@ export type TransitionErrorCode =
   | "concurrent_transition"
   /** 个人资产没有共享发布目录：要发布，得先把可见范围改成部门 / 全局。 */
   | "personal_asset_not_shared"
+  /** 选「本部门」发布，但资产没有部门信息（作者档案部门为空）。 */
+  | "department_missing"
+  /** 非发布类动作不接受可见范围参数：调用方理解错了，不静默忽略。 */
+  | "visibility_not_applicable"
 
 export class AssetTransitionError extends Error {
   constructor(

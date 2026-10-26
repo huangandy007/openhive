@@ -1022,6 +1022,108 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(error.code).toBe("notification_failed")
     expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
   })
+
+  test("个人资产发布时选定「本部门」：状态、可见范围与文件一起落地", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "个人稿")
+    // 创建时选了个人可见（`create_skill_draft` 的默认值）：发布前必须由发布者补选共享范围。
+    await seedSkill(db, { visibility: "personal" })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "submit_review",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+    })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "approve_business",
+      viewer: 业务管理员, grants: 审, now: 2_001,
+    })
+
+    const published = await transitionAsset({
+      db, root, assetId: "asset_1", action: "publish_tech",
+      viewer: 系统管理员, grants: 管, visibility: "department", now: 2_002,
+    })
+
+    expect(published.status).toBe("published")
+    expect(published.visibility).toBe("department")
+    expect(await exists(join(发布目录(root), "SKILL.md"))).toBe(true)
+    expect(await exists(待审目录(root))).toBe(false)
+  })
+
+  test("发布者可以改作者原先选的共享范围：部门 → 全局，文件落到 global/", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "部门稿")
+    await seedSkill(db)
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "submit_review",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+    })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "approve_business",
+      viewer: 业务管理员, grants: 审, now: 2_001,
+    })
+
+    const published = await transitionAsset({
+      db, root, assetId: "asset_1", action: "publish_tech",
+      viewer: 系统管理员, grants: 管, visibility: "global", now: 2_002,
+    })
+
+    expect(published.visibility).toBe("global")
+    expect(await exists(join(root, "global", "skills", "asset_1", "SKILL.md"))).toBe(true)
+    expect(await exists(发布目录(root))).toBe(false)
+  })
+
+  test("选「本部门」但资产没有部门信息：department_missing，状态与文件不动", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "无部门稿")
+    // 个人可见时元数据校验不要求部门（`metadata.ts:149`），所以这条脏数据进得来。
+    await seedSkill(db, { visibility: "personal", department: "" })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "submit_review",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+    })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "approve_business",
+      viewer: 业务管理员, grants: 审, now: 2_001,
+    })
+
+    const error = await failure(() =>
+      transitionAsset({
+        db, root, assetId: "asset_1", action: "publish_tech",
+        viewer: 系统管理员, grants: 管, visibility: "department", now: 2_002,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("department_missing")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+    expect(await exists(join(待审目录(root), "SKILL.md"))).toBe(true)
+  })
+
+  test("非发布动作带可见范围：visibility_not_applicable，状态不动", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "越界参数")
+    await seedSkill(db)
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "submit_review",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+    })
+
+    const error = await failure(() =>
+      transitionAsset({
+        db, root, assetId: "asset_1", action: "approve_business",
+        viewer: 业务管理员, grants: 审, visibility: "global", now: 2_001,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("visibility_not_applicable")
+    expect((await assetById(db, "asset_1"))?.status).toBe("in_review")
+  })
 })
 
 describe("discardAsset · 删除", () => {
