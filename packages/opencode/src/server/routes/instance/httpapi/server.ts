@@ -129,6 +129,7 @@ import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
+import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
@@ -394,6 +395,11 @@ export function createRoutes(
     // 只读业务 PG——树没有沙箱目录，改名级联也只改 `auth.user` 的三列文本。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T006）。
     OpenhiveGovernanceOrg.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 资产治理出口（010 T007）：待审列表 / 审核 / 发布 / 上下架 / 归档（FR-006）。
+    // 复用 009 的 `listAssets` ＋ `transitionAsset`（状态机与文件迁移不重写）；资产根从
+    // `process.env.OPENHIVE_ASSETS_ROOT` 每请求读一次，与 009 的出口同一个约定。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T007）。
+    OpenhiveGovernanceAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

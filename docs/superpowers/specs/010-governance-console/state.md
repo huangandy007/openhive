@@ -1,10 +1,75 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T006 已交付（axe 新增 8 格全绿）。**下一项 T007**（AI 资产治理），等用户 `next`。
+T007 已交付（axe 新增 8 格全绿）。**下一项 T008**（数据项目权限），等用户 `next`。
 T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 
 ## 已完成
+
+- **T007** AI 资产治理（FR-006 / US3）
+  - 后端新增 `packages/opencode/src/server/openhive/governance-assets.ts`，两条出口：
+    `GET /openhive/governance/assets?status=&type=&q=`（治理后台看**全量**，草稿也在）、
+    `POST /openhive/governance/assets/:id/transition`（体 `{ action, reason? }`）。
+    复用 009 的 `listAssets` / `transitionAsset`——状态机与文件迁移**不重写**；动作白名单 7 个，
+    作者动作（`submit_review` / `start_iteration`）单列 400；授权排在**读体之前**（`#004-09`）
+  - **本轮的核心决定：治理板块权限 → 单份资产的授权行**。009 的每资产授权行**没有通配**
+    （`resource_id` 就是资产 id），所以 `governance/asset-governance` 的 read/review/admin 不能
+    直接拿去判；出口把治理授权行投影成「当前这一份资产」的 `GrantRow[]`（只投 `review` / `admin`，
+    `write` 不投——后台没有「以作者身份改内容」的动作），`review ≠ admin` 的两道关因此原样保留，
+    **009 一行未改**
+  - **授权先于类型判定**：`transitionAsset()` 先查类型、再查授权 ⇒ 只有 read 的人对一份 MCP 资产
+    会拿到 400 而不是 403（那 200ms 的差别就是「资产是什么类型」的探针）。出口用**同一个**
+    `authorizeTransition()` 预检一次；服务层随后再算一次（确定性函数、无副作用）⇒ 不是两份规则
+  - 错误映射：401 空体 / 403 / 404 资产不存在 / 409（`invalid_source`、`concurrent_transition`、
+    `source_directory_required`）/ 400（缺 action、未知动作、作者动作、reason 非字符串、未知状态或
+    类型；**驳回理由必填**那条带 `field: "reason"`）；**通知写失败** ⇒ 200 ＋ `notice`
+    （流转已生效，不回 500——否则客户端会以为没生效而重试）
+  - 接线 `server.ts`（只吃 `OpenhivePg.layer`；资产根每请求读 `OPENHIVE_ASSETS_ROOT`，与 009 同约定）；
+    `packages/opencode` 增 workspace devDependency `@opencode-ai/asset-service` ⇒ `bun.lock` **1 行**
+    （`bun install` 污染镜像源那次已按纪律还原，见仓库级 CLAUDE.md「锁文件污染」）
+  - 前端新增 `governance/asset-api.ts`（与 account/org 同范式：同源路径、可注入 `send`、Outcome 三态、
+    严格解析、10s 超时；状态/类型/动作闭集**刻意复写一份**，`#003-05`）与
+    `governance/asset-governance.tsx`（状态筛选默认「待业务审核」；按状态画动作；七个动作全部过
+    确认框且写明后果；驳回理由必填；失败不关框；`field=reason` 挂到理由框；读列表带代次守卫
+    `#008-03`）；4 条 story（待审队列 / 空 / 错误 / 驳回确认框打开态）。`console.tsx` 增 `Match`、
+    `console-host.tsx` / `console-connected.tsx` 接线（未注入 api ⇒ 回落占位）
+  - 测试新增 **39 条**：`opencode/test/server/openhive-governance-assets.test.ts` 18（真 PGlite ＋
+    临时资产根）、`app/src/governance/asset-api.test.ts` 10、`asset-governance.test.tsx` 10、
+    `console.test.tsx` +1（接线）
+  - 后端变异 B1–B6（均实得红并还原）：① 白名单去掉 `archive` ⇒ **1 红**（归档用例）；
+    ② 合成授权行只投 `admin` ⇒ **3 红**；③ 去掉 `authorizeTransition` 预检 ⇒ **1 红**
+    （只读角色 403 那条）；④ 丢掉 `q` ⇒ **1 红**；⑤ `notice` 分支改成 500 ⇒ **0 红**（见缺口 ①）；
+    ⑥ 未知 `status` 不再 400（退化为空列表）⇒ **1 红**
+  - 前端变异 F1–F6（均实得红并还原）：① `published` 返回无动作 ⇒ **1 红**；② 去掉理由必填 ⇒
+    **1 红**（`Received: ""`）；③ 忽略状态筛选 ⇒ **3 红**；④ 成功后不置空 `确认()` ⇒ **1 红**
+    （`等到(框已关)` 超时）；⑤ 409 当 `failed` ⇒ **1 红**（`Expected "rejected" / Received "failed"`）；
+    ⑥ 丢掉 `field` ⇒ **1 红**
+  - 门禁实得：opencode 路由 **18 pass / 0 fail**；app 治理 10 文件 **99 pass / 0 fail**；
+    `test:components` 全量 **1420 pass / 0 fail**；根 `bun run typecheck` **32/32 successful**；
+    oxlint（治理目录 ＋ 本轮后端两文件）**0 warning / 0 error**；
+    `git diff --stat bun.lock` = **1 insertion**（有意新增的 workspace 依赖）
+  - **一个被二分出来的假问题**（写下来防重复踩）：`通过审核要过确认框` 头几轮让 bun 进程尾部多睡
+    ~37s，且 `expect(框).toBeNull()` 时绿时红。逐条二分（P1–P4 / P3b / P3c / P3d）后定位：
+    **Kobalte 的 `Presence` 在 happy-dom 里不会把浮层从 DOM 摘掉**——关掉后连等 10 拍仍在，
+    只打上 `data-closed`；于是「框已关」当场问 `querySelector(...) === null` 取决于它那一拍有没有被
+    移除。判据改为**两条的交集**（元素没了 **或** 带 `data-closed`，见测试里的 `框已关()`），
+    既仍抓得住「忘了把 `确认()` 置空」（F4 实得红），也不再跟 happy-dom 的移除时机赛跑；
+    改后连跑 3 次均 10 pass、每次 ~1.2s，37s 尾巴消失
+  - **axe 实得**（2026-10-26）：`node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/Governance"`
+    （12 story × 浅/深 = **24 格**）⇒ **23 ✅ / 1 ❌**。新增的 asset-governance 四 story × 两主题
+    **8 格全 0 违例**（含驳回确认框打开态的 Kobalte Portal 子树）。唯一红仍是 T005 的
+    account-manage「有数据 [light]」3 个 accent 标签（3.11:1），按护栏维持 HALT、不重报为新缺口。
+    复跑：`bun --cwd packages/storybook storybook --port 6018 --ci --no-open` ＋
+    `STORYBOOK_URL=http://127.0.0.1:6018`（6017 仍被占）
+  - **缺口**：① `AssetNotificationError ⇒ 200 ＋ notice` **没有用例守**（B5 变异 0 红）——已知，
+    要造出「通知写失败」得给 `transitionAsset` 一个可注入的 notifier，属 009 的接口范围，未改；
+    ② 前端用例没逐个断言 `pending_tech` / `iterating` / `archived` 三态的按钮组合
+    （`可用动作()` 的这几个分支只有 `console.test.tsx` 的一条间接覆盖）；
+    ③ 本任务范围只到 Skill 治理动作：**MCP / 知识库 / 授权组 / 试跑 / 归档批量 / 分页** 不在其中
+    （T008 起）；④ 治理壳 `console.tsx` 仍无 story（同 T005 / T006）；
+    ⑤ **真栈未跑**（同 009 的 `openai@6.39.1` 缺口）；⑥ `packages/app` 的 `test:unit` 27 fail
+    全是既有的 `jsxDEV` 预载缺失（`test:unit` 没有 `--preload ./solid-jsx.ts`）＋ project-data
+    upload/download 两条，失败文件与 T003 记录同一批，**均未触碰**
 
 - **T006** 组织架构（FR-005）
   - 新增迁移 `packages/auth/src/migrations/0014_org_node.sql`（＋ `.down.sql`）：
@@ -216,4 +281,4 @@ T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 （无）
 
 ## 最后更新
-2026-10-26（T004 交付）
+2026-10-26（T007 交付）

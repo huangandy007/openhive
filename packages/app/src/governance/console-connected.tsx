@@ -14,6 +14,7 @@
 import { createMemo, type JSX } from "solid-js"
 import { useAuthSession } from "@/auth/session-context"
 import { createAccountApi } from "./account-api"
+import { createAssetApi } from "./asset-api"
 import { GovernanceConsoleHost } from "./console-host"
 import { createOrgApi } from "./org-api"
 
@@ -45,6 +46,9 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
   /** 组织架构接口（T006）：与账号接口同为无状态薄壳，模块内建一次。 */
   const 组织接口 = createOrgApi()
 
+  /** AI 资产治理接口（T007）：同上，无状态薄壳，模块内建一次。 */
+  const 资产接口 = createAssetApi()
+
   return (
     <GovernanceConsoleHost
       open={props.open}
@@ -52,6 +56,7 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
       capabilities={能力()}
       accountApi={账号接口}
       orgApi={组织接口}
+      assetApi={资产接口}
       selfId={会话?.identity?.id}
     >
       {props.children}

@@ -10,6 +10,7 @@
 
 import { Show, createEffect, type JSX } from "solid-js"
 import type { AccountApi } from "./account-api"
+import type { AssetApi } from "./asset-api"
 import { GovernanceConsole } from "./console"
 import type { OrgApi } from "./org-api"
 
@@ -22,6 +23,8 @@ export interface GovernanceConsoleHostProps {
   accountApi?: AccountApi
   /** 组织架构接口（T006）。省略 = 该页显示占位。 */
   orgApi?: OrgApi
+  /** AI 资产治理接口（T007）。省略 = 该页显示占位。 */
+  assetApi?: AssetApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
@@ -66,6 +69,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           capabilities={props.capabilities}
           accountApi={props.accountApi}
           orgApi={props.orgApi}
+          assetApi={props.assetApi}
           selfId={props.selfId}
         />
       </Show>

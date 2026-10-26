@@ -80,7 +80,16 @@
 
 ## Phase 4: US3 资产治理 + US4 数据项目（P1）
 
-- [ ] T007 [P] [FE·新增] 实现 AI 资产治理（审核/发布/上下架，复用 F9 机制）[FR-006] [T003] [出参：审核/发布动作可用]
+- [x] T007 [P] [FE·新增] 实现 AI 资产治理（审核/发布/上下架，复用 F9 机制）[FR-006] [T003] [出参：审核/发布动作可用]
+  - 交付：内核两条出口（`governance-assets.ts`：列表 ＋ 流转）＋ 前端 `asset-api.ts` /
+    `asset-governance.tsx` ＋ 4 条 story；接线 `console.tsx` / `console-host.tsx` /
+    `console-connected.tsx`。**009 一行未改**——治理板块的 read/review/admin 在此**投影成单份资产的
+    授权行**（009 的每资产授权行没有通配），`review ≠ admin` 的两道关原样保留。
+  - 测试新增 39 条（后端 18 / asset-api 10 / 组件 10 / console 接线 1）；后端变异 B1–B6、
+    前端 F1–F6 均实得红并还原，**B5（通知失败 ⇒ 500）0 红**——该分支无用例守，已记入缺口。
+  - 门禁：opencode 路由 18 pass、app 治理 99 pass、`test:components` 全量 1420 pass、
+    根 typecheck 32/32、oxlint 0 warning；`bun.lock` **1 行**（workspace 依赖，非镜像污染）。
+  - **axe 新增 8 格全绿**（含驳回确认框打开态）；唯一红仍是 T005「有数据 [light]」3 个 accent 标签。
 - [ ] T008 [P] [FE·新增] 实现数据项目权限（管理员兜底撤销/归档）[FR-007] [T003] [出参：管理员兜底撤销/归档]
 
 ## Phase 5: US5 用量 + 审计（P2）

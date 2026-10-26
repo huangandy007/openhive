@@ -31,6 +31,7 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           capabilities={props.capabilities}
           accountApi={props.accountApi}
           orgApi={props.orgApi}
+          assetApi={props.assetApi}
           selfId={props.selfId}
         />
       ),
@@ -113,6 +114,44 @@ describe("治理后台 · 全屏骨架", () => {
 
     expect(读树).toBe(1)
     expect(root.querySelector('[data-slot="org-row"][data-id="n1"]')).not.toBeNull()
+  })
+
+  test("接了资产接口 ⇒「AI 资产治理」页是真的待审队列，不是占位（T007 接线）", async () => {
+    let 读列表 = 0
+    const root = 挂上({
+      assetApi: {
+        list: async (query = {}) => {
+          读列表 += 1
+          expect(query).toEqual({ status: "in_review" })
+          return {
+            kind: "ok",
+            value: [
+              {
+                id: "a1",
+                name: "资金流水分析",
+                type: "skill" as const,
+                status: "in_review" as const,
+                visibility: "global" as const,
+                department: "经侦支队",
+                ownerName: "甲民警",
+                version: 1,
+                updatedAt: 1_700_000_000,
+                publishedAt: null,
+              },
+            ],
+          }
+        },
+        transition: async () => ({ kind: "failed", message: "本用例不流转" }),
+      },
+    })
+    await flush()
+
+    导航项(root)[2].click()
+    await flush()
+    await flush()
+
+    expect(读列表).toBe(1)
+    expect(root.querySelector('[data-slot="asset-row"][data-id="a1"]')).not.toBeNull()
   })
 
   test("返回工作台 ⇒ 调 onClose", async () => {

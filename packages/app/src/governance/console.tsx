@@ -14,6 +14,8 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { For, Match, Show, Switch, createMemo, createSignal, onMount } from "solid-js"
 import type { AccountApi } from "./account-api"
 import { AccountManage } from "./account-manage"
+import type { AssetApi } from "./asset-api"
+import { AssetGovernance } from "./asset-governance"
 import type { OrgApi } from "./org-api"
 import { OrgTree } from "./org-tree"
 import { filterGovernanceSections, GOVERNANCE_SECTIONS, type GovernanceSection } from "./sections"
@@ -27,6 +29,8 @@ export interface GovernanceConsoleProps {
   accountApi?: AccountApi
   /** 组织架构接口（T006）。省略 = 组织页显示占位（还没接线）。 */
   orgApi?: OrgApi
+  /** AI 资产治理接口（T007）。省略 = 资产页显示占位（还没接线）。 */
+  assetApi?: AssetApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
 }
@@ -143,7 +147,13 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
           }
         >
           {(section) => (
-            <页面 section={section()} accountApi={props.accountApi} orgApi={props.orgApi} selfId={props.selfId} />
+            <页面
+              section={section()}
+              accountApi={props.accountApi}
+              orgApi={props.orgApi}
+              assetApi={props.assetApi}
+              selfId={props.selfId}
+            />
           )}
         </Show>
       </main>
@@ -154,13 +164,14 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
 /**
  * 按板块 id 挑真实内容；没接线或还没接入的板块一律落到占位。
  *
- * 每页的接口是**独立可省略**的：T005 接了账号、T006 接了组织，其余七页仍占位——
- * 一处没接线不该把已经接好的页也藏起来。
+ * 每页的接口是**独立可省略**的：T005 接了账号、T006 接了组织、T007 接了 AI 资产，
+ * 其余五页仍占位——一处没接线不该把已经接好的页也藏起来。
  */
 function 页面(props: {
   section: GovernanceSection
   accountApi?: AccountApi
   orgApi?: OrgApi
+  assetApi?: AssetApi
   selfId?: string
 }) {
   return (
@@ -173,6 +184,11 @@ function 页面(props: {
       <Match when={props.section.id === "org-tree"}>
         <Show when={props.orgApi} fallback={<占位 section={props.section} />}>
           {(api) => <OrgTree api={api()} />}
+        </Show>
+      </Match>
+      <Match when={props.section.id === "asset-governance"}>
+        <Show when={props.assetApi} fallback={<占位 section={props.section} />}>
+          {(api) => <AssetGovernance api={api()} />}
         </Show>
       </Match>
     </Switch>
