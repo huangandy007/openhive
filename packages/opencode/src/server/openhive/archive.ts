@@ -352,31 +352,68 @@ function handleArchive(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     if (Option.isNone(deps.minio)) return unavailable("MinIO 未配置，归档不可用")
     const settings = deps.minio.value
 
-    // ⑤ 成员的 id 是**库里的**数据，但它也要当路径段用 ⇒ 与请求入参同一条判据。
-    //    ⚠️ 失败不是 400 而是 **die（500）**：调用方没做错任何事，是**库里的数据坏了**，
-    //    这与「客户端递了个 `../x`」是两回事（同上，混在一起会让人去查错方向）。
-    //    **先全部判完再动手**：判一半才发现第三个人有问题，前两个人已经传完了——半成品状态。
-    for (const member of members) {
-      if (!User.isSafePathSegment(member.userId)) {
-        yield* Effect.die(new Error(`项目 ${projectId} 的成员 id 不是合法路径段：${JSON.stringify(member.userId)}`))
-      }
-    }
-
-    const targets = members.map((member) => ({
-      userId: member.userId,
-      directory: projectDirectory(deps.root, member.userId, projectId),
-    }))
-
-    // ⑥ 全员上传（只读沙箱 ＋ 只写 MinIO）。
-    yield* Effect.promise(() => backupAll(targets, projectId, settings))
-    // ⑦ **到这里才**全员删沙箱。两个函数之间那次 await 就是那条不变量本身（见文件头）。
-    yield* Effect.promise(() => releaseAll(targets))
-    // ⑧ 标记最后落：中途任何一步失败，结果是「项目看起来还没归档」，重试即可——而不是
-    //    「文件已经删光、MinIO 也没备份、但界面上说归档完成了」。
-    yield* Effect.promise(() => markArchived(pg, { projectId, archivedAt: nowSeconds() }))
+    // ⑤–⑧（成员 id 校验 → 全员上传 → 全员删沙箱 → 标记最后落）整段在 `archiveProject` 里。
+    // 010 T008 的管理员兜底归档与本出口**共用**那一段：那条次序（先全员传完、才开删、标记最后）
+    // 是本功能最贵的一条不变量，写两份迟早漂（`LEARNINGS #002-06`；`#004-01` 的取向：先数
+    // 底层调用点，`backupAll` / `releaseAll` / `markArchived` 今天各有两个调用者）。
+    // ⚠️ `archiveProject` 会**再读一次**成员名单——多一次查询换「管线自带前置」：治理后台那边
+    // 不需要为了拿名单而先做一遍它并不关心的身份判读。
+    yield* Effect.promise(() => archiveProject({ root: deps.root, minio: settings, pg }, projectId))
 
     return HttpServerResponse.jsonUnsafe({ projectId, archived: true })
   })
+}
+
+/** `archiveProject` 的三样输入：沙箱根、已确认可用的 MinIO 参数、业务 PG 客户端。 */
+export interface ArchiveProjectDeps {
+  /** 沙箱根（`AnchorWorkspace.Config`）——`projectDirectory` 的两个调用点共用它。 */
+  readonly root: string
+  /** ⚠️ **不是 `Option`**：MinIO 配没配由调用方在**授权之后**判定并回 503（见 `handleArchive` ④）。 */
+  readonly minio: MinioSettings
+  /** **已取出的**句柄（`Deps.pg()` 的返回值），不是那个闭包——本函数假定调用方已判完库配置。 */
+  readonly pg: ReturnType<OpenhivePg.Interface["pg"]>
+}
+
+/**
+ * 归档的**全部副作用**（文件头 §8.2 的 ②–④：全员上传 → 全员删沙箱 → 标记最后落）。
+ *
+ * 抽出来不是为了复用而抽象：**已经有第二个调用者**——010 T008 的管理员兜底归档
+ * （`governance-projects.ts`）。两处各写一遍「先传完再删」不会报错，只会让其中一处某天
+ * 把顺序写成「传一个删一个」，而那一半的测试未必覆盖得到。
+ *
+ * ## 次序在这里面，调用方**只负责**「该不该归档」
+ *
+ * 身份 / 归档态 / 配置三项判定留给调用方（两个调用者的判据不同：一个是 owner 的 `decide`，
+ * 一个是治理板块的 `admin`），本函数假定「已经判过、已经该归档了」。`markArchived` 的
+ * **最后**位置同理——它在这里，调用方没有机会把它挪到删除之前。
+ *
+ * ## 抛错语义
+ *
+ * - 成员 id 不是合法路径段 ⇒ **抛**（500 一类：库里数据坏了，不是客户端递错）。先**全部判完**
+ *   再动手：判一半才发现第三个人有问题，前两个人已经传完了——半成品状态。
+ * - 上传 / 删除失败 ⇒ 各自抛出（调用方的 `Effect.promise` 把它变成 defect）。
+ *   任何一步失败，`archived` 标记都**没落** ⇒ 项目看起来还没归档，重试即收敛（三个函数都幂等）。
+ */
+export async function archiveProject(deps: ArchiveProjectDeps, projectId: string): Promise<void> {
+  const members = await membersOf(deps.pg, projectId)
+  for (const member of members) {
+    if (!User.isSafePathSegment(member.userId)) {
+      throw new Error(`项目 ${projectId} 的成员 id 不是合法路径段：${JSON.stringify(member.userId)}`)
+    }
+  }
+
+  const targets = members.map((member) => ({
+    userId: member.userId,
+    directory: projectDirectory(deps.root, member.userId, projectId),
+  }))
+
+  // ⑥ 全员上传（只读沙箱 ＋ 只写 MinIO）。
+  await backupAll(targets, projectId, deps.minio)
+  // ⑦ **到这里才**全员删沙箱。两个函数之间那次 await 就是那条不变量本身（见文件头）。
+  await releaseAll(targets)
+  // ⑧ 标记最后落：中途任何一步失败，结果是「项目看起来还没归档」，重试即可——而不是
+  //    「文件已经删光、MinIO 也没备份、但界面上说归档完成了」。
+  await markArchived(deps.pg, { projectId, archivedAt: nowSeconds() })
 }
 
 /**

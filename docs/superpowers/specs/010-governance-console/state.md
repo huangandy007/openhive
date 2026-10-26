@@ -1,10 +1,66 @@
 # 实施进度 · 治理后台
 
 ## 当前任务
-T007 已交付（axe 新增 8 格全绿）。**下一项 T008**（数据项目权限），等用户 `next`。
+T008 已交付（axe 新增 8 格全绿）。**下一项 T009**（用量 / 成本看板，FR-008；读接口接 T004 的
+`analytics.report`），等用户 `next`。
 T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 
 ## 已完成
+
+- **T008** 数据项目权限（FR-007 / US4）
+  - 后端新增 `packages/opencode/src/server/openhive/governance-projects.ts`，四条出口：
+    `GET /openhive/governance/projects`（**全量**，含已归档）、`GET …/:id/members`、
+    `POST …/:id/members/remove`、`POST …/:id/archive`。板块 `data-project-perm`，
+    读口要 `read`、写口要 `admin`；授权**排在读体与配置检查之前**（`#004-09`，实测由
+    `-unconfigured` 文件里「只读角色归档 ⇒ 403 而不是 503」钉住）
+  - **FR-004 × FR-007 的冲突裁定**（用户 2026-10-26 认可「按专业建议」，落在这里备查）：
+    管理员可撤**普通成员**、可**归档**整个项目；**不能撤 owner**——owner 撤掉就留下无主项目，
+    破 005 的「项目永远有一个 owner」不变量，而修复它需要「转移所有权」这个 feature 没有的动作。
+    owner 调离 ⇒ 归档（全员转存备份 → 沙箱清空 → 冻结，权限一并收回）。`ProjectMembership.decide`
+    **一个字未改**：治理管理员不是成员，走的是 `authorizeGovernance(admin)`；「已归档名单冻结」
+    读的仍是 `auth.project_archive` 那一处事实（不是把 `decide` 的规则抄第二份）
+  - `packages/auth/src/project-member.ts` 新增**并集读面** `projectOverviews`：`project_meta`
+    ∪ `project_member` ∪ `project_archive` 的 id 并集——只看 `project_meta` 会让 0006 之前建的
+    项目从治理清单里**消失**（那是本 feature 最该看见的一批）。`memberCount` 在这里填 `0`
+    （而 `memberCountsOf` 缺席保留键不存在），差别写在函数注释里
+  - `archive.ts` 把 ⑤–⑧（成员 id 校验 → 全员上传 → 全员删沙箱 → 标记最后落）抽成
+    `archiveProject`，**005 与治理共用一份次序**（`#002-06` / `#004-01`：先数底层调用点，
+    `backupAll` / `releaseAll` / `markArchived` 今天各有两个调用者，仍只有一处写次序）
+  - 前端新增 `governance/project-api.ts`（同范式四出口 ＋ 严格解析）与
+    `governance/data-project-perm.tsx`（项目表 + 点「成员」展开名单；**撤销按钮只出现在 member
+    行**、已归档项目**一个动作都不画**；两个动作都过确认框且写明后果、失败不关框；列表与名单
+    **各一个代次守卫**，`#008-03`）；4 条 story（有数据 / 空 / 错误 / 归档确认框打开态）；
+    `console.tsx` / `console-host.tsx` / `console-connected.tsx` 接线（未注入 ⇒ 回落占位）
+  - 测试新增 **39 条**：`opencode/test/server/openhive-governance-projects.test.ts` 11
+    （真 PGlite ＋ 假 S3 ＋ 真 app；身份矩阵、撤销、归档、上传失败次序、重复归档）、
+    `…-unconfigured.test.ts` 2（独立 app，无 `OPENHIVE_MINIO_*`）、
+    `app/src/governance/project-api.test.ts` 13、`data-project-perm.test.tsx` 11、
+    `console.test.tsx` +2（接线 / 回落占位）
+  - 后端变异 B1–B4（均实得红并还原）：① 去掉「已归档 ⇒ 409」⇒ **1 红**；② 去掉 owner 守卫
+    ⇒ **1 红**（`Expected 409 / Received 200` ＋ 库行数变化）；③ 把 MinIO 配置检查提到授权之前
+    ⇒ **1 红**（`Expected 403 / Received 503`）；④ 把 `markArchived` 挪到管线最前 ⇒ **3 红**
+    （本 feature 1 条 ＋ 005 归档 2 条——共用函数没有把旧出口的不变量丢在注释里）
+  - 前端变异 F1–F4（均实得红并还原）：① 撤销按钮不再区分角色 ⇒ **2 红**（创建人行 / 冻结行）；
+    ② 已归档行照画归档按钮 ⇒ **1 红**；③ 去掉名单代次守卫 ⇒ **1 红**（切项目后旧回包占住面板）；
+    ④ 失败时关掉确认框 ⇒ **2 红**（409 / 503 两条「框不关」）
+  - 门禁实得：治理后端 **13 pass / 0 fail**；005 归档/找回/项目 **46 pass / 0 fail**；
+    005 成员/删除/改名/共享 **42 pass / 0 fail**；`test:components` 全量 **1433 pass / 0 fail**；
+    根 `bun run typecheck` **32/32 successful**；oxlint（本轮 5 个新前端文件）**0 warning / 0 error**；
+    `git diff --stat bun.lock` **无输出**
+  - **typecheck 抓到的真缺陷（记一笔）**：`archiveProject` / `加入时刻` 的 `pg` 参数先前写成
+    `OpenhivePg.Interface["pg"]`（那个**闭包**的类型），而运行时传的是 `deps.pg()` 的**返回值**
+    ——单测全绿、类型全红。改成 `ReturnType<OpenhivePg.Interface["pg"]>` 后 32/32
+  - **axe 实得**（2026-10-26）：`node e2e/a11y/storybook-axe-audit.ts "App/OpenHive/Governance/DataProjectPerm"`
+    （4 story × 浅/深 = **8 格**）⇒ **8 ✅ / 0 ❌**。另用真 Chromium 复核两条**容易哑绿的**：
+    归档确认框 story 里 `project-confirm` 真的挂了（文案含「归档后全员失权」）；有数据 story
+    真的画了 2 个项目行 / 3 个成员行 / 2 颗撤销钮（创建人没有）
+  - **缺口**：① 成员 id 不是合法路径段时的 **500 分支**没有用例守（要往库里塞坏 id）；
+    ② 「撤销后他沙箱里已下载的文件不删」只有文案、没有断言（那是 005 的既有行为，不是本出口的
+    副作用）；③ 前端确认框沿用治理模块手写 Kobalte Dialog（005 项目面板用的是 `useDialog()` ＋
+    `DialogV2`）——两套壳并存，属治理模块四页一致的既有选择，统一是另一笔裁定；
+    ④ 治理壳 `console.tsx` 仍无 story（同 T005–T007）；⑤ **真栈未跑**（同 009 的 `openai@6.39.1`
+    缺口）；⑥ `packages/app` 的 `test:unit` 仍是那 **27 fail**（既有 `jsxDEV` 预载问题 ＋
+    project-data 两条）：本轮**排除 `governance/**` 后仍 27 fail**，证据在此，与 T008 无关
 
 - **T007** AI 资产治理（FR-006 / US3）
   - 后端新增 `packages/opencode/src/server/openhive/governance-assets.ts`，两条出口：
@@ -281,4 +337,4 @@ T005 的 axe 1 格红仍在等设计裁定（A/B/C，未定）。
 （无）
 
 ## 最后更新
-2026-10-26（T007 交付）
+2026-10-26（T008 交付）

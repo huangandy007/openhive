@@ -90,7 +90,25 @@
   - 门禁：opencode 路由 18 pass、app 治理 99 pass、`test:components` 全量 1420 pass、
     根 typecheck 32/32、oxlint 0 warning；`bun.lock` **1 行**（workspace 依赖，非镜像污染）。
   - **axe 新增 8 格全绿**（含驳回确认框打开态）；唯一红仍是 T005「有数据 [light]」3 个 accent 标签。
-- [ ] T008 [P] [FE·新增] 实现数据项目权限（管理员兜底撤销/归档）[FR-007] [T003] [出参：管理员兜底撤销/归档]
+- [x] T008 [P] [FE·新增] 实现数据项目权限（管理员兜底撤销/归档）[FR-007] [T003] [出参：管理员兜底撤销/归档]
+  - 交付：内核四条出口（`governance-projects.ts`：全量项目列表 / 成员名单 / 兜底撤销 / 兜底归档）
+    ＋ `auth/project-member` 新增并集读面 `projectOverviews` ＋ 归档管线抽成 `archiveProject`
+    （005 与治理**共用一份次序**：全员传完才开删、标记最后落）＋ 前端 `project-api.ts` /
+    `data-project-perm.tsx` ＋ 4 条 story；接线 `console.tsx` / `console-host.tsx` /
+    `console-connected.tsx`。
+  - **FR-004 × FR-007 的冲突按下述裁定落地**（用户 2026-10-26 认可「按专业建议」）：管理员可撤
+    **普通成员**、可**归档**整个项目；**不能撤 owner**（会留下无主项目，破 005 的不变量「项目永远
+    有一个 owner」）——owner 调离一律走归档（全员转存备份 → 沙箱清空 → 冻结）。`decide` 的语义
+    **一个字未改**：治理管理员不是成员，走的是 `authorizeGovernance(admin)` ＋ 自己的边界。
+  - 测试新增 39 条（后端 13 / project-api 13 / 组件 11 / console 接线 2）；后端变异 B1–B4、
+    前端 F1–F4 均实得红并还原（B4 连带钉住 005 的两条次序用例，证明共用函数没有把旧出口的
+    不变量留在只有一份注释里）。
+  - 门禁：治理后端 13 pass、005 归档/找回/项目 46 pass、005 成员/删除/改名/共享 42 pass、
+    `test:components` 全量 1433 pass、`bun run typecheck` 32/32、oxlint 本批文件 0 warning；
+    `bun.lock` **0 行**。
+  - **axe 新增 8 格全绿**（4 条 story × light/dark，含归档确认框打开态）；另用真 Chromium 复核
+    「确认框真的开了」与「有数据 story 真画了 3 行成员 / 2 颗撤销钮」，避免 Portal 子树与异步
+    点击造成哑绿。已知红仍是 T005「有数据 [light]」3 个 accent 标签（等视觉裁定）。
 
 ## Phase 5: US5 用量 + 审计（P2）
 

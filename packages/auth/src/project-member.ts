@@ -553,6 +553,120 @@ export async function projectMetaOf(
   )
 }
 
+/** 治理后台「数据项目权限」列表的一行（010 T008 / FR-007 / US4）。 */
+export interface ProjectOverview {
+  readonly projectId: string
+  /** `project_meta` 缺席（0006 之前建的项目）⇒ `""`，由出口层决定怎么显示（不在这里编名字）。 */
+  readonly name: string
+  readonly type: string
+  readonly archived: boolean
+  /** Unix **秒**；未归档为 `null`（与 `archived` 的一致性由迁移那条 CHECK 钉死）。 */
+  readonly archivedAt: number | null
+  /**
+   * `role = owner` 那一行的 `user_id`。**没有成员行**的项目是 `null`，不是 `""`：
+   * 与 `archiveStatesOf` 同口径——「没有那一行」与「那一行说自己是谁」是两件事。
+   */
+  readonly ownerId: string | null
+  /** 成员行数（含 owner）。**零成员就是 `0`**——见下方函数注释与 `memberCountsOf` 的区别。 */
+  readonly memberCount: number
+}
+
+/**
+ * **全部**数据项目的一屏概览（010 T008 治理后台的列表，FR-007 / US4「管理员可见全部数据项目，
+ * 含已归档」）。
+ *
+ * ## 名单是三张表的**并集**，不是 `project_meta` 一张
+ *
+ * 三张表回答的是三件事，各有各的缺席：`project_meta` 给名字与类型（0006 之前建的项目没有行）、
+ * `project_member` 给名单与 owner（项目建好后一直没人加入时没有行）、`project_archive` 给归档态
+ * （从没归档过就没有行）。**只读 `project_meta`** 会让「有成员但没有名字行」的旧项目在治理列表里
+ * 整行消失——管理员看不见，也就兜不了底（这正是本出口存在的理由）。
+ * 并集的代价是三条查询 ＋ 一次归并；写成一条 `full outer join` 也行，但三张表都没有外键
+ * （`0005_project_member.sql:33-37` 逐字写着跨库**不能**有），并集的口径反而更直白。
+ *
+ * ## 排序：`project_id` 升序
+ *
+ * 治理列表没有「业务上该按什么排」的定义（最近归档？名字？成员数？都只是偏好）。
+ * 这里只给**确定性**：同一份库每次取出同样的顺序，前端与测试都不依赖「碰巧的顺序」
+ * （与 `handleList` 那条「次级键是语义不是修饰」同一取向）。
+ *
+ * ## `memberCount` 为什么在这里补 0，而 `memberCountsOf` 不补
+ *
+ * `memberCountsOf` 是**批量按 id 问**的辅助，键缺席是它的口径（调用方自己决定默认值）。
+ * 本函数不是那个形状：它产出的就是一个**完整的一行**，`memberCount` 是这一行的列——缺列在
+ * 这里没有含义（同 `handleList` 对 `stale` / `directory` 的「算出来的」口径）。
+ * ⚠️ 与它并列的 `ownerId` 恰恰相反：那一个是「仓库里有没有那一行」的事实，缺席必须可见。
+ */
+export async function projectOverviews(db: ProjectMemberTarget): Promise<ProjectOverview[]> {
+  // 三条独立查询而不是一条 join：三张表之间没有外键（见函数头），而 PGlite 夹具下
+  // 「同句 SQL × 两个客户端」的坑（`42P05`）与这里无关——三条查询走的是同一个客户端。
+  const metas = rowsOf(
+    await db.execute(sql`
+      select project_id, name, type
+      from auth.project_meta
+    `),
+  )
+  // `order by time_created, user_id` 与 `membersOf` 同一条（同秒成员靠 `user_id` 定序）：
+  // owner 的识别不依赖顺序（部分唯一索引保证至多一行），但保持同源让两处读法一眼可对。
+  const members = rowsOf(
+    await db.execute(sql`
+      select project_id, user_id, role
+      from auth.project_member
+      order by time_created, user_id
+    `),
+  )
+  const archives = rowsOf(
+    await db.execute(sql`
+      select project_id, archived, archived_at
+      from auth.project_archive
+    `),
+  )
+
+  const 元 = new Map(
+    metas.map((row) => [String(row.project_id), { name: String(row.name), type: String(row.type) }]),
+  )
+  const 成员 = new Map<string, { count: number; ownerId: string | null }>()
+  for (const row of members) {
+    const id = String(row.project_id)
+    const 之前 = 成员.get(id) ?? { count: 0, ownerId: null }
+    成员.set(id, {
+      count: 之前.count + 1,
+      // 部分唯一索引 `project_member_single_owner` 保证至多一个 owner ⇒ `??` 只在「还没有」时成立。
+      ownerId: 之前.ownerId ?? (String(row.role) === "owner" ? String(row.user_id) : null),
+    })
+  }
+  const 归档 = new Map(
+    archives.map((row) => [
+      String(row.project_id),
+      { archived: asBool(row.archived), archivedAt: row.archived_at === null ? null : Number(row.archived_at) },
+    ]),
+  )
+
+  const ids = [...元.keys()]
+  const 已见 = new Set(ids)
+  for (const id of [...成员.keys(), ...归档.keys()]) {
+    if (已见.has(id)) continue
+    已见.add(id)
+    ids.push(id)
+  }
+
+  return ids
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((id) => {
+      const 成员行 = 成员.get(id)
+      const 归档行 = 归档.get(id)
+      return {
+        projectId: id,
+        name: 元.get(id)?.name ?? "",
+        type: 元.get(id)?.type ?? "",
+        archived: 归档行?.archived ?? false,
+        archivedAt: 归档行?.archivedAt ?? null,
+        ownerId: 成员行?.ownerId ?? null,
+        memberCount: 成员行?.count ?? 0,
+      }
+    })
+}
+
 /**
  * 把 id 列表编成 SQL 的 `in (...)` 参数列。
  *

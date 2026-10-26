@@ -32,6 +32,7 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           accountApi={props.accountApi}
           orgApi={props.orgApi}
           assetApi={props.assetApi}
+          projectApi={props.projectApi}
           selfId={props.selfId}
         />
       ),
@@ -152,6 +153,56 @@ describe("治理后台 · 全屏骨架", () => {
 
     expect(读列表).toBe(1)
     expect(root.querySelector('[data-slot="asset-row"][data-id="a1"]')).not.toBeNull()
+  })
+
+  test("接了数据项目接口 ⇒「数据项目权限」页是真的项目表，不是占位（T008 接线）", async () => {
+    let 读列表 = 0
+    const root = 挂上({
+      projectApi: {
+        list: async () => {
+          读列表 += 1
+          return {
+            kind: "ok",
+            value: [
+              {
+                id: "p1",
+                name: "某专案资金分析",
+                type: "shared",
+                archived: false,
+                archivedAt: null,
+                ownerId: "u-owner",
+                ownerName: "甲民警",
+                memberCount: 3,
+              },
+            ],
+          }
+        },
+        members: async () => ({ kind: "failed", message: "本用例不开名单" }),
+        removeMember: async () => ({ kind: "failed", message: "本用例不撤销" }),
+        archive: async () => ({ kind: "failed", message: "本用例不归档" }),
+      },
+    })
+    await flush()
+
+    root.querySelector<HTMLButtonElement>('[data-slot="governance-nav"] button[data-section="data-project-perm"]')!.click()
+    await flush()
+    await flush()
+
+    expect(读列表).toBe(1)
+    expect(root.querySelector('[data-slot="project-row"][data-id="p1"]')).not.toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).not.toContain("将在后续任务接入")
+  })
+
+  test("没接数据项目接口 ⇒ 该页回落占位（不白屏、不画假表）", async () => {
+    const root = 挂上()
+    await flush()
+
+    root.querySelector<HTMLButtonElement>('[data-slot="governance-nav"] button[data-section="data-project-perm"]')!.click()
+    await flush()
+
+    expect(页标题(root)).toBe("数据项目权限")
+    expect(root.querySelector('[data-slot="project-row"]')).toBeNull()
+    expect(root.querySelector('[data-slot="governance-content"]')?.textContent).toContain("将在后续任务接入")
   })
 
   test("返回工作台 ⇒ 调 onClose", async () => {

@@ -13,6 +13,7 @@ import type { AccountApi } from "./account-api"
 import type { AssetApi } from "./asset-api"
 import { GovernanceConsole } from "./console"
 import type { OrgApi } from "./org-api"
+import type { ProjectApi } from "./project-api"
 
 export interface GovernanceConsoleHostProps {
   open: boolean
@@ -25,6 +26,8 @@ export interface GovernanceConsoleHostProps {
   orgApi?: OrgApi
   /** AI 资产治理接口（T007）。省略 = 该页显示占位。 */
   assetApi?: AssetApi
+  /** 数据项目权限接口（T008）。省略 = 该页显示占位。 */
+  projectApi?: ProjectApi
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
@@ -70,6 +73,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           accountApi={props.accountApi}
           orgApi={props.orgApi}
           assetApi={props.assetApi}
+          projectApi={props.projectApi}
           selfId={props.selfId}
         />
       </Show>

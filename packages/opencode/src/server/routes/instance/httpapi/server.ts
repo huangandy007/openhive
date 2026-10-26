@@ -131,6 +131,7 @@ import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
+import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
@@ -400,6 +401,18 @@ export function createRoutes(
     // `process.env.OPENHIVE_ASSETS_ROOT` 每请求读一次，与 009 的出口同一个约定。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T007）。
     OpenhiveGovernanceAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 数据项目权限出口（010 T008）：全部项目 / 名单 / 兜底撤销成员 / 兜底归档（FR-007）。
+    // 授权是治理板块的 `data-project-perm`（**不是** 005 的成员身份 `decide`——管理员按定义不是
+    // 项目成员，见该模块文件头）；写动作复用 `removeMember` 与 `archiveProject`。
+    // 三份服务与上面几项**同一个实例**：沙箱根（归档要给每个成员算目录，与建项目/归档同一处定义）、
+    // MinIO 配置（与归档出口共用同一个 `MinioConfig`，两处漂了就是「一个说配了一个说没配」）、
+    // 业务 PG（同一批 `auth.project_member` / `auth.project_archive` 行）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T008）。
+    OpenhiveGovernanceProjects.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhiveArchive.MinioConfig.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
     // openhive 成员管理出口（005 T021）：名单 / 邀请 / 移除 / 退群（FR-004）。
     // 只供一个服务——业务 PG（与上面两项共用**同一个**客户端实例，理由同 T015 那条：
     // 它们读的是同一批 `auth.project_member` / `auth.project_archive` 行）。

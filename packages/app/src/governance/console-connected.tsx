@@ -17,6 +17,7 @@ import { createAccountApi } from "./account-api"
 import { createAssetApi } from "./asset-api"
 import { GovernanceConsoleHost } from "./console-host"
 import { createOrgApi } from "./org-api"
+import { createProjectApi } from "./project-api"
 
 export interface GovernanceConsoleConnectedProps {
   open: boolean
@@ -49,6 +50,9 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
   /** AI 资产治理接口（T007）：同上，无状态薄壳，模块内建一次。 */
   const 资产接口 = createAssetApi()
 
+  /** 数据项目权限接口（T008）：同上，无状态薄壳，模块内建一次。 */
+  const 项目接口 = createProjectApi()
+
   return (
     <GovernanceConsoleHost
       open={props.open}
@@ -57,6 +61,7 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
       accountApi={账号接口}
       orgApi={组织接口}
       assetApi={资产接口}
+      projectApi={项目接口}
       selfId={会话?.identity?.id}
     >
       {props.children}
