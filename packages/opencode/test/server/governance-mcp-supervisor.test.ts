@@ -1,12 +1,34 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Fiber } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { Layer, Effect, Fiber } from "effect"
+import { HttpClient } from "effect/unstable/http"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
+import { Npm } from "@opencode-ai/core/npm"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Account } from "@/account/account"
+import { Auth } from "@/auth"
+import { Config } from "@/config/config"
+import { Env } from "@/env"
 import {
   backoffMs,
+  createTreeStopper,
   governanceCommand,
+  KILL_GRACE_MS,
   parseReadyLine,
+  PORT_ENV,
+  readyConfigPatch,
+  spawnGovernanceMcp,
   supervise,
   type Launched,
 } from "@/server/openhive/governance-mcp-supervisor"
+import { AccountTest } from "../fake/account"
+import { AuthTest } from "../fake/auth"
+import { NpmTest } from "../fake/npm"
 
 /**
  * 治理 MCP 监督器的判据（不需要真进程）：
@@ -14,6 +36,7 @@ import {
  * ② 退避 1s→60s 封顶；
  * ③ 命令三态：off / 显式命令 / 缺省命令 / 坏 JSON（**不崩**，交给上层记 WARN）；
  * ④ 循环：就绪 ⇒ onReady；退出 ⇒ 退避后重启；就绪超时 ⇒ stop + 退避。
+ * ⑤ 真进程：跨 chunk 就绪行、spawn 失败、幂等 stop、整树收尾（孙进程）。
  */
 describe("parseReadyLine", () => {
   test("合法行给出端口", () => {
@@ -75,8 +98,11 @@ function deferred<T>() {
 
 function scripted(scripts: ReadonlyArray<{ port?: number; exitBeforeReady?: boolean }>) {
   const handles: Array<{ ready: ReturnType<typeof deferred<number>>; exited: ReturnType<typeof deferred<void>>; stops: number }> = []
+  /** `supervise` 每轮传给 `launch` 的端口实参（钉住「重启沿用上一次端口」）。 */
+  const ports: Array<number | undefined> = []
   let index = 0
-  const launch = (): Launched => {
+  const launch = (port?: number): Launched => {
+    ports.push(port)
     const script = scripts[index++]!
     const ready = deferred<number>()
     const exited = deferred<void>()
@@ -105,7 +131,7 @@ function scripted(scripts: ReadonlyArray<{ port?: number; exitBeforeReady?: bool
       },
     }
   }
-  return { launch, handles }
+  return { launch, handles, ports }
 }
 
 const until = async (predicate: () => boolean, label: string) => {
@@ -116,69 +142,60 @@ const until = async (predicate: () => boolean, label: string) => {
   throw new Error(`等待超时：${label}`)
 }
 
+const untilAsync = async (predicate: () => Promise<boolean>, label: string) => {
+  for (let i = 0; i < 200; i += 1) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`等待超时：${label}`)
+}
+
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`等待超时：${label}`)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 describe("supervise", () => {
-  test("就绪 ⇒ onReady；退出 ⇒ 按退避重启（重启前不换端口）", async () => {
-    const { launch, handles } = scripted([{ port: 4101 }, { port: 4101 }])
+  test("就绪 ⇒ onReady；退出 ⇒ 按退避重启（重启沿用上一次端口）", async () => {
+    const { launch, handles, ports } = scripted([{ port: 4101 }, { port: 4101 }])
     const readyPorts: number[] = []
     const sleeps: number[] = []
 
     await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          supervise({
-            launch: () => launch(),
-            onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
-            onFailure: () => Effect.void,
-            sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
-            startTimeoutMs: 200,
-          }),
-        )
-        yield* Effect.promise(() => until(() => readyPorts.length === 1, "第一次就绪"))
-        handles[0]!.exited.resolve()
-        yield* Effect.promise(() => until(() => readyPorts.length === 2, "第二次就绪"))
-        yield* Fiber.interrupt(fiber)
-      }),
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            supervise({
+              launch,
+              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onFailure: () => Effect.void,
+              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              startTimeoutMs: 200,
+            }),
+          )
+          yield* Effect.promise(() => until(() => readyPorts.length === 1, "第一次就绪"))
+          handles[0]!.exited.resolve()
+          yield* Effect.promise(() => until(() => readyPorts.length === 2, "第二次就绪"))
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
     )
 
     expect(readyPorts).toEqual([4101, 4101])
+    // 第一次没有「上一次的端口」；第二次必须沿用 4101（不能换成 undefined）。
+    expect(ports.slice(0, 2)).toEqual([undefined, 4101])
     expect(sleeps[0]).toBe(1000)
   })
 
   test("就绪超时 ⇒ stop 掉子进程，并按退避重试", async () => {
-    const { launch, handles } = scripted([{}, { port: 4102 }])
-    const failures: string[] = []
-    const readyPorts: number[] = []
-    const sleeps: number[] = []
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          supervise({
-            launch: () => launch(),
-            onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
-            onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
-            sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
-            startTimeoutMs: 30,
-          }),
-        )
-        yield* Effect.promise(() => until(() => readyPorts.length === 1, "超时后重试成功"))
-        yield* Fiber.interrupt(fiber)
-      }),
-    )
-
-    expect(handles[0]!.stops).toBe(1)
-    expect(failures[0]).toContain("超时")
-    expect(readyPorts).toEqual([4102])
-    expect(sleeps[0]).toBe(1000)
-  })
-
-  /**
-   * 补齐 `waitReady` 里 `child.ready.catch(...)` 这条不可省的分支：真进程缺 `PG_*` 时会
-   * **报错退出且不打就绪行**（Task 2 的既定行为）。若这里直接 `await child.ready`，拒绝会
-   * 变成 Effect defect，把整个监督器打死——正是「起不来就退避重试」要防的那条。
-   */
-  test("就绪前退出 ⇒ 不打死监督器，退避后重启", async () => {
-    const { launch, handles } = scripted([{ exitBeforeReady: true }, { port: 4103 }])
+    const { launch, handles, ports } = scripted([{}, { port: 4102 }])
     const failures: string[] = []
     const readyPorts: number[] = []
     const sleeps: number[] = []
@@ -188,7 +205,44 @@ describe("supervise", () => {
         Effect.gen(function* () {
           const fiber = yield* Effect.forkScoped(
             supervise({
-              launch: () => launch(),
+              launch,
+              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
+              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              startTimeoutMs: 30,
+            }),
+          )
+          yield* Effect.promise(() => until(() => readyPorts.length === 1, "超时后重试成功"))
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
+    )
+
+    expect(handles[0]!.stops).toBe(1)
+    expect(failures[0]).toContain("超时")
+    expect(readyPorts).toEqual([4102])
+    // 超时那一轮没拿到端口 ⇒ 下一轮仍是 undefined（不会凭空沿用坏端口）。
+    expect(ports.slice(0, 2)).toEqual([undefined, undefined])
+    expect(sleeps[0]).toBe(1000)
+  })
+
+  /**
+   * `waitReady` 必须把「就绪前退出」与「就绪超时」分开：真进程缺 `PG_*` 时会**报错退出且
+   * 不打就绪行**（Task 2 的既定行为），200ms 就崩却报「15000ms 超时」会把死因藏起来；
+   * 而且直接 `await child.ready` 的拒绝会变成 Effect defect，把监督器整个打死。
+   */
+  test("就绪前退出 ⇒ 报「就绪前退出」而不是超时，退避后重启", async () => {
+    const { launch, handles, ports } = scripted([{ exitBeforeReady: true }, { port: 4103 }])
+    const failures: string[] = []
+    const readyPorts: number[] = []
+    const sleeps: number[] = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            supervise({
+              launch,
               onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
               onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
@@ -203,8 +257,303 @@ describe("supervise", () => {
 
     // 已退出的进程不再 kill（真实 `stop()` 也如此）。
     expect(handles[0]!.stops).toBe(0)
-    expect(failures[0]).toContain("就绪超时")
+    expect(failures[0]).toContain("就绪前退出")
+    expect(failures[0]).not.toContain("超时")
     expect(readyPorts).toEqual([4103])
     expect(sleeps[0]).toBe(1000)
+  })
+
+  test("稳定运行 ≥60s 后崩溃 ⇒ 退避计数归零（now 注入）", async () => {
+    const { launch, handles, ports } = scripted([
+      { port: 4201 },
+      { port: 4202 },
+      { port: 4203 },
+      { port: 4204 },
+      { port: 4205 },
+    ])
+    const times = [0, 1000, 2000, 3000, 4000, 100_000, 110_000, 111_000, 120_000, 121_000]
+    const readyPorts: number[] = []
+    const sleeps: number[] = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            supervise({
+              launch,
+              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onFailure: () => Effect.void,
+              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              startTimeoutMs: 200,
+              now: () => times.shift()!,
+            }),
+          )
+          for (const round of [1, 2, 3, 4]) {
+            yield* Effect.promise(() => until(() => readyPorts.length === round, `第 ${round} 次就绪`))
+            handles[round - 1]!.exited.resolve()
+          }
+          // 第 4 轮的退避（2000）也要落袋，否则中断可能抢在 `sleep` 之前。
+          yield* Effect.promise(() => until(() => sleeps.length >= 4, "第 4 次退避"))
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
+    )
+
+    // 不带归零应是 1000/2000/4000/8000；第 3 轮跑了 96s ⇒ 归零，第 4 轮回到 2000。
+    expect(sleeps.slice(0, 4)).toEqual([1000, 2000, 1000, 2000])
+    expect(ports.slice(0, 4)).toEqual([undefined, 4201, 4202, 4203])
+  })
+})
+
+describe("createTreeStopper", () => {
+  test("POSIX：SIGTERM 进程组 → 宽限后 SIGKILL；stop 幂等", () => {
+    const signals: Array<[number, string]> = []
+    let scheduled: { callback: () => void; ms: number; cleared: number } | undefined
+    const stopper = createTreeStopper(4242, {
+      platform: "linux",
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      schedule: (callback, ms) => {
+        const handle = { callback, ms, cleared: 0 }
+        scheduled = handle
+        return { clear: () => void (handle.cleared += 1) }
+      },
+    })
+
+    stopper.stop()
+    stopper.stop()
+
+    // 以进程组为靶：-pid。
+    expect(signals).toEqual([[-4242, "SIGTERM"]])
+    expect(scheduled?.ms).toBe(KILL_GRACE_MS)
+    scheduled!.callback()
+    expect(signals).toEqual([
+      [-4242, "SIGTERM"],
+      [-4242, "SIGKILL"],
+    ])
+  })
+
+  test("cancel 撤掉待发 SIGKILL；force 立即 SIGKILL 且可与 stop 叠加", () => {
+    const signals: Array<[number, string]> = []
+    let cleared = 0
+    const stopper = createTreeStopper(4243, {
+      platform: "linux",
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      schedule: () => ({ clear: () => void (cleared += 1) }),
+    })
+    stopper.stop()
+    stopper.cancel()
+    expect(cleared).toBe(1)
+    stopper.force()
+    expect(signals).toEqual([
+      [-4243, "SIGTERM"],
+      [-4243, "SIGKILL"],
+    ])
+  })
+
+  test("win32：taskkill /T /F，一次且幂等", () => {
+    const killed: number[] = []
+    const stopper = createTreeStopper(4244, { platform: "win32", taskkill: (pid) => void killed.push(pid) })
+    stopper.stop()
+    stopper.stop()
+    stopper.force()
+    expect(killed).toEqual([4244])
+  })
+
+  test("pid 未知（spawn 失败）⇒ 什么都不做", () => {
+    const signals: Array<[number, string]> = []
+    const stopper = createTreeStopper(undefined, {
+      platform: "linux",
+      kill: (pid, signal) => void signals.push([pid, signal]),
+    })
+    stopper.stop()
+    stopper.force()
+    expect(signals).toEqual([])
+  })
+})
+
+describe("spawnGovernanceMcp", () => {
+  const bun = process.execPath
+
+  const readyScript = (body: string) => [bun, "-e", body]
+
+  test("就绪行跨 chunk 拼接后仍能解析", async () => {
+    const launched = spawnGovernanceMcp({
+      command: readyScript(
+        [
+          `process.stdout.write('GOVERNANCE_MCP_READY {"port":41')`,
+          `setTimeout(() => process.stdout.write('234}\\n'), 30)`,
+          `setInterval(() => {}, 1000)`,
+        ].join("\n"),
+      ),
+    })
+    try {
+      expect(await withTimeout(launched.ready, 5_000, "跨 chunk 就绪")).toBe(41234)
+    } finally {
+      launched.stop()
+      await withTimeout(launched.exited, 5_000, "子进程退出")
+    }
+  })
+
+  test("PORT_ENV：缺省强制 0（不继承父进程残留），显式端口透传", async () => {
+    const echo = [
+      `const port = Number(process.env.${PORT_ENV})`,
+      `process.stdout.write('GOVERNANCE_MCP_READY {"port":' + (port === 0 ? 4111 : port) + '}\\n')`,
+      `setInterval(() => {}, 1000)`,
+    ].join("\n")
+
+    const previous = process.env[PORT_ENV]
+    process.env[PORT_ENV] = "54321"
+    try {
+      const inherited = spawnGovernanceMcp({ command: readyScript(echo) })
+      try {
+        expect(await withTimeout(inherited.ready, 5_000, "缺省端口")).toBe(4111)
+      } finally {
+        inherited.stop()
+        await withTimeout(inherited.exited, 5_000, "子进程退出")
+      }
+    } finally {
+      if (previous === undefined) delete process.env[PORT_ENV]
+      else process.env[PORT_ENV] = previous
+    }
+
+    const explicit = spawnGovernanceMcp({ command: readyScript(echo), port: 41234 })
+    try {
+      expect(await withTimeout(explicit.ready, 5_000, "显式端口")).toBe(41234)
+    } finally {
+      explicit.stop()
+      await withTimeout(explicit.exited, 5_000, "子进程退出")
+    }
+  })
+
+  test("spawn 失败（命令不存在）⇒ ready 拒绝 + exited 兑现，不抛未捕获异常", async () => {
+    const launched = spawnGovernanceMcp({ command: ["openhive-definitely-missing-command-xyz"] })
+    const error = await withTimeout(
+      launched.ready.then(
+        () => undefined,
+        (reason) => reason as Error,
+      ),
+      5_000,
+      "spawn 失败",
+    )
+    expect(error).toBeInstanceOf(Error)
+    await withTimeout(launched.exited, 5_000, "exited 兑现")
+    launched.stop()
+    await withTimeout(launched.exited, 5_000, "stop 后 exited 仍兑现")
+  })
+
+  test("stop() 幂等：连调两次不抛，exited 只兑现一次", async () => {
+    const launched = spawnGovernanceMcp({ command: readyScript("setInterval(() => {}, 1000)") })
+    launched.stop()
+    launched.stop()
+    await withTimeout(launched.exited, 5_000, "幂等 stop")
+    launched.stop()
+  })
+
+  /**
+   * `#010-03` 的实测形态：直接子进程可能是包装器，脚本跑在孙进程。只杀直接子进程时
+   * 孙进程会继续跑——用「孙进程持续写文件」当探针，stop 之后文件必须不再增长。
+   */
+  test("stop() 收掉整棵进程树：孙进程不再写盘", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openhive-supervisor-tree-"))
+    const file = path.join(dir, "ticks.txt")
+    const grandchildFile = path.join(dir, "grandchild.cjs")
+    // 直接子进程是**包装器**（win32 `cmd.exe /c`、POSIX `sh -c '… & wait'`），
+    // 真正写盘的 bun 是孙进程。只杀直接子进程时孙进程会继续写。
+    // argv 里统一用 `/`：bun 1.4.3 在 win32 上会把 argv 里的反斜杠当转义吃掉（实测
+    // `C:\Users\…` 变成 `C:Users…`）；脚本文件内容里的反斜杠不受影响。
+    const bun = process.execPath.replaceAll("\\", "/")
+    const grandchild = grandchildFile.replaceAll("\\", "/")
+    const command =
+      process.platform === "win32"
+        ? ["cmd.exe", "/c", bun, grandchild]
+        : ["sh", "-c", '"$0" "$1" & wait', bun, grandchild]
+    const previous = process.env.OPENHIVE_TEST_TICKS
+    process.env.OPENHIVE_TEST_TICKS = file
+    let launched: Launched | undefined
+    try {
+      await fs.writeFile(
+        grandchildFile,
+        [
+          `const fs = require("node:fs")`,
+          `let n = 0`,
+          `const t = setInterval(() => { fs.appendFileSync(process.env.OPENHIVE_TEST_TICKS, "x"); if (++n >= 200) clearInterval(t) }, 25)`,
+        ].join("\n"),
+      )
+
+      launched = spawnGovernanceMcp({ command })
+      await withTimeout(
+        untilAsync(async () => {
+          try {
+            return (await fs.stat(file)).size > 0
+          } catch {
+            return false
+          }
+        }, "孙进程开始写"),
+        5_000,
+        "孙进程开始写",
+      )
+
+      launched.stop()
+      await withTimeout(launched.exited, 5_000, "包装进程退出")
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      const settled = (await fs.stat(file)).size
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect((await fs.stat(file)).size).toBe(settled)
+    } finally {
+      launched?.stop()
+      if (previous === undefined) delete process.env.OPENHIVE_TEST_TICKS
+      else process.env.OPENHIVE_TEST_TICKS = previous
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("readyConfigPatch / layer", () => {
+  const configLayer = LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, Env.node, CrossSpawnSpawner.node]), [
+    [Auth.node, AuthTest.empty],
+    [Account.node, AccountTest.empty],
+    [Npm.node, NpmTest.noop],
+    [
+      httpClient,
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("unexpected http request")),
+      ),
+    ],
+  ])
+
+  test("patch 形状：remote + loopback URL", () => {
+    expect(readyConfigPatch(41234)).toEqual({
+      mcp: { "openhive-governance": { type: "remote", url: "http://127.0.0.1:41234/mcp" } },
+    })
+  })
+
+  test("updateGlobal 幂等：连写两次 changed=false 且文件字节不变", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openhive-supervisor-config-"))
+    const previous = Global.Path.config as string
+    ;(Global.Path as { config: string }).config = dir
+    const file = path.join(dir, "opencode.jsonc")
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const config = yield* Config.Service
+          const first = yield* config.updateGlobal(readyConfigPatch(41234))
+          expect(first.changed).toBe(true)
+          const before = yield* Effect.promise(() => fs.readFile(file, "utf8"))
+          expect(JSON.parse(before).mcp["openhive-governance"]).toEqual({
+            type: "remote",
+            url: "http://127.0.0.1:41234/mcp",
+          })
+
+          const second = yield* config.updateGlobal(readyConfigPatch(41234))
+          expect(second.changed).toBe(false)
+          const after = yield* Effect.promise(() => fs.readFile(file, "utf8"))
+          expect(after).toBe(before)
+        }).pipe(Effect.scoped, Effect.provide(configLayer)),
+      )
+    } finally {
+      ;(Global.Path as { config: string }).config = previous
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 })

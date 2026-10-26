@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 
 /**
@@ -23,7 +23,11 @@ import { Config } from "@/config/config"
  *
  * - 起不来 / 反复崩 / 15s 没就绪 ⇒ WARN 日志 + 1s/2s/4s…60s 退避重启；
  *   治理工具对模型**不可见**，会话本身照常可用；
- * - 内核退出 ⇒ 作用域收尾把子进程按进程树收掉（`#010-03`：只杀包装进程会留下占端口的子进程）；
+ * - 内核退出 ⇒ 收尾**整棵进程树**：POSIX 用 `detached` 进程组 + `kill(-pid)`（SIGTERM→5s→
+ *   SIGKILL），win32 用 `taskkill /PID <pid> /T /F`；另有 `process.on("exit")` 里的同步兜底
+ *   （内核顶层 `index.ts` 无条件 `process.exit()`，作用域 finalizer 不保证跑完）。
+ *   `#010-03`：只杀包装进程会留下占端口的子进程。**注意**：本机（win32）实测 `bun` 是包装器、
+ *   脚本在孙进程；Linux 上的进程形态**未验证**，别把「单进程」当结论。
  * - 重启时**沿用上一次的端口**，已下发的配置就不会指向死端口。
  *
  * ⚠️ 已知边界：子进程重启后，**已建立的实例**（`InstanceState` 里缓存的 MCP state）不会重建
@@ -41,6 +45,8 @@ export const START_TIMEOUT_MS = 15_000
 export const MAX_BACKOFF_MS = 60_000
 /** 稳定跑过这么久再崩 ⇒ 退避计数归零（否则「起—崩—起」永远是 1s）。 */
 export const RESET_BACKOFF_AFTER_MS = 60_000
+/** SIGTERM 之后等这么久再 SIGKILL（仅 POSIX；win32 的 `taskkill /F` 是立即的）。 */
+export const KILL_GRACE_MS = 5_000
 
 export function parseReadyLine(line: string): number | undefined {
   const trimmed = line.trim()
@@ -96,6 +102,102 @@ export interface Launched {
   stop(): void
 }
 
+/** 定时器句柄；`clear()` 用于撤掉尚未触发的 SIGKILL。 */
+export interface ScheduleHandle {
+  clear(): void
+}
+
+export interface ProcessTreeDeps {
+  readonly platform?: NodeJS.Platform
+  /** 等价于 `process.kill(pid, signal)`；测试注入用。 */
+  readonly kill?: (pid: number, signal: NodeJS.Signals) => unknown
+  /** win32 整树强杀；测试注入用。 */
+  readonly taskkill?: (pid: number) => void
+  readonly graceMs?: number
+  readonly schedule?: (callback: () => void, ms: number) => ScheduleHandle
+}
+
+export interface TreeStopper {
+  /** 幂等：重复调用只发一次信号。 */
+  stop(): void
+  /** 立即强杀（`process.on("exit")` 同步兜底用；可与 `stop()` 叠加）。 */
+  force(): void
+  /** 子进程已退出：撤掉待发的 SIGKILL，避免 pid 复用后误杀。 */
+  cancel(): void
+}
+
+const defaultSchedule = (callback: () => void, ms: number): ScheduleHandle => {
+  const timer = setTimeout(callback, ms)
+  timer.unref()
+  return { clear: () => clearTimeout(timer) }
+}
+
+const taskkillTree = (pid: number) => {
+  try {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
+  } catch {
+    // 进程已退出 / taskkill 不可用：没有可收的东西。
+  }
+}
+
+/**
+ * 进程树收尾器（`#010-03`）：本机实测 `bun` 是包装器，脚本跑在孙进程——只 kill 直接子进程
+ * 会留下「孙进程活着、端口仍应答」的下一次 EADDRINUSE。
+ *
+ * - POSIX：spawn 时 `detached: true` 让子进程成为进程组组长，信号发 `-pid` 打整组；
+ *   SIGTERM 后 `graceMs` 再 SIGKILL（定时器 `unref()`，不拖住事件循环）。
+ * - win32：没有可捕获的 SIGTERM，直接 `taskkill /PID <pid> /T /F`。
+ */
+export function createTreeStopper(pid: number | undefined, deps: ProcessTreeDeps = {}): TreeStopper {
+  const platform = deps.platform ?? process.platform
+  const kill = deps.kill ?? ((target: number, signal: NodeJS.Signals) => process.kill(target, signal))
+  const taskkill = deps.taskkill ?? taskkillTree
+  const schedule = deps.schedule ?? defaultSchedule
+  const signal = (target: number, sig: NodeJS.Signals) => {
+    try {
+      kill(target, sig)
+    } catch {
+      // 已退出 / 进程组已不存在。
+    }
+  }
+  let stopped = false
+  let forced = false
+  let timer: ScheduleHandle | undefined
+  const cancel = () => {
+    timer?.clear()
+    timer = undefined
+  }
+  return {
+    stop: () => {
+      if (stopped || pid === undefined) return
+      stopped = true
+      if (platform === "win32") {
+        taskkill(pid)
+        return
+      }
+      signal(-pid, "SIGTERM")
+      timer = schedule(() => {
+        timer = undefined
+        signal(-pid, "SIGKILL")
+      }, deps.graceMs ?? KILL_GRACE_MS)
+    },
+    force: () => {
+      if (forced || pid === undefined) return
+      if (platform === "win32") {
+        // win32 的 `stop()` 本身就是 `/T /F` 强杀，已经收过就不再重复。
+        if (stopped) return
+        forced = true
+        taskkill(pid)
+        return
+      }
+      forced = true
+      cancel()
+      signal(-pid, "SIGKILL")
+    },
+    cancel,
+  }
+}
+
 export function spawnGovernanceMcp(input: {
   readonly command: readonly string[]
   readonly cwd?: string
@@ -105,9 +207,12 @@ export function spawnGovernanceMcp(input: {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     env: {
       ...process.env,
-      ...(input.port === undefined ? {} : { [PORT_ENV]: String(input.port) }),
+      // 首次启动显式给 0（系统分配）：不把父进程里残留的值当成「上次的端口」。
+      [PORT_ENV]: String(input.port ?? 0),
     },
     stdio: ["ignore", "pipe", "pipe"],
+    // POSIX 下让子进程当进程组组长，收尾时才能 `kill(-pid)` 打整组。
+    detached: process.platform !== "win32",
   })
 
   let settleReady: ((port: number) => void) | undefined
@@ -134,32 +239,61 @@ export function spawnGovernanceMcp(input: {
   child.stderr?.setEncoding("utf8")
   child.stderr?.on("data", (chunk: string) => process.stderr.write(chunk))
 
+  const stopper = createTreeStopper(child.pid)
+  let settled = false
+  let resolveExit: (() => void) | undefined
   const exited = new Promise<void>((resolve) => {
-    child.once("exit", () => {
-      failReady?.(new Error("治理 MCP 在就绪前退出"))
-      resolve()
-    })
+    resolveExit = resolve
   })
+  // 内核顶层无条件 `process.exit()`：作用域 finalizer 不保证跑完，这里同步兜底强杀整棵树。
+  const onProcessExit = () => stopper.force()
+  process.once("exit", onProcessExit)
+  const settleExit = () => {
+    if (settled) return
+    settled = true
+    process.off("exit", onProcessExit)
+    stopper.cancel()
+    failReady?.(new Error("治理 MCP 在就绪前退出"))
+    resolveExit?.()
+  }
+  // spawn 失败（命令不存在 / cwd 写错）只发 `error` + `close`，**不发 `exit`**：
+  // 不监听 `error` 就是未捕获异常（直接打死内核），且 `exited` 永不兑现。
+  child.on("error", (error) => {
+    failReady?.(error instanceof Error ? error : new Error(String(error)))
+    settleExit()
+  })
+  child.once("exit", settleExit)
+  child.once("close", settleExit)
 
   return {
     ready,
     exited,
     stop: () => {
-      if (child.exitCode !== null || child.signalCode !== null) return
-      child.kill("SIGTERM")
-      const timer = setTimeout(() => child.kill("SIGKILL"), 5_000)
-      child.once("exit", () => clearTimeout(timer))
+      if (settled) return
+      stopper.stop()
     },
   }
 }
 
-async function waitReady(child: Launched, timeoutMs: number): Promise<number | undefined> {
+export type ReadyOutcome =
+  | { readonly kind: "ready"; readonly port: number }
+  | { readonly kind: "exited" }
+  | { readonly kind: "timeout" }
+
+async function waitReady(child: Launched, timeoutMs: number): Promise<ReadyOutcome> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), timeoutMs)
+  const timeout = new Promise<ReadyOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs)
   })
+  // 就绪前退出（含 spawn 失败）与就绪超时是**两件事**：前者通常缺 PG_* 等配置、立刻返回，
+  // 报成「15s 超时」会把真正的死因藏起来。
+  const ready = child.ready.then(
+    (port): ReadyOutcome => ({ kind: "ready", port }),
+    (): ReadyOutcome => ({ kind: "exited" }),
+  )
+  const exited = child.exited.then((): ReadyOutcome => ({ kind: "exited" }))
   try {
-    return await Promise.race([child.ready.catch(() => undefined), timeout])
+    return await Promise.race([ready, exited, timeout])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
@@ -179,7 +313,7 @@ export interface SupervisionDeps {
  *
  * **每一轮各自 `Effect.scoped`**：子进程的 `acquireRelease` 只活在那一轮里——不这样的话，
  * 每次重启都往同一个长命作用域里挂一份收尾器（本轮已退出的进程也一直挂着）。
- * 定时器（`setTimeout`）与停止（SIGTERM→5s 后 SIGKILL）都在 `stop()`/`exited` 里，不占 Effect 的作用域。
+ * 定时器（`setTimeout`）与停止（整树收尾）都在 `stop()`/`exited` 里，不占 Effect 的作用域。
  */
 export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, never> =>
   Effect.gen(function* () {
@@ -200,20 +334,23 @@ export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, ne
               }),
           )
 
-          const readyPort = yield* Effect.promise(() => waitReady(child, deps.startTimeoutMs))
-          if (readyPort === undefined) {
+          const first = yield* Effect.promise(() => waitReady(child, deps.startTimeoutMs))
+          if (first.kind === "timeout") {
             child.stop()
             yield* Effect.promise(() => child.exited)
             return { kind: "timeout" as const }
           }
-          yield* deps.onReady(readyPort)
+          if (first.kind === "exited") return { kind: "exited-before-ready" as const }
+          yield* deps.onReady(first.port)
           yield* Effect.promise(() => child.exited)
-          return { kind: "exited" as const, port: readyPort }
+          return { kind: "exited" as const, port: first.port }
         }),
       )
 
       if (outcome.kind === "timeout") {
         yield* deps.onFailure(`治理 MCP 就绪超时（${deps.startTimeoutMs}ms 内未就绪），准备重启`)
+      } else if (outcome.kind === "exited-before-ready") {
+        yield* deps.onFailure("治理 MCP 在就绪前退出（检查 PG_* 等启动配置），准备重启")
       } else {
         port = outcome.port
         yield* deps.onFailure(`治理 MCP 退出（端口 ${outcome.port}），准备重启`)
@@ -224,6 +361,15 @@ export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, ne
       attempt += 1
     }
   })
+
+/** 就绪后写进全局配置的补丁（单独导出以便钉住形状）。 */
+export function readyConfigPatch(port: number) {
+  return {
+    mcp: {
+      [GOVERNANCE_MCP_SERVER]: { type: "remote" as const, url: `http://127.0.0.1:${port}/mcp` },
+    },
+  }
+}
 
 /** 生产层：读 env 决定起不起、把就绪端口写进全局配置。 */
 export const layer = Layer.effectDiscard(
@@ -236,8 +382,7 @@ export const layer = Layer.effectDiscard(
     }
 
     const config = yield* Config.Service
-    // 先读一次：`updateGlobal` 只写不改目录，首次启动要确保全局配置文件已存在。
-    yield* config.get()
+    // 全局配置目录由 `@opencode-ai/core/global` 在加载时建好；配置文件由 `updateGlobal` 自己创建。
 
     yield* Effect.forkScoped(
       supervise({
@@ -248,16 +393,14 @@ export const layer = Layer.effectDiscard(
             ...(port === undefined ? {} : { port }),
           }),
         onReady: (port) =>
-          config
-            .updateGlobal({
-              mcp: {
-                [GOVERNANCE_MCP_SERVER]: { type: "remote", url: `http://127.0.0.1:${port}/mcp` },
-              },
-            })
-            .pipe(
-              Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
-              Effect.catch((error) => Effect.logError("治理 MCP 配置写入失败", { error: String(error) })),
+          config.updateGlobal(readyConfigPatch(port)).pipe(
+            Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
+            // `updateGlobal` 写盘走 `Effect.orDie`（defect，普通 `catch` 收不到）：配置目录只读
+            // （容器常见）时不能让监督器纤维整个死掉，否则子进程再也不会被拉起。
+            Effect.catchCause((cause) =>
+              Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }),
             ),
+          ),
         onFailure: (reason) => Effect.logWarning(reason),
         sleep: (ms) => Effect.sleep(ms),
         startTimeoutMs: START_TIMEOUT_MS,
