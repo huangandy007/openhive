@@ -111,7 +111,7 @@ POST /openhive/governance/assets/asset_15c2d13f-…/transition  500 (Internal Se
 
 | 用例 | 期望 |
 |---|---|
-| 个人 + `visibility=department` | 成功；`status=published`、`visibility=department`；文件在 `department/<dept>/<id>/`，pending 已空 |
+| 个人 + `visibility=department` | 成功；`status=published`、`visibility=department`；文件在 `dept/<department>/skills/<id>/`（`storage.ts:96`），pending 已空 |
 | 个人 + 不传 | `personal_asset_not_shared`；状态与文件零副作用 |
 | 部门 → 全局（覆盖作者原选） | 成功；文件落到 `global/` |
 | 部门为空 + 选本部门 | `department_missing` |
