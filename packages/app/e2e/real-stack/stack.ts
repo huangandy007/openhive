@@ -32,7 +32,7 @@
  * - `Upgrade: websocket` ⇒ **Vite 自己**（HMR 原生工作，因为 Vite 就是这台服务器）。
  */
 import { spawn } from "bun"
-import { writeFileSync } from "fs"
+import { mkdirSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { createServer } from "vite"
@@ -51,9 +51,19 @@ const log = (line: string) => process.stdout.write(`${line}\n`)
 /** 起真内核，读它的 `READY {...}` 行（含真 token 与内核实际端口）。 */
 function startKernel(): Promise<{ kernel: number; token: string; sandbox: string; alice: string; db: string }> {
   return new Promise((resolve, reject) => {
+    const stateDir = process.env.REAL_STACK_STATE_DIR ?? path.join(tmpdir(), "openhive-real-stack-state")
+    /** 全局配置（`Global.Path.config` = `$XDG_CONFIG_HOME/opencode`）必须隔离到栈状态目录里：
+     * 监督器会 upsert `mcp.openhive-governance`，写进开发机真实的 `~/.config/opencode/opencode.json` 就是污染。 */
+    const configHome = path.join(stateDir, "config")
+    mkdirSync(configHome, { recursive: true })
     const child = spawn(["bun", "run", "test/real-stack/serve.ts"], {
       cwd: opencodeDir,
-      env: { ...process.env, REAL_STACK_KERNEL_PORT: String(KERNEL_PORT) },
+      env: {
+        ...process.env,
+        REAL_STACK_KERNEL_PORT: String(KERNEL_PORT),
+        XDG_CONFIG_HOME: configHome,
+        OPENHIVE_ASSET_SERVICE_DIR: path.join(repoRoot, "packages/asset-service"),
+      },
       stdout: "pipe",
       stderr: "inherit",
     })

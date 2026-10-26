@@ -315,6 +315,34 @@ T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户
   - 业务分类 seed 9 条（D0-15，待业务管理员审阅）
   - 23 个用例通过（含「7 个状态都从草稿正向可达」）；两轮变异验证均按预期变红
 
+## 治理 MCP 单进程形态（2026-10-26）
+
+形态：内核 spawn **一份** `asset-service/src/mcp-http.ts`（绑 127.0.0.1、系统分配端口）＋
+`Config.updateGlobal` 把 `mcp.openhive-governance` 写进全局配置（保留键）。身份与沙箱目录由内核
+每次调用注入 `_meta{openhive/user, openhive/directory}`，服务端独立校验。
+详见 `../2026-10-26-governance-mcp-single-process-design.md`。
+
+| 判据 | 实测（2026-10-26） |
+|---|---|
+| 全局配置落位（栈隔离的 `$XDG_CONFIG_HOME`） | `<state>/config/opencode/opencode.jsonc`：`{"mcp":{"openhive-governance":{"type":"remote","url":"http://127.0.0.1:63924/mcp"}}}`。**文件名是 `opencode.jsonc`**（`globalConfigFile()` 在无既有文件时取 `candidates[0]`），不是计划里写的 `.json`。开发机真实 `~/.config/opencode/opencode.json` 未被改动（mtime Oct 20 19:03，`grep -c openhive-governance` = 0） |
+| `/mcp` 状态（内核 4711；前门 3010 对 `/mcp` 返回 SPA HTML，探针要打内核） | 020602 王五：`{"openhive-governance":{"status":"connected"}}` HTTP 200；换 020600 李四再查：同一结果 |
+| 治理 MCP 进程数 | 换第二个账号后仍 **1 个**：`wmic process ... \| grep -i mcp-http` → 1 行（PID 15356，LISTENING 63924，启动时间 22:34:48，与本次栈一致） |
+| 一次真实登记 draft → in_review | **待用户本人实操**（页面里说「把这个 skill 登记成资产草稿并提交审核」），做完后回填本行 |
+
+### 现场发现（实测，非推断）
+
+- **孤儿进程**：起本栈前系统里已有两个更早的 `bun run src/mcp-http.ts`（PID 19352 @21:07 端口 65357、PID 23892 @21:23 端口 55215），是 Task 2 实现期手工探针留下的，父进程已不在。已按 PID 杀掉。这正是 `#010-03` 的形状：清理只打直接子进程就会留孤儿。
+- **`STACK_FILE` 是固定路径**（`%TEMP%/openhive-real-stack.json`），同机并行起两份真栈会互相覆盖；本次是与另一会话协调后**独占** 4711/3010 起的。
+
+### 缺口（本机无法覆盖，不算已覆盖）
+
+- **Docker 镜像内实测**：本机没有构建带 `bun` + `packages/asset-service` 的镜像。**没跑**（`#003-04`）。验收命令（部署机执行）：
+  `docker compose exec openhive sh -lc 'ps -ef | grep -c "[m]cp-http.ts"'` ⇒ 期望 `1`；
+  `docker compose exec openhive sh -lc 'cat "$XDG_CONFIG_HOME"/opencode/opencode.json*'` ⇒ 期望含 `openhive-governance`。
+- **Linux 进程组收尾未真机验证**：`kill(-pid)` 分支本机（win32）走的是 `taskkill /T /F`；POSIX 分支只有注入式单测。
+- **子进程重启后老会话的 MCP 客户端不会重建**：`MCP.state` 按目录缓存且只读一次 config，新会话正常，老会话要等实例重建。已知边界，未修。
+- **测试侧提醒**：若把 `OPENHIVE_ASSET_SERVICE_DIR` 写进 `packages/opencode/.env*`，所有用 `HttpApiApp.routes` 的单测都会真起子进程；测试环境应显式 `OPENHIVE_GOVERNANCE_MCP=off`。
+
 ## 阻塞项
 - **D0-15（内容）**：分类 seed 是可审阅初稿，正式词条仍需业务管理员确认。
 - **D0-6（已裁定，投影部分已落地）**：006 `capabilities.ts` 字段扩充与「资产服务 → 右栏清单」
@@ -346,4 +374,4 @@ T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-10-25（T017 完成，tasks.md 17/17）
+2026-10-26（治理 MCP 改为单进程形态，真栈三条判据实测通过；Step 5 真实登记待用户实操）

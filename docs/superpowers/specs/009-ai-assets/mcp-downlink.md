@@ -123,6 +123,15 @@ Config.mcp 的键  ≡  资产 id  ≡  role_resource.resource_id
 信任边界：名单是**代码常量**、不是配置。若改成可配置，配置可写就等于可放行任意 server——
 而那已经等于任意本地进程执行（详见 `builtin-mcp.ts` 文件头）。
 
+### 5.1 验收清单（形态已变，2026-10-26）
+
+- [x] 治理 server 的配置**不再**由 `buildUserMcpConfig()` 下发，改由内核监督器 upsert 全局配置
+      （`mcp.openhive-governance` 是保留键；管理员手工改会在下次启动被覆盖）。
+      `buildUserMcpConfig()` 仅为**业务 MCP 资产**保留，本次未接调用方（spec §9）。
+
+上面第 4 条描述的是 `buildUserMcpConfig()` 作为**纯函数**的输出口径（stdio 形态）；生产已不走它，
+改由单进程 HTTP 形态（见 `../../2026-10-26-governance-mcp-single-process-design.md`）。
+
 ## 6. 第四环：服务端 RLS 的接口契约
 
 🔴 **本仓没有业务 MCP server，也没有任何 RLS 落地与验证。** 本节的每一条都**不是**
