@@ -132,6 +132,7 @@ import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-account
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-source"
+import { OpenhiveGovernanceMcp } from "@/server/openhive/governance-mcp-supervisor"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
 import { OpenhiveGovernanceTemplates } from "@/server/openhive/governance-templates"
@@ -450,6 +451,12 @@ export function createRoutes(
     // 因此只留 `decide` 一处（见该模块文件头）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T021）。
     OpenhiveMember.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 治理 MCP 监督器（2026-10-26）：内核启动时拉起**一份**本地治理 MCP
+    //（127.0.0.1，系统分配端口），把 `mcp.openhive-governance` 写进全局配置。
+    // 只在这里挂一次；spawn / 退避重启 / 收尾都在它自己的作用域里。
+    // 没设 `OPENHIVE_ASSET_SERVICE_DIR` 就是无操作（dev / 单测默认不起进程）。
+    // 【保留的定制 · 同步上游时不要丢】—— 治理 MCP 单进程形态。
+    OpenhiveGovernanceMcp.layer,
   ).pipe(
     Layer.provide([
       errorLayer,
