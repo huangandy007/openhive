@@ -51,6 +51,27 @@ const ALICE: TokenSubject = {
 }
 
 /**
+ * 010 · **治理后台的种子管理员**（`fullstack-slice-testing` 环境编排）。
+ *
+ * 为什么非补不可：治理后台的入口在顶栏用户下拉里是 `adminOnly` 的那一项，而**服务端**进后台
+ * 还要过两道——`is_admin = 1` 与「该板块有 read 行」（`packages/auth/src/governance.ts`
+ * 的 `authorizeGovernance`：`status` / `is_admin` 都满足后，再按 `role_resource` 查板块）。
+ * 只种 `auth.user` 一行会得到「有身份、进不去」的半吊子态，症状长得像「治理接口没挂」。
+ *
+ * 角色不另建：`0013_governance.sql` 已经种好两张模板角色与 16 行授权，本脚本只做部署侧
+ * 那一步「把人挂上模板」（迁移刻意不认业务里的人，见该文件注释）。
+ *
+ * ALICE 一行不动：其余真栈 spec 用的就是「非管理员」这个身份（`topbar-user-menu-real.spec.ts`
+ * 断言她的下拉恰三项），把她的 `is_admin` 改大等于把那些用例的判据一起改掉。
+ */
+const 管理员: TokenSubject = {
+  id: "550e8400-e29b-41d4-a716-446655440001",
+  policeNo: "020600",
+  name: "李四",
+  isAdmin: true,
+}
+
+/**
  * 状态目录 —— **设了 `REAL_STACK_STATE_DIR` 就落在那儿、停栈不删**；**不设 ⇒ 与 2026-10-09 之前逐字一致**
  * （`mkdtempSync` 临时目录 ＋ 停栈删掉）。
  *
@@ -124,6 +145,19 @@ await pg.db.execute(sql`
   on conflict (id) do nothing
 `)
 
+// 管理员：`is_admin = 1` ＋ `status = 1` ＋ `must_change_pw = 0`（三列都会把后台锁住，理由同 ALICE），
+// 再把人挂上已种好的 `gov-system-admin` 模板（16 行授权由 `0013_governance.sql` 提供）。
+// `on conflict do nothing` 让**落盘态重起**时不重复挂角色（PK 是 `(user_id, role_id)`）。
+await pg.db.execute(sql`
+  insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, must_change_pw, password_hash, created_at)
+  values (${管理员.id}, ${管理员.policeNo}, ${管理员.name}, 'x', 'x', 'x', 'x', 'x', 1, 1, 0, ${PASSWORD_HASH}, 0)
+  on conflict (id) do nothing
+`)
+await pg.db.execute(sql`
+  insert into auth.user_role (user_id, role_id) values (${管理员.id}, 'gov-system-admin')
+  on conflict do nothing
+`)
+
 // ⚠️ 种子是**直接种 SQL**（不走 `register.ts` → `createWorkspace`），所以 `workspaces/<userId>`
 // 这个目录**没人建**。但内核 `FileSystem` 层在 `Server.listen` 构造期就要
 // `fs.realPath(location.directory).pipe(Effect.orDie)`（`core/filesystem.ts:65`）——目录不存在
@@ -133,6 +167,7 @@ await pg.db.execute(sql`
 // `recursive` ＋ `mode: 0o700`）；这里照它补上，与生产同形。不建的话右栏 `/` 面板与模型选择的
 // 真栈验收（`right-pane-slash-and-model-real.spec.ts`）第一步就 500。
 mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, ALICE.id), { recursive: true, mode: 0o700 })
+mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, 管理员.id), { recursive: true, mode: 0o700 })
 
 /**
  * 端口当默认 4096（= 上游 dev 默认，也是 `entry.tsx` 的 `getCurrentUrl()` 在 DEV 的默认目标）——
@@ -147,6 +182,8 @@ const listener = await Server.listen({ hostname: "127.0.0.1", port })
  * 若让 spec 自己签，就等于把 `signToken` 的形状镜像一份到测试里（`LEARNINGS #003-05`）。
  */
 const token = await signToken(ALICE, SECRET)
+/** 010 · 管理员的真令牌，同样由内核侧签发（spec 一行签名逻辑都没有）。 */
+const adminToken = await signToken(管理员, SECRET)
 
 /**
  * 这一行是给**编排器**的交接物（`stack.ts` 解析它、落进 `STACK_FILE`）。
@@ -166,6 +203,10 @@ log(
     password: PASSWORD,
     secret: SECRET,
     token,
+    admin: 管理员.id,
+    adminPoliceNo: 管理员.policeNo,
+    adminName: 管理员.name,
+    adminToken,
   })}`,
 )
 
