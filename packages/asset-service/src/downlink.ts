@@ -177,8 +177,13 @@ function withIdentity(connection: McpConnectionSpec, userId: string): McpServerC
 /**
  * 算出这个用户的 `mcp` 段。
  *
+ * ⚠️ **生产禁用**：治理 server 已改由内核监督器 upsert 全局配置（`type: "remote"` 的
+ * `mcp.openhive-governance`，见 `2026-10-26-governance-mcp-single-process-design.md`）。本函数
+ * 仍会无条件下发一条 **local stdio** 的同名条目（`governanceMcpCommand()`，见下方 `entries.set`），
+ * 一旦接回生产就会**盖掉**监督器写的那条、并且退回「每用户一份子进程」。今天只有单测在调用。
+ *
  * - 资产型：`type === "mcp"` ∧ `isAssetUsable(status)` ∧ 显式 `(mcp, id, read)` 授权；
- * - 治理 server：恒下发（内建，见 `@opencode-ai/auth/builtin-mcp`）；
+ * - 治理 server：恒下发（内建，见 `@opencode-ai/auth/builtin-mcp`）——**仅限测试 / 旧形态**；
  * - 键按字典序输出：`sessionRuleset` 的规则顺序与 `Config.mcp` 的键序有关，固定顺序让
  *   「同一份授权 → 同一份配置」可复现；
  * - 任何不一致（重复 id / 缺连接 / 占用治理键 / 连接非法）**在产出之前**抛

@@ -160,7 +160,8 @@ export function startGovernanceHttp(
     // 不设 idleTimeout（Bun 默认 10s）：治理工具都是快操作；将来出现 >10s 的调用需复核。
     fetch: (request) => {
       const url = new URL(request.url)
-      // 只是 liveness：不探 DB、不反映依赖健康度（监督器据此判断「进程还在」）。
+      // 只是 liveness：不探 DB、不反映依赖健康度。**没有消费者**——内核监督器只解析就绪行
+      // ＋ 订阅子进程 exit 来判断存活，从不请求本端点；留着它是给运维手动探活用。
       if (url.pathname === HEALTH_PATH) return new Response("ok")
       if (url.pathname !== MCP_PATH) return jsonError(404, { error: "not_found" })
       return handleMcp(deps, request, () => {

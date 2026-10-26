@@ -16,9 +16,11 @@ import { Config } from "@/config/config"
 import { Env } from "@/env"
 import {
   backoffMs,
+  COMMAND_ENV,
   createTreeStopper,
   governanceCommand,
   KILL_GRACE_MS,
+  OpenhiveGovernanceMcp,
   parseReadyLine,
   PORT_ENV,
   readyConfigPatch,
@@ -58,6 +60,13 @@ describe("parseReadyLine", () => {
 describe("backoffMs", () => {
   test("1s/2s/4s… 封顶 60s", () => {
     expect([0, 1, 2, 3, 6, 20].map(backoffMs)).toEqual([1000, 2000, 4000, 8000, 60000, 60000])
+  })
+})
+
+describe("env 名契约", () => {
+  // 两侧（监督器 / asset-service）各持一份字面量、不能 import 对方，所以逐字钉住。
+  test("PORT_ENV 逐字是 OPENHIVE_GOVERNANCE_MCP_PORT", () => {
+    expect(PORT_ENV).toBe("OPENHIVE_GOVERNANCE_MCP_PORT")
   })
 })
 
@@ -186,7 +195,11 @@ describe("supervise", () => {
           const fiber = yield* Effect.forkScoped(
             supervise({
               launch,
-              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onReady: (port) =>
+                Effect.sync(() => {
+                  readyPorts.push(port)
+                  return true
+                }),
               onFailure: () => Effect.void,
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
               startTimeoutMs: 200,
@@ -218,7 +231,11 @@ describe("supervise", () => {
           const fiber = yield* Effect.forkScoped(
             supervise({
               launch,
-              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onReady: (port) =>
+                Effect.sync(() => {
+                  readyPorts.push(port)
+                  return true
+                }),
               onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
               startTimeoutMs: 30,
@@ -257,7 +274,11 @@ describe("supervise", () => {
           const fiber = yield* Effect.forkScoped(
             supervise({
               launch,
-              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onReady: (port) =>
+                Effect.sync(() => {
+                  readyPorts.push(port)
+                  return true
+                }),
               onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
               startTimeoutMs: 200,
@@ -297,7 +318,11 @@ describe("supervise", () => {
           const fiber = yield* Effect.forkScoped(
             supervise({
               launch,
-              onReady: (port) => Effect.sync(() => void readyPorts.push(port)),
+              onReady: (port) =>
+                Effect.sync(() => {
+                  readyPorts.push(port)
+                  return true
+                }),
               onFailure: () => Effect.void,
               sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
               startTimeoutMs: 200,
@@ -324,6 +349,10 @@ describe("supervise", () => {
    * `updateGlobal` 写盘失败走 `Effect.orDie`（**defect**，错误通道恒为 `never`）。普通 `catch`
    * 收不到 defect，监督器纤维会跟着一起死、子进程再也不会被拉起；`readyHandler` 用
    * `catchCause` 记 WARN 后继续——本用例用「下一轮仍会启动」当判据。
+   *
+   * 写失败后本轮会在后台不断重写（`rewriteConfig`），所以 `onReady` 的调用次数不再等于轮数；
+   * 判据改成「看端口」：首轮 4301，子进程退出后的下一轮是 4302。`sleep` 给 1ms 真实延迟，
+   * 免得重写循环把事件循环空转占住。
    */
   test("onReady 写配置 defect（orDie）⇒ 监督器不死，退避后仍起下一轮", async () => {
     const { launch, handles } = scripted([{ port: 4301 }, { port: 4302 }])
@@ -344,25 +373,72 @@ describe("supervise", () => {
               onReady: (port) =>
                 Effect.sync(() => void readyCalls.push(port)).pipe(
                   Effect.flatMap(() => readyHandler(readOnlyConfig, port)),
-                  Effect.map(() => undefined),
                 ),
               onFailure: (reason) => Effect.sync(() => void failures.push(reason)),
-              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              // 1ms 真实延迟：重写循环若同步空转会把事件循环占住，测不出「子进程退出能停下」。
+              sleep: (ms) =>
+                Effect.promise(() => {
+                  sleeps.push(ms)
+                  return new Promise<void>((resolve) => setTimeout(resolve, 1))
+                }),
               startTimeoutMs: 200,
             }),
           )
-          yield* Effect.promise(() => until(() => readyCalls.length === 1, "首轮 onReady"))
+          yield* Effect.promise(() => until(() => readyCalls.length >= 1, "首轮 onReady"))
           handles[0]!.exited.resolve()
-          // defect 若把纤维打死，这里永远不会到 2，`until` 会以等待超时红。
-          yield* Effect.promise(() => until(() => readyCalls.length === 2, "defect 后仍起第二轮"))
+          // defect 若把纤维打死，这里永远不会出现 4302，`until` 会以等待超时红。
+          yield* Effect.promise(() => until(() => readyCalls.includes(4302), "defect 后仍起第二轮"))
           yield* Fiber.interrupt(fiber)
         }),
       ),
     )
 
-    expect(readyCalls).toEqual([4301, 4302])
+    // 首轮 4301（可能被重写多次），第二轮必须真的是新起的子进程 4302。
+    expect(readyCalls[0]).toBe(4301)
+    expect(readyCalls).toContain(4302)
     expect(sleeps[0]).toBe(1000)
     expect(failures[0]).toContain("退出")
+  })
+
+  /**
+   * 「写失败只试一次」是个静默的数据丢失：子进程健康，全局配置却在整个内核生命周期里缺
+   * `openhive-governance`（WARN 文案还写着「后台继续退避重试」）。判据两条：
+   * ① 最终写成功；② 期间**不重启子进程**（重启会换端口、且把「写失败」错记成子进程故障）。
+   */
+  test("配置写入失败 ⇒ 后台按退避重写到成功，且不重启子进程", async () => {
+    const { launch, handles, ports } = scripted([{ port: 4501 }])
+    const writes: number[] = []
+    const sleeps: number[] = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            supervise({
+              launch,
+              // 第一写失败（如目录只读），第二写成功。
+              onReady: (port) =>
+                Effect.sync(() => {
+                  writes.push(port)
+                  return writes.length >= 2
+                }),
+              onFailure: () => Effect.void,
+              sleep: (ms) => Effect.sync(() => void sleeps.push(ms)),
+              startTimeoutMs: 200,
+            }),
+          )
+          yield* Effect.promise(() => until(() => writes.length >= 2, "第二次写入"))
+          // 留一个「误重启」窗口：若把重试做成重启子进程，这里会多出一次 `launch`。
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)))
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
+    )
+
+    expect(writes).toEqual([4501, 4501])
+    expect(sleeps[0]).toBe(1000)
+    expect(handles).toHaveLength(1)
+    expect(ports).toEqual([undefined])
   })
 })
 
@@ -695,6 +771,52 @@ describe("readyConfigPatch / layer", () => {
       )
     } finally {
       ;(Global.Path as { config: string }).config = previous
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * 首启端口的唯一入口是 `OPENHIVE_GOVERNANCE_MCP_PORT`（`layer` 启动时读一次）。真起一个子
+   * 进程、让它把**自己看到的** env 写进文件——只测 `spawnGovernanceMcp({port})` 的透传不够，
+   * 漏掉 layer 里那行接线就没人守（设计 §6「显式配置的端口被占 ⇒ 按起不来处理」也就无从谈起）。
+   *
+   * 第二次能真起进程本身就是 `mounted` 随作用域复位的判据：不复位时第二次 layer 构建直接返回，
+   * 新 marker 文件根本不会出现（旧文件也不是这个名字）。
+   */
+  test("layer：首启端口取 PORT_ENV（不设 ⇒ 0），mounted 随作用域复位", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openhive-supervisor-port-"))
+    const previousConfig = Global.Path.config as string
+    ;(Global.Path as { config: string }).config = dir
+    const previousCommand = process.env[COMMAND_ENV]
+    const previousPort = process.env[PORT_ENV]
+    // bun 1.4.3 在 win32 上会把 argv 里的反斜杠当转义吃掉（见下方整树用例的注释）。
+    const bun = process.execPath.replaceAll("\\", "/")
+
+    const runLayer = async (portEnv: string | undefined, markerName: string): Promise<string> => {
+      const marker = path.join(dir, markerName).replaceAll("\\", "/")
+      const script = [
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.env[${JSON.stringify(PORT_ENV)}]))`,
+        `process.stdout.write('GOVERNANCE_MCP_READY {"port":41999}\\n')`,
+        `setInterval(() => {}, 1000)`,
+      ].join(";")
+      process.env[COMMAND_ENV] = JSON.stringify([bun, "-e", script])
+      if (portEnv === undefined) delete process.env[PORT_ENV]
+      else process.env[PORT_ENV] = portEnv
+      await Effect.runPromise(
+        Effect.scoped(Layer.build(OpenhiveGovernanceMcp.layer.pipe(Layer.provide(configLayer)))),
+      )
+      return fs.readFile(marker, "utf8")
+    }
+
+    try {
+      expect(await runLayer("41234", "explicit.txt")).toBe("41234")
+      expect(await runLayer(undefined, "default.txt")).toBe("0")
+    } finally {
+      if (previousCommand === undefined) delete process.env[COMMAND_ENV]
+      else process.env[COMMAND_ENV] = previousCommand
+      if (previousPort === undefined) delete process.env[PORT_ENV]
+      else process.env[PORT_ENV] = previousPort
+      ;(Global.Path as { config: string }).config = previousConfig
       await fs.rm(dir, { recursive: true, force: true })
     }
   })

@@ -95,7 +95,7 @@
 | asset-service 单测 | 沙箱校验：用户根内通过 / 越界拒绝 / `..` 逃逸拒绝 / 缺键拒绝；HTTP 传输下三工具可列可调（真端口，127.0.0.1:0） |
 | opencode 单测 | supervisor：解析就绪行、退避重启、退出收尾；`userMeta()` 带目录；`Config.updateGlobal` 幂等（连调两次结果相同） |
 | 真栈验收 | 起真栈后 `GET /mcp` = `connected`，且 `ps` 中治理进程数为 1；一次真实登记（draft → in_review） |
-| 缺口表 | Docker 镜像内实测：**没跑**（本机无镜像，2026-10-26）。部署机验收命令：`docker compose exec openhive sh -lc 'ps -ef \| grep -c "[m]cp-http.ts"'` ⇒ 期望 `1`；`docker compose exec openhive sh -lc 'cat "$XDG_CONFIG_HOME/opencode/opencode.json"'` ⇒ 期望含 `openhive-governance`。同时记入 `009/state.md` 缺口 |
+| 缺口表 | Docker 镜像内实测：**没跑**（本机无镜像，2026-10-26）。部署机验收命令：`docker compose exec openhive sh -lc 'ps -ef \| grep -c "[m]cp-http.ts"'` ⇒ 期望 `1`；`docker compose exec openhive sh -lc 'cat "$XDG_CONFIG_HOME/opencode/opencode.json*"'` ⇒ 期望含 `openhive-governance`。**文件名用 `opencode.json*` 而不是 `opencode.json`**：`globalConfigFile()` 在目录里没有既有配置文件时取 `candidates[0]`，实测落盘是 `opencode.jsonc`（2026-10-26 真栈：`<state>/config/opencode/opencode.jsonc`）。同时记入 `009/state.md` 缺口 |
 
 ## 8. 部署要求（写进部署文档，不是运维手工步骤）
 
@@ -112,7 +112,7 @@
 ## 9. 不做的事
 
 - **业务 MCP 资产的 per-user 下发器**（Q3 定：延后；`buildUserMcpConfig()` 保留不动）。
-- 多副本内核共享一个 MCP：每个内核副本各起一个，各连各的 PG 池；规模上来再议。
+- 多副本内核共享一个 MCP：每个内核副本各起一个，各连各的 PG 池；规模上来再议。⚠️ 前提是**每个副本各自独立的 `XDG_CONFIG_HOME`**（§8：容器里不挂卷、按需可写）——同一宿主上跑多个内核而无配置目录隔离时，它们会互相覆盖同一份全局配置里的 `mcp.openhive-governance.url`（后写的赢），表现为「连到别人的端口」。
 - 删除 stdio 入口。
 - 改上游 `packages/opencode/src/mcp/index.ts`（remote 客户端通道已够用）。
 

@@ -31,7 +31,9 @@ import { Config } from "@/config/config"
  * - 重启时**沿用上一次的端口**，已下发的配置就不会指向死端口。
  * - `layer` 对**首次就绪（配置写入）有界等待**（默认 15s）：`MCP.state` 在首个请求建实例时就把
  *   配置读走、按目录缓存后不再重读，晚写等于该实例永久缺治理工具。超时则 WARN 放行（不卡启动），
- *   后台继续退避重试。同进程只挂载一次（两份 routes 图不会再起第二个进程）。
+ *   后台继续退避重试。同进程只挂载一次（两份 routes 图不会再起第二个进程），随作用域收尾复位。
+ * - 子进程健康但**配置写盘失败**（目录只读 / 瞬时错误）⇒ 不放行首次就绪，并在后台按退避**重写**
+ *   直到成功或子进程退出——不能只试一次，否则全局配置在整个内核生命周期里都缺这一条。
  *
  * ⚠️ 已知边界：子进程重启后，**已建立的实例**（`InstanceState` 里缓存的 MCP state）不会重建
  * 客户端——新会话正常，老会话要等下次实例初始化。记在 `docs/superpowers/specs/009-ai-assets/state.md`。
@@ -304,12 +306,29 @@ async function waitReady(child: Launched, timeoutMs: number): Promise<ReadyOutco
 
 export interface SupervisionDeps {
   readonly launch: (port: number | undefined) => Launched
-  readonly onReady: (port: number) => Effect.Effect<void, never, never>
+  /** 返回 `true` = 配置确已写入。`false` ⇒ 本轮回合内按退避重写，直到成功或子进程退出。 */
+  readonly onReady: (port: number) => Effect.Effect<boolean, never, never>
   readonly onFailure: (reason: string) => Effect.Effect<void, never, never>
   readonly sleep: (ms: number) => Effect.Effect<void, never, never>
   readonly startTimeoutMs: number
   readonly now?: () => number
 }
+
+/**
+ * 配置写失败后的后台重写（spec §6：「首次就绪等待不放行，15s 超时后 WARN 放行、后台继续按退避重试」）。
+ *
+ * `onReady` 只返回 `false`（`readyHandler` 已把 defect 收成日志），所以这里永不失败；**与子进程退出
+ * 的竞速由调用方负责**：子进程一退就中断本纤维，下一轮拉起后还会再写一次。
+ */
+const rewriteConfig = (deps: SupervisionDeps, port: number): Effect.Effect<void, never, never> =>
+  Effect.gen(function* () {
+    let attempt = 0
+    while (true) {
+      yield* deps.sleep(backoffMs(attempt))
+      attempt += 1
+      if (yield* deps.onReady(port)) return
+    }
+  })
 
 /**
  * 主循环：起 → 等就绪 → 通知 → 等退出 → 退避 → 再起。永不返回，靠中断收尾。
@@ -344,7 +363,16 @@ export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, ne
             return { kind: "timeout" as const }
           }
           if (first.kind === "exited") return { kind: "exited-before-ready" as const }
-          yield* deps.onReady(first.port)
+          const written = yield* deps.onReady(first.port)
+          if (!written) {
+            // 子进程是健康的（刚报过就绪），不能让配置就这么缺着：后台按退避重写，
+            // 与「子进程退出」竞速——退出就停（下一轮拉起后会再写），成功则一起等退出。
+            const exited = yield* Effect.raceFirst(
+              rewriteConfig(deps, first.port).pipe(Effect.as(false)),
+              Effect.promise(() => child.exited).pipe(Effect.as(true)),
+            )
+            if (exited) return { kind: "exited" as const, port: first.port }
+          }
           yield* Effect.promise(() => child.exited)
           return { kind: "exited" as const, port: first.port }
         }),
@@ -444,7 +472,6 @@ export const startSupervision = (deps: StartupDeps): Effect.Effect<void, never, 
                 if (written) settle?.()
               }),
             ),
-            Effect.map(() => undefined),
           ),
         onFailure: deps.onFailure,
         sleep: deps.sleep,
@@ -463,8 +490,12 @@ export const startSupervision = (deps: StartupDeps): Effect.Effect<void, never, 
 /**
  * 进程级「已挂载」标记：`createRoutes()` 每次构建都会重建层，同进程两份 routes 图
  *（TUI worker 的 `worker.ts:42` 与 `:56`）都设了 env 就会起 2 个 MCP。
- * 标记只认进程生命周期，**不随 scope 释放**（容器内稳态就该只有一份）。
- * 测试不走 `layer`（`startSupervision` 不经过这里），故无跨用例污染。
+ *
+ * 标记**随作用域收尾复位**：监督纤维本来就活在这个作用域里，它若先死（scope 释放 / 内核
+ * 关掉这份 routes），标记不复位的话本进程再也不会起 MCP，而全局配置还指着那个死端口。
+ * 用 `addFinalizer` 而不是 `Effect.ensuring`：layer 的 effect 在**首次就绪后**就已完成，
+ * `ensuring` 会在那一刻复位（作用域明明还活着）。用例守着这条：同一个进程里连建两次 layer
+ * 必须两次都真起子进程（`governance-mcp-supervisor.test.ts` 的「首启端口」组）。
  */
 let mounted = false
 
@@ -479,16 +510,21 @@ export const layer = Layer.effectDiscard(
     }
     if (mounted) return
     mounted = true
+    yield* Effect.addFinalizer(() => Effect.sync(() => void (mounted = false)))
 
     const config = yield* Config.Service
     // 全局配置目录由 `@opencode-ai/core/global` 在加载时建好；配置文件由 `updateGlobal` 自己创建。
+    // 首启端口在这里读**一次**：`OPENHIVE_GOVERNANCE_MCP_PORT` 非数字 / 缺省 ⇒ 0（系统分配）。
+    // 之后每轮沿用上一轮**回报**的端口——已下发的配置才不会指向死端口；显式端口被占则由子进程
+    // 起不来（spec §6）走退避重启，而不是悄悄换号。
+    const firstPort = Number(process.env[PORT_ENV]) || 0
 
     yield* startSupervision({
       launch: (port) =>
         spawnGovernanceMcp({
           command: plan.command,
           cwd: process.env[ENTRY_DIR_ENV],
-          ...(port === undefined ? {} : { port }),
+          port: port ?? firstPort,
         }),
       onReady: (port) => readyHandler(config, port),
       onFailure: (reason) => Effect.logWarning(reason),

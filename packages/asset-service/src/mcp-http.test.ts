@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { GOVERNANCE_TOOL_NAMES } from "./governance"
-import { closeAfterBody, DEFAULT_HOSTNAME, READY_PREFIX, readyLine, startGovernanceHttp } from "./mcp-http"
+import { closeAfterBody, DEFAULT_HOSTNAME, PORT_ENV, READY_PREFIX, readyLine, startGovernanceHttp } from "./mcp-http"
 
 /**
  * 治理 MCP 的 HTTP 传输（单进程形态）。
@@ -16,10 +16,11 @@ import { closeAfterBody, DEFAULT_HOSTNAME, READY_PREFIX, readyLine, startGoverna
  * 判据：
  * ① 真端口上三个工具可列可调（说明 transport 接对了，不是「handler 直调」的假覆盖）；
  * ② `_meta` 能穿过 HTTP 缝：带身份 + 沙箱内目录时工具真的执行（不是恒回 `identity_required`）；
- * ③ `/healthz` 与 `/mcp` 之外一律 404（监督器只会探 `/mcp`，多开出口就是多一个攻击面）；
+ * ③ `/healthz` 与 `/mcp` 之外一律 404（多开出口就是多一个攻击面）；
  * ④ `GET /mcp` 回 405（SDK 客户端 initialize 后会发 GET，靠这个 405 才不报错）；
  * ⑤ 默认只绑 loopback（这份服务无鉴权，绑定就是唯一的访问控制）；
- * ⑥ 就绪行是逐字契约（内核与 spawn 侧按它解析）。
+ * ⑥ 就绪行与端口变量名是逐字契约（内核监督器只解析就绪行 ＋ 订阅 exit 判存活，
+ *    **从不请求 `/healthz`**，那个端点今天零消费者）。
  */
 const databases: ProductionDb[] = []
 const tempDirs: string[] = []
@@ -216,6 +217,8 @@ describe("HTTP 传输", () => {
   })
 
   test("就绪行是逐字契约", () => {
+    // 端口变量名两侧各写一份字面量（asset-service 不能 import 内核监督器），逐字钉住。
+    expect(PORT_ENV).toBe("OPENHIVE_GOVERNANCE_MCP_PORT")
     expect(READY_PREFIX).toBe("GOVERNANCE_MCP_READY")
     expect(readyLine(65357)).toBe('GOVERNANCE_MCP_READY {"port":65357}')
     expect(JSON.parse(readyLine(65357).slice(READY_PREFIX.length + 1))).toEqual({ port: 65357 })
