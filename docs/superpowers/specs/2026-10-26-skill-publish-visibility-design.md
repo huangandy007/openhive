@@ -93,6 +93,7 @@ POST /openhive/governance/assets/asset_15c2d13f-…/transition  500 (Internal Se
 - **同一条 UPDATE**：`status`、`version`、`published_at`、`visibility` 一起写，条件仍是 `where id = ? and status = ?`（`asset.ts:296-305`）。状态与范围在同一行，不存在「范围改了但没发布」的中间态。
 - **并发**：两个管理员同时发布、选了不同范围 ⇒ 先到先得；后者条件更新落空 ⇒ `concurrent_transition`（409），文件按现有逻辑回滚，不覆盖前者的范围。
 - **失败边界**：文件搬迁失败 ⇒ 按现有 catch 分支回滚文件；库中状态与范围已同事务落定，不会半截。
+- **迭代发布改范围**：旧范围的发布目录在写库成功后删除；写库失败时不动它（新旧状态仍一致）。
 - **通知**：不变；文案仍是「发布后进入共享空间」。
 
 ## 6. 界面

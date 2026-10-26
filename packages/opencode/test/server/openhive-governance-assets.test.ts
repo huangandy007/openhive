@@ -428,9 +428,56 @@ describe("T007 · 审核与发布动作", () => {
       const response = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "department" })
 
       expect(response.status).toBe(409)
-      expect((yield* json(ErrorResponse, response)).error).toContain("没有部门信息")
+      // 判据与落盘同一个谓词后，文案统一成「部门信息不能用作共享目录」（I-3）。
+      expect((yield* json(ErrorResponse, response)).error).toContain("部门信息")
       expect(yield* Effect.promise(() => 库状态(id))).toBe("pending_tech")
       expect(有文件(join(ASSETS_ROOT, "pending", id, "SKILL.md"))).toBe(true)
+    }),
+  )
+
+  it.live("部门是脏值（前导空格）⇒ 409 且落审计，不是 500", () =>
+    Effect.gen(function* () {
+      const id = "asset-scope-dirtydep-0005"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      // `register.ts:89` 不 trim：`auth.user.dept` 会出现「 经侦支队」。个人可见时元数据
+      // 校验不要求部门，所以这条脏数据进得来；落盘谓词会判它非法。
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({
+            id,
+            name: "脏部门资源",
+            status: "pending_tech",
+            visibility: "personal",
+            department: " 经侦支队",
+            updatedAt: 1_100,
+          }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const response = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "department" })
+
+      // 业务前提不成立 ⇒ 409（`department_missing` 的映射不带 field，别臆造）。
+      expect(response.status).toBe(409)
+      const body = yield* json(ErrorResponse, response)
+      expect(body.error).toContain("部门信息")
+      expect(body.field).toBeUndefined()
+
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("pending_tech")
+      expect(有文件(join(ASSETS_ROOT, "pending", id, "SKILL.md"))).toBe(true)
+
+      // 409 走过 `失败()`，它写审计；500 走 `Effect.die`，什么都不留（最终评审 I-3）。
+      const 库 = pg
+      const 审计行 = yield* Effect.promise(() =>
+        库.db.execute(
+          sql`select result, detail::jsonb->>'status' as status from auth.audit_event where target_id = ${id} order by id desc limit 1`,
+        ),
+      )
+      const [审计] = rowsOf(审计行)
+      expect(String(审计?.result)).toBe("failed")
+      expect(String(审计?.status)).toBe("409")
     }),
   )
 

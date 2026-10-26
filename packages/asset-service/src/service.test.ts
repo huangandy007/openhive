@@ -451,6 +451,36 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v2")
   })
 
+  test("迭代发布改范围：新目录落在 global，旧部门目录被清掉（内核不会扫到旧版）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db, { status: "published", visibility: "department", publishedAt: 1_500 })
+    const 部门目录 = 发布目录(root)
+    await mkdir(部门目录, { recursive: true })
+    await writeFile(join(部门目录, "SKILL.md"), "v1")
+
+    await writeSkill(source, "v2")
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "start_iteration",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 3_000,
+    })
+
+    const republished = await transitionAsset({
+      db, root, assetId: "asset_1", action: "publish_iteration",
+      viewer: 系统管理员, grants: 管, visibility: "global", now: 3_001,
+    })
+
+    const 全局目录 = publishDirectory(root, "skill", { visibility: "global" }, "asset_1")
+    expect(republished.status).toBe("published")
+    expect(republished.visibility).toBe("global")
+    expect(await readFile(join(全局目录, "SKILL.md"), "utf8")).toBe("v2")
+    // 旧范围副本既不在 pending 也不在新 target，不清理就会被内核按目录扫描继续加载。
+    expect(await exists(部门目录)).toBe(false)
+    expect(await exists(待审目录(root))).toBe(false)
+  })
+
   test("下线只改状态、不搬目录；重新上线刷新发布时间", async () => {
     const db = await freshDb()
     const root = tempRoot()
@@ -1101,6 +1131,39 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(codeOf(error)).toBe("department_missing")
     expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
     expect(await exists(join(待审目录(root), "SKILL.md"))).toBe(true)
+  })
+
+  test("选「本部门」但部门是脏值（前导空格）：department_missing，零副作用", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "脏部门稿")
+    // `register.ts:89` 刻意不 trim：`auth.user.dept` 里真的可能出现「 经侦支队」。
+    // 个人可见时元数据校验不要求部门，所以这条脏数据一路走到了待技术发布。
+    await seedSkill(db, { visibility: "personal", department: " 经侦支队" })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "submit_review",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+    })
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "approve_business",
+      viewer: 业务管理员, grants: 审, now: 2_001,
+    })
+
+    const error = await failure(() =>
+      transitionAsset({
+        db, root, assetId: "asset_1", action: "publish_tech",
+        viewer: 系统管理员, grants: 管, visibility: "department", now: 2_002,
+      }),
+    )
+
+    // 部门判据必须与落盘同一个谓词（`assertSafeSegment`）：否则放行后由存储层抛裸 Error
+    // ⇒ 出口认不出 ⇒ 500 且不落审计（最终评审 I-3 实测）。
+    expect(codeOf(error)).toBe("department_missing")
+    expect(error.message).toContain("部门信息")
+    expect((await assetById(db, "asset_1"))?.status).toBe("pending_tech")
+    expect((await assetById(db, "asset_1"))?.visibility).toBe("personal")
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("脏部门稿")
   })
 
   test("非发布动作带可见范围：visibility_not_applicable，状态不动", async () => {

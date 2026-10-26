@@ -23,6 +23,7 @@ import { AssetNotificationError, notifyAssetTransition } from "./notify"
 import { authorizeTransition } from "./review"
 import {
   archiveDirectory,
+  assertSafeSegment,
   assertWithinRoot,
   copyDirectory,
   MissingSourceDirectoryError,
@@ -291,11 +292,18 @@ function withPublishScope(
       `个人资产不进入共享空间：${asset.id}（发布时请选择本部门或全局）`,
     )
   }
-  if (范围 === "department" && asset.department.trim() === "") {
-    throw new AssetTransitionError(
-      "department_missing",
-      `资产 ${asset.id} 没有部门信息：请发布为全局，或先补部门`,
-    )
+  if (范围 === "department") {
+    // 判据必须与落盘同一个谓词：`auth.user.dept` 可能带前导空格（`register.ts:89` 刻意不
+    // trim），只判 `trim() === ""` 会放行，随后由 `publishDirectory` 抛裸 Error ⇒ 出口认
+    // 不出 ⇒ 500 且不落审计（最终评审 I-3 实测）。
+    try {
+      assertSafeSegment(asset.department, "部门 id")
+    } catch {
+      throw new AssetTransitionError(
+        "department_missing",
+        `资产 ${asset.id} 的部门信息不能用作共享目录（空白或含非法字符）：请发布为全局，或先修正部门`,
+      )
+    }
   }
   return 范围 === asset.visibility ? asset : { ...asset, visibility: 范围 }
 }
@@ -390,7 +398,7 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 范围解析在授权之后、任何文件搬运之前（`#004-09`）。
   const 生效 = withPublishScope(asset, applied, input.visibility)
 
-  const step = await prepareStorageStep(root, 生效, applied, input.sourceDirectory)
+  const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory)
 
   let updated: AssetMetadata
   // 条件更新落空之后才知道有没有「另一个写者已经完成同一流转」；它决定 catch 里
@@ -506,12 +514,30 @@ function sharedDirectoryOf(root: string, asset: AssetMetadata): string {
 }
 
 /**
+ * 迭代发布且改了可见范围时，旧版本的共享目录还留在旧范围——它既不在 pending 也不在新 target，
+ * 不清理就会被内核按目录扫描继续加载（设计 §5）。范围没变、或旧范围是 personal 时返回 undefined。
+ */
+function staleSharedDirectoryOf(
+  root: string,
+  original: AssetMetadata,
+  effective: AssetMetadata,
+): string | undefined {
+  if (effective.visibility === original.visibility) return undefined
+  if (original.visibility !== "department" && original.visibility !== "global") return undefined
+  return sharedDirectoryOf(root, original)
+}
+
+/**
  * 按转移表里的 `storage` 落文件步骤。抛错都发生在**写库之前**——文件没搬成就不该改状态。
+ *
+ * `original` 是流转**开始前**读到的资产（`asset` 是生效后的 metadata）：迭代发布改范围时
+ * 要按旧范围算旧目录，两个都需要。
  */
 async function prepareStorageStep(
   root: string,
   asset: AssetMetadata,
   applied: AppliedSkillTransition,
+  original: AssetMetadata,
   sourceDirectory: string | undefined,
 ): Promise<StorageStep | undefined> {
   switch (applied.storage) {
@@ -534,8 +560,17 @@ async function prepareStorageStep(
     case "move_pending_to_publish": {
       const source = pendingDirectory(root, asset.id)
       const target = sharedDirectoryOf(root, asset)
+      const 旧目录 =
+        applied.action === "publish_iteration" ? staleSharedDirectoryOf(root, original, asset) : undefined
       const replacement = await moveWithinTransition(source, target, applied.action)
-      return { commit: () => replacement.commit(), rollback: () => replacement.rollback() }
+      return {
+        commit: async () => {
+          await replacement.commit()
+          // 写库已成功，旧范围副本才删：写库失败时 rollback 不碰它（旧状态与旧目录仍一致）。
+          if (旧目录 !== undefined) await removeDirectory(root, 旧目录)
+        },
+        rollback: () => replacement.rollback(),
+      }
     }
 
     case "move_publish_to_archive": {

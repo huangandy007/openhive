@@ -320,6 +320,9 @@ export async function moveDirectory(
   if (!(await statOrNull(targetPath))) {
     try {
       await rename(sourcePath, targetPath)
+      // 并发下两条 rename 到不同目标可能都回成功、只有一条真的搬了（Windows 实测 20/20）。
+      // 落地校验：目标没出现就说明本次是空转，按「源已被并发搬走」处理，让调用方在写库前退出。
+      if ((await statOrNull(targetPath)) === null) throw new MissingSourceDirectoryError(source)
       return
     } catch (error) {
       if (errorCode(error) !== "EXDEV") throw error
