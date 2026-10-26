@@ -18,7 +18,7 @@ import type { AssetMetadata } from "./metadata"
  * ① 协议面：`tools/list` 暴露三个治理工具，必填字段各自钉住；
  * ② 身份：`_meta["openhive/user"]` 缺失 / 用户不存在 / 已停用 ⇒ 一律拒，且资产状态不动；
  * ③ capability：没有对应权限就调不动（提交需写、发布需管），且失败发生在文件操作之前；
- * ④ 路径：源目录必须相对、且落在 MCP 进程的工作目录内，越界不复制；
+ * ④ 路径：调用目录必须落在作者沙箱内；源目录必须相对、且仍在调用目录内，越界不复制；
  * ⑤ 制作入口：只有沙箱里真有带 frontmatter 的 SKILL.md 才登记草稿，作者 / 部门取自身份。
  */
 
@@ -98,9 +98,14 @@ async function grant(
   `)
 }
 
+/** 最近一次 harness 建的工作区根——`call()` 用它给 `_meta` 补默认目录。 */
+let currentWorkspaceRoot = ""
+
 interface Harness {
   readonly db: ProductionDb["db"]
   readonly root: string
+  readonly workspaceRoot: string
+  /** 「甲民警（u1）的沙箱根」——绝大多数用例把源目录建在这里。 */
   readonly sourceRoot: string
   readonly client: Client
 }
@@ -108,9 +113,12 @@ interface Harness {
 async function harness(options: { sourceRoot?: string } = {}): Promise<Harness> {
   const db = await freshDb()
   const root = await tempDir("gov-assets-")
-  const sourceRoot = options.sourceRoot ?? (await tempDir("gov-source-"))
+  const workspaceRoot = await tempDir("gov-workspace-")
+  currentWorkspaceRoot = workspaceRoot
+  const sourceRoot = options.sourceRoot ?? join(workspaceRoot, "u1")
+  await mkdir(sourceRoot, { recursive: true })
 
-  const server = createGovernanceServer({ db, root, sourceRoot })
+  const server = createGovernanceServer({ db, root, workspaceRoot })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0" }, { capabilities: {} })
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
@@ -119,7 +127,7 @@ async function harness(options: { sourceRoot?: string } = {}): Promise<Harness> 
     await server.close()
   })
 
-  return { db, root, sourceRoot, client }
+  return { db, root, workspaceRoot, sourceRoot, client }
 }
 
 async function call(
@@ -127,9 +135,15 @@ async function call(
   name: string,
   args: Record<string, unknown>,
   userId?: string,
+  directory?: string,
 ): Promise<{ isError: boolean; text: string }> {
   const params: Record<string, unknown> = { name, arguments: args }
-  if (userId !== undefined) params._meta = { "openhive/user": userId }
+  if (userId !== undefined) {
+    params._meta = {
+      "openhive/user": userId,
+      "openhive/directory": directory ?? join(currentWorkspaceRoot, userId),
+    }
+  }
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- SDK 的 callTool 入参是联合类型，测试按名字分派
   const result = (await client.callTool(params as never)) as {
     isError?: boolean
@@ -513,6 +527,80 @@ describe("submit_skill_for_review", () => {
     const wrongType = await call(client, "submit_skill_for_review", { assetId: "asset_mcp", sourceDirectory: "." }, "u1")
     expect(wrongType.isError).toBe(true)
     expect(wrongType.text).toContain("unsupported_asset_type")
+  })
+})
+
+describe("调用目录（_meta openhive/directory）", () => {
+  test("缺目录 ⇒ identity_required，且不登记资产", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source },
+      "u1",
+      "",
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("identity_required")
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("目录在别人的沙箱里 ⇒ source_outside_sandbox，且不登记资产", async () => {
+    const { db, workspaceRoot, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source },
+      "u1",
+      join(workspaceRoot, "u2"),
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("source_outside_sandbox")
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("目录用 .. 逃出沙箱 ⇒ source_outside_sandbox", async () => {
+    const { db, workspaceRoot, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: source },
+      "u1",
+      join(workspaceRoot, "u1", "..", ".."),
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("source_outside_sandbox")
+    expect(await assetCount(db)).toBe(0)
+  })
+
+  test("目录在沙箱里（可再深一层） ⇒ 正常登记", async () => {
+    const { db, workspaceRoot, client } = await harness()
+    const project = join(workspaceRoot, "u1", "project-a")
+    await mkdir(join(project, "fund-analysis"), { recursive: true })
+    await writeFile(
+      join(project, "fund-analysis", "SKILL.md"),
+      "---\nname: fund-analysis\ndescription: x\n---\n\n# 资金流水分析\n",
+    )
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "x", category: "intelligence", sourceDirectory: "fund-analysis" },
+      "u1",
+      project,
+    )
+
+    expect(result.isError).toBe(false)
+    expect(await assetCount(db)).toBe(1)
   })
 })
 

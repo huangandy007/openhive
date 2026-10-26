@@ -48,10 +48,13 @@ import { createDraftAsset, transitionAsset } from "./service"
  *
  * ## 源目录边界
  *
- * 提交要把作者沙箱里的成果复制进共享卷。源目录由调用方给（模型从对话里知道项目路径），
- * 所以这里必须收边界：**只收相对路径**，相对 MCP 进程的工作目录（opencode 拉起 local
- * MCP server 时 `cwd` = 用户工作区，`mcp/index.ts:355`）解析后必须仍在目录内。
- * 否则一次 `../..` 就能把服务器上的任意目录复制成「已提交的 skill」。
+ * 提交要把作者沙箱里的成果复制进共享卷。边界分两层：
+ * ① **调用目录**（`_meta["openhive/directory"]`）必须落在 `<workspaceRoot>/<userId>/` 之内
+ *    （`sandboxDirectoryOf`）——单进程形态下同一个人可能同时在多个项目里，目录只能由内核带；
+ * ② **源目录**（工具入参 `sourceDirectory`）只收相对路径，相对调用目录解析，且解析后必须仍在
+ *    调用目录内（`resolveSourceDirectory`）。
+ *
+ * 两层缺任一层，一次 `../..` 就能把服务器上的任意目录复制成「已提交的 skill」。
  *
  * ## 为什么工具不登记元数据
  *
@@ -62,6 +65,9 @@ import { createDraftAsset, transitionAsset } from "./service"
 
 /** 与 `packages/opencode/src/mcp/openhive-identity.ts` 的 `USER_META_KEY` 逐字一致。 */
 export const USER_META_KEY = "openhive/user"
+
+/** 与 `packages/opencode/src/mcp/openhive-identity.ts` 的 `DIRECTORY_META_KEY` 逐字一致。 */
+export const DIRECTORY_META_KEY = "openhive/directory"
 
 export const GOVERNANCE_TOOL_NAMES = [
   "submit_skill_for_review",
@@ -163,8 +169,8 @@ export interface GovernanceDeps {
   readonly db: AssetTarget
   /** 资产共享根（`assetsRoot(process.env)`）。 */
   readonly root: string
-  /** 源目录边界；生产取 MCP 进程的 cwd。 */
-  readonly sourceRoot: string
+  /** 沙箱根的上级（`workspaceRoot(process.env)`，默认 `/workspaces`）：`<workspaceRoot>/<userId>/…` 之内才收。 */
+  readonly workspaceRoot: string
 }
 
 function textResult(payload: Record<string, unknown>): CallToolResult {
@@ -285,6 +291,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
+/**
+ * 调用方声明的「当前项目目录」，校验它落在 `<workspaceRoot>/<userId>/` 之内。
+ *
+ * 单进程形态下 server 不再靠 cwd 区分用户（cwd 恒为内核目录），所以目录由内核按调用带过来
+ * （`_meta["openhive/directory"]`）。**这个值不可信**：越界就拒，否则一次
+ * `{"openhive/user":"甲","openhive/directory":"/etc"}` 就能把任意系统目录登记成资产。
+ *
+ * 只做规范化比较，**不 stat**：目录不存在时后续 `skill_file_not_found` 会给出更具体的错误码，
+ * 而安全性质（能不能逃出去）只取决于包含关系。
+ */
+export function sandboxDirectoryOf(workspaceRoot: string, userId: string, meta: unknown): string {
+  if (!isRecord(meta)) {
+    throw new GovernanceError("identity_required", "缺少调用目录：_meta 未注入 openhive/directory")
+  }
+  const value = meta[DIRECTORY_META_KEY]
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new GovernanceError("identity_required", "缺少调用目录：_meta 未注入 openhive/directory")
+  }
+  if (!isAbsolute(value)) {
+    throw new GovernanceError("source_outside_sandbox", `调用目录必须是绝对路径：${value}`)
+  }
+  const userRoot = resolve(workspaceRoot, userId)
+  const directory = resolve(value)
+  const rel = relative(userRoot, directory)
+  if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
+    throw new GovernanceError("source_outside_sandbox", `调用目录越出作者沙箱：${value}`)
+  }
+  return directory
+}
+
 /** 从 MCP 请求的 `_meta` 取调用身份；缺失就拒绝，不猜也不回退。 */
 function userIdOf(meta: unknown): string {
   if (!isRecord(meta)) {
@@ -323,7 +359,10 @@ async function runTool(
   }
 
   const user = await userOf(deps.db, userIdOf(meta))
-  const source = sourceDirectory === undefined ? undefined : resolveSourceDirectory(deps.sourceRoot, sourceDirectory)
+  const source =
+    sourceDirectory === undefined
+      ? undefined
+      : resolveSourceDirectory(sandboxDirectoryOf(deps.workspaceRoot, user.id, meta), sourceDirectory)
 
   try {
     const updated = await transitionAsset({
@@ -401,7 +440,7 @@ async function runCreateDraft(
 
   try {
     const user = await userOf(deps.db, userIdOf(meta))
-    const source = resolveSourceDirectory(deps.sourceRoot, sourceDirectory)
+    const source = resolveSourceDirectory(sandboxDirectoryOf(deps.workspaceRoot, user.id, meta), sourceDirectory)
     const skillName = await skillNameOf(source)
     const asset = await createDraftAsset({
       db: deps.db,
@@ -432,7 +471,7 @@ async function runCreateDraft(
  * 建一个治理 MCP server（不碰 env / stdio，便于用 in-memory transport 测）。
  *
  * 生产入口见 `mcp-main.ts`：`connect(process.env)` + `assetsRoot(process.env)` +
- * `process.cwd()` 交进来，再挂 `StdioServerTransport`。
+ * `workspaceRoot(process.env)` 交进来，再挂 `StdioServerTransport`。
  */
 export function createGovernanceServer(deps: GovernanceDeps): Server {
   const server = new Server(

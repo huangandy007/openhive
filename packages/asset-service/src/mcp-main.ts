@@ -1,5 +1,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { connect } from "@opencode-ai/auth/db"
+import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { createGovernanceServer } from "./governance"
 import { assetsRoot } from "./storage"
 
@@ -14,8 +15,9 @@ import { assetsRoot } from "./storage"
  *
  * - `PG_*`：`connect(process.env)` 的必需项；缺失时这里是**启动即失败**，不是带着坏配置跑；
  * - `OPENHIVE_ASSETS_ROOT`：资产共享根（省略 = `/assets`）；
- * - 工作目录：opencode 拉起 local server 时 `cwd` = 用户工作区（`mcp/index.ts`），
- *   因此 `process.cwd()` 就是「作者沙箱」的边界。
+ * - `OPENHIVE_WORKSPACE_ROOT`：沙箱根的上级（省略 = `/workspaces`）。沙箱边界不再靠 cwd
+ *   判定：每次调用的目录由内核注入 `_meta["openhive/directory"]`，服务端校验它落在
+ *   `<workspaceRoot>/<userId>/` 之内（`sandboxDirectoryOf`）。
  *
  * ## 为什么这层不写测试
  *
@@ -27,7 +29,7 @@ import { assetsRoot } from "./storage"
 const server = createGovernanceServer({
   db: connect(process.env),
   root: assetsRoot(process.env),
-  sourceRoot: process.cwd(),
+  workspaceRoot: workspaceRoot(process.env),
 })
 
 await server.connect(new StdioServerTransport())

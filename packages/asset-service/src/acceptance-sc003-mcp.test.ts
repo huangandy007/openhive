@@ -138,16 +138,23 @@ const 身份们: readonly 身份[] = [
   { 名: "未注入身份", create: "identity_required", submit: "identity_required", publish: "identity_required" },
 ]
 
+/** 最近一次 harness 建的工作区根——`call()` 用它给 `_meta` 补默认目录。 */
+let currentWorkspaceRoot = ""
+
 interface Harness {
   readonly db: ProductionDb["db"]
   readonly root: string
+  readonly workspaceRoot: string
   readonly client: Client
 }
 
 async function harness(who: { readonly id?: string | undefined; readonly perm?: 身份["perm"] | undefined }): Promise<Harness> {
   const db = await freshDb()
   const root = await tempDir("mcp-assets-")
-  const sourceRoot = await tempDir("mcp-source-")
+  const workspaceRoot = await tempDir("mcp-workspace-")
+  currentWorkspaceRoot = workspaceRoot
+  // 「未注入身份」那一栏没有目录可言，隔离一个临时目录即可。
+  const sourceRoot = who.id === undefined ? await tempDir("mcp-source-") : join(workspaceRoot, who.id)
   const skillDir = join(sourceRoot, "fund-analysis")
   await mkdir(skillDir, { recursive: true })
   await writeFile(join(skillDir, "SKILL.md"), `---\nname: fund-analysis\ndescription: 按账户汇总资金流水\n---\n\n# 资金流水分析\n`)
@@ -172,7 +179,7 @@ async function harness(who: { readonly id?: string | undefined; readonly perm?: 
     }
   }
 
-  const server = createGovernanceServer({ db, root, sourceRoot })
+  const server = createGovernanceServer({ db, root, workspaceRoot })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "matrix-client", version: "0" }, { capabilities: {} })
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
@@ -180,7 +187,7 @@ async function harness(who: { readonly id?: string | undefined; readonly perm?: 
     await client.close()
     await server.close()
   })
-  return { db, root, client }
+  return { db, root, workspaceRoot, client }
 }
 
 async function call(
@@ -188,9 +195,15 @@ async function call(
   name: string,
   args: Record<string, unknown>,
   userId?: string,
+  directory?: string,
 ): Promise<{ isError: boolean; text: string }> {
   const params: Record<string, unknown> = { name, arguments: args }
-  if (userId !== undefined) params._meta = { "openhive/user": userId }
+  if (userId !== undefined) {
+    params._meta = {
+      "openhive/user": userId,
+      "openhive/directory": directory ?? join(currentWorkspaceRoot, userId),
+    }
+  }
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- SDK 的 callTool 入参是联合类型，测试按名字分派
   const result = (await client.callTool(params as never)) as {
     isError?: boolean

@@ -268,7 +268,8 @@ describe.skipIf(!enabled)("真 PG · 资产服务缺口补测", () => {
     await withRealPg(async ({ db }) => {
       await seedUser(db)
       const assetsRoot = await tempDir("realpg-stdio-assets-")
-      const workspace = await tempDir("realpg-stdio-cwd-")
+      const workspaceRoot = await tempDir("realpg-stdio-workspace-")
+      const workspace = join(workspaceRoot, "u1")
       await mkdir(join(workspace, "fund-analysis"), { recursive: true })
       await writeFile(
         join(workspace, "fund-analysis", "SKILL.md"),
@@ -282,6 +283,7 @@ describe.skipIf(!enabled)("真 PG · 资产服务缺口补测", () => {
         env: {
           ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)),
           OPENHIVE_ASSETS_ROOT: assetsRoot,
+          OPENHIVE_WORKSPACE_ROOT: workspaceRoot,
         },
         stderr: "pipe",
       })
@@ -304,7 +306,7 @@ describe.skipIf(!enabled)("真 PG · 资产服务缺口补测", () => {
             category: "intelligence",
             sourceDirectory: "fund-analysis",
           },
-          _meta: { "openhive/user": "u1" },
+          _meta: { "openhive/user": "u1", "openhive/directory": workspace },
         } as never)) as { isError?: boolean; content: Array<{ type: string; text?: string }> }
 
         expect(result.isError).toBeUndefined()
@@ -321,7 +323,7 @@ describe.skipIf(!enabled)("真 PG · 资产服务缺口补测", () => {
       } finally {
         await client.close()
         await rm(assetsRoot, { recursive: true, force: true })
-        await rm(workspace, { recursive: true, force: true })
+        await rm(workspaceRoot, { recursive: true, force: true })
       }
     })
   })
