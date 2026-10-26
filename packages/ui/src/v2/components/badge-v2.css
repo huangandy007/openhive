@@ -29,5 +29,11 @@
 [data-component="tag"][data-variant="accent"] {
   border: 0;
   background: var(--v2-background-bg-accent);
-  color: var(--v2-text-text-contrast);
+  /* 2026-10-26 · 字色不是 `--v2-text-text-contrast`：那个 token 的语义是「**深色对比面上**的浅色字」
+     （浅色方案 = grey-50 = #FFFFFF），而这里的底是 `--v2-background-bg-accent` —— 浅色方案取品牌金
+     #D97706。白字压金底实测 **3.18:1**（axe，11px/常规），低于 4.5:1（010 T005 的 axe 审计拦下）。
+     同族对照：`button-v2` / `icon-button-v2` 的 contrast 变体底色是 `background-bg-contrast`（灰黑面），
+     白字在那里是对的 —— 所以**不能改 token，只能改这一处的配对**。
+     `--v2-text-text-base`：浅色 #1C1A18（≈5.4:1）、深色 grey-100（蓝底上仍高对比）。 */
+  color: var(--v2-text-text-base);
 }

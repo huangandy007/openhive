@@ -23,6 +23,24 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #010-03 · 2026-10-26 · tool-quirk · 010-governance-console
+
+**现象 / 决策**：想给治理后台补 axe 审计，`curl :6017/index.json` 说 `427` 条、**一条 Governance 都没有**，
+而 story 文件在、glob 也对得上——看着像「storybook 索引不刷新」。真相是**6017 上还挂着一个旧
+storybook**：重启时只 `TaskStop` 掉了 `bun --cwd packages/storybook storybook …` 这层**包装进程**，
+它 spawn 的 `storybook` 子进程活着，继续用旧索引应答；新实例发现端口被占，**静默改用 6021**
+（日志里写着 `Local: http://localhost:6021/`，不报错）。于是「重启了却没变化」。
+第二个坑叠在上面：`storybook-axe-audit.ts` 的**默认前缀是 `App/OpenHive/AiSession`**，
+不显式传 `"App/OpenHive/Governance"` 就整片新页面**一格都不审**，而输出「合计 1 条违例」看着像
+「审过了、只有一条红」。
+
+**应对**：① 起后台服务后**核对它实际监听的端口**（读启动日志的 `Local:` 行），不要假设你传的那个；
+② 重启前后拿**索引条目数 / 关键字**对账（`curl :port/index.json | grep -c <新标题>`），别拿「进程还在」
+当「重启成功」；③ 带前缀参数的审计脚本，**先看默认前缀覆盖了谁**，再决定要不要传参。
+
+**应用范围**：任何「先起服务、再拿端口喂给另一个工具」的编排（storybook / vite / 真栈 / mock server）；
+任何按前缀筛选的批量审计或批量测试。
+
 ## #010-02 · 2026-10-26 · pitfall · 010-governance-console
 
 **现象 / 决策**：前端 `account-api.ts` 把内核路径**另写一份字面量**（文件头明说「不 import 内核」），
