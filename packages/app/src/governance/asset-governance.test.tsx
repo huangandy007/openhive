@@ -274,6 +274,11 @@ describe("资产治理页 · 发布范围", () => {
     expect(文章("[data-slot='asset-publish-hint']")).toContain("个人可见")
     expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
     expect(有("[data-slot='asset-publish-scope-department']")).not.toBeNull()
+    // 「无默认」不能只由按钮禁用间接表达：两个单选的视觉选中态也要钉住（`#005-47`）。
+    const 个人本部门 = 有("[data-slot='asset-publish-scope-department']")
+    const 个人全局 = 有("[data-slot='asset-publish-scope-global']")
+    expect(个人本部门 instanceof HTMLInputElement && 个人本部门.checked).toBe(false)
+    expect(个人全局 instanceof HTMLInputElement && 个人全局.checked).toBe(false)
 
     点单选("[data-slot='asset-publish-scope-global']")
     await 等到(() => !按钮("[data-slot='asset-confirm-submit']").disabled)
@@ -298,6 +303,25 @@ describe("资产治理页 · 发布范围", () => {
     点击("[data-slot='asset-confirm-submit']")
     await 等到(() => 记录.transition.length === 1)
     expect(记录.transition[0]).toEqual({ id: "p2", action: "publish_tech", visibility: "department" })
+  })
+
+  test("全局资产发布：预选全局，可直接提交", async () => {
+    const 全局待发布 = 资产("p3", { name: "全局知识库", status: "pending_tech", visibility: "global" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [全局待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    const 全局 = 有("[data-slot='asset-publish-scope-global']")
+    const 本部门 = 有("[data-slot='asset-publish-scope-department']")
+    expect(全局 instanceof HTMLInputElement && 全局.checked).toBe(true)
+    expect(本部门 instanceof HTMLInputElement && 本部门.checked).toBe(false)
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
+
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+    expect(记录.transition[0]).toEqual({ id: "p3", action: "publish_tech", visibility: "global" })
   })
 })
 
