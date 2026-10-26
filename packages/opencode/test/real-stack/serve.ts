@@ -28,7 +28,7 @@
  *   `REAL_STACK_STATE_DIR` 的落盘态**不清理**——那是「停栈再起，数据还在」的载体，见 `SANDBOX` 注释）。
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
@@ -69,6 +69,24 @@ const 管理员: TokenSubject = {
   id: "550e8400-e29b-41d4-a716-446655440001",
   policeNo: "020600",
   name: "李四",
+  isAdmin: true,
+}
+
+/**
+ * 手动验收 · **业务专家**（2026-10-26 用户实报：真栈里没有能过业务审核的账号）。
+ *
+ * 为什么不复用 ALICE 或管理员：
+ * - ALICE 被 `topbar-user-menu-real.spec.ts` 钉成「下拉恰三项」的普通民警，改她的 `is_admin`
+ *   等于把那条用例的判据一起改掉；
+ * - 009 / 010 的两道关刻意**互不蕴含**（`review` 与 `admin` 是两行授权），管理员替业务审核
+ *   会被服务端回 403。要手动走完「审核 → 发布」，必须真有一个挂了 `gov-business-expert` 的人。
+ *
+ * 角色模板不另建：`0013_governance.sql` 已种好 16 行授权，这里只做部署侧「把人挂上模板」。
+ */
+const 业务专家: TokenSubject = {
+  id: "550e8400-e29b-41d4-a716-446655440002",
+  policeNo: "020602",
+  name: "王五",
   isAdmin: true,
 }
 
@@ -195,6 +213,19 @@ await db.execute(sql`
   on conflict do nothing
 `)
 
+// 业务专家：同样是 `is_admin = 1` ＋ `status = 1` ＋ `must_change_pw = 0`，再挂
+// `gov-business-expert`（`asset-governance` 的 `read` ＋ `review`）。两道关因此各有人：
+// 李四只能发布，王五只能审核——与 010 的分权矩阵逐字一致。
+await db.execute(sql`
+  insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, must_change_pw, password_hash, created_at)
+  values (${业务专家.id}, ${业务专家.policeNo}, ${业务专家.name}, 'x', 'x', 'x', 'x', 'x', 1, 1, 0, ${PASSWORD_HASH}, 0)
+  on conflict (id) do nothing
+`)
+await db.execute(sql`
+  insert into auth.user_role (user_id, role_id) values (${业务专家.id}, 'gov-business-expert')
+  on conflict do nothing
+`)
+
 // ⚠️ 种子是**直接种 SQL**（不走 `register.ts` → `createWorkspace`），所以 `workspaces/<userId>`
 // 这个目录**没人建**。但内核 `FileSystem` 层在 `Server.listen` 构造期就要
 // `fs.realPath(location.directory).pipe(Effect.orDie)`（`core/filesystem.ts:65`）——目录不存在
@@ -205,6 +236,30 @@ await db.execute(sql`
 // 真栈验收（`right-pane-slash-and-model-real.spec.ts`）第一步就 500。
 mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, ALICE.id), { recursive: true, mode: 0o700 })
 mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, 管理员.id), { recursive: true, mode: 0o700 })
+mkdirSync(path.join(env.OPENHIVE_WORKSPACE_ROOT, 业务专家.id), { recursive: true, mode: 0o700 })
+
+/**
+ * 待审资产种子（2026-10-26 手动验收「AI 资产管理」用）。
+ *
+ * 作者侧本应走 `create_skill_draft` → `submit_skill_for_review`，但治理 MCP server 的
+ * `opencode.json` 写入器还没落（009 `state.md` 的阻塞项）⇒ 真栈里那条链路走不通。
+ * 这里按真栈种子的既有做法直接种，但**文件与元数据必须一起补**：只种 SQL 表的话，发布时
+ * `pending` 目录不存在，症状会长得像「发布接口坏了」（`#006-28` 的同一类）。
+ */
+const 待审资产 = "asset_demo_review"
+const 资产根 = process.env.OPENHIVE_ASSETS_ROOT ?? "/assets"
+const 待审目录 = path.join(资产根, "pending", 待审资产)
+mkdirSync(待审目录, { recursive: true })
+writeFileSync(
+  path.join(待审目录, "SKILL.md"),
+  `---\nname: fund-flow-summary\ndescription: 演示用：按账户汇总资金流水并列出可疑账户\n---\n\n# 资金流水快速汇总\n\n真栈手动验收用的演示 skill，可以安全删除。\n`,
+)
+const 资产时间 = Math.floor(Date.now() / 1000)
+await db.execute(sql`
+  insert into auth.asset (id, name, type, description, icon, category, tags, owner_id, owner_name, department, visibility, version, status, created_at, updated_at)
+  values (${待审资产}, '资金流水快速汇总（演示）', 'skill', '真栈演示资产：按账户维度汇总资金流水，输出可疑账户线索', '🧩', 'intelligence', array['资金', '演示']::text[], ${管理员.id}, ${管理员.name}, 'x', 'global', 1, 'in_review', ${资产时间}, ${资产时间})
+  on conflict (id) do nothing
+`)
 
 /**
  * 端口当默认 4096（= 上游 dev 默认，也是 `entry.tsx` 的 `getCurrentUrl()` 在 DEV 的默认目标）——
