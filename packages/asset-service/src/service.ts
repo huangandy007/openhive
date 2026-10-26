@@ -567,7 +567,16 @@ async function prepareStorageStep(
         commit: async () => {
           await replacement.commit()
           // 写库已成功，旧范围副本才删：写库失败时 rollback 不碰它（旧状态与旧目录仍一致）。
-          if (旧目录 !== undefined) await removeDirectory(root, 旧目录)
+          // 删除失败**不能**把已完成的发布翻成错误：那会让调用方收到 500 且跳过站内信，
+          // 而库里其实已经是新状态。旧副本是上一版的残留，删除属尽力而为——
+          // 残留旧目录是「可被告知的缺陷」，失败响应是「谎报」，取前者。
+          if (旧目录 !== undefined) {
+            try {
+              await removeDirectory(root, 旧目录)
+            } catch {
+              // 有意吞掉：见上。
+            }
+          }
         },
         rollback: () => replacement.rollback(),
       }

@@ -52,7 +52,7 @@ POST /openhive/governance/assets/asset_15c2d13f-…/transition  500 (Internal Se
 1. 预选：资产当前 `visibility` 是 `department` / `global` ⇒ 弹窗预选它；
 2. 资产当前是 `personal` ⇒ **无默认、必须选一个共享范围**才能发布；
 3. 发布范围只允许 `department` / `global`；显式传 `personal` ⇒ 400；
-4. 选 `department` 且资产 `department` 为空 / 空白 ⇒ 409 `department_missing`，文案要求改选全局或先补部门；
+4. 选 `department` 且资产 `department` 为空 / 空白 / 不能作为目录名 ⇒ 409 `department_missing`，文案要求改选全局或先修正部门；
 5. 不传范围且资产是个人 ⇒ 保持 409 `personal_asset_not_shared`（直连 API / MCP 的兜底）；
 6. 非发布动作（`approve_business` / `take_offline` 等）带了 `visibility` ⇒ 400 `visibility_not_applicable`（不静默忽略）。
 
@@ -61,7 +61,7 @@ POST /openhive/governance/assets/asset_15c2d13f-…/transition  500 (Internal Se
 | 错误码 | HTTP | 触发条件 | 文案要点 |
 |---|---|---|---|
 | `personal_asset_not_shared`（已有） | 409 | 个人资产发布且未传范围 | 个人资产不进入共享空间，请选择发布范围 |
-| `department_missing`（新） | 409 | 选本部门，但资产 `department` 为空 | 该资产没有部门信息：请发布为全局，或先补部门 |
+| `department_missing`（新） | 409 | 选本部门，但资产 `department` 为空 / 空白 / 不能作为目录名 | 部门信息不能用作共享目录：请发布为全局，或先修正部门 |
 | `visibility_not_applicable`（新） | 400 | 非发布动作带了 `visibility` | 动作 X 不支持可见范围 |
 | 路由 / 工具层校验（不经领域码） | 400 | 范围值不在闭集，或显式传 `personal` | `未知可见范围：x` / `发布范围必须是部门或全局` |
 
@@ -151,5 +151,5 @@ POST /openhive/governance/assets/asset_15c2d13f-…/transition  500 (Internal Se
 | 风险 | 处置 |
 |---|---|
 | 发布者选错范围把个人资产推给全局 | 弹窗展示落点；审计记录范围；已发布范围修改列入非目标，后续单独评估 |
-| 资产 `department` 是脏值（如测试数据的 `x`） | 落盘目录照旧按 `department` 字面量；`department_missing` 只挡空值。脏值清理不属本设计 |
+| 资产 `department` 是脏值（如前导空格、含路径分隔符） | 落盘目录按 `department` 字面量；`department_missing` 挡空白**与不可用作目录段的部门名**（`assertSafeSegment` 同一谓词），发布前即拒绝。历史脏值的清理不属本设计 |
 | 与官方上游的合并面 | 只改 fork 已有的 `openhive/` 路由与 `asset-service` 包，不碰上游文件 |
