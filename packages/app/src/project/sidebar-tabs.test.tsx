@@ -4,7 +4,7 @@ import { render } from "solid-js/web"
 import { SidebarTabs, type SidebarTabKey } from "./sidebar-tabs"
 
 /**
- * 左栏 tab 容器（005 T019 / 设计 §2 ②）：`[会话] [文件]`，默认「文件」。
+ * 左栏 tab 容器（005 T019 / 设计 §2 ②）：`[会话] [文件] [能力 N]`，默认「文件」。
  *
  * happy-dom **没有 CSS 引擎**——判据全是**结构不变量**（槽位在不在、属性对不对、点了通知谁），
  * 不是像素。**`hidden` 属性**是本文件的中心：它既是「哪一个 pane 此刻该显示」的唯一真源，

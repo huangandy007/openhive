@@ -941,11 +941,12 @@ describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T0
     setMinioBackups(undefined)
   })
 
-  test("左栏有 [会话][文件] 两个 tab，且**默认停在「文件」**（设计 §2）", () => {
+  test("左栏有 [会话][文件][能力] 三个 tab，且**默认停在「文件」**（设计 §2）", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
     expect(侧栏tab(host, "files")?.getAttribute("aria-selected")).toBe("true")
     expect(侧栏tab(host, "session")?.getAttribute("aria-selected")).toBe("false")
+    expect(侧栏tab(host, "capability")?.getAttribute("aria-selected")).toBe("false")
   })
 
   test("点「会话」切过去：会话 pane 露出来、文件 pane 藏起来", () => {

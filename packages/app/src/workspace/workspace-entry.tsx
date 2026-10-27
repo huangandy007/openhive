@@ -258,7 +258,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const [memberOpen, setMemberOpen] = createSignal(false)
   /**
-   * 左栏 ② 当前停在哪个 tab（设计 §2：`[会话] [文件]`，**默认「文件」**）。
+   * 左栏 ② 当前停在哪个 tab（设计 §2：`[会话] [文件] [能力 N]`，**默认「文件」**）。
    *
    * 落在这里而不是 `SidebarTabs` 里，是因为**有两个读写方**：窄条点击要把它拨回「文件」
    * （设计 §5.1 步骤 2①），而它是左栏的状态、跟中栏模块一样是「我在哪」的一部分。
@@ -2009,11 +2009,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     </Show>
                   </div>
                 </Show>
-                {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件]` tab 容器 ＋ 主体。
+                {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件] [能力 N]` tab 容器 ＋ 主体。
                     「文件」pane 里装的是**上下双树**（T012 / 设计 §5）：上树＝沙箱那棵文件树
                     （T007 的 `FileTree` 一字未改地当了上树），下树＝MinIO 备份，默认收起、点 ④
                     窄条展开。pane 的 `data-slot` 仍叫 `file-tree-slot`（T007 起就是这个名字，
-                    不必随装进去的东西改）。`files` 传的是元素本身，`SidebarTabs` 两个 pane
+                    不必随装进去的东西改）。`files` 传的是元素本身，`SidebarTabs` 三个 pane
                     常挂不卸载 —— 切一下 tab 不该把选中的行、展开的目录、搜过的词丢掉
                     （`DualFileTree` 也因此只把**下树**放进 `<Show>`，上树恒挂载）。
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
