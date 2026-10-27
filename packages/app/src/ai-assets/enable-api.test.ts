@@ -154,13 +154,59 @@ describe("skills 字段：未知与空必须分开（#002-02）", () => {
     expect(结果.value.skills?.[0]?.name).toBe("资金流向分析")
   })
 
-  test("回包没有 skills ⇒ 解析成 undefined，不是空数组", async () => {
+  test("回包没有 skills ⇒ 解析成 undefined，不是空数组；且键整个缺席", async () => {
     const 记录: Array<{ url: string; init?: RequestInit }> = []
     const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], 记录))
     const 结果 = await api.read("p1")
     expect(结果.kind).toBe("ok")
     if (结果.kind !== "ok") return
     expect(结果.value.skills).toBe(undefined)
+    // 值层面 `undefined` 与「键缺席」在 JSON 上等价，这里钉对象层面：
+    // 后端 `带内核清单` 也是这么分辨「不知道」的，两层口径要一致。
+    expect(Object.prototype.hasOwnProperty.call(结果.value, "skills")).toBe(false)
+  })
+
+  // 修复轮次 1：`skills: []` 必须在**解析层**钉住。只靠 `enable-state.test.tsx` 不够——
+  // 那条直接构造 `EnablementOutcome`，绕过了 `解析状态`；有人把「空数组」折叠成 `undefined`
+  // 时两层全绿，后端说的「明确没有」就被静默改成「不知道」（`#002-02` 核心判据）。
+  test("回包 skills 是空数组 ⇒ 解析成 []，不是 undefined", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(
+      假发送([{ status: 200, body: { enabled: [], enabledCount: 0, limit: 20, skills: [] } }], 记录),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    // 分开断：「是数组」与「长度 0」各自能定位红在哪（合起来断 `toEqual([])` 说不清）。
+    expect(Array.isArray(结果.value.skills)).toBe(true)
+    expect(结果.value.skills?.length).toBe(0)
+  })
+
+  test("最小条目（只有 name + location）⇒ 解析成功，三个可选字段都是 undefined", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              enabled: [],
+              enabledCount: 0,
+              limit: 20,
+              skills: [{ name: "x", location: "/w/.opencode/skill/x/SKILL.md" }],
+            },
+          },
+        ],
+        记录,
+      ),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.skills?.length).toBe(1)
+    expect(结果.value.skills?.[0]?.assetId).toBe(undefined)
+    expect(结果.value.skills?.[0]?.assetName).toBe(undefined)
+    expect(结果.value.skills?.[0]?.description).toBe(undefined)
   })
 
   test("skills 里有一条形状不对 ⇒ 整份回包判为形状错误（不悄悄丢掉那条）", async () => {
