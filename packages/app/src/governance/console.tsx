@@ -231,7 +231,9 @@ function 页面(props: {
       </Match>
       <Match when={props.section.id === "asset-governance"}>
         <Show when={props.assetApi} fallback={<占位 section={props.section} />}>
-          {(api) => <AssetGovernance api={api()} />}
+          {/* 【保留的定制 · 同步上游时不要丢】（需求 2）：批量改分类要把分类 id 翻成名字、
+              且只允许挑启用分类，所以同一个 `categoryApi` 也交给资产队列。 */}
+          {(api) => <AssetGovernance api={api()} categoryApi={props.categoryApi} />}
         </Show>
         {/* 【保留的定制 · 同步上游时不要丢】（需求 4）：业务分类维护与资产治理同属
             `asset-governance` 板块，渲染在资产队列下面。接口省略时整块不画（不是画一个空表）。 */}

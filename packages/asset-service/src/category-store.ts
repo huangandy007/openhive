@@ -26,6 +26,15 @@ import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
  * `CategoryNameTakenError`——`template.ts` 同一处置。
  */
 
+/**
+ * 「其他」兜底桶在 HTTP 查询串里的**保留值**（需求 2，2026-10-27）。
+ *
+ * 它不是分类：库里没有这一行，所以建草稿 / 批量改分类都拒它。前端 `filter.ts` 另写一份
+ * 字面量（客户端不 import 内核源码，`#003-05`）；两处漂了会在组件测试 / HTTP 用例里当场红。
+ * seed id 是普通 slug、管理员新建的是 `cat_<uuid>`，两边都不可能撞上这个值。
+ */
+export const OTHER_CATEGORY_ID = "__other__"
+
 /** 与 `asset.ts` 的 `AssetTarget` 同形：PGlite 与生产 bun-sql 都满足。 */
 export interface CategoryTarget {
   execute(query: SQL): PromiseLike<unknown>
@@ -114,6 +123,24 @@ export async function listCategories(
 export async function isEnabledCategory(db: CategoryTarget, id: string): Promise<boolean> {
   const rows = rowsOf(await db.execute(sql`select 1 from auth.asset_category where id = ${id} and enabled`))
   return rows.length > 0
+}
+
+/**
+ * 一页资产用到的分类名（需求 2）：**含停用分类**。
+ *
+ * 「其他」桶里的资产要标「原分类：xxx」——那正是被停用的那个分类，名字只能从库里取；
+ * 拿 seed 常量拼就是第二份真相（管理员改过名就对不上）。库里没有的 id 不出现，
+ * 前端退回显示 id（历史数据 / 直写库）。
+ */
+export async function categoryNamesOf(
+  db: CategoryTarget,
+  ids: readonly string[],
+): Promise<Record<string, string>> {
+  const 唯一 = [...new Set(ids)]
+  if (唯一.length === 0) return {}
+  const values = sql.join(唯一.map((id) => sql`${id}`), sql`, `)
+  const rows = rowsOf(await db.execute(sql`select id, name from auth.asset_category where id in (${values})`))
+  return Object.fromEntries(rows.map((row) => [String(row["id"]), String(row["name"])]))
 }
 
 export async function categoryById(db: CategoryTarget, id: string): Promise<AssetCategory | undefined> {

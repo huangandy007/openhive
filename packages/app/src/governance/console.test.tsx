@@ -141,11 +141,13 @@ describe("治理后台 · 全屏骨架", () => {
                 version: 1,
                 updatedAt: 1_700_000_000,
                 publishedAt: null,
+                category: "intelligence",
               },
             ],
           }
         },
         transition: async () => ({ kind: "failed", message: "本用例不流转" }),
+        batchCategory: async () => ({ kind: "failed", message: "本用例不批量改分类" }),
       },
     })
     await flush()

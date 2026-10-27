@@ -1,5 +1,5 @@
 import { Icon } from "@opencode-ai/ui/icon"
-import type { JSX } from "solid-js"
+import { Show, type JSX } from "solid-js"
 import {
   ASSET_STATUS_LABELS,
   ASSET_VISIBILITY_LABELS,
@@ -19,6 +19,13 @@ const 徽章 = "rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[1
 export interface AssetCardProps {
   readonly asset: AssetMetadata
   readonly onOpen: (asset: AssetMetadata) => void
+  /**
+   * 原分类名（需求 2）：**只有「其他」桶里才给**。兜底桶里的资产已经不在任何启用分类，
+   * 卡片上不标一句「它原来属于哪类」，管理员根本不知道该把它挪去哪。
+   *
+   * 名字由服务端给（含停用分类的名字），查不到时上层退回分类 id——这里不做判断。
+   */
+  readonly 原分类?: string
 }
 
 export function AssetCard(props: AssetCardProps): JSX.Element {
@@ -60,6 +67,19 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           <span data-slot="asset-card-status" data-status={props.asset.status} class={徽章}>
             {ASSET_STATUS_LABELS[props.asset.status]}
           </span>
+          {/* 卡片是定高的（132px，见 `grid-model.ts`）：这一枚只能占同一行的余宽、省略号收口，
+              全名挂 `title`。多起一行会把行高撑破，虚拟滚动的几何就跟不上了。 */}
+          <Show when={props.原分类}>
+            {(名字) => (
+              <span
+                data-slot="asset-card-category"
+                title={`原分类：${名字()}`}
+                class={`${徽章} min-w-0 truncate`}
+              >
+                原分类：{名字()}
+              </span>
+            )}
+          </Show>
         </div>
       </button>
     </div>

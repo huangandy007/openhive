@@ -75,6 +75,11 @@ export interface AssetRow {
   readonly version: number
   readonly updatedAt: number
   readonly publishedAt: number | null
+  /**
+   * 业务分类 id（需求 2）。库里存的是 id，**名字要另查**（`CategoryAdminApi.list`）——
+   * 这里若也存名字，就是第二份真相（`#002-06`）：管理员改名后后台仍显示旧名。
+   */
+  readonly category: string
 }
 
 export interface AssetQuery {
@@ -108,6 +113,13 @@ export interface AssetApi {
     reason?: string,
     visibility?: "department" | "global",
   ): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
+  /**
+   * 把一批资产挪到某个**启用**分类（需求 2）：管理员收拾「其他」兜底桶的收尾动作。
+   *
+   * 服务端整批原子——有一个 id 不存在就 404、一个都不写。回包只有 `updated`（真改了几条）：
+   * 重复提交同一批 ⇒ `updated = 0`，不是失败。
+   */
+  batchCategory(ids: readonly string[], category: string): Promise<AssetOutcome<{ readonly updated: number }>>
 }
 
 /** 只用到的那一小片 `fetch`（类型与 `GovernanceFetch` 逐字相同，便于注入同一个替身）。 */
@@ -119,6 +131,8 @@ const PREFIX = "/openhive/governance/assets"
 export const PATH = {
   list: PREFIX,
   transition: (id: string) => `${PREFIX}/${encodeURIComponent(id)}/transition`,
+  /** 需求 2：批量改分类。与内核 `PATH.batchCategory` 逐字对应（刻意不共享）。 */
+  batchCategory: `${PREFIX}/batch-category`,
 } as const
 
 /** 一次请求的上限：与 `account-api.ts` 同值同理由。 */
@@ -149,13 +163,16 @@ function 闭集<T extends string>(values: readonly T[], value: unknown): value i
 /** 每一列都严判：缺一列、类型不对、枚举越界都算 `failed`（不猜默认值）。 */
 function 行(value: unknown): AssetRow | undefined {
   if (!isRecord(value)) return undefined
-  const { id, name, type, status, visibility, department, ownerName, version, updatedAt, publishedAt } = value
+  const { id, name, type, status, visibility, department, ownerName, version, updatedAt, publishedAt, category } =
+    value
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof department !== "string" || typeof ownerName !== "string") return undefined
   if (!闭集(ASSET_TYPES, type) || !闭集(ASSET_STATUSES, status) || !闭集(ASSET_VISIBILITIES, visibility)) return undefined
   if (!数(version) || !数(updatedAt)) return undefined
   if (publishedAt !== null && !数(publishedAt)) return undefined
-  return { id, name, type, status, visibility, department, ownerName, version, updatedAt, publishedAt }
+  // 分类 id 是 NOT NULL 的列：缺了就是形状变了（批量改分类的「原分类」要读它）。
+  if (typeof category !== "string") return undefined
+  return { id, name, type, status, visibility, department, ownerName, version, updatedAt, publishedAt, category }
 }
 
 function 列表(value: unknown): readonly AssetRow[] | undefined {
@@ -248,6 +265,12 @@ export function 列表地址(query: AssetQuery = {}): string {
   return 串 === "" ? PATH.list : `${PATH.list}?${串}`
 }
 
+/** 批量改分类的回包：`{ updated }`，缺了 / 不是数字都算形状变了（不能当 0 条蒙混）。 */
+function 批量结果(value: unknown): { readonly updated: number } | undefined {
+  if (!isRecord(value) || !数(value["updated"])) return undefined
+  return { updated: value["updated"] }
+}
+
 /** 建一份客户端。`send` 省略 = 真实 `fetch` ＋ 超时（测试注入替身）。 */
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
@@ -262,5 +285,16 @@ export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
           ...(visibility === undefined ? {} : { visibility }),
         }),
       }, 流转结果),
+    batchCategory: (ids, category) =>
+      请求(
+        send,
+        PATH.batchCategory,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ids: [...ids], category }),
+        },
+        批量结果,
+      ),
   }
 }

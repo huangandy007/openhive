@@ -20,6 +20,15 @@ import {
  * 由 `AssetNav` 通过访问器接收；本文件只管**选中了哪个 id**。
  */
 
+/**
+ * 「其他」兜底桶的保留值（需求 2，2026-10-27）。
+ *
+ * 它不是分类：库里没有这一行（见 `@opencode-ai/asset-service/category-store` 的同名常量）。
+ * 左栏底部那一项把 `category` 设成它，服务端看到才翻成「分类不在启用清单里」的条件。
+ * 与内核 `OTHER_CATEGORY_ID` **逐字相同、刻意各写一份**（前端不 import 内核源码，`#003-05`）。
+ */
+export const 兜底分类ID = "__other__"
+
 export interface AssetFilter {
   /** 已选空间，恒按 `ASSET_VISIBILITIES` 的顺序。 */
   readonly spaces: Accessor<readonly AssetVisibility[]>

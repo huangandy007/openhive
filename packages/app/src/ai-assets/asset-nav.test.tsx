@@ -163,6 +163,36 @@ describe("AI 资产左栏导航", () => {
     expect(全部.getAttribute("aria-current")).toBe("true")
   })
 
+  test("底部「其他」：恒在最后；选中它之后「全部」与真实分类都让出（需求 2）", () => {
+    const filter = createAssetFilter()
+    const host = mount(filter)
+    const 其他 = host.querySelector<HTMLElement>("[data-slot='asset-category-other']")!
+    const 全部 = host.querySelector<HTMLElement>("[data-slot='asset-category-all']")!
+    const 分类按钮 = 槽(host, "asset-category")
+
+    expect(其他.textContent?.trim()).toBe("其他")
+    // 它就是分类手风琴里的一项，所以默认不选中。
+    expect(其他.getAttribute("aria-current")).toBe("false")
+
+    // 位置：排在内置「全部」与所有真实分类**之后**——兜底桶是「剩下的都在这儿」。
+    const 顺序 = [
+      ...host.querySelectorAll<HTMLElement>(
+        "[data-slot='asset-category-all'], [data-slot='asset-category'], [data-slot='asset-category-other']",
+      ),
+    ]
+    expect(顺序.at(-1)).toBe(其他)
+
+    // 先选一个真实分类，再点「其他」：三者互斥，最终只剩「其他」选中。
+    分类按钮[1].click()
+    expect(全部.getAttribute("aria-current")).toBe("false")
+
+    其他.click()
+    expect(filter.category()).toBe("__other__")
+    expect(其他.getAttribute("aria-current")).toBe("true")
+    expect(全部.getAttribute("aria-current")).toBe("false")
+    expect(分类按钮.map((el) => el.getAttribute("aria-expanded"))).toEqual(["false", "false", "false"])
+  })
+
   test("停用的分类服务端就不给了：访问器换成两项，左栏只剩两项（不缓存旧行）", () => {
     const [行, set行] = createSignal<readonly AssetCategoryRow[]>(分类)
     const host = document.createElement("div")

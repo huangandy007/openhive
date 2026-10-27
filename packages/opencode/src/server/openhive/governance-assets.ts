@@ -43,7 +43,14 @@ export * as OpenhiveGovernanceAssets from "./governance-assets"
  * 用户再点一次就撞 `concurrent_transition`（409），比「成功但通知没写进去」更难解释。
  */
 
-import { assetById, countAssets, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
+import {
+  assetById,
+  countAssets,
+  listAssets,
+  updateAssetCategories,
+  type AssetListFilters,
+} from "@opencode-ai/asset-service/asset"
+import { isEnabledCategory, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import {
   ASSET_STATUSES,
@@ -79,7 +86,17 @@ const PREFIX = "/openhive/governance/assets"
 export const PATH = {
   list: PREFIX,
   transition: `${PREFIX}/:id/transition`,
+  /** 需求 2：把资产批量挪出「其他」兜底桶（管理员维护分类的收尾动作）。 */
+  batchCategory: `${PREFIX}/batch-category`,
 } as const
+
+/**
+ * 一次最多改多少条（需求 2）。
+ *
+ * 使用面每页最多 100 条（`paging.ts` 的白名单），批量条也按同一上限收：再大就是「一次改
+ * 全表」的口子，审计也会一次写爆。超了回 400，让前端分批。
+ */
+const BATCH_LIMIT = 100
 
 /**
  * 治理后台能执行的动作：业务审核两道关 ＋ 技术发布 ＋ 上下架 ＋ 归档。
@@ -114,6 +131,7 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
     yield* router.add("POST", PATH.transition, (request) => handleTransition(request, deps))
+    yield* router.add("POST", PATH.batchCategory, (request) => handleBatchCategory(request, deps))
   }),
 )
 
@@ -313,6 +331,81 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       return ok({ asset: updated, notice: error.message })
     }
     return yield* 翻译(error, deps, userId, base, 补充)
+  })
+}
+
+/**
+ * 需求 2（2026-10-27）：把资产批量挪到某个**启用**分类——管理员收拾「其他」兜底桶的出口。
+ *
+ * ## 权限是 `admin`，不是「能进后台」
+ *
+ * 分类维护（需求 4）同权：改资产的业务归类是管理动作，业务审核员（`review`）不做归类。
+ * 只读角色能进后台看列表，但这条 403。
+ *
+ * ## 整批原子
+ *
+ * 有一个 id 不存在就 404、一个都不写（`updateAssetCategories` 的既有语义）：半截批量最难
+ * 对账。上限 100 条与使用面每页同数（`BATCH_LIMIT`）。
+ *
+ * ## 只有真改了的行留审计
+ *
+ * 逐条记 `asset.category`（`detail.from` → `detail.to`）：审计要能回答「哪一份从哪类挪到
+ * 哪类」。重复点「应用」不产生新行——否则审计里「没改也算改」，事后查不出真改动。
+ *
+ * ## 目标分类必须是**启用**分类
+ *
+ * 判据只有一份：`isEnabledCategory()`（`#002-06`）。`__other__` 是保留值、没有库行，
+ * 显式拒（报一句人话，而不是「未知业务分类：__other__」这种内部黑话）。
+ */
+function handleBatchCategory(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+    // 授权先于读体（`#004-09`）：没有 admin 的人递畸形 JSON 也拿 403，不是 400。
+    if (!(yield* 有权(deps, userId, "admin"))) return forbidden()
+
+    const base = { action: "asset.category", targetType: "asset", targetId: null } as const
+    const body = yield* 读取体(request)
+    if (!isRecord(body)) return yield* 失败(deps, userId, base, BAD_REQUEST, "请求体不是 JSON 对象")
+
+    const ids = body["ids"]
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "ids 必须是非空的资产 id 数组", "ids")
+    }
+    if (!ids.every((id): id is string => typeof id === "string" && id.trim() !== "")) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "ids 里每一项都必须是非空字符串", "ids")
+    }
+    if (ids.length > BATCH_LIMIT) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, `一次最多 ${BATCH_LIMIT} 条（实得 ${ids.length}）`, "ids")
+    }
+
+    const category = body["category"]
+    if (typeof category !== "string" || category.trim() === "") {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "category 必须是非空字符串", "category")
+    }
+    if (category === OTHER_CATEGORY_ID) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, "「其他」不是分类，不能作为目标分类", "category")
+    }
+    if (!(yield* Effect.promise(() => isEnabledCategory(deps.pg(), category)))) {
+      return yield* 失败(deps, userId, base, BAD_REQUEST, `未知业务分类：${category}`, "category")
+    }
+
+    const result = yield* Effect.promise(() => updateAssetCategories(deps.pg(), ids, category))
+    if (result.missing.length > 0) {
+      return yield* 失败(deps, userId, base, NOT_FOUND, `资产不存在：${result.missing.join("、")}`, "ids")
+    }
+
+    for (const 改动 of result.changed) {
+      yield* 记账.记(deps, userId, {
+        action: "asset.category",
+        targetType: "asset",
+        targetId: 改动.id,
+        result: "ok",
+        detail: { from: 改动.from, to: category },
+      })
+    }
+    return ok({ updated: result.changed.length })
   })
 }
 

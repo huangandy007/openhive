@@ -39,9 +39,15 @@ import {
   type AssetStatus,
   type GovernanceAction,
 } from "./asset-api"
+import type { CategoryAdminApi, CategoryAdminRow } from "./category-api"
 
 export interface AssetGovernanceProps {
   api: AssetApi
+  /**
+   * 分类管理接口（需求 2）：用来把行上的分类 id 翻成名字，以及给批量下拉**只列启用分类**。
+   * 省略 = 不画分类名、批量改分类按不下去（组件测试 / storybook 的退化形态）。
+   */
+  categoryApi?: CategoryAdminApi
 }
 
 /** 筛选下拉：空串 = 全部状态。默认停在「待业务审核」，那是审核人的待办队列。 */
@@ -131,6 +137,18 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [提示, 设提示] = createSignal<string>()
   const [筛选, 设筛选] = createSignal<"" | AssetStatus>("in_review")
 
+  /**
+   * 批量改分类（需求 2）：勾了谁、改成哪一类、这条动作错了什么。
+   *
+   * 选择存 **id 列表**而不是行：列表重拉之后行对象会换新，存行就会拿着旧数据（旧分类）去对账。
+   */
+  const [已选, 设已选] = createSignal<readonly string[]>([])
+  const [批量分类, 设批量分类] = createSignal("")
+  const [批量处理中, 设批量处理中] = createSignal(false)
+  const [批量错误, 设批量错误] = createSignal<string>()
+  /** 分类表（含停用项）：名字与「能不能作为目标」的唯一来源。拉不到就只剩 id。 */
+  const [分类行们, 设分类行们] = createSignal<readonly CategoryAdminRow[]>([])
+
   const [确认, 设确认] = createSignal<{ readonly row: AssetRow; readonly action: GovernanceAction }>()
   const [理由, 设理由] = createSignal("")
   const [理由错误, 设理由错误] = createSignal<string>()
@@ -155,9 +173,55 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       return
     }
     设行们(out.value)
+    // 换了筛选 / 刷新之后，已经不在列表里的行不能再算「已选」：下一次批量会带上一个服务端
+    // 不认识的 id，整批 404（批量是原子的）。
+    const 在列表中 = new Set(out.value.map((row) => row.id))
+    设已选((当前) => 当前.filter((id) => 在列表中.has(id)))
   }
 
   onMount(() => void 读())
+
+  onMount(async () => {
+    // 拉不到分类不算失败态：行上退回显示 id、批量下拉空着（按不下去）。为它多一条错误条
+    // 反而会盖住真正的列表错误。
+    if (!props.categoryApi) return
+    const out = await props.categoryApi.list()
+    if (out.kind === "ok") 设分类行们(out.value)
+  })
+
+  /** 分类 id → 人话：启用直呼其名；停用的标出来（管理员据此决定要不要挪走）；查不到的留 id。 */
+  function 分类文案(id: string): string {
+    const 行 = 分类行们().find((item) => item.id === id)
+    if (行 === undefined) return id
+    return 行.enabled ? 行.name : `${行.name}（已停用）`
+  }
+
+  function 切换选中(id: string, 选上: boolean) {
+    设批量错误(undefined)
+    设已选((当前) => (选上 ? [...当前, id] : 当前.filter((item) => item !== id)))
+  }
+
+  async function 应用批量() {
+    const category = 批量分类()
+    if (category === "" || 已选().length === 0) return
+    设批量处理中(true)
+    设批量错误(undefined)
+    设提示(undefined)
+    const out = await props.api.batchCategory(已选(), category)
+    设批量处理中(false)
+    if (out.kind !== "ok") {
+      设批量错误(out.message)
+      return
+    }
+    设提示(
+      out.value.updated === 0
+        ? "所选资产已经在这个分类里，没有改动"
+        : `已把 ${out.value.updated} 项资产改为「${分类文案(category)}」`,
+    )
+    设已选([])
+    设批量分类("")
+    await 读()
+  }
 
   function 换筛选(value: string) {
     设筛选(是状态(value) ? value : "")
@@ -313,6 +377,68 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
         </div>
       </Show>
 
+      {/*
+        批量改分类（需求 2）：管理员收拾「其他」兜底桶的动作。条只在勾了行之后出现——
+        没勾人时它占着位置却不做事。目标分类只列**启用**的（停用的当目标会被服务端 400）。
+      */}
+      <Show when={已选().length > 0}>
+        <div
+          data-slot="asset-batch-bar"
+          class="flex flex-wrap items-center gap-2 rounded-xl border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-3 py-2"
+        >
+          <span data-slot="asset-batch-count" class="text-[13px] text-v2-text-text-base">
+            已选 {已选().length} 项
+          </span>
+          <label class="flex items-center gap-2 text-[13px] text-v2-text-text-muted">
+            改为分类
+            <select
+              data-slot="asset-batch-category"
+              class="h-8 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base"
+              value={批量分类()}
+              disabled={批量处理中()}
+              onChange={(event) => {
+                设批量分类(event.currentTarget.value)
+                设批量错误(undefined)
+              }}
+            >
+              <option value="">请选择</option>
+              <For each={分类行们().filter((行) => 行.enabled)}>{(行) => <option value={行.id}>{行.name}</option>}</For>
+            </select>
+          </label>
+          <ButtonV2
+            data-slot="asset-batch-apply"
+            type="button"
+            variant="contrast"
+            size="small"
+            disabled={批量分类() === "" || 批量处理中()}
+            onClick={() => void 应用批量()}
+          >
+            {批量处理中() ? "处理中…" : "应用"}
+          </ButtonV2>
+          <ButtonV2
+            data-slot="asset-batch-clear"
+            type="button"
+            variant="neutral"
+            size="small"
+            disabled={批量处理中()}
+            onClick={() => {
+              设已选([])
+              设批量分类("")
+              设批量错误(undefined)
+            }}
+          >
+            取消选择
+          </ButtonV2>
+          <Show when={批量错误()}>
+            {(message) => (
+              <span data-slot="asset-batch-error" role="alert" class="text-[12px] text-v2-state-fg-danger">
+                {message()}
+              </span>
+            )}
+          </Show>
+        </div>
+      </Show>
+
       <Show when={!错误() && 行们()}>
         {(清单) => (
           <Show
@@ -333,11 +459,17 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
               <table data-slot="governance-table" class="w-full border-collapse text-left text-[13px]">
                 <thead>
                   <tr class="h-10 border-b border-v2-border-border-muted text-[12px] text-v2-text-text-muted">
+                    <th scope="col" class="w-8 px-3 font-normal">
+                      <span class="sr-only">选择</span>
+                    </th>
                     <th scope="col" class="px-3 font-normal">
                       资产
                     </th>
                     <th scope="col" class="px-3 font-normal">
                       类型
+                    </th>
+                    <th scope="col" class="px-3 font-normal">
+                      分类
                     </th>
                     <th scope="col" class="px-3 font-normal">
                       状态
@@ -366,12 +498,26 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                         class="h-11 border-b border-v2-border-border-muted last:border-b-0"
                       >
                         <td class="px-3">
+                          <input
+                            type="checkbox"
+                            data-slot="asset-select"
+                            data-id={row.id}
+                            aria-label={`选择 ${row.name}`}
+                            checked={已选().includes(row.id)}
+                            disabled={批量处理中()}
+                            onChange={(event) => 切换选中(row.id, event.currentTarget.checked)}
+                          />
+                        </td>
+                        <td class="px-3">
                           <div data-slot="asset-row-name" class="text-v2-text-text-base">
                             {row.name}
                           </div>
                           <div class="text-[11px] text-v2-text-text-muted">v{row.version}</div>
                         </td>
                         <td class="px-3 text-v2-text-text-muted">{TYPE_LABELS[row.type]}</td>
+                        <td data-slot="asset-row-category" class="px-3 text-v2-text-text-muted">
+                          {分类文案(row.category)}
+                        </td>
                         <td class="px-3">
                           <Tag variant="neutral">{STATUS_LABELS[row.status]}</Tag>
                         </td>

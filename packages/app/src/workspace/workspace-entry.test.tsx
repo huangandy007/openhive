@@ -6147,6 +6147,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       total: () => 清单().length,
       page: () => 1,
       pageSize: () => 20,
+      // 需求 2：本夹具不覆盖「其他」桶的原分类标注，空表即可（卡片不画那枚徽章）。
+      categoryNames: () => ({}),
       error: () => undefined,
       load: (query) => {
         const 词 = (query.q ?? "").trim().toLowerCase()

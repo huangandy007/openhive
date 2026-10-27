@@ -213,10 +213,61 @@ export async function assetById(db: AssetTarget, id: string): Promise<AssetMetad
   return row === undefined ? undefined : toMetadata(row)
 }
 
+/** 批量改分类的结果（需求 2）：真改了的（带旧值，供审计）＋ 库里没有的 id。 */
+export interface CategoryUpdateResult {
+  readonly changed: readonly { readonly id: string; readonly from: string }[]
+  readonly missing: readonly string[]
+}
+
+/**
+ * 批量把资产的业务分类改成 `category`（需求 2，2026-10-27）。
+ *
+ * **只动「旧值 ≠ 目标值」的行**：重复点「应用」不该把 `updated_at` 一路刷新、把清单顺序
+ * 打乱，也不该给审计灌一批「没改也算改」。目标分类是否**合法**不在这里判——那是出口的
+ * 责任，唯一实现是 `isEnabledCategory()`（`#002-06`）。
+ *
+ * 先读旧值再写，中间存在极小窗口（并发改同一行会让审计里的 `from` 过时）；分类维护是
+ * 低频管理动作，为此加一把锁不划算。写用一条语句，行与行之间不会只改一半。
+ */
+export async function updateAssetCategories(
+  db: AssetTarget,
+  ids: readonly string[],
+  category: string,
+  now = Math.floor(Date.now() / 1000),
+): Promise<CategoryUpdateResult> {
+  if (ids.length === 0) return { changed: [], missing: [] }
+
+  const 占位 = sql.join(ids.map((id) => sql`${id}`), sql`, `)
+  const rows = rowsOf(await db.execute(sql`select id, category from auth.asset where id in (${占位})`))
+  const 现有 = new Map(rows.map((row) => [String(row["id"]), String(row["category"])]))
+  const missing = [...new Set(ids.filter((id) => !现有.has(id)))]
+  // 有一个 id 不存在就整批不写：批量动作留半截，管理员看到 404 却已有资产改了分类，最难对账。
+  if (missing.length > 0) return { changed: [], missing }
+
+  const changed = [...现有.entries()]
+    .filter(([, 旧值]) => 旧值 !== category)
+    .map(([id, from]) => ({ id, from }))
+  if (changed.length === 0) return { changed, missing }
+
+  const 目标 = sql.join(changed.map((item) => sql`${item.id}`), sql`, `)
+  await db.execute(sql`
+    update auth.asset set category = ${category}, updated_at = ${now} where id in (${目标})
+  `)
+  return { changed, missing }
+}
+
 export interface AssetListFilters {
   readonly type?: AssetType
   readonly status?: AssetStatus
   readonly category?: string
+  /**
+   * 「其他」兜底（需求 2，2026-10-27）：只列**分类不在启用清单里**的行。
+   *
+   * 口径是「不在启用清单」而不是「分类为空」——`category` 是 NOT NULL，空分类不存在；
+   * 停用的分类（管理员停掉）与库里根本没有的 id（历史数据 / 直写库）都落进来。
+   * 「启用清单」的唯一来源是 `auth.asset_category.enabled`，与 `category-store.ts` 同源。
+   */
+  readonly categoryOther?: true
   /**
    * 空间过滤。**单个值或数组**都收（需求 6，2026-10-27）：使用面左栏三个空间是复选，
    * 前端把选中的那几个一起下推，免得「取回 20 条再内存筛」把每页条数吃掉。
@@ -259,6 +310,11 @@ function assetConditions(filters: AssetListFilters): SQL[] {
   if (filters.type !== undefined) conditions.push(sql`type = ${filters.type}`)
   if (filters.status !== undefined) conditions.push(sql`status = ${filters.status}`)
   if (filters.category !== undefined) conditions.push(sql`category = ${filters.category}`)
+  if (filters.categoryOther === true) {
+    // 需求 2 的兜底桶。子查询而不是把 id 清单拼进来：分类随时会被管理员停用，
+    // 拼进来的清单在下一次请求就过期了。
+    conditions.push(sql`category not in (select id from auth.asset_category where enabled)`)
+  }
   if (filters.visibility !== undefined) {
     // 数组逐个占位符（不把 JS 数组直接塞进模板：drizzle 会展开成行构造器，`in` 的语义就
     // 取决于 PG 怎么理解 record——`tags` 那里踩过同款坑）。

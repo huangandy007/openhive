@@ -45,6 +45,7 @@ export * as OpenhiveAssets from "./assets"
  */
 
 import { countAssets, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
+import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { offsetOf, parsePage } from "./paging"
 import {
   ASSET_TYPES,
@@ -133,11 +134,17 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 分页 = parsePage(params)
     if ("error" in 分页) return fail(BAD_REQUEST, 分页.error)
 
+    // 需求 2：「其他」是保留值，翻成兜底条件；其余仍按分类 id 等值筛。
+    // 兜底项没有库行，`category = '__other__'` 走等值筛只会恒空——所以必须在这里翻。
     const filters: AssetListFilters = {
       status: "published",
       ...(type === "" ? {} : { type }),
       ...(search === "" ? {} : { search }),
-      ...(category === "" ? {} : { category }),
+      ...(category === ""
+        ? {}
+        : category === OTHER_CATEGORY_ID
+          ? { categoryOther: true as const }
+          : { category }),
       ...(可见性.length === 0 ? {} : { visibility: 可见性 }),
     }
 
@@ -156,6 +163,16 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     )
     const total = yield* Effect.promise(() => countAssets(deps.pg(), 筛选))
 
-    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize })
+    // 需求 2：本页资产用到的分类名（**含停用分类**）。「其他」桶里要标「原分类」，
+    // 名字只能从库里取——seed 常量在管理员改名/停用之后就是第二份真相（`#002-06`）。
+    // 顺序查而不是并发：PGlite 夹具是单连接（同本文件上方「顺序查」的理由）。
+    const categoryNames = yield* Effect.promise(() =>
+      categoryNamesOf(
+        deps.pg(),
+        assets.map((asset) => asset.category),
+      ),
+    )
+
+    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize, categoryNames })
   })
 }

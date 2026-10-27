@@ -7,11 +7,11 @@ import { sql, type SQL } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
-import { assetById, insertAsset, type AssetTarget } from "./asset"
+import { assetById, AssetMetadataError, insertAsset, listAssets, type AssetTarget } from "./asset"
 import { AssetTransitionError } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import { AssetNotificationError } from "./notify"
-import { assetLocation, discardAsset, storeAsset, transitionAsset } from "./service"
+import { assetLocation, createDraftAsset, discardAsset, storeAsset, transitionAsset } from "./service"
 import { archiveDirectory, pendingDirectory, publishDirectory } from "./storage"
 
 /**
@@ -125,6 +125,30 @@ describe("资产位置（assetLocation）", () => {
     expect(() => assetLocation(root, metadata({ status: "published", visibility: "personal" }))).toThrow(
       "个人资产不发布",
     )
+  })
+})
+
+describe("createDraftAsset · 分类闭集（需求 2）", () => {
+  /**
+   * 「其他」是使用面的**兜底桶，不是分类**：它没有库行，所以不可能是启用分类。
+   * 这条用例钉住「不可选作创建分类」——建草稿必须当场拒，且一行都不写。
+   */
+  test("兜底项 __other__ 不是分类：建草稿当场拒，库里不写行", async () => {
+    const db = await freshDb()
+
+    await expect(
+      createDraftAsset({
+        db,
+        owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+        name: "兜底草稿",
+        description: "不该建成",
+        category: "__other__",
+        id: "draft-other",
+        now: 10,
+      }),
+    ).rejects.toThrow(AssetMetadataError)
+
+    expect(await listAssets(db)).toEqual([])
   })
 })
 

@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { AssetApi, AssetOutcome, AssetQuery, AssetRow, GovernanceAction } from "./asset-api"
+import type { CategoryAdminApi, CategoryAdminRow } from "./category-api"
 import { AssetGovernance } from "./asset-governance"
 
 const 挂过的: Array<() => void> = []
@@ -41,16 +42,34 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   version: 1,
   updatedAt: 1_700_000_000,
   publishedAt: null,
+  category: "intelligence",
   ...overrides,
 })
 
 const 样本: readonly AssetRow[] = [
   资产("a1", { name: "资金流水分析" }),
   资产("a2", { name: "话单碰撞分析", status: "pending_tech" }),
-  资产("a3", { name: "涉案账户串并", status: "published", publishedAt: 1_700_000_100 }),
-  资产("a4", { name: "已下线规则", status: "offline" }),
-  资产("a5", { name: "作者草稿", status: "draft", visibility: "personal" }),
+  // 停用分类里的资产：后台要标「已停用」，管理员才知道为什么要挪它。
+  资产("a3", { name: "涉案账户串并", status: "published", publishedAt: 1_700_000_100, category: "supervision" }),
+  // 库里查不到的分类 id：直接显示 id，不猜、也不当成「无分类」。
+  资产("a4", { name: "已下线规则", status: "offline", category: "ghost-category" }),
+  资产("a5", { name: "作者草稿", status: "draft", visibility: "personal", category: "case-handling" }),
 ]
+
+/** 分类管理接口的替身：两项启用、一项停用（停用的不能作为批量目标）。 */
+const 分类行: readonly CategoryAdminRow[] = [
+  { id: "intelligence", name: "情报研判", sortOrder: 10, enabled: true, builtin: true },
+  { id: "case-handling", name: "案件办理", sortOrder: 20, enabled: true, builtin: true },
+  { id: "supervision", name: "督导考核", sortOrder: 30, enabled: false, builtin: true },
+]
+
+function 分类后端(): CategoryAdminApi {
+  return {
+    list: async () => ({ kind: "ok", value: 分类行 }),
+    create: async () => ({ kind: "failed", message: "本用例不新建分类" }),
+    update: async () => ({ kind: "failed", message: "本用例不改分类" }),
+  }
+}
 
 interface 记录 {
   readonly list: AssetQuery[]
@@ -60,6 +79,7 @@ interface 记录 {
     readonly reason?: string
     readonly visibility?: "department" | "global"
   }>
+  readonly batch: Array<{ readonly ids: readonly string[]; readonly category: string }>
 }
 
 /** 默认替身：按 `query.status` 过滤假数据（与服务端的过滤语义一致）。 */
@@ -70,7 +90,7 @@ function 假后端(
   }),
   覆写: Partial<AssetApi> = {},
 ) {
-  const 记录: 记录 = { list: [], transition: [] }
+  const 记录: 记录 = { list: [], transition: [], batch: [] }
   const api: AssetApi = {
     list: async (query = {}) => {
       记录.list.push(query)
@@ -87,15 +107,19 @@ function 假后端(
       // 原实现回 `pending_tech`；假后端只被断言「记下了什么」，不改它。
       return { kind: "ok", value: { asset: { ...原行, status: "pending_tech" } } }
     },
+    batchCategory: async (ids, category) => {
+      记录.batch.push({ ids, category })
+      return { kind: "ok", value: { updated: ids.length } }
+    },
     ...覆写,
   }
   return { api, 记录 }
 }
 
-function 挂上(api: AssetApi) {
+function 挂上(api: AssetApi, categoryApi?: CategoryAdminApi) {
   const root = document.createElement("div")
   document.body.appendChild(root)
-  挂过的.push(render(() => <AssetGovernance api={api} />, root))
+  挂过的.push(render(() => <AssetGovernance api={api} categoryApi={categoryApi} />, root))
   return root
 }
 
@@ -379,6 +403,7 @@ describe("资产治理页 · 三态", () => {
         return { kind: "ok", value: 样本 }
       },
       transition: (id, action, reason) => 失败一次.api.transition(id, action, reason),
+      batchCategory: (ids, category) => 失败一次.api.batchCategory(ids, category),
     })
     await 等到(() => 有("[data-slot='asset-error']") !== null)
     expect(文章("[data-slot='asset-error']")).toContain("连接服务失败")
@@ -403,5 +428,98 @@ describe("资产治理页 · 三态", () => {
     await 等到(() => 有("[data-slot='asset-loading']") !== null)
     放行()
     await 等到(() => 有("[data-slot='asset-row']") !== null)
+  })
+})
+
+describe("资产治理页 · 分类列与批量改分类（需求 2）", () => {
+  const 分类文案 = (id: string) =>
+    文章(`[data-slot='asset-row'][data-id='${id}'] [data-slot='asset-row-category']`)
+
+  const 勾选 = (id: string) => {
+    const 框 = document.querySelector(`[data-slot='asset-select'][data-id='${id}']`)
+    if (!(框 instanceof HTMLInputElement)) throw new Error(`找不到勾选框：${id}`)
+    框.click()
+  }
+
+  const 选批量分类 = (value: string) => {
+    const 目标 = 有("[data-slot='asset-batch-category']")
+    if (!(目标 instanceof HTMLSelectElement)) throw new Error("找不到批量分类下拉")
+    目标.value = value
+    目标.dispatchEvent(new Event("change", { bubbles: true }))
+  }
+
+  test("分类列：停用分类带「已停用」、查不到的 id 原样显示；下拉只给启用分类", async () => {
+    const { api } = 假后端()
+    挂上(api, 分类后端())
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    // 五条样本散在四个状态里：先切「全部状态」，逐行断言才有意义。
+    选状态("")
+    await 等到(() => document.querySelectorAll("[data-slot='asset-row']").length === 样本.length)
+
+    // 名字来自分类接口，不是 id 本身。
+    expect(分类文案("a1")).toBe("情报研判")
+    expect(分类文案("a3")).toBe("督导考核（已停用）")
+    // 库里没有这个分类：显示 id，别假装它属于某一类。
+    expect(分类文案("a4")).toBe("ghost-category")
+
+    // 「其他」不是分类，停用的也不能作为目标：下拉里只有启用项。
+    勾选("a1")
+    await 等到(() => 有("[data-slot='asset-batch-category']") !== null)
+    const 选项 = [...document.querySelectorAll<HTMLOptionElement>("[data-slot='asset-batch-category'] option")]
+      .map((option) => option.value)
+      .filter((value) => value !== "")
+    expect(选项).toEqual(["intelligence", "case-handling"])
+  })
+
+  test("勾两行 ⇒ 批量条报「已选 2 项」；选分类、应用 ⇒ 一次 POST，之后重拉并提示", async () => {
+    const { api, 记录 } = 假后端()
+    挂上(api, 分类后端())
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    // 没勾选时批量条不出现。
+    expect(有("[data-slot='asset-batch-bar']")).toBeNull()
+
+    // a1 与 a4 分属不同状态：切到「全部状态」才能同时勾到它们（批量不按状态分组）。
+    选状态("")
+    await 等到(() => document.querySelectorAll("[data-slot='asset-row']").length === 样本.length)
+
+    勾选("a1")
+    勾选("a4")
+    await 等到(() => 文章("[data-slot='asset-batch-count']") === "已选 2 项")
+
+    // 还没选目标分类 ⇒「应用」按不了（防误点；真门在服务端）。
+    expect(按钮("[data-slot='asset-batch-apply']").disabled).toBe(true)
+
+    选批量分类("case-handling")
+    expect(按钮("[data-slot='asset-batch-apply']").disabled).toBe(false)
+    点击("[data-slot='asset-batch-apply']")
+
+    await 等到(() => 记录.batch.length === 1)
+    expect(记录.batch[0]).toEqual({ ids: ["a1", "a4"], category: "case-handling" })
+    // 首屏一次 ＋ 切「全部状态」一次 ＋ 改完重拉一次。
+    await 等到(() => 记录.list.length === 3)
+    // 结果要看得见：提示里写清几条、改成了哪一类。
+    expect(文章("[data-slot='asset-notice']")).toContain("2")
+    expect(文章("[data-slot='asset-notice']")).toContain("案件办理")
+    // 改完清空选择，不会误把同一批再改一次。
+    expect(有("[data-slot='asset-batch-bar']")).toBeNull()
+  })
+
+  test("批量失败（有一个 id 不存在，整批没写）⇒ 原样显示服务端消息，选择保留", async () => {
+    const { api } = 假后端(undefined, {
+      batchCategory: async () => ({ kind: "rejected", message: "资产不存在：asset-nope", field: "ids" }),
+    })
+    挂上(api, 分类后端())
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    勾选("a1")
+    await 等到(() => 有("[data-slot='asset-batch-bar']") !== null)
+    选批量分类("case-handling")
+    点击("[data-slot='asset-batch-apply']")
+
+    await 等到(() => 有("[data-slot='asset-batch-error']") !== null)
+    expect(文章("[data-slot='asset-batch-error']")).toBe("资产不存在：asset-nope")
+    // 选择留着：管理员补掉坏 id 再点一次，不用从头勾。
+    expect(文章("[data-slot='asset-batch-count']")).toBe("已选 1 项")
   })
 })

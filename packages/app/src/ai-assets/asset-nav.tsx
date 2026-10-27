@@ -7,7 +7,7 @@ import {
   ASSET_VISIBILITY_LABELS,
 } from "@opencode-ai/asset-service/metadata"
 import type { AssetCategoryRow } from "./category-api"
-import type { AssetFilter } from "./filter"
+import { 兜底分类ID, type AssetFilter } from "./filter"
 
 /**
  * AI 资产左栏纯导航（009 T005 / DESIGN §4.8）。
@@ -129,6 +129,22 @@ export function AssetNav(props: AssetNavProps): JSX.Element {
             )
           }}
         </For>
+        {/*
+          「其他」在最后（需求 2，2026-10-27）：分类不在启用清单里的资产（被停用的、库里查不到的）
+          都归这一桶。它是**只读**的视图——不能作为新建 / 发布的分类（服务端没有这一行，建草稿与
+          批量改分类都会拒），所以它只出现在左栏，不出现在任何「选分类」的下拉里。
+          恒在，理由与「全部」相同：兜底桶里可能正躺着用户要找的东西。
+        */}
+        <button
+          type="button"
+          data-slot="asset-category-other"
+          aria-current={props.filter.category() === 兜底分类ID ? "true" : "false"}
+          class={`flex w-full items-center gap-2 text-left ${导航项(props.filter.category() === 兜底分类ID)}`}
+          onClick={() => props.filter.selectCategory(兜底分类ID)}
+        >
+          <span class="size-4 shrink-0" aria-hidden="true" />
+          <span class="min-w-0 truncate">其他</span>
+        </button>
       </nav>
 
       {/* 拉不到分类时说一句人话：左栏空着不给任何提示，会被当成「分类没了」（需求 4）。 */}

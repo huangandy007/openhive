@@ -12,7 +12,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCenter } from "./asset-center"
 import type { AssetCatalog } from "./asset-catalog"
-import { createAssetFilter } from "./filter"
+import { createAssetFilter, 兜底分类ID } from "./filter"
 
 if (!("ResizeObserver" in globalThis)) {
   globalThis.ResizeObserver = class {
@@ -29,11 +29,13 @@ function 数据源(over: Partial<{
   page: number
   pageSize: number
   error: string | undefined
+  categoryNames: Readonly<Record<string, string>>
 }> = {}): AssetCatalog & { 翻页: number[]; 改条数: number[]; 查询: unknown[] } {
   const [清单] = createSignal<readonly AssetMetadata[]>(over.assets ?? [])
   const [总数, set总数] = createSignal(over.total ?? 0)
   const [页码, set页码] = createSignal(over.page ?? 1)
   const [每页, set每页] = createSignal(over.pageSize ?? 20)
+  const [分类名] = createSignal<Readonly<Record<string, string>>>(over.categoryNames ?? {})
   const [错误] = createSignal<string | undefined>(over.error)
   const 翻页: number[] = []
   const 改条数: number[] = []
@@ -43,6 +45,7 @@ function 数据源(over: Partial<{
     total: 总数,
     page: 页码,
     pageSize: 每页,
+    categoryNames: 分类名,
     error: 错误,
     load: (query) => void 查询.push(query),
     goPage: (page) => {
@@ -60,10 +63,10 @@ function 数据源(over: Partial<{
   }
 }
 
-function 挂(catalog: AssetCatalog | undefined) {
+function 挂(catalog: AssetCatalog | undefined, filter = createAssetFilter()) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  const dispose = render(() => <AssetCenter filter={createAssetFilter()} catalog={catalog} />, host)
+  const dispose = render(() => <AssetCenter filter={filter} catalog={catalog} />, host)
   return {
     host,
     卸: () => {
@@ -135,6 +138,71 @@ describe("AssetCenter · 页码条", () => {
       expect(源.查询.at(0)).toEqual({ type: "skill", spaces: ["global", "department", "personal"], category: undefined, q: "" })
     } finally {
       卸()
+    }
+  })
+})
+
+describe("AssetCenter · 「其他」桶标原分类（需求 2）", () => {
+  const 资产 = (id: string, category: string): AssetMetadata => ({
+    id,
+    name: `资产${id}`,
+    type: "skill",
+    description: "",
+    icon: "skill",
+    category,
+    tags: [],
+    ownerId: "u-1",
+    ownerName: "甲民警",
+    department: "经侦支队",
+    visibility: "global",
+    version: 1,
+    status: "published",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    publishedAt: 1,
+    archivedAt: null,
+  })
+
+  const 选择 = (category: string) => {
+    const filter = createAssetFilter()
+    filter.selectCategory(category)
+    return filter
+  }
+
+  test("「其他」模式：名字取服务端的 categoryNames（含停用分类）；查不到退回 id", () => {
+    const 源 = 数据源({
+      assets: [资产("a", "supervision"), 资产("b", "ghost-category")],
+      total: 2,
+      categoryNames: { supervision: "督导考核（已停用）" },
+    })
+    const { host, 卸 } = 挂(源, 选择(兜底分类ID))
+    try {
+      const 徽章 = [...host.querySelectorAll<HTMLElement>('[data-slot="asset-card-category"]')]
+      expect(徽章.map((el) => el.textContent)).toEqual(["原分类：督导考核（已停用）", "原分类：ghost-category"])
+      // 查询进的是保留值：服务端据此翻成「分类不在启用清单里」。
+      expect(源.查询.at(0)).toMatchObject({ category: "__other__" })
+    } finally {
+      卸()
+    }
+  })
+
+  test("不按分类收窄 / 选了真实分类 ⇒ 一枚都不画（它只在兜底桶里出现）", () => {
+    const 源 = 数据源({ assets: [资产("a", "intelligence")], total: 1, categoryNames: { intelligence: "情报研判" } })
+    for (const filter of [createAssetFilter(), 选择("intelligence")]) {
+      const { host, 卸 } = 挂(源, filter)
+      try {
+        // 断言写布尔值而不是 `toBeNull()`：真红了的时候，bun 会去序列化 happy-dom 的 DOM 节点，
+        // 节点带环形引用（parentNode / ownerDocument），打印 diff 直接把堆爆掉（实测 16GiB 分配失败），
+        // 用例看起来是「挂死」而不是「红」。布尔值失败只打印 false。
+        expect(host.querySelector('[data-slot="asset-card-category"]') === null).toBe(true)
+      } finally {
+        卸()
+      }
     }
   })
 })

@@ -63,12 +63,17 @@ export interface CatalogQuery {
   readonly pageSize?: number
 }
 
-/** 服务端回的一页：行 ＋ 筛选后的总数 ＋ 回显的分页参数。 */
+/** 服务端回的一页：行 ＋ 筛选后的总数 ＋ 回显的分页参数 ＋ 本页用到的分类名。 */
 export interface CatalogPage {
   readonly assets: readonly AssetMetadata[]
   readonly total: number
   readonly page: number
   readonly pageSize: number
+  /**
+   * 分类 id → 名称（需求 2）：**含停用分类**——「其他」桶里要标原分类，那正是被停用的那一类。
+   * 服务端没给就是空表（卡片退回显示 id），不是形状错误。
+   */
+  readonly categoryNames: Readonly<Record<string, string>>
 }
 
 export type CatalogOutcome<T> =
@@ -177,18 +182,37 @@ function 行(value: unknown): AssetMetadata | undefined {
   }
 }
 
+/**
+ * 分类名表（需求 2）：省略 = 空表（服务端没给，卡片退回显示 id）；给了就必须是「id → 名字」
+ * 的平表——数组 / 字符串 / 值不是字符串的，都算形状变了，不猜。
+ */
+function 分类名表(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) return {}
+  if (!isRecord(value)) return undefined
+  // 逐键重建而不是断言原对象：断言要在「校验过每个值」与「类型窄化」之间靠人眼对齐，
+  // 重建则是类型系统自己认的（oxlint `no-unsafe-type-assertion` 也不放行那种写法）。
+  const 名字: Record<string, string> = {}
+  for (const [id, name] of Object.entries(value)) {
+    if (typeof name !== "string") return undefined
+    名字[id] = name
+  }
+  return 名字
+}
+
 /** 一页：`assets` 逐行严判，`total / page / pageSize` 必须是有限数字（缺了就是形状变了）。 */
 function 一页(value: unknown): CatalogPage | undefined {
   if (!isRecord(value) || !Array.isArray(value["assets"])) return undefined
   const { total, page, pageSize } = value
   if (!数(total) || !数(page) || !数(pageSize)) return undefined
+  const categoryNames = 分类名表(value["categoryNames"])
+  if (categoryNames === undefined) return undefined
   const parsed: AssetMetadata[] = []
   for (const item of value["assets"]) {
     const row = 行(item)
     if (!row) return undefined
     parsed.push(row)
   }
-  return { assets: parsed, total, page, pageSize }
+  return { assets: parsed, total, page, pageSize, categoryNames }
 }
 
 function 消息(body: unknown, response: Response): string {

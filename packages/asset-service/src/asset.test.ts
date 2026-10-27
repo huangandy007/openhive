@@ -7,9 +7,11 @@ import {
   asset,
   assetById,
   AssetMetadataError,
+  countAssets,
   deleteAsset,
   insertAsset,
   listAssets,
+  updateAssetCategories,
   updateAssetLifecycle,
 } from "./asset"
 import {
@@ -246,6 +248,51 @@ describe("资产仓储（T003）", () => {
     expect(ids(await listAssets(db, { category: "case-handling" }))).toEqual(["a2", "a3"])
     expect(ids(await listAssets(db, { visibility: "global" }))).toEqual(["a2"])
     expect(ids(await listAssets(db, { search: "话单" }))).toEqual(["a3"])
+  })
+
+  /**
+   * 需求 2（2026-10-27）：「其他」兜底与批量改分类。
+   *
+   * 兜底口径是**「分类不在启用清单里」**，不是「分类为空」——`category` 是 NOT NULL，
+   * 空分类这种情形不存在。停用的分类算兜底、库里根本没有的 id 也算（历史数据 / 直写库）。
+   */
+  test("categoryOther：停用分类与未知分类进兜底，启用分类不进；count 与 list 同口径", async () => {
+    const db = await freshDb()
+    await db.execute(sql`update auth.asset_category set enabled = false where id = 'supervision'`)
+
+    await insertAsset(db, metadata({ id: "on", category: "intelligence", updatedAt: 3_000 }))
+    await insertAsset(db, metadata({ id: "off", category: "supervision", updatedAt: 2_000 }))
+    await insertAsset(db, metadata({ id: "ghost", category: "no-such-category", updatedAt: 1_000 }))
+
+    const ids = (rows: AssetMetadata[]) => rows.map((row) => row.id)
+
+    expect(ids(await listAssets(db, { categoryOther: true }))).toEqual(["off", "ghost"])
+    // 总数与列表必须同一份条件，否则翻页时 total 与可见行数对不上。
+    expect(await countAssets(db, { categoryOther: true })).toBe(2)
+    // 与显式分类互不干扰：给了 category 仍按等值筛。
+    expect(ids(await listAssets(db, { category: "intelligence" }))).toEqual(["on"])
+  })
+
+  test("updateAssetCategories：只动不在目标类的行，返回旧值；未知 id 归 missing；重复调用幂等", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "x", category: "supervision" }))
+    await insertAsset(db, metadata({ id: "y", category: "case-handling" }))
+
+    const 结果 = await updateAssetCategories(db, ["x", "y"], "case-handling", 5_000)
+
+    expect(结果).toEqual({ changed: [{ id: "x", from: "supervision" }], missing: [] })
+    expect((await assetById(db, "x"))?.category).toBe("case-handling")
+    // 已经是目标类 ⇒ 一个字节都不动（`updated_at` 也不动），否则审计会被「没改也算改」灌水。
+    expect((await assetById(db, "y"))?.category).toBe("case-handling")
+    expect((await assetById(db, "y"))?.updatedAt).toBe(1_000)
+
+    const 再 = await updateAssetCategories(db, ["x"], "case-handling", 6_000)
+    expect(再.changed).toEqual([])
+
+    // 有一个 id 不存在 ⇒ 整批不写（半个批量最难对账）。
+    const 缺一 = await updateAssetCategories(db, ["x", "missing"], "intelligence", 7_000)
+    expect(缺一).toEqual({ changed: [], missing: ["missing"] })
+    expect((await assetById(db, "x"))?.category).toBe("case-handling")
   })
 
   test("删除：命中返回 true，未命中返回 false", async () => {

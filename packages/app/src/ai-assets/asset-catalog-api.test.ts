@@ -132,6 +132,30 @@ describe("使用面资产客户端", () => {
     }
   })
 
+  test("categoryNames：服务端给的就原样带出（含停用分类的名字）；不给 = 空表；形状不对 ⇒ failed", async () => {
+    const names = { supervision: "督导考核（已停用）", intelligence: "情报研判" }
+    const 有名字 = await createCatalogApi(
+      替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20, categoryNames: names })).send,
+    ).list()
+    expect(有名字.kind).toBe("ok")
+    if (有名字.kind === "ok") expect(有名字.value.categoryNames).toEqual(names)
+
+    // 没有这一列（或服务端还没升级）不算形状变了：卡片退回显示分类 id，其余照常。
+    const 没名字 = await createCatalogApi(
+      替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20 })).send,
+    ).list()
+    expect(没名字.kind).toBe("ok")
+    if (没名字.kind === "ok") expect(没名字.value.categoryNames).toEqual({})
+
+    // 有这一列但不是「id → 名字」的表：那是形状变了，不能当空表吞掉。
+    for (const bad of [[], "x", { supervision: 1 }, null]) {
+      const out = await createCatalogApi(
+        替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20, categoryNames: bad })).send,
+      ).list()
+      expect(out.kind).toBe("failed")
+    }
+  })
+
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {
     const 缺描述 = { ...资产("a1") } as Record<string, unknown>
     delete 缺描述["description"]

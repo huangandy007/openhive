@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { ASSET_VISIBILITIES } from "@opencode-ai/asset-service/metadata"
-import { createAssetFilter } from "./filter"
+import { createAssetFilter, 兜底分类ID } from "./filter"
 
 /**
  * 左栏筛选条件（009 T005 / 需求 4）。
@@ -73,9 +73,22 @@ describe("AI 资产筛选状态", () => {
     expect(filter.category()).toBeUndefined()
   })
 
+  test("「其他」是保留值：选中它等于选中一个字面量 id，与真实分类走同一条状态（需求 2）", () => {
+    const filter = createAssetFilter()
+
+    filter.selectCategory(兜底分类ID)
+    expect(filter.category()).toBe("__other__")
+
+    // 再点一次回到「全部」——它长在分类手风琴里，就守手风琴的规矩。
+    filter.selectCategory(兜底分类ID)
+    expect(filter.category()).toBeUndefined()
+  })
+
   test("筛选状态不带分类行：本模块只留「选中了哪个 id」", async () => {
     const 模块 = await import("./filter")
     // 需求 4 的红线：前端不再持有分类清单。它一旦回来，「管理员改了用户看不见」就复发了。
-    expect(Object.keys(模块)).toEqual(["createAssetFilter"])
+    // 需求 2 的 `兜底分类ID` 不是清单：它是一个保留值（服务端库里没有这一行），
+    // 与内核 `category-store.ts` 的 `OTHER_CATEGORY_ID` 逐字相同、刻意各写一份（`#003-05`）。
+    expect(Object.keys(模块).sort()).toEqual(["createAssetFilter", "兜底分类ID"])
   })
 })

@@ -5,7 +5,7 @@ import { AssetGrid } from "./asset-grid"
 import { AssetPager, 需要页码条 } from "./asset-pager"
 import { AssetSearch } from "./asset-search"
 import type { AssetCatalog } from "./asset-catalog"
-import type { AssetFilter } from "./filter"
+import { 兜底分类ID, type AssetFilter } from "./filter"
 
 /**
  * AI 资产中栏（009 T006 / T007 / 需求 6）：搜索框 + 卡片网格 + 页码条；选中资产后
@@ -68,6 +68,16 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
     })
   })
 
+  /**
+   * 「其他」桶里卡片要标原分类（需求 2）：名字取服务端给的 `categoryNames`（含停用分类），
+   * 库里查不到就退回 id——那是历史数据 / 直写库的行，管理员得看得见它到底挂在哪个 id 上。
+   * 别的模式返回 `undefined`，卡片保持精简四件。
+   */
+  const 原分类 = (asset: AssetMetadata) => {
+    if (props.filter.category() !== 兜底分类ID) return undefined
+    return props.catalog?.categoryNames()[asset.category] ?? asset.category
+  }
+
   const 打开 = (asset: AssetMetadata) => {
     set最近打开id(asset.id)
     set选中(asset)
@@ -108,7 +118,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
             </div>
           )}
         </Show>
-        <AssetGrid assets={props.catalog?.assets} onOpen={打开} />
+        <AssetGrid assets={props.catalog?.assets} onOpen={打开} 原分类={原分类} />
         <Show when={props.catalog}>
           {(catalog) => (
             <Show when={需要页码条(catalog().total())}>

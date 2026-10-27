@@ -34,11 +34,18 @@ const 资产 = (id: string): AssetMetadata => ({
   archivedAt: null,
 })
 
-const 页 = (ids: readonly string[], total = ids.length, page = 1, pageSize = 20): CatalogPage => ({
+const 页 = (
+  ids: readonly string[],
+  total = ids.length,
+  page = 1,
+  pageSize = 20,
+  categoryNames: Readonly<Record<string, string>> = {},
+): CatalogPage => ({
   assets: ids.map(资产),
   total,
   page,
   pageSize,
+  categoryNames,
 })
 
 /** 每次调用挂起，由测试决定何时、**以什么顺序**回包（`待回[i]` 是第 i 次请求）。 */
@@ -104,6 +111,27 @@ describe("使用面数据源 · 拉取语义", () => {
     await 等一轮()
 
     expect(目录.assets().map((a) => a.id)).toEqual(["新"])
+  })
+
+  test("分类名随回包换新；失败时与清单一起留着；空集短路时清掉（需求 2）", async () => {
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
+
+    目录.load({ category: "__other__" })
+    待回[0]!({ kind: "ok", value: 页(["a1"], 1, 1, 20, { supervision: "督导考核（已停用）" }) })
+    await 等一轮()
+    expect(目录.categoryNames()).toEqual({ supervision: "督导考核（已停用）" })
+
+    // 失败不清清单，那分类名也不该清：卡片还挂着旧清单，名字得跟得上。
+    目录.reload()
+    待回[1]!({ kind: "failed", message: "连接服务失败，请检查网络后重试" })
+    await 等一轮()
+    expect(目录.categoryNames()).toEqual({ supervision: "督导考核（已停用）" })
+
+    // 空间全取消：清单被本地清空，名字留着就是上一屏的残留。
+    目录.load({ spaces: [] })
+    await 等一轮()
+    expect(目录.categoryNames()).toEqual({})
   })
 
   test("失败后再次成功 ⇒ 错误清空（错误不是粘住的）", async () => {

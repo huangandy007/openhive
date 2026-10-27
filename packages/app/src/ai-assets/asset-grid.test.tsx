@@ -55,12 +55,12 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
   }
 }
 
-function 挂(列表: readonly AssetMetadata[]) {
+function 挂(列表: readonly AssetMetadata[], 原分类?: (asset: AssetMetadata) => string | undefined) {
   const 打开过: string[] = []
   const host = document.createElement("div")
   document.body.appendChild(host)
   const dispose = render(
-    () => <AssetGrid assets={() => 列表} onOpen={(asset) => 打开过.push(asset.id)} />,
+    () => <AssetGrid assets={() => 列表} onOpen={(asset) => 打开过.push(asset.id)} 原分类={原分类} />,
     host,
   )
   return {
@@ -122,6 +122,36 @@ describe("资产卡片", () => {
       expect(打开过).toEqual(["a"])
     } finally {
       卸()
+    }
+  })
+
+  test("「其他」模式才多一枚「原分类」徽章；不给就不画（需求 2）", () => {
+    const { host, 卸 } = 挂([
+      资产({ id: "a", category: "supervision" }),
+      资产({ id: "b", category: "ghost" }),
+    ])
+    try {
+      // 默认（不按分类收窄 / 选了某个真实分类）：卡片仍是精简四件，不带原分类。
+      for (const card of 卡片(host)) expect(card.querySelector('[data-slot="asset-card-category"]')).toBeNull()
+    } finally {
+      卸()
+    }
+
+    // 「其他」模式：给什么名字显示什么名字（查不到 ⇒ 由上层退回 id）。
+    const 第二 = 挂(
+      [资产({ id: "a", category: "supervision" }), 资产({ id: "b", category: "ghost" })],
+      (asset) => (asset.category === "supervision" ? "督导考核（已停用）" : asset.category),
+    )
+    try {
+      const [甲, 乙] = 卡片(第二.host)
+      expect(甲.querySelector('[data-slot="asset-card-category"]')?.textContent).toContain("督导考核（已停用）")
+      expect(乙.querySelector('[data-slot="asset-card-category"]')?.textContent).toContain("ghost")
+      // 名字长到放不下时靠省略号收口，所以全名要挂 title（悬停能读全）。
+      expect(甲.querySelector('[data-slot="asset-card-category"]')?.getAttribute("title")).toBe(
+        "原分类：督导考核（已停用）",
+      )
+    } finally {
+      第二.卸()
     }
   })
 

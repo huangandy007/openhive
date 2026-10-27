@@ -44,6 +44,13 @@ export interface AssetCatalog {
   readonly total: () => number
   readonly page: () => number
   readonly pageSize: () => number
+  /**
+   * 本页资产用到的分类名（需求 2，id → 名称，含停用分类）。
+   *
+   * 「其他」桶里的卡片要标「原分类：xxx」，名字只能从服务端来——前端拼 seed 常量是第二份
+   * 真相（管理员改过名就对不上）。失败时**不清**（清单也没清），空集短路时清掉。
+   */
+  readonly categoryNames: () => Readonly<Record<string, string>>
   /** 最近一次拉取的失败原因；成功后清空。 */
   readonly error: () => string | undefined
   /**
@@ -82,6 +89,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const [总数, set总数] = createSignal(0)
   const [页码, set页码] = createSignal(1)
   const [每页, set每页] = createSignal(options.initialPageSize ?? DEFAULT_PAGE_SIZE)
+  const [分类名, set分类名] = createSignal<Readonly<Record<string, string>>>({})
   const [错误, set错误] = createSignal<string | undefined>()
 
   let 当前条件: CatalogQuery = {}
@@ -95,6 +103,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
       代次 += 1
       set清单([])
       set总数(0)
+      set分类名({})
       set错误(undefined)
       set页码(1)
       return
@@ -108,6 +117,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
         if (结果.kind === "ok") {
           set清单(结果.value.assets)
           set总数(结果.value.total)
+          set分类名(结果.value.categoryNames)
           set错误(undefined)
           return
         }
@@ -145,6 +155,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     total: 总数,
     page: 页码,
     pageSize: 每页,
+    categoryNames: 分类名,
     error: 错误,
     load,
     goPage,

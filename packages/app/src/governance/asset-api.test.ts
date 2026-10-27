@@ -36,6 +36,7 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   version: 1,
   updatedAt: 1_700_000_000,
   publishedAt: null,
+  category: "intelligence",
   ...overrides,
 })
 
@@ -75,6 +76,9 @@ describe("资产客户端 · 列表", () => {
       { assets: [{ ...资产("a1"), type: "plugin" }] },
       { assets: [{ ...资产("a1"), publishedAt: "1700000000" }] },
       { assets: [{ ...资产("a1"), visibility: "world" }] },
+      // 需求 2 起分类列也是这一行的必填项（批量改分类要按它显示「原分类」）。
+      { assets: [{ ...资产("a1"), category: undefined }] },
+      { assets: [{ ...资产("a1"), category: 1 }] },
       { items: [] },
     ]) {
       const out = await createAssetApi(替身(() => json(坏)).send).list()
@@ -123,6 +127,34 @@ describe("资产客户端 · 流转", () => {
   test("回包缺 asset / asset 形状不对 ⇒ failed", async () => {
     for (const 坏 of [{}, { asset: null }, { asset: { ...资产("a1"), version: "1" } }, { assets: [] }]) {
       const out = await createAssetApi(替身(() => json(坏)).send).transition("a1", "publish_tech")
+      expect(out.kind).toBe("failed")
+    }
+  })
+})
+
+describe("资产客户端 · 批量改分类（需求 2）", () => {
+  test("POST 子路径；体是 { ids, category }；回包只认 updated", async () => {
+    const { send, calls } = 替身(() => json({ updated: 2 }))
+
+    const out = await createAssetApi(send).batchCategory(["a1", "a2"], "case-handling")
+
+    expect(calls[0]?.input).toBe("/openhive/governance/assets/batch-category")
+    expect(calls[0]?.init?.method).toBe("POST")
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ ids: ["a1", "a2"], category: "case-handling" }))
+    expect(out).toEqual({ kind: "ok", value: { updated: 2 } })
+  })
+
+  test("404（有一个 id 不存在，整批没写）⇒ rejected 原样带服务端消息", async () => {
+    const out = await createAssetApi(
+      替身(() => json({ error: "资产不存在：asset-nope", field: "ids" }, 404)).send,
+    ).batchCategory(["a1", "asset-nope"], "case-handling")
+
+    expect(out).toEqual({ kind: "rejected", message: "资产不存在：asset-nope", field: "ids" })
+  })
+
+  test("回包缺 updated / 不是数字 ⇒ failed（不把没改成的当成改成了）", async () => {
+    for (const 坏 of [{}, { updated: "2" }, { updated: null }]) {
+      const out = await createAssetApi(替身(() => json(坏)).send).batchCategory(["a1"], "case-handling")
       expect(out.kind).toBe("failed")
     }
   })

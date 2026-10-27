@@ -23,6 +23,11 @@ export interface AssetGridProps {
   readonly assets?: () => readonly AssetMetadata[]
   /** 打开详情（T007）：点卡片时把整份元数据交给中栏，由它决定详情怎么呈现。 */
   readonly onOpen: (asset: AssetMetadata) => void
+  /**
+   * 原分类名（需求 2）：返回 `undefined` = 这张卡不标。由中栏按「是不是在看『其他』」决定，
+   * 网格自己不判模式——它连筛选都不认识（见 `assets` 的注释）。
+   */
+  readonly 原分类?: (asset: AssetMetadata) => string | undefined
 }
 
 export function AssetGrid(props: AssetGridProps): JSX.Element {
@@ -111,7 +116,9 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                     }}
                   >
                     <For each={本行()}>
-                      {(asset) => <AssetCard asset={asset} onOpen={props.onOpen} />}
+                      {(asset) => (
+                        <AssetCard asset={asset} onOpen={props.onOpen} 原分类={props.原分类?.(asset)} />
+                      )}
                     </For>
                   </div>
                 )
