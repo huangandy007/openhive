@@ -61,11 +61,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function 解析状态(body: unknown): EnablementState | undefined {
   if (!isRecord(body)) return undefined
   const 值 = body
-  if (!Array.isArray(值["enabled"])) return undefined
+  const 启用 = 值["enabled"]
+  if (!Array.isArray(启用)) return undefined
+  // 元素必须是字符串：不再 `String()` 把 `[1]` 洗成 `["1"]`——形状不对就说形状不对。
+  if (!启用.every((item): item is string => typeof item === "string")) return undefined
   if (typeof 值["enabledCount"] !== "number") return undefined
   if (typeof 值["limit"] !== "number") return undefined
   return {
-    enabled: 值["enabled"].map((item) => String(item)),
+    enabled: 启用,
     enabledCount: 值["enabledCount"],
     limit: 值["limit"],
   }

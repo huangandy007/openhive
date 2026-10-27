@@ -95,7 +95,13 @@ describe("enable-api", () => {
       throw new Error("断网")
     })
     const 结果 = await api.read("p1")
-    expect(结果.kind).toBe("error")
+    // 整对象断言：只判 `kind === "error"` 时，把捕获分支的 message 改成固定串仍然绿（假绿）。
+    expect(结果).toEqual({ kind: "error", message: "断网" })
+  })
+
+  test("enabled 里有非字符串元素 ⇒ error，不用 String() 洗成字符串", async () => {
+    const api = createEnableApi(假发送([{ status: 200, body: { enabled: [1], enabledCount: 1, limit: 20 } }], []))
+    expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
   })
 
   test("回包形状不对（缺 enabled / enabledCount / limit）⇒ error，不静默当空集合", async () => {
