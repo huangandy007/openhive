@@ -1917,7 +1917,9 @@ git commit -m "feat(assets): 当前项目的启用状态（服务端权威 + 代
 - Modify: `packages/app/src/ai-assets/asset-grid.tsx`
 - Test: `packages/app/src/ai-assets/asset-card.test.tsx`（新建）＋ 既有 `asset-grid.test.tsx` 不动
 
-**为什么必须动结构：** 今天整张卡片是一个 `<button>`（`asset-card.tsx:27`）。按钮里再放按钮是非法 HTML、屏幕阅读器会读乱。改成「外层 `div[role=listitem]` ＋ 两个 sibling 按钮」：打开的按钮铺满卡片，启用按钮绝对定位在右上角、`z-10`。
+**结构现状（2026-10-27 核对）**：卡片**已经**是「外层 `div[role=listitem]` ＋ 内层 `<button data-slot="asset-card-open">`」
+（并发工作流 需求 2 那轮改的），所以本任务**不需要拆结构**，只要在外层 `div` 里加第二个 sibling 按钮。
+按钮里再放按钮是非法 HTML —— 这条约束仍然成立：启用按钮必须是 `asset-card-open` 的**兄弟**，不能嵌进去。
 
 - [ ] **Step 1: 先写会红的用例**
 
@@ -1925,11 +1927,13 @@ git commit -m "feat(assets): 当前项目的启用状态（服务端权威 + 代
 
 ```tsx
 import { describe, expect, test } from "bun:test"
-import { render } from "@solidjs/testing-library"
+// ⚠️ 用 `solid-js/web` 的 `render`：本仓**没有** `@solidjs/testing-library`
+// （`src/project/backup-restore-dialog.test.tsx:6` 明确写着那是别的仓的写法）
+import { render } from "solid-js/web"
 import { AssetCard } from "./asset-card"
-import { 资产夹具 } from "./asset-story-fixtures"
+import { 样例资产 } from "./asset-story-fixtures"
 
-const 资产 = 资产夹具({ id: "a1", name: "资金分析", status: "published", visibility: "global" })
+const 资产 = 样例资产({ id: "a1", name: "资金分析", status: "published", visibility: "global" })
 
 function 挂(props: Parameters<typeof AssetCard>[0]) {
   const host = document.createElement("div")
@@ -1941,7 +1945,9 @@ function 挂(props: Parameters<typeof AssetCard>[0]) {
 describe("AssetCard 的启用按钮", () => {
   test("不给 onToggleEnabled ⇒ 卡片上没有启用按钮（storybook / 旧测试不受影响）", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {} })
-    expect(host.querySelector('[data-slot="asset-card-enable"]')).toBeNull()
+    // ⚠️ 布尔断言，不要 `expect(节点).toBeNull()`：happy-dom 节点直断会让 bun 序列化环形引用，
+    // 16 GiB 分配失败、看着像挂死（`LEARNINGS #009-01`，实测 31ms vs 爆炸）。
+    expect(host.querySelector('[data-slot="asset-card-enable"]') === null).toBe(true)
     dispose()
   })
 
@@ -2000,7 +2006,7 @@ describe("AssetCard 的启用按钮", () => {
 
 > `asset-story-fixtures.ts` 里若没有可直接调用的 `资产夹具`，先看它导出什么，照它的形状造一份局部夹具——**不要**为了这条用例改那个文件。
 
-- [ ] **Step 2: 跑，确认红** → `cd packages/app && bun test src/ai-assets/asset-card.test.tsx`，红在「卡上没有启用按钮 / 传 props 不存在」。
+- [ ] **Step 2: 跑，确认红** → `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets/asset-card.test.tsx`，红在「传 props 不存在 / 选择器取到 null 再 `.getAttribute` 抛 TypeError」。
 
 - [ ] **Step 3: 改组件**
 
@@ -2087,7 +2093,7 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
 
 - [ ] **Step 4: 跑绿**
 
-Run: `cd packages/app && bun test src/ai-assets/asset-card.test.tsx src/ai-assets/asset-grid.test.tsx`
+Run: `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets/asset-card.test.tsx src/ai-assets/asset-grid.test.tsx`
 Expected: 全绿（`asset-grid.test.tsx` 是回归：不传新 prop 时行为不变）。
 
 - [ ] **Step 5: 变异验证**：把启用按钮挪进打开的按钮内部（嵌套）→ 「点启用不会顺带打开详情」必须红（点击冒泡到外层）。改回。
