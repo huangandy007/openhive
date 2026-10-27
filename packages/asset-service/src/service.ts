@@ -10,7 +10,7 @@ import {
   type AssetTarget,
 } from "./asset"
 import type { AssetViewer } from "./authorization"
-import { isKnownCategory } from "./categories"
+import { isEnabledCategory } from "./category-store"
 import type { AssetVisibility } from "./metadata"
 import {
   AssetTransitionError,
@@ -181,7 +181,9 @@ export interface CreateDraftAssetInput {
  * 还是并存」后再加约束，不在这里猜）。
  */
 export async function createDraftAsset(input: CreateDraftAssetInput): Promise<AssetMetadata> {
-  if (!isKnownCategory(input.category)) {
+  // 闭集读**库**（`category-store.ts` 的 `isEnabledCategory`），不是 `categories.ts` 的常量：
+  // 管理员新建的分类必须立刻合法、停用的立刻不合法（需求 4）。常量只是 seed 源。
+  if (!(await isEnabledCategory(input.db, input.category))) {
     throw new AssetMetadataError([{ field: "category", message: `未知业务分类：${input.category}` }])
   }
 

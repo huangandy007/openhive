@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetGrid } from "./asset-grid"
-import { ASSET_CATEGORY_ROWS } from "./filter"
 
 // happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
 if (!("ResizeObserver" in globalThis)) {
@@ -35,7 +34,7 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
     type: "skill",
     description: "按账户汇总资金往来",
     icon: "skill",
-    category: ASSET_CATEGORY_ROWS[0].id,
+    category: "intelligence", // 需求 4 起分类 id 来自服务端，这里只是夹具里的一个字符串
     tags: ["资金"],
     ownerId: "u1",
     ownerName: "张三",

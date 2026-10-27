@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import {
   ASSET_TYPE_LABELS,
@@ -7,20 +8,49 @@ import {
   ASSET_VISIBILITY_LABELS,
 } from "@opencode-ai/asset-service/metadata"
 import { AssetNav } from "./asset-nav"
-import { ASSET_CATEGORY_ROWS, createAssetFilter } from "./filter"
+import type { AssetCategoryRow } from "./category-api"
+import { createAssetFilter } from "./filter"
 
 /**
  * AI 资产左栏纯导航（009 T005 / DESIGN §4.8）。
  *
  * 守三件事：**分组齐备**（空间 / 类型 / 分类）、**状态可达**（多选、单开手风琴）、
  * **左栏永不列资产**（design §1.1）。
+ *
+ * 需求 4 起分类是**注入的**（服务端来），所以这里的夹具故意**不是** seed 的顺序与名字：
+ * 若组件偷偷按 seed 排或补自家名字，这两条会当场红。
  */
 const 挂过的: Array<() => void> = []
 
-function mount(filter = createAssetFilter()) {
+/** 夹具：故意把「资金分析」放第一、且它不是 seed 里的任何一项。 */
+const 分类: readonly AssetCategoryRow[] = [
+  { id: "finance", name: "资金分析" },
+  { id: "intelligence", name: "情报研判" },
+  { id: "supervision", name: "督导考核" },
+]
+
+function mount(
+  filter = createAssetFilter(),
+  options: {
+    categories?: readonly AssetCategoryRow[]
+    error?: string
+  } = {},
+) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  挂过的.push(render(() => <AssetNav filter={filter} />, host))
+  const rows = options.categories ?? 分类
+  挂过的.push(
+    render(
+      () => (
+        <AssetNav
+          filter={filter}
+          categories={() => rows}
+          categoriesError={() => options.error}
+        />
+      ),
+      host,
+    ),
+  )
   return host
 }
 
@@ -92,20 +122,44 @@ describe("AI 资产左栏导航", () => {
     expect(filter.type()).toBe("mcp")
   })
 
-  test("业务分类：按 seed 顺序渲染，**默认一个都不展开**（T017 裁定，见 `filter.ts` 的头注）", () => {
+  test("业务分类：**按喂进来的顺序原样渲染**（不排序、不补名字），默认一个都不展开", () => {
     const host = mount()
-    const 分类 = 槽(host, "asset-category")
+    const 分类按钮 = 槽(host, "asset-category")
 
-    expect(分类.map((el) => el.textContent?.trim())).toEqual(ASSET_CATEGORY_ROWS.map((行) => 行.name))
+    // 与注入的顺序逐项相等：组件若按 seed 排或补自家名字，这里当场红。
+    expect(分类按钮.map((el) => el.textContent?.trim())).toEqual(分类.map((行) => 行.name))
+    expect(分类按钮.map((el) => el.getAttribute("data-category"))).toEqual(分类.map((行) => 行.id))
     // 默认「不筛分类」：一进来就收窄到第一类，会把落在别类的已发布资产全藏起来——
     // 那正是用户报「AI 资产里面看不到」的现场。
-    expect(分类.map((el) => el.getAttribute("aria-expanded"))).toEqual(ASSET_CATEGORY_ROWS.map(() => "false"))
-    expect(分类.every((el) => 箭名(el).includes("chevron-right"))).toBe(true)
+    expect(分类按钮.map((el) => el.getAttribute("aria-expanded"))).toEqual(分类.map(() => "false"))
+    expect(分类按钮.every((el) => 箭名(el).includes("chevron-right"))).toBe(true)
 
     // 点一项才收窄；箭头跟着翻。
-    分类[0]?.click()
-    expect(分类[0]?.getAttribute("aria-expanded")).toBe("true")
-    expect(箭名(分类[0])).toContain("chevron-down")
+    分类按钮[0]?.click()
+    expect(分类按钮[0]?.getAttribute("aria-expanded")).toBe("true")
+    expect(箭名(分类按钮[0])).toContain("chevron-down")
+  })
+
+  test("停用的分类服务端就不给了：访问器换成两项，左栏只剩两项（不缓存旧行）", () => {
+    const [行, set行] = createSignal<readonly AssetCategoryRow[]>(分类)
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    挂过的.push(render(() => <AssetNav filter={createAssetFilter()} categories={行} />, host))
+
+    expect(槽(host, "asset-category").length).toBe(3)
+
+    set行([分类[0]!])
+
+    expect(槽(host, "asset-category").map((el) => el.textContent?.trim())).toEqual(["资金分析"])
+  })
+
+  test("拉分类失败：左栏显示那句人话，而不是空无一人", () => {
+    const host = mount(createAssetFilter(), { categories: [], error: "连接服务失败，请检查网络后重试" })
+
+    expect(槽(host, "asset-category")).toEqual([])
+    expect(host.querySelector("[data-slot='asset-category-error']")?.textContent).toBe(
+      "连接服务失败，请检查网络后重试",
+    )
   })
 
   test("单开手风琴：点第二项 ⇒ 第一项收起、第二项展开；再点它 ⇒ 全部收起", () => {

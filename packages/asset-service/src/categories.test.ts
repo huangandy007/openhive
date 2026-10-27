@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ASSET_CATEGORY_SEED, categoryById, isKnownCategory } from "./categories"
+import { ASSET_CATEGORY_SEED, categoryById } from "./categories"
 
 const DESIGN_EXAMPLES = ["情报研判", "案件办理", "文书写作", "审讯深挖", "督导考核"]
 
@@ -23,7 +23,6 @@ describe("业务分类 seed（D0-15，待业务管理员审阅）", () => {
   test("按 ID 能取到分类，未知 ID 明确为未知", () => {
     expect(categoryById("intelligence")?.name).toBe("情报研判")
     expect(categoryById("not-exist")).toBeUndefined()
-    expect(isKnownCategory("intelligence")).toBe(true)
-    expect(isKnownCategory("not-exist")).toBe(false)
+    // 「合法分类」的判定不在这里（见 categories.ts 文件尾）——由 `category-store.test.ts` 钉。
   })
 })

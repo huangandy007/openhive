@@ -4,7 +4,6 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { 订阅会话输入, type 写入方式 } from "@/ai-session/send-to-session"
 import { ToastRegion } from "@/utils/toast"
-import { ASSET_CATEGORY_ROWS } from "./filter"
 import { AssetDetail, 详情Tab列表 } from "./asset-detail"
 
 /**
@@ -20,7 +19,7 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
     type: "skill",
     description: "按账户汇总资金往来",
     icon: "skill",
-    category: ASSET_CATEGORY_ROWS[0].id,
+    category: "intelligence", // 需求 4 起分类 id 来自服务端，这里只是夹具里的一个字符串
     tags: ["资金", "研判"],
     ownerId: "u1",
     ownerName: "张三",

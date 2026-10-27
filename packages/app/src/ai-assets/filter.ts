@@ -1,5 +1,4 @@
 import { createSignal, type Accessor } from "solid-js"
-import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import {
   ASSET_TYPES,
   ASSET_VISIBILITIES,
@@ -13,18 +12,13 @@ import {
  * **状态按挂载点生成，不做模块级单例**：`filter.ts` 被 `WorkspaceEntry` 调一次、测试各调一次，
  * 互不串味（`LEARNINGS #005-03`：模块级缝没复位，红绿会取决于用例顺序）。
  *
- * 分类行**只从 `asset-service` 的 seed 来**（`categories.ts` 文件头：T005 只消费本字典）：
- * 前端再抄一份，改名时两处就静默分家（`LEARNINGS #002-06`）。
+ * ## 分类行**不在这里**（需求 4，2026-10-27）
+ *
+ * 原先本文件从 `@opencode-ai/asset-service/categories` 的 seed 派生 `ASSET_CATEGORY_ROWS`。
+ * 分类改为管理员维护、进库之后，那条读法就是「管理员改了、用户看不见」的两份真相
+ * （`LEARNINGS #002-06`），已删除。分类的唯一来源是服务端（`category-api.ts` ＋ `categories.ts`），
+ * 由 `AssetNav` 通过访问器接收；本文件只管**选中了哪个 id**。
  */
-export interface AssetCategoryRow {
-  readonly id: string
-  readonly name: string
-}
-
-/** 左栏展示用的分类行：按 `order` 升序。seed 是只读的，这里只派生一份展示形状。 */
-export const ASSET_CATEGORY_ROWS: readonly AssetCategoryRow[] = [...ASSET_CATEGORY_SEED]
-  .sort((a, b) => a.order - b.order)
-  .map(({ id, name }) => ({ id, name }))
 
 export interface AssetFilter {
   /** 已选空间，恒按 `ASSET_VISIBILITIES` 的顺序。 */

@@ -32,6 +32,6 @@ export function categoryById(id: string): AssetCategorySeed | undefined {
   return ASSET_CATEGORY_SEED.find((category) => category.id === id)
 }
 
-export function isKnownCategory(id: string): boolean {
-  return categoryById(id) !== undefined
-}
+// 「谁是合法分类」的判断**不在这里**：需求 4 起分类进库、可由管理员维护，
+// 唯一实现是 `category-store.ts` 的 `isEnabledCategory()`（读库里的启用集合）。
+// 本文件只提供 seed 源与测试夹具——在这里再放一份闭集就是两份实现漂移（`#002-06`）。

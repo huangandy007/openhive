@@ -127,11 +127,13 @@ import { projectLocationLayer } from "./middleware/project-location"
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveAssets } from "@/server/openhive/assets"
+import { OpenhiveCategories } from "@/server/openhive/categories"
 import { OpenhivePreferences } from "@/server/openhive/preferences"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
+import { OpenhiveGovernanceCategories } from "@/server/openhive/governance-categories"
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-source"
 import { OpenhiveGovernanceMcp } from "@/server/openhive/governance-mcp-supervisor"
@@ -408,6 +410,10 @@ export function createRoutes(
     // `process.env.OPENHIVE_ASSETS_ROOT` 每请求读一次，与 009 的出口同一个约定。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 治理后台（010 T007）。
     OpenhiveGovernanceAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 业务分类管理出口（需求 4）：列表（含停用）/ 新建 / 改名 / 排序 / 启停，**无删除**。
+    // 板块是 `asset-governance`：读要 read、写要 admin；表规则全在 `category-store.ts`。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 4）。
+    OpenhiveGovernanceCategories.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 使用面资产出口（T017）：「我能用的已发布资产」。与上面那条治理出口**不是一套**：
     // 那条给管理员看全量、进门要板块授权；这条给普通民警，只要登录，且逐条过 009 的
     // `canReadAsset()`（可见性规则只有那一份）。资产根不读——列表不碰磁盘。
@@ -417,6 +423,10 @@ export function createRoutes(
     // 只供业务 PG（`auth.user_preference`）；值的白名单复用 `paging.ts` 的 `PAGE_SIZES`。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 6）。
     OpenhivePreferences.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 使用面业务分类出口（需求 4，2026-10-27）：左栏分类改由服务端给（管理员可维护），
+    // 只回启用项。与资产列表同一条口径：登录即可读，卡在这里等于整页打不开。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 4）。
+    OpenhiveCategories.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 数据项目权限出口（010 T008）：全部项目 / 名单 / 兜底撤销成员 / 兜底归档（FR-007）。
     // 授权是治理板块的 `data-project-perm`（**不是** 005 的成员身份 `decide`——管理员按定义不是
     // 项目成员，见该模块文件头）；写动作复用 `removeMember` 与 `archiveProject`。

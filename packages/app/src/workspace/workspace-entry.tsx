@@ -1,6 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
 import { AssetCenter } from "@/ai-assets/asset-center"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
+import type { AssetCategories } from "@/ai-assets/categories"
 import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
 import { ProjectionModuleProvider } from "@/ai-session/projection-module"
@@ -166,6 +167,17 @@ export interface WorkspaceEntryProps {
    * 与 `catalog` 的同一条规矩：注入而不 import 生产实现，组件测试仍然离线。
    */
   onAssetsOpen?: () => void
+  /**
+   * **AI 资产左栏的业务分类**（需求 4，2026-10-27）。
+   *
+   * 【保留的定制 · 同步上游时不要丢】009 时左栏 import `filter.ts` 那份由 seed 派生的常量。
+   * 分类改为管理员维护、进库之后，再读常量就是「管理员改了、用户看不见」（`#002-06`），
+   * 于是分类改由服务端来，生产实现在 `pages/layout-new.tsx` 建（`ai-assets/categories.ts`）后注入。
+   *
+   * 与 `catalog` / `projectData` 同一条规矩：**注入而不 import 生产实现**——本组件被组件测试
+   * 裸挂，自己去取就再也跑不成离线。省略 = 还没有分类（左栏分类组空着，不放假数据）。
+   */
+  categories?: AssetCategories
 }
 
 /**
@@ -1717,7 +1729,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
           leftCollapsed={!左栏可见()}
           left={
             视图() === "ai-assets" ? (
-              <AssetNav filter={assetFilter} />
+              <AssetNav
+                filter={assetFilter}
+                categories={props.categories?.rows}
+                categoriesError={props.categories?.error}
+              />
             ) : 视图() === "project" ? (
               // 这一层 `relative` 是给面板当定位祖先的：面板按设计 §3 是**滑出**的浮层
               // （「点项目名 ▾ 滑出」），不能挤掉下面 §2 的 ②tab / ③文件树。

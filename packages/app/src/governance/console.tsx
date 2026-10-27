@@ -16,6 +16,8 @@ import type { AccountApi } from "./account-api"
 import { AccountManage } from "./account-manage"
 import type { AssetApi } from "./asset-api"
 import { AssetGovernance } from "./asset-governance"
+import type { CategoryAdminApi } from "./category-api"
+import { CategoryManage } from "./category-manage"
 import type { AuditApi } from "./audit-log-api"
 import { AuditLog } from "./audit-log"
 import { DataProjectPerm } from "./data-project-perm"
@@ -41,6 +43,11 @@ export interface GovernanceConsoleProps {
   orgApi?: OrgApi
   /** AI 资产治理接口（T007）。省略 = 资产页显示占位（还没接线）。 */
   assetApi?: AssetApi
+  /**
+   * 【保留的定制 · 同步上游时不要丢】业务分类维护接口（需求 4）。
+   * 与 `assetApi` 同一板块（`asset-governance`），省略 = 只画资产队列、不画分类维护块。
+   */
+  categoryApi?: CategoryAdminApi
   /** 数据项目权限接口（T008）。省略 = 数据项目页显示占位（还没接线）。 */
   projectApi?: ProjectApi
   /** 用量/成本看板接口（T009）。省略 = 用量页显示占位（还没接线）。 */
@@ -174,6 +181,7 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
               accountApi={props.accountApi}
               orgApi={props.orgApi}
               assetApi={props.assetApi}
+              categoryApi={props.categoryApi}
               projectApi={props.projectApi}
               usageApi={props.usageApi}
               auditApi={props.auditApi}
@@ -201,6 +209,7 @@ function 页面(props: {
   accountApi?: AccountApi
   orgApi?: OrgApi
   assetApi?: AssetApi
+  categoryApi?: CategoryAdminApi
   projectApi?: ProjectApi
   usageApi?: UsageApi
   auditApi?: AuditApi
@@ -224,6 +233,9 @@ function 页面(props: {
         <Show when={props.assetApi} fallback={<占位 section={props.section} />}>
           {(api) => <AssetGovernance api={api()} />}
         </Show>
+        {/* 【保留的定制 · 同步上游时不要丢】（需求 4）：业务分类维护与资产治理同属
+            `asset-governance` 板块，渲染在资产队列下面。接口省略时整块不画（不是画一个空表）。 */}
+        <Show when={props.categoryApi}>{(api) => <CategoryManage api={api()} />}</Show>
       </Match>
       <Match when={props.section.id === "data-project-perm"}>
         <Show when={props.projectApi} fallback={<占位 section={props.section} />}>

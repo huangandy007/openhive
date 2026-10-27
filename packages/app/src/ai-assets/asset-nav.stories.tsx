@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { AssetNav } from "./asset-nav"
 import { createAssetFilter } from "./filter"
 
@@ -16,9 +17,15 @@ import { createAssetFilter } from "./filter"
  * 只画「全默认态」就等于放弃另一半审计面。
  */
 
+/**
+ * 故事用的分类夹具：需求 4 起分类由服务端来，故事里直接拿 seed 当「服务端回了这九类」。
+ * （seed 在这条路径上只是替身——生产实现见 `ai-assets/categories.ts`。）
+ */
+const 分类 = [...ASSET_CATEGORY_SEED].map(({ id, name }) => ({ id, name }))
+
 function 默认筛选() {
   const filter = createAssetFilter()
-  return <AssetNav filter={filter} />
+  return <AssetNav filter={filter} categories={() => 分类} />
 }
 
 /**
@@ -35,7 +42,7 @@ function 收窄筛选() {
   filter.toggleSpace("personal")
   filter.selectType("mcp")
   filter.selectCategory("intelligence")
-  return <AssetNav filter={filter} />
+  return <AssetNav filter={filter} categories={() => 分类} />
 }
 
 export const 收窄 = {

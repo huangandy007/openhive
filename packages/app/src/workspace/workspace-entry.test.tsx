@@ -5,7 +5,8 @@ import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
-import { ASSET_CATEGORY_ROWS } from "@/ai-assets/filter"
+import type { AssetCategories } from "@/ai-assets/categories"
+import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { useProjectionModule } from "@/ai-session/projection-module"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
 import { useCenterTabs } from "@/center/tab-context"
@@ -5985,6 +5986,18 @@ describe("备份 / 恢复接线（Task 17）", () => {
  * 三条轴各钉一次：**左栏换内容**（不是换模块就整列消失）、**中栏走模块级视图**（文件 tab 保留
  * 在状态里但不可见）、**右栏投影不换**（仍停在进入前的业务模块）。
  */
+/**
+ * 左栏分类夹具（需求 4，2026-10-27）。
+ *
+ * 分类的唯一来源是服务端，`WorkspaceEntry` 只认**注入的**访问器（见它 `categories` prop）。
+ * 这里拿 seed 的九类当替身——**这不是生产读法**，生产实现是 `ai-assets/categories.ts`
+ * 走 `GET /openhive/categories`；组件测试里注入替身才保持离线。
+ */
+const 分类夹具 = [...ASSET_CATEGORY_SEED].map(({ id, name }) => ({ id, name }))
+
+/** 每次挂载给一份新的（不共享模块级对象，`LEARNINGS #005-03`）。 */
+const 假分类 = (): AssetCategories => ({ rows: () => 分类夹具, error: () => undefined, reload: () => {} })
+
 describe("AI 资产工作台（009 T005）", () => {
   const 进入 = (host: HTMLElement) => 入口(host, "AI 资产").click()
 
@@ -6003,7 +6016,7 @@ describe("AI 资产工作台（009 T005）", () => {
   })
 
   test("左栏导航三组齐备，且**不列资产行**", () => {
-    const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
+    const host = mount(() => <WorkspaceEntry categories={假分类()}>中栏</WorkspaceEntry>)
     进入(host)
 
     expect(host.querySelectorAll("[data-slot='asset-space']").length).toBe(3)
@@ -6097,7 +6110,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       type: "skill",
       description: "按账户汇总资金往来",
       icon: "skill",
-      category: ASSET_CATEGORY_ROWS[0].id,
+      category: 分类夹具[0].id,
       tags: ["资金"],
       ownerId: "u1",
       ownerName: "张三",
@@ -6197,18 +6210,18 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
 
   test("左栏换分类 ⇒ 中栏只剩该分类", async () => {
     const 目录 = 假目录([
-      资产({ id: "a", name: "第一类", category: ASSET_CATEGORY_ROWS[0].id }),
-      资产({ id: "b", name: "第二类", category: ASSET_CATEGORY_ROWS[1].id }),
+      资产({ id: "a", name: "第一类", category: 分类夹具[0].id }),
+      资产({ id: "b", name: "第二类", category: 分类夹具[1].id }),
     ])
     const host = mount(() => (
-      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
+      <WorkspaceEntry catalog={目录} categories={假分类()}>中栏</WorkspaceEntry>
     ))
     进入(host)
     // 默认**不筛分类**（T017 裁定）：两类都在，第一屏就是「我能用的东西」。
     expect(卡片(host)).toHaveLength(2)
 
     const 第二类 = host.querySelector<HTMLElement>(
-      `[data-slot='asset-category'][data-category='${ASSET_CATEGORY_ROWS[1].id}']`,
+      `[data-slot='asset-category'][data-category='${分类夹具[1].id}']`,
     )!
     第二类.click()
     await 等一拍()

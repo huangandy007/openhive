@@ -8,6 +8,7 @@ import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { insertAsset } from "./asset"
+import { createCategory, updateCategory } from "./category-store"
 import { createGovernanceServer, GOVERNANCE_TOOL_NAMES } from "./governance"
 import type { AssetMetadata } from "./metadata"
 
@@ -319,6 +320,31 @@ describe("create_skill_draft", () => {
     expect(submitted.isError).toBe(false)
     expect(await statusOf(db, assetId)).toBe("in_review")
     expect(await readFile(join(root, "pending", assetId, "SKILL.md"), "utf8")).toContain("fund-analysis")
+  })
+
+  test("业务分类读库：管理员新建的立刻可用，停用的立刻不可用（需求 4）", async () => {
+    const { db, sourceRoot, client } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+    const 新 = await createCategory(db, { name: "资金分析" })
+
+    const 用新类 = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "按账户汇总流水", category: 新.id, sourceDirectory: source },
+      "u1",
+    )
+    expect(用新类.isError).toBe(false)
+
+    // 停用后同一个 id 立刻不合法——闭集是库里的启用集合，不是代码里的常量。
+    await updateCategory(db, 新.id, { enabled: false })
+    const 停用后 = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "按账户汇总流水", category: 新.id, sourceDirectory: source },
+      "u1",
+    )
+    expect(停用后.isError).toBe(true)
+    expect(停用后.text).toContain("invalid_arguments")
   })
 
   test("department 可见范围：部门取调用者档案，不听参数", async () => {

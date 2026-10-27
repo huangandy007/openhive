@@ -15,6 +15,7 @@ import { createMemo, type JSX } from "solid-js"
 import { useAuthSession } from "@/auth/session-context"
 import { createAccountApi } from "./account-api"
 import { createAssetApi } from "./asset-api"
+import { createCategoryAdminApi } from "./category-api"
 import { createAuditApi } from "./audit-log-api"
 import { GovernanceConsoleHost } from "./console-host"
 import { createDataSourceApi } from "./data-source-api"
@@ -54,6 +55,9 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
   /** AI 资产治理接口（T007）：同上，无状态薄壳，模块内建一次。 */
   const 资产接口 = createAssetApi()
 
+  /** 业务分类维护接口（需求 4）：同上，无状态薄壳，模块内建一次。 */
+  const 分类接口 = createCategoryAdminApi()
+
   /** 数据项目权限接口（T008）：同上，无状态薄壳，模块内建一次。 */
   const 项目接口 = createProjectApi()
 
@@ -77,6 +81,7 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
       accountApi={账号接口}
       orgApi={组织接口}
       assetApi={资产接口}
+      categoryApi={分类接口}
       projectApi={项目接口}
       usageApi={用量接口}
       auditApi={审计接口}

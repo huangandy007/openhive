@@ -4,6 +4,7 @@ import { createStore } from "solid-js/store"
 // ⚠️ openhive 定制（006 修复）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 中栏在会话路由上让位给右栏，判据（`routeSessionID`）在下面 `routePageVisible` 那处用。
 import { createAssetCatalog } from "@/ai-assets/asset-catalog"
+import { createAssetCategories } from "@/ai-assets/categories"
 import { createPreferencesApi, PAGE_SIZE_KEY } from "@/ai-assets/preferences-api"
 import { AiSessionSlot } from "@/ai-session/ai-session-slot"
 import { SidebarSessions } from "@/ai-session/sidebar-sessions"
@@ -83,6 +84,11 @@ export default function NewLayout(props: ParentProps) {
   const 资产目录 = createAssetCatalog(undefined, {
     persistPageSize: (size) => void 偏好.write(PAGE_SIZE_KEY, String(size)),
   })
+  // 【保留的定制 · 同步上游时不要丢】（需求 4，2026-10-27）左栏分类由管理员维护，来源是服务端
+  // （`GET /openhive/categories`，只回启用项）。挂载时拉一次，之后每次进入资产视图再拉
+  // （与 `资产目录.reload` 同一条时机，见 `onAssetsOpen`）——管理员改了分类，切回资产页就该看见。
+  const 分类 = createAssetCategories()
+  void 分类.reload()
   void 偏好.read().then((映射) => {
     const 存过 = Number(映射?.[PAGE_SIZE_KEY])
     if (Number.isInteger(存过) && 存过 > 0) 资产目录.setPageSize(存过)
@@ -190,7 +196,13 @@ export default function NewLayout(props: ParentProps) {
             // 数据源整个交下去（清单 / 总数 / 页码 / 每页条数 / 错误 / 加载），中栏自己组装查询；
             // 「进入资产视图了，去拉一次」单独一条（切换视图要拿最新的，见 `asset-catalog.ts` 文件头）。
             catalog={资产目录}
-            onAssetsOpen={资产目录.reload}
+            // 【保留的定制 · 同步上游时不要丢】（需求 4）：分类与清单同一时机重拉——
+            // 只刷清单会让「刚发布到新分类的资产」在左栏找不到那个分类可点。
+            categories={分类}
+            onAssetsOpen={() => {
+              资产目录.reload()
+              分类.reload()
+            }}
           >
             <Suspense>{props.children}</Suspense>
           </WorkspaceEntry>

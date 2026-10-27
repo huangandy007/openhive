@@ -12,6 +12,7 @@ import { Show, createEffect, type JSX } from "solid-js"
 import type { AccountApi } from "./account-api"
 import type { AssetApi } from "./asset-api"
 import type { AuditApi } from "./audit-log-api"
+import type { CategoryAdminApi } from "./category-api"
 import { GovernanceConsole } from "./console"
 import type { DataSourceApi } from "./data-source-api"
 import type { OrgApi } from "./org-api"
@@ -30,6 +31,8 @@ export interface GovernanceConsoleHostProps {
   orgApi?: OrgApi
   /** AI 资产治理接口（T007）。省略 = 该页显示占位。 */
   assetApi?: AssetApi
+  /** 【保留的定制 · 同步上游时不要丢】业务分类维护接口（需求 4）：省略 = 不画分类维护块。 */
+  categoryApi?: CategoryAdminApi
   /** 数据项目权限接口（T008）。省略 = 该页显示占位。 */
   projectApi?: ProjectApi
   /** 用量/成本看板接口（T009）。省略 = 该页显示占位。 */
@@ -85,6 +88,7 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           accountApi={props.accountApi}
           orgApi={props.orgApi}
           assetApi={props.assetApi}
+          categoryApi={props.categoryApi}
           projectApi={props.projectApi}
           usageApi={props.usageApi}
           auditApi={props.auditApi}
