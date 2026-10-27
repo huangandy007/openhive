@@ -67,6 +67,24 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(一(host, "capability-group-knowledge")?.getAttribute("aria-expanded")).toBe("false")
   })
 
+  /**
+   * 组头右侧箭头（终审 M2）：展开的以 `⌄` 结尾、收起的以 `›` 结尾。
+   *
+   * 断的是 `textContent` 的结尾字符，**不比较节点**（`#009-01`：比节点会让整轮测试挂死）。
+   */
+  test("组头箭头：展开的以 ⌄ 结尾、收起的以 › 结尾", () => {
+    const host = 面板()
+    expect(文(host, "capability-group-skill").trimEnd().endsWith("⌄")).toBe(true)
+    expect(文(host, "capability-group-knowledge").trimEnd().endsWith("›")).toBe(true)
+    expect(文(host, "capability-group-mcp").trimEnd().endsWith("›")).toBe(true)
+
+    // 换一组展开 ⇒ 箭头跟着翻转（不是写死的）。
+    一(host, "capability-group-mcp")?.click()
+
+    expect(文(host, "capability-group-mcp").trimEnd().endsWith("⌄")).toBe(true)
+    expect(文(host, "capability-group-skill").trimEnd().endsWith("›")).toBe(true)
+  })
+
   test("知识库横条不写数字，写「即将支持」", () => {
     const host = 面板()
     expect(文(host, "capability-group-knowledge")).toContain("即将支持")
