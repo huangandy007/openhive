@@ -217,10 +217,16 @@ function 目录名(location: string): string | undefined {
 
 /** `location` 是否落在本项目沙箱内。全局 / 内置技能一律落在外面，不该进「本项目自带」。 */
 export function 属于项目(location: string, 目录: string): boolean {
-  // 前缀比较忽略大小写：`项目目录()` 与内核 `location` 虽同源，win32 盘符大小写
-  // （`D:\` vs `d:\`）或 env 拼出的根可能不同形；不忽略就会把整个清单筛空 ⇒
+  // 前缀比较只在 **win32** 忽略大小写：`项目目录()` 与内核 `location` 虽同源，win32 盘符
+  // 大小写（`D:\` vs `d:\`）或 env 拼出的根可能不同形；不忽略就会把整个清单筛空 ⇒
   // 前端把每条已启用技能都误标成「没生效」。
-  const 规整 = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  //
+  // POSIX 下路径**大小写敏感**：在那边也折小写，会把 `/w/u/P` 与 `/w/u/p`（两个真目录）
+  // 当成同一个根，把别人项目里的技能并进「本项目自带」（终审 M1）。
+  const 规整 = (s: string) => {
+    const 正斜杠 = s.replace(/\\/g, "/").replace(/\/+$/, "")
+    return process.platform === "win32" ? 正斜杠.toLowerCase() : 正斜杠
+  }
   const 根 = 规整(目录)
   const 文 = 规整(location)
   // 带分隔符比较：`/w/u/p` 不能吞下 `/w/u/p2/...`。

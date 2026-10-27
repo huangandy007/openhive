@@ -81,7 +81,8 @@ describe("映射内核清单", () => {
     expect(回[0]?.assetId).toBe("asset_1")
   })
 
-  test("前缀比较忽略大小写：盘符大小写不同仍算本项目", () => {
+  // win32 的盘符大小写不保证同形（`D:\` vs `d:\`）；折小写只在 win32 做。
+  test.skipIf(process.platform !== "win32")("win32：前缀比较忽略大小写，盘符大小写不同仍算本项目", () => {
     const 回 = 映射内核清单(
       [{ name: "资金", location: "d:/s/1/p/.opencode/skill/a/SKILL.md" }],
       "D:\\s\\1\\p",
@@ -89,6 +90,17 @@ describe("映射内核清单", () => {
     )
     expect(回.length).toBe(1)
     expect(回[0]?.name).toBe("资金")
+  })
+
+  // POSIX 分支的反向钉子：大小写敏感，大小写不同就是**两个目录**（终审 M1）。
+  // ⚠️ 本机（win32）跑不到，如实登记为缺口；上面的平台无关用例不含这条语义。
+  test.skipIf(process.platform === "win32")("POSIX：大小写敏感，大小写不同不算本项目", () => {
+    const 回 = 映射内核清单(
+      [{ name: "资金", location: "/w/u/P/.opencode/skill/a/SKILL.md" }],
+      "/w/u/p",
+      new Map(),
+    )
+    expect(回.length).toBe(0)
   })
 
   test("目录尾部分隔符不影响匹配", () => {
