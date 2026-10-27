@@ -1,5 +1,5 @@
 import { createEffect, createRoot, createSignal, getOwner, onCleanup, runWithOwner, untrack } from "solid-js"
-import { createEnableApi, type EnableApi, type EnablementState } from "./enable-api"
+import { createEnableApi, type EnableApi, type EnablementState, type 内核技能 } from "./enable-api"
 
 /**
  * 「当前项目启用了哪些 skill」的**唯一读取点**（2026-10-27）。
@@ -28,6 +28,8 @@ export interface ProjectEnablement {
   readonly limit: () => number
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
+  /** 内核视角的技能清单；`undefined` = 还没读到（与「内核一条都没有」是两件事）。 */
+  readonly skills: () => readonly 内核技能[] | undefined
   readonly bind: (projectId: () => string | undefined) => void
   readonly toggle: (assetId: string) => void
   readonly reload: () => void
@@ -45,6 +47,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [上限, set上限] = createSignal(默认上限)
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
+  const [技能, set技能] = createSignal<readonly 内核技能[] | undefined>()
 
   let 代次 = 0
 
@@ -52,6 +55,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set集合(new Set(状态.enabled))
     set数量(状态.enabledCount)
     set上限(状态.limit)
+    set技能(状态.skills)
   }
 
   const 清空 = () => {
@@ -61,6 +65,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set上限(默认上限)
     set错误(undefined)
     set忙(undefined)
+    set技能(undefined)
   }
 
   /**
@@ -156,5 +161,16 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     拉(projectId)
   }
 
-  return { projectId: 项目, enabled: 集合, enabledCount: 数量, limit: 上限, error: 错误, busy: 忙, bind, toggle, reload }
+  return {
+    projectId: 项目,
+    enabled: 集合,
+    enabledCount: 数量,
+    limit: 上限,
+    error: 错误,
+    busy: 忙,
+    skills: 技能,
+    bind,
+    toggle,
+    reload,
+  }
 }

@@ -6336,6 +6336,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       limit: () => 20,
       error: () => undefined,
       busy: () => undefined,
+      skills: () => undefined,
       bind: () => {},
       toggle: (id) => 切换.push(id),
       reload: () => {},

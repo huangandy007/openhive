@@ -259,6 +259,7 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       limit: over.limit ?? (() => 20),
       error: over.error ?? 空,
       busy: over.busy ?? 空,
+      skills: over.skills ?? 空,
       bind: over.bind ?? (() => {}),
       toggle: over.toggle ?? (() => {}),
       reload: over.reload ?? (() => {}),

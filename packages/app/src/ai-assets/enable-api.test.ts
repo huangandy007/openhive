@@ -118,3 +118,57 @@ describe("enable-api", () => {
     }
   })
 })
+
+describe("skills 字段：未知与空必须分开（#002-02）", () => {
+  test("回包带 skills ⇒ 逐条解析出来", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              enabled: ["a"],
+              enabledCount: 1,
+              limit: 20,
+              skills: [
+                {
+                  name: "资金流向分析",
+                  description: "提取资金链",
+                  location: "/w/u/p/.opencode/skill/a/SKILL.md",
+                  assetId: "a",
+                  assetName: "资金流向分析",
+                },
+              ],
+            },
+          },
+        ],
+        记录,
+      ),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.skills?.length).toBe(1)
+    expect(结果.value.skills?.[0]?.assetId).toBe("a")
+    expect(结果.value.skills?.[0]?.name).toBe("资金流向分析")
+  })
+
+  test("回包没有 skills ⇒ 解析成 undefined，不是空数组", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], 记录))
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.skills).toBe(undefined)
+  })
+
+  test("skills 里有一条形状不对 ⇒ 整份回包判为形状错误（不悄悄丢掉那条）", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(
+      假发送([{ status: 200, body: { enabled: [], enabledCount: 0, limit: 20, skills: [{ name: 1 }] } }], 记录),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("error")
+  })
+})

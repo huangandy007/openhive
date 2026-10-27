@@ -412,3 +412,44 @@ test("reload 撞在飞的 toggle：旧回包不回写，busy 被收掉", async (
     dispose()
   })
 })
+
+// Task 2（2026-10-27）：把内核清单原样暴露给渲染层。两条都必须钉住——
+// ① 回包带 skills ⇒ `skills()` 拿到它（只加信号不接 `应用` 的话这条红）；
+// ② 换项目在新回包到之前就复位（不复位的话界面会拿甲的清单去标乙，`#002-02`）。
+// 「未知 / 空数组」的**三态合并**留给 Task 3，这里只断言原样透传。
+test("skills：随回包暴露；换项目先复位为 undefined，空数组不被折叠", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.skills()).toBeUndefined()
+
+    待到[0]({
+      kind: "ok",
+      value: {
+        ...空,
+        skills: [{ name: "资金流向分析", location: "/w/u/p1/.opencode/skill/a/SKILL.md", assetId: "a" }],
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.skills()?.length).toBe(1)
+    expect(状态.skills()?.[0]?.assetId).toBe("a")
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // 新回包还没回：必须先复位，不能拿 p1 的清单继续标 p2
+    expect(状态.skills()).toBeUndefined()
+    待到[1]({ kind: "ok", value: { ...空, skills: [] } })
+    await new Promise((r) => setTimeout(r, 0))
+    // 明确的空数组保持为 `[]`，不被折叠成 `undefined`（`#002-02`）
+    expect(状态.skills()).toEqual([])
+    dispose()
+  })
+})
