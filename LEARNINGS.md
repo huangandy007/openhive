@@ -36,6 +36,14 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #009-02 · 2026-10-27 · tool-quirk · 009-ai-assets
+**一句话**：`packages/app` 里图省事跑 `bun test src/ai-assets/*.test.tsx`（漏了 `--conditions=browser --preload ./solid-jsx.ts`）
+⇒ Solid 解析到 **`dist/server.js`**、`createEffect` 是 **no-op** ⇒ 20 条本来全绿的 `enable-state` 用例一起红，
+报的全是「回包没应用 / 没切项目」，看着像刚改的实现坏了；照抄 package script 的 conditions 跑即全绿。
+**应对**：单文件跑也照抄 `test:components` / `test:unit` 的 conditions；红成一片先看堆栈有没有 `solid-js/dist/server.js`。
+**应用范围**：任何 Solid 组件测试；任何「改完实现一片红、报错却都指向状态没生效」的现场。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #009-01 · 2026-10-27 · tool-quirk · 009-ai-assets
 **一句话**：`expect(happy-dom 节点).toBeNull()` **真失败**时，bun 序列化 DOM 节点（环形引用）⇒ 16 GiB 分配失败、用例表现为「挂死」；同一变异改成布尔断言后 **31ms 干净报红**。
 **应用范围**：任何 happy-dom / jsdom 组件测试的「元素不存在」断言；任何变异验证红成「挂死 / OOM / 无输出」的现场。

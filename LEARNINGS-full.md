@@ -23,6 +23,24 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #009-02 · 2026-10-27 · tool-quirk · 009-ai-assets
+
+**现象 / 决策**：在 `packages/app` 里图省事直接跑 `bun test src/ai-assets/*.test.tsx`，20 条本来
+全绿的 `enable-state` 用例**一起红**，报的全是「回包没应用 / 计数没上 / 项目没切过去」——看着像
+刚写的实现把状态层改坏了。根因不在被测代码，在**跑法**：`packages/app` 的组件测试必须带
+`--conditions=browser`，否则 Solid 解析到 `dist/server.js`，那里 `createEffect` 是 **no-op** ⇒
+`bind()` 里的 effect 一次都不跑、`api.read` 根本没发出（探针实测：`READ` 一行没打印）。
+同一批用例按 package script 的 conditions 跑，**全部转绿**；`.ts` 单测（`--conditions=solid`）
+同理，只是它不依赖 DOM 信号，症状没这么显眼。
+
+**应对**：单文件跑也照抄 `package.json` 里的 conditions：
+`.tsx` → `bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts <files>`；
+`.ts` → `bun test --conditions=solid --preload ./happydom.ts <files>`。
+判据：红成一片时先看堆栈里有没有 `solid-js/dist/server.js`，有就是跑法错了，别去改实现。
+
+**应用范围**：任何 Solid 组件测试（本仓 `packages/app`）；任何「改完实现一片红、但报错全指向
+状态没生效」的现场；任何按 `bun test <path>` 绕开 npm script 的临时跑法。
+
 ## #009-01 · 2026-10-27 · tool-quirk · 009-ai-assets
 
 **现象 / 决策**：变异验证时把守卫拆掉，那条用例**「挂死」而不是报红**——bun 跑两分钟无输出，
