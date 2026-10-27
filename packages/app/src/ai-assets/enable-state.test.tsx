@@ -184,3 +184,120 @@ test("没有项目时 toggle 不发请求", async () => {
     dispose()
   })
 })
+
+test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async () => {
+  // 两个「悬着的」请求：p1 的 read 与 enable 都由用例手动放行
+  let 放p1读: ((v: EnableOutcome) => void) | undefined
+  let 放p1切: ((v: EnableOutcome) => void) | undefined
+  const api: EnableApi = {
+    read: (projectId: string) =>
+      projectId === "p1"
+        ? new Promise<EnableOutcome>((r) => {
+            放p1读 = r
+          })
+        : Promise.resolve({ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20 } }),
+    enable: () =>
+      new Promise<EnableOutcome>((r) => {
+        放p1切 = r
+      }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    状态.toggle("x") // p1 上的一次切换，悬着不回
+    expect(状态.busy()).toBe("x")
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // 换项目就该复位：旧请求已被代次丢弃，但「请求已结束」必须写回，否则按钮永久转忙
+    expect(状态.busy()).toBeUndefined()
+    expect([...状态.enabled()]).toEqual(["b"])
+
+    放p1读?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
+    放p1切?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["b"]) // 旧回包不覆盖新项目
+    expect(状态.enabledCount()).toBe(1)
+    expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
+
+test("api reject：错误落到 error、busy 复位（不留未处理拒绝）", async () => {
+  const api: EnableApi = {
+    read: async () => {
+      throw new Error("boom")
+    },
+    enable: async () => {
+      throw new Error("boom")
+    },
+    disable: async () => {
+      throw new Error("boom")
+    },
+  }
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("加载启用状态失败")
+
+    状态.toggle("a")
+    expect(状态.busy()).toBe("a")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("操作失败，请重试")
+    expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
+
+test("重复 bind：旧的 effect 被拆掉（换项目只发一次 read）", async () => {
+  const 记录: string[] = []
+  const api: EnableApi = {
+    read: async (projectId: string) => {
+      记录.push(`read:${projectId}`)
+      return { kind: "ok", value: 空 }
+    },
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    状态.bind(项目) // 二次 bind：旧 effect 必须先拆
+    await new Promise((r) => setTimeout(r, 0))
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(记录.filter((key) => key === "read:p2").length).toBe(1)
+    dispose()
+  })
+})
+
+test("切项目：上一项目的集合不沿用（新项目读还没回来时为空）", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: async () => new Promise((r) => 待到.push(r)),
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["a"])
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // p2 的读还悬着：这一刻不能把 p1 的集合当成 p2 的
+    expect(状态.enabled().size).toBe(0)
+    expect(状态.enabledCount()).toBe(0)
+    dispose()
+  })
+})
