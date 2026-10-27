@@ -37,10 +37,23 @@ const 会话body = (
   </p>
 )
 
+/** 「能力」tab 的 body 同样由调用方注入（生产接的是 `@/project/capability-panel`）。 */
+const 能力body = (
+  <p data-slot="story-capability-body" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+    （这里由调用方注入能力面板）
+  </p>
+)
+
 const 受控 = (初始: SidebarTabKey) => {
   const [active, setActive] = createSignal<SidebarTabKey>(初始)
   return () => (
-    <SidebarTabs active={active()} onSelect={setActive} files={文件body} sessions={会话body} />
+    <SidebarTabs
+      active={active()}
+      onSelect={setActive}
+      files={文件body}
+      sessions={会话body}
+      capability={能力body}
+    />
   )
 }
 
@@ -52,4 +65,9 @@ export const FilesTab = {
 /** 激活「会话」：body 是调用方注入的那一块（空态归列表自己，不在这里）。 */
 export const SessionTab = {
   render: 受控("session"),
+}
+
+/** 第三个 tab：激活「能力」，默认不写计数（还没取到数时不写 0）。 */
+export const CapabilityTab = {
+  render: 受控("capability"),
 }

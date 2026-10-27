@@ -2028,6 +2028,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   // ③ 会话 pane（2026-10-08）：与 `files` 同款注入——本组件不认识会话列表，
                   // 正如它不认识文件树。`?.()` 得到 `undefined` ＝ 调用方没接（pane 空着）。
                   sessions={props.sessions?.()}
+                  capability={<></>}
                   files={
                     <>
                       {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项 ＋ Task 17 的备份 / 恢复

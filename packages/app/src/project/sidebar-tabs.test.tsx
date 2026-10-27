@@ -68,6 +68,7 @@ function 挂(初始: SidebarTabKey = "files", 接住 = true) {
       }}
       files={<探针 />}
       sessions={<探针 slot="probe-session" />}
+      capability={<探针 slot="probe-capability" />}
     />
   ))
   return { host, 喊过 }
@@ -77,11 +78,11 @@ const 敲 = (el: HTMLElement | null, key: string) =>
   el?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
 
 describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
-  test("两个 tab 齐备、顺序固定：会话 → 文件（设计 §2：只有这两个）", () => {
+  test("三个 tab 齐备、顺序固定：会话 → 文件 → 能力（设计 §2 ②，2026-10-27 加第三个）", () => {
     const { host } = 挂()
 
-    expect(各tab(host).map((el) => el.getAttribute("data-tab"))).toEqual(["session", "files"])
-    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件"])
+    expect(各tab(host).map((el) => el.getAttribute("data-tab"))).toEqual(["session", "files", "capability"])
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力"])
   })
 
   test("tablist 有可访问名称——两个裸词不足以说明这排东西是什么", () => {
@@ -161,6 +162,35 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(pane(host, "session")?.contains(槽(host, "probe-session"))).toBe(true)
   })
 
+  test("「能力」pane 的 body 由调用方注入——组件不认识能力面板", () => {
+    const { host } = 挂("capability")
+
+    expect(pane(host, "capability")?.contains(槽(host, "probe-capability"))).toBe(true)
+  })
+
+  test("没有计数（还没取到）时只写「能力」，**不写 0**", () => {
+    const host = mount(() => (
+      <SidebarTabs active="files" onSelect={() => {}} sessions={<span />} files={<span />} capability={<span />} />
+    ))
+
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力"])
+  })
+
+  test("有计数时标签带数字", () => {
+    const host = mount(() => (
+      <SidebarTabs
+        active="files"
+        onSelect={() => {}}
+        sessions={<span />}
+        files={<span />}
+        capability={<span />}
+        capabilityCount={3}
+      />
+    ))
+
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力 3"])
+  })
+
   test("← / → 把焦点与选中一起移到另一个 tab（本 task 的「外壳自己的键盘」）", () => {
     const { host, 喊过 } = 挂("files")
     tab(host, "files")?.focus()
@@ -177,12 +207,28 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(document.activeElement === tab(host, "session")).toBe(true)
   })
 
-  test("← 与 → 都能切（只有两个 tab，两个方向等价但不该有一个是死的）", () => {
-    const { host, 喊过 } = 挂("files")
-
-    敲(tab(host, "files"), "ArrowRight")
-
-    expect(喊过).toEqual(["session"])
+  /**
+   * ← → 走**索引环绕**：会话 → 文件 → 能力 → 会话。
+   *
+   * ⚠️ 这条**取代**了「两个 tab 时两个方向都等价」那版：三个 tab 之后 `→` 与 `←` 在中间位置
+   * 落点不同，再按「都是另一个」写断言会红得像产品坏，而事实是设计变了。
+   */
+  test("← / → 走索引环绕：文件→能力（右）、文件→会话（左）、会话→能力（左，环绕）", () => {
+    {
+      const { host, 喊过 } = 挂("files")
+      敲(tab(host, "files"), "ArrowRight")
+      expect(喊过).toEqual(["capability"])
+    }
+    {
+      const { host, 喊过 } = 挂("files")
+      敲(tab(host, "files"), "ArrowLeft")
+      expect(喊过).toEqual(["session"])
+    }
+    {
+      const { host, 喊过 } = 挂("session")
+      敲(tab(host, "session"), "ArrowLeft")
+      expect(喊过).toEqual(["capability"])
+    }
   })
 
   test("别的键不管事——不把 ↑↓ 顺手吃掉（↑↓ 是树里的，归 T007 的挂账）", () => {
@@ -226,7 +272,7 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
   test("tab ↔ tabpanel 的 ARIA 关系接对了（aria-controls 指得到、aria-labelledby 回得来）", () => {
     const { host } = 挂("files")
 
-    for (const key of ["session", "files"] as const) {
+    for (const key of ["session", "files", "capability"] as const) {
       const 目标 = tab(host, key)?.getAttribute("aria-controls")
 
       expect(目标).toBeTruthy()
