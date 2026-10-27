@@ -131,6 +131,15 @@ interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   readonly root: string
   readonly store: Option.Option<InstanceStore.Interface>
+  /**
+   * 内核技能服务：**必须在层构造期取**，不能等到请求期再 `yield* Skill.Service`。
+   *
+   * `InstanceStore.provide()` 只往作用域里补 `InstanceRef`，**不补**实例服务：请求期的
+   * environment 里没有 `Skill.Service`（实测 `Service not found: @opencode/Skill`），
+   * 于是 `读内核清单` 每次都被 catch 折成「不知道」⇒ `skills` 键永远缺席、面板永远
+   * 说「暂时读不到」。这与上游 handler 的写法一致（服务在层构造期捕获，请求体只跑副作用）。
+   */
+  readonly skill: Option.Option<Skill.Interface>
 }
 
 export const routes = HttpRouter.use((router) =>
@@ -140,7 +149,9 @@ export const routes = HttpRouter.use((router) =>
     // 测试里可能没有内核实例层（只挂路由的子集）：缺席时丢弃缓存这一步跳过并告警，不静默
     // 假装做了（`#002-02`）。
     const store = yield* Effect.serviceOption(InstanceStore.Service)
-    const deps: Deps = { pg: openhivePg.pg, root: config.root, store }
+    // 同上：只挂路由子集的测试可能没有内核层；缺席时 `skills` 键整份缺席（「不知道」）。
+    const skill = yield* Effect.serviceOption(Skill.Service)
+    const deps: Deps = { pg: openhivePg.pg, root: config.root, store, skill }
 
     yield* router.add("GET", PATH.state, (request) => handleState(request, deps))
     yield* router.add("POST", PATH.enable, (request) => handleToggle(request, deps, "enable"))
@@ -241,23 +252,21 @@ export function 映射内核清单(
 /**
  * 在算好的项目目录上读内核技能清单（`Skill.Service.available()`）。
  *
- * `store` 缺席（只挂路由子集的测试）⇒ 返回 `undefined`：**不知道**，不谎报为空。
+ * `store` / `skill` 缺席（只挂路由子集的测试）⇒ 返回 `undefined`：**不知道**，不谎报为空。
  * 读失败同理——告警并返回 `undefined`，让前端说「暂时读不到」，而不是把每条技能标成没生效。
+ *
+ * ⚠️ `skill` 是层构造期捕获的（见 `Deps.skill`）：请求期取不到它。
  *
  * ⚠️ 必须在对账**之后**调（见 `对账并读` 末尾）。反过来的话，新成员第一次进项目时
  * 沙箱里还没有链接，全部技能都会被误报成「没生效」。
  */
 function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<string, string>) {
   const store = deps.store
-  if (Option.isNone(store)) return Effect.succeed<readonly 内核技能[] | undefined>(undefined)
+  const skill = deps.skill
+  if (Option.isNone(store) || Option.isNone(skill))
+    return Effect.succeed<readonly 内核技能[] | undefined>(undefined)
   return store.value
-    .provide(
-      { directory },
-      Effect.gen(function* () {
-        const skill = yield* Skill.Service
-        return yield* skill.available()
-      }),
-    )
+    .provide({ directory }, skill.value.available())
     .pipe(
       Effect.map((list) => 映射内核清单(list, directory, 标题)),
       Effect.catchCause((cause) =>
@@ -386,7 +395,12 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     const 最新 = 收回 > 0 ? yield* Effect.promise(() => enablementOf(deps.pg(), projectId)) : state
     // 顺序是设计的一部分：先对账（上面已做完）再读内核。反了会把「沙箱还没同步」
     // （新成员第一次进项目）误报成「已启用但没生效」。
-    const 内核 = yield* 读内核清单(deps, 目录, 标题)
+    //
+    // ⚠️ 对账失败（`结果 === undefined`）⇒ 清单传 `undefined`（键缺席），**不读**内核。
+    // 此刻目录还是旧状态：读出来的是一份「缺链接」的清单，前端会把每条已启用 skill 画成
+    // 「已启用但 AI 没加载到——停用后可在资产中心重新启用」，在一次临时文件系统故障上
+    // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
+    const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题)
     return 带内核清单({ ...最新, enabled: 可见 }, 内核)
   })
 }
