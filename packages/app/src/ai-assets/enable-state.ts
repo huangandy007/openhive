@@ -30,6 +30,14 @@ export interface ProjectEnablement {
   readonly busy: () => string | undefined
   /** 内核视角的技能清单；`undefined` = 还没读到（与「内核一条都没有」是两件事）。 */
   readonly skills: () => readonly 内核技能[] | undefined
+  /**
+   * 「这个项目的这次读到底了」（成功或失败都算）。
+   *
+   * 与 `skills()` 配着读才分得清两种 `undefined`：`readDone() === false` ⇒ **还在读**，
+   * `readDone() === true` ⇒ **读完了但没读到**（该给重试，而不是永远停在「正在读取…」）。
+   * 换项目 / 清空回 `false`。
+   */
+  readonly readDone: () => boolean
   readonly bind: (projectId: () => string | undefined) => void
   readonly toggle: (assetId: string) => void
   readonly reload: () => void
@@ -48,6 +56,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
   const [技能, set技能] = createSignal<readonly 内核技能[] | undefined>()
+  const [已读, set已读] = createSignal(false)
 
   let 代次 = 0
 
@@ -55,7 +64,12 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set集合(new Set(状态.enabled))
     set数量(状态.enabledCount)
     set上限(状态.limit)
-    set技能(状态.skills)
+    // ⚠️ **只在回包里真有 `skills` 键时**才覆盖（`解析状态` 已保证「不知道」= 键缺席）。
+    // 无条件 `set技能(状态.skills)` 会在两种真实路径上把好面板翻进「正在读取…」且再也出不来：
+    // ① GET 时后端读内核失败；② 面板好着时点「停用」，这次 toggle 的回包 200 但没有 `skills`
+    //（终审 I2）。同一项目内「这次没读到」保留上次已知，比清空有用（同「失败不清空」）。
+    if (状态.skills !== undefined) set技能(状态.skills)
+    set已读(true)
   }
 
   const 清空 = () => {
@@ -66,6 +80,8 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set错误(undefined)
     set忙(undefined)
     set技能(undefined)
+    // 换项目 ⇒ 新项目的读还没回来，不能替它说「读完了」（否则面板会先闪一次「读不到」）。
+    set已读(false)
   }
 
   /**
@@ -88,11 +104,14 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
           if (!保留错误) set错误(undefined)
           return
         }
+        // 失败分支也是「读到底了」：`readDone && skills === undefined` 才是「读不到、给重试」。
+        set已读(true)
         if (!保留错误) set错误(结果.message)
       })
       // 注入的 api 若 reject（真实 `createEnableApi` 全捕获、不抛），别留未处理拒绝 + 卡忙
       .catch(() => {
         if (本次 !== 代次) return
+        set已读(true)
         if (!保留错误) set错误("加载启用状态失败")
         set忙(undefined)
       })
@@ -169,6 +188,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     error: 错误,
     busy: 忙,
     skills: 技能,
+    readDone: 已读,
     bind,
     toggle,
     reload,

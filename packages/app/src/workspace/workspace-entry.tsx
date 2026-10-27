@@ -2037,6 +2037,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                       enabled={() => props.enablement?.enabled() ?? new Set<string>()}
                       enabledCount={() => props.enablement?.enabledCount() ?? 0}
                       skills={() => props.enablement?.skills()}
+                      // 没接线（`enablement` 缺席）时恒 `false` ⇒ 面板说「正在读取」，
+                      // 不替一个不存在的取数说「读不到，请重试」（`#002-02`）。
+                      readDone={() => props.enablement?.readDone() ?? false}
                       error={() => props.enablement?.error()}
                       busy={() => props.enablement?.busy()}
                       onToggle={(assetId) => props.enablement?.toggle(assetId)}

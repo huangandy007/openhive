@@ -35,6 +35,8 @@ function 面板(over: Partial<CapabilityPanelProps> = {}) {
       enabledCount={over.enabledCount ?? (() => 1)}
       skills={over.skills ?? (() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })])}
       error={over.error ?? (() => undefined)}
+      // 默认 `false`：本文件的夹具大多表达「还没读到」，那是「正在读取」的形状（I2）。
+      readDone={over.readDone ?? (() => false)}
       busy={over.busy ?? (() => undefined)}
       onToggle={over.onToggle ?? (() => {})}
       onRetry={over.onRetry ?? (() => {})}
@@ -228,6 +230,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabledCount={() => 启用().size}
         skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
         error={() => undefined}
+        readDone={() => false}
         busy={() => undefined}
         onToggle={() => {}}
         onRetry={() => {}}
@@ -262,6 +265,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabledCount={() => 启用().size}
         skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
         error={() => undefined}
+        readDone={() => false}
         busy={() => undefined}
         onToggle={() => {}}
         onRetry={() => {}}
@@ -287,6 +291,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabledCount={() => 0}
         skills={清单}
         error={() => undefined}
+        readDone={() => false}
         busy={() => undefined}
         onToggle={() => {}}
         onRetry={() => {}}
@@ -301,6 +306,48 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
     expect((host.textContent ?? "").includes("甲工具")).toBe(false)
   })
 
+  /**
+   * 读完了、但内核清单还是 `undefined` ⇒ **重试视图**，不是「正在读取…」（终审 I2）。
+   *
+   * 「正在读取…」没有任何 UI 出口（`reload()` 在面板上只有这个重试按钮）。读不到却永远
+   * 停在「正在读取」，用户除了重启应用没有别的路。
+   */
+  test("readDone 且 skills 仍是 undefined ⇒ 走重试视图，不写 0、不画组头/条目", () => {
+    const host = 面板({ skills: () => undefined, readDone: () => true, enabled: () => new Set(["a"]), enabledCount: () => 4 })
+    expect(有(host, "capability-unreadable")).toBe(true)
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(文(host, "capability-loading")).not.toContain("正在读取")
+    expect(有(host, "capability-group-skill")).toBe(false)
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect((host.textContent ?? "").includes("0 个")).toBe(false)
+    // I2 第 4 点：这一态下「其中 N 个不在你的授权范围」不可能出现——
+    // 它要把 `enabledCount ?? 0` 与空集合相减，凭空造出一个「权威的 0」。
+    expect(有(host, "capability-out-of-scope")).toBe(false)
+  })
+
+  test("readDone 从 false 变 true（读完了但没读到）⇒ 同一个面板从「正在读取」换成重试", () => {
+    const [读完, 设读完] = createSignal(false)
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={() => new Set<string>()}
+        enabledCount={() => 0}
+        skills={() => undefined}
+        error={() => undefined}
+        readDone={读完}
+        busy={() => undefined}
+        onToggle={() => {}}
+        onRetry={() => {}}
+      />
+    ))
+    expect(有(host, "capability-loading")).toBe(true)
+
+    设读完(true)
+
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(有(host, "capability-loading")).toBe(false)
+  })
+
   test("skills 从数组变 undefined（换了项目、新回包还没到）⇒ 回到「正在读取」，旧条目一个不剩", () => {
     const [清单, 设清单] = createSignal<readonly 内核技能[] | undefined>([技能({ name: "甲工具" })])
     const host = mount(() => (
@@ -310,6 +357,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabledCount={() => 0}
         skills={清单}
         error={() => undefined}
+        readDone={() => false}
         busy={() => undefined}
         onToggle={() => {}}
         onRetry={() => {}}

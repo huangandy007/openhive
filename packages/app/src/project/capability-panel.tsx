@@ -42,6 +42,14 @@ export interface CapabilityPanelProps {
   /** 项目真相（含我看不见的）。与 `enabled().size` 不等时补一行说明（设计 §6）。 */
   readonly enabledCount: () => number
   readonly skills: () => readonly 内核技能[] | undefined
+  /**
+   * 「这个项目的这次读到底了」（成功或失败都算）。
+   *
+   * 只靠 `skills()` 的 `undefined` 分不清「还在读」与「读完了但读不到」：前者该说「正在读取…」，
+   * 后者必须给重试——否则面板会永远停在「正在读取」，而 `reload()` 在面板上没有第二个入口
+   * （终审 I2）。
+   */
+  readonly readDone: () => boolean
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
   readonly onToggle: (assetId: string) => void
@@ -201,11 +209,15 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           照画会把每条已装技能误判成 ③「本项目自带」，组头还会写 `· 0 个`。
         */}
         {/* 判据是 `!== undefined`，不是真值：`error()` 为空串也是「有错」（设计口径），
-            用真值会让 `""` 落回 fallback——旧 skills 还在时 §8 违规复活。 */}
+            用真值会让 `""` 落回 fallback——旧 skills 还在时 §8 违规复活。
+
+            「读完了但没读到」也走这一块（终审 I2）：`readDone()` 为真而 `条目()` 仍缺席，
+            说明这次读有结论了——结论是「不知道」。停在「正在读取…」是没有出口的，
+            面板上唯一能拨重试的地方就是下面这颗钮。 */}
         <Show
-          when={props.error() !== undefined}
+          when={props.error() !== undefined || (props.readDone() && 条目() === undefined)}
           fallback={
-            // 从没读到 / 换过项目：一行「正在读取」，不画组头、计数、条目、重试。
+            // 从没读到 / 换过项目 / 正在读：一行「正在读取」，不画组头、计数、条目、重试。
             <Show
               when={条目()}
               fallback={
@@ -222,9 +234,11 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
         >
           {/* 不用 children 回调：`when` 现在是布尔，回调拿到的是 `true` 而不是那句人话。 */}
           <div data-slot="capability-unreadable" class="px-2 py-2 text-[12px] text-v2-text-text-muted">
-            <p data-slot="capability-error" class="text-v2-state-fg-danger">
-              {props.error()}
-            </p>
+            <Show when={props.error() !== undefined}>
+              <p data-slot="capability-error" class="text-v2-state-fg-danger">
+                {props.error()}
+              </p>
+            </Show>
             <p>
               暂时读不到这个项目的技能。
               <button type="button" data-slot="capability-retry" class={小钮} onClick={() => props.onRetry()}>

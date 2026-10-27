@@ -453,3 +453,88 @@ test("skills：随回包暴露；换项目先复位为 undefined，空数组不�
     dispose()
   })
 })
+
+/**
+ * 终审 I2：回包**没有 `skills` 键**（＝「这次没读到」）时，不许拿它覆盖上一次已知。
+ *
+ * 两条真实路径都走这一条：① GET 时 `读内核清单` 失败；② 面板好着时点「停用」，这次 toggle
+ * 回包 200 但没有 `skills`。旧代码无条件 `set技能(状态.skills)` ⇒ 把好面板翻进「正在读取…」，
+ * 而且 reload 没有 UI 入口，永远出不来。
+ */
+test("回包没有 skills 键 ⇒ 保留上次读到的清单，不被 undefined 覆盖", async () => {
+  const 清单 = [{ name: "资金分析", location: "/w/u/p1/.opencode/skill/a/SKILL.md", assetId: "a" }]
+  const { api } = 假api({
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, skills: 清单 } }],
+    // 停用：回 200，但这次后端没读到内核（键缺席）。
+    "disable:a": [{ kind: "ok", value: 空 }],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.skills()?.length).toBe(1)
+
+    状态.toggle("a")
+    await new Promise((r) => setTimeout(r, 0))
+
+    // 计数以这次回包为准（服务端权威），清单留着上次已知的那份。
+    expect([...状态.enabled()]).toEqual([])
+    expect(状态.skills()?.length).toBe(1)
+    dispose()
+  })
+})
+
+/**
+ * `readDone`：「这次读到底了」（成功或失败）。读不到且已读完 ⇒ 面板给重试，
+ * 而不是永远停在「正在读取…」——后者的 UI 里没有任何出口。
+ */
+test("readDone：读成功置 true；失败分支（回包错 / api reject）也置 true；换项目与清空回 false", async () => {
+  const { api } = 假api({
+    "read:p1": [{ kind: "ok", value: { ...空, skills: [] } }],
+  })
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>(undefined)
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    expect(状态.readDone()).toBe(false)
+
+    设项目("p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.readDone()).toBe(true)
+
+    // 换项目 ⇒ 复位：新项目的读还没回来时，不能说「读完了」
+    设项目("p2")
+    expect(状态.readDone()).toBe(false)
+    await new Promise((r) => setTimeout(r, 0))
+    dispose()
+  })
+})
+
+test("readDone：回包是 error 也置 true（读完 ≠ 读成功）", async () => {
+  const { api } = 假api({ "read:p1": [{ kind: "error", message: "炸了" }] })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("炸了")
+    expect(状态.readDone()).toBe(true)
+    dispose()
+  })
+})
+
+test("readDone：api reject 也置 true", async () => {
+  const api: EnableApi = {
+    read: async () => {
+      throw new Error("boom")
+    },
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.readDone()).toBe(true)
+    dispose()
+  })
+})

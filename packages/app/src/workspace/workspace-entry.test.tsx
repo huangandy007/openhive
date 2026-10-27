@@ -1808,6 +1808,10 @@ describe("项目数据接线（T018 出参）", () => {
     enabledCount?: number
     skills?: readonly 内核技能[]
     error?: string
+    /** 默认按「清单到了就算读完了」：本组夹具里 `skills` 有值都表示一次成功的读。 */
+    readDone?: boolean
+    toggle?: (assetId: string) => void
+    reload?: () => void
   } = {}): ProjectEnablement {
     const 集合 = new Set(选项.enabled ?? [])
     return {
@@ -1818,9 +1822,10 @@ describe("项目数据接线（T018 出参）", () => {
       error: () => 选项.error,
       busy: () => undefined,
       skills: () => 选项.skills,
+      readDone: () => 选项.readDone ?? 选项.skills !== undefined,
       bind: () => {},
-      toggle: () => {},
-      reload: () => {},
+      toggle: (assetId) => 选项.toggle?.(assetId),
+      reload: () => 选项.reload?.(),
     }
   }
 
@@ -1940,6 +1945,21 @@ describe("项目数据接线（T018 出参）", () => {
     expect(Boolean(能力页)).toBe(true)
     expect(Boolean(能力页?.querySelector("[data-slot='capability-retry']"))).toBe(true)
     expect(能力页?.querySelectorAll("[data-slot='capability-group-skill']").length).toBe(0)
+  })
+
+  /**
+   * `readDone()` 这条缝同样要真的落到面板上（终审 I2）。
+   *
+   * 接成恒 `false`（或干脆不接）⇒「读完了但没读到」永远画成「正在读取…」，重试钮永不出现，
+   * 而其余用例全绿——它们的 `skills` 都有值，走不到这一态。
+   */
+  test("「能力」pane：readDone() 为真而 skills 仍缺席 ⇒ 重试视图（不是「正在读取…」）", () => {
+    const host = mount(() => <WorkspaceEntry enablement={假启用({ readDone: true })}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    expect(Boolean(能力页?.querySelector("[data-slot='capability-retry']"))).toBe(true)
+    expect(能力页?.textContent ?? "").not.toContain("正在读取")
   })
 
   /**
