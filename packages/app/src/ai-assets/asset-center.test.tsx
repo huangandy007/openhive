@@ -290,16 +290,20 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       const 按钮 = host.querySelector<HTMLButtonElement>('[data-slot="asset-card-enable"]')!
       expect(按钮.disabled).toBe(true)
       expect(按钮.title).toContain("选择项目")
+      // 没项目时整条计数都不该出现（布尔断言，避开 `#009-01`）
+      expect(host.querySelector('[data-slot="asset-enable-count"]') === null).toBe(true)
     } finally {
       卸()
     }
   })
 
-  test("有项目：顶部显示「已启用 1/20」，卡片按集合标已启用", async () => {
-    const 假 = 假启用({ projectId: () => "p1", enabled: () => new Set(["a1"]), enabledCount: () => 1, limit: () => 20 })
+  test("有项目：顶部显示「已启用 3/20」，卡片按集合标已启用", async () => {
+    // ⚠️ `enabledCount` 故意与 `enabled().size` 不等（3 vs 1）：相等的话把计数行换成 `enabled().size`
+    // 也全绿，「一律用 enabledCount」就没被钉住（`#005-18` 默认值满足断言）。
+    const 假 = 假启用({ projectId: () => "p1", enabled: () => new Set(["a1"]), enabledCount: () => 3, limit: () => 20 })
     const { host, 卸 } = 挂中栏({ enablement: 假 })
     try {
-      expect(host.querySelector('[data-slot="asset-enable-count"]')!.textContent).toContain("已启用 1/20")
+      expect(host.querySelector('[data-slot="asset-enable-count"]')!.textContent).toContain("已启用 3/20")
       expect(host.querySelector('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!.getAttribute("aria-pressed")).toBe(
         "true",
       )
@@ -323,6 +327,20 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       // ⚠️ 达上限时**已启用**的那张必须仍可点「停用」，否则 20/20 时用户一个也停不掉（2026-10-27 实现者提出的坑）
       const 已启用的 = host.querySelector<HTMLButtonElement>('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!
       expect(已启用的.disabled).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("busy 只禁那一张：busyId 对得上才转忙", async () => {
+    const 假 = 假启用({ projectId: () => "p1", busy: () => "a2" })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 别的 = host.querySelector<HTMLButtonElement>('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!
+      const 忙的 = host.querySelector<HTMLButtonElement>('[data-asset-id="a2"] [data-slot="asset-card-enable"]')!
+      expect(别的.disabled).toBe(false)
+      expect(忙的.disabled).toBe(true)
+      expect(忙的.title).toContain("正在切换")
     } finally {
       卸()
     }

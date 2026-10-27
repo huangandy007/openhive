@@ -166,10 +166,8 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
           )}
         </Show>
         {/*
-          ⚠️ 这里**逐个传**、而不是 brief 里那种条件展开：Solid 的组件 props 是 getter，写法上
-          直传能让 `busyId` / `enableHintOf` 跟着信号变（上限满了、切换回包了，按钮当场跟上）；
-          条件展开里的表达式只在建元素那一刻求一次值，之后就不跟了。
-          `onToggleEnabled` 省略 ⇒ 网格不渲染启用按钮（`AssetGrid` 只认这一个开关）。
+          这里逐个传，比条件展开直白；`onToggleEnabled` 省略 ⇒ 网格不渲染启用按钮
+          （`AssetGrid` 只认这一个开关）。
         */}
         <AssetGrid
           assets={props.catalog?.assets}
