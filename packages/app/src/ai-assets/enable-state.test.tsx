@@ -374,9 +374,11 @@ test("reload 撞在飞的 toggle：旧回包不回写，busy 被收掉", async (
     expect([...状态.enabled()]).toEqual(["a"])
     expect(状态.busy()).toBeUndefined()
 
-    待到[2]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }) // reload 的回包
+    // reload 的回包故意与旧值不同：否则「回包被应用」这件事钉不住（回包前后都是 `["a"]`，`#005-47`）
+    待到[2]({ kind: "ok", value: { enabled: ["b"], enabledCount: 2, limit: 20 } })
     await new Promise((r) => setTimeout(r, 0))
-    expect([...状态.enabled()]).toEqual(["a"])
+    expect([...状态.enabled()]).toEqual(["b"])
+    expect(状态.enabledCount()).toBe(2)
     expect(状态.busy()).toBeUndefined()
     dispose()
   })
