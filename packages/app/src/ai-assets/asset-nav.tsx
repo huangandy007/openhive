@@ -94,6 +94,21 @@ export function AssetNav(props: AssetNavProps): JSX.Element {
         展开态下**不渲染任何资产行**——它只表示「中栏当前看的是这一类」。
       */}
       <nav aria-label="业务分类" data-slot="asset-category-list" class="flex flex-col gap-0.5">
+        {/*
+          「全部」在最上面（需求 1，2026-10-27）：不按分类收窄。它**恒在**——包括分类还没拉回来、
+          拉失败的时候，否则用户连「取消分类筛选」都点不到。
+          占位 span 与真实分类的箭头同宽（16px），文字才对得齐。
+        */}
+        <button
+          type="button"
+          data-slot="asset-category-all"
+          aria-current={props.filter.category() === undefined ? "true" : "false"}
+          class={`flex w-full items-center gap-2 text-left ${导航项(props.filter.category() === undefined)}`}
+          onClick={() => props.filter.clearCategory()}
+        >
+          <span class="size-4 shrink-0" aria-hidden="true" />
+          <span class="min-w-0 truncate">全部</span>
+        </button>
         <For each={props.categories?.() ?? []}>
           {(category) => {
             const 展开 = () => props.filter.category() === category.id

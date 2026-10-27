@@ -59,6 +59,20 @@ describe("AI 资产筛选状态", () => {
     expect(filter.category()).toBeUndefined()
   })
 
+  test("「全部」：清掉已选分类，回到不筛（需求 1）", () => {
+    const filter = createAssetFilter()
+
+    filter.selectCategory("finance")
+    expect(filter.category()).toBe("finance")
+
+    filter.clearCategory()
+    expect(filter.category()).toBeUndefined()
+
+    // 已经「全部」时再点一次仍是「全部」（不是 toggle，不会反过来选中谁）。
+    filter.clearCategory()
+    expect(filter.category()).toBeUndefined()
+  })
+
   test("筛选状态不带分类行：本模块只留「选中了哪个 id」", async () => {
     const 模块 = await import("./filter")
     // 需求 4 的红线：前端不再持有分类清单。它一旦回来，「管理员改了用户看不见」就复发了。

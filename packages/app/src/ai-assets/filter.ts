@@ -31,6 +31,13 @@ export interface AssetFilter {
   readonly selectType: (type: AssetType) => void
   /** 单开手风琴：点同一项收起，点另一项换过去。 */
   readonly selectCategory: (id: string) => void
+  /**
+   * 回到「全部」（需求 1，2026-10-27）：不按分类收窄。
+   *
+   * 与 `selectCategory` 分开是有意的：那是开关（再点同一项也会回到全部），而左栏顶部的
+   * 「全部」必须在**任何**状态下都表示「不筛」——包括已经选着某一类的时候。
+   */
+  readonly clearCategory: () => void
 }
 
 /**
@@ -65,5 +72,6 @@ export function createAssetFilter(): AssetFilter {
       ),
     selectType: setType,
     selectCategory: (id) => setCategory((当前) => (当前 === id ? undefined : id)),
+    clearCategory: () => setCategory(undefined),
   }
 }

@@ -140,6 +140,29 @@ describe("AI 资产左栏导航", () => {
     expect(箭名(分类按钮[0])).toContain("chevron-down")
   })
 
+  test("顶部「全部」：默认选中；选了分类后让出；点它回到不筛（需求 1）", () => {
+    const filter = createAssetFilter()
+    const host = mount(filter)
+    const 全部 = host.querySelector<HTMLElement>("[data-slot='asset-category-all']")!
+    const 分类按钮 = 槽(host, "asset-category")
+
+    expect(全部.textContent?.trim()).toBe("全部")
+    // 一进来不筛分类 ⇒「全部」就是选中态。
+    expect(全部.getAttribute("aria-current")).toBe("true")
+
+    // 位置：排在所有真实分类之前（不是塞在中间或末尾）。
+    const 顺序 = [...host.querySelectorAll<HTMLElement>("[data-slot='asset-category-all'], [data-slot='asset-category']")]
+    expect(顺序[0]).toBe(全部)
+
+    分类按钮[1].click()
+    expect(filter.category()).toBe("intelligence")
+    expect(全部.getAttribute("aria-current")).toBe("false")
+
+    全部.click()
+    expect(filter.category()).toBeUndefined()
+    expect(全部.getAttribute("aria-current")).toBe("true")
+  })
+
   test("停用的分类服务端就不给了：访问器换成两项，左栏只剩两项（不缓存旧行）", () => {
     const [行, set行] = createSignal<readonly AssetCategoryRow[]>(分类)
     const host = document.createElement("div")
