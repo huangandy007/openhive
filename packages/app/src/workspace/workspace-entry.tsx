@@ -17,6 +17,7 @@ import { viewRegistry } from "@/center/views"
 import { 清空草稿 } from "@/center/views/richtext/draft-store"
 import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
+import { CapabilityPanel } from "@/project/capability-panel"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
 import { MemberPanel, type MemberEntry } from "@/project/member-panel"
@@ -2028,7 +2029,28 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   // ③ 会话 pane（2026-10-08）：与 `files` 同款注入——本组件不认识会话列表，
                   // 正如它不认识文件树。`?.()` 得到 `undefined` ＝ 调用方没接（pane 空着）。
                   sessions={props.sessions?.()}
-                  capability={<></>}
+                  // ③ 能力 pane（2026-10-27）：与另外两个 pane 同款注入。面板不认识
+                  // 「当前是哪个项目」也不认识取数——都从 `props.enablement` 与 `有项目()` 拿。
+                  capability={
+                    <CapabilityPanel
+                      hasProject={() => 有项目()}
+                      enabled={() => props.enablement?.enabled() ?? new Set<string>()}
+                      enabledCount={() => props.enablement?.enabledCount() ?? 0}
+                      skills={() => props.enablement?.skills()}
+                      error={() => props.enablement?.error()}
+                      busy={() => props.enablement?.busy()}
+                      onToggle={(assetId) => props.enablement?.toggle(assetId)}
+                      onRetry={() => props.enablement?.reload()}
+                    />
+                  }
+                  // `undefined` = 还没取到 ⇒ tab 上不写 0（`#002-02`）。
+                  // 用 `enabled().size` 而不是合并后的条数：两者按定义相等（设计 §6），
+                  // 而这里拿不到合并结果，也不该为此再算一遍。
+                  capabilityCount={
+                    props.enablement === undefined || props.enablement.skills() === undefined
+                      ? undefined
+                      : props.enablement.enabled().size
+                  }
                   files={
                     <>
                       {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项 ＋ Task 17 的备份 / 恢复

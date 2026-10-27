@@ -6,6 +6,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import type { AssetCategories } from "@/ai-assets/categories"
+import type { 内核技能 } from "@/ai-assets/enable-api"
 import type { ProjectEnablement } from "@/ai-assets/enable-state"
 import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { useProjectionModule } from "@/ai-session/projection-module"
@@ -912,13 +913,13 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
   })
 })
 
-const 侧栏tab = (host: HTMLElement, key: "session" | "files") =>
+const 侧栏tab = (host: HTMLElement, key: "session" | "files" | "capability") =>
   host.querySelector<HTMLButtonElement>(`[data-slot='sidebar-tab'][data-tab='${key}']`)
 const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-slot='minio-bar-open']")
 const 双树 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-component='dual-file-tree']")
 const 沙箱树 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-tree='sandbox']")
-const tabpane = (host: HTMLElement, key: "session" | "files") =>
+const tabpane = (host: HTMLElement, key: "session" | "files" | "capability") =>
   host.querySelector<HTMLElement>(`[role='tabpanel'][data-pane='${key}']`)
 /** 这个 pane 被藏起来了吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
 const 藏起来了 = (el: HTMLElement | null) => el !== null && el.hasAttribute("hidden")
@@ -1794,6 +1795,81 @@ describe("项目数据接线（T018 出参）", () => {
     await 冲一遍()
 
     expect(记.files).toEqual(["p1"])
+  })
+
+  /**
+   * 一条最小的 `ProjectEnablement` 替身——本组只读 `enabled` / `enabledCount` / `skills`。
+   *
+   * ⚠️ `skills` 留空**不是**「夹具忘了填」：`undefined` 是一个合法状态（从没读到 / 换过项目），
+   * 与 `[]`（明确一条都没有）是两件事，这一组分得开正是靠它（`#002-02`）。
+   */
+  function 假启用(选项: {
+    enabled?: readonly string[]
+    enabledCount?: number
+    skills?: readonly 内核技能[]
+  } = {}): ProjectEnablement {
+    const 集合 = new Set(选项.enabled ?? [])
+    return {
+      projectId: () => "p1",
+      enabled: () => 集合,
+      enabledCount: () => 选项.enabledCount ?? 集合.size,
+      limit: () => 20,
+      error: () => undefined,
+      busy: () => undefined,
+      skills: () => 选项.skills,
+      bind: () => {},
+      toggle: () => {},
+      reload: () => {},
+    }
+  }
+
+  /**
+   * Task 6：能力面板要**真的挂进左栏**。
+   *
+   * Task 4 的面板与 Task 5 的 tab 各有自己的组件测试，但「这两根线接上了没有」只有这一层
+   * 看得见——同 T019 立下的规矩：组件绿 ≠ 接线绿。判据落在 `[data-pane='capability']` 里找
+   * 技能组头，而不是断言 `SidebarTabs` 收到了某个 prop：prop 传对了、面板没渲染出来时，
+   * 前者仍然红，后者会假绿。
+   */
+  test("切到「能力」⇒ pane 里挂的是真面板（技能组头在），不是占位空片段", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [] })}>中栏</WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+
+    expect(藏起来了(tabpane(host, "capability"))).toBe(false)
+    const 技能组头 = tabpane(host, "capability")?.querySelector("[data-slot='capability-group-skill']")
+    // 断**布尔**，不拿节点去 `toBeTruthy`（`#009-01`：bun 会序列化被 Solid 渲染过的 DOM，
+    // 环形引用一路涨到十几 GB，看着像挂死）。
+    expect(Boolean(技能组头)).toBe(true)
+  })
+
+  test("读到清单且启用两个 ⇒ tab 上写「能力 2」，面板里两条也都加载到了", () => {
+    const 启用 = 假启用({
+      enabled: ["a", "b"],
+      enabledCount: 2,
+      skills: [
+        { name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" },
+        { name: "话单分析", assetId: "b", assetName: "话单分析", location: "/skills/话单分析" },
+      ],
+    })
+    const host = mount(() => <WorkspaceEntry enablement={启用}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    expect(侧栏tab(host, "capability")?.textContent).toBe("能力 2")
+    // 数字只是「库侧数了 2 个」；这半条才证明**清单也真的进了面板**（两条都 `loaded`）。
+    // 少了它，把面板的 `skills` 焊死成 `undefined` 时这条用例仍然绿——数字走的是另一条 prop。
+    expect(tabpane(host, "capability")?.querySelectorAll("[data-slot='capability-item-loaded']").length).toBe(2)
+  })
+
+  test("清单还没读到 ⇒ tab 只写「能力」，不把「不知道」画成「0」（启用集合非空也不行）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"] })}>中栏</WorkspaceEntry>
+    ))
+
+    expect(侧栏tab(host, "capability")?.textContent).toBe("能力")
   })
 
   /**
