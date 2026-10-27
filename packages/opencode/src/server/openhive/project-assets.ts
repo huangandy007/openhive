@@ -92,8 +92,10 @@ export const PATH = {
  * 内核视角的一条技能。
  *
  * **不含 `content`**：`Skill.Info.content` 是 SKILL.md 全文，进 HTTP 回包既浪费又是泄露面。
- * `assetId` / `assetName` 只在它确实是库里的一份资产时才有——「本项目自带」的那条两者皆无，
- * 前端据此分第三态（不能给它画「停用」）。
+ *
+ * `assetId` = `location` 倒数第二段目录名，本项目自带的技能同样有（就是它的目录名）；
+ * `assetName` 才是「库里确有这份资产」的标记——③「本项目自带」的条目只有 `assetId`，
+ * 没有 `assetName`。前端**不得**用 `assetId !== undefined` 判「是不是库里的」，只能比 `enabled`。
  */
 export interface 内核技能 {
   readonly name: string
@@ -202,6 +204,40 @@ function 目录名(location: string): string | undefined {
   return 段[段.length - 2]
 }
 
+/** `location` 是否落在本项目沙箱内。全局 / 内置技能一律落在外面，不该进「本项目自带」。 */
+export function 属于项目(location: string, 目录: string): boolean {
+  // 前缀比较忽略大小写：`项目目录()` 与内核 `location` 虽同源，win32 盘符大小写
+  // （`D:\` vs `d:\`）或 env 拼出的根可能不同形；不忽略就会把整个清单筛空 ⇒
+  // 前端把每条已启用技能都误标成「没生效」。
+  const 规整 = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  const 根 = 规整(目录)
+  const 文 = 规整(location)
+  // 带分隔符比较：`/w/u/p` 不能吞下 `/w/u/p2/...`。
+  return 文 === 根 || 文.startsWith(根 + "/")
+}
+
+/** 把内核返回的技能列表筛成「本项目内的」，并映射成回包形状。 */
+export function 映射内核清单(
+  列表: readonly { name: string; description?: string; location: string }[],
+  目录: string,
+  标题: ReadonlyMap<string, string>,
+): 内核技能[] {
+  return 列表
+    .filter((info) => 属于项目(info.location, 目录))
+    .map((info) => {
+      // 查表用原样的目录名（大小写敏感）：assetId 是库里的真实 id。
+      const id = 目录名(info.location)
+      const 名 = id === undefined ? undefined : 标题.get(id)
+      return {
+        name: info.name,
+        ...(info.description === undefined ? {} : { description: info.description }),
+        location: info.location,
+        ...(id === undefined ? {} : { assetId: id }),
+        ...(名 === undefined ? {} : { assetName: 名 }),
+      }
+    })
+}
+
 /**
  * 在算好的项目目录上读内核技能清单（`Skill.Service.available()`）。
  *
@@ -223,19 +259,7 @@ function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<stri
       }),
     )
     .pipe(
-      Effect.map((list) =>
-        list.map((info): 内核技能 => {
-          const id = 目录名(info.location)
-          const 名 = id === undefined ? undefined : 标题.get(id)
-          return {
-            name: info.name,
-            ...(info.description === undefined ? {} : { description: info.description }),
-            location: info.location,
-            ...(id === undefined ? {} : { assetId: id }),
-            ...(名 === undefined ? {} : { assetName: 名 }),
-          }
-        }),
-      ),
+      Effect.map((list) => 映射内核清单(list, directory, 标题)),
       Effect.catchCause((cause) =>
         Effect.logWarning("读内核技能清单失败，本次不回报（不谎报为空）", { directory, cause }).pipe(
           Effect.as<readonly 内核技能[] | undefined>(undefined),
