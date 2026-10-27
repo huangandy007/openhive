@@ -1963,6 +1963,67 @@ describe("项目数据接线（T018 出参）", () => {
   })
 
   /**
+   * 终审 I5：`onToggle` / `onRetry` / `enabledCount` 这三根线也要有钉子。
+   *
+   * 此前只钉了「面板挂进来了」与「正反两态的文案」——把 `onToggle` 接成空函数、
+   * `onRetry` 接成 `() => {}`、`enabledCount` 接成 `enabled().size`，全部仍然绿。
+   * 判据落在**面板喊出去的东西**上，不是「prop 传了没有」。
+   */
+  test("「能力」pane：点停用 ⇒ toggle 收到 assetId", () => {
+    const 收到: string[] = []
+    const host = mount(() => (
+      <WorkspaceEntry
+        enablement={假启用({
+          enabled: ["a"],
+          skills: [{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }],
+          toggle: (assetId) => 收到.push(assetId),
+        })}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+    tabpane(host, "capability")?.querySelector<HTMLButtonElement>("[data-slot='capability-disable']")?.click()
+
+    expect(收到).toEqual(["a"])
+  })
+
+  test("「能力」pane：失败态点重试 ⇒ reload 被调", () => {
+    let 次数 = 0
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [], error: "网络不通", reload: () => (次数 += 1) })}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+    tabpane(host, "capability")?.querySelector<HTMLButtonElement>("[data-slot='capability-retry']")?.click()
+
+    expect(次数).toBe(1)
+  })
+
+  test("「能力」pane：enabledCount 是项目真相（4/1）⇒ 出现「其中 3 个不在你的授权范围」", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        enablement={假启用({
+          enabled: ["a"],
+          enabledCount: 4,
+          skills: [{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }],
+        })}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 说明 = tabpane(host, "capability")?.querySelector("[data-slot='capability-out-of-scope']")
+    expect(说明?.textContent ?? "").toContain("项目共启用 4 个，其中 3 个不在你的授权范围")
+  })
+
+  /**
    * 进门那一次清单**迟到**时，不许把刚建好的新项目抹掉。
    *
    * 写这个缝的有**两个出口**（进门拉一次、建完重拉一次），这条测的是两者乱序。成因不是假想的：
