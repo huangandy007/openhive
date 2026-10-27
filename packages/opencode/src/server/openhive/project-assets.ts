@@ -71,6 +71,7 @@ import { User } from "@opencode-ai/core/user"
 import { InstanceStore } from "@/project/instance-store"
 import { ConfigMarkdown } from "@/config/markdown"
 import { AnchorWorkspace } from "@/server/routes/instance/httpapi/middleware/anchor-workspace"
+import { Skill } from "@/skill"
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -193,6 +194,56 @@ function 丢缓存(deps: Deps, directory: string) {
   )
 }
 
+/** 从内核技能的 location 里取最后一级目录名（= assetId，或用户自己的目录名）。 */
+function 目录名(location: string): string | undefined {
+  const 段 = location.split(/[\\/]/).filter((s) => s.length > 0)
+  // 期望形态：<沙箱>/.opencode/(skill|skills)/<名>/SKILL.md —— 取倒数第二段。
+  if (段.length < 2) return undefined
+  return 段[段.length - 2]
+}
+
+/**
+ * 在算好的项目目录上读内核技能清单（`Skill.Service.available()`）。
+ *
+ * `store` 缺席（只挂路由子集的测试）⇒ 返回 `undefined`：**不知道**，不谎报为空。
+ * 读失败同理——告警并返回 `undefined`，让前端说「暂时读不到」，而不是把每条技能标成没生效。
+ *
+ * ⚠️ 必须在对账**之后**调（见 `对账并读` 末尾）。反过来的话，新成员第一次进项目时
+ * 沙箱里还没有链接，全部技能都会被误报成「没生效」。
+ */
+function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<string, string>) {
+  const store = deps.store
+  if (Option.isNone(store)) return Effect.succeed<readonly 内核技能[] | undefined>(undefined)
+  return store.value
+    .provide(
+      { directory },
+      Effect.gen(function* () {
+        const skill = yield* Skill.Service
+        return yield* skill.available()
+      }),
+    )
+    .pipe(
+      Effect.map((list) =>
+        list.map((info): 内核技能 => {
+          const id = 目录名(info.location)
+          const 名 = id === undefined ? undefined : 标题.get(id)
+          return {
+            name: info.name,
+            ...(info.description === undefined ? {} : { description: info.description }),
+            location: info.location,
+            ...(id === undefined ? {} : { assetId: id }),
+            ...(名 === undefined ? {} : { assetName: 名 }),
+          }
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("读内核技能清单失败，本次不回报（不谎报为空）", { directory, cause }).pipe(
+          Effect.as<readonly 内核技能[] | undefined>(undefined),
+        ),
+      ),
+    )
+}
+
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */
 function 取部门(deps: Deps, userId: string) {
   return Effect.promise(async (): Promise<string> => {
@@ -246,6 +297,8 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // `canReadAsset()`，就会「列表看得见、送达/启用全无」——判据仍只有那一份。
     const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
     const 可见: string[] = []
+    /** 内核清单里的中文名来源：与 `可见` 同一批资产，不额外查库。 */
+    const 标题 = new Map<string, string>()
     let 收回 = 0
 
     const desired = new Map<string, string>()
@@ -286,6 +339,7 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       // 发布目录缺失时链接照样建不了（下面 `continue`），但前端仍要能把那份资产标成「已启用」，
       // 否则会出现「已占 1/20 但列表里一份都标不出来」——用户既看不见也点不掉。
       可见.push(assetId)
+      标题.set(assetId, asset.name)
       const target = skillLinkTarget(根, asset)
       if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
@@ -306,7 +360,10 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
     // 收回过行 ⇒ 配额已经变了，重读一次库（服务端权威），别把旧计数回给前端。
     const 最新 = 收回 > 0 ? yield* Effect.promise(() => enablementOf(deps.pg(), projectId)) : state
-    return { ...最新, enabled: 可见 }
+    // 顺序是设计的一部分：先对账（上面已做完）再读内核。反了会把「沙箱还没同步」
+    // （新成员第一次进项目）误报成「已启用但没生效」。
+    const 内核 = yield* 读内核清单(deps, 目录, 标题)
+    return 带内核清单({ ...最新, enabled: 可见 }, 内核)
   })
 }
 
