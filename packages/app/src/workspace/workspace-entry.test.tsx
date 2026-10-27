@@ -1798,7 +1798,7 @@ describe("项目数据接线（T018 出参）", () => {
   })
 
   /**
-   * 一条最小的 `ProjectEnablement` 替身——本组只读 `enabled` / `enabledCount` / `skills`。
+   * 一条最小的 `ProjectEnablement` 替身——本组只读 `enabled` / `enabledCount` / `skills` / `error`。
    *
    * ⚠️ `skills` 留空**不是**「夹具忘了填」：`undefined` 是一个合法状态（从没读到 / 换过项目），
    * 与 `[]`（明确一条都没有）是两件事，这一组分得开正是靠它（`#002-02`）。
@@ -1807,6 +1807,7 @@ describe("项目数据接线（T018 出参）", () => {
     enabled?: readonly string[]
     enabledCount?: number
     skills?: readonly 内核技能[]
+    error?: string
   } = {}): ProjectEnablement {
     const 集合 = new Set(选项.enabled ?? [])
     return {
@@ -1814,7 +1815,7 @@ describe("项目数据接线（T018 出参）", () => {
       enabled: () => 集合,
       enabledCount: () => 选项.enabledCount ?? 集合.size,
       limit: () => 20,
-      error: () => undefined,
+      error: () => 选项.error,
       busy: () => undefined,
       skills: () => 选项.skills,
       bind: () => {},
@@ -1839,7 +1840,6 @@ describe("项目数据接线（T018 出参）", () => {
 
     侧栏tab(host, "capability")?.click()
 
-    expect(藏起来了(tabpane(host, "capability"))).toBe(false)
     const 技能组头 = tabpane(host, "capability")?.querySelector("[data-slot='capability-group-skill']")
     // 断**布尔**，不拿节点去 `toBeTruthy`（`#009-01`：bun 会序列化被 Solid 渲染过的 DOM，
     // 环形引用一路涨到十几 GB，看着像挂死）。
@@ -1870,6 +1870,52 @@ describe("项目数据接线（T018 出参）", () => {
     ))
 
     expect(侧栏tab(host, "capability")?.textContent).toBe("能力")
+  })
+
+  /**
+   * `skills()` 的 `undefined` 必须**原样**穿到面板里（`#002-02`）。
+   *
+   * 这条钉的是接线缝上最省事的那种「改错仍全绿」：把 `skills={() => …?.skills()}`
+   * 写成 `… ?? []`，面板收到的就从「不知道」变成「明确没有」，于是 `正在读取…` 被换成
+   * 「这个项目还没有装任何技能。」——替后端回答了它还没回答的问题。
+   *
+   * 为什么前三条抓不到它：(c) 只断 tab 数字，而数字走的是 `capabilityCount` 另一条 prop；
+   * (a)(b) 用的都是 `skills` **有值**的状态。故判据只能落在 pane 的**文案**上。
+   * 两句都去 `capability-panel.tsx` 里抄，不自己编。
+   */
+  test("「能力」pane：skills() 为 undefined ⇒ 说「正在读取…」，不画成「这个项目还没有装任何技能」", () => {
+    // 启用集合留空是**有意的**：`?? []` 那种改法只在「库侧也空」时才会把它画成
+    // 「这个项目还没有装任何技能。」——正是这句要抓的形状（启用非空时它会画成另一句
+    // 「已启用但没加载到」，同样错、但不是本条钉的那个）。
+    const host = mount(() => <WorkspaceEntry enablement={假启用()}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 文本 = tabpane(host, "capability")?.textContent ?? ""
+    expect(文本).toContain("正在读取…")
+    expect(文本).not.toContain("这个项目还没有装任何技能")
+  })
+
+  /**
+   * `error()` 这条缝也必须真的落到面板上。
+   *
+   * 改错形态：接成恒 `undefined` ⇒ 面板永远走不到失败态（`capability-retry` 永不出现），
+   * 而其余用例全绿——它们的 `error()` 都是 `undefined`，看不出这条线断没断。
+   * 失败态按设计 §8 **整块只剩重试**，连技能组头都不该在（旧 `skills` 还在时照画会把
+   * 已装技能误判成「本项目自带」，见 `capability-panel.tsx` 里那段注释）。
+   */
+  test("「能力」pane：error() 有话说 ⇒ 失败态（重试钮在、技能组头不在）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [], error: "网络不通" })}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    // 前置：pane 本身在。少了它，下面「组头找不到」在 pane 不存在时也成立。
+    expect(Boolean(能力页)).toBe(true)
+    expect(Boolean(能力页?.querySelector("[data-slot='capability-retry']"))).toBe(true)
+    expect(能力页?.querySelectorAll("[data-slot='capability-group-skill']").length).toBe(0)
   })
 
   /**
