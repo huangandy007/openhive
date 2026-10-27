@@ -106,7 +106,7 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           disabled={props.busy === true || 提示() !== undefined}
           title={不可用()}
           onClick={() => props.onToggleEnabled?.(props.asset)}
-          class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-accent data-[enabled=true]:text-v2-text-text-accent"
+          class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-focus data-[enabled=true]:text-v2-text-text-accent"
         >
           {props.enabled === true ? "已启用" : "启用"}
         </button>
