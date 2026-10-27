@@ -144,6 +144,7 @@ import { OpenhiveGovernanceUsage } from "@/server/openhive/governance-usage"
 import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
+import { OpenhiveProjectAssets } from "@/server/openhive/project-assets"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
@@ -353,6 +354,15 @@ export function createRoutes(
       // SQL 文本会在 PGlite 夹具上撞 `42P05`（理由与取舍见 `@/server/openhive/pg` 文件头）。
       // `OpenhivePg.layer` 是**同一个模块级值**，三处 provide 同一对象 ⇒ 层记忆化只建一次。
       // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T015）。
+      Layer.provide(OpenhivePg.layer),
+    ),
+    // openhive 项目级 skill 启用出口（2026-10-27）：查 / 启用 / 停用。
+    // 启用 = 库里一行关系 ＋ 项目目录里一条链接；链接的落点由 `AnchorWorkspace.Config` 的
+    // 沙箱根算出（与建项目/归档同一个定义），关系行与成员判定读同一个业务 PG 客户端。
+    // `InstanceStore.Service` 由 `app` 组供上（不在本层 provide），路由体用 `serviceOption` 取。
+    // 【保留的定制 · 同步上游时不要丢】—— 项目级 skill 启用（2026-10-27）。
+    OpenhiveProjectAssets.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
       Layer.provide(OpenhivePg.layer),
     ),
     // openhive 归档出口（005 T013）：项目归档（上传 MinIO ＋ 删沙箱 ＋ 标记）。

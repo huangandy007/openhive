@@ -108,6 +108,8 @@ import {
   removeProjectArchive,
   removeProjectMeta,
 } from "@opencode-ai/auth/project-member"
+// 【保留的定制 · 同步上游时不要丢】项目级启用（2026-10-27）：删项目要清掉它的启用关系行。
+import { removeProjectEnablement } from "@opencode-ai/asset-service/enablement"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { Database } from "@opencode-ai/core/database/database"
 import { Global } from "@opencode-ai/core/global"
@@ -653,6 +655,9 @@ function handleDelete(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
         yield* Effect.promise(() => removeAllMembers(pg, { projectId }))
         yield* Effect.promise(() => removeProjectArchive(pg, { projectId }))
         yield* Effect.promise(() => removeProjectMeta(pg, { projectId }))
+        // 这张 PG 表没有外键指向项目（项目本体在每用户 SQLite）：漏了这一行就是永久孤儿，
+        // 而它还占着「每项目 20 个」的名额。同组第四个成员（`#002-06`）。
+        yield* Effect.promise(() => removeProjectEnablement(pg, { projectId }))
 
         return HttpServerResponse.jsonUnsafe({ projectId, deleted: true })
       }),

@@ -50,6 +50,9 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   "org.delete": "删除组织节点",
   "org.import": "从账号导入组织",
   "asset.transition": "资产流转",
+  // 【保留的定制 · 同步上游时不要丢】项目级启用（2026-10-27）
+  "asset.enable": "资产启用",
+  "asset.disable": "资产停用",
   "project.remove_member": "移除项目成员",
   "project.archive": "归档项目",
   "template.create": "新建模板",

@@ -66,6 +66,9 @@ export const AUDIT_ACTIONS = [
   "org.delete",
   "org.import",
   "asset.transition",
+  // 【保留的定制 · 同步上游时不要丢】项目级启用（2026-10-27）
+  "asset.enable",
+  "asset.disable",
   "project.remove_member",
   "project.archive",
   "template.create",
