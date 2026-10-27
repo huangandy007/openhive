@@ -119,6 +119,12 @@ const 迭代项目 = "proj_enable_iterating"
 const 归档项目 = "proj_enable_archived"
 const 限额项目 = "proj_enable_limit"
 const 审计项目 = "proj_enable_audit"
+/** 沙箱里的 `.opencode/skill` 被做成**普通文件** ⇒ 对账的 `mkdir` 必抛（终审 I3 的夹具）。 */
+const 对账失败项目 = "proj_enable_reconcile_broken"
+/** 设计 §12 三条后端用例的专用项目（自带一条手写技能，启用/停用不干扰其它用例）。 */
+const 能力项目 = "proj_enable_capability"
+/** 手写在项目沙箱里的技能目录名（内核按目录名给出 `assetId`，库里没有这份资产）。 */
+const 手写技能 = "我的工具"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
@@ -196,9 +202,16 @@ beforeAll(async () => {
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
-  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目]) {
+  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目, 对账失败项目, 能力项目]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
   }
+
+  // I3 的夹具：把 `<项目>/.opencode/skill` 做成一个**普通文件**。对账第一步就是
+  // `mkdir(<项目>/.opencode/skill, { recursive: true })` ⇒ 必然抛（EEXIST / ENOTDIR），
+  // 正好落在 `对账并读` 那条 catchCause 上；而内核扫描那边只是「一个目录都没有」，读得成功。
+  const 坏目录 = join(projectDirectory(沙箱根, 我.id, 对账失败项目), ".opencode")
+  mkdirSync(坏目录, { recursive: true })
+  writeFileSync(join(坏目录, "skill"), "不是目录\n", "utf8")
 
   // 已发布 / 全局 ⇒ 可启用。
   await insertAsset(pg.db, 资产({ id: 已发布资产, name: "资金分析", status: "published", visibility: "global" }))
@@ -314,6 +327,12 @@ beforeAll(async () => {
   const 审计目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 审计资产)
   mkdirSync(审计目标, { recursive: true })
   writeFileSync(join(审计目标, "SKILL.md"), "---\nname: 审计停用\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  // 设计 §12 ②：**手写**在项目目录里的技能（不是从库里链进来的）。
+  // 它与「库内技能」的唯一区别是：库里没有这份资产 ⇒ 回包只有 `assetId`、没有 `assetName`。
+  const 手写目录 = join(projectDirectory(沙箱根, 我.id, 能力项目), ".opencode", "skill", 手写技能)
+  mkdirSync(手写目录, { recursive: true })
+  writeFileSync(join(手写目录, "SKILL.md"), `---\nname: ${手写技能}\ndescription: 本项目手写\n---\n\n正文\n`, "utf8")
 })
 
 afterAll(async () => {
@@ -366,10 +385,25 @@ const json = <A>(schema: Schema.Codec<A>, response: Response) =>
     return Schema.decodeUnknownSync(schema)(JSON.parse(text))
   })
 
+/**
+ * 回包形状。
+ *
+ * ⚠️ `skills` 必须写进 Schema（终审 I1）：Effect Schema 默认**剥掉**未声明的字段，
+ * 缺了它「回包到底带没带 skills」在这条链上根本断言不到——把 `skills` 整个删掉也全绿。
+ * 形状与后端 `内核技能` 逐字对应；**可选**是因为「不知道」时整个键缺席（`#002-02`）。
+ */
+const 内核技能 = Schema.Struct({
+  name: Schema.String,
+  location: Schema.String,
+  description: Schema.optional(Schema.String),
+  assetId: Schema.optional(Schema.String),
+  assetName: Schema.optional(Schema.String),
+})
 const 状态 = Schema.Struct({
   enabled: Schema.Array(Schema.String),
   enabledCount: Schema.Number,
   limit: Schema.Number,
+  skills: Schema.optional(Schema.Array(内核技能)),
 })
 const 错误 = Schema.Struct({ error: Schema.String, code: Schema.optional(Schema.String) })
 
@@ -386,7 +420,11 @@ describe("项目级 skill 启用（真应用）", () => {
         // 被测属性在 `json()` 里：Content-Type 不是 application/json 就当场红。
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [], enabledCount: 0, limit: 20 })
+        // 逐字段断，不整份 `toEqual`：`skills` 在不在是 §12 的另一条判据（I1），
+        // 把两件事揉进一个 `toEqual` 里，任何一边变化都会把另一边带红。
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+        expect(body.limit).toBe(20)
       }),
     30_000,
   )
@@ -398,7 +436,9 @@ describe("项目级 skill 启用（真应用）", () => {
         const response = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 已发布资产 })
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [已发布资产], enabledCount: 1, limit: 20 })
+        expect(body.enabled).toEqual([已发布资产])
+        expect(body.enabledCount).toBe(1)
+        expect(body.limit).toBe(20)
 
         // oracle 不经过被测对象：裸 SQL 读库。
         const rows = rowsOf(
@@ -451,7 +491,9 @@ describe("项目级 skill 启用（真应用）", () => {
         const response = yield* post(我, DISABLE, { projectId: 我的项目, assetId: 已发布资产 })
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [], enabledCount: 0, limit: 20 })
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+        expect(body.limit).toBe(20)
 
         const 剩余 = rowsOf(
           yield* Effect.promise(() =>
@@ -713,7 +755,14 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(body.enabled).not.toContain(他部门同名资产)
         expect(body.enabledCount).toBe(2)
         // 改前这里是一条 409，error 文案里带着「同名研判」——正好把无权读者的资产名回显了。
-        expect(文本).not.toContain(同名研判)
+        // ⚠️ 判据不能用「整份文本不含 同名研判」：两份同名 skill 共用这个 frontmatter 名，
+        // 我读得到的那份**本来就会**出现在 `skills` 里（`name` 取自 SKILL.md）。真正要守的是
+        // 「读不到的那份一个标识都不许回显」——按它独有的标识断：id（`enabled` 上一行已断）
+        // 与清单里**不能有它的 assetId**。
+        const ids = (body.skills ?? []).map((skill) => skill.assetId)
+        expect(ids.includes(可读同名资产)).toBe(true)
+        expect(ids.includes(他部门同名资产)).toBe(false)
+        expect(文本).not.toContain(他部门同名资产)
 
         // 收尾：停用我启用的那份、删掉夹具行。
         expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 可读同名资产 })).status).toBe(200)
@@ -847,6 +896,109 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(审计).toEqual([
           { action: "asset.disable", board: "asset-governance", target_id: 审计资产, result: "ok" },
         ])
+      }),
+    30_000,
+  )
+
+  /**
+   * 终审 I3：对账失败不许把「没同步」卖成「没生效」。
+   *
+   * 对账抛错时目录还是旧的（缺链接），这时照常读内核会拿到一份「缺链接」的清单 ⇒ 前端把
+   * 每条已启用 skill 画成 ②「快捷方式可能丢了，停用后可在资产中心重新启用」——在一次临时
+   * 文件系统故障上引导用户做破坏性操作。正确口径：清单传 `undefined`（键缺席），
+   * 前端说「暂时读不到 + 重试」。
+   *
+   * ⚠️ 判据只能是「`skills` 这个键在不在」，不能断 `skills: []`：后者恰好就是修复前
+   * 那份谎报（空数组 = 内核一条都没看见 = 每条都已失效）。
+   */
+  it.live(
+    "对账失败 ⇒ 回包不带 skills 键（不放出一份「缺链接」的清单去劝人停用）",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* as(我, `${STATE}?projectId=${对账失败项目}`)
+        expect(response.status).toBe(200)
+        expect(response.headers.get("content-type") ?? "").toContain("application/json")
+        const 原文 = JSON.parse(yield* Effect.promise(() => response.text())) as Record<string, unknown>
+        // 前置：这个项目本身读得通（否则「没 skills」在 500 上也成立）。
+        expect(Array.isArray(原文["enabled"])).toBe(true)
+        expect(原文["enabledCount"]).toBe(0)
+        // 被测属性：键整个缺席（不知道），不是 `[]`（明确没有）。
+        expect(Object.prototype.hasOwnProperty.call(原文, "skills")).toBe(false)
+      }),
+    30_000,
+  )
+
+  /**
+   * 设计 §12 ①：「启用 → 内核真的读到了」这条接线。
+   *
+   * 这条以前没有任何用例守着（回包 Schema 里连 `skills` 都没声明）——
+   * `Skill.Service` 在请求期拿不到、`读内核清单` 一直静默回 `undefined`，全绿。
+   * 判据必须落在**回包内容**上：`assetId` 来自链接目录名、`assetName` 来自库里的标题、
+   * `location` 必须落在该项目的沙箱目录下（否则会被 `属于项目()` 筛掉，说明扫描根不对）。
+   */
+  it.live(
+    "设计 §12 ①：启用后 GET 的 skills 带 assetId / assetName / 项目沙箱里的 location",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${能力项目}`))
+        expect(body.enabled).toEqual([已发布资产])
+        // `skills` 整个缺席 = 这次没读到内核（`#002-02` 的「不知道」）——本用例要的是读到了。
+        expect(body.skills === undefined).toBe(false)
+        const 条 = (body.skills ?? []).find((skill) => skill.assetId === 已发布资产)
+        expect(条 === undefined).toBe(false)
+        // 名字两处来源不同：`name` 是 SKILL.md frontmatter，`assetName` 是库里的资产标题。
+        expect(条!.name).toBe("资金分析")
+        expect(条!.assetName).toBe("资金分析")
+
+        const 目录 = projectDirectory(沙箱根, 我.id, 能力项目)
+        const 规整 = (value: string) => value.replace(/\\/g, "/").toLowerCase()
+        const location = 规整(条!.location)
+        // 落在项目沙箱内（`属于项目()` 能通过的前提），且就是那条链接的落点。
+        expect(location.startsWith(`${规整(目录)}/`)).toBe(true)
+        expect(location.endsWith(`/.opencode/skill/${已发布资产}/skill.md`)).toBe(true)
+      }),
+    30_000,
+  )
+
+  /**
+   * 设计 §12 ②：**手写**的 `SKILL.md` 也在清单里，但它只有 `assetId`、没有 `assetName`。
+   *
+   * `assetId` 对自带技能同样有（就是它的目录名）⇒ 前端**不得**用 `assetId !== undefined`
+   * 判「是不是库里的」，只能比 `enabled`；`assetName` 才是库内标记。
+   */
+  it.live(
+    "设计 §12 ②：手写的 SKILL.md ⇒ 有 assetId、没有 assetName",
+    () =>
+      Effect.gen(function* () {
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${能力项目}`))
+        expect(body.skills === undefined).toBe(false)
+        const 条 = (body.skills ?? []).find((skill) => skill.assetId === 手写技能)
+        expect(条 === undefined).toBe(false)
+        expect(条!.name).toBe(手写技能)
+        expect(Object.prototype.hasOwnProperty.call(条, "assetName")).toBe(false)
+      }),
+    30_000,
+  )
+
+  /**
+   * 设计 §12 ③：停用后该条从 `skills` 消失——**清单还在**（手写那条还在），
+   * 不是用「空数组 / 键缺席」冒充的。
+   */
+  it.live(
+    "设计 §12 ③：停用后那条技能从 skills 消失，手写的那条还在",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, DISABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${能力项目}`))
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+        expect(body.skills === undefined).toBe(false)
+        const ids = (body.skills ?? []).map((skill) => skill.assetId)
+        expect(ids.includes(已发布资产)).toBe(false)
+        expect(ids.includes(手写技能)).toBe(true)
       }),
     30_000,
   )
