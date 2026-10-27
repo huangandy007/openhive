@@ -68,7 +68,8 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     set展开(组 === 展开() ? "skill" : 组)
   }
 
-  const 组头 = (组: 能力组, 贴底: boolean) => (
+  // `清单` 只从「已经数过」的分支传进来——这个函数不负责分辨「不知道」与 0（`#002-02`）。
+  const 组头 = (组: 能力组, 贴底: boolean, 清单: readonly 能力条目[]) => (
     <button
       type="button"
       data-slot={槽名[组]}
@@ -78,13 +79,10 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     >
       <span aria-hidden="true">◆</span>
       <span class="font-semibold">{组名[组]}</span>
-      {/* 数字只在**真的数过**时出现：`undefined` 是「还没读到内核清单」，不是 0 个。 */}
-      <Show when={组 === "skill" ? 条目() : undefined}>
-        {(条) => (
-          <span data-slot="capability-count-skill" class="text-v2-text-text-muted">
-            · {计数(条())} 个
-          </span>
-        )}
+      <Show when={组 === "skill"}>
+        <span data-slot="capability-count-skill" class="text-v2-text-text-muted">
+          · {计数(清单)} 个
+        </span>
       </Show>
       <Show when={组 === "mcp"}>
         <span data-slot="capability-count-mcp" class="text-v2-text-text-muted">
@@ -144,6 +142,44 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   // ③ 自带条目**没有**操作按钮：它不是装来的，点了等于删用户的文件（设计 §4）。
   const 一条 = (条: 能力条目) => (条.kind === "local" ? 自带(条) : 库内(条))
 
+  // 只有「真的数过」才进得来：`清单` 一定是有值的数组，组头/条目/计数才允许出现。
+  const 手风琴 = (清单: readonly 能力条目[]) => (
+    <>
+      <For each={前面()}>{(组) => 组头(组, false, 清单)}</For>
+      {组头(展开(), false, 清单)}
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-1 py-1">
+        <Show when={展开() === "skill"}>
+          <Show when={数不到() > 0}>
+            <p data-slot="capability-out-of-scope" class="px-1 pb-1 text-[11px] text-v2-text-text-muted">
+              项目共启用 {props.enabledCount()} 个，其中 {数不到()} 个不在你的授权范围。
+            </p>
+          </Show>
+          <Show
+            when={清单.length > 0}
+            fallback={<p class="px-1 py-2 text-[12px] text-v2-text-text-muted">这个项目还没有装任何技能。</p>}
+          >
+            <div class="flex flex-col gap-1.5">
+              <For each={清单}>{(条) => 一条(条)}</For>
+            </div>
+          </Show>
+        </Show>
+
+        <Show when={展开() === "knowledge"}>
+          <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">知识库还没有接入，接入后会出现在这里。</p>
+        </Show>
+
+        <Show when={展开() === "mcp"}>
+          <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">
+            这个项目还没有连任何 MCP。MCP 要由管理员在治理后台登记、授权给你，才会出现在这里。
+          </p>
+        </Show>
+      </div>
+
+      <For each={后面()}>{(组) => 组头(组, true, 清单)}</For>
+    </>
+  )
+
   return (
     <div data-component="capability-panel" class="flex min-h-0 w-full flex-1 flex-col">
       <Show
@@ -154,62 +190,41 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           </p>
         }
       >
-        <Show when={props.error()}>
-          {(说) => (
-            <div data-slot="capability-error" class="px-2 py-1 text-[12px] text-v2-state-fg-danger">
-              {说()}
-            </div>
-          )}
-        </Show>
-
-        <For each={前面()}>{(组) => 组头(组, false)}</For>
-        {组头(展开(), false)}
-
-        <div class="min-h-0 flex-1 overflow-y-auto px-1 py-1">
-          <Show when={展开() === "skill"}>
+        {/*
+          失败 ⇒ 整块只剩重试（设计 §8）。**旧数据也必须一起藏掉**：`error` 有值时
+          `skills()` 可能还留着上次成功的值，而库侧这次没读到——三态判断不成立，
+          照画会把每条已装技能误判成 ③「本项目自带」，组头还会写 `· 0 个`。
+        */}
+        <Show
+          when={props.error()}
+          fallback={
+            // 从没读到 / 换过项目：一行「正在读取」，不画组头、计数、条目、重试。
             <Show
               when={条目()}
               fallback={
-                <div data-slot="capability-unreadable" class="px-1 py-2 text-[12px] text-v2-text-text-muted">
-                  暂时读不到这个项目的技能。
-                  <button type="button" data-slot="capability-retry" class={小钮} onClick={() => props.onRetry()}>
-                    重试
-                  </button>
-                </div>
+                <p data-slot="capability-loading" class="px-2 py-3 text-[13px] text-v2-text-text-muted">
+                  正在读取…
+                </p>
               }
             >
-              {(清单) => (
-                <>
-                  <Show when={数不到() > 0}>
-                    <p data-slot="capability-out-of-scope" class="px-1 pb-1 text-[11px] text-v2-text-text-muted">
-                      项目共启用 {props.enabledCount()} 个，其中 {数不到()} 个不在你的授权范围。
-                    </p>
-                  </Show>
-                  <Show
-                    when={清单().length > 0}
-                    fallback={<p class="px-1 py-2 text-[12px] text-v2-text-text-muted">这个项目还没有装任何技能。</p>}
-                  >
-                    <div class="flex flex-col gap-1.5">
-                      <For each={清单()}>{(条) => 一条(条)}</For>
-                    </div>
-                  </Show>
-                </>
-              )}
+              {(清单) => 手风琴(清单())}
             </Show>
-          </Show>
-
-          <Show when={展开() === "knowledge"}>
-            <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">知识库还没有接入，接入后会出现在这里。</p>
-          </Show>
-
-          <Show when={展开() === "mcp"}>
-            <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">
-              这个项目还没有连任何 MCP。MCP 要由管理员在治理后台登记、授权给你，才会出现在这里。
-            </p>
-          </Show>
-        </div>
-
-        <For each={后面()}>{(组) => 组头(组, true)}</For>
+          }
+        >
+          {(说) => (
+            <div data-slot="capability-unreadable" class="px-2 py-2 text-[12px] text-v2-text-text-muted">
+              <p data-slot="capability-error" class="text-v2-state-fg-danger">
+                {说()}
+              </p>
+              <p>
+                暂时读不到这个项目的技能。
+                <button type="button" data-slot="capability-retry" class={小钮} onClick={() => props.onRetry()}>
+                  重试
+                </button>
+              </p>
+            </div>
+          )}
+        </Show>
       </Show>
     </div>
   )

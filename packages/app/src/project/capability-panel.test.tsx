@@ -68,7 +68,8 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
   test("知识库横条不写数字，写「即将支持」", () => {
     const host = 面板()
     expect(文(host, "capability-group-knowledge")).toContain("即将支持")
-    expect(文(host, "capability-group-knowledge")).not.toContain("0 个")
+    // 不光排除 `0 个`：整条横条**一个阿拉伯数字都不许有**（写成 `· 5 个` 同样是假话）。
+    expect(文(host, "capability-group-knowledge")).not.toMatch(/\d/)
   })
 
   test("MCP 是明确 0 个 ⇒ 写出数字", () => {
@@ -101,6 +102,22 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(收到).toBe("a1")
   })
 
+  test("② 没生效的条目恰有一个停用按钮，并给出文字指引（不给第二个按钮）", () => {
+    const host = 面板({ enabled: () => new Set(["a9"]), enabledCount: () => 1, skills: () => [] })
+    expect(槽(host, "capability-item-stale").length).toBe(1)
+    expect(槽(host, "capability-disable").length).toBe(1)
+    expect(文(host, "capability-item-stale")).toContain("停用后可在资产中心重新启用")
+  })
+
+  test("busy 指向某条时，该条的停用按钮禁用、点了不触发", () => {
+    let 收到: string | undefined
+    const host = 面板({ busy: () => "a1", onToggle: (id) => (收到 = id) })
+    const 钮 = host.querySelector<HTMLButtonElement>("[data-slot='capability-disable']")
+    expect(钮?.disabled).toBe(true)
+    钮?.click()
+    expect(收到).toBe(undefined)
+  })
+
   test("技能组头的数字 = 我能用的条数（含没生效的）", () => {
     const host = 面板({
       enabled: () => new Set(["a1", "a2"]),
@@ -113,7 +130,7 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
   test("项目真相多于我能用时，补一行说明（设计 §6）", () => {
     const host = 面板({ enabled: () => new Set(["a1"]), enabledCount: () => 4 })
     expect(有(host, "capability-out-of-scope")).toBe(true)
-    expect(文(host, "capability-out-of-scope")).toContain("3")
+    expect(文(host, "capability-out-of-scope")).toContain("项目共启用 4 个，其中 3 个不在你的授权范围。")
   })
 
   test("项目真相与我能用的一样多时，不出现那行", () => {
@@ -121,22 +138,47 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(有(host, "capability-out-of-scope")).toBe(false)
   })
 
-  test("没有内核数据 ⇒ 说「暂时读不到」并给重试，不列空", () => {
+  // 两种「没有数」是两件事（`#002-02`）：从没读到 ≠ 读失败。
+  test("还没读到内核数据（且没报错）⇒ 说「正在读取」，不画组头、不画重试", () => {
     const host = 面板({ skills: () => undefined })
-    expect(有(host, "capability-unreadable")).toBe(true)
-    expect(槽(host, "capability-item-loaded").length).toBe(0)
-    expect(槽(host, "capability-item-stale").length).toBe(0)
+    expect(文(host, "capability-loading")).toContain("正在读取")
+    expect(有(host, "capability-unreadable")).toBe(false)
+    expect(有(host, "capability-retry")).toBe(false)
+    expect(有(host, "capability-group-skill")).toBe(false)
+    expect(有(host, "capability-group-knowledge")).toBe(false)
+    expect(有(host, "capability-group-mcp")).toBe(false)
+    expect(有(host, "capability-count-skill")).toBe(false)
+    expect((host.textContent ?? "")).not.toContain("0 个")
   })
 
-  test("没有内核数据时，技能组头也不写 0 个（「读不到」不是「0 个」）", () => {
-    const host = 面板({ skills: () => undefined })
-    expect(文(host, "capability-group-skill")).not.toContain("0 个")
+  test("接口失败 ⇒ 整块换成重试，组头、计数、条目一个都不画", () => {
+    const host = 面板({ error: () => "网络请求失败", skills: () => undefined })
+    expect(有(host, "capability-unreadable")).toBe(true)
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(槽(host, "capability-item").length).toBe(0)
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect(槽(host, "capability-item-stale").length).toBe(0)
+    expect(有(host, "capability-group-skill")).toBe(false)
+    expect(有(host, "capability-group-knowledge")).toBe(false)
+    expect(有(host, "capability-group-mcp")).toBe(false)
+    expect(有(host, "capability-count-skill")).toBe(false)
+  })
+
+  test("失败但 skills 还留着上次的旧值 ⇒ 仍是重试块，不把旧数据画成自带条目", () => {
+    const host = 面板({
+      error: () => "网络请求失败",
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })],
+    })
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(槽(host, "capability-item").length).toBe(0)
+    expect(槽(host, "capability-item-local").length).toBe(0)
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
     expect(有(host, "capability-count-skill")).toBe(false)
   })
 
   test("重试按钮把回调交出去", () => {
     let 点过 = false
-    const host = 面板({ skills: () => undefined, onRetry: () => (点过 = true) })
+    const host = 面板({ error: () => "网络请求失败", onRetry: () => (点过 = true) })
     一(host, "capability-retry")?.click()
     expect(点过).toBe(true)
   })
