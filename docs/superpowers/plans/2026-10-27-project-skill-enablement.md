@@ -1649,6 +1649,47 @@ test("没有项目时 toggle 不发请求", async () => {
     dispose()
   })
 })
+
+test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async () => {
+  // 两个「悬着的」请求：p1 的 read 与 enable 都由用例手动放行
+  let 放p1读: ((v: unknown) => void) | undefined
+  let 放p1切: ((v: unknown) => void) | undefined
+  const api = {
+    read: (projectId: string) =>
+      projectId === "p1"
+        ? new Promise((r) => {
+            放p1读 = r
+          })
+        : Promise.resolve({ kind: "ok" as const, value: { enabled: ["b"], enabledCount: 1, limit: 20 } }),
+    enable: () =>
+      new Promise((r) => {
+        放p1切 = r
+      }),
+    disable: async () => ({ kind: "ok" as const, value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api as never)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    状态.toggle("x") // p1 上的一次切换，悬着不回
+    expect(状态.busy()).toBe("x")
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // 换项目就该复位：旧请求已被代次丢弃，但「请求已结束」必须写回，否则按钮永久转忙
+    expect(状态.busy()).toBeUndefined()
+    expect([...状态.enabled()]).toEqual(["b"])
+
+    放p1读?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
+    放p1切?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["b"]) // 旧回包不覆盖新项目
+    expect(状态.enabledCount()).toBe(1)
+    expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
 ```
 
 - [ ] **Step 2: 跑，确认红** → `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets/enable-state.test.tsx`，FAIL 模块不存在。
@@ -1691,6 +1732,9 @@ export interface ProjectEnablement {
   readonly reload: () => void
 }
 
+// ⚠️ 与服务端 `ENABLEMENT_LIMIT` 同值，只是**首帧占位**：每次 `bind` 必发一次 `read`，
+// 拿到回包就被服务端值覆盖，所以它不会在界面上停留。改配额时不必改这里（改不改都行），
+// 但**不要**把它当作配额的第二个真相去别处引用。
 const 默认上限 = 20
 
 export function createProjectEnablement(api: EnableApi = createEnableApi()): ProjectEnablement {
@@ -1718,28 +1762,52 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set忙(undefined)
   }
 
-  const 拉 = (projectId: string) => {
-    const 本次 = ++代次
-    void api.read(projectId).then((结果) => {
-      if (本次 !== 代次 || 项目() !== projectId) return
-      if (结果.kind === "ok") {
-        应用(结果.value)
-        set错误(undefined)
-        return
-      }
-      set错误(结果.message)
-    })
+  /** 换项目的**专属**复位：连 `busy` 一起清。见 `bind` 里的注释。 */
+  const 换项目复位 = () => {
+    set忙(undefined)
+    清空()
   }
 
+  const 拉 = (projectId: string) => {
+    const 本次 = ++代次
+    void api
+      .read(projectId)
+      .then((结果) => {
+        if (本次 !== 代次 || 项目() !== projectId) return
+        if (结果.kind === "ok") {
+          应用(结果.value)
+          set错误(undefined)
+          return
+        }
+        set错误(结果.message)
+      })
+      // 注入的 api 若 reject（真实 `createEnableApi` 全捕获、不抛），别留未处理拒绝 + 卡忙
+      .catch(() => {
+        if (本次 !== 代次) return
+        set错误("加载启用状态失败")
+        set忙(undefined)
+      })
+  }
+
+  let 停旧: (() => void) | undefined
+
   const bind = (读: () => string | undefined) => {
-    createEffect(() => {
-      const 当前 = 读()
-      set项目(当前)
-      if (当前 === undefined) {
-        清空()
-        return
-      }
-      拉(当前)
+    // 重复 bind 先拆上一次的 effect，否则两个 effect 同时拉、互相推代次
+    停旧?.()
+    停旧 = createRoot((dispose) => {
+      createEffect(() => {
+        const 当前 = 读()
+        const 换了项目 = 当前 !== 项目()
+        set项目(当前)
+        // ⚠️ **换项目必须整体复位**（含 `busy` 与上一项目的集合）：
+        // 「失败不清空」只适用于**同一项目内**的刷新——跨项目沿用旧集合，界面会把甲的
+        // 启用集合当成乙的（`toggle` 还会据此走错 enable/disable 分支）；`busy` 不复位，
+        // 旧请求的 return 会把它永久钉在按钮上（代次丢弃了回包，但「请求已结束」没写回）。
+        if (换了项目) 换项目复位()
+        if (当前 === undefined) return
+        拉(当前)
+      })
+      return dispose
     })
   }
 
@@ -1747,18 +1815,25 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     const projectId = 项目()
     if (projectId === undefined) return
     const 本次 = ++代次
+    const 换项目前 = projectId
     set忙(assetId)
     const 请求 = 集合().has(assetId) ? api.disable({ projectId, assetId }) : api.enable({ projectId, assetId })
-    void 请求.then((结果) => {
-      if (本次 !== 代次 || 项目() !== projectId) return
-      set忙(undefined)
-      if (结果.kind === "ok") {
-        应用(结果.value)
-        set错误(undefined)
-        return
-      }
-      set错误(结果.message)
-    })
+    void 请求
+      .then((结果) => {
+        if (本次 !== 代次 || 项目() !== 换项目前) return
+        set忙(undefined)
+        if (结果.kind === "ok") {
+          应用(结果.value)
+          set错误(undefined)
+          return
+        }
+        set错误(结果.message)
+      })
+      .catch(() => {
+        if (本次 !== 代次) return
+        set错误("操作失败，请重试")
+        set忙(undefined)
+      })
   }
 
   const reload = () => {
@@ -1771,7 +1846,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
 }
 ```
 
-- [ ] **Step 4: 跑绿 → 变异**（删掉 `本次 !== 代次` 判断 → 需补一条「连点两次、旧回包不回写」的用例；若现有用例不红，**先补用例再改**，不要接受不红的变异）→ 改回。
+- [ ] **Step 4: 跑绿 → 变异**（删掉 `本次 !== 代次` 判断 → 需补一条「连点两次、旧回包不回写」的用例；
+  删掉 `if (换了项目) 换项目复位()` → 「切项目：旧项目的晚回包不回写，且 busy 不卡住」必须红（实得 `busy = "x"`）；
+  若现有用例不红，**先补用例再改**，不要接受不红的变异）→ 改回。
 
 - [ ] **Step 5: 门禁 ＋ 提交**
 
