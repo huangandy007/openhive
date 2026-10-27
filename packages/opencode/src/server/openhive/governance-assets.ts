@@ -31,6 +31,11 @@ export * as OpenhiveGovernanceAssets from "./governance-assets"
  *
  * 与账号 / 组织出口一致（`#004-09`）：民警递畸形 JSON 必须拿 403，而不是 400。
  *
+ * ## 分页（需求 6）
+ *
+ * 与使用面**同一份**参数解析（`paging.ts`）与同一份条件构造器（`listAssets` / `countAssets`
+ * 共用一个 WHERE）——两处各写一遍会漂成「总数说有 25 条、翻到第 2 页只剩 3 条」。
+ *
  * ## 站内信失败不回滚，也不谎报失败
  *
  * `transitionAsset()` 在流转提交后写通知，通知失败抛 `AssetNotificationError`——此时
@@ -38,7 +43,7 @@ export * as OpenhiveGovernanceAssets from "./governance-assets"
  * 用户再点一次就撞 `concurrent_transition`（409），比「成功但通知没写进去」更难解释。
  */
 
-import { assetById, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
+import { assetById, countAssets, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import {
   ASSET_STATUSES,
@@ -59,6 +64,7 @@ import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { OpenhiveAudit } from "./audit"
 import { GovernanceAuthz } from "./governance-authz"
+import { offsetOf, parsePage } from "./paging"
 import { OpenhivePg } from "./pg"
 
 /** 板块 id（与 `@opencode-ai/auth/governance` 的闭集、前端 `sections.ts` 逐字相同）。 */
@@ -181,13 +187,21 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if (status !== "" && !是状态(status)) return fail(BAD_REQUEST, `未知资产状态：${status}`)
     if (type !== "" && !是类型(type)) return fail(BAD_REQUEST, `未知资产类型：${type}`)
 
+    // 分页参数与使用面共用一份解析（`paging.ts`）：治理后台一次拖全量同样会压垮出口。
+    const 分页 = parsePage(params)
+    if ("error" in 分页) return fail(BAD_REQUEST, 分页.error)
+
     const filters: AssetListFilters = {
       ...(status === "" ? {} : { status }),
       ...(type === "" ? {} : { type }),
       ...(search === "" ? {} : { search }),
     }
-    const assets = yield* Effect.promise(() => listAssets(deps.pg(), filters))
-    return ok({ assets })
+    // 顺序查而不是 Promise.all：PGlite 夹具是单连接（`PG_POOL_MAX=1`），并发两条会撞 42P05。
+    const assets = yield* Effect.promise(() =>
+      listAssets(deps.pg(), filters, { limit: 分页.pageSize, offset: offsetOf(分页) }),
+    )
+    const total = yield* Effect.promise(() => countAssets(deps.pg(), filters))
+    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize })
   })
 }
 

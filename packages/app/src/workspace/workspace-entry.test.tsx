@@ -4,6 +4,7 @@ import { toaster } from "@opencode-ai/ui/toast"
 import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import { ASSET_CATEGORY_ROWS } from "@/ai-assets/filter"
 import { useProjectionModule } from "@/ai-session/projection-module"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
@@ -6117,14 +6118,54 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     }
   }
 
+  /**
+   * 服务端替身（需求 6）：筛选与分页都已下推服务端，组件只负责**把条件交出去、把回包画出来**。
+   * 这里按条件在测试里筛一遍，代替那条 WHERE——本层要证明的是接线，不是筛选口径
+   * （口径在 `packages/asset-service/src/asset.ts` 的 `search` 条件与 `readable-sql.ts`）。
+   *
+   * ⚠️ **必须在 JSX 外先造好再传**（`const 目录 = 假目录([...])`）：Solid 的组件 props 是
+   * getter，`catalog={假目录([...])}` 会被**每次读取都重跑一遍**——于是 `AssetCenter` 取数
+   * effect 写的信号与网格读的信号不是同一份（实测一次用例新建 5 份），数据一变网格就不跟。
+   */
+  function 假目录(rows: readonly AssetMetadata[]): AssetCatalog {
+    const [清单, set清单] = createSignal<readonly AssetMetadata[]>(rows)
+    return {
+      assets: 清单,
+      total: () => 清单().length,
+      page: () => 1,
+      pageSize: () => 20,
+      error: () => undefined,
+      load: (query) => {
+        const 词 = (query.q ?? "").trim().toLowerCase()
+        const 过滤 = rows.filter(
+          (asset) =>
+            (query.type === undefined || asset.type === query.type) &&
+            (query.spaces === undefined || query.spaces.includes(asset.visibility)) &&
+            (query.category === undefined || asset.category === query.category) &&
+            (词 === "" ||
+              [asset.name, asset.description, ...asset.tags].some((文本) => 文本.toLowerCase().includes(词))),
+        )
+        set清单(过滤)
+      },
+      goPage: () => {},
+      setPageSize: () => {},
+      reload: () => {},
+    }
+  }
+
+  /**
+   * 等效果跑一趟（需求 6）：查询由 `AssetCenter` 的 effect 交给数据源，不在点击的那一拍照完；
+   * 搜索框还有 250ms 防抖（`asset-center.tsx` 的 `搜索防抖ms`）。
+   */
+  const 等一拍 = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+
   const 卡片 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>("[data-slot='asset-card']")]
   const 卡片名 = (host: HTMLElement) => 卡片(host).map((card) => card.textContent ?? "")
 
   test("中栏是搜索框 + 网格：注入的资产按默认筛选出现在卡片里", () => {
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })])
     const host = mount(() => (
-      <WorkspaceEntry assets={() => [资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })]}>
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
 
@@ -6135,37 +6176,32 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     expect(卡片名(host).join()).toContain("技能甲")
   })
 
-  test("左栏点类型 ⇒ 中栏跟着换（同一份筛选，不是各建一份）", () => {
+  test("左栏点类型 ⇒ 中栏跟着换（同一份筛选，不是各建一份）", async () => {
+    const 目录 = 假目录([
+      资产({ id: "a", name: "技能甲", type: "skill" }),
+      资产({ id: "b", name: "MCP 乙", type: "mcp" }),
+    ])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [
-          资产({ id: "a", name: "技能甲", type: "skill" }),
-          资产({ id: "b", name: "MCP 乙", type: "mcp" }),
-        ]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     expect(卡片名(host)).toHaveLength(1)
     expect(卡片名(host)[0]).toContain("技能甲")
 
     host.querySelector<HTMLElement>("[data-slot='asset-type-tab'][data-type='mcp']")!.click()
+    await 等一拍()
 
     expect(卡片(host)).toHaveLength(1)
     expect(卡片名(host)[0]).toContain("MCP 乙")
   })
 
-  test("左栏换分类 ⇒ 中栏只剩该分类", () => {
+  test("左栏换分类 ⇒ 中栏只剩该分类", async () => {
+    const 目录 = 假目录([
+      资产({ id: "a", name: "第一类", category: ASSET_CATEGORY_ROWS[0].id }),
+      资产({ id: "b", name: "第二类", category: ASSET_CATEGORY_ROWS[1].id }),
+    ])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [
-          资产({ id: "a", name: "第一类", category: ASSET_CATEGORY_ROWS[0].id }),
-          资产({ id: "b", name: "第二类", category: ASSET_CATEGORY_ROWS[1].id }),
-        ]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     // 默认**不筛分类**（T017 裁定）：两类都在，第一屏就是「我能用的东西」。
@@ -6175,35 +6211,36 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       `[data-slot='asset-category'][data-category='${ASSET_CATEGORY_ROWS[1].id}']`,
     )!
     第二类.click()
+    await 等一拍()
 
     expect(卡片(host)).toHaveLength(1)
     expect(卡片名(host)[0]).toContain("第二类")
 
     // 再点一次 ⇒ 收起分类、回到全部（与空间全选、搜索留空同一种姿态）。
     第二类.click()
+    await 等一拍()
     expect(卡片(host)).toHaveLength(2)
   })
 
-  test("搜索框过滤中栏；清空恢复全部", () => {
+  test("搜索框过滤中栏（防抖后发查询）；清空恢复全部", async () => {
+    const 目录 = 假目录([
+      资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
+      资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
+    ])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [
-          资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
-          资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
-        ]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     const 输入 = host.querySelector<HTMLInputElement>("[data-slot='asset-search-input']")!
 
     输入.value = "fund"
     输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等一拍(300)
     expect(卡片(host)).toHaveLength(1)
     expect(卡片名(host)[0]).toContain("FundFlow")
 
     host.querySelector<HTMLButtonElement>("[data-slot='asset-search-clear']")!.click()
+    await 等一拍(300)
     expect(卡片(host)).toHaveLength(2)
   })
 
@@ -6224,12 +6261,9 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
   }
 
   test("点卡片 ⇒ 详情面板替换网格，头部与四 tab 就位，焦点落在返回", () => {
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲", description: "甲的做法", tags: ["甲"] })])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [资产({ id: "a", name: "技能甲", description: "甲的做法", tags: ["甲"] })]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     expect(浏览区(host).classList.contains("hidden")).toBe(false)
@@ -6244,8 +6278,9 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
   })
 
   test("详情切 tab：注意事项带不确定性标注，评价 / 版本各有内容", () => {
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲", version: 2 })])
     const host = mount(() => (
-      <WorkspaceEntry assets={() => [资产({ id: "a", name: "技能甲", version: 2 })]}>中栏</WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     打开卡(host, "技能甲")
@@ -6261,12 +6296,9 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
   })
 
   test("点第二张卡打开的是第二张，不是第一张", () => {
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [资产({ id: "a", name: "技能甲" }), 资产({ id: "b", name: "技能乙" })]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     打开卡(host, "技能乙")
@@ -6274,20 +6306,18 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
   })
 
   test("返回 ⇒ 网格回来、搜索词保留、焦点归还原卡片", async () => {
+    const 目录 = 假目录([
+      资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
+      资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
+    ])
     const host = mount(() => (
-      <WorkspaceEntry
-        assets={() => [
-          资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: [] }),
-          资产({ id: "b", name: "话单分析", description: "通话记录", tags: [] }),
-        ]}
-      >
-        中栏
-      </WorkspaceEntry>
+      <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
     ))
     进入(host)
     const 输入 = host.querySelector<HTMLInputElement>("[data-slot='asset-search-input']")!
     输入.value = "fund"
     输入.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等一拍(300)
     expect(卡片(host)).toHaveLength(1)
 
     打开卡(host, "FundFlow")

@@ -53,26 +53,41 @@ const 资产 = (id: string, overrides: Partial<AssetMetadata> = {}): AssetMetada
 })
 
 describe("使用面资产客户端", () => {
-  test("GET 同源路径；无查询串时不带 ?；回包整份保留", async () => {
+  test("GET 同源路径；无查询串时不带 ?；回包里行与分页字段整份保留", async () => {
     const rows = [资产("a1"), 资产("a2", { visibility: "department", department: "刑侦大队" })]
-    const { send, calls } = 替身(() => json({ assets: rows }))
+    const { send, calls } = 替身(() => json({ assets: rows, total: 25, page: 2, pageSize: 20 }))
 
     const out = await createCatalogApi(send).list()
 
     expect(calls[0]?.input).toBe("/openhive/assets")
     expect(out.kind).toBe("ok")
-    if (out.kind === "ok") expect(out.value).toEqual(rows)
+    if (out.kind === "ok") {
+      expect(out.value.assets).toEqual(rows)
+      expect(out.value.total).toBe(25)
+      expect(out.value.page).toBe(2)
+      expect(out.value.pageSize).toBe(20)
+    }
   })
 
-  test("type / q 进查询串；q 两端空白裁掉、空 q 不进 URL", async () => {
-    const { send, calls } = 替身(() => json({ assets: [] }))
+  test("type / q / category / 空间 / 分页 进查询串；q 两端空白裁掉、空 q 不进 URL", async () => {
+    const { send, calls } = 替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20 }))
     const api = createCatalogApi(send)
 
     await api.list({ type: "mcp", q: "  话单  " })
     await api.list({ q: "   " })
+    await api.list({
+      category: "intelligence",
+      spaces: ["global", "department"],
+      page: 2,
+      pageSize: 50,
+    })
 
     expect(calls[0]?.input).toBe("/openhive/assets?type=mcp&q=%E8%AF%9D%E5%8D%95")
     expect(calls[1]?.input).toBe("/openhive/assets")
+    // 空间是**重复参数**（服务端逐值收窄），顺序按左栏闭集顺序。
+    expect(calls[2]?.input).toBe(
+      "/openhive/assets?category=intelligence&visibility=global&visibility=department&page=2&pageSize=50",
+    )
   })
 
   test("401 ⇒ rejected（登录失效），不做成空列表", async () => {
@@ -107,19 +122,21 @@ describe("使用面资产客户端", () => {
     expect(out.kind).toBe("failed")
   })
 
-  test("返回体不是 {assets:[...]} ⇒ failed（形状不对不猜空）", async () => {
-    const { send } = 替身(() => json({ items: [] }))
-    const out = await createCatalogApi(send).list()
+  test("返回体不是 {assets:[...], total, page, pageSize} ⇒ failed（形状不对不猜空）", async () => {
+    for (const body of [{ items: [] }, { assets: [] }, { assets: [], total: 0, page: 1 }]) {
+      const { send } = 替身(() => json(body))
+      const out = await createCatalogApi(send).list()
 
-    expect(out.kind).toBe("failed")
-    if (out.kind === "failed") expect(out.message).toContain("格式不对")
+      expect(out.kind).toBe("failed")
+      if (out.kind === "failed") expect(out.message).toContain("格式不对")
+    }
   })
 
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {
     const 缺描述 = { ...资产("a1") } as Record<string, unknown>
     delete 缺描述["description"]
     for (const bad of [缺描述, { ...资产("a2"), status: "deleted" }, { ...资产("a3"), publishedAt: "x" }]) {
-      const { send } = 替身(() => json({ assets: [bad] }))
+      const { send } = 替身(() => json({ assets: [bad], total: 1, page: 1, pageSize: 20 }))
       const out = await createCatalogApi(send).list()
       expect(out.kind).toBe("failed")
     }

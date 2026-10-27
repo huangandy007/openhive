@@ -1,6 +1,6 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
-import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCenter } from "@/ai-assets/asset-center"
+import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
 import { ProjectionModuleProvider } from "@/ai-session/projection-module"
@@ -146,22 +146,16 @@ export interface WorkspaceEntryProps {
    */
   onOpenSettings?: () => void
   /**
-   * **AI 资产的列表数据源**（009 T006）。
+   * **AI 资产的数据源**（009 T006 / 需求 6）。
    *
-   * 与 `projectData` 同一条规矩：**注入而不 import 生产实现**——`/assets` 的 HTTP 接口今天
-   * 还没落（见 `docs/superpowers/specs/009-ai-assets/state.md` 的已知缺口），本组件若自己去取，
-   * 组件测试就再也跑不成离线。省略 = 空列表（`AssetGrid` 显示「没有符合条件的资产」），
-   * **不放假数据**把界面撑满（`metadata.ts` 的计数注释：后续写入方必须填真值）。
+   * 与 `projectData` 同一条规矩：**注入而不 import 生产实现**——本组件被组件测试裸挂，
+   * 自己去取就再也跑不成离线。省略 = 无数据源（网格空着，`AssetGrid` 显示
+   * 「没有符合条件的资产」，**不放假数据**）。
    *
-   * 形状是访问器：接口接上后，数据变化要能让网格跟着刷新，传现成数组会冻在首帧。
+   * 需求 6 起它不只是一份清单：筛选、分页、每页条数都在这个对象里（`AssetCatalog`），
+   * 因为「筛完再看第几页」必须由同一处说了算（`asset-catalog.ts` 文件头）。
    */
-  assets?: () => readonly AssetMetadata[]
-  /**
-   * **取数失败的原因**（T017）：有值就在资产中栏上方挂一条提示（`AssetCenter` 的 `loadError`）。
-   *
-   * 单独一条而不是塞进 `assets`：失败与「没有资产」是两件事，混成一件用户会以为资产丢了。
-   */
-  loadError?: () => string | undefined
+  catalog?: AssetCatalog
   /**
    * **进入 AI 资产视图时通知外面去拉一次**（T017）。
    *
@@ -169,7 +163,7 @@ export interface WorkspaceEntryProps {
    * 「刚发布却看不见」正是本轮要修的病，换成「刷新页面才看得见」等于没修。
    *
    * **只在视图变成 `ai-assets` 时触发**（每次进入都触发，含从别处切回来）；本组件自己不取数，
-   * 与 `assets` 的同一条规矩：注入而不 import 生产实现，组件测试仍然离线。
+   * 与 `catalog` 的同一条规矩：注入而不 import 生产实现，组件测试仍然离线。
    */
   onAssetsOpen?: () => void
 }
@@ -2180,10 +2174,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               都在 `center-split.tsx` 里，本组件只把取数出口与上游页面注入进去。
               AI 资产是**模块级页面**（D0-3）——文件 tab 那套（`CenterSplit`）整块让位，但 tab
               状态不丢（只是不渲染，`center` 里的 tabs 原封不动），切回项目管理时照旧。
-              T006 起这里是搜索 + 卡片网格；`assetFilter` 与左栏**共享同一份**（左栏点了类型/分类，
-              网格立刻按它筛），数据来自 `props.assets` 这条注入缝。 */}
+              T006 起这里是搜索 + 卡片网格 ＋ 页码条；`assetFilter` 与左栏**共享同一份**（左栏点了
+              类型/分类，中栏按它重新取数），取数走 `props.catalog` 这条注入缝（需求 6）。 */}
           {视图() === "ai-assets" ? (
-            <AssetCenter filter={assetFilter} assets={props.assets} loadError={props.loadError} />
+            <AssetCenter filter={assetFilter} catalog={props.catalog} />
           ) : (
             <CenterSplit
               registry={viewRegistry}

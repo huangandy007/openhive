@@ -216,6 +216,13 @@ const 行 = Schema.Struct({
   department: Schema.String,
 })
 const 列表 = Schema.Struct({ assets: Schema.Array(行) })
+/** 需求 6：分页后列表带上 `total / page / pageSize`。 */
+const 分页列表 = Schema.Struct({
+  assets: Schema.Array(行),
+  total: Schema.Number,
+  page: Schema.Number,
+  pageSize: Schema.Number,
+})
 const 错误 = Schema.Struct({ error: Schema.String })
 
 const json = <A>(schema: Schema.Codec<A>, response: Response) =>
@@ -291,6 +298,79 @@ describe("T017 · 使用面资产列表", () => {
       const bad = yield* get(ME, `${LIST}?type=unknown`)
       expect(bad.status).toBe(400)
       expect((yield* json(错误, bad)).error).toContain("未知资产类型")
+    }),
+  )
+
+  it.live("分页：默认 20 条、total 是筛选后的可见全集、page 切片、非法参数 400", () =>
+    Effect.gen(function* () {
+      // 25 条同前缀的全局已发布资产：用搜索词把它们与既有夹具隔开，互不干扰。
+      for (let i = 0; i < 25; i += 1) {
+        yield* Effect.promise(() =>
+          insertAsset(
+            pg!.db,
+            资产({
+              id: `asset-page-${String(i).padStart(2, "0")}`,
+              name: `分页夹具 ${i}`,
+              status: "published",
+              updatedAt: 10_000 + i,
+            }),
+          ),
+        )
+      }
+      const 搜索 = `${LIST}?q=${encodeURIComponent("分页夹具")}`
+
+      const 默认 = yield* json(分页列表, yield* get(ME, 搜索))
+      expect(默认.total).toBe(25)
+      expect(默认.assets.length).toBe(20)
+      expect(默认.page).toBe(1)
+      expect(默认.pageSize).toBe(20)
+
+      const 第二页 = yield* json(分页列表, yield* get(ME, `${搜索}&page=2`))
+      expect(第二页.assets.length).toBe(5)
+      expect(第二页.page).toBe(2)
+
+      const 五十 = yield* json(分页列表, yield* get(ME, `${搜索}&pageSize=50`))
+      expect(五十.assets.length).toBe(25)
+      expect(五十.pageSize).toBe(50)
+
+      // 白名单与正整数校验在出口收窄：越界值一律 400，不静默退回默认。
+      for (const bad of ["pageSize=999", "pageSize=0", "page=0", "page=abc", "page=-1", "pageSize=1.5"]) {
+        expect((yield* get(ME, `${LIST}?${bad}`)).status).toBe(400)
+      }
+    }),
+  )
+
+  it.live("category / visibility 过滤：空间可多选（重复参数）；未知可见性 ⇒ 400；不越过可见性", () =>
+    Effect.gen(function* () {
+      // 分类：夹具全是 intelligence，另插一条别的分类，证明过滤真的收窄。
+      yield* Effect.promise(() =>
+        insertAsset(pg!.db, 资产({ id: "asset-read-other-cat", name: "内勤稿件", status: "published", category: "internal-doc" })),
+      )
+
+      // 前一用例灌了 25 条夹具，这里一律要一页装得下（`pageSize=100`），断言才与条数无关。
+      const 全部 = (query: string) =>
+        Effect.flatMap(get(ME, `${LIST}?pageSize=100&${query}`), (response) => json(列表, response))
+
+      const 情报 = idsOf(yield* 全部("category=intelligence"))
+      expect(情报).toContain(IDS.global)
+      expect(情报).not.toContain("asset-read-other-cat")
+
+      const 内勤 = idsOf(yield* 全部("category=internal-doc"))
+      expect(内勤).toEqual(["asset-read-other-cat"])
+
+      // 只选「个人」：作者自己的个人资产在，别人的个人资产不在（可见性没有因为过滤被绕过）。
+      const 个人 = idsOf(yield* 全部("visibility=personal"))
+      expect(个人).toContain(IDS.mine)
+      expect(个人).not.toContain(IDS.notMine)
+      expect(个人).not.toContain(IDS.global)
+
+      const 两种 = idsOf(yield* 全部("visibility=global&visibility=department"))
+      expect(两种).toContain(IDS.global)
+      expect(两种).toContain(IDS.sameDept)
+      expect(两种).not.toContain(IDS.mine)
+
+      expect((yield* get(ME, `${LIST}?visibility=`)).status).toBe(400)
+      expect((yield* get(ME, `${LIST}?visibility=secret`)).status).toBe(400)
     }),
   )
 

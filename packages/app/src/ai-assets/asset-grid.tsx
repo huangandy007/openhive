@@ -1,9 +1,8 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js"
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { createVirtualizer } from "@tanstack/solid-virtual"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCard } from "./asset-card"
-import type { AssetFilter } from "./filter"
-import { 卡片行高, 卡片行距, 卡片高, 网格列数, 网格行数, 筛选资产 } from "./grid-model"
+import { 卡片行高, 卡片行距, 卡片高, 网格列数, 网格行数 } from "./grid-model"
 
 /**
  * 中栏资产网格（009 T006 / DESIGN §4.9）：**按行虚拟滚动**，卡片固定高度。
@@ -15,11 +14,11 @@ import { 卡片行高, 卡片行距, 卡片高, 网格列数, 网格行数, 筛�
  * 别再给内容层套 `overflow`，否则滚轮落点会分裂成两个盒子。
  */
 export interface AssetGridProps {
-  readonly filter: AssetFilter
-  readonly search: Accessor<string>
   /**
-   * 资产数据源（T006 的注入缝）。省略 = 空列表（**不放假数据**）：
-   * `/assets` 的 HTTP 接口还没落（见 `state.md` 的已知缺口），由应用入口接上真实来源后自然有值。
+   * **已经筛好、切好**的这一页（需求 6）。省略 = 空列表（**不放假数据**）。
+   *
+   * ⚠️ 网格**不再自己筛**：筛选与分页都在服务端（`asset-catalog-api.ts` 文件头）。这里再按
+   * 空间 / 分类筛一遍，就会出现「服务端回 20 条、界面显示 3 条、总数写 25」——假分页。
    */
   readonly assets?: () => readonly AssetMetadata[]
   /** 打开详情（T007）：点卡片时把整份元数据交给中栏，由它决定详情怎么呈现。 */
@@ -33,15 +32,7 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
   /** 容器宽（列数全靠它）。初值 800 与 `initialRect` 一致，真量到再覆盖。 */
   const [容器宽, set容器宽] = createSignal(800)
 
-  const 数据 = createMemo(() => props.assets?.() ?? [])
-  const 结果 = createMemo(() =>
-    筛选资产(数据(), {
-      spaces: props.filter.spaces(),
-      type: props.filter.type(),
-      category: props.filter.category(),
-      search: props.search(),
-    }),
-  )
+  const 结果 = createMemo(() => props.assets?.() ?? [])
   const 列数 = createMemo(() => 网格列数(容器宽()))
   const 行数 = createMemo(() => 网格行数(结果().length, 列数()))
 

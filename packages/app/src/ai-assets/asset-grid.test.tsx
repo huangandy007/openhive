@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetGrid } from "./asset-grid"
-import { ASSET_CATEGORY_ROWS, createAssetFilter } from "./filter"
+import { ASSET_CATEGORY_ROWS } from "./filter"
 
 // happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
 if (!("ResizeObserver" in globalThis)) {
@@ -58,26 +57,15 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
 }
 
 function 挂(列表: readonly AssetMetadata[]) {
-  const filter = createAssetFilter()
-  const [搜索词, set搜索词] = createSignal("")
   const 打开过: string[] = []
   const host = document.createElement("div")
   document.body.appendChild(host)
   const dispose = render(
-    () => (
-      <AssetGrid
-        filter={filter}
-        search={搜索词}
-        assets={() => 列表}
-        onOpen={(asset) => 打开过.push(asset.id)}
-      />
-    ),
+    () => <AssetGrid assets={() => 列表} onOpen={(asset) => 打开过.push(asset.id)} />,
     host,
   )
   return {
     host,
-    filter,
-    set搜索词,
     打开过,
     卸: () => {
       dispose()
@@ -88,7 +76,6 @@ function 挂(列表: readonly AssetMetadata[]) {
 
 const 卡片 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[data-slot="asset-card"]')]
 const 卡片名 = (host: HTMLElement) => 卡片(host).map((card) => card.textContent ?? "")
-const 空态 = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="asset-empty"]')
 
 const 等到 = async (条件: () => boolean, 说明: string, timeout = 2000) => {
   const 起 = Date.now()
@@ -150,69 +137,6 @@ describe("资产卡片", () => {
       expect(甲.querySelector('[data-slot="asset-card-status"]')?.textContent).toBe("审核中")
       expect(乙.querySelector('[data-slot="asset-card-space"]')?.textContent).toBe("个人")
       expect(乙.querySelector('[data-slot="asset-card-status"]')?.textContent).toBe("已下线")
-    } finally {
-      卸()
-    }
-  })
-})
-
-describe("网格筛选与搜索", () => {
-  test("左栏类型切换 ⇒ 网格只剩该类型", () => {
-    const { host, filter, 卸 } = 挂([
-      资产({ id: "a", name: "技能甲", type: "skill" }),
-      资产({ id: "b", name: "MCP 乙", type: "mcp" }),
-    ])
-    try {
-      expect(卡片(host)).toHaveLength(1)
-      filter.selectType("mcp")
-      expect(卡片名(host)).toEqual([expect.stringContaining("MCP 乙")])
-      expect(卡片(host)).toHaveLength(1)
-    } finally {
-      卸()
-    }
-  })
-
-  test("左栏分类切换到空分类 ⇒ 空态文案", () => {
-    const { host, filter, 卸 } = 挂([资产({ id: "a" })])
-    try {
-      filter.selectCategory(ASSET_CATEGORY_ROWS[1].id)
-      expect(卡片(host)).toHaveLength(0)
-      expect(空态(host)?.textContent).toContain("没有符合条件的资产")
-    } finally {
-      卸()
-    }
-  })
-
-  test("搜索名称 / 描述 / 标签，忽略大小写；清空恢复", () => {
-    const { host, set搜索词, 卸 } = 挂([
-      资产({ id: "a", name: "FundFlow", description: "账户汇总", tags: ["xlsx"] }),
-      资产({ id: "b", name: "话单分析", description: "通话记录", tags: ["cdr"] }),
-    ])
-    try {
-      set搜索词("fund")
-      expect(卡片(host)).toHaveLength(1)
-      expect(卡片名(host)[0]).toContain("FundFlow")
-
-      set搜索词("cdr")
-      expect(卡片名(host)[0]).toContain("话单分析")
-
-      set搜索词("账户")
-      expect(卡片名(host)[0]).toContain("FundFlow")
-
-      set搜索词("")
-      expect(卡片(host)).toHaveLength(2)
-    } finally {
-      卸()
-    }
-  })
-
-  test("搜索无命中 ⇒ 空态，且虚拟容器不残留旧行", () => {
-    const { host, set搜索词, 卸 } = 挂([资产({ id: "a" })])
-    try {
-      set搜索词("不存在")
-      expect(卡片(host)).toHaveLength(0)
-      expect(空态(host)?.textContent).toContain("没有符合条件的资产")
-      expect(host.querySelector('[data-slot="asset-row"]')).toBeNull()
     } finally {
       卸()
     }

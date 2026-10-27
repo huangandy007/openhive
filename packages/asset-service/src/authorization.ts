@@ -2,7 +2,7 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { GrantRow } from "@opencode-ai/auth/rbac"
 import { assetById } from "./asset"
-import type { AssetMetadata, AssetStatus } from "./metadata"
+import type { AssetMetadata } from "./metadata"
 
 /**
  * 资产授权（009 T004，FR-006 / FR-007）：三级空间 + 四类权限 + 授权组。
@@ -44,34 +44,19 @@ import type { AssetMetadata, AssetStatus } from "./metadata"
  * （`core/access/rbac.ts` 自认的 `knowledge_base` 零映射）。
  */
 
-/** 四类权限动作（design §3.1）。与 `0004_rbac.sql` 的 `role_resource_perm_check` 同值。 */
-export const ASSET_PERMS = ["read", "write", "review", "admin"] as const
-export type AssetPerm = (typeof ASSET_PERMS)[number]
-
 /**
- * 运行时收窄。`GrantRow.perm` 是 `string`（PG 侧的保证是 CHECK，不是 TS 类型）；
- * 未知值**跳过而不是猜一档**——猜成 `read` 会把一条坏数据变成一次放行。
+ * 权限闭集、授权视角、共享状态与「读」的 SQL 投影都在 `readable-sql.ts`：
+ * 那里是本文件与 `asset.ts` 的**共同依赖**，把常量放过去才不会造出
+ * `asset.ts ↔ authorization.ts` 的运行时循环。这里原样再导出，外部引用不用改。
  */
-export function isAssetPerm(value: unknown): value is AssetPerm {
-  return typeof value === "string" && (ASSET_PERMS as readonly string[]).includes(value)
-}
-
-/** 授权判定的视角：只认「你是谁 + 你在哪个部门」，不碰 `is_admin`（那是治理后台总开关，F10）。 */
-export interface AssetViewer {
-  readonly userId: string
-  readonly department: string
-}
-
-/**
- * 对**非作者、非被授权者**可见的状态：资产只有进入共享空间之后才对全单位 / 部门开放。
- *
- * 草稿 / 审核中 / 待技术发布还停在作者或审核人手里；已归档是终态，不在浏览中出现。
- * 不为这道门，「作者先把可见范围设成 global 再慢慢写」就等于对全单位直播未完成品。
- *
- * ⚠️ `offline`（已下线）仍算可见：它只是「不能用」，不是「看不见」——使用者收到下线通知
- * 后要能找到它。可用性判定归 T008 / T009，别在这里提前砍。
- */
-const SHARED_STATUSES: ReadonlySet<AssetStatus> = new Set(["published", "iterating", "offline"])
+export {
+  ASSET_PERMS,
+  isAssetPerm,
+  readableAssetCondition,
+  type AssetPerm,
+  type AssetViewer,
+} from "./readable-sql"
+import { ASSET_PERMS, SHARED_STATUSES, isAssetPerm, type AssetPerm, type AssetViewer } from "./readable-sql"
 
 /** 能跑 SQL 的句柄（形状同 `asset.ts` 的 `AssetTarget` / `auth/rbac.ts` 的 `GrantTarget`）。 */
 export interface AuthorizationTarget {
@@ -246,3 +231,4 @@ export function canReadAsset(
 ): boolean {
   return effectivePermissions(viewer, asset, grants).has("read")
 }
+

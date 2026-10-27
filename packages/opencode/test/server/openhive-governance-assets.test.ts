@@ -219,6 +219,13 @@ const Asset = Schema.Struct({
   publishedAt: Schema.NullOr(Schema.Number),
 })
 const ListResponse = Schema.Struct({ assets: Schema.Array(Asset) })
+/** 需求 6：治理列表与使用面同一套分页契约。 */
+const 分页列表 = Schema.Struct({
+  assets: Schema.Array(Asset),
+  total: Schema.Number,
+  page: Schema.Number,
+  pageSize: Schema.Number,
+})
 const TransitionResponse = Schema.Struct({ asset: Asset })
 const ErrorResponse = Schema.Struct({ error: Schema.String, field: Schema.optional(Schema.String) })
 
@@ -275,6 +282,44 @@ describe("T007 · 读出口的门", () => {
 })
 
 describe("T007 · 读出口的过滤", () => {
+  it.live("分页：默认 20 条 + total 是筛选后全量；page 切片；非法参数 400", () =>
+    Effect.gen(function* () {
+      // 25 条同前缀资产：用 q 与既有夹具隔开，互不干扰其它用例的精确断言。
+      for (let i = 0; i < 25; i += 1) {
+        yield* Effect.promise(() =>
+          insertAsset(
+            pg!.db,
+            资产({
+              id: `asset-gov-page-${String(i).padStart(2, "0")}`,
+              name: `分页夹具 ${i}`,
+              status: "published",
+              updatedAt: 20_000 + i,
+            }),
+          ),
+        )
+      }
+      const 搜索 = `${GOV}?q=${encodeURIComponent("分页夹具")}`
+
+      const 默认 = yield* json(分页列表, yield* get(READER, 搜索))
+      expect(默认.total).toBe(25)
+      expect(默认.assets.length).toBe(20)
+      expect(默认.page).toBe(1)
+      expect(默认.pageSize).toBe(20)
+
+      const 第二页 = yield* json(分页列表, yield* get(READER, `${搜索}&page=2`))
+      expect(第二页.assets.length).toBe(5)
+
+      for (const bad of ["pageSize=999", "pageSize=0", "page=0", "page=abc"]) {
+        expect((yield* get(READER, `${GOV}?${bad}`)).status).toBe(400)
+      }
+    }).pipe(
+      // 自清：这 25 条只服务本条用例；留在共享夹具里会把后面「总数 6 条」那类精确断言顶红（`#005-34`）。
+      Effect.ensuring(
+        Effect.promise(() => pg!.db.execute(sql`delete from auth.asset where id like 'asset-gov-page-%'`)),
+      ),
+    ),
+  )
+
   it.live("status 过滤只回该状态；未知 status ⇒ 400（闭集在出口收窄，不靠库）", () =>
     Effect.gen(function* () {
       const 审核中 = yield* json(ListResponse, yield* get(EXPERT, `${GOV}?status=in_review`))

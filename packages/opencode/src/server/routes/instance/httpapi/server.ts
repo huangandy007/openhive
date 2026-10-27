@@ -127,6 +127,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
 import { OpenhiveAssets } from "@/server/openhive/assets"
+import { OpenhivePreferences } from "@/server/openhive/preferences"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
@@ -412,6 +413,10 @@ export function createRoutes(
     // `canReadAsset()`（可见性规则只有那一份）。资产根不读——列表不碰磁盘。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 资产使用面（T017）。
     OpenhiveAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 账号偏好出口（需求 6，2026-10-27）：中栏「每页条数」跨设备一致。
+    // 只供业务 PG（`auth.user_preference`）；值的白名单复用 `paging.ts` 的 `PAGE_SIZES`。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 6）。
+    OpenhivePreferences.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 数据项目权限出口（010 T008）：全部项目 / 名单 / 兜底撤销成员 / 兜底归档（FR-007）。
     // 授权是治理板块的 `data-project-perm`（**不是** 005 的成员身份 `decide`——管理员按定义不是
     // 项目成员，见该模块文件头）；写动作复用 `removeMember` 与 `archiveProject`。

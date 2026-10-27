@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm"
 import { integer, numeric, pgSchema, text } from "drizzle-orm/pg-core"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { readableAssetCondition, type AssetViewer } from "./readable-sql"
 import {
   ASSET_STATUSES,
   ASSET_TYPES,
@@ -216,7 +217,14 @@ export interface AssetListFilters {
   readonly type?: AssetType
   readonly status?: AssetStatus
   readonly category?: string
-  readonly visibility?: AssetVisibility
+  /**
+   * 空间过滤。**单个值或数组**都收（需求 6，2026-10-27）：使用面左栏三个空间是复选，
+   * 前端把选中的那几个一起下推，免得「取回 20 条再内存筛」把每页条数吃掉。
+   *
+   * ⚠️ **空数组是「空集」，不是「不过滤」**：用户把三个空间全取消，结果必须是空的——
+   * 否则「取消」这个动作永远取消不掉任何东西。
+   */
+  readonly visibility?: AssetVisibility | readonly AssetVisibility[]
   /**
    * 关键字（`ilike`）：匹配名称、描述、标签。
    *
@@ -224,6 +232,74 @@ export interface AssetListFilters {
    * 标签用 `array_to_string` 展开后匹配，避免为搜索再建一张表。
    */
   readonly search?: string
+  /**
+   * 可见性下推（需求 6，2026-10-27）：只列这个读者读得到的行。
+   *
+   * 条件由 `readableAssetCondition()` 生成——那是 `canReadAsset()` 的 SQL 投影，
+   * 规则仍只有一份（`readable-sql.ts`）。别在这里手写 `owner_id = ... or ...`：
+   * 第二份实现漂了不会报错，只会「该看见的看不见」。
+   */
+  readonly readableBy?: AssetViewer
+}
+
+/** 一页的切片（需求 6）。`limit` 是页大小，`offset` 是已经跳过的行数。 */
+export interface AssetPage {
+  readonly limit: number
+  readonly offset: number
+}
+
+/**
+ * 条件全集——`listAssets` / `countAssets` **共用这一份**。
+ *
+ * 两处各写一遍 `where`，就会出现「总数说有 25 条、翻到第 2 页只剩 3 条」这类只在翻页时
+ * 才现形的漂移。所以这里只有构造，没有第二种拼法。
+ */
+function assetConditions(filters: AssetListFilters): SQL[] {
+  const conditions: SQL[] = []
+  if (filters.type !== undefined) conditions.push(sql`type = ${filters.type}`)
+  if (filters.status !== undefined) conditions.push(sql`status = ${filters.status}`)
+  if (filters.category !== undefined) conditions.push(sql`category = ${filters.category}`)
+  if (filters.visibility !== undefined) {
+    // 数组逐个占位符（不把 JS 数组直接塞进模板：drizzle 会展开成行构造器，`in` 的语义就
+    // 取决于 PG 怎么理解 record——`tags` 那里踩过同款坑）。
+    const values: readonly AssetVisibility[] =
+      typeof filters.visibility === "string" ? [filters.visibility] : filters.visibility
+    conditions.push(
+      values.length === 0
+        ? sql`false`
+        : sql`visibility in (${sql.join(
+            values.map((value) => sql`${value}`),
+            sql`, `,
+          )})`,
+    )
+  }
+  if (filters.search !== undefined) {
+    const pattern = `%${filters.search}%`
+    conditions.push(sql`(
+      name ilike ${pattern}
+      or description ilike ${pattern}
+      or array_to_string(tags, ' ') ilike ${pattern}
+    )`)
+  }
+  if (filters.readableBy !== undefined) conditions.push(readableAssetCondition(filters.readableBy))
+  return conditions
+}
+
+function whereOf(conditions: readonly SQL[]): SQL {
+  return conditions.length === 0 ? sql`` : sql`where ${sql.join([...conditions], sql` and `)}`
+}
+
+/**
+ * 分页参数**在碰库之前**校验：`limit <= 0` 或非整数会被 PG 拒成一条看不出所以然的 SQL 错，
+ * 负数 offset 更糟——它静默返回空页，看起来像「没有数据」。
+ */
+function assertPage(page: AssetPage): void {
+  if (!Number.isInteger(page.limit) || page.limit <= 0) {
+    throw new Error(`非法分页：limit 必须是正整数，实得 ${String(page.limit)}`)
+  }
+  if (!Number.isInteger(page.offset) || page.offset < 0) {
+    throw new Error(`非法分页：offset 必须是非负整数，实得 ${String(page.offset)}`)
+  }
 }
 
 /**
@@ -239,29 +315,34 @@ export interface AssetListFilters {
 export async function listAssets(
   db: AssetTarget,
   filters: AssetListFilters = {},
+  page?: AssetPage,
 ): Promise<AssetMetadata[]> {
-  const conditions: SQL[] = []
-  if (filters.type !== undefined) conditions.push(sql`type = ${filters.type}`)
-  if (filters.status !== undefined) conditions.push(sql`status = ${filters.status}`)
-  if (filters.category !== undefined) conditions.push(sql`category = ${filters.category}`)
-  if (filters.visibility !== undefined) conditions.push(sql`visibility = ${filters.visibility}`)
-  if (filters.search !== undefined) {
-    const pattern = `%${filters.search}%`
-    conditions.push(sql`(
-      name ilike ${pattern}
-      or description ilike ${pattern}
-      or array_to_string(tags, ' ') ilike ${pattern}
-    )`)
-  }
+  if (page !== undefined) assertPage(page)
 
-  const where = conditions.length === 0 ? sql`` : sql`where ${sql.join(conditions, sql` and `)}`
+  const where = whereOf(assetConditions(filters))
+  // 切片排在 order by 之后：先取全序再切，翻页才不会跳条。
+  const paging = page === undefined ? sql`` : sql`limit ${page.limit} offset ${page.offset}`
   const rows = rowsOf(await db.execute(sql`
     select ${COLUMNS}
     from auth.asset
     ${where}
     order by updated_at desc, id asc
+    ${paging}
   `))
   return rows.map(toMetadata)
+}
+
+/**
+ * 同一份条件下的**总数**（需求 6）。
+ *
+ * 与 `listAssets` 共用 `assetConditions()`：分页只切列表，总数必须按同一条件数全量，
+ * 否则前端算出来的总页数会与翻到底的实际行为对不上。
+ */
+export async function countAssets(db: AssetTarget, filters: AssetListFilters = {}): Promise<number> {
+  const where = whereOf(assetConditions(filters))
+  const rows = rowsOf(await db.execute(sql`select count(*) as total from auth.asset ${where}`))
+  const total = rows[0]?.["total"]
+  return typeof total === "number" ? total : Number(total ?? 0)
 }
 
 /** 生命周期列的一次条件写入（T008）。 */
