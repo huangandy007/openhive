@@ -31,6 +31,16 @@ describe("合并能力（设计 §4 的三态）", () => {
     expect(结果?.[0]?.kind === "library" ? 结果[0].loaded : undefined).toBe(true)
   })
 
+  test("① 已加载但库里没有中文名 ⇒ 名字取内核 name；description 搬过来", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(["a1"]),
+      skills: [技能({ name: "fund", assetId: "a1", description: "从流水里找资金链" })],
+    })
+    expect(结果?.[0]?.name).toBe("fund")
+    expect(结果?.[0]?.description).toBe("从流水里找资金链")
+    expect(结果?.[0] !== undefined && 结果[0].kind === "library" ? 结果[0].loaded : undefined).toBe(true)
+  })
+
   test("② 库里有 + 内核没有 ⇒ loaded=false，名字退回 assetId", () => {
     const 结果 = 合并能力({ enabled: new Set(["a1"]), skills: [] })
     expect(结果?.[0]?.kind).toBe("library")
@@ -54,6 +64,16 @@ describe("合并能力（设计 §4 的三态）", () => {
     expect(结果?.[0]?.kind).toBe("library")
     expect(结果?.[1]?.kind).toBe("local")
     expect(结果?.[1]?.name).toBe("我的小工具")
+    expect(结果?.[1] !== undefined && "assetId" in 结果[1]).toBe(false)
+  })
+
+  test("③ 自带条目也带 description", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(),
+      skills: [技能({ name: "我的小工具", assetId: "我的小工具", description: "在项目里自己写的" })],
+    })
+    expect(结果?.[0]?.kind).toBe("local")
+    expect(结果?.[0]?.description).toBe("在项目里自己写的")
   })
 
   test("三态同屏：库内条目在前（按 enabled 顺序），自带条目在后", () => {

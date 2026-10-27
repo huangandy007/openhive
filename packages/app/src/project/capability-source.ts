@@ -48,6 +48,7 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
   const 自带: 自带条目[] = []
   for (const 条 of 清单) {
     if (条.assetId !== undefined && 输入.enabled.has(条.assetId)) {
+      // 重复 assetId 时后一条覆盖前一条、前一条整体消失：有意取舍——库内清单来自 enabled 这个 Set，不受影响；内核侧同名目录属极端形状，不为此加去重。
       内核在某资产.set(条.assetId, 条)
       continue
     }
