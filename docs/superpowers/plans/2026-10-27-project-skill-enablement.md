@@ -1698,7 +1698,7 @@ test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async ()
 - [ ] **Step 3: 写实现**
 
 ```ts
-import { createEffect, createSignal } from "solid-js"
+import { createEffect, createRoot, createSignal, untrack } from "solid-js"
 import { createEnableApi, type EnableApi, type EnablementState } from "./enable-api"
 
 /**
@@ -1797,7 +1797,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     停旧 = createRoot((dispose) => {
       createEffect(() => {
         const 当前 = 读()
-        const 换了项目 = 当前 !== 项目()
+        // ⚠️ 必须 `untrack(项目)`：直接 `项目()` 会让本 effect 订阅自己 `set` 的那个信号 ⇒
+        // 自环（2026-10-27 实测：照抄 12 条用例红 7 条，`read:p1` 发两次）。
+        const 换了项目 = 当前 !== untrack(项目)
         set项目(当前)
         // ⚠️ **换项目必须整体复位**（含 `busy` 与上一项目的集合）：
         // 「失败不清空」只适用于**同一项目内**的刷新——跨项目沿用旧集合，界面会把甲的
