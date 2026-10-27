@@ -262,6 +262,19 @@ describe("项目级 skill 启用（真应用）", () => {
         const 目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 已发布资产)
         expect(readlinkSync(链接)).toBe(目标)
         expect(readFileSync(join(链接, "SKILL.md"), "utf8")).toContain("资金分析")
+
+        // 审计：启用是治理动作，写一行 `asset.enable`（裸 SQL 读表，不经被测对象）。
+        const 审计 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select action, board, target_id, result from auth.audit_event
+               where action = 'asset.enable' and target_id = ${已发布资产}
+            `),
+          ),
+        )
+        expect(审计).toEqual([
+          { action: "asset.enable", board: "asset-governance", target_id: 已发布资产, result: "ok" },
+        ])
       }),
     30_000,
   )
