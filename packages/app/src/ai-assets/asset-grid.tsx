@@ -28,6 +28,11 @@ export interface AssetGridProps {
    * 网格自己不判模式——它连筛选都不认识（见 `assets` 的注释）。
    */
   readonly 原分类?: (asset: AssetMetadata) => string | undefined
+  /** 已启用判定（服务端权威）。省略 ⇒ 卡片不显示启用按钮。 */
+  readonly enabledOf?: (asset: AssetMetadata) => boolean
+  readonly onToggleEnabled?: (asset: AssetMetadata) => void
+  readonly enableHint?: string
+  readonly busyId?: string
 }
 
 export function AssetGrid(props: AssetGridProps): JSX.Element {
@@ -117,7 +122,19 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                   >
                     <For each={本行()}>
                       {(asset) => (
-                        <AssetCard asset={asset} onOpen={props.onOpen} 原分类={props.原分类?.(asset)} />
+                        <AssetCard
+                          asset={asset}
+                          onOpen={props.onOpen}
+                          原分类={props.原分类?.(asset)}
+                          {...(props.onToggleEnabled === undefined
+                            ? {}
+                            : {
+                                enabled: props.enabledOf?.(asset) === true,
+                                onToggleEnabled: props.onToggleEnabled,
+                                enableHint: props.enableHint,
+                                busy: props.busyId === asset.id,
+                              })}
+                        />
                       )}
                     </For>
                   </div>

@@ -26,17 +26,27 @@ export interface AssetCardProps {
    * 名字由服务端给（含停用分类的名字），查不到时上层退回分类 id——这里不做判断。
    */
   readonly 原分类?: string
+  /** 已启用（服务端权威；缺省 = 未启用）。 */
+  readonly enabled?: boolean
+  /** 省略 ⇒ 不渲染启用按钮（storybook、旧测试、无数据源的场景）。 */
+  readonly onToggleEnabled?: (asset: AssetMetadata) => void
+  /** 按钮不可用的原因（没有当前项目 / 已达上限）；非空 ⇒ 按钮 disabled 且写进 title。 */
+  readonly enableHint?: string
+  /** 正在切换（转忙）。 */
+  readonly busy?: boolean
 }
 
 export function AssetCard(props: AssetCardProps): JSX.Element {
+  const 可切换 = () => props.onToggleEnabled !== undefined
+  const 不可用 = () => (props.busy === true ? "正在切换…" : props.enableHint)
   return (
-    <div role="listitem" data-slot="asset-card" data-asset-id={props.asset.id} class="h-[132px]">
+    <div role="listitem" data-slot="asset-card" data-asset-id={props.asset.id} class="relative h-[132px]">
       <button
         type="button"
         data-slot="asset-card-open"
         aria-label={`查看资产：${props.asset.name}`}
         onClick={() => props.onOpen(props.asset)}
-        class="flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-3 text-left shadow-[var(--v2-elevation-raised)] hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-border-border-focus"
+        class="flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-3 pr-16 text-left shadow-[var(--v2-elevation-raised)] hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-border-border-focus"
       >
         <div class="flex min-w-0 items-center gap-2">
           <span
@@ -82,6 +92,21 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           </Show>
         </div>
       </button>
+      <Show when={可切换()}>
+        <button
+          type="button"
+          data-slot="asset-card-enable"
+          data-enabled={props.enabled === true}
+          aria-pressed={props.enabled === true}
+          aria-busy={props.busy === true}
+          disabled={props.busy === true || props.enableHint !== undefined}
+          title={不可用()}
+          onClick={() => props.onToggleEnabled?.(props.asset)}
+          class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-accent data-[enabled=true]:text-v2-text-text-accent"
+        >
+          {props.enabled === true ? "已启用" : "启用"}
+        </button>
+      </Show>
     </div>
   )
 }
