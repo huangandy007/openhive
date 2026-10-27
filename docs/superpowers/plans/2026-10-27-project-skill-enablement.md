@@ -1939,7 +1939,8 @@ function 挂(props: Parameters<typeof AssetCard>[0]) {
   const host = document.createElement("div")
   document.body.append(host)
   const dispose = render(() => <AssetCard {...props} />, host)
-  return { host, dispose }
+  // 卸载时连 host 一起摘：只 dispose 会把节点留在 document.body 里，污染后续全局查询
+  return { host, dispose: () => { dispose(); host.remove() } }
 }
 
 describe("AssetCard 的启用按钮", () => {
@@ -1955,7 +1956,8 @@ describe("AssetCard 的启用按钮", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {} })
     const 按钮 = host.querySelector('[data-slot="asset-card-enable"]')!
     expect(按钮.getAttribute("aria-pressed")).toBe("false")
-    expect(按钮.textContent).toContain("启用")
+    // 精确断言，不用 `toContain`：那对「已启用」也成立，恒回「已启用」的变异体会假绿（`#006-22`）
+    expect(按钮.textContent?.trim()).toBe("启用")
     dispose()
   })
 
@@ -1963,7 +1965,7 @@ describe("AssetCard 的启用按钮", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, enabled: true })
     const 按钮 = host.querySelector('[data-slot="asset-card-enable"]')!
     expect(按钮.getAttribute("aria-pressed")).toBe("true")
-    expect(按钮.textContent).toContain("已启用")
+    expect(按钮.textContent?.trim()).toBe("已启用")
     dispose()
   })
 
@@ -1994,6 +1996,14 @@ describe("AssetCard 的启用按钮", () => {
     dispose()
   })
 
+  test("enableHint 是空串 ⇒ 不算禁用理由（禁用却不写原因是最糟的）", () => {
+    const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, enableHint: "" })
+    const 按钮 = host.querySelector<HTMLButtonElement>('[data-slot="asset-card-enable"]')!
+    expect(按钮.disabled).toBe(false)
+    expect(按钮.getAttribute("title")).toBe(null)
+    dispose()
+  })
+
   test("busy：按钮 disabled、aria-busy=true", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, busy: true })
     const 按钮 = host.querySelector('[data-slot="asset-card-enable"]') as HTMLButtonElement
@@ -2017,7 +2027,7 @@ describe("AssetCard 的启用按钮", () => {
   readonly enabled?: boolean
   /** 省略 ⇒ 不渲染启用按钮（storybook、旧测试、无数据源的场景）。 */
   readonly onToggleEnabled?: (asset: AssetMetadata) => void
-  /** 按钮不可用的原因（没有当前项目 / 已达上限）；非空 ⇒ 按钮 disabled 且写进 title。 */
+  /** 按钮不可用的原因（没有当前项目 / 已达上限）；**非空** ⇒ 按钮 disabled 且写进 title。空串等同没传。 */
   readonly enableHint?: string
   /** 正在切换（转忙）。 */
   readonly busy?: boolean
@@ -2028,7 +2038,9 @@ describe("AssetCard 的启用按钮", () => {
 ```tsx
 export function AssetCard(props: AssetCardProps): JSX.Element {
   const 可切换 = () => props.onToggleEnabled !== undefined
-  const 不可用 = () => (props.busy === true ? "正在切换…" : props.enableHint)
+  // 空串按「没给」处理：禁用却不写原因，用户看不出为什么点不了。
+  const 提示 = () => (props.enableHint === undefined || props.enableHint.trim() === "" ? undefined : props.enableHint)
+  const 不可用 = () => (props.busy === true ? "正在切换…" : 提示())
   return (
     <div role="listitem" data-slot="asset-card" data-asset-id={props.asset.id} class="relative h-[132px]">
       <button
@@ -2036,7 +2048,8 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
         data-slot="asset-card-open"
         aria-label={`查看资产：${props.asset.name}`}
         onClick={() => props.onOpen(props.asset)}
-        class="flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-3 pr-16 text-left shadow-[var(--v2-elevation-raised)] hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-border-border-focus"
+        class="flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base p-3 text-left shadow-[var(--v2-elevation-raised)] hover:bg-v2-overlay-simple-overlay-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-border-border-focus"
+        classList={{ "pr-16": 可切换() }}
       >
         {/* …图标 + 名称 + 描述 + 徽章，与原实现逐行相同… */}
       </button>
@@ -2045,9 +2058,10 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           type="button"
           data-slot="asset-card-enable"
           data-enabled={props.enabled === true}
+          aria-label={`${props.enabled === true ? "停用" : "启用"}资产：${props.asset.name}`}
           aria-pressed={props.enabled === true}
           aria-busy={props.busy === true}
-          disabled={props.busy === true || props.enableHint !== undefined}
+          disabled={props.busy === true || 提示() !== undefined}
           title={不可用()}
           onClick={() => props.onToggleEnabled?.(props.asset)}
           class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-accent data-[enabled=true]:text-v2-text-text-accent"
@@ -2060,7 +2074,8 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
 }
 ```
 
-需要的 import：`Show`（`solid-js`）。卡片正文那一段**逐字保留**（图标 span、名称 span、描述 p、徽章行），只把外层 `div` 上的 `flex/…` 类挪到内层按钮上、并给按钮加 `pr-16` 给右上角按钮让位。
+需要的 import：`Show`（`solid-js`）。卡片正文那一段**逐字保留**（图标 span、名称 span、描述 p、徽章行），只把外层 `div` 上的 `flex/…` 类挪到内层按钮上。
+⚠️ `pr-16` **必须按需加**（`classList={{ "pr-16": 可切换() }}`）：不传 `onToggleEnabled` 时按钮不存在，正文不该被白吃掉右侧 64px（约束 6「不传新 prop 时与今天一致」）。
 
 `asset-grid.tsx` 的 `AssetGridProps` 追加：
 
