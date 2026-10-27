@@ -155,7 +155,6 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     const host = 面板({ error: () => "网络请求失败", skills: () => undefined })
     expect(有(host, "capability-unreadable")).toBe(true)
     expect(有(host, "capability-retry")).toBe(true)
-    expect(槽(host, "capability-item").length).toBe(0)
     expect(槽(host, "capability-item-loaded").length).toBe(0)
     expect(槽(host, "capability-item-stale").length).toBe(0)
     expect(有(host, "capability-group-skill")).toBe(false)
@@ -170,9 +169,24 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
       skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })],
     })
     expect(有(host, "capability-retry")).toBe(true)
-    expect(槽(host, "capability-item").length).toBe(0)
     expect(槽(host, "capability-item-local").length).toBe(0)
     expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect(有(host, "capability-count-skill")).toBe(false)
+  })
+
+  test("error 是空串也算失败（判据是 !== undefined，不是真值）⇒ 仍重试，不画旧数据", () => {
+    const host = 面板({
+      error: () => "",
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })],
+    })
+    expect(有(host, "capability-unreadable")).toBe(true)
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect(槽(host, "capability-item-stale").length).toBe(0)
+    expect(槽(host, "capability-item-local").length).toBe(0)
+    expect(有(host, "capability-group-skill")).toBe(false)
+    expect(有(host, "capability-group-knowledge")).toBe(false)
+    expect(有(host, "capability-group-mcp")).toBe(false)
     expect(有(host, "capability-count-skill")).toBe(false)
   })
 

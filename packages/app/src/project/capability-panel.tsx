@@ -195,8 +195,10 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           `skills()` 可能还留着上次成功的值，而库侧这次没读到——三态判断不成立，
           照画会把每条已装技能误判成 ③「本项目自带」，组头还会写 `· 0 个`。
         */}
+        {/* 判据是 `!== undefined`，不是真值：`error()` 为空串也是「有错」（设计口径），
+            用真值会让 `""` 落回 fallback——旧 skills 还在时 §8 违规复活。 */}
         <Show
-          when={props.error()}
+          when={props.error() !== undefined}
           fallback={
             // 从没读到 / 换过项目：一行「正在读取」，不画组头、计数、条目、重试。
             <Show
@@ -211,19 +213,18 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
             </Show>
           }
         >
-          {(说) => (
-            <div data-slot="capability-unreadable" class="px-2 py-2 text-[12px] text-v2-text-text-muted">
-              <p data-slot="capability-error" class="text-v2-state-fg-danger">
-                {说()}
-              </p>
-              <p>
-                暂时读不到这个项目的技能。
-                <button type="button" data-slot="capability-retry" class={小钮} onClick={() => props.onRetry()}>
-                  重试
-                </button>
-              </p>
-            </div>
-          )}
+          {/* 不用 children 回调：`when` 现在是布尔，回调拿到的是 `true` 而不是那句人话。 */}
+          <div data-slot="capability-unreadable" class="px-2 py-2 text-[12px] text-v2-text-text-muted">
+            <p data-slot="capability-error" class="text-v2-state-fg-danger">
+              {props.error()}
+            </p>
+            <p>
+              暂时读不到这个项目的技能。
+              <button type="button" data-slot="capability-retry" class={小钮} onClick={() => props.onRetry()}>
+                重试
+              </button>
+            </p>
+          </div>
         </Show>
       </Show>
     </div>
