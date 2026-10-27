@@ -67,6 +67,19 @@ const 别人: TokenSubject = {
   name: "别人",
   isAdmin: false,
 }
+/**
+ * 乙部门的同事，**同一项目里的 member**（不是 owner）。
+ *
+ * 「启用是项目级事实、送达是读者级授权」那条判据要他：他不是甲部门的人，
+ * 却是我那个项目的合法成员 ⇒ 能 GET，但部门内 skill 不能进他的沙箱。
+ */
+const 乙部门同事: TokenSubject = {
+  id: "770e8400-e29b-41d4-a716-446655440022",
+  policeNo: "020613",
+  name: "乙部门同事",
+  isAdmin: false,
+}
+const 乙部门 = "乙部门"
 
 /** 客户端契约：**写字面量，不 import 生产常量**（`LEARNINGS #003-05`）。 */
 const STATE = "/openhive/project/assets"
@@ -78,6 +91,10 @@ const 别人的项目 = "proj_enable_2"
 const 已发布资产 = "asset_skill_ok"
 const 草稿资产 = "asset_skill_draft"
 const 个人资产 = "asset_skill_personal"
+/** 部门内的已发布 skill（甲部门）：甲部门成员可读、乙部门成员不可读。 */
+const 部门资产 = "asset_skill_dept"
+/** 与 `已发布资产` 同 frontmatter name 的第二份（同名拦截的对照）。 */
+const 同名资产 = "asset_skill_same_name"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
@@ -137,18 +154,24 @@ beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
 
-  // `project_member.user_id` 有外键 ⇒ 两个身份要先有 `auth.user` 行。
-  for (const subject of [我, 别人]) {
+  // `project_member.user_id` 有外键 ⇒ 身份先要有 `auth.user` 行。
+  for (const [subject, dept] of [
+    [我, "甲部门"],
+    [别人, "甲部门"],
+    [乙部门同事, 乙部门],
+  ] as const) {
     await pg.db.execute(sql`
       insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
-      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', '甲部门', 'x', 0, 'h', 0)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', ${dept}, 'x', 0, 'h', 0)
       on conflict (id) do nothing
     `)
   }
 
-  // 成员：我是「我的项目」owner；别人是「别人的项目」owner。
+  // 成员：我是「我的项目」owner；别人是「别人的项目」owner；
+  // 乙部门同事是「我的项目」的 **member**（同项目、不同部门 —— 越权送达那条的读者）。
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
+  await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
 
   // 已发布 / 全局 ⇒ 可启用。
   await insertAsset(pg.db, 资产({ id: 已发布资产, name: "资金分析", status: "published", visibility: "global" }))
@@ -156,11 +179,39 @@ beforeAll(async () => {
   await insertAsset(pg.db, 资产({ id: 草稿资产, name: "草稿 skill", status: "draft", visibility: "personal" }))
   // 已发布 + 个人 ⇒ 撞「个人空间没有共享发布目录」那道门（`personal_not_linkable`）。
   await insertAsset(pg.db, 资产({ id: 个人资产, name: "个人 skill", status: "published", visibility: "personal" }))
+  // 已发布 + 部门（甲部门）：作者是别人（让「能不能读」由部门判据决定，不由作者身份兜底）。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: 部门资产,
+      name: "部门研判",
+      status: "published",
+      visibility: "department",
+      department: "甲部门",
+      ownerId: 别人.id,
+      ownerName: 别人.name,
+    }),
+  )
+  // 与 `已发布资产` 同 frontmatter name（资金分析）的第二份。
+  await insertAsset(pg.db, 资产({ id: 同名资产, name: "另一份资金分析", status: "published", visibility: "global" }))
 
   // 已发布目录：链接的落点必须真的存在（junction 的硬要求）。
-  const 目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 已发布资产)
-  mkdirSync(目标, { recursive: true })
-  writeFileSync(join(目标, "SKILL.md"), "---\nname: 资金分析\ndescription: 测试\n---\n\n正文\n", "utf8")
+  const 全局目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 已发布资产)
+  mkdirSync(全局目标, { recursive: true })
+  writeFileSync(join(全局目标, "SKILL.md"), "---\nname: 资金分析\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  const 同名目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 同名资产)
+  mkdirSync(同名目标, { recursive: true })
+  writeFileSync(join(同名目标, "SKILL.md"), "---\nname: 资金分析\ndescription: 撞名的那份\n---\n\n正文\n", "utf8")
+
+  const 部门目标 = publishDirectory(
+    assetsRoot(process.env),
+    "skill",
+    { visibility: "department", department: "甲部门" },
+    部门资产,
+  )
+  mkdirSync(部门目标, { recursive: true })
+  writeFileSync(join(部门目标, "SKILL.md"), "---\nname: 部门研判\ndescription: 测试\n---\n\n正文\n", "utf8")
 })
 
 afterAll(async () => {
@@ -220,9 +271,9 @@ const 状态 = Schema.Struct({
 })
 const 错误 = Schema.Struct({ error: Schema.String, code: Schema.optional(Schema.String) })
 
-/** `<项目目录>/.opencode/skill/<assetId>` —— 判链接的落点（字面量拼，不经生产常量）。 */
-const 链接路径 = (projectId: string, assetId: string) =>
-  join(projectDirectory(沙箱根, 我.id, projectId), ".opencode", "skill", assetId)
+/** `<某人的项目目录>/.opencode/skill/<assetId>` —— 判链接的落点（字面量拼，不经生产常量）。 */
+const 链接路径 = (projectId: string, assetId: string, userId: string = 我.id) =>
+  join(projectDirectory(沙箱根, userId, projectId), ".opencode", "skill", assetId)
 
 describe("项目级 skill 启用（真应用）", () => {
   it.live(
@@ -330,7 +381,9 @@ describe("项目级 skill 启用（真应用）", () => {
         // 这条会是 500 而不是 application/json。
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body.enabled).toEqual([个人资产])
+        expect(body.enabled).toEqual([])
+        // 行还在库里 ⇒ 项目真相仍是 1；但它不可链接、也不回显给任何读者。
+        expect(body.enabledCount).toBe(1)
         expect(existsSync(链接路径(我的项目, 个人资产))).toBe(false)
 
         // 清掉夹具，别把状态漏给后面的用例。
@@ -394,6 +447,74 @@ describe("项目级 skill 启用（真应用）", () => {
       Effect.gen(function* () {
         const response = yield* as(null, `${STATE}?projectId=${我的项目}`)
         expect(response.status).toBe(401)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "同名 skill：第二份启用回 409 duplicate_skill_name，库里只有第一份",
+    () =>
+      Effect.gen(function* () {
+        // 前置：第一份（frontmatter name = 资金分析）先在项目里。
+        expect((yield* post(我, ENABLE, { projectId: 我的项目, assetId: 已发布资产 })).status).toBe(200)
+
+        const 第二份 = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 同名资产 })
+        expect(第二份.status).toBe(409)
+        expect((yield* json(错误, 第二份)).code).toBe("duplicate_skill_name")
+
+        // 库里没有第二份（被拦在写库之前）。
+        const rows = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select asset_id from auth.project_asset_enablement
+               where project_id = ${我的项目} order by asset_id
+            `),
+          ),
+        )
+        expect(rows.map((row) => row["asset_id"])).toEqual([已发布资产])
+        expect(existsSync(链接路径(我的项目, 同名资产))).toBe(false)
+
+        // 清掉夹具。
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 已发布资产 })).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * **启用是项目级事实，送达是读者级授权**（复审判定，2026-10-27 修复轮 1）。
+   *
+   * 反例今天就能构造：甲部门成员在项目里启用一份**甲部门的**已发布 skill（启用入口放行），
+   * 乙部门成员是**同一个项目的 member** ⇒ 他能 GET。若对账不按**这个读者**判 `canReadAsset()`，
+   * 就会用乙的 userId 算目录、给他建一条链接 ⇒ **乙的内核真的会加载一份他无权读的资产**；
+   * 同时 `enabled` 原样回显，等于给出「项目里启用了哪些 id」的探针。
+   *
+   * 判据三半：① 甲（有权）看得见、链接在**甲**的目录里（机制是活的，`#004-08`）；
+   * ② 乙（无权）`enabled` 不含该 id、**乙的目录里没有链接**（被测属性）；
+   * ③ `enabledCount` 仍是项目真相 1（上限是项目级参数）。
+   */
+  it.live(
+    "越权送达：甲部门成员启用的部门 skill 不进乙部门成员沙箱，enabled 也不回显（enabledCount 是项目真相）",
+    () =>
+      Effect.gen(function* () {
+        // 前置：甲（甲部门）启用成功 —— 机制是活的。
+        const 启用 = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 部门资产 })
+        expect(启用.status).toBe(200)
+        expect((yield* json(状态, 启用)).enabled).toContain(部门资产)
+        expect(existsSync(链接路径(我的项目, 部门资产, 我.id))).toBe(true)
+
+        // 乙（乙部门，同项目 member）打开资产中心。
+        const 乙响应 = yield* as(乙部门同事, `${STATE}?projectId=${我的项目}`)
+        const 乙状态 = yield* json(状态, 乙响应)
+        expect(乙响应.status).toBe(200)
+
+        // 被测属性：不送达、不回显（**链接在前**——它才是「内核会真的加载」那一半）。
+        expect(existsSync(链接路径(我的项目, 部门资产, 乙部门同事.id))).toBe(false)
+        expect(乙状态.enabled).not.toContain(部门资产)
+        // 项目真相不动：上限是项目级参数，读者要知道还剩多少位置。
+        expect(乙状态.enabledCount).toBe(1)
+
+        // 清掉夹具（同时摘掉甲目录里那条链接）。
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 部门资产 })).status).toBe(200)
       }),
     30_000,
   )

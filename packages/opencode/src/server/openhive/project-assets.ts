@@ -196,6 +196,12 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     const state = yield* Effect.promise(() => enablementOf(deps.pg(), projectId))
     const 目录 = 项目目录(deps, userId, projectId)
     const 根 = assetsRoot(process.env)
+    const 部门 = yield* 取部门(deps, userId)
+    // 「启用」是项目级事实（库里的行），「送达」是读者级授权：每个读者只把**自己读得到**的资产
+    // 链进自己的沙箱。否则甲部门发布的 skill 会被乙部门成员的 GET 顺手对账进乙的沙箱，
+    // 且 `enabled` 还会泄露项目启用了哪些 id。故这里先按读者判可见性，再建链接。
+    const viewer = { userId, department: 部门 }
+    const 可见: string[] = []
 
     const desired = new Map<string, string>()
     for (const assetId of state.enabled) {
@@ -205,16 +211,28 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       // 个人空间没有共享目录 ⇒ 算不出 target（`skillLinkTarget` 会抛）。启用入口已经拦了，
       // 这里再挡一次是给「历史遗留行 / 直接写库」兜底：不挡就是每次打开资产中心都 500。
       if (asset.visibility === "personal") continue
+      // 读者读不到 ⇒ 不链、也不回给前端。只影响 `enabled`，不影响库里的启用事实。
+      if (!canReadAsset(viewer, asset)) continue
       const target = skillLinkTarget(根, asset)
       if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
+      可见.push(assetId)
     }
 
-    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired))
-    if (结果.skipped.length > 0) {
+    // 对账失败不能把整个 GET 变成 500：库里的启用状态仍要能读出来，目录留到下次自愈。
+    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired)).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("对账失败，目录状态待下次修复", { projectId, 目录, cause }).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    )
+    if (结果 !== undefined && 结果.skipped.length > 0) {
       yield* Effect.logWarning("项目目录里有不是链接的 skill 目录，未动", { skipped: 结果.skipped })
     }
-    return state
+    // `enabled` 只回**当前读者可见**的 id，而 `enabledCount` 保持项目真相（库里的启用条数）。
+    // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
+    return { ...state, enabled: 可见 }
   })
 }
 
@@ -257,6 +275,10 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
         return fail(409, "个人空间的 skill 还不能装进项目，请先发布到部门或全局", "personal_not_linkable")
 
       const 部门 = yield* 取部门(deps, userId)
+      // `canReadAsset` 的第三个参数是新版授权组（`readable-sql.ts:81-91` 的 grant 行）。它今天
+      // **没有任何生产写入口**，所以这里沿用默认的 `[]`。等授权组上线时**必须**把该读者命中的
+      // grant 一并传进来，否则资产列表（按 grant 判可见）与启用（不认 grant）会漂移成
+      // 「列表看得见、启用返回 403」。对账里的可见性判定（`对账并读`）要同步改。
       if (!canReadAsset({ userId, department: 部门 }, asset)) return fail(403, "无权使用该资产", "forbidden")
 
       const target = skillLinkTarget(assetsRoot(process.env), asset)
@@ -294,6 +316,8 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
         detail: { projectId },
       })
     } else {
+      // 停用对「库里没有这条」的 assetId 也回 200 + 审计，这是刻意的幂等：用户连点两次、
+      // 或两台机器同时点，不该第二次报错。幽灵 id 也留一条审计，便于追「谁按了什么」。
       yield* Effect.promise(() => disableAsset(deps.pg(), { projectId, assetId }))
       const 目录 = 项目目录(deps, userId, projectId)
       yield* Effect.promise(() => unlinkSkill(目录, assetId)).pipe(
