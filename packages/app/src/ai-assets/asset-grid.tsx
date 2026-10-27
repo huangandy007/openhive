@@ -41,6 +41,8 @@ export interface AssetGridProps {
    */
   readonly enableHintOf?: (asset: AssetMetadata) => string | undefined
   readonly busyId?: string
+  /** 自动送达名单（需求 5a）：命中的卡片标「自动」、按钮显示「固定安装」。 */
+  readonly autoOf?: (asset: AssetMetadata) => boolean
 }
 
 export function AssetGrid(props: AssetGridProps): JSX.Element {
@@ -138,6 +140,7 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                             ? {}
                             : {
                                 enabled: props.enabledOf?.(asset) === true,
+                                auto: props.autoOf?.(asset) === true,
                                 onToggleEnabled: props.onToggleEnabled,
                                 enableHint: props.enableHintOf?.(asset),
                                 busy: props.busyId === asset.id,

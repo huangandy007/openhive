@@ -26,6 +26,15 @@ export interface ProjectEnablement {
   readonly enabled: () => ReadonlySet<string>
   readonly enabledCount: () => number
   readonly limit: () => number
+  /**
+   * 【保留的定制 · 同步上游时不要丢】自动送达（需求 5a，2026-10-27）。
+   * `auto` 与 `enabled` **不是包含关系**：手动启用的不会出现在 `auto`（服务端把它们排除在
+   * 候选集之外），`auto` 里的是「这次对账替你链进去的」。
+   */
+  readonly auto: () => ReadonlySet<string>
+  readonly autoDelivery: () => boolean
+  readonly autoDeliveryBusy: () => boolean
+  readonly setAutoDelivery: (enabled: boolean) => void
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
   readonly bind: (projectId: () => string | undefined) => void
@@ -43,6 +52,10 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [集合, set集合] = createSignal<ReadonlySet<string>>(new Set())
   const [数量, set数量] = createSignal(0)
   const [上限, set上限] = createSignal(默认上限)
+  const [自动, set自动] = createSignal<ReadonlySet<string>>(new Set())
+  // 首帧占位「开」与服务端同口径（无行 = 开）；每次 bind 必发一次 read，拿到回包就被覆盖。
+  const [自动开关, set自动开关] = createSignal(true)
+  const [开关忙, set开关忙] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
 
@@ -52,6 +65,8 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set集合(new Set(状态.enabled))
     set数量(状态.enabledCount)
     set上限(状态.limit)
+    set自动(new Set(状态.auto))
+    set自动开关(状态.autoDelivery)
   }
 
   const 清空 = () => {
@@ -59,6 +74,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set集合(new Set<string>())
     set数量(0)
     set上限(默认上限)
+    set自动(new Set<string>())
+    set自动开关(true)
+    set开关忙(false)
     set错误(undefined)
     set忙(undefined)
   }
@@ -71,9 +89,10 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
    */
   const 拉 = (projectId: string, 保留错误 = false) => {
     const 本次 = ++代次
-    // 本次 read 让所有在飞的 toggle 作废（它们回来时代次对不上、整份丢弃），
-    // 那就必须**替它们**把 `busy` 收掉，否则按钮会一直转忙到下一次 toggle。
+    // 本次 read 让所有在飞的 toggle / 开关请求作废（它们回来时代次对不上、整份丢弃），
+    // 那就必须**替它们**把忙态收掉，否则按钮会一直转忙到下一次操作。
     set忙(undefined)
+    set开关忙(false)
     void api
       .read(projectId)
       .then((结果) => {
@@ -150,11 +169,55 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
       })
   }
 
+  /**
+   * 一键开关自动送达（需求 5a）。与 `toggle` 同一套代次纪律：回包只认最新一次，
+   * 且失败后补一次重拉——「关了没有」只有服务端知道，界面不在本地猜。
+   */
+  const 设自动送达 = (enabled: boolean) => {
+    const projectId = 项目()
+    if (projectId === undefined) return
+    const 本次 = ++代次
+    set开关忙(true)
+    void api
+      .setAutoDelivery({ projectId, enabled })
+      .then((结果) => {
+        if (本次 !== 代次 || 项目() !== projectId) return
+        set开关忙(false)
+        if (结果.kind === "ok") {
+          应用(结果.value)
+          set错误(undefined)
+          return
+        }
+        set错误(结果.message)
+        拉(projectId, true)
+      })
+      .catch(() => {
+        if (本次 !== 代次) return
+        set开关忙(false)
+        set错误("操作失败，请重试")
+        拉(projectId, true)
+      })
+  }
+
   const reload = () => {
     const projectId = 项目()
     if (projectId === undefined) return
     拉(projectId)
   }
 
-  return { projectId: 项目, enabled: 集合, enabledCount: 数量, limit: 上限, error: 错误, busy: 忙, bind, toggle, reload }
+  return {
+    projectId: 项目,
+    enabled: 集合,
+    enabledCount: 数量,
+    limit: 上限,
+    auto: 自动,
+    autoDelivery: 自动开关,
+    autoDeliveryBusy: 开关忙,
+    setAutoDelivery: 设自动送达,
+    error: 错误,
+    busy: 忙,
+    bind,
+    toggle,
+    reload,
+  }
 }

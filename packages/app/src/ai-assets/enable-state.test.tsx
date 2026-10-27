@@ -22,15 +22,16 @@ function 假api(回包: Record<string, Array<{ kind: "ok"; value: any } | { kind
       read: async (projectId: string) => 取(`read:${projectId}`),
       enable: async (input: { projectId: string; assetId: string }) => 取(`enable:${input.assetId}`),
       disable: async (input: { projectId: string; assetId: string }) => 取(`disable:${input.assetId}`),
+      setAutoDelivery: async (input: { projectId: string; enabled: boolean }) => 取(`auto:${input.enabled}`),
     },
   }
 }
 
-const 空 = { enabled: [], enabledCount: 0, limit: 20 }
+const 空 = { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: true }
 
 test("bind：项目一换就重拉，没项目时清空", async () => {
   const { api } = 假api({
-    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }],
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }],
   })
   await createRoot(async (dispose) => {
     const [项目, 设项目] = createSignal<string | undefined>(undefined)
@@ -51,7 +52,7 @@ test("bind：项目一换就重拉，没项目时清空", async () => {
 test("toggle：启用成功后以服务端回包为准（不自己算）", async () => {
   const { api } = 假api({
     "read:p1": [{ kind: "ok", value: 空 }],
-    "enable:b": [{ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20 } }],
+    "enable:b": [{ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }],
   })
   await createRoot(async (dispose) => {
     const 状态 = createProjectEnablement(api)
@@ -69,7 +70,7 @@ test("toggle：启用成功后以服务端回包为准（不自己算）", async
 
 test("已启用的再点 = 停用", async () => {
   const { 记录, api } = 假api({
-    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }],
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }],
     "disable:a": [{ kind: "ok", value: 空 }],
   })
   await createRoot(async (dispose) => {
@@ -86,7 +87,7 @@ test("已启用的再点 = 停用", async () => {
 
 test("失败：错误原样留着，既有集合不动（不假清空）", async () => {
   const { api } = 假api({
-    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }],
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }],
     "enable:b": [{ kind: "error", message: "每个项目最多启用 20 个 skill，请先停用一个", code: "enablement_limit" }],
   })
   await createRoot(async (dispose) => {
@@ -108,8 +109,8 @@ test("失败：错误原样留着，既有集合不动（不假清空）", async
 test("toggle 失败后补一次重拉：计数以服务端为准、错误留着", async () => {
   const { api } = 假api({
     "read:p1": [
-      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } },
-      { kind: "ok", value: { enabled: ["a"], enabledCount: 2, limit: 20 } },
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } },
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 2, limit: 20, auto: [], autoDelivery: true } },
     ],
     "enable:b": [{ kind: "error", message: "项目里已启用同名 skill：资金分析", code: "duplicate_skill_name" }],
   })
@@ -137,6 +138,7 @@ test("连点两次：旧回包晚到不回写（代次丢弃）", async () => {
     read: async () => new Promise((r) => 待到.push(r)),
     enable: async () => new Promise((r) => 待到.push(r)),
     disable: async () => new Promise((r) => 待到.push(r)),
+    setAutoDelivery: async () => new Promise((r) => 待到.push(r)),
   }
   await createRoot(async (dispose) => {
     const 状态 = createProjectEnablement(api)
@@ -149,11 +151,11 @@ test("连点两次：旧回包晚到不回写（代次丢弃）", async () => {
     状态.toggle("b") // 第二次：enable:b 挂着
     expect(状态.busy()).toBe("b")
 
-    待到[2]({ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20 } }) // 新的先回
+    待到[2]({ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }) // 新的先回
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["b"])
 
-    待到[1]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }) // 旧的后回
+    待到[1]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }) // 旧的后回
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["b"])
     expect(状态.busy()).toBeUndefined()
@@ -167,21 +169,22 @@ test("重拉：旧回包晚到不回写（代次丢弃）", async () => {
     read: async () => new Promise((r) => 待到.push(r)),
     enable: async () => ({ kind: "ok", value: 空 }),
     disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
   }
   await createRoot(async (dispose) => {
     const 状态 = createProjectEnablement(api)
     状态.bind(() => "p1")
     await new Promise((r) => setTimeout(r, 0))
-    待到[0]({ kind: "ok", value: { enabled: ["初始"], enabledCount: 1, limit: 20 } })
+    待到[0]({ kind: "ok", value: { enabled: ["初始"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } })
     await new Promise((r) => setTimeout(r, 0))
 
     状态.reload() // 第 2 次读
     状态.reload() // 第 3 次读
-    待到[2]({ kind: "ok", value: { enabled: ["新"], enabledCount: 1, limit: 20 } }) // 新先回
+    待到[2]({ kind: "ok", value: { enabled: ["新"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }) // 新先回
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["新"])
 
-    待到[1]({ kind: "ok", value: { enabled: ["旧"], enabledCount: 1, limit: 20 } }) // 旧后回
+    待到[1]({ kind: "ok", value: { enabled: ["旧"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }) // 旧后回
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["新"])
     dispose()
@@ -190,7 +193,7 @@ test("重拉：旧回包晚到不回写（代次丢弃）", async () => {
 
 test("enabledCount 是项目真相：不等于可见 set 的大小；limit 原样透传", async () => {
   const { api } = 假api({
-    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 3, limit: 50 } }],
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 3, limit: 50, auto: [], autoDelivery: true } }],
   })
   await createRoot(async (dispose) => {
     const 状态 = createProjectEnablement(api)
@@ -224,12 +227,13 @@ test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async ()
         ? new Promise<EnableOutcome>((r) => {
             放p1读 = r
           })
-        : Promise.resolve({ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20 } }),
+        : Promise.resolve({ kind: "ok", value: { enabled: ["b"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } }),
     enable: () =>
       new Promise<EnableOutcome>((r) => {
         放p1切 = r
       }),
     disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
   }
   await createRoot(async (dispose) => {
     const [项目, 设项目] = createSignal<string | undefined>("p1")
@@ -245,8 +249,8 @@ test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async ()
     expect(状态.busy()).toBeUndefined()
     expect([...状态.enabled()]).toEqual(["b"])
 
-    放p1读?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
-    放p1切?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20 } })
+    放p1读?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20, auto: [], autoDelivery: true } })
+    放p1切?.({ kind: "ok", value: { enabled: ["a"], enabledCount: 9, limit: 20, auto: [], autoDelivery: true } })
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["b"]) // 旧回包不覆盖新项目
     expect(状态.enabledCount()).toBe(1)
@@ -264,6 +268,9 @@ test("api reject：错误落到 error、busy 复位（不留未处理拒绝）",
       throw new Error("boom")
     },
     disable: async () => {
+      throw new Error("boom")
+    },
+    setAutoDelivery: async () => {
       throw new Error("boom")
     },
   }
@@ -291,6 +298,7 @@ test("重复 bind：旧的 effect 被拆掉（换项目只发一次 read）", as
     },
     enable: async () => ({ kind: "ok", value: 空 }),
     disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
   }
   await createRoot(async (dispose) => {
     const [项目, 设项目] = createSignal<string | undefined>("p1")
@@ -312,13 +320,14 @@ test("切项目：上一项目的集合不沿用（新项目读还没回来时�
     read: async () => new Promise((r) => 待到.push(r)),
     enable: async () => ({ kind: "ok", value: 空 }),
     disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
   }
   await createRoot(async (dispose) => {
     const [项目, 设项目] = createSignal<string | undefined>("p1")
     const 状态 = createProjectEnablement(api)
     状态.bind(项目)
     await new Promise((r) => setTimeout(r, 0))
-    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } })
+    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } })
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["a"])
 
@@ -336,10 +345,11 @@ test("卸载后不再发请求（effect 必须随调用方 owner 一起拆）", 
   const api: EnableApi = {
     read: async (projectId: string) => {
       记录.push(projectId)
-      return { kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20 } }
+      return { kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: true } }
     },
     enable: async () => ({ kind: "ok", value: 空 }),
     disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
   }
   const [项目, 设项目] = createSignal<string | undefined>("p1")
   const 状态 = createProjectEnablement(api)
@@ -362,7 +372,7 @@ test("卸载后不再发请求（effect 必须随调用方 owner 一起拆）", 
 test("同项目刷新失败：错误留着，既有集合不清空", async () => {
   const { api } = 假api({
     "read:p1": [
-      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } },
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } },
       { kind: "error", message: "炸了" },
     ],
   })
@@ -384,12 +394,13 @@ test("reload 撞在飞的 toggle：旧回包不回写，busy 被收掉", async (
     read: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
     enable: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
     disable: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    setAutoDelivery: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
   }
   await createRoot(async (dispose) => {
     const 状态 = createProjectEnablement(api)
     状态.bind(() => "p1")
     await new Promise((r) => setTimeout(r, 0))
-    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } })
+    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } })
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["a"])
 
@@ -404,11 +415,116 @@ test("reload 撞在飞的 toggle：旧回包不回写，busy 被收掉", async (
     expect(状态.busy()).toBeUndefined()
 
     // reload 的回包故意与旧值不同：否则「回包被应用」这件事钉不住（回包前后都是 `["a"]`，`#005-47`）
-    待到[2]({ kind: "ok", value: { enabled: ["b"], enabledCount: 2, limit: 20 } })
+    待到[2]({ kind: "ok", value: { enabled: ["b"], enabledCount: 2, limit: 20, auto: [], autoDelivery: true } })
     await new Promise((r) => setTimeout(r, 0))
     expect([...状态.enabled()]).toEqual(["b"])
     expect(状态.enabledCount()).toBe(2)
     expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
+
+/**
+ * 自动送达（需求 5a，2026-10-27）：名单与开关跟启用集合**同一次回包**——本层不另发读请求，
+ * 也不在本地推算「关了以后还有哪些」；关掉后服务端回 `auto: []`，界面自然就没有自动项了。
+ */
+test("应用：自动送达名单与开关都跟着服务端回包走", async () => {
+  const { api } = 假api({
+    "read:p1": [
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: ["x", "y"], autoDelivery: false } },
+    ],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.auto()]).toEqual(["x", "y"])
+    expect(状态.autoDelivery()).toBe(false)
+    dispose()
+  })
+})
+
+test("切项目：自动名单清空、开关复位成「开」（首帧与默认一致）", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: async () => new Promise((r) => 待到.push(r)),
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    待到[0]({ kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: ["x"], autoDelivery: false } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.auto().size).toBe(1)
+    expect(状态.autoDelivery()).toBe(false)
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // p2 的读还悬着：这一刻不能把 p1 的自动名单 / 关状态当成 p2 的
+    expect(状态.auto().size).toBe(0)
+    expect(状态.autoDelivery()).toBe(true)
+    dispose()
+  })
+})
+
+test("setAutoDelivery：请求带当前项目与目标值，结果以服务端回包为准", async () => {
+  const { 记录, api } = 假api({
+    "read:p1": [{ kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: ["x"], autoDelivery: true } }],
+    "auto:false": [{ kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: false } }],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.autoDelivery()).toBe(true)
+
+    状态.setAutoDelivery(false)
+    expect(状态.autoDeliveryBusy()).toBe(true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(记录).toContain("auto:false")
+    expect(状态.autoDelivery()).toBe(false)
+    // 关掉后服务端不再自动装载 ⇒ 名单同步清空（不在本地自己清，完全照回包）
+    expect(状态.auto().size).toBe(0)
+    expect(状态.autoDeliveryBusy()).toBe(false)
+    dispose()
+  })
+})
+
+test("setAutoDelivery 失败：错误留着、补一次重拉、开关忙复位", async () => {
+  const { api } = 假api({
+    "read:p1": [
+      { kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: true } },
+      { kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: true } },
+    ],
+    "auto:false": [{ kind: "error", message: "不是该项目成员" }],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    状态.setAutoDelivery(false)
+    // 两次：开关回包一次、它触发的重拉一次。
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("不是该项目成员")
+    expect(状态.autoDeliveryBusy()).toBe(false)
+    expect(状态.autoDelivery()).toBe(true)
+    dispose()
+  })
+})
+
+test("没有项目时 setAutoDelivery 不发请求", async () => {
+  const { 记录, api } = 假api({})
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => undefined)
+    状态.setAutoDelivery(false)
+    expect(记录).toEqual([])
+    expect(状态.autoDeliveryBusy()).toBe(false)
     dispose()
   })
 })

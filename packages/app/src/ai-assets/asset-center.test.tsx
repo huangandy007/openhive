@@ -257,6 +257,11 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       enabled: over.enabled ?? (() => new Set<string>()),
       enabledCount: over.enabledCount ?? (() => 0),
       limit: over.limit ?? (() => 20),
+      auto: over.auto ?? (() => new Set<string>()),
+      // 需求 5a：默认「开」与服务端同口径（无行 = 开）。用例要测关闭态就显式传 false。
+      autoDelivery: over.autoDelivery ?? (() => true),
+      autoDeliveryBusy: over.autoDeliveryBusy ?? (() => false),
+      setAutoDelivery: over.setAutoDelivery ?? (() => {}),
       error: over.error ?? 空,
       busy: over.busy ?? 空,
       bind: over.bind ?? (() => {}),
@@ -355,4 +360,80 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       卸()
     }
   })
+
+  /**
+   * 自动送达（需求 5a）：中栏只做两件接线——**把自动名单标到卡上**、**把一键开关交回去**。
+   * 开关的竞态与失败处理在 `enable-state.test.tsx` 守着；这里钉「点了真的会发」。
+   *
+   * 嵌套在本 describe 里只是为了让 `假启用 / 挂中栏` 这两个夹具够得着；用例名已写明是哪一块。
+   */
+  describe("自动送达（需求 5a）", () => {
+  test("有项目：开关显示「自动送达：开」，点一下请求关闭", () => {
+    const 请求: boolean[] = []
+    const 假 = 假启用({ projectId: () => "p1", setAutoDelivery: (enabled) => 请求.push(enabled) })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 开关 = host.querySelector<HTMLButtonElement>('[data-slot="asset-auto-delivery"]')!
+      expect(开关.textContent?.trim()).toBe("自动送达：开")
+      expect(开关.getAttribute("aria-pressed")).toBe("true")
+      开关.click()
+      expect(请求).toEqual([false])
+    } finally {
+      卸()
+    }
+  })
+
+  test("已关闭：显示「关」，点一下请求打开", () => {
+    const 请求: boolean[] = []
+    const 假 = 假启用({
+      projectId: () => "p1",
+      autoDelivery: () => false,
+      setAutoDelivery: (enabled) => 请求.push(enabled),
+    })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 开关 = host.querySelector<HTMLButtonElement>('[data-slot="asset-auto-delivery"]')!
+      expect(开关.textContent?.trim()).toBe("自动送达：关")
+      expect(开关.getAttribute("aria-pressed")).toBe("false")
+      开关.click()
+      expect(请求).toEqual([true])
+    } finally {
+      卸()
+    }
+  })
+
+  test("开关忙时禁用（避免连点发出互相打架的两趟）", () => {
+    const 假 = 假启用({ projectId: () => "p1", autoDeliveryBusy: () => true })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 开关 = host.querySelector<HTMLButtonElement>('[data-slot="asset-auto-delivery"]')!
+      expect(开关.disabled).toBe(true)
+      expect(开关.getAttribute("aria-busy")).toBe("true")
+    } finally {
+      卸()
+    }
+  })
+
+  test("自动送达的卡片带「自动」标记，别的不带", () => {
+    const 假 = 假启用({ projectId: () => "p1", auto: () => new Set(["a1"]) })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      expect(host.querySelector('[data-asset-id="a1"] [data-slot="asset-card-auto"]')?.textContent).toBe("自动")
+      // 布尔断言避开 `#009-01`
+      expect(host.querySelector('[data-asset-id="a2"] [data-slot="asset-card-auto"]') === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("没有项目：开关整块不出现（与计数条同一条规矩）", () => {
+    const 假 = 假启用({ projectId: undefined })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      expect(host.querySelector('[data-slot="asset-auto-delivery"]') === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+})
 })

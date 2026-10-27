@@ -39,6 +39,12 @@ export interface AssetCardProps {
   readonly enableHint?: string
   /** 正在切换（转忙）。 */
   readonly busy?: boolean
+  /**
+   * 自动送达装进来的（需求 5a）：卡上标「自动」，按钮改名「固定安装」——那一下才写进
+   * 手动启用，此后不再随自动送达的增减而变。服务端不会让同一个 id 同时出现在
+   * `enabled` 与 `auto` 里；真同时出现时按「已固定」呈现（`enabled` 优先）。
+   */
+  readonly auto?: boolean
 }
 
 export function AssetCard(props: AssetCardProps): JSX.Element {
@@ -46,6 +52,9 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
   // 空串按「没给」处理：禁用却不写原因，用户看不出为什么点不了。
   const 提示 = () => (props.enableHint === undefined || props.enableHint.trim() === "" ? undefined : props.enableHint)
   const 不可用 = () => (props.busy === true ? "正在切换…" : 提示())
+  /** 动作名：已固定 > 自动（可选固定安装）> 普通启用。无障碍名与可见文案共用这一份。 */
+  const 动作 = () => (props.enabled === true ? "停用" : props.auto === true ? "固定安装" : "启用")
+  const 按钮文案 = () => (props.enabled === true ? "已启用" : props.auto === true ? "固定安装" : "启用")
   return (
     <div role="listitem" data-slot="asset-card" data-asset-id={props.asset.id} class="relative h-[132px]">
       <button
@@ -85,6 +94,17 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           <span data-slot="asset-card-status" data-status={props.asset.status} class={徽章}>
             {ASSET_STATUS_LABELS[props.asset.status]}
           </span>
+          {/* 自动送达（需求 5a）：光有头像旁的按钮改名还不够——用户扫一眼网格就该知道
+              「这玩意儿不是我装的」。同理挂在徽章行，与前两枚同高。 */}
+          <Show when={props.auto === true}>
+            <span
+              data-slot="asset-card-auto"
+              title="自动送达：审核通过后自动装入本项目"
+              class={`${徽章} shrink-0`}
+            >
+              自动
+            </span>
+          </Show>
           {/* 卡片是定高的（132px，见 `grid-model.ts`）：这一枚只能占同一行的余宽、省略号收口，
               全名挂 `title`。多起一行会把行高撑破，虚拟滚动的几何就跟不上了。 */}
           <Show when={props.原分类}>
@@ -105,7 +125,8 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           type="button"
           data-slot="asset-card-enable"
           data-enabled={props.enabled === true}
-          aria-label={`${props.enabled === true ? "停用" : "启用"}资产：${props.asset.name}`}
+          data-auto={props.auto === true}
+          aria-label={`${动作()}资产：${props.asset.name}`}
           aria-pressed={props.enabled === true}
           aria-busy={props.busy === true}
           disabled={props.busy === true || 提示() !== undefined}
@@ -113,7 +134,7 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           onClick={() => props.onToggleEnabled?.(props.asset)}
           class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-focus data-[enabled=true]:text-v2-text-text-accent"
         >
-          {props.enabled === true ? "已启用" : "启用"}
+          {按钮文案()}
         </button>
       </Show>
     </div>

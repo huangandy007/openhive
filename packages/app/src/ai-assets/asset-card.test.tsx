@@ -106,3 +106,28 @@ describe("AssetCard 的启用按钮", () => {
     dispose()
   })
 })
+
+/**
+ * 自动送达标记（需求 5a，2026-10-27）：自动装进项目的 skill 要**一眼看出来它不是我装的选择**，
+ * 按钮也改名「固定安装」——那一下才会写进手动启用（此后不再随自动送达增减）。
+ */
+describe("AssetCard 的自动送达标记", () => {
+  test("auto ⇒ 徽章「自动」、按钮文案「固定安装」", () => {
+    const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, auto: true })
+    expect(host.querySelector('[data-slot="asset-card-auto"]')?.textContent).toBe("自动")
+    const 按钮 = host.querySelector('[data-slot="asset-card-enable"]')!
+    // 精确断言（`#006-22`）：`toContain("安装")` 对「启用」不成立，但恒回「固定安装」的变异体也绿不了
+    expect(按钮.textContent?.trim()).toBe("固定安装")
+    expect(按钮.getAttribute("aria-pressed")).toBe("false")
+    expect(按钮.getAttribute("aria-label")).toBe("固定安装资产：资金分析")
+    dispose()
+  })
+
+  test("不是 auto ⇒ 不画徽章、文案仍是「启用」（加它之前逐字相同）", () => {
+    const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {} })
+    // 布尔断言避开 `#009-01`
+    expect(host.querySelector('[data-slot="asset-card-auto"]') === null).toBe(true)
+    expect(host.querySelector('[data-slot="asset-card-enable"]')?.textContent?.trim()).toBe("启用")
+    dispose()
+  })
+})

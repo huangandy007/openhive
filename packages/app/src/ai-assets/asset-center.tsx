@@ -138,10 +138,36 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
           <AssetSearch value={搜索词()} onInput={改搜索} />
         </div>
         {/* 项目级启用（2026-10-27 / Task 7）：没选项目时整条不出现——「0/20」会被读成
-            「一个都没启用」，那是另一件事。启用在**下一条消息**才进内核，故文案这么说。 */}
+            「一个都没启用」，那是另一件事。启用在**下一条消息**才进内核，故文案这么说。
+
+            自动送达开关（需求 5a）挂同一行：它和配额是一件事的两面（自动项占的就是剩余预算），
+            分两行反而要用户自己算。默认「开」，关掉只是不再新增，已装的（含固定的）不动。 */}
         <Show when={props.enablement?.projectId() !== undefined}>
-          <div data-slot="asset-enable-count" class="px-4 pt-2 text-[12px] text-v2-text-text-muted">
-            已启用 {props.enablement?.enabledCount()}/{props.enablement?.limit()} · 下一条消息生效
+          <div class="flex items-center justify-between gap-2 px-4 pt-2 text-[12px] text-v2-text-text-muted">
+            <span data-slot="asset-enable-count">
+              已启用 {props.enablement?.enabledCount()}/{props.enablement?.limit()} · 下一条消息生效
+            </span>
+            <button
+              type="button"
+              data-slot="asset-auto-delivery"
+              data-enabled={props.enablement?.autoDelivery() === true}
+              aria-pressed={props.enablement?.autoDelivery() === true}
+              aria-busy={props.enablement?.autoDeliveryBusy() === true}
+              disabled={props.enablement?.autoDeliveryBusy() === true}
+              title={
+                props.enablement?.autoDelivery() === true
+                  ? "关闭后，后续审核通过并共享给您的 skill 不再自动装入本项目（已装入与固定安装的不受影响）"
+                  : "打开后，审核通过并共享给您的 skill 会自动装入本项目（最多 20 个，手动安装优先）"
+              }
+              onClick={() => {
+                const 状态 = props.enablement
+                if (状态 === undefined) return
+                状态.setAutoDelivery(!状态.autoDelivery())
+              }}
+              class="shrink-0 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-0.5 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-focus data-[enabled=true]:text-v2-text-text-accent"
+            >
+              自动送达：{props.enablement?.autoDelivery() === true ? "开" : "关"}
+            </button>
           </div>
         </Show>
         {/* 失败如实显示、不清空集合（`enable-state.ts` 文件头）：旧状态比白屏有用。 */}
@@ -175,6 +201,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
           原分类={原分类}
           onToggleEnabled={props.enablement === undefined ? undefined : (asset) => props.enablement!.toggle(asset.id)}
           enabledOf={(asset) => props.enablement?.enabled().has(asset.id) === true}
+          autoOf={(asset) => props.enablement?.auto().has(asset.id) === true}
           enableHintOf={启用提示}
           busyId={props.enablement?.busy()}
         />

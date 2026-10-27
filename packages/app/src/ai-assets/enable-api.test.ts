@@ -26,7 +26,7 @@ function 假发送(
   }
 }
 
-const 成功态 = { enabled: ["a"], enabledCount: 1, limit: 20 }
+const 成功态 = { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true }
 
 /** 取请求头的一项（不用断言：`HeadersInit` 有三种形态，这里只认本客户端发的那种普通对象）。 */
 function 头值(init: RequestInit | undefined, key: string): string | undefined {
@@ -47,8 +47,15 @@ describe("enable-api", () => {
     const 记录: Array<{ url: string; init?: RequestInit }> = []
     const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], 记录))
     const 结果 = await api.read("p 1")
-    expect(结果).toEqual({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } })
+    expect(结果).toEqual({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: true } })
     expect(记录[0]?.url).toBe("/openhive/project/assets?projectId=p%201")
+  })
+
+  // 需求 5a：自动送达名单与开关跟启用集合同一份回包，前端不另发一趟请求。
+  test("read：把自动送达名单与开关原样解析出来", async () => {
+    const 回包 = { enabled: ["a"], enabledCount: 1, limit: 20, auto: ["x", "y"], autoDelivery: false }
+    const api = createEnableApi(假发送([{ status: 200, body: 回包 }], []))
+    expect(await api.read("p1")).toEqual({ kind: "ok", value: 回包 })
   })
 
   test("enable：POST JSON 体，声明 content-type", async () => {
@@ -63,12 +70,24 @@ describe("enable-api", () => {
 
   test("disable：走停用路径，体与 enable 同形", async () => {
     const 记录: Array<{ url: string; init?: RequestInit }> = []
-    const api = createEnableApi(假发送([{ status: 200, body: { enabled: [], enabledCount: 0, limit: 20 } }], 记录))
+    const 空态 = { enabled: [], enabledCount: 0, limit: 20, auto: [], autoDelivery: true }
+    const api = createEnableApi(假发送([{ status: 200, body: 空态 }], 记录))
     const 结果 = await api.disable({ projectId: "p1", assetId: "a" })
     expect(记录[0]?.url).toBe("/openhive/project/assets/disable")
     expect(记录[0]?.init?.method).toBe("POST")
     expect(体值(记录[0]?.init)).toEqual({ projectId: "p1", assetId: "a" })
-    expect(结果).toEqual({ kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20 } })
+    expect(结果).toEqual({ kind: "ok", value: 空态 })
+  })
+
+  // 需求 5a：「一键关自动送达」是**项目级**开关，体里只有 projectId ＋ enabled。
+  test("setAutoDelivery：POST 开关路径，体只带 projectId ＋ enabled", async () => {
+    const 记录: Array<{ url: string; init?: RequestInit }> = []
+    const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], 记录))
+    await api.setAutoDelivery({ projectId: "p1", enabled: false })
+    expect(记录[0]?.url).toBe("/openhive/project/assets/auto-delivery")
+    expect(记录[0]?.init?.method).toBe("POST")
+    expect(头值(记录[0]?.init, "content-type")).toBe("application/json")
+    expect(体值(记录[0]?.init)).toEqual({ projectId: "p1", enabled: false })
   })
 
   test("409 带上 code，文案原样回给人看", async () => {
@@ -86,8 +105,9 @@ describe("enable-api", () => {
   })
 
   test("enabledCount 是项目真相：enabled 少于它时也原样带回，不按数组长度重算", async () => {
-    const api = createEnableApi(假发送([{ status: 200, body: { enabled: ["a"], enabledCount: 3, limit: 20 } }], []))
-    expect(await api.read("p1")).toEqual({ kind: "ok", value: { enabled: ["a"], enabledCount: 3, limit: 20 } })
+    const 回包 = { enabled: ["a"], enabledCount: 3, limit: 20, auto: ["x"], autoDelivery: true }
+    const api = createEnableApi(假发送([{ status: 200, body: 回包 }], []))
+    expect(await api.read("p1")).toEqual({ kind: "ok", value: 回包 })
   })
 
   test("网络异常也回 error，不抛", async () => {
@@ -109,9 +129,23 @@ describe("enable-api", () => {
     // 抛 `TypeError`，会被外层 catch 收成 error（`#005-18` 第四问：判据的射程里得真有被拆的那一行）。
     for (const body of [
       // 另两个字段齐全，只缺 enabled：这条才真正走到 `Array.isArray` 那行
-      { enabledCount: 1, limit: 20 },
-      { enabled: ["a"], limit: 20 },
-      { enabled: ["a"], enabledCount: 1 },
+      { enabledCount: 1, limit: 20, auto: [], autoDelivery: true },
+      { enabled: ["a"], limit: 20, auto: [], autoDelivery: true },
+      { enabled: ["a"], enabledCount: 1, auto: [], autoDelivery: true },
+    ]) {
+      const api = createEnableApi(假发送([{ status: 200, body }], []))
+      expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
+    }
+  })
+
+  // 需求 5a 新增的两个字段同样是**硬形状**：缺了就说形状不对，不要退化成「没有自动送达」——
+  // 那会让「服务端没升级」看起来跟「一个都没自动送达」一模一样（`#002-02`）。
+  test("回包缺 auto / autoDelivery 或类型不对 ⇒ 形状不对", async () => {
+    for (const body of [
+      { enabled: ["a"], enabledCount: 1, limit: 20, autoDelivery: true },
+      { enabled: ["a"], enabledCount: 1, limit: 20, auto: [] },
+      { enabled: ["a"], enabledCount: 1, limit: 20, auto: [1], autoDelivery: true },
+      { enabled: ["a"], enabledCount: 1, limit: 20, auto: [], autoDelivery: "true" },
     ]) {
       const api = createEnableApi(假发送([{ status: 200, body }], []))
       expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
