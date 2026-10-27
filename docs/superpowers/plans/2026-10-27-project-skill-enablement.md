@@ -2083,7 +2083,11 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
   /** 已启用判定（服务端权威）。省略 ⇒ 卡片不显示启用按钮。 */
   readonly enabledOf?: (asset: AssetMetadata) => boolean
   readonly onToggleEnabled?: (asset: AssetMetadata) => void
-  readonly enableHint?: string
+  /**
+   * **按资产**算禁用原因。必须是函数而不是一个字符串：达上限时要禁的是**未启用**的那些，
+   * 已启用的那张必须仍能点「停用」——整网格一个值会把用户锁死（20/20 时一个也停不掉）。
+   */
+  readonly enableHintOf?: (asset: AssetMetadata) => string | undefined
   readonly busyId?: string
 ```
 
@@ -2099,7 +2103,7 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
       : {
           enabled: props.enabledOf?.(asset) === true,
           onToggleEnabled: props.onToggleEnabled,
-          enableHint: props.enableHint,
+          enableHint: props.enableHintOf?.(asset),
           busy: props.busyId === asset.id,
         })}
   />
@@ -2166,6 +2170,9 @@ test("达到上限：未启用的卡片按钮禁用并提示先停用", async ()
   const 按钮 = host.querySelector('[data-asset-id="a2"] [data-slot="asset-card-enable"]') as HTMLButtonElement
   expect(按钮.disabled).toBe(true)
   expect(按钮.title).toContain("停用")
+  // ⚠️ 达上限时**已启用**的那张必须仍可点「停用」，否则 20/20 时用户一个也停不掉（2026-10-27 实现者提出的坑）
+  const 已启用的 = host.querySelector('[data-asset-id="a1"] [data-slot="asset-card-enable"]') as HTMLButtonElement
+  expect(已启用的.disabled).toBe(false)
 })
 
 test("错误如实显示，不当成「没有错误」", async () => {
@@ -2207,13 +2214,16 @@ test("错误如实显示，不当成「没有错误」", async () => {
     : {
         enabledOf: (asset) => props.enablement!.enabled().has(asset.id),
         onToggleEnabled: (asset) => props.enablement!.toggle(asset.id),
-        enableHint:
-          props.enablement.projectId() === undefined
-            ? "请先在左侧选择项目"
-            : props.enablement.enabledCount() >= props.enablement.limit() &&
-                !props.enablement.enabled().has(asset.id)
-              ? `每个项目最多启用 ${props.enablement.limit()} 个，请先停用一个`
-              : undefined,
+        enableHintOf: (asset) => {
+          if (props.enablement!.projectId() === undefined) return "请先在左侧选择项目"
+          // 达上限只禁「还没启用」的那些：已启用的必须仍可点「停用」，否则用户锁死在这一页。
+          if (
+            props.enablement!.enabledCount() >= props.enablement!.limit() &&
+            !props.enablement!.enabled().has(asset.id)
+          )
+            return `每个项目最多启用 ${props.enablement!.limit()} 个，请先停用一个`
+          return undefined
+        },
         busyId: props.enablement.busy(),
       })}
 />
