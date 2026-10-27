@@ -3,14 +3,14 @@ import { createSignal } from "solid-js"
 import { SidebarTabs, type SidebarTabKey } from "./sidebar-tabs"
 
 /**
- * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件]`，默认「文件」。
+ * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件] [能力 N]`，默认「文件」。
  *
- * ## 为什么这两个 story 都非要不可
+ * ## 为什么这三个 story 都非要不可
  *
  * 本组件是一个 **ARIA tabs**（`role="tablist"` / `role="tab"` / `role="tabpanel"` +
  * `aria-controls` + `aria-labelledby` + roving tabindex）。这套东西**只有一个 tab 可见**
  * 不是缺陷、而是规格：非激活的 pane 带 `hidden`，因此**不进 Tab 顺序**。
- * 所以「会话」与「文件」是**两个不同的可访问性状态**，axe 各查一遍才算照全。
+ * 所以「会话」「文件」「能力」是**三个不同的可访问性状态**，axe 各查一遍才算照全。
  *
  * ## 受控：状态必须由 story 自己持有
  *

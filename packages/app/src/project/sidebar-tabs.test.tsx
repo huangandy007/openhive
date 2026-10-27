@@ -85,7 +85,7 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力"])
   })
 
-  test("tablist 有可访问名称——两个裸词不足以说明这排东西是什么", () => {
+  test("tablist 有可访问名称——几个裸词不足以说明这排东西是什么", () => {
     const { host } = 挂()
 
     const 列表 = host.querySelector("[role='tablist']")
@@ -108,7 +108,7 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
    * 哪行还选着），**上面那条照样绿**（`#004-02`：两个投影各长各的，没有相等断言把他们钉在一起）。
    * 实得值取 **`className` 字符串**（不是节点），红了毫秒级出结果（`#005-01`）。
    */
-  test("选中态走品牌浅金，未选中的不带；两个 tab 的 hover 都是 house 标准", () => {
+  test("选中态走品牌浅金，未选中的不带；各 tab 的 hover 都是 house 标准", () => {
     const { host } = 挂("files")
     const 金 = "bg-[var(--v2-background-bg-accent-soft)]"
     const hover = "hover:bg-v2-overlay-simple-overlay-hover"
@@ -191,6 +191,41 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力 3"])
   })
 
+  /**
+   * 「已知是 0」与「还不知道」是**两句话**，必须分开钉（`#002-02`）。
+   *
+   * 上面那条钉的是「未知 ⇒ 不写」；这条钉「已知 0 ⇒ 要写 0」。只钉前者的话，把判断写成
+   * truthy（`props.capabilityCount ? … : ""`）全套仍然绿——而 0 个能力与「还没取到」在
+   * 屏幕上会变成同一句「能力」，民警看不出是哪一种。
+   */
+  test("计数是 0（已取到、就是没有）时标签写「能力 0」，不是「能力」", () => {
+    const host = mount(() => (
+      <SidebarTabs
+        active="files"
+        onSelect={() => {}}
+        sessions={<span />}
+        files={<span />}
+        capability={<span />}
+        capabilityCount={0}
+      />
+    ))
+
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力 0"])
+  })
+
+  test("能力 pane 常挂不卸载：切走再切回来是**同一个节点**", () => {
+    const { host } = 挂("capability")
+    const 切走前 = pane(host, "capability")
+
+    tab(host, "session")?.click()
+    tab(host, "files")?.click()
+    tab(host, "capability")?.click()
+
+    // ⚠️ 比布尔而不是比节点：实得值若是被 Solid 渲染过的节点，红了会让 bun 的打印器
+    // 停不下来（`#009-01`）。
+    expect(pane(host, "capability") === 切走前).toBe(true)
+  })
+
   test("← / → 把焦点与选中一起移到另一个 tab（本 task 的「外壳自己的键盘」）", () => {
     const { host, 喊过 } = 挂("files")
     tab(host, "files")?.focus()
@@ -229,6 +264,20 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
       敲(tab(host, "session"), "ArrowLeft")
       expect(喊过).toEqual(["capability"])
     }
+  })
+
+  /**
+   * 右边缘也要绕回去：能力 →（右）→ 会话。
+   *
+   * 上面那条钉的是**左**环绕（会话 ← 能力）；只写一侧的话，把取模写成 `min(i+1, 末位)`
+   * 这类「到头就停」的实现会全套绿——而那样键盘在最后一个 tab 上就死住了。
+   */
+  test("右边缘环绕：在「能力」上按 → 回到「会话」", () => {
+    const { host, 喊过 } = 挂("capability")
+
+    敲(tab(host, "capability"), "ArrowRight")
+
+    expect(喊过).toEqual(["session"])
   })
 
   test("别的键不管事——不把 ↑↓ 顺手吃掉（↑↓ 是树里的，归 T007 的挂账）", () => {

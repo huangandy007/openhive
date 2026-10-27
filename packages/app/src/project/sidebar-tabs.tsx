@@ -26,9 +26,9 @@ const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-overlay-simple-over
 const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-semibold text-v2-text-text-base`
 
 /**
- * pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
+ * pane 的骨架。**三个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
  *
- * ## `flex flex-col` 是**两个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
+ * ## `flex flex-col` 是**三个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
  *
  * 这一层必须是 flex 容器，body 根上那个 `flex-1` 才**有剩余空间可分**；否则它退化成
  * 「高度＝内容高」，页签余下的空白**不属于任何 `ContextMenu` 触发区** ⇒ 空白处右键冒不到
@@ -80,7 +80,7 @@ export interface SidebarTabsProps {
 /**
  * 左栏的 ② tab 容器 ＋ ③ 主体（设计 §2）：`[会话] [文件] [能力 N]`，默认「文件」。
  *
- * ## 两个 pane **同时挂载**，靠 `hidden` 属性切换
+ * ## 三个 pane **同时挂载**，靠 `hidden` 属性切换
  *
  * 这不是省渲染的写法，是**正确性**的一半——同 `@/center/center-content` 里那条
  * 「还是同一份内容吗」的注释：`FileTree` 自己有搜索词 / 折叠态 / 选中行三份内部信号，
@@ -126,7 +126,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
           const 目标 = 下一个(props.active, event.key === "ArrowRight" ? 1 : -1)
           props.onSelect(目标)
-          // `currentTarget` 必须**同步**取——事件派发完就置 null。两个 tab 是**同一批 DOM 节点**
+          // `currentTarget` 必须**同步**取——事件派发完就置 null。三个 tab 是**同一批 DOM 节点**
           // 被改属性、不随切换重建，所以这里取到的按钮与切换后页面上那个是同一个
           // （本文件有一条「切走切回没被重建」的用例把守）。
           event.currentTarget.querySelector<HTMLElement>(`[data-tab='${目标}']`)?.focus()
