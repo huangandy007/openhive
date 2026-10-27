@@ -158,7 +158,9 @@ describe("project-skill-link", () => {
   // 反方向的钉子：收紧不能收成「什么都不摘」，部门档下的真投影必须照摘。
   test("对账：共享发布目录之下的真投影仍被摘（防一刀切全不摘）", async () => {
     const 资产根 = join(根, "assets")
-    const 部门目标 = join(资产根, "dept", "刑侦", "skill", "asset_dept")
+    // 目录名与生产同形：`ASSET_TYPE_DIRS.skill === "skills"`（storage.ts:13），写 `skill` 的夹具
+    // 在生产形态下不成立（`#006-11`：按生产常态种）。
+    const 部门目标 = join(资产根, "dept", "刑侦", "skills", "asset_dept")
     mkdirSync(部门目标, { recursive: true })
     await linkSkill(项目, "asset_dept", 部门目标)
 
