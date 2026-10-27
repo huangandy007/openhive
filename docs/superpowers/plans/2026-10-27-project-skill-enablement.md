@@ -617,7 +617,7 @@ Expected: FAIL — `Cannot find module './project-skill-link'`。
 `packages/asset-service/src/project-skill-link.ts`：
 
 ```ts
-import { lstat, mkdir, readdir, readlink, symlink, unlink, rm } from "node:fs/promises"
+import { lstat, mkdir, readdir, readlink, symlink, unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { assertSafeSegment, publishDirectory } from "./storage"
 
@@ -998,6 +998,7 @@ import { AnchorWorkspace } from "@/server/routes/instance/httpapi/middleware/anc
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { stat } from "node:fs/promises"
 import { join } from "node:path"
 import { 记治理 } from "./audit"
 import { OpenhivePg } from "./pg"
@@ -1092,29 +1093,58 @@ function 取部门(deps: Deps, userId: string) {
   })
 }
 
+/** 发布目录在不在。**只把 ENOENT 当「不在」**：权限 / IO 故障要暴露，不折成「文件缺失」。 */
+async function 路径存在(target: string): Promise<boolean> {
+  try {
+    await stat(target)
+    return true
+  } catch (error) {
+    if (typeof error === "object" && error !== null && Reflect.get(error, "code") === "ENOENT") return false
+    throw error
+  }
+}
+
 /** 已启用集合 + 把目录对账到与库一致。`GET` 也顺手对账：用户换机器 / 目录被清理都靠它自愈。 */
 function 对账并读(deps: Deps, userId: string, projectId: string) {
   return Effect.gen(function* () {
     const state = yield* Effect.promise(() => enablementOf(deps.pg(), projectId))
     const 目录 = 项目目录(deps, userId, projectId)
     const 根 = assetsRoot(process.env)
+    // 读者本人的部门：可见性要按**这个读者**判，不是按启用者（见下面那道门）。
+    const 部门 = yield* 取部门(deps, userId)
+    const viewer = { userId, department: 部门 }
 
     const desired = new Map<string, string>()
+    const 可见: string[] = []
     for (const assetId of state.enabled) {
       const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
       // 已下线 / 被删掉的资产：不再链（对账时会被摘掉）
       if (asset === undefined || asset.status !== "published" || asset.type !== "skill") continue
+      // 个人空间没有共享目录 ⇒ 算不出 target（`skillLinkTarget` 会抛）。启用入口已经拦了，
+      // 这里再挡一次是给「历史遗留行 / 直接写库」兜底：不挡就是每次打开资产中心都 500。
+      if (asset.visibility === "personal") continue
+      // ⚠️ **启用是项目级事实，送达是读者级授权**：甲部门成员启用的部门内 skill，
+      // 不能因为「项目里启用了」就送进乙部门成员的沙箱（内核会真的加载它）。
+      // 可见性判定只此一份——`canReadAsset()`（`#002-06`）。
+      if (!canReadAsset(viewer, asset)) continue
+      可见.push(assetId)
       const target = skillLinkTarget(根, asset)
-      if (!(yield* Effect.promise(() => import("node:fs/promises").then((fs) => fs.stat(target).then(() => true, () => false)))))
-        continue
+      if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
     }
 
-    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired))
-    if (结果.skipped.length > 0) {
+    // 对账失败**不翻掉整页 GET**：库里的状态仍然要回（目录残差由下一次对账修）。
+    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired)).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("对账失败，目录状态待下次修复", { projectId, 目录, cause }).pipe(Effect.as(undefined)),
+      ),
+    )
+    if (结果 !== undefined && 结果.skipped.length > 0) {
       yield* Effect.logWarning("项目目录里有不是链接的 skill 目录，未动", { skipped: 结果.skipped })
     }
-    return state
+    // `enabled` 只回**这个读者看得见**的那些（不然等于给出了一个「项目里有哪些 id」的探针）；
+    // `enabledCount` 仍回项目真相——上限是项目级参数，用户要知道还剩多少位置。
+    return { ...state, enabled: 可见 }
   })
 }
 
@@ -1149,15 +1179,18 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
       if (asset === undefined) return fail(404, "资产不存在", "not_found")
       if (asset.type !== "skill") return fail(409, "只有 skill 能装进项目", "asset_not_skill")
       if (asset.status !== "published") return fail(409, "只有已发布的 skill 能启用", "asset_not_published")
+      // 个人空间的资产**留在作者沙箱**，没有共享发布目录：`publishDirectory` 对 personal 直接抛
+      // `PersonalAssetDirectoryError`（`storage.ts:98-100`）。不在这里拦住，就会以 500 收场，
+      // 而产品口径要的是可读的 409。等「个人资产也进共享卷」那天再放开。
+      if (asset.visibility === "personal")
+        return fail(409, "个人空间的 skill 还不能装进项目，请先发布到部门或全局", "personal_not_linkable")
 
       const 部门 = yield* 取部门(deps, userId)
       if (!canReadAsset({ userId, department: 部门 }, asset)) return fail(403, "无权使用该资产", "forbidden")
 
       const target = skillLinkTarget(assetsRoot(process.env), asset)
-      const 目标在 = yield* Effect.promise(() =>
-        import("node:fs/promises").then((fs) => fs.stat(target).then(() => true, () => false)),
-      )
-      if (!目标在) return fail(409, "资产文件缺失，请重新发布", "asset_files_missing")
+      if (!(yield* Effect.promise(() => 路径存在(target))))
+        return fail(409, "资产文件缺失，请重新发布", "asset_files_missing")
 
       // 同名拦截：以 SKILL.md 的 frontmatter name 为准（内核也按它去重）
       const 新名 = yield* Effect.promise(() => ConfigMarkdown.parse(join(target, "SKILL.md")).then((md) => md.data["name"], () => undefined))
@@ -1165,7 +1198,7 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
       for (const 已有 of 已启用) {
         if (已有 === assetId) continue
         const 另一份 = yield* Effect.promise(() => assetById(deps.pg(), 已有))
-        if (另一份 === undefined) continue
+        if (另一份 === undefined || 另一份.visibility === "personal") continue
         const 另一目标 = skillLinkTarget(assetsRoot(process.env), 另一份)
         const 另一名 = yield* Effect.promise(() =>
           ConfigMarkdown.parse(join(另一目标, "SKILL.md")).then((md) => md.data["name"], () => undefined),
