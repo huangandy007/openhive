@@ -23,6 +23,22 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #009-01 · 2026-10-27 · tool-quirk · 009-ai-assets
+
+**现象 / 决策**：变异验证时把守卫拆掉，那条用例**「挂死」而不是报红**——bun 跑两分钟无输出，
+最后 `memory allocation of 17179869184 bytes failed`（16 GiB）。根因不是产品死循环，而在断言本身：
+`expect(host.querySelector('[data-slot=x]')).toBeNull()` **失败**时，bun 要序列化 happy-dom 节点做 diff，
+而节点带环形引用（`parentNode` / `ownerDocument` / `firstChild` …）⇒ 序列化无限展开。
+把同一条断言写成 `expect(host.querySelector(...) === null).toBe(true)` 后，**同一变异 31ms 干净报红**
+（`Expected: true / Received: false`）。指纹：**绿的时候永远发现不了**——只有真要红时才炸，
+且炸成「挂死 / OOM」的样子，极易被误判成产品 bug 或环境问题（当时先后怀疑过虚拟滚动的几何和信号依赖）。
+
+**应对**：组件测试里断言「元素不存在 / 数量 / 文本」，一律把**可序列化的值**交给断言（布尔、数字、
+字符串数组），不要直接把 DOM 节点丢给 `toBeNull()` / `toEqual()`。变异验证红成「挂死、OOM、无输出」时，
+**先怀疑断言序列化**（换布尔断言再跑一次，30 秒就能定性），再怀疑产品。
+
+**应用范围**：任何 happy-dom / jsdom 组件测试的「元素不存在」断言；任何变异验证「红得很奇怪」的现场。
+
 ## #010-04 · 2026-10-27 · pitfall · 010-governance-console
 
 **现象 / 决策**：真栈落盘态从 `%TEMP%\openhive-real-stack-state` 换到 `D:\openhive-stack-state`

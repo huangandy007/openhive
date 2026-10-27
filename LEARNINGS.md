@@ -36,6 +36,11 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #009-01 · 2026-10-27 · tool-quirk · 009-ai-assets
+**一句话**：`expect(happy-dom 节点).toBeNull()` **真失败**时，bun 序列化 DOM 节点（环形引用）⇒ 16 GiB 分配失败、用例表现为「挂死」；同一变异改成布尔断言后 **31ms 干净报红**。
+**应用范围**：任何 happy-dom / jsdom 组件测试的「元素不存在」断言；任何变异验证红成「挂死 / OOM / 无输出」的现场。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #010-04 · 2026-10-27 · pitfall · 010-governance-console
 **一句话**：真栈落盘根从 `%TEMP%` 换到 `D:\openhive-stack-state`，**只搬了文件、没改库里的绝对路径** ⇒
 左栏按项目行算出新根去问 `/session?directory=`，内核精确匹配得 0 条，会话 tab 恒「暂无会话」；
