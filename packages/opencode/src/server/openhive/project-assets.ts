@@ -25,9 +25,22 @@ export * as OpenhiveProjectAssets from "./project-assets"
  * 其他成员要「自己的 GET 对账」**且**「自己的实例重建」两件事都发生，才看得见 / 看不见。
  * 不做成员广播——那会打断别人正在跑的会话，需要单独的产品决策。
  *
- * ⚠️ 这是本模块唯一一处会打断在跑实例的调用：正在生成的会话会经历一次实例重建
- * （表现为前端收到 `server.instance.disposed` 后重拉该目录的状态）。启用是显式的用户动作，
- * 这个代价可以接受；**不要**把它加进任何自动路径。
+ * ⚠️ 丢缓存会打断在跑实例：正在生成的会话会经历一次实例重建（表现为前端收到
+ * `server.instance.disposed` 后重拉该目录的状态）。所以它只落在**目录真的变了**的时候：
+ * 显式启停各一次，以及 `GET` 对账里 `created/removed > 0` 的那次（需求 5a：自动送达
+ * 第一次建链接、关掉开关摘链接）。**不要**改成「每次 GET 都丢」——那会打断别人正在跑的会话。
+ *
+ * ## 自动送达（需求 5a，2026-10-27 用户裁定）
+ *
+ * 审核通过的 skill **不用点启用**：读者打开自己的项目时，`对账并读()` 把他读得到的
+ * 已发布 skill 一并链进沙箱。规则细节在 `auto-delivery.ts`（候选集）与这里的三句话：
+ *
+ * - 预算是 `ENABLEMENT_LIMIT` **减去**该项目已手动启用的条数——手动装满就不再自动送；
+ * - 自动送达**不写启用行**：它不是「替用户点了启用」，关掉开关时靠目录对账还原；
+ * - 关掉后立刻摘链接（`对账并读()` 重算 `desired` 时不再含自动候选并丢缓存）。
+ *
+ * `global` 档不在候选集：它走内核配置的 `skills.paths`（`/assets/global/skills`），
+ * 一份配置全单位生效，不吃个人预算。
  *
  * ## 谁能启用
  *
@@ -47,6 +60,11 @@ export * as OpenhiveProjectAssets from "./project-assets"
  */
 
 import { assetById } from "@opencode-ai/asset-service/asset"
+import {
+  autoDeliverableAssets,
+  autoDeliveryOf,
+  setAutoDelivery,
+} from "@opencode-ai/asset-service/auto-delivery"
 import { canReadAsset } from "@opencode-ai/asset-service/authorization"
 import {
   disableAsset,
@@ -85,6 +103,8 @@ export const PATH = {
   state: PREFIX,
   enable: `${PREFIX}/enable`,
   disable: `${PREFIX}/disable`,
+  /** 需求 5a：自动送达开关（按「人 × 项目」记）。 */
+  autoDelivery: `${PREFIX}/auto-delivery`,
 } as const
 
 const BOARD = "asset-governance"
@@ -107,6 +127,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.state, (request) => handleState(request, deps))
     yield* router.add("POST", PATH.enable, (request) => handleToggle(request, deps, "enable"))
     yield* router.add("POST", PATH.disable, (request) => handleToggle(request, deps, "disable"))
+    yield* router.add("POST", PATH.autoDelivery, (request) => handleAutoDelivery(request, deps))
   }),
 )
 
@@ -256,6 +277,52 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       desired.set(assetId, target)
     }
 
+    // 收回过行 ⇒ 配额已经变了，重读一次库（服务端权威），别把旧计数回给前端。
+    const 最新 = 收回 > 0 ? yield* Effect.promise(() => enablementOf(deps.pg(), projectId)) : state
+
+    // ---- 需求 5a：自动送达（2026-10-27，用户裁定）----
+    //
+    // 预算 = 20 − 该项目已手动启用的条数（**项目真相**，不是「我看得见几个」）：
+    // 手动装满就不再自动送，避免「自动一送就超 20」。
+    const 自动开关 = yield* Effect.promise(() => autoDeliveryOf(deps.pg(), { userId, projectId }))
+    const auto: string[] = []
+    if (自动开关.enabled) {
+      const 预算 = ENABLEMENT_LIMIT - 最新.enabledCount
+      if (预算 > 0) {
+        // 候选集读失败不能把 GET 变成 500：手动那部分状态仍要能读出来。
+        const 候选 = yield* Effect.promise(() =>
+          autoDeliverableAssets(deps.pg(), viewer, { limit: 预算, exclude: state.enabled }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("自动送达候选集读取失败，本次不送", { projectId, cause }).pipe(Effect.as([])),
+          ),
+        )
+        // 同名只留第一份：内核按 SKILL.md 的 frontmatter name 去重，第二份会被静默丢掉
+        // ——那正是「说好了自动送、会话里却少一份」的成因（`#005-47` 的同一类）。
+        const 已用名字 = new Set<string>()
+        for (const assetId of 可见) {
+          const 已链 = desired.get(assetId)
+          if (已链 === undefined) continue
+          const name = yield* 读名字(已链)
+          if (name !== undefined) 已用名字.add(name)
+        }
+        for (const 候选项 of 候选) {
+          const target = skillLinkTarget(根, {
+            id: 候选项.id,
+            visibility: 候选项.visibility,
+            department: 候选项.department,
+          })
+          // 没有落点（发布目录缺失）⇒ 不送、也不回显：`auto` 的含义是「这次真的会出现」。
+          if (!(yield* Effect.promise(() => 路径存在(target)))) continue
+          const name = yield* 读名字(target)
+          if (name !== undefined && 已用名字.has(name)) continue
+          if (name !== undefined) 已用名字.add(name)
+          auto.push(候选项.id)
+          desired.set(候选项.id, target)
+        }
+      }
+    }
+
     // 对账失败不能把整个 GET 变成 500：库里的启用状态仍要能读出来，目录留到下次自愈。
     const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired, 根)).pipe(
       Effect.catchCause((cause) =>
@@ -267,11 +334,14 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     if (结果 !== undefined && 结果.skipped.length > 0) {
       yield* Effect.logWarning("项目目录里有不是链接的 skill 目录，未动", { skipped: 结果.skipped })
     }
+    // 目录真的变了才丢缓存：自动送达第一次建链接 / 关掉开关时都靠这一下让内核重扫。
+    // 没变就不打断在跑实例——「立即生效」的代价只付在真正改了目录的那一次。
+    if (结果 !== undefined && (结果.created > 0 || 结果.removed > 0)) {
+      yield* 丢缓存(deps, 目录)
+    }
     // `enabled` 只回**当前读者可见**的 id，而 `enabledCount` 保持项目真相（库里的启用条数）。
     // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
-    // 收回过行 ⇒ 配额已经变了，重读一次库（服务端权威），别把旧计数回给前端。
-    const 最新 = 收回 > 0 ? yield* Effect.promise(() => enablementOf(deps.pg(), projectId)) : state
-    return { ...最新, enabled: 可见 }
+    return { ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }
   })
 }
 
@@ -285,6 +355,42 @@ function handleState(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
     return ok(yield* 对账并读(deps, user.value.id, projectId))
+  })
+}
+
+/**
+ * 需求 5a：自动送达开关（按「人 × 项目」记）。
+ *
+ * 关掉之后**立刻摘链接**：`对账并读()` 重算 `desired` 时不再包含自动候选，
+ * `reconcileSkillLinks()` 会把上次的链接摘掉并丢缓存。打开则反过来。
+ */
+function handleAutoDelivery(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+    const userId = user.value.id
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = body["projectId"]
+    const enabled = body["enabled"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (typeof enabled !== "boolean") return fail(400, "enabled 必须是布尔", "bad_request")
+
+    if ((yield* 成员角色(deps, userId, projectId)) === undefined)
+      return fail(403, "不是该项目成员", "forbidden")
+
+    yield* Effect.promise(() => setAutoDelivery(deps.pg(), { userId, projectId, enabled }))
+    const state = yield* 对账并读(deps, userId, projectId)
+    yield* 记治理(deps, userId, {
+      board: BOARD,
+      action: "asset.auto_delivery",
+      targetType: "project",
+      targetId: projectId,
+      result: "ok",
+      detail: { enabled },
+    })
+    return ok(state)
   })
 }
 

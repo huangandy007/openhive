@@ -53,6 +53,8 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   // 【保留的定制 · 同步上游时不要丢】项目级启用（2026-10-27）
   "asset.enable": "资产启用",
   "asset.disable": "资产停用",
+  // 【保留的定制 · 同步上游时不要丢】自动送达开关（需求 5a，2026-10-27）
+  "asset.auto_delivery": "自动送达开关",
   "project.remove_member": "移除项目成员",
   "project.archive": "归档项目",
   "template.create": "新建模板",

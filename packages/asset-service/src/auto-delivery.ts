@@ -93,6 +93,8 @@ export type AutoVisibility = "department" | "targeted"
 export interface AutoCandidate {
   readonly id: string
   readonly visibility: AutoVisibility
+  /** `department` 档拼发布目录要用它（`publishDirectory` 的入参）。 */
+  readonly department: string
   /** 排序键，回给调用方只为可查（不参与建链接）。 */
   readonly publishedAt: number | null
 }
@@ -121,7 +123,7 @@ export async function autoDeliverableAssets(
         )})`
 
   const result = await db.execute(sql`
-    select auth.asset.id, auth.asset.visibility, auth.asset.published_at
+    select auth.asset.id, auth.asset.visibility, auth.asset.department, auth.asset.published_at
       from auth.asset
      where ${readableAssetCondition(viewer)}
        and auth.asset.type = 'skill'
@@ -141,6 +143,7 @@ export async function autoDeliverableAssets(
       {
         id: String(row.id),
         visibility,
+        department: typeof row.department === "string" ? row.department : "",
         publishedAt: row.published_at === null ? null : Number(row.published_at),
       },
     ]

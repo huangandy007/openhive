@@ -85,6 +85,8 @@ const 乙部门 = "乙部门"
 const STATE = "/openhive/project/assets"
 const ENABLE = "/openhive/project/assets/enable"
 const DISABLE = "/openhive/project/assets/disable"
+/** 需求 5a：自动送达开关（客户端契约，字面量）。 */
+const AUTO = "/openhive/project/assets/auto-delivery"
 
 const 我的项目 = "proj_enable_1"
 const 别人的项目 = "proj_enable_2"
@@ -118,6 +120,8 @@ const 限额资产 = Array.from({ length: 20 }, (_, index) => `asset_limit_${Str
 const 迭代项目 = "proj_enable_iterating"
 const 归档项目 = "proj_enable_archived"
 const 限额项目 = "proj_enable_limit"
+/** 自动送达预算用例的独立项目（限额项目已被上限用例占了 20 行，且不清）。 */
+const 预算项目 = "proj_auto_budget"
 const 审计项目 = "proj_enable_audit"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
@@ -196,7 +200,7 @@ beforeAll(async () => {
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
-  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目]) {
+  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目, 预算项目]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
   }
 
@@ -370,6 +374,10 @@ const 状态 = Schema.Struct({
   enabled: Schema.Array(Schema.String),
   enabledCount: Schema.Number,
   limit: Schema.Number,
+  /** 自动送达的（本项目、本读者）：与 `enabled`（手动）分开回，前端靠它打「自动」标。 */
+  auto: Schema.Array(Schema.String),
+  /** 这个人在这个项目里的自动送达开关（默认 `true`）。 */
+  autoDelivery: Schema.Boolean,
 })
 const 错误 = Schema.Struct({ error: Schema.String, code: Schema.optional(Schema.String) })
 
@@ -386,7 +394,11 @@ describe("项目级 skill 启用（真应用）", () => {
         // 被测属性在 `json()` 里：Content-Type 不是 application/json 就当场红。
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [], enabledCount: 0, limit: 20 })
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+        expect(body.limit).toBe(20)
+        // 自动送达默认开（需求 5a）；这一条只钉「出口挂上了、形状对」。
+        expect(body.autoDelivery).toBe(true)
       }),
     30_000,
   )
@@ -398,7 +410,9 @@ describe("项目级 skill 启用（真应用）", () => {
         const response = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 已发布资产 })
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [已发布资产], enabledCount: 1, limit: 20 })
+        expect(body.enabled).toEqual([已发布资产])
+        expect(body.enabledCount).toBe(1)
+        expect(body.limit).toBe(20)
 
         // oracle 不经过被测对象：裸 SQL 读库。
         const rows = rowsOf(
@@ -451,7 +465,9 @@ describe("项目级 skill 启用（真应用）", () => {
         const response = yield* post(我, DISABLE, { projectId: 我的项目, assetId: 已发布资产 })
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
-        expect(body).toEqual({ enabled: [], enabledCount: 0, limit: 20 })
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+        expect(body.limit).toBe(20)
 
         const 剩余 = rowsOf(
           yield* Effect.promise(() =>
@@ -847,6 +863,121 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(审计).toEqual([
           { action: "asset.disable", board: "asset-governance", target_id: 审计资产, result: "ok" },
         ])
+      }),
+    30_000,
+  )
+
+  /**
+   * 需求 5a · **自动送达**（2026-10-27，用户裁定）。
+   *
+   * 「审核通过」只复制进共享卷，内核从不读共享卷 ⇒ 用户还得去资产中心一份份点启用。
+   * 自动送达把这段去掉：**读者打开自己的项目时，他读得到的已发布 skill 直接出现在
+   * `.opencode/skill/` 里**，库里不写启用行（手动启用才是项目级事实）。
+   *
+   * 判据三半：① `auto` 回显该 id、② 链接真的在**这个读者**的沙箱里、③ 库里没有启用行
+   * （自动送达不是「替用户点了启用」，停用时不能靠删行来还原）。
+   */
+  it.live(
+    "自动送达：部门内已发布 skill 无需点击就出现在项目目录，库里没有启用行",
+    () =>
+      Effect.gen(function* () {
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${我的项目}`))
+        // 甲部门、已发布 ⇒ 该送；global 的 `已发布资产` 不在候选集（走内核配置，不占预算）。
+        expect(body.auto).toContain(部门资产)
+        expect(body.auto).not.toContain(已发布资产)
+        expect(body.enabled).not.toContain(部门资产)
+        expect(existsSync(链接路径(我的项目, 部门资产))).toBe(true)
+
+        const 行 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select 1 from auth.project_asset_enablement
+               where project_id = ${我的项目} and asset_id = ${部门资产}
+            `),
+          ),
+        )
+        expect(行).toEqual([])
+      }),
+    30_000,
+  )
+
+  it.live(
+    "自动送达可一键关：关掉链接摘掉、auto 为空；再打开又回来",
+    () =>
+      Effect.gen(function* () {
+        const 关 = yield* post(我, AUTO, { projectId: 我的项目, enabled: false })
+        const 关体 = yield* json(状态, 关)
+        expect(关.status).toBe(200)
+        expect(关体.autoDelivery).toBe(false)
+        expect(关体.auto).toEqual([])
+        expect(existsSync(链接路径(我的项目, 部门资产))).toBe(false)
+
+        // 开关按「人 × 项目」记：同项目的别人不受影响（乙部门同事读不到甲部门的，故只看开关位）。
+        const 开 = yield* post(我, AUTO, { projectId: 我的项目, enabled: true })
+        const 开体 = yield* json(状态, 开)
+        expect(开体.autoDelivery).toBe(true)
+        expect(开体.auto).toContain(部门资产)
+        expect(existsSync(链接路径(我的项目, 部门资产))).toBe(true)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "手动启用优先：同一份不进 auto，停用后又回到 auto",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 我的项目, assetId: 定向资产 })).status).toBe(200)
+
+        const 体 = yield* json(状态, yield* as(我, `${STATE}?projectId=${我的项目}`))
+        expect(体.enabled).toContain(定向资产)
+        expect(体.auto).not.toContain(定向资产)
+        expect(体.auto).toContain(部门资产)
+        expect(existsSync(链接路径(我的项目, 定向资产))).toBe(true)
+
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 定向资产 })).status).toBe(200)
+        const 回 = yield* json(状态, yield* as(我, `${STATE}?projectId=${我的项目}`))
+        expect(回.auto).toContain(定向资产)
+      }),
+    30_000,
+  )
+
+  /**
+   * 预算 = `ENABLEMENT_LIMIT` − 已手动启用的条数：手动装满了就不自动送（不静默超 20）。
+   *
+   * 18 份限额资产 + 手动启用 `部门资产` = 19 行 ⇒ 只剩 **1** 个位置。
+   * 候选按发布时间倒序时 `部门资产` 排第一（它已手动装了，必须被 `exclude` 剔掉），
+   * 于是这 1 个位置落在 `定向资产` 上——**这一格同时钉住两件事**：
+   * 预算不超、以及「手动装的那份不白占一个候选位」（只靠同名去重会给出一条空结果）。
+   */
+  it.live(
+    "自动送达不超预算：已手动启用 19 个时，唯一的预算位给下一份而不是重复手动那份",
+    () =>
+      Effect.gen(function* () {
+        for (const id of 限额资产.slice(0, 18)) {
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+              values (${预算项目}, ${id}, ${我.id}, 5)
+            `),
+          )
+        }
+        expect((yield* post(我, ENABLE, { projectId: 预算项目, assetId: 部门资产 })).status).toBe(200)
+
+        const 体 = yield* json(状态, yield* as(我, `${STATE}?projectId=${预算项目}`))
+        expect(体.enabledCount).toBe(19)
+        expect(体.auto).toEqual([定向资产])
+        expect(existsSync(链接路径(预算项目, 定向资产))).toBe(true)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "自动送达按读者判：乙部门同事的沙箱里没有甲部门的自动送达",
+    () =>
+      Effect.gen(function* () {
+        const 体 = yield* json(状态, yield* as(乙部门同事, `${STATE}?projectId=${我的项目}`))
+        expect(体.auto).not.toContain(部门资产)
+        expect(existsSync(链接路径(我的项目, 部门资产, 乙部门同事.id))).toBe(false)
       }),
     30_000,
   )
