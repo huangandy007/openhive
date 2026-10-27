@@ -17,7 +17,8 @@ function 挂(props: Parameters<typeof AssetCard>[0]) {
   const host = document.createElement("div")
   document.body.append(host)
   const dispose = render(() => <AssetCard {...props} />, host)
-  return { host, dispose }
+  // 卸载时连 host 一起摘：只 dispose 会把节点留在 document.body 里，污染后续全局查询
+  return { host, dispose: () => { dispose(); host.remove() } }
 }
 
 describe("AssetCard 的启用按钮", () => {
@@ -29,11 +30,27 @@ describe("AssetCard 的启用按钮", () => {
     dispose()
   })
 
+  test("不给 onToggleEnabled ⇒ 打开按钮不为启用按钮让位（pr-16 只在有启用按钮时加）", () => {
+    const 无 = 挂({ asset: 资产, onOpen: () => {} })
+    const 无按钮 = 无.host.querySelector<HTMLButtonElement>('[data-slot="asset-card-open"]')!
+    // 没有启用按钮时正文不该被白吃掉右侧 64px（约束 6：不传新 prop 时与今天一致）。
+    expect(无按钮.classList.contains("pr-16")).toBe(false)
+    无.dispose()
+
+    const 有 = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {} })
+    const 有按钮 = 有.host.querySelector<HTMLButtonElement>('[data-slot="asset-card-open"]')!
+    expect(有按钮.classList.contains("pr-16")).toBe(true)
+    有.dispose()
+  })
+
   test("给了就渲染，文案随 enabled 变", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {} })
     const 按钮 = host.querySelector('[data-slot="asset-card-enable"]')!
     expect(按钮.getAttribute("aria-pressed")).toBe("false")
-    expect(按钮.textContent).toContain("启用")
+    // 精确断言，不用 `toContain`：那对「已启用」也成立，恒回「已启用」的变异体会假绿（`#006-22`）
+    expect(按钮.textContent?.trim()).toBe("启用")
+    // 一屏多卡时当前名字全是「启用/已启用」，列表导航分不清是哪张 ⇒ 无障碍名带上资产名。
+    expect(按钮.getAttribute("aria-label")).toBe("启用资产：资金分析")
     dispose()
   })
 
@@ -41,7 +58,8 @@ describe("AssetCard 的启用按钮", () => {
     const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, enabled: true })
     const 按钮 = host.querySelector('[data-slot="asset-card-enable"]')!
     expect(按钮.getAttribute("aria-pressed")).toBe("true")
-    expect(按钮.textContent).toContain("已启用")
+    expect(按钮.textContent?.trim()).toBe("已启用")
+    expect(按钮.getAttribute("aria-label")).toBe("停用资产：资金分析")
     dispose()
   })
 
@@ -69,6 +87,14 @@ describe("AssetCard 的启用按钮", () => {
     const 按钮 = host.querySelector<HTMLButtonElement>('[data-slot="asset-card-enable"]')!
     expect(按钮.disabled).toBe(true)
     expect(按钮.title).toBe("请先在左侧选择项目")
+    dispose()
+  })
+
+  test("enableHint 是空串 ⇒ 不算禁用理由（禁用却不写原因是最糟的）", () => {
+    const { host, dispose } = 挂({ asset: 资产, onOpen: () => {}, onToggleEnabled: () => {}, enableHint: "" })
+    const 按钮 = host.querySelector<HTMLButtonElement>('[data-slot="asset-card-enable"]')!
+    expect(按钮.disabled).toBe(false)
+    expect(按钮.getAttribute("title")).toBe(null)
     dispose()
   })
 
