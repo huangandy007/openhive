@@ -1,4 +1,4 @@
-import { createEffect, createRoot, createSignal, untrack } from "solid-js"
+import { createEffect, createRoot, createSignal, getOwner, onCleanup, runWithOwner, untrack } from "solid-js"
 import { createEnableApi, type EnableApi, type EnablementState } from "./enable-api"
 
 /**
@@ -15,7 +15,7 @@ import { createEnableApi, type EnableApi, type EnablementState } from "./enable-
  * 回来时**代次不是最新、或项目已经不是那一个**就整份丢弃（`LEARNINGS #008-03`：
  * await 之后不许再读「当前是谁」）。
  *
- * ## 失败不清空（仅限同一项目内）
+ * ## 失败不清空
  *
  * 与 `asset-catalog.ts` 同一条：失败只置错误，现有集合留着——旧状态比白屏有用；
  * 空集合会被读成「一个都没启用」，那是另一件事（`#002-02`）。
@@ -63,14 +63,11 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set忙(undefined)
   }
 
-  /** 换项目的**专属**复位：连 `busy` 一起清。见 `bind` 里的注释。 */
-  const 换项目复位 = () => {
-    set忙(undefined)
-    清空()
-  }
-
   const 拉 = (projectId: string) => {
     const 本次 = ++代次
+    // 本次 read 让所有在飞的 toggle 作废（它们回来时代次对不上、整份丢弃），
+    // 那就必须**替它们**把 `busy` 收掉，否则按钮会一直转忙到下一次 toggle。
+    set忙(undefined)
     void api
       .read(projectId)
       .then((结果) => {
@@ -95,36 +92,40 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const bind = (读: () => string | undefined) => {
     // 重复 bind 先拆上一次的 effect，否则两个 effect 同时拉、互相推代次
     停旧?.()
-    停旧 = createRoot((dispose) => {
+    // ⚠️ `createRoot` 会把 effect 从**调用方**的 owner 上摘下来（2026-10-27 复审实测：
+    // 外层 `dispose()` 之后 effect 仍然重跑）⇒ 必须在调用方 owner 上登记一次清理，
+    // 组件卸载时才拆得掉；否则旧实例每次切项目都还在发请求。
+    const 上级 = getOwner()
+    const 拆 = createRoot((dispose) => {
       createEffect(() => {
         const 当前 = 读()
-        // ⚠️ 比的是「已绑的项目」，用 `untrack` 读：直接读 `项目()` 会把本 effect 变成它的
-        // 依赖，下面 `set项目(当前)` 又会让 effect 自己重跑一次——每次换项目发两份 `read`，
-        // 后一份还会把前一份的回包队列顺序顶乱（实测：`read:p1` 发两次、toggle 走错分支）。
+        // ⚠️ 必须 `untrack(项目)`：直接 `项目()` 会让本 effect 订阅自己 `set` 的那个信号 ⇒
+        // 自环（2026-10-27 实测：照抄 12 条用例红 7 条，`read:p1` 发两次）。
         const 换了项目 = 当前 !== untrack(项目)
         set项目(当前)
         // ⚠️ **换项目必须整体复位**（含 `busy` 与上一项目的集合）：
         // 「失败不清空」只适用于**同一项目内**的刷新——跨项目沿用旧集合，界面会把甲的
         // 启用集合当成乙的（`toggle` 还会据此走错 enable/disable 分支）；`busy` 不复位，
         // 旧请求的 return 会把它永久钉在按钮上（代次丢弃了回包，但「请求已结束」没写回）。
-        if (换了项目) 换项目复位()
+        if (换了项目) 清空()
         if (当前 === undefined) return
         拉(当前)
       })
       return dispose
     })
+    停旧 = 拆
+    if (上级 !== null) runWithOwner(上级, () => onCleanup(拆))
   }
 
   const toggle = (assetId: string) => {
     const projectId = 项目()
     if (projectId === undefined) return
     const 本次 = ++代次
-    const 换项目前 = projectId
     set忙(assetId)
     const 请求 = 集合().has(assetId) ? api.disable({ projectId, assetId }) : api.enable({ projectId, assetId })
     void 请求
       .then((结果) => {
-        if (本次 !== 代次 || 项目() !== 换项目前) return
+        if (本次 !== 代次 || 项目() !== projectId) return
         set忙(undefined)
         if (结果.kind === "ok") {
           应用(结果.value)

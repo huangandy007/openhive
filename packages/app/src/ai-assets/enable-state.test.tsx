@@ -301,3 +301,83 @@ test("切项目：上一项目的集合不沿用（新项目读还没回来时�
     dispose()
   })
 })
+
+test("卸载后不再发请求（effect 必须随调用方 owner 一起拆）", async () => {
+  const 记录: string[] = []
+  const api: EnableApi = {
+    read: async (projectId: string) => {
+      记录.push(projectId)
+      return { kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20 } }
+    },
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+  }
+  const [项目, 设项目] = createSignal<string | undefined>("p1")
+  const 状态 = createProjectEnablement(api)
+  await new Promise<void>((done) => {
+    createRoot((dispose) => {
+      状态.bind(项目)
+      setTimeout(() => {
+        expect(记录).toEqual(["p1"])
+        dispose() // 模拟组件卸载
+        设项目("p2") // 卸载后再换项目：一次请求都不许再发
+        setTimeout(() => {
+          expect(记录).toEqual(["p1"])
+          done()
+        }, 0)
+      }, 0)
+    })
+  })
+})
+
+test("同项目刷新失败：错误留着，既有集合不清空", async () => {
+  const { api } = 假api({
+    "read:p1": [
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } },
+      { kind: "error", message: "炸了" },
+    ],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    状态.reload()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("炸了")
+    expect([...状态.enabled()]).toEqual(["a"]) // 失败不清空（同项目）
+    dispose()
+  })
+})
+
+test("reload 撞在飞的 toggle：旧回包不回写，busy 被收掉", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    enable: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    disable: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+  }
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    待到[0]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["a"])
+
+    状态.toggle("a") // disable:a 在飞
+    expect(状态.busy()).toBe("a")
+    状态.reload() // reload 领新代次使在飞 toggle 作废 ⇒ 必须替它收掉 busy
+    expect(状态.busy()).toBeUndefined()
+
+    待到[1]({ kind: "ok", value: 空 }) // 旧 toggle 回包（代次对不上，丢弃）
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["a"])
+    expect(状态.busy()).toBeUndefined()
+
+    待到[2]({ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } }) // reload 的回包
+    await new Promise((r) => setTimeout(r, 0))
+    expect([...状态.enabled()]).toEqual(["a"])
+    expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
