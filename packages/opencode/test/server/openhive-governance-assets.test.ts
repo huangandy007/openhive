@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
+import { linkSkill } from "@opencode-ai/asset-service/project-skill-link"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -68,6 +69,9 @@ const GOV = "/openhive/governance/assets"
 const transitionUrl = (id: string) => `${GOV}/${id}/transition`
 
 const ASSETS_ROOT = mkdtempSync(join(tmpdir(), "openhive-gov-assets-"))
+/** 需求 5a：下线撤回扫的是**沙箱根**（`workspaceRoot(process.env)`，不走 ConfigProvider）。 */
+const WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "openhive-gov-workspaces-"))
+const restoreWorkspaceRoot = restorePoint({ OPENHIVE_WORKSPACE_ROOT: WORKSPACE_ROOT })
 const restoreAssetsRoot = restorePoint({ OPENHIVE_ASSETS_ROOT: ASSETS_ROOT })
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 /**
@@ -79,7 +83,9 @@ const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 afterAll(restoreDefaultPassword)
 afterAll(restorePoolMax)
 afterAll(restoreAssetsRoot)
+afterAll(restoreWorkspaceRoot)
 afterAll(() => rmSync(ASSETS_ROOT, { recursive: true, force: true }))
+afterAll(() => rmSync(WORKSPACE_ROOT, { recursive: true, force: true }))
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "status">): AssetMetadata => ({
   type: "skill",
@@ -111,6 +117,8 @@ const IDS = {
   pending: "asset-pending-0001",
   /** 已发布：可以下线。 */
   published: "asset-published-0001",
+  /** 已发布且**已送达进某个沙箱**：下线后链接必须消失（需求 5a）。 */
+  delivered: "asset-delivered-0001",
   /** 审核中、预备用驳回（驳回不删 `pending/`）。 */
   reject: "asset-reject-0001",
   /** 草稿：治理后台不允许作者动作。 */
@@ -168,6 +176,19 @@ beforeAll(async () => {
   造目录(join(ASSETS_ROOT, "pending", IDS.pending))
   造目录(join(ASSETS_ROOT, "pending", IDS.reject))
   造目录(join(ASSETS_ROOT, "global", "skills", IDS.published))
+
+  // 需求 5a：一份已发布、**已经送达**的 skill —— 沙箱里有一条指向它的链接。
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.delivered, name: "已送达的研判", status: "published", updatedAt: 1_100, publishedAt: 1_000 }),
+  )
+  造目录(join(ASSETS_ROOT, "global", "skills", IDS.delivered))
+  const 已送达目录 = join(WORKSPACE_ROOT, OFFICER.id, "proj-delivered-1")
+  await linkSkill(
+    已送达目录,
+    IDS.delivered,
+    join(ASSETS_ROOT, "global", "skills", IDS.delivered),
+  )
 })
 
 const OPEN: Record<string, string | undefined> = {
@@ -346,7 +367,8 @@ describe("T007 · 读出口的过滤", () => {
       expect(命中.assets.map((asset) => asset.id)).toEqual([IDS.mcp, IDS.pending].sort())
 
       const 空 = yield* json(ListResponse, yield* get(EXPERT, `${GOV}?q=`))
-      expect(空.assets.length).toBe(6)
+      // 7 = 原 6 份夹具 + 需求 5a 的「已送达」那一份。
+      expect(空.assets.length).toBe(7)
     }),
   )
 })
@@ -577,6 +599,25 @@ describe("T007 · 审核与发布动作", () => {
       expect(archived.status).toBe(200)
       expect(yield* Effect.promise(() => 库状态(IDS.published))).toBe("archived")
       expect(有文件(join(ASSETS_ROOT, "archive", IDS.published, "SKILL.md"))).toBe(true)
+    }),
+  )
+
+  /**
+   * 需求 5a 验收「下线后立即从所有人的项目里消失」。
+   *
+   * 判据在**文件系统**上：沙箱里那条指向已发布目录的链接，下线后必须没了。
+   * 链接还在 ⇒ 内核照样会加载它（「已下线」对内核没有任何意义）。
+   */
+  it.live("下线：已送达进沙箱的链接立刻消失（不等下次对账）", () =>
+    Effect.gen(function* () {
+      const 链接 = join(WORKSPACE_ROOT, OFFICER.id, "proj-delivered-1", ".opencode", "skill", IDS.delivered)
+      expect(existsSync(链接)).toBe(true)
+
+      const offline = yield* post(ADMIN, transitionUrl(IDS.delivered), { action: "take_offline" })
+      expect(offline.status).toBe(200)
+      expect(existsSync(链接)).toBe(false)
+      // 共享卷里的文件不动（下线是「不能用」，不是「删文件」）。
+      expect(有文件(join(ASSETS_ROOT, "global", "skills", IDS.delivered, "SKILL.md"))).toBe(true)
     }),
   )
 })

@@ -95,6 +95,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { stat } from "node:fs/promises"
 import { join } from "node:path"
 import { 记治理 } from "./audit"
+import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhivePg } from "./pg"
 
 export const PREFIX = "/openhive/project/assets"
@@ -170,13 +171,7 @@ function 项目目录(deps: Deps, userId: string, projectId: string): string {
 
 /** 丢掉该项目的实例缓存：让下一次请求重扫 skill 目录（见文件头「丢缓存」）。 */
 function 丢缓存(deps: Deps, directory: string) {
-  const store = deps.store
-  if (Option.isNone(store)) {
-    return Effect.logWarning("实例层缺席，跳过缓存丢弃；启用在重启前不生效", { directory })
-  }
-  return Effect.promise(() => Effect.runPromise(store.value.disposeDirectory(directory))).pipe(
-    Effect.catchCause((cause) => Effect.logError("实例缓存丢弃失败", { directory, cause })),
-  )
+  return disposeInstanceDirectory(deps.store, directory, "实例层缺席，跳过缓存丢弃；启用在重启前不生效")
 }
 
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */

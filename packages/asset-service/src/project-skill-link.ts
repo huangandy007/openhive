@@ -117,13 +117,19 @@ export async function linkSkill(projectDir: string, assetId: string, target: str
   await symlink(target, link, linkType())
 }
 
-/** 删链接（幂等）。真目录 ⇒ 抛 `NotALinkError`，一个字节都不动。 */
-export async function unlinkSkill(projectDir: string, assetId: string): Promise<void> {
+/**
+ * 删链接（幂等）。真目录 ⇒ 抛 `NotALinkError`，一个字节都不动。
+ *
+ * 返回 `true` = 这次真的摘了一条——下线撤回（`asset-link-fanout.ts`）要靠它区分
+ * 「目录变了、该丢实例缓存」与「本来就没有」。
+ */
+export async function unlinkSkill(projectDir: string, assetId: string): Promise<boolean> {
   const link = skillLinkPath(projectDir, assetId)
   const 现有 = await lstatOrNull(link)
-  if (现有 === null) return
+  if (现有 === null) return false
   if (!现有.isSymbolicLink()) throw new NotALinkError(link)
   await unlink(link)
+  return true
 }
 
 export interface ReconcileResult {

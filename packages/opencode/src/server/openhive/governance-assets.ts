@@ -63,19 +63,26 @@ import {
   type AssetStatus,
   type AssetType,
 } from "@opencode-ai/asset-service/metadata"
+import {
+  DELIVERABLE_STATUSES,
+  removeAssetLinksAcrossWorkspaces,
+} from "@opencode-ai/asset-service/asset-link-fanout"
 import { AssetNotificationError } from "@opencode-ai/asset-service/notify"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
 import { transitionAsset } from "@opencode-ai/asset-service/service"
 import { assetsRoot, MissingSourceDirectoryError } from "@opencode-ai/asset-service/storage"
 import { governanceGrants } from "@opencode-ai/auth/governance"
+import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { GrantRow } from "@opencode-ai/auth/rbac"
 import { User } from "@opencode-ai/core/user"
+import { InstanceStore } from "@/project/instance-store"
 import { sql } from "drizzle-orm"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { OpenhiveAudit } from "./audit"
 import { GovernanceAuthz } from "./governance-authz"
+import { disposeInstanceDirectory } from "./instance-cache"
 import { offsetOf, parsePage } from "./paging"
 import { OpenhivePg } from "./pg"
 
@@ -127,12 +134,15 @@ const CONFLICT = 409
 
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
+  /** 下线撤回后要丢这些目录的实例缓存（测试里可能没有内核实例层 ⇒ Option）。 */
+  readonly store: Option.Option<InstanceStore.Interface>
 }
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
-    const deps: Deps = { pg: openhivePg.pg }
+    const store = yield* Effect.serviceOption(InstanceStore.Service)
+    const deps: Deps = { pg: openhivePg.pg, store }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
     yield* router.add("POST", PATH.transition, (request) => handleTransition(request, deps))
@@ -225,6 +235,36 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     )
     const total = yield* Effect.promise(() => countAssets(deps.pg(), filters))
     return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize })
+  })
+}
+
+/**
+ * 需求 5a 验收「下线后立即从所有人的项目里消失」：资产不再处于可送达状态时，
+ * 把它从**所有**沙箱里摘掉，并丢掉这些目录的实例缓存。
+ *
+ * 为什么不能只靠下次对账：对账按读者触发，三天没打开资产中心的人那里链接会一直留着，
+ * 而内核只认目录里有没有 `SKILL.md`——「已下线」对内核没有任何意义。
+ *
+ * 失败不回滚、也不回 500：状态已经变了，回 500 是谎报「没生效」；逐个记日志（`#002-02`）。
+ */
+function 撤回已下线(deps: Deps, assetId: string, status: AssetStatus) {
+  return Effect.gen(function* () {
+    if (DELIVERABLE_STATUSES.has(status)) return
+    const 结果 = yield* Effect.promise(() =>
+      removeAssetLinksAcrossWorkspaces(workspaceRoot(process.env), assetId),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("下线撤回失败，沙箱里可能还留着链接", { assetId, cause }).pipe(Effect.as(undefined)),
+      ),
+    )
+    if (结果 === undefined) return
+    for (const directory of 结果.removed) yield* disposeInstanceDirectory(deps.store, directory)
+    for (const 失败 of 结果.failed)
+      yield* Effect.logError("下线撤回：某个沙箱没摘成", {
+        assetId,
+        directory: 失败.directory,
+        error: String(失败.error),
+      })
   })
 }
 
@@ -388,6 +428,8 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
           ...(通知 === undefined ? {} : { notice: 通知 }),
         },
       })
+      // 下线 / 归档 / 退回 ⇒ 从所有人的沙箱里撤回（需求 5a 验收）。
+      yield* 撤回已下线(deps, result.success.id, result.success.status)
       return ok({ asset: result.success, ...(通知 === undefined ? {} : { notice: 通知 }) })
     }
 
@@ -401,6 +443,7 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
         result: "ok",
         detail: { transition: 动, notice: error.message },
       })
+      if (updated !== undefined) yield* 撤回已下线(deps, updated.id, updated.status)
       return ok({ asset: updated, notice: error.message })
     }
     return yield* 翻译(error, deps, userId, base, 补充)
