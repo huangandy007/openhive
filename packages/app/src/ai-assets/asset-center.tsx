@@ -5,6 +5,7 @@ import { AssetGrid } from "./asset-grid"
 import { AssetPager, 需要页码条 } from "./asset-pager"
 import { AssetSearch } from "./asset-search"
 import type { AssetCatalog } from "./asset-catalog"
+import type { ProjectEnablement } from "./enable-state"
 import { 兜底分类ID, type AssetFilter } from "./filter"
 
 /**
@@ -35,6 +36,19 @@ export interface AssetCenterProps {
    * （组件测试 / storybook）：网格空着，不放假数据。
    */
   readonly catalog?: AssetCatalog
+  /**
+   * **项目级 skill 启用状态**（2026-10-27 / Task 7）。
+   *
+   * 【保留的定制 · 同步上游时不要丢】与 `catalog` 同一条注入规矩：生产实现在
+   * `pages/layout-new.tsx` 建（`createProjectEnablement` ＋ `bind(() => currentProject()?.id)`），
+   * 本组件被组件测试裸挂，自己去取就跑不成离线。
+   *
+   * 省略 = 整块功能不出现：不画「已启用 N/20」计数条，卡片也不带启用按钮——与加它之前逐字相同。
+   *
+   * **状态由服务端说了算**：本层只按 `enabled()` 标卡、按 `toggle()` 交回切换请求；不做本地增减
+   * （同名拦截、上限、已下线撤销这三件事只有服务端知道，见 `enable-state.ts` 文件头）。
+   */
+  readonly enablement?: ProjectEnablement
 }
 
 /** 搜索框防抖：这段时间内的连续输入只发最后一趟。 */
@@ -83,6 +97,21 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
     set选中(asset)
   }
 
+  /**
+   * 启用按钮不可用的原因（非空 ⇒ 卡片把它写进 `title` 并禁用）：
+   * **没选项目** / **已达上限**。
+   *
+   * ⚠️ `AssetGrid.enableHint` 是**整网格一个值**（Task 6 定稿的接口，本任务不改），所以上限态下
+   * 「已启用」的卡片也被一并禁用——按钮在，但点不了。要逐卡区分得让网格收「按资产的禁用原因」，
+   * 属接口变更；已记进 `task-7-report.md` 的缺口表。
+   */
+  const 上限提示 = () => {
+    const 状态 = props.enablement
+    if (状态 === undefined) return undefined
+    if (状态.projectId() === undefined) return "请先在左侧选择项目"
+    return 状态.enabledCount() >= 状态.limit() ? `每个项目最多启用 ${状态.limit()} 个，请先停用一个` : undefined
+  }
+
   const 返回 = () => {
     const id = 最近打开id()
     set选中(undefined)
@@ -107,6 +136,23 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
         <div class="px-4 pt-4">
           <AssetSearch value={搜索词()} onInput={改搜索} />
         </div>
+        {/* 项目级启用（2026-10-27 / Task 7）：没选项目时整条不出现——「0/20」会被读成
+            「一个都没启用」，那是另一件事。启用在**下一条消息**才进内核，故文案这么说。 */}
+        <Show when={props.enablement?.projectId() !== undefined}>
+          <div data-slot="asset-enable-count" class="px-4 pt-2 text-[12px] text-v2-text-text-muted">
+            已启用 {props.enablement?.enabledCount()}/{props.enablement?.limit()} · 下一条消息生效
+          </div>
+        </Show>
+        {/* 失败如实显示、不清空集合（`enable-state.ts` 文件头）：旧状态比白屏有用。 */}
+        <Show when={props.enablement?.error()}>
+          <div
+            data-slot="asset-enable-error"
+            role="alert"
+            class="mx-4 mt-2 rounded-md border border-v2-state-border-danger bg-v2-state-bg-danger px-3 py-2 text-[13px] text-v2-state-fg-danger"
+          >
+            {props.enablement?.error()}
+          </div>
+        </Show>
         <Show when={props.catalog?.error()}>
           {(原因) => (
             <div
@@ -118,7 +164,21 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
             </div>
           )}
         </Show>
-        <AssetGrid assets={props.catalog?.assets} onOpen={打开} 原分类={原分类} />
+        {/*
+          ⚠️ 这里**逐个传**、而不是 brief 里那种条件展开：Solid 的组件 props 是 getter，写法上
+          直传能让 `busyId` / `enableHint` 跟着信号变（上限满了、切换回包了，按钮当场跟上）；
+          条件展开里的表达式只在建元素那一刻求一次值，之后就不跟了。
+          `onToggleEnabled` 省略 ⇒ 网格不渲染启用按钮（`AssetGrid` 只认这一个开关）。
+        */}
+        <AssetGrid
+          assets={props.catalog?.assets}
+          onOpen={打开}
+          原分类={原分类}
+          onToggleEnabled={props.enablement === undefined ? undefined : (asset) => props.enablement!.toggle(asset.id)}
+          enabledOf={(asset) => props.enablement?.enabled().has(asset.id) === true}
+          enableHint={上限提示()}
+          busyId={props.enablement?.busy()}
+        />
         <Show when={props.catalog}>
           {(catalog) => (
             <Show when={需要页码条(catalog().total())}>

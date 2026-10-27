@@ -6,6 +6,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import type { AssetCategories } from "@/ai-assets/categories"
+import type { ProjectEnablement } from "@/ai-assets/enable-state"
 import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { useProjectionModule } from "@/ai-session/projection-module"
 import { useModuleAction, type ModuleAction } from "@/center/module-actions"
@@ -6319,6 +6320,36 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     进入(host)
     打开卡(host, "技能乙")
     expect(text(host, "asset-detail-name")).toBe("技能乙")
+  })
+
+  /**
+   * Task 7：`enablement` 这条注入缝必须**真的落到中栏**上——只加 prop 不往下传时，
+   * 计数条与卡片按钮都不出现，而本组件自己的其它用例全绿（新缝没人读，等于没接）。
+   */
+  test("注入启用状态 ⇒ 中栏显示「已启用 N/20」，卡片按钮点得动", () => {
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲" })])
+    const 切换: string[] = []
+    const 启用: ProjectEnablement = {
+      projectId: () => "p1",
+      enabled: () => new Set(["a"]),
+      enabledCount: () => 1,
+      limit: () => 20,
+      error: () => undefined,
+      busy: () => undefined,
+      bind: () => {},
+      toggle: (id) => 切换.push(id),
+      reload: () => {},
+    }
+    const host = mount(() => (
+      <WorkspaceEntry catalog={目录} enablement={启用}>中栏</WorkspaceEntry>
+    ))
+    进入(host)
+
+    expect(text(host, "asset-enable-count")).toContain("已启用 1/20")
+    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='asset-card-enable']")!
+    expect(按钮.getAttribute("aria-pressed")).toBe("true")
+    按钮.click()
+    expect(切换).toEqual(["a"])
   })
 
   test("返回 ⇒ 网格回来、搜索词保留、焦点归还原卡片", async () => {

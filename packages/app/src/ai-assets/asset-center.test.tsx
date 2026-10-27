@@ -12,6 +12,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCenter } from "./asset-center"
 import type { AssetCatalog } from "./asset-catalog"
+import type { ProjectEnablement } from "./enable-state"
 import { createAssetFilter, 兜底分类ID } from "./filter"
 
 if (!("ResizeObserver" in globalThis)) {
@@ -208,6 +209,129 @@ describe("AssetCenter · 「其他」桶标原分类（需求 2）", () => {
       } finally {
         卸()
       }
+    }
+  })
+})
+
+/**
+ * 项目级启用（2026-10-27 / Task 7）：中栏只做三件事——**把集合标到卡上、把上限/错误说出来、
+ * 把开关交给 `ProjectEnablement`**。服务端权威与竞态丢弃在 `enable-state.test.ts` 守，这里钉接线。
+ *
+ * `enablement` 省略时整块形态与加它之前逐字相同（不画计数条、卡片不带启用按钮）——那是老用例
+ * 仍然要绿的前提。
+ */
+describe("AssetCenter · 项目级启用（2026-10-27）", () => {
+  const 启用资产 = (id: string): AssetMetadata => ({
+    id,
+    name: `资产${id}`,
+    type: "skill",
+    description: "",
+    icon: "skill",
+    category: "intelligence",
+    tags: [],
+    ownerId: "u-1",
+    ownerName: "甲民警",
+    department: "经侦支队",
+    visibility: "global",
+    version: 1,
+    status: "published",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    publishedAt: 1,
+    archivedAt: null,
+  })
+
+  /**
+   * 启用状态替身：**未提供的成员给空实现**（brief 的口径）。`{ projectId: undefined }` 按「没给」
+   * 处理 ⇒ 落到空实现 `() => undefined`，正是「还没选项目」。
+   */
+  function 假启用(over: Partial<ProjectEnablement> = {}): ProjectEnablement {
+    const 空 = () => undefined
+    return {
+      projectId: over.projectId ?? 空,
+      enabled: over.enabled ?? (() => new Set<string>()),
+      enabledCount: over.enabledCount ?? (() => 0),
+      limit: over.limit ?? (() => 20),
+      error: over.error ?? 空,
+      busy: over.busy ?? 空,
+      bind: over.bind ?? (() => {}),
+      toggle: over.toggle ?? (() => {}),
+      reload: over.reload ?? (() => {}),
+    }
+  }
+
+  /** 中栏夹具：默认两张卡（a1 / a2），数据源走本文件既有的 `数据源` 替身。 */
+  function 挂中栏(over: { enablement?: ProjectEnablement; catalog?: AssetCatalog } = {}) {
+    const 源 = over.catalog ?? 数据源({ assets: [启用资产("a1"), 启用资产("a2")], total: 2 })
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(
+      () => <AssetCenter filter={createAssetFilter()} catalog={源} enablement={over.enablement} />,
+      host,
+    )
+    return {
+      host,
+      卸: () => {
+        dispose()
+        host.remove()
+      },
+    }
+  }
+
+  test("没有项目：卡片上的启用按钮禁用，提示先选项目", async () => {
+    const 假 = 假启用({ projectId: undefined })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 按钮 = host.querySelector<HTMLButtonElement>('[data-slot="asset-card-enable"]')!
+      expect(按钮.disabled).toBe(true)
+      expect(按钮.title).toContain("选择项目")
+    } finally {
+      卸()
+    }
+  })
+
+  test("有项目：顶部显示「已启用 1/20」，卡片按集合标已启用", async () => {
+    const 假 = 假启用({ projectId: () => "p1", enabled: () => new Set(["a1"]), enabledCount: () => 1, limit: () => 20 })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      expect(host.querySelector('[data-slot="asset-enable-count"]')!.textContent).toContain("已启用 1/20")
+      expect(host.querySelector('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!.getAttribute("aria-pressed")).toBe(
+        "true",
+      )
+    } finally {
+      卸()
+    }
+  })
+
+  test("达到上限：未启用的卡片按钮禁用并提示先停用", async () => {
+    const 假 = 假启用({
+      projectId: () => "p1",
+      enabled: () => new Set(["a1"]),
+      enabledCount: () => 20,
+      limit: () => 20,
+    })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 按钮 = host.querySelector<HTMLButtonElement>('[data-asset-id="a2"] [data-slot="asset-card-enable"]')!
+      expect(按钮.disabled).toBe(true)
+      expect(按钮.title).toContain("停用")
+    } finally {
+      卸()
+    }
+  })
+
+  test("错误如实显示，不当成「没有错误」", async () => {
+    const 假 = 假启用({ projectId: () => "p1", error: () => "每个项目最多启用 20 个 skill，请先停用一个" })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      expect(host.querySelector('[data-slot="asset-enable-error"]')!.textContent).toContain("最多启用 20")
+    } finally {
+      卸()
     }
   })
 })

@@ -5,6 +5,8 @@ import { createStore } from "solid-js/store"
 // 中栏在会话路由上让位给右栏，判据（`routeSessionID`）在下面 `routePageVisible` 那处用。
 import { createAssetCatalog } from "@/ai-assets/asset-catalog"
 import { createAssetCategories } from "@/ai-assets/categories"
+// 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：项目级 skill 启用的唯一状态源。
+import { createProjectEnablement } from "@/ai-assets/enable-state"
 import { createPreferencesApi, PAGE_SIZE_KEY } from "@/ai-assets/preferences-api"
 import { AiSessionSlot } from "@/ai-session/ai-session-slot"
 import { SidebarSessions } from "@/ai-session/sidebar-sessions"
@@ -27,6 +29,8 @@ import { 监听会话改过 } from "@/center/session-edits-wiring"
 // 与 `useDialog()`，只有**落在路由根之内**的这一层拿得到（`WorkspaceEntry` 被测试裸挂，读不了
 // Router——见它 `onOpenSettings` 那个 prop 上的注释）。
 import { useSettingsDialog } from "@/components/settings-dialog"
+// 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：当前项目是启用集合的绑定源。
+import { currentProject } from "@/project/current-project"
 // ⚠️ openhive 定制（005 T018）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 工作台「项目」那件事的数据源在这里注入（1 行 import ＋ 1 个 prop，见 `@/project/project-data`
 // 文件头「为什么要有这一层」）。删掉这两处 = 面板/文件树退回「未接线即禁用」态。
@@ -89,6 +93,14 @@ export default function NewLayout(props: ParentProps) {
   // （与 `资产目录.reload` 同一条时机，见 `onAssetsOpen`）——管理员改了分类，切回资产页就该看见。
   const 分类 = createAssetCategories()
   void 分类.reload()
+  // 【保留的定制 · 同步上游时不要丢】项目级 skill 启用（2026-10-27 / Task 7）：
+  // 绑定「当前项目」读口，项目一换就重拉启用集合；没选项目时整块功能禁用。
+  //
+  // ⚠️ `createProjectEnablement()` 与 `bind(...)` **都必须在组件体内**调用：`bind` 要
+  // `getOwner()` 把内部 effect 挂到调用方 owner 上；放进事件回调 / `await` 之后调用，
+  // owner 为 null ⇒ effect 静默泄漏、组件卸载也不拆（见 `enable-state.ts` 的 `bind` 注释）。
+  const 启用状态 = createProjectEnablement()
+  启用状态.bind(() => currentProject()?.id)
   void 偏好.read().then((映射) => {
     const 存过 = Number(映射?.[PAGE_SIZE_KEY])
     if (Number.isInteger(存过) && 存过 > 0) 资产目录.setPageSize(存过)
@@ -196,12 +208,18 @@ export default function NewLayout(props: ParentProps) {
             // 数据源整个交下去（清单 / 总数 / 页码 / 每页条数 / 错误 / 加载），中栏自己组装查询；
             // 「进入资产视图了，去拉一次」单独一条（切换视图要拿最新的，见 `asset-catalog.ts` 文件头）。
             catalog={资产目录}
+            // 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：项目级启用状态整块交下去，
+            // 中栏据此画「已启用 N/20」与卡片按钮（`AssetCenterProps.enablement`）。
+            enablement={启用状态}
             // 【保留的定制 · 同步上游时不要丢】（需求 4）：分类与清单同一时机重拉——
             // 只刷清单会让「刚发布到新分类的资产」在左栏找不到那个分类可点。
             categories={分类}
             onAssetsOpen={() => {
               资产目录.reload()
               分类.reload()
+              // 启用集合与清单**同一时机**重拉（同一处回调，别另起一条链）：别的窗口刚启用/停用过，
+              // 切回来就得看见；`reload` 自己守住「没选项目就不发请求」。
+              启用状态.reload()
             }}
           >
             <Suspense>{props.children}</Suspense>

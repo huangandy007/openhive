@@ -1,6 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type ParentProps } from "solid-js"
 import { AssetCenter } from "@/ai-assets/asset-center"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
+import type { ProjectEnablement } from "@/ai-assets/enable-state"
 import type { AssetCategories } from "@/ai-assets/categories"
 import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
@@ -157,6 +158,17 @@ export interface WorkspaceEntryProps {
    * 因为「筛完再看第几页」必须由同一处说了算（`asset-catalog.ts` 文件头）。
    */
   catalog?: AssetCatalog
+  /**
+   * **项目级 skill 启用状态**（2026-10-27 / Task 7）。
+   *
+   * 【保留的定制 · 同步上游时不要丢】与 `catalog` / `projectData` 同一条规矩：注入而不 import
+   * 生产实现——本组件被组件测试裸挂，自己去取就跑不成离线。生产实现在 `pages/layout-new.tsx`
+   * 建（`createProjectEnablement()` ＋ **在组件体内** `bind(() => currentProject()?.id)`）。
+   *
+   * 省略 = 中栏不画「已启用 N/20」计数条、卡片也不带启用按钮（与加它之前逐字相同）。
+   * 本组件**只转发**，不读它的任何成员。
+   */
+  enablement?: ProjectEnablement
   /**
    * **进入 AI 资产视图时通知外面去拉一次**（T017）。
    *
@@ -2193,7 +2205,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               T006 起这里是搜索 + 卡片网格 ＋ 页码条；`assetFilter` 与左栏**共享同一份**（左栏点了
               类型/分类，中栏按它重新取数），取数走 `props.catalog` 这条注入缝（需求 6）。 */}
           {视图() === "ai-assets" ? (
-            <AssetCenter filter={assetFilter} catalog={props.catalog} />
+            <AssetCenter filter={assetFilter} catalog={props.catalog} enablement={props.enablement} />
           ) : (
             <CenterSplit
               registry={viewRegistry}
