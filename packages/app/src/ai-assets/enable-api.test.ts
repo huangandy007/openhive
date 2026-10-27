@@ -105,8 +105,8 @@ describe("enable-api", () => {
   })
 
   test("回包形状不对（缺 enabled / enabledCount / limit）⇒ error，不静默当空集合", async () => {
-    // 断言**具体文案**，不是只断言 `kind === "error"`：拆掉形状检查后 `.map` 抛出的异常
-    // 也会被外层 catch 收成 error（`#005-18` 第四问：判据的射程里得真有被拆的那一行）。
+    // 断言**具体文案**，不是只断言 `kind === "error"`：拆掉形状检查后 `启用.every` 在非数组上
+    // 抛 `TypeError`，会被外层 catch 收成 error（`#005-18` 第四问：判据的射程里得真有被拆的那一行）。
     for (const body of [
       // 另两个字段齐全，只缺 enabled：这条才真正走到 `Array.isArray` 那行
       { enabledCount: 1, limit: 20 },
