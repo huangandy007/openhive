@@ -85,11 +85,44 @@ describe("project-skill-link", () => {
     await linkSkill(项目, "asset_old", 另一个)
     mkdirSync(skillLinkPath(项目, "asset_manual"), { recursive: true })
 
-    const 结果 = await reconcileSkillLinks(项目, new Map([["asset_1", 已发布], ["asset_2", 已发布]]))
+    const 结果 = await reconcileSkillLinks(项目, new Map([["asset_1", 已发布], ["asset_2", 已发布]]), join(根, "assets"))
     expect(结果).toEqual({ created: 2, removed: 1, skipped: [] })
     expect(existsSync(skillLinkPath(项目, "asset_old"))).toBe(false)
     expect(existsSync(skillLinkPath(项目, "asset_1"))).toBe(true)
     expect(existsSync(skillLinkPath(项目, "asset_manual"))).toBe(true)
+  })
+
+  // R5（复审 Critical）：对账**只摘自己的投影**。
+  // 同一个目录里还长着别人的链接：个人草稿（另一条 feature 指向 `<assets>/draft/`）与用户
+  // 手工建的链接（可能指向任意位置）。它们不在 `desired` 里，但不是我们建的——摘掉就是静默
+  // 删用户的文件。判据只能是「目标落在共享发布目录之下」。
+  test("对账只摘指向共享发布目录的链接：草稿与外部目标留着", async () => {
+    const 资产根 = join(根, "assets")
+
+    // (a) 草稿送达：`<assets>/draft/<id>`，同一个项目的沙箱里。
+    const 草稿目标 = join(资产根, "draft", "asset_draft")
+    mkdirSync(草稿目标, { recursive: true })
+    await linkSkill(项目, "asset_draft", 草稿目标)
+
+    // (b) 仓库外 / 资产根外的手工链接。
+    const 外部 = mkdtempSync(join(tmpdir(), "openhive-external-"))
+    try {
+      await linkSkill(项目, "asset_external", 外部)
+
+      // (c) 共享发布目录（global）——这是我们的投影，`desired` 里没有就该摘。
+      const 共享目标 = join(资产根, "global", "skill", "asset_shared")
+      mkdirSync(共享目标, { recursive: true })
+      await linkSkill(项目, "asset_shared", 共享目标)
+
+      const 结果 = await reconcileSkillLinks(项目, new Map(), 资产根)
+
+      expect(existsSync(skillLinkPath(项目, "asset_draft"))).toBe(true)
+      expect(existsSync(skillLinkPath(项目, "asset_external"))).toBe(true)
+      expect(existsSync(skillLinkPath(项目, "asset_shared"))).toBe(false)
+      expect(结果).toEqual({ created: 0, removed: 1, skipped: [] })
+    } finally {
+      rmSync(外部, { recursive: true, force: true })
+    }
   })
 
   // 两种「真目录」要分开：`desired` 之外的（上一条用例）是用户自己的，静默不动；
@@ -106,6 +139,7 @@ describe("project-skill-link", () => {
         ["asset_9", 已发布],
         ["asset_1", 已发布],
       ]),
+      join(根, "assets"),
     )
 
     expect(结果).toEqual({ created: 1, removed: 0, skipped: [占位] })

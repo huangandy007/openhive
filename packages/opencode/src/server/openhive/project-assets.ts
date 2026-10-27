@@ -21,6 +21,10 @@ export * as OpenhiveProjectAssets from "./project-assets"
  * 不丢缓存，这次启用在本进程内**永远**不生效——用户会看到「点了启用、问了还是不会用」。
  * 丢缓存后下一次请求重建实例、重扫目录 ⇒ **下一条消息生效**。
  *
+ * ⚠️ **「立即生效」只对操作者自己的沙箱成立**（R8）：启停改的是操作者自己那份项目目录；
+ * 其他成员要「自己的 GET 对账」**且**「自己的实例重建」两件事都发生，才看得见 / 看不见。
+ * 不做成员广播——那会打断别人正在跑的会话，需要单独的产品决策。
+ *
  * ⚠️ 这是本模块唯一一处会打断在跑实例的调用：正在生成的会话会经历一次实例重建
  * （表现为前端收到 `server.instance.disposed` 后重拉该目录的状态）。启用是显式的用户动作，
  * 这个代价可以接受；**不要**把它加进任何自动路径。
@@ -57,7 +61,9 @@ import {
   skillLinkTarget,
   unlinkSkill,
 } from "@opencode-ai/asset-service/project-skill-link"
+import { SHARED_STATUSES } from "@opencode-ai/asset-service/readable-sql"
 import { assetsRoot } from "@opencode-ai/asset-service/storage"
+import { grantsFor } from "@opencode-ai/auth/rbac"
 import { rolesOf } from "@opencode-ai/auth/project-member"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
@@ -201,18 +207,46 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 链进自己的沙箱。否则甲部门发布的 skill 会被乙部门成员的 GET 顺手对账进乙的沙箱，
     // 且 `enabled` 还会泄露项目启用了哪些 id。故这里先按读者判可见性，再建链接。
     const viewer = { userId, department: 部门 }
+    // R6：授权组（「指定人员」档）的读权**只**来自授权行。不把读者命中的 grant 传进
+    // `canReadAsset()`，就会「列表看得见、送达/启用全无」——判据仍只有那一份。
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
     const 可见: string[] = []
+    let 收回 = 0
 
     const desired = new Map<string, string>()
     for (const assetId of state.enabled) {
       const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
-      // 已下线 / 被删掉的资产：不再链（对账时会被摘掉）
-      if (asset === undefined || asset.status !== "published" || asset.type !== "skill") continue
-      // 个人空间没有共享目录 ⇒ 算不出 target（`skillLinkTarget` 会抛）。启用入口已经拦了，
-      // 这里再挡一次是给「历史遗留行 / 直接写库」兜底：不挡就是每次打开资产中心都 500。
-      if (asset.visibility === "personal") continue
+      // 真的**不可送达**的行：资产已删 / 不是 skill / 个人空间（没有共享发布目录）/ 不在
+      // 共享状态集。留着它们，计数条会显示 N/20 而卡片一张都点不到，攒到 20 就永久卡死。
+      // R7：GET 顺手自愈——先删行、再记审计（`asset.disable` + `reason = "asset_unavailable"`）。
+      if (
+        asset === undefined ||
+        asset.type !== "skill" ||
+        asset.visibility === "personal" ||
+        !SHARED_STATUSES.has(asset.status)
+      ) {
+        const 删了 = yield* Effect.promise(() => disableAsset(deps.pg(), { projectId, assetId })).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("收回不可送达的启用行失败，配额待下次自愈", { projectId, assetId, cause }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        )
+        // 删失败不记审计（没有「已收回」这件事可说），更不能把 GET 变成 500。
+        if (删了 === undefined) continue
+        收回 += 1
+        yield* 记治理(deps, userId, {
+          board: BOARD,
+          action: "asset.disable",
+          targetType: "asset",
+          targetId: assetId,
+          result: "ok",
+          detail: { projectId, reason: "asset_unavailable" },
+        })
+        continue
+      }
       // 读者读不到 ⇒ 不链、也不回给前端。只影响 `enabled`，不影响库里的启用事实。
-      if (!canReadAsset(viewer, asset)) continue
+      if (!canReadAsset(viewer, asset, grants)) continue
       // 先记「看得见」再判目录：`enabled` 的语义是**授权**，不是「文件齐不齐」。
       // 发布目录缺失时链接照样建不了（下面 `continue`），但前端仍要能把那份资产标成「已启用」，
       // 否则会出现「已占 1/20 但列表里一份都标不出来」——用户既看不见也点不掉。
@@ -223,7 +257,7 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     }
 
     // 对账失败不能把整个 GET 变成 500：库里的启用状态仍要能读出来，目录留到下次自愈。
-    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired)).pipe(
+    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired, 根)).pipe(
       Effect.catchCause((cause) =>
         Effect.logError("对账失败，目录状态待下次修复", { projectId, 目录, cause }).pipe(
           Effect.as(undefined),
@@ -235,7 +269,9 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     }
     // `enabled` 只回**当前读者可见**的 id，而 `enabledCount` 保持项目真相（库里的启用条数）。
     // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
-    return { ...state, enabled: 可见 }
+    // 收回过行 ⇒ 配额已经变了，重读一次库（服务端权威），别把旧计数回给前端。
+    const 最新 = 收回 > 0 ? yield* Effect.promise(() => enablementOf(deps.pg(), projectId)) : state
+    return { ...最新, enabled: 可见 }
   })
 }
 
@@ -278,11 +314,11 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
         return fail(409, "个人空间的 skill 还不能装进项目，请先发布到部门或全局", "personal_not_linkable")
 
       const 部门 = yield* 取部门(deps, userId)
-      // `canReadAsset` 的第三个参数是新版授权组（`readable-sql.ts:81-91` 的 grant 行）。它今天
-      // **没有任何生产写入口**，所以这里沿用默认的 `[]`。等授权组上线时**必须**把该读者命中的
-      // grant 一并传进来，否则资产列表（按 grant 判可见）与启用（不认 grant）会漂移成
-      // 「列表看得见、启用返回 403」。对账里的可见性判定（`对账并读`）要同步改。
-      if (!canReadAsset({ userId, department: 部门 }, asset)) return fail(403, "无权使用该资产", "forbidden")
+      const viewer = { userId, department: 部门 }
+      // R6：授权组必须进可见性判定（否则「列表看得见、启用 403」）。判据仍只有
+      // `canReadAsset()` 一份，`对账并读` 那边传的是同一批 grant。
+      const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+      if (!canReadAsset(viewer, asset, grants)) return fail(403, "无权使用该资产", "forbidden")
 
       const target = skillLinkTarget(assetsRoot(process.env), asset)
       if (!(yield* Effect.promise(() => 路径存在(target))))
@@ -295,6 +331,8 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
         if (已有 === assetId) continue
         const 另一份 = yield* Effect.promise(() => assetById(deps.pg(), 已有))
         if (另一份 === undefined || 另一份.visibility === "personal") continue
+        // R6：读不到的不拿来比名——否则会把无权读者看不到的资产名回显给他。
+        if (!canReadAsset(viewer, 另一份, grants)) continue
         const 另一名 = yield* 读名字(skillLinkTarget(assetsRoot(process.env), 另一份))
         if (新名 !== undefined && 新名 === 另一名)
           return fail(409, `项目里已启用同名 skill：${新名}`, "duplicate_skill_name")

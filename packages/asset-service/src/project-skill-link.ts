@@ -1,5 +1,5 @@
 import { lstat, mkdir, readdir, readlink, symlink, unlink } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve, sep } from "node:path"
 import { assertSafeSegment, publishDirectory } from "./storage"
 
 /**
@@ -27,6 +27,24 @@ import { assertSafeSegment, publishDirectory } from "./storage"
  */
 
 export const SKILL_LINK_DIR = join(".opencode", "skill")
+
+/**
+ * 归我们对账的共享发布档（`publishDirectory` 的三档落点）。
+ *
+ * **不在这里的是 `draft`**：个人草稿由另一条链路送达（目标在 `<assetsRoot>/draft/`），
+ * 它同样长在 `.opencode/skill/` 下，但不是我们的投影——摘掉等于静默删人的文件。
+ */
+const 共享发布档 = ["global", "dept", "targeted"] as const
+
+/** 链接目标是否落在共享发布目录之下（`resolve` 归一后按 `sep` 前缀比较，挡住 `..` 与跨盘）。 */
+function 在共享发布目录下(target: string, assetsRoot: string): boolean {
+  const 归一 = resolve(target)
+  for (const 档 of 共享发布档) {
+    const 根 = resolve(assetsRoot, 档)
+    if (归一 === 根 || 归一.startsWith(根 + sep)) return true
+  }
+  return false
+}
 
 /** skill 链接指向哪儿：与发布用的是同一个 `publishDirectory`（`#002-06`：一份算法）。 */
 export function skillLinkTarget(
@@ -107,22 +125,25 @@ export interface ReconcileResult {
   readonly removed: number
   /**
    * 想建却被占住的链接位（那个名字上是人自己放的真目录 / 文件）。
-   * 据实回给调用方去记日志，不静默；`desired` 之外的手写条目只是不动，不进这里。
+   * 据实回给调用方去记日志，不静默；`desired` 之外的条目（手写目录、草稿或外部目标的
+   * 链接）只是不动，不进这里。
    */
   readonly skipped: string[]
 }
 
 /**
- * 对账：让 `.opencode/skill/` 下的**链接**与 `desired` 一致。
+ * 对账：让 `.opencode/skill/` 下的**我们建的链接**与 `desired` 一致。
  *
  * - `desired` 里有、目录里没有 ⇒ 建；
- * - 目录里有链接、`desired` 里没有 ⇒ 摘；
- * - 目录里不是链接的条目 ⇒ **不动**。`desired` 之外的手写条目静默留着（那是人自己放的，
- *   不是我们的投影）；`desired` 里的名字被手写条目占住时记进 `skipped`，让调用方去告警。
+ * - 目录里有链接、`desired` 里没有、**且目标落在共享发布目录之下** ⇒ 摘；
+ * - 其余一律**不动**：不是链接的条目、目标在 `<assetsRoot>/draft/`、目标指向任意外部路径
+ *   （含 `..` / 别的盘符）——那些不是我们的投影，摘掉就是静默删人的东西。
+ *   `desired` 里的名字被手写条目占住时记进 `skipped`，让调用方去告警。
  */
 export async function reconcileSkillLinks(
   projectDir: string,
   desired: ReadonlyMap<string, string>,
+  assetsRoot: string,
 ): Promise<ReconcileResult> {
   const dir = join(projectDir, SKILL_LINK_DIR)
   await mkdir(dir, { recursive: true })
@@ -144,6 +165,15 @@ export async function reconcileSkillLinks(
     const info = await lstatOrNull(path)
     if (info === null) continue
     if (!info.isSymbolicLink()) continue
+    // 只摘自己的投影：目标不在共享发布目录下 ⇒ 是别的链路 / 用户手放的，留着。
+    let target: string
+    try {
+      target = await readlink(path)
+    } catch (error) {
+      if (codeOf(error) === "ENOENT") continue
+      throw error
+    }
+    if (!在共享发布目录下(target, assetsRoot)) continue
     await unlink(path)
     removed += 1
   }

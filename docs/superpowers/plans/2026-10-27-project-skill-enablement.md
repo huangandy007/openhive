@@ -2397,8 +2397,8 @@ ls -l "<沙箱根>/<userId>/<projectId>/.opencode/skill/"
 
 1. **「丢缓存后下一条消息生效」没有自动化用例**：`InstanceStore.disposeDirectory` 的效应要靠真栈 Step 2-3 验。Variant 验证时它会「绿得可疑」，见 Task 3 Step 7。
 2. **Linux 容器的链接行为未实测**：本机只验了 Windows junction。POSIX 分支用的是 `symlink(..., "dir")`，容器里的挂载卷是否允许建链接要上线前单独验。
-3. **共享项目里其他成员的项目目录不会自动补链**：启用后，别人只有在自己打开资产中心（触发 GET 对账）或自己的内核实例重建后才拿到。这是 R2 的代价，接受。
-4. **下线一份 skill 不会自动从所有项目撤回**：`project_asset_enablement_asset_idx` 索引是为这条留的，撤回逻辑不在本计划（`GET` 对账会把 `status != published` 的链接摘掉，但只在有人打开资产中心时）。
+3. **共享项目里其他成员的项目目录不会自动补链**：启用后，别人只有在自己打开资产中心（触发 GET 对账）**且**自己的内核实例重建后才拿到——两件事都发生才生效（R8 的口径：原写「或」是错的）。这是 R2 的代价，接受。
+4. **下线一份 skill 不会自动从所有项目撤回**：`project_asset_enablement_asset_idx` 索引是为这条留的，撤回逻辑不在本计划（R7 之后，`GET` 对账只在资产**不在 `SHARED_STATUSES`** —— 如 `archived` —— 时收回启用行与链接；`offline` 仍按共享状态送达。且只在有人打开资产中心时）。
 5. **`packages/auth` 的 `comments.test.ts` 在 0013–0020 上既有红**（迁移缺中文 `COMMENT ON`），
    与本 feature 无关（`0021` 的注释是齐的）。本次不动别人的迁移（Karpathy 原则 3），
    Task 8 Step 1 要如实记录这一点，别把它算成本 feature 的红。

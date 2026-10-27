@@ -102,6 +102,35 @@ test("失败：错误原样留着，既有集合不动（不假清空）", async
   })
 })
 
+// R9（复审 Minor）：失败后补一次重拉，让计数以服务端为准。
+// 否则「库里其实已满 20 / 被别的成员改了」时，前端计数停在旧值，用户反复点出同一个 409。
+// 重拉**不清掉**刚刚那条操作错误——它才是用户要看的那句。
+test("toggle 失败后补一次重拉：计数以服务端为准、错误留着", async () => {
+  const { api } = 假api({
+    "read:p1": [
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } },
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 2, limit: 20 } },
+    ],
+    "enable:b": [{ kind: "error", message: "项目里已启用同名 skill：资金分析", code: "duplicate_skill_name" }],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.enabledCount()).toBe(1)
+
+    状态.toggle("b")
+    // 两次：toggle 的回包一次、它触发的重拉回包一次。
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(状态.enabledCount()).toBe(2)
+    expect(状态.error()).toContain("同名")
+    expect(状态.busy()).toBeUndefined()
+    dispose()
+  })
+})
+
 test("连点两次：旧回包晚到不回写（代次丢弃）", async () => {
   const 待到: Array<(out: EnableOutcome) => void> = []
   const api: EnableApi = {

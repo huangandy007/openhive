@@ -63,7 +63,13 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set忙(undefined)
   }
 
-  const 拉 = (projectId: string) => {
+  /**
+   * 重拉一次服务端状态。
+   *
+   * `保留错误 = true`：**失败后**补的那次重拉用它——计数要以服务端为准（R9），但刚刚那条
+   * 操作错误不能被一次成功重拉抹掉（用户还在看它），也不能被重拉自己的失败盖住。
+   */
+  const 拉 = (projectId: string, 保留错误 = false) => {
     const 本次 = ++代次
     // 本次 read 让所有在飞的 toggle 作废（它们回来时代次对不上、整份丢弃），
     // 那就必须**替它们**把 `busy` 收掉，否则按钮会一直转忙到下一次 toggle。
@@ -74,15 +80,15 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
         if (本次 !== 代次 || 项目() !== projectId) return
         if (结果.kind === "ok") {
           应用(结果.value)
-          set错误(undefined)
+          if (!保留错误) set错误(undefined)
           return
         }
-        set错误(结果.message)
+        if (!保留错误) set错误(结果.message)
       })
       // 注入的 api 若 reject（真实 `createEnableApi` 全捕获、不抛），别留未处理拒绝 + 卡忙
       .catch(() => {
         if (本次 !== 代次) return
-        set错误("加载启用状态失败")
+        if (!保留错误) set错误("加载启用状态失败")
         set忙(undefined)
       })
   }
@@ -133,11 +139,14 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
           return
         }
         set错误(结果.message)
+        // R9：失败后补一次重拉，让计数以服务端为准（否则用户会对着旧计数反复点出同一个 409）。
+        拉(projectId, true)
       })
       .catch(() => {
         if (本次 !== 代次) return
         set错误("操作失败，请重试")
         set忙(undefined)
+        拉(projectId, true)
       })
   }
 

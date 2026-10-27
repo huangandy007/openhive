@@ -28,6 +28,10 @@ export interface AssetGridProps {
    * 网格自己不判模式——它连筛选都不认识（见 `assets` 的注释）。
    */
   readonly 原分类?: (asset: AssetMetadata) => string | undefined
+  /**
+   * 【保留的定制 · 同步上游时不要丢】项目级 skill 启用（2026-10-27）。
+   * 以下四个可选 prop 都是本 fork 新增的定制，只做透传；全部省略时网格与加它之前相同。
+   */
   /** 已启用判定（服务端权威）。省略 ⇒ 卡片不显示启用按钮。 */
   readonly enabledOf?: (asset: AssetMetadata) => boolean
   readonly onToggleEnabled?: (asset: AssetMetadata) => void

@@ -97,6 +97,22 @@ const 部门资产 = "asset_skill_dept"
 const 同名资产 = "asset_skill_same_name"
 /** 已发布、可读，但发布目录会被删掉的那一份（`enabled` 与「链接建得成」是两件事）。 */
 const 缺目录资产 = "asset_skill_no_files"
+/** 指定人员档（转发：`targeted`）的已发布 skill：读者靠授权行才读得到（R6）。 */
+const 定向资产 = "asset_skill_targeted"
+/** 迭代中（`iterating`）：共享状态，送达应继续（R7）。 */
+const 迭代资产 = "asset_skill_iterating"
+/** 已归档（`archived`）：不可送达，启用行应在 GET 时自愈收回（R7）。 */
+const 归档资产 = "asset_skill_archived"
+/** `asset.disable` 审计落库的专用资产（避免与别处的停用混在一起）。 */
+const 审计资产 = "asset_skill_audit"
+
+/** 上限用例的 20 份资产（只为把 `count(*)` 顶到 20，不需要发布目录）。 */
+const 限额资产 = Array.from({ length: 20 }, (_, index) => `asset_limit_${String(index + 1).padStart(2, "0")}`)
+
+const 迭代项目 = "proj_enable_iterating"
+const 归档项目 = "proj_enable_archived"
+const 限额项目 = "proj_enable_limit"
+const 审计项目 = "proj_enable_audit"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
@@ -174,6 +190,9 @@ beforeAll(async () => {
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
+  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目]) {
+    await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
+  }
 
   // 已发布 / 全局 ⇒ 可启用。
   await insertAsset(pg.db, 资产({ id: 已发布资产, name: "资金分析", status: "published", visibility: "global" }))
@@ -199,6 +218,35 @@ beforeAll(async () => {
   // 发布目录稍后会被删掉的那一份（见最后一条用例）。
   await insertAsset(pg.db, 资产({ id: 缺目录资产, name: "缺文件 skill", status: "published", visibility: "global" }))
 
+  // --- R6 / R7 / 出口层用例的夹具 ---
+  // 指定人员：作者是别人，读者（我）的读权只来自授权行。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: 定向资产,
+      name: "定向研判",
+      status: "published",
+      visibility: "targeted",
+      ownerId: 别人.id,
+      ownerName: 别人.name,
+    }),
+  )
+  await pg.db.execute(sql`insert into auth.role (id, name) values ('test-targeted-reader', '定点授权读者')`)
+  await pg.db.execute(sql`
+    insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+    values ('test-targeted-reader', 'skill', ${定向资产}, 'read')
+  `)
+  await pg.db.execute(sql`
+    insert into auth.user_role (user_id, role_id) values (${我.id}, 'test-targeted-reader')
+  `)
+
+  await insertAsset(pg.db, 资产({ id: 迭代资产, name: "迭代中的研判", status: "iterating", visibility: "global" }))
+  await insertAsset(pg.db, 资产({ id: 归档资产, name: "归档的研判", status: "archived", visibility: "global" }))
+  await insertAsset(pg.db, 资产({ id: 审计资产, name: "审计停用", status: "published", visibility: "global" }))
+  for (const id of 限额资产) {
+    await insertAsset(pg.db, 资产({ id, name: `限额 ${id}`, status: "published", visibility: "global" }))
+  }
+
   // 已发布目录：链接的落点必须真的存在（junction 的硬要求）。
   const 全局目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 已发布资产)
   mkdirSync(全局目标, { recursive: true })
@@ -220,6 +268,18 @@ beforeAll(async () => {
   const 缺目录目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 缺目录资产)
   mkdirSync(缺目录目标, { recursive: true })
   writeFileSync(join(缺目录目标, "SKILL.md"), "---\nname: 缺文件\n---\n\n正文\n", "utf8")
+
+  const 定向目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "targeted" }, 定向资产)
+  mkdirSync(定向目标, { recursive: true })
+  writeFileSync(join(定向目标, "SKILL.md"), "---\nname: 定向研判\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  const 迭代目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 迭代资产)
+  mkdirSync(迭代目标, { recursive: true })
+  writeFileSync(join(迭代目标, "SKILL.md"), "---\nname: 迭代中的研判\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  const 审计目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 审计资产)
+  mkdirSync(审计目标, { recursive: true })
+  writeFileSync(join(审计目标, "SKILL.md"), "---\nname: 审计停用\ndescription: 测试\n---\n\n正文\n", "utf8")
 })
 
 afterAll(async () => {
@@ -373,7 +433,7 @@ describe("项目级 skill 启用（真应用）", () => {
   )
 
   it.live(
-    "历史遗留的个人空间启用行：GET 不 500、也不建链接（对账跳过 personal）",
+    "历史遗留的个人空间启用行：GET 不 500、不建链接，并自愈收回（R7）",
     () =>
       Effect.gen(function* () {
         // 夹具直接写库（输入）：模拟「启用入口拦住之前落下的行」或「直接写库」。
@@ -390,17 +450,19 @@ describe("项目级 skill 启用（真应用）", () => {
         const body = yield* json(状态, response)
         expect(response.status).toBe(200)
         expect(body.enabled).toEqual([])
-        // 行还在库里 ⇒ 项目真相仍是 1；但它不可链接、也不回显给任何读者。
-        expect(body.enabledCount).toBe(1)
+        // 个人空间没有共享发布目录 ⇒ **真的不可送达** ⇒ GET 时收回，配额自愈（R7）。
+        expect(body.enabledCount).toBe(0)
         expect(existsSync(链接路径(我的项目, 个人资产))).toBe(false)
 
-        // 清掉夹具，别把状态漏给后面的用例。
-        yield* Effect.promise(() =>
-          pg!.db.execute(sql`
-            delete from auth.project_asset_enablement
-             where project_id = ${我的项目} and asset_id = ${个人资产}
-          `),
+        const 剩余 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select asset_id from auth.project_asset_enablement
+               where project_id = ${我的项目} and asset_id = ${个人资产}
+            `),
+          ),
         )
+        expect(剩余).toEqual([])
       }),
     30_000,
   )
@@ -551,6 +613,163 @@ describe("项目级 skill 启用（真应用）", () => {
 
         // 收尾：库里那一行还在，别的用例不该被它影响 → 停用掉。
         expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 缺目录资产 })).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * R6（复审 Important）：授权组必须进可见性判定。
+   *
+   * 「指定人员」档（`targeted`）**空间不授读**，读只来自作者身份与 `auth.role_resource`。
+   * 启用/对账两处若不把读者的 grant 行传给 `canReadAsset()`，就会「列表看得见、启用 403」。
+   */
+  it.live(
+    "指定人员（授权组）：读者 GET 看得见、启用回 200（R6）",
+    () =>
+      Effect.gen(function* () {
+        // 前置：项目里已经有这条启用关系（模拟别的成员启用的）。读权只来自授权行 ⇒
+        // 不带 grants 的判定看不见它（R6 的「改前」）。
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+            values (${我的项目}, ${定向资产}, ${我.id}, 2)
+          `),
+        )
+
+        // 读口先要能看见它（不带 grants 时这里就是红的）。
+        const 读体 = yield* json(状态, yield* as(我, `${STATE}?projectId=${我的项目}`))
+        expect(读体.enabled).toContain(定向资产)
+
+        const 启用 = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 定向资产 })
+        expect(启用.status).toBe(200)
+        expect((yield* json(状态, 启用)).enabled).toContain(定向资产)
+        expect(existsSync(链接路径(我的项目, 定向资产))).toBe(true)
+
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 定向资产 })).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * R7（复审 Important）：送达判据用共享状态集。
+   *
+   * `iterating` 期间旧版文件仍在共享目录；作者一改稿就让 skill 从所有项目里静默消失，
+   * 不是产品的本意。启用入口仍只认 `published`，但对账的**送达**认 `SHARED_STATUSES`。
+   */
+  it.live(
+    "迭代中（iterating）的启用行：GET 仍送达（R7）",
+    () =>
+      Effect.gen(function* () {
+        // 夹具直接写库（输入）：模拟「资产从 published 流入 iterating」。
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+            values (${迭代项目}, ${迭代资产}, ${我.id}, 3)
+          `),
+        )
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${迭代项目}`))
+        expect(body.enabled).toContain(迭代资产)
+        expect(body.enabledCount).toBe(1)
+        // 被测属性：链接真的建了（不是只在回包里「看得见」）。
+        expect(existsSync(链接路径(迭代项目, 迭代资产))).toBe(true)
+      }),
+    30_000,
+  )
+
+  /**
+   * R7（复审 Important）：幽灵行在 GET 时自愈。
+   *
+   * 资产归档后不再可送达；启用行若留着，计数条会显示 N/20 而卡片一张都点不到，攒到 20 就
+   * 永久卡死。GET 收回该行并记 `asset.disable`（`detail.reason = "asset_unavailable"`）。
+   */
+  it.live(
+    "已归档的启用行：GET 自愈收回（删行 + 审计 asset_unavailable）（R7）",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+            values (${归档项目}, ${归档资产}, ${我.id}, 4)
+          `),
+        )
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${归档项目}`))
+        expect(body.enabled).toEqual([])
+        expect(body.enabledCount).toBe(0)
+
+        const 剩余 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select asset_id from auth.project_asset_enablement where project_id = ${归档项目}
+            `),
+          ),
+        )
+        expect(剩余).toEqual([])
+
+        const 审计 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select action, result, detail from auth.audit_event
+               where action = 'asset.disable' and target_id = ${归档资产}
+            `),
+          ),
+        )
+        expect(审计).toHaveLength(1)
+        expect(审计[0]?.["action"]).toBe("asset.disable")
+        expect(审计[0]?.["result"]).toBe("ok")
+        expect(String(审计[0]?.["detail"])).toContain("asset_unavailable")
+      }),
+    30_000,
+  )
+
+  it.live(
+    "启用上限：项目里已有 20 行时，第 21 个回 409 enablement_limit",
+    () =>
+      Effect.gen(function* () {
+        for (const id of 限额资产) {
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+              values (${限额项目}, ${id}, ${我.id}, 5)
+            `),
+          )
+        }
+
+        const response = yield* post(我, ENABLE, { projectId: 限额项目, assetId: 已发布资产 })
+        expect(response.status).toBe(409)
+        expect((yield* json(错误, response)).code).toBe("enablement_limit")
+
+        const 行数 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select count(*)::int as n from auth.project_asset_enablement where project_id = ${限额项目}
+            `),
+          ),
+        )
+        expect(行数[0]?.["n"]).toBe(20)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "停用落 asset.disable 审计（result=ok）",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 审计项目, assetId: 审计资产 })).status).toBe(200)
+        expect((yield* post(我, DISABLE, { projectId: 审计项目, assetId: 审计资产 })).status).toBe(200)
+
+        const 审计 = rowsOf(
+          yield* Effect.promise(() =>
+            pg!.db.execute(sql`
+              select action, board, target_id, result from auth.audit_event
+               where action = 'asset.disable' and target_id = ${审计资产}
+            `),
+          ),
+        )
+        expect(审计).toEqual([
+          { action: "asset.disable", board: "asset-governance", target_id: 审计资产, result: "ok" },
+        ])
       }),
     30_000,
   )

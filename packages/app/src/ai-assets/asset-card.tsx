@@ -26,6 +26,11 @@ export interface AssetCardProps {
    * 名字由服务端给（含停用分类的名字），查不到时上层退回分类 id——这里不做判断。
    */
   readonly 原分类?: string
+  /**
+   * 【保留的定制 · 同步上游时不要丢】项目级 skill 启用（2026-10-27）。
+   * 以下四个可选 prop 与卡片上的 sibling「启用」按钮都是本 fork 新增的定制；
+   * 全部省略时，渲染结果与加它之前逐字相同。
+   */
   /** 已启用（服务端权威；缺省 = 未启用）。 */
   readonly enabled?: boolean
   /** 省略 ⇒ 不渲染启用按钮（storybook、旧测试、无数据源的场景）。 */

@@ -128,8 +128,9 @@ export async function disableAsset(
  * `archive.ts` 的删除链第 5 步逐个 `remove*`，本函数是那一组的第四个成员（`#002-06`：
  * 找的是「谁在按同一个前提做同一件事」）。
  *
- * 接线点（**Task 3，尚未接线**）：`packages/opencode/src/server/openhive/archive.ts` 的删除链第 5 步。
- * 现在全仓还没有调用者 —— 别看到这段注释就当已经接好了。
+ * 接线点：`packages/opencode/src/server/openhive/archive.ts` 的删除链第 5 步
+ * （`archive.ts` 的 `removeProjectEnablement(pg, { projectId })`，与 `removeProjectMeta` 等并排）。
+ * 加表 / 加项目级 PG 表时记得回来对一遍那一组——漏接就是永久孤儿行。
  */
 export async function removeProjectEnablement(
   db: EnablementTarget,
