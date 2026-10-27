@@ -1690,6 +1690,53 @@ test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async ()
     dispose()
   })
 })
+
+test("卸载后不再发请求（effect 必须随调用方 owner 一起拆）", async () => {
+  const 记录: string[] = []
+  const api = {
+    read: async (p: string) => {
+      记录.push(p)
+      return { kind: "ok" as const, value: { enabled: [], enabledCount: 0, limit: 20 } }
+    },
+    enable: async () => ({ kind: "ok" as const, value: 空 }),
+    disable: async () => ({ kind: "ok" as const, value: 空 }),
+  }
+  const [项目, 设项目] = createSignal<string | undefined>("p1")
+  const 状态 = createProjectEnablement(api as never)
+  await new Promise<void>((done) => {
+    createRoot((dispose) => {
+      状态.bind(项目)
+      setTimeout(() => {
+        expect(记录).toEqual(["p1"])
+        dispose() // 模拟组件卸载
+        设项目("p2") // 卸载后再换项目：一次请求都不许再发
+        setTimeout(() => {
+          expect(记录).toEqual(["p1"])
+          done()
+        }, 0)
+      }, 0)
+    })
+  })
+})
+
+test("同项目刷新失败：错误留着，既有集合不清空", async () => {
+  const { api } = 假api({
+    "read:p1": [
+      { kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20 } },
+      { kind: "error", message: "炸了" },
+    ],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    状态.reload()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("炸了")
+    expect([...状态.enabled()]).toEqual(["a"]) // 失败不清空（同项目）
+    dispose()
+  })
+})
 ```
 
 - [ ] **Step 2: 跑，确认红** → `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets/enable-state.test.tsx`，FAIL 模块不存在。
@@ -1698,7 +1745,7 @@ test("切项目：旧项目的晚回包不回写，且 busy 不卡住", async ()
 - [ ] **Step 3: 写实现**
 
 ```ts
-import { createEffect, createRoot, createSignal, untrack } from "solid-js"
+import { createEffect, createRoot, createSignal, getOwner, onCleanup, runWithOwner, untrack } from "solid-js"
 import { createEnableApi, type EnableApi, type EnablementState } from "./enable-api"
 
 /**
@@ -1762,14 +1809,11 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set忙(undefined)
   }
 
-  /** 换项目的**专属**复位：连 `busy` 一起清。见 `bind` 里的注释。 */
-  const 换项目复位 = () => {
-    set忙(undefined)
-    清空()
-  }
-
   const 拉 = (projectId: string) => {
     const 本次 = ++代次
+    // 本次 read 让所有在飞的 toggle 作废（它们回来时代次对不上、整份丢弃），
+    // 那就必须**替它们**把 `busy` 收掉，否则按钮会一直转忙到下一次 toggle。
+    set忙(undefined)
     void api
       .read(projectId)
       .then((结果) => {
@@ -1794,7 +1838,11 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const bind = (读: () => string | undefined) => {
     // 重复 bind 先拆上一次的 effect，否则两个 effect 同时拉、互相推代次
     停旧?.()
-    停旧 = createRoot((dispose) => {
+    // ⚠️ `createRoot` 会把 effect 从**调用方**的 owner 上摘下来（2026-10-27 复审实测：
+    // 外层 `dispose()` 之后 effect 仍然重跑）⇒ 必须在调用方 owner 上登记一次清理，
+    // 组件卸载时才拆得掉；否则旧实例每次切项目都还在发请求。
+    const 上级 = getOwner()
+    const 拆 = createRoot((dispose) => {
       createEffect(() => {
         const 当前 = 读()
         // ⚠️ 必须 `untrack(项目)`：直接 `项目()` 会让本 effect 订阅自己 `set` 的那个信号 ⇒
@@ -1805,24 +1853,25 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
         // 「失败不清空」只适用于**同一项目内**的刷新——跨项目沿用旧集合，界面会把甲的
         // 启用集合当成乙的（`toggle` 还会据此走错 enable/disable 分支）；`busy` 不复位，
         // 旧请求的 return 会把它永久钉在按钮上（代次丢弃了回包，但「请求已结束」没写回）。
-        if (换了项目) 换项目复位()
+        if (换了项目) 清空()
         if (当前 === undefined) return
         拉(当前)
       })
       return dispose
     })
+    停旧 = 拆
+    if (上级 !== null) runWithOwner(上级, () => onCleanup(拆))
   }
 
   const toggle = (assetId: string) => {
     const projectId = 项目()
     if (projectId === undefined) return
     const 本次 = ++代次
-    const 换项目前 = projectId
     set忙(assetId)
     const 请求 = 集合().has(assetId) ? api.disable({ projectId, assetId }) : api.enable({ projectId, assetId })
     void 请求
       .then((结果) => {
-        if (本次 !== 代次 || 项目() !== 换项目前) return
+        if (本次 !== 代次 || 项目() !== projectId) return
         set忙(undefined)
         if (结果.kind === "ok") {
           应用(结果.value)
