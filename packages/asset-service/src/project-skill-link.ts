@@ -34,7 +34,12 @@ export function skillLinkTarget(
   asset: { readonly id: string; readonly visibility: string; readonly department: string },
 ): string {
   const visibility = asset.visibility
-  if (visibility !== "global" && visibility !== "department" && visibility !== "personal") {
+  if (
+    visibility !== "global" &&
+    visibility !== "department" &&
+    visibility !== "targeted" &&
+    visibility !== "personal"
+  ) {
     throw new Error(`未知可见范围：${visibility}`)
   }
   return publishDirectory(assetsRoot, "skill", { visibility, department: asset.department }, asset.id)

@@ -12,7 +12,7 @@ import { createAssetFilter, 兜底分类ID } from "./filter"
  * 筛选状态只记住「选中了哪个 id」，名字与顺序不归它管。
  */
 describe("AI 资产筛选状态", () => {
-  test("默认：三个空间全选、类型 Skill、**不展开任何分类**（T017 裁定，见 `filter.ts` 头注）", () => {
+  test("默认：全部空间（需求 3b 起四档）全选、类型 Skill、**不展开任何分类**（T017 裁定，见 `filter.ts` 头注）", () => {
     const filter = createAssetFilter()
 
     expect(filter.spaces()).toEqual([...ASSET_VISIBILITIES])
@@ -25,15 +25,15 @@ describe("AI 资产筛选状态", () => {
     const filter = createAssetFilter()
 
     filter.toggleSpace("department")
-    expect(filter.spaces()).toEqual(["global", "personal"])
+    expect(filter.spaces()).toEqual(["global", "targeted", "personal"])
     expect(filter.spaceOn("department")).toBe(false)
     expect(filter.spaceOn("global")).toBe(true)
 
     filter.toggleSpace("personal")
-    expect(filter.spaces()).toEqual(["global"])
+    expect(filter.spaces()).toEqual(["global", "targeted"])
 
     filter.toggleSpace("department")
-    expect(filter.spaces()).toEqual(["global", "department"])
+    expect(filter.spaces()).toEqual(["global", "department", "targeted"])
   })
 
   test("类型 Tab：切换只改类型，不动空间与分类", () => {

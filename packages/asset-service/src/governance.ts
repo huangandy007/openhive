@@ -149,8 +149,12 @@ const TOOLS: readonly Tool[] = [
         },
         visibility: {
           type: "string",
-          enum: [...ASSET_VISIBILITIES],
-          description: "可见范围，默认 personal；department 的部门取调用者档案",
+          // 需求 3b：「指定人员」要同时选定授权组，而这个工具没有 groupIds 参数——
+          // 只写 visibility=targeted 等于发出去却一个人都看不见。所以这一档刻意不开放给工具：
+          // 需要定向发布时由管理员在治理后台选组。`ASSET_VISIBILITIES` 仍含四档（元数据闭集），
+          // 这里的枚举是「工具能做的事」，比元数据窄。
+          enum: ["personal", "department", "global"],
+          description: "可见范围，默认 personal；department 的部门取调用者档案（定向发布请在治理后台操作）",
         },
         sourceDirectory: {
           type: "string",

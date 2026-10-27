@@ -65,6 +65,7 @@ const 资产接口: AssetApi = {
   list: async () => ({ kind: "ok", value: [] }),
   transition: 不写,
   batchCategory: 不写,
+  listGroups: 不写,
 }
 
 const 项目接口: ProjectApi = {

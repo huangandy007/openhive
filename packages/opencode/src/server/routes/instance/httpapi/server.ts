@@ -133,6 +133,7 @@ import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
+import { OpenhiveGovernanceAssetGroups } from "@/server/openhive/governance-asset-groups"
 import { OpenhiveGovernanceCategories } from "@/server/openhive/governance-categories"
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-source"
@@ -424,6 +425,10 @@ export function createRoutes(
     // 板块是 `asset-governance`：读要 read、写要 admin；表规则全在 `category-store.ts`。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 4）。
     OpenhiveGovernanceCategories.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 授权组出口（需求 3b，2026-10-27）：列表 / 建组 / 加组员。「指定人员」这一档的
+    // 读权只来自授权行，没有组就没有可选的名单；本模块只管组本身，资产的授权行由发布动作写。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 3b）。
+    OpenhiveGovernanceAssetGroups.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 使用面资产出口（T017）：「我能用的已发布资产」。与上面那条治理出口**不是一套**：
     // 那条给管理员看全量、进门要板块授权；这条给普通民警，只要登录，且逐条过 009 的
     // `canReadAsset()`（可见性规则只有那一份）。资产根不读——列表不碰磁盘。

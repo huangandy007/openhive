@@ -429,7 +429,7 @@ describe("T007 · 审核与发布动作", () => {
 
       const 个人 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech", visibility: "personal" })
       expect(个人.status).toBe(400)
-      expect((yield* json(ErrorResponse, 个人)).error).toContain("部门或全局")
+      expect((yield* json(ErrorResponse, 个人)).error).toContain("本部门、全局或指定人员")
 
       const 缺省 = yield* post(ADMIN, transitionUrl(id), { action: "publish_tech" })
       expect(缺省.status).toBe(409)

@@ -51,6 +51,11 @@ import {
   type AssetListFilters,
 } from "@opencode-ai/asset-service/asset"
 import { isEnabledCategory, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
+import {
+  assertAssetReadGroups,
+  setAssetReadGroups,
+  UnknownAuthorizationGroupError,
+} from "@opencode-ai/asset-service/authorization"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import {
   ASSET_STATUSES,
@@ -257,13 +262,48 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     const visibility = body["visibility"]
     if (visibility !== undefined) {
       if (visibility === "personal") {
-        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "发布范围必须是部门或全局", "visibility")
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "发布范围必须是本部门、全局或指定人员", "visibility")
       }
-      if (visibility !== "department" && visibility !== "global") {
+      if (visibility !== "department" && visibility !== "global" && visibility !== "targeted") {
         return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `未知可见范围：${JSON.stringify(visibility)}`, "visibility")
       }
     }
-    const 范围 = visibility === "department" || visibility === "global" ? visibility : undefined
+    const 范围 = visibility === "department" || visibility === "global" || visibility === "targeted"
+      ? visibility
+      : undefined
+
+    // 「指定人员」（需求 3b）：读只来自授权行，所以**必须**带至少一个授权组。
+    // 载荷在出口收窄（`string[]`、非空、无空白项），组是否真的存在在流转之前单独验。
+    const rawGroupIds = body["groupIds"]
+    let 组: string[] | undefined
+    if (rawGroupIds !== undefined) {
+      if (!Array.isArray(rawGroupIds)) {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 必须是授权组 id 的数组", "groupIds")
+      }
+      const items: readonly unknown[] = rawGroupIds
+      const ids: string[] = []
+      for (const item of items) {
+        if (typeof item !== "string" || item.trim() === "") {
+          return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 里每一项都必须是非空字符串", "groupIds")
+        }
+        if (!ids.includes(item.trim())) ids.push(item.trim())
+      }
+      组 = ids
+    }
+    if (组 !== undefined && 范围 !== "targeted") {
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 只能配合「指定人员」使用", "groupIds")
+    }
+    if (范围 === "targeted" && (组 === undefined || 组.length === 0)) {
+      return yield* 失败(
+        deps,
+        userId,
+        未知对象,
+        BAD_REQUEST,
+        "「指定人员」发布必须至少选一个授权组",
+        "groupIds",
+        { visibility: 范围 },
+      )
+    }
 
     const params = yield* HttpRouter.params
     const assetId = params.id ?? ""
@@ -289,6 +329,18 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     )
     if (Result.isFailure(预检)) return yield* 翻译(预检.failure, deps, userId, base, 补充)
 
+    // 组前提在**流转之前**验（顺序：授权 → 前提 → 副作用）：不存在的组若等到发布成功后才
+    // 发现，资产已经变成「指定人员但没有任何组」——组员看不见、作者以外谁都看不见的坏状态。
+    if (范围 === "targeted" && 组 !== undefined) {
+      const 验组 = yield* Effect.result(
+        Effect.tryPromise({
+          try: () => assertAssetReadGroups(deps.pg(), { assetId, groupIds: 组 }),
+          catch: (error) => error,
+        }),
+      )
+      if (Result.isFailure(验组)) return yield* 翻译(验组.failure, deps, userId, base, { ...补充, visibility: 范围 })
+    }
+
     const result = yield* Effect.result(
       Effect.tryPromise({
         try: () =>
@@ -306,6 +358,25 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       }),
     )
     if (Result.isSuccess(result)) {
+      // 「指定人员」的授权行在流转**之后**写：发布没成就不该留下授权行（授权行不受状态门
+      // 限制——先写等于提前把一份待审资产发给那几个人）。
+      //
+      // 写失败时不回 500：状态与目录已经变了，回 500 是谎报「没生效」；按站内信失败的同一条
+      // 口径回 200 ＋ `notice`。此时是 **fail-closed**（组员看不见），不是越权。
+      const 写组 =
+        范围 === "targeted" && 组 !== undefined
+          ? yield* Effect.result(
+              Effect.tryPromise({
+                try: () => setAssetReadGroups(deps.pg(), { assetId, groupIds: 组 }),
+                catch: (error) => error,
+              }),
+            )
+          : undefined
+      const 通知 =
+        写组 !== undefined && Result.isFailure(写组)
+          ? `资产已发布为「指定人员」，但授权组未写入：${写组.failure instanceof Error ? 写组.failure.message : String(写组.failure)}`
+          : undefined
+
       yield* 记账.记(deps, userId, {
         ...base,
         result: "ok",
@@ -313,9 +384,11 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
           transition: 动,
           ...(reason === undefined ? {} : { reason }),
           ...(范围 === undefined ? {} : { visibility: 范围 }),
+          ...(组 === undefined ? {} : { groupIds: 组 }),
+          ...(通知 === undefined ? {} : { notice: 通知 }),
         },
       })
-      return ok({ asset: result.success })
+      return ok({ asset: result.success, ...(通知 === undefined ? {} : { notice: 通知 }) })
     }
 
     const error = result.failure
@@ -492,6 +565,8 @@ export function 映射错误(
     }
   }
   if (error instanceof MissingSourceDirectoryError) return { status: CONFLICT, message: error.message }
+  // 需求 3b：「指定人员」发布挑了不存在 / 不是组的 id。这是发布前提不成立，不是内部故障。
+  if (error instanceof UnknownAuthorizationGroupError) return { status: CONFLICT, message: error.message }
   return undefined
 }
 

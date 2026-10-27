@@ -35,6 +35,7 @@ import {
   STATUS_LABELS,
   TYPE_LABELS,
   type AssetApi,
+  type AssetGroup,
   type AssetRow,
   type AssetStatus,
   type GovernanceAction,
@@ -152,8 +153,17 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [确认, 设确认] = createSignal<{ readonly row: AssetRow; readonly action: GovernanceAction }>()
   const [理由, 设理由] = createSignal("")
   const [理由错误, 设理由错误] = createSignal<string>()
-  const [发布范围, 设发布范围] = createSignal<"department" | "global">()
+  const [发布范围, 设发布范围] = createSignal<"department" | "global" | "targeted">()
   const [范围错误, 设范围错误] = createSignal<string>()
+  /**
+   * 「指定人员」（需求 3b）：组清单懒拉——只有选了这一档（或打开一份已是指定人员的资产）才拉，
+   * 用户八成是发本部门，不该为每个弹窗多一次网。`undefined` = 还没拉过，`[]` = 拉到了但一个组都没有。
+   */
+  const [组清单, 设组清单] = createSignal<readonly AssetGroup[]>()
+  const [组加载中, 设组加载中] = createSignal(false)
+  const [组错误, 设组错误] = createSignal<string>()
+  /** 勾了哪些组：存 id 不存对象，理由同 `已选`（列表重拉会换行对象）。 */
+  const [已选组, 设已选组] = createSignal<readonly string[]>([])
   const [动作错误, 设动作错误] = createSignal<string>()
   const [处理中, 设处理中] = createSignal(false)
 
@@ -236,7 +246,12 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设理由错误(undefined)
     设范围错误(undefined)
     设发布范围(row.visibility === "personal" ? undefined : row.visibility)
+    // 每次打开都重新拉：组成员数量会变，缓存一份旧名单只会让选择器说旧话。
+    设组清单(undefined)
+    设组错误(undefined)
+    设已选组([])
     设确认({ row, action })
+    if (row.visibility === "targeted") void 拉组()
   }
 
   function 关确认() {
@@ -245,6 +260,34 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设理由错误(undefined)
     设范围错误(undefined)
     设发布范围(undefined)
+    设组清单(undefined)
+    设组错误(undefined)
+    设已选组([])
+  }
+
+  function 选发布范围(value: "department" | "global" | "targeted") {
+    设发布范围(value)
+    设范围错误(undefined)
+    if (value === "targeted") void 拉组()
+  }
+
+  /** 拉一次组清单。失败要停在原地报原因：静默成空列表会让人以为「系统里没有组」。 */
+  async function 拉组() {
+    if (组清单() !== undefined || 组加载中()) return
+    设组加载中(true)
+    设组错误(undefined)
+    const out = await props.api.listGroups()
+    设组加载中(false)
+    if (out.kind !== "ok") {
+      设组错误(out.message)
+      return
+    }
+    设组清单(out.value)
+  }
+
+  function 切组(id: string, 选上: boolean) {
+    设范围错误(undefined)
+    设已选组((当前) => (选上 ? [...当前, id] : 当前.filter((item) => item !== id)))
   }
 
   async function 提交() {
@@ -261,6 +304,9 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       设范围错误("请选择发布范围")
       return
     }
+    // 「指定人员」才带组：给了 groupIds 却不是这一档，服务端按 400 拒。一个组都没选时
+    // 提交按钮是禁用的（见 `asset-confirm-submit` 的 disabled），这里不再重复兜一遍。
+    const 组 = 选范围 && 发布范围() === "targeted" ? 已选组() : undefined
 
     设处理中(true)
     设动作错误(undefined)
@@ -271,6 +317,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       目标.action,
       需要理由 ? 理由值 : undefined,
       选范围 ? 发布范围() : undefined,
+      组,
     )
     设处理中(false)
 
@@ -600,10 +647,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                       value="department"
                       checked={发布范围() === "department"}
                       disabled={处理中()}
-                      onChange={() => {
-                        设发布范围("department")
-                        设范围错误(undefined)
-                      }}
+                      onChange={() => 选发布范围("department")}
                     />
                     <span>本部门{确认()?.row.department ? `（${确认()?.row.department}）` : ""}</span>
                   </label>
@@ -615,13 +659,69 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                       value="global"
                       checked={发布范围() === "global"}
                       disabled={处理中()}
-                      onChange={() => {
-                        设发布范围("global")
-                        设范围错误(undefined)
-                      }}
+                      onChange={() => 选发布范围("global")}
                     />
                     <span>全局</span>
                   </label>
+                  <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                    <input
+                      data-slot="asset-publish-scope-targeted"
+                      type="radio"
+                      name="asset-publish-scope"
+                      value="targeted"
+                      checked={发布范围() === "targeted"}
+                      disabled={处理中()}
+                      onChange={() => 选发布范围("targeted")}
+                    />
+                    <span>指定人员</span>
+                  </label>
+                  <Show when={发布范围() === "targeted"}>
+                    <div data-slot="asset-publish-groups" class="flex flex-col gap-1 pl-6">
+                      <Show when={组加载中()}>
+                        <span class="text-[12px] text-v2-text-text-muted">正在加载授权组…</span>
+                      </Show>
+                      <Show when={组错误()}>
+                        {(message) => (
+                          <span
+                            data-slot="asset-publish-group-error"
+                            role="alert"
+                            class="text-[12px] text-v2-state-fg-danger"
+                          >
+                            {message()}
+                          </span>
+                        )}
+                      </Show>
+                      <Show when={组清单()}>
+                        {(清单) => (
+                          <Show
+                            when={清单().length > 0}
+                            fallback={
+                              <p class="text-[12px] text-v2-text-text-muted">
+                                还没有授权组，请先在「账号与组织」里建立授权组并添加成员。
+                              </p>
+                            }
+                          >
+                            <For each={清单()}>
+                              {(组) => (
+                                <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                                  <input
+                                    type="checkbox"
+                                    data-slot={`asset-publish-group-${组.id}`}
+                                    checked={已选组().includes(组.id)}
+                                    disabled={处理中()}
+                                    onChange={(event) => 切组(组.id, event.currentTarget.checked)}
+                                  />
+                                  <span>
+                                    {组.name}（{组.memberCount} 人）
+                                  </span>
+                                </label>
+                              )}
+                            </For>
+                          </Show>
+                        )}
+                      </Show>
+                    </div>
+                  </Show>
                   <Show when={范围错误()}>
                     {(message) => (
                       <span data-slot="asset-scope-error" role="alert" class="text-[12px] text-v2-state-fg-danger">
@@ -671,7 +771,11 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                 data-slot="asset-confirm-submit"
                 type="button"
                 variant={确认()?.action === "reject_business" ? "danger" : "contrast"}
-                disabled={处理中() || (需要选范围() && 发布范围() === undefined)}
+                disabled={
+                  处理中() ||
+                  (需要选范围() && 发布范围() === undefined) ||
+                  (需要选范围() && 发布范围() === "targeted" && 已选组().length === 0)
+                }
                 onClick={() => void 提交()}
               >
                 {处理中() ? "处理中…" : 提交文案()}
@@ -691,6 +795,8 @@ export function 可见范围文案(row: Pick<AssetRow, "visibility" | "departmen
       return "全单位"
     case "department":
       return row.department === "" ? "本部门" : `本部门 · ${row.department}`
+    case "targeted":
+      return "指定人员"
     case "personal":
       return "仅作者"
     default: {

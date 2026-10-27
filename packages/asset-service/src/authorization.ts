@@ -70,6 +70,19 @@ function assertNonBlank(value: string, label: string): string {
 }
 
 /**
+ * 给的 id 不是授权组（不存在、或存在但 `role_type` 不是 `group`）。
+ *
+ * 为什么要类型而不是只靠消息：需求 3b 起「指定人员」发布会在**流转之前**验组，
+ * 这是发布前提不成立（409），不是内部故障（500）——出口要能认出来。
+ */
+export class UnknownAuthorizationGroupError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "UnknownAuthorizationGroupError"
+  }
+}
+
+/**
  * 这个 role 必须存在且是授权组。
  *
  * 为什么不靠外键：外键只保证「角色存在」，不保证「它是组」。给普通角色写一条
@@ -78,10 +91,12 @@ function assertNonBlank(value: string, label: string): string {
  */
 async function assertAuthorizationGroup(db: AuthorizationTarget, groupId: string): Promise<void> {
   const rows = rowsOf(await db.execute(sql`select role_type from auth.role where id = ${groupId}`))
-  if (rows.length === 0) throw new Error(`授权组不存在：${groupId}`)
+  if (rows.length === 0) throw new UnknownAuthorizationGroupError(`授权组不存在：${groupId}`)
 
   const roleType = String(rows[0]!.role_type)
-  if (roleType !== "group") throw new Error(`${groupId} 不是授权组（role_type=${roleType}）`)
+  if (roleType !== "group") {
+    throw new UnknownAuthorizationGroupError(`${groupId} 不是授权组（role_type=${roleType}）`)
+  }
 }
 
 /**
@@ -148,6 +163,72 @@ export async function grantAssetToGroup(
   `)
 }
 
+/** 组 id 列表的去重与收窄：空串 / 空白一律拒，重复只留一份。 */
+function 授权组清单(groupIds: readonly string[]): string[] {
+  const ids: string[] = []
+  for (const raw of groupIds) {
+    const id = assertNonBlank(raw, "组 id")
+    if (!ids.includes(id)) ids.push(id)
+  }
+  if (ids.length === 0) throw new Error("「指定人员」至少要一个授权组")
+  return ids
+}
+
+/**
+ * 指定人员发布的**前置校验**：组都在、都是组、资产也在。**一条都不写库。**
+ *
+ * 出口要在流转之前调它（`#004-09`：授权 / 前提先于副作用）：组写错了就该在状态机动手
+ * 之前拿到 409，而不是「资产已发布、授权没写进去」——后者是看不见的坏状态。
+ */
+export async function assertAssetReadGroups(
+  db: AuthorizationTarget,
+  input: { readonly assetId: string; readonly groupIds: readonly string[] },
+): Promise<AssetMetadata> {
+  const assetId = assertNonBlank(input.assetId, "资产 id")
+  // 先验组、再查资产：两件都是读，顺序只影响报哪一条错；组错更常见。
+  for (const groupId of 授权组清单(input.groupIds)) await assertAuthorizationGroup(db, groupId)
+
+  const asset = await assetById(db, assetId)
+  if (!asset) throw new Error(`资产不存在：${assetId}`)
+  return asset
+}
+
+/**
+ * 把一份资产的「指定人员」读权**设成**给定的组集合（需求 3b）。
+ *
+ * ## 为什么是「设成」而不是「追加」
+ *
+ * 迭代发布换了组时，旧组的 `read` 行必须消失——只追加的话，「不再被指定的人」会一直
+ * 看得见。所以先删该资产的 `read` 授权，再按清单写回。
+ *
+ * ## 只动授权组的行
+ *
+ * 删除条件带 `role_id in (select id from auth.role where role_type = 'group')`：
+ * 普通角色上的同资产授权是**另一条渠道**（例如测试 / 运维直配的零散授权），
+ * 重设「指定人员」不该顺手把人家撤了。
+ *
+ * ## 顺序：先验后删后写
+ *
+ * `assertAssetReadGroups()` 把所有前提验完才动库，于是「有组写错」时一条都不删。
+ */
+export async function setAssetReadGroups(
+  db: AuthorizationTarget,
+  input: { readonly assetId: string; readonly groupIds: readonly string[] },
+): Promise<void> {
+  const asset = await assertAssetReadGroups(db, input)
+  const groupIds = 授权组清单(input.groupIds)
+
+  await db.execute(sql`
+    delete from auth.role_resource
+     where resource_type = ${asset.type}
+       and resource_id = ${asset.id}
+       and perm = 'read'
+       and role_id in (select id from auth.role where role_type = 'group')
+  `)
+
+  for (const groupId of groupIds) await grantAssetToGroup(db, { groupId, assetId: asset.id, perm: "read" })
+}
+
 /**
  * 三级空间是否允许「读」。只回答空间那半边，授权组那半边在 `effectivePermissions()` 里并。
  *
@@ -164,6 +245,11 @@ function spaceAllowsRead(viewer: AssetViewer, asset: AssetMetadata): boolean {
       return asset.department !== "" && viewer.department !== "" && asset.department === viewer.department
     case "personal":
       // 个人资产的空间只有作者本人；作者那一份由 `effectivePermissions()` 直接给。
+      return false
+    case "targeted":
+      // 指定人员（需求 3b）：**空间不授读**。同部门也不行——读只来自作者身份与授权行，
+      // 所以「组外同部门不可见」不需要再加第二个开关。SQL 下推那边同样没有这一档的分支
+      // （`readable-sql.ts`），两处判据同源。
       return false
     default: {
       const visibility: never = asset.visibility

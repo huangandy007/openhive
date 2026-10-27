@@ -249,6 +249,23 @@ describe("tools/list", () => {
     )
     expect(create.required).not.toContain("assetId")
   })
+
+  test("工具不开放「指定人员」（需求 3b）：没有 groupIds 参数，枚举必须比元数据窄", async () => {
+    const { client } = await harness()
+    const { tools } = await client.listTools()
+    const byName = new Map(tools.map((tool) => [tool.name, tool]))
+
+    const draft = byName.get("create_skill_draft")!.inputSchema as {
+      properties?: Record<string, { enum?: string[] }>
+    }
+    // 元数据闭集有 `targeted`，但工具没有选组的能力：只传 visibility 等于发出去谁也看不见。
+    expect(draft.properties?.["visibility"]?.enum).toEqual(["personal", "department", "global"])
+
+    const publish = byName.get("publish_skill")!.inputSchema as {
+      properties?: Record<string, { enum?: string[] }>
+    }
+    expect(publish.properties?.["visibility"]?.enum).toEqual(["department", "global"])
+  })
 })
 
 describe("create_skill_draft", () => {

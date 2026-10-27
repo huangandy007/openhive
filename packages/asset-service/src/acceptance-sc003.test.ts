@@ -113,7 +113,9 @@ const 身份们: readonly 身份[] = [
  * 独立口径：这个人能不能读到这份资产。
  *
  * 规则来自设计 §1.2 / §3.2：作者恒可读；任一授权行附带 read；其余人只有在
- * **共享状态**下按空间放行（global 全单位、department 同部门、personal 空间永不放行）。
+ * **共享状态**下按空间放行（global 全单位、department 同部门、personal / targeted
+ * 空间永不放行）。「指定人员」（需求 3b）的读只从授权行来，同部门也不例外——这一格
+ * 是**故意**与 department 不同，别把两支合并。
  */
 function 期望可读(人: 身份, asset: AssetMetadata): boolean {
   if (人.作者) return true
@@ -121,6 +123,7 @@ function 期望可读(人: 身份, asset: AssetMetadata): boolean {
   if (!共享状态.has(asset.status)) return false
   if (asset.visibility === "global") return true
   if (asset.visibility === "personal") return false
+  if (asset.visibility === "targeted") return false
   return asset.department !== "" && 人.viewer.department !== "" && asset.department === 人.viewer.department
 }
 
@@ -135,7 +138,7 @@ function 授权给(人: 身份, asset: AssetMetadata): GrantRow[] {
 // ---------------------------------------------------------------------------
 
 describe("SC-003 验收 · 无权资产不可见（T017）", () => {
-  test("可见性全矩阵：7 状态 × 3 空间 × 6 类身份，逐格与独立口径对账", () => {
+  test("可见性全矩阵：7 状态 × 4 档可见范围 × 6 类身份，逐格与独立口径对账", () => {
     for (const status of ASSET_STATUSES) {
       for (const visibility of ASSET_VISIBILITIES) {
         const asset = metadata({ id: `a_${status}_${visibility}`, status, visibility })

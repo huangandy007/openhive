@@ -71,15 +71,23 @@ function 分类后端(): CategoryAdminApi {
   }
 }
 
+const 授权组 = [
+  { id: "g_case", name: "电诈专案组", memberCount: 2 },
+  { id: "g_taskforce", name: "涉黑专案组", memberCount: 5 },
+] as const
+
 interface 记录 {
   readonly list: AssetQuery[]
   readonly transition: Array<{
     readonly id: string
     readonly action: GovernanceAction
     readonly reason?: string
-    readonly visibility?: "department" | "global"
+    readonly visibility?: "department" | "global" | "targeted"
+    readonly groupIds?: readonly string[]
   }>
   readonly batch: Array<{ readonly ids: readonly string[]; readonly category: string }>
+  /** 「指定人员」弹窗拉了几次组清单：不点这一档就不该拉（白拉一次网）。 */
+  groupCalls: number
 }
 
 /** 默认替身：按 `query.status` 过滤假数据（与服务端的过滤语义一致）。 */
@@ -90,18 +98,19 @@ function 假后端(
   }),
   覆写: Partial<AssetApi> = {},
 ) {
-  const 记录: 记录 = { list: [], transition: [], batch: [] }
+  const 记录: 记录 = { list: [], transition: [], batch: [], groupCalls: 0 }
   const api: AssetApi = {
     list: async (query = {}) => {
       记录.list.push(query)
       return 应答(query)
     },
-    transition: async (id, action, reason, visibility) => {
+    transition: async (id, action, reason, visibility, groupIds) => {
       记录.transition.push({
         id,
         action,
         ...(reason === undefined ? {} : { reason }),
         ...(visibility === undefined ? {} : { visibility }),
+        ...(groupIds === undefined ? {} : { groupIds }),
       })
       const 原行 = 样本.find((row) => row.id === id) ?? 资产(id)
       // 原实现回 `pending_tech`；假后端只被断言「记下了什么」，不改它。
@@ -110,6 +119,10 @@ function 假后端(
     batchCategory: async (ids, category) => {
       记录.batch.push({ ids, category })
       return { kind: "ok", value: { updated: ids.length } }
+    },
+    listGroups: async () => {
+      记录.groupCalls += 1
+      return { kind: "ok", value: 授权组 }
     },
     ...覆写,
   }
@@ -349,6 +362,79 @@ describe("资产治理页 · 发布范围", () => {
   })
 })
 
+describe("资产治理页 · 发布范围 · 指定人员（需求 3b）", () => {
+  test("个人资产改「指定人员」：点这一档才拉组；选组前不能提交，选了组提交带 groupIds", async () => {
+    const 个人待发布 = 资产("p1", { status: "pending_tech", visibility: "personal" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [个人待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    // 不点这一档就不该拉组清单：白拉一次网，而用户可能根本打算发到本部门。
+    expect(记录.groupCalls).toBe(0)
+
+    点单选("[data-slot='asset-publish-scope-targeted']")
+    await 等到(() => 有("[data-slot='asset-publish-group-g_case']") !== null)
+    expect(记录.groupCalls).toBe(1)
+    const 组选框 = 有("[data-slot='asset-publish-group-g_case']")
+    expect(组选框 instanceof HTMLInputElement && 组选框.checked).toBe(false)
+    // 「指定人员」等于「谁都不给」是不可提交的状态：一个组都没选时按钮必须禁用。
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
+
+    点单选("[data-slot='asset-publish-group-g_case']")
+    await 等到(() => !按钮("[data-slot='asset-confirm-submit']").disabled)
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+
+    expect(记录.transition[0]).toEqual({
+      id: "p1",
+      action: "publish_tech",
+      visibility: "targeted",
+      groupIds: ["g_case"],
+    })
+  })
+
+  test("已是指定人员的资产：预选这一档并列出组；切回本部门后组选项消失、提交不带 groupIds", async () => {
+    const 定向待发布 = 资产("p4", { status: "pending_tech", visibility: "targeted" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [定向待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    await 等到(() => 有("[data-slot='asset-publish-group-g_case']") !== null)
+    const 定向 = 有("[data-slot='asset-publish-scope-targeted']")
+    expect(定向 instanceof HTMLInputElement && 定向.checked).toBe(true)
+    // 回包里的资产不带「当前授权组」，所以组的勾选态**不回填**：重发必须重选。
+    // 这也是提交禁用的原因——空组 = 谁都不给，比拿不准更糟。
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
+
+    点单选("[data-slot='asset-publish-scope-department']")
+    await 等到(() => 有("[data-slot='asset-publish-group-g_case']") === null)
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
+
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+    expect(记录.transition[0]).toEqual({ id: "p4", action: "publish_tech", visibility: "department" })
+  })
+
+  test("组清单拉不到：在原处说清楚、提交保持禁用（不假装「没有组」）", async () => {
+    const 个人待发布 = 资产("p1", { status: "pending_tech", visibility: "personal" })
+    const { api } = 假后端(async () => ({ kind: "ok", value: [个人待发布] }), {
+      listGroups: async () => ({ kind: "failed", message: "取授权组超时" }),
+    })
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    点单选("[data-slot='asset-publish-scope-targeted']")
+    await 等到(() => 文章("[data-slot='asset-publish-group-error']").includes("取授权组超时"))
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
+  })
+})
+
 describe("资产治理页 · 失败不关框", () => {
   test("服务端 field=reason ⇒ 错误挂到理由框，框不关", async () => {
     const 服务端拒绝 = 假后端(undefined, {
@@ -404,6 +490,7 @@ describe("资产治理页 · 三态", () => {
       },
       transition: (id, action, reason) => 失败一次.api.transition(id, action, reason),
       batchCategory: (ids, category) => 失败一次.api.batchCategory(ids, category),
+      listGroups: () => 失败一次.api.listGroups(),
     })
     await 等到(() => 有("[data-slot='asset-error']") !== null)
     expect(文章("[data-slot='asset-error']")).toContain("连接服务失败")

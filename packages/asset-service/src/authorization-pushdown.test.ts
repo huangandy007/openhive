@@ -28,8 +28,9 @@ import type { AssetMetadata } from "./metadata"
  * - 投影 A：`canReadAsset(viewer, asset, grantsFor(viewer))` 逐条判；
  * - 投影 B：`select id from auth.asset where <readableAssetCondition(viewer)>`。
  *
- * 两个集合必须**逐一相等**。矩阵覆盖：7 种状态 × 3 档可见范围 × 两个部门 × 三种读者
+ * 两个集合必须**逐一相等**。矩阵覆盖：7 种状态 × 4 档可见范围 × 两个部门 × 三种读者
  * （作者 / 同部门非作者 / 异部门），外加一条授权组定向授权（草稿 + 跨部门）。
+ * 「指定人员」（需求 3b）在矩阵里与部门档同格：**同部门也不可见**——它的读只来自授权行。
  *
  * ## 变异
  *
@@ -58,7 +59,12 @@ async function freshDb(): Promise<ProductionDb["db"]> {
 }
 
 const STATUSES = ["draft", "in_review", "pending_tech", "published", "iterating", "offline", "archived"] as const
-const VISIBILITIES = ["global", "department", "personal"] as const
+/**
+ * 四档（需求 3b 起）。`targeted` 必须进矩阵：它的判据是「空间不授读」，也就是**没有**
+ * 新增的 SQL 分支——恰恰要靠这条相等断言钉住「两侧都没有它」，而不是两边各漂一点、
+ * 看起来还相等。
+ */
+const VISIBILITIES = ["global", "department", "targeted", "personal"] as const
 const DEPARTMENTS = ["经侦支队", "刑侦支队"] as const
 
 function row(id: string, overrides: Partial<AssetMetadata>): AssetMetadata {

@@ -6019,7 +6019,8 @@ describe("AI 资产工作台（009 T005）", () => {
     const host = mount(() => <WorkspaceEntry categories={假分类()}>中栏</WorkspaceEntry>)
     进入(host)
 
-    expect(host.querySelectorAll("[data-slot='asset-space']").length).toBe(3)
+    // 空间筛选项 = 可见范围档数（需求 3b 起四档），与「三组」无关。
+    expect(host.querySelectorAll("[data-slot='asset-space']").length).toBe(4)
     expect(host.querySelectorAll("[data-slot='asset-type-tab']").length).toBe(3)
     expect(host.querySelectorAll("[data-slot='asset-category']").length).toBe(9)
     expect(host.querySelectorAll("[data-slot='asset-item']").length).toBe(0)

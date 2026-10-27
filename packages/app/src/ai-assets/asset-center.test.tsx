@@ -135,7 +135,12 @@ describe("AssetCenter · 页码条", () => {
     const 源 = 数据源({ total: 1 })
     const { 卸 } = 挂(源)
     try {
-      expect(源.查询.at(0)).toEqual({ type: "skill", spaces: ["global", "department", "personal"], category: undefined, q: "" })
+      expect(源.查询.at(0)).toEqual({
+        type: "skill",
+        spaces: ["global", "department", "targeted", "personal"],
+        category: undefined,
+        q: "",
+      })
     } finally {
       卸()
     }

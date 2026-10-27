@@ -109,6 +109,11 @@ export function publishDirectory(
     const department = assertSafeSegment(scope.department ?? "", "部门 id")
     return join(root, "dept", department, typeDirectory, assertSafeSegment(assetId, "资产 id"))
   }
+  if (visibility === "targeted") {
+    // 需求 3b：指定人员有自己的存放目录。**不落部门目录**——否则「路径在部门下」会被
+    // 后来的人顺手当成「同部门可见」，而这一档恰恰不给空间读权。
+    return join(root, "targeted", typeDirectory, assertSafeSegment(assetId, "资产 id"))
+  }
   if (visibility === "personal") {
     throw new PersonalAssetDirectoryError()
   }

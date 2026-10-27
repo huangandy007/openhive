@@ -15,15 +15,20 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
 }
 
 /**
- * 三级空间（FR-006）。部门当前是自由文本（D0-4 的技术债），
- * 所以这里只固定三档，不引入部门 ID。
+ * 可见范围（FR-006；需求 3b 起四档）。部门当前是自由文本（D0-4 的技术债），
+ * 所以这里只固定档位，不引入部门 ID。
+ *
+ * `targeted`（指定人员，2026-10-27）**不是第四个空间**：它不给任何空间读权，读只来自
+ * 作者身份与 `auth.role_resource` 的授权行。别在 `spaceAllowsRead()` 之外再写一套判定
+ * （`#002-06`）。
  */
-export const ASSET_VISIBILITIES = ["global", "department", "personal"] as const
+export const ASSET_VISIBILITIES = ["global", "department", "targeted", "personal"] as const
 export type AssetVisibility = (typeof ASSET_VISIBILITIES)[number]
 
 export const ASSET_VISIBILITY_LABELS: Record<AssetVisibility, string> = {
   global: "全局",
   department: "部门",
+  targeted: "指定人员",
   personal: "个人",
 }
 

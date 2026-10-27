@@ -32,7 +32,7 @@ export type AssetStatus = (typeof ASSET_STATUSES)[number]
 export const ASSET_TYPES = ["skill", "mcp", "knowledge_base"] as const
 export type AssetType = (typeof ASSET_TYPES)[number]
 
-export const ASSET_VISIBILITIES = ["global", "department", "personal"] as const
+export const ASSET_VISIBILITIES = ["global", "department", "targeted", "personal"] as const
 export type AssetVisibility = (typeof ASSET_VISIBILITIES)[number]
 
 /** 治理后台能执行的动作（与内核白名单逐字相同；作者动作不在这里）。 */
@@ -95,6 +95,18 @@ export type AssetOutcome<T> =
   /** 没说成：网络 / 超时 / 5xx / 返回体形状不对。 */
   | { readonly kind: "failed"; readonly message: string }
 
+/**
+ * 授权组（需求 3b）：「指定人员」发布时可选的那份名单。
+ *
+ * 只有这三个字段——弹窗只需要「勾哪个、叫什么、发给几个人」。组里具体是谁属于账号 / 组织
+ * 那套接口的事，同一个人名出现在这里不会帮用户判断任何事。
+ */
+export interface AssetGroup {
+  readonly id: string
+  readonly name: string
+  readonly memberCount: number
+}
+
 export interface AssetApi {
   list(query?: AssetQuery): Promise<AssetOutcome<readonly AssetRow[]>>
   /**
@@ -111,8 +123,16 @@ export interface AssetApi {
     id: string,
     action: GovernanceAction,
     reason?: string,
-    visibility?: "department" | "global",
+    visibility?: "department" | "global" | "targeted",
+    groupIds?: readonly string[],
   ): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
+  /**
+   * 授权组清单（需求 3b）：发布为「指定人员」时弹窗里的可选项。
+   *
+   * 只读、无参数、不分页——授权组是管理员手工维护的小集合（一个专案组、一个专班），
+   * 不存在翻到第二页才找得到的情况。形状不对照旧算 `failed`，不当空列表。
+   */
+  listGroups(): Promise<AssetOutcome<readonly AssetGroup[]>>
   /**
    * 把一批资产挪到某个**启用**分类（需求 2）：管理员收拾「其他」兜底桶的收尾动作。
    *
@@ -133,6 +153,8 @@ export const PATH = {
   transition: (id: string) => `${PREFIX}/${encodeURIComponent(id)}/transition`,
   /** 需求 2：批量改分类。与内核 `PATH.batchCategory` 逐字对应（刻意不共享）。 */
   batchCategory: `${PREFIX}/batch-category`,
+  /** 需求 3b：授权组清单。与内核 `OpenhiveGovernanceAssetGroups.PATH.list` 逐字对应。 */
+  groups: "/openhive/governance/asset-groups",
 } as const
 
 /** 一次请求的上限：与 `account-api.ts` 同值同理由。 */
@@ -265,6 +287,19 @@ export function 列表地址(query: AssetQuery = {}): string {
   return 串 === "" ? PATH.list : `${PATH.list}?${串}`
 }
 
+/** 授权组清单：`{ groups: [{ id, name, memberCount }] }`，逐项严判（`memberCount` 不能是字符串）。 */
+function 授权组清单(value: unknown): readonly AssetGroup[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value["groups"])) return undefined
+  const parsed: AssetGroup[] = []
+  for (const item of value["groups"]) {
+    if (!isRecord(item)) return undefined
+    const { id, name, memberCount } = item
+    if (typeof id !== "string" || typeof name !== "string" || !数(memberCount)) return undefined
+    parsed.push({ id, name, memberCount })
+  }
+  return parsed
+}
+
 /** 批量改分类的回包：`{ updated }`，缺了 / 不是数字都算形状变了（不能当 0 条蒙混）。 */
 function 批量结果(value: unknown): { readonly updated: number } | undefined {
   if (!isRecord(value) || !数(value["updated"])) return undefined
@@ -275,7 +310,7 @@ function 批量结果(value: unknown): { readonly updated: number } | undefined 
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
     list: (query) => 请求(send, 列表地址(query), undefined, 列表),
-    transition: (id, action, reason, visibility) =>
+    transition: (id, action, reason, visibility, groupIds) =>
       请求(send, PATH.transition(id), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -283,8 +318,11 @@ export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
           action,
           ...(reason === undefined ? {} : { reason }),
           ...(visibility === undefined ? {} : { visibility }),
+          // 空数组不带：服务端把「给了 groupIds 却不是 targeted」当 400，别自己造一个。
+          ...(groupIds === undefined || groupIds.length === 0 ? {} : { groupIds: [...groupIds] }),
         }),
       }, 流转结果),
+    listGroups: () => 请求(send, PATH.groups, undefined, 授权组清单),
     batchCategory: (ids, category) =>
       请求(
         send,

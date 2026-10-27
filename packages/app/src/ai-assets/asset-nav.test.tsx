@@ -73,14 +73,15 @@ const 箭名 = (el: HTMLElement) =>
   ""
 
 describe("AI 资产左栏导航", () => {
-  test("空间筛选：全局 / 部门 / 个人三项，默认全选", () => {
+  test("空间筛选：全局 / 部门 / 指定人员 / 个人四项，默认全选", () => {
     const host = mount()
     const 空间 = 槽(host, "asset-space")
 
     expect(空间.map((el) => el.textContent?.trim())).toEqual(
       ASSET_VISIBILITIES.map((value) => ASSET_VISIBILITY_LABELS[value]),
     )
-    expect(空间.map((el) => el.getAttribute("aria-pressed"))).toEqual(["true", "true", "true"])
+    // 需求 3b 起四档：多出的一档是「指定人员」（只包含别人定向发给我的资产）。
+    expect(空间.map((el) => el.getAttribute("aria-pressed"))).toEqual(["true", "true", "true", "true"])
   })
 
   test("空间是多选：点「个人」只取消它，其余不动；再点恢复", () => {
@@ -91,7 +92,7 @@ describe("AI 资产左栏导航", () => {
     个人.click()
 
     expect(个人.getAttribute("aria-pressed")).toBe("false")
-    expect(filter.spaces()).toEqual(["global", "department"])
+    expect(filter.spaces()).toEqual(["global", "department", "targeted"])
 
     个人.click()
 

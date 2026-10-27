@@ -4,6 +4,7 @@ import {
   ASSET_STATUS_LABELS,
   ASSET_TYPES,
   ASSET_VISIBILITIES,
+  ASSET_VISIBILITY_LABELS,
   validateAssetMetadata,
   type AssetMetadata,
 } from "./metadata"
@@ -60,7 +61,9 @@ describe("资产统一元数据（FR-001）", () => {
       "已归档",
     ])
     expect(ASSET_TYPES).toEqual(["skill", "mcp", "knowledge_base"])
-    expect(ASSET_VISIBILITIES).toEqual(["global", "department", "personal"])
+    // 需求 3b：第四档「指定人员」。它不靠空间授权，只靠授权行（`authorization.ts`）。
+    expect(ASSET_VISIBILITIES).toEqual(["global", "department", "targeted", "personal"])
+    expect(ASSET_VISIBILITY_LABELS["targeted"]).toBe("指定人员")
   })
 
   test("一份合法元数据没有校验问题", () => {

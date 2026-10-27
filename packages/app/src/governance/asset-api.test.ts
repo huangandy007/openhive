@@ -160,6 +160,42 @@ describe("资产客户端 · 批量改分类（需求 2）", () => {
   })
 })
 
+describe("资产客户端 · 指定人员（需求 3b）", () => {
+  test("visibility=targeted ⇒ 体里带 groupIds；不传组时不带这个键", async () => {
+    const { send, calls } = 替身(() =>
+      json({ asset: 资产("a1", { status: "published", visibility: "targeted" }) }),
+    )
+    const api = createAssetApi(send)
+
+    const out = await api.transition("a1", "publish_tech", undefined, "targeted", ["g_case", "g_taskforce"])
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ action: "publish_tech", visibility: "targeted", groupIds: ["g_case", "g_taskforce"] }),
+    )
+    // 行解析必须收下 `targeted`：不收的话这一行会被当成「形状不对」整个丢掉，
+    // 治理列表里那份资产直接消失（比显示错更糟）。
+    expect(out.kind).toBe("ok")
+    if (out.kind === "ok") expect(out.value.asset.visibility).toBe("targeted")
+
+    await api.transition("a1", "publish_tech", undefined, "global")
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ action: "publish_tech", visibility: "global" }))
+  })
+
+  test("授权组列表：GET 同源路径；逐字段严判，形状不对 ⇒ failed", async () => {
+    const { send, calls } = 替身(() =>
+      json({ groups: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }] }),
+    )
+    const out = await createAssetApi(send).listGroups()
+
+    expect(calls[0]?.input).toBe("/openhive/governance/asset-groups")
+    expect(out).toEqual({ kind: "ok", value: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }] })
+
+    for (const 坏 of [{}, { groups: [{ id: "g", name: "组" }] }, { groups: [{ id: "g", name: "组", memberCount: "2" }] }]) {
+      const 结果 = await createAssetApi(替身(() => json(坏)).send).listGroups()
+      expect(结果.kind).toBe("failed")
+    }
+  })
+})
+
 describe("资产客户端 · 结论三态", () => {
   test("401 ⇒ rejected「登录状态已失效」；403 ⇒ rejected 原样带服务端消息", async () => {
     const 未登录 = await createAssetApi(替身(() => new Response(null, { status: 401 })).send).list()

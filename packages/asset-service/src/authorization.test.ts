@@ -12,6 +12,8 @@ import {
   createAuthorizationGroup,
   effectivePermissions,
   grantAssetToGroup,
+  setAssetReadGroups,
+  UnknownAuthorizationGroupError,
   type AssetViewer,
 } from "./authorization"
 import { ASSET_TYPES, type AssetMetadata } from "./metadata"
@@ -124,6 +126,32 @@ describe("三级空间（FR-006）", () => {
 
     expect(canReadAsset(v1, asset)).toBe(true)
     expect(canReadAsset(v3, asset)).toBe(false)
+  })
+
+  /**
+   * 需求 3b「指定人员」：第四档**不给空间读权**——同部门也不放行，读只来自作者身份与授权行。
+   *
+   * 这三条一起钉住「组外同部门不可见」：只加一档枚举、不加一条判定（`spaceAllowsRead` 里
+   * 一个 `return false`），SQL 下推那边同样没有 targeted 分支，天然同源（#002-06）。
+   */
+  test("指定人员：同部门 / 跨部门都不给空间读权", () => {
+    const asset = metadata({ visibility: "targeted" })
+
+    expect(canReadAsset(v3, asset)).toBe(false) // 同部门
+    expect(canReadAsset(v2, asset)).toBe(false) // 跨部门
+  })
+
+  test("指定人员：命中授权行可读，且只得到「读」", () => {
+    const asset = metadata({ visibility: "targeted" })
+
+    expect(permsOf(v2, asset, [grant("read")])).toEqual(["read"])
+    expect(effectivePermissions(v2, asset, [grant("admin")]).has("read")).toBe(true)
+  })
+
+  test("指定人员：作者本人照旧读 + 写（可见范围不影响作者那一份）", () => {
+    const asset = metadata({ visibility: "targeted" })
+
+    expect(permsOf(v1, asset)).toEqual(["read", "write"])
   })
 
   test("空部门不匹配空部门：free text 的空串不能当成「同一个部门」", () => {
@@ -317,6 +345,54 @@ describe("授权组（FR-006 / D0-4）", () => {
     expect(
       rowsOf(await db.execute(sql`select role_id from auth.role_resource where role_id = 'g_taskforce'`)),
     ).toEqual([])
+  })
+
+  /**
+   * 需求 3b：发布时「选组」写的就是这组行。语义是**设成**而不是追加——迭代发布换了组，
+   * 「不再被指定的人」必须看不见；只追加的话旧组会一直留着。
+   */
+  test("指定人员：重设读组是「设成」——旧组消失、新组进；普通角色的授权行不动", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_targeted", visibility: "targeted" }))
+    await createAuthorizationGroup(db, { id: "g_old", name: "老专案组" })
+    await createAuthorizationGroup(db, { id: "g_new", name: "新专案组" })
+    // 一条**普通角色**上的同资产授权：它不是「指定人员」的渠道，重设不该顺手撤掉。
+    await db.execute(sql`insert into auth.role (id, name) values ('r_normal', '普通角色')`)
+    await db.execute(sql`
+      insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+      values ('r_normal', 'skill', 'a_targeted', 'read')
+    `)
+
+    await setAssetReadGroups(db, { assetId: "a_targeted", groupIds: ["g_old"] })
+    await setAssetReadGroups(db, { assetId: "a_targeted", groupIds: ["g_new", "g_new"] })
+
+    const rows = rowsOf(
+      await db.execute(sql`
+        select role_id from auth.role_resource
+         where resource_type = 'skill' and resource_id = 'a_targeted'
+         order by role_id
+      `),
+    )
+    // 重复给的组只写一行（去重）；删只删授权组的行。
+    expect(rows).toEqual([{ role_id: "g_new" }, { role_id: "r_normal" }])
+  })
+
+  test("指定人员：组写错时一条都不删（先验后删）", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_targeted", visibility: "targeted" }))
+    await createAuthorizationGroup(db, { id: "g_old", name: "老专案组" })
+    await setAssetReadGroups(db, { assetId: "a_targeted", groupIds: ["g_old"] })
+
+    const error = await failure(() => setAssetReadGroups(db, { assetId: "a_targeted", groupIds: ["g_ghost"] }))
+
+    expect(error).toBeInstanceOf(UnknownAuthorizationGroupError)
+    expect(
+      rowsOf(
+        await db.execute(sql`
+          select role_id from auth.role_resource where resource_type = 'skill' and resource_id = 'a_targeted'
+        `),
+      ),
+    ).toEqual([{ role_id: "g_old" }])
   })
 
   test("未知权限动作 ⇒ 在碰库之前拒绝", async () => {

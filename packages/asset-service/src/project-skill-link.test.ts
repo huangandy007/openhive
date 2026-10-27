@@ -35,6 +35,10 @@ describe("project-skill-link", () => {
     expect(skillLinkTarget("/assets", { id: "a2", visibility: "department", department: "刑侦" })).toBe(
       join("/assets", "dept", "刑侦", "skills", "a2"),
     )
+    // 需求 3b：第四档有自己的存放目录，不能落到部门目录下（那会让人误以为「同部门都能用」）。
+    expect(skillLinkTarget("/assets", { id: "a3", visibility: "targeted", department: "刑侦" })).toBe(
+      join("/assets", "targeted", "skills", "a3"),
+    )
   })
 
   test("建、读、删：删完链接没了、目标还在", async () => {

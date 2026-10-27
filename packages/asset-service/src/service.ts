@@ -348,7 +348,7 @@ function withPublishScope(
   if (范围 === "personal") {
     throw new AssetTransitionError(
       "personal_asset_not_shared",
-      `个人资产不进入共享空间：${asset.id}（发布时请选择本部门或全局）`,
+      `个人资产不进入共享空间：${asset.id}（发布时请选择本部门、全局或指定人员）`,
     )
   }
   if (范围 === "department") {
@@ -565,7 +565,7 @@ function sharedDirectoryOf(root: string, asset: AssetMetadata): string {
     if (error instanceof PersonalAssetDirectoryError) {
       throw new AssetTransitionError(
         "personal_asset_not_shared",
-        `个人资产不进入共享空间：${asset.id}（需先把可见范围改为部门 / 全局）`,
+        `个人资产不进入共享空间：${asset.id}（需先把可见范围改为本部门、全局或指定人员）`,
       )
     }
     throw error
@@ -582,7 +582,14 @@ function staleSharedDirectoryOf(
   effective: AssetMetadata,
 ): string | undefined {
   if (effective.visibility === original.visibility) return undefined
-  if (original.visibility !== "department" && original.visibility !== "global") return undefined
+  // 个人资产没有共享目录；其余三档（全局 / 部门 / 指定人员，需求 3b）都有，改范围后要清旧的那份。
+  if (
+    original.visibility !== "department" &&
+    original.visibility !== "global" &&
+    original.visibility !== "targeted"
+  ) {
+    return undefined
+  }
   return sharedDirectoryOf(root, original)
 }
 

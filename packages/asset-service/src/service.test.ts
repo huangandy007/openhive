@@ -615,6 +615,33 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await exists(待审目录(root))).toBe(false)
   })
 
+  test("迭代发布把范围从「指定人员」改成本部门：旧 targeted 目录被清掉（需求 3b）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await seedSkill(db, { status: "published", visibility: "targeted", publishedAt: 1_500 })
+    const 指定人员目录 = publishDirectory(root, "skill", { visibility: "targeted" }, "asset_1")
+    await mkdir(指定人员目录, { recursive: true })
+    await writeFile(join(指定人员目录, "SKILL.md"), "v1")
+
+    await writeSkill(source, "v2")
+    await transitionAsset({
+      db, root, assetId: "asset_1", action: "start_iteration",
+      viewer: 作者, grants: [], sourceDirectory: source, now: 3_000,
+    })
+
+    const republished = await transitionAsset({
+      db, root, assetId: "asset_1", action: "publish_iteration",
+      viewer: 系统管理员, grants: 管, visibility: "department", now: 3_001,
+    })
+
+    expect(republished.visibility).toBe("department")
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v2")
+    // 「指定人员」与部门 / 全局一样有自己的发布目录，改范围后旧那份同样要清。
+    expect(await exists(指定人员目录)).toBe(false)
+  })
+
   test("下线只改状态、不搬目录；重新上线刷新发布时间", async () => {
     const db = await freshDb()
     const root = tempRoot()
