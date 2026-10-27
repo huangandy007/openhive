@@ -87,4 +87,25 @@ describe("project-skill-link", () => {
     expect(existsSync(skillLinkPath(项目, "asset_1"))).toBe(true)
     expect(existsSync(skillLinkPath(项目, "asset_manual"))).toBe(true)
   })
+
+  // 两种「真目录」要分开：`desired` 之外的（上一条用例）是用户自己的，静默不动；
+  // `desired` 里的名字被真目录占住时，那一份 skill **送不到**，必须据实报给调用方去告警
+  // ——而且不能因此中断整次对账（其余条目的链接照样要建）。
+  test("对账：要建的名字被手写真目录占住 ⇒ 进 skipped、不中断、其余照建", async () => {
+    const 占位 = skillLinkPath(项目, "asset_9")
+    mkdirSync(占位, { recursive: true })
+    writeFileSync(join(占位, "SKILL.md"), "手写的")
+
+    const 结果 = await reconcileSkillLinks(
+      项目,
+      new Map([
+        ["asset_9", 已发布],
+        ["asset_1", 已发布],
+      ]),
+    )
+
+    expect(结果).toEqual({ created: 1, removed: 0, skipped: [占位] })
+    expect(readFileSync(join(占位, "SKILL.md"), "utf8")).toBe("手写的")
+    expect(existsSync(skillLinkPath(项目, "asset_1"))).toBe(true)
+  })
 })
