@@ -213,10 +213,13 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       if (asset.visibility === "personal") continue
       // 读者读不到 ⇒ 不链、也不回给前端。只影响 `enabled`，不影响库里的启用事实。
       if (!canReadAsset(viewer, asset)) continue
+      // 先记「看得见」再判目录：`enabled` 的语义是**授权**，不是「文件齐不齐」。
+      // 发布目录缺失时链接照样建不了（下面 `continue`），但前端仍要能把那份资产标成「已启用」，
+      // 否则会出现「已占 1/20 但列表里一份都标不出来」——用户既看不见也点不掉。
+      可见.push(assetId)
       const target = skillLinkTarget(根, asset)
       if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
-      可见.push(assetId)
     }
 
     // 对账失败不能把整个 GET 变成 500：库里的启用状态仍要能读出来，目录留到下次自愈。

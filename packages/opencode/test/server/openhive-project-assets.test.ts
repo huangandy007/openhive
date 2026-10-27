@@ -95,6 +95,8 @@ const 个人资产 = "asset_skill_personal"
 const 部门资产 = "asset_skill_dept"
 /** 与 `已发布资产` 同 frontmatter name 的第二份（同名拦截的对照）。 */
 const 同名资产 = "asset_skill_same_name"
+/** 已发布、可读，但发布目录会被删掉的那一份（`enabled` 与「链接建得成」是两件事）。 */
+const 缺目录资产 = "asset_skill_no_files"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
@@ -194,6 +196,8 @@ beforeAll(async () => {
   )
   // 与 `已发布资产` 同 frontmatter name（资金分析）的第二份。
   await insertAsset(pg.db, 资产({ id: 同名资产, name: "另一份资金分析", status: "published", visibility: "global" }))
+  // 发布目录稍后会被删掉的那一份（见最后一条用例）。
+  await insertAsset(pg.db, 资产({ id: 缺目录资产, name: "缺文件 skill", status: "published", visibility: "global" }))
 
   // 已发布目录：链接的落点必须真的存在（junction 的硬要求）。
   const 全局目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 已发布资产)
@@ -212,6 +216,10 @@ beforeAll(async () => {
   )
   mkdirSync(部门目标, { recursive: true })
   writeFileSync(join(部门目标, "SKILL.md"), "---\nname: 部门研判\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  const 缺目录目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 缺目录资产)
+  mkdirSync(缺目录目标, { recursive: true })
+  writeFileSync(join(缺目录目标, "SKILL.md"), "---\nname: 缺文件\n---\n\n正文\n", "utf8")
 })
 
 afterAll(async () => {
@@ -515,6 +523,34 @@ describe("项目级 skill 启用（真应用）", () => {
 
         // 清掉夹具（同时摘掉甲目录里那条链接）。
         expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 部门资产 })).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * `enabled` 的语义是**授权**，不是「文件齐不齐」。
+   *
+   * 发布目录被清掉（换机器 / 误删 / 卷没挂上）时，链接建不成——但库里那一行还在。
+   * 前端若因此把这份资产标成「未启用」，用户会看到「已占 1/20、列表里却一份都标不出来」，
+   * 既看不见也点不掉。所以：`enabled` 照回，悬空链接由对账摘掉。
+   */
+  it.live(
+    "发布目录缺失：enabled 仍回该 id，悬空链接被对账摘掉",
+    () =>
+      Effect.gen(function* () {
+        const 启用 = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 缺目录资产 })
+        expect(启用.status).toBe(200)
+        expect(existsSync(链接路径(我的项目, 缺目录资产))).toBe(true)
+
+        const 目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 缺目录资产)
+        rmSync(目标, { recursive: true, force: true })
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${我的项目}`))
+        expect(body.enabled).toContain(缺目录资产)
+        expect(existsSync(链接路径(我的项目, 缺目录资产))).toBe(false)
+
+        // 收尾：库里那一行还在，别的用例不该被它影响 → 停用掉。
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 缺目录资产 })).status).toBe(200)
       }),
     30_000,
   )
