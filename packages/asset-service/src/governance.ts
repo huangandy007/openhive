@@ -462,7 +462,8 @@ async function runCreateDraft(
 
   try {
     const user = await userOf(deps.db, userIdOf(meta))
-    const source = resolveSourceDirectory(sandboxDirectoryOf(deps.workspaceRoot, user.id, meta), sourceDirectory)
+    const directory = sandboxDirectoryOf(deps.workspaceRoot, user.id, meta)
+    const source = resolveSourceDirectory(directory, sourceDirectory)
     const skillName = await skillNameOf(source)
     const asset = await createDraftAsset({
       db: deps.db,
@@ -472,6 +473,9 @@ async function runCreateDraft(
       category,
       tags,
       visibility,
+      // 需求 3a：草稿当场落进 `/draft/<id>` 并链接进当前项目，会话里就能调到，
+      // 不必等审核与发布。作者沙箱里的原目录不动（提交审核仍从它复制）。
+      storage: { root: deps.root, sourceDirectory: source, projectDirectory: directory },
     })
     return textResult({
       ok: true,

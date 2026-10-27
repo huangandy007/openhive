@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
+import { existsSync, readFileSync, readlinkSync } from "node:fs"
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,8 +12,9 @@ import { assetById, AssetMetadataError, insertAsset, listAssets, type AssetTarge
 import { AssetTransitionError } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import { AssetNotificationError } from "./notify"
+import { skillLinkPath } from "./project-skill-link"
 import { assetLocation, createDraftAsset, discardAsset, storeAsset, transitionAsset } from "./service"
-import { archiveDirectory, pendingDirectory, publishDirectory } from "./storage"
+import { archiveDirectory, draftDirectory, pendingDirectory, publishDirectory } from "./storage"
 
 /**
  * 009 T003 · 资产服务编排（metadata + storage）。
@@ -136,8 +138,10 @@ describe("createDraftAsset · 分类闭集（需求 2）", () => {
   test("兜底项 __other__ 不是分类：建草稿当场拒，库里不写行", async () => {
     const db = await freshDb()
 
-    await expect(
-      createDraftAsset({
+    // 不用 `await expect(...).rejects`：oxlint 的 await-thenable 认不出 bun 那条链返回 Promise。
+    let 抛错: unknown
+    try {
+      await createDraftAsset({
         db,
         owner: { id: "u1", name: "甲民警", department: "经侦支队" },
         name: "兜底草稿",
@@ -145,10 +149,116 @@ describe("createDraftAsset · 分类闭集（需求 2）", () => {
         category: "__other__",
         id: "draft-other",
         now: 10,
-      }),
-    ).rejects.toThrow(AssetMetadataError)
+      })
+    } catch (error) {
+      抛错 = error
+    }
+    expect(抛错).toBeInstanceOf(AssetMetadataError)
 
     expect(await listAssets(db)).toEqual([])
+  })
+})
+
+describe("createDraftAsset · 个人草稿在当前项目直接可用（需求 3a）", () => {
+  /**
+   * 需求 3a：草稿不再只是「一行元数据 + 作者沙箱里的文件」。给了 `storage` 时，源目录被复制进
+   * `<root>/draft/<id>`（草稿从此有了稳定落点），并在项目目录建 `.opencode/skill/<id>` 链接——
+   * 内核扫 `OPENCODE_SKILL_PATTERN` 且跟进链接，所以这条既是「落盘」也是「送达」。
+   */
+  test("给 storage ⇒ 复制进 /draft/<id>，项目里出现指向它的链接", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const project = join(tempRoot(), "sandbox", "u1", "proj_1")
+    const source = join(project, "my-skill")
+    await writeSkill(source, "草稿 skill")
+
+    const asset = await createDraftAsset({
+      db,
+      owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+      name: "资金流水分析",
+      description: "草稿",
+      category: "intelligence",
+      id: "asset_draft",
+      now: 10,
+      storage: { root, sourceDirectory: source, projectDirectory: project },
+    })
+
+    expect(asset.status).toBe("draft")
+    const draft = draftDirectory(root, "asset_draft")
+    expect(readFileSync(join(draft, "SKILL.md"), "utf8")).toBe("草稿 skill")
+    expect(readFileSync(join(draft, "references", "notes.txt"), "utf8")).toBe("草稿 skill-notes")
+    expect(readlinkSync(skillLinkPath(project, "asset_draft"))).toBe(draft)
+    expect(await assetById(db, "asset_draft")).toEqual(asset)
+  })
+
+  test("不给 storage ⇒ 老行为：不复制、不建链接（草稿停在作者沙箱）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const source = join(tempRoot(), "sandbox", "my-skill")
+    await writeSkill(source, "沙箱里的 skill")
+
+    await createDraftAsset({
+      db,
+      owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+      name: "沙箱草稿",
+      description: "没有 storage",
+      category: "intelligence",
+      id: "asset_sandbox",
+      now: 10,
+    })
+
+    expect(existsSync(draftDirectory(root, "asset_sandbox"))).toBe(false)
+  })
+
+  test("分类不合法 ⇒ 一个文件都不复制（校验在落盘之前）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const project = join(tempRoot(), "sandbox", "u1", "proj_1")
+    const source = join(project, "my-skill")
+    await writeSkill(source, "不该被复制")
+
+    let 抛错: unknown
+    try {
+      await createDraftAsset({
+        db,
+        owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+        name: "兜底草稿",
+        description: "不该建成",
+        category: "__other__",
+        id: "asset_bad",
+        now: 10,
+        storage: { root, sourceDirectory: source, projectDirectory: project },
+      })
+    } catch (error) {
+      抛错 = error
+    }
+    expect(抛错).toBeInstanceOf(AssetMetadataError)
+
+    expect(existsSync(draftDirectory(root, "asset_bad"))).toBe(false)
+    expect(await listAssets(db)).toEqual([])
+  })
+
+  test("删草稿 ⇒ /draft/<id> 一起删掉（force 好，重复删不报错）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const project = join(tempRoot(), "sandbox", "u1", "proj_1")
+    const source = join(project, "my-skill")
+    await writeSkill(source, "要删的草稿")
+
+    await createDraftAsset({
+      db,
+      owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+      name: "待删草稿",
+      description: "删掉",
+      category: "intelligence",
+      id: "asset_del",
+      now: 10,
+      storage: { root, sourceDirectory: source, projectDirectory: project },
+    })
+
+    expect(await discardAsset({ db, root, assetId: "asset_del" })).toBe(true)
+    expect(existsSync(draftDirectory(root, "asset_del"))).toBe(false)
+    expect(await assetById(db, "asset_del")).toBeUndefined()
   })
 })
 

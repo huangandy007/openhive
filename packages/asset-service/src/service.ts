@@ -20,12 +20,14 @@ import {
 } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import { AssetNotificationError, notifyAssetTransition } from "./notify"
+import { linkSkill, unlinkSkill } from "./project-skill-link"
 import { authorizeTransition } from "./review"
 import {
   archiveDirectory,
   assertSafeSegment,
   assertWithinRoot,
   copyDirectory,
+  draftDirectory,
   MissingSourceDirectoryError,
   pendingDirectory,
   PersonalAssetDirectoryError,
@@ -52,7 +54,11 @@ import {
  */
 
 /**
- * 资产在共享根里的位置；`undefined` 表示**不落共享根**（草稿还在作者沙箱）。
+ * 资产在共享根里的**生命周期**目录；草稿返回 `undefined`。
+ *
+ * ⚠️ 草稿从需求 3a 起也可能有副本（`draftDirectory()`，`<root>/draft/<id>`），但它**不属于
+ * 这一套状态目录**：状态流转从不搬它，删除也单独处理（`discardAsset`）。别把这里当成
+ * 「资产有没有落盘」的唯一判据。
  *
  * 状态到目录的映射与 design §2.5 一致：
  * - `in_review` / `pending_tech` → `pending/{assetId}`
@@ -160,19 +166,36 @@ export interface CreateDraftAssetInput {
   readonly id?: string
   /** Unix 秒；测试注入固定时间，生产省略取当前。 */
   readonly now?: number
+  /**
+   * 让草稿「在当前项目直接可用」（需求 3a，2026-10-27）：给了这一组就把源目录复制进
+   * `<root>/draft/<id>`，并在 `<projectDirectory>/.opencode/skill/<id>` 建链接指向它。
+   *
+   * 省略 = 老行为（草稿只停在作者沙箱、共享根里没有副本）。生产路径（MCP
+   * `create_skill_draft`）总是给：需求 3a 的验收是「新建草稿 → 当前项目会话可用」。
+   */
+  readonly storage?: {
+    readonly root: string
+    readonly sourceDirectory: string
+    readonly projectDirectory: string
+  }
 }
 
 /**
- * 建一份 Skill 草稿元数据（009 T013，FR-008）。
+ * 建一份 Skill 草稿（009 T013，FR-008；需求 3a 起可选落盘，2026-10-27）。
  *
- * ## 为什么没有走 `storeAsset`
+ * ## 为什么没有直接走 `storeAsset`
  *
- * `storeAsset` 的职责是「把作者沙箱里的文件复制进共享根 + 写元数据」。草稿的存储约定相反：
- * 它**停在作者沙箱**，`assetLocation("draft")` 明确返回 `undefined`，共享根里不该有
- * 它的目录。硬套 `storeAsset` 会先复制一份没人读取的目录，再给后来的提交留下两份源。
+ * `storeAsset` 的职责是「把来源目录复制到**调用方算好的目标目录** + 写元数据」。草稿的目标
+ * 目录不是 `assetLocation` 能算出来的（草稿状态返回 `undefined`，见该函数），而且草稿还要
+ * 在项目目录里建链接——两件事的顺序与补偿和提交不一样，硬套会把「链接失败」和「写库失败」
+ * 混成一种残差。
  *
- * 这里走的仍是资产服务的**正式写入路径**：先按 `validateAssetMetadata` 校验（含业务分类
- * 字典），再 `insertAsset`。不是手拼 SQL，也不伪造作者 / 部门 / 状态。
+ * 所以这里自己编排三步：**复制到 `/draft/<id>` → 建项目链接 → 写库**；任一步失败就按相反
+ * 顺序清掉已做的（清理也失败则抛 `AggregateError`，与 `storeAsset` 同一条纪律）。
+ *
+ * 走的仍是资产服务的**正式写入路径**：先按 `validateAssetMetadata` 校验（含业务分类字典），
+ * 再 `insertAsset`。不是手拼 SQL，也不伪造作者 / 部门 / 状态；校验在复制之前，校验不过一个
+ * 字节都不落盘。
  *
  * ## 不检查同名重复
  *
@@ -213,6 +236,33 @@ export async function createDraftAsset(input: CreateDraftAssetInput): Promise<As
     archivedAt: null,
   }
 
+  if (input.storage !== undefined) {
+    const { root, sourceDirectory, projectDirectory } = input.storage
+    const target = draftDirectory(root, metadata.id)
+    assertWithinRoot(root, target, "草稿目录")
+    await copyDirectory(sourceDirectory, target)
+    try {
+      await linkSkill(projectDirectory, metadata.id, target)
+      await insertAsset(input.db, metadata)
+    } catch (error) {
+      // 先摘链接、再删副本：留下链接会指向一个刚被删掉的目录，内核下一次扫描就报错。
+      // 清理本身失败不能吞（`#006-28`：空 catch 是盲区），两条都露出来。
+      try {
+        await unlinkSkill(projectDirectory, metadata.id)
+        await removeDirectory(root, target)
+      } catch (cleanupError) {
+        // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
+        throw new AggregateError(
+          [error, cleanupError],
+          `草稿 ${metadata.id} 建失败，且已复制的目录 / 链接未能清理`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
+    return metadata
+  }
+
   await insertAsset(input.db, metadata)
   return metadata
 }
@@ -244,6 +294,13 @@ export async function discardAsset(input: DiscardAssetInput): Promise<boolean> {
 
   const deleted = await deleteAsset(db, assetId)
   if (!deleted) return false
+
+  // 草稿副本（需求 3a）：`rm force` ⇒ 老草稿（共享根里本来就没有副本）也不报错。
+  // 项目目录里的链接不在这里摘：那是「哪些项目装了它」的问题，由送达对账统一收拾。
+  if (metadata.status === "draft") {
+    await removeDirectory(root, draftDirectory(root, assetId))
+    return true
+  }
 
   if (metadata.visibility === "personal") return true
 

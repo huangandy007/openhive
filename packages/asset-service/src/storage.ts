@@ -46,6 +46,20 @@ export function pendingDirectory(root: string, assetId: string): string {
   return join(root, "pending", assertSafeSegment(assetId, "资产 id"))
 }
 
+/**
+ * 草稿：`/assets/draft/{assetId}`（需求 3a，2026-10-27）。
+ *
+ * 与 `pending/` 同构。为什么草稿也要进共享根：需求 3a 要「个人草稿在当前项目内直接可用」，
+ * 而内核只认目录里的 `SKILL.md`，草稿的源目录又不落库（跨会话就找不回来）。这份副本让草稿
+ * 有了稳定落点，项目目录里再建一条链接指向它（`project-skill-link.ts`）。
+ *
+ * ⚠️ 它**不是**共享发布目录：只有作者自己的项目链到它。可见性仍由 `canReadAsset()` 判，
+ * 别把「路径在共享根下」当成「谁都能读」。
+ */
+export function draftDirectory(root: string, assetId: string): string {
+  return join(root, "draft", assertSafeSegment(assetId, "资产 id"))
+}
+
 /** 已归档：`/assets/archive/{assetId}`。 */
 export function archiveDirectory(root: string, assetId: string): string {
   return join(root, "archive", assertSafeSegment(assetId, "资产 id"))

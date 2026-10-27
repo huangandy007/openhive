@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { readlinkSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -251,7 +252,7 @@ describe("tools/list", () => {
 })
 
 describe("create_skill_draft", () => {
-  test("把 AI 落盘的 skill 登记成草稿：作者 / 部门取自库，文件不复制进共享根", async () => {
+  test("把 AI 落盘的 skill 登记成草稿：作者 / 部门取自库，并当场落进 /draft/<id> + 链接进项目（需求 3a）", async () => {
     const { db, root, sourceRoot, client } = await harness()
     const source = await prepareSkillSource(sourceRoot)
 
@@ -293,9 +294,13 @@ describe("create_skill_draft", () => {
     })
     expect(row.tags).toEqual(["资金", "流水"])
 
-    // 草稿停在作者沙箱：共享根里没有它的目录，源文件也没被动过。
-    expect(await exists(join(root, source))).toBe(false)
+    // 需求 3a：作者沙箱里的源目录**原地不动**（提交审核仍从它复制），同时复制一份到
+    // 共享根的 `/draft/<id>`，并在调用目录（这里就是 u1 的沙箱根）.opencode/skill/<id>
+    // 建链接指向它——内核扫 `OPENCODE_SKILL_PATTERN` 时跟进链接，草稿当场就能被调用。
     expect(await exists(join(sourceRoot, source, "SKILL.md"))).toBe(true)
+    const draft = join(root, "draft", payload.assetId)
+    expect(await exists(join(draft, "SKILL.md"))).toBe(true)
+    expect(readlinkSync(join(sourceRoot, ".opencode", "skill", payload.assetId))).toBe(draft)
   })
 
   test("登记完就能用同一个 assetId 提交审核（制作 → 提交是一条链）", async () => {
