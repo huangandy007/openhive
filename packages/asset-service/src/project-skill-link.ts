@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readlink, rm, symlink, unlink } from "node:fs/promises"
+import { lstat, mkdir, readdir, readlink, symlink, unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { assertSafeSegment, publishDirectory } from "./storage"
 
@@ -155,9 +155,4 @@ export async function reconcileSkillLinks(
   }
 
   return { created, removed, skipped }
-}
-
-/** 删除整个链接目录（仅在项目目录被删除时用；不是本计划的调用点，留作对称）。 */
-export async function removeSkillLinkDir(projectDir: string): Promise<void> {
-  await rm(join(projectDir, SKILL_LINK_DIR), { recursive: true, force: true })
 }

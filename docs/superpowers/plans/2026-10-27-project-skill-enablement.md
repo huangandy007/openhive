@@ -779,10 +779,8 @@ export async function reconcileSkillLinks(
   return { created, removed, skipped }
 }
 
-/** 删除整个链接目录（仅在项目目录被删除时用；不是本计划的调用点，留作对称）。 */
-export async function removeSkillLinkDir(projectDir: string): Promise<void> {
-  await rm(join(projectDir, SKILL_LINK_DIR), { recursive: true, force: true })
-}
+// 没有 `removeSkillLinkDir`：项目删除时整个沙箱目录一起没了，不需要专门摘这一层；
+// 而它会是本文件唯一的 `rm -r`，与本文件「删只用 unlink」的安全论证并列容易被误用。
 ```
 
 > 实现者注意：注释里的 `**\/SKILL.md` 是为了不把注释提前闭合（`LEARNINGS #004-06`）。
