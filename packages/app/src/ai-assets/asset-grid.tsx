@@ -31,7 +31,11 @@ export interface AssetGridProps {
   /** 已启用判定（服务端权威）。省略 ⇒ 卡片不显示启用按钮。 */
   readonly enabledOf?: (asset: AssetMetadata) => boolean
   readonly onToggleEnabled?: (asset: AssetMetadata) => void
-  readonly enableHint?: string
+  /**
+   * **按资产**算禁用原因。必须是函数而不是一个字符串：达上限时要禁的是**未启用**的那些，
+   * 已启用的那张必须仍能点「停用」——整网格一个值会把用户锁死（20/20 时一个也停不掉）。
+   */
+  readonly enableHintOf?: (asset: AssetMetadata) => string | undefined
   readonly busyId?: string
 }
 
@@ -131,7 +135,7 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                             : {
                                 enabled: props.enabledOf?.(asset) === true,
                                 onToggleEnabled: props.onToggleEnabled,
-                                enableHint: props.enableHint,
+                                enableHint: props.enableHintOf?.(asset),
                                 busy: props.busyId === asset.id,
                               })}
                         />

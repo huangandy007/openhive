@@ -320,6 +320,9 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       const 按钮 = host.querySelector<HTMLButtonElement>('[data-asset-id="a2"] [data-slot="asset-card-enable"]')!
       expect(按钮.disabled).toBe(true)
       expect(按钮.title).toContain("停用")
+      // ⚠️ 达上限时**已启用**的那张必须仍可点「停用」，否则 20/20 时用户一个也停不掉（2026-10-27 实现者提出的坑）
+      const 已启用的 = host.querySelector<HTMLButtonElement>('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!
+      expect(已启用的.disabled).toBe(false)
     } finally {
       卸()
     }

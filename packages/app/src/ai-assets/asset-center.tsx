@@ -101,15 +101,16 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
    * 启用按钮不可用的原因（非空 ⇒ 卡片把它写进 `title` 并禁用）：
    * **没选项目** / **已达上限**。
    *
-   * ⚠️ `AssetGrid.enableHint` 是**整网格一个值**（Task 6 定稿的接口，本任务不改），所以上限态下
-   * 「已启用」的卡片也被一并禁用——按钮在，但点不了。要逐卡区分得让网格收「按资产的禁用原因」，
-   * 属接口变更；已记进 `task-7-report.md` 的缺口表。
+   * **按资产算**（`AssetGrid.enableHintOf`）：达上限只禁「还没启用」的那些——已启用的那张必须
+   * 仍能点「停用」，否则 20/20 时用户一个也停不掉（整网格一个值会让功能自锁）。
    */
-  const 上限提示 = () => {
+  const 启用提示 = (asset: AssetMetadata) => {
     const 状态 = props.enablement
     if (状态 === undefined) return undefined
     if (状态.projectId() === undefined) return "请先在左侧选择项目"
-    return 状态.enabledCount() >= 状态.limit() ? `每个项目最多启用 ${状态.limit()} 个，请先停用一个` : undefined
+    if (状态.enabledCount() >= 状态.limit() && !状态.enabled().has(asset.id))
+      return `每个项目最多启用 ${状态.limit()} 个，请先停用一个`
+    return undefined
   }
 
   const 返回 = () => {
@@ -166,7 +167,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
         </Show>
         {/*
           ⚠️ 这里**逐个传**、而不是 brief 里那种条件展开：Solid 的组件 props 是 getter，写法上
-          直传能让 `busyId` / `enableHint` 跟着信号变（上限满了、切换回包了，按钮当场跟上）；
+          直传能让 `busyId` / `enableHintOf` 跟着信号变（上限满了、切换回包了，按钮当场跟上）；
           条件展开里的表达式只在建元素那一刻求一次值，之后就不跟了。
           `onToggleEnabled` 省略 ⇒ 网格不渲染启用按钮（`AssetGrid` 只认这一个开关）。
         */}
@@ -176,7 +177,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
           原分类={原分类}
           onToggleEnabled={props.enablement === undefined ? undefined : (asset) => props.enablement!.toggle(asset.id)}
           enabledOf={(asset) => props.enablement?.enabled().has(asset.id) === true}
-          enableHint={上限提示()}
+          enableHintOf={启用提示}
           busyId={props.enablement?.busy()}
         />
         <Show when={props.catalog}>
