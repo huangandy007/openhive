@@ -87,6 +87,41 @@ export const PATH = {
   disable: `${PREFIX}/disable`,
 } as const
 
+/**
+ * 内核视角的一条技能。
+ *
+ * **不含 `content`**：`Skill.Info.content` 是 SKILL.md 全文，进 HTTP 回包既浪费又是泄露面。
+ * `assetId` / `assetName` 只在它确实是库里的一份资产时才有——「本项目自带」的那条两者皆无，
+ * 前端据此分第三态（不能给它画「停用」）。
+ */
+export interface 内核技能 {
+  readonly name: string
+  readonly description?: string
+  readonly location: string
+  readonly assetId?: string
+  readonly assetName?: string
+}
+
+interface 状态基 {
+  readonly enabled: readonly string[]
+  readonly enabledCount: number
+  readonly limit: number
+}
+
+/**
+ * 把内核清单并进返回体。
+ *
+ * `内核 === undefined` ⇒ **整个 `skills` 键缺席**，不是空数组。空数组会被前端读成
+ * 「内核一条都没看见」⇒ 把每条技能都标成「没生效」，而事实只是「这次没读到」（`#002-02`）。
+ */
+export function 带内核清单<T extends 状态基>(
+  base: T,
+  内核: readonly 内核技能[] | undefined,
+): T & { skills?: readonly 内核技能[] } {
+  if (内核 === undefined) return base
+  return { ...base, skills: 内核 }
+}
+
 const BOARD = "asset-governance"
 
 interface Deps {
