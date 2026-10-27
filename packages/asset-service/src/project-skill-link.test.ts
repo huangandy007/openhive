@@ -125,6 +125,49 @@ describe("project-skill-link", () => {
     }
   })
 
+  // 判据是**严格之下**：只摘我们建得出来的投影，边界宁可偏保守。
+  //
+  // 兄弟前缀：`<root>/globalX` 与 `<root>/global` 只差一个字符。松成 `startsWith(根)`
+  // 就会把前者当成自己的投影摘掉（复审判定的变异 A 实测），这条钉住「必须保留」。
+  test("对账：兄弟前缀（<root>/globalX）不是共享发布目录，链接保留", async () => {
+    const 资产根 = join(根, "assets")
+    const 兄弟 = join(资产根, "globalX", "x")
+    mkdirSync(兄弟, { recursive: true })
+    await linkSkill(项目, "asset_sibling", 兄弟)
+
+    const 结果 = await reconcileSkillLinks(项目, new Map(), 资产根)
+
+    expect(existsSync(skillLinkPath(项目, "asset_sibling"))).toBe(true)
+    expect(结果).toEqual({ created: 0, removed: 0, skipped: [] })
+  })
+
+  // 档根（`<root>/global`）本身我们从不建，也不该认作投影。旧判据把 `归一 === 根`
+  // 也算在内，会把指向档根的链接摘掉。
+  test("对账：档根（<root>/global）本身不是投影，链接保留", async () => {
+    const 资产根 = join(根, "assets")
+    const 档根 = join(资产根, "global")
+    mkdirSync(档根, { recursive: true })
+    await linkSkill(项目, "asset_root", 档根)
+
+    const 结果 = await reconcileSkillLinks(项目, new Map(), 资产根)
+
+    expect(existsSync(skillLinkPath(项目, "asset_root"))).toBe(true)
+    expect(结果).toEqual({ created: 0, removed: 0, skipped: [] })
+  })
+
+  // 反方向的钉子：收紧不能收成「什么都不摘」，部门档下的真投影必须照摘。
+  test("对账：共享发布目录之下的真投影仍被摘（防一刀切全不摘）", async () => {
+    const 资产根 = join(根, "assets")
+    const 部门目标 = join(资产根, "dept", "刑侦", "skill", "asset_dept")
+    mkdirSync(部门目标, { recursive: true })
+    await linkSkill(项目, "asset_dept", 部门目标)
+
+    const 结果 = await reconcileSkillLinks(项目, new Map(), 资产根)
+
+    expect(existsSync(skillLinkPath(项目, "asset_dept"))).toBe(false)
+    expect(结果).toEqual({ created: 0, removed: 1, skipped: [] })
+  })
+
   // 两种「真目录」要分开：`desired` 之外的（上一条用例）是用户自己的，静默不动；
   // `desired` 里的名字被真目录占住时，那一份 skill **送不到**，必须据实报给调用方去告警
   // ——而且不能因此中断整次对账（其余条目的链接照样要建）。

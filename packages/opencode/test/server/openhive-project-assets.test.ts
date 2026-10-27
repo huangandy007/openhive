@@ -105,6 +105,12 @@ const 迭代资产 = "asset_skill_iterating"
 const 归档资产 = "asset_skill_archived"
 /** `asset.disable` 审计落库的专用资产（避免与别处的停用混在一起）。 */
 const 审计资产 = "asset_skill_audit"
+/** 乙部门的同名 skill：我（甲部门）**读不到**，但它能被别人启用进同一个项目（R6 同名过滤）。 */
+const 他部门同名资产 = "asset_skill_same_name_other"
+/** 我读得到的同名 skill：同名拦截必须只看「我读得到的」那一份。 */
+const 可读同名资产 = "asset_skill_same_name_readable"
+/** 两份资产共用的 frontmatter name（同名拦截按它判）。 */
+const 同名研判 = "同名研判"
 
 /** 上限用例的 20 份资产（只为把 `count(*)` 顶到 20，不需要发布目录）。 */
 const 限额资产 = Array.from({ length: 20 }, (_, index) => `asset_limit_${String(index + 1).padStart(2, "0")}`)
@@ -240,6 +246,21 @@ beforeAll(async () => {
     insert into auth.user_role (user_id, role_id) values (${我.id}, 'test-targeted-reader')
   `)
 
+  // R6 同名过滤：另一部门（乙部门）的同名 skill——我读不到，但可被别人启用进同一项目。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: 他部门同名资产,
+      name: "他部门同名",
+      status: "published",
+      visibility: "department",
+      department: 乙部门,
+      ownerId: 别人.id,
+      ownerName: 别人.name,
+    }),
+  )
+  await insertAsset(pg.db, 资产({ id: 可读同名资产, name: "可读同名", status: "published", visibility: "global" }))
+
   await insertAsset(pg.db, 资产({ id: 迭代资产, name: "迭代中的研判", status: "iterating", visibility: "global" }))
   await insertAsset(pg.db, 资产({ id: 归档资产, name: "归档的研判", status: "archived", visibility: "global" }))
   await insertAsset(pg.db, 资产({ id: 审计资产, name: "审计停用", status: "published", visibility: "global" }))
@@ -272,6 +293,19 @@ beforeAll(async () => {
   const 定向目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "targeted" }, 定向资产)
   mkdirSync(定向目标, { recursive: true })
   writeFileSync(join(定向目标, "SKILL.md"), "---\nname: 定向研判\ndescription: 测试\n---\n\n正文\n", "utf8")
+
+  const 他部门同名目标 = publishDirectory(
+    assetsRoot(process.env),
+    "skill",
+    { visibility: "department", department: 乙部门 },
+    他部门同名资产,
+  )
+  mkdirSync(他部门同名目标, { recursive: true })
+  writeFileSync(join(他部门同名目标, "SKILL.md"), `---\nname: ${同名研判}\ndescription: 测试\n---\n\n正文\n`, "utf8")
+
+  const 可读同名目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 可读同名资产)
+  mkdirSync(可读同名目标, { recursive: true })
+  writeFileSync(join(可读同名目标, "SKILL.md"), `---\nname: ${同名研判}\ndescription: 测试\n---\n\n正文\n`, "utf8")
 
   const 迭代目标 = publishDirectory(assetsRoot(process.env), "skill", { visibility: "global" }, 迭代资产)
   mkdirSync(迭代目标, { recursive: true })
@@ -646,6 +680,49 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(existsSync(链接路径(我的项目, 定向资产))).toBe(true)
 
         expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 定向资产 })).status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * R6（复审 Important）后半：同名拦截只看**读者读得到**的那一份。
+   *
+   * 项目里可以有一份别人启用的、我无权读的同名 skill。把它也拿来比名，会：① 我启用自己
+   * 读得到的那份被 409 挡住；② 409 文案把无权读者的资产名回显给我。
+   */
+  it.live(
+    "同名拦截只看读者读得到的：读不到的同名不挡路、也不回显名字（R6）",
+    () =>
+      Effect.gen(function* () {
+        // 前置：项目里已启用一份「我读不到」的同名 skill（另一部门的，由乙部门同事启用）。
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+            values (${我的项目}, ${他部门同名资产}, ${乙部门同事.id}, 2)
+          `),
+        )
+
+        const response = yield* post(我, ENABLE, { projectId: 我的项目, assetId: 可读同名资产 })
+        expect(response.status).toBe(200)
+        expect(response.headers.get("content-type") ?? "").toContain("application/json")
+        const 文本 = yield* Effect.promise(() => response.text())
+        const body = Schema.decodeUnknownSync(状态)(JSON.parse(文本))
+
+        expect(body.enabled).toContain(可读同名资产)
+        // 读不到的那份不回显（它仍在库里，见下面的计数：项目真相是 2）。
+        expect(body.enabled).not.toContain(他部门同名资产)
+        expect(body.enabledCount).toBe(2)
+        // 改前这里是一条 409，error 文案里带着「同名研判」——正好把无权读者的资产名回显了。
+        expect(文本).not.toContain(同名研判)
+
+        // 收尾：停用我启用的那份、删掉夹具行。
+        expect((yield* post(我, DISABLE, { projectId: 我的项目, assetId: 可读同名资产 })).status).toBe(200)
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            delete from auth.project_asset_enablement
+             where project_id = ${我的项目} and asset_id = ${他部门同名资产}
+          `),
+        )
       }),
     30_000,
   )

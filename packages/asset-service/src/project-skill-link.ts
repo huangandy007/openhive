@@ -36,12 +36,18 @@ export const SKILL_LINK_DIR = join(".opencode", "skill")
  */
 const 共享发布档 = ["global", "dept", "targeted"] as const
 
-/** 链接目标是否落在共享发布目录之下（`resolve` 归一后按 `sep` 前缀比较，挡住 `..` 与跨盘）。 */
+/**
+ * 链接目标是否落在共享发布目录**之下**（`resolve` 归一后按 `sep` 前缀比较，挡住 `..` 与跨盘）。
+ *
+ * 只认**严格之下**：`<root>/global`、`<root>/dept`、`<root>/targeted` 档根本身不算——
+ * 我们从不建指向档根的投影，把它算进来只会多摘一份不属于我们的链接。
+ * 兄弟前缀（`<root>/globalX`）也必须不匹配，所以比较的是 `根 + sep` 而不是裸 `根`。
+ */
 function 在共享发布目录下(target: string, assetsRoot: string): boolean {
   const 归一 = resolve(target)
   for (const 档 of 共享发布档) {
     const 根 = resolve(assetsRoot, 档)
-    if (归一 === 根 || 归一.startsWith(根 + sep)) return true
+    if (归一.startsWith(根 + sep)) return true
   }
   return false
 }
