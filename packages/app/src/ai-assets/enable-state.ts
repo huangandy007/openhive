@@ -28,7 +28,12 @@ export interface ProjectEnablement {
   readonly limit: () => number
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
-  /** 内核视角的技能清单；`undefined` = 还没读到（与「内核一条都没有」是两件事）。 */
+  /**
+   * 内核视角的技能清单。
+   *
+   * `undefined` = **这次没读到**（还没读 / 读了但读不到 / 刚被一份无 `skills` 键的回包作废）——
+   * 与「内核一条都没有」（`[]`）是两件事（`#002-02`）；两者靠 `readDone()` 再分开。
+   */
   readonly skills: () => readonly 内核技能[] | undefined
   /**
    * 「这个项目的这次读到底了」（成功或失败都算）。
@@ -64,11 +69,17 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set集合(new Set(状态.enabled))
     set数量(状态.enabledCount)
     set上限(状态.limit)
-    // ⚠️ **只在回包里真有 `skills` 键时**才覆盖（`解析状态` 已保证「不知道」= 键缺席）。
-    // 无条件 `set技能(状态.skills)` 会在两种真实路径上把好面板翻进「正在读取…」且再也出不来：
-    // ① GET 时后端读内核失败；② 面板好着时点「停用」，这次 toggle 的回包 200 但没有 `skills`
-    //（终审 I2）。同一项目内「这次没读到」保留上次已知，比清空有用（同「失败不清空」）。
-    if (状态.skills !== undefined) set技能(状态.skills)
+    // ⚠️ **无论有没有 `skills` 键都覆盖**：键缺席（`解析状态` 保证「不知道」= 键缺席）⇒
+    // 清单作废成 `undefined`。`skills() === undefined` ＋ `已读 === true` = 「这次没读到」，
+    // 面板据此走「暂时读不到 + 重试」——不会卡在「正在读取…」，所以作废不再等于死路。
+    //
+    // 上一版选的是「有键才覆盖 / 保留上次已知」，复审实测出它开了另一扇门（I3 从侧门回来）：
+    // 面板好着时 `.opencode/skill` 故障（对账失败 ⇒ 后端不给 `skills` 键），用户在故障期点
+    // 「启用/停用」，回包换了集合、清单还是旧的 ⇒ `合并能力` 把新 id 判成「没生效」，
+    // 面板打出「快捷方式可能丢了，停用后可在资产中心重新启用」——把基础设施故障翻译成
+    // 「你的文件丢了」，还劝用户停用自己刚开的能力。`#002-02`：后端刚说了「这次我不知道」，
+    // 前端继续拿旧清单当现在，就是替它回答。
+    set技能(状态.skills)
     set已读(true)
   }
 

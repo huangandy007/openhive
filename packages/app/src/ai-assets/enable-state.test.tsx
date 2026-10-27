@@ -455,13 +455,20 @@ test("skills：随回包暴露；换项目先复位为 undefined，空数组不�
 })
 
 /**
- * 终审 I2：回包**没有 `skills` 键**（＝「这次没读到」）时，不许拿它覆盖上一次已知。
+ * 残余修复（复审）：回包**没有 `skills` 键**（＝「这次没读到」）⇒ 旧清单**作废**。
  *
- * 两条真实路径都走这一条：① GET 时 `读内核清单` 失败；② 面板好着时点「停用」，这次 toggle
- * 回包 200 但没有 `skills`。旧代码无条件 `set技能(状态.skills)` ⇒ 把好面板翻进「正在读取…」，
- * 而且 reload 没有 UI 入口，永远出不来。
+ * 上一版（终审 I2 第 1 条）选的是「保留上次已知」。复审实测出另一扇门，等于让 I3 从侧门
+ * 回来：面板本来好着（清单有值）→ `.opencode/skill` 故障（对账失败，后端不再给 `skills` 键）
+ * → 用户在故障期点「启用」→ 回包 `enabled` 是新的、清单还是旧的 ⇒ `合并能力` 把新 id 判成
+ * `loaded:false`，面板打出「已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在
+ * 资产中心重新启用。」：把基础设施故障翻译成「你的文件丢了」，还劝用户停用自己刚开的能力。
+ *
+ * 现在的口径（`#002-02`：后端刚说了「这次我不知道」，前端继续拿旧清单当现在，就是替它回答）：
+ * 键缺席 ⇒ 清单作废成 `undefined`；`readDone` 仍置 `true`，面板据此落到「暂时读不到 + 重试」，
+ * 不会卡在「正在读取…」——这正是上一轮把 (b) 那条顾虑解决掉的方式，所以「保留上次已知」
+ * 换来的已经不是安全感，而是一条新破坏路径。
  */
-test("回包没有 skills 键 ⇒ 保留上次读到的清单，不被 undefined 覆盖", async () => {
+test("回包没有 skills 键 ⇒ 旧清单作废（undefined），readDone 为 true", async () => {
   const 清单 = [{ name: "资金分析", location: "/w/u/p1/.opencode/skill/a/SKILL.md", assetId: "a" }]
   const { api } = 假api({
     "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, skills: 清单 } }],
@@ -472,14 +479,19 @@ test("回包没有 skills 键 ⇒ 保留上次读到的清单，不被 undefined
     const 状态 = createProjectEnablement(api)
     状态.bind(() => "p1")
     await new Promise((r) => setTimeout(r, 0))
+    // 前置：好面板（否则下面「作废」断不出东西）。
     expect(状态.skills()?.length).toBe(1)
+    expect(状态.readDone()).toBe(true)
 
     状态.toggle("a")
     await new Promise((r) => setTimeout(r, 0))
 
-    // 计数以这次回包为准（服务端权威），清单留着上次已知的那份。
+    // 计数以这次回包为准（服务端权威）——这条不受影响。
     expect([...状态.enabled()]).toEqual([])
-    expect(状态.skills()?.length).toBe(1)
+    // 被测属性：清单作废，不是留着上次那份。
+    expect(状态.skills()).toBeUndefined()
+    // 作废不等于卡死：仍然是「读完了」⇒ 面板给重试，不是「正在读取…」。
+    expect(状态.readDone()).toBe(true)
     dispose()
   })
 })
@@ -491,6 +503,9 @@ test("回包没有 skills 键 ⇒ 保留上次读到的清单，不被 undefined
 test("readDone：读成功置 true；失败分支（回包错 / api reject）也置 true；换项目与清空回 false", async () => {
   const { api } = 假api({
     "read:p1": [{ kind: "ok", value: { ...空, skills: [] } }],
+    // p2 的读也铺一条明确回包：不铺的话 `队列.shift()!` 返回 `undefined`，靠
+    // 「`结果.kind` 读取炸掉 → 落进 catch」收尾，是**隐式**行为，读用例的人看不出这里在测什么。
+    "read:p2": [{ kind: "ok", value: { ...空, skills: [] } }],
   })
   await createRoot(async (dispose) => {
     const [项目, 设项目] = createSignal<string | undefined>(undefined)

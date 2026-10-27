@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import type { 内核技能 } from "@/ai-assets/enable-api"
+import type { EnableApi, EnableOutcome, 内核技能 } from "@/ai-assets/enable-api"
+import { createProjectEnablement } from "@/ai-assets/enable-state"
 import { CapabilityPanel, type CapabilityPanelProps } from "./capability-panel"
 
 /**
@@ -364,6 +365,68 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
 
     expect(有(host, "capability-retry")).toBe(true)
     expect(有(host, "capability-loading")).toBe(false)
+  })
+
+  /**
+   * **端到端**（残余修复，复审）：好面板 → 故障期点「停用」（回包 200 但没有 `skills` 键）
+   * ⇒ 清单作废 ⇒ 同一个面板换成重试块，**不留计数、不留条目**。
+   *
+   * 这条走 `createProjectEnablement` 真状态层，不是手搓信号：上一版「有键才覆盖」在这条路径上
+   * 会把新集合配旧清单，`合并能力` 把刚停用的那条画成「📝 本项目自带」幽灵条目
+   *（或把刚启用的画成「快捷方式可能丢了，停用后可在资产中心重新启用」）——I3 从侧门回来。
+   *
+   * ⚠️ 断言全是结构/文本，不比较节点（`#009-01`）。
+   */
+  test("端到端：故障期点停用（回包无 skills 键）⇒ 面板换成重试块，不写计数、不留条目", async () => {
+    const 读回包: EnableOutcome[] = [
+      {
+        kind: "ok",
+        value: {
+          enabled: ["a1"],
+          enabledCount: 1,
+          limit: 20,
+          skills: [技能({ name: "资金分析", assetId: "a1", assetName: "资金流向分析" })],
+        },
+      },
+    ]
+    // 停用成功，但这次后端没读到内核 ⇒ 键缺席。
+    const 写回包: EnableOutcome[] = [{ kind: "ok", value: { enabled: [], enabledCount: 0, limit: 20 } }]
+    const api: EnableApi = {
+      read: async () => 读回包.shift()!,
+      enable: async () => 写回包.shift()!,
+      disable: async () => 写回包.shift()!,
+    }
+    const 状态 = createProjectEnablement(api)
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={状态.enabled}
+        enabledCount={状态.enabledCount}
+        skills={状态.skills}
+        readDone={状态.readDone}
+        error={状态.error}
+        busy={状态.busy}
+        onToggle={状态.toggle}
+        onRetry={状态.reload}
+      />
+    ))
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+
+    // 前置：好面板（有计数、有已加载条目），否则下面「换成重试块」断不出东西。
+    expect(文(host, "capability-count-skill")).toContain("1 个")
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+
+    一(host, "capability-disable")?.click()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(有(host, "capability-unreadable")).toBe(true)
+    expect(有(host, "capability-retry")).toBe(true)
+    expect(有(host, "capability-count-skill")).toBe(false)
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect(槽(host, "capability-item-stale").length).toBe(0)
+    expect(槽(host, "capability-item-local").length).toBe(0)
+    expect((host.textContent ?? "").includes("0 个")).toBe(false)
   })
 
   test("skills 从数组变 undefined（换了项目、新回包还没到）⇒ 回到「正在读取」，旧条目一个不剩", () => {
