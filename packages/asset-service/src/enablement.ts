@@ -10,11 +10,20 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
  * `project-skill-link.ts`，两件事**分开**：链接失败（权限、磁盘）不该把库写脏，
  * 库写成功而链接失败时由下一次对账修回来（`reconcileSkillLinks`）。
  *
- * ## 上限用子查询守卫，不先查后写
+ * ## 上限用子查询守卫，**但它只是软上限**
  *
- * `insert ... select ... where (count < 上限)` 一条语句完成「够数就不插」，没有
- * 「查完 19、两人同时插进第 20、21 个」的窗口。并发下仍可能出现「实际插入 0 行、且随后
- * 读到的也不是已启用」的瞬时态，那时回 `limit_reached`——比放行第 21 个安全。
+ * `insert ... select ... where (count < 上限)` 把「查」和「写」收进一条语句，省掉应用层的
+ * 两次往返。**它挡不住并发**：PG 默认 READ COMMITTED（`migrations/README.md` 的迁移运行器
+ * 前提），`count` 子查询不锁任何行 ⇒ 两个并发语句各按自己的快照看到 19，资产不同则主键不冲突，
+ * 都插进去，最终 21 行。
+ *
+ * 这个残差是**接受**的：启用是人的点击动作，两次点击相隔以秒计；且真超了也只是多装一个 skill，
+ * 下一次停用就回来了。真要硬保证得上事务 ＋ `pg_advisory_xact_lock(hashtext(项目 id))`
+ * （`auth/migrate.ts` 有同样的先例），但 `EnablementTarget` 只有 `execute`、拿不到那把锁——
+ * **不为一个人工动作引入事务边界**。
+ *
+ * 并发下另一种瞬时态：实际插入 0 行、随后再读也不是已启用 ⇒ 回 `limit_reached`，
+ * 比回「已启用」安全（前者让用户重试，后者骗他说装好了）。
  *
  * ## 时间一律 Unix 秒
  *
@@ -40,14 +49,15 @@ function nowSeconds(now: number | undefined): number {
   return now ?? Math.floor(Date.now() / 1000)
 }
 
-/** 一个项目的启用集合（服务端权威；前端只渲染这个）。 */
-export async function enablementOf(
-  db: EnablementTarget,
-  projectId: string,
-  limit = ENABLEMENT_LIMIT,
-): Promise<EnablementState> {
+/**
+ * 一个项目的启用集合（服务端权威；前端只渲染这个）。
+ *
+ * `limit` **不接受入参**：上报给前端的数与守卫用的数必须是同一个常量，两处各传一份迟早
+ * 漂成「启用说没到上限、读回来显示超了」（`#002-06`：同一个判断两处各写一份，早晚不等）。
+ */
+export async function enablementOf(db: EnablementTarget, projectId: string): Promise<EnablementState> {
   const enabled = await enabledAssetIds(db, projectId)
-  return { enabled, enabledCount: enabled.length, limit }
+  return { enabled, enabledCount: enabled.length, limit: ENABLEMENT_LIMIT }
 }
 
 export async function enabledAssetIds(db: EnablementTarget, projectId: string): Promise<string[]> {
@@ -67,7 +77,6 @@ export interface EnableInput {
   readonly userId: string
   /** Unix 秒；测试传固定值。 */
   readonly now?: number
-  readonly limit?: number
 }
 
 export type EnableResult = "enabled" | "already_enabled" | "limit_reached"
@@ -79,13 +88,12 @@ export type EnableResult = "enabled" | "already_enabled" | "limit_reached"
  * - `limit_reached`：数到上限，没插。
  */
 export async function enableAsset(db: EnablementTarget, input: EnableInput): Promise<EnableResult> {
-  const limit = input.limit ?? ENABLEMENT_LIMIT
   const inserted = await db.execute(sql`
     insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
     select ${input.projectId}, ${input.assetId}, ${input.userId}, ${nowSeconds(input.now)}
      where (
        select count(*) from auth.project_asset_enablement where project_id = ${input.projectId}
-     ) < ${limit}
+     ) < ${ENABLEMENT_LIMIT}
     on conflict (project_id, asset_id) do nothing
     returning asset_id
   `)
@@ -109,4 +117,24 @@ export async function disableAsset(
     returning 1
   `)
   return rowsOf(result).length > 0
+}
+
+/**
+ * 删项目时清掉它的全部启用行（**不是**本模块的启停链，是项目删除链的同类落点）。
+ *
+ * 为什么必须有：`project_id` 没有外键（项目本体在每用户 SQLite），删项目时没有任何东西
+ * 会替我们清这张表 ⇒ 删掉的项目会永久留下一批读不到、也清不掉的启用行。仓库里同类的
+ * 项目级 PG 表（`project_member` / `project_archive` / `project_meta`）都在
+ * `archive.ts` 的删除链第 5 步逐个 `remove*`，本函数是那一组的第四个成员（`#002-06`：
+ * 找的是「谁在按同一个前提做同一件事」）。
+ *
+ * 调用点：`packages/opencode/src/server/openhive/archive.ts` 的删除链第 5 步。
+ */
+export async function removeProjectEnablement(
+  db: EnablementTarget,
+  input: { readonly projectId: string },
+): Promise<void> {
+  await db.execute(sql`
+    delete from auth.project_asset_enablement where project_id = ${input.projectId}
+  `)
 }

@@ -132,4 +132,37 @@ describe("enablement", () => {
     expect(await enabledAssetIds(db, "proj_a")).toEqual(["asset_t01", "asset_t02"])
     expect(await enabledAssetIds(db, "proj_b")).not.toContain("asset_t02")
   })
+
+  // 上限已满时，**已经启用过**的那一份再点一次必须是 `already_enabled`，不能被上限误判成
+  // 「装不下了」。守卫一旦被重排成「先判上限、再判是否已启用」，用户就再也点不动已装的那份。
+  test("满员时重复启用已启用项 ⇒ already_enabled（不是 limit_reached）", async () => {
+    for (let index = 1; index <= ENABLEMENT_LIMIT; index += 1) {
+      await enableAsset(db, { projectId: "proj_c", assetId: `asset_t${String(index).padStart(2, "0")}`, userId: "u1" })
+    }
+    expect(await enableAsset(db, { projectId: "proj_c", assetId: "asset_t05", userId: "u1" })).toBe("already_enabled")
+  })
+
+  test("最近启用的在前（时间不同，不是靠 id 排序凑出来的）", async () => {
+    await enableAsset(db, { projectId: "proj_d", assetId: "asset_t03", userId: "u1", now: 1000 })
+    await enableAsset(db, { projectId: "proj_d", assetId: "asset_t01", userId: "u1", now: 2000 })
+    await enableAsset(db, { projectId: "proj_d", assetId: "asset_t02", userId: "u1", now: 3000 })
+    expect(await enabledAssetIds(db, "proj_d")).toEqual(["asset_t02", "asset_t01", "asset_t03"])
+  })
+
+  test("删掉资产 ⇒ 它的启用行跟着消失（外键级联）", async () => {
+    await enableAsset(db, { projectId: "proj_e", assetId: "asset_t24", userId: "u1" })
+    await db.execute(sql`delete from auth.asset where id = 'asset_t24'`)
+    expect(await enabledAssetIds(db, "proj_e")).toEqual([])
+  })
+
+  test("删掉启用人 ⇒ 启用行跟着消失（enabled_by 也级联）", async () => {
+    // `auth.user` 的必填列照 `0001_init.sql` 补齐（计划里那行 insert 只是形状示例）。
+    await db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values ('u_del', '0999', '待删', 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
+    `)
+    await enableAsset(db, { projectId: "proj_f", assetId: "asset_t25", userId: "u_del" })
+    await db.execute(sql`delete from auth.user where id = 'u_del'`)
+    expect(await enabledAssetIds(db, "proj_f")).toEqual([])
+  })
 })

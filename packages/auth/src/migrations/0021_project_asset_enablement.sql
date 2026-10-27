@@ -10,7 +10,11 @@
 -- - `enabled_by` 记得住是谁开的这个口子：共享项目里任何成员都能启用（本计划 R2），
 --   出事要能答「谁装的」。
 -- - `asset_id` 外键**级联删除**：资产被 `discardAsset` 删掉时，启用关系跟着走，
---   不留指向空目录的行（`auth.project_member` 的 `user_id` 是同一个理由）。
+--   不留指向空目录的行（与 `0019_user_preference.sql` 对 `user_id` 的处置同取向）。
+-- - `enabled_by` 外键**也级联**（同 `0012` / `0019` 的所有 user 外键）：账号注销不能被启用
+--   记录挡住。「谁装的」这件事的可查性由审计表（`auth.audit_event` 存 actor 快照）承担，
+--   不靠这张关系表——两件事别混。⚠️ 别拿 `0009_asset.sql` 的 `owner_id` 当先例：那条**刻意
+--   不级联**，因为「资产成了无主行」比「删不掉账号」更难查；启用关系不是资产本体。
 -- - `project_id` **没有外键、也不可能有**：项目本体是 opencode 原生 `project` 表，
 --   活在每用户 SQLite，与 PG 是两个库（同 `0005_project_member.sql` 的注释）。
 --   悬空 project_id 本层查不出来，能拦它的只有写入侧（`project-assets.ts` 先查 `rolesOf`）。
@@ -24,7 +28,7 @@
 CREATE TABLE auth.project_asset_enablement (
   project_id text    NOT NULL,
   asset_id   text    NOT NULL REFERENCES auth.asset(id) ON DELETE CASCADE,
-  enabled_by text    NOT NULL REFERENCES auth.user(id),
+  enabled_by text    NOT NULL REFERENCES auth.user(id) ON DELETE CASCADE,
   enabled_at integer NOT NULL,
   PRIMARY KEY (project_id, asset_id)
 );
@@ -40,6 +44,16 @@ CREATE INDEX project_asset_enablement_asset_idx
 
 COMMENT ON TABLE auth.project_asset_enablement IS
   '项目级 skill 启用关系（项目 × 资产）；启用写一行、停用删一行，目录是其投影';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.project_asset_enablement.project_id IS
+  '项目标识（悬空值本层查不出来：项目本体在每用户 SQLite，跨库无外键）';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.project_asset_enablement.asset_id IS
+  '被启用的资产 id（指向 auth.asset；资产删除时本行级联消失）';
 
 --> statement-breakpoint
 
