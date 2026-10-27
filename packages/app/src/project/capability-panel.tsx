@@ -69,7 +69,10 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   }
 
   // `清单` 只从「已经数过」的分支传进来——这个函数不负责分辨「不知道」与 0（`#002-02`）。
-  const 组头 = (组: 能力组, 贴底: boolean, 清单: readonly 能力条目[]) => (
+  // ⚠️ 收的是 **accessor**，不是数组：数组字面值在这里是「烧死的快照」，数据一变就永远停在旧值
+  //（终审 C1 实测：`setEnabled(new Set())` 后组头仍写「· 1 个」）。JSX 里的 `清单()` 会被编译器
+  // 包成 getter，所以读它就是订阅。
+  const 组头 = (组: 能力组, 贴底: boolean, 清单: () => readonly 能力条目[]) => (
     <button
       type="button"
       data-slot={槽名[组]}
@@ -81,7 +84,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       <span class="font-semibold">{组名[组]}</span>
       <Show when={组 === "skill"}>
         <span data-slot="capability-count-skill" class="text-v2-text-text-muted">
-          · {计数(清单)} 个
+          · {计数(清单())} 个
         </span>
       </Show>
       <Show when={组 === "mcp"}>
@@ -142,8 +145,10 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   // ③ 自带条目**没有**操作按钮：它不是装来的，点了等于删用户的文件（设计 §4）。
   const 一条 = (条: 能力条目) => (条.kind === "local" ? 自带(条) : 库内(条))
 
-  // 只有「真的数过」才进得来：`清单` 一定是有值的数组，组头/条目/计数才允许出现。
-  const 手风琴 = (清单: readonly 能力条目[]) => (
+  // 只有「真的数过」才进得来：`清单()` 一定是有值的数组，组头/条目/计数才允许出现。
+  // ⚠️ 形参是 **accessor**：`Show` 的非 keyed 回调只在真假翻转时重跑，把 `清单()` 当场求值再传下去
+  // 等于把数组焊死在那一刻（终审 C1）。JSX 里的 `清单()` / `<For each={清单()}>` 才是订阅点。
+  const 手风琴 = (清单: () => readonly 能力条目[]) => (
     <>
       <For each={前面()}>{(组) => 组头(组, false, 清单)}</For>
       {组头(展开(), false, 清单)}
@@ -156,11 +161,11 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
             </p>
           </Show>
           <Show
-            when={清单.length > 0}
+            when={清单().length > 0}
             fallback={<p class="px-1 py-2 text-[12px] text-v2-text-text-muted">这个项目还没有装任何技能。</p>}
           >
             <div class="flex flex-col gap-1.5">
-              <For each={清单}>{(条) => 一条(条)}</For>
+              <For each={清单()}>{(条) => 一条(条)}</For>
             </div>
           </Show>
         </Show>
@@ -209,7 +214,9 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
                 </p>
               }
             >
-              {(清单) => 手风琴(清单())}
+              {/* `Show` 的回调参数**本来就是** accessor：直接透传，别再 `()` 一次
+                  （求了值就又把它烧成数组，C1 会原地复活）。 */}
+              {(清单) => 手风琴(清单)}
             </Show>
           }
         >

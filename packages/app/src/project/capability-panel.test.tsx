@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { type JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { 内核技能 } from "@/ai-assets/enable-api"
 import { CapabilityPanel, type CapabilityPanelProps } from "./capability-panel"
@@ -206,5 +206,122 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
   test("接口报错（含 403「不是该项目成员」）⇒ 原样显示服务端那句", () => {
     const host = 面板({ error: () => "不是该项目成员" })
     expect(文(host, "capability-error")).toContain("不是该项目成员")
+  })
+})
+
+/**
+ * **数据变了，面板要跟着重绘**（终审 C1 / I4）。
+ *
+ * 上一组的 props 全是「返回常量的箭头函数」——它们在结构上就表达不了「数据变了」，
+ * 于是一条「`清单` 在回调里当场求值、把数组烧死」的 Critical 从这条缝里溜了过去。
+ * 本组一律用 `createSignal` 驱动：先断初值，**改信号**，再断同一个 pane 跟着变。
+ *
+ * Solid 的更新是同步的（没有异步调度），所以改完信号立刻断言即可，不需要 `await`。
+ */
+describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
+  test("enabled 从 {a1} 变空 ⇒ 组头计数变小、条目从「已加载」变「本项目自带」", () => {
+    const [启用, 设启用] = createSignal<ReadonlySet<string>>(new Set(["a1"]))
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={启用}
+        enabledCount={() => 启用().size}
+        skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
+        error={() => undefined}
+        busy={() => undefined}
+        onToggle={() => {}}
+        onRetry={() => {}}
+      />
+    ))
+
+    // 前置：初值真的按「已启用」画（否则下面的变化断不出东西）。
+    expect(文(host, "capability-count-skill")).toContain("1 个")
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+
+    设启用(new Set<string>())
+
+    expect(文(host, "capability-count-skill")).toContain("0 个")
+    expect(槽(host, "capability-item-loaded").length).toBe(0)
+    expect(槽(host, "capability-item-local").length).toBe(1)
+  })
+
+  /**
+   * **收起状态的组头**也要跟着变。
+   *
+   * 展开中的那个组头由 `{组头(展开(), …)}` 画——它的外层渲染 effect 顺带读到了清单，
+   * 所以「把清单烧成数组」这种改法在**它身上会被遮住**（终审修复轮实测：只拆 `组头` 的
+   * 形参，其它用例全绿）。收起的组走的是 `For each={前面()}`，回调只在条目集合变化时重跑，
+   * 烧死的清单在那里不会自己醒过来 ⇒ 这条是那个改法唯一会被抓到的形状。
+   */
+  test("收起的组头也跟着变（技能组落到「前面」里时，计数仍然是活的）", () => {
+    const [启用, 设启用] = createSignal<ReadonlySet<string>>(new Set(["a1"]))
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={启用}
+        enabledCount={() => 启用().size}
+        skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
+        error={() => undefined}
+        busy={() => undefined}
+        onToggle={() => {}}
+        onRetry={() => {}}
+      />
+    ))
+
+    // 把「技能」挤进「前面」：点开知识库，技能组头就变成收起状态的那一条。
+    一(host, "capability-group-knowledge")?.click()
+    expect(一(host, "capability-group-skill")?.getAttribute("aria-expanded")).toBe("false")
+    expect(文(host, "capability-count-skill")).toContain("1 个")
+
+    设启用(new Set<string>())
+
+    expect(文(host, "capability-count-skill")).toContain("0 个")
+  })
+
+  test("skills 整份换成另一组 ⇒ 条目集合跟着换（不是留在旧数组上）", () => {
+    const [清单, 设清单] = createSignal<readonly 内核技能[]>([技能({ name: "甲工具" })])
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={() => new Set<string>()}
+        enabledCount={() => 0}
+        skills={清单}
+        error={() => undefined}
+        busy={() => undefined}
+        onToggle={() => {}}
+        onRetry={() => {}}
+      />
+    ))
+
+    expect(文(host, "capability-item-local")).toContain("甲工具")
+
+    设清单([技能({ name: "乙工具" })])
+
+    expect(文(host, "capability-item-local")).toContain("乙工具")
+    expect((host.textContent ?? "").includes("甲工具")).toBe(false)
+  })
+
+  test("skills 从数组变 undefined（换了项目、新回包还没到）⇒ 回到「正在读取」，旧条目一个不剩", () => {
+    const [清单, 设清单] = createSignal<readonly 内核技能[] | undefined>([技能({ name: "甲工具" })])
+    const host = mount(() => (
+      <CapabilityPanel
+        hasProject={() => true}
+        enabled={() => new Set<string>()}
+        enabledCount={() => 0}
+        skills={清单}
+        error={() => undefined}
+        busy={() => undefined}
+        onToggle={() => {}}
+        onRetry={() => {}}
+      />
+    ))
+
+    expect(槽(host, "capability-item-local").length).toBe(1)
+
+    设清单(undefined)
+
+    expect(有(host, "capability-loading")).toBe(true)
+    expect(槽(host, "capability-item-local").length).toBe(0)
+    expect(有(host, "capability-group-skill")).toBe(false)
   })
 })

@@ -1896,6 +1896,30 @@ describe("项目数据接线（T018 出参）", () => {
   })
 
   /**
+   * **这条缝是活的**：`skills` 从 `undefined` 变成数组时，pane 要跟着换（终审 I4）。
+   *
+   * 上一组夹具的 `skills` 是常量访问器，它结构上表达不了「数据到了」——面板即使永远不重绘，
+   * 那一组也全绿（C1 就是从这条缝里溜过去的）。这里把信号本身当访问器递进去：先断
+   * 「还没到」的形状，再改信号、断同一个 pane 变了。
+   */
+  test("「能力」pane：接线是响应式的——skills 从 undefined 变数组，「正在读取…」当场消失", () => {
+    const [清单, 设清单] = createSignal<readonly 内核技能[] | undefined>(undefined)
+    // 启用集合非空：这样「到了」之后画的是 `loaded`（库内已加载）而不是「本项目自带」——
+    // 两者的 data-slot 不同，断错了一个就分不出是「清单进来了」还是「清单还是空的」。
+    const 启用: ProjectEnablement = { ...假启用({ enabled: ["a"] }), skills: 清单 }
+    const host = mount(() => <WorkspaceEntry enablement={启用}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    expect(能力页?.textContent ?? "").toContain("正在读取…")
+
+    设清单([{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }])
+
+    expect(能力页?.textContent ?? "").not.toContain("正在读取…")
+    expect(能力页?.querySelectorAll("[data-slot='capability-item-loaded']").length).toBe(1)
+  })
+
+  /**
    * `error()` 这条缝也必须真的落到面板上。
    *
    * 改错形态：接成恒 `undefined` ⇒ 面板永远走不到失败态（`capability-retry` 永不出现），
