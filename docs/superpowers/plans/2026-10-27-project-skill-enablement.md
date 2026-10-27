@@ -64,7 +64,7 @@
 | `packages/app/src/ai-assets/enable-api.ts` | 三条出口的客户端（同源 HTTP），`Outcome` 三态 |
 | `packages/app/src/ai-assets/enable-api.test.ts` | 上者 |
 | `packages/app/src/ai-assets/enable-state.ts` | Solid 状态：当前项目的启用集合、计数、上限、busy、错误；跟随当前项目切换 |
-| `packages/app/src/ai-assets/enable-state.test.ts` | 上者 |
+| `packages/app/src/ai-assets/enable-state.test.tsx` | 上者 |
 
 **修改（逐处都写 `【保留的定制 · 同步上游时不要丢】`）**
 
@@ -1514,7 +1514,7 @@ git commit -m "feat(assets): 项目级启用出口的前端客户端"
 
 **Files:**
 - Create: `packages/app/src/ai-assets/enable-state.ts`
-- Test: `packages/app/src/ai-assets/enable-state.test.ts`
+- Test: `packages/app/src/ai-assets/enable-state.test.tsx`
 
 **Interfaces:**
 - Consumes: `EnableApi` / `EnablementState`（Task 4）
@@ -1539,7 +1539,7 @@ export interface ProjectEnablement {
 
 - [ ] **Step 1: 先写会红的用例**
 
-`packages/app/src/ai-assets/enable-state.test.ts`：
+`packages/app/src/ai-assets/enable-state.test.tsx`：
 
 ```ts
 import { describe, expect, test } from "bun:test"
@@ -1651,7 +1651,8 @@ test("没有项目时 toggle 不发请求", async () => {
 })
 ```
 
-- [ ] **Step 2: 跑，确认红** → `cd packages/app && bun test src/ai-assets/enable-state.test.ts`，FAIL 模块不存在。
+- [ ] **Step 2: 跑，确认红** → `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets/enable-state.test.tsx`，FAIL 模块不存在。
+  ⚠️ **后缀必须是 `.tsx`、必须带 `--conditions=browser`**（2026-10-27 实测）：solid-js 1.9.10 的 `exports` 没有 `solid` 条件，bun 在 `test:unit` 口径下命中 `node` ⇒ `dist/server.js`，`createEffect` 是空函数，本任务 7/8 条用例必红（实得 `1 pass / 7 fail`，`Expected 1 / Received 0`）。`.test.tsx` 会被 `test:unit` 的 `--path-ignore-patterns="**/*.test.tsx"` 跳过、被 `test:components` 收走，正是包内既有分工。
 
 - [ ] **Step 3: 写实现**
 
@@ -1775,7 +1776,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
 - [ ] **Step 5: 门禁 ＋ 提交**
 
 ```bash
-git add packages/app/src/ai-assets/enable-state.ts packages/app/src/ai-assets/enable-state.test.ts
+git add packages/app/src/ai-assets/enable-state.ts packages/app/src/ai-assets/enable-state.test.tsx
 git commit -m "feat(assets): 当前项目的启用状态（服务端权威 + 代次丢弃旧回包）"
 ```
 
@@ -2088,8 +2089,12 @@ test("错误如实显示，不当成「没有错误」", async () => {
 
 - [ ] **Step 5: 跑绿 ＋ 回归**
 
-Run: `cd packages/app && bun test src/ai-assets src/workspace/workspace-entry.test.tsx`
-Expected: 全绿。
+Run（**两条，分别对应两套条件；缺一条就是把 `.tsx` 用例按 node 构建跑，必红**）:
+```bash
+cd packages/app && timeout 300 bun test --conditions=solid --path-ignore-patterns="**/*.test.tsx" src/ai-assets
+cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/ai-assets
+```
+Expected: 全绿（等价于包内 `bun run test:unit` + `bun run test:components` 的过滤子集）。
 
 - [ ] **Step 6: 提交**
 
@@ -2112,8 +2117,10 @@ git commit -m "feat(assets): 中栏显示已启用 N/20，入口按当前项目�
   如实记进报告，**不修别人的迁移**）
 - [ ] **Step 2** `cd packages/asset-service && bun test && bun run typecheck`
 - [ ] **Step 3** `cd packages/opencode && bun test test/server/openhive-project-assets.test.ts test/server/openhive-project-delete.test.ts && bun run typecheck`
-- [ ] **Step 4** `cd packages/app && bun test src/ai-assets src/governance && bun run typecheck`
-  （`AUDIT_ACTIONS` 加词后 `audit-log-api.ts` 的 `Record<AuditAction,string>` 若漏词，红在这里）
+- [ ] **Step 4** `cd packages/app && timeout 300 bun run test:unit && timeout 300 bun run test:components && bun run typecheck`
+  （**别写裸 `bun test src/ai-assets`**：`enable-state.test.tsx` 需要 `--conditions=browser`，裸跑拿到 `dist/server.js`、
+  `createEffect` 是空函数，7 条必红——2026-10-27 实测 `1 pass / 7 fail`。`AUDIT_ACTIONS` 加词后
+  `audit-log-api.ts` 的 `Record<AuditAction,string>` 若漏词，红在这里）
 - [ ] **Step 5** 仓库根 `bun run lint`（⚠️ 已知基线红在 `packages/session-ui/.../prompt-input/index.tsx:163`，
   与本次改动无关；判据是「本次改动的文件在 oxlint 输出里不出现」）
 - [ ] **Step 6** `git diff --stat bun.lock` 必须为空
