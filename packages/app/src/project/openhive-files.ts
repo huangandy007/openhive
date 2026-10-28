@@ -81,23 +81,76 @@ export async function listProjectFiles(
   projectId: string,
   send: ProjectFilesFetch = defaultSend,
 ): Promise<readonly string[] | undefined> {
-  const files: string[] = []
-  const 有文件 = await walk("", projectId, send, files)
-  // ⚠️ 判据是 **`undefined`**（这一趟走不成），不是假值：一个里头只有空文件夹的项目，
-  // 根目录这一层 `walk` 回的是 `false`（这一支没有文件），而 `files` 里**是有东西的**
-  // （那些空目录）。写成 `有文件 ? files : undefined` 会把「项目里全是空文件夹」
-  // 报成「取不到」——正是本条要修的那个 bug 的镜像。
-  return 有文件 === undefined ? undefined : files
+  const 闸门 = 建闸门(走树并发上限)
+  const 走成 = await walk("", projectId, send, 闸门)
+  // ⚠️ 判据是 **`undefined`**（这一趟走不成），不是 `有文件`：一个里头只有空文件夹的项目，
+  // 根这一层 `有文件` 是 `false`，而清单里**是有东西的**（那些空目录）。写成
+  // `有文件 ? 清单 : undefined` 会把「项目里全是空文件夹」报成「取不到」。
+  if (走成 === undefined) return undefined
+  return 走成.清单
 }
 
 /**
- * 从 `dir` 往下走。**就地深度优先**：先按服务端给的顺序处理，遇到目录当场钻进去——
- * 这样「目录在前」这个上游顺序自然保留下来，结果稳定可断言。
+ * 同时在飞的目录请求上限。
+ *
+ * ## 为什么要有这个数（2026-10-28，用户实报「选中项目后一直卡着」）
+ *
+ * 原来 `walk` 是**一个目录等一个目录**：真栈实测单趟 46–72ms，测试1027 那个项目有 370 个
+ * 目录（里头塞了一整个 `superpowers/` 仓库）⇒ 光排队就 17–27 秒，界面一直停在
+ * 「正在加载文件…」。并发的收益是**数量级**的，所以这个上限不是「调优」，是这条链能不能用的前提。
+ *
+ * ## 上限怎么定的
+ *
+ * 8 是**行为契约**，不是微调出来的魔法数（`openhive-files.test.ts` 里写字面量 8，不 import
+ * 本常量——`LEARNINGS #003-05`）。理由是两头：① 浏览器对同一源的并发连接有硬限制
+ * （HTTP/1.1 是 6），设太大只是让请求在浏览器里排队，压不到内核；② 服务端每趟要重做鉴权与
+ * 目录定位（真栈实测本机回环 48ms，不是纯 IO），几百个请求同时打过去是给内核添麻烦，不是省时间。
+ */
+const 走树并发上限 = 8
+
+/**
+ * 一次「放行 N 个」的闸门。每次 `listProjectFiles` 各建一个——两次取数不该互相排队。
+ *
+ * ## 名额是**转让**的，不是「先还回去、再去叫醒下一个人」
+ *
+ * 每个名额只在两处存在：「空位」这个计数里，或某个调用者手里。释放时**直接**把名额交给
+ * 队首那个人，不经过 `空位`。这不是写法偏好：先 `空位 += 1` 再把等待者叫醒的话，从加回去
+ * 到等待者真正恢复执行之间隔着一个微任务，这期间刚进来的调用者会看到「有空位」而占掉它
+ * ⇒ 同时在飞的请求数悄悄超过上限，而 `<上限` 那条用例仍是绿的（它挡的是另一个方向）。
+ */
+function 建闸门(上限: number): <T>(任务: () => Promise<T>) => Promise<T> {
+  let 空位 = 上限
+  const 等在门外: Array<() => void> = []
+  return async function 限流<T>(任务: () => Promise<T>): Promise<T> {
+    if (空位 > 0) {
+      空位 -= 1
+    } else {
+      await new Promise<void>((放行) => 等在门外.push(放行))
+    }
+    try {
+      return await 任务()
+    } finally {
+      const 下一个 = 等在门外.shift()
+      if (下一个) 下一个()
+      else 空位 += 1
+    }
+  }
+}
+
+type 走成 = {
+  /** 这一支下面的文件路径，以及这一支下面**空目录**的路径（不含这一支自己）。 */
+  清单: string[]
+  /** 这一支下面有没有**文件**（不是「有没有清单项」——见 `walk` 那节）。 */
+  有文件: boolean
+}
+
+/**
+ * 从 `dir` 往下走，**兄弟目录并发**（受闸门限流），但**清单顺序与串行时逐字相同**。
  *
  * ## 返回值是**两件事**，调用方必须分开问
  *
  * `undefined` ＝ **这一支（含以下）走不成**（取不到 / 体不是数组）⇒ 整份判为取不到。
- * `true` / `false` ＝ **走成了，这一支下面有没有`文件`**。后者不是「走不成」的近义词：
+ * `有文件` ＝ **走成了，这一支下面有没有`文件`**。后者不是「走不成」的近义词：
  * 一个只有空文件夹的目录走得很成，只是它下面一个文件都没有。
  *
  * ## 空目录必须自己占一条（2026-10-10，用户实报「新建的文件夹建完就看不见」）
@@ -112,37 +165,53 @@ export async function listProjectFiles(
  *
  * 补的时候**原样带上游那个尾分隔符**（`资料\` 而不是 `资料/`）：那是 `fs.list` 对目录项的
  * 指路方式（见本文件头），建树那侧据此认出这是目录——同一个约定，不另发明一个。
+ *
+ * ## 顺序是怎么在并发下保住的（2026-10-28）
+ *
+ * 先按**服务端给的 body 原序**把每一支**全部启动**（目录当场发请求，被闸门挡在外面的只是
+ * 排队），再按同一个顺序**逐个收**。收的顺序决定清单顺序，发的顺序不影响它。
+ * 于是「文件就地、目录钻进去回来再按原位置补」这条老规矩一个字没变——
+ * `openhive-files.test.ts` 里那条并发顺序用例钉的就是这个。
  */
 async function walk(
   dir: string,
   projectId: string,
   send: ProjectFilesFetch,
-  files: string[],
-): Promise<boolean | undefined> {
-  const response = await trySend(send, `${FILE_PATH}?${new URLSearchParams({ path: dir })}`, {
-    credentials: "same-origin",
-    headers: { [PROJECT_HEADER]: projectId },
+  限流: <T>(任务: () => Promise<T>) => Promise<T>,
+): Promise<走成 | undefined> {
+  const body = await 限流(async () => {
+    const response = await trySend(send, `${FILE_PATH}?${new URLSearchParams({ path: dir })}`, {
+      credentials: "same-origin",
+      headers: { [PROJECT_HEADER]: projectId },
+    })
+    if (!response?.ok) return undefined
+    const 解开的 = await readJson(response)
+    return Array.isArray(解开的) ? 解开的 : undefined
   })
-  if (!response?.ok) return undefined
+  if (body === undefined) return undefined
 
-  const body = await readJson(response)
-  if (!Array.isArray(body)) return undefined
-
-  let 有文件 = false
-  for (const value of body) {
+  // 先全部启动（`map` 里那次 `walk(...)` 调用是**当场**发生的），再按序收。
+  const 各支 = body.map((value) => {
     const entry = readEntry(value)
-    if (!entry || entry.ignored || isHiddenRoot(entry.path)) continue
+    if (!entry || entry.ignored || isHiddenRoot(entry.path)) return undefined
     if (entry.type !== "directory") {
-      files.push(entry.path)
-      有文件 = true
-      continue
+      return { path: entry.path, 结果: Promise.resolve<走成 | undefined>({ 清单: [entry.path], 有文件: true }) }
     }
-    const 下面有文件 = await walk(entry.path, projectId, send, files)
-    if (下面有文件 === undefined) return undefined
-    if (!下面有文件) files.push(entry.path)
-    有文件 = 有文件 || 下面有文件
+    return { path: entry.path, 结果: walk(entry.path, projectId, send, 限流) }
+  })
+
+  const 清单: string[] = []
+  let 有文件 = false
+  for (const 一支 of 各支) {
+    if (一支 === undefined) continue
+    const 结果 = await 一支.结果
+    if (结果 === undefined) return undefined
+    清单.push(...结果.清单)
+    // 这一支下面一个文件都没有 ⇒ 它就是空目录（或只剩空目录），名字得由父级补上。
+    if (!结果.有文件) 清单.push(一支.path)
+    有文件 = 有文件 || 结果.有文件
   }
-  return 有文件
+  return { 清单, 有文件 }
 }
 
 /**

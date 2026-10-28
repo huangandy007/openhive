@@ -392,6 +392,95 @@ describe("项目根的 .opencode 从清单里隐掉", () => {
   })
 })
 
+/**
+ * 2026-10-28 · **目录树要并发走**（用户实报「选中项目后一直卡着」）。
+ *
+ * ## 为什么钉「同时在飞的请求数」而不是「总耗时」
+ *
+ * 耗时在本机 / CI 之间会漂（真栈实测单趟 46–72ms），而**串行 ⇒ 峰值恒为 1** 是这次改动
+ * 前后唯一干净的分界：改之前必然是 1，改之后必然大于 1。写死一个毫秒数的判据，要么是
+ * 编出来的，要么在慢机器上假红。
+ *
+ * ## 延迟是**必需**的，不是为了让测试慢一点
+ *
+ * 替身若不拖一下，每个请求同步就返回了——串行实现也能瞬间跑完，峰值永远看不出差别，
+ * 于是这条用例在缺陷态下照样绿（`#005-47`：你搭的前提可能在缺陷态下根本不成立）。
+ *
+ * ## 为什么还要钉「上限」
+ *
+ * 无上限地并发一个 370 目录的项目，会一次性向内核抛出几百个请求。限流让「并发」这件事
+ * 有一个说得出数值的上界：8（见 `openhive-files.ts` 里那个常量，两处是同一条约定）。
+ * **不 import 那个常量**（`LEARNINGS #003-05`）：这里钉的是行为契约，不是实现细节。
+ */
+function 计并发(routes: Record<string, unknown>, 延迟 = 5) {
+  let 在飞 = 0
+  let 峰值 = 0
+  const send: ProjectFilesFetch = async (input) => {
+    const path = new URL(input, "http://localhost").searchParams.get("path")
+    在飞 += 1
+    峰值 = Math.max(峰值, 在飞)
+    try {
+      await new Promise((放行) => setTimeout(放行, 延迟))
+      const route = routes[path ?? ""]
+      if (route === undefined) throw new Error(`替身没配这条路径：${JSON.stringify(path)}`)
+      if (route instanceof Error) throw route
+      return new Response(JSON.stringify(route), { headers: { "content-type": "application/json" } })
+    } finally {
+      在飞 -= 1
+    }
+  }
+  return { send, 峰值: () => 峰值 }
+}
+
+describe("走树是并发的", () => {
+  test("兄弟目录并发发出：同时在飞的请求数大于 1", async () => {
+    const { send, 峰值 } = 计并发({
+      "": [目录("甲\\", "甲"), 目录("乙\\", "乙"), 目录("丙\\", "丙")],
+      "甲\\": [文件("甲\\a.txt", "a.txt")],
+      "乙\\": [文件("乙\\b.txt", "b.txt")],
+      "丙\\": [文件("丙\\c.txt", "c.txt")],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["甲\\a.txt", "乙\\b.txt", "丙\\c.txt"])
+    expect(峰值(), "同时在飞的请求峰值该大于 1｜串行实现恒为 1").toBeGreaterThan(1)
+  })
+
+  test("并发有上限：同时在飞不超过 8", async () => {
+    const 扇出 = 30
+    const 根: unknown[] = []
+    const 树: Record<string, unknown> = { "": 根 }
+    for (let i = 0; i < 扇出; i += 1) {
+      const 名 = `目录${i}\\`
+      根.push(目录(名, `目录${i}`))
+      树[名] = [文件(`${名}f.txt`, "f.txt")]
+    }
+
+    const { send, 峰值 } = 计并发(树)
+
+    expect((await listProjectFiles(PROJECT, send))?.length, "三十个目录里的三十个文件都该收到").toBe(扇出)
+    expect(峰值(), "同时在飞不该超过上限 8").toBeLessThanOrEqual(8)
+  })
+
+  /**
+   * **并发不许改变清单顺序**。这条是给上面两条兜底的：一个「先并发收齐、再按任意顺序拼」
+   * 的实现能把它们都跑绿，而树会当场乱序——文件跑到别的目录底下、空目录挤在最前面。
+   *
+   * 顺序的真身是**服务端给的 body 原序**：文件就地收下，目录钻进去、回来再按原位置补。
+   * 空目录（`乙\`）与「只有空子目录的目录」（`甲\`）都在这棵树里，因为它们的补位点
+   * 正是最容易在并发里错位的那种。
+   */
+  test("并发之后清单顺序不变（文件就地、目录后序、空目录在自己那一支的末尾）", async () => {
+    const { send } = 计并发({
+      "": [文件("r.txt", "r.txt"), 目录("甲\\", "甲"), 文件("z.txt", "z.txt"), 目录("乙\\", "乙")],
+      "甲\\": [文件("甲\\x.txt", "x.txt"), 目录("甲\\空\\", "空")],
+      "甲\\空\\": [],
+      "乙\\": [],
+    })
+
+    expect(await listProjectFiles(PROJECT, send)).toEqual(["r.txt", "甲\\x.txt", "甲\\空\\", "z.txt", "乙\\"])
+  })
+})
+
 describe("readProjectFile", () => {
   function 替身(answer: Response) {
     const 收到: Array<{ url: string; path: string | null; project: string | null }> = []
