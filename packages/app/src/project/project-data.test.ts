@@ -85,12 +85,23 @@ describe("PROJECT_DATA 生产绑定", () => {
    * `files` 那一条最容易接错：它要的是**项目的 id**（走 `x-openhive-project` 头，T017 的契约），
    * 而不是一个目录参数——目录由 fork 的中间件从那个头推出来，客户端说了不算。
    * 接成 `() => listProjectFiles("")` 之类的话，头里就是个空串，后端会当成「没有项目」。
+   *
+   * 2026-10-28 起 `files` 内部改走 `GET /openhive/project/tree`（一次取整棵树，见
+   * `openhive-files.ts` 文件头）：判据仍是「项目 id 进头、客户端不自编目录参数」。
    */
   test("files 带着项目 id（走 x-openhive-project 头），且不自己编目录参数", async () => {
-    const 发出 = 假服务({ "/file": [{ path: "资料/话单.csv", type: "file", ignored: false }] })
+    const 发出 = 假服务({ "/openhive/project/tree": { paths: ["资料/话单.csv"], truncated: false } })
 
     expect(await PROJECT_DATA.files("p1")).toEqual(["资料/话单.csv"])
-    expect(发出).toEqual([{ url: "/file?path=", method: "GET", 项目头: "p1", 体: undefined }])
+    expect(发出).toEqual([{ url: "/openhive/project/tree", method: "GET", 项目头: "p1", 体: undefined }])
+  })
+
+  /** `tree` 与 `files` 是同一次取数的两种口径：这一条钉「截断标记没有被只交清单的那条口径吞掉」。 */
+  test("tree 交出 paths 与 truncated", async () => {
+    const 发出 = 假服务({ "/openhive/project/tree": { paths: ["资料/话单.csv"], truncated: true } })
+
+    expect(await PROJECT_DATA.tree("p1")).toEqual({ paths: ["资料/话单.csv"], truncated: true })
+    expect(发出).toEqual([{ url: "/openhive/project/tree", method: "GET", 项目头: "p1", 体: undefined }])
   })
 
   /**

@@ -53,7 +53,7 @@ import {
   type DownloadOptions,
   type UploadOptions,
 } from "./openhive-file-ops"
-import { listProjectFiles } from "./openhive-files"
+import { listProjectFiles, listProjectTree, type ProjectTree } from "./openhive-files"
 import { inviteMember, leaveProject, listMembers, removeMember } from "./openhive-members"
 import type {
   BackupJob,
@@ -117,6 +117,8 @@ export interface ProjectData {
   deleteProject(projectId: string): Promise<ProjectActionOutcome>
   /** 取某个项目的全部文件路径（`undefined` = 取不到，`[]` = 一个文件都没有）。 */
   files(projectId: string): Promise<readonly string[] | undefined>
+  /** 与 `files` 同一条出口，但把「是否被截断」一并交出来（2026-10-28 批量取数）。 */
+  tree(projectId: string): Promise<ProjectTree | undefined>
   /**
    * 把项目内的一个文件复制到**项目内的另一个目录**（T020 / FR-005）。
    * `dir` 是目标**目录**（相对项目根，`""` ＝ 项目根），目标名由服务端取源的末段。
@@ -240,6 +242,7 @@ export const PROJECT_DATA: ProjectData = {
   rename: (projectId, name) => renameProject(projectId, name),
   deleteProject: (projectId) => deleteProject(projectId),
   files: (projectId) => listProjectFiles(projectId),
+  tree: (projectId) => listProjectTree(projectId),
   copy: (projectId, path, dir) => copyFile(projectId, path, dir),
   move: (projectId, path, dir) => moveFile(projectId, path, dir),
   upload: (projectId, dir, file, options) => uploadFile(projectId, dir, file, options),

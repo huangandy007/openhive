@@ -383,7 +383,7 @@ describe("中栏 tab 与左栏模块切换的联动（FR-006）", () => {
 
   test("换项目也清空草稿：旧项目没保存的正文不跟着串到新项目", async () => {
     setCurrentProject(undefined)
-    const host = mount(() => (
+    mount(() => (
       <WorkspaceEntry>
         <OpenTabs tabs={[专案]} />
       </WorkspaceEntry>
@@ -1179,6 +1179,7 @@ function 假数据源(
       | "rename"
       | "deleteProject"
       | "files"
+      | "tree"
       | "createEntry"
       | "renameEntry"
       | "removeEntry"
@@ -1274,6 +1275,18 @@ function 假数据源(
     files: async (projectId) => {
       记.files.push(projectId)
       return 剧本.files ? await 剧本.files(projectId) : []
+    },
+    // 2026-10-28 批量取数：`tree` 与 `files` 是**同一次取数的两种口径**（后者丢了 `truncated`）。
+    // 没给 `剧本.tree` 时**复用 `剧本.files` 那一段**、`truncated` 记 false——否则本文件里二十来处
+    // `假数据源({ files: … })` 与 `expect(记.files).toEqual(…)` 会在 Task 4 换调用点那天集体失效，
+    // 而那些用例考的是「清单什么时候去取」，与走哪条口径无关。
+    tree: async (projectId) => {
+      记.files.push(projectId)
+      if (剧本.tree) return await 剧本.tree(projectId)
+      const paths = 剧本.files ? await 剧本.files(projectId) : []
+      // `剧本.files` 回 `undefined` ＝「取不到」，`tree` 照同一条口径交 `undefined`，
+      // 不能把它编成一份空清单（三态的分工见 `project-files.ts`）。
+      return paths === undefined ? undefined : { paths, truncated: false }
     },
     // T018 的建 / 改名 / 删。同上面几条：**没给剧本就是没办成**——一条没接剧本的路在测试里
     // 悄悄报成功，会让「接线根本没接上」看起来是绿的。
@@ -1681,8 +1694,8 @@ describe("项目数据接线（T018 出参）", () => {
   /**
    * 文件清单的三态（2026-10-21 用户实报：打开大项目 2.9 秒里一直显示「还没有文件」）。
    *
-   * 真栈实测那两个数：`file-tree-empty` 在点击后 **6ms** 就出现，数据 **2930ms** 才到；
-   * 而 `listProjectFiles` 的 314 次目录请求里 96% 花在 `.opencode\` 上（P0-② 另治）。
+   * 真栈实测那两个数：`file-tree-empty` 在点击后 **6ms** 就出现，数据 **2930ms** 才到
+   * （当时还是逐个目录走树；2026-10-28 已改成服务端一趟扫完）。
    * 这一组钉的是**说法**：没答案时说「正在加载」，取不到时说「取不到」并给重试。
    */
   test("清单还没回来 ⇒ 树说「正在加载文件…」，不说「还没有文件」", async () => {
@@ -6378,7 +6391,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
    * effect 写的信号与网格读的信号不是同一份（实测一次用例新建 5 份），数据一变网格就不跟。
    */
   function 假目录(rows: readonly AssetMetadata[]): AssetCatalog {
-    const [清单, set清单] = createSignal<readonly AssetMetadata[]>(rows)
+    const [清单, set清单] = createSignal(rows)
     return {
       assets: 清单,
       total: () => 清单().length,

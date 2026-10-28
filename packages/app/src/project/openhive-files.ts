@@ -1,55 +1,43 @@
 /**
- * 005 T018 · 把项目沙箱的目录走成一棵树的**路径清单**（`@/project/openhive-project` 的同族）。
+ * 005 T018 · 项目文件树的**取数出口**（`@/project/openhive-project` 的同族）。
  *
  * 底座（`ForkFetch` / `trySend` / `readJson` / `isRecord`）在 `@/project/openhive-fetch`——
  * 与项目那条链共用一份，因为「解不开的体算不算取不到」这类判断只能有一份。
  *
- * ## 出口与「目录谁说了算」
+ * ## 一次请求取整棵树（2026-10-28）
  *
- * `GET /file?path=<相对路径>`（上游 `FileHttpApi`，`handlers/file.ts` 的 `list`）**只回一层**。
- * 相对谁的路径？**请求落点那个目录**——由 fork 的两道中间件定死：`anchorWorkspaceLayer`
- * 把目录入参一律改写成 `{沙箱根}/{userId}`，`projectLocationLayer` 再接到
- * `{沙箱根}/{userId}/{projectId}`（都**无条件**，客户端传什么目录都无效）。
- * 所以本层**不发任何目录参数**——发了也只是装饰，还会让人以为这里能选目录。
- * 真正需要客户端说的只有一件事：**哪个项目**，走 `x-openhive-project` 头（T017 的契约）。
+ * 本层原先是**一个目录一条 `GET /file`**、自己走树：真栈实测单趟 46–72ms，370 个目录的项目
+ * 光排队就 17–27 秒（用户实报「选中项目后一直卡着」）。现在交给服务端一趟扫完
+ * （`GET /openhive/project/tree`，接线层 `packages/opencode/src/server/openhive/project-tree.ts`），
+ * 本层只发**一个**请求、只做形状校验。
  *
- * ## 清单里只有**两类**条目：文件路径、以及**空目录**的路径（带尾分隔符）
+ * ## 顺序与过滤**不在这里**
  *
- * 上游 `buildFileTreeV2Model` 把每条路径按 `/` 切开、**把最后一段标成 `type: "file"`**、
- * 中间的段才当目录（`packages/app/src/components/file-tree-v2-model.ts`）。所以**靠子路径
- * 带出来的目录**（`资料/8·17/话单.csv` 里的 `资料`）不必、也不能在这里出现——它们只用来
- * **往下走**。
+ * 「先收什么、后补什么」以及哪些条目要跳过，**全部**住在服务端的
+ * `packages/opencode/src/server/openhive/project-tree-scan.ts`，由
+ * `packages/opencode/test/server/openhive-project-tree-scan.test.ts` 钉着。
+ * 本层对它们**一个字都不说**：在这里补一句规则，就是给两处漂开一个口子。
  *
- * 唯一的例外是**空目录**：它交不出任何子路径，不补一条就整个消失（用户实报「新建的文件夹
- * 建完就看不见」）。补法是**原样搬上游那个尾分隔符**（`资料\`）——那是 `fs.list` 对目录项的
- * 指路方式，建树那侧（`./file-tree-model.ts`）据此把这条路径的节点认成目录。
- * ⚠️ 那一步**不能省**：少了它，`资料\` 会被画成一个叫「资料」的**文件**。
- * 本层只保证「它出现了」，要不要认出它是目录是**建树那一侧**的事。
+ * ## 路径原样上交，不归一化
  *
- * ## 文件路径**原样**上交，不归一化
+ * 服务端交回来的 `paths` 原样转给调用方：树模型自己会把 `\` 换成 `/`，而它给叶子留的
+ * `originalPath` 是**原始串**——那是回头打开这个文件要用的值。本层要是先换掉了，
+ * 那个值就变成我们编的了。
  *
- * 树模型自己会把 `\` 换成 `/`，而它给叶子留的 `originalPath` 是**原始串**——
- * 那是回头打开这个文件要用的值。本层要是先换掉了，那个值就变成我们编的了。
- * 目录项的尾分隔符（win32 的 `资料\`）同理：那是上游 `fs.list` 指路的方式，拿它当下一层的
- * `?path=` 正好，不必自己拼。
+ * ## 取不到 ⇒ 整份 `undefined`
  *
- * ## 不设「最多走 N 层」上限：**不会成环**
- *
- * `FileSystem.list` 在源头就把 `type` 不是 `file` / `directory` 的项**丢掉**
- * （`packages/core/src/filesystem.ts` 的 `flatMap`），符号链接不在其中 ⇒ 走不出环。
- * 加一个上限就得回答「撞上限时返回什么」，而**半个清单冒充完整清单是谎**。
- *
- * ## 一条走不通 ⇒ 整份 `undefined`（不交半棵）
- *
- * 同因：任何一层取不到，缺的是哪几支我们并不知道。`[]` 与 `undefined` 的分工见
- * `project-files.ts`——`[]` 是「这个项目一个文件都没有」，`undefined` 是「还不知道」。
+ * 网络错 / 非 200 / 体不是 `{ paths: string[], truncated? }` 一律翻成 `undefined`：
+ * 缺的是哪几支我们并不知道，`[]` 与 `undefined` 的分工见 `project-files.ts`
+ * ——`[]` 是「这个项目一个文件都没有」，`undefined` 是「还不知道」。
  */
 
 import { defaultSend, isRecord, readJson, trySend, type ForkFetch } from "./openhive-fetch"
 import type { FileContent } from "@/center/file-content"
 
-/** 上游那条出口的路径。**测试里写字面量、不 import 本常量**（`LEARNINGS #003-05`）。 */
-export const FILE_PATH = "/file"
+/**
+ * 批量取树的出口（2026-10-28）。**测试里写字面量、不 import 本常量**（`LEARNINGS #003-05`）。
+ */
+export const TREE_PATH = "/openhive/project/tree"
 
 /**
  * 读内容的出口（2026-10-12）。**走的是上游现成的那条**（`FilePaths.content = "/file/content"`）
@@ -57,7 +45,7 @@ export const FILE_PATH = "/file"
  *
  * ⚠️ 为什么不能直接用 SDK 的 `client.file.read`：那条认的是**内核当前的工作目录**，
  * 而我们手里只有**项目 id**。带上 `x-openhive-project` 让中间件把工作目录锚到那个项目，
- * 与 `listProjectFiles` 是同一条链、同一个头。
+ * 与 `listProjectTree` 是同一条链、同一个头。
  *
  * **测试里写字面量、不 import 本常量**（`LEARNINGS #003-05`）。
  */
@@ -72,198 +60,51 @@ const PROJECT_HEADER = "x-openhive-project"
 export type ProjectFilesFetch = ForkFetch
 
 /**
+ * 一次取数的结论。
+ *
+ * `truncated` 是**服务端**的截断标记（扫到上限就停，见 `project-tree-scan.ts` 的 `默认上限`）：
+ * 被截断的那份清单与完整清单形状一模一样，差的就是这一位。本层只负责原样转交
+ * ——要不要在界面上说「只显示了一部分」是消费方的事。
+ */
+export type ProjectTree = { paths: readonly string[]; truncated: boolean }
+
+/**
+ * 一次请求取回某个项目的**整棵文件树**（相对项目目录的路径清单）。
+ *
+ * - `undefined` —— 取不到（没挂上 / 没身份 / 网络错 / 体不成形）。
+ * - `{ paths: [], truncated: false }` —— 取到了，这个项目一个文件都没有。
+ */
+export async function listProjectTree(
+  projectId: string,
+  send: ProjectFilesFetch = defaultSend,
+): Promise<ProjectTree | undefined> {
+  const response = await trySend(send, TREE_PATH, {
+    credentials: "same-origin",
+    headers: { [PROJECT_HEADER]: projectId },
+  })
+  if (!response?.ok) return undefined
+
+  const body = await readJson(response)
+  if (!isRecord(body)) return undefined
+  const paths = body.paths
+  if (!Array.isArray(paths) || paths.some((item) => typeof item !== "string")) return undefined
+  return { paths, truncated: body.truncated === true }
+}
+
+/**
  * 列出某个项目的全部文件路径（相对项目目录）。
  *
- * - `undefined` —— 取不到（没挂上 / 没身份 / 网络错 / 半路挂 / 体不是数组）。
+ * 与 `listProjectTree` 是**同一次取数的两种口径**：这里只交清单，`truncated` 被丢掉。
+ * 需要知道「是否被截断」的调用方走 `listProjectTree`。
+ *
+ * - `undefined` —— 取不到（同 `listProjectTree`）。
  * - `[]` —— 取到了，这个项目一个文件都没有。
  */
 export async function listProjectFiles(
   projectId: string,
   send: ProjectFilesFetch = defaultSend,
 ): Promise<readonly string[] | undefined> {
-  const 闸门 = 建闸门(走树并发上限)
-  const 走成 = await walk("", projectId, send, 闸门)
-  // ⚠️ 判据是 **`undefined`**（这一趟走不成），不是 `有文件`：一个里头只有空文件夹的项目，
-  // 根这一层 `有文件` 是 `false`，而清单里**是有东西的**（那些空目录）。写成
-  // `有文件 ? 清单 : undefined` 会把「项目里全是空文件夹」报成「取不到」。
-  if (走成 === undefined) return undefined
-  return 走成.清单
-}
-
-/**
- * 同时在飞的目录请求上限。
- *
- * ## 为什么要有这个数（2026-10-28，用户实报「选中项目后一直卡着」）
- *
- * 原来 `walk` 是**一个目录等一个目录**：真栈实测单趟 46–72ms，测试1027 那个项目有 370 个
- * 目录（里头塞了一整个 `superpowers/` 仓库）⇒ 光排队就 17–27 秒，界面一直停在
- * 「正在加载文件…」。并发的收益是**数量级**的，所以这个上限不是「调优」，是这条链能不能用的前提。
- *
- * ## 上限怎么定的
- *
- * 8 是**行为契约**，不是微调出来的魔法数（`openhive-files.test.ts` 里写字面量 8，不 import
- * 本常量——`LEARNINGS #003-05`）。理由是两头：① 浏览器对同一源的并发连接有硬限制
- * （HTTP/1.1 是 6），设太大只是让请求在浏览器里排队，压不到内核；② 服务端每趟要重做鉴权与
- * 目录定位（真栈实测本机回环 48ms，不是纯 IO），几百个请求同时打过去是给内核添麻烦，不是省时间。
- */
-const 走树并发上限 = 8
-
-/**
- * 一次「放行 N 个」的闸门。每次 `listProjectFiles` 各建一个——两次取数不该互相排队。
- *
- * ## 名额是**转让**的，不是「先还回去、再去叫醒下一个人」
- *
- * 每个名额只在两处存在：「空位」这个计数里，或某个调用者手里。释放时**直接**把名额交给
- * 队首那个人，不经过 `空位`。这不是写法偏好：先 `空位 += 1` 再把等待者叫醒的话，从加回去
- * 到等待者真正恢复执行之间隔着一个微任务，这期间刚进来的调用者会看到「有空位」而占掉它
- * ⇒ 同时在飞的请求数悄悄超过上限，而 `<上限` 那条用例仍是绿的（它挡的是另一个方向）。
- */
-function 建闸门(上限: number): <T>(任务: () => Promise<T>) => Promise<T> {
-  let 空位 = 上限
-  const 等在门外: Array<() => void> = []
-  return async function 限流<T>(任务: () => Promise<T>): Promise<T> {
-    if (空位 > 0) {
-      空位 -= 1
-    } else {
-      await new Promise<void>((放行) => 等在门外.push(放行))
-    }
-    try {
-      return await 任务()
-    } finally {
-      const 下一个 = 等在门外.shift()
-      if (下一个) 下一个()
-      else 空位 += 1
-    }
-  }
-}
-
-type 走成 = {
-  /** 这一支下面的文件路径，以及这一支下面**空目录**的路径（不含这一支自己）。 */
-  清单: string[]
-  /** 这一支下面有没有**文件**（不是「有没有清单项」——见 `walk` 那节）。 */
-  有文件: boolean
-}
-
-/**
- * 从 `dir` 往下走，**兄弟目录并发**（受闸门限流），但**清单顺序与串行时逐字相同**。
- *
- * ## 返回值是**两件事**，调用方必须分开问
- *
- * `undefined` ＝ **这一支（含以下）走不成**（取不到 / 体不是数组）⇒ 整份判为取不到。
- * `有文件` ＝ **走成了，这一支下面有没有`文件`**。后者不是「走不成」的近义词：
- * 一个只有空文件夹的目录走得很成，只是它下面一个文件都没有。
- *
- * ## 空目录必须自己占一条（2026-10-10，用户实报「新建的文件夹建完就看不见」）
- *
- * 判据是**「这一支下面有没有文件」**，不是「这一支贡献了几条清单项」。两者只在
- * 「只有空子目录的目录」上分得开，而那正是最容易漏的那种：`资料\` 里只有一个空目录
- * `8·17\`，数清单项的话 `8·17\` 自己占的那条会把 `资料\` 骗成「有内容」⇒ `资料\` 仍然消失。
- *
- * 为什么它只能靠「自己占一条」出场：上游 `buildFileTreeV2Model` 认目录的唯一依据是
- * 「这条路径**还有下一段**」（`components/file-tree-v2-model.ts` 把最后一段恒判 `file`）。
- * 一个没有文件的目录交不出任何子路径 ⇒ 它的名字必须由本层补。
- *
- * 补的时候**原样带上游那个尾分隔符**（`资料\` 而不是 `资料/`）：那是 `fs.list` 对目录项的
- * 指路方式（见本文件头），建树那侧据此认出这是目录——同一个约定，不另发明一个。
- *
- * ## 顺序是怎么在并发下保住的（2026-10-28）
- *
- * 先按**服务端给的 body 原序**把每一支**全部启动**（目录当场发请求，被闸门挡在外面的只是
- * 排队），再按同一个顺序**逐个收**。收的顺序决定清单顺序，发的顺序不影响它。
- * 于是「文件就地、目录钻进去回来再按原位置补」这条老规矩一个字没变——
- * `openhive-files.test.ts` 里那条并发顺序用例钉的就是这个。
- */
-async function walk(
-  dir: string,
-  projectId: string,
-  send: ProjectFilesFetch,
-  限流: <T>(任务: () => Promise<T>) => Promise<T>,
-): Promise<走成 | undefined> {
-  const body = await 限流(async () => {
-    const response = await trySend(send, `${FILE_PATH}?${new URLSearchParams({ path: dir })}`, {
-      credentials: "same-origin",
-      headers: { [PROJECT_HEADER]: projectId },
-    })
-    if (!response?.ok) return undefined
-    const 解开的 = await readJson(response)
-    return Array.isArray(解开的) ? 解开的 : undefined
-  })
-  if (body === undefined) return undefined
-
-  // 先全部启动（`map` 里那次 `walk(...)` 调用是**当场**发生的），再按序收。
-  const 各支 = body.map((value) => {
-    const entry = readEntry(value)
-    if (!entry || entry.ignored || isHiddenRoot(entry.path)) return undefined
-    if (entry.type !== "directory") {
-      return { path: entry.path, 结果: Promise.resolve<走成 | undefined>({ 清单: [entry.path], 有文件: true }) }
-    }
-    return { path: entry.path, 结果: walk(entry.path, projectId, send, 限流) }
-  })
-
-  const 清单: string[] = []
-  let 有文件 = false
-  for (const 一支 of 各支) {
-    if (一支 === undefined) continue
-    const 结果 = await 一支.结果
-    if (结果 === undefined) return undefined
-    清单.push(...结果.清单)
-    // 这一支下面一个文件都没有 ⇒ 它就是空目录（或只剩空目录），名字得由父级补上。
-    if (!结果.有文件) 清单.push(一支.path)
-    有文件 = 有文件 || 结果.有文件
-  }
-  return { 清单, 有文件 }
-}
-
-/**
- * 项目根下**不画、也不往下走**的目录：版本库（`.git`）与运行时安装根（`.opencode`）。
- *
- * ## 为什么要有它（上游那份忽略规则里两个都不认）
- *
- * - `.git`：建项目时无条件 `git init`（`packages/opencode/src/server/openhive/project.ts`），
- *   而上游默认忽略规则里**没有 `.git`**（2026-10-11 实测 `ignore().ignores(".git/")` 为
- *   `false`）⇒ 不补这一句，民警点开文件 Tab 看到的就是一个进得去的 `.git`，里面成千上万个
- *   对象文件。
- * - `.opencode`：插件 / 技能的安装根（`packages/opencode/src/plugin/install.ts` 的
- *   `path.join(root, ".opencode")`），底下是 `node_modules/`。2026-10-21 真栈实测
- *   「业务梳理01」：整份清单 314 个目录 / 3933 个文件 / 2268ms，其中 `.opencode\` 一个子树
- *   就占 **304 个目录 / 3873 个文件 / 2181ms（96%）**；真实业务目录只有 ~10 个、~79ms。
- *
- * 两者都是「项目根的基础设施」，不是民警要看的文件；更要紧的是**走它的代价**：每层目录一次
- * 往返，三千多个文件就是几秒钟——用户实报的「打开项目要等几秒」主要就是这一条。
- *
- * ## 判据：**整条路径的第一段**，**不分大小写**
- *
- * 「第一段」不是「任何一段」——嵌在项目内容里的 `资料\.git\` / `资料\.opencode\`（解压进来
- * 的别人一份仓库 / 配置）是项目**内容**，与根上那个不是一回事。`.git` 那一半与服务端
- * `packages/opencode/src/server/openhive/file.ts` 的 `inGit` **逐字同形**（那边拦八个出口，
- * 两处边界必须同一条，否则「看得见却动不了」）；`.opencode` 没有服务端对应守卫（见下）。
- *
- * ## ⚠️ 这里不是安全边界
- *
- * 拦住改动的是服务端那八个守卫；`.opencode` 服务端**没有**守卫，本函数拦不住任何一条直接
- * 构造的请求。`CLAUDE.md` 的 Anti-Patterns 写着「用前端『隐藏资源』替代权限校验」是禁止的
- * ——这里是**叠加**（对 `.git`）／纯粹省一趟走树（对 `.opencode`），不是替代。
- */
-function isHiddenRoot(path: string): boolean {
-  const 首段 = (path.split(/[\\/]/)[0] ?? "").toLowerCase()
-  return 首段 === ".git" || 首段 === ".opencode"
-}
-
-/**
- * 收窄成一行能用的项。
- *
- * 缺 `path` 的行丢掉就行（画不出来），**不必因此把整份判为取不到**——单行不成形不影响
- * 其余行可用（同 `listProjects` 的 `readEntry`）。
- *
- * `ignored` 是上游拿项目根的 `.gitignore` / `.ignore` 算出来的（`handlers/file.ts` 的
- * `list`）。**让这一行走出去**（而不是在这里 `return undefined`）是为了让「跳过」这件事
- * 发生在**调用处**——那里才看得出「文件跳过」与「目录不进去」是同一件事的两面。
- */
-function readEntry(value: unknown): { path: string; type: "file" | "directory"; ignored: boolean } | undefined {
-  if (!isRecord(value)) return undefined
-  if (typeof value.path !== "string" || value.path.length === 0) return undefined
-  if (value.type !== "file" && value.type !== "directory") return undefined
-  return { path: value.path, type: value.type, ignored: value.ignored === true }
+  return (await listProjectTree(projectId, send))?.paths
 }
 
 /**
