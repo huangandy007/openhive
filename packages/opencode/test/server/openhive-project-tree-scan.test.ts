@@ -17,7 +17,7 @@ function 替身(routes: Record<string, 条目[] | Error | undefined>) {
   return { 读, 走过 }
 }
 
-describe("扫树：与前端 walk 逐字同序", () => {
+describe("扫树：顺序规则（文件就地、目录后序、空目录补自己）", () => {
   test("只回文件 ⇒ 原样给出", async () => {
     const { 读 } = 替身({ "": [文件("笔记.md")] })
     expect(await 扫树(读)).toEqual({ paths: ["笔记.md"], truncated: false })
