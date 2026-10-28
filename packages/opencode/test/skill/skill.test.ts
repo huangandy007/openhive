@@ -582,4 +582,58 @@ description: A skill in the .opencode/skills directory.
       { git: true },
     ),
   )
+
+  /**
+   * 同名去重必须**确定性**，且**项目内的副本赢**。
+   *
+   * 现场（2026-10-28 真栈）：项目 `.opencode/skill/<assetId>` 链到发布目录，而同一个 skill 又经
+   * 配置 `skills.paths` / `~/.claude/skills` 以**同名**进入扫描 ⇒ `add()` 无条件覆盖（只打警告）、
+   * `loadSkills` 又是 `concurrency: "unbounded"` ⇒ **谁最后解析完谁赢**。项目里那条链接明明完好，
+   * 内核清单里却没有它（`属于项目()` 把落在外面的赢家整条滤掉），能力面板于是打出
+   * 「已启用，但 AI 没加载到——项目里的快捷方式可能丢了」，并在一次假故障上劝用户停用。
+   *
+   * 怎么把竞态钉成**必然红**（`#005-49`：RED 必须红在预期那句）：外部那份写得明显更大 ⇒
+   * 解析更慢 ⇒ 修复前它必然最后完成、覆盖项目副本。修复后去重按「`.opencode` 自己的目录优先」
+   * 判定，与完成顺序无关。
+   *
+   * ⚠️ 外部副本放**项目内的 `.claude/skills`**（`up()` 扫到的 external 根），不是另设 home：
+   * `Global.home` 在测试层构造期就快照了，`withHome` 改的是给 `~/.claude` 用的那条分支——
+   * 实测那条在本 harness 里扫不到（探针：`dirs` 里只有项目内那条）。
+   */
+  it.live("同名时 .opencode 项目目录里的副本优先，不被外部同名的慢解析顶掉", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            Promise.all([
+              Bun.write(
+                path.join(dir, ".opencode", "skill", "asset_dup", "SKILL.md"),
+                `---
+name: dup-name
+description: 项目内那份。
+---
+
+项目正文
+`,
+              ),
+              Bun.write(
+                path.join(dir, ".claude", "skills", "global-dup", "SKILL.md"),
+                `---
+name: dup-name
+description: 外部那份。
+---
+
+${"x".repeat(400_000)}
+`,
+              ),
+            ]),
+          )
+
+          const skill = yield* Skill.Service
+          const info = yield* skill.get("dup-name")
+          expect(info?.location).toContain(path.join(".opencode", "skill", "asset_dup"))
+        }),
+      { git: true },
+    ),
+  )
 })

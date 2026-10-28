@@ -24,6 +24,33 @@ const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
 const OPENCODE_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
 
+/**
+ * 同名 skill 的**优先级档位**（大者赢）。`loadSkills` 是并发解析的，原先的同名处理是
+ * 「后到覆盖」⇒ **谁最后解析完谁赢**，同一份目录多扫几次结果会变。
+ *
+ * 现场（2026-10-28 真栈）：项目 `.opencode/skill/<assetId>` 链到发布目录，而同一个 skill
+ * 又经 `~/.claude/skills` / 配置 `skills.paths` 以同名进入扫描 ⇒ 赢家落回项目外，上层
+ * `属于项目()` 把它整条滤掉 ⇒ 能力面板打出「已启用，但 AI 没加载到——快捷方式可能丢了」，
+ * 在一次假故障上劝用户停用。
+ *
+ * 规则：**越贴近项目的副本越优先**；同档再按路径字典序（`更强` 里），所以最终赢家是
+ * `(tier, path)` 上的全序，与到达顺序无关。内置技能档位最低 ⇒ 磁盘上任何同名技能都能盖掉它。
+ */
+const TIER = {
+  builtIn: 0,
+  /** `~/.claude/skills`、`.agents/skills`（含向上找到的）：别人家的兼容目录。 */
+  external: 1,
+  /** 配置显式列的 `skills.paths` / `skills.urls`：是配置，但不一定是本项目。 */
+  configured: 2,
+  /** `.opencode/{skill,skills}` 但不在本项目目录内（如全局配置目录）。 */
+  opencode: 3,
+  /** 本项目目录里的 `.opencode/{skill,skills}`：项目自己的技能，最优先。 */
+  project: 4,
+} as const
+
+const 更强 = (a: { tier: number; path: string }, b: { tier: number; path: string }) =>
+  a.tier !== b.tier ? a.tier > b.tier : a.path < b.path
+
 // Built-in skill that ships with opencode. The model's intuition for what an
 // opencode.json should look like is often wrong, and opencode hard-fails on
 // invalid config, so users hit cryptic startup errors. Loading this skill
@@ -82,15 +109,18 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Ski
 type State = {
   skills: Record<string, Info>
   dirs: Set<string>
+  /** 同名去重的当前赢家来源（见 `TIER` / `更强`）：`name → { tier, path }`。 */
+  胜出: Record<string, { tier: number; path: string }>
 }
 
 type DiscoveryState = {
-  matches: string[]
+  /** `[SKILL.md 绝对路径, 档位]` —— 档位跟着 match 走，`add()` 阶段还认得出它从哪个根来。 */
+  matches: [string, number][]
   dirs: string[]
 }
 
 type ScanState = {
-  matches: Set<string>
+  matches: Map<string, number>
   dirs: Set<string>
 }
 
@@ -102,7 +132,12 @@ export interface Interface {
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
-const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
+const add = Effect.fnUntraced(function* (
+  state: State,
+  match: string,
+  tier: number,
+  events: EventV2Bridge.Service["Service"],
+) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
@@ -122,27 +157,36 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
 
   if (!isSkillFrontmatter(md.data)) return
 
-  if (state.skills[md.data.name]) {
+  state.dirs.add(path.dirname(match))
+
+  // 同名去重：按 `(档位, 路径)` 全序判定，**与解析完成顺序无关**（见 `TIER`）。
+  const 候选 = { tier, path: match }
+  const 现有 = state.胜出[md.data.name]
+  if (现有 !== undefined) {
+    const 候选赢 = 更强(候选, 现有)
     yield* Effect.logWarning("duplicate skill name", {
       name: md.data.name,
       existing: state.skills[md.data.name].location,
       duplicate: match,
+      winner: 候选赢 ? match : state.skills[md.data.name].location,
     })
+    if (!候选赢) return
   }
 
-  state.dirs.add(path.dirname(match))
   state.skills[md.data.name] = {
     name: md.data.name,
     description: md.data.description,
     location: match,
     content: md.content,
   }
+  state.胜出[md.data.name] = 候选
 })
 
 const scan = Effect.fnUntraced(function* (
   state: ScanState,
   root: string,
   pattern: string,
+  tier: number,
   opts?: { dot?: boolean; scope?: string },
 ) {
   const matches = yield* Effect.tryPromise({
@@ -165,7 +209,8 @@ const scan = Effect.fnUntraced(function* (
   )
 
   for (const match of matches) {
-    state.matches.add(match)
+    // 同一个文件被两个根扫到（如项目目录既是 `.opencode` 又在 `skills.paths` 里）时取高档位。
+    state.matches.set(match, Math.max(state.matches.get(match) ?? tier, tier))
     state.dirs.add(path.dirname(match))
   }
 })
@@ -180,7 +225,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   directory: string,
   worktree: string,
 ) {
-  const state: ScanState = { matches: new Set(), dirs: new Set() }
+  const state: ScanState = { matches: new Map(), dirs: new Set() }
 
   const externalDirs: string[] = []
   if (!disableExternalSkills) {
@@ -190,7 +235,7 @@ const discoverSkills = Effect.fnUntraced(function* (
     for (const dir of externalDirs) {
       const root = path.join(global.home, dir)
       if (!(yield* fsys.isDir(root))) continue
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
+      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, TIER.external, { dot: true, scope: "global" })
     }
 
     const upDirs = yield* fsys
@@ -198,13 +243,15 @@ const discoverSkills = Effect.fnUntraced(function* (
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
+      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, TIER.external, { dot: true, scope: "project" })
     }
   }
 
+  // 本项目目录里的 `.opencode` 比全局配置目录更贴近用户 ⇒ 高一档（`TIER.project` / `TIER.opencode`）。
+  const rank = (dir: string) => (dir === directory || dir.startsWith(directory + path.sep) ? TIER.project : TIER.opencode)
   const configDirs = yield* config.directories()
   for (const dir of configDirs) {
-    yield* scan(state, dir, OPENCODE_SKILL_PATTERN)
+    yield* scan(state, dir, OPENCODE_SKILL_PATTERN, rank(dir))
   }
 
   const cfg = yield* config.get()
@@ -216,13 +263,13 @@ const discoverSkills = Effect.fnUntraced(function* (
       continue
     }
 
-    yield* scan(state, dir, SKILL_PATTERN)
+    yield* scan(state, dir, SKILL_PATTERN, TIER.configured)
   }
 
   for (const url of cfg.skills?.urls ?? []) {
     const pulledDirs = yield* discovery.pull(url)
     for (const dir of pulledDirs) {
-      yield* scan(state, dir, SKILL_PATTERN)
+      yield* scan(state, dir, SKILL_PATTERN, TIER.configured)
     }
   }
 
@@ -237,7 +284,7 @@ const loadSkills = Effect.fnUntraced(function* (
   discovered: DiscoveryState,
   events: EventV2Bridge.Service["Service"],
 ) {
-  yield* Effect.forEach(discovered.matches, (match) => add(state, match, events), {
+  yield* Effect.forEach(discovered.matches, ([match, tier]) => add(state, match, tier, events), {
     concurrency: "unbounded",
     discard: true,
   })
@@ -272,15 +319,16 @@ const layer = Layer.effect(
     )
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
-        const s: State = { skills: {}, dirs: new Set() }
+        const s: State = { skills: {}, dirs: new Set(), 胜出: {} }
         // Register the built-in skill BEFORE disk discovery so a user-disk
-        // skill with the same name can override it.
+        // skill with the same name can override it: 内置档位最低（`TIER.builtIn`）。
         s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME] = {
           name: CUSTOMIZE_OPENCODE_SKILL_NAME,
           description: CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
         }
+        s.胜出[CUSTOMIZE_OPENCODE_SKILL_NAME] = { tier: TIER.builtIn, path: "<built-in>" }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s
       }),
