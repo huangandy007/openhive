@@ -5,10 +5,11 @@ interface 请求 {
   id: number
   bytes: ArrayBuffer
   limits: 解析限制
+  sheetName?: string
 }
 
 self.onmessage = (event: MessageEvent<请求>) => {
-  const { id, bytes, limits } = event.data
+  const { id, bytes, limits, sheetName } = event.data
   const 回调: 解析回调 = {
     onMeta(meta) {
       self.postMessage({ type: "meta", id, meta })
@@ -29,7 +30,7 @@ self.onmessage = (event: MessageEvent<请求>) => {
       self.postMessage({ type: "error", id, kind, message })
     },
   }
-  void 解析工作簿(new Uint8Array(bytes), 回调, limits)
+  void 解析工作簿(new Uint8Array(bytes), 回调, limits, sheetName)
 }
 
 export {}

@@ -30,7 +30,7 @@ for (const [属性, 尺寸] of [
 
 function 元(over: Partial<SheetMeta> = {}): SheetMeta {
   return {
-    sheetNames: ["明细"],
+    sheets: [{ name: "明细", hidden: false }],
     sheetName: "明细",
     startRow: 0,
     startCol: 0,
@@ -982,18 +982,6 @@ describe("横幅与空态", () => {
     document.body.appendChild(host)
     const dispose = render(() => <SheetGrid store={store} />, host)
     expect(host.querySelector('[data-slot="sheet-column-truncated"]')?.textContent).toContain("前 256 列")
-    dispose()
-    host.remove()
-  })
-
-  test("多工作表：写明总表数与当前表名", () => {
-    const store = createSheetStore(元({ sheetNames: ["明细", "汇总"] }), "full", { rows: 0, cols: 0 })
-    const host = document.createElement("div")
-    document.body.appendChild(host)
-    const dispose = render(() => <SheetGrid store={store} />, host)
-    const 文案 = host.querySelector('[data-slot="sheet-multi-sheet"]')?.textContent ?? ""
-    expect(文案).toContain("共 2 张表")
-    expect(文案).toContain("明细")
     dispose()
     host.remove()
   })

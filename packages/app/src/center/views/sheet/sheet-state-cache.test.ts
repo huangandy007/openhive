@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import {
   缓存键,
+  表键,
+  记上次表,
+  读上次表,
   清空UI状态,
   清空数据,
   清空表格缓存,
@@ -59,7 +62,7 @@ describe("UI 状态 LRU", () => {
 describe("数据缓存 LRU", () => {
   const 数据 = (cells: number) => ({
     meta: {
-      sheetNames: ["明细"],
+      sheets: [{ name: "明细", hidden: false }],
       sheetName: "明细",
       startRow: 0,
       startCol: 0,
@@ -87,6 +90,35 @@ describe("数据缓存 LRU", () => {
     expect(读数据("k0")).toBeDefined()
     expect(读数据("k1")).toBeUndefined()
     expect(读数据("k3")).toBeDefined()
+  })
+
+  test("每张工作表各有自己的键：同一文件两张表不共用数据与 UI 状态", () => {
+    const 基 = 缓存键("项目甲", "/案卷/多表.xlsx", 0)
+    const 甲 = 表键(基, "甲表")
+    const 乙 = 表键(基, "乙表")
+    expect(甲).not.toBe(乙)
+    // 同一基键 + 同一表名必须稳定命中（否则切换回来就丢状态了）。
+    expect(表键(基, "甲表")).toBe(甲)
+
+    写UI状态(甲, 状态(1))
+    写UI状态(乙, 状态(2))
+    expect(读UI状态(甲)?.scrollTop).toBe(1)
+    expect(读UI状态(乙)?.scrollTop).toBe(2)
+
+    写数据(甲, 数据(10))
+    expect(读数据(甲)).toBeDefined()
+    expect(读数据(乙)).toBeUndefined()
+  })
+
+  test("记上次表 / 读上次表：按基键记，清空表格缓存一起清", () => {
+    const 基 = 缓存键("项目甲", "/案卷/多表.xlsx", 0)
+    expect(读上次表(基)).toBeUndefined()
+    记上次表(基, "乙表")
+    expect(读上次表(基)).toBe("乙表")
+    // 另一个重载代是另一份基键，不互相串。
+    expect(读上次表(缓存键("项目甲", "/案卷/多表.xlsx", 1))).toBeUndefined()
+    清空表格缓存()
+    expect(读上次表(基)).toBeUndefined()
   })
 
   test("数据格数按行累加", () => {

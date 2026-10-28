@@ -150,7 +150,7 @@ describe("解析客户端：Worker 协议", () => {
       type: "meta",
       id,
       meta: {
-        sheetNames: ["明细"],
+        sheets: [{ name: "明细", hidden: false }],
         sheetName: "明细",
         startRow: 0,
         startCol: 0,

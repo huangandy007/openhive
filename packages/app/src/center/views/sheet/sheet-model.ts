@@ -41,12 +41,22 @@ export interface 解析限制 {
 }
 
 /**
+ * 工作簿里的一张表。顺序与文件一致；`hidden` = Excel 里设了隐藏（`Hidden` 1 或 2）。
+ * 隐藏表**照样列出来、照样能看**，只是界面上标注——「看不见的表」不该变成「不存在的表」。
+ */
+export interface 工作表项 {
+  readonly name: string
+  readonly hidden: boolean
+}
+
+/**
  * 解析端交回的元信息。
  * - `preview` 是**原始行**（含首行），不是数据行；行号 = `startRow + 原始行下标 + 1`。
  * - `header` 与 `columnTypes` 的长度 = 实际显示列数（可能被 256/64 截断）。
+ * - `sheets` 是整本工作簿的清单（不只是当前这张），切换标签栏读它。
  */
 export interface SheetMeta {
-  sheetNames: string[]
+  sheets: readonly 工作表项[]
   sheetName: string
   startRow: number
   startCol: number

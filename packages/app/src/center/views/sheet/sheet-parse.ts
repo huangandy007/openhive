@@ -14,6 +14,8 @@ export interface WorkerLike {
 
 export interface 解析选项 {
   limits?: 解析限制
+  /** 要读的那张工作表；不传 = 第一张。表名不存在时经 `onError("parse")` 报告。 */
+  sheetName?: string
   强制主线程?: boolean
   创建Worker?: () => WorkerLike
 }
@@ -147,7 +149,7 @@ export function 解析表格(
     void (async () => {
       const core = await import("./sheet-parse-core")
       if (已取消) return
-      await core.解析工作簿(bytes, 内部回调, limits)
+      await core.解析工作簿(bytes, 内部回调, limits, options.sheetName)
     })().catch((error) => 失败("parse", error instanceof Error ? error.message : String(error)))
   }
 
@@ -191,7 +193,7 @@ export function 解析表格(
         w.terminate()
       }
       const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-      w.postMessage({ id, bytes: buffer, limits }, [buffer])
+      w.postMessage({ id, bytes: buffer, limits, sheetName: options.sheetName }, [buffer])
       超时 = setTimeout(降级主线程, 首屏超时毫秒)
     } catch {
       // 创建同步抛，或 postMessage 抛（如 DataCloneError）：都先清理再降级，不泄漏 Worker。

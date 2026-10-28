@@ -11,6 +11,7 @@ import {
   type Cell,
   type ColumnType,
   type SheetMeta,
+  type 工作表项,
   type 解析限制,
 } from "./sheet-model"
 
@@ -161,7 +162,7 @@ function 推断列类型组(rows: readonly Cell[][], cols: number): ColumnType[]
 
 function 发送(
   callbacks: 解析回调,
-  sheetNames: string[],
+  sheets: readonly 工作表项[],
   sheetName: string,
   range: XLSX.Range,
   totalRows: number,
@@ -172,7 +173,7 @@ function 发送(
 ) {
   const 首屏 = preview.slice(0, limits.首屏行数 + 1)
   callbacks.onMeta({
-    sheetNames,
+    sheets,
     sheetName,
     startRow: range.s.r,
     startCol: range.s.c,
@@ -185,10 +186,33 @@ function 发送(
   return 首屏.length
 }
 
+/**
+ * 工作簿清单：名字按 `SheetNames` 顺序，隐藏标记按同下标的 `Workbook.Sheets[i].Hidden`
+ * （0 可见 / 1 隐藏 / 2 深度隐藏；后两者都算隐藏，用户都点得到）。
+ */
+function 工作表清单(book: XLSX.WorkBook): 工作表项[] {
+  return book.SheetNames.map((name, index) => ({
+    name,
+    hidden: (book.Workbook?.Sheets?.[index]?.Hidden ?? 0) !== 0,
+  }))
+}
+
+/**
+ * 表名 → 实际要读的那张。未指定取第一张（旧行为）；指定了不存在 ⇒ 抛错。
+ * 不静默退回第一张：那会把「表被改名/删了」显示成「另一张表的内容」，用户看不出自己看错了表。
+ */
+function 选表(sheets: readonly 工作表项[], 目标表: string | undefined): string {
+  if (sheets.length === 0) throw new Error("工作簿里没有工作表")
+  if (目标表 === undefined) return sheets[0].name
+  if (sheets.some((表) => 表.name === 目标表)) return 目标表
+  throw new Error(`工作表不存在：${目标表}`)
+}
+
 async function 解析二进制(
   bytes: Uint8Array<ArrayBuffer>,
   callbacks: 解析回调,
   limits: 解析限制,
+  目标表?: string,
 ): Promise<void> {
   const first = XLSX.read(bytes, {
     type: "array",
@@ -196,8 +220,8 @@ async function 解析二进制(
     cellNF: true,
     sheetRows: limits.首屏行数 + 1,
   })
-  const sheetName = first.SheetNames[0]
-  if (!sheetName) throw new Error("工作簿里没有工作表")
+  const sheets = 工作表清单(first)
+  const sheetName = 选表(sheets, 目标表)
   const firstSheet = first.Sheets[sheetName]
   // 探针（2026-10-18）：xlsx 与 xls(biff8) 在 sheetRows 下都保留 !fullref。
   const 全范围 = XLSX.utils.decode_range(String(firstSheet["!fullref"] ?? firstSheet["!ref"] ?? "A1"))
@@ -210,7 +234,7 @@ async function 解析二进制(
   // 首屏先发：meta 必须在后续（可能的全量）读取之前送出，网格才能先挂载。
   const 已发首屏 = 发送(
     callbacks,
-    first.SheetNames,
+    sheets,
     sheetName,
     全范围,
     totalRows,
@@ -264,6 +288,7 @@ async function 解析文本(
   bytes: Uint8Array<ArrayBuffer>,
   callbacks: 解析回调,
   limits: 解析限制,
+  目标表?: string,
 ): Promise<void> {
   const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/^\uFEFF/, "")
   // 全文扫描先于任何 meta 发送：晚出现的宽列也要计入 totalCols，不能只信首读 201 行。
@@ -274,7 +299,9 @@ async function 解析文本(
     cellNF: true,
     sheetRows: limits.首屏行数 + 1,
   })
-  const sheetName = 首屏本.SheetNames[0]
+  // 文本（CSV/TSV）只有一张表，且没有隐藏属性。
+  const sheets: 工作表项[] = 首屏本.SheetNames.map((name) => ({ name, hidden: false }))
+  const sheetName = 选表(sheets, 目标表)
   const sheet = 首屏本.Sheets[sheetName]
   const range = XLSX.utils.decode_range(sheet["!ref"] ?? "A1")
   const totalRows = 行数
@@ -285,7 +312,7 @@ async function 解析文本(
   // 首屏先发：meta 必须在后续（可能的全量）读取之前送出，网格才能先挂载。
   const 已发首屏 = 发送(
     callbacks,
-    首屏本.SheetNames,
+    sheets,
     sheetName,
     range,
     totalRows,
@@ -339,10 +366,11 @@ export async function 解析工作簿(
   bytes: Uint8Array<ArrayBuffer>,
   callbacks: 解析回调,
   limits: 解析限制 = 规模,
+  目标表?: string,
 ): Promise<void> {
   try {
-    if (是文本(bytes)) await 解析文本(bytes, callbacks, limits)
-    else await 解析二进制(bytes, callbacks, limits)
+    if (是文本(bytes)) await 解析文本(bytes, callbacks, limits, 目标表)
+    else await 解析二进制(bytes, callbacks, limits, 目标表)
   } catch (原因) {
     callbacks.onError(是加密工作簿(原因) ? "password" : "parse", 原因 instanceof Error ? 原因.message : String(原因))
   }

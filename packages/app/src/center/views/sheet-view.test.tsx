@@ -6,7 +6,7 @@ import type { FileContent } from "@/center/file-content"
 import { 清空会话改过 } from "@/center/session-edits"
 import { setCurrentProject } from "@/project/current-project"
 import { 加密的Office容器 } from "./__fixtures__/office"
-import { 清空UI状态, 清空数据 } from "./sheet/sheet-state-cache"
+import { 缓存键, 记上次表, 清空UI状态, 清空数据 } from "./sheet/sheet-state-cache"
 import { 列上界, 行上界, 是加密工作簿, renderSheet, SheetView } from "./sheet-view"
 
 // 组件测试一律走主线程解析：Bun 里 `Worker` 存在，但 Vite 的 worker 入口转换不在这条链上，
@@ -102,6 +102,35 @@ const 等条件 = async (条件: () => boolean, 说明: string) => {
     await new Promise((r) => setTimeout(r, 10))
   }
   throw new Error(`等条件超时：${说明}`)
+}
+
+function 多表工作簿(表?: { 名: string; 行: unknown[][]; 隐藏?: boolean }[]): Uint8Array<ArrayBuffer> {
+  const 内容 = 表 ?? [
+    { 名: "甲表", 行: [["内容"], ["甲表数据"]] },
+    { 名: "乙表", 行: [["内容"], ["乙表数据"]] },
+    { 名: "丙表", 行: [["内容"], ["丙表数据"]], 隐藏: true },
+  ]
+  const book = XLSX.utils.book_new()
+  for (const item of 内容) XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(item.行), item.名)
+  内容.forEach((item, index) => {
+    if (item.隐藏) XLSX.utils.book_set_sheet_visibility(book, index, 1)
+  })
+  return new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" }))
+}
+
+const 标签 = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('[data-slot="sheet-tab"]')]
+const 当前表 = (host: HTMLElement) =>
+  host.querySelector('[data-slot="sheet-tab"][aria-selected="true"]')?.getAttribute("data-sheet")
+
+/** 首列宽（模板串第一项是行号列 56px）。 */
+const 首列宽 = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>('[data-slot="sheet-header"]')?.style.gridTemplateColumns.split(" ")[1]
+
+function 拖宽首列(host: HTMLElement, 起: number, 止: number) {
+  const 拖拽 = host.querySelector<HTMLElement>('[data-column="0"] [data-slot="sheet-col-resize"]')!
+  拖拽.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 起 }))
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: 止 }))
+  window.dispatchEvent(new MouseEvent("pointerup"))
 }
 
 const 网格 = (host: HTMLElement) => host.querySelector('[role="grid"]')
@@ -226,17 +255,116 @@ describe("表格视图：字节 → 网格", () => {
     expect(网格(host)).toBeNull()
   })
 
-  test("多张工作表：只渲染第一张，并写明共 N 张", async () => {
-    const book = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["第一张的格子"]]), "第一张")
-    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["第二张的格子"]]), "第二张")
+  test("多张工作表：底部标签栏列出全部表，默认第一张，别的表不混进来", async () => {
     const host = 容器()
-    await renderSheet(new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" })), host, {
+    await renderSheet(多表工作簿(), host, { 强制主线程: true })
+    expect(标签(host).map((el) => el.textContent)).toEqual(["甲表", "乙表", "丙表（隐藏）"])
+    expect(当前表(host)).toBe("甲表")
+    expect(host.textContent).toContain("甲表数据")
+    expect(host.textContent).not.toContain("乙表数据")
+  })
+
+  test("点「乙表」标签：网格换成乙表，标签栏不消失，甲表内容不残留", async () => {
+    const host = 容器()
+    await renderSheet(多表工作簿(), host, { 强制主线程: true })
+    标签(host)[1].click()
+    await 等条件(() => host.textContent?.includes("乙表数据") ?? false, "乙表数据")
+    expect(host.textContent).not.toContain("甲表数据")
+    expect(当前表(host)).toBe("乙表")
+    expect(标签(host)).toHaveLength(3)
+    expect(网格(host)).not.toBeNull()
+    expect(数据行(host)[0]?.textContent).toContain("乙表数据")
+  })
+
+  // 隐藏工作表在最常见的口径里是「辅助表/中间结果」：用户仍要看得见、点得着，只是标注出来。
+  test("隐藏工作表：标签带「（隐藏）」，照样能切过去", async () => {
+    const host = 容器()
+    await renderSheet(多表工作簿(), host, { 强制主线程: true })
+    const 隐藏 = host.querySelector<HTMLElement>('[data-sheet="丙表"]')!
+    expect(隐藏.textContent).toContain("（隐藏）")
+    隐藏.click()
+    await 等条件(() => host.textContent?.includes("丙表数据") ?? false, "隐藏表的数据")
+    expect(当前表(host)).toBe("丙表")
+  })
+
+  test("单张工作表：没有标签栏", async () => {
+    const host = 容器()
+    await renderSheet(工作簿字节([["姓名"], ["张三"]]), host, { 强制主线程: true })
+    expect(host.querySelector('[data-slot="sheet-tabs"]')).toBeNull()
+  })
+
+  test("两张表各记各的列宽：切走再切回来还是自己那份", async () => {
+    const 键 = 缓存键("", "/p/多表.xlsx", 0)
+    const bytes = 多表工作簿([
+      { 名: "甲表", 行: [["姓名", "金额"], ["甲行", "1"]] },
+      { 名: "乙表", 行: [["地址", "备注"], ["乙行", "2"]] },
+    ])
+    const host = 容器()
+    await renderSheet(bytes, host, { 强制主线程: true, 缓存键: 键 })
+    // 首列默认 = max(64, 表头宽 + 16) = 64px。
+    expect(首列宽(host)).toBe("64px")
+    拖宽首列(host, 200, 300)
+    expect(首列宽(host)).toBe("164px")
+
+    标签(host)[1].click()
+    await 等条件(() => host.textContent?.includes("乙行") ?? false, "切到乙表")
+    // 乙表自己那份默认值，不继承甲表拖过的宽度。
+    expect(首列宽(host)).toBe("64px")
+
+    标签(host)[0].click()
+    await 等条件(() => host.textContent?.includes("甲行") ?? false, "切回甲表")
+    expect(首列宽(host)).toBe("164px")
+  })
+
+  // 换表必须把上一趟解析终止掉：否则旧表的分块会追进**新表**的 store（`视图()` 已经指向新表），
+  // 用户看到的是「乙表的表头 + 甲表的数据」。这里靠「让出后还有分块没发」的那一拍切表来钉。
+  test("换表时上一趟解析被终止：旧表的分块不会追进新表", async () => {
+    const bytes = 多表工作簿([
+      { 名: "甲表", 行: [["内容"], ["甲一"], ["甲二"], ["甲三"]] },
+      { 名: "乙表", 行: [["内容"], ["乙一"]] },
+    ])
+    const host = 容器()
+    await renderSheet(bytes, host, {
       强制主线程: true,
+      // 首屏只给 2 行 ⇒ 剩下的行走「让出后全量重读 + 分块」这条路，切表正好落在让出那一拍。
+      limits: { 首屏行数: 1, 预览行数: 10, 预览列数: 4, 全量行上限: 100, 全量格上限: 1000, 全量列上限: 4, 分块行数: 1 },
     })
-    expect(host.textContent).toContain("第一张的格子")
-    expect(host.textContent).not.toContain("第二张的格子")
-    expect(host.textContent).toContain("共 2 张表")
+    标签(host)[1].click()
+    await 等条件(() => host.textContent?.includes("乙一") ?? false, "切到乙表")
+    // 乙表只有表头 + 1 行；多出来的就是旧表漏进来的分块。
+    await 等条件(
+      () => host.querySelector<HTMLElement>('[data-slot="sheet-grid"]')?.getAttribute("data-loaded-rows") === "2",
+      "乙表只该有 2 行",
+    )
+    expect(host.textContent).not.toContain("甲一")
+  })
+
+  // 「上次看的表」只是我们自己的记忆：文件被换掉后那张表可能已经不存在。
+  // 这时退回第一张，别让一个过期的记忆把好好的文件判成打不开。
+  test("记住的表已不存在：退回第一张，不报错", async () => {
+    const 键 = 缓存键("", "/p/换过.xlsx", 0)
+    记上次表(键, "丁表")
+    const host = 容器()
+    await renderSheet(多表工作簿(), host, { 强制主线程: true, 缓存键: 键 })
+    await 等条件(() => 当前表(host) === "甲表", "退回第一张表")
+    expect(host.textContent).toContain("甲表数据")
+  })
+
+  // 缓存键 + 「上次看的表」：切走再打开同一个文件，应当停在用户上次看的那张表，而不是每次都回第一张。
+  test("重新打开：回到上次看的那张表", async () => {
+    const 键 = 缓存键("", "/p/再看.xlsx", 0)
+    const bytes = 多表工作簿()
+    const 第一 = 容器()
+    const 卸第一 = await renderSheet(bytes, 第一, { 强制主线程: true, 缓存键: 键 })
+    标签(第一)[1].click()
+    await 等条件(() => 第一.textContent?.includes("乙表数据") ?? false, "第一次打开切到乙表")
+    卸第一()
+
+    const 第二 = 容器()
+    const 卸第二 = await renderSheet(bytes, 第二, { 强制主线程: true, 缓存键: 键 })
+    await 等条件(() => 当前表(第二) === "乙表", "重新打开停在乙表")
+    expect(第二.textContent).toContain("乙表数据")
+    卸第二()
   })
 
   test("cleanup 卸载网格", async () => {

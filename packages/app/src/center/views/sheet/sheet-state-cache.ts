@@ -10,9 +10,31 @@ export interface SheetCacheData {
 
 const ui = new Map<string, SheetUiState>()
 const data = new Map<string, SheetCacheData>()
+/** 基键 → 这个文件上次看的那张表。重新打开时用它定位，才知道该读哪一份数据/UI 缓存。 */
+const 上次表 = new Map<string, string>()
 
 /** 键 = 项目身份 + 路径 + 重载代。换项目或重载后旧缓存自动失配。 */
 export const 缓存键 = (项目: string, path: string, 代: number) => `${项目}\n${path}\n${代}`
+
+/**
+ * 单个工作表的键 = 基键 + 表名。**同一文件的不同表不共用**：
+ * 列宽/筛选/排序/滚动位置与已解析数据都是「这张表」的，串到另一张上就是拿别人的表头量宽度。
+ */
+export const 表键 = (基键: string, 表: string) => `${基键}\n${表}`
+
+export function 读上次表(基键: string): string | undefined {
+  return 上次表.get(基键)
+}
+
+export function 记上次表(基键: string, 表: string): void {
+  上次表.delete(基键)
+  上次表.set(基键, 表)
+  while (上次表.size > 规模.UI状态缓存份数) {
+    const oldest = 上次表.keys().next().value
+    if (oldest === undefined) break
+    上次表.delete(oldest)
+  }
+}
 
 export function 读UI状态(key: string): SheetUiState | undefined {
   const value = ui.get(key)
@@ -75,4 +97,5 @@ export function 清空数据(): void {
 export function 清空表格缓存(): void {
   清空UI状态()
   清空数据()
+  上次表.clear()
 }

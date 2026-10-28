@@ -445,14 +445,6 @@ function 横幅(props: {
           原表共 {props.meta.totalCols} 列，当前只显示前 {显示列数()} 列。
         </p>
       </Show>
-      <Show when={props.meta.sheetNames.length > 1}>
-        <p
-          data-slot="sheet-multi-sheet"
-          class="w-full border-b border-v2-border-border-muted px-3 py-1 text-11-regular text-v2-text-text-muted"
-        >
-          工作簿共 {props.meta.sheetNames.length} 张表，当前仅显示：{props.meta.sheetName}。
-        </p>
-      </Show>
       <Show when={props.error}>
         <p
           data-slot="sheet-parse-error"

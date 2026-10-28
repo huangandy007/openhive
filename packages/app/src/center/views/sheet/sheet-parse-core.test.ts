@@ -228,3 +228,113 @@ describe("解析：xlsx", () => {
     expect(c.meta[0].preview[0][0]).toBe("<img src=x onerror=alert(1)>")
   })
 })
+
+/**
+ * 多工作表（2026-10-28）。
+ *
+ * 以前解析层写死 `SheetNames[0]`：meta 里带着全部表名，界面却只给一句「当前仅显示 X」，
+ * 其余表**根本读不出来**。这里钉住三条最低约定：
+ * ① 不指定表名 ⇒ 第一张（旧行为不变）；② 指定表名 ⇒ 读那张（首屏、预览重读、全量重读三条读路径都要跟）；
+ * ③ 表名不存在 ⇒ `onError("parse")`，**不静默退回第一张**——静默回退会把「表被改名」显示成「另一张表的内容」。
+ */
+function 多表工作簿(表: { 名: string; 行: unknown[][]; 隐藏?: boolean }[]): Uint8Array<ArrayBuffer> {
+  const book = XLSX.utils.book_new()
+  for (const item of 表) XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(item.行), item.名)
+  表.forEach((item, index) => {
+    if (item.隐藏) XLSX.utils.book_set_sheet_visibility(book, index, 1)
+  })
+  return new Uint8Array(XLSX.write(book, { type: "array", bookType: "xlsx" }))
+}
+
+const 双表 = () =>
+  多表工作簿([
+    { 名: "甲表", 行: [["姓名"], ["甲行"]] },
+    { 名: "乙表", 行: [["金额"], ["乙行"]] },
+  ])
+
+describe("多工作表", () => {
+  test("默认读第一张；meta.sheets 按文件顺序列出全部表", async () => {
+    const c = 收集()
+    await 解析工作簿(双表(), c.回调, 小限制())
+    expect(c.errors).toEqual([])
+    expect(c.meta[0].sheetName).toBe("甲表")
+    expect(c.meta[0].preview).toEqual([["姓名"], ["甲行"]])
+    expect(c.meta[0].sheets).toEqual([
+      { name: "甲表", hidden: false },
+      { name: "乙表", hidden: false },
+    ])
+  })
+
+  test("指定表名：读的是那张表的行", async () => {
+    const c = 收集()
+    await 解析工作簿(双表(), c.回调, 小限制(), "乙表")
+    expect(c.errors).toEqual([])
+    expect(c.meta[0].sheetName).toBe("乙表")
+    expect(c.meta[0].preview).toEqual([["金额"], ["乙行"]])
+  })
+
+  test("表名不存在 ⇒ onError(parse)，不发 meta，不静默退回第一张", async () => {
+    const c = 收集()
+    await 解析工作簿(双表(), c.回调, 小限制(), "丙表")
+    expect(c.meta).toEqual([])
+    expect(c.errors).toHaveLength(1)
+    expect(c.errors[0]?.[0]).toBe("parse")
+    expect(c.errors[0]?.[1]).toContain("工作表不存在")
+    expect(c.errors[0]?.[1]).toContain("丙表")
+  })
+
+  test("全量档：后续 chunk 读的是指定表，不串到第一张", async () => {
+    const bytes = 多表工作簿([
+      { 名: "甲表", 行: [["甲"], ["甲1"], ["甲2"], ["甲3"]] },
+      { 名: "乙表", 行: [["乙"], ["乙1"], ["乙2"], ["乙3"]] },
+    ])
+    const c = 收集()
+    await 解析工作簿(bytes, c.回调, 小限制({ 首屏行数: 1, 分块行数: 2 }), "乙表")
+    expect(c.meta[0].preview).toEqual([["乙"], ["乙1"]])
+    expect(c.chunks).toEqual([{ start: 2, rows: [["乙2"], ["乙3"]] }])
+  })
+
+  test("预览档：预览重读也用指定表", async () => {
+    const 八行 = (前缀: string) => [[前缀], ...Array.from({ length: 8 }, (_, i) => [`${前缀}${i + 1}`])]
+    const bytes = 多表工作簿([
+      { 名: "甲表", 行: 八行("甲") },
+      { 名: "乙表", 行: 八行("乙") },
+    ])
+    const c = 收集()
+    await 解析工作簿(bytes, c.回调, 小限制({ 首屏行数: 2, 预览行数: 4, 全量行上限: 2 }), "乙表")
+    expect(c.done[0]?.[0]).toBe("preview")
+    const 物化 = c.chunks.flatMap((chunk) => chunk.rows.flat())
+    expect(物化).toContain("乙3")
+    expect(物化).not.toContain("甲3")
+  })
+
+  test("隐藏工作表：清单里标 hidden=true，仍可按名读取", async () => {
+    const bytes = 多表工作簿([
+      { 名: "甲表", 行: [["甲"]] },
+      { 名: "丙表", 行: [["丙"]], 隐藏: true },
+    ])
+    const c = 收集()
+    await 解析工作簿(bytes, c.回调, 小限制())
+    expect(c.meta[0].sheets).toEqual([
+      { name: "甲表", hidden: false },
+      { name: "丙表", hidden: true },
+    ])
+
+    const d = 收集()
+    await 解析工作簿(bytes, d.回调, 小限制(), "丙表")
+    expect(d.meta[0].preview).toEqual([["丙"]])
+  })
+
+  test("CSV：单表清单 hidden 恒 false；指定别的表名同样报错", async () => {
+    const bytes = new TextEncoder().encode("姓名,金额\n张三,1200\n")
+    const c = 收集()
+    await 解析工作簿(bytes, c.回调, 小限制())
+    expect(c.meta[0].sheets).toEqual([{ name: c.meta[0].sheetName, hidden: false }])
+
+    const d = 收集()
+    await 解析工作簿(bytes, d.回调, 小限制(), "不存在的表")
+    expect(d.meta).toEqual([])
+    expect(d.errors[0]?.[0]).toBe("parse")
+    expect(d.errors[0]?.[1]).toContain("工作表不存在")
+  })
+})
