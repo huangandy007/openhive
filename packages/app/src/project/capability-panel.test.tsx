@@ -749,7 +749,7 @@ describe("技能卡片是拖拽源（2026-10-29）", () => {
 
     expect(存.get("application/x-openhive-skill")).toBe("skill:资金流向分析")
     // 拖进记事本时落下的是这句话，而不是 `skill:资金流向分析`。
-    expect(存.get("text/plain")).toBe("请使用“资金流向分析”技能帮我")
+    expect(存.get("text/plain")).toBe("请使用“资金流向分析”技能帮我：")
   })
 
   test("自带卡片带的是它自己的名字（不是库里的资产名）", () => {

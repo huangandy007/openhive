@@ -2,6 +2,7 @@
  * 「把技能卡片拖到右栏输入框」的载荷与文案（2026-10-29 用户提出）。
  *
  * 用户原话：鼠标拖技能卡片到会话输入框，在**松手那一点**插入「请使用“X”技能帮我」。
+ * 2026-10-29 追加：句末带一个全角冒号「帮我：」——用户接着就在后面写要它干什么。
  *
  * ## 为什么另起一个 MIME 型，不复用 `text/plain`
  *
@@ -28,7 +29,7 @@ const 前缀 = "skill:"
 
 /** 用户在输入框里看到的那句话。名字原样嵌进去，不 trim、不补空格。 */
 export function 技能句子(名字: string): string {
-  return `请使用“${名字}”技能帮我`
+  return `请使用“${名字}”技能帮我：`
 }
 
 export function 技能载荷(名字: string): string {
@@ -39,7 +40,7 @@ export function 技能载荷(名字: string): string {
  * 从拖拽载荷里认出一个技能名。
  *
  * `undefined` = 这不是技能载荷（文件引用、普通正文、空载荷都算）。
- * 空名字当没拖：插一句「请使用“”技能帮我」比什么都不插更糟。
+ * 空名字当没拖：插一句「请使用“”技能帮我：」比什么都不插更糟。
  */
 export function 拖入技能(载荷: string | undefined): string | undefined {
   if (载荷 === undefined || !载荷.startsWith(前缀)) return undefined
