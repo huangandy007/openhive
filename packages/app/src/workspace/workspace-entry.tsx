@@ -2133,10 +2133,15 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onOpen={有项目() ? (path) => void 打开文件({ path, 标题: 末段(path) }) : undefined}
                       />
                       {/* 截断提示（2026-10-28）：项目文件超过上限时**必须说出来**，
-                          不许静默交半张清单（design §4）。文案与上限是同一个数，改一处要改两处。 */}
+                          不许静默交半张清单（design §4）。文案与上限是同一个数：上限在
+                          `packages/opencode/src/server/openhive/project-tree-scan.ts` 的
+                          `默认上限 = 50000`，改一处要改两处。
+                          `role="status"`（陈述语义）而不是 `文件话` 那条的 `role="alert"`：
+                          这句话是取数回来后异步冒出的**状态说明**，不是出错的警报。 */}
                       <Show when={项目文件被截断()}>
                         <p
                           data-slot="file-tree-truncated"
+                          role="status"
                           class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] text-v2-text-text-muted"
                         >
                           文件太多，只列了前 5 万个

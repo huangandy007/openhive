@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { extensionOf } from "@/center/view-registry"
-import { 请求文件清单, projectFiles } from "@/project/project-files"
+import { 请求文件清单, projectFiles, 项目文件被截断 } from "@/project/project-files"
 
 /**
  * 从**当前项目的文件清单**里挑一个，插成引用。
@@ -57,6 +57,19 @@ export function 引用文件选择(props: {
           取消
         </button>
       </div>
+      {/* 截断提示（2026-10-28 批量取数）：本选择器列的是**同一份**项目清单，服务端超过
+          50000 条就只交前 5 万。不说的后果是用户把「没列出来」读成「这个文件不存在」——
+          与文件树那句同一口径（`workspace-entry.tsx` 的 `file-tree-truncated`），
+          `data-slot` 分开是为了审计脚本能各查各的。 */}
+      <Show when={项目文件被截断()}>
+        <p
+          data-slot="file-picker-truncated"
+          role="status"
+          class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] text-v2-text-text-muted"
+        >
+          文件太多，只列了前 5 万个
+        </p>
+      </Show>
       <div class="max-h-56 overflow-auto">
         <For each={候选()}>
           {(路径) => (

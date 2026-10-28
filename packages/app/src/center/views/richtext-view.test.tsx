@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
-import { setProjectFiles } from "@/project/project-files"
+import { setProjectFiles, set项目文件被截断 } from "@/project/project-files"
 import { 默认字号, 设阅读字号 } from "./reading-size"
 import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
 import { 取草稿, 清空草稿, 设自动保存参数 } from "./richtext/draft-store"
@@ -929,6 +929,40 @@ describe("图文视图 · 草稿与 Markdown 编辑（2026-10-19）", () => {
       expect(路径们).toEqual(["资料/说明.txt"])
     } finally {
       setProjectFiles(undefined)
+    }
+  })
+
+  /**
+   * 截断提示（2026-10-28 批量取数）：服务端上限 5 万，超过就只交前 5 万个。
+   *
+   * 本选择器列的是**同一份**清单，一字不说会让用户把「没列出来」读成「这个文件不存在」，
+   * 所以它也得说那句话。⚠️ 这一层没有 `剧本.tree` 替身：本文件直连 `project-files` 的真缝
+   * （`setProjectFiles` ＋ `set项目文件被截断`，同上面两条用例），而「`tree.truncated` 写进信号」
+   * 那一半由 `workspace-entry.test.tsx` 的截断用例守着。这里断的是**信号 → 画面**：
+   * 真时那句话在、归假时它必须没——否则就只是「有个永远存在的槽」。
+   */
+  test("清单被截断 ⇒ 选择器也说出来（不许静默只列前 5 万个）", async () => {
+    setProjectFiles(["卷宗/纪要.md"])
+    set项目文件被截断(true)
+    try {
+      const h = 挂编辑器("正文")
+      await 落定()
+      h.钮("edit")!.click()
+      await 落定()
+      h.钮("attachment")!.click()
+      await 落定()
+
+      expect(h.host.querySelector("[data-slot='file-picker-truncated']")?.textContent?.trim()).toBe(
+        "文件太多，只列了前 5 万个",
+      )
+
+      // 对照（`#002-02`）：信号归假，那句话就得没——证明它读的是信号，不是写死的装饰。
+      set项目文件被截断(false)
+      await 落定()
+      expect(h.host.querySelector("[data-slot='file-picker-truncated']")).toBeNull()
+    } finally {
+      setProjectFiles(undefined)
+      set项目文件被截断(false)
     }
   })
 

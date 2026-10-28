@@ -1786,9 +1786,14 @@ describe("项目数据接线（T018 出参）", () => {
     // ⚠️ 断在**乙的清单还没回来**的时候：若只靠新回包里的 `truncated: false` 来清，那么加载中
     // 与取不到这两条路上旧提示都还挂着——清零那一行守的正是这段空窗，拆掉它这条必须红。
     let 放行乙: (v: { paths: readonly string[]; truncated: boolean } | undefined) => void = () => {}
+    // 哨兵：没被赋值时 `放行乙` 落在初值 noop 上，后面那两次断言就成了空转（`#005-38`）。
+    let 已请求乙 = false
     const { data } = 假数据源({
-      tree: async (id) =>
-        id === "p1" ? { paths: ["a.txt"], truncated: true } : new Promise((resolve) => (放行乙 = resolve)),
+      tree: async (id) => {
+        if (id === "p1") return { paths: ["a.txt"], truncated: true }
+        已请求乙 = true
+        return new Promise((resolve) => (放行乙 = resolve))
+      },
     })
     const host = 挂(data)
     await 冲一遍()
@@ -1798,6 +1803,7 @@ describe("项目数据接线（T018 出参）", () => {
 
     setCurrentProject({ id: "p2", name: "乙" })
     await 冲一遍()
+    expect(已请求乙).toBe(true) // 乙的取数真的发起了，下面的「放行」才有意义
     expect(host.textContent).not.toContain("文件太多")
 
     放行乙({ paths: ["b.txt"], truncated: false })
