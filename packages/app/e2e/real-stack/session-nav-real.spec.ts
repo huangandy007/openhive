@@ -317,6 +317,48 @@ test("索引轨（真栈）：落在滚动条内侧不压正文、悬停呼出�
   expect(预.预览文字.endsWith("…"), "长句该被截断并以「…」收尾").toBe(true)
   expect(预.预览中, "预览该对着它那一行的中线").toBeCloseTo(预.行中们[1] ?? Number.NaN, 0)
 
+  // ── ③b 预览越出右栏的那一段**不许在右栏边界被裁掉**（2026-10-28 用户实报） ──────────────
+  //
+  // 用户原话：「显示完整输入信息没有在最前端，当 AI 助手宽度不够的时候，它会被中栏遮挡住」。
+  // 修前实测的形状：预览 `left=926`、右栏卡左缘 `1081.5` ⇒ 越出 **155px**；越出那一片的
+  // `elementsFromPoint` 栈顶是 `div[center-empty]`（中栏）、**预览不在栈里** ⇒ 不是「画上去被盖住」，
+  // 是右栏壳（`three-pane-right-card` / `aside[three-pane-right]`，两层 `overflow: hidden`）在
+  // 右栏边界把它**裁断了**——刀口正好落在右栏边界，看上去像被中栏挡住。
+  // 判据：越出的那一段上，命中栈顶必须是预览自己。
+  const 越界 = await page.evaluate(() => {
+    const 预览 = document.querySelector<HTMLElement>('[data-slot="session-nav-preview"]')
+    const 卡 = document.querySelector<HTMLElement>('[data-slot="three-pane-right-card"]')
+    if (!预览 || !卡) throw new Error("没找到预览盒或右栏卡（选择器换地方了？）")
+    const 预览盒 = 预览.getBoundingClientRect()
+    const 卡盒 = 卡.getBoundingClientRect()
+    const y = 预览盒.top + 预览盒.height / 2
+    // 贴着预览左端 4px 取一点：这一段在修前**整段都在右栏卡之外**。
+    const 探x = 预览盒.left + 4
+    const 栈 = document.elementsFromPoint(探x, y).map((el) => {
+      const slot = el.getAttribute("data-slot")
+      return `${el.tagName.toLowerCase()}${slot ? `[data-slot="${slot}"]` : ""}`
+    })
+    return {
+      预览左: 预览盒.left,
+      预览右: 预览盒.right,
+      卡左: 卡盒.left,
+      y,
+      探x,
+      探x在卡外: 探x < 卡盒.left,
+      栈顶: 栈[0] ?? "",
+      栈,
+    }
+  })
+  console.log(`[索引轨] ③b 越界实得=${JSON.stringify(越界)}`)
+  expect(
+    越界.探x在卡外,
+    `前置：这一屏预览该真的越出右栏卡（不越界的话下面那条就是空转）｜${JSON.stringify(越界)}`,
+  ).toBe(true)
+  expect(
+    越界.栈顶,
+    `预览越出右栏的那一段该画得出来（栈顶应是它自己，不是中栏）｜${JSON.stringify(越界)}`,
+  ).toBe('div[data-slot="session-nav-preview"]')
+
   // ── ④ 点第二行 ⇒ 强调色落到第二条 ＋ 视野真滚到**那一轮的气泡**上 ──────────────
   await 行们.nth(1).click()
   // 平滑滚动是动画 ⇒ 判据用 `poll` 等它落地（`#006-31`：等条件、不等时间）。

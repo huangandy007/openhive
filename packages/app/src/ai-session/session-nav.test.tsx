@@ -81,8 +81,10 @@ const 刻度们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLEleme
 const 面板个数 = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-slot="session-nav-panel"]').length
 const 行们 = (宿主: HTMLElement) => [...宿主.querySelectorAll<HTMLElement>('[data-slot="session-nav-row"]')]
 const 行文字 = (行: HTMLElement) => 行.querySelector('[data-slot="session-nav-row-label"]')?.textContent ?? ""
-const 预览个数 = (宿主: HTMLElement) => 宿主.querySelectorAll('[data-slot="session-nav-preview"]').length
-const 预览文字 = (宿主: HTMLElement) => 宿主.querySelector('[data-slot="session-nav-preview"]')?.textContent ?? ""
+// ⚠️ 预览盒按 `document` 取、**不按宿主取**：它挂 `Portal` 到 body 下（见「悬停预览」里那条结构判据），
+// 宿主的子树里根本找不到它。`afterEach` 清的是 `document.body`，所以跨用例也不会串。
+const 预览个数 = (_宿主: HTMLElement) => document.querySelectorAll('[data-slot="session-nav-preview"]').length
+const 预览文字 = (_宿主: HTMLElement) => document.querySelector('[data-slot="session-nav-preview"]')?.textContent ?? ""
 
 /**
  * 鼠标进 / 出。`mouseenter` / `mouseleave` 不冒泡，直派即到（Solid 把它们直接挂在元素上）。
@@ -252,6 +254,37 @@ describe("悬停预览（停在某一行上弹出的那段）", () => {
     进(行们(宿主)[1])
 
     expect(预览文字(宿主)).toBe("长".repeat(预览上限) + "…")
+  })
+
+  /**
+   * ⚠️ 2026-10-28 用户实报：「完整的输入信息没有在最前端，当 AI 助手宽度不够的时候会被中栏遮挡」。
+   *
+   * 真栈实测的根因**不是层叠顺序**：越出右栏那一片（预览左端 155px）的 `elementsFromPoint`
+   * 命中栈里**根本没有预览**，栈顶是中栏的 `center-empty` —— 它是被右栏壳
+   * （`three-pane-right-card` / `aside[three-pane-right]`，两层都 `overflow: hidden`）在右栏边界
+   * **裁掉了**（预览的包含块在裁剪盒内部 ⇒ CSS 规范下必被裁）。
+   * ⇒ 预览必须**逃出右栏这棵裁剪树**：`Portal` 到 body 下 ＋ `position: fixed` 自定位。
+   *
+   * happy-dom 没有布局引擎、量不出「裁没裁」（`#005-07`），本层能钉的是机制本身：它还在不在
+   * 会话树里。几何判据（越界那一点上能不能命中预览）在 `e2e/real-stack/session-nav-real.spec.ts` 的 ③b。
+   */
+  test("⚠️ 预览盒挂在 body 下（不在 `session-nav` 里）——逃开右栏的 overflow:hidden", () => {
+    const { 宿主 } = 挂轨()
+
+    打开面板(宿主)
+    进(行们(宿主)[0])
+
+    const 预览 = document.querySelector('[data-slot="session-nav-preview"]')
+    expect(预览, "预览该画出来了").not.toBeNull()
+    // ⚠️ 不断「父节点 === body」：Solid 的 `Portal` 会先建一层自己的包裹 div 再插进 body
+    // （`solid-js/web` 的 `Portal` 实现），断那个只会钉住它的内部形状。要钉的是**机制**：
+    // 预览已经离开宿主子树、落在 body 下。
+    expect(宿主.contains(预览), "预览不该还在宿主（会话树）里——它的祖先右栏有 overflow:hidden").toBe(false)
+    expect(document.body.contains(预览), "预览该挂在 body 下（Portal）").toBe(true)
+    expect(
+      预览!.closest('[data-slot="session-nav"]'),
+      "预览不该还挂在会话树里——右栏那两层 overflow:hidden 会在右栏边界把它裁掉",
+    ).toBeNull()
   })
 
   test("那一轮没有文字 ⇒ 不弹预览（不给一个空盒子）", () => {

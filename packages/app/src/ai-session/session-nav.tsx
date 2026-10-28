@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js"
+import { Portal } from "solid-js/web"
 import { 索引标签, 预览文本, type 可读片段 } from "./session-nav-text"
 
 /**
@@ -55,6 +56,12 @@ const 无文字 = "（没有文字）"
  */
 const 每格高 = 28
 
+/**
+ * 预览盒的**宽**（px）。定位要从它反推（`left = 面板左缘 − 8 − 这个宽`，见 `记预览位`），
+ * 所以它只能有一处定义——写成类名 `w-[200px]` 再手抄一个 200 的那种分家，改宽时会静默错位。
+ */
+const 预览宽 = 200
+
 export interface SessionNavProps {
   /** 要索引的轮（**用户消息**，按时间升序）。生产喂 `session-panel.tsx` 的 `轮次()`。 */
   轮次: readonly 可索引的一轮[]
@@ -110,9 +117,10 @@ function 短横(props: { 活跃: boolean }) {
 export function SessionNav(props: SessionNavProps) {
   const [悬停, set悬停] = createSignal(false)
   const [停在, set停在] = createSignal<string | undefined>()
-  const [预览顶, set预览顶] = createSignal(0)
+  /** 预览盒**视口坐标**的左/中（`position: fixed` 的 `left` / `top`）。 */
+  const [预览位, set预览位] = createSignal({ left: 0, top: 0 })
 
-  /** 索引面板（预览盒的定位上下文）。 */
+  /** 索引面板（预览盒按它的左缘 ＋ 所在行来定位，见 `记预览位`）。 */
   let 板: HTMLDivElement | undefined
 
   /**
@@ -169,26 +177,23 @@ export function SessionNav(props: SessionNavProps) {
   }
 
   /**
-   * 把预览盒的纵向位置对到**那一行**的中线上。
+   * 把预览盒摆到**那一行**的中线上，横向贴在面板左边（面板左缘往左 8px，即原 `mr-2` 的间隙）。
    *
-   * 量的是**相对面板**的差值（两边的 `getBoundingClientRect()` 都在同一个屏幕坐标系里，
-   * 相减即可 —— 面板自己带 `-translate-y-1/2`，而 `getBoundingClientRect` 给的是**变换之后**
-   * 的盒子，所以这个差是正确的，不需要再补那个位移）。
+   * 量的是 `getBoundingClientRect()` 的**视口坐标**：预览盒是 `position: fixed`（见渲染处注释），
+   * `fixed` 的 `left` / `top` 就是视口坐标，两者同一个系，不必再换算。
    *
-   * ⚠️ 为什么非要量：预览盒是**面板**的子节点（不能是行的子节点——行的祖先里有
-   * `overflow-y-auto` 的滚动区，`overflow-y` 一旦不是 visible，另一条轴也会被算成 auto
-   * （CSS 规范：两轴不能一 auto 一 visible）⇒ 往外弹的预览盒会被**裁掉**）。
-   * 而它又必须**对着那一行**（用户要的样子），所以只能算一次位置。
+   * ⚠️ 为什么非要量：预览盒已经不在面板的盒子里（Portal 到 body），它又必须**对着那一行**
+   * （用户要的样子），所以只能算一次位置。
    *
    * happy-dom 里所有 `getBoundingClientRect()` 都是零矩形 ⇒ 量出来恒 0（`LEARNINGS #005-32`：
    * 零矩形是量错了对象/量不出布局，不是产品坏）。所以**对齐这件事的真判据在真栈**。
    */
-  function 记预览顶(行: HTMLElement) {
+  function 记预览位(行: HTMLElement) {
     const 盒 = 板
     if (!盒) return
     const 面板盒 = 盒.getBoundingClientRect()
     const 行盒 = 行.getBoundingClientRect()
-    set预览顶(行盒.top - 面板盒.top + 行盒.height / 2)
+    set预览位({ left: 面板盒.left - 8 - 预览宽, top: 行盒.top + 行盒.height / 2 })
   }
 
   return (
@@ -268,7 +273,7 @@ export function SessionNav(props: SessionNavProps) {
                     onClick={() => props.on选择(消息)}
                     onMouseEnter={(事件) => {
                       set停在(消息.id)
-                      记预览顶(事件.currentTarget)
+                      记预览位(事件.currentTarget)
                     }}
                     onMouseLeave={() => set停在((现在) => (现在 === 消息.id ? undefined : 现在))}
                     class="flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent py-2 pl-2 text-left hover:bg-v2-overlay-simple-overlay-hover"
@@ -294,16 +299,36 @@ export function SessionNav(props: SessionNavProps) {
             </div>
 
             {/* ③ 预览：停在某一行的**正文**（不是它的首行），超出截断 ＋「…」。
-                `keyed` ⇒ 子函数拿到的是**那个值**、不是 getter，不必求两次（也免得两次取到不同值）。 */}
+                `keyed` ⇒ 子函数拿到的是**那个值**、不是 getter，不必求两次（也免得两次取到不同值）。
+
+                ⚠️ **必须 `Portal` 到 body 下 ＋ `position: fixed`**（2026-10-28 用户实报「完整的
+                输入信息没有在最前端，AI 助手宽度不够时被中栏遮挡」）。真栈实测的根因**不是层叠顺序**：
+                预览越出右栏卡左缘 155px，越出那一片 `elementsFromPoint` 的命中栈顶是中栏的
+                `center-empty`、**预览根本不在栈里** ⇒ 它是被右栏壳（`three-pane-right-card` /
+                `aside[three-pane-right]`，两层 `overflow: hidden`）在右栏边界**裁掉**的
+                （预览的包含块在裁剪盒内部 ⇒ 规范下必被裁）。裁剪与层叠是两件事：留在面板里
+                再怎么调 `z-index` 都救不回来。
+                `Portal` 把它挪出那棵裁剪树；`fixed` 让它按**视口**定位（`记预览位` 量的正是视口
+                坐标），于是它落在根层叠上下文里：`z-30` 高于中栏内容最高的 20（见上面
+                `session-nav` 的 z 值清单），仍低于真浮层的 50 起。
+                替掉的是原来的 `absolute right-full mr-2`：横向改由 `预览位().left`
+                （= 面板左缘 − 8 − 预览宽）算出，几何与从前逐字一致，只是不再受右栏边界约束。 */}
             <Show when={预览()} keyed>
               {(文字) => (
-                <div
-                  data-slot="session-nav-preview"
-                  style={{ top: `${预览顶()}px` }}
-                  class="absolute right-full z-30 mr-2 w-[200px] -translate-y-1/2 rounded-lg bg-v2-background-bg-layer-01 p-2 text-xs leading-5 whitespace-pre-wrap text-v2-text-text-base shadow-[var(--v2-elevation-floating)]"
-                >
-                  {文字}
-                </div>
+                <Portal>
+                  <div
+                    data-slot="session-nav-preview"
+                    style={{
+                      position: "fixed",
+                      left: `${预览位().left}px`,
+                      top: `${预览位().top}px`,
+                      width: `${预览宽}px`,
+                    }}
+                    class="z-30 -translate-y-1/2 rounded-lg bg-v2-background-bg-layer-01 p-2 text-xs leading-5 whitespace-pre-wrap text-v2-text-text-base shadow-[var(--v2-elevation-floating)]"
+                  >
+                    {文字}
+                  </div>
+                </Portal>
               )}
             </Show>
           </div>
