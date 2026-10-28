@@ -146,6 +146,7 @@ import { OpenhiveMember } from "@/server/openhive/member"
 import { OpenhivePg } from "@/server/openhive/pg"
 import { OpenhiveProject } from "@/server/openhive/project"
 import { OpenhiveProjectAssets } from "@/server/openhive/project-assets"
+import { OpenhiveProjectTree } from "@/server/openhive/project-tree"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "@/server/user-identity"
 
@@ -366,6 +367,12 @@ export function createRoutes(
       Layer.provide(AnchorWorkspace.Config.layer),
       Layer.provide(OpenhivePg.layer),
     ),
+    // openhive 项目文件树批量取数（2026-10-28）：一次请求交回整棵树。
+    // **不供 `OpenhivePg`**（本端点一个库都不查）；`LocationServiceMap` 由外层
+    // `locationServiceMapV2` 供上——这里再 provide 一次会建出第二个服务图，
+    // 文件系统实例就与 `handlers/file.ts` 不是同一份了。
+    // 【保留的定制 · 同步上游时不要丢】—— 项目文件树批量取数（2026-10-28）。
+    OpenhiveProjectTree.routes.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
     // openhive 归档出口（005 T013）：项目归档（上传 MinIO ＋ 删沙箱 ＋ 标记）。
     // 沙箱根**复用**上一项同一个 `AnchorWorkspace.Config`（沙箱根只有一处定义，两处漂了就是
     // 「建到 A、归档时去 B 找」）；`MinioConfig` 是本层自己的配置服务，同样必须在这里供上
