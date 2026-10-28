@@ -36,6 +36,15 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #010-06 · 2026-10-28 · pitfall · 010-项目能力面板
+**一句话**：「这个项目是我的吗」在本仓有**两套来源**——每用户 SQLite 的 `project_ext` 行（平台全局项目门
+`project-location.ts` / `file.ts` 只认它）与 PG 的 `auth.project_member`（成员/归档/治理只认它）；资产出口只问了
+后者 ⇒ 多租户改造**前**建的老项目（只在创建者库里有一行，PG 一条记录都没有）被自己的属主判成「不是该项目成员」
+——面板对着用户自己的项目打红条（真栈实测：张三 13 条清单里 **11 条** 403）。**应对**：判据只能有一份；先问 PG，
+**PG 完全不认识**该项目时才回落到「调用者自己库里有一行 `project_ext` = 属主」，PG 认识的项目一字不放宽。
+**应用范围**：任何「两套存储各判一次同一件事」的授权；任何多租户/迁移改造后遗留的老数据；任何 403 打在用户自己东西上。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #009-02 · 2026-10-27 · tool-quirk · 009-ai-assets
 **一句话**：`packages/app` 里图省事跑 `bun test src/ai-assets/*.test.tsx`（漏了 `--conditions=browser --preload ./solid-jsx.ts`）
 ⇒ Solid 解析到 **`dist/server.js`**、`createEffect` 是 **no-op** ⇒ 20 条本来全绿的 `enable-state` 用例一起红，

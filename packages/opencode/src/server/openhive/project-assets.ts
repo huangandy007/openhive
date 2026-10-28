@@ -45,7 +45,10 @@ export * as OpenhiveProjectAssets from "./project-assets"
  * ## 谁能启用
  *
  * 项目**成员**（owner 或 member）都能启用/停用（本计划 R2）：启用是干活不是治理。
- * 判定只调 `rolesOf()`（`#002-06`：成员判定只该有一份）。
+ * 判定只有一份（`#002-06`）：`成员角色()`——先问 PG `auth.project_member`（`rolesOf`），
+ * 只对**PG 完全不认识**的老项目再问「调用者自己库里有没有 `project_ext` 行」
+ * （2026-10-28 修：多租户改造前建的项目只在每用户 SQLite 里，只问 PG 会把用户自己的项目
+ * 判成「不是该项目成员」，真栈实测 13 条清单里 11 条如此）。
  *
  * ## 能启用哪一份
  *
@@ -82,9 +85,11 @@ import {
 import { SHARED_STATUSES } from "@opencode-ai/asset-service/readable-sql"
 import { assetsRoot } from "@opencode-ai/asset-service/storage"
 import { grantsFor } from "@opencode-ai/auth/rbac"
-import { rolesOf } from "@opencode-ai/auth/project-member"
+import { membersOf, projectMetaOf, rolesOf } from "@opencode-ai/auth/project-member"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { Database } from "@opencode-ai/core/database/database"
+import { ProjectExt } from "@opencode-ai/core/project/ext"
 import { User } from "@opencode-ai/core/user"
 import { InstanceStore } from "@/project/instance-store"
 import { ConfigMarkdown } from "@/config/markdown"
@@ -172,6 +177,12 @@ const BOARD = "asset-governance"
 
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
+  /**
+   * 每用户 SQLite（**调用者自己那份**）。只用来答一个问题：老项目的 `project_ext` 行在不在
+   * （见 `成员角色()` 的第二道来源）。与 `project.ts` 同一个取法：层构造期取、请求期用，
+   * 按 fiber 身份路由到本人的库。
+   */
+  readonly database: Database.Interface
   readonly root: string
   readonly store: Option.Option<InstanceStore.Interface>
   /**
@@ -194,7 +205,8 @@ export const routes = HttpRouter.use((router) =>
     const store = yield* Effect.serviceOption(InstanceStore.Service)
     // 同上：只挂路由子集的测试可能没有内核层；缺席时 `skills` 键整份缺席（「不知道」）。
     const skill = yield* Effect.serviceOption(Skill.Service)
-    const deps: Deps = { pg: openhivePg.pg, root: config.root, store, skill }
+    const database = yield* Database.Service
+    const deps: Deps = { pg: openhivePg.pg, root: config.root, store, skill, database }
 
     yield* router.add("GET", PATH.state, (request) => handleState(request, deps))
     yield* router.add("POST", PATH.enable, (request) => handleToggle(request, deps, "enable"))
@@ -213,11 +225,44 @@ function fail(status: number, error: string, code?: string) {
 
 const 身份 = Effect.serviceOption(User.Service)
 
-/** 这个人在这个项目里是什么角色；`undefined` = 不是成员（含项目不存在）。 */
+/**
+ * 这个人在这个项目里是什么角色；`undefined` = 不是成员（含项目不存在）。
+ *
+ * ## 两道来源，顺序即优先级（2026-10-28 修：自己的老项目被判「不是该项目成员」）
+ *
+ * ① **PG `auth.project_member`**：共享项目的真相。有行就按行，**不再往下问**。
+ * ② **老项目**（多租户改造前建的）：PG 的 `project_member` / `project_meta` 一条行都没有，
+ *    它只存在于**调用者自己的**每用户 SQLite（`project_ext` 一行）里。此时认那行为**属主**
+ *    ——平台对「能不能进这个项目」的全局口径本来就是它：中间件 `project-location.ts` 与
+ *    `file.ts` 的 gate 都只查这一份，从不查 PG。不补这一支，用户自己的项目在这里被拒，
+ *    而文件树、会话全都正常（真栈实测：13 条项目清单里 11 条如此）。
+ *
+ * ## ⚠️ PG 认识的项目**一字不放宽**
+ *
+ * 「认识」= 有**任何人的**成员行，或有 `project_meta` 行。只要 PG 认识它，就只认 `rolesOf`：
+ * 否则一条陈旧 / 迁移残留的 `project_ext` 行就能让非成员往**别人项目**的启用记录里写东西
+ * （`auth.project_asset_enablement` 是项目级共享态，不是个人态）。
+ *
+ * ⚠️ 放宽只到 `owner`：老项目里没有「成员」这个概念，创建者就是属主。
+ */
 function 成员角色(deps: Deps, userId: string, projectId: string) {
-  return Effect.promise(async () => {
-    const roles = await rolesOf(deps.pg(), { userId, projectIds: [projectId] })
-    return roles.get(projectId)
+  return Effect.gen(function* () {
+    const roles = yield* Effect.promise(() => rolesOf(deps.pg(), { userId, projectIds: [projectId] }))
+    const 角色 = roles.get(projectId)
+    if (角色 !== undefined) return 角色
+    // 查的是**调用者自己那份**库：没有这一行（不是他建的 / 老项目以外的形态）⇒ 不是属主。
+    const 自建 = yield* ProjectExt.findByProjectID(deps.database.db, projectId)
+    if (自建 === undefined) return undefined
+    // PG 认识它吗？认识 ⇒ 用 PG 的话（见上面「一字不放宽」）。
+    const 已登记 = yield* Effect.promise(async () => {
+      const [成员, 元信息] = await Promise.all([
+        membersOf(deps.pg(), projectId),
+        projectMetaOf(deps.pg(), [projectId]),
+      ])
+      return 成员.length > 0 || 元信息.has(projectId)
+    })
+    if (已登记) return undefined
+    return "owner"
   })
 }
 

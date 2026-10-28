@@ -14,6 +14,7 @@ import { addMember } from "@opencode-ai/auth/project-member"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -140,6 +141,21 @@ const 阴影项目 = "proj_enable_shadow"
 /** 压住资产的本地副本目录名（`a` 开头，字典序必在 `asset_…` 之前）。 */
 const 阴影技能 = "aaa_shadow"
 
+/**
+ * **多租户改造前建的老项目**（2026-10-28 用户实报 403 的现场）。
+ *
+ * 它只在**调用者自己的**每用户 SQLite 里有一行 `project_ext`，PG 的 `project_member` /
+ * `project_meta` **一条行都没有**——真栈里张三有 11 个这样的项目（清单 13 条、PG 只认识 2 条）。
+ * 同一个 id 由**别人**来问仍该 403：每用户库是物理隔离的，他库里没有这一行。
+ */
+const 老项目 = "proj_enable_legacy"
+/**
+ * **PG 认识、而我不是成员**的项目，但我自己的库里留了一行同 id 的 `project_ext`
+ * （陈旧行 / 迁移残留的形态）。放宽**不能**越到它头上：否则一条旧行就能让非成员
+ * 往别人项目的启用记录里写东西（那是项目级共享态）。
+ */
+const 认得而我非成员项目 = "proj_enable_stale_row"
+
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
 /** 服务端实际用的沙箱根（`AnchorWorkspace.Config.root` 归一化后的形态）。 */
@@ -194,6 +210,34 @@ const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name"
   ...over,
 })
 
+/**
+ * 往**某个用户自己的**每用户库里种一行「他建过这个项目」——老项目在 PG 里的唯一替代证据。
+ *
+ * 走 `DatabaseRouter`（与请求期**同一条**建库 / 迁移路径）而不是自己拉一个 `bun:sqlite`：
+ * `project_ext` 是建库钩子建的，自己连库就得自己保证表已存在（同 `project-ext.test.ts` 的取舍，
+ * `LEARNINGS #004-12`）。裸 SQL 只用来绕开 drizzle 的 `.$default()`（运行时默认值，脚本写不进去）。
+ *
+ * ⚠️ `project` 行不能省：`project_ext.project_id` 有外键（`ON DELETE CASCADE`）。
+ */
+const 种自建项目 = async (subject: TokenSubject, projectId: string) => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const router = yield* DatabaseRouter.Service
+        const db = (yield* router.forUser(subject.id)).db
+        yield* db.run(
+          sql`INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated)
+              VALUES (${projectId}, ${`/tmp/${projectId}`}, '[]', 1700000000000, 1700000000000)`,
+        )
+        yield* db.run(
+          sql`INSERT OR IGNORE INTO project_ext (project_id, type, project_type, shared_directory, last_accessed_at)
+              VALUES (${projectId}, 'private', '单案', NULL, 1700000000000)`,
+        )
+      }),
+    ).pipe(Effect.provide(DatabaseRouter.layer({ root: DATA_ROOT }))),
+  )
+}
+
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
@@ -228,6 +272,12 @@ beforeAll(async () => {
   ]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
   }
+
+  // 老项目那一组：一个是**PG 完全不认识**的（`老项目`），一个是 **PG 认识、而我不是成员**的
+  // （`认得而我非成员项目`）。两者的区别只在 PG 里有没有行——结论必须不同。
+  await addMember(pg.db, { projectId: 认得而我非成员项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
+  await 种自建项目(我, 老项目)
+  await 种自建项目(我, 认得而我非成员项目)
 
   // I3 的夹具：把 `<项目>/.opencode/skill` 做成一个**普通文件**。对账第一步就是
   // `mkdir(<项目>/.opencode/skill, { recursive: true })` ⇒ 必然抛（EEXIST / ENOTDIR），
@@ -1215,4 +1265,70 @@ describe("项目级 skill 启用（真应用）", () => {
       }),
     30_000,
   )
+
+  /**
+   * ## 老项目（多租户改造前建的）：自建即属主
+   *
+   * 现场（2026-10-28 用户实报截图）：张三的清单 13 条、PG 只认识 2 条；另外 11 个老项目只在
+   * **他自己**的每用户 SQLite 里有一行 `project_ext`。资产出口当时只问 PG ⇒ 自己的项目被判成
+   * 「不是该项目成员」，资产中心一条红条。
+   *
+   * 判据（用户 2026-10-28 裁定「自建即属主」）：**PG 完全不认识**该项目时，调用者自己库里那行
+   * `project_ext` 就是属主证据——平台上「能不能进这个项目」的全局口径本来就是它
+   * （`middleware/project-location.ts` 与 `file.ts` 的 gate 都只查这一份）。
+   *
+   * ⚠️ **PG 认识的一字不放宽**：只要 PG 里有该项目的成员行或 meta 行，就只认 `rolesOf`。
+   */
+  describe("老项目（PG 不认识，只有每用户库的 project_ext 行）", () => {
+    it.live(
+      "自建的老项目能读启用状态：不再 403",
+      () =>
+        Effect.gen(function* () {
+          const response = yield* as(我, `${STATE}?projectId=${老项目}`)
+          const body = yield* json(状态, response)
+          expect(response.status).toBe(200)
+          expect(body.enabled).toEqual([])
+          expect(body.limit).toBe(20)
+        }),
+      30_000,
+    )
+
+    it.live(
+      "自建的老项目能启用 skill：关系行与链接都落在自己的沙箱里",
+      () =>
+        Effect.gen(function* () {
+          const enabled = yield* post(我, ENABLE, { projectId: 老项目, assetId: 已发布资产 })
+          expect(enabled.status).toBe(200)
+          expect((yield* json(状态, enabled)).enabled).toEqual([已发布资产])
+          // oracle 不经过被测对象：链接直接看文件系统。
+          expect(existsSync(链接路径(老项目, 已发布资产))).toBe(true)
+
+          const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${老项目}`))
+          expect(body.enabled).toEqual([已发布资产])
+        }),
+      30_000,
+    )
+
+    it.live(
+      "同一个老项目，别人来问仍 403（每用户库物理隔离：他库里没有这行）",
+      () =>
+        Effect.gen(function* () {
+          const response = yield* as(别人, `${STATE}?projectId=${老项目}`)
+          expect(response.status).toBe(403)
+          expect((yield* json(错误, response)).code).toBe("forbidden")
+        }),
+      30_000,
+    )
+
+    it.live(
+      "PG 认识该项目时不放宽：我库里留了同 id 的 project_ext 行，仍 403",
+      () =>
+        Effect.gen(function* () {
+          const response = yield* as(我, `${STATE}?projectId=${认得而我非成员项目}`)
+          expect(response.status).toBe(403)
+          expect((yield* json(错误, response)).code).toBe("forbidden")
+        }),
+      30_000,
+    )
+  })
 })
