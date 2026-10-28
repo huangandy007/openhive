@@ -25,7 +25,12 @@ import {
 } from "@/project/minio-backups"
 import type { BackupJob, BackupPreview, BackupSnapshot, BackupSnapshotDetail } from "@/project/openhive-backup"
 import { type ProjectData } from "@/project/project-data"
-import { 请求文件清单, set文件清单请求, setProjectFiles } from "@/project/project-files"
+import {
+  请求文件清单,
+  set文件清单请求,
+  setProjectFiles,
+  set项目文件被截断,
+} from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { setProjectMembers } from "@/project/project-members"
 import { type NewProjectInput, type ProjectEntry } from "@/project/project-panel"
@@ -1501,11 +1506,13 @@ const 打字 = (el: HTMLInputElement, 值: string) => {
  * ——这正是 `loadFile` 那条注释防的同一件事（`useSDK()` 要六层 provider 才活得下来）。
  */
 describe("项目数据接线（T018 出参）", () => {
-  // 三条接入缝都是模块级的，测试之间必须复位，否则互相串味。
+  // 四条接入缝都是模块级的，测试之间必须复位，否则互相串味。
   beforeEach(() => {
     setCurrentProject(undefined)
     setProjectList(undefined)
     setProjectFiles(undefined)
+    // 2026-10-28：截断提示与清单同一处写、同一处清；不复位的话上一条用例那句提示会残到这一条。
+    set项目文件被截断(false)
   })
 
   /**
@@ -1741,6 +1748,61 @@ describe("项目数据接线（T018 出参）", () => {
     全展开(host) // 默认全收缩（用户第 5 条）⇒ 深一层的行要先打开
     expect(路径们(host)).toContain("资料/话单.csv")
     expect(text(host, "file-tree-failed")).toBeUndefined()
+  })
+
+  /**
+   * **截断提示**（2026-10-28 批量取数）。
+   *
+   * 服务端一趟最多交 50000 条，超了就停下并置 `truncated: true`——这是本项目**第一次允许**
+   * 交出不完整清单，所以界面上必须有那句话；半个清单冒充完整清单是谎（`project-files.ts` 头）。
+   *
+   * ⚠️ 三条都走 `剧本.tree`，**不许**用 `剧本.files`：替身在没有 `剧本.tree` 时把 `truncated`
+   * **写死成 `false`**，拿 `files` 写的用例断的是那个字面量、真正的接线
+   * （`set项目文件被截断(结果.truncated)`）根本没被走到（`#005-47`）。
+   */
+  test("清单被截断时把「只列了前 5 万个」说出来", async () => {
+    const { data } = 假数据源({ tree: async () => ({ paths: ["a.txt"], truncated: true }) })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+
+    // 断的是**那句话在画面上**，不是「信号被置了」——信号对了而提示没渲出来，正是这条要挡的。
+    expect(host.textContent).toContain("文件太多，只列了前 5 万个")
+  })
+
+  test("没被截断时一个字都不说", async () => {
+    const { data } = 假数据源({ tree: async () => ({ paths: ["a.txt"], truncated: false }) })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+
+    expect(host.textContent).not.toContain("文件太多")
+  })
+
+  test("切到没被截断的项目 ⇒ 上一句提示跟着消失", async () => {
+    // 信号是**模块级**的：换项目不清，就会出现「这个项目明明完整，却挂着上一个项目那句话」。
+    // ⚠️ 断在**乙的清单还没回来**的时候：若只靠新回包里的 `truncated: false` 来清，那么加载中
+    // 与取不到这两条路上旧提示都还挂着——清零那一行守的正是这段空窗，拆掉它这条必须红。
+    let 放行乙: (v: { paths: readonly string[]; truncated: boolean } | undefined) => void = () => {}
+    const { data } = 假数据源({
+      tree: async (id) =>
+        id === "p1" ? { paths: ["a.txt"], truncated: true } : new Promise((resolve) => (放行乙 = resolve)),
+    })
+    const host = 挂(data)
+    await 冲一遍()
+    setCurrentProject({ id: "p1", name: "甲" })
+    await 冲一遍()
+    expect(host.textContent).toContain("文件太多")
+
+    setCurrentProject({ id: "p2", name: "乙" })
+    await 冲一遍()
+    expect(host.textContent).not.toContain("文件太多")
+
+    放行乙({ paths: ["b.txt"], truncated: false })
+    await 冲一遍()
+    expect(host.textContent).not.toContain("文件太多")
   })
 
   /**

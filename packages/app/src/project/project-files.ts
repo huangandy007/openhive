@@ -22,6 +22,17 @@ import { createSignal } from "solid-js"
 export const [projectFiles, setProjectFiles] = createSignal<readonly string[] | undefined>()
 
 /**
+ * 这一份清单是不是**被截断**的（2026-10-28 批量取数）。
+ *
+ * 半个清单冒充完整清单是谎（本文件头那条），所以截断这件事必须由界面说出来——它是本项目
+ * 第一次**允许**交出不完整清单，那句提示是它的代价，不是可选装饰。
+ *
+ * 与 `projectFiles` 同一口气写、同一处清：换项目时一起归 `false`（否则切到一个正常项目
+ * 还挂着上一个项目的那句提示）。
+ */
+export const [项目文件被截断, set项目文件被截断] = createSignal(false)
+
+/**
  * 「现在就要清单」的拨号（2026-10-21，按需取数）。
  *
  * 起因：文件清单过去**无条件**在换项目时取，可停「会话」页签的用户一眼都看不到那棵树，

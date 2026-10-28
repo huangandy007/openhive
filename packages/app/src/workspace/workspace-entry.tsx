@@ -40,7 +40,13 @@ import type { ProjectActionOutcome } from "@/project/openhive-project"
 import { ProjectAnchor } from "@/project/project-anchor"
 import type { ProjectData } from "@/project/project-data"
 import { TargetPicker } from "@/project/target-picker"
-import { 文件清单请求, projectFiles, setProjectFiles } from "@/project/project-files"
+import {
+  项目文件被截断,
+  文件清单请求,
+  projectFiles,
+  setProjectFiles,
+  set项目文件被截断,
+} from "@/project/project-files"
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { projectMembers, setProjectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
@@ -596,6 +602,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     if (id !== 上次项目) {
       上次项目 = id
       setProjectFiles(undefined)
+      set项目文件被截断(false)
       set文件清单态(id ? "loading" : "idle")
     }
     if (!id || !projectData) {
@@ -612,15 +619,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     onCleanup(() => {
       作废 = true
     })
-    void projectData.files(id).then((paths) => {
+    void projectData.tree(id).then((结果) => {
       if (作废) return
-      if (paths === undefined) {
+      if (结果 === undefined) {
         // 取不到：**有旧清单就留着**（刷新失败不能把已有的树抹掉——同 `FileTreeProps.status`
         // 的「旧清单优先」）；没有才如实说「取不到」，并让树给出重试。
         set文件清单态(projectFiles() === undefined ? "failed" : "ready")
         return
       }
-      setProjectFiles(paths)
+      setProjectFiles(结果.paths)
+      set项目文件被截断(结果.truncated)
       set文件清单态("ready")
     })
   })
@@ -2124,6 +2132,16 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         // 与其余各项同一口径——**要有项目**才接线（没有项目就没有可打开的文件）。
                         onOpen={有项目() ? (path) => void 打开文件({ path, 标题: 末段(path) }) : undefined}
                       />
+                      {/* 截断提示（2026-10-28）：项目文件超过上限时**必须说出来**，
+                          不许静默交半张清单（design §4）。文案与上限是同一个数，改一处要改两处。 */}
+                      <Show when={项目文件被截断()}>
+                        <p
+                          data-slot="file-tree-truncated"
+                          class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] text-v2-text-text-muted"
+                        >
+                          文件太多，只列了前 5 万个
+                        </p>
+                      </Show>
                       {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
                           排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树
                           （同 `dual-file-tree.tsx` 的拉回确认）。
