@@ -79,6 +79,7 @@ export async function listProjectTree(
   send: ProjectFilesFetch = defaultSend,
 ): Promise<ProjectTree | undefined> {
   const response = await trySend(send, TREE_PATH, {
+    method: "GET",
     credentials: "same-origin",
     headers: { [PROJECT_HEADER]: projectId },
   })

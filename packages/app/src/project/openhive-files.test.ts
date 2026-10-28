@@ -23,12 +23,18 @@ import { listProjectFiles, listProjectTree, readProjectFile, type ProjectFilesFe
 
 const PROJECT = "550e8400-e29b-41d4-a716-446655440000"
 
-/** 一次取数的替身：记下这次请求（路径 / 项目头 / cookie），回传入的体。 */
+/** 一次取数的替身：记下这次请求（路径 / 动词 / 项目头 / cookie），回传入的体。 */
 function stub(body: unknown) {
-  const 收到: Array<{ url: string; project: string | null; credentials: RequestCredentials | undefined }> = []
+  const 收到: Array<{
+    url: string
+    method: string | undefined
+    project: string | null
+    credentials: RequestCredentials | undefined
+  }> = []
   const send: ProjectFilesFetch = async (input, init) => {
     收到.push({
       url: input,
+      method: init?.method,
       project: init?.headers ? new Headers(init.headers).get("x-openhive-project") : null,
       credentials: init?.credentials,
     })
@@ -42,7 +48,9 @@ describe("listProjectTree", () => {
     const { send, 收到 } = stub({ paths: ["a.txt"], truncated: false })
 
     expect(await listProjectTree(PROJECT, send)).toEqual({ paths: ["a.txt"], truncated: false })
-    expect(收到).toEqual([{ url: "/openhive/project/tree", project: PROJECT, credentials: "same-origin" }])
+    expect(收到).toEqual([
+      { url: "/openhive/project/tree", method: "GET", project: PROJECT, credentials: "same-origin" },
+    ])
   })
 
   /**
