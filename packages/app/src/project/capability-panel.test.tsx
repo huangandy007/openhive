@@ -697,3 +697,81 @@ describe("技能说明：卡片里不显示，悬停 / 聚焦时右侧预览（2
     expect(来源.textContent).not.toContain("📦")
   })
 })
+
+/**
+ * 拖技能卡片到右栏输入框（2026-10-29 用户提出）。
+ *
+ * 本组件只交出「这张卡能不能拖、拖出去带什么」；放下以后插什么、插在哪儿，归右栏
+ * （`session-panel` 那一侧收货）。两侧的 MIME 型与句子都从 `@/ai-session/skill-drop` 取，
+ * 这里仍按**字面量**断——断的是跨栏契约本身，不是「函数调了函数」（`#003-05`）。
+ */
+describe("技能卡片是拖拽源（2026-10-29）", () => {
+  /** 起一次 `dragstart`，把 `setData` 写进来的载荷收下来。happy-dom 不造真 DataTransfer。 */
+  const 拖起 = (卡: HTMLElement) => {
+    const 存 = new Map<string, string>()
+    const 事件 = new Event("dragstart", { bubbles: true, cancelable: true })
+    Object.defineProperty(事件, "dataTransfer", {
+      value: {
+        effectAllowed: "",
+        setData: (型: string, 值: string) => void 存.set(型, 值),
+      },
+    })
+    卡.dispatchEvent(事件)
+    return 存
+  }
+
+  const 两张 = () => [
+    技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" }),
+    技能({ name: "话单分析" }),
+  ]
+
+  test("能用的才可拖：库内已加载 ＋ 自带", () => {
+    const host = 面板({ enabled: () => new Set(["a1"]), enabledCount: () => 1, skills: 两张 })
+
+    expect(一(host, "capability-item-loaded")?.getAttribute("draggable")).toBe("true")
+    expect(一(host, "capability-item-local")?.getAttribute("draggable")).toBe("true")
+  })
+
+  test("没生效的库内卡（② 已启用但内核没加载到）不能拖", () => {
+    // `enabled` 有 a1，但内核清单里没有它 ⇒ `loaded: false`。
+    const host = 面板({ enabled: () => new Set(["a1"]), enabledCount: () => 1, skills: () => [] })
+    const 卡 = 一(host, "capability-item-stale")!
+
+    expect(卡.getAttribute("draggable") === "true", "拖了也只会得到一句「请使用…」，AI 那边没有这个技能").toBe(false)
+    // 起拖也带不出任何载荷（处理器根本没挂）。
+    expect(拖起(卡).size).toBe(0)
+  })
+
+  test("拖出去带两种载荷：自定义型给右栏认，text/plain 给别的应用看人话", () => {
+    const host = 面板({ enabled: () => new Set(["a1"]), enabledCount: () => 1, skills: 两张 })
+
+    const 存 = 拖起(一(host, "capability-item-loaded")!)
+
+    expect(存.get("application/x-openhive-skill")).toBe("skill:资金流向分析")
+    // 拖进记事本时落下的是这句话，而不是 `skill:资金流向分析`。
+    expect(存.get("text/plain")).toBe("请使用“资金流向分析”技能帮我")
+  })
+
+  test("自带卡片带的是它自己的名字（不是库里的资产名）", () => {
+    const host = 面板({ enabled: () => new Set(["a1"]), enabledCount: () => 1, skills: 两张 })
+
+    const 存 = 拖起(一(host, "capability-item-local")!)
+
+    expect(存.get("application/x-openhive-skill")).toBe("skill:话单分析")
+  })
+
+  test("起拖时收掉悬停预览（拖拽期间没有 mouseleave，不收就孤零零留在屏上）", () => {
+    const host = 面板({
+      enabled: () => new Set(["a1"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析", description: "甲说" })],
+    })
+    const 卡 = 一(host, "capability-item-loaded")!
+    卡.dispatchEvent(new MouseEvent("mouseenter"))
+    expect(document.querySelector('[data-slot="capability-hover-preview"]') !== null, "前置：预览要先出来").toBe(true)
+
+    拖起(卡)
+
+    expect(document.querySelector('[data-slot="capability-hover-preview"]')).toBeNull()
+  })
+})

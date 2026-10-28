@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web"
 import { Icon } from "@opencode-ai/ui/icon"
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import { 合并能力, 计数, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
+import { 技能句子, 技能载荷, 技能载荷型 } from "@/ai-session/skill-drop"
 
 /**
  * 项目「能力」面板（`2026-10-27-项目能力面板-design.md`）。
@@ -147,6 +148,38 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     },
   })
 
+  /**
+   * 这张卡能不能拖去右栏（2026-10-29 用户提出，并裁定「没启用的不能拖」）。
+   *
+   * - 库内条目：只有 `loaded`（内核真加载到了）才算能用。②「已启用但没加载到」那张卡
+   *   拖过去只会得到一句「请使用…技能帮我」，而 AI 那边根本没有这个技能——等于用拖拽
+   *   替用户造一个不存在的承诺（这正是那张卡下面那行诊断在说的事）。
+   * - 自带条目：内核读得到才在这里出现，本来就是可用的。
+   */
+  const 可拖 = (条: 能力条目) => (条.kind === "local" ? true : 条.loaded)
+
+  /**
+   * 拖拽源接线。载荷与文案都取自 `@/ai-session/skill-drop`，收货方从同一处取（`#002-06`）。
+   *
+   * `text/plain` 写**整句**而不是内部前缀：拖到别的应用（记事本、别的输入框）时落下的
+   * 是人话，不是 `skill:话单分析`。同一个拖拽里两种型各说各的受众。
+   */
+  const 拖接线 = (条: 能力条目) =>
+    可拖(条)
+      ? {
+          draggable: true,
+          onDragStart: (事件: DragEvent) => {
+            if (!事件.dataTransfer) return
+            事件.dataTransfer.effectAllowed = "copy"
+            事件.dataTransfer.setData(技能载荷型, 技能载荷(条.name))
+            事件.dataTransfer.setData("text/plain", 技能句子(条.name))
+            // 指针拖着东西离开卡片时多半没有 `mouseleave`（拖拽期间不派发指针事件）⇒
+            // 不收掉预览，它就会孤零零留在屏上（同「卡片被移走」那条清理的必要性）。
+            收说明()
+          },
+        }
+      : {}
+
   /** 说明对读屏仍然可见（视觉上省掉了那一行，信息不能整个消失）。 */
   const 读屏说明 = (文字: () => string | undefined) => (
     <Show when={文字()}>
@@ -203,7 +236,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   )
 
   const 自带 = (条: 自带条目) => (
-    <div data-slot="capability-item-local" class={条目框} {...卡接线(() => 条.description)}>
+    <div data-slot="capability-item-local" class={条目框} {...卡接线(() => 条.description)} {...拖接线(条)}>
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">●</span>
         <span class="font-semibold">{条.name}</span>
@@ -218,6 +251,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       data-slot={条.loaded ? "capability-item-loaded" : "capability-item-stale"}
       class={条目框}
       {...卡接线(() => 条.description)}
+      {...拖接线(条)}
     >
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">{条.loaded ? "●" : "▲"}</span>

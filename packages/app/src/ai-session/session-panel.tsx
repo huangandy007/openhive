@@ -13,6 +13,7 @@ import { createStore } from "solid-js/store"
 import { 右栏选中命令, 右栏斜杠命令, 右栏斜杠源, type 内建命令条, type 服务端命令条 } from "./command-palette"
 import { CommonCards } from "./common-cards"
 import { 拖入正文, 拖入路径 } from "./drop-reference"
+import { 技能句子, 技能载荷型, 松手偏移, 拖入技能 } from "./skill-drop"
 import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
 import { SessionNav, type 可索引的一轮 } from "./session-nav"
@@ -549,6 +550,20 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
       // 走表单自带的 `onDrop`（`index.tsx` 的 `<form>`）⇒ **只有落在会话框里的拖拽**才走到这儿，
       // 拖到文件树上不会误插。
       onDrop: (event) => {
+        // ── 技能卡片（2026-10-29 用户提出）：在**松手那一点**插「请使用“X”技能帮我」。
+        //
+        // 只认卡片自己写的自定义 MIME，不靠句子形状去猜——`text/plain` 上那条兜底文案
+        // 是给「拖到别的应用」看的，混进来当正文处理正好（它本身就是一句人话）。
+        // 落点：像素→位置问浏览器（`松手偏移`），量不到（happy-dom / 没落在输入框里）
+        // 就退回插入前的光标，**不**因此放弃插入——插在哪儿是次要的，插没插是主要的。
+        const 技能名 = 拖入技能(event.dataTransfer?.getData(技能载荷型))
+        if (技能名 !== undefined) {
+          const 偏移 = 松手偏移(event)
+          if (偏移 !== undefined) 草稿操作.setCursor(偏移)
+          const 结果 = 发送到会话(技能句子(技能名))
+          if (!结果.ok) showToast(发送失败提示(结果.原因))
+          return
+        }
         // 只读 `text/plain`：真拖选还带一份 `text/html`，那份不看（会塞进 HTML 结构）。
         const 载荷 = event.dataTransfer?.getData("text/plain")
         const 路径 = 拖入路径(载荷)

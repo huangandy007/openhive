@@ -2456,3 +2456,95 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
     expect(发送到会话("张三")).toEqual({ ok: false, 原因: "没有会话" })
   })
 })
+
+/**
+ * 拖技能卡片到右栏会话框 ⇒ 在输入框里插「请使用“X”技能帮我」（2026-10-29 用户提出）。
+ *
+ * 起拖那一头在 `project/capability-panel.tsx`（只交出「谁能拖、带什么」）；这里钉的是收货：
+ * 认哪个型、插什么话、以及**不许**把它当成文件引用。
+ *
+ * ⚠️ **测不到的那一段**：用户要的落点是「松手那一点」，靠 `document.caretRangeFromPoint`
+ * 把像素换成偏移——happy-dom 没有这两个 API（也没有布局），量出来恒是 `undefined`。
+ * 本文件钉的是**退回原光标也照样插**那一支；「真落在松手处」只有真栈用例能验，已记为缺口。
+ */
+describe("拖技能卡片到右栏会话框（2026-10-29 用户提出）", () => {
+  /** 发一次真实的 `drop`，替身 `dataTransfer` 按**型**取载荷（同上面那条 `拖入` 的注记）。 */
+  const 拖入带型 = (宿主: HTMLElement, 载荷们: Record<string, string>) => {
+    const 表单 = 宿主.querySelector<HTMLElement>('[data-component="prompt-input-v2"]')
+    if (!表单) throw new Error('没找到右栏会话框的表单（[data-component="prompt-input-v2"]）')
+    const 事件 = new Event("drop", { bubbles: true, cancelable: true })
+    Object.defineProperty(事件, "dataTransfer", {
+      value: { getData: (型: string) => 载荷们[型] ?? "" },
+    })
+    表单.dispatchEvent(事件)
+  }
+
+  /**
+   * ⚠️ 只带自定义型、**不带 `text/plain`**。
+   *
+   * 卡片两样都写（`text/plain` 是给别的应用看的人话），可那句人话本身就能走正文那条老路插进来
+   * ——两条路产出一模一样，那这几条用例在**没有**技能识别分支的实现上照样全绿（假绿）。
+   * 只给自定义型，才逼出「认得出技能」这一支：认不出就一个字都没有。
+   */
+  const 技能载荷们 = (名: string) => ({ "application/x-openhive-skill": `skill:${名}` })
+
+  test("拖一张技能卡 ⇒ 会话框里出现整句，名字带中文弯引号", () => {
+    const 宿主 = 摆右栏()
+
+    拖入带型(宿主, 技能载荷们("话单分析"))
+
+    expect(输入框里的话(宿主), "拖了技能卡，会话框里没出现那句话").toBe("请使用“话单分析”技能帮我")
+  })
+
+  test("技能卡被当成正文，不是文件引用", () => {
+    const 宿主 = 摆右栏()
+
+    拖入带型(宿主, 技能载荷们("话单分析"))
+
+    const 引用 = 宿主.querySelectorAll('[data-component="prompt-input"] [data-mention]')
+    expect(引用.length, "技能卡片被错认成了文件路径引用").toBe(0)
+  })
+
+  test("会话框里已打的字不被吞：整句接在原文后面", () => {
+    const 宿主 = 摆右栏()
+    打字(宿主, "帮我看看")
+
+    拖入带型(宿主, 技能载荷们("话单分析"))
+
+    const 话 = 输入框里的话(宿主) ?? ""
+    expect(话.startsWith("帮我看看"), `已经打好的字被吞了或被挤到后面：${JSON.stringify(话)}`).toBe(true)
+    expect(话).toContain("请使用“话单分析”技能帮我")
+  })
+
+  test("连着拖两张 ⇒ 两句话都在（各自是自己的技能名）", () => {
+    const 宿主 = 摆右栏()
+
+    拖入带型(宿主, 技能载荷们("话单分析"))
+    拖入带型(宿主, 技能载荷们("资金流向分析"))
+
+    const 话 = 输入框里的话(宿主) ?? ""
+    expect(话.indexOf("请使用“话单分析”技能帮我") >= 0, `第一句丢了：${JSON.stringify(话)}`).toBe(true)
+    expect(话.indexOf("请使用“资金流向分析”技能帮我") >= 0, `第二句丢了：${JSON.stringify(话)}`).toBe(true)
+  })
+
+  /**
+   * 兜底路：有的拖拽来源只肯带 `text/plain`。卡片写进 `text/plain` 的**就是整句人话**
+   * （给别的应用看的），所以这一类掉进来的照样是一句能用的正文——只是它走的是正文那条路。
+   */
+  test("只剩 text/plain 的来源 ⇒ 整句当正文插进来（不是哑拖）", () => {
+    const 宿主 = 摆右栏()
+
+    拖入带型(宿主, { "text/plain": "请使用“话单分析”技能帮我" })
+
+    expect(输入框里的话(宿主)).toBe("请使用“话单分析”技能帮我")
+  })
+
+  test("反面：自定义型里不是技能载荷 ⇒ 一个字都不插", () => {
+    const 宿主 = 摆右栏()
+
+    // 没有前缀（不是 `skill:` 开头）⇒ 认不出来；也没有 text/plain 可以退。
+    拖入带型(宿主, { "application/x-openhive-skill": "话单分析" })
+
+    expect(输入框里的话(宿主) ?? "", "认不出的载荷被当正文插进去了").toBe("")
+  })
+})
