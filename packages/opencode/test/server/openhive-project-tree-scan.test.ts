@@ -4,14 +4,15 @@ import { 扫树, type 条目, type 读目录 } from "@/server/openhive/project-t
 const 目录 = (path: string, ignored = false): 条目 => ({ path, type: "directory", ignored })
 const 文件 = (path: string, ignored = false): 条目 => ({ path, type: "file", ignored })
 
-function 替身(routes: Record<string, unknown>) {
+function 替身(routes: Record<string, 条目[] | Error | undefined>) {
   const 走过: string[] = []
   const 读: 读目录 = async (dir) => {
     走过.push(dir)
+    if (!(dir in routes)) throw new Error(`替身没配这条路径：${JSON.stringify(dir)}`)
     const route = routes[dir]
-    if (route === undefined) throw new Error(`替身没配这条路径：${JSON.stringify(dir)}`)
+    if (route === undefined) return undefined
     if (route instanceof Error) return undefined
-    return route as 条目[]
+    return route
   }
   return { 读, 走过 }
 }
@@ -127,6 +128,16 @@ describe("扫树：上限与截断", () => {
     })
     const 结果 = await 扫树(读, 1)
     expect(结果).toEqual({ paths: ["一\\a"], truncated: true })
+    expect(走过).toEqual(["", "一\\"])
+  })
+
+  test("到达上限后不再读下一层：下一层读失败也不该把整份变成 undefined", async () => {
+    const { 读, 走过 } = 替身({
+      "": [目录("一\\"), 目录("二\\")],
+      "一\\": [文件("一\\a")],
+      "二\\": undefined, // 这一层取不到
+    })
+    expect(await 扫树(读, 1)).toEqual({ paths: ["一\\a"], truncated: true })
     expect(走过).toEqual(["", "一\\"])
   })
 })
