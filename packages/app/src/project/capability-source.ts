@@ -1,4 +1,4 @@
-import type { 内核技能 } from "@/ai-assets/enable-api"
+import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 
 /**
  * 「这个项目现在能用什么」的三态合并（`2026-10-27-项目能力面板-design.md` §4）。
@@ -25,6 +25,14 @@ export interface 库内条目 {
   readonly name: string
   readonly description?: string
   readonly loaded: boolean
+  /**
+   * `loaded === false` 的成因之二：被一份**同名**技能盖掉（2026-10-28）。
+   *
+   * 缺席 = 「进程里没有它，且服务端没说被谁盖了」——那才该说「快捷方式可能丢了」。
+   * `name` 是撞上的 frontmatter name，`location` 是赢家的 SKILL.md 落点（可能在本项目内，
+   * 也可能在项目外，如全局 `skills.paths`）。
+   */
+  readonly 覆盖者?: { readonly name: string; readonly location: string }
 }
 
 export interface 自带条目 {
@@ -38,6 +46,8 @@ export type 能力条目 = 库内条目 | 自带条目
 export interface 合并输入 {
   readonly enabled: ReadonlySet<string>
   readonly skills: readonly 内核技能[] | undefined
+  /** 服务端点名的「被同名技能盖掉的启用资产」；缺席 = 没有被盖的（或这次没读到内核）。 */
+  readonly shadowed?: readonly 被覆盖技能[] | undefined
 }
 
 export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
@@ -59,9 +69,18 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
     })
   }
 
+  // 只认**本项目已启用**的那些：服务端可能多报（别的项目 / 不是这次 enabled 的），
+  // 凭空造一条条目或覆盖者都是替服务端补话（`#002-02`）。
+  const 覆盖表 = new Map<string, { name: string; location: string }>()
+  for (const 项 of 输入.shadowed ?? []) {
+    if (!输入.enabled.has(项.assetId)) continue
+    覆盖表.set(项.assetId, { name: 项.name, location: 项.location })
+  }
+
   const 库内: 库内条目[] = []
   for (const assetId of 输入.enabled) {
     const 命中 = 内核在某资产.get(assetId)
+    const 覆盖者 = 命中 === undefined ? 覆盖表.get(assetId) : undefined
     库内.push({
       kind: "library",
       assetId,
@@ -69,6 +88,7 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
       name: 命中?.assetName ?? 命中?.name ?? assetId,
       ...(命中?.description === undefined ? {} : { description: 命中.description }),
       loaded: 命中 !== undefined,
+      ...(覆盖者 === undefined ? {} : { 覆盖者 }),
     })
   }
 

@@ -259,3 +259,47 @@ describe("skills 字段：未知与空必须分开（#002-02）", () => {
     expect(结果.kind).toBe("error")
   })
 })
+
+/**
+ * `shadowed`：已启用却被同名技能盖掉的资产（2026-10-28）。
+ *
+ * 与 `skills` 同一套口径：键缺席 = 没有被盖的（或这次没读到内核）；形状不对 ⇒ 整份回包判错——
+ * 把「说不清」悄悄降级成「没被盖」，面板就会回到诬告链接的那句话上（`#002-02`）。
+ */
+describe("shadowed 字段", () => {
+  test("回包带 shadowed ⇒ 逐条解析出来", async () => {
+    const 回包 = {
+      enabled: ["a"],
+      enabledCount: 1,
+      limit: 20,
+      auto: [],
+      autoDelivery: true,
+      skills: [{ name: "资金分析", location: "/w/u/p/.opencode/skill/x/SKILL.md", assetId: "x" }],
+      shadowed: [{ assetId: "a", name: "资金分析", location: "/w/u/p/.opencode/skill/x/SKILL.md" }],
+    }
+    const api = createEnableApi(假发送([{ status: 200, body: 回包 }], []))
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.shadowed?.length).toBe(1)
+    expect(结果.value.shadowed?.[0]?.assetId).toBe("a")
+    expect(结果.value.shadowed?.[0]?.name).toBe("资金分析")
+    expect(结果.value.shadowed?.[0]?.location).toContain("/x/SKILL.md")
+  })
+
+  test("回包没有 shadowed ⇒ 解析成 undefined；键整个缺席", async () => {
+    const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], []))
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.shadowed).toBe(undefined)
+    expect(Object.prototype.hasOwnProperty.call(结果.value, "shadowed")).toBe(false)
+  })
+
+  test("shadowed 形状不对 ⇒ 整份回包判为形状错误", async () => {
+    const api = createEnableApi(
+      假发送([{ status: 200, body: { ...成功态, shadowed: [{ assetId: "a", name: 1, location: "/x" }] } }], []),
+    )
+    expect((await api.read("p1")).kind).toBe("error")
+  })
+})

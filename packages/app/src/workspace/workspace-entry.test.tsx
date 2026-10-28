@@ -6,7 +6,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import type { AssetCategories } from "@/ai-assets/categories"
-import type { 内核技能 } from "@/ai-assets/enable-api"
+import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import type { ProjectEnablement } from "@/ai-assets/enable-state"
 import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { useProjectionModule } from "@/ai-session/projection-module"
@@ -1808,6 +1808,7 @@ describe("项目数据接线（T018 出参）", () => {
     enabled?: readonly string[]
     enabledCount?: number
     skills?: readonly 内核技能[]
+    shadowed?: readonly 被覆盖技能[]
     error?: string
     /** 默认按「清单到了就算读完了」：本组夹具里 `skills` 有值都表示一次成功的读。 */
     readDone?: boolean
@@ -1828,6 +1829,7 @@ describe("项目数据接线（T018 出参）", () => {
       error: () => 选项.error,
       busy: () => undefined,
       skills: () => 选项.skills,
+      shadowed: () => 选项.shadowed,
       readDone: () => 选项.readDone ?? 选项.skills !== undefined,
       bind: () => {},
       toggle: (assetId) => 选项.toggle?.(assetId),
@@ -6574,6 +6576,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       error: () => undefined,
       busy: () => undefined,
       skills: () => undefined,
+      shadowed: () => undefined,
       readDone: () => true,
       bind: () => {},
       toggle: (id) => 切换.push(id),

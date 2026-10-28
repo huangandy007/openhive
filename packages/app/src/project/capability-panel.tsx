@@ -1,5 +1,5 @@
 import { createSignal, For, Show, type JSX } from "solid-js"
-import type { 内核技能 } from "@/ai-assets/enable-api"
+import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import { 合并能力, 计数, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
 
 /**
@@ -42,6 +42,8 @@ export interface CapabilityPanelProps {
   /** 项目真相（含我看不见的）。与 `enabled().size` 不等时补一行说明（设计 §6）。 */
   readonly enabledCount: () => number
   readonly skills: () => readonly 内核技能[] | undefined
+  /** 服务端点名的「已启用却被同名技能盖掉」的资产；`undefined` = 这次没这个结论。 */
+  readonly shadowed: () => readonly 被覆盖技能[] | undefined
   /**
    * 「这个项目的这次读到底了」（成功或失败都算）。
    *
@@ -66,7 +68,7 @@ const 小钮 =
 export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   const [展开, set展开] = createSignal<能力组>("skill")
 
-  const 条目 = () => 合并能力({ enabled: props.enabled(), skills: props.skills() })
+  const 条目 = () => 合并能力({ enabled: props.enabled(), skills: props.skills(), shadowed: props.shadowed() })
   const 前面 = () => 组序.filter((组) => 组序.indexOf(组) < 组序.indexOf(展开()))
   const 后面 = () => 组序.filter((组) => 组序.indexOf(组) > 组序.indexOf(展开()))
   const 数不到 = () => props.enabledCount() - props.enabled().size
@@ -131,7 +133,23 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       <Show
         when={条.loaded}
         fallback={
-          <p class="pl-3 text-[11px]">已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。</p>
+          // ② 有两种成因，说反了就是在假故障上劝用户停用（2026-10-28 真栈现场）：
+          // 链接真丢了 vs 被同名技能盖掉（链接完好，内核去重时留了另一份）。
+          // 槽名分开，两种文案不互相顶替，测试也断得出是哪一种。
+          <Show
+            when={条.覆盖者}
+            fallback={
+              <p data-slot="capability-stale-reason" class="pl-3 text-[11px]">
+                已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。
+              </p>
+            }
+          >
+            {(盖) => (
+              <p data-slot="capability-shadowed-reason" class="pl-3 text-[11px]">
+                已启用，但被一份同名技能「{盖().name}」盖住了，AI 现在用的是那一份。改名或移走那份同名技能后重试。
+              </p>
+            )}
+          </Show>
         }
       >
         <Show when={条.description}>{(说) => <p class="pl-3 text-[11px] text-v2-text-text-muted">{说()}</p>}</Show>

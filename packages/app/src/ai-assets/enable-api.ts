@@ -48,6 +48,19 @@ export interface 内核技能 {
   readonly assetName?: string
 }
 
+/**
+ * 已启用、却被一份同名技能盖掉的资产（与后端 `project-assets.ts` 的 `被覆盖技能` 逐字对应）。
+ *
+ * 「库里有、内核没看见」有两种成因：链接真丢了，或者链接完好但内核按 frontmatter name 去重时
+ * 留了另一份。只报前者会把后者说成「快捷方式可能丢了」（2026-10-28 真栈实测）。
+ * `location` 是**赢家**的 SKILL.md 落点。
+ */
+export interface 被覆盖技能 {
+  readonly assetId: string
+  readonly name: string
+  readonly location: string
+}
+
 export interface EnablementState {
   readonly enabled: readonly string[]
   readonly enabledCount: number
@@ -69,6 +82,11 @@ export interface EnablementState {
   readonly auto: readonly string[]
   readonly autoDelivery: boolean
   readonly skills?: readonly 内核技能[]
+  /**
+   * 已启用却被同名技能盖掉的资产（2026-10-28）。**键缺席** = 没有被盖的（或这次没读到内核），
+   * 与 `skills` 同一条纪律：不拿空数组冒充「没有」以外的含义，也不拿旧值解释新一次读。
+   */
+  readonly shadowed?: readonly 被覆盖技能[]
 }
 
 export type EnableOutcome =
@@ -141,6 +159,22 @@ function 解析状态(body: unknown): EnablementState | undefined {
     }
     技能 = 逐条
   }
+  // 同 `skills` 的严格度：形状不对就整份判错，不把「说不清」降级成「没被盖」——
+  // 那会让面板回到「快捷方式可能丢了」的诬告上（`#002-02`）。
+  const 覆盖原 = 值["shadowed"]
+  let 覆盖: readonly 被覆盖技能[] | undefined
+  if (覆盖原 !== undefined) {
+    if (!Array.isArray(覆盖原)) return undefined
+    const 逐条: 被覆盖技能[] = []
+    for (const 项 of 覆盖原) {
+      if (!isRecord(项)) return undefined
+      if (typeof 项["assetId"] !== "string") return undefined
+      if (typeof 项["name"] !== "string") return undefined
+      if (typeof 项["location"] !== "string") return undefined
+      逐条.push({ assetId: 项["assetId"], name: 项["name"], location: 项["location"] })
+    }
+    覆盖 = 逐条
+  }
   return {
     enabled: 启用,
     enabledCount: 值["enabledCount"],
@@ -150,6 +184,7 @@ function 解析状态(body: unknown): EnablementState | undefined {
     // 键整个缺席 = 不知道；不写 `skills: undefined`（那会让「有键但值为 undefined」也成立，
     // 区分靠的是键在不在，与后端 `带内核清单` 对齐）。
     ...(技能 === undefined ? {} : { skills: 技能 }),
+    ...(覆盖 === undefined ? {} : { shadowed: 覆盖 }),
   }
 }
 

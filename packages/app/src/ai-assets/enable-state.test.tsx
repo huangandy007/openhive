@@ -615,6 +615,47 @@ test("回包没有 skills 键 ⇒ 旧清单作废（undefined），readDone 为 
 })
 
 /**
+ * `shadowed`：已启用却被同名技能盖掉的资产（2026-10-28）。
+ *
+ * 口径与 `skills` 完全一致（同一份回包、同一条「键缺席 = 作废」纪律）：留着上一次的
+ * 「被谁盖了」去解释这一次的清单，等于拿旧事实回答新问题（`#002-02`）。
+ */
+test("shadowed：随回包暴露；键缺席作废；换项目先复位", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
+  }
+  const 盖 = [{ assetId: "a", name: "资金分析", location: "/w/u/p1/.opencode/skill/x/SKILL.md" }]
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.shadowed()).toBeUndefined()
+
+    待到[0]({ kind: "ok", value: { ...空, skills: [], shadowed: 盖 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.shadowed()?.length).toBe(1)
+    expect(状态.shadowed()?.[0]?.assetId).toBe("a")
+
+    // 下一次回包没带 shadowed（这次没读到内核 / 没被盖）⇒ 不能留着上一次那份。
+    状态.reload()
+    await new Promise((r) => setTimeout(r, 0))
+    待到[1]({ kind: "ok", value: { ...空, skills: [] } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.shadowed()).toBeUndefined()
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.shadowed()).toBeUndefined()
+    dispose()
+  })
+})
+
+/**
  * `readDone`：「这次读到底了」（成功或失败）。读不到且已读完 ⇒ 面板给重试，
  * 而不是永远停在「正在读取…」——后者的 UI 里没有任何出口。
  */

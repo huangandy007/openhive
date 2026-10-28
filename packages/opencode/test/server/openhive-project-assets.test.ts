@@ -129,6 +129,16 @@ const 对账失败项目 = "proj_enable_reconcile_broken"
 const 能力项目 = "proj_enable_capability"
 /** 手写在项目沙箱里的技能目录名（内核按目录名给出 `assetId`，库里没有这份资产）。 */
 const 手写技能 = "我的工具"
+/**
+ * 「同名本地副本压住启用资产」的专用项目。
+ *
+ * 里面预先写好一份**手写** `SKILL.md`，frontmatter name 与 `已发布资产` 相同（资金分析）。
+ * 档位相同（都落在本项目 `.opencode/skill` 下）⇒ 按路径字典序，`aaa_shadow` 先于
+ * `asset_skill_ok` ⇒ 本地副本赢、链接那份被内核静默丢掉。
+ */
+const 阴影项目 = "proj_enable_shadow"
+/** 压住资产的本地副本目录名（`a` 开头，字典序必在 `asset_…` 之前）。 */
+const 阴影技能 = "aaa_shadow"
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "openhive-project-assets-"))
 const WORKSPACE_ROOT = join(SANDBOX, "workspaces")
@@ -206,7 +216,16 @@ beforeAll(async () => {
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
-  for (const projectId of [迭代项目, 归档项目, 限额项目, 审计项目, 预算项目, 对账失败项目, 能力项目]) {
+  for (const projectId of [
+    迭代项目,
+    归档项目,
+    限额项目,
+    审计项目,
+    预算项目,
+    对账失败项目,
+    能力项目,
+    阴影项目,
+  ]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
   }
 
@@ -337,6 +356,12 @@ beforeAll(async () => {
   const 手写目录 = join(projectDirectory(沙箱根, 我.id, 能力项目), ".opencode", "skill", 手写技能)
   mkdirSync(手写目录, { recursive: true })
   writeFileSync(join(手写目录, "SKILL.md"), `---\nname: ${手写技能}\ndescription: 本项目手写\n---\n\n正文\n`, "utf8")
+
+  // 与 `已发布资产` 的 SKILL.md **同名**（资金分析）的本地副本，目录名 `a` 开头 ⇒ 字典序先赢。
+  // 链接本身完好，只是内核按名字去重时留了这份、丢了链接那份。
+  const 阴影目录 = join(projectDirectory(沙箱根, 我.id, 阴影项目), ".opencode", "skill", 阴影技能)
+  mkdirSync(阴影目录, { recursive: true })
+  writeFileSync(join(阴影目录, "SKILL.md"), "---\nname: 资金分析\ndescription: 本地同名副本\n---\n\n正文\n", "utf8")
 })
 
 afterAll(async () => {
@@ -403,6 +428,18 @@ const 内核技能 = Schema.Struct({
   assetId: Schema.optional(Schema.String),
   assetName: Schema.optional(Schema.String),
 })
+/**
+ * 「已启用、但它被一份同名技能盖掉了」的那条报备（2026-10-28）。
+ *
+ * `assetId` 是库里那份被盖掉的资产；`name` 是撞上的 frontmatter name；`location` 是**赢家**
+ * 的 SKILL.md 落点（项目内本地副本，或项目外的同名副本）。前端据此说「被谁盖了」，
+ * 而不是诬告「快捷方式可能丢了」。
+ */
+const 被覆盖技能 = Schema.Struct({
+  assetId: Schema.String,
+  name: Schema.String,
+  location: Schema.String,
+})
 const 状态 = Schema.Struct({
   enabled: Schema.Array(Schema.String),
   enabledCount: Schema.Number,
@@ -412,6 +449,7 @@ const 状态 = Schema.Struct({
   /** 这个人在这个项目里的自动送达开关（默认 `true`）。 */
   autoDelivery: Schema.Boolean,
   skills: Schema.optional(Schema.Array(内核技能)),
+  shadowed: Schema.optional(Schema.Array(被覆盖技能)),
 })
 const 错误 = Schema.Struct({ error: Schema.String, code: Schema.optional(Schema.String) })
 
@@ -1124,6 +1162,56 @@ describe("项目级 skill 启用（真应用）", () => {
         const ids = (body.skills ?? []).map((skill) => skill.assetId)
         expect(ids.includes(已发布资产)).toBe(false)
         expect(ids.includes(手写技能)).toBe(true)
+      }),
+    30_000,
+  )
+
+  /**
+   * ② 的**假故障**：链接好好的，是同名去重把这份资产盖掉了（2026-10-28）。
+   *
+   * 现场是「已启用，但 AI 没加载到——项目里的快捷方式可能丢了」——链接根本没丢，
+   * 内核按 frontmatter name 去重时留了另一份同名技能（真栈里是项目外的副本；这里用
+   * 项目内的本地副本复现同一形状）。回包必须把「赢家是谁」说出来，前端才不用诬告链接。
+   *
+   * 判据分三段，缺一段都能被别的病冒充：
+   * ① 链接在、库里有启用行 ⇒ 不是「快捷方式丢了」；
+   * ② 内核清单里没有这个 assetId ⇒ 确实没生效（不是面板误报）；
+   * ③ `shadowed` 指出赢家（同名、落点是那份本地副本）。
+   */
+  it.live(
+    "同名本地副本压住启用资产 ⇒ 回包用 shadowed 说出赢家，不诬告链接丢了",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 阴影项目, assetId: 已发布资产 })).status).toBe(200)
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${阴影项目}`))
+        // ① 启用行与链接都在：这正好排除「链接丢了」这个解释。
+        expect(body.enabled).toEqual([已发布资产])
+        expect(existsSync(链接路径(阴影项目, 已发布资产))).toBe(true)
+        // ② 内核清单里没有它（同名去重丢了链接那份）。
+        expect(body.skills === undefined).toBe(false)
+        expect((body.skills ?? []).some((skill) => skill.assetId === 已发布资产)).toBe(false)
+        // ③ 回包点名赢家。
+        const 盖 = (body.shadowed ?? []).find((item) => item.assetId === 已发布资产)
+        expect(盖 === undefined).toBe(false)
+        expect(盖!.name).toBe("资金分析")
+        expect(盖!.location.replace(/\\/g, "/")).toContain(`/.opencode/skill/${阴影技能}/SKILL.md`)
+      }),
+    30_000,
+  )
+
+  /** 照常加载的资产**不进** `shadowed`：这个键只在真被盖时出现，别把正常态也标一遍。 */
+  it.live(
+    "正常加载的资产不出现在 shadowed 里",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${能力项目}`))
+        expect((body.skills ?? []).some((skill) => skill.assetId === 已发布资产)).toBe(true)
+        expect(body.shadowed === undefined || body.shadowed.length === 0).toBe(true)
+
+        expect((yield* post(我, DISABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
       }),
     30_000,
   )

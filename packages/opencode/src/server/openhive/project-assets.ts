@@ -126,6 +126,23 @@ export interface 内核技能 {
   readonly assetName?: string
 }
 
+/**
+ * 「已启用、却被一份同名技能盖掉了」的报备（2026-10-28）。
+ *
+ * 第二态（库里有、内核没看见）有两种成因，面板要说清是哪一种：
+ * - **链接丢了 / 没建**（文件系统事实）；
+ * - **同名去重**：链接完好，但内核按 frontmatter name 去重时留了另一份（`Skill.TIER`）。
+ *
+ * 只报第一种会把第二种说成「项目里的快捷方式可能丢了」，劝用户在假故障上停用（实测现场）。
+ * `location` 是**赢家**的 SKILL.md 落点——真栈里是项目外的同名副本（经 `skills.paths`），
+ * 也可能是项目内用户自己写的同名副本。
+ */
+export interface 被覆盖技能 {
+  readonly assetId: string
+  readonly name: string
+  readonly location: string
+}
+
 interface 状态基 {
   readonly enabled: readonly string[]
   readonly enabledCount: number
@@ -137,13 +154,18 @@ interface 状态基 {
  *
  * `内核 === undefined` ⇒ **整个 `skills` 键缺席**，不是空数组。空数组会被前端读成
  * 「内核一条都没看见」⇒ 把每条技能都标成「没生效」，而事实只是「这次没读到」（`#002-02`）。
+ *
+ * `被覆盖` 同样只在**读到了内核**时才有意义（没读到就无从判断谁盖了谁）⇒ 不传就缺席；
+ * 空数组也不写，让「正常加载」与「被盖了」在回包形状上就分开。
  */
 export function 带内核清单<T extends 状态基>(
   base: T,
   内核: readonly 内核技能[] | undefined,
-): T & { skills?: readonly 内核技能[] } {
+  被覆盖?: readonly 被覆盖技能[],
+): T & { skills?: readonly 内核技能[]; shadowed?: readonly 被覆盖技能[] } {
   if (内核 === undefined) return base
-  return { ...base, skills: 内核 }
+  if (被覆盖 === undefined || 被覆盖.length === 0) return { ...base, skills: 内核 }
+  return { ...base, skills: 内核, shadowed: 被覆盖 }
 }
 
 const BOARD = "asset-governance"
@@ -293,17 +315,63 @@ function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<stri
   const store = deps.store
   const skill = deps.skill
   if (Option.isNone(store) || Option.isNone(skill))
-    return Effect.succeed<readonly 内核技能[] | undefined>(undefined)
+    return Effect.succeed<{ 项目内: 内核技能[]; 全量: { name: string; location: string }[] } | undefined>(undefined)
   return store.value
     .provide({ directory }, skill.value.available())
     .pipe(
-      Effect.map((list) => 映射内核清单(list, directory, 标题)),
+      // `全量` 是**未过滤**的清单：判「谁盖了谁」必须看得到项目外的赢家——`属于项目()` 一过就把
+      // 它滤掉了，而它恰恰是解释损失的那一条（2026-10-28 现场：赢家经 `skills.paths` 落在项目外）。
+      Effect.map((list) => ({
+        项目内: 映射内核清单(list, directory, 标题),
+        全量: list.map((info) => ({ name: info.name, location: info.location })),
+      })),
       Effect.catchCause((cause) =>
         Effect.logWarning("读内核技能清单失败，本次不回报（不谎报为空）", { directory, cause }).pipe(
-          Effect.as<readonly 内核技能[] | undefined>(undefined),
+          Effect.as<{ 项目内: 内核技能[]; 全量: { name: string; location: string }[] } | undefined>(undefined),
         ),
       ),
     )
+}
+
+/**
+ * 找出「链接在、启用行也在，但内核清单里没有它」的资产，并把**赢家**是谁说出来。
+ *
+ * 判据（三条同时成立才算被覆盖）：
+ * ① 它在 `desired` 里（链接确实要建、且建了）；
+ * ② 内核清单里没有它的 `assetId`（去重后那份没赢）；
+ * ③ 全量清单里有一条**同名**、但 `location` 的目录名不是它（即赢家另有其人）。
+ *
+ * 只有 ①② 才是「链接丢了 —— 这次真的没建/建了没被扫到」；③ 缺位时**不报** shadowed，
+ * 让面板继续按原来的「快捷方式可能丢了」说——宁可说旧话，也不编一个赢家（`#002-02`）。
+ */
+function 找被覆盖(
+  内核: { 项目内: readonly 内核技能[]; 全量: readonly { name: string; location: string }[] },
+  desired: ReadonlyMap<string, string>,
+  目录: string,
+) {
+  const 已加载 = new Set(内核.项目内.flatMap((skill) => (skill.assetId === undefined ? [] : [skill.assetId])))
+  const 缺 = Array.from(desired.keys()).filter((assetId) => !已加载.has(assetId))
+  if (缺.length === 0) return Effect.succeed<被覆盖技能[]>([])
+  return Effect.forEach(
+    缺,
+    (assetId) =>
+      读名字(desired.get(assetId)!).pipe(
+        Effect.map((name): 被覆盖技能 | undefined => {
+          if (name === undefined) return undefined
+          const 赢家 = 内核.全量.find((info) => info.name === name && 目录名(info.location) !== assetId)
+          if (赢家 === undefined) return undefined
+          return { assetId, name, location: 赢家.location }
+        }),
+      ),
+    { discard: false },
+  ).pipe(
+    Effect.map((list) => list.filter((item): item is 被覆盖技能 => item !== undefined)),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("判定同名覆盖失败，本次不回报 shadowed", { 目录, cause }).pipe(
+        Effect.as<被覆盖技能[]>([]),
+      ),
+    ),
+  )
 }
 
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */
@@ -479,9 +547,11 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 「已启用但 AI 没加载到——停用后可在资产中心重新启用」，在一次临时文件系统故障上
     // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
     const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题)
+    // 第二态再分一次因：链接在却被同名技能盖掉（`TIER` 去重）≠ 链接丢了。只在读到内核时判。
+    const 被覆盖 = 内核 === undefined ? undefined : yield* 找被覆盖(内核, desired, 目录)
     // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自
     // 能力面板。两者都长在同一份回包上，所以合成一个 return，谁都不许吞掉另一边。
-    return 带内核清单({ ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }, 内核)
+    return 带内核清单({ ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }, 内核?.项目内, 被覆盖)
   })
 }
 

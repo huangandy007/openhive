@@ -57,6 +57,34 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 
 **应用范围**：任何 happy-dom / jsdom 组件测试的「元素不存在」断言；任何变异验证「红得很奇怪」的现场。
 
+## #010-05 · 2026-10-28 · pitfall · 010-项目能力面板
+
+**现象 / 决策**：真栈里王五的 `1028讨论` 连做三轮「启用 → 停用」，能力面板的 `skills` 条数在 0/1/0 之间
+跳。同一份目录，内核给的赢家会变。根因有两层，缺一层都复现不出来：
+
+1. `packages/opencode/src/skill/index.ts` 里 `add()` 对同名 skill 是**无条件覆盖**（只打 WARN），而
+   `loadSkills` 用 `Effect.forEach(..., { concurrency: "unbounded" })` ⇒ **谁最后解析完谁赢**，与扫描顺序
+   无关、与文件大小相关。
+2. 同一个 skill 以三条来源同名进入扫描：`~/.claude/skills`（external）、配置 `skills.paths`
+   的 `D:/assets/global/skills`（configured）、项目内 `.opencode/skill/<assetId>` 链接（project）。
+   赢家如果落在项目外，上层 `映射内核清单` 的 `属于项目()` 会把这条整条滤掉 ⇒ `assetId` 缺失 ⇒
+   面板判 ②「已启用，但 AI 没加载到——项目里的快捷方式可能丢了」，并在一次**假故障**上劝用户停用。
+
+**应对**：
+
+- 去重改成**全序**：`(档位, 路径字典序)`，档位 builtIn < external < configured < opencode < project。
+  项目内副本必然赢，且结果与解析完成顺序无关。同一次扫描里同一个文件被多个根扫到（如项目目录既是
+  `.opencode` 又在 `skills.paths` 里）取最高档位。
+- 用例要把竞态钉成**必然红**（`#005-49`）：让「不该赢」的那份写得明显更大 ⇒ 修复前它必然最后解析完。
+  变异验证：把比较器换成恒 `true`，该用例立刻红。
+- 上报层把 ② 的两种成因分开：`shadowed: { assetId, name, location }[]`——链接在、启用行在、内核清单里
+  没有它的 `assetId`、且全量清单里有一条**同名但目录名不同**的赢家，才报；否则维持原「快捷方式可能丢了」。
+  宁可说旧话，也不编一个赢家（`#002-02`）。
+- 前端沿用 `skills` 的口径：键缺席 = 没有这个结论（不是 `[]`）；形状不对整份回包判错。
+
+**应用范围**：任何「并发解析 + 后到覆盖」的合并；任何「库里有、进程里没生效」的判据与提示文案；
+同名去重的优先级设计（谁该赢要能一句话说清，且与到达顺序无关）。
+
 ## #010-04 · 2026-10-27 · pitfall · 010-governance-console
 
 **现象 / 决策**：真栈落盘态从 `%TEMP%\openhive-real-stack-state` 换到 `D:\openhive-stack-state`

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import type { EnableApi, EnableOutcome, 内核技能 } from "@/ai-assets/enable-api"
+import type { EnableApi, EnableOutcome, 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import { createProjectEnablement } from "@/ai-assets/enable-state"
 import { CapabilityPanel, type CapabilityPanelProps } from "./capability-panel"
 
@@ -35,6 +35,7 @@ function 面板(over: Partial<CapabilityPanelProps> = {}) {
       enabled={over.enabled ?? (() => new Set(["a1"]))}
       enabledCount={over.enabledCount ?? (() => 1)}
       skills={over.skills ?? (() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })])}
+      shadowed={over.shadowed ?? (() => undefined)}
       error={over.error ?? (() => undefined)}
       // 默认 `false`：本文件的夹具大多表达「还没读到」，那是「正在读取」的形状（I2）。
       readDone={over.readDone ?? (() => false)}
@@ -128,6 +129,39 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(槽(host, "capability-item-stale").length).toBe(1)
     expect(槽(host, "capability-disable").length).toBe(1)
     expect(文(host, "capability-item-stale")).toContain("停用后可在资产中心重新启用")
+  })
+
+  /**
+   * ② 的第二成因：链接好好的，只是被一份同名技能盖掉了（2026-10-28 真栈现场）。
+   *
+   * 旧文案「项目里的快捷方式可能丢了」在那时是**诬告**，还劝用户在假故障上停用。
+   * 判据落在两处：条目仍是 stale（它确实没生效），但指引说的是「被谁盖了」，
+   * 且**不再出现**「快捷方式可能丢了」。槽名也分开，免得两种成因的文案互相顶替还能全绿。
+   */
+  test("② 被同名技能盖掉 ⇒ 文案说出赢家，不说「快捷方式可能丢了」", () => {
+    const 盖: 被覆盖技能[] = [
+      { assetId: "a1", name: "资金分析", location: "/w/u/p/.opencode/skill/aaa_shadow/SKILL.md" },
+    ]
+    const host = 面板({
+      enabled: () => new Set(["a1"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "资金分析", assetId: "aaa_shadow" })],
+      shadowed: () => 盖,
+      readDone: () => true,
+    })
+    expect(槽(host, "capability-item-stale").length).toBe(1)
+    const 话 = 文(host, "capability-shadowed-reason")
+    expect(话).toContain("同名")
+    expect(话).toContain("资金分析")
+    expect(话).not.toContain("快捷方式可能丢了")
+    // 两种成因不能同时出现（`Show` 的 fallback 只该落一边）。
+    expect(有(host, "capability-stale-reason")).toBe(false)
+  })
+
+  test("② 链接真丢了（没有 shadowed）⇒ 仍是原来那句「快捷方式可能丢了」", () => {
+    const host = 面板({ enabled: () => new Set(["a9"]), enabledCount: () => 1, skills: () => [], readDone: () => true })
+    expect(文(host, "capability-stale-reason")).toContain("快捷方式可能丢了")
+    expect(有(host, "capability-shadowed-reason")).toBe(false)
   })
 
   test("busy 指向某条时，该条的停用按钮禁用、点了不触发", () => {
@@ -248,6 +282,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={启用}
         enabledCount={() => 启用().size}
         skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
+        shadowed={() => undefined}
         error={() => undefined}
         readDone={() => false}
         busy={() => undefined}
@@ -283,6 +318,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={启用}
         enabledCount={() => 启用().size}
         skills={() => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })]}
+        shadowed={() => undefined}
         error={() => undefined}
         readDone={() => false}
         busy={() => undefined}
@@ -309,6 +345,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={() => new Set<string>()}
         enabledCount={() => 0}
         skills={清单}
+        shadowed={() => undefined}
         error={() => undefined}
         readDone={() => false}
         busy={() => undefined}
@@ -352,6 +389,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={() => new Set<string>()}
         enabledCount={() => 0}
         skills={() => undefined}
+        shadowed={() => undefined}
         error={() => undefined}
         readDone={读完}
         busy={() => undefined}
@@ -408,6 +446,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={状态.enabled}
         enabledCount={状态.enabledCount}
         skills={状态.skills}
+        shadowed={状态.shadowed}
         readDone={状态.readDone}
         error={状态.error}
         busy={状态.busy}
@@ -442,6 +481,7 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
         enabled={() => new Set<string>()}
         enabledCount={() => 0}
         skills={清单}
+        shadowed={() => undefined}
         error={() => undefined}
         readDone={() => false}
         busy={() => undefined}

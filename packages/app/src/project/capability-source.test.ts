@@ -96,4 +96,49 @@ describe("合并能力（设计 §4 的三态）", () => {
     })
     expect(计数(结果 ?? [])).toBe(2)
   })
+
+  /**
+   * 第二态（库里有、内核没看见）有两种成因，合并结果必须把它们分开（2026-10-28）：
+   * 链接真丢了 ⇒ 没有 `覆盖者`；被同名技能盖掉 ⇒ 带上赢家。面板的文案全靠这一位。
+   */
+  test("② 被同名技能盖掉 ⇒ 库内条目带「覆盖者」（名字 + 赢家落点）", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(["a1"]),
+      skills: [技能({ name: "资金分析", assetId: "aaa_shadow" })],
+      shadowed: [{ assetId: "a1", name: "资金分析", location: "/w/u/p/.opencode/skill/aaa_shadow/SKILL.md" }],
+    })
+    const 库 = 结果?.[0]
+    expect(库?.kind).toBe("library")
+    expect(库?.kind === "library" ? 库.loaded : undefined).toBe(false)
+    expect(库?.kind === "library" ? 库.覆盖者?.name : undefined).toBe("资金分析")
+    expect(库?.kind === "library" ? 库.覆盖者?.location : undefined).toContain("aaa_shadow")
+  })
+
+  test("② 链接真丢了（回包没 shadowed）⇒ 没有覆盖者，只说没生效", () => {
+    const 结果 = 合并能力({ enabled: new Set(["a1"]), skills: [] })
+    expect(结果?.[0]?.kind).toBe("library")
+    expect(结果?.[0]?.kind === "library" ? 结果[0].覆盖者 : "缺省").toBe(undefined)
+  })
+
+  /** `shadowed` 只标**已启用**的资产；不认识的 assetId 不能凭空造出条目或覆盖者。 */
+  test("shadowed 里不属于本项目的 assetId 被忽略", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(["a1"]),
+      skills: [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" })],
+      shadowed: [{ assetId: "别的项目", name: "资金分析", location: "/elsewhere/SKILL.md" }],
+    })
+    expect(结果?.length).toBe(1)
+    expect(结果?.[0]?.kind === "library" ? 结果[0].loaded : undefined).toBe(true)
+    expect(结果?.[0]?.kind === "library" ? 结果[0].覆盖者 : "缺省").toBe(undefined)
+  })
+
+  /** 被盖掉的资产仍在配额账上：计数按 `enabled`，不受 `loaded` 影响。 */
+  test("被覆盖的条目照常计数", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(["a1"]),
+      skills: [],
+      shadowed: [{ assetId: "a1", name: "资金分析", location: "/w/u/p/SKILL.md" }],
+    })
+    expect(计数(结果 ?? [])).toBe(1)
+  })
 })

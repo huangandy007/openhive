@@ -1,5 +1,5 @@
 import { createEffect, createRoot, createSignal, getOwner, onCleanup, runWithOwner, untrack } from "solid-js"
-import { createEnableApi, type EnableApi, type EnablementState, type 内核技能 } from "./enable-api"
+import { createEnableApi, type EnableApi, type EnablementState, type 内核技能, type 被覆盖技能 } from "./enable-api"
 
 /**
  * 「当前项目启用了哪些 skill」的**唯一读取点**（2026-10-27）。
@@ -45,6 +45,11 @@ export interface ProjectEnablement {
    */
   readonly skills: () => readonly 内核技能[] | undefined
   /**
+   * 已启用却被同名技能盖掉的资产（2026-10-28）。口径与 `skills()` 一致：`undefined` = 这次
+   * 没有这个结论（没读到内核 / 回包没带这个键），键缺席就作废——不拿旧值解释新一次读。
+   */
+  readonly shadowed: () => readonly 被覆盖技能[] | undefined
+  /**
    * 「这个项目的这次读到底了」（成功或失败都算）。
    *
    * 与 `skills()` 配着读才分得清两种 `undefined`：`readDone() === false` ⇒ **还在读**，
@@ -74,6 +79,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
   const [技能, set技能] = createSignal<readonly 内核技能[] | undefined>()
+  const [被覆盖, set被覆盖] = createSignal<readonly 被覆盖技能[] | undefined>()
   const [已读, set已读] = createSignal(false)
 
   let 代次 = 0
@@ -95,6 +101,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     // 「你的文件丢了」，还劝用户停用自己刚开的能力。`#002-02`：后端刚说了「这次我不知道」，
     // 前端继续拿旧清单当现在，就是替它回答。
     set技能(状态.skills)
+    // 同一个理由：键缺席 ⇒ 作废旧结论。留着上次的「被谁盖了」去解释这一次的清单，
+    // 就是替后端回答它刚说过「不知道」的问题（`#002-02`）。
+    set被覆盖(状态.shadowed)
     set已读(true)
   }
 
@@ -109,6 +118,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set错误(undefined)
     set忙(undefined)
     set技能(undefined)
+    set被覆盖(undefined)
     // 换项目 ⇒ 新项目的读还没回来，不能替它说「读完了」（否则面板会先闪一次「读不到」）。
     set已读(false)
   }
@@ -252,6 +262,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     error: 错误,
     busy: 忙,
     skills: 技能,
+    shadowed: 被覆盖,
     readDone: 已读,
     bind,
     toggle,
