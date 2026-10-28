@@ -29,6 +29,12 @@ export * as OpenhiveProjectTree from "./project-tree"
  * ⚠️ **`LocationServiceMap` 不在本层 provide**：由 `server.ts` 外层的 `locationServiceMapV2` 供上。
  * 再 provide 一次会建出第二个服务图，文件系统实例就与 `handlers/file.ts` 不是同一份了。
  *
+ * ## 身份门关着时本端点**恒 400**——这是设计，不是 bug
+ *
+ * 没配 `OPENHIVE_REQUIRE_USER_ID` 的常规 `bun run dev` 里，身份门不注入 `User.Service` ⇒
+ * 下面 `Option.isNone(user)` 那一路直接 400「没有项目上下文」。兄弟端点此时照常应答（它们的
+ * 目录由锚定层给出、不依赖身份），所以这个差异很容易被当成回归——**Task 3 接线前先看这一句**。
+ *
  * ## `扫树` 是 Promise 的，`读目录` 用 `Effect.runPromise` 过桥
  *
  * 这在本仓是既有做法（`src/acp/event.ts`、`src/effect/bridge.ts`、`src/cli/cmd/attach.ts`）。
@@ -42,7 +48,7 @@ import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
 import { User } from "@opencode-ai/core/user"
-import { Effect, Option } from "effect"
+import { Cause, Effect, Option } from "effect"
 import ignore from "ignore"
 import path from "node:path"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
@@ -87,6 +93,10 @@ export const routes = HttpRouter.use((router) =>
 
         // ignore 规则**一趟请求读一次**（上游 `/file` 是每请求读一次；本端点整棵树只看一次，
         // 读法与 `handlers/file.ts` 的 `list` 逐字同形——两处漂了就是「树里看得见、列表里看不见」）。
+        // ⚠️ 兜底必须 `catchCause`：`层` 是在 `Effect.provide` 时才构建的，而 `filesystem.ts` 的
+        // `baseLayer` 里 `fs.realPath(location.directory)` 是 `Effect.orDie`——目录不存在 / 权限
+        // 不足全是 **defect**，`Effect.catch` 接不住，漏掉就回上游的通用 `UnknownError`，而不是
+        // 本端点承诺的 `{ error: "读取文件树失败" }`。
         const 规则 = yield* Effect.gen(function* () {
           const location = yield* Location.Service
           const ignored = ignore()
@@ -97,7 +107,16 @@ export const routes = HttpRouter.use((router) =>
             if (text) ignored.add(text)
           }
           return ignored
-        }).pipe(Effect.provide(层))
+        }).pipe(
+          Effect.provide(层),
+          // 中断原样抛出：客户端断开是客户端的事，不该被吞成「整份取不到」。
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.succeed<ReturnType<typeof ignore> | undefined>(undefined),
+          ),
+        )
+        if (规则 === undefined) return HttpServerResponse.jsonUnsafe({ error: "读取文件树失败" }, { status: 500 })
 
         const 读: 读目录 = (dir) =>
           Effect.runPromise(
@@ -121,7 +140,15 @@ export const routes = HttpRouter.use((router) =>
               Effect.provide(层),
               // 这一层读不到 ⇒ `undefined`，由 `扫树` 判「整份取不到」——**不交半棵树**
               // （理由见 design §5：半个清单冒充完整清单是谎）。
-              Effect.catch(() => Effect.succeed<readonly 条目[] | undefined>(undefined)),
+              // ⚠️ 必须 `catchCause`，不能 `catch`：`filesystem.ts` 的 `list` 里 `realPath` /
+              // `stat` / `readDirectoryEntries` 全是 `Effect.orDie`，路径逃逸是 `Effect.die`
+              // ——**都是 defect**，`catch` 只接 typed failure；漏掉的话异常穿出 `扫树`
+              // （它没有 try/catch），变成上游通用 500。中断原样抛出。
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.interrupt
+                  : Effect.succeed<readonly 条目[] | undefined>(undefined),
+              ),
             ),
           )
 

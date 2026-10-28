@@ -95,6 +95,12 @@ const 出口 = "/openhive/project/tree"
 const ALPHA = "prj_alpha_0001"
 /** 忽略规则组那个项目（与 ALPHA 分开：``.gitignore` 一旦种进同一个目录，顺序组的逐字断言就变了）。 */
 const IGNORED = "prj_ignored_0002"
+/** 目录形态忽略组（`.gitignore` 里是 `dist/`，不是文件名）。 */
+const DIRS = "prj_dirs_0003"
+/** 目录被删掉的项目（夹具：项目行在、目录不在）。 */
+const MISSING = "prj_missing_0004"
+/** 项目目录是个**文件**（落在 `FileSystem.list` 那一层才 die）。 */
+const NOTDIR = "prj_notdir_0005"
 
 const SANDBOX = realpathSync.native(mkdtempSync(path.join(tmpdir(), "openhive-project-tree-")))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -273,7 +279,8 @@ describe("GET /openhive/project/tree · 一次请求交回整棵树", () => {
     "没有项目上下文：400「没有项目上下文」，且体里没有 paths",
     () =>
       Effect.gen(function* () {
-        yield* 种项目(ALICE, ALPHA)
+        // ⚠️ 刻意**不**种项目：这一条测的是「项目通道缺席」，ProjectLocation 根本不会改写目录，
+        // 400 也不读任何项目行。种一遍只会与用例 1 建立无谓的顺序耦合（删掉后仍绿，见报告）。
         摆项目目录(ALICE, ALPHA)
 
         const response = yield* as(ALICE, 出口)
@@ -309,6 +316,85 @@ describe("GET /openhive/project/tree · 一次请求交回整棵树", () => {
 
         const body = yield* 体(response)
         expect(body).toEqual({ paths: [".gitignore", "kept.txt"], truncated: false })
+      }),
+    30_000,
+  )
+
+  /**
+   * **目录形态的 ignore**（`dist/`，而不是文件名）。
+   *
+   * 上面那条只钉了「根级文件被忽略」。目录形态走的是**另一个位**：`path + "/"` 才让
+   * `dist/` 这条规则命中（`project-tree.ts` 拼尾分隔符的那一行）。漏掉尾 `/` 的话，`dist\`
+   * 本身不被忽略 ⇒ 整个 `dist` 子树原样进清单——不报错、也不变红，只是清单比编辑器里多一大块。
+   *
+   * 断言同样两半：`dist\` 与它下面那个文件都**不在**，没被忽略的 `kept.txt` **在**。
+   */
+  it.live(
+    ".gitignore 里的 dist/（目录形态）整棵不进清单",
+    () =>
+      Effect.gen(function* () {
+        yield* 种项目(ALICE, DIRS)
+        const 目录 = 摆项目目录(ALICE, DIRS)
+        writeFileSync(path.join(目录, ".gitignore"), "dist/\n")
+        mkdirSync(path.join(目录, "dist"), { recursive: true })
+        writeFileSync(path.join(目录, "dist", "x.txt"), "不该出现")
+        writeFileSync(path.join(目录, "kept.txt"), "该出现")
+
+        const response = yield* as(ALICE, 出口, DIRS)
+        expect(response.status).toBe(200)
+
+        const body = yield* 体(response)
+        expect(body).toEqual({ paths: [".gitignore", "kept.txt"], truncated: false })
+      }),
+    30_000,
+  )
+
+  /**
+   * **项目目录不在了 ⇒ 500 `读取文件树失败`**，而不是上游那种通用 500。
+   *
+   * 这是本端点唯一承诺过的「取不到」形状（`project-tree.ts` 里两处兜底共用同一个体）。
+   * 夹具是「`project` / `project_ext` 行都在、目录整个删掉」：中间件**不校验目录存在**，
+   * 请求照样进 handler，而 location 层在构建时 `fs.realPath(location.directory)` 直接
+   * `Effect.orDie`（`filesystem.ts` 的 `baseLayer`）——**是 defect 不是 typed failure**，
+   * 所以这里钉的正是 `catchCause`（写成 `Effect.catch` 会漏，见报告里的变异验证）。
+   *
+   * 只断言状态码不够（`LEARNINGS #004-09`）：还要钉住体，否则「先崩成通用 500」照样绿。
+   */
+  it.live(
+    "项目目录被删掉：500「读取文件树失败」，不是通用 UnknownError",
+    () =>
+      Effect.gen(function* () {
+        yield* 种项目(ALICE, MISSING)
+        rmSync(项目目录(ALICE, MISSING), { recursive: true, force: true })
+
+        const response = yield* as(ALICE, 出口, MISSING)
+
+        expect(yield* 体(response)).toEqual({ error: "读取文件树失败" })
+        expect(response.status).toBe(500)
+      }),
+    30_000,
+  )
+
+  /**
+   * **项目目录是个文件 ⇒ 同样 500 `读取文件树失败`**（这一条单钉 `读目录` 那道兜底）。
+   *
+   * 与上一条走的是**不同**的失败点：location 层建得起来（`realPath` 对文件也成功），是
+   * `FileSystem.list` 里 `stat` 判出 `type !== "Directory"` 才 `Effect.die`——同样是 defect。
+   * 两条合起来才把「层构建 die」与「list die」两处兜底都钉住（`LEARNINGS #002-06`：
+   * 同一个前提的两个落点要各有一条）。
+   */
+  it.live(
+    "项目目录是个文件：500「读取文件树失败」",
+    () =>
+      Effect.gen(function* () {
+        yield* 种项目(ALICE, NOTDIR)
+        mkdirSync(sandboxOf(ALICE), { recursive: true })
+        writeFileSync(项目目录(ALICE, NOTDIR), "不是目录")
+
+        const response = yield* as(ALICE, 出口, NOTDIR)
+
+        expect(yield* 体(response)).toEqual({ error: "读取文件树失败" })
+        expect(response.status).toBe(500)
       }),
     30_000,
   )
