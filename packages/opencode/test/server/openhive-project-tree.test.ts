@@ -27,7 +27,7 @@ import { testEffect } from "../lib/effect"
  * ## 这一层测的是**接线**，不是遍历规则
  *
  * 顺序 / 截断那类判据在 `openhive-project-tree-scan.test.ts`（Task 1），本文件钉的是「这一层列出了什么」：
- * ① 真目录真读出来、**形状与顺序与前端 walk 逐字相同**；
+ * ① 真目录真读出来、**形状与顺序与改前前端 walk（已于 `e4fa64c941` 删除）逐字相同**；
  * ② **没有项目通道 ⇒ 400**（形状判据把「沙箱根」挡在门外，否则交回的是**跨项目的一棵树**）；
  * ③ `.gitignore` 在这一层**真的生效**（文件名过滤走 `ignore`，与上游 `/file` 同一份规则；
  *   文件名与目录形态 `dist/` 各一条）；
@@ -237,12 +237,21 @@ function 摆项目目录(subject: TokenSubject, projectId: string) {
 
 describe("GET /openhive/project/tree · 一次请求交回整棵树", () => {
   /**
-   * **主判据**：真目录 ⇒ 整棵树的路径清单，逐字等于前端 walk 的产出口径。
+   * **主判据**：真目录 ⇒ 整棵树的路径清单，逐字等于改前前端 walk（已于 `e4fa64c941` 删除）的产出口径。
    *
    * 期望顺序**不是**字母序，是上游 `FileSystem.list` 的顺序（**目录在前、文件在后**，各自按
    * `localeCompare`）叠上 `扫树` 的规则（文件就地收、目录钻进去回来再补、空目录补自己）：
-   * `空目录\` → `子\b.txt` → `a.txt`。`/?path=` 的实测体与本期望同一来源（探针记过），
+   * `dist\` → `sub\话单.txt` → `a.txt`。`/?path=` 的实测体与本期望同一来源（探针记过），
    * 改期望前先去打一发 `/file?path=`，别凭感觉调。
+   *
+   * ⚠️ **名字为什么长这样**（2026-10-28）：`filesystem.ts:106` 的 `localeCompare` **不带 locale**，
+   * 比较规则跟运行时默认 locale 走，而 CJK 与拉丁混排的结果**是反的**——实测：
+   * `zh: 空目录, 子, a.txt, sub`（汉字在前，汉字之间按拼音）；
+   * `en: a.txt, sub, 子, 空目录`（拉丁在前，汉字之间按码点）。
+   * 同级若把两种语言并列，字面期望就**绑了环境**：ICU 按码点排的机器（Linux 容器 / `LANG=en`）
+   * 上会假红——产品行为没错，是断言绑了环境（`LEARNINGS #003-01` 同族：假红）。故同级只用
+   * 同语种的名字：根下 `dist` / `sub` 两个目录（实测 zh / en 下都是 `dist, sub`），各自下面不再
+   * 与另一种语言并列；中文覆盖由 `sub\话单.txt` 这条路保留。
    *
    * `truncated === false` 同一条断言里：正常项目必须明确说「没截断」，不能靠键缺席让人猜。
    */
@@ -252,15 +261,15 @@ describe("GET /openhive/project/tree · 一次请求交回整棵树", () => {
       Effect.gen(function* () {
         yield* 种项目(ALICE, ALPHA)
         const 目录 = 摆项目目录(ALICE, ALPHA)
-        mkdirSync(path.join(目录, "子"), { recursive: true })
-        mkdirSync(path.join(目录, "空目录"), { recursive: true })
+        mkdirSync(path.join(目录, "dist"), { recursive: true })
+        mkdirSync(path.join(目录, "sub"), { recursive: true })
         writeFileSync(path.join(目录, "a.txt"), "甲的正文")
-        writeFileSync(path.join(目录, "子", "b.txt"), "乙的正文")
+        writeFileSync(path.join(目录, "sub", "话单.txt"), "乙的正文")
 
         const response = yield* as(ALICE, 出口, ALPHA)
         expect(response.status).toBe(200)
 
-        expect(yield* 体(response)).toEqual({ paths: ["空目录\\", "子\\b.txt", "a.txt"], truncated: false })
+        expect(yield* 体(response)).toEqual({ paths: ["dist\\", "sub\\话单.txt", "a.txt"], truncated: false })
       }),
     30_000,
   )

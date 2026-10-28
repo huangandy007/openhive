@@ -2066,6 +2066,21 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   }
                   files={
                     <>
+                      {/* 截断提示（2026-10-28）：项目文件超过上限时**必须说出来**，
+                          不许静默交半张清单（design §4）。文案与上限是同一个数：上限在
+                          `packages/opencode/src/server/openhive/project-tree-scan.ts` 的
+                          `默认上限 = 50000`，改一处要改两处。
+                          `role="status"`（陈述语义）而不是 `文件话` 那条的 `role="alert"`：
+                          这句话是取数回来后异步冒出的**状态说明**，不是出错的警报。 */}
+                      <Show when={项目文件被截断()}>
+                        <p
+                          data-slot="file-tree-truncated"
+                          role="status"
+                          class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] text-v2-text-text-muted"
+                        >
+                          文件太多，只列了前 5 万个
+                        </p>
+                      </Show>
                       {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项 ＋ Task 17 的备份 / 恢复
                           （接收方是 `@/project/minio-backups` 的 HTTP 出口）。
                           `onRefresh`（T020+，2026-10-10）：把「再取一次清单」那枚代次交给用户手拨
@@ -2132,21 +2147,6 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         // 与其余各项同一口径——**要有项目**才接线（没有项目就没有可打开的文件）。
                         onOpen={有项目() ? (path) => void 打开文件({ path, 标题: 末段(path) }) : undefined}
                       />
-                      {/* 截断提示（2026-10-28）：项目文件超过上限时**必须说出来**，
-                          不许静默交半张清单（design §4）。文案与上限是同一个数：上限在
-                          `packages/opencode/src/server/openhive/project-tree-scan.ts` 的
-                          `默认上限 = 50000`，改一处要改两处。
-                          `role="status"`（陈述语义）而不是 `文件话` 那条的 `role="alert"`：
-                          这句话是取数回来后异步冒出的**状态说明**，不是出错的警报。 */}
-                      <Show when={项目文件被截断()}>
-                        <p
-                          data-slot="file-tree-truncated"
-                          role="status"
-                          class="w-full min-w-0 rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[13px] text-v2-text-text-muted"
-                        >
-                          文件太多，只列了前 5 万个
-                        </p>
-                      </Show>
                       {/* 目标选择器（复制 / 移动共用，用户裁定①）：点了目标才发请求。
                           排在树**下面**：它是这次操作的一部分，不该盖住用户正在看的那棵树
                           （同 `dual-file-tree.tsx` 的拉回确认）。

@@ -115,13 +115,13 @@ describe("扫树：顺序规则（文件就地、目录后序、空目录补自�
 
   test("顺序：文件就地、目录后序、空目录在自己那一支的末尾", async () => {
     const { 读 } = 替身({
-      "": [文件("r.txt"), 目录("甲\\"), 文件("z.txt"), 目录("乙\\")],
-      "甲\\": [文件("甲\\x.txt"), 目录("甲\\空\\")],
-      "甲\\空\\": [],
-      "乙\\": [],
+      "": [文件("r.txt"), 目录("dirA\\"), 文件("z.txt"), 目录("dirB\\")],
+      "dirA\\": [文件("dirA\\x.txt"), 目录("dirA\\empty\\")],
+      "dirA\\empty\\": [],
+      "dirB\\": [],
     })
     expect(await 扫树(读)).toEqual({
-      paths: ["r.txt", "甲\\x.txt", "甲\\空\\", "z.txt", "乙\\"],
+      paths: ["r.txt", "dirA\\x.txt", "dirA\\empty\\", "z.txt", "dirB\\"],
       truncated: false,
     })
   })

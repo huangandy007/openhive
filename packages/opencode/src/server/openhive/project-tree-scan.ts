@@ -3,7 +3,8 @@ export * as OpenhiveProjectTreeScan from "./project-tree-scan"
 /**
  * 项目文件树的**服务端遍历**（2026-10-28）。
  *
- * 逐字复刻前端 `packages/app/src/project/openhive-files.ts` 里 `walk` 的产出口径：
+ * 逐字复刻改前前端 `packages/app/src/project/openhive-files.ts` 里 `walk`（已于 `e4fa64c941`
+ * 删除）的产出口径：
  * **文件就地收下，目录钻进去、回来再按原位置补，空目录补自己**。顺序一漂，树就画错
  * （文件跑到别的目录底下、空目录挤到最前面）——所以那份前端的对应用例**整组迁到了这里**。
  *
