@@ -3,14 +3,14 @@ import { createSignal } from "solid-js"
 import { SidebarTabs, type SidebarTabKey } from "./sidebar-tabs"
 
 /**
- * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件]`，默认「文件」。
+ * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件] [能力 N]`，默认「文件」。
  *
- * ## 为什么这两个 story 都非要不可
+ * ## 为什么这三个 story 都非要不可
  *
  * 本组件是一个 **ARIA tabs**（`role="tablist"` / `role="tab"` / `role="tabpanel"` +
  * `aria-controls` + `aria-labelledby` + roving tabindex）。这套东西**只有一个 tab 可见**
  * 不是缺陷、而是规格：非激活的 pane 带 `hidden`，因此**不进 Tab 顺序**。
- * 所以「会话」与「文件」是**两个不同的可访问性状态**，axe 各查一遍才算照全。
+ * 所以「会话」「文件」「能力」是**三个不同的可访问性状态**，axe 各查一遍才算照全。
  *
  * ## 受控：状态必须由 story 自己持有
  *
@@ -37,10 +37,23 @@ const 会话body = (
   </p>
 )
 
+/** 「能力」tab 的 body 同样由调用方注入（生产接的是 `@/project/capability-panel`）。 */
+const 能力body = (
+  <p data-slot="story-capability-body" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+    （这里由调用方注入能力面板）
+  </p>
+)
+
 const 受控 = (初始: SidebarTabKey) => {
   const [active, setActive] = createSignal<SidebarTabKey>(初始)
   return () => (
-    <SidebarTabs active={active()} onSelect={setActive} files={文件body} sessions={会话body} />
+    <SidebarTabs
+      active={active()}
+      onSelect={setActive}
+      files={文件body}
+      sessions={会话body}
+      capability={能力body}
+    />
   )
 }
 
@@ -52,4 +65,9 @@ export const FilesTab = {
 /** 激活「会话」：body 是调用方注入的那一块（空态归列表自己，不在这里）。 */
 export const SessionTab = {
   render: 受控("session"),
+}
+
+/** 第三个 tab：激活「能力」，默认不写计数（还没取到数时不写 0）。 */
+export const CapabilityTab = {
+  render: 受控("capability"),
 }

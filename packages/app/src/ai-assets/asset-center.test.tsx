@@ -264,6 +264,9 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       setAutoDelivery: over.setAutoDelivery ?? (() => {}),
       error: over.error ?? 空,
       busy: over.busy ?? 空,
+      skills: over.skills ?? 空,
+      // 中栏不看这个字段，但接口上是必填：「这次读到底了没有」是面板三态判据（终审 I2）。
+      readDone: over.readDone ?? (() => true),
       bind: over.bind ?? (() => {}),
       toggle: over.toggle ?? (() => {}),
       reload: over.reload ?? (() => {}),

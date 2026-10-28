@@ -16,6 +16,7 @@ import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
 import { 清空草稿 } from "@/center/views/richtext/draft-store"
 import { archiveName, type ArchiveKind } from "@/project/archive-name"
+import { CapabilityPanel } from "@/project/capability-panel"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
@@ -257,7 +258,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    */
   const [memberOpen, setMemberOpen] = createSignal(false)
   /**
-   * 左栏 ② 当前停在哪个 tab（设计 §2：`[会话] [文件]`，**默认「文件」**）。
+   * 左栏 ② 当前停在哪个 tab（设计 §2：`[会话] [文件] [能力 N]`，**默认「文件」**）。
    *
    * 落在这里而不是 `SidebarTabs` 里，是因为**有两个读写方**：窄条点击要把它拨回「文件」
    * （设计 §5.1 步骤 2①），而它是左栏的状态、跟中栏模块一样是「我在哪」的一部分。
@@ -2008,11 +2009,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     </Show>
                   </div>
                 </Show>
-                {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件]` tab 容器 ＋ 主体。
+                {/* 左栏 ②③（设计 §2 / FR-005）：`[会话] [文件] [能力 N]` tab 容器 ＋ 主体。
                     「文件」pane 里装的是**上下双树**（T012 / 设计 §5）：上树＝沙箱那棵文件树
                     （T007 的 `FileTree` 一字未改地当了上树），下树＝MinIO 备份，默认收起、点 ④
                     窄条展开。pane 的 `data-slot` 仍叫 `file-tree-slot`（T007 起就是这个名字，
-                    不必随装进去的东西改）。`files` 传的是元素本身，`SidebarTabs` 两个 pane
+                    不必随装进去的东西改）。`files` 传的是元素本身，`SidebarTabs` 三个 pane
                     常挂不卸载 —— 切一下 tab 不该把选中的行、展开的目录、搜过的词丢掉
                     （`DualFileTree` 也因此只把**下树**放进 `<Show>`，上树恒挂载）。
                     它排在面板之后：面板是 `absolute` 浮层、不占流，故视觉上紧贴锚点行。
@@ -2028,6 +2029,31 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   // ③ 会话 pane（2026-10-08）：与 `files` 同款注入——本组件不认识会话列表，
                   // 正如它不认识文件树。`?.()` 得到 `undefined` ＝ 调用方没接（pane 空着）。
                   sessions={props.sessions?.()}
+                  // ③ 能力 pane（2026-10-27）：与另外两个 pane 同款注入。面板不认识
+                  // 「当前是哪个项目」也不认识取数——都从 `props.enablement` 与 `有项目()` 拿。
+                  capability={
+                    <CapabilityPanel
+                      hasProject={() => 有项目()}
+                      enabled={() => props.enablement?.enabled() ?? new Set<string>()}
+                      enabledCount={() => props.enablement?.enabledCount() ?? 0}
+                      skills={() => props.enablement?.skills()}
+                      // 没接线（`enablement` 缺席）时恒 `false` ⇒ 面板说「正在读取」，
+                      // 不替一个不存在的取数说「读不到，请重试」（`#002-02`）。
+                      readDone={() => props.enablement?.readDone() ?? false}
+                      error={() => props.enablement?.error()}
+                      busy={() => props.enablement?.busy()}
+                      onToggle={(assetId) => props.enablement?.toggle(assetId)}
+                      onRetry={() => props.enablement?.reload()}
+                    />
+                  }
+                  // `undefined` = 还没取到 ⇒ tab 上不写 0（`#002-02`）。
+                  // 用 `enabled().size` 而不是合并后的条数：两者按定义相等（设计 §6），
+                  // 而这里拿不到合并结果，也不该为此再算一遍。
+                  capabilityCount={
+                    props.enablement === undefined || props.enablement.skills() === undefined
+                      ? undefined
+                      : props.enablement.enabled().size
+                  }
                   files={
                     <>
                       {/* 文件动作：T018 的建 / 改名 / 删 ＋ T020 的四项 ＋ Task 17 的备份 / 恢复

@@ -156,7 +156,7 @@ export interface DualFileTreeProps extends Omit<FileTreeProps, "draggable"> {
  *
  * `<Show>` 只包**下树与分隔条**：上树恒挂载。`FileTree` 自己有搜索词 / 折叠态 / 选中行三份
  * 内部信号，展开双树再收起就把它们清掉的话，用户会看见自己刚选好的东西不见了
- * （同 `sidebar-tabs.tsx` 那条「两个 pane 常挂不卸载」的理由）。
+ * （同 `sidebar-tabs.tsx` 那条「pane 常挂不卸载」的理由）。
  *
  * ## 拖拽为什么是**委托**，不是给每行挂一对回调
  *

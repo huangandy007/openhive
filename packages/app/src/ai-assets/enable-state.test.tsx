@@ -528,3 +528,147 @@ test("没有项目时 setAutoDelivery 不发请求", async () => {
     dispose()
   })
 })
+
+
+// Task 2（2026-10-27）：把内核清单原样暴露给渲染层。两条都必须钉住——
+// ① 回包带 skills ⇒ `skills()` 拿到它（只加信号不接 `应用` 的话这条红）；
+// ② 换项目在新回包到之前就复位（不复位的话界面会拿甲的清单去标乙，`#002-02`）。
+// 「未知 / 空数组」的**三态合并**留给 Task 3，这里只断言原样透传。
+test("skills：随回包暴露；换项目先复位为 undefined，空数组不被折叠", async () => {
+  const 待到: Array<(out: EnableOutcome) => void> = []
+  const api: EnableApi = {
+    read: () => new Promise<EnableOutcome>((r) => 待到.push(r)),
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.skills()).toBeUndefined()
+
+    待到[0]({
+      kind: "ok",
+      value: {
+        ...空,
+        skills: [{ name: "资金流向分析", location: "/w/u/p1/.opencode/skill/a/SKILL.md", assetId: "a" }],
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.skills()?.length).toBe(1)
+    expect(状态.skills()?.[0]?.assetId).toBe("a")
+
+    设项目("p2")
+    await new Promise((r) => setTimeout(r, 0))
+    // 新回包还没回：必须先复位，不能拿 p1 的清单继续标 p2
+    expect(状态.skills()).toBeUndefined()
+    待到[1]({ kind: "ok", value: { ...空, skills: [] } })
+    await new Promise((r) => setTimeout(r, 0))
+    // 明确的空数组保持为 `[]`，不被折叠成 `undefined`（`#002-02`）
+    expect(状态.skills()).toEqual([])
+    dispose()
+  })
+})
+
+/**
+ * 残余修复（复审）：回包**没有 `skills` 键**（＝「这次没读到」）⇒ 旧清单**作废**。
+ *
+ * 上一版（终审 I2 第 1 条）选的是「保留上次已知」。复审实测出另一扇门，等于让 I3 从侧门
+ * 回来：面板本来好着（清单有值）→ `.opencode/skill` 故障（对账失败，后端不再给 `skills` 键）
+ * → 用户在故障期点「启用」→ 回包 `enabled` 是新的、清单还是旧的 ⇒ `合并能力` 把新 id 判成
+ * `loaded:false`，面板打出「已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在
+ * 资产中心重新启用。」：把基础设施故障翻译成「你的文件丢了」，还劝用户停用自己刚开的能力。
+ *
+ * 现在的口径（`#002-02`：后端刚说了「这次我不知道」，前端继续拿旧清单当现在，就是替它回答）：
+ * 键缺席 ⇒ 清单作废成 `undefined`；`readDone` 仍置 `true`，面板据此落到「暂时读不到 + 重试」，
+ * 不会卡在「正在读取…」——这正是上一轮把 (b) 那条顾虑解决掉的方式，所以「保留上次已知」
+ * 换来的已经不是安全感，而是一条新破坏路径。
+ */
+test("回包没有 skills 键 ⇒ 旧清单作废（undefined），readDone 为 true", async () => {
+  const 清单 = [{ name: "资金分析", location: "/w/u/p1/.opencode/skill/a/SKILL.md", assetId: "a" }]
+  const { api } = 假api({
+    "read:p1": [{ kind: "ok", value: { enabled: ["a"], enabledCount: 1, limit: 20, skills: 清单 } }],
+    // 停用：回 200，但这次后端没读到内核（键缺席）。
+    "disable:a": [{ kind: "ok", value: 空 }],
+  })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    // 前置：好面板（否则下面「作废」断不出东西）。
+    expect(状态.skills()?.length).toBe(1)
+    expect(状态.readDone()).toBe(true)
+
+    状态.toggle("a")
+    await new Promise((r) => setTimeout(r, 0))
+
+    // 计数以这次回包为准（服务端权威）——这条不受影响。
+    expect([...状态.enabled()]).toEqual([])
+    // 被测属性：清单作废，不是留着上次那份。
+    expect(状态.skills()).toBeUndefined()
+    // 作废不等于卡死：仍然是「读完了」⇒ 面板给重试，不是「正在读取…」。
+    expect(状态.readDone()).toBe(true)
+    dispose()
+  })
+})
+
+/**
+ * `readDone`：「这次读到底了」（成功或失败）。读不到且已读完 ⇒ 面板给重试，
+ * 而不是永远停在「正在读取…」——后者的 UI 里没有任何出口。
+ */
+test("readDone：读成功置 true；失败分支（回包错 / api reject）也置 true；换项目与清空回 false", async () => {
+  const { api } = 假api({
+    "read:p1": [{ kind: "ok", value: { ...空, skills: [] } }],
+    // p2 的读也铺一条明确回包：不铺的话 `队列.shift()!` 返回 `undefined`，靠
+    // 「`结果.kind` 读取炸掉 → 落进 catch」收尾，是**隐式**行为，读用例的人看不出这里在测什么。
+    "read:p2": [{ kind: "ok", value: { ...空, skills: [] } }],
+  })
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>(undefined)
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    expect(状态.readDone()).toBe(false)
+
+    设项目("p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.readDone()).toBe(true)
+
+    // 换项目 ⇒ 复位：新项目的读还没回来时，不能说「读完了」
+    设项目("p2")
+    expect(状态.readDone()).toBe(false)
+    await new Promise((r) => setTimeout(r, 0))
+    dispose()
+  })
+})
+
+test("readDone：回包是 error 也置 true（读完 ≠ 读成功）", async () => {
+  const { api } = 假api({ "read:p1": [{ kind: "error", message: "炸了" }] })
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.error()).toBe("炸了")
+    expect(状态.readDone()).toBe(true)
+    dispose()
+  })
+})
+
+test("readDone：api reject 也置 true", async () => {
+  const api: EnableApi = {
+    read: async () => {
+      throw new Error("boom")
+    },
+    enable: async () => ({ kind: "ok", value: 空 }),
+    disable: async () => ({ kind: "ok", value: 空 }),
+    setAutoDelivery: async () => ({ kind: "ok", value: 空 }),
+  }
+  await createRoot(async (dispose) => {
+    const 状态 = createProjectEnablement(api)
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.readDone()).toBe(true)
+    dispose()
+  })
+})

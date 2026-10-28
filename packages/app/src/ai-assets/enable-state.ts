@@ -1,5 +1,5 @@
 import { createEffect, createRoot, createSignal, getOwner, onCleanup, runWithOwner, untrack } from "solid-js"
-import { createEnableApi, type EnableApi, type EnablementState } from "./enable-api"
+import { createEnableApi, type EnableApi, type EnablementState, type 内核技能 } from "./enable-api"
 
 /**
  * 「当前项目启用了哪些 skill」的**唯一读取点**（2026-10-27）。
@@ -37,6 +37,21 @@ export interface ProjectEnablement {
   readonly setAutoDelivery: (enabled: boolean) => void
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
+  /**
+   * 内核视角的技能清单。
+   *
+   * `undefined` = **这次没读到**（还没读 / 读了但读不到 / 刚被一份无 `skills` 键的回包作废）——
+   * 与「内核一条都没有」（`[]`）是两件事（`#002-02`）；两者靠 `readDone()` 再分开。
+   */
+  readonly skills: () => readonly 内核技能[] | undefined
+  /**
+   * 「这个项目的这次读到底了」（成功或失败都算）。
+   *
+   * 与 `skills()` 配着读才分得清两种 `undefined`：`readDone() === false` ⇒ **还在读**，
+   * `readDone() === true` ⇒ **读完了但没读到**（该给重试，而不是永远停在「正在读取…」）。
+   * 换项目 / 清空回 `false`。
+   */
+  readonly readDone: () => boolean
   readonly bind: (projectId: () => string | undefined) => void
   readonly toggle: (assetId: string) => void
   readonly reload: () => void
@@ -58,6 +73,8 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [开关忙, set开关忙] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
+  const [技能, set技能] = createSignal<readonly 内核技能[] | undefined>()
+  const [已读, set已读] = createSignal(false)
 
   let 代次 = 0
 
@@ -67,6 +84,18 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set上限(状态.limit)
     set自动(new Set(状态.auto))
     set自动开关(状态.autoDelivery)
+    // ⚠️ **无论有没有 `skills` 键都覆盖**：键缺席（`解析状态` 保证「不知道」= 键缺席）⇒
+    // 清单作废成 `undefined`。`skills() === undefined` ＋ `已读 === true` = 「这次没读到」，
+    // 面板据此走「暂时读不到 + 重试」——不会卡在「正在读取…」，所以作废不再等于死路。
+    //
+    // 上一版选的是「有键才覆盖 / 保留上次已知」，复审实测出它开了另一扇门（I3 从侧门回来）：
+    // 面板好着时 `.opencode/skill` 故障（对账失败 ⇒ 后端不给 `skills` 键），用户在故障期点
+    // 「启用/停用」，回包换了集合、清单还是旧的 ⇒ `合并能力` 把新 id 判成「没生效」，
+    // 面板打出「快捷方式可能丢了，停用后可在资产中心重新启用」——把基础设施故障翻译成
+    // 「你的文件丢了」，还劝用户停用自己刚开的能力。`#002-02`：后端刚说了「这次我不知道」，
+    // 前端继续拿旧清单当现在，就是替它回答。
+    set技能(状态.skills)
+    set已读(true)
   }
 
   const 清空 = () => {
@@ -79,6 +108,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set开关忙(false)
     set错误(undefined)
     set忙(undefined)
+    set技能(undefined)
+    // 换项目 ⇒ 新项目的读还没回来，不能替它说「读完了」（否则面板会先闪一次「读不到」）。
+    set已读(false)
   }
 
   /**
@@ -102,11 +134,14 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
           if (!保留错误) set错误(undefined)
           return
         }
+        // 失败分支也是「读到底了」：`readDone && skills === undefined` 才是「读不到、给重试」。
+        set已读(true)
         if (!保留错误) set错误(结果.message)
       })
       // 注入的 api 若 reject（真实 `createEnableApi` 全捕获、不抛），别留未处理拒绝 + 卡忙
       .catch(() => {
         if (本次 !== 代次) return
+        set已读(true)
         if (!保留错误) set错误("加载启用状态失败")
         set忙(undefined)
       })
@@ -216,6 +251,8 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     setAutoDelivery: 设自动送达,
     error: 错误,
     busy: 忙,
+    skills: 技能,
+    readDone: 已读,
     bind,
     toggle,
     reload,

@@ -1,20 +1,17 @@
 import { createUniqueId, For, type JSX } from "solid-js"
 
-/** 左栏两个 tab（`2026-09-11-项目管理-design.md` §2 ②：只有「会话 / 文件」两个）。 */
-export type SidebarTabKey = "session" | "files"
+/**
+ * 左栏三个 tab。前两个见 `2026-09-11-项目管理-design.md` §2 ②；第三个「能力」于
+ * 2026-10-27 裁决加入（`2026-10-27-项目能力面板-design.md` §14）。
+ */
+export type SidebarTabKey = "session" | "files" | "capability"
+
+const TAB_LABEL: Record<SidebarTabKey, string> = { session: "会话", files: "文件", capability: "能力" }
 
 /**
- * 两个 tab 的字面，**顺序即显示顺序**——设计 §2 画的就是 `[会话] [文件]`（默认停「文件」）。
- *
- * ⚠️ 这两个词是**判据**，不是装饰：US4 的验收标准原文写着「当前在**「文件」tab**」，
- * 所以「会话 / 文件」这个分法不是本组件自选的措辞。
+ * 三个 tab 的顺序表——`For` 与「下一个是哪个」都从这里取，不各写一份（`LEARNINGS #004-02`）。
  */
-const TAB_LABEL: Record<SidebarTabKey, string> = { session: "会话", files: "文件" }
-
-/**
- * 两个 tab 的顺序表——`For` 与「另一个是哪个」都从这里取，不各写一份（`LEARNINGS #004-02`）。
- */
-const TAB_ORDER: readonly SidebarTabKey[] = ["session", "files"]
+const TAB_ORDER: readonly SidebarTabKey[] = ["session", "files", "capability"]
 
 /**
  * tab 的两种外观——**两条独立的 class 串，不是「基础串 ＋ 叠加串」**。
@@ -29,9 +26,9 @@ const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-overlay-simple-over
 const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-semibold text-v2-text-text-base`
 
 /**
- * pane 的骨架。**两个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
+ * pane 的骨架。**三个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
  *
- * ## `flex flex-col` 是**两个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
+ * ## `flex flex-col` 是**三个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
  *
  * 这一层必须是 flex 容器，body 根上那个 `flex-1` 才**有剩余空间可分**；否则它退化成
  * 「高度＝内容高」，页签余下的空白**不属于任何 `ContextMenu` 触发区** ⇒ 空白处右键冒不到
@@ -68,12 +65,22 @@ export interface SidebarTabsProps {
    * 两句相反的话，而只有列表知道自己是哪一种（`LEARNINGS #002-02`）。
    */
   sessions: JSX.Element
+  /**
+   * 「能力」tab 的 body——**同样由调用方注入**（生产接 `@/project/capability-panel`）。
+   * 本组件不认识能力面板，正如它不认识文件树与会话列表。
+   */
+  capability: JSX.Element
+  /**
+   * 「能力」标签后的数字。`undefined` = 还没取到 ⇒ **只写「能力」，不写 0**：
+   * 那是替后端回答一个它还没回答的问题（同 `minio-bar.tsx:32-35`、`#002-02`）。
+   */
+  capabilityCount?: number
 }
 
 /**
- * 左栏的 ② tab 容器 ＋ ③ 主体（设计 §2）：`[会话] [文件]`，默认「文件」。
+ * 左栏的 ② tab 容器 ＋ ③ 主体（设计 §2）：`[会话] [文件] [能力 N]`，默认「文件」。
  *
- * ## 两个 pane **同时挂载**，靠 `hidden` 属性切换
+ * ## 三个 pane **同时挂载**，靠 `hidden` 属性切换
  *
  * 这不是省渲染的写法，是**正确性**的一半——同 `@/center/center-content` 里那条
  * 「还是同一份内容吗」的注释：`FileTree` 自己有搜索词 / 折叠态 / 选中行三份内部信号，
@@ -93,11 +100,14 @@ export function SidebarTabs(props: SidebarTabsProps) {
   const paneId = (key: SidebarTabKey) => `${基}-pane-${key}`
 
   /**
-   * 另一个 tab 是哪个。只有两个 ⇒ ← 与 → 都等于「切到另一个」（环绕在两个元素上退化成互换）。
-   * 写成这样而不是 `indexOf` ＋ 取模：后者要处理「找不到」和「越界」两条**不可能发生**的分支。
-   * 将来真加了第三个 tab，这里是一眼能看见该改的地方。
+   * 相邻的下一个 tab——**索引环绕**：会话 → 文件 → 能力 → 会话。
+   *
+   * 两个 tab 时 ← → 等价于互换，直接写 `key === "session" ? "files" : "session"` 就够；
+   * 2026-10-27 加了第三个，「谁在谁右边」不再是对称关系，必须真的走环。
+   * 用取模而不是逐对列举：`TAB_ORDER` 是唯一顺序来源，加第四个 tab 时这里不用动（`#004-02`）。
    */
-  const 另一个 = (key: SidebarTabKey): SidebarTabKey => (key === "session" ? "files" : "session")
+  const 下一个 = (key: SidebarTabKey, 步: 1 | -1): SidebarTabKey =>
+    TAB_ORDER[(TAB_ORDER.indexOf(key) + 步 + TAB_ORDER.length) % TAB_ORDER.length]
 
   return (
     <div data-component="sidebar-tabs" class="flex min-h-0 w-full flex-1 flex-col">
@@ -114,9 +124,9 @@ export function SidebarTabs(props: SidebarTabsProps) {
         // `onInput={(event) => …event.currentTarget.value}`。
         onKeyDown={(event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
-          const 目标 = 另一个(props.active)
+          const 目标 = 下一个(props.active, event.key === "ArrowRight" ? 1 : -1)
           props.onSelect(目标)
-          // `currentTarget` 必须**同步**取——事件派发完就置 null。两个 tab 是**同一批 DOM 节点**
+          // `currentTarget` 必须**同步**取——事件派发完就置 null。三个 tab 是**同一批 DOM 节点**
           // 被改属性、不随切换重建，所以这里取到的按钮与切换后页面上那个是同一个
           // （本文件有一条「切走切回没被重建」的用例把守）。
           event.currentTarget.querySelector<HTMLElement>(`[data-tab='${目标}']`)?.focus()
@@ -139,6 +149,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
               onClick={() => props.onSelect(key)}
             >
               {TAB_LABEL[key]}
+              {key === "capability" && props.capabilityCount !== undefined ? ` ${props.capabilityCount}` : ""}
             </button>
           )}
         </For>
@@ -171,6 +182,20 @@ export function SidebarTabs(props: SidebarTabsProps) {
         class={PANE}
       >
         {props.files}
+      </div>
+
+      {/* ③ 能力（2026-10-27）。**与另外两个 pane 同一条规则**：body 由调用方注入。
+          它同样常挂不卸载——面板里有「哪一组展开」的内部状态，切走再回来不该复位。 */}
+      <div
+        role="tabpanel"
+        data-slot="capability-slot"
+        data-pane="capability"
+        id={paneId("capability")}
+        aria-labelledby={tabId("capability")}
+        hidden={props.active !== "capability"}
+        class={PANE}
+      >
+        {props.capability}
       </div>
     </div>
   )

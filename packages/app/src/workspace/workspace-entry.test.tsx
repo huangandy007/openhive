@@ -6,6 +6,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import type { AssetCategories } from "@/ai-assets/categories"
+import type { 内核技能 } from "@/ai-assets/enable-api"
 import type { ProjectEnablement } from "@/ai-assets/enable-state"
 import { ASSET_CATEGORY_SEED } from "@opencode-ai/asset-service/categories"
 import { useProjectionModule } from "@/ai-session/projection-module"
@@ -912,13 +913,13 @@ describe("成员面板接进左栏（FR-004 / US3 出参）", () => {
   })
 })
 
-const 侧栏tab = (host: HTMLElement, key: "session" | "files") =>
+const 侧栏tab = (host: HTMLElement, key: "session" | "files" | "capability") =>
   host.querySelector<HTMLButtonElement>(`[data-slot='sidebar-tab'][data-tab='${key}']`)
 const 窄条 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-slot='minio-bar-open']")
 const 双树 = (host: HTMLElement) =>
   host.querySelector<HTMLElement>("[data-component='dual-file-tree']")
 const 沙箱树 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-tree='sandbox']")
-const tabpane = (host: HTMLElement, key: "session" | "files") =>
+const tabpane = (host: HTMLElement, key: "session" | "files" | "capability") =>
   host.querySelector<HTMLElement>(`[role='tabpanel'][data-pane='${key}']`)
 /** 这个 pane 被藏起来了吗？——返回**布尔**（`#005-01`：断节点会把整轮测试挂哑）。 */
 const 藏起来了 = (el: HTMLElement | null) => el !== null && el.hasAttribute("hidden")
@@ -940,11 +941,12 @@ describe("左栏外壳（② tab 容器 ＋ ④ MinIO 窄条）接进左栏（T0
     setMinioBackups(undefined)
   })
 
-  test("左栏有 [会话][文件] 两个 tab，且**默认停在「文件」**（设计 §2）", () => {
+  test("左栏有 [会话][文件][能力] 三个 tab，且**默认停在「文件」**（设计 §2）", () => {
     const host = mount(() => <WorkspaceEntry>中栏</WorkspaceEntry>)
 
     expect(侧栏tab(host, "files")?.getAttribute("aria-selected")).toBe("true")
     expect(侧栏tab(host, "session")?.getAttribute("aria-selected")).toBe("false")
+    expect(侧栏tab(host, "capability")?.getAttribute("aria-selected")).toBe("false")
   })
 
   test("点「会话」切过去：会话 pane 露出来、文件 pane 藏起来", () => {
@@ -1794,6 +1796,237 @@ describe("项目数据接线（T018 出参）", () => {
     await 冲一遍()
 
     expect(记.files).toEqual(["p1"])
+  })
+
+  /**
+   * 一条最小的 `ProjectEnablement` 替身——本组只读 `enabled` / `enabledCount` / `skills` / `error`。
+   *
+   * ⚠️ `skills` 留空**不是**「夹具忘了填」：`undefined` 是一个合法状态（从没读到 / 换过项目），
+   * 与 `[]`（明确一条都没有）是两件事，这一组分得开正是靠它（`#002-02`）。
+   */
+  function 假启用(选项: {
+    enabled?: readonly string[]
+    enabledCount?: number
+    skills?: readonly 内核技能[]
+    error?: string
+    /** 默认按「清单到了就算读完了」：本组夹具里 `skills` 有值都表示一次成功的读。 */
+    readDone?: boolean
+    toggle?: (assetId: string) => void
+    reload?: () => void
+  } = {}): ProjectEnablement {
+    const 集合 = new Set(选项.enabled ?? [])
+    return {
+      projectId: () => "p1",
+      enabled: () => 集合,
+      enabledCount: () => 选项.enabledCount ?? 集合.size,
+      limit: () => 20,
+      // 自动送达（需求 5a）：本组不读这三项，补默认值只为满足 `ProjectEnablement` 的形状。
+      auto: () => new Set<string>(),
+      autoDelivery: () => true,
+      autoDeliveryBusy: () => false,
+      setAutoDelivery: () => {},
+      error: () => 选项.error,
+      busy: () => undefined,
+      skills: () => 选项.skills,
+      readDone: () => 选项.readDone ?? 选项.skills !== undefined,
+      bind: () => {},
+      toggle: (assetId) => 选项.toggle?.(assetId),
+      reload: () => 选项.reload?.(),
+    }
+  }
+
+  /**
+   * Task 6：能力面板要**真的挂进左栏**。
+   *
+   * Task 4 的面板与 Task 5 的 tab 各有自己的组件测试，但「这两根线接上了没有」只有这一层
+   * 看得见——同 T019 立下的规矩：组件绿 ≠ 接线绿。判据落在 `[data-pane='capability']` 里找
+   * 技能组头，而不是断言 `SidebarTabs` 收到了某个 prop：prop 传对了、面板没渲染出来时，
+   * 前者仍然红，后者会假绿。
+   */
+  test("切到「能力」⇒ pane 里挂的是真面板（技能组头在），不是占位空片段", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [] })}>中栏</WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+
+    const 技能组头 = tabpane(host, "capability")?.querySelector("[data-slot='capability-group-skill']")
+    // 断**布尔**，不拿节点去 `toBeTruthy`（`#009-01`：bun 会序列化被 Solid 渲染过的 DOM，
+    // 环形引用一路涨到十几 GB，看着像挂死）。
+    expect(Boolean(技能组头)).toBe(true)
+  })
+
+  test("读到清单且启用两个 ⇒ tab 上写「能力 2」，面板里两条也都加载到了", () => {
+    const 启用 = 假启用({
+      enabled: ["a", "b"],
+      enabledCount: 2,
+      skills: [
+        { name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" },
+        { name: "话单分析", assetId: "b", assetName: "话单分析", location: "/skills/话单分析" },
+      ],
+    })
+    const host = mount(() => <WorkspaceEntry enablement={启用}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    expect(侧栏tab(host, "capability")?.textContent).toBe("能力 2")
+    // 数字只是「库侧数了 2 个」；这半条才证明**清单也真的进了面板**（两条都 `loaded`）。
+    // 少了它，把面板的 `skills` 焊死成 `undefined` 时这条用例仍然绿——数字走的是另一条 prop。
+    expect(tabpane(host, "capability")?.querySelectorAll("[data-slot='capability-item-loaded']").length).toBe(2)
+  })
+
+  test("清单还没读到 ⇒ tab 只写「能力」，不把「不知道」画成「0」（启用集合非空也不行）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"] })}>中栏</WorkspaceEntry>
+    ))
+
+    expect(侧栏tab(host, "capability")?.textContent).toBe("能力")
+  })
+
+  /**
+   * `skills()` 的 `undefined` 必须**原样**穿到面板里（`#002-02`）。
+   *
+   * 这条钉的是接线缝上最省事的那种「改错仍全绿」：把 `skills={() => …?.skills()}`
+   * 写成 `… ?? []`，面板收到的就从「不知道」变成「明确没有」，于是 `正在读取…` 被换成
+   * 「这个项目还没有装任何技能。」——替后端回答了它还没回答的问题。
+   *
+   * 为什么前三条抓不到它：(c) 只断 tab 数字，而数字走的是 `capabilityCount` 另一条 prop；
+   * (a)(b) 用的都是 `skills` **有值**的状态。故判据只能落在 pane 的**文案**上。
+   * 两句都去 `capability-panel.tsx` 里抄，不自己编。
+   */
+  test("「能力」pane：skills() 为 undefined ⇒ 说「正在读取…」，不画成「这个项目还没有装任何技能」", () => {
+    // 启用集合留空是**有意的**：`?? []` 那种改法只在「库侧也空」时才会把它画成
+    // 「这个项目还没有装任何技能。」——正是这句要抓的形状（启用非空时它会画成另一句
+    // 「已启用但没加载到」，同样错、但不是本条钉的那个）。
+    const host = mount(() => <WorkspaceEntry enablement={假启用()}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 文本 = tabpane(host, "capability")?.textContent ?? ""
+    expect(文本).toContain("正在读取…")
+    expect(文本).not.toContain("这个项目还没有装任何技能")
+  })
+
+  /**
+   * **这条缝是活的**：`skills` 从 `undefined` 变成数组时，pane 要跟着换（终审 I4）。
+   *
+   * 上一组夹具的 `skills` 是常量访问器，它结构上表达不了「数据到了」——面板即使永远不重绘，
+   * 那一组也全绿（C1 就是从这条缝里溜过去的）。这里把信号本身当访问器递进去：先断
+   * 「还没到」的形状，再改信号、断同一个 pane 变了。
+   */
+  test("「能力」pane：接线是响应式的——skills 从 undefined 变数组，「正在读取…」当场消失", () => {
+    const [清单, 设清单] = createSignal<readonly 内核技能[] | undefined>(undefined)
+    // 启用集合非空：这样「到了」之后画的是 `loaded`（库内已加载）而不是「本项目自带」——
+    // 两者的 data-slot 不同，断错了一个就分不出是「清单进来了」还是「清单还是空的」。
+    const 启用: ProjectEnablement = { ...假启用({ enabled: ["a"] }), skills: 清单 }
+    const host = mount(() => <WorkspaceEntry enablement={启用}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    expect(能力页?.textContent ?? "").toContain("正在读取…")
+
+    设清单([{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }])
+
+    expect(能力页?.textContent ?? "").not.toContain("正在读取…")
+    expect(能力页?.querySelectorAll("[data-slot='capability-item-loaded']").length).toBe(1)
+  })
+
+  /**
+   * `error()` 这条缝也必须真的落到面板上。
+   *
+   * 改错形态：接成恒 `undefined` ⇒ 面板永远走不到失败态（`capability-retry` 永不出现），
+   * 而其余用例全绿——它们的 `error()` 都是 `undefined`，看不出这条线断没断。
+   * 失败态按设计 §8 **整块只剩重试**，连技能组头都不该在（旧 `skills` 还在时照画会把
+   * 已装技能误判成「本项目自带」，见 `capability-panel.tsx` 里那段注释）。
+   */
+  test("「能力」pane：error() 有话说 ⇒ 失败态（重试钮在、技能组头不在）", () => {
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [], error: "网络不通" })}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    // 前置：pane 本身在。少了它，下面「组头找不到」在 pane 不存在时也成立。
+    expect(Boolean(能力页)).toBe(true)
+    expect(Boolean(能力页?.querySelector("[data-slot='capability-retry']"))).toBe(true)
+    expect(能力页?.querySelectorAll("[data-slot='capability-group-skill']").length).toBe(0)
+  })
+
+  /**
+   * `readDone()` 这条缝同样要真的落到面板上（终审 I2）。
+   *
+   * 接成恒 `false`（或干脆不接）⇒「读完了但没读到」永远画成「正在读取…」，重试钮永不出现，
+   * 而其余用例全绿——它们的 `skills` 都有值，走不到这一态。
+   */
+  test("「能力」pane：readDone() 为真而 skills 仍缺席 ⇒ 重试视图（不是「正在读取…」）", () => {
+    const host = mount(() => <WorkspaceEntry enablement={假启用({ readDone: true })}>中栏</WorkspaceEntry>)
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 能力页 = tabpane(host, "capability")
+    expect(Boolean(能力页?.querySelector("[data-slot='capability-retry']"))).toBe(true)
+    expect(能力页?.textContent ?? "").not.toContain("正在读取")
+  })
+
+  /**
+   * 终审 I5：`onToggle` / `onRetry` / `enabledCount` 这三根线也要有钉子。
+   *
+   * 此前只钉了「面板挂进来了」与「正反两态的文案」——把 `onToggle` 接成空函数、
+   * `onRetry` 接成 `() => {}`、`enabledCount` 接成 `enabled().size`，全部仍然绿。
+   * 判据落在**面板喊出去的东西**上，不是「prop 传了没有」。
+   */
+  test("「能力」pane：点停用 ⇒ toggle 收到 assetId", () => {
+    const 收到: string[] = []
+    const host = mount(() => (
+      <WorkspaceEntry
+        enablement={假启用({
+          enabled: ["a"],
+          skills: [{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }],
+          toggle: (assetId) => 收到.push(assetId),
+        })}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+    tabpane(host, "capability")?.querySelector<HTMLButtonElement>("[data-slot='capability-disable']")?.click()
+
+    expect(收到).toEqual(["a"])
+  })
+
+  test("「能力」pane：失败态点重试 ⇒ reload 被调", () => {
+    let 次数 = 0
+    const host = mount(() => (
+      <WorkspaceEntry enablement={假启用({ enabled: ["a"], skills: [], error: "网络不通", reload: () => (次数 += 1) })}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    侧栏tab(host, "capability")?.click()
+    tabpane(host, "capability")?.querySelector<HTMLButtonElement>("[data-slot='capability-retry']")?.click()
+
+    expect(次数).toBe(1)
+  })
+
+  test("「能力」pane：enabledCount 是项目真相（4/1）⇒ 出现「其中 3 个不在你的授权范围」", () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        enablement={假启用({
+          enabled: ["a"],
+          enabledCount: 4,
+          skills: [{ name: "资金分析", assetId: "a", assetName: "资金分析", location: "/skills/资金分析" }],
+        })}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+
+    const 说明 = tabpane(host, "capability")?.querySelector("[data-slot='capability-out-of-scope']")
+    expect(说明?.textContent ?? "").toContain("项目共启用 4 个，其中 3 个不在你的授权范围")
   })
 
   /**
@@ -6340,6 +6573,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       setAutoDelivery: () => {},
       error: () => undefined,
       busy: () => undefined,
+      skills: () => undefined,
+      readDone: () => true,
       bind: () => {},
       toggle: (id) => 切换.push(id),
       reload: () => {},

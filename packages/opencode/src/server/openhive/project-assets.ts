@@ -89,6 +89,7 @@ import { User } from "@opencode-ai/core/user"
 import { InstanceStore } from "@/project/instance-store"
 import { ConfigMarkdown } from "@/config/markdown"
 import { AnchorWorkspace } from "@/server/routes/instance/httpapi/middleware/anchor-workspace"
+import { Skill } from "@/skill"
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -108,12 +109,58 @@ export const PATH = {
   autoDelivery: `${PREFIX}/auto-delivery`,
 } as const
 
+/**
+ * 内核视角的一条技能。
+ *
+ * **不含 `content`**：`Skill.Info.content` 是 SKILL.md 全文，进 HTTP 回包既浪费又是泄露面。
+ *
+ * `assetId` = `location` 倒数第二段目录名，本项目自带的技能同样有（就是它的目录名）；
+ * `assetName` 才是「库里确有这份资产」的标记——③「本项目自带」的条目只有 `assetId`，
+ * 没有 `assetName`。前端**不得**用 `assetId !== undefined` 判「是不是库里的」，只能比 `enabled`。
+ */
+export interface 内核技能 {
+  readonly name: string
+  readonly description?: string
+  readonly location: string
+  readonly assetId?: string
+  readonly assetName?: string
+}
+
+interface 状态基 {
+  readonly enabled: readonly string[]
+  readonly enabledCount: number
+  readonly limit: number
+}
+
+/**
+ * 把内核清单并进返回体。
+ *
+ * `内核 === undefined` ⇒ **整个 `skills` 键缺席**，不是空数组。空数组会被前端读成
+ * 「内核一条都没看见」⇒ 把每条技能都标成「没生效」，而事实只是「这次没读到」（`#002-02`）。
+ */
+export function 带内核清单<T extends 状态基>(
+  base: T,
+  内核: readonly 内核技能[] | undefined,
+): T & { skills?: readonly 内核技能[] } {
+  if (内核 === undefined) return base
+  return { ...base, skills: 内核 }
+}
+
 const BOARD = "asset-governance"
 
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   readonly root: string
   readonly store: Option.Option<InstanceStore.Interface>
+  /**
+   * 内核技能服务：**必须在层构造期取**，不能等到请求期再 `yield* Skill.Service`。
+   *
+   * `InstanceStore.provide()` 只往作用域里补 `InstanceRef`，**不补**实例服务：请求期的
+   * environment 里没有 `Skill.Service`（实测 `Service not found: @opencode/Skill`），
+   * 于是 `读内核清单` 每次都被 catch 折成「不知道」⇒ `skills` 键永远缺席、面板永远
+   * 说「暂时读不到」。这与上游 handler 的写法一致（服务在层构造期捕获，请求体只跑副作用）。
+   */
+  readonly skill: Option.Option<Skill.Interface>
 }
 
 export const routes = HttpRouter.use((router) =>
@@ -123,7 +170,9 @@ export const routes = HttpRouter.use((router) =>
     // 测试里可能没有内核实例层（只挂路由的子集）：缺席时丢弃缓存这一步跳过并告警，不静默
     // 假装做了（`#002-02`）。
     const store = yield* Effect.serviceOption(InstanceStore.Service)
-    const deps: Deps = { pg: openhivePg.pg, root: config.root, store }
+    // 同上：只挂路由子集的测试可能没有内核层；缺席时 `skills` 键整份缺席（「不知道」）。
+    const skill = yield* Effect.serviceOption(Skill.Service)
+    const deps: Deps = { pg: openhivePg.pg, root: config.root, store, skill }
 
     yield* router.add("GET", PATH.state, (request) => handleState(request, deps))
     yield* router.add("POST", PATH.enable, (request) => handleToggle(request, deps, "enable"))
@@ -172,6 +221,89 @@ function 项目目录(deps: Deps, userId: string, projectId: string): string {
 /** 丢掉该项目的实例缓存：让下一次请求重扫 skill 目录（见文件头「丢缓存」）。 */
 function 丢缓存(deps: Deps, directory: string) {
   return disposeInstanceDirectory(deps.store, directory, "实例层缺席，跳过缓存丢弃；启用在重启前不生效")
+}
+
+/** 从内核技能的 location 里取最后一级目录名（= assetId，或用户自己的目录名）。 */
+function 目录名(location: string): string | undefined {
+  const 段 = location.split(/[\\/]/).filter((s) => s.length > 0)
+  // 期望形态：<沙箱>/.opencode/(skill|skills)/<名>/SKILL.md —— 取倒数第二段。
+  if (段.length < 2) return undefined
+  return 段[段.length - 2]
+}
+
+/** `location` 是否落在本项目沙箱内。全局 / 内置技能一律落在外面，不该进「本项目自带」。 */
+export function 属于项目(location: string, 目录: string): boolean {
+  // 前缀比较只在 **win32** 忽略大小写：`项目目录()` 与内核 `location` 虽同源，win32 盘符
+  // 大小写（`D:\` vs `d:\`）或 env 拼出的根可能不同形；不忽略就会把整个清单筛空 ⇒
+  // 前端把每条已启用技能都误标成「没生效」。
+  //
+  // POSIX 下路径**大小写敏感**：在那边也折小写，会把 `/w/u/P` 与 `/w/u/p`（两个真目录）
+  // 当成同一个根，把别人项目里的技能并进「本项目自带」（终审 M1）。
+  //
+  // ⚠️ 大小写**按平台判定**，不是按文件系统：macOS 默认 APFS 大小写不敏感但 `process.platform`
+  // 是 `darwin`，在那里不折小写同样能匹配（同一路径的两种写法本来就指向同一个 inode）。
+  // 反过来的坑在这儿：**若将来给 `location` 加 `realpath` 之类的归一化**，在「大小写不敏感但
+  // 非 win32」的文件系统上，内核给回的盘符/目录大小写可能与 `项目目录()` 拼出来的不同形 ⇒
+  // 前缀比较静默失败、整片清单被筛空（面板把每条已启用技能都标成「没生效」，正是 #002-02 里
+  // 「不知道 ≠ 没有」最坏的那种误报）。真要做，归一化必须**同时**处理大小写，别再各改各的。
+  const 规整 = (s: string) => {
+    const 正斜杠 = s.replace(/\\/g, "/").replace(/\/+$/, "")
+    return process.platform === "win32" ? 正斜杠.toLowerCase() : 正斜杠
+  }
+  const 根 = 规整(目录)
+  const 文 = 规整(location)
+  // 带分隔符比较：`/w/u/p` 不能吞下 `/w/u/p2/...`。
+  return 文 === 根 || 文.startsWith(根 + "/")
+}
+
+/** 把内核返回的技能列表筛成「本项目内的」，并映射成回包形状。 */
+export function 映射内核清单(
+  列表: readonly { name: string; description?: string; location: string }[],
+  目录: string,
+  标题: ReadonlyMap<string, string>,
+): 内核技能[] {
+  return 列表
+    .filter((info) => 属于项目(info.location, 目录))
+    .map((info) => {
+      // 查表用原样的目录名（大小写敏感）：assetId 是库里的真实 id。
+      const id = 目录名(info.location)
+      const 名 = id === undefined ? undefined : 标题.get(id)
+      return {
+        name: info.name,
+        ...(info.description === undefined ? {} : { description: info.description }),
+        location: info.location,
+        ...(id === undefined ? {} : { assetId: id }),
+        ...(名 === undefined ? {} : { assetName: 名 }),
+      }
+    })
+}
+
+/**
+ * 在算好的项目目录上读内核技能清单（`Skill.Service.available()`）。
+ *
+ * `store` / `skill` 缺席（只挂路由子集的测试）⇒ 返回 `undefined`：**不知道**，不谎报为空。
+ * 读失败同理——告警并返回 `undefined`，让前端说「暂时读不到」，而不是把每条技能标成没生效。
+ *
+ * ⚠️ `skill` 是层构造期捕获的（见 `Deps.skill`）：请求期取不到它。
+ *
+ * ⚠️ 必须在对账**之后**调（见 `对账并读` 末尾）。反过来的话，新成员第一次进项目时
+ * 沙箱里还没有链接，全部技能都会被误报成「没生效」。
+ */
+function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<string, string>) {
+  const store = deps.store
+  const skill = deps.skill
+  if (Option.isNone(store) || Option.isNone(skill))
+    return Effect.succeed<readonly 内核技能[] | undefined>(undefined)
+  return store.value
+    .provide({ directory }, skill.value.available())
+    .pipe(
+      Effect.map((list) => 映射内核清单(list, directory, 标题)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("读内核技能清单失败，本次不回报（不谎报为空）", { directory, cause }).pipe(
+          Effect.as<readonly 内核技能[] | undefined>(undefined),
+        ),
+      ),
+    )
 }
 
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */
@@ -227,6 +359,8 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // `canReadAsset()`，就会「列表看得见、送达/启用全无」——判据仍只有那一份。
     const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
     const 可见: string[] = []
+    /** 内核清单里的中文名来源：与 `可见` 同一批资产，不额外查库。 */
+    const 标题 = new Map<string, string>()
     let 收回 = 0
 
     const desired = new Map<string, string>()
@@ -267,6 +401,7 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       // 发布目录缺失时链接照样建不了（下面 `continue`），但前端仍要能把那份资产标成「已启用」，
       // 否则会出现「已占 1/20 但列表里一份都标不出来」——用户既看不见也点不掉。
       可见.push(assetId)
+      标题.set(assetId, asset.name)
       const target = skillLinkTarget(根, asset)
       if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
@@ -336,7 +471,17 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     }
     // `enabled` 只回**当前读者可见**的 id，而 `enabledCount` 保持项目真相（库里的启用条数）。
     // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
-    return { ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }
+    // 顺序是设计的一部分：先对账（上面已做完）再读内核。反了会把「沙箱还没同步」
+    // （新成员第一次进项目）误报成「已启用但没生效」。
+    //
+    // ⚠️ 对账失败（`结果 === undefined`）⇒ 清单传 `undefined`（键缺席），**不读**内核。
+    // 此刻目录还是旧状态：读出来的是一份「缺链接」的清单，前端会把每条已启用 skill 画成
+    // 「已启用但 AI 没加载到——停用后可在资产中心重新启用」，在一次临时文件系统故障上
+    // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
+    const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题)
+    // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自
+    // 能力面板。两者都长在同一份回包上，所以合成一个 return，谁都不许吞掉另一边。
+    return 带内核清单({ ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }, 内核)
   })
 }
 
