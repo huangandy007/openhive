@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { EnableApi, EnableOutcome, 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
@@ -16,16 +16,32 @@ function mount(element: () => JSX.Element) {
   return host
 }
 
+/**
+ * 说明预览挂 `Portal` 到 `document.body` 下（见文末那一组），宿主子树里找不到它。
+ *
+ * 故本文件必须清 body：本文件原先一个用例都不清理，宿主会一路堆下去；预览一旦按
+ * `document` 取，前一个用例没关的盒子就会被后一个用例当成自己的（同 `session-nav.test.tsx` 的收尾）。
+ */
+afterEach(() => {
+  document.body.innerHTML = ""
+})
+
 const 槽 = (host: HTMLElement, slot: string) => [...host.querySelectorAll<HTMLElement>(`[data-slot='${slot}']`)]
 const 一 = (host: HTMLElement, slot: string) => host.querySelector<HTMLElement>(`[data-slot='${slot}']`)
 const 有 = (host: HTMLElement, slot: string) => 一(host, slot) !== null
 const 文 = (host: HTMLElement, slot: string) => 一(host, slot)?.textContent ?? ""
 
-const 技能 = (over: { name: string; assetId?: string; assetName?: string }): 内核技能 => ({
+const 技能 = (over: {
+  name: string
+  assetId?: string
+  assetName?: string
+  description?: string
+}): 内核技能 => ({
   name: over.name,
   location: `/w/u/p/.opencode/skill/${over.assetId ?? over.name}/SKILL.md`,
   ...(over.assetId === undefined ? {} : { assetId: over.assetId }),
   ...(over.assetName === undefined ? {} : { assetName: over.assetName }),
+  ...(over.description === undefined ? {} : { description: over.description }),
 })
 
 function 面板(over: Partial<CapabilityPanelProps> = {}) {
@@ -497,5 +513,187 @@ describe("CapabilityPanel 跟着数据重绘（信号驱动，C1）", () => {
     expect(有(host, "capability-loading")).toBe(true)
     expect(槽(host, "capability-item-local").length).toBe(0)
     expect(有(host, "capability-group-skill")).toBe(false)
+  })
+})
+
+/**
+ * 说明不再占卡片一行（2026-10-28 用户裁定：「卡片上 名称／来源／说明／停用 四行太挤」）。
+ *
+ * 改成**悬停 / 聚焦时从卡片右侧弹出**的预览；并且必须画在**顶层**——左栏 `aside` 与三层卡片壳
+ * 都是 `overflow: hidden`（`three-pane.tsx`），留在左栏这棵裁剪树里的预览会在栏边被裁掉。
+ * 这条与 `session-nav` 的悬停预览同因（那里的实测见 `e2e/real-stack/session-nav-real.spec.ts` ③b），
+ * 解法也同一条：`Portal` 到 body 下 ＋ `position: fixed`。
+ *
+ * happy-dom 不跑布局（`#005-07`）⇒「有没有被裁」「位置对不对」本层量不出来，那是真栈的判据。
+ * 本层钉的是**结构、作用对象与机制**：卡片里还有没有那行字、弹的是**这一张**的说明、
+ * 盒子挂在哪里、用的是哪个图标。
+ */
+describe("技能说明：卡片里不显示，悬停 / 聚焦时右侧预览（2026-10-28）", () => {
+  const 甲说 = "甲的说明：按对手方聚合近三个月流水"
+  const 乙说 = "乙的说明：把话单按时间段切片"
+
+  /** 两张**说明不同**的自带条目：作用对象判据靠这个分得开（`#005-19`）。 */
+  const 两只 = () => [技能({ name: "甲", description: 甲说 }), 技能({ name: "乙", description: 乙说 })]
+
+  // ⚠️ 预览按 `document` 取、不按宿主取：它挂在 body 下（见下面那条机制判据）。
+  const 预览个数 = () => document.querySelectorAll('[data-slot="capability-hover-preview"]').length
+  const 预览文字 = () => document.querySelector('[data-slot="capability-hover-preview"]')?.textContent ?? ""
+
+  const 进 = (元素: Element) => 元素.dispatchEvent(new MouseEvent("mouseenter"))
+  const 出 = (元素: Element) => 元素.dispatchEvent(new MouseEvent("mouseleave"))
+
+  // 焦点事件走冒泡的 `focusin` / `focusout`（Solid 的 onFocusIn/onFocusOut 就挂这两个），
+  // 所以可以直接派在卡里的按钮上，处理器拿到的 `currentTarget` 仍是卡片。
+  const 聚焦进 = (元素: Element) => 元素.dispatchEvent(new FocusEvent("focusin", { bubbles: true }))
+  const 聚焦出 = (元素: Element, relatedTarget: EventTarget | null) =>
+    元素.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget }))
+
+  test("卡片里不再有说明那一段——说明只剩给读屏的那一份", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: () => [技能({ name: "甲", description: 甲说 })] })
+    const 卡 = 一(host, "capability-item-local")!
+
+    // 判据是「卡片里没有说明的可见段落」，不是「看不看得见」——CSS 藏起来也算藏错方向：
+    // 用户要的是**省掉这一行**，不是留着占位。
+    expect(卡.querySelector("p"), "说明不该再是卡片里的一行").toBeNull()
+    const 读屏 = 卡.querySelector<HTMLElement>('[data-slot="capability-desc-sr"]')
+    expect(读屏?.textContent, "说明要留给读屏").toBe(甲说)
+    // 「读屏看得见、眼睛看不见」全靠 `sr-only` 这一个类（happy-dom 不跑 CSS，量不出实际渲染，
+    // 所以钉的是机制本身）。拆掉它，下面这条就是最后一道闸——实际变异验证过。
+    expect(读屏?.classList.contains("sr-only"), "那份说明必须真的只在读屏里").toBe(true)
+  })
+
+  test("没有说明的条目 ⇒ 什么都不留（不留一个空的读屏节点）", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: () => [技能({ name: "甲" })] })
+    const 卡 = 一(host, "capability-item-local")!
+
+    expect(卡.querySelector('[data-slot="capability-desc-sr"]')).toBeNull()
+  })
+
+  test("悬停第一张 ⇒ 弹出**这一张**的说明（作用对象判据）", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: 两只 })
+    const 卡们 = 槽(host, "capability-item-local")
+
+    进(卡们[0])
+
+    expect(预览个数()).toBe(1)
+    expect(预览文字()).toBe(甲说)
+  })
+
+  test("悬停第二张 ⇒ 弹的是第二张的（不是第一张的，也不是两张堆在一起）", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: 两只 })
+    const 卡们 = 槽(host, "capability-item-local")
+
+    进(卡们[0])
+    进(卡们[1])
+
+    expect(预览个数()).toBe(1)
+    expect(预览文字()).toBe(乙说)
+  })
+
+  test("库内（资产库）条目也照样弹——两个来源的说明都走同一条路", () => {
+    const host = 面板({
+      enabled: () => new Set(["a1"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析", description: 甲说 })],
+    })
+
+    进(一(host, "capability-item-loaded")!)
+
+    expect(预览文字()).toBe(甲说)
+  })
+
+  test("条目没有说明 ⇒ 悬停不弹（不给一个空盒子）", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: () => [技能({ name: "甲" })] })
+
+    进(一(host, "capability-item-local")!)
+
+    expect(预览个数()).toBe(0)
+  })
+
+  test("鼠标移出卡片 ⇒ 预览收掉", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: 两只 })
+    const 卡 = 槽(host, "capability-item-local")[0]
+    进(卡)
+    // 前置先钉「出来过」：不然「收掉」这条在一个从没弹过的实现上照样绿。
+    expect(预览个数()).toBe(1)
+
+    出(卡)
+
+    expect(预览个数()).toBe(0)
+  })
+
+  /**
+   * ⚠️ 机制判据：预览逃出了左栏这棵裁剪树。
+   *
+   * 与 `session-nav.test.tsx` 同一条：不断「父节点 === body」（`Portal` 会自建一层包裹 div，
+   * 断那个只钉住它的内部形状），断的是**它已经不在宿主子树里、且自己是 `fixed` 定位**
+   * ——两件缺一不可：只 Portal 不 fixed，位置仍按裁剪盒算；只 fixed 不 Portal，祖先照样裁它。
+   */
+  test("⚠️ 预览挂在 body 下 ＋ position:fixed——两件一起才逃得开左栏的 overflow:hidden", () => {
+    const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: 两只 })
+
+    进(槽(host, "capability-item-local")[0])
+
+    const 预览 = document.querySelector<HTMLElement>('[data-slot="capability-hover-preview"]')!
+    expect(预览, "预览该画出来了").not.toBeNull()
+    expect(host.contains(预览), "预览不该还在左栏（宿主）子树里").toBe(false)
+    expect(document.body.contains(预览), "预览该挂在 body 下（Portal）").toBe(true)
+    expect(预览.style.position, "fixed 才会按视口定位、不参与祖先的裁剪盒").toBe("fixed")
+  })
+
+  test("键盘：焦点进卡片（落在停用按钮上）⇒ 弹；焦点离开卡片 ⇒ 收", () => {
+    const host = 面板({
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析", description: 甲说 })],
+    })
+    const 卡 = 一(host, "capability-item-loaded")!
+    const 钮 = 卡.querySelector<HTMLElement>('[data-slot="capability-disable"]')!
+
+    聚焦进(钮)
+
+    expect(预览文字()).toBe(甲说)
+
+    聚焦出(钮, document.body)
+
+    expect(预览个数()).toBe(0)
+  })
+
+  test("焦点在卡片**内部**挪动（卡片 → 停用按钮）⇒ 不收", () => {
+    const host = 面板({
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析", description: 甲说 })],
+    })
+    const 卡 = 一(host, "capability-item-loaded")!
+    const 钮 = 卡.querySelector<HTMLElement>('[data-slot="capability-disable"]')!
+
+    聚焦进(卡)
+    expect(预览个数()).toBe(1)
+
+    聚焦出(卡, 钮) // relatedTarget 仍在卡内
+
+    expect(预览个数(), "焦点还在卡里，预览不该闪一下就没").toBe(1)
+  })
+
+  /**
+   * 悬停灰底（2026-10-28 用户要求）。happy-dom 不跑 CSS ⇒ 量不出「灰没灰」，钉的是**机制**：
+   * 两类卡片都挂的是项目统一的那一枚 hover 覆盖层令牌（与组头、资产卡同一档），不另造色。
+   */
+  test("两类卡片都带同一枚悬停灰底令牌", () => {
+    const host = 面板({
+      enabled: () => new Set(["a1"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "fund", assetId: "a1", assetName: "资金流向分析" }), 技能({ name: "甲" })],
+    })
+    const 令牌 = "hover:bg-v2-overlay-simple-overlay-hover"
+
+    expect(一(host, "capability-item-loaded")!.classList.contains(令牌), "库内卡片要有悬停灰底").toBe(true)
+    expect(一(host, "capability-item-local")!.classList.contains(令牌), "自带卡片要有悬停灰底").toBe(true)
+  })
+
+  test("来源标记换成官方 archive 图标 ＋「资产库」，不再用 📦", () => {
+    const host = 面板()
+    const 来源 = 一(host, "capability-source")!
+
+    expect(来源.querySelector('[data-component="icon"] use')?.getAttribute("href")).toBe("#opencode-icon-archive")
+    expect(来源.textContent).toContain("资产库")
+    expect(来源.textContent).not.toContain("📦")
   })
 })

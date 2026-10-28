@@ -1,4 +1,6 @@
-import { createSignal, For, Show, type JSX } from "solid-js"
+import { createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { Portal } from "solid-js/web"
+import { Icon } from "@opencode-ai/ui/icon"
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import { 合并能力, 计数, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
 
@@ -61,12 +63,100 @@ export interface CapabilityPanelProps {
 const 头 =
   "flex h-7 w-full shrink-0 cursor-pointer items-center gap-1.5 px-2 text-[13px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
 const 贴底头 = `border-t border-v2-border-border-muted ${头}`
-const 条目框 = "rounded-[6px] border border-v2-border-border-muted px-2 py-1.5"
+// 悬停灰底（2026-10-28 用户要求）：用项目统一的 hover 覆盖层令牌，与组头、资产卡同一档灰，
+// 不另造颜色（品牌化走 tokens，不硬编码）。
+const 条目框 =
+  "rounded-[6px] border border-v2-border-border-muted px-2 py-1.5 hover:bg-v2-overlay-simple-overlay-hover"
 const 小钮 =
   "cursor-pointer rounded-[4px] px-1.5 py-0.5 text-[12px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
 
+/** 预览与卡片右缘的缝。 */
+const 预览缝 = 8
+
+/** 预览锚在**视口坐标**上（`getBoundingClientRect` 给的就是视口坐标，配 `position: fixed` 用）。 */
+interface 说明锚 {
+  readonly 文字: string
+  readonly left: number
+  /** 卡片纵向中线——预览默认居中在它上面。 */
+  readonly 中线: number
+}
+
 export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   const [展开, set展开] = createSignal<能力组>("skill")
+
+  /**
+   * 说明预览（2026-10-28 用户裁定：说明从卡片里挪到**悬停 / 聚焦时卡片右侧**的浮层）。
+   *
+   * ## `Portal` ＋ `fixed` 各管一件事（两件都靠真栈变异实测过，别按「都一样」想当然）
+   *
+   * 左栏这三层壳——`aside[three-pane-left]`、`three-pane-left-card`、本面板——都是
+   * `overflow: hidden`。但裁剪只吃**包含块落在裁剪树内**的元素；`position: fixed` 的元素
+   * 包含块是视口，**躲在 `overflow: hidden` 的祖先里也不会被裁**（实测：只留 `fixed`、
+   * 拆掉 `Portal`，越界那一段的命中栈顶仍是预览自己，`capability-hover-preview-real.spec.ts`）。
+   * 所以挡住裁剪的是 `fixed`，`Portal` 不是。
+   *
+   * `Portal` 管的是另一件事——**坐标基准**。实测同一变异：`left` 偏 1px、纵向偏 37px
+   * （卡中 168 ⇒ 预中 205），说明这棵子树里有祖先成了 `fixed` 的包含块，坐标就不再是视口
+   * 坐标了。而 `说明锚` 存的是 `getBoundingClientRect` 给的**视口坐标**，两套基准对不上就错位。
+   * `Portal` 到 body 下把基准拉回视口，与「视口坐标」这个前提对齐；顺带也不依赖这棵树将来
+   * 有没有人加 `transform` / `filter` / `contain`（它们都会改包含块）。
+   *
+   * 两句合起来才是这段代码能成立的完整理由：`fixed` 逃裁剪，`Portal` 保坐标。
+   * 右栏那条悬停预览是同一个形状（`ai-session/session-nav.tsx` 与
+   * `e2e/real-stack/session-nav-real.spec.ts` ③b）。
+   *
+   * `z-30`：左栏之上、真浮层之下（真 dialog/menu 从 50 起）。`pointer-events-none`：预览
+   * 压在鼠标路径上也不能接事件——否则它自己会吃掉 `mouseleave`/`mouseenter`，卡片闪个不停。
+   */
+  const [说明, set说明] = createSignal<说明锚>()
+  /** 夹紧后的纵向中心；`undefined` = 还没量到高度（happy-dom 或尚未布局）⇒ 退回卡片中线。 */
+  const [预览纵, set预览纵] = createSignal<number>()
+
+  const 收说明 = () => {
+    set预览纵(undefined)
+    set说明(undefined)
+  }
+
+  /**
+   * 从**这张卡**右上角弹出它的说明。
+   *
+   * 没有说明就什么都不弹——不给一个空盒子（空浮层比没有浮层更像坏了）。
+   */
+  const 弹说明 = (卡: HTMLElement, 文字: string | undefined) => {
+    if (文字 === undefined) return 收说明()
+    const 盒 = 卡.getBoundingClientRect()
+    set预览纵(undefined)
+    set说明({ 文字, left: 盒.right + 预览缝, 中线: 盒.top + 盒.height / 2 })
+  }
+
+  /**
+   * 卡片的悬停 / 聚焦接线（两处条目共用）。
+   *
+   * 键盘要能拿到同一份信息：焦点落在卡里的停用按钮上时同样弹。`focusout` 要分清楚
+   * 「焦点离开卡片」与「焦点在卡内挪动」（卡片 → 停用按钮），后者收掉就是闪一下没了。
+   */
+  const 卡接线 = (文字: () => string | undefined) => ({
+    onMouseEnter: (事件: MouseEvent & { currentTarget: HTMLElement }) => 弹说明(事件.currentTarget, 文字()),
+    onMouseLeave: () => 收说明(),
+    onFocusIn: (事件: FocusEvent & { currentTarget: HTMLElement }) => 弹说明(事件.currentTarget, 文字()),
+    onFocusOut: (事件: FocusEvent & { currentTarget: HTMLElement }) => {
+      const 下一个 = 事件.relatedTarget
+      // `relatedTarget` 是 `EventTarget | null`：`null`（焦点不知去向，如点了页外）与
+      // 非节点目标都按「离开了」处理；只有落在**卡内**的节点上才算还在卡里。
+      if (!(下一个 instanceof Node) || !事件.currentTarget.contains(下一个)) 收说明()
+    },
+  })
+
+  /** 说明对读屏仍然可见（视觉上省掉了那一行，信息不能整个消失）。 */
+  const 读屏说明 = (文字: () => string | undefined) => (
+    <Show when={文字()}>
+      {(说) => (
+        <span data-slot="capability-desc-sr" class="sr-only">
+          {说()}
+        </span>
+      )}
+    </Show>
+  )
 
   const 条目 = () => 合并能力({ enabled: props.enabled(), skills: props.skills(), shadowed: props.shadowed() })
   const 前面 = () => 组序.filter((组) => 组序.indexOf(组) < 组序.indexOf(展开()))
@@ -113,46 +203,59 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   )
 
   const 自带 = (条: 自带条目) => (
-    <div data-slot="capability-item-local" class={条目框}>
+    <div data-slot="capability-item-local" class={条目框} {...卡接线(() => 条.description)}>
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">●</span>
         <span class="font-semibold">{条.name}</span>
         <span class="ml-auto text-[11px] text-v2-text-text-muted">📝 本项目自带</span>
       </div>
-      <Show when={条.description}>{(说) => <p class="pl-3 text-[11px] text-v2-text-text-muted">{说()}</p>}</Show>
+      {读屏说明(() => 条.description)}
     </div>
   )
 
   const 库内 = (条: 库内条目) => (
-    <div data-slot={条.loaded ? "capability-item-loaded" : "capability-item-stale"} class={条目框}>
+    <div
+      data-slot={条.loaded ? "capability-item-loaded" : "capability-item-stale"}
+      class={条目框}
+      {...卡接线(() => 条.description)}
+    >
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">{条.loaded ? "●" : "▲"}</span>
         <span class="font-semibold">{条.name}</span>
-        <span class="ml-auto text-[11px] text-v2-text-text-muted">📦 资产库</span>
+        {/* 2026-10-28：`📦` 换成图标集里的 `archive`（同一个意思，但是对得上设计系统的画法）。
+            `--icon-base` 必须由这层注入——`icon.css` 给图标自身写了 `color: var(--icon-base)`，
+            写在父级上的 `text-*` 到不了它，不注入就静默落上游那档硬编码灰（`rail.tsx` 同一个坑）。 */}
+        <span
+          data-slot="capability-source"
+          class="ml-auto flex items-center gap-1 text-[11px] text-v2-text-text-muted"
+        >
+          <span class="flex items-center [--icon-base:var(--v2-icon-icon-muted)]">
+            <Icon name="archive" size="small" />
+          </span>
+          资产库
+        </span>
       </div>
-      <Show
-        when={条.loaded}
-        fallback={
-          // ② 有两种成因，说反了就是在假故障上劝用户停用（2026-10-28 真栈现场）：
-          // 链接真丢了 vs 被同名技能盖掉（链接完好，内核去重时留了另一份）。
-          // 槽名分开，两种文案不互相顶替，测试也断得出是哪一种。
-          <Show
-            when={条.覆盖者}
-            fallback={
-              <p data-slot="capability-stale-reason" class="pl-3 text-[11px]">
-                已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。
-              </p>
-            }
-          >
-            {(盖) => (
-              <p data-slot="capability-shadowed-reason" class="pl-3 text-[11px]">
-                已启用，但被一份同名技能「{盖().name}」盖住了，AI 现在用的是那一份。改名或移走那份同名技能后重试。
-              </p>
-            )}
-          </Show>
-        }
-      >
-        <Show when={条.description}>{(说) => <p class="pl-3 text-[11px] text-v2-text-text-muted">{说()}</p>}</Show>
+      {读屏说明(() => 条.description)}
+      {/* 正常（`loaded`）时卡片里没有第二块文字——说明改由右侧预览承载了。
+          只有 ② 还要一行**诊断**（它不是说明，是「为什么没生效」，必须留在卡上）。 */}
+      <Show when={!条.loaded}>
+        {/* ② 有两种成因，说反了就是在假故障上劝用户停用（2026-10-28 真栈现场）：
+            链接真丢了 vs 被同名技能盖掉（链接完好，内核去重时留了另一份）。
+            槽名分开，两种文案不互相顶替，测试也断得出是哪一种。 */}
+        <Show
+          when={条.覆盖者}
+          fallback={
+            <p data-slot="capability-stale-reason" class="pl-3 text-[11px]">
+              已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。
+            </p>
+          }
+        >
+          {(盖) => (
+            <p data-slot="capability-shadowed-reason" class="pl-3 text-[11px]">
+              已启用，但被一份同名技能「{盖().name}」盖住了，AI 现在用的是那一份。改名或移走那份同名技能后重试。
+            </p>
+          )}
+        </Show>
       </Show>
       <div class="pl-3 pt-1">
         <button
@@ -169,7 +272,12 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   )
 
   // ③ 自带条目**没有**操作按钮：它不是装来的，点了等于删用户的文件（设计 §4）。
-  const 一条 = (条: 能力条目) => (条.kind === "local" ? 自带(条) : 库内(条))
+  const 一条 = (条: 能力条目) => {
+    // 卡片被移走（比如刚点了「停用」，回包后它整条消失）时，指针不会再给这张卡发
+    // `mouseleave` ⇒ 预览会孤零零留在屏上。卡片自己的清理里把它收掉。
+    onCleanup(收说明)
+    return 条.kind === "local" ? 自带(条) : 库内(条)
+  }
 
   // 只有「真的数过」才进得来：`清单()` 一定是有值的数组，组头/条目/计数才允许出现。
   // ⚠️ 形参是 **accessor**：`Show` 的非 keyed 回调只在真假翻转时重跑，把 `清单()` 当场求值再传下去
@@ -265,6 +373,40 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
             </p>
           </div>
         </Show>
+      </Show>
+
+      {/* 说明预览：`Portal` ＋ `fixed`（理由见 `说明` 信号上的那段注释）。 */}
+      <Show when={说明()} keyed>
+        {(锚) => {
+          let 盒: HTMLDivElement | undefined
+          // 高度要**挂上去之后**才量得到（`Portal` 是先建后插）；量到再夹紧到视口内，
+          // 免得靠近底边的那张卡的预览从屏幕下沿出去。量不到（happy-dom／未布局）就落在中线上。
+          onMount(() => {
+            const 高 = 盒?.offsetHeight ?? 0
+            if (高 <= 0) return
+            const 上沿 = 8
+            const 下沿 = window.innerHeight - 8
+            set预览纵(Math.min(Math.max(锚.中线, 上沿 + 高 / 2), 下沿 - 高 / 2))
+          })
+          return (
+            <Portal>
+              <div
+                ref={盒}
+                data-slot="capability-hover-preview"
+                class="pointer-events-none z-30 -translate-y-1/2 overflow-hidden rounded-lg bg-v2-background-bg-layer-01 p-2 text-xs leading-5 whitespace-pre-wrap text-v2-text-text-base shadow-[var(--v2-elevation-floating)] w-[260px] max-h-[min(320px,50vh)]"
+                style={{
+                  // `position` 写内联而不是类：它是这套逃逸机制的**一半**，测试要能直接读到它
+                  //（happy-dom 不跑 CSS，类名量不出来——`#005-07`）。
+                  position: "fixed",
+                  left: `${锚.left}px`,
+                  top: `${预览纵() ?? 锚.中线}px`,
+                }}
+              >
+                {锚.文字}
+              </div>
+            </Portal>
+          )
+        }}
       </Show>
     </div>
   )
