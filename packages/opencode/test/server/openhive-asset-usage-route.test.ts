@@ -189,4 +189,24 @@ describe("GET /openhive/assets · usageStats", () => {
       expect("usage-route-a2" in body.usageStats.stats).toBe(false)
     }),
   )
+
+  it.live("用量统计坏了 ⇒ 列表仍 200，只是不带 usageStats（老内核兼容的那一档）", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        pg.db.execute(sql`alter table auth.asset_usage_event rename to asset_usage_event_parked`),
+      )
+      try {
+        const response = yield* get(ME, LIST)
+        expect(response.status).toBe(200)
+        const body = JSON.parse(yield* Effect.promise(() => response.text())) as Record<string, unknown>
+        // 不含该键 ≠ 给个空表：前端 §7 的第三档是「这一项不出现」，给 `{days,stats:{}}` 会被渲染成「还没人用过」。
+        expect("usageStats" in body).toBe(false)
+        expect(Array.isArray(body["assets"])).toBe(true)
+      } finally {
+        yield* Effect.promise(() =>
+          pg.db.execute(sql`alter table auth.asset_usage_event_parked rename to asset_usage_event`),
+        )
+      }
+    }),
+  )
 })

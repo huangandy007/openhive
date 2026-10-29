@@ -197,7 +197,18 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if (deps.时控.该抽()) {
       yield* Effect.promise(() => deps.时控.跑一次({ db: deps.pg(), root: dataRoot(process.env) }))
     }
-    const usageStats = yield* Effect.promise(() => 用量统计(deps.pg(), assets.map((asset) => asset.id), nowSeconds()))
+    // 读失败也**不能** 500：列表是主功能。省略整个键 ⇒ 前端落进设计 §7 的第三档「这一项不出现」，
+    // 不会被渲染成「最近 30 天还没人用过」（那是假 0，正是本 feature 要修的东西，`#002-02`）。
+    const usageStats = yield* Effect.promise(() =>
+      用量统计(deps.pg(), assets.map((asset) => asset.id), nowSeconds()),
+    ).pipe(
+      // Effect 4 里旧名 `catchAllCause` 叫 `catchCause`：失败 / 缺陷 / 中断一并接住。
+      Effect.catchCause((cause) =>
+        Effect.sync(() => console.warn("[openhive-asset-usage] 用量统计失败，本次不带 usageStats", cause)).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    )
 
     return ok({
       assets,
@@ -206,7 +217,7 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       pageSize: 分页.pageSize,
       categoryNames,
       favoritedIds,
-      usageStats,
+      ...(usageStats === undefined ? {} : { usageStats }),
     })
   })
 }
