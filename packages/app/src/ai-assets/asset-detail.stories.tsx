@@ -95,6 +95,34 @@ export const 失败提示 = {
   ),
 }
 
+/**
+ * 使用记录三态（2026-10-29）：服务端 `usageStats` 给了才显示。两个 story 只差
+ * `stats` 里有没有 `a1`——「有人用过」与「还没人用过」是两段不同的文案，不是 0 与正数之差。
+ */
+export const 有使用记录 = {
+  render: () => (
+    <div style={{ width: "520px", height: "560px", display: "flex", flexDirection: "column" }}>
+      <AssetDetail
+        asset={样例资产({ id: "a1", name: "资金流水分析" })}
+        onBack={返回}
+        usage={{ days: 30, stats: { a1: { users: 3, calls: 12 } } }}
+      />
+    </div>
+  ),
+}
+
+export const 还没人用过 = {
+  render: () => (
+    <div style={{ width: "520px", height: "560px", display: "flex", flexDirection: "column" }}>
+      <AssetDetail
+        asset={样例资产({ id: "a1", name: "资金流水分析" })}
+        onBack={返回}
+        usage={{ days: 30, stats: {} }}
+      />
+    </div>
+  ),
+}
+
 export default {
   title: "App/OpenHive/AiAssets/Detail",
   id: "app-openhive-ai-assets-detail",

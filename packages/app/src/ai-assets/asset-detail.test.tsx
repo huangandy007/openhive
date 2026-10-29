@@ -65,7 +65,7 @@ const 标签 = (host: HTMLElement, id: string) =>
 const 面板 = (host: HTMLElement) => 槽(host, "asset-detail-panel")
 
 describe("资产详情头部", () => {
-  test("名称、空间/状态徽章、作者、收藏与使用次数都来自元数据", () => {
+  test("名称、空间/状态徽章、作者、收藏都来自元数据", () => {
     const { host, 卸 } = 挂({
       name: "资金流向研判",
       visibility: "department",
@@ -81,7 +81,8 @@ describe("资产详情头部", () => {
       expect(文本(host, "asset-detail-status")).toBe("已发布")
       expect(文本(host, "asset-detail-author")).toBe("张三 · 经侦支队")
       expect(文本(host, "asset-detail-favorites")).toBe("5 人收藏")
-      expect(文本(host, "asset-detail-usage")).toBe("37 次使用")
+      // 使用数换了口径（2026-10-29）：累计列不再显示，改由 `usage` 三态给。
+      expect(槽(host, "asset-detail-usage") === null).toBe(true)
       expect(槽(host, "asset-detail-back")?.getAttribute("aria-label")).toBe("返回资产列表")
     } finally {
       卸()
@@ -127,6 +128,38 @@ describe("资产详情头部", () => {
       expect(返回次数()).toBe(1)
     } finally {
       卸()
+    }
+  })
+
+  // 使用记录三态（2026-10-29）：窗口天数由**服务端**给（`usageStats.days`）。这里特意用
+  // `days: 7` 而不是 30——组件若把 30 写死，这条当场红（`#002-06`：同一件事别有两份来源）。
+  test("有数 ⇒ 「最近 7 天 · 3 人用过 · 共 12 次」", () => {
+    const { host, 卸 } = 挂({}, { usage: { days: 7, stats: { "asset-1": { users: 3, calls: 12 } } } })
+    try {
+      expect(文本(host, "asset-detail-usage")).toBe("最近 7 天 · 3 人用过 · 共 12 次")
+    } finally {
+      卸()
+    }
+  })
+
+  test("没有记录 ⇒ 「最近 30 天还没人用过」（不是 0 人 0 次）", () => {
+    const { host, 卸 } = 挂({}, { usage: { days: 30, stats: {} } })
+    try {
+      expect(文本(host, "asset-detail-usage")).toBe("最近 30 天还没人用过")
+    } finally {
+      卸()
+    }
+  })
+
+  test("没给 usage（旧内核 / 非 skill）⇒ 这一项不出现", () => {
+    const 无内核 = 挂()
+    const 非skill = 挂({ type: "mcp" }, { usage: { days: 30, stats: { "asset-1": { users: 3, calls: 12 } } } })
+    try {
+      expect(槽(无内核.host, "asset-detail-usage") === null).toBe(true)
+      expect(槽(非skill.host, "asset-detail-usage") === null).toBe(true)
+    } finally {
+      无内核.卸()
+      非skill.卸()
     }
   })
 })

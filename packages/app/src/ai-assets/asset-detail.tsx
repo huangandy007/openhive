@@ -7,6 +7,7 @@ import {
   type AssetMetadata,
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
+import type { UsageStats } from "./asset-catalog-api"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 import "./asset-action-active.css"
 
@@ -16,7 +17,8 @@ import "./asset-action-active.css"
  * **呈现方式**：中栏页面内状态（D0-3 的建议）——`AssetCenter` 选中 assetId 后把详情盖在浏览区上，
  * 不新增 `ContentTab`（资产的 `path` 没有意义）。
  *
- * **头部固定**：名称 / 空间 / 状态 / 作者 / 收藏数 / 使用次数都取自 `AssetMetadata` 真字段；
+ * **头部固定**：名称 / 空间 / 状态 / 作者 / 收藏数都取自 `AssetMetadata` 真字段；使用次数改由
+ * `usage` 三态算（最近 N 天，2026-10-29）。
  * 头部在 tab 切换时不重建。
  *
  * **评分 / 评价收起**（2026-10-29，用户裁定「不建议做评分」）：库里没有一条评价正文、也没有写
@@ -62,6 +64,17 @@ function 格式化日期(unix秒: number): string {
 
 function 作者文案(asset: AssetMetadata): string {
   return asset.department === "" ? asset.ownerName : `${asset.ownerName} · ${asset.department}`
+}
+
+/**
+ * 使用文案三态（2026-10-29）。窗口天数由**服务端**给：前端硬编码 30 会在服务端换窗口时
+ * 显示一个不对的「最近 30 天」（`#002-06`：同一件事别有两份来源）。
+ */
+function 使用文案(用量: UsageStats, assetId: string): string {
+  const 一份 = 用量.stats[assetId]
+  return 一份 === undefined
+    ? `最近 ${用量.days} 天还没人用过`
+    : `最近 ${用量.days} 天 · ${一份.users} 人用过 · 共 ${一份.calls} 次`
 }
 
 function 介绍面板(props: { readonly asset: AssetMetadata }): JSX.Element {
@@ -171,6 +184,13 @@ export interface AssetDetailProps {
    * 「点了没反应」。所以详情自己也要有一条 `role="alert"`。空串按「没有」处理。
    */
   readonly error?: string
+  /**
+   * 【保留的定制 · 同步上游时不要丢】最近 N 天的使用统计（2026-10-29）。
+   *
+   * **省略 ⇒ 这一项不出现**（旧内核没给 `usageStats`、或这不是 skill）；给了但资产没有记录
+   * ⇒ 明确写「还没人用过」。累计列 `usageCount` 从此不再显示——它是没人写过的假数（设计 §1）。
+   */
+  readonly usage?: UsageStats
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -296,7 +316,11 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
             <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-v2-text-text-muted">
               <span data-slot="asset-detail-author">{作者文案(props.asset)}</span>
               <span data-slot="asset-detail-favorites">{props.asset.favoriteCount} 人收藏</span>
-              <span data-slot="asset-detail-usage">{props.asset.usageCount} 次使用</span>
+              {/* 使用记录（2026-10-29）：只有 skill 且服务端给了 usageStats 才显示——
+                  没给 = 旧内核 / 非 skill，这一项整个不出现（不是显示 0）。 */}
+              <Show when={props.asset.type === "skill" ? props.usage : undefined}>
+                {(用量) => <span data-slot="asset-detail-usage">{使用文案(用量(), props.asset.id)}</span>}
+              </Show>
             </div>
           </div>
         </div>
