@@ -12,6 +12,7 @@ import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCenter } from "./asset-center"
 import type { AssetCatalog } from "./asset-catalog"
+import type { UsageStats } from "./asset-catalog-api"
 import type { ProjectEnablement } from "./enable-state"
 import { createAssetFilter, 兜底分类ID } from "./filter"
 
@@ -35,6 +36,8 @@ function 数据源(over: Partial<{
   favorited: readonly string[]
   /** 正在写收藏的那个 id。 */
   favoriteBusy: string | undefined
+  /** 最近 N 天的使用聚合（2026-10-29）；省略 = 服务端没给。 */
+  usage: UsageStats | undefined
 }> = {}): AssetCatalog & {
   翻页: number[]
   改条数: number[]
@@ -51,6 +54,7 @@ function 数据源(over: Partial<{
   const [错误, set错误] = createSignal<string | undefined>(over.error)
   const [收藏] = createSignal<ReadonlySet<string>>(new Set(over.favorited ?? []))
   const [收藏中] = createSignal<string | undefined>(over.favoriteBusy)
+  const [用量] = createSignal<UsageStats | undefined>(over.usage)
   const 翻页: number[] = []
   const 改条数: number[] = []
   const 查询: unknown[] = []
@@ -62,7 +66,7 @@ function 数据源(over: Partial<{
     pageSize: 每页,
     categoryNames: 分类名,
     error: 错误,
-    usage: () => undefined,
+    usage: () => 用量(),
     favorited: 收藏,
     favoriteBusy: 收藏中,
     setFavorite: (assetId, favorited) => void 收藏请求.push({ assetId, favorited }),
@@ -463,37 +467,38 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
 })
 })
 
-describe("中栏 · 收藏（2026-10-29）", () => {
-  const 资产 = (id: string): AssetMetadata => ({
-    id,
-    name: `资产${id}`,
-    type: "skill",
-    description: "",
-    icon: "skill",
-    category: "intelligence",
-    tags: [],
-    ownerId: "u-1",
-    ownerName: "甲民警",
-    department: "经侦支队",
-    visibility: "global",
-    version: 1,
-    status: "published",
-    favoriteCount: 0,
-    usageCount: 0,
-    rating: 0,
-    ratingCount: 0,
-    feedbackCount: 0,
-    createdAt: 1,
-    updatedAt: 1,
-    publishedAt: 1,
-    archivedAt: null,
-  })
+const 资产 = (id: string): AssetMetadata => ({
+  id,
+  name: `资产${id}`,
+  type: "skill",
+  description: "",
+  icon: "skill",
+  category: "intelligence",
+  tags: [],
+  ownerId: "u-1",
+  ownerName: "甲民警",
+  department: "经侦支队",
+  visibility: "global",
+  version: 1,
+  status: "published",
+  favoriteCount: 0,
+  usageCount: 0,
+  rating: 0,
+  ratingCount: 0,
+  feedbackCount: 0,
+  createdAt: 1,
+  updatedAt: 1,
+  publishedAt: 1,
+  archivedAt: null,
+})
 
-  const 开卡 = (host: HTMLElement, id: string) => {
-    const 卡 = host.querySelector<HTMLElement>(`[data-asset-id="${id}"] [data-slot="asset-card-open"]`)
-    if (!卡) throw new Error(`没有 ${id} 这张卡`)
-    卡.click()
-  }
+const 开卡 = (host: HTMLElement, id: string) => {
+  const 卡 = host.querySelector<HTMLElement>(`[data-asset-id="${id}"] [data-slot="asset-card-open"]`)
+  if (!卡) throw new Error(`没有 ${id} 这张卡`)
+  卡.click()
+}
+
+describe("中栏 · 收藏（2026-10-29）", () => {
   const 收藏按钮 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-favorite"]')
 
   // ⚠️ 「没有数据源 ⇒ 不渲染收藏按钮」在这里**测不到**：没有数据源就没有卡片，详情根本打不开。
@@ -590,6 +595,33 @@ describe("中栏 · 收藏（2026-10-29）", () => {
       expect(条.textContent?.trim()).toBe("收藏失败，请检查网络后重试")
       // 在详情头部里，而不是在被 `hidden` 掉的浏览区里。
       expect(host.querySelector('[data-slot="asset-detail-header"]')?.contains(条) === true).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+})
+
+/**
+ * 用量接线的最后一环（2026-10-29 终审 I-1）：`asset-catalog-api` 管解析、
+ * `asset-catalog` 管信号、`asset-detail` 管渲染，三者各自都有用例；把它们连起来的
+ * `asset-center.tsx` 那一行 `usage={props.catalog?.usage()}` 曾经没有任何用例守着——
+ * 抹掉它，本层全部用例照绿，而用户看到的「使用记录」整条静默消失。
+ */
+describe("中栏 · 使用记录接线（2026-10-29）", () => {
+  test("数据源给了用量 ⇒ 详情里就是那串文案（天数也取数据源的值）", () => {
+    const 源 = 数据源({
+      assets: [资产("a1")],
+      total: 1,
+      usage: { days: 7, stats: { a1: { users: 2, calls: 5 } } },
+    })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      // 先钉「详情真的开了」与「画的是这份资产」：否则下面「找不到 usage 元素」也会绿（#005-18）。
+      expect(host.querySelector('[data-slot="asset-detail-name"]')?.textContent?.trim()).toBe("资产a1")
+      const 用量 = host.querySelector<HTMLElement>('[data-slot="asset-detail-usage"]')
+      if (!用量) throw new Error("详情里没有使用记录这一项")
+      expect(用量.textContent?.trim()).toBe("最近 7 天 · 2 人用过 · 共 5 次")
     } finally {
       卸()
     }
