@@ -147,12 +147,13 @@ describe("PDF 预览（FR-007 的 .pdf）", () => {
  */
 describe("PDF 纸张与清晰度（2026-10-29）", () => {
   /** 最小合法 PDF：一页 A4 空白（无内容流）。渲染它不需要真绘图，只要能走完 pdfjs 那趟。 */
-  function 空白PDF(): Uint8Array<ArrayBuffer> {
+  function 空白PDF(页数 = 1): Uint8Array<ArrayBuffer> {
     const 编码 = new TextEncoder()
+    const 页号 = Array.from({ length: 页数 }, (_, i) => i + 3)
     const 对象 = [
       "<< /Type /Catalog /Pages 2 0 R >>",
-      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+      `<< /Type /Pages /Kids [${页号.map((号) => `${号} 0 R`).join(" ")}] /Count ${页数} >>`,
+      ...页号.map(() => "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>"),
     ]
     let 正文 = "%PDF-1.4\n"
     const 偏移: number[] = []
@@ -226,6 +227,37 @@ describe("PDF 纸张与清晰度（2026-10-29）", () => {
     const canvas = 页盒(容器)!.querySelector("canvas")!
     expect(canvas.style.width).toBe("595px")
     expect(canvas.width).toBe(595)
+  })
+
+  /**
+   * 逐页上屏（2026-10-29）：**画完一页交一页**，不是全画完才一次性换上。
+   *
+   * 这条判据靠**回调里同步查容器**区分两种实现：
+   * - 逐页上屏：`已=1` 时容器里已有 1 张纸，`已=2` 时有 2 张；
+   * - 全画完才上屏（改前的写法）：每一次回调时容器里都是 **0** 张。
+   *
+   * 光断言「最后有 2 张」区分不了这两者——大 PDF 的白屏正是后者造成的。
+   */
+  test("逐页上屏：画完一页就已交上去（不是全画完才换）", async () => {
+    配好测试worker()
+    置像素比(1)
+    const 容器 = document.createElement("div")
+    document.body.appendChild(容器)
+    置宽(容器, 595)
+    const 见到的: { 已?: number; 共?: number; 盒数: number }[] = []
+
+    await renderPdf(空白PDF(2), 容器, (进度) => {
+      见到的.push({
+        已: 进度.已,
+        共: 进度.共,
+        盒数: 容器.querySelectorAll("[data-slot='pdf-page']").length,
+      })
+    })
+
+    expect(见到的).toEqual([
+      { 已: 1, 共: 2, 盒数: 1 },
+      { 已: 2, 共: 2, 盒数: 2 },
+    ])
   })
 
   test("比例与像素的算法在边界上不返回 0 / NaN", () => {

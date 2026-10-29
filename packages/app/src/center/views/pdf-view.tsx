@@ -112,7 +112,7 @@ function 可用内容宽(容器: HTMLElement): number {
  *
  * 导出仅供测试直接驱动——生产路径是 `PdfView`。
  */
-export const renderPdf: BytesRenderer = async (bytes, container) => {
+export const renderPdf: BytesRenderer = async (bytes, container, 报进度) => {
   await 配好worker脚本()
   const task = getDocument({ data: bytes })
   let pdf: Awaited<typeof task.promise>
@@ -140,7 +140,15 @@ export const renderPdf: BytesRenderer = async (bytes, container) => {
   let 上次宽 = Number.NaN
   let 代次 = 0
 
-  async function 画一次() {
+  /**
+   * 画全部页。
+   *
+   * `渐进 = true`（首屏）：**画完一页就交一页**——用户一两秒内看到第一页，
+   * 剩下的在后面生长，这正是「打开大文件不像假死」的正主。
+   * `渐进 = false`（窗口缩放后的重画）：离屏画完再**一次性换上**——重画时屏幕上
+   * 已经有旧的一份，逐页替换会让它一段一段地闪。
+   */
+  async function 画一次(渐进: boolean) {
     const 我的 = ++代次
     const 宽 = 可用内容宽(container)
     上次宽 = 宽
@@ -163,12 +171,15 @@ export const renderPdf: BytesRenderer = async (bytes, container) => {
       盒.dataset.slot = "pdf-page"
       盒.className = 页类名
       盒.appendChild(canvas)
-      盒们.push(盒)
       await page.render({ canvas, viewport, transform: 倍 === 1 ? undefined : [倍, 0, 0, 倍, 0, 0] }).promise
       if (我的 !== 代次) return
+      // 先上屏、再报进度：报进度的那一刻，页面必须已经看得见（用例就是按这条钉的）。
+      if (渐进) container.appendChild(盒)
+      else 盒们.push(盒)
+      报进度?.({ 文字: `排版中 · 第 ${number} / ${pdf.numPages} 页`, 已: number, 共: pdf.numPages })
     }
     if (我的 !== 代次) return
-    container.replaceChildren(...盒们)
+    if (!渐进) container.replaceChildren(...盒们)
   }
 
   let 定时: ReturnType<typeof setTimeout> | undefined
@@ -180,14 +191,14 @@ export const renderPdf: BytesRenderer = async (bytes, container) => {
           定时 = setTimeout(() => {
             定时 = undefined
             if (Math.abs(可用内容宽(container) - 上次宽) < 1) return
-            void 画一次().catch((原因: unknown) => {
+            void 画一次(false).catch((原因: unknown) => {
               console.warn(`[openhive] pdf-view 按新宽度重画失败，保留原画面`, 原因)
             })
           }, 150)
         })
   观察?.observe(container)
 
-  await 画一次()
+  await 画一次(true)
 
   return () => {
     观察?.disconnect()

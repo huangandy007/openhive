@@ -25,6 +25,25 @@ const 降级原因 = (state: BinaryViewState): DegradedReason | undefined =>
 export type RenderCleanup = () => void
 
 /**
+ * 渲染器能报的**进度**（2026-10-29，用户实报「大文件打开像假死」）。
+ *
+ * 壳只出兜底文案（读取中 / 排版中）与不确定态的条；**具体说法由渲染器给**——
+ * 它才知道自己走到哪一步（PDF 报得出「第 3 / 180 页」，Word 只能说「正在解析」）。
+ */
+export interface 渲染进度 {
+  /** 给人看的一句话。 */
+  文字: string
+  /**
+   * 已完成的单位数。**必须与 `共` 成对、且 `共 > 0` 才画确定宽度**——
+   * 只有一个数时不猜另一个，退回不确定态（`file-transfer-dialog.tsx` 同一条口径）。
+   */
+  已?: number
+  共?: number
+}
+
+export type 报进度 = (进度: 渲染进度) => void
+
+/**
  * 降级提示里只放**文件名**，不放整条路径。
  *
  * `D:\案件\2026-0912\卷宗.pdf` 那种前缀对民警是噪音：那句话要回答的是「是哪个文件看不了」，
@@ -48,8 +67,23 @@ const 文件名 = (path: string) => path.split(/[/\\]/).pop() || path
  * 不持有资源的渲染器照旧 `Promise<void>` 即可。
  *
  * `bytes` 的 `ArrayBuffer` 参数（而不是裸 `Uint8Array`）与 `decodeBytes` 同源——见那里的说明。
+ *
+ * 第三个参数 `报进度` 是**可选**的：不接它的渲染器（Word / 图片 / 文本……）行为一个字节都不用改，
+ * 壳仍会给出「读取中 → 排版中」两段兜底进度；接它的（今天的 PDF）能把真数报上来。
  */
-export type BytesRenderer = (bytes: Uint8Array<ArrayBuffer>, container: HTMLElement) => Promise<void | RenderCleanup>
+export type BytesRenderer = (
+  bytes: Uint8Array<ArrayBuffer>,
+  container: HTMLElement,
+  报进度?: 报进度,
+) => Promise<void | RenderCleanup>
+
+/**
+ * 进度条**出现前要等多久**（毫秒）。
+ *
+ * 绝大多数文件几百毫秒内就打开了，条一闪而过比没有更糟（看着像「界面卡了一下」）。
+ * 200ms 是「人能感到停顿」的下沿：短于它什么都不该画。
+ */
+const 出条延迟 = 200
 
 export interface BinaryViewProps {
   /** 要渲染的文件（内容由 `load` 取，视图不自行取数）。 */
@@ -83,6 +117,16 @@ export interface BinaryViewProps {
  */
 export function BinaryView(props: BinaryViewProps) {
   const [state, setState] = createSignal<BinaryViewState>("pending")
+  /** 当前进度（`undefined` ＝ 没在打开）。 */
+  const [进度, set进度] = createSignal<渲染进度 | undefined>()
+  /** 条露不露——过了 `出条延迟` 才真；小文件的全过程它都是 `false`。 */
+  const [露条, set露条] = createSignal(false)
+  /** 知道总数才给百分比；否则 `undefined` ＝ 不确定态（不写宽度）。 */
+  const 百分比 = (): number | undefined => {
+    const 现在 = 进度()
+    if (!现在 || 现在.已 === undefined || 现在.共 === undefined || 现在.共 <= 0) return undefined
+    return Math.min(100, Math.floor((现在.已 / 现在.共) * 100))
+  }
   let container!: HTMLDivElement
   /**
    * 竞态令牌：`path` 一变就作废上一次的异步链。
@@ -138,7 +182,26 @@ export function BinaryView(props: BinaryViewProps) {
       容器.replaceChildren()
     }
 
+    /**
+     * 进度条的起落都挂在**这一条 effect** 上：换文件时上一次的定时器必须撤掉，
+     * 否则它会在下一个文件已经 ready 之后把条又推出来——而那时再没有谁去收它。
+     */
+    let 条定时: ReturnType<typeof setTimeout> | undefined
+    const 收起进度 = () => {
+      if (条定时 !== undefined) clearTimeout(条定时)
+      条定时 = undefined
+      set露条(false)
+      set进度(undefined)
+    }
+    onCleanup(() => {
+      if (条定时 !== undefined) clearTimeout(条定时)
+    })
+
     setState("pending")
+    set进度({ 文字: "正在读取文件…" })
+    set露条(false)
+    条定时 = setTimeout(() => set露条(true), 出条延迟)
+
     void (async () => {
       const 内容 = load ? await load(path) : undefined
       if (!还在()) return
@@ -151,20 +214,28 @@ export function BinaryView(props: BinaryViewProps) {
       const bytes = decodeBytes(内容)
       清空() // 无论这一份有没有内容，都先把上一份收干净
       if (!bytes) {
+        收起进度()
         setState("empty")
         return
       }
-      const 本次 = await render(bytes, 容器)
+      // 字节到手 ⇒ 从「读取」切到「排版」；接这个回调的渲染器会把它替换成真数（PDF 的页数）。
+      set进度({ 文字: "正在排版…" })
+      const 本次 = await render(bytes, 容器, (新) => {
+        // 迟到的渲染不许改当前这份的进度：那是别人文件的页数。
+        if (还在()) set进度(新)
+      })
       if (!还在()) {
         // 迟到的那一份（或卸载后才到点的）：它自己占的资源立刻还掉。
         // **不入 `待归还`**，否则会把当前那份的清理函数挤掉，造成真正的漏。
         本次?.()
         return
       }
+      收起进度()
       待归还 = 本次 ? { 还: 本次, 文件: path } : undefined // 渲染器不持资源时它回 `void`，别把 `void` 塞进「待归还」
       setState("ready")
     })().catch((原因: unknown) => {
       if (!还在()) return
+      收起进度()
       // 渲染器可能已经写了一半才抛（取内容失败时容器里则还留着上一个文件的画面）：
       // 残片不跟提示同屏，一并收掉。
       清空()
@@ -179,6 +250,55 @@ export function BinaryView(props: BinaryViewProps) {
 
   return (
     <>
+      {/*
+        打开进度条（2026-10-29，用户实报「大文件打开像假死」）。
+
+        ## 为什么是「零高度 + 绝对定位」
+
+        中栏是 `flex-col`，这层要是占几像素的盒高，条消失的那一刻下面的内容会**跳一下**——
+        打开完成的瞬间最不该晃。`h-0` 让它不占位，里面的条与标签绝对定位浮在内容上缘。
+
+        ## 为什么放在**滚动容器外面**
+
+        渲染器往容器里**就地**写 DOM，PDF 每页重画还会 `replaceChildren` 整个容器——
+        放里面就会被一起抹掉。放外面，它就不归任何渲染器管。
+
+        ## 不确定态不写宽度
+
+        知道 `已/共` 才画确定宽度；否则 `animate-pulse` 走满宽——与
+        `file-transfer-dialog.tsx` / `minio-bar.tsx` 同一套语言。假百分比（卡 90%、
+        来回跳）比没有进度条更伤信任。
+      */}
+      <Show when={露条() && 进度()}>
+        <div data-slot="open-progress" class="pointer-events-none relative h-0 w-full shrink-0">
+          <span
+            role="progressbar"
+            aria-label="打开进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={百分比()}
+            data-indeterminate={百分比() === undefined ? "true" : "false"}
+            class="absolute inset-x-0 top-0 block h-[3px] overflow-hidden bg-v2-overlay-simple-overlay-hover"
+          >
+            <span
+              data-slot="open-progress-fill"
+              class={
+                百分比() === undefined
+                  ? "block h-full w-full animate-pulse bg-v2-text-text-base"
+                  : "block h-full bg-v2-text-text-base transition-[width]"
+              }
+              style={百分比() === undefined ? undefined : { width: `${百分比()}%` }}
+            />
+          </span>
+          <span
+            data-slot="open-progress-label"
+            class="absolute top-2 left-4 rounded bg-v2-overlay-simple-overlay-hover px-2 py-1 text-[11px] text-v2-text-text-base"
+          >
+            正在打开 {文件名(props.path)}
+            <span class="ml-2 text-v2-text-text-faint">{进度()?.文字}</span>
+          </span>
+        </div>
+      </Show>
       {/*
         `p-4`（16px）＝ 内容区的内边距，与 tab 栏文字的缩进同值（`tab-bar.tsx` 的 `px-1` ＋ tab 的 `px-3`）
         ⇒ 正文左缘与正上方那个 tab 标题的左缘落在同一条竖线上。

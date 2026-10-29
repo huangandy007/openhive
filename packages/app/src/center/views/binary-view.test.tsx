@@ -34,6 +34,99 @@ const 视图 = (host: HTMLElement) =>
 
 const 降级 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-component='degraded-view']")
 
+/**
+ * 打开时**有东西在动**（2026-10-29 用户实报：大文件打开像假死）。
+ *
+ * 现状是「四段里三段没有任何变化」：拉 chunk 时留着上一个文件、取内容时也留着、
+ * 渲染时白屏。条只解决「看不出在干活」，故它还担两件事：
+ *
+ * - **200ms 内不出现**——小文件（绝大多数）不该看到它闪一下；
+ * - **不知道总数就不写宽度**——假百分比（卡 90%、来回跳）比没有进度条更伤信任，
+ *   与 `file-transfer-dialog.tsx` / `minio-bar.tsx` 同一套「不确定态」语言。
+ */
+describe("打开时的进度条", () => {
+  const 条 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='open-progress']")
+  const 填充 = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-slot='open-progress-fill']")
+  const 等过延迟 = () => new Promise((resolve) => setTimeout(resolve, 260))
+
+  test("小文件不闪：200ms 内没有条，之后才出现；落定后收起", async () => {
+    let 放行!: () => void
+    const 卡住 = new Promise<void>((resolve) => (放行 = resolve))
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path="/p/大卷宗.pdf"
+        load={async () => {
+          await 卡住
+          return 内容([1])
+        }}
+        render={async () => {}}
+      />
+    ))
+
+    await 落定()
+    expect(条(host)).toBeNull()
+
+    await 等过延迟()
+    expect(条(host)).not.toBeNull()
+    expect(条(host)?.textContent).toContain("大卷宗.pdf") // 说得出在开哪一份
+    expect(条(host)?.textContent).toContain("正在读取")
+
+    放行()
+    await 落定()
+    expect(条(host)).toBeNull()
+  })
+
+  test("还不知道总数：条在走，但不写宽度（不假装知道百分比）", async () => {
+    let 放行!: () => void
+    const 卡住 = new Promise<void>((resolve) => (放行 = resolve))
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path="/p/大卷宗.pdf"
+        load={async () => {
+          await 卡住
+          return 内容([1])
+        }}
+        render={async () => {}}
+      />
+    ))
+
+    await 等过延迟()
+
+    expect(条(host)?.querySelector("[role='progressbar']")).not.toBeNull()
+    expect(填充(host)?.style.width).toBe("")
+
+    放行()
+    await 落定()
+  })
+
+  test("渲染器报出真数：宽度按 已/共 算，文字用渲染器自己的说法", async () => {
+    let 放行!: () => void
+    const 卡住 = new Promise<void>((resolve) => (放行 = resolve))
+    const host = mount(() => (
+      <BinaryView
+        name="probe"
+        path="/p/卷宗.pdf"
+        load={async () => 内容([1])}
+        render={async (_bytes, _container, 报进度) => {
+          报进度?.({ 文字: "排版中 · 第 1 / 2 页", 已: 1, 共: 2 })
+          await 卡住
+        }}
+      />
+    ))
+
+    await 等过延迟()
+
+    expect(填充(host)?.style.width).toBe("50%")
+    expect(条(host)?.textContent).toContain("第 1 / 2 页")
+
+    放行()
+    await 落定()
+    expect(条(host)).toBeNull()
+  })
+})
+
 describe("字节型视图的公共壳：取字节 → 交渲染器", () => {
   test("拿到字节就交给渲染器，渲染完标记 ready", async () => {
     const 收到: number[][] = []
