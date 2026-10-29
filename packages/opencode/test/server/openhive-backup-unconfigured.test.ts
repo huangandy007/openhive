@@ -13,6 +13,7 @@ import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { AnchorWorkspace } from "../../src/server/routes/instance/httpapi/middleware/anchor-workspace"
 import { userIdentityLayer } from "../../src/server/routes/instance/httpapi/middleware/user-identity"
+import { Database } from "@opencode-ai/core/database/database"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { OpenhiveArchive } from "../../src/server/openhive/archive"
 import { OpenhiveBackup } from "../../src/server/openhive/backup"
@@ -98,6 +99,12 @@ const appRoutes = Layer.merge(
     Layer.provide(
       userIdentityLayer.pipe(Layer.provide(UserIdentity.Config.layer), Layer.provide(DatabaseRouter.layer())),
     ),
+    // 2026-10-29：备份授权要读「登录者自己那份」`project_ext`（老项目回落），于是备份层
+    // 在层构造期 `yield* Database.Service` 了。生产里这个服务由 app 层供；本文件是手工拼的
+    // 小 app，得自己给一份（内容与本用例无关——这几条断言只看 403 / 503）。
+    // ⚠️ 落点写在 `SANDBOX` 根下：`DATA_ROOT` 那时还不存在，而 `layerFromPath` **不建父目录**，
+    // 直接指过去会 `SQLITE_CANTOPEN: unable to open database file`（2026-10-29 实测）。
+    Layer.provide(Database.layerFromPath(path.join(SANDBOX, "global.db"))),
   ),
 )
 

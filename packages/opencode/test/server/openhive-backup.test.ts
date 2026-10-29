@@ -5,11 +5,12 @@ import path from "path"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { listBackupEvents } from "@opencode-ai/auth/project-backup-event"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { type FakeS3, startFakeS3 } from "@opencode-ai/core/test-support/fake-s3"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -1442,6 +1443,129 @@ describe("Fix round 2 · 每日清扫的 isBusy 透传（§8.4）", () => {
       // 中途出现任务 ⇒ 这一轮什么都没做，不该留下「删了 0 个」的假 ok 审计。
       expect(审计.some((event) => event.action === "gc")).toBe(false)
     }),
+    30_000,
+  )
+})
+
+/**
+ * 2026-10-29 · 老项目（多租户改造**前**建的）的备份：**自建即属主**，不再 403。
+ *
+ * ## 现场（2026-10-29 用户实报）
+ *
+ * 「现在提示 MinIO 备份没有起起来」——查下来 MinIO 活得好好的（`/minio/health/live` 200、
+ * 真栈里真备份 202 并落了新快照）；真正的原因是项目清单 13 条里 **11 条是改造前**建的老项目：
+ * 它们只在**调用者自己的**每用户 SQLite 里有一行 `project_ext`，PG 的 `project_member` /
+ * `project_meta` **一条行都没有**。备份出口的 `authorize()` 当时只问 PG ⇒ `actor === null`
+ * ⇒ **403「无权访问该项目的备份」**；而客户端 `backupProject()` 只认 202/409、其余一律
+ * `undefined` ⇒ 前端把 403 翻译成「备份没能起起来」（`workspace-entry.tsx:1481`）。
+ *
+ * 这与 `LEARNINGS #010-06` 是同一件事的第二个落点：资产出口 2026-10-28 已修（共用
+ * `project-actor.ts` 的 `成员角色()`），备份当时漏了。
+ *
+ * ## 三条用例合起来才是这条判据（少一条就放过一个方向的错）
+ *
+ * ① 老项目 → `202` / `200`（**修的是它**）；
+ * ② 同一个 id 换**别人**来问 → 仍 `403`（每用户库物理隔离，他库里没有那一行 ⇒ 放宽不能越人）；
+ * ③ **PG 认识、而我不是成员**、我库里却留着一行同 id 的陈旧 `project_ext` → 仍 `403`
+ *    （否则一条迁移残留就能让非成员碰别人项目的共享状态）。
+ */
+describe("2026-10-29 · 老项目（PG 不认识，只有每用户库的 project_ext 行）也能备份", () => {
+  /** PG **完全不认识**的项目（老项目的形态）。 */
+  const 老项目 = "proj_backup_legacy"
+  /** PG 认识（BOB 是 owner）、而 ALICE 不是成员，但 ALICE 自己库里留了一行陈旧 `project_ext`。 */
+  const 陈旧行项目 = "proj_backup_stale_row"
+
+  /** 老项目的沙箱目录：预检要扫它，缺了会先撞 400「path 不存在」，测不出授权那一条。 */
+  const 种沙箱 = (userId: string, projectId: string) => {
+    const directory = path.join(WORKSPACE_ROOT, userId, projectId)
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(path.join(directory, "旧资料.txt"), "legacy")
+  }
+
+  /**
+   * 往**某个用户自己的**每用户库里种一行「他建过这个项目」——老项目在 PG 里的唯一替代证据。
+   *
+   * 配方与 `openhive-project-assets.test.ts` 的 `种自建项目` 同源（`LEARNINGS #004-12`）：
+   * 走 `DatabaseRouter`（与请求期**同一条**建库 / 迁移路径），裸 SQL 只为绕开 drizzle 的
+   * 运行时默认值。⚠️ `project` 行不能省：`project_ext.project_id` 有外键（`ON DELETE CASCADE`）。
+   */
+  const 种自建项目 = (userId: string, projectId: string) =>
+    Effect.promise(() =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const router = yield* DatabaseRouter.Service
+            const db = (yield* router.forUser(userId)).db
+            yield* db.run(
+              sql`INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated)
+                  VALUES (${projectId}, ${`/tmp/${projectId}`}, '[]', 1700000000000, 1700000000000)`,
+            )
+            yield* db.run(
+              sql`INSERT OR IGNORE INTO project_ext (project_id, type, project_type, shared_directory, last_accessed_at)
+                  VALUES (${projectId}, 'private', '单案', NULL, 1700000000000)`,
+            )
+          }),
+        ).pipe(Effect.provide(DatabaseRouter.layer({ root: DATA_ROOT }))),
+      ),
+    )
+
+  beforeAll(async () => {
+    // 老项目：PG 一条行都不写。陈旧行项目：PG 认识（BOB 是 owner），ALICE 只是自己库里留了一行。
+    await pg!.db.execute(sql`
+      insert into auth.project_member (project_id, user_id, role, time_created)
+      values (${陈旧行项目}, ${BOB.id}, 'owner', 1000)
+      on conflict (project_id, user_id) do nothing
+    `)
+    await Effect.runPromise(种自建项目(ALICE.id, 老项目))
+    await Effect.runPromise(种自建项目(ALICE.id, 陈旧行项目))
+    种沙箱(ALICE.id, 老项目)
+    种沙箱(ALICE.id, 陈旧行项目)
+  })
+
+  it.live(
+    "① 老项目：自建即属主——起备份 202、读状态 200（不再 403「无权访问该项目的备份」）",
+    () =>
+      Effect.gen(function* () {
+        // 前提：这个项目在 PG 里**一条成员行都没有**——否则测的是正常那条路，不是回落。
+        const 成员行 = yield* Effect.promise(() =>
+          pg!.db.execute(sql`select user_id from auth.project_member where project_id = ${老项目}`),
+        )
+        expect(rowsOf(成员行).length).toBe(0)
+
+        const 起 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: 老项目 }))
+        expect(起.status).toBe(202)
+        const { jobId } = yield* json(Schema.Struct({ jobId: Schema.String }), 起)
+        // 等到终态再走：单飞锁按项目，跑着的任务会留给下一条用例。
+        yield* 等到终态(jobId)
+
+        const 状态 = yield* as(openApp, ALICE, `${BACKUP}/status?projectId=${老项目}`)
+        expect(状态.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "② 同一个老项目换别人来问：仍 403（每用户库物理隔离，放宽不越人）",
+    () =>
+      Effect.gen(function* () {
+        const 起 = yield* as(openApp, BOB, BACKUP, 体({ projectId: 老项目 }))
+        expect(起.status).toBe(403)
+        expect((yield* json(Schema.Struct({ code: Schema.String }), 起)).code).toBe("forbidden")
+
+        const 状态 = yield* as(openApp, BOB, `${BACKUP}/status?projectId=${老项目}`)
+        expect(状态.status).toBe(403)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "③ PG 认识、而我不是成员：自己库里的陈旧行**不放宽** ⇒ 仍 403",
+    () =>
+      Effect.gen(function* () {
+        const 起 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: 陈旧行项目 }))
+        expect(起.status).toBe(403)
+        expect((yield* json(Schema.Struct({ code: Schema.String }), 起)).code).toBe("forbidden")
+      }),
     30_000,
   )
 })

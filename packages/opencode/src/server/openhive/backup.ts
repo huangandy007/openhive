@@ -22,12 +22,13 @@
 export * as OpenhiveBackup from "./backup"
 
 import { sql } from "drizzle-orm"
-import { Effect, Option, Schema } from "effect"
+import { Context, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { archiveStatesOf, membersOf } from "@opencode-ai/auth/project-member"
 import { recordBackupEvent, type BackupEventInput } from "@opencode-ai/auth/project-backup-event"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
+import { Database } from "@opencode-ai/core/database/database"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import { User } from "@opencode-ai/core/user"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
@@ -42,6 +43,7 @@ import {
 } from "./archive"
 import { OpenhivePg } from "./pg"
 import { PREFIX } from "./project"
+import { 成员角色 } from "./project-actor"
 import {
   AutoBackupCancelled,
   applyRetention,
@@ -99,6 +101,23 @@ interface Deps {
   readonly minio: Option.Option<MinioSettings>
   /** 与 `archive.ts` 同型：`OpenhivePg` 的**共享**客户端读取器（调用一次拿一次）。 */
   readonly pg: OpenhivePg.Interface["pg"]
+  /**
+   * 每用户 SQLite（**调用者自己那份**）。只用来答一个授权问题：老项目的 `project_ext` 行在不在
+   * （`./project-actor` 的第二道来源，2026-10-29 起）。与 `archive.ts:248` / `project-assets.ts`
+   * 同一个取法：层构造期取、请求期用，按 fiber 身份路由到本人的库。
+   */
+  readonly database: Database.Interface
+  /**
+   * **请求 fiber 的上下文**，由 `挂()` 逐请求补齐（层构造期那份 `deps` 没有它）。
+   *
+   * 只为 `authorize()` 里那次跨 fiber 的 Effect 服务：`authorize` 是 async 函数，跑
+   * `./project-actor` 的角色判据只能 `Effect.runPromise`，而 `runPromise` **另起一个 fiber、
+   * 不带调用方的上下文** ⇒ 「按身份取连接」的钩子看不到 `User`，查询落到**全局库**；全局库里
+   * 没有 `project_ext` 表 ⇒ `SQLiteError: no such table`（2026-10-29 实测，备份出口整片 500）。
+   *
+   * `Context.Context<never>` = 「不额外要求任何服务」，只是把当前上下文原样带过去。
+   */
+  readonly 上下文?: Context.Context<never>
   readonly jobs: JobRegistry
   readonly scheduler: AutoScheduler
   /** 容量上限（生产 = `QUOTA_BYTES`；测试注入小上限，spec §8.3 的公式不变）。 */
@@ -186,7 +205,7 @@ type 授权结果 =
  */
 async function authorize(
   user: User.Info,
-  deps: Pick<Deps, "pg" | "minio" | "root">,
+  deps: Pick<Deps, "pg" | "minio" | "root" | "database" | "上下文">,
   projectId: string,
   options: { readonly allowArchived?: boolean } = {},
 ): Promise<授权结果> {
@@ -198,8 +217,18 @@ async function authorize(
   }
 
   const pg = deps.pg()
-  const members = await membersOf(pg, projectId)
-  const actor = ProjectMembership.asRole(members.find((member) => member.userId === user.id)?.role)
+  // 角色判据**只有一份**（`./project-actor`，`LEARNINGS #002-06` / `#010-06`）：先问 PG 名册，
+  // 只对「PG 完全不认识」的老项目回落到**调用者自己库**里的 `project_ext` 行（= 属主）。
+  //
+  // 2026-10-29 修：这里原先只问 PG ⇒ 多租户改造**前**建的老项目（真栈 13 条里 11 条）被判成
+  // 非成员、回 403「无权访问该项目的备份」，而客户端只认 202/409、把它翻成「备份没能起起来」
+  // ——用户看到的现象是「MinIO 没起来」，实际 MinIO 一直是通的。
+  // 判据必须在**请求 fiber 的上下文**里跑（`挂()` 传下来的 `deps.上下文`）：钩子靠上下文里的
+  // `User` 选库，`Effect.runPromise` 不带上下文（见 `Deps.上下文` 的注释）。
+  const 判据 = 成员角色({ pg, database: deps.database }, user.id, projectId)
+  const actor = ProjectMembership.asRole(
+    await (deps.上下文 === undefined ? Effect.runPromise(判据) : Effect.runPromiseWith(deps.上下文)(判据)),
+  )
   // 非成员与「角色认不出」同一条守卫（安全方向相同：一律不放行）。
   if (actor === null) return { ok: false, response: forbidden("无权访问该项目的备份") }
 
@@ -1265,6 +1294,8 @@ export const routesWithQuota = (quotaBytes: number) =>
     const config = yield* AnchorWorkspace.Config
     const minio = yield* MinioConfig
     const openhivePg = yield* OpenhivePg.Service
+    // 每用户 SQLite：只在授权要回落「老项目的 project_ext 行」时才被读（`./project-actor`）。
+    const database = yield* Database.Service
 
     const 根 = config.root
     const 连接 = minio.connection
@@ -1278,7 +1309,7 @@ export const routesWithQuota = (quotaBytes: number) =>
       detect: makeDetect({ root: 根, minio: 连接, pg: 库, jobs, quotaBytes }),
     })
 
-    const deps: Deps = { root: 根, minio: 连接, pg: 库, jobs, scheduler, quotaBytes }
+    const deps: Deps = { root: 根, minio: 连接, pg: 库, database, jobs, scheduler, quotaBytes }
 
     const 心跳 = setInterval(() => {
       jobs.evict()
@@ -1294,16 +1325,38 @@ export const routesWithQuota = (quotaBytes: number) =>
       }),
     )
 
-    yield* router.add("POST", PATH.backup, (request) => handleBackup(request, deps))
-    yield* router.add("POST", PATH.heartbeat, (request) => handleHeartbeat(request, deps))
-    yield* router.add("GET", PATH.status, (request) => handleStatus(request, deps))
-    yield* router.add("GET", PATH.snapshots, (request) => handleSnapshots(request, deps))
-    yield* router.add("GET", PATH.snapshot, (request) => handleSnapshot(request, deps))
-    yield* router.add("DELETE", PATH.snapshot, (request) => handleDeleteSnapshot(request, deps))
-    yield* router.add("POST", PATH.preview, (request) => handlePreview(request, deps))
-    yield* router.add("POST", PATH.restore, (request) => handleRestore(request, deps))
-    yield* router.add("GET", PATH.job, (request) => handleJob(request, deps))
-    yield* router.add("POST", PATH.cancel, (request) => handleCancel(request, deps))
+    /**
+     * 挂一条路由，并把**请求 fiber 的上下文**随 `deps` 交给 handler。
+     *
+     * ⚠️ 为什么统一在这一处取、不让各 handler 自己取：`authorize()` 是 async 函数，跑
+     * `./project-actor` 的角色判据只能用 `Effect.runPromise`，而它**另起一个 fiber、不带调用方的
+     * 上下文** ⇒ 钩子看不到 `User`，查询落到全局库（没有 `project_ext` 表）。见 `Deps.上下文`。
+     */
+    const 挂 = <E, R>(
+      method: "GET" | "POST" | "DELETE",
+      path: HttpRouter.PathInput,
+      handler: (
+        request: HttpServerRequest.HttpServerRequest,
+        deps: Deps,
+      ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+    ) =>
+      router.add(method, path, (request) =>
+        Effect.gen(function* () {
+          const 上下文 = yield* Effect.context<never>()
+          return yield* handler(request, { ...deps, 上下文 })
+        }),
+      )
+
+    yield* 挂("POST", PATH.backup, (request, deps) => handleBackup(request, deps))
+    yield* 挂("POST", PATH.heartbeat, (request, deps) => handleHeartbeat(request, deps))
+    yield* 挂("GET", PATH.status, (request, deps) => handleStatus(request, deps))
+    yield* 挂("GET", PATH.snapshots, (request, deps) => handleSnapshots(request, deps))
+    yield* 挂("GET", PATH.snapshot, (request, deps) => handleSnapshot(request, deps))
+    yield* 挂("DELETE", PATH.snapshot, (request, deps) => handleDeleteSnapshot(request, deps))
+    yield* 挂("POST", PATH.preview, (request, deps) => handlePreview(request, deps))
+    yield* 挂("POST", PATH.restore, (request, deps) => handleRestore(request, deps))
+    yield* 挂("GET", PATH.job, (request, deps) => handleJob(request, deps))
+    yield* 挂("POST", PATH.cancel, (request, deps) => handleCancel(request, deps))
   }),
   )
 
