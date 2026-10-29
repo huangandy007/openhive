@@ -62,7 +62,7 @@ export type ProjectFilesFetch = ForkFetch
 /**
  * 一次取数的结论。
  *
- * `truncated` 是**服务端**的截断标记（扫到上限就停，见 `project-tree-scan.ts` 的 `默认上限`）：
+ * `truncated` 是**服务端**的截断标记（超过上限只交前 N 条，见 `project-tree-scan.ts` 的 `默认上限`）：
  * 被截断的那份清单与完整清单形状一模一样，差的就是这一位。本层只负责原样转交
  * ——要不要在界面上说「只显示了一部分」是消费方的事。
  */

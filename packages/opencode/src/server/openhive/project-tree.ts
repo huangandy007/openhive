@@ -38,7 +38,7 @@ export * as OpenhiveProjectTree from "./project-tree"
  * ## `扫树` 是 Promise 的，`读目录` 用 `Effect.runPromise` 过桥
  *
  * 这在本仓是既有做法（`src/acp/event.ts`、`src/effect/bridge.ts`、`src/cli/cmd/attach.ts`）。
- * **别把 `扫树` 改成 Effect 的**：它那 15 条顺序用例是纯 Promise 写法，改成 Effect 只会让用例翻倍
+ * **别把 `扫树` 改成 Effect 的**：它那组顺序用例是纯 Promise 写法，改成 Effect 只会让用例翻倍
  * 变长，换不到任何东西。
  */
 

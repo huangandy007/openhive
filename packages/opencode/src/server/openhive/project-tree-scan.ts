@@ -54,53 +54,114 @@ function 隐藏根(path: string): boolean {
   return 首段 === ".git" || 首段 === ".opencode"
 }
 
-export async function 扫树(读: 读目录, 上限: number = 默认上限): Promise<扫描结果 | undefined> {
-  const paths: string[] = []
-  let truncated = false
+/**
+ * 同时读几个目录。
+ *
+ * 起点是实测（2026-10-29）：串行时**每个目录约 2.8ms**，FDE 项目 176 个目录 ≈ 500ms；
+ * 而目录之间互不依赖，慢的是「一次一次等」，不是盘。
+ *
+ * 4 是在「比串行快一个数量级」和「不把盘打满」之间的折中：50 人同时进项目时最坏
+ * 50 × 4 = 200 个读在飞，固态盘扛得住；真要更大规模，该加的是**全进程**限流，
+ * 而不是把这个数调大（单个请求的分片再细，也挡不住 N 个请求叠起来）。
+ */
+export const 默认并发 = 4
 
-  /** `undefined` ＝ 这一支走不成；`true`/`false` ＝ 这一支下面有没有**文件**。 */
-  async function walk(dir: string): Promise<boolean | undefined> {
-    if (truncated) return false
-    const body = await 读(dir)
-    if (body === undefined) return undefined
+export async function 扫树(
+  读: 读目录,
+  上限: number = 默认上限,
+  并发: number = 默认并发,
+): Promise<扫描结果 | undefined> {
+  /** 在飞上限。等待是最贵的部分：目录之间没有先后依赖，串行等就是纯浪费。 */
+  let 在飞 = 0
+  const 排位: (() => void)[] = []
+  /**
+   * 槽位**直接转手**，不是「先放下再抢」。
+   *
+   * 放下再抢会留一个窗口：离场者把 `在飞` 减了、还没叫醒下一个时，新来的调用者看到有空位就
+   * 先占了，被叫醒的那位再 `+= 1` 就冲过并发度（实测峰值 5 而并发 4）。而「叫醒之后重新检查」
+   * 这种写法在本仓库的用例里钉不住（把 `while` 改成 `if`，20 条用例全绿）。
+   *
+   * 转手没有窗口：只有**没人排队**时才减 `在飞`，排队者是接过一个本来就在算的槽。
+   * 界因此由结构本身保证，不靠时序。
+   */
+  async function 限流<T>(做: () => Promise<T>): Promise<T> {
+    if (在飞 >= 并发) {
+      await new Promise<void>((放行) => 排位.push(放行))
+    } else {
+      在飞 += 1
+    }
+    try {
+      return await 做()
+    } finally {
+      const 接手 = 排位.shift()
+      // 有人接着 ⇒ 槽位原样交出去（`在飞` 不动）；没人 ⇒ 这个槽真的空出来了。
+      if (接手) 接手()
+      else 在飞 -= 1
+    }
+  }
 
+  /**
+   * 一支的产物：**已经按条目顺序排好的路径**，加上「这一支下面有没有文件」。
+   *
+   * `失败` 不做成抛异常、也不做成 `undefined`：并行之后，某一支失败的**位置**要在
+   * 全序里才判得了（截断点之前 ⇒ 整份失败；之后 ⇒ 不算数，同 `#004-09` 的「门在副作用之前」）。
+   * 所以失败也要跟着前缀一起带上去，由最外层按位置裁定。
+   */
+  type 支 = { 路径: string[]; 有文件: boolean; 失败: boolean }
+
+  /**
+   * 顺序由下面收的循环决定（条目顺序），**与谁先读完无关**——并行只改何时读，
+   * 不改交出什么。这也是「并发与串行逐字相同」那条用例钉着的东西。
+   */
+  async function 走(dir: string): Promise<支> {
+    const body = await 限流(() => 读(dir))
+    if (body === undefined) return { 路径: [], 有文件: false, 失败: true }
+
+    // 先发后收：这一层的子目录一起发出去，回来再按原顺序拼。
+    const 子 = new Map<number, Promise<支>>()
+    for (let i = 0; i < body.length; i++) {
+      const 条 = body[i]
+      if (条.ignored || 隐藏根(条.path) || 条.type !== "directory") continue
+      子.set(i, 走(条.path))
+    }
+
+    const 出: string[] = []
     let 有文件 = false
-    for (const entry of body) {
+    for (let i = 0; i < body.length; i++) {
+      const entry = body[i]
       if (entry.ignored || 隐藏根(entry.path)) continue
-      if (entry.type !== "directory") {
-        if (paths.length >= 上限) {
-          truncated = true
-          return false
-        }
-        paths.push(entry.path)
+      const 下 = 子.get(i)
+      if (下 === undefined) {
+        出.push(entry.path)
         有文件 = true
         continue
       }
-      /**
-       * 上限在**递归之前**查：非 ignored、非隐藏的目录必然至少贡献一条路径（自己或后代），
-       * 所以此时截断已是定局。放在递归之后查的话，会先 `await 读(entry.path)`——那一层若是
-       * 取不到，整份 `undefined`，把一个本来可用的截断结果丢掉（截断是唯一允许的例外）。
-       * 同理见 `#004-09`：门在副作用之前。
-       */
-      if (paths.length >= 上限) {
-        truncated = true
-        return false
+      const 下面 = await 下
+      if (下面.失败) {
+        // 前缀到此为止：失败在不在截断点之内，由最外层按 `出.length` 的位置裁定。
+        出.push(...下面.路径)
+        return { 路径: 出, 有文件, 失败: true }
       }
-      const 下面有文件 = await walk(entry.path)
-      if (下面有文件 === undefined) return undefined
-      if (!下面有文件) {
-        if (paths.length >= 上限) {
-          truncated = true
-          return false
-        }
-        paths.push(entry.path)
+      if (下面.有文件) {
+        出.push(...下面.路径)
+        有文件 = true
+      } else {
+        // 空目录 / 全是空目录：自己补自己那一条，位置在这一支的末尾（与改前同一口径）。
+        出.push(...下面.路径, entry.path)
       }
-      有文件 = 有文件 || 下面有文件
     }
-    return 有文件
+    return { 路径: 出, 有文件, 失败: false }
   }
 
-  const 成 = await walk("")
-  if (成 === undefined) return undefined
-  return { paths, truncated }
+  const 根 = await 走("")
+  /**
+   * 裁截断，并按**位置**裁定失败：
+   * - 前缀已够 `上限` ⇒ 后面那一支即使读不到也不算数——改前它根本不会被读到。
+   * - 前缀不够 ⇒ 整份 `undefined`（不交半棵树）。
+   *
+   * ⚠️ 并行换来的代价（2026-10-29 与用户确认）：截断之后**不再提前停**，会多读一些目录。
+   * 结果与改前逐字相同，多花的是盘上的时间，只发生在 ≥`上限` 条路径的超大项目上。
+   */
+  if (根.失败 && 根.路径.length < 上限) return undefined
+  return { paths: 根.路径.slice(0, 上限), truncated: 根.路径.length > 上限 || 根.失败 }
 }

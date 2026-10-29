@@ -127,6 +127,71 @@ describe("扫树：顺序规则（文件就地、目录后序、空目录补自�
   })
 })
 
+describe("扫树：并发（2026-10-29）", () => {
+  /** 每读一层都「等一会儿」的替身：串行时峰值恒为 1，并发时才看得出重叠。 */
+  function 慢替身(routes: Record<string, 条目[]>) {
+    let 在飞 = 0
+    let 峰值 = 0
+    const 读: 读目录 = async (dir) => {
+      在飞 += 1
+      峰值 = Math.max(峰值, 在飞)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      在飞 -= 1
+      return routes[dir] ?? []
+    }
+    return { 读, 峰值: () => 峰值 }
+  }
+
+  test("同一层的多个目录**同时在读**，且不超过并发度", async () => {
+    const 根: 条目[] = []
+    const routes: Record<string, 条目[]> = { "": 根 }
+    for (let i = 0; i < 8; i++) {
+      根.push(目录(`d${i}\\`))
+      routes[`d${i}\\`] = [文件(`d${i}\\f.txt`)]
+    }
+    const { 读, 峰值 } = 慢替身(routes)
+    const 结果 = await 扫树(读)
+    // 串行时这里是 1；并行必须真的重叠，且不把盘打满（默认并发度 4）。
+    expect(峰值()).toBeGreaterThan(1)
+    expect(峰值()).toBeLessThanOrEqual(4)
+    // 并行只改「什么时候读」，不改「交出来什么」：顺序仍是条目顺序。
+    expect(结果).toEqual({
+      paths: Array.from({ length: 8 }, (_, i) => `d${i}\\f.txt`),
+      truncated: false,
+    })
+  })
+
+  test("并发与串行的成品**逐字相同**（含空目录补自己）", async () => {
+    const 配 = () => ({
+      "": [文件("r.txt"), 目录("a\\"), 文件("z.txt"), 目录("b\\"), 目录("e\\")],
+      "a\\": [文件("a\\x.txt"), 目录("a\\empty\\")],
+      "a\\empty\\": [],
+      "b\\": [目录("b\\c\\")],
+      "b\\c\\": [文件("b\\c\\y.txt")],
+      "e\\": [],
+    })
+    const 串行 = await 扫树(替身(配()).读, 50000, 1)
+    const 并发 = await 扫树(替身(配()).读, 50000, 8)
+    expect(并发).toEqual(串行)
+    expect(并发).toEqual({
+      paths: ["r.txt", "a\\x.txt", "a\\empty\\", "z.txt", "b\\c\\y.txt", "e\\"],
+      truncated: false,
+    })
+  })
+
+  test("截断时并发交出的仍是**顺序前缀**", async () => {
+    const 配 = () => ({
+      "": [目录("一\\"), 文件("m.txt"), 目录("二\\")],
+      "一\\": [文件("一\\a"), 文件("一\\b")],
+      "二\\": [文件("二\\c")],
+    })
+    const 串行 = await 扫树(替身(配()).读, 2, 1)
+    const 并发 = await 扫树(替身(配()).读, 2, 8)
+    expect(并发).toEqual(串行)
+    expect(并发).toEqual({ paths: ["一\\a", "一\\b"], truncated: true })
+  })
+})
+
 describe("扫树：上限与截断", () => {
   test("恰好到上限 ⇒ 不截断", async () => {
     const { 读 } = 替身({ "": [文件("a"), 文件("b")] })
@@ -138,7 +203,12 @@ describe("扫树：上限与截断", () => {
     expect(await 扫树(读, 2)).toEqual({ paths: ["a", "b"], truncated: true })
   })
 
-  test("截断后不再继续走后面的目录", async () => {
+  /**
+   * 口径变更（2026-10-29 并行化）：改前「截断点一到就不再发下一个目录的读」，并行之后同层的
+   * 兄弟目录在收第一个结果之前**已经一起发出去了**，收不回来——这是并行换速度的代价：
+   * 成品不变，多读的只是**同层已列出**的目录。所以这里改钉成品与「多读了哪些」，不再钉「一个不多读」。
+   */
+  test("截断时成品仍是顺序前缀（同层兄弟可能已被一并读过）", async () => {
     const { 读, 走过 } = 替身({
       "": [目录("一\\"), 目录("二\\")],
       "一\\": [文件("一\\a"), 文件("一\\b")],
@@ -146,16 +216,22 @@ describe("扫树：上限与截断", () => {
     })
     const 结果 = await 扫树(读, 1)
     expect(结果).toEqual({ paths: ["一\\a"], truncated: true })
-    expect(走过).toEqual(["", "一\\"])
+    // 并发下谁先读完不定，比集合不比顺序。
+    expect([...走过].sort()).toEqual(["", "一\\", "二\\"])
   })
 
-  test("到达上限后不再读下一层：下一层读失败也不该把整份变成 undefined", async () => {
+  /**
+   * 这条钉的是**失败的位置**：截断点之内的读失败 ⇒ 整份 undefined；截断点之外的 ⇒ 不算数
+   * （改前它根本不会被读到，`#004-09`「门在副作用之前」）。并行之后两者在同一层里同时发生，
+   * 所以失败必须带成数据、到最后按位置裁——不能一失败就返回 undefined。
+   */
+  test("截断点**之外**的目录读失败，不该把整份变成 undefined", async () => {
     const { 读, 走过 } = 替身({
       "": [目录("一\\"), 目录("二\\")],
       "一\\": [文件("一\\a")],
-      "二\\": undefined, // 这一层取不到
+      "二\\": undefined, // 这一层取不到，但它在上限（1 条）之外
     })
     expect(await 扫树(读, 1)).toEqual({ paths: ["一\\a"], truncated: true })
-    expect(走过).toEqual(["", "一\\"])
+    expect([...走过].sort()).toEqual(["", "一\\", "二\\"])
   })
 })
