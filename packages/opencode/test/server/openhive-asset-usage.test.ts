@@ -21,10 +21,6 @@ import { 抽取 } from "@/server/openhive/asset-usage"
  */
 
 const ROOT = mkdtempSync(join(tmpdir(), "openhive-asset-usage-"))
-const 临时目录: string[] = [ROOT]
-afterEach(() => {
-  for (const dir of 临时目录.splice(1)) rmSync(dir, { recursive: true, force: true })
-})
 
 const 源库连接: Array<Database> = []
 afterEach(() => {
@@ -180,6 +176,12 @@ describe("资产使用记录：抽取", () => {
         extracted_at: 1_790_000_100,
       },
     ])
+
+    // 游标：每用户一条，**秒**（`#002-01`）。写成毫秒会 22003 被 catch 吞成警告、测试却全绿。
+    const 游标 = rowsOf(
+      await pg.db.execute(sql`select last_updated_sec from auth.asset_usage_cursor where user_id = ${"usage-u1"}`),
+    )
+    expect(游标).toEqual([{ last_updated_sec: 1_790_000_000 }])
   })
 
   test("同一会话里加载两次 ⇒ 两行（每次调用记一条）", async () => {

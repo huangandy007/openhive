@@ -26,8 +26,6 @@ export * as OpenhiveAssetUsage from "./asset-usage"
  * ## 失败不假装成 0（`LEARNINGS #002-02`）
  *
  * 单个用户库打不开 / 解析失败 ⇒ `console.warn` ＋ **不推进该用户游标** ＋ 继续下一个人。
- * 整个抽取抛错由 `create抽取时控().跑一次` 吞掉并保留旧数：资产列表是主功能，不能因为
- * 用量统计坏了就 500。
  */
 
 import { Database } from "bun:sqlite"
@@ -88,20 +86,20 @@ function 字符串(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
 
-function 记录(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
-  const out: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value)) out[key] = item
-  return out
-}
-
-/** 源库里一次 skill 调用的可读面。 */
+/**
+ * 源库里一次 skill 调用的可读面。
+ *
+ * 只取需要的三列、不取整份 `data`：工具 output 全文可能很大，`.all()` 是同步的，
+ * 把整段 JSON 读进内存既抬峰值又阻塞事件循环。`json_extract` 让 SQLite 侧就削掉。
+ */
 interface 调用行 {
   readonly id: string
   readonly session_id: string
   readonly time_created: number
   readonly time_updated: number
-  readonly data: string
+  readonly status: string | null
+  readonly name: string | null
+  readonly call_id: string | null
 }
 
 /**
@@ -169,10 +167,19 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
         )[0]?.["last_updated_sec"] ?? 0,
       )
 
+      // 毒行兜底用 `case when json_valid(data) then … end`，**不能**用 `where … and json_valid(data)`：
+      // SQLite 会重排 AND 里的项，裸的 `json_extract` 仍可能先被求值、在非 JSON 行上抛
+      // `malformed JSON`（本机实测：加了 `and json_valid(data)` 依旧整轮失败）⇒ 该用户每轮
+      // 都死在同一行、游标永不推进。CASE 保证只对合法 JSON 求值；一条毒行不该拖死整个用户。
       const 行 = 源
         .query<调用行, [number, string]>(
-          `select id, session_id, time_created, time_updated, data from part
-           where time_updated > ? and json_extract(data, '$.tool') = ?
+          `select id, session_id, time_created, time_updated,
+                  case when json_valid(data) then json_extract(data, '$.state.status') end     as status,
+                  case when json_valid(data) then json_extract(data, '$.state.input.name') end as name,
+                  case when json_valid(data) then json_extract(data, '$.callID') end           as call_id
+           from part
+           where time_updated > ?
+             and case when json_valid(data) then json_extract(data, '$.tool') end = ?
            order by time_updated asc, id asc`,
         )
         .all(水位秒 * 1000 - 回看ms, SKILL_TOOL)
@@ -186,16 +193,9 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
         const 行秒 = Math.floor(row.time_updated / 1000)
         if (行秒 > 新水位秒) 新水位秒 = 行秒
 
-        let data: Record<string, unknown> | undefined
-        try {
-          data = 记录(JSON.parse(row.data))
-        } catch {
-          data = undefined
-        }
-        const state = 记录(data?.["state"])
-        if (state?.["status"] !== "completed") continue
+        if (row.status !== "completed") continue
 
-        const 名字 = 文本(记录(state["input"])?.["name"])
+        const 名字 = 文本(row.name)
         if (名字 === undefined) {
           unattributed += 1
           continue
@@ -225,7 +225,7 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
             (user_id, part_id, asset_id, session_id, call_id, skill_name, org, dept, section, occurred_at, extracted_at)
           values (
             ${人.id}, ${row.id}, ${候选[0]}, ${row.session_id},
-            ${文本(data?.["callID"]) ?? ""}, ${名字},
+            ${row.call_id ?? ""}, ${名字},
             ${人.org}, ${人.dept}, ${人.section},
             ${Math.floor(row.time_created / 1000)}, ${now}
           )
