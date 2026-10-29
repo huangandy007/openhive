@@ -126,6 +126,7 @@ import { projectLocationLayer } from "./middleware/project-location"
 
 import { AuthGateway } from "@/server/openhive/gateway"
 import { OpenhiveArchive } from "@/server/openhive/archive"
+import { OpenhiveAssetFavorite } from "@/server/openhive/favorites"
 import { OpenhiveAssets } from "@/server/openhive/assets"
 import { OpenhiveCategories } from "@/server/openhive/categories"
 import { OpenhivePreferences } from "@/server/openhive/preferences"
@@ -441,6 +442,10 @@ export function createRoutes(
     // `canReadAsset()`（可见性规则只有那一份）。资产根不读——列表不碰磁盘。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 资产使用面（T017）。
     OpenhiveAssets.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 资产收藏出口（2026-10-29）：`POST /openhive/asset-favorite`。详情页「收藏」。
+    // 写操作的唯一入口；可见性判定复用 `canReadAsset()`（收藏不能成为越权读的旁路）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心。
+    OpenhiveAssetFavorite.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 账号偏好出口（需求 6，2026-10-27）：中栏「每页条数」跨设备一致。
     // 只供业务 PG（`auth.user_preference`）；值的白名单复用 `paging.ts` 的 `PAGE_SIZES`。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 资产中心（需求 6）。

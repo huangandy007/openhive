@@ -39,12 +39,19 @@ export * as OpenhiveAssets from "./assets"
  * 使用面是「我能用的东西」：草稿 / 待审 / 迭代中 / 下线 / 归档都不该出现在这里。
  * `offline` 虽然 `canReadAsset()` 放行（看得见、不能用），但使用面连列表也不给。
  *
- * ## 列表不带写操作
+ * ## 带「我收藏了哪些」（2026-10-29）
  *
- * 收藏、使用次数、评分、「用这个 skill 执行」都不在本轮范围内（用户裁定 2026-10-27）。
+ * 回包多一个 `favoritedIds`：**本页里我收藏过的**。写操作（收藏 / 取消）在
+ * `./favorites.ts` 的 `POST /openhive/asset-favorite`——本出口仍是只读。
+ *
+ * 为什么不塞进每条 `AssetMetadata`：那是与治理后台共用的类型，加一个 per-user 字段会让
+ * 另一处出口回假值（那里根本没有「当前读者」）。平行数组则要么有、要么空，没有歧义。
+ *
+ * 使用次数与评分仍不在本出口（工作台没有写它们的路径）。
  */
 
 import { countAssets, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
+import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
 import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { offsetOf, parsePage } from "./paging"
 import {
@@ -173,6 +180,13 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       ),
     )
 
-    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize, categoryNames })
+    // 本页里「我」收藏过的（2026-10-29）。顺序查而不是并发：PGlite 夹具是单连接
+    // （同本文件上方「顺序查」的理由）。`favoriteAssetIds()` 回的是**全量**原始清单
+    // （可能含已无权读取的旧行），这里与本页求交，既收窄了体积也不会把无权资产漏出去。
+    const 收藏 = yield* Effect.promise(() => favoriteAssetIds(deps.pg(), userId))
+    const 本页 = new Set(assets.map((asset) => asset.id))
+    const favoritedIds = 收藏.filter((id) => 本页.has(id))
+
+    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize, categoryNames, favoritedIds })
   })
 }
