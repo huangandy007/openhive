@@ -6468,6 +6468,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       // 需求 2：本夹具不覆盖「其他」桶的原分类标注，空表即可（卡片不画那枚徽章）。
       categoryNames: () => ({}),
       error: () => undefined,
+      // 2026-10-29 使用统计：本夹具不覆盖用量渲染（`asset-catalog-api.test.ts` 守着解析）。
+      usage: () => undefined,
       load: (query) => {
         const 词 = (query.q ?? "").trim().toLowerCase()
         const 过滤 = rows.filter(

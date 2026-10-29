@@ -62,6 +62,7 @@ function 数据源(over: Partial<{
     pageSize: 每页,
     categoryNames: 分类名,
     error: 错误,
+    usage: () => undefined,
     favorited: 收藏,
     favoriteBusy: 收藏中,
     setFavorite: (assetId, favorited) => void 收藏请求.push({ assetId, favorited }),

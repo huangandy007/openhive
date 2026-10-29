@@ -8,6 +8,7 @@ import {
   type CatalogOutcome,
   type CatalogPage,
   type CatalogQuery,
+  type UsageStats,
 } from "./asset-catalog-api"
 import { createFavoriteApi, type FavoriteApi, type FavoriteOutcome } from "./favorite-api"
 
@@ -63,6 +64,11 @@ export interface AssetCatalog {
   readonly categoryNames: () => Readonly<Record<string, string>>
   /** 最近一次拉取的失败原因；成功后清空。 */
   readonly error: () => string | undefined
+  /**
+   * 最近 N 天的使用统计（2026-10-29）；`undefined` = 旧内核没给（详情不显示这一项）。
+   * 由每次 `load` 成功时的回包重建；空间全取消时清空（与清单同进退）。
+   */
+  readonly usage: () => UsageStats | undefined
   /** 本页里「我」收藏过的资产 id（2026-10-29）；由每次 `load` 成功时的回包重建。 */
   readonly favorited: () => ReadonlySet<string>
   /** 正在写收藏的那个资产 id；没有在飞的就是 `undefined`。 */
@@ -109,6 +115,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const [每页, set每页] = createSignal(options.initialPageSize ?? DEFAULT_PAGE_SIZE)
   const [分类名, set分类名] = createSignal<Readonly<Record<string, string>>>({})
   const [错误, set错误] = createSignal<string | undefined>()
+  const [用量, set用量] = createSignal<UsageStats | undefined>()
   const [收藏, set收藏] = createSignal<ReadonlySet<string>>(new Set<string>())
   const [收藏中, set收藏中] = createSignal<string | undefined>()
   const 收藏Api = options.favoriteApi ?? createFavoriteApi()
@@ -125,6 +132,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
       set清单([])
       set总数(0)
       set分类名({})
+      set用量(undefined)
       set收藏(new Set<string>())
       set错误(undefined)
       set页码(1)
@@ -140,6 +148,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
           set清单(结果.value.assets)
           set总数(结果.value.total)
           set分类名(结果.value.categoryNames)
+          set用量(结果.value.usageStats)
           set收藏(new Set(结果.value.favoritedIds))
           set错误(undefined)
           return
@@ -204,6 +213,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     pageSize: 每页,
     categoryNames: 分类名,
     error: 错误,
+    usage: 用量,
     favorited: 收藏,
     favoriteBusy: 收藏中,
     setFavorite,

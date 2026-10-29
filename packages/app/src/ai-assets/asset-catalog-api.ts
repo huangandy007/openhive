@@ -79,6 +79,25 @@ export interface CatalogPage {
    * （那是与治理后台共用的类型，那边没有「当前读者」）。服务端没给就是空数组，不是形状错误。
    */
   readonly favoritedIds: readonly string[]
+  /**
+   * 最近 N 天的使用统计（2026-10-29）。**省略 = 旧内核没给这个键**：前端不显示这一项，
+   * 不是显示 0（`usageStats` 缺失与「没人用过」是两件事）。给了就必须形状正确，否则整页 failed。
+   */
+  readonly usageStats?: UsageStats
+}
+
+export interface UsageStat {
+  readonly users: number
+  readonly calls: number
+}
+
+/**
+ * 最近 30 天的使用聚合（2026-10-29）。**只含本页有记录的资产**——没记录的资产不出现，
+ * 前端按「还没人用过」渲染（而不是 0 人 0 次）。
+ */
+export interface UsageStats {
+  readonly days: number
+  readonly stats: Readonly<Record<string, UsageStat>>
 }
 
 export type CatalogOutcome<T> =
@@ -220,6 +239,25 @@ function 收藏的(value: unknown): readonly string[] | undefined {
   return ids
 }
 
+type 用量解析 =
+  | { readonly kind: "missing" }
+  | { readonly kind: "bad" }
+  | { readonly kind: "ok"; readonly value: UsageStats }
+
+/** `usageStats`：省略 = missing；给了就逐层严判（days 有限数、stats 是「id → {users,calls}」）。 */
+function 解析用量(value: unknown): 用量解析 {
+  if (value === undefined) return { kind: "missing" }
+  if (!isRecord(value) || !数(value["days"])) return { kind: "bad" }
+  const raw = value["stats"]
+  if (!isRecord(raw)) return { kind: "bad" }
+  const stats: Record<string, UsageStat> = {}
+  for (const [id, item] of Object.entries(raw)) {
+    if (!isRecord(item) || !数(item["users"]) || !数(item["calls"])) return { kind: "bad" }
+    stats[id] = { users: item["users"], calls: item["calls"] }
+  }
+  return { kind: "ok", value: { days: value["days"], stats } }
+}
+
 /** 一页：`assets` 逐行严判，`total / page / pageSize` 必须是有限数字（缺了就是形状变了）。 */
 function 一页(value: unknown): CatalogPage | undefined {
   if (!isRecord(value) || !Array.isArray(value["assets"])) return undefined
@@ -229,13 +267,23 @@ function 一页(value: unknown): CatalogPage | undefined {
   if (categoryNames === undefined) return undefined
   const favoritedIds = 收藏的(value["favoritedIds"])
   if (favoritedIds === undefined) return undefined
+  const 用量 = 解析用量(value["usageStats"])
+  if (用量.kind === "bad") return undefined
   const parsed: AssetMetadata[] = []
   for (const item of value["assets"]) {
     const row = 行(item)
     if (!row) return undefined
     parsed.push(row)
   }
-  return { assets: parsed, total, page, pageSize, categoryNames, favoritedIds }
+  return {
+    assets: parsed,
+    total,
+    page,
+    pageSize,
+    categoryNames,
+    favoritedIds,
+    ...(用量.kind === "ok" ? { usageStats: 用量.value } : {}),
+  }
 }
 
 function 消息(body: unknown, response: Response): string {

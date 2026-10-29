@@ -352,4 +352,24 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     await 等一轮()
     expect(目录.favorited().has("a1")).toBe(true)
   })
+
+  test("usage 由 load 成功时的回包重建；空间全取消时清空", async () => {
+    let 回包: unknown = {
+      assets: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } },
+    }
+    const api = { list: async () => ({ kind: "ok" as const, value: 回包 as never }) }
+    const 目录 = createAssetCatalog(api as never)
+
+    目录.load({})
+    await Promise.resolve()
+    expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
+
+    目录.load({ spaces: [] })
+    await Promise.resolve()
+    expect(目录.usage()).toBeUndefined()
+  })
 })

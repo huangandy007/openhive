@@ -189,3 +189,41 @@ describe("使用面资产客户端", () => {
     }
   })
 })
+
+describe("使用统计 usageStats（2026-10-29）", () => {
+  const 一页 = (extra: Record<string, unknown>) => ({
+    assets: [资产("a1")],
+    total: 1,
+    page: 1,
+    pageSize: 20,
+    ...extra,
+  })
+
+  test("给了就整份保留：days 与 stats 原样交出去", async () => {
+    const { send } = 替身(() =>
+      json(一页({ usageStats: { days: 30, stats: { a1: { users: 3, calls: 12 } } } })),
+    )
+
+    const out = await createCatalogApi(send).list()
+
+    expect(out.kind).toBe("ok")
+    if (out.kind === "ok") expect(out.value.usageStats).toEqual({ days: 30, stats: { a1: { users: 3, calls: 12 } } })
+  })
+
+  test("旧内核没给 ⇒ 省略（不是形状错，也不是空表）", async () => {
+    const { send } = 替身(() => json(一页({})))
+
+    const out = await createCatalogApi(send).list()
+
+    expect(out.kind).toBe("ok")
+    if (out.kind === "ok") expect(out.value.usageStats).toBeUndefined()
+  })
+
+  test("形状不对 ⇒ 整页 failed（不猜默认 0）", async () => {
+    const { send } = 替身(() => json(一页({ usageStats: { days: "30", stats: {} } })))
+
+    const out = await createCatalogApi(send).list()
+
+    expect(out.kind).toBe("failed")
+  })
+})
