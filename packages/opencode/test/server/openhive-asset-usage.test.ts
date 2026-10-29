@@ -453,6 +453,9 @@ describe("资产使用记录：归因与游标", () => {
     try {
       const 失败轮 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
       expect(失败轮.inserted).toBe(0)
+      // 先把前提钉死：这一轮**确实扫到了**那一行，失败发生在写入而不是扫描之前——
+      // 否则「没写游标」可以是「压根没扫到」的假象，本用例就守不住游标位置那条判据。
+      expect(失败轮.scanned).toBe(1)
       // 关键断言：没写成 ≠ 读过了。游标不动，下一轮才会重扫这一段的行。
       expect(await 游标()).toEqual([])
     } finally {
