@@ -50,6 +50,7 @@ import {
 import { projectList, projectListFailed, setProjectList, setProjectListFailed } from "@/project/project-list"
 import { projectMembers, setProjectMembers } from "@/project/project-members"
 import { ProjectPanel } from "@/project/project-panel"
+import { 安装预热, 造预热 } from "@/project/tree-warm"
 import { SidebarTabs, type SidebarTabKey } from "@/project/sidebar-tabs"
 import { RAIL_ENTRIES } from "@/rail/entries"
 import { Rail } from "@/rail/rail"
@@ -380,6 +381,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * （`layout-new.tsx` 传的是常量），不值当为「会变的 prop」再写一层。
    */
   const projectData = props.projectData
+  // 悬停预热（2026-10-29）：面板行上停够久就把该项目的「位置层」建起来（守卫见 `./tree-warm`）。
+  // 装在这一层是因为**只有这层认识数据源**（面板是受控组件）；`projectData` 缺省 ⇒ 装空，
+  // 面板那一钩子照旧空转（组件测试裸挂时不打网络）。
+  安装预热(projectData ? 造预热((id) => projectData.tree(id)) : undefined)
+  onCleanup(() => 安装预热(undefined))
   /**
    * 清单请求的**代次**——只有最新一代的响应能写缝。
    *

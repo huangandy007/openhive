@@ -6,6 +6,7 @@ import { For, Show, createSignal, splitProps, type JSX } from "solid-js"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { MEMBER_GLYPH } from "./project-anchor"
 import { ProjectActionDialog, type ProjectActionKind } from "./project-action-dialog"
+import { 预热 } from "./tree-warm"
 
 /**
  * 项目面板（FR-002 / FR-003 / `2026-09-11-项目管理-design.md` §3）：点锚点行的 `▾` 滑出，
@@ -539,7 +540,17 @@ function 活跃行(props: {
    */
   const [在改名, set在改名] = createSignal(false)
   return (
-    <div data-slot="project-row" class={`${ITEM_ROW} group/row`}>
+    // 悬停预热（2026-10-29）：鼠标停在行上够久才去把该项目的「位置层」建起来，
+    // 点开时就不必再等那一秒。划过不算——守卫在 `./tree-warm` 里。
+    <div
+      data-slot="project-row"
+      class={`${ITEM_ROW} group/row`}
+      onMouseEnter={() => {
+        // 当前项目本来就有树（切 tab 时就取了），再热一次只是白遍历一遍。
+        if (!props.current) 预热()?.悬停(props.project.id)
+      }}
+      onMouseLeave={() => 预热()?.离开()}
+    >
       <Show
         when={在改名()}
         fallback={
@@ -645,7 +656,15 @@ function 归档行(props: {
   return (
     // 与 `活跃行` 同一层壳（`data-slot="project-row"`）：⋯ 要挂在**行**上，而 `行菜单钮` 的
     // 辅助按这个壳找行——没有它，已归档的行上那颗 ⋯ 就找不到了。
-    <div data-slot="project-row" class={`${ITEM_ROW} group/row`}>
+    <div
+      data-slot="project-row"
+      class={`${ITEM_ROW} group/row`}
+      onMouseEnter={() => {
+        // 当前项目本来就有树（切 tab 时就取了），再热一次只是白遍历一遍。
+        if (!props.current) 预热()?.悬停(props.project.id)
+      }}
+      onMouseLeave={() => 预热()?.离开()}
+    >
       <div
         data-slot="project-item"
         data-current={props.current ? "true" : undefined}

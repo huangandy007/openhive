@@ -4,6 +4,7 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { ProjectPanel, 近况分组, type ProjectEntry, type RecentGroup } from "./project-panel"
+import { 安装预热 } from "./tree-warm"
 
 /**
  * 挂一块面板——**外面套着 `DialogProvider`**（2026-10-11 起）。
@@ -2232,5 +2233,66 @@ describe("删除确认（spec §8 / §10 判据 10）", () => {
     点弹窗确认()
 
     expect(收到.map((p) => p.id)).toEqual(["p1"])
+  })
+})
+
+/**
+ * 悬停预热（2026-10-29 改法二）：行上停够久才去把该项目的「位置层」建起来。
+ *
+ * 这一组只钉**面板那一钩子接在谁身上**（哪一行、什么事件、当前项目跳不跳）；
+ * 去抖 / 单飞 / 静默那三条守卫在 `tree-warm.test.ts`。
+ *
+ * 面板是受控组件 ⇒ 预热器由缝装进来（`安装预热`），这里装一个**记账的替身**。
+ */
+describe("项目行悬停预热（改法二）", () => {
+  const 悬停过: string[] = []
+  let 离开次数 = 0
+
+  afterEach(() => {
+    安装预热(undefined)
+    悬停过.length = 0
+    离开次数 = 0
+  })
+
+  const 项目 = (over: Partial<ProjectEntry> = {}): ProjectEntry => ({
+    id: "p1",
+    name: "8·17专案",
+    type: "private",
+    lastAccessedAt: 1_759_600_000_000,
+    role: "owner",
+    ...over,
+  })
+
+  const 行 = (host: HTMLElement, 名: string) =>
+    [...host.querySelectorAll<HTMLElement>("[data-slot='project-row']")].find(
+      (r) => r.querySelector("[data-slot='project-item-name']")?.textContent?.trim() === 名,
+    )
+
+  const 装上 = () =>
+    安装预热({
+      悬停: (id) => 悬停过.push(id),
+      离开: () => {
+        离开次数 += 1
+      },
+    })
+
+  test("悬停一行 ⇒ 预热那个项目；离开 ⇒ 收工", () => {
+    装上()
+    const host = mount(() => <ProjectPanel projects={[项目({ id: "p2", name: "话单专案" })]} />)
+    const 那一行 = 行(host, "话单专案")!
+    expect(那一行).toBeDefined()
+
+    那一行.dispatchEvent(new MouseEvent("mouseenter"))
+    expect(悬停过).toEqual(["p2"])
+
+    那一行.dispatchEvent(new MouseEvent("mouseleave"))
+    expect(离开次数).toBe(1)
+  })
+
+  test("当前项目不热：它的树在切 tab 时就取过了", () => {
+    装上()
+    const host = mount(() => <ProjectPanel projects={[项目({ id: "p1" })]} currentId="p1" />)
+    行(host, "8·17专案")!.dispatchEvent(new MouseEvent("mouseenter"))
+    expect(悬停过).toEqual([])
   })
 })
