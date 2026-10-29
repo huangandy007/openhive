@@ -44,11 +44,69 @@ async function 配好worker脚本(): Promise<void> {
 }
 
 /**
- * 交给 pdfjs 渲染一份 PDF：逐页画进各自的 canvas。
+ * 一张「纸」的外观：白底 + 投影 + 页缝。
  *
- * 页尺寸取 viewport 原始尺寸（`scale: 1`）——缩放 / 适配宽度属后续，容器 `overflow-auto` 先兜住。
- * 渲染完立刻 `destroy()` 装载任务：不销毁会把整份文档连同 worker 留在内存里，
- * 而 001 的预览是一次性的（换 tab 即整体重渲）。
+ * **逐字抄 docx-preview 给 Word 页配的那条默认样式**（`docx-preview.js:3288`：
+ * `background: white; box-shadow: 0 0 10px rgba(0,0,0,.5); margin-bottom: 30px`）——
+ * 用户 2026-10-29 说「希望 PDF 像 Word 打开的感觉」，而 Word 那边好看有一大半就是这三行。
+ */
+const 页类名 = "mx-auto mb-[30px] bg-white shadow-[0_0_10px_rgba(0,0,0,0.5)]"
+
+/**
+ * 适配中栏宽度的渲染比例。
+ *
+ * 量不到宽（隐藏的 tab、还没挂载、happy-dom 那种没有布局引擎的环境）一律退回 1：
+ * 返回 0 会画出一张 0 宽的画布，NaN 会让 pdfjs 直接抛——两者在界面上都是「打不开」，
+ * 而归因会指向文件坏（同 `#006-06` / `#005-32`：读数可疑时先怀疑测量）。
+ */
+export function 适配比例(可用宽: number, 页宽: number): number {
+  if (!Number.isFinite(可用宽) || !Number.isFinite(页宽)) return 1
+  if (可用宽 <= 0 || 页宽 <= 0) return 1
+  return 可用宽 / 页宽
+}
+
+/**
+ * 画布的**后备像素**长（不是 CSS 长）。
+ *
+ * 改前这里没有这一层：`canvas.width = viewport.width`（CSS 像素），于是 125% / 150% 缩放的屏上
+ * 整张位图被拉伸到 1.25~1.5 倍设备像素 ⇒ 字发虚。这一乘就是「清晰」的全部来源。
+ */
+export function 画布像素(css长: number, 像素比: number): number {
+  const 倍 = Number.isFinite(像素比) && 像素比 > 0 ? 像素比 : 1
+  return Math.max(1, Math.round(css长 * 倍))
+}
+
+/** 容器里真正能放纸的宽度：客户宽扣掉左右内边距（`binary-view.tsx` 那个 `p-4`）。 */
+function 可用内容宽(容器: HTMLElement): number {
+  const 样 = getComputedStyle(容器)
+  const 左 = Number.parseFloat(样.paddingLeft) || 0
+  const 右 = Number.parseFloat(样.paddingRight) || 0
+  return 容器.clientWidth - 左 - 右
+}
+
+/**
+ * 交给 pdfjs 渲染一份 PDF：逐页画进各自的 canvas，每页套一张「纸」。
+ *
+ * ## 三件事合起来才是「像专业阅读器」
+ *
+ * 1. **清晰**：画布后备像素乘上屏幕像素比（`画布像素`），再用 CSS 长把它量回去；
+ * 2. **适配宽度**：页宽按容器可用宽算比例（`适配比例`），A4 的 595 会撑满中栏；
+ * 3. **像纸**：每页一个盒子（`页类名`：白底 + 投影 + 30px 页缝）。
+ *
+ * ## 为什么现在要留着自己这份文档
+ *
+ * 改前是「画完立刻 `destroy()`」——一次性预览的取舍。**适宽之后不行了**：窗口一改宽，
+ * 那几页就得按新宽度重画，重画要 `getPage()`，文档不能已经销毁。于是改成**视图活着就留着**，
+ * 由交回去的清理函数在换 tab / 卸载时销毁（`BinaryView` 会调用它）。代价是开着一份 PDF 期间
+ * 多占一份文档内存——这是「改动窗口大小仍清晰」必须付的钱。
+ *
+ * ## 重画的守卫
+ *
+ * - 宽度变化 < 1px 不重画（滚动条出现/消失会带来十几像素的抖动，不设阈会来回画）；
+ * - 变化走 150ms 去抖（拖窗口会连发几十次）；
+ * - 重画在**离屏节点里画完再一次性换上**，中途不闪；
+ * - 代次令牌作废迟到的旧画（与 `BinaryView` 的 `token` 同一手法）；
+ * - 重画失败只留痕、保留已画好的画面——它没有 await 的调用方，抛出去没人接。
  *
  * **加密的 PDF 单独认出来**（见下方 catch）：文件没坏，只是锁着。
  *
@@ -57,18 +115,9 @@ async function 配好worker脚本(): Promise<void> {
 export const renderPdf: BytesRenderer = async (bytes, container) => {
   await 配好worker脚本()
   const task = getDocument({ data: bytes })
+  let pdf: Awaited<typeof task.promise>
   try {
-    const pdf = await task.promise
-    for (let number = 1; number <= pdf.numPages; number++) {
-      const page = await pdf.getPage(number)
-      const viewport = page.getViewport({ scale: 1 })
-      const canvas = document.createElement("canvas")
-      canvas.dataset.page = String(number)
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      container.appendChild(canvas)
-      await page.render({ canvas, viewport }).promise
-    }
+    pdf = await task.promise
   } catch (原因) {
     // 加密的 PDF：我们没给 `onPassword`，pdfjs 拿空密码去试、试不过就抛 `PasswordException`
     // （`PasswordResponses.NEED_PASSWORD`）。**必须单独认出来**——它此前会一路被兜成 `error`
@@ -79,10 +128,72 @@ export const renderPdf: BytesRenderer = async (bytes, container) => {
     // 按**类型**认而不是按 message 文本：文本是 pdfjs 的内部措辞，它改一个词这里就静默失效
     // （又悄悄退回「可能已经损坏」）。这个类与 `getDocument` 来自同一个模块实例，
     // 不存在「自己造的类跨 chunk 有两份」那个坑——那两处标记错的理由不适用这里。
+    await task.destroy()
     if (原因 instanceof PasswordException) throw 需要密码("PDF 是加密的，pdfjs 报 PasswordException")
     throw 原因
-  } finally {
-    await task.destroy()
+  }
+
+  const 倍 = (() => {
+    const 比 = typeof window === "undefined" ? 1 : window.devicePixelRatio
+    return Number.isFinite(比) && 比 > 0 ? 比 : 1
+  })()
+  let 上次宽 = Number.NaN
+  let 代次 = 0
+
+  async function 画一次() {
+    const 我的 = ++代次
+    const 宽 = 可用内容宽(container)
+    上次宽 = 宽
+    const 盒们: HTMLElement[] = []
+    for (let number = 1; number <= pdf.numPages; number++) {
+      const page = await pdf.getPage(number)
+      if (我的 !== 代次) return
+      const 原 = page.getViewport({ scale: 1 })
+      const viewport = page.getViewport({ scale: 适配比例(宽, 原.width) })
+      const css宽 = Math.round(viewport.width)
+      const css高 = Math.round(viewport.height)
+      const canvas = document.createElement("canvas")
+      canvas.dataset.page = String(number)
+      canvas.width = 画布像素(css宽, 倍)
+      canvas.height = 画布像素(css高, 倍)
+      canvas.style.width = `${css宽}px`
+      canvas.style.height = `${css高}px`
+      canvas.style.display = "block"
+      const 盒 = document.createElement("div")
+      盒.dataset.slot = "pdf-page"
+      盒.className = 页类名
+      盒.appendChild(canvas)
+      盒们.push(盒)
+      await page.render({ canvas, viewport, transform: 倍 === 1 ? undefined : [倍, 0, 0, 倍, 0, 0] }).promise
+      if (我的 !== 代次) return
+    }
+    if (我的 !== 代次) return
+    container.replaceChildren(...盒们)
+  }
+
+  let 定时: ReturnType<typeof setTimeout> | undefined
+  const 观察 =
+    typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(() => {
+          if (定时 !== undefined) clearTimeout(定时)
+          定时 = setTimeout(() => {
+            定时 = undefined
+            if (Math.abs(可用内容宽(container) - 上次宽) < 1) return
+            void 画一次().catch((原因: unknown) => {
+              console.warn(`[openhive] pdf-view 按新宽度重画失败，保留原画面`, 原因)
+            })
+          }, 150)
+        })
+  观察?.observe(container)
+
+  await 画一次()
+
+  return () => {
+    观察?.disconnect()
+    if (定时 !== undefined) clearTimeout(定时)
+    代次++ // 让在飞的重画作废
+    void task.destroy()
   }
 }
 

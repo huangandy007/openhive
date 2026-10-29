@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test"
-import { getDocument, PasswordException } from "pdfjs-dist"
+import { afterEach, describe, expect, test } from "bun:test"
+import { getDocument, GlobalWorkerOptions, PasswordException } from "pdfjs-dist"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { FileContent } from "@/center/file-content"
-import { PdfView } from "./pdf-view"
+import { PdfView, renderPdf, 适配比例, 画布像素 } from "./pdf-view"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -128,5 +128,113 @@ describe("PDF 预览（FR-007 的 .pdf）", () => {
     expect(降级?.textContent).toContain("密码")
     // 「损坏」是 error 那一档的说法——一份锁着的文件不该被说成这样
     expect(降级?.textContent).not.toContain("损坏")
+  })
+})
+
+/**
+ * ── 纸张与清晰度（2026-10-29 用户实报）───────────────────────────────────
+ *
+ * 「中栏打开 PDF 像糊图，不像专业阅读器」。三条一起才是「像 Word 那样的一张纸」：
+ *
+ * 1. **按屏幕像素比渲染**——改前 canvas 的后备像素 = CSS 像素，125%/150% 缩放的屏上整张图被拉伸 ⇒ 字发虚；
+ * 2. **页宽适配中栏**——改前锁死 `scale: 1`（A4 只有 595px 宽），中栏里缩成一小条；
+ * 3. **白纸 + 投影 + 页缝**——改前页面直接贴在一起、没有纸的样子。Word 那边好看正是
+ *    docx-preview 自带这套（`docx-preview.js:3288` 的 `section` 样式）；这里照抄同一套。
+ *
+ * ⚠️ 这组**真**跑 pdfjs 渲染（给 `workerSrc` 一个真路径后 Bun 能走通），但 happy-dom 没有布局引擎：
+ * 容器宽度由用例用 `defineProperty` 摆上去，不是真量出来的。所以这条钉的是「按给定宽度怎么排」，
+ * 不是「浏览器里量到的宽度对不对」——后者归真栈验收。
+ */
+describe("PDF 纸张与清晰度（2026-10-29）", () => {
+  /** 最小合法 PDF：一页 A4 空白（无内容流）。渲染它不需要真绘图，只要能走完 pdfjs 那趟。 */
+  function 空白PDF(): Uint8Array<ArrayBuffer> {
+    const 编码 = new TextEncoder()
+    const 对象 = [
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+    ]
+    let 正文 = "%PDF-1.4\n"
+    const 偏移: number[] = []
+    for (const [i, 体] of 对象.entries()) {
+      偏移.push(编码.encode(正文).length)
+      正文 += `${i + 1} 0 obj\n${体}\nendobj\n`
+    }
+    const xref位置 = 编码.encode(正文).length
+    正文 += `xref\n0 ${对象.length + 1}\n0000000000 65535 f \n`
+    for (const 处 of 偏移) 正文 += `${String(处).padStart(10, "0")} 00000 n \n`
+    正文 += `trailer\n<< /Size ${对象.length + 1} /Root 1 0 R >>\nstartxref\n${xref位置}\n%%EOF\n`
+    // 拷进自己的 ArrayBuffer：`encode()` 回来的是 `Uint8Array<ArrayBufferLike>`，
+    // 而 `BytesRenderer` 收的是 `Uint8Array<ArrayBuffer>`（pdfjs 会拿走这块内存）。
+    return new Uint8Array(编码.encode(正文))
+  }
+
+  /** happy-dom 不做布局 ⇒ `clientWidth` 恒 0；要摆一个宽度上去只能自己定义这个读口。 */
+  const 置宽 = (el: HTMLElement, 宽: number) =>
+    Object.defineProperty(el, "clientWidth", { value: 宽, configurable: true })
+
+  const 置像素比 = (比: number) =>
+    Object.defineProperty(window, "devicePixelRatio", { value: 比, configurable: true })
+
+  const 原像素比 = window.devicePixelRatio
+  afterEach(() => 置像素比(原像素比))
+
+  /**
+   * 让 pdfjs 在这些用例里拿得到 worker——**这不是产品的配置**，是测试环境专有的一步：
+   * 生产走 `配好worker脚本()` 里那条 `?url`（Bun 不认，所以 Bun 里 `default` 是 undefined）。
+   * 不设它，`getDocument` 直接抛 `No "GlobalWorkerOptions.workerSrc" specified.`，
+   * 本组就退化成「错误路径」，看着绿、其实一次都没画（`#005-18` 那种假绿）。
+   */
+  const 配好测试worker = () => {
+    GlobalWorkerOptions.workerSrc = require.resolve("pdfjs-dist/build/pdf.worker.min.mjs")
+  }
+
+  const 页盒 = (容器: HTMLElement) => 容器.querySelector<HTMLElement>("[data-slot='pdf-page']")
+
+  test("页宽适配中栏、画布按屏幕像素比放大、每页是一张白纸", async () => {
+    配好测试worker()
+    置像素比(2)
+    const 容器 = document.createElement("div")
+    容器.style.padding = "16px"
+    document.body.appendChild(容器)
+    置宽(容器, 660) // 660 − 左右各 16 = 628 可用宽
+
+    await renderPdf(空白PDF(), 容器)
+
+    const 页 = 页盒(容器)
+    expect(页).not.toBeNull()
+    const canvas = 页!.querySelector("canvas")!
+    // 适配宽度：A4 的 595 → 628
+    expect(canvas.style.width).toBe("628px")
+    // 清晰：CSS 628 × 像素比 2 ＝ 后备 1256
+    expect(canvas.width).toBe(1256)
+    // 一张纸：白底 + 投影 + 页缝（与 docx 预览同一套）
+    expect(页!.className).toContain("bg-white")
+    expect(页!.className).toContain("shadow-[0_0_10px_rgba(0,0,0,0.5)]")
+    expect(页!.className).toContain("mb-[30px]")
+  })
+
+  test("量不到宽度（隐藏的 tab / 未挂载）⇒ 按原尺寸画，不画成 0 宽", async () => {
+    配好测试worker()
+    置像素比(1)
+    const 容器 = document.createElement("div")
+    document.body.appendChild(容器)
+    置宽(容器, 0)
+
+    await renderPdf(空白PDF(), 容器)
+
+    const canvas = 页盒(容器)!.querySelector("canvas")!
+    expect(canvas.style.width).toBe("595px")
+    expect(canvas.width).toBe(595)
+  })
+
+  test("比例与像素的算法在边界上不返回 0 / NaN", () => {
+    expect(适配比例(628, 595)).toBeCloseTo(1.0555, 3)
+    expect(适配比例(0, 595)).toBe(1)
+    expect(适配比例(Number.NaN, 595)).toBe(1)
+    expect(适配比例(628, 0)).toBe(1)
+    expect(画布像素(628, 2)).toBe(1256)
+    expect(画布像素(0, 1)).toBe(1)
+    expect(画布像素(628, Number.NaN)).toBe(628)
   })
 })
