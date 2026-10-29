@@ -268,3 +268,110 @@ describe("资产使用记录：抽取", () => {
     expect((await 行("usage-u4")).length).toBe(1)
   })
 })
+
+describe("资产使用记录：归因与游标", () => {
+  /**
+   * 每条用例独占一个源库根。抽取按 `root/<用户 id>` 找库、整轮累计计数：共用一个根时，
+   * 上一条用例里**没入表**的行（同名 / 名字对不上 / 会话缺失）在下一轮 60 秒回看窗口内
+   * 必被重扫、重复计进 `unattributed`（水位恒等于该行自己的时间 ⇒ 永远落在回看窗里）。
+   * 实测：第 2 条与第 1 条共用根时 `unattributed` 实得 3，单独跑实得 2。
+   */
+  const 独占根 = (名: string) => {
+    const dir = join(ROOT, 名)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  test("项目里同名两份已启用资产 ⇒ 不猜，不入表，计未归因", async () => {
+    await 建用户("usage-u5")
+    await insertAsset(pg.db, 资产({ id: "usage-a5x", name: "同名技能" }))
+    await insertAsset(pg.db, 资产({ id: "usage-a5y", name: "同名技能" }))
+    await 启用("usage-p5", "usage-a5x", "usage-u5")
+    await 启用("usage-p5", "usage-a5y", "usage-u5")
+    const 根 = 独占根("t5")
+    const 源 = 建源库("usage-u5", 根)
+    建会话(源, "usage-s5", "usage-p5")
+    记调用(源, { partId: "usage-prt5", sessionId: "usage-s5", name: "同名技能" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect(结果.unattributed).toBe(1)
+    expect((await 行("usage-u5")).length).toBe(0)
+  })
+
+  test("非 skill 工具 / 名字对不上 / 会话不存在 ⇒ 都不是使用记录", async () => {
+    await 建用户("usage-u6")
+    await insertAsset(pg.db, 资产({ id: "usage-a6", name: "话单比对" }))
+    await 启用("usage-p6", "usage-a6", "usage-u6")
+    const 根 = 独占根("t6")
+    const 源 = 建源库("usage-u6", 根)
+    建会话(源, "usage-s6", "usage-p6")
+    记调用(源, { partId: "usage-prt6a", sessionId: "usage-s6", name: "话单比对", tool: "bash" })
+    记调用(源, { partId: "usage-prt6b", sessionId: "usage-s6", name: "不存在的技能" })
+    记调用(源, { partId: "usage-prt6c", sessionId: "usage-s6-不存在", name: "话单比对" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    // bash 那条被 SQL 挡在外面（连 scanned 都不进）；另两条进了 scanned、归因失败。
+    // 不断言 `scanned`：它是整轮累计值，本文件所有用例共用一个 PG 夹具，
+    // 断言它会把与本条无关的用户的行数绑进来。
+    // 「去掉 tool 过滤」的变异会让 inserted 变 1，仍能被上面那条钉住。
+    expect(结果.unattributed).toBe(2)
+  })
+
+  test("没有源库的用户 ⇒ 进 missing、不报错、不留游标", async () => {
+    await 建用户("usage-u7")
+    const 根 = 独占根("t7")
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.missing).toContain("usage-u7")
+    const 游标 = rowsOf(
+      await pg.db.execute(sql`select user_id from auth.asset_usage_cursor where user_id = ${"usage-u7"}`),
+    )
+    expect(游标).toEqual([])
+  })
+
+  test("组织是写时快照：改部门后重抽，旧行不变、新行用新部门", async () => {
+    await 建用户("usage-u8", "经侦支队")
+    await insertAsset(pg.db, 资产({ id: "usage-a8", name: "快照技能" }))
+    await 启用("usage-p8", "usage-a8", "usage-u8")
+    const 根 = 独占根("t8")
+    const 源 = 建源库("usage-u8", 根)
+    建会话(源, "usage-s8", "usage-p8")
+    记调用(源, { partId: "usage-prt8a", sessionId: "usage-s8", name: "快照技能", timeCreated: 1_790_000_000_000 })
+    await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    await pg.db.execute(sql`update auth.user set dept = '刑侦大队' where id = ${"usage-u8"}`)
+    记调用(源, { partId: "usage-prt8b", sessionId: "usage-s8", name: "快照技能", timeCreated: 1_790_000_060_000 })
+    await 抽取({ db: pg.db, root: 根, now: 1_790_000_200 })
+
+    const 部门 = rowsOf(
+      await pg.db.execute(
+        sql`select part_id, dept from auth.asset_usage_event where user_id = ${"usage-u8"} order by part_id`,
+      ),
+    )
+    expect(部门).toEqual([
+      { part_id: "usage-prt8a", dept: "经侦支队" },
+      { part_id: "usage-prt8b", dept: "刑侦大队" },
+    ])
+  })
+
+  test("删账号 ⇒ 历史行仍在（无外键）", async () => {
+    await 建用户("usage-u9")
+    await 建用户("usage-author9")
+    await insertAsset(pg.db, 资产({ id: "usage-a9", name: "留档技能", ownerId: "usage-author9" }))
+    await 启用("usage-p9", "usage-a9", "usage-u9")
+    const 根 = 独占根("t9")
+    const 源 = 建源库("usage-u9", 根)
+    建会话(源, "usage-s9", "usage-p9")
+    记调用(源, { partId: "usage-prt9", sessionId: "usage-s9", name: "留档技能" })
+    await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    await pg.db.execute(sql`delete from auth.user where id = ${"usage-u9"}`)
+
+    expect((await 行("usage-u9")).length).toBe(1)
+  })
+})
