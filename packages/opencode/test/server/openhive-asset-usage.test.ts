@@ -434,4 +434,36 @@ describe("资产使用记录：归因与游标", () => {
       { user_id: "usage-uB", last_updated_sec: 1_789_000_000 },
     ])
   })
+
+  test("写入失败的那一轮不推进游标：腾空事件表后重抽，行照旧入表、游标才前进", async () => {
+    await 建用户("usage-u11")
+    await insertAsset(pg.db, 资产({ id: "usage-a11", name: "游标技能" }))
+    await 启用("usage-p11", "usage-a11", "usage-u11")
+    const 根 = 独占根("t11")
+    const 源 = 建源库("usage-u11", 根)
+    建会话(源, "usage-s11", "usage-p11")
+    记调用(源, { partId: "usage-prt11", sessionId: "usage-s11", name: "游标技能", timeCreated: 1_790_000_000_000 })
+
+    const 游标 = async () =>
+      rowsOf(await pg.db.execute(sql`select last_updated_sec from auth.asset_usage_cursor where user_id = ${"usage-u11"}`))
+
+    // 让这一轮的写入必然失败：把事件表挪走。失败发生在「扫到行之后」，正是游标该不该推进的岔口
+    // （失败挂在名册查询上的话，任何用户都还没开始，测不到这条）。
+    await pg.db.execute(sql`alter table auth.asset_usage_event rename to asset_usage_event_t11`)
+    try {
+      const 失败轮 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+      expect(失败轮.inserted).toBe(0)
+      // 关键断言：没写成 ≠ 读过了。游标不动，下一轮才会重扫这一段的行。
+      expect(await 游标()).toEqual([])
+    } finally {
+      // RENAME 的新名**不能**带 schema 前缀（PG 42601 `syntax error at or near "."`），
+      // 限定加在旧名上。
+      await pg.db.execute(sql`alter table auth.asset_usage_event_t11 rename to asset_usage_event`)
+    }
+
+    const 成功轮 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_200 })
+    expect(成功轮.inserted).toBe(1)
+    expect((await 行("usage-u11")).length).toBe(1)
+    expect(await 游标()).toEqual([{ last_updated_sec: 1_790_000_000 }])
+  })
 })
