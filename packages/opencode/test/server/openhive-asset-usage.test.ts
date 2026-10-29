@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql } from "drizzle-orm"
@@ -300,34 +300,44 @@ describe("资产使用记录：归因与游标", () => {
     expect((await 行("usage-u5")).length).toBe(0)
   })
 
-  test("非 skill 工具 / 名字对不上 / 会话不存在 ⇒ 都不是使用记录", async () => {
+  test("非 skill 工具 / 未启用资产 / 名字对不上 / 会话不存在 ⇒ 都不是使用记录", async () => {
     await 建用户("usage-u6")
     await insertAsset(pg.db, 资产({ id: "usage-a6", name: "话单比对" }))
     await 启用("usage-p6", "usage-a6", "usage-u6")
+    // 资产存在、但项目 p6 没启用它：归因表只认启用台账，不能退化成「库里同名就算」。
+    await insertAsset(pg.db, 资产({ id: "usage-a6x", name: "未启用技能" }))
     const 根 = 独占根("t6")
     const 源 = 建源库("usage-u6", 根)
     建会话(源, "usage-s6", "usage-p6")
     记调用(源, { partId: "usage-prt6a", sessionId: "usage-s6", name: "话单比对", tool: "bash" })
     记调用(源, { partId: "usage-prt6b", sessionId: "usage-s6", name: "不存在的技能" })
     记调用(源, { partId: "usage-prt6c", sessionId: "usage-s6-不存在", name: "话单比对" })
+    记调用(源, { partId: "usage-prt6d", sessionId: "usage-s6", name: "未启用技能" })
 
     const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
 
     expect(结果.inserted).toBe(0)
-    // bash 那条被 SQL 挡在外面（连 scanned 都不进）；另两条进了 scanned、归因失败。
-    // 不断言 `scanned`：它是整轮累计值，本文件所有用例共用一个 PG 夹具，
-    // 断言它会把与本条无关的用户的行数绑进来。
+    // 6a（bash）被 SQL 挡在外面、不进 scanned；6b/6c/6d 三条进 scanned、归因失败。
+    // t6 这个独占根里只有 u6 一个源库 ⇒ scanned 是确定值，可以钉。
+    expect(结果.scanned).toBe(3)
     // 「去掉 tool 过滤」的变异会让 inserted 变 1，仍能被上面那条钉住。
-    expect(结果.unattributed).toBe(2)
+    expect(结果.unattributed).toBe(3)
   })
 
   test("没有源库的用户 ⇒ 进 missing、不报错、不留游标", async () => {
     await 建用户("usage-u7")
     const 根 = 独占根("t7")
+    // 用户目录存在、库文件不存在：这是「缺库」的常见形态（目录可能被沙箱/其他文件建过），
+    // 也让下面「不留空库」的断言真的承重——父目录不存在时 `create: true` 也会 CANTOPEN，
+    // 建不出文件，那条断言就成了恒真的摆设。
+    mkdirSync(join(根, "usage-u7"), { recursive: true })
 
     const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
 
     expect(结果.missing).toContain("usage-u7")
+    // 缺库路径不能有副作用：`new Database(路径)` 若带 `{ create: true }`，第二道
+    // `sqlite_master` 守卫仍会把它算 missing，但根里会留下一只空库文件。
+    expect(existsSync(join(根, "usage-u7", "opencode.db"))).toBe(false)
     const 游标 = rowsOf(
       await pg.db.execute(sql`select user_id from auth.asset_usage_cursor where user_id = ${"usage-u7"}`),
     )
@@ -372,6 +382,48 @@ describe("资产使用记录：归因与游标", () => {
 
     await pg.db.execute(sql`delete from auth.user where id = ${"usage-u9"}`)
 
+    // 先钉前提：删账号真的删掉了。否则「历史行仍在」会在 delete 静默影响 0 行时假绿（`#005-18`）。
+    const 还在 = rowsOf(await pg.db.execute(sql`select id from auth.user where id = ${"usage-u9"}`))
+    expect(还在).toEqual([])
     expect((await 行("usage-u9")).length).toBe(1)
+  })
+
+  test("同一源根下多用户并存：游标按用户隔离，别人的高水位挡不住本用户的行", async () => {
+    const 根 = 独占根("t10")
+
+    // A 先抽一次，把 A 的水位推到 1_790_000_200
+    await 建用户("usage-uA")
+    await insertAsset(pg.db, 资产({ id: "usage-aA", name: "隔离技能A" }))
+    await 启用("usage-pA", "usage-aA", "usage-uA")
+    const 源A = 建源库("usage-uA", 根)
+    建会话(源A, "usage-sA", "usage-pA")
+    记调用(源A, { partId: "usage-prtA", sessionId: "usage-sA", name: "隔离技能A", timeCreated: 1_790_000_200_000 })
+    await 抽取({ db: pg.db, root: 根, now: 1_790_000_300 })
+
+    // B 后来才第一次被抽，行时间比既有所有水位都早得多
+    await 建用户("usage-uB")
+    await insertAsset(pg.db, 资产({ id: "usage-aB", name: "隔离技能B" }))
+    await 启用("usage-pB", "usage-aB", "usage-uB")
+    const 源B = 建源库("usage-uB", 根)
+    建会话(源B, "usage-sB", "usage-pB")
+    记调用(源B, { partId: "usage-prtB", sessionId: "usage-sB", name: "隔离技能B", timeCreated: 1_789_000_000_123 })
+
+    const 第二遍 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_400 })
+
+    // B 没有游标 ⇒ 必须被扫到。读游标若漏掉 `where user_id = …`，会取到别人的高水位、
+    // 把这一行挡在 60 秒回看窗之外，且不报错不计数（`#002-02`）。行时间取得比任何既有
+    // 游标都早，保证漏 WHERE 时不论取到哪一行都会红（不是碰巧取到 B 自己的）。
+    expect(第二遍.inserted).toBe(1)
+    expect((await 行("usage-uB")).length).toBe(1)
+    const 游标 = rowsOf(
+      await pg.db.execute(sql`
+        select user_id, last_updated_sec from auth.asset_usage_cursor
+        where user_id in ('usage-uA', 'usage-uB') order by user_id
+      `),
+    )
+    expect(游标).toEqual([
+      { user_id: "usage-uA", last_updated_sec: 1_790_000_200 },
+      { user_id: "usage-uB", last_updated_sec: 1_789_000_000 },
+    ])
   })
 })
