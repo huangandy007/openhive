@@ -4350,3 +4350,44 @@ v2 把变体编进**类名**（`toast-v2--success`），根上**没有** `data-v
    2026-10-13 裁定不修**（理由：用得少，后期可能屏蔽）。⚠️ 该落点**未实测**，判据是从代码路径读出来的
    （两个入口调的是同一个 `store.addMention`、同样没敲 `@`）；按 `#002-02` 记为缺口。要修的话改法与本次
    同形（补 `@` 锚点），但落在上游文件上 ⇒ 需在「修好」与「少冲突」之间另裁。
+
+### 视觉一致性 · 左栏「新建会话」钮改回首页同款（2026-10-29）
+
+**需求（用户原话）**：「请将项目管理中左栏会话Tab页面中的"+新建会话"按钮改成
+`D:\project\study\openhive\images\screen\2026-10-29_081430.png` 图片中按钮的样式，确保整个系统在视觉上的一致性。」
+
+→ 与 **⑦-7**（2026-10-10 把这颗钮改成深色实心 `contrast`）**方向相反**，但两条诉求不冲突：⑦-7 要的是
+「不要只有 hover 才现形的裸『＋』」，那件事由**带字**继续满足；这次要的是**跟首页那颗一样**。
+
+**① 动手前量到的三件事（不猜）**
+
+1. 现钮在 `ai-session/session-list.tsx` 的标题行：`ButtonV2 variant="contrast" size="small" icon="plus"`。
+2. 截图那套样式**仓里已有出处**：`pages/home/home-sessions-view.tsx` 的 `data-action="home-new-session"`
+   ＝ `variant="ghost-muted" size="normal" icon="edit" class="h-7 px-2"`。
+3. 原图（117×44）逐项取样，与那一档逐条对上：底 `#FCFCFC`＝`--v2-background-bg-base`；
+   字 `#5C5C5C`（113 个暗像素）＝`--v2-text-text-muted`(grey-700)、图标 `#808080`（另有 8 个同值）
+   ＝`--v2-icon-icon-muted`(grey-600)——**正是 `ghost-muted` 那一档的两条颜色声明**；
+   四个汉字合计 51px ⇒ 13px（ButtonV2 基础字号）；图标墨迹 13px ⇒ 16px 盒（Icon 默认）；
+   文字起点 − 图标终点 ＝ 6px（ButtonV2 的 `gap`）。⇒「一致」＝**照搬那一档**，不新搓色值。
+
+**改法**：`contrast→ghost-muted`、`plus→edit`、`small→normal`、class 补 `h-7 px-2`（与首页逐字同）。
+`h-7`＝28px 仍正好等于标题行高 ⇒ 会话列表不下移。
+
+**判据 / 变异**
+
+| 层 | 判据 | 变异（`#003-03` 第一类：恰红该条） |
+|---|---|---|
+| 组件（`session-list.test.tsx`） | `data-variant='ghost-muted'` ＋ `data-icon='edit'` ＋ 文案**全等**「新建会话」＋ 类名**集合**含 `h-7`/`px-2` ＋ 负向不含 `bg-v2-background-bg-contrast` | 拆分 ②：`variant` 拆回 `contrast` ⇒ `Expected: "ghost-muted" / Received: "contrast"`；拆分 ⑤：去掉 `h-7` ⇒ `Expected to contain: "h-7" / Received: [ "shrink-0", "px-2" ]` |
+| 真栈（`e2e/real-stack/session-new-button-real.spec.ts`） | 计算色：自身底 `rgba(0,0,0,0)`、有效底可解析、字色 `rgb(92, 92, 92)`、字/底对比度 ≥ 4.5、图标/底 ≥ 3:1（WCAG 1.4.11 非文字）、标题行仍 28px、钮高 ≤ 28 | 见下方门禁 |
+
+**⑥ 同类落点（grep 全量 `contrast` / `session-new` / `新建会话`，逐个打勾）**
+
+| 落点 | 判定 |
+|---|---|
+| `ai-session/session-list.tsx` | **本次改** |
+| `ai-session/session-list.test.tsx` | 判据同步（旧那条钉的正是被换掉的档） |
+| `e2e/real-stack/session-new-button-real.spec.ts` | 判据同步（同上，连测量口径一起换：从「量实底亮度」改成「量有效底 + 字色 + 对比度」） |
+| `pages/home/home-sessions-view.tsx` 那颗 `home-new-session` | ✅ 不动——它是本条的**参照物** |
+| `ai-session/session-panel.tsx` 右栏「＋ 新会话」 | ✅ 不改：用户说的是**左栏会话 tab**；两颗钮不在同一栏，本轮诉求是「与首页一致」 |
+| `ai-session/sidebar-sessions.tsx` | ✅ 纯组装层，无样式 |
+| `docs/.../2026-09-11-项目管理-design.md:191`（「标题行右侧『＋』」） | ✅ 不改：该句在 ⑦-7 之后就已过时，本条只登记、不回改历史 |

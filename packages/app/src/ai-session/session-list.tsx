@@ -15,7 +15,7 @@ import { 会话重命名输入 } from "./session-rename"
  *
  * ## 它做四件事
  *
- * 1. 标题行右侧「＋」＝**新增会话**；
+ * 1. 标题行右侧「新建会话」（`edit` 图标＋四个字，首页同款，2026-10-29）＝**新增会话**；
  * 2. 当前会话**浅金高亮**（`bg-[var(--v2-background-bg-accent-soft)]`，与 `file-tree.tsx` 的
  *    `ROW_SELECTED` / `sidebar-tabs.tsx` 的 `TAB_ACTIVE` 同一个 token）；
  * 3. 点某一行 **切到那一场**；
@@ -24,7 +24,7 @@ import { 会话重命名输入 } from "./session-rename"
  *
  * ## 四个 `data-slot`
  *
- * `session-list-bar`（标题行）/ `session-new`（＋）/ `session-item`（一行）/ `session-empty`（空态）
+ * `session-list-bar`（标题行）/ `session-new`（新建会话）/ `session-item`（一行）/ `session-empty`（空态）
  * ＋ `session-loading`（**在途态**，2026-10-09 加）——`session-item` / `session-empty` 沿用 T019 那批
  * 接线用例认的名字（`session-empty` 此前是「会话列表未接入」那块硬编码空态）。
  *
@@ -205,18 +205,21 @@ export function SessionList(props: SessionListProps): JSX.Element {
 
   return (
     <div data-component="session-list" class="flex min-h-0 w-full flex-1 flex-col">
-      {/* 标题行：**一颗带字的深色实心钮**（「新建会话」四个字右边那颗 plus 图标自己画）。
+      {/* 标题行：**一颗带字的幽灵钮**（「新建会话」四个字右边那颗 `edit` 图标自己画）。
           它**不在** `role="tablist"` 里：tablist 里只许有 tab，塞个按钮进去屏幕阅读器读到的
           是「第三个 tab」。
 
-          ⚠️ 样子是 2026-10-10 用户下达改的（原话：「『新建会话』图标按钮不明显，我担心初始用户
-          难以找到，为了突出……」；参考材料 `images/screen/2026-10-10_192112.png` 那颗深色实心钮）。
-          改动前这里是**一个裸的全角「＋」**、无底色、`text-v2-text-text-muted`——只有 hover 才现形，
-          所以「不明显」是真的。
-          ⇒ 取仓里**现成的**设计系统钮 `ButtonV2 variant="contrast"`（底/字/四态都在 `button-v2.css` 里），
-          **不手搓颜色、不新增 app 级 CSS**。`size="small"`＝24px 高、`rounded-[4px]`
-          ⇒ 正好塞进这条 `h-7`(28px) 的标题行，**行高不变、会话列表不下移**。
-          `icon="plus"` 替掉原来那个全角「＋」字符（全角字符在不同字体下宽度会歪）。 */}
+          ⚠️ 样子是 2026-10-29 用户下达改的（原话：「请将项目管理中左栏会话Tab页面中的“+新建会话”
+          按钮改成〈截图〉图片中按钮的样式，确保整个系统在视觉上的一致性」，参考材料
+          `images/screen/2026-10-29_081430.png`）。
+          截图里那颗正是**首页**「新建会话」（`pages/home/home-sessions-view.tsx` 的
+          `data-action="home-new-session"`）那一档：`ghost-muted` ＋ `edit` ＋ `h-7 px-2`。
+          「一致」＝照搬那一档，**不手搓颜色、不新增 app 级 CSS**（底/字/四态都在 `button-v2.css` 里）。
+          `h-7`＝28px＝这条标题行的高度 ⇒ 塞进去**行高不变、会话列表不下移**。
+
+          沿革（别把上一版当成随手写的）：2026-10-10 曾照当时的截图把它从裸的全角「＋」改成
+          **深色实心**（`variant="contrast"`），理由是「不明显」；那一版的解药其实是**带字**。
+          这次改成浅底灰字之后，可发现性仍由那四个字承担，不再独占一块深色。 */}
       <Show when={props.directory}>
         {(目录) => (
           <div data-slot="session-list-bar" class="flex h-7 shrink-0 items-center justify-end px-1">
@@ -225,10 +228,10 @@ export function SessionList(props: SessionListProps): JSX.Element {
               data-slot="session-new"
               aria-label="新建会话"
               title="新建会话"
-              variant="contrast"
-              size="small"
-              icon="plus"
-              class="shrink-0"
+              variant="ghost-muted"
+              size="normal"
+              icon="edit"
+              class="h-7 shrink-0 px-2"
               onClick={() => props.onNewSession(目录())}
             >
               新建会话

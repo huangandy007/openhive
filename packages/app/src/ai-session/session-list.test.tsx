@@ -237,7 +237,7 @@ describe("SessionList 左栏会话列表（设计 §7）", () => {
     expect(新建过).toEqual([])
   })
 
-  test("目录已知 ⇒ 画「＋」，落在标题行里；点它回调**带着那个目录**", () => {
+  test("目录已知 ⇒ 画「新建会话」，落在标题行里；点它回调**带着那个目录**", () => {
     const { host, 新建过 } = 挂({ directory: "/workspaces/u1/p1", sessions: [] })
 
     const 按钮 = 槽(host, "session-new")
@@ -252,22 +252,26 @@ describe("SessionList 左栏会话列表（设计 §7）", () => {
   })
 
   /**
-   * 「＋」这颗钮的**视觉规格**（2026-10-10 用户下达；参考材料 `images/screen/2026-10-10_192112.png`）。
+   * 这颗钮的**视觉规格**（2026-10-29 用户下达；参考材料 `images/screen/2026-10-29_081430.png`）。
    *
-   * 用户原话：「左栏"会话"Tab页面的"新建会话"图标按钮不明显，我担心初始用户难以找到，为了突出，
-   * 我希望把这里的图标设计成〈截图〉这种样式」——截图是一颗**深色实心圆角矩形 ＋ 白字**的钮。
+   * 用户原话：「请将项目管理中左栏会话Tab页面中的"＋新建会话"按钮改成〈截图〉图片中按钮的样式，
+   * 确保整个系统在视觉上的一致性。」
    *
-   * 落点取仓里**现成的设计系统件**，不手搓颜色：`ButtonV2 variant="contrast"`。`contrast` 的底/字
-   * 正是 `--v2-background-bg-contrast`（浅色主题 grey-1000 近黑、深色主题 grey-700）
-   * ＋ `--v2-text-text-contrast`（浅色 near-white、深色 grey-100），并且自带
-   * hover / pressed / focus-visible / disabled 四态 ⇒ **不新增 app 级 CSS**，也不落一组只在本地成立的色值。
+   * 沿革：2026-10-10 曾把它从裸的全角「＋」改成**深色实心**（`contrast`），当时的理由是
+   * 「不明显」，解药是**带字**。这次截图给的正是仓里已有的另一档——首页「新建会话」
+   * （`pages/home/home-sessions-view.tsx` 的 `data-action="home-new-session"`）：
+   * `ghost-muted` ＋ `edit` 图标 ＋ `h-7 px-2`。所以「一致」＝**照搬那一档**，不新搓色值。
+   *
+   * 像素口径（原图 117×44 取样）：底 `#FCFCFC`＝`--v2-background-bg-base`；
+   * 字 `#5C5C5C`＝`--v2-text-text-muted`(grey-700)、图标 `#808080`＝`--v2-icon-icon-muted`(grey-600)
+   * ——正好是 `ghost-muted` 那一档的两条颜色声明；四个汉字 51px ⇒ 13px 字号；图标 16px、间隙 6px。
    *
    * ⚠️ 判据的**分工**（别把这一条读成「外观已经验过了」）：happy-dom **没有 CSS 引擎**
-   *（`#005-07`）⇒ 这里能钉的只有「**用了哪一档**」——设计系统钮 ＋ `contrast` 档 ＋ 带字；
-   * 「**真的是深色实心、字真的看得清**」要真栈量（`e2e/real-stack/session-new-button-real.spec.ts`
-   * 量盒子的底色/字色与对比度）。两层各钉一半，谁都替代不了谁（同 `#004-02`：一份东西两个投影）。
+   *（`#005-07`）⇒ 这里能钉的只有「**用了哪一档**」；
+   * 「**真的是灰字、在浅底上够读**」要真栈量（`e2e/real-stack/session-new-button-real.spec.ts`）。
+   * 两层各钉一半（同 `#004-02`：一份东西两个投影）。
    */
-  test("「＋」＝设计系统那颗**深色实心**钮（`contrast`），并且带「新建会话」四个字与 plus 图标", () => {
+  test("「新建会话」＝首页同款：`ghost-muted` ＋ `edit` 图标 ＋ 带字，盒子与首页逐字相同", () => {
     const { host } = 挂({ directory: "/workspaces/u1/p1", sessions: [] })
 
     const 钮 = 槽(host, "session-new")
@@ -275,21 +279,22 @@ describe("SessionList 左栏会话列表（设计 §7）", () => {
 
     // ① 它是**仓里现成那颗设计系统钮**，不是我手搓的一颗 —— 换回手搓按钮这条就红。
     expect(钮?.getAttribute("data-component")).toBe("button-v2")
-    // ② 深色实心那一档（截图那个底/字就是 `contrast`，见文件头：token 在两套主题下都成立）。
-    expect(钮?.getAttribute("data-variant")).toBe("contrast")
-    // ③ 它是**带字**的钮：「不明显」这件事的正面解药就是这四个字。
-    //  ⚠️ 用**全等**不用包含（`#006-22`：`toContain` 是子串匹配）——顺带钉住「旧那个全角『＋』字符
-    //  没有被留成第二个加号」（`icon="plus"` 已经画了一个）。
-    expect(钮?.textContent?.trim()).toBe("新建会话")
-    // ④ 图标走设计系统的 plus，不是全角字符（全角「＋」在不同字体下宽度会歪）。
+    // ② 首页那一档：浅底透明 ＋ muted 字（原来这里是 `contrast` 深色实心）。
+    expect(钮?.getAttribute("data-variant")).toBe("ghost-muted")
+    // ③ 图标换成 `edit`（方框＋斜笔，与截图那枚逐形相同）。`data-icon` 由 ButtonV2 自己落。
+    expect(钮?.getAttribute("data-icon")).toBe("edit")
     expect(钮?.querySelector("[data-slot='icon-svg']") === null).toBe(false)
+    // ④ 它是**带字**的钮（可发现性靠这四个字，不靠一块深色）。
+    //  ⚠️ 用**全等**不用包含（`#006-22`：`toContain` 是子串匹配）——顺带钉住「旧那个全角『＋』字符
+    //  没有被留成第二个加号」。
+    expect(钮?.textContent?.trim()).toBe("新建会话")
+    // ⑤ 盒子与首页那颗逐字同：`h-7`＝28px（正好等于标题行高，列表不下移）、`px-2`。
+    //  取**类名集合**（`#006-22`），不取子串。
+    expect(类集(钮)).toContain("h-7")
+    expect(类集(钮)).toContain("px-2")
 
-    // ⑤ 负向：**旧钮那两个记号一个都不该在**——`text-v2-text-text-muted`（无底色的小灰字）与
-    //  `hover:bg-v2-overlay-simple-overlay-hover`（hover 才现形的幽灵钮）。
-    //  ⚠️ 按 `#006-22` 取**类名集合**取，不取子串。据实记它的**射程**：它只咬得住
-    //  「新钮上又被贴回旧 token」，**咬不住**「整个钮被换回手搓版」——那一半归 ①② 条。
-    expect(类集(钮)).not.toContain("text-v2-text-text-muted")
-    expect(类集(钮)).not.toContain("hover:bg-v2-overlay-simple-overlay-hover")
+    // ⑥ 负向：不许用 class 把**深色实心**手搓回来（那是 2026-10-10 那版的样子，这次要换掉的正是它）。
+    expect(类集(钮)).not.toContain("bg-v2-background-bg-contrast")
   })
 
   /**
