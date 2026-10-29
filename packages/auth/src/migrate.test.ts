@@ -179,10 +179,25 @@ describe("migrate", () => {
     expect(await 表数(db, "asset_usage_event")).toBe(1)
     expect(await 表数(db, "asset_usage_cursor")).toBe(1)
 
-    // 只回滚 head（0024），不经过更早的迁移：整份逆序回滚那条用例在 0017 的 down 脚本上
+    // 时间单位（#002-01）：游标存秒。谁把它改回毫秒，这里会 22003 直接红。
+    const 现在秒 = Math.floor(Date.now() / 1000)
+    await db.execute(sql`
+      insert into auth.asset_usage_cursor (user_id, last_updated_sec, updated_at)
+      values ('u-unit', ${现在秒}, ${现在秒})
+    `)
+    const 回读 = await db.execute(sql`
+      select last_updated_sec from auth.asset_usage_cursor where user_id = 'u-unit'
+    `)
+    expect(Number(rowsOf(回读)[0]?.["last_updated_sec"])).toBe(现在秒)
+
+    // 只回滚到 0024 就停，不经过更早的迁移：整份逆序回滚那条用例在 0017 的 down 脚本上
     // 有一条既有红（两条 DROP 挤在一个 chunk ⇒ 42601），把断言挂在它后面就永远执行不到。
+    // 也不写死 `rollback(db, "0024_asset_usage")`：rollback 只认 head，下一条迁移落地当天就假红。
     expect(本次).toContain("0024_asset_usage")
-    await rollback(db, "0024_asset_usage")
+    for (const version of [...本次].reverse()) {
+      await rollback(db, version)
+      if (version === "0024_asset_usage") break
+    }
 
     expect(await 表数(db, "asset_usage_event")).toBe(0)
     expect(await 表数(db, "asset_usage_cursor")).toBe(0)

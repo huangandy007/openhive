@@ -52,18 +52,19 @@ COMMENT ON COLUMN auth.asset_usage_event.occurred_at IS
 
 --> statement-breakpoint
 
--- 游标：每用户一条。**毫秒**水位，与源 part.time_updated 同刻度——part.id 不保证单调，
--- 拿 id 当 `> 游标` 会漏行（见设计 §4「游标表」）。
+-- 游标：每用户一条。**秒**水位——`integer` 是 int4（上限 2 147 483 647），毫秒 1.79e12 装不下，
+-- 写毫秒会 22003 被抽取器的 catch 吞成警告 ⇒ 游标停在 0、每轮全量重扫（测试还全绿，
+-- 见 0001_init.sql:8-11）。part.id 不保证单调，拿 id 当 `> 游标` 会漏行（见设计 §4「游标表」）。
 CREATE TABLE auth.asset_usage_cursor (
-  user_id         text    PRIMARY KEY,
-  last_updated_ms integer NOT NULL,
-  updated_at      integer NOT NULL
+  user_id          text    PRIMARY KEY,
+  last_updated_sec integer NOT NULL,
+  updated_at       integer NOT NULL
 );
 
 --> statement-breakpoint
 
-COMMENT ON COLUMN auth.asset_usage_cursor.last_updated_ms IS
-  '已消费到的 part.time_updated 水位（Unix 毫秒）；抽取时回看 60 秒，重扫的行被主键吃掉';
+COMMENT ON COLUMN auth.asset_usage_cursor.last_updated_sec IS
+  '已消费到的 part.time_updated 水位（Unix 秒）；抽取时回看 60 秒，重扫的行被主键吃掉';
 
 --> statement-breakpoint
 
