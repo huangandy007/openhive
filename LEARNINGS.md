@@ -36,6 +36,15 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #010-07 · 2026-10-29 · pitfall · 010-项目能力面板
+**一句话**：在 **async 函数**里 `Effect.runPromise(...)` 跑「按身份取库」的读，会**另起 fiber、丢请求上下文**
+——`DatabaseConnectionRouting` 钩子看不到 `User` ⇒ 退回**全局库**（没有 `project_ext` 表），表现为改动后
+**整片** 500 `no such table`，看着像迁移没跑；对照：同一判据在 `yield*`（请求 fiber）里一直绿。
+**应对**：路由注册处统一取一次 `Effect.context<never>()` 随 `deps` 传下去，用
+`Effect.runPromiseWith(上下文)(判据)` 跑；先问「这个读跑在哪个 fiber」。
+**应用范围**：任何 async/无上下文 fiber 里碰 per-user 库的现场；任何「A 出口绿、B 出口 500」的对照。
+→ 全文见 `LEARNINGS-full.md`
+
 ## #010-06 · 2026-10-28 · pitfall · 010-项目能力面板
 **一句话**：「这个项目是我的吗」在本仓有**两套来源**——每用户 SQLite 的 `project_ext` 行（平台全局项目门
 `project-location.ts` / `file.ts` 只认它）与 PG 的 `auth.project_member`（成员/归档/治理只认它）；资产出口只问了

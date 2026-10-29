@@ -23,6 +23,29 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #010-07 · 2026-10-29 · pitfall · 010-项目能力面板
+
+**现象 / 决策**：给备份出口补上「老项目回落」（判据 `./project-actor`，见 `#010-06` / `#002-06`）后，
+备份的**全部十条路由**一起 500——连与成员判定无关的读端点也 500；错误是
+`SQLiteError: no such table: project_ext`。原因是 `authorize()` 是 **async 函数**，跑角色判据只能
+`Effect.runPromise(...)`，而 `Effect.runPromise` **另起一个 fiber、不带调用方的上下文**；于是
+`DatabaseConnectionRouting` 的钩子（`connection-routing.ts` 的 `routed()` 读 `fiber.context` 里的
+`User`）看不到身份 ⇒ `Option.none()` ⇒ 退回**全局库**——全局库是上游 schema，**没有 `project_ext` 表**。
+对照：`project-assets.ts` 同一个判据一直好好的，区别只在于它是 `yield*` 在请求 fiber 里跑。
+修法：路由注册处统一包一层（`挂()`），在请求 fiber 里 `yield* Effect.context<never>()` 取上下文、
+随 `deps` 传给 `authorize`，再用 `Effect.runPromiseWith(上下文)(判据)` 跑——落到的才是**调用者自己**的库。
+变异验证：把「传上下文」那一行拆掉 ⇒ 三条用例全红成 500（Expected 202/403 / Received 500）。
+
+**应对**：给某个出口加「按用户/按身份取库」的读时，先看那个读**跑在哪个 fiber**——`yield*` 在
+handler 的 `Effect.gen` 里才是请求 fiber；一旦下沉到 async 函数（`Effect.runPromise`），上下文就没了。
+症状识别：改动后**整片** 500、错误指向「表不存在」，而降级路径依赖的服务/表本来属于**另一份库**
+⇒ 九成是掉回了全局库，不是迁移没跑。
+
+**应用范围**：任何 async 函数 / 未带上下文的 fiber 里跑 Effect 并碰 per-user 库的现场；任何
+「同一份判据在 A 出口绿、B 出口 500」的对照；任何 `no such table` 却确认迁移跑过的排查。
+
+→ 全文见本文件（本条即全文）
+
 ## #010-06 · 2026-10-28 · pitfall · 010-项目能力面板
 
 **现象 / 决策**：真栈里张三点开自己任何一个项目的「能力」tab，都显示红条「你不是这个项目成员」。
