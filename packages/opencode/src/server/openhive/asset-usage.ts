@@ -25,7 +25,8 @@ export * as OpenhiveAssetUsage from "./asset-usage"
  *
  * ## 失败不假装成 0（`LEARNINGS #002-02`）
  *
- * 单个用户库打不开 / 解析失败 ⇒ `console.warn` ＋ **不推进该用户游标** ＋ 继续下一个人。
+ * 单个用户库打不开 ⇒ `console.warn` ＋ **不推进该用户游标** ＋ 继续下一个人；
+ * `data` 不是合法 JSON 的毒行由 SQL 侧 CASE 过滤、**静默丢弃、不计数**（设计 §10 缺口 8）。
  */
 
 import { Database } from "bun:sqlite"

@@ -153,6 +153,11 @@ describe("资产使用记录：抽取", () => {
     const 源 = 建源库("usage-u1")
     建会话(源, "usage-s1", "usage-p1")
     记调用(源, { partId: "usage-prt1", sessionId: "usage-s1", name: "资金分析" })
+    // 毒行：data 不是 JSON。没有 CASE 守卫时 `.all()` 在语句级抛 malformed JSON，
+    // 整个用户的抽取被 catch 吞掉 ⇒ 下面三处断言全红（scanned 0 / 0 行 / 游标 []）。
+    源.query(
+      "insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?)",
+    ).run("usage-poison", "msg_usage", "usage-s1", 1_790_000_000_123, 1_790_000_000_123, "not json")
 
     const 结果 = await 抽取({ db: pg.db, root: ROOT, now: 1_790_000_100 })
 
