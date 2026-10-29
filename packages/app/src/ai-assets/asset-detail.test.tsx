@@ -89,7 +89,8 @@ describe("资产详情头部", () => {
     }
   })
 
-  // 评分收起（2026-10-29，用户裁定「不建议做评分」）：元信息行只剩作者 / 收藏 / 使用数。
+  // 评分收起（2026-10-29，用户裁定「不建议做评分」）：元信息行只剩作者 / 收藏；
+  // 使用记录是有条件的第三项（skill 且服务端给了 usageStats），三态见下文。
   // 数据列（rating / ratingCount / feedbackCount）仍在 `AssetMetadata` 里——那是治理后台与
   // 库表的形状，前端不再读它（不在这一层删类型，免得动到别的读者）。
   test("元信息行没有评分 / 评价（评分已收起）", () => {
@@ -153,13 +154,36 @@ describe("资产详情头部", () => {
 
   test("没给 usage（旧内核 / 非 skill）⇒ 这一项不出现", () => {
     const 无内核 = 挂()
-    const 非skill = 挂({ type: "mcp" }, { usage: { days: 30, stats: { "asset-1": { users: 3, calls: 12 } } } })
     try {
+      // 渲染锚点：先证明组件真的画出了头部，否则「槽不存在」在「整块没渲染」时也会绿
+      // （`#005-18` 假绿四问第②问：这条路径真的走到了吗）。
+      expect(文本(无内核.host, "asset-detail-name")).toBe("资金流向研判")
       expect(槽(无内核.host, "asset-detail-usage") === null).toBe(true)
-      expect(槽(非skill.host, "asset-detail-usage") === null).toBe(true)
     } finally {
       无内核.卸()
-      非skill.卸()
+    }
+
+    // 非 skill 的两类（设计 §7 点名「MCP / 知识库」）：走同一条 `=== "skill"` 分支，
+    // 但按 `#002-06` 的落点纪律把两类都钉住，别只测 MCP 就代表知识库。
+    for (const type of ["mcp", "knowledge_base"] as const) {
+      const 非skill = 挂({ type }, { usage: { days: 30, stats: { "asset-1": { users: 3, calls: 12 } } } })
+      try {
+        expect(文本(非skill.host, "asset-detail-name")).toBe("资金流向研判")
+        expect(槽(非skill.host, "asset-detail-usage") === null).toBe(true)
+      } finally {
+        非skill.卸()
+      }
+    }
+  })
+
+  // 与上一条互为对照：这条把 days 换成 7，让「还没人用过」分支里的 `用量.days` 也被钉住
+  // （否则该分支若把 30 写死，没有任何用例会红）。
+  test("没有记录时天数同样取服务端值（days: 7）", () => {
+    const { host, 卸 } = 挂({}, { usage: { days: 7, stats: {} } })
+    try {
+      expect(文本(host, "asset-detail-usage")).toBe("最近 7 天还没人用过")
+    } finally {
+      卸()
     }
   })
 })
