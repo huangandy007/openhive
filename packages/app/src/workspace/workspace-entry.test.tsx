@@ -6597,7 +6597,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     card!.querySelector<HTMLButtonElement>("[data-slot='asset-card-open']")!.click()
   }
 
-  test("点卡片 ⇒ 详情面板替换网格，头部与四 tab 就位，焦点落在返回", () => {
+  test("点卡片 ⇒ 详情面板替换网格，头部与三 tab 就位，焦点落在返回", () => {
     const 目录 = 假目录([资产({ id: "a", name: "技能甲", description: "甲的做法", tags: ["甲"] })])
     const host = mount(() => (
       <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
@@ -6610,11 +6610,12 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     expect(浏览区(host).classList.contains("hidden")).toBe(true)
     expect(text(host, "asset-detail-name")).toBe("技能甲")
     expect(text(host, "asset-detail-description")).toBe("甲的做法")
-    expect(host.querySelectorAll("[data-slot='asset-detail-tab']")).toHaveLength(4)
+    expect(host.querySelectorAll("[data-slot='asset-detail-tab']")).toHaveLength(3)
     expect(document.activeElement).toBe(host.querySelector("[data-slot='asset-detail-back']"))
   })
 
-  test("详情切 tab：注意事项带不确定性标注，评价 / 版本各有内容", () => {
+  // 评价分区已收起（2026-10-29，用户裁定「不建议做评分」）：tab 只剩介绍 / 注意事项 / 版本。
+  test("详情切 tab：注意事项带不确定性标注，版本有内容", () => {
     const 目录 = 假目录([资产({ id: "a", name: "技能甲", version: 2 })])
     const host = mount(() => (
       <WorkspaceEntry catalog={目录}>中栏</WorkspaceEntry>
@@ -6625,8 +6626,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='precautions']")!.click()
     expect(text(host, "asset-detail-uncertainty")).toContain("必须经过人工复核")
 
-    host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='reviews']")!.click()
-    expect(text(host, "asset-detail-review-summary")).toContain("暂无评分")
+    expect(host.querySelector("[data-slot='asset-detail-tab'][data-tab='reviews']") === null).toBe(true)
 
     host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='versions']")!.click()
     expect(text(host, "asset-detail-version")).toBe("v2")

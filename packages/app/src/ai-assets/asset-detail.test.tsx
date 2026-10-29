@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetDetail, 详情Tab列表, type AssetDetailProps } from "./asset-detail"
@@ -64,15 +65,13 @@ const 标签 = (host: HTMLElement, id: string) =>
 const 面板 = (host: HTMLElement) => 槽(host, "asset-detail-panel")
 
 describe("资产详情头部", () => {
-  test("名称、空间/状态徽章、作者、评分、收藏与使用次数都来自元数据", () => {
+  test("名称、空间/状态徽章、作者、收藏与使用次数都来自元数据", () => {
     const { host, 卸 } = 挂({
       name: "资金流向研判",
       visibility: "department",
       status: "published",
       ownerName: "张三",
       department: "经侦支队",
-      rating: 4.56,
-      ratingCount: 12,
       favoriteCount: 5,
       usageCount: 37,
     })
@@ -81,7 +80,6 @@ describe("资产详情头部", () => {
       expect(文本(host, "asset-detail-space")).toBe("部门")
       expect(文本(host, "asset-detail-status")).toBe("已发布")
       expect(文本(host, "asset-detail-author")).toBe("张三 · 经侦支队")
-      expect(文本(host, "asset-detail-header-rating")).toBe("★ 4.6（12 人评分）")
       expect(文本(host, "asset-detail-favorites")).toBe("5 人收藏")
       expect(文本(host, "asset-detail-usage")).toBe("37 次使用")
       expect(槽(host, "asset-detail-back")?.getAttribute("aria-label")).toBe("返回资产列表")
@@ -90,10 +88,18 @@ describe("资产详情头部", () => {
     }
   })
 
-  test("没人评分时写「暂无评分」，不显示 0.0", () => {
-    const { host, 卸 } = 挂({ rating: 0, ratingCount: 0 })
+  // 评分收起（2026-10-29，用户裁定「不建议做评分」）：元信息行只剩作者 / 收藏 / 使用数。
+  // 数据列（rating / ratingCount / feedbackCount）仍在 `AssetMetadata` 里——那是治理后台与
+  // 库表的形状，前端不再读它（不在这一层删类型，免得动到别的读者）。
+  test("元信息行没有评分 / 评价（评分已收起）", () => {
+    const { host, 卸 } = 挂({ rating: 4.56, ratingCount: 12, feedbackCount: 3 })
     try {
-      expect(文本(host, "asset-detail-header-rating")).toBe("暂无评分")
+      expect(槽(host, "asset-detail-header-rating") === null).toBe(true)
+      const 全文字 = host.textContent ?? ""
+      expect(
+        全文字.includes("评分") || 全文字.includes("评价"),
+        `详情里不该再出现评分 / 评价字样，实得：${全文字}`,
+      ).toBe(false)
     } finally {
       卸()
     }
@@ -103,7 +109,7 @@ describe("资产详情头部", () => {
     const { host, 卸 } = 挂()
     try {
       const 头部 = 槽(host, "asset-detail-header")
-      标签(host, "reviews").click()
+      标签(host, "versions").click()
       expect(槽(host, "asset-detail-header")).toBe(头部)
       expect(文本(host, "asset-detail-name")).toBe("资金流向研判")
     } finally {
@@ -125,19 +131,19 @@ describe("资产详情头部", () => {
   })
 })
 
-describe("详情四 tab", () => {
-  test("tab 栏是介绍/注意事项/评价/版本，默认选中介绍", () => {
+describe("详情三 tab", () => {
+  test("tab 栏是介绍/注意事项/版本（评价已收起），默认选中介绍", () => {
     const { host, 卸 } = 挂()
     try {
       const tablist = host.querySelector('[role="tablist"]')
       expect(tablist).not.toBeNull()
       const 按钮 = [...host.querySelectorAll<HTMLButtonElement>('[data-slot="asset-detail-tab"]')]
       expect(按钮.map((el) => el.textContent)).toEqual(详情Tab列表.map((项) => 项.label))
-      expect(按钮.map((el) => el.dataset.tab)).toEqual(["intro", "precautions", "reviews", "versions"])
+      expect(按钮.map((el) => el.dataset.tab)).toEqual(["intro", "precautions", "versions"])
       expect(按钮.every((el) => el.getAttribute("role") === "tab")).toBe(true)
 
       expect(标签(host, "intro").getAttribute("aria-selected")).toBe("true")
-      for (const id of ["precautions", "reviews", "versions"]) {
+      for (const id of ["precautions", "versions"]) {
         expect(标签(host, id).getAttribute("aria-selected")).toBe("false")
       }
       expect(面板(host)?.dataset.tab).toBe("intro")
@@ -159,11 +165,6 @@ describe("详情四 tab", () => {
       expect(面板(host)?.dataset.tab).toBe("precautions")
       expect(槽(host, "asset-detail-description")).toBeNull()
       expect(文本(host, "asset-detail-uncertainty")).toContain("必须经过人工复核")
-
-      标签(host, "reviews").click()
-      expect(面板(host)?.dataset.tab).toBe("reviews")
-      expect(槽(host, "asset-detail-uncertainty")).toBeNull()
-      expect(槽(host, "asset-detail-review-summary")).not.toBeNull()
 
       标签(host, "versions").click()
       expect(面板(host)?.dataset.tab).toBe("versions")
@@ -211,24 +212,21 @@ describe("详情各 tab 内容", () => {
     }
   })
 
-  test("评价：有评分显示汇总；无评分显示空态；评价正文缺失时显式说明", () => {
-    const 有分 = 挂({ rating: 4.56, ratingCount: 12, feedbackCount: 3 })
+  // 评价分区收起（2026-10-29，用户裁定）：库里没有一条评价正文，写一个永远空着的 tab
+  // 等于把「不可达」装成「可达」（`#008-04`）。等真有写入口再单独立 feature 加回来。
+  test("评价分区不再存在：没有评价 tab，也没有评价面板", () => {
+    const { host, 卸 } = 挂({ rating: 4.56, ratingCount: 12, feedbackCount: 3 })
     try {
-      标签(有分.host, "reviews").click()
-      expect(文本(有分.host, "asset-detail-review-summary")).toContain("★ 4.6")
-      expect(文本(有分.host, "asset-detail-review-summary")).toContain("12 人评分")
-      expect(文本(有分.host, "asset-detail-review-summary")).toContain("3 条反馈")
-      expect(文本(有分.host, "asset-detail-reviews-empty")).toBe("暂无评价内容。")
+      expect(标签(host, "reviews") === null).toBe(true)
+      for (const id of ["intro", "precautions", "versions"] as const) {
+        标签(host, id).click()
+        expect(
+          槽(host, "asset-detail-review-summary") === null,
+          `${id} 面板里不该出现评价汇总`,
+        ).toBe(true)
+      }
     } finally {
-      有分.卸()
-    }
-
-    const 无分 = 挂({ rating: 0, ratingCount: 0, feedbackCount: 0 })
-    try {
-      标签(无分.host, "reviews").click()
-      expect(文本(无分.host, "asset-detail-review-summary")).toContain("暂无评分")
-    } finally {
-      无分.卸()
+      卸()
     }
   })
 
@@ -443,6 +441,109 @@ describe("头部操作：收藏（2026-10-29）", () => {
       expect(按钮.getAttribute("title")).toBe("正在处理…")
     } finally {
       卸()
+    }
+  })
+})
+
+/**
+ * 选中态（2026-10-29，用户实报「点了收藏像没反应，看不出已收藏 / 已启用」）。
+ *
+ * 分两层钉，缺一层就等于没钉住：
+ * 1. **组件把状态写成属性**（`data-favorited` / `data-enabled`）——样式表唯一的挂钩；
+ * 2. **样式表里有按这两个属性出的规则**，且底色 / 图标走的是同一对变量。
+ *
+ * 为什么不用 Tailwind 的 class：`button-v2.css` 的变体规则特异度 (0,2,0)、图标那条 (0,3,0)，
+ * 而工具类是 (0,1,0)——永远输。选中态只能落在 app 自己的样式表里，用更高特异度压过去。
+ *
+ * 文字色用 `--v2-text-text-base` 而不是金色：金色文字在深色主题下对比度只有 1.07–1.99:1
+ * （已知缺陷），选中态不再扩大它；金色只落在图标上。
+ */
+describe("头部操作：选中态（2026-10-29）", () => {
+  const 按钮 = (host: HTMLElement, slot: string) =>
+    host.querySelector<HTMLButtonElement>(`[data-slot="${slot}"]`)
+  const 样式表 = () => readFileSync(new URL("./asset-action-active.css", import.meta.url), "utf8")
+
+  test("已收藏 ⇒ data-favorited=true；未收藏 ⇒ 不是 true", () => {
+    const 已 = 挂({}, { onToggleFavorite: () => {}, favorited: true })
+    try {
+      expect(按钮(已.host, "asset-detail-favorite")?.getAttribute("data-favorited")).toBe("true")
+    } finally {
+      已.卸()
+    }
+
+    const 未 = 挂({}, { onToggleFavorite: () => {} })
+    try {
+      expect(按钮(未.host, "asset-detail-favorite")?.getAttribute("data-favorited")).not.toBe("true")
+    } finally {
+      未.卸()
+    }
+  })
+
+  test("已启用 ⇒ data-enabled=true；未启用 ⇒ 不是 true", () => {
+    const 已 = 挂({}, { onToggleEnabled: () => {}, enabled: true })
+    try {
+      expect(按钮(已.host, "asset-detail-enable")?.getAttribute("data-enabled")).toBe("true")
+    } finally {
+      已.卸()
+    }
+
+    const 未 = 挂({}, { onToggleEnabled: () => {} })
+    try {
+      expect(按钮(未.host, "asset-detail-enable")?.getAttribute("data-enabled")).not.toBe("true")
+    } finally {
+      未.卸()
+    }
+  })
+
+  test("样式表按这两个属性出规则，底色 / 图标取同一对变量（淡金底 + 金色图标）", () => {
+    const css = 样式表()
+    // 选择器与组件渲染出来的属性**逐字对得上**——两处任一改名，这条当场红。
+    expect(css.includes('[data-slot="asset-detail-favorite"][data-favorited="true"]')).toBe(true)
+    expect(css.includes('[data-slot="asset-detail-enable"][data-enabled="true"]')).toBe(true)
+    expect(css.includes("--v2-background-bg-accent-soft")).toBe(true)
+    expect(css.includes("--v2-icon-icon-accent")).toBe(true)
+    // 文字不能是金色（`--v2-text-text-accent`）：深色主题下那是对比度缺陷。
+    expect(css.includes("--v2-text-text-accent")).toBe(false)
+  })
+})
+
+/**
+ * 详情里的失败要能看见（2026-10-29，用户实报「点收藏没反应」）。
+ *
+ * 根因是**失败被盖住了**：收藏 / 启用的错误写回 `catalog.error()` / `enablement.error()`，
+ * 而那两个横幅挂在浏览区里，详情一打开浏览区就 `hidden` —— 用户点了按钮，界面一个字都不变。
+ * 详情自己也要有一条 `role="alert"`（`#008-04`：不可达状态不能装成可达，失败更不能装成没发生）。
+ */
+describe("详情里的失败要能看见（2026-10-29）", () => {
+  const 提示 = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="asset-detail-error"]')
+
+  test("给了 error ⇒ 头部出现 role=alert 的提示，且不在浏览区那侧", () => {
+    const { host, 卸 } = 挂({}, { error: "收藏失败，请检查网络后重试" })
+    try {
+      const 节点 = 提示(host)
+      if (!节点) throw new Error("给了 error 却没有提示")
+      expect(节点.getAttribute("role")).toBe("alert")
+      expect(节点.textContent?.trim()).toBe("收藏失败，请检查网络后重试")
+      const 头部 = 槽(host, "asset-detail-header")
+      expect(头部?.contains(节点) === true).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("没有 error（含空串）⇒ 不渲染提示", () => {
+    const 无 = 挂()
+    try {
+      expect(提示(无.host) === null).toBe(true)
+    } finally {
+      无.卸()
+    }
+
+    const 空 = 挂({}, { error: "" })
+    try {
+      expect(提示(空.host) === null).toBe(true)
+    } finally {
+      空.卸()
     }
   })
 })

@@ -8,6 +8,7 @@ import {
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
+import "./asset-action-active.css"
 
 /**
  * 资产详情（009 T007 / DESIGN §4.10）。
@@ -15,12 +16,16 @@ import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
  * **呈现方式**：中栏页面内状态（D0-3 的建议）——`AssetCenter` 选中 assetId 后把详情盖在浏览区上，
  * 不新增 `ContentTab`（资产的 `path` 没有意义）。
  *
- * **头部固定**：名称 / 空间 / 状态 / 作者 / 评分 / 收藏数 / 使用次数都取自 `AssetMetadata` 真字段；
+ * **头部固定**：名称 / 空间 / 状态 / 作者 / 收藏数 / 使用次数都取自 `AssetMetadata` 真字段；
  * 头部在 tab 切换时不重建。
  *
- * ⚠️ **没有的字段就显示空态，不写正文**（`#005-47`、`#008-04`）：介绍正文、评价正文、变更说明
- * 今天没有数据源；「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意
- * 事项缺失时显式说明「尚未填写」。
+ * **评分 / 评价收起**（2026-10-29，用户裁定「不建议做评分」）：库里没有一条评价正文、也没有写
+ * 入口，留着 tab 就是把不可达装成可达（`#008-04`）。`AssetMetadata` 上的 `rating / ratingCount /
+ * feedbackCount` 三列**不动**——治理后台与库表还有读者，前端只是不再显示。
+ *
+ * ⚠️ **没有的字段就显示空态，不写正文**（`#005-47`、`#008-04`）：介绍正文、变更说明今天没有
+ * 数据源；「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意事项缺失
+ * 时显式说明「尚未填写」。
  *
  * ⚠️ 启用按钮**没接线就不渲染**——写一个按下去什么也不发生的按钮，就是把不可达状态
  * 装成可达（`#008-04`）。
@@ -38,7 +43,6 @@ import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 export const 详情Tab列表 = [
   { id: "intro", label: "介绍" },
   { id: "precautions", label: "注意事项" },
-  { id: "reviews", label: "评价" },
   { id: "versions", label: "版本" },
 ] as const
 
@@ -54,10 +58,6 @@ function 格式化日期(unix秒: number): string {
   const 月 = String(日期.getMonth() + 1).padStart(2, "0")
   const 日 = String(日期.getDate()).padStart(2, "0")
   return `${日期.getFullYear()}-${月}-${日}`
-}
-
-function 评分文案(asset: AssetMetadata): string {
-  return asset.ratingCount > 0 ? `★ ${asset.rating.toFixed(1)}（${asset.ratingCount} 人评分）` : "暂无评分"
 }
 
 function 作者文案(asset: AssetMetadata): string {
@@ -116,26 +116,6 @@ function 注意事项面板(): JSX.Element {
   )
 }
 
-function 评价面板(props: { readonly asset: AssetMetadata }): JSX.Element {
-  return (
-    <div data-slot="asset-detail-reviews" class="space-y-3">
-      <div
-        data-slot="asset-detail-review-summary"
-        class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-v2-text-text-base"
-      >
-        <Show when={props.asset.ratingCount > 0} fallback={<span>暂无评分</span>}>
-          <span class="font-semibold">★ {props.asset.rating.toFixed(1)}</span>
-          <span class="text-v2-text-text-muted">{props.asset.ratingCount} 人评分</span>
-        </Show>
-        <span class="text-v2-text-text-muted">{props.asset.feedbackCount} 条反馈</span>
-      </div>
-      <p data-slot="asset-detail-reviews-empty" class="text-[13px] text-v2-text-text-muted">
-        暂无评价内容。
-      </p>
-    </div>
-  )
-}
-
 function 版本面板(props: { readonly asset: AssetMetadata }): JSX.Element {
   return (
     <div data-slot="asset-detail-versions" class="space-y-3">
@@ -183,6 +163,14 @@ export interface AssetDetailProps {
   readonly onToggleFavorite?: (asset: AssetMetadata) => void
   readonly favorited?: boolean
   readonly favoriteBusy?: boolean
+  /**
+   * 【保留的定制 · 同步上游时不要丢】最近一次失败的原因（2026-10-29）。
+   *
+   * 收藏 / 启用的错误写在 `catalog.error()` / `enablement.error()` 上，而那两个横幅挂在
+   * **浏览区**里——详情一打开浏览区就 `hidden`。用户点了按钮，界面一个字都不变，这正是
+   * 「点了没反应」。所以详情自己也要有一条 `role="alert"`。空串按「没有」处理。
+   */
+  readonly error?: string
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -307,12 +295,22 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-v2-text-text-muted">
               <span data-slot="asset-detail-author">{作者文案(props.asset)}</span>
-              <span data-slot="asset-detail-header-rating">{评分文案(props.asset)}</span>
               <span data-slot="asset-detail-favorites">{props.asset.favoriteCount} 人收藏</span>
               <span data-slot="asset-detail-usage">{props.asset.usageCount} 次使用</span>
             </div>
           </div>
         </div>
+
+        {/* 失败要在**看得见的地方**出现（2026-10-29）：浏览区那两条横幅在详情打开时是 hidden 的。 */}
+        <Show when={props.error !== undefined && props.error !== ""}>
+          <div
+            data-slot="asset-detail-error"
+            role="alert"
+            class="mt-2 rounded-md border border-v2-state-border-danger bg-v2-state-bg-danger px-3 py-2 text-[13px] text-v2-state-fg-danger"
+          >
+            {props.error}
+          </div>
+        </Show>
       </header>
 
       <div
@@ -360,9 +358,6 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
             </Match>
             <Match when={当前() === "precautions"}>
               <注意事项面板 />
-            </Match>
-            <Match when={当前() === "reviews"}>
-              <评价面板 asset={props.asset} />
             </Match>
             <Match when={当前() === "versions"}>
               <版本面板 asset={props.asset} />

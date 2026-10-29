@@ -41,13 +41,14 @@ function 数据源(over: Partial<{
   查询: unknown[]
   收藏请求: Array<{ readonly assetId: string; readonly favorited: boolean }>
   改清单: (rows: readonly AssetMetadata[]) => void
+  改错误: (reason: string | undefined) => void
 } {
   const [清单, set清单] = createSignal<readonly AssetMetadata[]>(over.assets ?? [])
   const [总数, set总数] = createSignal(over.total ?? 0)
   const [页码, set页码] = createSignal(over.page ?? 1)
   const [每页, set每页] = createSignal(over.pageSize ?? 20)
   const [分类名] = createSignal<Readonly<Record<string, string>>>(over.categoryNames ?? {})
-  const [错误] = createSignal<string | undefined>(over.error)
+  const [错误, set错误] = createSignal<string | undefined>(over.error)
   const [收藏] = createSignal<ReadonlySet<string>>(new Set(over.favorited ?? []))
   const [收藏中] = createSignal<string | undefined>(over.favoriteBusy)
   const 翻页: number[] = []
@@ -65,6 +66,7 @@ function 数据源(over: Partial<{
     favoriteBusy: 收藏中,
     setFavorite: (assetId, favorited) => void 收藏请求.push({ assetId, favorited }),
     改清单: set清单,
+    改错误: set错误,
     收藏请求,
     load: (query) => void 查询.push(query),
     goPage: (page) => {
@@ -560,6 +562,33 @@ describe("中栏 · 收藏（2026-10-29）", () => {
       // 服务端回来的新行（`setFavorite` 成功之后数据源就是这么改的）。
       源.改清单([{ ...资产("a1"), favoriteCount: 7 }])
       expect(计数()).toBe("7 人收藏")
+    } finally {
+      卸()
+    }
+  })
+
+  /**
+   * 失败必须在**详情里**看得见（2026-10-29，用户实报「点收藏没反应」）。
+   *
+   * 根因是浏览区那两条横幅在详情打开时是 `hidden` 的：数据源把原因写进 `error()`，用户却在
+   * 详情里什么也看不到。这条钉的是 `AssetCenter` **把 `error()` 传进详情**这件事本身——
+   * 只把 `AssetDetail` 自己的告警画对（`asset-detail.test.tsx` 那条）不覆盖这一层。
+   */
+  test("收藏失败 ⇒ 详情头部出现那条原因，不是只在隐藏的浏览区里", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1 })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      expect(host.querySelector('[data-slot="asset-detail-error"]') === null).toBe(true)
+
+      源.改错误("收藏失败，请检查网络后重试")
+
+      const 条 = host.querySelector<HTMLElement>('[data-slot="asset-detail-error"]')
+      if (!条) throw new Error("收藏失败了，详情里却没有提示")
+      expect(条.getAttribute("role")).toBe("alert")
+      expect(条.textContent?.trim()).toBe("收藏失败，请检查网络后重试")
+      // 在详情头部里，而不是在被 `hidden` 掉的浏览区里。
+      expect(host.querySelector('[data-slot="asset-detail-header"]')?.contains(条) === true).toBe(true)
     } finally {
       卸()
     }

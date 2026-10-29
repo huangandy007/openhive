@@ -9,14 +9,16 @@ import { 样例资产 } from "./asset-story-fixtures"
  * 详情是**页内状态**（`AssetCenter` 选中后盖在浏览区上），不是路由，所以 story 直接给
  * `asset` ＋ 空 `onBack` 就还原了真实画面。默认落在「介绍」分区（`当前` 初值）。
  *
- * 三态各自对应一段**不同的 DOM**：
+ * 各态对应一段**不同的 DOM**：
  *
  * - **已发布 skill**：头部右上角渲染「已收藏」与「已启用」（2026-10-29 起从卡片搬进来），
- *   底部有评分 / 收藏 / 使用数——实心星与空心星两种图标都照得到；
- * - **无评分**：头部与评价区都走「暂无评分」分支（文案对比度组合不同），启用按钮走
- *   **禁用态**（没选项目）——`title` 与 `opacity` 是不同的对比度组合；
+ *   **两个都处于选中态**（淡金底 ＋ 金色图标，`asset-action-active.css`）——实心星也在这一态；
+ * - **无评分**：启用按钮走**禁用态**（没选项目）——`title` 与 `opacity` 是不同的对比度组合。
+ *   （评分 / 评价分区已于 2026-10-29 收起，这个 story 名保留，照的是「按钮禁用」那一态。）
  * - **知识库**：启用按钮对三类资产都渲染（能不能启用由服务端判，前端不按类型藏）。
- *   三态并置才照得到「按钮该不该出现 / 该不该禁用」。
+ * - **失败提示**：收藏失败时头部那条 `role="alert"`（`state-*danger` 一组颜色）——详情打开时
+ *   浏览区的横幅是 hidden 的，这条是用户唯一看得见的失败。
+ *   四态并置才照得到「按钮该不该出现 / 该不该禁用 / 选中了没有 / 失败了看不看得见」。
  *
  * **不给 `onToggleEnabled` 的第四态不画**：省略接线就不渲染按钮（`#008-04`），那是组件被
  * 裸挂的形状，不是产品画面。
@@ -46,7 +48,7 @@ export const 已发布skill = {
   ),
 }
 
-export const 无评分 = {
+export const 未选中_禁用 = {
   render: () => (
     <div style={{ width: "520px", height: "560px", display: "flex", flexDirection: "column" }}>
       <AssetDetail
@@ -73,6 +75,21 @@ export const 知识库 = {
         onBack={返回}
         onToggleEnabled={() => {}}
         onToggleFavorite={() => {}}
+      />
+    </div>
+  ),
+}
+
+export const 失败提示 = {
+  render: () => (
+    <div style={{ width: "520px", height: "560px", display: "flex", flexDirection: "column" }}>
+      <AssetDetail
+        asset={样例资产({ id: "a1", name: "资金流水分析" })}
+        onBack={返回}
+        onToggleEnabled={() => {}}
+        onToggleFavorite={() => {}}
+        favorited
+        error="收藏失败，请检查网络后重试"
       />
     </div>
   ),

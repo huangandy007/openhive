@@ -1,0 +1,53 @@
+/**
+ * 详情头部「已收藏 / 已启用」的选中态（2026-10-29，用户裁定：淡金底 + 金色图标）。
+ *
+ * 用户原话：「收藏、启用是乒乓开关，处于已收藏、已启用的状态时，其按钮在背景、颜色上要
+ * 有所变化，否则不能有强的视觉识别。」
+ *
+ * ## 为什么要在 app 里写一份，而不是给 `ButtonV2` 传 class
+ *
+ * `packages/ui/src/v2/components/button-v2.css` 里 `ghost-muted` 的规则特异度是 (0,2,0)，
+ * 图标那条是 (0,3,0)；Tailwind 工具类是 (0,1,0)——传 `bg-... text-...` 上去永远输，
+ * 写了等于没写。所以选中态落在 app 自己的样式表里，用更高特异度压过去。
+ * （同一个道理记在 `#006-10`：一件事两个来源时，赢的那个必须是**确定**的。）
+ *
+ * ## 为什么带 `[data-variant="ghost-muted"]`
+ *
+ * 不带的话基础规则 (0,3,0) 只压得住变体底色 (0,2,0)，压不住 hover：(0,2,0) 的变体选择器
+ * 再挂 `:is(:hover) :not(:disabled) :not([data-expanded])` 之后是 (0,5,0)——鼠标一放上去
+ * 「淡金底」就被通用 hover 蒙层盖掉，状态在最该看清的时候消失。
+ *
+ * ## 颜色取哪两个
+ *
+ * 底色 `--v2-background-bg-accent-soft`（淡金底），图标 `--v2-icon-icon-accent`（金色）——
+ * 与左栏选中项、详情页左上角那块资产图标**同一套视觉语言**，用户不用再学第二套。
+ * 文字取 `--v2-text-text-base`（主文本色）**而不是金色**：金色文字在深色主题下对比度只有
+ * 1.07–1.99:1，那是已记录的缺陷，选中态不再扩大它。
+ */
+
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-favorite"][data-favorited="true"],
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-enable"][data-enabled="true"] {
+  background-color: var(--v2-background-bg-accent-soft);
+  color: var(--v2-text-text-base);
+}
+
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-favorite"][data-favorited="true"]
+  [data-slot="icon-svg"],
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-enable"][data-enabled="true"]
+  [data-slot="icon-svg"] {
+  color: var(--v2-icon-icon-accent);
+}
+
+/* hover 时保持淡金底：见文件头「为什么带 data-variant」。特异度 (0,6,0) > 变体 hover 的 (0,5,0)，
+   顺序无关。`:active`（按下）也落在这条里——按下必然同时处于 hover。 */
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-favorite"][data-favorited="true"]:is(
+    :hover,
+    [data-state="hover"]
+  ):not(:disabled),
+[data-component="button-v2"][data-variant="ghost-muted"][data-slot="asset-detail-enable"][data-enabled="true"]:is(
+    :hover,
+    [data-state="hover"]
+  ):not(:disabled) {
+  background-color: var(--v2-background-bg-accent-soft);
+  color: var(--v2-text-text-base);
+}

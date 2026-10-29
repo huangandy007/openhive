@@ -248,6 +248,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
                 }
                 favorited={props.catalog?.favorited().has(asset().id) === true}
                 favoriteBusy={props.catalog?.favoriteBusy() === asset().id}
+                error={props.catalog?.error() ?? props.enablement?.error()}
               />
             </div>
           )
