@@ -154,6 +154,18 @@ describe("migrate", () => {
     // 逆序的起点取 `migrate()` 自己报的「这次应用了哪些」——它就是账上的真相，
     // 不需要在测试里另抄一份版本清单（抄一份 = 每加一个迁移再改一次，`LEARNINGS #002-06`）。
     const applied = await migrate(db)
+
+    // 0024（2026-10-29）：资产使用记录的两张表随迁移建出、随回滚撤掉。
+    const 表数 = async (name: string) => {
+      const result = await db.execute(sql`
+        select count(*)::int as n from information_schema.tables
+        where table_schema = 'auth' and table_name = ${name}
+      `)
+      return Number(rowsOf(result)[0]?.["n"] ?? 0)
+    }
+    expect(await 表数("asset_usage_event")).toBe(1)
+    expect(await 表数("asset_usage_cursor")).toBe(1)
+
     for (const version of [...applied].reverse()) await rollback(db, version)
 
     const result = await db.execute(sql`
@@ -161,6 +173,8 @@ describe("migrate", () => {
       where table_schema = 'auth' and table_name = 'user'
     `)
     expect(result.rows).toEqual([{ n: 0 }])
+    expect(await 表数("asset_usage_event")).toBe(0)
+    expect(await 表数("asset_usage_cursor")).toBe(0)
   })
 })
 
