@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { create抽取时控 } from "@/server/openhive/asset-usage"
+import { create抽取时控, 节流ms } from "@/server/openhive/asset-usage"
 
 /**
  * `create抽取时控` 的三条语义（2026-10-29）：节流、单飞、吞错。
@@ -27,6 +27,13 @@ describe("create抽取时控：节流 + 单飞 + 吞错", () => {
     expect(节流.该抽()).toBe(true)
     await 节流.跑一次(输入)
     expect(节流.该抽()).toBe(false)
+  })
+
+  test("不传间隔 ⇒ 用生产默认 60 秒（量级也钉住，不只钉机制）", async () => {
+    expect(节流ms).toBe(60_000)
+    const 时控 = create抽取时控()
+    await 时控.跑一次(输入)
+    expect(时控.该抽()).toBe(false)
   })
 
   test("并发进来只有一个真抽，另一个立刻返回 undefined", async () => {

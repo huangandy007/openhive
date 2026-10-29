@@ -190,6 +190,18 @@ describe("GET /openhive/assets · usageStats", () => {
     }),
   )
 
+  it.live("空页（筛不到资产）⇒ 仍带 usageStats，stats 是空对象（有键 ≠ 读失败）", () =>
+    Effect.gen(function* () {
+      // 第二档「这一项出现、写『还没人用过』」与第三档「这一项不出现」的分界就在这个键：
+      // 本页真没人用过 ⇒ 有键 + 空 stats；读失败 ⇒ 无键（上一条用例）。
+      const response = yield* get(ME, `${LIST}?q=zzz-no-such-asset`)
+      expect(response.status).toBe(200)
+      const body = JSON.parse(yield* Effect.promise(() => response.text())) as Record<string, unknown>
+      expect(body["assets"]).toEqual([])
+      expect(body["usageStats"]).toEqual({ days: 30, stats: {} })
+    }),
+  )
+
   it.live("用量统计坏了 ⇒ 列表仍 200，只是不带 usageStats（老内核兼容的那一档）", () =>
     Effect.gen(function* () {
       yield* Effect.promise(() =>
