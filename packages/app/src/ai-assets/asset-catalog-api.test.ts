@@ -219,11 +219,27 @@ describe("使用统计 usageStats（2026-10-29）", () => {
     if (out.kind === "ok") expect(out.value.usageStats).toBeUndefined()
   })
 
-  test("形状不对 ⇒ 整页 failed（不猜默认 0）", async () => {
-    const { send } = 替身(() => json(一页({ usageStats: { days: "30", stats: {} } })))
+  test("空表合法：没记录的资产不出现，days 照带（服务端空页就是 stats: {}）", async () => {
+    const { send } = 替身(() => json(一页({ usageStats: { days: 30, stats: {} } })))
 
     const out = await createCatalogApi(send).list()
 
-    expect(out.kind).toBe("failed")
+    expect(out.kind).toBe("ok")
+    if (out.kind === "ok") expect(out.value.usageStats).toEqual({ days: 30, stats: {} })
+  })
+
+  test("形状不对 ⇒ 整页 failed（不猜默认 0）", async () => {
+    for (const bad of [
+      { days: "30", stats: {} },
+      { days: 30, stats: [] },
+      { days: 30, stats: { a1: { users: "3", calls: 1 } } },
+      { days: 30, stats: { a1: null } },
+    ]) {
+      const { send } = 替身(() => json(一页({ usageStats: bad })))
+
+      const out = await createCatalogApi(send).list()
+
+      expect(out.kind).toBe("failed")
+    }
   })
 })

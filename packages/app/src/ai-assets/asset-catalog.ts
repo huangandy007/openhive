@@ -66,7 +66,7 @@ export interface AssetCatalog {
   readonly error: () => string | undefined
   /**
    * 最近 N 天的使用统计（2026-10-29）；`undefined` = 旧内核没给（详情不显示这一项）。
-   * 由每次 `load` 成功时的回包重建；空间全取消时清空（与清单同进退）。
+   * 由每次 `load` 成功时的回包重建；失败时**不清**（清单也没清）；空间全取消时清空（与清单同进退）。
    */
   readonly usage: () => UsageStats | undefined
   /** 本页里「我」收藏过的资产 id（2026-10-29）；由每次 `load` 成功时的回包重建。 */

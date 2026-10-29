@@ -354,22 +354,38 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
   })
 
   test("usage 由 load 成功时的回包重建；空间全取消时清空", async () => {
-    let 回包: unknown = {
-      assets: [],
-      total: 0,
-      page: 1,
-      pageSize: 20,
-      usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } },
-    }
-    const api = { list: async () => ({ kind: "ok" as const, value: 回包 as never }) }
-    const 目录 = createAssetCatalog(api as never)
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
 
     目录.load({})
-    await Promise.resolve()
+    待回[0]!({
+      kind: "ok",
+      value: { ...页([]), usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } } },
+    })
+    await 等一轮()
     expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
 
     目录.load({ spaces: [] })
-    await Promise.resolve()
+    await 等一轮()
     expect(目录.usage()).toBeUndefined()
+  })
+
+  test("拉取失败 ⇒ usage 保留上一份（一次网络抖动不等于没有用量）", async () => {
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
+
+    目录.load({})
+    待回[0]!({
+      kind: "ok",
+      value: { ...页([]), usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } } },
+    })
+    await 等一轮()
+    expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
+
+    目录.reload()
+    待回[1]!({ kind: "failed", message: "网络断了" })
+    await 等一轮()
+    expect(目录.error()).toBe("网络断了")
+    expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
   })
 })
