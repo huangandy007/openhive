@@ -289,3 +289,43 @@ export async function 用量统计(
   }
   return { days: WINDOW_DAYS, stats }
 }
+
+export interface 抽取时控 {
+  /** 现在该不该抽（距上次 ≥ 间隔、且没有在抽）。 */
+  该抽(now?: number): boolean
+  /**
+   * 抽一次：单飞（并发进来只有一个真抽）、吞错（列表不能因为用量统计 500）。
+   * 返回 `undefined` = 本轮没跑（已在抽 / 出错）。
+   */
+  跑一次(input: 抽取输入): Promise<抽取结果 | undefined>
+}
+
+/**
+ * 时控：进程内节流 ＋ 单飞。一个 HTTP 应用层一份（与 `openhive-pg.ts` 同一条理由：
+ * 模块级单例会在多文件一起跑时被另一个文件的服务器串味）。
+ *
+ * 失败也更新 `上次`：坏掉的数据源不该被每 60 秒之外更频繁地重试。
+ */
+export function create抽取时控(间隔ms = 节流ms): 抽取时控 {
+  let 上次 = 0
+  let 在抽 = false
+
+  return {
+    该抽(now = Date.now()) {
+      return !在抽 && now - 上次 >= 间隔ms
+    },
+    async 跑一次(input) {
+      if (在抽) return undefined
+      在抽 = true
+      try {
+        return await 抽取(input)
+      } catch (error) {
+        console.warn("[openhive-asset-usage] 本轮抽取失败，沿用已有数据", error)
+        return undefined
+      } finally {
+        在抽 = false
+        上次 = Date.now()
+      }
+    },
+  }
+}

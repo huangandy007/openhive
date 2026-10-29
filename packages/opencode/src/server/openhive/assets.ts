@@ -61,10 +61,13 @@ import {
   type AssetVisibility,
 } from "@opencode-ai/asset-service/metadata"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { nowSeconds } from "@opencode-ai/auth/time"
+import { dataRoot } from "@opencode-ai/core/database/router"
 import { User } from "@opencode-ai/core/user"
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { create抽取时控, 用量统计 } from "./asset-usage"
 import { OpenhivePg } from "./pg"
 
 export const PATH = {
@@ -76,12 +79,14 @@ const UNAUTHORIZED = 401
 
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
+  /** 使用记录的抽取节流（一个应用层一份；见 `asset-usage.ts` 的 `create抽取时控`）。 */
+  readonly 时控: ReturnType<typeof create抽取时控>
 }
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
-    const deps: Deps = { pg: openhivePg.pg }
+    const deps: Deps = { pg: openhivePg.pg, 时控: create抽取时控() }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
   }),
@@ -187,6 +192,21 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 本页 = new Set(assets.map((asset) => asset.id))
     const favoritedIds = 收藏.filter((id) => 本页.has(id))
 
-    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize, categoryNames, favoritedIds })
+    // 使用记录（2026-10-29）：**读之前先抽取**（同 010 T009 的次序）。60 秒节流 ＋ 单飞，
+    // 失败沿用已有数据——列表是主功能，不能因为用量统计坏了就 500。
+    if (deps.时控.该抽()) {
+      yield* Effect.promise(() => deps.时控.跑一次({ db: deps.pg(), root: dataRoot(process.env) }))
+    }
+    const usageStats = yield* Effect.promise(() => 用量统计(deps.pg(), assets.map((asset) => asset.id), nowSeconds()))
+
+    return ok({
+      assets,
+      total,
+      page: 分页.page,
+      pageSize: 分页.pageSize,
+      categoryNames,
+      favoritedIds,
+      usageStats,
+    })
   })
 }
