@@ -31,16 +31,29 @@ function 数据源(over: Partial<{
   pageSize: number
   error: string | undefined
   categoryNames: Readonly<Record<string, string>>
-}> = {}): AssetCatalog & { 翻页: number[]; 改条数: number[]; 查询: unknown[] } {
-  const [清单] = createSignal<readonly AssetMetadata[]>(over.assets ?? [])
+  /** 本页里我收藏过的（2026-10-29）。 */
+  favorited: readonly string[]
+  /** 正在写收藏的那个 id。 */
+  favoriteBusy: string | undefined
+}> = {}): AssetCatalog & {
+  翻页: number[]
+  改条数: number[]
+  查询: unknown[]
+  收藏请求: Array<{ readonly assetId: string; readonly favorited: boolean }>
+  改清单: (rows: readonly AssetMetadata[]) => void
+} {
+  const [清单, set清单] = createSignal<readonly AssetMetadata[]>(over.assets ?? [])
   const [总数, set总数] = createSignal(over.total ?? 0)
   const [页码, set页码] = createSignal(over.page ?? 1)
   const [每页, set每页] = createSignal(over.pageSize ?? 20)
   const [分类名] = createSignal<Readonly<Record<string, string>>>(over.categoryNames ?? {})
   const [错误] = createSignal<string | undefined>(over.error)
+  const [收藏] = createSignal<ReadonlySet<string>>(new Set(over.favorited ?? []))
+  const [收藏中] = createSignal<string | undefined>(over.favoriteBusy)
   const 翻页: number[] = []
   const 改条数: number[] = []
   const 查询: unknown[] = []
+  const 收藏请求: Array<{ readonly assetId: string; readonly favorited: boolean }> = []
   return {
     assets: 清单,
     total: 总数,
@@ -48,6 +61,11 @@ function 数据源(over: Partial<{
     pageSize: 每页,
     categoryNames: 分类名,
     error: 错误,
+    favorited: 收藏,
+    favoriteBusy: 收藏中,
+    setFavorite: (assetId, favorited) => void 收藏请求.push({ assetId, favorited }),
+    改清单: set清单,
+    收藏请求,
     load: (query) => void 查询.push(query),
     goPage: (page) => {
       翻页.push(page)
@@ -440,4 +458,110 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
     }
   })
 })
+})
+
+describe("中栏 · 收藏（2026-10-29）", () => {
+  const 资产 = (id: string): AssetMetadata => ({
+    id,
+    name: `资产${id}`,
+    type: "skill",
+    description: "",
+    icon: "skill",
+    category: "intelligence",
+    tags: [],
+    ownerId: "u-1",
+    ownerName: "甲民警",
+    department: "经侦支队",
+    visibility: "global",
+    version: 1,
+    status: "published",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    publishedAt: 1,
+    archivedAt: null,
+  })
+
+  const 开卡 = (host: HTMLElement, id: string) => {
+    const 卡 = host.querySelector<HTMLElement>(`[data-asset-id="${id}"] [data-slot="asset-card-open"]`)
+    if (!卡) throw new Error(`没有 ${id} 这张卡`)
+    卡.click()
+  }
+  const 收藏按钮 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-favorite"]')
+
+  // ⚠️ 「没有数据源 ⇒ 不渲染收藏按钮」在这里**测不到**：没有数据源就没有卡片，详情根本打不开。
+  // 那条接线是纵深防御，不拿一个永远成立的空断言假装覆盖（`#005-18`）。
+  test("打开详情 ⇒ 收藏按钮在", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1 })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      expect(收藏按钮(host) !== null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("没收藏 ⇒ 点它请求「收藏」（目标态 true）", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1 })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("详情里没有收藏按钮")
+      expect(按钮.textContent?.trim()).toBe("收藏")
+      按钮.click()
+      expect(源.收藏请求).toEqual([{ assetId: "a1", favorited: true }])
+    } finally {
+      卸()
+    }
+  })
+
+  test("已收藏 ⇒ 显示「已收藏」，点它请求取消（目标态 false）", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1, favorited: ["a1"] })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("详情里没有收藏按钮")
+      expect(按钮.textContent?.trim()).toBe("已收藏")
+      按钮.click()
+      expect(源.收藏请求).toEqual([{ assetId: "a1", favorited: false }])
+    } finally {
+      卸()
+    }
+  })
+
+  test("在写收藏时按钮禁用（连点会发出互相打架的两趟）", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1, favoriteBusy: "a1" })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("详情里没有收藏按钮")
+      expect(按钮.disabled).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("「N 人收藏」读数据源里的现行行：写完回包换了计数，详情就地跟着变", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1 })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      const 计数 = () => host.querySelector('[data-slot="asset-detail-favorites"]')?.textContent
+      expect(计数()).toBe("0 人收藏")
+
+      // 服务端回来的新行（`setFavorite` 成功之后数据源就是这么改的）。
+      源.改清单([{ ...资产("a1"), favoriteCount: 7 }])
+      expect(计数()).toBe("7 人收藏")
+    } finally {
+      卸()
+    }
+  })
 })

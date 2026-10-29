@@ -6483,6 +6483,10 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       goPage: () => {},
       setPageSize: () => {},
       reload: () => {},
+      // 2026-10-29 收藏：本夹具不覆盖收藏流程（`asset-catalog.test.ts` / `asset-center.test.tsx` 守着）。
+      favorited: () => new Set<string>(),
+      favoriteBusy: () => undefined,
+      setFavorite: () => {},
     }
   }
 

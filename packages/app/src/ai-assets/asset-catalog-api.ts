@@ -74,6 +74,11 @@ export interface CatalogPage {
    * 服务端没给就是空表（卡片退回显示 id），不是形状错误。
    */
   readonly categoryNames: Readonly<Record<string, string>>
+  /**
+   * 本页里**我**收藏过的资产 id（2026-10-29）：收藏态是 per-user 的，所以不进 `AssetMetadata`
+   * （那是与治理后台共用的类型，那边没有「当前读者」）。服务端没给就是空数组，不是形状错误。
+   */
+  readonly favoritedIds: readonly string[]
 }
 
 export type CatalogOutcome<T> =
@@ -199,6 +204,22 @@ function 分类名表(value: unknown): Readonly<Record<string, string>> | undefi
   return 名字
 }
 
+/**
+ * 「我收藏过的」（2026-10-29）：省略 = 空数组（旧内核没这列，不算形状变了）；给了就必须是
+ * 字符串数组——元素类型漂了要当场 `failed`，不能当空数组吞掉：那样「已收藏」会静默变回
+ * 「未收藏」，用户点一下才发现是被翻掉了。
+ */
+function 收藏的(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const ids: string[] = []
+  for (const id of value) {
+    if (typeof id !== "string") return undefined
+    ids.push(id)
+  }
+  return ids
+}
+
 /** 一页：`assets` 逐行严判，`total / page / pageSize` 必须是有限数字（缺了就是形状变了）。 */
 function 一页(value: unknown): CatalogPage | undefined {
   if (!isRecord(value) || !Array.isArray(value["assets"])) return undefined
@@ -206,13 +227,15 @@ function 一页(value: unknown): CatalogPage | undefined {
   if (!数(total) || !数(page) || !数(pageSize)) return undefined
   const categoryNames = 分类名表(value["categoryNames"])
   if (categoryNames === undefined) return undefined
+  const favoritedIds = 收藏的(value["favoritedIds"])
+  if (favoritedIds === undefined) return undefined
   const parsed: AssetMetadata[] = []
   for (const item of value["assets"]) {
     const row = 行(item)
     if (!row) return undefined
     parsed.push(row)
   }
-  return { assets: parsed, total, page, pageSize, categoryNames }
+  return { assets: parsed, total, page, pageSize, categoryNames, favoritedIds }
 }
 
 function 消息(body: unknown, response: Response): string {

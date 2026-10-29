@@ -174,6 +174,15 @@ export interface AssetDetailProps {
   readonly enableHint?: string
   readonly busy?: boolean
   readonly auto?: boolean
+  /**
+   * 【保留的定制 · 同步上游时不要丢】收藏（2026-10-29）。
+   *
+   * 同 `onToggleEnabled`：**省略 ⇒ 不渲染收藏按钮**。`favorited` 一律以服务端回包为准
+   * （`asset-catalog.ts` 的 `favorited()`），`favoriteBusy` 期间按下去也不该再发一条。
+   */
+  readonly onToggleFavorite?: (asset: AssetMetadata) => void
+  readonly favorited?: boolean
+  readonly favoriteBusy?: boolean
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -224,29 +233,52 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
             <span>返回</span>
           </button>
 
-          {/* 启用（2026-10-29）：与卡片同一份判断（`enable-button.ts`），省略接线就不渲染。
-              样式与右栏「新建会话」逐字同档（`ghost-muted / normal / h-7 px-2`）——用户指定
-              与截图 `images/screen/2026-10-29_081430.png` 一致。 */}
-          <Show when={props.onToggleEnabled !== undefined}>
-            <ButtonV2
-              type="button"
-              data-slot="asset-detail-enable"
-              data-enabled={props.enabled === true}
-              data-auto={props.auto === true}
-              aria-label={`${启用动作(props)}资产：${props.asset.name}`}
-              aria-pressed={props.enabled === true}
-              aria-busy={props.busy === true}
-              disabled={启用禁用原因(props) !== undefined}
-              title={启用禁用原因(props)}
-              variant="ghost-muted"
-              size="normal"
-              icon="check"
-              class="h-7 shrink-0 px-2"
-              onClick={() => props.onToggleEnabled?.(props.asset)}
-            >
-              {启用文案(props)}
-            </ButtonV2>
-          </Show>
+          {/* 收藏 ＋ 启用（2026-10-29）：读完详情就地决定用不用得上 / 收不收，不必退回卡片。
+              两个按钮同一档样式（`ghost-muted / normal / h-7 px-2` ＋ 图标 ＋ 文字）——用户指定
+              与截图 `images/screen/2026-10-29_081430.png` 一致；启用那一份判断来自
+              `enable-button.ts`（与卡片逐字相同，`#002-06`）。省略接线就不渲染（`#008-04`）。 */}
+          <div class="flex shrink-0 items-center gap-1">
+            <Show when={props.onToggleFavorite !== undefined}>
+              <ButtonV2
+                type="button"
+                data-slot="asset-detail-favorite"
+                data-favorited={props.favorited === true}
+                aria-label={`${props.favorited === true ? "取消收藏" : "收藏"}：${props.asset.name}`}
+                aria-pressed={props.favorited === true}
+                aria-busy={props.favoriteBusy === true}
+                disabled={props.favoriteBusy === true}
+                title={props.favoriteBusy === true ? "正在处理…" : undefined}
+                variant="ghost-muted"
+                size="normal"
+                icon={props.favorited === true ? "star-filled" : "star"}
+                class="h-7 px-2"
+                onClick={() => props.onToggleFavorite?.(props.asset)}
+              >
+                {props.favorited === true ? "已收藏" : "收藏"}
+              </ButtonV2>
+            </Show>
+
+            <Show when={props.onToggleEnabled !== undefined}>
+              <ButtonV2
+                type="button"
+                data-slot="asset-detail-enable"
+                data-enabled={props.enabled === true}
+                data-auto={props.auto === true}
+                aria-label={`${启用动作(props)}资产：${props.asset.name}`}
+                aria-pressed={props.enabled === true}
+                aria-busy={props.busy === true}
+                disabled={启用禁用原因(props) !== undefined}
+                title={启用禁用原因(props)}
+                variant="ghost-muted"
+                size="normal"
+                icon="check"
+                class="h-7 px-2"
+                onClick={() => props.onToggleEnabled?.(props.asset)}
+              >
+                {启用文案(props)}
+              </ButtonV2>
+            </Show>
+          </div>
         </div>
 
         <div class="mt-2 flex items-start gap-3">

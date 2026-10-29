@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { CatalogApi, CatalogOutcome, CatalogPage, CatalogQuery } from "./asset-catalog-api"
+import type { FavoriteApi, FavoriteOutcome } from "./favorite-api"
 import { createAssetCatalog } from "./asset-catalog"
 
 const 资产 = (id: string): AssetMetadata => ({
@@ -40,12 +41,14 @@ const 页 = (
   page = 1,
   pageSize = 20,
   categoryNames: Readonly<Record<string, string>> = {},
+  favoritedIds: readonly string[] = [],
 ): CatalogPage => ({
   assets: ids.map(资产),
   total,
   page,
   pageSize,
   categoryNames,
+  favoritedIds,
 })
 
 /** 每次调用挂起，由测试决定何时、**以什么顺序**回包（`待回[i]` 是第 i 次请求）。 */
@@ -68,6 +71,25 @@ function 手动(): {
 }
 
 const 等一轮 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** 收藏的替身：同 `手动()`，记下每次送的目标态，由测试决定何时回。 */
+function 手动收藏(): {
+  api: FavoriteApi
+  请求: Array<{ readonly assetId: string; readonly favorited: boolean }>
+  待回: Array<(out: FavoriteOutcome) => void>
+} {
+  const 请求: Array<{ readonly assetId: string; readonly favorited: boolean }> = []
+  const 待回: Array<(out: FavoriteOutcome) => void> = []
+  const api: FavoriteApi = {
+    set: (assetId, favorited) => {
+      请求.push({ assetId, favorited })
+      return new Promise((resolve) => {
+        待回.push(resolve)
+      })
+    },
+  }
+  return { api, 请求, 待回 }
+}
 
 describe("使用面数据源 · 拉取语义", () => {
   test("成功 ⇒ 清单与总数写进去、错误清空", async () => {
@@ -222,5 +244,112 @@ describe("使用面数据源 · 分页语义", () => {
     目录.setPageSize(30)
     expect(目录.pageSize()).toBe(50)
     expect(持久化).toEqual([50])
+  })
+})
+
+describe("使用面数据源 · 收藏（2026-10-29）", () => {
+  test("拉回一页 ⇒ favorited() 就是回包里「我收藏的」那组；换一页就跟着换", async () => {
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1", "a2"], 2, 1, 20, {}, ["a2"]) })
+    await 等一轮()
+    expect([...目录.favorited()]).toEqual(["a2"])
+
+    目录.goPage(2)
+    待回[1]!({ kind: "ok", value: 页(["a3"], 3, 2, 20, {}, []) })
+    await 等一轮()
+    expect([...目录.favorited()]).toEqual([])
+  })
+
+  test("空间全取消短路 ⇒ 收藏也清空（旧页的收藏不能留在空集上）", async () => {
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1"], 1, 1, 20, {}, ["a1"]) })
+    await 等一轮()
+    expect(目录.favorited().has("a1")).toBe(true)
+
+    目录.load({ spaces: [] })
+    await 等一轮()
+    expect([...目录.favorited()]).toEqual([])
+  })
+
+  test("收藏成功 ⇒ 集合加进去、卡片的人数换成服务端回的值、错误清空", async () => {
+    const { api, 待回 } = 手动()
+    const { api: 收藏Api, 请求, 待回: 待收藏 } = 手动收藏()
+    const 目录 = createAssetCatalog(api, { favoriteApi: 收藏Api })
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1"]) })
+    await 等一轮()
+
+    目录.setFavorite("a1", true)
+    expect(请求).toEqual([{ assetId: "a1", favorited: true }])
+    expect(目录.favoriteBusy()).toBe("a1")
+
+    待收藏[0]!({ kind: "ok", value: { assetId: "a1", favorited: true, favoriteCount: 7 } })
+    await 等一轮()
+
+    expect(目录.favorited().has("a1")).toBe(true)
+    expect(目录.favoriteBusy()).toBe(undefined)
+    expect(目录.assets()[0]?.favoriteCount).toBe(7)
+    expect(目录.error()).toBe(undefined)
+  })
+
+  test("取消成功 ⇒ 集合去掉（不是「翻一下」，是照服务端回的目标态）", async () => {
+    const { api, 待回 } = 手动()
+    const { api: 收藏Api, 待回: 待收藏 } = 手动收藏()
+    const 目录 = createAssetCatalog(api, { favoriteApi: 收藏Api })
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1"], 1, 1, 20, {}, ["a1"]) })
+    await 等一轮()
+
+    目录.setFavorite("a1", false)
+    待收藏[0]!({ kind: "ok", value: { assetId: "a1", favorited: false, favoriteCount: 0 } })
+    await 等一轮()
+
+    expect(目录.favorited().has("a1")).toBe(false)
+    expect(目录.assets()[0]?.favoriteCount).toBe(0)
+  })
+
+  test("失败 ⇒ 集合与清单都不动，只留一句错误（乐观改状态会把用户骗一次）", async () => {
+    const { api, 待回 } = 手动()
+    const { api: 收藏Api, 待回: 待收藏 } = 手动收藏()
+    const 目录 = createAssetCatalog(api, { favoriteApi: 收藏Api })
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1"]) })
+    await 等一轮()
+
+    目录.setFavorite("a1", true)
+    待收藏[0]!({ kind: "rejected", message: "无权使用该资产" })
+    await 等一轮()
+
+    expect(目录.favorited().has("a1")).toBe(false)
+    expect(目录.assets()[0]?.favoriteCount).toBe(0)
+    expect(目录.error()).toBe("无权使用该资产")
+    expect(目录.favoriteBusy()).toBe(undefined)
+  })
+
+  test("在飞的时候再点 ⇒ 只发一条（回包顺序才有定数）", async () => {
+    const { api, 待回 } = 手动()
+    const { api: 收藏Api, 请求, 待回: 待收藏 } = 手动收藏()
+    const 目录 = createAssetCatalog(api, { favoriteApi: 收藏Api })
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: 页(["a1"]) })
+    await 等一轮()
+
+    目录.setFavorite("a1", true)
+    目录.setFavorite("a1", false)
+    expect(请求.length).toBe(1)
+
+    待收藏[0]!({ kind: "ok", value: { assetId: "a1", favorited: true, favoriteCount: 1 } })
+    await 等一轮()
+    expect(目录.favorited().has("a1")).toBe(true)
   })
 })

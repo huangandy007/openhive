@@ -156,6 +156,29 @@ describe("使用面资产客户端", () => {
     }
   })
 
+  test("favoritedIds：本页里我收藏过的原样带出；不给 = 空数组；元素不是字符串 ⇒ failed", async () => {
+    const 有收藏 = await createCatalogApi(
+      替身(() => json({ assets: [资产("a1")], total: 1, page: 1, pageSize: 20, favoritedIds: ["a1"] })).send,
+    ).list()
+    expect(有收藏.kind).toBe("ok")
+    if (有收藏.kind === "ok") expect(有收藏.value.favoritedIds).toEqual(["a1"])
+
+    // 没有这一列（旧内核 / 治理侧）不算形状变了：一条都不标「已收藏」，其余照常。
+    const 没这列 = await createCatalogApi(
+      替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20 })).send,
+    ).list()
+    expect(没这列.kind).toBe("ok")
+    if (没这列.kind === "ok") expect(没这列.value.favoritedIds).toEqual([])
+
+    // 有这一列但不是字符串数组：形状变了，不能当空数组吞掉（否则「已收藏」会静默变「未收藏」）。
+    for (const bad of [[1], "a1", { a1: true }, null]) {
+      const out = await createCatalogApi(
+        替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20, favoritedIds: bad })).send,
+      ).list()
+      expect(out.kind).toBe("failed")
+    }
+  })
+
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {
     const 缺描述 = { ...资产("a1") } as Record<string, unknown>
     delete 缺描述["description"]

@@ -357,6 +357,20 @@ describe("头部操作：启用（2026-10-29）", () => {
     }
   })
 
+  test("收藏与启用并排：两个按钮都在头部第一行右侧", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, onToggleFavorite: () => {} })
+    try {
+      // 布尔比较而不是把节点交给 `toBe`：断言失败时 happy-dom 的循环引用会把 run 挂死（`#009-01`）。
+      const 行 = 槽(host, "asset-detail-back")?.parentElement
+      const 启用 = 启用按钮(host)?.parentElement
+      const 收藏 = host.querySelector<HTMLElement>('[data-slot="asset-detail-favorite"]')?.parentElement
+      // 同一组容器、且都在头部那一行里：两个动作并列在右侧，不是散在页面上。
+      expect(启用 !== undefined && 启用 === 收藏 && 行?.contains(启用) === true).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
   test("「让 AI 助手执行此 skill」不再存在——三类资产都没有", () => {
     for (const type of ["skill", "mcp", "knowledge_base"] as const) {
       const { host, 卸 } = 挂({ type })
@@ -368,6 +382,67 @@ describe("头部操作：启用（2026-10-29）", () => {
       } finally {
         卸()
       }
+    }
+  })
+})
+
+describe("头部操作：收藏（2026-10-29）", () => {
+  const 收藏按钮 = (host: HTMLElement) =>
+    host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-favorite"]')
+  const 图标 = (host: HTMLElement) =>
+    收藏按钮(host)?.querySelector("use")?.getAttribute("href") ?? ""
+
+  test("不给 onToggleFavorite ⇒ 不渲染收藏按钮", () => {
+    const { host, 卸 } = 挂()
+    try {
+      expect(收藏按钮(host) === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("给了 ⇒ 文案「收藏」、空心星、aria-pressed=false，点它把该资产交回去", () => {
+    const 收到: AssetMetadata[] = []
+    const { host, 卸 } = 挂({ name: "话单分析" }, { onToggleFavorite: (asset) => 收到.push(asset) })
+    try {
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("给了 onToggleFavorite 却没有收藏按钮")
+      expect(按钮.textContent?.trim()).toBe("收藏")
+      expect(按钮.getAttribute("aria-pressed")).toBe("false")
+      expect(按钮.getAttribute("aria-label")).toBe("收藏：话单分析")
+      expect(图标(host)).toBe("#opencode-v2-icon-star")
+
+      按钮.click()
+
+      expect(收到.map((asset) => asset.id)).toEqual(["asset-1"])
+    } finally {
+      卸()
+    }
+  })
+
+  test("已收藏 ⇒ 文案「已收藏」、实心星、aria-pressed=true", () => {
+    const { host, 卸 } = 挂({}, { onToggleFavorite: () => {}, favorited: true })
+    try {
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("给了 onToggleFavorite 却没有收藏按钮")
+      expect(按钮.textContent?.trim()).toBe("已收藏")
+      expect(按钮.getAttribute("aria-pressed")).toBe("true")
+      expect(图标(host)).toBe("#opencode-v2-icon-star-filled")
+    } finally {
+      卸()
+    }
+  })
+
+  test("正在写 ⇒ 禁用、aria-busy=true、title 写「正在处理…」", () => {
+    const { host, 卸 } = 挂({}, { onToggleFavorite: () => {}, favoriteBusy: true })
+    try {
+      const 按钮 = 收藏按钮(host)
+      if (!按钮) throw new Error("给了 onToggleFavorite 却没有收藏按钮")
+      expect(按钮.disabled).toBe(true)
+      expect(按钮.getAttribute("aria-busy")).toBe("true")
+      expect(按钮.getAttribute("title")).toBe("正在处理…")
+    } finally {
+      卸()
     }
   })
 })

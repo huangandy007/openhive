@@ -11,8 +11,8 @@ import { 样例资产 } from "./asset-story-fixtures"
  *
  * 三态各自对应一段**不同的 DOM**：
  *
- * - **已发布 skill**：头部右上角渲染「已启用」（2026-10-29 起从卡片搬进来），底部有评分 /
- *   收藏 / 使用数；
+ * - **已发布 skill**：头部右上角渲染「已收藏」与「已启用」（2026-10-29 起从卡片搬进来），
+ *   底部有评分 / 收藏 / 使用数——实心星与空心星两种图标都照得到；
  * - **无评分**：头部与评价区都走「暂无评分」分支（文案对比度组合不同），启用按钮走
  *   **禁用态**（没选项目）——`title` 与 `opacity` 是不同的对比度组合；
  * - **知识库**：启用按钮对三类资产都渲染（能不能启用由服务端判，前端不按类型藏）。
@@ -38,7 +38,9 @@ export const 已发布skill = {
         })}
         onBack={返回}
         onToggleEnabled={() => {}}
+        onToggleFavorite={() => {}}
         enabled
+        favorited
       />
     </div>
   ),
@@ -51,6 +53,7 @@ export const 无评分 = {
         asset={样例资产({ id: "a5", name: "关联账户扩展", publishedAt: null })}
         onBack={返回}
         onToggleEnabled={() => {}}
+        onToggleFavorite={() => {}}
         enableHint="请先在左侧选择项目"
       />
     </div>
@@ -69,6 +72,7 @@ export const 知识库 = {
         })}
         onBack={返回}
         onToggleEnabled={() => {}}
+        onToggleFavorite={() => {}}
       />
     </div>
   ),

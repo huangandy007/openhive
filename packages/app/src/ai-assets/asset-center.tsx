@@ -221,25 +221,37 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
       </div>
 
       <Show when={选中()}>
-        {(asset) => (
-          <div
-            data-slot="asset-detail-layer"
-            class="absolute inset-0 flex min-h-0 flex-col bg-v2-background-bg-base"
-          >
-            {/* 启用状态与卡片读同一份（`enablement`）与同一个判断（`启用提示`）——
-                详情里就地启用，用户不必退回卡片（2026-10-29 裁定）。 */}
-            <AssetDetail
-              asset={asset()}
-              onBack={返回}
-              onToggleEnabled={props.enablement === undefined ? undefined : (a) => props.enablement!.toggle(a.id)}
-              enabled={props.enablement?.enabled().has(asset().id) === true}
-              auto={props.enablement?.auto().has(asset().id) === true}
-              enableHint={启用提示(asset())}
-              busy={props.enablement?.busy() === asset().id}
-            />
-
-          </div>
-        )}
+        {(asset) => {
+          // 详情拿**数据源里的现行行**（2026-10-29）：`选中()` 是打开那一刻的快照，收藏成功
+          // 之后服务端回的 `favoriteCount` 写在数据源的行上——读快照的话「N 人收藏」会停在旧数。
+          // 行被筛掉（换条件 / 翻页）时就退回快照，详情不至于空掉。
+          const 现行 = () => props.catalog?.assets().find((row) => row.id === asset().id) ?? asset()
+          return (
+            <div
+              data-slot="asset-detail-layer"
+              class="absolute inset-0 flex min-h-0 flex-col bg-v2-background-bg-base"
+            >
+              {/* 启用状态与卡片读同一份（`enablement`）与同一个判断（`启用提示`）——
+                  详情里就地启用，用户不必退回卡片（2026-10-29 裁定）。收藏同理读数据源。 */}
+              <AssetDetail
+                asset={现行()}
+                onBack={返回}
+                onToggleEnabled={props.enablement === undefined ? undefined : (a) => props.enablement!.toggle(a.id)}
+                enabled={props.enablement?.enabled().has(asset().id) === true}
+                auto={props.enablement?.auto().has(asset().id) === true}
+                enableHint={启用提示(asset())}
+                busy={props.enablement?.busy() === asset().id}
+                onToggleFavorite={
+                  props.catalog === undefined
+                    ? undefined
+                    : (a) => props.catalog!.setFavorite(a.id, !props.catalog!.favorited().has(a.id))
+                }
+                favorited={props.catalog?.favorited().has(asset().id) === true}
+                favoriteBusy={props.catalog?.favoriteBusy() === asset().id}
+              />
+            </div>
+          )
+        }}
       </Show>
     </div>
   )

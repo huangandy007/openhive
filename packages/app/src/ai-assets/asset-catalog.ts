@@ -9,6 +9,7 @@ import {
   type CatalogPage,
   type CatalogQuery,
 } from "./asset-catalog-api"
+import { createFavoriteApi, type FavoriteApi, type FavoriteOutcome } from "./favorite-api"
 
 /**
  * AI 资产使用面的数据源（T017 / 需求 6）：把「拉一页」变成界面能读的一小组信号。
@@ -36,6 +37,15 @@ import {
  *
  * 快速翻页 / 连续输入会同时飞几个请求，回包顺序不保证。每次请求领一个代次号，回来时代次
  * 不是最新的就丢弃（`#008-03`：异步链上等回来的是哪一次，得自己钉住）。
+ *
+ * ## 收藏：服务端说了算（2026-10-29）
+ *
+ * 点击**不**先改本地集合再发请求（乐观更新）：失败时界面已经显示「已收藏」，用户得再看一次
+ * 它跳回来，等于被界面骗了一次。这里等回包，只认服务端读回来的 `favorited` 与
+ * `favoriteCount`——同 `enable-state` 的纪律，也同 `#010-06`（两套来源不各判一次）。
+ *
+ * 在飞的时候再点直接忽略：一条一条来，回包顺序才有定数，不会出现「先发的后到」把状态翻掉。
+ * 集合由 `load` 成功时的 `favoritedIds` 重建，切换筛选 / 翻页后仍然是对的。
  */
 export interface AssetCatalog {
   /** 当前这一页（首次成功前为空数组）。 */
@@ -53,6 +63,12 @@ export interface AssetCatalog {
   readonly categoryNames: () => Readonly<Record<string, string>>
   /** 最近一次拉取的失败原因；成功后清空。 */
   readonly error: () => string | undefined
+  /** 本页里「我」收藏过的资产 id（2026-10-29）；由每次 `load` 成功时的回包重建。 */
+  readonly favorited: () => ReadonlySet<string>
+  /** 正在写收藏的那个资产 id；没有在飞的就是 `undefined`。 */
+  readonly favoriteBusy: () => string | undefined
+  /** 送**目标态**（true = 收藏）。在飞时重复调用被忽略；状态一律照服务端回包改。 */
+  readonly setFavorite: (assetId: string, favorited: boolean) => void
   /**
    * 换查询条件并拉第 1 页。同条件重复调用 = 刷新当前页。
    * 空间全取消（空数组）走短路：**不发请求**，直接空集。
@@ -71,6 +87,8 @@ export interface AssetCatalogOptions {
   readonly persistPageSize?: (size: number) => void
   /** 初始每页条数（从账号偏好读回来之前不设，读到再调 `setPageSize`）。 */
   readonly initialPageSize?: number
+  /** 收藏的写出口；省略 = 真 `fetch`（测试注入替身）。 */
+  readonly favoriteApi?: FavoriteApi
 }
 
 /**
@@ -91,6 +109,9 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const [每页, set每页] = createSignal(options.initialPageSize ?? DEFAULT_PAGE_SIZE)
   const [分类名, set分类名] = createSignal<Readonly<Record<string, string>>>({})
   const [错误, set错误] = createSignal<string | undefined>()
+  const [收藏, set收藏] = createSignal<ReadonlySet<string>>(new Set<string>())
+  const [收藏中, set收藏中] = createSignal<string | undefined>()
+  const 收藏Api = options.favoriteApi ?? createFavoriteApi()
 
   let 当前条件: CatalogQuery = {}
   let 当前键 = 条件键({})
@@ -104,6 +125,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
       set清单([])
       set总数(0)
       set分类名({})
+      set收藏(new Set<string>())
       set错误(undefined)
       set页码(1)
       return
@@ -118,6 +140,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
           set清单(结果.value.assets)
           set总数(结果.value.total)
           set分类名(结果.value.categoryNames)
+          set收藏(new Set(结果.value.favoritedIds))
           set错误(undefined)
           return
         }
@@ -150,6 +173,30 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     拉()
   }
 
+  const setFavorite = (assetId: string, favorited: boolean) => {
+    // 一条一条来：先发的后到会把状态翻掉，而用户只点了一次。
+    if (收藏中() !== undefined) return
+    set收藏中(assetId)
+    void 收藏Api.set(assetId, favorited).then((结果: FavoriteOutcome) => {
+      set收藏中(undefined)
+      if (结果.kind !== "ok") {
+        // 失败不动集合：界面显示「已收藏」但它其实没存上，比不响应更糟。
+        set错误(结果.message)
+        return
+      }
+      const { assetId: 目标, favorited: 已收藏, favoriteCount } = 结果.value
+      set收藏((旧) => {
+        const 新 = new Set(旧)
+        if (已收藏) 新.add(目标)
+        else 新.delete(目标)
+        return 新
+      })
+      // 「N 人收藏」用服务端读回来的数，不在本地 ±1：并发收藏 / 旧缓存会让本地算的数越漂越远。
+      set清单((旧) => 旧.map((资产) => (资产.id === 目标 ? { ...资产, favoriteCount } : 资产)))
+      set错误(undefined)
+    })
+  }
+
   return {
     assets: 清单,
     total: 总数,
@@ -157,6 +204,9 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     pageSize: 每页,
     categoryNames: 分类名,
     error: 错误,
+    favorited: 收藏,
+    favoriteBusy: 收藏中,
+    setFavorite,
     load,
     goPage,
     setPageSize,
