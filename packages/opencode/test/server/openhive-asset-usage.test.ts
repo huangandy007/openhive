@@ -8,6 +8,7 @@ import { insertAsset } from "@opencode-ai/asset-service/asset"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
+import { userDatabasePath } from "@opencode-ai/core/database/router"
 import { 抽取 } from "@/server/openhive/asset-usage"
 
 /**
@@ -337,7 +338,9 @@ describe("资产使用记录：归因与游标", () => {
     expect(结果.missing).toContain("usage-u7")
     // 缺库路径不能有副作用：`new Database(路径)` 若带 `{ create: true }`，第二道
     // `sqlite_master` 守卫仍会把它算 missing，但根里会留下一只空库文件。
-    expect(existsSync(join(根, "usage-u7", "opencode.db"))).toBe(false)
+    // 用 `userDatabasePath` 拼路径，不写死 `"opencode.db"`：写死的字面量在库文件名改掉后
+    // 会变成「这个不存在的路径确实不存在」——断言恒真、静默失效（`#005-18`）。
+    expect(existsSync(userDatabasePath(根, "usage-u7"))).toBe(false)
     const 游标 = rowsOf(
       await pg.db.execute(sql`select user_id from auth.asset_usage_cursor where user_id = ${"usage-u7"}`),
     )
@@ -413,6 +416,11 @@ describe("资产使用记录：归因与游标", () => {
     // B 没有游标 ⇒ 必须被扫到。读游标若漏掉 `where user_id = …`，会取到别人的高水位、
     // 把这一行挡在 60 秒回看窗之外，且不报错不计数（`#002-02`）。行时间取得比任何既有
     // 游标都早，保证漏 WHERE 时不论取到哪一行都会红（不是碰巧取到 B 自己的）。
+    //
+    // ⚠️ 这条判别力依赖一个**外部前提**：此刻游标表里每一行的水位都 ≥ 1_790_000_000
+    // （本文件其它用例的行时间都落在这一秒附近），B 的行才必然被挡在窗外。将来若有用例
+    // 写入更早的游标（行时间字面量取更小），这个变异在全量跑里可能变绿。改本文件时间
+    // 字面量时回头看这一条。
     expect(第二遍.inserted).toBe(1)
     expect((await 行("usage-uB")).length).toBe(1)
     const 游标 = rowsOf(
