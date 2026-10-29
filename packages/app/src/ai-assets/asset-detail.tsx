@@ -6,10 +6,8 @@ import {
   ASSET_VISIBILITY_LABELS,
   type AssetMetadata,
 } from "@opencode-ai/asset-service/metadata"
-import { 发送到会话, 发送失败提示 } from "@/ai-session/send-to-session"
-import { showToast } from "@/utils/toast"
-import { 执行skill指令 } from "./execute-skill"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
+import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 
 /**
  * 资产详情（009 T007 / DESIGN §4.10）。
@@ -24,13 +22,18 @@ import { 六边形裁切, 资产类型图标 } from "./asset-visual"
  * 今天没有数据源；「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意
  * 事项缺失时显式说明「尚未填写」。
  *
- * ⚠️ 收藏按钮属 T011：未接线**不渲染**——写一个按下去什么也不发生的按钮，就是把不可达状态
+ * ⚠️ 启用按钮**没接线就不渲染**——写一个按下去什么也不发生的按钮，就是把不可达状态
  * 装成可达（`#008-04`）。
  *
- * **「▶ 让 AI 助手执行此 skill」**（T015 / FR-010）：只对 **skill 资产**渲染（文案写的就是
- * skill，MCP / 知识库上没有「执行」这回事）。点击把这句指令**以「替换」方式**送进右栏输入框
- * ——与指令卡「点卡片 = 填入一句话」同一个语义；右栏没开会话时弹「先在右栏开一个会话」，
- * 不静默（`send-to-session` 的 `发送失败提示`）。
+ * **「启用」搬进了头部**（2026-10-29，用户裁定），同时删掉了原来的「▶ 让 AI 助手执行此
+ * skill」：AI 执行 skill 需要上下文才知道怎么执行，一句「请使用 X」送进输入框，点了也
+ * 干不成事——留着它就是 `#008-04` 那个坑。
+ *
+ * 搬进来的理由是心智顺序：用户在详情里读完介绍才决定用不用得上，此时要他退回卡片点启用，
+ * 违背心智。文案 / 能不能点 / 为什么不能点读 `enable-button.ts` 那一份，与卡片逐字相同
+ * （`#002-06`）。样式照 `session-list.tsx` 的「新建会话」那一档（`ButtonV2` 的
+ * `ghost-muted / normal / h-7 px-2` ＋ 图标 ＋ 文字），用户指定与
+ * `images/screen/2026-10-29_081430.png` 一致。
  */
 export const 详情Tab列表 = [
   { id: "intro", label: "介绍" },
@@ -159,6 +162,18 @@ function 版本面板(props: { readonly asset: AssetMetadata }): JSX.Element {
 export interface AssetDetailProps {
   readonly asset: AssetMetadata
   readonly onBack: () => void
+  /**
+   * 【保留的定制 · 同步上游时不要丢】项目级 skill 启用（2026-10-29）。
+   *
+   * 与卡片的那一组同名同义（`asset-card.tsx` 的 `enabled / onToggleEnabled / enableHint /
+   * busy / auto`）：**省略 `onToggleEnabled` ⇒ 不渲染启用按钮**（storybook、组件测试裸挂
+   * 时与加它之前逐字相同）。
+   */
+  readonly onToggleEnabled?: (asset: AssetMetadata) => void
+  readonly enabled?: boolean
+  readonly enableHint?: string
+  readonly busy?: boolean
+  readonly auto?: boolean
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -172,17 +187,6 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
   const 切换 = (目标: AssetDetailTab) => {
     set当前(目标)
     标签按钮.get(目标)?.focus()
-  }
-
-  /**
-   * T015：把「执行此 skill」这句话替换进右栏输入框。
-   *
-   * 只透传、不在这里判断右栏开没开：判据与提示文案都住在 `send-to-session`（`#002-06`——
-   * 同一个判断两处各写一份，改一处就静默分家）。
-   */
-  const 执行skill = () => {
-    const 结果 = 发送到会话(执行skill指令(props.asset), "替换")
-    if (!结果.ok) showToast(发送失败提示(结果.原因))
   }
 
   const 键盘切换 = (event: KeyboardEvent, index: number) => {
@@ -207,17 +211,43 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
         data-slot="asset-detail-header"
         class="shrink-0 border-b border-v2-border-border-muted px-4 pt-3 pb-3"
       >
-        <button
-          ref={(el) => (返回按钮 = el)}
-          type="button"
-          data-slot="asset-detail-back"
-          aria-label="返回资产列表"
-          onClick={() => props.onBack()}
-          class={`flex cursor-pointer items-center gap-1 rounded-[6px] px-1 py-0.5 text-[13px] text-v2-text-text-muted hover:text-v2-text-text-base ${焦点环}`}
-        >
-          <Icon name="chevron-left" size="small" />
-          <span>返回</span>
-        </button>
+        <div class="flex items-center justify-between gap-2">
+          <button
+            ref={(el) => (返回按钮 = el)}
+            type="button"
+            data-slot="asset-detail-back"
+            aria-label="返回资产列表"
+            onClick={() => props.onBack()}
+            class={`flex cursor-pointer items-center gap-1 rounded-[6px] px-1 py-0.5 text-[13px] text-v2-text-text-muted hover:text-v2-text-text-base ${焦点环}`}
+          >
+            <Icon name="chevron-left" size="small" />
+            <span>返回</span>
+          </button>
+
+          {/* 启用（2026-10-29）：与卡片同一份判断（`enable-button.ts`），省略接线就不渲染。
+              样式与右栏「新建会话」逐字同档（`ghost-muted / normal / h-7 px-2`）——用户指定
+              与截图 `images/screen/2026-10-29_081430.png` 一致。 */}
+          <Show when={props.onToggleEnabled !== undefined}>
+            <ButtonV2
+              type="button"
+              data-slot="asset-detail-enable"
+              data-enabled={props.enabled === true}
+              data-auto={props.auto === true}
+              aria-label={`${启用动作(props)}资产：${props.asset.name}`}
+              aria-pressed={props.enabled === true}
+              aria-busy={props.busy === true}
+              disabled={启用禁用原因(props) !== undefined}
+              title={启用禁用原因(props)}
+              variant="ghost-muted"
+              size="normal"
+              icon="check"
+              class="h-7 shrink-0 px-2"
+              onClick={() => props.onToggleEnabled?.(props.asset)}
+            >
+              {启用文案(props)}
+            </ButtonV2>
+          </Show>
+        </div>
 
         <div class="mt-2 flex items-start gap-3">
           <span
@@ -250,18 +280,6 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
               <span data-slot="asset-detail-usage">{props.asset.usageCount} 次使用</span>
             </div>
           </div>
-          <Show when={props.asset.type === "skill"}>
-            <ButtonV2
-              type="button"
-              size="small"
-              variant="contrast"
-              data-slot="asset-detail-execute"
-              class="shrink-0"
-              onClick={执行skill}
-            >
-              ▶ 让 AI 助手执行此 skill
-            </ButtonV2>
-          </Show>
         </div>
       </header>
 

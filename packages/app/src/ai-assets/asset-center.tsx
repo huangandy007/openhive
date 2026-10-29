@@ -226,7 +226,18 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
             data-slot="asset-detail-layer"
             class="absolute inset-0 flex min-h-0 flex-col bg-v2-background-bg-base"
           >
-            <AssetDetail asset={asset()} onBack={返回} />
+            {/* 启用状态与卡片读同一份（`enablement`）与同一个判断（`启用提示`）——
+                详情里就地启用，用户不必退回卡片（2026-10-29 裁定）。 */}
+            <AssetDetail
+              asset={asset()}
+              onBack={返回}
+              onToggleEnabled={props.enablement === undefined ? undefined : (a) => props.enablement!.toggle(a.id)}
+              enabled={props.enablement?.enabled().has(asset().id) === true}
+              auto={props.enablement?.auto().has(asset().id) === true}
+              enableHint={启用提示(asset())}
+              busy={props.enablement?.busy() === asset().id}
+            />
+
           </div>
         )}
       </Show>

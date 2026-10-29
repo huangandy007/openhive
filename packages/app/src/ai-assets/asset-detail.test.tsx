@@ -1,10 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { toaster } from "@opencode-ai/ui/toast"
+import { describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
-import { 订阅会话输入, type 写入方式 } from "@/ai-session/send-to-session"
-import { ToastRegion } from "@/utils/toast"
-import { AssetDetail, 详情Tab列表 } from "./asset-detail"
+import { AssetDetail, 详情Tab列表, type AssetDetailProps } from "./asset-detail"
 
 /**
  * 资产详情（009 T007 / DESIGN §4.10）。
@@ -41,12 +38,12 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
   }
 }
 
-function 挂(over: Partial<AssetMetadata> = {}) {
+function 挂(over: Partial<AssetMetadata> = {}, extra: Partial<AssetDetailProps> = {}) {
   const host = document.createElement("div")
   document.body.appendChild(host)
   let 返回次数 = 0
   const dispose = render(
-    () => <AssetDetail asset={资产(over)} onBack={() => (返回次数 += 1)} />,
+    () => <AssetDetail asset={资产(over)} onBack={() => (返回次数 += 1)} {...extra} />,
     host,
   )
   return {
@@ -260,77 +257,117 @@ describe("详情各 tab 内容", () => {
 })
 
 /**
- * 009 T015 · 「▶ 让 AI 助手执行此 skill」（FR-010 / 2026-09-12 设计 §1.4）。
+ * 头部操作（2026-10-29，用户实报设计不妥）。
  *
- * 判据是**中栏这一头**：点按钮 ⇒ 指令经接线盒（`send-to-session`）出门，且方式是「替换」。
- * 右栏那一头（真输入框收到替换后的文本）在 `session-panel.test.tsx` 里钉。
+ * ## 为什么删掉「▶ 让 AI 助手执行此 skill」
  *
- * ⚠️ 接线盒是**模块级**状态 ⇒ 每条用例自己登记、`afterEach` 收回（`#005-03` 同型）。
+ * 用户原话：AI 助手执行 skill 需要上下文，才知道「怎么执行」——一句「请使用 X」送进输入框，
+ * 模型没有输入数据，点了也干不成事。留着一个点了做不成事的按钮，就是把不可达状态装成可达
+ * （`#008-04`）。
+ *
+ * ## 为什么把「启用」搬进详情
+ *
+ * 用户在详情里读完介绍才决定「用不用得上」，此时要他退回卡片点启用，违背心智。判断只有一份
+ * （`enable-button.ts`），卡片与详情共用（`#002-06`）。
+ *
+ * ⚠️ 断言纪律：元素不存在一律布尔式 `node === null`（`#009-01`：happy-dom 节点直断会让 bun
+ * 序列化环形引用）。文案用全等不用 `toContain`（`#006-22`：「已启用」含「启用」）。
  */
-describe("「▶ 让 AI 助手执行此 skill」（T015）", () => {
-  afterEach(() => {
-    订阅会话输入(undefined)
-    toaster.clear()
-  })
+describe("头部操作：启用（2026-10-29）", () => {
+  const 启用按钮 = (host: HTMLElement) =>
+    host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-enable"]')
 
-  const 执行按钮 = (host: HTMLElement) =>
-    host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-execute"]')
-
-  test("技能资产：头部主按钮在，点它把「skill 名 + 做什么」以「替换」方式送进右栏", () => {
-    const 收到: Array<{ 文本: string; 方式: 写入方式 }> = []
-    订阅会话输入((文本, 方式) => 收到.push({ 文本, 方式 }))
+  test("不给 onToggleEnabled ⇒ 不渲染启用按钮（storybook / 旧用法逐字不变）", () => {
     const { host, 卸 } = 挂()
     try {
-      const 按钮 = 执行按钮(host)
-      if (!按钮) throw new Error("详情头部没有「▶ 让 AI 助手执行此 skill」按钮")
-      expect(按钮.textContent).toBe("▶ 让 AI 助手执行此 skill")
-
-      按钮.click()
-
-      expect(收到).toEqual([
-        { 文本: "请使用「资金流向研判」这个 skill：按账户汇总资金往来", 方式: "替换" },
-      ])
+      expect(启用按钮(host) === null).toBe(true)
     } finally {
       卸()
     }
   })
 
-  test("非 skill 资产（MCP / 知识库）不渲染这颗按钮——它的文案只对 skill 成立", () => {
-    for (const type of ["mcp", "knowledge_base"] as const) {
-      const { host, 卸 } = 挂({ type })
-      try {
-        expect(执行按钮(host) === null, `${type} 资产上不该有「执行此 skill」按钮`).toBe(true)
-      } finally {
-        卸()
-      }
+  test("给了 ⇒ 文案「启用」、aria-pressed=false，点它把该资产交回去", () => {
+    const 收到: AssetMetadata[] = []
+    const { host, 卸 } = 挂({}, { onToggleEnabled: (asset) => 收到.push(asset) })
+    try {
+      const 按钮 = 启用按钮(host)
+      if (!按钮) throw new Error("给了 onToggleEnabled 却没有启用按钮")
+      expect(按钮.textContent?.trim()).toBe("启用")
+      expect(按钮.getAttribute("aria-pressed")).toBe("false")
+
+      按钮.click()
+
+      expect(收到.map((asset) => asset.id)).toEqual(["asset-1"])
+    } finally {
+      卸()
     }
   })
 
-  test("右栏没有会话 ⇒ 弹「先在右栏开一个会话」，不静默吞掉", async () => {
-    // 接线盒此刻没有收件口（afterEach 已收回）⇒ 走「没有会话」那条失败路。
-    const host = document.createElement("div")
-    document.body.appendChild(host)
-    const dispose = render(
-      () => (
-        <>
-          <ToastRegion v2={false} />
-          <AssetDetail asset={资产()} onBack={() => {}} />
-        </>
-      ),
-      host,
-    )
+  test("已启用 ⇒ 文案「已启用」、aria-pressed=true", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, enabled: true })
     try {
-      const 按钮 = 执行按钮(host)
-      if (!按钮) throw new Error("详情头部没有「▶ 让 AI 助手执行此 skill」按钮")
-      按钮.click()
-
-      // 等条件、不等时间（`#006-31`）：提示是异步插进 body 的。
-      const 有提示 = () => (document.body.textContent ?? "").includes("先在右栏开一个会话")
-      for (let i = 0; i < 50 && !有提示(); i++) await new Promise((r) => setTimeout(r, 0))
-      expect(有提示(), "点按钮时右栏没开会话，界面上没有任何提示").toBe(true)
+      const 按钮 = 启用按钮(host)!
+      expect(按钮.textContent?.trim()).toBe("已启用")
+      expect(按钮.getAttribute("aria-pressed")).toBe("true")
     } finally {
-      dispose()
-      host.remove()
+      卸()
+    }
+  })
+
+  test("自动送达装进来的 ⇒ 文案「固定安装」（与卡片同一档说法）", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, auto: true })
+    try {
+      expect(启用按钮(host)?.textContent?.trim()).toBe("固定安装")
+    } finally {
+      卸()
+    }
+  })
+
+  test("没选项目 ⇒ 禁用，title 写原因（禁用却不写原因是最糟的）", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, enableHint: "请先在左侧选择项目" })
+    try {
+      const 按钮 = 启用按钮(host)!
+      expect(按钮.disabled).toBe(true)
+      expect(按钮.getAttribute("title")).toBe("请先在左侧选择项目")
+    } finally {
+      卸()
+    }
+  })
+
+  test("enableHint 是空串 ⇒ 不算禁用理由", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, enableHint: "" })
+    try {
+      const 按钮 = 启用按钮(host)!
+      expect(按钮.disabled).toBe(false)
+      expect(按钮.getAttribute("title") === null || 按钮.getAttribute("title") === "").toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("正在切换 ⇒ 禁用，title 是「正在切换…」，aria-busy=true", () => {
+    const { host, 卸 } = 挂({}, { onToggleEnabled: () => {}, busy: true })
+    try {
+      const 按钮 = 启用按钮(host)!
+      expect(按钮.disabled).toBe(true)
+      expect(按钮.getAttribute("title")).toBe("正在切换…")
+      expect(按钮.getAttribute("aria-busy")).toBe("true")
+    } finally {
+      卸()
+    }
+  })
+
+  test("「让 AI 助手执行此 skill」不再存在——三类资产都没有", () => {
+    for (const type of ["skill", "mcp", "knowledge_base"] as const) {
+      const { host, 卸 } = 挂({ type })
+      try {
+        expect(
+          host.querySelector('[data-slot="asset-detail-execute"]') === null,
+          `${type} 资产上不该再出现执行按钮`,
+        ).toBe(true)
+      } finally {
+        卸()
+      }
     }
   })
 })

@@ -6,6 +6,7 @@ import {
   type AssetMetadata,
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
+import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 
 /**
  * 资产卡片（009 T006 / T007 / DESIGN §4.9–§4.10）：**精简四件**——六边形图标、名称、两行描述、
@@ -49,12 +50,9 @@ export interface AssetCardProps {
 
 export function AssetCard(props: AssetCardProps): JSX.Element {
   const 可切换 = () => props.onToggleEnabled !== undefined
-  // 空串按「没给」处理：禁用却不写原因，用户看不出为什么点不了。
-  const 提示 = () => (props.enableHint === undefined || props.enableHint.trim() === "" ? undefined : props.enableHint)
-  const 不可用 = () => (props.busy === true ? "正在切换…" : 提示())
-  /** 动作名：已固定 > 自动（可选固定安装）> 普通启用。无障碍名与可见文案共用这一份。 */
-  const 动作 = () => (props.enabled === true ? "停用" : props.auto === true ? "固定安装" : "启用")
-  const 按钮文案 = () => (props.enabled === true ? "已启用" : props.auto === true ? "固定安装" : "启用")
+  // 文案与「能不能点 / 为什么不能点」只有一份（`enable-button.ts`）：详情页读的也是它，
+  // 两处各写一份就会漂成「卡片说固定安装、详情说启用」（`#002-06`）。
+  const 不可用 = () => 启用禁用原因(props)
   return (
     <div role="listitem" data-slot="asset-card" data-asset-id={props.asset.id} class="relative h-[132px]">
       <button
@@ -126,15 +124,15 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           data-slot="asset-card-enable"
           data-enabled={props.enabled === true}
           data-auto={props.auto === true}
-          aria-label={`${动作()}资产：${props.asset.name}`}
+          aria-label={`${启用动作(props)}资产：${props.asset.name}`}
           aria-pressed={props.enabled === true}
           aria-busy={props.busy === true}
-          disabled={props.busy === true || 提示() !== undefined}
+          disabled={不可用() !== undefined}
           title={不可用()}
           onClick={() => props.onToggleEnabled?.(props.asset)}
           class="absolute top-2 right-2 z-10 cursor-pointer rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 py-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:cursor-not-allowed disabled:opacity-60 data-[enabled=true]:border-v2-border-border-focus data-[enabled=true]:text-v2-text-text-accent"
         >
-          {按钮文案()}
+          {启用文案(props)}
         </button>
       </Show>
     </div>
