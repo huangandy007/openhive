@@ -12,6 +12,7 @@ import { create抽取时控, 节流ms } from "@/server/openhive/asset-usage"
  */
 
 /** 名册为空 ⇒ `抽取` 立刻返回全 0，不碰文件系统。 */
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `抽取输入.db` 是 Drizzle `connect()` 反推的巨型接口（见上面「为什么单独立文件」一节），替身只实现 `抽取` 真调的那一下 `execute`。
 const 空库 = { execute: async () => [] } as never
 
 const 输入 = { db: 空库, root: "/nonexistent-openhive-throttle" } as const
@@ -45,6 +46,7 @@ describe("create抽取时控：节流 + 单飞 + 吞错", () => {
   })
 
   test("抽取抛错 ⇒ 不 reject、返回 undefined，且仍然推进「上次」", async () => {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 同上：替身只实现 `execute`，且这里要它 reject。
     const 坏库 = { execute: () => Promise.reject(new Error("boom")) } as never
     const 时控 = create抽取时控(60_000)
     expect(await 时控.跑一次({ db: 坏库, root: "/nonexistent" })).toBeUndefined()

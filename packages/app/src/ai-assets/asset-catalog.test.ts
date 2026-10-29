@@ -358,7 +358,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     const 目录 = createAssetCatalog(api)
 
     目录.load({})
-    待回[0]!({
+    待回[0]({
       kind: "ok",
       value: { ...页([]), usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } } },
     })
@@ -375,7 +375,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     const 目录 = createAssetCatalog(api)
 
     目录.load({})
-    待回[0]!({
+    待回[0]({
       kind: "ok",
       value: { ...页([]), usageStats: { days: 30, stats: { a1: { users: 2, calls: 5 } } } },
     })
@@ -383,7 +383,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
 
     目录.reload()
-    待回[1]!({ kind: "failed", message: "网络断了" })
+    待回[1]({ kind: "failed", message: "网络断了" })
     await 等一轮()
     expect(目录.error()).toBe("网络断了")
     expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })

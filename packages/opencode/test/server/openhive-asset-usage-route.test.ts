@@ -196,9 +196,9 @@ describe("GET /openhive/assets · usageStats", () => {
       // 本页真没人用过 ⇒ 有键 + 空 stats；读失败 ⇒ 无键（上一条用例）。
       const response = yield* get(ME, `${LIST}?q=zzz-no-such-asset`)
       expect(response.status).toBe(200)
-      const body = JSON.parse(yield* Effect.promise(() => response.text())) as Record<string, unknown>
-      expect(body["assets"]).toEqual([])
-      expect(body["usageStats"]).toEqual({ days: 30, stats: {} })
+      const body = Schema.decodeUnknownSync(回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      expect(body.assets).toEqual([])
+      expect(body.usageStats).toEqual({ days: 30, stats: {} })
     }),
   )
 
@@ -210,7 +210,11 @@ describe("GET /openhive/assets · usageStats", () => {
       try {
         const response = yield* get(ME, LIST)
         expect(response.status).toBe(200)
-        const body = JSON.parse(yield* Effect.promise(() => response.text())) as Record<string, unknown>
+        // 这里要断言的是「键**不存在**」——所以不用 `回包` 那套结构解码（它要求该键必在），
+        // 解码成「任意键 → unknown」的记录再逐键看。
+        const body = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(
+          JSON.parse(yield* Effect.promise(() => response.text())),
+        )
         // 不含该键 ≠ 给个空表：前端 §7 的第三档是「这一项不出现」，给 `{days,stats:{}}` 会被渲染成「还没人用过」。
         expect("usageStats" in body).toBe(false)
         expect(Array.isArray(body["assets"])).toBe(true)
