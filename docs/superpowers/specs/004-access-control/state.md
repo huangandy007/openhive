@@ -19,6 +19,41 @@
 
 ---
 
+## 2026-10-30 · 事后发现：capability 把**所有人**的 skill 都关掉了
+
+**现象**：真栈三个用户库共 5468 个 `part`，`tool = "skill"` **零个**；资产使用记录一份也抽不到。
+民警当日确实在用 skill——用 `bash` / 读文件直接读 `.opencode/skill/…/SKILL.md`。
+
+**根因（两处叠在一起，第①处是主因）**：
+
+1. `sessionRuleset()` 的 allow **只**来自 `auth.role_resource`，而「审核通过 + 自动送达」这条
+   产品主路径**一份授权行都不写**（`auto-delivery.ts` 只查可见性）；
+   ⇒ 零 allow ⇒ `{skill,*,deny}` 罩住所有人，「自动送达」把文件链进沙箱、capability 又把工具关掉。
+2. 就算有授权行，`resource_id` 存的是**资产 id**（`asset_<uuid>`，`grantAssetToGroup`），
+   而 `skill` 工具 `ask` 的 pattern 是 **SKILL.md 的 `name`** ⇒ 那条 allow 永远匹配不上。
+
+**修法（用户裁定「先修授权链」）**：接线层（`server/openhive/skill-availability.ts`）按
+`readableAssetCondition()`（可见性只有一份判据，`#004-02`）取「读得到的、已发布」skill 资产，
+解析出 SKILL.md 的 `name`，经 `sessionRuleset(grants, mcp?, skillNames?)` 的第三段并入 allow。
+`role_resource` 形状、`canReadAsset`、`readable-sql`、抽取器、迁移**一行未改**。
+
+**同批收掉的两个口子**：
+- `system.ts` 的技能目录改为**只列调得动的名字**（复用执行期同一个 `Permission.evaluate`）；
+  否则「整体 deny ＋ 逐条 allow」下，目录会列出调了就 `DeniedError` 的名字；
+- 作者自填的名字含 `*` / `?` ⇒ **不放行**（否则一份叫 `*` 的资产会被抄成 `allow skill:*`，
+  把这个人所有 deny 的 skill 一起打开）。
+
+**残差（挂账，非疏漏）**：`personal` 档不进这条出口（`publishDirectory` 对它无落点，作者草稿走
+`draft/` 链接）；`iterating` / `offline` 也不放行（只认 `published`）。要放开任一条，先定
+「personal 的落点算谁」「迭代中算不算可用」。
+
+**测试**：`test/server/openhive-access-skill-visible.test.ts`（新，真应用 ＋ 真 PGlite ＋ 真落盘
+＋ SKILL.md 夹具，3 条：可见三支各放行 / 不可读·未发布·无名字·通配名·迭代中全拒 /
+无可见的人只拿到全局那一份）；`test/server/openhive-access.test.ts` 补第三段 4 条；
+`test/session/openhive-tool-visibility.test.ts` 的口径从「不按名字过滤」改成「必须只列被允许的」。
+变异：M1 拆 skillNames 段 ⇒ 5 红（含主用例）｜M2 部门恒空 ⇒ ① 红｜M3 状态放宽 ⇒ ② 红｜
+M4 拆通配护栏 ⇒ ①② 红｜M5 拆目录过滤 ⇒ 恰红 1 条。
+
 ## 开工前实测（Step 0.5 · 2026-10-04）
 
 `dev_tdd.004.md` 的 Step 0.5 要求「T001 之前先实测四条生死前提，命中就停下来问」。
