@@ -117,17 +117,23 @@ function 记调用(
     readonly tool?: string
     readonly status?: string
     readonly timeCreated?: number
+    /** bash 的命令行 / read 的文件路径（2026-10-30 起归因也走这两类 part）。 */
+    readonly command?: string
+    readonly filePath?: string
   },
 ) {
   const t = input.timeCreated ?? 1_790_000_000_123
+  const 入参: Record<string, string> = { name: input.name ?? "" }
+  if (input.command !== undefined) 入参.command = input.command
+  if (input.filePath !== undefined) 入参.filePath = input.filePath
   const state =
     input.status === "error"
-      ? { status: "error", input: { name: input.name ?? "" }, error: "boom", time: { start: t, end: t } }
+      ? { status: "error", input: 入参, error: "boom", time: { start: t, end: t } }
       : input.status === "running"
-        ? { status: "running", input: { name: input.name ?? "" }, time: { start: t } }
+        ? { status: "running", input: 入参, time: { start: t } }
         : {
             status: "completed",
-            input: { name: input.name ?? "" },
+            input: 入参,
             output: "",
             title: "",
             metadata: {},
@@ -318,10 +324,11 @@ describe("资产使用记录：归因与游标", () => {
     const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
 
     expect(结果.inserted).toBe(0)
-    // 6a（bash）被 SQL 挡在外面、不进 scanned；6b/6c/6d 三条进 scanned、归因失败。
+    // 6a（bash）**进 scanned 但不入表**（2026-10-30 起 bash 也是归因入口，只是它没有 command
+    // 字段 ⇒ 命中不了资产段）；6b/6c/6d 三条走 skill 老路径、归因失败。
     // t6 这个独占根里只有 u6 一个源库 ⇒ scanned 是确定值，可以钉。
-    expect(结果.scanned).toBe(3)
-    // 「去掉 tool 过滤」的变异会让 inserted 变 1，仍能被上面那条钉住。
+    expect(结果.scanned).toBe(4)
+    // `unattributed` 只数「像 skill 调用却归不了因」的：bash 找不到资产段不算它。
     expect(结果.unattributed).toBe(3)
   })
 
@@ -468,5 +475,139 @@ describe("资产使用记录：归因与游标", () => {
     expect(成功轮.inserted).toBe(1)
     expect((await 行("usage-u11")).length).toBe(1)
     expect(await 游标()).toEqual([{ last_updated_sec: 1_790_000_000 }])
+  })
+})
+
+describe("资产使用记录：不止 skill 工具（2026-10-30 口径）", () => {
+  /**
+   * 用户裁定（2026-10-30）：
+   * - **①A 一次工具调用 = 一次**：同一个 part 里跑十个脚本也只记一行（主键天然如此）。
+   * - **②A 只认真的执行了技能脚本**：命令行里得出现 `<资产 id>/scripts/`，`ls` 目录不算。
+   * - **归因走路径里的资产 id**，不查项目启用台账——「用了就是用了」，未启用的一样记。
+   */
+  const 独占根 = (名: string) => {
+    const dir = join(ROOT, 名)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  function 记文本(
+    db: Database,
+    input: { readonly partId: string; readonly sessionId: string; readonly text: string; readonly timeCreated?: number },
+  ) {
+    const t = input.timeCreated ?? 1_790_000_000_123
+    db.query(
+      "insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, 'msg_usage', ?, ?, ?, ?)",
+    ).run(input.partId, input.sessionId, t, t, JSON.stringify({ type: "text", text: input.text }))
+  }
+
+  test("跑脚本 / 读说明书 / 斜杠命令 ⇒ 各记一行，归因到路径里的资产 id", async () => {
+    await 建用户("usage-u20")
+    await insertAsset(pg.db, 资产({ id: "usage-a20", name: "脚本技能" }))
+    await 启用("usage-p20", "usage-a20", "usage-u20")
+    const 根 = 独占根("t20")
+    const 源 = 建源库("usage-u20", 根)
+    建会话(源, "usage-s20", "usage-p20")
+
+    记调用(源, {
+      partId: "usage-prt20a",
+      sessionId: "usage-s20",
+      tool: "bash",
+      command: 'python ".opencode/skill/usage-a20/scripts/md_to_word.py" "a.md" "b.docx"',
+      timeCreated: 1_790_000_000_000,
+    })
+    记调用(源, {
+      partId: "usage-prt20b",
+      sessionId: "usage-s20",
+      tool: "read",
+      filePath: ".opencode/skill/usage-a20/SKILL.md",
+      timeCreated: 1_790_000_010_000,
+    })
+    记文本(源, {
+      partId: "usage-prt20c",
+      sessionId: "usage-s20",
+      text: "# Skill: 脚本技能\n……正文……\n\nBase directory for this skill: .opencode/skill/usage-a20\nRelative paths in this skill are relative to this base directory.",
+      timeCreated: 1_790_000_020_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(3)
+    expect(await 行("usage-u20")).toEqual([
+      expect.objectContaining({ part_id: "usage-prt20a", asset_id: "usage-a20", skill_name: "脚本技能" }),
+      expect.objectContaining({ part_id: "usage-prt20b", asset_id: "usage-a20", skill_name: "脚本技能" }),
+      expect.objectContaining({ part_id: "usage-prt20c", asset_id: "usage-a20", skill_name: "脚本技能" }),
+    ])
+  })
+
+  test("同一个 part 里跑两个脚本 ⇒ 仍然只记一行（①A）", async () => {
+    await 建用户("usage-u21")
+    await insertAsset(pg.db, 资产({ id: "usage-a21", name: "批量技能" }))
+    const 根 = 独占根("t21")
+    const 源 = 建源库("usage-u21", 根)
+    建会话(源, "usage-s21", "usage-p21")
+    记调用(源, {
+      partId: "usage-prt21",
+      sessionId: "usage-s21",
+      tool: "bash",
+      command:
+        'python .opencode/skill/usage-a21/scripts/a.py && python .opencode/skill/usage-a21/scripts/b.py && python .opencode/skill/usage-a21/scripts/c.py',
+      timeCreated: 1_790_000_000_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(1)
+    expect((await 行("usage-u21")).length).toBe(1)
+  })
+
+  test("只摸目录不跑脚本 ⇒ 不算（②A）：ls 技能目录、read 非 SKILL.md 都不记", async () => {
+    await 建用户("usage-u22")
+    await insertAsset(pg.db, 资产({ id: "usage-a22", name: "摸鱼技能" }))
+    const 根 = 独占根("t22")
+    const 源 = 建源库("usage-u22", 根)
+    建会话(源, "usage-s22", "usage-p22")
+    记调用(源, {
+      partId: "usage-prt22a",
+      sessionId: "usage-s22",
+      tool: "bash",
+      command: "ls -la .opencode/skill/usage-a22",
+      timeCreated: 1_790_000_000_000,
+    })
+    记调用(源, {
+      partId: "usage-prt22b",
+      sessionId: "usage-s22",
+      tool: "read",
+      filePath: ".opencode/skill/usage-a22/README.md",
+      timeCreated: 1_790_000_010_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect((await 行("usage-u22")).length).toBe(0)
+  })
+
+  test("未启用的资产被跑了脚本 ⇒ 照样记（归因不查启用台账）", async () => {
+    await 建用户("usage-u23")
+    await insertAsset(pg.db, 资产({ id: "usage-a23", name: "没启用的技能" }))
+    // 注意：**不调用 `启用`**。旧口径下未启用 = 不可归因。
+    const 根 = 独占根("t23")
+    const 源 = 建源库("usage-u23", 根)
+    建会话(源, "usage-s23", "usage-p23")
+    记调用(源, {
+      partId: "usage-prt23",
+      sessionId: "usage-s23",
+      tool: "bash",
+      command: "python D:/assets/draft/usage-a23/scripts/run.py",
+      timeCreated: 1_790_000_000_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(1)
+    expect(await 行("usage-u23")).toEqual([
+      expect.objectContaining({ part_id: "usage-prt23", asset_id: "usage-a23", skill_name: "没启用的技能" }),
+    ])
   })
 })
