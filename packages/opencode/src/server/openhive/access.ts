@@ -2,12 +2,16 @@ export * as OpenhiveAccess from "./access"
 
 import { BUILTIN_MCP_SERVERS } from "@opencode-ai/auth/builtin-mcp"
 import { connect } from "@opencode-ai/auth/db"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import { grantsFor } from "@opencode-ai/auth/rbac"
+import { assetsRoot } from "@opencode-ai/asset-service/storage"
 import { AccessSession } from "@opencode-ai/core/access/session"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Config } from "@/config/config"
 import { McpCatalog } from "@/mcp/catalog"
 import { Effect } from "effect"
+import { sql } from "drizzle-orm"
+import { OpenhiveSkillAvailability } from "./skill-availability"
 
 /**
  * 一个 MCP server 的**工具名通配**（`fund.db` → `fund_db_*`）——T007 的「opencode 出名字」那一半。
@@ -38,6 +42,13 @@ export function mcpServerNaming(
     toolPattern: toolPatternOf(server),
     builtin: BUILTIN_MCP_SERVERS.includes(server),
   }))
+}
+
+/** 读者部门（`AssetViewer` 判「同部门」要用它）。读不到 ⇒ 空串：只剩全局那一支。 */
+async function departmentOf(db: OpenhiveSkillAvailability.SkillAvailabilityTarget, userId: string) {
+  const rows = rowsOf(await db.execute(sql`select dept from auth.user where id = ${userId}`))
+  const 部门 = rows[0]?.["dept"]
+  return typeof 部门 === "string" ? 部门 : ""
 }
 
 /**
@@ -93,6 +104,14 @@ export function capabilityFor() {
    * 工具名通配走 {@link toolPatternOf}；资源 pattern 的**原样** server 名由 core 拼
    * （`mcp:<server>:*`，与 `src/session/tools.ts` 的 `ask` 逐字同形）。
    *
+   * ## 可见资产的名字也要进规则集（2026-10-30）
+   *
+   * 除了授权行，本函数还按「读者读得到的、已发布的 skill 资产」出 allow（`skill-availability.ts`），
+   * 因为**发布 + 自动送达**这条主路径一份授权行都不写，而授权的 `resource_id` 是资产 id、
+   * 工具按 SKILL.md 的 `name` 发 `ask`。判据复用 `readableAssetCondition()`（`#004-02`）。
+   * 它多依赖两样东西：`auth.user.dept`（判同部门）与 `assetsRoot(process.env)`（读 SKILL.md）。
+   * 与 `Config` 同理，**任一步失败都拒绝建会话**——半个规则集不能用。
+   *
    * ⚠️ **名单还要过一道命名检查**（C1）：两个 server 的工具名前缀若互相覆盖，授权会随
    * `Config.mcp` 的**键序**漂移（不报错、不变红）⇒ 这里**拒绝建会话**，见下面那段注释。
    */
@@ -128,6 +147,23 @@ export function capabilityFor() {
       }
 
       const grants = yield* Effect.promise(() => grantsFor(database(), userId))
-      return AccessSession.sessionRuleset(grants, servers)
+
+      // ④ 可见资产的 skill 名字（2026-10-30）：授权行那一侧管不到「发布 + 自动送达」这条主路径，
+      // 而且授权的 `resource_id` 是资产 id、工具按 SKILL.md 的 name 发 `ask`。判据仍只有一份
+      // 可见性（`readableAssetCondition()`），「id → name」的翻译与读盘都在
+      // `skill-availability.ts`。失败仍按上面那条 fail-closed 走（读到一半的规则集不给会话用）。
+      const department = yield* Effect.promise(() => departmentOf(database(), userId))
+      const 可用 = yield* Effect.promise(() =>
+        OpenhiveSkillAvailability.scanUsableSkills(database(), { userId, department }, assetsRoot(process.env)),
+      )
+      // 读不到名字的资产**不放行**，但要说出来：静默少一条，用户看到的是「发布了却调不到」。
+      if (可用.skipped.length > 0) {
+        yield* Effect.logWarning("有 skill 资产拿不到 SKILL.md 的 name，本次不放行", {
+          userId,
+          skipped: 可用.skipped,
+        })
+      }
+
+      return AccessSession.sessionRuleset(grants, servers, 可用.names)
     })
 }
