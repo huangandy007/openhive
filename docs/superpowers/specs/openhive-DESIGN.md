@@ -442,7 +442,8 @@
 | 网格容器 | 占满中栏剩余高度，`overflow-y-auto`；内边距 16px；行间 / 列间 12px |
 | 列宽 | 卡片最小 240px，`repeat(列数, minmax(0, 1fr))`；列数 = `floor((容器宽 + 12) / (240 + 12))`，至少 1 列 |
 | 卡片尺寸 | **固定高 132px**（虚拟滚动按固定行高计算的前提）；白底 `bg-v2-background-bg-base` ＋ `shadow-[var(--v2-elevation-raised)]` ＋ `border border-v2-border-border-muted`；**16px 圆角**（§3.1 大内容卡档） |
-| 卡片内容 | ① 六边形图标 32px（浅金底，内嵌按类型图标；`clip-path` 画形，图标集无 `hexagon`，§5.3）② 名称 14px / 600，单行截断 ③ 描述 12px 弱化，**两行截断** ④ 底部徽章：空间（`ASSET_VISIBILITY_LABELS`）＋ 状态（`ASSET_STATUS_LABELS`），11px |
+| 卡片内容 | ① 六边形图标 32px（浅金底，内嵌按类型图标；`clip-path` 画形，图标集无 `hexagon`，§5.3）② 名称 14px / 600，单行截断 ③ 描述 12px 弱化，**两行截断** ④ 底部徽章：空间（`ASSET_VISIBILITY_LABELS`）＋ 状态（`ASSET_STATUS_LABELS`），11px ⑤ 徽章行**右端**：`★{收藏数} · {N}次`（2026-10-30） |
+| 卡片统计 | 收藏数所有类型都显示（0 也照实显示）；使用次数**只给 skill**（抽取器只统计 skill 工具调用，给 MCP 显示「0次」是假话），且 `usageStats` 缺省（旧内核）时整段不出现——「没有这个信息」≠「没人用过」。数字取近 N 天 `calls`，N 由服务端 `usageStats.days` 给；悬停 title 写全称「收藏：N 人；使用：最近 N 天 · X 人用过 · 共 Y 次」。文案与详情页同源（`card-meta.ts`，`#002-06`）。徽章行两端对齐：右端块 `shrink-0`，空间/状态徽章也 `shrink-0`，余宽由「原分类」`min-w-0 truncate` 吸收（**不折行**——卡片定高 132px，折行会撑破虚拟滚动几何） |
 | 徽章 | 中性底色 `bg-v2-background-bg-layer-02` ＋ `text-v2-text-text-muted`；圆角 4px；`px-1.5 py-0.5` |
 | 空结果 | 居中一行 13px 弱化文案「没有符合条件的资产」；不画插画、不造数量 |
 | 虚拟滚动 | 行高 = 卡片 132px ＋ 行距 12px；overscan 2 行；滚动容器本身承载滚动（不套第二层滚动盒，`#006-30`） |
