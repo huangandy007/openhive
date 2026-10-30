@@ -173,10 +173,25 @@ export function namingConflicts(servers: readonly McpServerNaming[]): ReadonlyAr
  * ⚠️ **`mcp` 省略时行为与 T006 逐字相同**（一条 mcp 授权行产不出任何规则）：既有调用点
  * （`src/session/prompt.ts`）不传它，而**名单从哪来归调用方**——core 读不到 `Config`，
  * 也不该去猜。
+ *
+ * ## `skillNames`（2026-10-30）：为什么要有第三个入参
+ *
+ * 授权行的 `resource_id` 是**资产 id**（`asset_<uuid>`），而 `skill` 工具按
+ * SKILL.md frontmatter 的 `name` 发 `ask` ⇒ ③ 产出的 allow 匹配不上；再加上「发布 + 自动送达」
+ * 这条产品主路径**不写授权行**，零 allow ⇒ 整体 deny 罩住所有人。真栈实测：5468 个 part、
+ * 零个 `tool: "skill"`，资产使用记录因此永远抽不到数据。
+ *
+ * 修法不在本函数里做「id → name」的翻译：那要读 PG + 文件系统，core 两样都不碰。调用方
+ * （`src/server/openhive/access.ts` 的 `capabilityFor`）把「读者读得到的、已发布的 skill 资产」
+ * 解析成名字传进来，本函数只负责**按名字出 allow**。判据仍只有一份
+ * `readableAssetCondition()`（`#004-02`），别在这里另写一套可见性。
+ *
+ * 去重在这里做（`new Set`）：名字来自文件系统解析，重复不值一提但会让规则集字节不稳定。
  */
 export function sessionRuleset(
   grants: readonly AccessRbac.Grant[],
   mcp?: readonly McpServerNaming[],
+  skillNames?: readonly string[],
 ): PermissionV1.Ruleset {
   const rules: PermissionV1.Rule[] = []
 
@@ -211,6 +226,18 @@ export function sessionRuleset(
   for (const rule of AccessRbac.resolve(grants)) {
     if (rule.effect !== "allow") continue
     rules.push({ permission: rule.action, pattern: rule.resource, action: rule.effect })
+  }
+
+  // ④ 可见资产的 skill **名字**（2026-10-30，`skillNames`）。放在最后，理由同 ③：全是 allow，
+  //    顺序不影响判决，但「整体 deny 在前、allow 在后」这条形状必须一眼看得出。
+  //
+  //    🔴 为什么需要它：`role_resource.resource_id` 存的是**资产 id**（`asset_<uuid>`），
+  //    而 `skill` 工具 `ask` 的 pattern 是 SKILL.md frontmatter 的 `name` —— ③ 产出的那条
+  //    allow 永远匹配不上。更根本的是**产品主路径一份授权行都不写**（发布 + 自动送达只查
+  //    可见性）⇒ 零 allow ⇒ 整体 deny 罩住所有人（真栈实测：5468 个 part、零个 `skill` 工具）。
+  //    名字从哪来归调用方：core 读不到库、读不到文件系统，也不该去猜（同 `mcp` 那段）。
+  for (const name of new Set(skillNames ?? [])) {
+    rules.push({ permission: "skill", pattern: name, action: "allow" })
   }
 
   return rules

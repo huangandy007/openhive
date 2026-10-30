@@ -209,3 +209,46 @@ describe("T006 · 把 prompt 带来的工具开关并进会话规则集", () => 
     expect(evaluateV1("skill", "call-analysis", merged).action).toBe("deny")
   })
 })
+
+/**
+ * **第三个入参 `skillNames`（2026-10-30）：可见资产的 SKILL.md 名字。**
+ *
+ * 它补的是「发布 + 自动送达」这条**不写授权行**的主路径：没有授权行时，规则集只剩一条
+ * 整体 deny，`skill` 工具对所有人生效地被关掉（真栈实测零个 `tool: "skill"`）。
+ * 名字从哪来归调用方（`capabilityFor` + `skill-availability.ts`）——本函数只按名字出 allow。
+ */
+describe("2026-10-30 · `sessionRuleset(grants, mcp?, skillNames?)` 的第三段", () => {
+  test("① 没给名字 ⇒ 与两参调用逐字相同（不多出一条规则）", () => {
+    expect(AccessSession.sessionRuleset([])).toEqual([{ permission: "skill", pattern: "*", action: "deny" }])
+    expect(AccessSession.sessionRuleset([], [], [])).toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+    ])
+  })
+
+  test("② 给了名字 ⇒ 整体 deny 在前、按名字的 allow 在后（`findLast` 取到 allow）", () => {
+    const ruleset = AccessSession.sessionRuleset([], [], ["fund-analysis"])
+
+    expect(ruleset).toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "skill", pattern: "fund-analysis", action: "allow" },
+    ])
+    expect(evaluateV1("skill", "fund-analysis", ruleset).action).toBe("allow")
+    // 不在名单里的照旧拒：allow 是按名字逐条开的，不是把整体 deny 拆了。
+    expect(evaluateV1("skill", "call-analysis", ruleset).action).toBe("deny")
+  })
+
+  test("③ 名字重复 ⇒ 只出一条（规则集字节稳定）", () => {
+    const ruleset = AccessSession.sessionRuleset([], [], ["fund-analysis", "fund-analysis"])
+
+    expect(ruleset.filter((rule) => rule.action === "allow").length).toBe(1)
+  })
+
+  test("④ 名字里有通配字符 ⇒ 本函数照抄（`*` 会匹配一切）；拦在**取名那一侧**", () => {
+    // ⚠️ 这条钉的是「core 不做猜测式清洗」——清洗放在 `skill-availability.ts`（名字从哪来归
+    // 调用方）。它在 `scanUsableSkills()` 里拒掉含 `*` / `?` 的名字：否则一份作者自命名
+    // `*` 的 skill 会在这里变成 `allow skill:*`，**把所有人所有 skill 一起打开**。
+    const ruleset = AccessSession.sessionRuleset([], [], ["*"])
+
+    expect(evaluateV1("skill", "any-other-skill", ruleset).action).toBe("allow")
+  })
+})
