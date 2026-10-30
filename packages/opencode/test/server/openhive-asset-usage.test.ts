@@ -32,6 +32,13 @@ const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 
 const SOURCE_DDL = `
 CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL);
+CREATE TABLE message (
+  id text PRIMARY KEY,
+  session_id text NOT NULL,
+  time_created integer NOT NULL,
+  time_updated integer NOT NULL,
+  data text NOT NULL
+);
 CREATE TABLE part (
   id text PRIMARY KEY,
   message_id text NOT NULL,
@@ -586,6 +593,84 @@ describe("资产使用记录：不止 skill 工具（2026-10-30 口径）", () =
 
     expect(结果.inserted).toBe(0)
     expect((await 行("usage-u22")).length).toBe(0)
+  })
+
+  function 记用户消息(
+    db: Database,
+    input: { readonly id: string; readonly sessionId: string; readonly timeCreated: number },
+  ) {
+    db.query("insert into message (id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?)").run(
+      input.id,
+      input.sessionId,
+      input.timeCreated,
+      input.timeCreated,
+      JSON.stringify({ role: "user" }),
+    )
+  }
+
+  test("同一轮里把同一个技能跑三遍 ⇒ 只记一次；下一轮再跑才记第二次（裁定 C）", async () => {
+    await 建用户("usage-u30")
+    await insertAsset(pg.db, 资产({ id: "usage-a30", name: "轮次技能" }))
+    await 启用("usage-p30", "usage-a30", "usage-u30")
+    const 根 = 独占根("t30")
+    const 源 = 建源库("usage-u30", 根)
+    建会话(源, "usage-s30", "usage-p30")
+
+    // 第一轮：一条用户消息，后面跟三次独立的 bash 调用（真栈 20:15 的形状）。
+    记用户消息(源, { id: "usage-msg30a", sessionId: "usage-s30", timeCreated: 1_790_000_000_000 })
+    记调用(源, {
+      partId: "usage-prt30a",
+      sessionId: "usage-s30",
+      tool: "bash",
+      command: "python .opencode/skill/usage-a30/scripts/a.py",
+      timeCreated: 1_790_000_001_000,
+    })
+    记调用(源, {
+      partId: "usage-prt30b",
+      sessionId: "usage-s30",
+      tool: "bash",
+      command: "python .opencode/skill/usage-a30/scripts/b.py",
+      timeCreated: 1_790_000_002_000,
+    })
+    记调用(源, {
+      partId: "usage-prt30c",
+      sessionId: "usage-s30",
+      tool: "bash",
+      command: "python .opencode/skill/usage-a30/scripts/c.py",
+      timeCreated: 1_790_000_003_000,
+    })
+
+    const 第一遍 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+    expect(第一遍.inserted).toBe(1)
+    expect(await 行("usage-u30")).toEqual([
+      expect.objectContaining({ part_id: "usage-prt30a", asset_id: "usage-a30" }),
+    ])
+
+    // 第二轮：新的一条用户消息，再跑一次 ⇒ 这是「第二次使用」。
+    记用户消息(源, { id: "usage-msg30b", sessionId: "usage-s30", timeCreated: 1_790_000_100_000 })
+    记调用(源, {
+      partId: "usage-prt30d",
+      sessionId: "usage-s30",
+      tool: "bash",
+      command: "python .opencode/skill/usage-a30/scripts/a.py",
+      timeCreated: 1_790_000_101_000,
+    })
+
+    const 第二遍 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_200 })
+    expect(第二遍.inserted).toBe(1)
+    expect((await 行("usage-u30")).length).toBe(2)
+
+    // 轮次 id 落表：第一行归第一轮、第二行归第二轮。
+    const 轮次 = rowsOf(
+      await pg.db.execute(sql`
+        select part_id, turn_id from auth.asset_usage_event
+        where user_id = ${"usage-u30"} order by part_id
+      `),
+    )
+    expect(轮次).toEqual([
+      { part_id: "usage-prt30a", turn_id: "usage-msg30a" },
+      { part_id: "usage-prt30d", turn_id: "usage-msg30b" },
+    ])
   })
 
   test("未启用的资产被跑了脚本 ⇒ 照样记（归因不查启用台账）", async () => {

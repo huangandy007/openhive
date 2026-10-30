@@ -289,6 +289,48 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
 
       // 同一会话会被问多次，按会话缓存 project_id（`null` = 走不通）。
       const 项目 = new Map<string, string | null>()
+
+      // 轮次（2026-10-30 裁定 C）：同一轮用户请求里，同一资产跑几遍都只记一次。
+      // 轮次 = 该行**之前最近一条 `role=user` 消息**的 id。按会话懒加载、二分查找。
+      // 缺 `message` 表（极老源库）⇒ 退回按 part 记（`turn_id` 为 null，唯一索引不管 NULL）。
+      const 用户消息表 = new Map<string, { time_created: number; id: string }[] | null>()
+      const 取用户消息 = (sessionId: string) => {
+        const 缓存 = 用户消息表.get(sessionId)
+        if (缓存 !== undefined) return 缓存
+        let 列表: { time_created: number; id: string }[] | null = null
+        try {
+          列表 = 源!
+            .query<{ time_created: number; id: string }, [string]>(
+              `select id, time_created from message
+               where session_id = ?
+                 and case when json_valid(data) then json_extract(data, '$.role') end = 'user'
+               order by time_created asc, id asc`,
+            )
+            .all(sessionId)
+        } catch {
+          // 表不存在 / 形状不认识：当这一会话没有轮次信息。
+        }
+        用户消息表.set(sessionId, 列表)
+        return 列表
+      }
+      const 轮次id = (sessionId: string, at: number): string | null => {
+        const 列表 = 取用户消息(sessionId)
+        if (列表 === null || 列表.length === 0) return null
+        let 低 = 0
+        let 高 = 列表.length - 1
+        let 命中: string | null = null
+        while (低 <= 高) {
+          const 中 = (低 + 高) >> 1
+          if (列表[中].time_created <= at) {
+            命中 = 列表[中].id
+            低 = 中 + 1
+          } else {
+            高 = 中 - 1
+          }
+        }
+        return 命中
+      }
+
       let 新水位秒 = 水位秒
 
       for (const row of 行) {
@@ -343,16 +385,18 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
         if (资产id === undefined) continue
         名字 ??= 资产.get(资产id) ?? 资产id
 
+        // 同一轮里同一资产的第二条被唯一索引吃掉（无目标 conflict：主键与轮次索引都兜）。
         const result = await input.db.execute(sql`
           insert into auth.asset_usage_event
-            (user_id, part_id, asset_id, session_id, call_id, skill_name, org, dept, section, occurred_at, extracted_at)
+            (user_id, part_id, asset_id, session_id, call_id, skill_name, org, dept, section, occurred_at, extracted_at, turn_id)
           values (
             ${人.id}, ${row.id}, ${资产id}, ${row.session_id},
             ${row.call_id ?? ""}, ${名字},
             ${人.org}, ${人.dept}, ${人.section},
-            ${Math.floor(row.time_created / 1000)}, ${now}
+            ${Math.floor(row.time_created / 1000)}, ${now},
+            ${轮次id(row.session_id, row.time_created)}
           )
-          on conflict (user_id, part_id) do nothing
+          on conflict do nothing
           returning part_id
         `)
         if (rowsOf(result).length > 0) inserted += 1
