@@ -100,4 +100,15 @@ describe("应用级视图注册表（FR-007 的 10 类里 001 认领的几类）
     expect(源码).not.toMatch(/^import\s[^\n]*from\s+["']\.\/[\w-]+-view["']/m)
     expect(源码).toMatch(/import\(["']\.\/[\w-]+-view["']\)/)
   })
+
+  /**
+   * `.html` / `.htm` 从代码视图改归 HTML 预览（2026-10-30）：民警要看的是网页本身，
+   * 不是「这是代码文件」再点一步。两个扩展名必须**整体**归 HtmlView——同一个扩展名
+   * 不能有两个归属（`register` 会抛），只摘一半会让本文件在导入时直接炸。
+   */
+  test(".html / .htm 归 HTML 预览", async () => {
+    const { HtmlView } = await import("./html-view")
+    expect(await 解出(".html")).toBe(HtmlView)
+    expect(await 解出(".htm")).toBe(HtmlView)
+  })
 })

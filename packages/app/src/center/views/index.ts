@@ -61,10 +61,22 @@ viewRegistry.register({
 })
 
 /**
+ * HTML 预览（2026-10-30）：渲染成网页，另给「源码」切换。
+ *
+ * 从下面的 `代码扩展名` 里摘出来了——代码视图对网页只显示「这是代码文件」+ 一个按钮，
+ * 等于什么都没看到；而同一个扩展名不能有两个归属（`register` 会抛），故两者只能各管各的。
+ */
+viewRegistry.register({
+  extensions: [".html", ".htm"],
+  load: async () => (await import("./html-view")).HtmlView,
+})
+
+/**
  * 代码类扩展名（T016）：源码 + 脚本 + 配置三类文本格式。
  *
  * `.md` / `.txt`（图文）与 `.csv`（表格）已有归属，故不在此列——**重复认领会抛错**
  * （`view-registry` 的 `register`），本文件在导入时即会炸，不会静默抢走别人的归属。
+ * `.html` / `.htm` 同理（已改归上面的 HTML 预览）。
  */
 const 代码扩展名 = [
   // 源码
@@ -79,7 +91,7 @@ const 代码扩展名 = [
   //    **别把这一项读成「.env 文件已支持」**。（代码审查曾把这一项判成「永不命中」，
   //    复核后不成立：`点在首位`才算无扩展名，`点在中间`照常切出后缀。）
   ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env", ".properties",
-  ".xml", ".html", ".htm", ".css", ".scss", ".less",
+  ".xml", ".css", ".scss", ".less",
 ] as const
 
 viewRegistry.register({
