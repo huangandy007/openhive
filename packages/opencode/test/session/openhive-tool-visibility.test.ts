@@ -103,20 +103,27 @@ describe("T005 · 技能目录的可见性与 capability 一致", () => {
   )
 
   /**
-   * **对照：授过一条 ⇒ 目录照旧。**（少了这条，把目录无条件 `return undefined` 也能让上一条绿。）
+   * **对照：授过一条 ⇒ 被授的那条出现在目录里。**（少了这条，把目录无条件 `return undefined`
+   * 也能让上一条绿。）
    *
-   * 注意**不是**「只列出被授予的那一条」——目录这一层跟工具过滤用的是同一个
-   * `Permission.disabled`，它问的是「这个工具**被整体拒掉**了吗」，不是「这个名字被允许了吗」。
-   * 要列「只有 fund-analysis」就得在目录这处**另写一套按名字过滤的判据**，那是
-   * `LEARNINGS #003-05` 说的假镜像；逐条授权由**执行期**的 `evaluate` 兜底（T006）。
+   * 🔴 2026-10-30 改口径（capability 真的有了逐条 allow 之后）：目录**必须只列被允许的名字**。
+   * 原先这里刻意「不按名字过滤」，理由是那会另写一套判据（`#003-05` 的假镜像）。现在
+   * `GOVERNED` 的基线是「整体 deny ＋ 逐条 allow」，于是「整体 deny 但允许两条中的一条」的
+   * 规则集**生产上真实存在**（可见资产 A、看不见资产 B）。若不按名字过滤，模型会在目录里
+   * 看到 B、调它、拿到 `DeniedError`——「说了能用、一用就拒」。
+   *
+   * 反假镜像是靠**复用同一个判决器**做到的：目录过滤用的就是执行期 `ask` 用的那个
+   * `Permission.evaluate("skill", name, merged).action === "deny"`，不是另写一套匹配。
    */
-  it.effect("授过一条 ⇒ 目录照旧出现（并入不是覆盖）", () =>
+  it.effect("授过一条 ⇒ 目录里只出现被允许的名字", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
 
       const output = yield* prompt.skills(build, GRANTED_FUND_ANALYSIS)
 
       expect(output).toContain("<name>fund-analysis</name>")
+      // 没被允许的那条**不许**出现在目录里：目录与执行期判决必须同源。
+      expect(output).not.toContain("<name>call-analysis</name>")
     }),
   )
 
@@ -140,7 +147,8 @@ describe("T005 · 技能目录的可见性与 capability 一致", () => {
    *
    * 两个出口拿**同一个** `Permission.disabled` 问**同一个**合并后的 ruleset ⇒ 任何 ruleset 上
    * 都必须同进同退。跑一个小矩阵而不是一个例子：将来有人给目录那处「顺手」加一条自己的判据
-   * （比如按名字 allow-list），矩阵上总有一条会红——单例测试挑不出来。
+   * （比如**另写一套**按名字的 allow-list，而不是复用 `Permission.evaluate`），矩阵上总有一条
+   * 会红——单例测试挑不出来。
    *
    * `Permission.disabled` 是 `resolveTools` 用的那个**真**函数（`src/permission/index.ts`），
    * 不是这里复刻的镜像（`LEARNINGS #003-05`）。

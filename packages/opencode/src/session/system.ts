@@ -114,10 +114,21 @@ const layer = Layer.effect(
       // ⚠️ 上游改了 `skills` / `disabled` 的判据，这三处要一起改（否则就是假的镜像，
       // `LEARNINGS #003-05`）。不变式：**目录可见 ⟺ skill 工具可见**，
       // 由 `test/session/openhive-tool-visibility.test.ts` 的矩阵断言钉住。
+      //
+      // 【保留的定制 · 2026-10-30】再收一层：**目录里只列调得动的名字**。
+      // 上面那道门只回答「工具整体被关了吗」。capability 的形状是「整体 deny ＋ 逐条 allow」，
+      // 于是「工具在、但只有一部分名字被允许」是**生产上的常态**（同部门可见 A、看不见 B）。
+      // 只按整体判 ⇒ 目录里列着 B、模型一调就是 `DeniedError`：「说了能用、一用就拒」。
+      // 🔴 判据必须复用执行期 `ask` 用的**同一个** `Permission.evaluate`（`tool/skill.ts` 传的
+      // pattern 就是 `skill.name`），否则就是 `#003-05` 的假镜像。`ask` 的判决**不隐藏**
+      // （只有 deny 才藏）：上游兜底是 `ask`，往上收紧会把「询问」误伤成「不存在」。
       skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset) {
-        if (Permission.disabled(["skill"], Permission.merge(agent.permission, permission ?? [])).has("skill")) return
+        const ruleset = Permission.merge(agent.permission, permission ?? [])
+        if (Permission.disabled(["skill"], ruleset).has("skill")) return
 
-        const list = yield* skill.available(agent)
+        const list = (yield* skill.available(agent)).filter(
+          (item) => Permission.evaluate("skill", item.name, ruleset).action !== "deny",
+        )
 
         return [
           "Skills provide specialized instructions and workflows for specific tasks.",
