@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import type { UsageStats } from "./asset-catalog-api"
 import { AssetGrid } from "./asset-grid"
 
 // happy-dom 的 ResizeObserver 回调不触发；virtual-core 首帧会主动量一次，够用。
@@ -166,6 +167,52 @@ describe("资产卡片", () => {
       expect(甲.querySelector('[data-slot="asset-card-status"]')?.textContent).toBe("审核中")
       expect(乙.querySelector('[data-slot="asset-card-space"]')?.textContent).toBe("个人")
       expect(乙.querySelector('[data-slot="asset-card-status"]')?.textContent).toBe("已下线")
+    } finally {
+      卸()
+    }
+  })
+})
+
+/**
+ * 用量透传（2026-10-30）：网格自己不读用量，只把同一份 `usage` 交给每张卡。
+ * 抹掉 `AssetCard` 上的 `usage`，中栏的卡片统计会整片静默消失——那正是这条要钉住的。
+ */
+function 挂带用量(列表: readonly AssetMetadata[], usage?: UsageStats) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  const dispose = render(
+    () => <AssetGrid assets={() => 列表} onOpen={() => {}} usage={usage} />,
+    host,
+  )
+  return {
+    host,
+    卸: () => {
+      dispose()
+      host.remove()
+    },
+  }
+}
+
+describe("网格把用量透传给每张卡（2026-10-30）", () => {
+  test("传 usage ⇒ 卡片上有收藏段与使用段", () => {
+    const { host, 卸 } = 挂带用量([资产({ id: "a", favoriteCount: 3 })], {
+      days: 30,
+      stats: { a: { users: 3, calls: 12 } },
+    })
+    try {
+      const card = 卡片(host)[0]
+      expect(card.querySelector('[data-slot="asset-card-meta-favorites"]')?.textContent?.trim()).toBe("3")
+      expect(card.querySelector('[data-slot="asset-card-meta-usage"]')?.textContent?.trim()).toBe("12次")
+    } finally {
+      卸()
+    }
+  })
+
+  test("不传 usage ⇒ 没有使用段", () => {
+    const { host, 卸 } = 挂带用量([资产({ id: "a" })])
+    try {
+      // 布尔断言避开 `#009-01`
+      expect(卡片(host)[0].querySelector('[data-slot="asset-card-meta-usage"]') === null).toBe(true)
     } finally {
       卸()
     }

@@ -608,6 +608,29 @@ describe("中栏 · 收藏（2026-10-29）", () => {
  * 抹掉它，本层全部用例照绿，而用户看到的「使用记录」整条静默消失。
  */
 describe("中栏 · 使用记录接线（2026-10-29）", () => {
+  test("卡片上直接显示使用次数（不进详情页也看得见）", () => {
+    const 源 = 数据源({
+      assets: [{ ...资产("a1"), favoriteCount: 3 }],
+      total: 1,
+      usage: { days: 30, stats: { a1: { users: 3, calls: 12 } } },
+    })
+    const { host, 卸 } = 挂(源)
+    try {
+      // ⚠️ 点开详情**之前**断言：要的就是「不进详情页也看得见」；详情还开着的话，
+      // 卡片统计消失也会被下面的断言漏掉（`#005-18`）。
+      expect(host.querySelector('[data-slot="asset-detail-usage"]') === null).toBe(true)
+      const 统计块 = host.querySelector<HTMLElement>('[data-asset-id="a1"] [data-slot="asset-card-meta"]')
+      if (!统计块) throw new Error("卡片上没有统计块")
+      expect(host.querySelector('[data-asset-id="a1"] [data-slot="asset-card-meta-usage"]')?.textContent?.trim()).toBe(
+        "12次",
+      )
+      // 卡片写短文案「12次」，不是详情页那串长文案。
+      expect(统计块.getAttribute("title")).toBe("收藏：3 人；使用：最近 30 天 · 3 人用过 · 共 12 次")
+    } finally {
+      卸()
+    }
+  })
+
   test("数据源给了用量 ⇒ 详情里就是那串文案（天数也取数据源的值）", () => {
     const 源 = 数据源({
       assets: [资产("a1")],

@@ -8,6 +8,8 @@ import {
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import type { UsageStats } from "./asset-catalog-api"
+// 「有没有用过 / 怎么说」与卡片同源（`card-meta.ts`，`#002-06`）。
+import { 使用文案 } from "./card-meta"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 import "./asset-action-active.css"
 
@@ -64,17 +66,6 @@ function 格式化日期(unix秒: number): string {
 
 function 作者文案(asset: AssetMetadata): string {
   return asset.department === "" ? asset.ownerName : `${asset.ownerName} · ${asset.department}`
-}
-
-/**
- * 使用文案三态（2026-10-29）。窗口天数由**服务端**给：前端硬编码 30 会在服务端换窗口时
- * 显示一个不对的「最近 30 天」（`#002-06`：同一件事别有两份来源）。
- */
-function 使用文案(用量: UsageStats, assetId: string): string {
-  const 一份 = 用量.stats[assetId]
-  return 一份 === undefined
-    ? `最近 ${用量.days} 天还没人用过`
-    : `最近 ${用量.days} 天 · ${一份.users} 人用过 · 共 ${一份.calls} 次`
 }
 
 function 介绍面板(props: { readonly asset: AssetMetadata }): JSX.Element {

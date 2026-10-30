@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { createVirtualizer } from "@tanstack/solid-virtual"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import type { UsageStats } from "./asset-catalog-api"
 import { AssetCard } from "./asset-card"
 import { 卡片行高, 卡片行距, 卡片高, 网格列数, 网格行数 } from "./grid-model"
 
@@ -43,6 +44,11 @@ export interface AssetGridProps {
   readonly busyId?: string
   /** 自动送达名单（需求 5a）：命中的卡片标「自动」、按钮显示「固定安装」。 */
   readonly autoOf?: (asset: AssetMetadata) => boolean
+  /**
+   * 最近 N 天的使用统计（2026-10-30）：**只做透传**——「给不给 skill 显示、显示几次」由
+   * `card-meta.ts` 一份判定（与详情页同源）。省略 ⇒ 卡片只显示收藏段。
+   */
+  readonly usage?: UsageStats
 }
 
 export function AssetGrid(props: AssetGridProps): JSX.Element {
@@ -135,6 +141,7 @@ export function AssetGrid(props: AssetGridProps): JSX.Element {
                         <AssetCard
                           asset={asset}
                           onOpen={props.onOpen}
+                          usage={props.usage}
                           原分类={props.原分类?.(asset)}
                           {...(props.onToggleEnabled === undefined
                             ? {}

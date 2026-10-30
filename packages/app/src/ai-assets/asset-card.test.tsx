@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 // ⚠️ 用 `solid-js/web` 的 `render`：本仓**没有** `@solidjs/testing-library`
 // （`src/project/backup-restore-dialog.test.tsx:6` 明确写着那是别的仓的写法）
 import { render } from "solid-js/web"
+import type { UsageStats } from "./asset-catalog-api"
 import { AssetCard } from "./asset-card"
 import { 样例资产 } from "./asset-story-fixtures"
 
@@ -128,6 +129,48 @@ describe("AssetCard 的自动送达标记", () => {
     // 布尔断言避开 `#009-01`
     expect(host.querySelector('[data-slot="asset-card-auto"]') === null).toBe(true)
     expect(host.querySelector('[data-slot="asset-card-enable"]')?.textContent?.trim()).toBe("启用")
+    dispose()
+  })
+})
+
+/**
+ * 卡片上的收藏数 + 近 N 天使用次数（2026-10-30）：不进详情页也能看见。
+ *
+ * 卡片是定高 132px 的（见 `grid-model.ts`）：两者只占徽章行右端，不加行。
+ * `favoriteCount` 设成 3 而不是默认 0，避免「默认值刚好满足断言」（`#005-47`）；
+ * title 用全等，不用 `toContain`（`#006-22`）。
+ */
+describe("AssetCard 的收藏与使用统计（2026-10-30）", () => {
+  const 带收藏 = () => 样例资产({ id: "a1", name: "资金分析", favoriteCount: 3 })
+  const 用量: UsageStats = { days: 30, stats: { a1: { users: 3, calls: 12 } } }
+
+  test("传 usage ⇒ 收藏段「3」、使用段「12次」、title 写清人数与次数", () => {
+    const { host, dispose } = 挂({ asset: 带收藏(), onOpen: () => {}, usage: 用量 })
+    const 统计块 = host.querySelector<HTMLElement>('[data-slot="asset-card-meta"]')
+    if (!统计块) throw new Error("卡片上没有统计块")
+    expect(统计块.getAttribute("title")).toBe("收藏：3 人；使用：最近 30 天 · 3 人用过 · 共 12 次")
+    expect(host.querySelector('[data-slot="asset-card-meta-favorites"]')?.textContent?.trim()).toBe("3")
+    expect(host.querySelector('[data-slot="asset-card-meta-usage"]')?.textContent?.trim()).toBe("12次")
+    dispose()
+  })
+
+  test("不传 usage ⇒ 只有收藏段，没有使用段（旧调用方 / storybook 不受影响）", () => {
+    const { host, dispose } = 挂({ asset: 带收藏(), onOpen: () => {} })
+    expect(host.querySelector('[data-slot="asset-card-meta-favorites"]')?.textContent?.trim()).toBe("3")
+    // 布尔断言避开 `#009-01`
+    expect(host.querySelector('[data-slot="asset-card-meta-usage"]') === null).toBe(true)
+    expect(host.querySelector('[data-slot="asset-card-meta"]')?.getAttribute("title")).toBe("收藏：3 人")
+    dispose()
+  })
+
+  test("非 skill ＋ usage ⇒ 没有使用段（抽取器只统计 skill 工具调用）", () => {
+    const { host, dispose } = 挂({
+      asset: 样例资产({ id: "a1", name: "话单碰撞", type: "mcp", favoriteCount: 3 }),
+      onOpen: () => {},
+      usage: 用量,
+    })
+    expect(host.querySelector('[data-slot="asset-card-meta-usage"]') === null).toBe(true)
+    expect(host.querySelector('[data-slot="asset-card-meta"]')?.getAttribute("title")).toBe("收藏：3 人")
     dispose()
   })
 })

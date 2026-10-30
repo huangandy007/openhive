@@ -198,6 +198,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
         <AssetGrid
           assets={props.catalog?.assets}
           onOpen={打开}
+          usage={props.catalog?.usage()}
           原分类={原分类}
           onToggleEnabled={props.enablement === undefined ? undefined : (asset) => props.enablement!.toggle(asset.id)}
           enabledOf={(asset) => props.enablement?.enabled().has(asset.id) === true}
