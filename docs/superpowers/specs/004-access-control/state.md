@@ -54,6 +54,16 @@
 变异：M1 拆 skillNames 段 ⇒ 5 红（含主用例）｜M2 部门恒空 ⇒ ① 红｜M3 状态放宽 ⇒ ② 红｜
 M4 拆通配护栏 ⇒ ①② 红｜M5 拆目录过滤 ⇒ 恰红 1 条。
 
+**开工前实测（本机真栈的落盘根与真实名字，供验收对账）**：自动送达留下的链接指向
+`/d/assets/global/skills/asset_*` ⇒ 在跑的内核里 `assetsRoot(process.env)` = `D:\assets`
+（`OPENHIVE_ASSETS_ROOT` 未设，走 `DEFAULT_ASSETS_ROOT = "/assets"`，进程在 D: 盘 ⇒ `D:\assets`）。
+该目录下 7 个已发布 skill 目录的 `SKILL.md` 全部解析成功：
+`write-as-huzhou-gongan` / `archify` / `MD转Word`（两份资产重名 ⇒ 去重被真实数据踩到）/
+`word-format-proofread` / `writing-skills` / `fund-flow-summary`（`asset_demo_review`，`in_review`，
+状态过滤会排除它）。**没有一份名字含 `*` / `?`** ⇒ 通配护栏在真数据上不误伤。
+⚠️ 别被 `D:\openhive-stack-state\assets`（空目录）误导——那是 009 文档里的「开发机应设」值，
+本机没设；换机器/上生产前按 `CONFIG.md` 对一遍这个变量。
+
 ## 开工前实测（Step 0.5 · 2026-10-04）
 
 `dev_tdd.004.md` 的 Step 0.5 要求「T001 之前先实测四条生死前提，命中就停下来问」。
