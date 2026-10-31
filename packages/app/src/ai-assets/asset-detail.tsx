@@ -9,6 +9,7 @@ import {
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import type { UsageStats } from "./asset-catalog-api"
+import { 资产Markdown } from "./markdown"
 // 「有没有用过 / 怎么说」与卡片同源（`card-meta.ts`，`#002-06`）。
 import { 使用文案 } from "./card-meta"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
@@ -85,6 +86,8 @@ function 可编辑字段(props: {
   readonly textSlot: string
   readonly 标题: string
   readonly 值: string
+  /** 只读态是否把值按 Markdown 渲染。省略 = 纯文本（现状）。 */
+  readonly markdown?: boolean
   /** 值为空时只读态显示这句话；不传就显示空串。 */
   readonly emptyText?: string
   /** 空态那句提示的槽位（只在 `emptyText` 生效时渲染）。 */
@@ -98,6 +101,8 @@ function 可编辑字段(props: {
   const [草稿, set草稿] = createSignal("")
   const [保存中, set保存中] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
+  /** `markdown` 字段编辑态的「预览 / 编辑」切换（2026-10-31）。退出编辑态一律回到写。 */
+  const [预览, set预览] = createSignal(false)
   /** 只读 → 编辑态切换后把焦点送进来：键盘 / 读屏用户不用再 Tab 找输入框（终审 M-4）。 */
   let 编辑框: HTMLTextAreaElement | undefined
 
@@ -112,9 +117,16 @@ function 可编辑字段(props: {
   const 开 = () => {
     set草稿(props.值)
     set错误(undefined)
+    set预览(false)
     set编辑中(true)
     // Solid 的信号写入是同步渲染的：上面一行执行完 `textarea` 已经在 DOM 里，ref 也已赋值。
     编辑框?.focus()
+  }
+
+  /** 退出编辑态：预览状态一并回到「写」（下次打开默认对着草稿写）。 */
+  const 退 = () => {
+    set预览(false)
+    set编辑中(false)
   }
 
   const 存 = async () => {
@@ -124,7 +136,7 @@ function 可编辑字段(props: {
     try {
       const 成 = await props.onSave(草稿())
       // 失败文案由调用方给：本组件不知道是网络断了、没权限，还是「写入成功但回包读不懂」（M-5）。
-      if (成 === true) set编辑中(false)
+      if (成 === true) 退()
       else set错误(成)
     } catch (error) {
       set错误(error instanceof Error ? error.message : "保存失败，请重试")
@@ -151,16 +163,43 @@ function 可编辑字段(props: {
 
       <Switch>
         <Match when={编辑中()}>
-          <textarea
-            ref={(el) => (编辑框 = el)}
-            data-slot="asset-detail-editor"
-            aria-label={props.标题}
-            class="mt-1 w-full rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[13px] leading-6 text-v2-text-text-base"
-            rows={props.多行 ? 6 : 2}
-            maxlength={props.上限}
-            value={草稿()}
-            onInput={(事件) => set草稿(事件.currentTarget.value)}
-          />
+          {/* Markdown 字段的编辑态：上方一句提示 + 右侧「预览」切换（2026-10-31）。
+              纯文本字段（功能描述）不出现这一行。 */}
+          <Show when={props.markdown === true}>
+            <div class="mt-1 flex items-center justify-between gap-2">
+              <span data-slot="asset-detail-markdown-hint" class="text-[11px] leading-5 text-v2-text-text-faint">
+                支持 Markdown：标题 / 粗体 / 列表 / 代码块
+              </span>
+              <button
+                type="button"
+                data-slot="asset-detail-preview"
+                class="shrink-0 cursor-pointer rounded-[4px] px-1.5 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+                onClick={() => set预览(!预览())}
+              >
+                {预览() ? "编辑" : "预览"}
+              </button>
+            </div>
+          </Show>
+          {/* 预览只换掉输入框：草稿在信号里，切回来一个字不丢。保存 / 取消始终在下方。 */}
+          <Show
+            when={预览()}
+            fallback={
+              <textarea
+                ref={(el) => (编辑框 = el)}
+                data-slot="asset-detail-editor"
+                aria-label={props.标题}
+                class="mt-1 w-full rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[13px] leading-6 text-v2-text-text-base"
+                rows={props.多行 ? 6 : 2}
+                maxlength={props.上限}
+                value={草稿()}
+                onInput={(事件) => set草稿(事件.currentTarget.value)}
+              />
+            }
+          >
+            <div class="mt-1">
+              <资产Markdown text={草稿()} slot={props.textSlot} />
+            </div>
+          </Show>
           <div class="mt-1.5 flex items-center gap-2">
             <button
               type="button"
@@ -176,7 +215,7 @@ function 可编辑字段(props: {
               data-slot="asset-detail-cancel"
               class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
               disabled={保存中()}
-              onClick={() => set编辑中(false)}
+              onClick={退}
             >
               取消
             </button>
@@ -193,16 +232,27 @@ function 可编辑字段(props: {
           </Show>
         </Match>
         <Match when={!编辑中()}>
-          <p
-            data-slot={props.值.trim() === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
-            class="mt-1 whitespace-pre-wrap text-[13px] leading-6"
-            classList={{
-              "text-v2-text-text-muted": 显示空态(),
-              "text-v2-text-text-base": !显示空态(),
-            }}
+          {/* 空态逻辑一个字没改（`trim()` + `emptyText`）：只在「不是空态且声明了 markdown」
+              时换成渲染容器。两种情况下 `data-slot` 都是 `props.textSlot`，既有用例照旧。 */}
+          <Show
+            when={props.markdown === true && !显示空态()}
+            fallback={
+              <p
+                data-slot={props.值.trim() === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
+                class="mt-1 whitespace-pre-wrap text-[13px] leading-6"
+                classList={{
+                  "text-v2-text-text-muted": 显示空态(),
+                  "text-v2-text-text-base": !显示空态(),
+                }}
+              >
+                {显示空态() ? props.emptyText : props.值}
+              </p>
+            }
           >
-            {显示空态() ? props.emptyText : props.值}
-          </p>
+            <div class="mt-1 text-[13px] leading-6">
+              <资产Markdown text={props.值} slot={props.textSlot} />
+            </div>
+          </Show>
         </Match>
       </Switch>
     </section>
@@ -221,6 +271,7 @@ function 介绍面板(props: {
         textSlot="asset-detail-description"
         标题="功能与用法"
         值={props.asset.description}
+        markdown
         上限={CONTENT_LIMITS.description}
         多行
         可写={props.可写}
@@ -294,6 +345,7 @@ function 注意事项面板(props: {
         emptyText="该资产尚未填写专属注意事项。"
         标题="专属注意事项"
         值={props.asset.precautions}
+        markdown
         上限={CONTENT_LIMITS.precautions}
         多行
         可写={props.可写}

@@ -501,6 +501,93 @@ describe("内容编辑（2026-10-31）", () => {
 })
 
 /**
+ * Markdown 渲染（2026-10-31，用户要求作者能写 Markdown、读者看到排版）。
+ *
+ * 三个决定：① 详情页渲染、「功能描述」不渲染（它是悬停浮层的一句话）；② 编辑态给
+ * 提示 + 「预览」切换，切回来草稿还在；③ 长度上限不变（服务端零改动）。
+ *
+ * 断言的是**结构**（`h2` / `strong` / `li`）而不仅是文字：文字在纯文本态也相同，
+ * 只断文字会让「没渲染」假绿。
+ */
+describe("Markdown 渲染（2026-10-31）", () => {
+  const 渲染容器 = (host: HTMLElement, slot: string) => 槽(host, slot)
+
+  test("介绍 Tab 只读态把 Markdown 渲染成元素（h2 / strong）", () => {
+    const { host, 卸 } = 挂({ description: "## 小标题\n\n正文有 **重点**" })
+    try {
+      const 容器 = 渲染容器(host, "asset-detail-description")
+      // 这个属性是 `index.css` 里元素级样式的唯一钩子，两处任一改名样式就全丢。
+      expect(容器?.getAttribute("data-format")).toBe("markdown")
+      expect(容器?.querySelector("h2")?.textContent).toBe("小标题")
+      expect(容器?.querySelector("strong")?.textContent).toBe("重点")
+    } finally {
+      卸()
+    }
+  })
+
+  test("注意事项 Tab 只读态同样渲染（h3 / li）", () => {
+    const { host, 卸 } = 挂({ precautions: "### 复核\n\n- 双人" })
+    try {
+      标签(host, "precautions").click()
+      const 容器 = 渲染容器(host, "asset-detail-precautions-text")
+      expect(容器?.querySelector("h3")?.textContent).toBe("复核")
+      expect(容器?.querySelector("li")?.textContent).toBe("双人")
+    } finally {
+      卸()
+    }
+  })
+
+  test("功能描述不渲染：**粗** 原样显示，没有 <strong>", () => {
+    const { host, 卸 } = 挂({ summary: "**粗**" })
+    try {
+      标签(host, "summary").click()
+      const 容器 = 渲染容器(host, "asset-detail-summary-text")
+      expect(容器?.textContent).toBe("**粗**")
+      expect(容器?.querySelector("strong") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("编辑态：有 Markdown 提示与「预览」；切预览看到渲染结果，切回草稿还在", () => {
+    const { host, 卸 } = 挂({ description: "## 小标题\n\n正文" }, { canWrite: true, onSaveContent: async () => true })
+    try {
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("## 小标题\n\n正文")
+      expect(文本(host, "asset-detail-markdown-hint")).toBe("支持 Markdown：标题 / 粗体 / 列表 / 代码块")
+
+      const 预览钮 = 槽(host, "asset-detail-preview") as HTMLElement
+      expect(预览钮.textContent?.trim()).toBe("预览")
+      预览钮.click()
+
+      // 输入框消失、渲染结果出现；保存 / 取消按钮仍在。
+      expect(槽(host, "asset-detail-editor") === null).toBe(true)
+      expect(槽(host, "asset-detail-description")?.querySelector("h2")?.textContent).toBe("小标题")
+      expect(槽(host, "asset-detail-save") !== null).toBe(true)
+      expect(槽(host, "asset-detail-cancel") !== null).toBe(true)
+      expect((槽(host, "asset-detail-preview") as HTMLElement).textContent?.trim()).toBe("编辑")
+
+      // 切回编辑：草稿一个字不丢。
+      ;(槽(host, "asset-detail-preview") as HTMLElement).click()
+      expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("## 小标题\n\n正文")
+    } finally {
+      卸()
+    }
+  })
+
+  test("功能描述的编辑态没有「预览」（它不渲染 Markdown）", () => {
+    const { host, 卸 } = 挂({ summary: "一句话" }, { canWrite: true, onSaveContent: async () => true })
+    try {
+      标签(host, "summary").click()
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      expect(槽(host, "asset-detail-preview") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+})
+
+/**
  * 头部操作（2026-10-29，用户实报设计不妥）。
  *
  * ## 为什么删掉「▶ 让 AI 助手执行此 skill」
