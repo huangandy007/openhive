@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { CatalogApi, CatalogOutcome, CatalogPage, CatalogQuery } from "./asset-catalog-api"
 import type { FavoriteApi, FavoriteOutcome } from "./favorite-api"
+import type { ContentOutcome } from "./content-api"
 import { createAssetCatalog } from "./asset-catalog"
 
 const 资产 = (id: string): AssetMetadata => ({
@@ -395,6 +396,56 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     目录.load({})
     expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
     expect(目录.error()).toBe("无权修改该资产")
+  })
+
+  test("contentBusy：保存中是那条资产，回包后复位", async () => {
+    const 待回: Array<(out: ContentOutcome) => void> = []
+    const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
+    const 目录 = createAssetCatalog(api, {
+      contentApi: {
+        save: () =>
+          new Promise((resolve) => {
+            待回.push(resolve)
+          }),
+      },
+    })
+    目录.load({})
+    await 等一轮()
+
+    const 任务 = 目录.saveContent("a1", { summary: "x" })
+    expect(目录.contentBusy()).toBe("a1")
+    待回[0]!({ kind: "ok", value: { ...完整行({ summary: "x" }) } })
+
+    expect((await 任务)?.summary).toBe("x")
+    expect(目录.contentBusy()).toBeUndefined()
+  })
+
+  test("saveContent 抛错（替身直接 throw）⇒ 返回 undefined、错误进 error()、busy 复位", async () => {
+    const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
+    const 目录 = createAssetCatalog(api, {
+      contentApi: {
+        save: async () => {
+          throw new Error("boom")
+        },
+      },
+    })
+    目录.load({})
+
+    expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
+    expect(目录.error()).toBe("保存失败，请检查网络后重试")
+    expect(目录.contentBusy()).toBeUndefined()
+  })
+
+  test("回包是坏行 ⇒ 不返回行（确实过了 解析资产行）", async () => {
+    const 坏行 = { ...完整行({ summary: "x" }) } as Record<string, unknown>
+    delete 坏行["publishedAt"]
+    const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
+    const 目录 = createAssetCatalog(api, {
+      contentApi: { save: async () => ({ kind: "ok", value: 坏行 }) },
+    })
+    目录.load({})
+
+    expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
   })
 
   test("writableIds 随每页回包重建；空间全取消短路时清空", async () => {

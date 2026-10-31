@@ -201,14 +201,19 @@ describe("使用面资产客户端", () => {
     expect(out.value.writableIds).toEqual([])
   })
 
-  test("writableIds 原样带出", async () => {
-    const { send } = 替身(() =>
-      json({ assets: [资产("a1")], total: 1, page: 1, pageSize: 20, writableIds: ["a1"] }),
-    )
-    const out = await createCatalogApi(send).list()
-    expect(out.kind).toBe("ok")
-    if (out.kind !== "ok") return
-    expect(out.value.writableIds).toEqual(["a1"])
+  test("writableIds 原样带出；元素不是字符串 ⇒ failed（与 favoritedIds 同口径）", async () => {
+    const 有可写 = await createCatalogApi(
+      替身(() => json({ assets: [资产("a1")], total: 1, page: 1, pageSize: 20, writableIds: ["a1"] })).send,
+    ).list()
+    expect(有可写.kind).toBe("ok")
+    if (有可写.kind === "ok") expect(有可写.value.writableIds).toEqual(["a1"])
+
+    for (const bad of [["a1", 1], "a1", { a1: true }, null]) {
+      const out = await createCatalogApi(
+        替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20, writableIds: bad })).send,
+      ).list()
+      expect(out.kind).toBe("failed")
+    }
   })
 
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {

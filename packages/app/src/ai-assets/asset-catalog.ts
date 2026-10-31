@@ -238,14 +238,21 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const saveContent = async (assetId: string, patch: 内容补丁): Promise<AssetMetadata | undefined> => {
     if (保存中() !== undefined) return undefined
     set保存中(assetId)
-    const 结果 = await 内容Api.save(assetId, patch)
-    set保存中(undefined)
-    if (结果.kind !== "ok") {
-      set错误(结果.message)
+    try {
+      const 结果 = await 内容Api.save(assetId, patch)
+      if (结果.kind !== "ok") {
+        set错误(结果.message)
+        return undefined
+      }
+      set错误(undefined)
+      return 解析资产行(结果.value)
+    } catch {
+      // 注入的客户端若直接抛（默认实现自己会吞），也不能把 `保存中` 永久卡住。
+      set错误("保存失败，请检查网络后重试")
       return undefined
+    } finally {
+      set保存中(undefined)
     }
-    set错误(undefined)
-    return 解析资产行(结果.value)
   }
 
   return {
