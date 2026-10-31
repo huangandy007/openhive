@@ -48,10 +48,27 @@ export * as OpenhiveAssets from "./assets"
  * 另一处出口回假值（那里根本没有「当前读者」）。平行数组则要么有、要么空，没有歧义。
  *
  * 使用次数与评分仍不在本出口（工作台没有写它们的路径）。
+ *
+ * ## 可写集合与内容编辑（2026-10-31）
+ *
+ * 列表再回一个 `writableIds`：**本页里我有 `write` 的**，与 `favoritedIds` 同构的平行数组
+ * （理由同上：不往共用类型上加 per-user 字段）。判据是 `effectivePermissions()` 一份。
+ * 写出口是 `PATCH /openhive/assets/:id`（改 `description` / `summary` / `precautions`），
+ * 次序恒定「身份 → 存在 → 授权 → 校验 → 写」——**授权先于校验**（见 `handleContent`）。
  */
 
-import { countAssets, listAssets, type AssetListFilters } from "@opencode-ai/asset-service/asset"
+import {
+  AssetMetadataError,
+  assetById,
+  countAssets,
+  listAssets,
+  updateAssetContent,
+  type AssetContentPatch,
+  type AssetListFilters,
+} from "@opencode-ai/asset-service/asset"
+import { effectivePermissions } from "@opencode-ai/asset-service/authorization"
 import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
+import { grantsFor } from "@opencode-ai/auth/rbac"
 import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { offsetOf, parsePage } from "./paging"
 import {
@@ -65,17 +82,20 @@ import { nowSeconds } from "@opencode-ai/auth/time"
 import { dataRoot } from "@opencode-ai/core/database/router"
 import { User } from "@opencode-ai/core/user"
 import { sql } from "drizzle-orm"
-import { Effect, Option } from "effect"
+import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { create抽取时控, 用量统计 } from "./asset-usage"
 import { OpenhivePg } from "./pg"
 
 export const PATH = {
   list: "/openhive/assets",
+  content: "/openhive/assets/:id",
 } as const
 
 const BAD_REQUEST = 400
 const UNAUTHORIZED = 401
+const FORBIDDEN = 403
+const NOT_FOUND = 404
 
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
@@ -89,6 +109,7 @@ export const routes = HttpRouter.use((router) =>
     const deps: Deps = { pg: openhivePg.pg, 时控: create抽取时控() }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
+    yield* router.add("PATCH", PATH.content, (request) => handleContent(request, deps))
   }),
 )
 
@@ -192,6 +213,14 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 本页 = new Set(assets.map((asset) => asset.id))
     const favoritedIds = 收藏.filter((id) => 本页.has(id))
 
+    // 可写的（2026-10-31）：与 `favoritedIds` 同构的平行数组——不往 `AssetMetadata` 上加
+    // per-user 字段（那份类型与治理后台共用，加了会让另一个出口回假值）。
+    // 判据只有 `effectivePermissions()` 一份；本页资产已经过可见性下推，这里只看 write。
+    const 本页授权 = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    const writableIds = assets
+      .filter((asset) => effectivePermissions(viewer, asset, 本页授权).has("write"))
+      .map((asset) => asset.id)
+
     // 使用记录（2026-10-29）：**读之前先抽取**（同 010 T009 的次序）。60 秒节流 ＋ 单飞，
     // 失败沿用已有数据——列表是主功能，不能因为用量统计坏了就 500。
     if (deps.时控.该抽()) {
@@ -217,7 +246,73 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       pageSize: 分页.pageSize,
       categoryNames,
       favoritedIds,
+      writableIds,
       ...(usageStats === undefined ? {} : { usageStats }),
     })
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function 读取体(request: HttpServerRequest.HttpServerRequest) {
+  return request.json.pipe(
+    Effect.match({ onFailure: () => undefined, onSuccess: (value: unknown) => value }),
+  )
+}
+
+/**
+ * `PATCH /openhive/assets/:id`（2026-10-31）：改介绍 / 功能描述 / 注意事项。
+ *
+ * 次序是「身份 → 存在 → 授权 → 校验 → 写」：
+ * - 不存在回 404（存在性问题，与 `favorites.ts:140` 同一口径）；
+ * - **有资产但无 write 一律 403，先于长度校验的 400**——否则可以靠 400/403 的差别
+ *   试探「合法长度是多少」，也等于把校验规则暴露给无权者（`#004-09`）。
+ *
+ * 回包是**读完库之后的完整元数据**，不是「我送了什么」（与收藏出口同一取向）。
+ */
+function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+
+    const 参数 = yield* HttpRouter.params
+    const assetId = 参数.id ?? ""
+    const body = yield* 读取体(request)
+    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return fail(NOT_FOUND, "资产不存在")
+
+    const department = yield* 取部门(deps, userId)
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    if (!effectivePermissions({ userId, department }, asset, grants).has("write")) {
+      return fail(FORBIDDEN, "无权修改该资产")
+    }
+
+    const patch: AssetContentPatch = {}
+    for (const 字段 of ["description", "summary", "precautions"] as const) {
+      const 值 = body[字段]
+      if (值 === undefined) continue
+      if (typeof 值 !== "string") return fail(BAD_REQUEST, `${字段} 必须是字符串`)
+      patch[字段] = 值
+    }
+    if (Object.keys(patch).length === 0) return fail(BAD_REQUEST, "没有可修改的字段")
+
+    const 结果 = yield* Effect.result(
+      Effect.tryPromise({
+        try: () => updateAssetContent(deps.pg(), assetId, patch, nowSeconds()),
+        catch: (error) => error,
+      }),
+    )
+    if (Result.isFailure(结果)) {
+      const error = 结果.failure
+      if (error instanceof AssetMetadataError) return fail(BAD_REQUEST, error.message)
+      throw error
+    }
+    if (结果.success === undefined) return fail(NOT_FOUND, "资产不存在")
+    return ok(结果.success)
   })
 }
