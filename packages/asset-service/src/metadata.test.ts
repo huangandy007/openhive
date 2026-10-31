@@ -15,6 +15,8 @@ function validMetadata(): AssetMetadata {
     name: "资金分析",
     type: "skill",
     description: "从银行流水中识别可疑资金链路",
+    summary: "",
+    precautions: "",
     icon: "analysis",
     category: "intelligence",
     tags: ["资金", "研判"],

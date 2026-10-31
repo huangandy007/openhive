@@ -216,6 +216,8 @@ export async function createDraftAsset(input: CreateDraftAssetInput): Promise<As
     name: input.name,
     type: "skill",
     description: input.description,
+    summary: "",
+    precautions: "",
     icon: input.icon ?? "🧩",
     category: input.category,
     tags: input.tags ?? [],

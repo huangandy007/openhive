@@ -34,6 +34,8 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
     name: "资金流向研判",
     type: "skill",
     description: "按账户汇总资金往来",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence", // 需求 4 起分类 id 来自服务端，这里只是夹具里的一个字符串
     tags: ["资金"],

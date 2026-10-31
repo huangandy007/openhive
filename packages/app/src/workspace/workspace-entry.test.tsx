@@ -6427,6 +6427,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       name: "资金流向研判",
       type: "skill",
       description: "按账户汇总资金往来",
+      summary: "",
+      precautions: "",
       icon: "skill",
       category: 分类夹具[0].id,
       tags: ["资金"],

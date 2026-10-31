@@ -72,6 +72,8 @@ afterAll(restorePoolMax)
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "status">): AssetMetadata => ({
   type: "skill",
   description: "测试用资产",
+  summary: "",
+  precautions: "",
   icon: "skill",
   category: "intelligence",
   tags: ["测试"],

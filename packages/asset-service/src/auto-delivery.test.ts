@@ -35,6 +35,8 @@ function metadata(over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "nam
   return {
     type: "skill",
     description: "自动送达夹具",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: ["测试"],

@@ -31,6 +31,8 @@ const 资产 = (id: string, overrides: Partial<AssetMetadata> = {}): AssetMetada
   name: "资金流水分析",
   type: "skill",
   description: "按账号汇总资金流向",
+  summary: "",
+  precautions: "",
   icon: "skill",
   category: "intelligence",
   tags: ["资金", "研判"],

@@ -14,6 +14,8 @@ export function 样例资产(over: Partial<AssetMetadata> & Pick<AssetMetadata, 
   return {
     type: "skill",
     description: "按账户汇总资金流水，标注异常进出账。",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: ["资金", "账户"],

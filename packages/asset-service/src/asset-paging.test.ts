@@ -44,6 +44,8 @@ function row(id: string, overrides: Partial<AssetMetadata> = {}): AssetMetadata 
     name: `资产 ${id}`,
     type: "skill",
     description: "分页夹具",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: [],

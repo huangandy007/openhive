@@ -15,6 +15,8 @@ const 资产 = (id: string): AssetMetadata => ({
   name: `资产 ${id}`,
   type: "skill",
   description: "",
+  summary: "",
+  precautions: "",
   icon: "skill",
   category: "intelligence",
   tags: [],

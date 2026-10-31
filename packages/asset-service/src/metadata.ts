@@ -70,6 +70,10 @@ export interface AssetMetadata {
   name: string
   type: AssetType
   description: string
+  /** 一句话功能描述，专供左栏悬停浮层（2026-10-31）。空串 = 未填，悬停回落到 SKILL.md。 */
+  summary: string
+  /** 资产专属注意事项（2026-10-31）。空串 = 未填。产品级提示不在这里。 */
+  precautions: string
   /** 图标标识，前端按标识映射到视觉资产。 */
   icon: string
   /** 业务分类 ID，取值见 categories.ts；单值，不等同于 tags。 */
@@ -95,6 +99,20 @@ export interface AssetMetadata {
   publishedAt: number | null
   archivedAt: number | null
 }
+
+/**
+ * 三个内容字段的长度上限（2026-10-31）。
+ *
+ * `summary` 卡在 200：悬停浮层只有 260px 宽、最多 320px 高，再长就读不完了。
+ * 上限按 `String.length`（UTF-16 码元）计——中文常用字是 1，够用，不做字素簇统计。
+ */
+export const CONTENT_LIMITS = {
+  description: 2000,
+  summary: 200,
+  precautions: 1000,
+} as const
+
+export type AssetContentField = keyof typeof CONTENT_LIMITS
 
 export interface MetadataIssue {
   field: string
@@ -139,6 +157,16 @@ export function validateAssetMetadata(input: AssetMetadata): MetadataIssue[] {
     if (typeof value !== "string" || value.trim() === "") {
       issues.push({ field, message: "不能为空" })
     }
+  }
+
+  for (const field of ["description", "summary", "precautions"] as const) {
+    // `description` 的「必须是字符串 / 不能为空」已由上面的 REQUIRED_TEXT_FIELDS 报过；
+    // 这里只补它没有的长度上限，避免同一处问题报两条（#002-06）。
+    const 问题 =
+      field === "description"
+        ? contentLengthIssue(field, input[field])
+        : validateContentField(field, input[field])
+    if (问题 !== undefined) issues.push(问题)
   }
 
   if (!isOneOf(ASSET_TYPES, input.type)) {
@@ -203,4 +231,26 @@ export function validateAssetMetadata(input: AssetMetadata): MetadataIssue[] {
   }
 
   return issues
+}
+
+/** 只判长度：长度规则只在这里出现一次，`validateContentField` 与元数据校验共用。 */
+function contentLengthIssue(field: AssetContentField, value: unknown): MetadataIssue | undefined {
+  if (typeof value !== "string") return undefined
+  const limit = CONTENT_LIMITS[field]
+  if (value.length > limit) return { field, message: `不能超过 ${limit} 字` }
+  return undefined
+}
+
+/**
+ * 单个内容字段的校验。
+ *
+ * - 不是字符串 ⇒ 报错（HTTP 来的 body 什么都可能是）；
+ * - `description` 空串 ⇒ 报错（「介绍」是必填，卡片与详情都靠它）；`summary` / `precautions`
+ *   允许空串（= 未填）；
+ * - 超长 ⇒ 报错，消息里带上限值，前端能直接把这句话显示出来。
+ */
+export function validateContentField(field: AssetContentField, value: unknown): MetadataIssue | undefined {
+  if (typeof value !== "string") return { field, message: "必须是字符串" }
+  if (field === "description" && value.trim() === "") return { field, message: "不能为空" }
+  return contentLengthIssue(field, value)
 }

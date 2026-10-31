@@ -40,6 +40,8 @@ function mcpAsset(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
     name: "资金数据查询",
     type: "mcp",
     description: "按账户查询资金流水",
+    summary: "",
+    precautions: "",
     icon: "mcp",
     category: "intelligence",
     tags: [],

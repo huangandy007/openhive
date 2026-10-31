@@ -25,6 +25,8 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
     name: "资金流向研判",
     type: "skill",
     description: "按账户汇总",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: [],

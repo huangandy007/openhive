@@ -62,6 +62,8 @@ function metadata(over: Partial<AssetMetadata> = {}): AssetMetadata {
     name: "资金流水分析",
     type: "skill",
     description: "按账户汇总流水",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: ["资金"],

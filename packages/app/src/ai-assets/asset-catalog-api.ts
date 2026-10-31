@@ -150,6 +150,8 @@ function 行(value: unknown): AssetMetadata | undefined {
     name,
     type,
     description,
+    summary,
+    precautions,
     icon,
     category,
     tags,
@@ -169,6 +171,7 @@ function 行(value: unknown): AssetMetadata | undefined {
   } = value
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof description !== "string" || typeof icon !== "string" || typeof category !== "string") return undefined
+  if (typeof summary !== "string" || typeof precautions !== "string") return undefined
   if (typeof ownerId !== "string" || typeof ownerName !== "string" || typeof department !== "string") {
     return undefined
   }
@@ -185,6 +188,8 @@ function 行(value: unknown): AssetMetadata | undefined {
     name,
     type,
     description,
+    summary,
+    precautions,
     icon,
     category,
     tags,

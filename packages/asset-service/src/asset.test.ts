@@ -56,6 +56,8 @@ function metadata(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
     name: "资金流水分析",
     type: "skill",
     description: "按账户汇总流水",
+    summary: "",
+    precautions: "",
     icon: "skill",
     category: "intelligence",
     tags: ["资金", "流水"],
@@ -340,5 +342,25 @@ describe("生命周期列的条件更新（T008）", () => {
       metadata({ status: "published", version: 2, updatedAt: 5_000, publishedAt: 5_000 }),
     )
     expect(await assetById(db, "asset_1")).toEqual(updated)
+  })
+})
+
+describe("内容字段（2026-10-31）", () => {
+  test("插入后 summary / precautions 默认是空串，不是 null", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_default", name: "内容默认值" }))
+    const 读回 = await assetById(db, "a_content_default")
+    expect(读回?.summary).toBe("")
+    expect(读回?.precautions).toBe("")
+  })
+
+  test("迁移把 description 回填进 summary 之后，两者相等", async () => {
+    // 迁移本身在 beforeAll 的 migrate() 里已跑过；这里验回填口径：
+    // 先写一行 summary 为空、description 非空，再跑一遍回填语句（幂等）。
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_backfill", name: "回填", description: "原来的介绍" }))
+    await db.execute(sql`update auth.asset set summary = description where id = ${"a_content_backfill"}`)
+    const 读回 = await assetById(db, "a_content_backfill")
+    expect(读回?.summary).toBe("原来的介绍")
   })
 })

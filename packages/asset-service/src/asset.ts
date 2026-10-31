@@ -53,6 +53,8 @@ export const asset = assetSchema.table("asset", {
   name: text("name").notNull(),
   type: text("type").notNull(),
   description: text("description").notNull(),
+  summary: text("summary").notNull(),
+  precautions: text("precautions").notNull(),
   icon: text("icon").notNull(),
   category: text("category").notNull(),
   tags: text("tags").array().notNull(),
@@ -136,6 +138,8 @@ function toMetadata(row: Record<string, unknown>): AssetMetadata {
     name: String(row.name),
     type: closedValue(ASSET_TYPES, row.type, "type"),
     description: String(row.description),
+    summary: String(row.summary),
+    precautions: String(row.precautions),
     icon: String(row.icon),
     category: String(row.category),
     tags: row.tags.map(String),
@@ -158,9 +162,10 @@ function toMetadata(row: Record<string, unknown>): AssetMetadata {
 }
 
 const COLUMNS = sql`
-  id, name, type, description, icon, category, tags, owner_id, owner_name, department,
-  visibility, version, status, favorite_count, usage_count, rating, rating_count,
-  feedback_count, created_at, updated_at, published_at, archived_at
+  id, name, type, description, summary, precautions, icon, category, tags,
+  owner_id, owner_name, department, visibility, version, status, favorite_count,
+  usage_count, rating, rating_count, feedback_count, created_at, updated_at,
+  published_at, archived_at
 `
 
 /**
@@ -176,16 +181,17 @@ export async function insertAsset(db: AssetTarget, input: AssetMetadata): Promis
   assertValidAssetMetadata(input)
   await db.execute(sql`
     insert into auth.asset (
-      id, name, type, description, icon, category, tags, owner_id, owner_name, department,
-      visibility, version, status, favorite_count, usage_count, rating, rating_count,
-      feedback_count, created_at, updated_at, published_at, archived_at
+      id, name, type, description, summary, precautions, icon, category, tags,
+      owner_id, owner_name, department, visibility, version, status, favorite_count,
+      usage_count, rating, rating_count, feedback_count, created_at, updated_at,
+      published_at, archived_at
     ) values (
-      ${input.id}, ${input.name}, ${input.type}, ${input.description}, ${input.icon},
-      ${input.category}, ${tagsLiteral(input.tags)}, ${input.ownerId}, ${input.ownerName},
-      ${input.department}, ${input.visibility}, ${input.version}, ${input.status},
-      ${input.favoriteCount}, ${input.usageCount}, ${input.rating}, ${input.ratingCount},
-      ${input.feedbackCount}, ${input.createdAt}, ${input.updatedAt}, ${input.publishedAt},
-      ${input.archivedAt}
+      ${input.id}, ${input.name}, ${input.type}, ${input.description}, ${input.summary},
+      ${input.precautions}, ${input.icon}, ${input.category}, ${tagsLiteral(input.tags)},
+      ${input.ownerId}, ${input.ownerName}, ${input.department}, ${input.visibility},
+      ${input.version}, ${input.status}, ${input.favoriteCount}, ${input.usageCount},
+      ${input.rating}, ${input.ratingCount}, ${input.feedbackCount}, ${input.createdAt},
+      ${input.updatedAt}, ${input.publishedAt}, ${input.archivedAt}
     )
   `)
 }
