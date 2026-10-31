@@ -101,8 +101,13 @@ function 可编辑字段(props: {
   /** 只读 → 编辑态切换后把焦点送进来：键盘 / 读屏用户不用再 Tab 找输入框（终审 M-4）。 */
   let 编辑框: HTMLTextAreaElement | undefined
 
-  /** 只读态是不是「还没填」——空态与真实正文要可辨（旧空态是 muted）。 */
-  const 显示空态 = () => props.值 === "" && props.emptyText !== undefined
+  /**
+   * 只读态是不是「还没填」——空态与真实正文要可辨（旧空态是 muted）。
+   *
+   * 用 `trim()` 与悬停取值（`project-assets.ts` 的 `描述.trim() !== ""`）同口径：作者存进
+   * `"   "` 时服务端允许（`summary` / `precautions` 只拒绝非字符串），前端不能把一片空白当正文。
+   */
+  const 显示空态 = () => props.值.trim() === "" && props.emptyText !== undefined
 
   const 开 = () => {
     set草稿(props.值)
@@ -188,7 +193,7 @@ function 可编辑字段(props: {
         </Match>
         <Match when={!编辑中()}>
           <p
-            data-slot={props.值 === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
+            data-slot={props.值.trim() === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
             class="mt-1 whitespace-pre-wrap text-[13px] leading-6"
             classList={{
               "text-v2-text-text-muted": 显示空态(),

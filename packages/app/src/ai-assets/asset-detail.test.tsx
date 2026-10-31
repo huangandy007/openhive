@@ -272,6 +272,19 @@ describe("详情各 tab 内容", () => {
     }
   })
 
+  // 终审 M-6：空态判定要与悬停侧同口径（`trim()`）。作者存进 `"   "` 时服务端允许，
+  // 前端若按 `=== ""` 判，会把一片空白当正文显示。
+  test("注意事项只有空白字符 ⇒ 显示空态，不把空白当正文", () => {
+    const { host, 卸 } = 挂({ precautions: "   " })
+    try {
+      标签(host, "precautions").click()
+      expect(文本(host, "asset-detail-precautions-empty")).toBe("该资产尚未填写专属注意事项。")
+      expect(槽(host, "asset-detail-precautions-text") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
   // 评价分区收起（2026-10-29，用户裁定）：库里没有一条评价正文，写一个永远空着的 tab
   // 等于把「不可达」装成「可达」（`#008-04`）。等真有写入口再单独立 feature 加回来。
   test("评价分区不再存在：没有评价 tab，也没有评价面板", () => {
