@@ -4,6 +4,71 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-10-31 · 资产内容编辑与悬停文案
+
+**现象**（三件事同一个根：**资产的可读文案没有写入路径，悬停还读错了地方**）：
+1. 左栏项目管理 → 技能 Tab，鼠标移到卡片上弹出的说明取自 SKILL.md 的 `description`，多数是英文；
+2. 详情页「介绍」读 `auth.asset.description`，这一列只在建草稿那一次写入，全仓没有任何 UPDATE；
+3. 「注意事项」Tab 那条「该资产尚未填写专属注意事项」是写死的空态——**根本没有对应的列**。
+
+**做法**（spec：`docs/superpowers/specs/2026-10-31-资产内容编辑-design.md`）：
+- 迁移 `0026_asset_content_fields.sql` 加 `summary` / `precautions`（`NOT NULL DEFAULT ''`），并把现有
+  `description` 回填进 `summary`（现网 9 条介绍本来就是一句话中文，上线当天悬停即中文）；
+- `asset-service`：`AssetMetadata` 扩两列、`CONTENT_LIMITS`（2000 / 200 / 1000）、`validateContentField()`、
+  `updateAssetContent()`（只写三个内容列 + `updated_at`，不碰 `status` / `version`）；
+- 路由：`PATCH /openhive/assets/:id`（401 → 404 → 403 → 400，`#004-09` 门在副作用之前）；
+  `GET /openhive/assets` 增平行数组 `writableIds`（与 `favoritedIds` 同构，授权行 `grantsFor()` 一次取全）；
+- 悬停：`映射内核清单()` 多收一张 `assetId → summary` 的表，非空用它，否则回落 SKILL.md `description`；
+- 前端：`content-api.ts`（PATCH 客户端）、`CatalogPage.writableIds`、`saveContent` / `applyAsset`、
+  详情页三 Tab 就地编辑（保存失败保留输入）。
+
+**测试**（实跑，非转述）：
+
+| 范围 | 命令 | 实得 |
+|---|---|---|
+| asset-service | `timeout 900 bun test` | 310 pass / 4 skip / 0 fail（314 用例 / 24 文件 / 179s）|
+| app 组件 | `bun run test:components` | 1720 pass / 0 fail（82 文件 / 36s）|
+| app 单元 | `bun run test` → `test:unit` | 1415 pass / 27 fail（**全部** `jsxDEV not found in solid-js/dist/solid.js`）|
+| app 浏览器 | `bun run test` → `test:browser` | 18 pass / 8 fail（同上 jsxDEV）|
+| opencode server | `timeout 1800 bun test test/server/` | 1127 pass / 24 skip / 3 fail / 1 error（复跑一次同计数）|
+| auth 迁移 | `timeout 600 bun test src/migrate.test.ts` | 19 pass / 1 fail（红的是 0017 down 的既有 42601）|
+| 全仓类型 | `bun turbo typecheck` | 32 successful / 32 total |
+| 全仓 lint | `bun run lint` | 5353 warning / **1 error** |
+
+**既有红（已基线复核，不是本次引入）**：
+- app 单元的 27 fail 与浏览器的 8 fail（全部 `jsxDEV not found in solid-js/dist/solid.js`）：
+  `git checkout --detach aef2a10cb5` 复跑，计数完全一致；
+- opencode 的 3 条红全是 `SDK file search index was not ready` 5s 超时（httpapi-file ×1、httpapi-sdk ×2），
+  同样的文件在 `aef2a10cb5` 上单跑**同样这 3 条**；
+- 第一次全量跑还红过一条 `T-rename · 非创建人改名被拒（零副作用）`；同文件单跑（HEAD 与基线）7 pass，
+  全量复跑也不再复现 ⇒ 跨文件偶发干扰，非本改动引入；
+- `bun run lint` 的 1 error 在 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`
+  （上游文件，`git log aef2a10cb5..HEAD -- packages/session-ui` 为空）；受影响范围单跑 oxlint → 0 error / 186 warning。
+
+**变异验证**（每处都实拆过、见 `.superpowers/sdd/2026-10-31-资产内容编辑/progress.md`）：
+回填语句注释掉 ⇒ 红 `asset.test.ts:380`；`patch.summary || null` ⇒ 红「清空为 `''`」；
+清空 `0026.down.sql` ⇒ 红 `migrate.test.ts` 的「0026 两列回滚后撤掉」（Expected 0 / Received 1）；
+`description = description` ⇒ 红「介绍正向写入」；权限判据换成 `ownerId === userId` ⇒ 红「显式 write 授权」；
+`summary` 优先分支拆掉 ⇒ 红悬停取值；前端路径用 `PATH.base` 自比 ⇒ 已改成字面量（`#003-05`）。
+
+**残留（如实记）**：
+1. **回填后「介绍」与「功能描述」内容完全相同**（现网 9 条），要等作者各自改写才会分开——裁定的直接代价；
+2. **项目自带技能悬停仍是 SKILL.md 原文**（可能英文）：库里没有这条记录，就没有可编辑的功能描述；
+3. **`write` 权限今天等价于「仅作者本人」**：生产代码没有任何授予 `write` 的其他路径（`grantAssetToGroup`
+   唯一生产调用写死 `perm: "read"`）。开放协作编辑需先补授予入口，不在本次范围；
+4. **`auto` 自动送达的资产不在悬停映射表内**（与既有 `标题` 表同覆盖面），悬停回落 SKILL.md；
+5. **新发布的资产悬停回到英文，直到作者填功能描述**：`createDraftAsset()` 写死 `summary: ""`
+   （spec §4.2 的裁定），迁移只回填**存量**行；治理发布流程建出来的新资产没有 `summary` ⇒ 回落 SKILL.md。
+   作者要从详情页「功能描述」Tab 填一次。想让发布时自动继承介绍，得改发布入参——不在本次范围；
+6. **资产搜索只搜 `description`**（`asset.ts:344`），不搜 `summary` / `precautions`：同一类「内容列读者」
+   漏了一处。本次不动（spec 未列），记在此处以免被当成已覆盖；
+7. **版本 Tab 维持只读**：版本历史单独立项（`start_iteration` 在产品里没有入口，建表只会得到一张不长行的表）；
+8. **路由层的非字符串守卫没有单独用例**：`assets.ts:302` 的 `typeof 值 !== "string" ⇒ 400` 与服务层
+   `validateContentField` 的判断重合，只删路由那一条时服务层会回同样的 400，用例照绿。留着它是因为
+   它同时把类型收窄成 `string`（删掉就得写 `as string`）；不是「已覆盖」，是「行为重合」；
+9. **⚠️ 本次未在真栈验证**：迁移、PATCH 出口、悬停文案、编辑态都只在 PGlite 测试库与组件层验过，
+   真栈要重启内核（`0026` 迁移在启动时跑）后由用户实操验收。
+
 ## 2026-10-30 · 使用记录口径扩展：五条路都认
 
 **现象**：用户在真栈上「确实用了技能」（16:38 跑 `md_to_word.py` 产出 39,878 字节 docx），
@@ -452,4 +517,4 @@ B 天数硬编码 30 ⇒ 3 红；C 拆网格透传 ⇒ 2 红；**我方另做一
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-10-26（治理 MCP 改为单进程形态，真栈三条判据实测通过；Step 5 真实登记待用户实操）
+2026-10-31（资产内容编辑与悬停文案：迁移 0026、PATCH 出口、悬停回落、详情页三 Tab 就地编辑；真栈验收待用户）
