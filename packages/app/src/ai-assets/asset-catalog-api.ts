@@ -150,9 +150,13 @@ function 可空时间(value: unknown): number | null | undefined {
 /**
  * 每一列都严判：缺一列、类型不对、枚举越界都算 `failed`（不猜默认值）。
  *
- * **例外：`summary` / `precautions` 缺省按空串**（2026-10-31）。旧内核的回包没有这两列，
- * 升前端不升内核时若按「形状变了」处理，整页资产都会 failed；而空串本来就是「未填」的
- * 合法值、也就是默认值。其余列仍保持严格，不把整份解析放宽。
+ * **唯一例外：`summary` / `precautions` 这一列「缺席」时按空串**（2026-10-31）。旧内核的
+ * 回包没有这两列，升前端不升内核时若按「形状变了」处理，整页资产都会 failed；而空串本来
+ * 就是「未填」的合法值、也就是默认值。
+ *
+ * ⚠️ **放宽的只有「缺列」（`undefined`），类型漂移仍按坏行处理**（终审 M-1）：`summary: 123`
+ * 必须整页 failed，不能被静默当成 `""` 显示成「未填」——那会把「服务端契约变了」伪装成
+ * 「作者没填」。判据因此是「先判缺席，再判类型」，与其余列「类型不对 ⇒ failed」同一口径。
  */
 export function 解析资产行(value: unknown): AssetMetadata | undefined {
   if (!isRecord(value)) return undefined
@@ -180,8 +184,12 @@ export function 解析资产行(value: unknown): AssetMetadata | undefined {
   } = value
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof description !== "string" || typeof icon !== "string" || typeof category !== "string") return undefined
-  const summary = typeof value["summary"] === "string" ? value["summary"] : ""
-  const precautions = typeof value["precautions"] === "string" ? value["precautions"] : ""
+  // 缺席（旧内核没这列）⇒ 空串；给了但不是字符串 ⇒ 坏行（不把类型漂移吞成「未填」）。
+  // 缺席（旧内核没这列）⇒ 空串；给了但不是字符串 ⇒ 坏行（不把类型漂移吞成「未填」）。
+  const summary = value["summary"]
+  const precautions = value["precautions"]
+  if (summary !== undefined && typeof summary !== "string") return undefined
+  if (precautions !== undefined && typeof precautions !== "string") return undefined
   if (typeof ownerId !== "string" || typeof ownerName !== "string" || typeof department !== "string") {
     return undefined
   }
@@ -198,8 +206,8 @@ export function 解析资产行(value: unknown): AssetMetadata | undefined {
     name,
     type,
     description,
-    summary,
-    precautions,
+    summary: summary ?? "",
+    precautions: precautions ?? "",
     icon,
     category,
     tags,

@@ -193,6 +193,18 @@ describe("使用面资产客户端", () => {
     expect(out.value.assets[0]?.precautions).toBe("")
   })
 
+  // 终审 M-1：放宽的只有「缺列」，类型漂移必须整页 failed——否则 `summary: 123`
+  // 会静默变成空串、显示成「未填」，把服务端契约变化伪装成作者没填。
+  test("summary / precautions 类型漂移 ⇒ 整页 failed（不吞成空串）", async () => {
+    for (const 坏 of [{ summary: 123 }, { precautions: false }, { summary: null }]) {
+      const { send } = 替身(() =>
+        json({ assets: [{ ...资产("a1"), ...坏 }], total: 1, page: 1, pageSize: 20 }),
+      )
+      const out = await createCatalogApi(send).list()
+      expect(out.kind, `类型漂移 ${JSON.stringify(坏)} 被当成合法行了`).toBe("failed")
+    }
+  })
+
   test("writableIds 缺省 ⇒ 空数组（旧内核兼容）", async () => {
     const { send } = 替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20 }))
     const out = await createCatalogApi(send).list()
