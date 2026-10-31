@@ -348,6 +348,27 @@ describe("内容编辑（2026-10-31）", () => {
     }
   })
 
+  // 终审 M-4：编辑框必须有可访问名称（读屏才报得出「在编辑哪个字段」），
+  // 且打开编辑后焦点要落进框里（键盘用户不必再 Tab 找）。
+  test("编辑框带可访问名称；打开编辑后焦点移进编辑框", () => {
+    const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: 保存成功 })
+    try {
+      for (const [id, 标题] of [
+        ["intro", "功能与用法"],
+        ["summary", "功能描述"],
+        ["precautions", "专属注意事项"],
+      ] as const) {
+        标签(host, id).click()
+        ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+        const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+        expect(框.getAttribute("aria-label")).toBe(标题)
+        expect(document.activeElement).toBe(框)
+      }
+    } finally {
+      卸()
+    }
+  })
+
   test("保存失败 ⇒ 保留用户输入并就地显示错误", async () => {
     const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: 保存抛错 })
     try {

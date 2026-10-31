@@ -98,6 +98,8 @@ function 可编辑字段(props: {
   const [草稿, set草稿] = createSignal("")
   const [保存中, set保存中] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
+  /** 只读 → 编辑态切换后把焦点送进来：键盘 / 读屏用户不用再 Tab 找输入框（终审 M-4）。 */
+  let 编辑框: HTMLTextAreaElement | undefined
 
   /** 只读态是不是「还没填」——空态与真实正文要可辨（旧空态是 muted）。 */
   const 显示空态 = () => props.值 === "" && props.emptyText !== undefined
@@ -106,6 +108,8 @@ function 可编辑字段(props: {
     set草稿(props.值)
     set错误(undefined)
     set编辑中(true)
+    // Solid 的信号写入是同步渲染的：上面一行执行完 `textarea` 已经在 DOM 里，ref 也已赋值。
+    编辑框?.focus()
   }
 
   const 存 = async () => {
@@ -142,7 +146,9 @@ function 可编辑字段(props: {
       <Switch>
         <Match when={编辑中()}>
           <textarea
+            ref={(el) => (编辑框 = el)}
             data-slot="asset-detail-editor"
+            aria-label={props.标题}
             class="mt-1 w-full rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[13px] leading-6 text-v2-text-text-base"
             rows={props.多行 ? 6 : 2}
             maxlength={props.上限}
