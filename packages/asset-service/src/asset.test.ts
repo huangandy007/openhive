@@ -15,6 +15,7 @@ import {
   updateAssetCategories,
   updateAssetContent,
   updateAssetLifecycle,
+  type AssetContentPatch,
 } from "./asset"
 import {
   ASSET_STATUSES,
@@ -483,6 +484,42 @@ describe("内容字段（2026-10-31）", () => {
     expect(error.issues.map((issue) => issue.field)).toContain("summary")
     // 校验在碰库之前：断言错误类型之外再钉住行一个字节都没动。
     expect((await assetById(db, "a_content_long"))?.updatedAt).toBe(1_000)
+  })
+
+  // 终审 I-2：spec §8 要求「三个字段各自超限」。之前只测了 `summary`，
+  // `CONTENT_LIMITS.description` / `precautions` 改成多大都不会有机制发现。
+  test("updateAssetContent 介绍超 2000 抛 AssetMetadataError 且带字段名", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_desc_long", name: "超长介绍" }))
+    const error = await failure(() =>
+      updateAssetContent(db, "a_content_desc_long", { description: "一".repeat(2001) }, 8_100),
+    )
+    if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
+    expect(error.issues.map((issue) => issue.field)).toContain("description")
+    expect((await assetById(db, "a_content_desc_long"))?.updatedAt).toBe(1_000)
+  })
+
+  test("updateAssetContent 注意事项超 1000 抛 AssetMetadataError 且带字段名", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_prec_long", name: "超长注意事项" }))
+    const error = await failure(() =>
+      updateAssetContent(db, "a_content_prec_long", { precautions: "一".repeat(1001) }, 8_200),
+    )
+    if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
+    expect(error.issues.map((issue) => issue.field)).toContain("precautions")
+    expect((await assetById(db, "a_content_prec_long"))?.updatedAt).toBe(1_000)
+  })
+
+  // 非字符串是 HTTP 边界的第二道门（`metadata.ts` 的 `typeof value !== "string"`）：
+  // 绕过 TS 直接喂运行时脏值，证明校验发生在碰库之前。
+  test("updateAssetContent 非字符串抛 AssetMetadataError 且一行未写", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_type", name: "非字符串" }))
+    const 坏补丁 = { summary: 123 } as unknown as AssetContentPatch
+    const error = await failure(() => updateAssetContent(db, "a_content_type", 坏补丁, 8_300))
+    if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
+    expect(error.issues.map((issue) => issue.field)).toContain("summary")
+    expect((await assetById(db, "a_content_type"))?.updatedAt).toBe(1_000)
   })
 
   test("updateAssetContent 拒绝空介绍", async () => {

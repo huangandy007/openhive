@@ -170,11 +170,14 @@ describe("资产内容出口 · 权限", () => {
     }),
   )
 
-  it.live("无权的人送非法长度 ⇒ 仍回 403，而不是 400（授权先于校验）", () =>
+  it.live("无权的人送非法长度 / 非字符串 ⇒ 仍回 403，而不是 400（授权先于一切内容校验）", () =>
     Effect.gen(function* () {
-      const response = yield* 改内容(MATE, IDS.blocked, { summary: "一".repeat(500) })
-      expect(response.status).toBe(403)
-      expect((yield* 读错误(response)).error).toBe("无权修改该资产")
+      // 长度与类型两种坏请求都试：只要鉴权在前，无权者就永远看不到 400 的校验口径。
+      for (const 坏请求 of [{ summary: "一".repeat(500) }, { summary: 123 }]) {
+        const response = yield* 改内容(MATE, IDS.blocked, 坏请求)
+        expect(response.status).toBe(403)
+        expect((yield* 读错误(response)).error).toBe("无权修改该资产")
+      }
     }),
   )
 
@@ -212,6 +215,16 @@ describe("资产内容出口 · 写入", () => {
       const response = yield* 改内容(ME, IDS.mine, { summary: "一".repeat(201) })
       expect(response.status).toBe(400)
       expect(yield* Effect.promise(() => response.text())).toContain("200")
+    }),
+  )
+
+  // 终审 I-2：`assets.ts` 的 `typeof 值 !== "string"` 守卫之前没有用例。
+  // 有权限的人送脏类型必须得到 400（而不是 500 / 静默落库）。
+  it.live("作者送非字符串 ⇒ 400（类型守卫在授权之后）", () =>
+    Effect.gen(function* () {
+      const response = yield* 改内容(ME, IDS.mine, { summary: 123 })
+      expect(response.status).toBe(400)
+      expect((yield* 读错误(response)).error).toContain("summary")
     }),
   )
 
