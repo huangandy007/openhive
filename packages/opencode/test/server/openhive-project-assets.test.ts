@@ -128,6 +128,13 @@ const 审计项目 = "proj_enable_audit"
 const 对账失败项目 = "proj_enable_reconcile_broken"
 /** 设计 §12 三条后端用例的专用项目（自带一条手写技能，启用/停用不干扰其它用例）。 */
 const 能力项目 = "proj_enable_capability"
+/**
+ * 「summary 为空 ⇒ 回落 SKILL.md 原文」的专用项目。
+ *
+ * 不能复用 `能力项目`：那里的 §12 ③ 用例断言「停用后 enabled 为空」，本用例一旦在同一个项目
+ * 里启用 `部门资产`，就会把那条用例连坐拖红。独立项目才能各自维护启用态。
+ */
+const 兜底项目 = "proj_enable_fallback"
 /** 手写在项目沙箱里的技能目录名（内核按目录名给出 `assetId`，库里没有这份资产）。 */
 const 手写技能 = "我的工具"
 /**
@@ -270,6 +277,7 @@ beforeAll(async () => {
     预算项目,
     对账失败项目,
     能力项目,
+    兜底项目,
     阴影项目,
   ]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
@@ -289,7 +297,18 @@ beforeAll(async () => {
   writeFileSync(join(坏目录, "skill"), "不是目录\n", "utf8")
 
   // 已发布 / 全局 ⇒ 可启用。
-  await insertAsset(pg.db, 资产({ id: 已发布资产, name: "资金分析", status: "published", visibility: "global" }))
+  // `summary` 特意写成中文短句：悬停回包的 `description` 必须取它，而不是 SKILL.md 的英文原文
+  // （终审 I-1：之前这条夹具是空串，填入映射表那一行被删掉也全绿）。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: 已发布资产,
+      name: "资金分析",
+      status: "published",
+      visibility: "global",
+      summary: "一句话说清资金分析：按账户汇总流水并找出可疑对手方",
+    }),
+  )
   // 草稿 + 个人 ⇒ 先撞状态门（`asset_not_published`）。
   await insertAsset(pg.db, 资产({ id: 草稿资产, name: "草稿 skill", status: "draft", visibility: "personal" }))
   // 已发布 + 个人 ⇒ 撞「个人空间没有共享发布目录」那道门（`personal_not_linkable`）。
@@ -1109,6 +1128,10 @@ describe("项目级 skill 启用（真应用）", () => {
    * `Skill.Service` 在请求期拿不到、`读内核清单` 一直静默回 `undefined`，全绿。
    * 判据必须落在**回包内容**上：`assetId` 来自链接目录名、`assetName` 来自库里的标题、
    * `location` 必须落在该项目的沙箱目录下（否则会被 `属于项目()` 筛掉，说明扫描根不对）。
+   *
+   * `description` 是设计 §6 的悬停文案：作者填了功能描述就必须用它。这条断言是
+   * `project-assets.ts` 里 `功能描述.set(assetId, asset.summary)` 那一行的**唯一接线用例**
+   * （终审 I-1：删掉那行，之前全套照绿）。
    */
   it.live(
     "设计 §12 ①：启用后 GET 的 skills 带 assetId / assetName / 项目沙箱里的 location",
@@ -1125,6 +1148,8 @@ describe("项目级 skill 启用（真应用）", () => {
         // 名字两处来源不同：`name` 是 SKILL.md frontmatter，`assetName` 是库里的资产标题。
         expect(条!.name).toBe("资金分析")
         expect(条!.assetName).toBe("资金分析")
+        // 悬停文案取库里的 `summary`，不是 SKILL.md 的 `description: 测试`（设计 §6）。
+        expect(条!.description).toBe("一句话说清资金分析：按账户汇总流水并找出可疑对手方")
 
         const 目录 = projectDirectory(沙箱根, 我.id, 能力项目)
         const 规整 = (value: string) => value.replace(/\\/g, "/").toLowerCase()
@@ -1132,6 +1157,27 @@ describe("项目级 skill 启用（真应用）", () => {
         // 落在项目沙箱内（`属于项目()` 能通过的前提），且就是那条链接的落点。
         expect(location.startsWith(`${规整(目录)}/`)).toBe(true)
         expect(location.endsWith(`/.opencode/skill/${已发布资产}/skill.md`)).toBe(true)
+      }),
+    30_000,
+  )
+
+  /**
+   * 设计 §6 的回落档：`summary` 为空（或只有空白）⇒ 用内核给的 SKILL.md `description`。
+   *
+   * 与上一条成对：上一条钉「有功能描述时优先」，这条钉「没有时不能丢原文」。
+   * 夹具 `部门资产` 的 `summary` 是默认空串，它的 SKILL.md 写的是 `description: 测试`。
+   */
+  it.live(
+    "设计 §6：summary 为空 ⇒ 悬停文案回落 SKILL.md 的 description",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 兜底项目, assetId: 部门资产 })).status).toBe(200)
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${兜底项目}`))
+        expect(body.skills === undefined).toBe(false)
+        const 条 = (body.skills ?? []).find((skill) => skill.assetId === 部门资产)
+        expect(条 === undefined).toBe(false)
+        expect(条!.description).toBe("测试")
       }),
     30_000,
   )
