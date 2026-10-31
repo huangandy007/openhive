@@ -44,6 +44,13 @@ describe("最后回复文本", () => {
     expect(最后回复文本([消息("assistant", 工具块()), 消息("assistant")])).toBeUndefined()
   })
 
+  // 只跳过 `"user"` 等于假设「role 只有 user / assistant 两种」。SDK 将来加第三种 role
+  // （system、tool…）时，那种消息会被当成 AI 回复填进编辑框。按语义只认 assistant。
+  test("不是 assistant 的消息都不算回复（user 之外的其他 role 同理）", () => {
+    expect(最后回复文本([消息("system", 文本块("系统提示")), 消息("assistant", 文本块("回答"))])).toBe("回答")
+    expect(最后回复文本([消息("assistant", 文本块("回答")), 消息("system", 文本块("系统提示"))])).toBe("回答")
+  })
+
   test("只看最后一条非用户消息，不回头拼更早的助手消息", () => {
     expect(
       最后回复文本([

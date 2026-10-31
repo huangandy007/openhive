@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { 行数上界 } from "@/ai-session/send-to-session"
 import { 提取正文, 构造起草提示 } from "./起草提示"
 
 const 提示 = (over: Partial<Parameters<typeof 构造起草提示>[0]> = {}) =>
@@ -57,6 +58,20 @@ describe("构造起草提示", () => {
     expect(结果).toContain("原内容")
     expect(结果).toContain("旧的介绍正文")
   })
+
+  /**
+   * 中栏 → 右栏一次最多 50 行（`send-to-session.ts` 的 `行数上界`）。原先把现有内容整段塞进去，
+   * 「介绍」这种列表式 Markdown 一长就永远发不出去，还报「请少选点」——这个按钮上没有「选」
+   * 这个动作（2026-10-31 复审 I-2）。
+   */
+  test("现有内容很长 ⇒ 按行数上限截断，指令整体不超过上界", () => {
+    const 六十行 = Array.from({ length: 60 }, (_, i) => `第${i}行`).join("\n")
+    const 结果 = 提示({ 现有: 六十行 })
+    expect(结果.split("\n").length <= 行数上界).toBe(true)
+    expect(结果).toContain("第0行")
+    expect(结果).toContain("其余已省略")
+    expect(结果.includes("第59行")).toBe(false)
+  })
 })
 
 describe("提取正文", () => {
@@ -68,8 +83,18 @@ describe("提取正文", () => {
     expect(提取正文("  正文  \n")).toBe("正文")
   })
 
-  test("围栏未闭合 ⇒ 回退整段 trim", () => {
-    expect(提取正文("```\n没闭合")).toBe("```\n没闭合")
+  /**
+   * 提示词明确要求 AI「用 Markdown 写（标题 / 粗体 / 列表 / **代码块**）」——正文里带代码块
+   * 是预期之内的事。闭合围栏若取第一个 ```，代码块及其后的正文会被整段截掉
+   * （探针实得 `"# 标题"`，2026-10-31 复审 I-1）。
+   */
+  test("围栏里的正文自己带代码块 ⇒ 不能截断", () => {
+    const 回复 = "```markdown\n# 标题\n\n```ts\nconst a = 1\n```\n\n结尾\n```"
+    expect(提取正文(回复)).toBe("# 标题\n\n```ts\nconst a = 1\n```\n\n结尾")
+  })
+
+  test("围栏未闭合 ⇒ 丢掉开头那行标记，正文照收", () => {
+    expect(提取正文("```markdown\n正文没闭合")).toBe("正文没闭合")
   })
 
   test("空回复 / 只有围栏没有内容 ⇒ 空串", () => {

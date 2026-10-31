@@ -18,21 +18,23 @@ type 文本片段 = {
   readonly text?: string
 }
 
+/** 判定「这一块是可直接读的正文」。用类型谓词而不是 `as string`，下游不必再断言。 */
+const 是正文块 = (片段: 文本片段): 片段 is 文本片段 & { text: string } =>
+  片段.type === "text" && typeof 片段.text === "string" && 片段.text.trim() !== ""
+
 /**
- * 取**最后一条非用户消息**的全部正文：多个 `text` part 用换行连接。
+ * 取**最后一条 assistant 消息**的全部正文：多个 `text` part 用换行连接。
  *
- * - `role === "user"` 的跳过；
+ * - 只认 `role === "assistant"`（不是「只跳过 user」：SDK 将来加第三种 role 时，
+ *   那种消息会被当成 AI 回复填进编辑框）；
  * - 没有 `parts`、或没有任何非空 `text` part 的跳过（末尾那条可能只是个工具调用）；
  * - 一条都没有 ⇒ `undefined`。
  */
 export function 最后回复文本(消息们: readonly 任意消息[]): string | undefined {
   for (let i = 消息们.length - 1; i >= 0; i--) {
     const 消息 = 消息们[i]
-    if (消息.role === "user") continue
-    const 正文 = (消息.parts ?? [])
-      .filter((片段) => 片段.type === "text" && typeof 片段.text === "string" && 片段.text.trim() !== "")
-      .map((片段) => 片段.text as string)
-      .join("\n")
+    if (消息.role !== "assistant") continue
+    const 正文 = (消息.parts ?? []).filter(是正文块).map((片段) => 片段.text).join("\n")
     if (正文 !== "") return 正文
   }
   return undefined

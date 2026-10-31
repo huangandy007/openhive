@@ -178,7 +178,12 @@ function 可编辑字段(props: {
       return
     }
     set草稿(正文)
-    set错误(undefined)
+    // `maxlength` 只约束用户输入，程序写信号不截断：超了不说，用户会在点保存时才被服务端拒一次。
+    set错误(
+      正文.length > props.上限
+        ? `AI 起草的正文有 ${正文.length} 字，超过上限 ${props.上限} 字，请删减后再保存`
+        : undefined,
+    )
     set预览(false)
   }
 
@@ -281,6 +286,7 @@ function 可编辑字段(props: {
               type="button"
               data-slot="asset-detail-draft"
               class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              disabled={保存中()}
               onClick={让AI起草}
             >
               让 AI 起草
@@ -289,6 +295,7 @@ function 可编辑字段(props: {
               type="button"
               data-slot="asset-detail-fill"
               class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              disabled={保存中()}
               onClick={从AI回复填入}
             >
               从 AI 回复填入

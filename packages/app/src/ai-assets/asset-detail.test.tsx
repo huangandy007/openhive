@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { render } from "solid-js/web"
-import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
-import { 发送失败提示, 订阅会话输入, 订阅最近回复 } from "@/ai-session/send-to-session"
+import { CONTENT_LIMITS, type AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { 行数上界, 订阅会话输入, 订阅最近回复 } from "@/ai-session/send-to-session"
 import { AssetDetail, 详情Tab列表, type AssetDetailProps } from "./asset-detail"
 
 /**
@@ -916,9 +916,10 @@ describe("详情里的失败要能看见（2026-10-29）", () => {
 describe("AI 起草与填入（2026-10-31）", () => {
   const 可写的 = (over: Partial<AssetMetadata> = {}, 保存: () => Promise<true | string> = async () => true) =>
     挂(over, { canWrite: true, onSaveContent: 保存 })
-  const 开编辑 = (host: HTMLElement) => (槽(host, "asset-detail-edit") as HTMLElement).click()
-  const 点 = (host: HTMLElement, slot: string) => (槽(host, slot) as HTMLElement).click()
-  const 编辑框 = (host: HTMLElement) => 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+  const 开编辑 = (host: HTMLElement) => 槽(host, "asset-detail-edit")?.click()
+  const 点 = (host: HTMLElement, slot: string) => 槽(host, slot)?.click()
+  const 编辑框 = (host: HTMLElement) =>
+    host.querySelector<HTMLTextAreaElement>('[data-slot="asset-detail-editor"]')!
 
   afterEach(() => {
     订阅会话输入(undefined)
@@ -955,7 +956,12 @@ describe("AI 起草与填入（2026-10-31）", () => {
     }
   })
 
-  test("行数超限 ⇒ 用共用的那句失败提示，且一个字符都没送进右栏", () => {
+  /**
+   * 现有内容很长时，指令要按行数上限**截断后再发**，而不是撞上「一次最多发 50 行，请少选点」
+   * ——这个按钮上没有「选」这个动作，且「介绍」（列表式 Markdown）很容易超过 43 行
+   * （2026-10-31 复审 I-2）。
+   */
+  test("现有内容很长 ⇒ 截断后照常发出，不再撞行数上限", () => {
     const 收到: string[] = []
     订阅会话输入((文本) => 收到.push(文本))
     const 六十行 = Array.from({ length: 60 }, (_, i) => `第${i}行`).join("\n")
@@ -963,8 +969,12 @@ describe("AI 起草与填入（2026-10-31）", () => {
     try {
       开编辑(host)
       点(host, "asset-detail-draft")
-      expect(收到.length, "超限的提示不该送进输入框").toBe(0)
-      expect(文本(host, "asset-detail-edit-error")).toBe(发送失败提示("行数超限"))
+      expect(收到.length, "截断之后应该发得出去").toBe(1)
+      expect(收到[0].split("\n").length <= 行数上界).toBe(true)
+      expect(收到[0]).toContain("第0行")
+      expect(收到[0]).toContain("其余已省略")
+      expect(收到[0].includes("第59行")).toBe(false)
+      expect(槽(host, "asset-detail-edit-error") === null).toBe(true)
     } finally {
       卸()
     }
@@ -1037,6 +1047,42 @@ describe("AI 起草与填入（2026-10-31）", () => {
       expect(槽(host, "asset-detail-edit-error") === null).toBe(true)
       expect(槽(host, "asset-detail-editor") === null).toBe(false)
       expect(编辑框(host).value).toBe("新正文")
+    } finally {
+      卸()
+    }
+  })
+
+  /**
+   * `maxlength` 只约束用户输入；程序写信号不截断。超了不说，用户会在点保存时才被服务端拒一次，
+   * 还得自己数哪里超了。
+   */
+  test("填入的正文超过字段上限 ⇒ 填进去并明说超了多少", () => {
+    const 超长 = "字".repeat(CONTENT_LIMITS.description + 1)
+    订阅最近回复(() => "```\n" + 超长 + "\n```")
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(编辑框(host).value.length).toBe(CONTENT_LIMITS.description + 1)
+      expect(文本(host, "asset-detail-edit-error")).toBe(
+        `AI 起草的正文有 ${CONTENT_LIMITS.description + 1} 字，超过上限 ${CONTENT_LIMITS.description} 字，请删减后再保存`,
+      )
+    } finally {
+      卸()
+    }
+  })
+
+  test("保存请求在途时两个 AI 按钮禁用（否则保存成功会把刚填的内容一起关掉）", async () => {
+    let 放行: (值: true | string) => void = () => {}
+    const 挂起 = () => new Promise<true | string>((落) => (放行 = 落))
+    const { host, 卸 } = 可写的({}, 挂起)
+    try {
+      开编辑(host)
+      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-draft"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-fill"]')?.disabled).toBe(true)
+      放行(true)
+      await Promise.resolve()
     } finally {
       卸()
     }
