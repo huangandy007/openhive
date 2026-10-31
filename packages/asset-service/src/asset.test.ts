@@ -13,6 +13,7 @@ import {
   insertAsset,
   listAssets,
   updateAssetCategories,
+  updateAssetContent,
   updateAssetLifecycle,
 } from "./asset"
 import {
@@ -381,5 +382,70 @@ describe("内容字段（2026-10-31）", () => {
     await db.execute(sql.raw(回填语句!))
     const 读回 = await assetById(db, "a_content_backfill")
     expect(读回?.summary).toBe("原来的介绍")
+  })
+
+  test("updateAssetContent 只改内容列：status / version 一个字都不动", async () => {
+    const db = await freshDb()
+    await insertAsset(
+      db,
+      metadata({
+        id: "a_content_write",
+        name: "写入",
+        status: "published",
+        version: 3,
+        createdAt: 100,
+        updatedAt: 100,
+      }),
+    )
+    const 写完 = await updateAssetContent(
+      db,
+      "a_content_write",
+      { summary: "一句话功能", precautions: "注意甲" },
+      5_000,
+    )
+    expect(写完?.summary).toBe("一句话功能")
+    expect(写完?.precautions).toBe("注意甲")
+    expect(写完?.status).toBe("published")
+    expect(写完?.version).toBe(3)
+    expect(写完?.updatedAt).toBe(5_000)
+  })
+
+  test("updateAssetContent 不带某字段就不动它", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_partial", name: "部分", description: "原介绍" }))
+    const 写完 = await updateAssetContent(db, "a_content_partial", { summary: "只改功能描述" }, 6_000)
+    expect(写完?.description).toBe("原介绍")
+    expect(写完?.summary).toBe("只改功能描述")
+  })
+
+  test("updateAssetContent 对不存在的 id 返回 undefined", async () => {
+    const db = await freshDb()
+    expect(await updateAssetContent(db, "a_content_missing", { summary: "x" }, 7_000)).toBeUndefined()
+  })
+
+  test("updateAssetContent 超长抛 AssetMetadataError 且带字段名", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_long", name: "超长" }))
+    const error = await failure(() =>
+      updateAssetContent(db, "a_content_long", { summary: "一".repeat(201) }, 8_000),
+    )
+    if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
+    expect(error.issues).toContainEqual({ field: "summary", message: "不能超过 200 字" })
+    // 校验在碰库之前：断言错误类型之外再钉住行一个字节都没动。
+    expect((await assetById(db, "a_content_long"))?.updatedAt).toBe(1_000)
+  })
+
+  test("updateAssetContent 拒绝空介绍", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_empty", name: "空介绍" }))
+    // 只匹配 /description/ 会被数据库的 `asset_description_not_blank_check` 兜底蒙混过去
+    // （那条 SQL 错误的约束名里也有 description），所以这里必须断言错误类型与关库后未写
+    // （`#004-09`：校验在副作用之前）。
+    const error = await failure(() =>
+      updateAssetContent(db, "a_content_empty", { description: "  " }, 9_000),
+    )
+    if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
+    expect(error.issues).toContainEqual({ field: "description", message: "不能为空" })
+    expect((await assetById(db, "a_content_empty"))?.updatedAt).toBe(1_000)
   })
 })

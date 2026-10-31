@@ -7,6 +7,8 @@ import {
   ASSET_TYPES,
   ASSET_VISIBILITIES,
   validateAssetMetadata,
+  validateContentField,
+  type AssetContentField,
   type AssetMetadata,
   type AssetStatus,
   type AssetType,
@@ -447,6 +449,49 @@ export async function updateAssetLifecycle(
       archived_at = ${update.archivedAt},
       visibility = coalesce(${update.visibility ?? null}, visibility)
     where id = ${id} and status = ${update.expectedStatus}
+    returning ${COLUMNS}
+  `))
+  const [row] = rows
+  return row === undefined ? undefined : toMetadata(row)
+}
+
+/** 可编辑的内容字段（2026-10-31）。只这三列——生命周期列归 `updateAssetLifecycle`。 */
+export type AssetContentPatch = Partial<Record<AssetContentField, string>>
+
+/**
+ * 写内容字段：`description` / `summary` / `precautions` 三个里带哪个改哪个。
+ *
+ * **只碰内容列 + `updated_at`**，一个字都不动 `status` / `version` / 可见范围 / 计数。
+ * 反过来 `updateAssetLifecycle()` 也只碰生命周期列——两条写入路径互不覆盖（`asset.ts` 上方
+ * 「名称 / 描述 / 标签等内容字段由编辑路径负责」那句，在这里兑现）。
+ *
+ * 用 `coalesce(占位符, 列)` 一次写完三列，而不是按字段拼动态 SQL：值来自 HTTP，
+ * 拼列名要把字段名做成标识符，这里干脆三个字段全写、没带的传 `null` 让 `coalesce` 保留原值。
+ * 空串是**值**不是 `null`，所以「清空功能描述」能落库。
+ *
+ * 校验在碰库之前（`AssetMetadataError`），不合法时一行都不写。
+ */
+export async function updateAssetContent(
+  db: AssetTarget,
+  id: string,
+  patch: AssetContentPatch,
+  now: number,
+): Promise<AssetMetadata | undefined> {
+  const issues: MetadataIssue[] = []
+  for (const field of ["description", "summary", "precautions"] as const) {
+    if (!(field in patch)) continue
+    const 问题 = validateContentField(field, patch[field])
+    if (问题 !== undefined) issues.push(问题)
+  }
+  if (issues.length > 0) throw new AssetMetadataError(issues)
+
+  const rows = rowsOf(await db.execute(sql`
+    update auth.asset set
+      description = coalesce(${patch.description ?? null}, description),
+      summary = coalesce(${patch.summary ?? null}, summary),
+      precautions = coalesce(${patch.precautions ?? null}, precautions),
+      updated_at = ${now}
+    where id = ${id}
     returning ${COLUMNS}
   `))
   const [row] = rows
