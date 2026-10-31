@@ -3,6 +3,11 @@ import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
+import {
+  addGroupMember,
+  createAuthorizationGroup,
+  grantAssetToGroup,
+} from "@opencode-ai/asset-service/authorization"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
@@ -62,7 +67,15 @@ const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name"
   ...over,
 })
 
-const IDS = { mine: "asset-content-mine", mates: "asset-content-mates" } as const
+const IDS = {
+  mine: "asset-content-mine",
+  mates: "asset-content-mates",
+  /** 只给「无权者」的独立夹具：不与任何写用例共享，杜绝执行顺序依赖。 */
+  blocked: "asset-content-blocked",
+} as const
+
+/** 给 MATE 的显式 `write` 授权组（非作者拿写权：判据必须来自能力模型，不是作者身份）。 */
+const WRITE_GROUP = "g_content_editor"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 
@@ -85,6 +98,13 @@ beforeAll(async () => {
 
   await insertAsset(pg.db, 资产({ id: IDS.mine, name: "我写的" }))
   await insertAsset(pg.db, 资产({ id: IDS.mates, name: "同事写的", ownerId: MATE.id, ownerName: MATE.name }))
+  await insertAsset(pg.db, 资产({ id: IDS.blocked, name: "无权者只能读的" }))
+
+  // 非作者拿写权，只能来自显式 `write` 授权行（空间只授读）。建组 → 加人 → 授权，
+  // 走生产出口而不是手写 SQL（`#006-35`）；顺序调用，PGlite 夹具单连接。
+  await createAuthorizationGroup(pg.db, { id: WRITE_GROUP, name: "内容编辑组" })
+  await addGroupMember(pg.db, { groupId: WRITE_GROUP, userId: MATE.id })
+  await grantAssetToGroup(pg.db, { groupId: WRITE_GROUP, assetId: IDS.mine, perm: "write" })
 })
 
 const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
@@ -121,6 +141,13 @@ const 读摘要 = (assetId: string) =>
     return rows[0]
   })
 
+const 读错误 = (response: Response) =>
+  Effect.gen(function* () {
+    return Schema.decodeUnknownSync(Schema.Struct({ error: Schema.String }))(
+      JSON.parse(yield* Effect.promise(() => response.text())),
+    )
+  })
+
 describe("资产内容出口 · 权限", () => {
   it.live("无凭证 ⇒ 401", () =>
     Effect.gen(function* () {
@@ -128,10 +155,12 @@ describe("资产内容出口 · 权限", () => {
     }),
   )
 
-  it.live("不是作者（只有 read）⇒ 403，且一字未写", () =>
+  it.live("不是作者（只有 read）⇒ 403 且一字未写（独立夹具，不依赖执行顺序）", () =>
     Effect.gen(function* () {
-      expect((yield* 改内容(MATE, IDS.mine, { summary: "我要改" })).status).toBe(403)
-      expect((yield* 读摘要(IDS.mine))?.summary).toBe("")
+      const response = yield* 改内容(MATE, IDS.blocked, { summary: "我要改" })
+      expect(response.status).toBe(403)
+      expect((yield* 读错误(response)).error).toBe("无权修改该资产")
+      expect((yield* 读摘要(IDS.blocked))?.summary).toBe("")
     }),
   )
 
@@ -143,7 +172,24 @@ describe("资产内容出口 · 权限", () => {
 
   it.live("无权的人送非法长度 ⇒ 仍回 403，而不是 400（授权先于校验）", () =>
     Effect.gen(function* () {
-      expect((yield* 改内容(MATE, IDS.mine, { summary: "一".repeat(500) })).status).toBe(403)
+      const response = yield* 改内容(MATE, IDS.blocked, { summary: "一".repeat(500) })
+      expect(response.status).toBe(403)
+      expect((yield* 读错误(response)).error).toBe("无权修改该资产")
+    }),
+  )
+
+  it.live("非作者但有显式 write 授权 ⇒ 列表可写、且真能改（判据是能力模型不是作者身份）", () =>
+    Effect.gen(function* () {
+      const 列表响应 = yield* 发(MATE, LIST)
+      const 列表 = Schema.decodeUnknownSync(
+        Schema.Struct({ writableIds: Schema.Array(Schema.String) }),
+      )(JSON.parse(yield* Effect.promise(() => 列表响应.text())))
+      expect(列表.writableIds).toContain(IDS.mine)
+      expect(列表.writableIds).not.toContain(IDS.blocked)
+
+      const response = yield* 改内容(MATE, IDS.mine, { precautions: "授权组给的写权" })
+      expect(response.status).toBe(200)
+      expect((yield* 读摘要(IDS.mine))?.precautions).toBe("授权组给的写权")
     }),
   )
 })
