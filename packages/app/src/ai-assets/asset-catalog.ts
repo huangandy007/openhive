@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import {
+  解析资产行,
   createCatalogApi,
   DEFAULT_PAGE_SIZE,
   PAGE_SIZES,
@@ -10,6 +11,7 @@ import {
   type CatalogQuery,
   type UsageStats,
 } from "./asset-catalog-api"
+import { createContentApi, type ContentApi, type 内容补丁 } from "./content-api"
 import { createFavoriteApi, type FavoriteApi, type FavoriteOutcome } from "./favorite-api"
 
 /**
@@ -75,6 +77,14 @@ export interface AssetCatalog {
   readonly favoriteBusy: () => string | undefined
   /** 送**目标态**（true = 收藏）。在飞时重复调用被忽略；状态一律照服务端回包改。 */
   readonly setFavorite: (assetId: string, favorited: boolean) => void
+  /** 本页里「我」有 write 权限的资产 id（2026-10-31）；由每次 `load` 成功时的回包重建。 */
+  readonly writable: () => ReadonlySet<string>
+  /** 正在保存内容的那条资产；没有在飞的就是 `undefined`。 */
+  readonly contentBusy: () => string | undefined
+  /** 保存内容；成功后返回服务端读回来的整行（由调用方交给 `applyAsset`），失败返回 `undefined`。 */
+  readonly saveContent: (assetId: string, patch: 内容补丁) => Promise<AssetMetadata | undefined>
+  /** 用服务端回来的整行替换清单里的同一行（行不在清单里就忽略）。 */
+  readonly applyAsset: (asset: AssetMetadata) => void
   /**
    * 换查询条件并拉第 1 页。同条件重复调用 = 刷新当前页。
    * 空间全取消（空数组）走短路：**不发请求**，直接空集。
@@ -95,6 +105,8 @@ export interface AssetCatalogOptions {
   readonly initialPageSize?: number
   /** 收藏的写出口；省略 = 真 `fetch`（测试注入替身）。 */
   readonly favoriteApi?: FavoriteApi
+  /** 内容编辑的写出口；省略 = 真 `fetch`（测试注入替身）。 */
+  readonly contentApi?: ContentApi
 }
 
 /**
@@ -119,6 +131,9 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const [收藏, set收藏] = createSignal<ReadonlySet<string>>(new Set<string>())
   const [收藏中, set收藏中] = createSignal<string | undefined>()
   const 收藏Api = options.favoriteApi ?? createFavoriteApi()
+  const [可写, set可写] = createSignal<ReadonlySet<string>>(new Set<string>())
+  const [保存中, set保存中] = createSignal<string | undefined>()
+  const 内容Api = options.contentApi ?? createContentApi()
 
   let 当前条件: CatalogQuery = {}
   let 当前键 = 条件键({})
@@ -134,6 +149,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
       set分类名({})
       set用量(undefined)
       set收藏(new Set<string>())
+      set可写(new Set<string>())
       set错误(undefined)
       set页码(1)
       return
@@ -150,6 +166,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
           set分类名(结果.value.categoryNames)
           set用量(结果.value.usageStats)
           set收藏(new Set(结果.value.favoritedIds))
+          set可写(new Set(结果.value.writableIds))
           set错误(undefined)
           return
         }
@@ -206,6 +223,31 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     })
   }
 
+  const applyAsset = (asset: AssetMetadata) => {
+    set清单((旧) => 旧.map((行) => (行.id === asset.id ? asset : 行)))
+  }
+
+  /**
+   * 保存内容：成功返回服务端读回来的整行（调用方交给 `applyAsset`），失败返回 `undefined`。
+   *
+   * 严格解析回包用的是 `asset-catalog-api.ts` 的 `解析资产行()`（本次把那里的内部 `行()`
+   * 导出并改名）——回包由内核重新读库产生，形状与列表行逐字相同，没必要写第二份解析。
+   *
+   * 与收藏同一条纪律：一次只允许一条在飞，否则后发的先到会把界面翻回去（`#010-05`）。
+   */
+  const saveContent = async (assetId: string, patch: 内容补丁): Promise<AssetMetadata | undefined> => {
+    if (保存中() !== undefined) return undefined
+    set保存中(assetId)
+    const 结果 = await 内容Api.save(assetId, patch)
+    set保存中(undefined)
+    if (结果.kind !== "ok") {
+      set错误(结果.message)
+      return undefined
+    }
+    set错误(undefined)
+    return 解析资产行(结果.value)
+  }
+
   return {
     assets: 清单,
     total: 总数,
@@ -217,6 +259,10 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     favorited: 收藏,
     favoriteBusy: 收藏中,
     setFavorite,
+    writable: 可写,
+    contentBusy: 保存中,
+    saveContent,
+    applyAsset,
     load,
     goPage,
     setPageSize,

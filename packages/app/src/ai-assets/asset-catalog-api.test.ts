@@ -181,6 +181,36 @@ describe("使用面资产客户端", () => {
     }
   })
 
+  test("旧内核的回包没有 summary / precautions ⇒ 按空串，不当成形状不对", async () => {
+    const 缺列 = { ...资产("a1") } as Record<string, unknown>
+    delete 缺列["summary"]
+    delete 缺列["precautions"]
+    const { send } = 替身(() => json({ assets: [缺列], total: 1, page: 1, pageSize: 20 }))
+    const out = await createCatalogApi(send).list()
+    expect(out.kind).toBe("ok")
+    if (out.kind !== "ok") return
+    expect(out.value.assets[0]?.summary).toBe("")
+    expect(out.value.assets[0]?.precautions).toBe("")
+  })
+
+  test("writableIds 缺省 ⇒ 空数组（旧内核兼容）", async () => {
+    const { send } = 替身(() => json({ assets: [], total: 0, page: 1, pageSize: 20 }))
+    const out = await createCatalogApi(send).list()
+    expect(out.kind).toBe("ok")
+    if (out.kind !== "ok") return
+    expect(out.value.writableIds).toEqual([])
+  })
+
+  test("writableIds 原样带出", async () => {
+    const { send } = 替身(() =>
+      json({ assets: [资产("a1")], total: 1, page: 1, pageSize: 20, writableIds: ["a1"] }),
+    )
+    const out = await createCatalogApi(send).list()
+    expect(out.kind).toBe("ok")
+    if (out.kind !== "ok") return
+    expect(out.value.writableIds).toEqual(["a1"])
+  })
+
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {
     const 缺描述 = { ...资产("a1") } as Record<string, unknown>
     delete 缺描述["description"]

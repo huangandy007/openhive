@@ -80,6 +80,11 @@ export interface CatalogPage {
    */
   readonly favoritedIds: readonly string[]
   /**
+   * 本页里**我**有 `write` 权限的资产 id（2026-10-31）：与 `favoritedIds` 同构的平行数组，
+   * 同样不进 `AssetMetadata`。服务端没给就是空数组，不是形状错误。
+   */
+  readonly writableIds: readonly string[]
+  /**
    * 最近 N 天的使用统计（2026-10-29）。**省略 = 旧内核没给这个键**：前端不显示这一项，
    * 不是显示 0（`usageStats` 缺失与「没人用过」是两件事）。给了就必须形状正确，否则整页 failed。
    */
@@ -142,16 +147,20 @@ function 可空时间(value: unknown): number | null | undefined {
   return 数(value) ? value : undefined
 }
 
-/** 每一列都严判：缺一列、类型不对、枚举越界都算 `failed`（不猜默认值）。 */
-function 行(value: unknown): AssetMetadata | undefined {
+/**
+ * 每一列都严判：缺一列、类型不对、枚举越界都算 `failed`（不猜默认值）。
+ *
+ * **例外：`summary` / `precautions` 缺省按空串**（2026-10-31）。旧内核的回包没有这两列，
+ * 升前端不升内核时若按「形状变了」处理，整页资产都会 failed；而空串本来就是「未填」的
+ * 合法值、也就是默认值。其余列仍保持严格，不把整份解析放宽。
+ */
+export function 解析资产行(value: unknown): AssetMetadata | undefined {
   if (!isRecord(value)) return undefined
   const {
     id,
     name,
     type,
     description,
-    summary,
-    precautions,
     icon,
     category,
     tags,
@@ -171,7 +180,8 @@ function 行(value: unknown): AssetMetadata | undefined {
   } = value
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof description !== "string" || typeof icon !== "string" || typeof category !== "string") return undefined
-  if (typeof summary !== "string" || typeof precautions !== "string") return undefined
+  const summary = typeof value["summary"] === "string" ? value["summary"] : ""
+  const precautions = typeof value["precautions"] === "string" ? value["precautions"] : ""
   if (typeof ownerId !== "string" || typeof ownerName !== "string" || typeof department !== "string") {
     return undefined
   }
@@ -232,6 +242,9 @@ function 分类名表(value: unknown): Readonly<Record<string, string>> | undefi
  * 「我收藏过的」（2026-10-29）：省略 = 空数组（旧内核没这列，不算形状变了）；给了就必须是
  * 字符串数组——元素类型漂了要当场 `failed`，不能当空数组吞掉：那样「已收藏」会静默变回
  * 「未收藏」，用户点一下才发现是被翻掉了。
+ *
+ * 2026-10-31 起**两处共用**：`favoritedIds` 与 `writableIds`（后者同样「省略 ⇒ 空数组、
+ * 给了就逐项判字符串」）。名字保留「收藏的」——改名会牵动既有测试，语义仍以收藏为准。
  */
 function 收藏的(value: unknown): readonly string[] | undefined {
   if (value === undefined) return []
@@ -272,11 +285,13 @@ function 一页(value: unknown): CatalogPage | undefined {
   if (categoryNames === undefined) return undefined
   const favoritedIds = 收藏的(value["favoritedIds"])
   if (favoritedIds === undefined) return undefined
+  const writableIds = 收藏的(value["writableIds"])
+  if (writableIds === undefined) return undefined
   const 用量 = 解析用量(value["usageStats"])
   if (用量.kind === "bad") return undefined
   const parsed: AssetMetadata[] = []
   for (const item of value["assets"]) {
-    const row = 行(item)
+    const row = 解析资产行(item)
     if (!row) return undefined
     parsed.push(row)
   }
@@ -287,6 +302,7 @@ function 一页(value: unknown): CatalogPage | undefined {
     pageSize,
     categoryNames,
     favoritedIds,
+    writableIds,
     ...(用量.kind === "ok" ? { usageStats: 用量.value } : {}),
   }
 }

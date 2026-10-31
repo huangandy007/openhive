@@ -51,6 +51,7 @@ const 页 = (
   pageSize,
   categoryNames,
   favoritedIds,
+  writableIds: [],
 })
 
 /** 每次调用挂起，由测试决定何时、**以什么顺序**回包（`待回[i]` 是第 i 次请求）。 */
@@ -73,6 +74,9 @@ function 手动(): {
 }
 
 const 等一轮 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** 服务端读回来的整行（内容编辑的回包）：默认是 a1，可用 overrides 改几列。 */
+const 完整行 = (overrides: Partial<AssetMetadata> = {}): AssetMetadata => ({ ...资产("a1"), ...overrides })
 
 /** 收藏的替身：同 `手动()`，记下每次送的目标态，由测试决定何时回。 */
 function 手动收藏(): {
@@ -370,6 +374,41 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     目录.load({ spaces: [] })
     await 等一轮()
     expect(目录.usage()).toBeUndefined()
+  })
+
+  test("saveContent 成功后返回新行；applyAsset 把它写回清单", async () => {
+    const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
+    const 目录 = createAssetCatalog(api, {
+      contentApi: { save: async () => ({ kind: "ok", value: { ...完整行({ summary: "新的功能描述" }) } }) },
+    })
+    目录.load({})
+    await 等一轮()
+    目录.applyAsset((await 目录.saveContent("a1", { summary: "新的功能描述" }))!)
+    expect(目录.assets().find((行) => 行.id === "a1")?.summary).toBe("新的功能描述")
+  })
+
+  test("saveContent 失败 ⇒ 不返回行，错误进 error()", async () => {
+    const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
+    const 目录 = createAssetCatalog(api, {
+      contentApi: { save: async () => ({ kind: "rejected", message: "无权修改该资产" }) },
+    })
+    目录.load({})
+    expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
+    expect(目录.error()).toBe("无权修改该资产")
+  })
+
+  test("writableIds 随每页回包重建；空间全取消短路时清空", async () => {
+    const { api, 待回 } = 手动()
+    const 目录 = createAssetCatalog(api)
+
+    目录.load({})
+    待回[0]!({ kind: "ok", value: { ...页(["a1"]), writableIds: ["a1"] } })
+    await 等一轮()
+    expect([...目录.writable()]).toEqual(["a1"])
+
+    目录.load({ spaces: [] })
+    await 等一轮()
+    expect([...目录.writable()]).toEqual([])
   })
 
   test("拉取失败 ⇒ usage 保留上一份（一次网络抖动不等于没有用量）", async () => {
