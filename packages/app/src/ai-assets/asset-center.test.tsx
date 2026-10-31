@@ -73,7 +73,6 @@ function 数据源(over: Partial<{
     setFavorite: (assetId, favorited) => void 收藏请求.push({ assetId, favorited }),
     // 2026-10-31 内容编辑：本夹具不覆盖保存流程（`asset-catalog.test.ts` 守着）。
     writable: () => new Set<string>(),
-    contentBusy: () => undefined,
     saveContent: async () => undefined,
     applyAsset: () => {},
     改清单: set清单,

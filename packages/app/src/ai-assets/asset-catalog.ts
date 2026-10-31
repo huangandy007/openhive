@@ -79,8 +79,6 @@ export interface AssetCatalog {
   readonly setFavorite: (assetId: string, favorited: boolean) => void
   /** 本页里「我」有 write 权限的资产 id（2026-10-31）；由每次 `load` 成功时的回包重建。 */
   readonly writable: () => ReadonlySet<string>
-  /** 正在保存内容的那条资产；没有在飞的就是 `undefined`。 */
-  readonly contentBusy: () => string | undefined
   /** 保存内容；成功后返回服务端读回来的整行（由调用方交给 `applyAsset`），失败返回 `undefined`。 */
   readonly saveContent: (assetId: string, patch: 内容补丁) => Promise<AssetMetadata | undefined>
   /** 用服务端回来的整行替换清单里的同一行（行不在清单里就忽略）。 */
@@ -274,7 +272,6 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     favoriteBusy: 收藏中,
     setFavorite,
     writable: 可写,
-    contentBusy: 保存中,
     saveContent,
     applyAsset,
     load,

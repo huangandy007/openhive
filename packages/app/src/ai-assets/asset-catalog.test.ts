@@ -398,26 +398,39 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     expect(目录.error()).toBe("无权修改该资产")
   })
 
-  test("contentBusy：保存中是那条资产，回包后复位", async () => {
+  // 终审 M-3：`contentBusy` 只导出、无生产消费者，已删除。留下的单飞守卫
+  // （`if (保存中() !== undefined) return undefined`）本身没有用例——这里用「只发一条」
+  // 与「回包后守卫释放」两个方向钉住它。
+  test("单飞：保存中再调一次直接忽略；回包后守卫释放", async () => {
     const 待回: Array<(out: ContentOutcome) => void> = []
+    const 请求: string[] = []
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
       contentApi: {
-        save: () =>
-          new Promise((resolve) => {
+        save: (_assetId, patch) => {
+          请求.push(patch.summary ?? "")
+          return new Promise((resolve) => {
             待回.push(resolve)
-          }),
+          })
+        },
       },
     })
     目录.load({})
     await 等一轮()
 
-    const 任务 = 目录.saveContent("a1", { summary: "x" })
-    expect(目录.contentBusy()).toBe("a1")
-    待回[0]!({ kind: "ok", value: { ...完整行({ summary: "x" }) } })
+    const 第一次 = 目录.saveContent("a1", { summary: "第一次" })
+    // 第二次在飞时调用：立即返回 undefined，且不新增请求。
+    expect(await 目录.saveContent("a1", { summary: "第二次" })).toBeUndefined()
+    expect(请求).toEqual(["第一次"])
 
-    expect((await 任务)?.summary).toBe("x")
-    expect(目录.contentBusy()).toBeUndefined()
+    待回[0]!({ kind: "ok", value: { ...完整行({ summary: "第一次" }) } })
+    expect((await 第一次)?.summary).toBe("第一次")
+
+    // 回包后守卫必须释放：下一次保存仍能发出（否则第一次失败就永久卡死）。
+    const 第三次 = 目录.saveContent("a1", { summary: "第三次" })
+    expect(请求).toEqual(["第一次", "第三次"])
+    待回[1]!({ kind: "ok", value: { ...完整行({ summary: "第三次" }) } })
+    expect((await 第三次)?.summary).toBe("第三次")
   })
 
   test("saveContent 抛错（替身直接 throw）⇒ 返回 undefined、错误进 error()、busy 复位", async () => {
@@ -433,7 +446,6 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
 
     expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
     expect(目录.error()).toBe("保存失败，请检查网络后重试")
-    expect(目录.contentBusy()).toBeUndefined()
   })
 
   test("回包是坏行 ⇒ 不返回行，且错误文案说明是回包格式问题（写入其实已成功）", async () => {

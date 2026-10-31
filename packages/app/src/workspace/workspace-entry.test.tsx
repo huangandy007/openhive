@@ -6494,7 +6494,6 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       setFavorite: () => {},
       // 2026-10-31 内容编辑：本夹具不覆盖保存流程（`asset-catalog.test.ts` 守着）。
       writable: () => new Set<string>(),
-      contentBusy: () => undefined,
       saveContent: async () => undefined,
       applyAsset: () => {},
     }
