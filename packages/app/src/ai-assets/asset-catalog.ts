@@ -244,8 +244,15 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
         set错误(结果.message)
         return undefined
       }
+      const 行 = 解析资产行(结果.value)
+      if (行 === undefined) {
+        // 写入其实**已经成功**，只是回包形状变了。不能说「保存失败」——那会引导用户再点一次，
+        // 而这次失败只是读不懂回包（终审 M-5）。
+        set错误("服务返回的数据格式不对，请刷新后确认")
+        return undefined
+      }
       set错误(undefined)
-      return 解析资产行(结果.value)
+      return 行
     } catch {
       // 注入的客户端若直接抛（默认实现自己会吞），也不能把 `保存中` 永久卡住。
       set错误("保存失败，请检查网络后重试")

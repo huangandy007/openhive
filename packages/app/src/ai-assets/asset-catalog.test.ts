@@ -436,7 +436,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     expect(目录.contentBusy()).toBeUndefined()
   })
 
-  test("回包是坏行 ⇒ 不返回行（确实过了 解析资产行）", async () => {
+  test("回包是坏行 ⇒ 不返回行，且错误文案说明是回包格式问题（写入其实已成功）", async () => {
     const 坏行 = { ...完整行({ summary: "x" }) } as Record<string, unknown>
     delete 坏行["publishedAt"]
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
@@ -446,6 +446,8 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     目录.load({})
 
     expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
+    // 不能是「保存失败，请重试」：写入已成功，重试只会再写一次；要用户刷新确认真实状态。
+    expect(目录.error()).toBe("服务返回的数据格式不对，请刷新后确认")
   })
 
   test("writableIds 随每页回包重建；空间全取消短路时清空", async () => {
