@@ -10,6 +10,9 @@ import {
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import type { UsageStats } from "./asset-catalog-api"
 import { 资产Markdown } from "./markdown"
+// AI 起草只**送指令 / 取回复**，不写库（2026-10-31）：保存仍是用户点。
+import { 取最近回复, 发送到会话, 发送失败提示 } from "@/ai-session/send-to-session"
+import { 构造起草提示, 提取正文, type 起草字段 } from "./起草提示"
 // 「有没有用过 / 怎么说」与卡片同源（`card-meta.ts`，`#002-06`）。
 import { 使用文案 } from "./card-meta"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
@@ -85,6 +88,9 @@ function 可编辑字段(props: {
    */
   readonly textSlot: string
   readonly 标题: string
+  /** 资产名与字段键：只用于拼「让 AI 起草」的指令（2026-10-31）。 */
+  readonly 资产名: string
+  readonly 字段: 起草字段
   readonly 值: string
   /** 只读态是否把值按 Markdown 渲染。省略 = 纯文本（现状）。 */
   readonly markdown?: boolean
@@ -127,6 +133,53 @@ function 可编辑字段(props: {
   const 退 = () => {
     set预览(false)
     set编辑中(false)
+  }
+
+  /**
+   * 「让 AI 起草」（2026-10-31）：把一句**起草指令**替换进右栏输入框，等 AI 回复。
+   * 这一步不碰资产、不写库——指令只是开个头，回复要用户自己过目后点填入与保存。
+   *
+   * 失败分两种：右栏没开会话用自己的那句话（「先打开再试」比共用的「先在右栏开一个会话」
+   * 更贴合这里的按钮语境）；行数超限沿用共用文案。
+   */
+  const 让AI起草 = () => {
+    const 结果 = 发送到会话(
+      构造起草提示({
+        名称: props.资产名,
+        字段: props.字段,
+        上限: props.上限,
+        现有: 草稿(),
+        markdown: props.markdown === true,
+      }),
+      "替换",
+    )
+    if (结果.ok) {
+      set错误(undefined)
+      return
+    }
+    set错误(结果.原因 === "没有会话" ? "右栏还没有打开的会话，先打开再试" : 发送失败提示(结果.原因))
+  }
+
+  /**
+   * 「从 AI 回复填入」（2026-10-31）：把 AI 的**最后一条回复**提取成正文填进草稿。
+   *
+   * ⚠️ 仍然**不保存**：只改草稿（并清掉旧错误），用户过目后自己点保存。
+   * 在预览态点它时切回写态——否则草稿变了屏幕上却没变，看着像没反应。
+   */
+  const 从AI回复填入 = () => {
+    const 回复 = 取最近回复()
+    if (回复 === undefined) {
+      set错误("还没等到 AI 的回复")
+      return
+    }
+    const 正文 = 提取正文(回复)
+    if (正文 === "") {
+      set错误("AI 的回复里没有可用内容")
+      return
+    }
+    set草稿(正文)
+    set错误(undefined)
+    set预览(false)
   }
 
   const 存 = async () => {
@@ -222,6 +275,24 @@ function 可编辑字段(props: {
             <span class="text-[11px] text-v2-text-text-faint">
               {草稿().length}/{props.上限}
             </span>
+            {/* AI 起草（2026-10-31）：只往右栏送指令 / 从右栏取回复，**不写库**。
+                出错走下面那条既有的 `asset-detail-edit-error`，不另开一行提示。 */}
+            <button
+              type="button"
+              data-slot="asset-detail-draft"
+              class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              onClick={让AI起草}
+            >
+              让 AI 起草
+            </button>
+            <button
+              type="button"
+              data-slot="asset-detail-fill"
+              class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              onClick={从AI回复填入}
+            >
+              从 AI 回复填入
+            </button>
           </div>
           <Show when={错误()}>
             {(文字) => (
@@ -270,6 +341,8 @@ function 介绍面板(props: {
         slot="asset-detail-field-description"
         textSlot="asset-detail-description"
         标题="功能与用法"
+        资产名={props.asset.name}
+        字段="description"
         值={props.asset.description}
         markdown
         上限={CONTENT_LIMITS.description}
@@ -309,6 +382,8 @@ function 功能描述面板(props: {
         slot="asset-detail-field-summary"
         textSlot="asset-detail-summary-text"
         标题="功能描述"
+        资产名={props.asset.name}
+        字段="summary"
         值={props.asset.summary}
         上限={CONTENT_LIMITS.summary}
         多行={false}
@@ -344,6 +419,8 @@ function 注意事项面板(props: {
         emptySlot="asset-detail-precautions-empty"
         emptyText="该资产尚未填写专属注意事项。"
         标题="专属注意事项"
+        资产名={props.asset.name}
+        字段="precautions"
         值={props.asset.precautions}
         markdown
         上限={CONTENT_LIMITS.precautions}

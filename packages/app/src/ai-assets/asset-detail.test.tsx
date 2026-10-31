@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { 发送失败提示, 订阅会话输入, 订阅最近回复 } from "@/ai-session/send-to-session"
 import { AssetDetail, 详情Tab列表, type AssetDetailProps } from "./asset-detail"
 
 /**
@@ -898,6 +899,164 @@ describe("详情里的失败要能看见（2026-10-29）", () => {
       expect(提示(空.host) === null).toBe(true)
     } finally {
       空.卸()
+    }
+  })
+})
+
+/**
+ * AI 起草与填入（2026-10-31）。
+ *
+ * 设计边界：**AI 没有写库能力**。两个按钮只做「把指令送进右栏」与「把回复填进草稿」，
+ * 保存仍是用户自己点。这里钉的正是这条线：右栏收到的是指令、编辑框变了、但 `onSaveContent`
+ * 一次都没被调用。
+ *
+ * ⚠️ 两个口都是**模块级状态**（`send-to-session.ts`）⇒ 用例结束必须收回，否则下一条
+ * 站在上一条的替身上。
+ */
+describe("AI 起草与填入（2026-10-31）", () => {
+  const 可写的 = (over: Partial<AssetMetadata> = {}, 保存: () => Promise<true | string> = async () => true) =>
+    挂(over, { canWrite: true, onSaveContent: 保存 })
+  const 开编辑 = (host: HTMLElement) => (槽(host, "asset-detail-edit") as HTMLElement).click()
+  const 点 = (host: HTMLElement, slot: string) => (槽(host, slot) as HTMLElement).click()
+  const 编辑框 = (host: HTMLElement) => 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+
+  afterEach(() => {
+    订阅会话输入(undefined)
+    订阅最近回复(undefined)
+  })
+
+  test("点「让 AI 起草」⇒ 右栏收到含资产名的起草指令，方式是「替换」", () => {
+    const 收到: Array<{ 文本: string; 方式: string }> = []
+    订阅会话输入((文本, 方式) => 收到.push({ 文本, 方式 }))
+    const { host, 卸 } = 可写的({ description: "旧介绍" })
+    try {
+      开编辑(host)
+      点(host, "asset-detail-draft")
+      expect(收到.length).toBe(1)
+      expect(收到[0].文本).toContain("资金流向研判")
+      expect(收到[0].文本).toContain("旧介绍")
+      expect(收到[0].方式).toBe("替换")
+      // 成功时不显示错误（输入框里已经出现指令，用户看得见）。
+      expect(槽(host, "asset-detail-edit-error") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("右栏没开 ⇒ 显示「右栏还没有打开的会话，先打开再试」", () => {
+    订阅会话输入(undefined)
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-draft")
+      expect(文本(host, "asset-detail-edit-error")).toBe("右栏还没有打开的会话，先打开再试")
+    } finally {
+      卸()
+    }
+  })
+
+  test("行数超限 ⇒ 用共用的那句失败提示，且一个字符都没送进右栏", () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => 收到.push(文本))
+    const 六十行 = Array.from({ length: 60 }, (_, i) => `第${i}行`).join("\n")
+    const { host, 卸 } = 可写的({ description: 六十行 })
+    try {
+      开编辑(host)
+      点(host, "asset-detail-draft")
+      expect(收到.length, "超限的提示不该送进输入框").toBe(0)
+      expect(文本(host, "asset-detail-edit-error")).toBe(发送失败提示("行数超限"))
+    } finally {
+      卸()
+    }
+  })
+
+  test("点「从 AI 回复填入」⇒ 编辑框变成提取正文的结果（围栏内容）", () => {
+    订阅最近回复(() => "说明文字\n```markdown\n# 新介绍\n正文\n```\n尾巴")
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(编辑框(host).value).toBe("# 新介绍\n正文")
+    } finally {
+      卸()
+    }
+  })
+
+  test("还没等到回复 ⇒ 显示「还没等到 AI 的回复」", () => {
+    订阅最近回复(() => undefined)
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(文本(host, "asset-detail-edit-error")).toBe("还没等到 AI 的回复")
+    } finally {
+      卸()
+    }
+  })
+
+  test("回复里没有可用内容 ⇒ 显示「AI 的回复里没有可用内容」", () => {
+    订阅最近回复(() => "  \n```\n\n```")
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(文本(host, "asset-detail-edit-error")).toBe("AI 的回复里没有可用内容")
+    } finally {
+      卸()
+    }
+  })
+
+  test("在预览态点填入 ⇒ 填完切回写态（否则屏幕上什么都没变）", () => {
+    订阅最近回复(() => "```\n新正文\n```")
+    const { host, 卸 } = 可写的({ description: "旧介绍" })
+    try {
+      开编辑(host)
+      点(host, "asset-detail-preview")
+      expect(槽(host, "asset-detail-editor") === null).toBe(true)
+
+      点(host, "asset-detail-fill")
+
+      expect(槽(host, "asset-detail-editor") === null).toBe(false)
+      expect(编辑框(host).value).toBe("新正文")
+    } finally {
+      卸()
+    }
+  })
+
+  test("填入成功清掉旧错误，且不退出编辑态", () => {
+    订阅最近回复(() => undefined)
+    const { host, 卸 } = 可写的()
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(文本(host, "asset-detail-edit-error")).toBe("还没等到 AI 的回复")
+
+      订阅最近回复(() => "```\n新正文\n```")
+      点(host, "asset-detail-fill")
+
+      expect(槽(host, "asset-detail-edit-error") === null).toBe(true)
+      expect(槽(host, "asset-detail-editor") === null).toBe(false)
+      expect(编辑框(host).value).toBe("新正文")
+    } finally {
+      卸()
+    }
+  })
+
+  test("填入不写库：onSaveContent 一次都没被调用，保存仍要用户点", () => {
+    let 保存次数 = 0
+    订阅最近回复(() => "```\n新正文\n```")
+    const { host, 卸 } = 可写的({}, async () => {
+      保存次数 += 1
+      return true
+    })
+    try {
+      开编辑(host)
+      点(host, "asset-detail-fill")
+      expect(保存次数).toBe(0)
+      // 不点保存就还在编辑态。
+      expect(槽(host, "asset-detail-editor") === null).toBe(false)
+    } finally {
+      卸()
     }
   })
 })
