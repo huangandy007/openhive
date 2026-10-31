@@ -291,11 +291,18 @@ export function 属于项目(location: string, 目录: string): boolean {
   return 文 === 根 || 文.startsWith(根 + "/")
 }
 
-/** 把内核返回的技能列表筛成「本项目内的」，并映射成回包形状。 */
+/**
+ * 把内核返回的技能列表筛成「本项目内的」，并映射成回包形状。
+ *
+ * `功能描述` 是库里 `auth.asset.summary` 的表（2026-10-31）：**非空白时优先于** SKILL.md 的
+ * `description`。悬停浮层给中文同事看，SKILL.md 多半是英文原文；作者填了功能描述就用作者的，
+ * 没填才回落。空白串按「没填」处理——只填空格不该把英文顶掉又显示成一片空白。
+ */
 export function 映射内核清单(
   列表: readonly { name: string; description?: string; location: string }[],
   目录: string,
   标题: ReadonlyMap<string, string>,
+  功能描述: ReadonlyMap<string, string>,
 ): 内核技能[] {
   return 列表
     .filter((info) => 属于项目(info.location, 目录))
@@ -303,9 +310,11 @@ export function 映射内核清单(
       // 查表用原样的目录名（大小写敏感）：assetId 是库里的真实 id。
       const id = 目录名(info.location)
       const 名 = id === undefined ? undefined : 标题.get(id)
+      const 描述 = id === undefined ? undefined : 功能描述.get(id)
+      const 最终描述 = 描述 !== undefined && 描述.trim() !== "" ? 描述 : info.description
       return {
         name: info.name,
-        ...(info.description === undefined ? {} : { description: info.description }),
+        ...(最终描述 === undefined ? {} : { description: 最终描述 }),
         location: info.location,
         ...(id === undefined ? {} : { assetId: id }),
         ...(名 === undefined ? {} : { assetName: 名 }),
@@ -324,7 +333,12 @@ export function 映射内核清单(
  * ⚠️ 必须在对账**之后**调（见 `对账并读` 末尾）。反过来的话，新成员第一次进项目时
  * 沙箱里还没有链接，全部技能都会被误报成「没生效」。
  */
-function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<string, string>) {
+function 读内核清单(
+  deps: Deps,
+  directory: string,
+  标题: ReadonlyMap<string, string>,
+  功能描述: ReadonlyMap<string, string>,
+) {
   const store = deps.store
   const skill = deps.skill
   if (Option.isNone(store) || Option.isNone(skill))
@@ -335,7 +349,7 @@ function 读内核清单(deps: Deps, directory: string, 标题: ReadonlyMap<stri
       // `全量` 是**未过滤**的清单：判「谁盖了谁」必须看得到项目外的赢家——`属于项目()` 一过就把
       // 它滤掉了，而它恰恰是解释损失的那一条（2026-10-28 现场：赢家经 `skills.paths` 落在项目外）。
       Effect.map((list) => ({
-        项目内: 映射内核清单(list, directory, 标题),
+        项目内: 映射内核清单(list, directory, 标题, 功能描述),
         全量: list.map((info) => ({ name: info.name, location: info.location })),
       })),
       Effect.catchCause((cause) =>
@@ -442,6 +456,8 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     const 可见: string[] = []
     /** 内核清单里的中文名来源：与 `可见` 同一批资产，不额外查库。 */
     const 标题 = new Map<string, string>()
+    /** 悬停文案来源（2026-10-31）：同上，取自 `auth.asset.summary`。 */
+    const 功能描述 = new Map<string, string>()
     let 收回 = 0
 
     const desired = new Map<string, string>()
@@ -483,6 +499,7 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
       // 否则会出现「已占 1/20 但列表里一份都标不出来」——用户既看不见也点不掉。
       可见.push(assetId)
       标题.set(assetId, asset.name)
+      功能描述.set(assetId, asset.summary)
       const target = skillLinkTarget(根, asset)
       if (!(yield* Effect.promise(() => 路径存在(target)))) continue
       desired.set(assetId, target)
@@ -559,7 +576,7 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 此刻目录还是旧状态：读出来的是一份「缺链接」的清单，前端会把每条已启用 skill 画成
     // 「已启用但 AI 没加载到——停用后可在资产中心重新启用」，在一次临时文件系统故障上
     // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
-    const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题)
+    const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题, 功能描述)
     // 第二态再分一次因：链接在却被同名技能盖掉（`TIER` 去重）≠ 链接丢了。只在读到内核时判。
     const 被覆盖 = 内核 === undefined ? undefined : yield* 找被覆盖(内核, desired, 目录)
     // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自

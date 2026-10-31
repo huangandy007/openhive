@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, it, test } from "bun:test"
 import { 带内核清单, 映射内核清单 } from "../../src/server/openhive/project-assets"
 
 /**
@@ -53,6 +53,7 @@ describe("映射内核清单", () => {
       ],
       "/w/u/p",
       new Map(),
+      new Map(),
     )
     expect(回.length).toBe(1)
     expect(回[0]?.name).toBe("项目内")
@@ -66,6 +67,7 @@ describe("映射内核清单", () => {
       ],
       "/w/u/p",
       new Map(),
+      new Map(),
     )
     expect(回.length).toBe(1)
     expect(回[0]?.name).toBe("本项目")
@@ -75,6 +77,7 @@ describe("映射内核清单", () => {
     const 回 = 映射内核清单(
       [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\asset_1\\SKILL.md" }],
       "D:\\s\\1\\p",
+      new Map(),
       new Map(),
     )
     expect(回.length).toBe(1)
@@ -86,6 +89,7 @@ describe("映射内核清单", () => {
     const 回 = 映射内核清单(
       [{ name: "资金", location: "d:/s/1/p/.opencode/skill/a/SKILL.md" }],
       "D:\\s\\1\\p",
+      new Map(),
       new Map(),
     )
     expect(回.length).toBe(1)
@@ -99,6 +103,7 @@ describe("映射内核清单", () => {
       [{ name: "资金", location: "/w/u/P/.opencode/skill/a/SKILL.md" }],
       "/w/u/p",
       new Map(),
+      new Map(),
     )
     expect(回.length).toBe(0)
   })
@@ -107,6 +112,7 @@ describe("映射内核清单", () => {
     const 回 = 映射内核清单(
       [{ name: "项目内", location: "/w/u/p/.opencode/skill/a/SKILL.md" }],
       "/w/u/p/",
+      new Map(),
       new Map(),
     )
     expect(回.length).toBe(1)
@@ -120,11 +126,42 @@ describe("映射内核清单", () => {
       ],
       "/w/u/p",
       new Map([["asset_1", "资金流向分析"]]),
+      new Map(),
     )
     expect(回.length).toBe(2)
     expect(回[0]?.assetId).toBe("asset_1")
     expect(回[0]?.assetName).toBe("资金流向分析")
     expect(回[1]?.assetId).toBe("自写目录")
     expect(回[1]?.assetName).toBeUndefined()
+  })
+
+  it("库里有功能描述时，用它盖掉 SKILL.md 的英文 description", () => {
+    const 回 = 映射内核清单(
+      [{ name: "fund", description: "Analyze fund flows", location: "/w/p/.opencode/skill/asset_fund/SKILL.md" }],
+      "/w/p",
+      new Map([["asset_fund", "资金分析"]]),
+      new Map([["asset_fund", "从流水里找出可疑账户"]]),
+    )
+    expect(回[0]?.description).toBe("从流水里找出可疑账户")
+  })
+
+  it("功能描述是空白串时回落到 SKILL.md 的 description", () => {
+    const 回 = 映射内核清单(
+      [{ name: "fund", description: "Analyze fund flows", location: "/w/p/.opencode/skill/asset_fund/SKILL.md" }],
+      "/w/p",
+      new Map([["asset_fund", "资金分析"]]),
+      new Map([["asset_fund", "   "]]),
+    )
+    expect(回[0]?.description).toBe("Analyze fund flows")
+  })
+
+  it("项目自带技能（库里没有）保持 SKILL.md 的 description", () => {
+    const 回 = 映射内核清单(
+      [{ name: "mine", description: "My own skill", location: "/w/p/.opencode/skill/mine/SKILL.md" }],
+      "/w/p",
+      new Map(),
+      new Map(),
+    )
+    expect(回[0]?.description).toBe("My own skill")
   })
 })
