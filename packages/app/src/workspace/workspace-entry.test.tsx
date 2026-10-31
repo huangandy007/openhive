@@ -5,6 +5,7 @@ import { createSignal, For, onMount, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
+import { 详情Tab列表 } from "@/ai-assets/asset-detail"
 import type { AssetCategories } from "@/ai-assets/categories"
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import type { ProjectEnablement } from "@/ai-assets/enable-state"
@@ -6619,11 +6620,12 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     expect(浏览区(host).classList.contains("hidden")).toBe(true)
     expect(text(host, "asset-detail-name")).toBe("技能甲")
     expect(text(host, "asset-detail-description")).toBe("甲的做法")
-    expect(host.querySelectorAll("[data-slot='asset-detail-tab']")).toHaveLength(3)
+    // 数量取自 `详情Tab列表`，别再写死数字：加 / 减 Tab 时这条不该跟着手工改（2026-10-31 四 Tab）。
+    expect(host.querySelectorAll("[data-slot='asset-detail-tab']")).toHaveLength(详情Tab列表.length)
     expect(document.activeElement).toBe(host.querySelector("[data-slot='asset-detail-back']"))
   })
 
-  // 评价分区已收起（2026-10-29，用户裁定「不建议做评分」）：tab 只剩介绍 / 注意事项 / 版本。
+  // 评价分区已收起（2026-10-29，用户裁定「不建议做评分」）：tab 只剩介绍 / 功能描述 / 注意事项 / 版本。
   test("详情切 tab：注意事项带不确定性标注，版本有内容", () => {
     const 目录 = 假目录([资产({ id: "a", name: "技能甲", version: 2 })])
     const host = mount(() => (

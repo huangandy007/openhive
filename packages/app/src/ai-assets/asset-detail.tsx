@@ -28,9 +28,12 @@ import "./asset-action-active.css"
  * 入口，留着 tab 就是把不可达装成可达（`#008-04`）。`AssetMetadata` 上的 `rating / ratingCount /
  * feedbackCount` 三列**不动**——治理后台与库表还有读者，前端只是不再显示。
  *
- * ⚠️ **没有的字段就显示空态，不写正文**（`#005-47`、`#008-04`）：介绍正文、变更说明今天没有
- * 数据源；「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意事项缺失
- * 时显式说明「尚未填写」。
+ * ⚠️ **没有的字段就显示空态，不写正文**（`#005-47`、`#008-04`）：变更说明今天仍没有数据源；
+ * 「注意事项」固定挂一条产品级不确定性标注（FR-003 硬性要求），资产专属注意事项缺失时显式
+ * 说明「尚未填写」。
+ *
+ * **内容编辑**（2026-10-31）：介绍 / 功能描述 / 专属注意事项由 `可编辑字段` 承载，有 write
+ * 权限的人可就地改；`canWrite` 省略 / false ⇒ 不渲染编辑按钮（与启用、收藏同一条纪律）。
  *
  * ⚠️ 启用按钮**没接线就不渲染**——写一个按下去什么也不发生的按钮，就是把不可达状态
  * 装成可达（`#008-04`）。
@@ -95,6 +98,9 @@ function 可编辑字段(props: {
   const [草稿, set草稿] = createSignal("")
   const [保存中, set保存中] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
+
+  /** 只读态是不是「还没填」——空态与真实正文要可辨（旧空态是 muted）。 */
+  const 显示空态 = () => props.值 === "" && props.emptyText !== undefined
 
   const 开 = () => {
     set草稿(props.值)
@@ -177,9 +183,13 @@ function 可编辑字段(props: {
         <Match when={!编辑中()}>
           <p
             data-slot={props.值 === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
-            class="mt-1 whitespace-pre-wrap text-[13px] leading-6 text-v2-text-text-base"
+            class="mt-1 whitespace-pre-wrap text-[13px] leading-6"
+            classList={{
+              "text-v2-text-text-muted": 显示空态(),
+              "text-v2-text-text-base": !显示空态(),
+            }}
           >
-            {props.值 === "" && props.emptyText !== undefined ? props.emptyText : props.值}
+            {显示空态() ? props.emptyText : props.值}
           </p>
         </Match>
       </Switch>

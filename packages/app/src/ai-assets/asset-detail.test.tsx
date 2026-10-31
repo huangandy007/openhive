@@ -278,7 +278,7 @@ describe("详情各 tab 内容", () => {
     const { host, 卸 } = 挂({ rating: 4.56, ratingCount: 12, feedbackCount: 3 })
     try {
       expect(标签(host, "reviews") === null).toBe(true)
-      for (const id of ["intro", "precautions", "versions"] as const) {
+      for (const id of ["intro", "summary", "precautions", "versions"] as const) {
         标签(host, id).click()
         expect(
           槽(host, "asset-detail-review-summary") === null,
@@ -340,7 +340,8 @@ describe("内容编辑（2026-10-31）", () => {
       ;(槽(host, "asset-detail-edit") as HTMLElement).click()
       expect(槽(host, "asset-detail-editor")).not.toBeNull()
       ;(槽(host, "asset-detail-cancel") as HTMLElement).click()
-      expect(槽(host, "asset-detail-editor")).toBeNull()
+      // 布尔式避开的同样是 happy-dom 节点序列化（`#009-01`）。
+      expect(槽(host, "asset-detail-editor") === null).toBe(true)
       expect(文本(host, "asset-detail-description")).toBe("按账户汇总资金往来")
     } finally {
       卸()
@@ -359,6 +360,8 @@ describe("内容编辑（2026-10-31）", () => {
       await Promise.resolve()
       expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("我写的字")
       expect(文本(host, "asset-detail-edit-error")).toBe("网络断了")
+      // 读屏要在保存失败时被叫醒，不是只画一行红字。
+      expect(槽(host, "asset-detail-edit-error")?.getAttribute("role")).toBe("alert")
     } finally {
       卸()
     }
@@ -384,7 +387,74 @@ describe("内容编辑（2026-10-31）", () => {
       await Promise.resolve()
       await Promise.resolve()
       expect(收到的).toEqual([{ summary: "新的一句话" }])
-      expect(槽(host, "asset-detail-editor")).toBeNull()
+      expect(槽(host, "asset-detail-editor") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("canWrite={false} ⇒ 与省略一样不渲染编辑按钮", () => {
+    const { host, 卸 } = 挂({}, { canWrite: false })
+    try {
+      for (const id of ["intro", "summary", "precautions"]) {
+        标签(host, id).click()
+        expect(槽(host, "asset-detail-edit") === null, `${id} 面板 canWrite=false 也渲染了编辑按钮`).toBe(true)
+      }
+    } finally {
+      卸()
+    }
+  })
+
+  test("onSaveContent 返回 false ⇒ 同样保留输入并报错", async () => {
+    const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: async () => false })
+    try {
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+      框.value = "没存上的字"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("没存上的字")
+      expect(文本(host, "asset-detail-edit-error")).toBe("保存失败，请重试")
+    } finally {
+      卸()
+    }
+  })
+
+  // 注意事项的「有正文」路径：所有其他夹具里 `precautions` 都是空串，只测空态会让
+  // `值={props.asset.precautions}` 写成 `值=""`、或保存键名写错，整片用例照绿。
+  test("注意事项有正文 ⇒ 显示正文、不显示空态，产品级黄框仍在", () => {
+    const { host, 卸 } = 挂({ precautions: "必须双人复核" })
+    try {
+      标签(host, "precautions").click()
+      expect(文本(host, "asset-detail-precautions-text")).toBe("必须双人复核")
+      expect(槽(host, "asset-detail-precautions-empty") === null).toBe(true)
+      expect(文本(host, "asset-detail-uncertainty")).toContain("必须经过人工复核")
+    } finally {
+      卸()
+    }
+  })
+
+  test("注意事项 Tab 保存时只送 precautions（键名正确）", async () => {
+    const 收到的: unknown[] = []
+    const { host, 卸 } = 挂({ precautions: "旧注意事项" }, {
+      canWrite: true,
+      onSaveContent: async (patch) => {
+        收到的.push(patch)
+        return true
+      },
+    })
+    try {
+      标签(host, "precautions").click()
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+      框.value = "新注意事项"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(收到的).toEqual([{ precautions: "新注意事项" }])
     } finally {
       卸()
     }
