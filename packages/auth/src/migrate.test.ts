@@ -40,6 +40,15 @@ async function 表数(db: ReturnType<typeof freshDb>, name: string) {
   return Number(rowsOf(result)[0]?.["n"] ?? 0)
 }
 
+/** `auth.asset` 上某列的数量（0026 加了 `summary` / `precautions`）。 */
+async function 资产列(db: ReturnType<typeof freshDb>, name: string) {
+  const result = await db.execute(sql`
+    select count(*)::int as n from information_schema.columns
+    where table_schema = 'auth' and table_name = 'asset' and column_name = ${name}
+  `)
+  return Number(rowsOf(result)[0]?.["n"] ?? 0)
+}
+
 /** 表在不在。用 `information_schema` 而不是 `to_regclass()`：后者认 `search_path`，判据会随会话漂。 */
 async function tableExists(db: ReturnType<typeof freshDb>, name: string, schema?: string): Promise<boolean> {
   const result = await db.execute(sql`
@@ -201,6 +210,25 @@ describe("migrate", () => {
 
     expect(await 表数(db, "asset_usage_event")).toBe(0)
     expect(await 表数(db, "asset_usage_cursor")).toBe(0)
+  })
+
+  test("0026：资产内容两列随迁移建出，回滚后撤掉", async () => {
+    const db = freshDb()
+    const 本次 = await migrate(db)
+
+    expect(本次).toContain("0026_asset_content_fields")
+    expect(await 资产列(db, "summary")).toBe(1)
+    expect(await 资产列(db, "precautions")).toBe(1)
+
+    // 只回滚到 0026 就停：整份逆序回滚那条用例在 0017 的 down 脚本上有既有红（42601），
+    // 写死在它前面的版本就永远执行不到。也不写死 `rollback(db, "0026_...")`——rollback 只认 head。
+    for (const version of [...本次].reverse()) {
+      await rollback(db, version)
+      if (version === "0026_asset_content_fields") break
+    }
+
+    expect(await 资产列(db, "summary")).toBe(0)
+    expect(await 资产列(db, "precautions")).toBe(0)
   })
 })
 
