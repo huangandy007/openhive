@@ -3,7 +3,8 @@ import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { setProjectFiles, set项目文件被截断 } from "@/project/project-files"
 import { 默认字号, 设阅读字号 } from "./reading-size"
-import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView, sanitizeHtml } from "./richtext-view"
+import { 造Markdown渲染器, renderMarkdown, renderPlainText, RichtextView } from "./richtext-view"
+import { sanitizeHtml } from "./sanitize-html"
 import { 取草稿, 清空草稿, 设自动保存参数 } from "./richtext/draft-store"
 
 const 字节 = (s: string) => new TextEncoder().encode(s)
