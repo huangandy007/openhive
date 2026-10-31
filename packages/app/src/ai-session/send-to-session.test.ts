@@ -1,12 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { 发送到会话, 发送失败提示, 数行, 订阅会话输入, 行数上界 } from "./send-to-session"
+import {
+  发送到会话,
+  发送失败提示,
+  取最近回复,
+  数行,
+  订阅会话输入,
+  订阅最近回复,
+  行数上界,
+} from "./send-to-session"
 
 /**
  * 接线盒是**模块级**的一份状态（同 `center/views/reading-size.ts` 的写法）⇒ 它**跨用例活着**。
  * 谁登记过收件口，谁就得在 `afterEach` 里收回，否则下一条用例一进来就站在别人的收件口上
  * （`LEARNINGS #005-03` 的同型：模块级接缝谁写谁收）。
  */
-afterEach(() => 订阅会话输入(undefined))
+afterEach(() => {
+  订阅会话输入(undefined)
+  订阅最近回复(undefined)
+})
 
 describe("数行：末尾那个换行不算一行", () => {
   test("空串 0 行", () => expect(数行("")).toBe(0))
@@ -98,5 +109,31 @@ describe("发送失败提示", () => {
   test("两条原因各有各的说法，且都提到 50", () => {
     expect(发送失败提示("没有会话")).toContain("会话")
     expect(发送失败提示("行数超限")).toContain(String(行数上界))
+  })
+})
+
+/**
+ * 反向读取口（2026-10-31）：详情页「从 AI 回复填入」要从右栏取**最后一条 AI 回复**。
+ * 与收件口一样是模块级状态 ⇒ 跨用例活着，本文件 `afterEach` 一并收回。
+ */
+describe("最近回复口（反向读取）", () => {
+  test("登记后能取到", () => {
+    订阅最近回复(() => "AI 的回答")
+    expect(取最近回复()).toBe("AI 的回答")
+  })
+
+  test("右栏还没有回复 ⇒ 取到 undefined", () => {
+    订阅最近回复(() => undefined)
+    expect(取最近回复()).toBeUndefined()
+  })
+
+  test("传 undefined 收回 ⇒ 取不到", () => {
+    订阅最近回复(() => "AI 的回答")
+    订阅最近回复(undefined)
+    expect(取最近回复()).toBeUndefined()
+  })
+
+  test("从没登记过 ⇒ undefined（不是抛错）", () => {
+    expect(取最近回复()).toBeUndefined()
   })
 })

@@ -18,6 +18,9 @@
  * `center/views/reading-size.ts` / `project/current-project.ts` 同一个写法，只是共享的
  * 从「一个值」换成「一个动作」。
  *
+ * 2026-10-31 起这里还多存了一个**读取口**（反向）：右栏登记「取最近一条 AI 回复」，
+ * 详情页在用户点「从 AI 回复填入」时来取。方向仍是 `ai-assets → ai-session`，同向不构成环。
+ *
  * ⚠️ 模块级状态**跨用例活着** ⇒ 组件测试必须 `afterEach` 收回（同 `reading-size` 那条口径）。
  *
  * ## 依赖方向
@@ -89,4 +92,22 @@ export function 发送到会话(文本: string, 方式: 写入方式 = "追加")
  */
 export function 发送失败提示(原因: "没有会话" | "行数超限"): string {
   return 原因 === "行数超限" ? `一次最多发 ${行数上界} 行，请少选点` : "先在右栏开一个会话"
+}
+
+/** 当前登记的「取最近一条 AI 回复」；`undefined` = 右栏没开 / 没人登记。 */
+let 最近回复口: (() => string | undefined) | undefined
+
+/**
+ * 右栏登记「取最近一条 AI 回复」；卸载时传 `undefined` 收回。
+ *
+ * 与 `订阅会话输入` 同一条纪律：模块级状态**跨用例活着** ⇒ 组件测试的 `afterEach`
+ * 必须一并收回（`LEARNINGS #005-03`）。
+ */
+export function 订阅最近回复(取: (() => string | undefined) | undefined): void {
+  最近回复口 = 取
+}
+
+/** 取最近一条 AI 回复。右栏没开 / 还没有回复 ⇒ `undefined`。 */
+export function 取最近回复(): string | undefined {
+  return 最近回复口?.()
 }

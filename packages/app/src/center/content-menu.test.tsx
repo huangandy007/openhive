@@ -2,15 +2,16 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { toaster } from "@opencode-ai/ui/toast"
 import { render } from "solid-js/web"
 import { 内容菜单 } from "./content-menu"
-import { 发送失败提示, 订阅会话输入 } from "@/ai-session/send-to-session"
+import { 发送失败提示, 订阅会话输入, 订阅最近回复 } from "@/ai-session/send-to-session"
 import { ToastRegion } from "@/utils/toast"
 
 const 挂过的: Array<() => void> = []
 afterEach(() => {
   while (挂过的.length) 挂过的.pop()!()
   document.body.innerHTML = ""
-  // 接线盒是模块级状态 ⇒ 谁登记谁收回（同 Task 1 那条口径）。
+  // 接线盒是模块级状态 ⇒ 谁登记谁收回（同 Task 1 那条口径）。反向读取口一并收回。
   订阅会话输入(undefined)
+  订阅最近回复(undefined)
   // toast 的 store 是模块级 ⇒ 不清的话上一条的提示会残到下一条（同 file-tree 那条口径）。
   toaster.clear()
 })

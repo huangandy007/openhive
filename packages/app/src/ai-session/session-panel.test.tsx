@@ -13,7 +13,7 @@ import { SessionPanel, type SessionPanelData } from "./session-panel"
 import { type 内建命令条 } from "./command-palette"
 import { GENERIC_MODULE, type CapabilityManifest, type SkillCapability } from "./capabilities"
 import { projectCapabilities } from "./projection"
-import { 发送失败提示, 发送到会话, 订阅会话输入 } from "./send-to-session"
+import { 取最近回复, 发送失败提示, 发送到会话, 订阅会话输入, 订阅最近回复 } from "./send-to-session"
 
 /**
  * 右栏「最小可用会话」（T008 / FR-010 / DESIGN §4.7.5）。
@@ -41,6 +41,8 @@ afterEach(() => {
   // ⚠️ **模块级收件口**是另一件事：组件卸载会经 `onCleanup` 收回它，但那要有 `onCleanup`
   // 真的跑过。这里兜底一次，保证**下一条用例**不会站在上一条的收件口上（同 Task 1 那条口径）。
   订阅会话输入(undefined)
+  // 反向读取口同一条纪律（2026-10-31）：右栏挂载时登记，卸载会收回；这里再兜底一次。
+  订阅最近回复(undefined)
   // toast 的 store 是模块级 ⇒ 不清的话上一条的提示会残到下一条（同 file-tree 那条口径）。
   toaster.clear()
 })
@@ -2454,6 +2456,51 @@ describe("中栏发来的文本（接线盒那一头，2026-10-14）", () => {
     挂过的.pop()!() // 卸载这一棵——`afterEach` 就是这么收的（33-37 行）
 
     expect(发送到会话("张三")).toEqual({ ok: false, 原因: "没有会话" })
+  })
+
+  /**
+   * 反向读取口（2026-10-31）：「从 AI 回复填入」取的是右栏登记的**最后一条助手正文**。
+   *
+   * ⚠️ 这一条钉的是**面板真的登记了**（`session-panel.tsx` 的 `订阅最近回复`）：详情页那组
+   * 用例手工登记替身，面板不登记也照样绿。变异：删掉面板里那次 `订阅最近回复(...)` ⇒
+   * 本条第 ① 句实得 `undefined`、必红。
+   *
+   * ① 顺带钉「正文从 `data.part[消息.id]` 拼出来」：`message[]` 的元素本身没有 `parts`，
+   * 若照 `message` 里的字段硬读，这里永远取不到。
+   */
+  test("登记最近回复：取到最后一个助手的正文；卸载后收回", () => {
+    /**
+     * ⚠️ 助手消息**故意不挂 `parentID`**：挂上就会被 `SessionTurn` 认领并渲染成 Markdown，
+     * 而本文件前面的「思考过程」用例已经把 session-ui 的 markdown worker 异步打成 disabled
+     * （happy-dom 起不了 worker）⇒ 再渲染一次会同步抛 `MarkdownWorkerUnavailableError`。
+     * 本条要钉的是**登记的那条链**（`data.message` ＋ `data.part` ⇒ 取最近回复），不是渲染，
+     * 所以让助手消息留在「不被任何 turn 认领」的状态——观测面不变，也不受那个环境缺陷牵连。
+     */
+    挂(() =>
+      原语环境(() => (
+        <SessionPanel
+          data={{
+            ...夹具数据(),
+            message: { ses_1: [造消息("usr_1", "ses_1", "user"), 造消息("ast_1", "ses_1", "assistant")] },
+            part: {
+              usr_1: [造文本块("prt_1", "usr_1", "帮我看看")],
+              ast_1: [造文本块("prt_2", "ast_1", "第一段"), 造文本块("prt_3", "ast_1", "第二段")],
+            },
+          }}
+          directory="/tmp/openhive-test"
+          sessionID="ses_1"
+          projection={空投影}
+          斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+          模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+          showReasoningSummaries={false}
+        />
+      )),
+    )
+
+    expect(取最近回复()).toBe("第一段\n第二段")
+
+    挂过的.pop()!() // 卸载这一棵
+    expect(取最近回复()).toBeUndefined()
   })
 })
 

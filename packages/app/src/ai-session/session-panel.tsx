@@ -18,7 +18,8 @@ import { projectCapabilities } from "./projection"
 import { 可列出的会话 } from "./session-actions"
 import { SessionNav, type 可索引的一轮 } from "./session-nav"
 import { 会话重命名输入 } from "./session-rename"
-import { 发送到会话, 发送失败提示, 订阅会话输入 } from "./send-to-session"
+import { 最后回复文本 } from "./last-reply"
+import { 发送到会话, 发送失败提示, 订阅会话输入, 订阅最近回复 } from "./send-to-session"
 import { SkillDrawer } from "./skill-drawer"
 import { showToast } from "@/utils/toast"
 
@@ -606,6 +607,25 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
     controller.restoreFocus()
   })
   onCleanup(() => 订阅会话输入(undefined))
+
+  /**
+   * 反向登记（2026-10-31）：详情页「从 AI 回复填入」要取**最后一条 AI 回复**。
+   *
+   * ⚠️ `data.message[id]` 的元素（SDK 的 `Message`）**没有 `parts`**——正文在
+   * `data.part[消息.id]`。这里按消息顺序把两者拼成 `{ role, parts }` 再交给纯函数
+   * （`last-reply.ts` 的注释写了为什么收窄成这个形状）。
+   *
+   * 与收件口同一条纪律：登记 / 收回成对，否则模块级状态跨用例活着。
+   */
+  订阅最近回复(() =>
+    最后回复文本(
+      (props.data.message[props.sessionID] ?? []).map((消息) => ({
+        role: 消息.role,
+        parts: props.data.part[消息.id] ?? [],
+      })),
+    ),
+  )
+  onCleanup(() => 订阅最近回复(undefined))
 
   /** 草稿正文。定义在 `controller` **之后**只为避开 TS 的循环推断；只在 `onSubmit` 被调时才求值。 */
   const 取正文 = () => controller.value()
