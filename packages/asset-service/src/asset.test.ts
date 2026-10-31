@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { join } from "node:path"
 import { getTableColumns, sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
@@ -354,12 +355,30 @@ describe("内容字段（2026-10-31）", () => {
     expect(读回?.precautions).toBe("")
   })
 
-  test("迁移把 description 回填进 summary 之后，两者相等", async () => {
-    // 迁移本身在 beforeAll 的 migrate() 里已跑过；这里验回填口径：
-    // 先写一行 summary 为空、description 非空，再跑一遍回填语句（幂等）。
+  test("0026 迁移的回填语句把 description 复制进 summary", async () => {
+    // 回填语句**从迁移文件里读出来**再执行（不是测试自己手写一条）：删掉 0026 里那行
+    // `UPDATE auth.asset SET summary = description ...`，这里就找不到语句、用例变红，
+    // 迁移的回填口径便由本用例钉住。
     const db = await freshDb()
-    await insertAsset(db, metadata({ id: "a_content_backfill", name: "回填", description: "原来的介绍" }))
-    await db.execute(sql`update auth.asset set summary = description where id = ${"a_content_backfill"}`)
+    await insertAsset(
+      db,
+      metadata({
+        id: "a_content_backfill",
+        name: "回填",
+        description: "原来的介绍",
+        summary: "",
+        precautions: "",
+      }),
+    )
+    const 迁移 = await Bun.file(
+      join(import.meta.dir, "..", "..", "auth", "src", "migrations", "0026_asset_content_fields.sql"),
+    ).text()
+    const 回填语句 = 迁移
+      .split("--> statement-breakpoint")
+      .map((片段) => 片段.replace(/^--.*$/gm, "").trim())
+      .find((片段) => /^UPDATE auth\.asset SET summary = description\b/i.test(片段))
+    expect(回填语句).toBeDefined()
+    await db.execute(sql.raw(回填语句!))
     const 读回 = await assetById(db, "a_content_backfill")
     expect(读回?.summary).toBe("原来的介绍")
   })
