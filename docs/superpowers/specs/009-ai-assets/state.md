@@ -4,6 +4,53 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-10-31 · 介绍 / 注意事项支持 Markdown
+
+**现象**：`description`（介绍）与 `precautions`（注意事项）按纯文本显示，作者写 `## 小标题`、`- 列表`
+看到的仍是源码。功能描述（`summary`）是悬停浮层的一句话，不该渲染。
+
+**用户谈定的三个决定**：① 详情页渲染、**卡片两行预览去格式**（仍是纯文字）；② 编辑态给一句提示 +
+一个「预览」切换（切回草稿不丢）；③ 长度上限不变（2000 / 1000），**服务端零改动**——存储仍是 Markdown 源码。
+
+**做法**（6 个提交 `f10a90fe00..4e26481cbe`）：
+- `center/views/sanitize-html.ts`：净化器（白名单 + `sanitizeHtml()`）从 `richtext-view.tsx` **原样搬出**，
+  两处共用一份策略（`#002-06`）。不直接 import `richtext-view` 会把 draft-store / binary-view / 工具栏拖进包。
+- `ai-assets/markdown.tsx`：`渲染Markdown` = `sanitizeHtml(marked.parse(源,{async:false})).trim()`；
+  `去Markdown` 给卡片用（近似实现）；`资产Markdown` 是写 `innerHTML` 的容器，挂 `data-format="markdown"`
+  作样式钩子，拦链接默认跳转（协议前缀另开标签页、页内锚点放行、相对链接拦下并 `console.warn`），`onCleanup` 摘监听。
+- `asset-detail.tsx`：`可编辑字段` 增 `markdown?: boolean`；介绍 / 注意事项传，功能描述不传。
+  空态判定（`trim()` + `emptyText`）与 `data-slot` 一个字未改。
+- `asset-card.tsx`：描述走 `去Markdown()`。
+- `index.css`：排版规则选择器 35 处由 `[data-component="richtext-view"][data-format="markdown"]`
+  放宽成 `[data-format="markdown"]`；`data-format="text"` 与字号那条 `[data-component="richtext-view"]` 未动。
+  用户正文无法伪造 `data-format`（`ALLOW_DATA_ATTR: false`）。
+
+**门禁**（实跑）：
+
+| 范围 | 命令 | 实得 |
+|---|---|---|
+| app 组件 | `bun run test:components` | 1753 pass / 0 fail（83 文件 / 35s）|
+| app 单元 | `bun run test:unit` | 1415 pass / 27 fail（既有 `jsxDEV` 基线，未修）|
+| app 类型 | `bunx tsgo --noEmit` | 退出码 0 |
+| 静态检查 | `bunx oxlint packages/app/src/ai-assets packages/app/src/center/views` | 0 error / 121 warning |
+
+**变异验证**（实拆实红，均已还原）：介绍面板去掉 `markdown` ⇒ 2 红；给功能描述加 `markdown` ⇒ 2 红；
+`渲染Markdown` 换成裸 `marked.parse` ⇒ 2 红；卡片改回原文 ⇒ 1 红；删两行 `set预览(false)` ⇒
+「取消退出后重开编辑」红；删 `onMount`/`onCleanup` ⇒ 2 红；只删 `onCleanup` ⇒ 清理用例红。
+
+**复审（本机子代理）**：Critical 0 / Important 2 / Minor 5，两条 Important 已在 `4e26481cbe` 修完——
+`去Markdown` 原先无词边界，把 intraword `_` 当强调吃掉（`project_member_id → projectmemberid`、
+裸 URL `a*b*c → abc`），改为 `\p{L}\p{N}` 边界；预览复位 / 链接拦截 / `onCleanup` 三处原本零用例
+（整段删掉仍全绿），现各补一条。报告见 `.superpowers/sdd/2026-10-31-资产Markdown渲染/`（git 忽略）。
+
+**残留**：
+- 卡片描述**不剥原始 HTML**（`<b>粗</b>` 会露出标签），详情页却会渲染——简报未要求，备查；
+- 卡片每渲染跑一遍正则，未 memo（列表长时白跑，非缺陷）；
+- `\p{L}\p{N}` 边界比 CommonMark 保守一档：`这是*斜体*文字` 不剥星号（换来裸 URL / 字段名不被改字）；
+- **真栈未验证**：CSS 只按 `data-format` 属性断言钉住，没跑 `getComputedStyle`；`test:browser` 与 e2e 未跑；
+- 净化覆盖受 happy-dom 限制（`NodeIterator` 会停摆），一条输入只能喂一个被禁标签，行为由既有
+  `richtext-view` 用例兜底。
+
 ## 2026-10-31 · 资产内容编辑与悬停文案
 
 **现象**（三件事同一个根：**资产的可读文案没有写入路径，悬停还读错了地方**）：
@@ -517,4 +564,4 @@ B 天数硬编码 30 ⇒ 3 红；C 拆网格透传 ⇒ 2 红；**我方另做一
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-10-31（资产内容编辑与悬停文案：迁移 0026、PATCH 出口、悬停回落、详情页三 Tab 就地编辑；真栈验收待用户）
+2026-10-31（介绍 / 注意事项支持 Markdown：详情页渲染、卡片去格式、编辑态预览切换；真栈与 CSS 实测量未做）
