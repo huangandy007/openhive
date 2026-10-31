@@ -11,6 +11,7 @@ import type { UsageStats } from "./asset-catalog-api"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import { 卡片统计 } from "./card-meta"
 import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
+import { 去Markdown } from "./markdown"
 
 /**
  * 资产卡片（009 T006 / T007 / DESIGN §4.9–§4.10）：**精简四件**——六边形图标、名称、两行描述、
@@ -94,7 +95,9 @@ export function AssetCard(props: AssetCardProps): JSX.Element {
           data-slot="asset-card-description"
           class="line-clamp-2 text-[12px] leading-4 text-v2-text-text-muted"
         >
-          {props.asset.description}
+          {/* 卡片两行预览是纯文字：作者在 description 里写的 Markdown 标记要去掉
+              （详情页才渲染，见 `markdown.tsx`）。 */}
+          {去Markdown(props.asset.description)}
         </p>
         <div class="mt-auto flex items-center justify-between gap-1.5">
           <div class="flex min-w-0 items-center gap-1.5">

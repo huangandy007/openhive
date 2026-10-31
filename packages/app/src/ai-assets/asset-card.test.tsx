@@ -140,6 +140,23 @@ describe("AssetCard 的自动送达标记", () => {
  * `favoriteCount` 设成 3 而不是默认 0，避免「默认值刚好满足断言」（`#005-47`）；
  * title 用全等，不用 `toContain`（`#006-22`）。
  */
+/**
+ * 卡片描述去格式（2026-10-31）：详情页渲染 Markdown，卡片那两行预览**仍是纯文字**
+ * ——作者在 description 里写 `**加粗**`，卡片上不能露出星号。
+ */
+describe("AssetCard 的描述去 Markdown（2026-10-31）", () => {
+  test("描述里的 **加粗** ⇒ 卡片显示「加粗」，不带星号", () => {
+    const { host, dispose } = 挂({
+      asset: 样例资产({ id: "a1", name: "资金分析", description: "**加粗**说明" }),
+      onOpen: () => {},
+    })
+    const 描述 = host.querySelector<HTMLElement>('[data-slot="asset-card-description"]')
+    expect(描述?.textContent?.trim()).toBe("加粗说明")
+    expect((描述?.textContent ?? "").includes("*")).toBe(false)
+    dispose()
+  })
+})
+
 describe("AssetCard 的收藏与使用统计（2026-10-30）", () => {
   const 带收藏 = () => 样例资产({ id: "a1", name: "资金分析", favoriteCount: 3 })
   const 用量: UsageStats = { days: 30, stats: { a1: { users: 3, calls: 12 } } }
