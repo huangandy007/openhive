@@ -459,6 +459,14 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
   const 草稿操作 = createPromptInputV2Store(草稿)
 
   /**
+   * 本实例的根节点。只用来回答一个问题：**我还看得见吗**（`isConnected`）。
+   *
+   * 真栈里本组件会被实例化多次、DOM 只留下其中一份，跨栏接缝的选择就靠它
+   * （`send-to-session.ts` 的 `收件口们`）。卸载后 `isConnected` 变 false，不必手动清。
+   */
+  let 根节点: HTMLDivElement | undefined
+
+  /**
    * `/` 面板的两个源（T007 📤 的那根线，2026-10-11 由「投影的 `all`」换成「服务端命令表 ＋ 上游内建」）：
    *
    * | 源 | 从哪来 | 为什么 |
@@ -600,13 +608,19 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * ⚠️ 聚焦走 `controller.restoreFocus()`（`interaction.ts:340`），不自己找 DOM 去 focus。
    * `focus.editor` 同名两物：**事件**在 `machine.ts:77` 只记 `state.focus`，**命令**在
    * `interaction.ts:159` 才真聚焦——`dispatch({ type: "focus.editor" })` 只走前者、不聚焦；详见 task-3-report.md。
+   *
+   * ⚠️ **带归属登记**（2026-10-31）：真栈（Vite dev）里本组件会被实例化多次，DOM 只留下其中
+   * 一份。登记时附上「我还看得见吗」＝根节点还在 document 里，发送时只挑**最后一个还活着的**
+   * ——否则文字会写进看不见的那份 store，`发送到会话` 还回 `ok:true`，界面一个字不插
+   * （实测日志 `收件口被调用 {我是挂载: 2, 可见挂载: 1}`）。收回也**只撤自己这一条**。
    */
-  订阅会话输入((文本, 方式) => {
+  const 活着 = () => 根节点?.isConnected === true
+  const 收回收件口 = 订阅会话输入((文本, 方式) => {
     if (方式 === "替换") 草稿操作.setText(文本)
     else 草稿操作.addText(文本)
     controller.restoreFocus()
-  })
-  onCleanup(() => 订阅会话输入(undefined))
+  }, 活着)
+  onCleanup(收回收件口)
 
   /**
    * 反向登记（2026-10-31）：详情页「从 AI 回复填入」要取**最后一条 AI 回复**。
@@ -615,17 +629,20 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
    * `data.part[消息.id]`。这里按消息顺序把两者拼成 `{ role, parts }` 再交给纯函数
    * （`last-reply.ts` 的注释写了为什么收窄成这个形状）。
    *
-   * 与收件口同一条纪律：登记 / 收回成对，否则模块级状态跨用例活着。
+   * 与收件口同一条纪律：登记 / 收回成对，否则模块级状态跨用例活着；归属判据也用同一个
+   * `活着`（看不见的那份读的是同一份 `data`，抢在最后一个就会把可见的那份挡掉）。
    */
-  订阅最近回复(() =>
-    最后回复文本(
-      (props.data.message[props.sessionID] ?? []).map((消息) => ({
-        role: 消息.role,
-        parts: props.data.part[消息.id] ?? [],
-      })),
-    ),
+  const 收回回复口 = 订阅最近回复(
+    () =>
+      最后回复文本(
+        (props.data.message[props.sessionID] ?? []).map((消息) => ({
+          role: 消息.role,
+          parts: props.data.part[消息.id] ?? [],
+        })),
+      ),
+    活着,
   )
-  onCleanup(() => 订阅最近回复(undefined))
+  onCleanup(收回回复口)
 
   /** 草稿正文。定义在 `controller` **之后**只为避开 TS 的循环推断；只在 `onSubmit` 被调时才求值。 */
   const 取正文 = () => controller.value()
@@ -635,7 +652,11 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
       {/* ⚠️ `relative` 不是装饰：`SkillDrawer` 是 `absolute inset-0`，它盖的是**右栏这个容器**
           （§4.7.3 明写「右栏容器 `relative`」）。少这一个类，抽屉会去盖离它最近的那个定位祖先
           ——那是**中栏**，也就是 §4.7.3 特意不要的「把民警正在看的东西盖住」。 */}
-      <div data-component="session-panel" class="relative flex h-full w-full flex-col">
+      <div
+        ref={(el) => (根节点 = el)}
+        data-component="session-panel"
+        class="relative flex h-full w-full flex-col"
+      >
         {/* 会话行（2026-10-07 裁定：做在右栏内，不新增全局浮层）。视觉照 §4.7.0 的 token 纪律，
             底色取 `layer-01` 与指令卡行（§4.7.1）同一档，避免同白相叠。
 

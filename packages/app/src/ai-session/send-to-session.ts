@@ -46,8 +46,23 @@ export type 写入方式 = "追加" | "替换"
 
 export type 发送结果 = { ok: true } | { ok: false; 原因: "没有会话" | "行数超限" }
 
-/** 当前登记的收件口。`undefined` = 右栏没开会话。 */
-let 收件口: ((文本: string, 方式: 写入方式) => void) | undefined
+type 收件口 = (文本: string, 方式: 写入方式) => void
+/** 这个登记者**现在**还看得见吗。右栏传给它是「根节点还在 document 里」。 */
+type 活着 = () => boolean
+
+type 登记 = { readonly 写: 收件口; readonly 活着: 活着 }
+
+/**
+ * 登记表，不是单槽（2026-10-31 真栈实测改的）。
+ *
+ * 单槽是「后到覆盖」：真栈（Vite dev）里 `SessionPanel` 会被实例化多次，DOM 只留下其中一份，
+ * 而槽位是最后登记的那份 ⇒ 发送写进了**看不见的那份 store**，还回 `ok:true`，界面上一个字不插、
+ * 也不报错（实测日志 `收件口被调用 {我是挂载: 2, 可见挂载: 1}`）。同一条接缝的拖拽 / 右键两条老路
+ * 早已因同一机制标了 `test.fixme`（`e2e/real-stack/send-to-session-real.spec.ts`）。
+ *
+ * 所以：**取最后一个还活着的**；收回只撤自己那一条（`订阅` 返回的函数）。
+ */
+const 收件口们: 登记[] = []
 
 /**
  * 数一段文本有几行。
@@ -63,13 +78,31 @@ export function 数行(文本: string): number {
 }
 
 /**
- * 右栏输入框挂上时传一个收件口；卸载时传 `undefined` 收回。
+ * 右栏输入框挂上时登记一个收件口，返回**只撤自己这一条**的收回函数（卸载时调它）。
+ *
+ * - `收 === undefined` ⇒ 清空全部登记（测试 `afterEach` 收尾用；产品代码不用这条）。
+ * - `活着` 省略 ⇒ 恒为真（既有替身、单挂载的测试逐字不变）。
  *
  * 收件口收「文本 + 方式」两个参数：既有的 `(文本) => …` 替身照样能传（少一个参数不影响
  * 赋值兼容），只是它就看不到方式了——真收件口必须按方式分派（`session-panel.tsx`）。
  */
-export function 订阅会话输入(收: ((文本: string, 方式: 写入方式) => void) | undefined): void {
-  收件口 = 收
+export function 订阅会话输入(收: 收件口 | undefined, 活着: 活着 = () => true): () => void {
+  if (收 === undefined) {
+    收件口们.length = 0
+    return () => {}
+  }
+  const 登记项: 登记 = { 写: 收, 活着 }
+  收件口们.push(登记项)
+  return () => {
+    const 位置 = 收件口们.indexOf(登记项)
+    if (位置 >= 0) 收件口们.splice(位置, 1)
+  }
+}
+
+/** 最后一个还活着的收件口。一个都没有 ⇒ `undefined`（= 右栏没开会话）。 */
+function 当前收件口(): 收件口 | undefined {
+  for (let i = 收件口们.length - 1; i >= 0; i--) if (收件口们[i].活着()) return 收件口们[i].写
+  return undefined
 }
 
 /**
@@ -80,9 +113,10 @@ export function 订阅会话输入(收: ((文本: string, 方式: 写入方式) 
  * 行数上限对两种写入方式**同一条判据**：它管的是「一次塞多少行」，与追加/替换无关。
  */
 export function 发送到会话(文本: string, 方式: 写入方式 = "追加"): 发送结果 {
-  if (!收件口) return { ok: false, 原因: "没有会话" }
+  const 收 = 当前收件口()
+  if (!收) return { ok: false, 原因: "没有会话" }
   if (数行(文本) > 行数上界) return { ok: false, 原因: "行数超限" }
-  收件口(文本, 方式)
+  收(文本, 方式)
   return { ok: true }
 }
 
@@ -94,20 +128,34 @@ export function 发送失败提示(原因: "没有会话" | "行数超限"): str
   return 原因 === "行数超限" ? `一次最多发 ${行数上界} 行，请少选点` : "先在右栏开一个会话"
 }
 
-/** 当前登记的「取最近一条 AI 回复」；`undefined` = 右栏没开 / 没人登记。 */
-let 最近回复口: (() => string | undefined) | undefined
+type 读取口 = () => string | undefined
+
+/** 「取最近一条 AI 回复」的登记表。与收件口同一条纪律：取最后一个还活着的（见上方 `收件口们`）。 */
+const 最近回复口们: Array<{ readonly 取: 读取口; readonly 活着: 活着 }> = []
 
 /**
- * 右栏登记「取最近一条 AI 回复」；卸载时传 `undefined` 收回。
+ * 右栏登记「取最近一条 AI 回复」，返回只撤自己这一条的收回函数。
  *
  * 与 `订阅会话输入` 同一条纪律：模块级状态**跨用例活着** ⇒ 组件测试的 `afterEach`
- * 必须一并收回（`LEARNINGS #005-03`）。
+ * 必须一并收回（`LEARNINGS #005-03`）；产品代码在 `onCleanup` 里调收回函数。
  */
-export function 订阅最近回复(取: (() => string | undefined) | undefined): void {
-  最近回复口 = 取
+export function 订阅最近回复(取: 读取口 | undefined, 活着: 活着 = () => true): () => void {
+  if (取 === undefined) {
+    最近回复口们.length = 0
+    return () => {}
+  }
+  const 登记项 = { 取, 活着 }
+  最近回复口们.push(登记项)
+  return () => {
+    const 位置 = 最近回复口们.indexOf(登记项)
+    if (位置 >= 0) 最近回复口们.splice(位置, 1)
+  }
 }
 
 /** 取最近一条 AI 回复。右栏没开 / 还没有回复 ⇒ `undefined`。 */
 export function 取最近回复(): string | undefined {
-  return 最近回复口?.()
+  for (let i = 最近回复口们.length - 1; i >= 0; i--) {
+    if (最近回复口们[i].活着()) return 最近回复口们[i].取()
+  }
+  return undefined
 }
