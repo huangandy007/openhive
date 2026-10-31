@@ -72,6 +72,14 @@ const IDS = {
   mates: "asset-content-mates",
   /** 只给「无权者」的独立夹具：不与任何写用例共享，杜绝执行顺序依赖。 */
   blocked: "asset-content-blocked",
+  /**
+   * 「ME 只读」的独立夹具（终审 M-8 的第二个方向）。
+   *
+   * ⚠️ **不能拿 `blocked` 来断言 ME 的 writableIds 不含它**：`blocked` 的 owner 就是 ME，
+   * ME 对它本来就有 write（实测 ME 的 writableIds = [mine, blocked]）。那会是一条**假红**。
+   * 这一份 owner 是 MATE、没有任何 write 授予 ⇒ 对 ME 才是真正的只读资产。
+   */
+  readonly: "asset-content-readonly",
 } as const
 
 /** 给 MATE 的显式 `write` 授权组（非作者拿写权：判据必须来自能力模型，不是作者身份）。 */
@@ -99,6 +107,7 @@ beforeAll(async () => {
   await insertAsset(pg.db, 资产({ id: IDS.mine, name: "我写的" }))
   await insertAsset(pg.db, 资产({ id: IDS.mates, name: "同事写的", ownerId: MATE.id, ownerName: MATE.name }))
   await insertAsset(pg.db, 资产({ id: IDS.blocked, name: "无权者只能读的" }))
+  await insertAsset(pg.db, 资产({ id: IDS.readonly, name: "我只读的", ownerId: MATE.id, ownerName: MATE.name }))
 
   // 非作者拿写权，只能来自显式 `write` 授权行（空间只授读）。建组 → 加人 → 授权，
   // 走生产出口而不是手写 SQL（`#006-35`）；顺序调用，PGlite 夹具单连接。
@@ -245,6 +254,10 @@ describe("资产列表 · writableIds", () => {
       )(JSON.parse(yield* Effect.promise(() => response.text())))
       expect(body.writableIds).toContain(IDS.mine)
       expect(body.writableIds).not.toContain(IDS.mates)
+      // 第二个方向（终审 M-8）：实现若误写成「本页除 mates 之外全给」，这条必须红。
+      // 用 `readonly`（owner 是 MATE、无 write 授予）而不是 `blocked`——后者 owner 是 ME，
+      // 对 ME 本来就可写，拿它断言会是假红（见 IDS 里的注释）。
+      expect(body.writableIds).not.toContain(IDS.readonly)
     }),
   )
 })
