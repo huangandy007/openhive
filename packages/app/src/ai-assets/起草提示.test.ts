@@ -72,6 +72,15 @@ describe("构造起草提示", () => {
     expect(结果).toContain("其余已省略")
     expect(结果.includes("第59行")).toBe(false)
   })
+
+  // `数行` 按 `/\r\n|\r|\n/` 切：孤立 `\r`（老式 Mac 换行）也算一行。这里若按 `/\r?\n/` 算，
+  // 预算会算少，实际行数照样撞上限。
+  test("孤立 \\r 换行的现有内容同样按行数截断", () => {
+    const 六十段 = Array.from({ length: 60 }, (_, i) => `第${i}行`).join("\r")
+    const 结果 = 提示({ 现有: 六十段 })
+    expect(结果.split(/\r\n|\r|\n/).length <= 行数上界).toBe(true)
+    expect(结果).toContain("其余已省略")
+  })
 })
 
 describe("提取正文", () => {

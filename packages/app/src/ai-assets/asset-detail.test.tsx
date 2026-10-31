@@ -1078,7 +1078,7 @@ describe("AI 起草与填入（2026-10-31）", () => {
     const { host, 卸 } = 可写的({}, 挂起)
     try {
       开编辑(host)
-      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      槽(host, "asset-detail-save")?.click()
       expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-draft"]')?.disabled).toBe(true)
       expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-fill"]')?.disabled).toBe(true)
       放行(true)
