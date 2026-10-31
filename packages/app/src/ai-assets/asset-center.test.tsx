@@ -13,6 +13,7 @@ import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { AssetCenter } from "./asset-center"
 import type { AssetCatalog } from "./asset-catalog"
 import type { UsageStats } from "./asset-catalog-api"
+import type { 内容补丁 } from "./content-api"
 import type { ProjectEnablement } from "./enable-state"
 import { createAssetFilter, 兜底分类ID } from "./filter"
 
@@ -606,6 +607,72 @@ describe("中栏 · 收藏（2026-10-29）", () => {
       expect(条.textContent?.trim()).toBe("收藏失败，请检查网络后重试")
       // 在详情头部里，而不是在被 `hidden` 掉的浏览区里。
       expect(host.querySelector('[data-slot="asset-detail-header"]')?.contains(条) === true).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+})
+
+/**
+ * 内容编辑接线的最后一环（2026-10-31）：`asset-detail` 的编辑态由自己的用例守着、
+ * `asset-catalog` 的 `saveContent` 由数据层用例守着；把两者连起来的 `asset-center.tsx`
+ * 那两行（`canWrite=` / `onSaveContent=`）没有用例就会静默漏掉——删掉它们，本层其他用例照绿，
+ * 而用户看到的编辑按钮整块消失（与 2026-10-29 的 `usage` 接线同一个坑）。
+ */
+describe("中栏 · 内容编辑接线（2026-10-31）", () => {
+  const 编辑按钮 = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-edit"]')
+
+  test("数据源没说我有 write ⇒ 详情里没有编辑按钮", () => {
+    const 源 = 数据源({ assets: [资产("a1")], total: 1 })
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      expect(编辑按钮(host) === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("数据源说我有 write ⇒ 详情里有编辑按钮", () => {
+    const 源 = { ...数据源({ assets: [资产("a1")], total: 1 }), writable: () => new Set(["a1"]) }
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      expect(编辑按钮(host) !== null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("保存成功 ⇒ patch 送 saveContent，回包经 applyAsset 落回清单，详情就地显示新正文", async () => {
+    const 基础 = 数据源({ assets: [资产("a1")], total: 1 })
+    const 送出: Array<{ readonly assetId: string; readonly patch: 内容补丁 }> = []
+    const 源 = {
+      ...基础,
+      writable: () => new Set(["a1"]),
+      saveContent: async (assetId: string, patch: 内容补丁) => {
+        送出.push({ assetId, patch })
+        return { ...资产("a1"), description: "改好的正文" }
+      },
+      applyAsset: (asset: AssetMetadata) => 基础.改清单([asset]),
+    }
+    const { host, 卸 } = 挂(源)
+    try {
+      开卡(host, "a1")
+      const 按钮 = 编辑按钮(host)
+      if (!按钮) throw new Error("有 write 权限却没有编辑按钮")
+      按钮.click()
+      const 框 = host.querySelector<HTMLTextAreaElement>('[data-slot="asset-detail-editor"]')
+      if (!框) throw new Error("点开编辑却没有输入框")
+      框.value = "改好的正文"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-save"]')!.click()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(送出).toEqual([{ assetId: "a1", patch: { description: "改好的正文" } }])
+      // 保存成功后退出编辑态，正文取自 `applyAsset` 落回清单的那一行。
+      expect(host.querySelector('[data-slot="asset-detail-editor"]') === null).toBe(true)
+      expect(host.querySelector('[data-slot="asset-detail-description"]')?.textContent).toBe("改好的正文")
     } finally {
       卸()
     }

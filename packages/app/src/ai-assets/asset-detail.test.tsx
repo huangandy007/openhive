@@ -191,18 +191,18 @@ describe("资产详情头部", () => {
 })
 
 describe("详情三 tab", () => {
-  test("tab 栏是介绍/注意事项/版本（评价已收起），默认选中介绍", () => {
+  test("tab 栏是介绍/功能描述/注意事项/版本（评价已收起），默认选中介绍", () => {
     const { host, 卸 } = 挂()
     try {
       const tablist = host.querySelector('[role="tablist"]')
       expect(tablist).not.toBeNull()
       const 按钮 = [...host.querySelectorAll<HTMLButtonElement>('[data-slot="asset-detail-tab"]')]
       expect(按钮.map((el) => el.textContent)).toEqual(详情Tab列表.map((项) => 项.label))
-      expect(按钮.map((el) => el.dataset.tab)).toEqual(["intro", "precautions", "versions"])
+      expect(按钮.map((el) => el.dataset.tab)).toEqual(["intro", "summary", "precautions", "versions"])
       expect(按钮.every((el) => el.getAttribute("role") === "tab")).toBe(true)
 
       expect(标签(host, "intro").getAttribute("aria-selected")).toBe("true")
-      for (const id of ["precautions", "versions"]) {
+      for (const id of ["summary", "precautions", "versions"]) {
         expect(标签(host, id).getAttribute("aria-selected")).toBe("false")
       }
       expect(面板(host)?.dataset.tab).toBe("intro")
@@ -238,10 +238,11 @@ describe("详情三 tab", () => {
     try {
       标签(host, "intro").focus()
       标签(host, "intro").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))
-      expect(标签(host, "precautions").getAttribute("aria-selected")).toBe("true")
-      expect(document.activeElement).toBe(标签(host, "precautions"))
+      // 功能描述 Tab 插在介绍之后（2026-10-31）：右移一格落在它上面，不是注意事项。
+      expect(标签(host, "summary").getAttribute("aria-selected")).toBe("true")
+      expect(document.activeElement).toBe(标签(host, "summary"))
 
-      标签(host, "precautions").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }))
+      标签(host, "summary").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }))
       expect(标签(host, "intro").getAttribute("aria-selected")).toBe("true")
 
       标签(host, "intro").dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }))
@@ -307,6 +308,83 @@ describe("详情各 tab 内容", () => {
     try {
       标签(host, "versions").click()
       expect(文本(host, "asset-detail-published")).toBe("发布于 2026-10-18")
+    } finally {
+      卸()
+    }
+  })
+})
+
+describe("内容编辑（2026-10-31）", () => {
+  const 保存成功 = async () => true
+  const 保存抛错 = async () => {
+    throw new Error("网络断了")
+  }
+
+  test("没有 canWrite ⇒ 三个 Tab 都不渲染编辑按钮", () => {
+    const { host, 卸 } = 挂()
+    try {
+      for (const id of ["intro", "summary", "precautions"]) {
+        标签(host, id).click()
+        // 布尔式而不是 `toBeNull()`：变异时 bun 会去序列化 happy-dom 节点、环形引用把进程挂死（`#009-01`）。
+        expect(槽(host, "asset-detail-edit") === null, `${id} 面板无权也渲染了编辑按钮`).toBe(true)
+      }
+    } finally {
+      卸()
+    }
+  })
+
+  test("canWrite ⇒ 当前 Tab 有编辑按钮；点开出现 textarea，取消回到只读", () => {
+    const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: 保存成功 })
+    try {
+      expect(槽(host, "asset-detail-edit")).not.toBeNull()
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      expect(槽(host, "asset-detail-editor")).not.toBeNull()
+      ;(槽(host, "asset-detail-cancel") as HTMLElement).click()
+      expect(槽(host, "asset-detail-editor")).toBeNull()
+      expect(文本(host, "asset-detail-description")).toBe("按账户汇总资金往来")
+    } finally {
+      卸()
+    }
+  })
+
+  test("保存失败 ⇒ 保留用户输入并就地显示错误", async () => {
+    const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: 保存抛错 })
+    try {
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+      框.value = "我写的字"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("我写的字")
+      expect(文本(host, "asset-detail-edit-error")).toBe("网络断了")
+    } finally {
+      卸()
+    }
+  })
+
+  test("功能描述 Tab 保存时只送 summary", async () => {
+    const 收到的: unknown[] = []
+    const { host, 卸 } = 挂({ summary: "旧的一句话" }, {
+      canWrite: true,
+      onSaveContent: async (patch) => {
+        收到的.push(patch)
+        return true
+      },
+    })
+    try {
+      标签(host, "summary").click()
+      expect(文本(host, "asset-detail-summary-text")).toBe("旧的一句话")
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
+      框.value = "新的一句话"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      ;(槽(host, "asset-detail-save") as HTMLElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(收到的).toEqual([{ summary: "新的一句话" }])
+      expect(槽(host, "asset-detail-editor")).toBeNull()
     } finally {
       卸()
     }

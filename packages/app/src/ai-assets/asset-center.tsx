@@ -251,6 +251,17 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
                 usage={props.catalog?.usage()}
                 favoriteBusy={props.catalog?.favoriteBusy() === asset().id}
                 error={props.catalog?.error() ?? props.enablement?.error()}
+                canWrite={props.catalog?.writable().has(asset().id) === true}
+                onSaveContent={
+                  props.catalog === undefined
+                    ? undefined
+                    : async (patch) => {
+                        const 新行 = await props.catalog!.saveContent(asset().id, patch)
+                        if (新行 === undefined) return false
+                        props.catalog!.applyAsset(新行)
+                        return true
+                      }
+                }
               />
             </div>
           )

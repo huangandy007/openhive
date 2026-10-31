@@ -4,6 +4,7 @@ import { createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid
 import {
   ASSET_STATUS_LABELS,
   ASSET_VISIBILITY_LABELS,
+  CONTENT_LIMITS,
   type AssetMetadata,
 } from "@opencode-ai/asset-service/metadata"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
@@ -46,6 +47,7 @@ import "./asset-action-active.css"
  */
 export const 详情Tab列表 = [
   { id: "intro", label: "介绍" },
+  { id: "summary", label: "功能描述" },
   { id: "precautions", label: "注意事项" },
   { id: "versions", label: "版本" },
 ] as const
@@ -68,18 +70,140 @@ function 作者文案(asset: AssetMetadata): string {
   return asset.department === "" ? asset.ownerName : `${asset.ownerName} · ${asset.department}`
 }
 
-function 介绍面板(props: { readonly asset: AssetMetadata }): JSX.Element {
+/** 单个内容字段的只读 / 编辑两态（2026-10-31）。三个 Tab 共用，避免三份复制。 */
+function 可编辑字段(props: {
+  /** 外层 `<section>` 的槽位，形如 `asset-detail-field-summary`。 */
+  readonly slot: string
+  /**
+   * 只读态正文的槽位。**必须每个字段各不相同**：现有测试用
+   * `槽(host, "asset-detail-description")` 取介绍正文、`槽(host, "asset-detail-precautions-empty")`
+   * 取空态——三处共用同一个槽位会让 `querySelector` 命中最先渲染的那份。
+   */
+  readonly textSlot: string
+  readonly 标题: string
+  readonly 值: string
+  /** 值为空时只读态显示这句话；不传就显示空串。 */
+  readonly emptyText?: string
+  /** 空态那句提示的槽位（只在 `emptyText` 生效时渲染）。 */
+  readonly emptySlot?: string
+  readonly 上限: number
+  readonly 多行: boolean
+  readonly 可写: boolean
+  readonly onSave?: (值: string) => Promise<boolean>
+}): JSX.Element {
+  const [编辑中, set编辑中] = createSignal(false)
+  const [草稿, set草稿] = createSignal("")
+  const [保存中, set保存中] = createSignal(false)
+  const [错误, set错误] = createSignal<string | undefined>()
+
+  const 开 = () => {
+    set草稿(props.值)
+    set错误(undefined)
+    set编辑中(true)
+  }
+
+  const 存 = async () => {
+    if (props.onSave === undefined) return
+    set保存中(true)
+    set错误(undefined)
+    try {
+      const 成 = await props.onSave(草稿())
+      if (成) set编辑中(false)
+      else set错误("保存失败，请重试")
+    } catch (error) {
+      set错误(error instanceof Error ? error.message : "保存失败，请重试")
+    } finally {
+      set保存中(false)
+    }
+  }
+
+  return (
+    <section data-slot={props.slot}>
+      <div class="flex items-center gap-2">
+        <h3 class="text-[12px] font-semibold text-v2-text-text-faint">{props.标题}</h3>
+        <Show when={props.可写 && !编辑中()}>
+          <button
+            type="button"
+            data-slot="asset-detail-edit"
+            class="cursor-pointer rounded-[4px] px-1.5 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+            onClick={开}
+          >
+            编辑
+          </button>
+        </Show>
+      </div>
+
+      <Switch>
+        <Match when={编辑中()}>
+          <textarea
+            data-slot="asset-detail-editor"
+            class="mt-1 w-full rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[13px] leading-6 text-v2-text-text-base"
+            rows={props.多行 ? 6 : 2}
+            maxlength={props.上限}
+            value={草稿()}
+            onInput={(事件) => set草稿(事件.currentTarget.value)}
+          />
+          <div class="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              data-slot="asset-detail-save"
+              class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+              disabled={保存中()}
+              onClick={() => void 存()}
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              data-slot="asset-detail-cancel"
+              class="cursor-pointer rounded-[4px] px-2 py-0.5 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              disabled={保存中()}
+              onClick={() => set编辑中(false)}
+            >
+              取消
+            </button>
+            <span class="text-[11px] text-v2-text-text-faint">
+              {草稿().length}/{props.上限}
+            </span>
+          </div>
+          <Show when={错误()}>
+            {(文字) => (
+              <p data-slot="asset-detail-edit-error" role="alert" class="mt-1 text-[12px] text-v2-state-fg-danger">
+                {文字()}
+              </p>
+            )}
+          </Show>
+        </Match>
+        <Match when={!编辑中()}>
+          <p
+            data-slot={props.值 === "" && props.emptySlot !== undefined ? props.emptySlot : props.textSlot}
+            class="mt-1 whitespace-pre-wrap text-[13px] leading-6 text-v2-text-text-base"
+          >
+            {props.值 === "" && props.emptyText !== undefined ? props.emptyText : props.值}
+          </p>
+        </Match>
+      </Switch>
+    </section>
+  )
+}
+
+function 介绍面板(props: {
+  readonly asset: AssetMetadata
+  readonly 可写: boolean
+  readonly onSave?: (值: string) => Promise<boolean>
+}): JSX.Element {
   return (
     <div data-slot="asset-detail-intro" class="space-y-4">
-      <section>
-        <h3 class="text-[12px] font-semibold text-v2-text-text-faint">是什么</h3>
-        <p
-          data-slot="asset-detail-description"
-          class="mt-1 text-[13px] leading-6 text-v2-text-text-base"
-        >
-          {props.asset.description}
-        </p>
-      </section>
+      <可编辑字段
+        slot="asset-detail-field-description"
+        textSlot="asset-detail-description"
+        标题="功能与用法"
+        值={props.asset.description}
+        上限={CONTENT_LIMITS.description}
+        多行
+        可写={props.可写}
+        {...(props.onSave === undefined ? {} : { onSave: props.onSave })}
+      />
       <Show when={props.asset.tags.length > 0}>
         <section>
           <h3 class="text-[12px] font-semibold text-v2-text-text-faint">标签</h3>
@@ -98,7 +222,35 @@ function 介绍面板(props: { readonly asset: AssetMetadata }): JSX.Element {
   )
 }
 
-function 注意事项面板(): JSX.Element {
+function 功能描述面板(props: {
+  readonly asset: AssetMetadata
+  readonly 可写: boolean
+  readonly onSave?: (值: string) => Promise<boolean>
+}): JSX.Element {
+  return (
+    <div data-slot="asset-detail-summary" class="space-y-3">
+      <p class="text-[12px] text-v2-text-text-muted">
+        这句话显示在左栏技能卡片的悬停浮层上，给同事一眼看懂这个技能能干什么。
+      </p>
+      <可编辑字段
+        slot="asset-detail-field-summary"
+        textSlot="asset-detail-summary-text"
+        标题="功能描述"
+        值={props.asset.summary}
+        上限={CONTENT_LIMITS.summary}
+        多行={false}
+        可写={props.可写}
+        {...(props.onSave === undefined ? {} : { onSave: props.onSave })}
+      />
+    </div>
+  )
+}
+
+function 注意事项面板(props: {
+  readonly asset: AssetMetadata
+  readonly 可写: boolean
+  readonly onSave?: (值: string) => Promise<boolean>
+}): JSX.Element {
   return (
     <div data-slot="asset-detail-precautions" class="space-y-3">
       <div
@@ -109,13 +261,22 @@ function 注意事项面板(): JSX.Element {
         <span class="mt-0.5 shrink-0 text-v2-icon-icon-accent">
           <Icon name="warning" size="small" />
         </span>
-        <p>
-          AI 生成的结论可能存在偏差：关键数据、统计口径与最终结论必须经过人工复核。
-        </p>
+        <p>AI 生成的结论可能存在偏差：关键数据、统计口径与最终结论必须经过人工复核。</p>
       </div>
-      <p data-slot="asset-detail-precautions-empty" class="text-[13px] text-v2-text-text-muted">
-        该资产尚未填写专属注意事项。
-      </p>
+      {/* 一个组件，空态靠 `emptyText` / `emptySlot` 表达——不要写成两个 `Show` 二选一，
+          那会让「有值时没有编辑按钮」的路径漏掉。 */}
+      <可编辑字段
+        slot="asset-detail-field-precautions"
+        textSlot="asset-detail-precautions-text"
+        emptySlot="asset-detail-precautions-empty"
+        emptyText="该资产尚未填写专属注意事项。"
+        标题="专属注意事项"
+        值={props.asset.precautions}
+        上限={CONTENT_LIMITS.precautions}
+        多行
+        可写={props.可写}
+        {...(props.onSave === undefined ? {} : { onSave: props.onSave })}
+      />
     </div>
   )
 }
@@ -182,6 +343,19 @@ export interface AssetDetailProps {
    * ⇒ 明确写「还没人用过」。累计列 `usageCount` 从此不再显示——它是没人写过的假数（设计 §1）。
    */
   readonly usage?: UsageStats
+  /**
+   * 【保留的定制 · 同步上游时不要丢】内容编辑（2026-10-31）。
+   *
+   * `canWrite` 省略 / false ⇒ 三个 Tab **都不渲染编辑按钮**（与启用、收藏同一条纪律：
+   * 没接线就不渲染）。`onSaveContent` 返回 true 表示已保存，详情据此退出编辑态；
+   * 抛错或返回 false 时**保留用户输入**并显示错误——敲的字不能因为一次网络失败消失。
+   */
+  readonly canWrite?: boolean
+  readonly onSaveContent?: (patch: {
+    readonly description?: string
+    readonly summary?: string
+    readonly precautions?: string
+  }) => Promise<boolean>
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -191,6 +365,10 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
 
   // 进入详情把焦点放到「返回」：键盘 / 读屏用户落点明确（`#005-17` 的焦点时间线）。
   onMount(() => 返回按钮?.focus())
+
+  // 省略接线（storybook / 旧用法）⇒ 一律当失败，绝不让编辑态静默留在「已保存」上。
+  const 保存 = (patch: { description?: string; summary?: string; precautions?: string }) =>
+    props.onSaveContent?.(patch) ?? Promise.resolve(false)
 
   const 切换 = (目标: AssetDetailTab) => {
     set当前(目标)
@@ -369,10 +547,25 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
         >
           <Switch>
             <Match when={当前() === "intro"}>
-              <介绍面板 asset={props.asset} />
+              <介绍面板
+                asset={props.asset}
+                可写={props.canWrite === true}
+                onSave={(值) => 保存({ description: 值 })}
+              />
+            </Match>
+            <Match when={当前() === "summary"}>
+              <功能描述面板
+                asset={props.asset}
+                可写={props.canWrite === true}
+                onSave={(值) => 保存({ summary: 值 })}
+              />
             </Match>
             <Match when={当前() === "precautions"}>
-              <注意事项面板 />
+              <注意事项面板
+                asset={props.asset}
+                可写={props.canWrite === true}
+                onSave={(值) => 保存({ precautions: 值 })}
+              />
             </Match>
             <Match when={当前() === "versions"}>
               <版本面板 asset={props.asset} />
