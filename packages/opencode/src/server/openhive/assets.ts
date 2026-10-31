@@ -281,6 +281,9 @@ function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     const 参数 = yield* HttpRouter.params
     const assetId = 参数.id ?? ""
     const body = yield* 读取体(request)
+    // 请求体形态检查有意前置到「找资产」之前（终审 M-2）：这是**与资产无关**的请求形态错误
+    // （不是 JSON 对象），不是内容校验。不构成存在性探测——对存在与不存在的 id，非对象体
+    // 都回同一个 400；只有「请求体是对象」时才继续 404 / 403 / 字段校验那条链。
     if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
 
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
