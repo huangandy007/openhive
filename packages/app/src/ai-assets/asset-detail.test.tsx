@@ -328,7 +328,7 @@ describe("详情各 tab 内容", () => {
 })
 
 describe("内容编辑（2026-10-31）", () => {
-  const 保存成功 = async () => true
+  const 保存成功 = async (): Promise<true> => true
   const 保存抛错 = async () => {
     throw new Error("网络断了")
   }
@@ -439,8 +439,13 @@ describe("内容编辑（2026-10-31）", () => {
     }
   })
 
-  test("onSaveContent 返回 false ⇒ 同样保留输入并报错", async () => {
-    const { host, 卸 } = 挂({}, { canWrite: true, onSaveContent: async () => false })
+  // 终审 M-5：失败文案由调用方给。详情页不能一律写「保存失败」——「写入已成功、只是回包读不懂」
+  // 那种情况让用户看到「失败」会诱导他再点一次。
+  test("onSaveContent 返回文案 ⇒ 保留输入并原样显示那句话", async () => {
+    const { host, 卸 } = 挂({}, {
+      canWrite: true,
+      onSaveContent: async () => "服务返回的数据格式不对，请刷新后确认",
+    })
     try {
       ;(槽(host, "asset-detail-edit") as HTMLElement).click()
       const 框 = 槽(host, "asset-detail-editor") as HTMLTextAreaElement
@@ -450,7 +455,7 @@ describe("内容编辑（2026-10-31）", () => {
       await Promise.resolve()
       await Promise.resolve()
       expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("没存上的字")
-      expect(文本(host, "asset-detail-edit-error")).toBe("保存失败，请重试")
+      expect(文本(host, "asset-detail-edit-error")).toBe("服务返回的数据格式不对，请刷新后确认")
     } finally {
       卸()
     }

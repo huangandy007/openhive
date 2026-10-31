@@ -185,7 +185,6 @@ export function 解析资产行(value: unknown): AssetMetadata | undefined {
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof description !== "string" || typeof icon !== "string" || typeof category !== "string") return undefined
   // 缺席（旧内核没这列）⇒ 空串；给了但不是字符串 ⇒ 坏行（不把类型漂移吞成「未填」）。
-  // 缺席（旧内核没这列）⇒ 空串；给了但不是字符串 ⇒ 坏行（不把类型漂移吞成「未填」）。
   const summary = value["summary"]
   const precautions = value["precautions"]
   if (summary !== undefined && typeof summary !== "string") return undefined

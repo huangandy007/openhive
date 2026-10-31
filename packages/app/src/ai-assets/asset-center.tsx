@@ -257,7 +257,8 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
                     ? undefined
                     : async (patch) => {
                         const 新行 = await props.catalog!.saveContent(asset().id, patch)
-                        if (新行 === undefined) return false
+                        // 失败文案取 catalog 刚设的那句：可能是网络、403，或「写入已成功但回包读不懂」（M-5）。
+                        if (新行 === undefined) return props.catalog!.error() ?? "保存失败，请重试"
                         props.catalog!.applyAsset(新行)
                         return true
                       }

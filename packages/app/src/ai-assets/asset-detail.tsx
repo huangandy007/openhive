@@ -92,7 +92,7 @@ function 可编辑字段(props: {
   readonly 上限: number
   readonly 多行: boolean
   readonly 可写: boolean
-  readonly onSave?: (值: string) => Promise<boolean>
+  readonly onSave?: (值: string) => Promise<true | string>
 }): JSX.Element {
   const [编辑中, set编辑中] = createSignal(false)
   const [草稿, set草稿] = createSignal("")
@@ -123,8 +123,9 @@ function 可编辑字段(props: {
     set错误(undefined)
     try {
       const 成 = await props.onSave(草稿())
-      if (成) set编辑中(false)
-      else set错误("保存失败，请重试")
+      // 失败文案由调用方给：本组件不知道是网络断了、没权限，还是「写入成功但回包读不懂」（M-5）。
+      if (成 === true) set编辑中(false)
+      else set错误(成)
     } catch (error) {
       set错误(error instanceof Error ? error.message : "保存失败，请重试")
     } finally {
@@ -211,7 +212,7 @@ function 可编辑字段(props: {
 function 介绍面板(props: {
   readonly asset: AssetMetadata
   readonly 可写: boolean
-  readonly onSave?: (值: string) => Promise<boolean>
+  readonly onSave?: (值: string) => Promise<true | string>
 }): JSX.Element {
   return (
     <div data-slot="asset-detail-intro" class="space-y-4">
@@ -246,7 +247,7 @@ function 介绍面板(props: {
 function 功能描述面板(props: {
   readonly asset: AssetMetadata
   readonly 可写: boolean
-  readonly onSave?: (值: string) => Promise<boolean>
+  readonly onSave?: (值: string) => Promise<true | string>
 }): JSX.Element {
   return (
     <div data-slot="asset-detail-summary" class="space-y-3">
@@ -270,7 +271,7 @@ function 功能描述面板(props: {
 function 注意事项面板(props: {
   readonly asset: AssetMetadata
   readonly 可写: boolean
-  readonly onSave?: (值: string) => Promise<boolean>
+  readonly onSave?: (值: string) => Promise<true | string>
 }): JSX.Element {
   return (
     <div data-slot="asset-detail-precautions" class="space-y-3">
@@ -368,15 +369,16 @@ export interface AssetDetailProps {
    * 【保留的定制 · 同步上游时不要丢】内容编辑（2026-10-31）。
    *
    * `canWrite` 省略 / false ⇒ 三个 Tab **都不渲染编辑按钮**（与启用、收藏同一条纪律：
-   * 没接线就不渲染）。`onSaveContent` 返回 true 表示已保存，详情据此退出编辑态；
-   * 抛错或返回 false 时**保留用户输入**并显示错误——敲的字不能因为一次网络失败消失。
+   * 没接线就不渲染）。`onSaveContent` 返回 `true` 表示已保存，详情据此退出编辑态；
+   * 返回错误文案或抛错时**保留用户输入**并就地显示那句话——敲的字不能因为一次网络失败消失，
+   * 而失败原因（网络 / 403 / 写入成功但回包读不懂）只有调用方知道，详情页不自己编一句（M-5）。
    */
   readonly canWrite?: boolean
   readonly onSaveContent?: (patch: {
     readonly description?: string
     readonly summary?: string
     readonly precautions?: string
-  }) => Promise<boolean>
+  }) => Promise<true | string>
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -389,7 +391,7 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
 
   // 省略接线（storybook / 旧用法）⇒ 一律当失败，绝不让编辑态静默留在「已保存」上。
   const 保存 = (patch: { description?: string; summary?: string; precautions?: string }) =>
-    props.onSaveContent?.(patch) ?? Promise.resolve(false)
+    props.onSaveContent?.(patch) ?? Promise.resolve("保存失败，请重试")
 
   const 切换 = (目标: AssetDetailTab) => {
     set当前(目标)
