@@ -48,12 +48,18 @@ export function 去Markdown(源: string): string {
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
       // 行内代码
       .replace(/`([^`]+)`/g, "$1")
-      // 粗体
-      .replace(/(\*\*|__)(.*?)\1/g, "$2")
+      // 粗体（`**` 是显式标记，词内也照收）
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      // 粗体的下划线写法。按 CommonMark，`__` 落在「词内」不算强调；这里对 `*` 的单标记
+      // 斜体也一并要求词边界——卡片只是两行纯文字预览，把 `a*b*c` 这种裸 URL 当斜体吃掉
+      // 等于静默改字，比留着星号糟得多（2026-10-31 复审 Important-1）。
+      // 边界用 `\p{L}\p{N}` 而不是 `\w`：后者只认 ASCII，`资金_账户_交易` 会漏判。
+      .replace(/(?<![\p{L}\p{N}])__(.+?)__(?![\p{L}\p{N}])/gu, "$1")
       // 删除线
       .replace(/~~(.*?)~~/g, "$1")
-      // 斜体（近似：不处理单词内部的单个下划线）
-      .replace(/(\*|_)([^*_\n]+)\1/g, "$2")
+      // 斜体
+      .replace(/(?<![\p{L}\p{N}])\*([^*\n]+)\*(?![\p{L}\p{N}])/gu, "$1")
+      .replace(/(?<![\p{L}\p{N}])_([^_\n]+)_(?![\p{L}\p{N}])/gu, "$1")
       // 表格竖线 ⇒ 空格
       .replace(/^[ \t]*\|(.*)\|[ \t]*$/gm, (_, 行: string) =>
         行
@@ -82,7 +88,8 @@ export function 资产Markdown(props: { readonly text: string; readonly slot: st
   /**
    * 拦住链接的默认跳转：这是一张 SPA，整页跳走等于把民警正在看的东西丢了。
    * 有协议前缀的（`https:` / `mailto:` …）另开标签页；`#` 开头的页内锚点交给浏览器。
-   * 相对链接同样拦下——它的基准是哪个目录这里不知道，先不猜。
+   * 相对链接同样拦下——它的基准是哪个目录这里不知道，先不猜；但要留一句告警，
+   * 否则作者点下去「没反应也没痕迹」（与 `richtext-view` 的处理对齐）。
    */
   const 点链接 = (事件: MouseEvent) => {
     if (事件.defaultPrevented) return
@@ -92,6 +99,7 @@ export function 资产Markdown(props: { readonly text: string; readonly slot: st
     if (href === null || href.startsWith("#")) return
     事件.preventDefault()
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) window.open(href, "_blank", "noopener,noreferrer")
+    else console.warn("[资产Markdown] 相对链接不打开（不知道该相对谁的目录）：", href)
   }
 
   // 监听挂在容器上、不是挂在每个 `<a>` 上：`innerHTML` 换内容时子节点会重建，容器不变。

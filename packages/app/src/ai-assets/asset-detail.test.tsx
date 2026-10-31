@@ -575,6 +575,27 @@ describe("Markdown 渲染（2026-10-31）", () => {
     }
   })
 
+  /**
+   * 退出编辑态后预览必须复位（规格原话「下次打开默认写」）。没有这条，
+   * 把 `开()` / `退()` 里那两行 `set预览(false)` 删掉也全绿（复审 Important-2）。
+   */
+  test("取消退出后重开编辑：回到写态，不是停在预览", () => {
+    const { host, 卸 } = 挂({ description: "## 小标题" }, { canWrite: true, onSaveContent: async () => true })
+    try {
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+      ;(槽(host, "asset-detail-preview") as HTMLElement).click()
+      expect(槽(host, "asset-detail-editor") === null).toBe(true)
+
+      ;(槽(host, "asset-detail-cancel") as HTMLElement).click()
+      ;(槽(host, "asset-detail-edit") as HTMLElement).click()
+
+      expect((槽(host, "asset-detail-editor") as HTMLTextAreaElement).value).toBe("## 小标题")
+      expect((槽(host, "asset-detail-preview") as HTMLElement).textContent?.trim()).toBe("预览")
+    } finally {
+      卸()
+    }
+  })
+
   test("功能描述的编辑态没有「预览」（它不渲染 Markdown）", () => {
     const { host, 卸 } = 挂({ summary: "一句话" }, { canWrite: true, onSaveContent: async () => true })
     try {
