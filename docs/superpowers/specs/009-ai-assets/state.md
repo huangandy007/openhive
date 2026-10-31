@@ -4,6 +4,53 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-10-31 · 编辑面板「让 AI 起草」+「从 AI 回复填入」
+
+**现象**：三个内容字段能就地编辑了，但作者还得自己写。要能点一下让右栏 AI 起草，再一键把回复填进编辑框。
+
+**用户谈定的边界**：走「按钮 + 一键填入」，**不做零点击自动写库**；AI 的回复只进编辑框草稿，
+**保存仍由用户点**。这条是设计边界，代码里有用例钉住（`onSaveContent` 零调用）。
+
+**做法**（3 个提交 `ba862ad47a..8254fb1a07`）：
+- `ai-session/last-reply.ts`：`最后回复文本(消息们)` —— 只认 `role === "assistant"`，多个 `text` part 换行拼接，
+  末尾只有工具调用时回落到上一条有文字的。
+- `ai-session/send-to-session.ts`：加模块级**反向读取口** `订阅最近回复` / `取最近回复`，与既有收件口并列
+  （仍不走 Provider，理由见该文件顶部注释）。
+- `ai-session/session-panel.tsx`：与 `订阅会话输入` 并排登记 / 收回。
+- `ai-assets/起草提示.ts`：`构造起草提示(...)`（指名资产与字段中文名、字数上限、字段定位、Markdown 要求、
+  只输出正文并用 ``` 包起来、附现有内容）与 `提取正文(回复)`。
+- `ai-assets/asset-detail.tsx`：编辑态多两个按钮 `asset-detail-draft` / `asset-detail-fill`；错误复用既有
+  `错误` 信号与 `asset-detail-edit-error`；填入后清旧错、不退出编辑态、预览态自动切回写。
+
+**关键事实（与简报相反，已核实）**：`props.data.message[sessionID]` 的元素（SDK 的 `Message`）**没有
+`parts`**，正文在 `data.part[消息.id]`（`session-ui/src/context/data.tsx:27-40`）。登记时按消息顺序拼成
+`{ role, parts }` 再喂纯函数。
+
+**门禁**（实跑）：
+
+| 范围 | 命令 | 实得 |
+|---|---|---|
+| app 组件 | `bun run test:components` | 1765 pass / 0 fail（83 文件）|
+| app 单元 | `bun run test:unit` | 1441 pass / 27 fail（既有 `jsxDEV` 基线）|
+| app 类型 | `bunx tsgo --noEmit` | 退出码 0 |
+| 静态检查 | `bunx oxlint packages/app/src/ai-assets packages/app/src/ai-session` | 0 error / 90 warning |
+
+**复审（两轮，本机子代理）**：首轮 Critical 0 / Important 2（都是简报边界，不是实现没照做）——
+① `提取正文` 取第一个闭合围栏，正文自带代码块时整段截断；② 现有内容整段内嵌，超过约 43 行永远发不出去
+且报「请少选点」。两条已在 `44851af045` 修完；返工复审 Critical 0 / Important 0，两条 Minor（冗余断言、
+`\r` 切法与 `数行` 不一致）已在 `8254fb1a07` 修完。报告见 `.superpowers/sdd/2026-10-31-AI起草填入/`（git 忽略）。
+
+**变异验证**（全部实拆实红后还原）：围栏闭合改回取第一个 / 去掉截断 / 去掉超上限分支 / 去掉两个
+`disabled` / role 判断改回只跳过 user / 换行切法改回 `\r?\n` —— 各红在对应那条用例。
+
+**残留**：
+- **取到陈旧回复**：`取最近回复()` 与本次起草请求无关联。用户点了起草但 AI 还没答（或流式中途）时点
+  「从 AI 回复填入」，会取到**上一轮**或**半截**的回复。不落库、肉眼可见、可重来，判为 v1 近似；
+  要收窄的话最便宜的护栏是「起草时记下最后一条 assistant 的 id/条数，只接受更新的」。
+- **真栈 / e2e 未跑**：本机只有组件级用例 + 只读探针；右栏真实交互与按钮视觉未验证。
+- 测试环境限制：`session-panel.test.tsx` 前序用例会把 markdown worker 打成 disabled，新接线用例
+  只能让助手消息不挂 `parentID`（不被 `SessionTurn` 认领），只钉登记链、不断言渲染。
+
 ## 2026-10-31 · 介绍 / 注意事项支持 Markdown
 
 **现象**：`description`（介绍）与 `precautions`（注意事项）按纯文本显示，作者写 `## 小标题`、`- 列表`
@@ -564,4 +611,4 @@ B 天数硬编码 30 ⇒ 3 红；C 拆网格透传 ⇒ 2 红；**我方另做一
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-10-31（介绍 / 注意事项支持 Markdown：详情页渲染、卡片去格式、编辑态预览切换；真栈与 CSS 实测量未做）
+2026-10-31（编辑面板「让 AI 起草」+「从 AI 回复填入」；AI 无写库能力，保存仍由用户点；真栈与 e2e 待用户）
