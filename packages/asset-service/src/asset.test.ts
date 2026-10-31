@@ -393,6 +393,14 @@ describe("内容字段（2026-10-31）", () => {
         name: "写入",
         status: "published",
         version: 3,
+        precautions: "原注意事项",
+        favoriteCount: 7,
+        usageCount: 9,
+        rating: 3.25,
+        ratingCount: 4,
+        feedbackCount: 2,
+        visibility: "global",
+        publishedAt: 200,
         createdAt: 100,
         updatedAt: 100,
       }),
@@ -405,17 +413,58 @@ describe("内容字段（2026-10-31）", () => {
     )
     expect(写完?.summary).toBe("一句话功能")
     expect(写完?.precautions).toBe("注意甲")
+    // 没带的那个内容列也原样保留。
+    expect(写完?.description).toBe("按账户汇总流水")
     expect(写完?.status).toBe("published")
     expect(写完?.version).toBe(3)
     expect(写完?.updatedAt).toBe(5_000)
+    // 本函数最贵的承诺：内容写入不碰计数 / 评分 / 可见范围 / 发布时间。
+    expect(写完?.favoriteCount).toBe(7)
+    expect(写完?.usageCount).toBe(9)
+    expect(写完?.rating).toBe(3.25)
+    expect(写完?.ratingCount).toBe(4)
+    expect(写完?.feedbackCount).toBe(2)
+    expect(写完?.visibility).toBe("global")
+    expect(写完?.publishedAt).toBe(200)
+
+    // 后续写入仍只覆盖带上的字段：只带 summary，precautions 还是上一次写的值。
+    const 再写 = await updateAssetContent(db, "a_content_write", { summary: "再一句话" }, 5_500)
+    expect(再写?.precautions).toBe("注意甲")
+    expect(再写?.updatedAt).toBe(5_500)
   })
 
   test("updateAssetContent 不带某字段就不动它", async () => {
     const db = await freshDb()
-    await insertAsset(db, metadata({ id: "a_content_partial", name: "部分", description: "原介绍" }))
+    await insertAsset(
+      db,
+      metadata({ id: "a_content_partial", name: "部分", description: "原介绍", precautions: "原注意事项" }),
+    )
     const 写完 = await updateAssetContent(db, "a_content_partial", { summary: "只改功能描述" }, 6_000)
     expect(写完?.description).toBe("原介绍")
+    expect(写完?.precautions).toBe("原注意事项")
     expect(写完?.summary).toBe("只改功能描述")
+  })
+
+  test("updateAssetContent 空串是值：清空功能描述能落库，未带的注意事项保留", async () => {
+    const db = await freshDb()
+    await insertAsset(
+      db,
+      metadata({ id: "a_content_clear", name: "清空", summary: "旧一句话", precautions: "原注意事项" }),
+    )
+    const 写完 = await updateAssetContent(db, "a_content_clear", { summary: "" }, 6_500)
+    expect(写完?.summary).toBe("")
+    expect(写完?.precautions).toBe("原注意事项")
+    // 落库确认：空串不是「没传」，读回来也必须是空串。
+    expect((await assetById(db, "a_content_clear"))?.summary).toBe("")
+  })
+
+  test("updateAssetContent 写入非空介绍", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "a_content_desc", name: "改介绍", description: "旧介绍" }))
+    const 新介绍 = "按账户汇总资金流水，识别异常对手方与可疑资金回流。"
+    const 写完 = await updateAssetContent(db, "a_content_desc", { description: 新介绍 }, 6_600)
+    expect(写完?.description).toBe(新介绍)
+    expect((await assetById(db, "a_content_desc"))?.description).toBe(新介绍)
   })
 
   test("updateAssetContent 对不存在的 id 返回 undefined", async () => {
@@ -430,7 +479,8 @@ describe("内容字段（2026-10-31）", () => {
       updateAssetContent(db, "a_content_long", { summary: "一".repeat(201) }, 8_000),
     )
     if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
-    expect(error.issues).toContainEqual({ field: "summary", message: "不能超过 200 字" })
+    // 只钉字段名：提示文案是产品文案，改一句话不该把语义用例拖红。
+    expect(error.issues.map((issue) => issue.field)).toContain("summary")
     // 校验在碰库之前：断言错误类型之外再钉住行一个字节都没动。
     expect((await assetById(db, "a_content_long"))?.updatedAt).toBe(1_000)
   })
@@ -445,7 +495,7 @@ describe("内容字段（2026-10-31）", () => {
       updateAssetContent(db, "a_content_empty", { description: "  " }, 9_000),
     )
     if (!(error instanceof AssetMetadataError)) throw new Error(`期望 AssetMetadataError，实得 ${error.name}`)
-    expect(error.issues).toContainEqual({ field: "description", message: "不能为空" })
+    expect(error.issues.map((issue) => issue.field)).toContain("description")
     expect((await assetById(db, "a_content_empty"))?.updatedAt).toBe(1_000)
   })
 })
