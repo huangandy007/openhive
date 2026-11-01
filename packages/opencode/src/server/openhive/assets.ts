@@ -148,7 +148,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.iterationSubmit, (request) => handleIteration(request, deps, "submit_iteration"))
     yield* router.add("POST", PATH.iterationAbort, (request) => handleIteration(request, deps, "abort_iteration"))
     // 提交审核（2026-11-01，设计 §4.4）：作者在能力面板上点「提交审核」的服务端落点。
-    yield* router.add("POST", PATH.submit, (request) => handleSubmit(request, deps))
+    yield* router.add("POST", PATH.submit, () => handleSubmit(deps))
   }),
 )
 
@@ -482,9 +482,7 @@ function handleIteration(
  * 与迭代端点的差别只有三处：不读请求体（本端点无 body）、action 固定 `submit_review`、
  * 不查项目归属（提交不看项目）。也不传 `workspaceRoot`——本动作不发布，不重指项目链接。
  */
-function handleSubmit(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
-  // 本端点无请求体：`request` 只为与其他 handler 同形（路由注册签名），故不读它。
-  void request
+function handleSubmit(deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* 身份
     if (Option.isNone(user)) return unauthorized()
@@ -522,10 +520,21 @@ function handleSubmit(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
         catch: (error) => error,
       }),
     )
-    // 状态不允许（已提交过 / 不是草稿）：设计 §4.4 / D7 要求 400 ＋ 说人话；
-    // 迭代出口同码仍是 409（既有契约），所以只在本出口给 `失败()` 换口径。
     if (Result.isFailure(结果)) {
-      return 失败(结果.failure, { status: BAD_REQUEST, message: "已经提交过了" })
+      const error = 结果.failure
+      // 状态口径与迭代出口不同，特殊口径留在本出口，不让共用 `失败()` 背裸状态码（设计 §4.4 / §4.8）。
+      if (error instanceof AssetTransitionError) {
+        if (error.code === "invalid_source") {
+          // 只有「已经送审」才是重复提交。published / offline / archived / iterating / pending_*
+          // 从没提交过，说「已经提交过了」是假话（D7 只授权重复提交这一种）。
+          return fail(BAD_REQUEST, asset.status === "in_review" ? "已经提交过了" : "当前状态不能提交审核")
+        }
+        if (error.code === "concurrent_transition") {
+          // 并发那一刻可能是别人（比如管理员）动了它——说「已经提交过了」是第二种假话。
+          return fail(BAD_REQUEST, "状态已变化，请刷新后再试")
+        }
+      }
+      return 失败(error)
     }
 
     const updated = 结果.success
@@ -545,12 +554,8 @@ function handleSubmit(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
  * `default` 里的 `never` 赋值是给未来加码的人用的：新增 `TransitionErrorCode` 却忘了
  * 在这里给映射 ⇒ typecheck 红，而不是运行时悄悄落到 500（Task 3 的 `iteration_not_submitted`
  * 在治理台那边就是这么漏掉的）。
- *
- * `状态不允许` 只覆盖 `invalid_source`：迭代出口沿用 409（既有契约），提交审核按设计
- * §4.4 / D7 要 400 ＋「已经提交过了」。同一个错误码在不同出口状态码不同是**出口契约**，
- * 所以由调用方给口径，而不是在这里按出关口写第二份 switch。
  */
-function 失败(error: unknown, 状态不允许: { readonly status: number; readonly message?: string } = { status: CONFLICT }) {
+function 失败(error: unknown) {
   if (error instanceof AssetTransitionError) {
     switch (error.code) {
       case "asset_not_found":
@@ -563,7 +568,6 @@ function 失败(error: unknown, 状态不允许: { readonly status: number; read
       case "unsupported_asset_type":
         return fail(BAD_REQUEST, error.message)
       case "invalid_source":
-        return fail(状态不允许.status, 状态不允许.message ?? error.message)
       case "concurrent_transition":
       case "source_directory_required":
       case "draft_content_missing":

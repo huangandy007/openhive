@@ -91,6 +91,8 @@ const IDS = {
   subAgain: "asset-sub-again",
   subOther: "asset-sub-other",
   subMissingDraft: "asset-sub-missing-draft",
+  subPublished: "asset-sub-published",
+  subMcp: "asset-sub-mcp",
 } as const
 
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
@@ -376,6 +378,29 @@ beforeAll(async () => {
       name: "草稿副本没了",
       ownerId: 我.id,
       ownerName: 我.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+
+  // 已发布：从没提交过（本轮 400 文案不能说「已经提交过了」）。
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.subPublished, name: "已发布资产", ownerId: 我.id, ownerName: 我.name, status: "published" }),
+  )
+
+  // 非 skill：端点的授权预检必须排在服务层的「类型不支持」之前——没有预检时它先回 400，
+  // 等于把「这是个 mcp 资产」告诉没有写权的人。owner 是同事，提交者是「我」。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subMcp,
+      name: "别人的 MCP",
+      type: "mcp",
+      ownerId: 同事.id,
+      ownerName: 同事.name,
       status: "draft",
       version: 1,
       visibility: "personal",
@@ -710,15 +735,27 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
     }),
   )
 
-  it.live("已经提交过（in_review）⇒ 400，和状态机口径一致", () =>
+  it.live("已经提交过（in_review）⇒ 400，文案「已经提交过了」", () =>
     Effect.gen(function* () {
       const res = yield* 提交审核(我, IDS.subAgain)
       expect(res.status).toBe(400)
       // 设计 §4.4 / D7：文案要让作者看懂「已经提交过了」，不是状态机那串内部话。
-      expect((yield* 读错误(res))).toContain("已经提交过")
+      expect((yield* 读错误(res))).toContain("已经提交过了")
       // 拒绝发生在流转之前：状态与草稿副本都没动。
       expect((yield* 读行(IDS.subAgain))?.status).toBe("in_review")
       expect(existsSync(join(资产根, "pending", IDS.subAgain))).toBe(false)
+    }),
+  )
+
+  it.live("不是草稿（已发布）⇒ 400，但文案不能说「已经提交过了」", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subPublished)
+      expect(res.status).toBe(400)
+
+      const 说明 = yield* 读错误(res)
+      expect(说明).toContain("当前状态不能提交审核")
+      // published 从没提交过：D7 只授权「重复提交」这一种说「已经提交过了」。
+      expect(说明).not.toContain("已经提交过了")
     }),
   )
 
@@ -729,6 +766,24 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
       expect((yield* 读错误(res))).toContain("不能执行")
       expect((yield* 读行(IDS.subOther))?.status).toBe("draft")
       expect(existsSync(join(资产根, "pending", IDS.subOther))).toBe(false)
+    }),
+  )
+
+  // 这条钉的是**端点自己的**预检：非作者 + 非 skill 时，预检先回 403；
+  // 若预检被删，服务层会先撞类型检查回 400（把资产类型泄漏给无权者）。
+  it.live("非作者提交非 skill 资产 ⇒ 403（端点的门在服务层类型检查之前）", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subMcp)
+      expect(res.status).toBe(403)
+      expect((yield* 读错误(res))).toContain("不能执行")
+    }),
+  )
+
+  it.live("资产不存在 ⇒ 404", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, "asset-sub-does-not-exist")
+      expect(res.status).toBe(404)
+      expect((yield* 读错误(res))).toContain("资产不存在")
     }),
   )
 
