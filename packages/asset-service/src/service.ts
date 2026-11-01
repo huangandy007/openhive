@@ -393,15 +393,18 @@ function withPublishScope(
  *
  * 三条迭代动作各有各的落点来源：
  * - `start_iteration`：**现在算**（用户 + 项目 + 资产），并落库；
- * - `submit_iteration` / `abort_iteration`：**读库里那一段**。库是唯一真相，
- *   再由出口传一份就是两份口径（`#002-06` / `#010-04`）。
+ * - `submit_iteration`：**读库里那一段**并解析成绝对目录（要读工作副本）；
+ * - `abort_iteration`：同样读库里那一段，但**不解析目录**（只删 pending、清两列），
+ *   坏值不该让「解卡」出口自己 500。
+ *
+ * 库是唯一真相，再由出口传一份就是两份口径（`#002-06` / `#010-04`）。
  */
 interface IterationTarget {
   /** 沙箱根（绝对）。 */
   readonly root: string
   /** 相对沙箱根的片段；`null` = 库里没有记录。 */
   readonly relative: string | null
-  /** 绝对路径；`relative` 为 `null` 时也是 `null`。 */
+  /** 绝对路径；`abort_iteration` 不需要目录，恒为 `null`（`relative` 为 `null` 时亦然）。 */
   readonly directory: string | null
 }
 
@@ -471,7 +474,12 @@ export interface TransitionAssetInput {
   /** 省略时从库里取（`grantsFor`）。测试 / 批处理可预取后传入，省一次查询。 */
   readonly grants?: readonly GrantRow[]
   readonly reason?: string
-  /** 提交审核 / 发起迭代的源目录（作者沙箱里的当前版本）；其他动作不需要。 */
+  /**
+   * 提交审核的源目录（作者沙箱里的当前版本）；其他动作不需要。
+   *
+   * `start_iteration` **不用它**：迭代的源是发布目录（`sharedDirectoryOf`）。`submit_iteration`
+   * 也不用它：那是从库里记录的 `iteration_workspace` 还原的工作副本。
+   */
   readonly sourceDirectory?: string
   /** 发布类动作（技术发布 / 迭代发布）的可见范围；省略沿用资产现状。 */
   readonly visibility?: AssetVisibility
