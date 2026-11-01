@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import {
   AssetTransitionError,
+  SKILL_ACTIONS,
   SKILL_TRANSITIONS,
+  STORAGE_INTENTS,
   allowedSkillActions,
   applySkillTransition,
   isAssetUsable,
@@ -78,7 +80,10 @@ describe("Skill 7 状态机（FR-004 / D0-7）", () => {
   })
 
   test("发起迭代后旧版仍可用，新版本发布回到已发布", () => {
-    const iterating = applySkillTransition("published", "start_iteration", { actor: "author" })
+    const iterating = applySkillTransition("published", "start_iteration", {
+      actor: "author",
+      reason: "补一条口径",
+    })
     expect(iterating.to).toBe("iterating")
     expect(isAssetUsable("iterating")).toBe(true)
 
@@ -88,9 +93,70 @@ describe("Skill 7 状态机（FR-004 / D0-7）", () => {
     expect(republished.to).toBe("published")
   })
 
-  test("迭代发布同时要求业务复审与技术发布两道关", () => {
+  test("迭代发布只留技术关：迭代不再过业务审核（2026-11-01 拍板）", () => {
     const transition = SKILL_TRANSITIONS.find((item) => item.action === "publish_iteration")
-    expect(transition?.gates).toEqual(["business_review", "technical_publish"])
+    expect(transition?.gates).toEqual(["technical_publish"])
+  })
+
+  test("submit_iteration / abort_iteration：源状态 iterating，作者可做，版本语义各自不同", () => {
+    expect(applySkillTransition("iterating", "submit_iteration", { actor: "author" })).toEqual({
+      action: "submit_iteration",
+      from: "iterating",
+      to: "iterating",
+      actor: "author",
+      storage: "copy_to_pending",
+    })
+    expect(applySkillTransition("iterating", "abort_iteration", { actor: "author" })).toEqual({
+      action: "abort_iteration",
+      from: "iterating",
+      to: "published",
+      actor: "author",
+      storage: "discard_pending",
+    })
+    // 系统管理员也能放弃（管理员兜底：作者离职后这条迭代不能永久卡在 iterating）。
+    expect(applySkillTransition("iterating", "abort_iteration", { actor: "system_admin" }).to).toBe(
+      "published",
+    )
+  })
+
+  test("start_iteration 要变更说明；publish_iteration 只留技术关（迭代不过业务审核）", () => {
+    expect(() => applySkillTransition("published", "start_iteration", { actor: "author" })).toThrow(
+      /必须填写理由/,
+    )
+    expect(
+      applySkillTransition("published", "start_iteration", {
+        actor: "author",
+        reason: "补一条口径",
+      }).storage,
+    ).toBe("copy_publish_to_workspace")
+    // `AppliedSkillTransition` 不带 `gates`（它只是执行结果）；关卡的真相在转移表里。
+    expect(
+      SKILL_TRANSITIONS.find((transition) => transition.action === "publish_iteration")?.gates,
+    ).toEqual(["technical_publish"])
+  })
+
+  test("闭集：11 个动作、6 个存储意图", () => {
+    expect([...SKILL_ACTIONS].sort()).toEqual([
+      "abort_iteration",
+      "approve_business",
+      "archive",
+      "bring_online",
+      "publish_iteration",
+      "publish_tech",
+      "reject_business",
+      "start_iteration",
+      "submit_iteration",
+      "submit_review",
+      "take_offline",
+    ])
+    expect([...STORAGE_INTENTS].sort()).toEqual([
+      "copy_publish_to_workspace",
+      "copy_to_pending",
+      "discard_pending",
+      "move_pending_to_publish",
+      "move_publish_to_archive",
+      "none",
+    ])
   })
 
   test("下线与重新上线", () => {
@@ -143,7 +209,9 @@ describe("Skill 7 状态机（FR-004 / D0-7）", () => {
       ["approve_business", "none"],
       ["reject_business", "none"],
       ["publish_tech", "move_pending_to_publish"],
-      ["start_iteration", "copy_to_pending"],
+      ["start_iteration", "copy_publish_to_workspace"],
+      ["submit_iteration", "copy_to_pending"],
+      ["abort_iteration", "discard_pending"],
       ["publish_iteration", "move_pending_to_publish"],
       ["take_offline", "none"],
       ["bring_online", "none"],

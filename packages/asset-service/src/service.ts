@@ -27,7 +27,11 @@ import {
   assertSafeSegment,
   assertWithinRoot,
   copyDirectory,
+  directoryExists,
   draftDirectory,
+  hasPendingContent,
+  iterationWorkspaceDirectory,
+  iterationWorkspaceRelative,
   MissingSourceDirectoryError,
   pendingDirectory,
   PersonalAssetDirectoryError,
@@ -324,6 +328,17 @@ const PUBLISHING_ACTIONS: ReadonlySet<SkillAction> = new Set([
 /** 发起迭代 = 新版本在途，版本号 +1（design §2.4）。 */
 const VERSION_BUMPING_ACTIONS: ReadonlySet<SkillAction> = new Set(["start_iteration"])
 
+/**
+ * 放弃迭代 = 新版本没发布，版本号回退（设计 §4）。
+ *
+ * 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+ *
+ * 为什么不并进上面那个集合改成一个 `-1` 的映射：`VERSION_BUMPING_ACTIONS` 的语义是
+ * 「发布前先占一个版本号」，回退是**它失败时的逆操作**，两者成立的前提不同
+ * （回退还要守 `version >= 2`）。混在一个集合里，读代码的人得先算正负号。
+ */
+const VERSION_REVERTING_ACTIONS: ReadonlySet<SkillAction> = new Set(["abort_iteration"])
+
 /** 只有发布类动作可以选可见范围：其它动作带了就是调用方理解错了（不静默忽略）。 */
 const SCOPE_SELECTING_ACTIONS: ReadonlySet<SkillAction> = new Set(["publish_tech", "publish_iteration"])
 
@@ -371,6 +386,94 @@ function withPublishScope(
   return 范围 === asset.visibility ? asset : { ...asset, visibility: 范围 }
 }
 
+/**
+ * 本次流转要碰的工作副本。`undefined` = 这一条动作不碰工作副本。
+ *
+ * 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+ *
+ * 三条迭代动作各有各的落点来源：
+ * - `start_iteration`：**现在算**（用户 + 项目 + 资产），并落库；
+ * - `submit_iteration` / `abort_iteration`：**读库里那一段**。库是唯一真相，
+ *   再由出口传一份就是两份口径（`#002-06` / `#010-04`）。
+ */
+interface IterationTarget {
+  /** 沙箱根（绝对）。 */
+  readonly root: string
+  /** 相对沙箱根的片段；`null` = 库里没有记录。 */
+  readonly relative: string | null
+  /** 绝对路径；`relative` 为 `null` 时也是 `null`。 */
+  readonly directory: string | null
+}
+
+function 迭代目标(input: TransitionAssetInput, asset: AssetMetadata): IterationTarget {
+  const 根 = input.workspaceRoot
+  if (根 === undefined) {
+    // 调用方漏传是**编码错误**，不是状态错误：不翻成用户可读的错误码，
+    // 直接炸出来（出口永远会传，漏传说明接线断了）。
+    throw new Error(`${input.action} 需要 workspaceRoot`)
+  }
+
+  if (input.action === "start_iteration") {
+    const 项目 = input.projectId
+    if (项目 === undefined) throw new Error("start_iteration 需要 projectId")
+    // 用 `viewer.userId` 而不是 `asset.ownerId`：工作副本落在**发起人**的沙箱里，
+    // 出口已校验 projectId 属于该发起人。ownerId 与 viewer 在作者动作上恒等，
+    // 但写成 viewer 才是「谁发起、落在谁的沙箱」这条事实。
+    const 相对 = iterationWorkspaceRelative(input.viewer.userId, 项目, asset.id)
+    return { root: 根, relative: 相对, directory: iterationWorkspaceDirectory(根, 相对) }
+  }
+
+  const 相对 = asset.iterationWorkspace
+  return {
+    root: 根,
+    relative: 相对,
+    directory: 相对 === null ? null : iterationWorkspaceDirectory(根, 相对),
+  }
+}
+
+/**
+ * 本次流转要写进 `iteration_note` / `iteration_workspace` 的值。`undefined` = 不动这两列。
+ *
+ * - `start_iteration`：记说明、记工作副本；发起那一刻上一版的说明就被覆盖（设计 §3）；
+ * - `submit_iteration`：两个都不动（说明仍是本次迭代的，路径仍指向作者手里那份）；
+ * - `abort_iteration`：说明清空、路径清空——留着一条被放弃的说明，已发布资产会显示
+ *   错误的注解（设计 §3 原话）。
+ */
+function iterationColumnsOf(
+  action: SkillAction,
+  reason: string | undefined,
+  target: IterationTarget | undefined,
+):
+  | { iterationNote: string; iterationWorkspace: string }
+  | { iterationNote: string; clearIteration: true }
+  | undefined {
+  if (action === "start_iteration") {
+    return { iterationNote: (reason ?? "").trim(), iterationWorkspace: target?.relative ?? "" }
+  }
+  // 说明也要清空：`clearIteration` 只处置 `iteration_workspace`，而 `coalesce` 把空串当**值**
+  // （不是「不改」），所以显式传 `""` 才能真的写空（Task 1 的 `iterationNote?: string` 语义）。
+  if (action === "abort_iteration") return { iterationNote: "", clearIteration: true }
+  return undefined
+}
+
+/**
+ * `iteration_workspace` 的**写入口形状校验**（保留的定制 · 版本迭代 2026-11-01）。
+ *
+ * 为什么必须在写入口验：`updateAssetLifecycle` 不过 `validateAssetMetadata`，而
+ * `metadata.ts` 的形状校验放行反斜杠——这里是这条列唯一的共同出口（`#005-24`）。
+ *
+ * 判据是「**等于本次应当写入的那一段**」，不是「看起来像路径」：后者要再造一份路径规则，
+ * 两份口径迟早漂（`#002-06`）。绝对路径、反斜杠、指向 `.opencode` 的相对值都不可能等于它。
+ */
+export function assertIterationWorkspaceValue(value: string, expected: string): void {
+  if (value !== expected) {
+    throw new AssetTransitionError(
+      "invalid_source",
+      `iteration_workspace 必须恰好是 ${JSON.stringify(expected)}，实得 ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 export interface TransitionAssetInput {
   readonly db: AssetTarget
   readonly root: string
@@ -390,6 +493,15 @@ export interface TransitionAssetInput {
   readonly visibility?: AssetVisibility
   /** Unix 秒；测试注入固定时间，生产省略取当前。 */
   readonly now?: number
+  /**
+   * 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+   *
+   * 用户沙箱根（`workspaceRoot(env)`）。迭代三条动作必填——工作副本要落在
+   * **发起人自己的**沙箱里，服务层不读环境变量（env 只由出口读）。
+   */
+  readonly workspaceRoot?: string
+  /** 目标项目（`start_iteration` 必填）。出口已校验它属于发起人。 */
+  readonly projectId?: string
 }
 
 /** 一次已落地的文件步骤；`commit` 清理备份，`rollback` 把文件退回原样。 */
@@ -461,7 +573,30 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 范围解析在授权之后、任何文件搬运之前（`#004-09`）。
   const 生效 = withPublishScope(asset, applied, input.visibility)
 
-  const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory)
+  // 迭代三条动作要碰工作副本；落点在这里一次算定（授权之后、搬运之前，`#004-09`）。
+  // 判据写「存储意图 + 源要从工作副本取」，而不是动作列表：**存储意图才是「要不要搬文件」
+  // 的真相**，按动作列表写第二份判断就是两份口径（`#002-06`）。
+  const 迭代 =
+    applied.storage === "copy_publish_to_workspace" ||
+    applied.storage === "discard_pending" ||
+    applied.action === "submit_iteration"
+      ? 迭代目标(input, asset)
+      : undefined
+
+  const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代)
+  if (迭代列 !== undefined && "iterationWorkspace" in 迭代列) {
+    // 写入口形状校验（保留的定制 · `#005-24`）：写进库的那一段，用
+    // (userId, projectId, assetId) **重算一遍**仍必须相等。不拿 `迭代.relative` 自比——
+    // 那样任何来源的漂移都测不出来。
+    const 项目 = input.projectId
+    if (项目 === undefined) throw new Error("start_iteration 需要 projectId")
+    assertIterationWorkspaceValue(
+      迭代列.iterationWorkspace,
+      iterationWorkspaceRelative(input.viewer.userId, 项目, asset.id),
+    )
+  }
+
+  const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory, 迭代)
 
   let updated: AssetMetadata
   // 条件更新落空之后才知道有没有「另一个写者已经完成同一流转」；它决定 catch 里
@@ -471,11 +606,16 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     const result = await updateAssetLifecycle(db, asset.id, {
       expectedStatus: asset.status,
       status: applied.to,
-      version: VERSION_BUMPING_ACTIONS.has(applied.action) ? asset.version + 1 : asset.version,
+      version: VERSION_BUMPING_ACTIONS.has(applied.action)
+        ? asset.version + 1
+        : VERSION_REVERTING_ACTIONS.has(applied.action)
+          ? Math.max(1, asset.version - 1)
+          : asset.version,
       updatedAt: now,
       publishedAt: PUBLISHING_ACTIONS.has(applied.action) ? now : asset.publishedAt,
       archivedAt: applied.action === "archive" ? now : asset.archivedAt,
       ...(生效.visibility === asset.visibility ? {} : { visibility: 生效.visibility }),
+      ...(迭代列 === undefined ? {} : 迭代列),
     })
     if (result === undefined) {
       // 当前状态已经是本调用的目标态 ⇒ 另一个写者完成了**同一条**流转：
@@ -609,26 +749,82 @@ async function prepareStorageStep(
   applied: AppliedSkillTransition,
   original: AssetMetadata,
   sourceDirectory: string | undefined,
+  // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+  迭代: IterationTarget | undefined,
 ): Promise<StorageStep | undefined> {
   switch (applied.storage) {
     case "none":
       return undefined
 
     case "copy_to_pending": {
-      if (sourceDirectory === undefined) {
+      // 源目录按动作取：`submit_review` 用调用方给的沙箱路径；`submit_iteration` 用
+      // **库里记着的那一条**（`#010-04`：路径进了库就是唯一真相，不要第二份口径）。
+      const 提交迭代 = applied.action === "submit_iteration"
+      const source = 提交迭代 ? 迭代?.directory : sourceDirectory
+      if (source === undefined || source === null) {
         throw new AssetTransitionError(
           "source_directory_required",
-          `${applied.action} 需要作者沙箱里的源目录`,
+          提交迭代 ? "工作副本记录缺失，请重新发起迭代" : `${applied.action} 需要作者沙箱里的源目录`,
+        )
+      }
+      if (提交迭代 && !(await directoryExists(source))) {
+        // 工作副本被人删了 / 换了落盘根：翻成状态机错误码，别把 fs 异常丢给前端。
+        throw new AssetTransitionError(
+          "source_directory_required",
+          `工作副本不存在（可能已被删除或换了落盘根）：${source}`,
         )
       }
       const target = pendingDirectory(root, asset.id)
       assertWithinRoot(root, target, "待审目录")
-      await copyDirectory(sourceDirectory, target, { replace: true })
+      await copyDirectory(source, target, { replace: true })
       return { rollback: () => removeDirectory(root, target) }
+    }
+
+    // 【保留的定制 · 同步上游时不要丢】发起迭代（2026-11-01）：发布目录 → 工作副本。
+    case "copy_publish_to_workspace": {
+      const 工作副本根 = 迭代?.root
+      const 工作副本 = 迭代?.directory
+      if (工作副本根 === undefined || 工作副本 === null || 工作副本 === undefined) {
+        throw new Error("copy_publish_to_workspace 缺少工作副本路径")
+      }
+      const source = sharedDirectoryOf(root, asset)
+      if (!(await directoryExists(source))) {
+        // 线上那份不在（落盘根换过 / 被人删了）⇒ 不能凭空造一个空工作副本：
+        // 作者会以为自己在改线上内容，改完发布出来是一片空白。
+        throw new MissingSourceDirectoryError(source)
+      }
+      // `replace: true`：再次发起迭代时以线上为准，工作副本里未提交的改动会被覆盖
+      // （设计 §5 / §10 风险 1；发起弹窗里有明写）。
+      await copyDirectory(source, 工作副本, { replace: true })
+      return {
+        rollback: async () => {
+          // 删掉的是**从线上复制出来的副本**：线上那份没动，不丢数据；
+          // 作者未提交的改动在 copy 那一步已经被覆盖了，这一步也不会再丢什么。
+          await removeDirectory(工作副本根, 工作副本)
+        },
+      }
+    }
+
+    // 【保留的定制 · 同步上游时不要丢】放弃迭代（2026-11-01）：删 pending。
+    case "discard_pending": {
+      const target = pendingDirectory(root, asset.id)
+      assertWithinRoot(root, target, "待审目录")
+      // `force` ⇒ 本来就不存在也不报错；回滚是空的：pending 是临时区，删了就是删了。
+      await removeDirectory(root, target)
+      return undefined
     }
 
     case "move_pending_to_publish": {
       const source = pendingDirectory(root, asset.id)
+      // 作者还没交（或交了又被 abort 删了）⇒ 搬一个不存在的目录，落成
+      // 「库里 published、文件还在 pending」。设计 §4 要求在这里拦，宁可发布失败也不能
+      // 让线上出现一个空版本。
+      if (applied.action === "publish_iteration" && !(await hasPendingContent(source))) {
+        throw new AssetTransitionError(
+          "iteration_not_submitted",
+          `资产 ${asset.id} 还没有提交新版本`,
+        )
+      }
       const target = sharedDirectoryOf(root, asset)
       const 旧目录 =
         applied.action === "publish_iteration" ? staleSharedDirectoryOf(root, original, asset) : undefined

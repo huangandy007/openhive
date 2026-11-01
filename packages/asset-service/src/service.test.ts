@@ -10,10 +10,17 @@ import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { assetById, AssetMetadataError, insertAsset, listAssets, type AssetTarget } from "./asset"
 import { AssetTransitionError } from "./lifecycle"
-import type { AssetMetadata } from "./metadata"
+import type { AssetMetadata, AssetVisibility } from "./metadata"
 import { AssetNotificationError } from "./notify"
 import { skillLinkPath } from "./project-skill-link"
-import { assetLocation, createDraftAsset, discardAsset, storeAsset, transitionAsset } from "./service"
+import {
+  assertIterationWorkspaceValue,
+  assetLocation,
+  createDraftAsset,
+  discardAsset,
+  storeAsset,
+  transitionAsset,
+} from "./service"
 import { archiveDirectory, draftDirectory, pendingDirectory, publishDirectory } from "./storage"
 
 /**
@@ -438,6 +445,35 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     })
   }
 
+  /** 某可见范围的发布目录；`department` 需要部门段，其余三档不需要。 */
+  function 可见范围发布目录(root: string, visibility: AssetVisibility): string {
+    return visibility === "department"
+      ? publishDirectory(root, "skill", { visibility, department: "经侦支队" }, "asset_1")
+      : publishDirectory(root, "skill", { visibility }, "asset_1")
+  }
+
+  /** 直接把资产种成「迭代中、作者已提交新版」——只给「发布/回滚」那几条用例当前置。 */
+  async function 种迭代中(
+    db: ProductionDb["db"],
+    root: string,
+    options: { 版本: number; 待审内容: string; visibility?: AssetVisibility },
+  ): Promise<void> {
+    const visibility = options.visibility ?? "department"
+    await seedSkill(db, {
+      status: "iterating",
+      version: options.版本,
+      visibility,
+      publishedAt: 1_500,
+      iterationNote: "补一条口径",
+      iterationWorkspace: "u1/p1/.openhive/iterations/asset_1",
+    })
+    const 发布 = 可见范围发布目录(root, visibility)
+    await mkdir(发布, { recursive: true })
+    await writeFile(join(发布, "SKILL.md"), "v1")
+    await mkdir(待审目录(root), { recursive: true })
+    await writeFile(join(待审目录(root), "SKILL.md"), options.待审内容)
+  }
+
   /**
    * 让第 2 次 `execute`（= 生命周期 update）之前先有别人改掉状态。
    *
@@ -549,29 +585,10 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v1")
   })
 
-  test("迭代：版本 +1、旧版继续可用；新版本发布后替换旧版", async () => {
+  test("迭代发布：版本不再 +1，新版本替换旧版并刷新发布时间", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
-    await publishToV1(db, root, source)
-
-    await writeSkill(source, "v2")
-    const iterating = await transitionAsset({
-      db,
-      root,
-      assetId: "asset_1",
-      action: "start_iteration",
-      viewer: 作者,
-      grants: [],
-      sourceDirectory: source,
-      now: 3_000,
-    })
-    expect(iterating.status).toBe("iterating")
-    expect(iterating.version).toBe(2)
-    expect(iterating.publishedAt).toBe(2_002)
-    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
-    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
+    await 种迭代中(db, root, { 版本: 2, 待审内容: "v2" })
 
     const republished = await transitionAsset({
       db,
@@ -592,18 +609,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("迭代发布改范围：新目录落在 global，旧部门目录被清掉（内核不会扫到旧版）", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
-    await seedSkill(db, { status: "published", visibility: "department", publishedAt: 1_500 })
     const 部门目录 = 发布目录(root)
-    await mkdir(部门目录, { recursive: true })
-    await writeFile(join(部门目录, "SKILL.md"), "v1")
-
-    await writeSkill(source, "v2")
-    await transitionAsset({
-      db, root, assetId: "asset_1", action: "start_iteration",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 3_000,
-    })
+    await 种迭代中(db, root, { 版本: 2, 待审内容: "v2", visibility: "department" })
 
     const republished = await transitionAsset({
       db, root, assetId: "asset_1", action: "publish_iteration",
@@ -622,18 +629,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("迭代发布把范围从「指定人员」改成本部门：旧 targeted 目录被清掉（需求 3b）", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
-    await seedSkill(db, { status: "published", visibility: "targeted", publishedAt: 1_500 })
     const 指定人员目录 = publishDirectory(root, "skill", { visibility: "targeted" }, "asset_1")
-    await mkdir(指定人员目录, { recursive: true })
-    await writeFile(join(指定人员目录, "SKILL.md"), "v1")
-
-    await writeSkill(source, "v2")
-    await transitionAsset({
-      db, root, assetId: "asset_1", action: "start_iteration",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 3_000,
-    })
+    await 种迭代中(db, root, { 版本: 2, 待审内容: "v2", visibility: "targeted" })
 
     const republished = await transitionAsset({
       db, root, assetId: "asset_1", action: "publish_iteration",
@@ -875,20 +872,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("迭代发布时并发改状态：旧版本与新版 pending 一起回滚", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
-    await publishToV1(db, root, source)
-    await writeSkill(source, "v2")
-    await transitionAsset({
-      db,
-      root,
-      assetId: "asset_1",
-      action: "start_iteration",
-      viewer: 作者,
-      grants: [],
-      sourceDirectory: source,
-      now: 3_000,
-    })
+    await 种迭代中(db, root, { 版本: 2, 待审内容: "v2" })
 
     const racing = await raceOnUpdate(db, sql`update auth.asset set status = 'offline' where id = 'asset_1'`)
     const error = await failure(() =>
@@ -907,6 +891,353 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
     expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
     expect((await assetById(db, "asset_1"))?.status).toBe("offline")
+  })
+
+  test("迭代：发起把发布目录复制到工作副本，发布目录一个字没变、库里记下说明与路径", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    const iterating = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+
+    expect(iterating.status).toBe("iterating")
+    expect(iterating.version).toBe(2)
+    expect(iterating.publishedAt).toBe(2_002)
+    expect(iterating.iterationNote).toBe("补一条统计口径")
+    expect(iterating.iterationWorkspace).toBe("u1/p1/.openhive/iterations/asset_1")
+
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
+    expect(await readFile(join(工作副本, "SKILL.md"), "utf8")).toBe("v1")
+    expect(await readFile(join(工作副本, "references", "notes.txt"), "utf8")).toBe("v1-notes")
+    // 线上那份**一个字没变**：迭代期间民警用的还是旧版。
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("迭代：非作者发起 ⇒ actor_not_allowed，且一个文件都没搬", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    const 错误 = await failure(() =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_1",
+        action: "start_iteration",
+        viewer: 业务管理员, // 有 review，没有 write
+        grants: 审,
+        reason: "我想改",
+        workspaceRoot: 沙箱根,
+        projectId: "p1",
+        now: 3_000,
+      }),
+    )
+    expect(codeOf(错误)).toBe("actor_not_allowed")
+    expect(existsSync(join(沙箱根, "u1"))).toBe(false)
+    expect((await assetById(db, "asset_1"))?.status).toBe("published")
+  })
+
+  test("迭代：说明为空 ⇒ reason_required，状态不动", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    expect(
+      codeOf(
+        await failure(() =>
+          transitionAsset({
+            db,
+            root,
+            assetId: "asset_1",
+            action: "start_iteration",
+            viewer: 作者,
+            grants: [],
+            reason: "   ",
+            workspaceRoot: 沙箱根,
+            projectId: "p1",
+            now: 3_000,
+          }),
+        ),
+      ),
+    ).toBe("reason_required")
+    expect((await assetById(db, "asset_1"))?.status).toBe("published")
+  })
+
+  test("迭代：再次发起以线上为准，工作副本里未提交的改动被覆盖", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "第一次",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
+    await writeFile(join(工作副本, "SKILL.md"), "改了一半没提交")
+
+    // 放弃再发起一次（发布会把 version 加回去；这里要验的是「覆盖」不是版本号）。
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "abort_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_001,
+    })
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "第二次",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_002,
+    })
+
+    expect(await readFile(join(工作副本, "SKILL.md"), "utf8")).toBe("v1")
+    expect((await assetById(db, "asset_1"))?.iterationNote).toBe("第二次")
+  })
+
+  test("迭代：submit_iteration 把工作副本搬进 pending，改了哪个字就是哪个字", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
+    await writeFile(join(工作副本, "SKILL.md"), "v2-作者改过")
+
+    const 提交 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_001,
+    })
+    expect(提交.status).toBe("iterating")
+    expect(提交.version).toBe(2)
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2-作者改过")
+    // 工作副本**不删**：作者可能还要再改一遍再提交（设计 §9 不自动清理）。
+    expect(await readFile(join(工作副本, "SKILL.md"), "utf8")).toBe("v2-作者改过")
+    // 提交后可发布。
+    const 发布 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_iteration",
+      viewer: 系统管理员,
+      grants: 管,
+      now: 3_002,
+    })
+    expect(发布.status).toBe("published")
+    expect(发布.version).toBe(2)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v2-作者改过")
+    expect(await exists(待审目录(root))).toBe(false)
+  })
+
+  test("迭代：没提交就发布 ⇒ iteration_not_submitted，发布目录不变", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+
+    expect(
+      codeOf(
+        await failure(() =>
+          transitionAsset({
+            db,
+            root,
+            assetId: "asset_1",
+            action: "publish_iteration",
+            viewer: 系统管理员,
+            grants: 管,
+            now: 3_001,
+          }),
+        ),
+      ),
+    ).toBe("iteration_not_submitted")
+    expect((await assetById(db, "asset_1"))?.status).toBe("iterating")
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("迭代：abort 删 pending、清空两列、版本回退，工作副本仍在", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
+    // 种一份 pending（提交后放弃），abort 要把它删掉。
+    await mkdir(待审目录(root), { recursive: true })
+    await writeFile(join(待审目录(root), "SKILL.md"), "v2")
+    expect(await exists(工作副本)).toBe(true)
+
+    const 放弃 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "abort_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_001,
+    })
+    expect(放弃.status).toBe("published")
+    // v1 发布时是 1，发起后 2，放弃回到 1。
+    expect(放弃.version).toBe(1)
+    expect(放弃.iterationNote).toBe("")
+    expect(放弃.iterationWorkspace).toBeNull()
+    expect(await exists(待审目录(root))).toBe(false)
+    // 删用户项目里的文件是不可逆动作，abort 不碰它（设计 §9）。
+    expect(await exists(工作副本)).toBe(true)
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("迭代：version 已经是 1 时 abort 不再往下减（守卫 version >= 2）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    await seedSkill(db, { status: "iterating", version: 1, iterationNote: "手工种" })
+    await mkdir(发布目录(root), { recursive: true })
+    await writeFile(join(发布目录(root), "SKILL.md"), "v1")
+
+    const 放弃 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "abort_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_000,
+    })
+    expect(放弃.status).toBe("published")
+    expect(放弃.version).toBe(1)
+  })
+
+  test("迭代：工作副本缺失时提交 ⇒ source_directory_required（不是 500）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    await seedSkill(db, {
+      status: "iterating",
+      version: 2,
+      iterationWorkspace: "u1/p1/.openhive/iterations/asset_1",
+    })
+
+    expect(
+      codeOf(
+        await failure(() =>
+          transitionAsset({
+            db,
+            root,
+            assetId: "asset_1",
+            action: "submit_iteration",
+            viewer: 作者,
+            grants: [],
+            workspaceRoot: 沙箱根,
+            now: 3_000,
+          }),
+        ),
+      ),
+    ).toBe("source_directory_required")
+    expect((await assetById(db, "asset_1"))?.status).toBe("iterating")
+  })
+
+  test("iteration_workspace 写入口：绝对路径 / 反斜杠 / 指向 .opencode 的值都进不了库", () => {
+    const 应得 = "u1/p1/.openhive/iterations/asset_1"
+    expect(() => assertIterationWorkspaceValue(应得, 应得)).not.toThrow()
+
+    for (const 坏值 of [
+      // 绝对路径：换落盘根那天会指向旧机器上的位置（#010-04）。
+      "D:/sandbox/u1/p1/.openhive/iterations/asset_1",
+      // 反斜杠：`metadata.ts` 的形状校验放行它，但相对路径按 `/` 分段还原。
+      "u1\\p1\\.openhive\\iterations\\asset_1",
+      // `.opencode`：会落进内核的 skill 扫描范围，和项目里的链接同名打架（#010-05）。
+      "u1/p1/.opencode/iterations/asset_1",
+    ]) {
+      expect(() => assertIterationWorkspaceValue(坏值, 应得)).toThrow(AssetTransitionError)
+    }
   })
 
   test("并发写者已完成同一流转：条件更新落空不回滚目标目录（不搬走别人的结果）", async () => {

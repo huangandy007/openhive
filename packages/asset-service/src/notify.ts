@@ -59,6 +59,10 @@ export const TRANSITION_RECIPIENTS: Record<SkillAction, readonly RecipientKind[]
   reject_business: ["author"],
   publish_tech: ["author"],
   start_iteration: [],
+  // 【保留的定制 · 同步上游时不要丢】迭代（2026-11-01）：设计 §9 明确「迭代不新增通知」。
+  // 提交 / 放弃都是作者自己做的，通知作者只会制造噪音。
+  submit_iteration: [],
+  abort_iteration: [],
   publish_iteration: ["author"],
   take_offline: ["author", "favoriters"],
   bring_online: ["favoriters"],
@@ -176,6 +180,10 @@ function messageOf(notice: AssetTransitionNotice): { title: string; body: string
     // 没有收件人（见 TRANSITION_RECIPIENTS）；返回什么都写不进库。
     case "start_iteration":
       return { title: "skill 状态变化", body: `${name} 已开始迭代。` }
+    case "submit_iteration":
+      return { title: "skill 状态变化", body: `${name} 已提交新版本，等待发布。` }
+    case "abort_iteration":
+      return { title: "skill 状态变化", body: `${name} 已放弃本次迭代。` }
     default: {
       const action: never = notice.applied.action
       throw new Error(`未知生命周期动作：${String(action)}`)

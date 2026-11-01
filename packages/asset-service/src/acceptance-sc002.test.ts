@@ -165,6 +165,8 @@ const 验收转移表 = {
   reject_business: { from: ["in_review"], to: "draft", roles: ["business_reviewer"] },
   publish_tech: { from: ["pending_tech"], to: "published", roles: ["system_admin"] },
   start_iteration: { from: ["published"], to: "iterating", roles: ["author"] },
+  submit_iteration: { from: ["iterating"], to: "iterating", roles: ["author"] },
+  abort_iteration: { from: ["iterating"], to: "published", roles: ["author", "system_admin"] },
   publish_iteration: { from: ["iterating"], to: "published", roles: ["system_admin"] },
   take_offline: { from: ["published"], to: "offline", roles: ["system_admin"] },
   bring_online: { from: ["offline"], to: "published", roles: ["author", "system_admin"] },
@@ -261,6 +263,8 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
       now: number
       sourceDirectory?: string
       reason?: string
+      workspaceRoot?: string
+      projectId?: string
     }) =>
       transitionAsset({
         db,
@@ -272,6 +276,8 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
         now: input.now,
         ...(input.sourceDirectory === undefined ? {} : { sourceDirectory: input.sourceDirectory }),
         ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(input.workspaceRoot === undefined ? {} : { workspaceRoot: input.workspaceRoot }),
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       })
 
     // 1. 提交审核：文件复制到 pending，发布时间仍为空
@@ -308,36 +314,59 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await exists(待审目录)).toBe(false)
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v1")
 
-    // 5. 发起迭代：版本 +1，旧版继续可用，新内容进 pending
-    await writeSkill(source, "v2")
-    const 迭代 = await 走({ action: "start_iteration", viewer: 作者, grants: [], now: 3_000, sourceDirectory: source })
+    // 5. 发起迭代：版本 +1，旧版继续可用；作者拿到工作副本，线上那份一个字没变
+    const 沙箱根 = tempRoot()
+    const 迭代 = await 走({
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      now: 3_000,
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+    })
     expect(迭代.status).toBe("iterating")
     expect(迭代.version).toBe(2)
     expect(迭代.publishedAt).toBe(2_004)
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v1")
-    expect(await readFile(join(待审目录, "SKILL.md"), "utf8")).toBe("v2")
+    expect(await readFile(join(工作副本, "SKILL.md"), "utf8")).toBe("v1")
 
-    // 6. 迭代发布：新版替换旧版，发布时间刷新，版本不再 +1
-    const 迭代发布 = await 走({ action: "publish_iteration", viewer: 系统管理员, grants: 管, now: 3_001 })
+    // 6. 作者在工作副本里改，提交迭代：工作副本 → pending（线上仍是旧版）
+    await writeSkill(工作副本, "v2")
+    const 提交迭代 = await 走({
+      action: "submit_iteration",
+      viewer: 作者,
+      grants: [],
+      now: 3_001,
+      workspaceRoot: 沙箱根,
+    })
+    expect(提交迭代.status).toBe("iterating")
+    expect(提交迭代.version).toBe(2)
+    expect(await readFile(join(待审目录, "SKILL.md"), "utf8")).toBe("v2")
+    expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v1")
+
+    // 7. 迭代发布：新版替换旧版，发布时间刷新，版本不再 +1
+    const 迭代发布 = await 走({ action: "publish_iteration", viewer: 系统管理员, grants: 管, now: 3_002 })
     expect(迭代发布.status).toBe("published")
     expect(迭代发布.version).toBe(2)
-    expect(迭代发布.publishedAt).toBe(3_001)
+    expect(迭代发布.publishedAt).toBe(3_002)
     expect(await exists(待审目录)).toBe(false)
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v2")
 
-    // 7. 下线：只改状态、不搬目录，发布时间保留
+    // 8. 下线：只改状态、不搬目录，发布时间保留
     const 下线 = await 走({ action: "take_offline", viewer: 系统管理员, grants: 管, now: 4_000 })
     expect(下线.status).toBe("offline")
-    expect(下线.publishedAt).toBe(3_001)
+    expect(下线.publishedAt).toBe(3_002)
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v2")
 
-    // 8. 重新上线：作者即可（write 语义），发布时间刷新
+    // 9. 重新上线：作者即可（write 语义），发布时间刷新
     const 上线 = await 走({ action: "bring_online", viewer: 作者, grants: [], now: 4_001 })
     expect(上线.status).toBe("published")
     expect(上线.publishedAt).toBe(4_001)
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v2")
 
-    // 9. 归档：目录进 archive，终态
+    // 10. 归档：目录进 archive，终态
     const 归档 = await 走({ action: "archive", viewer: 系统管理员, grants: 管, now: 5_000 })
     expect(归档.status).toBe("archived")
     expect(归档.archivedAt).toBe(5_000)
@@ -346,7 +375,7 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await readFile(join(archiveDirectory(root, "asset_1"), "SKILL.md"), "utf8")).toBe("v2")
     expect(allowedSkillActions("archived")).toEqual([])
 
-    // 10. 终态不可再流转，且失败不改库
+    // 11. 终态不可再流转，且失败不改库
     expect(
       await 异步错误码(() => 走({ action: "bring_online", viewer: 系统管理员, grants: 管, now: 5_001 })),
     ).toBe("invalid_source")
@@ -370,7 +399,7 @@ describe("SC-002 验收 · 审核两道关分离（T016）", () => {
     }
   })
 
-  test("全矩阵：7 状态 × 9 动作 × 6 类身份，逐格与转移表 + 权限映射对账", () => {
+  test("全矩阵：7 状态 × 11 动作 × 6 类身份，逐格与转移表 + 权限映射对账", () => {
     for (const status of ASSET_STATUSES) {
       const 资产 = metadata({ status })
       for (const action of SKILL_ACTIONS) {

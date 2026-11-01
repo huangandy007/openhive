@@ -256,6 +256,18 @@ describe("收件人矩阵（design §2.6）", () => {
     expect(TRANSITION_RECIPIENTS.bring_online).toEqual(["favoriters"])
   })
 
+  test("迭代的两个新动作不发通知：收件人是空集，写不进库", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ status: "iterating" }))
+
+    expect(TRANSITION_RECIPIENTS.submit_iteration).toEqual([])
+    expect(TRANSITION_RECIPIENTS.abort_iteration).toEqual([])
+    // 空集 ⇒ 解析出零个收件人 ⇒ `notifyAssetTransition` 直接返回 0，一行都不写。
+    expect(await notify(db, "submit_iteration", { actorId: "u1" })).toBe(0)
+    expect(await notify(db, "abort_iteration", { actorId: "u1" })).toBe(0)
+    expect(await rows(db)).toEqual([])
+  })
+
   test("下线：作者 + 收藏者都收到；发起人若恰好也收藏了则被排除", async () => {
     const db = await freshDb()
     await insertAsset(db, metadata({ status: "published" }))

@@ -387,6 +387,48 @@ describe("生命周期列的条件更新（T008）", () => {
     )
     expect(await assetById(db, "asset_1")).toEqual(updated)
   })
+
+  /**
+   * Task 1 复审挂账项：`coalesce` / `clearIteration` 的第一个调用方是迭代三条动作，
+   * 所以在这里用**写库 → 读回**钉住三种语义。只断言返回值不够——真正的契约是读回来的列。
+   */
+  test("迭代两列的三种语义：省略=不改、clearIteration=清空路径、空串=清空说明", async () => {
+    const db = await freshDb()
+    const 工作副本 = "u1/p1/.openhive/iterations/asset_1"
+    await insertAsset(
+      db,
+      metadata({
+        status: "published",
+        publishedAt: 1_500,
+        iterationNote: "补一条口径",
+        iterationWorkspace: 工作副本,
+      }),
+    )
+    const 基线 = {
+      expectedStatus: "published" as const,
+      status: "published" as const,
+      version: 1,
+      updatedAt: 5_000,
+      publishedAt: 1_500,
+      archivedAt: null,
+    }
+
+    // ① 两列都省略 ⇒ 一个字节都不动（别的流转（下线 / 归档）不能顺手擦掉作者的说明）。
+    await updateAssetLifecycle(db, "asset_1", 基线)
+    expect((await assetById(db, "asset_1"))?.iterationNote).toBe("补一条口径")
+    expect((await assetById(db, "asset_1"))?.iterationWorkspace).toBe(工作副本)
+
+    // ② 传空串 ⇒ 说明清空（空串是**值**，不是「不改」），路径保留。
+    await updateAssetLifecycle(db, "asset_1", { ...基线, iterationNote: "" })
+    expect((await assetById(db, "asset_1"))?.iterationNote).toBe("")
+    expect((await assetById(db, "asset_1"))?.iterationWorkspace).toBe(工作副本)
+
+    // ③ clearIteration ⇒ 路径置 null；说明仍是空串（同一接口里 null 与 undefined 都表示「不改」，
+    //    清空路径只能走这个显式开关——Task 1 的 `AssetLifecycleUpdate.clearIteration`）。
+    await updateAssetLifecycle(db, "asset_1", { ...基线, clearIteration: true })
+    expect((await assetById(db, "asset_1"))?.iterationWorkspace).toBeNull()
+    expect((await assetById(db, "asset_1"))?.iterationNote).toBe("")
+  })
 })
 
 describe("内容字段（2026-10-31）", () => {

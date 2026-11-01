@@ -13,6 +13,9 @@ export const SKILL_ACTIONS = [
   "reject_business",
   "publish_tech",
   "start_iteration",
+  // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+  "submit_iteration",
+  "abort_iteration",
   "publish_iteration",
   "take_offline",
   "bring_online",
@@ -31,16 +34,22 @@ export type ReviewGate = (typeof REVIEW_GATES)[number]
  * 转移的物理动作（T008）。只写「搬什么」，不写路径——路径由 `service.ts` 按
  * `storage.ts` 的约定算，两边都不各自猜一份。
  *
- * - `copy_to_pending`：从作者沙箱复制新内容到 `pending/`（提交审核 / 发起迭代）；
+ * - `copy_to_pending`：从作者沙箱 / 工作副本复制新内容到 `pending/`（提交审核 / 提交迭代）；
  * - `move_pending_to_publish`：`pending/` → 发布目录（技术发布 / 迭代发布）；
  * - `move_publish_to_archive`：发布目录 → `archive/`（归档）；
  * - `none`：只改元数据（审核通过 / 驳回 / 下线 / 上线）。
+ *
+ * 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）新增两个意图：
+ * - `copy_publish_to_workspace`：发布目录 → 作者项目里的工作副本（发起迭代）；
+ * - `discard_pending`：删 `pending/`（放弃迭代）。
  */
 export const STORAGE_INTENTS = [
   "none",
   "copy_to_pending",
   "move_pending_to_publish",
   "move_publish_to_archive",
+  "copy_publish_to_workspace",
+  "discard_pending",
 ] as const
 export type StorageIntent = (typeof STORAGE_INTENTS)[number]
 
@@ -96,14 +105,38 @@ export const SKILL_TRANSITIONS = [
     to: "iterating",
     actors: ["author"],
     gates: [],
+    // 变更说明必填（设计 §4）：它同时是管理员在治理台看到的「这一版改了什么」。
+    requiresReason: true,
+    storage: "copy_publish_to_workspace",
+  },
+  // 【保留的定制 · 同步上游时不要丢】提交迭代（2026-11-01）：
+  // 工作副本 → pending。源状态与目标状态都是 iterating（可重复提交，后一次覆盖前一次），
+  // 所以它**不改版本号**——版本号在发起那一刻已经 +1 了。
+  {
+    action: "submit_iteration",
+    from: ["iterating"],
+    to: "iterating",
+    actors: ["author"],
+    gates: [],
     storage: "copy_to_pending",
+  },
+  // 放弃迭代：回到 published，版本号回退（service 的 VERSION_REVERTING_ACTIONS）。
+  {
+    action: "abort_iteration",
+    from: ["iterating"],
+    to: "published",
+    actors: ["author", "system_admin"],
+    gates: [],
+    storage: "discard_pending",
   },
   {
     action: "publish_iteration",
     from: ["iterating"],
     to: "published",
     actors: ["system_admin"],
-    gates: ["business_review", "technical_publish"],
+    // 迭代不再过业务审核（用户 2026-11-01 拍板）。`gates` 今天全仓无人消费，
+    // 改它只是**声明与决策对齐**，不改运行时行为。
+    gates: ["technical_publish"],
     storage: "move_pending_to_publish",
   },
   {
@@ -147,6 +180,9 @@ export type TransitionErrorCode =
   | "department_missing"
   /** 非发布类动作不接受可见范围参数：调用方理解错了，不静默忽略。 */
   | "visibility_not_applicable"
+  // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）：
+  // 只用于 `publish_iteration` 的前置判据——作者还没提交（或 pending 被 abort 删了）。
+  | "iteration_not_submitted"
 
 export class AssetTransitionError extends Error {
   constructor(
