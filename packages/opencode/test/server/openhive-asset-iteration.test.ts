@@ -12,6 +12,7 @@ import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
+import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -88,10 +89,19 @@ const IDS = {
 } as const
 
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
-const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-iter-ws-"))
+/** 配置里的原值。本机 `%TEMP%` 是 8.3 短名（`…\ADMINI~1\…`）——出口必须自己规范化。 */
+const 原始沙箱根 = mkdtempSync(join(tmpdir(), "openhive-iter-ws-"))
+/**
+ * 回包应有的形状：与内核锚定侧同一个 `WorkspaceRoot.canonicalRoot`（长名）。
+ *
+ * ⚠️ **不能拿 `原始沙箱根` 当期望**：在本机它和规范根逐字不同（8.3 短名 vs 长名），
+ * 这正是 `#006-23`「resolve≠同形」的形状；出口若漏掉规范化，下面所有 `workspace`
+ * 断言都会红（变异 #11 实证）。
+ */
+const 沙箱根 = WorkspaceRoot.canonicalRoot(原始沙箱根)
 const 数据根 = mkdtempSync(join(tmpdir(), "openhive-iter-data-"))
 const restoreAssetsRoot = restorePoint({ OPENHIVE_ASSETS_ROOT: 资产根 })
-const restoreWorkspaceRoot = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
+const restoreWorkspaceRoot = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 原始沙箱根 })
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 /** PGlite 夹具把多条连接汇进同一个 PG 会话，`bun-sql` 的语句缓存是连接级的（同治理测试）。 */
 const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
@@ -112,7 +122,7 @@ afterAll(() => {
   else process.env.OPENHIVE_DATA_ROOT = previousDataRoot
 })
 afterAll(() => rmSync(资产根, { recursive: true, force: true }))
-afterAll(() => rmSync(沙箱根, { recursive: true, force: true }))
+afterAll(() => rmSync(原始沙箱根, { recursive: true, force: true }))
 afterAll(() => {
   try {
     rmSync(数据根, { recursive: true, force: true })
@@ -362,7 +372,8 @@ describe("迭代出口 · 成功面", () => {
       expect(体.assetId).toBe(IDS.start)
       expect(体.status).toBe("iterating")
       expect(体.version).toBe(3)
-      // 前端要把这个路径塞进给 AI 的指令里：必须是平台原生绝对路径（win32 反斜杠）。
+      // 前端要把这个路径塞进给 AI 的指令里：必须是平台原生绝对路径（win32 反斜杠），
+      // 且是**规范化后的根**——与内核锚定侧同形（`#006-23`；配置原值在本机是 8.3 短名）。
       expect(体.workspace).toBe(工作副本绝对(IDS.start))
       expect(existsSync(工作副本绝对(IDS.start))).toBe(true)
       expect(existsSync(join(资产根, "global", "skills", IDS.start, "SKILL.md"))).toBe(true)
@@ -476,6 +487,26 @@ describe("迭代出口 · 失败面", () => {
 
       expect((yield* 读行(IDS.mateAbort))?.status).toBe("iterating")
       expect((yield* 读行(IDS.mateAbort))?.version).toBe(3)
+    }),
+  )
+
+  it.live("资产不存在 ⇒ 404（存在性判在归属之前，不泄漏 403/400 差异），目录未建", () =>
+    Effect.gen(function* () {
+      // 用**不是任何资产属主**的外人：若「存在性」排在授权之后，这里会先拿 403；
+      // 若排在读体之后，畸形体 / 空体会先拿 400。两者都会泄漏「这个 id 存不存在」之外的信息，
+      // 也会把「资产不存在」这件事说成别的原因。
+      const response = yield* 发起(外人, "asset-iter-does-not-exist", "{ 这不是 JSON")
+      expect(response.status).toBe(404)
+
+      const 说明 = yield* 读错误(response)
+      expect(说明).toContain("资产不存在")
+      expect(说明).not.toContain("不能执行")
+      expect(说明).not.toContain("note")
+      expect(说明).not.toContain("属于你")
+
+      // 404 发生在 `transitionAsset()` / 建目录之前。
+      expect(existsSync(join(沙箱根, 外人.id))).toBe(false)
+      expect(existsSync(join(沙箱根, 外人.id, 我的项目, ".openhive"))).toBe(false)
     }),
   )
 

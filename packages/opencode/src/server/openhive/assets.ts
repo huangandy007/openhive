@@ -80,6 +80,7 @@ import { grantsFor } from "@opencode-ai/auth/rbac"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { Database } from "@opencode-ai/core/database/database"
+import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { offsetOf, parsePage } from "./paging"
 import { 成员角色 } from "./project-actor"
 import {
@@ -415,7 +416,11 @@ function handleIteration(
       projectId = 项目
     }
 
-    const 沙箱根 = workspaceRoot(process.env)
+    // 回包 / 解析工作副本用的根必须与内核锚定侧**同形**（`middleware/anchor-workspace.ts`
+    // 的 `Config.root` 也过这一层）。本机 `%TEMP%` 是 8.3 短名（`…\ADMINI~1\…`），原样回给前端
+    // 后，它与项目目录（长名）比较、或喂给 AI 再回读时，同一物理目录会出现两个形状（`#006-23`
+    // 「resolve≠同形」）。`transitionAsset()` 内部的落盘口径不动——这里只对齐出口。
+    const 沙箱根 = WorkspaceRoot.canonicalRoot(workspaceRoot(process.env))
     const 结果 = yield* Effect.result(
       Effect.tryPromise({
         try: () =>

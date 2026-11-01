@@ -798,4 +798,45 @@ describe("T009 · 迭代的发布与放弃（治理台）", () => {
       expect(有文件(join(ASSETS_ROOT, "pending", id))).toBe(false)
     }),
   )
+
+  it.live("业务专家 / 普通民警放弃迭代 ⇒ 403（白名单加了动作 ≠ 所有角色都获得能力）", () =>
+    Effect.gen(function* () {
+      const id = "asset-iter-gate-abort-0001"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      // `abort_iteration` 的 actors 只有作者与 system_admin：治理台只投影 review/admin
+      // 授权行，所以这两类角色都该被拦下（EXPERT 只有 review，OFFICER 什么都没有）。
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({
+            id,
+            name: "非管理员不能放弃",
+            status: "iterating",
+            version: 3,
+            updatedAt: 1_100,
+            ownerId: OFFICER.id,
+            ownerName: OFFICER.name,
+            iterationNote: "补一条口径",
+            iterationWorkspace: `${OFFICER.id}/p1/.openhive/iterations/${id}`,
+          }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      // EXPERT 进得了治理台（有 review 行），但 abort 只认 admin ⇒ 403「admin」。
+      const 专家 = yield* post(EXPERT, transitionUrl(id), { action: "abort_iteration" })
+      expect(专家.status).toBe(403)
+      expect((yield* json(ErrorResponse, 专家)).error).toContain("admin")
+
+      // OFFICER 连治理板块的门都进不来（没有任何治理授权行）⇒ 403「治理权限」。
+      const 民警 = yield* post(OFFICER, transitionUrl(id), { action: "abort_iteration" })
+      expect(民警.status).toBe(403)
+      expect((yield* json(ErrorResponse, 民警)).error).toContain("治理权限")
+
+      // 两道关：状态与 pending 都没动。
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("iterating")
+      expect(有文件(join(ASSETS_ROOT, "pending", id))).toBe(true)
+    }),
+  )
 })
