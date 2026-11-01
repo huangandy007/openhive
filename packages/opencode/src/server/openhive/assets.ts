@@ -452,9 +452,11 @@ function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: D
     if (源信息 === undefined || !源信息.isDirectory()) {
       return fail(BAD_REQUEST, "源目录不存在或不是目录")
     }
+    // 存在不算数，必须是**文件**：`SKILL.md/` 这样的同名目录只 stat 会过关，内核照样扫不到。
+    // 上面的 `isDirectory()` 同理：存在性要连同类型一起判，才能把「调用方给错了源」挡成 400。
     const 有技能文件 = yield* Effect.promise(() =>
       stat(join(源, "SKILL.md")).then(
-        () => true,
+        (info) => info.isFile(),
         () => false,
       ),
     )

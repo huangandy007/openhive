@@ -18,15 +18,20 @@ import { testEffect } from "../lib/effect"
 /**
  * 入库出口（2026-11-01，设计 §4.4）：`POST /openhive/assets/draft`。
  *
- * 一条成功面 ＋ 五条失败面，各自钉一个判据：
+ * 一条成功面 ＋ 七条失败面，各自钉一个判据：
  * 1. **成功** ⇒ 库里有行（`status: draft`），且 `<资产根>/draft/<id>` 有副本——`storage` 漏传
  *    会造出一个「永远提交不了」的草稿（提交审核只从 `/draft/<id>` 取内容）；
- * 2. `skillPath` 带 `../..` ⇒ 403，且 `<资产根>/draft` 一个目录都不多；
- * 3. 不是成员的项目 ⇒ **400 而不是 404**（404 会变成「这个项目 id 存在吗」的探针）；
- * 4. `skillPath` 字面在项目内、真身是项目外的链接 ⇒ 403（`#009-03`：只比字面路径会被
- *    junction / symlink 绕过）。第 2、3、4 条都断言「没有新增草稿目录」——拒绝必须发生在复制之前；
- * 5. `skillPath` 指向**文件** ⇒ 400（不能落进 `stageDirectory` 的普通 `Error` 变 500）；
- * 6. 目录里**没有 SKILL.md** ⇒ 400，且不新增草稿目录（否则会造出内核永远扫不到的废数据）。
+ * 2. `skillPath` 带 `../../../etc` ⇒ 403；
+ * 3. `skillPath` 用 `..` 指向项目外**真实存在**的目录 ⇒ 403（专门让「只比字面路径」的变异红）；
+ * 4. 不是成员的项目 ⇒ **400 而不是 404**（404 会变成「这个项目 id 存在吗」的探针）；
+ * 5. `skillPath` 字面在项目内、真身是项目外的链接 ⇒ 403（`#009-03`：只比字面路径会被
+ *    junction / symlink 绕过）；
+ * 6. `skillPath` 指向**文件** ⇒ 400（不能落进 `stageDirectory` 的普通 `Error` 变 500）；
+ * 7. 目录里**没有 SKILL.md** ⇒ 400（否则会造出内核永远扫不到的废数据）；
+ * 8. 目录里的 `SKILL.md` 是**同名目录** ⇒ 400（只判存在会放行，MCP 走 `readFile` 本来就拒）。
+ *
+ * 第 2、3、5、6、7、8 条都断言「`<资产根>/draft` 没有新增目录」——拒绝必须发生在复制之前；
+ * 第 4 条只钉状态码（它在目录边界之前就被项目归属挡下）。
  *
  * ⚠️ 与 `openhive-asset-iteration.test.ts` 逐行对齐 app 构造方式（同一个出口家族）：
  * 身份靠 `OPENHIVE_REQUIRE_USER_ID=1` ＋ `AUTH_JWT_SECRET`，`handler` 要带 `HttpApiApp.context`。
@@ -193,7 +198,6 @@ describe("POST /openhive/assets/draft（2026-11-01）", () => {
       // `..` 的落点并不存在，realpath 的 fail-closed 会替字面判定兜底——变异 A 就红不了。
       const 项目目录 = join(沙箱根, 我.id, 我的项目)
       mkdirSync(项目目录, { recursive: true })
-      mkdirSync(join(沙箱根, 我.id, "sibling-real-dir"), { recursive: true })
 
       const 前 = 草稿目录数()
       const res = yield* 入库(我, 请求体({ skillPath: "..", name: "兄弟目录", description: "x" }))
@@ -240,6 +244,19 @@ describe("POST /openhive/assets/draft（2026-11-01）", () => {
 
       const 前 = 草稿目录数()
       const res = yield* 入库(我, 请求体({ skillPath: "no-skill-md", name: "空目录", description: "x" }))
+      expect(res.status).toBe(400)
+      expect(草稿目录数()).toBe(前)
+    }))
+
+  it.live("SKILL.md 是同名目录（不是文件）⇒ 400，且不新增草稿目录", () =>
+    Effect.gen(function* () {
+      // 「存在」不等于「是文件」：只 stat 判存在时，`SKILL.md/` 会过关、建成草稿，
+      // 内核仍然扫不到（废数据）。MCP 那条路走 `readFile` + frontmatter，本来就拒。
+      const 源 = join(沙箱根, 我.id, 我的项目, "skill-md-is-dir")
+      mkdirSync(join(源, "SKILL.md"), { recursive: true })
+
+      const 前 = 草稿目录数()
+      const res = yield* 入库(我, 请求体({ skillPath: "skill-md-is-dir", name: "同名目录", description: "x" }))
       expect(res.status).toBe(400)
       expect(草稿目录数()).toBe(前)
     }))
