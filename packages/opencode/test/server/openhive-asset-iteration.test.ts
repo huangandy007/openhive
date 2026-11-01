@@ -86,6 +86,11 @@ const IDS = {
   mateAbort: "asset-iter-mate-abort",
   legacy: "asset-iter-legacy",
   stale: "asset-iter-stale",
+  // 提交审核（Task 4，2026-11-01）：每条用例一套新 id，不复用上面的资产（`#005-34`）。
+  subDraft: "asset-sub-draft",
+  subAgain: "asset-sub-again",
+  subOther: "asset-sub-other",
+  subMissingDraft: "asset-sub-missing-draft",
 } as const
 
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
@@ -134,6 +139,13 @@ function 造线上(id: string) {
   const directory = join(资产根, "global", "skills", id)
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, "SKILL.md"), "v1", "utf8")
+}
+
+/** 草稿副本（`<资产根>/draft/<id>`）：提交审核唯一的内容来源（Task 2，设计 §4.5）。 */
+function 造草稿副本(id: string) {
+  const directory = join(资产根, "draft", id)
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, "SKILL.md"), "草稿内容", "utf8")
 }
 
 /** 工作副本（迭代中作者手里那份）。 */
@@ -309,6 +321,67 @@ beforeAll(async () => {
     资产({ id: IDS.stale, name: "越权试探", ownerId: 陈旧.id, ownerName: 陈旧.name, status: "published" }),
   )
   造线上(IDS.stale)
+
+  // 提交审核（Task 4）：草稿 / 审核中 / 别人的草稿 / 草稿副本缺失，各一条、各用新 id。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subDraft,
+      name: "可提交草稿",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+  造草稿副本(IDS.subDraft)
+
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subAgain,
+      name: "已送审",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "in_review",
+      version: 2,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subOther,
+      name: "别人的草稿",
+      ownerId: 同事.id,
+      ownerName: 同事.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+  造草稿副本(IDS.subOther)
+
+  // 草稿行在、但 `<资产根>/draft/<id>` 不在：Task 2 的 `draft_content_missing`
+  // 只有编译期穷尽 switch 守着，这里补它的**运行期**落点（必须 409）。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subMissingDraft,
+      name: "草稿副本没了",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
 })
 
 const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
@@ -610,6 +683,73 @@ describe("迭代出口 · 失败面", () => {
       expect((yield* 读行(IDS.submitMissing))?.status).toBe("iterating")
       expect((yield* 读行(IDS.submitMissing))?.version).toBe(3)
       expect(existsSync(join(资产根, "pending", IDS.submitMissing))).toBe(false)
+    }),
+  )
+})
+
+describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
+  const 提交路径 = (id: string) => `/openhive/assets/${id}/submit`
+  const 提交审核 = (subject: TokenSubject | null, assetId: string) =>
+    发(subject, 提交路径(assetId), { method: "POST" })
+
+  it.live("作者提交自己的草稿 ⇒ 200，状态变 in_review，pending 有内容", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subDraft)
+      expect(res.status).toBe(200)
+
+      const 体 = Schema.decodeUnknownSync(
+        Schema.Struct({ assetId: Schema.String, status: Schema.String, version: Schema.Number }),
+      )(JSON.parse(yield* Effect.promise(() => res.text())))
+      expect(体.assetId).toBe(IDS.subDraft)
+      expect(体.status).toBe("in_review")
+      // submit_review 不改版本号（只有发起 / 放弃迭代才动它）。
+      expect(体.version).toBe(1)
+
+      expect(existsSync(join(资产根, "pending", IDS.subDraft, "SKILL.md"))).toBe(true)
+      expect((yield* 读行(IDS.subDraft))?.status).toBe("in_review")
+    }),
+  )
+
+  it.live("已经提交过（in_review）⇒ 400，和状态机口径一致", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subAgain)
+      expect(res.status).toBe(400)
+      // 设计 §4.4 / D7：文案要让作者看懂「已经提交过了」，不是状态机那串内部话。
+      expect((yield* 读错误(res))).toContain("已经提交过")
+      // 拒绝发生在流转之前：状态与草稿副本都没动。
+      expect((yield* 读行(IDS.subAgain))?.status).toBe("in_review")
+      expect(existsSync(join(资产根, "pending", IDS.subAgain))).toBe(false)
+    }),
+  )
+
+  it.live("非作者提交 ⇒ 403", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subOther)
+      expect(res.status).toBe(403)
+      expect((yield* 读错误(res))).toContain("不能执行")
+      expect((yield* 读行(IDS.subOther))?.status).toBe("draft")
+      expect(existsSync(join(资产根, "pending", IDS.subOther))).toBe(false)
+    }),
+  )
+
+  it.live("没登录 ⇒ 401", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(null, IDS.subDraft)
+      expect(res.status).toBe(401)
+    }),
+  )
+
+  // Task 2 把 `submit_review` 的源改成 `<资产根>/draft/<id>`；副本缺失抛 `draft_content_missing`。
+  // 出口把它映射成 409 这件事此前只有编译期穷尽 switch 守着——这里补**运行期**落点。
+  it.live("草稿副本不存在 ⇒ 409，状态不变、pending 不落半截", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subMissingDraft)
+      expect(res.status).toBe(409)
+      expect((yield* 读错误(res))).toContain("草稿内容不存在")
+
+      expect((yield* 读行(IDS.subMissingDraft))?.status).toBe("draft")
+      expect((yield* 读行(IDS.subMissingDraft))?.version).toBe(1)
+      expect(existsSync(join(资产根, "pending", IDS.subMissingDraft))).toBe(false)
     }),
   )
 })

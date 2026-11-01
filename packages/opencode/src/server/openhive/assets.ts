@@ -114,6 +114,8 @@ export const PATH = {
   iteration: "/openhive/assets/:id/iteration",
   iterationSubmit: "/openhive/assets/:id/iteration/submit",
   iterationAbort: "/openhive/assets/:id/iteration/abort",
+  // 【保留的定制 · 同步上游时不要丢】项目技能提交审核（2026-11-01 设计 §4.4）。
+  submit: "/openhive/assets/:id/submit",
 } as const
 
 const BAD_REQUEST = 400
@@ -145,6 +147,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.iteration, (request) => handleIteration(request, deps, "start_iteration"))
     yield* router.add("POST", PATH.iterationSubmit, (request) => handleIteration(request, deps, "submit_iteration"))
     yield* router.add("POST", PATH.iterationAbort, (request) => handleIteration(request, deps, "abort_iteration"))
+    // 提交审核（2026-11-01，设计 §4.4）：作者在能力面板上点「提交审核」的服务端落点。
+    yield* router.add("POST", PATH.submit, (request) => handleSubmit(request, deps))
   }),
 )
 
@@ -468,6 +472,68 @@ function handleIteration(
 }
 
 /**
+ * `POST /openhive/assets/:id/submit`（2026-11-01，设计 §4.4）。
+ *
+ * 【保留的定制 · 同步上游时不要丢】项目技能提交审核。
+ *
+ * 次序与迭代三端点逐条一致（`#004-09`）：身份 → 资产存在 → 授权 → 流转。
+ * 授权用**同一个** `authorizeTransition()`；状态机自己拒绝「已提交过 / 不是草稿」。
+ *
+ * 与迭代端点的差别只有三处：不读请求体（本端点无 body）、action 固定 `submit_review`、
+ * 不查项目归属（提交不看项目）。也不传 `workspaceRoot`——本动作不发布，不重指项目链接。
+ */
+function handleSubmit(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  // 本端点无请求体：`request` 只为与其他 handler 同形（路由注册签名），故不读它。
+  void request
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+
+    const 参数 = yield* HttpRouter.params
+    const assetId = 参数.id ?? ""
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return fail(NOT_FOUND, "资产不存在")
+
+    const department = yield* 取部门(deps, userId)
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    const viewer = { userId, department }
+
+    // 授权先于一切副作用（`#004-09`）；判据只有 `authorizeTransition()` 一份（`#005-24`）。
+    const 预检 = yield* Effect.result(
+      Effect.try({
+        try: () => authorizeTransition(viewer, asset, grants, "submit_review"),
+        catch: (error) => error,
+      }),
+    )
+    if (Result.isFailure(预检)) return 失败(预检.failure)
+
+    const 结果 = yield* Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          transitionAsset({
+            db: deps.pg(),
+            root: assetsRoot(process.env),
+            assetId,
+            action: "submit_review",
+            viewer,
+            grants,
+          }),
+        catch: (error) => error,
+      }),
+    )
+    // 状态不允许（已提交过 / 不是草稿）：设计 §4.4 / D7 要求 400 ＋ 说人话；
+    // 迭代出口同码仍是 409（既有契约），所以只在本出口给 `失败()` 换口径。
+    if (Result.isFailure(结果)) {
+      return 失败(结果.failure, { status: BAD_REQUEST, message: "已经提交过了" })
+    }
+
+    const updated = 结果.success
+    return ok({ assetId: updated.id, status: updated.status, version: updated.version })
+  })
+}
+
+/**
  * 迭代出口的错误翻译。
  *
  * 与治理台那份**分开写**是有意的：本仓每个出口模块各有一份 `映射错误()`，见
@@ -479,8 +545,12 @@ function handleIteration(
  * `default` 里的 `never` 赋值是给未来加码的人用的：新增 `TransitionErrorCode` 却忘了
  * 在这里给映射 ⇒ typecheck 红，而不是运行时悄悄落到 500（Task 3 的 `iteration_not_submitted`
  * 在治理台那边就是这么漏掉的）。
+ *
+ * `状态不允许` 只覆盖 `invalid_source`：迭代出口沿用 409（既有契约），提交审核按设计
+ * §4.4 / D7 要 400 ＋「已经提交过了」。同一个错误码在不同出口状态码不同是**出口契约**，
+ * 所以由调用方给口径，而不是在这里按出关口写第二份 switch。
  */
-function 失败(error: unknown) {
+function 失败(error: unknown, 状态不允许: { readonly status: number; readonly message?: string } = { status: CONFLICT }) {
   if (error instanceof AssetTransitionError) {
     switch (error.code) {
       case "asset_not_found":
@@ -493,6 +563,7 @@ function 失败(error: unknown) {
       case "unsupported_asset_type":
         return fail(BAD_REQUEST, error.message)
       case "invalid_source":
+        return fail(状态不允许.status, 状态不允许.message ?? error.message)
       case "concurrent_transition":
       case "source_directory_required":
       case "draft_content_missing":
