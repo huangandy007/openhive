@@ -232,4 +232,33 @@ describe("补资产状态", () => {
     expect(结果[0]!.assetRejectReason).toBe("第二步缺少校验")
     expect(Object.prototype.hasOwnProperty.call(结果[1]!, "assetRejectReason")).toBe(false)
   })
+
+  /**
+   * 降级只能由**调用方**做：这里失败就原样往上抛。
+   *
+   * 吞成「原样返回列表」是错的——没有 `assetStatus` 键在前端等于「未入库」，会把库里的
+   * 已发布资产画成未入库（`#002-02`）。端点层拿到异常后把整个 `skills` 键置缺席。
+   *
+   * 故意让**第二条**查询（通知表）抛：这条用例同时钉住「不返回半份数据」——资产表那份
+   * 若被提前返回，`assetStatus` 就带上了一半事实。
+   */
+  test("db 抛错 ⇒ 原样向上抛（不吞、不返回半份数据）", async () => {
+    let 次 = 0
+    const db = {
+      execute: async () => {
+        次 += 1
+        if (次 === 1) return [{ id: "a1", status: "published", owner_id: "u1" }]
+        throw new Error("通知表查询失败")
+      },
+    }
+    // 不用 `expect(...).rejects`：bun 的类型声明把它标成非 Promise（`await-thenable` 告警），
+    // 捕获原值再比更直接，失败时实得值也看得见（`undefined` = 被吞了）。
+    let 抛错: unknown
+    try {
+      await 补资产状态(db, [{ name: "a", location: "/w/u/p/.opencode/skill/a1/SKILL.md", assetId: "a1" }], "u1")
+    } catch (error) {
+      抛错 = error
+    }
+    expect(抛错 instanceof Error ? 抛错.message : 抛错).toBe("通知表查询失败")
+  })
 })

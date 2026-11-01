@@ -357,16 +357,22 @@ export async function 补资产状态(
   const 表 = new Map(
     rows.map((row) => [
       String(row["id"]),
+      // 断言安全：`auth.asset.status` 有 `asset_status_check`（`0009_asset.sql:44-46`），
+      // 库里的值只可能是 `ASSET_STATUSES` 这 7 个，绕不过去。
       { status: String(row["status"]) as AssetStatus, ownerId: String(row["owner_id"]) },
     ]),
   )
 
   // 驳回理由（设计 §4.7）：同一个批量里再查一次通知表。按 created_at 倒序，
   // JS 里取每个 asset 的第一条——不用 PG 的 `distinct on`，PGlite 上也一样跑。
+  //
+  // `created_at` 只到**秒**，同秒两条驳回没有先后。补一个稳定次级键（`id desc`）让顺序
+  // 不再随数据库返回顺序漂：同秒内的取舍仍是任意的（不是「谁更晚」），但同一份数据每次
+  // 读到的是同一条。不为此加列（设计 §4.7：不加列）。
   const 通知行 = rowsOf(await db.execute(sql`
     select asset_id, body from auth.asset_notification
     where action = 'reject_business' and recipient_id = ${读者} and asset_id in (${占位})
-    order by created_at desc
+    order by created_at desc, id desc
   `))
   const 最近驳回 = new Map<string, string>()
   for (const row of 通知行) {
@@ -643,16 +649,26 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
     const 内核原始 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题, 功能描述)
     // **先补状态，再找人盖人**：否则 `被覆盖` 用的是没补过的清单。
-    const 内核 =
+    //
+    // 补状态失败 ⇒ 与「内核清单读不到」走**同一条路**：整个 `内核` 置 `undefined`，
+    // `skills` 键缺席，面板说「暂时读不到」。
+    // ⚠️ 不许吞成「原样返回列表」：没有 `assetStatus` 键在前端就是「未入库」，会把库里的
+    // 已发布资产画成未入库、还可能被重复入库（`#002-02` 最坏的那种误报）。
+    const 项目内 =
       内核原始 === undefined
         ? undefined
-        : {
-            ...内核原始,
-            项目内: yield* Effect.promise(() =>
-              // `userId` = 本端点已经解出来的登录用户（它本来就要用来读启用状态，别再取第二次）。
-              补资产状态(deps.pg(), 内核原始.项目内, userId),
+        : yield* Effect.promise(() =>
+            // `userId` = 本端点已经解出来的登录用户（它本来就要用来读启用状态，别再取第二次）。
+            补资产状态(deps.pg(), 内核原始.项目内, userId),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("补资产状态失败，本次整个内核清单不回报（不谎报未入库）", {
+                projectId,
+                cause,
+              }).pipe(Effect.as(undefined)),
             ),
-          }
+          )
+    const 内核 = 内核原始 === undefined || 项目内 === undefined ? undefined : { ...内核原始, 项目内 }
     // 第二态再分一次因：链接在却被同名技能盖掉（`TIER` 去重）≠ 链接丢了。只在读到内核时判。
     const 被覆盖 = 内核 === undefined ? undefined : yield* 找被覆盖(内核, desired, 目录)
     // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自

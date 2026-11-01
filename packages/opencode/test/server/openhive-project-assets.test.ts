@@ -7,6 +7,7 @@ import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { notifyAssetTransition } from "@opencode-ai/asset-service/notify"
 import { assetsRoot, publishDirectory } from "@opencode-ai/asset-service/storage"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -220,6 +221,30 @@ const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name"
   iterationWorkspace: null,
   ...over,
 })
+
+/**
+ * 种一条「业务驳回」站内信——**走生产出口** `notifyAssetTransition`，不裸写 SQL。
+ *
+ * 收件人由 `TRANSITION_RECIPIENTS.reject_business = ["author"]` 解析成 `asset.ownerId`，
+ * **发起人会被排除**。所以：
+ * - 想让收件人是「我」：`asset.ownerId` = 我、发起人 = 别人；
+ * - 想让收件人是「别人」：`asset.ownerId` = 别人、发起**不能**是别人（否则收件人清空、
+ *   一行都写不进去，用例会假绿）。
+ */
+const 种驳回通知 = (asset: AssetMetadata, now: number, reason: string, 发起人: TokenSubject = 别人) =>
+  notifyAssetTransition(pg!.db, {
+    asset,
+    applied: {
+      from: "in_review",
+      to: "draft",
+      action: "reject_business",
+      actor: "business_reviewer",
+      storage: "none",
+      reason,
+    },
+    actorId: 发起人.id,
+    now,
+  })
 
 /**
  * 往**某个用户自己的**每用户库里种一行「他建过这个项目」——老项目在 PG 里的唯一替代证据。
@@ -500,6 +525,16 @@ const 内核技能 = Schema.Struct({
   description: Schema.optional(Schema.String),
   assetId: Schema.optional(Schema.String),
   assetName: Schema.optional(Schema.String),
+  /**
+   * 库内判据（2026-11-01，设计 §4.1）：**有没有这个键**才是「在不在库里」——
+   * 手写技能没有；库里有、但没启用的草稿同样有（`enabled` 判不出来）。
+   * 不声明它，Effect Schema 会**剥掉**这个字段，端点把补状态整段删掉也全绿。
+   */
+  assetStatus: Schema.optional(Schema.String),
+  /** 库里那行的属主（同资产表一起补上）。 */
+  assetOwnerId: Schema.optional(Schema.String),
+  /** 最近一次业务驳回的理由（设计 §4.7，读通知表）；没被驳回过就没有这个键。 */
+  assetRejectReason: Schema.optional(Schema.String),
 })
 /**
  * 「已启用、但它被一份同名技能盖掉了」的那条报备（2026-10-28）。
@@ -1152,6 +1187,11 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(条!.assetName).toBe("资金分析")
         // 悬停文案取库里的 `summary`，不是 SKILL.md 的 `description: 测试`（设计 §6）。
         expect(条!.description).toBe("一句话说清资金分析：按账户汇总流水并找出可疑对手方")
+        // 库内判据（2026-11-01，设计 §4.1）：状态与属主来自 `auth.asset`。
+        // 这两行是端点里 `补资产状态(...)` 那次调用的**唯一接线断言**——漏传调用 /
+        // 传错清单都会在这里红（Schema 不声明这两个键时，整段删掉也全绿）。
+        expect(条!.assetStatus).toBe("published")
+        expect(条!.assetOwnerId).toBe(我.id)
 
         const 目录 = projectDirectory(沙箱根, 我.id, 能力项目)
         const 规整 = (value: string) => value.replace(/\\/g, "/").toLowerCase()
@@ -1159,6 +1199,42 @@ describe("项目级 skill 启用（真应用）", () => {
         // 落在项目沙箱内（`属于项目()` 能通过的前提），且就是那条链接的落点。
         expect(location.startsWith(`${规整(目录)}/`)).toBe(true)
         expect(location.endsWith(`/.opencode/skill/${已发布资产}/skill.md`)).toBe(true)
+      }),
+    30_000,
+  )
+
+  /**
+   * 设计 §4.7：驳回理由取**读者收到的、最近一次** `reject_business` 通知（2026-11-01）。
+   *
+   * 三种退化都会让这条红：
+   * ① 删掉 `order by created_at desc` ⇒ 取到的不是较新那条（库里按插入顺序回，先种的是旧的）；
+   * ② 删掉 `recipient_id = 读者` ⇒ 取到发给别人的那条——它时间**最新**，故意种成最有竞争力的；
+   * ③ 理由不是从通知表读的（编一条）⇒ 与正文对不上。
+   *
+   * 种数据走生产出口 `notifyAssetTransition`（收件人解析、正文拼装都按生产口径）。
+   * ⚠️ 通知正文含资产名（`notify.ts` 的 `messageOf`），断言按正文原文比。
+   */
+  it.live(
+    "驳回理由取读者收到的最新一条；发给别人的不出现",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
+        const 已发布 = 资产({ id: 已发布资产, name: "资金分析", status: "published" })
+
+        yield* Effect.promise(() => 种驳回通知(已发布, 1_000, "更早的那次"))
+        yield* Effect.promise(() => 种驳回通知(已发布, 2_000, "第二步缺少校验"))
+        // 时间最新、但收件人是别人（`ownerId` 决定收件人；发起人不能是别人，否则收件人被清空）
+        // ⇒ 过滤 `recipient_id` 后必须看不见它。
+        yield* Effect.promise(() =>
+          种驳回通知({ ...已发布, ownerId: 别人.id, ownerName: 别人.name }, 3_000, "别人的那条不该出现", 我),
+        )
+
+        const body = yield* json(状态, yield* as(我, `${STATE}?projectId=${能力项目}`))
+        const 条 = (body.skills ?? []).find((skill) => skill.assetId === 已发布资产)
+        expect(条 === undefined).toBe(false)
+        expect(条!.assetRejectReason).toBe("资金分析 被驳回：第二步缺少校验")
+        // 同一批查询补上的状态也还在（两条查询是同一次批量，不是二选一）。
+        expect(条!.assetStatus).toBe("published")
       }),
     30_000,
   )
@@ -1230,6 +1306,9 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(条 === undefined).toBe(false)
         expect(条!.name).toBe(手写技能)
         expect(Object.prototype.hasOwnProperty.call(条, "assetName")).toBe(false)
+        // 「未入库」的权威判据是**这个键不在**（2026-11-01）：手里有 assetId 不等于库里有。
+        expect(Object.prototype.hasOwnProperty.call(条, "assetStatus")).toBe(false)
+        expect(Object.prototype.hasOwnProperty.call(条, "assetOwnerId")).toBe(false)
       }),
     30_000,
   )
@@ -1381,4 +1460,45 @@ describe("项目级 skill 启用（真应用）", () => {
       30_000,
     )
   })
+
+  /**
+   * 补状态失败 ⇒ 与「内核清单读不到」走**同一条路**（2026-11-01，评审 B1）。
+   *
+   * **不许吞成「原样返回列表」**：没有 `assetStatus` 键在前端就是「未入库」，会把库里的
+   * 已发布资产画成未入库、还可能被重复入库（`#002-02` 最坏的那种误报）。
+   *
+   * 故障注入：把通知表临时**改名**（不 drop；`ensuring` 里改回）。`补资产状态` 的第二条
+   * 查询必抛 ⇒ 回包必须仍是 200、状态字段照常，但 **`skills` 键整份缺席**——而不是带回
+   * 一份没补状态的清单。
+   *
+   * ⚠️ 只有「通知表」这一条查询会挂：资产表那条成功。这正好钉住「半份数据也不许返回」。
+   */
+  it.live(
+    "补资产状态失败 ⇒ skills 键整份缺席（不谎报未入库），状态接口仍 200",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 能力项目, assetId: 已发布资产 })).status).toBe(200)
+
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`alter table auth.asset_notification rename to asset_notification_offline`),
+        )
+        const body = yield* as(我, `${STATE}?projectId=${能力项目}`).pipe(
+          Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+          Effect.flatMap((response) => json(状态, response)),
+          // 无论断言成败都要改回来，否则后续用例（以及本文件里别的 GET）全被拖红。
+          Effect.ensuring(
+            Effect.promise(() =>
+              pg!.db.execute(sql`alter table auth.asset_notification_offline rename to asset_notification`),
+            ),
+          ),
+        )
+
+        // 状态字段照常（降级只降 `skills` 这一块）。
+        expect(body.enabled).toEqual([已发布资产])
+        expect(body.enabledCount).toBe(1)
+        // 判据：键**整份缺席**（「这次没读到」），不是空数组、更不是一份没补状态的清单。
+        expect(Object.prototype.hasOwnProperty.call(body, "skills")).toBe(false)
+      }),
+    30_000,
+  )
 })
