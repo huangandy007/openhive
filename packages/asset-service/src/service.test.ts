@@ -20,7 +20,13 @@ import {
   storeAsset,
   transitionAsset,
 } from "./service"
-import { archiveDirectory, draftDirectory, pendingDirectory, publishDirectory } from "./storage"
+import {
+  archiveDirectory,
+  copyDirectory,
+  draftDirectory,
+  pendingDirectory,
+  publishDirectory,
+} from "./storage"
 
 /**
  * 009 T003 · 资产服务编排（metadata + storage）。
@@ -58,6 +64,11 @@ async function writeSkill(directory: string, body: string): Promise<void> {
   await mkdir(join(directory, "references"), { recursive: true })
   await writeFile(join(directory, "SKILL.md"), body)
   await writeFile(join(directory, "references", "notes.txt"), `${body}-notes`)
+}
+
+/** 提交审核的源是 `<root>/draft/<id>`（2026-11-01 设计 §4.5）：夹具把内容直接放进草稿副本。 */
+async function 写草稿副本(root: string, body: string, id = "asset_1"): Promise<void> {
+  await writeSkill(draftDirectory(root, id), body)
 }
 
 function metadata(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
@@ -414,6 +425,8 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   /** 走真实主路径到「已发布」，各步时间戳固定。 */
   async function publishToV1(db: ProductionDb["db"], root: string, source: string): Promise<void> {
     await seedSkill(db)
+    // 提交审核从 `<root>/draft/<id>` 取内容（2026-11-01）：把夹具的沙箱内容先放进草稿副本。
+    await copyDirectory(source, draftDirectory(root, "asset_1"))
     await transitionAsset({
       db,
       root,
@@ -421,7 +434,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
     await transitionAsset({
@@ -493,8 +505,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("主路径：提交 → 业务通过 → 技术发布，文件随状态迁移", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
 
     const submitted = await transitionAsset({
@@ -504,7 +515,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
     expect(submitted.status).toBe("in_review")
@@ -541,8 +551,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("驳回回草稿：必须带理由，已提交的文件留在 pending 等下次覆盖", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
     await transitionAsset({
       db,
@@ -551,7 +560,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
 
@@ -749,7 +757,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("审核中")
   })
 
-  test("提交与发起迭代必须给源目录：缺了先报错，不碰库也不建目录", async () => {
+  test("提交审核的草稿副本缺失：报 draft_content_missing，不碰库也不建目录", async () => {
     const db = await freshDb()
     const root = tempRoot()
     await seedSkill(db)
@@ -765,7 +773,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         now: 2_000,
       }),
     )
-    expect(codeOf(missing)).toBe("source_directory_required")
+    expect(codeOf(missing)).toBe("draft_content_missing")
     expect((await assetById(db, "asset_1"))?.status).toBe("draft")
     expect(await exists(待审目录(root))).toBe(false)
   })
@@ -773,8 +781,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("MCP / 知识库不走 Skill 7 状态机", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "mcp 配置")
     await seedSkill(db, { type: "mcp" })
 
     const error = await failure(() =>
@@ -785,7 +791,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         action: "submit_review",
         viewer: 作者,
         grants: [],
-        sourceDirectory: source,
         now: 2_000,
       }),
     )
@@ -797,8 +802,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("个人可见范围的资产发布：给领域错误码，不漏出存储层的裸 Error（出口才能翻成 409）", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db, { visibility: "personal" })
 
     // 提交与业务审核都不碰共享目录，「个人」资产能一路走到「待技术发布」——这条路径现实中可达。
@@ -809,7 +813,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
     await transitionAsset({
@@ -845,8 +848,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("并发改状态：条件更新落空 ⇒ 复制出来的文件被收回，别人的状态不被覆盖", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
 
     const racing = await raceOnUpdate(db, sql`update auth.asset set status = 'offline' where id = 'asset_1'`)
@@ -858,7 +860,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         action: "submit_review",
         viewer: 作者,
         grants: [],
-        sourceDirectory: source,
         now: 2_000,
       }),
     )
@@ -1443,8 +1444,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("两道关分离：作者不能自审，业务管理员不能发布，系统管理员不能业务审核", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
     await transitionAsset({
       db,
@@ -1453,7 +1453,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
 
@@ -1529,8 +1528,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("省略 grants 时从真库取授权（grantsFor 接线）：组授权 review 即可过业务关", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
 
     await db.execute(sql`
@@ -1551,7 +1549,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       action: "submit_review",
       viewer: 作者,
       grants: [],
-      sourceDirectory: source,
       now: 2_000,
     })
 
@@ -1583,8 +1580,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("没有任何权限的人不能提交别人的草稿：授权判定在搬文件之前", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "越权提交")
     await seedSkill(db)
 
     const stranger = await failure(() =>
@@ -1595,7 +1590,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
         action: "submit_review",
         viewer: { userId: "u9", department: "经侦支队" },
         grants: [],
-        sourceDirectory: source,
         now: 2_000,
       }),
     )
@@ -1608,8 +1602,7 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("状态变化通知到人（T010）：提交通知审核人，通过通知作者 + 管理员，发布通知作者", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    await 写草稿副本(root, "v1")
     await seedSkill(db)
 
     for (const [id, name, dept] of [
@@ -1639,7 +1632,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       assetId: "asset_1",
       action: "submit_review",
       viewer: 作者,
-      sourceDirectory: source,
       now: 2_000,
     })
     await transitionAsset({
@@ -1700,13 +1692,12 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("个人资产发布时选定「本部门」：状态、可见范围与文件一起落地", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "个人稿")
+    await 写草稿副本(root, "个人稿")
     // 创建时选了个人可见（`create_skill_draft` 的默认值）：发布前必须由发布者补选共享范围。
     await seedSkill(db, { visibility: "personal" })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "submit_review",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+      viewer: 作者, grants: [], now: 2_000,
     })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "approve_business",
@@ -1727,12 +1718,11 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("发布者可以改作者原先选的共享范围：部门 → 全局，文件落到 global/", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "部门稿")
+    await 写草稿副本(root, "部门稿")
     await seedSkill(db)
     await transitionAsset({
       db, root, assetId: "asset_1", action: "submit_review",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+      viewer: 作者, grants: [], now: 2_000,
     })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "approve_business",
@@ -1752,13 +1742,12 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("选「本部门」但资产没有部门信息：department_missing，状态与文件不动", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "无部门稿")
+    await 写草稿副本(root, "无部门稿")
     // 个人可见时元数据校验不要求部门（`metadata.ts:149`），所以这条脏数据进得来。
     await seedSkill(db, { visibility: "personal", department: "" })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "submit_review",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+      viewer: 作者, grants: [], now: 2_000,
     })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "approve_business",
@@ -1780,14 +1769,13 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("选「本部门」但部门是脏值（前导空格）：department_missing，零副作用", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "脏部门稿")
+    await 写草稿副本(root, "脏部门稿")
     // `register.ts:89` 刻意不 trim：`auth.user.dept` 里真的可能出现「 经侦支队」。
     // 个人可见时元数据校验不要求部门，所以这条脏数据一路走到了待技术发布。
     await seedSkill(db, { visibility: "personal", department: " 经侦支队" })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "submit_review",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+      viewer: 作者, grants: [], now: 2_000,
     })
     await transitionAsset({
       db, root, assetId: "asset_1", action: "approve_business",
@@ -1813,12 +1801,11 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
   test("非发布动作带可见范围：visibility_not_applicable，状态不动", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "越界参数")
+    await 写草稿副本(root, "越界参数")
     await seedSkill(db)
     await transitionAsset({
       db, root, assetId: "asset_1", action: "submit_review",
-      viewer: 作者, grants: [], sourceDirectory: source, now: 2_000,
+      viewer: 作者, grants: [], now: 2_000,
     })
 
     const error = await failure(() =>
@@ -1830,6 +1817,44 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
 
     expect(codeOf(error)).toBe("visibility_not_applicable")
     expect((await assetById(db, "asset_1"))?.status).toBe("in_review")
+  })
+})
+
+describe("提交审核只认草稿副本（2026-11-01）", () => {
+  test("从 <root>/draft/<id> 复制；调用方给的 sourceDirectory 不再被使用", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 我 = { userId: "u1", department: "经侦支队" }
+    await insertAsset(db, metadata({ id: "a-sub", ownerId: 我.userId, status: "draft" }))
+    await writeSkill(draftDirectory(root, "a-sub"), "草稿里的内容")
+    await writeSkill(join(root, "作者原目录"), "原目录里另改的一份")
+
+    // 老调用方仍可能带着 sourceDirectory；新实现必须完全不看它。
+    // 变量传参不触发「多余属性」类型检查，因此这里能同时钉住「字段已下线 + 运行时被忽略」。
+    const 旧调用方参数 = {
+      db,
+      root,
+      assetId: "a-sub",
+      action: "submit_review" as const,
+      viewer: 我,
+      sourceDirectory: join(root, "作者原目录"),
+    }
+    await transitionAsset(旧调用方参数)
+
+    expect(readFileSync(join(root, "pending", "a-sub", "SKILL.md"), "utf8")).toBe("草稿里的内容")
+  })
+
+  test("草稿副本不存在 ⇒ draft_content_missing，且不落半截 pending", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 我 = { userId: "u1", department: "经侦支队" }
+    await insertAsset(db, metadata({ id: "a-nodraft", ownerId: 我.userId, status: "draft" }))
+
+    const error = await failure(() =>
+      transitionAsset({ db, root, assetId: "a-nodraft", action: "submit_review", viewer: 我 }),
+    )
+    expect(error instanceof AssetTransitionError ? error.code : undefined).toBe("draft_content_missing")
+    expect(existsSync(join(root, "pending", "a-nodraft"))).toBe(false)
   })
 })
 

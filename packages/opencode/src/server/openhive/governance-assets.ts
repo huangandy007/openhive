@@ -637,8 +637,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 把领域错误翻成状态码 ＋ 给人看的一句话；认不出的继续炸（500），不吞。
  *
- * 409 覆盖五种「状态 / 配置 / 文件不允许」：`invalid_source`（当前状态不能做这个动作）、
- * `concurrent_transition`（别人先改了）、源目录缺失（文件与库不一致，需要人看一眼）、
+ * 409 覆盖「状态 / 配置 / 文件不允许」：`invalid_source`（当前状态不能做这个动作）、
+ * `concurrent_transition`（别人先改了）、源目录 / 草稿副本缺失（文件与库不一致，需要人看一眼）、
  * `personal_asset_not_shared`（个人资产没有共享发布目录，先把可见范围改成部门 / 全局），
  * 以及 `department_missing`（选了本部门，但资产的部门为空 / 空白 / 不能作为目录名，只能发布为全局或先修正部门）。
  */
@@ -660,6 +660,8 @@ export function 映射错误(
       case "invalid_source":
       case "concurrent_transition":
       case "source_directory_required":
+      // 【保留的定制 · 同步上游时不要丢】提交审核只认草稿副本（2026-11-01 设计 §4.5）。
+      case "draft_content_missing":
       case "personal_asset_not_shared":
       case "department_missing":
       // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）：`publish_iteration` 的前置

@@ -247,6 +247,14 @@ describe("tools/list", () => {
       expect(schema.required).toContain("assetId")
     }
 
+    // 提交只认 `<root>/draft/<id>`（2026-11-01 设计 §4.5）：入参里不该再有 sourceDirectory。
+    const submit = byName.get("submit_skill_for_review")!.inputSchema as {
+      required?: string[]
+      properties?: Record<string, unknown>
+    }
+    expect(submit.required).toEqual(["assetId"])
+    expect(submit.properties?.["sourceDirectory"]).toBeUndefined()
+
     const create = byName.get("create_skill_draft")!.inputSchema as { required?: string[] }
     expect(create.required).toEqual(
       expect.arrayContaining(["name", "description", "category", "sourceDirectory"]),
@@ -336,12 +344,7 @@ describe("create_skill_draft", () => {
     )
     const { assetId } = createdAsset(created.text)
 
-    const submitted = await call(
-      client,
-      "submit_skill_for_review",
-      { assetId, sourceDirectory: source },
-      "u1",
-    )
+    const submitted = await call(client, "submit_skill_for_review", { assetId }, "u1")
 
     expect(submitted.isError).toBe(false)
     expect(await statusOf(db, assetId)).toBe("in_review")
@@ -486,12 +489,15 @@ describe("create_skill_draft", () => {
 })
 
 describe("submit_skill_for_review", () => {
-  test("作者提交自己的草稿：复制到 pending、状态进 in_review、源目录保留", async () => {
+  test("作者提交自己的草稿：从 /draft/<id> 复制到 pending、状态进 in_review、沙箱原目录不动", async () => {
     const { db, root, sourceRoot, client } = await harness()
     await insertAsset(db, metadata())
     const source = await prepareSource(sourceRoot)
+    // 提交只认共享根里的草稿副本（2026-11-01 设计 §4.5），内容与沙箱里那份可以不同。
+    await mkdir(join(root, "draft", "asset_1"), { recursive: true })
+    await writeFile(join(root, "draft", "asset_1", "SKILL.md"), "# 草稿副本里的资金流水分析\n")
 
-    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: source }, "u1")
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "u1")
 
     expect(result.isError).toBe(false)
     expect(JSON.parse(result.text)).toMatchObject({
@@ -501,7 +507,7 @@ describe("submit_skill_for_review", () => {
       status: "in_review",
     })
     expect(await statusOf(db)).toBe("in_review")
-    expect(await readFile(join(root, "pending", "asset_1", "SKILL.md"), "utf8")).toContain("资金流水分析")
+    expect(await readFile(join(root, "pending", "asset_1", "SKILL.md"), "utf8")).toContain("草稿副本")
     expect(await exists(join(sourceRoot, source, "SKILL.md"))).toBe(true)
   })
 
@@ -509,7 +515,7 @@ describe("submit_skill_for_review", () => {
     const { db, client } = await harness()
     await insertAsset(db, metadata())
 
-    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." })
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1" })
 
     expect(result.isError).toBe(true)
     expect(result.text).toContain("identity_required")
@@ -520,22 +526,21 @@ describe("submit_skill_for_review", () => {
     const { db, client } = await harness()
     await insertAsset(db, metadata())
 
-    const unknown = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." }, "nobody")
+    const unknown = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "nobody")
     expect(unknown.isError).toBe(true)
     expect(unknown.text).toContain("user_not_found")
 
-    const disabled = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "." }, "u3")
+    const disabled = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "u3")
     expect(disabled.isError).toBe(true)
     expect(disabled.text).toContain("user_disabled")
     expect(await statusOf(db)).toBe("draft")
   })
 
   test("不是作者也没有写授权：actor_not_allowed，且文件一个都没复制（门在副作用之前）", async () => {
-    const { db, root, sourceRoot, client } = await harness()
+    const { db, root, client } = await harness()
     await insertAsset(db, metadata())
-    const source = await prepareSource(sourceRoot)
 
-    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: source }, "u2")
+    const result = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "u2")
 
     expect(result.isError).toBe(true)
     expect(result.text).toContain("actor_not_allowed")
@@ -544,52 +549,50 @@ describe("submit_skill_for_review", () => {
     expect(await exists(join(root, "pending", "asset_1"))).toBe(false)
   })
 
-  test("源目录越界（绝对路径 / ../）：拒绝，状态不动", async () => {
-    const { db, client } = await harness()
+  test("提交不再收 sourceDirectory：传了越界值也照常按草稿副本提交", async () => {
+    const { db, root, client } = await harness()
     await insertAsset(db, metadata())
+    await mkdir(join(root, "draft", "asset_1"), { recursive: true })
+    await writeFile(join(root, "draft", "asset_1", "SKILL.md"), "# 草稿副本\n")
 
-    const absolute = await call(
+    const result = await call(
       client,
       "submit_skill_for_review",
       { assetId: "asset_1", sourceDirectory: "D:/somewhere/else" },
       "u1",
     )
-    expect(absolute.isError).toBe(true)
-    expect(absolute.text).toContain("source_outside_workspace")
 
-    const parent = await call(client, "submit_skill_for_review", { assetId: "asset_1", sourceDirectory: "../outside" }, "u1")
-    expect(parent.isError).toBe(true)
-    expect(parent.text).toContain("source_outside_workspace")
-    expect(await statusOf(db)).toBe("draft")
+    expect(result.isError).toBe(false)
+    expect(await statusOf(db)).toBe("in_review")
+    expect(await readFile(join(root, "pending", "asset_1", "SKILL.md"), "utf8")).toContain("草稿副本")
   })
 
-  test("缺少源目录 / 资产不存在 / 非 skill：各给明确错误码", async () => {
+  test("缺少草稿副本 / 资产不存在 / 非 skill：各给明确错误码", async () => {
     const { db, client } = await harness()
     await insertAsset(db, metadata())
     await insertAsset(db, metadata({ id: "asset_mcp", type: "mcp", name: "资金 MCP" }))
 
     const missing = await call(client, "submit_skill_for_review", { assetId: "asset_1" }, "u1")
     expect(missing.isError).toBe(true)
-    expect(missing.text).toContain("invalid_arguments")
+    expect(missing.text).toContain("draft_content_missing")
 
-    const unknown = await call(client, "submit_skill_for_review", { assetId: "nope", sourceDirectory: "." }, "u1")
+    const unknown = await call(client, "submit_skill_for_review", { assetId: "nope" }, "u1")
     expect(unknown.isError).toBe(true)
     expect(unknown.text).toContain("asset_not_found")
 
-    const wrongType = await call(client, "submit_skill_for_review", { assetId: "asset_mcp", sourceDirectory: "." }, "u1")
+    const wrongType = await call(client, "submit_skill_for_review", { assetId: "asset_mcp" }, "u1")
     expect(wrongType.isError).toBe(true)
     expect(wrongType.text).toContain("unsupported_asset_type")
   })
 
   test("提交审核不接受发布范围：由服务层判 visibility_not_applicable（不静默忽略）", async () => {
-    const { db, sourceRoot, client } = await harness()
+    const { db, client } = await harness()
     await insertAsset(db, metadata())
-    const source = await prepareSource(sourceRoot)
 
     const result = await call(
       client,
       "submit_skill_for_review",
-      { assetId: "asset_1", sourceDirectory: source, visibility: "department" },
+      { assetId: "asset_1", visibility: "department" },
       "u1",
     )
 

@@ -165,6 +165,9 @@ async function harness(who: { readonly id?: string | undefined; readonly perm?: 
 
   await insertAsset(db, metadata({ id: "asset_submit", status: "draft" }))
   await insertAsset(db, metadata({ id: "asset_publish", status: "pending_tech" }))
+  // 提交审核只认共享根里的草稿副本（2026-11-01 设计 §4.5）：夹具把这一半也造出来。
+  await mkdir(join(root, "draft", "asset_submit"), { recursive: true })
+  await writeFile(join(root, "draft", "asset_submit", "SKILL.md"), "# 资金流水分析\n")
   // `pending_tech` 的生产形态是「文件就躺在待发布目录里」；夹具要把这一半也造出来，
   // 否则「被拒后文件不搬」的断言会退化成一个恒假的空断言。
   await mkdir(join(root, "pending", "asset_publish"), { recursive: true })
@@ -256,7 +259,7 @@ async function 存在(path: string): Promise<boolean> {
   }
 }
 
-const 提交参数 = { assetId: "asset_submit", sourceDirectory: "fund-analysis" }
+const 提交参数 = { assetId: "asset_submit" }
 const 发布参数 = { assetId: "asset_publish" }
 const 草稿参数 = {
   name: "资金流水分析",

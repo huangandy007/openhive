@@ -495,6 +495,7 @@ function 失败(error: unknown) {
       case "invalid_source":
       case "concurrent_transition":
       case "source_directory_required":
+      case "draft_content_missing":
       case "personal_asset_not_shared":
       case "department_missing":
       case "visibility_not_applicable":

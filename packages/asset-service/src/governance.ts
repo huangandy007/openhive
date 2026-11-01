@@ -48,13 +48,16 @@ import { createDraftAsset, transitionAsset } from "./service"
  *
  * ## 源目录边界
  *
- * 提交要把作者沙箱里的成果复制进共享卷。边界分两层：
+ * 建草稿要把作者沙箱里的成果复制进共享卷。边界分两层：
  * ① **调用目录**（`_meta["openhive/directory"]`）必须落在 `<workspaceRoot>/<userId>/` 之内
  *    （`sandboxDirectoryOf`）——单进程形态下同一个人可能同时在多个项目里，目录只能由内核带；
- * ② **源目录**（工具入参 `sourceDirectory`）只收相对路径，相对调用目录解析，且解析后必须仍在
- *    调用目录内（`resolveSourceDirectory`）。
+ * ② **源目录**（`create_skill_draft` 的工具入参 `sourceDirectory`）只收相对路径，相对调用目录
+ *    解析，且解析后必须仍在调用目录内（`resolveSourceDirectory`）。
  *
  * 两层缺任一层，一次 `../..` 就能把服务器上的任意目录复制成「已提交的 skill」。
+ *
+ * 提交审核（`submit_skill_for_review`）**不再收源目录**：内容只从共享根里的草稿副本
+ * `<root>/draft/<assetId>` 复制（2026-11-01 设计 §4.5），MCP 与 HTTP 只有一个来源。
  *
  * ## 为什么工具不登记元数据
  *
@@ -89,19 +92,15 @@ const TOOLS: readonly Tool[] = [
   {
     name: "submit_skill_for_review",
     description:
-      "把作者沙箱里的 skill 提交业务审核（draft → in_review）。" +
-      "必须传资产 id（assetId）与沙箱内的相对源目录（sourceDirectory）。" +
+      "把草稿提交业务审核（draft → in_review）。" +
+      "只需传资产 id（assetId）：内容从共享根里的草稿副本（/draft/<assetId>）复制，不需再传源目录。" +
       "只有资产作者或持有写权限的人能提交；提交后业务管理员会收到站内信。",
     inputSchema: {
       type: "object",
       properties: {
         assetId: { type: "string", description: "资产 id（不是 skill 显示名）" },
-        sourceDirectory: {
-          type: "string",
-          description: "作者工作区内的相对路径，指向待提交的 skill 目录",
-        },
       },
-      required: ["assetId", "sourceDirectory"],
+      required: ["assetId"],
       additionalProperties: false,
     },
   },
@@ -363,15 +362,6 @@ async function runTool(
     return errorResult("invalid_arguments", `${name} 需要非空的 assetId`)
   }
 
-  let sourceDirectory: string | undefined
-  if (name === "submit_skill_for_review") {
-    const raw = stringArg(args, "sourceDirectory")
-    if (raw === undefined) {
-      return errorResult("invalid_arguments", "submit_skill_for_review 需要非空的 sourceDirectory")
-    }
-    sourceDirectory = raw
-  }
-
   let visibility: "department" | "global" | undefined
   const 声明范围 = args["visibility"]
   if (声明范围 !== undefined) {
@@ -384,10 +374,6 @@ async function runTool(
   }
 
   const user = await userOf(deps.db, userIdOf(meta))
-  const source =
-    sourceDirectory === undefined
-      ? undefined
-      : resolveSourceDirectory(sandboxDirectoryOf(deps.workspaceRoot, user.id, meta), sourceDirectory)
 
   try {
     const updated = await transitionAsset({
@@ -396,7 +382,6 @@ async function runTool(
       assetId,
       action,
       viewer: viewerOf(user),
-      ...(source === undefined ? {} : { sourceDirectory: source }),
       ...(visibility === undefined ? {} : { visibility }),
     })
     return textResult({
@@ -488,7 +473,7 @@ async function runCreateDraft(
       skillName,
       status: asset.status,
       visibility: asset.visibility,
-      next: "用 submit_skill_for_review 提交审核（assetId + 同一个 sourceDirectory）",
+      next: "已提交审核，等待业务审核",
     })
   } catch (error) {
     if (error instanceof AssetMetadataError) return errorResult("invalid_arguments", error.message)

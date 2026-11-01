@@ -178,6 +178,8 @@ export type TransitionErrorCode =
   | "asset_not_found"
   | "unsupported_asset_type"
   | "source_directory_required"
+  /** 【保留的定制 · 同步上游时不要丢】提交审核只认草稿副本：`<资产根>/draft/<id>` 不存在。 */
+  | "draft_content_missing"
   | "concurrent_transition"
   /** 个人资产没有共享发布目录：要发布，得先把可见范围改成部门 / 全局。 */
   | "personal_asset_not_shared"

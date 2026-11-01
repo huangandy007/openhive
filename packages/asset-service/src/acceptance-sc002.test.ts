@@ -25,7 +25,7 @@ import {
 import { ASSET_STATUSES, type AssetMetadata, type AssetStatus } from "./metadata"
 import { authorizeTransition } from "./review"
 import { assetLocation, transitionAsset } from "./service"
-import { archiveDirectory, pendingDirectory, publishDirectory } from "./storage"
+import { archiveDirectory, draftDirectory, pendingDirectory, publishDirectory } from "./storage"
 
 /**
  * SC-002 验收：生命周期状态流转正确 + 审核两道关（业务 / 技术）分离。
@@ -238,8 +238,8 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
   test("一条连续旅程：草稿 → 驳回 → 重提 → 发布 → 迭代 → 下线 → 上线 → 归档，状态 / 版本 / 时间 / 文件步步对账", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    const source = join(tempRoot(), "sandbox")
-    await writeSkill(source, "v1")
+    // 提交审核只认 `<root>/draft/<id>`（2026-11-01 设计 §4.5）：夹具把内容放进草稿副本。
+    await writeSkill(draftDirectory(root, "asset_1"), "v1")
     await insertAsset(db, metadata({ status: "draft" }))
 
     const 作者 = { userId: "u1", department: "经侦支队" }
@@ -261,7 +261,6 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
       viewer: AssetViewer
       grants: readonly GrantRow[]
       now: number
-      sourceDirectory?: string
       reason?: string
       workspaceRoot?: string
       projectId?: string
@@ -274,14 +273,13 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
         viewer: input.viewer,
         grants: [...input.grants],
         now: input.now,
-        ...(input.sourceDirectory === undefined ? {} : { sourceDirectory: input.sourceDirectory }),
         ...(input.reason === undefined ? {} : { reason: input.reason }),
         ...(input.workspaceRoot === undefined ? {} : { workspaceRoot: input.workspaceRoot }),
         ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       })
 
     // 1. 提交审核：文件复制到 pending，发布时间仍为空
-    const 提交 = await 走({ action: "submit_review", viewer: 作者, grants: [], now: 2_000, sourceDirectory: source })
+    const 提交 = await 走({ action: "submit_review", viewer: 作者, grants: [], now: 2_000 })
     expect(提交.status).toBe("in_review")
     expect(提交.version).toBe(1)
     expect(提交.publishedAt).toBeNull()
@@ -300,7 +298,7 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await readFile(join(待审目录, "SKILL.md"), "utf8")).toBe("v1")
 
     // 3. 重新提交 + 业务通过：同一个 assetId、同一个 pending 目录
-    const 重提 = await 走({ action: "submit_review", viewer: 作者, grants: [], now: 2_002, sourceDirectory: source })
+    const 重提 = await 走({ action: "submit_review", viewer: 作者, grants: [], now: 2_002 })
     expect(重提.status).toBe("in_review")
     const 业务通过 = await 走({ action: "approve_business", viewer: 业务管理员, grants: 审, now: 2_003 })
     expect(业务通过.status).toBe("pending_tech")
@@ -383,6 +381,9 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await 目录快照(root)).toEqual([
       `archive/asset_1/SKILL.md:v2`,
       `archive/asset_1/references/notes.txt:v2-notes`,
+      // 提交审核只认草稿副本（2026-11-01 设计 §4.5）：提交不删它，发布后收拾副本是 Task 3 的事。
+      `draft/asset_1/SKILL.md:v1`,
+      `draft/asset_1/references/notes.txt:v1-notes`,
     ])
   })
 })
@@ -466,7 +467,6 @@ describe("SC-002 验收 · 审核两道关分离（T016）", () => {
       action: SkillAction
       viewer: AssetViewer
       grants: readonly GrantRow[]
-      sourceDirectory?: string
     }) =>
       transitionAsset({
         db,
@@ -476,7 +476,6 @@ describe("SC-002 验收 · 审核两道关分离（T016）", () => {
         viewer: input.viewer,
         grants: [...input.grants],
         now: 9_000,
-        ...(input.sourceDirectory === undefined ? {} : { sourceDirectory: input.sourceDirectory }),
       })
 
     // 顺序跑：PGlite 是一条连接，并发发同一条预处理语句会撞 `42P05`

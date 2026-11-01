@@ -474,13 +474,6 @@ export interface TransitionAssetInput {
   /** 省略时从库里取（`grantsFor`）。测试 / 批处理可预取后传入，省一次查询。 */
   readonly grants?: readonly GrantRow[]
   readonly reason?: string
-  /**
-   * 提交审核的源目录（作者沙箱里的当前版本）；其他动作不需要。
-   *
-   * `start_iteration` **不用它**：迭代的源是发布目录（`sharedDirectoryOf`）。`submit_iteration`
-   * 也不用它：那是从库里记录的 `iteration_workspace` 还原的工作副本。
-   */
-  readonly sourceDirectory?: string
   /** 发布类动作（技术发布 / 迭代发布）的可见范围；省略沿用资产现状。 */
   readonly visibility?: AssetVisibility
   /** Unix 秒；测试注入固定时间，生产省略取当前。 */
@@ -579,7 +572,7 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 在 `迭代目标()` 里现算），该函数内部已逐段 `assertSafeSegment`——这里不再「校验」一次。
   const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代)
 
-  const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory, 迭代)
+  const step = await prepareStorageStep(root, 生效, applied, asset, 迭代)
 
   // 本次要写入的版本号**只算一次**：条件更新与「他人已落地」判据必须用同一个值，
   // 算两遍就可能一边 +1 一边回退，判别式自己先漂掉。
@@ -741,7 +734,6 @@ async function prepareStorageStep(
   asset: AssetMetadata,
   applied: AppliedSkillTransition,
   original: AssetMetadata,
-  sourceDirectory: string | undefined,
   // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
   迭代: IterationTarget | undefined,
 ): Promise<StorageStep | undefined> {
@@ -750,21 +742,18 @@ async function prepareStorageStep(
       return undefined
 
     case "copy_to_pending": {
-      // 源目录按动作取：`submit_review` 用调用方给的沙箱路径；`submit_iteration` 用
-      // **库里记着的那一条**（`#010-04`：路径进了库就是唯一真相，不要第二份口径）。
+      // 【保留的定制 · 同步上游时不要丢】提交审核的源统一为草稿副本（2026-11-01 设计 §4.5）。
+      // `submit_iteration` 仍用**库里记着的那一条**工作副本（`#010-04`：路径进了库就是唯一真相）。
+      // `submit_review` 改用 `<root>/draft/<id>`：与项目无关、库里不存用户路径。
       const 提交迭代 = applied.action === "submit_iteration"
-      const source = 提交迭代 ? 迭代?.directory : sourceDirectory
+      const source = 提交迭代 ? 迭代?.directory : draftDirectory(root, asset.id)
       if (source === undefined || source === null) {
-        throw new AssetTransitionError(
-          "source_directory_required",
-          提交迭代 ? "工作副本记录缺失，请重新发起迭代" : `${applied.action} 需要作者沙箱里的源目录`,
-        )
+        throw new AssetTransitionError("source_directory_required", "工作副本记录缺失，请重新发起迭代")
       }
-      if (提交迭代 && !(await directoryExists(source))) {
-        // 工作副本被人删了 / 换了落盘根：翻成状态机错误码，别把 fs 异常丢给前端。
+      if (!(await directoryExists(source))) {
         throw new AssetTransitionError(
-          "source_directory_required",
-          `工作副本不存在（可能已被删除或换了落盘根）：${source}`,
+          提交迭代 ? "source_directory_required" : "draft_content_missing",
+          提交迭代 ? `工作副本不存在（可能已被删除或换了落盘根）：${source}` : "草稿内容不存在，请重新建草稿",
         )
       }
       const target = pendingDirectory(root, asset.id)
