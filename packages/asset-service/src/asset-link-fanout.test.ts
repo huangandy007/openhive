@@ -91,6 +91,9 @@ describe("发布后重指：retargetAssetLinksAcrossWorkspaces", () => {
     await symlink(旧, join(甲, SKILL_LINK_DIR, "a1"), "junction")
     await symlink(别处, join(乙, SKILL_LINK_DIR, "a1"), "junction")
     mkdirSync(join(丙, SKILL_LINK_DIR, "a1"), { recursive: true })
+    // 手写真目录里放个文件：「一个字节不动」要能验到内容仍在，不能只验「不是链接」——
+    // 删掉再原地建个同名空目录也满足那个断言。
+    writeFileSync(join(丙, SKILL_LINK_DIR, "a1", "SKILL.md"), "人手写的", "utf8")
 
     const 结果 = await retargetAssetLinksAcrossWorkspaces(join(路径根, "ws"), "a1", 旧, 新)
 
@@ -99,5 +102,24 @@ describe("发布后重指：retargetAssetLinksAcrossWorkspaces", () => {
     expect(await readlink(join(甲, SKILL_LINK_DIR, "a1"))).toBe(新)
     expect(await readlink(join(乙, SKILL_LINK_DIR, "a1"))).toBe(别处)
     expect(lstatSync(join(丙, SKILL_LINK_DIR, "a1")).isSymbolicLink()).toBe(false)
+    expect(existsSync(join(丙, SKILL_LINK_DIR, "a1", "SKILL.md"))).toBe(true)
+  })
+
+  test("工作区根读不了（是个文件）：记入 failed、不抛，removed 为空", async () => {
+    const 路径根 = join(SANDBOX, "retarget-unreadable")
+    const 坏根 = join(路径根, "根是文件")
+    mkdirSync(路径根, { recursive: true })
+    writeFileSync(坏根, "不是目录", "utf8")
+
+    const 结果 = await retargetAssetLinksAcrossWorkspaces(
+      坏根,
+      "a2",
+      join(路径根, "旧"),
+      join(路径根, "新"),
+    )
+
+    // 失败如实回给调用方（不静默、不抛出），调用方据此告警。
+    expect(结果.removed).toEqual([])
+    expect(结果.failed.map((失败) => 失败.directory)).toEqual([坏根])
   })
 })

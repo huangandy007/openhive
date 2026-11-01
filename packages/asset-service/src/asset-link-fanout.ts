@@ -1,5 +1,5 @@
 import { readdir, readlink } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AssetStatus } from "./metadata"
 import { linkSkill, lstatOrNull, NotALinkError, skillLinkPath, unlinkSkill } from "./project-skill-link"
 
@@ -34,7 +34,10 @@ import { linkSkill, lstatOrNull, NotALinkError, skillLinkPath, unlinkSkill } fro
 export const DELIVERABLE_STATUSES: ReadonlySet<AssetStatus> = new Set(["published", "iterating"])
 
 export interface FanoutResult {
-  /** 真的摘掉过链接的项目目录（调用方拿它丢实例缓存）。 */
+  /**
+   * 真的动过链接的项目目录（调用方拿它丢实例缓存）。
+   * 语义随调用方：下线撤回 = 摘掉了链接；发布重指 = 把链接改指到了新目标。
+   */
   readonly removed: readonly string[]
   readonly failed: ReadonlyArray<{ readonly directory: string; readonly error: unknown }>
 }
@@ -133,7 +136,9 @@ export async function retargetAssetLinksAcrossWorkspaces(
         // 不存在、或不是链接（手写真目录 / 普通文件）⇒ 不是我们的投影，一个字节都不动。
         if (信息 === null || !信息.isSymbolicLink()) continue
         // 判据是**当前指向哪儿**，不是「文件名是 assetId」：指向别处的链接留着。
-        if ((await readlink(link)) !== 旧目标) continue
+        // 两侧都 `resolve()` 归一后比较（**不用 realpath**：那会跟随链接，`#009-03`），
+        // 挡住将来某一侧改走 `canonicalRoot()` / 短名形状后这里静默不匹配。
+        if (resolve(await readlink(link)) !== resolve(旧目标)) continue
         await linkSkill(directory, assetId, 新目标)
         removed.push(directory)
       } catch (error) {

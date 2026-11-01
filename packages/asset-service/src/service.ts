@@ -834,22 +834,40 @@ async function prepareStorageStep(
               // 有意吞掉：见上。
             }
           }
-          // 【保留的定制 · 同步上游时不要丢】发布后收拾草稿副本、重指项目链接（2026-11-01 设计 §4.6）。
-          // 草稿副本已经过期（Task 2 起提交只从它取内容，发布后不再有任何读者）；项目里若还指着它，
-          // 作者用的就永远是提交前那份。同样尽力而为：失败不能让一次已完成的流转落进外层 catch
-          // 触发 rollback——那会把已发布的目录搬回 pending。
+          // 【保留的定制 · 同步上游时不要丢】发布后重指项目链接、删草稿副本（2026-11-01 设计 §4.6）。
+          //
+          // **先重指、再删副本**（与设计 §4.6 的字面顺序不同，2026-11-01 评审裁定）：
+          // 反过来的话，重指失败时项目里的链接就从「指向过期副本（还能看）」直接变成
+          // 「指向已删目录（用不了）」；Windows 上文件占用导致删 / 改失败很常见。先指后删
+          // 同样满足「项目用线上那份」，且任何一步失败都还有副本可退。
+          //
+          // 重指**不按「草稿目录还在不在」设门**：函数本身只动指向旧目标的链接，没有就空转；
+          // 上一次「删成功、重指失败」留下的坏链接也能因此自愈。
+          //
+          // 两段各自 try：失败不能让一次已完成的流转落进外层 catch 触发 rollback——那会把
+          // 已发布的目录搬回 pending。失败也不静默：逐个记 warning（目录 + 错误），便于事后捞。
           // `workspaceRoot` 没传就只删副本、不重指；服务层不读 env（env 只由出口读）。
           if (applied.action === "publish_tech" || applied.action === "publish_iteration") {
-            try {
-              const 草稿 = draftDirectory(root, asset.id)
-              if (await directoryExists(草稿)) {
-                await removeDirectory(root, 草稿)
-                if (workspaceRoot !== undefined) {
-                  await retargetAssetLinksAcrossWorkspaces(workspaceRoot, asset.id, 草稿, target)
+            const 草稿 = draftDirectory(root, asset.id)
+            if (workspaceRoot !== undefined) {
+              try {
+                const 重指 = await retargetAssetLinksAcrossWorkspaces(workspaceRoot, asset.id, 草稿, target)
+                for (const 失败 of 重指.failed) {
+                  console.warn(
+                    `[openhive-asset-publish] 资产 ${asset.id} 发布后重指链接失败：${失败.directory}`,
+                    失败.error,
+                  )
                 }
+              } catch (error) {
+                // 有意不冒出去：见上。整段抛错（理论上只有编码错误）同样要留痕。
+                console.warn(`[openhive-asset-publish] 资产 ${asset.id} 发布后重指链接失败`, error)
               }
-            } catch {
-              // 有意吞掉：见上。
+            }
+            try {
+              if (await directoryExists(草稿)) await removeDirectory(root, 草稿)
+            } catch (error) {
+              // 副本删不掉只是残留，不能让已完成的流转回 500。
+              console.warn(`[openhive-asset-publish] 资产 ${asset.id} 发布后删除草稿副本失败`, error)
             }
           }
         },

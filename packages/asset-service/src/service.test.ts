@@ -584,6 +584,111 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(readlinkSync(join(项目目录, ".opencode", "skill", "a-pub"))).toBe(发布)
   })
 
+  test("草稿副本已不存在、项目里仍指着它的链接：发布后照样改指（历史坏链接自愈）", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const 项目目录 = join(沙箱根, 作者.userId, "p1")
+    const 草稿 = draftDirectory(root, "a-pub")
+    const 链接 = join(项目目录, ".opencode", "skill", "a-pub")
+    const 发布 = publishDirectory(
+      root,
+      "skill",
+      { visibility: "department", department: "经侦支队" },
+      "a-pub",
+    )
+    await seedSkill(db, { id: "a-pub", status: "pending_tech" })
+    await mkdir(join(root, "pending", "a-pub"), { recursive: true })
+    await writeFile(join(root, "pending", "a-pub", "SKILL.md"), "待发布的内容")
+    await mkdir(草稿, { recursive: true })
+    await mkdir(join(项目目录, ".opencode", "skill"), { recursive: true })
+    await symlink(草稿, 链接, "junction")
+    // 上一次「删成功、重指失败」的形态：副本没了，链接还指着它。
+    await rm(草稿, { recursive: true, force: true })
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "a-pub",
+      action: "publish_tech",
+      viewer: 系统管理员,
+      grants: [{ resourceType: "skill", resourceId: "a-pub", perm: "admin" }],
+      workspaceRoot: 沙箱根,
+    })
+
+    // 历史坏链接不该因为「副本已不存在」就永远没人修。
+    expect(readlinkSync(链接)).toBe(发布)
+  })
+
+  test("workspaceRoot 未传：只删草稿副本、不重指，也不抛错", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const 项目目录 = join(沙箱根, 作者.userId, "p1")
+    const 草稿 = draftDirectory(root, "a-pub")
+    const 链接 = join(项目目录, ".opencode", "skill", "a-pub")
+    await seedSkill(db, { id: "a-pub", status: "pending_tech" })
+    await mkdir(join(root, "pending", "a-pub"), { recursive: true })
+    await writeFile(join(root, "pending", "a-pub", "SKILL.md"), "待发布的内容")
+    await mkdir(草稿, { recursive: true })
+    await writeFile(join(草稿, "SKILL.md"), "草稿副本")
+    await mkdir(join(项目目录, ".opencode", "skill"), { recursive: true })
+    await symlink(草稿, 链接, "junction")
+
+    const published = await transitionAsset({
+      db,
+      root,
+      assetId: "a-pub",
+      action: "publish_tech",
+      viewer: 系统管理员,
+      grants: [{ resourceType: "skill", resourceId: "a-pub", perm: "admin" }],
+    })
+
+    expect(published.status).toBe("published")
+    expect(await exists(草稿)).toBe(false)
+    // 没给沙箱根 ⇒ 不知道去哪个沙箱找链接，一个都不动（服务层不读 env）。
+    expect(readlinkSync(链接)).toBe(草稿)
+  })
+
+  test("重指失败：发布仍成功、副本照删，并记一条警告", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    // 沙箱根指向一个普通文件：枚举第一层就 ENOTDIR ⇒ retarget 返回 failed，而不是抛。
+    const 坏沙箱根 = join(tmpdir(), `openhive-asset-badroot-${randomUUID()}`)
+    roots.push(坏沙箱根)
+    const 草稿 = draftDirectory(root, "a-pub")
+    await seedSkill(db, { id: "a-pub", status: "pending_tech" })
+    await mkdir(join(root, "pending", "a-pub"), { recursive: true })
+    await writeFile(join(root, "pending", "a-pub", "SKILL.md"), "待发布的内容")
+    await mkdir(草稿, { recursive: true })
+    await writeFile(join(草稿, "SKILL.md"), "草稿副本")
+    await writeFile(坏沙箱根, "不是目录")
+
+    const 警告: unknown[][] = []
+    const 原warn = console.warn
+    console.warn = (...args: unknown[]) => {
+      警告.push(args)
+    }
+    let published
+    try {
+      published = await transitionAsset({
+        db,
+        root,
+        assetId: "a-pub",
+        action: "publish_tech",
+        viewer: 系统管理员,
+        grants: [{ resourceType: "skill", resourceId: "a-pub", perm: "admin" }],
+        workspaceRoot: 坏沙箱根,
+      })
+    } finally {
+      console.warn = 原warn
+    }
+
+    expect(published.status).toBe("published")
+    expect(await exists(草稿)).toBe(false)
+    expect(警告.some((参数) => String(参数[0]).includes("重指链接失败"))).toBe(true)
+  })
+
   test("驳回回草稿：必须带理由，已提交的文件留在 pending 等下次覆盖", async () => {
     const db = await freshDb()
     const root = tempRoot()
