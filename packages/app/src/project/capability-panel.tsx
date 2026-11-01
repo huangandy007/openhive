@@ -1,8 +1,9 @@
 import { createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { Icon } from "@opencode-ai/ui/icon"
+import { ASSET_STATUS_LABELS, type AssetStatus } from "@opencode-ai/asset-service/metadata"
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
-import { 合并能力, 计数, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
+import { 合并能力, 计数, 阶段, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
 import { 技能句子, 技能载荷, 技能载荷型 } from "@/ai-session/skill-drop"
 
 /**
@@ -59,6 +60,14 @@ export interface CapabilityPanelProps {
   readonly busy: () => string | undefined
   readonly onToggle: (assetId: string) => void
   readonly onRetry: () => void
+  /**
+   * 已入库的草稿 → 提交审核（2026-11-01，设计 §4.2）。回 promise 时按钮在飞期间禁用。
+   *
+   * 省略 = 没接线：草稿行仍然画角标，但不给一颗点了没反应的按钮（`#002-02`）。
+   */
+  readonly onSubmit?: (条: 库内条目) => void | Promise<void>
+  /** 未入库 → 打开入库表单（设计 §4.3）。省略 = 同一条规矩，不画按钮。 */
+  readonly onCreateAndSubmit?: (条: 自带条目) => void | Promise<void>
 }
 
 const 头 =
@@ -191,6 +200,67 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     </Show>
   )
 
+  /**
+   * 阶段角标（2026-11-01，设计 §4.2）。颜色只用仓里已有的**状态色**令牌，不新增、不硬编码。
+   *
+   * `阶段()` 返回 `undefined` = 阶段未知（旧服务端没给 `assetStatus`）：**不画角标**。
+   * 把「不知道」画成「未入库」会诱导用户重复入库（`#002-02`）。
+   */
+  const 角标色: Record<AssetStatus, string> = {
+    draft: "text-v2-state-fg-warning border-v2-state-fg-warning",
+    in_review: "text-v2-state-fg-info border-v2-state-fg-info",
+    pending_tech: "text-v2-text-text-muted border-v2-border-border-muted",
+    published: "text-v2-state-fg-success border-v2-state-fg-success",
+    iterating: "text-v2-state-fg-info border-v2-state-fg-info",
+    offline: "text-v2-text-text-muted border-v2-border-border-muted",
+    archived: "text-v2-text-text-muted border-v2-border-border-muted",
+  }
+
+  const 角标 = (条: 能力条目) => {
+    const 值 = 阶段(条)
+    if (值 === undefined) return null
+    const 色 = 值 === "未入库" ? "text-v2-state-fg-danger border-v2-state-fg-danger" : 角标色[值]
+    return (
+      <span data-slot="capability-stage" class={`shrink-0 rounded-[4px] border px-1 text-[10px] leading-4 ${色}`}>
+        {值 === "未入库" ? "未入库" : ASSET_STATUS_LABELS[值]}
+      </span>
+    )
+  }
+
+  /**
+   * 库内条目的「停用」只对**真的在启用集合里**的行画出来（2026-11-01，跨任务隐患）。
+   *
+   * `enable-state.toggle()` 按 enabled 集合决定发 disable 还是 **enable**：草稿链进项目时
+   * 不写启用行，它不在集合里——原来那颗无条件渲染的「停用」点下去实际发的是**启用**。
+   *
+   * 阶段未知（旧服务端没给 `assetStatus`）保留既有行为：`合并能力` 的兜底只把 enabled 里的
+   * 条目算进库内，所以它按构造就在集合里，那颗「停用」名副其实。
+   */
+  const 可停用 = (条: 库内条目) => {
+    if (!props.enabled().has(条.assetId)) return false
+    const 值 = 阶段(条)
+    return 值 === undefined || 值 === "published" || 值 === "iterating"
+  }
+
+  /** 提交在飞的那一条（防连点）。`onSubmit` 回 promise 时由 `.finally` 收掉。 */
+  const [提交中, set提交中] = createSignal<string>()
+  const 提交 = (条: 库内条目) => {
+    const 动作 = props.onSubmit
+    if (动作 === undefined || 提交中() !== undefined) return
+    set提交中(条.assetId)
+    try {
+      const 结果 = 动作(条)
+      if (结果 === undefined) {
+        set提交中(undefined)
+        return
+      }
+      void Promise.resolve(结果).finally(() => set提交中(undefined))
+    } catch (error) {
+      set提交中(undefined)
+      throw error
+    }
+  }
+
   const 条目 = () => 合并能力({ enabled: props.enabled(), skills: props.skills(), shadowed: props.shadowed() })
   const 前面 = () => 组序.filter((组) => 组序.indexOf(组) < 组序.indexOf(展开()))
   const 后面 = () => 组序.filter((组) => 组序.indexOf(组) > 组序.indexOf(展开()))
@@ -240,9 +310,31 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">●</span>
         <span class="font-semibold">{条.name}</span>
+        {角标(条)}
         <span class="ml-auto text-[11px] text-v2-text-text-muted">📝 本项目自带</span>
       </div>
       {读屏说明(() => 条.description)}
+      {/* `skillPath === "."` = 技能目录就是项目根：一键入库会把**整个项目树**复制成草稿
+          （服务端 ② 只校验「目录存在且带 SKILL.md」，项目根本身完全合格）。这一档不给按钮，
+          只给一句改法——按钮位留空，不放假按钮。 */}
+      <Show when={条.skillPath === "."}>
+        <p data-slot="capability-submit-blocked" class="pl-3 pt-1 text-[10px] text-v2-text-text-muted">
+          技能目录就是项目根，请把 SKILL.md 放进子目录后再提交
+        </p>
+      </Show>
+      {/* 没接线（组件测试 / 别的宿主）⇒ 不画按钮：点了没反应比没有按钮更像坏了。 */}
+      <Show when={条.skillPath !== "." && props.onCreateAndSubmit !== undefined}>
+        <div class="flex justify-end pl-3 pt-1">
+          <button
+            type="button"
+            data-slot="capability-submit"
+            class={小钮}
+            onClick={() => void props.onCreateAndSubmit?.(条)}
+          >
+            提交审核
+          </button>
+        </div>
+      </Show>
     </div>
   )
 
@@ -256,6 +348,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       <div class="flex items-center gap-1.5">
         <span aria-hidden="true">{条.loaded ? "●" : "▲"}</span>
         <span class="font-semibold">{条.name}</span>
+        {角标(条)}
         {/* 2026-10-28：`📦` 换成图标集里的 `archive`（同一个意思，但是对得上设计系统的画法）。
             `--icon-base` 必须由这层注入——`icon.css` 给图标自身写了 `color: var(--icon-base)`，
             写在父级上的 `text-*` 到不了它，不注入就静默落上游那档硬编码灰（`rail.tsx` 同一个坑）。 */}
@@ -270,6 +363,12 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
         </span>
       </div>
       {读屏说明(() => 条.description)}
+      {/* 驳回理由不是按钮位的东西，挂在正文下方：用户是要**改内容**，不是要按它。 */}
+      <Show when={条.rejectReason !== undefined}>
+        <div data-slot="capability-reject-reason" class="pl-3 pt-1 text-[10px] text-v2-state-fg-danger">
+          上次驳回：{条.rejectReason}
+        </div>
+      </Show>
       {/* 正常（`loaded`）时卡片里没有第二块文字——说明改由右侧预览承载了。
           只有 ② 还要一行**诊断**（它不是说明，是「为什么没生效」，必须留在卡上）。 */}
       <Show when={!条.loaded}>
@@ -291,17 +390,46 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           )}
         </Show>
       </Show>
-      <div class="pl-3 pt-1">
-        <button
-          type="button"
-          data-slot="capability-disable"
-          disabled={props.busy() === 条.assetId}
-          class={小钮}
-          onClick={() => props.onToggle(条.assetId)}
-        >
-          停用
-        </button>
-      </div>
+      {/* 每条技能**最多一个按钮**，按钮只给下一步（设计 §4.2）。四个分支互斥、
+          没有下一步时按钮位留空——不放假按钮。 */}
+      <Show when={条.status === "draft" && props.onSubmit !== undefined}>
+        <div class="flex justify-end pl-3 pt-1">
+          <button
+            type="button"
+            data-slot="capability-submit"
+            disabled={提交中() === 条.assetId}
+            class={小钮}
+            onClick={() => 提交(条)}
+          >
+            提交审核
+          </button>
+        </div>
+      </Show>
+      <Show when={条.status === "in_review"}>
+        <div class="flex flex-col items-end pl-3 pt-1" data-slot="capability-stage-note">
+          <span class="text-[11px] text-v2-text-text-muted">等业务审核</span>
+          {/* D8：不说这句，作者会以为「我改了」就等于「送审的那一版改了」。 */}
+          <span class="text-[10px] text-v2-text-text-muted">送审版已锁定，改动不影响本次审核</span>
+        </div>
+      </Show>
+      <Show when={条.status === "pending_tech"}>
+        <p data-slot="capability-stage-note" class="pl-3 pt-1 text-[11px] text-v2-text-text-muted">
+          等管理员发布
+        </p>
+      </Show>
+      <Show when={可停用(条)}>
+        <div class="pl-3 pt-1">
+          <button
+            type="button"
+            data-slot="capability-disable"
+            disabled={props.busy() === 条.assetId}
+            class={小钮}
+            onClick={() => props.onToggle(条.assetId)}
+          >
+            停用
+          </button>
+        </div>
+      </Show>
     </div>
   )
 

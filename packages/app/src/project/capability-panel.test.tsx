@@ -36,12 +36,18 @@ const 技能 = (over: {
   assetId?: string
   assetName?: string
   description?: string
+  assetStatus?: 内核技能["assetStatus"]
+  assetRejectReason?: string
+  skillPath?: string
 }): 内核技能 => ({
   name: over.name,
   location: `/w/u/p/.opencode/skill/${over.assetId ?? over.name}/SKILL.md`,
   ...(over.assetId === undefined ? {} : { assetId: over.assetId }),
   ...(over.assetName === undefined ? {} : { assetName: over.assetName }),
   ...(over.description === undefined ? {} : { description: over.description }),
+  ...(over.assetStatus === undefined ? {} : { assetStatus: over.assetStatus }),
+  ...(over.assetRejectReason === undefined ? {} : { assetRejectReason: over.assetRejectReason }),
+  ...(over.skillPath === undefined ? {} : { skillPath: over.skillPath }),
 })
 
 function 面板(over: Partial<CapabilityPanelProps> = {}) {
@@ -58,6 +64,8 @@ function 面板(over: Partial<CapabilityPanelProps> = {}) {
       busy={over.busy ?? (() => undefined)}
       onToggle={over.onToggle ?? (() => {})}
       onRetry={over.onRetry ?? (() => {})}
+      onSubmit={over.onSubmit}
+      onCreateAndSubmit={over.onCreateAndSubmit}
     />
   ))
 }
@@ -773,5 +781,177 @@ describe("技能卡片是拖拽源（2026-10-29）", () => {
     拖起(卡)
 
     expect(document.querySelector('[data-slot="capability-hover-preview"]')).toBeNull()
+  })
+})
+
+/**
+ * 阶段角标 + 唯一主动作（2026-11-01，设计 §4.2）。
+ *
+ * ## 为什么按钮槽名统一成 `capability-submit`
+ *
+ * 「每条技能最多一个按钮」是本组的核心判据：角标说到了哪一步，按钮只给**下一步**。
+ * 只查「有没有按钮」会漏掉「按钮写错了名字」——所以四种阶段各自钉住槽名与文案。
+ */
+describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
+  test("草稿行显示「草稿」角标与「提交审核」按钮；点了回调收到该条", () => {
+    const 点过: string[] = []
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [{ name: "草稿技能", location: "/w/u/p/.opencode/skill/a1/SKILL.md", assetId: "a1", assetStatus: "draft" }],
+      onSubmit: (条) => {
+        点过.push(条.assetId)
+      },
+    })
+
+    expect(host.textContent).toContain("草稿")
+    const 钮 = host.querySelector<HTMLButtonElement>('[data-slot="capability-submit"]')!
+    钮.click()
+    expect(点过).toEqual(["a1"])
+  })
+
+  /**
+   * 草稿行**没有**停用按钮（跨任务隐患，2026-11-01）。
+   *
+   * `enable-state` 按 enabled 集合决定发 disable 还是 enable：草稿不在启用集合里，
+   * 那颗写着「停用」的按钮点下去实际发的是**启用**。
+   */
+  test("草稿行没有停用按钮（它不在启用集合里，点了会发成启用）", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "草稿技能", assetId: "a1", assetStatus: "draft" })],
+      onSubmit: () => {},
+    })
+
+    expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
+  })
+
+  test("审核中行没有按钮，只有「等业务审核」与锁定说明", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [{ name: "在审的", location: "/w/u/p/.opencode/skill/a2/SKILL.md", assetId: "a2", assetStatus: "in_review" }],
+      onSubmit: () => {
+        throw new Error("不该有按钮")
+      },
+    })
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+    expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
+    expect(host.textContent).toContain("等业务审核")
+    // D8：不写这句就会变成「我明明改了」的投诉
+    expect(host.textContent).toContain("送审版已锁定")
+  })
+
+  test("待技术发布行没有按钮，写「等管理员发布」", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "待发的", assetId: "a5", assetStatus: "pending_tech" })],
+    })
+
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+    expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
+    expect(host.textContent).toContain("等管理员发布")
+  })
+
+  test("被驳回过的草稿行显示最近一次理由，且仍有提交按钮", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        {
+          name: "被驳回的",
+          location: "/w/u/p/.opencode/skill/a4/SKILL.md",
+          assetId: "a4",
+          assetStatus: "draft",
+          assetRejectReason: "第二步缺少校验",
+        },
+      ],
+      onSubmit: () => {},
+    })
+    expect(host.textContent).toContain("第二步缺少校验")
+    expect(host.querySelector('[data-slot="capability-submit"]')).not.toBe(null)
+  })
+
+  test("未入库行点提交 ⇒ 走「入库并提交」回调", () => {
+    const 点过: string[] = []
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [{ name: "手写的", location: "/w/u/p/.opencode/skill/hand/SKILL.md" }],
+      onCreateAndSubmit: (条) => {
+        点过.push(条.name)
+      },
+    })
+    host.querySelector<HTMLButtonElement>('[data-slot="capability-submit"]')!.click()
+    expect(点过).toEqual(["手写的"])
+  })
+
+  /**
+   * `skillPath === "."` 是「技能目录就是项目根」：一键入库会把**整个项目树**复制成草稿，
+   * 所以不给按钮，只给一句改法。
+   */
+  test("未入库且 skillPath 是项目根 ⇒ 没有提交按钮，改为一句提示", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "根上的", skillPath: "." })],
+      onCreateAndSubmit: () => {
+        throw new Error("不该有按钮")
+      },
+    })
+
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+    expect(host.querySelector('[data-slot="capability-submit-blocked"]')?.textContent).toContain("项目根")
+  })
+
+  test("被同名技能盖住的库内条目不给提交按钮", () => {
+    const host = 面板({
+      enabled: () => new Set(["a3"]),
+      enabledCount: () => 1,
+      skills: () => [],
+      shadowed: () => [{ assetId: "a3", name: "撞名", location: "/w/u/p/.opencode/skill/other/SKILL.md" }],
+      onSubmit: () => {
+        throw new Error("不该有按钮")
+      },
+    })
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+  })
+
+  test("已发布 / 迭代中的行仍保留既有的停用按钮（本期不新造迭代动作）", () => {
+    const host = 面板({
+      enabled: () => new Set(["a6"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "线上版", assetId: "a6", assetStatus: "published" })],
+    })
+
+    expect(host.querySelector('[data-slot="capability-disable"]')).not.toBe(null)
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+  })
+
+  test("提交请求在飞时按钮禁用，再点不再触发", async () => {
+    let 调用 = 0
+    let 放行: (() => void) | undefined
+    const 在飞 = new Promise<void>((resolve) => (放行 = resolve))
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "草稿技能", assetId: "a1", assetStatus: "draft" })],
+      onSubmit: () => {
+        调用 += 1
+        return 在飞
+      },
+    })
+
+    const 钮 = host.querySelector<HTMLButtonElement>('[data-slot="capability-submit"]')!
+    钮.click()
+    expect(钮.disabled).toBe(true)
+    钮.click()
+    expect(调用).toBe(1)
+
+    放行?.()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(钮.disabled).toBe(false)
   })
 })

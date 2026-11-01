@@ -16,7 +16,9 @@ import { contentTabKey } from "@/center/tab-store"
 import { viewRegistry } from "@/center/views"
 import { 清空草稿 } from "@/center/views/richtext/draft-store"
 import { archiveName, type ArchiveKind } from "@/project/archive-name"
+import { 入库并提交, 提交审核 } from "@/project/capability-action-api"
 import { CapabilityPanel } from "@/project/capability-panel"
+import { CapabilitySubmitDialog } from "@/project/capability-submit-dialog"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
@@ -2069,6 +2071,49 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                       busy={() => props.enablement?.busy()}
                       onToggle={(assetId) => props.enablement?.toggle(assetId)}
                       onRetry={() => props.enablement?.reload()}
+                      // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / 项目技能提交审核）：
+                      // 草稿行 → 提交审核；未入库行 → 入库并提交（设计 §4.2 / §4.3）。
+                      // 回 promise ⇒ 面板在飞期间禁用那颗钮（防连点）；成功后重拉一次，
+                      // 让行的阶段从服务端刷新（不在前端本地改状态，`#008-03`）。
+                      onSubmit={(条) =>
+                        提交审核(条.assetId).then((结果) => {
+                          if (!结果.ok) {
+                            showToast({ variant: "error", title: "提交审核失败", description: 结果.message })
+                            return
+                          }
+                          props.enablement?.reload()
+                          showToast({ variant: "success", title: "已提交审核" })
+                        })
+                      }
+                      onCreateAndSubmit={(条) => {
+                        const projectId = currentProject()?.id
+                        if (projectId === undefined) return
+                        void dialog.show(() => (
+                          <CapabilitySubmitDialog
+                            条={条}
+                            projectId={projectId}
+                            // 分类的唯一来源是服务端（`GET /openhive/categories`，只回启用项）。
+                            categories={props.categories?.rows() ?? []}
+                            onConfirm={async (输入) => {
+                              const 结果 = await 入库并提交(输入)
+                              if (!("error" in 结果)) {
+                                props.enablement?.reload()
+                                showToast({ variant: "success", title: "已提交审核" })
+                                return undefined
+                              }
+                              // 第一段成功、第二段失败：草稿已经建出来了 ⇒ 关框、刷新成「草稿」，
+                              // 让用户点面板上的「提交审核」重试。不留在框里再按一次——那会多建一份草稿。
+                              if (结果.assetId !== undefined) {
+                                props.enablement?.reload()
+                                showToast({ variant: "error", title: "已入库，但提交失败", description: 结果.error })
+                                return undefined
+                              }
+                              // 第一段就失败了：什么都没建，话就地留在框里，用户改完能再交。
+                              return 结果.error
+                            }}
+                          />
+                        ))
+                      }}
                     />
                   }
                   // `undefined` = 还没取到 ⇒ tab 上不写 0（`#002-02`）。
