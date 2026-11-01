@@ -10,13 +10,16 @@ export * as OpenhiveAssetUsage from "./asset-usage"
  * 直接 `read` 读 SKILL.md，两种都会产生真实成果却一条记录都没有。所以口径扩成三条入口
  * （外加斜杠命令展开的**文本 part**，见 `归因工具` 的注释）：
  *
- * - **`skill` 工具**：按名字归因，仍走项目启用台账（同名歧义不猜）。
- * - **`bash`**：命令行里出现 `<资产 id>/scripts/` 才算；`ls` / `cat` 摸一下目录不算。
- * - **`read`**：路径里 `SKILL.md` 落在 `<资产 id>/` 下才算。
+ * - **`skill` 工具**：按名字归因，走项目启用台账（**忽略大小写**；0 个 / ≥2 个同名都不猜）。
+ * - **`bash`**：命令行里出现 `<资产>/scripts/` 才算；`ls` / `cat` 摸一下目录不算。
+ * - **`read`**：路径里 `SKILL.md` 落在 `<资产>/` 下才算。
  * - **斜杠命令**：展开后的文本带着 `Base directory for this skill: <目录>` 尾巴。
  *
- * 三条路径型入口**按资产 id 归因，不查启用台账**——未启用的资产被跑了脚本也算「用了」
- * （用户原话：「不管用哪一种都记」）。
+ * 三条路径型入口先按**资产 id** 精确归因，**不查启用台账**——未启用的资产被跑了脚本也算
+ * 「用了」（用户原话：「不管用哪一种都记」）。id 命不中时再按**技能名**回落到本项目的
+ * 启用台账（2026-11-01 裁定 A）：项目里常留着一份同内容的名字目录（如 `html-ppt/`，
+ * 真栈实测与资产交付目录 239 个文件全同），模型从那调用的真实使用否则一条都记不上。
+ * 回落仍要求本项目恰好 1 个同名资产（0 个 / ≥2 个不猜，`#010-05`）。
  *
  * ## 为什么源是 part 表
  *
@@ -163,26 +166,80 @@ function 找资产段(文本: string, 资产: ReadonlyMap<string, string>): { id
 }
 
 /**
+ * 名字段：路径里没有资产 id 时，按**技能名**在**本项目启用台账**里找唯一同名资产
+ * （2026-11-01 用户裁定 A）。
+ *
+ * 为什么要这条：资产按 `<项目>/.opencode/skill/<资产 id>/` 交付，但项目里常同时留着一份
+ * **同内容**的名字目录（真栈实测 `.opencode/skill/html-ppt` 与 `asset_46f47fb1…` 239 个
+ * 文件全同），模型会挑好读的那个名字 ⇒ 命令里根本没有 id 段。旧口径下这类使用一条都不记。
+ *
+ * 只认本项目台账、且恰好 1 个同名：名字是猜测性身份，与 `skill` 工具同一条规则
+ * （0 个 / ≥2 个都不猜，`LEARNINGS #010-05`）；退化成「全库同名就算」会把别人的同名技能
+ * 记到本项目头上。
+ */
+function 找名字段(
+  文本: string,
+  启用: ReadonlyMap<string, string[]> | undefined,
+): { id: string; 后续: string[] } | undefined {
+  if (文本.length === 0 || 启用 === undefined) return undefined
+  const 段 = 文本.split(路径边界)
+  for (let i = 0; i < 段.length; i++) {
+    const 段文 = 段[i]
+    if (段文.length === 0) continue
+    const 候选 = 启用.get(段文.toLowerCase())
+    if (候选 === undefined || 候选.length !== 1) continue
+    return { id: 候选[0], 后续: 段.slice(i + 1) }
+  }
+  return undefined
+}
+
+/**
+ * 路径里的可归因段：**先精确比资产 id，命不中再按名字回落**。
+ *
+ * id 段一旦出现就以 id 为准、不再回落——id 是精确身份，名字是猜测性替代；两者并存时
+ * 再按名字试一次，等于让一条命令有机会挂到两个资产上。
+ */
+function 找可归因段(
+  文本: string,
+  资产: ReadonlyMap<string, string>,
+  启用: ReadonlyMap<string, string[]> | undefined,
+): { id: string; 后续: string[] } | undefined {
+  return 找资产段(文本, 资产) ?? 找名字段(文本, 启用)
+}
+
+/**
  * bash（②A：只认真跑了脚本）：命中的资产段**后面必须跟着 `scripts`**。
  * 于是 `ls .opencode/skill/<id>`、`cat .opencode/skill/<id>/SKILL.md` 都不算——
  * 摸一下目录不该让看板上的次数往上涨。
  */
-function 命中脚本(文本: string, 资产: ReadonlyMap<string, string>): string | undefined {
-  const 中 = 找资产段(文本, 资产)
+function 命中脚本(
+  文本: string,
+  资产: ReadonlyMap<string, string>,
+  启用: ReadonlyMap<string, string[]> | undefined,
+): string | undefined {
+  const 中 = 找可归因段(文本, 资产, 启用)
   return 中 !== undefined && 中.后续.includes("scripts") ? 中.id : undefined
 }
 
 /** read：直接读了技能目录里的 SKILL.md。 */
-function 命中说明书(文本: string, 资产: ReadonlyMap<string, string>): string | undefined {
-  const 中 = 找资产段(文本, 资产)
+function 命中说明书(
+  文本: string,
+  资产: ReadonlyMap<string, string>,
+  启用: ReadonlyMap<string, string[]> | undefined,
+): string | undefined {
+  const 中 = 找可归因段(文本, 资产, 启用)
   return 中 !== undefined && 中.后续.includes("SKILL.md") ? 中.id : undefined
 }
 
-/** 文本 part：斜杠命令展开的尾巴带目录，从目录里取资产 id。 */
-function 命中命令目录(文本: string, 资产: ReadonlyMap<string, string>): string | undefined {
+/** 文本 part：斜杠命令展开的尾巴带目录，从目录里取资产（id 优先，名字回落）。 */
+function 命中命令目录(
+  文本: string,
+  资产: ReadonlyMap<string, string>,
+  启用: ReadonlyMap<string, string[]> | undefined,
+): string | undefined {
   const 匹配 = 技能目录.exec(文本)
   if (匹配 === null) return undefined
-  return 找资产段(匹配[1], 资产)?.id
+  return 找可归因段(匹配[1], 资产, 启用)?.id
 }
 
 /**
@@ -201,7 +258,11 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
   }))
 
   // 全量启用台账一次读进来：抽取里同一个项目会被问上百次，逐行查库是白给。
-  // 形状：projectId → 资产名 → assetId[]（长度 > 1 = 不可归因，见文件头第 3 条）。
+  // 形状：projectId → 资产名（**小写归一**）→ assetId[]（长度 > 1 = 不可归因，见文件头第 3 条）。
+  //
+  // 键归一的原因（2026-11-01）：名字来自模型输入，台账里登记的是 `Archify`、调用传的是
+  // `archify`——精确比对 0 个候选 ⇒ 记成未归因，使用次数不涨（真栈 22:46:54 实测）。
+  // 归一后仍守「唯一」：只差大小写的两个资产会落进同一个键，长度 2 ⇒ 不猜。
   const 台账 = new Map<string, Map<string, string[]>>()
   for (const row of rowsOf(
     await input.db.execute(sql`
@@ -211,11 +272,11 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
     `),
   )) {
     const projectId = String(row["project_id"])
-    const name = String(row["name"])
+    const 键 = String(row["name"]).toLowerCase()
     const 按名 = 台账.get(projectId) ?? new Map<string, string[]>()
-    const ids = 按名.get(name) ?? []
+    const ids = 按名.get(键) ?? []
     ids.push(String(row["asset_id"]))
-    按名.set(name, ids)
+    按名.set(键, ids)
     台账.set(projectId, 按名)
   }
 
@@ -289,6 +350,21 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
 
       // 同一会话会被问多次，按会话缓存 project_id（`null` = 走不通）。
       const 项目 = new Map<string, string | null>()
+      const 取项目 = (sessionId: string): string | null => {
+        const 缓存 = 项目.get(sessionId)
+        if (缓存 !== undefined) return 缓存
+        const 会话 = 源!
+          .query<{ project_id: string }, [string]>("select project_id from session where id = ?")
+          .get(sessionId)
+        const projectId = 会话?.project_id ?? null
+        项目.set(sessionId, projectId)
+        return projectId
+      }
+      /** 本项目启用台账（`undefined` = 会话走不通 / 项目没启用任何资产）：名字回落只问它。 */
+      const 本项目启用 = (sessionId: string): ReadonlyMap<string, string[]> | undefined => {
+        const projectId = 取项目(sessionId)
+        return projectId === null ? undefined : 台账.get(projectId)
+      }
 
       // 轮次（2026-10-30 裁定 C）：同一轮用户请求里，同一资产跑几遍都只记一次。
       // 轮次 = 该行**之前最近一条 `role=user` 消息**的 id。按会话懒加载、二分查找。
@@ -353,37 +429,33 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
             continue
           }
 
-          let projectId = 项目.get(row.session_id)
-          if (projectId === undefined) {
-            const 会话 = 源
-              .query<{ project_id: string }, [string]>("select project_id from session where id = ?")
-              .get(row.session_id)
-            projectId = 会话?.project_id ?? null
-            项目.set(row.session_id, projectId)
-          }
+          const projectId = 取项目(row.session_id)
           if (projectId === null) {
             unattributed += 1
             continue
           }
 
-          const 候选 = 台账.get(projectId)?.get(名字) ?? []
+          const 候选 = 台账.get(projectId)?.get(名字.toLowerCase()) ?? []
           if (候选.length !== 1) {
             unattributed += 1
             continue
           }
           资产id = 候选[0]
         } else if (row.tool === "bash") {
-          资产id = 命中脚本(文本(row.command) ?? "", 资产)
+          资产id = 命中脚本(文本(row.command) ?? "", 资产, 本项目启用(row.session_id))
         } else if (row.tool === "read") {
-          资产id = 命中说明书(文本(row.file_path) ?? "", 资产)
+          资产id = 命中说明书(文本(row.file_path) ?? "", 资产, 本项目启用(row.session_id))
         } else {
-          资产id = 命中命令目录(文本(row.text) ?? "", 资产)
+          资产id = 命中命令目录(文本(row.text) ?? "", 资产, 本项目启用(row.session_id))
         }
 
         // 找不到资产段 = 普通命令 / 普通文件 / 普通消息，不是技能使用，也不计入 `unattributed`
         // （那个计数只回答「明明像 skill 调用、为什么归不了因」）。
         if (资产id === undefined) continue
-        名字 ??= 资产.get(资产id) ?? 资产id
+        // `skill_name` 一律落**资产登记名**（2026-11-01）：大小写归一之后调用名的写法不再有意义，
+        // 同一资产不该在报表 / 检索里出现 `archify` 与 `Archify` 两种。
+        // 路径型入口本来就没有调用名，同样取登记名（原 `??=` 的行为）。
+        名字 = 资产.get(资产id) ?? 资产id
 
         // 同一轮里同一资产的第二条被唯一索引吃掉（无目标 conflict：主键与轮次索引都兜）。
         const result = await input.db.execute(sql`

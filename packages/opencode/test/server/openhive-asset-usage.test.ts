@@ -699,4 +699,136 @@ describe("资产使用记录：不止 skill 工具（2026-10-30 口径）", () =
       expect.objectContaining({ part_id: "usage-prt23", asset_id: "usage-a23", skill_name: "没启用的技能" }),
     ])
   })
+
+  /**
+   * 名字目录回落（2026-11-01 用户裁定 A）。
+   *
+   * 现场：资产按 `<项目>/.opencode/skill/<资产 id>/` 交付，但项目里同时留着一份**同内容**的
+   * 名字目录（真栈实测 `.opencode/skill/html-ppt` 与 `asset_46f47fb1…` 239 个文件全同）。
+   * 模型挑了好读的那个名字 ⇒ 命令行里没有资产 id 段 ⇒ 旧口径一条都不记：
+   * 王五 22:18–22:21 的 50 条 html-ppt 相关 part，按旧规则可归因 0 条，游标却已推进
+   * （`last_updated_sec` 1793542885 晚于全部使用时刻）——不是抽取器停摆，是判定漏了这一入口。
+   *
+   * 回落卡在「**本项目启用台账里恰好一个同名资产**」，与 `skill` 工具同一条规则（`#010-05`）：
+   * 名字是猜测性身份，只在本项目内无歧义时才认。
+   */
+  test("按技能名目录跑脚本 / 读说明书 / 斜杠命令 ⇒ 回落到唯一同名启用资产", async () => {
+    await 建用户("usage-u40")
+    await insertAsset(pg.db, 资产({ id: "usage-a40", name: "名字目录技能" }))
+    await 启用("usage-p40", "usage-a40", "usage-u40")
+    const 根 = 独占根("t40")
+    const 源 = 建源库("usage-u40", 根)
+    建会话(源, "usage-s40", "usage-p40")
+
+    记调用(源, {
+      partId: "usage-prt40a",
+      sessionId: "usage-s40",
+      tool: "bash",
+      command: "bash .opencode/skill/名字目录技能/scripts/new-deck.sh deck 04_PPT",
+      timeCreated: 1_790_000_000_000,
+    })
+    记调用(源, {
+      partId: "usage-prt40b",
+      sessionId: "usage-s40",
+      tool: "read",
+      filePath: ".opencode/skill/名字目录技能/SKILL.md",
+      timeCreated: 1_790_000_010_000,
+    })
+    记文本(源, {
+      partId: "usage-prt40c",
+      sessionId: "usage-s40",
+      text: "# Skill: 名字目录技能\n……正文……\n\nBase directory for this skill: .opencode/skill/名字目录技能\nRelative paths in this skill are relative to this base directory.",
+      timeCreated: 1_790_000_020_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(3)
+    expect(await 行("usage-u40")).toEqual([
+      expect.objectContaining({ part_id: "usage-prt40a", asset_id: "usage-a40", skill_name: "名字目录技能" }),
+      expect.objectContaining({ part_id: "usage-prt40b", asset_id: "usage-a40", skill_name: "名字目录技能" }),
+      expect.objectContaining({ part_id: "usage-prt40c", asset_id: "usage-a40", skill_name: "名字目录技能" }),
+    ])
+  })
+
+  test("名字回落不猜：本项目没启用 / 同名两份 ⇒ 都不记（不退化成全库同名匹配）", async () => {
+    await 建用户("usage-u41")
+    await insertAsset(pg.db, 资产({ id: "usage-a41x", name: "同名两件" }))
+    await insertAsset(pg.db, 资产({ id: "usage-a41y", name: "同名两件" }))
+    await 启用("usage-p41", "usage-a41x", "usage-u41")
+    await 启用("usage-p41", "usage-a41y", "usage-u41")
+    // 库里存在、但项目 p41 没启用：回落只问本项目台账，不能被全库同名吸走。
+    await insertAsset(pg.db, 资产({ id: "usage-a41z", name: "没启用的名字" }))
+    const 根 = 独占根("t41")
+    const 源 = 建源库("usage-u41", 根)
+    建会话(源, "usage-s41", "usage-p41")
+    记调用(源, {
+      partId: "usage-prt41a",
+      sessionId: "usage-s41",
+      tool: "bash",
+      command: "bash .opencode/skill/同名两件/scripts/a.sh",
+      timeCreated: 1_790_000_000_000,
+    })
+    记调用(源, {
+      partId: "usage-prt41b",
+      sessionId: "usage-s41",
+      tool: "bash",
+      command: "bash .opencode/skill/没启用的名字/scripts/a.sh",
+      timeCreated: 1_790_000_010_000,
+    })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect((await 行("usage-u41")).length).toBe(0)
+  })
+
+  /**
+   * 名字大小写（2026-11-01 用户裁定 A）。
+   *
+   * 真栈现场：项目 `6db1717a` 的启用台账登记名是 `Archify`，模型调 `skill` 工具传的是
+   * `input.name = "archify"` ⇒ 精确比对 0 个候选 ⇒ 记成未归因，使用次数不涨
+   * （22:46:54 实测：Archify 资产事件数 0，游标已越过该 part）。
+   *
+   * 名字来自模型输入，大小写不该决定「认不认得这个技能」。落表的 `skill_name` 统一用
+   * **资产登记名**：否则同一资产在报表/检索里会出现 `archify` 与 `Archify` 两种写法。
+   *
+   * 归一后仍守「唯一」：两个资产名只差大小写 ⇒ 2 个候选 ⇒ 不猜（`#010-05`）。
+   */
+  test("skill 工具名字忽略大小写：台账 `Archify` 对得上调用 `ArChIfY`", async () => {
+    await 建用户("usage-u50")
+    await insertAsset(pg.db, 资产({ id: "usage-a50", name: "Archify" }))
+    await 启用("usage-p50", "usage-a50", "usage-u50")
+    const 根 = 独占根("t50")
+    const 源 = 建源库("usage-u50", 根)
+    建会话(源, "usage-s50", "usage-p50")
+    // 调用名故意用混合大小写：全小写的话，正则化后的键恰好等于调用名，就分不出
+    // 「索引侧归一」和「查询侧归一」哪一侧被拆掉（本用例第一版就是这样，变异时没红）。
+    记调用(源, { partId: "usage-prt50", sessionId: "usage-s50", name: "ArChIfY" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(1)
+    expect(结果.unattributed).toBe(0)
+    expect(await 行("usage-u50")).toEqual([
+      expect.objectContaining({ part_id: "usage-prt50", asset_id: "usage-a50", skill_name: "Archify" }),
+    ])
+  })
+
+  test("大小写归一后仍不猜：两个资产的登记名只差大小写 ⇒ 不记", async () => {
+    await 建用户("usage-u51")
+    await insertAsset(pg.db, 资产({ id: "usage-a51x", name: "Archify" }))
+    await insertAsset(pg.db, 资产({ id: "usage-a51y", name: "ARCHIFY" }))
+    await 启用("usage-p51", "usage-a51x", "usage-u51")
+    await 启用("usage-p51", "usage-a51y", "usage-u51")
+    const 根 = 独占根("t51")
+    const 源 = 建源库("usage-u51", 根)
+    建会话(源, "usage-s51", "usage-p51")
+    记调用(源, { partId: "usage-prt51", sessionId: "usage-s51", name: "archify" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect(结果.unattributed).toBe(1)
+  })
 })
