@@ -424,11 +424,13 @@ function 迭代目标(input: TransitionAssetInput, asset: AssetMetadata): Iterat
   }
 
   const 相对 = asset.iterationWorkspace
-  return {
-    root: 根,
-    relative: 相对,
-    directory: 相对 === null ? null : iterationWorkspaceDirectory(根, 相对),
-  }
+  // 只有 `submit_iteration` 要读工作副本；`abort_iteration`（`discard_pending`）只删 pending、
+  // 清两列，**不解析目录**。库里若是坏值（手工改库 / 历史数据），解析会抛裸 Error ⇒ abort 500，
+  // 而 abort 正是管理员「解卡」的出口——它自己先卡住就没人能救了（2026-11-01 终审）。
+  // `start_iteration` 仍在上面的分支里现算。
+  const directory =
+    input.action === "submit_iteration" && 相对 !== null ? iterationWorkspaceDirectory(根, 相对) : null
+  return { root: 根, relative: 相对, directory }
 }
 
 /**

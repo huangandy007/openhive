@@ -1306,6 +1306,37 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
   })
 
+  /**
+   * abort 是管理员「解卡」的出口：库里 `iteration_workspace` 若是坏值（手工改库 / 历史数据），
+   * 它不能自己先卡住。abort 只删 pending、清两列，**不需要**工作副本目录。
+   */
+  test("迭代：abort 不解析工作副本目录——库里 iteration_workspace 是坏值也能成功", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    await seedSkill(db, { status: "iterating", version: 2, iterationNote: "手工种" })
+    await mkdir(发布目录(root), { recursive: true })
+    await writeFile(join(发布目录(root), "SKILL.md"), "v1")
+    // 直接改库：`insertAsset` 的形状校验管不到既有行，这正是「历史坏数据」的形态。
+    await db.execute(sql`update auth.asset set iteration_workspace = 'C:/evil/x' where id = 'asset_1'`)
+
+    const 放弃 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "abort_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_000,
+    })
+    expect(放弃.status).toBe("published")
+    expect(放弃.version).toBe(1)
+    expect(放弃.iterationWorkspace).toBeNull()
+    // 线上那份不动（abort 只删 pending）。
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
   test("迭代：version 已经是 1 时 abort 不再往下减（守卫 version >= 2）", async () => {
     const db = await freshDb()
     const root = tempRoot()
