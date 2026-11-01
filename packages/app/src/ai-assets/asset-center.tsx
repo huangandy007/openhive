@@ -54,7 +54,7 @@ export interface AssetCenterProps {
    *
    * 与 `catalog` / `enablement` 同一条注入规矩：生产实现在 `pages/layout-new.tsx` 取
    * （`projectList()` / `currentProject()`）再逐层传下来，本组件被组件测试裸挂，自己去取就跑不成离线。
-   * 省略 ⇒ 弹窗只能选当前项目（两个都缺 ⇒ 「发起」按钮禁用）。
+   * 省略 ⇒ 弹窗只能选当前项目（两个都缺 ⇒ 下拉提示先选项目、弹窗的确认按钮「发起」禁用）。
    */
   readonly projects?: readonly { readonly id: string; readonly name: string }[]
   /** 当前项目 id（发起迭代的默认目标）。 */

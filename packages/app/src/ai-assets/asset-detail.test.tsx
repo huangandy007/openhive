@@ -1316,8 +1316,113 @@ describe("版本迭代（2026-11-01）", () => {
       )
       // 节点在不在不足以说明「还开着」（`#005-29`）——要读状态属性。
       expect(弹窗开着()).toBe(true)
+      // 失败之后**不再是提交中**：按钮要能再点一次（说明与项目都还在）。
+      // 少了 `finally { set忙(false) }`，这里会停在 disabled + 「处理中…」，用户只能关框重来。
+      const 确认 = document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-confirm']")!
+      expect(确认.disabled).toBe(false)
+      expect(确认.textContent).toBe("发起")
       // 页面级那条错误是另一个信号，失败时不该沾上。
       expect(槽(host, "asset-detail-iteration-error") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("published 且带变更说明 ⇒ 显示这段说明（发布后它仍当本版说明），不显示空态", () => {
+    // 设计 §3：`iteration_note` 发布后保留当本版说明。只按 `迭代中()` 画的话，
+    // 「提交 → 发布」走完一次，这一块就整段空白——分不清「没写」和「界面坏了」（`#008-04`）。
+    const { host, 卸 } = 挂({ status: "published", version: 3, iterationNote: "补一条统计口径" })
+    try {
+      标签(host, "versions").click()
+      expect(文本(host, "asset-detail-iteration-note")).toBe("补一条统计口径")
+      expect(槽(host, "asset-detail-changelog-empty") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("提交失败（返回一句话）⇒ 面板原样显示那句，按钮回到可点", async () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3 },
+      {
+        canWrite: true,
+        onSubmitIteration: async () => "版本号已变，请刷新后再试",
+        onAbortIteration: async () => true,
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')!.click()
+      await 等到(() => 槽(host, "asset-detail-iteration-error") !== null)
+      expect(文本(host, "asset-detail-iteration-error")).toBe("版本号已变，请刷新后再试")
+      const 提交 = host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')!
+      expect(提交.disabled).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("放弃失败（返回一句话）⇒ 面板原样显示那句", async () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3 },
+      {
+        canWrite: true,
+        onSubmitIteration: async () => true,
+        onAbortIteration: async () => "已提交的版本不能放弃，请联系管理员",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-abort-iteration"]')!.click()
+      await 等到(() => 槽(host, "asset-detail-iteration-error") !== null)
+      expect(文本(host, "asset-detail-iteration-error")).toBe("已提交的版本不能放弃，请联系管理员")
+    } finally {
+      卸()
+    }
+  })
+
+  test("提交时调用直接抛 ⇒ 面板说「操作失败，请重试」，不把异常当空白吞掉", async () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3 },
+      {
+        canWrite: true,
+        onSubmitIteration: async () => {
+          throw new Error("网络断了")
+        },
+        onAbortIteration: async () => true,
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')!.click()
+      await 等到(() => 槽(host, "asset-detail-iteration-error") !== null)
+      expect(文本(host, "asset-detail-iteration-error")).toBe("操作失败，请重试")
+    } finally {
+      卸()
+    }
+  })
+
+  test("发起成功但右栏没开会话 ⇒ 提示里带上这次的工作副本路径", async () => {
+    const 路径 = "D:/ws/u/p/.openhive/iterations/a1"
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const, workspace: 路径 }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      填说明("补一条口径")
+      点确认()
+      await 等到(() => 槽(host, "asset-detail-iteration-error") !== null)
+      const 提示 = 文本(host, "asset-detail-iteration-error")
+      // 弹窗已经关了，路径在界面上再没有第二处——提示里必须给全。
+      expect(提示).toContain("先在右栏开一个会话")
+      expect(提示).toContain(路径)
     } finally {
       卸()
     }

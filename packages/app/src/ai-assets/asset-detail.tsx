@@ -525,7 +525,13 @@ function 版本面板(props: {
   const 收起 = () => {
     set开弹窗(false)
     set错误(undefined)
-    setTimeout(() => 发起按钮?.focus(), 0)
+    setTimeout(() => {
+      // 发起成功后状态变成 iterating ⇒ 触发器（`可发起()` 的 `Show`）已被卸载。
+      // 对着一个不在文档里的节点 `focus()` 没有任何意义，有的浏览器还会把焦点丢给 body
+      // ——那正是这一行要防的「键盘用户被扔回页顶」。所以先问它还在不在。
+      if (!发起按钮?.isConnected) return
+      发起按钮.focus()
+    }, 0)
   }
 
   const 关闭 = () => {
@@ -563,7 +569,12 @@ function 版本面板(props: {
       const 发送 = 发送到会话(指令, "替换")
       // 发起**已经成功**（状态与文件都变了），失败的是「告诉右栏」这一步。
       // 所以写在页面上、不写弹窗（弹窗已经关了）。
-      if (!发送.ok) set操作错误(`已发起迭代，但右栏没收到指令：${发送失败提示(发送.原因)}`)
+      // 失败提示要**带上这次的路径**：弹窗已经关了，而这个路径在界面上再没有第二处可取
+      // （项目里那份副本在哪，用户此刻只能靠这句话）。
+      if (!发送.ok)
+        set操作错误(
+          `已发起迭代，但右栏没收到指令：${发送失败提示(发送.原因)}。工作副本在 ${结果.workspace}，可先复制这个路径再发一次。`,
+        )
     } catch {
       set错误("发起失败，请重试")
     } finally {
@@ -614,11 +625,6 @@ function 版本面板(props: {
             ? `v${props.asset.version} 迭代中（线上仍是 v${上一次()}）`
             : `v${props.asset.version} 迭代中（作者正在修订，线上仍是 v${上一次()}）`}
         </p>
-        <Show when={props.asset.iterationNote !== ""}>
-          <p data-slot="asset-detail-iteration-note" class="text-[13px] text-v2-text-text-muted">
-            {props.asset.iterationNote}
-          </p>
-        </Show>
         <Show when={可操作() && props.onSubmit !== undefined}>
           <div class="flex gap-2">
             <ButtonV2
@@ -659,11 +665,22 @@ function 版本面板(props: {
         </p>
       </Show>
 
-      <Show when={props.asset.iterationNote === "" && !迭代中()}>
-        <p data-slot="asset-detail-changelog-empty" class="text-[13px] text-v2-text-text-muted">
-          暂无变更说明。
-        </p>
-      </Show>
+      {/* 说明是**这一版改了什么**，不只是迭代中的进度（设计 §3：`iteration_note` 发布后保留当本版说明；
+          `publish_iteration` 不写它 ⇒ 每次迭代走完都会带着同一句进 published）。
+          所以按「有没有内容」画，不按状态画：非空就显示，空才给空态。
+          只按 `迭代中()` 画的话，published + 非空 = 整块空白，用户分不清「没写」和「界面坏了」（`#008-04`）。 */}
+      <Switch>
+        <Match when={props.asset.iterationNote !== ""}>
+          <p data-slot="asset-detail-iteration-note" class="text-[13px] text-v2-text-text-muted">
+            {props.asset.iterationNote}
+          </p>
+        </Match>
+        <Match when={!迭代中()}>
+          <p data-slot="asset-detail-changelog-empty" class="text-[13px] text-v2-text-text-muted">
+            暂无变更说明。
+          </p>
+        </Match>
+      </Switch>
 
       <Kobalte open={开弹窗()} onOpenChange={(打开) => !打开 && 关闭()}>
         <Kobalte.Portal>
@@ -822,7 +839,8 @@ export interface AssetDetailProps {
   readonly onAbortIteration?: () => Promise<true | string>
   /**
    * 可选项目清单（发起迭代时选目标项目）。省略 ⇒ 只能选 `currentProjectId`；
-   * 两个都没有 ⇒ 「发起」按钮禁用并提示先选项目。
+   * 两个都没有 ⇒ 弹窗里的下拉显示「请先在左侧选择项目」，弹窗的**确认按钮**（「发起」）禁用。
+   * （入口那颗「发起新版本」照常可点——否则用户连弹窗里为什么要选项目都看不到。）
    */
   readonly projects?: readonly { readonly id: string; readonly name: string }[]
   readonly currentProjectId?: string
