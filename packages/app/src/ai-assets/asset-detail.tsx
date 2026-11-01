@@ -707,7 +707,12 @@ function 版本面板(props: {
                   会报 label-has-associated-control。可访问名称由输入框自己的 `aria-label` 给。 */}
               <div class="flex flex-col gap-1">
                 <span class="text-[12px] text-v2-text-text-muted">变更说明（必填）</span>
+                {/* `!w-full` 不能省成 `w-full`：`textarea-v2.css` 里 `[data-component="textarea-v2"]`
+                    有 `width: 280px`，它是不带 `@layer` 的组件样式，优先级高于 Tailwind 的 utilities 层，
+                    普通 `w-full` 赢不了（真浏览器实测：裸的 280px、`w-full` 仍 280px、`!w-full` 400px）。
+                    这一格必须撑满：同弹窗的下拉框是原生 `<select>`，默认 stretch 到内容宽 400px。 */}
                 <TextareaV2
+                  class="!w-full"
                   id="asset-iteration-note"
                   data-slot="asset-iteration-note"
                   name="asset-iteration-note"

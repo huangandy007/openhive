@@ -124,8 +124,12 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
     set失败话(回话)
   }
 
+  // `fit`：容器默认写死 `height: 368px`（`dialog-v2.css:24`），而这个表单 6 个字段 ＋ 提示语
+  // 本来就装不下——真浏览器实测「谁能用」底 637 > 容器底 616，`dialog-body{overflow:hidden}`
+  // 又让它滚不动，用户根本选不到。`fit` 把高度交还给内容（用户拖高描述框时弹窗跟着长）。
+  // `max-h`：拖高没有上限，超过视口就得封顶，否则头尾都跑到屏幕外；封顶后由 body 自己滚。
   return (
-    <DialogV2 class="w-[min(28rem,calc(100vw-3rem))]">
+    <DialogV2 fit containerClass="max-h-[calc(100vh-2rem)]" class="w-[min(28rem,calc(100vw-3rem))]">
       <form
         data-slot="capability-submit-dialog"
         class="contents"
@@ -137,7 +141,9 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
         <DialogHeader>
           <DialogTitle>登记并提交审核</DialogTitle>
         </DialogHeader>
-        <DialogBody class="flex w-full flex-col gap-3 px-4 pt-4 pb-2">
+        {/* `!overflow-y-auto`：`[data-slot="dialog-body"]` 自带 `overflow: hidden`（不带 @layer），
+            普通 utility 压不过；封顶到视口高度后，多出来的部分靠这里滚。 */}
+        <DialogBody class="flex w-full flex-col gap-3 px-4 pt-4 pb-2 !overflow-y-auto">
           <label class="flex flex-col gap-1">
             <span class="text-[12px] text-v2-text-text-muted">名称</span>
             <TextInputV2
@@ -157,6 +163,7 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
           <div class="flex flex-col gap-1">
             <span class="text-[12px] text-v2-text-text-muted">功能描述（必填）</span>
             <TextareaV2
+              class="!w-full"
               name="capability-submit-description"
               aria-label="功能描述"
               rows={3}

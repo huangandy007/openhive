@@ -275,4 +275,35 @@ describe("入库表单（CapabilitySubmitDialog）", () => {
     expect(文案("capability-submit-error")).toContain("源目录不存在或不是目录")
     expect(document.body.querySelector("[data-slot='capability-submit-dialog']") !== null).toBe(true)
   })
+
+  /**
+   * 尺寸两条（2026-11-01 用户报告）。
+   *
+   * ⚠️ happy-dom **没有布局**：`getBoundingClientRect()` 恒 0，宽度/裁切量在这里一条也量不出来。
+   * 所以这两条钉的是**结构前提**，不是几何——真几何的证据在改动报告里（真浏览器实测：
+   * 固定 368px 高 + `dialog-body{overflow:hidden}` ⇒「谁能用」底 637 > 容器底 616，被裁且滚不到；
+   * 拖高描述框后容器仍是 368px；描述框裸样式 280px，而同排字段 448px）。
+   * 拆掉这两个前提，真栈上就会退回被裁的样子——这条用例是那个回归的替身（`#004-03`）。
+   */
+  test("弹窗要跟着内容长（fit + 内容区可滚）：否则「分类 / 谁能用」被裁在固定 368px 里", async () => {
+    await 打开()
+
+    const 壳 = document.body.querySelector("[data-component='dialog-v2']")
+    expect(壳?.hasAttribute("data-fit")).toBe(true)
+
+    const 体 = document.body.querySelector("[data-slot='dialog-body']")
+    // 组件样式 `[data-slot="dialog-body"]{overflow:hidden}` 不带 @layer，普通 `overflow-y-auto` 压不过，
+    // 必须是 `!` 变体（同 `!w-full` 的道理）。
+    expect(体?.className ?? "").toContain("!overflow-y-auto")
+  })
+
+  test("功能描述框与同排字段同宽：`!w-full`（裸 `w-full` 压不过组件里的 `width:280px`）", async () => {
+    await 打开()
+
+    const 外框 = document.body.querySelector("[data-component='textarea-v2']")
+    expect(外框?.className ?? "").toContain("!w-full")
+    // 名称框已经是 `!w-full`：两个文本字段必须同一个写法，否则改一个漏一个。
+    const 名称框 = document.body.querySelector("[data-component='text-input-v2']")
+    expect(名称框?.className ?? "").toContain("!w-full")
+  })
 })
