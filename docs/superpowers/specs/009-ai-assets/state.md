@@ -35,6 +35,14 @@ T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户
 12. **写入口没有独立校验**：`iteration_workspace` 的形状只由 `validateAssetMetadata` 挡，而它只覆盖 insert 出口（`updateAssetLifecycle` 不过校验）；写入值由 `iterationWorkspaceRelative()` 唯一产生，该函数内部逐段 `assertSafeSegment`。曾经写过一个「写入值 === 用同样实参重算一遍」的守卫，实测左右两边同一函数同一实参、**恒真**，删掉后全部用例仍绿，已删除；改由 `metadata.test.ts` 的真负例钉住形状（绝对路径 / `..` / 非字符串）。其中绝对路径那条用 `resolve("x")` 而非写死 `C:/evil/x`——后者在 Linux 上 `isAbsolute` 为 false，会在 CI 的 ubuntu unit 矩阵里恒红。
 13. **迭代用例的「列表仍能看到它」并入发起用例**：这条断言要的是「刚发起完」这个状态，另起一条用例就会依赖上一条的副作用——单跑 `-t` / `--only-failures` 重跑必红（`LEARNINGS #005-34`），故与发起同处一个场景；代价是这个用例同时覆盖回包、落库与列表三处，红的时候要看断言行定位。
 
+### 修复（真栈整页白板，2026-11-01）
+
+- **现象**：重启后前端打开是白板。
+- **根因（实测）**：前端把 `metadata.ts` 当**运行时常量来源**（`ASSET_*` / label 表 / `CONTENT_LIMITS`，见 `packages/app/src/ai-assets/*.tsx`），Vite 会把整个模块打进浏览器图；Task 1 为 `iterationWorkspace` 校验引入 `import { isAbsolute } from "node:path"` ⇒ Vite 把它换成「一访问就抛」的桩 ⇒ 模块加载失败。控制台唯一读数：`Module "node:path" has been externalized for browser compatibility. Cannot access "node:path.isAbsolute"`。
+- **做法**：删掉该导入，改用文件内的纯字符串判定 `是绝对路径`（盘符 / 前导分隔符）；它与既有的「空段」规则合起来等价于 `path.isAbsolute` + 逐段检查，非字符串仍在 `.split` 处抛 `TypeError`。文件头补上「不许引 Node 内置模块」的约束。
+- **守卫**：`metadata.test.ts` 新增「本模块必须能在浏览器里加载：不许引 Node 内置模块」——读源码断言没有 `node:*` 导入。`bun test` 里 `node:path` 是能解析的、跑得绿，只有静态检查拦得住「服务端能跑、浏览器炸」这类。
+- **实得**：加用例 `9 pass / 1 fail`（`Received: ["node:path"]`）→ 修后 asset-service `91 pass / 0 fail / 319 expect`，typecheck 通过；变异（把导入加回去）⇒ 守卫用例红。真栈：登录 → AI 资产列表 → 详情「版本」Tab 全部渲染，控制台 0 error。
+
 ### 门禁（实得）
 
 | 命令（在受影响包内，全部带 `timeout 300`） | 实得 |
