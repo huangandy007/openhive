@@ -333,10 +333,10 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
 
   const 自带 = (条: 自带条目) => (
     <div data-slot="capability-item-local" class={条目框} {...卡接线(() => 条.description)} {...拖接线(条)}>
-      <div class="flex items-center gap-1.5">
+      {/* 标题行只放身份（名字 + 来源标记）；角标挪到最后一行，见下方状态行。 */}
+      <div data-slot="capability-title" class="flex items-center gap-1.5">
         <span aria-hidden="true">●</span>
         <span class="font-semibold">{条.name}</span>
-        {角标(条)}
         <span class="ml-auto text-[11px] text-v2-text-text-muted">📝 本项目自带</span>
       </div>
       {读屏说明(() => 条.description)}
@@ -357,24 +357,29 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           拿不到这个技能在项目里的路径，无法入库
         </p>
       </Show>
-      {/* 没接线（组件测试 / 别的宿主）⇒ 不画按钮：点了没反应比没有按钮更像坏了。 */}
-      <Show when={条.skillPath !== undefined && 条.skillPath !== "." && props.onCreateAndSubmit !== undefined}>
-        <div class="flex justify-end pl-3 pt-1">
-          <button
-            type="button"
-            data-slot="capability-submit"
-            disabled={有动作在飞()}
-            class={小钮}
-            onClick={() => {
-              const 动作 = props.onCreateAndSubmit
-              if (动作 === undefined) return
-              跑动作(`local:${条.name}`, () => 动作(条))
-            }}
-          >
-            提交审核
-          </button>
+      {/* 状态行（2026-11-01 用户要求）：**左状态、右动作**。角标不再挤在名字后面，
+          名字再长也不会和它撞在一起。没接线（组件测试 / 别的宿主）⇒ 不画按钮：
+          点了没反应比没有按钮更像坏了。 */}
+      <div data-slot="capability-status-row" class="flex items-center gap-2 pl-3 pt-1">
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">{角标(条)}</div>
+        <div class="flex shrink-0 items-center gap-1">
+          <Show when={条.skillPath !== undefined && 条.skillPath !== "." && props.onCreateAndSubmit !== undefined}>
+            <button
+              type="button"
+              data-slot="capability-submit"
+              disabled={有动作在飞()}
+              class={小钮}
+              onClick={() => {
+                const 动作 = props.onCreateAndSubmit
+                if (动作 === undefined) return
+                跑动作(`local:${条.name}`, () => 动作(条))
+              }}
+            >
+              提交审核
+            </button>
+          </Show>
         </div>
-      </Show>
+      </div>
     </div>
   )
 
@@ -409,103 +414,112 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     return 理由
   }
 
-  const 库内 = (条: 库内条目) => (
-    <div
-      data-slot={条.loaded ? "capability-item-loaded" : "capability-item-stale"}
-      class={条目框}
-      {...卡接线(() => 条.description)}
-      {...拖接线(条)}
-    >
-      <div class="flex items-center gap-1.5">
-        <span aria-hidden="true">{条.loaded ? "●" : "▲"}</span>
-        <span class="font-semibold">{条.name}</span>
-        {角标(条)}
-        {/* 2026-10-28：`📦` 换成图标集里的 `archive`（同一个意思，但是对得上设计系统的画法）。
-            `--icon-base` 必须由这层注入——`icon.css` 给图标自身写了 `color: var(--icon-base)`，
-            写在父级上的 `text-*` 到不了它，不注入就静默落上游那档硬编码灰（`rail.tsx` 同一个坑）。 */}
-        <span
-          data-slot="capability-source"
-          class="ml-auto flex items-center gap-1 text-[11px] text-v2-text-text-muted"
-        >
-          <span class="flex items-center [--icon-base:var(--v2-icon-icon-muted)]">
-            <Icon name="archive" size="small" />
+  const 库内 = (条: 库内条目) => {
+    // 状态行（2026-11-01 用户要求）：**左状态、右动作**。`阶段()` 缺席（旧服务端没给
+    // `assetStatus`）时角标不画；连同说明与动作全都缺席时整行不画，免得留一条空带。
+    const 有说明 = 条.status === "in_review" || 条.status === "pending_tech"
+    const 能提交 = 条.status === "draft" && props.onSubmit !== undefined
+    const 有动作 = 能提交 || 可停用(条)
+    return (
+      <div
+        data-slot={条.loaded ? "capability-item-loaded" : "capability-item-stale"}
+        class={条目框}
+        {...卡接线(() => 条.description)}
+        {...拖接线(条)}
+      >
+        {/* 标题行只放身份（名字 + 来源标记）；角标挪到最后一行。 */}
+        <div data-slot="capability-title" class="flex items-center gap-1.5">
+          <span aria-hidden="true">{条.loaded ? "●" : "▲"}</span>
+          <span class="font-semibold">{条.name}</span>
+          {/* 2026-10-28：`📦` 换成图标集里的 `archive`（同一个意思，但是对得上设计系统的画法）。
+              `--icon-base` 必须由这层注入——`icon.css` 给图标自身写了 `color: var(--icon-base)`，
+              写在父级上的 `text-*` 到不了它，不注入就静默落上游那档硬编码灰（`rail.tsx` 同一个坑）。 */}
+          <span
+            data-slot="capability-source"
+            class="ml-auto flex items-center gap-1 text-[11px] text-v2-text-text-muted"
+          >
+            <span class="flex items-center [--icon-base:var(--v2-icon-icon-muted)]">
+              <Icon name="archive" size="small" />
+            </span>
+            资产库
           </span>
-          资产库
-        </span>
-      </div>
-      {读屏说明(() => 条.description)}
-      {/* 驳回理由不是按钮位的东西，挂在正文下方：用户是要**改内容**，不是要按它。
-          只在草稿阶段成立，且文案已去掉「被驳回：」重复（说明见 `驳回理由`）。 */}
-      <Show when={条.status === "draft" ? 驳回理由(条.rejectReason) : undefined}>
-        {(话) => (
-          <div data-slot="capability-reject-reason" class="pl-3 pt-1 text-[10px] text-v2-state-fg-danger">
-            {话()}
-          </div>
-        )}
-      </Show>
-      {/* 正常（`loaded`）时卡片里没有第二块文字——说明改由右侧预览承载了。
-          只有 ② 还要一行**诊断**（它不是说明，是「为什么没生效」，必须留在卡上）。 */}
-      <Show when={!条.loaded}>
-        {/* ② 有两种成因，说反了就是在假故障上劝用户停用（2026-10-28 真栈现场）：
-            链接真丢了 vs 被同名技能盖掉（链接完好，内核去重时留了另一份）。
-            槽名分开，两种文案不互相顶替，测试也断得出是哪一种。 */}
-        <Show
-          when={条.覆盖者}
-          fallback={
-            <p data-slot="capability-stale-reason" class="pl-3 text-[11px]">
-              已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。
-            </p>
-          }
-        >
-          {(盖) => (
-            <p data-slot="capability-shadowed-reason" class="pl-3 text-[11px]">
-              已启用，但被一份同名技能「{盖().name}」盖住了，AI 现在用的是那一份。改名或移走那份同名技能后重试。
-            </p>
+        </div>
+        {读屏说明(() => 条.description)}
+        {/* 驳回理由不是按钮位的东西，挂在正文下方：用户是要**改内容**，不是要按它。
+            只在草稿阶段成立，且文案已去掉「被驳回：」重复（说明见 `驳回理由`）。 */}
+        <Show when={条.status === "draft" ? 驳回理由(条.rejectReason) : undefined}>
+          {(话) => (
+            <div data-slot="capability-reject-reason" class="pl-3 pt-1 text-[10px] text-v2-state-fg-danger">
+              {话()}
+            </div>
           )}
         </Show>
-      </Show>
-      {/* 每条技能**最多一个按钮**，按钮只给下一步（设计 §4.2）。四个分支互斥、
-          没有下一步时按钮位留空——不放假按钮。 */}
-      <Show when={条.status === "draft" && props.onSubmit !== undefined}>
-        <div class="flex justify-end pl-3 pt-1">
-          <button
-            type="button"
-            data-slot="capability-submit"
-            disabled={有动作在飞()}
-            class={小钮}
-            onClick={() => 提交(条)}
+        {/* 正常（`loaded`）时卡片里没有第二块文字——说明改由右侧预览承载了。
+            只有 ② 还要一行**诊断**（它不是说明，是「为什么没生效」，必须留在卡上）。 */}
+        <Show when={!条.loaded}>
+          {/* ② 有两种成因，说反了就是在假故障上劝用户停用（2026-10-28 真栈现场）：
+              链接真丢了 vs 被同名技能盖掉（链接完好，内核去重时留了另一份）。
+              槽名分开，两种文案不互相顶替，测试也断得出是哪一种。 */}
+          <Show
+            when={条.覆盖者}
+            fallback={
+              <p data-slot="capability-stale-reason" class="pl-3 text-[11px]">
+                已启用，但 AI 没加载到——项目里的快捷方式可能丢了。停用后可在资产中心重新启用。
+              </p>
+            }
           >
-            提交审核
-          </button>
-        </div>
-      </Show>
-      <Show when={条.status === "in_review"}>
-        <div class="flex flex-col items-end pl-3 pt-1" data-slot="capability-stage-note">
-          <span class="text-[11px] text-v2-text-text-muted">等业务审核</span>
-          {/* D8：不说这句，作者会以为「我改了」就等于「送审的那一版改了」。 */}
-          <span class="text-[10px] text-v2-text-text-muted">送审版已锁定，改动不影响本次审核</span>
-        </div>
-      </Show>
-      <Show when={条.status === "pending_tech"}>
-        <p data-slot="capability-stage-note" class="pl-3 pt-1 text-[11px] text-v2-text-text-muted">
-          等管理员发布
-        </p>
-      </Show>
-      <Show when={可停用(条)}>
-        <div class="pl-3 pt-1">
-          <button
-            type="button"
-            data-slot="capability-disable"
-            disabled={props.busy() === 条.assetId || 有动作在飞()}
-            class={小钮}
-            onClick={() => props.onToggle(条.assetId)}
-          >
-            停用
-          </button>
-        </div>
-      </Show>
-    </div>
-  )
+            {(盖) => (
+              <p data-slot="capability-shadowed-reason" class="pl-3 text-[11px]">
+                已启用，但被一份同名技能「{盖().name}」盖住了，AI 现在用的是那一份。改名或移走那份同名技能后重试。
+              </p>
+            )}
+          </Show>
+        </Show>
+        {/* 每条技能**最多一个按钮**，按钮只给下一步（设计 §4.2）。四个分支互斥、
+            没有下一步时按钮位留空——不放假按钮。 */}
+        <Show when={阶段(条) !== undefined || 有说明 || 有动作}>
+          <div data-slot="capability-status-row" class="flex items-center gap-2 pl-3 pt-1">
+            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+              {角标(条)}
+              <Show when={条.status === "in_review"}>
+                {/* D8：不说「送审版已锁定」，作者会以为「我改了」就等于「送审的那一版改了」。 */}
+                <span data-slot="capability-stage-note" class="text-[10px] text-v2-text-text-muted">
+                  等业务审核 · 送审版已锁定，改动不影响本次审核
+                </span>
+              </Show>
+              <Show when={条.status === "pending_tech"}>
+                <span data-slot="capability-stage-note" class="text-[11px] text-v2-text-text-muted">等管理员发布</span>
+              </Show>
+            </div>
+            <div class="flex shrink-0 items-center gap-1">
+              <Show when={能提交}>
+                <button
+                  type="button"
+                  data-slot="capability-submit"
+                  disabled={有动作在飞()}
+                  class={小钮}
+                  onClick={() => 提交(条)}
+                >
+                  提交审核
+                </button>
+              </Show>
+              <Show when={可停用(条)}>
+                <button
+                  type="button"
+                  data-slot="capability-disable"
+                  disabled={props.busy() === 条.assetId || 有动作在飞()}
+                  class={小钮}
+                  onClick={() => props.onToggle(条.assetId)}
+                >
+                  停用
+                </button>
+              </Show>
+            </div>
+          </div>
+        </Show>
+      </div>
+    )
+  }
 
   // ③ 自带条目不是「装来的」：不给停用 / 卸载——那等于删用户的文件（设计 §4）。
   // 它唯一的下一步是「入库并提交」，由 `自带()` 自己画。

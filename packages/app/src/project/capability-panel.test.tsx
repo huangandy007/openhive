@@ -827,6 +827,66 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
   })
 
+  /**
+   * 版式：状态与动作共用卡片最后一行（2026-11-01 用户要求）。
+   *
+   * 角标原来紧跟在技能名后面——名字一长就和角标挤成一团。现在角标挪到最后一行，
+   * **左状态、右动作**，标题行只剩名字与来源标记。
+   *
+   * 断言按**结构**走（谁是状态行的首 / 尾子元素），不按坐标：happy-dom 不排版，
+   * 量几何在这里恒为 0（`#005-32`）。
+   */
+  test("草稿行：角标在状态行最左，提交按钮在最右，标题行里不再有角标", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "草稿技能", assetId: "a1", assetStatus: "draft" })],
+      onSubmit: () => {},
+    })
+    const 卡 = 一(host, "capability-item-loaded")!
+    const 标题行 = 一(卡, "capability-title")!
+    const 状态行 = 一(卡, "capability-status-row")!
+    const 角标 = 一(卡, "capability-stage")!
+
+    expect(标题行.querySelector("[data-slot='capability-stage']"), "标题行不该再有角标").toBe(null)
+    expect(角标, "角标该在状态行里").not.toBe(null)
+    expect(状态行.firstElementChild!.contains(角标), "状态在左").toBe(true)
+    expect(状态行.lastElementChild!.contains(一(卡, "capability-submit")), "动作在右").toBe(true)
+  })
+
+  test("已发布行：角标在状态行最左，停用在最右（本期它没有别的动作按钮）", () => {
+    const host = 面板({
+      enabled: () => new Set(["a2"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "线上版", assetId: "a2", assetStatus: "published" })],
+    })
+    const 卡 = 一(host, "capability-item-loaded")!
+    const 标题行 = 一(卡, "capability-title")!
+    const 状态行 = 一(卡, "capability-status-row")!
+
+    expect(标题行.querySelector("[data-slot='capability-stage']")).toBe(null)
+    expect(状态行.firstElementChild!.contains(一(卡, "capability-stage"))).toBe(true)
+    expect(状态行.lastElementChild!.contains(一(卡, "capability-disable"))).toBe(true)
+    expect(一(卡, "capability-submit")).toBe(null)
+  })
+
+  test("未入库（自带）行：角标与提交按钮同处状态行，标题行只剩名字与来源", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "本地工具", skillPath: ".opencode/skill/本地工具" })],
+      onCreateAndSubmit: () => {},
+    })
+    const 卡 = 一(host, "capability-item-local")!
+    const 标题行 = 一(卡, "capability-title")!
+    const 状态行 = 一(卡, "capability-status-row")!
+
+    expect(标题行.querySelector("[data-slot='capability-stage']")).toBe(null)
+    expect(文(卡, "capability-stage")).toBe("未入库")
+    expect(状态行.firstElementChild!.contains(一(卡, "capability-stage"))).toBe(true)
+    expect(状态行.lastElementChild!.contains(一(卡, "capability-submit"))).toBe(true)
+  })
+
   test("审核中行没有按钮，只有「等业务审核」与锁定说明", () => {
     const host = 面板({
       enabled: () => new Set(),
