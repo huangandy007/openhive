@@ -77,7 +77,7 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
     // 【保留的定制 · 同步上游时不要丢】来源判定按 assetStatus（2026-11-01）。
     // 不能用 enabled：草稿链进项目时不写启用行，但它确实在库里。
     if (条.assetStatus !== undefined) {
-      // 服务端今天必给 assetId；下面的 `?? 条.name` / `:131` 的 `?? id` 只是兜底，
+      // 服务端今天必给 assetId；这里的 `?? 条.name` 与下面组装库内条目时的 `?? id` 只是兜底，
       // 只为不造出 undefined 键。
       库里.set(条.assetId ?? 条.name, 条)
       continue
