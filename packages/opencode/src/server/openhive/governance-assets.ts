@@ -253,17 +253,35 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
      * 这一列**不在库里**（它描述的是文件系统的当下状态），所以只能在出口算；前端再判一次
      * 就是两份口径（`#002-06`）。只对 `iterating` 的行做文件判据：其它状态没有 pending 的
      * 语义（`pending_tech` 的 `pending/` 是流转的正常状态，拿它当「作者交了」会误标），
-     * 逐行 stat 一遍是白花 I/O。`Promise.all` 并行：一页最多 100 条，串行会让列表慢一个量级。
+     * 逐行 stat 一遍是白花 I/O。并发跑（`concurrency: "unbounded"`）：一页最多 100 条，
+     * 串行会让列表慢一个量级。
+     *
+     * **逐行兜底**：`pendingDirectory()` 对非法 id 会**同步抛**（`assertSafeSegment`），
+     * 文件系统在并发写者 / 杀毒软件下也可能抛 ENOENT / EPERM。一行出错只把这行的
+     * `iterationSubmitted` 降级成 false，**不能**让整页列表 500（一个坏 id 让所有人翻不了页）。
+     * 兜底必须包住**整条表达式**（含 `pendingDirectory`），只包 `hasPendingContent` 漏掉同步抛。
+     * 降级记 `Effect.logWarning` 而不是裸 `catch {}`——吞掉原因就永远查不出那行数据为什么坏（`#006-28`）。
+     * `hasPendingContent` 本身一个字不动：它同时是发布前置的严格判据（`service.ts`），
+     * 在这里放宽会把「发布前必须验 pending」一起废掉。
      */
-    const 补迭代状态 = yield* Effect.promise(() =>
-      Promise.all(
-        assets.map(async (资产行) => ({
-          ...资产行,
-          iterationSubmitted:
-            资产行.status === "iterating" &&
-            (await hasPendingContent(pendingDirectory(assetsRoot(process.env), 资产行.id))),
-        })),
-      ),
+    const 补迭代状态 = yield* Effect.forEach(
+      assets,
+      (资产行) =>
+        Effect.gen(function* () {
+          if (资产行.status !== "iterating") return { ...资产行, iterationSubmitted: false }
+          const 已提交 = yield* Effect.tryPromise(() =>
+            hasPendingContent(pendingDirectory(assetsRoot(process.env), 资产行.id)),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("列表算 iterationSubmitted 失败，按未提交处理", {
+                assetId: 资产行.id,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          )
+          return { ...资产行, iterationSubmitted: 已提交 }
+        }),
+      { concurrency: "unbounded" },
     )
     return ok({ assets: 补迭代状态, total, page: 分页.page, pageSize: 分页.pageSize })
   })

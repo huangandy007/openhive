@@ -460,6 +460,68 @@ describe("T007 · 列表的 iterationSubmitted（版本迭代）", () => {
       ),
     ),
   )
+
+  /**
+   * 一行坏数据不能把整页列表打成 500。
+   *
+   * `auth.asset.id` 是普通 text，写入侧只校验「非空字符串」（`validateAssetMetadata`），
+   * 所以「id 里带 `/`」是库里的可达状态（历史数据、直接改库、别的写入端都可能留下）。
+   * 列表出口逐行拼 `pendingDirectory()` 时 `assertSafeSegment` 会**同步抛错**，而它跑在
+   * `Promise.all` 的行回调里 ⇒ 整条 reject ⇒ 出口 500，一个人翻不了页。
+   *
+   * 判据是「坏行降级成 false、正常行照常算出 true、列表仍 200」——三件事一起断言，
+   * 少任何一条都可能是「把整页都降级成 false」的假绿（`#005-18`）。
+   */
+  it.live("单行 id 非法 ⇒ 列表仍 200，坏行 false，其它行照常算", () =>
+    Effect.gen(function* () {
+      const 坏段 = "asset-iter-fallback-bad-seg/../x"
+      const 正常 = "asset-iter-fallback-ok-0001"
+      if (!pg) throw new Error("真库没起来")
+      yield* Effect.promise(async () => {
+        await insertAsset(
+          pg!.db,
+          资产({
+            id: 坏段,
+            name: "迭代兜底夹具 · 坏段",
+            status: "iterating",
+            version: 2,
+            updatedAt: 30_201,
+            iterationNote: "id 里带斜杠",
+          }),
+        )
+        await insertAsset(
+          pg!.db,
+          资产({
+            id: 正常,
+            name: "迭代兜底夹具 · 正常",
+            status: "iterating",
+            version: 2,
+            updatedAt: 30_200,
+            iterationNote: "pending 里有内容",
+          }),
+        )
+      })
+      造目录(join(ASSETS_ROOT, "pending", 正常))
+
+      // 与上一条用例同一圈法：q 圈住本用例的两行，条数不随执行顺序漂（`#005-34`）。
+      const response = yield* get(EXPERT, `${GOV}?q=${encodeURIComponent("迭代兜底夹具")}`)
+      expect(response.status).toBe(200)
+      const body = yield* json(迭代列表, response)
+      const 按Id = new Map(body.assets.map((资产行) => [资产行.id, 资产行]))
+
+      expect(按Id.get(坏段)?.iterationSubmitted).toBe(false)
+      expect(按Id.get(正常)?.iterationSubmitted).toBe(true)
+    }).pipe(
+      Effect.ensuring(
+        Effect.promise(async () => {
+          await pg!.db.execute(
+            sql`delete from auth.asset where id in ('asset-iter-fallback-bad-seg/../x', 'asset-iter-fallback-ok-0001')`,
+          )
+          rmSync(join(ASSETS_ROOT, "pending", "asset-iter-fallback-ok-0001"), { recursive: true, force: true })
+        }),
+      ),
+    ),
+  )
 })
 
 describe("T007 · 审核与发布动作", () => {
