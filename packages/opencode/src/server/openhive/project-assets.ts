@@ -69,6 +69,7 @@ import {
   setAutoDelivery,
 } from "@opencode-ai/asset-service/auto-delivery"
 import { canReadAsset } from "@opencode-ai/asset-service/authorization"
+import type { AssetStatus } from "@opencode-ai/asset-service/metadata"
 import {
   disableAsset,
   enabledAssetIds,
@@ -119,8 +120,8 @@ export const PATH = {
  * **不含 `content`**：`Skill.Info.content` 是 SKILL.md 全文，进 HTTP 回包既浪费又是泄露面。
  *
  * `assetId` = `location` 倒数第二段目录名，本项目自带的技能同样有（就是它的目录名）；
- * `assetName` 才是「库里确有这份资产」的标记——③「本项目自带」的条目只有 `assetId`，
- * 没有 `assetName`。前端**不得**用 `assetId !== undefined` 判「是不是库里的」，只能比 `enabled`。
+ * `assetName` 来自库里的标题表。**「在不在库里」只认 `assetStatus` 有没有这个键**——
+ * `assetId` 既有条目也有，`enabled` 又漏掉草稿（2026-11-01，见下）。
  */
 export interface 内核技能 {
   readonly name: string
@@ -128,6 +129,19 @@ export interface 内核技能 {
   readonly location: string
   readonly assetId?: string
   readonly assetName?: string
+  /**
+   * 库里那一行的状态（2026-11-01）。**有没有这个键才是「在不在库里」的权威判据**——
+   * `assetId` 自带条目也有（它就是目录名），`enabled` 又漏掉草稿（草稿链进项目时不写启用行）。
+   * 查不到 = 未入库。
+   */
+  readonly assetStatus?: AssetStatus
+  /** 只有库里那行存在时才有；「是不是我的」靠它判，不靠名字。 */
+  readonly assetOwnerId?: string
+  /**
+   * 最近一次业务驳回的理由（设计 §4.7）。只读通知表，不加列。
+   * 缺行 = 没被驳回过，**不要编理由**。
+   */
+  readonly assetRejectReason?: string
 }
 
 /**
@@ -320,6 +334,57 @@ export function 映射内核清单(
         ...(名 === undefined ? {} : { assetName: 名 }),
       }
     })
+}
+
+/**
+ * 给内核清单补「它在不在库里」的权威信号（2026-11-01，设计 §4.1）。
+ *
+ * 一次批量查：内核看得见的技能可能几十条，逐条查会变成 N 次往返。
+ * **不回落、不猜测**：查不到就是查不到，前端据此显示「未入库」。
+ */
+export async function 补资产状态(
+  db: { execute(query: ReturnType<typeof sql>): PromiseLike<unknown> },
+  列表: readonly 内核技能[],
+  读者: string,
+): Promise<内核技能[]> {
+  const ids = [...new Set(列表.flatMap((条) => (条.assetId === undefined ? [] : [条.assetId])))]
+  if (ids.length === 0) return [...列表]
+  const 占位 = sql.join(ids.map((id) => sql`${id}`), sql`, `)
+
+  const rows = rowsOf(await db.execute(sql`
+    select id, status, owner_id from auth.asset where id in (${占位})
+  `))
+  const 表 = new Map(
+    rows.map((row) => [
+      String(row["id"]),
+      { status: String(row["status"]) as AssetStatus, ownerId: String(row["owner_id"]) },
+    ]),
+  )
+
+  // 驳回理由（设计 §4.7）：同一个批量里再查一次通知表。按 created_at 倒序，
+  // JS 里取每个 asset 的第一条——不用 PG 的 `distinct on`，PGlite 上也一样跑。
+  const 通知行 = rowsOf(await db.execute(sql`
+    select asset_id, body from auth.asset_notification
+    where action = 'reject_business' and recipient_id = ${读者} and asset_id in (${占位})
+    order by created_at desc
+  `))
+  const 最近驳回 = new Map<string, string>()
+  for (const row of 通知行) {
+    const id = String(row["asset_id"])
+    if (!最近驳回.has(id)) 最近驳回.set(id, String(row["body"]))
+  }
+
+  return 列表.map((条) => {
+    const 行 = 条.assetId === undefined ? undefined : 表.get(条.assetId)
+    if (行 === undefined) return 条
+    const 理由 = 最近驳回.get(条.assetId!)
+    return {
+      ...条,
+      assetStatus: 行.status,
+      assetOwnerId: 行.ownerId,
+      ...(理由 === undefined ? {} : { assetRejectReason: 理由 }),
+    }
+  })
 }
 
 /**
@@ -576,7 +641,18 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     // 此刻目录还是旧状态：读出来的是一份「缺链接」的清单，前端会把每条已启用 skill 画成
     // 「已启用但 AI 没加载到——停用后可在资产中心重新启用」，在一次临时文件系统故障上
     // 引导用户做破坏性操作。读不到就说读不到，让用户点重试。
-    const 内核 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题, 功能描述)
+    const 内核原始 = 结果 === undefined ? undefined : yield* 读内核清单(deps, 目录, 标题, 功能描述)
+    // **先补状态，再找人盖人**：否则 `被覆盖` 用的是没补过的清单。
+    const 内核 =
+      内核原始 === undefined
+        ? undefined
+        : {
+            ...内核原始,
+            项目内: yield* Effect.promise(() =>
+              // `userId` = 本端点已经解出来的登录用户（它本来就要用来读启用状态，别再取第二次）。
+              补资产状态(deps.pg(), 内核原始.项目内, userId),
+            ),
+          }
     // 第二态再分一次因：链接在却被同名技能盖掉（`TIER` 去重）≠ 链接丢了。只在读到内核时判。
     const 被覆盖 = 内核 === undefined ? undefined : yield* 找被覆盖(内核, desired, 目录)
     // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自

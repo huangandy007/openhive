@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "bun:test"
-import { 带内核清单, 映射内核清单 } from "../../src/server/openhive/project-assets"
+import { 带内核清单, 补资产状态, 映射内核清单 } from "../../src/server/openhive/project-assets"
 
 /**
  * `带内核清单` 的判据只有一条：**「不知道」与「没有」必须长得不一样**（`#002-02`）。
@@ -163,5 +163,73 @@ describe("映射内核清单", () => {
       new Map(),
     )
     expect(回[0]?.description).toBe("My own skill")
+  })
+})
+
+/**
+ * 假库：bun-sql 的形态就是行数组（`rowsOf` 认这个）。
+ * `补资产状态` 发两次查询（资产表 → 通知表），按调用次序返回。
+ */
+const 假库 = (资产行: Record<string, unknown>[], 通知行: Record<string, unknown>[] = []) => {
+  let 次 = 0
+  return { execute: async () => (次++ === 0 ? 资产行 : 通知行) }
+}
+
+describe("补资产状态", () => {
+  test("查得到的 id 带上状态与属主；查不到的原样返回（= 未入库）", async () => {
+    const 列表 = [
+      { name: "md转word", location: "/w/u/p/.opencode/skill/a1/SKILL.md", assetId: "a1", assetName: "MD转Word" },
+      { name: "handmade", location: "/w/u/p/.opencode/skill/hand/SKILL.md", assetId: "hand" },
+    ]
+    const 结果 = await 补资产状态(假库([{ id: "a1", status: "draft", owner_id: "u1" }]), 列表, "u1")
+
+    expect(结果[0]).toMatchObject({ assetId: "a1", assetStatus: "draft", assetOwnerId: "u1" })
+    // 关键：手写的 skill 没有 assetStatus 这个键，前端据此判「未入库」
+    expect(Object.prototype.hasOwnProperty.call(结果[1], "assetStatus")).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(结果[1], "assetOwnerId")).toBe(false)
+  })
+
+  test("列表里一个 assetId 都没有 ⇒ 一次库都不查", async () => {
+    let 查了 = 0
+    const db = { execute: async () => { 查了 += 1; return [] } }
+    const 结果 = await 补资产状态(db, [{ name: "x", location: "/w/u/p/.opencode/skill/x/SKILL.md" }], "u1")
+    expect(查了).toBe(0)
+    expect(结果).toEqual([{ name: "x", location: "/w/u/p/.opencode/skill/x/SKILL.md" }])
+  })
+
+  test("同 id 出现两次也只查两次（资产 + 通知各一次），两处都被补上", async () => {
+    let 次数 = 0
+    const db = {
+      execute: async () => {
+        次数 += 1
+        return 次数 === 1
+          ? [{ id: "a1", status: "published", owner_id: "u1" }]
+          : [{ asset_id: "a1", body: "描述太笼统" }]
+      },
+    }
+    const 结果 = await 补资产状态(db, [
+      { name: "a", location: "/w/u/p/.opencode/skill/a1/SKILL.md", assetId: "a1" },
+      { name: "b", location: "/w/u/p2/.opencode/skill/a1/SKILL.md", assetId: "a1" },
+    ], "u1")
+    expect(次数).toBe(2) // 不是四条各查一次
+    expect(结果.map((条) => 条.assetStatus)).toEqual(["published", "published"])
+  })
+
+  test("最近一次驳回理由带在条目上；没有通知就不带这个键", async () => {
+    const 列表 = [
+      { name: "a", location: "/w/u/p/.opencode/skill/a1/SKILL.md", assetId: "a1" },
+      { name: "b", location: "/w/u/p/.opencode/skill/a2/SKILL.md", assetId: "a2" },
+    ]
+    const 结果 = await 补资产状态(
+      假库(
+        [{ id: "a1", status: "draft", owner_id: "u1" }, { id: "a2", status: "draft", owner_id: "u1" }],
+        // 倒序返回 ⇒ 第一条就是最近一次
+        [{ asset_id: "a1", body: "第二步缺少校验" }, { asset_id: "a1", body: "更早的那次" }],
+      ),
+      列表,
+      "u1",
+    )
+    expect(结果[0]!.assetRejectReason).toBe("第二步缺少校验")
+    expect(Object.prototype.hasOwnProperty.call(结果[1]!, "assetRejectReason")).toBe(false)
   })
 })
