@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { cp, mkdir, rename, rm, stat } from "node:fs/promises"
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { AssetType, AssetVisibility } from "./metadata"
 
@@ -120,9 +120,83 @@ export function publishDirectory(
   throw new Error(`未知可见范围：${visibilityName}`)
 }
 
+/**
+ * 迭代工作副本在用户沙箱里的落点（2026-11-01 设计 §5）。
+ *
+ * ⚠️ `.openhive/` **不是** `.opencode/`，也不在 `.claude/skills`、`.agents/skills` 里：
+ * 内核的 skill 扫描只看那四个目录（`skill/index.ts:23-25`）。工作副本一旦落进扫描范围，
+ * 就会和项目里指向共享资产的那条链接**同名打架**——后到覆盖，谁赢取决于到达顺序
+ * （`LEARNINGS #010-05`）。所以这一层目录名刻意与它们都不重名。
+ */
+export const ITERATION_ROOT_SEGMENT = ".openhive"
+
+/** 上一级目录名。单独命名是为了让测试与文档引用同一个字面量。 */
+export const ITERATION_DIRECTORY_NAME = "iterations"
+
+/**
+ * 工作副本的路径段：`<userId> <projectId> .openhive iterations <assetId>`。
+ *
+ * 逐段校验（不是拼完再校验）：`assertSafeSegment` 挡 `..`、分隔符、Windows 保留名，
+ * 与资产根那一侧同一条口径。
+ */
+export function iterationWorkspaceSegments(
+  userId: string,
+  projectId: string,
+  assetId: string,
+): readonly string[] {
+  return [
+    assertSafeSegment(userId, "userId"),
+    assertSafeSegment(projectId, "projectId"),
+    ITERATION_ROOT_SEGMENT,
+    ITERATION_DIRECTORY_NAME,
+    assertSafeSegment(assetId, "assetId"),
+  ]
+}
+
+/** 相对**用户沙箱根**的片段（落库用这个，`#010-04`：换根不用搬库）。 */
+export function iterationWorkspaceRelative(userId: string, projectId: string, assetId: string): string {
+  return iterationWorkspaceSegments(userId, projectId, assetId).join("/")
+}
+
+/**
+ * 从库里那一段还原绝对路径，并校验仍在沙箱根**内部**。
+ *
+ * 两个防线缺一不可：写入时逐段校验挡的是「本次请求带进来的坏值」，这里挡的是
+ * 「库里已经存着的坏值」（历史数据 / 手工改库）。库里被改坏时不能把文件写到根外面去。
+ */
+export function iterationWorkspaceDirectory(root: string, relative: string): string {
+  const 段 = relative.split("/")
+  for (const 一段 of 段) assertSafeSegment(一段, "工作副本目录")
+  return assertWithinRoot(root, join(root, ...段), "工作副本目录")
+}
+
 /** 建目录，已存在不报错（重复调用安全）。 */
 export async function ensureDir(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o755 })
+}
+
+/** 目录存在吗。不存在是正常态（第一次发起迭代），不抛错。 */
+export async function directoryExists(directory: string): Promise<boolean> {
+  const info = await statOrNull(directory)
+  return info?.isDirectory() === true
+}
+
+/**
+ * 目录里有「实质内容」吗：至少有一个非空子目录、或一个文件。
+ *
+ * 为什么不用 `readdir().length > 0`：`copyDirectory` 会连空子目录一起搬，一个只剩
+ * `references/`（空）的 pending 目录读起来「有东西」，发布出来却是个空壳 skill。
+ * 递归判到第一个文件为止——skill 目录都很小，不做缓存。
+ */
+export async function hasPendingContent(directory: string): Promise<boolean> {
+  const info = await statOrNull(directory)
+  if (info?.isDirectory() !== true) return false
+
+  for (const 条目 of await readdir(directory, { withFileTypes: true })) {
+    if (条目.isFile()) return true
+    if (条目.isDirectory() && (await hasPendingContent(join(directory, 条目.name)))) return true
+  }
+  return false
 }
 
 /**

@@ -12,7 +12,12 @@ import {
   assertWithinRoot,
   commitStagedDirectory,
   copyDirectory,
+  directoryExists,
   ensureDir,
+  hasPendingContent,
+  iterationWorkspaceDirectory,
+  iterationWorkspaceRelative,
+  iterationWorkspaceSegments,
   moveDirectory,
   pendingDirectory,
   publishDirectory,
@@ -375,5 +380,62 @@ describe("目录删除与根路径校验（T003）", () => {
     expect(() => assertWithinRoot(root, join(root, "pending", "asset_1"))).not.toThrow()
     expect(() => assertWithinRoot(root, `${root}-evil`)).toThrow("不在资产根")
     expect(() => assertWithinRoot(root, join(root, "pending", "..", "..", "escape"))).toThrow("不在资产根")
+  })
+})
+
+describe("迭代工作副本路径（2026-11-01）", () => {
+  test("相对片段是 <userId>/<projectId>/.openhive/iterations/<assetId>", () => {
+    expect(iterationWorkspaceRelative("u1", "p1", "asset_1")).toBe("u1/p1/.openhive/iterations/asset_1")
+  })
+
+  test("绝对路径落在沙箱根内，且与相对片段一一对应", () => {
+    const root = join(tmpdir(), "openhive-ws-绝对路径")
+    const 相对 = iterationWorkspaceRelative("u1", "p1", "asset_1")
+    expect(iterationWorkspaceDirectory(root, 相对)).toBe(join(root, "u1", "p1", ".openhive", "iterations", "asset_1"))
+  })
+
+  test("路径段带 .. / 分隔符 / 空串 ⇒ 拒（挡住逃出沙箱）", () => {
+    expect(() => iterationWorkspaceSegments("u1", "..", "asset_1")).toThrow(/非法projectId/)
+    expect(() => iterationWorkspaceSegments("u1", "p1/../p2", "asset_1")).toThrow(/非法projectId/)
+    expect(() => iterationWorkspaceSegments("", "p1", "asset_1")).toThrow(/非法userId/)
+    expect(() => iterationWorkspaceSegments("u1", "p1", "a\\b")).toThrow(/非法assetId/)
+  })
+
+  test("库里那一段被改坏（.. 越界）⇒ 读回时也拒，不只靠写入时把关", () => {
+    const root = join(tmpdir(), "openhive-ws-越界")
+    expect(() => iterationWorkspaceDirectory(root, "u1/../../etc")).toThrow(/非法工作副本目录/)
+    expect(() => iterationWorkspaceDirectory(root, "u1")).not.toThrow()
+  })
+
+  test("directoryExists：有目录 true、没有 false", async () => {
+    const root = join(tmpdir(), `openhive-storage-${randomUUID()}`)
+    try {
+      expect(await directoryExists(join(root, "nope"))).toBe(false)
+      await mkdir(join(root, "here"), { recursive: true })
+      expect(await directoryExists(join(root, "here"))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hasPendingContent：不存在 false、空目录 false、只有空子目录 false、有文件 true", async () => {
+    const root = join(tmpdir(), `openhive-storage-${randomUUID()}`)
+    try {
+      expect(await hasPendingContent(join(root, "missing"))).toBe(false)
+
+      await mkdir(join(root, "empty"), { recursive: true })
+      expect(await hasPendingContent(join(root, "empty"))).toBe(false)
+
+      // 只有空子目录也算「没东西」：`copyDirectory` 会把源目录整个搬过来，
+      // 里面一个文件都没有时搬过去等于搬了个空壳，发布出来是空的 skill。
+      await mkdir(join(root, "hollow", "references"), { recursive: true })
+      expect(await hasPendingContent(join(root, "hollow"))).toBe(false)
+
+      await mkdir(join(root, "real"), { recursive: true })
+      await writeFile(join(root, "real", "SKILL.md"), "v2")
+      expect(await hasPendingContent(join(root, "real"))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
