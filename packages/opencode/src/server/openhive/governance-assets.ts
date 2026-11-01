@@ -111,14 +111,20 @@ export const PATH = {
 const BATCH_LIMIT = 100
 
 /**
- * 治理后台能执行的动作：业务审核两道关 ＋ 技术发布 ＋ 上下架 ＋ 归档。
- * `submit_review` / `start_iteration` 归作者，**不在**这里（见文件头）。
+ * 治理后台能执行的动作：业务审核两道关 ＋ 技术发布 ＋ 上下架 ＋ 归档，
+ * 以及**放弃迭代**（系统管理员兜底）。
+ *
+ * `abort_iteration` 的 `actors` 本来就写了 `system_admin`（作者离职后不能永久卡在 iterating），
+ * 但白名单不收它时那条兜底**不可达**。业务规则不改，只把门打开。
+ *
+ * `submit_review` / `start_iteration` / `submit_iteration` 归作者，**不在**这里（见文件头）。
  */
 export const GOVERNANCE_ACTIONS = [
   "approve_business",
   "reject_business",
   "publish_tech",
   "publish_iteration",
+  "abort_iteration",
   "take_offline",
   "bring_online",
   "archive",
@@ -391,6 +397,10 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
             action: 动,
             viewer,
             grants,
+            // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）：`abort_iteration` 要
+            // 按库里那一段还原工作副本路径（`迭代目标()` 缺它会当编码错误直接炸 ⇒ 500）。
+            // 其余治理动作不碰工作副本，多传一个值无副作用。
+            workspaceRoot: workspaceRoot(process.env),
             ...(reason === undefined ? {} : { reason }),
             ...(范围 === undefined ? {} : { visibility: 范围 }),
           }),
@@ -530,8 +540,13 @@ function 治理动作(value: string): GovernanceAction | undefined {
   return GOVERNANCE_ACTIONS.find((action) => action === value)
 }
 
-/** 作者在编辑器里做的动作（出口只用来把它们与拼错的动作区分开，不执行）。 */
-const AUTHOR_ACTIONS: ReadonlySet<string> = new Set(["submit_review", "start_iteration"])
+/**
+ * 作者在编辑器里做的动作（出口只用来把它们与拼错的动作区分开，不执行）。
+ *
+ * 版本迭代（2026-11-01）：`submit_iteration` 同属作者；漏了它会落进「未知生命周期动作」，
+ * 同一个前提（治理台不替作者提交）在不同动作上给出两种解释。
+ */
+const AUTHOR_ACTIONS: ReadonlySet<string> = new Set(["submit_review", "start_iteration", "submit_iteration"])
 
 function 作者动作(value: string): boolean {
   return AUTHOR_ACTIONS.has(value)
@@ -604,6 +619,10 @@ export function 映射错误(
       case "source_directory_required":
       case "personal_asset_not_shared":
       case "department_missing":
+      // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）：`publish_iteration` 的前置
+      // 判据（作者还没提交 / pending 被 abort 删了）。缺这条 case 会落到下面的 `undefined`
+      // ⇒ 出口 `Effect.die` ⇒ 500 且不落审计（Task 3 复审挂账）。
+      case "iteration_not_submitted":
         return { status: CONFLICT, message: error.message }
     }
   }

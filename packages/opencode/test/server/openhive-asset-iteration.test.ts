@@ -1,0 +1,438 @@
+import { afterAll, beforeAll, describe, expect } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { sql } from "drizzle-orm"
+import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { HttpRouter } from "effect/unstable/http"
+import { assetById, insertAsset } from "@opencode-ai/asset-service/asset"
+import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import { migrate } from "@opencode-ai/auth/migrate"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
+import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { UserIdentity } from "../../src/server/user-identity"
+import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { testEffect } from "../lib/effect"
+
+/**
+ * 迭代出口（2026-11-01，设计 §6）：`POST /openhive/assets/:id/iteration[/submit|/abort]`。
+ *
+ * 三条判据在这里钉死：
+ * 1. **授权在读体之前**（`LEARNINGS #004-09`）：非作者递畸形 JSON 也拿 403，不是 400；
+ * 2. 别人的 `projectId` ⇒ 400，且**一个目录都没建**（不给人「这个项目 id 存在吗」的探针）；
+ * 3. 状态不对 ⇒ 409，元数据一个字不动。
+ *
+ * ⚠️ 与 `openhive-asset-content.test.ts` 逐行对齐 app 构造方式（同一个出口，改路由要一起跑）：
+ * 身份靠 `OPENHIVE_REQUIRE_USER_ID=1` ＋ `AUTH_JWT_SECRET`，`handler` 要带 `HttpApiApp.context`。
+ *
+ * ⚠️ 每条用例用**不同的调用者 / 资产**：`沙箱根/<userId>` 是跨用例共享的磁盘事实，
+ * 用同一个 id 断言「没有建目录」会被前一条用例建出来的目录打成假红（`#005-34`）。
+ */
+
+const it = testEffect(Layer.empty)
+const SECRET = "i1t2e3r4a5t6i7o8n9t0e1s2t3s4e5c6r7e8t9"
+
+const 我: TokenSubject = { id: "u-iter-me", policeNo: "950001", name: "甲作者", isAdmin: false }
+const 同事: TokenSubject = { id: "u-iter-mate", policeNo: "950002", name: "乙同事", isAdmin: false }
+/** 以下三个各供一条**失败面**用例：断言它自己的沙箱目录不存在，互不干扰。 */
+const 外人: TokenSubject = { id: "u-iter-foreign", policeNo: "950003", name: "丙外人", isAdmin: false }
+const 空说明: TokenSubject = { id: "u-iter-empty", policeNo: "950004", name: "丁空说明", isAdmin: false }
+const 草稿主: TokenSubject = { id: "u-iter-draft", policeNo: "950005", name: "戊草稿", isAdmin: false }
+
+const 我的项目 = "p-iter-mine"
+const 同事的项目 = "p-iter-mate"
+
+const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "ownerId" | "ownerName" | "status">): AssetMetadata => ({
+  type: "skill",
+  description: "测试用资产",
+  summary: "",
+  precautions: "",
+  icon: "skill",
+  category: "intelligence",
+  tags: ["测试"],
+  department: "经侦支队",
+  visibility: "global",
+  version: 2,
+  favoriteCount: 0,
+  usageCount: 0,
+  rating: 0,
+  ratingCount: 0,
+  feedbackCount: 0,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  publishedAt: 1_500,
+  archivedAt: null,
+  iterationNote: "",
+  iterationWorkspace: null,
+  ...over,
+})
+
+const IDS = {
+  start: "asset-iter-start",
+  badJson: "asset-iter-badjson",
+  foreign: "asset-iter-foreign",
+  draft: "asset-iter-draft",
+  emptyNote: "asset-iter-empty-note",
+  submitOk: "asset-iter-submit-ok",
+  submitMissing: "asset-iter-submit-missing",
+  abort: "asset-iter-abort",
+  mateAbort: "asset-iter-mate-abort",
+} as const
+
+const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
+const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-iter-ws-"))
+const restoreAssetsRoot = restorePoint({ OPENHIVE_ASSETS_ROOT: 资产根 })
+const restoreWorkspaceRoot = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+/** PGlite 夹具把多条连接汇进同一个 PG 会话，`bun-sql` 的语句缓存是连接级的（同治理测试）。 */
+const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
+
+afterAll(restoreAssetsRoot)
+afterAll(restoreWorkspaceRoot)
+afterAll(restoreDefaultPassword)
+afterAll(restorePoolMax)
+afterAll(() => rmSync(资产根, { recursive: true, force: true }))
+afterAll(() => rmSync(沙箱根, { recursive: true, force: true }))
+
+/** 共享根里造一份「线上已发布」的 skill。 */
+function 造线上(id: string) {
+  const directory = join(资产根, "global", "skills", id)
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, "SKILL.md"), "v1", "utf8")
+}
+
+/** 工作副本（迭代中作者手里那份）。 */
+function 造工作副本(id: string) {
+  const directory = join(沙箱根, 我.id, 我的项目, ".openhive", "iterations", id)
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, "SKILL.md"), "v2", "utf8")
+  return directory
+}
+
+const 工作副本相对 = (id: string) => `${我.id}/${我的项目}/.openhive/iterations/${id}`
+const 工作副本绝对 = (id: string) => join(沙箱根, 我.id, 我的项目, ".openhive", "iterations", id)
+
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+
+  for (const subject of [我, 同事, 外人, 空说明, 草稿主]) {
+    await pg.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室',
+              ${1}, ${subject.isAdmin ? 1 : 0}, 'h', 0)
+    `)
+  }
+  await pg.db.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${我的项目}, ${我.id}, 'owner', 0),
+           (${我的项目}, ${空说明.id}, 'member', 0),
+           (${我的项目}, ${草稿主.id}, 'member', 0),
+           (${同事的项目}, ${同事.id}, 'owner', 0)
+  `)
+
+  // 成功面 / 失败面各用独立夹具，杜绝执行顺序依赖。
+  await insertAsset(pg.db, 资产({ id: IDS.start, name: "发起成功", ownerId: 我.id, ownerName: 我.name, status: "published" }))
+  造线上(IDS.start)
+
+  await insertAsset(pg.db, 资产({ id: IDS.badJson, name: "畸形体", ownerId: 我.id, ownerName: 我.name, status: "published" }))
+
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.foreign, name: "他人项目", ownerId: 外人.id, ownerName: 外人.name, status: "published" }),
+  )
+  造线上(IDS.foreign)
+
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.draft,
+      name: "草稿不能迭代",
+      ownerId: 草稿主.id,
+      ownerName: 草稿主.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.emptyNote, name: "空说明", ownerId: 空说明.id, ownerName: 空说明.name, status: "published" }),
+  )
+  造线上(IDS.emptyNote)
+
+  // 迭代中、工作副本在位：提交应成功。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.submitOk,
+      name: "可提交",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "iterating",
+      version: 3,
+      iterationNote: "补一条统计口径",
+      iterationWorkspace: 工作副本相对(IDS.submitOk),
+    }),
+  )
+  造工作副本(IDS.submitOk)
+
+  // 迭代中、但工作副本不存在：提交必须 409，且不落半截 pending。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.submitMissing,
+      name: "工作副本没了",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "iterating",
+      version: 3,
+      iterationNote: "补一条统计口径",
+      iterationWorkspace: 工作副本相对(IDS.submitMissing),
+    }),
+  )
+
+  // 迭代中、pending 已有内容：放弃应删掉它。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.abort,
+      name: "可放弃",
+      ownerId: 我.id,
+      ownerName: 我.name,
+      status: "iterating",
+      version: 3,
+      iterationNote: "补一条统计口径",
+      iterationWorkspace: 工作副本相对(IDS.abort),
+    }),
+  )
+  造工作副本(IDS.abort)
+  mkdirSync(join(资产根, "pending", IDS.abort), { recursive: true })
+  writeFileSync(join(资产根, "pending", IDS.abort, "SKILL.md"), "v2", "utf8")
+
+  // 别人（同事）的迭代中资产：非作者放弃必须 403。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.mateAbort,
+      name: "别人的迭代",
+      ownerId: 同事.id,
+      ownerName: 同事.name,
+      status: "iterating",
+      version: 3,
+      iterationWorkspace: `${同事.id}/${同事的项目}/.openhive/iterations/${IDS.mateAbort}`,
+    }),
+  )
+})
+
+const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
+
+function realApp(env: Record<string, string | undefined>) {
+  const handler = HttpRouter.toWebHandler(
+    HttpApiApp.routes.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env)))),
+    { disableLogger: true },
+  ).handler
+  return (url: string, init?: RequestInit) =>
+    Effect.promise(() => Promise.resolve(handler(new Request(new URL(url, "http://localhost"), init), HttpApiApp.context)))
+}
+
+const openApp = realApp(OPEN)
+const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject, SECRET))
+
+const 发 = (subject: TokenSubject | null, url: string, init: RequestInit = {}) =>
+  Effect.gen(function* () {
+    const headers = new Headers(init.headers)
+    if (subject) headers.set("Cookie", `${UserIdentity.COOKIE_NAME}=${yield* token(subject)}`)
+    return yield* openApp(url, { ...init, headers })
+  })
+
+const 发起 = (subject: TokenSubject | null, assetId: string, body: unknown) =>
+  发(subject, `/openhive/assets/${assetId}/iteration`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  })
+
+const 提交 = (subject: TokenSubject | null, assetId: string) =>
+  发(subject, `/openhive/assets/${assetId}/iteration/submit`, { method: "POST" })
+
+const 放弃 = (subject: TokenSubject | null, assetId: string) =>
+  发(subject, `/openhive/assets/${assetId}/iteration/abort`, { method: "POST" })
+
+const 读错误 = (response: Response) =>
+  Effect.gen(function* () {
+    const 体 = Schema.decodeUnknownSync(Schema.Struct({ error: Schema.String }))(
+      JSON.parse(yield* Effect.promise(() => response.text())),
+    )
+    return 体.error
+  })
+
+const 回包 = Schema.Struct({
+  assetId: Schema.String,
+  status: Schema.String,
+  version: Schema.Number,
+  workspace: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
+const 读行 = (id: string) => Effect.promise(() => assetById(pg!.db, id))
+
+describe("迭代出口 · 成功面", () => {
+  it.live("作者发起 ⇒ 200，回带绝对 workspace，库里落说明与路径，线上那份不动", () =>
+    Effect.gen(function* () {
+      const response = yield* 发起(我, IDS.start, { note: "补一条统计口径", projectId: 我的项目 })
+      expect(response.status).toBe(200)
+
+      const 体 = Schema.decodeUnknownSync(回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      expect(体.assetId).toBe(IDS.start)
+      expect(体.status).toBe("iterating")
+      expect(体.version).toBe(3)
+      // 前端要把这个路径塞进给 AI 的指令里：必须是平台原生绝对路径（win32 反斜杠）。
+      expect(体.workspace).toBe(工作副本绝对(IDS.start))
+      expect(existsSync(工作副本绝对(IDS.start))).toBe(true)
+      expect(existsSync(join(资产根, "global", "skills", IDS.start, "SKILL.md"))).toBe(true)
+
+      const 行 = yield* 读行(IDS.start)
+      expect(行?.iterationNote).toBe("补一条统计口径")
+      // 落库的是**相对沙箱根**那一段（`#010-04`：换根不用搬库）。
+      expect(行?.iterationWorkspace).toBe(工作副本相对(IDS.start))
+    }),
+  )
+
+  it.live("作者提交 ⇒ 200，工作副本进 pending，版本不变（发起时已经 +1）", () =>
+    Effect.gen(function* () {
+      const response = yield* 提交(我, IDS.submitOk)
+      expect(response.status).toBe(200)
+
+      const 体 = Schema.decodeUnknownSync(回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      expect(体.assetId).toBe(IDS.submitOk)
+      expect(体.status).toBe("iterating")
+      expect(体.version).toBe(3)
+      // 提交不改变工作副本指向：它还在作者手里。
+      expect(体.workspace).toBe(工作副本绝对(IDS.submitOk))
+
+      expect(existsSync(join(资产根, "pending", IDS.submitOk, "SKILL.md"))).toBe(true)
+      expect((yield* 读行(IDS.submitOk))?.status).toBe("iterating")
+    }),
+  )
+
+  it.live("作者放弃 ⇒ 200，回到 published、版本回退、两列清空、pending 目录删除", () =>
+    Effect.gen(function* () {
+      const response = yield* 放弃(我, IDS.abort)
+      expect(response.status).toBe(200)
+
+      const 体 = Schema.decodeUnknownSync(回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      expect(体.assetId).toBe(IDS.abort)
+      expect(体.status).toBe("published")
+      expect(体.version).toBe(2)
+      // 放弃后没有工作副本可指——回 `null` 而不是编一个路径。
+      expect(体.workspace).toBeNull()
+
+      const 行 = yield* 读行(IDS.abort)
+      expect(行?.status).toBe("published")
+      expect(行?.version).toBe(2)
+      expect(行?.iterationNote).toBe("")
+      expect(行?.iterationWorkspace).toBeNull()
+      expect(existsSync(join(资产根, "pending", IDS.abort))).toBe(false)
+    }),
+  )
+})
+
+describe("迭代出口 · 失败面", () => {
+  it.live("无凭证 ⇒ 401", () =>
+    Effect.gen(function* () {
+      for (const 请求 of [发起(null, IDS.badJson, { note: "x", projectId: 我的项目 }), 提交(null, IDS.submitOk), 放弃(null, IDS.mateAbort)]) {
+        expect((yield* 请求).status).toBe(401)
+      }
+    }),
+  )
+
+  it.live("非作者发起 ⇒ 403，且请求体根本没被读（畸形 JSON 也是 403，不是 400）", () =>
+    Effect.gen(function* () {
+      const response = yield* 发起(同事, IDS.badJson, "{ 这不是 JSON")
+      // 403 不是 400：门在副作用（解析请求体）之前。若返回 400，说明有人把读体挪到了授权前面。
+      expect(response.status).toBe(403)
+      expect((yield* 读错误(response))).toContain("不能执行")
+      expect((yield* 读行(IDS.badJson))?.status).toBe("published")
+      // 授权在流转 + 建目录之前：这个人的沙箱里不该出现任何东西。
+      expect(existsSync(join(沙箱根, 同事.id))).toBe(false)
+    }),
+  )
+
+  it.live("非作者提交 / 放弃别人的迭代 ⇒ 403，状态与目录零副作用", () =>
+    Effect.gen(function* () {
+      const 提交响应 = yield* 提交(同事, IDS.submitOk)
+      expect(提交响应.status).toBe(403)
+      expect((yield* 读错误(提交响应))).toContain("不能执行")
+
+      const 放弃响应 = yield* 放弃(我, IDS.mateAbort)
+      expect(放弃响应.status).toBe(403)
+
+      expect((yield* 读行(IDS.mateAbort))?.status).toBe("iterating")
+      expect((yield* 读行(IDS.mateAbort))?.version).toBe(3)
+    }),
+  )
+
+  it.live("别人的 projectId ⇒ 400，且没有建出任何目录（不是 404 探针）", () =>
+    Effect.gen(function* () {
+      // 同事的项目里没有外人的成员行；p-missing 更不存在。两者都必须是 400。
+      for (const projectId of [同事的项目, "p-iter-missing"]) {
+        const response = yield* 发起(外人, IDS.foreign, { note: "补一条口径", projectId })
+        expect(response.status).toBe(400)
+        expect((yield* 读错误(response))).toContain("不属于你")
+      }
+      expect(existsSync(join(沙箱根, 外人.id))).toBe(false)
+      expect((yield* 读行(IDS.foreign))?.status).toBe("published")
+    }),
+  )
+
+  it.live("note 缺失 / 非字符串 / 空白 ⇒ 400，元数据未变、目录未建", () =>
+    Effect.gen(function* () {
+      const 缺 = yield* 发起(空说明, IDS.emptyNote, { projectId: 我的项目 })
+      expect(缺.status).toBe(400)
+      expect((yield* 读错误(缺))).toContain("note")
+
+      const 类型错 = yield* 发起(空说明, IDS.emptyNote, { note: 123, projectId: 我的项目 })
+      expect(类型错.status).toBe(400)
+      expect((yield* 读错误(类型错))).toContain("note")
+
+      // 空白说明是**服务层**的 `reason_required`（start_iteration 必填变更说明）⇒ 出口翻 400。
+      const 空白 = yield* 发起(空说明, IDS.emptyNote, { note: "   ", projectId: 我的项目 })
+      expect(空白.status).toBe(400)
+      expect((yield* 读错误(空白))).toContain("变更说明")
+
+      expect((yield* 读行(IDS.emptyNote))?.status).toBe("published")
+      expect(existsSync(join(沙箱根, 空说明.id))).toBe(false)
+    }),
+  )
+
+  it.live("状态不对（草稿不能发起迭代）⇒ 409，元数据未变、目录未建", () =>
+    Effect.gen(function* () {
+      const response = yield* 发起(草稿主, IDS.draft, { note: "补一条口径", projectId: 我的项目 })
+      expect(response.status).toBe(409)
+
+      const 行 = yield* 读行(IDS.draft)
+      expect(行?.status).toBe("draft")
+      expect(行?.version).toBe(1)
+      expect(行?.iterationNote).toBe("")
+      expect(行?.iterationWorkspace).toBeNull()
+      expect(existsSync(join(沙箱根, 草稿主.id))).toBe(false)
+    }),
+  )
+
+  it.live("提交时工作副本不存在 ⇒ 409，状态不回退、pending 不落半截", () =>
+    Effect.gen(function* () {
+      const response = yield* 提交(我, IDS.submitMissing)
+      expect(response.status).toBe(409)
+      expect((yield* 读错误(response))).toContain("工作副本不存在")
+
+      expect((yield* 读行(IDS.submitMissing))?.status).toBe("iterating")
+      expect((yield* 读行(IDS.submitMissing))?.version).toBe(3)
+      expect(existsSync(join(资产根, "pending", IDS.submitMissing))).toBe(false)
+    }),
+  )
+})

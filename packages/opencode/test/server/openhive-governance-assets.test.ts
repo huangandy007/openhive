@@ -715,3 +715,87 @@ describe("T007 · 动作收窄与错误翻译", () => {
     }),
   )
 })
+
+/**
+ * 版本迭代（2026-11-01）：治理台的**技术关**只做两件事——
+ * 发布作者提交的新版本，以及在作者不在时放弃那一次迭代。
+ *
+ * 两条用例各自钉一个「可达性」问题：
+ * 1. `iteration_not_submitted` 没有 HTTP 映射时会走 `Effect.die` ⇒ 500 且**不落审计**；
+ * 2. `abort_iteration` 声明了 `system_admin`，但白名单不收它时那条兜底**根本走不到**。
+ */
+describe("T009 · 迭代的发布与放弃（治理台）", () => {
+  it.live("作者还没提交新版本 ⇒ 发布回 409（不是 500），且落一行 failed/409 审计", () =>
+    Effect.gen(function* () {
+      const id = "asset-iter-nopending-0001"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({
+            id,
+            name: "还没提交的迭代",
+            status: "iterating",
+            version: 3,
+            updatedAt: 1_100,
+            iterationNote: "补一条口径",
+            iterationWorkspace: `u-iter-nopending/p1/.openhive/iterations/${id}`,
+          }),
+        ),
+      )
+      // pending/ 不存在 / 为空：发布必须被前置判据拦下。
+      const response = yield* post(ADMIN, transitionUrl(id), { action: "publish_iteration" })
+
+      expect(response.status).toBe(409)
+      expect((yield* json(ErrorResponse, response)).error).toContain("还没有提交")
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("iterating")
+
+      // 409 走过 `失败()`，它写审计；500 走 `Effect.die`，什么都不留——这正是 Task 3 挂的那笔账。
+      const 审计行 = yield* Effect.promise(() =>
+        db.execute(
+          sql`select result, detail::jsonb->>'status' as status from auth.audit_event where target_id = ${id} order by id desc limit 1`,
+        ),
+      )
+      const [审计] = rowsOf(审计行)
+      expect(String(审计?.result)).toBe("failed")
+      expect(String(审计?.status)).toBe("409")
+    }),
+  )
+
+  it.live("系统管理员放弃别人的迭代 ⇒ 200，版本回退、pending 删除（作者离职的兜底可达）", () =>
+    Effect.gen(function* () {
+      const id = "asset-iter-admin-abort-0001"
+      if (!pg) throw new Error("真库没起来")
+      const db = pg.db
+      // 作者是 OFFICER，管理员不是它的属主：走的是 `system_admin` 角色，不是作者身份。
+      yield* Effect.promise(() =>
+        insertAsset(
+          db,
+          资产({
+            id,
+            name: "作者已离职的迭代",
+            status: "iterating",
+            version: 3,
+            updatedAt: 1_100,
+            ownerId: OFFICER.id,
+            ownerName: OFFICER.name,
+            iterationNote: "补一条口径",
+            iterationWorkspace: `${OFFICER.id}/p1/.openhive/iterations/${id}`,
+          }),
+        ),
+      )
+      造目录(join(ASSETS_ROOT, "pending", id))
+
+      const response = yield* post(ADMIN, transitionUrl(id), { action: "abort_iteration" })
+
+      expect(response.status).toBe(200)
+      const 体 = yield* json(TransitionResponse, response)
+      expect(体.asset.status).toBe("published")
+      expect(体.asset.version).toBe(2)
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("published")
+      // `discard_pending`：pending 是临时区，放弃就删掉。
+      expect(有文件(join(ASSETS_ROOT, "pending", id))).toBe(false)
+    }),
+  )
+})
