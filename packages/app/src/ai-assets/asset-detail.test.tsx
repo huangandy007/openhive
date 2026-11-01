@@ -69,6 +69,15 @@ const 标签 = (host: HTMLElement, id: string) =>
   host.querySelector<HTMLButtonElement>(`[data-slot="asset-detail-tab"][data-tab="${id}"]`)!
 const 面板 = (host: HTMLElement) => 槽(host, "asset-detail-panel")
 
+/** 等一个条件成立（Kobalte 的 Portal 是异步挂上的，同步断言会撞空节点）。 */
+async function 等到(条件: () => boolean, 超时ms = 1_000): Promise<void> {
+  const 起 = Date.now()
+  while (!条件()) {
+    if (Date.now() - 起 > 超时ms) throw new Error("等待超时")
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
 describe("资产详情头部", () => {
   test("名称、空间/状态徽章、作者、收藏都来自元数据", () => {
     const { host, 卸 } = 挂({
@@ -1103,6 +1112,340 @@ describe("AI 起草与填入（2026-10-31）", () => {
       expect(保存次数).toBe(0)
       // 不点保存就还在编辑态。
       expect(槽(host, "asset-detail-editor") === null).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+})
+
+/**
+ * 版本迭代（2026-11-01，设计 §7 / §10 风险 1）。
+ *
+ * 三态按 `status` + `canWrite` 分，判据不是「我是不是作者」——作者身份只有服务端知道，
+ * 前端有的是 `canWrite`（服务端逐行给）。多画的按钮由服务端 `actor_not_allowed` 挡住。
+ *
+ * ⚠️ 弹窗在 Kobalte 的 Portal 里：它挂在 `document.body`，**不在 `host`**。
+ * 所以框里的节点一律用 `document.querySelector` 找；「关没关」读 `data-expanded` 而不是
+ * 「节点在不在」（`#005-29`：happy-dom 里退场动画不跑，节点会一直留着）。
+ */
+describe("版本迭代（2026-11-01）", () => {
+  const 弹窗 = () => document.querySelector<HTMLElement>("[data-slot='asset-iteration-dialog']")
+  const 弹窗开着 = () => 弹窗()?.hasAttribute("data-expanded") === true
+  // `TextareaV2` 把自己的 `data-slot` 写在 props 之后，会盖掉调用方传的那个；按 `name` 找
+  // （同 `governance/asset-governance.test.tsx` 的写法）。
+  const 说明框 = () => document.querySelector<HTMLTextAreaElement>("textarea[name='asset-iteration-note']")
+  const 开弹窗 = async (host: HTMLElement) => {
+    槽(host, "asset-detail-start-iteration")!.click()
+    await 等到(弹窗开着)
+  }
+  const 填说明 = (值: string) => {
+    const 框 = 说明框()!
+    框.value = 值
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+  const 点确认 = () => document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-confirm']")!.click()
+  const 点取消 = () => document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-cancel']")!.click()
+
+  afterEach(() => {
+    订阅会话输入(undefined)
+  })
+
+  test("published + canWrite ⇒ 出现「发起新版本」，还没发起时没有迭代提示", () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      { canWrite: true, onStartIteration: async () => ({ ok: true as const }) },
+    )
+    try {
+      标签(host, "versions").click()
+      expect(槽(host, "asset-detail-start-iteration")?.textContent).toBe("发起新版本")
+      expect(槽(host, "asset-detail-iteration-hint") === null).toBe(true)
+      // 没发起过 ⇒ 还是空态，不是空白。
+      expect(文本(host, "asset-detail-changelog-empty")).toBe("暂无变更说明。")
+    } finally {
+      卸()
+    }
+  })
+
+  test("published 但不可写 ⇒ 没有「发起新版本」（没接线就不渲染）", () => {
+    const { host, 卸 } = 挂({ status: "published", version: 2 })
+    try {
+      标签(host, "versions").click()
+      expect(槽(host, "asset-detail-start-iteration") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("published 且接线齐全、但服务端说不可写 ⇒ 没有「发起新版本」", () => {
+    // 判据是 `canWrite`（服务端授权），不是「有没有接线」：只按 `onStart` 是否存在画按钮，
+    // 等于把权限判断交给前端——点了才 403，用户白填一遍说明。
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      { canWrite: false, onStartIteration: async () => ({ ok: true as const }) },
+    )
+    try {
+      标签(host, "versions").click()
+      expect(槽(host, "asset-detail-start-iteration") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("iterating + 可写 ⇒ 两个按钮，文案写明线上仍是上一版，并显示变更说明", () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3, iterationNote: "补一条统计口径" },
+      { canWrite: true, onSubmitIteration: async () => true, onAbortIteration: async () => true },
+    )
+    try {
+      标签(host, "versions").click()
+      expect(文本(host, "asset-detail-iteration-hint")).toBe("v3 迭代中（线上仍是 v2）")
+      expect(文本(host, "asset-detail-iteration-note")).toBe("补一条统计口径")
+      expect(槽(host, "asset-detail-submit-iteration")?.textContent).toBe("提交新版本")
+      expect(槽(host, "asset-detail-abort-iteration")?.textContent).toBe("放弃迭代")
+      expect(槽(host, "asset-detail-start-iteration") === null).toBe(true)
+      // 没有在飞的操作 ⇒ 两个按钮都不该禁用（别让默认值满足断言）。
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')?.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-abort-iteration"]')?.disabled).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("iterating 但不可写 ⇒ 只读提示，一个按钮都没有", () => {
+    const { host, 卸 } = 挂({ status: "iterating", version: 3, iterationNote: "补一条统计口径" })
+    try {
+      标签(host, "versions").click()
+      expect(文本(host, "asset-detail-iteration-hint")).toBe("v3 迭代中（作者正在修订，线上仍是 v2）")
+      expect(槽(host, "asset-detail-submit-iteration") === null).toBe(true)
+      expect(槽(host, "asset-detail-abort-iteration") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("发起成功后把工作副本路径经跨栏传送带替换进右栏", async () => {
+    const 收到: Array<{ 文本: string; 方式: string }> = []
+    订阅会话输入((文本, 方式) => 收到.push({ 文本, 方式 }))
+
+    const 发起 = async () => ({ ok: true as const, workspace: "D:/ws/u1/p1/.openhive/iterations/asset-1" })
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2, name: "资金流向研判" },
+      {
+        canWrite: true,
+        onStartIteration: 发起,
+        projects: [{ id: "p1", name: "8·17专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      填说明("补一条统计口径")
+      点确认()
+
+      await 等到(() => 收到.length === 1)
+      expect(收到[0]?.方式).toBe("替换")
+      expect(收到[0]?.文本).toContain("资金流向研判")
+      // 工作副本是**发起时线上那一版**（version 2）。写成 `asset.version - 1` 会在这里说 v1。
+      expect(收到[0]?.文本).toContain("v2")
+      expect(收到[0]?.文本).toContain("D:/ws/u1/p1/.openhive/iterations/asset-1")
+    } finally {
+      卸()
+    }
+  })
+
+  test("变更说明为空时确认按钮禁用（服务端也会 400，但不该让用户先撞一次）", async () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      const 确认 = document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-confirm']")!
+      expect(确认.disabled).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("发起失败 ⇒ 弹窗不关，错误留在框里", async () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: false as const, message: "资产不在可迭代状态" }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      填说明("补一条口径")
+      点确认()
+      await 等到(() => document.querySelector("[data-slot='asset-iteration-error']") !== null)
+      expect(document.querySelector("[data-slot='asset-iteration-error']")?.textContent).toBe(
+        "资产不在可迭代状态",
+      )
+      // 节点在不在不足以说明「还开着」（`#005-29`）——要读状态属性。
+      expect(弹窗开着()).toBe(true)
+      // 页面级那条错误是另一个信号，失败时不该沾上。
+      expect(槽(host, "asset-detail-iteration-error") === null).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
+  test("发起成功但服务端没给 workspace ⇒ 右栏一条都没收到，页面上明确说没返回路径", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => 收到.push(文本))
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const }),
+        projects: [{ id: "p1", name: "8·17专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      填说明("补一条口径")
+      点确认()
+
+      // ⚠️ 不编路径、也不往右栏塞半句：右栏凭空多一句「去 .openhive/iterations 找」是误导。
+      await 等到(() => 槽(host, "asset-detail-iteration-error") !== null)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(收到.length).toBe(0)
+      const 提示 = 文本(host, "asset-detail-iteration-error")
+      expect(提示).toContain("已在你的项目里创建副本")
+      expect(提示).toContain("没有返回路径")
+      // 弹窗照常关掉（发起本身是成功的）。
+      expect(弹窗开着()).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("iterating 且服务端说这个资产正在跑 ⇒ 两个按钮禁用，且 id 没被当文案渲染", () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3, iterationNote: "补一条口径", iterationWorkspace: null },
+      {
+        canWrite: true,
+        onSubmitIteration: async () => true,
+        onAbortIteration: async () => true,
+        iterationBusy: true,
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      // `iterationBusy` 是「正在跑的是不是这个资产」，只用来禁用；界面文案自己按状态拼。
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-abort-iteration"]')?.disabled).toBe(true)
+      expect(host.textContent?.includes("asset-1")).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("iterating 且工作副本路径为空、没有在飞 ⇒ 提交 / 放弃照常可点（不拿 workspace 当门）", () => {
+    const { host, 卸 } = 挂(
+      { status: "iterating", version: 3, iterationNote: "补一条口径", iterationWorkspace: null },
+      { canWrite: true, onSubmitIteration: async () => true, onAbortIteration: async () => true },
+    )
+    try {
+      标签(host, "versions").click()
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-submit-iteration"]')?.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-abort-iteration"]')?.disabled).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  test("弹窗明写再次发起会覆盖项目里的副本（设计 §10 风险 1）", async () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      const 正文 = 弹窗()?.textContent ?? ""
+      expect(正文).toContain("副本若已存在，会被线上版本覆盖")
+    } finally {
+      卸()
+    }
+  })
+
+  /**
+   * 浮层关不掉 / 第二次打不开，是这一套里踩过的坑（`#005-29` / `#005-30`）。
+   * 只断言初始渲染看不出来：必须真跑「打开 → 取消 → 再打开」。
+   */
+  test("打开 → 取消 → 再打开：第二次照样打得开，说明已清空", async () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      填说明("上一次填的")
+      点取消()
+      await 等到(() => !弹窗开着())
+
+      槽(host, "asset-detail-start-iteration")!.click()
+      await 等到(弹窗开着)
+      expect(说明框()?.value).toBe("")
+    } finally {
+      卸()
+    }
+  })
+
+  /**
+   * 触发器是外置的 `ButtonV2`，不是 `Kobalte.Trigger` —— Kobalte 关框时 `triggerRef()` 是空的，
+   * 焦点不会自己回来（`#005-17`：焦点时间线断在这里，键盘用户被扔回页面顶部）。
+   */
+  test("关闭弹窗后焦点回到「发起新版本」", async () => {
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      {
+        canWrite: true,
+        onStartIteration: async () => ({ ok: true as const }),
+        projects: [{ id: "p1", name: "专案" }],
+        currentProjectId: "p1",
+      },
+    )
+    try {
+      标签(host, "versions").click()
+      // 用带泛型的 `querySelector`，不写 `as HTMLButtonElement`（`槽` 回的是 `HTMLElement`）。
+      const 触发 = host.querySelector<HTMLButtonElement>('[data-slot="asset-detail-start-iteration"]')!
+      触发.focus()
+      await 开弹窗(host)
+      // 先把焦点**真的放进框里**：happy-dom 没有布局引擎，Kobalte 的 firstTabbable 找不到候选，
+      // 开框时不会自己移焦点。不补这一步，焦点从头到尾都在触发器上——那条断言恒绿（`#005-18`）。
+      说明框()!.focus()
+      expect(document.activeElement).toBe(说明框())
+      点取消()
+      await 等到(() => document.activeElement === 触发)
+      // 用布尔比、不直接对节点做 `toBe`：断言失败时 Bun 序列化 DOM 节点会挂死（`#009-01`）。
+      expect(document.activeElement === 触发).toBe(true)
     } finally {
       卸()
     }

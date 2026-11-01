@@ -31,6 +31,9 @@ import { 监听会话改过 } from "@/center/session-edits-wiring"
 import { useSettingsDialog } from "@/components/settings-dialog"
 // 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：当前项目是启用集合的绑定源。
 import { currentProject } from "@/project/current-project"
+// 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：项目清单是发起弹窗的候选项目源。
+// `undefined` = 还没有来源（不是「一个项目都没有」），弹窗按「只能选当前项目」处理。
+import { projectList } from "@/project/project-list"
 // ⚠️ openhive 定制（005 T018）：这是要保留的定制 —— 合并上游时两侧都留着。
 // 工作台「项目」那件事的数据源在这里注入（1 行 import ＋ 1 个 prop，见 `@/project/project-data`
 // 文件头「为什么要有这一层」）。删掉这两处 = 面板/文件树退回「未接线即禁用」态。
@@ -211,6 +214,10 @@ export default function NewLayout(props: ParentProps) {
             // 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：项目级启用状态整块交下去，
             // 中栏据此画「已启用 N/20」与卡片按钮（`AssetCenterProps.enablement`）。
             enablement={启用状态}
+            // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：发起新版本时要选
+            // 「在哪个项目里改」。与上面那条同一条注入纪律——本层取、往里只传值。
+            projects={projectList()}
+            currentProjectId={currentProject()?.id}
             // 【保留的定制 · 同步上游时不要丢】（需求 4）：分类与清单同一时机重拉——
             // 只刷清单会让「刚发布到新分类的资产」在左栏找不到那个分类可点。
             categories={分类}

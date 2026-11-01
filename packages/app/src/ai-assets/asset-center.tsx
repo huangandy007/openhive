@@ -49,6 +49,16 @@ export interface AssetCenterProps {
    * （同名拦截、上限、已下线撤销这三件事只有服务端知道，见 `enable-state.ts` 文件头）。
    */
   readonly enablement?: ProjectEnablement
+  /**
+   * 【保留的定制 · 同步上游时不要丢】可选项目清单（2026-11-01）：发起迭代时选目标项目。
+   *
+   * 与 `catalog` / `enablement` 同一条注入规矩：生产实现在 `pages/layout-new.tsx` 取
+   * （`projectList()` / `currentProject()`）再逐层传下来，本组件被组件测试裸挂，自己去取就跑不成离线。
+   * 省略 ⇒ 弹窗只能选当前项目（两个都缺 ⇒ 「发起」按钮禁用）。
+   */
+  readonly projects?: readonly { readonly id: string; readonly name: string }[]
+  /** 当前项目 id（发起迭代的默认目标）。 */
+  readonly currentProjectId?: string
 }
 
 /** 搜索框防抖：这段时间内的连续输入只发最后一趟。 */
@@ -252,6 +262,18 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
                 favoriteBusy={props.catalog?.favoriteBusy() === asset().id}
                 error={props.catalog?.error() ?? props.enablement?.error()}
                 canWrite={props.catalog?.writable().has(asset().id) === true}
+                projects={props.projects}
+                currentProjectId={props.currentProjectId}
+                // `iterationBusy()` 回的是**资产 id**：先比成布尔再交下去，详情只拿它禁用按钮。
+                iterationBusy={props.catalog?.iterationBusy() === asset().id}
+                {...(props.catalog === undefined
+                  ? {}
+                  : {
+                      onStartIteration: (note: string, projectId: string) =>
+                        props.catalog!.startIteration(asset().id, note, projectId),
+                      onSubmitIteration: () => props.catalog!.submitIteration(asset().id),
+                      onAbortIteration: () => props.catalog!.abortIteration(asset().id),
+                    })}
                 onSaveContent={
                   props.catalog === undefined
                     ? undefined

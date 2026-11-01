@@ -198,6 +198,15 @@ export interface WorkspaceEntryProps {
    * 裸挂，自己去取就再也跑不成离线。省略 = 还没有分类（左栏分类组空着，不放假数据）。
    */
   categories?: AssetCategories
+  /**
+   * 【保留的定制 · 同步上游时不要丢】可选项目清单与当前项目（2026-11-01 / skill 版本迭代）。
+   *
+   * 与 `catalog` / `enablement` 同一条规矩：注入而不 import 生产实现——本组件被组件测试裸挂，
+   * 自己去取就跑不成离线。生产实现在 `pages/layout-new.tsx` 取（`projectList()` /
+   * `currentProject()`）。本组件**只转发**给中栏的 `AssetCenter`，不读它。
+   */
+  projects?: readonly { readonly id: string; readonly name: string }[]
+  currentProjectId?: string
 }
 
 /**
@@ -2262,7 +2271,13 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               T006 起这里是搜索 + 卡片网格 ＋ 页码条；`assetFilter` 与左栏**共享同一份**（左栏点了
               类型/分类，中栏按它重新取数），取数走 `props.catalog` 这条注入缝（需求 6）。 */}
           {视图() === "ai-assets" ? (
-            <AssetCenter filter={assetFilter} catalog={props.catalog} enablement={props.enablement} />
+            <AssetCenter
+              filter={assetFilter}
+              catalog={props.catalog}
+              enablement={props.enablement}
+              projects={props.projects}
+              currentProjectId={props.currentProjectId}
+            />
           ) : (
             <CenterSplit
               registry={viewRegistry}

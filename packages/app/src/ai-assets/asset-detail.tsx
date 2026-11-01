@@ -1,5 +1,7 @@
+import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { Icon } from "@opencode-ai/ui/icon"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
+import { TextareaV2 } from "@opencode-ai/ui/v2/textarea-v2"
 import { createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid-js"
 import {
   ASSET_STATUS_LABELS,
@@ -439,7 +441,151 @@ function 注意事项面板(props: {
   )
 }
 
-function 版本面板(props: { readonly asset: AssetMetadata }): JSX.Element {
+/**
+ * 发起迭代的结果（2026-11-01）。
+ *
+ * 与 `onSaveContent` 的 `true | string` 不同：这里成功时**还要交回工作副本路径**，
+ * 详情要拿它拼那句给 AI 的指令。失败仍是一句话。
+ */
+export type 发起迭代结果 =
+  | { readonly ok: true; readonly workspace?: string }
+  | { readonly ok: false; readonly message: string }
+
+/**
+ * 版本 Tab（2026-11-01 加三态，设计 §7）。
+ *
+ * 三态按 `status` + `canWrite` 分：published/可写 = 发起；iterating/可写 = 提交 + 放弃；
+ * iterating/不可写 = 只读进度。其余状态保持原样（「暂无变更说明。」那段）。
+ *
+ * 弹窗放在这个组件内：它只属于这一处，提到外层只会让 `AssetDetail` 多三个状态。
+ */
+function 版本面板(props: {
+  readonly asset: AssetMetadata
+  readonly 可写: boolean
+  readonly onStart?: (note: string, projectId: string) => Promise<发起迭代结果>
+  readonly onSubmit?: () => Promise<true | string>
+  readonly onAbort?: () => Promise<true | string>
+  readonly projects?: readonly { readonly id: string; readonly name: string }[]
+  readonly currentProjectId?: string
+  /** 服务端 / 数据源那边正在为这个资产跑迭代操作（`iterationBusy()` 的 id 就是本资产）。 */
+  readonly iterationBusy?: boolean
+}): JSX.Element {
+  const [开弹窗, set开弹窗] = createSignal(false)
+  const [说明, set说明] = createSignal("")
+  const [项目, set项目] = createSignal<string | undefined>()
+  /**
+   * 打开弹窗那一刻的版本号（= 线上要复制的那一版）。
+   *
+   * 不读 `props.asset.version`：发起成功后数据源会刷新，那一行会变成 n+1；再读就成了
+   * 「v{n+1} 的工作副本」——错一版，而这段文案是直接交给 AI 去改文件的。
+   */
+  const [发起时版本, set发起时版本] = createSignal(1)
+  /** 弹窗里的错误（发起失败）。关弹窗时清空。 */
+  const [错误, set错误] = createSignal<string | undefined>()
+  /**
+   * 页面上（版本 Tab 里）的错误：提交 / 放弃失败、以及「发起成功但右栏没开会话」。
+   *
+   * 为什么不与 `错误` 共用一个信号：生命周期不同——关弹窗会把 `错误` 清掉，
+   * 而「发起了但指令送不出去」这句话必须在弹窗关掉之后还留在页面上，
+   * 否则用户以为一切正常，右栏其实一个字都没收到。
+   */
+  const [操作错误, set操作错误] = createSignal<string | undefined>()
+  const [忙, set忙] = createSignal(false)
+  /** 触发器（外置 `ButtonV2`）：关弹窗时把焦点还给它（`#005-17`）。 */
+  let 发起按钮: HTMLButtonElement | undefined
+
+  const 上一次 = () => Math.max(1, props.asset.version - 1)
+  const 迭代中 = () => props.asset.status === "iterating"
+  const 可发起 = () => props.asset.status === "published" && props.可写 && props.onStart !== undefined
+  const 可操作 = () => 迭代中() && props.可写
+  const 在飞 = () => 忙() || props.iterationBusy === true
+
+  /** 打开弹窗时把项目默认成「当前项目」，说明清空（上一次的残留会让人以为已经填过）。 */
+  const 打开 = () => {
+    set说明("")
+    set错误(undefined)
+    set项目(props.currentProjectId)
+    set发起时版本(props.asset.version)
+    set开弹窗(true)
+  }
+
+  /**
+   * 关弹窗的唯一出口：清掉弹窗错误，并把焦点还给触发器。
+   *
+   * 为什么要自己还：Kobalte 关框时会先 `e.preventDefault()`，再 focus 它自己的
+   * `triggerRef()`——而这里的触发器是**外置按钮**、不是 `Kobalte.Trigger` ⇒ 那条路是空的，
+   * 连默认的「还给先前焦点」也被 preventDefault 挡掉了。不补这一行，焦点掉到 body，
+   * 键盘用户被扔回页顶（`#005-17`）。
+   *
+   * 为什么用 `setTimeout(0)` 而不是 `queueMicrotask`：Kobalte 的焦点陷阱在**微任务**里才拆
+   * （关框后 `trapFocus` 的 effect 重跑）。微任务里提前移焦点，陷阱还挂着，会把它拽回框内
+   * 最后一个聚焦元素（实测是右上角「关闭」）——焦点于是停在一个马上要被卸掉的节点上。
+   * 定时器排在这批微任务之后，陷阱已拆，焦点才留得住。
+   */
+  const 收起 = () => {
+    set开弹窗(false)
+    set错误(undefined)
+    setTimeout(() => 发起按钮?.focus(), 0)
+  }
+
+  const 关闭 = () => {
+    if (忙()) return
+    收起()
+  }
+
+  const 确认 = async () => {
+    const 发起 = props.onStart
+    const 目标项目 = 项目()
+    if (发起 === undefined || 目标项目 === undefined) return
+    set忙(true)
+    set错误(undefined)
+    set操作错误(undefined)
+    try {
+      const 结果 = await 发起(说明().trim(), 目标项目)
+      if (!结果.ok) {
+        // 失败**不关框**：关掉再弹一条提示，用户要重新填一遍说明（同治理台确认框的纪律）。
+        set错误(结果.message)
+        return
+      }
+      收起()
+      const 项目名 = props.projects?.find((一项) => 一项.id === 目标项目)?.name ?? 目标项目
+      // 服务端没给路径 ⇒ **不编路径、也不往右栏塞半句**：「去 .openhive/iterations 找」是另一句
+      // 猜测，AI 会照着它去翻一个我们没确认过的目录。发起本身已经成功（状态与文件都变了），
+      // 所以弹窗照常关掉，这句话留在页面上。
+      if (结果.workspace === undefined) {
+        set操作错误(
+          `已在你的项目里创建副本，但服务端没有返回路径，请到项目「${项目名}」的 .openhive/iterations 目录下查看。`,
+        )
+        return
+      }
+      // 跨栏指令：与「让 AI 起草」同一条通道，不新建接缝。
+      const 指令 = `这是「${props.asset.name}」v${发起时版本()} 的工作副本：${结果.workspace}。请在这里改，改完我点「提交新版本」。`
+      const 发送 = 发送到会话(指令, "替换")
+      // 发起**已经成功**（状态与文件都变了），失败的是「告诉右栏」这一步。
+      // 所以写在页面上、不写弹窗（弹窗已经关了）。
+      if (!发送.ok) set操作错误(`已发起迭代，但右栏没收到指令：${发送失败提示(发送.原因)}`)
+    } catch {
+      set错误("发起失败，请重试")
+    } finally {
+      set忙(false)
+    }
+  }
+
+  /** 提交 / 放弃共用：成功就清掉错误，失败就地显示（不弹窗、不清界面）。 */
+  const 执行 = async (跑: (() => Promise<true | string>) | undefined) => {
+    if (跑 === undefined || 忙()) return
+    set忙(true)
+    set操作错误(undefined)
+    try {
+      const 结果 = await 跑()
+      if (结果 !== true) set操作错误(结果)
+    } catch {
+      set操作错误("操作失败，请重试")
+    } finally {
+      set忙(false)
+    }
+  }
+
   return (
     <div data-slot="asset-detail-versions" class="space-y-3">
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -449,15 +595,164 @@ function 版本面板(props: { readonly asset: AssetMetadata }): JSX.Element {
         <span data-slot="asset-detail-updated" class="text-[12px] text-v2-text-text-muted">
           更新于 {格式化日期(props.asset.updatedAt)}
         </span>
+        <Show when={可发起()}>
+          <ButtonV2
+            ref={(el: HTMLButtonElement) => (发起按钮 = el)}
+            data-slot="asset-detail-start-iteration"
+            type="button"
+            variant="contrast"
+            onClick={打开}
+          >
+            发起新版本
+          </ButtonV2>
+        </Show>
       </div>
+
+      <Show when={迭代中()}>
+        <p data-slot="asset-detail-iteration-hint" class="text-[13px] text-v2-text-text-base">
+          {props.可写
+            ? `v${props.asset.version} 迭代中（线上仍是 v${上一次()}）`
+            : `v${props.asset.version} 迭代中（作者正在修订，线上仍是 v${上一次()}）`}
+        </p>
+        <Show when={props.asset.iterationNote !== ""}>
+          <p data-slot="asset-detail-iteration-note" class="text-[13px] text-v2-text-text-muted">
+            {props.asset.iterationNote}
+          </p>
+        </Show>
+        <Show when={可操作() && props.onSubmit !== undefined}>
+          <div class="flex gap-2">
+            <ButtonV2
+              data-slot="asset-detail-submit-iteration"
+              type="button"
+              variant="contrast"
+              disabled={在飞()}
+              onClick={() => void 执行(props.onSubmit)}
+            >
+              提交新版本
+            </ButtonV2>
+            <Show when={props.onAbort !== undefined}>
+              <ButtonV2
+                data-slot="asset-detail-abort-iteration"
+                type="button"
+                variant="danger"
+                disabled={在飞()}
+                onClick={() => void 执行(props.onAbort)}
+              >
+                放弃迭代
+              </ButtonV2>
+            </Show>
+          </div>
+        </Show>
+      </Show>
+
+      <Show when={操作错误()}>
+        {(message) => (
+          <div data-slot="asset-detail-iteration-error" role="alert" class="text-[13px] text-v2-state-fg-danger">
+            {message()}
+          </div>
+        )}
+      </Show>
+
       <Show when={props.asset.publishedAt !== null}>
         <p data-slot="asset-detail-published" class="text-[12px] text-v2-text-text-muted">
           发布于 {格式化日期(props.asset.publishedAt ?? 0)}
         </p>
       </Show>
-      <p data-slot="asset-detail-changelog-empty" class="text-[13px] text-v2-text-text-muted">
-        暂无变更说明。
-      </p>
+
+      <Show when={props.asset.iterationNote === "" && !迭代中()}>
+        <p data-slot="asset-detail-changelog-empty" class="text-[13px] text-v2-text-text-muted">
+          暂无变更说明。
+        </p>
+      </Show>
+
+      <Kobalte open={开弹窗()} onOpenChange={(打开) => !打开 && 关闭()}>
+        <Kobalte.Portal>
+          <Kobalte.Overlay class="fixed inset-0 z-40 bg-v2-overlay-simple-overlay-scrim" />
+          <Kobalte.Content
+            data-slot="asset-iteration-dialog"
+            class="fixed top-1/2 left-1/2 z-50 w-[min(30rem,calc(100vw-3rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
+          >
+            <div class="flex items-center gap-3 border-b border-v2-border-border-muted px-5 py-4">
+              <Kobalte.Title class="min-w-0 flex-1 text-[15px] font-semibold text-v2-text-text-base">
+                发起新版本
+              </Kobalte.Title>
+              <Kobalte.CloseButton
+                type="button"
+                aria-label="关闭"
+                class="flex size-7 items-center justify-center rounded-lg text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover"
+              >
+                <Icon name="close-small" size="small" />
+              </Kobalte.CloseButton>
+            </div>
+            <div class="flex flex-col gap-3 px-5 py-4">
+              {/* 不用 `<label>`：里面包的是 `TextareaV2`（组件），a11y 规则看不进组件内部，
+                  会报 label-has-associated-control。可访问名称由输入框自己的 `aria-label` 给。 */}
+              <div class="flex flex-col gap-1">
+                <span class="text-[12px] text-v2-text-text-muted">变更说明（必填）</span>
+                <TextareaV2
+                  id="asset-iteration-note"
+                  data-slot="asset-iteration-note"
+                  name="asset-iteration-note"
+                  aria-label="变更说明"
+                  rows={3}
+                  disabled={忙()}
+                  value={说明()}
+                  onInput={(event) => set说明(event.currentTarget.value)}
+                />
+              </div>
+              <label class="flex flex-col gap-1">
+                <span class="text-[12px] text-v2-text-text-muted">在哪个项目里改</span>
+                <select
+                  data-slot="asset-iteration-project"
+                  aria-label="目标项目"
+                  disabled={忙()}
+                  value={项目() ?? ""}
+                  onChange={(event) => set项目(event.currentTarget.value === "" ? undefined : event.currentTarget.value)}
+                  class="h-8 rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base"
+                >
+                  <For each={props.projects ?? []}>
+                    {(一项) => <option value={一项.id}>{一项.name}</option>}
+                  </For>
+                  <Show when={项目() === undefined}>
+                    <option value="">请先在左侧选择项目</option>
+                  </Show>
+                </select>
+              </label>
+              <p class="text-[12px] text-v2-text-text-muted">
+                服务端会把线上 v{发起时版本()} 复制到这个项目里；项目里那份副本若已存在，会被线上版本覆盖。
+              </p>
+              <Show when={错误()}>
+                {(message) => (
+                  <div data-slot="asset-iteration-error" role="alert" class="text-[13px] text-v2-state-fg-danger">
+                    {message()}
+                  </div>
+                )}
+              </Show>
+            </div>
+            <div class="flex justify-end gap-2 border-t border-v2-border-border-muted px-5 py-3">
+              <ButtonV2
+                data-slot="asset-iteration-cancel"
+                type="button"
+                variant="neutral"
+                autofocus
+                disabled={忙()}
+                onClick={关闭}
+              >
+                取消
+              </ButtonV2>
+              <ButtonV2
+                data-slot="asset-iteration-confirm"
+                type="button"
+                variant="contrast"
+                disabled={忙() || 说明().trim() === "" || 项目() === undefined}
+                onClick={() => void 确认()}
+              >
+                {忙() ? "处理中…" : "发起"}
+              </ButtonV2>
+            </div>
+          </Kobalte.Content>
+        </Kobalte.Portal>
+      </Kobalte>
     </div>
   )
 }
@@ -515,6 +810,28 @@ export interface AssetDetailProps {
     readonly summary?: string
     readonly precautions?: string
   }) => Promise<true | string>
+  /**
+   * 【保留的定制 · 同步上游时不要丢】skill 版本迭代（2026-11-01，设计 §7）。
+   *
+   * 与 `canWrite` / `onSaveContent` 同一条纪律：**省略回调 ⇒ 对应的按钮不渲染**。
+   * `canWrite` 决定「能不能按」，`status` 决定「按哪一组」——「迭代中但我不可写」是
+   * **看得见、不操作**的态，所以它只读不画按钮。
+   */
+  readonly onStartIteration?: (note: string, projectId: string) => Promise<发起迭代结果>
+  readonly onSubmitIteration?: () => Promise<true | string>
+  readonly onAbortIteration?: () => Promise<true | string>
+  /**
+   * 可选项目清单（发起迭代时选目标项目）。省略 ⇒ 只能选 `currentProjectId`；
+   * 两个都没有 ⇒ 「发起」按钮禁用并提示先选项目。
+   */
+  readonly projects?: readonly { readonly id: string; readonly name: string }[]
+  readonly currentProjectId?: string
+  /**
+   * 数据源那边正在为**本资产**跑迭代操作（`AssetCatalog.iterationBusy()` 的 id 是否就是它）。
+   *
+   * 只用来禁用按钮：`iterationBusy()` 回的是资产 id，不是给人看的文案，别往界面上写。
+   */
+  readonly iterationBusy?: boolean
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
@@ -727,7 +1044,16 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
               />
             </Match>
             <Match when={当前() === "versions"}>
-              <版本面板 asset={props.asset} />
+              <版本面板
+                asset={props.asset}
+                可写={props.canWrite === true}
+                projects={props.projects}
+                currentProjectId={props.currentProjectId}
+                iterationBusy={props.iterationBusy}
+                {...(props.onStartIteration === undefined ? {} : { onStart: props.onStartIteration })}
+                {...(props.onSubmitIteration === undefined ? {} : { onSubmit: props.onSubmitIteration })}
+                {...(props.onAbortIteration === undefined ? {} : { onAbort: props.onAbortIteration })}
+              />
             </Match>
           </Switch>
         </div>
