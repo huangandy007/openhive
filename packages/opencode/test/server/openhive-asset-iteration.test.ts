@@ -369,7 +369,7 @@ const 列表回包 = Schema.Struct({
 const 读行 = (id: string) => Effect.promise(() => assetById(pg!.db, id))
 
 describe("迭代出口 · 成功面", () => {
-  it.live("作者发起 ⇒ 200，回带绝对 workspace，库里落说明与路径，线上那份不动", () =>
+  it.live("作者发起 ⇒ 200、回带绝对 workspace、落库正确；随后使用面列表仍能看到它（iterating）且 writableIds 含它", () =>
     Effect.gen(function* () {
       const response = yield* 发起(我, IDS.start, { note: "补一条统计口径", projectId: 我的项目 })
       expect(response.status).toBe(200)
@@ -388,22 +388,23 @@ describe("迭代出口 · 成功面", () => {
       expect(行?.iterationNote).toBe("补一条统计口径")
       // 落库的是**相对沙箱根**那一段（`#010-04`：换根不用搬库）。
       expect(行?.iterationWorkspace).toBe(工作副本相对(IDS.start))
-    }),
-  )
 
-  it.live("作者发起后：使用面列表仍能看到它（iterating），且 writableIds 含它（提交 / 放弃的入口）", () =>
-    Effect.gen(function* () {
-      // 前一条用例已经把 IDS.start 推到 iterating，这里验的是「迭代中不再从浏览面消失」。
-      // 旧实现把 status 写死成 published ⇒ 这一行整条不见 ⇒ 详情退回打开时的快照、
-      // 作者也没有提交 / 放弃的入口，设计 §7 的「迭代中」两态一次都渲染不出来。
-      const response = yield* 发(我, "/openhive/assets?pageSize=100")
-      expect(response.status).toBe(200)
-      const 体 = Schema.decodeUnknownSync(列表回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      // 后续这两条断言**故意放在本用例里**（`#005-34`）：它们要的是「刚发起完」这个状态，
+      // 若另起一条用例来断言，就会依赖上一条用例的副作用——单跑 / `-t` 过滤 /
+      // `--only-failures` 重跑时都会红。自己发起、自己断言，用例才与执行顺序无关。
+      // 验的是「迭代中不再从浏览面消失」：旧实现把 status 写死成 published ⇒ 这一行整条
+      // 不见 ⇒ 详情退回打开时的快照、作者也没有提交 / 放弃的入口，设计 §7 的「迭代中」
+      // 两态一次都渲染不出来。
+      const 列表响应 = yield* 发(我, "/openhive/assets?pageSize=100")
+      expect(列表响应.status).toBe(200)
+      const 列表体 = Schema.decodeUnknownSync(列表回包)(
+        JSON.parse(yield* Effect.promise(() => 列表响应.text())),
+      )
 
-      const 行 = 体.assets.find((asset) => asset.id === IDS.start)
-      expect(行?.status).toBe("iterating")
+      const 列表行 = 列表体.assets.find((asset) => asset.id === IDS.start)
+      expect(列表行?.status).toBe("iterating")
       // 作者有 write：前端据此显示「提交 / 放弃」。
-      expect(体.writableIds).toContain(IDS.start)
+      expect(列表体.writableIds).toContain(IDS.start)
     }),
   )
 
