@@ -1,5 +1,6 @@
 import { describe, expect, it, test } from "bun:test"
-import { 带内核清单, 补资产状态, 映射内核清单 } from "../../src/server/openhive/project-assets"
+import path from "node:path"
+import { 带内核清单, 补资产状态, 映射内核清单, 技能相对路径 } from "../../src/server/openhive/project-assets"
 
 /**
  * `带内核清单` 的判据只有一条：**「不知道」与「没有」必须长得不一样**（`#002-02`）。
@@ -154,36 +155,27 @@ describe("映射内核清单", () => {
   })
 
   // 修复轮 1（审查实测）：`属于项目()` 会把 `\` 归一后放行，但 POSIX 的 `relative` /
-  // `dirname` 不认 `\`。两个入参形态不一致时（一边含 `\`），整串反斜杠会被当成文件名 ⇒
-  // `skillPath` 变成盘符路径 / `..`，两边都反斜杠时甚至会变成 `"."`（入库端点会接受，
-  // 等于把整个项目入库）。契约是「全部转成 `/` 分隔」，所以归一必须在算之前。
-  test("目录与 location 分隔符形态不一致（一边含 \\）⇒ skillPath 仍是正确相对路径", () => {
-    const 正斜杠目录 = 映射内核清单(
-      [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" }],
-      "D:/s/1/p",
-      new Map(),
-      new Map(),
-    )
-    const 反斜杠目录 = 映射内核清单(
-      [{ name: "资金", location: "D:/s/1/p/.opencode/skill/a1/SKILL.md" }],
-      "D:\\s\\1\\p",
-      new Map(),
-      new Map(),
-    )
-    // 两边都反斜杠：POSIX 上 dirname 不切分 ⇒ 修复前会算成 `"."`（整项目入库）。
-    const 全反斜杠 = 映射内核清单(
-      [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" }],
-      "D:\\s\\1\\p",
-      new Map(),
-      new Map(),
-    )
-
-    for (const 回 of [正斜杠目录, 反斜杠目录, 全反斜杠]) {
-      expect(回[0]?.skillPath).toBe(".opencode/skill/a1")
+  // `dirname` 不认 `\`。入参形态不一致时，整串反斜杠会被当成文件名 ⇒ 实测 `".."` /
+  // `"../D:/s/1/p/..."`（两边都反斜杠也不是 `"."`）。`resolveSourceDirectory()` 会拒绝
+  // `..` 与绝对路径 ⇒ 一键入库请求实际被拒（403），不会静默把整个项目入库。真实 POSIX
+  // 内核不会回反斜杠，这是**契约硬化**，生产今天不可触发。归一则必须在算之前。
+  //
+  // ⚠️ `实现` 显式传 `path.posix`（修复轮 2）：本机 win32 的 `path` 两种分隔符都认，
+  // 走生产默认实现时修复前 / 修复后 / 变异后**全绿**，等于没有守卫。只有 POSIX 语义下的
+  // 变异才会红——这样才能在本机真正钉住「归一分隔符」这条契约。
+  test("POSIX 语义：三种混合 / 全反斜杠形态都归一出正确相对路径", () => {
+    const 形态 = [
+      { 名: "目录正、location 反", 目录: "D:/s/1/p", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" },
+      { 名: "目录反、location 正", 目录: "D:\\s\\1\\p", location: "D:/s/1/p/.opencode/skill/a1/SKILL.md" },
+      { 名: "两边都反", 目录: "D:\\s\\1\\p", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" },
+    ] as const
+    for (const 例 of 形态) {
+      const 得 = 技能相对路径(例.目录, 例.location, path.posix)
+      expect({ 形态: 例.名, skillPath: 得 }).toEqual({ 形态: 例.名, skillPath: ".opencode/skill/a1" })
       // 不能带盘符、不能以 `..` 逃出项目目录、不能漏反斜杠。
-      expect(回[0]?.skillPath).not.toMatch(/^[A-Za-z]:/)
-      expect(回[0]?.skillPath?.startsWith("..")).toBe(false)
-      expect(回[0]?.skillPath).not.toContain("\\")
+      expect(得).not.toMatch(/^[A-Za-z]:/)
+      expect(得.startsWith("..")).toBe(false)
+      expect(得).not.toContain("\\")
     }
   })
 
@@ -253,6 +245,9 @@ describe("补资产状态", () => {
     const 结果 = await 补资产状态(假库([{ id: "a1", status: "draft", owner_id: "u1" }]), 列表, "u1")
 
     expect(结果[0]).toMatchObject({ assetId: "a1", assetStatus: "draft", assetOwnerId: "u1" })
+    // 库内条目只补「状态 / 属主 / 驳回理由」，不凭空造 `skillPath`——它由 `映射内核清单`
+    // 从内核 `location` 算，这一层拿到的是已算好的条目（修复轮 2：钉住不被污染）。
+    expect("skillPath" in 结果[0]).toBe(false)
     // 关键：手写的 skill 没有 assetStatus 这个键，前端据此判「未入库」
     expect(Object.prototype.hasOwnProperty.call(结果[1], "assetStatus")).toBe(false)
     expect(Object.prototype.hasOwnProperty.call(结果[1], "assetOwnerId")).toBe(false)

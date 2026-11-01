@@ -98,7 +98,7 @@ import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { stat } from "node:fs/promises"
-import { dirname, join, relative } from "node:path"
+import nodePath, { join } from "node:path"
 import { 记治理 } from "./audit"
 import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhivePg } from "./pg"
@@ -297,13 +297,27 @@ function 目录名(location: string): string | undefined {
  *
  * ⚠️ **两个入参先统一成 `/` 再算**（2026-11-01 修复轮 1）：`属于项目()` 会把 `\` 归一后放行，
  * 但 POSIX 的 `relative` / `dirname` 不认 `\`。入参形态不一致时（一边正斜杠、一边反斜杠），
- * 整串反斜杠会被当成一个文件名 ⇒ `skillPath` 算成盘符路径 / `..` / `"."`，而 `"."` 入库
- * 端点会接受（等于把整个项目入库）。真实内核在 POSIX 不会回反斜杠，属潜在陷阱，但契约是
- * 「全部转成 `/` 分隔」，归一必须发生在算之前，不能只归一输出。
+ * 整串反斜杠会被当成一个文件名：
+ *
+ * - 一边反斜杠 ⇒ `skillPath` 算成 `..` / 带盘符的路径（实测 `../../../..`、`../D:/s/1/p/...`）；
+ * - 两边都反斜杠 ⇒ 实测 `".."`（**不是** `"."` 整项目）。
+ *
+ * 这两种形态递到「一键入库」都会被 `resolveSourceDirectory()` 拒掉（`..` 与绝对路径一律
+ * `source_outside_workspace` ⇒ draft 端点回 **403**），不会静默把整个项目入库。真实 POSIX
+ * 内核不会回反斜杠，所以生产今天不可触发——这里是**契约硬化**，不是线上缺陷。
+ *
+ * 契约是「全部转成 `/` 分隔」，归一必须发生在算之前，不能只归一输出。
+ *
+ * 第三参 `实现` **只为让 POSIX 语义在本机（win32）可测**，生产不传：默认 `node:path`
+ * 跟随平台，行为与传入前一致。
  */
-function 技能相对路径(location: string, 目录: string): string {
+export function 技能相对路径(
+  目录: string,
+  location: string,
+  实现: Pick<typeof nodePath, "relative" | "dirname"> = nodePath,
+): string {
   const 正 = (s: string) => s.replace(/\\/g, "/")
-  const 相对 = relative(正(目录), dirname(正(location))).replace(/\\/g, "/")
+  const 相对 = 实现.relative(正(目录), 实现.dirname(正(location))).replace(/\\/g, "/")
   return 相对 === "" ? "." : 相对
 }
 
@@ -360,7 +374,7 @@ export function 映射内核清单(
         ...(id === undefined ? {} : { assetId: id }),
         ...(名 === undefined ? {} : { assetName: 名 }),
         // 项目内技能的相对目录一定能算（`属于项目()` 已保证它落在 `目录` 下）。
-        skillPath: 技能相对路径(info.location, 目录),
+        skillPath: 技能相对路径(目录, info.location),
       }
     })
 }
