@@ -32,12 +32,21 @@ export interface AssetCategories {
   readonly rows: () => readonly AssetCategoryRow[]
   /** 最近一次拉取的失败原因；成功后清空。 */
   readonly error: () => string | undefined
+  /**
+   * 是否已经**有过一次结论**（成功或失败都算）。
+   *
+   * `rows() === []` 有两种成因：首屏还没回来，和「确实一个启用分类都没有」。只靠长度
+   * 分不开，入库表单就会把「读不到 / 还在读」说成「没有分类，请联系管理员」（`#002-02`）。
+   * 失败时仍为 `true`——那一次有结论，结论挂在 `error` 上。
+   */
+  readonly loaded: () => boolean
   readonly reload: () => void
 }
 
 export function createAssetCategories(api: CategoryApi = createCategoryApi()): AssetCategories {
   const [行, set行] = createSignal<readonly AssetCategoryRow[]>([])
   const [错误, set错误] = createSignal<string | undefined>()
+  const [已读, set已读] = createSignal(false)
 
   let 代次 = 0
 
@@ -48,11 +57,13 @@ export function createAssetCategories(api: CategoryApi = createCategoryApi()): A
       if (结果.kind === "ok") {
         set行(结果.value)
         set错误(undefined)
-        return
+      } else {
+        set错误(结果.message)
       }
-      set错误(结果.message)
+      // 只有本次代次的结论才算「读过」；被丢弃的旧回包不改这个信号。
+      set已读(true)
     })
   }
 
-  return { rows: 行, error: 错误, reload }
+  return { rows: 行, error: 错误, loaded: 已读, reload }
 }

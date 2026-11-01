@@ -135,7 +135,13 @@ export interface 内核技能 {
    * 查不到 = 未入库。
    */
   readonly assetStatus?: AssetStatus
-  /** 只有库里那行存在时才有；「是不是我的」靠它判，不靠名字。 */
+  /**
+   * 只有库里那行存在时才有；「是不是我的」靠它判，不靠名字。
+   *
+   * 全链已贯通到前端合并层（`capability-source.ts` 的 `ownerId`），但**本期前端不消费**：
+   * `currentUser` 只有 `policeId`，与 `owner_id` 不可比。留给 009「我的创作」，不要在这里
+   * 或前端擅自把它与警号当同一套标识。
+   */
   readonly assetOwnerId?: string
   /**
    * 最近一次业务驳回的理由（设计 §4.7）。只读通知表，不加列。

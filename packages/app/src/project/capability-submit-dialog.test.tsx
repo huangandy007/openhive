@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { DialogProvider, useDialog } from "@opencode-ai/ui/context/dialog"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
+import type { AssetCategoryRow } from "@/ai-assets/category-api"
 import type { 入库入参 } from "./capability-action-api"
 import type { 自带条目 } from "./capability-source"
 import { CapabilitySubmitDialog } from "./capability-submit-dialog"
@@ -29,6 +30,13 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 interface 剧本 {
   条?: 自带条目
   onConfirm?: (输入: 入库入参) => string | undefined | Promise<string | undefined>
+  /** 分类行；省略 = 两条夹具。要测「空 / 读不到」时显式传 `[]`。 */
+  categories?: readonly AssetCategoryRow[]
+  /** 分类接口最近一次失败的那句话；省略 = 没有错。 */
+  categoriesError?: string
+  /** 分类是否已经读完（首屏未回来时为 `false`）；省略 = 已读完。 */
+  categoriesLoaded?: boolean
+  onRetryCategories?: () => void
 }
 
 async function 打开(剧本: 剧本 = {}): Promise<入库入参[]> {
@@ -44,10 +52,15 @@ async function 打开(剧本: 剧本 = {}): Promise<入库入参[]> {
             <CapabilitySubmitDialog
               条={条}
               projectId="p1"
-              categories={[
-                { id: "intelligence", name: "情报研判" },
-                { id: "case-handling", name: "案件办理" },
-              ]}
+              categories={
+                剧本.categories ?? [
+                  { id: "intelligence", name: "情报研判" },
+                  { id: "case-handling", name: "案件办理" },
+                ]
+              }
+              categoriesError={剧本.categoriesError}
+              categoriesLoaded={剧本.categoriesLoaded}
+              onRetryCategories={剧本.onRetryCategories}
               onConfirm={(输入) => {
                 收到.push(输入)
                 return 剧本.onConfirm?.(输入)
@@ -206,6 +219,49 @@ describe("入库表单（CapabilitySubmitDialog）", () => {
     // 换回别的可见范围 ⇒ 提示收掉（只在部门那一档成立）。
     选(可见(), "personal")
     expect(文案("capability-submit-department-note")).toBe("")
+  })
+
+  /**
+   * 分类的三种「下拉里没有选项」形状必须分开（2026-11-01 最终修复轮）。
+   *
+   * `AssetCategories.rows()` 在首成功前恒 `[]`、失败也 `[]`；只看数组长度，会把
+   * 「接口 500 / 断网 / 首屏还没回来」全都画成「还没有可选的分类；请联系管理员…」——
+   * 把故障说成配置问题，还把人引去找管理员。三态：加载中 / 读不到（可重试）/ 真的为空。
+   */
+  test("分类暂时读不到 ⇒ 说「暂时读不到」并给重试，不催用户找管理员", async () => {
+    let 重试 = 0
+    await 打开({
+      categories: [],
+      categoriesError: "连接服务失败，请检查网络后重试",
+      categoriesLoaded: true,
+      onRetryCategories: () => {
+        重试 += 1
+      },
+    })
+
+    expect(文案("capability-submit-category-error")).toContain("暂时读不到")
+    expect(文案("capability-submit-category-error")).toContain("连接服务失败")
+    // 故障不是配置问题：不许出现「没有分类 / 联系管理员启用」那套话。
+    expect(文案("capability-submit-no-category")).toBe("")
+    expect(document.body.textContent ?? "").not.toContain("联系管理员启用分类")
+
+    框("[data-slot='capability-submit-category-retry']", HTMLButtonElement).click()
+    expect(重试).toBe(1)
+  })
+
+  test("分类确实为空（读到了，只是没有启用项）⇒ 仍是原来的「联系管理员」文案", async () => {
+    await 打开({ categories: [], categoriesLoaded: true })
+
+    expect(文案("capability-submit-no-category")).toContain("联系管理员")
+    expect(文案("capability-submit-category-error")).toBe("")
+  })
+
+  test("分类还在读（首屏未回来）⇒ 说「正在读取」，不判成空也不催管理员", async () => {
+    await 打开({ categories: [], categoriesLoaded: false })
+
+    expect(文案("capability-submit-category-loading")).toContain("正在读取")
+    expect(文案("capability-submit-no-category")).toBe("")
+    expect(document.body.textContent ?? "").not.toContain("联系管理员启用分类")
   })
 
   test("接口回一句失败 ⇒ 弹窗不关、话就地在弹窗里", async () => {

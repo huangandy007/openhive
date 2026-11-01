@@ -48,6 +48,30 @@ describe("左栏分类数据源", () => {
     expect(source.error()).toBeUndefined()
   })
 
+  /**
+   * 「读完没」必须问得出来（2026-11-01 最终修复轮）。
+   *
+   * 只看 `rows().length === 0` 分不清「首屏还没回来」与「确实一个分类都没有」——
+   * 入库表单要把这两件事说成不同的话。首次**成功或失败**都算读完：失败有自己的 `error`。
+   */
+  test("读完之前 loaded=false；首次成功或首次失败之后 loaded=true", async () => {
+    const { api, settle } = 可控()
+    const source = createAssetCategories(api)
+
+    expect(source.loaded()).toBe(false)
+
+    source.reload()
+    expect(source.loaded()).toBe(false)
+    await settle(0, { kind: "ok", value: 两类 })
+    expect(source.loaded()).toBe(true)
+
+    // 再拉一次：在飞期间它不会退回「没读过」（已有可用的旧清单）。
+    source.reload()
+    expect(source.loaded()).toBe(true)
+    await settle(1, { kind: "failed", message: "连接服务失败，请检查网络后重试" })
+    expect(source.loaded()).toBe(true)
+  })
+
   test("失败保留上一次的清单，只把一句话挂到 error；下次成功清掉那句话", async () => {
     const { api, settle } = 可控()
     const source = createAssetCategories(api)

@@ -889,6 +889,36 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     expect(host.textContent).toContain("等业务审核")
   })
 
+  /**
+   * 已下线 / 已归档仍占着启用行（`take_offline` / `archive` 不删启用行），
+   * 卡上的诊断还在说「停用后可在资产中心重新启用」。
+   *
+   * 守卫若写成只放行 `undefined / published / iterating` 的白名单，这两个阶段就成了
+   * 「照着提示却找不到按钮」的死路：那条启用行再也删不掉，还继续占 `ENABLEMENT_LIMIT` 配额。
+   * 只挡三个**非启用态**（草稿 / 审核中 / 待技术发布），其余一律照画。
+   */
+  test("已下线且在启用集合里 ⇒ 仍有停用按钮（诊断指的那条路要能走通）", () => {
+    const host = 面板({
+      enabled: () => new Set(["a7"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "下线版", assetId: "a7", assetStatus: "offline" })],
+    })
+
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-disable"]')).not.toBe(null)
+  })
+
+  test("已归档且在启用集合里 ⇒ 仍有停用按钮", () => {
+    const host = 面板({
+      enabled: () => new Set(["a7"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "归档版", assetId: "a7", assetStatus: "archived" })],
+    })
+
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-disable"]')).not.toBe(null)
+  })
+
   test("被驳回过的草稿行显示最近一次理由，且仍有提交按钮", () => {
     const host = 面板({
       enabled: () => new Set(),
@@ -908,6 +938,60 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     expect(host.querySelector('[data-slot="capability-submit"]')).not.toBe(null)
   })
 
+  /**
+   * 驳回理由整句去重（2026-11-01 最终修复轮）。
+   *
+   * 通知 `body` 本身就是「<资产名> 被驳回：<理由>」，面板再加一句「上次驳回：」就变成
+   * 「上次驳回：资金分析 被驳回：第二步缺少校验」。重复的不只是文案：两次「驳回」让人
+   * 分不清哪一段才是要改的内容。只取最后一个全角冒号之后的部分，取不到就整句贴。
+   */
+  test("草稿行的驳回理由只留理由本身，不重复「上次驳回：…被驳回：」", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        技能({
+          name: "资金分析",
+          assetId: "a4",
+          assetStatus: "draft",
+          assetRejectReason: "资金分析 被驳回：第二步缺少校验",
+        }),
+      ],
+      onSubmit: () => {},
+    })
+    expect(文(host, "capability-reject-reason")).toBe("第二步缺少校验")
+  })
+
+  /**
+   * 驳回理由只在 `draft` 画（设计 §4.2 只定义「草稿（被驳回过）」）。
+   *
+   * 不限阶段的话，作者再次提交（`in_review`）甚至在发布之后，旧理由还挂在卡上——
+   * 看起来像「这次的驳回」，而其实说的是上一版。
+   */
+  test("审核中的行不挂旧驳回理由（只在草稿阶段成立）", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        技能({ name: "再审的", assetId: "a8", assetStatus: "in_review", assetRejectReason: "第二步缺少校验" }),
+      ],
+    })
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-reject-reason"]')).toBe(null)
+  })
+
+  test("已发布的行也不挂旧驳回理由", () => {
+    const host = 面板({
+      enabled: () => new Set(["a8"]),
+      enabledCount: () => 1,
+      skills: () => [
+        技能({ name: "已上线的", assetId: "a8", assetStatus: "published", assetRejectReason: "第二步缺少校验" }),
+      ],
+    })
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-reject-reason"]')).toBe(null)
+  })
+
   test("未入库行点提交 ⇒ 走「入库并提交」回调", () => {
     const 点过: string[] = []
     const host = 面板({
@@ -920,6 +1004,37 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     })
     host.querySelector<HTMLButtonElement>('[data-slot="capability-submit"]')!.click()
     expect(点过).toEqual(["手写的"])
+  })
+
+  /**
+   * 未入库行也要占在飞槽（2026-11-01 最终修复轮）。
+   *
+   * 上一版直接 `void onCreateAndSubmit(...)`，在飞状态里没有它 ⇒ 连点会开出两张入库表单。
+   * 与库内行同一套禁用：点下去立刻占槽，回 promise 时由 `.finally` 收掉。
+   */
+  test("未入库行提交在飞时按钮禁用，连点不会再触发一次", async () => {
+    let 放行: (() => void) | undefined
+    const 在飞 = new Promise<void>((resolve) => (放行 = resolve))
+    let 调用 = 0
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "手写的", skillPath: ".opencode/skill/hand" })],
+      onCreateAndSubmit: () => {
+        调用 += 1
+        return 在飞
+      },
+    })
+
+    const 钮 = host.querySelector<HTMLButtonElement>('[data-slot="capability-submit"]')!
+    钮.click()
+    expect(钮.disabled).toBe(true)
+    钮.click()
+    expect(调用).toBe(1)
+
+    放行?.()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(钮.disabled).toBe(false)
   })
 
   /**

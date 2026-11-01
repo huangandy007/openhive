@@ -2093,7 +2093,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                             条={条}
                             projectId={projectId}
                             // 分类的唯一来源是服务端（`GET /openhive/categories`，只回启用项）。
+                            // 三态分开传：`rows` 为空时，`error` / `loaded` 决定表单说
+                            // 「读不到」还是「正在读」还是「确实没有分类」（`#002-02`）。
                             categories={props.categories?.rows() ?? []}
+                            categoriesError={props.categories?.error()}
+                            categoriesLoaded={props.categories?.loaded() ?? true}
+                            onRetryCategories={() => props.categories?.reload()}
                             onConfirm={async (输入) => {
                               const 结果 = await 入库并提交(输入)
                               if (!("error" in 结果)) {

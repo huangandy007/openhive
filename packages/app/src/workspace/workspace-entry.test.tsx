@@ -6314,7 +6314,12 @@ describe("备份 / 恢复接线（Task 17）", () => {
 const 分类夹具 = [...ASSET_CATEGORY_SEED].map(({ id, name }) => ({ id, name }))
 
 /** 每次挂载给一份新的（不共享模块级对象，`LEARNINGS #005-03`）。 */
-const 假分类 = (): AssetCategories => ({ rows: () => 分类夹具, error: () => undefined, reload: () => {} })
+const 假分类 = (): AssetCategories => ({
+  rows: () => 分类夹具,
+  error: () => undefined,
+  loaded: () => true,
+  reload: () => {},
+})
 
 describe("AI 资产工作台（009 T005）", () => {
   const 进入 = (host: HTMLElement) => 入口(host, "AI 资产").click()

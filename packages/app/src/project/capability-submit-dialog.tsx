@@ -45,6 +45,21 @@ export interface CapabilitySubmitDialogProps {
   /** 管理员维护的启用分类（`GET /openhive/categories`）。 */
   readonly categories: readonly AssetCategoryRow[]
   /**
+   * 分类接口最近一次的失败原因；`undefined` = 这次没报错。
+   *
+   * 只有 `rows` 是分不出「读不到」与「确实为空」的：两者都是 `[]`。失败原因在这里，
+   * 表单据此说「暂时读不到」——**不把故障说成配置问题**（`#002-02`）。
+   */
+  readonly categoriesError?: string
+  /**
+   * 分类是否已经有过一次结论（成功或失败都算）。`false` = 首屏还没回来（「正在读取」）。
+   *
+   * 省略 = 调用方不提供加载态：按「已读完」处理，保住裸挂（组件测试 / 别的宿主）的旧行为。
+   */
+  readonly categoriesLoaded?: boolean
+  /** 「暂时读不到分类」那颗重试的接线；省略 = 不画按钮（宿主管不了取数，就不放假按钮）。 */
+  readonly onRetryCategories?: () => void
+  /**
    * 回话约定（与 `FileCreateDialog.onConfirm` 同形）：**回一句字符串 = 没办成**，
    * 那句话就地显示、弹窗不关；`undefined` / `void` = 收工（弹窗关掉）。
    */
@@ -65,6 +80,16 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
 
   const 技能目录 = () => props.条.skillPath
   const 描述空 = () => 描述().trim() === ""
+  /**
+   * 分类下拉的三种「没有选项」（2026-11-01 最终修复轮）。
+   *
+   * 只看 `categories.length === 0` 会把「首屏还没回来」「接口 500 / 断网」和「管理员真的
+   * 一个都没启用」说成同一句话，还叫人去找管理员。三态分开：加载中 / 读不到（可重试）/
+   * 确实为空——三种要用户做的事完全不同。
+   */
+  const 分类已读 = () => props.categoriesLoaded ?? true
+  const 分类读不到 = () => props.categories.length === 0 && props.categoriesError !== undefined
+  const 分类加载中 = () => props.categories.length === 0 && !分类读不到() && !分类已读()
   /** 三个必填（名称 / 描述 / 分类 / 可见范围）＋ 一个前提（skillPath）全部满足才交得出去。 */
   const 能交 = () =>
     技能目录() !== undefined && 名称().trim() !== "" && !描述空() && 分类() !== "" && 可见() !== "" && !忙()
@@ -169,7 +194,28 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
               <option value="">请选择分类</option>
               <For each={props.categories}>{(行) => <option value={行.id}>{行.name}</option>}</For>
             </select>
-            <Show when={props.categories.length === 0}>
+            {/* 读不到不是配置问题：说清楚、给重试，别让人白跑一趟找管理员。 */}
+            <Show when={分类读不到()}>
+              <p data-slot="capability-submit-category-error" class="text-[11px] text-v2-state-fg-warning">
+                暂时读不到分类：{props.categoriesError}
+                <Show when={props.onRetryCategories}>
+                  <button
+                    type="button"
+                    data-slot="capability-submit-category-retry"
+                    class="ml-1 cursor-pointer rounded-[4px] px-1 text-[11px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                    onClick={() => props.onRetryCategories?.()}
+                  >
+                    重试
+                  </button>
+                </Show>
+              </p>
+            </Show>
+            <Show when={分类加载中()}>
+              <p data-slot="capability-submit-category-loading" class="text-[11px] text-v2-text-text-muted">
+                正在读取分类…
+              </p>
+            </Show>
+            <Show when={props.categories.length === 0 && !分类读不到() && !分类加载中()}>
               <p data-slot="capability-submit-no-category" class="text-[11px] text-v2-text-text-muted">
                 还没有可选的分类；请联系管理员在治理后台启用分类后再提交。
               </p>

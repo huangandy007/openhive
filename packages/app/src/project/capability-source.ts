@@ -46,7 +46,12 @@ export interface 库内条目 {
    * 库里那一行的状态（2026-11-01）。**缺席 = 阶段未知**，不是「未入库」（`#002-02`）。
    */
   readonly status?: AssetStatus
-  /** 库里那行的属主；「是不是我的」靠它判，不靠名字。 */
+  /**
+   * 库里那行的属主（`owner_id`）；「是不是我的」靠它判，不靠名字。
+   *
+   * 全链已贯通到这一层，但**本期前端不消费**：`currentUser` 只有 `policeId`，它与
+   * `owner_id` 不是同一套标识、不可比。留给 009「我的创作」——到那时再接判断，别在这里猜等价。
+   */
   readonly ownerId?: string
   /** 最近一次业务驳回的理由；缺行 = 没被驳回过，不要编理由。 */
   readonly rejectReason?: string

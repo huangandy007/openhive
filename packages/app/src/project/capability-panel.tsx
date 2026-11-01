@@ -233,13 +233,19 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
    * `enable-state.toggle()` 按 enabled 集合决定发 disable 还是 **enable**：草稿链进项目时
    * 不写启用行，它不在集合里——原来那颗无条件渲染的「停用」点下去实际发的是**启用**。
    *
-   * 阶段未知（旧服务端没给 `assetStatus`）保留既有行为：`合并能力` 的兜底只把 enabled 里的
+   * 阶段那一半是**黑名单**，不是白名单：只挡三个「还没启用过」的状态（草稿 / 审核中 /
+   * 待技术发布）。其余一律照画，尤其 `offline` / `archived`——`take_offline` / `archive`
+   * **不删启用行**，卡上的诊断还在说「停用后可在资产中心重新启用」；守卫要是把它们挡掉，
+   * 用户照着提示却找不到按钮，那条启用行再也删不掉，还继续占 `ENABLEMENT_LIMIT` 配额
+   *（2026-11-01 最终修复轮：上一版白名单正是这个回归）。
+   *
+   * 阶段未知（旧服务端没给 `assetStatus`）同理保留：`合并能力` 的兜底只把 enabled 里的
    * 条目算进库内，所以它按构造就在集合里，那颗「停用」名副其实。
    */
   const 可停用 = (条: 库内条目) => {
     if (!props.enabled().has(条.assetId)) return false
     const 值 = 阶段(条)
-    return 值 === undefined || 值 === "published" || 值 === "iterating"
+    return 值 !== "draft" && 值 !== "in_review" && 值 !== "pending_tech"
   }
 
   /** 提交在飞的那一条（防连点）。`onSubmit` 回 promise 时由 `.finally` 收掉。 */
@@ -252,12 +258,18 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
    * （提交 ＋ 停用）；跨行并发的写动作本来就不该从这张面板发生。
    */
   const 有动作在飞 = () => 提交中() !== undefined
-  const 提交 = (条: 库内条目) => {
-    const 动作 = props.onSubmit
-    if (动作 === undefined || 提交中() !== undefined) return
-    set提交中(条.assetId)
+  /**
+   * 占住在飞槽跑一个动作（库内提交与未入库提交共用）。
+   *
+   * 两种动作必须走同一套：未入库那条上一版直接 `void onCreateAndSubmit(...)`，
+   * 在飞状态里没有它 ⇒ 连点会开出两张入库表单（2026-11-01 最终修复轮）。
+   * 返回值是 promise 时由 `.finally` 收槽；同步返回（含 `undefined`）立刻收。
+   */
+  const 跑动作 = (标识: string, 动作: () => void | Promise<void>) => {
+    if (提交中() !== undefined) return
+    set提交中(标识)
     try {
-      const 结果 = 动作(条)
+      const 结果 = 动作()
       if (结果 === undefined) {
         set提交中(undefined)
         return
@@ -267,6 +279,12 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       set提交中(undefined)
       throw error
     }
+  }
+
+  const 提交 = (条: 库内条目) => {
+    const 动作 = props.onSubmit
+    if (动作 === undefined) return
+    跑动作(条.assetId, () => 动作(条))
   }
 
   const 条目 = () => 合并能力({ enabled: props.enabled(), skills: props.skills(), shadowed: props.shadowed() })
@@ -347,7 +365,11 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
             data-slot="capability-submit"
             disabled={有动作在飞()}
             class={小钮}
-            onClick={() => void props.onCreateAndSubmit?.(条)}
+            onClick={() => {
+              const 动作 = props.onCreateAndSubmit
+              if (动作 === undefined) return
+              跑动作(`local:${条.name}`, () => 动作(条))
+            }}
           >
             提交审核
           </button>
@@ -355,6 +377,22 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
       </Show>
     </div>
   )
+
+  /**
+   * 驳回理由的**展示文案**（2026-11-01 最终修复轮）。
+   *
+   * 通知 `body` 本身就是「<资产名> 被驳回：<理由>」；面板再套一句「上次驳回：」就成了
+   * 「上次驳回：资金分析 被驳回：第二步缺少校验」——同一件事说两遍，读者还得自己找哪段是理由。
+   * 只取最后一个全角冒号之后的部分；没有冒号就整句贴，**不加自己的前缀**。
+   *
+   * 只在 `draft` 阶段渲染（设计 §4.2 只定义「草稿（被驳回过）」）：再提交（`in_review`）
+   * 甚至发布之后，旧理由还挂着会看起来像「这次的驳回」。
+   */
+  const 驳回理由 = (原文: string | undefined) => {
+    if (原文 === undefined) return undefined
+    const 位 = 原文.lastIndexOf("：")
+    return 位 === -1 ? 原文 : 原文.slice(位 + 1)
+  }
 
   const 库内 = (条: 库内条目) => (
     <div
@@ -381,11 +419,14 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
         </span>
       </div>
       {读屏说明(() => 条.description)}
-      {/* 驳回理由不是按钮位的东西，挂在正文下方：用户是要**改内容**，不是要按它。 */}
-      <Show when={条.rejectReason !== undefined}>
-        <div data-slot="capability-reject-reason" class="pl-3 pt-1 text-[10px] text-v2-state-fg-danger">
-          上次驳回：{条.rejectReason}
-        </div>
+      {/* 驳回理由不是按钮位的东西，挂在正文下方：用户是要**改内容**，不是要按它。
+          只在草稿阶段成立，且文案已去掉「被驳回：」重复（说明见 `驳回理由`）。 */}
+      <Show when={条.status === "draft" ? 驳回理由(条.rejectReason) : undefined}>
+        {(话) => (
+          <div data-slot="capability-reject-reason" class="pl-3 pt-1 text-[10px] text-v2-state-fg-danger">
+            {话()}
+          </div>
+        )}
       </Show>
       {/* 正常（`loaded`）时卡片里没有第二块文字——说明改由右侧预览承载了。
           只有 ② 还要一行**诊断**（它不是说明，是「为什么没生效」，必须留在卡上）。 */}

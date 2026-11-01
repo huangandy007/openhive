@@ -620,7 +620,14 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(readlinkSync(链接)).toBe(发布)
   })
 
-  test("workspaceRoot 未传：只删草稿副本、不重指，也不抛错", async () => {
+  /**
+   * 契约在 2026-11-01 最终修复轮改过一次，**这里是改后契约**：
+   *
+   * `workspaceRoot` 未传时，既不知道去哪个沙箱重指，就**也不能删草稿副本**——副本是那条
+   * 退化路径的唯一退路。旧行为「跳过重指、照删副本」会把项目里的链接变成一个指向
+   * 已删目录的死链：服务层默认值自己产出坏状态，这比「少清理一次」糟得多。
+   */
+  test("workspaceRoot 未传：不重指、也不删草稿副本（副本是退化路径的唯一退路）", async () => {
     const db = await freshDb()
     const root = tempRoot()
     const 沙箱根 = tempRoot()
@@ -645,9 +652,13 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     })
 
     expect(published.status).toBe("published")
-    expect(await exists(草稿)).toBe(false)
-    // 没给沙箱根 ⇒ 不知道去哪个沙箱找链接，一个都不动（服务层不读 env）。
+    // 副本还在——删掉它，下面那条链接就成了断链。
+    expect(await exists(草稿)).toBe(true)
+    expect(await readFile(join(草稿, "SKILL.md"), "utf8")).toBe("草稿副本")
+    // 没给沙箱根 ⇒ 不知道去哪个沙箱找链接，一个都不动（服务层不读 env）；
+    // 链接仍指向仍存在的副本 ⇒ 仍然可用。
     expect(readlinkSync(链接)).toBe(草稿)
+    expect(await exists(链接)).toBe(true)
   })
 
   test("重指失败：发布仍成功、副本照删，并记一条警告", async () => {

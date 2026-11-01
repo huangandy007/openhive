@@ -846,10 +846,14 @@ async function prepareStorageStep(
           //
           // 两段各自 try：失败不能让一次已完成的流转落进外层 catch 触发 rollback——那会把
           // 已发布的目录搬回 pending。失败也不静默：逐个记 warning（目录 + 错误），便于事后捞。
-          // `workspaceRoot` 没传就只删副本、不重指；服务层不读 env（env 只由出口读）。
+          //
+          // `workspaceRoot` 没传 ⇒ **两段都跳过**（2026-11-01 最终修复轮改的契约）：不重指，
+          // 也**不能删草稿副本**。副本是那条退化路径的唯一退路——只删副本会让项目里仍指着它的
+          // 链接变成死链，服务层默认值自己产出坏状态；留副本最坏也只是少清理一次。
+          // 服务层不读 env（env 只由出口读）。
           if (applied.action === "publish_tech" || applied.action === "publish_iteration") {
-            const 草稿 = draftDirectory(root, asset.id)
             if (workspaceRoot !== undefined) {
+              const 草稿 = draftDirectory(root, asset.id)
               try {
                 const 重指 = await retargetAssetLinksAcrossWorkspaces(workspaceRoot, asset.id, 草稿, target)
                 for (const 失败 of 重指.failed) {
@@ -862,12 +866,12 @@ async function prepareStorageStep(
                 // 有意不冒出去：见上。整段抛错（理论上只有编码错误）同样要留痕。
                 console.warn(`[openhive-asset-publish] 资产 ${asset.id} 发布后重指链接失败`, error)
               }
-            }
-            try {
-              if (await directoryExists(草稿)) await removeDirectory(root, 草稿)
-            } catch (error) {
-              // 副本删不掉只是残留，不能让已完成的流转回 500。
-              console.warn(`[openhive-asset-publish] 资产 ${asset.id} 发布后删除草稿副本失败`, error)
+              try {
+                if (await directoryExists(草稿)) await removeDirectory(root, 草稿)
+              } catch (error) {
+                // 副本删不掉只是残留，不能让已完成的流转回 500。
+                console.warn(`[openhive-asset-publish] 资产 ${asset.id} 发布后删除草稿副本失败`, error)
+              }
             }
           }
         },
