@@ -140,6 +140,36 @@ describe("资产统一元数据（FR-001）", () => {
     )
   })
 
+  /**
+   * `iterationWorkspace` 的形状校验（`metadata.ts:224-231`）。
+   *
+   * ⚠️ 这里只覆盖 **insert 出口**：`insertAsset` / `storeAsset` 走 `validateAssetMetadata`；
+   * `updateAssetLifecycle` **不过校验**（迭代三条动作直接写这一列，这是已知的）。
+   * 写入值由 `iterationWorkspaceRelative()` 唯一产生，该函数内部已逐段 `assertSafeSegment`，
+   * 所以这里只钉「形状门」这一份，不另造一套路径规则。
+   *
+   * 删掉那条分支 ⇒ 前两条不再报 issue、后两条不再抛 ⇒ 一起红。
+   */
+  test("iterationWorkspace 必须是沙箱根下的相对路径：绝对路径 / `..` / 类型不对都被拒", () => {
+    const 问题 = (value: unknown) =>
+      validateAssetMetadata({ ...validMetadata(), iterationWorkspace: value as string })
+    const 字段 = (value: unknown) => 问题(value).map((issue) => issue.field)
+
+    // 绝对路径：换落盘根那天会指向旧机器上的位置（#010-04）。
+    expect(字段("C:/evil/x")).toContain("iterationWorkspace")
+    // 越界段：`..` 能把文件写到沙箱根外面。
+    expect(字段("u1/../p1/x")).toContain("iterationWorkspace")
+
+    // 类型不对（非字符串）：今天 `path.isAbsolute` 直接抛 TypeError，而不是静默放行。
+    // 没有把它变成 MetadataIssue 是已知残差（该分支只做形状判断）；删掉分支后这两句不再抛。
+    expect(() => 问题(42)).toThrow(TypeError)
+    expect(() => 问题({} as unknown)).toThrow(TypeError)
+
+    // 合法值与 null（没有工作副本）放行。
+    expect(问题("u1/p1/.openhive/iterations/asset_1")).toEqual([])
+    expect(问题(null)).toEqual([])
+  })
+
   test("已归档时间只能是 null 或 Unix 秒", () => {
     const issues = validateAssetMetadata({
       ...validMetadata(),

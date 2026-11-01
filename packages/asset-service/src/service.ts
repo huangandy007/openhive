@@ -456,24 +456,6 @@ function iterationColumnsOf(
   return undefined
 }
 
-/**
- * `iteration_workspace` 的**写入口形状校验**（保留的定制 · 版本迭代 2026-11-01）。
- *
- * 为什么必须在写入口验：`updateAssetLifecycle` 不过 `validateAssetMetadata`，而
- * `metadata.ts` 的形状校验放行反斜杠——这里是这条列唯一的共同出口（`#005-24`）。
- *
- * 判据是「**等于本次应当写入的那一段**」，不是「看起来像路径」：后者要再造一份路径规则，
- * 两份口径迟早漂（`#002-06`）。绝对路径、反斜杠、指向 `.opencode` 的相对值都不可能等于它。
- */
-export function assertIterationWorkspaceValue(value: string, expected: string): void {
-  if (value !== expected) {
-    throw new AssetTransitionError(
-      "invalid_source",
-      `iteration_workspace 必须恰好是 ${JSON.stringify(expected)}，实得 ${JSON.stringify(value)}`,
-    )
-  }
-}
-
 export interface TransitionAssetInput {
   readonly db: AssetTarget
   readonly root: string
@@ -583,18 +565,9 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       ? 迭代目标(input, asset)
       : undefined
 
+  // 写进 `iteration_workspace` 的值由 `iterationWorkspaceRelative()` 唯一产生（`start_iteration`
+  // 在 `迭代目标()` 里现算），该函数内部已逐段 `assertSafeSegment`——这里不再「校验」一次。
   const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代)
-  if (迭代列 !== undefined && "iterationWorkspace" in 迭代列) {
-    // 写入口形状校验（保留的定制 · `#005-24`）：写进库的那一段，用
-    // (userId, projectId, assetId) **重算一遍**仍必须相等。不拿 `迭代.relative` 自比——
-    // 那样任何来源的漂移都测不出来。
-    const 项目 = input.projectId
-    if (项目 === undefined) throw new Error("start_iteration 需要 projectId")
-    assertIterationWorkspaceValue(
-      迭代列.iterationWorkspace,
-      iterationWorkspaceRelative(input.viewer.userId, 项目, asset.id),
-    )
-  }
 
   const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory, 迭代)
 

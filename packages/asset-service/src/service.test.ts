@@ -14,7 +14,6 @@ import type { AssetMetadata, AssetVisibility } from "./metadata"
 import { AssetNotificationError } from "./notify"
 import { skillLinkPath } from "./project-skill-link"
 import {
-  assertIterationWorkspaceValue,
   assetLocation,
   createDraftAsset,
   discardAsset,
@@ -1356,22 +1355,6 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
       ),
     ).toBe("source_directory_required")
     expect((await assetById(db, "asset_1"))?.status).toBe("iterating")
-  })
-
-  test("iteration_workspace 写入口：绝对路径 / 反斜杠 / 指向 .opencode 的值都进不了库", () => {
-    const 应得 = "u1/p1/.openhive/iterations/asset_1"
-    expect(() => assertIterationWorkspaceValue(应得, 应得)).not.toThrow()
-
-    for (const 坏值 of [
-      // 绝对路径：换落盘根那天会指向旧机器上的位置（#010-04）。
-      "D:/sandbox/u1/p1/.openhive/iterations/asset_1",
-      // 反斜杠：`metadata.ts` 的形状校验放行它，但相对路径按 `/` 分段还原。
-      "u1\\p1\\.openhive\\iterations\\asset_1",
-      // `.opencode`：会落进内核的 skill 扫描范围，和项目里的链接同名打架（#010-05）。
-      "u1/p1/.opencode/iterations/asset_1",
-    ]) {
-      expect(() => assertIterationWorkspaceValue(坏值, 应得)).toThrow(AssetTransitionError)
-    }
   })
 
   test("并发写者已完成同一流转：条件更新落空不回滚目标目录（不搬走别人的结果）", async () => {
