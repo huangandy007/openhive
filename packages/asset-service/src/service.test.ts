@@ -1088,6 +1088,90 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await exists(待审目录(root))).toBe(false)
   })
 
+  /**
+   * 可重复提交（设计 §4 / §9：「后一次覆盖前一次」）。
+   *
+   * 今天这条行为只靠 `copyDirectory(..., { replace: true })` 成立，没有用例钉住——
+   * 改成非覆盖式（或改成「同名文件覆盖、多余文件保留」）不会红（`#004-03`）。
+   * 判别式用**第一次独有的文件在第二次提交后消失**：只比对同名文件内容的话，
+   * 两种实现都绿。
+   */
+  test("迭代：连续提交两次，第二次以工作副本当前内容整体覆盖 pending", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const source = join(tempRoot(), "sandbox")
+    await writeSkill(source, "v1")
+    await publishToV1(db, root, source)
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "start_iteration",
+      viewer: 作者,
+      grants: [],
+      reason: "补一条统计口径",
+      workspaceRoot: 沙箱根,
+      projectId: "p1",
+      now: 3_000,
+    })
+
+    const 工作副本 = join(沙箱根, "u1", "p1", ".openhive", "iterations", "asset_1")
+    await writeSkill(工作副本, "v2-第一次")
+    await writeFile(join(工作副本, "obsolete.md"), "只有第一版才有的文件")
+
+    const 第一次 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_001,
+    })
+    expect(第一次.version).toBe(2)
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2-第一次")
+    expect(await exists(join(待审目录(root), "obsolete.md"))).toBe(true)
+
+    // 作者接着改：换内容，并把第一次那个文件删掉
+    await writeSkill(工作副本, "v2-第二次，改过口径")
+    await rm(join(工作副本, "obsolete.md"))
+
+    const 第二次 = await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "submit_iteration",
+      viewer: 作者,
+      grants: [],
+      workspaceRoot: 沙箱根,
+      now: 3_002,
+    })
+    // 状态仍是 iterating、版本号不动：版本在发起那一刻已经 +1 了。
+    expect(第二次.status).toBe("iterating")
+    expect(第二次.version).toBe(2)
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2-第二次，改过口径")
+    expect(await readFile(join(待审目录(root), "references", "notes.txt"), "utf8")).toBe(
+      "v2-第二次，改过口径-notes",
+    )
+    // 判别式：第一次独有的文件不能被留下。改成「合并式覆盖」时这里红。
+    expect(await exists(join(待审目录(root), "obsolete.md"))).toBe(false)
+
+    // 发布出去的是第二次的内容（不是第一次）。
+    await transitionAsset({
+      db,
+      root,
+      assetId: "asset_1",
+      action: "publish_iteration",
+      viewer: 系统管理员,
+      grants: 管,
+      now: 3_003,
+    })
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v2-第二次，改过口径")
+    expect(await exists(join(发布目录(root), "obsolete.md"))).toBe(false)
+  })
+
   test("迭代：没提交就发布 ⇒ iteration_not_submitted，发布目录不变", async () => {
     const db = await freshDb()
     const root = tempRoot()

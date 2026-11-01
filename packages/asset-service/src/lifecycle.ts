@@ -59,7 +59,12 @@ export interface SkillTransition {
   to: AssetStatus
   /** 允许触发该动作的角色；多角色表示任一即可。 */
   actors: readonly ActorRole[]
-  /** 触发前必须满足的审核关；迭代发布同时要求两道关。 */
+  /**
+   * 触发前必须满足的审核关。迭代发布只要求技术关（迭代不过业务审核，2026-11-01 拍板）。
+   *
+   * ⚠️ **本字段今天全仓无人消费**：它只是「这条转移需要过哪几关」的声明，运行时不会拦
+   * 任何人（真正拦人的是 `from` / `actors`）。改它不改行为——别读成它真的在当门禁。
+   */
   gates: readonly ReviewGate[]
   storage: StorageIntent
   requiresReason?: boolean

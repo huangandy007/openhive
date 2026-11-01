@@ -49,6 +49,23 @@ async function 资产列(db: ReturnType<typeof freshDb>, name: string) {
   return Number(rowsOf(result)[0]?.["n"] ?? 0)
 }
 
+/**
+ * `asset_notification.action` 的 CHECK 闭集（0028 把它从 9 值重建为 11 值，down 再退回 9 值）。
+ *
+ * 为什么要把字面量抓出来比、而不是只断言「约束还在」：down 里少写一个值，约束照样在，
+ * 那条断言照样绿——它钉不住任何东西（`#004-03`）。
+ */
+async function 通知动作闭集(db: ReturnType<typeof freshDb>): Promise<string[]> {
+  const result = await db.execute(sql`
+    select pg_get_constraintdef(oid) as def
+    from pg_constraint
+    where conname = 'asset_notification_action_check'
+  `)
+  const [row] = rowsOf(result)
+  if (row === undefined) throw new Error("asset_notification_action_check 不存在（迁移没建出来）")
+  return [...String(row.def).matchAll(/'([^']*)'/g)].map((match) => match[1]!).sort()
+}
+
 /** 表在不在。用 `information_schema` 而不是 `to_regclass()`：后者认 `search_path`，判据会随会话漂。 */
 async function tableExists(db: ReturnType<typeof freshDb>, name: string, schema?: string): Promise<boolean> {
   const result = await db.execute(sql`
@@ -233,6 +250,19 @@ describe("migrate", () => {
     // 0027 的 down：只断言 0026 的两列的话，0027 的 down 写成空文件也照样绿（`#004-03`）。
     expect(await 资产列(db, "iteration_note")).toBe(0)
     expect(await 资产列(db, "iteration_workspace")).toBe(0)
+    // 同理，逆序回滚也会先跑 0028 的 down：动作闭集必须从 11 值退回 0011 的 9 值。
+    // 只断言「约束还在」钉不住 down 少写值（`#004-03`），所以逐值比。
+    expect(await 通知动作闭集(db)).toEqual([
+      "approve_business",
+      "archive",
+      "bring_online",
+      "publish_iteration",
+      "publish_tech",
+      "reject_business",
+      "start_iteration",
+      "submit_review",
+      "take_offline",
+    ])
   })
 })
 
