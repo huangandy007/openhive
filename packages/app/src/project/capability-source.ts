@@ -56,6 +56,13 @@ export interface 自带条目 {
   readonly kind: "local"
   readonly name: string
   readonly description?: string
+  /**
+   * 技能目录相对项目目录的路径（Task 6.5），由内核条目原样透传；缺席 = 服务端算不出来。
+   *
+   * 「未入库 → 入库并提交」拿它当 `POST /openhive/assets/draft` 的 `skillPath` 入参。
+   * **库内条目不带**：库里的条目已经入库了，这个字段只服务「未入库」那一档。
+   */
+  readonly skillPath?: string
 }
 
 export type 能力条目 = 库内条目 | 自带条目
@@ -92,6 +99,7 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
       kind: "local",
       name: 条.name,
       ...(条.description === undefined ? {} : { description: 条.description }),
+      ...(条.skillPath === undefined ? {} : { skillPath: 条.skillPath }),
     })
   }
 

@@ -294,9 +294,16 @@ function 目录名(location: string): string | undefined {
  * - 一律正斜杠：win32 的 `relative()` 会给 `\`，前端拿去拼请求就成了转义；
  * - 空串 ⇒ `"."`：`location` 就是 `<项目目录>/SKILL.md` 时，技能目录确实是项目根。
  *   有没有 SKILL.md、能不能入库由调用方判，这一层不拒也不猜。
+ *
+ * ⚠️ **两个入参先统一成 `/` 再算**（2026-11-01 修复轮 1）：`属于项目()` 会把 `\` 归一后放行，
+ * 但 POSIX 的 `relative` / `dirname` 不认 `\`。入参形态不一致时（一边正斜杠、一边反斜杠），
+ * 整串反斜杠会被当成一个文件名 ⇒ `skillPath` 算成盘符路径 / `..` / `"."`，而 `"."` 入库
+ * 端点会接受（等于把整个项目入库）。真实内核在 POSIX 不会回反斜杠，属潜在陷阱，但契约是
+ * 「全部转成 `/` 分隔」，归一必须发生在算之前，不能只归一输出。
  */
 function 技能相对路径(location: string, 目录: string): string {
-  const 相对 = relative(目录, dirname(location)).replace(/\\/g, "/")
+  const 正 = (s: string) => s.replace(/\\/g, "/")
+  const 相对 = relative(正(目录), dirname(正(location))).replace(/\\/g, "/")
   return 相对 === "" ? "." : 相对
 }
 

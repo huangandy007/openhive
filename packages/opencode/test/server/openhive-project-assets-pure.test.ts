@@ -153,6 +153,40 @@ describe("映射内核清单", () => {
     expect(回[0]?.skillPath).toBe(".opencode/skill/a1")
   })
 
+  // 修复轮 1（审查实测）：`属于项目()` 会把 `\` 归一后放行，但 POSIX 的 `relative` /
+  // `dirname` 不认 `\`。两个入参形态不一致时（一边含 `\`），整串反斜杠会被当成文件名 ⇒
+  // `skillPath` 变成盘符路径 / `..`，两边都反斜杠时甚至会变成 `"."`（入库端点会接受，
+  // 等于把整个项目入库）。契约是「全部转成 `/` 分隔」，所以归一必须在算之前。
+  test("目录与 location 分隔符形态不一致（一边含 \\）⇒ skillPath 仍是正确相对路径", () => {
+    const 正斜杠目录 = 映射内核清单(
+      [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" }],
+      "D:/s/1/p",
+      new Map(),
+      new Map(),
+    )
+    const 反斜杠目录 = 映射内核清单(
+      [{ name: "资金", location: "D:/s/1/p/.opencode/skill/a1/SKILL.md" }],
+      "D:\\s\\1\\p",
+      new Map(),
+      new Map(),
+    )
+    // 两边都反斜杠：POSIX 上 dirname 不切分 ⇒ 修复前会算成 `"."`（整项目入库）。
+    const 全反斜杠 = 映射内核清单(
+      [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" }],
+      "D:\\s\\1\\p",
+      new Map(),
+      new Map(),
+    )
+
+    for (const 回 of [正斜杠目录, 反斜杠目录, 全反斜杠]) {
+      expect(回[0]?.skillPath).toBe(".opencode/skill/a1")
+      // 不能带盘符、不能以 `..` 逃出项目目录、不能漏反斜杠。
+      expect(回[0]?.skillPath).not.toMatch(/^[A-Za-z]:/)
+      expect(回[0]?.skillPath?.startsWith("..")).toBe(false)
+      expect(回[0]?.skillPath).not.toContain("\\")
+    }
+  })
+
   test("assetName 只来自标题表；没有资产记录时只有 assetId", () => {
     const 回 = 映射内核清单(
       [

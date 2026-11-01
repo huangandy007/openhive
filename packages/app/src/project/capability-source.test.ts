@@ -7,12 +7,14 @@ const 技能 = (over: {
   assetId?: string
   assetName?: string
   description?: string
+  skillPath?: string
 }): 内核技能 => ({
   name: over.name,
   location: `/w/u/p/.opencode/skill/${over.assetId ?? over.name}/SKILL.md`,
   ...(over.assetId === undefined ? {} : { assetId: over.assetId }),
   ...(over.assetName === undefined ? {} : { assetName: over.assetName }),
   ...(over.description === undefined ? {} : { description: over.description }),
+  ...(over.skillPath === undefined ? {} : { skillPath: over.skillPath }),
 })
 
 describe("合并能力（设计 §4 的三态）", () => {
@@ -74,6 +76,23 @@ describe("合并能力（设计 §4 的三态）", () => {
     })
     expect(结果?.[0]?.kind).toBe("local")
     expect(结果?.[0]?.description).toBe("在项目里自己写的")
+  })
+
+  // Task 6.5 修复轮 1：Task 7 的「未入库 → 入库并提交」要拿 `skillPath` 调
+  // `POST /openhive/assets/draft`。合并层不透传，这个字段就到不了 UI。
+  test("③ 自带条目透传 skillPath（一键入库要用）", () => {
+    const 结果 = 合并能力({
+      enabled: new Set(),
+      skills: [技能({ name: "我的小工具", skillPath: ".opencode/skill/我的小工具" })],
+    })
+    expect(结果?.[0]?.kind).toBe("local")
+    expect(结果?.[0]?.kind === "local" ? 结果[0].skillPath : undefined).toBe(".opencode/skill/我的小工具")
+  })
+
+  test("③ 内核条目没有 skillPath ⇒ 自带条目也没有这个键（缺席不猜）", () => {
+    const 结果 = 合并能力({ enabled: new Set(), skills: [技能({ name: "我的小工具" })] })
+    expect(结果?.[0]?.kind).toBe("local")
+    expect(结果?.[0] !== undefined && "skillPath" in 结果[0]).toBe(false)
   })
 
   test("三态同屏：库内条目在前（按 enabled 顺序），自带条目在后", () => {
