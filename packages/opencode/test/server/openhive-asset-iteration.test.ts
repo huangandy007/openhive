@@ -7,10 +7,11 @@ import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { assetById, insertAsset } from "@opencode-ai/asset-service/asset"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -39,9 +40,13 @@ const 同事: TokenSubject = { id: "u-iter-mate", policeNo: "950002", name: "乙
 const 外人: TokenSubject = { id: "u-iter-foreign", policeNo: "950003", name: "丙外人", isAdmin: false }
 const 空说明: TokenSubject = { id: "u-iter-empty", policeNo: "950004", name: "丁空说明", isAdmin: false }
 const 草稿主: TokenSubject = { id: "u-iter-draft", policeNo: "950005", name: "戊草稿", isAdmin: false }
+/** 自己库里给**别人的 PG 项目**留过一行 `project_ext`（历史残留）：不能凭这行越权。 */
+const 陈旧: TokenSubject = { id: "u-iter-stale", policeNo: "950006", name: "己陈旧", isAdmin: false }
 
 const 我的项目 = "p-iter-mine"
 const 同事的项目 = "p-iter-mate"
+/** 多租户改造前建的老项目：只在属主自己的 SQLite 里有行，PG 名册不认识（`#010-06`）。 */
+const 我的老项目 = "p-iter-legacy"
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "ownerId" | "ownerName" | "status">): AssetMetadata => ({
   type: "skill",
@@ -78,22 +83,41 @@ const IDS = {
   submitMissing: "asset-iter-submit-missing",
   abort: "asset-iter-abort",
   mateAbort: "asset-iter-mate-abort",
+  legacy: "asset-iter-legacy",
+  stale: "asset-iter-stale",
 } as const
 
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
 const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-iter-ws-"))
+const 数据根 = mkdtempSync(join(tmpdir(), "openhive-iter-data-"))
 const restoreAssetsRoot = restorePoint({ OPENHIVE_ASSETS_ROOT: 资产根 })
 const restoreWorkspaceRoot = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 /** PGlite 夹具把多条连接汇进同一个 PG 会话，`bun-sql` 的语句缓存是连接级的（同治理测试）。 */
 const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 
+/**
+ * 每用户库的根：请求期 `Database.Service` 从 `Global`/`Flag` 之外的这条环境变量取。
+ * 必须**在 `realApp()` 构造之前**写好（app 的 layer 构造期就会定下根）。
+ */
+const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
+process.env.OPENHIVE_DATA_ROOT = 数据根
+
 afterAll(restoreAssetsRoot)
 afterAll(restoreWorkspaceRoot)
 afterAll(restoreDefaultPassword)
 afterAll(restorePoolMax)
+afterAll(() => {
+  if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
+  else process.env.OPENHIVE_DATA_ROOT = previousDataRoot
+})
 afterAll(() => rmSync(资产根, { recursive: true, force: true }))
 afterAll(() => rmSync(沙箱根, { recursive: true, force: true }))
+afterAll(() => {
+  try {
+    rmSync(数据根, { recursive: true, force: true })
+  } catch {} // Windows 上 SQLite 句柄可能仍被持有，清理失败不该变成测试失败
+})
 
 /** 共享根里造一份「线上已发布」的 skill。 */
 function 造线上(id: string) {
@@ -113,13 +137,39 @@ function 造工作副本(id: string) {
 const 工作副本相对 = (id: string) => `${我.id}/${我的项目}/.openhive/iterations/${id}`
 const 工作副本绝对 = (id: string) => join(沙箱根, 我.id, 我的项目, ".openhive", "iterations", id)
 
+/**
+ * 往**某个用户自己的**每用户库里种一行「他建过这个项目」——老项目在 PG 名册里的唯一替代证据。
+ *
+ * 走 `DatabaseRouter`（与请求期**同一条**建库 / 迁移路径），不自己拉 `bun:sqlite`：`project_ext`
+ * 是建库钩子建的（`#004-12`）。裸 SQL 只用来绕开 drizzle 的 `.$default()`。
+ * `project` 行不能省：`project_ext.project_id` 有外键。
+ */
+const 种自建项目 = async (subject: TokenSubject, projectId: string) => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const router = yield* DatabaseRouter.Service
+        const db = (yield* router.forUser(subject.id)).db
+        yield* db.run(
+          sql`INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated)
+              VALUES (${projectId}, ${`/tmp/${projectId}`}, '[]', 1700000000000, 1700000000000)`,
+        )
+        yield* db.run(
+          sql`INSERT OR IGNORE INTO project_ext (project_id, type, project_type, shared_directory, last_accessed_at)
+              VALUES (${projectId}, 'private', '单案', NULL, 1700000000000)`,
+        )
+      }),
+    ).pipe(Effect.provide(DatabaseRouter.layer({ root: 数据根 }))),
+  )
+}
+
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
 
-  for (const subject of [我, 同事, 外人, 空说明, 草稿主]) {
+  for (const subject of [我, 同事, 外人, 空说明, 草稿主, 陈旧]) {
     await pg.db.execute(sql`
       insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
       values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室',
@@ -133,6 +183,13 @@ beforeAll(async () => {
            (${我的项目}, ${草稿主.id}, 'member', 0),
            (${同事的项目}, ${同事.id}, 'owner', 0)
   `)
+
+  // 老项目（多租户改造前）：证据只在属主**自己**库的 `project_ext` 里；PG 里**故意不建**
+  // `project_member` / `project_meta`——这正是 `#010-06` 描述的形态。
+  await 种自建项目(我, 我的老项目)
+  // 反向夹具：陈旧自己库里给同事的 **PG 已知项目**留过一行历史残留。回落有界：只要 PG
+  // 认识这个项目，这行就不能当授权证据。
+  await 种自建项目(陈旧, 同事的项目)
 
   // 成功面 / 失败面各用独立夹具，杜绝执行顺序依赖。
   await insertAsset(pg.db, 资产({ id: IDS.start, name: "发起成功", ownerId: 我.id, ownerName: 我.name, status: "published" }))
@@ -228,6 +285,20 @@ beforeAll(async () => {
       iterationWorkspace: `${同事.id}/${同事的项目}/.openhive/iterations/${IDS.mateAbort}`,
     }),
   )
+
+  // 老项目里属主自己的资产：发起必须成功（只查 PG 会误判成「不属于你」）。
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.legacy, name: "老项目资产", ownerId: 我.id, ownerName: 我.name, status: "published" }),
+  )
+  造线上(IDS.legacy)
+
+  // 陈旧在**同事的 PG 项目**里发起：自己库里有残留 `project_ext` 行也不该放行。
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.stale, name: "越权试探", ownerId: 陈旧.id, ownerName: 陈旧.name, status: "published" }),
+  )
+  造线上(IDS.stale)
 })
 
 const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
@@ -300,6 +371,37 @@ describe("迭代出口 · 成功面", () => {
       expect(行?.iterationNote).toBe("补一条统计口径")
       // 落库的是**相对沙箱根**那一段（`#010-04`：换根不用搬库）。
       expect(行?.iterationWorkspace).toBe(工作副本相对(IDS.start))
+    }),
+  )
+
+  it.live("老项目（只在属主自己库里有 project_ext）⇒ 属主发起成功，不误判成「不属于你」", () =>
+    Effect.gen(function* () {
+      // 夹具自证：「老」的含义是 PG 完全不认识它（`#010-06` 那 11/13 条的形态）。
+      const 名册 = rowsOf(
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`select 1 from auth.project_member where project_id = ${我的老项目}`),
+        ),
+      )
+      expect(名册).toHaveLength(0)
+      const 项目元 = rowsOf(
+        yield* Effect.promise(() => pg!.db.execute(sql`select 1 from auth.project_meta where project_id = ${我的老项目}`)),
+      )
+      expect(项目元).toHaveLength(0)
+
+      const response = yield* 发起(我, IDS.legacy, { note: "老项目也补一条口径", projectId: 我的老项目 })
+      expect(response.status).toBe(200)
+
+      const 体 = Schema.decodeUnknownSync(回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+      expect(体.assetId).toBe(IDS.legacy)
+      expect(体.status).toBe("iterating")
+      // 工作副本按**老项目 id** 落，而不是退回别的项目目录。
+      const 绝对 = join(沙箱根, 我.id, 我的老项目, ".openhive", "iterations", IDS.legacy)
+      expect(体.workspace).toBe(绝对)
+      expect(existsSync(绝对)).toBe(true)
+
+      const 行 = yield* 读行(IDS.legacy)
+      expect(行?.status).toBe("iterating")
+      expect(行?.iterationWorkspace).toBe(`${我.id}/${我的老项目}/.openhive/iterations/${IDS.legacy}`)
     }),
   )
 
@@ -387,6 +489,27 @@ describe("迭代出口 · 失败面", () => {
       }
       expect(existsSync(join(沙箱根, 外人.id))).toBe(false)
       expect((yield* 读行(IDS.foreign))?.status).toBe("published")
+    }),
+  )
+
+  it.live("PG 认识的项目 + 调用者不是成员 ⇒ 400（自己库里残留一行 project_ext 也不放宽）", () =>
+    Effect.gen(function* () {
+      // 夹具自证：同事是 `p-iter-mate` 的 PG 属主 ⇒ 项目是 PG 认识的；陈旧自己库里那行
+      // `project_ext` 只是历史残留，不能当授权证据（回落**只**给 PG 完全不认识的项目）。
+      const 名册 = rowsOf(
+        yield* Effect.promise(() => pg!.db.execute(sql`select user_id from auth.project_member where project_id = ${同事的项目}`)),
+      )
+      expect(名册.map((行) => 行["user_id"])).toContain(同事.id)
+
+      const response = yield* 发起(陈旧, IDS.stale, { note: "补一条口径", projectId: 同事的项目 })
+      expect(response.status).toBe(400)
+      expect((yield* 读错误(response))).toContain("不属于你")
+
+      // 拒绝发生在 `transitionAsset()` 之前：一行元数据、一个目录都不该动。
+      const 行 = yield* 读行(IDS.stale)
+      expect(行?.status).toBe("published")
+      expect(行?.iterationWorkspace).toBeNull()
+      expect(existsSync(join(沙箱根, 陈旧.id))).toBe(false)
     }),
   )
 

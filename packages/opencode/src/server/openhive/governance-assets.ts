@@ -624,6 +624,14 @@ export function 映射错误(
       // ⇒ 出口 `Effect.die` ⇒ 500 且不落审计（Task 3 复审挂账）。
       case "iteration_not_submitted":
         return { status: CONFLICT, message: error.message }
+      default: {
+        // 编译期闸门（与作者出口 `assets.ts` 的 `失败()` 同款）：`TransitionErrorCode` 新增了
+        // 码却没在上面归类 ⇒ `error.code` 不是 `never` ⇒ typecheck 红。没有这道闸，漏映射的码
+        // 会落到下面的 `undefined` ⇒ 出口 `Effect.die` ⇒ 500 且不落审计（`iteration_not_submitted`
+        // 就是这么欠下的）。运行期走不到这里。
+        const 未覆盖: never = error.code
+        throw new Error(`未映射的流转错误码：${String(未覆盖)}`)
+      }
     }
   }
   if (error instanceof MissingSourceDirectoryError) return { status: CONFLICT, message: error.message }

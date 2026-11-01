@@ -76,11 +76,12 @@ import {
   assetsRoot,
   iterationWorkspaceDirectory,
 } from "@opencode-ai/asset-service/storage"
-import { rolesOf } from "@opencode-ai/auth/project-member"
 import { grantsFor } from "@opencode-ai/auth/rbac"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
+import { Database } from "@opencode-ai/core/database/database"
 import { offsetOf, parsePage } from "./paging"
+import { 成员角色 } from "./project-actor"
 import {
   ASSET_TYPES,
   ASSET_VISIBILITIES,
@@ -117,12 +118,18 @@ interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   /** 使用记录的抽取节流（一个应用层一份；见 `asset-usage.ts` 的 `create抽取时控`）。 */
   readonly 时控: ReturnType<typeof create抽取时控>
+  /**
+   * **调用者自己的**每用户 SQLite。`projectId` 归属判定要读它（老项目的唯一证据）——
+   * 判据是 `./project-actor` 的 `成员角色()`，本文件不另写回落（`#002-06` / `#010-06`）。
+   */
+  readonly database: Database.Interface
 }
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
-    const deps: Deps = { pg: openhivePg.pg, 时控: create抽取时控() }
+    const database = yield* Database.Service
+    const deps: Deps = { pg: openhivePg.pg, 时控: create抽取时控(), database }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
     yield* router.add("PATCH", PATH.content, (request) => handleContent(request, deps))
@@ -349,8 +356,8 @@ function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps)
  * projectId → 流转。授权排在读体之前：非作者递畸形 JSON 拿 403 而不是 400——错误码本身
  * 不能变成「你有没有这个权限」的探针。
  *
- * `projectId` 必须是**调用者自己的项目**，且查的是共享 PG 的 `auth.project_member`
- * （唯一访问器 `rolesOf`）：不是成员回 400 而不是 404——404 会变成「这个项目 id 存在吗」的探针。
+ * `projectId` 必须是**调用者自己的项目**（判据：`./project-actor` 的 `成员角色()`，两套来源的
+ * 唯一入口，`#010-06`）：不是成员回 400 而不是 404——404 会变成「这个项目 id 存在吗」的探针。
  * 这一步在 `transitionAsset()` 之前，所以拒绝时沙箱里一个目录都不会出现。
  */
 function handleIteration(
@@ -397,8 +404,14 @@ function handleIteration(
         return fail(BAD_REQUEST, "projectId 不合法")
       }
       // 不是成员 ⇒ 400 而不是 404：404 会变成「这个项目 id 存在吗」的探针。
-      const 角色 = yield* Effect.promise(() => rolesOf(deps.pg(), { userId, projectIds: [项目] }))
-      if (!角色.has(项目)) return fail(BAD_REQUEST, "目标项目不属于你")
+      //
+      // 判据**只查这一处**（`./project-actor` 的 `成员角色`，`#002-06`）。不能只查 PG 的
+      // `auth.project_member`：多租户改造前建的老项目只在**属主自己**库的 `project_ext` 里
+      // 有行，PG 名册里根本没有——只查 PG 会让属主自己发起迭代被判成「不属于你」（`#010-06`，
+      // 真栈 13 条清单里 11 条如此）。回落有界：PG 名册有该项目、或 `project_meta` 认识它时，
+      // 一律以 PG 为准，绝不放宽（否则别人的库里残留一行就能越权）。
+      const 角色 = yield* 成员角色({ pg: deps.pg(), database: deps.database }, userId, 项目)
+      if (角色 === undefined) return fail(BAD_REQUEST, "目标项目不属于你")
       projectId = 项目
     }
 
