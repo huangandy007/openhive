@@ -34,10 +34,17 @@ export * as OpenhiveAssets from "./assets"
  * 「三个空间全取消」的结果是空集，由前端短路成「不发请求」，出口不提供「空数组 = 不过滤」
  * 这种会被误用的后门（空串 `visibility=` 直接 400）。
  *
- * ## 「只列已发布」是产品口径
+ * ## 「只列在线」是产品口径（2026-11-01 终审修正）
  *
- * 使用面是「我能用的东西」：草稿 / 待审 / 迭代中 / 下线 / 归档都不该出现在这里。
- * `offline` 虽然 `canReadAsset()` 放行（看得见、不能用），但使用面连列表也不给。
+ * 使用面是「我能用的东西」：列 `published` **与 `iterating`**，草稿 / 待审 / 待技术发布 /
+ * 下线 / 归档都不该出现在这里。`offline` 虽然 `canReadAsset()` 放行（看得见、不能用），
+ * 但使用面连列表也不给。
+ *
+ * 为什么 iterating 要进来：迭代中的内容**仍是线上那一份**（`assetLocation` 对 iterating
+ * 返回 `publishDirectory`，内核照常加载），把它从浏览面摘掉等于「迭代期间资产从所有人眼前
+ * 消失」；而作者失去入口就意味着设计 §7 的「迭代中 + 提交 / 放弃」一次都渲染不出来。
+ * `readable-sql.ts` 的 `SHARED_STATUSES` 早就把 iterating 当共享状态，设计 §7 还专门定义了
+ * 「iterating 但我不是作者」的只读态——两者都要求它可见。
  *
  * ## 带「我收藏了哪些」（2026-10-29）
  *
@@ -198,7 +205,10 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     // 需求 2：「其他」是保留值，翻成兜底条件；其余仍按分类 id 等值筛。
     // 兜底项没有库行，`category = '__other__'` 走等值筛只会恒空——所以必须在这里翻。
     const filters: AssetListFilters = {
-      status: "published",
+      // 在线 = 已发布 + 迭代中（2026-11-01 终审修正）。iterating 的内容仍是线上那一份
+      // （`assetLocation` 对 iterating 返回发布目录），摘掉它 = 迭代期间资产从所有人眼前
+      // 消失；`readable-sql.ts` 的 `SHARED_STATUSES` 也早把 iterating 当共享状态。
+      status: ["published", "iterating"],
       ...(type === "" ? {} : { type }),
       ...(search === "" ? {} : { search }),
       ...(category === ""

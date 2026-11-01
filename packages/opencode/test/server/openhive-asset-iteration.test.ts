@@ -360,6 +360,12 @@ const 回包 = Schema.Struct({
   workspace: Schema.optional(Schema.NullOr(Schema.String)),
 })
 
+/** 使用面列表（`GET /openhive/assets`）：只看本用例关心的两处。 */
+const 列表回包 = Schema.Struct({
+  assets: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })),
+  writableIds: Schema.Array(Schema.String),
+})
+
 const 读行 = (id: string) => Effect.promise(() => assetById(pg!.db, id))
 
 describe("迭代出口 · 成功面", () => {
@@ -382,6 +388,22 @@ describe("迭代出口 · 成功面", () => {
       expect(行?.iterationNote).toBe("补一条统计口径")
       // 落库的是**相对沙箱根**那一段（`#010-04`：换根不用搬库）。
       expect(行?.iterationWorkspace).toBe(工作副本相对(IDS.start))
+    }),
+  )
+
+  it.live("作者发起后：使用面列表仍能看到它（iterating），且 writableIds 含它（提交 / 放弃的入口）", () =>
+    Effect.gen(function* () {
+      // 前一条用例已经把 IDS.start 推到 iterating，这里验的是「迭代中不再从浏览面消失」。
+      // 旧实现把 status 写死成 published ⇒ 这一行整条不见 ⇒ 详情退回打开时的快照、
+      // 作者也没有提交 / 放弃的入口，设计 §7 的「迭代中」两态一次都渲染不出来。
+      const response = yield* 发(我, "/openhive/assets?pageSize=100")
+      expect(response.status).toBe(200)
+      const 体 = Schema.decodeUnknownSync(列表回包)(JSON.parse(yield* Effect.promise(() => response.text())))
+
+      const 行 = 体.assets.find((asset) => asset.id === IDS.start)
+      expect(行?.status).toBe("iterating")
+      // 作者有 write：前端据此显示「提交 / 放弃」。
+      expect(体.writableIds).toContain(IDS.start)
     }),
   )
 

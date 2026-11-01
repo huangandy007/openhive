@@ -297,6 +297,29 @@ describe("资产仓储（T003）", () => {
   })
 
   /**
+   * 状态过滤收**数组**（2026-11-01，版本迭代）：使用面要同时列「已发布 + 迭代中」。
+   *
+   * 单值仍走等值（既有 SQL 形状不变），数组走逐值占位符 + `in`。空数组是**空集**，
+   * 与 `visibility` 同一语义（不是「不过滤」）。
+   */
+  test("列表：status 收数组（多状态取并集；空数组是空集）", async () => {
+    const db = await freshDb()
+    await insertAsset(db, metadata({ id: "s1", status: "draft", updatedAt: 3_000 }))
+    await insertAsset(db, metadata({ id: "s2", status: "published", updatedAt: 2_000 }))
+    await insertAsset(db, metadata({ id: "s3", status: "iterating", updatedAt: 1_000 }))
+
+    const ids = (rows: AssetMetadata[]) => rows.map((row) => row.id)
+
+    expect(ids(await listAssets(db, { status: ["published", "iterating"] }))).toEqual(["s2", "s3"])
+    // 总数与列表共用同一份条件。
+    expect(await countAssets(db, { status: ["published", "iterating"] })).toBe(2)
+    // 单值路径保持原样（等值，不是 `in`）。
+    expect(ids(await listAssets(db, { status: "published" }))).toEqual(["s2"])
+    // 空数组 = 空集。
+    expect(ids(await listAssets(db, { status: [] }))).toEqual([])
+  })
+
+  /**
    * 需求 2（2026-10-27）：「其他」兜底与批量改分类。
    *
    * 兜底口径是**「分类不在启用清单里」**，不是「分类为空」——`category` 是 NOT NULL，

@@ -273,7 +273,15 @@ export async function updateAssetCategories(
 
 export interface AssetListFilters {
   readonly type?: AssetType
-  readonly status?: AssetStatus
+  /**
+   * 状态过滤。**单个值或数组**都收（版本迭代，2026-11-01）：使用面要同时列
+   * 「已发布 + 迭代中」——迭代中的内容仍是线上那一份（`assetLocation` 对 iterating 返回
+   * 发布目录），把它从浏览面摘掉等于「迭代期间资产从所有人眼前消失」。
+   *
+   * 与 `visibility` 同一写法：单值保持原来的等值条件（不改既有 SQL 形状），数组走逐值
+   * 占位符 + `in`。空数组是**空集**，不是「不过滤」。
+   */
+  readonly status?: AssetStatus | readonly AssetStatus[]
   readonly category?: string
   /**
    * 「其他」兜底（需求 2，2026-10-27）：只列**分类不在启用清单里**的行。
@@ -323,7 +331,24 @@ export interface AssetPage {
 function assetConditions(filters: AssetListFilters): SQL[] {
   const conditions: SQL[] = []
   if (filters.type !== undefined) conditions.push(sql`type = ${filters.type}`)
-  if (filters.status !== undefined) conditions.push(sql`status = ${filters.status}`)
+  if (filters.status !== undefined) {
+    // 单值保持等值（既有 SQL 形状不变）；数组逐个占位符 + `in`——原因同下面 `visibility`：
+    // 把 JS 数组直接塞进模板，drizzle 会展开成行构造器，`$1, $2` 变成 `status = ($1, $2)`
+    // ⇒ `operator does not exist: text = record`（42883，实测）。
+    if (typeof filters.status === "string") {
+      conditions.push(sql`status = ${filters.status}`)
+    } else {
+      const statuses = filters.status
+      conditions.push(
+        statuses.length === 0
+          ? sql`false`
+          : sql`status in (${sql.join(
+              statuses.map((status) => sql`${status}`),
+              sql`, `,
+            )})`,
+      )
+    }
+  }
   if (filters.category !== undefined) conditions.push(sql`category = ${filters.category}`)
   if (filters.categoryOther === true) {
     // 需求 2 的兜底桶。子查询而不是把 id 清单拼进来：分类随时会被管理员停用，

@@ -25,10 +25,12 @@ import { testEffect } from "../lib/effect"
  * `canReadAsset()`（作者恒可读；有授权行 `read`；否则按 `global` / 同部门 `department`
  * 放行，`personal` 只给作者）。这里证明的是**出口把它接上了**，不是再证一遍规则。
  *
- * ## 本轮口径（用户裁定）
+ * ## 本轮口径（用户裁定；2026-11-01 终审修正）
  *
- * **只列 `published`**。草稿 / 待审 / 迭代中 / 已下线 / 已归档一律不出现——半成品与
- * 下线资产不进「我能用的东西」这一面。
+ * **列 `published` 与 `iterating`**。草稿 / 待审 / 待技术发布 / 已下线 / 已归档一律不出现。
+ * 迭代中的内容仍是**线上那一份**（`assetLocation` / `publishDirectory` 对 iterating 返回
+ * 发布目录），把它从浏览面摘掉等于「迭代期间资产从所有人眼前消失」；设计 §7 还专门定义了
+ * 「iterating 但我不是作者」的只读态，那个态也只能从这里拿到。
  *
  * ## 判据落在可观测处
  *
@@ -153,7 +155,7 @@ beforeAll(async () => {
   )
   await insertAsset(
     pg.db,
-    // 自己的个人资产：作者恒可读，但本轮口径是「只列已发布」——所以得是 published 才出现。
+    // 自己的个人资产：作者恒可读，但本轮口径只列 published / iterating——所以得是 published 才出现。
     资产({ id: IDS.mine, name: "我的个人稿件", status: "published", visibility: "personal", ownerId: ME.id }),
   )
   await insertAsset(
@@ -273,19 +275,17 @@ describe("T017 · 使用面资产列表", () => {
     }),
   )
 
-  it.live("状态门：只列 published——草稿 / 待审 / 待发布 / 迭代中 / 下线 / 归档一律不出现", () =>
+  it.live("状态门：列 published + iterating——草稿 / 待审 / 待发布 / 下线 / 归档一律不出现", () =>
     Effect.gen(function* () {
       const ids = idsOf(yield* json(列表, yield* get(ME, LIST)))
-      for (const hidden of [
-        IDS.draft,
-        IDS.reviewing,
-        IDS.pendingTech,
-        IDS.iterating,
-        IDS.offline,
-        IDS.archived,
-      ]) {
+      for (const hidden of [IDS.draft, IDS.reviewing, IDS.pendingTech, IDS.offline, IDS.archived]) {
         expect(ids).not.toContain(hidden)
       }
+      // 迭代中**仍属「在线」**：它的目录就是发布目录（`assetLocation` 对 iterating 返回
+      // `publishDirectory`），内核照常加载，内容也仍是民警正在用的那一版。把它摘掉，迭代期间
+      // 资产就从所有人眼前消失了——设计 §7 的「iterating 但我不是作者」只读态同样不可达。
+      // `IDS.iterating` 的属主是 MATE（不是 ME）：这条同时证明非作者态可达。
+      expect(ids).toContain(IDS.iterating)
       expect(ids).toContain(IDS.global)
     }),
   )
