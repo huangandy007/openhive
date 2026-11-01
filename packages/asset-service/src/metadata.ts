@@ -1,11 +1,23 @@
 /**
  * 资产统一元数据模型（FR-001）。
  *
- * 这个文件只是「契约」：类型、闭集、校验规则。它不碰数据库、不碰文件系统。
+ * 这个文件只是「契约」：类型、闭集、校验规则。它不碰数据库、不碰文件系统，
+ * **也不许引 Node 内置模块**——前端把它当运行时常量来源（`ASSET_*` / label 表 /
+ * `CONTENT_LIMITS`），Vite 会把整个模块打进浏览器图，`node:*` 会被换成「一访问就抛」
+ * 的桩，模块加载即失败、整页白板（2026-11-01 真栈实测）。`metadata.test.ts` 有一条守卫钉住。
+ *
  * 资产表落在 `auth` schema（D0-1），文件落在 `/assets`（D0-2），两者由后续 task 接上。
  */
 
-import { isAbsolute } from "node:path"
+/**
+ * 绝对路径判定（**不引 `node:path`**，原因见文件头）。
+ *
+ * 只认两种绝对形态：盘符（`C:/x`、`C:\x`）与前导分隔符（`/x`、`\x`）。剩下能绕过它的形态
+ * ——空串、`.`、`..` 段——由下面的「空段」规则兜住；两处合起来与「`path.isAbsolute` + 逐段检查」
+ * 等价（`metadata.test.ts` 的 `iterationWorkspace` 用例逐形态钉住）。非字符串会在 `.split` 处
+ * 抛 `TypeError`，与引 `node:path` 时的行为一致。
+ */
+const 是绝对路径 = (value: string) => /^(?:[A-Za-z]:[\\/]|[\\/])/.test(value)
 
 export const ASSET_TYPES = ["skill", "mcp", "knowledge_base"] as const
 export type AssetType = (typeof ASSET_TYPES)[number]
@@ -225,7 +237,7 @@ export function validateAssetMetadata(input: AssetMetadata): MetadataIssue[] {
   // （LEARNINGS #010-04）。这里只挡形状，不挡越界——越界由 `iterationWorkspaceDirectory()` 挡。
   if (input.iterationWorkspace !== null) {
     const 相对 = input.iterationWorkspace
-    if (相对 === "" || isAbsolute(相对) || 相对.split(/[\\/]/).some((段) => 段 === "" || 段 === "." || 段 === "..")) {
+    if (相对 === "" || 是绝对路径(相对) || 相对.split(/[\\/]/).some((段) => 段 === "" || 段 === "." || 段 === "..")) {
       issues.push({ field: "iterationWorkspace", message: "工作副本路径必须是沙箱根下的相对路径" })
     }
   }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import {
   ASSET_STATUSES,
@@ -151,10 +152,10 @@ describe("资产统一元数据（FR-001）", () => {
    *
    * 删掉那条分支的后果按平台不同（`#004-03`：断言必须能失败，所以要说准）：
    * - win32：本条用例在第一条断言就红（实测 `Received: []`）；`..` 与非字符串那两条
-   *   轮不到执行（同一用例前一条失败即中止），所以能直接钉住 `isAbsolute` 的只有第一条；
-   * - posix：`isAbsolute` 没了也不影响结果——`resolve("x")` 以 `/` 开头，split 出首段
-   *   为空串，由「空段」规则照样拦下 ⇒ 该用例仍绿（删 `isAbsolute` 在 posix 上行为等价）。
-   *   所以 posix 侧真正钉住的是空段规则，不是 `isAbsolute`。
+   *   轮不到执行（同一用例前一条失败即中止），所以能直接钉住绝对路径判定的只有第一条；
+   * - posix：判定没了也不影响结果——`resolve("x")` 以 `/` 开头，split 出首段为空串，
+   *   由「空段」规则照样拦下 ⇒ 该用例仍绿（该判定在 posix 上行为等价于空段规则）。
+   *   所以 posix 侧真正钉住的是空段规则，不是绝对路径判定。
    */
   test("iterationWorkspace 必须是沙箱根下的相对路径：绝对路径 / `..` / 类型不对都被拒", () => {
     const 问题 = (value: unknown) =>
@@ -162,14 +163,14 @@ describe("资产统一元数据（FR-001）", () => {
     const 字段 = (value: unknown) => 问题(value).map((issue) => issue.field)
 
     // 绝对路径：换落盘根那天会指向旧机器上的位置（#010-04）。
-    // 用 `resolve("x")` 而不是写死 `C:/evil/x`：后者在 Linux 上 `isAbsolute` 为 false
+    // 用 `resolve("x")` 而不是写死 `C:/evil/x`：后者在 Linux 上不是绝对路径
     // （CI 的 unit 矩阵含 ubuntu），断言会恒红。posix 下这条由「首段为空」规则兜住，
-    // 与 isAbsolute 同效；win32 下才真正走 isAbsolute 那条。
+    // 与绝对路径判定同效；win32 下才真正走盘符那条。
     expect(字段(resolve("x"))).toContain("iterationWorkspace")
     // 越界段：`..` 能把文件写到沙箱根外面。
     expect(字段("u1/../p1/x")).toContain("iterationWorkspace")
 
-    // 类型不对（非字符串）：今天 `path.isAbsolute` 直接抛 TypeError，而不是静默放行。
+    // 类型不对（非字符串）：今天在绝对路径判定之后的 `.split` 处抛 TypeError，而不是静默放行。
     // 没有把它变成 MetadataIssue 是已知残差（该分支只做形状判断）；删掉分支后这两句不再抛。
     expect(() => 问题(42)).toThrow(TypeError)
     expect(() => 问题({} as unknown)).toThrow(TypeError)
@@ -177,6 +178,23 @@ describe("资产统一元数据（FR-001）", () => {
     // 合法值与 null（没有工作副本）放行。
     expect(问题("u1/p1/.openhive/iterations/asset_1")).toEqual([])
     expect(问题(null)).toEqual([])
+  })
+
+  /**
+   * 浏览器可加载性（2026-11-01 真栈白板）：前端把本文件当**运行时常量来源**
+   * （`ASSET_*` / label 表 / `CONTENT_LIMITS`，见 `packages/app/src/ai-assets/*.tsx`），
+   * 所以 Vite 会把整个模块打进浏览器图。一旦这里有 `node:*` 导入，Vite 换成一个
+   * 「一访问就抛」的桩 ⇒ 模块加载失败 ⇒ **整页白板**（实测报错：
+   * `Module "node:path" has been externalized for browser compatibility`）。
+   * 本文件头也写着「不碰数据库、不碰文件系统」。
+   *
+   * 读源码而不是 import：`bun test` 里 `node:path` 能解析、跑得绿，只有静态检查才拦得住
+   * 「服务端能跑、浏览器炸」这一类。`readFileSync` 引在测试里无妨——测试不进浏览器图。
+   */
+  test("本模块必须能在浏览器里加载：不许引 Node 内置模块", () => {
+    const 源 = readFileSync(new URL("./metadata.ts", import.meta.url), "utf8")
+    const 引入 = [...源.matchAll(/import\s+[^;]*?from\s+["'](node:[^"']+)["']/g)].map((m) => m[1])
+    expect(引入).toEqual([])
   })
 
   test("已归档时间只能是 null 或 Unix 秒", () => {
