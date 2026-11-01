@@ -4,6 +4,57 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-11-01 · 写工具顺着项目链接改到共享发布库（安全洞）
+
+**现象**：项目里的 `.opencode/skill/<assetId>` 是指向共享库的链接（Windows 上是 junction）。AI 用写工具改
+「项目里那个 skill」时，**实际改的是共享库里的已发布那一份**——绕过审核、绕过版本、没有备份，而且是所有人
+共用的同一份。
+
+**实测证据（真栈，只读 + 自清理）**：
+- `D:\assets` 是活的资产根（内核默认 `/assets` 在 D: 解析）；沙箱 `D:\openhive-stack-state`；7 个项目里
+  **18 条** junction 指向 `D:\assets\global\skills\<assetId>`。
+- 经链接写一个探针文件 ⇒ 共享目录里**立刻出现**；共享 `SKILL.md` 能以写模式打开（探针已删，残留 0）。
+- 真跑 `containsPath`：同一个路径判定 `项目内: true`，同一函数对真正项目外的路径 `false`。
+
+**根因**：外部目录判定 `assertExternalDirectoryEffect` → `containsPath` 只比**字面路径**，从不 `realpath`。
+链接路径落在项目内 ⇒ 放行；写操作的 `open()` 由操作系统顺着链接解析，落到共享库。
+
+**做法**：新增 `src/tool/shared-assets.ts`——`realPath()` 顺着链接一路 `realpathSync.native`（目标还不存在
+时解析最近的已存在祖先再拼回尾段，所以「顺着链接**新建**文件」同样拦得住），`assertNotSharedAsset()` 落在资产根
+下就抛错（文案指向「改工作区源目录」）。接在 `write` / `edit` / `apply_patch`（含 `move_path`）三处、紧跟
+`assertExternalDirectoryEffect` 之后。资产根与资产服务**同一来源**（`assetsRoot()`），不另写默认值；读共享资产
+不拦（AI 要读 `SKILL.md`），故闸门不放进读写共用的那个出口。
+
+**门禁实得**（`packages/opencode` 内，全部带 `timeout`）：
+
+| 命令 | 实得 |
+|---|---|
+| `bun test test/tool/shared-assets.test.ts`（红，改前） | `2 pass / 3 fail`（三条闸门用例全红，两条不误伤用例绿） |
+| 同上（改后） | `5 pass / 0 fail` |
+| `bun test test/tool` | `387 pass / 4 fail` |
+| `bunx turbo typecheck --filter=opencode` | `1 successful` |
+| `bunx oxlint -c script/oxlintrc.openhive.json <5 个改动文件>` | `0 errors`，5 warnings 全是上游既有行 |
+
+4 条红**全部是既有的**：`改前/改后` 各跑一遍逐条对照，失败集合逐字相同（`assertExternalDirectory` /
+`read` / `shell` 三条「normalizes Windows path variants」是本机仓库在 D:、临时目录在 C: 的盘符剥离问题；
+`glob > matches files from a directory path` 5s 超时）。**不是本次改动引入**（`#003-04`：实测当场对照）。
+
+**变异**：把 `assertNotSharedAsset` 里的 `realPath(target)` 换成字面 `target`（= 复原旧判据）⇒ 正好那三条
+闸门用例转红、两条不误伤用例仍绿（`#003-03` 第一类：红的是被钉住的那条判据）。
+
+**§6 同类落点**：`src/tool` 里会写盘的是 `write` / `edit` / `apply_patch` 三个，三处都接了；`glob` / `grep` /
+`read` / `lsp` 只读，不该拦；`truncate` / `webfetch` 写的是自己的中间目录。`create_skill_draft` 的复制在
+`asset-service` 服务端（直接调 `storage.ts`），不走工具层，不受影响。
+
+**残留**（两条都不能写成已覆盖）：
+- **`shell` 工具仍能绕过**：重定向 / `cp` / `rm` 只按字面路径要权限。要挡它得靠共享库的只读属性或只读挂载
+  （设计里的 L2/L3），本次未做。
+- **真栈未复验**：真栈不热重载（`real-stack-serves-code-from-boot`），需要用户重启内核后再拿同一个探针打一次；
+  本次只有单测证据。
+
+**版本升级功能仍无入口**：`start_iteration` 在 `asset-service` 之外**无调用者**（全仓 grep），治理台的
+「发布新版本」（`publish_iteration`）因此不可达；`lifecycle.ts` 里声明的 `gates` 字段至今无人消费。待排期。
+
 ## 2026-10-31 · 编辑面板「让 AI 起草」+「从 AI 回复填入」
 
 **现象**：三个内容字段能就地编辑了，但作者还得自己写。要能点一下让右栏 AI 起草，再一键把回复填进编辑框。
@@ -663,5 +714,5 @@ B 天数硬编码 30 ⇒ 3 红；C 拆网格透传 ⇒ 2 红；**我方另做一
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-10-31（修「让 AI 起草」点了没反应：跨栏接缝的收件口从单槽换成带归属的登记表，`#006-39`；
-门禁与真栈已实测；残留：`send-to-session-real.spec.ts` 两条 `test.fixme` 未转绿）
+2026-11-01（堵写工具顺着项目链接改到共享发布库的洞：闸门按真实路径判、接在 write/edit/apply_patch 三处，
+`#005-24` / `#002-06`；门禁已实测，真栈需重启内核后复验；残留：`shell` 仍可绕过、版本升级仍无入口）

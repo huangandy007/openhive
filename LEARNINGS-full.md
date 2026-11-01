@@ -23,6 +23,40 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #009-03 · 2026-11-01 · pitfall · 009-ai-assets
+
+**现象 / 决策**：项目里的 `.opencode/skill/<assetId>` 不是目录，是指向共享发布库的**链接**（win32 上是
+junction；真栈实测 7 个项目共 18 条 → `D:\assets\global\skills\<assetId>`）。AI 用写工具改「项目里那个 skill」时，
+写进去的是**共享库的已发布那一份**——绕过审核、绕过版本、也没有备份。
+
+实测三样（只读 + 自清理，残留 0）：① 经链接写一个探针文件 ⇒ 共享目录里立刻出现；② 共享 `SKILL.md` 能以写模式
+打开；③ 真跑一次 `containsPath`，链接路径判 `项目内: true`，同一函数对真正项目外的路径判 `false`。
+
+根因：外部目录判定 `assertExternalDirectoryEffect` → `containsPath` 比的是**字面路径**（`FSUtil.contains` =
+`path.relative`），从不 `realpath`。链接路径字面上在项目内 ⇒ 放行；`open()` 由操作系统顺着链接解析，落到共享库。
+换句话说：**「路径在项目里」被当成了「这条写入落在项目里」，而链接让这两件事分家。**
+
+修法：`src/tool/shared-assets.ts` —— `realPath()` 顺着链接一路 `realpathSync.native`；`assertNotSharedAsset()`
+落在资产根下抛错，文案指向「改工作区源目录」。三个要点：
+1. **目标还不存在时**解析最近的已存在祖先再拼回尾段——「顺着链接**新建**文件」正是要被拦的那一类，不能因为
+   `realpath` 报 ENOENT 就退回字面路径（`FSUtil.resolve` 就是这么退的，直接用会漏）。
+2. 闸门**不进** `assertExternalDirectoryEffect` 那个读写共用的出口：读共享资产（AI 读 `SKILL.md`）必须放行。
+3. 资产根与资产服务**同一来源**（`assetsRoot()` = `OPENHIVE_ASSETS_ROOT`，默认 `/assets`），不另写默认值。
+
+接线落点：`write` / `edit` / `apply_patch`（含 `move_path`），紧跟外部目录判定之后。`create_skill_draft` 的复制在
+`asset-service` 服务端（直接调 `storage.ts`），不走工具层，不受影响。
+
+变异：把 `realPath(target)` 换回字面 `target`（= 复原旧判据）⇒ 正好三条闸门用例转红、两条「不误伤」用例仍绿（第一类）。
+
+**应对**：给「按路径判归属」的闸门打补丁前，先问一句「这个路径会不会是链接 / junction / 挂载点」，然后**真跑一次
+`realpath` 对照**，不要靠读代码推断。判「新建」路径时记得祖先回退。同类洞还有一条**没堵**：`shell` 的重定向 /
+`cp` / `rm` 只按字面路径要权限，工具层闸门挡不住，得靠共享库的只读属性或只读挂载。
+
+**应用范围**：任何 `contains` / `startsWith` / `path.relative` 式的目录归属判定；任何共享卷、软链、junction 参与的
+项目；任何「写进项目目录」的工具；任何「路径落在项目里 ⇒ 安全」的推理链。
+
+→ 全文见本文件（本条即全文）
+
 ## #010-07 · 2026-10-29 · pitfall · 010-项目能力面板
 
 **现象 / 决策**：给备份出口补上「老项目回落」（判据 `./project-actor`，见 `#010-06` / `#002-06`）后，

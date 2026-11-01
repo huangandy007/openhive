@@ -13,6 +13,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { assertNotSharedAsset } from "./shared-assets"
 import * as Bom from "@/util/bom"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -42,6 +43,7 @@ export const WriteTool = Tool.define(
             ? params.filePath
             : path.join(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filepath)
+          assertNotSharedAsset(filepath)
 
           const exists = yield* fs.existsSafe(filepath)
           const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
