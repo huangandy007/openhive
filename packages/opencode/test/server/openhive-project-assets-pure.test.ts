@@ -1,6 +1,14 @@
 import { describe, expect, it, test } from "bun:test"
-import path from "node:path"
-import { 带内核清单, 补资产状态, 映射内核清单, 技能相对路径 } from "../../src/server/openhive/project-assets"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path, { join } from "node:path"
+import {
+  带内核清单,
+  补资产状态,
+  映射内核清单,
+  技能相对路径,
+  技能目录签名,
+} from "../../src/server/openhive/project-assets"
 
 /**
  * `带内核清单` 的判据只有一条：**「不知道」与「没有」必须长得不一样**（`#002-02`）。
@@ -324,5 +332,80 @@ describe("补资产状态", () => {
       抛错 = error
     }
     expect(抛错 instanceof Error ? 抛错.message : 抛错).toBe("通知表查询失败")
+  })
+})
+
+/**
+ * 技能目录签名（2026-11-01）：判断「项目里的技能目录变没变」的唯一判据。
+ *
+ * 它只服务一件事：**签名变了才重扫内核技能清单**。所以两个方向都要钉死：
+ * 该变的必须变（否则新技能永远发现不了），不该变的必须不变（否则每次 GET 都白扫一遍）。
+ */
+describe("技能目录签名", () => {
+  const 造项目 = () => mkdtempSync(join(tmpdir(), "openhive-skill-signature-"))
+  const 写技能 = (项目: string, 根名: string, 目录名: string, 正文: string) => {
+    const 目录 = join(项目, ".opencode", 根名, 目录名)
+    mkdirSync(目录, { recursive: true })
+    writeFileSync(join(目录, "SKILL.md"), 正文, "utf8")
+    return 目录
+  }
+
+  it("新建技能目录 ⇒ 签名变", async () => {
+    const 项目 = 造项目()
+    try {
+      const 前 = await 技能目录签名(项目)
+      写技能(项目, "skill", "新技能", "---\nname: 新技能\ndescription: 甲\n---\n")
+      expect(await 技能目录签名(项目)).not.toBe(前)
+    } finally {
+      rmSync(项目, { recursive: true, force: true })
+    }
+  })
+
+  it("改 SKILL.md 的内容 ⇒ 签名变（description 改了，面板文案跟着变）", async () => {
+    const 项目 = 造项目()
+    try {
+      写技能(项目, "skill", "已有技能", "---\nname: 已有技能\ndescription: 甲\n---\n")
+      const 前 = await 技能目录签名(项目)
+      写技能(项目, "skill", "已有技能", "---\nname: 已有技能\ndescription: 乙乙\n---\n")
+      expect(await 技能目录签名(项目)).not.toBe(前)
+    } finally {
+      rmSync(项目, { recursive: true, force: true })
+    }
+  })
+
+  it("删技能目录 ⇒ 签名变", async () => {
+    const 项目 = 造项目()
+    try {
+      const 目录 = 写技能(项目, "skill", "要被删的", "---\nname: 要被删的\n---\n")
+      const 前 = await 技能目录签名(项目)
+      rmSync(目录, { recursive: true, force: true })
+      expect(await 技能目录签名(项目)).not.toBe(前)
+    } finally {
+      rmSync(项目, { recursive: true, force: true })
+    }
+  })
+
+  it("技能目录里加与 SKILL.md 无关的文件 ⇒ 签名不变（素材不是「技能变了」）", async () => {
+    const 项目 = 造项目()
+    try {
+      const 目录 = 写技能(项目, "skill", "带素材的", "---\nname: 带素材的\n---\n")
+      const 前 = await 技能目录签名(项目)
+      mkdirSync(join(目录, "assets"), { recursive: true })
+      writeFileSync(join(目录, "assets", "theme.css"), "body{}", "utf8")
+      expect(await 技能目录签名(项目)).toBe(前)
+    } finally {
+      rmSync(项目, { recursive: true, force: true })
+    }
+  })
+
+  it("两个根都认：`.opencode/skills` 下的新目录也算（内核扫 {skill,skills}）", async () => {
+    const 项目 = 造项目()
+    try {
+      const 前 = await 技能目录签名(项目)
+      写技能(项目, "skills", "复数根技能", "---\nname: 复数根技能\n---\n")
+      expect(await 技能目录签名(项目)).not.toBe(前)
+    } finally {
+      rmSync(项目, { recursive: true, force: true })
+    }
   })
 })

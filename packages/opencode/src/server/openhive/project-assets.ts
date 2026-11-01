@@ -97,7 +97,7 @@ import { Skill } from "@/skill"
 import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { stat } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import nodePath, { join } from "node:path"
 import { 记治理 } from "./audit"
 import { disposeInstanceDirectory } from "./instance-cache"
@@ -284,6 +284,81 @@ function 项目目录(deps: Deps, userId: string, projectId: string): string {
 /** 丢掉该项目的实例缓存：让下一次请求重扫 skill 目录（见文件头「丢缓存」）。 */
 function 丢缓存(deps: Deps, directory: string) {
   return disposeInstanceDirectory(deps.store, directory, "实例层缺席，跳过缓存丢弃；启用在重启前不生效")
+}
+
+/** 内核扫技能的两个根（`skill/index.ts` 的 `OPENCODE_SKILL_PATTERN`：`{skill,skills}` 下的 SKILL.md）。 */
+const 技能根 = ["skill", "skills"] as const
+
+/**
+ * 项目技能目录的签名（2026-11-01）：判断「目录变没变」的唯一判据。
+ *
+ * 只认内核真正会扫的东西：两个根下的**条目名**，加每个条目的 `SKILL.md`（跟随链接）的
+ * `mtime + size`。所以三类变化会改签名：新增/删除条目、改 SKILL.md 的内容；
+ * 而往技能目录里塞素材（`assets/theme.css`）**不会**——那不是「技能变了」，不该触发重扫。
+ *
+ * 目录不存在 ⇒ 记 `-`，与「空目录」区分开（`readdir` 成功但没条目 ⇒ 空串）。
+ */
+export async function 技能目录签名(目录: string): Promise<string> {
+  const 段: string[] = []
+  for (const 根名 of 技能根) {
+    const 根 = join(目录, ".opencode", 根名)
+    let 条目: string[]
+    try {
+      条目 = (await readdir(根)).toSorted()
+    } catch {
+      段.push(`${根名}:-`)
+      continue
+    }
+    const 行: string[] = []
+    for (const 名字 of 条目) {
+      let 指纹 = "-"
+      try {
+        const info = await stat(join(根, 名字, "SKILL.md"))
+        指纹 = `${info.mtimeMs}:${info.size}`
+      } catch {
+        // 没有 SKILL.md（或读不到）：它是不是目录由条目名本身的变化体现，这里不编造。
+      }
+      行.push(`${名字}|${指纹}`)
+    }
+    段.push(`${根名}=${行.join(",")}`)
+  }
+  return 段.join(";")
+}
+
+/**
+ * 按项目目录记住「上次重扫时的签名」。**进程内**即可：重启后第一次 GET 必然重扫一次，
+ * 那一份带出来的就是新的事实，不必持久化。
+ */
+const 上次技能签名 = new Map<string, string>()
+
+/**
+ * 技能目录变了 ⇒ 只重扫技能清单（2026-11-01）。
+ *
+ * 为什么不用 `丢缓存`：那条路是 `InstanceStore.disposeDirectory`，连带 MCP / LSP / 在跑实例
+ * 一起重建。启停那种「用户明确按了一下」的动作付得起，**每次打开面板**付不起。
+ * `Skill.reload()` 只丢技能快照，代价是一次目录扫描 + SKILL.md 解析。
+ *
+ * ⚠️ **先重扫成功、再记签名**：反过来的话，一次失败就会让签名永久停在「已是最新」，
+ * 之后再也不重试（用户看到的是「一直不生效」却没有任何痕迹）。
+ *
+ * 失败只告警、不影响 GET：本次按旧快照返回，下一次 GET 签名仍不等 ⇒ 会再试一次。
+ */
+function 刷新内核技能快照(deps: Deps, 目录: string) {
+  const store = deps.store
+  const skill = deps.skill
+  // 读不到内核（只挂路由子集的测试）⇒ 无从刷新，也不谎称刷了。
+  if (Option.isNone(store) || Option.isNone(skill)) return Effect.void
+  return Effect.promise(() => 技能目录签名(目录)).pipe(
+    Effect.flatMap((签名) => {
+      if (上次技能签名.get(目录) === 签名) return Effect.void
+      return store.value
+        .provide({ directory: 目录 }, skill.value.reload())
+        .pipe(Effect.tap(() => Effect.sync(() => 上次技能签名.set(目录, 签名))))
+    }),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("技能目录变化后重扫失败，本次按旧快照返回", { 目录, cause }).pipe(Effect.asVoid),
+    ),
+  )
 }
 
 /** 从内核技能的 location 里取最后一级目录名（= assetId，或用户自己的目录名）。 */
@@ -687,6 +762,10 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     if (结果 !== undefined && (结果.created > 0 || 结果.removed > 0)) {
       yield* 丢缓存(deps, 目录)
     }
+    // 目录还可能被**人**改过（用户在会话里让 AI 往项目里放了一份技能，2026-11-01）：
+    // 那条路不经过启停，`丢缓存` 永远不会被触发。这里补一条只重扫技能的路——
+    // 签名没变就什么都不做，所以放在每次 GET 上也不打断在跑实例。
+    if (结果 !== undefined) yield* 刷新内核技能快照(deps, 目录)
     // `enabled` 只回**当前读者可见**的 id，而 `enabledCount` 保持项目真相（库里的启用条数）。
     // 两者不等是刻意的：配额按项目算，不是按「我看得见几个」算。
     // 顺序是设计的一部分：先对账（上面已做完）再读内核。反了会把「沙箱还没同步」

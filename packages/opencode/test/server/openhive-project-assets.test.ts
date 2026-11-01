@@ -17,6 +17,7 @@ import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { DatabaseRouter } from "@opencode-ai/core/database/router"
 import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
+import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -148,6 +149,15 @@ const 手写技能 = "我的工具"
 const 阴影项目 = "proj_enable_shadow"
 /** 压住资产的本地副本目录名（`a` 开头，字典序必在 `asset_…` 之前）。 */
 const 阴影技能 = "aaa_shadow"
+/**
+ * 「技能目录变了 ⇒ 下一次 GET 自动重扫」的专用项目（2026-11-01）。
+ *
+ * 第一次 GET 时目录里**还没有**那条技能——这是「内核快照已经陈旧」的前提，顺序反了用例
+ * 就绿得没有意义。技能目录由用例中途写进去。
+ */
+const 重扫项目 = "proj_enable_rescan"
+const 重扫目录 = "会话里放的技能"
+const 重扫技能名 = "会话里放的研判"
 
 /**
  * **多租户改造前建的老项目**（2026-10-28 用户实报 403 的现场）。
@@ -306,6 +316,7 @@ beforeAll(async () => {
     能力项目,
     兜底项目,
     阴影项目,
+    重扫项目,
   ]) {
     await addMember(pg.db, { projectId, userId: 我.id, role: "owner", timeCreated: 1_000 })
   }
@@ -1505,6 +1516,55 @@ describe("项目级 skill 启用（真应用）", () => {
         expect(body.enabledCount).toBe(1)
         // 判据：键**整份缺席**（「这次没读到」），不是空数组、更不是一份没补状态的清单。
         expect(Object.prototype.hasOwnProperty.call(body, "skills")).toBe(false)
+      }),
+    30_000,
+  )
+
+  /**
+   * 项目里的技能目录变了 ⇒ **下一次 GET 自动重扫**，不用重启栈（2026-11-01）。
+   *
+   * 现场：AI 在会话里把一份技能放进 `<项目>/.opencode/skill/`，能力面板一直看不见，
+   * 必须重启栈——内核的技能清单按**项目目录**缓存一次（`Skill.discovery`），此后没有任何
+   * 失效路径。这条用例钉两件事：
+   *
+   * ① 第二次 GET 能看见新目录（刷新真的发生了）；
+   * ② 刷新**不是**靠销毁实例换来的（没有 `server.instance.disposed`）——那是启停路径的代价，
+   *    不能挪到「每次打开面板」上。
+   *
+   * ⚠️ 第一次 GET 必须排在写目录**之前**：这是「缓存已经陈旧」的前提，顺序反了就绿得没意义。
+   */
+  it.live(
+    "项目里新放的技能目录：下一次 GET 就可见，且不销毁实例",
+    () =>
+      Effect.gen(function* () {
+        const 目录 = projectDirectory(沙箱根, 我.id, 重扫项目)
+        const 前 = yield* json(状态, yield* as(我, `${STATE}?projectId=${重扫项目}`))
+        expect(前.skills === undefined).toBe(false)
+        expect((前.skills ?? []).some((skill) => skill.name === 重扫技能名)).toBe(false)
+
+        const 销毁: string[] = []
+        const 监听 = (事件: GlobalEvent) => {
+          if (事件.payload?.type === "server.instance.disposed") 销毁.push(事件.directory ?? "")
+        }
+        GlobalBus.on("event", 监听)
+        try {
+          const 技能目录 = join(目录, ".opencode", "skill", 重扫目录)
+          mkdirSync(技能目录, { recursive: true })
+          writeFileSync(
+            join(技能目录, "SKILL.md"),
+            `---\nname: ${重扫技能名}\ndescription: 会话里刚放的\n---\n\n正文\n`,
+            "utf8",
+          )
+
+          const 后 = yield* json(状态, yield* as(我, `${STATE}?projectId=${重扫项目}`))
+          const 条 = (后.skills ?? []).find((skill) => skill.name === 重扫技能名)
+          expect(条 === undefined).toBe(false)
+          expect(条!.skillPath).toBe(`.opencode/skill/${重扫目录}`)
+          // 刷新靠 `Skill.reload()`，不是靠销毁实例（那会打断在跑会话）。
+          expect(销毁).toEqual([])
+        } finally {
+          GlobalBus.off("event", 监听)
+        }
       }),
     30_000,
   )

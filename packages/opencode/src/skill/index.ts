@@ -130,6 +130,14 @@ export interface Interface {
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  /**
+   * 丢掉本目录的技能快照，让下一次读取重新扫盘（2026-11-01，openhive 定制）。
+   *
+   * 存在的理由：技能目录可能在实例启动**之后**才出现（用户/AI 往项目里放了一份技能），
+   * 而清单是按目录缓存一次的 ⇒ 不重扫就永远看不见，只能重启进程。调用方要自己判断
+   * 「目录真的变了没有」，本方法不做节流（见 `server/openhive/project-assets.ts` 的签名比对）。
+   */
+  readonly reload: () => Effect.Effect<void>
 }
 
 const add = Effect.fnUntraced(function* (
@@ -249,8 +257,17 @@ const discoverSkills = Effect.fnUntraced(function* (
 
   // 本项目目录里的 `.opencode` 比全局配置目录更贴近用户 ⇒ 高一档（`TIER.project` / `TIER.opencode`）。
   const rank = (dir: string) => (dir === directory || dir.startsWith(directory + path.sep) ? TIER.project : TIER.opencode)
+  // 【保留的定制 · 同步上游时不要丢】`<项目>/.opencode` 可能在实例启动**之后**才出现
+  // （用户/AI 新建技能目录）。`Config.directories()` 是按实例缓存的清单，不会自己更新 ⇒
+  // 不按**扫描时刻**的事实补这一下，`Skill.reload()` 重扫时仍然只看旧清单，
+  // 全新项目里的第一份技能永远看不见。
   const configDirs = yield* config.directories()
-  for (const dir of configDirs) {
+  const 项目配置目录 = path.join(directory, ".opencode")
+  const 扫描根 =
+    configDirs.includes(项目配置目录) || !(yield* fsys.isDir(项目配置目录))
+      ? configDirs
+      : [...configDirs, 项目配置目录]
+  for (const dir of 扫描根) {
     yield* scan(state, dir, OPENCODE_SKILL_PATTERN, rank(dir))
   }
 
@@ -362,7 +379,18 @@ const layer = Layer.effect(
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
-    return Service.of({ get, require, all, dirs, available })
+    /**
+     * 【保留的定制 · 同步上游时不要丢】技能目录变了之后重扫（2026-11-01）。
+     *
+     * ⚠️ **两个缓存都要清**：`state` 重建时会再 `InstanceState.get(discovered)` 读一次扫描结果，
+     * 只清 `state` 拿到的是旧快照 ⇒ 新技能照样看不见（假刷新）。
+     */
+    const reload = Effect.fn("Skill.reload")(function* () {
+      yield* InstanceState.invalidate(discovered)
+      yield* InstanceState.invalidate(state)
+    })
+
+    return Service.of({ get, require, all, dirs, available, reload })
   }),
 )
 

@@ -72,6 +72,8 @@ const it = testEffect(
           all: () => Effect.succeed(skills),
           dirs: () => Effect.succeed([]),
           available: () => Effect.succeed(skills),
+          // 本文件的技能清单是静态的：`reload` 无事可做（`Skill.Interface` 的定制方法）。
+          reload: () => Effect.void,
         }),
       ),
     ],
