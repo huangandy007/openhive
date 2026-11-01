@@ -323,13 +323,32 @@ describe("create_skill_draft", () => {
     })
     expect(row.tags).toEqual(["资金", "流水"])
 
-    // 需求 3a：作者沙箱里的源目录**原地不动**（提交审核仍从它复制），同时复制一份到
+    // 需求 3a：作者沙箱里的源目录**原地不动**（提交审核从 `/draft/<id>` 复制，不回读它），同时复制一份到
     // 共享根的 `/draft/<id>`，并在调用目录（这里就是 u1 的沙箱根）.opencode/skill/<id>
     // 建链接指向它——内核扫 `OPENCODE_SKILL_PATTERN` 时跟进链接，草稿当场就能被调用。
     expect(await exists(join(sourceRoot, source, "SKILL.md"))).toBe(true)
     const draft = join(root, "draft", payload.assetId)
     expect(await exists(join(draft, "SKILL.md"))).toBe(true)
     expect(readlinkSync(join(sourceRoot, ".opencode", "skill", payload.assetId))).toBe(draft)
+  })
+
+  test("返回的 next 只说「草稿已建 + 怎么提交」，不谎称已在审核队列", async () => {
+    const { client, sourceRoot } = await harness()
+    const source = await prepareSkillSource(sourceRoot)
+
+    const result = await call(
+      client,
+      "create_skill_draft",
+      { name: "资金流水分析", description: "按账户汇总流水", category: "intelligence", sourceDirectory: source },
+      "u1",
+    )
+
+    const { assetId } = createdAsset(result.text)
+    expect(JSON.parse(result.text)).toMatchObject({
+      // 该工具只建草稿、不碰状态机：`status` 仍是 draft，`next` 不能暗示已提交。
+      status: "draft",
+      next: `草稿已建（/draft/${assetId}），用 submit_skill_for_review 提交审核（只需 assetId）`,
+    })
   })
 
   test("登记完就能用同一个 assetId 提交审核（制作 → 提交是一条链）", async () => {

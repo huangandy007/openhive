@@ -54,7 +54,7 @@ import { createDraftAsset, transitionAsset } from "./service"
  * ② **源目录**（`create_skill_draft` 的工具入参 `sourceDirectory`）只收相对路径，相对调用目录
  *    解析，且解析后必须仍在调用目录内（`resolveSourceDirectory`）。
  *
- * 两层缺任一层，一次 `../..` 就能把服务器上的任意目录复制成「已提交的 skill」。
+ * 两层缺任一层，一次 `../..` 就能把服务器上的任意目录复制进共享卷的草稿副本。
  *
  * 提交审核（`submit_skill_for_review`）**不再收源目录**：内容只从共享根里的草稿副本
  * `<root>/draft/<assetId>` 复制（2026-11-01 设计 §4.5），MCP 与 HTTP 只有一个来源。
@@ -94,6 +94,7 @@ const TOOLS: readonly Tool[] = [
     description:
       "把草稿提交业务审核（draft → in_review）。" +
       "只需传资产 id（assetId）：内容从共享根里的草稿副本（/draft/<assetId>）复制，不需再传源目录。" +
+      "sourceDirectory 参数已下线：即使传了也会被忽略。" +
       "只有资产作者或持有写权限的人能提交；提交后业务管理员会收到站内信。",
     inputSchema: {
       type: "object",
@@ -101,6 +102,8 @@ const TOOLS: readonly Tool[] = [
         assetId: { type: "string", description: "资产 id（不是 skill 显示名）" },
       },
       required: ["assetId"],
+      // 兼容期刻意静默忽略旧的 sourceDirectory：现役会话的提示词里可能还带着它，
+      // 直接报 invalid_arguments 会让正在跑的会话突然失败；传了也只是被忽略（内容只认草稿副本）。
       additionalProperties: false,
     },
   },
@@ -463,7 +466,7 @@ async function runCreateDraft(
       tags,
       visibility,
       // 需求 3a：草稿当场落进 `/draft/<id>` 并链接进当前项目，会话里就能调到，
-      // 不必等审核与发布。作者沙箱里的原目录不动（提交审核仍从它复制）。
+      // 不必等审核与发布。作者沙箱里的原目录不动；提交审核从 `/draft/<id>` 复制（2026-11-01 设计 §4.5）。
       storage: { root: deps.root, sourceDirectory: source, projectDirectory: directory },
     })
     return textResult({
@@ -473,7 +476,7 @@ async function runCreateDraft(
       skillName,
       status: asset.status,
       visibility: asset.visibility,
-      next: "已提交审核，等待业务审核",
+      next: `草稿已建（/draft/${asset.id}），用 submit_skill_for_review 提交审核（只需 assetId）`,
     })
   } catch (error) {
     if (error instanceof AssetMetadataError) return errorResult("invalid_arguments", error.message)
