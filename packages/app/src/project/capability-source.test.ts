@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { 内核技能 } from "@/ai-assets/enable-api"
-import { 合并能力, 计数 } from "./capability-source"
+import { 阶段, 合并能力, 计数 } from "./capability-source"
 
 const 技能 = (over: {
   name: string
@@ -140,5 +140,42 @@ describe("合并能力（设计 §4 的三态）", () => {
       shadowed: [{ assetId: "a1", name: "资金分析", location: "/w/u/p/SKILL.md" }],
     })
     expect(计数(结果 ?? [])).toBe(1)
+  })
+})
+
+const 内核 = (over: Record<string, unknown>) => ({
+  name: "x",
+  location: "/w/u/p/.opencode/skill/a1/SKILL.md",
+  ...over,
+})
+
+describe("来源与阶段（2026-11-01）", () => {
+  test("有 assetStatus ⇒ 库内条目，阶段就是它；没有 ⇒ 未入库", () => {
+    const 结果 = 合并能力({
+      enabled: new Set<string>(),
+      skills: [
+        内核({ assetId: "a1", assetName: "草稿技能", assetStatus: "draft" }),
+        内核({ assetId: "hand", name: "手写的", location: "/w/u/p/.opencode/skill/hand/SKILL.md" }),
+      ],
+    })!
+
+    const 草稿 = 结果.find((条) => 条.name === "草稿技能")!
+    const 手写 = 结果.find((条) => 条.name === "手写的")!
+    expect(草稿.kind).toBe("library")
+    expect(阶段(草稿)).toBe("draft")
+    expect(手写.kind).toBe("local")
+    expect(阶段(手写)).toBe("未入库")
+  })
+
+  test("草稿没写启用行，也要算库内（这是本次要修的 bug）", () => {
+    const 结果 = 合并能力({ enabled: new Set(), skills: [内核({ assetId: "a1", assetStatus: "draft" })] })!
+    expect(结果).toHaveLength(1)
+    expect(结果[0].kind).toBe("library")
+  })
+
+  test("enabled 里有、内核没看见的，仍然是库内（保留原第二态）", () => {
+    const 结果 = 合并能力({ enabled: new Set(["a9"]), skills: [] })!
+    expect(结果[0]).toMatchObject({ kind: "library", assetId: "a9", loaded: false })
+    expect(阶段(结果[0])).toBe(undefined)
   })
 })

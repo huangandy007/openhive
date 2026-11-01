@@ -21,6 +21,8 @@
  * 同源相对路径、可注入的 `send`、10 秒超时（理由见 `account-api.ts` 文件头）。
  */
 
+import { ASSET_STATUSES, type AssetStatus } from "@opencode-ai/asset-service/metadata"
+
 export const PATH = {
   state: "/openhive/project/assets",
   enable: "/openhive/project/assets/enable",
@@ -37,8 +39,10 @@ export const TIMEOUT_MS = 10_000
  * （同 `#003-05` 的纪律：跨进程契约写字面量）。
  *
  * `assetId` 取自 `location` 倒数第二段目录名——**本项目自带的技能同样有**（就是它的目录名）；
- * `assetName` 才是「库里确有这份资产」的标记，自带的条目只有 `assetId`、没有 `assetName`。
- * 故**不得**用 `assetId !== undefined` 判「是不是库里的」，那只能比 `enabled`。
+ * `assetName` 只是库里的标题，不能当「在不在库里」的判据（自带条目可能碰巧撞名）。
+ *
+ * **「在不在库里」只认 `assetStatus` 有没有这个键**（2026-11-01）：`assetId` 自带条目也有，
+ * `enabled` 又漏掉草稿——草稿链进项目时不写启用行，但它是库里的条目。
  */
 export interface 内核技能 {
   readonly name: string
@@ -46,6 +50,12 @@ export interface 内核技能 {
   readonly location: string
   readonly assetId?: string
   readonly assetName?: string
+  /** 库里那一行的状态；**键缺席 = 未入库**（权威判据，见上）。 */
+  readonly assetStatus?: AssetStatus
+  /** 库里那行的属主；「是不是我的」靠它判，不靠名字。 */
+  readonly assetOwnerId?: string
+  /** 最近一次业务驳回的理由；缺行 = 没被驳回过，不要编理由。 */
+  readonly assetRejectReason?: string
 }
 
 /**
@@ -120,6 +130,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** 闭集守卫：与本项目其它前端出口同一套（不认的值当形状错误，不当「某个阶段」）。 */
+const 是状态 = (value: unknown): value is AssetStatus =>
+  typeof value === "string" && ASSET_STATUSES.some((状态) => 状态 === value)
+
 function 解析状态(body: unknown): EnablementState | undefined {
   if (!isRecord(body)) return undefined
   const 值 = body
@@ -149,12 +163,20 @@ function 解析状态(body: unknown): EnablementState | undefined {
       if (项["description"] !== undefined && typeof 项["description"] !== "string") return undefined
       if (项["assetId"] !== undefined && typeof 项["assetId"] !== "string") return undefined
       if (项["assetName"] !== undefined && typeof 项["assetName"] !== "string") return undefined
+      // 三个新字段同一条严格度：认不出的状态整份判错，不把它降级成「未入库」——
+      // 那会把「服务端升级了、前端不认识」画成「库里没有」（`#002-02`）。
+      if (项["assetStatus"] !== undefined && !是状态(项["assetStatus"])) return undefined
+      if (项["assetOwnerId"] !== undefined && typeof 项["assetOwnerId"] !== "string") return undefined
+      if (项["assetRejectReason"] !== undefined && typeof 项["assetRejectReason"] !== "string") return undefined
       逐条.push({
         name: 项["name"],
         location: 项["location"],
         ...(项["description"] === undefined ? {} : { description: 项["description"] }),
         ...(项["assetId"] === undefined ? {} : { assetId: 项["assetId"] }),
         ...(项["assetName"] === undefined ? {} : { assetName: 项["assetName"] }),
+        ...(项["assetStatus"] === undefined ? {} : { assetStatus: 项["assetStatus"] }),
+        ...(项["assetOwnerId"] === undefined ? {} : { assetOwnerId: 项["assetOwnerId"] }),
+        ...(项["assetRejectReason"] === undefined ? {} : { assetRejectReason: 项["assetRejectReason"] }),
       })
     }
     技能 = 逐条
