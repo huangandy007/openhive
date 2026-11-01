@@ -109,6 +109,14 @@ describe("迭代客户端（2026-11-01）", () => {
       "p1",
     )
     expect(无路径).toEqual({ kind: "ok", value: {} })
+
+    // 内核的 `workspace: null` 与「键完全不存在」都是「没有路径」；两条都要落到同一个空值。
+    const 无键 = await createContentApi(async () => json({ assetId: "a1", status: "iterating", version: 3 })).iteration(
+      "a1",
+      "说明",
+      "p1",
+    )
+    expect(无键).toEqual({ kind: "ok", value: {} })
   })
 
   test("提交 / 放弃：POST 到各自子路径，不带体也不发 Content-Type", async () => {
@@ -133,6 +141,11 @@ describe("迭代客户端（2026-11-01）", () => {
     const { send } = 替身(() => json({ error: "资产还没有提交新版本" }, 409))
     const 结果 = await createContentApi(send).submitIteration("a1")
     expect(结果).toEqual({ kind: "rejected", message: "资产还没有提交新版本" })
+  })
+
+  test("401 ⇒ rejected（登录失效，不重试，与 save 同一句文案）", async () => {
+    const 结果 = await createContentApi(async () => new Response("", { status: 401 })).iteration("a1", "说明", "p1")
+    expect(结果).toEqual({ kind: "rejected", message: "登录状态已失效，请重新登录" })
   })
 
   test("网络异常 ⇒ failed，用该动作的提示语", async () => {
