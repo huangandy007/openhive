@@ -35,12 +35,20 @@ export type AssetType = (typeof ASSET_TYPES)[number]
 export const ASSET_VISIBILITIES = ["global", "department", "targeted", "personal"] as const
 export type AssetVisibility = (typeof ASSET_VISIBILITIES)[number]
 
-/** 治理后台能执行的动作（与内核白名单逐字相同；作者动作不在这里）。 */
+/**
+ * 治理后台能执行的动作（作者动作不在这里）。
+ *
+ * 内核那份 `GOVERNANCE_ACTIONS`（`governance-assets.ts`）用 `satisfies readonly SkillAction[]`
+ * 与状态机闭集锁在一起；前端不 import 内核源码（`#003-05`），这份是**手抄的镜像**。
+ * 镜像漂了不会静默：`asset-api.test.ts` 有一条读内核源文件逐字比对的对账用例，
+ * 少一项 / 多一项 / 顺序变了都会红。
+ */
 export const GOVERNANCE_ACTIONS = [
   "approve_business",
   "reject_business",
   "publish_tech",
   "publish_iteration",
+  "abort_iteration",
   "take_offline",
   "bring_online",
   "archive",
@@ -80,6 +88,19 @@ export interface AssetRow {
    * 这里若也存名字，就是第二份真相（`#002-06`）：管理员改名后后台仍显示旧名。
    */
   readonly category: string
+  /**
+   * 本次迭代的变更说明（2026-11-01）。空串 = 没有说明（没发起过迭代）。
+   */
+  readonly iterationNote: string
+  /** 工作副本相对沙箱根的路径；`null` = 没有工作副本。前端只显示、不拼绝对路径。 */
+  readonly iterationWorkspace: string | null
+  /**
+   * 作者是否已经**提交**了工作副本（服务端算的，前端不猜）。
+   *
+   * 为什么不让前端自己判：pending 目录在服务端的文件系统上，前端看不见；
+   * 这里再判一次就是两份口径（`#002-06`）。
+   */
+  readonly iterationSubmitted: boolean
 }
 
 export interface AssetQuery {
@@ -194,7 +215,35 @@ function 行(value: unknown): AssetRow | undefined {
   if (publishedAt !== null && !数(publishedAt)) return undefined
   // 分类 id 是 NOT NULL 的列：缺了就是形状变了（批量改分类的「原分类」要读它）。
   if (typeof category !== "string") return undefined
-  return { id, name, type, status, visibility, department, ownerName, version, updatedAt, publishedAt, category }
+  // 版本迭代（2026-11-01）：这两个列随 `AssetMetadata` 直出。旧内核没有它们时按
+  // 「没发起过迭代」收下——为此把整页判成坏行，比少显示一行说明更糟。
+  const iterationNote = value["iterationNote"]
+  if (iterationNote !== undefined && typeof iterationNote !== "string") return undefined
+  const iterationWorkspace = value["iterationWorkspace"]
+  if (iterationWorkspace !== undefined && iterationWorkspace !== null && typeof iterationWorkspace !== "string") {
+    return undefined
+  }
+  // `iterationSubmitted` 是列表出口**算出来的**派生列，流转回包没有它（那里也没有
+  // 「作者交没交」的语义）。缺字段按 false；**给了但类型不对**就是形状漂了 ⇒ 整行判坏，
+  // 不把它静默当成 false（那会让一次后端改名表现为「所有按钮都点不动」而不是一条错误）。
+  const iterationSubmitted = value["iterationSubmitted"]
+  if (iterationSubmitted !== undefined && typeof iterationSubmitted !== "boolean") return undefined
+  return {
+    id,
+    name,
+    type,
+    status,
+    visibility,
+    department,
+    ownerName,
+    version,
+    updatedAt,
+    publishedAt,
+    category,
+    iterationNote: iterationNote ?? "",
+    iterationWorkspace: iterationWorkspace ?? null,
+    iterationSubmitted: iterationSubmitted === true,
+  }
 }
 
 function 列表(value: unknown): readonly AssetRow[] | undefined {

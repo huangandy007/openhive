@@ -70,7 +70,12 @@ import {
 import { AssetNotificationError } from "@opencode-ai/asset-service/notify"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
 import { transitionAsset } from "@opencode-ai/asset-service/service"
-import { assetsRoot, MissingSourceDirectoryError } from "@opencode-ai/asset-service/storage"
+import {
+  assetsRoot,
+  hasPendingContent,
+  MissingSourceDirectoryError,
+  pendingDirectory,
+} from "@opencode-ai/asset-service/storage"
 import { governanceGrants } from "@opencode-ai/auth/governance"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
@@ -240,7 +245,27 @@ function handleList(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       listAssets(deps.pg(), filters, { limit: 分页.pageSize, offset: offsetOf(分页) }),
     )
     const total = yield* Effect.promise(() => countAssets(deps.pg(), filters))
-    return ok({ assets, total, page: 分页.page, pageSize: 分页.pageSize })
+
+    /**
+     * 版本迭代（2026-11-01）：迭代中但作者还没提交 ⇒ `iterationSubmitted: false`，
+     * 治理台据此禁用「发布新版本」。
+     *
+     * 这一列**不在库里**（它描述的是文件系统的当下状态），所以只能在出口算；前端再判一次
+     * 就是两份口径（`#002-06`）。只对 `iterating` 的行做文件判据：其它状态没有 pending 的
+     * 语义（`pending_tech` 的 `pending/` 是流转的正常状态，拿它当「作者交了」会误标），
+     * 逐行 stat 一遍是白花 I/O。`Promise.all` 并行：一页最多 100 条，串行会让列表慢一个量级。
+     */
+    const 补迭代状态 = yield* Effect.promise(() =>
+      Promise.all(
+        assets.map(async (资产行) => ({
+          ...资产行,
+          iterationSubmitted:
+            资产行.status === "iterating" &&
+            (await hasPendingContent(pendingDirectory(assetsRoot(process.env), 资产行.id))),
+        })),
+      ),
+    )
+    return ok({ assets: 补迭代状态, total, page: 分页.page, pageSize: 分页.pageSize })
   })
 }
 

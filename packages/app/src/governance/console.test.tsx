@@ -142,6 +142,9 @@ describe("治理后台 · 全屏骨架", () => {
                 updatedAt: 1_700_000_000,
                 publishedAt: null,
                 category: "intelligence",
+                iterationNote: "",
+                iterationWorkspace: null,
+                iterationSubmitted: false,
               },
             ],
           }

@@ -13,7 +13,7 @@
  *
  * ## 动作必须过确认框
  *
- * 七个动作里六个会改状态（驳回还要求理由），没有「点一下就生效」的按钮：确认文案写清后果
+ * 八个动作都会改状态（驳回还要求理由），没有「点一下就生效」的按钮：确认文案写清后果
  * （「下线后使用者不能再调用」「归档后不可恢复」），驳回的理由输入框就在确认框里。
  * 失败不关框：403 / 409 留在框里让人看清，关掉再弹一条提示容易错过（与账号管理同一条纪律）。
  *
@@ -86,7 +86,13 @@ export function 可用动作(status: AssetStatus): readonly 动作[] {
     case "pending_tech":
       return [{ action: "publish_tech", label: "发布", variant: "contrast" }]
     case "iterating":
-      return [{ action: "publish_iteration", label: "发布新版本", variant: "contrast" }]
+      return [
+        { action: "publish_iteration", label: "发布新版本", variant: "contrast" },
+        // 设计 §4 给 system_admin 的兜底：作者离职后迭代不能永久卡在 iterating。
+        // 能不能点由服务端按 `asset-governance/admin` 判（业务专家点下去 403），
+        // 与同页其它动作同一条纪律：这里只按状态画，不充当门（宪法 §IV）。
+        { action: "abort_iteration", label: "放弃迭代", variant: "danger" },
+      ]
     case "published":
       return [
         { action: "take_offline", label: "下线", variant: "danger" },
@@ -116,6 +122,7 @@ const 动作说明: Record<GovernanceAction, string> = {
   reject_business: "驳回后退回作者草稿；请写明不通过的原因，作者据此修改后重新提交。",
   publish_tech: "发布后资产进入共享空间，使用者可以浏览与调用。",
   publish_iteration: "新版本将替换当前发布版本，旧版本不再下发。",
+  abort_iteration: "放弃本次迭代：版本号回退到上一版，工作区里的副本仍留在项目里，但这次的改动不会再发布。",
   take_offline: "下线后使用者不能再调用，但仍能看到资产（收到过下线通知的人要找得到它）。",
   bring_online: "重新上线后恢复可调用。",
   archive: "归档是终态，归档后不可恢复。",
@@ -126,6 +133,7 @@ const 动作文案: Record<GovernanceAction, string> = {
   reject_business: "驳回",
   publish_tech: "发布",
   publish_iteration: "发布新版本",
+  abort_iteration: "放弃迭代",
   take_offline: "下线",
   bring_online: "重新上线",
   archive: "归档",
@@ -560,6 +568,17 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                             {row.name}
                           </div>
                           <div class="text-[11px] text-v2-text-text-muted">v{row.version}</div>
+                          {/* 变更说明只对迭代中的行有意义：已发布的行上留着的说明是「这一版」的
+                              注解（发布后保留），但在后台的待办队列里它帮不上判断，反而占位。 */}
+                          <Show when={row.status === "iterating" && row.iterationNote !== ""}>
+                            <div
+                              data-slot="asset-row-iteration-note"
+                              class="max-w-[22rem] truncate text-[11px] text-v2-text-text-muted"
+                              title={row.iterationNote}
+                            >
+                              {row.iterationNote}
+                            </div>
+                          </Show>
                         </td>
                         <td class="px-3 text-v2-text-text-muted">{TYPE_LABELS[row.type]}</td>
                         <td data-slot="asset-row-category" class="px-3 text-v2-text-text-muted">
@@ -577,18 +596,28 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                         <td class="px-3">
                           <div class="flex justify-end gap-2">
                             <For each={可用动作(row.status)}>
-                              {(项) => (
-                                <ButtonV2
-                                  data-slot={`asset-action-${项.action}`}
-                                  data-id={row.id}
-                                  type="button"
-                                  variant={项.variant}
-                                  size="small"
-                                  onClick={() => 打开确认(row, 项.action)}
-                                >
-                                  {项.label}
-                                </ButtonV2>
-                              )}
+                              {(项) => {
+                                // 迭代中但作者还没交：「发布新版本」按下去必然 409
+                                // （服务端 `iteration_not_submitted`）——与「不画按了必 409 的按钮」
+                                // 同一条纪律，这里连画出来的那个也要禁用。
+                                // 判据只用服务端的 `iterationSubmitted`，前端不自己去看目录（`#002-06`）。
+                                const 未提交 = () =>
+                                  项.action === "publish_iteration" && !row.iterationSubmitted
+                                return (
+                                  <ButtonV2
+                                    data-slot={`asset-action-${项.action}`}
+                                    data-id={row.id}
+                                    type="button"
+                                    variant={项.variant}
+                                    size="small"
+                                    disabled={未提交()}
+                                    {...(未提交() ? { title: "作者尚未提交新版本" } : {})}
+                                    onClick={() => 打开确认(row, 项.action)}
+                                  >
+                                    {项.label}
+                                  </ButtonV2>
+                                )
+                              }}
                             </For>
                             <Show when={可用动作(row.status).length === 0}>
                               <span data-slot="asset-no-action" class="text-[12px] text-v2-text-text-muted">

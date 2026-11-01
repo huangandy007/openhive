@@ -8,7 +8,9 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { createAssetApi, type AssetRow, type GovernanceFetch } from "./asset-api"
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
+import { createAssetApi, GOVERNANCE_ACTIONS, type AssetRow, type GovernanceFetch } from "./asset-api"
 
 function 替身(应答: (call: { input: string; init?: RequestInit }) => Response | Promise<Response>): {
   send: GovernanceFetch
@@ -37,6 +39,9 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   updatedAt: 1_700_000_000,
   publishedAt: null,
   category: "intelligence",
+  iterationNote: "",
+  iterationWorkspace: null,
+  iterationSubmitted: false,
   ...overrides,
 })
 
@@ -193,6 +198,45 @@ describe("资产客户端 · 指定人员（需求 3b）", () => {
       const 结果 = await createAssetApi(替身(() => json(坏)).send).listGroups()
       expect(结果.kind).toBe("failed")
     }
+  })
+})
+
+describe("资产客户端 · 迭代字段（2026-11-01）", () => {
+  test("缺 iterationSubmitted（流转出口不带这个派生列）⇒ 按 false 收下，不是坏行", async () => {
+    const 旧形状 = { ...资产("a1"), iterationSubmitted: undefined, iterationNote: undefined, iterationWorkspace: undefined }
+    const out = await createAssetApi(替身(() => json({ assets: [旧形状] })).send).list()
+
+    expect(out.kind).toBe("ok")
+    if (out.kind === "ok") {
+      expect(out.value[0]?.iterationSubmitted).toBe(false)
+      expect(out.value[0]?.iterationNote).toBe("")
+      expect(out.value[0]?.iterationWorkspace).toBeNull()
+    }
+  })
+
+  test("iterationSubmitted 类型漂移 ⇒ 整行判坏（不放宽成「不是 true 就当 false」）", async () => {
+    for (const 坏 of [
+      { ...资产("a1"), iterationSubmitted: "true" },
+      { ...资产("a1"), iterationSubmitted: 1 },
+      { ...资产("a1"), iterationSubmitted: null },
+    ]) {
+      const out = await createAssetApi(替身(() => json({ assets: [坏] })).send).list()
+      expect(out.kind).toBe("failed")
+    }
+  })
+
+  test("治理动作白名单 ⇔ 内核 governance-assets.ts 逐字相同（读源文件，不靠人眼）", async () => {
+    // 前端不 import 内核源码（`#003-05`），两份镜像只能靠读文件对账；漂了必须会红，
+    // 否则「与内核白名单逐字相同」只是一句注释。范式同 `packages/auth/src/governance.test.ts`
+    // 里「八个板块 id ⇔ sections.ts」那一条。
+    const file = join(import.meta.dir, "../../../opencode/src/server/openhive/governance-assets.ts")
+    const source = await readFile(file, "utf8")
+    const 块 = source.match(/export const GOVERNANCE_ACTIONS = \[([\s\S]*?)\] as const/)
+    expect(块).not.toBeNull()
+    if (块 === null) throw new Error("内核 governance-assets.ts 里找不到 GOVERNANCE_ACTIONS")
+    const 内核动作 = [...(块[1] ?? "").matchAll(/"([a-z_]+)"/g)].map((match) => match[1])
+
+    expect(内核动作).toEqual([...GOVERNANCE_ACTIONS])
   })
 })
 

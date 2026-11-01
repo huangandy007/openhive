@@ -251,6 +251,22 @@ const 分页列表 = Schema.Struct({
   page: Schema.Number,
   pageSize: Schema.Number,
 })
+/**
+ * 版本迭代（2026-11-01）：列表行在 `AssetMetadata` 之外多一个**出口实算**的
+ * `iterationSubmitted`（pending 目录里有没有内容）。它不在库里，所以不能挂进共用的
+ * `Asset`（流转回包没有这一列）；单列一份只用得着的字段。
+ */
+const 迭代列表 = Schema.Struct({
+  assets: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      status: Schema.String,
+      iterationNote: Schema.String,
+      iterationWorkspace: Schema.NullOr(Schema.String),
+      iterationSubmitted: Schema.Boolean,
+    }),
+  ),
+})
 const TransitionResponse = Schema.Struct({ asset: Asset })
 const ErrorResponse = Schema.Struct({ error: Schema.String, field: Schema.optional(Schema.String) })
 
@@ -374,6 +390,75 @@ describe("T007 · 读出口的过滤", () => {
       // 7 = 原 6 份夹具 + 需求 5a 的「已送达」那一份。
       expect(空.assets.length).toBe(7)
     }),
+  )
+})
+
+/**
+ * 版本迭代（2026-11-01）：治理台要按「作者交没交」禁用「发布新版本」。
+ * 判据是**文件系统的当下状态**（pending 目录里有没有实质内容），前端看不见，
+ * 只能由列表出口算好给前端——这一条钉的就是出口真的算了。
+ */
+describe("T007 · 列表的 iterationSubmitted（版本迭代）", () => {
+  it.live("iterating 行按 pending 目录实算；其它状态恒 false", () =>
+    Effect.gen(function* () {
+      const 已交 = "asset-iter-list-submitted-0001"
+      const 未交 = "asset-iter-list-unsubmitted-0001"
+      if (!pg) throw new Error("真库没起来")
+      yield* Effect.promise(async () => {
+        await insertAsset(
+          pg!.db,
+          资产({
+            id: 已交,
+            name: "迭代列表夹具 · 已交",
+            status: "iterating",
+            version: 3,
+            updatedAt: 30_101,
+            iterationNote: "补一条统计口径",
+            iterationWorkspace: `u-iter-list/p1/.openhive/iterations/${已交}`,
+          }),
+        )
+        await insertAsset(
+          pg!.db,
+          资产({
+            id: 未交,
+            name: "迭代列表夹具 · 未交",
+            status: "iterating",
+            version: 2,
+            updatedAt: 30_100,
+            iterationNote: "改了但还没提交",
+            iterationWorkspace: `u-iter-list/p1/.openhive/iterations/${未交}`,
+          }),
+        )
+      })
+      造目录(join(ASSETS_ROOT, "pending", 已交))
+
+      // 用 q 圈住这两条：其它用例也会往 iterating 里插资产（放弃迭代那组），
+      // 不带 q 的 status=iterating 会随执行顺序漂成不同条数（`#005-34`）。
+      const body = yield* json(迭代列表, yield* get(EXPERT, `${GOV}?q=${encodeURIComponent("迭代列表夹具")}`))
+      const 按Id = new Map(body.assets.map((资产行) => [资产行.id, 资产行]))
+
+      expect(按Id.get(已交)?.iterationSubmitted).toBe(true)
+      expect(按Id.get(未交)?.iterationSubmitted).toBe(false)
+      // 两列随 `AssetMetadata` 直出，出口没有第二份映射。
+      expect(按Id.get(已交)?.iterationNote).toBe("补一条统计口径")
+      expect(按Id.get(已交)?.iterationWorkspace).toBe(`u-iter-list/p1/.openhive/iterations/${已交}`)
+
+      // 只对 iterating 算：`pending_tech` 的 `pending/` 目录是流转的正常状态，
+      // 拿它当「作者交了」会把待技术发布的行误标成可发布新版本（那条路压根不存在）。
+      const 待技术 = yield* json(迭代列表, yield* get(EXPERT, `${GOV}?status=pending_tech`))
+      expect(待技术.assets.find((资产行) => 资产行.id === IDS.pending)?.iterationSubmitted).toBe(false)
+    }).pipe(
+      Effect.ensuring(
+        Effect.promise(async () => {
+          await pg!.db.execute(
+            sql`delete from auth.asset where id in ('asset-iter-list-submitted-0001', 'asset-iter-list-unsubmitted-0001')`,
+          )
+          for (const id of ["asset-iter-list-submitted-0001", "asset-iter-list-unsubmitted-0001"]) {
+            rmSync(join(ASSETS_ROOT, "pending", id), { recursive: true, force: true })
+          }
+        }),
+      ),
+    ),
   )
 })
 

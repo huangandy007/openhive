@@ -43,6 +43,10 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   updatedAt: 1_700_000_000,
   publishedAt: null,
   category: "intelligence",
+  // 版本迭代（2026-11-01）：三个字段由服务端给；默认按「没发起过迭代」。
+  iterationNote: "",
+  iterationWorkspace: null,
+  iterationSubmitted: false,
   ...overrides,
 })
 
@@ -515,6 +519,80 @@ describe("资产治理页 · 三态", () => {
     await 等到(() => 有("[data-slot='asset-loading']") !== null)
     放行()
     await 等到(() => 有("[data-slot='asset-row']") !== null)
+  })
+})
+
+describe("迭代中（2026-11-01）", () => {
+  test("迭代中的行显示变更说明", async () => {
+    const { api } = 假后端(async () => ({
+      kind: "ok",
+      value: [
+        资产("a1", {
+          name: "资金流向研判",
+          status: "iterating",
+          version: 3,
+          publishedAt: 1_600_000_000,
+          iterationNote: "补一条统计口径",
+          iterationWorkspace: "u1/p1/.openhive/iterations/a1",
+          iterationSubmitted: true,
+        }),
+      ],
+    }))
+    挂上(api)
+    try {
+      选状态("iterating")
+      await 等到(() => 有("[data-slot='asset-row-iteration-note']") !== null)
+      expect(文章("[data-slot='asset-row-iteration-note']")).toBe("补一条统计口径")
+    } finally {
+      // `afterEach` 会清 DOM 与卸载；这里不需要额外动作
+    }
+  })
+
+  test("作者还没提交 ⇒ 「发布新版本」禁用并写明原因", async () => {
+    const { api } = 假后端(async () => ({
+      kind: "ok",
+      value: [资产("a1", { status: "iterating", version: 3, iterationSubmitted: false })],
+    }))
+    挂上(api)
+    选状态("iterating")
+    await 等到(() => 有("[data-slot='asset-action-publish_iteration']") !== null)
+
+    const 发布 = 按钮("[data-slot='asset-action-publish_iteration']")
+    expect(发布.disabled).toBe(true)
+    expect(发布.getAttribute("title")).toBe("作者尚未提交新版本")
+  })
+
+  test("已提交 ⇒ 「发布新版本」可点", async () => {
+    const { api } = 假后端(async () => ({
+      kind: "ok",
+      value: [资产("a1", { status: "iterating", version: 3, iterationSubmitted: true })],
+    }))
+    挂上(api)
+    选状态("iterating")
+    await 等到(() => 有("[data-slot='asset-action-publish_iteration']") !== null)
+
+    expect(按钮("[data-slot='asset-action-publish_iteration']").disabled).toBe(false)
+  })
+
+  test("迭代中的行给「放弃迭代」入口，点开有后果说明，确认后发 abort_iteration", async () => {
+    const { api, 记录 } = 假后端(async () => ({
+      kind: "ok",
+      value: [资产("a1", { name: "资金流向研判", status: "iterating", version: 3, iterationSubmitted: false })],
+    }))
+    挂上(api)
+    选状态("iterating")
+    await 等到(() => 有("[data-slot='asset-action-abort_iteration']") !== null)
+
+    点击("[data-slot='asset-action-abort_iteration']")
+    expect(文章("[data-slot='asset-confirm']")).toContain("放弃迭代「资金流向研判」")
+    // 后果要说清：版本号回退（管理员据此知道这条动作不可逆地丢了这次迭代）。
+    expect(文章("[data-slot='asset-confirm-text']")).toContain("版本号回退")
+    // 放弃不发布，不该问发布范围（那一档只属于 publish_*）。
+    expect(有("[data-slot='asset-publish-scope']")).toBeNull()
+
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+    expect(记录.transition[0]).toEqual({ id: "a1", action: "abort_iteration" })
   })
 })
 
