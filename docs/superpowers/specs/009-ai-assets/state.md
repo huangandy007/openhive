@@ -14,9 +14,9 @@ T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户
 | 层 | 东西 |
 |---|---|
 | 数据 | `auth.asset` 加 `iteration_note`（默认 `''`）/ `iteration_workspace`（相对沙箱根，可空）。两个迁移各带 `.down.sql`：`0027_asset_iteration.sql` 只加这两列；`0028_asset_notification_iteration_actions.sql` 把 `asset_notification_action_check` 从 9 值重建为 11 值（0011 的 9 个之外只新增 `submit_iteration` / `abort_iteration`；`start_iteration` / `publish_iteration` 早在 0011 的闭集里），与 `SKILL_ACTIONS` 加值同提交落地，防「DB ⇔ 代码逐值双向相等」断言在中间那段提交常红 |
-| 状态机 | 新动作 `submit_iteration`（iterating → iterating，`copy_to_pending`）、`abort_iteration`（iterating → published，`discard_pending`，作者或系统管理员）；`start_iteration` 改 `copy_publish_to_workspace` 且 `requiresReason`；`publish_iteration` 的 `gates` 只留 `technical_publish`；新错误码 `iteration_not_submitted` |
+| 状态机 | 新动作 `submit_iteration`（iterating → iterating，`copy_to_pending`）、`abort_iteration`（iterating → published，`discard_pending`，作者或系统管理员）；`start_iteration` 改 `copy_publish_to_workspace` 且 `requiresReason`；`publish_iteration` 的 `gates` 只留 `technical_publish`；新错误码 `iteration_not_submitted`。服务编排里「他人已落地」的判别式**连版本一起比**：`abort_iteration` 与 `publish_iteration` 首次出现「同源同目标」（都 iterating → published），只比状态会把 abort 抢先误判成 publish 已完成 ⇒ 删掉旧版备份、线上 v2 而库里 v1（审核闸门被绕过）；`abort_iteration` **不解析**工作副本目录（库里是坏值时「解卡出口」自己不该 500），解析只留给 `submit_iteration` |
 | 存储 | 工作副本落 `<沙箱根>/<userId>/<projectId>/.openhive/iterations/<assetId>`；`iterationWorkspaceDirectory()` 还原时再挡一次越界 |
-| 出口 | `POST /openhive/assets/:id/iteration`（`{note, projectId}`）、`…/iteration/submit`、`…/iteration/abort`；授权在读体之前 |
+| 出口 | `POST /openhive/assets/:id/iteration`（`{note, projectId}`）、`…/iteration/submit`、`…/iteration/abort`；授权在读体之前；使用面列表（`GET /openhive/assets`）返回 `published` + `iterating`（iterating 的内容仍是线上那份，摘掉等于迭代期间资产从所有人眼前消失；可见性仍只由 `readableAssetCondition()` 管，不另开判据） |
 | 前端 | 详情页版本 Tab 三态 + 发起弹窗；发起成功后经 `send-to-session` 把工作副本绝对路径**替换**进右栏；治理台显示变更说明、未提交时禁用「发布新版本」 |
 
 ### 残留（如实记）
@@ -30,6 +30,23 @@ T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户
 7. **工作副本不自动清理**：abort / publish 都不删项目里那份（删用户文件是不可逆动作）。
 8. **`hasPendingContent` 的失败兜底只钉住了确定性替身**：治理台列表出口对每行读盘做了逐行兜底（单行失败 ⇒ 该行按「未提交」显示 + 记 warning，不让一个坏 id 打穿整页），但失败注入用的是「库里 id 过不了路径校验」的确定性替身；真实的 EACCES / `stat` 与 `readdir` 之间的并发竞态**没有单独构造用例**。
 9. **详情页焦点归还守卫（`isConnected`）没有用例**：组件测试里 `status` 是静态的，构造不出「触发器在弹窗关闭那一帧被卸载」的场景，只在真浏览器里能验。
+10. **`publish_iteration` 不清空 `iteration_workspace`**（设计 §2④ 写的是「清空工作副本记录」）：`iterationColumnsOf` 对 publish 返回 `undefined`，这一列原样留着。无功能后果（下次 `start_iteration` 直接覆盖），**以代码为准**，设计稿那行视为口径漂移，不改设计稿。
+11. **`iteration_workspace` 出现在所有可读者的列表回包里**：值是含 `userId/projectId` 的相对路径（不是绝对根），前端不渲染。属「列表只该给绑定字段」的后续收敛项，今天不构成信息泄露（路径本身不可猜出别人的沙箱）。
+12. **写入口没有独立校验**：`iteration_workspace` 的形状只由 `validateAssetMetadata` 挡，而它只覆盖 insert 出口（`updateAssetLifecycle` 不过校验）；写入值由 `iterationWorkspaceRelative()` 唯一产生，该函数内部逐段 `assertSafeSegment`。曾经写过一个「写入值 === 用同样实参重算一遍」的守卫，实测左右两边同一函数同一实参、**恒真**，删掉后全部用例仍绿，已删除；改由 `metadata.test.ts` 的真负例钉住形状（绝对路径 / `..` / 非字符串）。其中绝对路径那条用 `resolve("x")` 而非写死 `C:/evil/x`——后者在 Linux 上 `isAbsolute` 为 false，会在 CI 的 ubuntu unit 矩阵里恒红。
+13. **迭代用例的「列表仍能看到它」并入发起用例**：这条断言要的是「刚发起完」这个状态，另起一条用例就会依赖上一条的副作用——单跑 `-t` / `--only-failures` 重跑必红（`LEARNINGS #005-34`），故与发起同处一个场景；代价是这个用例同时覆盖回包、落库与列表三处，红的时候要看断言行定位。
+
+### 门禁（实得）
+
+| 命令（在受影响包内，全部带 `timeout 300`） | 实得 |
+|---|---|
+| `packages/opencode`：`test/server/openhive-assets.test.ts` + `openhive-asset-iteration.test.ts` | 21 pass / 0 fail / 157 expect |
+| `packages/asset-service`：`service.test.ts` + `metadata.test.ts` + `asset.test.ts` | 90 pass / 0 fail / 318 expect |
+| `packages/app`：`workspace-entry.test.tsx` / `asset-detail.test.tsx`（`--conditions=browser --preload ./solid-jsx.ts`） | 234 pass / 0 fail ／ 80 pass / 0 fail |
+| `packages/auth`：`migrate.test.ts` | 19 pass / **1 fail**（既有 `42601`：`0017_data_source.down.sql` 两条 DROP 挤在同一 chunk、缺 `--> statement-breakpoint`；基线 `465d780427` 即在，与本分支无关，未修） |
+| `bunx turbo typecheck`（asset-service / opencode / app） | 三包均 `EXIT=0` |
+| `oxlint`（本轮改动文件） | 0 errors（余下 warning 与既有同形） |
+
+变异验证（每条都是「拆掉修复 ⇒ 那条用例必须红」）：删 `isAbsolute` 分支 ⇒ `metadata.test.ts` 红（`Expected to contain: "iterationWorkspace"` / `Received: []`）；出口改回只筛 `published` ⇒ 迭代用例红（`Expected "iterating"` / `Received: undefined`，该行被整条摘掉）；删 `projects` / `currentProjectId` 任一层透传 ⇒ 前端接线用例红；并发判别式退回只比状态 ⇒ 交错用例红（发布目录停在 `v1`，期望 `v2`）。
 
 ## 2026-11-01 · 写工具顺着项目链接改到共享发布库（安全洞）
 
