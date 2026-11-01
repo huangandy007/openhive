@@ -381,9 +381,7 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await 目录快照(root)).toEqual([
       `archive/asset_1/SKILL.md:v2`,
       `archive/asset_1/references/notes.txt:v2-notes`,
-      // 提交审核只认草稿副本（2026-11-01 设计 §4.5）：提交不删它，发布后收拾副本是 Task 3 的事。
-      `draft/asset_1/SKILL.md:v1`,
-      `draft/asset_1/references/notes.txt:v1-notes`,
+      // 草稿副本在发布成功后就删掉了（2026-11-01 设计 §4.6）：终态只剩归档这一份。
     ])
   })
 })

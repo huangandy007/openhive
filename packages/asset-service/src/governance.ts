@@ -385,6 +385,9 @@ async function runTool(
       assetId,
       action,
       viewer: viewerOf(user),
+      // 【保留的定制 · 同步上游时不要丢】发布后重指项目链接要用（2026-11-01 设计 §4.6）：
+      // 这条 MCP 出口也是发布入口，不传就只删草稿副本、链接留在已被删掉的旧目标上。
+      workspaceRoot: deps.workspaceRoot,
       ...(visibility === undefined ? {} : { visibility }),
     })
     return textResult({

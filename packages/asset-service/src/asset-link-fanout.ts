@@ -1,7 +1,7 @@
-import { readdir } from "node:fs/promises"
+import { readdir, readlink } from "node:fs/promises"
 import { join } from "node:path"
 import type { AssetStatus } from "./metadata"
-import { NotALinkError, unlinkSkill } from "./project-skill-link"
+import { linkSkill, lstatOrNull, NotALinkError, skillLinkPath, unlinkSkill } from "./project-skill-link"
 
 /**
  * 下线撤回（需求 5a，2026-10-27，验收「下线后立即从所有人的项目里消失」）。
@@ -84,6 +84,59 @@ export async function removeAssetLinksAcrossWorkspaces(
       } catch (error) {
         // 手写真目录：不是我们的投影，一个字节都不动，也不算失败。
         if (error instanceof NotALinkError) continue
+        failed.push({ directory, error })
+      }
+    }
+  }
+
+  return { removed, failed }
+}
+
+/**
+ * 把「指向旧目标的链接」改指新目标（2026-11-01，设计 §4.6）。
+ *
+ * 发布之后草稿副本就过期了：项目里若还指着 `draft/<id>`，作者用的永远是提交前那份。
+ * 只动**当前确实指向 `旧目标`** 的链接——指向别处的、手写的真目录一律不碰。
+ *
+ * 与下线撤回同样逐目录记失败、不中断：某个沙箱坏了不该让其余人继续指着过期副本，
+ * 失败如实回给调用方（`#002-02`）。
+ */
+export async function retargetAssetLinksAcrossWorkspaces(
+  workspaceRoot: string,
+  assetId: string,
+  旧目标: string,
+  新目标: string,
+): Promise<FanoutResult> {
+  const removed: string[] = []
+  const failed: Array<{ directory: string; error: unknown }> = []
+
+  let users: string[]
+  try {
+    users = await 子目录(workspaceRoot)
+  } catch (error) {
+    // 沙箱根本身读不了：没有任何目录被处理，如实回给调用方。
+    return { removed, failed: [{ directory: workspaceRoot, error }] }
+  }
+
+  for (const userDir of users) {
+    let projects: string[]
+    try {
+      projects = await 子目录(userDir)
+    } catch (error) {
+      failed.push({ directory: userDir, error })
+      continue
+    }
+    for (const directory of projects) {
+      try {
+        const link = skillLinkPath(directory, assetId)
+        const 信息 = await lstatOrNull(link)
+        // 不存在、或不是链接（手写真目录 / 普通文件）⇒ 不是我们的投影，一个字节都不动。
+        if (信息 === null || !信息.isSymbolicLink()) continue
+        // 判据是**当前指向哪儿**，不是「文件名是 assetId」：指向别处的链接留着。
+        if ((await readlink(link)) !== 旧目标) continue
+        await linkSkill(directory, assetId, 新目标)
+        removed.push(directory)
+      } catch (error) {
         failed.push({ directory, error })
       }
     }

@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { readlink, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { removeAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
+import { removeAssetLinksAcrossWorkspaces, retargetAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
 import { linkSkill, SKILL_LINK_DIR } from "./project-skill-link"
 
 /**
@@ -63,5 +64,40 @@ describe("下线撤回：从所有沙箱摘链接", () => {
   test("没有沙箱根 / 没有链接时是空操作（幂等）", async () => {
     expect(await removeAssetLinksAcrossWorkspaces(join(SANDBOX, "nope"), 资产)).toEqual({ removed: [], failed: [] })
     expect(await removeAssetLinksAcrossWorkspaces(根, 资产)).toEqual({ removed: [], failed: [] })
+  })
+})
+
+/**
+ * 发布后把「指着草稿副本」的链接改指发布目录（2026-11-01，设计 §4.6）。
+ *
+ * 判据只有一条：**当前确实指向旧目标**才动。指向别处的链接、手写的真目录一个字节都不许碰——
+ * 拿它去「顺手统一」别处就是事故。
+ */
+describe("发布后重指：retargetAssetLinksAcrossWorkspaces", () => {
+  test("只改指向旧目标的链接；指向别处的、手写的真目录都不动", async () => {
+    const 路径根 = join(SANDBOX, "retarget")
+    const 旧 = join(路径根, "assets", "draft", "a1")
+    const 新 = join(路径根, "assets", "global", "skills", "a1")
+    const 别处 = join(路径根, "别处")
+    mkdirSync(旧, { recursive: true })
+    mkdirSync(新, { recursive: true })
+    // junction 的硬要求：目标必须存在，所以「指向别处」的对照组也得先造出来。
+    mkdirSync(别处, { recursive: true })
+
+    const 甲 = join(路径根, "ws", "u1", "p1") // 指向旧目标 → 应改
+    const 乙 = join(路径根, "ws", "u2", "p2") // 指向别处 → 不动
+    const 丙 = join(路径根, "ws", "u3", "p3") // 手写真目录 → 不动
+    for (const d of [甲, 乙, 丙]) mkdirSync(join(d, SKILL_LINK_DIR), { recursive: true })
+    await symlink(旧, join(甲, SKILL_LINK_DIR, "a1"), "junction")
+    await symlink(别处, join(乙, SKILL_LINK_DIR, "a1"), "junction")
+    mkdirSync(join(丙, SKILL_LINK_DIR, "a1"), { recursive: true })
+
+    const 结果 = await retargetAssetLinksAcrossWorkspaces(join(路径根, "ws"), "a1", 旧, 新)
+
+    expect(结果.removed).toEqual([甲])
+    expect(结果.failed).toEqual([])
+    expect(await readlink(join(甲, SKILL_LINK_DIR, "a1"))).toBe(新)
+    expect(await readlink(join(乙, SKILL_LINK_DIR, "a1"))).toBe(别处)
+    expect(lstatSync(join(丙, SKILL_LINK_DIR, "a1")).isSymbolicLink()).toBe(false)
   })
 })

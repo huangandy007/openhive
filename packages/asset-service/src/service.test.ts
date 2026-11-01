@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync, readlinkSync } from "node:fs"
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { sql, type SQL } from "drizzle-orm"
@@ -546,6 +546,42 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(published.publishedAt).toBe(2_002)
     expect(await exists(待审目录(root))).toBe(false)
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+  })
+
+  test("技术发布成功后：草稿副本被删、项目链接改指发布目录", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    const 沙箱根 = tempRoot()
+    const 项目目录 = join(沙箱根, 作者.userId, "p1")
+    const 草稿 = draftDirectory(root, "a-pub")
+    const 发布 = publishDirectory(
+      root,
+      "skill",
+      { visibility: "department", department: "经侦支队" },
+      "a-pub",
+    )
+    await seedSkill(db, { id: "a-pub", status: "pending_tech" })
+    await mkdir(join(root, "pending", "a-pub"), { recursive: true })
+    await writeFile(join(root, "pending", "a-pub", "SKILL.md"), "待发布的内容")
+    await mkdir(草稿, { recursive: true })
+    await writeFile(join(草稿, "SKILL.md"), "草稿副本")
+    await mkdir(join(项目目录, ".opencode", "skill"), { recursive: true })
+    await symlink(草稿, join(项目目录, ".opencode", "skill", "a-pub"), "junction")
+
+    await transitionAsset({
+      db,
+      root,
+      assetId: "a-pub",
+      action: "publish_tech",
+      viewer: 系统管理员,
+      grants: [{ resourceType: "skill", resourceId: "a-pub", perm: "admin" }],
+      workspaceRoot: 沙箱根,
+    })
+
+    // 草稿副本已经过期（提交后不再被任何路径读取）：发布成功就该删掉。
+    expect(await exists(草稿)).toBe(false)
+    // 项目里原来指着草稿副本的链接，改指新的发布目录。
+    expect(readlinkSync(join(项目目录, ".opencode", "skill", "a-pub"))).toBe(发布)
   })
 
   test("驳回回草稿：必须带理由，已提交的文件留在 pending 等下次覆盖", async () => {

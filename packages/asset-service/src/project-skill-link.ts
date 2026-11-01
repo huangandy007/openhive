@@ -88,7 +88,8 @@ function codeOf(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined
 }
 
-async function lstatOrNull(path: string) {
+/** `lstat` 的「不存在就当没有」版本；导出给同一判据的调用方复用（`#002-06`：一份算法）。 */
+export async function lstatOrNull(path: string) {
   try {
     return await lstat(path)
   } catch (error) {

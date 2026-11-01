@@ -9,6 +9,7 @@ import {
   updateAssetLifecycle,
   type AssetTarget,
 } from "./asset"
+import { retargetAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
 import type { AssetViewer } from "./authorization"
 import { isEnabledCategory } from "./category-store"
 import type { AssetVisibility } from "./metadata"
@@ -572,7 +573,7 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 在 `迭代目标()` 里现算），该函数内部已逐段 `assertSafeSegment`——这里不再「校验」一次。
   const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代)
 
-  const step = await prepareStorageStep(root, 生效, applied, asset, 迭代)
+  const step = await prepareStorageStep(root, 生效, applied, asset, 迭代, input.workspaceRoot)
 
   // 本次要写入的版本号**只算一次**：条件更新与「他人已落地」判据必须用同一个值，
   // 算两遍就可能一边 +1 一边回退，判别式自己先漂掉。
@@ -736,6 +737,8 @@ async function prepareStorageStep(
   original: AssetMetadata,
   // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
   迭代: IterationTarget | undefined,
+  /** 用户沙箱根；发布后重指项目链接要用。`undefined` = 只删草稿副本、不重指（不读 env）。 */
+  workspaceRoot: string | undefined,
 ): Promise<StorageStep | undefined> {
   switch (applied.storage) {
     case "none":
@@ -827,6 +830,24 @@ async function prepareStorageStep(
           if (旧目录 !== undefined) {
             try {
               await removeDirectory(root, 旧目录)
+            } catch {
+              // 有意吞掉：见上。
+            }
+          }
+          // 【保留的定制 · 同步上游时不要丢】发布后收拾草稿副本、重指项目链接（2026-11-01 设计 §4.6）。
+          // 草稿副本已经过期（Task 2 起提交只从它取内容，发布后不再有任何读者）；项目里若还指着它，
+          // 作者用的就永远是提交前那份。同样尽力而为：失败不能让一次已完成的流转落进外层 catch
+          // 触发 rollback——那会把已发布的目录搬回 pending。
+          // `workspaceRoot` 没传就只删副本、不重指；服务层不读 env（env 只由出口读）。
+          if (applied.action === "publish_tech" || applied.action === "publish_iteration") {
+            try {
+              const 草稿 = draftDirectory(root, asset.id)
+              if (await directoryExists(草稿)) {
+                await removeDirectory(root, 草稿)
+                if (workspaceRoot !== undefined) {
+                  await retargetAssetLinksAcrossWorkspaces(workspaceRoot, asset.id, 草稿, target)
+                }
+              }
             } catch {
               // 有意吞掉：见上。
             }
