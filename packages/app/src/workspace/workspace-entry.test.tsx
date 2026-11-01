@@ -2114,6 +2114,56 @@ describe("项目数据接线（T018 出参）", () => {
   })
 
   /**
+   * **在飞槽的契约要由宿主兑现**（2026-11-01 残留修复）。
+   *
+   * 面板的 `跑动作()` 靠回调**返回 promise** 才占住槽：返回 `undefined` 就同步收掉、
+   * `disabled` 一秒都不生效。上一版宿主写的是 `void dialog.show(...)`——箭头函数返回
+   * `undefined` ⇒ 这个「防连点」在**真实界面里从未存在过**。组件测试喂的是 promise 替身
+   * （`capability-panel.test.tsx` 的「未入库行提交在飞时按钮禁用」），所以它绿着也证明不了
+   * 生产满足这条契约（「测的契约生产不满足」）。
+   *
+   * 判据只能在**宿主层**：点完提交审核、入库表单还开着时，那颗钮必须仍是禁用的；
+   * 关掉表单（取消 ＝ 确认 / Esc / 点遮罩之一，都走 `show()` 的 `onClose`）才恢复。
+   */
+  test("「能力」pane：入库表单开着时提交按钮保持禁用，关掉表单才恢复", async () => {
+    const host = mount(() => (
+      <WorkspaceEntry
+        enablement={假启用({
+          // 没有 `assetStatus` ⇒ 内核看得见、库里没有 ⇒ 未入库的自带条目（有「提交审核」按钮）。
+          skills: [
+            {
+              name: "手写的",
+              location: "/w/u/p/.opencode/skill/hand/SKILL.md",
+              skillPath: ".opencode/skill/hand",
+            },
+          ],
+        })}
+      >
+        中栏
+      </WorkspaceEntry>
+    ))
+    setCurrentProject({ id: "p1", name: "甲" })
+    侧栏tab(host, "capability")?.click()
+
+    const 钮 = tabpane(host, "capability")?.querySelector<HTMLButtonElement>("[data-slot='capability-submit']")
+    // 前置：条目是「未入库」那一档、按钮真的画出来了（否则下面断的是另一件事）。
+    expect(Boolean(钮)).toBe(true)
+
+    钮!.click()
+    // `dialog.show()` 里包着 `startTransition` ⇒ 表单晚一拍才落下来。
+    await 冲一遍()
+
+    // 前置：表单真的开出来了（没开出来时「还禁用着」可能只是压根没走这条路）。
+    expect(document.body.querySelector("[data-slot='capability-submit-dialog']") !== null).toBe(true)
+    expect(钮!.disabled, "表单还开着，按钮必须禁用——否则连点会开出两张入库表单").toBe(true)
+
+    document.body.querySelector<HTMLButtonElement>("[data-slot='capability-submit-cancel']")?.click()
+    await 冲一遍()
+
+    expect(钮!.disabled, "表单关了，在飞槽该收掉").toBe(false)
+  })
+
+  /**
    * 进门那一次清单**迟到**时，不许把刚建好的新项目抹掉。
    *
    * 写这个缝的有**两个出口**（进门拉一次、建完重拉一次），这条测的是两者乱序。成因不是假想的：

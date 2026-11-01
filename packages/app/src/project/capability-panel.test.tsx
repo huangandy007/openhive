@@ -963,6 +963,63 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
   })
 
   /**
+   * 理由**自己**带的冒号不能被当成通知的分隔符（2026-11-01 残留修复）。
+   *
+   * 上一版按 `lastIndexOf("：")` 切：治理端的理由只做 trim ＋ 非空，是**自由文本**
+   * （`asset-service/src/notify.ts:162` 只是把理由拼在 `<名> 被驳回：` 后面）。理由是
+   * 「第二步缺少校验：请补充数据来源」时，最后一个全角冒号落在**理由中间** ⇒ 只剩后半句，
+   * 前半句被当成「重复的通知前缀」扔掉。分隔符只该认**第一次**出现的那个。
+   */
+  test("驳回理由自带全角冒号 ⇒ 完整保留（不在理由中间截断）", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        技能({
+          name: "资金分析",
+          assetId: "a4",
+          assetStatus: "draft",
+          assetRejectReason: "资金分析 被驳回：第二步缺少校验：请补充数据来源",
+        }),
+      ],
+      onSubmit: () => {},
+    })
+    expect(文(host, "capability-reject-reason")).toBe("第二步缺少校验：请补充数据来源")
+  })
+
+  /** 没有 `被驳回：` 分隔符（不是通知正文，是一句纯理由）⇒ 整句贴，不截、不加前缀。 */
+  test("没有「被驳回：」分隔符 ⇒ 整句贴，不截、不加前缀", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        技能({ name: "资金分析", assetId: "a4", assetStatus: "draft", assetRejectReason: "第二步缺少校验" }),
+      ],
+      onSubmit: () => {},
+    })
+    expect(文(host, "capability-reject-reason")).toBe("第二步缺少校验")
+  })
+
+  /**
+   * 空理由的通知正文是 `"<名> 被驳回。"`（`notify.ts:162` 的 `reason === ""` 那支）。
+   *
+   * 它没有 `被驳回：`，整句贴出来就是一句「XX 被驳回。」挂在卡上——读者把它当理由，
+   * 而它没说任何要改什么。切出来为空 ⇒ **不渲染那一行**。
+   */
+  test("空理由的通知正文（「<名> 被驳回。」）不渲染理由行", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [
+        技能({ name: "资金分析", assetId: "a4", assetStatus: "draft", assetRejectReason: "资金分析 被驳回。" }),
+      ],
+      onSubmit: () => {},
+    })
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(有(host, "capability-reject-reason")).toBe(false)
+  })
+
+  /**
    * 驳回理由只在 `draft` 画（设计 §4.2 只定义「草稿（被驳回过）」）。
    *
    * 不限阶段的话，作者再次提交（`in_review`）甚至在发布之后，旧理由还挂在卡上——

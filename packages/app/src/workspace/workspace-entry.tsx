@@ -2087,37 +2087,48 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                       }
                       onCreateAndSubmit={(条) => {
                         const projectId = currentProject()?.id
-                        if (projectId === undefined) return
-                        void dialog.show(() => (
-                          <CapabilitySubmitDialog
-                            条={条}
-                            projectId={projectId}
-                            // 分类的唯一来源是服务端（`GET /openhive/categories`，只回启用项）。
-                            // 三态分开传：`rows` 为空时，`error` / `loaded` 决定表单说
-                            // 「读不到」还是「正在读」还是「确实没有分类」（`#002-02`）。
-                            categories={props.categories?.rows() ?? []}
-                            categoriesError={props.categories?.error()}
-                            categoriesLoaded={props.categories?.loaded() ?? true}
-                            onRetryCategories={() => props.categories?.reload()}
-                            onConfirm={async (输入) => {
-                              const 结果 = await 入库并提交(输入)
-                              if (!("error" in 结果)) {
-                                props.enablement?.reload()
-                                showToast({ variant: "success", title: "已提交审核" })
-                                return undefined
-                              }
-                              // 第一段成功、第二段失败：草稿已经建出来了 ⇒ 关框、刷新成「草稿」，
-                              // 让用户点面板上的「提交审核」重试。不留在框里再按一次——那会多建一份草稿。
-                              if (结果.assetId !== undefined) {
-                                props.enablement?.reload()
-                                showToast({ variant: "error", title: "已入库，但提交失败", description: 结果.error })
-                                return undefined
-                              }
-                              // 第一段就失败了：什么都没建，话就地留在框里，用户改完能再交。
-                              return 结果.error
-                            }}
-                          />
-                        ))
+                        if (projectId === undefined) return undefined
+                        // ⚠️ 必须回一个**到表单关掉才 resolve** 的 promise（2026-11-01 残留修复）：
+                        // 面板的 `跑动作()` 只在回调返回 promise 时占住在飞槽。上一版这里是
+                        // `void dialog.show(...)` ⇒ 箭头函数返回 `undefined` ⇒ 槽同步收起 ⇒
+                        // `disabled` 在真实界面里**从未生效过**（组件测试喂的是 promise 替身）。
+                        // `show()` 的第二参是 `onClose`：确认 / 取消 / Esc / 点遮罩 / 关闭按钮
+                        // 都会走到它（`context/dialog.tsx:48`），所以「表单结束」只有一个出口。
+                        return new Promise<void>((收) => {
+                          void dialog.show(
+                            () => (
+                              <CapabilitySubmitDialog
+                                条={条}
+                                projectId={projectId}
+                                // 分类的唯一来源是服务端（`GET /openhive/categories`，只回启用项）。
+                                // 三态分开传：`rows` 为空时，`error` / `loaded` 决定表单说
+                                // 「读不到」还是「正在读」还是「确实没有分类」（`#002-02`）。
+                                categories={props.categories?.rows() ?? []}
+                                categoriesError={props.categories?.error()}
+                                categoriesLoaded={props.categories?.loaded() ?? true}
+                                onRetryCategories={() => props.categories?.reload()}
+                                onConfirm={async (输入) => {
+                                  const 结果 = await 入库并提交(输入)
+                                  if (!("error" in 结果)) {
+                                    props.enablement?.reload()
+                                    showToast({ variant: "success", title: "已提交审核" })
+                                    return undefined
+                                  }
+                                  // 第一段成功、第二段失败：草稿已经建出来了 ⇒ 关框、刷新成「草稿」，
+                                  // 让用户点面板上的「提交审核」重试。不留在框里再按一次——那会多建一份草稿。
+                                  if (结果.assetId !== undefined) {
+                                    props.enablement?.reload()
+                                    showToast({ variant: "error", title: "已入库，但提交失败", description: 结果.error })
+                                    return undefined
+                                  }
+                                  // 第一段就失败了：什么都没建，话就地留在框里，用户改完能再交。
+                                  return 结果.error
+                                }}
+                              />
+                            ),
+                            () => 收(),
+                          )
+                        })
                       }}
                     />
                   }
