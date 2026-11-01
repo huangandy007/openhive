@@ -135,7 +135,7 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(槽(host, "capability-item-local").length).toBe(1)
   })
 
-  test("自带的条目没有停用按钮、也没有第二个操作", () => {
+  test("自带的条目没有停用按钮（它不是装来的）", () => {
     const host = 面板({ enabled: () => new Set(), enabledCount: () => 0, skills: () => [技能({ name: "我的小工具" })] })
     expect(槽(host, "capability-item-local").length).toBe(1)
     expect(槽(host, "capability-disable").length).toBe(0)
@@ -855,6 +855,40 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     expect(host.textContent).toContain("等管理员发布")
   })
 
+  /**
+   * 阶段守卫（2026-11-01 修复轮 1）：`可停用` 的**第二个条件**。
+   *
+   * 「在启用集合里」只是一半——`enable-state.toggle()` 按集合决定发 disable 还是 enable，
+   * 但阶段决定这颗按钮该不该存在：`pending_tech` / `in_review` 在设计 §4.2 里只写状态说明，
+   * 没有下一步动作。上一版的用例 enabled 全是空集，只钉住了「不在集合里」那一半，
+   * 把阶段那行删掉仍全绿。
+   *
+   * ⚠️ 前置先断「它确实是一张已加载的库内卡」：否则「没有按钮」可能只是因为压根没画出条目。
+   */
+  test("待技术发布且在启用集合里 ⇒ 仍然没有停用按钮", () => {
+    const host = 面板({
+      enabled: () => new Set(["a5"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "待发的", assetId: "a5", assetStatus: "pending_tech" })],
+    })
+
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
+    expect(host.textContent).toContain("等管理员发布")
+  })
+
+  test("审核中且在启用集合里 ⇒ 仍然没有停用按钮", () => {
+    const host = 面板({
+      enabled: () => new Set(["a2"]),
+      enabledCount: () => 1,
+      skills: () => [技能({ name: "在审的", assetId: "a2", assetStatus: "in_review" })],
+    })
+
+    expect(槽(host, "capability-item-loaded").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-disable"]')).toBe(null)
+    expect(host.textContent).toContain("等业务审核")
+  })
+
   test("被驳回过的草稿行显示最近一次理由，且仍有提交按钮", () => {
     const host = 面板({
       enabled: () => new Set(),
@@ -879,7 +913,7 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     const host = 面板({
       enabled: () => new Set(),
       enabledCount: () => 0,
-      skills: () => [{ name: "手写的", location: "/w/u/p/.opencode/skill/hand/SKILL.md" }],
+      skills: () => [{ name: "手写的", location: "/w/u/p/.opencode/skill/hand/SKILL.md", skillPath: ".opencode/skill/hand" }],
       onCreateAndSubmit: (条) => {
         点过.push(条.name)
       },
@@ -904,6 +938,37 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
 
     expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
     expect(host.querySelector('[data-slot="capability-submit-blocked"]')?.textContent).toContain("项目根")
+  })
+
+  /**
+   * `skillPath` 缺席（旧服务端 / 算不出）与 `"."` 同一处理：接口必填项拿不到，
+   * 点开只会得到一张必然被禁用的弹窗，且弹窗里没有原因说明。这一档同样不给按钮，
+   * 在行上把原因说清楚。
+   */
+  test("未入库且服务端没给 skillPath ⇒ 没有提交按钮，改为一句「拿不到路径」", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "没路径的" })],
+      onCreateAndSubmit: () => {
+        throw new Error("不该有按钮")
+      },
+    })
+
+    expect(槽(host, "capability-item-local").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-submit"]')).toBe(null)
+    expect(host.querySelector('[data-slot="capability-submit-no-path"]')?.textContent).toContain("路径")
+  })
+
+  test("未接线时 skillPath 缺席不报「无法入库」（没提供这个动作，就别造一个故障）", () => {
+    const host = 面板({
+      enabled: () => new Set(),
+      enabledCount: () => 0,
+      skills: () => [技能({ name: "没路径的" })],
+    })
+
+    expect(槽(host, "capability-item-local").length).toBe(1)
+    expect(host.querySelector('[data-slot="capability-submit-no-path"]')).toBe(null)
   })
 
   test("被同名技能盖住的库内条目不给提交按钮", () => {
@@ -953,5 +1018,54 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     放行?.()
     await new Promise((r) => setTimeout(r, 0))
     expect(钮.disabled).toBe(false)
+  })
+
+  /**
+   * `提交中` 是**单槽**状态（2026-11-01 修复轮 1）：A 行在飞时，别的行既没禁用、
+   * 点下去又被 `提交()` 的早退静默吞掉——用户对着一个按了没反应的按钮。
+   * 在飞期间把所有动作按钮（提交 ＋ 停用）一起禁用，点不到就不会以为是自己点漏了。
+   */
+  test("一行提交在飞时，其它行的动作按钮也禁用（不再点了没反应）", async () => {
+    let 放行: (() => void) | undefined
+    const 在飞 = new Promise<void>((resolve) => (放行 = resolve))
+    const 点过: string[] = []
+    const host = 面板({
+      enabled: () => new Set(["a1", "a2", "a6"]),
+      enabledCount: () => 3,
+      skills: () => [
+        技能({ name: "甲稿", assetId: "a1", assetStatus: "draft" }),
+        技能({ name: "乙稿", assetId: "a2", assetStatus: "draft" }),
+        技能({ name: "线上版", assetId: "a6", assetStatus: "published" }),
+        技能({ name: "本地工具", skillPath: ".opencode/skill/本地工具" }),
+      ],
+      onSubmit: (条) => {
+        点过.push(条.assetId)
+        return 在飞
+      },
+      onCreateAndSubmit: (条) => {
+        点过.push(条.name)
+      },
+    })
+
+    // 提交按钮：甲稿、乙稿、本地工具 共三颗；停用：线上版那一颗。
+    const 提交钮 = [...host.querySelectorAll<HTMLButtonElement>('[data-slot="capability-submit"]')]
+    const 停用钮 = host.querySelector<HTMLButtonElement>('[data-slot="capability-disable"]')!
+    expect(提交钮.length).toBe(3)
+    expect(停用钮.disabled).toBe(false)
+
+    提交钮[0].click()
+
+    expect(提交钮[1].disabled, "乙稿的按钮该禁用").toBe(true)
+    expect(提交钮[2].disabled, "本地条目的按钮该禁用").toBe(true)
+    expect(停用钮.disabled, "停用也该在飞期间禁用").toBe(true)
+
+    // 就算程序化点，也不该发出第二个动作。
+    提交钮[1].click()
+    expect(点过).toEqual(["a1"])
+
+    放行?.()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(提交钮[1].disabled).toBe(false)
+    expect(停用钮.disabled).toBe(false)
   })
 })

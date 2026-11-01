@@ -195,6 +195,13 @@ export function CapabilitySubmitDialog(props: CapabilitySubmitDialogProps): JSX.
               </For>
             </select>
           </label>
+          {/* 部门不是这个表单能改的字段：端点不读 body.department，部门取自登录者档案
+              （`取部门()`）。给一句只读说明，别放一个改了也没用的输入框。 */}
+          <Show when={可见() === "department"}>
+            <p data-slot="capability-submit-department-note" class="text-[11px] text-v2-text-text-muted">
+              部门可见时使用你账号档案中的部门；档案里没有部门会被拒绝
+            </p>
+          </Show>
 
           {/* 服务端算不出 skillPath ⇒ 接口必填项拿不到，不猜、也不放一颗点了必然失败的按钮。 */}
           <Show when={技能目录() === undefined}>

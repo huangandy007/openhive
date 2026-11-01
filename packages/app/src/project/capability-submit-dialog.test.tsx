@@ -186,6 +186,28 @@ describe("入库表单（CapabilitySubmitDialog）", () => {
     expect(文案("capability-submit-no-path")).toContain("目录")
   })
 
+  /**
+   * 「谁能用 = 部门」不是这个表单能填的：端点不读 `body.department`，部门取登录者档案
+   * （`auth.user.dept`）。给一句只读说明，**不放**可编辑的部门输入框——那是个改了也没用的假控件。
+   */
+  test("可见范围选「部门」⇒ 只读提示部门取账号档案，没有部门输入框", async () => {
+    await 打开()
+
+    expect(文案("capability-submit-department-note")).toBe("")
+    选(可见(), "department")
+
+    expect(文案("capability-submit-department-note")).toContain("账号档案中的部门")
+    expect(文案("capability-submit-department-note")).toContain("被拒绝")
+    expect(
+      document.body.querySelector("input[name='capability-submit-department'], input[name='department']"),
+      "部门不可编辑，不该有输入框",
+    ).toBeNull()
+
+    // 换回别的可见范围 ⇒ 提示收掉（只在部门那一档成立）。
+    选(可见(), "personal")
+    expect(文案("capability-submit-department-note")).toBe("")
+  })
+
   test("接口回一句失败 ⇒ 弹窗不关、话就地在弹窗里", async () => {
     await 打开({ onConfirm: () => "源目录不存在或不是目录" })
 

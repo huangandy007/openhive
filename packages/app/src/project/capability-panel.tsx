@@ -244,6 +244,14 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
 
   /** 提交在飞的那一条（防连点）。`onSubmit` 回 promise 时由 `.finally` 收掉。 */
   const [提交中, set提交中] = createSignal<string>()
+  /**
+   * 有任何一条提交在飞。
+   *
+   * `提交中` 是**单槽**状态：另一行的按钮若不禁用，点下去会被 `提交()` 的早退静默吞掉——
+   * 用户看到一个按得下去、却什么都不发生的按钮。所以在飞期间禁用**所有**动作按钮
+   * （提交 ＋ 停用）；跨行并发的写动作本来就不该从这张面板发生。
+   */
+  const 有动作在飞 = () => 提交中() !== undefined
   const 提交 = (条: 库内条目) => {
     const 动作 = props.onSubmit
     if (动作 === undefined || 提交中() !== undefined) return
@@ -322,12 +330,22 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           技能目录就是项目根，请把 SKILL.md 放进子目录后再提交
         </p>
       </Show>
+      {/* `skillPath` 缺席（旧服务端 / 算不出来）与 `"."` 同一档：接口必填项拿不到，按钮点开
+          只会得到一张必然被禁用的弹窗。这里直接不给按钮、说明原因。
+          只在**接了线**的宿主里说这句——没接线时本来就不提供这个动作，报一句「无法入库」
+          等于凭空造一个故障（`#002-02`）。 */}
+      <Show when={条.skillPath === undefined && props.onCreateAndSubmit !== undefined}>
+        <p data-slot="capability-submit-no-path" class="pl-3 pt-1 text-[10px] text-v2-text-text-muted">
+          拿不到这个技能在项目里的路径，无法入库
+        </p>
+      </Show>
       {/* 没接线（组件测试 / 别的宿主）⇒ 不画按钮：点了没反应比没有按钮更像坏了。 */}
-      <Show when={条.skillPath !== "." && props.onCreateAndSubmit !== undefined}>
+      <Show when={条.skillPath !== undefined && 条.skillPath !== "." && props.onCreateAndSubmit !== undefined}>
         <div class="flex justify-end pl-3 pt-1">
           <button
             type="button"
             data-slot="capability-submit"
+            disabled={有动作在飞()}
             class={小钮}
             onClick={() => void props.onCreateAndSubmit?.(条)}
           >
@@ -397,7 +415,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           <button
             type="button"
             data-slot="capability-submit"
-            disabled={提交中() === 条.assetId}
+            disabled={有动作在飞()}
             class={小钮}
             onClick={() => 提交(条)}
           >
@@ -422,7 +440,7 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           <button
             type="button"
             data-slot="capability-disable"
-            disabled={props.busy() === 条.assetId}
+            disabled={props.busy() === 条.assetId || 有动作在飞()}
             class={小钮}
             onClick={() => props.onToggle(条.assetId)}
           >
@@ -433,7 +451,8 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
     </div>
   )
 
-  // ③ 自带条目**没有**操作按钮：它不是装来的，点了等于删用户的文件（设计 §4）。
+  // ③ 自带条目不是「装来的」：不给停用 / 卸载——那等于删用户的文件（设计 §4）。
+  // 它唯一的下一步是「入库并提交」，由 `自带()` 自己画。
   const 一条 = (条: 能力条目) => {
     // 卡片被移走（比如刚点了「停用」，回包后它整条消失）时，指针不会再给这张卡发
     // `mouseleave` ⇒ 预览会孤零零留在屏上。卡片自己的清理里把它收掉。
