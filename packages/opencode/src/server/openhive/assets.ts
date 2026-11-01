@@ -64,6 +64,8 @@ export * as OpenhiveAssets from "./assets"
  * 次序恒定「身份 → 存在 → 授权 → 校验 → 写」——**授权先于校验**（见 `handleContent`）。
  */
 
+import { realpath } from "node:fs/promises"
+import { join, relative } from "node:path"
 import {
   AssetMetadataError,
   assetById,
@@ -77,7 +79,8 @@ import { effectivePermissions } from "@opencode-ai/asset-service/authorization"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
-import { transitionAsset } from "@opencode-ai/asset-service/service"
+import { createDraftAsset, transitionAsset } from "@opencode-ai/asset-service/service"
+import { DIRECTORY_META_KEY, resolveSourceDirectory, sandboxDirectoryOf } from "@opencode-ai/asset-service/governance"
 import {
   MissingSourceDirectoryError,
   assetsRoot,
@@ -85,7 +88,7 @@ import {
 } from "@opencode-ai/asset-service/storage"
 import { grantsFor } from "@opencode-ai/auth/rbac"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
-import { categoryNamesOf, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
+import { categoryNamesOf, listCategories, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import { Database } from "@opencode-ai/core/database/database"
 import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { offsetOf, parsePage } from "./paging"
@@ -116,6 +119,8 @@ export const PATH = {
   iterationAbort: "/openhive/assets/:id/iteration/abort",
   // 【保留的定制 · 同步上游时不要丢】项目技能提交审核（2026-11-01 设计 §4.4）。
   submit: "/openhive/assets/:id/submit",
+  // 入库：把项目里**未入库**的 skill 目录登记成草稿（提交审核的上一步）。
+  draft: "/openhive/assets/draft",
 } as const
 
 const BAD_REQUEST = 400
@@ -142,6 +147,9 @@ export const routes = HttpRouter.use((router) =>
     const deps: Deps = { pg: openhivePg.pg, 时控: create抽取时控(), database }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
+    // 入库（2026-11-01，设计 §4.4）：`/draft` 只有一个路径段，**必须注册在 `:id` 系列之前**——
+    // 否则按注册顺序匹配时 `draft` 会被当成某个资产 id。
+    yield* router.add("POST", PATH.draft, (request) => handleCreateDraft(request, deps))
     yield* router.add("PATCH", PATH.content, (request) => handleContent(request, deps))
     // 迭代三个端点共用 `handleIteration`：同一件事只该有一条实现（`#002-06`）。
     yield* router.add("POST", PATH.iteration, (request) => handleIteration(request, deps, "start_iteration"))
@@ -359,6 +367,125 @@ function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps)
     }
     if (结果.success === undefined) return fail(NOT_FOUND, "资产不存在")
     return ok(结果.success)
+  })
+}
+
+/**
+ * `POST /openhive/assets/draft`（2026-11-01，设计 §4.4）：把项目里的一个 skill 目录登记成资产草稿。
+ *
+ * 【保留的定制 · 同步上游时不要丢】项目技能提交审核的前半程：前端随后串行调
+ * `POST /openhive/assets/:id/submit` 完成「一键入库并提交」。
+ *
+ * ## 两层边界与 MCP 的 `create_skill_draft` 完全相同，**共用同一份实现**
+ *
+ * ① 调用目录必须落在 `<沙箱根>/<userId>/` 之内（`sandboxDirectoryOf`）；
+ * ② `skillPath` 只收相对路径，解析后必须仍在项目目录内（`resolveSourceDirectory`）；
+ * ③ **真身**也必须仍在项目目录内：② 只比字面路径，而项目里的 `.opencode/skill/<id>` 是指向
+ *    共享资产库的 junction（`#009-03`）——字面判定挡不住链接，必须两边 `realpath` 再比。
+ *
+ * 少任一层，一个 `../..` 或一条链接就能把服务器上任意目录复制成「已提交的 skill」。
+ *
+ * ## 次序
+ *
+ * 身份 → 读体 → 字段校验 → 项目归属 → 目录边界 → 建草稿（**建草稿是唯一副作用**）。
+ * 所有拒绝都排在复制之前：失败时 `<资产根>/draft` 一个目录都不会多。
+ *
+ * ## `storage` 必传
+ *
+ * 提交审核只从 `<资产根>/draft/<assetId>` 取内容（Task 2 起）。`createDraftAsset` 的
+ * `storage` 是可选参数，漏传会造出一个**永远提交不了**的草稿——本端点显式传。
+ */
+function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+
+    const body = yield* 读取体(request)
+    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+
+    const 项目 = body["projectId"]
+    if (typeof 项目 !== "string" || !User.isSafePathSegment(项目)) return fail(BAD_REQUEST, "projectId 不合法")
+    const 相对 = body["skillPath"]
+    if (typeof 相对 !== "string" || 相对.trim() === "") return fail(BAD_REQUEST, "skillPath 不能为空")
+    const 名称 = body["name"]
+    const 描述 = body["description"]
+    const 分类 = body["category"]
+    const 可见 = body["visibility"]
+    if (typeof 名称 !== "string" || 名称.trim() === "") return fail(BAD_REQUEST, "name 不能为空")
+    if (typeof 描述 !== "string") return fail(BAD_REQUEST, "description 必须是字符串")
+    if (typeof 分类 !== "string" || 分类.trim() === "") return fail(BAD_REQUEST, "category 不能为空")
+    // 分类必须在册（设计 §4.8：停用的分类等同不存在，文案要能指路）。
+    // 闭集的唯一来源是 `category-store.ts`，不在这里拼 SQL、也不拿 seed 常量冒充。
+    const 分类表 = yield* Effect.promise(() => listCategories(deps.pg()))
+    if (!分类表.some((条) => 条.id === 分类 && 条.enabled)) {
+      return fail(BAD_REQUEST, "这个分类已停用，请重新选择")
+    }
+    if (typeof 可见 !== "string" || !是可见性(可见)) return fail(BAD_REQUEST, "未知可见范围")
+
+    // 不是成员 ⇒ 400 而不是 404：404 会变成「这个项目 id 存在吗」的探针（判据只有 `成员角色` 一份）。
+    const 角色 = yield* 成员角色({ pg: deps.pg(), database: deps.database }, userId, 项目)
+    if (角色 === undefined) return fail(BAD_REQUEST, "目标项目不属于你")
+
+    // 与迭代端点同一条规范化：本机 `%TEMP%` 是 8.3 短名，字面比较会让同一物理目录出现两种形状（`#006-23`）。
+    const 沙箱根 = WorkspaceRoot.canonicalRoot(workspaceRoot(process.env))
+    const 项目目录 = join(沙箱根, userId, 项目)
+    let 源: string
+    try {
+      // ① 与 MCP 同一个 `sandboxDirectoryOf`：调用目录必须落在 `<沙箱根>/<userId>/` 内。
+      sandboxDirectoryOf(沙箱根, userId, { [DIRECTORY_META_KEY]: 项目目录 })
+      // ② 与 MCP 同一个 `resolveSourceDirectory`：相对路径解析后仍在项目目录内。
+      源 = resolveSourceDirectory(项目目录, 相对)
+    } catch {
+      return fail(FORBIDDEN, "源目录必须在项目目录之内")
+    }
+    // ③ 字面判定挡不住链接（`#009-03`）：真身越界同样 403，且发生在复制之前。
+    if (!(yield* 真身在目录内(项目目录, 源))) {
+      return fail(FORBIDDEN, "源目录必须在项目目录之内")
+    }
+
+    const 部门 = yield* 取部门(deps, userId)
+    const 结果 = yield* Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          createDraftAsset({
+            db: deps.pg(),
+            owner: { id: userId, name: user.value.name, department: 部门 },
+            name: 名称,
+            description: 描述,
+            category: 分类,
+            visibility: 可见,
+            // 必传：草稿副本落进 `<资产根>/draft/<id>`，提交审核只认这一份。
+            storage: { root: assetsRoot(process.env), sourceDirectory: 源, projectDirectory: 项目目录 },
+          }),
+        catch: (error) => error,
+      }),
+    )
+    if (Result.isFailure(结果)) {
+      const error = 结果.failure
+      if (error instanceof AssetMetadataError) return fail(BAD_REQUEST, error.message)
+      throw error
+    }
+    const asset = 结果.success
+    return ok({ assetId: asset.id, name: asset.name, status: asset.status, visibility: asset.visibility })
+  })
+}
+
+/**
+ * `source` 的**真身**是否仍落在 `root` 的**真身**里（`#009-03`）。
+ *
+ * 两边都 `realpath` 再逐段比（同 `file.ts` 的 `realInside`）：项目根本身经由链接到达时，
+ * 只解一边会把所有正常路径一起拒掉。取不到真身（源不存在 / 无权限）一律 false（fail-closed）——
+ * 拒绝只会让调用方拿到 403，不会去复制。
+ */
+function 真身在目录内(root: string, source: string) {
+  return Effect.promise(async () => {
+    const [真根, 真源] = await Promise.all([
+      realpath(root).catch(() => undefined),
+      realpath(source).catch(() => undefined),
+    ])
+    if (真根 === undefined || 真源 === undefined) return false
+    return 真源 === join(真根, relative(root, source))
   })
 }
 

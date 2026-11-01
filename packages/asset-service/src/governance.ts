@@ -230,7 +230,7 @@ function viewerOf(user: LoadedUser): AssetViewer {
  * 空路径与「指到根本身」都不拒绝（项目根也可以是 skill 目录），但 `..` / 绝对路径 /
  * 盘符路径一律拒绝——它们都能把任意系统目录复制进共享资产卷。
  */
-function resolveSourceDirectory(sourceRoot: string, value: string): string {
+export function resolveSourceDirectory(sourceRoot: string, value: string): string {
   if (isAbsolute(value)) {
     throw new GovernanceError("source_outside_workspace", `源目录必须是工作区内的相对路径：${value}`)
   }
