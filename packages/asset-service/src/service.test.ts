@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync, readlinkSync } from "node:fs"
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { sql, type SQL } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
@@ -891,6 +891,56 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
     expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
     expect((await assetById(db, "asset_1"))?.status).toBe("offline")
+  })
+
+  /**
+   * 数据完整性（2026-11-01 终审）：`publish_iteration` 与 `abort_iteration` 都是
+   * `iterating → published`，**只比状态分不出是谁完成的**。
+   *
+   * 交错窗口：publish 已把 pending 的 v2 搬进发布目录（v1 进 `.bak-*`）、库还没写；abort 抢先
+   * 落库（version 回退到 1、说明清空、工作副本清空）。publish 的条件更新落空后若只判
+   * `status === published`，就会误认成「并发请求完成了同一条 publish」⇒ `commit()` 删掉备份。
+   * 结果：线上是不该发布的 v2，库里是已放弃的 v1，审核闸门被绕过且无审计。
+   */
+  test("迭代发布 vs 放弃并发：abort 先落库 ⇒ 不把放弃当已完成，旧版备份必须放回、pending 不丢", async () => {
+    const db = await freshDb()
+    const root = tempRoot()
+    await 种迭代中(db, root, { 版本: 2, 待审内容: "v2" })
+
+    // 在 publish 的条件 update 之前，插一条 abort 已经落库的写入。
+    const racing = await raceOnUpdate(
+      db,
+      sql`update auth.asset set status = 'published', version = 1, iteration_note = '', iteration_workspace = null where id = 'asset_1'`,
+    )
+    const error = await failure(() =>
+      transitionAsset({
+        db: racing,
+        root,
+        assetId: "asset_1",
+        action: "publish_iteration",
+        viewer: 系统管理员,
+        grants: 管,
+        now: 3_001,
+      }),
+    )
+
+    expect(codeOf(error)).toBe("concurrent_transition")
+
+    // 线上仍是 v1：只有 `.bak-*` 里的旧版被放回，才读得到这个内容。
+    // （修复路径里备份是被 rollback **改名回目标**，不是留下——所以下面断言「没有残留备份」，
+    //  v1 本身才是「备份没被 commit 删掉」的证据。）
+    expect(await readFile(join(发布目录(root), "SKILL.md"), "utf8")).toBe("v1")
+    const 备份 = (await readdir(dirname(发布目录(root)))).filter((name) => name.includes(".bak-"))
+    expect(备份).toEqual([])
+
+    // pending 里的 v2 没丢：回滚把新版退回源。
+    expect(await readFile(join(待审目录(root), "SKILL.md"), "utf8")).toBe("v2")
+
+    // 库里是 abort 的结果，不是 publish 的。
+    const 行 = await assetById(db, "asset_1")
+    expect(行?.status).toBe("published")
+    expect(行?.version).toBe(1)
+    expect(行?.iterationNote).toBe("")
   })
 
   test("迭代：发起把发布目录复制到工作副本，发布目录一个字没变、库里记下说明与路径", async () => {

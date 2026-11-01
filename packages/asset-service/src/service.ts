@@ -598,6 +598,14 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
 
   const step = await prepareStorageStep(root, 生效, applied, asset, input.sourceDirectory, 迭代)
 
+  // 本次要写入的版本号**只算一次**：条件更新与「他人已落地」判据必须用同一个值，
+  // 算两遍就可能一边 +1 一边回退，判别式自己先漂掉。
+  const 目标版本 = VERSION_BUMPING_ACTIONS.has(applied.action)
+    ? asset.version + 1
+    : VERSION_REVERTING_ACTIONS.has(applied.action)
+      ? Math.max(1, asset.version - 1)
+      : asset.version
+
   let updated: AssetMetadata
   // 条件更新落空之后才知道有没有「另一个写者已经完成同一流转」；它决定 catch 里
   // 是收尾（commit）还是回滚（rollback）——见 catch 里的说明。
@@ -606,11 +614,7 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     const result = await updateAssetLifecycle(db, asset.id, {
       expectedStatus: asset.status,
       status: applied.to,
-      version: VERSION_BUMPING_ACTIONS.has(applied.action)
-        ? asset.version + 1
-        : VERSION_REVERTING_ACTIONS.has(applied.action)
-          ? Math.max(1, asset.version - 1)
-          : asset.version,
+      version: 目标版本,
       updatedAt: now,
       publishedAt: PUBLISHING_ACTIONS.has(applied.action) ? now : asset.publishedAt,
       archivedAt: applied.action === "archive" ? now : asset.archivedAt,
@@ -622,7 +626,13 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       // 目标目录里放的是它已提交的结果，不是本调用搬过去的（真栈实测：Windows 上
       // 两条并发 `rename` 同一源到同一目标**都**回成功，输家以为自己搬了、其实没有）。
       // 这时回滚会把别人的结果搬回 pending，落成「库里 published、文件在 pending」。
-      他人已落地 = (await assetById(db, asset.id))?.status === applied.to
+      //
+      // ⚠️ **必须连版本一起比**：`publish_iteration` 与 `abort_iteration` 都是
+      // `iterating → published`，只比状态会把「abort 已落库」误认成「并发的 publish 已完成」
+      // ⇒ `commit()` 删掉旧版备份，线上留下未发布的 v2、库里是已放弃的 v1（2026-11-01
+      // 终审：审核闸门被绕过且无审计）。两者的版本号不同：publish 不动版本，abort 回退。
+      const 现状 = await assetById(db, asset.id)
+      他人已落地 = 现状?.status === applied.to && 现状.version === 目标版本
       throw new AssetTransitionError(
         "concurrent_transition",
         他人已落地
