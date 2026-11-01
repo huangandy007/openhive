@@ -407,6 +407,13 @@ describe("迭代工作副本路径（2026-11-01）", () => {
     expect(() => iterationWorkspaceDirectory(root, "u1")).not.toThrow()
   })
 
+  test("根内穿越也拒：某一段是 .. 但拼回后仍在 root 内（assertWithinRoot 拦不住）", () => {
+    // 与上一条的区别：`join(root, "u1", "..", "p1")` 归一化后是 `root/p1`，仍在根**内部**，
+    // 所以 `assertWithinRoot` 会放行——挡住它的是逐段 `assertSafeSegment`。
+    const root = join(tmpdir(), "openhive-ws-根内穿越")
+    expect(() => iterationWorkspaceDirectory(root, "u1/../p1")).toThrow(/非法工作副本目录/)
+  })
+
   test("directoryExists：有目录 true、没有 false", async () => {
     const root = join(tmpdir(), `openhive-storage-${randomUUID()}`)
     try {
