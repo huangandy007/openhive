@@ -238,6 +238,12 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
   test("一条连续旅程：草稿 → 驳回 → 重提 → 发布 → 迭代 → 下线 → 上线 → 归档，状态 / 版本 / 时间 / 文件步步对账", async () => {
     const db = await freshDb()
     const root = tempRoot()
+    // 发布后的链接重指需要沙箱根。**这里必须像生产一样传**（2026-11-01 收尾裁定）：两个 HTTP
+    // 出口（`assets.ts:591`、`governance-assets.ts:436`）与 MCP 都恒传 `workspaceRoot(env)`；
+    // 不传是**退化路径**，那条路径按契约不重指、也**不删草稿副本**（`service.test.ts`
+    // 「workspaceRoot 未传：不重指、也不删草稿副本」钉的就是它）。本条旅程断言的是设计 §4.6
+    // 的正常路径，夹具不传就成了「拿退化路径的行为去断正常路径的账」。
+    const 沙箱根 = tempRoot()
     // 提交审核只认 `<root>/draft/<id>`（2026-11-01 设计 §4.5）：夹具把内容放进草稿副本。
     await writeSkill(draftDirectory(root, "asset_1"), "v1")
     await insertAsset(db, metadata({ status: "draft" }))
@@ -305,15 +311,23 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await readFile(join(待审目录, "SKILL.md"), "utf8")).toBe("v1")
 
     // 4. 技术发布：pending 搬进发布目录，发布时间落定
-    const 发布 = await 走({ action: "publish_tech", viewer: 系统管理员, grants: 管, now: 2_004 })
+    const 发布 = await 走({
+      action: "publish_tech",
+      viewer: 系统管理员,
+      grants: 管,
+      now: 2_004,
+      workspaceRoot: 沙箱根,
+    })
     expect(发布.status).toBe("published")
     expect(发布.version).toBe(1)
     expect(发布.publishedAt).toBe(2_004)
     expect(await exists(待审目录)).toBe(false)
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v1")
+    // 设计 §4.6：发布成功即删草稿副本。这一步**必须单独断**——只靠终态快照的话，
+    // 后面的 `publish_iteration` 会把同一次清理再做一遍，这里漏掉也看不出来。
+    expect(await exists(draftDirectory(root, "asset_1"))).toBe(false)
 
     // 5. 发起迭代：版本 +1，旧版继续可用；作者拿到工作副本，线上那份一个字没变
-    const 沙箱根 = tempRoot()
     const 迭代 = await 走({
       action: "start_iteration",
       viewer: 作者,
@@ -345,7 +359,13 @@ describe("SC-002 验收 · 生命周期状态流转（T016）", () => {
     expect(await readFile(join(发布目录, "SKILL.md"), "utf8")).toBe("v1")
 
     // 7. 迭代发布：新版替换旧版，发布时间刷新，版本不再 +1
-    const 迭代发布 = await 走({ action: "publish_iteration", viewer: 系统管理员, grants: 管, now: 3_002 })
+    const 迭代发布 = await 走({
+      action: "publish_iteration",
+      viewer: 系统管理员,
+      grants: 管,
+      now: 3_002,
+      workspaceRoot: 沙箱根,
+    })
     expect(迭代发布.status).toBe("published")
     expect(迭代发布.version).toBe(2)
     expect(迭代发布.publishedAt).toBe(3_002)
