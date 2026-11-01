@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { resolve } from "node:path"
 import {
   ASSET_STATUSES,
   ASSET_STATUS_LABELS,
@@ -148,7 +149,12 @@ describe("资产统一元数据（FR-001）", () => {
    * 写入值由 `iterationWorkspaceRelative()` 唯一产生，该函数内部已逐段 `assertSafeSegment`，
    * 所以这里只钉「形状门」这一份，不另造一套路径规则。
    *
-   * 删掉那条分支 ⇒ 前两条不再报 issue、后两条不再抛 ⇒ 一起红。
+   * 删掉那条分支的后果按平台不同（`#004-03`：断言必须能失败，所以要说准）：
+   * - win32：本条用例在第一条断言就红（实测 `Received: []`）；`..` 与非字符串那两条
+   *   轮不到执行（同一用例前一条失败即中止），所以能直接钉住 `isAbsolute` 的只有第一条；
+   * - posix：`isAbsolute` 没了也不影响结果——`resolve("x")` 以 `/` 开头，split 出首段
+   *   为空串，由「空段」规则照样拦下 ⇒ 该用例仍绿（删 `isAbsolute` 在 posix 上行为等价）。
+   *   所以 posix 侧真正钉住的是空段规则，不是 `isAbsolute`。
    */
   test("iterationWorkspace 必须是沙箱根下的相对路径：绝对路径 / `..` / 类型不对都被拒", () => {
     const 问题 = (value: unknown) =>
@@ -156,7 +162,10 @@ describe("资产统一元数据（FR-001）", () => {
     const 字段 = (value: unknown) => 问题(value).map((issue) => issue.field)
 
     // 绝对路径：换落盘根那天会指向旧机器上的位置（#010-04）。
-    expect(字段("C:/evil/x")).toContain("iterationWorkspace")
+    // 用 `resolve("x")` 而不是写死 `C:/evil/x`：后者在 Linux 上 `isAbsolute` 为 false
+    // （CI 的 unit 矩阵含 ubuntu），断言会恒红。posix 下这条由「首段为空」规则兜住，
+    // 与 isAbsolute 同效；win32 下才真正走 isAbsolute 那条。
+    expect(字段(resolve("x"))).toContain("iterationWorkspace")
     // 越界段：`..` 能把文件写到沙箱根外面。
     expect(字段("u1/../p1/x")).toContain("iterationWorkspace")
 
