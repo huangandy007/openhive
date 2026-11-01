@@ -18,13 +18,15 @@ import { testEffect } from "../lib/effect"
 /**
  * 入库出口（2026-11-01，设计 §4.4）：`POST /openhive/assets/draft`。
  *
- * 一条成功面 ＋ 三条失败面，各自钉一个判据：
+ * 一条成功面 ＋ 五条失败面，各自钉一个判据：
  * 1. **成功** ⇒ 库里有行（`status: draft`），且 `<资产根>/draft/<id>` 有副本——`storage` 漏传
  *    会造出一个「永远提交不了」的草稿（提交审核只从 `/draft/<id>` 取内容）；
  * 2. `skillPath` 带 `../..` ⇒ 403，且 `<资产根>/draft` 一个目录都不多；
  * 3. 不是成员的项目 ⇒ **400 而不是 404**（404 会变成「这个项目 id 存在吗」的探针）；
  * 4. `skillPath` 字面在项目内、真身是项目外的链接 ⇒ 403（`#009-03`：只比字面路径会被
- *    junction / symlink 绕过）。第 2、4 条都断言「没有新增草稿目录」——拒绝必须发生在复制之前。
+ *    junction / symlink 绕过）。第 2、3、4 条都断言「没有新增草稿目录」——拒绝必须发生在复制之前；
+ * 5. `skillPath` 指向**文件** ⇒ 400（不能落进 `stageDirectory` 的普通 `Error` 变 500）；
+ * 6. 目录里**没有 SKILL.md** ⇒ 400，且不新增草稿目录（否则会造出内核永远扫不到的废数据）。
  *
  * ⚠️ 与 `openhive-asset-iteration.test.ts` 逐行对齐 app 构造方式（同一个出口家族）：
  * 身份靠 `OPENHIVE_REQUIRE_USER_ID=1` ＋ `AUTH_JWT_SECRET`，`handler` 要带 `HttpApiApp.context`。
@@ -186,6 +188,13 @@ describe("POST /openhive/assets/draft（2026-11-01）", () => {
       // `../../../etc` 在本机多半不存在，第三层（realpath fail-closed）会顺手兜住它；
       // `..` 则是**真实存在**的项目外目录（调用者自己的沙箱根），只有字面那一层能拒——
       // 这条让「只比字面路径」的变异一眼可见（`#009-03`）。
+      //
+      // 目录必须在本用例内自己造（`#005-34`：不依赖前一条用例留下的夹具）。否则单跑时
+      // `..` 的落点并不存在，realpath 的 fail-closed 会替字面判定兜底——变异 A 就红不了。
+      const 项目目录 = join(沙箱根, 我.id, 我的项目)
+      mkdirSync(项目目录, { recursive: true })
+      mkdirSync(join(沙箱根, 我.id, "sibling-real-dir"), { recursive: true })
+
       const 前 = 草稿目录数()
       const res = yield* 入库(我, 请求体({ skillPath: "..", name: "兄弟目录", description: "x" }))
       expect(res.status).toBe(403)
@@ -208,6 +217,30 @@ describe("POST /openhive/assets/draft（2026-11-01）", () => {
       const 前 = 草稿目录数()
       const res = yield* 入库(我, 请求体({ skillPath: "越界链接", name: "链接", description: "x" }))
       expect(res.status).toBe(403)
+      expect(草稿目录数()).toBe(前)
+    }))
+
+  it.live("skillPath 指向文件（不是目录）⇒ 400，不是 500，且不新增草稿目录", () =>
+    Effect.gen(function* () {
+      const 项目目录 = join(沙箱根, 我.id, 我的项目)
+      mkdirSync(项目目录, { recursive: true })
+      writeFileSync(join(项目目录, "not-a-dir.md"), "x", "utf8")
+
+      const 前 = 草稿目录数()
+      const res = yield* 入库(我, 请求体({ skillPath: "not-a-dir.md", name: "文件", description: "x" }))
+      // 不先做 stat：`stageDirectory` 会抛普通 `Error`，被 `throw error` 抛成 500。
+      expect(res.status).toBe(400)
+      expect(草稿目录数()).toBe(前)
+    }))
+
+  it.live("目录里没有 SKILL.md ⇒ 400，且不新增草稿目录", () =>
+    Effect.gen(function* () {
+      // 内核只加载带 SKILL.md 的 skill：建成草稿只会得到一条永远扫不到、却可提交发布的废数据。
+      mkdirSync(join(沙箱根, 我.id, 我的项目, "no-skill-md"), { recursive: true })
+
+      const 前 = 草稿目录数()
+      const res = yield* 入库(我, 请求体({ skillPath: "no-skill-md", name: "空目录", description: "x" }))
+      expect(res.status).toBe(400)
       expect(草稿目录数()).toBe(前)
     }))
 })

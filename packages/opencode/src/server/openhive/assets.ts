@@ -64,7 +64,7 @@ export * as OpenhiveAssets from "./assets"
  * 次序恒定「身份 → 存在 → 授权 → 校验 → 写」——**授权先于校验**（见 `handleContent`）。
  */
 
-import { realpath } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { join, relative } from "node:path"
 import {
   AssetMetadataError,
@@ -390,6 +390,11 @@ function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps)
  * 身份 → 读体 → 字段校验 → 项目归属 → 目录边界 → 建草稿（**建草稿是唯一副作用**）。
  * 所有拒绝都排在复制之前：失败时 `<资产根>/draft` 一个目录都不会多。
  *
+ * 目录边界内部再分：**字面边界（403）→ 源存在性 / SKILL.md（400）→ 真身越界（403）→ 复制**。
+ * 越界必须先于任何复制（`#004-09`）；而「源不是目录 / 没有 SKILL.md」是调用方给错了源，
+ * 回 400——否则前者会落进 `stageDirectory` 的普通 `Error` 变 500，后者会建出一条内核
+ * 永远扫不到、却可提交发布的废草稿。
+ *
  * ## `storage` 必传
  *
  * 提交审核只从 `<资产根>/draft/<assetId>` 取内容（Task 2 起）。`createDraftAsset` 的
@@ -439,6 +444,22 @@ function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: D
     } catch {
       return fail(FORBIDDEN, "源目录必须在项目目录之内")
     }
+    // 源必须真的是一个带 SKILL.md 的目录（排在字面边界之后、真身判定之前）：
+    // - 指向文件 / 不存在 ⇒ 400。不先判，`stageDirectory` 会抛普通 `Error`，被下面 `throw` 成 500；
+    // - 没有 SKILL.md ⇒ 400。内核只加载带 SKILL.md 的 skill，建成草稿就是废数据
+    //   （可提交、可发布，但内核永远扫不到）。
+    const 源信息 = yield* Effect.promise(() => stat(源).catch(() => undefined))
+    if (源信息 === undefined || !源信息.isDirectory()) {
+      return fail(BAD_REQUEST, "源目录不存在或不是目录")
+    }
+    const 有技能文件 = yield* Effect.promise(() =>
+      stat(join(源, "SKILL.md")).then(
+        () => true,
+        () => false,
+      ),
+    )
+    if (!有技能文件) return fail(BAD_REQUEST, "这个目录里没有 SKILL.md")
+
     // ③ 字面判定挡不住链接（`#009-03`）：真身越界同样 403，且发生在复制之前。
     if (!(yield* 真身在目录内(项目目录, 源))) {
       return fail(FORBIDDEN, "源目录必须在项目目录之内")
