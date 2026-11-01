@@ -11,7 +11,7 @@ import {
   type CatalogQuery,
   type UsageStats,
 } from "./asset-catalog-api"
-import { createContentApi, type ContentApi, type 内容补丁 } from "./content-api"
+import { createContentApi, type ContentApi, type 内容补丁, type 迭代结果 } from "./content-api"
 import { createFavoriteApi, type FavoriteApi, type FavoriteOutcome } from "./favorite-api"
 
 /**
@@ -83,6 +83,18 @@ export interface AssetCatalog {
   readonly saveContent: (assetId: string, patch: 内容补丁) => Promise<AssetMetadata | undefined>
   /** 用服务端回来的整行替换清单里的同一行（行不在清单里就忽略）。 */
   readonly applyAsset: (asset: AssetMetadata) => void
+  /** 【保留的定制 · 同步上游时不要丢】发起迭代（2026-11-01）。成功回工作副本绝对路径（可能没有）。 */
+  readonly startIteration: (
+    assetId: string,
+    note: string,
+    projectId: string,
+  ) => Promise<{ readonly ok: true; readonly workspace?: string } | { readonly ok: false; readonly message: string }>
+  /** 提交工作副本；成功 `true`，失败返回那句人话。 */
+  readonly submitIteration: (assetId: string) => Promise<true | string>
+  /** 放弃迭代；成功 `true`，失败返回那句人话。 */
+  readonly abortIteration: (assetId: string) => Promise<true | string>
+  /** 正在迭代操作的那个资产 id；没有在飞的就是 `undefined`。 */
+  readonly iterationBusy: () => string | undefined
   /**
    * 换查询条件并拉第 1 页。同条件重复调用 = 刷新当前页。
    * 空间全取消（空数组）走短路：**不发请求**，直接空集。
@@ -131,6 +143,7 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
   const 收藏Api = options.favoriteApi ?? createFavoriteApi()
   const [可写, set可写] = createSignal<ReadonlySet<string>>(new Set<string>())
   const [保存中, set保存中] = createSignal<string | undefined>()
+  const [迭代中, set迭代中] = createSignal<string | undefined>()
   const 内容Api = options.contentApi ?? createContentApi()
 
   let 当前条件: CatalogQuery = {}
@@ -260,6 +273,69 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     }
   }
 
+  /**
+   * 三条迭代调用共用一把「一次一条」的锁（与保存 / 收藏同一纪律，`#010-05`）：
+   * 后发的先到会把界面翻回去。
+   *
+   * 失败都写 `error`（详情自己有 `role="alert"` 读它），成功后清掉——不清的话
+   * 上一次的 409 会一直挂在详情顶上。
+   *
+   * 这三条都**不**改本地行：版本号 / 状态以服务端为准，成功之后走既有刷新入口 `拉()`
+   * （与 `reload` 同一个）。猜一个 `version + 1` 上去，失败时就得多写一次回滚。
+   */
+  const 迭代调用 = async <T>(
+    assetId: string,
+    跑: () => Promise<迭代结果>,
+    成功: (结果: Extract<迭代结果, { kind: "ok" }>) => T,
+  ): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }> => {
+    // 已有在飞的不排队：用户点一次就够了，排队反而会在他改了主意之后偷偷执行。
+    // ⚠️ 失败**不能**与成功值共用一个 `string` 返回口——`startIteration` 的成功值本身就是
+    // 字符串（工作副本路径），`typeof 结果 === "string"` 会把成功当失败。
+    if (迭代中() !== undefined) return { ok: false, message: "上一条操作还没完成，请稍等" }
+    set迭代中(assetId)
+    try {
+      const 结果 = await 跑()
+      if (结果.kind !== "ok") {
+        set错误(结果.message)
+        return { ok: false, message: 结果.message }
+      }
+      set错误(undefined)
+      return { ok: true, value: 成功(结果) }
+    } catch {
+      // 注入的客户端若直接抛（默认实现自己会吞），也不能把锁永久卡住。
+      set错误("操作失败，请检查网络后重试")
+      return { ok: false, message: "操作失败，请检查网络后重试" }
+    } finally {
+      set迭代中(undefined)
+    }
+  }
+
+  const startIteration: AssetCatalog["startIteration"] = async (assetId, note, projectId) => {
+    const 结果 = await 迭代调用(
+      assetId,
+      () => 内容Api.iteration(assetId, note, projectId),
+      (值) => 值.value.workspace,
+    )
+    if (!结果.ok) return 结果
+    // 成功才刷新：状态 / 版本以服务端为准；失败时清单没变，刷新只是白跑一趟。
+    拉()
+    return 结果.value === undefined ? { ok: true } : { ok: true, workspace: 结果.value }
+  }
+
+  const submitIteration: AssetCatalog["submitIteration"] = async (assetId) => {
+    const 结果 = await 迭代调用(assetId, () => 内容Api.submitIteration(assetId), () => true)
+    if (!结果.ok) return 结果.message
+    拉()
+    return true
+  }
+
+  const abortIteration: AssetCatalog["abortIteration"] = async (assetId) => {
+    const 结果 = await 迭代调用(assetId, () => 内容Api.abortIteration(assetId), () => true)
+    if (!结果.ok) return 结果.message
+    拉()
+    return true
+  }
+
   return {
     assets: 清单,
     total: 总数,
@@ -274,6 +350,10 @@ export function createAssetCatalog(api: CatalogApi = createCatalogApi(), options
     writable: 可写,
     saveContent,
     applyAsset,
+    startIteration,
+    submitIteration,
+    abortIteration,
+    iterationBusy: 迭代中,
     load,
     goPage,
     setPageSize,

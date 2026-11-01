@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import type { CatalogApi, CatalogOutcome, CatalogPage, CatalogQuery } from "./asset-catalog-api"
 import type { FavoriteApi, FavoriteOutcome } from "./favorite-api"
-import type { ContentOutcome } from "./content-api"
+import type { ContentApi, ContentOutcome } from "./content-api"
 import { createAssetCatalog } from "./asset-catalog"
 
 const 资产 = (id: string): AssetMetadata => ({
@@ -77,6 +77,18 @@ function 手动(): {
 }
 
 const 等一轮 = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 内容客户端替身：`save` 由用例给，三条迭代调用默认「不该走到这里」。
+ *
+ * 迭代用例自己另建整套替身（要按在飞时刻断言 `iterationBusy`），所以这里只服务保存路径。
+ */
+const 内容客户端 = (save: ContentApi["save"]): ContentApi => ({
+  save,
+  iteration: async () => ({ kind: "failed", message: "不该走到这里" }),
+  submitIteration: async () => ({ kind: "failed", message: "不该走到这里" }),
+  abortIteration: async () => ({ kind: "failed", message: "不该走到这里" }),
+})
 
 /** 服务端读回来的整行（内容编辑的回包）：默认是 a1，可用 overrides 改几列。 */
 const 完整行 = (overrides: Partial<AssetMetadata> = {}): AssetMetadata => ({ ...资产("a1"), ...overrides })
@@ -382,7 +394,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
   test("saveContent 成功后返回新行；applyAsset 把它写回清单", async () => {
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
-      contentApi: { save: async () => ({ kind: "ok", value: { ...完整行({ summary: "新的功能描述" }) } }) },
+      contentApi: 内容客户端(async () => ({ kind: "ok", value: { ...完整行({ summary: "新的功能描述" }) } })),
     })
     目录.load({})
     await 等一轮()
@@ -393,7 +405,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
   test("saveContent 失败 ⇒ 不返回行，错误进 error()", async () => {
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
-      contentApi: { save: async () => ({ kind: "rejected", message: "无权修改该资产" }) },
+      contentApi: 内容客户端(async () => ({ kind: "rejected", message: "无权修改该资产" })),
     })
     目录.load({})
     expect(await 目录.saveContent("a1", { summary: "x" })).toBeUndefined()
@@ -408,14 +420,12 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     const 请求: string[] = []
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
-      contentApi: {
-        save: (_assetId, patch) => {
-          请求.push(patch.summary ?? "")
-          return new Promise((resolve) => {
-            待回.push(resolve)
-          })
-        },
-      },
+      contentApi: 内容客户端((_assetId, patch) => {
+        请求.push(patch.summary ?? "")
+        return new Promise((resolve) => {
+          待回.push(resolve)
+        })
+      }),
     })
     目录.load({})
     await 等一轮()
@@ -438,11 +448,9 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
   test("saveContent 抛错（替身直接 throw）⇒ 返回 undefined、错误进 error()、busy 复位", async () => {
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
-      contentApi: {
-        save: async () => {
-          throw new Error("boom")
-        },
-      },
+      contentApi: 内容客户端(async () => {
+        throw new Error("boom")
+      }),
     })
     目录.load({})
 
@@ -455,7 +463,7 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     delete 坏行["publishedAt"]
     const api: CatalogApi = { list: async () => ({ kind: "ok", value: 页(["a1"]) }) }
     const 目录 = createAssetCatalog(api, {
-      contentApi: { save: async () => ({ kind: "ok", value: 坏行 }) },
+      contentApi: 内容客户端(async () => ({ kind: "ok", value: 坏行 })),
     })
     目录.load({})
 
@@ -495,5 +503,121 @@ describe("使用面数据源 · 收藏（2026-10-29）", () => {
     await 等一轮()
     expect(目录.error()).toBe("网络断了")
     expect(目录.usage()).toEqual({ days: 30, stats: { a1: { users: 2, calls: 5 } } })
+  })
+})
+
+/**
+ * 版本迭代（2026-11-01，设计 §6）：发起 / 提交 / 放弃三条出口。
+ *
+ * 三条共用一把「一次一条」的锁（同保存 / 收藏，`#010-05`：后发的先到会把界面翻回去）；
+ * 成功走既有刷新入口（`拉`，与 `reload` 同一个），失败写 `error` 且**不动**本地行。
+ */
+describe("使用面数据源 · 版本迭代（2026-11-01）", () => {
+  test("发起迭代：成功把 workspace 交回调用方，期间 iterationBusy 是那个 id", async () => {
+    let 放行: (值: unknown) => void = () => {}
+    const 闸 = new Promise((resolve) => (放行 = resolve))
+    const 内容Api: ContentApi = {
+      save: async () => ({ kind: "failed", message: "不该走到这里" }),
+      iteration: async () => {
+        await 闸
+        return { kind: "ok", value: { workspace: "D:/ws/u1/p1/.openhive/iterations/asset-1" } }
+      },
+      submitIteration: async () => ({ kind: "ok", value: {} }),
+      abortIteration: async () => ({ kind: "ok", value: {} }),
+    }
+    const { api, 请求 } = 手动()
+    const catalog = createAssetCatalog(api, { contentApi: 内容Api })
+
+    const 在飞 = catalog.startIteration("asset-1", "补一条口径", "p1")
+    expect(catalog.iterationBusy()).toBe("asset-1")
+    expect(请求.length).toBe(0) // 还没成功：不刷新
+
+    放行(undefined)
+    expect(await 在飞).toEqual({ ok: true, workspace: "D:/ws/u1/p1/.openhive/iterations/asset-1" })
+    expect(catalog.iterationBusy()).toBeUndefined()
+    // 成功后走既有刷新入口（`reload` 同一个 `拉`），不自己再造一份状态。
+    expect(请求.length).toBe(1)
+  })
+
+  test("发起迭代：409 ⇒ 返回失败，error 信号写服务端那句话，界面不会以为成功了", async () => {
+    const { api, 请求 } = 手动()
+    const catalog = createAssetCatalog(api, {
+      contentApi: {
+        save: async () => ({ kind: "failed", message: "x" }),
+        iteration: async () => ({ kind: "rejected", message: "资产不在可迭代状态" }),
+        submitIteration: async () => ({ kind: "ok", value: {} }),
+        abortIteration: async () => ({ kind: "ok", value: {} }),
+      },
+    })
+    expect(await catalog.startIteration("asset-1", "说明", "p1")).toEqual({ ok: false, message: "资产不在可迭代状态" })
+    expect(catalog.error()).toBe("资产不在可迭代状态")
+    expect(catalog.iterationBusy()).toBeUndefined()
+    expect(请求.length).toBe(0) // 失败不刷新
+  })
+
+  test("提交 / 放弃：成功返回 true 并刷新；失败返回那句话、不刷新", async () => {
+    const { api, 请求 } = 手动()
+    const catalog = createAssetCatalog(api, {
+      contentApi: {
+        save: async () => ({ kind: "failed", message: "x" }),
+        iteration: async () => ({ kind: "ok", value: {} }),
+        submitIteration: async () => ({ kind: "ok", value: {} }),
+        abortIteration: async () => ({ kind: "rejected", message: "工作副本记录缺失" }),
+      },
+    })
+    expect(await catalog.submitIteration("asset-1")).toBe(true)
+    expect(请求.length).toBe(1) // 成功 ⇒ 刷新
+    expect(await catalog.abortIteration("asset-1")).toBe("工作副本记录缺失")
+    expect(请求.length).toBe(1) // 失败 ⇒ 不刷新
+    expect(catalog.iterationBusy()).toBeUndefined()
+    expect(catalog.error()).toBe("工作副本记录缺失")
+  })
+
+  test("互斥：迭代在飞时另一条动作直接拒绝，且不会等到前面那条之后偷偷执行", async () => {
+    let 放行: (值: unknown) => void = () => {}
+    const 闸 = new Promise((resolve) => (放行 = resolve))
+    let 提交次数 = 0
+    const 内容Api: ContentApi = {
+      save: async () => ({ kind: "failed", message: "不该走到这里" }),
+      iteration: async () => {
+        await 闸
+        return { kind: "ok", value: {} }
+      },
+      submitIteration: async () => {
+        提交次数 += 1
+        return { kind: "ok", value: {} }
+      },
+      abortIteration: async () => ({ kind: "ok", value: {} }),
+    }
+    const catalog = createAssetCatalog(手动().api, { contentApi: 内容Api })
+
+    const 在飞 = catalog.startIteration("asset-1", "说明", "p1")
+    expect(await catalog.submitIteration("asset-1")).toBe("上一条操作还没完成，请稍等")
+    expect(提交次数).toBe(0)
+
+    放行(undefined)
+    expect(await 在飞).toEqual({ ok: true })
+    // 锁释放后还能发（否则一次失败就永久卡死）。
+    expect(await catalog.submitIteration("asset-1")).toBe(true)
+    expect(提交次数).toBe(1)
+  })
+
+  test("替身直接抛 ⇒ 返回一句人话、写 error()、iterationBusy 复位", async () => {
+    const 内容Api: ContentApi = {
+      save: async () => ({ kind: "failed", message: "不该走到这里" }),
+      iteration: async () => {
+        throw new Error("boom")
+      },
+      submitIteration: async () => ({ kind: "ok", value: {} }),
+      abortIteration: async () => ({ kind: "ok", value: {} }),
+    }
+    const catalog = createAssetCatalog(手动().api, { contentApi: 内容Api })
+
+    expect(await catalog.startIteration("asset-1", "说明", "p1")).toEqual({
+      ok: false,
+      message: "操作失败，请检查网络后重试",
+    })
+    expect(catalog.error()).toBe("操作失败，请检查网络后重试")
+    expect(catalog.iterationBusy()).toBeUndefined()
   })
 })

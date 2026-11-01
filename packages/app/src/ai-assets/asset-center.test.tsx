@@ -75,6 +75,11 @@ function 数据源(over: Partial<{
     writable: () => new Set<string>(),
     saveContent: async () => undefined,
     applyAsset: () => {},
+    // 2026-11-01 版本迭代：本夹具不覆盖迭代流程（`asset-catalog.test.ts` 守着）。
+    startIteration: async () => ({ ok: false, message: "本夹具不覆盖迭代" }),
+    submitIteration: async () => "本夹具不覆盖迭代",
+    abortIteration: async () => "本夹具不覆盖迭代",
+    iterationBusy: () => undefined,
     改清单: set清单,
     改错误: set错误,
     收藏请求,
