@@ -261,6 +261,86 @@ describe("skills 字段：未知与空必须分开（#002-02）", () => {
 })
 
 /**
+ * `assetStatus` / `assetOwnerId` / `assetRejectReason`（2026-11-01 修复轮 1）。
+ *
+ * 三字段同一条严格度：**认不出就整份判错，不降级成「未入库」**（`#002-02`）。
+ * 没有用例时，守卫被放宽或某个 spread 被漏掉不会有任何东西变红——这里逐条钉住。
+ */
+describe("skills 的三个新字段", () => {
+  test("assetStatus 是闭集外的值 ⇒ 整份回包判错，不当成「未入库」", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [{ name: "x", location: "/w/.opencode/skill/x/SKILL.md", assetStatus: "weird" }],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
+  })
+
+  test("assetOwnerId 不是字符串 ⇒ 整份回包判错", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [{ name: "x", location: "/w/.opencode/skill/x/SKILL.md", assetOwnerId: 123 }],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
+  })
+
+  test("三个字段都合法 ⇒ 原样透传（不丢、不改名）", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [
+                {
+                  name: "x",
+                  location: "/w/.opencode/skill/x/SKILL.md",
+                  assetStatus: "published",
+                  assetOwnerId: "u1",
+                  assetRejectReason: "描述不够具体",
+                },
+              ],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    // 整条断言：漏掉任一 spread（例如只搬 assetStatus）都会红。
+    expect(结果.value.skills?.[0]).toEqual({
+      name: "x",
+      location: "/w/.opencode/skill/x/SKILL.md",
+      assetStatus: "published",
+      assetOwnerId: "u1",
+      assetRejectReason: "描述不够具体",
+    })
+  })
+})
+
+/**
  * `shadowed`：已启用却被同名技能盖掉的资产（2026-10-28）。
  *
  * 与 `skills` 同一套口径：键缺席 = 没有被盖的（或这次没读到内核）；形状不对 ⇒ 整份回包判错——

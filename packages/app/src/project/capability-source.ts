@@ -19,7 +19,8 @@ import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
  *
  * 「在不在库里」的权威判据是内核清单里**有没有 `assetStatus` 这个键**。
  * `assetId` 不行——本项目自带的技能也有（它就是目录名）；`enabled` 也不行——草稿链进项目时
- * **不写启用行**，可它确实是库里的条目。`enabled` 只用来补「库里有、内核这次没看见」的第二态。
+ * **不写启用行**，可它确实是库里的条目。`enabled` 只用来补「库里有、内核这次没看见」的第二态
+ * 与旧版服务端缺 `assetStatus` 时的兜底。`status` 缺席 = **阶段未知**，不要断言缺席的成因。
  *
  * ## 顺序
  *
@@ -42,8 +43,7 @@ export interface 库内条目 {
    */
   readonly 覆盖者?: { readonly name: string; readonly location: string }
   /**
-   * 库里那一行的状态（2026-11-01）。**缺席 = 阶段未知**，不是「未入库」——
-   * 只有 `enabled` 里有、内核这次没看见的条目才没有它（`#002-02`）。
+   * 库里那一行的状态（2026-11-01）。**缺席 = 阶段未知**，不是「未入库」（`#002-02`）。
    */
   readonly status?: AssetStatus
   /** 库里那行的属主；「是不是我的」靠它判，不靠名字。 */
@@ -77,6 +77,8 @@ export function 合并能力(输入: 合并输入): 能力条目[] | undefined {
     // 【保留的定制 · 同步上游时不要丢】来源判定按 assetStatus（2026-11-01）。
     // 不能用 enabled：草稿链进项目时不写启用行，但它确实在库里。
     if (条.assetStatus !== undefined) {
+      // 服务端今天必给 assetId；下面的 `?? 条.name` / `:131` 的 `?? id` 只是兜底，
+      // 只为不造出 undefined 键。
       库里.set(条.assetId ?? 条.name, 条)
       continue
     }
@@ -146,7 +148,7 @@ export function 计数(条目: readonly 能力条目[]): number {
 /**
  * 一条技能处在哪一步。`未入库` 是自带条目的唯一阶段。
  *
- * 返回 `undefined` = 阶段未知（`enabled` 有、内核这次没看见），**不要冒充「未入库」**
+ * 返回 `undefined` = 阶段未知（`status` 缺席的成因不唯一），**不要冒充「未入库」**
  * （`#002-02`：把「读不到」画成「没入库」会诱导用户重复入库）。
  */
 export function 阶段(条: 能力条目): AssetStatus | "未入库" | undefined {
