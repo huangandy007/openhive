@@ -56,6 +56,12 @@ export interface 内核技能 {
   readonly assetOwnerId?: string
   /** 最近一次业务驳回的理由；缺行 = 没被驳回过，不要编理由。 */
   readonly assetRejectReason?: string
+  /**
+   * 技能目录相对项目目录的路径（Task 6.5），正斜杠；`"."` = 技能目录就是项目根。
+   * 「一键入库」拿它调 `POST /openhive/assets/draft`——相对路径只能由服务端算，
+   * 前端反推要靠沙箱根，那是服务端 env，还会在换落盘根时错（`#010-04`）。
+   */
+  readonly skillPath?: string
 }
 
 /**
@@ -168,6 +174,9 @@ function 解析状态(body: unknown): EnablementState | undefined {
       if (项["assetStatus"] !== undefined && !是状态(项["assetStatus"])) return undefined
       if (项["assetOwnerId"] !== undefined && typeof 项["assetOwnerId"] !== "string") return undefined
       if (项["assetRejectReason"] !== undefined && typeof 项["assetRejectReason"] !== "string") return undefined
+      // Task 6.5：与非空规则同一处。类型不对 ⇒ 整份判错（不降级成「缺席」）；
+      // 空串 ⇒ 视为缺席——调用方拿空串拼请求，等于把「算不出来」当成「项目根」。
+      if (项["skillPath"] !== undefined && typeof 项["skillPath"] !== "string") return undefined
       逐条.push({
         name: 项["name"],
         location: 项["location"],
@@ -177,6 +186,7 @@ function 解析状态(body: unknown): EnablementState | undefined {
         ...(项["assetStatus"] === undefined ? {} : { assetStatus: 项["assetStatus"] }),
         ...(项["assetOwnerId"] === undefined ? {} : { assetOwnerId: 项["assetOwnerId"] }),
         ...(项["assetRejectReason"] === undefined ? {} : { assetRejectReason: 项["assetRejectReason"] }),
+        ...(typeof 项["skillPath"] === "string" && 项["skillPath"] !== "" ? { skillPath: 项["skillPath"] } : {}),
       })
     }
     技能 = 逐条

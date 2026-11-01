@@ -261,12 +261,13 @@ describe("skills 字段：未知与空必须分开（#002-02）", () => {
 })
 
 /**
- * `assetStatus` / `assetOwnerId` / `assetRejectReason`（2026-11-01 修复轮 1）。
+ * `assetStatus` / `assetOwnerId` / `assetRejectReason`（2026-11-01 修复轮 1），
+ * 以及 `skillPath`（Task 6.5，与三字段同一处、同一严格度）。
  *
- * 三字段同一条严格度：**认不出就整份判错，不降级成「未入库」**（`#002-02`）。
+ * 同一条严格度：**类型认不出就整份判错，不降级成「缺这个字段」**（`#002-02`）。
  * 没有用例时，守卫被放宽或某个 spread 被漏掉不会有任何东西变红——这里逐条钉住。
  */
-describe("skills 的三个新字段", () => {
+describe("skills 的新字段（严格解析）", () => {
   test("assetStatus 是闭集外的值 ⇒ 整份回包判错，不当成「未入库」", async () => {
     const api = createEnableApi(
       假发送(
@@ -337,6 +338,77 @@ describe("skills 的三个新字段", () => {
       assetOwnerId: "u1",
       assetRejectReason: "描述不够具体",
     })
+  })
+
+  // Task 6.5：`skillPath` 是前端调 `POST /openhive/assets/draft` 的入参，
+  // 与三字段同一条严格度——类型不对整份判错，不降级成「缺席」。
+  test("skillPath 不是字符串 ⇒ 整份回包判错", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [{ name: "x", location: "/w/.opencode/skill/x/SKILL.md", skillPath: 123 }],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    expect(await api.read("p1")).toEqual({ kind: "error", message: "服务端回包形状不对" })
+  })
+
+  test("skillPath 是合法相对路径 ⇒ 原样透传", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [
+                { name: "x", location: "/w/.opencode/skill/x/SKILL.md", skillPath: ".opencode/skill/x" },
+              ],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.skills?.[0]).toEqual({
+      name: "x",
+      location: "/w/.opencode/skill/x/SKILL.md",
+      skillPath: ".opencode/skill/x",
+    })
+  })
+
+  // brief 契约：必须是**非空**字符串才收。空串视为缺席（键不出现），不原样透传一个空值
+  // 出去——调用方拿空串拼请求，等于把「算不出来」当成「项目根」。
+  test("skillPath 是空串 ⇒ 视为缺席，键不出现", async () => {
+    const api = createEnableApi(
+      假发送(
+        [
+          {
+            status: 200,
+            body: {
+              ...成功态,
+              skills: [{ name: "x", location: "/w/.opencode/skill/x/SKILL.md", skillPath: "" }],
+            },
+          },
+        ],
+        [],
+      ),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.skills?.[0]?.skillPath).toBe(undefined)
+    expect(Object.prototype.hasOwnProperty.call(结果.value.skills?.[0], "skillPath")).toBe(false)
   })
 })
 

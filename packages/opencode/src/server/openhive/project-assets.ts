@@ -98,7 +98,7 @@ import { sql } from "drizzle-orm"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { stat } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { 记治理 } from "./audit"
 import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhivePg } from "./pg"
@@ -142,6 +142,14 @@ export interface 内核技能 {
    * 缺行 = 没被驳回过，**不要编理由**。
    */
   readonly assetRejectReason?: string
+  /**
+   * 技能目录相对项目目录的路径（Task 6.5），一律正斜杠；技能目录就是项目根时是 `"."`。
+   *
+   * 只能由服务端算：沙箱根在服务端 env（`workspaceRoot`）里，前端拿不到；让它从绝对
+   * `location` 反推，就等于把落盘布局泄露给浏览器，换落盘根时还会错（`#010-04`）。
+   * 缺席 = 算不出来，**不猜**。
+   */
+  readonly skillPath?: string
 }
 
 /**
@@ -280,6 +288,18 @@ function 目录名(location: string): string | undefined {
   return 段[段.length - 2]
 }
 
+/**
+ * 技能目录相对项目目录的路径（Task 6.5）。只喂给「一键入库」的 `POST /openhive/assets/draft`。
+ *
+ * - 一律正斜杠：win32 的 `relative()` 会给 `\`，前端拿去拼请求就成了转义；
+ * - 空串 ⇒ `"."`：`location` 就是 `<项目目录>/SKILL.md` 时，技能目录确实是项目根。
+ *   有没有 SKILL.md、能不能入库由调用方判，这一层不拒也不猜。
+ */
+function 技能相对路径(location: string, 目录: string): string {
+  const 相对 = relative(目录, dirname(location)).replace(/\\/g, "/")
+  return 相对 === "" ? "." : 相对
+}
+
 /** `location` 是否落在本项目沙箱内。全局 / 内置技能一律落在外面，不该进「本项目自带」。 */
 export function 属于项目(location: string, 目录: string): boolean {
   // 前缀比较只在 **win32** 忽略大小写：`项目目录()` 与内核 `location` 虽同源，win32 盘符
@@ -332,6 +352,8 @@ export function 映射内核清单(
         location: info.location,
         ...(id === undefined ? {} : { assetId: id }),
         ...(名 === undefined ? {} : { assetName: 名 }),
+        // 项目内技能的相对目录一定能算（`属于项目()` 已保证它落在 `目录` 下）。
+        skillPath: 技能相对路径(info.location, 目录),
       }
     })
 }

@@ -535,6 +535,11 @@ const 内核技能 = Schema.Struct({
   assetOwnerId: Schema.optional(Schema.String),
   /** 最近一次业务驳回的理由（设计 §4.7，读通知表）；没被驳回过就没有这个键。 */
   assetRejectReason: Schema.optional(Schema.String),
+  /**
+   * 技能目录相对项目目录的路径（Task 6.5），一律正斜杠；`"."` = 技能目录即项目根。
+   * 不声明它，Effect Schema 会剥掉这个字段，端点不返回它也全绿。
+   */
+  skillPath: Schema.optional(Schema.String),
 })
 /**
  * 「已启用、但它被一份同名技能盖掉了」的那条报备（2026-10-28）。
@@ -1192,6 +1197,8 @@ describe("项目级 skill 启用（真应用）", () => {
         // 传错清单都会在这里红（Schema 不声明这两个键时，整段删掉也全绿）。
         expect(条!.assetStatus).toBe("published")
         expect(条!.assetOwnerId).toBe(我.id)
+        // Task 6.5：一键入库的入参——相对项目目录、正斜杠（前端从 `location` 反推不到）。
+        expect(条!.skillPath).toBe(`.opencode/skill/${已发布资产}`)
 
         const 目录 = projectDirectory(沙箱根, 我.id, 能力项目)
         const 规整 = (value: string) => value.replace(/\\/g, "/").toLowerCase()

@@ -118,6 +118,41 @@ describe("映射内核清单", () => {
     expect(回.length).toBe(1)
   })
 
+  // Task 6.5：前端要拿它调 `POST /openhive/assets/draft`，而沙箱根只在服务端 env 里
+  // ⇒ 相对路径只能在服务端算（`#010-04`：落盘根一换，前端反推就错）。
+  test("skillPath 是相对项目目录的路径，且一律正斜杠", () => {
+    const 回 = 映射内核清单(
+      [{ name: "资金", location: "/w/u/p/.opencode/skill/a1/SKILL.md" }],
+      "/w/u/p/",
+      new Map(),
+      new Map(),
+    )
+    expect(回[0]?.skillPath).toBe(".opencode/skill/a1")
+  })
+
+  // 空串在这一层必须换成 `"."`：它确实是「项目根这个技能目录」。有没有 SKILL.md 由调用方判，
+  // 这一层不拒也不猜（brief 契约）。
+  test("location 就是 <目录>/SKILL.md ⇒ skillPath 是「.」（技能目录即项目根）", () => {
+    const 回 = 映射内核清单(
+      [{ name: "根", location: "/w/u/p/SKILL.md" }],
+      "/w/u/p",
+      new Map(),
+      new Map(),
+    )
+    expect(回[0]?.skillPath).toBe(".")
+  })
+
+  // win32 的 `relative` 会给 `\`；不转正斜杠，前端拼 URL 时会被当成转义。
+  test.skipIf(process.platform !== "win32")("win32：location 的反斜杠不会漏进 skillPath", () => {
+    const 回 = 映射内核清单(
+      [{ name: "资金", location: "D:\\s\\1\\p\\.opencode\\skill\\a1\\SKILL.md" }],
+      "D:\\s\\1\\p",
+      new Map(),
+      new Map(),
+    )
+    expect(回[0]?.skillPath).toBe(".opencode/skill/a1")
+  })
+
   test("assetName 只来自标题表；没有资产记录时只有 assetId", () => {
     const 回 = 映射内核清单(
       [
