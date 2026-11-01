@@ -6463,7 +6463,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
    * getter，`catalog={假目录([...])}` 会被**每次读取都重跑一遍**——于是 `AssetCenter` 取数
    * effect 写的信号与网格读的信号不是同一份（实测一次用例新建 5 份），数据一变网格就不跟。
    */
-  function 假目录(rows: readonly AssetMetadata[]): AssetCatalog {
+  function 假目录(rows: readonly AssetMetadata[], 可写: readonly string[] = []): AssetCatalog {
     const [清单, set清单] = createSignal(rows)
     return {
       assets: 清单,
@@ -6495,7 +6495,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       favoriteBusy: () => undefined,
       setFavorite: () => {},
       // 2026-10-31 内容编辑：本夹具不覆盖保存流程（`asset-catalog.test.ts` 守着）。
-      writable: () => new Set<string>(),
+      // 2026-11-01 版本迭代接线：`可写` 只用来让详情画出「发起新版本」（判据 `writable().has(id)`）。
+      writable: () => new Set(可写),
       saveContent: async () => undefined,
       applyAsset: () => {},
       // 2026-11-01 版本迭代：本夹具不覆盖迭代流程（`asset-catalog.test.ts` 守着）。
@@ -6723,5 +6724,56 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     expect(document.activeElement).toBe(
       卡片(host)[0].querySelector("[data-slot='asset-card-open']"),
     )
+  })
+
+  /**
+   * 版本迭代的 `projects` / `currentProjectId` **两层透传**（2026-11-01 复审补口）。
+   *
+   * 复审实测：把 `workspace-entry.tsx` 那两行透传删掉，本套件此前**一条都不红**——资产中栏的
+   * 夹具没喂项目清单，详情自己的迭代用例（`asset-detail.test.tsx`）又直接给 props、绕过了这一层。
+   * 真栈的表现会是：发起弹窗永远「请先在左侧选择项目」、确认按钮恒禁用，而门禁全绿。
+   *
+   * 所以这里走**生产那一条路**：`projectList()` / `currentProject()?.id` 喂给 `WorkspaceEntry`
+   * （同 `layout-new.tsx` 的写法），再点进详情、切「版本」、开弹窗。三条断言分别钉住那两行：
+   * - 下拉里**没有**「请先在左侧选择项目」⇒ 删任一行都红；
+   * - 下拉里有该项目名 ⇒ 只删 `projects` 也红（那时 `currentProjectId` 还在，确认按钮反而可点，
+   *   单看按钮会漏）；
+   * - 填了说明后确认可点 ⇒ 只删 `currentProjectId` 也红（有清单、但没选中默认项目）。
+   */
+  test("详情「发起新版本」拿到项目清单与当前项目——两行透传各删一条都要红", async () => {
+    const 项目 = { id: "p1", name: "8·17专案", type: "private" as const, lastAccessedAt: 1 }
+    const 目录 = 假目录([资产({ id: "a", name: "技能甲", version: 2 })], ["a"])
+    const host = mount(() => (
+      <WorkspaceEntry catalog={目录} projects={projectList()} currentProjectId={currentProject()?.id}>
+        中栏
+      </WorkspaceEntry>
+    ))
+    try {
+      // 夹具从既有入口喂（`@/project/project-list` / `@/project/current-project`），不另造一套。
+      // ⚠️ 必须**挂载之后**再写：没有 `projectData` 时 `onMount` 会把存档当作「判不了有效性」清一次
+      // （`workspace-entry.tsx` 那条注释），挂载前写的当前项目会被它抹掉。
+      setProjectList([项目])
+      setCurrentProject({ id: 项目.id, name: 项目.name })
+      进入(host)
+      打开卡(host, "技能甲")
+      host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-tab'][data-tab='versions']")!.click()
+      host.querySelector<HTMLButtonElement>("[data-slot='asset-detail-start-iteration']")!.click()
+      // 弹窗在 Kobalte 的 Portal 里，挂在 `document.body`、不在 `host`（同 `asset-detail.test.tsx`）。
+      await 等到(() => document.querySelector("[data-slot='asset-iteration-project']") !== null)
+
+      const 下拉 = document.querySelector<HTMLSelectElement>("[data-slot='asset-iteration-project']")!
+      expect([...下拉.options].map((option) => option.textContent)).toContain("8·17专案")
+      expect(下拉.textContent).not.toContain("请先在左侧选择项目")
+
+      const 框 = document.querySelector<HTMLTextAreaElement>("textarea[name='asset-iteration-note']")!
+      框.value = "补一条统计口径"
+      框.dispatchEvent(new Event("input", { bubbles: true }))
+      expect(
+        document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-confirm']")!.disabled,
+      ).toBe(false)
+    } finally {
+      setProjectList(undefined)
+      setCurrentProject(undefined)
+    }
   })
 })
