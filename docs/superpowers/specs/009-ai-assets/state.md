@@ -4,6 +4,33 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-11-01 · skill 版本迭代（P1）
+
+设计稿：`docs/superpowers/specs/2026-11-01-skill版本迭代-design.md`。
+计划：`docs/superpowers/plans/2026-11-01-skill版本迭代.md`。
+
+### 交付
+
+| 层 | 东西 |
+|---|---|
+| 数据 | `auth.asset` 加 `iteration_note`（默认 `''`）/ `iteration_workspace`（相对沙箱根，可空）。两个迁移各带 `.down.sql`：`0027_asset_iteration.sql` 只加这两列；`0028_asset_notification_iteration_actions.sql` 把 `asset_notification_action_check` 从 9 值重建为 11 值（0011 的 9 个之外只新增 `submit_iteration` / `abort_iteration`；`start_iteration` / `publish_iteration` 早在 0011 的闭集里），与 `SKILL_ACTIONS` 加值同提交落地，防「DB ⇔ 代码逐值双向相等」断言在中间那段提交常红 |
+| 状态机 | 新动作 `submit_iteration`（iterating → iterating，`copy_to_pending`）、`abort_iteration`（iterating → published，`discard_pending`，作者或系统管理员）；`start_iteration` 改 `copy_publish_to_workspace` 且 `requiresReason`；`publish_iteration` 的 `gates` 只留 `technical_publish`；新错误码 `iteration_not_submitted` |
+| 存储 | 工作副本落 `<沙箱根>/<userId>/<projectId>/.openhive/iterations/<assetId>`；`iterationWorkspaceDirectory()` 还原时再挡一次越界 |
+| 出口 | `POST /openhive/assets/:id/iteration`（`{note, projectId}`）、`…/iteration/submit`、`…/iteration/abort`；授权在读体之前 |
+| 前端 | 详情页版本 Tab 三态 + 发起弹窗；发起成功后经 `send-to-session` 把工作副本绝对路径**替换**进右栏；治理台显示变更说明、未提交时禁用「发布新版本」 |
+
+### 残留（如实记）
+
+1. **再次发起会覆盖项目里的工作副本**：未提交的改动会丢。弹窗里已明写，但**没有二次确认**。
+2. **P1 没有版本历史**：`iteration_note` 只有「当前这一版」的说明，发布后保留、下次发起即覆盖；看不到 v1/v2 的历史说明（要配快照，归 P2）。
+3. **工作副本刻意不进内核扫描目录**：`.openhive/` 不在 `.opencode/{skill,skills}`、`.claude/skills`、`.agents/skills` 里，所以作者**不能**在会话里把工作副本当 skill 加载，只能「把路径告诉 AI」试跑。这是为了避免与链接那份同名 skill 打架（`LEARNINGS #010-05`）。
+4. **`gates` 仍是纯声明**：`transitionAsset` 不读它，改成只留技术关只是「声明与决策对齐」，不是运行时门禁。
+5. **真栈未验收**：需要重启内核后由用户实操（发起 → AI 改 → 提交 → 管理员发布）。单测覆盖到「文件搬运 + 元数据一致 + 出口状态码」，**不覆盖**跨进程落盘与真实浏览器交互。
+6. **`abort_iteration` 允许系统管理员**：作者离职后迭代不能永久卡在 `iterating`。但这意味着管理员能替作者放弃——设计稿只写了 author，**这一条是在代码里放宽的**，已在此登记。
+7. **工作副本不自动清理**：abort / publish 都不删项目里那份（删用户文件是不可逆动作）。
+8. **`hasPendingContent` 的失败兜底只钉住了确定性替身**：治理台列表出口对每行读盘做了逐行兜底（单行失败 ⇒ 该行按「未提交」显示 + 记 warning，不让一个坏 id 打穿整页），但失败注入用的是「库里 id 过不了路径校验」的确定性替身；真实的 EACCES / `stat` 与 `readdir` 之间的并发竞态**没有单独构造用例**。
+9. **详情页焦点归还守卫（`isConnected`）没有用例**：组件测试里 `status` 是静态的，构造不出「触发器在弹窗关闭那一帧被卸载」的场景，只在真浏览器里能验。
+
 ## 2026-11-01 · 写工具顺着项目链接改到共享发布库（安全洞）
 
 **现象**：项目里的 `.opencode/skill/<assetId>` 是指向共享库的链接（Windows 上是 junction）。AI 用写工具改
