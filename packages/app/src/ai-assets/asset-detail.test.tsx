@@ -1274,6 +1274,27 @@ describe("版本迭代（2026-11-01）", () => {
     }
   })
 
+  test("没给项目清单也没给当前项目 ⇒ 下拉写明要先去左侧选项目，确认始终禁用", async () => {
+    // 发起迭代必须落到某个项目里；`项目()` 为 undefined 时确认按钮一律禁用——没有这条守卫，
+    // 点下去只会拿 `undefined` 当 projectId 发请求。
+    const { host, 卸 } = 挂(
+      { status: "published", version: 2 },
+      { canWrite: true, onStartIteration: async () => ({ ok: true as const }) },
+    )
+    try {
+      标签(host, "versions").click()
+      await 开弹窗(host)
+      expect(document.querySelector('[data-slot="asset-iteration-project"]')?.textContent).toContain(
+        "请先在左侧选择项目",
+      )
+      填说明("补一条口径")
+      const 确认 = document.querySelector<HTMLButtonElement>("[data-slot='asset-iteration-confirm']")!
+      expect(确认.disabled).toBe(true)
+    } finally {
+      卸()
+    }
+  })
+
   test("发起失败 ⇒ 弹窗不关，错误留在框里", async () => {
     const { host, 卸 } = 挂(
       { status: "published", version: 2 },
