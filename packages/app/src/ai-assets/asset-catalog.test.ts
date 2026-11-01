@@ -36,6 +36,8 @@ const 资产 = (id: string): AssetMetadata => ({
   updatedAt: 1,
   publishedAt: 1,
   archivedAt: null,
+  iterationNote: "",
+  iterationWorkspace: null,
 })
 
 const 页 = (

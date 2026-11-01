@@ -51,6 +51,8 @@ const 资产 = (id: string, overrides: Partial<AssetMetadata> = {}): AssetMetada
   updatedAt: 1_700_000_100,
   publishedAt: 1_700_000_100,
   archivedAt: null,
+  iterationNote: "",
+  iterationWorkspace: null,
   ...overrides,
 })
 

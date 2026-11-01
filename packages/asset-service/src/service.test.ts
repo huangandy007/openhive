@@ -80,6 +80,8 @@ function metadata(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
     updatedAt: 1000,
     publishedAt: null,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
     ...overrides,
   }
 }

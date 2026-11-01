@@ -229,6 +229,10 @@ describe("migrate", () => {
 
     expect(await 资产列(db, "summary")).toBe(0)
     expect(await 资产列(db, "precautions")).toBe(0)
+    // 这条用例的逆序回滚从 head 开始，0027 会先于 0026 被撤掉——所以同一条用例顺带钉住
+    // 0027 的 down：只断言 0026 的两列的话，0027 的 down 写成空文件也照样绿（`#004-03`）。
+    expect(await 资产列(db, "iteration_note")).toBe(0)
+    expect(await 资产列(db, "iteration_workspace")).toBe(0)
   })
 })
 

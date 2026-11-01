@@ -200,6 +200,15 @@ export function 解析资产行(value: unknown): AssetMetadata | undefined {
   const publishedAt = 可空时间(value["publishedAt"])
   const archivedAt = 可空时间(value["archivedAt"])
   if (publishedAt === undefined || archivedAt === undefined) return undefined
+  // 【保留的定制 · 同步上游时不要丢】版本迭代两列（2026-11-01）。
+  // 与 `summary` / `precautions` 同一口径：旧内核没这两列时按默认值（空串 / null），
+  // 给了但类型不对仍按坏行处理——不把「服务端契约变了」伪装成「没填」。
+  const iterationNote = value["iterationNote"]
+  const iterationWorkspace = value["iterationWorkspace"]
+  if (iterationNote !== undefined && typeof iterationNote !== "string") return undefined
+  if (iterationWorkspace !== undefined && iterationWorkspace !== null && typeof iterationWorkspace !== "string") {
+    return undefined
+  }
   return {
     id,
     name,
@@ -225,6 +234,8 @@ export function 解析资产行(value: unknown): AssetMetadata | undefined {
     updatedAt,
     publishedAt,
     archivedAt,
+    iterationNote: iterationNote ?? "",
+    iterationWorkspace: iterationWorkspace ?? null,
   }
 }
 

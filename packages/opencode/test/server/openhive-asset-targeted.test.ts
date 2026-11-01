@@ -107,6 +107,8 @@ const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name"
   updatedAt: 1_000,
   publishedAt: null,
   archivedAt: null,
+  iterationNote: "",
+  iterationWorkspace: null,
   ...over,
 })
 

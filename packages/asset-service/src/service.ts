@@ -236,6 +236,8 @@ export async function createDraftAsset(input: CreateDraftAssetInput): Promise<As
     updatedAt: now,
     publishedAt: null,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
   }
 
   if (input.storage !== undefined) {

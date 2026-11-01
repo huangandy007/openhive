@@ -93,6 +93,8 @@ function row(id: string, overrides: Partial<AssetMetadata>): AssetMetadata {
     updatedAt: 1000,
     publishedAt: 1000,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
     ...overrides,
   }
 }

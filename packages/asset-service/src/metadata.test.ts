@@ -35,6 +35,8 @@ function validMetadata(): AssetMetadata {
     updatedAt: 1_760_000_000,
     publishedAt: null,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
   }
 }
 

@@ -75,6 +75,10 @@ export const asset = assetSchema.table("asset", {
   updatedAt: integer("updated_at").notNull(),
   publishedAt: integer("published_at"),
   archivedAt: integer("archived_at"),
+  // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+  // 迁移在 `packages/auth/src/migrations/0027_asset_iteration.sql`，两处必须同名同可空性。
+  iterationNote: text("iteration_note").notNull(),
+  iterationWorkspace: text("iteration_workspace"),
 })
 
 export type AssetRow = typeof asset.$inferSelect
@@ -160,6 +164,8 @@ function toMetadata(row: Record<string, unknown>): AssetMetadata {
     updatedAt: Number(row.updated_at),
     publishedAt: row.published_at === null ? null : Number(row.published_at),
     archivedAt: row.archived_at === null ? null : Number(row.archived_at),
+    iterationNote: String(row.iteration_note),
+    iterationWorkspace: row.iteration_workspace === null ? null : String(row.iteration_workspace),
   }
 }
 
@@ -167,7 +173,7 @@ const COLUMNS = sql`
   id, name, type, description, summary, precautions, icon, category, tags,
   owner_id, owner_name, department, visibility, version, status, favorite_count,
   usage_count, rating, rating_count, feedback_count, created_at, updated_at,
-  published_at, archived_at
+  published_at, archived_at, iteration_note, iteration_workspace
 `
 
 /**
@@ -186,14 +192,15 @@ export async function insertAsset(db: AssetTarget, input: AssetMetadata): Promis
       id, name, type, description, summary, precautions, icon, category, tags,
       owner_id, owner_name, department, visibility, version, status, favorite_count,
       usage_count, rating, rating_count, feedback_count, created_at, updated_at,
-      published_at, archived_at
+      published_at, archived_at, iteration_note, iteration_workspace
     ) values (
       ${input.id}, ${input.name}, ${input.type}, ${input.description}, ${input.summary},
       ${input.precautions}, ${input.icon}, ${input.category}, ${tagsLiteral(input.tags)},
       ${input.ownerId}, ${input.ownerName}, ${input.department}, ${input.visibility},
       ${input.version}, ${input.status}, ${input.favoriteCount}, ${input.usageCount},
       ${input.rating}, ${input.ratingCount}, ${input.feedbackCount}, ${input.createdAt},
-      ${input.updatedAt}, ${input.publishedAt}, ${input.archivedAt}
+      ${input.updatedAt}, ${input.publishedAt}, ${input.archivedAt},
+      ${input.iterationNote}, ${input.iterationWorkspace}
     )
   `)
 }
@@ -420,6 +427,23 @@ export interface AssetLifecycleUpdate {
   readonly archivedAt: number | null
   /** 发布时选定的可见范围；省略表示不改。 */
   readonly visibility?: AssetVisibility
+  // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）。
+  //
+  // `iterationNote` / `iterationWorkspace` 省略 = **不改**这两列（`coalesce(null, 列)`），
+  // 与上面 `visibility` 同一手法：一次写入只管它负责的列，两条写入路径互不覆盖。
+  //
+  // `iterationWorkspace` 刻意**不带 `| null`**：在这个接口里 `null` 与 `undefined` 必须同义
+  // （都表示「不改」），否则「传 null 是想清空还是想不改」就靠猜。
+  // 清空单独给一个显式开关：
+  readonly iterationNote?: string
+  readonly iterationWorkspace?: string
+  /**
+   * 把 `iteration_workspace` 置 `null`（`abort_iteration` 用）。
+   *
+   * 为什么不复用 `iterationWorkspace: null`：`coalesce` 里 `null` 的含义是「保留原值」，
+   * 同一个值兼表两件事，读代码的人分不出来，写代码的人迟早写反。
+   */
+  readonly clearIteration?: boolean
 }
 
 /**
@@ -447,7 +471,12 @@ export async function updateAssetLifecycle(
       updated_at = ${update.updatedAt},
       published_at = ${update.publishedAt},
       archived_at = ${update.archivedAt},
-      visibility = coalesce(${update.visibility ?? null}, visibility)
+      visibility = coalesce(${update.visibility ?? null}, visibility),
+      iteration_note = coalesce(${update.iterationNote ?? null}, iteration_note),
+      iteration_workspace = case
+        when ${update.clearIteration === true} then null
+        else coalesce(${update.iterationWorkspace ?? null}, iteration_workspace)
+      end
     where id = ${id} and status = ${update.expectedStatus}
     returning ${COLUMNS}
   `))

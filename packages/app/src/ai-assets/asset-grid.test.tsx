@@ -54,6 +54,8 @@ function 资产(over: Partial<AssetMetadata> = {}): AssetMetadata {
     updatedAt: 1,
     publishedAt: 1,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
     ...over,
   }
 }

@@ -204,6 +204,8 @@ describe("AssetCenter · 「其他」桶标原分类（需求 2）", () => {
     updatedAt: 1,
     publishedAt: 1,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
   })
 
   const 选择 = (category: string) => {
@@ -278,6 +280,8 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
     updatedAt: 1,
     publishedAt: 1,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
   })
 
   /**
@@ -501,6 +505,8 @@ const 资产 = (id: string): AssetMetadata => ({
   updatedAt: 1,
   publishedAt: 1,
   archivedAt: null,
+  iterationNote: "",
+  iterationWorkspace: null,
 })
 
 const 开卡 = (host: HTMLElement, id: string) => {

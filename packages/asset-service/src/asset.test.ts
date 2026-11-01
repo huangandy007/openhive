@@ -79,6 +79,8 @@ function metadata(overrides: Partial<AssetMetadata> = {}): AssetMetadata {
     updatedAt: 1000,
     publishedAt: null,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
     ...overrides,
   }
 }
@@ -153,6 +155,45 @@ describe("auth.asset 表模型", () => {
   test("department 可见范围必须有部门：迁移里落了一条显式命名的 CHECK", async () => {
     const db = await freshDb()
     expect(await constraintDefOf(db, "asset_department_required_check")).toContain("department")
+  })
+
+  test("迭代两列：iteration_note 非空默认空串、iteration_workspace 可空", async () => {
+    const db = await freshDb()
+
+    const rows = rowsOf(
+      await db.execute(sql`
+        select column_name, is_nullable, column_default
+        from information_schema.columns
+        where table_schema = 'auth' and table_name = 'asset'
+          and column_name in ('iteration_note', 'iteration_workspace')
+        order by column_name
+      `),
+    )
+
+    expect(rows).toHaveLength(2)
+    expect({ 列: String(rows[0]!.column_name), 可空: String(rows[0]!.is_nullable) }).toEqual({
+      列: "iteration_note",
+      可空: "NO",
+    })
+    // 默认值在 PG 里读回来是 `''::text`；只钉「有个空串」，不钉 cast 的写法。
+    expect(String(rows[0]!.column_default)).toContain("''")
+    expect({ 列: String(rows[1]!.column_name), 可空: String(rows[1]!.is_nullable) }).toEqual({
+      列: "iteration_workspace",
+      可空: "YES",
+    })
+    expect(rows[1]!.column_default).toBeNull()
+  })
+
+  test("迭代两列可写可读：空串说明与相对路径原样回环", async () => {
+    const db = await freshDb()
+    await insertAsset(
+      db,
+      metadata({ iterationNote: "补一条统计口径", iterationWorkspace: "u1/p1/.openhive/iterations/asset_1" }),
+    )
+
+    const 读回 = await assetById(db, "asset_1")
+    expect(读回?.iterationNote).toBe("补一条统计口径")
+    expect(读回?.iterationWorkspace).toBe("u1/p1/.openhive/iterations/asset_1")
   })
 })
 

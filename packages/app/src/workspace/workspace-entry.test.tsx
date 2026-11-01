@@ -6448,6 +6448,8 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       updatedAt: 1,
       publishedAt: 1,
       archivedAt: null,
+      iterationNote: "",
+      iterationWorkspace: null,
       ...over,
     }
   }

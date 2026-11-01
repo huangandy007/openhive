@@ -5,6 +5,8 @@
  * 资产表落在 `auth` schema（D0-1），文件落在 `/assets`（D0-2），两者由后续 task 接上。
  */
 
+import { isAbsolute } from "node:path"
+
 export const ASSET_TYPES = ["skill", "mcp", "knowledge_base"] as const
 export type AssetType = (typeof ASSET_TYPES)[number]
 
@@ -98,6 +100,10 @@ export interface AssetMetadata {
   updatedAt: number
   publishedAt: number | null
   archivedAt: number | null
+  /** 最近一次发起迭代的变更说明（设计 2026-11-01 §3）；没发起过是空串。 */
+  readonly iterationNote: string
+  /** 工作副本相对**用户沙箱根**的路径；没有工作副本是 `null`。 */
+  readonly iterationWorkspace: string | null
 }
 
 /**
@@ -213,6 +219,15 @@ export function validateAssetMetadata(input: AssetMetadata): MetadataIssue[] {
 
   if (!isFiniteNumber(input.rating) || input.rating < 0 || input.rating > 5) {
     issues.push({ field: "rating", message: "必须是 0 到 5 之间的数字" })
+  }
+
+  // 工作副本路径是**相对沙箱根**的片段，不是绝对路径：绝对路径进了库，换落盘根就搬不动
+  // （LEARNINGS #010-04）。这里只挡形状，不挡越界——越界由 `iterationWorkspaceDirectory()` 挡。
+  if (input.iterationWorkspace !== null) {
+    const 相对 = input.iterationWorkspace
+    if (相对 === "" || isAbsolute(相对) || 相对.split(/[\\/]/).some((段) => 段 === "" || 段 === "." || 段 === "..")) {
+      issues.push({ field: "iterationWorkspace", message: "工作副本路径必须是沙箱根下的相对路径" })
+    }
   }
 
   for (const field of ["createdAt", "updatedAt"] as const) {

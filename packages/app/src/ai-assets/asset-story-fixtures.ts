@@ -34,6 +34,8 @@ export function 样例资产(over: Partial<AssetMetadata> & Pick<AssetMetadata, 
     updatedAt: 1_760_000_000,
     publishedAt: 1_760_000_000,
     archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
     ...over,
   }
 }
