@@ -407,7 +407,7 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     const viewer = { userId, department }
 
     // 授权先于「类型 / 状态」判定（`#004-09` 在资产层的落点）：`transitionAsset()` 先查类型、
-    // 再查授权，于是只有 read 的人对一份 MCP 资产会拿到 400 而不是 403——那 200 毫秒的差别
+    // 再查授权，于是只有 read 的人对一份知识库资产会拿到 400 而不是 403——那 200 毫秒的差别
     // 就是「资产是什么类型」的探针。这里用**同一个** `authorizeTransition()` 先过一遍门；
     // 服务层随后会再算一次（确定性函数、无副作用），不是两份规则。
     const 预检 = yield* Effect.result(

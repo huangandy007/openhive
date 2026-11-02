@@ -629,8 +629,9 @@ function handleIteration(
  * 次序与迭代三端点逐条一致（`#004-09`）：身份 → 资产存在 → 授权 → 流转。
  * 授权用**同一个** `authorizeTransition()`；状态机自己拒绝「已提交过 / 不是草稿」。
  *
- * 与迭代端点的差别只有三处：不读请求体（本端点无 body）、action 固定 `submit_review`、
- * 不查项目归属（提交不看项目）。也不传 `workspaceRoot`——本动作不发布，不重指项目链接。
+ * 与迭代端点的差别有四处：不读请求体（本端点无 body）、action 固定 `submit_review`、
+ * 不查项目归属（提交不看项目）、授权预检之后多一道类型门（只提交 skill，见下方注释）。
+ * 也不传 `workspaceRoot`——本动作不发布，不重指项目链接。
  */
 function handleSubmit(deps: Deps) {
   return Effect.gen(function* () {
