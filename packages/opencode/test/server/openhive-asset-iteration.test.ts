@@ -93,6 +93,8 @@ const IDS = {
   subMissingDraft: "asset-sub-missing-draft",
   subPublished: "asset-sub-published",
   subMcp: "asset-sub-mcp",
+  /** 属主自己建的 MCP 草稿：端点自己的类型门必须拒它（不靠服务层）。 */
+  subMyMcp: "asset-sub-my-mcp",
 } as const
 
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-iter-assets-"))
@@ -391,8 +393,9 @@ beforeAll(async () => {
     资产({ id: IDS.subPublished, name: "已发布资产", ownerId: 我.id, ownerName: 我.name, status: "published" }),
   )
 
-  // 非 skill：端点的授权预检必须排在服务层的「类型不支持」之前——没有预检时它先回 400，
+  // 非 skill：端点的授权预检必须排在端点自己的类型门之前——没有预检时类型门先回 400，
   // 等于把「这是个 mcp 资产」告诉没有写权的人。owner 是同事，提交者是「我」。
+  // （服务层只拒 knowledge_base；MCP 由本出口的类型门拒——批次 2 的裁定 A/C。）
   await insertAsset(
     pg.db,
     资产({
@@ -401,6 +404,22 @@ beforeAll(async () => {
       type: "mcp",
       ownerId: 同事.id,
       ownerName: 同事.name,
+      status: "draft",
+      version: 1,
+      visibility: "personal",
+      publishedAt: null,
+    }),
+  )
+
+  // 属主自己的 MCP 草稿：过了授权预检，必须撞端点自己的类型门（批次 3 才开）。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.subMyMcp,
+      name: "我的 MCP",
+      type: "mcp",
+      ownerId: 我.id,
+      ownerName: 我.name,
       status: "draft",
       version: 1,
       visibility: "personal",
@@ -769,13 +788,27 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
     }),
   )
 
-  // 这条钉的是**端点自己的**预检：非作者 + 非 skill 时，预检先回 403；
-  // 若预检被删，服务层会先撞类型检查回 400（把资产类型泄漏给无权者）。
-  it.live("非作者提交非 skill 资产 ⇒ 403（端点的门在服务层类型检查之前）", () =>
+  // 这条钉的是**端点自己的**预检：非作者 + 非 skill 时，预检先回 403。
+  // 服务层只拒 knowledge_base；MCP 由本出口的类型门拒——若预检被删，类型门会先回 400
+  // （仍会把资产类型泄漏给无权者），所以预检必须留在类型门之前。
+  it.live("非作者提交非 skill 资产 ⇒ 403（端点的门在出口类型门之前）", () =>
     Effect.gen(function* () {
       const res = yield* 提交审核(我, IDS.subMcp)
       expect(res.status).toBe(403)
       expect((yield* 读错误(res))).toContain("不能执行")
+    }),
+  )
+
+  // 批次 2 的裁定 C：MCP 没有草稿副本，服务层（批次 2 起）对它放行 7 状态机，
+  // 所以本出口必须自己按类型拒绝——否则属主会拿到 200 + in_review，实际没提交任何内容。
+  it.live("属主提交自己的 MCP 草稿 ⇒ 400 unsupported_asset_type，状态仍 draft", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交审核(我, IDS.subMyMcp)
+      expect(res.status).toBe(400)
+      expect((yield* 读错误(res))).toContain("只提交 skill")
+      // 拒绝发生在任何副作用之前：状态、版本都不动。
+      expect((yield* 读行(IDS.subMyMcp))?.status).toBe("draft")
+      expect((yield* 读行(IDS.subMyMcp))?.version).toBe(1)
     }),
   )
 

@@ -714,6 +714,26 @@ describe("publish_skill", () => {
     expect(await exists(join(root, "pending", "asset_1"))).toBe(false)
   })
 
+  test("MCP 不走本工具：unsupported_asset_type，状态不动（发布前的试连 + 快照在批次 3）", async () => {
+    const { db, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech", type: "mcp" }))
+    // `grant()` 助手固定写 `resource_type='skill'`；这里按资产类型写一条 mcp 授权，
+    // 才构成「没有类型门时真能发出去」的场景（否则先撞 actor_not_allowed，红得没有意义）。
+    await db.execute(sql`insert into auth.role (id, name, role_type) values ('role_mcp_admin', 'role_mcp_admin', 'group')`)
+    await db.execute(sql`insert into auth.user_role (user_id, role_id) values ('u2', 'role_mcp_admin')`)
+    await db.execute(sql`
+      insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+      values ('role_mcp_admin', 'mcp', 'asset_1', 'admin')
+    `)
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("unsupported_asset_type")
+    // 拒绝发生在任何流转之前：MCP 不能在没有试连 + 快照的情况下被发出去。
+    expect(await statusOf(db)).toBe("pending_tech")
+  })
+
   test("只有 review 权限：发布被拒（审 ≠ 管），状态与文件都不动", async () => {
     const { db, root, client } = await harness()
     await insertAsset(db, metadata({ status: "pending_tech" }))

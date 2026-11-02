@@ -656,6 +656,14 @@ function handleSubmit(deps: Deps) {
     )
     if (Result.isFailure(预检)) return 失败(预检.failure)
 
+    // 【保留的定制 · 同步上游时不要丢】提交审核只处理 skill（2026-11-02 批次 2 裁定 A/C）：
+    // MCP 没有草稿副本，服务层自本批次起对它放行 7 状态机；不在这里按类型拒绝，
+    // 属主会拿到 200 + in_review，实际没提交任何内容。MCP 提交入口在批次 3 随 UI / 试连一起定义。
+    // 位置放在授权预检之后：否则会把「这是个 MCP 资产」泄漏给没有写权的人（`#004-09`）。
+    if (asset.type !== "skill") {
+      return 失败(new AssetTransitionError("unsupported_asset_type", `该接口只提交 skill：${assetId}`))
+    }
+
     const 结果 = yield* Effect.result(
       Effect.tryPromise({
         try: () =>

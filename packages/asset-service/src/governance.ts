@@ -111,7 +111,8 @@ const TOOLS: readonly Tool[] = [
     name: "publish_skill",
     description:
       "技术发布一份已通过业务审核的 skill（pending_tech → published）。" +
-      "必须传资产 id（assetId）；只有持有管理权限的系统管理员能发布。",
+      "必须传资产 id（assetId）；只有持有管理权限的系统管理员能发布。" +
+      "只处理 skill；MCP 发布在批次 3（需先试连 + 快照）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -379,14 +380,16 @@ async function runTool(
   const user = await userOf(deps.db, userIdOf(meta))
 
   try {
-    // 【保留的定制 · 同步上游时不要丢】`submit_skill_for_review` 只提交 skill（2026-11-02 批次 2 裁定）：
-    // 工具契约是「内容从 `<root>/draft/<assetId>` 复制」，MCP 没有草稿副本，放进来等于静默空转。
+    // 【保留的定制 · 同步上游时不要丢】两个流转工具都只处理 skill（2026-11-02 批次 2 裁定 A/D）：
+    // `submit_skill_for_review` 的契约是「内容从 `<root>/draft/<assetId>` 复制」，MCP 没有草稿副本；
+    // `publish_skill` 发布后 `published_config` 仍为空（MCP 的硬前提是发布前有试连 + 快照）。
     // 服务层自本批次起对 MCP 放行 7 状态机，所以这条工具级边界不能靠服务层的类型门兜底。
-    // MCP 的提交审核入口在批次 3 随 UI 一起定义。资产不存在时交给 `transitionAsset` 报 asset_not_found。
-    if (name === "submit_skill_for_review") {
+    // MCP 的提交 / 发布入口在批次 3 随 UI 一起定义。资产不存在时交给 `transitionAsset` 报 asset_not_found。
+
+    if (name === "submit_skill_for_review" || name === "publish_skill") {
       const asset = await assetById(deps.db, assetId)
       if (asset !== undefined && asset.type !== "skill") {
-        throw new AssetTransitionError("unsupported_asset_type", `该工具只提交 skill：${assetId}`)
+        throw new AssetTransitionError("unsupported_asset_type", `该工具只处理 skill：${assetId}`)
       }
     }
 
