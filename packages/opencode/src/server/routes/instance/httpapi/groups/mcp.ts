@@ -63,7 +63,7 @@ export const McpApi = HttpApi.make("mcp")
           OpenApi.annotations({
             identifier: "mcp.add",
             summary: "Add MCP server",
-            description: "Dynamically add a new Model Context Protocol (MCP) server to the system.",
+            description: "fork：本端点已关闭（2026-11-02，spec §3.3.3），恒返回 403；仅为 schema 兼容保留。",
           }),
         ),
         HttpApiEndpoint.post("authStart", McpPaths.auth, {

@@ -485,10 +485,16 @@ const layer = Layer.effect(
           yield* mergePluginOrigins(dir, list)
         }
 
-        // 🔒 openhive 定制（要保留）：恢复受保护的 mcp 快照 —— 项目级两个合并块（项目目录的
-        // opencode.json(c) 与 .opencode/ 目录）都不能新增 / 覆盖 / 删除任何 MCP server。
+        // 🔒 openhive 定制（要保留）：恢复受保护的 mcp 快照。`权威MCP` 取自这些合并之前，
+        // 因此下面这一行会丢弃以下来源对 mcp 的新增 / 覆盖 / 删除：
+        //   1. 项目目录及向上查找到的 opencode.json(c)（`ConfigPaths.files`）；
+        //   2. 项目内 `.opencode/` 的 opencode.json(c)；
+        //   3. `~/.opencode/` 的 opencode.json(c)；
+        //   4. `OPENCODE_CONFIG_DIR` 指定目录的 opencode.json(c)。
         // 其它键（agent / mode / plugin / instructions）行为不变。
         // 位置故意在 OPENCODE_CONFIG_CONTENT 之前：那个来源是进程环境，沙箱不可写，属受信通道。
+        // 已知缺口（批次 2 关闭）：CLI `mcp add`（`packages/opencode/src/cli/cmd/mcp.ts:452,497-499`
+        // 的 `addMcpToConfig`）仍会写受信配置；batch 2 的 `replaceGlobalMcp` 接管，本批不修。
         if (权威MCP === undefined) delete result.mcp
         else result.mcp = 权威MCP
 

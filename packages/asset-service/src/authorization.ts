@@ -349,6 +349,13 @@ export async function assertAssetReaders(
  * 只删**组**的行与**私有角色**的行（`role_id like 'personal:%'`）。运维直配的普通角色行
  * 是另一条渠道，重设「指定人员」不该顺手撤掉（口径沿用 `setAssetReadGroups`）。
  *
+ * ## 前提：批次 1 只写 `perm = 'read'`
+ *
+ * 写回的每一行都是 `read`（`grantAssetToGroup` / `grantAssetToUser` 的 perm 固定传 `'read'`），
+ * 删除条件也带 `perm = 'read'`。所以「重设读者」= **改谁能读**，不是「撤销全部权限」：
+ * 某人在该资产上的 `write` / `review` / `admin` 授权行会**原样保留**。批次 1 没有任何路径
+ * 写非 read 的组 / 个人授权；非 read 授权的撤销语义留到批次 3 决定。
+ *
  * ## 顺序
  *
  * 先 `assertAssetReaders()` 验完全部输入，再删再写——「有一个人写错」时一条都不删。

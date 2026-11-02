@@ -219,8 +219,9 @@ export function sessionRuleset(
         (grant) =>
           grant.resourceType === "mcp" && grant.resourceId === naming.server && grant.perm === AccessRbac.READ,
       ) ||
-      // 新增（2026-11-02，spec §3.4.2）：读者读得到的已发布 MCP 资产。元素是**配置键**
-      // （本设计里 = 资产 id，spec §3.3.1），与 `naming.server` 同一个键空间。
+      // 新增（2026-11-02，spec §3.4.2）：读者读得到的已发布 MCP 资产。元素是**配置键**，
+      // 与 `naming.server` 同键是**接线的前提**、不是本函数的不变量：从批次 1 起，业务 server
+      // 的键就是服务端生成的资产 id（spec §3.3.1）。调用方若用别的键，这里会静默失配。
       // 为什么不是第二个开关：授权行与可见性是同一件事的两条来源，任一命中即放行（`#010-06`）。
       visible.has(naming.server)
     const action = granted ? "allow" : "deny"
