@@ -30,6 +30,11 @@ if (argv.includes("--spawn-child")) {
   if (pidFile !== undefined && 孙.pid !== undefined) writeFileSync(pidFile, String(孙.pid))
   await new Promise(() => {})
 } else {
+  // --env-file：把自己实际拿到的环境变量原样写一份，供「只继承安全变量」用例断言。
+  const envFile = argv[argv.indexOf("--env-file") + 1]
+  if (argv.includes("--env-file") && envFile !== undefined) {
+    writeFileSync(envFile, JSON.stringify(process.env))
+  }
   const [{ Server }, { StdioServerTransport }, { ListToolsRequestSchema }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"),
     import("@modelcontextprotocol/sdk/server/stdio.js"),

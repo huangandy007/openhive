@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { spawnSync } from "node:child_process"
 import type { McpConnectionInput } from "./mcp-connection"
@@ -59,7 +59,9 @@ export async function probeMcpConnection(
   } finally {
     if (计时 !== undefined) clearTimeout(计时)
     // pid 必须**在 close 之前**取：close 之后 SDK 会把内部进程引用置空。
-    const pid = transport instanceof StdioClientTransport ? transport.pid : undefined
+    // 用结构化读取而不是 `instanceof`：模块被加载两份时 instanceof 会为 false，
+    // 杀树就静默失效了。
+    const pid = 读pid(transport)
     // 杀树也必须在 close **之前**：SDK 的 close 先 SIGTERM 直接子进程，Windows 上那等于
     // TerminateProcess——子进程一死，`taskkill /T` 就找不到 pid，孙进程成了孤儿、杀不掉。
     // 先按 pid 杀整棵树，再 close 收尾（此时子进程已退出，close 很快返回）。
@@ -92,22 +94,30 @@ function 本地传输(input: McpConnectionInput): StdioClientTransport | string 
   return new StdioClientTransport({
     command: cmd!,
     args,
-    stderr: "pipe",
+    // `"pipe"` 会造一条没人读的管道：verbose 的服务写满约 80KB 后自己阻塞，
+    // 表现成「试连超时」。不需要子进程的 stderr，直接丢弃。
+    stderr: "ignore",
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     env: 合并环境(input.environment),
   })
 }
 
 /**
- * 继承当前进程环境再叠加连接配置；`process.env` 的值可能是 `undefined`，
- * 而 SDK 要求 `Record<string, string>`，所以逐项过滤。
+ * 只继承 SDK 认定的安全环境变量（win32 白名单含 PATH / SYSTEMROOT / TEMP 等），
+ * 再叠加连接配置；凭据（PG / MinIO 等）不随子进程走。
  */
 function 合并环境(extra: Readonly<Record<string, string>> | undefined): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) out[key] = value
-  }
-  return { ...out, ...extra }
+  return { ...getDefaultEnvironment(), ...extra }
+}
+
+/**
+ * 结构化读取传输上的子进程 pid：只有 stdio 传输有 `pid`，streamable HTTP 没有。
+ * 不依赖 `instanceof`，跨模块副本也可用。
+ */
+function 读pid(transport: unknown): number | undefined {
+  if (typeof transport !== "object" || transport === null || !("pid" in transport)) return undefined
+  const pid: unknown = transport.pid
+  return typeof pid === "number" ? pid : undefined
 }
 
 /**

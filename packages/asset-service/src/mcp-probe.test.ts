@@ -83,6 +83,10 @@ async function 起不响应服务器(): Promise<string> {
   return `${await 监听(server)}/mcp`
 }
 
+function 是字符串表(value: unknown): value is Record<string, string | undefined> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function 还活着(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -186,6 +190,46 @@ describe("probeMcpConnection", () => {
   })
 
   test(
+    "local 子进程只继承安全环境变量 ⇒ 凭据不随子进程走",
+    async () => {
+      const envFile = `${tmpdir()}/mcp-probe-env-${process.pid}-${Date.now()}.json`
+      const 旧值 = process.env.OPENHIVE_PROBE_TEST_SECRET
+      process.env.OPENHIVE_PROBE_TEST_SECRET = "probe-leak-canary"
+      try {
+        const 结果 = await probeMcpConnection(
+          {
+            transport: "local",
+            command: [
+              "bun",
+              `${import.meta.dir}/fixtures/mcp-probe-server.ts`,
+              "--env-file",
+              envFile,
+            ],
+            environment: { OPENHIVE_PROBE_FIXTURE_KEY: "v" },
+          },
+          // 本机 bun 起进程约 3.2s，别用 5s 卡边
+          { timeoutMs: 15_000 },
+        )
+        expect(结果.ok).toBe(true)
+        const json: unknown = JSON.parse(await Bun.file(envFile).text())
+        if (!是字符串表(json)) throw new Error("环境变量文件不是对象")
+        const path = json.PATH ?? json.Path
+        expect(typeof path).toBe("string")
+        expect(path?.length ?? 0).toBeGreaterThan(0)
+        // 金丝雀：父进程的凭据 / 任意环境变量不得出现在子进程里
+        expect(json.OPENHIVE_PROBE_TEST_SECRET).toBeUndefined()
+        // 连接配置里显式给的环境变量必须送达
+        expect(json.OPENHIVE_PROBE_FIXTURE_KEY).toBe("v")
+      } finally {
+        if (旧值 === undefined) delete process.env.OPENHIVE_PROBE_TEST_SECRET
+        else process.env.OPENHIVE_PROBE_TEST_SECRET = 旧值
+        await Bun.file(envFile).delete().catch(() => {})
+      }
+    },
+    30_000,
+  )
+
+  test(
     "local 超时 ⇒ 杀掉整个进程树",
     async () => {
       // fixture 参数 --spawn-child --pid-file <tmp>：自己起一个孙进程并写 pid 文件，然后永不响应
@@ -201,7 +245,7 @@ describe("probeMcpConnection", () => {
             pidFile,
           ],
         },
-        { timeoutMs: 800 },
+        { timeoutMs: 2500 },
       )
       expect(结果).toEqual({ ok: false, error: expect.stringContaining("超时") })
       const 孙pid = await 等pid文件(pidFile, 5000)
