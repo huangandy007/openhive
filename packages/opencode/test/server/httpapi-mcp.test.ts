@@ -10,6 +10,7 @@ import { testEffect } from "../lib/effect"
 // fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts。
 // 项目级配置里的 mcp 会被忽略 ⇒ demo 夹具走 OPENCODE_CONFIG_CONTENT（受信通道），
 // 与 openhive-access-mcp-wiring.test.ts 的写法一致。
+// 模块级改 env 会波及同进程的其它测试文件 ⇒ 必须在 afterAll 还原，别改在 beforeEach。
 const previousConfigContent = process.env.OPENCODE_CONFIG_CONTENT
 process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
   mcp: {
@@ -99,6 +100,11 @@ describe("mcp HttpApi", () => {
 
       expect(added.status).toBe(403)
       expect(yield* json(added)).toMatchObject({ _tag: "ForbiddenError" })
+
+      // 403 是真拒绝而不是「拒了但已写进去」：状态表仍只有夹具里那台。
+      const status = yield* request(handler, McpPaths.status, tmp.directory)
+      expect(status.status).toBe(200)
+      expect(yield* json(status)).toEqual({ demo: { status: "disabled" } })
     }),
   )
 

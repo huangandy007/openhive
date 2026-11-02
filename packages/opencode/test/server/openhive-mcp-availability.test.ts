@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
+import { grantAssetToUser } from "@opencode-ai/asset-service/authorization"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { scanUsableMcpServers } from "../../src/server/openhive/mcp-availability"
 
@@ -36,7 +37,8 @@ async function freshDb(): Promise<ProductionDb["db"]> {
     insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
     values
       ('u1', '010001', '甲民警', 'x', 'x', '市局', '经侦支队', 'x', 0, 'h', 0),
-      ('u2', '020002', '乙民警', 'x', 'x', '市局', '刑侦支队', 'x', 0, 'h', 0)
+      ('u2', '020002', '乙民警', 'x', 'x', '市局', '刑侦支队', 'x', 0, 'h', 0),
+      ('u3', '030003', '丙民警', 'x', 'x', '市局', '刑侦支队', 'x', 0, 'h', 0)
   `)
   return database.db
 }
@@ -113,17 +115,40 @@ describe("scanUsableMcpServers（spec §3.4.1）", () => {
     const scan = await scanUsableMcpServers(db, U1)
 
     expect(scan.names).toEqual([])
+    expect(scan.skipped).toEqual([])
+  })
+
+  test("个人授权（personal:）经 SQL 投影生效：只有被授权的那个人看得见", async () => {
+    const db = await freshDb()
+    // 归 u1 所有 + targeted：作者支帮不了 u2，空间也不授读 ⇒ 入选只能来自授权行。
+    await insertAsset(db, 资产({ id: "asset-personal-grant", visibility: "targeted", ownerId: "u1" }))
+
+    const 授权前 = await scanUsableMcpServers(db, { userId: "u2", department: "刑侦支队" })
+    expect(授权前.names).toEqual([])
+
+    await grantAssetToUser(db, { userId: "u2", assetId: "asset-personal-grant", perm: "read" })
+
+    const 授权后 = await scanUsableMcpServers(db, { userId: "u2", department: "刑侦支队" })
+    expect(授权后.names).toContain("asset-personal-grant")
+
+    // 第三个用户既不是作者、也没被授权 ⇒ 仍然看不见（授权不广播）。
+    const 旁人 = await scanUsableMcpServers(db, { userId: "u3", department: "刑侦支队" })
+    expect(旁人.names).not.toContain("asset-personal-grant")
   })
 
   test("id 含通配字符 ⇒ skipped（fail-closed，不当配置键用）", async () => {
     const db = await freshDb()
     await insertAsset(db, 资产({ id: "asset_*", visibility: "global" }))
+    await insertAsset(db, 资产({ id: "asset-?", visibility: "global" }))
     await insertAsset(db, 资产({ id: "asset-ok", visibility: "global" }))
 
     const scan = await scanUsableMcpServers(db, U1)
 
     expect(scan.names).toEqual(["asset-ok"])
-    expect(scan.skipped).toEqual([{ id: "asset_*", reason: "资产 id 含通配字符，不能当配置键：asset_*" }])
+    expect(scan.skipped).toEqual([
+      { id: "asset-?", reason: "资产 id 含通配字符，不能当配置键：asset-?" },
+      { id: "asset_*", reason: "资产 id 含通配字符，不能当配置键：asset_*" },
+    ])
   })
 
   test("空 id ⇒ skipped（否则会退化成 `_*`，同样会放大成别的键）", async () => {

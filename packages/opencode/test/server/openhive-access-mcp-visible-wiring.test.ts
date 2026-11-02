@@ -24,7 +24,7 @@ import { testEffect } from "../lib/effect"
  *
  * 纯函数那一半（`openhive-access-mcp.test.ts`）验的是「给了名单怎么拼规则」；本文件验
  * 「名单**从哪来**」——`capabilityFor` 是否真的把 `scanUsableMcpServers` 的结果传进了第四参。
- * 把 `access.ts` 里那个第四参删掉，纯函数那 12 条**一条都不会红**（`#002-02`）。
+ * 把 `access.ts` 里那个第四参删掉，纯函数那 15 条**一条都不会红**（`#002-02`）。
  *
  * 夹具要点：
  * - 配置走 `OPENCODE_CONFIG_CONTENT`（受信通道，沙箱不可写）；
@@ -44,6 +44,8 @@ const ALICE: TokenSubject = {
 
 const 可见资产 = "asset-mcp-visible-0001"
 const 手写键 = "handwritten.mcp"
+/** 只在库里、不在 `Config.mcp` 的第二台：可见 ≠ 可配置，它不该凭空产出规则。 */
+const 仅库内资产 = "asset-mcp-db-only-0002"
 
 const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-mcp-visible-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -113,6 +115,8 @@ beforeAll(async () => {
   `)
   // 只有「可见资产」在库里，且是 published + global、**零授权行**；手写键没有任何资产行。
   await insertAsset(pg.db, 资产({ id: 可见资产 }))
+  // 第二台只在库里（published + global、归 ALICE）：配置里没有这个键 ⇒ 不进规则集。
+  await insertAsset(pg.db, 资产({ id: 仅库内资产 }))
 })
 
 afterAll(async () => {
@@ -180,7 +184,13 @@ describe("可见即可用 · capability 接线（真应用 + 真库）", () => {
         expect(evaluateV1("read", `mcp:${可见资产}:ledger`, stored).action).toBe("allow")
         expect(evaluateV1("handwritten_mcp_query", "*", stored).action).toBe("deny")
         expect(evaluateV1("read", `mcp:${手写键}:ledger`, stored).action).toBe("deny")
-        expect(evaluateV1("read", "src/index.ts", stored).action).not.toBe("deny")
+        // 读文件不落在本规则集里 ⇒ 上游兜底 `ask`（不是 deny，也不是 allow；
+        // 纯函数用例 `openhive-access-mcp.test.ts` 把它写成「读文件仍是上游的 ask」）。
+        expect(evaluateV1("read", "src/index.ts", stored).action).toBe("ask")
+
+        // 可见 ≠ 可配置：库里有、`Config.mcp` 里没有的那台不产出任何规则（I6 的另一半）。
+        expect(stored).toHaveLength(5)
+        expect(stored.some((rule) => rule.pattern.includes(仅库内资产))).toBe(false)
       }),
     30_000,
   )

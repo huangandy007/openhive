@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { Effect, Layer } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { Config } from "@/config/config"
@@ -19,6 +20,7 @@ import { AuthTest } from "../fake/auth"
 import { AccountTest } from "../fake/account"
 import { NpmTest } from "../fake/npm"
 import path from "path"
+import { writeFileSync } from "fs"
 
 /**
  * I2（spec §3.3.2）：**项目级配置不能新增 / 覆盖 / 删除任何 MCP server**。
@@ -79,6 +81,33 @@ const withGlobalConfigDir = <A, E, R>(dir: string, effect: Effect.Effect<A, E, R
 const writeConfig = (dir: string, config: object, name?: string) =>
   Filesystem.write(path.join(dir, name ?? "opencode.json"), JSON.stringify(schemaConfig(config)))
 
+/**
+ * 受信来源 `OPENCODE_CONFIG`：临时 JSON 文件 + env + `Flag` 快照，退出时两处都还原。
+ *
+ * ⚠️ `Flag.OPENCODE_CONFIG` 是**模块加载时的 env 快照**（`core/flag/flag.ts:21`），
+ * 只写 `process.env` 在本测试里不生效，所以必须同步那份快照；两处都在 release 里还原，
+ * 否则会漏到同进程的其它测试文件。
+ */
+const withTrustedConfigFile = <A, E, R>(dir: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const file = path.join(dir, "trusted-opencode.json")
+      writeFileSync(file, JSON.stringify(schemaConfig({ mcp: { asset_trusted: 全局A } })))
+      const flag = Flag as { OPENCODE_CONFIG: string | undefined }
+      const saved = { previousEnv: process.env.OPENCODE_CONFIG, flag, previousFlag: flag.OPENCODE_CONFIG }
+      process.env.OPENCODE_CONFIG = file
+      flag.OPENCODE_CONFIG = file
+      return saved
+    }),
+    () => effect,
+    (saved) =>
+      Effect.sync(() => {
+        if (saved.previousEnv === undefined) delete process.env.OPENCODE_CONFIG
+        else process.env.OPENCODE_CONFIG = saved.previousEnv
+        saved.flag.OPENCODE_CONFIG = saved.previousFlag
+      }),
+  )
+
 const withConfigTree = <A, E, R>(
   input: { global?: object; project?: object; local?: object },
   effect: Effect.Effect<A, E, R>,
@@ -138,5 +167,30 @@ describe("I2 · 项目级配置不能动 MCP server（fork 定制）", () => {
         expect((yield* Config.use.get()).mcp).toBeUndefined()
       }),
     ),
+  )
+
+  it.effect("④ 受信来源 OPENCODE_CONFIG 的 mcp 幸存，项目级不能覆盖 / 新增", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      yield* withTrustedConfigFile(
+        root,
+        withConfigTree(
+          {
+            project: {
+              mcp: {
+                asset_trusted: { type: "local", command: ["项目本地-trusted"], enabled: true },
+                asset_project: { type: "local", command: ["项目-b"], enabled: true },
+              },
+            },
+          },
+          Effect.gen(function* () {
+            const mcp = (yield* Config.use.get()).mcp
+            expect(Object.keys(mcp ?? {})).toEqual(["asset_trusted"])
+            expect(mcp?.asset_trusted).toEqual(全局A)
+            expect(mcp?.asset_project).toBeUndefined()
+          }),
+        ),
+      )
+    }),
   )
 })
