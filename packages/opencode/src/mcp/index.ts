@@ -34,6 +34,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { OpenhiveMcpChildEnv } from "./openhive-child-env"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -359,7 +360,8 @@ const layer = Layer.effect(
         args,
         cwd,
         env: {
-          ...process.env,
+          // 【保留的定制】业务 MCP 子进程不继承平台 PG / MinIO 凭据（见 openhive-child-env.ts）。
+          ...OpenhiveMcpChildEnv.净化子进程环境(process.env),
           ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
           ...mcp.environment,
         },
