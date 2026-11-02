@@ -66,6 +66,7 @@ const 资产接口: AssetApi = {
   transition: 不写,
   batchCategory: 不写,
   listGroups: 不写,
+  createMcpDraft: 不写,
 }
 
 const 项目接口: ProjectApi = {

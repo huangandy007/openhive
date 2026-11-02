@@ -10,7 +10,14 @@
 
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { AssetApi, AssetOutcome, AssetQuery, AssetRow, GovernanceAction } from "./asset-api"
+import type {
+  AssetApi,
+  AssetOutcome,
+  AssetQuery,
+  AssetRow,
+  CreateMcpDraftInput,
+  GovernanceAction,
+} from "./asset-api"
 import type { CategoryAdminApi, CategoryAdminRow } from "./category-api"
 import { AssetGovernance } from "./asset-governance"
 
@@ -90,6 +97,7 @@ interface 记录 {
     readonly groupIds?: readonly string[]
   }>
   readonly batch: Array<{ readonly ids: readonly string[]; readonly category: string }>
+  readonly createMcp: CreateMcpDraftInput[]
   /** 「指定人员」弹窗拉了几次组清单：不点这一档就不该拉（白拉一次网）。 */
   groupCalls: number
 }
@@ -102,7 +110,7 @@ function 假后端(
   }),
   覆写: Partial<AssetApi> = {},
 ) {
-  const 记录: 记录 = { list: [], transition: [], batch: [], groupCalls: 0 }
+  const 记录: 记录 = { list: [], transition: [], batch: [], createMcp: [], groupCalls: 0 }
   const api: AssetApi = {
     list: async (query = {}) => {
       记录.list.push(query)
@@ -123,6 +131,10 @@ function 假后端(
     batchCategory: async (ids, category) => {
       记录.batch.push({ ids, category })
       return { kind: "ok", value: { updated: ids.length } }
+    },
+    createMcpDraft: async (input) => {
+      记录.createMcp.push(input)
+      return { kind: "ok", value: { assetId: "asset_new_mcp" } }
     },
     listGroups: async () => {
       记录.groupCalls += 1
@@ -495,6 +507,7 @@ describe("资产治理页 · 三态", () => {
       transition: (id, action, reason) => 失败一次.api.transition(id, action, reason),
       batchCategory: (ids, category) => 失败一次.api.batchCategory(ids, category),
       listGroups: () => 失败一次.api.listGroups(),
+      createMcpDraft: (input) => 失败一次.api.createMcpDraft(input),
     })
     await 等到(() => 有("[data-slot='asset-error']") !== null)
     expect(文章("[data-slot='asset-error']")).toContain("连接服务失败")
@@ -686,5 +699,80 @@ describe("资产治理页 · 分类列与批量改分类（需求 2）", () => {
     expect(文章("[data-slot='asset-batch-error']")).toBe("资产不存在：asset-nope")
     // 选择留着：管理员补掉坏 id 再点一次，不用从头勾。
     expect(文章("[data-slot='asset-batch-count']")).toBe("已选 1 项")
+  })
+})
+
+describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
+  const 填输入 = (selector: string, value: string) => {
+    const 目标 = document.querySelector(selector)
+    if (!(目标 instanceof HTMLInputElement || 目标 instanceof HTMLTextAreaElement)) {
+      throw new Error(`找不到输入框：${selector}`)
+    }
+    目标.value = value
+    目标.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+
+  const 选下拉 = (selector: string, value: string) => {
+    const 目标 = document.querySelector(selector)
+    if (!(目标 instanceof HTMLSelectElement)) throw new Error(`找不到下拉：${selector}`)
+    目标.value = value
+    目标.dispatchEvent(new Event("change", { bubbles: true }))
+  }
+
+  test("工具栏打开表单，提交后刷新并切到草稿队列", async () => {
+    const { api, 记录 } = 假后端()
+    const host = 挂上(api, 分类后端())
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    点击("[data-slot='asset-create-mcp']")
+    await 等到(() => 有("[data-slot='mcp-create-dialog']") !== null)
+
+    填输入("input[name='mcp-create-name']", "资金查询 MCP")
+    填输入("textarea[name='mcp-create-description']", "按账户查流水")
+    选下拉("select[name='mcp-create-category']", "intelligence")
+    填输入("input[name='mcp-create-url']", "https://mcp.example/path")
+
+    const 提交 = document.querySelector("[data-slot='mcp-create-submit']")
+    if (!(提交 instanceof HTMLButtonElement)) throw new Error("找不到创建按钮")
+    提交.click()
+
+    await 等到(() => 记录.createMcp.length === 1)
+    await 等到(() => 记录.list.at(-1)?.status === "draft")
+
+    expect(记录.createMcp[0]).toEqual({
+      name: "资金查询 MCP",
+      description: "按账户查流水",
+      category: "intelligence",
+      visibility: "targeted",
+      connection: { transport: "remote", url: "https://mcp.example/path" },
+    })
+    expect(文章("[data-slot='asset-notice']")).toContain("已新建 MCP 资产")
+    expect(
+      (host.querySelector("[data-slot='asset-filter-status']") as HTMLSelectElement).value,
+    ).toBe("draft")
+  })
+
+  test("服务端拒绝：错误就地在表单里，弹窗不关", async () => {
+    const { api } = 假后端(undefined, {
+      createMcpDraft: async () => ({ kind: "rejected", message: "只有资产治理管理员可以新建 MCP 资产" }),
+    })
+    挂上(api, 分类后端())
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    点击("[data-slot='asset-create-mcp']")
+    await 等到(() => 有("[data-slot='mcp-create-dialog']") !== null)
+
+    填输入("input[name='mcp-create-name']", "会被拒")
+    填输入("textarea[name='mcp-create-description']", "描述")
+    选下拉("select[name='mcp-create-category']", "intelligence")
+    填输入("input[name='mcp-create-url']", "https://x")
+
+    const 提交 = document.querySelector("[data-slot='mcp-create-submit']")
+    if (!(提交 instanceof HTMLButtonElement)) throw new Error("找不到创建按钮")
+    提交.click()
+
+    await 等到(() => 文章("[data-slot='mcp-create-error']") !== "")
+    expect(文章("[data-slot='mcp-create-error']")).toBe("只有资产治理管理员可以新建 MCP 资产")
+    expect(有("[data-slot='mcp-create-dialog']")).not.toBeNull()
   })
 })

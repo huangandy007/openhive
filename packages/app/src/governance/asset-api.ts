@@ -128,6 +128,26 @@ export interface AssetGroup {
   readonly memberCount: number
 }
 
+/** 新建 MCP 时交给服务端的连接规格（与内核 `McpConnectionInput` 同形）。 */
+export interface McpConnectionInput {
+  readonly transport: "local" | "remote"
+  readonly url?: string
+  readonly command?: readonly string[]
+  readonly cwd?: string
+  readonly headers?: Readonly<Record<string, string>>
+  readonly environment?: Readonly<Record<string, string>>
+  readonly enabled?: boolean
+  readonly timeoutMs?: number
+}
+
+export interface CreateMcpDraftInput {
+  readonly name: string
+  readonly description: string
+  readonly category: string
+  readonly visibility: AssetVisibility
+  readonly connection: McpConnectionInput
+}
+
 export interface AssetApi {
   list(query?: AssetQuery): Promise<AssetOutcome<readonly AssetRow[]>>
   /**
@@ -161,6 +181,13 @@ export interface AssetApi {
    * 重复提交同一批 ⇒ `updated = 0`，不是失败。
    */
   batchCategory(ids: readonly string[], category: string): Promise<AssetOutcome<{ readonly updated: number }>>
+  /**
+   * 新建一台 MCP 资产（2026-11-02 设计 §5.3）。**只有治理管理员**能成——
+   * 前端不判权限，403 由服务端回（宪法 §IV）。
+   *
+   * 回包只取 `assetId`：新行由列表刷新取，前端不拿半截对象拼列表。
+   */
+  createMcpDraft(input: CreateMcpDraftInput): Promise<AssetOutcome<{ readonly assetId: string }>>
 }
 
 /** 只用到的那一小片 `fetch`（类型与 `GovernanceFetch` 逐字相同，便于注入同一个替身）。 */
@@ -176,6 +203,8 @@ export const PATH = {
   batchCategory: `${PREFIX}/batch-category`,
   /** 需求 3b：授权组清单。与内核 `OpenhiveGovernanceAssetGroups.PATH.list` 逐字对应。 */
   groups: "/openhive/governance/asset-groups",
+  /** 入库（MCP 与 skill 共用）。与内核 `OpenhiveAssets.PATH.draft` 逐字对应。 */
+  draft: "/openhive/assets/draft",
 } as const
 
 /** 一次请求的上限：与 `account-api.ts` 同值同理由。 */
@@ -355,6 +384,12 @@ function 批量结果(value: unknown): { readonly updated: number } | undefined 
   return { updated: value["updated"] }
 }
 
+/** 建草稿回包：只认非空 `assetId`（其它字段列表会再取一份）。 */
+function 草稿结果(value: unknown): { readonly assetId: string } | undefined {
+  if (!isRecord(value) || typeof value["assetId"] !== "string" || value["assetId"] === "") return undefined
+  return { assetId: value["assetId"] }
+}
+
 /** 建一份客户端。`send` 省略 = 真实 `fetch` ＋ 超时（测试注入替身）。 */
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
@@ -382,6 +417,17 @@ export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
           body: JSON.stringify({ ids: [...ids], category }),
         },
         批量结果,
+      ),
+    createMcpDraft: (input) =>
+      请求(
+        send,
+        PATH.draft,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ type: "mcp", ...input }),
+        },
+        草稿结果,
       ),
   }
 }

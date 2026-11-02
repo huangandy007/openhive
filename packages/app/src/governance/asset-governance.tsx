@@ -38,9 +38,11 @@ import {
   type AssetGroup,
   type AssetRow,
   type AssetStatus,
+  type CreateMcpDraftInput,
   type GovernanceAction,
 } from "./asset-api"
 import type { CategoryAdminApi, CategoryAdminRow } from "./category-api"
+import { McpCreateForm } from "./mcp-create-form"
 
 export interface AssetGovernanceProps {
   api: AssetApi
@@ -158,6 +160,8 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   /** 分类表（含停用项）：名字与「能不能作为目标」的唯一来源。拉不到就只剩 id。 */
   const [分类行们, 设分类行们] = createSignal<readonly CategoryAdminRow[]>([])
 
+  const [新建开, 设新建开] = createSignal(false)
+
   const [确认, 设确认] = createSignal<{ readonly row: AssetRow; readonly action: GovernanceAction }>()
   const [理由, 设理由] = createSignal("")
   const [理由错误, 设理由错误] = createSignal<string>()
@@ -199,12 +203,20 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
 
   onMount(() => void 读())
 
+  const [分类已读, 设分类已读] = createSignal(false)
+  const [分类错误, 设分类错误] = createSignal<string>()
+
   onMount(async () => {
-    // 拉不到分类不算失败态：行上退回显示 id、批量下拉空着（按不下去）。为它多一条错误条
-    // 反而会盖住真正的列表错误。
-    if (!props.categoryApi) return
+    // 拉不到分类不算列表失败态：行上退回显示 id、批量下拉空着。但「新建 MCP」的表单
+    // 必须知道分类为什么是空的——空着提交会被服务端 400，不如就地说明。
+    if (!props.categoryApi) {
+      设分类已读(true)
+      return
+    }
     const out = await props.categoryApi.list()
     if (out.kind === "ok") 设分类行们(out.value)
+    else 设分类错误(out.message)
+    设分类已读(true)
   })
 
   /** 分类 id → 人话：启用直呼其名；停用的标出来（管理员据此决定要不要挪走）；查不到的留 id。 */
@@ -239,6 +251,18 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设已选([])
     设批量分类("")
     await 读()
+  }
+
+  async function 新建Mcp(input: CreateMcpDraftInput): Promise<string | undefined> {
+    const out = await props.api.createMcpDraft(input)
+    if (out.kind !== "ok") return out.message
+    设新建开(false)
+    // 新建的一定是草稿：直接切到草稿队列，管理员不必自己找。
+    // 次序不能反：`换筛选` 会清掉提示，先设提示等于白设。
+    换筛选("draft")
+    设提示(`已新建 MCP 资产「${input.name}」`)
+    await 读()
+    return undefined
   }
 
   function 换筛选(value: string) {
@@ -393,6 +417,18 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
               正在加载…
             </span>
           </Show>
+          <ButtonV2
+            data-slot="asset-create-mcp"
+            type="button"
+            variant="contrast"
+            size="small"
+            onClick={() => {
+              设提示(undefined)
+              设新建开(true)
+            }}
+          >
+            新建 MCP 资产
+          </ButtonV2>
           <ButtonV2 data-slot="asset-refresh" type="button" variant="neutral" size="small" onClick={() => void 读()}>
             刷新
           </ButtonV2>
@@ -809,6 +845,38 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
               >
                 {处理中() ? "处理中…" : 提交文案()}
               </ButtonV2>
+            </div>
+          </Kobalte.Content>
+        </Kobalte.Portal>
+      </Kobalte>
+
+      <Kobalte open={新建开()} onOpenChange={(open) => 设新建开(open)}>
+        <Kobalte.Portal>
+          <Kobalte.Overlay class="fixed inset-0 z-40 bg-v2-overlay-simple-overlay-scrim" />
+          <Kobalte.Content
+            data-slot="mcp-create-dialog"
+            class="fixed top-1/2 left-1/2 z-50 w-[min(34rem,calc(100vw-3rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-v2-border-border-muted bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
+          >
+            <div class="flex items-center gap-3 border-b border-v2-border-border-muted px-5 py-4">
+              <Kobalte.Title class="min-w-0 flex-1 text-[15px] font-semibold text-v2-text-text-base">
+                新建 MCP 资产
+              </Kobalte.Title>
+              <Kobalte.CloseButton
+                type="button"
+                aria-label="关闭"
+                class="flex size-7 items-center justify-center rounded-lg text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover"
+              >
+                <Icon name="xmark-small" size="small" />
+              </Kobalte.CloseButton>
+            </div>
+            <div class="max-h-[calc(100vh-10rem)] overflow-y-auto px-5 py-4">
+              <McpCreateForm
+                categories={分类行们().filter((行) => 行.enabled)}
+                categoriesLoaded={分类已读()}
+                categoriesError={分类错误()}
+                onCreate={新建Mcp}
+                onCancel={() => 设新建开(false)}
+              />
             </div>
           </Kobalte.Content>
         </Kobalte.Portal>
