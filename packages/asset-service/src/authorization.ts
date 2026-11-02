@@ -170,7 +170,6 @@ function 授权组清单(groupIds: readonly string[]): string[] {
     const id = assertNonBlank(raw, "组 id")
     if (!ids.includes(id)) ids.push(id)
   }
-  if (ids.length === 0) throw new Error("「指定人员」至少要一个授权组")
   return ids
 }
 
@@ -185,8 +184,11 @@ export async function assertAssetReadGroups(
   input: { readonly assetId: string; readonly groupIds: readonly string[] },
 ): Promise<AssetMetadata> {
   const assetId = assertNonBlank(input.assetId, "资产 id")
+  const groups = 授权组清单(input.groupIds)
+  // 旧 API 的语义留在旧 API：`setAssetReadGroups` 仍然要求至少一个组。
+  if (groups.length === 0) throw new Error("「指定人员」至少要一个授权组")
   // 先验组、再查资产：两件都是读，顺序只影响报哪一条错；组错更常见。
-  for (const groupId of 授权组清单(input.groupIds)) await assertAuthorizationGroup(db, groupId)
+  for (const groupId of groups) await assertAuthorizationGroup(db, groupId)
 
   const asset = await assetById(db, assetId)
   if (!asset) throw new Error(`资产不存在：${assetId}`)
@@ -227,6 +229,149 @@ export async function setAssetReadGroups(
   `)
 
   for (const groupId of groupIds) await grantAssetToGroup(db, { groupId, assetId: asset.id, perm: "read" })
+}
+
+/**
+ * 私有角色（「授权个人」的落点，spec §3.2.3）：`personal:<userId>`，`role_type = 'normal'`。
+ *
+ * 为什么不是新表：`grantsFor()`（`@opencode-ai/auth/rbac`）与 `readableAssetCondition()`
+ * （`./readable-sql`）都只 join `auth.user_role`，**不看 `role_type`** ⇒ 私有角色零改动
+ * 同时满足内存判据与 SQL 投影两处（`#004-02`：判据只有一份）。
+ * 为什么不是「塞进一个组」：组是共享容器，发布重设 `setAssetReaders` 会按组整体清掉，
+ * 个人授权会被误伤（I4）。
+ */
+export const PERSONAL_ROLE_PREFIX = "personal:"
+
+/** `userId → 私有角色 id`。前缀本身就是标记，别再另存一列。 */
+export function personalRoleIdOf(userId: string): string {
+  return `${PERSONAL_ROLE_PREFIX}${userId}`
+}
+
+/** 用户必须存在（`role.name` 要显示名；也避免给一个不存在的 id 建孤儿角色）。 */
+async function assertUserExists(db: AuthorizationTarget, userId: string): Promise<string> {
+  const rows = rowsOf(await db.execute(sql`select name from auth.user where id = ${userId}`))
+  if (rows.length === 0) throw new Error(`用户不存在：${userId}`)
+  return String(rows[0]!.name)
+}
+
+/**
+ * 找不到就建，并把用户挂上去（幂等）。
+ *
+ * 名字带 userId：`role.name` 是 UNIQUE，只写显示名会撞。
+ *
+ * ⚠️ 必须写 `auth.user_role`：`grantsFor()` 与 SQL 投影都从 `user_role` join 出去，
+ * 只建 role + role_resource 是一条**谁都不认**的授权；而「撤销 = 删 user_role 一行」
+ * 这个运维口径也依赖它真实存在。
+ */
+async function ensurePersonalRole(db: AuthorizationTarget, userId: string): Promise<string> {
+  const displayName = await assertUserExists(db, userId)
+  const roleId = personalRoleIdOf(userId)
+  await db.execute(sql`
+    insert into auth.role (id, name, role_type)
+    values (${roleId}, ${`个人授权：${displayName}·${userId}`}, 'normal')
+    on conflict (id) do nothing
+  `)
+  await db.execute(sql`
+    insert into auth.user_role (user_id, role_id)
+    values (${userId}, ${roleId})
+    on conflict do nothing
+  `)
+  return roleId
+}
+
+/**
+ * 把一份资产授权给**一个人**（spec §3.2.4）。
+ *
+ * 形状与 `grantAssetToGroup()` 一致：`perm` 在碰库之前校验、`resource_type` 由资产真实类型
+ * 决定、资产必须存在。写的是同一条 `role_resource`，只是 `role_id` 换成私有角色。
+ */
+export async function grantAssetToUser(
+  db: AuthorizationTarget,
+  input: { readonly userId: string; readonly assetId: string; readonly perm: string },
+): Promise<void> {
+  const userId = assertNonBlank(input.userId, "用户 id")
+  const assetId = assertNonBlank(input.assetId, "资产 id")
+
+  if (!isAssetPerm(input.perm)) {
+    throw new Error(`未知资产权限：${input.perm}（可用：${ASSET_PERMS.join(" / ")}）`)
+  }
+  await assertUserExists(db, userId)
+  const asset = await assetById(db, assetId)
+  if (!asset) throw new Error(`资产不存在：${assetId}`)
+
+  const roleId = await ensurePersonalRole(db, userId)
+  await db.execute(sql`
+    insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+    values (${roleId}, ${asset.type}, ${asset.id}, ${input.perm})
+    on conflict do nothing
+  `)
+}
+
+/** 个人 id 列表的去重与收窄：空串一律拒，重复只留一份。 */
+function 个人清单(userIds: readonly string[]): string[] {
+  const ids: string[] = []
+  for (const raw of userIds) {
+    const id = assertNonBlank(raw, "用户 id")
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * 「指定人员」发布的**前置校验（组 + 个人）**：全在、类型对、资产在。**一条都不写库。**
+ *
+ * 至少一个组或一个人（spec §3.2.4）；`setAssetReaders` 靠它保证「有一个人写错时一条都不删」
+ * （`#004-09`：门在副作用之前）。
+ */
+export async function assertAssetReaders(
+  db: AuthorizationTarget,
+  input: { readonly assetId: string; readonly groupIds?: readonly string[]; readonly userIds?: readonly string[] },
+): Promise<{ readonly asset: AssetMetadata; readonly groups: string[]; readonly users: string[] }> {
+  const assetId = assertNonBlank(input.assetId, "资产 id")
+  const groups = 授权组清单(input.groupIds ?? [])
+  const users = 个人清单(input.userIds ?? [])
+  if (groups.length === 0 && users.length === 0) throw new Error("至少要一个授权组或一个人")
+
+  for (const groupId of groups) await assertAuthorizationGroup(db, groupId)
+  for (const userId of users) await assertUserExists(db, userId)
+
+  const asset = await assetById(db, assetId)
+  if (!asset) throw new Error(`资产不存在：${assetId}`)
+  return { asset, groups, users }
+}
+
+/**
+ * 把一份资产的「指定人员」读权**设成**给定的组 + 人集合（spec §3.2.4，替代
+ * `setAssetReadGroups` 的「只认组」）。
+ *
+ * ## 删除范围（I4）
+ *
+ * 只删**组**的行与**私有角色**的行（`role_id like 'personal:%'`）。运维直配的普通角色行
+ * 是另一条渠道，重设「指定人员」不该顺手撤掉（口径沿用 `setAssetReadGroups`）。
+ *
+ * ## 顺序
+ *
+ * 先 `assertAssetReaders()` 验完全部输入，再删再写——「有一个人写错」时一条都不删。
+ */
+export async function setAssetReaders(
+  db: AuthorizationTarget,
+  input: { readonly assetId: string; readonly groupIds?: readonly string[]; readonly userIds?: readonly string[] },
+): Promise<void> {
+  const { asset, groups, users } = await assertAssetReaders(db, input)
+
+  await db.execute(sql`
+    delete from auth.role_resource
+     where resource_type = ${asset.type}
+       and resource_id = ${asset.id}
+       and perm = 'read'
+       and (
+         role_id in (select id from auth.role where role_type = 'group')
+         or role_id like ${`${PERSONAL_ROLE_PREFIX}%`}
+       )
+  `)
+
+  for (const groupId of groups) await grantAssetToGroup(db, { groupId, assetId: asset.id, perm: "read" })
+  for (const userId of users) await grantAssetToUser(db, { userId, assetId: asset.id, perm: "read" })
 }
 
 /**

@@ -12,6 +12,8 @@ import {
   createAuthorizationGroup,
   effectivePermissions,
   grantAssetToGroup,
+  grantAssetToUser,
+  setAssetReaders,
   setAssetReadGroups,
   UnknownAuthorizationGroupError,
   type AssetViewer,
@@ -105,6 +107,12 @@ const permsOf = (viewer: AssetViewer, asset: AssetMetadata, grants: readonly Gra
 const v1: AssetViewer = { userId: "u1", department: "经侦支队" }
 const v2: AssetViewer = { userId: "u2", department: "刑侦支队" }
 const v3: AssetViewer = { userId: "u3", department: "经侦支队" }
+
+const viewerOf = (userId: string): AssetViewer =>
+  userId === "u1" ? v1 : userId === "u2" ? v2 : v3
+
+const reads = async (db: ProductionDb["db"], asset: AssetMetadata, userId: string): Promise<boolean> =>
+  canReadAsset(viewerOf(userId), asset, await grantsFor(db, userId))
 
 function grant(perm: string, overrides: Partial<GrantRow> = {}): GrantRow {
   return { resourceType: "skill", resourceId: "a_global", perm, ...overrides }
@@ -469,5 +477,132 @@ describe("授权组（FR-006 / D0-4）", () => {
       [...ASSET_TYPES, GOVERNANCE_RESOURCE_TYPE].sort(),
     )
     expect(literalsOf(definitions.get("role_resource_perm_check")!)).toEqual([...ASSET_PERMS].sort())
+  })
+})
+
+describe("个人授权（私有角色 personal:<userId>，spec §3.2.3）", () => {
+  const 定向 = (id: string, ownerId = "u1"): AssetMetadata =>
+    metadata({ id, visibility: "targeted", ownerId, ownerName: ownerId === "u1" ? "甲民警" : "乙民警" })
+
+  test("grantAssetToUser：建私有角色 + 写 read 行 ⇒ 该用户可读", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "read" })
+
+    const roles = rowsOf(await db.execute(sql`select id, name, role_type from auth.role where id = 'personal:u2'`))
+    expect(roles.length).toBe(1)
+    expect(String(roles[0]!.role_type)).toBe("normal")
+    expect(String(roles[0]!.name)).toBe("个人授权：乙民警·u2")
+
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true)
+    expect(await reads(db, 定向("a_targeted"), "u3")).toBe(false)
+  })
+
+  test("grantAssetToUser：重复调用幂等（角色一行、授权一行）", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "read" })
+    await grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "read" })
+
+    const roles = rowsOf(await db.execute(sql`select id from auth.role where id = 'personal:u2'`))
+    expect(roles.length).toBe(1)
+    const rows = rowsOf(await db.execute(sql`
+      select 1 from auth.role_resource where role_id = 'personal:u2' and resource_id = 'a_targeted' and perm = 'read'
+    `))
+    expect(rows.length).toBe(1)
+  })
+
+  test("grantAssetToUser：未知用户 / 未知资产 / 未知权限 ⇒ 抛错且不落任何行", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+
+    expect((await failure(() => grantAssetToUser(db, { userId: "u_none", assetId: "a_targeted", perm: "read" }))).message)
+      .toContain("用户不存在")
+    expect((await failure(() => grantAssetToUser(db, { userId: "u2", assetId: "a_none", perm: "read" }))).message)
+      .toContain("资产不存在")
+    expect((await failure(() => grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "fly" }))).message)
+      .toContain("未知资产权限")
+
+    const rows = rowsOf(await db.execute(sql`select 1 from auth.role where id like 'personal:%'`))
+    expect(rows).toEqual([])
+  })
+
+  test("撤销 = 删 user_role 一行 ⇒ 立刻不可读", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "read" })
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true)
+
+    await db.execute(sql`delete from auth.user_role where user_id = 'u2' and role_id = 'personal:u2'`)
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(false)
+  })
+
+  test("setAssetReaders：组 + 个人同时写；重设时旧组 / 旧个人被替换", async () => {
+    const db = await freshDb()
+    // ⚠️ 作者不能是 u1：`effectivePermissions()` 对作者**恒**给 read，拿 u1 当作者会让
+    // 最后那句「个人被撤 ⇒ u1 不可读」不可达。故这一条另造一个不会被当读方的作者 u4。
+    await db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values ('u4', '040004', '丁民警', 'x', 'x', '市局', '经侦支队', 'x', 0, 'h', 0)
+    `)
+    const 资产 = metadata({ id: "a_targeted", visibility: "targeted", ownerId: "u4", ownerName: "丁民警" })
+    await insertAsset(db, 资产)
+    await createAuthorizationGroup(db, { id: "g_a", name: "组A" })
+    await createAuthorizationGroup(db, { id: "g_b", name: "组B" })
+    await addGroupMember(db, { groupId: "g_a", userId: "u2" })
+    await addGroupMember(db, { groupId: "g_b", userId: "u3" })
+
+    await setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_a"], userIds: ["u1"] })
+    expect(await reads(db, 资产, "u2")).toBe(true)  // 组 A
+    expect(await reads(db, 资产, "u1")).toBe(true)  // 个人
+    expect(await reads(db, 资产, "u3")).toBe(false)
+
+    await setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_b"], userIds: ["u2"] })
+    expect(await reads(db, 资产, "u3")).toBe(true)  // 组 B 进来
+    expect(await reads(db, 资产, "u1")).toBe(false) // 个人被撤
+    expect(await reads(db, 资产, "u2")).toBe(true)  // 个人换人后仍可读（走个人）
+  })
+
+  test("setAssetReaders：只给个人（组为空）也允许", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await setAssetReaders(db, { assetId: "a_targeted", groupIds: [], userIds: ["u2"] })
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true)
+  })
+
+  test("setAssetReaders：一个人写错 ⇒ 一条都不删（先验后删）", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await createAuthorizationGroup(db, { id: "g_a", name: "组A" })
+    await addGroupMember(db, { groupId: "g_a", userId: "u2" })
+    await setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_a"], userIds: ["u1"] })
+
+    await failure(() => setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_a"], userIds: ["u1", "u_none"] }))
+    expect(await reads(db, 定向("a_targeted"), "u1")).toBe(true) // 旧个人还在
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true) // 旧组还在
+  })
+
+  test("setAssetReaders：运维直配的普通角色行不被误删", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await db.execute(sql`insert into auth.role (id, name, role_type) values ('r_ops', '运维直配', 'normal')`)
+    await db.execute(sql`insert into auth.user_role (user_id, role_id) values ('u3', 'r_ops')`)
+    await db.execute(sql`
+      insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+      values ('r_ops', 'skill', 'a_targeted', 'read')
+    `)
+
+    await setAssetReaders(db, { assetId: "a_targeted", groupIds: [], userIds: ["u1"] })
+    expect(await reads(db, 定向("a_targeted"), "u3")).toBe(true)
+  })
+
+  test("setAssetReaders：组与个人都为空 ⇒ 拒绝，且不删任何行", async () => {
+    const db = await freshDb()
+    await insertAsset(db, 定向("a_targeted"))
+    await grantAssetToUser(db, { userId: "u2", assetId: "a_targeted", perm: "read" })
+
+    const error = await failure(() => setAssetReaders(db, { assetId: "a_targeted", groupIds: [], userIds: [] }))
+    expect(error.message).toContain("至少要一个授权组或一个人")
+    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true)
   })
 })
