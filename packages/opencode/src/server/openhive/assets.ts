@@ -75,7 +75,8 @@ import {
   type AssetContentPatch,
   type AssetListFilters,
 } from "@opencode-ai/asset-service/asset"
-import { effectivePermissions } from "@opencode-ai/asset-service/authorization"
+import { canReadAsset, effectivePermissions } from "@opencode-ai/asset-service/authorization"
+import { getMcpConnection, updateMcpConnection, 遮罩连接 } from "@opencode-ai/asset-service/mcp-connection"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
@@ -96,6 +97,7 @@ import { 成员角色 } from "./project-actor"
 import {
   ASSET_TYPES,
   ASSET_VISIBILITIES,
+  type AssetMetadata,
   type AssetType,
   type AssetVisibility,
 } from "@opencode-ai/asset-service/metadata"
@@ -113,6 +115,8 @@ import { OpenhivePg } from "./pg"
 export const PATH = {
   list: "/openhive/assets",
   content: "/openhive/assets/:id",
+  // 【保留的定制 · 同步上游时不要丢】MCP 连接规格（2026-11-02 设计 §3.1.2）。
+  connection: "/openhive/assets/:id/connection",
   // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01，设计 §6）。
   // 挂在使用面而不是治理台：`governance-assets.ts` 已划定这三条属作者动作。
   iteration: "/openhive/assets/:id/iteration",
@@ -152,6 +156,8 @@ export const routes = HttpRouter.use((router) =>
     // 否则按注册顺序匹配时 `draft` 会被当成某个资产 id。
     yield* router.add("POST", PATH.draft, (request) => handleCreateDraft(request, deps))
     yield* router.add("PATCH", PATH.content, (request) => handleContent(request, deps))
+    yield* router.add("GET", PATH.connection, () => handleConnectionRead(deps))
+    yield* router.add("PATCH", PATH.connection, (request) => handleConnectionWrite(request, deps))
     // 迭代三个端点共用 `handleIteration`：同一件事只该有一条实现（`#002-06`）。
     yield* router.add("POST", PATH.iteration, (request) => handleIteration(request, deps, "start_iteration"))
     yield* router.add("POST", PATH.iterationSubmit, (request) => handleIteration(request, deps, "submit_iteration"))
@@ -568,6 +574,110 @@ function handleCreateMcpDraft(
     }
     const asset = 结果.success
     return ok({ assetId: asset.id, name: asset.name, status: asset.status, visibility: asset.visibility })
+  })
+}
+
+/**
+ * 连接规格的**读**权：作者 / 显式 read（含空间可见与授权行）/ 治理管理员。
+ *
+ * 判据只有 `canReadAsset` 一份（`#002-06`）；治理管理员是后补的一条来源——
+ * 治理台要能排障，但不能再写一套可见性规则。
+ */
+function 能读连接(deps: Deps, userId: string, asset: AssetMetadata) {
+  return Effect.gen(function* () {
+    if (asset.ownerId === userId) return true
+    const 部门 = yield* 取部门(deps, userId)
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    if (canReadAsset({ userId, department: 部门 }, asset, grants)) return true
+    return yield* GovernanceAuthz.进(deps, userId, ASSET_GOVERNANCE_BOARD, "admin")
+  })
+}
+
+/**
+ * 连接规格的**写**权：作者 / 资产上的 admin 授权 / 治理管理员。
+ *
+ * `write` 不在此列：连接里的凭据与命令是运行期高危输入，与「改描述」不是同一档
+ * （设计 §5.3）。`admin` 授权仍然算——那是资产域的既有管理员来源，不因本功能另造一套。
+ */
+function 能写连接(deps: Deps, userId: string, asset: AssetMetadata) {
+  return Effect.gen(function* () {
+    if (asset.ownerId === userId) return true
+    const 部门 = yield* 取部门(deps, userId)
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    if (effectivePermissions({ userId, department: 部门 }, asset, grants).has("admin")) return true
+    return yield* GovernanceAuthz.进(deps, userId, ASSET_GOVERNANCE_BOARD, "admin")
+  })
+}
+
+const CONNECTION_WRITABLE_STATUSES: ReadonlySet<AssetMetadata["status"]> = new Set(["draft", "iterating"])
+
+/**
+ * `GET /openhive/assets/:id/connection`（2026-11-02 设计 §3.1.2）。
+ *
+ * 不返回任何凭据值：`遮罩连接` 把 `headers` / `environment` 的值统一换成
+ * `MASKED_VALUE`，`publishedConfig` 整个不出视图。
+ */
+function handleConnectionRead(deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+    const 参数 = yield* HttpRouter.params
+    const assetId = 参数.id ?? ""
+
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return fail(NOT_FOUND, "资产不存在")
+    // 授权先于类型判断：否则无关用户能靠 400/403 的差别探出「这个 id 是什么类型」。
+    if (!(yield* 能读连接(deps, userId, asset))) return fail(FORBIDDEN, "无权查看这台 MCP 的连接")
+    if (asset.type !== "mcp") return fail(BAD_REQUEST, "只有 MCP 资产有连接规格")
+
+    const row = yield* Effect.promise(() => getMcpConnection(deps.pg(), asset.id))
+    if (row === undefined) return fail(NOT_FOUND, "这台资产还没有连接规格")
+    return ok(遮罩连接(row))
+  })
+}
+
+/**
+ * `PATCH /openhive/assets/:id/connection`（2026-11-02 设计 §3.1.4 的编辑窗口）。
+ *
+ * 只有 `draft` / `iterating` 能改：审核中 / 待发布期改连接，等于绕开审核换内容。
+ * 次序：身份 → 存在 → 授权 → 类型 → **状态** → 请求体 → 校验 / 写。
+ *
+ * PATCH 提交的是**完整**连接规格，缺省字段按默认值重置（`updateMcpConnection` 整行替换，
+ * 不做部分合并）：`headers` / `environment` 漏传会变成 `{}`，`enabled` 回到 `true`。
+ */
+function handleConnectionWrite(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+    const 参数 = yield* HttpRouter.params
+    const assetId = 参数.id ?? ""
+
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return fail(NOT_FOUND, "资产不存在")
+    if (!(yield* 能写连接(deps, userId, asset))) return fail(FORBIDDEN, "无权修改这台 MCP 的连接")
+    if (asset.type !== "mcp") return fail(BAD_REQUEST, "只有 MCP 资产有连接规格")
+    if (!CONNECTION_WRITABLE_STATUSES.has(asset.status)) {
+      return fail(CONFLICT, "只有草稿或迭代中的资产可以改连接")
+    }
+
+    const body = yield* 读取体(request)
+    if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
+
+    const 结果 = yield* Effect.result(
+      Effect.tryPromise({
+        try: () => updateMcpConnection(deps.pg(), asset.id, body["connection"], nowSeconds()),
+        catch: (error) => error,
+      }),
+    )
+    if (Result.isFailure(结果)) {
+      const error = 结果.failure
+      if (error instanceof AssetMetadataError) return fail(BAD_REQUEST, error.message)
+      throw error
+    }
+    if (结果.success === undefined) return fail(NOT_FOUND, "这台资产还没有连接规格")
+    return ok(遮罩连接(结果.success))
   })
 }
 
