@@ -79,7 +79,7 @@ import { effectivePermissions } from "@opencode-ai/asset-service/authorization"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
 import { authorizeTransition } from "@opencode-ai/asset-service/review"
-import { createDraftAsset, transitionAsset } from "@opencode-ai/asset-service/service"
+import { createDraftAsset, createMcpDraft, transitionAsset } from "@opencode-ai/asset-service/service"
 import { DIRECTORY_META_KEY, resolveSourceDirectory, sandboxDirectoryOf } from "@opencode-ai/asset-service/governance"
 import {
   MissingSourceDirectoryError,
@@ -107,6 +107,7 @@ import { sql } from "drizzle-orm"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { create抽取时控, 用量统计 } from "./asset-usage"
+import { GovernanceAuthz } from "./governance-authz"
 import { OpenhivePg } from "./pg"
 
 export const PATH = {
@@ -370,6 +371,37 @@ function handleContent(request: HttpServerRequest.HttpServerRequest, deps: Deps)
   })
 }
 
+interface 资产表单字段 {
+  readonly 名称: string
+  readonly 描述: string
+  readonly 分类: string
+  readonly 可见: AssetVisibility
+}
+
+/**
+ * 两种资产类型共用的四个字段（名称 / 描述 / 分类 / 可见范围）。
+ *
+ * 抽成一份而不是在两个分支里各写一遍（`#002-06`）：skill 与 MCP 的字段规则完全一样，
+ * 分类闭集也只该查一次库。
+ */
+function 校验资产表单(deps: Deps, body: Record<string, unknown>) {
+  return Effect.gen(function* () {
+    const 名称 = body["name"]
+    const 描述 = body["description"]
+    const 分类 = body["category"]
+    const 可见 = body["visibility"]
+    if (typeof 名称 !== "string" || 名称.trim() === "") return "name 不能为空"
+    if (typeof 描述 !== "string") return "description 必须是字符串"
+    if (typeof 分类 !== "string" || 分类.trim() === "") return "category 不能为空"
+    // 分类必须在册（设计 §4.8：停用的分类等同不存在，文案要能指路）。
+    // 闭集的唯一来源是 `category-store.ts`，不在这里拼 SQL、也不拿 seed 常量冒充。
+    const 分类表 = yield* Effect.promise(() => listCategories(deps.pg()))
+    if (!分类表.some((条) => 条.id === 分类 && 条.enabled)) return "这个分类已停用，请重新选择"
+    if (typeof 可见 !== "string" || !是可见性(可见)) return "未知可见范围"
+    return { 名称, 描述, 分类, 可见 } satisfies 资产表单字段
+  })
+}
+
 /**
  * `POST /openhive/assets/draft`（2026-11-01，设计 §4.4）：把项目里的一个 skill 目录登记成资产草稿。
  *
@@ -409,24 +441,20 @@ function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: D
     const body = yield* 读取体(request)
     if (!isRecord(body)) return fail(BAD_REQUEST, "请求体不是 JSON 对象")
 
+    const 类型 = body["type"]
+    if (类型 !== undefined && 类型 !== "skill" && 类型 !== "mcp") return fail(BAD_REQUEST, "未知资产类型")
+    // MCP 只能由治理管理员创建（设计 §5.3）：local 等于在内核宿主执行任意命令，
+    // remote 等于向任意地址发请求。授权门放在任何字段校验之前。
+    if (类型 === "mcp") {
+      return yield* handleCreateMcpDraft(body, deps, userId, user.value.name)
+    }
+
     const 项目 = body["projectId"]
     if (typeof 项目 !== "string" || !User.isSafePathSegment(项目)) return fail(BAD_REQUEST, "projectId 不合法")
     const 相对 = body["skillPath"]
     if (typeof 相对 !== "string" || 相对.trim() === "") return fail(BAD_REQUEST, "skillPath 不能为空")
-    const 名称 = body["name"]
-    const 描述 = body["description"]
-    const 分类 = body["category"]
-    const 可见 = body["visibility"]
-    if (typeof 名称 !== "string" || 名称.trim() === "") return fail(BAD_REQUEST, "name 不能为空")
-    if (typeof 描述 !== "string") return fail(BAD_REQUEST, "description 必须是字符串")
-    if (typeof 分类 !== "string" || 分类.trim() === "") return fail(BAD_REQUEST, "category 不能为空")
-    // 分类必须在册（设计 §4.8：停用的分类等同不存在，文案要能指路）。
-    // 闭集的唯一来源是 `category-store.ts`，不在这里拼 SQL、也不拿 seed 常量冒充。
-    const 分类表 = yield* Effect.promise(() => listCategories(deps.pg()))
-    if (!分类表.some((条) => 条.id === 分类 && 条.enabled)) {
-      return fail(BAD_REQUEST, "这个分类已停用，请重新选择")
-    }
-    if (typeof 可见 !== "string" || !是可见性(可见)) return fail(BAD_REQUEST, "未知可见范围")
+    const 字段 = yield* 校验资产表单(deps, body)
+    if (typeof 字段 === "string") return fail(BAD_REQUEST, 字段)
 
     // 不是成员 ⇒ 400 而不是 404：404 会变成「这个项目 id 存在吗」的探针（判据只有 `成员角色` 一份）。
     const 角色 = yield* 成员角色({ pg: deps.pg(), database: deps.database }, userId, 项目)
@@ -474,12 +502,61 @@ function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: D
           createDraftAsset({
             db: deps.pg(),
             owner: { id: userId, name: user.value.name, department: 部门 },
-            name: 名称,
-            description: 描述,
-            category: 分类,
-            visibility: 可见,
+            name: 字段.名称,
+            description: 字段.描述,
+            category: 字段.分类,
+            visibility: 字段.可见,
             // 必传：草稿副本落进 `<资产根>/draft/<id>`，提交审核只认这一份。
             storage: { root: assetsRoot(process.env), sourceDirectory: 源, projectDirectory: 项目目录 },
+          }),
+        catch: (error) => error,
+      }),
+    )
+    if (Result.isFailure(结果)) {
+      const error = 结果.failure
+      if (error instanceof AssetMetadataError) return fail(BAD_REQUEST, error.message)
+      throw error
+    }
+    const asset = 结果.success
+    return ok({ assetId: asset.id, name: asset.name, status: asset.status, visibility: asset.visibility })
+  })
+}
+
+/** 资产治理板块 id：与 `governance-assets.ts` 的 `BOARD` 逐字相同（刻意不共享内部常量）。 */
+const ASSET_GOVERNANCE_BOARD = "asset-governance"
+
+/**
+ * 【保留的定制 · 同步上游时不要丢】MCP 草稿分支（2026-11-02 设计 §5.3）。
+ *
+ * 次序：身份（调用方已取）→ 请求体是对象（调用方已判）→ **治理 admin 授权** →
+ * 字段校验 → 写库。授权排在字段校验之前：非管理员不该从 400 的措辞里读到字段规则；
+ * 拒绝也要留审计（`GovernanceAuthz.进` 的唯一落点）。
+ */
+function handleCreateMcpDraft(
+  body: Record<string, unknown>,
+  deps: Deps,
+  userId: string,
+  userName: string,
+) {
+  return Effect.gen(function* () {
+    const 允许 = yield* GovernanceAuthz.进(deps, userId, ASSET_GOVERNANCE_BOARD, "admin")
+    if (!允许) return fail(FORBIDDEN, "只有资产治理管理员可以新建 MCP 资产")
+
+    const 字段 = yield* 校验资产表单(deps, body)
+    if (typeof 字段 === "string") return fail(BAD_REQUEST, 字段)
+
+    const 部门 = yield* 取部门(deps, userId)
+    const 结果 = yield* Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          createMcpDraft({
+            db: deps.pg(),
+            owner: { id: userId, name: userName, department: 部门 },
+            name: 字段.名称,
+            description: 字段.描述,
+            category: 字段.分类,
+            visibility: 字段.可见,
+            connection: body["connection"],
           }),
         catch: (error) => error,
       }),
