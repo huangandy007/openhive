@@ -31,6 +31,11 @@ export * as OpenhiveGovernanceAssets from "./governance-assets"
  *
  * 与账号 / 组织出口一致（`#004-09`）：民警递畸形 JSON 必须拿 403，而不是 400。
  *
+ * ## 选人搜索（批次 3）
+ *
+ * `GET /openhive/governance/asset-readers` 只服务发布弹窗的「按人授权」：权限与发布同权
+ * （`admin`），只回 `id / name / dept`，不借账号板块的 PII 列表。
+ *
  * ## 分页（需求 6）
  *
  * 与使用面**同一份**参数解析（`paging.ts`）与同一份条件构造器（`listAssets` / `countAssets`
@@ -52,8 +57,8 @@ import {
 } from "@opencode-ai/asset-service/asset"
 import { isEnabledCategory, OTHER_CATEGORY_ID } from "@opencode-ai/asset-service/category-store"
 import {
-  assertAssetReadGroups,
-  setAssetReadGroups,
+  assertAssetReaders,
+  setAssetReaders,
   UnknownAuthorizationGroupError,
 } from "@opencode-ai/asset-service/authorization"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
@@ -105,6 +110,8 @@ export const PATH = {
   transition: `${PREFIX}/:id/transition`,
   /** 需求 2：把资产批量挪出「其他」兜底桶（管理员维护分类的收尾动作）。 */
   batchCategory: `${PREFIX}/batch-category`,
+  /** 批次 3：发布弹窗的选人搜索（只回 id / name / dept，不借账号板块的 PII）。 */
+  readers: "/openhive/governance/asset-readers",
 } as const
 
 /**
@@ -143,6 +150,14 @@ const FORBIDDEN = 403
 const NOT_FOUND = 404
 const CONFLICT = 409
 
+/**
+ * `auth.user.status` 的启用值。
+ *
+ * 语义以 `login.ts`（`record.status !== 1` 即拒）与 `register.ts`（`InvalidStatusError`：
+ * 「只允许 1 启用 / 0 停用」）为准——**1 是启用**，与「按 0 选人」的直觉相反。
+ */
+const ENABLED_USER_STATUS = 1
+
 interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   /** 下线撤回后要丢这些目录的实例缓存（测试里可能没有内核实例层 ⇒ Option）。 */
@@ -158,6 +173,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
     yield* router.add("POST", PATH.transition, (request) => handleTransition(request, deps))
     yield* router.add("POST", PATH.batchCategory, (request) => handleBatchCategory(request, deps))
+    yield* router.add("GET", PATH.readers, (request) => handleReaders(request, deps))
   }),
 )
 
@@ -364,8 +380,9 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
         ? visibility
         : undefined
 
-    // 「指定人员」（需求 3b）：读只来自授权行，所以**必须**带至少一个授权组。
-    // 载荷在出口收窄（`string[]`、非空、无空白项），组是否真的存在在流转之前单独验。
+    // 「指定人员」（需求 3b ＋ 批次 3 按人授权）：读只来自授权行，所以必须**至少一个授权组
+    // 或一个人**。载荷在出口收窄（`string[]`、非空、无空白项），组 / 人是否真的存在在流转
+    // 之前单独验。
     const rawGroupIds = body["groupIds"]
     let 组: string[] | undefined
     if (rawGroupIds !== undefined) {
@@ -385,13 +402,37 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     if (组 !== undefined && 范围 !== "targeted") {
       return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 只能配合「指定人员」使用", "groupIds")
     }
-    if (范围 === "targeted" && (组 === undefined || 组.length === 0)) {
+
+    // 按人授权与 groupIds **逐条同规则**（`#002-06`：同一前提不写两套解析）。
+    const rawUserIds = body["userIds"]
+    let 人: string[] | undefined
+    if (rawUserIds !== undefined) {
+      if (!Array.isArray(rawUserIds)) {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 必须是用户 id 的数组", "userIds")
+      }
+      const items: readonly unknown[] = rawUserIds
+      const ids: string[] = []
+      for (const item of items) {
+        if (typeof item !== "string" || item.trim() === "") {
+          return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 里每一项都必须是非空字符串", "userIds")
+        }
+        if (!ids.includes(item.trim())) ids.push(item.trim())
+      }
+      人 = ids
+    }
+    if (人 !== undefined && 范围 !== "targeted") {
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 只能配合「指定人员」使用", "userIds")
+    }
+
+    const 有组 = 组 !== undefined && 组.length > 0
+    const 有人 = 人 !== undefined && 人.length > 0
+    if (范围 === "targeted" && !有组 && !有人) {
       return yield* 失败(
         deps,
         userId,
         未知对象,
         BAD_REQUEST,
-        "「指定人员」发布必须至少选一个授权组",
+        "「指定人员」发布必须至少选一个授权组或一个人",
         "groupIds",
         { visibility: 范围 },
       )
@@ -437,16 +478,22 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       )
     }
 
-    // 组前提在**流转之前**验（顺序：授权 → 前提 → 副作用）：不存在的组若等到发布成功后才
-    // 发现，资产已经变成「指定人员但没有任何组」——组员看不见、作者以外谁都看不见的坏状态。
-    if (范围 === "targeted" && 组 !== undefined) {
-      const 验组 = yield* Effect.result(
+    // 组 / 人前提在**流转之前**验（顺序：授权 → 前提 → 副作用）：不存在的组或人若等到发布
+    // 成功之后才发现，资产已经变成「指定人员但没有任何读者」——组员 / 被选的人看不见、
+    // 作者以外谁都看不见的坏状态。
+    if (范围 === "targeted") {
+      const 验读者 = yield* Effect.result(
         Effect.tryPromise({
-          try: () => assertAssetReadGroups(deps.pg(), { assetId, groupIds: 组 }),
+          try: () =>
+            assertAssetReaders(deps.pg(), {
+              assetId,
+              ...(组 === undefined ? {} : { groupIds: 组 }),
+              ...(人 === undefined ? {} : { userIds: 人 }),
+            }),
           catch: (error) => error,
         }),
       )
-      if (Result.isFailure(验组)) return yield* 翻译(验组.failure, deps, userId, base, { ...补充, visibility: 范围 })
+      if (Result.isFailure(验读者)) return yield* 翻译(验读者.failure, deps, userId, base, { ...补充, visibility: 范围 })
     }
 
     const result = yield* Effect.result(
@@ -474,19 +521,25 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       // 限制——先写等于提前把一份待审资产发给那几个人）。
       //
       // 写失败时不回 500：状态与目录已经变了，回 500 是谎报「没生效」；按站内信失败的同一条
-      // 口径回 200 ＋ `notice`。此时是 **fail-closed**（组员看不见），不是越权。
-      const 写组 =
-        范围 === "targeted" && 组 !== undefined
+      // 口径回 200 ＋ `notice`。此时是 **fail-closed**（读者看不见），不是越权。
+      // `setAssetReaders` 用的是「设成」语义：重设时没勾选的人 / 组会被一并清掉。
+      const 写读者 =
+        范围 === "targeted"
           ? yield* Effect.result(
               Effect.tryPromise({
-                try: () => setAssetReadGroups(deps.pg(), { assetId, groupIds: 组 }),
+                try: () =>
+                  setAssetReaders(deps.pg(), {
+                    assetId,
+                    ...(组 === undefined ? {} : { groupIds: 组 }),
+                    ...(人 === undefined ? {} : { userIds: 人 }),
+                  }),
                 catch: (error) => error,
               }),
             )
           : undefined
       const 通知 =
-        写组 !== undefined && Result.isFailure(写组)
-          ? `资产已发布为「指定人员」，但授权组未写入：${写组.failure instanceof Error ? 写组.failure.message : String(写组.failure)}`
+        写读者 !== undefined && Result.isFailure(写读者)
+          ? `资产已发布为「指定人员」，但授权未写入：${写读者.failure instanceof Error ? 写读者.failure.message : String(写读者.failure)}`
           : undefined
 
       yield* 记账.记(deps, userId, {
@@ -497,6 +550,8 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
           ...(reason === undefined ? {} : { reason }),
           ...(范围 === undefined ? {} : { visibility: 范围 }),
           ...(组 === undefined ? {} : { groupIds: 组 }),
+          // 审计只放 id：姓名 / 部门是 PII，审计日志的读者比发布操作者多。
+          ...(人 === undefined ? {} : { userIds: 人 }),
           ...(通知 === undefined ? {} : { notice: 通知 }),
         },
       })
@@ -595,6 +650,69 @@ function handleBatchCategory(request: HttpServerRequest.HttpServerRequest, deps:
     }
     return ok({ updated: result.changed.length })
   })
+}
+
+/**
+ * 批次 3（2026-11-02）· **选人搜索**：发布弹窗按姓名 / 警号找人（spec §3.2.4）。
+ *
+ * ## 权限是 `admin`（与发布同权）
+ *
+ * 这是发布辅助动作（选出来的 id 随 `publish_tech` 的 `userIds` 提交），不是「进后台看看」；
+ * 业务审核员（`review`）不发布，也就没有选人的场景。与 `handleBatchCategory` 同一口径。
+ *
+ * ## 只回 `id` / `name` / `dept`
+ *
+ * 不借账号管理板块的列表（那里带警号 / 状态 / 登录时间等 PII）：选人只需要能认出是谁。
+ * `dept` 原样返回——`register.ts` 刻意不 trim，出口也不擅自改写。
+ *
+ * ## `q` 只做参数绑定，`%` / `_` 当字面量
+ *
+ * 与 `account-admin.ts` 的搜索同一口径：不转义的话搜一个 `%` 会把全库捞出来。`q` 为空时
+ * **拼另一条不带 WHERE 的 SQL**，而不是把 `q === ""` 这种 boolean 塞进参数位——PG 推不出
+ * 参数类型（PGlite 上会报 `could not determine data type of parameter`）。
+ */
+function handleReaders(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    if (!(yield* 有权(deps, user.value.id, "admin"))) return fail(FORBIDDEN, "需要资产治理管理员权限")
+
+    const params = new URL(request.url, "http://localhost").searchParams
+    const q = (params.get("q") ?? "").trim()
+    // `Number(...) || 20` 把 NaN / 0 落回默认；再夹到 1..50。
+    const limit = Math.min(Math.max(Number(params.get("limit") ?? 20) || 20, 1), 50)
+
+    const rows = yield* Effect.promise(async () => {
+      const db = deps.pg()
+      if (q === "") {
+        return rowsOf(
+          await db.execute(sql`
+            select id, name, dept from auth.user
+             where status = ${ENABLED_USER_STATUS}
+             order by name, id limit ${limit}
+          `),
+        )
+      }
+      const pattern = `%${转义搜索通配符(q)}%`
+      return rowsOf(
+        await db.execute(sql`
+          select id, name, dept from auth.user
+           where status = ${ENABLED_USER_STATUS}
+             and (name like ${pattern} or police_no like ${pattern})
+           order by name, id limit ${limit}
+        `),
+      )
+    })
+
+    return ok({
+      users: rows.map((row) => ({ id: String(row["id"]), name: String(row["name"]), dept: String(row["dept"]) })),
+    })
+  })
+}
+
+/** `%` / `_` / `\` 当字面量（PG 的 `like` 默认转义符是反斜杠）。 */
+function 转义搜索通配符(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 /** `GOVERNANCE_ACTIONS` 收窄；不在白名单回 `undefined`（调用方分「作者动作」与「未知动作」）。 */
@@ -705,6 +823,13 @@ export function 映射错误(
   if (error instanceof MissingSourceDirectoryError) return { status: CONFLICT, message: error.message }
   // 需求 3b：「指定人员」发布挑了不存在 / 不是组的 id。这是发布前提不成立，不是内部故障。
   if (error instanceof UnknownAuthorizationGroupError) return { status: CONFLICT, message: error.message }
+  // 批次 3：按人授权挑了不存在的用户。`assertUserExists()`（authorization.ts）抛的是**裸 Error**
+  // （它没有专门的错误类，这里也不改 asset-service 的公共错误类型），消息前缀是唯一可用的判别式。
+  // 不接住就会落到下面的 `undefined` ⇒ `Effect.die` ⇒ 500 且不落审计——与「组不存在」是同一类
+  // 发布前提，必须同一个状态码。
+  if (error instanceof Error && error.message.startsWith("用户不存在：")) {
+    return { status: CONFLICT, message: error.message }
+  }
   return undefined
 }
 
