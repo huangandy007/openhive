@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
@@ -113,6 +113,23 @@ function 记录配置() {
     },
   } as unknown as Pick<Config.Interface, "replaceGlobalMcp">
   return { config, 写入 }
+}
+
+/**
+ * 「不该被碰」的库桩：只计数、调用即拒。
+ *
+ * **断言面必须是计数，不能只靠拒绝**：`尝试同步` 按设计吞掉异常，删掉「非 MCP / 开关未开」
+ * 这类门后，异常被吞、`写入` 仍为 0，只断言 `写入` 的用例照样绿（变异 4 的失效模式）。
+ */
+function 计数桩() {
+  let 次数 = 0
+  const db = {
+    execute: () => {
+      次数 += 1
+      return Promise.reject(new Error("不该查库"))
+    },
+  }
+  return { db, 计数: () => 次数 }
 }
 
 describe("同步器：键集与快照（I1 / I7）", () => {
@@ -240,6 +257,10 @@ describe("同步器：键集与快照（I1 / I7）", () => {
     try {
       await expect(尝试同步({ db, config })).resolves.toBeUndefined()
       expect(记录).toHaveLength(1)
+      // 裁决 2：失败日志只留类型名，绝不带 message——`ConfigParse.jsonc` 的失败消息会嵌入
+      // 整份配置原文（含本同步器写入的 headers / environment 值），PG 的 message 可能带连接串。
+      expect(JSON.stringify(记录)).not.toContain("EROFS: read-only file system")
+      expect(JSON.stringify(记录)).toContain("Error")
     } finally {
       console.error = 原error
     }
@@ -247,30 +268,30 @@ describe("同步器：键集与快照（I1 / I7）", () => {
 })
 
 describe("触发同步：只对 MCP、只在开关打开时（§3.3.4 触发点 2）", () => {
-  const 不查库 = { execute: () => Promise.reject(new Error("不该查库")) }
-
   test("非 MCP 资产 ⇒ 不碰库也不写配置", async () => {
+    const { db, 计数 } = 计数桩()
     const { config, 写入 } = 记录配置()
     await Effect.runPromise(
-      触发同步({ type: "skill", db: 不查库, config, env: { [ENTRY_DIR_ENV]: "/srv/asset-service" } }),
+      触发同步({ type: "skill", db, config, env: { [ENTRY_DIR_ENV]: "/srv/asset-service" } }),
     )
+    expect(计数()).toBe(0)
     expect(写入).toHaveLength(0)
   })
 
   test("开关未开 ⇒ 不碰库也不写配置", async () => {
-    // 计数而不是「让 execute 拒绝」：拒绝会被 `尝试同步` 按设计吞掉，
-    // 断言面看不出「碰过库」（变异 4 曾因此存活）。
-    let 查库 = 0
-    const db = {
-      execute: () => {
-        查库 += 1
-        return Promise.reject(new Error("不该查库"))
-      },
-    }
+    const { db, 计数 } = 计数桩()
     const { config, 写入 } = 记录配置()
     await Effect.runPromise(触发同步({ type: "mcp", db, config, env: {} }))
-    expect(查库).toBe(0)
+    expect(计数()).toBe(0)
     expect(写入).toHaveLength(0)
+  })
+
+  test("没有 Config 服务 ⇒ 不碰库也不写配置", async () => {
+    const { db, 计数 } = 计数桩()
+    await Effect.runPromise(
+      触发同步({ type: "mcp", db, config: undefined, env: { [ENTRY_DIR_ENV]: "/srv/asset-service" } }),
+    )
+    expect(计数()).toBe(0)
   })
 
   test("开关打开 ⇒ 按库里的快照写一次", async () => {
@@ -339,6 +360,51 @@ describe("兜底层：开关是唯一的门", () => {
 
     expect(写入).toHaveLength(1)
     expect(写入[0]).toEqual({ "asset-a": { type: "remote", url: "https://a.example/mcp" } })
+  })
+
+  test("取库当场抛 ⇒ 层能建起来，日志只留错误名、不含连接串（裁决 2）", async () => {
+    const { config, 写入 } = 记录配置()
+    const 层 = OpenhiveMcpConfigSync.layer.pipe(
+      Layer.provide(Layer.succeed(Config.Service, config as Config.Interface)),
+      Layer.provide(
+        Layer.succeed(OpenhivePg.Service, {
+          pg: () => {
+            // 故意把连接串形态的原文塞进 message：日志若回显 message 就会带出 SECRET。
+            throw new Error("password=SECRET")
+          },
+        } as unknown as OpenhivePg.Interface),
+      ),
+    )
+
+    const 日志: unknown[] = []
+    const 原 = process.env[ENTRY_DIR_ENV]
+    process.env[ENTRY_DIR_ENV] = "/srv/asset-service"
+    try {
+      await Effect.runPromise(
+        Effect.scoped(Layer.build(层)).pipe(
+          // 只装捕获器，不叠默认 console logger：断言的就是「交给日志的是什么」。
+          Effect.provide(
+            Logger.layer(
+              [
+                Logger.make<unknown, void>((options) => {
+                  日志.push(options.message)
+                }),
+              ],
+              { mergeWithExisting: false },
+            ),
+          ),
+        ),
+      )
+    } finally {
+      if (原 === undefined) delete process.env[ENTRY_DIR_ENV]
+      else process.env[ENTRY_DIR_ENV] = 原
+    }
+
+    // 层能建起来（上面没抛）= 「同步不可用」没有升级成「内核起不来」。
+    expect(写入).toHaveLength(0)
+    expect(JSON.stringify(日志)).toContain("MCP 配置同步跳过")
+    expect(JSON.stringify(日志)).not.toContain("SECRET")
+    expect(JSON.stringify(日志)).toContain('"error":["Error"]')
   })
 })
 
