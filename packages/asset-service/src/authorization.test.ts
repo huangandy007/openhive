@@ -572,14 +572,16 @@ describe("个人授权（私有角色 personal:<userId>，spec §3.2.3）", () =
 
   test("setAssetReaders：一个人写错 ⇒ 一条都不删（先验后删）", async () => {
     const db = await freshDb()
-    await insertAsset(db, 定向("a_targeted"))
+    // ⚠️ 作者不能是 u1：作者恒可读（同本文件「组 + 个人同时写」那条），那样「旧个人还在」
+    // 这句就成了空断言。作者取 u3（既不在组里、也不是被授权个人），两处读断言才有区分力。
+    await insertAsset(db, 定向("a_targeted", "u3"))
     await createAuthorizationGroup(db, { id: "g_a", name: "组A" })
     await addGroupMember(db, { groupId: "g_a", userId: "u2" })
     await setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_a"], userIds: ["u1"] })
 
     await failure(() => setAssetReaders(db, { assetId: "a_targeted", groupIds: ["g_a"], userIds: ["u1", "u_none"] }))
-    expect(await reads(db, 定向("a_targeted"), "u1")).toBe(true) // 旧个人还在
-    expect(await reads(db, 定向("a_targeted"), "u2")).toBe(true) // 旧组还在
+    expect(await reads(db, 定向("a_targeted", "u3"), "u1")).toBe(true) // 旧个人还在
+    expect(await reads(db, 定向("a_targeted", "u3"), "u2")).toBe(true) // 旧组还在
   })
 
   test("setAssetReaders：运维直配的普通角色行不被误删", async () => {
