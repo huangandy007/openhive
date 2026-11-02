@@ -155,10 +155,13 @@ function 组装配置(rows: readonly 发布行[]): {
 
 /** 同步一次。抛错交给调用方（`尝试同步` / 触发封装）收。 */
 export async function 同步MCP配置(deps: 同步依赖): Promise<同步结果> {
-  const rows = await 读取已发布连接(deps.db)
-  const { entries, 跳过 } = 组装配置(rows)
-  const { changed } = await 串行写(() => Effect.runPromise(deps.config.replaceGlobalMcp(entries)))
-  return { 键: Object.keys(entries).toSorted(), 跳过, changed }
+  // 读 → 投影 → 写整段进同一个队列：只串行化写，先读的旧快照仍可能后进队列并覆盖新快照。
+  return 串行写(async () => {
+    const rows = await 读取已发布连接(deps.db)
+    const { entries, 跳过 } = 组装配置(rows)
+    const { changed } = await Effect.runPromise(deps.config.replaceGlobalMcp(entries))
+    return { 键: Object.keys(entries).toSorted(), 跳过, changed }
+  })
 }
 
 /** 生命周期出口用：一次同步失败只记日志，不让「发布成功」变成 500（状态已经变了）。 */

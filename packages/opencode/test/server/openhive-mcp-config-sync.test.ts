@@ -9,7 +9,8 @@ import { insertAsset } from "@opencode-ai/asset-service/asset"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { Config } from "@/config/config"
 import { OpenhivePg } from "@/server/openhive/pg"
-import { ENTRY_DIR_ENV } from "@/server/openhive/mcp-config-writer"
+import { ENTRY_DIR_ENV, 串行写, 串行写Effect } from "@/server/openhive/mcp-config-writer"
+import type { McpAvailabilityTarget } from "@/server/openhive/mcp-availability"
 import {
   OpenhiveMcpConfigSync,
   同步MCP配置,
@@ -266,6 +267,95 @@ describe("同步器：键集与快照（I1 / I7）", () => {
     } finally {
       console.error = 原error
     }
+  })
+})
+
+describe("串行写：同一队列（I1 / I2）", () => {
+  test("I1：串行写占住队列时，串行写Effect 的桩在放行前零调用", async () => {
+    let 调用 = 0
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((resolve) => {
+      放行 = resolve
+    })
+
+    // 占住共享队列，模拟同步器 / 治理监督器正在写。
+    const 占位 = 串行写(async () => {
+      await 闸门
+    })
+
+    const 跑 = Effect.runPromise(串行写Effect(Effect.sync(() => {
+      调用 += 1
+      return "ok"
+    })))
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      // 跑在另一条队列上 ⇒ 它此刻已经调用过桩。
+      expect(调用).toBe(0)
+    } finally {
+      放行()
+    }
+
+    await 占位
+    await expect(跑).resolves.toBe("ok")
+    expect(调用).toBe(1)
+  })
+
+  test("I1 接线：configUpdate 走串行写Effect（不是直接 updateGlobal）", () => {
+    const 源 = readFileSync(
+      join(import.meta.dir, "../../src/server/routes/instance/httpapi/handlers/global.ts"),
+      "utf8",
+    )
+    // 必须真的 `yield*` 这一行；整行注释掉（以 `//` 开头）或只写在别处都算没接上。
+    expect(源).toMatch(
+      /^\s+const result = yield\* OpenhiveMcpConfigWriter\.串行写Effect\(config\.updateGlobal\(ctx\.payload\)\)/m,
+    )
+  })
+
+  test("I2：读库也在队列内——两次并发同步，最终写入后完成那次的快照", async () => {
+    let 查询次数 = 0
+    let 放行首查!: () => void
+    const 首查闸门 = new Promise<void>((resolve) => {
+      放行首查 = resolve
+    })
+
+    // 第一次查询挂在门闩上（慢），第二次立即返回不同快照（快）。
+    const db = {
+      execute: async () => {
+        查询次数 += 1
+        const 本次 = 查询次数
+        if (本次 === 1) await 首查闸门
+        return [
+          {
+            id: `asset-${本次}`,
+            published_config: JSON.stringify({ transport: "remote", url: `https://s${本次}.example/mcp` }),
+          },
+        ]
+      },
+    } as unknown as McpAvailabilityTarget
+
+    const 写入: string[][] = []
+    const config = {
+      replaceGlobalMcp: (entries: Record<string, unknown>) => {
+        写入.push(Object.keys(entries).toSorted())
+        return Effect.succeed({ changed: true })
+      },
+    } as unknown as Pick<Config.Interface, "replaceGlobalMcp">
+
+    const 慢 = 同步MCP配置({ db, config })
+    // 让慢的那次先进入读库并挂住。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const 快 = 同步MCP配置({ db, config })
+    try {
+      // 等快的那次完成写（读库在队列外时它会先写完，把旧快照留在最后）。
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    } finally {
+      放行首查()
+    }
+
+    await Promise.all([慢, 快])
+    // 后完成的是第二次查询的快照：它读库时第一次还没放行。
+    expect(写入.at(-1)).toEqual(["asset-2"])
+    expect(查询次数).toBe(2)
   })
 })
 

@@ -4,6 +4,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { OpenhiveMcpConfigWriter } from "@/server/openhive/mcp-config-writer"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
@@ -76,7 +77,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     })
 
     const configUpdate = Effect.fn("GlobalHttpApi.configUpdate")(function* (ctx) {
-      const result = yield* config.updateGlobal(ctx.payload)
+      // 【保留的定制】与 MCP 配置同步器共用同一串行写者：两条「读 → 改 → 写」交错会互相抹键。
+      const result = yield* OpenhiveMcpConfigWriter.串行写Effect(config.updateGlobal(ctx.payload))
       if (result.changed) bridge.fork(disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true }))
       return result.info
     })
