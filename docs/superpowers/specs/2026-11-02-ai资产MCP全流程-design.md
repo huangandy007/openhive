@@ -538,6 +538,7 @@ cd packages/asset-service && timeout 300 bun test src/downlink.test.ts
 | **工具级授权** | 整台开关 | 拆 server 或改权限模型 |
 | **本地 server 在宿主执行** | 管理员可发布任意 `command` | 只允许白名单命令 / 容器化 |
 | **配置同步有窗口期** | 发布后最多 60 秒才写进配置 **＋ 实例重建**才生效（`MCP.state` 按目录缓存，不重读） | 事件推送 + 热重连 |
+| **多份全局配置文件共存时旧 `mcp` 键残留** | 同步器只整段替换它写的那一份（`opencode.jsonc` 优先）；若同目录还存在 `opencode.json` / `config.json` 且含 `mcp`，其键会经 `mergeDeep` 存活 | 部署时只保留一份全局配置；或下批把「清掉其它候选文件的 `mcp`」并入同一串行写者 |
 | **`POST /mcp` 关闭** | 已关；若外部客户端依赖此端点会失败 | 另开设计 |
 | **使用归因歧义** | 工具名前缀无法唯一映射时不归因；`抽取()` 返回 `ambiguous` 计数并 WARN 一次（**不落库**） | 需要审计时再落 `skipped` 明细表；或给资产 id 定更严的格式 |
 
