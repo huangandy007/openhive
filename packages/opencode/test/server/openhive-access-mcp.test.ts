@@ -57,8 +57,11 @@ const FUND_DB: AccessSession.McpServerNaming = { server: "fund.db", toolPattern:
 /** 该 server 的一个工具在链 A 里的名字（`McpCatalog.toolName("fund.db", "query")`）。 */
 const FUND_QUERY = "fund_db_query"
 
-const rulesetOf = (grants: readonly AccessRbac.Grant[], servers?: readonly AccessSession.McpServerNaming[]) =>
-  AccessSession.sessionRuleset(grants, servers)
+const rulesetOf = (
+  grants: readonly AccessRbac.Grant[],
+  servers?: readonly AccessSession.McpServerNaming[],
+  mcpVisible?: readonly string[],
+) => AccessSession.sessionRuleset(grants, servers, [], mcpVisible)
 
 describe("T007 · mcp 授权行 → 会话规则集（连接级，FR-005/FR-006）", () => {
   /**
@@ -270,5 +273,23 @@ describe("T007 · mcp 授权行 → 会话规则集（连接级，FR-005/FR-006�
     expect(evaluateV1(PROD_QUERY, "*", controlA).action).toBe(evaluateV1(PROD_QUERY, "*", controlB).action)
     expect(evaluateV1(PROD_QUERY, "*", controlA).action).toBe("allow") // 授过的照样放行
     expect(AccessSession.namingConflicts([FUND_NO_CLASH, PROD])).toEqual([])
+  })
+
+  /** 可见即可用（spec §3.4.2）：零授权行、但资产可见 ⇒ 两条 allow。 */
+  it("可见名单命中、零授权行 ⇒ 工具与资源都放行（可见即可用）", () => {
+    const ruleset = rulesetOf([], [FUND_DB], ["fund.db"])
+
+    expect(evaluateV1(FUND_QUERY, "*", ruleset).action).toBe("allow")
+    expect(evaluateV1("read", "mcp:fund.db:ledger", ruleset).action).toBe("allow")
+    expect(Permission.disabled([FUND_QUERY], ruleset).has(FUND_QUERY)).toBe(false)
+  })
+
+  /** I6：配置里有、资产库里没有 ⇒ 即便别的 server 可见，它自己恒 deny。 */
+  it("配置有、资产无 ⇒ 两条 deny（I6）", () => {
+    const OTHER: AccessSession.McpServerNaming = { server: "call.db", toolPattern: "call_db_*" }
+    const ruleset = rulesetOf([], [FUND_DB, OTHER], ["fund.db"])
+
+    expect(evaluateV1("call_db_query", "*", ruleset).action).toBe("deny")
+    expect(evaluateV1("read", "mcp:call.db:ledger", ruleset).action).toBe("deny")
   })
 })

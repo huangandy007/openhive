@@ -92,3 +92,35 @@ describe("MCP server 命名：前缀碰撞判定（C1）", () => {
     expect(pairs([naming("a", "a_"), naming("a_b", "a_b_")])).toEqual(["a | a_b"])
   })
 })
+
+describe("sessionRuleset 第四入参 mcpVisible（可见即可用，spec §3.4.2）", () => {
+  const ASSET = naming("asset-abc", "asset_abc_*")
+
+  test("① 可见名单命中、零授权行 ⇒ 正好两条 allow（工具前缀 + 资源 pattern）", () => {
+    const rules = AccessSession.sessionRuleset([], [ASSET], [], ["asset-abc"])
+
+    expect(rules).toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "asset_abc_*", pattern: "*", action: "allow" },
+      { permission: "read", pattern: "mcp:asset-abc:*", action: "allow" },
+    ])
+  })
+
+  test("② 名单未命中 ⇒ 两条 deny（I6：配置有、资产无）", () => {
+    const rules = AccessSession.sessionRuleset([], [ASSET], [], [])
+
+    expect(rules).toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "asset_abc_*", pattern: "*", action: "deny" },
+      { permission: "read", pattern: "mcp:asset-abc:*", action: "deny" },
+    ])
+  })
+
+  test("③ 省略第四参 ≡ 传空数组（旧行为逐字相同）", () => {
+    const grants = [{ resourceType: "skill", resourceId: "fund-analysis", perm: "read" }]
+    const servers = [ASSET]
+
+    expect(AccessSession.sessionRuleset(grants, servers, ["fund-analysis"]))
+      .toEqual(AccessSession.sessionRuleset(grants, servers, ["fund-analysis"], []))
+  })
+})

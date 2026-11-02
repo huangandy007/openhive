@@ -187,13 +187,21 @@ export function namingConflicts(servers: readonly McpServerNaming[]): ReadonlyAr
  * `readableAssetCondition()`（`#004-02`），别在这里另写一套可见性。
  *
  * 去重在这里做（`new Set`）：名字来自文件系统解析，重复不值一提但会让规则集字节不稳定。
+ *
+ * ## `mcpVisible`（2026-11-02）：为什么要有第四个入参
+ *
+ * 「一份已发布（或迭代中）的资产，谁能看见，谁就能用」（spec §3.2.1）。判据仍是那一份
+ * `readableAssetCondition()`（`#004-02`）——调用方把「读者读得到的 mcp 资产 id」传进来，
+ * 本函数只按名字放行。**省略时行为与今天逐字相同**（兼容 `src/session/prompt.ts` 等既有调用点）。
  */
 export function sessionRuleset(
   grants: readonly AccessRbac.Grant[],
   mcp?: readonly McpServerNaming[],
   skillNames?: readonly string[],
+  mcpVisible?: readonly string[],
 ): PermissionV1.Ruleset {
   const rules: PermissionV1.Rule[] = []
+  const visible = new Set(mcpVisible ?? [])
 
   // ① 先铺整体 deny（每个受管类型一条）。
   for (const type of GOVERNED) {
@@ -210,7 +218,11 @@ export function sessionRuleset(
       grants.some(
         (grant) =>
           grant.resourceType === "mcp" && grant.resourceId === naming.server && grant.perm === AccessRbac.READ,
-      )
+      ) ||
+      // 新增（2026-11-02，spec §3.4.2）：读者读得到的已发布 MCP 资产。元素是**配置键**
+      // （本设计里 = 资产 id，spec §3.3.1），与 `naming.server` 同一个键空间。
+      // 为什么不是第二个开关：授权行与可见性是同一件事的两条来源，任一命中即放行（`#010-06`）。
+      visible.has(naming.server)
     const action = granted ? "allow" : "deny"
     rules.push({ permission: naming.toolPattern, pattern: "*", action })
     rules.push({ permission: "read", pattern: `mcp:${naming.server}:*`, action })
