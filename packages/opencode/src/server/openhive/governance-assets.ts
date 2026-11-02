@@ -333,6 +333,28 @@ function 撤回已下线(deps: Deps, assetId: string, status: AssetStatus) {
   })
 }
 
+/**
+ * 授权目标 id 清单的解析（`groupIds` / `userIds` 共用）：非数组 / 项不是非空字符串 ⇒ 400 的
+ * 文案；否则 `trim` ＋ 去重。
+ *
+ * 抽成一处是评审 F2：两段循环逐字相同，注释却声称「同一前提不写两套解析」（`#002-06`）。
+ * 错误文案里的字段名保留（`groupIds 必须是授权组 id 的数组` / `userIds 必须是用户 id 的数组`）。
+ */
+function 解析id数组(raw: unknown, field: "groupIds" | "userIds"): { readonly ids: string[] } | { readonly error: string } {
+  const 名词 = field === "groupIds" ? "授权组 id" : "用户 id"
+  if (!Array.isArray(raw)) return { error: `${field} 必须是${名词}的数组` }
+
+  const items: readonly unknown[] = raw
+  const ids: string[] = []
+  for (const item of items) {
+    if (typeof item !== "string" || item.trim() === "") {
+      return { error: `${field} 里每一项都必须是非空字符串` }
+    }
+    if (!ids.includes(item.trim())) ids.push(item.trim())
+  }
+  return { ids }
+}
+
 function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* 身份
@@ -386,39 +408,25 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     const rawGroupIds = body["groupIds"]
     let 组: string[] | undefined
     if (rawGroupIds !== undefined) {
-      if (!Array.isArray(rawGroupIds)) {
-        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 必须是授权组 id 的数组", "groupIds")
+      const 解析 = 解析id数组(rawGroupIds, "groupIds")
+      if ("error" in 解析) {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, 解析.error, "groupIds")
       }
-      const items: readonly unknown[] = rawGroupIds
-      const ids: string[] = []
-      for (const item of items) {
-        if (typeof item !== "string" || item.trim() === "") {
-          return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 里每一项都必须是非空字符串", "groupIds")
-        }
-        if (!ids.includes(item.trim())) ids.push(item.trim())
-      }
-      组 = ids
+      组 = 解析.ids
     }
     if (组 !== undefined && 范围 !== "targeted") {
       return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "groupIds 只能配合「指定人员」使用", "groupIds")
     }
 
-    // 按人授权与 groupIds **逐条同规则**（`#002-06`：同一前提不写两套解析）。
+    // 按人授权与 groupIds **逐条同规则**（`#002-06`：同一前提只有一份解析，见 `解析id数组`）。
     const rawUserIds = body["userIds"]
     let 人: string[] | undefined
     if (rawUserIds !== undefined) {
-      if (!Array.isArray(rawUserIds)) {
-        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 必须是用户 id 的数组", "userIds")
+      const 解析 = 解析id数组(rawUserIds, "userIds")
+      if ("error" in 解析) {
+        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, 解析.error, "userIds")
       }
-      const items: readonly unknown[] = rawUserIds
-      const ids: string[] = []
-      for (const item of items) {
-        if (typeof item !== "string" || item.trim() === "") {
-          return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 里每一项都必须是非空字符串", "userIds")
-        }
-        if (!ids.includes(item.trim())) ids.push(item.trim())
-      }
-      人 = ids
+      人 = 解析.ids
     }
     if (人 !== undefined && 范围 !== "targeted") {
       return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "userIds 只能配合「指定人员」使用", "userIds")
@@ -679,8 +687,11 @@ function handleReaders(request: HttpServerRequest.HttpServerRequest, deps: Deps)
 
     const params = new URL(request.url, "http://localhost").searchParams
     const q = (params.get("q") ?? "").trim()
-    // `Number(...) || 20` 把 NaN / 0 落回默认；再夹到 1..50。
-    const limit = Math.min(Math.max(Number(params.get("limit") ?? 20) || 20, 1), 50)
+    // `Number(...) || 20` 把 NaN / 0 落回默认；**先截断再夹**到 1..50（评审 F1）。
+    // 不截断的话 `?limit=2.5` 会把小数绑进 `limit $1`——PGlite 的驱动会报
+    // `invalid input syntax for type bigint`（本仓的生产连接路径实测会隐式取整，但
+    // 不能依赖驱动的宽容；驱动一换就是 500）。
+    const limit = Math.min(Math.max(Math.trunc(Number(params.get("limit") ?? 20) || 20), 1), 50)
 
     const rows = yield* Effect.promise(async () => {
       const db = deps.pg()

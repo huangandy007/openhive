@@ -42,6 +42,19 @@ const ADMIN: TokenSubject = {
   name: "系统管理员庚",
   isAdmin: true,
 }
+/** 被授权的个人 / 组外对照。 */
+const U2: TokenSubject = {
+  id: "88888888-8888-4888-8888-888888888888",
+  policeNo: "980101",
+  name: "李四",
+  isAdmin: false,
+}
+const U3: TokenSubject = {
+  id: "99999999-9999-4999-8999-999999999999",
+  policeNo: "980102",
+  name: "王五",
+  isAdmin: false,
+}
 
 const GOV = "/openhive/governance/assets"
 const transitionUrl = (id: string) => `${GOV}/${id}/transition`
@@ -128,6 +141,13 @@ beforeAll(async () => {
     values (${ADMIN.id}, ${ADMIN.policeNo}, ${ADMIN.name}, 'x', 'x', '基座单位', '基座部门', '基座科室',
             1, 1, 'h', 0)
   `)
+  for (const subject of [U2, U3]) {
+    await pg.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '基座部门', '基座科室',
+              1, 0, 'h', 0)
+    `)
+  }
   await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${ADMIN.id}, 'gov-system-admin')`)
 })
 
@@ -258,6 +278,62 @@ describe("Task 5 · MCP 发布的 HTTP 出口", () => {
       expect(发布.status).toBe(409)
       expect((yield* json(ErrorResponse, 发布)).error).toContain("连接规格")
       expect(yield* Effect.promise(() => 库状态(id))).toBe("pending_tech")
+    }),
+  )
+
+  /**
+   * 评审 F3：按人授权的授权行 `resource_type` 必须随资产真实类型走（MCP 是 `mcp`）。
+   * 只测 skill 的话，「写授权时把 resourceType 写死成 skill」这个变异不会被任何用例听见——
+   * 授权行看起来完全合法，但 `effectivePermissions()` 按 `resource_type === asset.type`
+   * 匹配，永远匹配不上 ⇒ 「发布成功、被选的人却看不见」。
+   */
+  it.live("MCP targeted + userIds ⇒ 200，个人授权行落在 resource_type = 'mcp'", () =>
+    Effect.gen(function* () {
+      const db = pg!.db
+      const 服务 = yield* 起MCP服务()
+      const id = "asset-mcp-targeted-user-0005"
+      yield* Effect.promise(async () => {
+        await insertAsset(
+          db,
+          资产({ id, name: "只发给李四的 MCP", type: "mcp", status: "pending_tech", visibility: "personal" }),
+        )
+        await insertMcpConnection(db, id, { transport: "remote", url: 服务.url }, 1_100)
+      })
+
+      const 发布 = yield* post(ADMIN, transitionUrl(id), {
+        action: "publish_tech",
+        visibility: "targeted",
+        userIds: [U2.id],
+      })
+
+      expect(发布.status).toBe(200)
+      const 体 = yield* json(TransitionResponse, 发布)
+      expect(体.asset.type).toBe("mcp")
+      expect(体.asset.visibility).toBe("targeted")
+      expect(体.asset.status).toBe("published")
+
+      // 授权行的资源类型必须与资产类型同源（不是写死的 skill）。
+      const 行 = rowsOf(
+        yield* Effect.promise(() =>
+          db.execute(
+            sql`select role_id, resource_type, perm from auth.role_resource where resource_id = ${id} order by role_id`,
+          ),
+        ),
+      )
+      expect(行).toHaveLength(1)
+      expect(String(行[0]?.["role_id"])).toBe(`personal:${U2.id}`)
+      expect(String(行[0]?.["resource_type"])).toBe("mcp")
+      expect(String(行[0]?.["perm"])).toBe("read")
+
+      // 组外用户没有这条授权行。
+      const 组外 = rowsOf(
+        yield* Effect.promise(() =>
+          db.execute(
+            sql`select 1 from auth.role_resource where resource_id = ${id} and role_id = ${`personal:${U3.id}`}`,
+          ),
+        ),
+      )
+      expect(组外).toHaveLength(0)
     }),
   )
 })

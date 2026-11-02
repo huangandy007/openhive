@@ -464,6 +464,12 @@ describe("Task 5 · GET /asset-readers（选人搜索）", () => {
       const 默认 = yield* json(ReadersResponse, yield* get(ADMIN, `${搜索}&limit=abc`))
       expect(默认.users).toHaveLength(20)
 
+      // 小数不能直接绑进 `limit $1`：PG 报 `invalid input syntax for type bigint` ⇒ 500。
+      // 出口必须**先截断再夹**（评审 F1）。
+      const 小数 = yield* get(ADMIN, `${搜索}&limit=2.5`)
+      expect(小数.status).toBe(200)
+      expect((yield* json(ReadersResponse, 小数)).users).toHaveLength(2)
+
       // 空 q：返回全部**启用**账号（停用那条不在），且被 limit 截断。
       const 全部 = yield* json(ReadersResponse, yield* get(ADMIN, `${READERS}?limit=50`))
       expect(全部.users.some((user) => user.id === DISABLED.id)).toBe(false)
