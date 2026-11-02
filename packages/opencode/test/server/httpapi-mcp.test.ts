@@ -84,39 +84,37 @@ describe("mcp HttpApi", () => {
       }),
   )
 
-  it.instance(
-    "serves add, connect, and disconnect endpoints",
-    () =>
-      Effect.gen(function* () {
-        const tmp = yield* TestInstance
-        const handler = HttpApiApp.webHandler()
-        const added = yield* request(handler, McpPaths.status, tmp.directory, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "added",
-            config: {
-              type: "local",
-              command: ["echo", "added"],
-              enabled: false,
-            },
-          }),
-        })
-        expect(added.status).toBe(200)
-        expect(yield* json(added)).toMatchObject({ added: { status: "disabled" } })
+  it.instance("refuses runtime MCP registration with 403", () =>
+    Effect.gen(function* () {
+      const tmp = yield* TestInstance
+      const handler = HttpApiApp.webHandler()
+      const added = yield* request(handler, McpPaths.status, tmp.directory, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "added",
+          config: { type: "local", command: ["echo", "added"], enabled: false },
+        }),
+      })
 
-        const addedDisconnected = yield* request(handler, "/mcp/added/disconnect", tmp.directory, { method: "POST" })
-        expect(addedDisconnected.status).toBe(200)
-        expect(yield* json(addedDisconnected)).toBe(true)
+      expect(added.status).toBe(403)
+      expect(yield* json(added)).toMatchObject({ _tag: "ForbiddenError" })
+    }),
+  )
 
-        const connected = yield* request(handler, "/mcp/demo/connect", tmp.directory, { method: "POST" })
-        expect(connected.status).toBe(200)
-        expect(yield* json(connected)).toBe(true)
+  it.instance("serves connect and disconnect for configured servers", () =>
+    Effect.gen(function* () {
+      const tmp = yield* TestInstance
+      const handler = HttpApiApp.webHandler()
 
-        const disconnected = yield* request(handler, "/mcp/demo/disconnect", tmp.directory, { method: "POST" })
-        expect(disconnected.status).toBe(200)
-        expect(yield* json(disconnected)).toBe(true)
-      }),
+      const connected = yield* request(handler, "/mcp/demo/connect", tmp.directory, { method: "POST" })
+      expect(connected.status).toBe(200)
+      expect(yield* json(connected)).toBe(true)
+
+      const disconnected = yield* request(handler, "/mcp/demo/disconnect", tmp.directory, { method: "POST" })
+      expect(disconnected.status).toBe(200)
+      expect(yield* json(disconnected)).toBe(true)
+    }),
   )
 
   it.instance(

@@ -380,15 +380,7 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
       body: { name: "httpapi-disabled", config: { type: "local", command: ["bun", "--version"], enabled: false } },
     }))
-    .json(
-      200,
-      (body) => {
-        object(body)
-        object(body["httpapi-disabled"])
-        check(body["httpapi-disabled"].status === "disabled", "disabled MCP server should be added without spawning")
-      },
-      "status",
-    ),
+    .status(403),
   http.protected
     .post("/mcp", "mcp.add.invalid")
     .at((ctx) => ({

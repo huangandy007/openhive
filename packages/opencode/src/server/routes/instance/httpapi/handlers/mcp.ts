@@ -1,9 +1,9 @@
 import { MCP } from "@/mcp"
-import { Effect, Schema } from "effect"
-import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
+import { Effect } from "effect"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { McpServerNotFoundError } from "../errors"
-import { AddPayload, AuthCallbackPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"
+import { ForbiddenError, McpServerNotFoundError } from "../errors"
+import { AddPayload, AuthCallbackPayload, UnsupportedOAuthError } from "../groups/mcp"
 
 export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handlers) =>
   Effect.gen(function* () {
@@ -13,11 +13,10 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return yield* mcp.status()
     })
 
-    const add = Effect.fn("McpHttpApi.add")(function* (ctx: { payload: typeof AddPayload.Type }) {
-      const result = (yield* mcp.add(ctx.payload.name, ctx.payload.config)).status
-      return yield* Schema.decodeUnknownEffect(StatusMap)(
-        "status" in result ? { [ctx.payload.name]: result } : result,
-      ).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+    const add = Effect.fn("McpHttpApi.add")(function* (_ctx: { payload: typeof AddPayload.Type }) {
+      return yield* new ForbiddenError({
+        message: "MCP server 只能由资产发布流程登记（建 MCP 资产 → 审核 → 发布）；运行期动态添加已关闭。",
+      })
     })
 
     const authStart = Effect.fn("McpHttpApi.authStart")(function* (ctx: { params: { name: string } }) {
