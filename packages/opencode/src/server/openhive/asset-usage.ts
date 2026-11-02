@@ -8,11 +8,12 @@ export * as OpenhiveAssetUsage from "./asset-usage"
  *
  * 初版只认 `skill` 工具的调用。真栈实测发现模型常常绕开它：直接 `bash` 跑技能里的脚本、
  * 直接 `read` 读 SKILL.md，两种都会产生真实成果却一条记录都没有。所以口径扩成三条入口
- * （外加斜杠命令展开的**文本 part**，见 `归因工具` 的注释）：
+ * （外加斜杠命令展开的**文本 part**，见下方归因判定入口的注释）：
  *
  * - **`skill` 工具**：按名字归因，走项目启用台账（**忽略大小写**；0 个 / ≥2 个同名都不猜）。
  * - **`bash`**：命令行里出现 `<资产>/scripts/` 才算；`ls` / `cat` 摸一下目录不算。
  * - **`read`**：路径里 `SKILL.md` 落在 `<资产>/` 下才算。
+ * - **MCP 工具**：工具名形如 `<配置键>_<工具名>`，配置键 = 资产 id（设计 §3.3.1）；前缀唯一命中才归因。
  * - **斜杠命令**：展开后的文本带着 `Base directory for this skill: <目录>` 尾巴。
  *
  * 三条路径型入口先按**资产 id** 精确归因，**不查启用台账**——未启用的资产被跑了脚本也算
@@ -54,6 +55,7 @@ import type { connect } from "@opencode-ai/auth/db"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { userDatabasePath } from "@opencode-ai/core/database/router"
 import { sql } from "drizzle-orm"
+import { sanitize } from "@/mcp/catalog"
 
 /** 详情页「最近 N 天」的窗口（2026-10-29 用户裁定：30 天更妥）。 */
 export const WINDOW_DAYS = 30
@@ -84,6 +86,8 @@ export interface 抽取结果 {
   readonly inserted: number
   /** 源里有 skill 调用但归不了因的条数（0 条同名 / 多条同名 / 会话缺失 / 名字不是串）。 */
   readonly unattributed: number
+  /** 工具名同时命中多个 MCP 资产（一个 id 是另一个的前缀）⇒ 不猜、不入表、记这里。 */
+  readonly ambiguous: number
   /** 没有源库（或还没有 part 表）的用户 id；跳过不算失败。 */
   readonly missing: readonly string[]
 }
@@ -118,7 +122,7 @@ interface 调用行 {
   readonly status: string | null
   readonly name: string | null
   readonly call_id: string | null
-  /** 2026-10-30 起：工具名（`skill` / `bash` / `read`；文本 part 为 null）。 */
+  /** 工具名（`skill` / `bash` / `read` / 任意 MCP 工具名；文本 part 为 null）。 */
   readonly tool: string | null
   /** bash 的命令行。 */
   readonly command: string | null
@@ -129,15 +133,17 @@ interface 调用行 {
 }
 
 /**
- * 进入归因判定的工具（2026-10-30 口径）。
+ * 进入归因判定的工具（2026-10-30 口径；2026-11-02 扩到「任何工具」）。
  *
  * 只有 `skill` 工具被调用时，「用技能」这件事才在 part 表里留下一个显式的名字。另外两条
- * 常见路径——`bash` 直接跑技能里的脚本、`read` 直接读 SKILL.md——留的只是路径，
- * 而「斜杠命令」展开成一条**普通用户文本**，连工具都没有。三条都要认（用户裁定 2026-10-30）。
+ * 常见的路径——`bash` 直接跑技能里的脚本、`read` 直接读 SKILL.md——留的只是路径，而
+ * 「斜杠命令」展开成一条**普通用户文本**，连工具都没有。三条都要认（用户裁定 2026-10-30）。
  *
- * 内建技能（`customize-opencode`）不在这三条里：它没有资产身份，记了也没处挂。
+ * 2026-11-02 起 MCP 工具也进这扇门：工具名 = `<资产 id>_<工具名>`（设计 §3.3.1），按资产
+ * 名册归因。所以预过滤不再按工具名枚举——**任何工具 part 都进判定**，认不出前缀的就是内建
+ * 工具（`edit` / `grep`…），不是资产使用。内建技能（`customize-opencode`）没有资产身份，
+ * 记了也没处挂，归因后自然落空。
  */
-const 归因工具 = new Set(["skill", "bash", "read"])
 
 /** 斜杠命令模板的固定尾巴（`command/index.ts` 注册技能命令时拼上去的那一行）。 */
 export const 技能目录标记 = "Base directory for this skill:"
@@ -243,6 +249,26 @@ function 命中命令目录(
 }
 
 /**
+ * MCP 工具名的归因：**前缀 = `sanitize(配置键) + "_"`**，配置键就是资产 id（设计 §3.3.1）。
+ *
+ * `sanitize` 不是照抄的判据，是 `src/mcp/catalog.ts` 的 `toolName()` 用的同一个函数
+ * （`#004-02`：同一前提只留一份写法）。一个工具名同时命中两个资产（一个 id 是另一个的
+ * 前缀）时**不猜**：返回候选，调用方只计数 + 告警（设计 §9「使用归因歧义」）。
+ */
+function 命中MCP工具(
+  工具名: string,
+  资产: ReadonlyMap<string, string>,
+): { id: string } | { 候选: string[] } | undefined {
+  if (工具名.length === 0) return undefined
+  const 候选: string[] = []
+  for (const [前缀, id] of 资产) {
+    if (工具名.startsWith(前缀 + "_")) 候选.push(id)
+  }
+  if (候选.length === 0) return undefined
+  return 候选.length === 1 ? { id: 候选[0] } : { 候选 }
+}
+
+/**
  * 抽取一轮（全部用户）。返回统计，不抛业务错——单用户失败只跳过他自己。
  */
 export async function 抽取(input: 抽取输入): Promise<抽取结果> {
@@ -282,15 +308,20 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
 
   // 资产名册（2026-10-30）：bash / read / 斜杠命令这三条路没有「技能名」可查，
   // 只能从路径里的**资产 id 段**归因。整表读一次，段查找是 Map 命中。
+  // 2026-11-02 起同时建 MCP 前缀表：配置键 = sanitize(资产 id)，键序与 `toolName()` 一致。
   const 资产 = new Map<string, string>()
-  for (const row of rowsOf(await input.db.execute(sql`select id, name from auth.asset`))) {
-    资产.set(String(row["id"]), String(row["name"]))
+  const MCP资产 = new Map<string, string>()
+  for (const row of rowsOf(await input.db.execute(sql`select id, name, type from auth.asset`))) {
+    const id = String(row["id"])
+    资产.set(id, String(row["name"]))
+    if (String(row["type"]) === "mcp") MCP资产.set(sanitize(id), id)
   }
 
   let scanned = 0
   let inserted = 0
   let unattributed = 0
   const missing: string[] = []
+  const 歧义 = new Set<string>()
 
   for (const 人 of 名册) {
     let 源: Database | undefined
@@ -322,9 +353,9 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
       // SQLite 会重排 AND 里的项，裸的 `json_extract` 仍可能先被求值、在非 JSON 行上抛
       // `malformed JSON`（本机实测：加了 `and json_valid(data)` 依旧整轮失败）⇒ 该用户每轮
       // 都死在同一行、游标永不推进。CASE 保证只对合法 JSON 求值；一条毒行不该拖死整个用户。
-      // 三条入口一起扫（2026-10-30）：`skill` 工具、`bash`（跑脚本）、`read`（读说明书），
-      // 外加**文本 part**——斜杠命令展开后是一条普通用户消息，唯一可识别的痕迹是
-      // `command/index.ts` 拼上去的目录尾巴。LIKE 放在 CASE 里，毒行（非 JSON）不会被求值。
+      // 工具 part 全扫（MCP 工具名要在这里先放进来）、外加文本 part——斜杠命令展开后是一条
+      // 普通用户消息，唯一可识别的痕迹是 `command/index.ts` 拼上去的目录尾巴。
+      // LIKE 放在 CASE 里，毒行（非 JSON）不会被求值。
       const 行 = 源
         .query<调用行, [number, string]>(
           `select id, session_id, time_created, time_updated,
@@ -339,7 +370,7 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
            where time_updated > ?
              and case when json_valid(data) then
                    case
-                     when json_extract(data, '$.tool') in ('skill', 'bash', 'read') then 1
+                     when json_extract(data, '$.tool') is not null then 1
                      when json_extract(data, '$.text') like '%' || ? || '%' then 1
                      else 0
                    end
@@ -414,14 +445,18 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
         const 行秒 = Math.floor(row.time_updated / 1000)
         if (行秒 > 新水位秒) 新水位秒 = 行秒
 
-        // 工具 part 只认 completed；文本 part 没有 status（已经在消息里了，直接算）。
-        const 是工具 = row.tool !== null && 归因工具.has(row.tool)
-        if (是工具 && row.status !== "completed") continue
+        // 工具 part 只认 completed：工具结果只有成功时才回到模型上下文（`AI 读了` = 真读到）。
+        // 文本 part 没有 status（已经在消息里了，直接算）。
+        if (row.tool !== null && row.status !== "completed") continue
 
         let 资产id: string | undefined
         let 名字: string | undefined
+        let 形态: "skill" | "mcp" | "slash" = "slash"
+        let 工具名 = ""
 
         if (row.tool === "skill") {
+          形态 = "skill"
+          工具名 = "skill"
           // 老路径保持不变：名字 → 本项目启用台账，0 条 / ≥2 条同名都不猜（`#010-05`）。
           名字 = 文本(row.name)
           if (名字 === undefined) {
@@ -442,10 +477,26 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
           }
           资产id = 候选[0]
         } else if (row.tool === "bash") {
+          形态 = "skill"
+          工具名 = "bash"
           资产id = 命中脚本(文本(row.command) ?? "", 资产, 本项目启用(row.session_id))
         } else if (row.tool === "read") {
+          形态 = "skill"
+          工具名 = "read"
           资产id = 命中说明书(文本(row.file_path) ?? "", 资产, 本项目启用(row.session_id))
+        } else if (row.tool !== null) {
+          // MCP 工具：`<配置键>_<工具名>`，前缀唯一命中才算（见 `命中MCP工具`）。
+          const 命中 = 命中MCP工具(文本(row.tool) ?? "", MCP资产)
+          if (命中 === undefined) continue // 内建工具（edit / grep / write…），不是资产使用
+          if ("候选" in 命中) {
+            歧义.add(row.tool)
+            continue
+          }
+          形态 = "mcp"
+          工具名 = row.tool
+          资产id = 命中.id
         } else {
+          形态 = "slash"
           资产id = 命中命令目录(文本(row.text) ?? "", 资产, 本项目启用(row.session_id))
         }
 
@@ -460,10 +511,10 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
         // 同一轮里同一资产的第二条被唯一索引吃掉（无目标 conflict：主键与轮次索引都兜）。
         const result = await input.db.execute(sql`
           insert into auth.asset_usage_event
-            (user_id, part_id, asset_id, session_id, call_id, skill_name, org, dept, section, occurred_at, extracted_at, turn_id)
+            (user_id, part_id, asset_id, session_id, call_id, skill_name, kind, tool_name, org, dept, section, occurred_at, extracted_at, turn_id)
           values (
             ${人.id}, ${row.id}, ${资产id}, ${row.session_id},
-            ${row.call_id ?? ""}, ${名字},
+            ${row.call_id ?? ""}, ${名字}, ${形态}, ${工具名},
             ${人.org}, ${人.dept}, ${人.section},
             ${Math.floor(row.time_created / 1000)}, ${now},
             ${轮次id(row.session_id, row.time_created)}
@@ -491,7 +542,14 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
     }
   }
 
-  return { scanned, inserted, unattributed, missing }
+  if (歧义.size > 0) {
+    console.warn(
+      `[openhive-asset-usage] ${歧义.size} 个工具名无法唯一归因到 MCP 资产，已跳过`,
+      [...歧义].toSorted(),
+    )
+  }
+
+  return { scanned, inserted, unattributed, ambiguous: 歧义.size, missing }
 }
 
 /** 本页资产的最近 30 天聚合；没记录的资产**不出现**在 `stats` 里。 */

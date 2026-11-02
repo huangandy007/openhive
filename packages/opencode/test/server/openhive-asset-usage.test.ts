@@ -832,3 +832,112 @@ describe("资产使用记录：不止 skill 工具（2026-10-30 口径）", () =
     expect(结果.unattributed).toBe(1)
   })
 })
+
+async function 形态行(userId: string) {
+  const result = await pg.db.execute(
+    sql`select part_id, asset_id, kind, tool_name
+          from auth.asset_usage_event where user_id = ${userId} order by part_id`,
+  )
+  return rowsOf(result)
+}
+
+describe("MCP 调用（批次 4 · 设计 §7）", () => {
+  // 与上面两个 describe 同一理由：共用一个根时，上一条用例里没入表的行（歧义工具名）会在
+  // 60 秒回看窗内被下一轮重扫、重复计进 `ambiguous`。
+  const 独占根 = (名: string) => {
+    const dir = join(ROOT, 名)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  test("MCP 工具按「资产 id 前缀」归因，kind=mcp、tool_name=实际工具名", async () => {
+    await 建用户("usage-mcp1")
+    await insertAsset(pg.db, 资产({ id: "mcp-fund", name: "资金查询", type: "mcp" }))
+    const 根 = 独占根("mcp1")
+    const 源 = 建源库("usage-mcp1", 根)
+    建会话(源, "usage-mcp-s1", "usage-p-mcp1")
+    记调用(源, { partId: "usage-mcp-prt1", sessionId: "usage-mcp-s1", tool: "mcp-fund_query_account" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(1)
+    expect(await 形态行("usage-mcp1")).toEqual([
+      { part_id: "usage-mcp-prt1", asset_id: "mcp-fund", kind: "mcp", tool_name: "mcp-fund_query_account" },
+    ])
+  })
+
+  test("工具名同时命中两个资产（一个是另一个的前缀）⇒ 不归因、计入 ambiguous、不落表", async () => {
+    await 建用户("usage-mcp2")
+    await insertAsset(pg.db, 资产({ id: "mcp-dup", name: "重复甲", type: "mcp" }))
+    await insertAsset(pg.db, 资产({ id: "mcp-dup_x", name: "重复乙", type: "mcp" }))
+    const 根 = 独占根("mcp2")
+    const 源 = 建源库("usage-mcp2", 根)
+    建会话(源, "usage-mcp-s2", "usage-p-mcp2")
+    记调用(源, { partId: "usage-mcp-prt2", sessionId: "usage-mcp-s2", tool: "mcp-dup_x_query" })
+
+    const 原warn = console.warn
+    const 记录: unknown[][] = []
+    console.warn = (...args: unknown[]) => void 记录.push(args)
+    try {
+      const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+      expect(结果.inserted).toBe(0)
+      expect(结果.ambiguous).toBe(1)
+      expect(await 形态行("usage-mcp2")).toEqual([])
+      expect(记录.some((args) => String(args[0]).includes("无法唯一归因"))).toBe(true)
+    } finally {
+      console.warn = 原warn
+    }
+  })
+
+  test("内建工具（不是任何 MCP 资产的前缀）⇒ 不入表、不计 ambiguous", async () => {
+    await 建用户("usage-mcp3")
+    await insertAsset(pg.db, 资产({ id: "mcp-fund3", name: "资金查询", type: "mcp" }))
+    const 根 = 独占根("mcp3")
+    const 源 = 建源库("usage-mcp3", 根)
+    建会话(源, "usage-mcp-s3", "usage-p-mcp3")
+    记调用(源, { partId: "usage-mcp-prt3", sessionId: "usage-mcp-s3", tool: "edit" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect(结果.ambiguous).toBe(0)
+    expect(await 形态行("usage-mcp3")).toEqual([])
+  })
+
+  test("MCP 调用也只认 completed：running 不入表，完成后重抽才入", async () => {
+    await 建用户("usage-mcp4")
+    await insertAsset(pg.db, 资产({ id: "mcp-fund4", name: "资金查询", type: "mcp" }))
+    const 根 = 独占根("mcp4")
+    const 源 = 建源库("usage-mcp4", 根)
+    建会话(源, "usage-mcp-s4", "usage-p-mcp4")
+    记调用(源, {
+      partId: "usage-mcp-prt4",
+      sessionId: "usage-mcp-s4",
+      tool: "mcp-fund4_query_account",
+      status: "running",
+    })
+    expect((await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })).inserted).toBe(0)
+
+    // 完成态：同一 id 被 UPDATE，`time_updated` 往前走（与既有用例第 266 行同一写法）。
+    源.query("update part set time_updated = ?, data = ? where id = ?").run(
+      1_790_000_060_123,
+      JSON.stringify({
+        type: "tool",
+        tool: "mcp-fund4_query_account",
+        callID: "call_usage-mcp-prt4",
+        state: {
+          status: "completed",
+          input: {},
+          output: "",
+          title: "",
+          metadata: {},
+          time: { start: 1_790_000_000_123, end: 1_790_000_060_123 },
+        },
+      }),
+      "usage-mcp-prt4",
+    )
+
+    expect((await 抽取({ db: pg.db, root: 根, now: 1_790_000_200 })).inserted).toBe(1)
+    expect((await 形态行("usage-mcp4")).map((row) => row.kind)).toEqual(["mcp"])
+  })
+})
