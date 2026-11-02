@@ -247,8 +247,7 @@ describe("SC-003 验收 · 授权与收藏分离（T017）", () => {
 // ---------------------------------------------------------------------------
 
 describe("SC-003 验收 · 无权资产不可用（T017）", () => {
-  test("下发不超出可见：每个下发的 MCP 都满足 canReadAsset 且可用；收藏不产生下发", () => {
-    const 跨部门人 = 身份们[2]!
+  test("下发不超出可见：下发 = 可读名单 ∩ 可用；收藏不产生下发", () => {
     const 资产们: AssetMetadata[] = []
     const connections: Record<string, McpConnectionManifest[string]> = {}
     for (const status of ASSET_STATUSES) {
@@ -258,42 +257,55 @@ describe("SC-003 验收 · 无权资产不可用（T017）", () => {
         connections[id] = { type: "local", command: ["bun", "run", "server.ts"] }
       }
     }
+    const 按id = new Map(资产们.map((asset) => [asset.id, asset]))
 
-    const 跑 = (grants: readonly GrantRow[]) =>
-      buildUserMcpConfig({ userId: 跨部门人.viewer.userId, grants, assets: 资产们, connections })
+    const 跑 = (readableIds: readonly string[]) =>
+      buildUserMcpConfig({ userId: "u2", readableIds, assets: 资产们, connections })
+    const 下发id = (readableIds: readonly string[]) =>
+      Object.keys(跑(readableIds)).filter((key) => key !== GOVERNANCE_MCP_SERVER)
 
-    // 情形 A：没有任何授权 ⇒ 只有内建治理 server（收藏与否都不进这个函数）
+    // 情形 A：可读名单为空 ⇒ 只有内建治理 server（收藏与否都不进这个函数）
     expect(Object.keys(跑([]))).toEqual([GOVERNANCE_MCP_SERVER])
 
-    // 情形 B：全部 read 授权 ⇒ 只下发可用状态（published / iterating），且全部可读
-    const 读授权: GrantRow[] = 资产们.map((asset) => ({
-      resourceType: "mcp",
-      resourceId: asset.id,
+    // 情形 B：名单由独立口径 `期望可读` 算出（合成身份 perm=read）⇒ 下发 = 可读 ∩ 可用
+    const 全读人: 身份 = {
+      名: "合成 read 读者",
+      viewer: { userId: "u_oracle", department: "刑侦支队" },
+      作者: false,
       perm: "read",
-    }))
-    const 读配置 = 跑(读授权)
-    const 下发id = Object.keys(读配置).filter((key) => key !== GOVERNANCE_MCP_SERVER)
-    const 按id = new Map(资产们.map((asset) => [asset.id, asset]))
-    for (const id of 下发id) {
+    }
+    const 全读名单 = 资产们.filter((asset) => 期望可读(全读人, asset)).map((asset) => asset.id)
+    const 应下发 = 全读名单.filter((id) => {
+      const asset = 按id.get(id)
+      if (asset === undefined) throw new Error(`可读名单里有不存在的资产：${id}`)
+      return isAssetUsable(asset.status)
+    })
+    const 读下发 = 下发id(全读名单)
+    expect(读下发.sort()).toEqual(应下发.sort())
+    for (const id of 读下发) {
       const asset = 按id.get(id)
       if (asset === undefined) throw new Error(`下发了不存在的资产：${id}`)
-      expect(canReadAsset(跨部门人.viewer, asset, 读授权), `${id}：下发了但不可读`).toBe(true)
+      expect(期望可读(全读人, asset), `${id}：下发了但不可读`).toBe(true)
       expect(isAssetUsable(asset.status), `${id}：下发了但不可用`).toBe(true)
     }
-    expect(下发id.sort()).toEqual(
-      资产们.filter((asset) => isAssetUsable(asset.status)).map((asset) => asset.id).sort(),
-    )
 
-    // 情形 C：read 之外的授权（review）虽然能读，但**不产生下发**（下发出口更严）
-    const 审授权: GrantRow[] = 资产们.map((asset) => ({
-      resourceType: "mcp",
-      resourceId: asset.id,
-      perm: "review",
-    }))
-    expect(Object.keys(跑(审授权))).toEqual([GOVERNANCE_MCP_SERVER])
-    for (const asset of 资产们.filter((item) => isAssetUsable(item.status))) {
-      expect(canReadAsset(跨部门人.viewer, asset, 审授权), `${asset.id}：审授权不带读`).toBe(true)
-    }
+    // 情形 C：可读 ≠ 下发，两侧各拦一次（判据仍来自独立口径，不是实现也不是 canReadAsset）。
+    // (a) 可读但不可用：已下线的全局资产读得到，但不该进配置；
+    // (b) 可用但不在可读名单：已发布的部门资产对跨部门人不可读，即使可用也不下发。
+    const 跨部门人 = 身份们[2]!
+    const 可读名单 = 资产们.filter((asset) => 期望可读(跨部门人, asset)).map((asset) => asset.id)
+    // 前提成立的证据（防止下面几条断言因名单空转而假绿）
+    expect(可读名单).toContain("mcp_offline_global")
+    expect(可读名单).not.toContain("mcp_published_department")
+    expect(isAssetUsable("offline")).toBe(false)
+    expect(isAssetUsable("published")).toBe(true)
+
+    const 可见下发 = 下发id(可读名单)
+    expect(可见下发).not.toContain("mcp_offline_global")
+    expect(可见下发).not.toContain("mcp_published_department")
+    expect(可见下发.sort()).toEqual(
+      可读名单.filter((id) => isAssetUsable(按id.get(id)!.status)).sort(),
+    )
   })
 })
 

@@ -1,6 +1,5 @@
 import { join } from "node:path"
 import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
-import type { GrantRow } from "@opencode-ai/auth/rbac"
 import { isAssetUsable } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 
@@ -11,7 +10,7 @@ import type { AssetMetadata } from "./metadata"
  *
  * | 环 | 在哪 | 本文件做什么 |
  * |---|---|---|
- * | ① 授权（谁能用） | `role_resource` + capability | 只下发 `(mcp, 资产 id, read)` 且可用的资产 |
+ * | ① 授权（谁能用） | `readableAssetCondition` + capability | 只下发 id 在 `readableIds` 里的可用资产 |
  * | ② 下发（连到哪） | 各自的 `opencode.json` | 出 `mcp` 段；治理 server 恒下发 |
  * | ③ 连接带身份（以谁的身份） | `mcp.headers` / `mcp.environment` | remote 注入 `X-User-ID`，local 注入 `USER_ID` |
  * | ④ 服务端 RLS | **外部 MCP server** | **本仓不实现、不验证**；契约见 `mcp-downlink.md` |
@@ -23,17 +22,16 @@ import type { AssetMetadata } from "./metadata"
  * 哪段配置」算成纯数据，部署侧写盘/下发归后续接线。`connections` 是显式入参——业务 MCP 的
  * 连接清单（url / command / 静态凭据）从哪存取**留成接口**，本文件不猜存储形态。
  *
- * ## 授权口径：显式 `read` 授权，不是「空间可见」
+ * ## 下发口径：**读者可读**（2026-11-02 批次 4 裁定，设计 D-2）
  *
- * 浏览可以靠三级空间（全局 / 部门 / 个人）给「读」，但**下发**会把连接详情（含静态凭据、
- * 内网地址）交给用户。所以这里要求 `role_resource` 里真有 `(mcp, 资产 id, read)`：
- * - 与 capability 第①层**同一把钥匙**（配置键 = `resource_id` = 资产 id），否则会出现
- *   「配置里有、capability 却拒」的裂缝；
- * - 空间可见但没显式授权的资产不下发——连接详情不是浏览数据（`LEARNINGS #006-10`：
- *   一个配置被两用时要先分清两个读者）。
+ * 旧口径要求 `role_resource` 里真有 `(mcp, 资产 id, read)`——那是 Phase 1 之前的保守做法。
+ * 现在「能不能用」与「读不读得到」是**同一把钥匙**：`sessionRuleset` 的 `mcpVisible`
+ * （`mcp-availability.ts` 复用 `readableAssetCondition()`）决定工具可不可见，本文件只负责
+ * 把「读者读得到的已发布 MCP 资产」的连接详情交出去。两处若各判一次，就会出现
+ * 「配置里有、capability 却拒」或反过来的裂缝（`#010-06`：两套来源别各判一次）。
  *
- * `write` / `review` / `admin` 不产下发：capability 的 mcp 规则只吃 `perm === "read"`
- * （`core/access/session.ts` 实测）。
+ * 所以入参是 `readableIds`（调用方用**那一份** SQL 判据算出来的 id 名单），不是授权行。
+ * 空间可见 / 作者 / 授权行 / 个人档这些分支全在 `readable-sql.ts` 里，本文件一条都不重写。
  *
  * ## 身份注入的两条通道
  *
@@ -100,7 +98,11 @@ export type McpConfigSection = Record<string, McpServerConfig>
 
 export interface BuildUserMcpConfigInput {
   readonly userId: string
-  readonly grants: readonly GrantRow[]
+  /**
+   * 调用方按 `readableAssetCondition(viewer)` 算出的**可读资产 id**（字典序无关，比对用 Set 语义）。
+   * 只读这一份判据：本文件不查库、不重写可见性（设计 §3.4.1 / `#004-02`）。
+   */
+  readonly readableIds: readonly string[]
   readonly assets: readonly AssetMetadata[]
   readonly connections: McpConnectionManifest
 }
@@ -119,12 +121,6 @@ export class McpDownlinkError extends Error {
 /** 治理 server 的 stdio 命令；入口与本文件同目录（`asset-service/src/mcp-main.ts`）。 */
 export function governanceMcpCommand(): string[] {
   return ["bun", "run", join(import.meta.dir, "mcp-main.ts")]
-}
-
-function hasMcpReadGrant(grants: readonly GrantRow[], assetId: string): boolean {
-  return grants.some(
-    (grant) => grant.resourceType === "mcp" && grant.resourceId === assetId && grant.perm === "read",
-  )
 }
 
 function assertConnection(value: McpConnectionSpec, assetId: string): McpConnectionSpec {
@@ -182,7 +178,7 @@ function withIdentity(connection: McpConnectionSpec, userId: string): McpServerC
  * 仍会无条件下发一条 **local stdio** 的同名条目（`governanceMcpCommand()`，见下方 `entries.set`），
  * 一旦接回生产就会**盖掉**监督器写的那条、并且退回「每用户一份子进程」。今天只有单测在调用。
  *
- * - 资产型：`type === "mcp"` ∧ `isAssetUsable(status)` ∧ 显式 `(mcp, id, read)` 授权；
+ * - 资产型：`type === "mcp"` ∧ `isAssetUsable(status)` ∧ id 在 `readableIds` 里；
  * - 治理 server：恒下发（内建，见 `@opencode-ai/auth/builtin-mcp`）——**仅限测试 / 旧形态**；
  * - 键按字典序输出：`sessionRuleset` 的规则顺序与 `Config.mcp` 的键序有关，固定顺序让
  *   「同一份授权 → 同一份配置」可复现；
@@ -197,6 +193,7 @@ export function buildUserMcpConfig(input: BuildUserMcpConfigInput): McpConfigSec
 
   const entries = new Map<string, McpServerConfig>()
   const seen = new Set<string>()
+  const 可读 = new Set(input.readableIds)
 
   for (const asset of input.assets) {
     if (typeof asset.id !== "string" || asset.id.trim() === "") {
@@ -217,7 +214,7 @@ export function buildUserMcpConfig(input: BuildUserMcpConfigInput): McpConfigSec
 
     if (asset.type !== "mcp") continue
     if (!isAssetUsable(asset.status)) continue
-    if (!hasMcpReadGrant(input.grants, asset.id)) continue
+    if (!可读.has(asset.id)) continue
 
     const connection = input.connections[asset.id]
     if (connection === undefined) {

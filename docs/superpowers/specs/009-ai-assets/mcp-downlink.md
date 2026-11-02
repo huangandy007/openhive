@@ -6,7 +6,7 @@
   `packages/auth/src/builtin-mcp.ts`（内建 server 名单）、
   `packages/core/src/access/session.ts`（第①层的 `builtin` 标记）、
   `packages/opencode/src/server/openhive/access.ts`（`mcpServerNaming`）
-- **用例**：`packages/asset-service/src/downlink.test.ts`（17 条）、
+- **用例**：`packages/asset-service/src/downlink.test.ts`（15 条）、
   `packages/opencode/test/server/openhive-access-builtin-wiring.test.ts`（3 条）、
   `packages/opencode/test/server/openhive-access-mcp.test.ts`（新增 2 条）
 - **不在本文件**：治理 server 的三个工具语义（见 `governance.md`）、授权矩阵（见 `authorization.md`）、
@@ -16,7 +16,7 @@
 
 | 环 | 问题 | 本仓落点 | 今天的状态 |
 |---|---|---|---|
-| ① 授权 | 谁能用 | `role_resource` ＋ `sessionRuleset` | 已落地（T006/T007），T014 加内建放行 |
+| ① 授权 | 谁能用 | `role_resource` ＋ `sessionRuleset` | 已落地（T006/T007），T014 加内建放行；2026-11-02 起「谁能用」与「读不读得到」同源（`readableAssetCondition`），见 §3 |
 | ② 下发 | 连到哪 | `buildUserMcpConfig()` | **已落地为纯函数**；写盘/下发在外 |
 | ③ 连接带身份 | 以谁的身份 | `mcp.headers` / `mcp.environment` ＋ `_meta` | 已落地并实测 |
 | ④ 服务端 RLS | 看得见哪些行 | **外部 MCP server** | 🔴 **本仓未实现、未验证**（§6 契约） |
@@ -32,7 +32,7 @@
 ```ts
 buildUserMcpConfig({
   userId: "u_alice",
-  grants,                       // GrantRow[]：role_resource 的行
+  readableIds,                  // string[]：调用方按 readableAssetCondition(viewer) 算出的可读资产 id
   assets,                       // AssetMetadata[]：资产元数据
   connections,                  // 连接清单：资产 id → { type, url | command, headers?, environment? }
 }) // → { [资产 id]: McpServerConfig, "openhive-governance": McpServerConfig }
@@ -48,27 +48,31 @@ buildUserMcpConfig({
 `code` 共六个：`invalid_user_id` / `invalid_asset_id` / `duplicate_asset_id` /
 `governance_key_conflict` / `connection_missing` / `invalid_connection`。
 
-## 3. 第一环：授权口径 = **显式 read 授权**，不是「空间可见」
+## 3. 第一环：授权口径 = **读者可读**（2026-11-02 批次 4 起）
 
-浏览可以靠三级空间（全局 / 部门 / 个人）给「读」；但**下发**会把连接详情（含静态凭据、内网地址）
-交给用户。所以条件逐条都要满足：
+浏览与下发用**同一份**判据 `readableAssetCondition()`（`readable-sql.ts`）：作者、共享范围
+（全局 / 本部门 / 指定人员授权行）、个人档作者都算「读得到」。旧口径「必须有一条显式
+`(mcp, id, read)` 授权行」已退役——它与 capability 的 `mcpVisible` 是两套来源，两判一次
+迟早漂（`#010-06`）。
 
 | 条件 | 为什么 |
 |---|---|
 | `asset.type === "mcp"` | skill 资产不下发连接 |
 | `isAssetUsable(status)`（`published` ∨ `iterating`） | 草稿 / 审核中 / 待技术发布 / 已下线 / 已归档不下发；迭代中旧版本继续服务 |
-| `role_resource` 里真有 `(mcp, 资产 id, read)` | 空间可见但没显式授权的资产不下发——连接详情不是浏览数据（`#006-10`：一个配置被两用要先分清两个读者） |
+| `asset.id ∈ readableIds` | 连接详情（含静态凭据、内网地址）只交给读得到这份资产的人；判据由调用方用 `readableAssetCondition()` 算 |
 
-`write` / `review` / `admin` **不产下发**：capability 的 mcp 规则只吃 `perm === "read"`
-（`core/access/session.ts` 实测），两侧必须同口径。
+旧口径「`write` / `review` / `admin` 不产下发」**已随同一裁定退役**：`readableAssetCondition()`
+的授权行接受 `ASSET_PERMS` 全集（`readable-sql.ts`），`effectivePermissions()` 对**任何**授权行
+都附带 `read`（`authorization.ts`）。所以授了审 / 管的人也是读者，同样进下发名单——「能不能审 /
+管」由工具动作层（`governance.ts`）区分，不由下发名单区分。下发与可见同源，才是「一份判据」。
 
 ### 配置键不变式（最重要的接缝）
 
 ```
-Config.mcp 的键  ≡  资产 id  ≡  role_resource.resource_id
+Config.mcp 的键  ≡  资产 id  ≡  capability 的 mcpVisible 资源 id
 ```
 
-第①层拿 `resource_id` 与 `Config.mcp` 的键比对；第②层用资产 id 做键。**两边必须是同一把钥匙**，
+第①层（`mcpVisible`）与第②层（本文件）都拿资产 id 比对。**两边必须是同一把钥匙**，
 否则出现「配置里有、capability 却拒」或反过来的裂缝——不报错、不变红，只是功能时灵时不灵。
 用例直接断言 `Object.keys(config)` 等于资产 id（`downlink.test.ts` 第一条）。
 
@@ -128,6 +132,9 @@ Config.mcp 的键  ≡  资产 id  ≡  role_resource.resource_id
 - [x] 治理 server 的配置**不再**由 `buildUserMcpConfig()` 下发，改由内核监督器 upsert 全局配置
       （`mcp.openhive-governance` 是保留键；管理员手工改会在下次启动被覆盖）。
       `buildUserMcpConfig()` 仅为**业务 MCP 资产**保留，本次未接调用方（spec §9）。
+- [x] 2026-11-02：生产形态改为「全局一份配置 + 每人 capability 名单」（设计 §3.3 / §3.4）；
+      `buildUserMcpConfig()` 现在给的是**单用户视图**（Phase 2 按用户下发时复用 `withIdentity`），
+      当前无生产调用方（设计 §9）。
 
 上面第 4 条描述的是 `buildUserMcpConfig()` 作为**纯函数**的输出口径（stdio 形态）；生产已不走它，
 改由单进程 HTTP 形态（见 `../../2026-10-26-governance-mcp-single-process-design.md`）。
@@ -175,7 +182,7 @@ Config.mcp 的键  ≡  资产 id  ≡  role_resource.resource_id
 
 | 文件 | 条数 | 覆盖 |
 |---|---|---|
-| `downlink.test.ts` | 17 | 授权过滤 7、连接与身份 3、治理注册 1、失败面 5、fixture 真进程 1 |
+| `downlink.test.ts` | 15 | 可读性 5、连接与身份 3、治理注册 1、失败面 5、fixture 真进程 1 |
 | `openhive-access-builtin-wiring.test.ts` | 3 | 精确名字打标、`-copy` 不算内建、空配置 → 空名单 |
 | `openhive-access-mcp.test.ts`（新增） | 2 | 内建零授权 ⇒ allow，其它 server 仍 deny；同名无标记 ⇒ deny |
 
@@ -189,12 +196,12 @@ fixture（`test-fixtures/identity-server.ts`）只验「身份到达」：拉起
 |---|---|---|---|
 | A | core：`naming.builtin === true \|\|` → `false \|\|` | 内建零授权 ⇒ allow | 1 |
 | B | `access.ts`：`builtin: BUILTIN_MCP_SERVERS.includes(server)` → `false` | 精确名字打标（helper 首条） | 1 |
-| C | 去掉 `hasMcpReadGrant` 过滤 | 无授权不下发、只有 write 不下发、授权行指向别的资源类型 | 3 |
+| C | 删掉 `if (!可读.has(asset.id)) continue` | 不在可读名单 ⇒ 不下发（`readableIds` 为空的那些用例里凡是带资产的都会随之变） | 1 |
 | D | 去掉 `isAssetUsable` 过滤 | 不可用状态（草稿等五种）不下发 | 1 |
 | E | `withIdentity(...)` → `assertConnection(...)` | 首条下发（断言含身份头）、remote 覆盖、local 覆盖、fixture 真进程 | 4 |
 
-`#003-03` 归类：A / B / D 是「拆掉判据」类（单条精确定位）；C 是「拆掉过滤」类（同一依据下
-三条一起红，据实记录）；E 是「拆掉变换」类（凡断言产出含身份的用例一起红，4 条）。
+`#003-03` 归类：A / B / D 是「拆掉判据」类（单条精确定位）；C 是「拆掉过滤」类（同一依据下的
+用例一起红，条数按实得记）；E 是「拆掉变换」类（凡断言产出含身份的用例一起红，4 条）。
 
 ## 8. 门禁实测（2026-10-25）
 
