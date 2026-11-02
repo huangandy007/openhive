@@ -37,6 +37,17 @@ test("undefined 值不进子进程环境", () => {
   expect(净化子进程环境({ PATH: "C:/bin", EMPTY: undefined })).toEqual({ PATH: "C:/bin" })
 })
 
+test("整键剥离大小写无关（Windows 子进程按 process.env.DATABASE_URL 仍取得到）", () => {
+  // 变量名大小写不敏感的平台（Windows）上，`database_url` 与 `DATABASE_URL` 是同一个进程环境项。
+  const 结果 = 净化子进程环境({
+    database_url: "postgres://u:s3cret@db/db",
+    Opencode_Config_Content: '{"mcp":{}}',
+    pgpassword: "s3cret",
+    PATH: "C:/bin",
+  })
+  expect(结果).toEqual({ PATH: "C:/bin" })
+})
+
 test("connectLocal 用净化函数，且不再裸铺 process.env", () => {
   const 源 = readFileSync(new URL("../../src/mcp/index.ts", import.meta.url), "utf8")
   expect(源).toContain("净化子进程环境(process.env)")

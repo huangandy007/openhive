@@ -7,7 +7,8 @@ export * as OpenhiveMcpChildEnv from "./openhive-child-env"
  * 平台的数据库与对象存储凭据。内核自己的 `.env` 里有 `PG*` / `OPENHIVE_MINIO_*`，直接
  * `...process.env` 起子进程等于把「能执行命令」升级成「能连平台库」。
  *
- * 被剥掉的名字分三类：整键（连接串 / 配置原文）、前缀（`PG*`、`OPENHIVE_MINIO*`）、
+ * 被剥掉的名字分三类：整键（连接串 / 配置原文；**按大小写无关比较**——Windows 上
+ * `database_url` 与 `DATABASE_URL` 是同一个进程环境项）、前缀（`PG*`、`OPENHIVE_MINIO*`）、
  * 凭据字样（SECRET / PASSWORD / TOKEN / CREDENTIAL / API_KEY / PRIVATE_KEY，忽略大小写）。
  * 需要某台 MCP 专用变量时，把它写进资产的 `environment`——那份是显式授权的。
  */
@@ -21,7 +22,7 @@ export function 净化子进程环境(
   const 结果: Record<string, string> = {}
   for (const [键, 值] of Object.entries(env)) {
     if (值 === undefined) continue
-    if (整键.has(键)) continue
+    if (整键.has(键.toUpperCase())) continue
     if (前缀.some((模式) => 模式.test(键))) continue
     if (凭据字样.test(键)) continue
     结果[键] = 值
