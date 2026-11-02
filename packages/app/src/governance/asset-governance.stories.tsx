@@ -46,6 +46,8 @@ function 假后端(失败 = false): AssetApi {
       const 原行 = 样本.find((row) => row.id === id) ?? 行(id, "资产")
       return { kind: "ok", value: { asset: { ...原行, status: action === "reject_business" ? "draft" : "pending_tech" } } }
     },
+    // Storybook 里点「新建 MCP 资产」→ 创建：内存替身，按成功回一个 id（不连网）。
+    createMcpDraft: async () => ({ kind: "ok", value: { assetId: "asset_story_mcp" } }),
   }
 }
 

@@ -165,6 +165,39 @@ describe("资产客户端 · 批量改分类（需求 2）", () => {
   })
 })
 
+describe("资产客户端 · 新建 MCP 草稿（2026-11-02 设计 §5.3）", () => {
+  const 输入 = {
+    name: "资金查询 MCP",
+    description: "按账户查流水",
+    category: "intelligence",
+    visibility: "targeted" as const,
+    connection: { transport: "remote" as const, url: "https://mcp.example/path" },
+  }
+
+  test("POST 字面路径；体带 type:mcp 与连接字段原样；回包只取 assetId", async () => {
+    const { send, calls } = 替身(() => json({ assetId: "asset_new_mcp", name: "资金查询 MCP", status: "draft" }))
+
+    const out = await createAssetApi(send).createMcpDraft(输入)
+
+    expect(calls[0]?.input).toBe("/openhive/assets/draft")
+    expect(calls[0]?.init?.method).toBe("POST")
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ type: "mcp", ...输入 }))
+    expect(out).toEqual({ kind: "ok", value: { assetId: "asset_new_mcp" } })
+  })
+
+  test("403 ⇒ rejected 原样带服务端消息；缺 assetId / 空串 / 类型漂移 ⇒ failed", async () => {
+    const 越权 = await createAssetApi(
+      替身(() => json({ error: "只有资产治理管理员可以新建 MCP 资产" }, 403)).send,
+    ).createMcpDraft(输入)
+    expect(越权).toEqual({ kind: "rejected", message: "只有资产治理管理员可以新建 MCP 资产" })
+
+    for (const 坏 of [{}, { assetId: "" }, { assetId: 1 }, { id: "asset_x" }]) {
+      const out = await createAssetApi(替身(() => json(坏)).send).createMcpDraft(输入)
+      expect(out.kind).toBe("failed")
+    }
+  })
+})
+
 describe("资产客户端 · 指定人员（需求 3b）", () => {
   test("visibility=targeted ⇒ 体里带 groupIds；不传组时不带这个键", async () => {
     const { send, calls } = 替身(() =>

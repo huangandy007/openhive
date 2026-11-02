@@ -47,6 +47,10 @@ const 可见选项: readonly { readonly value: CreateMcpDraftInput["visibility"]
   { value: "global", label: "全单位" },
 ]
 
+/** 下拉给的是裸字符串；闭集外的值不落进信号（不靠 `as` 收窄）。 */
+const 是可见 = (value: string): value is CreateMcpDraftInput["visibility"] =>
+  可见选项.some((项) => 项.value === value)
+
 export function McpCreateForm(props: McpCreateFormProps): JSX.Element {
   const [名称, 设名称] = createSignal("")
   const [描述, 设描述] = createSignal("")
@@ -194,7 +198,7 @@ export function McpCreateForm(props: McpCreateFormProps): JSX.Element {
           disabled={忙()}
           value={可见()}
           onChange={(event) => {
-            设可见(event.currentTarget.value as CreateMcpDraftInput["visibility"])
+            if (是可见(event.currentTarget.value)) 设可见(event.currentTarget.value)
             清错误()
           }}
           class="h-8 rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base"

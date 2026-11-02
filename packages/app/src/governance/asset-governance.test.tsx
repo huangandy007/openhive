@@ -196,8 +196,8 @@ const 有理由框 = () => document.querySelector("textarea[name='asset-reject-r
  * 所以判据取两者的交集：元素没了 **或** 带 `data-closed`——两条都说明 `open` 已翻成 false，
  * 而「忘了把 `确认()` 置空」这类回退仍然会被抓到（那时它一直挂着 `data-expanded`）。
  */
-const 框已关 = () => {
-  const 框 = 有("[data-slot='asset-confirm']")
+const 框已关 = (selector = "[data-slot='asset-confirm']") => {
+  const 框 = 有(selector)
   return 框 === null || 框.hasAttribute("data-closed")
 }
 
@@ -747,9 +747,13 @@ describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
       connection: { transport: "remote", url: "https://mcp.example/path" },
     })
     expect(文章("[data-slot='asset-notice']")).toContain("已新建 MCP 资产")
-    expect(
-      (host.querySelector("[data-slot='asset-filter-status']") as HTMLSelectElement).value,
-    ).toBe("draft")
+    const 筛选框 = host.querySelector("[data-slot='asset-filter-status']")
+    if (!(筛选框 instanceof HTMLSelectElement)) throw new Error("找不到状态筛选")
+    expect(筛选框.value).toBe("draft")
+    // 成功必须关框。Kobalte 在 happy-dom 里关掉后**不摘元素**、只加 `data-closed`，
+    // 所以判据与同文件既有 `框已关` 相同（元素没了 或 带 data-closed）。
+    await 等到(() => 框已关("[data-slot='mcp-create-dialog']"))
+    expect(框已关("[data-slot='mcp-create-dialog']")).toBe(true)
   })
 
   test("服务端拒绝：错误就地在表单里，弹窗不关", async () => {
@@ -773,6 +777,8 @@ describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
 
     await 等到(() => 文章("[data-slot='mcp-create-error']") !== "")
     expect(文章("[data-slot='mcp-create-error']")).toBe("只有资产治理管理员可以新建 MCP 资产")
+    // 不关框：Kobalte 关掉后元素仍在（只加 `data-closed`），单看「元素还在」会假绿。
     expect(有("[data-slot='mcp-create-dialog']")).not.toBeNull()
+    expect(框已关("[data-slot='mcp-create-dialog']")).toBe(false)
   })
 })
