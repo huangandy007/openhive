@@ -464,8 +464,10 @@ describe("Task 5 · GET /asset-readers（选人搜索）", () => {
       const 默认 = yield* json(ReadersResponse, yield* get(ADMIN, `${搜索}&limit=abc`))
       expect(默认.users).toHaveLength(20)
 
-      // 小数不能直接绑进 `limit $1`：PG 报 `invalid input syntax for type bigint` ⇒ 500。
-      // 出口必须**先截断再夹**（评审 F1）。
+      // 出口约定 `limit` 只接受整数（先 `Math.trunc` 再夹 1..50）。
+      // 注意：本驱动（drizzle + Bun.SQL）会隐式取整，所以这条只钉**出口契约**
+      // （200 + 截断后的行数），不能证明 `Math.trunc` 本身；换原生驱动才可观察
+      // （评审 F1 已据实记录「500 在本机生产连接路径未复现」）。
       const 小数 = yield* get(ADMIN, `${搜索}&limit=2.5`)
       expect(小数.status).toBe(200)
       expect((yield* json(ReadersResponse, 小数)).users).toHaveLength(2)
