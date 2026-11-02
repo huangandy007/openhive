@@ -335,7 +335,7 @@ function 撤回已下线(deps: Deps, assetId: string, status: AssetStatus) {
 
 /**
  * 授权目标 id 清单的解析（`groupIds` / `userIds` 共用）：非数组 / 项不是非空字符串 ⇒ 400 的
- * 文案；否则 `trim` ＋ 去重。
+ * 文案；否则 `trim` ＋ 去重（`Set` 判重，保留插入顺序）。
  *
  * 抽成一处是评审 F2：两段循环逐字相同，注释却声称「同一前提不写两套解析」（`#002-06`）。
  * 错误文案里的字段名保留（`groupIds 必须是授权组 id 的数组` / `userIds 必须是用户 id 的数组`）。
@@ -345,12 +345,16 @@ function 解析id数组(raw: unknown, field: "groupIds" | "userIds"): { readonly
   if (!Array.isArray(raw)) return { error: `${field} 必须是${名词}的数组` }
 
   const items: readonly unknown[] = raw
+  const 已见 = new Set<string>()
   const ids: string[] = []
   for (const item of items) {
     if (typeof item !== "string" || item.trim() === "") {
       return { error: `${field} 里每一项都必须是非空字符串` }
     }
-    if (!ids.includes(item.trim())) ids.push(item.trim())
+    const id = item.trim()
+    if (已见.has(id)) continue
+    已见.add(id)
+    ids.push(id)
   }
   return { ids }
 }
@@ -661,7 +665,7 @@ function handleBatchCategory(request: HttpServerRequest.HttpServerRequest, deps:
 }
 
 /**
- * 批次 3（2026-11-02）· **选人搜索**：发布弹窗按姓名 / 警号找人（spec §3.2.4）。
+ * 批次 3（2026-11-02）· **选人搜索**：发布弹窗按姓名 / 警号 / 部门找人（spec §3.2.4）。
  *
  * ## 权限是 `admin`（与发布同权）
  *
@@ -709,7 +713,7 @@ function handleReaders(request: HttpServerRequest.HttpServerRequest, deps: Deps)
         await db.execute(sql`
           select id, name, dept from auth.user
            where status = ${ENABLED_USER_STATUS}
-             and (name like ${pattern} or police_no like ${pattern})
+             and (name like ${pattern} or police_no like ${pattern} or dept like ${pattern})
            order by name, id limit ${limit}
         `),
       )

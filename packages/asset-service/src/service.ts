@@ -12,7 +12,7 @@ import {
 import { retargetAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
 import type { AssetViewer } from "./authorization"
 import { isEnabledCategory } from "./category-store"
-import type { AssetVisibility } from "./metadata"
+import type { AssetStatus, AssetVisibility } from "./metadata"
 import {
   AssetTransitionError,
   applySkillTransition,
@@ -690,7 +690,9 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     (applied.action === "publish_tech" || applied.action === "publish_iteration")
   ) {
     // 只求值一次：`input.probe ?? probeMcpConnection` 写两遍会有两个投影。
-    await prepareMcpPublish(db, asset.id, input.probe ?? probeMcpConnection, now)
+    // `asset.status` 是**本次流转发起时**读到的状态：快照写入用它做条件，防止试连期间
+    // 被 abort / 他人流转抢先（终审 I-2）。
+    await prepareMcpPublish(db, asset.id, input.probe ?? probeMcpConnection, now, asset.status)
   }
   // 【保留的定制 · 同步上游时不要丢】放弃迭代 = 回到线上快照（设计 §3.1.4）。
   if (asset.type === "mcp" && applied.action === "abort_iteration") {
@@ -792,19 +794,27 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
  *
  * 错误消息直接带试连文本：生产路径的 `probeMcpConnection` 已按 headers / environment
  * 的值脱敏并截 500，这里不再拼装连接配置原文（二次拼装 = 第二条泄漏面）。
+ *
+ * ## 快照只写「被试连的那一份」（终审 I-2 根因版）
+ *
+ * `iterating` 期间允许改连接，所以试连不能拿一份、写快照再重读另一份：并发编辑会把
+ * **没试连过的**配置直接发布出去。这里在进函数时把工作副本定格成 `快照`，probe 与写快照
+ * 用的是同一个对象；写快照再带 `updated_at` ＋ 状态条件，试连期间被改 / 被 abort 都拒绝发布。
  */
 async function prepareMcpPublish(
   db: AssetTarget,
   assetId: string,
   probe: McpProbe,
   now: number,
+  expectedStatus: AssetStatus,
 ): Promise<void> {
   const 连接 = await getMcpConnection(db, assetId)
   if (连接 === undefined) {
     throw new AssetTransitionError("mcp_connection_missing", `这台 MCP 资产没有连接规格：${assetId}`)
   }
-  const 输入 = 连接输入(连接)
-  const 结果 = await probe(输入, { timeoutMs: 输入.timeoutMs })
+  // 这份快照同时交给 probe 和写快照：**试连的就是发布的**，中途不再重读工作副本。
+  const 快照 = { ...连接输入(连接) }
+  const 结果 = await probe(快照, { timeoutMs: 快照.timeoutMs })
   await 记录试连结果(db, assetId, {
     checkedAt: now,
     ok: 结果.ok,
@@ -812,10 +822,22 @@ async function prepareMcpPublish(
     toolCount: 结果.ok ? 结果.toolCount : null,
   })
   if (!结果.ok) throw new AssetTransitionError("mcp_probe_failed", `连不上：${结果.error}`)
-  // `false` = 读连接行与写快照之间该行被并发删除：这次发布仍会成功，但**没有快照**。
-  // 本轮不改行为（brief 示例同样忽略返回值）：该竞态概率极低，且后果不静默——后续
-  // `abort_iteration` 会以 `mcp_connection_missing` 显式报出「没有可回写的发布快照」。
-  await 写入发布快照(db, assetId, now)
+
+  const 写入 = await 写入发布快照(db, assetId, 快照, now, {
+    status: expectedStatus,
+    updatedAt: 连接.updatedAt,
+  })
+  if (写入) return
+
+  // `false` 不再只意味着「连接行被删」：连接行还在 ⇒ 一定是试连期间被并发改 / 被 abort 抢先。
+  // 此时已经试连过的那份配置不能发布，也不能默默换成别人改后的那份（那正是旧实现的漏洞）。
+  if ((await getMcpConnection(db, assetId)) !== undefined) {
+    throw new AssetTransitionError(
+      "concurrent_transition",
+      `MCP 连接或资产状态在试连期间被并发修改：${assetId}`,
+    )
+  }
+  // 连接行已不在：维持原行为（发布继续、没有快照；由后续 abort 显式报 `mcp_connection_missing`）。
 }
 
 /**

@@ -16,6 +16,7 @@ import type { McpConnectionInput } from "./mcp-connection"
  */
 
 export const PROBE_DEFAULT_TIMEOUT_MS = 5_000
+/** ⚠️ 与 `mcp-connection.ts` 的 `MCP_TIMEOUT_MAX_MS` 必须同值；改一处必须改另一处。 */
 export const PROBE_MAX_TIMEOUT_MS = 30_000
 
 export type McpProbeResult =

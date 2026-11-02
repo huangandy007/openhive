@@ -438,6 +438,22 @@ describe("Task 5 · GET /asset-readers（选人搜索）", () => {
     }),
   )
 
+  it.live("管理员按部门搜索：q 命中部门子串，字段仍只有 id/name/dept，别的部门不混进来", () =>
+    Effect.gen(function* () {
+      // 弹窗文案与 `aria-label` 写的是「按姓名或部门搜索人员」（终审 I-1）：
+      // U2 的部门是 " 经侦支队"（带前导空格），搜子串「经侦」应当命中。
+      const 按部门 = yield* get(ADMIN, `${READERS}?q=${encodeURIComponent("经侦")}&limit=5`)
+      expect(按部门.status).toBe(200)
+      const 体 = yield* json(ReadersResponse, 按部门)
+      expect(体.users).toHaveLength(1)
+      expect(体.users[0].id).toBe(U2.id)
+      // 只回这三个键：部门命中也不许把警号 / 状态借出来。
+      expect(Object.keys(体.users[0]).sort()).toEqual(["dept", "id", "name"])
+      // 前导空格原样返回（与按姓名那一段同一口径）。
+      expect(体.users[0].dept).toBe(" 经侦支队")
+    }),
+  )
+
   it.live("limit 夹在 1..50；空 q 返回启用账号；% 按字面量处理", () =>
     Effect.gen(function* () {
       const db = pg!.db

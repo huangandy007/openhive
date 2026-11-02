@@ -3,7 +3,7 @@ export * as McpConnection from "./mcp-connection"
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { AssetMetadataError, type AssetTarget } from "./asset"
-import type { MetadataIssue } from "./metadata"
+import type { AssetStatus, MetadataIssue } from "./metadata"
 
 /**
  * MCP 连接规格的**唯一实现**（2026-11-02 设计 §3.1.2）。
@@ -27,7 +27,11 @@ import type { MetadataIssue } from "./metadata"
 export const MCP_TRANSPORTS = ["local", "remote"] as const
 export type McpTransport = (typeof MCP_TRANSPORTS)[number]
 
-/** 输入校验的上限（毫秒）。试连侧另有一层同值兜底（`mcp-probe.ts` 的 `PROBE_MAX_TIMEOUT_MS`）。 */
+/**
+ * 输入校验的上限（毫秒）。试连侧另有一层同值兜底（`mcp-probe.ts` 的 `PROBE_MAX_TIMEOUT_MS`）。
+ *
+ * ⚠️ 与 `mcp-probe.ts` 的 `PROBE_MAX_TIMEOUT_MS` 必须同值；改一处必须改另一处。
+ */
 export const MCP_TIMEOUT_MAX_MS = 30_000
 
 export const MASKED_VALUE = "***(已设置)"
@@ -457,23 +461,42 @@ export async function 记录试连结果(
 }
 
 /**
- * 把当前工作副本定格成发布快照。**不动**试连列（那是工作副本的最近一次试连结果）；
+ * 把**已试连的那一份**连接规格定格成发布快照。**不动**试连列（那是工作副本的最近一次试连结果）；
  * 快照写入直接绑对象，先 `JSON.stringify` 会落成 jsonb 字符串。
+ *
+ * 快照**不在这里重读工作副本**：试连拿到的是哪份，落的就必须是哪份。`iterating` 期间允许
+ * 改连接（`assets.ts` 的 `CONNECTION_WRITABLE_STATUSES`），这里若重读，并发编辑会把一份
+ * **没试连过的**配置直接发布出去（终审 I-2 的根因）。
+ *
+ * 条件更新带 `updated_at` 与资产状态两道闸。返回 `false` 的三种成因：
+ * - 连接行不存在（资产不是从 `createMcpDraft` 来的，或行被并发删除）；
+ * - 连接在试连期间被并发改过（`updated_at` 已不是 `expected.updatedAt`）；
+ * - 资产状态已变（不再等于 `expected.status`，例如试连期间被 abort）。
+ * 调用方要区分「行不存在」与另外两者，只能 `false` 后再读一次连接判断。
  */
-export async function 写入发布快照(db: AssetTarget, assetId: string, now: number): Promise<boolean> {
-  const 连接 = await getMcpConnection(db, assetId)
-  if (连接 === undefined) return false
-  const 快照 = { ...连接输入(连接) }
+export async function 写入发布快照(
+  db: AssetTarget,
+  assetId: string,
+  快照: McpConnectionInput,
+  now: number,
+  expected: { readonly status: AssetStatus; readonly updatedAt: number },
+): Promise<boolean> {
+  let rows: Record<string, unknown>[]
   try {
-    await db.execute(sql`
-      update auth.asset_mcp_connection
-         set published_config = ${快照}::jsonb, updated_at = ${now}
-       where asset_id = ${assetId}
-    `)
+    rows = rowsOf(
+      await db.execute(sql`
+        update auth.asset_mcp_connection
+           set published_config = ${快照}::jsonb, updated_at = ${now}
+         where asset_id = ${assetId}
+           and updated_at = ${expected.updatedAt}
+           and exists (select 1 from auth.asset where id = ${assetId} and status = ${expected.status})
+         returning asset_id
+      `),
+    )
   } catch (error) {
     throw 连接写入错误(error)
   }
-  return true
+  return rows.length > 0
 }
 
 /** 把发布快照写回工作列（中止迭代用）。走 `updateMcpConnection` ⇒ 试连列随之清空。 */

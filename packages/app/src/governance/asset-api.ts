@@ -223,7 +223,7 @@ export const PATH = {
   batchCategory: `${PREFIX}/batch-category`,
   /** 需求 3b：授权组清单。与内核 `OpenhiveGovernanceAssetGroups.PATH.list` 逐字对应。 */
   groups: "/openhive/governance/asset-groups",
-  /** 2026-11-02 设计 §3.2.3：可指定人员搜索。与内核 `OpenhiveGovernanceAssetReaders.PATH.list` 逐字对应。 */
+  /** 2026-11-02 设计 §3.2.3：可指定人员搜索。与内核 `governance-assets.ts` 的 `PATH.readers` 逐字对应。 */
   readers: "/openhive/governance/asset-readers",
   /** 入库（MCP 与 skill 共用）。与内核 `OpenhiveAssets.PATH.draft` 逐字对应。 */
   draft: "/openhive/assets/draft",

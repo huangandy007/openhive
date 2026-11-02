@@ -297,3 +297,99 @@ describe("MCP 发布闸门", () => {
     expect(await 状态(db, id)).toBe("pending_tech")
   })
 })
+
+/**
+ * 终审 I-2 的根因版（2026-11-02）：发布快照必须绑定**实际试连过的那份配置**。
+ *
+ * `iterating` 期间允许改连接（`assets.ts` 的 `CONNECTION_WRITABLE_STATUSES`），而旧实现
+ * 「先试连 X、写快照时再重读工作副本」⇒ 试连期间被并发改成 Y 时，**没试连过的 Y 会被直接发布**。
+ * 这两条用例都让 probe 在返回前改库：一条改连接，一条 abort 掉状态。
+ */
+describe("MCP 发布 · 试连期间的并发", () => {
+  const OLD = { transport: "remote", url: "https://old.example" } as const
+  const X = { transport: "remote", url: "https://x.example" } as const
+  const Y = { transport: "remote", url: "https://y.example" } as const
+
+  /** 已发布过 OLD、正在迭代、工作副本已改成 X 的 MCP 资产。 */
+  async function 迭代中的资产(db: ProductionDb["db"]) {
+    const asset = await 有MCP资产(db, { status: "pending_tech", connection: OLD })
+    // 先真发布一次：published_config = OLD。
+    await 流转(db, asset.id, "publish_tech", 管理, {
+      grants: 授权(asset.id, "admin"),
+      probe: async () => ({ ok: true, toolCount: 1 }),
+    })
+    await 流转(db, asset.id, "start_iteration", 作者, { reason: "并发编辑" })
+    await updateMcpConnection(db, asset.id, X, 5_002)
+    return asset
+  }
+
+  test("试连期间连接被并发改 ⇒ 拒绝发布，published_config 不留未试连的 Y", async () => {
+    const db = await freshDb()
+    const asset = await 迭代中的资产(db)
+
+    let 试连: McpConnectionInput | undefined
+    const 错 = await 流转(db, asset.id, "publish_iteration", 管理, {
+      grants: 授权(asset.id, "admin"),
+      probe: async (input: McpConnectionInput) => {
+        试连 = input
+        // 试连在飞时，另一个写者把工作副本改成 Y。
+        await updateMcpConnection(db, asset.id, Y, 5_003)
+        return { ok: true, toolCount: 1 }
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    )
+
+    // probe 收到的是**实际工作副本 X**（发布闸门试的就是它）。
+    expect(试连).toMatchObject({ transport: "remote", url: "https://x.example" })
+    // 先断库：变异验证要能在「快照落成 Y」这一步直接红（改前旧实现正是如此）。
+    const 连接 = await getMcpConnection(db, asset.id)
+    expect(连接?.publishedConfig).toMatchObject({ url: "https://old.example" })
+    expect(错).toBeInstanceOf(AssetTransitionError)
+    expect(错误码(错)).toBe("concurrent_transition")
+    // 并发编辑没被吞掉：工作副本仍是 Y。
+    expect(连接?.url).toBe("https://y.example")
+    expect(await 状态(db, asset.id)).toBe("iterating")
+  })
+
+  /**
+   * 控制方核实的证伪用例：旧实现「abort 回写后被快照覆盖」**不成立**——`写入发布快照`
+   * 落库前会重读工作副本，abort 已把它还原成 OLD，快照写回去的也是 OLD。这条用例在旧实现
+   * 下应为绿（已实测），改后它守的是新实现的**状态条件**（`exists … status = expected.status`）。
+   *
+   * `now` 与连接此刻的 `updated_at` 取同一秒：让 `updated_at` 条件也通过，只有状态条件能挡住。
+   */
+  test("试连期间 abort ⇒ 拒绝发布，旧快照不被覆盖", async () => {
+    const db = await freshDb()
+    const asset = await 迭代中的资产(db)
+    const 试连前 = await getMcpConnection(db, asset.id)
+    if (试连前 === undefined) throw new Error("连接行没读回来")
+    const 同一秒 = 试连前.updatedAt
+
+    const 错 = await 流转(db, asset.id, "publish_iteration", 管理, {
+      grants: 授权(asset.id, "admin"),
+      probe: async () => {
+        // abort 把工作副本还原成 OLD、状态推到 published，`updated_at` 仍是同一秒。
+        await transitionAsset({
+          db,
+          root: 不存在的根(),
+          assetId: asset.id,
+          action: "abort_iteration",
+          viewer: 作者,
+          now: 同一秒,
+        })
+        return { ok: true, toolCount: 1 }
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    )
+
+    expect(错).toBeInstanceOf(AssetTransitionError)
+    expect(错误码(错)).toBe("concurrent_transition")
+    const 连接 = await getMcpConnection(db, asset.id)
+    expect(连接?.publishedConfig).toMatchObject({ url: "https://old.example" })
+    expect(await 状态(db, asset.id)).toBe("published")
+  })
+})

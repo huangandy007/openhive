@@ -532,7 +532,16 @@ describe("试连结果 · 重置 · 发布快照", () => {
     )
     await 记录试连结果(db, asset.id, { checkedAt: 8002, ok: true, error: "", toolCount: 5 })
 
-    expect(await 写入发布快照(db, asset.id, 8003)).toBe(true)
+    // 快照只写**调用方给的那份**（即被试连的工作副本），不再由函数自己重读。
+    const 工作副本 = 规范化连接({
+      transport: "remote",
+      url: "https://work.example",
+      headers: { Authorization: "Bearer snap-secret" },
+      timeoutMs: 8000,
+    })
+    expect(
+      await 写入发布快照(db, asset.id, 工作副本, 8003, { status: "draft", updatedAt: 8001 }),
+    ).toBe(true)
 
     // 写入快照只定格工作副本，**不得**动试连列（Task 4 的次序是「记录试连结果 → 写入发布快照」）。
     const 快照后 = await getMcpConnection(db, asset.id)
@@ -602,7 +611,49 @@ describe("发布快照 · 缺行 / 无快照（Task 3 修复轮 R1）", () => {
   test("写入发布快照：无连接行 ⇒ false", async () => {
     const db = await freshDb()
     const asset = await 有资产(db)
-    expect(await 写入发布快照(db, asset.id, 10001)).toBe(false)
+    // 语义改为「UPDATE 影响 0 行」：快照与期望值都合法，但没有连接行可写。
+    expect(
+      await 写入发布快照(
+        db,
+        asset.id,
+        规范化连接({ transport: "remote", url: "https://x" }),
+        10001,
+        { status: "draft", updatedAt: 1000 },
+      ),
+    ).toBe(false)
+  })
+
+  test("写入发布快照：expected 的 status / updatedAt 任一不匹配 ⇒ false 且 published_config 不变", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({ transport: "remote", url: "https://x" }),
+      11000,
+    )
+    const 快照 = 规范化连接({ transport: "remote", url: "https://snap.example" })
+
+    // updated_at 不匹配。
+    expect(
+      await 写入发布快照(db, asset.id, 快照, 11002, { status: "draft", updatedAt: 10_999 }),
+    ).toBe(false)
+    // 资产状态不匹配（夹具是 draft）。
+    expect(
+      await 写入发布快照(db, asset.id, 快照, 11003, { status: "pending_tech", updatedAt: 11000 }),
+    ).toBe(false)
+    // 两次都没命中 ⇒ 连接行与快照原样（updated_at 也没被前一次改掉）。
+    const 未写 = await getMcpConnection(db, asset.id)
+    expect(未写?.publishedConfig).toBeNull()
+    expect(未写?.updatedAt).toBe(11000)
+
+    // 对照：两个条件都成立才写。
+    expect(
+      await 写入发布快照(db, asset.id, 快照, 11004, { status: "draft", updatedAt: 11000 }),
+    ).toBe(true)
+    expect((await getMcpConnection(db, asset.id))?.publishedConfig).toMatchObject({
+      url: "https://snap.example",
+    })
   })
 
   test("回写发布快照：无连接行 ⇒ false", async () => {
@@ -649,7 +700,15 @@ describe("发布快照写入异常 · 清洗绑定参数（Task 3 修复轮 R1�
       { cause: 内层 },
     )
 
-    const error = await 写入发布快照(更新时抛(db, 外层), asset.id, 10006).then(
+    const 快照 = 规范化连接({
+      transport: "remote",
+      url: "https://x",
+      headers: { Authorization: "Bearer snapshot-canary-99" },
+    })
+    const error = await 写入发布快照(更新时抛(db, 外层), asset.id, 快照, 10006, {
+      status: "draft",
+      updatedAt: 10005,
+    }).then(
       () => null,
       (caught: unknown) => caught,
     )

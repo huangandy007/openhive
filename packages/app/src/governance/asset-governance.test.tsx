@@ -185,15 +185,6 @@ function 点单选(selector: string) {
   目标.click()
 }
 
-/** 确认框的「取消」（没有 data-slot，按文案找）。 */
-function 取消确认框() {
-  const 目标 = [...document.querySelectorAll<HTMLButtonElement>("[data-slot='asset-confirm'] button")].find(
-    (item) => item.textContent?.trim() === "取消",
-  )
-  if (!目标) throw new Error("找不到确认框的取消按钮")
-  目标.click()
-}
-
 function 选状态(value: string) {
   const 目标 = 有("[data-slot='asset-filter-status']")
   if (!(目标 instanceof HTMLSelectElement)) throw new Error("找不到状态筛选")
@@ -572,7 +563,7 @@ describe("资产治理页 · 指定人员 · 选人（2026-11-02 设计 §3.2.3�
     expect(文章("[data-slot='asset-publish-mcp-hint']")).toContain("MCP 默认建议指定人员；全单位可用才选全局")
   })
 
-  test("搜索回包按代次丢弃：慢的「李」不能盖掉快的「李四」；关框后旧回包也不落", async () => {
+  test("搜索回包按代次丢弃：慢的「李」不能盖掉快的「李四」；清空关键词后旧回包也不落", async () => {
     const 部门待发布 = 资产("p5", { name: "话单检索规则", status: "pending_tech", visibility: "department" })
     // 可控 promise：按关键词挂起，由用例决定谁先回（同步返回的替身造不出「先发慢回」）。
     const 挂起 = new Map<string, (value: AssetOutcome<readonly AssetReader[]>) => void>()
@@ -601,10 +592,9 @@ describe("资产治理页 · 指定人员 · 选人（2026-11-02 设计 §3.2.3�
     expect(有("[data-slot='asset-publish-user-u9']")).toBeNull()
     expect(有("[data-slot='asset-publish-user-u4']")).not.toBeNull()
 
-    // 关框后旧回包同样不落：先挂起一次搜索，关掉确认框，再把回包放出来。
+    // 清空关键词同样作废在飞的回包：这条路径可观测（关框会卸载搜索区，断言必然真空，终审 M-1）。
     填搜索("李五")
-    取消确认框()
-    await 等到(() => 框已关())
+    填搜索("")
     挂起.get("李五")!({ kind: "ok", value: [{ id: "u5", name: "李五", dept: "网安支队" }] })
     await 歇一拍()
     expect(有("[data-slot='asset-publish-user-u5']")).toBeNull()
