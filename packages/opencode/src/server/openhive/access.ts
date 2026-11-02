@@ -11,6 +11,7 @@ import { Config } from "@/config/config"
 import { McpCatalog } from "@/mcp/catalog"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
+import { OpenhiveMcpAvailability } from "./mcp-availability"
 import { OpenhiveSkillAvailability } from "./skill-availability"
 
 /**
@@ -96,9 +97,8 @@ export function capabilityFor() {
    * 建会话这一步绑到 MCP 连接上（迟到、甚至挂住）。配置是声明式的、稳定的，也是**权威**的——
    * 能不能连上是 MCP 自己的事，**能不能调**由这里说了算。
    *
-   * ⚠️ 已知残差（挂账，见 `004/state.md`）：`POST /mcp`（上游的「动态加一个 server」端点，
-   * 只写进 `InstanceState`、不回写配置）加的 server **不在**这份名单里 ⇒ 它的工具落回上游 `ask`。
-   * 那条端点本身还能加 `type: "local"`（= 任意进程）——同一个来源，一并挂账。
+   * `POST /mcp`（上游的「动态加一个 server」端点）已于 2026-11-02 **关闭**（handler 恒返回 403，
+   * spec §3.3.3）：运行期不会再出现「名单之外」的 server，此处不再挂残差。
    *
    * 名单是**键**（`Config.mcp` 的名字），翻译成一对名字交给 core（见模块头「分工分在两处」）：
    * 工具名通配走 {@link toolPatternOf}；资源 pattern 的**原样** server 名由 core 拼
@@ -164,6 +164,20 @@ export function capabilityFor() {
         })
       }
 
-      return AccessSession.sessionRuleset(grants, servers, 可用.names)
+      // ⑤ 可见的 MCP 资产（2026-11-02，spec §3.4.1/§3.4.3）：授权行那一侧只认显式行，而
+      // 产品口径是「谁能看见，谁就能用」。判据仍只有一份可见性（`readableAssetCondition()`），
+      // 名单（资产 id = 配置键）由 `mcp-availability.ts` 产出。失败仍按 fail-closed 走。
+      const 可用MCP = yield* Effect.promise(() =>
+        OpenhiveMcpAvailability.scanUsableMcpServers(database(), { userId, department }),
+      )
+      // 读得到但 id 不能当配置键的资产**不放行**，但要说出来（同 skill 那段）。
+      if (可用MCP.skipped.length > 0) {
+        yield* Effect.logWarning("有 MCP 资产 id 不能当配置键，本次不放行", {
+          userId,
+          skipped: 可用MCP.skipped,
+        })
+      }
+
+      return AccessSession.sessionRuleset(grants, servers, 可用.names, 可用MCP.names)
     })
 }
