@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterAll, describe, expect } from "bun:test"
 import { Context, Effect, Layer } from "effect"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
@@ -6,6 +6,21 @@ import { Server } from "../../src/server/server"
 import { resetDatabase } from "../fixture/db"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts。
+// 项目级配置里的 mcp 会被忽略 ⇒ demo 夹具走 OPENCODE_CONFIG_CONTENT（受信通道），
+// 与 openhive-access-mcp-wiring.test.ts 的写法一致。
+const previousConfigContent = process.env.OPENCODE_CONFIG_CONTENT
+process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+  mcp: {
+    demo: { type: "local", command: ["echo", "demo"], enabled: false },
+  },
+})
+
+afterAll(() => {
+  if (previousConfigContent === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+  else process.env.OPENCODE_CONFIG_CONTENT = previousConfigContent
+})
 
 const context = Context.empty() as Context.Context<unknown>
 const testStateLayer = Layer.effectDiscard(
@@ -67,17 +82,6 @@ describe("mcp HttpApi", () => {
         expect(response.status).toBe(200)
         expect(yield* json(response)).toEqual({ demo: { status: "disabled" } })
       }),
-    {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
-        },
-      },
-    },
   )
 
   it.instance(
@@ -113,17 +117,6 @@ describe("mcp HttpApi", () => {
         expect(disconnected.status).toBe(200)
         expect(yield* json(disconnected)).toBe(true)
       }),
-    {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
-        },
-      },
-    },
   )
 
   it.instance(
@@ -142,17 +135,6 @@ describe("mcp HttpApi", () => {
         expect(removed.status).toBe(200)
         expect(yield* json(removed)).toEqual({ success: true })
       }),
-    {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
-        },
-      },
-    },
   )
 
   it.instance(
@@ -174,19 +156,7 @@ describe("mcp HttpApi", () => {
           }),
         )
       }),
-    {
-      config: {
-        formatter: false,
-        lsp: false,
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
-        },
-      },
-    },
+    { config: { formatter: false, lsp: false } },
   )
 
   it.instance(
@@ -218,6 +188,5 @@ describe("mcp HttpApi", () => {
           })
         }
       }),
-    { config: { mcp: {} } },
   )
 })

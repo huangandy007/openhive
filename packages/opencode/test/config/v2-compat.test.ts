@@ -24,6 +24,23 @@ import { snapshot } from "./snapshot"
 const source = "test:v2-compat"
 const lower = (input: unknown) => ConfigParse.schema(ConfigV1.Info, ConfigV2Compat.lower(input, source).value, source)
 
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts。
+// 项目级 opencode.json 里的 mcp 会被忽略 ⇒ 需要被加载的 mcp 夹具放进 OPENCODE_CONFIG_CONTENT（受信通道）。
+const withConfigContent = <A, E, R>(content: object, effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.OPENCODE_CONFIG_CONTENT
+      process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify(content)
+      return previous
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+        else process.env.OPENCODE_CONFIG_CONTENT = previous
+      }),
+  )
+
 const it = testEffect(
   LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, Env.node, CrossSpawnSpawner.node]), [
     [Auth.node, AuthTest.empty],
@@ -323,12 +340,6 @@ describe("V2 configuration loading", () => {
           model: { providerID: "anthropic", model: "claude-sonnet", variant: "fast" },
           snapshots: false,
           skills: ["./skills", "https://example.com/skills"],
-          mcp: {
-            timeout: { catalog: 9000, execution: 9000 },
-            servers: {
-              native: { type: "remote", url: "https://native.example.com/mcp", disabled: false },
-            },
-          },
           agents: {
             reviewer: {
               model: "anthropic/claude-sonnet#thinking",
@@ -345,7 +356,17 @@ describe("V2 configuration loading", () => {
         }),
       )
 
-      const config = yield* Config.use.get()
+      const config = yield* withConfigContent(
+        {
+          mcp: {
+            timeout: { catalog: 9000, execution: 9000 },
+            servers: {
+              native: { type: "remote", url: "https://native.example.com/mcp", disabled: false },
+            },
+          },
+        },
+        Config.use.get(),
+      )
 
       expect(config.model).toBe("anthropic/claude-sonnet")
       expect(config.snapshot).toBe(false)
@@ -380,14 +401,18 @@ describe("V2 configuration loading", () => {
           theme: "legacy",
           keybinds: { leader: "ctrl+x" },
           tui: { scroll_speed: 4 },
+        }),
+      )
+
+      const config = yield* withConfigContent(
+        {
           mcp: {
             legacy: { enabled: false },
             servers: { native: { type: "local", command: ["native-mcp"] } },
           },
-        }),
+        },
+        Config.use.get(),
       )
-
-      const config = yield* Config.use.get()
 
       expect(config.model).toBe("openai/gpt-4.1")
       expect(config.mcp?.legacy).toEqual({ enabled: false })

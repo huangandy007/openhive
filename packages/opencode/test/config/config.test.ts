@@ -524,7 +524,8 @@ it.instance("rejects a project update with native agent permissions without writ
   }),
 )
 
-it.effect("native project MCP servers override inherited V1 disabled state", () =>
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts
+it.effect("项目级 MCP（含 V1 servers 形态）不能覆盖全局的 disabled 状态（fork）", () =>
   withConfigTree(
     {
       global: {
@@ -543,8 +544,8 @@ it.effect("native project MCP servers override inherited V1 disabled state", () 
     Effect.gen(function* () {
       expect((yield* Config.use.get()).mcp?.shared).toMatchObject({
         type: "local",
-        command: ["project-mcp"],
-        enabled: true,
+        command: ["global-mcp"],
+        enabled: false,
       })
     }),
   ),
@@ -1538,30 +1539,27 @@ test("config parser preserves permission order while ignoring unknown top-level 
 
 // MCP config merging tests
 
-it.instance("project config can override MCP server enabled status", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    // Simulates a base config (like from remote .well-known) with disabled MCP.
-    yield* writeConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        jira: {
-          type: "remote",
-          url: "https://jira.example.com/mcp",
-          enabled: false,
-        },
-        wiki: {
-          type: "remote",
-          url: "https://wiki.example.com/mcp",
-          enabled: false,
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts
+it.effect("项目级配置不能覆盖全局 MCP 的 enabled（fork）", () =>
+  withConfigTree(
+    {
+      // Simulates a base config (like from remote .well-known) with disabled MCP.
+      global: {
+        mcp: {
+          jira: {
+            type: "remote",
+            url: "https://jira.example.com/mcp",
+            enabled: false,
+          },
+          wiki: {
+            type: "remote",
+            url: "https://wiki.example.com/mcp",
+            enabled: false,
+          },
         },
       },
-    })
-    // Project config enables just jira.
-    yield* writeConfigEffect(
-      test.directory,
-      {
-        $schema: "https://opencode.ai/config.json",
+      // Project config enables just jira.
+      project: {
         mcp: {
           jira: {
             type: "remote",
@@ -1570,84 +1568,68 @@ it.instance("project config can override MCP server enabled status", () =>
           },
         },
       },
-      "opencode.jsonc",
-    )
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.jira).toEqual({
-      type: "remote",
-      url: "https://jira.example.com/mcp",
-      enabled: true,
-    })
-    expect(config.mcp?.wiki).toEqual({
-      type: "remote",
-      url: "https://wiki.example.com/mcp",
-      enabled: false,
-    })
-  }),
+    },
+    Effect.gen(function* () {
+      const config = yield* Config.use.get()
+      expect(config.mcp?.jira).toEqual({ type: "remote", url: "https://jira.example.com/mcp", enabled: false })
+      expect(config.mcp?.wiki).toEqual({ type: "remote", url: "https://wiki.example.com/mcp", enabled: false })
+    }),
+  ),
 )
 
-it.instance("MCP config deep merges preserving base config properties", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        myserver: {
-          type: "remote",
-          url: "https://myserver.example.com/mcp",
-          enabled: false,
-          headers: {
-            "X-Custom-Header": "value",
-          },
-        },
-      },
-    })
-    yield* writeConfigEffect(
-      test.directory,
-      {
-        $schema: "https://opencode.ai/config.json",
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts
+it.effect("项目级 MCP 深合并不再生效（fork）", () =>
+  withConfigTree(
+    {
+      global: {
         mcp: {
           myserver: {
             type: "remote",
             url: "https://myserver.example.com/mcp",
-            enabled: true,
+            enabled: false,
+            headers: {
+              "X-Custom-Header": "value",
+            },
           },
         },
       },
-      "opencode.jsonc",
-    )
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.myserver).toEqual({
-      type: "remote",
-      url: "https://myserver.example.com/mcp",
-      enabled: true,
-      headers: {
-        "X-Custom-Header": "value",
-      },
-    })
-  }),
-)
-
-it.instance("local .opencode config can override MCP from project config", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        docs: {
-          type: "remote",
-          url: "https://docs.example.com/mcp",
-          enabled: false,
+      project: {
+        mcp: {
+          myserver: {
+            type: "remote",
+            url: "https://myserver.example.com/mcp",
+            headers: {
+              "X-Project": "1",
+            },
+          },
         },
       },
-    })
-    yield* FSUtil.use.ensureDir(path.join(test.directory, ".opencode"))
-    yield* writeConfigEffect(
-      path.join(test.directory, ".opencode"),
-      {
-        $schema: "https://opencode.ai/config.json",
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).mcp?.myserver).toEqual({
+        type: "remote",
+        url: "https://myserver.example.com/mcp",
+        enabled: false,
+        headers: { "X-Custom-Header": "value" },
+      })
+    }),
+  ),
+)
+
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts
+it.effect(".opencode 目录不能覆盖 MCP（fork）", () =>
+  withConfigTree(
+    {
+      global: {
+        mcp: {
+          docs: {
+            type: "remote",
+            url: "https://docs.example.com/mcp",
+            enabled: false,
+          },
+        },
+      },
+      local: {
         mcp: {
           docs: {
             type: "remote",
@@ -1656,12 +1638,11 @@ it.instance("local .opencode config can override MCP from project config", () =>
           },
         },
       },
-      "opencode.json",
-    )
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.docs?.enabled).toBe(true)
-  }),
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).mcp?.docs?.enabled).toBe(false)
+    }),
+  ),
 )
 
 const remoteProjectOverride = wellKnown({
@@ -1670,13 +1651,14 @@ const remoteProjectOverride = wellKnown({
   },
 })
 
+// fork：mcp 只认受信来源（2026-11-02），见 openhive-mcp-authoritative.test.ts
 remoteProjectOverride.it.instance(
-  "project config overrides remote well-known config",
+  "well-known（受信）优先于项目级配置",
   () =>
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(remoteProjectOverride.seen.wellKnown).toBe("https://example.com/.well-known/opencode")
-      expect(config.mcp?.jira?.enabled).toBe(true)
+      expect(config.mcp?.jira?.enabled).toBe(false)
     }),
   {
     git: true,

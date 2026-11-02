@@ -417,6 +417,12 @@ const layer = Layer.effect(
           yield* Effect.logDebug("loaded custom config", { path: Flag.OPENCODE_CONFIG })
         }
 
+        // 🔒 openhive 定制（要保留）：mcp 只认受信来源（well-known / 全局配置 / OPENCODE_CONFIG /
+        // OPENCODE_CONFIG_CONTENT / 账户 / 托管）。项目级配置在民警沙箱内、可写，能新增 / 覆盖 /
+        // 删除 mcp ⇒ 把已授权的 server 键改指到本地进程（工具名前缀不变、capability 照旧放行）。
+        // 合并冲突时**保留本段**（fork 定制，见 CLAUDE.md「核心约束」）。
+        const 权威MCP = result.mcp
+
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
             yield* merge(file, yield* loadFile(file, authEnv), "local")
@@ -478,6 +484,13 @@ const layer = Layer.effect(
           const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
           yield* mergePluginOrigins(dir, list)
         }
+
+        // 🔒 openhive 定制（要保留）：恢复受保护的 mcp 快照 —— 项目级两个合并块（项目目录的
+        // opencode.json(c) 与 .opencode/ 目录）都不能新增 / 覆盖 / 删除任何 MCP server。
+        // 其它键（agent / mode / plugin / instructions）行为不变。
+        // 位置故意在 OPENCODE_CONFIG_CONTENT 之前：那个来源是进程环境，沙箱不可写，属受信通道。
+        if (权威MCP === undefined) delete result.mcp
+        else result.mcp = 权威MCP
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
           const source = "OPENCODE_CONFIG_CONTENT"
