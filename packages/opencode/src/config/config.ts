@@ -26,6 +26,8 @@ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
+import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
+import { BUILTIN_MCP_SERVERS } from "@opencode-ai/auth/builtin-mcp"
 import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
@@ -128,6 +130,7 @@ export interface Interface {
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
   readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
+  readonly replaceGlobalMcp: (entries: Readonly<Record<string, ConfigMCPV1.Info>>) => Effect.Effect<{ changed: boolean }>
   readonly invalidate: () => Effect.Effect<void>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
@@ -699,12 +702,67 @@ const layer = Layer.effect(
       return { info: next, changed }
     })
 
+    /**
+     * 【保留的定制 · 同步上游时不要丢】把全局配置的 `mcp` 段**整体替换**（设计 §3.3.4）。
+     *
+     * ## 为什么必须整体替换
+     *
+     * 只做合并的话，资产下线 / 归档后旧连接（含凭据）会永远留在配置里。「配置 ≡ 已发布
+     * 资产集合」要成为可断言的不变式（I1），删除就只能靠整段重写——`patchJsonc` 走的是
+     * jsonc-parser 的「写值」路径，**删不掉键**。
+     *
+     * ## 受保护键
+     *
+     * `BUILTIN_MCP_SERVERS`（今天只有 `openhive-governance`）的值从现存配置**原样**保留：
+     * 那条由治理监督器按实际端口写入，同步器既不知道端口、也无权改（上面 `readyHandler`）。
+     *
+     * ## 先校验后写盘
+     *
+     * 组装出的内容先按**将要写下去的字节**解析、再用与加载同一条 schema 解码，校验失败抛
+     * defect、一个字节都不落盘（用户在 `写失败保留上一份` 上要的就是这个）。
+     */
+    const replaceGlobalMcp = Effect.fn("Config.replaceGlobalMcp")(function* (
+      entries: Readonly<Record<string, ConfigMCPV1.Info>>,
+    ) {
+      const file = globalConfigFile()
+      const before = (yield* readConfigFile(file)) ?? "{}"
+      const 已解析 = ConfigParse.jsonc(before, file)
+      const 现状 = isRecord(已解析) ? 已解析 : {}
+
+      const 现存MCP = isRecord(现状["mcp"]) ? 现状["mcp"] : {}
+      const 受保护: Record<string, unknown> = {}
+      for (const name of BUILTIN_MCP_SERVERS) {
+        if (name in 现存MCP) 受保护[name] = 现存MCP[name]
+      }
+      const nextMcp = { ...entries, ...受保护 }
+
+      let updated: string
+      if (!file.endsWith(".jsonc")) {
+        updated = JSON.stringify({ ...现状, mcp: nextMcp }, null, 2)
+      } else {
+        const options = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+        // 删除整段再插入：`modify(..., undefined)` 是 jsonc-parser 的「删除」语义。
+        const cleared = applyEdits(before, modify(before, ["mcp"], undefined, options))
+        updated = applyEdits(cleared, modify(cleared, ["mcp"], nextMcp, options))
+      }
+
+      // 校验失败抛 defect（`Effect.orDie`），错误类型保持 `never`：写入口只有「成功」与「没写」。
+      yield* decodeConfig(ConfigParse.jsonc(updated, file), file).pipe(Effect.orDie)
+      const changed = updated !== before
+      if (changed) {
+        yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
+        yield* invalidate()
+      }
+      return { changed }
+    })
+
     return Service.of({
       get,
       getGlobal,
       getConsoleState,
       update,
       updateGlobal,
+      replaceGlobalMcp,
       invalidate,
       directories,
       waitForDependencies,
