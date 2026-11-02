@@ -19,6 +19,7 @@ import {
   type AppliedSkillTransition,
   type SkillAction,
 } from "./lifecycle"
+import { insertMcpConnection, 规范化连接 } from "./mcp-connection"
 import type { AssetMetadata } from "./metadata"
 import { AssetNotificationError, notifyAssetTransition } from "./notify"
 import { linkSkill, unlinkSkill } from "./project-skill-link"
@@ -273,6 +274,92 @@ export async function createDraftAsset(input: CreateDraftAssetInput): Promise<As
   }
 
   await insertAsset(input.db, metadata)
+  return metadata
+}
+
+export interface CreateMcpDraftInput {
+  readonly db: AssetTarget
+  /** 作者档案；与 skill 草稿同一条纪律：不收调用方自报值。 */
+  readonly owner: {
+    readonly id: string
+    readonly name: string
+    readonly department: string
+  }
+  readonly name: string
+  readonly description: string
+  readonly category: string
+  readonly tags?: readonly string[]
+  /** 默认 `targeted`：MCP 能直接取数，创建时就按「指定人员」起步（设计 §3.2.2）。 */
+  readonly visibility?: AssetVisibility
+  /** 测试注入；生产省略由服务生成稳定 id。 */
+  readonly id?: string
+  readonly now?: number
+  /** 连接规格，原样交给 `规范化连接` 校验（出口不必先拆字段）。 */
+  readonly connection: unknown
+}
+
+/**
+ * 【保留的定制 · 同步上游时不要丢】建一份 MCP 草稿（2026-11-02 设计 §3.1.2）。
+ *
+ * 与 `createDraftAsset` 的差异只有两处：**没有内容目录**（连接就是内容），以及
+ * **连接与元数据没有共同事务**。后者的补偿方向与 skill 相反：
+ * 先写元数据、再写连接；连接写失败就删掉刚写的元数据（级联删连接），
+ * 因为「资产行存在但连不上」比「没有这个资产」更难排障。
+ *
+ * 校验在**任何写入之前**：分类闭集读库、连接规格 `规范化连接`。
+ */
+export async function createMcpDraft(input: CreateMcpDraftInput): Promise<AssetMetadata> {
+  if (!(await isEnabledCategory(input.db, input.category))) {
+    throw new AssetMetadataError([{ field: "category", message: `未知业务分类：${input.category}` }])
+  }
+  const 连接 = 规范化连接(input.connection)
+
+  const now = input.now ?? Math.floor(Date.now() / 1000)
+  const metadata: AssetMetadata = {
+    id: input.id ?? `asset_${randomUUID()}`,
+    name: input.name,
+    type: "mcp",
+    description: input.description,
+    summary: "",
+    precautions: "",
+    icon: "mcp",
+    category: input.category,
+    tags: input.tags ?? [],
+    ownerId: input.owner.id,
+    ownerName: input.owner.name,
+    department: input.owner.department,
+    visibility: input.visibility ?? "targeted",
+    version: 1,
+    status: "draft",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: now,
+    updatedAt: now,
+    publishedAt: null,
+    archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
+  }
+
+  await insertAsset(input.db, metadata)
+  try {
+    await insertMcpConnection(input.db, metadata.id, 连接, now)
+  } catch (error) {
+    try {
+      await deleteAsset(input.db, metadata.id)
+    } catch (cleanupError) {
+      // oxlint-disable-next-line preserve-caught-error -- 第三个参数已带 `cause`；规则只认「二参 + cause」写法（实测 oxlint 1.60）。
+      throw new AggregateError(
+        [error, cleanupError],
+        `MCP 草稿 ${metadata.id} 的连接写入失败，且元数据未能清理`,
+        { cause: error },
+      )
+    }
+    throw error
+  }
   return metadata
 }
 
