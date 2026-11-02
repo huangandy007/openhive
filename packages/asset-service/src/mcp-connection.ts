@@ -27,6 +27,9 @@ import type { MetadataIssue } from "./metadata"
 export const MCP_TRANSPORTS = ["local", "remote"] as const
 export type McpTransport = (typeof MCP_TRANSPORTS)[number]
 
+/** 输入校验的上限（毫秒）。试连侧另有一层同值兜底（`mcp-probe.ts` 的 `PROBE_MAX_TIMEOUT_MS`）。 */
+export const MCP_TIMEOUT_MAX_MS = 30_000
+
 export const MASKED_VALUE = "***(已设置)"
 
 export interface McpConnectionInput {
@@ -57,6 +60,15 @@ export interface McpConnectionRecord {
   readonly toolCount: number | null
   readonly createdAt: number
   readonly updatedAt: number
+}
+
+/** 一次试连的结果（发布前展示与排障用，不作为运行期判据）。 */
+export interface McpCheck {
+  readonly checkedAt: number
+  readonly ok: boolean
+  /** 由调用方脱敏后的可读错误；入库存前再截断。 */
+  readonly error: string
+  readonly toolCount: number | null
 }
 
 /** 读接口的形状：**没有** `publishedConfig`（那是同步器的输入，不是浏览数据）。 */
@@ -180,6 +192,8 @@ export function 规范化连接(value: unknown): McpConnectionInput {
     (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs <= 0)
   ) {
     issues.push({ field: "connection.timeoutMs", message: "超时必须是正整数（毫秒）" })
+  } else if (typeof timeoutMs === "number" && timeoutMs > MCP_TIMEOUT_MAX_MS) {
+    issues.push({ field: "connection.timeoutMs", message: "超时不能超过 30 秒（30000 毫秒）" })
   }
   if (issues.length > 0) throw new AssetMetadataError(issues)
 
@@ -378,6 +392,10 @@ export async function updateMcpConnection(
           environment = ${input.environment ?? {}}::jsonb,
           enabled = ${input.enabled ?? true},
           timeout_ms = ${input.timeoutMs ?? null},
+          checked_at = null,
+          check_ok = null,
+          check_error = '',
+          tool_count = null,
           updated_at = ${now}
         where asset_id = ${assetId}
         returning asset_id
@@ -387,6 +405,72 @@ export async function updateMcpConnection(
     throw 连接写入错误(error)
   }
   return rows.length === 0 ? undefined : getMcpConnection(db, assetId)
+}
+
+/**
+ * 内部读路径：把库里的行组装成 `McpConnectionInput`（同步器与试连用，**保留凭据原文**）。
+ *
+ * `null` 的列一律省略（不是写 `undefined` 字面量）；空表也省略——`规范化连接` 把
+ * `local` 带 `headers` / `remote` 带 `environment` 当错误，回写快照要能再走一遍校验。
+ */
+export function 连接输入(record: McpConnectionRecord): McpConnectionInput {
+  const 公共 = {
+    transport: record.transport,
+    enabled: record.enabled,
+    ...(record.timeoutMs === null ? {} : { timeoutMs: record.timeoutMs }),
+  }
+  if (record.transport === "remote") {
+    return {
+      ...公共,
+      ...(record.url === null ? {} : { url: record.url }),
+      ...(Object.keys(record.headers).length === 0 ? {} : { headers: record.headers }),
+    }
+  }
+  return {
+    ...公共,
+    ...(record.command === null ? {} : { command: record.command }),
+    ...(record.cwd === null ? {} : { cwd: record.cwd }),
+    ...(Object.keys(record.environment).length === 0 ? {} : { environment: record.environment }),
+  }
+}
+
+/** 试连结果落库。错误原文由调用方脱敏；这里只截断长度，绝不整段入库。 */
+export async function 记录试连结果(
+  db: AssetTarget,
+  assetId: string,
+  check: McpCheck,
+): Promise<void> {
+  await db.execute(sql`
+    update auth.asset_mcp_connection set
+      checked_at = ${check.checkedAt},
+      check_ok = ${check.ok},
+      check_error = ${check.error.slice(0, 500)},
+      tool_count = ${check.toolCount}
+    where asset_id = ${assetId}
+  `)
+}
+
+/**
+ * 把当前工作副本定格成发布快照。**不动**试连列（那是工作副本的最近一次试连结果）；
+ * 快照写入直接绑对象，先 `JSON.stringify` 会落成 jsonb 字符串。
+ */
+export async function 写入发布快照(db: AssetTarget, assetId: string, now: number): Promise<boolean> {
+  const 连接 = await getMcpConnection(db, assetId)
+  if (连接 === undefined) return false
+  const 快照 = { ...连接输入(连接) }
+  await db.execute(sql`
+    update auth.asset_mcp_connection
+       set published_config = ${快照}::jsonb, updated_at = ${now}
+     where asset_id = ${assetId}
+  `)
+  return true
+}
+
+/** 把发布快照写回工作列（中止迭代用）。走 `updateMcpConnection` ⇒ 试连列随之清空。 */
+export async function 回写发布快照(db: AssetTarget, assetId: string, now: number): Promise<boolean> {
+  const 连接 = await getMcpConnection(db, assetId)
+  if (连接 === undefined || 连接.publishedConfig === null) return false
+  return (await updateMcpConnection(db, assetId, 连接.publishedConfig, now)) !== undefined
 }
 
 function 遮罩(map: Readonly<Record<string, string>>): Record<string, string> {

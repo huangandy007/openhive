@@ -5,9 +5,13 @@ import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-sup
 import { AssetMetadataError, deleteAsset, insertAsset, type AssetTarget } from "./asset"
 import {
   MASKED_VALUE,
+  MCP_TIMEOUT_MAX_MS,
   getMcpConnection,
   insertMcpConnection,
   updateMcpConnection,
+  回写发布快照,
+  写入发布快照,
+  记录试连结果,
   规范化连接,
   遮罩连接,
 } from "./mcp-connection"
@@ -455,5 +459,134 @@ describe("连接写入异常 · 清洗绑定参数（终审 I-1）", () => {
     expect(text).toContain("MCP 连接写入失败")
     expect(text).toContain("23514")
     expect(text).toContain("asset_mcp_connection_timeout_check")
+  })
+})
+
+describe("超时上限", () => {
+  test("timeoutMs 上限 30 秒", () => {
+    expect(MCP_TIMEOUT_MAX_MS).toBe(30_000)
+    expect(() =>
+      规范化连接({ transport: "remote", url: "https://x", timeoutMs: 30_001 }),
+    ).toThrow(AssetMetadataError)
+    // 边界值本身要收下：上限是闭区间，否则与设计里的 30 秒对不上。
+    expect(
+      规范化连接({ transport: "remote", url: "https://x", timeoutMs: MCP_TIMEOUT_MAX_MS }).timeoutMs,
+    ).toBe(30_000)
+  })
+})
+
+describe("试连结果 · 重置 · 发布快照", () => {
+  test("改连接会把试连结果列重置", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({ transport: "remote", url: "https://old.example" }),
+      7000,
+    )
+    await 记录试连结果(db, asset.id, { checkedAt: 7001, ok: true, error: "", toolCount: 3 })
+
+    const 试连后 = await getMcpConnection(db, asset.id)
+    expect(试连后?.checkedAt).toBe(7001)
+    expect(试连后?.checkOk).toBe(true)
+    expect(试连后?.toolCount).toBe(3)
+
+    const 改后 = await updateMcpConnection(
+      db,
+      asset.id,
+      { transport: "remote", url: "https://new.example" },
+      7002,
+    )
+    expect(改后?.checkedAt).toBeNull()
+    expect(改后?.checkOk).toBeNull()
+    expect(改后?.checkError).toBe("")
+    expect(改后?.toolCount).toBeNull()
+  })
+
+  test("写入发布快照 = 工作副本（含凭据原文），回写快照还原工作副本", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({
+        transport: "remote",
+        url: "https://old.example",
+        headers: { Authorization: "Bearer snap-secret" },
+        timeoutMs: 8000,
+      }),
+      8000,
+    )
+    // 改工作副本：快照要定格「现在这一份」，不是插入时那一份。
+    await updateMcpConnection(
+      db,
+      asset.id,
+      {
+        transport: "remote",
+        url: "https://work.example",
+        headers: { Authorization: "Bearer snap-secret" },
+        timeoutMs: 8000,
+      },
+      8001,
+    )
+    await 记录试连结果(db, asset.id, { checkedAt: 8002, ok: true, error: "", toolCount: 5 })
+
+    expect(await 写入发布快照(db, asset.id, 8003)).toBe(true)
+    await updateMcpConnection(
+      db,
+      asset.id,
+      { transport: "remote", url: "https://later.example" },
+      8004,
+    )
+
+    expect(await 回写发布快照(db, asset.id, 8005)).toBe(true)
+    const 回写后 = await getMcpConnection(db, asset.id)
+    expect(回写后?.url).toBe("https://work.example")
+    expect(回写后?.headers).toEqual({ Authorization: "Bearer snap-secret" })
+    // 回写走 updateMcpConnection ⇒ 试连列自然被清空。
+    expect(回写后?.checkedAt).toBeNull()
+    expect(回写后?.checkOk).toBeNull()
+    expect(回写后?.checkError).toBe("")
+    expect(回写后?.toolCount).toBeNull()
+
+    const rows = rowsOf(
+      await db.execute(sql`
+        select jsonb_typeof(published_config) as kind, published_config::text as body
+        from auth.asset_mcp_connection
+        where asset_id = ${asset.id}
+      `),
+    )
+    expect(rows.length).toBe(1)
+    // 直接绑对象就应该是 jsonb object；若先 JSON.stringify 会变成 jsonb 字符串。
+    expect(rows[0]?.kind).toBe("object")
+    expect(String(rows[0]?.body)).toContain("Bearer snap-secret")
+  })
+
+  test("记录试连结果：失败时 check_error 截断且可读", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({ transport: "remote", url: "https://x" }),
+      9000,
+    )
+    const 长错误 = "连接失败：".repeat(200)
+    expect(长错误.length).toBe(1000)
+
+    await 记录试连结果(db, asset.id, {
+      checkedAt: 9001,
+      ok: false,
+      error: 长错误,
+      toolCount: null,
+    })
+
+    const row = await getMcpConnection(db, asset.id)
+    expect(row?.checkError.length).toBe(500)
+    expect(row?.checkError).toBe(长错误.slice(0, 500))
+    expect(row?.checkOk).toBe(false)
+    expect(row?.checkedAt).toBe(9001)
+    expect(row?.toolCount).toBeNull()
   })
 })
