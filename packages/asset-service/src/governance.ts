@@ -9,7 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
-import { AssetMetadataError, type AssetTarget } from "./asset"
+import { AssetMetadataError, assetById, type AssetTarget } from "./asset"
 import type { AssetViewer } from "./authorization"
 import { ASSET_CATEGORY_SEED } from "./categories"
 import { AssetTransitionError, type SkillAction } from "./lifecycle"
@@ -379,6 +379,17 @@ async function runTool(
   const user = await userOf(deps.db, userIdOf(meta))
 
   try {
+    // 【保留的定制 · 同步上游时不要丢】`submit_skill_for_review` 只提交 skill（2026-11-02 批次 2 裁定）：
+    // 工具契约是「内容从 `<root>/draft/<assetId>` 复制」，MCP 没有草稿副本，放进来等于静默空转。
+    // 服务层自本批次起对 MCP 放行 7 状态机，所以这条工具级边界不能靠服务层的类型门兜底。
+    // MCP 的提交审核入口在批次 3 随 UI 一起定义。资产不存在时交给 `transitionAsset` 报 asset_not_found。
+    if (name === "submit_skill_for_review") {
+      const asset = await assetById(deps.db, assetId)
+      if (asset !== undefined && asset.type !== "skill") {
+        throw new AssetTransitionError("unsupported_asset_type", `该工具只提交 skill：${assetId}`)
+      }
+    }
+
     const updated = await transitionAsset({
       db: deps.db,
       root: deps.root,

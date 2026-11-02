@@ -817,21 +817,24 @@ describe("T007 · 动作收窄与错误翻译", () => {
     }),
   )
 
-  it.live("资产不存在 ⇒ 404；非 Skill ⇒ 400（7 状态机不套错表）", () =>
+  it.live("资产不存在 ⇒ 404；MCP 复用 7 状态机（设计 §3.1.4），状态不允许 ⇒ 409", () =>
     Effect.gen(function* () {
       expect((yield* post(ADMIN, transitionUrl("asset-nope-0001"), { action: "take_offline" })).status).toBe(404)
 
-      const 非技能 = yield* post(ADMIN, transitionUrl(IDS.mcp), { action: "publish_tech" })
-      expect(非技能.status).toBe(400)
-      expect((yield* json(ErrorResponse, 非技能)).error).toContain("Skill")
+      // MCP 现在与 Skill 共用同一套状态表：`publish_tech` 只允许从 `pending_tech` 发起，
+      // 当前 `in_review` ⇒ `invalid_source`（409），不再按类型拒绝。
+      const 状态不对 = yield* post(ADMIN, transitionUrl(IDS.mcp), { action: "publish_tech" })
+      expect(状态不对.status).toBe(409)
+      expect((yield* json(ErrorResponse, 状态不对)).error).toContain("in_review")
     }),
   )
 
   it.live("状态不允许该动作 ⇒ 409（系统管理员不能跳过业务审核）", () =>
     Effect.gen(function* () {
+      // MCP 复用 7 状态机（设计 §3.1.4）：`in_review` 可以业务审核 ⇒ 200，推进到 `pending_tech`。
       const response = yield* post(EXPERT, transitionUrl(IDS.mcp), { action: "approve_business" })
-      // 先撞类型（mcp 不走技能状态机），换一份技能资产再钉 invalid_source。
-      expect(response.status).toBe(400)
+      expect(response.status).toBe(200)
+      expect(yield* Effect.promise(() => 库状态(IDS.mcp))).toBe("pending_tech")
 
       const 跳过 = yield* post(ADMIN, transitionUrl(IDS.draft), { action: "publish_tech" })
       expect(跳过.status).toBe(409)
