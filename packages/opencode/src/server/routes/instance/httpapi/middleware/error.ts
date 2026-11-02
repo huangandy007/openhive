@@ -1,5 +1,6 @@
 import { NamedError } from "@opencode-ai/core/util/error"
 import { ConfigErrorV1 } from "@opencode-ai/core/v1/config/error"
+import { OpenhiveConfigErrorResponse } from "@/server/openhive/config-error-response"
 import { Cause, Effect } from "effect"
 import { HttpRouter, HttpServerError, HttpServerRespondable, HttpServerResponse } from "effect/unstable/http"
 
@@ -16,8 +17,10 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
       if (!defect) return Effect.failCause(cause)
 
       const error = defect.defect
+      // 【保留的定制】配置解析错误只回 path，不回含配置原文的 message（openhive-config-error-response.ts）。
+      const 净化 = OpenhiveConfigErrorResponse.配置错误响应(error)
+      if (净化) return Effect.succeed(HttpServerResponse.jsonUnsafe(净化, { status: 400 }))
       if (
-        ConfigErrorV1.JsonError.isInstance(error) ||
         ConfigErrorV1.InvalidError.isInstance(error) ||
         ConfigErrorV1.FrontmatterError.isInstance(error) ||
         ConfigErrorV1.DirectoryTypoError.isInstance(error) ||
