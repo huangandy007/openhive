@@ -533,6 +533,13 @@ describe("试连结果 · 重置 · 发布快照", () => {
     await 记录试连结果(db, asset.id, { checkedAt: 8002, ok: true, error: "", toolCount: 5 })
 
     expect(await 写入发布快照(db, asset.id, 8003)).toBe(true)
+
+    // 写入快照只定格工作副本，**不得**动试连列（Task 4 的次序是「记录试连结果 → 写入发布快照」）。
+    const 快照后 = await getMcpConnection(db, asset.id)
+    expect(快照后?.checkedAt).toBe(8002)
+    expect(快照后?.checkOk).toBe(true)
+    expect(快照后?.toolCount).toBe(5)
+
     await updateMcpConnection(
       db,
       asset.id,
@@ -588,5 +595,71 @@ describe("试连结果 · 重置 · 发布快照", () => {
     expect(row?.checkOk).toBe(false)
     expect(row?.checkedAt).toBe(9001)
     expect(row?.toolCount).toBeNull()
+  })
+})
+
+describe("发布快照 · 缺行 / 无快照（Task 3 修复轮 R1）", () => {
+  test("写入发布快照：无连接行 ⇒ false", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    expect(await 写入发布快照(db, asset.id, 10001)).toBe(false)
+  })
+
+  test("回写发布快照：无连接行 ⇒ false", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    expect(await 回写发布快照(db, asset.id, 10002)).toBe(false)
+  })
+
+  test("回写发布快照：有行但 published_config 为 null ⇒ false", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({ transport: "remote", url: "https://x" }),
+      10003,
+    )
+    expect((await getMcpConnection(db, asset.id))?.publishedConfig).toBeNull()
+    expect(await 回写发布快照(db, asset.id, 10004)).toBe(false)
+  })
+})
+
+describe("发布快照写入异常 · 清洗绑定参数（Task 3 修复轮 R1）", () => {
+  test("写入发布快照失败 ⇒ 异常不带快照原文、无 cause、固定文案", async () => {
+    const db = await freshDb()
+    const asset = await 有资产(db)
+    await insertMcpConnection(
+      db,
+      asset.id,
+      规范化连接({
+        transport: "remote",
+        url: "https://x",
+        headers: { Authorization: "Bearer snapshot-canary-99" },
+      }),
+      10005,
+    )
+
+    const 内层 = new Error(
+      'duplicate key value violates unique constraint "asset_mcp_connection_pkey"',
+    )
+    Object.assign(内层, { errno: "23505" })
+    const 外层 = new Error(
+      "Failed query: update auth.asset_mcp_connection set ... \nparams: Bearer snapshot-canary-99",
+      { cause: 内层 },
+    )
+
+    const error = await 写入发布快照(更新时抛(db, 外层), asset.id, 10006).then(
+      () => null,
+      (caught: unknown) => caught,
+    )
+
+    expect(error).toBeInstanceOf(Error)
+    if (!(error instanceof Error)) throw new Error("期望 Error")
+    const text = String(error)
+    expect(text).not.toContain("Bearer snapshot-canary-99")
+    expect(JSON.stringify(error)).not.toContain("Bearer snapshot-canary-99")
+    expect((error as { cause?: unknown }).cause).toBeUndefined()
+    expect(error.message).toBe("MCP 连接写入失败（23505，asset_mcp_connection_pkey）")
   })
 })

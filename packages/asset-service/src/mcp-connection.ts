@@ -434,7 +434,13 @@ export function 连接输入(record: McpConnectionRecord): McpConnectionInput {
   }
 }
 
-/** 试连结果落库。错误原文由调用方脱敏；这里只截断长度，绝不整段入库。 */
+/**
+ * 试连结果落库。
+ *
+ * ⚠️ `check.error` 的**唯一合规来源是 `probeMcpConnection`**：它在返回前按 headers /
+ * environment 的值替换并截到 500。自定义 probe 的返回值不经过这条防线——调用方绕开它
+ * 就等于把凭据原文写进库。这里只再截断一次长度，绝不整段入库。
+ */
 export async function 记录试连结果(
   db: AssetTarget,
   assetId: string,
@@ -458,11 +464,15 @@ export async function 写入发布快照(db: AssetTarget, assetId: string, now: 
   const 连接 = await getMcpConnection(db, assetId)
   if (连接 === undefined) return false
   const 快照 = { ...连接输入(连接) }
-  await db.execute(sql`
-    update auth.asset_mcp_connection
-       set published_config = ${快照}::jsonb, updated_at = ${now}
-     where asset_id = ${assetId}
-  `)
+  try {
+    await db.execute(sql`
+      update auth.asset_mcp_connection
+         set published_config = ${快照}::jsonb, updated_at = ${now}
+       where asset_id = ${assetId}
+    `)
+  } catch (error) {
+    throw 连接写入错误(error)
+  }
   return true
 }
 
