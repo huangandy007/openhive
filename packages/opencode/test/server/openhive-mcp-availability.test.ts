@@ -125,4 +125,23 @@ describe("scanUsableMcpServers（spec §3.4.1）", () => {
     expect(scan.names).toEqual(["asset-ok"])
     expect(scan.skipped).toEqual([{ id: "asset_*", reason: "资产 id 含通配字符，不能当配置键：asset_*" }])
   })
+
+  test("空 id ⇒ skipped（否则会退化成 `_*`，同样会放大成别的键）", async () => {
+    const db = await freshDb()
+    // `insertAsset` 的元数据校验拒绝空 id，所以这里直接写行：本用例防的正是「库里已有脏行」
+    // 被当成配置键（空串不含通配字符，只看通配字符时会一路放行）。
+    await db.execute(sql`
+      insert into auth.asset
+        (id, name, type, description, icon, category, owner_id, owner_name, department,
+         visibility, status, created_at, updated_at, published_at)
+      values
+        ('', '空 id 资产', 'mcp', '夹具', 'mcp', 'intelligence', 'u1', '甲民警', '经侦支队',
+         'global', 'published', 1000, 1000, 1000)
+    `)
+
+    const scan = await scanUsableMcpServers(db, U1)
+
+    expect(scan.names).toEqual([])
+    expect(scan.skipped.map((item) => item.id)).toEqual([""])
+  })
 })

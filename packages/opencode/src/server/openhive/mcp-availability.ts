@@ -22,7 +22,8 @@ import { readableAssetCondition, type AssetViewer } from "@opencode-ai/asset-ser
  *
  * `Permission.evaluate` 把规则那侧按通配解释。一个含 `*` / `?` 的资产 id 被当作 allow 写进
  * 规则集，会**放大成别的键**（与 `skill-availability.ts` 的 `是安全的调用名` 同一条纪律）。
- * 宁可那一台不放行，也不能让一份资产改写整条规则集。
+ * 空 id 同理：它会退化成 `_*`，把工具名里带 `_` 前缀的规则一并放大。宁可那一台不放行，
+ * 也不能让一份资产改写整条规则集。
  */
 
 /** 能跑 SQL 的句柄（形状同 `SkillAvailabilityTarget`）。 */
@@ -43,7 +44,7 @@ export interface UsableMcpScan {
 }
 
 function 是安全的配置键(id: string): boolean {
-  return !id.includes("*") && !id.includes("?")
+  return id.length > 0 && !id.includes("*") && !id.includes("?")
 }
 
 /**
