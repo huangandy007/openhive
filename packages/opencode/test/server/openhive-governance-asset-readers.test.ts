@@ -440,7 +440,7 @@ describe("Task 5 · GET /asset-readers（选人搜索）", () => {
 
   it.live("管理员按部门搜索：q 命中部门子串，字段仍只有 id/name/dept，别的部门不混进来", () =>
     Effect.gen(function* () {
-      // 弹窗文案与 `aria-label` 写的是「按姓名或部门搜索人员」（终审 I-1）：
+      // 弹窗提示文案是「按姓名或部门搜索人员」（`aria-label` 为「搜索人员」）（终审 I-1）：
       // U2 的部门是 " 经侦支队"（带前导空格），搜子串「经侦」应当命中。
       const 按部门 = yield* get(ADMIN, `${READERS}?q=${encodeURIComponent("经侦")}&limit=5`)
       expect(按部门.status).toBe(200)

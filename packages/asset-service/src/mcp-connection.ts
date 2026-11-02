@@ -441,6 +441,13 @@ export function 连接输入(record: McpConnectionRecord): McpConnectionInput {
 /**
  * 试连结果落库。
  *
+ * ## 结果属于**哪一份**配置（复审 M-1）
+ *
+ * 试连在飞时允许改连接（`iterating` 期间），若这行无条件写，probe 回来会把「试连 X 的结论」
+ * 写到并发改后的 Y 上——面板会对一份**从未试连的**配置显示「试连成功」。传 `expectedUpdatedAt`
+ * （进入试连时定格的那份的 `updated_at`）就只写那一份；0 行即不写。省略 = 老行为（直接调用方
+ * 用在「刚改完就试连」的场景，没有并发窗口）。
+ *
  * ⚠️ `check.error` 的**唯一合规来源是 `probeMcpConnection`**：它在返回前按 headers /
  * environment 的值替换并截到 500。自定义 probe 的返回值不经过这条防线——调用方绕开它
  * 就等于把凭据原文写进库。这里只再截断一次长度，绝不整段入库。
@@ -449,14 +456,19 @@ export async function 记录试连结果(
   db: AssetTarget,
   assetId: string,
   check: McpCheck,
+  expectedUpdatedAt?: number,
 ): Promise<void> {
+  // 两个分支而不是把「条件开关」塞进参数位：与 `handleReaders` 的 `q` 同一写法，
+  // 不让一个可空参数进入 SQL（否则类型 / 语义都要靠驱动宽容）。
+  const 版本条件 =
+    expectedUpdatedAt === undefined ? sql`` : sql` and updated_at = ${expectedUpdatedAt}`
   await db.execute(sql`
     update auth.asset_mcp_connection set
       checked_at = ${check.checkedAt},
       check_ok = ${check.ok},
       check_error = ${check.error.slice(0, 500)},
       tool_count = ${check.toolCount}
-    where asset_id = ${assetId}
+    where asset_id = ${assetId}${版本条件}
   `)
 }
 

@@ -815,12 +815,19 @@ async function prepareMcpPublish(
   // 这份快照同时交给 probe 和写快照：**试连的就是发布的**，中途不再重读工作副本。
   const 快照 = { ...连接输入(连接) }
   const 结果 = await probe(快照, { timeoutMs: 快照.timeoutMs })
-  await 记录试连结果(db, assetId, {
-    checkedAt: now,
-    ok: 结果.ok,
-    error: 结果.ok ? "" : 结果.error,
-    toolCount: 结果.ok ? 结果.toolCount : null,
-  })
+  // 结果属于**被试连的那份**：试连期间连接被并发改掉时，这里 0 行（不把 X 的结论写到 Y 上）。
+  // 失败路径仍抛 `mcp_probe_failed` 并带 `结果.error`，信息不丢（复审 M-1）。
+  await 记录试连结果(
+    db,
+    assetId,
+    {
+      checkedAt: now,
+      ok: 结果.ok,
+      error: 结果.ok ? "" : 结果.error,
+      toolCount: 结果.ok ? 结果.toolCount : null,
+    },
+    连接.updatedAt,
+  )
   if (!结果.ok) throw new AssetTransitionError("mcp_probe_failed", `连不上：${结果.error}`)
 
   const 写入 = await 写入发布快照(db, assetId, 快照, now, {

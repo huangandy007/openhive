@@ -665,7 +665,7 @@ function handleBatchCategory(request: HttpServerRequest.HttpServerRequest, deps:
 }
 
 /**
- * 批次 3（2026-11-02）· **选人搜索**：发布弹窗按姓名 / 警号 / 部门找人（spec §3.2.4）。
+ * 批次 3（2026-11-02）· **选人搜索**：发布弹窗按姓名 / 警号 / 部门找人（spec §3.2.3）。
  *
  * ## 权限是 `admin`（与发布同权）
  *

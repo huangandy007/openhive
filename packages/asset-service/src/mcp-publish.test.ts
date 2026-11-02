@@ -351,6 +351,11 @@ describe("MCP 发布 · 试连期间的并发", () => {
     // 并发编辑没被吞掉：工作副本仍是 Y。
     expect(连接?.url).toBe("https://y.example")
     expect(await 状态(db, asset.id)).toBe("iterating")
+    // 复审 M-1：试连结果是 X 的结论，不能写到并发改后的 Y 那一行。
+    // `updateMcpConnection(Y)` 已把 check 列清空 ⇒ 试连结果也不许落回，否则面板会对
+    // 一份从未试连的配置显示「试连成功」。
+    expect(连接?.checkOk).toBeNull()
+    expect(连接?.checkedAt).toBeNull()
   })
 
   /**
@@ -391,5 +396,38 @@ describe("MCP 发布 · 试连期间的并发", () => {
     const 连接 = await getMcpConnection(db, asset.id)
     expect(连接?.publishedConfig).toMatchObject({ url: "https://old.example" })
     expect(await 状态(db, asset.id)).toBe("published")
+  })
+
+  /**
+   * 复审 M-2：把「快照必须是**显式传入**的那份」这半单独钉住。
+   *
+   * 前一条用例的并发改发生在**另一秒**，`updated_at` 条件自己也能挡住；把 `prepareMcpPublish`
+   * 改回「写快照前重读工作副本」时，靠它就会漏测（重读那份的 updated_at 是新的，条件照样过）。
+   * 这里让并发改与捕获值取**同一秒**：`updated_at` 条件必过，只有「写的是试连过的 X」能解释结果。
+   */
+  test("同秒并发改连接 ⇒ 仍发布试连过的 X，不发布未试连的 Y", async () => {
+    const db = await freshDb()
+    const asset = await 迭代中的资产(db)
+    const 试连前 = await getMcpConnection(db, asset.id)
+    if (试连前 === undefined) throw new Error("连接行没读回来")
+    const 同一秒 = 试连前.updatedAt
+
+    let 试连: McpConnectionInput | undefined
+    const 结果 = await 流转(db, asset.id, "publish_iteration", 管理, {
+      grants: 授权(asset.id, "admin"),
+      probe: async (input: McpConnectionInput) => {
+        试连 = input
+        // 同一秒把工作副本改成 Y：`updated_at` 条件也会通过，挡不住「写成谁」。
+        await updateMcpConnection(db, asset.id, Y, 同一秒)
+        return { ok: true, toolCount: 1 }
+      },
+    })
+
+    expect(试连).toMatchObject({ transport: "remote", url: "https://x.example" })
+    expect(结果.status).toBe("published")
+    const 连接 = await getMcpConnection(db, asset.id)
+    // 发布的是**试连过的** X；工作副本保留并发写者的 Y。
+    expect(连接?.publishedConfig).toMatchObject({ url: "https://x.example" })
+    expect(连接?.url).toBe("https://y.example")
   })
 })
