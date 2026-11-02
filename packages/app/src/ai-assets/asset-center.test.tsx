@@ -827,4 +827,80 @@ describe("AssetCenter · MCP 连接（2026-11-02 设计 §3.1.2）", () => {
       host.remove()
     }
   })
+
+  /**
+   * 默认折算（`out.kind === "ok" ? out.value : out.message`）是生产唯一走法。
+   * 不建新基建：临时替换 `globalThis.fetch`，让默认客户端真的走一遍收发。
+   */
+  const 默认视图 = {
+    assetId: "m1",
+    transport: "remote",
+    url: "https://mcp.example/default",
+    command: null,
+    cwd: null,
+    headers: {},
+    environment: {},
+    enabled: true,
+    timeoutMs: null,
+    checkedAt: null,
+    checkOk: null,
+    checkError: "",
+    toolCount: null,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+
+  test("省略注入 ⇒ 默认客户端 ok 折算成视图并渲染", async () => {
+    const 原fetch = globalThis.fetch
+    const 请求: string[] = []
+    // 与 `project-data.test.ts` 同一个写法：真 `fetch` 收字符串 / `URL` / `Request` 三种，
+    // 三种都摊开再记——`String(input)` 会把 `Request` 变成 `[object Object]`（`#009-02` 同类）。
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+      请求.push(url)
+      return new Response(JSON.stringify(默认视图), { status: 200 })
+    }) as typeof fetch
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(
+      () => <AssetCenter filter={createAssetFilter()} catalog={数据源({ assets: [mcp资产], total: 1 })} />,
+      host,
+    )
+    try {
+      开卡(host, "m1")
+      await 等到(
+        () => host.querySelector("[data-slot='asset-detail-mcp-url']")?.textContent === 默认视图.url,
+      )
+      expect(请求).toEqual(["/openhive/assets/m1/connection"])
+    } finally {
+      dispose()
+      host.remove()
+      globalThis.fetch = 原fetch
+    }
+  })
+
+  test("省略注入 ⇒ 默认客户端失败折算成错误文案", async () => {
+    const 原fetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL) =>
+      new Response(JSON.stringify({ error: "无权查看这台 MCP 的连接" }), {
+        status: 403,
+      })) as typeof fetch
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(
+      () => <AssetCenter filter={createAssetFilter()} catalog={数据源({ assets: [mcp资产], total: 1 })} />,
+      host,
+    )
+    try {
+      开卡(host, "m1")
+      await 等到(() => host.querySelector("[data-slot='asset-detail-mcp-error']") !== null)
+      expect(host.querySelector("[data-slot='asset-detail-mcp-error']")?.textContent).toBe(
+        "无权查看这台 MCP 的连接",
+      )
+    } finally {
+      dispose()
+      host.remove()
+      globalThis.fetch = 原fetch
+    }
+  })
 })

@@ -61,8 +61,9 @@ function 视图(over: Partial<McpConnectionView> = {}): McpConnectionView {
     url: "https://mcp.example/path",
     command: null,
     cwd: null,
-    headers: { Authorization: MASKED },
-    environment: {},
+    // 真实样式的秘密值（不是遮罩占位）：只有这样，「面板只显示键名」才是可证伪的。
+    headers: { Authorization: "Bearer s3cret" },
+    environment: { API_KEY: "env-raw-42" },
     enabled: true,
     timeoutMs: null,
     checkedAt: null,
@@ -100,9 +101,32 @@ describe("详情页 MCP 分支", () => {
     expect(host.querySelector("[data-slot='asset-detail-mcp-url']")?.textContent).toBe("https://mcp.example/path")
     expect(host.querySelector("[data-slot='asset-detail-mcp-tool-count']")?.textContent).toBe("尚未试连")
     expect(host.querySelector("[data-slot='asset-detail-mcp-probe']")?.textContent).toBe("尚未试连")
-    const 头 = host.querySelector("[data-slot='asset-detail-mcp-headers']")?.textContent
-    expect(头).toContain("Authorization")
-    expect(头).not.toContain("Bearer s3cret")
+    // 键名要出现、秘密值一个都不能出现：正反两侧都断言，否则「只渲染值」的实现也能绿。
+    // 负向先断：变异成「渲染值」时，失败要直接落在负向断言上，而不是被正向断言先挡住。
+    const 面板 = host.querySelector("[data-slot='asset-detail-mcp']")?.textContent ?? ""
+    expect(面板).not.toContain("Bearer s3cret")
+    expect(面板).not.toContain("env-raw-42")
+    expect(面板).toContain("Authorization")
+    expect(面板).toContain("API_KEY")
+  })
+
+  test("试连成功与工具数各说各的；两张表都空 ⇒ 未配置", async () => {
+    const host = 挂(
+      资产(),
+      async () =>
+        视图({
+          checkedAt: 2000,
+          checkOk: true,
+          toolCount: 3,
+          headers: {},
+          environment: {},
+        }),
+    )
+    await flush()
+    expect(host.querySelector("[data-slot='asset-detail-mcp-probe']")?.textContent).toBe("成功")
+    expect(host.querySelector("[data-slot='asset-detail-mcp-tool-count']")?.textContent).toBe("3 个")
+    expect(host.querySelector("[data-slot='asset-detail-mcp-headers']")?.textContent).toContain("未配置")
+    expect(host.querySelector("[data-slot='asset-detail-mcp-environment']")?.textContent).toContain("未配置")
   })
 
   test("local：显示命令与工作目录，字段不混用", async () => {
