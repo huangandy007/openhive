@@ -14,6 +14,7 @@ import type {
   AssetApi,
   AssetOutcome,
   AssetQuery,
+  AssetReader,
   AssetRow,
   CreateMcpDraftInput,
   GovernanceAction,
@@ -181,6 +182,15 @@ function 点击(selector: string) {
 function 点单选(selector: string) {
   const 目标 = 有(selector)
   if (!(目标 instanceof HTMLInputElement)) throw new Error(`不是单选：${selector}`)
+  目标.click()
+}
+
+/** 确认框的「取消」（没有 data-slot，按文案找）。 */
+function 取消确认框() {
+  const 目标 = [...document.querySelectorAll<HTMLButtonElement>("[data-slot='asset-confirm'] button")].find(
+    (item) => item.textContent?.trim() === "取消",
+  )
+  if (!目标) throw new Error("找不到确认框的取消按钮")
   目标.click()
 }
 
@@ -560,6 +570,44 @@ describe("资产治理页 · 指定人员 · 选人（2026-11-02 设计 §3.2.3�
     expect(个人档 instanceof HTMLInputElement && 个人档.checked).toBe(true)
     expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
     expect(文章("[data-slot='asset-publish-mcp-hint']")).toContain("MCP 默认建议指定人员；全单位可用才选全局")
+  })
+
+  test("搜索回包按代次丢弃：慢的「李」不能盖掉快的「李四」；关框后旧回包也不落", async () => {
+    const 部门待发布 = 资产("p5", { name: "话单检索规则", status: "pending_tech", visibility: "department" })
+    // 可控 promise：按关键词挂起，由用例决定谁先回（同步返回的替身造不出「先发慢回」）。
+    const 挂起 = new Map<string, (value: AssetOutcome<readonly AssetReader[]>) => void>()
+    const { api } = 假后端(async () => ({ kind: "ok", value: [部门待发布] }), {
+      searchReaders: (query) =>
+        new Promise((resolve) => {
+          挂起.set(query, resolve)
+        }),
+    })
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+    点单选("[data-slot='asset-publish-scope-targeted']")
+    await 等到(() => 有("[data-slot='asset-publish-user-search']") !== null)
+
+    // 先发「李」（慢），再发「李四」（快）。
+    填搜索("李")
+    填搜索("李四")
+    挂起.get("李四")!({ kind: "ok", value: [{ id: "u4", name: "李四", dept: "经侦支队" }] })
+    await 等到(() => 有("[data-slot='asset-publish-user-u4']") !== null)
+
+    // 旧回包后到：代次已变，必须整份丢掉，不能拿「李」覆盖掉「李四」。
+    挂起.get("李")!({ kind: "ok", value: [{ id: "u9", name: "李", dept: "治安支队" }] })
+    await 歇一拍()
+    expect(有("[data-slot='asset-publish-user-u9']")).toBeNull()
+    expect(有("[data-slot='asset-publish-user-u4']")).not.toBeNull()
+
+    // 关框后旧回包同样不落：先挂起一次搜索，关掉确认框，再把回包放出来。
+    填搜索("李五")
+    取消确认框()
+    await 等到(() => 框已关())
+    挂起.get("李五")!({ kind: "ok", value: [{ id: "u5", name: "李五", dept: "网安支队" }] })
+    await 歇一拍()
+    expect(有("[data-slot='asset-publish-user-u5']")).toBeNull()
   })
 })
 

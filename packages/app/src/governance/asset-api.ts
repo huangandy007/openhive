@@ -140,7 +140,8 @@ export interface AssetReader {
   readonly dept: string
 }
 
-/** 新建 MCP 时交给服务端的连接规格（与内核 `McpConnectionInput` 同形）。 */export interface McpConnectionInput {
+/** 新建 MCP 时交给服务端的连接规格（与内核 `McpConnectionInput` 同形）。 */
+export interface McpConnectionInput {
   readonly transport: "local" | "remote"
   readonly url?: string
   readonly command?: readonly string[]
