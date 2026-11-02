@@ -39,6 +39,8 @@ const 管理丙: TokenSubject = { id: "conn-u3", policeNo: "980003", name: "管�
 const 读者丁: TokenSubject = { id: "conn-u4", policeNo: "980004", name: "读者丁", isAdmin: false }
 /** 非属主、非管理员，只有资产上的 `admin` 授权行。 */
 const 资产管戊: TokenSubject = { id: "conn-u5", policeNo: "980005", name: "资产管戊", isAdmin: false }
+/** 非属主、非管理员，只有资产上的 `write` 授权行（能改描述，不能改连接）。 */
+const 写者己: TokenSubject = { id: "conn-u6", policeNo: "980006", name: "写者己", isAdmin: false }
 
 const 数据根 = mkdtempSync(join(tmpdir(), "openhive-mcp-conn-data-"))
 const restoreDataRoot = restorePoint({ OPENHIVE_DATA_ROOT: 数据根 })
@@ -61,7 +63,7 @@ let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
-  for (const subject of [作者甲, 无关乙, 管理丙, 读者丁, 资产管戊]) {
+  for (const subject of [作者甲, 无关乙, 管理丙, 读者丁, 资产管戊, 写者己]) {
     await pg.db.execute(sql`
       insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
       values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室',
@@ -86,6 +88,15 @@ beforeAll(async () => {
     values ('test-mcp-admin', 'mcp', 'asset_conn_draft', 'admin')
   `)
   await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${资产管戊.id}, 'test-mcp-admin')`)
+  // 写权的**反向**来源：只有 `write`（改描述）不能改连接（设计 §5.3，凭据 / 命令不是同一档）。
+  await pg.db.execute(sql`
+    insert into auth.role (id, name, role_type) values ('test-mcp-writer', 'MCP 内容编辑', 'normal')
+  `)
+  await pg.db.execute(sql`
+    insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+    values ('test-mcp-writer', 'mcp', 'asset_conn_draft', 'write')
+  `)
+  await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${写者己.id}, 'test-mcp-writer')`)
 
   const owner = { id: 作者甲.id, name: 作者甲.name, department: "经侦支队" }
   await createMcpDraft({
@@ -326,6 +337,22 @@ describe("改连接", () => {
         url: "https://admin-grant.example",
       })
       expect(response.status).toBe(200)
+    }),
+  )
+
+  it.effect("只有 write 授权者不能改连接 ⇒ 403，库不变", () =>
+    Effect.gen(function* () {
+      // 设计 §5.3：`write` 是「改描述」，连接里的凭据与命令是运行期高危输入，不同档。
+      // 没有这条反向用例时，把写权判据从 `.has("admin")` 放宽成 `.has("write")` 不会红：
+      // admin 授权通常也带 write，正向用例照样绿（提权变异存活）。
+      const 前 = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_draft"))
+      const response = yield* 改连接(写者己, "asset_conn_draft", {
+        transport: "remote",
+        url: "https://write-grant.example",
+      })
+      expect(response.status).toBe(403)
+      const 后 = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_draft"))
+      expect(后?.url).toBe(前?.url)
     }),
   )
 
