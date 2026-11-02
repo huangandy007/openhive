@@ -821,7 +821,7 @@ function handleIteration(
  * 授权用**同一个** `authorizeTransition()`；状态机自己拒绝「已提交过 / 不是草稿」。
  *
  * 与迭代端点的差别有四处：不读请求体（本端点无 body）、action 固定 `submit_review`、
- * 不查项目归属（提交不看项目）、授权预检之后多一道类型门（只提交 skill，见下方注释）。
+ * 不查项目归属（提交不看项目）、授权预检之后多一道类型门（只提交 skill / mcp，见下方注释）。
  * 也不传 `workspaceRoot`——本动作不发布，不重指项目链接。
  */
 function handleSubmit(deps: Deps) {
@@ -848,12 +848,10 @@ function handleSubmit(deps: Deps) {
     )
     if (Result.isFailure(预检)) return 失败(预检.failure)
 
-    // 【保留的定制 · 同步上游时不要丢】提交审核只处理 skill（2026-11-02 批次 2 裁定 A/C）：
-    // MCP 没有草稿副本，服务层自本批次起对它放行 7 状态机；不在这里按类型拒绝，
-    // 属主会拿到 200 + in_review，实际没提交任何内容。MCP 提交入口在批次 3 随 UI / 试连一起定义。
-    // 位置放在授权预检之后：否则会把「这是个 MCP 资产」泄漏给没有写权的人（`#004-09`）。
-    if (asset.type !== "skill") {
-      return 失败(new AssetTransitionError("unsupported_asset_type", `该接口只提交 skill：${assetId}`))
+    // 【保留的定制 · 同步上游时不要丢】MCP 也走业务审核（设计 §3.1.4）：只拒 knowledge_base。
+    // 位置放在授权预检之后：否则会把「这是个知识库资产」泄漏给没有写权的人（`#004-09`）。
+    if (asset.type !== "skill" && asset.type !== "mcp") {
+      return 失败(new AssetTransitionError("unsupported_asset_type", `该接口只提交 skill / mcp：${assetId}`))
     }
 
     const 结果 = yield* Effect.result(

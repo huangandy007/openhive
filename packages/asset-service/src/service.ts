@@ -442,8 +442,9 @@ const SCOPE_SELECTING_ACTIONS: ReadonlySet<SkillAction> = new Set(["publish_tech
 /**
  * 解析这次流转的可见范围，返回**生效后**的 metadata（发布时可能替换 `visibility`）。
  *
- * 个人资产没有共享发布目录：发布必须由发布者选一个共享范围（设计 §2），否则仍是
- * `personal_asset_not_shared`（409）。发布者可以覆盖作者原先选的部门 / 全局。
+ * 个人资产没有共享发布目录：skill 发布必须由发布者选一个共享范围（设计 §2），否则仍是
+ * `personal_asset_not_shared`（409）；MCP 不落共享目录，个人档允许（裁定 D-9）。发布者可以
+ * 覆盖作者原先选的部门 / 全局。
  */
 function withPublishScope(
   asset: AssetMetadata,
@@ -461,7 +462,8 @@ function withPublishScope(
   }
 
   const 范围 = requested ?? asset.visibility
-  if (范围 === "personal") {
+  // 【保留的定制 · 同步上游时不要丢】MCP 没有共享目录，个人档在语义上成立（设计 §3.2.2 / 裁定 D-9）。
+  if (范围 === "personal" && asset.type !== "mcp") {
     throw new AssetTransitionError(
       "personal_asset_not_shared",
       `个人资产不进入共享空间：${asset.id}（发布时请选择本部门、全局或指定人员）`,

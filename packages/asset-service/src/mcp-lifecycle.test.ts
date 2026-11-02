@@ -175,7 +175,7 @@ describe("MCP 全状态流转", () => {
     expect(existsSync(root)).toBe(false)
   })
 
-  test("personal 发布仍被拒（批次 3 才放开）", async () => {
+  test("MCP 可以以 personal 发布（skill 仍被拒）", async () => {
     const db = await freshDb()
     const root = 不存在的根()
     await createMcpDraft({
@@ -190,11 +190,27 @@ describe("MCP 全状态流转", () => {
       connection: { transport: "remote", url: "https://x" },
     })
     const 步 = (action: SkillAction, viewer: typeof 作者, over: Record<string, unknown> = {}) =>
-      transitionAsset({ db, root, assetId: "asset_mcp_personal", action, viewer, now: 3101, ...over } as Parameters<typeof transitionAsset>[0])
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_mcp_personal",
+        action,
+        viewer,
+        now: 3101,
+        probe: 试连成功,
+        ...over,
+      } as Parameters<typeof transitionAsset>[0])
     await 步("submit_review", 作者)
     await 步("approve_business", 审核, { grants: 授权("asset_mcp_personal", "review") })
-    const error = await failure(() => 步("publish_tech", 管理, { grants: 授权("asset_mcp_personal", "admin") }))
-    expect(错误码(error)).toBe("personal_asset_not_shared")
+    // 裁定 D-9 / 设计 §3.2.2：MCP 没有共享目录，个人档在语义上成立。skill 的拒绝仍由
+    // `service.test.ts` 的 `personal_asset_not_shared` 用例守着。
+    const 发布 = await 步("publish_tech", 管理, {
+      grants: 授权("asset_mcp_personal", "admin"),
+      visibility: "personal",
+    })
+    expect(发布.status).toBe("published")
+    expect(发布.visibility).toBe("personal")
+    expect(existsSync(root)).toBe(false)
   })
 })
 

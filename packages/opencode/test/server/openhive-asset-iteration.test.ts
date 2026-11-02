@@ -788,9 +788,8 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
     }),
   )
 
-  // 这条钉的是**端点自己的**预检：非作者 + 非 skill 时，预检先回 403。
-  // 服务层只拒 knowledge_base；MCP 由本出口的类型门拒——若预检被删，类型门会先回 400
-  // （仍会把资产类型泄漏给无权者），所以预检必须留在类型门之前。
+  // 非作者提交别人的 MCP ⇒ 403。批次 3 起类型门放行 MCP，403 由授权判据给出；
+  // 「授权先于类型门」的次序不再由本条钉住（类型门对 MCP 不再拒绝），此处只守拒绝本身。
   it.live("非作者提交非 skill 资产 ⇒ 403（端点的门在出口类型门之前）", () =>
     Effect.gen(function* () {
       const res = yield* 提交审核(我, IDS.subMcp)
@@ -799,15 +798,13 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
     }),
   )
 
-  // 批次 2 的裁定 C：MCP 没有草稿副本，服务层（批次 2 起）对它放行 7 状态机，
-  // 所以本出口必须自己按类型拒绝——否则属主会拿到 200 + in_review，实际没提交任何内容。
-  it.live("属主提交自己的 MCP 草稿 ⇒ 400 unsupported_asset_type，状态仍 draft", () =>
+  // 批次 3：MCP 也走业务审核（设计 §3.1.4），属主提交自己的 MCP 草稿应成功。
+  // 服务层对 MCP 不落文件，所以不需要草稿副本——提交只改状态。
+  it.live("属主提交自己的 MCP 草稿 ⇒ 200，状态 in_review", () =>
     Effect.gen(function* () {
       const res = yield* 提交审核(我, IDS.subMyMcp)
-      expect(res.status).toBe(400)
-      expect((yield* 读错误(res))).toContain("只提交 skill")
-      // 拒绝发生在任何副作用之前：状态、版本都不动。
-      expect((yield* 读行(IDS.subMyMcp))?.status).toBe("draft")
+      expect(res.status).toBe(200)
+      expect((yield* 读行(IDS.subMyMcp))?.status).toBe("in_review")
       expect((yield* 读行(IDS.subMyMcp))?.version).toBe(1)
     }),
   )

@@ -348,18 +348,21 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     }
 
     // 可见范围闭集在出口收窄：客户端传的词是否合法不归库的 CHECK 管（与 list 的 status 同理）。
+    // `personal` 是合法词；它能否用于本次目标取决于资产类型，等读到 `asset` 再判（裁定 D-9）。
     const visibility = body["visibility"]
-    if (visibility !== undefined) {
-      if (visibility === "personal") {
-        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, "发布范围必须是本部门、全局或指定人员", "visibility")
-      }
-      if (visibility !== "department" && visibility !== "global" && visibility !== "targeted") {
-        return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `未知可见范围：${JSON.stringify(visibility)}`, "visibility")
-      }
+    if (
+      visibility !== undefined &&
+      visibility !== "personal" &&
+      visibility !== "department" &&
+      visibility !== "global" &&
+      visibility !== "targeted"
+    ) {
+      return yield* 失败(deps, userId, 未知对象, BAD_REQUEST, `未知可见范围：${JSON.stringify(visibility)}`, "visibility")
     }
-    const 范围 = visibility === "department" || visibility === "global" || visibility === "targeted"
-      ? visibility
-      : undefined
+    const 范围 =
+      visibility === "personal" || visibility === "department" || visibility === "global" || visibility === "targeted"
+        ? visibility
+        : undefined
 
     // 「指定人员」（需求 3b）：读只来自授权行，所以**必须**带至少一个授权组。
     // 载荷在出口收窄（`string[]`、非空、无空白项），组是否真的存在在流转之前单独验。
@@ -401,6 +404,20 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     const 补充 = { transition: 动 } as const
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
     if (!asset) return yield* 失败(deps, userId, base, NOT_FOUND, `资产不存在：${assetId}`, undefined, 补充)
+
+    // MCP 允许个人档（裁定 D-9）：它不落共享目录，个人档在语义上成立。
+    // skill / 知识库仍要求共享范围。判据要等读到 `asset` 才能按类型分流。
+    if (范围 === "personal" && asset.type !== "mcp") {
+      return yield* 失败(
+        deps,
+        userId,
+        base,
+        BAD_REQUEST,
+        "发布范围必须是本部门、全局或指定人员",
+        "visibility",
+        { visibility: 范围 },
+      )
+    }
 
     const department = yield* 取部门(deps, userId)
     const grants = yield* 合成授权行(deps, userId, asset.type, asset.id)
