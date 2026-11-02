@@ -23,8 +23,8 @@
 |---|---|---|
 | W1 | 配置来源收口：`mcp` 只认服务端权威配置；关闭运行期动态加 server | G6、G7 |
 | W2 | 授权口径改为「可见即可用」；`targeted` 支持**选人（可多选）** | G8 |
-| W3 | 新建 MCP 资产（草稿）+ 连接规格存储 | G1、G2 |
-| W4 | 发布前试连；发布弹窗能选组 / 选人 | G3 |
+| W3 | 新建 MCP 资产（草稿）+ 连接规格存储 + MCP 走通状态机（不搬文件） | G1、G2 |
+| W4 | 发布前试连（含 local）；发布弹窗能选组 / 选人；允许「个人」档 | G3 |
 | W5 | 配置同步器：资产库 → 全局配置（键 = 资产 id） | G4、G5 |
 | W6 | capability 按可见性放行 MCP server（与 skill 同源） | A 的落地 |
 | W7 | 使用记录与允许侧审计 | G10、G11 |
@@ -80,6 +80,8 @@ CREATE TABLE auth.asset_mcp_connection (
   environment   jsonb NOT NULL DEFAULT '{}'::jsonb,
   enabled       boolean NOT NULL DEFAULT true,
   timeout_ms    integer,
+  -- 最近一次「技术发布」时的连接规格快照；草稿期 / 迭代期改的是上面那组工作列
+  published_config jsonb,
   -- 发布前试连的结果（只做展示与排障，不作为运行期判据）
   checked_at    integer,
   check_ok      boolean,
@@ -110,6 +112,31 @@ CREATE TABLE auth.asset_mcp_connection (
 
 见 §3.2.3。
 
+#### 3.1.4 MCP 的生命周期：同一套状态，跳过文件步骤
+
+**现状（实测）**：`transitionAsset()` 看见 `asset.type !== "skill"` 直接抛 `unsupported_asset_type`（`service.ts:542-547`），注释写明「MCP / 知识库的简化生命周期未在本任务实现」。而整条流转的文件步骤是目录搬移（`copy_to_pending` / `move_pending_to_publish` / `copy_publish_to_workspace` / `move_publish_to_archive`），MCP 没有内容目录。
+
+**本设计的做法（最小改动）**：
+
+1. 去掉 `unsupported_asset_type` 这道硬拒；
+2. 在 `prepareStorageStep()` 开头：`asset.type === "mcp"` ⇒ 返回 `undefined`（**所有 storage intent 一律不落文件**）；
+3. 状态机本身**不新建**一套：MCP 仍走 `draft → in_review → pending_tech → published → iterating → offline → archived`。
+
+**为什么保留业务审核（与 009 FR-004 的「仅技术审核」有偏差）**：MCP 能直接取数据，多一道「用途与必要性」的业务审核与用户「严格控到人」的取向一致；而且零新动作、零新状态、API 与前端全部复用。若后续裁定要砍掉业务审核，只需在转移表里把 MCP 的 `submit_review` 目标改成 `pending_tech`（一处）。
+
+**迭代**：MCP 的 `start_iteration` 不复制工作副本（`iterationWorkspace` 为 `null`）；作者在详情页直接编辑连接规格，再走 `submit_iteration → publish_iteration`（技术发布，重新试连）。`abort_iteration` 回退版本号，与 skill 同语义。
+
+**连接规格的编辑窗口**：只有 `draft` / `iterating` 两个状态允许改连接（作者或管理员）。`in_review` / `pending_tech` 禁止——否则等于绕开审核改内容。
+
+**已发布快照与工作副本（必须分开，否则迭代等于绕过审核）**：
+
+- 可编辑的 `transport / url / command / headers / environment / timeout_ms` 是**工作副本**；
+- `published_config`（jsonb）是最近一次技术发布时的快照，**同步器只读它**；
+- `publish_tech` / `publish_iteration`：先试连工作副本 → 成功后把工作副本写进 `published_config` → 再改状态；
+- `start_iteration`：什么都不用做（快照已是线上那份），线上继续服务；
+- `abort_iteration`：把 `published_config` 写回工作副本，丢弃未发布的修改；
+- 效果与 skill 的「发布目录 ↔ 工作副本」同构：**迭代中改坏了，线上不受影响**。
+
 ### 3.2 授权口径（用户裁定 A）
 
 #### 3.2.1 一句话
@@ -123,7 +150,7 @@ CREATE TABLE auth.asset_mcp_connection (
 | `global` | 全单位 | 全单位可用 |
 | `department` | 同部门（非空部门） | 本部门可用 |
 | `targeted` | 作者 + 授权行命中的人 / 组 | **只给名单里的人和组** |
-| `personal` | 仅作者 | 不可共享；发布时按现有规则转共享档 |
+| `personal` | 仅作者 | **MCP 允许停在这一档**（2026-11-02 裁定）：发布后只有作者可读可用，其他人连能力清单里都看不到。skill / 知识库仍按原规则在发布时要求转共享档——它们有共享目录，MCP 没有 |
 
 `targeted` 是「严格控到人」的正确档位。产品口径：**MCP 默认建议 `targeted`；只有确实全单位都该用的（例如查法规）才发布 `global`。** 这句写进发布弹窗的提示与审核清单，不是代码约束。
 
@@ -210,13 +237,15 @@ Phase 1 处理：**该端点返回 403**，并在响应体说明「MCP server �
 **输入**（纯读，来自 `auth` 库）：
 
 ```sql
-select a.id, a.status, c.transport, c.url, c.command, c.cwd, c.headers, c.environment, c.enabled, c.timeout_ms
+select a.id, c.published_config
 from auth.asset a
 join auth.asset_mcp_connection c on c.asset_id = a.id
-where a.type = 'mcp' and a.status in ('published', 'iterating')
+where a.type = 'mcp'
+  and a.status in ('published', 'iterating')
+  and c.published_config is not null
 ```
 
-**输出**：`Record<assetId, ConfigMCPV1.Info>`，与连接规格 1:1 投影。`enabled` 直接取 `connection.enabled`（资产可用性已由 `status` 过滤）。
+**输出**：`Record<assetId, ConfigMCPV1.Info>`，从 `published_config` 1:1 投影（**不读工作副本**，见 §3.1.4 I7）。`enabled` 取快照里的值。
 
 **写入**：新增 `Config.replaceGlobalMcp(entries)`（`config.ts` 内、与 `updateGlobal` 同级）：
 
@@ -305,6 +334,7 @@ const granted =
 | I4 | 「个人授权」与「授权组」互不误伤 | 重设 `setAssetReaders` 时，组 A 的授权被替换、个人 P 保留与否按入参，运维直配行始终保留 |
 | I5 | 每台 MCP server 在 ruleset 里恰好两条规则，且动作一致 | 既有矩阵测试 + 新增「可见但无授权行 ⇒ 两条 allow」 |
 | I6 | 配置里出现、但不在资产库的 server ⇒ 恒 deny | 新增用例：手工塞一个键，零授权会话两条 deny |
+| I7 | 迭代中的工作副本改不动线上 | 改工作副本后同步器产出不变；`publish_iteration` 后才变；`abort_iteration` 后回到快照 |
 
 ---
 
@@ -391,14 +421,20 @@ cd packages/core && timeout 300 bun test test/access
 1. 迁移 `0029_asset_mcp_connection`；
 2. `createMcpDraft`（`packages/asset-service/src/service.ts`）+ 连接读写模块（读遮罩）；
 3. `POST /openhive/assets/draft` 接受 `type:"mcp"`，管理员限定；
-4. 治理后台「新建 MCP 资产」表单（名称 / 描述 / 分类 / 可见范围 / 传输方式 / url 或 command）；
-5. 资产详情页 MCP 分支：显示传输方式、工具数、试连结果、请求头键名（值遮罩）。
+4. `transitionAsset` 支持 MCP：去掉硬拒，`prepareStorageStep` 对 mcp 一律返回 `undefined`（§3.1.4）；
+5. 治理后台「新建 MCP 资产」表单（名称 / 描述 / 分类 / 可见范围 / 传输方式 / url 或 command）；
+6. 资产详情页 MCP 分支：显示传输方式、工具数、试连结果、请求头键名（值遮罩）；
+7. 连接编辑接口 `PATCH /openhive/assets/:id/connection`：仅 `draft` / `iterating`、仅作者或管理员。
 
 **完成判据**
 
 ```bash
 cd packages/asset-service && timeout 300 bun test src/mcp-connection.test.ts
-# 期望：DDL 约束 4 条、跨形态字段拒绝、读遮罩、级联删除 全绿
+# 期望：DDL 约束、跨形态字段拒绝、读遮罩、级联删除 全绿
+
+cd packages/asset-service && timeout 300 bun test src/mcp-lifecycle.test.ts
+# 期望：MCP 全状态流转不碰文件系统（用「根目录不存在也不失败」钉住）；
+#       非 draft/iterating 改连接被拒；skill 行为不变
 
 cd packages/opencode && timeout 300 bun test test/server/openhive-assets-mcp-draft.test.ts
 # 期望：非管理员被拒；合法草稿成功且 type=mcp；非法连接规格被拒且不落库
@@ -412,11 +448,12 @@ cd packages/asset-service && bun run typecheck   # 0 error
 
 **交付**
 
-1. 发布前试连（`probeMcpConnection`，local / remote 两种；结果落 `checked_at/check_ok/check_error/tool_count`）；
-2. `publish` / `pending_tech` 流转前置调用试连，失败阻断；
+1. 发布前试连（`probeMcpConnection`，**local / remote 都强制**；结果落 `checked_at/check_ok/check_error/tool_count`；local 超时杀整个进程树）；
+2. `publish_tech` / `publish_iteration` 流转前置调用试连，失败阻断；成功后把工作副本写进 `published_config`；`abort_iteration` 把快照写回工作副本；
 3. 发布弹窗「指定人员」支持选组 + 选人（多选）；
 4. 服务端入参 `groupIds` + `userIds`，走 `setAssetReaders`；
-5. 发布提示：「MCP 默认建议指定人员；全单位可用才选全局」。
+5. 发布提示：「MCP 默认建议指定人员；全单位可用才选全局」；
+6. `personal` 档对 MCP 放行：`withPublishScope` 的个人拒绝只对**有共享目录的类型**生效（§3.2.2）。
 
 **完成判据**
 
@@ -425,7 +462,8 @@ cd packages/asset-service && timeout 300 bun test src/mcp-probe.test.ts
 # 期望：remote 正常 / 超时 / 拒绝连接；local 正常 / 命令不存在 / 超时杀进程树 全绿
 
 cd packages/asset-service && timeout 300 bun test src/authorization.test.ts src/review.test.ts
-# 期望：试连失败阻断流转；选人发布后个人可读、组外不可读 全绿
+# 期望：试连失败阻断流转；选人发布后个人可读、组外不可读；
+#       MCP 以 personal 发布成功且只有作者可读；skill 以 personal 发布仍被拒 全绿
 
 cd packages/app && bun run typecheck && bun test src/governance
 # 期望：弹窗提交带 userIds；取消勾选后重设不残留
@@ -446,7 +484,8 @@ cd packages/app && bun run typecheck && bun test src/governance
 
 ```bash
 cd packages/opencode && timeout 300 bun test test/server/openhive-mcp-config-sync.test.ts
-# 期望：I1 键集相等；下线后键消失；写失败保留上一份；治理键不被覆盖 全绿
+# 期望：I1 键集相等；I7 迭代中改工作副本不影响产出；下线后键消失；
+#       写失败保留上一份；治理键不被覆盖 全绿
 
 cd packages/opencode && timeout 300 bun test test/server/openhive-asset-usage.test.ts
 # 期望：MCP 调用归因到资产 id；歧义工具名不归因（skipped 有记录）全绿
@@ -493,6 +532,7 @@ cd packages/asset-service && timeout 300 bun test src/downlink.test.ts
 | 缺口 | 现状 | 后续 |
 |---|---|---|
 | **Phase 1 的连接是全员建立** | 全局配置里所有已发布 server，所有用户实例都会连 | Phase 2：每人一份配置 + 连接级身份 |
+| **个人档 MCP 也会被全员建连** | 只有作者能调工具，但连接（含凭据）对宿主上所有实例可见 | Phase 2 按用户下发后消除 |
 | **凭据明文** | PG 内明文，API 遮罩 | 加密 / KMS / 轮换 |
 | **RLS 不在本仓** | 只交付契约与外部验收清单 | 业务 server 验收 |
 | **工具级授权** | 整台开关 | 拆 server 或改权限模型 |
@@ -514,11 +554,19 @@ cd packages/asset-service && timeout 300 bun test src/downlink.test.ts
 | D-5 | `mcp` 是受保护键 + 关闭 `POST /mcp` | 用户沙箱可写的配置能静默绕过整条授权 | 低 |
 | D-6 | 同步器整体替换 `mcp` 段 | 「配置 ≡ 已发布集合」可断言；避免凭据残留 | 低 |
 | D-7 | MCP 建资产仅管理员 | `local` = 任意命令执行 | 低 |
+| D-8 | 发布前试连**包含 local**（用户 2026-11-02 裁定） | 连接规格写错时，宁可发布前就失败，也不要发布后全员连不上 | 低 |
+| D-9 | **允许 MCP 用「个人」档**（用户 2026-11-02 裁定） | MCP 没有共享目录，个人档在语义上成立；个人服务器只给作者自己用 | 低 |
+| D-10 | 使用记录明细沿用「仅系统管理员」（用户 2026-11-02 裁定） | 与 skill 同一口径，不新开口子 | 低 |
+| D-11 | MCP 复用 7 状态机、保留业务审核、跳过全部文件步骤 | 零新动作 / 新状态；MCP 能取数，多一道必要性审核与「严格控制」一致 | 低（改一处转移目标即可砍掉业务审核） |
 
 ---
 
-## 11. 待用户确认的点
+## 11. 已裁定（2026-11-02）
 
-1. **发布前试连是否包含 `local` 形态**（会在内核宿主上真的拉起命令）。若希望更保守，Phase 1 可只对 `remote` 强制试连，`local` 只在首次连接时报错。
-2. **MCP 资产是否允许「个人」可见范围**：`personal` 按现有规则发布时转共享档；是否允许一台 MCP 只给作者自己用（不发布）？
-3. **使用记录明细的可见范围**：沿用 skill 的「仅系统管理员」口径。
+| # | 问题 | 裁定 |
+|---|---|---|
+| Q1 | 发布前试连是否包含 `local` | **包含**。`local` 与 `remote` 一视同仁，超时杀进程树 |
+| Q2 | 是否允许 MCP 资产用「个人」可见范围 | **允许**。发布后只有作者可读可用；skill / 知识库保持原规则 |
+| Q3 | 使用记录明细给谁看 | **仅系统管理员**，沿用 skill 口径 |
+
+以上三条已并入 §3.1.4、§3.2.2、§7 的交付与判据。
