@@ -86,6 +86,7 @@ import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { GrantRow } from "@opencode-ai/auth/rbac"
 import { User } from "@opencode-ai/core/user"
+import { Config } from "@/config/config"
 import { InstanceStore } from "@/project/instance-store"
 import { sql } from "drizzle-orm"
 import { Effect, Option, Result } from "effect"
@@ -93,6 +94,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { OpenhiveAudit } from "./audit"
 import { GovernanceAuthz } from "./governance-authz"
 import { disposeInstanceDirectory } from "./instance-cache"
+import { OpenhiveMcpConfigSync } from "./mcp-config-sync"
 import { offsetOf, parsePage } from "./paging"
 import { OpenhivePg } from "./pg"
 
@@ -162,13 +164,16 @@ interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   /** 下线撤回后要丢这些目录的实例缓存（测试里可能没有内核实例层 ⇒ Option）。 */
   readonly store: Option.Option<InstanceStore.Interface>
+  /** MCP 配置同步用（设计 §3.3.4 触发点 2）；没有 Config 服务的装配里为 none。 */
+  readonly config: Option.Option<Config.Interface>
 }
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
     const store = yield* Effect.serviceOption(InstanceStore.Service)
-    const deps: Deps = { pg: openhivePg.pg, store }
+    const config = yield* Effect.serviceOption(Config.Service)
+    const deps: Deps = { pg: openhivePg.pg, store, config }
 
     yield* router.add("GET", PATH.list, (request) => handleList(request, deps))
     yield* router.add("POST", PATH.transition, (request) => handleTransition(request, deps))
@@ -569,6 +574,13 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       })
       // 下线 / 归档 / 退回 ⇒ 从所有人的沙箱里撤回（需求 5a 验收）。
       yield* 撤回已下线(deps, result.success.id, result.success.status)
+      // 【保留的定制 · 同步上游时不要丢】MCP 配置同步（设计 §3.3.4 触发点 2）：
+      // 只对 MCP 资产、只在同步开关打开时跑；失败只记日志——状态已经变了，回 500 是谎报。
+      yield* OpenhiveMcpConfigSync.触发同步({
+        type: result.success.type,
+        db: deps.pg(),
+        config: Option.getOrUndefined(deps.config),
+      })
       return ok({ asset: result.success, ...(通知 === undefined ? {} : { notice: 通知 }) })
     }
 
@@ -582,7 +594,14 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
         result: "ok",
         detail: { transition: 动, notice: error.message },
       })
-      if (updated !== undefined) yield* 撤回已下线(deps, updated.id, updated.status)
+      if (updated !== undefined) {
+        yield* 撤回已下线(deps, updated.id, updated.status)
+        yield* OpenhiveMcpConfigSync.触发同步({
+          type: updated.type,
+          db: deps.pg(),
+          config: Option.getOrUndefined(deps.config),
+        })
+      }
       return ok({ asset: updated, notice: error.message })
     }
     return yield* 翻译(error, deps, userId, base, 补充)

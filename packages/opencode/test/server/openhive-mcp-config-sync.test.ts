@@ -1,4 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { sql } from "drizzle-orm"
 import { Effect, Layer, Logger } from "effect"
 import { migrate } from "@opencode-ai/auth/migrate"
@@ -406,6 +408,25 @@ describe("兜底层：开关是唯一的门", () => {
     expect(JSON.stringify(日志)).not.toContain("SECRET")
     expect(JSON.stringify(日志)).toContain('"error":["Error"]')
   })
+})
+
+/**
+ * **接线**用例，不是行为用例。
+ *
+ * 行为由上面的 `触发同步` 三条 ＋ 真栈验收覆盖；这里只钉「生命周期出口真的调了 trigger，
+ * 且把 `Option` 里的 Config 交了出去」。全文装配需要起完整 HTTP 应用 + 把
+ * `Global.Path.config` 指到临时目录，成本远大于它守的东西。两个出口都要接：成功分支与
+ * 「流转已生效、通知失败」分支（后者状态也已经变了）。
+ */
+test("生命周期出口接上了触发同步，并把 Config 交给它（接线检查）", () => {
+  const 源码 = readFileSync(
+    join(import.meta.dir, "../../src/server/openhive/governance-assets.ts"),
+    "utf8",
+  )
+  expect(源码).toContain("OpenhiveMcpConfigSync.触发同步(")
+  expect(源码).toContain("config: Option.getOrUndefined(deps.config)")
+  // 两处出口：成功分支与「流转已生效、通知失败」分支（后者状态也已经变了）。
+  expect(源码.match(/OpenhiveMcpConfigSync\.触发同步\(/g)?.length).toBe(2)
 })
 
 // 读快照的入口单独钉一次：`published_config` 是 jsonb，PGlite / bun-sql 的返回形状不同，
