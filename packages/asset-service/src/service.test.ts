@@ -930,10 +930,11 @@ describe("transitionAsset · 生命周期流转（T008）", () => {
     expect(await exists(待审目录(root))).toBe(false)
   })
 
-  test("MCP / 知识库不走 Skill 7 状态机", async () => {
+  // MCP 自 2026-11-02 起复用 7 状态机（`mcp-lifecycle.test.ts` 覆盖）；知识库仍未实现。
+  test("知识库不走 Skill 7 状态机", async () => {
     const db = await freshDb()
     const root = tempRoot()
-    await seedSkill(db, { type: "mcp" })
+    await seedSkill(db, { type: "knowledge_base" })
 
     const error = await failure(() =>
       transitionAsset({

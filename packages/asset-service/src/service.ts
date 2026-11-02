@@ -536,12 +536,17 @@ function iterationColumnsOf(
   action: SkillAction,
   reason: string | undefined,
   target: IterationTarget | undefined,
+  /** MCP 没有工作副本：`iteration_workspace` 要显式清空，不能写空串。 */
+  无工作副本 = false,
 ):
   | { iterationNote: string; iterationWorkspace: string }
   | { iterationNote: string; clearIteration: true }
   | undefined {
   if (action === "start_iteration") {
-    return { iterationNote: (reason ?? "").trim(), iterationWorkspace: target?.relative ?? "" }
+    const 说明 = (reason ?? "").trim()
+    // 空串在库里是**值**不是「没记录」；MCP 写 "" 会让迭代清单显示一个假路径。
+    if (无工作副本) return { iterationNote: 说明, clearIteration: true }
+    return { iterationNote: 说明, iterationWorkspace: target?.relative ?? "" }
   }
   // 说明也要清空：`clearIteration` 只处置 `iteration_workspace`，而 `coalesce` 把空串当**值**
   // （不是「不改」），所以显式传 `""` 才能真的写空（Task 1 的 `iterationNote?: string` 语义）。
@@ -618,19 +623,19 @@ interface StorageStep {
  *
  * ## 类型边界
  *
- * 7 状态机只适用于 Skill（design §2.0）；MCP / 知识库的简化生命周期未在本任务实现，
- * 显式抛 `unsupported_asset_type`，不套一张错的状态表。
+ * Skill 与 MCP 共用 7 状态机；MCP 只是不落文件（`prepareStorageStep` 开头短路）。
+ * 知识库的简化生命周期未实现，继续抛 `unsupported_asset_type`。
  */
 export async function transitionAsset(input: TransitionAssetInput): Promise<AssetMetadata> {
   const { db, root, assetId } = input
 
   const asset = await assetById(db, assetId)
   if (!asset) throw new AssetTransitionError("asset_not_found", `资产不存在：${assetId}`)
-  if (asset.type !== "skill") {
-    throw new AssetTransitionError(
-      "unsupported_asset_type",
-      `${asset.type} 不走 Skill 7 状态机：${assetId}`,
-    )
+  // 【保留的定制 · 同步上游时不要丢】MCP 复用同一套 7 状态机（2026-11-02 设计 §3.1.4）：
+  // 多一道业务审核与「严格控到人」一致；文件步骤在 `prepareStorageStep` 里短路。
+  // 知识库仍未实现，继续显式拒绝——不套一张错的状态表。
+  if (asset.type === "knowledge_base") {
+    throw new AssetTransitionError("unsupported_asset_type", `知识库不走 7 状态机：${assetId}`)
   }
 
   // 授权判定在**任何副作用之前**：过不了关就一个文件都不搬（`#004-09`）。
@@ -649,16 +654,20 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 迭代三条动作要碰工作副本；落点在这里一次算定（授权之后、搬运之前，`#004-09`）。
   // 判据写「存储意图 + 源要从工作副本取」，而不是动作列表：**存储意图才是「要不要搬文件」
   // 的真相**，按动作列表写第二份判断就是两份口径（`#002-06`）。
+  // 【保留的定制 · 同步上游时不要丢】MCP 没有工作副本（设计 §3.1.4）：
+  // 迭代三条动作对它是空操作，不能走 `迭代目标()`——那个函数对 `start_iteration`
+  // 强制要求 workspaceRoot / projectId，对 MCP 是编码错误而不是缺参数。
   const 迭代 =
-    applied.storage === "copy_publish_to_workspace" ||
-    applied.storage === "discard_pending" ||
-    applied.action === "submit_iteration"
+    asset.type === "skill" &&
+    (applied.storage === "copy_publish_to_workspace" ||
+      applied.storage === "discard_pending" ||
+      applied.action === "submit_iteration")
       ? 迭代目标(input, asset)
       : undefined
 
   // 写进 `iteration_workspace` 的值由 `iterationWorkspaceRelative()` 唯一产生（`start_iteration`
   // 在 `迭代目标()` 里现算），该函数内部已逐段 `assertSafeSegment`——这里不再「校验」一次。
-  const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代)
+  const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代, asset.type === "mcp")
 
   const step = await prepareStorageStep(root, 生效, applied, asset, 迭代, input.workspaceRoot)
 
@@ -827,6 +836,10 @@ async function prepareStorageStep(
   /** 用户沙箱根；发布后重指项目链接要用。`undefined` = 只删草稿副本、不重指（不读 env）。 */
   workspaceRoot: string | undefined,
 ): Promise<StorageStep | undefined> {
+  // 【保留的定制 · 同步上游时不要丢】MCP 没有内容目录（2026-11-02 设计 §3.1.4）：
+  // 所有 storage intent 一律不落文件。放在 switch 之前而不是每个 case 里，
+  // 是为了新增 storage 动作时默认也跳过——漏一处就会去搬一个不存在的目录。
+  if (asset.type === "mcp") return undefined
   switch (applied.storage) {
     case "none":
       return undefined
