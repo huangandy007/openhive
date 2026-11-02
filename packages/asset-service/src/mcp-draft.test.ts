@@ -149,7 +149,7 @@ describe("createMcpDraft", () => {
       (caught: unknown) => caught,
     )
     expect(error).toBeInstanceOf(Error)
-    expect(String(error)).toContain("模拟连接写入失败")
+    expect(String(error)).toContain("MCP 连接写入失败")
     expect(await 资产数(db)).toBe(前)
   })
 })

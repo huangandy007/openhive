@@ -86,6 +86,15 @@ function 读字符串表(
       issues.push({ field: `${field}.${key}`, message: "值必须是字符串" })
       return undefined
     }
+    // 读接口只回 `MASKED_VALUE`；PATCH 是整行替换，收下哨兵等于把真凭据写成占位值。
+    // 消息里不回显该值（与「异常不带原文」同一条约束）。
+    if (item === MASKED_VALUE) {
+      issues.push({
+        field: `${field}.${key}`,
+        message: "不能提交遮罩占位值，请重新填写真实值",
+      })
+      return undefined
+    }
     out[key] = item
   }
   return out
@@ -276,6 +285,38 @@ function toRecord(row: Record<string, unknown>): McpConnectionRecord {
   }
 }
 
+/**
+ * 从驱动错误上取 SQLSTATE。PGlite / bun-sql 实测是 `errno`，别的驱动可能是 `code`；
+ * 两者都认，取到字符串为止。
+ */
+function 取SQL状态码(value: unknown): string | undefined {
+  if (!是对象(value)) return undefined
+  for (const key of ["errno", "code"]) {
+    const 候选 = value[key]
+    if (typeof 候选 === "string" && 候选 !== "") return 候选
+    if (typeof 候选 === "number") return String(候选)
+  }
+  return undefined
+}
+
+/**
+ * 把驱动异常收成**不含绑定值**的新错误。
+ *
+ * drizzle 的 `DrizzleQueryError.message` 带 `params: …`，且 `params` 里 `headers` /
+ * `environment` 是**整对象**直接绑进去的、`command` 也在其中；`cause` 链上又是驱动的
+ * 原始错误。这个异常会穿过共享库函数交给任何 `catch` 后记日志的调用方——异常对象本身
+ * 带原文就已违规。这里只留 SQLSTATE 与约束名，**不挂 `cause`**（挂了等于把原文再递出去）。
+ */
+function 连接写入错误(error: unknown): Error {
+  const 内层 = error instanceof Error && error.cause instanceof Error ? error.cause : error
+  const 码 = 取SQL状态码(内层) ?? "unknown"
+  const 消息 = 内层 instanceof Error ? 内层.message : ""
+  const 约束 = /constraint "([^"]+)"/.exec(消息)?.[1]
+  return new Error(
+    约束 === undefined ? `MCP 连接写入失败（${码}）` : `MCP 连接写入失败（${码}，${约束}）`,
+  )
+}
+
 /** 写一条连接。调用方先 `规范化连接`；主键冲突 / 外键失败必须抛出去。 */
 export async function insertMcpConnection(
   db: AssetTarget,
@@ -283,17 +324,21 @@ export async function insertMcpConnection(
   input: McpConnectionInput,
   now: number,
 ): Promise<void> {
-  await db.execute(sql`
-    insert into auth.asset_mcp_connection (
-      asset_id, transport, url, command, cwd, headers, environment, enabled, timeout_ms,
-      published_config, checked_at, check_ok, check_error, tool_count, created_at, updated_at
-    ) values (
-      ${assetId}, ${input.transport}, ${input.url ?? null}, ${命令数组(input.command)}, ${input.cwd ?? null},
-      ${input.headers ?? {}}::jsonb, ${input.environment ?? {}}::jsonb,
-      ${input.enabled ?? true}, ${input.timeoutMs ?? null},
-      null, null, null, '', null, ${now}, ${now}
-    )
-  `)
+  try {
+    await db.execute(sql`
+      insert into auth.asset_mcp_connection (
+        asset_id, transport, url, command, cwd, headers, environment, enabled, timeout_ms,
+        published_config, checked_at, check_ok, check_error, tool_count, created_at, updated_at
+      ) values (
+        ${assetId}, ${input.transport}, ${input.url ?? null}, ${命令数组(input.command)}, ${input.cwd ?? null},
+        ${input.headers ?? {}}::jsonb, ${input.environment ?? {}}::jsonb,
+        ${input.enabled ?? true}, ${input.timeoutMs ?? null},
+        null, null, null, '', null, ${now}, ${now}
+      )
+    `)
+  } catch (error) {
+    throw 连接写入错误(error)
+  }
 }
 
 /** 按资产 id 读连接；没有返回 `undefined`（不是半填对象）。 */
@@ -318,23 +363,29 @@ export async function updateMcpConnection(
   value: unknown,
   now: number,
 ): Promise<McpConnectionRecord | undefined> {
+  // 校验错误必须原样抛出去（调用方靠 `AssetMetadataError` 回 400），所以只包住 execute。
   const input = 规范化连接(value)
-  const rows = rowsOf(
-    await db.execute(sql`
-      update auth.asset_mcp_connection set
-        transport = ${input.transport},
-        url = ${input.url ?? null},
-        command = ${命令数组(input.command)},
-        cwd = ${input.cwd ?? null},
-        headers = ${input.headers ?? {}}::jsonb,
-        environment = ${input.environment ?? {}}::jsonb,
-        enabled = ${input.enabled ?? true},
-        timeout_ms = ${input.timeoutMs ?? null},
-        updated_at = ${now}
-      where asset_id = ${assetId}
-      returning asset_id
-    `),
-  )
+  let rows: Record<string, unknown>[]
+  try {
+    rows = rowsOf(
+      await db.execute(sql`
+        update auth.asset_mcp_connection set
+          transport = ${input.transport},
+          url = ${input.url ?? null},
+          command = ${命令数组(input.command)},
+          cwd = ${input.cwd ?? null},
+          headers = ${input.headers ?? {}}::jsonb,
+          environment = ${input.environment ?? {}}::jsonb,
+          enabled = ${input.enabled ?? true},
+          timeout_ms = ${input.timeoutMs ?? null},
+          updated_at = ${now}
+        where asset_id = ${assetId}
+        returning asset_id
+      `),
+    )
+  } catch (error) {
+    throw 连接写入错误(error)
+  }
   return rows.length === 0 ? undefined : getMcpConnection(db, assetId)
 }
 
