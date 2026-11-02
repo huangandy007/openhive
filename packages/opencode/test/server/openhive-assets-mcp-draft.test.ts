@@ -19,7 +19,8 @@ import { testEffect } from "../lib/effect"
  * MCP 入库出口（2026-11-02 设计 §5.3）：`POST /openhive/assets/draft` 带 `type:"mcp"`。
  *
  * 判据：
- * 1. 只有资产治理管理员能建（普通民警 403，未登录 401）；
+ * 1. 只有资产治理管理员能建（普通民警 403，未登录 401），且**授权先于字段校验**、拒绝留
+ *    `governance.denied` 审计行（前者由「非法字段仍得 403」钉住，后者由审计行数 ＋1 钉住）；
  * 2. 合法 remote / local 草稿成功，库里 `type=mcp` 且连接行落库；
  * 3. 非法连接 / 未知分类 / 未知类型 ⇒ 400，且**一条资产行都不落**（授权与校验先于副作用）；
  * 4. skill 分支行为不变（由既有的 `openhive-asset-draft.test.ts` 在门禁里守着）。
@@ -117,6 +118,23 @@ async function 同名资产数(name: string): Promise<number> {
   return rows.length
 }
 
+/**
+ * 读治理拒绝审计（**裸 SQL**，不经被测对象；读法照 `openhive-governance-audit.test.ts:137-156`）。
+ * 按 actor ＋ board 收窄：前面「普通民警 ⇒ 403」那条也会落一行，靠「请求前后条数 ＋1」分清。
+ */
+function 治理拒绝行() {
+  return Effect.promise(async () => {
+    if (!pg) throw new Error("真库没起来")
+    return rowsOf(
+      await pg.db.execute(
+        sql`select board, action, result, detail from auth.audit_event
+            where actor_id = ${OFFICER.id} and action = 'governance.denied' and board = 'asset-governance'
+            order by id asc`,
+      ),
+    )
+  })
+}
+
 describe("MCP 入库 · 授权门", () => {
   it.effect("未登录 ⇒ 401", () =>
     Effect.gen(function* () {
@@ -132,14 +150,45 @@ describe("MCP 入库 · 授权门", () => {
       expect(yield* Effect.promise(() => 同名资产数("拒绝-非管理员"))).toBe(0)
     }),
   )
+
+  it.effect("普通民警递非法字段 ⇒ 403（授权先于字段校验），且留 governance.denied", () =>
+    Effect.gen(function* () {
+      // 常规「民警 ⇒ 403」用例送的是完全合法的字段：把 `校验资产表单` 挪到授权门之前，
+      // 那条仍然绿（字段合法、无 400）。用**非法字段**才能分清次序——
+      // 授权先跑得 403，校验先跑得 400（`#005-18` 的「假绿四问」）。
+      const 前 = (yield* 治理拒绝行()).length
+      const response = yield* 入库(OFFICER, mcpBody({ name: "", description: "" }))
+      expect(response.status).toBe(403)
+
+      // 拒绝要留痕：裸判权（不走 `GovernanceAuthz.进`）时 403 照样绿，但这里会少一行。
+      const rows = yield* 治理拒绝行()
+      expect(rows.length).toBe(前 + 1)
+      const row = rows[rows.length - 1]
+      expect(row).toMatchObject({ board: "asset-governance", action: "governance.denied", result: "denied" })
+      expect(JSON.parse(String(row?.detail))).toEqual({ perm: "admin" })
+    }),
+  )
 })
 
 describe("MCP 入库 · 成功面", () => {
   it.effect("remote：草稿落库，连接行存在", () =>
     Effect.gen(function* () {
-      const response = yield* 入库(ADMIN, mcpBody({ name: "远程 MCP" }))
+      const response = yield* 入库(
+        ADMIN,
+        mcpBody({
+          name: "远程 MCP",
+          connection: {
+            transport: "remote",
+            url: "https://mcp.example/path",
+            headers: { Authorization: "Bearer s3cret" },
+          },
+        }),
+      )
       expect(response.status).toBe(200)
-      const body = Schema.decodeUnknownSync(回包)(yield* Effect.promise(() => response.json()))
+      const text = yield* Effect.promise(() => response.text())
+      // 凭据安全：回包只有 `{assetId,name,status,visibility}`，连接头 / 环境变量的**值**一个都不能出现。
+      expect(text).not.toContain("s3cret")
+      const body = Schema.decodeUnknownSync(回包)(JSON.parse(text))
       expect(body.status).toBe("draft")
       expect(body.visibility).toBe("targeted")
       const asset = yield* Effect.promise(() => assetById(pg!.db, body.assetId))
