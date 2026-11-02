@@ -258,8 +258,18 @@ describe("触发同步：只对 MCP、只在开关打开时（§3.3.4 触发点 
   })
 
   test("开关未开 ⇒ 不碰库也不写配置", async () => {
+    // 计数而不是「让 execute 拒绝」：拒绝会被 `尝试同步` 按设计吞掉，
+    // 断言面看不出「碰过库」（变异 4 曾因此存活）。
+    let 查库 = 0
+    const db = {
+      execute: () => {
+        查库 += 1
+        return Promise.reject(new Error("不该查库"))
+      },
+    }
     const { config, 写入 } = 记录配置()
-    await Effect.runPromise(触发同步({ type: "mcp", db: 不查库, config, env: {} }))
+    await Effect.runPromise(触发同步({ type: "mcp", db, config, env: {} }))
+    expect(查库).toBe(0)
     expect(写入).toHaveLength(0)
   })
 
