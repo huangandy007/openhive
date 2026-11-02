@@ -218,6 +218,44 @@ describe("资产客户端 · 指定人员（需求 3b）", () => {
     expect(calls[1]?.init?.body).toBe(JSON.stringify({ action: "publish_tech", visibility: "global" }))
   })
 
+  test("带 userIds 时体里有 userIds；空数组不带这个键", async () => {
+    const { send, calls } = 替身(() =>
+      json({ asset: 资产("a1", { status: "published", visibility: "targeted" }) }),
+    )
+    const api = createAssetApi(send)
+
+    await api.transition("a1", "publish_tech", undefined, "targeted", undefined, ["u2", "u3"])
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ action: "publish_tech", visibility: "targeted", userIds: ["u2", "u3"] }),
+    )
+
+    // 组与人是同一档的两条来源：同一次提交可以都带。
+    await api.transition("a1", "publish_tech", undefined, "targeted", ["g_case"], ["u2"])
+    expect(calls[1]?.init?.body).toBe(
+      JSON.stringify({ action: "publish_tech", visibility: "targeted", groupIds: ["g_case"], userIds: ["u2"] }),
+    )
+
+    // 空数组不带：服务端把「给了 userIds 却不是 targeted」当 400，别自己造一个。
+    await api.transition("a1", "publish_tech", undefined, "targeted", ["g_case"], [])
+    expect(calls[2]?.init?.body).toBe(
+      JSON.stringify({ action: "publish_tech", visibility: "targeted", groupIds: ["g_case"] }),
+    )
+  })
+
+  test("searchReaders：GET 字面路径、q 转义、limit=20；回包解包 users，形状不对 ⇒ failed", async () => {
+    const { send, calls } = 替身(() => json({ users: [{ id: "u2", name: "李四", dept: "经侦支队" }] }))
+
+    const out = await createAssetApi(send).searchReaders("李四")
+
+    expect(calls[0]?.input).toBe("/openhive/governance/asset-readers?q=%E6%9D%8E%E5%9B%9B&limit=20")
+    expect(out).toEqual({ kind: "ok", value: [{ id: "u2", name: "李四", dept: "经侦支队" }] })
+
+    for (const 坏 of [{}, { users: [{ id: "u2", name: "李四" }] }, { users: [{ id: 1, name: "李四", dept: "x" }] }]) {
+      const 结果 = await createAssetApi(替身(() => json(坏)).send).searchReaders("李四")
+      expect(结果.kind).toBe("failed")
+    }
+  })
+
   test("授权组列表：GET 同源路径；逐字段严判，形状不对 ⇒ failed", async () => {
     const { send, calls } = 替身(() =>
       json({ groups: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }] }),

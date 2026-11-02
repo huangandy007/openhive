@@ -128,8 +128,19 @@ export interface AssetGroup {
   readonly memberCount: number
 }
 
-/** 新建 MCP 时交给服务端的连接规格（与内核 `McpConnectionInput` 同形）。 */
-export interface McpConnectionInput {
+/**
+ * 可指定的人员（2026-11-02 设计 §3.2.3）：「指定人员」发布时搜索得到的那份名单。
+ *
+ * 只有 `id / name / dept`——弹窗要的是「勾哪个、叫什么、哪个部门」，其余账号字段
+ * 属于账号管理板块，不从这里借出来。
+ */
+export interface AssetReader {
+  readonly id: string
+  readonly name: string
+  readonly dept: string
+}
+
+/** 新建 MCP 时交给服务端的连接规格（与内核 `McpConnectionInput` 同形）。 */export interface McpConnectionInput {
   readonly transport: "local" | "remote"
   readonly url?: string
   readonly command?: readonly string[]
@@ -164,8 +175,9 @@ export interface AssetApi {
     id: string,
     action: GovernanceAction,
     reason?: string,
-    visibility?: "department" | "global" | "targeted",
+    visibility?: "department" | "global" | "targeted" | "personal",
     groupIds?: readonly string[],
+    userIds?: readonly string[],
   ): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
   /**
    * 授权组清单（需求 3b）：发布为「指定人员」时弹窗里的可选项。
@@ -174,6 +186,13 @@ export interface AssetApi {
    * 不存在翻到第二页才找得到的情况。形状不对照旧算 `failed`，不当空列表。
    */
   listGroups(): Promise<AssetOutcome<readonly AssetGroup[]>>
+  /**
+   * 按姓名 / 部门搜人（2026-11-02 设计 §3.2.3）：「指定人员」发布时弹窗里的可选项。
+   *
+   * 只有治理管理员能调（服务端判），前端不判权限。空关键词由调用方挡在本地——
+   * 这里照发的话就是一次全量名单，没有意义。
+   */
+  searchReaders(query: string): Promise<AssetOutcome<readonly AssetReader[]>>
   /**
    * 把一批资产挪到某个**启用**分类（需求 2）：管理员收拾「其他」兜底桶的收尾动作。
    *
@@ -203,6 +222,8 @@ export const PATH = {
   batchCategory: `${PREFIX}/batch-category`,
   /** 需求 3b：授权组清单。与内核 `OpenhiveGovernanceAssetGroups.PATH.list` 逐字对应。 */
   groups: "/openhive/governance/asset-groups",
+  /** 2026-11-02 设计 §3.2.3：可指定人员搜索。与内核 `OpenhiveGovernanceAssetReaders.PATH.list` 逐字对应。 */
+  readers: "/openhive/governance/asset-readers",
   /** 入库（MCP 与 skill 共用）。与内核 `OpenhiveAssets.PATH.draft` 逐字对应。 */
   draft: "/openhive/assets/draft",
 } as const
@@ -378,6 +399,19 @@ function 授权组清单(value: unknown): readonly AssetGroup[] | undefined {
   return parsed
 }
 
+/** 可指定人员：`{ users: [{ id, name, dept }] }`，逐字段严判（三个字段缺一列都是形状漂了）。 */
+function 人员清单(value: unknown): readonly AssetReader[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value["users"])) return undefined
+  const parsed: AssetReader[] = []
+  for (const item of value["users"]) {
+    if (!isRecord(item)) return undefined
+    const { id, name, dept } = item
+    if (typeof id !== "string" || typeof name !== "string" || typeof dept !== "string") return undefined
+    parsed.push({ id, name, dept })
+  }
+  return parsed
+}
+
 /** 批量改分类的回包：`{ updated }`，缺了 / 不是数字都算形状变了（不能当 0 条蒙混）。 */
 function 批量结果(value: unknown): { readonly updated: number } | undefined {
   if (!isRecord(value) || !数(value["updated"])) return undefined
@@ -394,7 +428,7 @@ function 草稿结果(value: unknown): { readonly assetId: string } | undefined 
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
     list: (query) => 请求(send, 列表地址(query), undefined, 列表),
-    transition: (id, action, reason, visibility, groupIds) =>
+    transition: (id, action, reason, visibility, groupIds, userIds) =>
       请求(send, PATH.transition(id), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -404,9 +438,13 @@ export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
           ...(visibility === undefined ? {} : { visibility }),
           // 空数组不带：服务端把「给了 groupIds 却不是 targeted」当 400，别自己造一个。
           ...(groupIds === undefined || groupIds.length === 0 ? {} : { groupIds: [...groupIds] }),
+          // 人与组同一条规则：空数组不带。
+          ...(userIds === undefined || userIds.length === 0 ? {} : { userIds: [...userIds] }),
         }),
       }, 流转结果),
     listGroups: () => 请求(send, PATH.groups, undefined, 授权组清单),
+    searchReaders: (query) =>
+      请求(send, `${PATH.readers}?q=${encodeURIComponent(query)}&limit=20`, undefined, 人员清单),
     batchCategory: (ids, category) =>
       请求(
         send,

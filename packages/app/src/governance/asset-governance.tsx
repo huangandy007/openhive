@@ -36,6 +36,7 @@ import {
   TYPE_LABELS,
   type AssetApi,
   type AssetGroup,
+  type AssetReader,
   type AssetRow,
   type AssetStatus,
   type CreateMcpDraftInput,
@@ -165,7 +166,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [确认, 设确认] = createSignal<{ readonly row: AssetRow; readonly action: GovernanceAction }>()
   const [理由, 设理由] = createSignal("")
   const [理由错误, 设理由错误] = createSignal<string>()
-  const [发布范围, 设发布范围] = createSignal<"department" | "global" | "targeted">()
+  const [发布范围, 设发布范围] = createSignal<"department" | "global" | "targeted" | "personal">()
   const [范围错误, 设范围错误] = createSignal<string>()
   /**
    * 「指定人员」（需求 3b）：组清单懒拉——只有选了这一档（或打开一份已是指定人员的资产）才拉，
@@ -176,11 +177,24 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [组错误, 设组错误] = createSignal<string>()
   /** 勾了哪些组：存 id 不存对象，理由同 `已选`（列表重拉会换行对象）。 */
   const [已选组, 设已选组] = createSignal<readonly string[]>([])
+  /**
+   * 「指定人员」按人授权（2026-11-02 设计 §3.2.3）：搜到的候选、勾了谁。
+   *
+   * 已选人存**整份 `AssetReader`**（不像组那样只存 id）：勾选列表要显示人名与部门，
+   * 而搜索结果会被下一次搜索整份替换，存 id 就查不回名字了。
+   */
+  const [搜索词, 设搜索词] = createSignal("")
+  const [搜索结果, 设搜索结果] = createSignal<readonly AssetReader[]>()
+  const [已选人, 设已选人] = createSignal<readonly AssetReader[]>([])
+  const [人加载中, 设人加载中] = createSignal(false)
+  const [人错误, 设人错误] = createSignal<string>()
   const [动作错误, 设动作错误] = createSignal<string>()
   const [处理中, 设处理中] = createSignal(false)
 
   /** 读列表的代次：只认最新一代的回包（文件头「代次守卫」）。 */
   let 代次 = 0
+  /** 选人搜索的代次：改关键词 / 开合弹窗后，旧回包不能盖新结果（`#008-03`）。 */
+  let 搜人次次 = 0
 
   async function 读() {
     const 本次 = ++代次
@@ -271,17 +285,34 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     void 读()
   }
 
+  /**
+   * 清掉上一次的选人状态。搜索在飞也要作废：打开 / 关闭弹窗后旧回包不该再落进来。
+   */
+  function 清空选人() {
+    搜人次次 += 1
+    设搜索词("")
+    设搜索结果(undefined)
+    设已选人([])
+    设人加载中(false)
+    设人错误(undefined)
+  }
+
   function 打开确认(row: AssetRow, action: GovernanceAction) {
     设提示(undefined)
     设动作错误(undefined)
     设理由("")
     设理由错误(undefined)
     设范围错误(undefined)
-    设发布范围(row.visibility === "personal" ? undefined : row.visibility)
+    // 个人资产没有默认范围，必须显式选；MCP 例外——它是「仅作者」的个人工具，
+    // 默认留在 personal（设计 §3.2.3）。
+    设发布范围(
+      row.visibility === "personal" ? (row.type === "mcp" ? "personal" : undefined) : row.visibility,
+    )
     // 每次打开都重新拉：组成员数量会变，缓存一份旧名单只会让选择器说旧话。
     设组清单(undefined)
     设组错误(undefined)
     设已选组([])
+    清空选人()
     设确认({ row, action })
     if (row.visibility === "targeted") void 拉组()
   }
@@ -295,9 +326,10 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设组清单(undefined)
     设组错误(undefined)
     设已选组([])
+    清空选人()
   }
 
-  function 选发布范围(value: "department" | "global" | "targeted") {
+  function 选发布范围(value: "department" | "global" | "targeted" | "personal") {
     设发布范围(value)
     设范围错误(undefined)
     if (value === "targeted") void 拉组()
@@ -322,6 +354,42 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设已选组((当前) => (选上 ? [...当前, id] : 当前.filter((item) => item !== id)))
   }
 
+  /**
+   * 按关键词搜人（设计 §3.2.3）。空关键词就地清空、不发请求：那等于要一份全量名单。
+   * 不做防抖——每敲一次发一次，回包按代次丢弃过期的。
+   */
+  async function 搜人(query: string) {
+    设搜索词(query)
+    设人错误(undefined)
+    const 关键词 = query.trim()
+    if (关键词 === "") {
+      搜人次次 += 1
+      设搜索结果(undefined)
+      设人加载中(false)
+      return
+    }
+    const 本次 = ++搜人次次
+    设人加载中(true)
+    const out = await props.api.searchReaders(关键词)
+    if (本次 !== 搜人次次) return
+    设人加载中(false)
+    if (out.kind !== "ok") {
+      设搜索结果(undefined)
+      设人错误(out.message)
+      return
+    }
+    设搜索结果(out.value)
+  }
+
+  function 切人(人: AssetReader, 选上: boolean) {
+    设范围错误(undefined)
+    设已选人((当前) => {
+      if (!选上) return 当前.filter((item) => item.id !== 人.id)
+      // 重复搜索会把同一个人以新对象再勾一次：按 id 去重，避免提交重复 id。
+      return 当前.some((item) => item.id === 人.id) ? 当前 : [...当前, 人]
+    })
+  }
+
   async function 提交() {
     const 目标 = 确认()
     if (!目标) return
@@ -336,9 +404,14 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       设范围错误("请选择发布范围")
       return
     }
-    // 「指定人员」才带组：给了 groupIds 却不是这一档，服务端按 400 拒。一个组都没选时
-    // 提交按钮是禁用的（见 `asset-confirm-submit` 的 disabled），这里不再重复兜一遍。
-    const 组 = 选范围 && 发布范围() === "targeted" ? 已选组() : undefined
+    // 「指定人员」才带组和人：给了 groupIds / userIds 却不是这一档，服务端按 400 拒。
+    // 一条都没选时提交按钮是禁用的（见 `asset-confirm-submit` 的 disabled），这里不再兜。
+    const 组 =
+      选范围 && 发布范围() === "targeted" && 已选组().length > 0 ? 已选组() : undefined
+    const 人 =
+      选范围 && 发布范围() === "targeted" && 已选人().length > 0
+        ? 已选人().map((item) => item.id)
+        : undefined
 
     设处理中(true)
     设动作错误(undefined)
@@ -350,6 +423,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       需要理由 ? 理由值 : undefined,
       选范围 ? 发布范围() : undefined,
       组,
+      人,
     )
     设处理中(false)
 
@@ -699,7 +773,12 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
               <Show when={需要选范围()}>
                 <fieldset class="flex flex-col gap-2" data-slot="asset-publish-scope">
                   <legend class="text-[12px] text-v2-text-text-muted">发布范围</legend>
-                  <Show when={确认()?.row.visibility === "personal"}>
+                  <Show when={确认()?.row.type === "mcp"}>
+                    <p data-slot="asset-publish-mcp-hint" class="text-[12px] text-v2-text-text-muted">
+                      MCP 默认建议指定人员；全单位可用才选全局
+                    </p>
+                  </Show>
+                  <Show when={确认()?.row.visibility === "personal" && 发布范围() === undefined}>
                     <p data-slot="asset-publish-hint" class="text-[12px] text-v2-text-text-muted">
                       这份资产当前是个人可见，请选择发布范围
                     </p>
@@ -740,6 +819,21 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                     />
                     <span>指定人员</span>
                   </label>
+                  {/* personal 只对 MCP 放行（设计 §3.1.4）：其余资产发布后必须进共享面。 */}
+                  <Show when={确认()?.row.type === "mcp"}>
+                    <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                      <input
+                        data-slot="asset-publish-scope-personal"
+                        type="radio"
+                        name="asset-publish-scope"
+                        value="personal"
+                        checked={发布范围() === "personal"}
+                        disabled={处理中()}
+                        onChange={() => 选发布范围("personal")}
+                      />
+                      <span>仅作者</span>
+                    </label>
+                  </Show>
                   <Show when={发布范围() === "targeted"}>
                     <div data-slot="asset-publish-groups" class="flex flex-col gap-1 pl-6">
                       <Show when={组加载中()}>
@@ -784,6 +878,69 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                             </For>
                           </Show>
                         )}
+                      </Show>
+                    </div>
+                    {/*
+                      按人授权（设计 §3.2.3）：组与人是同一档的两条来源，任选其一即可提交。
+                      空关键词不发请求——那等于要一份全量名单。
+                    */}
+                    <div data-slot="asset-publish-users" class="flex flex-col gap-1 pl-6">
+                      <label class="flex flex-col gap-1">
+                        <span class="text-[12px] text-v2-text-text-muted">按姓名或部门搜索人员</span>
+                        <input
+                          data-slot="asset-publish-user-search"
+                          type="search"
+                          class="h-8 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base"
+                          placeholder="输入姓名或部门"
+                          aria-label="搜索人员"
+                          disabled={处理中()}
+                          value={搜索词()}
+                          onInput={(event) => void 搜人(event.currentTarget.value)}
+                        />
+                      </label>
+                      <Show when={人加载中()}>
+                        <span class="text-[12px] text-v2-text-text-muted">正在搜索人员…</span>
+                      </Show>
+                      <Show when={人错误()}>
+                        {(message) => (
+                          <span
+                            data-slot="asset-publish-user-error"
+                            role="alert"
+                            class="text-[12px] text-v2-state-fg-danger"
+                          >
+                            {message()}
+                          </span>
+                        )}
+                      </Show>
+                      <Show when={搜索结果()}>
+                        {(清单) => (
+                          <Show
+                            when={清单().length > 0}
+                            fallback={<p class="text-[12px] text-v2-text-text-muted">没有匹配的人员</p>}
+                          >
+                            <For each={清单()}>
+                              {(人) => (
+                                <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
+                                  <input
+                                    type="checkbox"
+                                    data-slot={`asset-publish-user-${人.id}`}
+                                    checked={已选人().some((item) => item.id === 人.id)}
+                                    disabled={处理中()}
+                                    onChange={(event) => 切人(人, event.currentTarget.checked)}
+                                  />
+                                  <span>
+                                    {人.name}（{人.dept}）
+                                  </span>
+                                </label>
+                              )}
+                            </For>
+                          </Show>
+                        )}
+                      </Show>
+                      <Show when={已选人().length > 0}>
+                        <div data-slot="asset-publish-users-selected" class="text-[12px] text-v2-text-text-muted">
+                          已选：{已选人().map((人) => 人.name).join("、")}
+                        </div>
                       </Show>
                     </div>
                   </Show>
@@ -839,7 +996,10 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                 disabled={
                   处理中() ||
                   (需要选范围() && 发布范围() === undefined) ||
-                  (需要选范围() && 发布范围() === "targeted" && 已选组().length === 0)
+                  (需要选范围() &&
+                    发布范围() === "targeted" &&
+                    已选组().length === 0 &&
+                    已选人().length === 0)
                 }
                 onClick={() => void 提交()}
               >

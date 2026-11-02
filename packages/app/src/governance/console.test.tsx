@@ -152,6 +152,7 @@ describe("治理后台 · 全屏骨架", () => {
         transition: async () => ({ kind: "failed", message: "本用例不流转" }),
         batchCategory: async () => ({ kind: "failed", message: "本用例不批量改分类" }),
         listGroups: async () => ({ kind: "failed", message: "本用例不拉授权组" }),
+        searchReaders: async () => ({ kind: "failed", message: "本用例不搜人" }),
         createMcpDraft: async () => ({ kind: "failed", message: "本用例不新建 MCP" }),
       },
     })

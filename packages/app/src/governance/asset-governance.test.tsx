@@ -87,19 +87,27 @@ const 授权组 = [
   { id: "g_taskforce", name: "涉黑专案组", memberCount: 5 },
 ] as const
 
+const 读者 = [
+  { id: "u2", name: "李四", dept: "经侦支队" },
+  { id: "u3", name: "王五", dept: "刑侦支队" },
+] as const
+
 interface 记录 {
   readonly list: AssetQuery[]
   readonly transition: Array<{
     readonly id: string
     readonly action: GovernanceAction
     readonly reason?: string
-    readonly visibility?: "department" | "global" | "targeted"
+    readonly visibility?: "department" | "global" | "targeted" | "personal"
     readonly groupIds?: readonly string[]
+    readonly userIds?: readonly string[]
   }>
   readonly batch: Array<{ readonly ids: readonly string[]; readonly category: string }>
   readonly createMcp: CreateMcpDraftInput[]
   /** 「指定人员」弹窗拉了几次组清单：不点这一档就不该拉（白拉一次网）。 */
   groupCalls: number
+  /** 选人搜索框发过哪些关键词（空串不该发请求）。 */
+  readonly readerQueries: string[]
 }
 
 /** 默认替身：按 `query.status` 过滤假数据（与服务端的过滤语义一致）。 */
@@ -110,23 +118,28 @@ function 假后端(
   }),
   覆写: Partial<AssetApi> = {},
 ) {
-  const 记录: 记录 = { list: [], transition: [], batch: [], createMcp: [], groupCalls: 0 }
+  const 记录: 记录 = { list: [], transition: [], batch: [], createMcp: [], groupCalls: 0, readerQueries: [] }
   const api: AssetApi = {
     list: async (query = {}) => {
       记录.list.push(query)
       return 应答(query)
     },
-    transition: async (id, action, reason, visibility, groupIds) => {
+    transition: async (id, action, reason, visibility, groupIds, userIds) => {
       记录.transition.push({
         id,
         action,
         ...(reason === undefined ? {} : { reason }),
         ...(visibility === undefined ? {} : { visibility }),
         ...(groupIds === undefined ? {} : { groupIds }),
+        ...(userIds === undefined ? {} : { userIds }),
       })
       const 原行 = 样本.find((row) => row.id === id) ?? 资产(id)
       // 原实现回 `pending_tech`；假后端只被断言「记下了什么」，不改它。
       return { kind: "ok", value: { asset: { ...原行, status: "pending_tech" } } }
+    },
+    searchReaders: async (query) => {
+      记录.readerQueries.push(query)
+      return { kind: "ok", value: 读者 }
     },
     batchCategory: async (ids, category) => {
       记录.batch.push({ ids, category })
@@ -351,6 +364,8 @@ describe("资产治理页 · 发布范围", () => {
 
     const 本部门 = 有("[data-slot='asset-publish-scope-department']")
     expect(本部门 instanceof HTMLInputElement && 本部门.checked).toBe(true)
+    // personal 只对 MCP 放行：skill 行的范围里不该出现这一档。
+    expect(有("[data-slot='asset-publish-scope-personal']")).toBeNull()
     expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
 
     点击("[data-slot='asset-confirm-submit']")
@@ -451,6 +466,103 @@ describe("资产治理页 · 发布范围 · 指定人员（需求 3b）", () =>
   })
 })
 
+describe("资产治理页 · 指定人员 · 选人（2026-11-02 设计 §3.2.3）", () => {
+  const 填搜索 = (value: string) => {
+    const 目标 = 有("[data-slot='asset-publish-user-search']")
+    if (!(目标 instanceof HTMLInputElement)) throw new Error("找不到选人搜索框")
+    目标.value = value
+    目标.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+
+  const 勾人 = (id: string) => {
+    const 框 = 有(`[data-slot='asset-publish-user-${id}']`)
+    if (!(框 instanceof HTMLInputElement)) throw new Error(`找不到人员勾选框：${id}`)
+    框.click()
+  }
+
+  test("targeted 发布：搜索并选中一个人，提交体带 userIds", async () => {
+    const 部门待发布 = 资产("p5", { name: "话单检索规则", status: "pending_tech", visibility: "department" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [部门待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    点单选("[data-slot='asset-publish-scope-targeted']")
+    await 等到(() => 有("[data-slot='asset-publish-user-search']") !== null)
+
+    // 没输入就不请求：空关键词不该往服务端打一次全量。
+    expect(记录.readerQueries).toEqual([])
+
+    填搜索("李四")
+    await 等到(() => 有("[data-slot='asset-publish-user-u2']") !== null)
+    expect(记录.readerQueries).toEqual(["李四"])
+    // 点了这一档但组和人一个都没选时不能提交。
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
+
+    勾人("u2")
+    await 等到(() => 文章("[data-slot='asset-publish-users-selected']").includes("李四"))
+    await 等到(() => !按钮("[data-slot='asset-confirm-submit']").disabled)
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+
+    // 第 6 参就是 userIds；有人的情况下组可以为空（两条来源同一档任选其一）。
+    expect(记录.transition[0]).toEqual({
+      id: "p5",
+      action: "publish_tech",
+      visibility: "targeted",
+      userIds: ["u2"],
+    })
+  })
+
+  test("取消勾选后重设不残留：先勾 u2、u3，取消 u3 后只提交 u2", async () => {
+    const 部门待发布 = 资产("p5", { name: "话单检索规则", status: "pending_tech", visibility: "department" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [部门待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    点单选("[data-slot='asset-publish-scope-targeted']")
+    await 等到(() => 有("[data-slot='asset-publish-user-search']") !== null)
+
+    填搜索("李")
+    await 等到(() => 有("[data-slot='asset-publish-user-u2']") !== null && 有("[data-slot='asset-publish-user-u3']") !== null)
+
+    勾人("u2")
+    勾人("u3")
+    await 等到(() => 文章("[data-slot='asset-publish-users-selected']").includes("王五"))
+
+    勾人("u3")
+    await 等到(() => !文章("[data-slot='asset-publish-users-selected']").includes("王五"))
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+
+    expect(记录.transition[0]?.userIds).toEqual(["u2"])
+  })
+
+  test("MCP 行显示 personal 选项与默认值，并给出发布提示", async () => {
+    const 待发布 = 资产("p6", {
+      name: "资金查询 MCP",
+      type: "mcp",
+      status: "pending_tech",
+      visibility: "personal",
+    })
+    const { api } = 假后端(async () => ({ kind: "ok", value: [待发布] }))
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    const 个人档 = 有("[data-slot='asset-publish-scope-personal']")
+    expect(个人档).not.toBeNull()
+    // MCP 的个人资产默认回到 personal：不必先随便点一档。
+    expect(个人档 instanceof HTMLInputElement && 个人档.checked).toBe(true)
+    expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(false)
+    expect(文章("[data-slot='asset-publish-mcp-hint']")).toContain("MCP 默认建议指定人员；全单位可用才选全局")
+  })
+})
+
 describe("资产治理页 · 失败不关框", () => {
   test("服务端 field=reason ⇒ 错误挂到理由框，框不关", async () => {
     const 服务端拒绝 = 假后端(undefined, {
@@ -508,6 +620,7 @@ describe("资产治理页 · 三态", () => {
       batchCategory: (ids, category) => 失败一次.api.batchCategory(ids, category),
       listGroups: () => 失败一次.api.listGroups(),
       createMcpDraft: (input) => 失败一次.api.createMcpDraft(input),
+      searchReaders: () => 失败一次.api.searchReaders(""),
     })
     await 等到(() => 有("[data-slot='asset-error']") !== null)
     expect(文章("[data-slot='asset-error']")).toContain("连接服务失败")
