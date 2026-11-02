@@ -34,6 +34,12 @@ const 作者 = { userId: "u1", department: "经侦支队" }
 const 审核 = { userId: "u2", department: "刑侦支队" }
 const 管理 = { userId: "u3", department: "刑侦支队" }
 
+/**
+ * 发布闸门（批次 3）要求先试连；这组用例断言的是状态机与文件，不是连接，
+ * 统一注入成功，不碰网络。
+ */
+const 试连成功 = async () => ({ ok: true, toolCount: 0 }) as const
+
 function 授权(assetId: string, perm: "review" | "admin") {
   return [{ resourceType: "mcp", resourceId: assetId, perm }]
 }
@@ -112,6 +118,7 @@ describe("MCP 全状态流转", () => {
         action,
         viewer,
         now: 2001,
+        probe: 试连成功,
         ...over,
       } as Parameters<typeof transitionAsset>[0])
 
@@ -154,7 +161,7 @@ describe("MCP 全状态流转", () => {
       connection: { transport: "remote", url: "https://x" },
     })
     const 步 = (action: SkillAction, viewer: typeof 作者, over: Record<string, unknown> = {}) =>
-      transitionAsset({ db, root, assetId: "asset_mcp_abort", action, viewer, now: 3001, ...over } as Parameters<typeof transitionAsset>[0])
+      transitionAsset({ db, root, assetId: "asset_mcp_abort", action, viewer, now: 3001, probe: 试连成功, ...over } as Parameters<typeof transitionAsset>[0])
 
     await 步("submit_review", 作者)
     await 步("approve_business", 审核, { grants: 授权("asset_mcp_abort", "review") })

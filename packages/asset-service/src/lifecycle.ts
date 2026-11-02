@@ -190,6 +190,11 @@ export type TransitionErrorCode =
   // 【保留的定制 · 同步上游时不要丢】版本迭代（2026-11-01）：
   // 只用于 `publish_iteration` 的前置判据——作者还没提交（或 pending 被 abort 删了）。
   | "iteration_not_submitted"
+  // 【保留的定制 · 同步上游时不要丢】MCP 发布闸门（2026-11-02 设计 §5.4）：
+  /** MCP 发布前试连失败：连不上 / 超时 / 命令起不来。 */
+  | "mcp_probe_failed"
+  /** MCP 资产没有连接规格（不该出现：建草稿时必然写入）。 */
+  | "mcp_connection_missing"
 
 export class AssetTransitionError extends Error {
   constructor(

@@ -925,6 +925,9 @@ function 失败(error: unknown) {
       case "department_missing":
       case "visibility_not_applicable":
       case "iteration_not_submitted":
+      // 【保留的定制 · 同步上游时不要丢】MCP 发布闸门（2026-11-02 设计 §5.4）。
+      case "mcp_probe_failed":
+      case "mcp_connection_missing":
         return fail(CONFLICT, error.message)
       default: {
         const 未覆盖: never = error.code

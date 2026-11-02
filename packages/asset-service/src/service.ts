@@ -19,7 +19,16 @@ import {
   type AppliedSkillTransition,
   type SkillAction,
 } from "./lifecycle"
-import { insertMcpConnection, 规范化连接 } from "./mcp-connection"
+import {
+  getMcpConnection,
+  insertMcpConnection,
+  记录试连结果,
+  回写发布快照,
+  写入发布快照,
+  连接输入,
+  规范化连接,
+} from "./mcp-connection"
+import { probeMcpConnection, type McpProbe } from "./mcp-probe"
 import type { AssetMetadata } from "./metadata"
 import { AssetNotificationError, notifyAssetTransition } from "./notify"
 import { linkSkill, unlinkSkill } from "./project-skill-link"
@@ -580,6 +589,8 @@ export interface TransitionAssetInput {
   readonly workspaceRoot?: string
   /** 目标项目（`start_iteration` 必填）。出口已校验它属于发起人。 */
   readonly projectId?: string
+  /** 试连实现（测试注入用）。缺省 = `probeMcpConnection`。 */
+  readonly probe?: McpProbe
 }
 
 /** 一次已落地的文件步骤；`commit` 清理备份，`rollback` 把文件退回原样。 */
@@ -669,6 +680,27 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   // 在 `迭代目标()` 里现算），该函数内部已逐段 `assertSafeSegment`——这里不再「校验」一次。
   const 迭代列 = iterationColumnsOf(applied.action, input.reason, 迭代, asset.type === "mcp")
 
+  // 【保留的定制 · 同步上游时不要丢】MCP 发布前试连：失败不落状态、不写快照（设计 §5.4）。
+  // 插在 `迭代列` 之后、文件步骤之前：对 MCP 而言迭代目标与文件步骤都是空操作，放在这里
+  // 才能保证「试连失败 ⇒ `updateAssetLifecycle` 根本没跑 ⇒ 状态不变」，而 check_error 已落库。
+  if (
+    asset.type === "mcp" &&
+    (applied.action === "publish_tech" || applied.action === "publish_iteration")
+  ) {
+    // 只求值一次：`input.probe ?? probeMcpConnection` 写两遍会有两个投影。
+    await prepareMcpPublish(db, asset.id, input.probe ?? probeMcpConnection, now)
+  }
+  // 【保留的定制 · 同步上游时不要丢】放弃迭代 = 回到线上快照（设计 §3.1.4）。
+  if (asset.type === "mcp" && applied.action === "abort_iteration") {
+    const 还原 = await 回写发布快照(db, asset.id, now)
+    if (!还原) {
+      throw new AssetTransitionError(
+        "mcp_connection_missing",
+        `这台 MCP 资产没有可回写的发布快照：${asset.id}`,
+      )
+    }
+  }
+
   const step = await prepareStorageStep(root, 生效, applied, asset, 迭代, input.workspaceRoot)
 
   // 本次要写入的版本号**只算一次**：条件更新与「他人已落地」判据必须用同一个值，
@@ -747,6 +779,38 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
   }
 
   return updated
+}
+
+/**
+ * MCP 发布前试连（设计 §5.4）：读连接规格 → 真连一次 → **先落试连结果** → 失败抛错。
+ *
+ * 顺序是这条闸门的全部意义：结果先入库，失败再抛 ⇒ 出口回 409 时界面能看到
+ * `check_error`；把抛错放在前面就会出现「被告知连不上，但库里查不到原因」。
+ * 成功才写快照：快照是**已发布**的连接规格，试连没过就不该有它。
+ *
+ * 错误消息直接带试连文本：生产路径的 `probeMcpConnection` 已按 headers / environment
+ * 的值脱敏并截 500，这里不再拼装连接配置原文（二次拼装 = 第二条泄漏面）。
+ */
+async function prepareMcpPublish(
+  db: AssetTarget,
+  assetId: string,
+  probe: McpProbe,
+  now: number,
+): Promise<void> {
+  const 连接 = await getMcpConnection(db, assetId)
+  if (连接 === undefined) {
+    throw new AssetTransitionError("mcp_connection_missing", `这台 MCP 资产没有连接规格：${assetId}`)
+  }
+  const 输入 = 连接输入(连接)
+  const 结果 = await probe(输入, { timeoutMs: 输入.timeoutMs })
+  await 记录试连结果(db, assetId, {
+    checkedAt: now,
+    ok: 结果.ok,
+    error: 结果.ok ? "" : 结果.error,
+    toolCount: 结果.ok ? 结果.toolCount : null,
+  })
+  if (!结果.ok) throw new AssetTransitionError("mcp_probe_failed", `连不上：${结果.error}`)
+  await 写入发布快照(db, assetId, now)
 }
 
 /**

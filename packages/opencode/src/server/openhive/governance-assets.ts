@@ -668,6 +668,10 @@ export function 映射错误(
       // 判据（作者还没提交 / pending 被 abort 删了）。缺这条 case 会落到下面的 `undefined`
       // ⇒ 出口 `Effect.die` ⇒ 500 且不落审计（Task 3 复审挂账）。
       case "iteration_not_submitted":
+      // 【保留的定制 · 同步上游时不要丢】MCP 发布闸门（2026-11-02 设计 §5.4）：
+      // 试连失败 / 连接规格缺失都是「发布前提不成立」，不是内部故障。
+      case "mcp_probe_failed":
+      case "mcp_connection_missing":
         return { status: CONFLICT, message: error.message }
       default: {
         // 编译期闸门（与作者出口 `assets.ts` 的 `失败()` 同款）：`TransitionErrorCode` 新增了
