@@ -55,7 +55,7 @@ import type { connect } from "@opencode-ai/auth/db"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { userDatabasePath } from "@opencode-ai/core/database/router"
 import { sql } from "drizzle-orm"
-import { sanitize } from "@/mcp/catalog"
+import { McpCatalog } from "@/mcp/catalog"
 
 /** 详情页「最近 N 天」的窗口（2026-10-29 用户裁定：30 天更妥）。 */
 export const WINDOW_DAYS = 30
@@ -249,11 +249,11 @@ function 命中命令目录(
 }
 
 /**
- * MCP 工具名的归因：**前缀 = `sanitize(配置键) + "_"`**，配置键就是资产 id（设计 §3.3.1）。
+ * MCP 工具名的归因：前缀由 `McpCatalog.toolName(id, "")` 出（今天 = `sanitize(id) + "_"`），
+ * **不自己拼分隔符**——分隔符住在 `toolName()` 里，上游改它时这里跟着走（`#003-05`）。
  *
- * `sanitize` 不是照抄的判据，是 `src/mcp/catalog.ts` 的 `toolName()` 用的同一个函数
- * （`#004-02`：同一前提只留一份写法）。一个工具名同时命中两个资产（一个 id 是另一个的
- * 前缀）时**不猜**：返回候选，调用方只计数 + 告警（设计 §9「使用归因歧义」）。
+ * 一个工具名同时命中两个资产（一个 id 是另一个的前缀）时**不猜**：返回候选，调用方只计数 +
+ * 告警（设计 §9「使用归因歧义」）。
  */
 function 命中MCP工具(
   工具名: string,
@@ -262,7 +262,7 @@ function 命中MCP工具(
   if (工具名.length === 0) return undefined
   const 候选: string[] = []
   for (const [前缀, id] of 资产) {
-    if (工具名.startsWith(前缀 + "_")) 候选.push(id)
+    if (工具名.startsWith(前缀)) 候选.push(id)
   }
   if (候选.length === 0) return undefined
   return 候选.length === 1 ? { id: 候选[0] } : { 候选 }
@@ -308,13 +308,14 @@ export async function 抽取(input: 抽取输入): Promise<抽取结果> {
 
   // 资产名册（2026-10-30）：bash / read / 斜杠命令这三条路没有「技能名」可查，
   // 只能从路径里的**资产 id 段**归因。整表读一次，段查找是 Map 命中。
-  // 2026-11-02 起同时建 MCP 前缀表：配置键 = sanitize(资产 id)，键序与 `toolName()` 一致。
+  // 2026-11-02 起同时建 MCP 前缀表：键形由 `McpCatalog.toolName(id, "")` 出，与内核工具名同源。
   const 资产 = new Map<string, string>()
   const MCP资产 = new Map<string, string>()
   for (const row of rowsOf(await input.db.execute(sql`select id, name, type from auth.asset`))) {
     const id = String(row["id"])
     资产.set(id, String(row["name"]))
-    if (String(row["type"]) === "mcp") MCP资产.set(sanitize(id), id)
+    // 表里含未发布 / 已归档的 MCP 资产，可能与已发布资产产生保守的假歧义（宁可少记、不猜）。
+    if (String(row["type"]) === "mcp") MCP资产.set(McpCatalog.toolName(id, ""), id)
   }
 
   let scanned = 0

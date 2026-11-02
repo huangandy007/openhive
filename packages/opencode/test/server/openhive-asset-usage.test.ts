@@ -940,4 +940,62 @@ describe("MCP 调用（批次 4 · 设计 §7）", () => {
     expect((await 抽取({ db: pg.db, root: 根, now: 1_790_000_200 })).inserted).toBe(1)
     expect((await 形态行("usage-mcp4")).map((row) => row.kind)).toEqual(["mcp"])
   })
+
+  test("资产 id 需要 sanitize 改写时，按 toolName 的真实前缀归因（mcp.fund → mcp_fund_）", async () => {
+    await 建用户("usage-mcp5")
+    await insertAsset(pg.db, 资产({ id: "mcp.fund", name: "点号资产", type: "mcp" }))
+    const 根 = 独占根("mcp5")
+    const 源 = 建源库("usage-mcp5", 根)
+    建会话(源, "usage-mcp-s5", "usage-p-mcp5")
+    记调用(源, { partId: "usage-mcp-prt5", sessionId: "usage-mcp-s5", tool: "mcp_fund_query_account" })
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(1)
+    expect(await 形态行("usage-mcp5")).toEqual([
+      { part_id: "usage-mcp-prt5", asset_id: "mcp.fund", kind: "mcp", tool_name: "mcp_fund_query_account" },
+    ])
+  })
+
+  test("毒行：tool 不是字符串 ⇒ 不抛、不入表、游标照常推进", async () => {
+    await 建用户("usage-mcp6")
+    // 名册里必须真有一个 MCP 资产：否则前缀表是空 Map，`.startsWith` 那行根本不会被执行，
+    // 「归一」缺失就测不出来（单独跑本用例时实得绿）。
+    await insertAsset(pg.db, 资产({ id: "mcp-poison", name: "毒行资产", type: "mcp" }))
+    const 根 = 独占根("mcp6")
+    const 源 = 建源库("usage-mcp6", 根)
+    建会话(源, "usage-mcp-s6", "usage-p-mcp6")
+    // `tool: 123`：预过滤只判 `is not null`，这行会进扫描；归因侧若不先归一成字符串，
+    // `.startsWith` 会抛，被每用户 catch 吞掉 ⇒ 游标不推进、该用户每轮重复失败。
+    源.query(
+      "insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, 'msg_usage', ?, ?, ?, ?)",
+    ).run(
+      "usage-mcp-prt6",
+      "usage-mcp-s6",
+      1_790_000_000_123,
+      1_790_000_000_123,
+      JSON.stringify({
+        type: "tool",
+        tool: 123,
+        callID: "call_usage-mcp-prt6",
+        state: {
+          status: "completed",
+          input: {},
+          output: "",
+          title: "",
+          metadata: {},
+          time: { start: 1_790_000_000_123, end: 1_790_000_000_123 },
+        },
+      }),
+    )
+
+    const 结果 = await 抽取({ db: pg.db, root: 根, now: 1_790_000_100 })
+
+    expect(结果.inserted).toBe(0)
+    expect(结果.ambiguous).toBe(0)
+    const 游标 = rowsOf(
+      await pg.db.execute(sql`select last_updated_sec from auth.asset_usage_cursor where user_id = ${"usage-mcp6"}`),
+    )
+    expect(游标).toEqual([{ last_updated_sec: 1_790_000_000 }])
+  })
 })
