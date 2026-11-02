@@ -102,7 +102,7 @@ Z = from.env.local        ← .env.local 更大
 | `OPENHIVE_DEFAULT_PASSWORD` | `packages/auth/src/policy.ts:11` | 初始口令（配了引导管理员时必填） |
 | `OPENHIVE_BOOTSTRAP_ADMIN_POLICE_NO` | `packages/auth/src/policy.ts:109` | 引导首个管理员；**不设 = 零影响**（不连库） |
 | `OPENHIVE_ACTIVITY_THROTTLE_SECONDS` | `packages/auth/src/policy.ts:79` | 活跃度上报节流 |
-| `OPENHIVE_ASSET_SERVICE_DIR` | `packages/opencode/src/server/openhive/governance-mcp-supervisor.ts:43` | asset-service **包目录**，内核据此拉起治理 MCP 子进程（`bun run <dir>/src/mcp-http.ts`）。**不设且没设下面 `_CMD` ⇒ 不起进程**（dev / 单测默认无影响），也就没有治理 MCP |
+| `OPENHIVE_ASSET_SERVICE_DIR` | `packages/opencode/src/server/openhive/mcp-config-writer.ts`（`export const ENTRY_DIR_ENV` 所在行；supervisor 从这里 import） | asset-service **包目录**。两个用途：① 内核据此拉起治理 MCP 子进程（`bun run <dir>/src/mcp-http.ts`）；② **MCP 配置同步的开关**——不设 ⇒ 不同步全局配置（dev / 单测默认不写开发机的 `opencode.jsonc`）。**不设且没设下面 `_CMD` ⇒ 不起进程** |
 | `OPENHIVE_GOVERNANCE_MCP` | 同上 `:47` | 设成 `off` ⇒ 显式关掉（给「目录配了、这次不想起」用） |
 | `OPENHIVE_GOVERNANCE_MCP_CMD` | 同上 `:45` | **JSON 字符串数组**（元素必须全是字符串），覆盖默认命令（镜像里 `bun` 不在 PATH 时用）；**设了它就不需要 `_DIR`**。非 JSON / 长度 < 2 / 元素非字符串 ⇒ 记 WARN 不起进程 |
 | `OPENHIVE_GOVERNANCE_MCP_PORT` | 同上 `:48` | 治理 MCP 的**首启**端口；缺省 / 非整数 / 不在 `1..65535` ⇒ `0`（系统分配）。重启沿用上一轮回报的端口；显式端口被占 ⇒ 子进程起不来，按退避重试（不会悄悄换号） |
@@ -146,6 +146,13 @@ Z = from.env.local        ← .env.local 更大
 
 **优先级**：`provider.ts:1832` 是 `if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key`
 ⇒ **配置文件里的 key 优先，`.env` 里的只是兜底**。所以两处都放 key 不会打架，配置那份赢。
+
+### `mcp` 段是**派生数据**（2026-11-02 起）
+
+全局配置里的 `mcp` 段由同步器按「已发布 / 迭代中的 MCP 资产」**整段替换**（设计 §3.3.4）：
+除 `BUILTIN_MCP_SERVERS`（今天只有 `openhive-governance`，由治理监督器按实际端口写）外，
+**手工写进去的 server 会在下一次同步时被清掉**。要加一台业务 MCP，唯一入口是资产库：
+建 MCP 资产 → 提交 → 业务审核 → 技术发布。
 
 ---
 
