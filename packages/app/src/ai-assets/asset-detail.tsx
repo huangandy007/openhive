@@ -2,7 +2,9 @@ import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { Icon } from "@opencode-ai/ui/icon"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { TextareaV2 } from "@opencode-ai/ui/v2/textarea-v2"
-import { createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid-js"
+import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid-js"
+import type { McpConnectionView } from "@opencode-ai/asset-service/mcp-connection"
+import { McpConnectionPanel } from "./mcp-connection-panel"
 import {
   ASSET_STATUS_LABELS,
   ASSET_VISIBILITY_LABELS,
@@ -856,10 +858,47 @@ export interface AssetDetailProps {
    * 只用来禁用按钮：`iterationBusy()` 回的是资产 id，不是给人看的文案，别往界面上写。
    */
   readonly iterationBusy?: boolean
+  /**
+   * 【保留的定制 · 同步上游时不要丢】读取 MCP 连接规格（2026-11-02 设计 §3.1.2）。
+   *
+   * **省略 ⇒ 不渲染连接面板**（与 `canWrite` / `onToggleEnabled` 同一条纪律：
+   * storybook 与组件测试裸挂时不发请求）。返回字符串 = 失败原因（服务端是 403 / 404
+   * 还是网络断了，由调用方决定文案，详情不自己编）。
+   */
+  readonly loadMcpConnection?: (assetId: string) => Promise<McpConnectionView | string>
 }
 
 export function AssetDetail(props: AssetDetailProps): JSX.Element {
   const [当前, set当前] = createSignal<AssetDetailTab>("intro")
+  const [连接视图, set连接视图] = createSignal<McpConnectionView | undefined>()
+  const [连接错误, set连接错误] = createSignal<string | undefined>()
+  const [连接加载中, set连接加载中] = createSignal(false)
+  // 先发后回：切资产时旧回包不能覆盖新资产的面板（`#008-03`）。
+  let 连接代次 = 0
+
+  createEffect(() => {
+    const 加载 = props.loadMcpConnection
+    const 资产id = props.asset.id
+    if (props.asset.type !== "mcp" || 加载 === undefined) return
+    const 代 = ++连接代次
+    set连接加载中(true)
+    set连接错误(undefined)
+    set连接视图(undefined)
+    void 加载(资产id).then(
+      (结果) => {
+        if (代 !== 连接代次) return
+        set连接加载中(false)
+        if (typeof 结果 === "string") set连接错误(结果)
+        else set连接视图(结果)
+      },
+      (error: unknown) => {
+        if (代 !== 连接代次) return
+        set连接加载中(false)
+        set连接错误(error instanceof Error ? error.message : "连接规格读取失败")
+      },
+    )
+  })
+
   let 返回按钮: HTMLButtonElement | undefined
   const 标签按钮 = new Map<AssetDetailTab, HTMLButtonElement>()
 
@@ -1052,6 +1091,13 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
                 可写={props.canWrite === true}
                 onSave={(值) => 保存({ description: 值 })}
               />
+              <Show when={props.asset.type === "mcp" && props.loadMcpConnection !== undefined}>
+                <McpConnectionPanel
+                  view={连接视图()}
+                  loading={连接加载中()}
+                  error={连接错误()}
+                />
+              </Show>
             </Match>
             <Match when={当前() === "summary"}>
               <功能描述面板

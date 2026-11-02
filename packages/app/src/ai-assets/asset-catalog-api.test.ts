@@ -230,6 +230,20 @@ describe("使用面资产客户端", () => {
     }
   })
 
+  // 需求 3b：「指定人员」是服务端真实会回的第四档；漏了它，整页都会被判成「数据格式不对」。
+  // MCP 默认就按这一档发布（2026-11-02 设计 §3.2.2），所以这条必须绿。
+  test("targeted 也是合法可见范围：不能把「指定人员」资产判成坏行", async () => {
+    const { send } = 替身(() =>
+      json({ assets: [资产("a1", { visibility: "targeted" })], total: 1, page: 1, pageSize: 20 }),
+    )
+    const out = await createCatalogApi(send).list()
+
+    expect(out.kind).toBe("ok")
+    if (out.kind !== "ok") return
+    expect(out.value.assets).toHaveLength(1)
+    expect(out.value.assets[0]?.visibility).toBe("targeted")
+  })
+
   test("一行缺列 / 枚举越界 ⇒ 整体 failed（不跳过坏行假装成功）", async () => {
     const 缺描述 = { ...资产("a1") } as Record<string, unknown>
     delete 缺描述["description"]

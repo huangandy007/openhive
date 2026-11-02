@@ -47,15 +47,15 @@ function 数据源(over: Partial<{
   改清单: (rows: readonly AssetMetadata[]) => void
   改错误: (reason: string | undefined) => void
 } {
-  const [清单, set清单] = createSignal<readonly AssetMetadata[]>(over.assets ?? [])
-  const [总数, set总数] = createSignal(over.total ?? 0)
+  const [清单, set清单] = createSignal(over.assets ?? [])
+  const [总数] = createSignal(over.total ?? 0)
   const [页码, set页码] = createSignal(over.page ?? 1)
   const [每页, set每页] = createSignal(over.pageSize ?? 20)
-  const [分类名] = createSignal<Readonly<Record<string, string>>>(over.categoryNames ?? {})
-  const [错误, set错误] = createSignal<string | undefined>(over.error)
+  const [分类名] = createSignal(over.categoryNames ?? {})
+  const [错误, set错误] = createSignal(over.error)
   const [收藏] = createSignal<ReadonlySet<string>>(new Set(over.favorited ?? []))
-  const [收藏中] = createSignal<string | undefined>(over.favoriteBusy)
-  const [用量] = createSignal<UsageStats | undefined>(over.usage)
+  const [收藏中] = createSignal(over.favoriteBusy)
+  const [用量] = createSignal(over.usage)
   const 翻页: number[] = []
   const 改条数: number[] = []
   const 查询: unknown[] = []
@@ -735,6 +735,96 @@ describe("中栏 · 使用记录接线（2026-10-29）", () => {
       expect(用量.textContent?.trim()).toBe("最近 7 天 · 2 人用过 · 共 5 次")
     } finally {
       卸()
+    }
+  })
+})
+
+describe("AssetCenter · MCP 连接（2026-11-02 设计 §3.1.2）", () => {
+  const mcp资产: AssetMetadata = {
+    id: "m1",
+    name: "资金查询 MCP",
+    type: "mcp",
+    description: "按账户查流水",
+    summary: "",
+    precautions: "",
+    icon: "mcp",
+    category: "intelligence",
+    tags: [],
+    ownerId: "u-1",
+    ownerName: "甲民警",
+    department: "经侦支队",
+    visibility: "targeted",
+    version: 1,
+    status: "published",
+    favoriteCount: 0,
+    usageCount: 0,
+    rating: 0,
+    ratingCount: 0,
+    feedbackCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    publishedAt: 1,
+    archivedAt: null,
+    iterationNote: "",
+    iterationWorkspace: null,
+  }
+
+  /** 每次 `setTimeout(0)` 一拍，直到条件成立（上限 1s，避免挂死时无限等）。 */
+  const 等到 = async (条件: () => boolean) => {
+    const 起 = Date.now()
+    while (!条件()) {
+      if (Date.now() - 起 > 1000) throw new Error("等待超时")
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+
+  test("打开 mcp 资产详情会调用注入的连接读取器，先加载再出数据", async () => {
+    const 调用: string[] = []
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const dispose = render(
+      () => (
+        <AssetCenter
+          filter={createAssetFilter()}
+          catalog={数据源({ assets: [mcp资产], total: 1 })}
+          loadMcpConnection={async (id) => {
+            调用.push(id)
+            return {
+              assetId: id,
+              transport: "remote",
+              url: "https://mcp.example/path",
+              command: null,
+              cwd: null,
+              headers: {},
+              environment: {},
+              enabled: true,
+              timeoutMs: null,
+              checkedAt: null,
+              checkOk: null,
+              checkError: "",
+              toolCount: null,
+              createdAt: 1,
+              updatedAt: 1,
+            }
+          }}
+        />
+      ),
+      host,
+    )
+    try {
+      // 点卡必须**同步**做：happy-dom 里视口高度量出来是 0，虚拟器在第一批微任务后会把行卸掉
+      // （`#009-02` 同类现象）。既有 `开卡` 助手正是这个节奏。
+      开卡(host, "m1")
+      await 等到(() => 调用.length === 1)
+      await 等到(() => host.querySelector("[data-slot='asset-detail-mcp-url']") !== null)
+
+      expect(调用).toEqual(["m1"])
+      expect(host.querySelector("[data-slot='asset-detail-mcp-url']")?.textContent).toBe(
+        "https://mcp.example/path",
+      )
+    } finally {
+      dispose()
+      host.remove()
     }
   })
 })

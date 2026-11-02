@@ -50,7 +50,9 @@ const STATUSES = [
   "offline",
   "archived",
 ] as const satisfies readonly AssetStatus[]
-const VISIBILITIES = ["global", "department", "personal"] as const satisfies readonly AssetVisibility[]
+// `targeted`（指定人员，需求 3b）是服务端真实会回的第四档；漏了它，整页都会被判成
+// 「数据格式不对」——MCP 默认就按这一档发布（2026-11-02 设计 §3.2.2），所以先补上。
+const VISIBILITIES = ["global", "department", "targeted", "personal"] as const satisfies readonly AssetVisibility[]
 
 export interface CatalogQuery {
   readonly type?: AssetType

@@ -1,6 +1,8 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
+import type { McpConnectionView } from "@opencode-ai/asset-service/mcp-connection"
 import { AssetDetail } from "./asset-detail"
+import { createMcpConnectionApi } from "./mcp-connection-api"
 import { AssetGrid } from "./asset-grid"
 import { AssetPager, 需要页码条 } from "./asset-pager"
 import { AssetSearch } from "./asset-search"
@@ -59,12 +61,23 @@ export interface AssetCenterProps {
   readonly projects?: readonly { readonly id: string; readonly name: string }[]
   /** 当前项目 id（发起迭代的默认目标）。 */
   readonly currentProjectId?: string
+  /**
+   * 读取 MCP 连接规格。省略 ⇒ 用同源默认客户端（生产）；组件测试可注入替身。
+   * 只有详情打开 MCP 资产时才会调用，skill 资产一次都不发请求。
+   */
+  readonly loadMcpConnection?: (assetId: string) => Promise<McpConnectionView | string>
 }
 
 /** 搜索框防抖：这段时间内的连续输入只发最后一趟。 */
 export const 搜索防抖ms = 250
 
 export function AssetCenter(props: AssetCenterProps): JSX.Element {
+  // 顶层建一次：不在每次渲染 / 每次详情打开时重新造客户端。
+  const 默认连接接口 = createMcpConnectionApi()
+  const 取连接 =
+    props.loadMcpConnection ??
+    ((assetId: string) =>
+      默认连接接口.get(assetId).then((out) => (out.kind === "ok" ? out.value : out.message)))
   const [搜索词, set搜索词] = createSignal("")
   /** 真正进入查询的搜索词（防抖之后）。 */
   const [生效搜索, set生效搜索] = createSignal("")
@@ -264,6 +277,7 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
                 canWrite={props.catalog?.writable().has(asset().id) === true}
                 projects={props.projects}
                 currentProjectId={props.currentProjectId}
+                loadMcpConnection={取连接}
                 // `iterationBusy()` 回的是**资产 id**：先比成布尔再交下去，详情只拿它禁用按钮。
                 iterationBusy={props.catalog?.iterationBusy() === asset().id}
                 {...(props.catalog === undefined
