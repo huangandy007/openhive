@@ -259,4 +259,41 @@ describe("MCP 发布闸门", () => {
     expect(连接?.checkOk).toBeNull()
     expect(连接?.checkError).toBe("")
   })
+
+  test("abort_iteration 没有发布快照 ⇒ mcp_connection_missing，状态保持 iterating", async () => {
+    const db = await freshDb()
+    // 从未发布过：`published_config` 为 null，但状态可以是已发布（历史数据 / 直接种）。
+    const asset = await 有MCP资产(db, { status: "published" })
+
+    await 流转(db, asset.id, "start_iteration", 作者, { reason: "未发布就迭代" })
+    expect(await 状态(db, asset.id)).toBe("iterating")
+
+    const 错 = await 流转(db, asset.id, "abort_iteration", 作者).then(
+      () => null,
+      (error: unknown) => error,
+    )
+
+    expect(错).toBeInstanceOf(AssetTransitionError)
+    expect(错误码(错)).toBe("mcp_connection_missing")
+    // 抛错在 `updateAssetLifecycle` 之前：版本不回落，状态停在 iterating。
+    expect(await 状态(db, asset.id)).toBe("iterating")
+  })
+
+  test("发布时资产没有连接行 ⇒ mcp_connection_missing，状态保持 pending_tech", async () => {
+    const db = await freshDb()
+    const id = "asset_mcp_no_connection"
+    // 不走 `有MCP资产`：这里要的正是「有资产、没有连接规格」的坏状态。
+    await insertAsset(db, 资产({ id, type: "mcp", icon: "mcp", status: "pending_tech" }))
+
+    const 错 = await 流转(db, id, "publish_tech", 管理, {
+      grants: 授权(id, "admin"),
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    )
+
+    expect(错).toBeInstanceOf(AssetTransitionError)
+    expect(错误码(错)).toBe("mcp_connection_missing")
+    expect(await 状态(db, id)).toBe("pending_tech")
+  })
 })

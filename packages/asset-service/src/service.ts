@@ -810,6 +810,9 @@ async function prepareMcpPublish(
     toolCount: 结果.ok ? 结果.toolCount : null,
   })
   if (!结果.ok) throw new AssetTransitionError("mcp_probe_failed", `连不上：${结果.error}`)
+  // `false` = 读连接行与写快照之间该行被并发删除：这次发布仍会成功，但**没有快照**。
+  // 本轮不改行为（brief 示例同样忽略返回值）：该竞态概率极低，且后果不静默——后续
+  // `abort_iteration` 会以 `mcp_connection_missing` 显式报出「没有可回写的发布快照」。
   await 写入发布快照(db, assetId, now)
 }
 
