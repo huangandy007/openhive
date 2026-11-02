@@ -577,6 +577,7 @@ function handleCreateMcpDraft(
   })
 }
 
+// 【保留的定制 · 同步上游时不要丢】MCP 连接规格的读写出口（2026-11-02 设计 §3.1.2 / §5.3）。
 /**
  * 连接规格的**读**权：作者 / 显式 read（含空间可见与授权行）/ 治理管理员。
  *
@@ -593,6 +594,7 @@ function 能读连接(deps: Deps, userId: string, asset: AssetMetadata) {
   })
 }
 
+// 【保留的定制 · 同步上游时不要丢】MCP 连接规格的读写出口（2026-11-02 设计 §3.1.2 / §5.3）。
 /**
  * 连接规格的**写**权：作者 / 资产上的 admin 授权 / 治理管理员。
  *
@@ -611,6 +613,7 @@ function 能写连接(deps: Deps, userId: string, asset: AssetMetadata) {
 
 const CONNECTION_WRITABLE_STATUSES: ReadonlySet<AssetMetadata["status"]> = new Set(["draft", "iterating"])
 
+// 【保留的定制 · 同步上游时不要丢】MCP 连接规格的读写出口（2026-11-02 设计 §3.1.2 / §5.3）。
 /**
  * `GET /openhive/assets/:id/connection`（2026-11-02 设计 §3.1.2）。
  *
@@ -637,6 +640,7 @@ function handleConnectionRead(deps: Deps) {
   })
 }
 
+// 【保留的定制 · 同步上游时不要丢】MCP 连接规格的读写出口（2026-11-02 设计 §3.1.2 / §5.3）。
 /**
  * `PATCH /openhive/assets/:id/connection`（2026-11-02 设计 §3.1.4 的编辑窗口）。
  *

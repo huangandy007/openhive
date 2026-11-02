@@ -8,7 +8,8 @@ import { HttpRouter } from "effect/unstable/http"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
 import { getMcpConnection, MASKED_VALUE } from "@opencode-ai/asset-service/mcp-connection"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
-import { createMcpDraft } from "@opencode-ai/asset-service/service"
+import { createMcpDraft, transitionAsset } from "@opencode-ai/asset-service/service"
+import { assetsRoot } from "@opencode-ai/asset-service/storage"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
@@ -36,6 +37,8 @@ const 作者甲: TokenSubject = { id: "conn-u1", policeNo: "980001", name: "作�
 const 无关乙: TokenSubject = { id: "conn-u2", policeNo: "980002", name: "无关乙", isAdmin: false }
 const 管理丙: TokenSubject = { id: "conn-u3", policeNo: "980003", name: "管理丙", isAdmin: true }
 const 读者丁: TokenSubject = { id: "conn-u4", policeNo: "980004", name: "读者丁", isAdmin: false }
+/** 非属主、非管理员，只有资产上的 `admin` 授权行。 */
+const 资产管戊: TokenSubject = { id: "conn-u5", policeNo: "980005", name: "资产管戊", isAdmin: false }
 
 const 数据根 = mkdtempSync(join(tmpdir(), "openhive-mcp-conn-data-"))
 const restoreDataRoot = restorePoint({ OPENHIVE_DATA_ROOT: 数据根 })
@@ -58,7 +61,7 @@ let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
-  for (const subject of [作者甲, 无关乙, 管理丙, 读者丁]) {
+  for (const subject of [作者甲, 无关乙, 管理丙, 读者丁, 资产管戊]) {
     await pg.db.execute(sql`
       insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
       values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室',
@@ -74,6 +77,15 @@ beforeAll(async () => {
     values ('test-mcp-reader', 'mcp', 'asset_conn_draft', 'read')
   `)
   await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${读者丁.id}, 'test-mcp-reader')`)
+  // 写权的第二条来源：资产上的 `admin` 授权行（非属主）。
+  await pg.db.execute(sql`
+    insert into auth.role (id, name, role_type) values ('test-mcp-admin', 'MCP 管理员', 'normal')
+  `)
+  await pg.db.execute(sql`
+    insert into auth.role_resource (role_id, resource_type, resource_id, perm)
+    values ('test-mcp-admin', 'mcp', 'asset_conn_draft', 'admin')
+  `)
+  await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${资产管戊.id}, 'test-mcp-admin')`)
 
   const owner = { id: 作者甲.id, name: 作者甲.name, department: "经侦支队" }
   await createMcpDraft({
@@ -103,6 +115,28 @@ beforeAll(async () => {
   await pg.db.execute(sql`
     update auth.asset set status = 'in_review' where id = 'asset_conn_review'
   `)
+  // iterating 窗口：先发布，再由属主走真实的 `start_iteration` 流转（MCP 无工作副本，
+  // 服务层对文件步骤短路）。直接改 status 会绕过状态机，测不出「窗口里真的能写」。
+  await createMcpDraft({
+    db: pg.db,
+    owner,
+    name: "迭代 MCP",
+    description: "迭代中的连接",
+    category: "intelligence",
+    id: "asset_conn_iter",
+    now: 5002,
+    connection: { transport: "remote", url: "https://iter-before.example" },
+  })
+  await pg.db.execute(sql`update auth.asset set status = 'published' where id = 'asset_conn_iter'`)
+  await transitionAsset({
+    db: pg.db,
+    root: assetsRoot(process.env),
+    assetId: "asset_conn_iter",
+    action: "start_iteration",
+    viewer: { userId: 作者甲.id, department: "经侦支队" },
+    reason: "开始迭代",
+    now: 5003,
+  })
   await insertAsset(pg.db, 资产({ id: "asset_conn_skill", type: "skill", status: "draft" }))
   await insertAsset(pg.db, 资产({ id: "asset_conn_newmcp", type: "mcp", status: "draft" }))
 })
@@ -169,6 +203,10 @@ const 改连接 = (subject: TokenSubject | null, id: string, connection: unknown
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connection }),
   })
+
+function 是记录(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
 
 const 视图 = Schema.Struct({
   assetId: Schema.String,
@@ -262,6 +300,45 @@ describe("改连接", () => {
     }),
   )
 
+  it.effect("PATCH 回显同样遮罩：凭据值不出现、无 publishedConfig 键", () =>
+    Effect.gen(function* () {
+      const response = yield* 改连接(作者甲, "asset_conn_draft", {
+        transport: "remote",
+        url: "https://mcp.example/x",
+        headers: { Authorization: "Bearer live-token" },
+      })
+      expect(response.status).toBe(200)
+      const text = yield* Effect.promise(() => response.text())
+      // 出口无论是读还是写，凭据都只以遮罩出现（`遮罩连接` 是唯一投影）。
+      expect(text).not.toContain("live-token")
+      const body: unknown = JSON.parse(text)
+      if (!是记录(body)) throw new Error("回包不是 JSON 对象")
+      expect(body["headers"]).toEqual({ Authorization: MASKED_VALUE })
+      expect(body["environment"]).toEqual({})
+      expect(Object.prototype.hasOwnProperty.call(body, "publishedConfig")).toBe(false)
+    }),
+  )
+
+  it.effect("资产 admin 授权者可写（非属主）", () =>
+    Effect.gen(function* () {
+      const response = yield* 改连接(资产管戊, "asset_conn_draft", {
+        transport: "remote",
+        url: "https://admin-grant.example",
+      })
+      expect(response.status).toBe(200)
+    }),
+  )
+
+  it.effect("治理管理员（非属主、无授权）可写", () =>
+    Effect.gen(function* () {
+      const response = yield* 改连接(管理丙, "asset_conn_draft", {
+        transport: "remote",
+        url: "https://governance-admin.example",
+      })
+      expect(response.status).toBe(200)
+    }),
+  )
+
   it.effect("无关用户 ⇒ 403，库不变", () =>
     Effect.gen(function* () {
       const 前 = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_draft"))
@@ -275,6 +352,18 @@ describe("改连接", () => {
     }),
   )
 
+  it.effect("iterating 窗口内可写", () =>
+    Effect.gen(function* () {
+      const response = yield* 改连接(作者甲, "asset_conn_iter", {
+        transport: "remote",
+        url: "https://iter-after.example",
+      })
+      expect(response.status).toBe(200)
+      const row = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_iter"))
+      expect(row?.url).toBe("https://iter-after.example")
+    }),
+  )
+
   it.effect("in_review 期 ⇒ 409，库不变", () =>
     Effect.gen(function* () {
       const 前 = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_review"))
@@ -282,9 +371,10 @@ describe("改连接", () => {
         transport: "remote",
         url: "https://changed.example",
       })
-      expect(response.status).toBe(409)
+      // 先读库、再断状态码：删掉状态门时，红的是「库被改」这一句，而不是一条更靠后的 409。
       const 后 = yield* Effect.promise(() => getMcpConnection(pg!.db, "asset_conn_review"))
       expect(后?.url).toBe(前?.url)
+      expect(response.status).toBe(409)
     }),
   )
 
