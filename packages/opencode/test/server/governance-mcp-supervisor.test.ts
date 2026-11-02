@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Layer, Effect, Fiber } from "effect"
+import { Layer, Effect, Fiber, Logger } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
@@ -31,6 +31,7 @@ import {
   supervise,
   type Launched,
 } from "@/server/openhive/governance-mcp-supervisor"
+import { 串行写 } from "@/server/openhive/mcp-config-writer"
 import { AccountTest } from "../fake/account"
 import { AuthTest } from "../fake/auth"
 import { NpmTest } from "../fake/npm"
@@ -105,6 +106,80 @@ describe("readyHandler（共享串行写者）", () => {
 
     expect(结果).toEqual([true, true])
     expect(峰值).toBe(1)
+  })
+
+  test("与同步器共用同一队列：占住队列时 readyHandler 排队（跨 lane 串行）", async () => {
+    let 在写 = 0
+    let 峰值 = 0
+    let 放行!: () => void
+    const 闸门 = new Promise<void>((resolve) => {
+      放行 = resolve
+    })
+
+    // 模拟同步器 lane 正在写：占住共享队列，等测试放行。
+    const 同步器写入 = 串行写(async () => {
+      在写 += 1
+      峰值 = Math.max(峰值, 在写)
+      await 闸门
+      在写 -= 1
+    })
+
+    const config = {
+      updateGlobal: () =>
+        Effect.promise(async () => {
+          在写 += 1
+          峰值 = Math.max(峰值, 在写)
+          await new Promise<void>((resolve) => setTimeout(resolve, 10))
+          在写 -= 1
+          return { info: {} as never, changed: true }
+        }),
+    }
+
+    let 就绪: Promise<boolean> | undefined
+    try {
+      就绪 = Effect.runPromise(readyHandler(config, 4013))
+      // 若两条 lane 各用各的队列，`updateGlobal` 此刻已和同步器写入同时在场（峰值 2）。
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(峰值).toBe(1)
+    } finally {
+      放行()
+    }
+    await 同步器写入
+    await expect(就绪!).resolves.toBe(true)
+    expect(峰值).toBe(1)
+  })
+
+  test("写盘失败的日志只留错误名，不回显配置原文（凭据不进日志）", async () => {
+    const config = {
+      // `ConfigParse.jsonc` 的 JsonError.message 会整段嵌入配置原文；这里用同样的形态。
+      updateGlobal: () =>
+        Effect.die(new Error("--- JSONC Input --- mcp.demo.headers.Authorization = Bearer SECRET")),
+    }
+
+    const 日志: unknown[] = []
+    const 结果 = await Effect.runPromise(
+      readyHandler(config, 4011).pipe(
+        // 只装捕获器，不叠默认 console logger：断言的就是「交给日志的是什么」。
+        Effect.provide(
+          Logger.layer(
+            [
+              Logger.make<unknown, void>((options) => {
+                日志.push(options.message)
+              }),
+            ],
+            { mergeWithExisting: false },
+          ),
+        ),
+      ),
+    )
+
+    const 文本 = JSON.stringify(日志)
+    expect(结果).toBe(false)
+    expect(文本).toContain("治理 MCP 配置写入失败")
+    expect(文本).not.toContain("SECRET")
+    expect(文本).not.toContain("--- JSONC Input ---")
+    // 类型名仍要在：否则「只留类型名」退化成「什么都不留」，定位不了是 IO 错还是校验错。
+    expect(文本).toContain("Error")
   })
 })
 

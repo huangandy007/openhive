@@ -432,7 +432,12 @@ export function readyHandler(
     Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
     Effect.map(() => true),
     Effect.catchCause((cause) =>
-      Effect.logError("治理 MCP 配置写入失败", { port, error: Cause.pretty(cause) }).pipe(
+      // 只记类型名：全局 `mcp` 段含业务 server 的 headers / environment，`ConfigParse.jsonc`
+      // 的失败消息会整段嵌入配置原文（`src/config/parse.ts`）——回显它等于把凭据写进内核日志。
+      Effect.logError("治理 MCP 配置写入失败", {
+        port,
+        error: Cause.prettyErrors(cause).map((error) => error.name),
+      }).pipe(
         Effect.map(() => false),
       ),
     ),
