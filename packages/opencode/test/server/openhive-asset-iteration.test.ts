@@ -393,9 +393,8 @@ beforeAll(async () => {
     资产({ id: IDS.subPublished, name: "已发布资产", ownerId: 我.id, ownerName: 我.name, status: "published" }),
   )
 
-  // 非 skill：端点的授权预检必须排在端点自己的类型门之前——没有预检时类型门先回 400，
-  // 等于把「这是个 mcp 资产」告诉没有写权的人。owner 是同事，提交者是「我」。
-  // （服务层只拒 knowledge_base；MCP 由本出口的类型门拒——批次 2 的裁定 A/C。）
+  // 别人的 MCP：提交者「我」没有写权，应得 403。批次 3 起类型门放行 MCP，403 由授权判据给出；
+  // 「预检先于类型门」的次序改由 `openhive-assets-mcp-submit.test.ts` 的知识库用例钉住。
   await insertAsset(
     pg.db,
     资产({
@@ -411,7 +410,7 @@ beforeAll(async () => {
     }),
   )
 
-  // 属主自己的 MCP 草稿：过了授权预检，必须撞端点自己的类型门（批次 3 才开）。
+  // 属主自己的 MCP 草稿：批次 3 起端点的类型门放行 MCP，提交应成功（下方用例）。
   await insertAsset(
     pg.db,
     资产({
@@ -790,7 +789,7 @@ describe("POST /openhive/assets/:id/submit（2026-11-01）", () => {
 
   // 非作者提交别人的 MCP ⇒ 403。批次 3 起类型门放行 MCP，403 由授权判据给出；
   // 「授权先于类型门」的次序不再由本条钉住（类型门对 MCP 不再拒绝），此处只守拒绝本身。
-  it.live("非作者提交非 skill 资产 ⇒ 403（端点的门在出口类型门之前）", () =>
+  it.live("非作者提交别人的 MCP ⇒ 403", () =>
     Effect.gen(function* () {
       const res = yield* 提交审核(我, IDS.subMcp)
       expect(res.status).toBe(403)

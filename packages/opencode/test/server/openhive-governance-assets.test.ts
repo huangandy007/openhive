@@ -2,10 +2,14 @@ import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { insertAsset } from "@opencode-ai/asset-service/asset"
+import { insertMcpConnection } from "@opencode-ai/asset-service/mcp-connection"
 import { linkSkill } from "@opencode-ai/asset-service/project-skill-link"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
@@ -135,6 +139,41 @@ const IDS = {
 function 造目录(directory: string, content = "# 成果\n") {
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, "SKILL.md"), content, "utf8")
+}
+
+/**
+ * 进程内真 MCP server（同 `test/mcp/openhive-mcp-identity.test.ts` 的写法）：
+ * MCP 发布前的试连会经 StreamableHTTP 连上来列一次工具。
+ * `capabilities.tools` ＋ `ListToolsRequestSchema` 返回一个工具 ⇒ 试连得到 `ok: true`。
+ */
+function 起MCP服务() {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      const protocol = new Server(
+        { name: "mcp-openhive-governance", version: "1.0.0" },
+        { capabilities: { tools: {} } },
+      )
+      protocol.setRequestHandler(ListToolsRequestSchema, () =>
+        Promise.resolve({
+          tools: [{ name: "query_ledger", description: "查流水", inputSchema: { type: "object" } }],
+        }),
+      )
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        enableJsonResponse: true,
+      })
+      await protocol.connect(transport)
+      const http = Bun.serve({ port: 0, fetch: (request) => transport.handleRequest(request) })
+      return {
+        url: http.url.toString(),
+        close: async () => {
+          await protocol.close().catch(() => {})
+          void http.stop(true)
+        },
+      }
+    }),
+    (server) => Effect.promise(server.close),
+  )
 }
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -584,6 +623,42 @@ describe("T007 · 审核与发布动作", () => {
     }),
   )
 
+  // 裁定 D-9（2026-11-02）：MCP 不落共享目录，`personal` 在语义上成立。
+  // 走**真试连**（进程内 MCP server），证明 personal 没有绕过发布闸门（设计 §5.4）。
+  it.live("MCP 发布可选 personal（试连通过）⇒ 200，visibility=personal、状态 published", () =>
+    Effect.gen(function* () {
+      const id = "asset-mcp-personal-publish-0001"
+      if (!pg) throw new Error("真库没起来")
+      const 服务 = yield* 起MCP服务()
+      yield* Effect.promise(async () => {
+        await insertAsset(
+          pg!.db,
+          资产({
+            id,
+            name: "个人档 MCP",
+            type: "mcp",
+            status: "pending_tech",
+            visibility: "personal",
+            updatedAt: 1_100,
+          }),
+        )
+        await insertMcpConnection(pg!.db, id, { transport: "remote", url: 服务.url }, 1_100)
+      })
+
+      const response = yield* post(ADMIN, transitionUrl(id), {
+        action: "publish_tech",
+        visibility: "personal",
+      })
+
+      expect(response.status).toBe(200)
+      const body = yield* json(TransitionResponse, response)
+      expect(body.asset.visibility).toBe("personal")
+      expect(body.asset.status).toBe("published")
+      // 库里那行也要变：只信出口回包会把「内存里算出来的」当成已落库（`#006-29`）。
+      expect(yield* Effect.promise(() => 库状态(id))).toBe("published")
+    }),
+  )
+
   it.live("发布范围参数不合法 ⇒ 400；个人资产不带范围仍 409", () =>
     Effect.gen(function* () {
       const id = "asset-personal-scope-0002"
@@ -801,6 +876,13 @@ describe("T007 · 两道关分离（业务专家 ≠ 系统管理员）", () => 
         expect(response.status).toBe(403)
       }
       expect(yield* Effect.promise(() => 库状态(IDS.mcp))).toBe("in_review")
+
+      // 可见范围的类型判定（personal 只对 MCP 合法）必须排在授权预检**之后**（`#004-09`）：
+      // 无发布权的人对 skill 与 MCP 都先得 403，不能靠 400/403 的差别探出资产类型。
+      for (const id of [IDS.pending, IDS.mcp]) {
+        const 带范围 = yield* post(READER, transitionUrl(id), { action: "publish_tech", visibility: "personal" })
+        expect(带范围.status).toBe(403)
+      }
     }),
   )
 })

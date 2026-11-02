@@ -405,20 +405,6 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
     if (!asset) return yield* 失败(deps, userId, base, NOT_FOUND, `资产不存在：${assetId}`, undefined, 补充)
 
-    // MCP 允许个人档（裁定 D-9）：它不落共享目录，个人档在语义上成立。
-    // skill / 知识库仍要求共享范围。判据要等读到 `asset` 才能按类型分流。
-    if (范围 === "personal" && asset.type !== "mcp") {
-      return yield* 失败(
-        deps,
-        userId,
-        base,
-        BAD_REQUEST,
-        "发布范围必须是本部门、全局或指定人员",
-        "visibility",
-        { visibility: 范围 },
-      )
-    }
-
     const department = yield* 取部门(deps, userId)
     const grants = yield* 合成授权行(deps, userId, asset.type, asset.id)
     const viewer = { userId, department }
@@ -434,6 +420,22 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
       }),
     )
     if (Result.isFailure(预检)) return yield* 翻译(预检.failure, deps, userId, base, 补充)
+
+    // 可见范围的类型前提也在预检**之后**（`#004-09`）：无发布权的人对 skill 得 403、
+    // 对 MCP 也 403，不能靠 400/403 的差别探出「这份资产是什么类型」。
+    // MCP 允许个人档（裁定 D-9）：它不落共享目录，个人档在语义上成立；
+    // skill / 知识库仍要求共享范围。
+    if (范围 === "personal" && asset.type !== "mcp") {
+      return yield* 失败(
+        deps,
+        userId,
+        base,
+        BAD_REQUEST,
+        "发布范围必须是本部门、全局或指定人员",
+        "visibility",
+        { visibility: 范围 },
+      )
+    }
 
     // 组前提在**流转之前**验（顺序：授权 → 前提 → 副作用）：不存在的组若等到发布成功后才
     // 发现，资产已经变成「指定人员但没有任何组」——组员看不见、作者以外谁都看不见的坏状态。

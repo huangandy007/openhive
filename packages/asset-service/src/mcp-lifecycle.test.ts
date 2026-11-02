@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { sql } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
-import { insertAsset } from "./asset"
+import { assetById, insertAsset } from "./asset"
 import { AssetTransitionError, type SkillAction } from "./lifecycle"
 import type { AssetMetadata } from "./metadata"
 import { createMcpDraft, transitionAsset } from "./service"
@@ -210,6 +210,49 @@ describe("MCP 全状态流转", () => {
     })
     expect(发布.status).toBe("published")
     expect(发布.visibility).toBe("personal")
+    expect(existsSync(root)).toBe(false)
+  })
+
+  test("MCP personal 发布仍过试连闸门：probe 失败 ⇒ mcp_probe_failed，状态不变", async () => {
+    const db = await freshDb()
+    const root = 不存在的根()
+    await createMcpDraft({
+      db,
+      owner: { id: "u1", name: "甲民警", department: "经侦支队" },
+      name: "个人 MCP（连不上）",
+      description: "描述",
+      category: "intelligence",
+      id: "asset_mcp_personal_probe",
+      now: 3200,
+      visibility: "personal",
+      connection: { transport: "remote", url: "https://x" },
+    })
+    const 步 = (action: SkillAction, viewer: typeof 作者, over: Record<string, unknown> = {}) =>
+      transitionAsset({
+        db,
+        root,
+        assetId: "asset_mcp_personal_probe",
+        action,
+        viewer,
+        now: 3201,
+        probe: 试连成功,
+        ...over,
+      } as Parameters<typeof transitionAsset>[0])
+    await 步("submit_review", 作者)
+    await 步("approve_business", 审核, { grants: 授权("asset_mcp_personal_probe", "review") })
+
+    // personal 没有绕过「发布前先试连」：失败的 probe 必须在写库之前拦下。
+    const error = await failure(() =>
+      步("publish_tech", 管理, {
+        grants: 授权("asset_mcp_personal_probe", "admin"),
+        visibility: "personal",
+        probe: async () => ({ ok: false, error: "连不上" }),
+      }),
+    )
+    expect(错误码(error)).toBe("mcp_probe_failed")
+    const 落库 = await assetById(db, "asset_mcp_personal_probe")
+    expect(落库?.status).toBe("pending_tech")
+    expect(落库?.visibility).toBe("personal")
     expect(existsSync(root)).toBe(false)
   })
 })

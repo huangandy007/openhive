@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql } from "drizzle-orm"
-import { ConfigProvider, Effect, Layer } from "effect"
+import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { assetById, insertAsset } from "@opencode-ai/asset-service/asset"
 import type { AssetMetadata } from "@opencode-ai/asset-service/metadata"
@@ -37,6 +37,9 @@ const IDS = {
   ok: "asset-mcp-submit-ok",
   /** 无写权的人来提交。 */
   denied: "asset-mcp-submit-denied",
+  /** 知识库：作者自己提交 ⇒ 类型门 400；非作者 ⇒ 预检 403。 */
+  kbOwned: "asset-kb-submit-owned",
+  kbForeign: "asset-kb-submit-foreign",
 } as const
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "ownerId" | "ownerName">): AssetMetadata => ({
@@ -105,6 +108,15 @@ beforeAll(async () => {
 
   await insertAsset(pg.db, 资产({ id: IDS.ok, name: "我的 MCP（可提交）", ownerId: 作者.id, ownerName: 作者.name }))
   await insertAsset(pg.db, 资产({ id: IDS.denied, name: "我的 MCP（别人来提交）", ownerId: 作者.id, ownerName: 作者.name }))
+  // 知识库：服务层永远拒绝（不走 7 状态机）；端点用这条钉「授权预检先于类型门」（`#004-09`）。
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.kbOwned, name: "知识库（作者提交）", type: "knowledge_base", ownerId: 作者.id, ownerName: 作者.name }),
+  )
+  await insertAsset(
+    pg.db,
+    资产({ id: IDS.kbForeign, name: "知识库（别人提交）", type: "knowledge_base", ownerId: 作者.id, ownerName: 作者.name }),
+  )
 })
 
 const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
@@ -133,6 +145,14 @@ const 提交 = (subject: TokenSubject | null, assetId: string) =>
 
 const 读行 = (id: string) => Effect.promise(() => assetById(pg!.db, id))
 
+const 读错误 = (response: Response) =>
+  Effect.gen(function* () {
+    const 体 = Schema.decodeUnknownSync(Schema.Struct({ error: Schema.String }))(
+      JSON.parse(yield* Effect.promise(() => response.text())),
+    )
+    return 体.error
+  })
+
 describe("MCP 提交审核", () => {
   it.live("作者提交 MCP 草稿 ⇒ 200，状态 in_review", () =>
     Effect.gen(function* () {
@@ -146,9 +166,31 @@ describe("MCP 提交审核", () => {
     Effect.gen(function* () {
       const res = yield* 提交(同事, IDS.denied)
       expect(res.status).toBe(403)
+      // 与同目录其它 403 出口同一口径：拒绝文案来自 `actor_not_allowed`。
+      expect((yield* 读错误(res))).toContain("不能执行")
       // 拒绝发生在任何副作用之前：状态、版本都不动。
       expect((yield* 读行(IDS.denied))?.status).toBe("draft")
       expect((yield* 读行(IDS.denied))?.version).toBe(1)
+    }),
+  )
+
+  // `#004-09`：授权预检必须排在端点类型门之前。知识库是服务层永远拒绝的类型，
+  // 所以「非作者」这一条能分清楚是谁先拒绝的——有预检得 403，没预检得 400。
+  it.live("非作者提交 knowledge_base ⇒ 403（端点预检先于类型门）", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交(同事, IDS.kbForeign)
+      expect(res.status).toBe(403)
+      expect((yield* 读错误(res))).toContain("不能执行")
+      expect((yield* 读行(IDS.kbForeign))?.status).toBe("draft")
+    }),
+  )
+
+  it.live("作者提交 knowledge_base ⇒ 400（类型门只放行 skill / mcp）", () =>
+    Effect.gen(function* () {
+      const res = yield* 提交(作者, IDS.kbOwned)
+      expect(res.status).toBe(400)
+      expect((yield* 读错误(res))).toContain("只提交 skill / mcp")
+      expect((yield* 读行(IDS.kbOwned))?.status).toBe("draft")
     }),
   )
 })
