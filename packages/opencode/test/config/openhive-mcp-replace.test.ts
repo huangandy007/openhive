@@ -74,6 +74,14 @@ const 初稿 = `{
   }
 }`
 
+const 初稿无治理 = `{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "test/model",
+  "mcp": {
+    "asset_old": { "type": "local", "command": ["old"] }
+  }
+}`
+
 function 临时全局目录(内容: string): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "openhive-mcp-replace-"))
   writeFileSync(path.join(dir, "opencode.jsonc"), 内容)
@@ -117,6 +125,24 @@ describe("Config.replaceGlobalMcp（批次 4 · §3.3.4）", () => {
             "openhive-governance": { type: "remote", url: "http://127.0.0.1:9999/mcp" },
           })
           expect(JSON.parse(读文件(dir)).mcp).toEqual({ "openhive-governance": 治理 })
+        }),
+      )
+    }),
+  )
+
+  it.effect("现存配置没有受保护键 ⇒ entries 里的同名条目被剔除，调用方无权新建", () =>
+    Effect.gen(function* () {
+      const dir = 临时全局目录(初稿无治理)
+      yield* withGlobalConfigDir(
+        dir,
+        Effect.gen(function* () {
+          yield* Config.use.replaceGlobalMcp({
+            "openhive-governance": { type: "remote", url: "http://127.0.0.1:9999/mcp" },
+            asset_new: { type: "remote", url: "https://new.example/mcp" },
+          })
+          const 之后 = JSON.parse(读文件(dir))
+          expect(之后.mcp).toEqual({ asset_new: { type: "remote", url: "https://new.example/mcp" } })
+          expect(Object.hasOwn(之后.mcp, "openhive-governance")).toBe(false)
         }),
       )
     }),

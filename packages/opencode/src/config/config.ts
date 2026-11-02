@@ -715,6 +715,7 @@ const layer = Layer.effect(
      *
      * `BUILTIN_MCP_SERVERS`（今天只有 `openhive-governance`）的值从现存配置**原样**保留：
      * 那条由治理监督器按实际端口写入，同步器既不知道端口、也无权改（上面 `readyHandler`）。
+     * `entries` 里的同名条目一律剔除——现存配置没有就保持没有，调用方也不能新建。
      *
      * ## 先校验后写盘
      *
@@ -732,9 +733,13 @@ const layer = Layer.effect(
       const 现存MCP = isRecord(现状["mcp"]) ? 现状["mcp"] : {}
       const 受保护: Record<string, unknown> = {}
       for (const name of BUILTIN_MCP_SERVERS) {
-        if (name in 现存MCP) 受保护[name] = 现存MCP[name]
+        if (Object.hasOwn(现存MCP, name)) 受保护[name] = 现存MCP[name]
       }
-      const nextMcp = { ...entries, ...受保护 }
+      // 先从 `entries` 剔除受保护键再叠加现存值：受保护键只能「原样继承」，调用方无权新建。
+      const 外部条目 = Object.fromEntries(
+        Object.entries(entries).filter(([name]) => !BUILTIN_MCP_SERVERS.includes(name)),
+      )
+      const nextMcp = { ...外部条目, ...受保护 }
 
       let updated: string
       if (!file.endsWith(".jsonc")) {
