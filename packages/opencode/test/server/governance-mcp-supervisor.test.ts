@@ -84,6 +84,30 @@ describe("firstPortOf", () => {
   })
 })
 
+describe("readyHandler（共享串行写者）", () => {
+  test("两个 readyHandler 并发 ⇒ 写者串行（不交错读改写同一份全局配置）", async () => {
+    let 在写 = 0
+    let 峰值 = 0
+    const config = {
+      updateGlobal: () =>
+        Effect.promise(async () => {
+          在写 += 1
+          峰值 = Math.max(峰值, 在写)
+          await new Promise<void>((resolve) => setTimeout(resolve, 10))
+          在写 -= 1
+          return { info: {} as never, changed: true }
+        }),
+    }
+
+    const 结果 = await Effect.runPromise(
+      Effect.all([readyHandler(config, 4011), readyHandler(config, 4012)], { concurrency: "unbounded" }),
+    )
+
+    expect(结果).toEqual([true, true])
+    expect(峰值).toBe(1)
+  })
+})
+
 describe("governanceCommand", () => {
   test("off ⇒ 不起进程", () => {
     expect(governanceCommand({ OPENHIVE_GOVERNANCE_MCP: "off" })).toEqual({ kind: "off" })

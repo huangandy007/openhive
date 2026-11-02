@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
 import { Cause, Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
+import { ENTRY_DIR_ENV, 串行写Effect } from "./mcp-config-writer"
 
 /**
  * 【这是要保留的定制】openhive 模块：**治理 MCP 单进程形态**（009 T014 的替代形态，2026-10-26）。
@@ -34,13 +35,12 @@ import { Config } from "@/config/config"
  *   后台继续退避重试。同进程只挂载一次（两份 routes 图不会再起第二个进程），随作用域收尾复位。
  * - 子进程健康但**配置写盘失败**（目录只读 / 瞬时错误）⇒ 不放行首次就绪，并在后台按退避**重写**
  *   直到成功或子进程退出——不能只试一次，否则全局配置在整个内核生命周期里都缺这一条。
+ * - 配置写入与 MCP 配置同步器共用 `mcp-config-writer.ts` 的串行写者（设计 §3.3.4 触发点 4）。
  *
  * ⚠️ 已知边界：子进程重启后，**已建立的实例**（`InstanceState` 里缓存的 MCP state）不会重建
  * 客户端——新会话正常，老会话要等下次实例初始化。记在 `docs/superpowers/specs/009-ai-assets/state.md`。
  */
 export const READY_PREFIX = "GOVERNANCE_MCP_READY"
-/** asset-service 包目录；**没设就不起进程**（dev/测试默认不受影响，路径也不靠猜）。 */
-export const ENTRY_DIR_ENV = "OPENHIVE_ASSET_SERVICE_DIR"
 /** JSON 数组，覆盖默认命令（镜像里 bun 不在 PATH 时用）。 */
 export const COMMAND_ENV = "OPENHIVE_GOVERNANCE_MCP_CMD"
 /** `off` ⇒ 显式关掉（`ENTRY_DIR_ENV` 已能关，这个给「设了目录但这次不想起」用）。 */
@@ -419,12 +419,16 @@ export function readyConfigPatch(port: number) {
  * 普通 `catch` 收不到——必须 `catchCause`，否则配置目录只读（容器常见）时监督器纤维整个死掉，
  * 子进程再也不会被拉起。返回 `true` 表示**配置确已写入**（首次就绪等待据此放行）。
  * 抽成函数是为了能用「updateGlobal 直接 die」的桩钉住这一点。
+ *
+ * 写盘排进 `串行写Effect`，与 MCP 配置同步器共用同一个写者：两处「读 → 改 → 写」交错时
+ * 后写的会把前一次的键整段抹掉（设计 §3.3.4 触发点 4）。`Effect.runPromise` 另起纤维、
+ * 不继承上下文——本条只用 `Config` 的文件系统服务，不需要请求上下文，见 `#010-07`。
  */
 export function readyHandler(
   config: Pick<Config.Interface, "updateGlobal">,
   port: number,
 ): Effect.Effect<boolean> {
-  return config.updateGlobal(readyConfigPatch(port)).pipe(
+  return 串行写Effect(config.updateGlobal(readyConfigPatch(port))).pipe(
     Effect.tap((result) => Effect.logInfo("治理 MCP 就绪", { port, configChanged: result.changed })),
     Effect.map(() => true),
     Effect.catchCause((cause) =>
