@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 114" width="100" height="114" fill="none">
+  <title>OpenHive</title>
+  <!-- 与 `src/topbar/topbar.tsx` 的内置 BrandMark 同一枚标（DESIGN §5.1）：
+       外等边六边形主金描边 + 中心蜂窝浅金→深金渐变。favicon 是独立文件、读不到
+       `--v2-brand-*`，故颜色直接取三档金原值。顶点按 60° 步进算，禁手写坐标取整。 -->
+  <defs>
+    <linearGradient id="openhive-honey" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F59E0B" />
+      <stop offset="1" stop-color="#B45309" />
+    </linearGradient>
+  </defs>
+  <polygon points="50,7 93.30127,32 93.30127,82 50,107 6.69873,82 6.69873,32" stroke="#D97706" stroke-width="9" />
+  <polygon points="50,32 71.650635,44.5 71.650635,69.5 50,82 28.349365,69.5 28.349365,44.5" fill="url(#openhive-honey)" />
+</svg>
