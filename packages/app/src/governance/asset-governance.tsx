@@ -35,7 +35,6 @@ import {
   STATUS_LABELS,
   TYPE_LABELS,
   type AssetApi,
-  type AssetGroup,
   type AssetReader,
   type AssetRow,
   type AssetStatus,
@@ -43,6 +42,7 @@ import {
   type GovernanceAction,
 } from "./asset-api"
 import type { CategoryAdminApi, CategoryAdminRow } from "./category-api"
+import { AssetReaderPicker } from "./asset-reader-picker"
 import { McpCreateForm } from "./mcp-create-form"
 
 export interface AssetGovernanceProps {
@@ -52,6 +52,11 @@ export interface AssetGovernanceProps {
    * 省略 = 不画分类名、批量改分类按不下去（组件测试 / storybook 的退化形态）。
    */
   categoryApi?: CategoryAdminApi
+  /**
+   * 当前登录人 id。只用来判断「草稿行的提交审核按钮该不该画」——服务端只认作者本人
+   * （`submit_review` 的授权规则），替别人的草稿点下去必然 403。
+   */
+  selfId?: string
 }
 
 /** 筛选下拉：空串 = 全部状态。默认停在「待业务审核」，那是审核人的待办队列。 */
@@ -169,32 +174,25 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
   const [发布范围, 设发布范围] = createSignal<"department" | "global" | "targeted" | "personal">()
   const [范围错误, 设范围错误] = createSignal<string>()
   /**
-   * 「指定人员」（需求 3b）：组清单懒拉——只有选了这一档（或打开一份已是指定人员的资产）才拉，
-   * 用户八成是发本部门，不该为每个弹窗多一次网。`undefined` = 还没拉过，`[]` = 拉到了但一个组都没有。
+   * 「指定人员」的授权对象（需求 3b / 2026-11-02 设计 §3.2.3）。选择器自己拉组清单、搜人，
+   * 这两份勾选状态留在页面上：提交体要拿 id，关弹窗时要一起清。
    */
-  const [组清单, 设组清单] = createSignal<readonly AssetGroup[]>()
-  const [组加载中, 设组加载中] = createSignal(false)
-  const [组错误, 设组错误] = createSignal<string>()
-  /** 勾了哪些组：存 id 不存对象，理由同 `已选`（列表重拉会换行对象）。 */
   const [已选组, 设已选组] = createSignal<readonly string[]>([])
-  /**
-   * 「指定人员」按人授权（2026-11-02 设计 §3.2.3）：搜到的候选、勾了谁。
-   *
-   * 已选人存**整份 `AssetReader`**（不像组那样只存 id）：勾选列表要显示人名与部门，
-   * 而搜索结果会被下一次搜索整份替换，存 id 就查不回名字了。
-   */
-  const [搜索词, 设搜索词] = createSignal("")
-  const [搜索结果, 设搜索结果] = createSignal<readonly AssetReader[]>()
   const [已选人, 设已选人] = createSignal<readonly AssetReader[]>([])
-  const [人加载中, 设人加载中] = createSignal(false)
-  const [人错误, 设人错误] = createSignal<string>()
+  /** 预填「作者创建时选好的授权对象」的加载态；加载期间不画选择器，避免回包盖掉手工勾选。 */
+  const [读者加载中, 设读者加载中] = createSignal(false)
+  /** 预填失败只说「没读回来」：读取失败不挡住发布，选择器照常可手工选。 */
+  const [读者提示, 设读者提示] = createSignal<string>()
   const [动作错误, 设动作错误] = createSignal<string>()
   const [处理中, 设处理中] = createSignal(false)
+  /** 草稿行「提交审核」的在飞 id 与错误（同一时间只可能点一行）。 */
+  const [提交中, 设提交中] = createSignal<string>()
+  const [提交错误, 设提交错误] = createSignal<{ readonly id: string; readonly message: string }>()
 
   /** 读列表的代次：只认最新一代的回包（文件头「代次守卫」）。 */
   let 代次 = 0
-  /** 选人搜索的代次：改关键词 / 开合弹窗后，旧回包不能盖新结果（`#008-03`）。 */
-  let 搜人次次 = 0
+  /** 预填读者的代次：关掉弹窗 / 换一行后，旧回包不能落进来（`#008-03`）。 */
+  let 读者代次 = 0
 
   async function 读() {
     const 本次 = ++代次
@@ -285,16 +283,36 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     void 读()
   }
 
-  /**
-   * 清掉上一次的选人状态。搜索在飞也要作废：打开 / 关闭弹窗后旧回包不该再落进来。
-   */
-  function 清空选人() {
-    搜人次次 += 1
-    设搜索词("")
-    设搜索结果(undefined)
+  /** 清掉上一次的授权对象。预填在飞也要作废：打开 / 关闭弹窗后旧回包不该再落进来。 */
+  function 清空读者() {
+    读者代次 += 1
+    设已选组([])
     设已选人([])
-    设人加载中(false)
-    设人错误(undefined)
+    设读者加载中(false)
+    设读者提示(undefined)
+  }
+
+  /**
+   * 预填作者创建时选好的授权对象（2026-11-02 设计 §3.2.4）。
+   *
+   * 加载期间先不画选择器：回包若晚于用户第一次勾选，直接 `设已选*` 会把手工选择覆盖掉。
+   * 读取失败不挡住发布——选择器照常可用，只提示「没读回来，请重新选择」。
+   */
+  async function 预填读者(row: AssetRow) {
+    const 本次 = ++读者代次
+    设已选组([])
+    设已选人([])
+    设读者提示(undefined)
+    设读者加载中(true)
+    const out = await props.api.readers(row.id)
+    if (本次 !== 读者代次) return
+    设读者加载中(false)
+    if (out.kind !== "ok") {
+      设读者提示(`没有读回已授权的组和人：${out.message}；请重新选择`)
+      return
+    }
+    设已选组(out.value.groups.map((组) => 组.id))
+    设已选人(out.value.users)
   }
 
   function 打开确认(row: AssetRow, action: GovernanceAction) {
@@ -303,18 +321,16 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设理由("")
     设理由错误(undefined)
     设范围错误(undefined)
+    清空读者()
+    // 预填要在弹窗挂上之前启动：`读者加载中` 先翻成 true，选择器才会等回包再挂——
+    // 否则它会先挂一次、再被加载态摘掉、回包后又挂一次，组清单白拉两遍。
+    if (是发布动作(action) && row.visibility === "targeted") void 预填读者(row)
     // 个人资产没有默认范围，必须显式选；MCP 例外——它是「仅作者」的个人工具，
     // 默认留在 personal（设计 §3.2.3）。
     设发布范围(
       row.visibility === "personal" ? (row.type === "mcp" ? "personal" : undefined) : row.visibility,
     )
-    // 每次打开都重新拉：组成员数量会变，缓存一份旧名单只会让选择器说旧话。
-    设组清单(undefined)
-    设组错误(undefined)
-    设已选组([])
-    清空选人()
     设确认({ row, action })
-    if (row.visibility === "targeted") void 拉组()
   }
 
   function 关确认() {
@@ -323,62 +339,20 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
     设理由错误(undefined)
     设范围错误(undefined)
     设发布范围(undefined)
-    设组清单(undefined)
-    设组错误(undefined)
-    设已选组([])
-    清空选人()
+    清空读者()
   }
 
   function 选发布范围(value: "department" | "global" | "targeted" | "personal") {
-    设发布范围(value)
     设范围错误(undefined)
-    if (value === "targeted") void 拉组()
-  }
-
-  /** 拉一次组清单。失败要停在原地报原因：静默成空列表会让人以为「系统里没有组」。 */
-  async function 拉组() {
-    if (组清单() !== undefined || 组加载中()) return
-    设组加载中(true)
-    设组错误(undefined)
-    const out = await props.api.listGroups()
-    设组加载中(false)
-    if (out.kind !== "ok") {
-      设组错误(out.message)
-      return
-    }
-    设组清单(out.value)
+    // 先起加载态、再切这一档：理由同 `打开确认`——避免选择器挂上又被摘掉、组清单拉两遍。
+    const 目标 = 确认()
+    if (value === "targeted" && 目标 !== undefined) void 预填读者(目标.row)
+    设发布范围(value)
   }
 
   function 切组(id: string, 选上: boolean) {
     设范围错误(undefined)
     设已选组((当前) => (选上 ? [...当前, id] : 当前.filter((item) => item !== id)))
-  }
-
-  /**
-   * 按关键词搜人（设计 §3.2.3）。空关键词就地清空、不发请求：那等于要一份全量名单。
-   * 不做防抖——每敲一次发一次，回包按代次丢弃过期的。
-   */
-  async function 搜人(query: string) {
-    设搜索词(query)
-    设人错误(undefined)
-    const 关键词 = query.trim()
-    if (关键词 === "") {
-      搜人次次 += 1
-      设搜索结果(undefined)
-      设人加载中(false)
-      return
-    }
-    const 本次 = ++搜人次次
-    设人加载中(true)
-    const out = await props.api.searchReaders(关键词)
-    if (本次 !== 搜人次次) return
-    设人加载中(false)
-    if (out.kind !== "ok") {
-      设搜索结果(undefined)
-      设人错误(out.message)
-      return
-    }
-    设搜索结果(out.value)
   }
 
   function 切人(人: AssetReader, 选上: boolean) {
@@ -388,6 +362,33 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
       // 重复搜索会把同一个人以新对象再勾一次：按 id 去重，避免提交重复 id。
       return 当前.some((item) => item.id === 人.id) ? 当前 : [...当前, 人]
     })
+  }
+
+  /**
+   * 草稿行的「提交审核」只对**作者本人**画：服务端只认 `submit_review` 的授权规则，
+   * 治理管理员替别人点必然 403——不画按了必拒的按钮。
+   *
+   * 只给 MCP：skill 草稿的提交入口在项目技能面板（`capability-panel.tsx`），
+   * 这里再画一颗会变成同一个动作两个入口、状态提示各说各的。
+   */
+  const 可提交审核 = (row: AssetRow) =>
+    row.status === "draft" &&
+    row.type === "mcp" &&
+    props.selfId !== undefined &&
+    row.ownerId !== "" &&
+    row.ownerId === props.selfId
+
+  async function 提交审核(row: AssetRow) {
+    设提交中(row.id)
+    设提交错误(undefined)
+    const out = await props.api.submit(row.id)
+    设提交中(undefined)
+    if (out.kind !== "ok") {
+      设提交错误({ id: row.id, message: out.message })
+      return
+    }
+    设提示(`已提交审核「${row.name}」`)
+    await 读()
   }
 
   async function 提交() {
@@ -705,6 +706,19 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                         <td class="px-3 tabular-nums text-v2-text-text-muted">{格式化时间(row.updatedAt)}</td>
                         <td class="px-3">
                           <div class="flex justify-end gap-2">
+                            <Show when={可提交审核(row)}>
+                              <ButtonV2
+                                data-slot="asset-submit-review"
+                                data-id={row.id}
+                                type="button"
+                                variant="contrast"
+                                size="small"
+                                disabled={提交中() === row.id}
+                                onClick={() => void 提交审核(row)}
+                              >
+                                {提交中() === row.id ? "提交中…" : "提交审核"}
+                              </ButtonV2>
+                            </Show>
                             <For each={可用动作(row.status)}>
                               {(项) => {
                                 // 迭代中但作者还没交：「发布新版本」按下去必然 409
@@ -729,12 +743,23 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                                 )
                               }}
                             </For>
-                            <Show when={可用动作(row.status).length === 0}>
+                            <Show when={可用动作(row.status).length === 0 && !可提交审核(row)}>
                               <span data-slot="asset-no-action" class="text-[12px] text-v2-text-text-muted">
                                 无可执行动作
                               </span>
                             </Show>
                           </div>
+                          <Show when={提交错误()?.id === row.id ? 提交错误() : undefined}>
+                            {(错误) => (
+                              <div
+                                data-slot="asset-submit-error"
+                                role="alert"
+                                class="mt-1 text-right text-[11px] text-v2-state-fg-danger"
+                              >
+                                {错误().message}
+                              </div>
+                            )}
+                          </Show>
                         </td>
                       </tr>
                     )}
@@ -835,112 +860,32 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                     </label>
                   </Show>
                   <Show when={发布范围() === "targeted"}>
-                    <div data-slot="asset-publish-groups" class="flex flex-col gap-1 pl-6">
-                      <Show when={组加载中()}>
-                        <span class="text-[12px] text-v2-text-text-muted">正在加载授权组…</span>
+                    <div data-slot="asset-publish-readers" class="flex flex-col gap-1 pl-6">
+                      <Show when={读者加载中()}>
+                        <span class="text-[12px] text-v2-text-text-muted">正在读取已授权的组和人…</span>
                       </Show>
-                      <Show when={组错误()}>
+                      <Show when={读者提示()}>
                         {(message) => (
                           <span
-                            data-slot="asset-publish-group-error"
+                            data-slot="asset-publish-reader-hint"
                             role="alert"
-                            class="text-[12px] text-v2-state-fg-danger"
+                            class="text-[12px] text-v2-state-fg-warning"
                           >
                             {message()}
                           </span>
                         )}
                       </Show>
-                      <Show when={组清单()}>
-                        {(清单) => (
-                          <Show
-                            when={清单().length > 0}
-                            fallback={
-                              <p class="text-[12px] text-v2-text-text-muted">
-                                还没有授权组，请先在「账号与组织」里建立授权组并添加成员。
-                              </p>
-                            }
-                          >
-                            <For each={清单()}>
-                              {(组) => (
-                                <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
-                                  <input
-                                    type="checkbox"
-                                    data-slot={`asset-publish-group-${组.id}`}
-                                    checked={已选组().includes(组.id)}
-                                    disabled={处理中()}
-                                    onChange={(event) => 切组(组.id, event.currentTarget.checked)}
-                                  />
-                                  <span>
-                                    {组.name}（{组.memberCount} 人）
-                                  </span>
-                                </label>
-                              )}
-                            </For>
-                          </Show>
-                        )}
-                      </Show>
-                    </div>
-                    {/*
-                      按人授权（设计 §3.2.3）：组与人是同一档的两条来源，任选其一即可提交。
-                      空关键词不发请求——那等于要一份全量名单。
-                    */}
-                    <div data-slot="asset-publish-users" class="flex flex-col gap-1 pl-6">
-                      <label class="flex flex-col gap-1">
-                        <span class="text-[12px] text-v2-text-text-muted">按姓名或部门搜索人员</span>
-                        <input
-                          data-slot="asset-publish-user-search"
-                          type="search"
-                          class="h-8 rounded-lg border border-v2-border-border-muted bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base"
-                          placeholder="输入姓名或部门"
-                          aria-label="搜索人员"
+                      {/* 加载期间不画：晚到的预填会盖掉用户刚勾的选择。 */}
+                      <Show when={!读者加载中()}>
+                        <AssetReaderPicker
+                          api={props.api}
+                          slotPrefix="asset-publish"
+                          selectedGroupIds={已选组()}
+                          selectedUsers={已选人()}
                           disabled={处理中()}
-                          value={搜索词()}
-                          onInput={(event) => void 搜人(event.currentTarget.value)}
+                          onToggleGroup={切组}
+                          onToggleUser={切人}
                         />
-                      </label>
-                      <Show when={人加载中()}>
-                        <span class="text-[12px] text-v2-text-text-muted">正在搜索人员…</span>
-                      </Show>
-                      <Show when={人错误()}>
-                        {(message) => (
-                          <span
-                            data-slot="asset-publish-user-error"
-                            role="alert"
-                            class="text-[12px] text-v2-state-fg-danger"
-                          >
-                            {message()}
-                          </span>
-                        )}
-                      </Show>
-                      <Show when={搜索结果()}>
-                        {(清单) => (
-                          <Show
-                            when={清单().length > 0}
-                            fallback={<p class="text-[12px] text-v2-text-text-muted">没有匹配的人员</p>}
-                          >
-                            <For each={清单()}>
-                              {(人) => (
-                                <label class="flex items-center gap-2 text-[13px] text-v2-text-text-base">
-                                  <input
-                                    type="checkbox"
-                                    data-slot={`asset-publish-user-${人.id}`}
-                                    checked={已选人().some((item) => item.id === 人.id)}
-                                    disabled={处理中()}
-                                    onChange={(event) => 切人(人, event.currentTarget.checked)}
-                                  />
-                                  <span>
-                                    {人.name}（{人.dept}）
-                                  </span>
-                                </label>
-                              )}
-                            </For>
-                          </Show>
-                        )}
-                      </Show>
-                      <Show when={已选人().length > 0}>
-                        <div data-slot="asset-publish-users-selected" class="text-[12px] text-v2-text-text-muted">
-                          已选：{已选人().map((人) => 人.name).join("、")}
-                        </div>
                       </Show>
                     </div>
                   </Show>
@@ -1034,6 +979,7 @@ export function AssetGovernance(props: AssetGovernanceProps): JSX.Element {
                 categories={分类行们().filter((行) => 行.enabled)}
                 categoriesLoaded={分类已读()}
                 categoriesError={分类错误()}
+                readerApi={props.api}
                 onCreate={新建Mcp}
                 onCancel={() => 设新建开(false)}
               />

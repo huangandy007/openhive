@@ -75,7 +75,12 @@ import {
   type AssetContentPatch,
   type AssetListFilters,
 } from "@opencode-ai/asset-service/asset"
-import { canReadAsset, effectivePermissions } from "@opencode-ai/asset-service/authorization"
+import {
+  canReadAsset,
+  effectivePermissions,
+  listAssetReaders,
+  UnknownAuthorizationGroupError,
+} from "@opencode-ai/asset-service/authorization"
 import { getMcpConnection, updateMcpConnection, 遮罩连接 } from "@opencode-ai/asset-service/mcp-connection"
 import { AssetTransitionError, type SkillAction } from "@opencode-ai/asset-service/lifecycle"
 import { favoriteAssetIds } from "@opencode-ai/asset-service/preferences"
@@ -126,6 +131,9 @@ export const PATH = {
   submit: "/openhive/assets/:id/submit",
   // 入库：把项目里**未入库**的 skill 目录登记成草稿（提交审核的上一步）。
   draft: "/openhive/assets/draft",
+  // 【保留的定制 · 同步上游时不要丢】当前「指定人员」授权对象（2026-11-02 设计 §3.2.4）：
+  // 发布弹窗据此预填作者在创建 / 上次发布时选好的组和人。
+  readers: "/openhive/assets/:id/readers",
 } as const
 
 const BAD_REQUEST = 400
@@ -158,6 +166,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("PATCH", PATH.content, (request) => handleContent(request, deps))
     yield* router.add("GET", PATH.connection, () => handleConnectionRead(deps))
     yield* router.add("PATCH", PATH.connection, (request) => handleConnectionWrite(request, deps))
+    // 「指定人员」授权对象的当前值（发布弹窗预填）。两个路径段，不会与 `:id` 的 PATCH 抢匹配。
+    yield* router.add("GET", PATH.readers, () => handleReadersRead(deps))
     // 迭代三个端点共用 `handleIteration`：同一件事只该有一条实现（`#002-06`）。
     yield* router.add("POST", PATH.iteration, (request) => handleIteration(request, deps, "start_iteration"))
     yield* router.add("POST", PATH.iterationSubmit, (request) => handleIteration(request, deps, "submit_iteration"))
@@ -532,6 +542,32 @@ function handleCreateDraft(request: HttpServerRequest.HttpServerRequest, deps: D
 const ASSET_GOVERNANCE_BOARD = "asset-governance"
 
 /**
+ * `groupIds` / `userIds` 的解析：与治理流转出口（`governance-assets.ts`）同一条规则——
+ * 非数组 / 项不是非空字符串 ⇒ 400，`trim` ＋ 去重。两处各写一份字面契约（前端也不 import 内核），
+ * 规则必须逐字一致，否则同一个请求从两个入口得到两种结论。
+ */
+function 解析目标id(
+  raw: unknown,
+  field: "groupIds" | "userIds",
+): { readonly ids: string[] } | { readonly error: string } {
+  const 名词 = field === "groupIds" ? "授权组 id" : "用户 id"
+  if (!Array.isArray(raw)) return { error: `${field} 必须是${名词}的数组` }
+
+  const 已见 = new Set<string>()
+  const ids: string[] = []
+  for (const item of raw as readonly unknown[]) {
+    if (typeof item !== "string" || item.trim() === "") {
+      return { error: `${field} 里每一项都必须是非空字符串` }
+    }
+    const id = item.trim()
+    if (已见.has(id)) continue
+    已见.add(id)
+    ids.push(id)
+  }
+  return { ids }
+}
+
+/**
  * 【保留的定制 · 同步上游时不要丢】MCP 草稿分支（2026-11-02 设计 §5.3）。
  *
  * 次序：身份（调用方已取）→ 请求体是对象（调用方已判）→ **治理 admin 授权** →
@@ -551,6 +587,25 @@ function handleCreateMcpDraft(
     const 字段 = yield* 校验资产表单(deps, body)
     if (typeof 字段 === "string") return fail(BAD_REQUEST, 字段)
 
+    // 「指定人员」的授权对象随创建一起交（设计 §3.2.4）：草稿期不生效，发布后按这一份生效。
+    // 给了却不是这一档 ⇒ 400：与流转出口同一条规则，不静默丢掉调用方的选择。
+    const rawGroupIds = body["groupIds"]
+    let 组: readonly string[] | undefined
+    if (rawGroupIds !== undefined) {
+      const 解析 = 解析目标id(rawGroupIds, "groupIds")
+      if ("error" in 解析) return fail(BAD_REQUEST, 解析.error)
+      if (字段.可见 !== "targeted") return fail(BAD_REQUEST, "groupIds 只能配合「指定人员」使用")
+      组 = 解析.ids
+    }
+    const rawUserIds = body["userIds"]
+    let 人: readonly string[] | undefined
+    if (rawUserIds !== undefined) {
+      const 解析 = 解析目标id(rawUserIds, "userIds")
+      if ("error" in 解析) return fail(BAD_REQUEST, 解析.error)
+      if (字段.可见 !== "targeted") return fail(BAD_REQUEST, "userIds 只能配合「指定人员」使用")
+      人 = 解析.ids
+    }
+
     const 部门 = yield* 取部门(deps, userId)
     const 结果 = yield* Effect.result(
       Effect.tryPromise({
@@ -563,6 +618,8 @@ function handleCreateMcpDraft(
             category: 字段.分类,
             visibility: 字段.可见,
             connection: body["connection"],
+            ...(组 === undefined ? {} : { groupIds: 组 }),
+            ...(人 === undefined ? {} : { userIds: 人 }),
           }),
         catch: (error) => error,
       }),
@@ -570,6 +627,13 @@ function handleCreateMcpDraft(
     if (Result.isFailure(结果)) {
       const error = 结果.failure
       if (error instanceof AssetMetadataError) return fail(BAD_REQUEST, error.message)
+      // 「指定人员」挑了不存在 / 不是组的 id、或不存在的人：表单输入问题（400），不是内部故障。
+      if (error instanceof UnknownAuthorizationGroupError) return fail(BAD_REQUEST, error.message)
+      // `assertUserExists()` 抛的是裸 Error（`authorization.ts` 的公共错误类型不改），
+      // 消息前缀是唯一判别式——与流转出口的 `翻译()` 同一条口径。
+      if (error instanceof Error && error.message.startsWith("用户不存在：")) {
+        return fail(BAD_REQUEST, error.message)
+      }
       throw error
     }
     const asset = 结果.success
@@ -637,6 +701,32 @@ function handleConnectionRead(deps: Deps) {
     const row = yield* Effect.promise(() => getMcpConnection(deps.pg(), asset.id))
     if (row === undefined) return fail(NOT_FOUND, "这台资产还没有连接规格")
     return ok(遮罩连接(row))
+  })
+}
+
+// 【保留的定制 · 同步上游时不要丢】「指定人员」授权对象的读取出口（2026-11-02 设计 §3.2.4）。
+/**
+ * `GET /openhive/assets/:id/readers`：发布弹窗预填——作者创建 / 上次发布时选好的组和人。
+ *
+ * 授权对象属于「这份资产发给谁」，只有作者 / 资产 admin / 治理管理员能读：
+ * 复用 `能写连接` 的同一条判据（作者 + `admin` 授权 + 治理管理员），不另造一套规则（`#002-06`）。
+ * 回包只有展示字段，凭据不在这里。
+ */
+function handleReadersRead(deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return unauthorized()
+    const userId = user.value.id
+    const 参数 = yield* HttpRouter.params
+    const assetId = 参数.id ?? ""
+
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return fail(NOT_FOUND, "资产不存在")
+    // 授权先于类型判断：否则无关用户能靠 400 / 403 的差别探出「这个 id 是什么类型」。
+    if (!(yield* 能写连接(deps, userId, asset))) return fail(FORBIDDEN, "无权查看这份资产的授权对象")
+
+    const readers = yield* Effect.promise(() => listAssetReaders(deps.pg(), asset))
+    return ok(readers)
   })
 }
 

@@ -79,6 +79,11 @@ export interface AssetRow {
   readonly status: AssetStatus
   readonly visibility: AssetVisibility
   readonly department: string
+  /**
+   * 作者 id。提交审核只认作者本人，前端据此决定画不画按钮（不画按了必 403 的按钮）。
+   * 旧内核不回这一列时按空串收下——按钮不出现，比整页判坏更可控。
+   */
+  readonly ownerId: string
   readonly ownerName: string
   readonly version: number
   readonly updatedAt: number
@@ -158,6 +163,18 @@ export interface CreateMcpDraftInput {
   readonly category: string
   readonly visibility: AssetVisibility
   readonly connection: McpConnectionInput
+  /**
+   * 「指定人员」的授权对象（2026-11-02 设计 §3.2.4）。创建时就落成 `read` 授权行：
+   * 草稿期不可见，发布后按这一份生效；发布弹窗据此预填。
+   */
+  readonly groupIds?: readonly string[]
+  readonly userIds?: readonly string[]
+}
+
+/** 一份资产当前的「指定人员」授权对象。发布弹窗打开时预填用。 */
+export interface AssetReaders {
+  readonly groups: readonly AssetGroup[]
+  readonly users: readonly AssetReader[]
 }
 
 export interface AssetApi {
@@ -180,6 +197,20 @@ export interface AssetApi {
     groupIds?: readonly string[],
     userIds?: readonly string[],
   ): Promise<AssetOutcome<{ readonly asset: AssetRow; readonly notice?: string }>>
+  /**
+   * 作者提交审核（`POST /openhive/assets/:id/submit`）。
+   *
+   * 治理台的动作表只列审核 / 发布动作，作者动作（提交审核、发起迭代）不在其中；
+   * 草稿行的「提交审核」按钮单独走这个出口。服务端只认作者本人（`submit_review` 的授权规则），
+   * 前端按 `ownerId` 决定画不画按钮——不画按了必 403 的按钮。
+   */
+  submit(id: string): Promise<AssetOutcome<{ readonly assetId: string; readonly status: AssetStatus; readonly version: number }>>
+  /**
+   * 读一份资产当前的「指定人员」授权对象：发布弹窗预填作者在创建时选好的人。
+   *
+   * 只回组 / 人的展示字段（与 `listGroups` / `searchReaders` 同形），不借账号管理那套 PII。
+   */
+  readers(id: string): Promise<AssetOutcome<AssetReaders>>
   /**
    * 授权组清单（需求 3b）：发布为「指定人员」时弹窗里的可选项。
    *
@@ -227,6 +258,10 @@ export const PATH = {
   readers: "/openhive/governance/asset-readers",
   /** 入库（MCP 与 skill 共用）。与内核 `OpenhiveAssets.PATH.draft` 逐字对应。 */
   draft: "/openhive/assets/draft",
+  /** 作者提交审核。与内核 `OpenhiveAssets.PATH.submit` 逐字对应。 */
+  submit: (id: string) => `/openhive/assets/${encodeURIComponent(id)}/submit`,
+  /** 当前授权对象（发布弹窗预填）。与内核新增的 `PATH.readers` 逐字对应。 */
+  assetReaders: (id: string) => `/openhive/assets/${encodeURIComponent(id)}/readers`,
 } as const
 
 /** 一次请求的上限：与 `account-api.ts` 同值同理由。 */
@@ -261,6 +296,10 @@ function 行(value: unknown): AssetRow | undefined {
     value
   if (typeof id !== "string" || typeof name !== "string") return undefined
   if (typeof department !== "string" || typeof ownerName !== "string") return undefined
+  // 作者 id 是「提交审核」按钮的判据。旧内核没有这一列时按空串收下（按钮不出现）；
+  // 给了但类型不对就是形状漂了 ⇒ 整行判坏，不能静默当成空串。
+  const ownerId = value["ownerId"]
+  if (ownerId !== undefined && typeof ownerId !== "string") return undefined
   if (!闭集(ASSET_TYPES, type) || !闭集(ASSET_STATUSES, status) || !闭集(ASSET_VISIBILITIES, visibility)) return undefined
   if (!数(version) || !数(updatedAt)) return undefined
   if (publishedAt !== null && !数(publishedAt)) return undefined
@@ -286,6 +325,7 @@ function 行(value: unknown): AssetRow | undefined {
     status,
     visibility,
     department,
+    ownerId: ownerId ?? "",
     ownerName,
     version,
     updatedAt,
@@ -425,6 +465,26 @@ function 草稿结果(value: unknown): { readonly assetId: string } | undefined 
   return { assetId: value["assetId"] }
 }
 
+/** 提交审核回包：状态与版本要能对上新行（列表随后会重拉，这里只做形状校验）。 */
+function 提交结果(
+  value: unknown,
+): { readonly assetId: string; readonly status: AssetStatus; readonly version: number } | undefined {
+  if (!isRecord(value)) return undefined
+  const { assetId, status, version } = value
+  if (typeof assetId !== "string" || assetId === "") return undefined
+  if (!闭集(ASSET_STATUSES, status) || !数(version)) return undefined
+  return { assetId, status, version }
+}
+
+/** 当前授权对象：组 / 人两张名单都按既有解析器严判，缺一个就算形状漂了。 */
+function 读者结果(value: unknown): AssetReaders | undefined {
+  if (!isRecord(value)) return undefined
+  const groups = 授权组清单(value)
+  const users = 人员清单(value)
+  if (groups === undefined || users === undefined) return undefined
+  return { groups, users }
+}
+
 /** 建一份客户端。`send` 省略 = 真实 `fetch` ＋ 超时（测试注入替身）。 */
 export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
   return {
@@ -443,6 +503,8 @@ export function createAssetApi(send: GovernanceFetch = 默认发送): AssetApi {
           ...(userIds === undefined || userIds.length === 0 ? {} : { userIds: [...userIds] }),
         }),
       }, 流转结果),
+    submit: (id) => 请求(send, PATH.submit(id), { method: "POST" }, 提交结果),
+    readers: (id) => 请求(send, PATH.assetReaders(id), undefined, 读者结果),
     listGroups: () => 请求(send, PATH.groups, undefined, 授权组清单),
     searchReaders: (query) =>
       请求(send, `${PATH.readers}?q=${encodeURIComponent(query)}&limit=20`, undefined, 人员清单),

@@ -20,6 +20,9 @@ const 行 = (id: string, name: string, 覆写: Partial<AssetRow> = {}): AssetRow
   status: "in_review",
   visibility: "global",
   department: "经侦支队",
+  // 作者动作（草稿行的「提交审核」）按 ownerId 决定画不画；story 里不给作者，
+  // 于是所有行都不显示这个按钮——与「治理台只看审核动作」的默认视图一致。
+  ownerId: "",
   ownerName: "甲民警",
   version: 1,
   updatedAt: 1_759_000_000,
@@ -46,6 +49,13 @@ function 假后端(失败 = false): AssetApi {
       const 原行 = 样本.find((row) => row.id === id) ?? 行(id, "资产")
       return { kind: "ok", value: { asset: { ...原行, status: action === "reject_business" ? "draft" : "pending_tech" } } }
     },
+    // 作者提交审核 / 读授权对象：story 的行都不是「自己的 MCP 草稿」，按钮不出现；
+    // 仍给出实现，免得 story 里任何路径点到就抛「不是函数」。
+    submit: async (id) => ({ kind: "ok", value: { assetId: id, status: "in_review", version: 2 } }),
+    readers: async () => ({ kind: "ok", value: { groups: [], users: [] } }),
+    // 「指定人员」选择器的两个读口：新建弹窗默认就是 targeted，一打开就会读组清单。
+    listGroups: async () => ({ kind: "ok", value: [] }),
+    searchReaders: async () => ({ kind: "ok", value: [] }),
     // Storybook 里点「新建 MCP 资产」→ 创建：内存替身，按成功回一个 id（不连网）。
     createMcpDraft: async () => ({ kind: "ok", value: { assetId: "asset_story_mcp" } }),
   }

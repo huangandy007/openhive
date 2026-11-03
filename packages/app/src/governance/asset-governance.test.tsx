@@ -47,6 +47,9 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   visibility: "global",
   department: "经侦支队",
   ownerName: "甲民警",
+  // 作者 id：草稿行的「提交审核」按钮只对作者本人画（服务端只认 `submit_review`）。
+  // 默认空串 = 与任何 selfId 都不相等，不画按钮。
+  ownerId: "",
   version: 1,
   updatedAt: 1_700_000_000,
   publishedAt: null,
@@ -105,6 +108,10 @@ interface 记录 {
   }>
   readonly batch: Array<{ readonly ids: readonly string[]; readonly category: string }>
   readonly createMcp: CreateMcpDraftInput[]
+  /** 草稿行点了几次「提交审核」，带的是哪个 id。 */
+  readonly submit: string[]
+  /** 发布弹窗预填读了几次授权对象（按资产 id）。 */
+  readonly readers: string[]
   /** 「指定人员」弹窗拉了几次组清单：不点这一档就不该拉（白拉一次网）。 */
   groupCalls: number
   /** 选人搜索框发过哪些关键词（空串不该发请求）。 */
@@ -119,7 +126,16 @@ function 假后端(
   }),
   覆写: Partial<AssetApi> = {},
 ) {
-  const 记录: 记录 = { list: [], transition: [], batch: [], createMcp: [], groupCalls: 0, readerQueries: [] }
+  const 记录: 记录 = {
+    list: [],
+    transition: [],
+    batch: [],
+    createMcp: [],
+    submit: [],
+    readers: [],
+    groupCalls: 0,
+    readerQueries: [],
+  }
   const api: AssetApi = {
     list: async (query = {}) => {
       记录.list.push(query)
@@ -150,6 +166,15 @@ function 假后端(
       记录.createMcp.push(input)
       return { kind: "ok", value: { assetId: "asset_new_mcp" } }
     },
+    submit: async (id) => {
+      记录.submit.push(id)
+      return { kind: "ok", value: { assetId: id, status: "in_review", version: 1 } }
+    },
+    // 默认没有授权对象：发布弹窗仍按「重发必须重选」走；要钉预填的用例自己覆写。
+    readers: async (id) => {
+      记录.readers.push(id)
+      return { kind: "ok", value: { groups: [], users: [] } }
+    },
     listGroups: async () => {
       记录.groupCalls += 1
       return { kind: "ok", value: 授权组 }
@@ -159,10 +184,10 @@ function 假后端(
   return { api, 记录 }
 }
 
-function 挂上(api: AssetApi, categoryApi?: CategoryAdminApi) {
+function 挂上(api: AssetApi, categoryApi?: CategoryAdminApi, selfId?: string) {
   const root = document.createElement("div")
   document.body.appendChild(root)
-  挂过的.push(render(() => <AssetGovernance api={api} categoryApi={categoryApi} />, root))
+  挂过的.push(render(() => <AssetGovernance api={api} categoryApi={categoryApi} selfId={selfId} />, root))
   return root
 }
 
@@ -438,8 +463,9 @@ describe("资产治理页 · 发布范围 · 指定人员（需求 3b）", () =>
     await 等到(() => 有("[data-slot='asset-publish-group-g_case']") !== null)
     const 定向 = 有("[data-slot='asset-publish-scope-targeted']")
     expect(定向 instanceof HTMLInputElement && 定向.checked).toBe(true)
-    // 回包里的资产不带「当前授权组」，所以组的勾选态**不回填**：重发必须重选。
-    // 这也是提交禁用的原因——空组 = 谁都不给，比拿不准更糟。
+    // 替身的 `readers` 回空名单（这份资产还没写过授权行），所以勾选态仍是空的：
+    // 重发必须重选——空组 = 谁都不给，比拿不准更糟。预填成功的路径另有用例钉。
+    expect(记录.readers).toEqual(["p4"])
     expect(按钮("[data-slot='asset-confirm-submit']").disabled).toBe(true)
 
     点单选("[data-slot='asset-publish-scope-department']")
@@ -449,6 +475,33 @@ describe("资产治理页 · 发布范围 · 指定人员（需求 3b）", () =>
     点击("[data-slot='asset-confirm-submit']")
     await 等到(() => 记录.transition.length === 1)
     expect(记录.transition[0]).toEqual({ id: "p4", action: "publish_tech", visibility: "department" })
+  })
+
+  test("已是指定人员：预填当前授权对象，不回填就重发也能交", async () => {
+    const 定向待发布 = 资产("p7", { status: "pending_tech", visibility: "targeted" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [定向待发布] }), {
+      readers: async () => ({
+        kind: "ok",
+        value: { groups: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }], users: 读者.slice(0, 1) },
+      }),
+    })
+    挂上(api)
+    选状态("pending_tech")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+    点击("[data-slot='asset-action-publish_tech']")
+
+    // 预填完成后组与人都应是勾上的，按钮随之可用——用户打开弹窗只是想改连接 / 补人。
+    await 等到(() => {
+      const 组 = 有("[data-slot='asset-publish-group-g_case']")
+      return 组 instanceof HTMLInputElement && 组.checked
+    })
+    expect(文章("[data-slot='asset-publish-users-selected']")).toContain("李四")
+    await 等到(() => !按钮("[data-slot='asset-confirm-submit']").disabled)
+
+    点击("[data-slot='asset-confirm-submit']")
+    await 等到(() => 记录.transition.length === 1)
+    expect(记录.transition[0]?.groupIds).toEqual(["g_case"])
+    expect(记录.transition[0]?.userIds).toEqual(["u2"])
   })
 
   test("组清单拉不到：在原处说清楚、提交保持禁用（不假装「没有组」）", async () => {
@@ -659,6 +712,8 @@ describe("资产治理页 · 三态", () => {
       listGroups: () => 失败一次.api.listGroups(),
       createMcpDraft: (input) => 失败一次.api.createMcpDraft(input),
       searchReaders: () => 失败一次.api.searchReaders(""),
+      submit: (id) => 失败一次.api.submit(id),
+      readers: (id) => 失败一次.api.readers(id),
     })
     await 等到(() => 有("[data-slot='asset-error']") !== null)
     expect(文章("[data-slot='asset-error']")).toContain("连接服务失败")
@@ -853,6 +908,60 @@ describe("资产治理页 · 分类列与批量改分类（需求 2）", () => {
   })
 })
 
+describe("资产治理页 · 草稿提交审核（MCP 作者动作）", () => {
+  test("作者本人的 MCP 草稿：画「提交审核」，点了走 submit 并刷新", async () => {
+    const 草稿 = 资产("m1", { name: "资金查询 MCP", type: "mcp", status: "draft", ownerId: "u1" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [草稿] }))
+    挂上(api, undefined, "u1")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    // 治理动作表对草稿是空的；作者动作不在表里，由这颗按钮单独承载。
+    expect(有("[data-slot='asset-action-approve_business']")).toBeNull()
+    expect(有("[data-slot='asset-no-action']")).toBeNull()
+    点击("[data-slot='asset-submit-review']")
+    await 等到(() => 记录.submit.length === 1)
+
+    expect(记录.submit).toEqual(["m1"])
+    expect(文章("[data-slot='asset-notice']")).toContain("已提交审核")
+    // 提交后草稿队列里不再有它：列表重拉过（服务端会把它变成 in_review）。
+    expect(记录.list.length).toBeGreaterThan(1)
+  })
+
+  test("不是作者本人：不画提交按钮（服务端只认作者，画了必 403）", async () => {
+    const 草稿 = 资产("m1", { name: "别人的 MCP", type: "mcp", status: "draft", ownerId: "u2" })
+    const { api, 记录 } = 假后端(async () => ({ kind: "ok", value: [草稿] }))
+    挂上(api, undefined, "u1")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    expect(有("[data-slot='asset-submit-review']")).toBeNull()
+    expect(文章("[data-slot='asset-no-action']")).toBe("无可执行动作")
+    expect(记录.submit).toEqual([])
+  })
+
+  test("skill 草稿：入口在项目技能面板，这里不重复画", async () => {
+    const 草稿 = 资产("s1", { name: "话单分析", type: "skill", status: "draft", ownerId: "u1" })
+    const { api } = 假后端(async () => ({ kind: "ok", value: [草稿] }))
+    挂上(api, undefined, "u1")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    expect(有("[data-slot='asset-submit-review']")).toBeNull()
+  })
+
+  test("提交失败：错误挂在那一行，不拦列表", async () => {
+    const 草稿 = 资产("m1", { name: "资金查询 MCP", type: "mcp", status: "draft", ownerId: "u1" })
+    const { api } = 假后端(async () => ({ kind: "ok", value: [草稿] }), {
+      submit: async () => ({ kind: "rejected", message: "只有草稿可以提交审核" }),
+    })
+    挂上(api, undefined, "u1")
+    await 等到(() => 有("[data-slot='asset-row']") !== null)
+
+    点击("[data-slot='asset-submit-review']")
+    await 等到(() => 有("[data-slot='asset-submit-error']") !== null)
+    expect(文章("[data-slot='asset-submit-error']")).toBe("只有草稿可以提交审核")
+    expect(文章("[data-slot='asset-submit-review']")).toBe("提交审核")
+  })
+})
+
 describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
   const 填输入 = (selector: string, value: string) => {
     const 目标 = document.querySelector(selector)
@@ -883,6 +992,10 @@ describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
     选下拉("select[name='mcp-create-category']", "intelligence")
     填输入("input[name='mcp-create-url']", "https://mcp.example/path")
 
+    // 默认「指定人员」：必须勾到至少一个授权对象才交得出去（与发布弹窗同一条门槛）。
+    await 等到(() => 有("[data-slot='mcp-create-group-g_case']") !== null)
+    点单选("[data-slot='mcp-create-group-g_case']")
+
     const 提交 = document.querySelector("[data-slot='mcp-create-submit']")
     if (!(提交 instanceof HTMLButtonElement)) throw new Error("找不到创建按钮")
     提交.click()
@@ -896,6 +1009,7 @@ describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
       category: "intelligence",
       visibility: "targeted",
       connection: { transport: "remote", url: "https://mcp.example/path" },
+      groupIds: ["g_case"],
     })
     expect(文章("[data-slot='asset-notice']")).toContain("已新建 MCP 资产")
     const 筛选框 = host.querySelector("[data-slot='asset-filter-status']")
@@ -920,6 +1034,8 @@ describe("资产治理页 · 新建 MCP（2026-11-02 设计 §5.3）", () => {
     填输入("input[name='mcp-create-name']", "会被拒")
     填输入("textarea[name='mcp-create-description']", "描述")
     选下拉("select[name='mcp-create-category']", "intelligence")
+    // 本用例只钉「服务端拒绝怎么显示」：选全局，避开「指定人员必须选读者」的前置门槛。
+    选下拉("select[name='mcp-create-visibility']", "global")
     填输入("input[name='mcp-create-url']", "https://x")
 
     const 提交 = document.querySelector("[data-slot='mcp-create-submit']")

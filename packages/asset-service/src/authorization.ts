@@ -382,6 +382,61 @@ export async function setAssetReaders(
 }
 
 /**
+ * 读一份资产**当前**的「指定人员」授权对象（发布弹窗预填用）。
+ *
+ * 只回展示字段（组名 / 成员数、人名 / 部门）：调用方要的是「勾哪个、叫什么」，
+ * 账号管理的其余 PII 不从这里借出去。
+ *
+ * 口径与 `setAssetReaders` 的删除范围一致：只认 `perm = 'read'` 且角色类型是
+ * 授权组 / 私有角色的行。运维直配的普通角色行不属于「指定人员」，不列出来。
+ */
+export async function listAssetReaders(
+  db: AuthorizationTarget,
+  asset: AssetMetadata,
+): Promise<{
+  readonly groups: readonly { readonly id: string; readonly name: string; readonly memberCount: number }[]
+  readonly users: readonly { readonly id: string; readonly name: string; readonly dept: string }[]
+}> {
+  const groups = rowsOf(
+    await db.execute(sql`
+      select r.id as id, r.name as name, count(ur.user_id) as member_count
+        from auth.role_resource rr
+        join auth.role r on r.id = rr.role_id
+        left join auth.user_role ur on ur.role_id = r.id
+       where rr.resource_type = ${asset.type}
+         and rr.resource_id = ${asset.id}
+         and rr.perm = 'read'
+         and r.role_type = 'group'
+       group by r.id, r.name
+       order by r.name, r.id
+    `),
+  ).map((row) => ({
+    id: String(row["id"]),
+    name: String(row["name"]),
+    memberCount: Number(row["member_count"]),
+  }))
+
+  const users = rowsOf(
+    await db.execute(sql`
+      select u.id as id, u.name as name, u.dept as dept
+        from auth.role_resource rr
+        join auth.user u on u.id = substring(rr.role_id from ${PERSONAL_ROLE_PREFIX.length + 1})
+       where rr.resource_type = ${asset.type}
+         and rr.resource_id = ${asset.id}
+         and rr.perm = 'read'
+         and rr.role_id like ${`${PERSONAL_ROLE_PREFIX}%`}
+       order by u.name, u.id
+    `),
+  ).map((row) => ({
+    id: String(row["id"]),
+    name: String(row["name"]),
+    dept: typeof row["dept"] === "string" ? row["dept"] : "",
+  }))
+
+  return { groups, users }
+}
+
+/**
  * 三级空间是否允许「读」。只回答空间那半边，授权组那半边在 `effectivePermissions()` 里并。
  *
  * 非共享状态对谁都返回 false（作者 / 被授权者由调用方另外加分）。

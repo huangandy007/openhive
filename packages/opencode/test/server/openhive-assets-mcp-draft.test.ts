@@ -66,6 +66,8 @@ beforeAll(async () => {
     `)
   }
   await pg.db.execute(sql`insert into auth.user_role (user_id, role_id) values (${ADMIN.id}, 'gov-system-admin')`)
+  // 「指定人员」的授权组：组本身是 `auth.role` 里 `role_type='group'` 的一行。
+  await pg.db.execute(sql`insert into auth.role (id, name, role_type) values ('g_mcp', 'MCP 专案组', 'group')`)
 })
 
 const OPEN: Record<string, string | undefined> = { OPENHIVE_REQUIRE_USER_ID: "1", AUTH_JWT_SECRET: SECRET }
@@ -199,6 +201,28 @@ describe("MCP 入库 · 成功面", () => {
     }),
   )
 
+  it.effect("指定人员：创建时的组与人落成 read 授权行，readers 出口据此预填", () =>
+    Effect.gen(function* () {
+      const response = yield* 入库(
+        ADMIN,
+        mcpBody({
+          name: "定向 MCP",
+          groupIds: ["g_mcp"],
+          userIds: [OFFICER.id],
+        }),
+      )
+      expect(response.status).toBe(200)
+      const body = Schema.decodeUnknownSync(回包)(yield* Effect.promise(() => response.json()))
+
+      const readers = yield* 发(ADMIN, `/openhive/assets/${body.assetId}/readers`)
+      expect(readers.status).toBe(200)
+      expect(yield* Effect.promise(() => readers.json())).toEqual({
+        groups: [{ id: "g_mcp", name: "MCP 专案组", memberCount: 0 }],
+        users: [{ id: OFFICER.id, name: OFFICER.name, dept: "经侦支队" }],
+      })
+    }),
+  )
+
   it.effect("local：命令数组落库", () =>
     Effect.gen(function* () {
       const response = yield* 入库(
@@ -243,6 +267,60 @@ describe("MCP 入库 · 拒绝面不落库", () => {
       const response = yield* 入库(ADMIN, mcpBody({ name: "拒绝-坏类型", type: "plugin" }))
       expect(response.status).toBe(400)
       expect(yield* Effect.promise(() => 同名资产数("拒绝-坏类型"))).toBe(0)
+    }),
+  )
+
+  it.effect("不存在的授权组 ⇒ 400，且资产与授权行都不落", () =>
+    Effect.gen(function* () {
+      const response = yield* 入库(ADMIN, mcpBody({ name: "拒绝-坏组", groupIds: ["g_missing"] }))
+      expect(response.status).toBe(400)
+      expect(yield* Effect.promise(() => 同名资产数("拒绝-坏组"))).toBe(0)
+      const 授权行 = rowsOf(
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`select resource_id from auth.role_resource where role_id = 'g_missing'`),
+        ),
+      )
+      expect(授权行).toHaveLength(0)
+    }),
+  )
+
+  it.effect("不存在的用户 ⇒ 400，且资产不落", () =>
+    Effect.gen(function* () {
+      const response = yield* 入库(ADMIN, mcpBody({ name: "拒绝-坏人", userIds: ["u_missing"] }))
+      expect(response.status).toBe(400)
+      expect(yield* Effect.promise(() => 同名资产数("拒绝-坏人"))).toBe(0)
+    }),
+  )
+
+  it.effect("可见范围不是「指定人员」却带 groupIds ⇒ 400（不静默丢掉调用方的选择）", () =>
+    Effect.gen(function* () {
+      const response = yield* 入库(
+        ADMIN,
+        mcpBody({ name: "拒绝-范围不符", visibility: "department", groupIds: ["g_mcp"] }),
+      )
+      expect(response.status).toBe(400)
+      expect(yield* Effect.promise(() => 同名资产数("拒绝-范围不符"))).toBe(0)
+    }),
+  )
+})
+
+describe("MCP 授权对象 · 读取出口", () => {
+  it.effect("未登录 ⇒ 401；非作者非管理员 ⇒ 403", () =>
+    Effect.gen(function* () {
+      const 建 = yield* 入库(ADMIN, mcpBody({ name: "读取权限 MCP" }))
+      const body = Schema.decodeUnknownSync(回包)(yield* Effect.promise(() => 建.json()))
+
+      expect((yield* 发(null, `/openhive/assets/${body.assetId}/readers`)).status).toBe(401)
+
+      // OFFICER 不是作者、没有 admin 授权、也不是治理管理员：授权对象不给他看。
+      expect((yield* 发(OFFICER, `/openhive/assets/${body.assetId}/readers`)).status).toBe(403)
+    }),
+  )
+
+  it.effect("不存在的资产 ⇒ 404（先判存在再判权限）", () =>
+    Effect.gen(function* () {
+      const response = yield* 发(ADMIN, "/openhive/assets/asset_missing/readers")
+      expect(response.status).toBe(404)
     }),
   )
 })

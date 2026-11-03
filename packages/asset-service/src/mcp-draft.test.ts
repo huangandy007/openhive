@@ -152,4 +152,59 @@ describe("createMcpDraft", () => {
     expect(String(error)).toContain("MCP 连接写入失败")
     expect(await 资产数(db)).toBe(前)
   })
+
+  test("指定人员：组与人的 read 授权行随创建落库", async () => {
+    const db = await freshDb()
+    await db.execute(sql`insert into auth.role (id, name, role_type) values ('g_case', '专案组', 'group')`)
+    await db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values ('u2', '010002', '乙民警', 'x', 'x', 'x', '刑侦支队', 'x', 0, 'h', 0)
+    `)
+
+    await createMcpDraft({
+      db,
+      owner,
+      name: "定向 MCP",
+      description: "只给专案组",
+      category: "intelligence",
+      id: "asset_mcp_readers",
+      connection: { transport: "remote", url: "https://x" },
+      groupIds: ["g_case"],
+      userIds: ["u2"],
+    })
+
+    const 授权行 = rowsOf(
+      await db.execute(
+        sql`select role_id, perm from auth.role_resource
+             where resource_type = 'mcp' and resource_id = 'asset_mcp_readers' order by role_id`,
+      ),
+    )
+    expect(授权行.map((row) => `${String(row["role_id"])}:${String(row["perm"])}`)).toEqual([
+      "g_case:read",
+      "personal:u2:read",
+    ])
+  })
+
+  test("授权目标不合法 ⇒ 抛错且资产行一条都不留（补偿删除）", async () => {
+    const db = await freshDb()
+    const 前 = await 资产数(db)
+    const error = await createMcpDraft({
+      db,
+      owner,
+      name: "坏组",
+      description: "组不存在",
+      category: "intelligence",
+      id: "asset_mcp_badreader",
+      connection: { transport: "remote", url: "https://x" },
+      groupIds: ["g_missing"],
+    }).then(
+      () => null,
+      (caught: unknown) => caught,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toContain("授权组不存在")
+    expect(await 资产数(db)).toBe(前)
+    // 连接行随元数据一起删（外键级联）——不能留下「资产没了、连接还在」的孤儿。
+    expect(await getMcpConnection(db, "asset_mcp_badreader")).toBeUndefined()
+  })
 })

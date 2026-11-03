@@ -138,6 +138,7 @@ describe("治理后台 · 全屏骨架", () => {
                 visibility: "global" as const,
                 department: "经侦支队",
                 ownerName: "甲民警",
+                ownerId: "u_owner",
                 version: 1,
                 updatedAt: 1_700_000_000,
                 publishedAt: null,
@@ -154,6 +155,8 @@ describe("治理后台 · 全屏骨架", () => {
         listGroups: async () => ({ kind: "failed", message: "本用例不拉授权组" }),
         searchReaders: async () => ({ kind: "failed", message: "本用例不搜人" }),
         createMcpDraft: async () => ({ kind: "failed", message: "本用例不新建 MCP" }),
+        submit: async () => ({ kind: "failed", message: "本用例不提交审核" }),
+        readers: async () => ({ kind: "failed", message: "本用例不读授权对象" }),
       },
     })
     await flush()

@@ -68,6 +68,8 @@ const 资产接口: AssetApi = {
   listGroups: 不写,
   searchReaders: 不写,
   createMcpDraft: 不写,
+  submit: 不写,
+  readers: 不写,
 }
 
 const 项目接口: ProjectApi = {

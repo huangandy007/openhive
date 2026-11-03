@@ -10,7 +10,7 @@ import {
   type AssetTarget,
 } from "./asset"
 import { retargetAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
-import type { AssetViewer } from "./authorization"
+import { setAssetReaders, type AssetViewer } from "./authorization"
 import { isEnabledCategory } from "./category-store"
 import type { AssetStatus, AssetVisibility } from "./metadata"
 import {
@@ -305,6 +305,12 @@ export interface CreateMcpDraftInput {
   readonly now?: number
   /** 连接规格，原样交给 `规范化连接` 校验（出口不必先拆字段）。 */
   readonly connection: unknown
+  /**
+   * 「指定人员」的授权对象（2026-11-02 设计 §3.2.4）。创建时就落成 `read` 授权行：
+   * 草稿期不可见，发布后按这一份生效；发布弹窗据此预填（`listAssetReaders`）。
+   */
+  readonly groupIds?: readonly string[]
+  readonly userIds?: readonly string[]
 }
 
 /**
@@ -353,9 +359,20 @@ export async function createMcpDraft(input: CreateMcpDraftInput): Promise<AssetM
     iterationWorkspace: null,
   }
 
+  const 有读者 = (input.groupIds?.length ?? 0) > 0 || (input.userIds?.length ?? 0) > 0
+
   await insertAsset(input.db, metadata)
   try {
     await insertMcpConnection(input.db, metadata.id, 连接, now)
+    // `setAssetReaders` 先验全部目标、再删再写（`#004-09`）：目标不合法时一条授权行都不会落。
+    // 失败与连接失败同一条补偿：删掉刚写的元数据，不留下「在库里、没人能看见」的草稿。
+    if (有读者) {
+      await setAssetReaders(input.db, {
+        assetId: metadata.id,
+        ...(input.groupIds === undefined ? {} : { groupIds: input.groupIds }),
+        ...(input.userIds === undefined ? {} : { userIds: input.userIds }),
+      })
+    }
   } catch (error) {
     try {
       await deleteAsset(input.db, metadata.id)

@@ -35,6 +35,7 @@ const 资产 = (id: string, overrides: Partial<AssetRow> = {}): AssetRow => ({
   visibility: "global",
   department: "经侦支队",
   ownerName: "甲民警",
+  ownerId: "u_owner",
   version: 1,
   updatedAt: 1_700_000_000,
   publishedAt: null,
@@ -185,6 +186,16 @@ describe("资产客户端 · 新建 MCP 草稿（2026-11-02 设计 §5.3）", ()
     expect(out).toEqual({ kind: "ok", value: { assetId: "asset_new_mcp" } })
   })
 
+  test("「指定人员」的组与人随创建一起交出（刷新后发布弹窗据此预填）", async () => {
+    const { send, calls } = 替身(() => json({ assetId: "asset_new_mcp" }))
+    const 带读者 = { ...输入, groupIds: ["g_case"], userIds: ["u2"] }
+
+    const out = await createAssetApi(send).createMcpDraft(带读者)
+
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ type: "mcp", ...带读者 }))
+    expect(out.kind).toBe("ok")
+  })
+
   test("403 ⇒ rejected 原样带服务端消息；缺 assetId / 空串 / 类型漂移 ⇒ failed", async () => {
     const 越权 = await createAssetApi(
       替身(() => json({ error: "只有资产治理管理员可以新建 MCP 资产" }, 403)).send,
@@ -194,6 +205,55 @@ describe("资产客户端 · 新建 MCP 草稿（2026-11-02 设计 §5.3）", ()
     for (const 坏 of [{}, { assetId: "" }, { assetId: 1 }, { id: "asset_x" }]) {
       const out = await createAssetApi(替身(() => json(坏)).send).createMcpDraft(输入)
       expect(out.kind).toBe("failed")
+    }
+  })
+})
+
+describe("资产客户端 · 作者提交审核（2026-11-03）", () => {
+  test("POST 字面路径（id 转义）；回包解出 status 与 version，形状不对 ⇒ failed", async () => {
+    const { send, calls } = 替身(() => json({ assetId: "a 1", status: "in_review", version: 2 }))
+
+    const out = await createAssetApi(send).submit("a 1")
+
+    expect(calls[0]?.input).toBe("/openhive/assets/a%201/submit")
+    expect(calls[0]?.init?.method).toBe("POST")
+    expect(out).toEqual({ kind: "ok", value: { assetId: "a 1", status: "in_review", version: 2 } })
+
+    for (const 坏 of [{}, { assetId: "", status: "in_review", version: 1 }, { assetId: "a1", status: "weird", version: 1 }]) {
+      const 结果 = await createAssetApi(替身(() => json(坏)).send).submit("a1")
+      expect(结果.kind).toBe("failed")
+    }
+  })
+
+  test("403 ⇒ rejected 原样带服务端消息（非作者 / 非草稿由服务端判）", async () => {
+    const out = await createAssetApi(替身(() => json({ error: "只有作者本人可以提交审核" }, 403)).send).submit("a1")
+    expect(out).toEqual({ kind: "rejected", message: "只有作者本人可以提交审核" })
+  })
+})
+
+describe("资产客户端 · 当前授权对象（发布弹窗预填）", () => {
+  test("GET 子路径（id 转义）；回包解出 groups / users，任一形状不对 ⇒ failed", async () => {
+    const { send, calls } = 替身(() =>
+      json({
+        groups: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }],
+        users: [{ id: "u2", name: "李四", dept: "经侦支队" }],
+      }),
+    )
+
+    const out = await createAssetApi(send).readers("a 1")
+
+    expect(calls[0]?.input).toBe("/openhive/assets/a%201/readers")
+    expect(out).toEqual({
+      kind: "ok",
+      value: {
+        groups: [{ id: "g_case", name: "电诈专案组", memberCount: 2 }],
+        users: [{ id: "u2", name: "李四", dept: "经侦支队" }],
+      },
+    })
+
+    for (const 坏 of [{}, { groups: [] }, { groups: [], users: [{ id: "u2", name: "李四" }] }]) {
+      const 结果 = await createAssetApi(替身(() => json(坏)).send).readers("a1")
+      expect(结果.kind).toBe("failed")
     }
   })
 })
