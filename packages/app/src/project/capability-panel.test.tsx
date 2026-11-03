@@ -66,6 +66,9 @@ function 面板(over: Partial<CapabilityPanelProps> = {}) {
       onRetry={over.onRetry ?? (() => {})}
       onSubmit={over.onSubmit}
       onCreateAndSubmit={over.onCreateAndSubmit}
+      mcps={over.mcps}
+      mcpsError={over.mcpsError}
+      onLoadMcps={over.onLoadMcps}
     />
   ))
 }
@@ -118,9 +121,11 @@ describe("CapabilityPanel 三档手风琴（设计 §3）", () => {
     expect(文(host, "capability-group-knowledge")).not.toMatch(/\d/)
   })
 
-  test("MCP 是明确 0 个 ⇒ 写出数字", () => {
+  // 2026-11-03：MCP 组接真实清单。**还没读到**时不许写数字——原来的 `· 0 个` 是硬编码，
+  // 等于替后端回答一个它还没回答的问题（`#002-02`）。
+  test("MCP 清单还没读到 ⇒ 组头不写数字", () => {
     const host = 面板()
-    expect(文(host, "capability-group-mcp")).toContain("0 个")
+    expect(文(host, "capability-group-mcp")).not.toMatch(/\d/)
   })
 
   test("三种条目同屏：正常 / 没生效 / 自带 各一条", () => {
@@ -1299,5 +1304,91 @@ describe("能力面板阶段角标与唯一主动作（2026-11-01）", () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(提交钮[1].disabled).toBe(false)
     expect(停用钮.disabled).toBe(false)
+  })
+})
+
+/**
+ * MCP 组（2026-11-03）：从「硬编码 0 个 + 固定文案」换成**按需拉取的真实清单**。
+ *
+ * 与技能组的关键差异：MCP 是**用户级**能力（发布 + 授权即生效，不装进项目），
+ * 所以这里既没有启用/停用按钮，数字也说「有权使用 N 个」。
+ *
+ * 三态必须分开（`#002-02`）：没读到 ≠ 0 台 ≠ 读失败。
+ */
+describe("CapabilityPanel 的 MCP 组（2026-11-03）", () => {
+  const 一台 = (id: string, name: string, description = "") => ({ id, name, description })
+
+  const 展开MCP = (host: HTMLElement) => {
+    一(host, "capability-group-mcp")?.click()
+  }
+
+  test("展开 MCP 组 ⇒ 拉一次清单（默认收起，不预取）", () => {
+    let 次数 = 0
+    const host = 面板({ mcps: () => undefined, onLoadMcps: () => (次数 += 1) })
+
+    expect(次数).toBe(0)
+    展开MCP(host)
+    expect(次数).toBe(1)
+
+    // 再点同一组头 = 收起，不是重新展开：不许再发一次请求。
+    展开MCP(host)
+    expect(次数).toBe(1)
+  })
+
+  test("读到 3 台 ⇒ 组头「3 个」，展开列出名称与描述", () => {
+    const host = 面板({
+      mcps: () => [一台("m1", "GoNavi", "数据库工作台"), 一台("m2", "话单查询"), 一台("m3", "资金图谱")],
+      onLoadMcps: () => {},
+    })
+    展开MCP(host)
+
+    expect(文(host, "capability-count-mcp")).toContain("3 个")
+    const 条目 = 槽(host, "capability-mcp-item")
+    expect(条目.length).toBe(3)
+    expect(条目[0].textContent).toContain("GoNavi")
+    expect(条目[0].textContent).toContain("数据库工作台")
+  })
+
+  test("读到 0 台 ⇒ 空态说「还没有被授权使用任何 MCP」，组头写 0 个", () => {
+    const host = 面板({ mcps: () => [], onLoadMcps: () => {} })
+    展开MCP(host)
+
+    expect(文(host, "capability-count-mcp")).toContain("0 个")
+    expect(文(host, "capability-mcp-empty")).toContain("你还没有被授权使用任何 MCP")
+    expect(槽(host, "capability-mcp-item").length).toBe(0)
+  })
+
+  test("还没读到 ⇒ 「正在读取…」，不写数字、不画空态（不知道 ≠ 0 台）", () => {
+    const host = 面板({ mcps: () => undefined, onLoadMcps: () => {} })
+    展开MCP(host)
+
+    expect(文(host, "capability-mcp-loading")).toContain("正在读取")
+    expect(文(host, "capability-group-mcp")).not.toMatch(/\d/)
+    expect(有(host, "capability-mcp-empty")).toBe(false)
+  })
+
+  test("读失败 ⇒ 错误原文 + 重试；点重试再拉一次，组头仍不写数字", () => {
+    let 次数 = 0
+    const host = 面板({
+      mcps: () => undefined,
+      mcpsError: () => "连接服务失败，请检查网络后重试",
+      onLoadMcps: () => (次数 += 1),
+    })
+    展开MCP(host)
+
+    expect(文(host, "capability-mcp-error")).toContain("连接服务失败")
+    expect(文(host, "capability-group-mcp")).not.toMatch(/\d/)
+
+    一(host, "capability-mcp-retry")?.click()
+    expect(次数).toBe(1)
+  })
+
+  test("没接线（mcps / onLoadMcps 都没有）⇒ 明说未接入，不假装在读、不写数字", () => {
+    const host = 面板()
+    展开MCP(host)
+
+    expect(文(host, "capability-mcp-unwired")).toContain("未接入")
+    expect(有(host, "capability-mcp-loading")).toBe(false)
+    expect(文(host, "capability-group-mcp")).not.toMatch(/\d/)
   })
 })

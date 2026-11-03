@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 启用动作, 启用文案, 启用禁用原因 } from "./enable-button"
+import { 可启用, 启用动作, 启用文案, 启用禁用原因 } from "./enable-button"
 
 /**
  * 启用按钮的**共用判断**（2026-10-29）。
@@ -35,5 +35,17 @@ describe("启用按钮的共用判断", () => {
     expect(启用禁用原因({ busy: true })).toBe("正在切换…")
     // 忙的时候标题写「正在切换…」——比「请先选择项目」更贴近此刻发生了什么
     expect(启用禁用原因({ busy: true, enableHint: "请先在左侧选择项目" })).toBe("正在切换…")
+  })
+
+  /**
+   * 2026-11-03：启用是 **skill 专属**动作。
+   *
+   * 服务端 `handleToggle` 对非 skill 直接 409「只有 skill 能装进项目」——MCP 与知识库的卡片/详情
+   * 却照着画了一颗按钮，点了必然红。判断抽到这里，卡片、详情、story 共用一份（`#002-06`）。
+   */
+  test("可启用：只有 skill 为真，MCP / 知识库都为假", () => {
+    expect(可启用({ type: "skill" })).toBe(true)
+    expect(可启用({ type: "mcp" })).toBe(false)
+    expect(可启用({ type: "knowledge_base" })).toBe(false)
   })
 })

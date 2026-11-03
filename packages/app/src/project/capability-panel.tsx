@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web"
 import { Icon } from "@opencode-ai/ui/icon"
 import { ASSET_STATUS_LABELS, type AssetStatus } from "@opencode-ai/asset-service/metadata"
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
+import type { McpCapabilityItem } from "@/ai-assets/mcp-capability"
 import { 合并能力, 计数, 阶段, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
 import { 技能句子, 技能载荷, 技能载荷型 } from "@/ai-session/skill-drop"
 
@@ -28,6 +29,12 @@ import { 技能句子, 技能载荷, 技能载荷型 } from "@/ai-session/skill-
  *
  * `计数()` 不区分「不知道」与 0，所以 `skills()` 为 `undefined`（从未读到 / 换过项目）时
  * 整段计数**不渲染**——兜底成 `计数(条目() ?? [])` 会把「读不到」画成「0 个」（`#002-02`）。
+ *
+ * ## MCP 组列的是**用户级**授权，不是项目启用（2026-11-03）
+ *
+ * MCP 发布 + 授权即生效，没有「装进项目」这一步（服务端 `handleToggle` 对非 skill 直接 409），
+ * 所以这里没有启用/停用按钮，数字说的也是「有权使用 N 台」。清单按需拉（展开才拉），
+ * 四态分开：没接线 / 读失败 / 在飞 / 读到了（空或非空）。
  */
 export type 能力组 = "skill" | "knowledge" | "mcp"
 
@@ -68,6 +75,20 @@ export interface CapabilityPanelProps {
   readonly onSubmit?: (条: 库内条目) => void | Promise<void>
   /** 未入库 → 打开入库表单（设计 §4.3）。省略 = 同一条规矩，不画按钮。 */
   readonly onCreateAndSubmit?: (条: 自带条目) => void | Promise<void>
+  /**
+   * 【保留的定制 · 同步上游时不要丢】有权使用的 MCP 清单（2026-11-03）。
+   *
+   * 三态（`#002-02`）：`undefined` = 还没读到（初始 / 在飞 / 失败），`[]` = 确实一台都没有。
+   * 省略整个 prop = 没接线，面板明说「未接入」，不假装在读。
+   *
+   * 判据在**服务端**（`GET /openhive/assets?type=mcp` 已按读者收敛）；这里只展示，不再筛一遍
+   * （`#002-06` / `#010-06`）。
+   */
+  readonly mcps?: () => readonly McpCapabilityItem[] | undefined
+  /** MCP 清单最近一次失败的原因；成功一次就清空。 */
+  readonly mcpsError?: () => string | undefined
+  /** 展开 MCP 组时拉一次（收起不拉）。省略 = 与 `mcps` 同一条「没接线就不假装」的规矩。 */
+  readonly onLoadMcps?: () => void
 }
 
 const 头 =
@@ -292,9 +313,19 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
   const 后面 = () => 组序.filter((组) => 组序.indexOf(组) > 组序.indexOf(展开()))
   const 数不到 = () => props.enabledCount() - props.enabled().size
 
+  // MCP 三态（2026-11-03）：清单来自 `mcp-capability.ts`，这里只挑该说哪一句。
+  const mcp未接线 = () => props.mcps === undefined || props.onLoadMcps === undefined
+  const mcp清单 = () => props.mcps?.()
+
   const 点组 = (组: 能力组) => {
     // 点已展开的组 ⇒ 回技能（设计 §3 规则 3）。点别的组 ⇒ 换它展开。
-    set展开(组 === 展开() ? "skill" : 组)
+    const 下一个 = 组 === 展开() ? "skill" : 组
+    set展开(下一个)
+    // 展开 MCP 且还没读到、也没有待看的错误 ⇒ 拉一次；收起不拉（点组头两下不该打两次网络）。
+    // 有错误时不自动重拉：用户要的是「重试」那颗钮，而不是每次展开又悄悄失败一遍。
+    if (下一个 === "mcp" && !mcp未接线() && mcp清单() === undefined && props.mcpsError?.() === undefined) {
+      props.onLoadMcps?.()
+    }
   }
 
   // `清单` 只从「已经数过」的分支传进来——这个函数不负责分辨「不知道」与 0（`#002-02`）。
@@ -316,10 +347,15 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           · {计数(清单())} 个
         </span>
       </Show>
+      {/* MCP（2026-11-03）：读到过才写数字；没读到 / 读失败都不写（`#002-02` 同一条规矩）。 */}
       <Show when={组 === "mcp"}>
-        <span data-slot="capability-count-mcp" class="text-v2-text-text-muted">
-          · 0 个
-        </span>
+        <Show when={mcp清单()}>
+          {(清单) => (
+            <span data-slot="capability-count-mcp" class="text-v2-text-text-muted">
+              · {清单().length} 个
+            </span>
+          )}
+        </Show>
       </Show>
       {/* 知识库不写数字：内核报不出它，0 是我们编的（设计 §3、`#002-02`）。 */}
       <Show when={组 === "knowledge"}>
@@ -559,10 +595,69 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
           <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">知识库还没有接入，接入后会出现在这里。</p>
         </Show>
 
+        {/* MCP 组（2026-11-03）：真实清单，按需拉。四态各说各的——没接线 / 读失败 / 在飞 /
+            读到了（空或非空），任何一态都不许把「不知道」画成「0 台」（`#002-02`）。 */}
         <Show when={展开() === "mcp"}>
-          <p class="px-1 py-2 text-[12px] text-v2-text-text-muted">
-            这个项目还没有连任何 MCP。MCP 要由管理员在治理后台登记、授权给你，才会出现在这里。
-          </p>
+          <Show when={mcp未接线()}>
+            <p data-slot="capability-mcp-unwired" class="px-1 py-2 text-[12px] text-v2-text-text-muted">
+              MCP 组未接入数据源，暂时看不到可用的 MCP。
+            </p>
+          </Show>
+          <Show when={!mcp未接线()}>
+            <Show when={props.mcpsError?.() !== undefined}>
+              <div data-slot="capability-mcp-error" role="alert" class="px-1 py-2 text-[12px] text-v2-text-text-muted">
+                <p>{props.mcpsError?.()}</p>
+                <button
+                  type="button"
+                  data-slot="capability-mcp-retry"
+                  class={`${小钮} mt-1`}
+                  onClick={() => props.onLoadMcps?.()}
+                >
+                  重试
+                </button>
+              </div>
+            </Show>
+            <Show when={props.mcpsError?.() === undefined}>
+              <Show
+                when={mcp清单()}
+                fallback={
+                  <p data-slot="capability-mcp-loading" class="px-1 py-2 text-[12px] text-v2-text-text-muted">
+                    正在读取…
+                  </p>
+                }
+              >
+                {(清单) => (
+                  <Show
+                    when={清单().length > 0}
+                    fallback={
+                      <p
+                        data-slot="capability-mcp-empty"
+                        class="px-1 py-2 text-[12px] text-v2-text-text-muted"
+                      >
+                        你还没有被授权使用任何 MCP。MCP 由管理员在治理后台登记、授权给你，才会出现在这里。
+                      </p>
+                    }
+                  >
+                    <div class="flex flex-col gap-1.5">
+                      <For each={清单()}>
+                        {(mcp) => (
+                          <div data-slot="capability-mcp-item" data-mcp-id={mcp.id} class={条目框}>
+                            <div class="flex items-center gap-1.5">
+                              <span aria-hidden="true">●</span>
+                              <span class="font-semibold">{mcp.name}</span>
+                            </div>
+                            <Show when={mcp.description !== ""}>
+                              <p class="pl-3 pt-0.5 text-[11px] text-v2-text-text-muted">{mcp.description}</p>
+                            </Show>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                )}
+              </Show>
+            </Show>
+          </Show>
         </Show>
       </div>
 

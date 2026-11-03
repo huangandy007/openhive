@@ -34,9 +34,16 @@ describe("卡片统计 · 使用次数", () => {
     expect(统计.title).toBe("收藏：3 人；使用：最近 30 天还没人用过")
   })
 
-  test("非 skill（mcp）就算 stats 里有它的 id，也不显示使用段", () => {
-    // 抽取器只统计 skill 工具调用：给 MCP 显示「0次」或「12次」都是假话。
+  // 2026-11-03：抽取器已经写 `kind='mcp'`（`asset-usage.ts`），MCP 的使用痕迹是真数据；
+  // 原先「非 skill 一律不显示」的理由（只统计 skill）已经不成立。
+  test("mcp 有记录 ⇒ 照常显示使用段", () => {
     const 统计 = 卡片统计(资产({ type: "mcp" }), 用量(30, { a1: { users: 3, calls: 12 } }))
+    expect(统计.使用).toBe("12次")
+    expect(统计.title).toBe("收藏：3 人；使用：最近 30 天 · 3 人用过 · 共 12 次")
+  })
+
+  test("知识库有记录也不显示使用段（抽取器不统计它，显示 0 是假话）", () => {
+    const 统计 = 卡片统计(资产({ type: "knowledge_base" }), 用量(30, { a1: { users: 3, calls: 12 } }))
     expect(统计.使用).toBeUndefined()
     expect(统计.title).toBe("收藏：3 人")
   })

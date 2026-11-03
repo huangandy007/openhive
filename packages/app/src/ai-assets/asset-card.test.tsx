@@ -106,6 +106,28 @@ describe("AssetCard 的启用按钮", () => {
     expect(按钮.getAttribute("aria-busy")).toBe("true")
     dispose()
   })
+
+  // 2026-11-03：服务端对非 skill 直接 409（只有 skill 能装进项目）。照画按钮 = 死按钮。
+  test("MCP 就算接了 onToggleEnabled ⇒ 卡片上没有启用按钮、也不为它让位", () => {
+    const { host, dispose } = 挂({
+      asset: 样例资产({ id: "a1", name: "GoNavi", type: "mcp" }),
+      onOpen: () => {},
+      onToggleEnabled: () => {},
+    })
+    expect(host.querySelector('[data-slot="asset-card-enable"]') === null).toBe(true)
+    expect(host.querySelector<HTMLElement>('[data-slot="asset-card-open"]')?.classList.contains("pr-16")).toBe(false)
+    dispose()
+  })
+
+  test("知识库同理：没有启用按钮（同一个服务端判据，别只修 MCP）", () => {
+    const { host, dispose } = 挂({
+      asset: 样例资产({ id: "a1", name: "案情知识库", type: "knowledge_base" }),
+      onOpen: () => {},
+      onToggleEnabled: () => {},
+    })
+    expect(host.querySelector('[data-slot="asset-card-enable"]') === null).toBe(true)
+    dispose()
+  })
 })
 
 /**
@@ -180,9 +202,24 @@ describe("AssetCard 的收藏与使用统计（2026-10-30）", () => {
     dispose()
   })
 
-  test("非 skill ＋ usage ⇒ 没有使用段（抽取器只统计 skill 工具调用）", () => {
+  // 2026-11-03：MCP 的使用痕迹已落库（`kind='mcp'`），卡片照常显示；知识库仍不显示
+  // ——抽取器不统计它，写 0 等于替后端回答一个它回答不了的问题（`#002-02`）。
+  test("mcp ＋ usage ⇒ 有使用段（与 skill 同一档）", () => {
     const { host, dispose } = 挂({
       asset: 样例资产({ id: "a1", name: "话单碰撞", type: "mcp", favoriteCount: 3 }),
+      onOpen: () => {},
+      usage: 用量,
+    })
+    expect(host.querySelector('[data-slot="asset-card-meta-usage"]')?.textContent?.trim()).toBe("12次")
+    expect(host.querySelector('[data-slot="asset-card-meta"]')?.getAttribute("title")).toBe(
+      "收藏：3 人；使用：最近 30 天 · 3 人用过 · 共 12 次",
+    )
+    dispose()
+  })
+
+  test("知识库 ＋ usage ⇒ 没有使用段（抽取器不统计它）", () => {
+    const { host, dispose } = 挂({
+      asset: 样例资产({ id: "a1", name: "案情知识库", type: "knowledge_base", favoriteCount: 3 }),
       onOpen: () => {},
       usage: 用量,
     })

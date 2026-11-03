@@ -12,7 +12,17 @@
  * 这里只算**怎么说**（文案 / 是否可点 / 为什么不可点），不算**是不是已启用**——那是
  * `ProjectEnablement` 从服务端读来的。前端自己加减一个 id 会与同名拦截、上限、已下线撤销
  * 三件事漂开（`enable-state.ts` 文件头）。
+ *
+ * ## 谁有这颗按钮（2026-11-03）
+ *
+ * `可启用()` 是 skill 专属：服务端 `handleToggle` 对 `type !== "skill"` 直接 409
+ * 「只有 skill 能装进项目」。卡片与详情原先不看类型，给 MCP / 知识库也画了一颗点了必红的按钮。
  */
+
+/** 只有 skill 能装进项目（服务端 `handleToggle` 对非 skill 回 409）。 */
+export function 可启用(asset: { readonly type: string }): boolean {
+  return asset.type === "skill"
+}
 
 export interface 启用外观 {
   /** 已启用（服务端权威；缺省 = 未启用）。 */

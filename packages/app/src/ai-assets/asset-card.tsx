@@ -10,7 +10,7 @@ import {
 import type { UsageStats } from "./asset-catalog-api"
 import { 六边形裁切, 资产类型图标 } from "./asset-visual"
 import { 卡片统计 } from "./card-meta"
-import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
+import { 可启用, 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 import { 去Markdown } from "./markdown"
 
 /**
@@ -53,13 +53,15 @@ export interface AssetCardProps {
   readonly auto?: boolean
   /**
    * 最近 N 天的使用统计（2026-10-30）。**省略 ⇒ 只显示收藏段**（旧调用方 / storybook
-   * 不受影响）；给了也只对 skill 显示使用段（判定规则见 `card-meta.ts`）。
+   * 不受影响）；给了也只对 skill / MCP 显示使用段（判定规则见 `card-meta.ts`）。
    */
   readonly usage?: UsageStats
 }
 
 export function AssetCard(props: AssetCardProps): JSX.Element {
-  const 可切换 = () => props.onToggleEnabled !== undefined
+  // 只有 skill 能装进项目（服务端判据同源，见 `enable-button.ts` 的 `可启用`）。
+  // MCP / 知识库不画这颗按钮：画了就是一颗点了必然 409 的死按钮（2026-11-03）。
+  const 可切换 = () => props.onToggleEnabled !== undefined && 可启用(props.asset)
   // 文案与「能不能点 / 为什么不能点」只有一份（`enable-button.ts`）：详情页读的也是它，
   // 两处各写一份就会漂成「卡片说固定安装、详情说启用」（`#002-06`）。
   const 不可用 = () => 启用禁用原因(props)

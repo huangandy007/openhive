@@ -7,6 +7,7 @@ import { createAssetCatalog } from "@/ai-assets/asset-catalog"
 import { createAssetCategories } from "@/ai-assets/categories"
 // 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：项目级 skill 启用的唯一状态源。
 import { createProjectEnablement } from "@/ai-assets/enable-state"
+import { createMcpCapability } from "@/ai-assets/mcp-capability"
 import { createPreferencesApi, PAGE_SIZE_KEY } from "@/ai-assets/preferences-api"
 import { AiSessionSlot } from "@/ai-session/ai-session-slot"
 import { SidebarSessions } from "@/ai-session/sidebar-sessions"
@@ -104,6 +105,10 @@ export default function NewLayout(props: ParentProps) {
   // owner 为 null ⇒ effect 静默泄漏、组件卸载也不拆（见 `enable-state.ts` 的 `bind` 注释）。
   const 启用状态 = createProjectEnablement()
   启用状态.bind(() => currentProject()?.id)
+  // 【保留的定制 · 同步上游时不要丢】（2026-11-03）能力面板 MCP 组的真实清单。
+  // 用户级（发布 + 授权即生效），与项目无关，所以**不用** bind 当前项目；展开时才拉
+  // （见 `mcp-capability.ts` 文件头）。与上面同一条注入纪律：本层建、往里只传。
+  const mcp能力 = createMcpCapability()
   void 偏好.read().then((映射) => {
     const 存过 = Number(映射?.[PAGE_SIZE_KEY])
     if (Number.isInteger(存过) && 存过 > 0) 资产目录.setPageSize(存过)
@@ -214,6 +219,8 @@ export default function NewLayout(props: ParentProps) {
             // 【保留的定制 · 同步上游时不要丢】（2026-10-27 / Task 7）：项目级启用状态整块交下去，
             // 中栏据此画「已启用 N/20」与卡片按钮（`AssetCenterProps.enablement`）。
             enablement={启用状态}
+            // 【保留的定制 · 同步上游时不要丢】（2026-11-03）：能力面板「MCP」组的真实清单。
+            mcpCapability={mcp能力}
             // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：发起新版本时要选
             // 「在哪个项目里改」。与上面那条同一条注入纪律——本层取、往里只传值。
             projects={projectList()}

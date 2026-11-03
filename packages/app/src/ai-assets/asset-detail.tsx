@@ -19,7 +19,7 @@ import { 取最近回复, 发送到会话, 发送失败提示 } from "@/ai-sessi
 import { 构造起草提示, 提取正文, type 起草字段 } from "./起草提示"
 // 「有没有用过 / 怎么说」与卡片同源（`card-meta.ts`，`#002-06`）。
 import { 使用文案 } from "./card-meta"
-import { 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
+import { 可启用, 启用动作, 启用禁用原因, 启用文案 } from "./enable-button"
 import "./asset-action-active.css"
 
 /**
@@ -817,7 +817,7 @@ export interface AssetDetailProps {
   /**
    * 【保留的定制 · 同步上游时不要丢】最近 N 天的使用统计（2026-10-29）。
    *
-   * **省略 ⇒ 这一项不出现**（旧内核没给 `usageStats`、或这不是 skill）；给了但资产没有记录
+   * **省略 ⇒ 这一项不出现**（旧内核没给 `usageStats`、或是 knowledge_base）；给了但资产没有记录
    * ⇒ 明确写「还没人用过」。累计列 `usageCount` 从此不再显示——它是没人写过的假数（设计 §1）。
    */
   readonly usage?: UsageStats
@@ -974,7 +974,9 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
               </ButtonV2>
             </Show>
 
-            <Show when={props.onToggleEnabled !== undefined}>
+            {/* 只有 skill 能装进项目（服务端对非 skill 回 409）；MCP / 知识库不画这颗按钮，
+                判据与卡片同源（`enable-button.ts` 的 `可启用`，2026-11-03）。 */}
+            <Show when={props.onToggleEnabled !== undefined && 可启用(props.asset)}>
               <ButtonV2
                 type="button"
                 data-slot="asset-detail-enable"
@@ -1024,9 +1026,10 @@ export function AssetDetail(props: AssetDetailProps): JSX.Element {
             <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-v2-text-text-muted">
               <span data-slot="asset-detail-author">{作者文案(props.asset)}</span>
               <span data-slot="asset-detail-favorites">{props.asset.favoriteCount} 人收藏</span>
-              {/* 使用记录（2026-10-29）：只有 skill 且服务端给了 usageStats 才显示——
-                  没给 = 旧内核 / 非 skill，这一项整个不出现（不是显示 0）。 */}
-              <Show when={props.asset.type === "skill" ? props.usage : undefined}>
+              {/* 使用记录（2026-10-29）：skill 与 MCP 且服务端给了 usageStats 才显示——
+                  没给 = 旧内核 / 知识库（抽取器不统计它），这一项整个不出现（不是显示 0）。
+                  类型门与卡片同源（`card-meta.ts`，2026-11-03）。 */}
+              <Show when={props.asset.type === "skill" || props.asset.type === "mcp" ? props.usage : undefined}>
                 {(用量) => <span data-slot="asset-detail-usage">{使用文案(用量(), props.asset.id)}</span>}
               </Show>
             </div>

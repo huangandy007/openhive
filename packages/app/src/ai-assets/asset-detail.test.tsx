@@ -177,16 +177,29 @@ describe("资产详情头部", () => {
       无内核.卸()
     }
 
-    // 非 skill 的两类（设计 §7 点名「MCP / 知识库」）：走同一条 `=== "skill"` 分支，
-    // 但按 `#002-06` 的落点纪律把两类都钉住，别只测 MCP 就代表知识库。
-    for (const type of ["mcp", "knowledge_base"] as const) {
-      const 非skill = 挂({ type }, { usage: { days: 30, stats: { "asset-1": { users: 3, calls: 12 } } } })
-      try {
-        expect(文本(非skill.host, "asset-detail-name")).toBe("资金流向研判")
-        expect(槽(非skill.host, "asset-detail-usage") === null).toBe(true)
-      } finally {
-        非skill.卸()
-      }
+    // 知识库：抽取器不统计它（`kind` 只有 skill / mcp / slash），没有使用记录可显示。
+    const 知识库 = 挂(
+      { type: "knowledge_base" },
+      { usage: { days: 30, stats: { "asset-1": { users: 3, calls: 12 } } } },
+    )
+    try {
+      expect(文本(知识库.host, "asset-detail-name")).toBe("资金流向研判")
+      expect(槽(知识库.host, "asset-detail-usage") === null).toBe(true)
+    } finally {
+      知识库.卸()
+    }
+  })
+
+  // 2026-11-03：MCP 的使用痕迹已落库（`asset-usage.ts` 写 `kind='mcp'`），详情页照常显示。
+  test("MCP 有记录 ⇒ 与 skill 同一档显示使用记录", () => {
+    const { host, 卸 } = 挂(
+      { type: "mcp" },
+      { usage: { days: 7, stats: { "asset-1": { users: 3, calls: 12 } } } },
+    )
+    try {
+      expect(文本(host, "asset-detail-usage")).toBe("最近 7 天 · 3 人用过 · 共 12 次")
+    } finally {
+      卸()
     }
   })
 
@@ -647,6 +660,20 @@ describe("头部操作：启用（2026-10-29）", () => {
       expect(启用按钮(host) === null).toBe(true)
     } finally {
       卸()
+    }
+  })
+
+  // 2026-11-03：服务端只让 skill 进项目（非 skill 409）。MCP / 知识库画了就是死按钮。
+  test("MCP / 知识库就算接了 onToggleEnabled ⇒ 也没有启用按钮", () => {
+    for (const type of ["mcp", "knowledge_base"] as const) {
+      const { host, 卸 } = 挂({ type }, { onToggleEnabled: () => {} })
+      try {
+        // 锚点：先证明头部真的画出来了，否则「按钮不存在」在整块没渲染时也会绿（`#005-18`）
+        expect(文本(host, "asset-detail-name")).toBe("资金流向研判")
+        expect(启用按钮(host) === null).toBe(true)
+      } finally {
+        卸()
+      }
     }
   })
 

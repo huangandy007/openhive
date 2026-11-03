@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show, type JSX, type Pa
 import { AssetCenter } from "@/ai-assets/asset-center"
 import type { AssetCatalog } from "@/ai-assets/asset-catalog"
 import type { ProjectEnablement } from "@/ai-assets/enable-state"
+import type { McpCapability } from "@/ai-assets/mcp-capability"
 import type { AssetCategories } from "@/ai-assets/categories"
 import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
@@ -179,6 +180,14 @@ export interface WorkspaceEntryProps {
    * 本组件**只转发**，不读它的任何成员。
    */
   enablement?: ProjectEnablement
+  /**
+   * 【保留的定制 · 同步上游时不要丢】**有权使用的 MCP 清单**（2026-11-03）。
+   *
+   * 与 `enablement` 同一条规矩：注入而不 import 生产实现——本组件被组件测试裸挂，
+   * 自己去取就跑不成离线。生产实现在 `pages/layout-new.tsx` 建（`createMcpCapability()`）。
+   * 省略 = 能力面板的 MCP 组明说「未接入」，不假装在读、也不写 `0 个`（`#002-02`）。
+   */
+  mcpCapability?: McpCapability
   /**
    * **进入 AI 资产视图时通知外面去拉一次**（T017）。
    *
@@ -2071,6 +2080,12 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                       busy={() => props.enablement?.busy()}
                       onToggle={(assetId) => props.enablement?.toggle(assetId)}
                       onRetry={() => props.enablement?.reload()}
+                      // MCP 组（2026-11-03）：用户级授权清单，展开才拉。没接线（省略）时
+                      // **两个 prop 都不传**——传一个恒返回 `undefined` 的 accessor 会让面板
+                      // 判成「已接线、正在读」，永远停在「正在读取…」（`#002-02` 的三态）。
+                      mcps={props.mcpCapability === undefined ? undefined : () => props.mcpCapability!.list()}
+                      mcpsError={props.mcpCapability === undefined ? undefined : () => props.mcpCapability!.error()}
+                      onLoadMcps={props.mcpCapability === undefined ? undefined : () => props.mcpCapability!.load()}
                       // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / 项目技能提交审核）：
                       // 草稿行 → 提交审核；未入库行 → 入库并提交（设计 §4.2 / §4.3）。
                       // 回 promise ⇒ 面板在飞期间禁用那颗钮（防连点）；成功后重拉一次，
