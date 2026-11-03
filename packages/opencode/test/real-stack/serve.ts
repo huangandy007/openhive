@@ -276,6 +276,8 @@ const listener = await Server.listen({ hostname: "127.0.0.1", port })
 const token = await signToken(ALICE, SECRET)
 /** 010 · 管理员的真令牌，同样由内核侧签发（spec 一行签名逻辑都没有）。 */
 const adminToken = await signToken(管理员, SECRET)
+/** 业务专家的真令牌：两道审核关各有人，手动验收 / 真栈 spec 需要能直接换成她。 */
+const businessToken = await signToken(业务专家, SECRET)
 
 /**
  * 这一行是给**编排器**的交接物（`stack.ts` 解析它、落进 `STACK_FILE`）。
@@ -301,6 +303,9 @@ log(
     adminPoliceNo: 管理员.policeNo,
     adminName: 管理员.name,
     adminToken,
+    business: 业务专家.id,
+    businessName: 业务专家.name,
+    businessToken,
   })}`,
 )
 

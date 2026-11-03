@@ -57,8 +57,12 @@ export default defineConfig({
       // 显式钉回 PGlite：即使外壳环境里带着 `REAL_STACK_DB=remote`（手动验收用的），
       // E2E 也绝不能打到远端库——那些用例会建项目、改名、发布资产，不隔离就会互相污染。
       // Playwright 会把这里的值**叠加**在 `process.env` 之上（webServerPlugin 的
-      // `{ ...process.env, ...options.env }`），所以只写这一项即可。
-      env: { REAL_STACK_DB: "pglite" },
+      // `{ ...process.env, ...options.env }`），所以只写这两项即可。
+      //
+      // `PG_POOL_MAX=1`：PGlite 是单会话嵌入式库，而 bun-sql 在**连接级**缓存预编译语句——
+      // 池子开多条连接就会撞 `42P05 duplicate_prepared_statement`（`packages/auth/src/db.ts`
+      // 有记）。资产页一次并发几个请求就能把它打出来。真栈 E2E 的并发需求本来就只有 1。
+      env: { REAL_STACK_DB: "pglite", PG_POOL_MAX: "1" },
       url: `http://127.0.0.1:${FRONT_PORT}/`,
       reuseExistingServer: false,
       timeout: 180_000,
