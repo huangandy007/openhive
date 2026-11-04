@@ -53,6 +53,22 @@ import { useLocal } from "@/context/local"
  * （`docs/superpowers/specs/006-ai-session/state.md`），判据落在真栈
  * （`e2e/real-stack/right-pane-slash-and-model-real.spec.ts` 的 T3–T7：搜索框在不在、
  * 过滤得动、列表滚得动、管理模型点得开、选中当场变 ＋ 重开页面还在）。
+ *
+ * ## `min-w-0`（2026-11-04 用户报障，真栈实测定的）
+ *
+ * `TooltipV2` 把触发内容包进一层 `div[data-component="tooltip-v2-trigger"]`
+ * （`ui/src/v2/components/tooltip-v2.tsx:101` 的 `as="div"`）。不传 `class` 时那一层是默认的
+ * `min-width: auto` ⇒ 作为底栏左侧控件组（`flex min-w-0 flex-1`）的 flex item，**不许缩到内容
+ * 宽度以下**；模型名是 `.truncate`（`white-space: nowrap`），自动最小尺寸＝整串名字 ⇒ 实测恒
+ * 220px（`max-w-[220px]` 撑满）。右栏收到下限 240 时控件组只有 161.5px，它溢出 90.5px、
+ * 与发送钮重叠满 28px；而 `ButtonV2` 自带 `position: relative`
+ * （`ui/src/v2/components/button-v2.css:8`）、发送钮是 `static` ⇒ 溢出那一段整层画在上面，
+ * **点发送按钮打开的是模型选择**（发送钮中心的 `elementsFromPoint` 栈顶实测是
+ * `button[data-action="prompt-model"]`）。
+ *
+ * 补上 `min-w-0` 让这一层可缩——内层按钮自己早写好了 `min-w-0 max-w-[220px]`，名字按既有的
+ * `truncate` 出省略号。判据落在 `e2e/real-stack/right-pane-narrow-submit-real.spec.ts`
+ * （组件层量不出布局，`#006-22`）。
  */
 export function 右栏模型控件(): JSX.Element {
   const local = useLocal()
@@ -66,6 +82,8 @@ export function 右栏模型控件(): JSX.Element {
     <TooltipV2
       placement="top"
       gutter={4}
+      // `min-w-0` 不是装饰：见文件头「## `min-w-0`（2026-11-04）」。
+      class="min-w-0"
       value={
         <>
           {language.t("command.model.choose")}
