@@ -1392,3 +1392,107 @@ describe("CapabilityPanel 的 MCP 组（2026-11-03）", () => {
     expect(文(host, "capability-group-mcp")).not.toMatch(/\d/)
   })
 })
+
+/**
+ * MCP 卡片的高度与悬停详情（2026-11-04 用户要求）。
+ *
+ * 用户原话：「MCP 卡片也需要像 skill 卡片一样，控制好显示的高度……MCP 的功能介绍在这个高度
+ * 无法显示完的，使用『...』，当鼠标移动或悬停在对应卡片的时候，在右侧以详情页进行显示，
+ * 详情页面要置于最上层，以免其他容器对其进行遮罩。」
+ *
+ * ## 本层钉什么、不钉什么
+ *
+ * happy-dom 不跑布局、不解析 Tailwind（`#006-22`）⇒「真的是 70px」「真的是两行」量不出来。
+ * 本层钉**机制**：卡片带固定高度类、简介带两行截断类、DOM 里保留全文（截断只是视觉）、
+ * 悬停接到的是**这一张**的完整简介、预览走 `Portal` ＋ `fixed`。
+ * 真几何与层叠由 `e2e/real-stack/capability-hover-preview-real.spec.ts` 量。
+ */
+describe("MCP 卡片：与技能卡同高、两行截断、悬停出详情（2026-11-04）", () => {
+  const 长简介 = "MySQL、Postgres、Redis、Kafka、Milvus、OceanBase、ClickHouse… 一个工作台打通。\n查询、编辑、审计、同步。"
+  const 另一段 = "按时间段切片话单，标出主叫与被叫的高频对手方。"
+  const 一台 = (id: string, name: string, description = "") => ({ id, name, description })
+
+  const 展开MCP = (host: HTMLElement) => 一(host, "capability-group-mcp")?.click()
+  const 进 = (元素: Element) => 元素.dispatchEvent(new MouseEvent("mouseenter"))
+  const 出 = (元素: Element) => 元素.dispatchEvent(new MouseEvent("mouseleave"))
+  // 视觉约定断的是**类名集合**，不是子串（`#006-22`：`line-clamp-2` ⊂ 别的类名会假绿）。
+  const 类集 = (元素: Element) => [...元素.classList]
+  const 预览 = () => document.querySelector<HTMLElement>('[data-slot="capability-hover-preview"]')
+
+  test("MCP 卡片固定 70px 高，简介两行截断——与真栈技能卡实测高度一致", () => {
+    const host = 面板({ mcps: () => [一台("m1", "GoNavi", 长简介)], onLoadMcps: () => {} })
+    展开MCP(host)
+
+    const 卡 = 槽(host, "capability-mcp-item")[0]
+    expect(卡, "前置：MCP 卡片要画出来").toBeDefined()
+    expect(类集(卡), "卡片高度要与技能卡一致（真栈实测 70px）").toContain("h-[70px]")
+    // 定高不等于裁内容：标题换行时简介会溢出到卡片外，必须有一层 overflow-hidden 兜住（`#006-22`）。
+    expect(类集(卡), "固定高度要真的裁住溢出的内容").toContain("overflow-hidden")
+
+    const 简介 = 一(卡, "capability-mcp-desc")
+    expect(简介, "简介要留在卡片里（截断显示，不是整块删掉）").not.toBeNull()
+    expect(类集(简介!), "两行截断，超出显示…").toContain("line-clamp-2")
+    // 截断是 CSS 的事：DOM 里必须还是完整原文，否则读屏也跟着只剩半句。
+    expect(简介!.textContent, "截断只是视觉上的，DOM 里仍是完整简介").toBe(长简介)
+  })
+
+  test("简介为空 ⇒ 不画简介元素，但卡片仍保持同高", () => {
+    const host = 面板({ mcps: () => [一台("m1", "GoNavi", "")], onLoadMcps: () => {} })
+    展开MCP(host)
+
+    const 卡 = 槽(host, "capability-mcp-item")[0]
+    expect(一(卡, "capability-mcp-desc"), "空简介不该留一个空盒子").toBeNull()
+    expect(类集(卡), "没有简介也要与有简介的卡片同高").toContain("h-[70px]")
+  })
+
+  test("悬停 MCP 卡 ⇒ 右侧弹出**完整**简介（挂 body 下 ＋ fixed）", () => {
+    const host = 面板({ mcps: () => [一台("m1", "GoNavi", 长简介)], onLoadMcps: () => {} })
+    展开MCP(host)
+
+    进(槽(host, "capability-mcp-item")[0])
+
+    const 盒 = 预览()
+    expect(盒, "悬停该弹出详情").not.toBeNull()
+    expect(盒!.textContent, "详情要是完整简介，不是卡片里截断的那半句").toBe(长简介)
+    expect(host.contains(盒), "预览不该还在左栏（宿主）子树里").toBe(false)
+    expect(document.body.contains(盒), "预览该挂在 body 下（Portal）").toBe(true)
+    expect(盒!.style.position, "fixed 才会按视口定位、不参与祖先的裁剪盒").toBe("fixed")
+  })
+
+  test("悬停两张 MCP 卡 ⇒ 弹的是这一张的简介（作用对象判据）", () => {
+    const host = 面板({
+      mcps: () => [一台("m1", "GoNavi", 长简介), 一台("m2", "话单查询", 另一段)],
+      onLoadMcps: () => {},
+    })
+    展开MCP(host)
+    const 卡们 = 槽(host, "capability-mcp-item")
+
+    进(卡们[0])
+    expect(预览()?.textContent).toBe(长简介)
+
+    进(卡们[1])
+    expect(document.querySelectorAll('[data-slot="capability-hover-preview"]').length, "同时只该有一个预览").toBe(1)
+    expect(预览()?.textContent).toBe(另一段)
+  })
+
+  test("鼠标移出 MCP 卡 ⇒ 预览收掉", () => {
+    const host = 面板({ mcps: () => [一台("m1", "GoNavi", 长简介)], onLoadMcps: () => {} })
+    展开MCP(host)
+    const 卡 = 槽(host, "capability-mcp-item")[0]
+
+    进(卡)
+    expect(预览(), "前置：预览要先出来过").not.toBeNull()
+
+    出(卡)
+    expect(预览(), "移开就该收掉").toBeNull()
+  })
+
+  test("简介为空 ⇒ 悬停不弹（不给一个空盒子）", () => {
+    const host = 面板({ mcps: () => [一台("m1", "GoNavi", "")], onLoadMcps: () => {} })
+    展开MCP(host)
+
+    进(槽(host, "capability-mcp-item")[0])
+
+    expect(预览()).toBeNull()
+  })
+})

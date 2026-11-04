@@ -641,13 +641,35 @@ export function CapabilityPanel(props: CapabilityPanelProps): JSX.Element {
                     <div class="flex flex-col gap-1.5">
                       <For each={清单()}>
                         {(mcp) => (
-                          <div data-slot="capability-mcp-item" data-mcp-id={mcp.id} class={条目框}>
+                          /**
+                           * 卡片高度钉在与技能卡一致的一档（2026-11-04 用户要求）。
+                           *
+                           * `h-[70px]` 不是拍脑袋：真栈 1600×900 实测（2026-11-04）技能卡
+                           * `capability-item-loaded` 高 **70px**（标题行 24 ＋ 状态行 32 ＋ 上下
+                           * padding 12）。MCP 没有状态行，用「标题 24 ＋ 两行简介 32 ＋ 间距 2 ＋
+                           * padding 12」凑齐同一高度——列表里两种卡片才不会一高一矮。
+                           *
+                           * 简介**留在卡里**但只给两行（`line-clamp-2`），超出由 CSS 画「…」；
+                           * DOM 里仍是全文，读屏读到的不是半句。完整内容走 `卡接线` 的右侧
+                           * 预览（与技能卡同一条：`Portal` ＋ `fixed` ＋ `z-30`）。
+                           */
+                          <div
+                            data-slot="capability-mcp-item"
+                            data-mcp-id={mcp.id}
+                            class={`${条目框} h-[70px] overflow-hidden`}
+                            {...卡接线(() => (mcp.description === "" ? undefined : mcp.description))}
+                          >
                             <div class="flex items-center gap-1.5">
                               <span aria-hidden="true">●</span>
                               <span class="font-semibold">{mcp.name}</span>
                             </div>
                             <Show when={mcp.description !== ""}>
-                              <p class="pl-3 pt-0.5 text-[11px] text-v2-text-text-muted">{mcp.description}</p>
+                              <p
+                                data-slot="capability-mcp-desc"
+                                class="pl-3 pt-0.5 text-[11px] leading-4 line-clamp-2 text-v2-text-text-muted"
+                              >
+                                {mcp.description}
+                              </p>
                             </Show>
                           </div>
                         )}
