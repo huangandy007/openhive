@@ -56,6 +56,7 @@ export async function createMaterial(db: Queryable, input: CreateMaterialInput):
       values (${input.id}, ${input.projectId}, ${input.fileName}, ${input.kind},
               ${input.fingerprint}, ${input.path}, ${nowSeconds()})
       on conflict (project_id, fingerprint)
+        -- kind 刻意不随冲突更新：内容是内容寻址的，kind 的更正归解析管线，不归建档
         do update set file_name = excluded.file_name, path = excluded.path
       returning id
     `),
@@ -100,7 +101,7 @@ export interface ApplyParseActionInput {
   action: ParseAction
   /** 人工触发时的操作人（设计 §8.1「记谁让它入队的」）。 */
   by?: string
-  /** 「有问题」的原因明细，原样落 `parse_detail`。 */
+  /** 「有问题」的原因明细，原样落 `parse_detail`。**传对象，不要传字符串**（会二次编码）。 */
   detail?: unknown
 }
 

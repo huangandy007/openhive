@@ -77,6 +77,15 @@ describe("applyParseAction", () => {
     expect(await applyParseAction(db(), { projectId: "p1", materialId: "m1", action: "取消" })).toBe("未入队")
   })
 
+  test("非入队动作不清掉 queued_by", async () => {
+    await 建("m10", "p1", "fp-m10")
+    await applyParseAction(db(), { projectId: "p1", materialId: "m10", action: "入队", by: "u1" })
+    await applyParseAction(db(), { projectId: "p1", materialId: "m10", action: "取消" })
+    const row = await getMaterial(db(), "p1", "m10")
+    expect(row?.parseStatus).toBe("未入队")
+    expect(row?.queuedBy).toBe("u1")
+  })
+
   test("推进不存在的材料 ⇒ 抛 not found", async () => {
     await expect(
       applyParseAction(db(), { projectId: "p1", materialId: "没有这个", action: "入队" }),
@@ -87,6 +96,36 @@ describe("applyParseAction", () => {
     await expect(applyParseAction(db(), { projectId: "p2", materialId: "m1", action: "入队" })).rejects.toThrow(
       /material not found/,
     )
+  })
+
+  test("UPDATE 也带项目谓词：同一 id 存在于两个项目时，只动自己那行", async () => {
+    // 两个项目里各有一行 id 都叫 m9（不同指纹 ⇒ 是两行不同的材料）
+    expect(
+      await createMaterial(db(), {
+        id: "m9",
+        projectId: "p1",
+        fileName: "话单-移动.xlsx",
+        kind: "话单",
+        fingerprint: "fp-m9-p1",
+        path: "p1/话单-移动.xlsx",
+      }),
+    ).toBe("m9")
+    expect(
+      await createMaterial(db(), {
+        id: "m9",
+        projectId: "p2",
+        fileName: "话单-联通.xlsx",
+        kind: "话单",
+        fingerprint: "fp-m9-p2",
+        path: "p2/话单-联通.xlsx",
+      }),
+    ).toBe("m9")
+
+    expect(await applyParseAction(db(), { projectId: "p1", materialId: "m9", action: "入队" })).toBe("排队中")
+
+    expect((await getMaterial(db(), "p1", "m9"))?.parseStatus).toBe("排队中")
+    // 关键断言：p2 那一行必须纹丝不动
+    expect((await getMaterial(db(), "p2", "m9"))?.parseStatus).toBe("未入队")
   })
 
   test("「有问题」把原因一起落进 parse_detail", async () => {
