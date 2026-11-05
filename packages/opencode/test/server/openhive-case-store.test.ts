@@ -271,15 +271,7 @@ describe("明细行", () => {
 
 describe("引用", () => {
   test("一条事实挂多条引用，按事实取回", async () => {
-    await addCitation(db(), {
-      id: "c1",
-      projectId: "p1",
-      factType: "relation",
-      factId: "r1",
-      materialId: "m1",
-      locator: { sheet: "Sheet1", row: 2041 },
-      extractMethod: "机器",
-    })
+    // 先写 c2、后写 c1：堆物理序是插入序，没 `order by id` 时会给出 ["c2","c1"]。
     await addCitation(db(), {
       id: "c2",
       projectId: "p1",
@@ -289,9 +281,44 @@ describe("引用", () => {
       locator: { sheet: "Sheet2", row: 3 },
       extractMethod: "人工",
     })
+    await addCitation(db(), {
+      id: "c1",
+      projectId: "p1",
+      factType: "relation",
+      factId: "r1",
+      materialId: "m1",
+      locator: { sheet: "Sheet1", row: 2041 },
+      extractMethod: "机器",
+    })
+    // 近邻干扰：同项目、但事实不同 / 类型不同 —— 两个谓词各钉住一个
+    await addCitation(db(), {
+      id: "c3",
+      projectId: "p1",
+      factType: "relation",
+      factId: "r2",
+      materialId: "m1",
+      locator: { sheet: "Sheet3", row: 7 },
+      extractMethod: "机器",
+    })
+    await addCitation(db(), {
+      id: "c4",
+      projectId: "p1",
+      factType: "entity",
+      factId: "r1",
+      materialId: "m1",
+      locator: { sheet: "Sheet4", row: 8 },
+      extractMethod: "人工",
+    })
     const list = await citationsOf(db(), "p1", "relation", "r1")
     expect(list.map((c) => c.id)).toEqual(["c1", "c2"])
-    expect(list[0]?.locator).toEqual({ sheet: "Sheet1", row: 2041 })
+    expect(list[0]).toEqual({
+      id: "c1",
+      factType: "relation",
+      factId: "r1",
+      materialId: "m1",
+      locator: { sheet: "Sheet1", row: 2041 },
+      extractMethod: "机器",
+    })
   })
 
   test("别的项目取不到同一条事实的引用", async () => {

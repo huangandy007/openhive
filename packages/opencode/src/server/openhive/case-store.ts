@@ -244,6 +244,10 @@ export async function addCitation(db: Queryable, input: CitationInput): Promise<
   `)
 }
 
+/**
+ * 按事实取引用。**排序是 `id` 的文本序，不是插入序**（`"c10"` 会排在 `"c2"` 前面，
+ * 与写入先后无关）；调用方若要插入序，须自己在写入侧定序（例如补零 id）。
+ */
 export async function citationsOf(
   db: Queryable,
   projectId: string,
