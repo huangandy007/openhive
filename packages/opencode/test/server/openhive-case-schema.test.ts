@@ -33,6 +33,7 @@ const 期望表 = [
   "case_ingest_job",
   "case_material",
   "case_relation",
+  "case_table_format",
 ]
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -233,5 +234,41 @@ describe("0031 迁移 · 产物不解析（设计 §5.5 硬边界）", () => {
       insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
       values ('p-call', 'p1', 'a.xlsx', '话单', 'fp-产物-p-call', 'a.xlsx', '已解析', 0)
     `))).toBe(false)
+  })
+})
+
+describe("0032 迁移 · 表格格式记忆", () => {
+  test("格式表在，且 method 只认三个值", async () => {
+    const 插 = (projectId: string, fingerprint: string, method: string) => sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
+      values (${projectId}, ${fingerprint}, '["主叫"]'::jsonb, '{"0":"caller"}'::jsonb, ${method}, 0, 0, 0, 0)
+    `
+    expect(await 被拒(db().execute(插("p1", "fp-fmt-1", "词典")))).toBe(false)
+    expect(await 被拒(db().execute(插("p1", "fp-fmt-2", "特征")))).toBe(false)
+    expect(await 被拒(db().execute(插("p1", "fp-fmt-3", "模型")))).toBe(false)
+    expect(await 被拒(db().execute(插("p1", "fp-fmt-4", "猜的")))).toBe(true)
+  })
+
+  test("同一格式指纹在两个项目里各存一行（主键带 project_id）", async () => {
+    const 插 = (projectId: string) => sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
+      values (${projectId}, 'fp-same', '[]'::jsonb, '{}'::jsonb, '词典', 0, 0, 0, 0)
+    `
+    expect(await 被拒(db().execute(插("p1")))).toBe(false)
+    expect(await 被拒(db().execute(插("p2")))).toBe(false)
+  })
+
+  test("作业表带上字节落点（重启后作业照样能跑完）", async () => {
+    // 0032 给 0031 的作业表补了一列：不可空、有默认值——旧的排队行不会因为没这一列而写不进去。
+    const 列 = rowsOf(
+      await db().execute(sql`
+        select column_name, is_nullable, column_default
+          from information_schema.columns
+         where table_schema = 'auth' and table_name = 'case_ingest_job' and column_name = 'source_path'
+      `),
+    )
+    expect(列[0]).toMatchObject({ column_name: "source_path", is_nullable: "NO" })
   })
 })

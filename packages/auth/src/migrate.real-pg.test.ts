@@ -62,6 +62,7 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
         "case_ingest_job",
         "case_material",
         "case_relation",
+        "case_table_format",
         "data_source",
         "data_source_lineage",
         "org_node",
