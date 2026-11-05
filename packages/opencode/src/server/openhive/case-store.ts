@@ -12,7 +12,9 @@ import { nextStatus, type ParseAction, type ParseStatus } from "./case-status"
  *
  * 生产是 `bun-sql` 的 `connect()`，测试是 PGlite 撑起来的同一个驱动 —— 但**不该让 DAO
  * 绑死在某一个具体类型上**。收窄到 `MigrationTarget` 的子集以后，任何能跑 SQL 的东西都能测，
- * 也不用为测试造一层假仓储。这个形状本身在 `packages/auth/src/db.test.ts` 有编译期断言兜着。
+ * 也不用为测试造一层假仓储。`packages/auth/src/db.test.ts` 只断言了
+ * `connect(): MigrationTarget`，并没有把 `connect()` 的结果往 `Queryable` 上赋过值 ——
+ * 也就是说**今天没有代码把两者接起来**；等到计划 2 真的接线时，类型系统才会当场报出形状不一致。
  *
  * ## 项目隔离靠调用约定，不靠库
  *
@@ -23,11 +25,14 @@ export interface Queryable {
   execute(query: SQL): PromiseLike<unknown>
 }
 
+export const MATERIAL_KINDS = ["话单", "资金", "笔录", "视频", "物证照", "产物", "其他"] as const
+export type MaterialKind = (typeof MATERIAL_KINDS)[number]
+
 export interface CreateMaterialInput {
   id: string
   projectId: string
   fileName: string
-  kind: string
+  kind: MaterialKind
   fingerprint: string
   path: string
 }
@@ -36,7 +41,7 @@ export interface MaterialRow {
   id: string
   projectId: string
   fileName: string
-  kind: string
+  kind: MaterialKind
   fingerprint: string
   path: string
   parseStatus: ParseStatus
@@ -85,7 +90,7 @@ export async function getMaterial(
     id: String(row.id),
     projectId: String(row.project_id),
     fileName: String(row.file_name),
-    kind: String(row.kind),
+    kind: String(row.kind) as MaterialKind,
     fingerprint: String(row.fingerprint),
     path: String(row.path),
     parseStatus: String(row.parse_status) as ParseStatus,
@@ -129,8 +134,11 @@ export async function applyParseAction(
   if (!next) throw new Error(`illegal transition: ${current.parseStatus} --${input.action}--> ?`)
 
   const 入队 = input.action === "入队"
-  const 有明细 = input.detail !== undefined
-  const 明细 = 有明细 ? JSON.stringify(input.detail) : null
+  // 设计 §8.1：解析中取消要落「有问题」且**带原因**；§5.2 要求「有问题」可解释。
+  // 调用点没给原因时补一句默认值，否则用户只看到一个说不出所以然的黄三角。
+  const 取消解析中 = input.action === "取消" && current.parseStatus === "解析中" && input.detail === undefined
+  const 有明细 = input.detail !== undefined || 取消解析中
+  const 明细 = 有明细 ? JSON.stringify(input.detail !== undefined ? input.detail : { reason: "用户取消" }) : null
 
   const rows = rowsOf(
     await db.execute(sql`
@@ -175,6 +183,19 @@ export interface FactRowInput {
  * 幂等键就是主键 `(project_id, material_id, sheet, row_no)`：重复导入同一个文件时
  * `on conflict do nothing` 把老行吃掉，返回的写入数因此会少。返回值是「**实际新写入**」的条数，
  * 不是入参长度 —— 调用点据此判断「这次有没有新东西」。
+ *
+ * ## `do nothing` 只承诺**导入幂等**，不是重放路径
+ *
+ * 设计 §5.3 要求解析器升级 / 列映射修正之后，**一条命令重建事实层** —— 那意味着已存在的行
+ * 要被**覆盖**。本函数做不到：`do nothing` 会把老行原样留下。重放必须另走一个函数
+ * （先按材料删掉旧行，再重新 insert），**不要**在这里加 `do update set`：那会让同一个函数
+ * 同时承担「导入去重」与「重放覆盖」两种语义，调用点分不清自己拿到的是哪一种。
+ * 这是刻意的取舍，不是遗漏。
+ *
+ * ## 不校验 `materialId` 属于 `projectId`
+ *
+ * 迁移里刻意没有外键（两张表要能各自重建），所以库里拦不住「拿 A 项目的 material_id 往
+ * B 项目的行里写」。这个归属**由调用方保证**；后续计划里任何 join 都要两侧都带 `project_id`。
  */
 export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promise<number> {
   let written = 0
@@ -208,10 +229,13 @@ export async function countFactRows(db: Queryable, projectId: string): Promise<n
   return Number(rows[0]?.n ?? 0)
 }
 
+export const CITATION_FACT_TYPES = ["entity", "relation", "event", "row"] as const
+export type CitationFactType = (typeof CITATION_FACT_TYPES)[number]
+
 export interface CitationInput {
   id: string
   projectId: string
-  factType: "entity" | "relation" | "event" | "row"
+  factType: CitationFactType
   /**
    * `row` 时是**不透明**的 `<material_id>#<sheet>#<row_no>`（迁移里的 COMMENT 约定了它，
    * 但没有任何代码去解析它 —— Excel 工作表名可以合法含 `#`，按 `#` 拆是错的）。
@@ -226,13 +250,19 @@ export interface CitationInput {
 
 export interface CitationRow {
   id: string
-  factType: string
+  factType: CitationFactType
   factId: string
   materialId: string
   locator: unknown
   extractMethod: string
 }
 
+/**
+ * 写一条引用。**没有冲突处理**：同一 id 重复写会抛 `23505`。
+ *
+ * 引用的重放路径是「**按材料删掉，再重新插入**」——索引
+ * `case_citation_material (project_id, material_id)` 就是为这条路径建的（设计 §5.5）。
+ */
 export async function addCitation(db: Queryable, input: CitationInput): Promise<void> {
   // material_id 与 locator 一并写入：行级引用的 `fact_id` 只当不透明键，绝不从中拆定位。
   await db.execute(sql`
@@ -251,7 +281,7 @@ export async function addCitation(db: Queryable, input: CitationInput): Promise<
 export async function citationsOf(
   db: Queryable,
   projectId: string,
-  factType: string,
+  factType: CitationFactType,
   factId: string,
 ): Promise<CitationRow[]> {
   const rows = rowsOf(
@@ -264,7 +294,7 @@ export async function citationsOf(
   )
   return rows.map((row) => ({
     id: String(row.id),
-    factType: String(row.fact_type),
+    factType: String(row.fact_type) as CitationFactType,
     factId: String(row.fact_id),
     materialId: String(row.material_id),
     locator: typeof row.locator === "string" ? JSON.parse(row.locator) : row.locator,

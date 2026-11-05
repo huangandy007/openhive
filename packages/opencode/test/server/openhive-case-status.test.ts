@@ -45,7 +45,7 @@ describe("parse_status 状态机", () => {
     expect(nextStatus("已解析", "取消")).toBeUndefined()
   })
 
-  test("正在跑的两种状态", () => {
+  test("只有排队中和解析中算占着队列", () => {
     expect(isRunning("未入队")).toBe(false)
     expect(isRunning("排队中")).toBe(true)
     expect(isRunning("解析中")).toBe(true)

@@ -48,6 +48,22 @@ describe("createMaterial", () => {
     expect(row?.fileName).toBe("话单-移动.xlsx")
   })
 
+  test("getMaterial 的十个字段逐个对（整对象断言，防映射错位）", async () => {
+    // 只挑几个字段断言的话，把 fingerprint 与 path 的映射对调也能全绿。
+    expect(await getMaterial(db(), "p1", "m1")).toEqual({
+      id: "m1",
+      projectId: "p1",
+      fileName: "话单-移动.xlsx",
+      kind: "话单",
+      fingerprint: "fp-m1",
+      path: "材料/话单-移动.xlsx",
+      parseStatus: "未入队",
+      parseDetail: null,
+      queuedBy: null,
+      clockOffsetSec: 0,
+    })
+  })
+
   test("同一个指纹重复建 ⇒ 不产生第二行，拿回老 id（判据 A2）", async () => {
     expect(await 建("m1-另一个id", "p1", "fp-m1")).toBe("m1")
     const n = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = 'p1'`))
@@ -81,8 +97,19 @@ describe("applyParseAction", () => {
     expect((await getMaterial(db(), "p1", "m1"))?.parseStatus).toBe("排队中")
   })
 
-  test("取消解析后回到未入队", async () => {
+  test("取消解析后回到未入队（从「排队中」取消不补原因）", async () => {
     expect(await applyParseAction(db(), { projectId: "p1", materialId: "m1", action: "取消" })).toBe("未入队")
+    expect((await getMaterial(db(), "p1", "m1"))?.parseDetail).toBeNull()
+  })
+
+  test("从「解析中」取消：落「有问题」并记下默认原因（设计 §8.1 / §5.2）", async () => {
+    await 建("m7", "p1", "fp-m7")
+    await applyParseAction(db(), { projectId: "p1", materialId: "m7", action: "入队" })
+    await applyParseAction(db(), { projectId: "p1", materialId: "m7", action: "开始" })
+    expect(await applyParseAction(db(), { projectId: "p1", materialId: "m7", action: "取消" })).toBe("有问题")
+    const row = await getMaterial(db(), "p1", "m7")
+    expect(row?.parseStatus).toBe("有问题")
+    expect(row?.parseDetail).toEqual({ reason: "用户取消" })
   })
 
   test("非入队动作不清掉 queued_by", async () => {
@@ -242,7 +269,7 @@ describe("明细行", () => {
     expect(await countFactRows(db(), "p2")).toBe(1)
   })
 
-  test("时间四字段原样落库（原始值 / 规范值 / 精度 / 时间类型）", async () => {
+  test("时间四字段原样落库（原始值 / 规范值 / 精度 / 时间类型），extras 往返", async () => {
     await insertFactRows(db(), [
       {
         projectId: "p2",
@@ -253,11 +280,12 @@ describe("明细行", () => {
         startedRaw: "2026-11-05 08:13:20",
         precision: "到秒",
         timeType: "发生",
+        extras: { 通话类型: "主叫", 基站: "HZ-01" },
       },
     ])
     const got = rowsOf(
       await db().execute(sql`
-        select started_at, started_raw, precision, time_type
+        select started_at, started_raw, precision, time_type, extras
         from auth.case_fact_row
         where project_id = 'p2' and material_id = 'm9' and sheet = 'Sheet9' and row_no = 1
       `),
@@ -266,6 +294,9 @@ describe("明细行", () => {
     expect(got[0]?.started_raw).toBe("2026-11-05 08:13:20")
     expect(got[0]?.precision).toBe("到秒")
     expect(got[0]?.time_type).toBe("发生")
+    // jsonb 在本仓的 bun-sql 驱动下读回来是**字符串**（同 getMaterial / citationsOf 的归一），
+    // 所以这里先 JSON.parse 再按对象比 —— 意图是「写进去什么、读出来就是什么」。
+    expect(JSON.parse(String(got[0]?.extras))).toEqual({ 通话类型: "主叫", 基站: "HZ-01" })
   })
 })
 

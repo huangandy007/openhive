@@ -101,6 +101,7 @@ CREATE TABLE auth.case_relation (
   type        text    NOT NULL,
   first_at    integer,
   last_at     integer,
+  precision   text,
   times       integer,
   amount      numeric(18,2),
   basis       text,
@@ -112,6 +113,7 @@ CREATE TABLE auth.case_relation (
     type IN ('通话','转账','实名登记','实际使用','同案','持有','同行')
   ),
   CONSTRAINT case_relation_source CHECK (source_kind IN ('data','human')),
+  CONSTRAINT case_relation_precision CHECK (precision IS NULL OR precision IN ('到日','到分','到秒')),
   CONSTRAINT case_relation_trust CHECK (
     trust_state IN ('自动抽取','已确认','已修正','已排除','存疑')
   ),
@@ -138,6 +140,11 @@ COMMENT ON COLUMN auth.case_relation.basis IS
 
 COMMENT ON COLUMN auth.case_relation.source_kind IS
   'data = 数据直接记录；human = 人认定。档案页与关系图按这一列区分「数据说的」与「人说的」';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_relation.precision IS
+  '聚合时间（first_at/last_at）的精度，取值源行的**最粗**精度；聚合值不存原始值（多行原始值无处安放），需要原始值请回查明细行。';
 
 --> statement-breakpoint
 
@@ -189,7 +196,8 @@ CREATE TABLE auth.case_citation (
   created_at     integer NOT NULL,
   PRIMARY KEY (project_id, id),
   CONSTRAINT case_citation_fact_type CHECK (fact_type IN ('entity','relation','event','row')),
-  CONSTRAINT case_citation_method CHECK (extract_method IN ('机器','人工'))
+  CONSTRAINT case_citation_method CHECK (extract_method IN ('机器','人工')),
+  CONSTRAINT case_citation_confidence CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
 );
 
 --> statement-breakpoint

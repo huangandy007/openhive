@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
+import { PARSE_STATUSES } from "../../src/server/openhive/case-status"
+import { CITATION_FACT_TYPES, MATERIAL_KINDS } from "../../src/server/openhive/case-store"
 
 /**
  * 0031 的见证测试：表在不在、分区挂没挂、闭集约束是不是真挡得住。
@@ -118,13 +120,64 @@ describe("0031 迁移 · 硬规则写进库", () => {
     expect(await 被拒(db().execute(插("a-ok", "已否决", "u1", "证据不足")))).toBe(false)
   })
 
-  test("parse_status 只认六个值", async () => {
+  test("parse_status 只认六个值（逐个来自 TS 常量，超集值被拒）", async () => {
     const 插 = (id: string, status: string) => sql`
       insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
       values (${id}, 'p1', 'a.xlsx', '资金', ${`fp-${id}`}, 'a.xlsx', ${status}, 0)
     `
+    // 逐个写一遍 `PARSE_STATUSES`：库里的 CHECK 与 TS 常量任何一边漂了，这里就会红。
+    for (const status of PARSE_STATUSES) {
+      expect(await 被拒(db().execute(插(`m-status-${status}`, status)))).toBe(false)
+    }
     expect(await 被拒(db().execute(插("m-bad", "解析完了")))).toBe(true)
-    expect(await 被拒(db().execute(插("m-ok", "已解析")))).toBe(false)
+  })
+})
+
+describe("0031 迁移 · 闭集两边对齐（库 CHECK ↔ TS 常量）", () => {
+  test("七个 kind 全部可写（产物走默认的「未入队」）", async () => {
+    const 插 = (id: string, kind: string) => sql`
+      insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, created_at)
+      values (${id}, 'p1', 'a.xlsx', ${kind}, ${`fp-kind-${id}`}, 'a.xlsx', 0)
+    `
+    for (const kind of MATERIAL_KINDS) {
+      expect(await 被拒(db().execute(插(`m-kind-${kind}`, kind)))).toBe(false)
+    }
+    expect(await 被拒(db().execute(插("m-kind-坏", "聊天记录")))).toBe(true)
+  })
+
+  test("四个 fact_type 全部可写，第五个被拒", async () => {
+    const 插 = (id: string, factType: string) => sql`
+      insert into auth.case_citation
+        (id, project_id, fact_type, fact_id, material_id, locator, extract_method, created_at)
+      values (${id}, 'p1', ${factType}, 'f1', 'm1', '{}'::jsonb, '机器', 0)
+    `
+    for (const factType of CITATION_FACT_TYPES) {
+      expect(await 被拒(db().execute(插(`c-type-${factType}`, factType)))).toBe(false)
+    }
+    expect(await 被拒(db().execute(插("c-type-坏", "material")))).toBe(true)
+  })
+
+  test("关系的聚合时间精度：只认三个值", async () => {
+    const 插 = (id: string, precision: string) => sql`
+      insert into auth.case_relation
+        (id, project_id, from_id, to_id, type, precision, source_kind, created_at)
+      values (${id}, 'p1', 'e1', 'e2', '通话', ${precision}, 'data', 0)
+    `
+    expect(await 被拒(db().execute(插("r-prec-ok", "到分")))).toBe(false)
+    expect(await 被拒(db().execute(插("r-prec-bad", "到小时")))).toBe(true)
+  })
+
+  test("引用的置信度：0..1，越界被拒，NULL 可写", async () => {
+    const 插 = (id: string, confidence: string | null) => sql`
+      insert into auth.case_citation
+        (id, project_id, fact_type, fact_id, material_id, locator, extract_method, confidence, created_at)
+      values (${id}, 'p1', 'entity', 'e1', 'm1', '{}'::jsonb, '机器', ${confidence}, 0)
+    `
+    expect(await 被拒(db().execute(插("c-conf-0", "0")))).toBe(false)
+    expect(await 被拒(db().execute(插("c-conf-1", "1")))).toBe(false)
+    expect(await 被拒(db().execute(插("c-conf-null", null)))).toBe(false)
+    expect(await 被拒(db().execute(插("c-conf-high", "1.5")))).toBe(true)
+    expect(await 被拒(db().execute(插("c-conf-low", "-0.1")))).toBe(true)
   })
 })
 
