@@ -50,12 +50,14 @@ describe("createMaterial", () => {
 
   test("getMaterial 的十个字段逐个对（整对象断言，防映射错位）", async () => {
     // 只挑几个字段断言的话，把 fingerprint 与 path 的映射对调也能全绿。
-    expect(await getMaterial(db(), "p1", "m1")).toEqual({
-      id: "m1",
-      projectId: "p1",
+    // 自建夹具：挂在别的用例建出来的行上，`bun test -t` 单跑这一条会红。
+    expect(await 建("m-fields", "p-fields", "fp-fields")).toBe("m-fields")
+    expect(await getMaterial(db(), "p-fields", "m-fields")).toEqual({
+      id: "m-fields",
+      projectId: "p-fields",
       fileName: "话单-移动.xlsx",
       kind: "话单",
-      fingerprint: "fp-m1",
+      fingerprint: "fp-fields",
       path: "材料/话单-移动.xlsx",
       parseStatus: "未入队",
       parseDetail: null,

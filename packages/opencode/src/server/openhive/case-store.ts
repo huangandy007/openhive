@@ -12,9 +12,14 @@ import { nextStatus, type ParseAction, type ParseStatus } from "./case-status"
  *
  * 生产是 `bun-sql` 的 `connect()`，测试是 PGlite 撑起来的同一个驱动 —— 但**不该让 DAO
  * 绑死在某一个具体类型上**。收窄到 `MigrationTarget` 的子集以后，任何能跑 SQL 的东西都能测，
- * 也不用为测试造一层假仓储。`packages/auth/src/db.test.ts` 只断言了
- * `connect(): MigrationTarget`，并没有把 `connect()` 的结果往 `Queryable` 上赋过值 ——
- * 也就是说**今天没有代码把两者接起来**；等到计划 2 真的接线时，类型系统才会当场报出形状不一致。
+ * 也不用为测试造一层假仓储。
+ *
+ * ⚠️ **形状不一致时类型系统不会报错**，别指望它：`MigrationTarget`（`migrate.ts:41`）多了
+ * 一个 `transaction`，是 `Queryable` 的**结构超集** ⇒ 把 `connect()` 的结果直接传给 DAO
+ * 一定编得过，哪怕哪天 `execute` 的签名变了、变窄了也一样。`packages/auth/src/db.test.ts`
+ * 里那几条编译期断言说的是 `UserInsertTarget` / `UserAccountTarget`，**没有一条**把
+ * `connect()` 往 `Queryable` 上赋过值。真正的守卫是下面那些用例：它们的驱动就是生产驱动
+ * （`startProductionDb()`），形状一漂，跑一次就红。
  *
  * ## 项目隔离靠调用约定，不靠库
  *
@@ -262,6 +267,9 @@ export interface CitationRow {
  *
  * 引用的重放路径是「**按材料删掉，再重新插入**」——索引
  * `case_citation_material (project_id, material_id)` 就是为这条路径建的（设计 §5.5）。
+ *
+ * 同样**不校验** `materialId` 属于 `projectId`：库里刻意没有外键（事实层要能整片重建），
+ * 这条归属由调用方保证；凡按材料聚合的查询，`project_id` 必须两侧都带。
  */
 export async function addCitation(db: Queryable, input: CitationInput): Promise<void> {
   // material_id 与 locator 一并写入：行级引用的 `fact_id` 只当不透明键，绝不从中拆定位。

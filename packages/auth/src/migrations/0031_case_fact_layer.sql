@@ -5,9 +5,12 @@
 -- 与 `asset_*` / `project_*` 同风格，也避开 `auth.event` 这种过于宽泛的名字。
 --
 -- 三条取向：
--- - **项目隔离走应用层**（用户 2026-11-06 裁定，不引入 RLS）：所以每张表
---   `PRIMARY KEY (project_id, id)`。它**不能**拦住漏写 `where project_id = ?`，
---   只保证同一份数据不可能在两个项目里撞成一行。
+-- - **项目隔离走应用层**（用户 2026-11-06 裁定，不引入 RLS）：所以每张表的主键都
+--   **带上 `project_id`**。它**不能**拦住漏写 `where project_id = ?`，只保证同一份数据
+--   不可能在两个项目里撞成一行。
+--   主键有两种形态：八张表是 `(project_id, id)`；`case_fact_row` 是自然键
+--   `(project_id, material_id, sheet, row_no)` —— 明细行没有代理 id，行级引用改用不透明的
+--   `fact_id`（见 `case_citation.fact_id` 的 COMMENT）。
 -- - **不设外键**：原始层与事实层要能各自重放；删材料不该级联删事实（同 0024 的取向）。
 -- - **时间列一律 integer Unix 秒**，与 `packages/auth/src/time.ts` 同口径。
 --   别改成 timestamptz：本库既有 30 份迁移全是秒，混用会让比较运算按驱动变形。

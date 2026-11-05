@@ -125,7 +125,10 @@ describe("0031 迁移 · 硬规则写进库", () => {
       insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
       values (${id}, 'p1', 'a.xlsx', '资金', ${`fp-${id}`}, 'a.xlsx', ${status}, 0)
     `
-    // 逐个写一遍 `PARSE_STATUSES`：库里的 CHECK 与 TS 常量任何一边漂了，这里就会红。
+    // 逐个写一遍 `PARSE_STATUSES`。**钉住的是两个方向：**① TS 有、库里没有 ⇒ 某一次插入被拒；
+    // ② 库放宽到收任意值 ⇒ 末尾那条超集值不再被拒。**钉不住的是第三方向**：库里多出一个
+    // TS 没有的值（外加一个成员）—— 循环只走 TS 那一侧，看不见。要堵它得比对
+    // `pg_get_constraintdef()` 的文本，本计划不做。
     for (const status of PARSE_STATUSES) {
       expect(await 被拒(db().execute(插(`m-status-${status}`, status)))).toBe(false)
     }
