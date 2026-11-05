@@ -3,7 +3,15 @@ import { sql, type SQL } from "drizzle-orm"
 import { PgDialect } from "drizzle-orm/pg-core"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { applyParseAction, createMaterial, getMaterial } from "../../src/server/openhive/case-store"
+import {
+  addCitation,
+  applyParseAction,
+  citationsOf,
+  countFactRows,
+  createMaterial,
+  getMaterial,
+  insertFactRows,
+} from "../../src/server/openhive/case-store"
 
 /** 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。 */
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -206,5 +214,87 @@ describe("applyParseAction", () => {
       )
       expect((await getMaterial(db(), "p1", "m6"))?.parseStatus).toBe("未入队")
     }
+  })
+})
+
+describe("明细行", () => {
+  const 行 = (projectId: string, materialId: string, rowNo: number) => ({
+    projectId,
+    materialId,
+    sheet: "Sheet1",
+    rowNo,
+    caller: "13800000000",
+    callee: "13900000000",
+    startedAt: 1_760_000_000,
+    durationSec: 37,
+    extras: {},
+  })
+
+  test("同一行重复写入不翻倍（幂等键 = 材料 ＋ 工作表 ＋ 行号）", async () => {
+    expect(await insertFactRows(db(), [行("p1", "m1", 1), 行("p1", "m1", 2)])).toBe(2)
+    expect(await insertFactRows(db(), [行("p1", "m1", 1)])).toBe(0)
+    expect(await countFactRows(db(), "p1")).toBe(2)
+  })
+
+  test("别的项目数不到（分区 ＋ 项目过滤）", async () => {
+    await insertFactRows(db(), [行("p2", "m9", 1)])
+    expect(await countFactRows(db(), "p1")).toBe(2)
+    expect(await countFactRows(db(), "p2")).toBe(1)
+  })
+
+  test("时间四字段原样落库（原始值 / 规范值 / 精度 / 时间类型）", async () => {
+    await insertFactRows(db(), [
+      {
+        projectId: "p2",
+        materialId: "m9",
+        sheet: "Sheet9",
+        rowNo: 1,
+        startedAt: 1_760_000_000,
+        startedRaw: "2026-11-05 08:13:20",
+        precision: "到秒",
+        timeType: "发生",
+      },
+    ])
+    const got = rowsOf(
+      await db().execute(sql`
+        select started_at, started_raw, precision, time_type
+        from auth.case_fact_row
+        where project_id = 'p2' and material_id = 'm9' and sheet = 'Sheet9' and row_no = 1
+      `),
+    )
+    expect(Number(got[0]?.started_at)).toBe(1_760_000_000)
+    expect(got[0]?.started_raw).toBe("2026-11-05 08:13:20")
+    expect(got[0]?.precision).toBe("到秒")
+    expect(got[0]?.time_type).toBe("发生")
+  })
+})
+
+describe("引用", () => {
+  test("一条事实挂多条引用，按事实取回", async () => {
+    await addCitation(db(), {
+      id: "c1",
+      projectId: "p1",
+      factType: "relation",
+      factId: "r1",
+      materialId: "m1",
+      locator: { sheet: "Sheet1", row: 2041 },
+      extractMethod: "机器",
+    })
+    await addCitation(db(), {
+      id: "c2",
+      projectId: "p1",
+      factType: "relation",
+      factId: "r1",
+      materialId: "m1",
+      locator: { sheet: "Sheet2", row: 3 },
+      extractMethod: "人工",
+    })
+    const list = await citationsOf(db(), "p1", "relation", "r1")
+    expect(list.map((c) => c.id)).toEqual(["c1", "c2"])
+    expect(list[0]?.locator).toEqual({ sheet: "Sheet1", row: 2041 })
+  })
+
+  test("别的项目取不到同一条事实的引用", async () => {
+    expect(await citationsOf(db(), "p2", "relation", "r1")).toEqual([])
   })
 })

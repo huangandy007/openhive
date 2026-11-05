@@ -147,3 +147,123 @@ export async function applyParseAction(
   if (rows.length === 0) throw new Error("状态已被别的作业改掉（并发保护）")
   return next
 }
+
+export interface FactRowInput {
+  projectId: string
+  materialId: string
+  sheet: string
+  rowNo: number
+  caller?: string | null
+  callee?: string | null
+  startedAt?: number | null
+  /** 原始值：照抄原件上的写法，永不改写（设计 §4.2 时间四字段之一）。 */
+  startedRaw?: string | null
+  precision?: "到日" | "到分" | "到秒" | null
+  timeType?: "发生" | "记录" | "入库" | null
+  durationSec?: number | null
+  /** numeric 列：JS 侧一律用 string 传，别用 number（`#002-01`：随驱动而变的形状）。 */
+  amount?: string | null
+  balance?: string | null
+  counterparty?: string | null
+  extras?: Record<string, unknown>
+}
+
+/**
+ * 批量写明细行。**一条一条发、不用多值 INSERT**：本计划只保证正确的幂等与隔离，
+ * 批量化（`COPY` / 多值 VALUES）留给计划 2 的量级任务（设计 §6.5）。
+ *
+ * 幂等键就是主键 `(project_id, material_id, sheet, row_no)`：重复导入同一个文件时
+ * `on conflict do nothing` 把老行吃掉，返回的写入数因此会少。返回值是「**实际新写入**」的条数，
+ * 不是入参长度 —— 调用点据此判断「这次有没有新东西」。
+ */
+export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promise<number> {
+  let written = 0
+  for (const row of rows) {
+    const result = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_fact_row
+          (project_id, material_id, sheet, row_no, caller, callee, started_at,
+           started_raw, precision, time_type,
+           duration_sec, amount, balance, counterparty, extras)
+        values (${row.projectId}, ${row.materialId}, ${row.sheet}, ${row.rowNo},
+                ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},
+                ${row.startedRaw ?? null}, ${row.precision ?? null}, ${row.timeType ?? null},
+                ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
+                ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::jsonb)
+        on conflict (project_id, material_id, sheet, row_no) do nothing
+        returning row_no
+      `),
+    )
+    written += result.length
+  }
+  return written
+}
+
+export async function countFactRows(db: Queryable, projectId: string): Promise<number> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as n from auth.case_fact_row where project_id = ${projectId}
+    `),
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+export interface CitationInput {
+  id: string
+  projectId: string
+  factType: "entity" | "relation" | "event" | "row"
+  /**
+   * `row` 时是**不透明**的 `<material_id>#<sheet>#<row_no>`（迁移里的 COMMENT 约定了它，
+   * 但没有任何代码去解析它 —— Excel 工作表名可以合法含 `#`，按 `#` 拆是错的）。
+   * 行级引用要定位，靠 `materialId` ＋ `locator` 两个字段，两者都必须给。
+   */
+  factId: string
+  materialId: string
+  locator: unknown
+  extractMethod: "机器" | "人工"
+  confidence?: string | null
+}
+
+export interface CitationRow {
+  id: string
+  factType: string
+  factId: string
+  materialId: string
+  locator: unknown
+  extractMethod: string
+}
+
+export async function addCitation(db: Queryable, input: CitationInput): Promise<void> {
+  // material_id 与 locator 一并写入：行级引用的 `fact_id` 只当不透明键，绝不从中拆定位。
+  await db.execute(sql`
+    insert into auth.case_citation
+      (id, project_id, fact_type, fact_id, material_id, locator, extract_method, confidence, created_at)
+    values (${input.id}, ${input.projectId}, ${input.factType}, ${input.factId}, ${input.materialId},
+            ${JSON.stringify(input.locator)}::jsonb, ${input.extractMethod},
+            ${input.confidence ?? null}, ${nowSeconds()})
+  `)
+}
+
+export async function citationsOf(
+  db: Queryable,
+  projectId: string,
+  factType: string,
+  factId: string,
+): Promise<CitationRow[]> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      select id, fact_type, fact_id, material_id, locator, extract_method
+      from auth.case_citation
+      where project_id = ${projectId} and fact_type = ${factType} and fact_id = ${factId}
+      order by id
+    `),
+  )
+  return rows.map((row) => ({
+    id: String(row.id),
+    factType: String(row.fact_type),
+    factId: String(row.fact_id),
+    materialId: String(row.material_id),
+    locator: typeof row.locator === "string" ? JSON.parse(row.locator) : row.locator,
+    extractMethod: String(row.extract_method),
+  }))
+}
