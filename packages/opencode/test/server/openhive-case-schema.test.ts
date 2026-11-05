@@ -6,7 +6,7 @@ import { PARSE_STATUSES } from "../../src/server/openhive/case-status"
 import { CITATION_FACT_TYPES, MATERIAL_KINDS } from "../../src/server/openhive/case-store"
 
 /**
- * 0031 的见证测试：表在不在、分区挂没挂、闭集约束是不是真挡得住。
+ * 0031 / 0032 的见证测试：表在不在、分区挂没挂、闭集约束是不是真挡得住。
  *
  * ## 为什么走 `startProductionDb()` 而不是裸 `new PGlite()`
  *
@@ -71,10 +71,11 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
 }
 
 describe("0031 迁移 · 表与分区", () => {
-  test("9 张表 ＋ 16 个分区全部建出来", async () => {
+  test("10 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables
+        -- like 'case%' 也会命中后续迁移（0032+）新加的 case_* 表：加表时同步补「期望表」，别改计数标题了。
         where table_schema = 'auth' and table_name like 'case%'
         order by table_name
       `),
@@ -269,6 +270,12 @@ describe("0032 迁移 · 表格格式记忆", () => {
          where table_schema = 'auth' and table_name = 'case_ingest_job' and column_name = 'source_path'
       `),
     )
-    expect(列[0]).toMatchObject({ column_name: "source_path", is_nullable: "NO" })
+    // 默认值必须真钉住：0031 先上、0032 后上之间若已有排队行，删掉 DEFAULT 的第二次部署会在
+    // 补列时 23502 直接失败。只比 is_nullable 的话，删了 DEFAULT 照样绿（`#004-03`）。
+    expect(列[0]).toMatchObject({
+      column_name: "source_path",
+      is_nullable: "NO",
+      column_default: "''::text",
+    })
   })
 })

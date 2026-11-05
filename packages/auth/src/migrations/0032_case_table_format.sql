@@ -36,7 +36,7 @@ COMMENT ON COLUMN auth.case_table_format.fingerprint IS
 --> statement-breakpoint
 
 COMMENT ON COLUMN auth.case_table_format.mapping IS
-  '{"<列下标>": "<标准字段>"}，只含认得出的列。标准字段取值见 case_fact_row 的列名。';
+  '{"<列下标>": "<标准字段>"}，只含认得出的列。标准字段是 camelCase 的 FactField 名：caller / callee / startedAt / durationSec / amount / balance / counterparty；**不是** case_fact_row 的 snake_case 列名（started_at / duration_sec）——写错会在落库时被当成未知列塞进 extras，映射「成功」而时间不解析。';
 
 --> statement-breakpoint
 
