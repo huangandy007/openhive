@@ -32,7 +32,9 @@ CREATE TABLE auth.case_material (
   CONSTRAINT case_material_kind CHECK (kind IN ('话单','资金','笔录','视频','物证照','产物','其他')),
   CONSTRAINT case_material_status CHECK (
     parse_status IN ('未入队','排队中','解析中','已解析','有问题','已跳过')
-  )
+  ),
+  -- 设计 §5.5 硬边界：产物（本平台自己生成的文件）不解析、也不可推进解析状态。
+  CONSTRAINT case_material_parsed_source CHECK (kind <> '产物' OR parse_status = '未入队')
 );
 
 --> statement-breakpoint
@@ -125,6 +127,10 @@ CREATE INDEX case_relation_from ON auth.case_relation (project_id, from_id, type
 
 --> statement-breakpoint
 
+CREATE INDEX case_relation_to ON auth.case_relation (project_id, to_id, type);
+
+--> statement-breakpoint
+
 COMMENT ON COLUMN auth.case_relation.basis IS
   '认定依据：供述指认 / 扣押实物 / 技侦 / 登录或使用日志 / 资金闭环 / 推断（设计 §4.2）';
 
@@ -192,6 +198,16 @@ CREATE INDEX case_citation_fact ON auth.case_citation (project_id, fact_type, fa
 
 --> statement-breakpoint
 
+CREATE INDEX case_citation_material ON auth.case_citation (project_id, material_id);
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_citation.fact_id IS
+  '被引用事实的 id。fact_type = entity/relation/event 时是对应表的主键 id；
+   fact_type = row 时为 <material_id>#<sheet>#<row_no>（明细行没有代理主键，见 case_fact_row 的 PK）';
+
+--> statement-breakpoint
+
 COMMENT ON COLUMN auth.case_citation.locator IS
   '定位：{"sheet":"Sheet1","row":2041} / {"page":12,"para":3} / {"start":0,"end":1200}';
 
@@ -208,12 +224,17 @@ CREATE TABLE auth.case_fact_row (
   caller       text,
   callee       text,
   started_at   integer,
+  started_raw  text,
+  precision    text,
+  time_type    text,
   duration_sec integer,
   amount       numeric(18,2),
   balance      numeric(18,2),
   counterparty text,
   extras       jsonb   NOT NULL DEFAULT '{}'::jsonb,
-  PRIMARY KEY (project_id, material_id, sheet, row_no)
+  PRIMARY KEY (project_id, material_id, sheet, row_no),
+  CONSTRAINT case_fact_row_precision CHECK (precision IS NULL OR precision IN ('到日','到分','到秒')),
+  CONSTRAINT case_fact_row_time_type CHECK (time_type IS NULL OR time_type IN ('发生','记录','入库'))
 ) PARTITION BY HASH (project_id);
 
 --> statement-breakpoint
@@ -254,6 +275,26 @@ CREATE TABLE auth.case_fact_row_p15 PARTITION OF auth.case_fact_row FOR VALUES W
 
 COMMENT ON TABLE auth.case_fact_row IS
   '明细行：表格类材料拆出来的每一行，不直接给民警看，只供抽取与统计（设计 §4.2）';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_fact_row.started_raw IS
+  '原始值：原文照抄、永不改写（设计 §4.2「时间的四个字段」）';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_fact_row.started_at IS
+  '规范值：统一换算到 UTC+8 后的 Unix 秒。跨源比对只许用它';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_fact_row.precision IS
+  '精度：到日 / 到分 / 到秒（设计 §4.2「时间的四个字段」）';
+
+--> statement-breakpoint
+
+COMMENT ON COLUMN auth.case_fact_row.time_type IS
+  '时间类型：发生 / 记录 / 入库（设计 §4.2「时间的四个字段」）';
 
 --> statement-breakpoint
 

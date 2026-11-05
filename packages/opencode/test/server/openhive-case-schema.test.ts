@@ -127,3 +127,55 @@ describe("0031 迁移 · 硬规则写进库", () => {
     expect(await 被拒(db().execute(插("m-ok", "已解析")))).toBe(false)
   })
 })
+
+describe("0031 迁移 · 明细行的时间四字段（判据 A16）", () => {
+  test("started_raw / precision / time_type 能写能读", async () => {
+    await db().execute(sql`
+      insert into auth.case_fact_row
+        (project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw, precision, time_type)
+      values ('p1', 'm1', 'Sheet1', 1, '13800000000', '13900000000', 1762387200,
+              '2026-11-06 10:00:00', '到分', '发生')
+    `)
+    const [row] = rowsOf(
+      await db().execute(sql`
+        select started_at::int as started_at, started_raw, precision, time_type
+        from auth.case_fact_row
+        where project_id = 'p1' and material_id = 'm1' and sheet = 'Sheet1' and row_no = 1
+      `),
+    )
+    expect(Number(row?.started_at)).toBe(1762387200)
+    expect(row?.started_raw).toBe("2026-11-06 10:00:00")
+    expect(row?.precision).toBe("到分")
+    expect(row?.time_type).toBe("发生")
+  })
+
+  test("precision 只认三个值：写「到小时」被拒，写「到分」通过", async () => {
+    const 插 = (rowNo: number, precision: string) => sql`
+      insert into auth.case_fact_row (project_id, material_id, sheet, row_no, precision)
+      values ('p2', 'm2', 'Sheet1', ${rowNo}, ${precision})
+    `
+    expect(await 被拒(db().execute(插(1, "到小时")))).toBe(true)
+    expect(await 被拒(db().execute(插(2, "到分")))).toBe(false)
+  })
+})
+
+describe("0031 迁移 · 产物不解析（设计 §5.5 硬边界）", () => {
+  const 插产物 = (id: string, status: string) => sql`
+    insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
+    values (${id}, 'p1', 'a.xlsx', '产物', ${`fp-产物-${id}`}, 'a.xlsx', ${status}, 0)
+  `
+  // 不写 parse_status，走列默认值，证明「默认就是未入队」而不是靠调用点显式传。
+  const 插产物默认 = (id: string) => sql`
+    insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, created_at)
+    values (${id}, 'p1', 'a.xlsx', '产物', ${`fp-产物-${id}`}, 'a.xlsx', 0)
+  `
+
+  test("产物不能被标成已解析，但不影响话单照常解析", async () => {
+    expect(await 被拒(db().execute(插产物("p-bad", "已解析")))).toBe(true)
+    expect(await 被拒(db().execute(插产物默认("p-ok")))).toBe(false)
+    expect(await 被拒(db().execute(sql`
+      insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
+      values ('p-call', 'p1', 'a.xlsx', '话单', 'fp-产物-p-call', 'a.xlsx', '已解析', 0)
+    `))).toBe(false)
+  })
+})
