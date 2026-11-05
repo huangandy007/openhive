@@ -46,9 +46,11 @@ describe("parse_status 状态机", () => {
   })
 
   test("正在跑的两种状态", () => {
+    expect(isRunning("未入队")).toBe(false)
     expect(isRunning("排队中")).toBe(true)
     expect(isRunning("解析中")).toBe(true)
     expect(isRunning("已解析")).toBe(false)
+    expect(isRunning("有问题")).toBe(false)
     expect(isRunning("已跳过")).toBe(false)
   })
 })
