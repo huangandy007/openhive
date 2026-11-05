@@ -70,12 +70,12 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
   }
 }
 
-describe("0031 迁移 · 表与分区", () => {
+describe("0031/0032 迁移 · 表与分区", () => {
   test("10 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables
-        -- like 'case%' 也会命中后续迁移（0032+）新加的 case_* 表：加表时同步补「期望表」，别改计数标题了。
+        -- like 'case%' 也会命中后续迁移（0032+）新加的 case_* 表：加表时补「期望表」，并同步改标题里的计数。
         where table_schema = 'auth' and table_name like 'case%'
         order by table_name
       `),
