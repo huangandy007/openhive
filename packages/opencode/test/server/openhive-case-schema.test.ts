@@ -1,0 +1,129 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { sql } from "drizzle-orm"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { startProductionDb } from "@opencode-ai/auth/test-support"
+
+/**
+ * 0031 的见证测试：表在不在、分区挂没挂、闭集约束是不是真挡得住。
+ *
+ * ## 为什么走 `startProductionDb()` 而不是裸 `new PGlite()`
+ *
+ * `packages/opencode` **没有** `@electric-sql/pglite` 依赖 —— 直接 import 解析不到。
+ * 本包侧起 PG 夹具只有这一条既有路径：真 PGlite socket 服务 ＋ 真 `connect()`（bun-sql 驱动），
+ * 与本包其余 PG 测试一致（`#006-35`：测的是生产出口，不是替身）。
+ *
+ * `withProductionDb()` 不能用：它会在 `fn` 结束后 `stop()` 掉夹具，而本文件多条用例
+ * 要共用同一个库（夹具生命周期先问清再选形状，见 `test-support.ts` 里那段注释）。
+ *
+ * ## 为什么约束要「插一条非法数据」来验
+ *
+ * 只查 `information_schema` 里有没有这条约束：约束写错值（少一个枚举、写反条件）时
+ * 「约束还在」，断言照样绿（`#004-03`）。必须让它真拒一次。
+ */
+const 期望表 = [
+  "case_ai_proposal",
+  "case_alert",
+  "case_citation",
+  "case_entity",
+  "case_event",
+  "case_fact_row",
+  ...Array.from({ length: 16 }, (_, i) => `case_fact_row_p${String(i).padStart(2, "0")}`),
+  "case_ingest_job",
+  "case_material",
+  "case_relation",
+]
+
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+})
+
+afterAll(async () => {
+  // 必须 stop：它同时负责还原 PG_*、关 socket 服务、关 PGlite（漏掉不报错，只漏端口与句柄）
+  await pg?.stop()
+})
+
+/** 夹具一定在（`beforeAll` 之后）。 */
+function db() {
+  if (!pg) throw new Error("真库没起来")
+  return pg.db
+}
+
+/**
+ * 跑一条**预期会被拒**的语句，用布尔说结果。
+ *
+ * 不写 `expect(...).rejects.toThrow()`：drizzle 的 `execute()` 是**懒 thenable**，不 await 不真执行
+ * （`packages/auth/src/migrate.test.ts` 顶上那条注释就是这么来的）。先 await 再判，
+ * 驱动是懒是急都不影响结论。
+ */
+async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
+  try {
+    await query
+    return false
+  } catch {
+    return true
+  }
+}
+
+describe("0031 迁移 · 表与分区", () => {
+  test("9 张表 ＋ 16 个分区全部建出来", async () => {
+    const names = rowsOf(
+      await db().execute(sql`
+        select table_name from information_schema.tables
+        where table_schema = 'auth' and table_name like 'case%'
+        order by table_name
+      `),
+    ).map((row) => String(row.table_name))
+
+    expect(names).toEqual(期望表)
+  })
+
+  test("16 个分区都挂在 case_fact_row 下", async () => {
+    const kids = rowsOf(
+      await db().execute(sql`
+        select count(*)::int as n from pg_inherits
+        where inhparent = 'auth.case_fact_row'::regclass
+      `),
+    )
+    expect(Number(kids[0]?.n)).toBe(16)
+  })
+})
+
+describe("0031 迁移 · 硬规则写进库", () => {
+  const 插关系 = (id: string, type: string, basis: string | null) => sql`
+    insert into auth.case_relation (id, project_id, from_id, to_id, type, basis, source_kind, created_at)
+    values (${id}, 'p1', 'e1', 'e2', ${type}, ${basis}, 'human', 0)
+  `
+
+  test("「实际使用」缺认定依据 ⇒ 被库里挡下", async () => {
+    expect(await 被拒(db().execute(插关系("r-bad", "实际使用", null)))).toBe(true)
+  })
+
+  test("「通话」不需要认定依据", async () => {
+    expect(await 被拒(db().execute(插关系("r-ok", "通话", null)))).toBe(false)
+    const n = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_relation`))
+    expect(Number(n[0]?.n)).toBe(1)
+  })
+
+  test("「已否决」的 AI 提议必须带理由、人和时间（判据 A18）", async () => {
+    const 插 = (id: string, status: string, by: string | null, reason: string | null) => sql`
+      insert into auth.case_ai_proposal
+        (id, project_id, kind, payload, status, decided_by, decided_at, reject_reason, created_at)
+      values (${id}, 'p1', 'merge', '{}'::jsonb, ${status}, ${by},
+              ${by === null ? null : 0}, ${reason}, 0)
+    `
+    expect(await 被拒(db().execute(插("a-bad", "已否决", null, null)))).toBe(true)
+    expect(await 被拒(db().execute(插("a-ok", "已否决", "u1", "证据不足")))).toBe(false)
+  })
+
+  test("parse_status 只认六个值", async () => {
+    const 插 = (id: string, status: string) => sql`
+      insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
+      values (${id}, 'p1', 'a.xlsx', '资金', ${`fp-${id}`}, 'a.xlsx', ${status}, 0)
+    `
+    expect(await 被拒(db().execute(插("m-bad", "解析完了")))).toBe(true)
+    expect(await 被拒(db().execute(插("m-ok", "已解析")))).toBe(false)
+  })
+})
