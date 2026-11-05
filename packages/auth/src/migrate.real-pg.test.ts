@@ -29,9 +29,14 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
       expect(tables).toEqual([
         "_migration",
         "asset",
+        "asset_category",
         "asset_favorite",
+        "asset_mcp_connection",
         "asset_notification",
         "asset_usage",
+        "asset_usage_cursor",
+        "asset_usage_event",
+        "audit_event",
         "case_ai_proposal",
         "case_alert",
         "case_citation",
@@ -57,13 +62,20 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
         "case_ingest_job",
         "case_material",
         "case_relation",
+        "data_source",
+        "data_source_lineage",
+        "org_node",
         "project_archive",
+        "project_asset_auto_delivery",
+        "project_asset_enablement",
         "project_backup_event",
         "project_member",
         "project_meta",
         "role",
         "role_resource",
+        "template",
         "user",
+        "user_preference",
         "user_role",
       ])
 
@@ -100,7 +112,9 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
       )
       expect(String(roleType?.comment)).toContain("授权组")
     })
-  })
+    // 远端真 PG：本用例要跑 31 份迁移、两轮、外加几条目录查询，默认 5s 不够
+    // （实测本机到远端约 6–8s）。本包 `test` 脚本的默认超时本来也是 30s。
+  }, 30_000)
 
   test("连接角色不是超级用户、也不绕过 RLS", async () => {
     await withRealPg(async ({ db }) => {
@@ -111,5 +125,6 @@ describe.skipIf(!enabled)("真 PG · 迁移落库", () => {
       expect(rows[0]!.rolsuper).toBe(false)
       expect(rows[0]!.rolbypassrls).toBe(false)
     })
-  })
+    // 同第一条：`withRealPg` 会先清库并重跑 31 份迁移，远端默认 5s 不够。
+  }, 30_000)
 })
