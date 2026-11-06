@@ -1,5 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { onSessionExpired } from "../auth/session-expired"
 import { PATH, createCaseMaterialsApi } from "./case-materials-api"
+
+const 原fetch = globalThis.fetch
+afterEach(() => {
+  globalThis.fetch = 原fetch
+})
+
+/** 把进程的 `fetch` 换成替身；`preconnect` 原样借过来（同 `capability-action-api.test.ts`）。 */
+function 设服务(回: () => Response) {
+  const 替身 = async () => 回()
+  globalThis.fetch = Object.assign(替身, { preconnect: 原fetch.preconnect })
+}
 
 const 视图行 = {
   id: "m1",
@@ -62,6 +74,21 @@ describe("材料状态客户端", () => {
       throw new Error("网络断了")
     })
     expect(await 断网.read("p1")).toEqual({ kind: "error", message: "网络断了" })
+  })
+
+  test("默认发送收到 401 ⇒ 喊会话过期（登录门据此重探），结论仍是 error、不抛", async () => {
+    const 声: string[] = []
+    const 退订 = onSessionExpired(() => 声.push("401"))
+    设服务(() => new Response(null, { status: 401 }))
+    try {
+      const api = createCaseMaterialsApi()
+      const 结果 = await api.read("p1")
+      // 空体 401 落成「非 JSON」仍是 error；关键是不抛、并且喊了一声。
+      expect(结果.kind).toBe("error")
+    } finally {
+      退订()
+    }
+    expect(声).toEqual(["401"])
   })
 
   test("parse：POST 固定路径与动作体；成功只认 { ok: true }", async () => {

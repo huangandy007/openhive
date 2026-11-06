@@ -93,13 +93,8 @@ export function createCaseMaterials(
     }, 间隔)
   }
 
-  /**
-   * 拉一次。
-   *
-   * `保留错误 = true`：失败后补的那次重拉用它——刚发生的那条操作错误不能被一次成功重拉
-   * 抹掉（用户还在看它），也不能被重拉自己的失败盖住（同 `enable-state.ts`）。
-   */
-  const 拉 = (projectId: string, 保留错误 = false) => {
+  /** 拉一次。旧回包（代次/项目对不上、或实例已卸载）在守卫处整份丢弃。 */
+  const 拉 = (projectId: string) => {
     const 本次 = ++代次
     停掉轮询()
     void api
@@ -110,16 +105,16 @@ export function createCaseMaterials(
         if (结果.kind === "ok") {
           set行们(结果.value.materials)
           set扩展名们(结果.value.parseableExtensions)
-          if (!保留错误) set错误(undefined)
+          set错误(undefined)
           排下一拍(projectId)
           return
         }
-        if (!保留错误) set错误(结果.message)
+        set错误(结果.message)
       })
       .catch(() => {
         if (本次 !== 代次 || 项目() !== projectId) return
         set已读(true)
-        if (!保留错误) set错误("加载解析状态失败")
+        set错误("加载解析状态失败")
       })
   }
 
@@ -133,7 +128,15 @@ export function createCaseMaterials(
     const 拆 = createRoot((dispose) => {
       // 轮询的 `setTimeout` 不在 effect 的清理域里：不显式挂一笔，组件卸载后它还会醒一次、
       // 对着已销毁的 owner 发请求。挂在**内层 root** 上，`bind` 重绑与组件卸载都会走到。
-      onCleanup(停掉轮询)
+      //
+      // ⚠️ 还要**推进代次**：清定时器只盖住「已经排好的那一拍」。dispose / rebind 都不经过
+      // `清空()`，所以一条**在飞**的 read 回包会把 `rows/loaded` 写进已卸载的实例，并调用
+      // `排下一拍` 起一个此后无人取消的定时器（每 3 秒打一次，永不停止）——`#008-03` 的
+      // 同一类：卸载之后一律不许再写状态。推进代次让在飞回包在守卫处被丢弃。
+      onCleanup(() => {
+        停掉轮询()
+        代次 += 1
+      })
       createEffect(() => {
         const 当前 = 读()
         const 换了项目 = 当前 !== untrack(项目)

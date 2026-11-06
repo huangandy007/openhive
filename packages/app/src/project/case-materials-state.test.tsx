@@ -89,6 +89,30 @@ test("代次：先发的回包晚到，不许盖掉后发的", async () => {
   })
 })
 
+test("卸载：在飞回包既不写信号，也不续起轮询", async () => {
+  let 放行!: (结果: 材料清单结果) => void
+  const api: CaseMaterialsApi = {
+    read: () => new Promise<材料清单结果>((resolve) => (放行 = resolve)),
+    parse: async () => ({ kind: "ok" }),
+  }
+  const 跑 = 手动轮询()
+  let 状态!: ReturnType<typeof createCaseMaterials>
+  const 拆 = createRoot((dispose) => {
+    状态 = createCaseMaterials(api, { 轮询器: 跑.轮询器 })
+    状态.bind(() => "p1")
+    return dispose
+  })
+  // 让 effect 起跑：read 在飞、尚未回包；此时组件卸载（首屏加载中切走就是这条路径）。
+  await new Promise((r) => setTimeout(r, 0))
+  拆()
+  放行(好([行("a.xlsx", "排队中")]))
+  await new Promise((r) => setTimeout(r, 0))
+
+  expect(状态.rows()).toEqual([])
+  expect(状态.loaded()).toBe(false)
+  expect(跑.任务).toHaveLength(0)
+})
+
 test("失败保留旧行、只置错误（旧状态比白屏有用）", async () => {
   const { api } = 假api([好([行("a.xlsx")]), { kind: "error", message: "断网了" }])
   await createRoot(async (dispose) => {

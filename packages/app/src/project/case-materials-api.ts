@@ -9,6 +9,8 @@
  * 服务端升级出第七种状态时，前端最坏的行为是「把它画成未入队」——那会让用户对一份已解析的
  * 文件再点一次。`#002-02`：不知道 ≠ 空 / ≠ 未入队。故这里宁可整份回包判错。
  */
+import { noteStatus } from "./openhive-fetch"
+
 export const PATH = {
   materials: "/openhive/case/materials",
   parse: "/openhive/case/parse",
@@ -73,7 +75,12 @@ async function 默认发送(input: string, init?: RequestInit): Promise<Response
   const 控制器 = new AbortController()
   const 定时器 = setTimeout(() => 控制器.abort(), TIMEOUT_MS)
   try {
-    return await fetch(input, { ...init, signal: 控制器.signal })
+    const response = await fetch(input, { ...init, signal: 控制器.signal })
+    // 未登录时后端回**空体 401**：结论侧只会说「服务端回了非 JSON（401）」，而能处理它的
+    // 登录门（`AuthGate`）只听得见 `markSessionExpired`。喊一声接在底座上（`openhive-fetch.ts`
+    // 的 `trySend` 用的是同一个口），返回值一个字不改。
+    noteStatus(response)
+    return response
   } finally {
     clearTimeout(定时器)
   }
@@ -85,9 +92,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const 是状态 = (value: unknown): value is 解析状态 =>
   typeof value === "string" && (解析状态们 as readonly string[]).includes(value)
-
-const 是动作 = (value: unknown): value is 人工解析动作 =>
-  typeof value === "string" && (人工解析动作们 as readonly string[]).includes(value)
 
 function 解析问题(value: unknown): 材料问题 | null | undefined {
   if (value === null) return null
