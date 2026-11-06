@@ -30,6 +30,25 @@ export interface Queryable {
   execute(query: SQL): PromiseLike<unknown>
 }
 
+/** `Queryable` ＋ drizzle 的事务入口。生产 `connect()` 与测试夹具都满足。 */
+interface TransactionCapable {
+  transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
+}
+
+/**
+ * 在**一个事务**里跑 `fn`。`Queryable` 只承诺 `execute`，事务能力是驱动给的
+ * （生产 `connect()` 与测试夹具 `startProductionDb().db` 都是 drizzle 实例）。
+ * 拿不到事务就**响亮失败**，不退化成一串自动提交语句——重放要的是原子性。
+ *
+ * 为什么不把 `transaction` 并进 `Queryable`：那会波及计划 1 的全部 DAO 契约，
+ * 而它们只读/写单条语句，不需要事务。事务是**调用点的选择**，不是 DAO 的形状。
+ */
+export async function inTransaction<T>(db: Queryable, fn: (tx: Queryable) => Promise<T>): Promise<T> {
+  const 候选 = db as Queryable & Partial<TransactionCapable>
+  if (typeof 候选.transaction !== "function") throw new Error("库句柄不支持事务：重放需要原子性")
+  return 候选.transaction(fn)
+}
+
 export const MATERIAL_KINDS = ["话单", "资金", "笔录", "视频", "物证照", "产物", "其他"] as const
 export type MaterialKind = (typeof MATERIAL_KINDS)[number]
 

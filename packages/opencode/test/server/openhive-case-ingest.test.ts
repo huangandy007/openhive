@@ -1,26 +1,39 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
+import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
-import { countFactRows, getMaterial } from "../../src/server/openhive/case-store"
+import { claimNextJob, enqueueMaterial, runJob, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
+import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
 
-/** 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。 */
+/**
+ * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
+ *
+ * ⚠️ **不用夹具自带的 `pg.db`**：事务从池里独占一条连接，事务之后换了连接再准备同一句
+ * 带参 SQL ⇒ `42P05`（`db.ts` 的 `PG_POOL_MAX` 注记）。而 `startProductionDb()` 给它自己
+ * 那个客户端传的是**固定 env**（不含 `PG_POOL_MAX`），在 `process.env` 里配不进去。
+ * 所以走生产入口 `connect()` 自建一份 `max: 1` 的客户端——形状仍是「一个进程、一条连接」。
+ */
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+let 库: ReturnType<typeof connect> | undefined
 
 beforeAll(async () => {
   pg = await startProductionDb()
-  await migrate(pg.db)
+  库 = connect({ ...process.env, PG_POOL_MAX: "1" })
+  await migrate(库)
 })
 
 afterAll(async () => {
+  await 库?.$client.close()
   await pg?.stop()
 })
 
 function db() {
-  if (!pg) throw new Error("真库没起来")
-  return pg.db
+  if (!库) throw new Error("真库没起来")
+  return 库
 }
 
 function 造工作簿(sheets: Record<string, (string | number)[][]>): Uint8Array {
@@ -41,13 +54,41 @@ const deps = {
   },
 }
 
+const 话单表头 = ["主叫号码", "被叫号码", "通话时间", "通话时长", "基站"] as const
 const 话单 = 造工作簿({
   Sheet1: [
-    ["主叫号码", "被叫号码", "通话时间", "通话时长", "基站"],
+    [...话单表头],
     ["13800000000", "13900000000", "2026-01-02 03:04:05", "37", "HZ-01"],
     ["13700000000", "13600000000", "2026-01-02 03:05", "00:01:23", "HZ-02"],
   ],
 })
+
+/** 600 行数据（文件行号 2–601）。第二块（行号 502–601）里含 550，供 C1 造中途失败。 */
+const 大话单 = 造工作簿({
+  Sheet1: [
+    [...话单表头],
+    ...Array.from({ length: 600 }, (_, i) => [
+      `1380000${String(i).padStart(4, "0")}`,
+      "13900000000",
+      "2026-01-02 03:04:05",
+      String(i % 100),
+      "HZ-01",
+    ]),
+  ],
+})
+
+/** 9 张表（默认上限 8）⇒ `readSheets` 会报「工作表超过上限」。 */
+const 九表工作簿 = 造工作簿(
+  Object.fromEntries(
+    Array.from({ length: 9 }, (_, i) => [
+      `S${i + 1}`,
+      [
+        ["主叫号码", "通话时间"],
+        ["13800000000", "2026-01-02 03:04:05"],
+      ],
+    ]),
+  ),
+)
 
 /** 入队的公共壳：`source_path` 在测试里就是 `项目id/文件名`，与生产形态形状相同即可。 */
 const 入队 = (projectId: string, fileName: string, fingerprint: string, force?: boolean) =>
@@ -67,30 +108,36 @@ async function 跑下一条() {
   return { job, 结果: await runJob(db(), deps, job) }
 }
 
-describe("enqueueMaterial", () => {
-  test("新文件 ⇒ 建档 ＋ 排队，作业记下文件落点", async () => {
+/** 手工造一个作业：不走队列，直接钉某份材料 / 某个文件落点（重放与截断用例用）。 */
+function 手工作业(projectId: string, materialId: string, sourcePath: string) {
+  return { projectId, jobId: `job-手工-${projectId}`, materialId, sourcePath }
+}
+
+describe("enqueueMaterial + runJob 主通路", () => {
+  test("新文件 ⇒ 建档 ＋ 排队，认领后跑通", async () => {
     文件.set("p1/话单.xlsx", 话单)
     const r = await 入队("p1", "话单.xlsx", "fp-1")
     expect(r.enqueued).toBe(true)
     expect((await getMaterial(db(), "p1", r.materialId))?.parseStatus).toBe("排队中")
 
-    const 作业 = rowsOf(
-      await db().execute(sql`select source_path, status from auth.case_ingest_job where project_id = 'p1'`),
+    const 排队 = rowsOf(
+      await db().execute(sql`select source_path, status, started_at from auth.case_ingest_job where project_id = 'p1'`),
     )
-    expect(作业[0]).toMatchObject({ source_path: "p1/话单.xlsx", status: "排队中" })
-  })
-})
+    expect(排队[0]).toMatchObject({ source_path: "p1/话单.xlsx", status: "排队中" })
+    expect(排队[0]?.started_at).toBeNull()
 
-describe("runJob", () => {
-  test("认领 → 跑通：明细行落库、类型自动判定、格式被记住、状态到「已解析」", async () => {
     const { job, 结果 } = await 跑下一条()
     expect(结果).toBe("完成")
 
     const 作业 = rowsOf(
-      await db().execute(sql`select status, attempts from auth.case_ingest_job where id = ${job.jobId}`),
+      await db().execute(
+        sql`select status, attempts, started_at from auth.case_ingest_job where id = ${job.jobId}`,
+      ),
     )
     expect(作业[0]).toMatchObject({ status: "完成" })
     expect(Number(作业[0]?.attempts)).toBe(1)
+    // 认领时写了 started_at（M5）：没有它，「这条到底跑过没有」只能靠状态猜。
+    expect(Number(作业[0]?.started_at)).toBeGreaterThan(0)
 
     expect(await countFactRows(db(), "p1")).toBe(2)
     const material = await getMaterial(db(), "p1", job.materialId)
@@ -98,18 +145,29 @@ describe("runJob", () => {
     expect(material?.kind).toBe("话单")
     expect(await 查格式行数("p1")).toBe(1)
   })
+})
 
+describe("enqueueMaterial 幂等", () => {
   test("同一个指纹再入队 ⇒ 不重复排队（判据 A2）", async () => {
-    const r = await 入队("p1", "话单.xlsx", "fp-1")
+    // 自己造出「已解析」状态：这一条钉的是 `case "已解析"` 分支。
+    文件.set("p11/话单.xlsx", 话单)
+    const 首次 = await 入队("p11", "话单.xlsx", "fp-11")
+    expect((await 跑下一条()).结果).toBe("完成")
+
+    const r = await 入队("p11", "话单.xlsx", "fp-11")
     expect(r.enqueued).toBe(false)
-    const n = rowsOf(
-      await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = 'p1'`),
+    expect(r.materialId).toBe(首次.materialId)
+    const 材料 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = 'p11'`),
     )
-    expect(Number(n[0]?.n)).toBe(1)
+    expect(Number(材料[0]?.n)).toBe(1)
+    const 作业 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_ingest_job where project_id = 'p11'`),
+    )
+    expect(Number(作业[0]?.n)).toBe(1)
   })
 
   test("排队中再入队 ⇒ 不重复排队，作业仍只有一条", async () => {
-    // 上一条走的是「已解析」分支；这一条钉「排队中/解析中一律不重排」那条。
     文件.set("p7/话单.xlsx", 话单)
     const r = await 入队("p7", "话单.xlsx", "fp-7")
     expect(r.enqueued).toBe(true)
@@ -123,14 +181,37 @@ describe("runJob", () => {
   })
 
   test("别的项目同一个指纹 ⇒ 各是各的一条，各跑各的", async () => {
-    文件.set("p2/话单.xlsx", 话单)
-    const r = await 入队("p2", "话单.xlsx", "fp-1")
-    expect(r.enqueued).toBe(true)
+    文件.set("p2a/话单.xlsx", 话单)
+    文件.set("p2b/话单.xlsx", 话单)
+    expect((await 入队("p2a", "话单.xlsx", "fp-共用")).enqueued).toBe(true)
     expect((await 跑下一条()).结果).toBe("完成")
-    expect(await countFactRows(db(), "p2")).toBe(2)
-    expect(await countFactRows(db(), "p1")).toBe(2)
+    expect((await 入队("p2b", "话单.xlsx", "fp-共用")).enqueued).toBe(true)
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p2a")).toBe(2)
+    expect(await countFactRows(db(), "p2b")).toBe(2)
   })
+})
 
+describe("claimNextJob", () => {
+  test("认领后同一条作业不能再被认领", async () => {
+    // ⚠️ 单连接顺序调用时，第二次的子查询本来就看不到「排队中」⇒ 修前也绿。
+    // 它钉的是**调用约定**（认领 ⇒ 离开可认领集合）；并发重复认领由外层
+    // `and status = '排队中'` 谓词兜住（CODE 复审为准，不是这条用例）。
+    文件.set("p16/话单.xlsx", 话单)
+    const r = await 入队("p16", "话单.xlsx", "fp-16")
+    const job = await claimNextJob(db())
+    if (!job) throw new Error("没认领到作业")
+    expect(job.materialId).toBe(r.materialId)
+    expect(await claimNextJob(db())).toBeUndefined()
+    expect(await runJob(db(), deps, job)).toBe("完成")
+    const 作业 = rowsOf(
+      await db().execute(sql`select attempts from auth.case_ingest_job where id = ${job.jobId}`),
+    )
+    expect(Number(作业[0]?.attempts)).toBe(1)
+  })
+})
+
+describe("runJob", () => {
   test("同格式的第二个文件：命中格式缓存，hit_count 涨到 1", async () => {
     // 必须真的跑**两份**文件：只跑一份时格式行刚写进去、hit_count 是 0，断言 1 必红。
     // 两份内容相同 ⇒ 格式指纹相同；材料指纹不同 ⇒ 两份材料各建各的。
@@ -157,10 +238,18 @@ describe("runJob", () => {
 
   test("文件读不出来 ⇒ 作业失败、材料落「有问题」且带原因", async () => {
     const r = await 入队("p4", "不存在.xlsx", "fp-4")
-    expect((await 跑下一条()).结果).toBe("失败")
+    const { job, 结果 } = await 跑下一条()
+    expect(结果).toBe("失败")
     const material = await getMaterial(db(), "p4", r.materialId)
     expect(material?.parseStatus).toBe("有问题")
     expect(material?.parseDetail).toMatchObject({ reason: expect.any(String) })
+    // M5：失败也要在作业表里留下可查的结论，不能只靠材料状态。
+    const 作业 = rowsOf(
+      await db().execute(sql`select status, error from auth.case_ingest_job where id = ${job.jobId}`),
+    )
+    expect(作业[0]).toMatchObject({ status: "失败" })
+    expect(typeof 作业[0]?.error).toBe("string")
+    expect(作业[0]?.error).not.toBe("")
   })
 
   test("字节不是表格 ⇒ 同样落「有问题」，不是崩掉 worker", async () => {
@@ -174,22 +263,98 @@ describe("runJob", () => {
     // ⚠️ 这一条是本计划最容易假绿的地方：`insertFactRows` 的 `on conflict do nothing`
     // 会让「没删也没写」和「真的重写了」都表现成「行数不变」。所以先手工把一行的
     // duration_sec 改成 999 —— 只有**真的删了再写**，它才会变回 37。
+    文件.set("p12/话单.xlsx", 话单)
+    expect((await 入队("p12", "话单.xlsx", "fp-12")).enqueued).toBe(true)
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p12")).toBe(2)
+
     await db().execute(sql`
       update auth.case_fact_row set duration_sec = 999
-       where project_id = 'p1' and sheet = 'Sheet1' and row_no = 2
+       where project_id = 'p12' and sheet = 'Sheet1' and row_no = 2
     `)
-    const r = await 入队("p1", "话单.xlsx", "fp-1", true)
+    const r = await 入队("p12", "话单.xlsx", "fp-12", true)
     expect(r.enqueued).toBe(true)
     expect((await 跑下一条()).结果).toBe("完成")
 
-    expect(await countFactRows(db(), "p1")).toBe(2)
+    expect(await countFactRows(db(), "p12")).toBe(2)
     const row = rowsOf(
       await db().execute(sql`
         select duration_sec from auth.case_fact_row
-         where project_id = 'p1' and sheet = 'Sheet1' and row_no = 2
+         where project_id = 'p12' and sheet = 'Sheet1' and row_no = 2
       `),
     )
     expect(Number(row[0]?.duration_sec)).toBe(37)
+  })
+
+  test("重放中途写库失败 ⇒ 旧行不被删（先删后写在同一个事务里，C1）", async () => {
+    // PROBE C 的形状：旧 2 行 → 重放 600 行、第二块（行号 550）写失败。
+    // 没有事务时旧行已删、只留前 500 行 —— 材料「有问题」但数据成了半份。
+    文件.set("p13/话单.xlsx", 话单)
+    const r = await 入队("p13", "话单.xlsx", "fp-13")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p13")).toBe(2)
+    const 旧行 = rowsOf(
+      await db().execute(sql`
+        select row_no, caller, duration_sec from auth.case_fact_row
+         where project_id = 'p13' order by row_no
+      `),
+    )
+
+    文件.set("p13/大话单.xlsx", 大话单)
+    await applyParseAction(db(), { projectId: "p13", materialId: r.materialId, action: "重新解析" })
+    await db().execute(sql`alter table auth.case_fact_row add constraint probe_boom check (row_no <> 550)`)
+    try {
+      expect(await runJob(db(), deps, 手工作业("p13", r.materialId, "p13/大话单.xlsx"))).toBe("失败")
+      expect(await countFactRows(db(), "p13")).toBe(2)
+      const 现在 = rowsOf(
+        await db().execute(sql`
+          select row_no, caller, duration_sec from auth.case_fact_row
+           where project_id = 'p13' order by row_no
+        `),
+      )
+      expect(现在).toEqual(旧行)
+    } finally {
+      await db().execute(sql`alter table auth.case_fact_row drop constraint probe_boom`)
+    }
+  })
+
+  test("工作表超过上限 ⇒ 整份不落库、材料「有问题」", async () => {
+    文件.set("p14/九表.xlsx", 九表工作簿)
+    const r = await 入队("p14", "九表.xlsx", "fp-14")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const material = await getMaterial(db(), "p14", r.materialId)
+    expect(material?.parseStatus).toBe("有问题")
+    expect(material?.parseDetail).toMatchObject({ reason: expect.stringContaining("工作表超过上限") })
+    expect(await countFactRows(db(), "p14")).toBe(0)
+  })
+
+  test("重放时截断 ⇒ 旧行还在（删除在算完之后）", async () => {
+    文件.set("p15/话单.xlsx", 话单)
+    const r = await 入队("p15", "话单.xlsx", "fp-15")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p15")).toBe(2)
+
+    文件.set("p15/九表.xlsx", 九表工作簿)
+    await applyParseAction(db(), { projectId: "p15", materialId: r.materialId, action: "重新解析" })
+    expect(await runJob(db(), deps, 手工作业("p15", r.materialId, "p15/九表.xlsx"))).toBe("失败")
+    expect(await countFactRows(db(), "p15")).toBe(2)
+  })
+})
+
+describe("沙箱内路径", () => {
+  const root = join(tmpdir(), "openhive-沙箱")
+
+  test("正常相对路径落在沙箱根下（/ 分隔也可）", () => {
+    expect(沙箱内路径(root, "u1/p/材料/a.xlsx")).toBe(resolve(root, "u1", "p", "材料", "a.xlsx"))
+  })
+
+  test("越出根 / 空路径 / 绝对路径一律 undefined", () => {
+    expect(沙箱内路径(root, "../../etc/passwd")).toBeUndefined()
+    expect(沙箱内路径(root, "u1/../../etc/passwd")).toBeUndefined()
+    expect(沙箱内路径(root, "")).toBeUndefined()
+    expect(沙箱内路径(root, join(root, "u1", "a.xlsx"))).toBeUndefined()
+    // win32 上反斜杠同样是分隔符：`..\..\Windows\win.ini` 必须被拒。
+    if (process.platform === "win32") expect(沙箱内路径(root, "..\\..\\Windows\\win.ini")).toBeUndefined()
   })
 })
 

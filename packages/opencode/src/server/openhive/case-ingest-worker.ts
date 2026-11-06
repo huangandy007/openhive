@@ -1,10 +1,9 @@
 export * as OpenhiveCaseIngestWorker from "./case-ingest-worker"
 
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
 import { Cause, Effect, Layer } from "effect"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
-import { claimNextJob, runJob } from "./case-ingest"
+import { claimNextJob, runJob, 沙箱内路径 } from "./case-ingest"
 import { OpenhivePg } from "./pg"
 
 /**
@@ -27,8 +26,19 @@ import { OpenhivePg } from "./pg"
  */
 export const 轮询间隔ms = 2000
 
+/** `connect(env)` 拼连接串要的变量。缺任一 ⇒ 这台部署不接业务 PG。 */
+const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
+    // 没配 PG 的部署**不起循环**（复审 I3）：配置是启动期静态值，不配就是永远不配；
+    // 起了的话每 2 秒一条 WARN、一天 43200 条，把真正的告警淹掉。
+    // 与 `mcp-config-sync` 的 `已启用` 同一条判据形状。
+    if (!PG_ENV.every((key) => process.env[key])) {
+      yield* Effect.logDebug("表格导入消费未启用：未配置 PG")
+      return
+    }
+
     const pg = yield* OpenhivePg.Service
     const config = yield* AnchorWorkspace.Config
 
@@ -41,7 +51,14 @@ export const layer = Layer.effectDiscard(
         if (job === undefined) return
         await runJob(
           db,
-          { readFile: async (sourcePath) => new Uint8Array(await readFile(join(config.root, ...sourcePath.split("/")))) },
+          {
+            readFile: async (sourcePath) => {
+              // `source_path` 是库里的数据，先过沙箱闸（复审 I4）：`..` / 绝对路径一律拒。
+              const 落点 = 沙箱内路径(config.root, sourcePath)
+              if (落点 === undefined) throw new Error("作业的落点越出沙箱根")
+              return new Uint8Array(await readFile(落点))
+            },
+          },
           job,
         )
       }),

@@ -1,6 +1,7 @@
 export * as OpenhiveCaseIngest from "./case-ingest"
 
 import { sql } from "drizzle-orm"
+import { isAbsolute, relative, resolve } from "node:path"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { readSheets } from "./case-sheet"
@@ -11,6 +12,7 @@ import {
   createMaterial,
   deleteFactRowsOfMaterial,
   getMaterial,
+  inTransaction,
   insertFactRows,
   setMaterialKind,
   type FactRowInput,
@@ -93,14 +95,19 @@ export async function enqueueMaterial(db: Queryable, input: EnqueueInput): Promi
 
   // 先推状态再插作业：反过来的话，作业可能先被 worker 认领、材料却还是「未入队」，
   // `runJob` 里那步「排队中 → 解析中」就推进不动。
-  await applyParseAction(db, { projectId: input.projectId, materialId, action, by: input.by })
-
-  await db.execute(sql`
-    insert into auth.case_ingest_job
-      (id, project_id, material_id, source_path, status, attempts, queued_by, queued_at)
-    values (${crypto.randomUUID()}, ${input.projectId}, ${materialId}, ${input.sourcePath},
-            '排队中', 0, ${input.by ?? null}, ${nowSeconds()})
-  `)
+  //
+  // ⚠️ 两步**必须同一个事务**（复审 I2）：只推状态而作业插入失败时，材料停在「排队中」、
+  // 队列里却没有作业，而「排队中」再入队直接返回 false —— 永远不自愈。
+  // `createMaterial` 留在事务外：它幂等，失败时材料是「未入队」，重拖能自愈。
+  await inTransaction(db, async (tx) => {
+    await applyParseAction(tx, { projectId: input.projectId, materialId, action, by: input.by })
+    await tx.execute(sql`
+      insert into auth.case_ingest_job
+        (id, project_id, material_id, source_path, status, attempts, queued_by, queued_at)
+      values (${crypto.randomUUID()}, ${input.projectId}, ${materialId}, ${input.sourcePath},
+              '排队中', 0, ${input.by ?? null}, ${nowSeconds()})
+    `)
+  })
   return { materialId, enqueued: true }
 }
 
@@ -111,7 +118,14 @@ export interface ClaimedJob {
   sourcePath: string
 }
 
-/** 认领一条排队作业（单 worker：不必加锁）。空队列返回 `undefined`。 */
+/**
+ * 认领一条排队作业（单 worker：不必加锁）。空队列返回 `undefined`。
+ *
+ * ⚠️ 外层 WHERE 的 `and status = '排队中'` 不是冗余（复审 I1）：子查询里的谓词在
+ * READ COMMITTED 下**不保护外层 UPDATE**——两个连接同时认领时，后到的那个会等锁，
+ * 锁释放后**重新求值外层 WHERE**；若外层不判状态，它照样把已变成「运行中」的那行改走
+ * （`attempts` 变 2、两个 worker 跑同一份文件）。加上它之后，后到者更新 0 行 ⇒ 返回 `undefined`。
+ */
 export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefined> {
   const rows = rowsOf(
     await db.execute(sql`
@@ -123,6 +137,7 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
           order by queued_at, id
           limit 1
        )
+         and status = '排队中'
       returning project_id, id, material_id, source_path
     `),
   )
@@ -139,6 +154,25 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
 export interface RunDeps {
   /** 读材料字节。注入而不是直接读盘：作业本身不该知道沙箱根长什么样。 */
   readFile: (sourcePath: string) => Promise<Uint8Array>
+}
+
+/**
+ * 沙箱根 ＋ 相对路径 → 绝对路径；越出根、空路径、绝对路径一律 `undefined`。
+ *
+ * `source_path` 是**库里的数据**，不能假设它一定老实：作业行可以被别的路径写进来
+ * （导入脚本、手工修库、将来别的上传出口）。只做 `join(root, ...)` 的话，
+ * `../../etc/passwd` 会原样落到根外——worker 手里拿的正是它。
+ *
+ * 判据落在**解析之后的相对式**上（`resolve` 归一 `..`、win32 的反斜杠也一起处理），
+ * 而不是比对字面串：`LEARNINGS #009-03` 的教训是「字面路径判定会被链接/分隔符绕过」。
+ */
+export function 沙箱内路径(root: string, sourcePath: string): string | undefined {
+  if (sourcePath === "") return undefined
+  if (isAbsolute(sourcePath)) return undefined
+  const 绝对 = resolve(root, ...sourcePath.split("/"))
+  const 相对 = relative(root, 绝对)
+  if (相对 === "" || 相对.startsWith("..") || isAbsolute(相对)) return undefined
+  return 绝对
 }
 
 /**
@@ -207,23 +241,32 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
     }
 
     // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
-    await deleteFactRowsOfMaterial(db, job.projectId, job.materialId)
-    await insertFactRows(db, 待写)
+    //
+    // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
+    // 「旧行已删、只有前 500 行」——材料标成「有问题」，数据却成了半份，比失败更糟。
+    // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
+    await inTransaction(db, async (tx) => {
+      await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
+      await insertFactRows(tx, 待写)
 
-    await setMaterialKind(db, job.projectId, job.materialId, 类型)
-    await applyParseAction(db, { projectId: job.projectId, materialId: job.materialId, action: "完成" })
-    await 收尾(db, job, "完成", null)
+      await setMaterialKind(tx, job.projectId, job.materialId, 类型)
+      await applyParseAction(tx, { projectId: job.projectId, materialId: job.materialId, action: "完成" })
+      await 收尾(tx, job, "完成", null)
+    })
     return "完成"
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     // 收尾失败不能盖掉「返回失败」这件事：作业表写不进去时，材料状态那条还在。
-    await applyParseAction(db, {
-      projectId: job.projectId,
-      materialId: job.materialId,
-      action: "出问题",
-      detail: { reason },
+    // 两条也是同一个事务：不能出现「作业记了失败、材料却还说解析中」的半截收尾。
+    await inTransaction(db, async (tx) => {
+      await applyParseAction(tx, {
+        projectId: job.projectId,
+        materialId: job.materialId,
+        action: "出问题",
+        detail: { reason },
+      })
+      await 收尾(tx, job, "失败", reason)
     }).catch(() => undefined)
-    await 收尾(db, job, "失败", reason).catch(() => undefined)
     return "失败"
   }
 }
@@ -242,7 +285,10 @@ async function 读格式(
   )
   const row = rows[0]
   if (!row) return undefined
-  const raw = typeof row.mapping === "string" ? JSON.parse(row.mapping) : row.mapping
+  const raw: unknown = typeof row.mapping === "string" ? JSON.parse(row.mapping) : row.mapping
+  // 脏形态（null / 标量 / 数组）当**缓存未命中**（复审 M6）：否则 `Object.entries` 要么抛、
+  // 要么把字符串的下标当列号，映射全错。让它重算一次，比信一条坏缓存便宜。
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
   const columns: Record<number, FactField> = {}
   for (const [k, v] of Object.entries(raw as Record<string, FactField>)) columns[Number(k)] = v
   return columns
