@@ -27,8 +27,14 @@ const test = testEffect(Layer.empty)
 const it = test.live
 const SECRET = "f4a5c6t7r8u9s0t1e2s3t4a5b6c7d8e9"
 
-const 我: TokenSubject = { id: "u-纠错-我", policeNo: "970011", name: "甲民警", isAdmin: false }
-const 别人: TokenSubject = { id: "u-纠错-别", policeNo: "970012", name: "乙民警", isAdmin: false }
+/**
+ * ⚠️ 用户 id 必须是 **ASCII**：网关会把它塞进 `x-user-id` 请求头（`gateway.ts:203`），
+ * POST 侧的 `replaceBody` 用这些头重建 `Request`；中文 id 会被 Web `Request` 判成
+ * `Header 'x-user-id' has invalid value` ⇒ 所有 POST 500（GET 不重建请求，所以此前没暴露）。
+ * 生产 id 是 UUID，中文只是夹具。姓名不受影响（只落库、不进头）。
+ */
+const 我: TokenSubject = { id: "u-case-me", policeNo: "970011", name: "甲民警", isAdmin: false }
+const 别人: TokenSubject = { id: "u-case-other", policeNo: "970012", name: "乙民警", isAdmin: false }
 const 项目 = "p-纠错-我的"
 const 别人的项目 = "p-纠错-别人的"
 
@@ -186,6 +192,54 @@ describe("GET /openhive/case/facts", () => {
       const 体带上 = yield* 读回<{ citations: unknown[]; changes: unknown[] }>(带上)
       expect(体带上.citations).toHaveLength(1)
       expect(体带上.changes).toHaveLength(1)
+    }),
+  )
+})
+
+describe("POST /openhive/case/facts/trust", () => {
+  const 判 = (body: unknown) => 发体(我, "/openhive/case/facts/trust", body)
+
+  it("不是成员 ⇒ 403", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 别人的项目, factType: "entity", factId: "e-别人", action: "确认" })
+      expect(响应.status).toBe(403)
+    }),
+  )
+
+  it("action 不在五种里 ⇒ 400", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-路由", action: "删掉" })
+      expect(响应.status).toBe(400)
+    }),
+  )
+
+  it("确认 ⇒ 200，读回来是已确认", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-路由", action: "确认" })
+      expect(响应.status).toBe(200)
+      expect((yield* 读回<{ trustState: string }>(响应)).trustState).toBe("已确认")
+
+      // 回包里的 trustState 是「目标值」的直传，光看它钉不住 UPDATE 真落了库（M3 变异实测）。
+      // 再走 GET 读一次库：写入没落盘时这条才红。
+      const 详情 = yield* 发(我, `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由`)
+      expect(详情.status).toBe(200)
+      expect((yield* 读回<{ trustState: string }>(详情)).trustState).toBe("已确认")
+    }),
+  )
+
+  it("排除缺原因 ⇒ 409 bad_changes", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-路由", action: "排除" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("bad_changes")
+    }),
+  )
+
+  it("事实不存在 ⇒ 409 fact_not_found", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-没有", action: "确认" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("fact_not_found")
     }),
   )
 })
