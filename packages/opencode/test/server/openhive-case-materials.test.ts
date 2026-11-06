@@ -10,6 +10,7 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { 材料视图 } from "../../src/server/openhive/case-materials"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -384,6 +385,47 @@ describe("GET /openhive/case/materials", () => {
         path: "资料/笔录.txt",
         parseable: true,
       })
+    }))
+
+  it("文本材料的事实数按引用去重计数，号码数按被引用的号码实体计数", () =>
+    Effect.gen(function* () {
+      // 沿用本文件既有的 `种材料` / `库()` 夹具（PGlite 会话约束见文件头）。
+      // `beforeEach` 只清 job / fact_row / material，不清 entity 与 citation ⇒ id 必须唯一。
+      const 唯一 = crypto.randomUUID()
+      const 材料id = yield* Effect.promise(() =>
+        种材料({ path: `笔录-${唯一}.txt`, kind: "笔录", status: "已解析" }),
+      )
+      const 号码实体 = `e-${唯一}`
+      // 必须再有一条**非号码**实体引用：只引号码的话，把 SQL 里 `e.type = '号码'` 删掉
+      // `count(distinct e.id)` 也还是 1，变异步骤就是空转（假红/假绿都测不出来）。
+      const 人实体 = `e-人-${唯一}`
+      for (const [id, type, 值] of [
+        [号码实体, "号码", `13800138000${唯一}`],
+        [人实体, "人", `张三${唯一}`],
+      ] as const) {
+        yield* Effect.promise(() =>
+          库().execute(sql`insert into auth.case_entity
+            (id, project_id, type, canonical_value, aliases, created_at)
+            values (${id}, ${项目}, ${type}, ${值}, '{}'::text[], 1)`),
+        )
+      }
+      // 同一号码实体被两片引用 ⇒ 只算 1 条；人实体 1 条；关系 1 条 ⇒ 事实数 3、号码数 1。
+      for (const [id, factType, factId] of [
+        [`${唯一}-c1`, "entity", 号码实体],
+        [`${唯一}-c2`, "entity", 号码实体],
+        [`${唯一}-c3`, "entity", 人实体],
+        [`${唯一}-c4`, "relation", `r-${唯一}`],
+      ] as const) {
+        yield* Effect.promise(() =>
+          库().execute(sql`insert into auth.case_citation
+            (id, project_id, fact_type, fact_id, material_id, locator, extract_method, created_at)
+            values (${id}, ${项目}, ${factType}, ${factId}, ${材料id}, '{}'::jsonb, '机器', 1)`),
+        )
+      }
+      const 行 = yield* Effect.promise(() => 材料视图(库(), 项目))
+      const 目标 = 行.find((m) => m.id === 材料id)
+      expect(目标?.factCount).toBe(3)
+      expect(目标?.numberCount).toBe(1)
     }))
 })
 

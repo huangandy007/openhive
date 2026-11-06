@@ -20,6 +20,12 @@ import type { ParseStatus } from "./case-status"
  *
  * 它回答的是「系统解不解析这个后缀」（表格 ∪ 文本，计划 4 起含文本类），与 `kind` 是两件事。
  * 产物的硬边界由 `applyParseAction` 的守卫与 `kind = 产物` 的库约束拦，**不靠这个布尔**。
+ *
+ * ## 两种材料的计数口径不同（R10）
+ *
+ * 表格材料的「事实数」是 `case_fact_row` 行数（明细行）；文本材料没有明细行，取
+ * `case_citation` 的去重事实数。两者相加（同一材料不会同时有两种）。号码数同理：
+ * 表格取 caller/callee/counterparty，文本取被引用的 `type = '号码'` 实体。
  */
 export interface 材料视图行 {
   id: string
@@ -65,6 +71,19 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
           ) 号码们
          group by material_id
       ),
+      cited as (
+        select material_id, count(distinct fact_type || ':' || fact_id)::int as n
+          from auth.case_citation
+         where project_id = ${projectId}
+         group by material_id
+      ),
+      cited_numbers as (
+        select c.material_id, count(distinct e.id)::int as n
+          from auth.case_citation c
+          join auth.case_entity e on e.project_id = c.project_id and e.id = c.fact_id
+         where c.project_id = ${projectId} and c.fact_type = 'entity' and e.type = '号码'
+         group by c.material_id
+      ),
       first_job as (
         select distinct on (material_id) material_id, queued_at, id
           from auth.case_ingest_job
@@ -81,12 +100,14 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
       )
       select l.id, l.path, l.kind, l.parse_status, l.parse_detail,
              coalesce(a.n, 0) as queue_ahead,
-             coalesce(f.n, 0) as fact_count,
-             coalesce(n.n, 0) as number_count
+             coalesce(f.n, 0) + coalesce(cd.n, 0) as fact_count,
+             coalesce(n.n, 0) + coalesce(cn.n, 0) as number_count
         from latest l
         left join ahead a on a.material_id = l.id
         left join facts f on f.material_id = l.id
         left join numbers n on n.material_id = l.id
+        left join cited cd on cd.material_id = l.id
+        left join cited_numbers cn on cn.material_id = l.id
        order by l.path, l.id
     `),
   )

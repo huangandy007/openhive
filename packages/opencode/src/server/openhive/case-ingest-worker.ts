@@ -1,9 +1,13 @@
 export * as OpenhiveCaseIngestWorker from "./case-ingest-worker"
 
 import { readFile } from "node:fs/promises"
+import { join } from "node:path"
 import { Cause, Effect, Layer } from "effect"
+import { InstanceStore } from "@/project/instance-store"
+import { Provider, parseModel } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
-import { claimNextJob, runJob, 沙箱内路径 } from "./case-ingest"
+import { 建调用模型 } from "./case-extract-ai"
+import { claimNextJob, runJob, 沙箱内路径, type ClaimedJob } from "./case-ingest"
 import { OpenhivePg } from "./pg"
 
 /**
@@ -37,6 +41,12 @@ const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] a
  */
 export const 消费开关ENV = "OPENHIVE_CASE_INGEST_WORKER"
 
+/**
+ * 抽取用的模型（`provider/model`）。不设 ⇒ `provider.defaultModel()`（与内核聊天同一条回退）。
+ * 抽取值钱且慢，部署时通常想钉一个比聊天更便宜的模型——这是配置项，不是代码分支。
+ */
+export const 抽取模型ENV = "OPENHIVE_CASE_EXTRACT_MODEL"
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     if (process.env[消费开关ENV] === "0") {
@@ -54,6 +64,49 @@ export const layer = Layer.effectDiscard(
 
     const pg = yield* OpenhivePg.Service
     const config = yield* AnchorWorkspace.Config
+    const provider = yield* Provider.Service
+    const instances = yield* InstanceStore.Service
+
+    /**
+     * 按作业的项目目录建抽取器。
+     *
+     * 模型的解析要实例上下文（`Provider.defaultModel` 读的是项目配置），而后台作业没有请求的
+     * `InstanceRef`；`InstanceStore.provide` 是仓库里给「非请求代码」起实例的正规入口。
+     * 这里用 `Effect.runPromise`：effect 自带 `instances.provide` 的上下文，不依赖调用方
+     * （`LEARNINGS #010-07` 讲的是「读请求上下文」的那种 runPromise，不是这种自足的）。
+     */
+    const 建抽取器 = async (job: ClaimedJob) => {
+      const 段 = job.sourcePath.split("/")
+      // `source_path` 是库里的数据。项目目录只取前两段，但**前两段本身也要过闸**：
+      // 空段 / `.` / `..` 会让 `join` 落到别的用户或别的项目上（`#009-03`：判归属别只看字面）。
+      if (段.length < 3 || 段[0] === "" || 段[1] === "" || 段[0] === "." || 段[0] === ".." || 段[1] === "." || 段[1] === "..")
+        throw new Error(`作业的落点不合法：${job.sourcePath}`)
+      // 不写 `段[0]!`：本包未开 `noUncheckedIndexedAccess`，`!` 只会新增
+      // `no-unnecessary-type-assertion` warning（`case-fact-store.ts:69` 同款注释）。
+      const 目录 = join(config.root, 段[0], 段[1])
+      return Effect.runPromise(
+        instances
+          .provide(
+            { directory: 目录 },
+            Effect.gen(function* () {
+              const 指定 = process.env[抽取模型ENV]
+              const 引用 = 指定 ? parseModel(指定) : yield* provider.defaultModel()
+              const resolved = yield* provider.getModel(引用.providerID, 引用.modelID)
+              const 语言 = yield* provider.getLanguage(resolved)
+              return { 调用: 建调用模型(语言), 模型标识: `${引用.providerID}/${引用.modelID}` }
+            }),
+          )
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.die(
+                new Error(
+                  `没有可用的抽取模型：请设置 ${抽取模型ENV}（形如 provider/model），或在项目配置里设置 model（${Cause.pretty(cause)}）`,
+                ),
+              ),
+            ),
+          ),
+      )
+    }
 
     // 一份坏文件不许把循环打停：`runJob` 自己已经把失败收成「有问题」，
     // 这里再兜一层是防**它之外**的意外（例如库连接当场断）。
@@ -71,6 +124,7 @@ export const layer = Layer.effectDiscard(
               if (落点 === undefined) throw new Error("作业的落点越出沙箱根")
               return new Uint8Array(await readFile(落点))
             },
+            建抽取器,
           },
           job,
         )
