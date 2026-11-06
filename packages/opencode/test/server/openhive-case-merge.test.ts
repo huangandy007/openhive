@@ -49,8 +49,9 @@ afterAll(async () => {
 async function 场景(前缀: string): Promise<void> {
   await 建实体(库(), { id: `${前缀}-a`, projectId: 项目, value: `${前缀}甲`, aliases: ["曾用名"] })
   await 建实体(库(), { id: `${前缀}-b`, projectId: 项目, value: `${前缀}乙`, aliases: ["乙的别名"] })
-  // 被并入的实体在**每一样快照字段上都与主体 / 默认值不同**：别名、attrs、createdAt、
-  // trustState 各有非默认值，拆分「快照完整性」断言才都有判别力（丢了或错存都会红）。
+  // 被并入的实体在快照的**五项上与主体 / 默认值不同**：canonicalValue 与主体不同，
+  // aliases / attrs / createdAt / trustState 各有非默认值——拆分断言才有判别力（丢了或错存都会红）。
+  // `type` 例外：合并本就要求同类型，它必然与主体同为默认「人」，这一项无从区分。
   // 主体 `-a` 的 attrs / createdAt / trustState 保持默认：`{}` / `1_760_000_000` / `自动抽取`。
   await 建实体(库(), {
     id: `${前缀}-c`,
@@ -167,8 +168,9 @@ describe("拆分（撤销合并）", () => {
     const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
     expect(拆.restoredEntityId).toBe("合1-c")
 
-    // 快照完整性：下面六项都与主体 / 默认值不同，快照少存或错存都会红。
-    // （type / canonicalValue 与主体不同；aliases / attrs / createdAt / trustState 都是非默认值。）
+    // 快照完整性：下面五项各有判别力（canonicalValue 与主体不同；aliases / attrs /
+    // createdAt / trustState 都是非默认值）——少存或错存都会红。`entityType` 是例外：
+    // 合并要求同类型，它必然与主体同值，这条断言只钉「恢复出来是这个类型」。
     const 恢复 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "合1-c" })
     if (恢复?.type !== "entity") throw new Error("形状不对")
     expect(恢复.entityType).toBe("人")
