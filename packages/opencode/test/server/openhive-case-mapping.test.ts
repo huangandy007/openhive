@@ -32,6 +32,18 @@ describe("detectMapping · 第一层：表头词典", () => {
     expect(r.columns[2]).toBeUndefined()
     expect(r.unknownColumns).toEqual([2])
   })
+
+  test("复合表头按后缀认：「主叫通话时长」是时长，不是主叫", () => {
+    // 包含匹配会把 col0 认成 caller（「主叫」是它的词），时长列就此静默消失。
+    const r = detectMapping(["主叫通话时长", "通话时间"], [["37", "2026-01-02 03:04:05"]])
+    expect(r.columns).toEqual({ 0: "durationSec", 1: "startedAt" })
+  })
+
+  test("两列都以后缀命中同一字段 ⇒ 消歧不了就不认", () => {
+    const r = detectMapping(["主叫通话时长", "被叫通话时长"], [["37", "83"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([0, 1])
+  })
 })
 
 describe("detectMapping · 第二层：数据特征", () => {

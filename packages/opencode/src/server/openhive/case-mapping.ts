@@ -23,6 +23,11 @@ export interface MappingResult {
   /** 列下标 → 标准字段。只含认得出的列。 */
   columns: Record<number, FactField>
   method: "词典" | "特征"
+  /**
+   * 认不出的列下标，**以 `header` 长度为界**。前提：`rows` 不比 `header` 宽
+   * （`readSheets` 产出的 `RawSheet` 满足这条——宽度恒等于 `!ref` 的列跨度）。
+   * 直接拿别的数据源调本函数时，多出来的数据列既不会进 `columns` 也不会进这里。
+   */
   unknownColumns: number[]
 }
 
@@ -37,7 +42,11 @@ const DICTIONARY: Record<FactField, string[]> = {
   counterparty: ["对方账号", "对方账户", "对方卡号", "交易对方", "对方户名", "对手账号", "对手户名"],
 }
 
-/** 认时间用的文本形状（与 `case-time.ts` 认的四种格式一致；这里只要「像不像」）。 */
+/**
+ * 认时间用的文本形状：`case-time.ts` 的四种格式里**只认前三种**（到秒/到分/到日）。
+ * 紧凑 14 位（`yyyyMMddHHmmss`）**故意不认**：它和长数字串（流水号、账号）在文本上
+ * 长得一样，特征层拿它当时间就会把号码列写进 `startedAt`。漏认可接受（进 extras），误认不可接受。
+ */
 const 时间形状 = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$/
 /** 金额形状：**必须带两位小数**。整数列（号码、行号）因此不会被误认成金额。 */
 const 金额形状 = /^-?\d+\.\d{2}$/
@@ -68,14 +77,18 @@ export function detectMapping(header: (string | null)[], rows: (string | null)[]
   /** 靠**表头词典**认走的列。`method` 靠它判定：有列不在里面 ⇒ 至少用了特征层。 */
   const 词典命中 = new Set<number>()
 
-  // 第一层：表头词典。精确相等优先，其次「包含且唯一」。
+  // 第一层：表头词典。精确相等优先，其次「以该词结尾且全表唯一」。
+  //
+  // 为什么是**后缀**而不是包含：中文表头是「修饰语 ＋ 中心词」，中心词在末尾。
+  // 「主叫通话时长」按包含会被 caller 的「主叫」抢走（时长列静默变成主叫号码），
+  // 按后缀则命中 durationSec 的「通话时长」——修饰语再长也不会改变它是什么列。
   const 规范表头 = header.map(规范化)
   for (const field of FACT_FIELDS) {
     const 词 = DICTIONARY[field].map(规范化)
     let hit = 规范表头.findIndex((h, i) => !已占.has(i) && h !== "" && 词.includes(h))
     if (hit < 0) {
-      const 候选 = 规范表头.flatMap((h, i) => (!已占.has(i) && h !== "" && 词.some((w) => h.includes(w)) ? [i] : []))
-      if (候选.length === 1) hit = 候选[0]!
+      const 候选 = 规范表头.flatMap((h, i) => (!已占.has(i) && h !== "" && 词.some((w) => h.endsWith(w)) ? [i] : []))
+      if (候选.length === 1) hit = 候选[0]
     }
     if (hit >= 0) {
       columns[hit] = field
@@ -88,16 +101,16 @@ export function detectMapping(header: (string | null)[], rows: (string | null)[]
   if (!Object.values(columns).includes("startedAt")) {
     const 候选 = header.flatMap((_, i) => (!已占.has(i) && 命中率(列(rows, i), 时间形状) >= 0.9 ? [i] : []))
     if (候选.length === 1) {
-      columns[候选[0]!] = "startedAt"
-      已占.add(候选[0]!)
+      columns[候选[0]] = "startedAt"
+      已占.add(候选[0])
     }
   }
   if (!Object.values(columns).includes("amount")) {
     const 候选 = header.flatMap((_, i) => (!已占.has(i) && 命中率(列(rows, i), 金额形状) >= 0.9 ? [i] : []))
     // 两列都像金额 ⇒ 认不出到底哪列是金额哪列是余额，不猜。
     if (候选.length === 1) {
-      columns[候选[0]!] = "amount"
-      已占.add(候选[0]!)
+      columns[候选[0]] = "amount"
+      已占.add(候选[0])
     }
   }
 
