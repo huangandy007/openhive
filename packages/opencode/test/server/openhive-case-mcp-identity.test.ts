@@ -28,6 +28,12 @@ describe("解析调用身份", () => {
     ).toThrow(expect.objectContaining({ code: "identity_required" }))
   })
 
+  test("目录停在沙箱根上一级 ⇒ identity_required", () => {
+    expect(() =>
+      解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": "u1", "openhive/directory": "/workspaces" } }),
+    ).toThrow(expect.objectContaining({ code: "identity_required" }))
+  })
+
   test("目录多一层 ⇒ identity_required", () => {
     expect(() =>
       解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": "u1", "openhive/directory": "/workspaces/u1/p/子目录" } }),
