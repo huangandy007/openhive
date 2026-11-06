@@ -36,7 +36,7 @@ import {
 import type { ParseAction, ParseStatus } from "./case-status"
 
 /**
- * 导入通路（设计 §5.2 六步里本计划做的 1–3 步，表格分支）。
+ * 导入通路（设计 §5.2 六步里本计划做的 1–3 步，表格与文本两个分支）。
  *
  * 唯一副作用出口：入队、认领、跑一个作业。判断逻辑全在 `case-mapping` / `case-rows` /
  * `case-time` 三个纯函数模块里，那些能脱离数据库单测。
@@ -247,6 +247,9 @@ export function 沙箱内路径(root: string, sourcePath: string): string | unde
  * 读盘 → 读表 → 认列 → **拼出全部待写行** → 删旧行 → 写新行。
  * 删除夹在「算完」与「写入」之间：读表或认列失败时，上一次的结果**原样保留**——
  * 用户要么拿到新的，要么还是旧的，不会两头落空。
+ *
+ * 文本分支的顺序见 `跑文本`：切片与抽取全部先做，删除与写入同在最后那一个事务里；
+ * 取消且零片时不动旧事实。
  */
 export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise<"完成" | "失败"> {
   try {
@@ -270,7 +273,9 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
     if (方式 === "文本") return await 跑文本(db, deps, job, material)
     throw new Error("这类文件的解析在后续计划")
   } catch (error) {
-    // 失败路径**不**用事务（原注释 R28）：两笔各自尽力，谁成谁算。
+    // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
+    // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
+    // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
     const 原因 = error instanceof Error ? error.message : String(error)
     await applyParseAction(db, {
       projectId: job.projectId,
@@ -374,7 +379,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
  * ## 顺序
  *
  * 读盘 → 文本层 → 切片 → 逐片抽取（会重试、会部分成功）→ **一个事务**里
- * 「删本材料旧引用 → 删旧机器事实 → 写新事实/引用 → 写 text_content → 改状态/收尾」。
+ * 「删旧机器事实 → 删旧引用 → 写新事实/引用 → 写 text_content → 改状态/收尾」。
+ * 删除顺序不能反：`删除本材料的事实` 靠引用找要删哪些行，先删引用就找不到它了。
  *
  * ## 取消（R6）
  *
@@ -421,9 +427,21 @@ async function 跑文本(
   if (!已取消 && 抽取条数 === 0 && 问题片.length === 0)
     throw new Error("这段文本里一条事实都没抽出来（可能不是案情材料，或模型没有按规定输出）")
 
+  // 零片取消（用户在一开始就点了取消）⇒ **不动**上一次解析的结果。
+  // 设计 §8.1：取消是「停下、已提交的切片保留」；零片没有可保留的东西，
+  // 删旧事实等于把「取消」做成了「清空」。
+  const 零片取消 = 已取消 && 输出.片们.length === 0
+
+  // 同一个事实 id 只写一次：模型在同一片里重复输出同一条关系/事件时，两条的 id 相同；
+  // 不跳过的话第二条的引用 id 也相同 ⇒ `case_citation` 主键冲突（23505），整个事务回滚。
+  // 一条重复输出就能让整份材料解析失败，而重试还会一模一样地失败。
+  const 已写事实 = new Set<string>()
+
   await inTransaction(db, async (tx) => {
-    await 删除本材料的事实(tx, job.projectId, job.materialId)
-    await deleteCitationsOfMaterial(tx, job.projectId, job.materialId)
+    if (!零片取消) {
+      await 删除本材料的事实(tx, job.projectId, job.materialId)
+      await deleteCitationsOfMaterial(tx, job.projectId, job.materialId)
+    }
 
     for (const 片 of 输出.片们) {
       const 实体id = new Map<string, string>()
@@ -457,6 +475,8 @@ async function 跑文本(
           job.projectId, "relation", job.materialId, 片.片.起, 关系.type, from, to,
           String(关系.amount ?? ""), 关系.原文,
         )
+        if (已写事实.has(id)) continue
+        已写事实.add(id)
         await insertRelation(tx, {
           projectId: job.projectId,
           id,
@@ -484,8 +504,10 @@ async function 跑文本(
       for (const 事件 of 片.事件) {
         const id = 事实id(
           job.projectId, "event", job.materialId, 片.片.起, 事件.type,
-          事件.occurredRaw ?? "", 事件.participants.join("|"), 事件.summary ?? "",
+          事件.occurredRaw ?? "", 事件.participants.join("|"), 事件.summary ?? "", 事件.原文,
         )
+        if (已写事实.has(id)) continue
+        已写事实.add(id)
         await insertEvent(tx, {
           projectId: job.projectId,
           id,

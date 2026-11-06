@@ -651,8 +651,8 @@ describe("文本作业（计划 4）", () => {
     事件: [{ 类型: "转账", 时间原文: "2026年3月5日", 参与人: ["张三", "李四"], 原文: "2026年3月5日，张三（13800138000）向李四转账28万元" }],
   }
 
-  async function 入队文本(fileName = "笔录.txt") {
-    文件.set(`p-txt/${fileName}`, new TextEncoder().encode(文本))
+  async function 入队文本(fileName = "笔录.txt", 内容 = 文本) {
+    文件.set(`p-txt/${fileName}`, new TextEncoder().encode(内容))
     return 入队("p-txt", fileName, `fp-${fileName}`)
   }
 
@@ -694,8 +694,17 @@ describe("文本作业（计划 4）", () => {
     const 引用 = rowsOf(await db().execute(sql`
       select fact_type, extract_method from auth.case_citation where project_id = 'p-txt'
     `))
-    expect(引用.length).toBeGreaterThanOrEqual(3)
+    // 3 实体 ＋ 1 关系 ＋ 1 事件。
+    expect(引用.length).toBe(5)
     expect(引用.every((c) => c.extract_method === "机器")).toBe(true)
+
+    // 事件也必须落库——只断关系/实体的话，事件写入整段删掉这条用例仍绿。
+    const 事件行 = rowsOf(await db().execute(sql`
+      select type, trust_state from auth.case_event where project_id = 'p-txt'
+    `))
+    expect(事件行.length).toBe(1)
+    expect(事件行[0]?.type).toBe("转账")
+    expect(事件行[0]?.trust_state).toBe("自动抽取")
 
     const 行 = rowsOf(await db().execute(sql`
       select text_content from auth.case_material where project_id = 'p-txt'
@@ -714,10 +723,14 @@ describe("文本作业（计划 4）", () => {
 
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("有问题")
-    const 明细 = 材料?.parseDetail as { slices: { range: string; reason: string; count: number }[] }
-    expect(明细.slices.length).toBe(1)
-    expect(明细.slices[0]?.range).toContain("0-")
-    expect(明细.slices[0]?.count).toBeGreaterThan(0)
+    // 不用 `as` 收窄：`toMatchObject` 能直接对 `unknown` 断言，且数组要求长度相等，
+    // 「slices 只有 1 段」仍被钉住。该输入固定，模型只产出「王五找不到」这一条问题。
+    const 明细 = 材料?.parseDetail
+    expect(明细).toMatchObject({
+      attempts: 3,
+      factCount: 0,
+      slices: [{ range: expect.stringContaining("0-"), count: 1 }],
+    })
   })
 
   test("重放：改模型回答后重新解析，旧关系被删、新关系落库，实体不重复", async () => {
@@ -748,7 +761,7 @@ describe("文本作业（计划 4）", () => {
     expect(实体[0]?.n).toBe(3)
   })
 
-  test("取消后不再调模型，已完成的事实保留、作业记「完成」", async () => {
+  test("取消（一片都没跑）后不再调模型、状态不被推进", async () => {
     const 入 = await 入队文本()
     const job = await 认领本材料(入.materialId)
     const 假 = 建假抽取器(() => 回答)
@@ -759,6 +772,35 @@ describe("文本作业（计划 4）", () => {
     const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
     expect(r).toBe("完成")
     expect(假.调用次数()).toBe(0)
+    expect((await getMaterial(db(), "p-txt", 入.materialId))?.parseStatus).toBe("有问题")
+  })
+
+  test("取消（一片都没跑）⇒ 上一次解析的事实原样保留，不清空", async () => {
+    const 入 = await 入队文本()
+    const 第一次 = await 认领本材料(入.materialId)
+    await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, 第一次)
+
+    const 重排 = await 入队("p-txt", "笔录.txt", "fp-笔录.txt", true)
+    expect(重排.enqueued).toBe(true)
+    const 第二次 = await 认领本材料(入.materialId)
+    // 模拟「跑到一半点取消」的入库时刻：排队中 →（开始）→ 解析中 →（取消）→ 有问题。
+    await applyParseAction(db(), { projectId: "p-txt", materialId: 入.materialId, action: "开始" })
+    await applyParseAction(db(), { projectId: "p-txt", materialId: 入.materialId, action: "取消" })
+
+    const 假 = 建假抽取器(() => 回答)
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, 第二次)
+    expect(r).toBe("完成")
+    expect(假.调用次数()).toBe(0)
+
+    // 旧事实必须还在：删了它就是「取消 = 清空」。
+    const 关系 = rowsOf(await db().execute(sql`
+      select amount from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系.map((x) => x.amount)).toEqual(["280000.00"])
+    const 引用 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_citation where project_id = 'p-txt'
+    `))
+    expect(引用[0]?.n).toBe(5)
     expect((await getMaterial(db(), "p-txt", 入.materialId))?.parseStatus).toBe("有问题")
   })
 
@@ -805,7 +847,50 @@ describe("文本作业（计划 4）", () => {
     expect(r).toBe("失败")
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("有问题")
-    expect((材料?.parseDetail as { reason: string }).reason).toContain("没有配置抽取模型")
+    expect(材料?.parseDetail).toMatchObject({ reason: expect.stringContaining("没有配置抽取模型") })
+  })
+
+  test("同片两条同型同时间的事件（原文不同）都落库；完全重复的只落一条，不撞引用主键", async () => {
+    // 第三句单独给关系用：金额「3万」必须在**该关系的出处**里，否则会多出一条「金额找不到」的
+    // 问题（不影响结论，但会把这条用例的意图搅浑）。
+    const 内容 = "2026年3月5日，张三与李四见面。2026年3月5日，张三又与李四见面。李四说张三还欠他3万元。"
+    const 入 = await 入队文本("重复事件.txt", 内容)
+    const job = await 认领本材料(入.materialId)
+    const 关系一条 = { 类型: "转账", 从: "张三", 到: "李四", 金额原文: "3万", 原文: "李四说张三还欠他3万元" }
+    const 甲 = {
+      类型: "见面", 时间原文: "2026年3月5日", 参与人: ["张三", "李四"],
+      原文: "2026年3月5日，张三与李四见面",
+    }
+    const 乙 = {
+      类型: "见面", 时间原文: "2026年3月5日", 参与人: ["张三", "李四"],
+      原文: "2026年3月5日，张三又与李四见面",
+    }
+    const 假 = 建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张三" },
+        { 类型: "人", 取值: "李四" },
+      ],
+      // 同一条关系重复两次 ⇒ 只该落一条。
+      关系: [关系一条, 关系一条],
+      // 甲重复两次 ⇒ 只该落一条；乙与甲只差原文 ⇒ 必须各自落一条。
+      事件: [甲, 甲, 乙],
+    }))
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
+    expect(r).toBe("完成")
+
+    const 事件 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_event where project_id = 'p-txt'
+    `))
+    expect(事件[0]?.n).toBe(2)
+    const 关系 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系[0]?.n).toBe(1)
+    const 事件引用 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_citation
+       where project_id = 'p-txt' and fact_type = 'event'
+    `))
+    expect(事件引用[0]?.n).toBe(2)
   })
 })
 

@@ -131,6 +131,8 @@ export interface 事件输入 {
   precision: Precision | null
   participants: string[]
   summary: string | null
+  /** 出处原文：事件的**内容**之一（两件同型同时间的事靠它区分），也是落库 id 的组成部分。 */
+  原文: string
   存疑: boolean
 }
 
@@ -430,6 +432,7 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
       precision,
       participants: 参与人,
       summary: 项.简述 ?? null,
+      原文: 项.原文,
       存疑,
     })
   }
