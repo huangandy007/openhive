@@ -86,11 +86,18 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
   const 行们 = rowsOf(
     await db.execute(sql`
       select e.id, e.type, e.canonical_value, e.trust_state, e.created_at,
+             -- 与「实体档案」同一口径：对方实体已排除的关系，档案不列、清单也不算（§9.1 不进统计）。
+             -- 用 in (select …) 而不是 join：join 会让 project_id / trust_state 变成歧义列
+             -- （同 case-mcp-tools.ts 里同款子查询的取法）。
              (select count(*)::int
                 from auth.case_relation r
                where r.project_id = e.project_id
                  and r.trust_state <> '已排除'
-                 and (r.from_id = e.id or r.to_id = e.id)) as 关联数
+                 and (r.from_id = e.id or r.to_id = e.id)
+                 and (case when r.from_id = e.id then r.to_id else r.from_id end)
+                     in (select id
+                           from auth.case_entity
+                          where project_id = e.project_id and trust_state <> '已排除')) as 关联数
         from auth.case_entity e
        where ${sql.join(条件, sql` and `)}
        order by ${顺序}

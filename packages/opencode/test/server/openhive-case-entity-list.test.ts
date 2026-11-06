@@ -24,7 +24,7 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-排", projectId: 项目, value: "王五", type: "人", trustState: "已排除" })
   await 建实体(库(), { id: "e-别人", projectId: 别人的项目, value: "赵六", type: "人" })
 
-  // e-张：3 条关系（1 通话 → e-李、1 转账 → e-账、1 通话 → 已排除的 e-排）；
+  // e-张 2 条有效关系（r-张李、r-张账）；r-张排 的对方 e-排 已排除 ⇒ 不计（§9.1 不进统计）；
   // e-李：1 条被排除的关系 → e-账。
   await 建关系(库(), { id: "r-张李", projectId: 项目, fromId: "e-张", toId: "e-李", type: "通话", sourceKind: "data" })
   await 建关系(库(), { id: "r-张账", projectId: 项目, fromId: "e-张", toId: "e-账", type: "转账", amount: 100, sourceKind: "data" })
@@ -54,7 +54,7 @@ describe("实体清单与档案", () => {
   test("清单默认按涉案（有效关系数）降序；已排除关系不计", async () => {
     const { 行们 } = await 实体清单(库(), { projectId: 项目, sort: "涉案" })
     expect(行们.map((行) => [行.id, 行.关联数])).toEqual([
-      ["e-张", 3],
+      ["e-张", 2],
       ["e-账", 1],
       ["e-李", 1],
       ["e-号1", 0],
