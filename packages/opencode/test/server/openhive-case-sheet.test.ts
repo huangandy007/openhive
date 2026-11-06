@@ -22,6 +22,19 @@ function 造带格式的工作簿(rows: (string | number | null)[][], 格式: Re
   return new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
 }
 
+/** UTF-16LE 字节（带 BOM），模拟 Excel「Unicode 文本」导出。 */
+function 造UTF16LE(text: string): Uint8Array {
+  const bytes = new Uint8Array(2 + text.length * 2)
+  bytes[0] = 0xff
+  bytes[1] = 0xfe
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    bytes[2 + i * 2] = code & 0xff
+    bytes[3 + i * 2] = code >> 8
+  }
+  return bytes
+}
+
 describe("readSheets", () => {
   test("表头单独取出，数据行从第 2 行起、行号是文件里的绝对行号", () => {
     const bytes = 造工作簿({
@@ -163,5 +176,18 @@ describe("readSheets", () => {
     const result = readSheets(bytes, { maxRowsPerSheet: 2 })
     expect(result.sheets[0]?.rows).toHaveLength(2)
     expect(result.truncatedSheets).toEqual([])
+  })
+
+  test("CSV 尾部空行不算截断（按非空行数判定），行号仍指回原文件", () => {
+    const bytes = new TextEncoder().encode("h\n1\n2\n\n")
+    const result = readSheets(bytes, { maxRowsPerSheet: 2 })
+    expect(result.sheets[0]?.rows).toHaveLength(2)
+    expect(result.sheets[0]?.rows.map((r) => r.rowNo)).toEqual([2, 3])
+    expect(result.truncatedSheets).toEqual([])
+  })
+
+  test("UTF-16（Excel「Unicode 文本」）⇒ 抛错并提示另存 UTF-8", () => {
+    expect(() => readSheets(造UTF16LE("主叫号码\n"))).toThrow(/UTF-16/)
+    expect(() => readSheets(造UTF16LE("主叫号码\n"))).toThrow(/另存为 UTF-8/)
   })
 })
