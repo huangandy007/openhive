@@ -790,7 +790,8 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
           </button>
         </div>
 
-        {/* 计划 7：提醒入口。改状态后由入口自己重取（它不往本组件回写）。 */}
+        {/* 计划 7：提醒入口。它只在**项目变化**时重取；中栏标记已读后徽标不会立刻更新，
+            要等下次重取（已知缺口，计划 8 处理）。 */}
         <Show when={props.提醒入口}>{props.提醒入口}</Show>
 
         {/* 列表用 `Show`（展开才在 DOM 里），不是 `hidden`——收起时它整段不存在，占位也为零。 */}

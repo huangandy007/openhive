@@ -34,14 +34,22 @@ export function CaseAlertEntry(props: CaseAlertEntryProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void 客户端.list(项目).then((结果) => {
-      if (作废) return
-      if (结果.kind === "error") {
+    void 客户端
+      .list(项目)
+      .then((结果) => {
+        if (作废) return
+        if (结果.kind === "error") {
+          set错误(true)
+          return
+        }
+        set提醒(结果.value)
+      })
+      // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会留下 unhandled rejection，
+      // 界面也停在初始态（这里表现为「没有新提醒」，同样是在断言一件没读到的事）。
+      .catch(() => {
+        if (作废) return
         set错误(true)
-        return
-      }
-      set提醒(结果.value)
-    })
+      })
   })
 
   const 未读数 = createMemo(() => 提醒().filter((条) => 条.read_at === null).length)
@@ -62,12 +70,17 @@ export function CaseAlertEntry(props: CaseAlertEntryProps): JSX.Element {
         class="flex w-full shrink-0 cursor-pointer items-center gap-1 border-b border-v2-border-border-muted px-3 py-1 text-start text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
         onClick={() => props.onOpen()}
       >
-        <Show when={未读数() > 0} fallback={<span>没有新提醒</span>}>
-          <span data-slot="case-alert-count" class="font-semibold text-v2-text-text-base">
-            新提醒 {未读数()} 条
-          </span>
-        </Show>
-        <Show when={错误()}>
+        {/* 错误态与「没有新提醒」互斥：取数失败时清空的列表不代表「确实没有」。 */}
+        <Show
+          when={错误()}
+          fallback={
+            <Show when={未读数() > 0} fallback={<span>没有新提醒</span>}>
+              <span data-slot="case-alert-count" class="font-semibold text-v2-text-text-base">
+                新提醒 {未读数()} 条
+              </span>
+            </Show>
+          }
+        >
           <span data-slot="case-alert-error" class="text-v2-state-fg-danger">
             读取失败
           </span>

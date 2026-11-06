@@ -21,6 +21,13 @@ export function Alerts(props: AlertsProps): JSX.Element {
   const [错误, set错误] = createSignal<string | undefined>()
   const [新增话, set新增话] = createSignal<string | undefined>()
   const [载入, set载入] = createSignal(false)
+  /**
+   * 版本号：refresh / markRead 每次自增；**初始 list** 落地时版本已变就丢弃。
+   *
+   * 没有它时，慢的初始 list 晚到会盖掉刚 refresh 出来的结果（用户在比对完成后看到旧清单）。
+   * 换项目的在途请求另由 effect 的 `作废` 挡住；两者管的是两件事，别合并。
+   */
+  let 版本 = 0
 
   createEffect(() => {
     const projectId = props.projectId
@@ -30,51 +37,80 @@ export function Alerts(props: AlertsProps): JSX.Element {
     set新增话(undefined)
     set载入(true)
     let 作废 = false
+    const 本次 = ++版本
     // ⚠️ 清理必须挂 `onCleanup`：`createEffect` **不执行**返回值（`LEARNINGS #005-03`）。
     // 写成 `return () => { 作废 = true }` 时，迟到的旧项目回包会盖掉新项目的那一份。
     onCleanup(() => {
       作废 = true
     })
-    void api.list(projectId).then((回) => {
-      if (作废) return
-      set载入(false)
-      if (回.kind === "error") {
-        set错误(回.message)
-        return
-      }
-      set错误(undefined)
-      set行们(回.value)
-    })
+    void api
+      .list(projectId)
+      .then((回) => {
+        if (作废 || 本次 !== 版本) return
+        set载入(false)
+        if (回.kind === "error") {
+          set错误(回.message)
+          return
+        }
+        set错误(undefined)
+        set行们(回.value)
+      })
+      // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会停在「正在读取提醒…」。
+      .catch((错误: unknown) => {
+        if (作废 || 本次 !== 版本) return
+        set载入(false)
+        set错误(错误 instanceof Error ? 错误.message : String(错误))
+      })
   })
 
   const 重新比对 = () => {
+    const 本次 = ++版本
+    // 三态互斥：进入载入态先清掉旧错误与旧的「新建 N 条」。
+    set错误(undefined)
+    set新增话(undefined)
     set载入(true)
-    void props.提醒api.refresh(props.projectId).then((回) => {
-      set载入(false)
-      if (回.kind === "error") {
-        set错误(回.message)
-        return
-      }
-      set错误(undefined)
-      set行们(回.value.提醒)
-      set新增话(`新建 ${回.value.新建} 条`)
-    })
+    void props.提醒api
+      .refresh(props.projectId)
+      .then((回) => {
+        if (本次 !== 版本) return
+        set载入(false)
+        if (回.kind === "error") {
+          set错误(回.message)
+          return
+        }
+        set错误(undefined)
+        set行们(回.value.提醒)
+        set新增话(`新建 ${回.value.新建} 条`)
+      })
+      .catch((错误: unknown) => {
+        if (本次 !== 版本) return
+        set载入(false)
+        set错误(错误 instanceof Error ? 错误.message : String(错误))
+      })
   }
 
   const 标记 = (ids: readonly string[]) => {
     if (ids.length === 0) return
-    void props.提醒api.markRead(props.projectId, ids).then((回) => {
-      if (回.kind === "error") {
-        set错误(回.message)
-        return
-      }
-      const 已 = new Set(ids)
-      set行们((上一批) =>
-        上一批.map((条) =>
-          已.has(条.id) && 条.read_at === null ? { ...条, read_at: Math.floor(Date.now() / 1000) } : 条,
-        ),
-      )
-    })
+    const 本次 = ++版本
+    void props.提醒api
+      .markRead(props.projectId, ids)
+      .then((回) => {
+        if (本次 !== 版本) return
+        if (回.kind === "error") {
+          set错误(回.message)
+          return
+        }
+        const 已 = new Set(ids)
+        set行们((上一批) =>
+          上一批.map((条) =>
+            已.has(条.id) && 条.read_at === null ? { ...条, read_at: Math.floor(Date.now() / 1000) } : 条,
+          ),
+        )
+      })
+      .catch((错误: unknown) => {
+        if (本次 !== 版本) return
+        set错误(错误 instanceof Error ? 错误.message : String(错误))
+      })
   }
 
   return (
@@ -119,7 +155,7 @@ export function Alerts(props: AlertsProps): JSX.Element {
           </p>
         )}
       </Show>
-      <Show when={载入() && 行们().length === 0}>
+      <Show when={载入() && 错误() === undefined && 行们().length === 0}>
         <p class="text-[13px] text-v2-text-text-muted">正在读取提醒…</p>
       </Show>
       <Show when={!载入() && 行们().length === 0 && 错误() === undefined}>

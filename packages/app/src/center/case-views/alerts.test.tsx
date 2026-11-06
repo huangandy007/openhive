@@ -132,6 +132,74 @@ describe("提醒清单", () => {
     expect(host.textContent).toContain("不是该项目成员")
   })
 
+  test("重新比对失败 ⇒ 只报错，不残留「新建」或载入文案", async () => {
+    let 次数 = 0
+    const host = mount(() => (
+      <Alerts
+        projectId="p"
+        api={假详情api()}
+        提醒api={假提醒api({
+          refresh: async () => {
+            次数 += 1
+            return 次数 === 1
+              ? { kind: "ok", value: { 新建: 1, 提醒: [未读, 另一条] } }
+              : { kind: "error", message: "比对失败" }
+          },
+        })}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='alert-row']").length === 2)
+    host.querySelector<HTMLElement>("[data-slot='alerts-refresh']")!.click()
+    await 等(() => host.textContent!.includes("新建 1 条"))
+
+    host.querySelector<HTMLElement>("[data-slot='alerts-refresh']")!.click()
+    await 等(() => host.querySelector("[data-slot='alerts-error']") !== null)
+    expect(host.textContent).toContain("比对失败")
+    expect(host.textContent).not.toContain("新建 1 条")
+    expect(host.textContent).not.toContain("正在读取提醒")
+  })
+
+  test("慢的初始 list 晚到不覆盖刚 refresh 的结果", async () => {
+    const 待回: Array<(回: Awaited<ReturnType<CaseAlertsApi["list"]>>) => void> = []
+    const 提醒api = 假提醒api({
+      list: () =>
+        new Promise((resolve) => {
+          待回.push(resolve)
+        }),
+      refresh: async () => ({
+        kind: "ok",
+        value: { 新建: 3, 提醒: [{ ...未读, id: "al-新", 标题: "刷新后的提醒" }] },
+      }),
+    })
+    const host = mount(() => <Alerts projectId="p" api={假详情api()} 提醒api={提醒api} />)
+    await 等(() => 待回.length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='alerts-refresh']")!.click()
+    await 等(() => host.textContent!.includes("刷新后的提醒"))
+
+    待回[0]!({ kind: "ok", value: [{ ...未读, id: "al-旧", 标题: "旧列表的提醒" }] })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(host.textContent).toContain("刷新后的提醒")
+    expect(host.textContent).not.toContain("旧列表的提醒")
+  })
+
+  test("注入的 api 抛 ⇒ 收成错误，不停在「正在读取提醒…」", async () => {
+    const host = mount(() => (
+      <Alerts
+        projectId="p"
+        api={假详情api()}
+        提醒api={假提醒api({
+          list: async () => {
+            throw new Error("网络断了")
+          },
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='alerts-error']") !== null)
+    expect(host.textContent).toContain("网络断了")
+    expect(host.textContent).not.toContain("正在读取提醒")
+  })
+
   test("换项目时迟到的旧回包不覆盖新项目（onCleanup 真的作废了旧请求）", async () => {
     const [项目, set项目] = createSignal("p1")
     const 待回: Array<(回: Awaited<ReturnType<CaseAlertsApi["list"]>>) => void> = []

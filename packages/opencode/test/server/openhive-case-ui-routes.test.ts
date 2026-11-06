@@ -115,6 +115,12 @@ beforeAll(async () => {
     ["r-提醒出2", "e-提醒账", "e-提醒丁"],
   ] as const)
     await 建关系(pg.db, { id, projectId: 项目, fromId: from, toId: to, type: "转账", amount: 3000 })
+
+  // ── 别人的项目也落一条提醒：让「提交别人的 id ⇒ 0」有真对象（`#005-47`）──
+  await pg.db.execute(sql`
+    insert into auth.case_alert (id, project_id, rule_id, fact_refs, created_at)
+    values ('al-别人的提醒', ${别人的项目}, '资金对称', '{}'::jsonb, 0)
+  `)
 })
 
 afterAll(async () => {
@@ -249,7 +255,7 @@ describe("openhive 案件视图出口（计划 7）", () => {
     }),
   )
 
-  it("提醒：标记已读只认本项目", () =>
+  it("提醒：标记已读只认本项目（提交别人的真实 id ⇒ 0）", () =>
     Effect.gen(function* () {
       const 清单 = yield* 读回<{ 提醒: { id: string; read_at: number | null }[] }>(
         yield* 发(我, `/openhive/case/alerts?projectId=${项目}`),
@@ -265,22 +271,58 @@ describe("openhive 案件视图出口（计划 7）", () => {
         }),
       )
       expect(已读.已读).toBe(1)
+
+      // 先钉住「别人的项目确实有这条提醒且未读」——没有它，下面的 0 可能是「根本不存在」。
+      const 别人的清单 = yield* 读回<{ 提醒: { id: string; read_at: number | null }[] }>(
+        yield* 发(别人, `/openhive/case/alerts?projectId=${别人的项目}`),
+      )
+      expect(别人的清单.提醒.find((条) => 条.id === "al-别人的提醒")?.read_at).toBeNull()
+
+      const 越界 = yield* 读回<{ 已读: number }>(
+        yield* 发(我, "/openhive/case/alerts/read", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId: 项目, ids: ["al-别人的提醒"] }),
+        }),
+      )
+      expect(越界.已读).toBe(0)
+
+      const 之后 = yield* 读回<{ 提醒: { id: string; read_at: number | null }[] }>(
+        yield* 发(别人, `/openhive/case/alerts?projectId=${别人的项目}`),
+      )
+      expect(之后.提醒.find((条) => 条.id === "al-别人的提醒")?.read_at).toBeNull()
     }),
   )
 
-  it("提醒：未登录 401 / 非成员 403 / ids 非数组 400", () =>
+  it("提醒：未登录 401 / 非成员 403 / ids 非数组 400（GET 与两个 POST 都走同一道门）", () =>
     Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
       expect((yield* 发(null, `/openhive/case/alerts?projectId=${项目}`)).status).toBe(401)
       expect((yield* 发(别人, `/openhive/case/alerts?projectId=${项目}`)).status).toBe(403)
       expect(
         (
           yield* 发(我, "/openhive/case/alerts/read", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: 头,
             body: JSON.stringify({ projectId: 项目, ids: "nope" }),
           })
         ).status,
       ).toBe(400)
+
+      // POST 也要在**体之前**拦身份：未登录的两个 POST 都是 401。
+      expect(
+        (yield* 发(null, "/openhive/case/alerts/refresh", { method: "POST", headers: 头, body: JSON.stringify({ projectId: 项目 }) }))
+          .status,
+      ).toBe(401)
+      expect(
+        (yield* 发(null, "/openhive/case/alerts/read", { method: "POST", headers: 头, body: JSON.stringify({ projectId: 项目, ids: [] }) }))
+          .status,
+      ).toBe(401)
+      // 非成员 POST ⇒ 403（不是 400）。
+      expect(
+        (yield* 发(别人, "/openhive/case/alerts/read", { method: "POST", headers: 头, body: JSON.stringify({ projectId: 项目, ids: [] }) }))
+          .status,
+      ).toBe(403)
     }),
   )
 

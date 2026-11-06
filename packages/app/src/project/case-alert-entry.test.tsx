@@ -51,22 +51,59 @@ describe("右栏提醒入口", () => {
   })
 
   test("全部已读 ⇒ 说「没有新提醒」，入口仍在（还能点进清单看历史）", async () => {
-    // ⚠️ 不能只 `await 等(textContent 含「没有新提醒」)`：**初始渲染**（列表还没回来）就已经是
-    // 0 条、已经写着这句话，条件第一次就成立 ⇒ 用例从没等到回包，去掉 `read_at === null`
-    // 过滤（变异 C）也照样绿。这里拿住回包、落地后再断言。
+    // ⚠️ 不能等 `data-unread === "0"` 或「没有新提醒」：**初始渲染**（列表还没回来）就已经满足，
+    // 用例会在回包落地前就绿。这里先等替身打出「已回」标记，再用一个**宏任务**让消费方的
+    // `.then`（微任务）先跑完，之后才断言最终文案。
     let 回包!: () => void
+    let 已回 = false
     const api = 假api({
       list: () =>
         new Promise((resolve) => {
-          回包 = () => resolve({ kind: "ok", value: [{ ...未读, read_at: 2 }] })
+          回包 = () => {
+            已回 = true
+            resolve({ kind: "ok", value: [{ ...未读, read_at: 2 }] })
+          }
         }),
     })
     const host = mount(() => <CaseAlertEntry projectId={() => "p"} api={api} onOpen={() => {}} />)
     await 等(() => 回包 !== undefined)
     回包()
-    await 等(() => host.querySelector("[data-slot='case-alert-entry']")!.getAttribute("data-unread") === "0")
+    await 等(() => 已回)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(host.querySelector("[data-slot='case-alert-entry']")!.getAttribute("data-unread")).toBe("0")
     expect(host.textContent).toContain("没有新提醒")
     expect(host.querySelector("[data-slot='case-alert-count']")).toBeNull()
+  })
+
+  test("取数回 error ⇒ 只说「读取失败」，不冒充「没有新提醒」", async () => {
+    const host = mount(() => (
+      <CaseAlertEntry
+        projectId={() => "p"}
+        api={假api({ list: async () => ({ kind: "error", message: "不是该项目成员" }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='case-alert-error']") !== null)
+    expect(host.textContent).toContain("读取失败")
+    expect(host.textContent).not.toContain("没有新提醒")
+    expect(host.querySelector("[data-slot='case-alert-entry']")!.getAttribute("data-unread")).toBe("0")
+  })
+
+  test("注入的 api 抛 ⇒ 收成「读取失败」，不留 unhandled rejection", async () => {
+    const host = mount(() => (
+      <CaseAlertEntry
+        projectId={() => "p"}
+        api={假api({
+          list: async () => {
+            throw new Error("网络断了")
+          },
+        })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='case-alert-error']") !== null)
+    expect(host.textContent).toContain("读取失败")
+    expect(host.textContent).not.toContain("没有新提醒")
   })
 
   test("点入口回调 onOpen", async () => {

@@ -121,36 +121,42 @@ async function 资金对称(db: Queryable, projectId: string): Promise<待写[]>
 }
 
 async function 通话转账重合(db: Queryable, projectId: string): Promise<待写[]> {
+  // ⚠️ **按无序对聚合**：`group by a.from_id, a.to_id` 会把 A→B 与 B→A 拆成两组——
+  // 反向各 6000（合计 12000）两组都过不了阈值，整条规则漏报；两个方向各自 ≥ 10000 时
+  // 又会撞同一个 key，落库数字取决于无 ORDER BY 的行序。这里统一取 least/greatest。
   const 行们 = rowsOf(
     await db.execute(sql`
-      select a.from_id as 甲, a.to_id as 乙,
+      select least(a.from_id, a.to_id) as 甲,
+             greatest(a.from_id, a.to_id) as 乙,
              甲.canonical_value as 甲值, 乙.canonical_value as 乙值,
              sum(a.amount)::text as 转账合计, count(*)::int as 转账笔数
         from auth.case_relation a
-        join auth.case_entity 甲 on 甲.project_id = a.project_id and 甲.id = a.from_id and 甲.trust_state <> '已排除'
-        join auth.case_entity 乙 on 乙.project_id = a.project_id and 乙.id = a.to_id and 乙.trust_state <> '已排除'
+        join auth.case_entity 甲
+          on 甲.project_id = a.project_id and 甲.id = least(a.from_id, a.to_id)
+         and 甲.trust_state <> '已排除'
+        join auth.case_entity 乙
+          on 乙.project_id = a.project_id and 乙.id = greatest(a.from_id, a.to_id)
+         and 乙.trust_state <> '已排除'
        where a.project_id = ${projectId} and a.type = '转账' and a.trust_state <> '已排除'
          and exists (select 1 from auth.case_relation b
                       where b.project_id = a.project_id and b.type = '通话' and b.trust_state <> '已排除'
-                        and ((b.from_id = a.from_id and b.to_id = a.to_id)
-                          or (b.from_id = a.to_id and b.to_id = a.from_id)))
-       group by a.from_id, a.to_id, 甲.canonical_value, 乙.canonical_value
+                        and least(b.from_id, b.to_id) = least(a.from_id, a.to_id)
+                        and greatest(b.from_id, b.to_id) = greatest(a.from_id, a.to_id))
+       group by least(a.from_id, a.to_id), greatest(a.from_id, a.to_id),
+                甲.canonical_value, 乙.canonical_value
       having sum(a.amount) >= ${通话转账最少金额}
     `),
   )
-  return 行们.map((行) => {
-    // 甲/乙 的 id 顺序随关系方向变；key 排成与方向无关的全序（`LEARNINGS #010-05`）。
-    const [小, 大] = [String(行.甲), String(行.乙)].sort()
-    return {
-      rule_id: 规则.通话转账重合,
-      key: `${小}|${大}`,
-      标题: `${String(行.甲值)} 与 ${String(行.乙值)} 既有通话又有转账`,
-      内容:
-        `两人之间转账 ${Number(行.转账笔数)} 笔、合计 ${金额(行.转账合计)} 元，` +
-        `同时存在通话记录。（口径：同一对实体；转账合计 ≥ ${通话转账最少金额} 元）`,
-      事实: { 甲: 行.甲, 乙: 行.乙, 甲值: 行.甲值, 乙值: 行.乙值, 转账合计: 行.转账合计, 转账笔数: 行.转账笔数 },
-    }
-  })
+  return 行们.map((行) => ({
+    rule_id: 规则.通话转账重合,
+    // 甲/乙 已经是 least/greatest 的无序对，key 直接拼即与方向无关（`LEARNINGS #010-05`）。
+    key: `${String(行.甲)}|${String(行.乙)}`,
+    标题: `${String(行.甲值)} 与 ${String(行.乙值)} 既有通话又有转账`,
+    内容:
+      `两人之间转账 ${Number(行.转账笔数)} 笔、合计 ${金额(行.转账合计)} 元，` +
+      `同时存在通话记录。（口径：同一对实体；转账合计 ≥ ${通话转账最少金额} 元）`,
+    事实: { 甲: 行.甲, 乙: 行.乙, 甲值: 行.甲值, 乙值: 行.乙值, 转账合计: 行.转账合计, 转账笔数: 行.转账笔数 },
+  }))
 }
 
 async function 号码多账户(db: Queryable, projectId: string): Promise<待写[]> {

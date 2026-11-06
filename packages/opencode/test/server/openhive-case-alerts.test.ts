@@ -72,6 +72,20 @@ beforeAll(async () => {
   ] as const)
     await 建关系(库(), { id, projectId: 项目, fromId: "e-号", toId: 账, type: "实名登记" })
 
+  // ── 反向各 6000（合计 12000）：按方向分组会漏报，按无序对聚合才命中 ──
+  await 建实体(库(), { id: "e-王", projectId: 项目, type: "人", value: "王五" })
+  await 建实体(库(), { id: "e-赵", projectId: 项目, type: "人", value: "赵六" })
+  await 建关系(库(), { id: "r-王赵转1", projectId: 项目, fromId: "e-王", toId: "e-赵", type: "转账", amount: 6000 })
+  await 建关系(库(), { id: "r-王赵转2", projectId: 项目, fromId: "e-赵", toId: "e-王", type: "转账", amount: 6000 })
+  await 建关系(库(), { id: "r-王赵话", projectId: 项目, fromId: "e-王", toId: "e-赵", type: "通话" })
+
+  // ── 两个方向各自都 ≥ 10000：仍应是一条（合并双向），且数字不随行序漂 ──
+  await 建实体(库(), { id: "e-周", projectId: 项目, type: "人", value: "周七" })
+  await 建实体(库(), { id: "e-吴", projectId: 项目, type: "人", value: "吴八" })
+  await 建关系(库(), { id: "r-周吴转1", projectId: 项目, fromId: "e-周", toId: "e-吴", type: "转账", amount: 12000 })
+  await 建关系(库(), { id: "r-周吴转2", projectId: 项目, fromId: "e-吴", toId: "e-周", type: "转账", amount: 15000 })
+  await 建关系(库(), { id: "r-周吴话", projectId: 项目, fromId: "e-周", toId: "e-吴", type: "通话" })
+
   // ── 不该命中的噪声：已排除的关系不算（变异 B 靠它）──
   // ⚠️ 方向必须是 **e-账 出**：`资金对称` 的「出」取 `from_id`。若把它建成 `e-甲 → e-账`，
   // 它只会让 e-甲 多一笔出，而 e-账 的出/入笔数不变 ⇒ 变异 B（去掉 trust 过滤）**不会红**。
@@ -104,19 +118,52 @@ afterAll(async () => {
   await pg?.stop()
 })
 
+type 通话事实 = { 甲: string; 乙: string; 甲值: string; 乙值: string; 转账合计: string; 转账笔数: number }
+
 describe("主动提醒 DAO", () => {
   test("三条规则各自命中，且已排除的关系不算", async () => {
     const { 提醒 } = await 生成提醒(库(), 项目)
-    expect(提醒.map((条) => 条.rule_id).sort()).toEqual([规则.号码多账户, 规则.资金对称, 规则.通话转账重合].sort())
+    const 规则们 = 提醒.map((条) => 条.rule_id)
+    expect(规则们.filter((条) => 条 === 规则.资金对称).length).toBe(1)
+    expect(规则们.filter((条) => 条 === 规则.号码多账户).length).toBe(1)
+    // R2 张/李 + 反向各 6000 + 双向各过阈值 ⇒ 三条「通话转账重合」，不是按方向拆开的四条。
+    expect(规则们.filter((条) => 条 === 规则.通话转账重合).length).toBe(3)
     const 对称 = 提醒.find((条) => 条.rule_id === 规则.资金对称)!
     expect(对称.事实).toMatchObject({ 账户: "e-账", 出笔: 2, 入笔: 2 })
+  })
+
+  test("通话转账重合按无序对聚合：反向各 6000（合计 12000）命中一条", async () => {
+    const { 提醒 } = await 生成提醒(库(), 项目)
+    const 命中 = 提醒.filter(
+      (条) => 条.rule_id === 规则.通话转账重合 && (条.事实 as 通话事实).甲值 === "王五",
+    )
+    expect(命中.length).toBe(1)
+    expect(命中[0]!.事实).toMatchObject({
+      甲: "e-王",
+      乙: "e-赵",
+      甲值: "王五",
+      乙值: "赵六",
+      转账合计: "12000.00",
+      转账笔数: 2,
+    })
+  })
+
+  test("通话转账重合双向各自过阈值：仍只有一条，合计不随行序漂", async () => {
+    const 第一次 = await 生成提醒(库(), 项目)
+    // least/greatest 按 id 排：`e-吴` < `e-周`，所以甲是吴八、乙是周七。
+    const 命中 = 第一次.提醒.filter(
+      (条) => 条.rule_id === 规则.通话转账重合 && (条.事实 as 通话事实).乙值 === "周七",
+    )
+    expect(命中.length).toBe(1)
+    expect(命中[0]!.事实).toMatchObject({ 甲值: "吴八", 乙值: "周七", 转账合计: "27000.00", 转账笔数: 2 })
+    expect((await 生成提醒(库(), 项目)).新建).toBe(0)
   })
 
   test("重复生成幂等：第二次 新建 = 0，清单长度不变", async () => {
     await 生成提醒(库(), 项目)
     const 第二次 = await 生成提醒(库(), 项目)
     expect(第二次.新建).toBe(0)
-    expect((await 提醒清单(库(), 项目)).length).toBe(3)
+    expect((await 提醒清单(库(), 项目)).length).toBe(5)
   })
 
   test("已读状态在重复生成后保住（提醒不是每次都「又变成新的一批」）", async () => {
