@@ -17,6 +17,13 @@ import type { Queryable } from "./case-store"
  * 实体取 `canonical_value`，关系拼两端规范值与类型，事件取 `summary`；引用悬空
  * （事实行被删）时回落成 `fact_id`。
  *
+ * ## §9.1 / R10：已排除事实默认不出现
+ *
+ * 与 `实体档案` 同口径：`includeExcluded: true` 才切换查看。默认过滤条件是
+ * 实体 / 事件自身非「已排除」，关系既要自身非「已排除」、也要**两端实体**都非「已排除」
+ * （材料视图没有「我方实体」，任一端被排除都不展示这条关系）。悬空引用（事实行不存在）
+ * 不算「已排除」——它没有可判定的状态，仍按 `fact_id` 回落列出。
+ *
  * ## 「最新一行」口径与 `getMaterialByPath` 逐字相同
  *
  * `created_at desc, id desc`：同一路径改过内容会另建一行（幂等键是内容指纹，不是路径），
@@ -54,8 +61,14 @@ export const 每组行上限 = 500
 
 export async function 材料事实清单(
   db: Queryable,
-  input: { readonly projectId: string; readonly path: string },
+  input: {
+    readonly projectId: string
+    readonly path: string
+    /** 默认 `false`：已排除的事实「可切换查看」，不是默认可见（§9.1 / R10）。 */
+    readonly includeExcluded?: boolean
+  },
 ): Promise<材料事实清单结果 | undefined> {
+  const 含排除 = input.includeExcluded === true
   const 材料行们 = rowsOf(
     await db.execute(sql`
       select id, path, file_name, kind, parse_status, parse_detail
@@ -69,21 +82,19 @@ export async function 材料事实清单(
   const 材料 = 材料行们[0]!
 
   // 定位只认 locator；fact_id 原样回传，不当定位键（工作表名可含 `#`）。
+  // 排序交给 JS：SQL 没有 limit，前三键不影响「留下哪些行」；且 `->>'row'` 在
+  // `{"row":"第2行"}` 这类形状上会 `22P02` 整块 500，与 `解定位` 的 fail-soft 打架。
   const 引用行们 = rowsOf(
     await db.execute(sql`
       select c.id, c.fact_type, c.fact_id, c.locator,
              coalesce(case when c.fact_type = 'entity' then 实体.canonical_value end, '') as 实体值,
              coalesce(case when c.fact_type = 'relation' then
-               (select 起.canonical_value || ' → ' || 终.canonical_value || ' · ' || 关系.type
-                  from auth.case_relation 关系
-                  join auth.case_entity 起 on 起.project_id = 关系.project_id and 起.id = 关系.from_id
-                  join auth.case_entity 终 on 终.project_id = 关系.project_id and 终.id = 关系.to_id
-                 where 关系.project_id = c.project_id and 关系.id = c.fact_id)
+               关系起.canonical_value || ' → ' || 关系终.canonical_value || ' · ' || 关系.type
              end, '') as 关系值,
              coalesce(case when c.fact_type = 'event' then 事件.summary end, '') as 事件值,
              case c.fact_type
                when 'entity' then 实体.trust_state
-               when 'relation' then (select trust_state from auth.case_relation where project_id = c.project_id and id = c.fact_id)
+               when 'relation' then 关系.trust_state
                when 'event' then 事件.trust_state
                else null
              end as trust_state
@@ -92,15 +103,35 @@ export async function 材料事实清单(
           on 实体.project_id = c.project_id and c.fact_type = 'entity' and 实体.id = c.fact_id
         left join auth.case_event 事件
           on 事件.project_id = c.project_id and c.fact_type = 'event' and 事件.id = c.fact_id
+        left join auth.case_relation 关系
+          on 关系.project_id = c.project_id and c.fact_type = 'relation' and 关系.id = c.fact_id
+        left join auth.case_entity 关系起
+          on 关系起.project_id = 关系.project_id and 关系起.id = 关系.from_id
+        left join auth.case_entity 关系终
+          on 关系终.project_id = 关系.project_id and 关系终.id = 关系.to_id
        where c.project_id = ${input.projectId} and c.material_id = ${String(材料.id)}
-       order by c.locator->>'sheet' asc, (c.locator->>'row')::int asc, c.id asc
+       ${含排除 ? sql`` : sql`
+         and coalesce(case c.fact_type
+               when 'entity' then 实体.trust_state
+               when 'relation' then 关系.trust_state
+               when 'event' then 事件.trust_state
+             end, '') <> '已排除'
+         and not (c.fact_type = 'relation'
+                  and (coalesce(关系起.trust_state = '已排除', false)
+                       or coalesce(关系终.trust_state = '已排除', false)))`}
+       order by c.id asc
     `),
   )
 
   const 表 = new Map<string, Map<number, 事实行[]>>()
+  let 未定位 = 0
   for (const 行 of 引用行们) {
     const 定位 = 解定位(行.locator)
-    if (定位 === undefined) continue
+    if (定位 === undefined) {
+      // 不静默吞：`{start,end}`（笔录）、`{page,para}`、坏 JSON 都计数，收进缺口。
+      未定位++
+      continue
+    }
     const 组 = 表.get(定位.sheet) ?? new Map<number, 事实行[]>()
     表.set(定位.sheet, 组)
     const 行们 = 组.get(定位.row) ?? []
@@ -115,14 +146,17 @@ export async function 材料事实清单(
 
   const 缺口: string[] = []
   if (引用行们.length === 0) 缺口.push("这份材料没有引用：可能还没解析，或解析没有抽出事实")
+  else if (未定位 > 0) 缺口.push(`${未定位} 条引用的定位不是「工作表 / 行」，未列出`)
   const 分组 = [...表.entries()]
     // 不用 `localeCompare`：它的默认排序随系统 locale 变（本机 zh-CN 把汉字排在拉丁字母前，
     // en-US 则相反）⇒ 同一份数据在不同机器上分组顺序不同、测试也跟着红绿摇摆。
-    // 这里按码位定序，跨平台稳定；语义仍是「按 sheet 名排序」。
+    // 这里按码位定序，跨平台稳定；语义仍是「按 sheet 名排序」。中文表名按码位序排列，
+    // 若要还原工作簿原始顺序，得由解析侧把 sheet 序号一并带出来。
     .sort((甲, 乙) => (甲[0] < 乙[0] ? -1 : 甲[0] > 乙[0] ? 1 : 0))
     .map(([sheet, 行表]) => {
       const 行们 = [...行表.entries()].sort((甲, 乙) => 甲[0] - 乙[0])
-      if (行们.length > 每组行上限) 缺口.push(`${sheet} 超过 ${每组行上限} 行，已截断`)
+      const 丢 = 行们.length - 每组行上限
+      if (丢 > 0) 缺口.push(`${sheet} 本表只显示前 ${每组行上限} 行，另有 ${丢} 行未列出`)
       return { sheet, 行们: 行们.slice(0, 每组行上限).map(([row_no, 事实们]) => ({ row_no, 事实们 })) }
     })
 
