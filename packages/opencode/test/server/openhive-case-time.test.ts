@@ -46,4 +46,20 @@ describe("parseTime", () => {
   test("前后空白先去掉", () => {
     expect(parseTime("  2026-01-02 03:04:05  ")?.precision).toBe("到秒")
   })
+
+  test("中文日期：到日 / 到分 / 到秒", () => {
+    expect(parseTime("2026年3月5日")).toEqual({ seconds: Date.UTC(2026, 2, 5) / 1000 - 8 * 3600, precision: "到日" })
+    expect(parseTime("2026年3月5日15时04分")).toEqual({
+      seconds: Date.UTC(2026, 2, 5, 15, 4) / 1000 - 8 * 3600,
+      precision: "到分",
+    })
+    expect(parseTime("2026年3月5日15时04分06秒")).toEqual({
+      seconds: Date.UTC(2026, 2, 5, 15, 4, 6) / 1000 - 8 * 3600,
+      precision: "到秒",
+    })
+  })
+
+  test("中文日期也要进位校验（2 月 31 日不认）", () => {
+    expect(parseTime("2026年2月31日")).toBeUndefined()
+  })
 })
