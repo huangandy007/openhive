@@ -82,6 +82,12 @@ beforeAll(async () => {
   await 建关系(库(), { id: "r-排张", projectId: 项目, fromId: "e-排", toId: "e-张", type: "通话" })
   // 关系在本项目、对端实体在别的项目：join 的 `project_id` 漏带到哪一侧都会把它画出来。
   await 建关系(库(), { id: "r-张别人", projectId: 项目, fromId: "e-张", toId: "e-别人", type: "通话" })
+  // §9.1 四类里的第 3 类：关系自身已排除（两端都可见）。它必须整条消失。
+  await 建关系(库(), { id: "r-排除", projectId: 项目, fromId: "e-张", toId: "e-李", type: "通话", trustState: "已排除" })
+  // §9.1 第 4 类：悬空端点（`case_relation` 无外键，可以插进去）。join 漏成 left join 就会画出来。
+  await 建关系(库(), { id: "r-悬空", projectId: 项目, fromId: "e-张", toId: "e-不存在", type: "通话" })
+  // 入方向：只有 `or r.to_id in (…)` 这一半能把它取到（删掉那半句必红）。
+  await 建关系(库(), { id: "r-账张", projectId: 项目, fromId: "e-账", toId: "e-张", type: "通话" })
 
   // 排序项目：两条边 id 是纯 ASCII，任何「按 id 排序」都与「按次数排序」相左，
   // 不依赖库的中文排序规则 —— 删掉 `times` 排序时必红。
@@ -97,6 +103,33 @@ beforeAll(async () => {
     type: "通话",
     times: 3,
   })
+  // 自环：同一条边在 `关联数` 里只算一次（from_id = to_id 时别加两遍）。
+  await 建关系(库(), { id: "r-自", projectId: 排序项目, fromId: "e-心", toId: "e-心", type: "通话" })
+  // 第 1 跳恰好装满上限、且没有被截断（没有更多边）：缺口只能说「未展开第 2 跳」，
+  // 不能谎称「画了前 N 个」。
+  await 建实体(库(), { id: "e-满", projectId: 排序项目, value: "满", type: "人" })
+  await 建实体(库(), { id: "e-甲2", projectId: 排序项目, value: "甲二", type: "账户" })
+  await 建实体(库(), { id: "e-乙2", projectId: 排序项目, value: "乙二", type: "账户" })
+  await 建关系(库(), { id: "r-满甲", projectId: 排序项目, fromId: "e-满", toId: "e-甲2", type: "通话" })
+  await 建关系(库(), { id: "r-满乙", projectId: 排序项目, fromId: "e-满", toId: "e-乙2", type: "通话" })
+
+  // 第 2 跳截断：中心 1 个邻居，邻居再连 50 个不同实体。上限 50 ⇒ 第 2 跳只能画 48 条，
+  // 剩下 2 条只能进缺口。修复前 `limit = 剩余` 把多出来的行静默吃掉，缺口是空的。
+  await 建实体(库(), { id: "e-根", projectId: "p-二跳", value: "根", type: "人" })
+  await 建实体(库(), { id: "e-枝", projectId: "p-二跳", value: "枝", type: "人" })
+  await 建关系(库(), { id: "r-根枝", projectId: "p-二跳", fromId: "e-根", toId: "e-枝", type: "通话" })
+  for (let i = 0; i < 50; i++) {
+    const 号 = String(i).padStart(2, "0")
+    await 建实体(库(), { id: `e-叶${号}`, projectId: "p-二跳", value: `叶${号}`, type: "账户" })
+    await 建关系(库(), {
+      id: `r-枝叶${号}`,
+      projectId: "p-二跳",
+      fromId: "e-枝",
+      toId: `e-叶${号}`,
+      type: "转账",
+      amount: 1,
+    })
+  }
 })
 
 afterAll(async () => {
@@ -107,16 +140,39 @@ describe("关系图", () => {
   test("1 跳：只画中心与直接邻居；已排除端点不画", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张" }))!
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-张", "e-李", "e-账"].sort())
-    expect(图.边.map((边) => 边.id).sort()).toEqual(["r-张李", "r-张账"].sort())
+    expect(图.边.map((边) => 边.id).sort()).toEqual(["r-张李", "r-张账", "r-账张"].sort())
     expect(图.节点.find((点) => 点.id === "e-张")!.中心).toBe(true)
+    // 中心只有一个（别的前缀同名 / 重复加点都会在这里红）。
+    expect(图.节点.filter((点) => 点.中心)).toHaveLength(1)
     expect(图.节点.find((点) => 点.id === "e-李")!.跳数).toBe(1)
     expect(图.节点.find((点) => 点.id === "e-李")!.trust_state).toBe("已确认")
+    expect(图.缺口).toEqual([])
   })
 
-  test("2 跳：带上第 2 跳节点与边；第 3 跳不画", async () => {
+  test("§9.1 四类都不画：已排除端点 / 已排除关系 / 悬空端点 / 跨项目端点", async () => {
+    const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张" }))!
+    expect(图.边.some((边) => ["r-排除", "r-悬空", "r-张排", "r-排张", "r-张别人"].includes(边.id))).toBe(false)
+    expect(图.节点.some((点) => ["e-排", "e-不存在", "e-别人"].includes(点.id))).toBe(false)
+  })
+
+  test("2 跳：跳数按最短距离回填；关联数只算图里画出来的边", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 跳数: 2 }))!
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-账", "e-号1", "e-号2", "e-张", "e-李"].sort())
     expect(图.边.some((边) => 边.id === "r-号1外")).toBe(false)
+    expect(图.缺口).toEqual([])
+    // 跳数：中心 0；e-李 / e-账 是第 1 跳；e-号1 / e-号2 是第 2 跳。
+    expect(图.节点.find((点) => 点.id === "e-张")!.跳数).toBe(0)
+    expect(图.节点.find((点) => 点.id === "e-李")!.跳数).toBe(1)
+    expect(图.节点.find((点) => 点.id === "e-账")!.跳数).toBe(1)
+    expect(图.节点.find((点) => 点.id === "e-号1")!.跳数).toBe(2)
+    expect(图.节点.find((点) => 点.id === "e-号2")!.跳数).toBe(2)
+    // 关联数（按实际种子）：e-张 3 条（r-张李 / r-张账 / r-账张）、e-李 3 条、
+    // e-账 2 条、e-号1 1 条、e-号2 1 条。
+    expect(图.节点.find((点) => 点.id === "e-张")!.关联数).toBe(3)
+    expect(图.节点.find((点) => 点.id === "e-李")!.关联数).toBe(3)
+    expect(图.节点.find((点) => 点.id === "e-账")!.关联数).toBe(2)
+    expect(图.节点.find((点) => 点.id === "e-号1")!.关联数).toBe(1)
+    expect(图.节点.find((点) => 点.id === "e-号2")!.关联数).toBe(1)
   })
 
   test("类型筛选只留该类型的边与两端", async () => {
@@ -125,14 +181,36 @@ describe("关系图", () => {
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-张", "e-账"].sort())
   })
 
-  test("上限截断写缺口，且 2 跳不再画", async () => {
+  test("第 1 跳被截断时缺口说清画了多少、共有多少", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 跳数: 2, 上限: 2 }))!
     expect(图.节点.length).toBe(2)
-    expect(图.缺口.join()).toContain("2")
     // 第二个名额是 e-账（r-张账 次数 1 排在前面）；装不下端点的边**不能画**，
     // 否则图里会留一条悬空边（§9.1）。
     expect(图.节点.map((点) => 点.id)).toEqual(["e-张", "e-账"])
     expect(图.边.map((边) => 边.id)).toEqual(["r-张账"])
+    // 图里只画了 1 条边 ⇒ 关联数只能按图算（库内 e-张 的度数还更大）。
+    expect(图.节点.find((点) => 点.id === "e-张")!.关联数).toBe(1)
+    // 只有一条缺口（不许「截断」与「没展开第 2 跳」两条近似重复的）。
+    expect(图.缺口).toHaveLength(1)
+    expect(图.缺口[0]).toContain("第 1 跳只画了前 2 个节点")
+    expect(图.缺口[0]).toContain("3 条关联关系")
+  })
+
+  test("第 1 跳恰好装满上限且没被截断：缺口说「未展开」，不谎称截断", async () => {
+    const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-满", 跳数: 2, 上限: 3 }))!
+    expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-满", "e-甲2", "e-乙2"].sort())
+    expect(图.缺口).toEqual(["节点已达上限 3，未展开第 2 跳"])
+  })
+
+  test("第 2 跳按边数截断时缺口不空，且带总数", async () => {
+    const 图 = (await 关系图(库(), { projectId: "p-二跳", id: "e-根", 跳数: 2, 上限: 50 }))!
+    expect(图.节点.length).toBe(50)
+    expect(图.边.length).toBe(49)
+    expect(图.缺口).toHaveLength(1)
+    expect(图.缺口[0]).toContain("第 2 跳只画了前 48 条关系")
+    // 总数是 `count(*) over()` 的口径：本跳相邻关系的**全部**条数。
+    // 这里 51 = 50 条叶子边 ＋ 1 条第 1 跳已画过的回边（r-根枝）。
+    expect(图.缺口[0]).toContain("共 51 条")
   })
 
   test("中心不存在 / 已排除 / 别的项目 ⇒ undefined", async () => {
@@ -152,5 +230,13 @@ describe("关系图", () => {
     const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-心", 上限: 2 }))!
     expect(图.节点.map((点) => 点.id)).toEqual(["e-心", "e-乙"])
     expect(图.边.map((边) => 边.id)).toEqual(["r-z"])
+  })
+
+  test("自环的关联数只计一次", async () => {
+    const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-心" }))!
+    expect(图.边.map((边) => 边.id).sort()).toEqual(["r-a", "r-z", "r-自"].sort())
+    expect(图.节点.find((点) => 点.id === "e-心")!.关联数).toBe(3)
+    expect(图.节点.find((点) => 点.id === "e-甲")!.关联数).toBe(1)
+    expect(图.节点.find((点) => 点.id === "e-乙")!.关联数).toBe(1)
   })
 })

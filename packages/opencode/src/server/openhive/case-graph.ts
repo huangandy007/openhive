@@ -15,6 +15,9 @@ import type { Queryable } from "./case-store"
  *   两条 `join` 各自带 `trust_state <> '已排除'`，**悬空端点的边因此根本查不出来**。
  * - 跳数用**两轮 SQL 在 TS 里 BFS**，不写递归 CTE：两轮能逐轮限行（第一轮按上限取边，
  *   第二轮只取「剩余名额」条），递归 CTE 要在 SQL 里截断反而更难读。
+ * - **截断不许静默**：每轮 `limit 剩余 + 1` 多取一条，并用 `count(*) over()` 拿本跳的全部
+ *   条数；装不下的写进 `缺口`（带「画了多少 / 共有多少」两个数字）。只把 `剩余` 当
+ *   `limit` 的话，多出来的行会被 SQL 悄悄吃掉——第 2 跳的容量判据在数据层恒假。
  *
  * ## 项目隔离
  *
@@ -83,7 +86,14 @@ interface 边行 {
   readonly to_trust: string
 }
 
-/** 取「与这批节点相邻」的一圈边。`剩余` 是本轮最多取几条。 */
+interface 一圈 {
+  /** 本跳最多取 `剩余 + 1` 条（多取一条只为判断「还有没有」）。 */
+  readonly 边们: 边行[]
+  /** 本跳满足条件的**全部**条数（`count(*) over()`，不受 `limit` 影响）。 */
+  readonly 总数: number
+}
+
+/** 取「与这批节点相邻」的一圈边。`剩余` 是本轮最多画几条。 */
 async function 取一圈(
   db: Queryable,
   input: {
@@ -92,8 +102,8 @@ async function 取一圈(
     readonly 类型?: readonly string[]
     readonly 剩余: number
   },
-): Promise<边行[]> {
-  if (input.节点们.length === 0 || input.剩余 <= 0) return []
+): Promise<一圈> {
+  if (input.节点们.length === 0 || input.剩余 <= 0) return { 边们: [], 总数: 0 }
   const 节点表 = sql.join(
     input.节点们.map((id) => sql`${id}`),
     sql`, `,
@@ -103,11 +113,12 @@ async function 取一圈(
       ? []
       : [sql`r.type in (${sql.join(input.类型.map((条) => sql`${条}`), sql`, `)})`]
 
-  return rowsOf(
+  const 行们 = rowsOf(
     await db.execute(sql`
       select r.id, r.from_id, r.to_id, r.type, r.times, r.amount::text as amount, r.trust_state,
              起.canonical_value as from_value, 起.type as from_type, 起.trust_state as from_trust,
-             终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust
+             终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust,
+             (count(*) over())::int as 总数
         from auth.case_relation r
         join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
         join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
@@ -116,24 +127,28 @@ async function 取一圈(
          and 起.trust_state <> '已排除' and 终.trust_state <> '已排除'
          and (r.from_id in (${节点表}) or r.to_id in (${节点表}))
          ${类型条件.length === 0 ? sql`` : sql`and ${sql.join(类型条件, sql` and `)}`}
-       order by coalesce(r.times, 0) desc, coalesce(r.last_at, r.first_at, 0) desc, r.id asc
-       limit ${input.剩余}
+       order by coalesce(r.times, 0) desc, coalesce(r.last_at, r.first_at, 0) desc, r.id collate "C" asc
+       limit ${input.剩余 + 1}
     `),
-  ).map((行) => ({
-    id: String(行.id),
-    from_id: String(行.from_id),
-    to_id: String(行.to_id),
-    type: String(行.type),
-    times: 行.times as number | null,
-    amount: (行.amount as string | null) ?? null,
-    trust_state: String(行.trust_state),
-    from_value: String(行.from_value),
-    from_type: String(行.from_type),
-    from_trust: String(行.from_trust),
-    to_value: String(行.to_value),
-    to_type: String(行.to_type),
-    to_trust: String(行.to_trust),
-  }))
+  )
+  return {
+    边们: 行们.map((行) => ({
+      id: String(行.id),
+      from_id: String(行.from_id),
+      to_id: String(行.to_id),
+      type: String(行.type),
+      times: 行.times as number | null,
+      amount: (行.amount as string | null) ?? null,
+      trust_state: String(行.trust_state),
+      from_value: String(行.from_value),
+      from_type: String(行.from_type),
+      from_trust: String(行.from_trust),
+      to_value: String(行.to_value),
+      to_type: String(行.to_type),
+      to_trust: String(行.to_trust),
+    })),
+    总数: 行们.length === 0 ? 0 : Number(行们[0].总数),
+  }
 }
 
 /**
@@ -212,18 +227,25 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     return 新点
   }
 
+  // 第 1 跳最多画 `可用` 条边：中心已占 1 个名额，而每条边最多带 1 个新节点。
+  // 查询多取 1 条、并带 `count(*) over()`，用来判断「真被截断」还是「恰好画完」。
+  const 可用 = 上限 - 1
   const 第一圈 = await 取一圈(db, {
     projectId: input.projectId,
     节点们: [String(中心.id)],
     类型: input.类型,
-    剩余: 上限,
+    剩余: 可用,
   })
-  const 一跳点 = 收一圈(第一圈)
+  const 一跳点 = 收一圈(第一圈.边们.slice(0, 可用))
+  const 第一跳截断 = 第一圈.总数 > 可用
+  if (第一跳截断) 缺口.push(`第 1 跳只画了前 ${节点表.size} 个节点，共 ${第一圈.总数} 条关联关系`)
 
   if (跳数 === 2) {
     const 剩余 = 上限 - 节点表.size
     if (剩余 <= 0) {
-      缺口.push(`第 1 跳就把 ${上限} 个节点的上限用完了，没有画第 2 跳`)
+      // 第 1 跳真被截断时上面那句已经说清「还有没画的」，不再补一句近似的；
+      // 恰好装满（库里也没有更多）才说「未展开」——我们确实没展开。
+      if (!第一跳截断) 缺口.push(`节点已达上限 ${上限}，未展开第 2 跳`)
     } else {
       const 第二圈 = await 取一圈(db, {
         projectId: input.projectId,
@@ -231,7 +253,9 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         类型: input.类型,
         剩余,
       })
-      收一圈(第二圈)
+      const 画第二圈 = 第二圈.边们.slice(0, 剩余)
+      收一圈(画第二圈)
+      if (第二圈.总数 > 剩余) 缺口.push(`第 2 跳只画了前 ${画第二圈.length} 条关系，共 ${第二圈.总数} 条`)
     }
   }
 
@@ -242,8 +266,9 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     点.跳数 = 邻居.has(点.id) ? 1 : 2
   }
   // 关联数按**图里画出来的边**数（不是库里的总数）——它要解释「屏幕上这几条」。
+  // `new Set`：自环（from = to）是一条边，不能给同一个节点加两次。
   for (const 边 of 边表.values()) {
-    for (const id of [边.from, 边.to]) {
+    for (const id of new Set([边.from, 边.to])) {
       const 点 = 节点表.get(id)
       if (点) 点.关联数 += 1
     }
