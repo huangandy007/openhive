@@ -35,9 +35,26 @@ export function 抽取文本(bytes: Uint8Array, path: string): 文本结果 {
   const 原文 = 低.endsWith(".docx") ? 读docx(bytes) : 解码文本(bytes)
   const 文本 = 原文.replace(/^﻿/, "").replace(/\r\n?/g, "\n")
   if (文本.trim() === "") throw new Error("文件里没有可读的文字")
+  if (怀疑二进制(文本))
+    throw new Error("这个文件看起来不是纯文本（可能是二进制或 UTF-16）；请另存为 UTF-8 后再导入")
   if (文本.length > 文本字数上限)
     throw new Error(`文本共 ${文本.length} 字，超过单份材料上限（${文本字数上限} 字）；请拆分后再导入`)
   return { text: 文本 }
+}
+
+/**
+ * 文本层只收纯文本。UTF-16LE 的 ASCII 文件是**合法 UTF-8**（每隔一字节一个 `\u0000`），
+ * GBK 兜底也保留「任意字节对都能解」的口子——不拦就是把乱码当钱烧。
+ * 控制字符按**比例**判：单个 `\f` 的老日志不该被拒，满篇控制字符的二进制必须拒。
+ */
+function 怀疑二进制(文本: string): boolean {
+  let 控 = 0
+  for (const 字符 of 文本) {
+    const 码 = 字符.codePointAt(0)!
+    if (码 === 0) return true
+    if (码 < 0x20 && 码 !== 0x09 && 码 !== 0x0a && 码 !== 0x0d) 控++
+  }
+  return 控 > 0 && 控 / 文本.length > 0.01
 }
 
 function 解码文本(bytes: Uint8Array): string {
@@ -52,7 +69,7 @@ function 解码文本(bytes: Uint8Array): string {
 }
 
 function 读docx(bytes: Uint8Array): string {
-  const 正文 = 读zip(bytes).get("word/document.xml")
+  const 正文 = 读zip(bytes, "word/document.xml")
   if (正文 === undefined)
     throw new Error("这个 .docx 里没有正文（word/document.xml）；如果是旧版 .doc 改了后缀，请用 Word 另存为 .docx")
   return 去掉xml标签(new TextDecoder("utf-8").decode(正文))
@@ -69,20 +86,38 @@ function 去掉xml标签(xml: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, n: string) => String.fromCodePoint(Number.parseInt(n, 16)))
+    .replace(/&nbsp;/g, " ")
+    .replace(/&mdash;/g, "—")
+    .replace(/&hellip;/g, "…")
+    .replace(/&#(\d+);/g, (原文: string, n: string) => 码点(Number(n), 原文))
+    .replace(/&#x([0-9a-fA-F]+);/g, (原文: string, n: string) => 码点(Number.parseInt(n, 16), 原文))
     .replace(/&amp;/g, "&")
+}
+
+/** 越界的码点不去构造字符（`String.fromCodePoint` 会抛英文 RangeError），原样留着。 */
+function 码点(码: number, 原文: string): string {
+  if (!Number.isInteger(码) || 码 < 0 || 码 > 0x10ffff) return 原文
+  return String.fromCodePoint(码)
+}
+
+/** 解压上限真的兜在解压器上：中央目录里的「原始长」是**声明值**，不能当闸用。 */
+function 解压(数据: Uint8Array): Uint8Array {
+  try {
+    return new Uint8Array(inflateRawSync(数据, { maxOutputLength: 解压上限 }))
+  } catch {
+    throw new Error("这个 .docx 的压缩数据已损坏")
+  }
 }
 
 const 中央目录签名 = 0x02014b50
 const 本地头签名 = 0x04034b50
 
-function 读zip(bytes: Uint8Array): Map<string, Uint8Array> {
+function 读zip(bytes: Uint8Array, 目标名: string): Uint8Array | undefined {
   const 视 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let 尾 = -1
   const 最早 = Math.max(0, bytes.length - 22 - 0xffff)
   for (let i = bytes.length - 22; i >= 最早; i--) {
-    if (视.getUint32(i, true) === 0x06054b50) {
+    if (视.getUint32(i, true) === 0x06054b50 && i + 22 + 视.getUint16(i + 20, true) === bytes.length) {
       尾 = i
       break
     }
@@ -91,7 +126,7 @@ function 读zip(bytes: Uint8Array): Map<string, Uint8Array> {
 
   const 条目数 = 视.getUint16(尾 + 10, true)
   let 偏移 = 视.getUint32(尾 + 16, true)
-  const 结果 = new Map<string, Uint8Array>()
+  if (条目数 === 0xffff || 偏移 === 0xffffffff) throw new Error("暂不支持 zip64 的 .docx")
   for (let n = 0; n < 条目数; n++) {
     if (偏移 + 46 > bytes.length || 视.getUint32(偏移, true) !== 中央目录签名)
       throw new Error("这个 .docx 的 zip 目录损坏了")
@@ -113,23 +148,20 @@ function 读zip(bytes: Uint8Array): Map<string, Uint8Array> {
     const 本地附长 = 视.getUint16(本地偏移 + 28, true)
     const 数据起 = 本地偏移 + 30 + 本地名长 + 本地附长
     if (数据起 + 压缩长 > bytes.length) throw new Error("这个 .docx 的 zip 条目越界了")
-    if (原始长 > 解压上限) throw new Error("这个 .docx 里的单个部件太大，已拒绝解压")
 
-    const 数据 = bytes.subarray(数据起, 数据起 + 压缩长)
-    if (方法 === 0) 结果.set(名, 数据)
-    else if (方法 === 8) {
-      let 解: Uint8Array
-      try {
-        解 = new Uint8Array(inflateRawSync(数据))
-      } catch {
-        // zlib 抛的是英文原文（如 "invalid code lengths set"），不能直接漏给民警。
-        throw new Error("这个 .docx 的压缩数据已损坏")
+    if (名 === 目标名) {
+      const 数据 = bytes.subarray(数据起, 数据起 + 压缩长)
+      if (原始长 > 解压上限) throw new Error("这个 .docx 的正文太大，已拒绝解压")
+      if (方法 === 0) return 数据
+      if (方法 === 8) {
+        const 解 = 解压(数据)
+        if (解.length !== 原始长) throw new Error("这个 .docx 的压缩数据长度对不上")
+        return 解
       }
-      if (解.length !== 原始长) throw new Error("这个 .docx 的压缩数据长度对不上")
-      结果.set(名, 解)
-    } else throw new Error(`这个 .docx 用了不支持的压缩方式（${方法}）`)
+      throw new Error(`这个 .docx 用了不支持的压缩方式（${方法}）`)
+    }
 
     偏移 += 46 + 名长 + 附长 + 注长
   }
-  return 结果
+  return undefined
 }
