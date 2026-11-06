@@ -602,11 +602,9 @@ async function 读第一行(projectId: string, materialId: string) {
 }
 
 /**
- * 计划 3 终审阻塞 3：人工「解析入库」要**置顶**（设计 `design.md:498`「强制入队，置顶优先」）。
- *
- * `claimNextJob` 按 `(queued_at, id)` 全局取最老一条；人工入队若用 `nowSeconds()`，就会排在
- * 所有已排队作业后面（实测第 51 位）。这里用**过去时刻**种队首，保证 FIFO 对照与置顶判据
- * 在变异下都能稳定地红/绿（同一秒内多个作业撞 `queued_at` 会让 `id` 的随机序决定胜负）。
+ * bun 1.4.3 会把绑给 jsonb 参数的 JS 字符串再编码一次；写侧不加 `::text` 时落库是
+ * **JSON 字符串**（`jsonb_typeof = 'string'`），`header->>0` 取不到列名。读路径的
+ * `typeof === "string" ? JSON.parse` 会把错形状也读对，所以只有 SQL 侧取值能揭穿它。
  */
 describe("表格格式缓存的 jsonb 形状", () => {
   test("header 落成 array、mapping 落成 object，SQL 侧能取到列名", async () => {
@@ -626,6 +624,13 @@ describe("表格格式缓存的 jsonb 形状", () => {
   })
 })
 
+/**
+ * 计划 3 终审阻塞 3：人工「解析入库」要**置顶**（设计 `design.md:498`「强制入队，置顶优先」）。
+ *
+ * `claimNextJob` 按 `(queued_at, id)` 全局取最老一条；人工入队若用 `nowSeconds()`，就会排在
+ * 所有已排队作业后面（实测第 51 位）。这里用**过去时刻**种队首，保证 FIFO 对照与置顶判据
+ * 在变异下都能稳定地红/绿（同一秒内多个作业撞 `queued_at` 会让 `id` 的随机序决定胜负）。
+ */
 describe("人工入库置顶（设计：强制入队，置顶优先）", () => {
   const 秒 = () => Math.floor(Date.now() / 1000)
 
