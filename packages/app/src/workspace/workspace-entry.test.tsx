@@ -862,6 +862,10 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     // 接线成立的证据：中栏多了一张标题带「抽取结果」的 tab（没注入 caseDetailApi ⇒ 内容说未接入，
     // 那是**内容层**的事；这条只钉「路径进没进中栏」）。
     expect(host.textContent).toContain("话单.csv · 抽取结果")
+    // ⚠️ 只断标题不够：标题在 tab 层就写好了，哪怕路径压根没被当成案件路径也会绿。
+    // 没注入 caseDetailApi 时，**只有真正解析成功的 case 路径**才会让 `CaseView` 说这句
+    // （落进表格视图 /「不支持」都不会出现它）——它是「路径确实到了 `CaseView` 手上」的证据。
+    expect(host.textContent).toContain("案件视图未接入")
   })
 })
 

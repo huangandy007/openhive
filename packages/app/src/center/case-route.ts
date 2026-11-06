@@ -2,9 +2,11 @@
  * 中栏「案件视图」的伪路径：`case://<projectId>/<view>/<arg>`。
  *
  * 为什么不另开一条 tab 类型（计划 7 的裁定 3）：`ContentTab` 已经是 `{module,title,path}`，
- * 加一种 kind 要动上游的 tab 去重 / 持久化路径；而 `case://…` 可能被 `extensionOf` 解析出
- * **真实扩展名**（材料路径的末段就是 `话单.xlsx`），会落进「有扩展名但没人认领」的降级档
- * —— **所以 `center-content.tsx` 必须先认这个前缀、再走 `extensionOf`**，tab 本身一字不改。
+ * 加一种 kind 要动上游的 tab 去重 / 持久化路径；而 `case://…` 会被 `extensionOf` 解析出
+ * **真实扩展名**（材料路径的末段就是 `话单.xlsx`），而 `.xls/.xlsx/.csv` 是**已注册**的
+ * 表格视图扩展名（`center/views/index.ts`）——不先认前缀，它就会被表格视图认领、打开**错的
+ * 视图**，而不是落进「没人认领」的降级档。**所以 `center-content.tsx` 必须先认这个前缀、
+ * 再走 `extensionOf`**，tab 本身一字不改。
  *
  * 参数一律 `encodeURIComponent`：项目文件路径带 `/`、实体 id 可能带 `#` 与空格，
  * 不编码会把段拆错（`#` 还会被 URL 解析吃掉）。

@@ -147,9 +147,10 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
      */
     const 代 = 当前重载代(tab.path)
 
-    // `case://` 不是文件：先认前缀，别让 `extensionOf` 把它判成「无扩展名」而降级
-    // （`extensionOf("case://p/entity/x")` 会给 x 这个假扩展名，落进「没人认领」档）。
-    // ⚠️ 这一支必须**在 `extensionOf` 之前**：挪到后面，每个案件 tab 都会变成「不支持」。
+    // `case://` 不是文件：先认前缀。`extensionOf` 会从材料路径的末段取出**真实扩展名**
+    // （`case://…/话单.xlsx` ⇒ `.xlsx`），而 `.xls/.xlsx/.csv` 是**已注册**的表格视图扩展名
+    // ——不先认前缀，它就会被表格视图认领、打开**错的视图**（不是「没人认领」的降级档）。
+    // ⚠️ 这一支必须**在 `extensionOf` 之前**：挪到后面，案件 tab 会按扩展名打开错的视图。
     // 认得出前缀、解不出段：这是**坏路径**，与「这份文件看不了」同一档呈现。
     if (是案件路径(tab.path)) {
       if (解析案件路径(tab.path)) {

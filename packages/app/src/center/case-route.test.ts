@@ -25,7 +25,7 @@ describe("案件伪路径", () => {
    * `case://…`（比如漏了 `encodeURIComponent`），解析器就只认得另一边——而症状是
    * 「点开的实体打不开」，不是抛错（`LEARNINGS #002-06` / Task 6 复审 Minor 5）。
    */
-  test("实体路径往返：projectId / id 里的空格、#、/ 、中文都保住", () => {
+  test("实体路径往返：projectId 的空格 / # / 中文、id 的空格 / # / 斜杠 / 中文都保住", () => {
     const projectId = "p 1#甲"
     const id = "e 张#三/李四"
     expect(解析案件路径(实体路径(projectId, id, "张三").path)).toEqual({ projectId, view: "entity", arg: id })

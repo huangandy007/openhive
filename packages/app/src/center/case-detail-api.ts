@@ -76,13 +76,20 @@ export interface 事实组 {
   readonly 行们: readonly { readonly row_no: number; readonly 事实们: readonly 事实行[] }[]
 }
 
+/**
+ * 材料解析状态。**逐字照抄**服务端 `case-status.ts` 的 `PARSE_STATUSES` /
+ * 迁移 `0031_case_fact_layer.sql`；跨包不 import（服务端代码不进 `packages/app` 的产物），
+ * 所以写错一个词要在编译期报出来，靠的就是这个联合类型。
+ */
+export type 解析状态 = "未入队" | "排队中" | "解析中" | "已解析" | "有问题" | "已跳过"
+
 export interface 材料事实清单结果 {
   readonly 材料: {
     readonly id: string
     readonly path: string
     readonly file_name: string
     readonly kind: string
-    readonly parse_status: string
+    readonly parse_status: 解析状态
     readonly parse_detail: unknown
   }
   readonly 分组: readonly 事实组[]

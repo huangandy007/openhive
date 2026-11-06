@@ -24,8 +24,9 @@ function 解详情(值: unknown): string {
  * **按工作表分组、行上并排列事实**——民警核对的是「这一行原文有没有被抽成事实」，
  * 按事实类型平铺就丢了「同一行」这个对照关系。
  *
- * `parse_status !== "解析完成"` 时才摆 `parse_detail`：解析成功时的 detail 是机器噪声，
- * 常驻只会把真正要看的东西挤下去。
+ * **仅当 `parse_status === "有问题"`** 时才摆 `parse_detail`：解析成功时的 detail 是机器噪声，
+ * 常驻只会把真正要看的东西挤下去。别写成 `!== "已解析"`——`解析中` / `排队中` 可能还带着
+ * 上一轮的 detail，把隔夜的原因当成本轮的原因摆出来，是同一种谎话。
  */
 export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [清单, set清单] = createSignal<材料事实清单结果 | undefined>()
@@ -82,7 +83,7 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                 {清单().材料.parse_status}
               </span>
             </div>
-            <Show when={清单().材料.parse_status !== "解析完成" && 解详情(清单().材料.parse_detail) !== ""}>
+            <Show when={清单().材料.parse_status === "有问题" && 解详情(清单().材料.parse_detail) !== ""}>
               <pre data-slot="material-facts-detail" class="mt-2 overflow-x-auto rounded-[4px] bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-muted">
                 {解详情(清单().材料.parse_detail)}
               </pre>

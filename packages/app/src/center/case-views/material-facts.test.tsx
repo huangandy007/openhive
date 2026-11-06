@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import type { JSX } from "solid-js"
 import { MaterialFacts } from "./material-facts"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
+import type { 结果 } from "../../project/entity-api"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -28,7 +29,9 @@ const 清单: 材料事实清单结果 = {
     path: "材料/话单.xlsx",
     file_name: "话单.xlsx",
     kind: "话单",
-    parse_status: "解析完成",
+    parse_status: "已解析",
+    // 成功时 detail 照样有内容（模型/提示词版本/切片数…，服务端写得出来）——
+    // 但页面不该摆它：那是机器噪声，不是给民警看的原因。
     parse_detail: { rows: 2 },
   },
   分组: [
@@ -84,7 +87,7 @@ describe("材料抽取结果", () => {
     expect(host.querySelectorAll("[data-slot='material-facts-gap']").length).toBe(1)
   })
 
-  test("解析未完成时把 parse_detail 摆出来（哪一步卡住要比「未完成」有用）", async () => {
+  test("「有问题」时把 parse_detail 摆出来（哪一步卡住要比「有问题」有用）", async () => {
     const host = mount(() => (
       <MaterialFacts
         projectId="p"
@@ -92,7 +95,7 @@ describe("材料抽取结果", () => {
         api={假api({
           materialFacts: async () => ({
             kind: "ok",
-            value: { ...清单, 材料: { ...清单.材料, parse_status: "解析失败", parse_detail: { reason: "第 3 列缺表头" } } },
+            value: { ...清单, 材料: { ...清单.材料, parse_status: "有问题", parse_detail: { reason: "第 3 列缺表头" } } },
           }),
         })}
       />
@@ -101,10 +104,56 @@ describe("材料抽取结果", () => {
     expect(host.querySelector("[data-slot='material-facts-detail']")!.textContent).toContain("第 3 列缺表头")
   })
 
-  test("解析完成时不摆 parse_detail（那是给失败看的，不是常驻噪音）", async () => {
+  test("「已解析」时即使 detail 非空也不摆（成功时的 detail 是机器噪声）", async () => {
     const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={假api()} />)
     await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
     expect(host.querySelector("[data-slot='material-facts-detail']")).toBeNull()
+  })
+
+  test("回包未到之前说「正在读取抽取结果…」，到了就撤掉", async () => {
+    const 在飞: Array<(值: 结果<材料事实清单结果>) => void> = []
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({ materialFacts: () => new Promise<结果<材料事实清单结果>>((收) => 在飞.push(收)) })}
+      />
+    ))
+    await 等(() => 在飞.length === 1)
+    expect(host.querySelector("[data-slot='material-facts-loading']")!.textContent).toContain("正在读取抽取结果")
+
+    在飞[0]({ kind: "ok", value: 清单 })
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
+    expect(host.querySelector("[data-slot='material-facts-loading']")).toBeNull()
+  })
+
+  test("换材料时迟到的旧回包不覆盖新结果（`onCleanup` 作废旧请求）", async () => {
+    const 在飞: Array<(值: 结果<材料事实清单结果>) => void> = []
+    const [路径, set路径] = createSignal("材料/旧.xlsx")
+    const api = 假api({ materialFacts: () => new Promise<结果<材料事实清单结果>>((收) => 在飞.push(收)) })
+    const host = mount(() => <MaterialFacts projectId="p" path={路径()} api={api} />)
+    await 等(() => 在飞.length === 1)
+
+    set路径("材料/新.xlsx")
+    await 等(() => 在飞.length === 2)
+
+    const 造 = (名: string): 材料事实清单结果 => ({
+      ...清单,
+      材料: { ...清单.材料, path: `材料/${名}.xlsx`, file_name: `${名}.xlsx`, parse_detail: null },
+      分组: [{ sheet: 名, 行们: [{ row_no: 1, 事实们: [{ fact_type: "entity", fact_id: `e-${名}`, 值: 名, trust_state: "自动抽取" }] }] }],
+    })
+
+    // 先回新的，后回旧的。
+    在飞[1]({ kind: "ok", value: 造("新") })
+    await 等(() => host.querySelector("[data-slot='material-facts-title']")?.textContent?.includes("新.xlsx") === true)
+
+    在飞[0]({ kind: "ok", value: 造("旧") })
+    // 给旧回包足够的时间落地（若没被作废，这里之后屏幕上就是旧材料）。
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(host.textContent).not.toContain("旧")
+    expect(host.querySelectorAll("[data-slot='material-facts-sheet']").length).toBe(1)
+    expect(host.querySelector("[data-slot='material-facts-sheet']")!.textContent).toBe("新")
   })
 
   test("取数失败如实说（404 的原文照搬）", async () => {

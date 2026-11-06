@@ -52,22 +52,29 @@ describe("案件视图外壳", () => {
     expect(host.querySelector("[data-slot='entity-profile-title']")!.textContent).toContain("张三")
   })
 
-  test("材料路径 ⇒ 渲染材料抽取结果", async () => {
+  test("材料路径 ⇒ 渲染材料抽取结果；标题取 file_name，api 收到解码后的路径", async () => {
+    // ⚠️ `file_name` 与 `path` **必须不同**，否则「标题渲染的是哪一个」这条断言分辨不出来。
+    const 收到: string[] = []
     const 材料api: CaseDetailApi = {
       ...api,
-      materialFacts: async () => ({
-        kind: "ok",
-        value: {
-          材料: { id: "m-1", path: "话单.xlsx", file_name: "话单.xlsx", kind: "话单", parse_status: "解析完成", parse_detail: null },
-          分组: [],
-          缺口: [],
-        },
-      }),
+      materialFacts: async (_projectId, path) => {
+        收到.push(path)
+        return {
+          kind: "ok",
+          value: {
+            材料: { id: "m-1", path: "材料/话单.xlsx", file_name: "话单（甲）.xlsx", kind: "话单", parse_status: "已解析", parse_detail: null },
+            分组: [],
+            缺口: [],
+          },
+        }
+      },
     }
     const host = mount(() => (
       <CaseView path={`case://p-1/material/${encodeURIComponent("材料/话单.xlsx")}`} api={材料api} />
     ))
     await 等(() => host.querySelectorAll("[data-slot='material-facts-title']").length === 1)
-    expect(host.querySelector("[data-slot='material-facts-title']")!.textContent).toContain("话单.xlsx")
+    expect(host.querySelector("[data-slot='material-facts-title']")!.textContent).toContain("话单（甲）.xlsx")
+    // 传下去的必须是解码后的 `arg`，不是 tab 里那串 `%E6%9D%90%E6%96%99…`。
+    expect(收到).toEqual(["材料/话单.xlsx"])
   })
 })
