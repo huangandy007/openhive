@@ -116,11 +116,19 @@ describe("裁决与传播接通", () => {
     expect(详情?.basisChangedAt).not.toBeNull()
   })
 
-  test("确认与存疑不触发传播（值没变）", async () => {
+  test("确认不触发传播（值没变）", async () => {
     await 建实体(库(), { id: "e-只确认", projectId: 项目, value: "只确认" })
     await 建关系(库(), { id: "r-只确认", projectId: 项目, fromId: "e-只确认", toId: "e-边" })
     await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-只确认", action: "确认", by: 甲 })
     const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-只确认" })
+    expect(详情?.basisChangedAt).toBeNull()
+  })
+
+  test("存疑不触发传播（只是看过了）", async () => {
+    await 建实体(库(), { id: "e-只存疑", projectId: 项目, value: "只存疑" })
+    await 建关系(库(), { id: "r-只存疑", projectId: 项目, fromId: "e-只存疑", toId: "e-边" })
+    await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-只存疑", action: "存疑", by: 甲 })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-只存疑" })
     expect(详情?.basisChangedAt).toBeNull()
   })
 })

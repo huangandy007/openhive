@@ -412,7 +412,7 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
       throw new 裁决冲突(`不认识的裁决动作：${String(未知)}`, "bad_changes")
     }
 
-    // §9.4：值真的变了才传播（确认 / 存疑只是「看过了」）。
+    // §9.4：改动值或判定为错才传播；确认 / 存疑只是「看过了」。
     if (input.factType === "entity" && (input.action === "修正" || input.action === "排除"))
       await 标依赖已变更(tx, input.projectId, input.factId)
     // 依赖事实被人工动过 ⇒ 它已经被人复核，标记清掉。
