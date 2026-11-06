@@ -18,8 +18,8 @@ import type { ParseStatus } from "./case-status"
  *
  * ## `parseable` 只按扩展名
  *
- * 它回答的是「计划 2 的解析器认不认这个后缀」，与 `kind` 是两件事。产物的硬边界由
- * `applyParseAction` 的守卫与 `kind = 产物` 的库约束拦，**不靠这个布尔**。
+ * 它回答的是「系统解不解析这个后缀」（表格 ∪ 文本，计划 4 起含文本类），与 `kind` 是两件事。
+ * 产物的硬边界由 `applyParseAction` 的守卫与 `kind = 产物` 的库约束拦，**不靠这个布尔**。
  */
 export interface 材料视图行 {
   id: string

@@ -98,6 +98,7 @@ beforeAll(async () => {
   writeFileSync(join(项目根, "资料", "话单.xlsx"), "话单内容")
   writeFileSync(join(项目根, "资料", "流水.csv"), "流水内容")
   writeFileSync(join(项目根, "资料", "笔录.pdf"), "笔录内容")
+  writeFileSync(join(项目根, "资料", "说明.md"), "说明内容")
   // R9 夹具：两份文件**字节相同** ⇒ 指纹相同，`createMaterial` 会认成同一行材料。
   writeFileSync(join(项目根, "资料", "原件.xlsx"), "同一份内容")
   writeFileSync(join(项目根, "资料", "副本.xlsx"), "同一份内容")
@@ -374,6 +375,16 @@ describe("GET /openhive/case/materials", () => {
       const 包 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}`))
       expect(包.materials[0]).toMatchObject({ path: "分析/结论.xlsx", kind: "产物", status: "未入队", parseable: true })
     }))
+
+  it("文本材料也标 parseable：白名单是表格 ∪ 文本", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => 种材料({ path: "资料/笔录.txt", status: "未入队" }))
+      const 包 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}`))
+      expect(包.materials.find((item) => item.path === "资料/笔录.txt")).toMatchObject({
+        path: "资料/笔录.txt",
+        parseable: true,
+      })
+    }))
 })
 
 const 解析回包形状 = Schema.Struct({ ok: Schema.Boolean, status: Schema.String })
@@ -484,6 +495,15 @@ describe("POST /openhive/case/parse（入队 / 重新解析）", () => {
       expect(响应.status).toBe(409)
       expect((yield* 读错误(响应)).code).toBe("not_parseable")
       expect(yield* Effect.promise(() => 材料行("资料/笔录.pdf"))).toBeUndefined()
+    }))
+
+  it("文本材料走同一入口：.md 入队成功，类型落到「其他」", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/说明.md", action: "入队" })
+      expect(响应.status).toBe(200)
+      const 行 = yield* Effect.promise(() => 材料行("资料/说明.md"))
+      // `材料行` 已按 path 查，这里钉的是类型与状态两列（列名是 `parse_status`，不是 `status`）。
+      expect(行).toMatchObject({ kind: "其他", parse_status: "排队中" })
     }))
 
   it("产物硬边界：kind=产物 时三个解析动作都回 artifact_not_parseable", () =>
