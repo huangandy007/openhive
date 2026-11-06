@@ -12,6 +12,7 @@ const 库 = () => {
 
 const 项目 = "p-实体"
 const 别人的项目 = "p-别人"
+const 截断项目 = "p-截断"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -34,8 +35,24 @@ beforeAll(async () => {
 
   await 建事件(库(), { id: "ev-见面", projectId: 项目, participants: ["张三", "李四"], occurredAt: 1760000100 })
   await 建事件(库(), { id: "ev-转账", projectId: 项目, participants: ["张三"], occurredAt: 1760000200 })
+  await 建事件(库(), { id: "ev-排除", projectId: 项目, participants: ["张三"], trustState: "已排除" })
 
   await 建引用(库(), { id: "c-张", projectId: 项目, factType: "entity", factId: "e-张", materialId: "m-1" })
+
+  // 截断：201 条关系（> 档案关系上限 200），用来钉「显示上限 ≠ 全量」。
+  await 建实体(库(), { id: "e-多", projectId: 截断项目, value: "钱多", type: "人" })
+  await 建实体(库(), { id: "e-多账", projectId: 截断项目, value: "6222****9999", type: "账户" })
+  for (let i = 0; i < 201; i++) {
+    await 建关系(库(), {
+      id: `r-多${String(i).padStart(3, "0")}`,
+      projectId: 截断项目,
+      fromId: "e-多",
+      toId: "e-多账",
+      type: "转账",
+      amount: 1,
+      sourceKind: "data",
+    })
+  }
 })
 
 afterAll(async () => {
@@ -103,5 +120,38 @@ describe("实体清单与档案", () => {
 
   test("别的项目的实体取不到", async () => {
     expect(await 实体档案(库(), { projectId: 项目, id: "e-别人" })).toBeUndefined()
+  })
+
+  test("档案关系入方向：对方取 from_id", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 项目, id: "e-李" }))!
+    expect(档.关系.map((行) => [行.id, 行.方向, 行.对方值])).toEqual([["r-张李", "入", "张三"]])
+  })
+
+  test("档案一句话：按对方实体去重，关系条数用全量", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 项目, id: "e-张" }))!
+    expect(档.一句话).toContain("与本项目 2 个实体有 2 条有效关系")
+    expect(档.一句话).toContain("1 个账户")
+    expect(档.一句话).toContain("1 个人")
+    // e-多 对同一个账户有 201 条关系：去重后是「1 个账户」。
+    // 用整段「涉及 1 个账户」而不是裸「1 个账户」——「201 个账户」含子串「1 个账户」（#006-22）。
+    const 多 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
+    expect(多.一句话).toContain("涉及 1 个账户")
+  })
+
+  test("档案：已排除实体与已排除事件默认不出现，includeExcluded 才给", async () => {
+    expect(await 实体档案(库(), { projectId: 项目, id: "e-排" })).toBeUndefined()
+    expect(await 实体档案(库(), { projectId: 项目, id: "e-排", includeExcluded: true })).toBeDefined()
+    const 默认 = (await 实体档案(库(), { projectId: 项目, id: "e-张" }))!
+    expect(默认.事件).toHaveLength(2)
+    const 带排 = (await 实体档案(库(), { projectId: 项目, id: "e-张", includeExcluded: true }))!
+    expect(带排.事件).toHaveLength(3)
+  })
+
+  test("档案截断：关系只显示前 200 条，缺口说清全量", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
+    expect(档.关系).toHaveLength(200)
+    expect(档.缺口?.length).toBe(1)
+    expect(档.缺口?.join()).toContain("200")
+    expect(档.一句话).toContain("201 条有效关系")
   })
 })

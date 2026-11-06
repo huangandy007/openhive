@@ -49,6 +49,10 @@ export interface 实体清单入参 {
 
 export const 清单上限 = 200
 
+/** 档案页一次最多带出的关系 / 事件条数；超了就进 `缺口`，不冒充全量。 */
+const 关系上限 = 200
+const 事件上限 = 100
+
 export async function 类型计数(db: Queryable, projectId: string): Promise<类型计数[]> {
   const 行们 = rowsOf(
     await db.execute(sql`
@@ -68,10 +72,11 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
   if (input.type !== undefined) 条件.push(sql`e.type = ${input.type}`)
   const 词 = input.q?.trim()
   if (词 !== undefined && 词 !== "") {
-    const 模式 = `%${词}%`
+    // `q` 是用户输入：`%` / `_` / `\` 不转义就会当通配符（搜「100%」不该命中一切）。
+    const 模式 = `%${转义模糊(词)}%`
     条件.push(
-      sql`(e.canonical_value ilike ${模式}
-           or exists (select 1 from unnest(e.aliases) as 别名 where 别名 ilike ${模式}))`,
+      sql`(e.canonical_value ilike ${模式} escape '\\'
+           or exists (select 1 from unnest(e.aliases) as 别名 where 别名 ilike ${模式} escape '\\'))`,
     )
   }
   const 排序 = input.sort ?? "涉案"
@@ -156,6 +161,11 @@ export interface 实体档案 {
   readonly 引用: readonly 引用视图[]
   /** §8.3：档案页顶部那句文字结论（服务端生成，保证同一份数据两次打开说同一句话）。 */
   readonly 一句话: string
+  /**
+   * 关系/事件被上限截断时的整句提示（与 `实体清单结果.缺口` 同名同风格）。
+   * 没有截断就是 `undefined`——**不给空数组**，免得调用方在「没缺口」和「没算」之间猜。
+   */
+  readonly 缺口?: readonly string[]
 }
 
 export async function 实体档案(
@@ -181,11 +191,13 @@ export async function 实体档案(
     sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`,
   ]
   if (!含排除) 关系条件.push(sql`r.trust_state <> '已排除'`)
-  const 关系 = rowsOf(
+  // `count(*) over()` 在 LIMIT **之前**算 ⇒ 拿的是过滤后的全量行数，不必另发一条 count。
+  const 关系行们 = rowsOf(
     await db.execute(sql`
       select r.id, r.type, r.from_id, r.to_id, r.source_kind, r.basis, r.trust_state,
              r.first_at, r.last_at, r.times, r.amount::text as amount,
-             对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型
+             对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型,
+             count(*) over() as 总数
         from auth.case_relation r
         join auth.case_entity 对方
           on 对方.project_id = r.project_id
@@ -195,9 +207,11 @@ export async function 实体档案(
          sql` and `,
        )}
        order by coalesce(r.last_at, r.first_at, 0) desc, r.id asc
-       limit 200
+       limit ${关系上限}
     `),
-  ).map((行) => ({
+  )
+  const 关系总数 = 关系行们.length === 0 ? 0 : Number(关系行们[0]!.总数)
+  const 关系 = 关系行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
     方向: String(行.from_id) === input.id ? ("出" as const) : ("入" as const),
@@ -214,18 +228,21 @@ export async function 实体档案(
   }))
 
   // 事件的参与者存的是**实体规范值**（计划 4 的写口），不是 id。
-  const 事件 = rowsOf(
+  const 事件行们 = rowsOf(
     await db.execute(sql`
       select id, type, occurred_at, occurred_raw, summary,
-             array_to_json(participants)::text as participants, trust_state
+             array_to_json(participants)::text as participants, trust_state,
+             count(*) over() as 总数
         from auth.case_event
        where project_id = ${input.projectId}
          and participants @> array[${String(实体.canonical_value)}]::text[]
          ${含排除 ? sql`` : sql`and trust_state <> '已排除'`}
        order by occurred_at desc nulls last, id asc
-       limit 100
+       limit ${事件上限}
     `),
-  ).map((行) => ({
+  )
+  const 事件总数 = 事件行们.length === 0 ? 0 : Number(事件行们[0]!.总数)
+  const 事件 = 事件行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
     occurred_at: 行.occurred_at as number | null,
@@ -236,6 +253,13 @@ export async function 实体档案(
   }))
 
   const 引用 = await 引用们(db, input.projectId, "entity", input.id)
+
+  // 截断不能伪装成总数：显示的是前 N 条，缺口里说清全量有多少。
+  const 缺口: string[] = []
+  if (关系总数 > 关系上限)
+    缺口.push(`关系只显示前 ${关系上限} 条，共 ${关系总数} 条，请到关系图或工具里看全部`)
+  if (事件总数 > 事件上限)
+    缺口.push(`事件只显示前 ${事件上限} 条，共 ${事件总数} 条，请到关系图或工具里看全部`)
 
   return {
     id: String(实体.id),
@@ -248,8 +272,14 @@ export async function 实体档案(
     关系,
     事件,
     引用,
-    一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 关系, 事件.length),
+    一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 关系, 关系总数, 事件总数),
+    ...(缺口.length > 0 ? { 缺口 } : {}),
   }
+}
+
+/** 用户输入里的模糊通配符先转义，再拼 `%…%`（SQL 侧配 `escape '\'`）。 */
+function 转义模糊(词: string): string {
+  return 词.replace(/[\\%_]/g, (字) => `\\${字}`)
 }
 
 /** 库列是 text[] 或 jsonb：驱动读回可能是数组，也可能是字符串 ⇒ 两种都收。 */
@@ -267,15 +297,32 @@ function 解JSON<T>(值: unknown, 兜底: T): T {
 
 /**
  * §8.3：一句话结论只陈述**可数的事实**，不下判断。
- * 例：「张三是本项目核心节点：2 个号码、1 个账户、与 3 个实体有 4 条有效关系」
+ * 例：「张三：人。与本项目 2 个实体有 2 条有效关系，涉及 1 个人、1 个账户；关联 2 个事件。」
+ *
+ * 「N 个<类型>」数的是**对方实体个数**，不是关系条数：同一个账户转了两笔仍是「1 个账户」。
+ * 关系条数用**全量总数**（`关系总数`），不用当前页的 `关系.length`——截断不能冒充总数。
  */
-function 一句话结论(type: string, 值: string, 关系: readonly 档案关系[], 事件数: number): string {
-  const 按类型 = new Map<string, number>()
-  for (const 行 of 关系) 按类型.set(行.对方类型, (按类型.get(行.对方类型) ?? 0) + 1)
+function 一句话结论(
+  type: string,
+  值: string,
+  关系: readonly 档案关系[],
+  关系总数: number,
+  事件数: number,
+): string {
+  const 对方们 = new Set<string>()
+  const 按类型 = new Map<string, Set<string>>()
+  for (const 行 of 关系) {
+    对方们.add(行.对方id)
+    const 集 = 按类型.get(行.对方类型) ?? new Set<string>()
+    集.add(行.对方id)
+    按类型.set(行.对方类型, 集)
+  }
   const 组成 = [...按类型.entries()]
-    .sort((甲, 乙) => 乙[1] - 甲[1] || 甲[0].localeCompare(乙[0]))
-    .map(([类, 数]) => `${数} 个${类}`)
-  const 件 = 组成.length === 0 ? "没有有效关系" : `与 ${组成.join("、")} 有 ${关系.length} 条有效关系`
+    .sort((甲, 乙) => 乙[1].size - 甲[1].size || 甲[0].localeCompare(乙[0]))
+    .map(([类, 集]) => `${集.size} 个${类}`)
+  const 件 =
+    关系总数 === 0 ? "没有有效关系" : `与本项目 ${对方们.size} 个实体有 ${关系总数} 条有效关系`
+  const 涉 = 组成.length === 0 ? "" : `，涉及 ${组成.join("、")}`
   const 事 = 事件数 === 0 ? "没有关联事件" : `关联 ${事件数} 个事件`
-  return `${值}（${type}）：${件}，${事}。`
+  return `${值}：${type}。${件}${涉}；${事}。`
 }
