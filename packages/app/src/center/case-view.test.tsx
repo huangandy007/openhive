@@ -122,4 +122,34 @@ describe("案件视图外壳", () => {
       document.body.innerHTML = ""
     }
   })
+
+  test("关系图点非中心节点 ⇒ 通过 open 交出实体档案的标题与路径", async () => {
+    const 收到: Array<{ title: string; path: string }> = []
+    const host = mount(() => (
+      <CaseView
+        path="case://p-1/graph/e-%E5%BC%A0"
+        api={{
+          ...api,
+          graph: async () => ({
+            kind: "ok",
+            value: {
+              节点: [
+                { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
+                { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+              ],
+              边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+              缺口: [],
+            },
+          }),
+        }}
+        open={(输入) => 收到.push(输入)}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 2)
+    // SVG 的 `<g>` 在 happy-dom 里没有 `.click()`，走真实事件派发（同 `graph.test.tsx`）。
+    host.querySelector<SVGGElement>("[data-slot='graph-node'][data-node-id='e-李']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    expect(收到).toEqual([{ title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }])
+  })
 })

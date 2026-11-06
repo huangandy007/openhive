@@ -58,15 +58,23 @@ export function Graph(props: GraphProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void api.graph(projectId, id, 当前跳数, 当前类型).then((回) => {
-      if (作废) return
-      set载入(false)
-      if (回.kind === "error") {
-        set错误(回.message)
-        return
-      }
-      set图(回.value)
-    })
+    void api.graph(projectId, id, 当前跳数, 当前类型)
+      .then((回) => {
+        if (作废) return
+        set载入(false)
+        if (回.kind === "error") {
+          set错误(回.message)
+          return
+        }
+        set图(回.value)
+      })
+      // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会一直停在「载入中」，
+      // 同时留下一条没人看的 unhandled rejection。
+      .catch((错误: unknown) => {
+        if (作废) return
+        set载入(false)
+        set错误(错误 instanceof Error ? 错误.message : String(错误))
+      })
   })
 
   const 位置 = createMemo(() => (图() ? 布局(图()!) : { 中心: [] as (图节点 & { x: number; y: number })[], 一层: [] as (图节点 & { x: number; y: number })[], 二层: [] as (图节点 & { x: number; y: number })[] }))

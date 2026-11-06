@@ -57,15 +57,23 @@ export function Timeline(props: TimelineProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void api.timeline(projectId, id).then((回) => {
-      if (作废) return
-      set载入(false)
-      if (回.kind === "error") {
-        set错误(回.message)
-        return
-      }
-      set结果(回.value)
-    })
+    void api.timeline(projectId, id)
+      .then((回) => {
+        if (作废) return
+        set载入(false)
+        if (回.kind === "error") {
+          set错误(回.message)
+          return
+        }
+        set结果(回.value)
+      })
+      // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会一直停在「载入中」，
+      // 同时留下一条没人看的 unhandled rejection。
+      .catch((错误: unknown) => {
+        if (作废) return
+        set载入(false)
+        set错误(错误 instanceof Error ? 错误.message : String(错误))
+      })
   })
 
   const 事件们 = () => 解事件们(结果()?.数据)

@@ -107,4 +107,20 @@ describe("资金", () => {
     ))
     await 等(() => host.textContent!.includes("找不到这个实体"))
   })
+
+  test("取数抛异常 ⇒ 报出来并收掉「载入中」（不留一条 unhandled rejection）", async () => {
+    const host = mount(() => (
+      <Money
+        projectId="p"
+        id="e-账"
+        api={假api({
+          money: async () => {
+            throw new Error("网络断了")
+          },
+        })}
+      />
+    ))
+    await 等(() => host.textContent!.includes("网络断了"))
+    expect(host.textContent).not.toContain("正在汇总资金")
+  })
 })

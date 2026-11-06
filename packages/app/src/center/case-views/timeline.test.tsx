@@ -112,4 +112,20 @@ describe("时间线", () => {
     ))
     await 等(() => host.textContent!.includes("找不到这个实体"))
   })
+
+  test("取数抛异常 ⇒ 报出来并收掉「载入中」（不留一条 unhandled rejection）", async () => {
+    const host = mount(() => (
+      <Timeline
+        projectId="p"
+        id="e-张"
+        api={假api({
+          timeline: async () => {
+            throw new Error("网络断了")
+          },
+        })}
+      />
+    ))
+    await 等(() => host.textContent!.includes("网络断了"))
+    expect(host.textContent).not.toContain("正在读取事件")
+  })
 })

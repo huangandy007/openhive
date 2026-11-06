@@ -77,18 +77,17 @@ export interface 事实组 {
   readonly 行们: readonly { readonly row_no: number; readonly 事实们: readonly 事实行[] }[]
 }
 
-/**
- * 材料解析状态。**类型本体在 `../project/case-materials-api`**（`解析状态们` 派生，计划 3 的
- * 闭集）——同一件事只留一处，here 不再抄第二份（`#002-06`）。它那里的注释说明了为什么要
- * 逐字照抄服务端 `case-status.ts` 的 `PARSE_STATUSES`。
- */
-
 export interface 材料事实清单结果 {
   readonly 材料: {
     readonly id: string
     readonly path: string
     readonly file_name: string
     readonly kind: string
+    /**
+     * 类型本体在 `../project/case-materials-api`（`解析状态们` 派生，计划 3 的闭集）——
+     * 同一件事只留一处，这里不再抄第二份（`#002-06`）。那边说明了为什么要逐字照抄服务端
+     * `case-status.ts` 的 `PARSE_STATUSES`。
+     */
     readonly parse_status: 解析状态
     readonly parse_detail: unknown
   }

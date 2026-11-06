@@ -3,7 +3,7 @@ import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
 import { Graph } from "./graph"
-import type { CaseDetailApi, 关系图结果 } from "../case-detail-api"
+import type { CaseDetailApi, 图节点, 关系图结果 } from "../case-detail-api"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -58,13 +58,78 @@ describe("关系图", () => {
   })
 
   test("点非中心节点把整条节点交给上层（打开实体档案）", async () => {
-    const 收到: string[] = []
-    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={(点) => 收到.push(点.id)} />)
+    // ⚠️ 断言**整条节点**，不是只断 `.id`：传一个 `{ id }` 的桩会照样让只读 id 的用例变绿，
+    // 而上层拼标题要用 `value` / `type`（`case-view.tsx`）⇒ 缺字段时标题会变成「undefined · undefined」。
+    const 收到: 图节点[] = []
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={(点) => 收到.push(点)} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 3)
     host.querySelector<HTMLElement>("[data-slot='graph-node'][data-node-id='e-李']")!.dispatchEvent(
       new MouseEvent("click", { bubbles: true }),
     )
-    expect(收到).toEqual(["e-李"])
+    expect(收到).toHaveLength(1)
+    expect(收到[0]).toMatchObject({
+      id: "e-李",
+      type: "人",
+      value: "李四",
+      trust_state: "自动抽取",
+      中心: false,
+      跳数: 1,
+      关联数: 1,
+    })
+  })
+
+  test("切 2 跳 ⇒ api 收到 跳数 2，2 跳节点画在外环", async () => {
+    const 调用: Array<1 | 2 | undefined> = []
+    const api = 假api({
+      graph: async (_projectId, _id, 跳数) => {
+        调用.push(跳数)
+        if (跳数 === 2)
+          return {
+            kind: "ok",
+            value: {
+              ...图,
+              节点: [
+                ...图.节点,
+                { id: "e-外", type: "人", value: "外环", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 },
+              ],
+            },
+          }
+        return { kind: "ok", value: 图 }
+      },
+    })
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 3)
+
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 4)
+
+    expect(调用.at(-1)).toBe(2)
+    const 外环 = host.querySelector("[data-slot='graph-node'][data-node-id='e-外']")!
+    expect(外环.getAttribute("data-hop")).toBe("2")
+    // 外环半径 250 ⇒ 单个节点落在正上方 y = 210 - 250 = -40（内环半径 150 ⇒ y = 60）。
+    expect(外环.querySelector("circle")!.getAttribute("cy")).toBe("-40")
+  })
+
+  test("边的端点不在节点里 ⇒ 那条边不画，也不抛", async () => {
+    const host = mount(() => (
+      <Graph
+        projectId="p"
+        id="e-张"
+        api={假api({
+          graph: async () => ({
+            kind: "ok",
+            value: {
+              节点: [图.节点[0]!],
+              边: [{ id: "r-悬空", from: "e-张", to: "e-缺", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+              缺口: [],
+            },
+          }),
+        })}
+        onOpenEntity={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 1)
+    expect(host.querySelectorAll("[data-slot='graph-edge']").length).toBe(0)
   })
 
   test("缺口如实说", async () => {
@@ -152,5 +217,22 @@ describe("关系图", () => {
       <Graph projectId="p" id="e-张" api={假api({ graph: async () => ({ kind: "error", message: "找不到这个实体" }) })} onOpenEntity={() => {}} />
     ))
     await 等(() => host.textContent!.includes("找不到这个实体"))
+  })
+
+  test("取数抛异常 ⇒ 报出来并收掉「载入中」（不留一条 unhandled rejection）", async () => {
+    const host = mount(() => (
+      <Graph
+        projectId="p"
+        id="e-张"
+        api={假api({
+          graph: async () => {
+            throw new Error("网络断了")
+          },
+        })}
+        onOpenEntity={() => {}}
+      />
+    ))
+    await 等(() => host.textContent!.includes("网络断了"))
+    expect(host.textContent).not.toContain("正在读取关系")
   })
 })
