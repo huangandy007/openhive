@@ -1,0 +1,213 @@
+import { afterAll, beforeAll, describe, expect } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { sql } from "drizzle-orm"
+import { ConfigProvider, Effect, Layer } from "effect"
+import { HttpRouter } from "effect/unstable/http"
+import { migrate } from "@opencode-ai/auth/migrate"
+import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
+import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
+import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { UserIdentity } from "../../src/server/user-identity"
+import { testEffect } from "../lib/effect"
+import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
+
+/**
+ * 案件视图六个读取出口的真应用测试（计划 7 Task 4）。夹具与
+ * `openhive-case-fact-routes.test.ts` 逐行一致：`HttpRouter.toWebHandler` ＋ `ConfigProvider`
+ * ＋ **Cookie 身份**（不是 Bearer）。
+ *
+ * Task 9 / 10 之后往本文件**追加**用例；`发` / `读回` / `我` / `别人` / `项目` 的名字不要改。
+ *
+ * ⚠️ 测试自己发的 SQL 文本必须与出口 DAO 的 SQL 不同（PGlite 连接级语句缓存，42P05）。
+ */
+const test = testEffect(Layer.empty)
+const it = test.live
+const SECRET = "f4a5c6t7r8u9s0t1e2s3t4a5b6c7d8e9"
+
+/**
+ * ⚠️ 用户 id 必须是 **ASCII**：网关会把它塞进 `x-user-id` 请求头（`gateway.ts:203`），
+ * POST 侧的 `replaceBody` 用这些头重建 `Request`；中文 id 会被 Web `Request` 判成
+ * `Header 'x-user-id' has invalid value` ⇒ 所有 POST 500（GET 不重建请求，所以此前没暴露）。
+ * 生产 id 是 UUID，中文只是夹具。姓名不受影响（只落库、不进头）。
+ */
+const 我: TokenSubject = { id: "u-case-me", policeNo: "970011", name: "甲民警", isAdmin: false }
+const 别人: TokenSubject = { id: "u-case-other", policeNo: "970012", name: "乙民警", isAdmin: false }
+const 项目 = "p-纠错-我的"
+const 别人的项目 = "p-纠错-别人的"
+
+const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-case-ui-"))
+const restoreWs = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
+const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
+const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
+const restoreWorker = restorePoint({ OPENHIVE_CASE_INGEST_WORKER: "0" })
+
+afterAll(restoreWs)
+afterAll(restoreDefaultPassword)
+afterAll(restorePoolMax)
+afterAll(restoreWorker)
+afterAll(() => rmSync(沙箱根, { recursive: true, force: true }))
+
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+  for (const subject of [我, 别人]) {
+    await pg.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
+    `)
+  }
+  // 成员关系是 200 的前提：`成员角色` 只认 `project_member` 与每用户库里的老项目属主；
+  // 不种这一行，除 401/403 的用例外，其余全部会掉进 403。
+  await pg.db.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${项目}, ${我.id}, 'owner', 0),
+           (${别人的项目}, ${别人.id}, 'owner', 0)
+  `)
+  await 建实体(pg.db, { id: "e-路由张", projectId: 项目, value: "路由张三", type: "人" })
+  await 建实体(pg.db, { id: "e-路由账", projectId: 项目, value: "路由账户", type: "账户" })
+  // 第二条转账的付款人：让 `/money` 的跨行聚合真被验到（笔数 2 / 合计 2000.00）。
+  await 建实体(pg.db, { id: "e-路由李", projectId: 项目, value: "路由李四", type: "人" })
+  await 建关系(pg.db, {
+    id: "r-路由",
+    projectId: 项目,
+    fromId: "e-路由张",
+    toId: "e-路由账",
+    type: "转账",
+    amount: 1000,
+  })
+  await 建关系(pg.db, {
+    id: "r-路由2",
+    projectId: 项目,
+    fromId: "e-路由李",
+    toId: "e-路由账",
+    type: "转账",
+    amount: 1000,
+  })
+  // `participants` 存的是实体**规范值**（`query_events` 按规范值过滤），与 `建实体` 的 value 一致。
+  await 建事件(pg.db, {
+    id: "ev-路由",
+    projectId: 项目,
+    type: "见面",
+    occurredAt: 1_700_000_050,
+    participants: ["路由张三"],
+    summary: "两人见面",
+  })
+})
+
+afterAll(async () => {
+  await pg?.stop()
+})
+
+const OPEN: Record<string, string | undefined> = {
+  OPENHIVE_REQUIRE_USER_ID: "1",
+  AUTH_JWT_SECRET: SECRET,
+  OPENHIVE_WORKSPACE_ROOT: 沙箱根,
+}
+
+function realApp(env: Record<string, string | undefined>) {
+  const handler = HttpRouter.toWebHandler(
+    HttpApiApp.routes.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env)))),
+    { disableLogger: true },
+  ).handler
+  return (url: string, init?: RequestInit) =>
+    Effect.promise(() => Promise.resolve(handler(new Request(new URL(url, "http://localhost"), init), HttpApiApp.context)))
+}
+
+const openApp = realApp(OPEN)
+const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject, SECRET))
+
+/** 身份走 **Cookie**（`UserIdentity.COOKIE_NAME`），不是 `Authorization: Bearer`。 */
+const 发 = (subject: TokenSubject | null, url: string, init: RequestInit = {}) =>
+  Effect.gen(function* () {
+    const headers = new Headers(init.headers)
+    if (subject) headers.set("Cookie", `${UserIdentity.COOKIE_NAME}=${yield* token(subject)}`)
+    return yield* openApp(url, { ...init, headers })
+  })
+
+/** 读回 JSON 体：`yield* 读回<{ code: string }>(响应)`。 */
+const 读回 = <T>(响应: Response) => Effect.promise(() => 响应.json() as Promise<T>)
+
+describe("openhive 案件视图出口（计划 7）", () => {
+  it("未登录 ⇒ 401（每个出口都先问身份）", () =>
+    Effect.gen(function* () {
+      for (const 路径 of ["/openhive/case/entities?projectId=p", "/openhive/case/entity?projectId=p&id=x"]) {
+        expect((yield* 发(null, 路径)).status).toBe(401)
+      }
+    }),
+  )
+
+  it("非成员 ⇒ 403", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(别人, `/openhive/case/entities?projectId=${项目}`)).status).toBe(403)
+    }),
+  )
+
+  it("projectId 非法 ⇒ 400", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(我, "/openhive/case/entities?projectId=../x")).status).toBe(400)
+    }),
+  )
+
+  it("实体清单：counts 与 list 同一次回包", () =>
+    Effect.gen(function* () {
+      const 体 = yield* 读回<{
+        counts: { type: string; count: number }[]
+        list: { 行们: { id: string }[]; 缺口: string[] }
+      }>(yield* 发(我, `/openhive/case/entities?projectId=${项目}`))
+      expect(体.counts).toContainEqual({ type: "人", count: 2 })
+      expect(体.list.行们.map((行) => 行.id)).toContain("e-路由张")
+    }),
+  )
+
+  it("实体档案：不存在 ⇒ 404", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(我, `/openhive/case/entity?projectId=${项目}&id=没有`)).status).toBe(404)
+    }),
+  )
+
+  it("材料事实：没引用过这份材料 ⇒ 404", () =>
+    Effect.gen(function* () {
+      // 第四道闸：原断言写的是 `体.toMatchObject({ error })`（等于断「200 且带错误」），
+      // 与用例名相反。DAO 对不存在的材料返回 `undefined` ⇒ 出口回 404。
+      const 响应 = yield* 发(
+        我,
+        `/openhive/case/material-facts?projectId=${项目}&path=${encodeURIComponent("没有.xlsx")}`,
+      )
+      expect(响应.status).toBe(404)
+    }),
+  )
+
+  it("时间线复用 query_events：按实体规范值过滤出事件", () =>
+    Effect.gen(function* () {
+      const 体 = yield* 读回<{ 数据: unknown }>(
+        yield* 发(我, `/openhive/case/timeline?projectId=${项目}&id=e-路由张`),
+      )
+      expect(JSON.stringify(体.数据)).toContain("两人见面")
+    }),
+  )
+
+  it("资金复用 aggregate_money：汇总出两笔入账", () =>
+    Effect.gen(function* () {
+      const 体 = yield* 读回<{ 数据: { 汇总: unknown[] } }>(
+        yield* 发(我, `/openhive/case/money?projectId=${项目}&id=e-路由账`),
+      )
+      expect(体.数据.汇总).toEqual([{ 方向: "入", 笔数: 2, 合计: "2000.00" }])
+    }),
+  )
+
+  it("关系图：跳数只认 1/2，其余 ⇒ 400", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&跳数=3`)).status).toBe(400)
+      const 图 = yield* 读回<{ 边: { id: string }[] }>(
+        yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&type=转账`),
+      )
+      // 只回中心（张）连出的那条；李 → 账 的 `r-路由2` 不在 1 跳邻域里。
+      expect(图.边.map((边) => 边.id)).toEqual(["r-路由"])
+    }),
+  )
+})

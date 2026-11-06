@@ -134,6 +134,7 @@ import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveCaseParse } from "@/server/openhive/case-parse"
 import { OpenhiveCaseFactRoutes } from "@/server/openhive/case-fact-routes"
+import { OpenhiveCaseUiRoutes } from "@/server/openhive/case-ui-routes"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAssetGroups } from "@/server/openhive/governance-asset-groups"
@@ -431,6 +432,10 @@ export function createRoutes(
     // 与解析出口同一套依赖：业务 PG ＋ 每用户库（成员判据要用后者回落老项目属主）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 5）。
     OpenhiveCaseFactRoutes.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 案件视图出口（计划 7）：实体清单 / 档案 / 材料事实 / 关系图 / 时间线 / 资金。
+    // 时间线与资金**复用计划 6 的取数函数**，不复制 SQL。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 7）。
+    OpenhiveCaseUiRoutes.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 账号管理出口（010 T005）：列表 / 详情 / 录入 / 重置 / 停用 / 启用 / 批量停用（FR-004）。
     // 沙箱根与项目出口共用同一个 `AnchorWorkspace.Config`（`provisionUser` 要在这里建目录——
     // 两处漂了就是「账号建在 A、文件树去 B 找」）；业务 PG 与上面几项共用同一个实例
