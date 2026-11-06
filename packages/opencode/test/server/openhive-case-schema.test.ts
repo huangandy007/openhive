@@ -28,6 +28,7 @@ const 期望表 = [
   "case_citation",
   "case_entity",
   "case_event",
+  "case_fact_change",
   "case_fact_row",
   ...Array.from({ length: 16 }, (_, i) => `case_fact_row_p${String(i).padStart(2, "0")}`),
   "case_ingest_job",
@@ -70,8 +71,8 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
   }
 }
 
-describe("0031/0032 迁移 · 表与分区", () => {
-  test("10 张表 ＋ 16 个分区全部建出来", async () => {
+describe("0031/0032/0033 迁移 · 表与分区", () => {
+  test("11 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables
@@ -277,5 +278,49 @@ describe("0032 迁移 · 表格格式记忆", () => {
       is_nullable: "NO",
       column_default: "''::text",
     })
+  })
+})
+
+describe("0033 迁移 · 留痕与依赖标记", () => {
+  const 插 = (id: string, action: string, kind: string | null, text: string | null) => sql`
+    insert into auth.case_fact_change
+      (id, project_id, fact_type, fact_id, action, reason_kind, reason_text,
+       actor_id, actor_name, actor_police_no, created_at)
+    values (${id}, 'p-留痕', 'relation', 'r-1', ${action}, ${kind}, ${text}, 'u1', '甲', '970001', 0)
+  `
+
+  test("「排除」不带原因类型 ⇒ 被库里挡下", async () => {
+    expect(await 被拒(db().execute(插("c-bad-1", "排除", null, "看错了")))).toBe(true)
+  })
+
+  test("「排除」不带一句话 ⇒ 被库里挡下", async () => {
+    expect(await 被拒(db().execute(插("c-bad-2", "排除", "识别错", "")))).toBe(true)
+  })
+
+  test("「修正」两样都带 ⇒ 进得去", async () => {
+    expect(await 被拒(db().execute(插("c-ok-1", "修正", "抽取错", "金额少了一个零")))).toBe(false)
+  })
+
+  test("「合并」不带依据 ⇒ 被库里挡下", async () => {
+    expect(await 被拒(db().execute(插("c-bad-3", "合并", null, null)))).toBe(true)
+  })
+
+  test("「确认」不需要原因", async () => {
+    expect(await 被拒(db().execute(插("c-ok-2", "确认", null, null)))).toBe(false)
+  })
+
+  test("两张事实表都补了 basis_changed_at，默认 null", async () => {
+    const 列们 = rowsOf(
+      await db().execute(sql`
+        select table_name, column_name, is_nullable
+          from information_schema.columns
+         where table_schema = 'auth'
+           and table_name in ('case_relation', 'case_event')
+           and column_name = 'basis_changed_at'
+         order by table_name
+      `),
+    )
+    expect(列们.map((行) => String(行.table_name))).toEqual(["case_event", "case_relation"])
+    expect(列们.every((行) => String(行.is_nullable) === "YES")).toBe(true)
   })
 })
