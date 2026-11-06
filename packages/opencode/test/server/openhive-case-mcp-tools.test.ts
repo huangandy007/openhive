@@ -637,6 +637,8 @@ test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   // 规范化键：`02` 不是 2 的「另一个 id」，命中后引用要按 `#2` 查得到。
   const 补零 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#02" })
   expect((补零.数据 as { 引用: Record<string, unknown>[] }).引用).toHaveLength(1)
+  // 有引用时 `缺口` 必须是 undefined：否则「无引用」的那条提示会变成常驻噪音。
+  expect(结果.缺口).toBeUndefined()
 })
 
 test("get_citation 明细行：工作表名含 # 也能定位", async () => {
@@ -698,10 +700,13 @@ test("aggregate_money 余额走势给首末与极值，并说明截断", async (
 })
 
 test("aggregate_money 对手方不返回「已排除」实体（§9.1）", async () => {
-  // 张三有一笔到 e-号X 的转账（关系本身正常）⇒ 只有对手方 join 的端点过滤能挡住。
-  const 数据 = (await aggregate_money(ctx(身份戊), { 账户: "张三" })).数据 as { 对手方: unknown[] }
+  // 张三有一笔到 e-号X 的转账（关系本身正常）⇒ 只有端点过滤能挡住。
+  const 数据 = (await aggregate_money(ctx(身份戊), { 账户: "张三" })).数据 as { 汇总: unknown[]; 对手方: unknown[] }
   expect(JSON.stringify(数据.对手方)).not.toContain("号X")
   expect(数据.对手方).toEqual([])
+  // §9.1「不进统计」也要管到汇总：对手方被排除，这笔关系就不该算进「出」的笔数与合计。
+  // 没这条时，同一次调用里 汇总 出 1 笔 100.00、对手方却为空 —— 自相矛盾。
+  expect(数据.汇总).toEqual([])
 })
 
 test("固定上限写进缺口（对手方 10、共同时空 50）", async () => {

@@ -487,6 +487,14 @@ export async function aggregate_money(
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
     sql`(from_id = ${账户.id} or to_id = ${账户.id})`,
+    // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
+    // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
+    // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
+    // `project_id` / `trust_state` 变成有歧义列（报错）。
+    sql`(case when from_id = ${账户.id} then to_id else from_id end) in (
+      select id from auth.case_entity
+       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+    )`,
   ]
   const 对手方条件: SQL[] = [
     sql`r.project_id = ${ctx.身份.projectId}`,
