@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { TextReader, TextWriter, Uint8ArrayReader, Uint8ArrayWriter, ZipReader, ZipWriter } from "@zip.js/zip.js"
 import * as XLSX from "xlsx"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 
@@ -20,6 +21,39 @@ function 造带格式的工作簿(rows: (string | number | null)[][], 格式: Re
   }
   XLSX.utils.book_append_sheet(wb, ws, "S")
   return new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+}
+
+/**
+ * 直接把 zip 里工作表 xml 的 `<dimension ref>` 撑大。
+ *
+ * ⚠️ **不能再走 `XLSX.write`**：它写盘时会按声明范围逐行遍历（实测 `A1:XFD1000` 就 ~5s），
+ * 撑到 `A1:XFD1048576` 直接挂死——夹具本身先冻住了，测不到读表器。真实导出件恰恰是
+ * 「文件里 dimension 很大、单元格只有几个」（选中整列设格式），所以这里改的是真实形态。
+ *
+ * `refs` 的键是 zip 内路径（`xl/worksheets/sheet1.xml`），值是要写进去的 ref。
+ */
+async function 撑大声明范围(bytes: Uint8Array, refs: Record<string, string>): Promise<Uint8Array> {
+  const reader = new ZipReader(new Uint8ArrayReader(bytes))
+  const entries = await reader.getEntries()
+  const writer = new ZipWriter(new Uint8ArrayWriter())
+  for (const entry of entries) {
+    if (entry.directory) {
+      await writer.add(entry.filename, undefined, { directory: true })
+      continue
+    }
+    const 目标 = refs[entry.filename]
+    if (目标 === undefined) {
+      await writer.add(entry.filename, new Uint8ArrayReader(await entry.getData!(new Uint8ArrayWriter())))
+      continue
+    }
+    const xml = await entry.getData!(new TextWriter())
+    const 改 = xml.replace(/<dimension ref="[^"]*"\s*\/>/, `<dimension ref="${目标}"/>`)
+    if (改 === xml) throw new Error(`夹具没找到 dimension 节点：${entry.filename}`)
+    await writer.add(entry.filename, new TextReader(改))
+  }
+  const out = await writer.close()
+  await reader.close()
+  return new Uint8Array(out)
 }
 
 /** UTF-16LE 字节（带 BOM），模拟 Excel「Unicode 文本」导出。 */
@@ -62,6 +96,31 @@ describe("readSheets", () => {
     expect(sheet?.header.map((c) => c.text)).toEqual(["主叫号码", "被叫号码", "通话时间"])
     expect(sheet?.rows.map((r) => r.rowNo)).toEqual([2, 3])
     expect(sheet?.rows[0]?.cells[0]?.text).toBe("13800000000")
+  })
+
+  test("真日期单元格（m/d/yy）：text 仍是显示原文，dateText 另给 ISO（I2）", () => {
+    // Excel 默认日期格式写出来的 `w` 是 "1/2/26"，既不是 ISO 也不是四种可解析格式之一。
+    // 数据不丢：`text` 必须保持民警在 Excel 里看到的样子（A16），解析用的 ISO 另放 dateText。
+    const wb = XLSX.utils.book_new()
+    // 46024.12783564815 = 2026-01-02 03:04:05（1899-12-30 起的天数）
+    const ws = XLSX.utils.aoa_to_sheet([["通话时间"], [46024.12783564815], [46024]])
+    ws["A2"]!.z = "m/d/yy h:mm:ss"
+    ws["A3"]!.z = "m/d/yy"
+    XLSX.utils.book_append_sheet(wb, ws, "S")
+    const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+    const [sheet] = readSheets(bytes).sheets
+    expect(sheet?.rows[0]?.cells[0]).toEqual({
+      text: "1/2/26 3:04:05",
+      kind: "number",
+      dateText: "2026-01-02 03:04:05",
+    })
+    expect(sheet?.rows[1]?.cells[0]).toEqual({ text: "1/2/26", kind: "number", dateText: "2026-01-02" })
+  })
+
+  test("非日期的数字单元格不带 dateText（`;;;` 隐藏值也不带）", () => {
+    const bytes = 造带格式的工作簿([["金额"], [1234.5]], { A2: "#,##0.00" })
+    const [sheet] = readSheets(bytes).sheets
+    expect(sheet?.rows[0]?.cells[0]).toEqual({ text: "1,234.50", kind: "number" })
   })
 
   test("空单元格是 null，不是空串", () => {
@@ -238,6 +297,40 @@ describe("readSheets", () => {
     // 「主叫」的 UTF-16LE 字节是 3B 4E EB 53 —— 每个字节都 ≥ 0x20，会被 looksLikeText 判成文本。
     // 所以 BOM 必须先于「像不像文本」判定，否则这类文件只拿到泛化提示（上一轮复审实测的缺口）。
     expect(() => readSheets(造UTF16LE("主叫"))).toThrow(/UTF-16 文本不受支持/)
+  })
+
+  test("声明范围被撑大（选中整列设格式）⇒ 响亮抛错，不冻结内核（C1）", async () => {
+    // 真实现时 SheetJS 会按 `<dimension ref="A1:XFD1048576">` 给出这个 !ref：
+    // 16384 列 × 1048575 行，按声明面积同步扫描是小时级 ＋ OOM，而它跑在 Bun 事件循环上
+    // ⇒ 整个内核停摆。闸必须在进入循环**之前**按声明面积判，不能等扫完再说。
+    const bytes = await 撑大声明范围(造工作簿({ S: [["主叫号码"], ["13800000000"]] }), {
+      "xl/worksheets/sheet1.xml": "A1:XFD1048576",
+    })
+    expect(() => readSheets(bytes)).toThrow(/声明范围过大/)
+  })
+
+  test("单表都在上限内、累计超过工作簿上限 ⇒ 同样抛错（防 8 张表各 1900 万）", async () => {
+    // 每张 10000 列 × 1500 行 = 1500 万（低于单表 2000 万），3 张累计 4500 万 > 4000 万。
+    const ref = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 1500, c: 9999 } })
+    const bytes = await 撑大声明范围(造工作簿({ S0: [["h"], ["1"]], S1: [["h"], ["1"]], S2: [["h"], ["1"]] }), {
+      "xl/worksheets/sheet1.xml": ref,
+      "xl/worksheets/sheet2.xml": ref,
+      "xl/worksheets/sheet3.xml": ref,
+    })
+    expect(() => readSheets(bytes)).toThrow(/声明范围过大/)
+  })
+
+  test("上限之外的空表不算「丢失」：skippedSheets 只收有 !ref 的表（I4）", () => {
+    // Excel 新建工作簿默认就带空表（无 !ref）。把它算进 skippedSheets 会让 runJob
+    // 把整份合法文件误判「有问题」——与「空表跳过、不算丢失」的既有口径矛盾。
+    const wb = XLSX.utils.book_new()
+    for (let i = 0; i < 8; i++)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["h"], ["1"]]), `S${i}`)
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([]), "空表")
+    const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+    const result = readSheets(bytes)
+    expect(result.sheets).toHaveLength(8)
+    expect(result.skippedSheets).toEqual([])
   })
 
   test("含 NUL 但没有 UTF-16 BOM ⇒ 给泛化措辞，不谎称是 UTF-16 文本", () => {

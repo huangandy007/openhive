@@ -1,6 +1,6 @@
 export * as OpenhiveCaseRows from "./case-rows"
 
-import type { RawSheet } from "./case-sheet"
+import type { RawCell, RawSheet } from "./case-sheet"
 import { parseTime } from "./case-time"
 import { FACT_FIELDS, type FactField } from "./case-mapping"
 import type { FactRowInput } from "./case-store"
@@ -126,14 +126,18 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
   for (const row of input.sheet.rows) {
     if (row.cells.every((c) => c.text === null)) continue
 
-    const 值 = (field: FactField): string | null => {
+    const 单元格 = (field: FactField): RawCell | undefined => {
       const 下标 = Object.keys(input.mapping).find((k) => input.mapping[Number(k)] === field)
-      if (下标 === undefined) return null
-      return row.cells[Number(下标)]?.text ?? null
+      if (下标 === undefined) return undefined
+      return row.cells[Number(下标)]
     }
+    const 值 = (field: FactField): string | null => 单元格(field)?.text ?? null
 
     const 时间原文 = 值("startedAt")
-    const 时间 = 时间原文 === null ? undefined : parseTime(时间原文)
+    // 日期单元格的 `text` 是 Excel 显示原文（"1/2/26"），解析用 `dateText` 的 ISO；
+    // `started_raw` 仍写 `text`（A16：原始值从不改写）。
+    const 时间解析文本 = 单元格("startedAt")?.dateText ?? 时间原文
+    const 时间 = 时间解析文本 === null ? undefined : parseTime(时间解析文本)
     const 时长 = parseDuration(值("durationSec"))
     const 金额 = parseAmount(值("amount"))
     const 余额 = parseAmount(值("balance"))

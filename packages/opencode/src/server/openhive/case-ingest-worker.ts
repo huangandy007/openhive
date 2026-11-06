@@ -29,8 +29,21 @@ export const 轮询间隔ms = 2000
 /** `connect(env)` 拼连接串要的变量。缺任一 ⇒ 这台部署不接业务 PG。 */
 const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const
 
+/**
+ * 显式开关（启动期静态值，与 `PG_ENV` 同一类判据）：值为 `"0"` 时不 fork 消费循环。
+ *
+ * 测试建**真应用**（`HttpApiApp.routes`）时后台 worker 会认领**同一个测试库**的作业，
+ * 把用例插进去的东西悄悄跑掉/改态（I7）。生产不设这个变量，默认开。
+ */
+export const 消费开关ENV = "OPENHIVE_CASE_INGEST_WORKER"
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
+    if (process.env[消费开关ENV] === "0") {
+      yield* Effect.logDebug("表格导入消费未启用：OPENHIVE_CASE_INGEST_WORKER=0")
+      return
+    }
+
     // 没配 PG 的部署**不起循环**（复审 I3）：配置是启动期静态值，不配就是永远不配；
     // 起了的话每 2 秒一条 WARN、一天 43200 条，把真正的告警淹掉。
     // 与 `mcp-config-sync` 的 `已启用` 同一条判据形状。

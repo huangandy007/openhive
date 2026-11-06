@@ -47,6 +47,43 @@ const 单位冲突: Partial<Record<FactField, RegExp>> = {
   balance: /万|亿|千元/,
 }
 
+/**
+ * 括号单位的**白名单**（I1）。黑名单是漏的：`分` / `角` / `美元` / `含手续费` 都不在
+ * 词表里，规范化剥掉括号后按默认单位解释 ⇒ 静默错 60 / 10 / 汇率倍，而且因为解析「成功」，
+ * 原文连 extras 都进不去。所以对**有默认单位**的三个字段：表头带括号时，只放行默认单位。
+ *
+ * 只看**原始表头**：规范化串里已经没有括号了。`秒` / `元` / `人民币` / `RMB` 是默认单位。
+ */
+const 单位白名单: Partial<Record<FactField, RegExp>> = {
+  durationSec: /^(秒|s|sec)$/i,
+  amount: /^(元|人民币|rmb)$/i,
+  balance: /^(元|人民币|rmb)$/i,
+}
+
+/** 只有这三个字段有「默认单位」概念；caller / 时间等表头里的括号不是单位，不套白名单。 */
+const 有默认单位: ReadonlySet<FactField> = new Set(["durationSec", "amount", "balance"])
+
+/** 表头的括号内容（全角 `（）` 与半角 `()` 都算）；没有括号 ⇒ `null`。 */
+function 括号内容(raw: string | null): string | null {
+  const m = /[（(]([^）)]*)[）)]/.exec(raw ?? "")
+  return m === null ? null : (m[1] ?? "").trim()
+}
+
+/**
+ * 表头对该字段的单位声明是否放行。同一道闸被词典精确 / 词典后缀 / 特征层三处共用
+ * （`#002-06`：同一前提的落点一次清完）。
+ *
+ * - 带括号 ⇒ 括号内容必须是该字段的默认单位；不是单位（如「金额（含手续费）」）也不认——
+ *   宁可进 extras 保留原文，也不静默错倍。
+ * - 没括号 ⇒ 沿用旧的黑名单（万元 / 分钟 / 小时 / 毫秒）。
+ */
+function 单位闸放行(field: FactField, raw: string | null): boolean {
+  if (!有默认单位.has(field)) return true
+  const 括号 = 括号内容(raw)
+  if (括号 !== null) return 单位白名单[field]?.test(括号) ?? false
+  return !(单位冲突[field]?.test(raw ?? "") ?? false)
+}
+
 /** 表头词典。比较前先 `规范化`（去空白、去括号后缀、转小写）。 */
 const DICTIONARY: Record<FactField, string[]> = {
   caller: ["主叫号码", "主叫", "主叫号", "呼叫号码", "发起方号码", "本机号码", "通话号码"],
@@ -101,8 +138,8 @@ export function detectMapping(header: (string | null)[], rows: (string | null)[]
   // 「主叫通话时长」按包含会被 caller 的「主叫」抢走（时长列静默变成主叫号码），
   // 按后缀则命中 durationSec 的「通话时长」——修饰语再长也不会改变它是什么列。
   const 规范表头 = header.map(规范化)
-  // 单位冲突按**原始表头**判（R25b）：规范化会把括号里的单位剥掉。
-  const 单位冲突了 = (field: FactField, i: number): boolean => 单位冲突[field]?.test(header[i] ?? "") ?? false
+  // 单位闸按**原始表头**判（R25b / I1）：规范化会把括号里的单位剥掉。
+  const 单位冲突了 = (field: FactField, i: number): boolean => !单位闸放行(field, header[i] ?? null)
   for (const field of FACT_FIELDS) {
     const 词 = DICTIONARY[field].map(规范化)
     let hit = 规范表头.findIndex((h, i) => !已占.has(i) && !单位冲突了(field, i) && h !== "" && 词.includes(h))
@@ -164,11 +201,20 @@ function 列形状(values: (string | null)[][]): string[] {
 }
 
 /**
- * 格式指纹：**表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。
+ * 识别版本：参与格式指纹。
+ *
+ * 改词典 / 单位闸 / 特征层规则就 **+1**。指纹一变，旧行自然成了不可达缓存（没有迁移负担，
+ * 也不需要回填）：否则已导入过的格式仍命中旧缓存、`detectMapping` 被短路，修复对存量材料
+ * 不生效（I6）。
+ */
+const 识别版本 = "2"
+
+/**
+ * 格式指纹：**识别版本 ＋ 表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。
  * 同一家运营商每个月的文件内容全变，列的形状不变 ⇒ 指纹相同。
  */
 export function formatFingerprint(header: (string | null)[], rows: (string | null)[][]): string {
-  return Hash.sha256(JSON.stringify([header.map(规范化), 列形状(rows)]))
+  return Hash.sha256(JSON.stringify([识别版本, header.map(规范化), 列形状(rows)]))
 }
 
 /** 材料类型（`case_material.kind` 偏表格的那三个）。产物与其它类型由调用方给。 */

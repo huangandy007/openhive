@@ -191,11 +191,15 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
   try {
     const material = await getMaterial(db, job.projectId, job.materialId)
     if (!material) throw new Error(`作业指向的材料不存在：${job.materialId}`)
-    if (job.sourcePath === "") throw new Error("作业没有记录文件落点（source_path 为空）")
 
     if (material.parseStatus === "排队中") {
       await applyParseAction(db, { projectId: job.projectId, materialId: job.materialId, action: "开始" })
     }
+
+    // 空 `source_path` 的检查放在「开始」**之后**（I5）：排队中直接「出问题」是非法转移，
+    // 被吞掉后材料永远停在「排队中」——而「排队中」再入队直接返回 false，不自愈。
+    // 先到「解析中」，失败路径的「出问题」才是合法边 ⇒ 落「有问题」⇒ 重拖能自愈。
+    if (job.sourcePath === "") throw new Error("作业没有记录文件落点（source_path 为空）")
 
     // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
     // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
@@ -213,6 +217,7 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
 
     const 待写: FactRowInput[] = []
     let 类型: MaterialKind = "其他"
+    let 认出列数 = 0
     for (const sheet of sheets) {
       const header = sheet.header.map((c) => c.text)
       const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
@@ -237,10 +242,27 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
       // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
       //   （缺口记在计划自检里，不在本计划修）。
       类型 = classifyMaterialType(columns)
-      待写.push(
-        ...toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns }),
-      )
+      认出列数 += Object.keys(columns).length
+      const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns })
+
+      // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
+      // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
+      // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
+      const 时间列 = Object.keys(columns).find((k) => columns[Number(k)] === "startedAt")
+      if (时间列 !== undefined) {
+        const 非空原文数 = sheet.rows.filter((r) => (r.cells[Number(时间列)]?.text ?? null) !== null).length
+        if (非空原文数 > 0 && !行.some((r) => r.startedAt !== null)) {
+          throw new Error(
+            `「${sheet.name}」的时间列（${header[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
+          )
+        }
+      }
+      待写.push(...行)
     }
+
+    // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
+    // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
+    if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
 
     // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
     //

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { classifyMaterialType, detectMapping, formatFingerprint } from "../../src/server/openhive/case-mapping"
+import {
+  classifyMaterialType,
+  detectMapping,
+  formatFingerprint,
+  type FactField,
+} from "../../src/server/openhive/case-mapping"
 
 describe("detectMapping · 第一层：表头词典", () => {
   test("话单表头逐个对上", () => {
@@ -74,6 +79,58 @@ describe("detectMapping · 第一层：表头词典", () => {
   test("括号里是默认单位 ⇒ 照常认，闸不是把带括号的全掐掉（R25b）", () => {
     expect(detectMapping(["通话时长(秒)"], [["37"]]).columns).toEqual({ 0: "durationSec" })
     expect(detectMapping(["金额（元）"], [["3.00"]]).columns).toEqual({ 0: "amount" })
+  })
+})
+
+describe("单位声明白名单（I1：黑名单漏掉的分/角/美元会静默错倍）", () => {
+  // 括号内容对 durationSec / amount / balance 是**单位声明**：只放行白名单里的默认单位。
+  // 黑名单挡不住「分」「角」「美元」「含手续费」——认成默认单位会静默错 60 / 10 / 汇率倍，
+  // 而且因为「解析成功」，原文连 extras 都进不去。宁可整列不认，原值进 extras。
+  const 不认: [string, string][] = [
+    ["通话时长（分）", "分 = 60 秒"],
+    ["通话时长(分钟)", "半角括号；黑名单已覆盖，白名单不能因它退化成黑名单"],
+    ["时长（小时）", "小时 = 3600 秒"],
+    ["时长（毫秒）", "毫秒 = 1/1000 秒"],
+    ["金额（美元）", "币种不同"],
+    ["金额(角)", "角 = 0.1 元"],
+    ["金额（万元）", "万元 = 10000 元"],
+    ["金额（千元）", "千元 = 1000 元"],
+    ["余额（分）", "余额同样走金额单位"],
+    ["金额（含手续费）", "括号里不是单位也算「说不清」⇒ 不认"],
+  ]
+  for (const [表头, 为什么] of 不认) {
+    test(`${表头} ⇒ 不认（${为什么}），原值留给 extras`, () => {
+      const 值 = 表头.includes("金额") || 表头.includes("余额") ? "5.00" : "5"
+      const r = detectMapping([表头], [[值]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    })
+  }
+
+  const 认: [string, FactField][] = [
+    ["通话时长（秒）", "durationSec"],
+    ["金额（元）", "amount"],
+    ["金额（人民币）", "amount"],
+    ["金额(元)", "amount"],
+    ["余额（RMB）", "balance"],
+  ]
+  for (const [表头, field] of 认) {
+    test(`${表头} ⇒ 照常认成 ${field}`, () => {
+      const 值 = field === "durationSec" ? "5" : "5.00"
+      expect(detectMapping([表头], [[值]]).columns).toEqual({ 0: field })
+    })
+  }
+
+  test("无单位概念的字段不受白名单波及：主叫号码（本地）仍是 caller", () => {
+    // 白名单只针对「有默认单位」的三个字段。给 caller 也套单位闸会误伤正常表头。
+    expect(detectMapping(["主叫号码（本地）"], [["13800000000"]]).columns).toEqual({ 0: "caller" })
+  })
+
+  test("特征层金额候选同样受白名单管：金额（美元）整列两位小数也不认（I1 落点清完）", () => {
+    // 词典层被拦下的列若只靠形状仍会被认回 amount ⇒ 静默错倍。三道认路必须共用同一道闸。
+    const r = detectMapping(["金额（美元）"], [["5.00"], ["6.00"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([0])
   })
 })
 

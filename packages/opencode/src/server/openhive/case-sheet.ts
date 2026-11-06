@@ -44,6 +44,14 @@ export interface RawCell {
   /** 单元格显示文本；空单元格为 null（不是空串）。 */
   text: string | null
   kind: CellKind
+  /**
+   * 日期单元格的 ISO 解析文本（`YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS`）。
+   *
+   * 只有「数值单元格 ＋ 日期格式」才有：Excel 默认 `m/d/yy` 的显示文本是 `1/2/26`，
+   * `case-time` 的四种格式都认不出。**它不改写 `text`** —— `text` 仍是显示原文（A16），
+   * 下游解析时间时优先用它，`started_raw` 照旧落 `text`。
+   */
+  dateText?: string
 }
 
 export interface RawRow {
@@ -78,6 +86,19 @@ export interface ReadResult {
 }
 
 const DEFAULT_LIMITS: Required<ReadLimits> = { maxSheets: 8, maxRowsPerSheet: 200_000 }
+
+/**
+ * 声明范围的**扫描面积**上限（格 = 列宽 × 行数），不是返回行数上限。
+ *
+ * `rowAt` 的成本是列宽，外层按行遍历 ⇒ 成本正是两者相乘；`maxRowsPerSheet` 只约束
+ * **返回的行数组**，被跳过的空行照样要扫。正常导出 20 万行 × 15 列 = 300 万格，取一个
+ * 数量级的余量定成单表 2000 万；整本 4000 万是防「8 张表各 1900 万」绕过单表闸。
+ *
+ * 超限**响亮抛错**（不是静默裁剪）：这类文件多半是「选中整列设格式」把 `!ref` 撑到
+ * `A1:XFD1048576`，同步扫完是小时级 ＋ OOM，而它跑在 Bun 事件循环上 ⇒ 整个内核停摆。
+ */
+const MAX_SHEET_SCAN_CELLS = 20_000_000
+const MAX_WORKBOOK_SCAN_CELLS = 40_000_000
 
 /**
  * 容器签名：ZIP（.xlsx/.xlsm/.ods）或 OLE2（.xls 旧格式）。
@@ -152,14 +173,37 @@ function decodeText(bytes: Uint8Array): string {
   return text
 }
 
-function toRawCell(cell: XLSX.CellObject | undefined): RawCell {
+/**
+ * 日期序列号 → ISO 文本。Excel 的 1900 闰年问题由 SheetJS 的 `parse_date_code` 处理。
+ * 时/分/秒/小数全为 0 才是纯日期；否则补零到 `YYYY-MM-DD HH:MM:SS`。
+ */
+function 日期文本(serial: number, date1904: boolean): string | undefined {
+  // `XLSX.SSF` 在 xlsx 的类型定义里是 `any`，这里按已知返回形状直接读（不做类型断言，
+  // 免得给 oxlint 添一条 `no-unsafe-type-assertion`）。
+  const d = XLSX.SSF.parse_date_code(serial, { date1904 })
+  if (!d) return undefined
+  const 补 = (n: number) => String(n).padStart(2, "0")
+  const 日 = `${String(d.y).padStart(4, "0")}-${补(d.m)}-${补(d.d)}`
+  if (d.H === 0 && d.M === 0 && d.S === 0 && d.u === 0) return 日
+  return `${日} ${补(d.H)}:${补(d.M)}:${补(d.S)}`
+}
+
+function toRawCell(cell: XLSX.CellObject | undefined, 基准1904: boolean): RawCell {
   if (cell === undefined || cell.v === undefined || cell.v === null || cell.v === "") {
     return { text: null, kind: "empty" }
   }
   // 只判 `typeof`：`w === ""`（如数字格式 `;;;` 隐藏值）时 Excel 显示空白，空串要原样保留，
   // 不能因为「空」就回退到底层值。
   const text = typeof cell.w === "string" ? cell.w : String(cell.v)
-  return { text, kind: cell.t === "n" ? "number" : "text" }
+  const kind: CellKind = cell.t === "n" ? "number" : "text"
+  const out: RawCell = { text, kind }
+  // 日期单元格另给一份可解析文本，**不改写 `text`**（A16）：Excel 默认 `m/d/yy` 的
+  // 显示文本（"1/2/26"）四种时间格式都不认，光靠 text 会让 startedAt 全 null。
+  if (cell.t === "n" && typeof cell.v === "number" && typeof cell.z === "string" && XLSX.SSF.is_date(cell.z)) {
+    const dateText = 日期文本(cell.v, 基准1904)
+    if (dateText !== undefined) out.dateText = dateText
+  }
+  return out
 }
 
 /**
@@ -191,24 +235,46 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
   const maxRowsPerSheet = limits.maxRowsPerSheet ?? DEFAULT_LIMITS.maxRowsPerSheet
 
   // 整本解析（不用 sheetRows，见文件头「上限的代价」）；文本通道先严格解码再交给 SheetJS。
+  // `cellNF: true` 保留数字格式串（`cell.z`）：日期单元格要靠它判「这是不是日期」，
+  // 才能另外给出 ISO 解析文本而**不改写** `text`（I2）。
   const wb = container
-    ? XLSX.read(bytes, { type: "array", cellDates: false, cellStyles: false })
-    : XLSX.read(decodeText(bytes), { type: "string", cellDates: false, cellStyles: false })
+    ? XLSX.read(bytes, { type: "array", cellDates: false, cellStyles: false, cellNF: true })
+    : XLSX.read(decodeText(bytes), { type: "string", cellDates: false, cellStyles: false, cellNF: true })
+
+  // 1904 日期系统的工作簿（Mac 老格式）序列号起点不同，解析要跟着走。
+  const 基准1904 = Boolean(wb.Workbook?.WBProps?.date1904)
+
+  // 先把上限内、有 !ref 的表连声明范围一起收齐，**进入任何扫描之前**验面积。
+  // 闸必须早于循环：它挡的正是「循环本身会让内核停摆」的那类文件（C1）。
+  const 可读 = wb.SheetNames.slice(0, maxSheets).flatMap((name) => {
+    const ws = wb.Sheets[name]
+    // 空表（没有 !ref）跳过，且**不算丢失**：它本来就没数据，塞进 skippedSheets 会让 Task 6
+    // 把整份材料误判「有问题」。
+    if (!ws || !ws["!ref"]) return []
+    return [{ name, ws, range: XLSX.utils.decode_range(ws["!ref"]) }]
+  })
+
+  let 累计扫描格 = 0
+  for (const { range } of 可读) {
+    // 扫描成本 = 列宽 × 外层最多遍历的行数（表头不算，数据行最多 maxRowsPerSheet + 1 行）。
+    const 宽 = range.e.c - range.s.c + 1
+    const 高 = range.e.r - range.s.r
+    const 单表扫描格 = 宽 * Math.min(高, maxRowsPerSheet + 1)
+    if (单表扫描格 > MAX_SHEET_SCAN_CELLS)
+      throw new Error(`声明范围过大（约 ${单表扫描格} 格），请只保留数据区域后重导`)
+    累计扫描格 += 单表扫描格
+    if (累计扫描格 > MAX_WORKBOOK_SCAN_CELLS)
+      throw new Error(`声明范围过大（约 ${累计扫描格} 格），请只保留数据区域后重导`)
+  }
 
   const sheets: RawSheet[] = []
   const truncatedSheets: string[] = []
 
-  for (const name of wb.SheetNames.slice(0, maxSheets)) {
-    const ws = wb.Sheets[name]
-    // 空表（没有 !ref）跳过，且**不算丢失**：它本来就没数据，塞进 skippedSheets 会让 Task 6
-    // 把整份材料误判「有问题」。
-    if (!ws || !ws["!ref"]) continue
-    const range = XLSX.utils.decode_range(ws["!ref"])
-
+  for (const { name, ws, range } of 可读) {
     const rowAt = (r: number): RawRow => {
       const cells: RawCell[] = []
       for (let c = range.s.c; c <= range.e.c; c++) {
-        cells.push(toRawCell(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined))
+        cells.push(toRawCell(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined, 基准1904))
       }
       return { rowNo: r + 1, cells }
     }
@@ -237,5 +303,9 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
     throw new Error(`没有可读的工作表（文件里有 ${wb.SheetNames.length} 张表，上限 ${maxSheets}）`)
   }
 
-  return { sheets, skippedSheets: wb.SheetNames.slice(maxSheets), truncatedSheets }
+  // 上限之外的空表**不算丢失**：与上限内「空表跳过」同一口径。否则 Excel 新建工作簿
+  // 默认带的那张无 !ref 的空表会让 runJob 把整份合法文件误判「有问题」（I4）。
+  const skippedSheets = wb.SheetNames.slice(maxSheets).filter((name) => Boolean(wb.Sheets[name]?.["!ref"]))
+
+  return { sheets, skippedSheets, truncatedSheets }
 }

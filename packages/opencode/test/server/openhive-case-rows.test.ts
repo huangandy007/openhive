@@ -119,6 +119,25 @@ describe("toFactRows", () => {
     expect(row?.precision).toBeNull()
   })
 
+  test("日期单元格用 dateText 解析，started_raw 仍是原文（I2）", () => {
+    // `text` 是 Excel 默认格式的 "1/2/26 3:04:05"（不可解析），`dateText` 是同一时刻的 ISO。
+    // 解析走 dateText；落库的原始值仍必须是 text —— 两条判据不能互相替代。
+    const sheet: RawSheet = {
+      name: "Sheet1",
+      header: [{ text: "通话时间", kind: "text" }],
+      rows: [
+        {
+          rowNo: 2,
+          cells: [{ text: "1/2/26 3:04:05", kind: "number", dateText: "2026-01-02 03:04:05" }],
+        },
+      ],
+    }
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "startedAt" } })
+    expect(row?.startedAt).toBe(Date.UTC(2026, 0, 2, 3, 4, 5) / 1000 - 8 * 3600)
+    expect(row?.startedRaw).toBe("1/2/26 3:04:05")
+    expect(row?.precision).toBe("到秒")
+  })
+
   test("金额去掉千分位与货币符号，保留两位小数", () => {
     const sheet = 表(["金额"], [["-1,234.50"], ["￥5000"], ["abc"]])
     const rows = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount" } })

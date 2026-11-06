@@ -3,10 +3,12 @@ import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
+import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
 
 /**
@@ -36,7 +38,7 @@ function db() {
   return 库
 }
 
-function 造工作簿(sheets: Record<string, (string | number)[][]>): Uint8Array {
+function 造工作簿(sheets: Record<string, (string | number | null)[][]>): Uint8Array {
   const wb = XLSX.utils.book_new()
   for (const [name, rows] of Object.entries(sheets)) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name)
@@ -230,10 +232,13 @@ describe("runJob", () => {
   })
 
   test("认不出的列原样进 extras（判据 A4）", async () => {
-    文件.set("p3/怪格式.xlsx", 造工作簿({ Sheet1: [["甲", "乙"], ["13800000000", "HZ-00"]] }))
+    // ⚠️ 必须保留至少一列认得出（主叫号码）：I3 起「所有列都认不出」按标题行处理、整份
+    // 「有问题」（否则「已解析」= 0 行在骗人）。A4 讲的是**列级**认不出仍入库，前提是
+    // 这张表本身被认成了一张数据表。
+    文件.set("p3/怪格式.xlsx", 造工作簿({ Sheet1: [["主叫号码", "基站"], ["13800000000", "HZ-00"]] }))
     const r = await 入队("p3", "怪格式.xlsx", "fp-3")
     expect((await 跑下一条()).结果).toBe("完成")
-    expect((await 读第一行("p3", r.materialId))?.extras).toEqual({ 甲: "13800000000", 乙: "HZ-00" })
+    expect((await 读第一行("p3", r.materialId))?.extras).toEqual({ 基站: "HZ-00" })
   })
 
   test("文件读不出来 ⇒ 作业失败、材料落「有问题」且带原因", async () => {
@@ -328,12 +333,13 @@ describe("runJob", () => {
     expect(await countFactRows(db(), "p14")).toBe(0)
   })
 
-  test("source_path 是空串的脏作业 ⇒ 作业仍落「失败」", async () => {
+  test("source_path 是空串的脏作业 ⇒ 材料落「有问题」，重拖能自愈（I5）", async () => {
     // `source_path` 的 schema 默认值就是空串：老数据 / 手工修库都可能留下这种作业。
-    // 失败路径**不绑事务**（R28）——绑了的话「出问题」这笔抛错会把「收尾」一起回滚，
-    // 作业永远停在「运行中」，而它不在可认领集合里，双方都不自愈。
+    // 空检查必须在「开始」**之后**：排队中直接「出问题」是非法转移（被吞掉）⇒ 材料永远
+    // 「排队中」、`该走哪个动作("排队中")` 返回 undefined ⇒ 再拖也 enqueued: false，不自愈。
+    // 失败路径本身不绑事务（R28）。
     文件.set("p17/话单.xlsx", 话单)
-    await 入队("p17", "话单.xlsx", "fp-17")
+    const r = await 入队("p17", "话单.xlsx", "fp-17")
     const 认领 = await claimNextJob(db())
     if (!认领) throw new Error("没认领到作业")
 
@@ -344,7 +350,141 @@ describe("runJob", () => {
     expect(作业[0]).toMatchObject({ status: "失败" })
     expect(typeof 作业[0]?.error).toBe("string")
     expect(作业[0]?.error).not.toBe("")
-    // 材料状态**不断言**：「排队中 → 有问题」在脏路径下是非法转移，材料会停在原状态。
+
+    // 状态必须走到「有问题」——「排队中」是一个没有出边的死胡同。
+    expect((await getMaterial(db(), "p17", r.materialId))?.parseStatus).toBe("有问题")
+
+    // 自愈：民警把同一个文件再拖一次 ⇒ 重新解析、跑通。
+    expect((await 入队("p17", "话单.xlsx", "fp-17")).enqueued).toBe(true)
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p17")).toBe(2)
+  })
+
+  test("映射了时间列但一个值都解析不出 ⇒ 材料「有问题」，不谎称「已解析」（I2）", async () => {
+    // 真 Date 单元格之外的另一半：列认出来了、原文有值，但值不是任何可解析格式。
+    // 没有这道闸时 startedAt 全 null、材料却标「已解析」——用户以为数据进来了。
+    文件.set(
+      "p19/待核实.xlsx",
+      造工作簿({
+        Sheet1: [
+          ["主叫号码", "通话时间"],
+          ["13800000000", "待核实"],
+          ["13700000000", "不详"],
+        ],
+      }),
+    )
+    const r = await 入队("p19", "待核实.xlsx", "fp-19")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const material = await getMaterial(db(), "p19", r.materialId)
+    expect(material?.parseStatus).toBe("有问题")
+    expect(material?.parseDetail).toMatchObject({ reason: expect.stringContaining("时间") })
+    expect(await countFactRows(db(), "p19")).toBe(0)
+  })
+
+  test("时间列整列为空 ⇒ 不触发失败闸（非空原文数为 0）", async () => {
+    // 闸只该拦「明明有原文、却一个都没解析出来」。空列是合法数据，不能把整份文件误拒。
+    文件.set(
+      "p19b/空时间.xlsx",
+      造工作簿({
+        Sheet1: [
+          ["主叫号码", "通话时间"],
+          ["13800000000", null],
+        ],
+      }),
+    )
+    const r = await 入队("p19b", "空时间.xlsx", "fp-19b")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect((await getMaterial(db(), "p19b", r.materialId))?.parseStatus).toBe("已解析")
+    expect(await countFactRows(db(), "p19b")).toBe(1)
+  })
+
+  test("一列都没认出来 ⇒ 材料「有问题」，不落任何行（I3）", async () => {
+    // 标题行被当表头时，所有表的所有列都认不出。标「已解析」等于告诉民警「这份导进来了」，
+    // 实际一行数据都没有。
+    文件.set("p20/标题行.xlsx", 造工作簿({ Sheet1: [["通话记录导出", null, null]] }))
+    const r = await 入队("p20", "标题行.xlsx", "fp-20")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const material = await getMaterial(db(), "p20", r.materialId)
+    expect(material?.parseStatus).toBe("有问题")
+    expect(material?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
+    expect(await countFactRows(db(), "p20")).toBe(0)
+  })
+
+  test("重放时一列都没认出来 ⇒ 旧行仍在（删除在算完之后，I3）", async () => {
+    文件.set("p21/话单.xlsx", 话单)
+    const r = await 入队("p21", "话单.xlsx", "fp-21")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await countFactRows(db(), "p21")).toBe(2)
+
+    文件.set("p21/标题行.xlsx", 造工作簿({ Sheet1: [["通话记录导出", null, null]] }))
+    await applyParseAction(db(), { projectId: "p21", materialId: r.materialId, action: "重新解析" })
+    expect(await runJob(db(), deps, 手工作业("p21", r.materialId, "p21/标题行.xlsx"))).toBe("失败")
+    expect(await countFactRows(db(), "p21")).toBe(2)
+  })
+
+  test("8 张有数据 ＋ 第 9 张 Excel 默认空表 ⇒ 不误拒，8 张的数据都在（I4）", async () => {
+    const sheets: Record<string, (string | number | null)[][]> = {}
+    for (let i = 1; i <= 8; i++) {
+      sheets[`S${i}`] = [
+        ["主叫号码", "通话时间"],
+        ["13800000000", "2026-01-02 03:04:05"],
+      ]
+    }
+    sheets["空表"] = []
+    文件.set("p22/八表.xlsx", 造工作簿(sheets))
+    const r = await 入队("p22", "八表.xlsx", "fp-22")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect((await getMaterial(db(), "p22", r.materialId))?.parseStatus).toBe("已解析")
+    expect(await countFactRows(db(), "p22")).toBe(8)
+  })
+
+  test("格式缓存参与识别版本：旧公式算出的指纹不再命中（I6）", async () => {
+    // 版本进了指纹之后，旧公式算出的行就成了不可达缓存（没有迁移负担）。
+    // 这里手工插一条**旧公式**指纹 ＋ 全指 amount 的错误映射：修前会命中它（caller 全空），
+    // 修后走新指纹重新识别。
+    const header = 话单表头.map((h) => String(h))
+    const { sheets } = readSheets(话单)
+    const 样例 = sheets[0]!.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    // 旧公式（`formatFingerprint` 加版本之前的那一份）：[规范化表头, 列形状]
+    const 规范化 = (raw: string | null) =>
+      (raw ?? "").replace(/[（(【[].*?[）)】\]]/g, "").replace(/[\s　]/g, "").toLowerCase()
+    const 列形状 = (values: (string | null)[][]) => {
+      const sample = values.slice(0, 20)
+      const width = Math.max(0, ...sample.map((r) => r.length))
+      const out: string[] = []
+      for (let c = 0; c < width; c++) {
+        const v = sample.map((r) => r[c] ?? null).filter((x): x is string => x !== null && x.trim() !== "")
+        if (v.length === 0) out.push("空")
+        else if (v.every((x) => /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$/.test(x.trim()))) out.push("时间")
+        else if (v.every((x) => /^-?\d+\.\d{2}$/.test(x.trim()))) out.push("金额")
+        else if (v.every((x) => /^-?\d+$/.test(x.trim()))) out.push("整数")
+        else out.push("文本")
+      }
+      return out
+    }
+    const 旧指纹 = Hash.sha256(JSON.stringify([header.map(规范化), 列形状(样例)]))
+    const 错误映射 = { 0: "amount", 1: "amount", 2: "amount", 3: "amount", 4: "amount" }
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
+      values ('p23', ${旧指纹}, ${JSON.stringify(header)}::jsonb, ${JSON.stringify(错误映射)}::jsonb,
+              '词典', 0, 0, 1, 1)
+    `)
+
+    文件.set("p23/话单.xlsx", 话单)
+    const r = await 入队("p23", "话单.xlsx", "fp-23")
+    expect((await 跑下一条()).结果).toBe("完成")
+
+    // 命中错误映射的表现：caller 空、amount = 号码（两位小数补零）。
+    const row = await 读第一行("p23", r.materialId)
+    expect(row?.caller).toBe("13800000000")
+
+    // 新指纹另起一行格式记忆；旧行留着但永远不会被读到。
+    const 格式行数 = rowsOf(
+      await db().execute(sql`select fingerprint from auth.case_table_format where project_id = 'p23'`),
+    )
+    expect(格式行数).toHaveLength(2)
+    expect(格式行数.map((x) => String(x.fingerprint))).toContain(旧指纹)
   })
 
   test("重放时截断 ⇒ 旧行还在（删除在算完之后）", async () => {

@@ -188,6 +188,14 @@ function 造链接() {
 const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
 
+/**
+ * I7：本文件建的是**真应用**（`HttpApiApp.routes`），表格导入 worker 挂在那套 layer 上
+ * 且每 2 秒认领**同一个测试库**的作业。本文件不测消费，后台消费者会把用例插的作业
+ * 悄悄跑掉/改态（复审实测：插一条「排队中」6 秒后变「失败」）。关掉；生产默认仍开。
+ */
+const previousIngestWorker = process.env.OPENHIVE_CASE_INGEST_WORKER
+process.env.OPENHIVE_CASE_INGEST_WORKER = "0"
+
 /** 真应用（`HttpApiApp.routes`）的测试必须像一次真部署那样把口令配上。 */
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 
@@ -196,6 +204,8 @@ afterAll(restoreDefaultPassword)
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
   else process.env.OPENHIVE_DATA_ROOT = previousDataRoot
+  if (previousIngestWorker === undefined) delete process.env.OPENHIVE_CASE_INGEST_WORKER
+  else process.env.OPENHIVE_CASE_INGEST_WORKER = previousIngestWorker
   try {
     rmSync(SANDBOX, { recursive: true, force: true })
   } catch {} // Windows 上 SQLite 句柄可能仍被持有，清理失败不该变成测试失败
@@ -3083,6 +3093,46 @@ it.live(
       expect(作业.length).toBe(1)
       expect(作业[0]?.source_path).toBe(`${ALICE.id}/${ALPHA}/sub/话单.xlsx`)
       expect(response.status).toBe(200)
+    }),
+  30_000,
+)
+
+/**
+ * I7：worker 开关。
+ *
+ * 钉两件事：① 本文件（真应用）把 `OPENHIVE_CASE_INGEST_WORKER` 设为 `"0"` 后，后台真的
+ * 不消费；② 消费循环确实挂在这套 layer 上——**删掉开关判据，这条必须红**
+ * （worker 2 秒内认领，作业变「失败」）。
+ *
+ * ⚠️ 必须先发一个请求把 layer 建起来：worker 在 layer 构造时 `forkScoped`。不发请求的话，
+ * 开关删没删都是绿的（空转的假绿）。
+ */
+it.live(
+  "OPENHIVE_CASE_INGEST_WORKER=0 ⇒ 后台不消费：插一条「排队中」3 秒后原样还在（I7）",
+  () =>
+    Effect.gen(function* () {
+      yield* openApp("/") // 建 layer（worker 在这里决定 fork 与否）
+      if (!pg) throw new Error("真库没起来")
+      const 项目 = "prj_ingest_off_0001"
+      const 作业id = `job-${crypto.randomUUID()}`
+      yield* Effect.promise(() =>
+        pg!.db.execute(sql`
+          insert into auth.case_ingest_job (id, project_id, material_id, status, attempts, queued_at)
+          values (${作业id}, ${项目}, 'material-不存在', '排队中', 0, ${Math.floor(Date.now() / 1000)})
+        `),
+      )
+
+      yield* Effect.sleep(3000)
+
+      const rows = rowsOf(
+        yield* Effect.promise(() =>
+          pg!.db.execute(
+            sql`select status, attempts from auth.case_ingest_job where project_id = ${项目} and id = ${作业id}`,
+          ),
+        ),
+      )
+      expect(rows[0]).toMatchObject({ status: "排队中" })
+      expect(Number(rows[0]?.attempts)).toBe(0)
     }),
   30_000,
 )
