@@ -3069,9 +3069,9 @@ describe("打包下载（POST /openhive/file/archive）", () => {
  *
  * 修复轮 2（复审改判）：**接线**真的调了入队，不只是库函数本身。
  *
- * 上面的上传用例都用 `.txt`——`入队表格材料` 在扩展名处就返回 `undefined`，走不到建材料那一步。
- * 这条用真 `.xlsx` 走完整条接线：落盘 → `入队表格材料` → `case_material` ＋ `case_ingest_job`
- * 各一行。删掉 `handleUpload` 里的入队调用，这条必须红（材料 0 行）。
+ * 上面的上传用例都用 `.txt`——计划 4 起 `.txt` 也会入队（文本材料），
+ * 但它们断言的是文件操作本身，材料与作业行怎么变不影响结论。这条用真 `.xlsx`
+ * 走完整条接线：落盘 → `入队材料` → `case_material` ＋ `case_ingest_job`
  */
 it.live(
   "上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行（接线真调了入队）",

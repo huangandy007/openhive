@@ -2,7 +2,7 @@ export * as OpenhiveCaseMaterials from "./case-materials"
 
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
-import { 可解析表格 } from "./case-parseable"
+import { 解析方式 } from "./case-parseable"
 import type { MaterialKind, Queryable } from "./case-store"
 import type { ParseStatus } from "./case-status"
 
@@ -100,6 +100,6 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
     queueAhead: Number(row.queue_ahead ?? 0),
     factCount: Number(row.fact_count ?? 0),
     numberCount: Number(row.number_count ?? 0),
-    parseable: 可解析表格(String(row.path)),
+    parseable: 解析方式(String(row.path)) !== undefined,
   }))
 }

@@ -10,10 +10,11 @@ import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 取消排队作业 } from "./case-ingest"
-import { 可解析扩展名, 可解析表格 } from "./case-parseable"
+// `可解析扩展名` 仍要给 GET /case/materials 返回，别在替换时丢掉它。
+import { 可解析扩展名, 可解析材料 } from "./case-parseable"
 import { applyParseAction, createMaterial, getMaterial, getMaterialByPath, inTransaction, 解析冲突 } from "./case-store"
 import { 人工解析动作, 该动作可用, isRunning, nextStatus } from "./case-status"
-import { 入队表格材料, inside, LINK_ESCAPE, realInside } from "./file"
+import { 入队材料, inside, LINK_ESCAPE, realInside } from "./file"
 import { 材料视图 } from "./case-materials"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
@@ -268,14 +269,15 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
 
     if (action === "重新解析" && 当前 === undefined)
       return fail(404, "这份文件还没有解析记录", "material_not_found")
-    if (!可解析表格(path)) return fail(409, "这类文件的解析在后续计划", "not_parseable")
+    // PDF / 图片 / 音视频仍不在这里（R1）；文本类从计划 4 起走同一个入口。
+    if (!可解析材料(path)) return fail(409, "这类文件的解析在后续计划", "not_parseable")
 
     const 读 = yield* 读盘文件(deps, user.value.id, projectId, path)
     if ("错误" in 读) return fail(读.status, 读.错误, 读.code)
 
     const 结果 = yield* Effect.promise(() =>
       收冲突(() =>
-        入队表格材料(deps.pg(), {
+        入队材料(deps.pg(), {
           root: deps.root,
           project: projectDirectory(deps.root, user.value.id, projectId),
           target: 读.绝对,

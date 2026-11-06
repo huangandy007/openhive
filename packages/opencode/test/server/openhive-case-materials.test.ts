@@ -312,7 +312,7 @@ describe("GET /openhive/case/materials", () => {
       const 包 = yield* 读清单回包(响应)
 
       expect(响应.status).toBe(200)
-      expect(包.parseableExtensions).toEqual([".xlsx", ".xls", ".csv"])
+      expect(包.parseableExtensions).toEqual([".xlsx", ".xls", ".csv", ".txt", ".md", ".log", ".docx"])
       const 行 = (path: string) => 包.materials.find((item) => item.path === path)
       expect(行("资料/话单.xlsx")).toMatchObject({
         kind: "话单",

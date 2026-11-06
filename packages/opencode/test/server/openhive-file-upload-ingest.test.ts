@@ -4,12 +4,12 @@ import { join, resolve } from "node:path"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 入队表格材料 } from "../../src/server/openhive/file"
+import { 入队材料 } from "../../src/server/openhive/file"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
  *
- * ⚠️ **不用夹具自带的 `pg.db`**：`入队表格材料` 走 `enqueueMaterial` 的 `inTransaction`，
+ * ⚠️ **不用夹具自带的 `pg.db`**：`入队材料` 走 `enqueueMaterial` 的 `inTransaction`，
  * 事务从池里独占一条连接，事务之后换了连接再准备同一句带参 SQL ⇒ `42P05`（`db.ts` 的
  * `PG_POOL_MAX` 注记）。而 `startProductionDb()` 给自己那个客户端传的是**固定 env**
  * （不含 `PG_POOL_MAX`），在 `process.env` 里配不进去。所以走生产入口 `connect()` 自建
@@ -42,9 +42,9 @@ const project = join(root, "u1", "proj-1")
 const 落点 = (文件: string) => join(project, "材料", 文件)
 const bytes = new Uint8Array([1, 2, 3, 4])
 
-describe("入队表格材料", () => {
+describe("入队材料", () => {
   test("表格文件 ⇒ 建档 ＋ 排队，项目内路径与沙箱内路径各归各", async () => {
-    const r = await 入队表格材料(db(), {
+    const r = await 入队材料(db(), {
       root,
       project,
       target: 落点("话单.xlsx"),
@@ -75,10 +75,10 @@ describe("入队表格材料", () => {
       fileName: "重复拖入.xlsx",
       by: "u1",
     }
-    const 首次 = await 入队表格材料(db(), 参数)
+    const 首次 = await 入队材料(db(), 参数)
     expect(首次?.enqueued).toBe(true)
 
-    const r = await 入队表格材料(db(), 参数)
+    const r = await 入队材料(db(), 参数)
     expect(r?.enqueued).toBe(false)
     const n = rowsOf(
       await db().execute(
@@ -104,11 +104,11 @@ describe("入队表格材料", () => {
       fileName: 文件名,
       by: "u1",
     }
-    const 首次 = await 入队表格材料(db(), 参数)
+    const 首次 = await 入队材料(db(), 参数)
     expect(首次?.enqueued).toBe(true)
     await db().execute(sql`update auth.case_material set parse_status = '已解析' where id = ${首次!.materialId}`)
 
-    const r = await 入队表格材料(db(), 参数)
+    const r = await 入队材料(db(), 参数)
     // 实测：材料已存在、动作是「无」⇒ 不是 `undefined`，而是 `enqueued: false`（材料仍在）。
     expect(r?.enqueued).toBe(false)
     const 行 = rowsOf(
@@ -127,11 +127,11 @@ describe("入队表格材料", () => {
       fileName: 文件名,
       by: "u1",
     }
-    const 首次 = await 入队表格材料(db(), 参数)
+    const 首次 = await 入队材料(db(), 参数)
     expect(首次?.enqueued).toBe(true)
     await db().execute(sql`update auth.case_material set parse_status = '已解析' where id = ${首次!.materialId}`)
 
-    const r = await 入队表格材料(db(), { ...参数, force: true })
+    const r = await 入队材料(db(), { ...参数, force: true })
     expect(r?.enqueued).toBe(true)
     const 行 = rowsOf(
       await db().execute(sql`select parse_status from auth.case_material where id = ${首次!.materialId}`),
@@ -139,29 +139,29 @@ describe("入队表格材料", () => {
     expect(行[0]?.parse_status).toBe("排队中")
   })
 
-  test("非表格扩展名 ⇒ 直接跳过，材料表里没有它", async () => {
-    const r = await 入队表格材料(db(), {
+  test("不可解析扩展名 ⇒ 直接跳过，材料表里没有它", async () => {
+    const r = await 入队材料(db(), {
       root,
       project,
-      target: 落点("提请批准逮捕书.md"),
+      target: 落点("提请批准逮捕书.pdf"),
       bytes,
-      fileName: "提请批准逮捕书.md",
+      fileName: "提请批准逮捕书.pdf",
       by: "u1",
     })
     expect(r).toBeUndefined()
     // 按文件名过滤而不是全表计数：单跑这一条时全表是空的，全表计数会红成「期望 1、实得 0」，
-    // 与它要验的「这个 .md 没建档」无关。
+    // 与它要验的「这个 .pdf 没建档」无关。
     const n = rowsOf(
       await db().execute(
         sql`select count(*)::int as n from auth.case_material
-             where project_id = 'proj-1' and file_name = '提请批准逮捕书.md'`,
+             where project_id = 'proj-1' and file_name = '提请批准逮捕书.pdf'`,
       ),
     )
     expect(Number(n[0]?.n)).toBe(0)
   })
 
   test("不在一个项目目录里（层数不是两层）⇒ 跳过，不猜项目", async () => {
-    const r = await 入队表格材料(db(), {
+    const r = await 入队材料(db(), {
       root,
       project: join(root, "proj-1"),
       target: join(root, "proj-1", "话单.xlsx"),
@@ -178,7 +178,7 @@ describe("入队表格材料", () => {
    * 并把中间那一层（`u1`）当成项目 id 入队——正是「宁可入不了队，也不猜」要挡的事。
    */
   test("项目目录深过两层 ⇒ 也跳过，不拿中间那层当项目 id", async () => {
-    const r = await 入队表格材料(db(), {
+    const r = await 入队材料(db(), {
       root,
       project: join(root, "u1", "proj-1", "子目录"),
       target: join(root, "u1", "proj-1", "子目录", "话单.xlsx"),
@@ -200,7 +200,7 @@ describe("入队表格材料", () => {
    * ——worker 读盘时才会发现跑到了兄弟项目。
    */
   test("target 落在兄弟项目 ⇒ 跳过，材料表里没有它", async () => {
-    const r = await 入队表格材料(db(), {
+    const r = await 入队材料(db(), {
       root,
       project,
       target: join(root, "u1", "其他项目", "密件.xlsx"),
@@ -225,7 +225,7 @@ describe("入队表格材料", () => {
    * 但函数是导出的 ⇒ 入口必须 fail-closed。
    */
   test("相对路径输入 ⇒ 跳过，兄弟项目的文件不入库", async () => {
-    const r = await 入队表格材料(db(), {
+    const r = await 入队材料(db(), {
       root: "ws",
       project: "ws/u1/proj-1",
       target: "ws/u1/其他项目/密件2.xlsx",
@@ -253,7 +253,7 @@ describe("入队表格材料", () => {
   ]
   for (const [文件名, 字节] of 其余扩展名) {
     test(`${文件名} ⇒ 也入队`, async () => {
-      const r = await 入队表格材料(db(), {
+      const r = await 入队材料(db(), {
         root,
         project,
         target: 落点(文件名),
@@ -271,4 +271,40 @@ describe("入队表格材料", () => {
       expect(Number(n[0]?.n)).toBe(1)
     })
   }
+})
+
+describe("文本材料也走同一个入口（计划 4）", () => {
+  // 沿用本文件既有的 `root` / `project` / `落点()`（见文件顶部）：不另起一套夹具。
+  const 参数 = (fileName: string) => ({
+    root,
+    project,
+    target: 落点(fileName),
+    bytes: new TextEncoder().encode("2026年3月5日，张三向李四转账28万元。"),
+    fileName,
+    by: "u1",
+  })
+
+  test(".txt 笔录 ⇒ 建档 kind=笔录 ＋ 排队（不再是「非表格一律不管」）", async () => {
+    const r = await 入队材料(db(), 参数("询问笔录.txt"))
+    expect(r).toBeDefined()
+    expect(r!.enqueued).toBe(true)
+
+    const 材料 = rowsOf(
+      await db().execute(sql`select kind from auth.case_material where id = ${r!.materialId}`),
+    )
+    expect(材料[0]?.kind).toBe("笔录")
+
+    const 作业 = rowsOf(
+      await db().execute(sql`
+        select status from auth.case_ingest_job
+         where project_id = 'proj-1' and material_id = ${r!.materialId}
+      `),
+    )
+    expect(作业[0]?.status).toBe("排队中")
+  })
+
+  test(".pdf 仍然不建档（PDF/OCR 不在本计划，R1）", async () => {
+    const r = await 入队材料(db(), 参数("笔录.pdf"))
+    expect(r).toBeUndefined()
+  })
 })

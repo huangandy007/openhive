@@ -48,6 +48,11 @@ export interface EnqueueInput {
   fingerprint: string
   /** 人工触发时的操作人（设计 §8.1 留痕）。 */
   by?: string
+  /**
+   * 材料类型。默认 `其他`——表格的真实类型由 `runJob` 认列后回填（计划 2 行为）；
+   * 文本材料由上传入口按文件名猜一次（计划 4，R9）。
+   */
+  kind?: MaterialKind
   /** 强制重解析：已解析的材料也重新排队。 */
   force?: boolean
   /**
@@ -89,7 +94,7 @@ export async function enqueueMaterial(db: Queryable, input: EnqueueInput): Promi
     id: crypto.randomUUID(),
     projectId: input.projectId,
     fileName: input.fileName,
-    kind: "其他",
+    kind: input.kind ?? "其他",
     fingerprint: input.fingerprint,
     path: input.path,
   })

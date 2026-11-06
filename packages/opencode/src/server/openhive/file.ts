@@ -156,8 +156,8 @@ import {
 import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { enqueueMaterial } from "./case-ingest"
-import { 可解析表格 } from "./case-parseable"
-import { 迁移材料路径, type Queryable } from "./case-store"
+import { 解析方式 } from "./case-parseable"
+import { 迁移材料路径, type MaterialKind, type Queryable } from "./case-store"
 import { OpenhivePg } from "./pg"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
@@ -589,7 +589,7 @@ const gate = (
   })
 
 /**
- * 项目目录 → `(projectId, 作业目录前缀)`；形状与 `入队表格材料` 用的是同一条判据：
+ * 项目目录 → `(projectId, 作业目录前缀)`；形状与 `入队材料` 用的是同一条判据：
  * 沙箱根相对**恰好两层**。算不出就不迁库——文件已经搬走了，不拿猜测去改别人的材料行。
  */
 function 项目标识(root: string, project: string): { projectId: string; 作业目录: string } | undefined {
@@ -713,10 +713,18 @@ function handleTransfer(
 }
 
 /**
+ * 文本材料的类型猜测（R9）：只认最常见的笔录，其余一律 `其他`。
+ * 不做内容识别——猜错只影响类型标签，不影响抽取；内容识别是后续计划的事。
+ */
+function 猜测文本类型(fileName: string): MaterialKind {
+  return /笔录|询问|讯问|陈述/.test(fileName) ? "笔录" : "其他"
+}
+
+/**
  * 上传落盘后顺手入队（设计 §5.2 第 1 步）。
  *
  * 三条自我约束：
- * - **只认表格扩展名**：产物与探索中间文件的解析由计划 3 的右键菜单决定。
+ * - **只认可解析扩展名（表格 ∪ 文本）**：产物与探索中间文件的解析由计划 3 的右键菜单决定。
  * - **算不出项目就跳过**：项目目录恒为 `{根}/{userId}/{projectId}`（`project.ts:14` /
  *   `@opencode-ai/auth/workspace` 的 `projectDirectory`），**恰好两层**才算得清
  *   「哪个项目」与「沙箱内落点」。层数不对时宁可入不了队，也不猜。
@@ -724,7 +732,7 @@ function handleTransfer(
  *
  * 返回 `undefined` = 没入队（不是失败）。调用方据此什么都不做。
  */
-export async function 入队表格材料(
+export async function 入队材料(
   db: Queryable,
   input: {
     /** 沙箱根的**绝对路径**（同上，`handleUpload` 传的就是它）。 */
@@ -760,7 +768,8 @@ export async function 入队表格材料(
   if (inside(input.project, input.target) === undefined) return undefined
 
   const 项目相对 = relativePath(input.project, input.target)
-  if (!可解析表格(项目相对)) return undefined
+  const 方式 = 解析方式(项目相对)
+  if (方式 === undefined) return undefined
 
   const 沙箱相对 = relative(input.root, input.project).split(sep).join("/")
   const 段 = 沙箱相对.split("/")
@@ -774,6 +783,8 @@ export async function 入队表格材料(
     // 指纹是**内容哈希**：同一个文件换个名字重拖仍是同一条材料（判据 A2）。
     fingerprint: Hash.sha256(Buffer.from(input.bytes)),
     by: input.by,
+    // 文本材料先按文件名给一个可解释的类型；表格保持 `其他`，由 `runJob` 认列后回填。
+    ...(方式 === "文本" ? { kind: 猜测文本类型(input.fileName) } : {}),
     ...(input.force === true ? { force: true } : {}),
     ...(input.置顶 === true ? { 置顶: true } : {}),
   })
@@ -837,7 +848,7 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isSome(user)) {
       yield* Effect.promise(() =>
-        入队表格材料(pg.pg(), {
+        入队材料(pg.pg(), {
           root,
           project,
           target,
