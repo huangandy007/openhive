@@ -449,8 +449,8 @@ export interface CitationRow {
  * 写一条引用。**同一个 id 重复写什么都不做**（`on conflict (project_id, id) do nothing`）。
  *
  * 引用是**不可变**的：id 由 `projectId / factType / factId / materialId / 片起` 确定性生成，
- * 同一个 id 必然是同一条出处，重插不带来任何新信息——与同文件事实写入的取向一致
- * （`insertRelation` / `insertEvent` 也是 `do nothing`）。
+ * 同一个 id 必然是同一条出处，重插不带来任何新信息——与事实写入的取向一致
+ * （`case-fact-store.ts` 的 `insertRelation` / `insertEvent` 也是 `do nothing`）。
  *
  * ⚠️ 这条兜底是「人工确认的事实保留引用」之后重放**必需**的：重放前只删「不会被保留的
  * 事实」的引用，模型若又抽出同一条人工事实，`引用id` 与上次完全相同；没有它，裸 INSERT
