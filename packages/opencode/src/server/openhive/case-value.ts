@@ -34,7 +34,9 @@ const 号码分隔符 = /[\s\-－—()（）／/·.]/g
  * undefined。需要「这段文字里有没有这串数字」时**另写包含判断**，别拿本函数凑。
  */
 export function 号码归一(raw: string): string | undefined {
-  const 净 = raw.normalize("NFKC").replace(号码分隔符, "")
+  // `+` 只剥**开头**那一个：`+8613800138000` 的国际前缀要认，但 `12+34` 中间那个加号
+  // 不是号码的一部分（剥成 `1234` 就是把两个数拼成一个）。
+  const 净 = raw.normalize("NFKC").replace(/^\+/, "").replace(号码分隔符, "")
   if (!/^[0-9A-Za-z]+$/.test(净)) return undefined
   if (!/[0-9]/.test(净)) return undefined
   if (净.length < 3) return undefined
@@ -54,7 +56,8 @@ const 中文单位: Record<string, number> = { 十: 10, 拾: 10, 百: 100, 佰: 
  * - 裸单位（`万`、`百`）不认——单位前面必须有数（`十八` 的 `十` 是唯一例外）；
  * - 连续两个数字位（`一二三`、`二〇二六`）不认——那是年份/编号的写法，不是金额；
  * - 省略写法（`三千五`、`一千二百三`）不认——3500 还是 3005 有歧义，不猜；
- * - `万`、`亿` 各只许出现一次（`一万二万`、`一亿二亿` 不认）；
+ * - `万`、`亿` 各只许出现一次，但**亿后可以跟一个万**（`一亿二千万` 认；`一万二万`、
+ *   `一亿二亿`、`一万亿` 不认——`一万亿` 超出现有段结构，fail-closed）；
  * - `零` 只作占位（`一百零三`）。
  */
 function 中文整数(s: string): number | undefined {
@@ -96,7 +99,9 @@ function 中文整数(s: string): number | undefined {
     }
 
     if (ch === "万") {
-      if (见过万 || 见过亿) return undefined
+      // 亿后可以再有一个万：`一亿二千万` = 1亿 + 2000万。`一万二万` 仍要拒（`见过万`），
+      // `一万亿`（万在亿前）也仍要拒——`亿` 分支要求 `总 === 0`，一万已把 `总` 写成 10000。
+      if (见过万) return undefined
       if (!待乘 && 段 === 0) return undefined
       段 += 数
       数 = 0
@@ -136,15 +141,9 @@ function 中文整数(s: string): number | undefined {
 /** `numeric(18,2)` 的整数位上限。超过它落库会整批失败（`case-rows.ts` 同款闸）。 */
 const 金额整数位上限 = 16
 
-/**
- * 舍入到「分」。
- *
- * 直接 `Math.round(值 * 100) / 100` 会在二进制浮点上翻车：`1.005 * 100 = 100.49999999999999`
- * ⇐ 舍成 1.00，而 `2.675` 又舍成 2.68，同一个函数两种行为。加一个 EPSILON 让两种都按
- * 四舍五入走，并在用例里把这两个值钉死（`1.005 ⇒ 1.01`、`2.675 ⇒ 2.68`）。
- */
-function 分位舍入(值: number): number {
-  return Math.round((值 + Number.EPSILON) * 100) / 100
+/** 万 / 亿 是**小数点右移**，不是乘法：全程在字符串上移位，不经过浮点。 */
+function 位移位数(后缀: string | undefined): number {
+  return 后缀 === "万" ? 4 : 后缀 === "亿" ? 8 : 0
 }
 
 export function 金额元(raw: string): number | undefined {
@@ -174,32 +173,41 @@ export function 金额元(raw: string): number | undefined {
   // 千分位必须先验成组再剥：`1234,56` 若先剥逗号会变成 123456（**放大 100 倍**）。
   // 这正是 `case-rows.ts` 的 `parseAmount` 专门挡住的那类事故。
   if (s.includes(",")) {
-    if (!/^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(s)) return undefined
+    // 逗号只约束分组；后缀照旧放行（`1,234.5万` 是合法写法）。
+    if (!/^\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:万|亿)?$/.test(s)) return undefined
     s = s.replace(/,/g, "")
   }
 
-  let 值: number | undefined
+  let 元整数: string
+  let 元小数: string
   if (/^\d/.test(s)) {
     const 数字 = /^(\d+)(?:\.(\d+))?(万|亿)?$/.exec(s)
     if (!数字) return undefined
     const 整 = 数字[1] ?? ""
     if (整.length > 金额整数位上限) return undefined
-    const n = Number(整 + (数字[2] === undefined ? "" : `.${数字[2]}`))
-    if (!Number.isFinite(n)) return undefined
-    值 = n * (数字[3] === "万" ? 10_000 : 数字[3] === "亿" ? 100_000_000 : 1)
+    // `1.23456万` = 12345.6 元：小数部分补足位移位后，前 4 位进整数、剩下的留小数。
+    const 位移 = 位移位数(数字[3])
+    const 补 = (数字[2] ?? "").padEnd(位移, "0")
+    元整数 = 整 + 补.slice(0, 位移)
+    元小数 = 补.slice(位移)
   } else {
     if (!/^[零〇一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟]+$/.test(s)) return undefined
     const n = 中文整数(s)
     if (n === undefined) return undefined
-    值 = n
+    元整数 = String(n)
+    元小数 = ""
   }
 
-  // 上限用「安全整数」判而不是只看位数：`numeric(18,2)` 允许 16 位整数，但 JS 的 number
-  // 在 2^53 以上已经不精确，算出来的「金额」本身就是错的。
-  if (!Number.isFinite(值) || !Number.isSafeInteger(Math.round(值 * 100))) return undefined
-
-  const 结果 = 分位舍入(值)
-  return 负 ? -结果 : 结果
+  // 舍到分：只看第三位小数（`1.005 ⇒ 1.01`）。整数部分与分都用**字符串/整数**算——
+  // 上一版是 `Math.round((值 + Number.EPSILON) * 100)`，EPSILON 是绝对量，
+  // 到百万级就压不住尾差（`1234567.005` 舍成 `1234567`）。这里没有浮点参与。
+  if (元整数.replace(/^0+/, "").length > 金额整数位上限) return undefined
+  const 分 = Number(元整数) * 100 + Number((元小数 + "00").slice(0, 2))
+  if (!Number.isSafeInteger(分)) return undefined
+  const 分终 = (元小数 + "000")[2] >= "5" ? 分 + 1 : 分
+  const 结果 = 分终 / 100
+  // `-0` 不是 `0`（`Object.is(-0, 0) === false`）：留着会让调用方的 `结果 === 0` 判空失效。
+  return 负 && 结果 !== 0 ? -结果 : 结果
 }
 
 /** 忽略空白与换行差异的包含判断：模型抄原文时经常把换行抄成空格。 */
