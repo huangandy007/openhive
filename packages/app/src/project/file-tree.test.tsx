@@ -2962,7 +2962,21 @@ describe("FileTree 文件树（FR-005）", () => {
   describe("解析子菜单（计划 3 · 设计 §8.1）", () => {
     const 子菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-sub-content']")
     const 子项 = (action: string) => 子菜单内容()?.querySelector<HTMLElement>(`[data-parse-action='${action}']`)
-    const 子项禁用 = (action: string) => 子项(action)?.getAttribute("aria-disabled") === "true"
+    // ⚠️ 元素缺失时**抛**，不是回 false（`#005-47`：默认值满足断言会假绿——`toBe(false)` 在
+    // 「子项根本没渲染」时照样通过，而它读起来像钉住了「这一项是亮的」）。
+    const 子项禁用 = (action: string) => {
+      const el = 子项(action)
+      if (!el) throw new Error(`没有子菜单项 ${action}——前提不成立`)
+      return el.getAttribute("aria-disabled") === "true"
+    }
+    /** 子项文案（第一格；第二格是禁用原因，不算文案）。 */
+    const 子项文案 = () => {
+      const 内容 = 子菜单内容()
+      if (!内容) throw new Error("解析子菜单没打开——前提不成立")
+      return [...内容.querySelectorAll<HTMLElement>("[data-parse-action]")].map(
+        (el) => el.querySelector<HTMLElement>("span")?.textContent?.trim(),
+      )
+    }
     const 子项原因 = (action: string) =>
       子项(action)?.querySelector<HTMLElement>("[data-slot='file-tree-parse-reason']")?.textContent?.trim()
     const 触发 = () => 菜单内容()?.querySelector<HTMLElement>("[data-slot='context-menu-sub-trigger']")
@@ -3074,6 +3088,77 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(子项禁用("parse-skip")).toBe(true)
     })
 
+    test("五项文案齐备且按设计顺序：解析入库 / 重新解析 / 取消解析 / 跳过解析 / 查看解析结果", async () => {
+      const { host } = 挂带材料(["话单.csv"])
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项文案()).toEqual(["解析入库", "重新解析", "取消解析", "跳过解析", "查看解析结果"])
+    })
+
+    test("点「查看解析结果」把这一行的路径交给 onReviewParse（计划 7 的接缝）", async () => {
+      const 收到: string[] = []
+      const { host } = 挂带材料(
+        ["话单.csv"],
+        { rows: [视图行({ path: "话单.csv", status: "已解析" })] },
+        (path) => 收到.push(path),
+      )
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-view")).toBe(false)
+      点子项("parse-view")
+      await 歇一拍()
+
+      expect(收到).toEqual(["话单.csv"])
+    })
+
+    test("文件夹批量：中途失败即停（第三个不再发），已发的保留，仍重拉，toast 点名失败的那一份", async () => {
+      const 假 = 假材料状态({
+        parse: ({ path }) => (path === "资料/乙.xlsx" ? { kind: "error", message: "服务端拒了" } : { kind: "ok" }),
+      })
+      // 这一条要读**真** toast 落点（同「文件路径」那组的观测面）⇒ 挂一棵带 ToastRegion 的树。
+      const host = mount(() => (
+        <>
+          <ToastRegion v2={false} />
+          <FileTree paths={["资料/甲.csv", "资料/乙.xlsx", "资料/丙.csv"]} caseMaterials={假.状态} />
+        </>
+      ))
+
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      document.body
+        .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      await 歇一拍()
+
+      // 甲成了、乙失败 ⇒ 丙一次都没发（`break` 那一行）。
+      expect(假.记.解析).toEqual([
+        { path: "资料/甲.csv", action: "入队" },
+        { path: "资料/乙.xlsx", action: "入队" },
+      ])
+      expect(假.记.重拉).toBe(1)
+      const 错误话 = document.body.querySelector<HTMLElement>("[data-variant='error']")?.textContent ?? ""
+      expect(错误话).toContain("资料/乙.xlsx")
+      toaster.clear()
+    })
+
+    test("材料状态还没读回来（R14）：入队项灰着，理由说「解析状态还在读取，请稍候」", async () => {
+      const { host } = 挂带材料(["话单.csv"], { loaded: false })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项原因("parse-enqueue")).toBe("解析状态还在读取，请稍候")
+    })
+
     test("点「跳过解析」直接发请求（不弹确认），成功后重拉", async () => {
       const { host, 假 } = 挂带材料(["话单.csv"])
       右键(行按路径(host, "话单.csv"))
@@ -3132,6 +3217,9 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
         "将解析这个文件夹下的 2 个文件",
       )
+      // 与「候选为 0」那条成对：确认键的 disabled 必须挂在 N 上，不是恒灰 / 恒亮。
+      const 确认键 = document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+      expect(确认键?.hasAttribute("disabled")).toBe(false)
 
       document.body
         .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
@@ -3148,7 +3236,7 @@ describe("FileTree 文件树（FR-005）", () => {
 
     test("文件夹：候选为 0 时仍弹窗，说清「没有需要入队的表格」，确认键置灰", async () => {
       // 三个文件一个都不该进候选：已跳过（人的意志）、产物、非表格。
-      const { host, 假 } = 挂带材料(["资料/跳过.xlsx", "资料/结论.xlsx", "资料/说明.pdf"], {
+      const { host } = 挂带材料(["资料/跳过.xlsx", "资料/结论.xlsx", "资料/说明.pdf"], {
         rows: [
           视图行({ path: "资料/跳过.xlsx", status: "已跳过" }),
           视图行({ path: "资料/结论.xlsx", kind: "产物" }),
@@ -3167,13 +3255,11 @@ describe("FileTree 文件树（FR-005）", () => {
         "这个文件夹下没有需要入队的表格（已跳过的文件请用它的单文件右键菜单恢复）",
       )
       // 确认键置灰：点了也发不出请求（Kobalte 的 disabled 同时把它移出键盘焦点序列）。
-      const 确认键 = document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
-      expect(确认键?.hasAttribute("disabled")).toBe(true)
-
-      确认键?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-      await 歇一拍()
-      expect(假.记.解析).toEqual([])
-      expect(假.记.重拉).toBe(0)
+      // ⚠️ 只断 `disabled` 本身：再点它一下、然后断「一次请求都没发」是**空转**——
+      // onConfirm 本来就是 no-op，按钮不置灰那条断言照样绿（`#005-47` 同族）。
+      expect(
+        document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
+      ).toBe(true)
     })
   })
 
@@ -3208,6 +3294,19 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(标记(host, "跳过.xlsx") === null).toBe(true)
       expect(行按路径(host, "跳过.xlsx").getAttribute("title")).toBe("已跳过 · 你手动跳过了解析")
       expect(行按路径(host, "笔录.pdf").getAttribute("title")).toBe("未入队 · 系统不解析这类文件")
+    })
+
+    /**
+     * F1（修复轮 1）：**生产里 PDF 根本没有材料行**（`file.ts:711` 对不可解析类型直接
+     * `return`，不建材料行）⇒ 上面那条用伪造的 `parseable:false` 行读到的句子在生产中
+     * 永远不出现（「绿但不可达」）。这里**不造材料行**，钉住真正会走的那条分支。
+     */
+    test("不可解析文件且**没有材料行** ⇒ title 仍说「系统不解析这类文件」", () => {
+      const 假 = 假材料状态({ rows: [] })
+      const host = mount(() => <FileTree paths={["资料/笔录.pdf"]} caseMaterials={假.状态} />)
+      动作(host, "expand-all")?.click()
+
+      expect(行按路径(host, "资料/笔录.pdf").getAttribute("title")).toBe("系统不解析这类文件")
     })
 
     test("目录行的 3/12 用**全量清单**算：折叠时子项不可见，汇总仍然对", () => {

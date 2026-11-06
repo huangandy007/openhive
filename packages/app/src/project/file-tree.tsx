@@ -13,7 +13,7 @@ import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
 import type { ArchiveKind } from "@/project/archive-name"
 import { FileOpError } from "./file-op-error"
-import type { 人工解析动作 } from "./case-materials-api"
+import type { 人工解析动作, 材料视图 } from "./case-materials-api"
 import type { CaseMaterials } from "./case-materials-state"
 import { CaseStatusBadge } from "./case-status-badge"
 import {
@@ -501,8 +501,21 @@ export function FileTree(props: FileTreeProps) {
   const 材料 = () => props.caseMaterials
   const 扩展名 = () => 材料()?.parseableExtensions() ?? []
 
+  /**
+   * 路径 → 材料行，按 `rows()` 建一次索引。
+   *
+   * 行提示与行标记会**逐行**问「这一行的材料行是哪一条」；每 3 秒轮询一次 `rows`，若每次线性
+   * `find` 就是 O(文件数 × 材料数)。memo 只依赖 `材料()` 与它的 `rows()`（Solid 信号），
+   * 父组件换对象、轮询换数组都会让它重算（不是一次性快照，`#006-21`）。
+   */
+  const 行表 = createMemo(() => {
+    const map = new Map<string, 材料视图>()
+    for (const row of 材料()?.rows() ?? []) map.set(row.path, row)
+    return map
+  })
+
   /** 这份文件在服务端视图里的那一行；没有 = 还没入队（或清单没读到）。 */
-  const 视图行 = (path: string) => 材料()?.rows().find((row) => row.path === path)
+  const 视图行 = (path: string) => 行表().get(path)
 
   const 依据 = (path: string, 有对象 = true): 亮灯依据 => ({
     path,
@@ -534,25 +547,34 @@ export function FileTree(props: FileTreeProps) {
     const row = 视图行(path)
     if (row === undefined) {
       if (节点表().get(path)?.type !== "file") return undefined
-      if (!可解析路径(path, 扩展名())) return undefined
+      // 生产里不可解析的文件**没有材料行**（`file.ts` 对这类类型直接 return，不建行）⇒
+      // 这一支才是 PDF 真正走的那条。口径与 `悬停文案` 的未入队句一致，但不加「未入队 · 」
+      // 前缀：它根本没进过队列，说「未入队」会暗示「以后会入」。
+      if (!可解析路径(path, 扩展名())) return "系统不解析这类文件"
       return "未入队 · 右键「解析」可入库"
     }
     if (标记形状(row.status) !== undefined) return undefined
     return 悬停文案(row, 扩展名())
   }
 
-  const 汇总根 = createMemo(() => {
+  /**
+   * 全部目录（含根 `""`）的汇总——**只算一次**，根进度与各行目录汇总都从它取。
+   *
+   * 这两处曾各调一次 `汇总全部`（同一个 O(文件数 × 路径深度) 的活算两遍），而 `rows` 每 3 秒
+   * 换一次。`undefined` = 没接入 / 还没读到（两处消费者据此不画）。
+   */
+  const 汇总 = createMemo(() => {
     const 状态 = 材料()
     if (状态 === undefined || !状态.loaded()) return undefined
-    const 总 = 汇总全部(全部(), 状态.rows(), 状态.parseableExtensions()).get("")
+    return 汇总全部(全部(), 状态.rows(), 状态.parseableExtensions())
+  })
+
+  const 汇总根 = createMemo(() => {
+    const 总 = 汇总()?.get("")
     return 总 !== undefined && 总.总数 > 0 ? 总 : undefined
   })
 
-  const 各目录汇总 = createMemo(() => {
-    const 状态 = 材料()
-    if (状态 === undefined || !状态.loaded()) return new Map<string, 目录汇总>()
-    return 汇总全部(全部(), 状态.rows(), 状态.parseableExtensions())
-  })
+  const 各目录汇总 = createMemo(() => 汇总() ?? new Map<string, 目录汇总>())
 
   /** 菜单当前作用的那一行（没有对象 ⇒ `undefined`）。 */
   const 菜单行 = () => {
@@ -644,7 +666,7 @@ export function FileTree(props: FileTreeProps) {
               showToast({
                 variant: "error",
                 title: "文件夹解析中断",
-                description: `第 ${成 + 1} 个文件没能入队：${结果.message}`,
+                description: `第 ${成 + 1} 个文件（${path}）没能入队：${结果.message}`,
               })
               break
             }
