@@ -16,7 +16,10 @@ function 造zip(条目: Record<string, string>, 压缩: boolean, 损坏?: string
     const 名节 = 编码.encode(名)
     const 原 = 编码.encode(内容)
     const 数据 = 压缩 ? new Uint8Array(deflateRawSync(原)) : 原
-    if (损坏?.includes(名) && 数据.length >= 4) 损坏位置.push(偏移 + 30 + 名节.length)
+    if (损坏?.includes(名)) {
+      if (数据.length < 4) throw new Error(`夹具错误：${名} 压缩后只有 ${数据.length} 字节，钉不出损坏`)
+      损坏位置.push(偏移 + 30 + 名节.length)
+    }
     const 头 = new DataView(new ArrayBuffer(30))
     头.setUint32(0, 0x04034b50, true)
     头.setUint16(8, 压缩 ? 8 : 0, true)
@@ -103,10 +106,9 @@ describe("文本抽取", () => {
     try {
       抽取文本(zip, "笔录.docx")
     } catch (e) {
-      消息 = (e as Error).message
+      消息 = e instanceof Error ? e.message : String(e)
     }
-    expect(消息).toContain("这个 .docx 的压缩数据已损坏")
-    expect(消息).not.toMatch(/code lengths|invalid|zlib|RangeError|ERR_/)
+    expect(消息).toBe("这个 .docx 的压缩数据已损坏")
   })
 
   test("别的部件坏了不影响正文：只解压 word/document.xml", () => {
@@ -114,9 +116,11 @@ describe("文本抽取", () => {
     expect(抽取文本(zip, "笔录.docx").text).toBe("2026年3月5日，张三向李四转账28万元。\n第二段。\n")
   })
 
-  test("越界的字符引用不让英文 RangeError 漏出来", () => {
-    const zip = 造zip({ "word/document.xml": `<w:document><w:body><w:p><w:r><w:t>甲&#1114112;乙</w:t></w:r></w:p></w:body></w:document>` }, true)
-    expect(抽取文本(zip, "笔录.docx").text).toBe("甲&#1114112;乙\n")
+  test("越界与代理区的字符引用都原样保留", () => {
+    for (const 实体 of ["&#1114112;", "&#xD800;", "&#xDFFF;"]) {
+      const zip = 造zip({ "word/document.xml": `<w:document><w:body><w:p><w:r><w:t>甲${实体}乙</w:t></w:r></w:p></w:body></w:document>` }, true)
+      expect(抽取文本(zip, "笔录.docx").text, 实体).toBe(`甲${实体}乙\n`)
+    }
   })
 
   test("命名实体 &nbsp; / &mdash; 也要解开", () => {

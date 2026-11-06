@@ -97,6 +97,9 @@ function 去掉xml标签(xml: string): string {
 /** 越界的码点不去构造字符（`String.fromCodePoint` 会抛英文 RangeError），原样留着。 */
 function 码点(码: number, 原文: string): string {
   if (!Number.isInteger(码) || 码 < 0 || 码 > 0x10ffff) return 原文
+  // 代理区（0xD800–0xDFFF）在 XML 里本就不该被引用：`fromCodePoint` 不抛错，
+  // 但会产出孤立代理，编码成 UTF-8 时变成 U+FFFD——保留原文更好交代。
+  if (码 >= 0xd800 && 码 <= 0xdfff) return 原文
   return String.fromCodePoint(码)
 }
 
@@ -104,8 +107,11 @@ function 码点(码: number, 原文: string): string {
 function 解压(数据: Uint8Array): Uint8Array {
   try {
     return new Uint8Array(inflateRawSync(数据, { maxOutputLength: 解压上限 }))
-  } catch {
-    throw new Error("这个 .docx 的压缩数据已损坏")
+  } catch (失败) {
+    // 撞上解压上限与「数据本身坏了」是两种话：前者可操作（拆文件），后者只能重导。
+    if (失败 instanceof Error && "code" in 失败 && 失败.code === "ERR_BUFFER_TOO_LARGE")
+      throw new Error("这个 .docx 的正文太大，已拒绝解压", { cause: 失败 })
+    throw new Error("这个 .docx 的压缩数据已损坏", { cause: 失败 })
   }
 }
 
