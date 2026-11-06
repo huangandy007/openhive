@@ -94,6 +94,23 @@ describe("留痕读写", () => {
   test("项目隔离：别的项目读不到", async () => {
     expect(await 变更历史(库(), "p-别的项目", "relation", "r-1")).toEqual([])
   })
+
+  test("jsonb 标量被驱动解析成 JS 字符串时原样读回，不吞成 null", async () => {
+    await 记变更(库(), {
+      projectId: "p-标量",
+      factType: "entity",
+      factId: "e-标量",
+      action: "修正",
+      before: "旧值",
+      after: "新值",
+      reasonKind: "识别错",
+      reasonText: "材料本身有歧义",
+      actor: 甲,
+    })
+    const 条 = (await 变更历史(库(), "p-标量", "entity", "e-标量"))[0]
+    expect(条?.before).toBe("旧值")
+    expect(条?.after).toBe("新值")
+  })
 })
 
 describe("落库形状（变异 M1 的承重处）", () => {

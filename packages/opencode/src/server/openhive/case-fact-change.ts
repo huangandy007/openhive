@@ -72,8 +72,10 @@ function 读杰森(值: unknown): unknown {
   try {
     return JSON.parse(值)
   } catch {
-    // 留痕是我们自己写的合法 JSON；解析不了只能是空值或外部手改，返回 null 不猜。
-    return null
+    // 驱动已把 jsonb **标量**解析成 JS 字符串（`"abc"` 到手就是 `abc`），JSON.parse 必然抛；
+    // 原样返回，别吞成 null——「有个值但读不出形状」和「没有值」是两件事，留痕是证据，
+    // 读不出就该看得见（`#006-28` 那类静默吞异常的教训）。
+    return 值
   }
 }
 
