@@ -412,7 +412,10 @@ export function createRoutes(
     // `?directory=`，而它同时也把「已归档 ⇒ 403」那道门套在这四个出口上（门在中间件里，
     // 所以本模块**一个字都不用写**，也就不会漂成两份）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T020）。
-    OpenhiveFile.routes.pipe(Layer.provide(AnchorWorkspace.Config.layer)),
+    OpenhiveFile.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
     // openhive 账号管理出口（010 T005）：列表 / 详情 / 录入 / 重置 / 停用 / 启用 / 批量停用（FR-004）。
     // 沙箱根与项目出口共用同一个 `AnchorWorkspace.Config`（`provisionUser` 要在这里建目录——
     // 两处漂了就是「账号建在 A、文件树去 B 找」）；业务 PG 与上面几项共用同一个实例

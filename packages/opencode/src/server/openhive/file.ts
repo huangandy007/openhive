@@ -141,7 +141,8 @@ export * as OpenhiveFile from "./file"
  */
 
 import { User } from "@opencode-ai/core/user"
-import { Config as EffectConfig, Effect, Option, Schema } from "effect"
+import { Hash } from "@opencode-ai/core/util/hash"
+import { Cause, Config as EffectConfig, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { access, copyFile, constants, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
@@ -154,6 +155,9 @@ import {
 } from "@zip.js/zip.js"
 import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { enqueueMaterial } from "./case-ingest"
+import type { Queryable } from "./case-store"
+import { OpenhivePg } from "./pg"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
@@ -381,6 +385,7 @@ const Made = (path: string, base?: string) =>
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const config = yield* AnchorWorkspace.Config
+    const pg = yield* OpenhivePg.Service
     // 构造期取、请求期用（同 `project.ts`：请求 fiber 的 context 里没有 app 层服务）。
     const root = config.root
     // 打包下载的两道容量闸（设计 §6.1）。必须与其它配置**同一时点**取——请求期取不到
@@ -394,7 +399,7 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, "copy"))
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, "move"))
-    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root))
+    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root, pg))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
     // 2026-10-12：读**前**问一句大小（前端闸门，表格 5 MB / 其余 10 MB）。
     yield* router.add("GET", PATH.stat, (request) => handleStat(request, root))
@@ -659,6 +664,52 @@ function handleTransfer(
   })
 }
 
+/** 表格材料的扩展名白名单。计划 3 的右键「解析入库」接管之后，这里的默认值仍是「表格就排队」。 */
+const 可解析扩展名 = [".xlsx", ".xls", ".csv"] as const
+
+/**
+ * 上传落盘后顺手入队（设计 §5.2 第 1 步）。
+ *
+ * 三条自我约束：
+ * - **只认表格扩展名**：产物与探索中间文件的解析由计划 3 的右键菜单决定。
+ * - **算不出项目就跳过**：项目目录恒为 `{根}/{userId}/{projectId}`（`project.ts:14` /
+ *   `@opencode-ai/auth/workspace` 的 `projectDirectory`），**恰好两层**才算得清
+ *   「哪个项目」与「沙箱内落点」。层数不对时宁可入不了队，也不猜。
+ * - **不认识文件内容**：`bytes` 由调用方给（上传时已经在内存里），这里不读盘。
+ *
+ * 返回 `undefined` = 没入队（不是失败）。调用方据此什么都不做。
+ */
+export async function 入队表格材料(
+  db: Queryable,
+  input: {
+    root: string
+    /** 项目目录的绝对路径。 */
+    project: string
+    /** 文件落点的绝对路径。 */
+    target: string
+    bytes: Uint8Array
+    fileName: string
+    by: string
+  },
+): Promise<{ materialId: string; enqueued: boolean } | undefined> {
+  const 项目相对 = relativePath(input.project, input.target)
+  if (!可解析扩展名.some((扩展名) => 项目相对.toLowerCase().endsWith(扩展名))) return undefined
+
+  const 沙箱相对 = relative(input.root, input.project).split(sep).join("/")
+  const 段 = 沙箱相对.split("/")
+  if (段.length !== 2 || 段.some((段) => 段 === "" || 段 === "..")) return undefined
+
+  return enqueueMaterial(db, {
+    projectId: 段[1],
+    path: 项目相对,
+    sourcePath: `${沙箱相对}/${项目相对}`,
+    fileName: input.fileName,
+    // 指纹是**内容哈希**：同一个文件换个名字重拖仍是同一条材料（判据 A2）。
+    fingerprint: Hash.sha256(Buffer.from(input.bytes)),
+    by: input.by,
+  })
+}
+
 /**
  * 上传：`multipart/form-data`，一个 `file` 字段，`?dir=` 指出落在哪个目录（相对项目根）。
  *
@@ -673,7 +724,7 @@ function handleTransfer(
  * ⚠️ 中间件不会碰这个体：它只在 `content-type` 会被当 JSON 解时读体，而 multipart 不是
  * （`project-location.ts` 的 `isJsonRequest`）——两件事各归各的，别把「中间件不管」读成「没中间件」。
  */
-function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string) {
+function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string, pg: OpenhivePg.Interface) {
   return Effect.gen(function* () {
     const project = yield* gate(request, root)
     if (typeof project !== "string") return project
@@ -710,6 +761,26 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
     if (failed !== undefined) {
       if (CLIENT_FAILURES.includes(errorCode(failed))) return badRequest("目标位置已经有同名文件")
       yield* Effect.die(failed)
+    }
+
+    // 落盘即入队（设计 §5.2）。**入队失败不能把上传改成失败**：文件已经在盘上了，
+    // 为了一条排队记录回滚上传只会更糟——记一条 WARN，让人重拖一次（指纹幂等，不会重复）。
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isSome(user)) {
+      yield* Effect.promise(() =>
+        入队表格材料(pg.pg(), {
+          root,
+          project,
+          target,
+          bytes,
+          fileName: part.name,
+          by: user.value.id,
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("上传后入队失败", { error: Cause.prettyErrors(cause).map((e) => e.name) }),
+        ),
+      )
     }
 
     return Made(relativePath(project, target))
