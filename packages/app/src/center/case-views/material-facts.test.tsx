@@ -251,6 +251,47 @@ describe("材料抽取结果", () => {
     ).toBe("true")
   })
 
+  /**
+   * 开关必须在 `Show when={清单()}` 之外（与档案页同构）。
+   *
+   * 旧结构里开关长在「清单已到」的分支里：请求在飞时清单为空 ⇒ 开关不渲染；切换后若这次请求
+   * 失败，清单一直是 `undefined` ⇒ 开关永久消失，用户再也切不回「含排除 = false」。
+   */
+  test("清单未回 / 取数失败时开关都在，失败态下点它仍会重新请求", async () => {
+    const 在飞: Array<(值: 结果<材料事实清单结果>) => void> = []
+    const 调用: Array<boolean | undefined> = []
+    const api = 假api({
+      materialFacts: (_projectId, _path, includeExcluded) => {
+        调用.push(includeExcluded)
+        return new Promise<结果<材料事实清单结果>>((收) => 在飞.push(收))
+      },
+    })
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={api} />)
+
+    // 首屏：请求在飞、清单为空 ⇒ 开关必须已经在。
+    await 等(() => 在飞.length === 1)
+    expect(host.querySelector("[data-slot='material-facts-include-excluded']")).not.toBeNull()
+
+    // 第一次失败 ⇒ 开关仍在（旧实现此时开关随 `Show` 一起消失）。
+    在飞[0]({ kind: "error", message: "服务端回了 500" })
+    await 等(() => host.textContent!.includes("服务端回了 500"))
+    const 失败后开关 = host.querySelector<HTMLElement>("[data-slot='material-facts-include-excluded']")
+    expect(失败后开关).not.toBeNull()
+    expect(失败后开关!.getAttribute("aria-pressed")).toBe("false")
+
+    // 失败态下点它 ⇒ 必须重新请求，带上 includeExcluded=true。
+    失败后开关!.click()
+    await 等(() => 在飞.length === 2)
+    expect(调用).toEqual([false, true])
+    expect(host.textContent).not.toContain("服务端回了 500")
+
+    在飞[1]({ kind: "ok", value: 清单 })
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
+    expect(
+      host.querySelector("[data-slot='material-facts-include-excluded']")!.getAttribute("aria-pressed"),
+    ).toBe("true")
+  })
+
   test("产物路径 ⇒ 不摆抽取分组，改成引用复核区", async () => {
     const 产物行 = { id: "mat-1", path: "报告/分析.md", file_name: "分析.md", kind: "产物", fingerprint: "f-1" }
     const host = mount(() => (

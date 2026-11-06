@@ -85,12 +85,21 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void api.counts(项目).then((结果) => {
-      if (作废) return
-      set计数载入(false)
-      if (结果.kind === "error") set计数错误(结果.message)
-      else set计数(结果.value)
-    })
+    void api
+      .counts(项目)
+      .then((结果) => {
+        if (作废) return
+        set计数载入(false)
+        if (结果.kind === "error") set计数错误(结果.message)
+        else set计数(结果.value)
+      })
+      // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会永久停在「正在读取…」
+      // ＋ 一条 unhandled rejection。与 `{kind:"error"}` 是同一件事：计数读不到。
+      .catch((错误值: unknown) => {
+        if (作废) return
+        set计数载入(false)
+        set计数错误(错误值 instanceof Error ? 错误值.message : "读取类型计数失败")
+      })
   })
 
   // 清单：类型 / 搜索 / 排序变了就重取；类型导航态（无类型、无搜索）不发请求。

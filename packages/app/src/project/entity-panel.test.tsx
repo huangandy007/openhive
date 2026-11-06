@@ -275,6 +275,19 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     expect(host.textContent).toContain("还没有实体")
   })
 
+  /**
+   * 注入的 api 若**抛**（不是回 `{kind:"error"}`），旧实现只 `void …then(...)`，没有 `.catch`：
+   * 界面永久停在「正在读取…」，还留下一条 unhandled rejection。
+   */
+  test("计数注入 api 拒绝 ⇒ 不卡在「正在读取」，进错误态", async () => {
+    const api = 假api({ counts: () => Promise.reject(new Error("计数请求被拒")) })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+
+    await 等(host, () => host.textContent.includes("计数请求被拒"))
+    expect(host.querySelector("[data-slot='entity-count-loading']")).toBeNull()
+    expect(host.textContent).not.toContain("还没有实体")
+  })
+
   /** 星标按项目分开存（修复轮 1 · Minor 2）：换项目后同一个 id 不许还是星标。 */
   test("星标按项目分开存：换项目后同一个 id 不再是星标", async () => {
     const [项目, set项目] = createSignal<string | undefined>("p1")

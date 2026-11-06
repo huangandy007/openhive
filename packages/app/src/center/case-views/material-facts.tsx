@@ -64,6 +64,24 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
 
   return (
     <div data-component="material-facts" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-2">
+      {/* 开关必须在 `Show when={清单()}` **之外**（与 `entity-profile.tsx` 同构）：请求在飞或失败时
+          清单仍是 `undefined`，塞在 `Show` 里会让用户切到「含排除」后遇到一次失败就再也点不回去。
+          产物没有事实可排除，清单落地后按 kind 隐藏。 */}
+      <Show when={清单()?.材料.kind !== "产物"}>
+        <button
+          type="button"
+          data-slot="material-facts-include-excluded"
+          aria-pressed={含排除()}
+          onClick={() => set含排除((值) => !值)}
+          class={
+            含排除()
+              ? "mb-1 h-6 w-fit shrink-0 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base"
+              : "mb-1 h-6 w-fit shrink-0 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+          }
+        >
+          显示已排除
+        </button>
+      </Show>
       <Show when={错误()}>
         {(话) => (
           <p data-slot="material-facts-error" role="alert" class="text-[13px] text-v2-state-fg-danger">
@@ -100,19 +118,6 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
               when={清单().材料.kind === "产物"}
               fallback={
                 <>
-                  <button
-                    type="button"
-                    data-slot="material-facts-include-excluded"
-                    aria-pressed={含排除()}
-                    onClick={() => set含排除((值) => !值)}
-                    class={
-                      含排除()
-                        ? "mt-2 h-6 w-fit shrink-0 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base"
-                        : "mt-2 h-6 w-fit shrink-0 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
-                    }
-                  >
-                    显示已排除
-                  </button>
                   {/* 缺口非空时**不摆通用空态**：DAO 的缺口可能是「引用的事实均已排除」，
                       与「这份材料还没有登记事实」同时出现就是两句互相打脸的话。 */}
                   <Show when={清单().分组.length === 0 && 清单().缺口.length === 0}>
