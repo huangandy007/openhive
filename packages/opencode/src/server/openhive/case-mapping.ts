@@ -31,6 +31,22 @@ export interface MappingResult {
   unknownColumns: number[]
 }
 
+/**
+ * 单位冲突词（R25b）。
+ *
+ * `规范化` 会剥掉括号后缀，裸数字又按**默认单位**解释：括号里的单位不是默认那个时，
+ * 「通话时长（分钟）」的 5 会落成 5 秒（60 倍错）、「交易金额（万元）」的 10000
+ * 会落成 10000 元（10000 倍错）。因此原表头命中冲突词时，该列对**该字段**直接不认
+ * （照常进 `unknownColumns` → extras），由前端手工映射。
+ *
+ * 只看**原始表头**：规范化串里已经没有括号单位了。`秒` / `元` 是默认单位，放行。
+ */
+const 单位冲突: Partial<Record<FactField, RegExp>> = {
+  durationSec: /分钟|小时|毫秒/,
+  amount: /万|亿|千元/,
+  balance: /万|亿|千元/,
+}
+
 /** 表头词典。比较前先 `规范化`（去空白、去括号后缀、转小写）。 */
 const DICTIONARY: Record<FactField, string[]> = {
   caller: ["主叫号码", "主叫", "主叫号", "呼叫号码", "发起方号码", "本机号码", "通话号码"],
@@ -85,11 +101,15 @@ export function detectMapping(header: (string | null)[], rows: (string | null)[]
   // 「主叫通话时长」按包含会被 caller 的「主叫」抢走（时长列静默变成主叫号码），
   // 按后缀则命中 durationSec 的「通话时长」——修饰语再长也不会改变它是什么列。
   const 规范表头 = header.map(规范化)
+  // 单位冲突按**原始表头**判（R25b）：规范化会把括号里的单位剥掉。
+  const 单位冲突了 = (field: FactField, i: number): boolean => 单位冲突[field]?.test(header[i] ?? "") ?? false
   for (const field of FACT_FIELDS) {
     const 词 = DICTIONARY[field].map(规范化)
-    let hit = 规范表头.findIndex((h, i) => !已占.has(i) && h !== "" && 词.includes(h))
+    let hit = 规范表头.findIndex((h, i) => !已占.has(i) && !单位冲突了(field, i) && h !== "" && 词.includes(h))
     if (hit < 0) {
-      const 候选 = 规范表头.flatMap((h, i) => (!已占.has(i) && h !== "" && 词.some((w) => h.endsWith(w)) ? [i] : []))
+      const 候选 = 规范表头.flatMap((h, i) =>
+        !已占.has(i) && !单位冲突了(field, i) && h !== "" && 词.some((w) => h.endsWith(w)) ? [i] : [],
+      )
       if (候选.length === 1) hit = 候选[0]
     }
     if (hit >= 0) {

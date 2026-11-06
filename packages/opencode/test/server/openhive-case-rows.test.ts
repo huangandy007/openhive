@@ -79,6 +79,21 @@ describe("toFactRows", () => {
     expect(row?.extras).toEqual({ 甲: "bad", 乙: "x" })
   })
 
+  test("未选中的列一律进 extras：最小下标失败、后一列成功也不丢（R25a）", () => {
+    const sheet = 表(["甲", "乙"], [["bad", "5.00"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount", 1: "amount" } })
+    expect(row?.amount).toBeNull()
+    expect(row?.extras).toEqual({ 甲: "bad", 乙: "5.00" })
+  })
+
+  test("未选中的列即使解析成功也进 extras：标准列仍是最小下标（R25a）", () => {
+    const sheet = 表(["甲", "乙"], [["1.00", "2.00"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount", 1: "amount" } })
+    expect(row?.amount).toBe("1.00")
+    // 第 1 列没被当标准列用，只有 extras 一条活路。
+    expect(row?.extras).toEqual({ 乙: "2.00" })
+  })
+
   test("mapping 里出现非法字段值 ⇒ 当未映射，原值进 extras（I4）", () => {
     const sheet = 表(["时长"], [["37"]])
     const [row] = toFactRows({

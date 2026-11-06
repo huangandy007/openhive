@@ -63,9 +63,34 @@ export function parseDuration(raw: string | null): number | null {
   return 秒
 }
 
-/** `mapping` 里可能混进数据库带出来的脏值，按「不是事实字段」处理，不静默吞掉（I4）。 */
+/**
+ * `mapping` 里可能混进数据库带出来的脏值，按「不是事实字段」处理，不静默吞掉（I4）。
+ *
+ * 迁移 `0032_case_table_format.sql:39` 的 COMMENT 仍写着 extras「值静默丢弃」，
+ * 与当前实现**相反**（解析失败的原值会补进 extras，R23）。该迁移已冻结、不改；
+ * 要更新 COMMENT 得另起 0033，本计划不做。
+ */
 function 是事实字段(value: unknown): value is FactField {
   return typeof value === "string" && (FACT_FIELDS as readonly string[]).includes(value)
+}
+
+/**
+ * field → 被 `值()` 选中的列（最小下标）。
+ *
+ * R25a：只有**被选中且解析成功**的列才有资格不进 extras；同一个字段被多列映射时，
+ * 其余列没被当标准列用，原文只有 extras 一条活路（否则「最小下标失败、后一列成功」
+ * 会把后一列静默丢掉）。
+ */
+function 选中列(mapping: Record<number, FactField>): Map<FactField, number> {
+  const out = new Map<FactField, number>()
+  for (const [key, field] of Object.entries(mapping)) {
+    if (!是事实字段(field)) continue
+    const i = Number(key)
+    if (!Number.isInteger(i)) continue
+    const 已有 = out.get(field)
+    if (已有 === undefined || i < 已有) out.set(field, i)
+  }
+  return out
 }
 
 /** 按**这一列自己的原文**判解析成败（I3：同一个字段被多列映射时不能拿别列的结果代替）。 */
@@ -95,6 +120,7 @@ function 表头键(header: RawSheet["header"]): string[] {
 
 export function toFactRows(input: ToRowsInput): FactRowInput[] {
   const 键 = 表头键(input.sheet.header)
+  const 选中 = 选中列(input.mapping)
 
   const out: FactRowInput[] = []
   for (const row of input.sheet.rows) {
@@ -116,11 +142,12 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
     row.cells.forEach((cell, i) => {
       if (cell.text === null) return
       const field: unknown = input.mapping[i]
-      // 已映射的列**按本列原文**解析成功才不进 extras；解析失败（或映射值是数据库带出来的
-      // 脏值）一律留底 —— 否则它既不在标准列、也不在 extras 里，原件上写的什么就再也看不到
-      // 了（Global Constraints：「认不出就留 null，原值仍在 extras 或 started_raw 里」）。
+      // 只有**被 `值()` 选中的那一列**、且**本列原文解析成功**，才不进 extras（R25a）。
+      // 未选中的列没被当标准列用，原文只有 extras 一条活路；解析失败或映射值是数据库带出来
+      // 的脏值，也同样留底 —— 否则它既不在标准列、也不在 extras 里，原件上写的什么就再也
+      // 看不到了（Global Constraints：「认不出就留 null，原值仍在 extras 或 started_raw 里」）。
       // 时间不在此列：它的原文在 started_raw。
-      if (是事实字段(field) && !解析失败(field, cell.text)) return
+      if (是事实字段(field) && 选中.get(field) === i && !解析失败(field, cell.text)) return
       extras[键[i] ?? `第${i + 1}列`] = cell.text
     })
 

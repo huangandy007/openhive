@@ -52,6 +52,29 @@ describe("detectMapping · 第一层：表头词典", () => {
     expect(r.columns).toEqual({})
     expect(r.unknownColumns).toEqual([0])
   })
+
+  test("括号里的单位不是默认单位 ⇒ 该列对该字段不认（R25b）", () => {
+    // 规范化会剥掉括号后缀，不拦的话「通话时长（分钟）」仍被认成 durationSec，
+    // 5 落成 5 秒（60 倍错）——R24 的同一前提，换了个表头写法。
+    for (const 表头 of ["通话时长（分钟）", "通话时长(分钟)", "时长(分钟)"]) {
+      const r = detectMapping([表头], [["5"]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    }
+  })
+
+  test("金额/余额以万元为单位 ⇒ 不认（剥括号按元落库会错 10000 倍，R25b）", () => {
+    for (const 表头 of ["交易金额（万元）", "余额(万元)"]) {
+      const r = detectMapping([表头], [["10000"]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    }
+  })
+
+  test("括号里是默认单位 ⇒ 照常认，闸不是把带括号的全掐掉（R25b）", () => {
+    expect(detectMapping(["通话时长(秒)"], [["37"]]).columns).toEqual({ 0: "durationSec" })
+    expect(detectMapping(["金额（元）"], [["3.00"]]).columns).toEqual({ 0: "amount" })
+  })
 })
 
 describe("detectMapping · 第二层：数据特征", () => {
