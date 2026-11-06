@@ -49,7 +49,9 @@ afterAll(async () => {
 async function 场景(前缀: string): Promise<void> {
   await 建实体(库(), { id: `${前缀}-a`, projectId: 项目, value: `${前缀}甲`, aliases: ["曾用名"] })
   await 建实体(库(), { id: `${前缀}-b`, projectId: 项目, value: `${前缀}乙`, aliases: ["乙的别名"] })
-  await 建实体(库(), { id: `${前缀}-c`, projectId: 项目, value: `${前缀}丙` })
+  // 被并入的实体必须带非空别名：拆分「快照完整性」断言（aliases）才钉得住，
+  // 否则别名快照丢了也看见（`文本数组([])` 变异会假绿）。
+  await 建实体(库(), { id: `${前缀}-c`, projectId: 项目, value: `${前缀}丙`, aliases: ["丙的别名"] })
   await 建关系(库(), { id: `${前缀}-r1`, projectId: 项目, fromId: `${前缀}-b`, toId: `${前缀}-c` })
   await 建关系(库(), { id: `${前缀}-r2`, projectId: 项目, fromId: `${前缀}-c`, toId: `${前缀}-b` })
   await 建关系(库(), { id: `${前缀}-r3`, projectId: 项目, fromId: `${前缀}-a`, toId: `${前缀}-b` })
@@ -156,8 +158,16 @@ describe("拆分（撤销合并）", () => {
     const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
     expect(拆.restoredEntityId).toBe("合1-c")
 
+    // 快照完整性：`before.被并入` 少存一样东西（type / canonicalValue / aliases / attrs /
+    // createdAt / trustState），这里就必有一行红。只断 id 与 survivorAliases 钉不住快照。
     const 恢复 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "合1-c" })
-    expect(恢复?.trustState).toBe("自动抽取")
+    if (恢复?.type !== "entity") throw new Error("形状不对")
+    expect(恢复.entityType).toBe("人")
+    expect(恢复.canonicalValue).toBe("合1丙")
+    expect(恢复.aliases).toEqual(["丙的别名"])
+    expect(恢复.attrs).toEqual({})
+    expect(恢复.trustState).toBe("自动抽取")
+    expect(恢复.createdAt).toBe(1_760_000_000)
 
     const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "合1-a" })
     if (主体?.type !== "entity") throw new Error("形状不对")
@@ -224,5 +234,30 @@ describe("拆分（撤销合并）", () => {
     expect(r3.fromId).toBe("拆3-a")
     expect(r3.toId).toBe("拆3-b")
     expect(r3.trustState).toBe("自动抽取")
+  })
+
+  // 撞名分支确定可达（`case-merge.ts` 的 `撞 !== undefined`）：合并之后又有人新建了一个
+  // 同类型、同规范值的实体。此时拆分不能硬插（会撞唯一索引），要回可解释的 409。
+  test("被并入者的规范值已被别的实体占用 ⇒ 409 restore_conflict，且不留半拆状态", async () => {
+    await 场景("撞1")
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "撞1-a",
+      mergedId: "撞1-b",
+      reasonText: "先合并",
+      by: 甲,
+    })
+    // 合并把「撞1乙」变成了别名；人在此之后又新建了一个同类型、同规范值的实体。
+    await 建实体(库(), { id: "撞1-新", projectId: 项目, value: "撞1乙" })
+
+    await expect(
+      拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 }),
+    ).rejects.toMatchObject({ code: "restore_conflict" })
+
+    // 事务回滚：被并入的行没有被偷偷插回来，主体也还停在合并后的样子。
+    expect(await 事实详情(库(), { projectId: 项目, type: "entity", id: "撞1-b" })).toBeUndefined()
+    const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "撞1-a" })
+    if (主体?.type !== "entity") throw new Error("形状不对")
+    expect(主体.aliases).toContain("撞1乙")
   })
 })
