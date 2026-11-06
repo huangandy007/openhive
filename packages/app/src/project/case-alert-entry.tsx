@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import type { 结果 } from "./entity-api"
 import { createCaseAlertsApi, type CaseAlertsApi, type 提醒行 } from "./case-alerts-api"
 
 export interface CaseAlertEntryProps {
@@ -8,10 +9,23 @@ export interface CaseAlertEntryProps {
 }
 
 /**
+ * 本项目在**当前会话**里是否已经比对过。计划第 38 行要求「入口打开时先调一次 scan」——
+ * 不比对就说「没有新提醒」，是在断言一件没比对过的事（`LEARNINGS #002-02`）。
+ *
+ * 取舍：右栏入口会随 tab / 会话反复挂载，每次扫全项目会把打开右栏变成一次重活。故同一项目
+ * 在同一模块生命周期内只扫一次；切到别的项目时该项目自己还没扫过，自然再允许一次。
+ * 比对失败**不算**「比对过」——失败下次挂载还可以重试。
+ */
+const 已比对项目 = new Set<string>()
+/** 同一项目的并发挂载共享同一次比对（dev 的双重挂载不该扫两遍）。 */
+const 比对中 = new Map<string, Promise<结果<readonly 提醒行[]>>>()
+
+/**
  * 右栏会话顶部的「新提醒 N 条」（design §7.3）。
  *
- * **只读、不比对**：比对是写操作（`POST /alerts/refresh`），挂在用户看得见的「重新比对」按钮上
- * （中栏清单页）；右栏每次挂载都扫一遍全项目会把打开右栏变成一次重活。
+ * **打开时先比对**（`POST /alerts/refresh`，写口）：用它自己的回包渲染。比对失败就进错误态，
+ * **不退回 `list`**——`list` 里的旧结果会把「刚比对过」冒充出来。
+ * 同一项目第二次挂载才改读 `list`（见 `已比对项目` 的取舍）。
  *
  * 默认客户端只在第一次用到时建（模块级常量会让测试替身与生产实例混住，同 `#002-02` 取向）。
  */
@@ -34,8 +48,27 @@ export function CaseAlertEntry(props: CaseAlertEntryProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void 客户端
-      .list(项目)
+
+    /** 首次打开本项目 ⇒ 先比对；已经比对过 ⇒ 只读清单。 */
+    const 取 = (): Promise<结果<readonly 提醒行[]>> => {
+      if (已比对项目.has(项目)) return 客户端.list(项目)
+      const 在飞 = 比对中.get(项目)
+      if (在飞 !== undefined) return 在飞
+      const 这次 = 客户端.refresh(项目).then((回) => {
+        if (回.kind === "ok") 已比对项目.add(项目)
+        return 回.kind === "ok" ? { kind: "ok" as const, value: 回.value.提醒 } : 回
+      })
+      比对中.set(项目, 这次)
+      // 无论成败都撤掉「在飞」：失败不算比对过，下次挂载可以重试。
+      // 用 then 的两个回调而不是 `finally`——`void p.finally()` 会派生一个未接住的 rejected promise。
+      void 这次.then(
+        () => 比对中.delete(项目),
+        () => 比对中.delete(项目),
+      )
+      return 这次
+    }
+
+    void 取()
       .then((结果) => {
         if (作废) return
         if (结果.kind === "error") {

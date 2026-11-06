@@ -76,6 +76,9 @@ async function 资金对称(db: Queryable, projectId: string): Promise<待写[]>
           from auth.case_relation r
          where r.project_id = ${projectId} and r.type = '转账'
            and r.trust_state <> '已排除' and r.amount is not null
+           -- 自环（from_id = to_id）会在两支里同时变成「出」与「入」，凑出一笔假的对称；
+           -- 它本来就不是「两方之间的资金往来」，两处统一排除。
+           and r.from_id <> r.to_id
            and exists (select 1 from auth.case_entity e2
                         where e2.project_id = r.project_id and e2.id = r.to_id and e2.trust_state <> '已排除')
         union all
@@ -83,6 +86,7 @@ async function 资金对称(db: Queryable, projectId: string): Promise<待写[]>
           from auth.case_relation r
          where r.project_id = ${projectId} and r.type = '转账'
            and r.trust_state <> '已排除' and r.amount is not null
+           and r.from_id <> r.to_id
            and exists (select 1 from auth.case_entity e2
                         where e2.project_id = r.project_id and e2.id = r.from_id and e2.trust_state <> '已排除')
       )
@@ -138,8 +142,11 @@ async function 通话转账重合(db: Queryable, projectId: string): Promise<待
           on 乙.project_id = a.project_id and 乙.id = greatest(a.from_id, a.to_id)
          and 乙.trust_state <> '已排除'
        where a.project_id = ${projectId} and a.type = '转账' and a.trust_state <> '已排除'
+         and a.from_id <> a.to_id
+         -- 自环的 least/greatest 两端相同，会聚合出「X 与 X」；通话那一侧也一并排除。
          and exists (select 1 from auth.case_relation b
                       where b.project_id = a.project_id and b.type = '通话' and b.trust_state <> '已排除'
+                        and b.from_id <> b.to_id
                         and least(b.from_id, b.to_id) = least(a.from_id, a.to_id)
                         and greatest(b.from_id, b.to_id) = greatest(a.from_id, a.to_id))
        group by least(a.from_id, a.to_id), greatest(a.from_id, a.to_id),

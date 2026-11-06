@@ -186,6 +186,94 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-error']")!.textContent).toContain("网络断了")
   })
 
+  test("默认不带 includeExcluded；打开「显示已排除」后带 true，并按新回包更新", async () => {
+    const 调用: Array<boolean | undefined> = []
+    const 含排除档: 实体档案 = {
+      ...档,
+      canonical_value: "张三（含已排除）",
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({
+          profile: async (_projectId, _id, includeExcluded) => {
+            调用.push(includeExcluded)
+            return { kind: "ok", value: includeExcluded === true ? 含排除档 : 档 }
+          },
+        })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    // 默认必须是**不带**（false / undefined 都行），不能一上来就请求已排除。
+    expect(调用[0]).not.toBe(true)
+
+    const 开关 = host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!
+    expect(开关.getAttribute("aria-pressed")).toBe("false")
+    开关.click()
+
+    await 等(() => 调用.length === 2)
+    expect(调用[1]).toBe(true)
+    await 等(() => host.querySelector("[data-slot='entity-profile-title']")!.textContent!.includes("含已排除"))
+    expect(
+      host.querySelector("[data-slot='entity-profile-include-excluded']")!.getAttribute("aria-pressed"),
+    ).toBe("true")
+  })
+
+  test("切换开关期间迟到的旧回包不覆盖新选择（onCleanup 作废旧请求）", async () => {
+    type 回包 = Awaited<ReturnType<CaseDetailApi["profile"]>>
+    const 在飞: Array<(回: 回包) => void> = []
+    const api = 假api({
+      profile: () =>
+        new Promise<回包>((收) => {
+          在飞.push(收)
+        }),
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => 在飞.length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
+    await 等(() => 在飞.length === 2)
+
+    在飞[1]!({ kind: "ok", value: { ...档, canonical_value: "新：含已排除" } })
+    await 等(() => host.textContent!.includes("新：含已排除"))
+
+    在飞[0]!({ kind: "ok", value: { ...档, canonical_value: "旧：默认" } })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(host.textContent).not.toContain("旧：默认")
+    expect(host.textContent).toContain("新：含已排除")
+  })
+
+  test("旧请求迟到失败：不回滚开关、不把错误盖到新档案上", async () => {
+    type 回包 = Awaited<ReturnType<CaseDetailApi["profile"]>>
+    const 在飞: Array<(回: 回包) => void> = []
+    const api = 假api({
+      profile: () =>
+        new Promise<回包>((收) => {
+          在飞.push(收)
+        }),
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => 在飞.length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
+    await 等(() => 在飞.length === 2)
+
+    在飞[1]!({ kind: "ok", value: { ...档, canonical_value: "新：含已排除" } })
+    await 等(() => host.textContent!.includes("新：含已排除"))
+
+    在飞[0]!({ kind: "error", message: "旧的默认请求失败了" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(host.querySelector("[data-slot='entity-profile-error']")).toBeNull()
+    expect(
+      host.querySelector("[data-slot='entity-profile-include-excluded']")!.getAttribute("aria-pressed"),
+    ).toBe("true")
+    expect(host.textContent).toContain("新：含已排除")
+  })
+
   test("三个跳转按钮把视图与标题交给上层", async () => {
     const 收到: Array<[string, string]> = []
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={(view, 标题) => 收到.push([view, 标题])} />)

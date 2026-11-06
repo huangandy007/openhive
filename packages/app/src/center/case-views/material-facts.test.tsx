@@ -182,6 +182,75 @@ describe("材料抽取结果", () => {
     await 等(() => host.textContent!.includes("这份材料还没有登记事实"))
   })
 
+  test("缺口非空时不再摆「还没有登记事实」的通用空态（两句不能打架）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/排除.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              分组: [],
+              缺口: ["没有可见引用：可能还没解析，或引用的事实均已排除"],
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.textContent!.includes("没有可见引用"))
+    expect(host.querySelector("[data-slot='material-facts-empty']")).toBeNull()
+    expect(host.textContent).not.toContain("这份材料还没有登记事实")
+  })
+
+  test("默认不带 includeExcluded；打开「显示已排除」后带 true，并按新回包更新", async () => {
+    const 调用: Array<boolean | undefined> = []
+    const 含排除: 材料事实清单结果 = {
+      ...清单,
+      分组: [
+        {
+          sheet: "Sheet#1",
+          行们: [
+            {
+              row_no: 2,
+              事实们: [
+                ...清单.分组[0]!.行们[0]!.事实们,
+                { fact_type: "entity", fact_id: "e-排除", 值: "被排除的人", trust_state: "已排除" },
+              ],
+            },
+          ],
+        },
+      ],
+      缺口: [],
+    }
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async (_projectId, _path, includeExcluded) => {
+            调用.push(includeExcluded)
+            return { kind: "ok", value: includeExcluded === true ? 含排除 : 清单 }
+          },
+        })}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
+    expect(调用[0]).not.toBe(true)
+
+    const 开关 = host.querySelector<HTMLElement>("[data-slot='material-facts-include-excluded']")!
+    expect(开关.getAttribute("aria-pressed")).toBe("false")
+    开关.click()
+
+    await 等(() => 调用.length === 2)
+    expect(调用[1]).toBe(true)
+    await 等(() => host.textContent!.includes("被排除的人"))
+    expect(
+      host.querySelector("[data-slot='material-facts-include-excluded']")!.getAttribute("aria-pressed"),
+    ).toBe("true")
+  })
+
   test("产物路径 ⇒ 不摆抽取分组，改成引用复核区", async () => {
     const 产物行 = { id: "mat-1", path: "报告/分析.md", file_name: "分析.md", kind: "产物", fingerprint: "f-1" }
     const host = mount(() => (

@@ -216,7 +216,14 @@ function handleMaterialFacts(request: HttpServerRequest.HttpServerRequest, deps:
 
     const path = 参数.get("path")
     if (typeof path !== "string" || path === "") return fail(400, "path 不能为空", "bad_request")
-    const 清单 = yield* Effect.promise(() => 材料事实清单(deps.pg(), { projectId: projectId!, path }))
+    const 清单 = yield* Effect.promise(() =>
+      材料事实清单(deps.pg(), {
+        projectId: projectId!,
+        path,
+        // 与档案出口同一个开关语义：只有显式 `true` 才带出已排除事实（§9.1 / R10）。
+        includeExcluded: 参数.get("includeExcluded") === "true",
+      }),
+    )
     if (清单 === undefined) return fail(404, "这个项目里没有这份材料", "material_not_found")
     return ok(清单)
   })
@@ -334,6 +341,9 @@ function handleAlertsRefresh(request: HttpServerRequest.HttpServerRequest, deps:
   })
 }
 
+/** 标记已读一次最多提交多少个 id。超了回 400，不在 DAO 里静默截断（`标记已读` 文件头）。 */
+export const 已读IDs上限 = 500
+
 function handleAlertsRead(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
     const user = yield* 身份
@@ -346,6 +356,8 @@ function handleAlertsRead(request: HttpServerRequest.HttpServerRequest, deps: De
     if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
     if (!Array.isArray(ids) || ids.some((id: unknown) => typeof id !== "string" || id === ""))
       return fail(400, "ids 必须是字符串数组", "bad_request")
+    if (ids.length > 已读IDs上限)
+      return fail(400, `ids 一次最多 ${已读IDs上限} 条（本次 ${ids.length} 条）`, "bad_request")
 
     const 门 = yield* 过门(deps, projectId)
     if (HttpServerResponse.isHttpServerResponse(门)) return 门

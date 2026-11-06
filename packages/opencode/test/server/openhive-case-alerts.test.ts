@@ -86,6 +86,13 @@ beforeAll(async () => {
   await 建关系(库(), { id: "r-周吴转2", projectId: 项目, fromId: "e-吴", toId: "e-周", type: "转账", amount: 15000 })
   await 建关系(库(), { id: "r-周吴话", projectId: 项目, fromId: "e-周", toId: "e-吴", type: "通话" })
 
+  // ── 自环（from_id = to_id）：金额对称不许把它同时计成出与入；通话转账不许产出「X 与 X」──
+  // 两条 6000 的自环转账会同时落进「出」与「入」两支（各 2 笔 / 12000），通话再让它命中 R2。
+  await 建实体(库(), { id: "e-自", projectId: 项目, type: "账户", value: "自环账户" })
+  for (const id of ["r-自1", "r-自2"])
+    await 建关系(库(), { id, projectId: 项目, fromId: "e-自", toId: "e-自", type: "转账", amount: 6000 })
+  await 建关系(库(), { id: "r-自话", projectId: 项目, fromId: "e-自", toId: "e-自", type: "通话" })
+
   // ── 不该命中的噪声：已排除的关系不算（变异 B 靠它）──
   // ⚠️ 方向必须是 **e-账 出**：`资金对称` 的「出」取 `from_id`。若把它建成 `e-甲 → e-账`，
   // 它只会让 e-甲 多一笔出，而 e-账 的出/入笔数不变 ⇒ 变异 B（去掉 trust 过滤）**不会红**。
@@ -157,6 +164,12 @@ describe("主动提醒 DAO", () => {
     expect(命中.length).toBe(1)
     expect(命中[0]!.事实).toMatchObject({ 甲值: "吴八", 乙值: "周七", 转账合计: "27000.00", 转账笔数: 2 })
     expect((await 生成提醒(库(), 项目)).新建).toBe(0)
+  })
+
+  test("自环（from_id = to_id）不产生提醒：不同时计出/入，也不出「X 与 X」", async () => {
+    const { 提醒 } = await 生成提醒(库(), 项目)
+    // 有 e-自 的提醒 = 自环被当成两条方向的边 / 被当成一对实体，两种都是错。
+    expect(提醒.filter((条) => JSON.stringify(条.事实).includes("e-自"))).toEqual([])
   })
 
   test("重复生成幂等：第二次 新建 = 0，清单长度不变", async () => {

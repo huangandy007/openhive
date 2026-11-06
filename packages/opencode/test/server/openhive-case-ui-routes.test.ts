@@ -11,8 +11,9 @@ import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@ope
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
+import { addCitation } from "../../src/server/openhive/case-store"
 import { testEffect } from "../lib/effect"
-import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
+import { 建材料, 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
 
 /**
  * 案件视图六个读取出口的真应用测试（计划 7 Task 4）。夹具与
@@ -116,6 +117,34 @@ beforeAll(async () => {
   ] as const)
     await 建关系(pg.db, { id, projectId: 项目, fromId: from, toId: to, type: "转账", amount: 3000 })
 
+  // ── 材料事实的 `includeExcluded` 透传：同一份材料里一条可见、一条已排除 ──
+  await 建材料(pg.db, { id: "m-路由排除", projectId: 项目, path: "路由排除.xlsx", kind: "话单" })
+  await 建实体(pg.db, {
+    id: "e-路由排除",
+    projectId: 项目,
+    type: "人",
+    value: "路由已排除",
+    trustState: "已排除",
+  })
+  await addCitation(pg.db, {
+    id: "c-路由可见",
+    projectId: 项目,
+    factType: "entity",
+    factId: "e-路由张",
+    materialId: "m-路由排除",
+    locator: { sheet: "路由表", row: 1 },
+    extractMethod: "机器",
+  })
+  await addCitation(pg.db, {
+    id: "c-路由排除",
+    projectId: 项目,
+    factType: "entity",
+    factId: "e-路由排除",
+    materialId: "m-路由排除",
+    locator: { sheet: "路由表", row: 2 },
+    extractMethod: "机器",
+  })
+
   // ── 别人的项目也落一条提醒：让「提交别人的 id ⇒ 0」有真对象（`#005-47`）──
   await pg.db.execute(sql`
     insert into auth.case_alert (id, project_id, rule_id, fact_refs, created_at)
@@ -203,6 +232,26 @@ describe("openhive 案件视图出口（计划 7）", () => {
         `/openhive/case/material-facts?projectId=${项目}&path=${encodeURIComponent("没有.xlsx")}`,
       )
       expect(响应.status).toBe(404)
+    }),
+  )
+
+  it("材料事实：includeExcluded=true 才透传到 DAO，带出已排除事实", () =>
+    Effect.gen(function* () {
+      type 清单 = { 分组: { 行们: { 事实们: { fact_id: string }[] }[] }[] }
+      const 事实id们 = (体: 清单) =>
+        体.分组
+          .flatMap((组) => 组.行们)
+          .flatMap((行) => 行.事实们)
+          .map((条) => 条.fact_id)
+          .sort()
+      const 地址 = `/openhive/case/material-facts?projectId=${项目}&path=${encodeURIComponent("路由排除.xlsx")}`
+
+      const 默认 = yield* 读回<清单>(yield* 发(我, 地址))
+      // 默认只看得见未排除的那条——出口没读 includeExcluded 时，下面这条会多出「已排除」。
+      expect(事实id们(默认)).toEqual(["e-路由张"])
+
+      const 含排除 = yield* 读回<清单>(yield* 发(我, `${地址}&includeExcluded=true`))
+      expect(事实id们(含排除)).toEqual(["e-路由张", "e-路由排除"])
     }),
   )
 
@@ -334,6 +383,29 @@ describe("openhive 案件视图出口（计划 7）", () => {
         (yield* 发(我, "/openhive/case/alerts/refresh", { method: "POST", headers: 头, body: JSON.stringify({ projectId: 42 }) }))
           .status,
       ).toBe(400)
+    }),
+  )
+
+  it("提醒已读：ids 超过 500 上限 ⇒ 400（可读文案）；恰好 500 通过", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      const 造 = (条数: number) => Array.from({ length: 条数 }, (_, i) => `al-不存在-${i}`)
+
+      const 恰好 = yield* 发(我, "/openhive/case/alerts/read", {
+        method: "POST",
+        headers: 头,
+        body: JSON.stringify({ projectId: 项目, ids: 造(500) }),
+      })
+      expect(恰好.status).toBe(200)
+
+      const 超限 = yield* 发(我, "/openhive/case/alerts/read", {
+        method: "POST",
+        headers: 头,
+        body: JSON.stringify({ projectId: 项目, ids: 造(501) }),
+      })
+      expect(超限.status).toBe(400)
+      const 体 = yield* 读回<{ error: string }>(超限)
+      expect(体.error).toContain("500")
     }),
   )
 

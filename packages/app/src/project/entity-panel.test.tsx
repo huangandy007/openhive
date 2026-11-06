@@ -257,6 +257,24 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     expect(调用.at(-1)).toEqual({ type: undefined, q: "张" })
   })
 
+  /** 计数回包未到 ≠ 这个项目没有实体（修复轮 · Minor 5：三态互斥）。 */
+  test("计数回包未到 ⇒ 说「正在读取」，不说「还没有实体」", async () => {
+    let 回!: (值: Awaited<ReturnType<EntityApi["counts"]>>) => void
+    const api = 假api({
+      counts: () => new Promise((收) => {
+        回 = 收
+      }),
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+
+    await 等(host, () => host.querySelector("[data-slot='entity-count-loading']") !== null)
+    expect(host.textContent).not.toContain("还没有实体")
+
+    回({ kind: "ok", value: [] })
+    await 等(host, () => host.querySelector("[data-slot='entity-count-loading']") === null)
+    expect(host.textContent).toContain("还没有实体")
+  })
+
   /** 星标按项目分开存（修复轮 1 · Minor 2）：换项目后同一个 id 不许还是星标。 */
   test("星标按项目分开存：换项目后同一个 id 不再是星标", async () => {
     const [项目, set项目] = createSignal<string | undefined>("p1")

@@ -20,21 +20,26 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const [档, set档] = createSignal<实体档案 | undefined>()
   const [错误, set错误] = createSignal<string | undefined>()
   const [载入, set载入] = createSignal(false)
+  // §9.1 / Global Constraint：已排除的事实默认不出现，档案页是唯一能「切换查看」的地方。
+  // 开关状态**只由用户点它改变**：请求失败只进错误态，不回滚开关（否则用户会以为是自己点错了）。
+  const [含排除, set含排除] = createSignal(false)
 
   createEffect(() => {
     const projectId = props.projectId
     const id = props.id
     const api = props.api
+    const 要排除 = 含排除()
     set档(undefined)
     set错误(undefined)
     set载入(true)
     let 作废 = false
     // ⚠️ 清理必须挂 `onCleanup`：`createEffect` **不执行**返回值（与 Task 5 同一处修过的坑，
     // `LEARNINGS #005-03`）。写成 `return () => …` 时迟到的回包会盖掉新实体的档案。
+    // 开关切换也会重跑本 effect——旧请求同样要被作废，否则迟到的旧回包会盖掉新选择。
     onCleanup(() => {
       作废 = true
     })
-    void api.profile(projectId, id)
+    void api.profile(projectId, id, 要排除)
       .then((结果) => {
         if (作废) return
         set载入(false)
@@ -58,6 +63,20 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
   return (
     <div data-component="entity-profile" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-2">
+      {/* 真实交互元素 + 文字标签（不是只靠颜色表达状态）：`aria-pressed` 也是状态的唯一判据。 */}
+      <button
+        type="button"
+        data-slot="entity-profile-include-excluded"
+        aria-pressed={含排除()}
+        onClick={() => set含排除((值) => !值)}
+        class={
+          含排除()
+            ? "mb-1 h-6 w-fit shrink-0 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base"
+            : "mb-1 h-6 w-fit shrink-0 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+        }
+      >
+        显示已排除
+      </button>
       <Show when={错误()}>
         {(话) => (
           <p data-slot="entity-profile-error" role="alert" class="text-[13px] text-v2-state-fg-danger">

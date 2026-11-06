@@ -38,6 +38,8 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
   // 一句假的「还没有实体」（修复轮 1 · Important 1）。
   const [计数错误, set计数错误] = createSignal<string | undefined>()
   const [清单错误, set清单错误] = createSignal<string | undefined>()
+  // 计数回包没回来 ≠ 这个项目没有实体：载入中不许摆「还没有实体」（三态互斥）。
+  const [计数载入, set计数载入] = createSignal(false)
   const [星标代, set星标代] = createSignal(0)
 
   const 存储 = () => props.storage ?? localStorage
@@ -73,7 +75,9 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
     set计数([])
     set载入(false)
     set计数错误(undefined)
+    set计数载入(false)
     if (项目 === undefined || api === undefined) return
+    set计数载入(true)
     let 作废 = false
     // ⚠️ 必须 `onCleanup`：`createEffect` **不会执行**返回的函数（Solid 只把它存进
     // `node.value`，清理只认 `onCleanup`）。写成 `return () => …` 的话 `作废` 恒 false，
@@ -83,6 +87,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
     })
     void api.counts(项目).then((结果) => {
       if (作废) return
+      set计数载入(false)
       if (结果.kind === "error") set计数错误(结果.message)
       else set计数(结果.value)
     })
@@ -175,7 +180,12 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                 </button>
               )}
             </For>
-            <Show when={可见计数().length === 0 && 计数错误() === undefined}>
+            <Show when={计数载入()}>
+              <p data-slot="entity-count-loading" class="px-1 py-2 text-[13px] text-v2-text-text-muted">
+                正在读取…
+              </p>
+            </Show>
+            <Show when={!计数载入() && 可见计数().length === 0 && 计数错误() === undefined}>
               <p data-slot="entity-no-types" class="px-1 py-2 text-[13px] text-v2-text-text-muted">
                 还没有实体：先上传并解析材料
               </p>

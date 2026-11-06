@@ -33,21 +33,25 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [清单, set清单] = createSignal<材料事实清单结果 | undefined>()
   const [错误, set错误] = createSignal<string | undefined>()
   const [载入, set载入] = createSignal(false)
+  // 与实体档案同一个开关语义（§9.1）：默认只看可见事实，用户点了才把已排除的一并带出。
+  const [含排除, set含排除] = createSignal(false)
 
   createEffect(() => {
     const projectId = props.projectId
     const path = props.path
     const api = props.api
+    const 要排除 = 含排除()
     set清单(undefined)
     set错误(undefined)
     set载入(true)
     let 作废 = false
     // ⚠️ 清理必须挂 `onCleanup`：`createEffect` **不执行**返回值（同 `entity-profile.tsx`，
     // `LEARNINGS #005-03`）。写成 `return () => …` 时迟到的回包会盖掉新材料的结果。
+    // 开关切换也会重跑本 effect——旧请求同样要作废。
     onCleanup(() => {
       作废 = true
     })
-    void api.materialFacts(projectId, path).then((结果) => {
+    void api.materialFacts(projectId, path, 要排除).then((结果) => {
       if (作废) return
       set载入(false)
       if (结果.kind === "error") {
@@ -96,7 +100,22 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
               when={清单().材料.kind === "产物"}
               fallback={
                 <>
-                  <Show when={清单().分组.length === 0}>
+                  <button
+                    type="button"
+                    data-slot="material-facts-include-excluded"
+                    aria-pressed={含排除()}
+                    onClick={() => set含排除((值) => !值)}
+                    class={
+                      含排除()
+                        ? "mt-2 h-6 w-fit shrink-0 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base"
+                        : "mt-2 h-6 w-fit shrink-0 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+                    }
+                  >
+                    显示已排除
+                  </button>
+                  {/* 缺口非空时**不摆通用空态**：DAO 的缺口可能是「引用的事实均已排除」，
+                      与「这份材料还没有登记事实」同时出现就是两句互相打脸的话。 */}
+                  <Show when={清单().分组.length === 0 && 清单().缺口.length === 0}>
                     <p data-slot="material-facts-empty" class="mt-3 text-[13px] text-v2-text-text-muted">
                       这份材料还没有登记事实
                     </p>

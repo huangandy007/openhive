@@ -5,7 +5,7 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { sql } from "drizzle-orm"
-import type { Queryable } from "./case-store"
+import { inTransaction, type Queryable } from "./case-store"
 
 /**
  * 产物引用（design §4.3 / §9.4）：报告保存时把正文里的 `[[fact:…]]` 标记登记回
@@ -121,54 +121,60 @@ export async function 登记产物引用(
 
   // 先清掉**本路径**旧版本的引用：引用行的核对基准是「现在这份正文」，旧版本的回链留着只会
   // 让「请复核」永远亮着。旧正文在盘上（重登记只是重算），所以清掉不是丢证据。
-  const 删除 = rowsOf(await db.execute(sql`
-    delete from auth.case_citation
-     where project_id = ${input.projectId}
-       and material_id in (
-         select id from auth.case_material
-          where project_id = ${input.projectId} and kind = '产物' and path = ${input.path}
-       )
-    returning id
-  `)).length
+  //
+  // ⚠️ 「删旧 ＋ 登记产物行 ＋ 插引用」必须在**同一个事务**里：中途任何一步失败（插引用抛错 /
+  // 进程被断），自动提交的 delete 已经把旧引用清零 ⇒ 页面显示「没有引用事实」，请复核消失。
+  // 事务能力由驱动提供（生产 `connect()` / 测试夹具），`inTransaction` 拿不到就响亮失败。
+  return inTransaction(db, async (tx) => {
+    const 删除 = rowsOf(await tx.execute(sql`
+      delete from auth.case_citation
+       where project_id = ${input.projectId}
+         and material_id in (
+           select id from auth.case_material
+            where project_id = ${input.projectId} and kind = '产物' and path = ${input.path}
+         )
+      returning id
+    `)).length
 
-  if (引用们.length === 0) return { 登记: 0, 删除, 材料id: null, 跳过: 未认 }
+    if (引用们.length === 0) return { 登记: 0, 删除, 材料id: null, 跳过: 未认 }
 
-  const 材料id = await 登记产物行(db, input, 指纹)
-  // 跳过项按「先查库发现的、后语法认不出的」排列（任务书的用例断言的就是这个次序）。
-  const 跳过: 未认标记[] = []
-  let 登记 = 0
-  for (const 类型 of 允许类型) {
-    const 这批 = 引用们.filter((条) => 条.fact_type === 类型)
-    if (这批.length === 0) continue
-    // `sql.raw(表名[类型])` 是**白名单查表**，不是拼接用户输入：`类型` 只可能是那三个字面量
-    // （`解析标记` 已挡过）。加类型只改 `表名` 与 `允许类型` 两处。
-    const 在 = new Set(
-      rowsOf(await db.execute(sql`
-        select id from ${sql.raw(表名[类型])}
-         where project_id = ${input.projectId}
-           and id in (${sql.join(这批.map((条) => sql`${条.fact_id}`), sql`, `)})
-      `)).map((行) => String(行.id)),
-    )
-    for (const 条 of 这批) {
-      if (!在.has(条.fact_id)) {
-        跳过.push({ 原文: 条.原文, 原因: "这个项目里没有这条事实" })
-        continue
+    const 材料id = await 登记产物行(tx, input, 指纹)
+    // 跳过项按「先查库发现的、后语法认不出的」排列（任务书的用例断言的就是这个次序）。
+    const 跳过: 未认标记[] = []
+    let 登记 = 0
+    for (const 类型 of 允许类型) {
+      const 这批 = 引用们.filter((条) => 条.fact_type === 类型)
+      if (这批.length === 0) continue
+      // `sql.raw(表名[类型])` 是**白名单查表**，不是拼接用户输入：`类型` 只可能是那三个字面量
+      // （`解析标记` 已挡过）。加类型只改 `表名` 与 `允许类型` 两处。
+      const 在 = new Set(
+        rowsOf(await tx.execute(sql`
+          select id from ${sql.raw(表名[类型])}
+           where project_id = ${input.projectId}
+             and id in (${sql.join(这批.map((条) => sql`${条.fact_id}`), sql`, `)})
+        `)).map((行) => String(行.id)),
+      )
+      for (const 条 of 这批) {
+        if (!在.has(条.fact_id)) {
+          跳过.push({ 原文: 条.原文, 原因: "这个项目里没有这条事实" })
+          continue
+        }
+        登记 += rowsOf(await tx.execute(sql`
+          insert into auth.case_citation
+            (id, project_id, fact_type, fact_id, material_id, locator, extract_method, created_at)
+          values (
+            ${"cit-" + Hash.fast(`${input.projectId}|${材料id}|${条.fact_type}|${条.fact_id}`)},
+            ${input.projectId}, ${条.fact_type}, ${条.fact_id}, ${材料id},
+            ${JSON.stringify({ 类型: "正文标记", 序: 条.位置, 原文: 条.原文 })}::text::jsonb,
+            '人工', ${nowSeconds()}
+          )
+          on conflict (project_id, id) do nothing
+          returning id
+        `)).length
       }
-      登记 += rowsOf(await db.execute(sql`
-        insert into auth.case_citation
-          (id, project_id, fact_type, fact_id, material_id, locator, extract_method, created_at)
-        values (
-          ${"cit-" + Hash.fast(`${input.projectId}|${材料id}|${条.fact_type}|${条.fact_id}`)},
-          ${input.projectId}, ${条.fact_type}, ${条.fact_id}, ${材料id},
-          ${JSON.stringify({ 类型: "正文标记", 序: 条.位置, 原文: 条.原文 })}::text::jsonb,
-          '人工', ${nowSeconds()}
-        )
-        on conflict (project_id, id) do nothing
-        returning id
-      `)).length
     }
-  }
-  return { 登记, 删除, 材料id, 跳过: [...跳过, ...未认] }
+    return { 登记, 删除, 材料id, 跳过: [...跳过, ...未认] }
+  })
 }
 
 /**
@@ -260,11 +266,14 @@ export async function 产物复核(
     select c.id, c.fact_type, c.fact_id, c.locator, c.created_at,
            变更.变更时间,
            coalesce(实体.canonical_value,
+                    -- ⚠️ 必须带 c.fact_type = 'relation'：fact_id 是自由字符串，event / relation
+                    -- 完全可能同 id；少了这一句，事件引用会显示成一条关系（跨表撞 id 的错值）。
                     (select 起.canonical_value || ' → ' || 终.canonical_value || ' · ' || 关系.type
                        from auth.case_relation 关系
                        join auth.case_entity 起 on 起.project_id = 关系.project_id and 起.id = 关系.from_id
                        join auth.case_entity 终 on 终.project_id = 关系.project_id and 终.id = 关系.to_id
-                      where 关系.project_id = c.project_id and 关系.id = c.fact_id),
+                      where c.fact_type = 'relation'
+                        and 关系.project_id = c.project_id and 关系.id = c.fact_id),
                     事件.summary,
                     c.fact_id) as 值,
            -- 信任态只带回、**不按它过滤**：已排除的事实照样列出来（用户才知道自己引了它），

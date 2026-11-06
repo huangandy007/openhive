@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
+import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
-import { startProductionDb } from "@opencode-ai/auth/test-support"
+import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 产物复核, 登记产物引用, 解析标记 } from "../../src/server/openhive/case-artifact-citations"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
@@ -20,10 +21,20 @@ import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
  * 用例会时红时绿。这里直接插入指定 `created_at` 的变更行。
  */
 
+/**
+ * `登记产物引用` 现在走 `inTransaction` ⇒ 按 R-预2 把池留 1 条：PGlite 把多条连接汇进同一
+ * 个 PG 会话，事务从池里另起一条再准备同一句带参 SQL 会 42P05。`startProductionDb()` 给它
+ * 自己那个客户端传的是固定 env（不含 `PG_POOL_MAX`），在 `process.env` 里配不进去——
+ * 所以走生产入口 `connect()` 自建一份（同 `openhive-case-merge.test.ts`）。
+ */
+const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
+afterAll(restorePoolMax)
+
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+let 客户端: ReturnType<typeof connect> | undefined
 const 库 = (): Queryable => {
-  if (!pg) throw new Error("数据库夹具还没起来——beforeAll 没跑完")
-  return pg.db
+  if (!客户端) throw new Error("数据库夹具还没起来——beforeAll 没跑完")
+  return 客户端
 }
 
 const 项目 = "p-产物引用"
@@ -31,7 +42,8 @@ const 别人的项目 = "p-产物引用-别人"
 
 beforeAll(async () => {
   pg = await startProductionDb()
-  await migrate(pg.db)
+  客户端 = connect({ ...process.env, PG_POOL_MAX: "1" })
+  await migrate(客户端)
   await 建实体(库(), { id: "e-张", projectId: 项目, type: "人", value: "张三" })
   await 建实体(库(), { id: "e-李", projectId: 项目, type: "人", value: "李四" })
   await 建关系(库(), { id: "r-张李", projectId: 项目, fromId: "e-张", toId: "e-李", type: "转账", amount: 100 })
@@ -40,9 +52,14 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-张", projectId: 别人的项目, type: "人", value: "别人家的张三" })
   // 只存在于别人项目的事实：引用它必须被跳过（跨项目引用不许登记）。
   await 建实体(库(), { id: "e-别人的专有", projectId: 别人的项目, type: "人", value: "别人家的专有" })
+  // 关系与事件**同 id**：关系值回落的子查询必须带 `fact_type = 'relation'`，否则事件引用会
+  // 显示成一条关系（fact id 是自由字符串，跨表撞 id 完全合法）。
+  await 建关系(库(), { id: "r-撞号", projectId: 项目, fromId: "e-张", toId: "e-李", type: "通话" })
+  await 建事件(库(), { id: "r-撞号", projectId: 项目, type: "见面", summary: "撞号事件" })
 })
 
 afterAll(async () => {
+  await 客户端?.$client.close()
   await pg?.stop()
 })
 
@@ -101,6 +118,46 @@ async function 建变更(
     values (${crypto.randomUUID()}, ${input.projectId}, ${input.factType}, ${input.factId},
             '确认', 'u-测试', '测试员', '000000', ${input.createdAt})
   `)
+}
+
+/**
+ * 从 drizzle `SQL` 对象里取原始语句文本。**只用于测试注入失败点**：判断「这一步是不是
+ * 插引用」，不拿它做任何生产判据。
+ */
+function 语句文本(query: unknown): string {
+  const chunks = (query as { queryChunks?: readonly unknown[] }).queryChunks ?? []
+  return chunks
+    .map((块) => {
+      if (typeof 块 === "string") return 块
+      const 值 = (块 as { value?: unknown }).value
+      return Array.isArray(值) ? 值.join("") : ""
+    })
+    .join(" ")
+}
+
+/**
+ * 事务内「插引用」那一步人造失败，其余语句原样透传。
+ *
+ * 目的只有一个：验证「删旧 ＋ 登记产物行 ＋ 插引用」确实在**同一个事务**里——旧实现先自动
+ * 提交 delete，一旦后面抛错，这个路径的引用就被清零（页面显示「没有引用事实」，请复核消失）。
+ */
+function 坏在插引用(db: Queryable): Queryable {
+  const 事务库 = db as Queryable & {
+    transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
+  }
+  return {
+    execute: (query: Parameters<Queryable["execute"]>[0]) => db.execute(query),
+    transaction: <T>(fn: (tx: Queryable) => Promise<T>) =>
+      事务库.transaction((tx) =>
+        fn({
+          execute: (query: Parameters<Queryable["execute"]>[0]) => {
+            if (语句文本(query).includes("insert into auth.case_citation"))
+              throw new Error("人造失败：插引用这一步")
+            return tx.execute(query)
+          },
+        }),
+      ),
+  } as unknown as Queryable
 }
 
 describe("产物引用（计划 7 Task 10）", () => {
@@ -208,5 +265,41 @@ describe("产物引用（计划 7 Task 10）", () => {
     const 结果 = await 产物复核(库(), { projectId: 项目, path: "报告/没有.md" })
     expect(结果.产物).toBeNull()
     expect(结果.缺口.join()).toContain("还没有登记过引用")
+  })
+
+  test("关系值回落的子查询只认 relation：event 与 relation 同 id 时显示事件摘要", async () => {
+    await 登记产物引用(库(), {
+      projectId: 项目,
+      path: "报告/撞号.md",
+      content: "[[fact:event:r-撞号]]",
+    })
+    const 结果 = await 产物复核(库(), { projectId: 项目, path: "报告/撞号.md" })
+    expect(结果.引用).toHaveLength(1)
+    // 缺 `fact_type = 'relation'` 时这里会变成「张三 → 李四 · 通话」——关系子查询按 id 撞上了。
+    expect(结果.引用[0]!.值).toBe("撞号事件")
+  })
+
+  test("插入阶段抛错 ⇒ 旧引用仍在（删旧 + 登记在同一事务里，不把复核清零）", async () => {
+    const 旧 = await 登记产物引用(库(), {
+      projectId: 项目,
+      path: "报告/事务.md",
+      content: "[[fact:entity:e-张]]",
+    })
+    expect(await 引用行数(库(), 项目, 旧.材料id!)).toBe(1)
+
+    let 抛了 = false
+    try {
+      // 内容变了 ⇒ 会先删掉本路径旧引用、再建新产物行与引用；插引用这一步人造失败。
+      await 登记产物引用(坏在插引用(库()), {
+        projectId: 项目,
+        path: "报告/事务.md",
+        content: "[[fact:entity:e-李]]",
+      })
+    } catch {
+      抛了 = true
+    }
+    expect(抛了).toBe(true)
+    // 没有事务时 delete 已经自动提交，这里会变 0。
+    expect(await 引用行数(库(), 项目, 旧.材料id!)).toBe(1)
   })
 })

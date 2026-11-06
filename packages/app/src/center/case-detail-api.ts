@@ -155,7 +155,11 @@ export interface 工具结果 {
 
 export interface CaseDetailApi {
   readonly profile: (projectId: string, id: string, includeExcluded?: boolean) => Promise<结果<实体档案>>
-  readonly materialFacts: (projectId: string, path: string) => Promise<结果<材料事实清单结果>>
+  readonly materialFacts: (
+    projectId: string,
+    path: string,
+    includeExcluded?: boolean,
+  ) => Promise<结果<材料事实清单结果>>
   readonly timeline: (projectId: string, id: string, 起?: number, 止?: number) => Promise<结果<工具结果>>
   readonly money: (projectId: string, id: string, 起?: number, 止?: number) => Promise<结果<工具结果>>
   readonly graph: (
@@ -181,9 +185,10 @@ export function createCaseDetailApi(send: CaseFetch = 默认发送): CaseDetailA
       if (includeExcluded === true) 参数.set("includeExcluded", "true")
       return 请求<实体档案>(send, `${PREFIX}/entity?${参数.toString()}`)
     },
-    materialFacts: async (projectId, path) => {
+    materialFacts: async (projectId, path, includeExcluded) => {
       const 参数 = 项目参数(projectId)
       参数.set("path", path)
+      if (includeExcluded === true) 参数.set("includeExcluded", "true")
       return 请求<材料事实清单结果>(send, `${PREFIX}/material-facts?${参数.toString()}`)
     },
     timeline: async (projectId, id, 起, 止) => {
