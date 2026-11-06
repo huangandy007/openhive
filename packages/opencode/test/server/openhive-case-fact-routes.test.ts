@@ -73,6 +73,7 @@ beforeAll(async () => {
            (${别人的项目}, ${别人.id}, 'owner', 0)
   `)
   await 建实体(pg.db, { id: "e-路由", projectId: 项目, value: "王五" })
+  await 建实体(pg.db, { id: "e-号码", projectId: 项目, type: "号码", value: "138…" })
   await 建实体(pg.db, { id: "e-别人", projectId: 别人的项目, value: "赵六" })
 })
 
@@ -298,6 +299,68 @@ describe("POST /openhive/case/facts/trust", () => {
       const 体 = yield* 读回<{ canonicalValue: string; trustState: string }>(详情)
       expect(体.canonicalValue).toBe("王五")
       expect(体.trustState).toBe("已确认")
+    }),
+  )
+})
+
+describe("POST /openhive/case/entities/merge 与 /split", () => {
+  it("缺依据 ⇒ 409 bad_input", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/entities/merge", {
+        projectId: 项目,
+        survivorId: "e-路由",
+        mergedId: "e-另一个",
+        reasonText: "",
+      })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("bad_input")
+    }),
+  )
+
+  it("跨类合并 ⇒ 409 type_mismatch", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/entities/merge", {
+        projectId: 项目,
+        survivorId: "e-路由",
+        mergedId: "e-号码",
+        reasonText: "试试",
+      })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("type_mismatch")
+    }),
+  )
+
+  it("留痕不存在 ⇒ /split 回 409 fact_not_found", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/entities/split", {
+        projectId: 项目,
+        changeId: "没有这条留痕",
+      })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("fact_not_found")
+    }),
+  )
+
+  it("不是合并留痕 ⇒ /split 回 409 not_a_merge", () =>
+    Effect.gen(function* () {
+      // 造一条**真实但非合并**的留痕：拿不存在的 id 只能断到 fact_not_found（实现先读留痕）。
+      const 别的留痕 = yield* Effect.promise(() =>
+        记变更(库(), {
+          projectId: 项目,
+          factType: "entity",
+          factId: "e-路由",
+          action: "确认",
+          before: { trustState: "自动抽取" },
+          after: { trustState: "已确认" },
+          actor: { id: 我.id, name: 我.name, policeNo: 我.policeNo },
+        }),
+      )
+      const 响应 = yield* 发体(我, "/openhive/case/entities/split", {
+        projectId: 项目,
+        changeId: 别的留痕,
+      })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("not_a_merge")
     }),
   )
 })

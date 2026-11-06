@@ -6,6 +6,7 @@ import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { 纠正原因们, type 纠正原因, 留痕类型们, type 留痕类型 } from "./case-fact-change"
 import { 事实详情 } from "./case-fact-read"
+import { 合并实体, 合并冲突, 拆分合并 } from "./case-merge"
 import { 裁决, 裁决动作们, 裁决冲突, type 裁决动作 } from "./case-trust"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
@@ -50,6 +51,8 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("GET", PATH.facts, (request) => handleFacts(request, deps))
     yield* router.add("POST", PATH.trust, (request) => handleTrust(request, deps))
+    yield* router.add("POST", PATH.merge, (request) => handleMerge(request, deps))
+    yield* router.add("POST", PATH.split, (request) => handleSplit(request, deps))
   }),
 )
 
@@ -162,5 +165,63 @@ function handleTrust(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     )
     if (结果 instanceof 裁决冲突) return fail(409, 结果.message, 结果.code)
     return ok({ ok: true, trustState: 结果.trustState })
+  })
+}
+
+function handleMerge(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+
+    const projectId = body["projectId"]
+    const survivorId = body["survivorId"]
+    const mergedId = body["mergedId"]
+    const reasonText = body["reasonText"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (typeof survivorId !== "string" || survivorId === "") return fail(400, "survivorId 不能为空", "bad_request")
+    if (typeof mergedId !== "string" || mergedId === "") return fail(400, "mergedId 不能为空", "bad_request")
+    if (typeof reasonText !== "string") return fail(400, "reasonText 必须是文本", "bad_request")
+
+    if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
+      return fail(403, "不是该项目成员", "forbidden")
+
+    const 结果 = yield* Effect.promise(() =>
+      合并实体(deps.pg(), { projectId, survivorId, mergedId, reasonText, by: user.value.id }).catch(
+        (error: unknown) => {
+          if (error instanceof 合并冲突) return error
+          throw error
+        },
+      ),
+    )
+    if (结果 instanceof 合并冲突) return fail(409, 结果.message, 结果.code)
+    return ok({ ok: true, ...结果 })
+  })
+}
+
+function handleSplit(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+
+    const projectId = body["projectId"]
+    const changeId = body["changeId"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (typeof changeId !== "string" || changeId === "") return fail(400, "changeId 不能为空", "bad_request")
+
+    if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
+      return fail(403, "不是该项目成员", "forbidden")
+
+    const 结果 = yield* Effect.promise(() =>
+      拆分合并(deps.pg(), { projectId, changeId, by: user.value.id }).catch((error: unknown) => {
+        if (error instanceof 合并冲突) return error
+        throw error
+      }),
+    )
+    if (结果 instanceof 合并冲突) return fail(409, 结果.message, 结果.code)
+    return ok({ ok: true, ...结果 })
   })
 }

@@ -43,7 +43,7 @@ export interface 实体写入 {
  * `case-store.addCitation` 的 locator 读回时仍要 `typeof === "string" ? JSON.parse`：
  * 修复**之前**落库的旧行还是 JSON 字符串标量（本次不回填，旧行只能按旧形状读）。
  */
-function 文本数组(值: readonly string[]) {
+export function 文本数组(值: readonly string[]) {
   return sql`array(select jsonb_array_elements_text(${JSON.stringify(值)}::text::jsonb))`
 }
 
