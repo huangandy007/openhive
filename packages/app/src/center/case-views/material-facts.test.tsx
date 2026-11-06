@@ -191,7 +191,8 @@ describe("材料抽取结果", () => {
         api={假api({
           materialFacts: async () => ({
             kind: "ok",
-            value: { ...清单, 材料: { ...清单.材料, kind: "产物", parse_status: "已跳过" } },
+            // 产物行的真实状态恒为「未入队」（0031 的 CHECK）；这里按库里的实际值给夹具。
+            value: { ...清单, 材料: { ...清单.材料, kind: "产物", parse_status: "未入队" } },
           }),
           review: async () => ({
             kind: "ok",
