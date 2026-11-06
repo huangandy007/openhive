@@ -124,6 +124,49 @@ describe("裁决与传播接通", () => {
     expect(详情?.basisChangedAt).toBeNull()
   })
 
+  // 终审修复 B：撤销修正会让规范值退回旧名，依赖事实的依据同样变了，必须重新标。
+  // 此前只按 action 判定，撤销一律不传播，导致依赖事实停留在对旧值的复核结论上。
+  test("撤销实体修正 ⇒ 依赖关系重新被标", async () => {
+    await 建实体(库(), { id: "e-撤修正", projectId: 项目, value: "撤修正人物" })
+    await 建关系(库(), { id: "r-撤修正", projectId: 项目, fromId: "e-撤修正", toId: "e-边" })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "entity",
+      factId: "e-撤修正",
+      action: "修正",
+      changes: { canonicalValue: "撤修正人物（改）" },
+      reasonKind: "抽取错",
+      reasonText: "名字认错",
+      by: 甲,
+    })
+    expect(
+      (await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-撤修正" }))?.basisChangedAt,
+    ).not.toBeNull()
+
+    // 人复核了这条依赖关系 ⇒ 标记清掉。
+    await 裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤修正", action: "确认", by: 甲 })
+    expect(
+      (await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-撤修正" }))?.basisChangedAt,
+    ).toBeNull()
+
+    // 撤销那次修正 ⇒ 值退回旧名，依赖关系的依据又变了，标记必须重新有值。
+    await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-撤修正", action: "撤销", by: 甲 })
+    expect(
+      (await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-撤修正" }))?.basisChangedAt,
+    ).not.toBeNull()
+  })
+
+  // 反例：撤销「确认」值没变，不能误传播（否则人每点一次撤销，周围关系全变「请复核」）。
+  test("撤销实体确认 ⇒ 依赖关系标记仍为 null（不误传播）", async () => {
+    await 建实体(库(), { id: "e-撤确认", projectId: 项目, value: "撤确认人物" })
+    await 建关系(库(), { id: "r-撤确认", projectId: 项目, fromId: "e-撤确认", toId: "e-边" })
+    await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-撤确认", action: "确认", by: 甲 })
+    await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-撤确认", action: "撤销", by: 甲 })
+    expect(
+      (await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-撤确认" }))?.basisChangedAt,
+    ).toBeNull()
+  })
+
   test("存疑不触发传播（只是看过了）", async () => {
     await 建实体(库(), { id: "e-只存疑", projectId: 项目, value: "只存疑" })
     await 建关系(库(), { id: "r-只存疑", projectId: 项目, fromId: "e-只存疑", toId: "e-边" })

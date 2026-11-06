@@ -92,6 +92,10 @@ function 读杰森(值: unknown): unknown {
   }
 }
 
+function 是记录(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
+}
+
 function 文本组(值: unknown): string[] {
   if (typeof 值 !== "string" || 值 === "") return []
   try {
@@ -261,11 +265,15 @@ export interface 拆分结果 {
  */
 export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<拆分结果> {
   return inTransaction(db, async (tx) => {
+    // `for update`：两个事务同时拆同一次合并时，后到者在这里等第一个提交，之后再判
+    // 「已拆」才读得到对方刚插入的拆分留痕（READ COMMITTED 下每条语句取新快照），
+    // 否则两边都判不到、都去 insert 同一实体 id，后者撞 23505 以 500 掉出去。
     const 行 = rowsOf(
       await tx.execute(sql`
         select id, project_id, fact_id, action, before, after
           from auth.case_fact_change
          where project_id = ${input.projectId} and id = ${input.changeId}
+         for update
       `),
     )[0]
     if (行 === undefined) throw new 合并冲突("找不到这条留痕", "fact_not_found")
@@ -283,15 +291,49 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
     const 前 = 读杰森(行.before) as
       | { survivorAliases: string[]; 被并入: 实体快照; 关系们: 关系快照[] }
       | null
-    if (前 === null || typeof 前 !== "object" || 前.被并入 === undefined)
+    if (
+      前 === null ||
+      typeof 前 !== "object" ||
+      前.被并入 === undefined ||
+      !Array.isArray(前.survivorAliases)
+    )
       throw new 合并冲突("留痕里没有可恢复的快照", "restore_conflict")
 
-    const 后 = 读杰森(行.after) as { 自环?: unknown } | null
-    const 自环 =
-      后 !== null && typeof 后 === "object" && Array.isArray(后.自环) ? 后.自环.map((x) => String(x)) : []
+    const 后 = 读杰森(行.after)
+    if (!是记录(后) || !Array.isArray(后["aliases"]))
+      throw new 合并冲突("留痕里没有可恢复的别名快照", "restore_conflict")
+    const 合并后别名 = 后["aliases"].map((x) => String(x))
+    const 自环原 = 后["自环"]
+    const 自环 = Array.isArray(自环原) ? 自环原.map((x) => String(x)) : []
 
     const 主体Id = String(行.fact_id)
     const 被并入 = 前.被并入
+
+    // 本次合并加进去的别名 = 合并后的别名集 − 合并前主体的别名集。
+    // 拆分只减掉这一份增量：合并之后另一次合并加进来的名字（以及它带来的实体身份）
+    // 不跟着消失——把别名整份覆盖成 `前.survivorAliases` 会静默抹掉它们。
+    const 前别名集 = new Set(前.survivorAliases)
+    const 增量 = 合并后别名.filter((名) => !前别名集.has(名))
+
+    // 主体当前别名必须加行锁再读：与另一次合并/改名并发时，按合并当时的口径写回会抹掉后到的改动。
+    const 主体行 = rowsOf(
+      await tx.execute(sql`
+        select array_to_json(aliases)::text as aliases
+          from auth.case_entity
+         where project_id = ${input.projectId} and id = ${主体Id}
+         for update
+      `),
+    )[0]
+    if (主体行 === undefined)
+      throw new 合并冲突("主体的别名在合并之后又变过，先处理再拆", "restore_conflict")
+    const 当前别名 = 文本组(主体行.aliases)
+    const 当前别名集 = new Set(当前别名)
+    // 增量里缺任何一个 ⇒ 主体在合并之后被别的操作改过，口径对不上。fail-closed：
+    // 不静默把别名写回旧快照（那会抹掉那次改动），交给人先处理。
+    if (增量.some((名) => !当前别名集.has(名)))
+      throw new 合并冲突("主体的别名在合并之后又变过，先处理再拆", "restore_conflict")
+    const 增量集 = new Set(增量)
+    const 新别名 = 当前别名.filter((名) => !增量集.has(名))
 
     const 撞 = rowsOf(
       await tx.execute(sql`
@@ -315,7 +357,7 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
     `)
 
     await tx.execute(sql`
-      update auth.case_entity set aliases = ${文本数组(前.survivorAliases)}
+      update auth.case_entity set aliases = ${文本数组(新别名)}
        where project_id = ${input.projectId} and id = ${主体Id}
     `)
 

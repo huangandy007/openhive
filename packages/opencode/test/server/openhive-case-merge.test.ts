@@ -247,6 +247,70 @@ describe("拆分（撤销合并）", () => {
     expect(r3.trustState).toBe("自动抽取")
   })
 
+  // 终审修复 A：拆分只退回「本次合并加进去的别名」，不能把主体的别名整份覆盖成合并前快照——
+  // 那样会把后一次合并并进来的名字一并抹掉。A 并 B → A 并 C → 拆 A+B：B 的增量该走，
+  // C 的规范值与别名必须还在主体上。
+  test("A 并 B 再并 C 之后拆 A+B：只退回 B 的增量，C 的规范值与别名仍在主体上", async () => {
+    await 场景("叠并")
+    const 并B = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "叠并-a",
+      mergedId: "叠并-b",
+      reasonText: "先把乙并进来",
+      by: 甲,
+    })
+    await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "叠并-a",
+      mergedId: "叠并-c",
+      reasonText: "再把丙并进来",
+      by: 甲,
+    })
+
+    const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 并B.changeId, by: 甲 })
+    expect(拆.restoredEntityId).toBe("叠并-b")
+
+    const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "叠并-a" })
+    if (主体?.type !== "entity") throw new Error("形状不对")
+    // 精确集合，不只 toContain：多留下「叠并乙 / 乙的别名」同样要红。
+    expect([...主体.aliases].sort()).toEqual(["曾用名", "丙的别名", "叠并丙"].sort())
+    // 反例：C 的名字没被这次拆分误删（事实图里还认得出丙这个人）。
+    expect(主体.aliases).toContain("叠并丙")
+    expect(主体.aliases).toContain("丙的别名")
+    // B 的规范值与别名正是本次合并的增量，应随拆分离去。
+    expect(主体.aliases).not.toContain("叠并乙")
+    expect(主体.aliases).not.toContain("乙的别名")
+  })
+
+  // fail-closed：主体别名在合并之后又被别的操作改过（增量里少了一个名字），
+  // 说明口径对不上——拒拆，不静默写回旧快照（那会把那次改动抹掉）。
+  test("合并后主体别名被人改过（少了一个增量名）⇒ 409 restore_conflict，别名不被覆盖", async () => {
+    await 场景("别改")
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "别改-a",
+      mergedId: "别改-b",
+      reasonText: "先合",
+      by: 甲,
+    })
+    await 库().execute(sql`
+      update auth.case_entity set aliases = array_remove(aliases, '乙的别名')
+       where project_id = ${项目} and id = '别改-a'
+    `)
+
+    await expect(
+      拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 }),
+    ).rejects.toMatchObject({ code: "restore_conflict" })
+
+    const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "别改-a" })
+    if (主体?.type !== "entity") throw new Error("形状不对")
+    // 没被整份覆盖回合并前的快照：人删掉的那个名字没回来。
+    expect(主体.aliases).not.toContain("乙的别名")
+    expect(主体.aliases).toContain("别改乙")
+    // 也没留半拆状态：被并入的实体没被恢复。
+    expect(await 事实详情(库(), { projectId: 项目, type: "entity", id: "别改-b" })).toBeUndefined()
+  })
+
   // 撞名分支确定可达（`case-merge.ts` 的 `撞 !== undefined`）：合并之后又有人新建了一个
   // 同类型、同规范值的实体。此时拆分不能硬插（会撞唯一索引），要回可解释的 409。
   test("被并入者的规范值已被别的实体占用 ⇒ 409 restore_conflict，且不留半拆状态", async () => {

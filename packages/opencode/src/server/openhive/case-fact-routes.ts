@@ -220,7 +220,15 @@ function handleProposals(request: HttpServerRequest.HttpServerRequest, deps: Dep
     if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
 
-    const 提议们 = yield* Effect.promise(() => 提议列表(deps.pg(), projectId, 状态))
+    // 与 `handleProposalDecide` 同构：DAO 对不认识的库内状态会抛 `提议冲突`，
+    // 不接住就成 500。翻成 409 + 错误码，让人知道是库里的脏状态而不是服务坏了。
+    const 提议们 = yield* Effect.promise(() =>
+      提议列表(deps.pg(), projectId, 状态).catch((error: unknown) => {
+        if (error instanceof 提议冲突) return error
+        throw error
+      }),
+    )
+    if (提议们 instanceof 提议冲突) return fail(409, 提议们.message, 提议们.code)
     return ok({ proposals: 提议们 })
   })
 }

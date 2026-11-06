@@ -5,6 +5,7 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import {
   type 纠正原因,
+  type 留痕动作,
   type 留痕类型,
   记变更,
   最近一次可撤销,
@@ -205,11 +206,17 @@ async function 只改状态(
   return { trustState: 目标, 值: 当前.值, 留痕 }
 }
 
+interface 撤销结果 {
+  readonly 结果: 裁决结果
+  /** 被撤销的那条人工动作：传播判据要看它（撤销修正/排除 = 值或判定退回去了）。 */
+  readonly 被撤销动作: 留痕动作
+}
+
 async function 撤销(
   tx: Queryable,
   input: 裁决输入,
   当前: 当前事实,
-): Promise<裁决结果> {
+): Promise<撤销结果> {
   const 目标 = await 最近一次可撤销(tx, input.projectId, input.factType, input.factId)
   if (目标 === undefined) throw new 裁决冲突("这条事实没有可以撤销的人工动作", "nothing_to_undo")
 
@@ -242,7 +249,7 @@ async function 撤销(
     after: { trustState: 前状态, ...值, 被撤销的留痕: 目标.id },
     actor: await 操作人快照(tx, input.by),
   })
-  return { trustState: 前状态, 值, 留痕 }
+  return { 结果: { trustState: 前状态, 值, 留痕 }, 被撤销动作: 目标.action }
 }
 
 /**
@@ -396,6 +403,8 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
     if (当前 === undefined) throw new 裁决冲突("找不到这条事实", "fact_not_found")
 
     let 结果: 裁决结果
+    // 撤销要看「撤销掉的是哪个动作」：撤销修正 / 排除会让依据退回去，撤销确认 / 存疑不会。
+    let 被撤销动作: 留痕动作 | undefined
     if (input.action === "确认" || input.action === "排除" || input.action === "存疑") {
       // §9.2：选「错」要写一句话并选原因。库约束也会挡，但在这里先回一句人话。
       if (input.action === "排除" && (input.reasonKind === null || input.reasonKind === undefined || !input.reasonText?.trim()))
@@ -406,14 +415,23 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
     } else if (input.action === "修正") {
       结果 = await 修正(tx, input, 当前)
     } else if (input.action === "撤销") {
-      结果 = await 撤销(tx, input, 当前)
+      const 撤销结果 = await 撤销(tx, input, 当前)
+      结果 = 撤销结果.结果
+      被撤销动作 = 撤销结果.被撤销动作
     } else {
       const 未知: never = input.action
       throw new 裁决冲突(`不认识的裁决动作：${String(未知)}`, "bad_changes")
     }
 
     // §9.4：改动值或判定为错才传播；确认 / 存疑只是「看过了」。
-    if (input.factType === "entity" && (input.action === "修正" || input.action === "排除"))
+    // 撤销修正 / 排除会让依赖事实的依据退回旧值或旧判定，同样要重新标；
+    // 撤销确认 / 存疑只把「看过了」退回去，值没变，不传播。
+    if (
+      input.factType === "entity" &&
+      (input.action === "修正" ||
+        input.action === "排除" ||
+        (input.action === "撤销" && (被撤销动作 === "修正" || 被撤销动作 === "排除")))
+    )
       await 标依赖已变更(tx, input.projectId, input.factId)
     // 依赖事实被人工动过 ⇒ 它已经被人复核，标记清掉。
     if (input.factType === "relation" || input.factType === "event")
