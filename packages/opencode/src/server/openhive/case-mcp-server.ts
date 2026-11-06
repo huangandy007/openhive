@@ -1,0 +1,339 @@
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolResult,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js"
+import type { Queryable } from "./case-store"
+import { 解析调用身份, 身份错误, type 调用身份 } from "./case-mcp-identity"
+import {
+  aggregate_money,
+  find_crossings,
+  get_citation,
+  query_entities,
+  query_events,
+  query_relations,
+  search_materials,
+  工具错误,
+  校验成员,
+  type 工具上下文,
+  type 工具结果,
+} from "./case-mcp-tools"
+
+/**
+ * 案件情报 MCP 服务器（计划 6 / Task 5）：把 7 个只读工具装配成一个 MCP server。
+ *
+ * ## 分发顺序写死
+ *
+ * ① 解析调用身份 → ② 校验成员 → ③ 判工具名 → ④ 调工具。
+ *
+ * 前两步是**门**，必须在名字分发之前：未知工具名只说明模型叫错了名字，不能成为
+ * 「没身份也能探到工具清单后面有什么」的侧信道。门只在入口做一次
+ * （`LEARNINGS #004-09`：门在副作用之前，且只在一处）。
+ *
+ * ## 错误映射
+ *
+ * `工具错误` 的 `code`（`bad_input` / `not_found` / `not_a_member`）原样回给模型；
+ * 其余任何异常一律 `tool_failed`，回给模型的**只有一句固定中文**——原文可能带表名 /
+ * 列名 / SQL 片段，只进留痕的 `错误原文` 给运维查。
+ *
+ * ## 留痕
+ *
+ * 每次调用无论成败都出一行（含被两道门拒掉的）；身份都没解出来时 `userId` /
+ * `projectId` 缺省，不编假身份。默认写 stderr 一行 JSON。**这不是表级使用记录**——
+ * 表级记录与「工具授权闸」一起做，是明说的缺口（设计缺口表）。
+ */
+
+export const 工具名 = [
+  "search_materials",
+  "query_entities",
+  "query_relations",
+  "query_events",
+  "aggregate_money",
+  "find_crossings",
+  "get_citation",
+] as const
+
+export type 工具名 = (typeof 工具名)[number]
+
+export interface 调用留痕 {
+  /** 身份解析失败时没有身份——留痕照样要出，故这两项可缺（不编假身份）。 */
+  readonly userId?: string
+  readonly projectId?: string
+  readonly 工具: string
+  readonly 耗时毫秒: number
+  readonly ok: boolean
+  readonly 错误码?: string
+  /** 仅 `tool_failed` 有：原始异常文本，**只进 stderr**，不回给模型。 */
+  readonly 错误原文?: string
+}
+
+export interface CaseMcpDeps {
+  readonly db: Queryable
+  readonly workspaceRoot: string
+  /** 留痕出口。生产默认写 stderr 一行 JSON；测试注入数组收集。 */
+  readonly 留痕?: (行: 调用留痕) => void
+}
+
+const 默认留痕 = (行: 调用留痕): void => {
+  process.stderr.write(`${JSON.stringify({ 事件: "mcp工具调用", ...行 })}\n`)
+}
+
+/** 异常原文只进留痕；**永远不要**把它的任何部分拼进回给模型的文本。 */
+function 原文(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+const 时间说明 = "整数 Unix 秒"
+const 限制说明 = "最多返回条数，默认 50、上限 200（超过按 200 截断并在缺口里说明）"
+
+const TOOLS: readonly Tool[] = [
+  {
+    name: "search_materials",
+    description:
+      "按文件名与正文关键词检索本项目的案件材料，返回材料 id、类型、解析状态与命中片段。" +
+      "正文只给片段不给全文；只能看到调用身份所属项目。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        关键词: { type: "string", description: "在文件名与正文里做不区分大小写的包含匹配" },
+        类型: { type: "string", description: "材料类型（话单 / 资金 / 笔录 / 视频 / 物证照 / 产物 / 其他）" },
+        限制: { type: "integer", description: 限制说明 },
+      },
+    },
+  },
+  {
+    name: "query_entities",
+    description:
+      "查询本项目的实体（人 / 账户 / 号码等），返回 id、类型、规范值、别名、属性与信任态。" +
+      "默认不返回「已排除」的实体。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        类型: { type: "string", description: "实体类型，例如 人 / 账户 / 号码" },
+        关键词: { type: "string", description: "在规范值与别名里做不区分大小写的包含匹配" },
+        含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的实体，默认否" },
+        限制: { type: "integer", description: 限制说明 },
+      },
+    },
+  },
+  {
+    name: "query_relations",
+    description:
+      "查询本项目的关系（转账 / 通话等）。实体先按 id、再按规范值解析；时间窗按「与窗口有交集」判定；" +
+      "默认不返回「已排除」的关系。金额是 numeric 字符串，勿自行转浮点。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        实体: { type: "string", description: "实体 id 或规范值；命中任一端即返回" },
+        类型: { type: "string", description: "关系类型，例如 转账 / 通话" },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的关系，默认否" },
+        限制: { type: "integer", description: 限制说明 },
+      },
+    },
+  },
+  {
+    name: "query_events",
+    description:
+      "查询本项目的事件（签约 / 交款 / 同框等）。参与实体先按 id、再按规范值解析；" +
+      "时间按 occurred_at 闭区间；默认不返回「已排除」的事件。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        类型: { type: "string", description: "事件类型" },
+        参与实体: { type: "string", description: "实体 id 或规范值；事件参与者含它才返回" },
+        含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的事件，默认否" },
+        限制: { type: "integer", description: 限制说明 },
+      },
+    },
+  },
+  {
+    name: "aggregate_money",
+    description:
+      "按账户聚合本项目已抽成关系（type=转账）的资金流水：出 / 入汇总、对手方与余额走势。" +
+      "每块的口径与缺口随结果返回；金额与余额为 numeric 字符串，勿自行转浮点。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        账户: { type: "string", description: "账户的实体 id 或规范值（必填）" },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+      },
+      required: ["账户"],
+    },
+  },
+  {
+    name: "find_crossings",
+    description:
+      "两个实体之间的交叉分析：共同关联（关系另一端的交集）＋共同时空（事件参与者同时含两人）。" +
+      "两侧各至多取 500 条关系后在服务端求交；覆盖不到的地方写进缺口。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        甲: { type: "string", description: "第一个实体的 id 或规范值（必填）" },
+        乙: { type: "string", description: "第二个实体的 id 或规范值（必填，不能与甲相同）" },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+      },
+      required: ["甲", "乙"],
+    },
+  },
+  {
+    name: "get_citation",
+    description:
+      "取一条事实（实体 / 关系 / 事件 / 明细行）的出处与变更历史。明细行 id 形状为" +
+      "「材料#工作表#行号」。出处字段沿用库列名。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        事实类型: {
+          type: "string",
+          enum: ["entity", "relation", "event", "row"],
+          description: "事实类型：entity / relation / event / row",
+        },
+        事实id: { type: "string", description: "事实 id；row 类型用「材料#工作表#行号」" },
+      },
+      required: ["事实类型", "事实id"],
+    },
+  },
+]
+
+const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
+  search_materials: (ctx, args) =>
+    search_materials(ctx, 收参数<Parameters<typeof search_materials>[1]>(args, ["关键词", "类型"], ["限制"], [])),
+  query_entities: (ctx, args) =>
+    query_entities(ctx, 收参数<Parameters<typeof query_entities>[1]>(args, ["类型", "关键词"], ["限制"], ["含已排除"])),
+  query_relations: (ctx, args) =>
+    query_relations(
+      ctx,
+      收参数<Parameters<typeof query_relations>[1]>(args, ["实体", "类型"], ["起", "止", "限制"], ["含已排除"]),
+    ),
+  query_events: (ctx, args) =>
+    query_events(
+      ctx,
+      收参数<Parameters<typeof query_events>[1]>(args, ["类型", "参与实体"], ["起", "止", "限制"], ["含已排除"]),
+    ),
+  aggregate_money: (ctx, args) =>
+    aggregate_money(ctx, 收参数<Parameters<typeof aggregate_money>[1]>(args, ["账户"], ["起", "止"], [])),
+  find_crossings: (ctx, args) =>
+    find_crossings(ctx, 收参数<Parameters<typeof find_crossings>[1]>(args, ["甲", "乙"], ["起", "止"], [])),
+  get_citation: (ctx, args) =>
+    get_citation(ctx, 收参数<Parameters<typeof get_citation>[1]>(args, ["事实类型", "事实id"], [], [])),
+}
+
+/**
+ * 模型给的 JSON → 工具入参。**未列出的键 ⇒ bad_input**（fail-closed，不静默忽略——
+ * 模型把「起始时间」写成 `起时` 时，静默丢掉等于按全时段返回，答案会悄悄错）。
+ */
+function 收参数<T>(args: Record<string, unknown>, 文本: string[], 整数: string[], 布尔: string[]): T {
+  const 允许 = new Set([...文本, ...整数, ...布尔])
+  for (const 键 of Object.keys(args)) {
+    if (!允许.has(键)) throw new 工具错误("bad_input", `不认识的参数：${键}；可用参数：${[...允许].join("、")}`)
+  }
+  const 结果: Record<string, unknown> = {}
+  for (const 键 of 文本) {
+    const 值 = args[键]
+    if (值 === undefined) continue
+    if (typeof 值 !== "string") throw new 工具错误("bad_input", `参数「${键}」必须是字符串`)
+    结果[键] = 值
+  }
+  for (const 键 of 整数) {
+    const 值 = args[键]
+    if (值 === undefined) continue
+    if (typeof 值 !== "number" || !Number.isInteger(值)) throw new 工具错误("bad_input", `参数「${键}」必须是整数`)
+    结果[键] = 值
+  }
+  for (const 键 of 布尔) {
+    const 值 = args[键]
+    if (值 === undefined) continue
+    if (typeof 值 !== "boolean") throw new 工具错误("bad_input", `参数「${键}」必须是布尔值`)
+    结果[键] = 值
+  }
+  return 结果 as unknown as T
+}
+
+function 是工具名(name: string): name is 工具名 {
+  return (工具名 as readonly string[]).includes(name)
+}
+
+/** 工具执行失败回给模型的**唯一**文本；原文只进留痕。 */
+const 工具失败文案 = "工具执行失败，已记入服务端日志"
+
+function 成功结果(结果: 工具结果): CallToolResult {
+  return { content: [{ type: "text", text: JSON.stringify(结果, null, 2) }] }
+}
+
+function 失败结果(错误码: string, message: string): CallToolResult {
+  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: 错误码, message }) }] }
+}
+
+/**
+ * 建一个案件情报 MCP server（不碰 env / stdio，便于用 in-memory transport 测）。
+ *
+ * 生产入口交给上层：`connect()` 出的库、沙箱根、以及 `StdioServerTransport`。
+ */
+export function createCaseMcpServer(deps: CaseMcpDeps): Server {
+  const server = new Server(
+    { name: "openhive-case-mcp", version: "0.1.0" },
+    { capabilities: { tools: {} } },
+  )
+  const 留痕 = deps.留痕 ?? 默认留痕
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOLS] }))
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const 开始 = performance.now()
+    const 工具 = request.params.name
+    let 身份: 调用身份 | undefined
+
+    // 每次调用（成功 / 业务错误 / 两道门拒掉 / 未知工具 / 异常）都且只出一行。
+    const 记 = (结果: CallToolResult, 码?: string, 错误原文?: string): CallToolResult => {
+      留痕({
+        ...(身份 === undefined ? {} : { userId: 身份.userId, projectId: 身份.projectId }),
+        工具,
+        耗时毫秒: Math.round(performance.now() - 开始),
+        ok: 结果.isError !== true,
+        ...(码 === undefined ? {} : { 错误码: 码 }),
+        ...(错误原文 === undefined ? {} : { 错误原文 }),
+      })
+      return 结果
+    }
+
+    // ① 身份门。
+    try {
+      身份 = 解析调用身份({ workspaceRoot: deps.workspaceRoot, meta: request.params._meta })
+    } catch (error) {
+      if (error instanceof 身份错误) return 记(失败结果(error.code, error.message), error.code)
+      return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
+    }
+
+    const ctx: 工具上下文 = { db: deps.db, 身份 }
+
+    // ② 成员门。放在名字分发之前：未知工具名不该成为探路侧信道。
+    try {
+      await 校验成员(ctx)
+    } catch (error) {
+      if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
+      return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
+    }
+
+    // ③ 名字。
+    if (!是工具名(工具)) return 记(失败结果("unknown_tool", `未知工具：${工具}`), "unknown_tool")
+
+    // ④ 调工具。
+    try {
+      const 结果 = await 分发表[工具](ctx, request.params.arguments ?? {})
+      return 记(成功结果(结果))
+    } catch (error) {
+      if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
+      return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
+    }
+  })
+
+  return server
+}
