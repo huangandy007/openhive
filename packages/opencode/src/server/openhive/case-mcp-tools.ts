@@ -315,7 +315,10 @@ export async function query_events(
   if (args.止 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
   if (args.参与实体 !== undefined) {
     const 参与实体 = await 解析实体(ctx, args.参与实体, "参与实体")
-    条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体.id})`)
+    // `participants` 存的是**实体规范值**，不是 id：唯一写口 `case-extract.ts:433` 写的是
+    // `项实体.canonicalValue`（`case-ingest.ts:573` 原样落库），而实体 id 是 `事实id(...)` 的
+    // sha256 前 32 位，两者永不相等。比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
+    条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体.value})`)
   }
   const rows = await ctx.db.execute(sql`
     select id, type, occurred_at, occurred_raw, precision, time_type,
@@ -339,7 +342,7 @@ export async function query_events(
   return {
     数据,
     口径:
-      "事件按类型与参与实体（先按 id、再按规范值解析成实体 id）过滤；时间按 occurred_at 闭区间；" +
+      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值）过滤；时间按 occurred_at 闭区间；" +
       "默认不含「已排除」；时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
@@ -347,8 +350,8 @@ export async function query_events(
 
 /**
  * 出处：`entity` / `relation` / `event` 直接复用计划 5 的只读出口 `事实详情`——它已经把
- * 引用与变更历史一并读回来；`row` 的明细行没有代理主键，按 `<material_id>#<sheet>#<row_no>`
- * 解析后查行，再取该行的引用。
+ * 引用与变更历史一并读回来；`row` 的明细行没有代理主键，按 `<material_id>#<sheet>#<row_no>` 的
+ * **首/末 `#`** 解析（中间整段是工作表名，可含 `#`）后查行，再按规范化键取该行的引用。
  *
  * ⛔ 不要在这里自己写 SQL 查事实表：那是计划 5 的两个只读出口已经做完的事，
  * 抄第二份就是给「已排除是否可见」这根判据开第二个会漂的点（`LEARNINGS #005-04`）。
@@ -358,14 +361,24 @@ export async function get_citation(
   args: { 事实类型: "entity" | "relation" | "event" | "row"; 事实id: string },
 ): Promise<工具结果> {
   if (args.事实类型 === "row") {
-    const 段 = args.事实id.split("#")
-    if (段.length !== 3 || 段.some((s) => s.trim() === "")) {
+    // 首 `#` 结束材料（材料 id 不含 `#`），末 `#` 开始行号，中间的整段都是工作表名（可含 `#`）。
+    // `case-store.ts:423-432` 的契约：Excel 工作表名可以合法含 `#`，按固定段数拆是错的。
+    const 首 = args.事实id.indexOf("#")
+    const 末 = args.事实id.lastIndexOf("#")
+    if (首 <= 0 || 末 === 首) {
       throw new 工具错误("bad_input", `明细行 id 形状应为「材料#工作表#行号」，收到 ${args.事实id}`)
     }
-    const [材料, 工作表, 行号] = 段 as [string, string, string]
+    const 材料 = args.事实id.slice(0, 首)
+    const 工作表 = args.事实id.slice(首 + 1, 末)
+    const 行号 = args.事实id.slice(末 + 1)
+    if (材料.trim() === "" || 工作表 === "" || 行号.trim() === "") {
+      throw new 工具错误("bad_input", `明细行 id 形状应为「材料#工作表#行号」，收到 ${args.事实id}`)
+    }
     if (!Number.isInteger(Number(行号))) {
       throw new 工具错误("bad_input", `行号必须是整数，收到 ${行号}`)
     }
+    // 引用按**规范化键**查：`"…#Sheet1#02"` 能命中明细行，但原始的 `02` 不是库里 `fact_id` 的写法。
+    const 规范键 = `${材料}#${工作表}#${Number(行号)}`
     const 行 = rowsOf(
       await ctx.db.execute(sql`
         select project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
@@ -380,7 +393,7 @@ export async function get_citation(
     // `引用们` 的第三参类型是 `留痕类型`（entity/relation/event），但 `case_citation.fact_type`
     // 的库约束也允许 `row`——计划 5 的单条事实详情只服务三类事实，没把 row 收进类型。
     // SQL 按字符串比较、不依赖这个类型，所以只在调用点摊开，不复制第二份引用查询。
-    const 引用 = await 引用们(ctx.db, ctx.身份.projectId, "row" as unknown as 留痕类型, args.事实id)
+    const 引用 = await 引用们(ctx.db, ctx.身份.projectId, "row" as unknown as 留痕类型, 规范键)
     return {
       数据: {
         明细行: {

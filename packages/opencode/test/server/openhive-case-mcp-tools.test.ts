@@ -168,6 +168,9 @@ beforeAll(async () => {
     lastAt: 300,
   })
   // 事件：ev-1 含 e-参与，ev-2 不含。
+  // ⚠️ `participants` 存的是**实体规范值**，不是 id：唯一写口 `case-extract.ts:433` 写的是
+  // `项实体.canonicalValue`（`case-ingest.ts:573` 原样落库），而实体 id 是 `事实id(...)` 的
+  // sha256 前 32 位，永远不等于规范值。按 id 种会让用例假绿在生产恒空的实现上（`#006-11`）。
   await insertEvent(库(), {
     id: "ev-1",
     projectId: 身份丁.projectId,
@@ -175,7 +178,7 @@ beforeAll(async () => {
     occurredAt: 1_760_000_000,
     occurredRaw: "2026年3月5日 14时",
     precision: "到分",
-    participants: ["e-参与"],
+    participants: ["参与人"],
     summary: "签约",
     trustState: "自动抽取",
   })
@@ -210,7 +213,27 @@ beforeAll(async () => {
       amount: "50.00",
       balance: "900.00",
     },
+    // 工作表名合法含 `#`（`case-store.ts:423-432`）：按固定段数拆的实现会永远拒掉这一行。
+    {
+      projectId: 身份丁.projectId,
+      materialId: "m-甲",
+      sheet: "Sheet#1",
+      rowNo: 2,
+      counterparty: "乙",
+      amount: "10.00",
+      balance: "890.00",
+    },
   ])
+  // 明细行的引用：行级 `fact_id` 是不透明键 `m-甲#Sheet1#2`，供 row 分支按 `fact_type='row'` 查。
+  await addCitation(库(), {
+    id: "c-行-1",
+    projectId: 身份丁.projectId,
+    factType: "row",
+    factId: "m-甲#Sheet1#2",
+    materialId: "m-甲",
+    locator: { sheet: "Sheet1", row: 2 },
+    extractMethod: "机器",
+  })
 })
 
 afterAll(async () => {
@@ -290,10 +313,14 @@ test("实得行数等于限制时缺口说「可能还有更多」", async () =>
 
 test("query_relations 按实体名（规范值）查两头都算", async () => {
   // e-甲 --转账--> e-乙 ；e-丙 --通话--> e-甲
-  // 种子表里 r-跨 也是甲→乙 的转账（非「已排除」），不带时间窗时同样命中——断言据实列出。
+  // r-跨 也是甲→乙 且非「已排除」，不带时间窗时必然命中 ⇒ 断言据实列出。
+  // 判别力仍在 from 侧：只查 from 时 r-2（丙→甲）会消失。
   const 结果 = await query_relations(ctx(身份丁), { 实体: "甲" })
-  expect(ids计(结果).sort()).toEqual(["r-1", "r-2", "r-跨"].sort())
+  const 行们 = 结果.数据 as Record<string, unknown>[]
+  expect(行们.map((行) => 行.id).sort()).toEqual(["r-1", "r-2", "r-跨"].sort())
   expect(结果.口径).toContain("numeric")
+  // 金额必须是字符串（`amount::text` 出库）：数字化的那一刻就丢了「勿自行转浮点」这条契约。
+  expect(行们.find((行) => 行.id === "r-1")!.amount).toBe("1000.00")
 })
 
 test("query_relations 默认不返回「已排除」，含已排除=true 才返回", async () => {
@@ -315,7 +342,8 @@ test("时间窗起 > 止 ⇒ bad_input", async () => {
 })
 
 test("query_events 按参与实体过滤（文本数组包含）", async () => {
-  // e-参与 出现在 ev-1.participants，不在 ev-2
+  // 输入给的是实体 id（`e-参与`），`participants` 里存的是规范值（`参与人`）——
+  // 这一条同时钉住「解析链」与「比规范值」。
   expect(ids计(await query_events(ctx(身份丁), { 参与实体: "e-参与" }))).toEqual(["ev-1"])
 })
 
@@ -324,6 +352,9 @@ test("query_events 返回原始值、规范值、精度三件套", async () => {
   // `time_type` 断言 null 不是偷懒：`insertEvent` 的入参里没有这个字段（`case-ingest.ts` 也不写），
   // 生产库该列今天恒为 NULL。工具仍要把列**带出来**——键名在、值如实为 null，用例才钉得住「没被吞掉」。
   expect(行[0]).toMatchObject({ occurred_raw: "2026年3月5日 14时", precision: "到分", time_type: null })
+  // 形状：`participants` 走 `array_to_json(...)::text` + `解JSON`。不加这条，把 `array_to_json` 拆掉仍绿。
+  expect(Array.isArray(行[0]!.participants)).toBe(true)
+  expect(行[0]!.participants).toEqual(["参与人"])
 })
 
 test("get_citation 对实体返回事实 + 引用", async () => {
@@ -333,11 +364,36 @@ test("get_citation 对实体返回事实 + 引用", async () => {
 
 test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" })
-  expect((结果.数据 as { 明细行: { row_no: number } }).明细行.row_no).toBe(2)
+  const 数据 = 结果.数据 as { 明细行: Record<string, unknown>; 引用: Record<string, unknown>[] }
+  expect(数据.明细行.row_no).toBe(2)
+  // 金额字符串原样返回；引用必须真的按 `fact_type='row'` 查到（种子里 `c-行-1`）。
+  expect(数据.明细行.amount).toBe("50.00")
+  expect(数据.引用.map((条) => 条.material_id)).toEqual(["m-甲"])
+  // 规范化键：`02` 不是 2 的「另一个 id」，命中后引用要按 `#2` 查得到。
+  const 补零 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#02" })
+  expect((补零.数据 as { 引用: Record<string, unknown>[] }).引用).toHaveLength(1)
+})
+
+test("get_citation 明细行：工作表名含 # 也能定位", async () => {
+  // `case-store.ts:423-432` 的契约：工作表名可合法含 `#`，按固定段数拆是错的。
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet#1#2" })
+  const 明细行 = (结果.数据 as { 明细行: { sheet: string; row_no: number } }).明细行
+  expect(明细行.sheet).toBe("Sheet#1")
+  expect(明细行.row_no).toBe(2)
 })
 
 test("get_citation 事实id 形状不对 ⇒ bad_input", async () => {
-  await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "没有井号" })).rejects.toMatchObject({
-    code: "bad_input",
-  })
+  await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "没有井号" })).rejects.toMatchObject({ code: "bad_input" })
+  // 多余的一段不是「多一个工作表」：按首/末 `#` 切，最后一段是行号 ⇒ 「多余」不是整数（R-T6-10）。
+  await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2#多余" })).rejects.toMatchObject({ code: "bad_input" })
+  // 两段（缺行号）也要拒。
+  await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1" })).rejects.toMatchObject({ code: "bad_input" })
+})
+
+test("get_citation 对「已排除」的实体照样能取到引用", async () => {
+  // `事实详情` 的默认口径是「已排除不返回」；出处工具必须传 includeExcluded:true，
+  // 否则模型问「这条为什么被排除」时得到 not_found（R-T6-11）。种子走共享夹具。
+  await 建实体(库(), { id: "e-排引", projectId: "p-工具-丁", value: "已排除的人", trustState: "已排除" })
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-排引" })
+  expect((结果.数据 as { 事实: { id: string } }).事实.id).toBe("e-排引")
 })
