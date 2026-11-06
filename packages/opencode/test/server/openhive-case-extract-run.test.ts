@@ -107,4 +107,74 @@ describe("抽取材料", () => {
     expect(r.片们).toEqual([])
     expect(假.次数()).toBe(0)
   })
+
+  test("合法缺失（事件没给时间）只标存疑，不重试", async () => {
+    const 假 = 假调用([
+      async () => ({
+        实体: [{ 类型: "人", 取值: "张三" }],
+        关系: [],
+        事件: [{ 类型: "见面", 参与人: ["张三"], 原文: "张三与李四见面" }],
+      }),
+    ])
+    const r = await 抽取材料({
+      文本: "张三与李四见面。",
+      fileName: "笔录.txt",
+      抽取器: { 模型标识: "test/model", 调用: 假.调用 },
+    })
+    expect(假.次数()).toBe(1)
+    expect(r.片们[0]?.尝试).toBe(1)
+    expect(r.片们[0]?.事件[0]?.存疑).toBe(true)
+    expect(r.片们[0]?.问题.length).toBe(1)
+  })
+
+  test("只重试失败的那一片", async () => {
+    // 40 行 × ~68 字 ≈ 2760 字 ⇒ 默认 1500 字切出 2 片。
+    const 文本 = Array.from({ length: 40 }, (_, i) => `第${i}行：张三与李四见面。` + "字".repeat(55)).join("\n")
+    const 假 = 假调用([
+      // 第 1 片第 1 次：编造一个片里没有的人 ⇒ 回读不过 ⇒ 只重试第 1 片。
+      async () => ({ 实体: [{ 类型: "人", 取值: "王五" }], 关系: [], 事件: [] }),
+      async () => 好输出(),
+    ])
+    const r = await 抽取材料({
+      文本,
+      fileName: "笔录.txt",
+      抽取器: { 模型标识: "test/model", 调用: 假.调用 },
+    })
+    expect(假.次数()).toBe(3)
+    expect(r.片们.map((片) => 片.尝试)).toEqual([2, 1])
+  })
+
+  test("最后一次尝试抛错 ⇒ 保留之前回读通过的部分", async () => {
+    const 假 = 假调用([
+      async () => ({
+        实体: [
+          { 类型: "人", 取值: "张三" },
+          { 类型: "人", 取值: "王五" },
+        ],
+        关系: [],
+        事件: [],
+      }),
+      async () => {
+        throw new Error("timeout")
+      },
+    ])
+    const r = await 抽取材料(
+      { 文本: "张三向李四转账。", fileName: "笔录.txt", 抽取器: { 模型标识: "test/model", 调用: 假.调用 } },
+      { 最多尝试: 2 },
+    )
+    expect(r.片们[0]?.实体.map((e) => e.canonicalValue)).toEqual(["张三"])
+    expect(r.片们[0]?.问题.some((s) => s.includes("王五"))).toBe(true)
+    expect(r.片们[0]?.问题.some((s) => s.includes("模型调用失败"))).toBe(true)
+  })
+
+  test("最多尝试不是正整数 ⇒ 直接报错（别让「尝试」字段撒谎）", async () => {
+    const 假 = 假调用([async () => 好输出()])
+    await expect(
+      抽取材料(
+        { 文本: "张三。", fileName: "a.txt", 抽取器: { 模型标识: "test/model", 调用: 假.调用 } },
+        { 最多尝试: 2.5 },
+      ),
+    ).rejects.toThrow("最多尝试")
+    expect(假.次数()).toBe(0)
+  })
 })
