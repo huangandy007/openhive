@@ -265,6 +265,23 @@ beforeAll(async () => {
     value: "号X",
     trustState: "已排除",
   })
+  // 规范值相同、类型不同的一对（`case_entity_type` 只收固定枚举，所以用「人」「号码」）：
+  // 两侧都按 id 解析 ⇒ 两边 id 不同、value 相同，`甲.id === 乙.id` 挡不住，必须再比 value
+  // （复审 Minor 5；不依赖 type 排序，避免 collation 换顺序后用例漂）。
+  await upsertEntity(库(), {
+    id: "e-同A",
+    projectId: 身份戊.projectId,
+    type: "人",
+    canonicalValue: "同名值",
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-同B",
+    projectId: 身份戊.projectId,
+    type: "号码",
+    canonicalValue: "同名值",
+    aliases: [],
+  })
   // 转账两条（出/入各一）＋ 一条**连着同一账户的同案非转账**关系，证明汇总按 type 过滤。
   // ⚠️ 这条关系的**一端必须是账户 e-账**：brief 原写 e-张三→e-对手甲，那样它根本不在
   // `(from_id = 账户 or to_id = 账户)` 的取数范围内，删掉 `type = '转账'` 汇总也不变 ⇒
@@ -354,6 +371,18 @@ beforeAll(async () => {
     sourceKind: "data",
     trustState: "自动抽取",
   })
+  // 一笔**转账**到「已排除」实体：只钉 `aggregate_money` 对手方 join 的端点过滤。
+  // 账户取张三而不是 e-账，避免改掉既有 `账号` 汇总期望（出 1 笔 1000.00）。
+  await insertRelation(库(), {
+    id: "r-张X转",
+    projectId: 身份戊.projectId,
+    fromId: "e-张三",
+    toId: "e-号X",
+    type: "转账",
+    amount: 100,
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
   // 余额明细：amount/balance 是 numeric，按 `FactRowInput` 的契约一律传 string。
   // ⚠️ `started_at` 与 `row_no` **逆序配对**：若两者同序，删掉 SQL 的 `order by started_at`
   // 后（PGlite 会走主键索引、按 row_no 返回）结果仍是 100/900，变异不可判别（2026-11-06 实测）。
@@ -425,6 +454,18 @@ beforeAll(async () => {
     summary: "只有张三",
     trustState: "自动抽取",
   })
+  // participants 里混一个「已排除」实体的规范值：事件本身正常，只钉 §9.1 的值过滤。
+  await insertEvent(库(), {
+    id: "ev-排参",
+    projectId: 身份戊.projectId,
+    type: "同框",
+    occurredAt: 1_760_000_300,
+    occurredRaw: "2026年3月9日",
+    precision: "到日",
+    participants: ["号X", "张三"],
+    summary: "含已排除实体",
+    trustState: "自动抽取",
+  })
 })
 
 afterAll(async () => {
@@ -443,6 +484,8 @@ test("search_materials 只返回本项目", async () => {
   const 结果 = await search_materials(ctx(身份甲), { 关键词: "张三" })
   expect(ids(结果)).toEqual(["m-甲"])
   expect(结果.口径).toContain("文件名与正文")
+  // 限定的是「材料范围」，不是「材料类型」（Minor 2）。
+  expect(结果.口径).toContain("材料范围仅限本项目")
 })
 
 test("search_materials 正文命中返回片段而非全文", async () => {
@@ -524,6 +567,16 @@ test("query_relations 时间窗按「有交集」判，不是按首末时间都�
   expect(ids计(await query_relations(ctx(身份丁), { 实体: "甲", 起: 200, 止: 400 }))).toContain("r-跨")
 })
 
+test("query_relations 不返回端点「已排除」的关系（§9.1）", async () => {
+  // r-甲X / r-张X转 都连着「已排除」实体 e-号X，关系本身正常 ⇒ 只有端点过滤能挡住。
+  const 结果 = await query_relations(ctx(身份戊), { 实体: "张三" })
+  expect(JSON.stringify(结果.数据)).not.toContain("号X")
+  expect(ids计(结果)).not.toContain("r-甲X")
+  expect(ids计(结果)).not.toContain("r-张X转")
+  // 正常关系必须仍在：删掉整条取数也会「不含号X」。
+  expect(ids计(结果)).toContain("r-甲N")
+})
+
 test("query_relations 给不存在的实体 ⇒ not_found", async () => {
   await expect(query_relations(ctx(身份丁), { 实体: "查无此人" })).rejects.toMatchObject({ code: "not_found" })
 })
@@ -546,6 +599,27 @@ test("query_events 返回原始值、规范值、精度三件套", async () => {
   // 形状：`participants` 走 `array_to_json(...)::text` + `解JSON`。不加这条，把 `array_to_json` 拆掉仍绿。
   expect(Array.isArray(行[0]!.participants)).toBe(true)
   expect(行[0]!.participants).toEqual(["参与人"])
+})
+
+test("query_events 的 participants 剔除「已排除」实体的规范值", async () => {
+  const 行们 = (await query_events(ctx(身份戊), { 类型: "同框" })).数据 as {
+    id: string
+    participants: string[]
+  }[]
+  // 事件本身正常、只有参与值落在已排除实体上：值必须被剔除，否则回答里会漏出「号X」。
+  expect(行们.find((行) => 行.id === "ev-排参")!.participants).toEqual(["张三"])
+  expect(JSON.stringify(行们)).not.toContain("号X")
+})
+
+test("解析实体规则写进 query_events / aggregate_money / find_crossings 的口径", async () => {
+  // 规则只写在 query_relations 口径里时，另三个工具的回答会让模型对同名/重名实体自行猜（Minor 4）。
+  for (const 口径 of [
+    (await query_events(ctx(身份丁), {})).口径,
+    (await aggregate_money(ctx(身份戊), { 账户: 账号 })).口径,
+    (await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })).口径,
+  ]) {
+    expect(口径).toContain("type 升序、id 升序")
+  }
 })
 
 test("get_citation 对实体返回事实 + 引用", async () => {
@@ -571,6 +645,14 @@ test("get_citation 明细行：工作表名含 # 也能定位", async () => {
   const 明细行 = (结果.数据 as { 明细行: { sheet: string; row_no: number } }).明细行
   expect(明细行.sheet).toBe("Sheet#1")
   expect(明细行.row_no).toBe(2)
+})
+
+test("get_citation 明细行没有引用 ⇒ 缺口说明尚未在生产写入", async () => {
+  // `m-甲#Sheet#1#2` 没有种引用；`fact_type='row'` 今天也没有生产写入者（只有测试手工种）。
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet#1#2" })
+  expect((结果.数据 as { 引用: unknown[] }).引用).toEqual([])
+  expect(结果.缺口?.join() ?? "").toContain("尚未在生产写入")
+  expect(结果.缺口?.join() ?? "").toContain("material/sheet/row_no")
 })
 
 test("get_citation 事实id 形状不对 ⇒ bad_input", async () => {
@@ -615,6 +697,18 @@ test("aggregate_money 余额走势给首末与极值，并说明截断", async (
   expect(结果.缺口?.join()).toContain("超过 200 行")
 })
 
+test("aggregate_money 对手方不返回「已排除」实体（§9.1）", async () => {
+  // 张三有一笔到 e-号X 的转账（关系本身正常）⇒ 只有对手方 join 的端点过滤能挡住。
+  const 数据 = (await aggregate_money(ctx(身份戊), { 账户: "张三" })).数据 as { 对手方: unknown[] }
+  expect(JSON.stringify(数据.对手方)).not.toContain("号X")
+  expect(数据.对手方).toEqual([])
+})
+
+test("固定上限写进缺口（对手方 10、共同时空 50）", async () => {
+  expect((await aggregate_money(ctx(身份戊), { 账户: 账号 })).缺口?.join()).toContain("最多 10 条")
+  expect((await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })).缺口?.join()).toContain("最多 50 条")
+})
+
 test("aggregate_money 本项目没有该账户的流水 ⇒ 余额走势 null 并说明", async () => {
   const 结果 = await aggregate_money(ctx(身份戊), { 账户: "对手甲" })
   expect((结果.数据 as { 余额走势: unknown }).余额走势).toBeNull()
@@ -637,6 +731,13 @@ test("find_crossings 不把「已排除」关系算进交集", async () => {
   expect(JSON.stringify(结果)).not.toContain("13900002222")
   // e-号X 是「已排除」实体、两条关系都正常 ⇒ 回查实体时也必须过滤掉它。
   expect(JSON.stringify(结果)).not.toContain("号X")
+})
+
+test("find_crossings 不同实体但规范值相同 ⇒ 也拒（id 相同挡不住）", async () => {
+  // 两侧都按 id 解析：e-同A（人）与 e-同B（号码）id 不同、value 都是「同名值」。
+  await expect(find_crossings(ctx(身份戊), { 甲: "e-同A", 乙: "e-同B" })).rejects.toMatchObject({
+    code: "bad_input",
+  })
 })
 
 test("find_crossings 甲和乙是同一实体 ⇒ bad_input", async () => {

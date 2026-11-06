@@ -145,7 +145,7 @@ export async function search_materials(
   }))
   return {
     数据,
-    口径: "材料检索按文件名与正文关键词（ilike），材料类型仅限本项目；正文命中给片段不给全文。",
+    口径: "材料检索按文件名与正文关键词（ilike），材料范围仅限本项目；正文命中给片段不给全文。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
 }
@@ -259,7 +259,12 @@ export async function query_relations(
     条件.push(sql`(r.from_id = ${实体.id} or r.to_id = ${实体.id})`)
   }
   if (args.类型 !== undefined) 条件.push(sql`r.type = ${args.类型}`)
-  if (args.含已排除 !== true) 条件.push(sql`r.trust_state <> '已排除'`)
+  if (args.含已排除 !== true) {
+    条件.push(sql`r.trust_state <> '已排除'`)
+    // §9.1：「已排除」不只是关系自身的信任态，端点实体被排除时这条关系同样不该回到回答里。
+    条件.push(sql`起.trust_state <> '已排除'`)
+    条件.push(sql`终.trust_state <> '已排除'`)
+  }
   // 「与窗口有交集」：最晚的一次不早于起，且最早的一次不晚于止。两端都缺时按 0 兜底，
   // 让「没有时间的关系」只在没有窗口约束时出现。
   if (args.起 !== undefined) 条件.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${args.起}`)
@@ -295,7 +300,7 @@ export async function query_relations(
     数据,
     口径:
       "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时按 type 升序、id 升序取第一条）与类型过滤；" +
-      "时间窗按「与窗口有交集」判定；默认不含「已排除」；金额为 numeric 字符串，勿自行转浮点；" +
+      "时间窗按「与窗口有交集」判定；默认不含「已排除」的关系及其端点实体；金额为 numeric 字符串，勿自行转浮点；" +
       "时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
@@ -320,6 +325,18 @@ export async function query_events(
     // sha256 前 32 位，两者永不相等。比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
     条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体.value})`)
   }
+  // §9.1：`participants` 存的是实体规范值、不是 id，join 不到实体表；先取本项目「已排除」
+  // 实体的规范值集合，出库后在 JS 里按值剔除（实现不足 20 行，故不选「写进缺口」的退路）。
+  const 已排除值 = new Set<string>()
+  if (args.含已排除 !== true) {
+    const 排除行 = rowsOf(
+      await ctx.db.execute(sql`
+        select distinct canonical_value from auth.case_entity
+         where project_id = ${ctx.身份.projectId} and trust_state = '已排除'
+      `),
+    )
+    for (const 行 of 排除行) 已排除值.add(String(行.canonical_value))
+  }
   const rows = await ctx.db.execute(sql`
     select id, type, occurred_at, occurred_raw, precision, time_type,
            array_to_json(participants)::text as participants, summary, trust_state
@@ -335,15 +352,16 @@ export async function query_events(
     occurred_raw: 行.occurred_raw as string | null,
     precision: 行.precision as string | null,
     time_type: 行.time_type as string | null,
-    participants: 解JSON<string[]>(行.participants, []),
+    participants: 解JSON<string[]>(行.participants, []).filter((值) => !已排除值.has(值)),
     summary: 行.summary as string | null,
     trust_state: 行.trust_state as string,
   }))
   return {
     数据,
     口径:
-      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值）过滤；时间按 occurred_at 闭区间；" +
-      "默认不含「已排除」；时间以规范值（UTC+8）比较，按各自精度标注。",
+      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时按 type 升序、" +
+      "id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
+      "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
 }
@@ -394,6 +412,13 @@ export async function get_citation(
     // 的库约束也允许 `row`——计划 5 的单条事实详情只服务三类事实，没把 row 收进类型。
     // SQL 按字符串比较、不依赖这个类型，所以只在调用点摊开，不复制第二份引用查询。
     const 引用 = await 引用们(ctx.db, ctx.身份.projectId, "row" as unknown as 留痕类型, 规范键)
+    // `case_citation.fact_type='row'` 今天**没有生产写入者**（`case-ingest.ts` 只写
+    // entity/relation/event 三处；测试里的 row 引用是手工种的）。查不到就如实说，
+    // 别让模型以为「没有出处」等于「这行没有依据」。
+    const 缺口 =
+      引用.length === 0
+        ? (["明细行引用尚未在生产写入，查不到时只能按 material/sheet/row_no 定位"] as const)
+        : undefined
     return {
       数据: {
         明细行: {
@@ -416,6 +441,7 @@ export async function get_citation(
         引用: 引用行(引用),
       },
       口径: "明细行按「材料#工作表#行号」解析；`引用` 为库列名。",
+      ...(缺口 === undefined ? {} : { 缺口 }),
     }
   }
   const 事实 = await 事实详情(ctx.db, {
@@ -436,6 +462,7 @@ export async function get_citation(
 const 对手方上限 = 10
 const 余额行上限 = 200
 const 每侧关系上限 = 500
+const 共同时空上限 = 50
 
 /**
  * 资金聚合：汇总 / 对手方 / 余额走势三块，**每块的口径与缺口随结果一起返回**。
@@ -496,6 +523,7 @@ export async function aggregate_money(
   // 而口径固定「出 → 入」。缺了这一步，同样的库、不同的 collation 就会换顺序。
   汇总.sort((左, 右) => (左.方向 === "出" ? 0 : 1) - (右.方向 === "出" ? 0 : 1))
 
+  // §9.1：对手方实体被「已排除」时，不能把它的名字与金额一起回给模型（join 条件里过滤）。
   const 对手方 = rowsOf(
     await ctx.db.execute(sql`
       select 对手.canonical_value as 对手方,
@@ -506,6 +534,7 @@ export async function aggregate_money(
         join auth.case_entity 对手
           on 对手.project_id = r.project_id
          and 对手.id = case when r.from_id = ${账户.id} then r.to_id else r.from_id end
+         and 对手.trust_state <> '已排除'
        where ${sql.join(对手方条件, sql` and `)}
        group by 对手.canonical_value, 方向
        order by sum(r.amount) desc nulls last, 对手.canonical_value asc
@@ -557,14 +586,19 @@ export async function aggregate_money(
   const 缺口 = [
     "只统计已抽成关系（type=转账）的转账；明细行里未抽成关系的转账不计入",
     "对手方按实体规范值聚合；未合并的重复实体不会自动合并",
+    `对手方最多 ${对手方上限} 条（按合计金额降序）`,
     "余额只按精确匹配取明细行，未做模糊匹配；超过 200 行截断",
   ]
+  // 与 `截断缺口` 同口径：命中上限才说「可能还有更多」，没满就不制造假警报。
+  if (对手方.length === 对手方上限) 缺口.push(`对手方已截到前 ${对手方上限} 条，可能还有更多`)
   if (余额行.length === 0) 缺口.push("本项目明细行里没有该账户的流水（按 counterparty/caller/callee 精确匹配）")
 
   return {
     数据: { 汇总, 对手方, 余额走势 },
     口径:
-      "汇总与对手方只统计 type=转账 且非「已排除」的关系，按出/入分组；金额为 numeric 字符串，勿自行转浮点；" +
+      "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
+      "账户先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
+      "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势按明细行的 counterparty/caller/callee 精确匹配账户的实体规范值。",
     缺口,
   }
@@ -588,8 +622,10 @@ export async function find_crossings(
   const 乙 = await 解析实体(ctx, args.乙, "乙")
   // fail-closed：`participants @> array[X, X]` 的多重集语义对只含一个 X 的事件可能恒假
   // （漏报），「找自己与自己的交叉」本身也没有意义——不要静默返回空。
-  if (甲.id === 乙.id) {
-    throw new 工具错误("bad_input", `甲和乙是同一个实体：${甲.value}，找自己与自己的交叉没有意义`)
+  // 只比 id 挡不住「同一规范值、不同类型」的两条实体行（`case_entity` 唯一索引含 type）；
+  // 从两个方向问同一个值时，按 id 解析与按规范值解析会落到不同的行。
+  if (甲.id === 乙.id || 甲.value === 乙.value) {
+    throw new 工具错误("bad_input", `甲和乙是同一个实体（或同一规范值）：${甲.value}，找自己与自己的交叉没有意义`)
   }
 
   const 另一端们 = async (实体id: string): Promise<{ 值们: string[]; 用满: boolean }> => {
@@ -646,7 +682,7 @@ export async function find_crossings(
         from auth.case_event
        where ${sql.join(时空条件, sql` and `)}
        order by occurred_at desc nulls last, id asc
-       limit 50
+       limit ${共同时空上限}
     `),
   ).map((行) => ({
     id: String(行.id),
@@ -658,14 +694,19 @@ export async function find_crossings(
     summary: 行.summary as string | null,
   }))
 
-  const 缺口 = ["按关系连通算；同一实体若被拆成两条未合并的实体，交集会漏"]
+  const 缺口 = [
+    "按关系连通算；同一实体若被拆成两条未合并的实体，交集会漏",
+    `共同时空最多 ${共同时空上限} 条（按 occurred_at 倒序）`,
+  ]
   if (侧甲.用满 || 侧乙.用满) 缺口.push("每侧最多取 500 条关系，交集可能不全")
+  if (共同时空.length === 共同时空上限) 缺口.push(`共同时空已截到前 ${共同时空上限} 条，可能还有更多`)
   缺口.push("共同时空按事件参与实体判；只覆盖已抽成事件的时空点")
 
   return {
     数据: { 共同关联, 共同时空 },
     口径:
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
+      "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
       "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。",
     缺口,
   }

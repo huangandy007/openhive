@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path"
+import { WorkspaceRoot } from "@opencode-ai/core/workspace-root"
 import { assertSafeUserId } from "@opencode-ai/auth/workspace"
 
 /**
@@ -35,6 +36,11 @@ const 取字符串 = (record: Record<string, unknown>, key: string): string | un
  *
  * 目录必须**正好**是 `<workspaceRoot>/<userId>/<projectId>`：多一段、少一段、指向别人的
  * 沙箱、带 `..` 逃逸，一律拒。拒绝是安全的默认值——猜错的代价是把别人的项目数据发给模型。
+ *
+ * 两侧都要先归一化成**同一形态**再比：配置侧根常是 8.3 短名（本机 `%TEMP%` =
+ * `C:\Users\ADMINI~1\…`），而 `_meta.directory` 由内核经 `WorkspaceRoot.canonicalRoot`
+ * 给成长名。不归一化 ⇒ `relative` 得到 `..\..\Administrator\…` ⇒ **每次调用都
+ * identity_required**。把门修在共同出口（`#004-09`），HTTP / in-process / 测试一次覆盖。
  */
 export function 解析调用身份(input: { readonly workspaceRoot: string; readonly meta: unknown }): 调用身份 {
   if (input.meta === null || typeof input.meta !== "object" || Array.isArray(input.meta)) {
@@ -52,8 +58,10 @@ export function 解析调用身份(input: { readonly workspaceRoot: string; read
   const directory = 取字符串(record, DIRECTORY_META_KEY)
   if (directory === undefined) throw new 身份错误("缺少调用目录：_meta 未注入 openhive/directory")
 
-  const 期望根 = resolve(input.workspaceRoot, userId)
-  const 相对 = relative(期望根, resolve(directory))
+  // `canonicalRoot` 幂等、且会把「不存在的最长前缀」规范化后把剩余段拼回去，
+  // 所以项目目录尚未建出来时也不会误判。`resolve` 已在它内部做过。
+  const 期望根 = resolve(WorkspaceRoot.canonicalRoot(input.workspaceRoot), userId)
+  const 相对 = relative(期望根, WorkspaceRoot.canonicalRoot(directory))
   if (相对 === "" || isAbsolute(相对)) {
     throw new 身份错误(`调用目录必须落在自己的沙箱里：${JSON.stringify(directory)}`)
   }

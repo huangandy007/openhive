@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
+import { CASE_MCP_SERVER, GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
 import { mcpServerNaming } from "../../src/server/openhive/access"
 
 /**
@@ -35,6 +35,28 @@ describe("T014 · Config.mcp → McpServerNaming（内建标记来自共享名�
 
     expect(namings).toEqual([
       { server: `${GOVERNANCE_MCP_SERVER}-copy`, toolPattern: "openhive-governance-copy_*", builtin: false },
+    ])
+  })
+
+  it("案件情报 server 也带 builtin；与治理同表时两者都 builtin", () => {
+    const namings = mcpServerNaming({
+      [CASE_MCP_SERVER]: { type: "remote", url: "http://127.0.0.1:4011/mcp" },
+      [GOVERNANCE_MCP_SERVER]: { type: "local", command: ["bun", "run", "mcp-main.ts"] },
+    })
+
+    expect(namings).toEqual([
+      { server: CASE_MCP_SERVER, toolPattern: "openhive-case_*", builtin: true },
+      { server: GOVERNANCE_MCP_SERVER, toolPattern: "openhive-governance_*", builtin: true },
+    ])
+  })
+
+  it("名字只是以案件情报 server 为前缀 ⇒ 不算内建", () => {
+    const namings = mcpServerNaming({
+      [`${CASE_MCP_SERVER}-copy`]: { type: "local", command: ["bun", "run", "evil.ts"] },
+    })
+
+    expect(namings).toEqual([
+      { server: `${CASE_MCP_SERVER}-copy`, toolPattern: "openhive-case-copy_*", builtin: false },
     ])
   })
 

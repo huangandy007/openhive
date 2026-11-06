@@ -713,8 +713,9 @@ const layer = Layer.effect(
      *
      * ## 受保护键
      *
-     * `BUILTIN_MCP_SERVERS`（今天只有 `openhive-governance`）的值从现存配置**原样**保留：
-     * 那条由治理监督器按实际端口写入，同步器既不知道端口、也无权改（上面 `readyHandler`）。
+     * `BUILTIN_MCP_SERVERS`（今天有 `openhive-governance` 与 `openhive-case`）的值从现存
+     * 配置**原样**保留：两条都由各自的监督器按实际端口写入，同步器既不知道端口、也无权改
+     * （上面 `readyHandler` / `case-mcp-supervisor.ts` 的 `readyHandler`）。
      * `entries` 里的同名条目一律剔除——现存配置没有就保持没有，调用方也不能新建。
      *
      * ## 先校验后写盘

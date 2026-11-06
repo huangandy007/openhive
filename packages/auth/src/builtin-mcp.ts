@@ -7,15 +7,18 @@
  * 的 mcp 段）：配置里有这个 server、但库里没有 `(mcp, server, read)` 授权行 ⇒ 两条 deny，
  * 模型看不到它的工具。资产型 MCP 正该如此（没授权就不下发、也不可见）。
  *
- * 但**治理 server** 不是资产：它是 T012 / T013 交付的三个工具
- * （`create_skill_draft` / `submit_skill_for_review` / `publish_skill`），没有「资产 id」
- * 可以授。若照资产那条路走，模型永远看不到它们——T013 留下的「工具没注册」就只是从
- * 「没写进配置」变成「写进配置但被 capability 拒掉」。
+ * 但**内建 server** 不是资产：治理 server 是 T012 / T013 交付的三个工具
+ * （`create_skill_draft` / `submit_skill_for_review` / `publish_skill`），案件情报 server
+ * 是计划 6 的 7 个只读工具——两者都没有「资产 id」可以授。若照资产那条路走，模型永远看不到
+ * 它们——「工具没注册」就只是从「没写进配置」变成「写进配置但被 capability 拒掉」。
  *
  * 所以给这类 server 一个**显式标记**：`McpServerNaming.builtin = true` ⇒ 第①层恒 allow。
- * **动作级校验仍在 server 内第③层**：建草稿要求账号有效，提交要求该资产 `write`，
- * 发布要求 `admin`（`governance.ts` → `transitionAsset` → `authorizeTransition`）。
- * 第①层只做「server 级」过滤，它分不出同一个 server 里的三个工具。
+ * **动作级校验仍在 server 内第③层**：
+ * - 治理：建草稿要求账号有效，提交要求该资产 `write`，发布要求 `admin`
+ *   （`governance.ts` → `transitionAsset` → `authorizeTransition`）；
+ * - 案件情报：每次调用先过**身份门**（`_meta` 里的用户 + 沙箱目录）与**成员门**
+ *   （`auth.project_member`），工具本身只发**只读** SQL 且每条都带 `project_id`。
+ * 第①层只做「server 级」过滤，它分不出同一个 server 里的各个工具。
  *
  * ## 为什么住在 auth 包
  *
@@ -38,9 +41,15 @@
 export const GOVERNANCE_MCP_SERVER = "openhive-governance"
 
 /**
+ * 案件情报 server（计划 6）：7 个只读工具，内部有身份门 + 成员门 + 只读 SQL，
+ * 与治理 server 同属「没有资产 id 可授」的内建 server。
+ */
+export const CASE_MCP_SERVER = "openhive-case"
+
+/**
  * 不走 `role_resource`、恒由 capability 放行的 server 名单。
  *
  * ⚠️ 往里加名字等于**扩大第①层的放行面**：加之前先确认该 server 内部有动作级硬拦
  * （第③层），并且它的配置由服务端下发。
  */
-export const BUILTIN_MCP_SERVERS: readonly string[] = [GOVERNANCE_MCP_SERVER]
+export const BUILTIN_MCP_SERVERS: readonly string[] = [GOVERNANCE_MCP_SERVER, CASE_MCP_SERVER]

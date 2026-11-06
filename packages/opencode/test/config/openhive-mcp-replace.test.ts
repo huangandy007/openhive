@@ -74,6 +74,16 @@ const 初稿 = `{
   }
 }`
 
+const 初稿含案件 = `{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "test/model",
+  "mcp": {
+    "openhive-governance": { "type": "remote", "url": "http://127.0.0.1:4010/mcp" },
+    "openhive-case": { "type": "remote", "url": "http://127.0.0.1:4011/mcp" },
+    "asset_old": { "type": "local", "command": ["old"] }
+  }
+}`
+
 const 初稿无治理 = `{
   "$schema": "https://opencode.ai/config.json",
   "model": "test/model",
@@ -125,6 +135,26 @@ describe("Config.replaceGlobalMcp（批次 4 · §3.3.4）", () => {
             "openhive-governance": { type: "remote", url: "http://127.0.0.1:9999/mcp" },
           })
           expect(JSON.parse(读文件(dir)).mcp).toEqual({ "openhive-governance": 治理 })
+        }),
+      )
+    }),
+  )
+
+  it.effect("案件情报 server 也在受保护名单：同步其它条目后它原样保留", () =>
+    Effect.gen(function* () {
+      const dir = 临时全局目录(初稿含案件)
+      yield* withGlobalConfigDir(
+        dir,
+        Effect.gen(function* () {
+          yield* Config.use.replaceGlobalMcp({
+            asset_new: { type: "remote", url: "https://new.example/mcp" },
+          })
+          const 之后 = JSON.parse(读文件(dir))
+          expect(之后.mcp).toEqual({
+            asset_new: { type: "remote", url: "https://new.example/mcp" },
+            "openhive-governance": 治理,
+            "openhive-case": { type: "remote", url: "http://127.0.0.1:4011/mcp" },
+          })
         }),
       )
     }),

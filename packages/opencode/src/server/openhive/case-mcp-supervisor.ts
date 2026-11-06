@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import { Cause, Effect, Layer } from "effect"
+import { CASE_MCP_SERVER as AUTH_CASE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
 import { Config } from "@/config/config"
 import { MCP_PATH, PORT_ENV, READY_PREFIX } from "./case-mcp-http"
 import { 串行写Effect } from "./mcp-config-writer"
@@ -25,9 +26,11 @@ import { START_TIMEOUT_MS, spawnGovernanceMcp, startSupervision } from "./govern
  * 治理监督器与 MCP 配置同步器也在写同一份全局配置，直接 `yield* config.updateGlobal(...)`
  * 会让一方的条目整段丢失。失败只记 `error.name`，不回显配置原文（`mcp` 段含凭据）。
  *
- * ⚠️ HTTP 入口与挂载**无单测**（需要真进程 + 真 PG），记缺口表。
+ * ⚠️ **内核挂载层无单测**（需要真进程 + 真 PG）；HTTP 入口本身已有 4 条真服务用例。
  */
-export const CASE_MCP_SERVER = "openhive-case"
+// 名字只在 `@opencode-ai/auth/builtin-mcp` 定义一次：capability 的 builtin 名单也从那里读，
+// 两处各写一份字符串迟早漂移（`LEARNINGS #002-06`）。
+export const CASE_MCP_SERVER = AUTH_CASE_MCP_SERVER
 /** JSON 数组，覆盖默认命令（镜像里 bun 不在 PATH 时用）。 */
 export const COMMAND_ENV = "OPENHIVE_CASE_MCP_CMD"
 /** `off` ⇒ 显式关掉（即使 PG 齐全）。 */
