@@ -150,11 +150,11 @@ test("query_entities 关键词命中别名，且 aliases 读回来是数组", as
   })
   const 行 = (await query_entities(ctx(身份丙), { 关键词: "张叁" })).数据 as Record<string, unknown>[]
   expect(行.map((条) => 条.id)).toEqual(["e-别"])
-  // 形状断言：`text[]` 两个驱动读回形状不同，查询必须 `array_to_json(...)::text` 再解析。
-  // 少了这一条，裸选在 PGlite 上拿到数组、在生产 bun-sql 上拿到 `"{张叁}"` 字符串，测试却全绿。
+  // 形状断言：仓内没有「数组列读回形状」的先例可依，查询与解析必须成对
+  // （`array_to_json(...)::text` ＋ `解JSON`）。少了这一条，把 SQL 与 JS 任一侧单改回去都不红。
   expect(Array.isArray(行[0]!.aliases)).toBe(true)
   expect(行[0]!.aliases).toContain("张叁")
-  expect(typeof 行[0]!.attrs).toBe("object")
+  expect(行[0]!.attrs).toEqual({})
 })
 
 test("限制非整数 / 0 / 负数 ⇒ bad_input", async () => {

@@ -62,10 +62,14 @@ export function 片段(正文: string, 关键词: string | undefined, 半径 = 4
 }
 
 /**
- * `text[]` / `jsonb` 一律**以 JSON 文本出库**再解析：两个驱动的读回形状没有先例可依
- * （`case-fact-read.ts:22-26` 的结论）。所以查询里必须写 `array_to_json(col)::text` 或
- * `col::text`，不要裸选后 `as string[]` —— 那在 bun-sql 上会拿到 `"{a,b}"` 字符串，
- * 测试（PGlite）却可能是数组，绿在测试、错在生产。
+ * `text[]` / `jsonb` 一律**以 JSON 文本出库**再解析：仓内没有「驱动读回形状」的约定或先例
+ * 可依（`case-fact-read.ts:22-25` 记的是同一件事）。查询写 `array_to_json(col)::text` 或
+ * `col::text`，出库形状就与驱动无关；裸选后 `as string[]` 则把「程序库给数组还是给
+ * `"{a,b}"` 文本」这种不确定行为直接当成契约，测试与生产一旦不同就是绿在测试、错在生产。
+ *
+ * （不要把风险归因到某个具体驱动：2026-11-06 复审用真 PG、PGlite socket 与
+ * `drizzle-orm/pglite` 三处实测，裸选 `text[]` / `jsonb` 都回数组 / 对象。结论是
+ * 「没有先例，所以不给它机会」，不是「某个驱动会回字符串」。）
  */
 export function 解JSON<T>(值: unknown, 兜底: T): T {
   if (typeof 值 !== "string" || 值 === "") return 兜底
