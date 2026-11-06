@@ -11,6 +11,7 @@ import {
   操作人快照,
 } from "./case-fact-change"
 import type { 事实信任态 } from "./case-fact-store"
+import { 清依赖标记, 标依赖已变更 } from "./case-propagation"
 import { inTransaction, type Queryable } from "./case-store"
 
 /**
@@ -394,21 +395,36 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
     const 当前 = await 读当前事实(tx, input.projectId, input.factType, input.factId)
     if (当前 === undefined) throw new 裁决冲突("找不到这条事实", "fact_not_found")
 
+    let 结果: 裁决结果
     if (input.action === "确认" || input.action === "排除" || input.action === "存疑") {
-      const 目标: 事实信任态 =
-        input.action === "确认" ? "已确认" : input.action === "排除" ? "已排除" : "存疑"
       // §9.2：选「错」要写一句话并选原因。库约束也会挡，但在这里先回一句人话。
       if (input.action === "排除" && (input.reasonKind === null || input.reasonKind === undefined || !input.reasonText?.trim()))
         throw new 裁决冲突("判定为错时必须选原因并写一句话", "bad_changes")
       if (input.action !== "排除" && input.reasonKind != null)
         throw new 裁决冲突("只有「排除 / 修正」需要原因", "bad_changes")
-      return 只改状态(tx, input, 当前, 目标)
+      结果 = await 只改状态(tx, input, 当前, 目标态(input.action))
+    } else if (input.action === "修正") {
+      结果 = await 修正(tx, input, 当前)
+    } else if (input.action === "撤销") {
+      结果 = await 撤销(tx, input, 当前)
+    } else {
+      const 未知: never = input.action
+      throw new 裁决冲突(`不认识的裁决动作：${String(未知)}`, "bad_changes")
     }
 
-    if (input.action === "修正") return 修正(tx, input, 当前)
-    if (input.action === "撤销") return 撤销(tx, input, 当前)
+    // §9.4：值真的变了才传播（确认 / 存疑只是「看过了」）。
+    if (input.factType === "entity" && (input.action === "修正" || input.action === "排除"))
+      await 标依赖已变更(tx, input.projectId, input.factId)
+    // 依赖事实被人工动过 ⇒ 它已经被人复核，标记清掉。
+    if (input.factType === "relation" || input.factType === "event")
+      await 清依赖标记(tx, input.projectId, input.factType, input.factId)
 
-    const 未知: never = input.action
-    throw new 裁决冲突(`不认识的裁决动作：${String(未知)}`, "bad_changes")
+    return 结果
   })
+}
+
+function 目标态(action: 裁决动作): 事实信任态 {
+  if (action === "确认") return "已确认"
+  if (action === "排除") return "已排除"
+  return "存疑"
 }
