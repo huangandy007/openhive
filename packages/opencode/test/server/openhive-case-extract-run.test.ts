@@ -169,12 +169,18 @@ describe("抽取材料", () => {
 
   test("最多尝试不是正整数 ⇒ 直接报错（别让「尝试」字段撒谎）", async () => {
     const 假 = 假调用([async () => 好输出()])
-    await expect(
-      抽取材料(
+    // 不用 `expect(...).rejects`：本机 bun 类型里它不被认作 Promise，oxlint 会报
+    // `await-thenable`（实测 1 warning）。
+    let 报错 = ""
+    try {
+      await 抽取材料(
         { 文本: "张三。", fileName: "a.txt", 抽取器: { 模型标识: "test/model", 调用: 假.调用 } },
         { 最多尝试: 2.5 },
-      ),
-    ).rejects.toThrow("最多尝试")
+      )
+    } catch (error) {
+      报错 = String(error)
+    }
+    expect(报错).toContain("最多尝试")
     expect(假.次数()).toBe(0)
   })
 })
