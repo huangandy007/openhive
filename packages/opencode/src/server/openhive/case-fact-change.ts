@@ -24,6 +24,15 @@ import type { Queryable } from "./case-store"
  * 不是「只变了哪几个字段」——少一个字段，撤销就会把那个字段留在半改状态。
  */
 
+/**
+ * ## 读 `before` / `after` 不做二次解析
+ *
+ * 写入走 `::text::jsonb`（`杰森`），对象到手就是对象；驱动对 jsonb **字符串标量**
+ * （`"abc"` / `"123"` / `"null"`）到手也已经是 JS 字符串。再 `JSON.parse` 一次会把
+ * `"123"` 变成数字、`"null"` 变成 null——证据按原样恢复的契约就破了。本表由 0033 新建、
+ * 没有二次编码的旧行，故不存在要兼容的历史；形状异常由测试里的裸 SQL 断言守，不靠 DAO 猜。
+ */
+
 export const 留痕类型们 = ["entity", "relation", "event"] as const
 export type 留痕类型 = (typeof 留痕类型们)[number]
 
@@ -64,20 +73,6 @@ export interface 留痕写入 {
  */
 const 杰森 = (值: unknown) =>
   值 === undefined || 值 === null ? sql`null` : sql`${JSON.stringify(值)}::text::jsonb`
-
-/** 读回来可能是对象（本仓驱动）也可能是字符串（旧行 / 别的驱动）——两种都收。 */
-function 读杰森(值: unknown): unknown {
-  if (值 === null || 值 === undefined) return null
-  if (typeof 值 !== "string") return 值
-  try {
-    return JSON.parse(值)
-  } catch {
-    // 驱动已把 jsonb **标量**解析成 JS 字符串（`"abc"` 到手就是 `abc`），JSON.parse 必然抛；
-    // 原样返回，别吞成 null——「有个值但读不出形状」和「没有值」是两件事，留痕是证据，
-    // 读不出就该看得见（`#006-28` 那类静默吞异常的教训）。
-    return 值
-  }
-}
 
 /**
  * 操作人快照：姓名与警号**写时取**，之后不再 join（同 `0015_audit_event` ②）。
@@ -155,8 +150,8 @@ export async function 变更历史(
   return 行们.map((行) => ({
     id: String(行.id),
     action: String(行.action) as 留痕动作,
-    before: 读杰森(行.before),
-    after: 读杰森(行.after),
+    before: 行.before ?? null,
+    after: 行.after ?? null,
     reasonKind: 纠正原因或空(行.reason_kind),
     reasonText: 文本或空(行.reason_text),
     actorId: String(行.actor_id),

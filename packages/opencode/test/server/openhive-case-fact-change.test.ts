@@ -95,21 +95,33 @@ describe("留痕读写", () => {
     expect(await 变更历史(库(), "p-别的项目", "relation", "r-1")).toEqual([])
   })
 
-  test("jsonb 标量被驱动解析成 JS 字符串时原样读回，不吞成 null", async () => {
-    await 记变更(库(), {
-      projectId: "p-标量",
-      factType: "entity",
-      factId: "e-标量",
-      action: "修正",
-      before: "旧值",
-      after: "新值",
-      reasonKind: "识别错",
-      reasonText: "材料本身有歧义",
-      actor: 甲,
-    })
-    const 条 = (await 变更历史(库(), "p-标量", "entity", "e-标量"))[0]
-    expect(条?.before).toBe("旧值")
-    expect(条?.after).toBe("新值")
+  test("jsonb 标量原样读回：不做二次解析（\"123\" 不变数字、\"null\" 不变 null）", async () => {
+    const 写 = async (id: string, action: "修正", before: unknown, after: unknown) => {
+      await 记变更(库(), {
+        projectId: "p-标量",
+        factType: "entity",
+        factId: id,
+        action,
+        before,
+        after,
+        reasonKind: "识别错",
+        reasonText: "材料本身有歧义",
+        actor: 甲,
+      })
+    }
+    await 写("e-标量-文本", "修正", "旧值", "新值")
+    await 写("e-标量-数字形", "修正", "123", "456")
+    await 写("e-标量-null形", "修正", "null", "null")
+    await 写("e-标量-布尔形", "修正", "true", "false")
+
+    const 读 = async (id: string) => (await 变更历史(库(), "p-标量", "entity", id))[0]
+
+    expect((await 读("e-标量-文本"))?.before).toBe("旧值")
+    expect((await 读("e-标量-文本"))?.after).toBe("新值")
+    expect((await 读("e-标量-数字形"))?.before).toBe("123")
+    expect((await 读("e-标量-数字形"))?.after).toBe("456")
+    expect((await 读("e-标量-null形"))?.before).toBe("null")
+    expect((await 读("e-标量-布尔形"))?.after).toBe("false")
   })
 })
 
@@ -124,7 +136,7 @@ describe("落库形状（变异 M1 的承重处）", () => {
       after: { trustState: "已确认" },
       actor: 甲,
     })
-    // 裸 SQL 读**落库类型**：`读杰森()` 会把字符串标量解析回对象，DAO 级断言看不见这个差别。
+    // 裸 SQL 读**落库类型**：读口不做二次解析，DAO 级断言看不见字符串标量这个差别。
     // 这条只有 `::text::jsonb` 能满足——变异成 `::jsonb` 后 `jsonb_typeof` = 'string'。
     const 行 = rowsOf(
       await 库().execute(sql`
