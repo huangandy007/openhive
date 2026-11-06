@@ -151,6 +151,28 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
   }
 }
 
+/**
+ * 撤掉一份材料**还在排队**的作业行，返回撤了几条。
+ *
+ * 只碰 `排队中`：运行中的作业归 worker 的 `runJob` 收尾，这里抢着改会与它互相覆盖
+ * （`runJob` 用 `(project_id, id)` 定位，它写的是 `完成` / `失败`）。设计 §8.1 的
+ * 「解析中取消」是**材料**落「有问题」、已提交切片保留，作业行仍旧跑完。
+ *
+ * 材料状态的推进由调用方在同一个事务里做——两笔必须一起提交，否则会出现
+ * 「材料回未入队、作业却还在排队」⇒ worker 认领后把它又推回解析中。
+ */
+export async function 取消排队作业(db: Queryable, projectId: string, materialId: string): Promise<number> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      update auth.case_ingest_job
+         set status = '已取消', finished_at = ${nowSeconds()}
+       where project_id = ${projectId} and material_id = ${materialId} and status = '排队中'
+      returning id
+    `),
+  )
+  return rows.length
+}
+
 export interface RunDeps {
   /** 读材料字节。注入而不是直接读盘：作业本身不该知道沙箱根长什么样。 */
   readFile: (sourcePath: string) => Promise<Uint8Array>

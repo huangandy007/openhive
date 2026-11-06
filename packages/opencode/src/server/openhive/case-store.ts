@@ -206,6 +206,10 @@ export async function applyParseAction(
   if (!next) throw new 解析冲突(`illegal transition: ${current.parseStatus} --${input.action}--> ?`, "illegal_transition")
 
   const 入队 = input.action === "入队"
+  // 「跳过」是人工终态：作业行不会为它建（见 `case-parse.ts` 的跳过分支），操作人只能
+  // 落在材料上，否则「谁跳过的」这条留痕就丢了。其余动作保持上一次入队的人
+  // （计划 3 缺口 #11：重新解析只把操作人写在作业行上），**不清空**。
+  const 记操作人 = 入队 || input.action === "跳过"
   // 设计 §8.1：解析中取消要落「有问题」且**带原因**；§5.2 要求「有问题」可解释。
   // 调用点没给原因时补一句默认值，否则用户只看到一个说不出所以然的黄三角。
   const 取消解析中 = input.action === "取消" && current.parseStatus === "解析中" && input.detail === undefined
@@ -216,7 +220,7 @@ export async function applyParseAction(
     await db.execute(sql`
       update auth.case_material
          set parse_status = ${next},
-             queued_by    = case when ${入队} then ${input.by ?? null} else queued_by end,
+             queued_by    = case when ${记操作人} then ${input.by ?? null} else queued_by end,
              parse_detail = case when ${有明细} then ${明细}::jsonb else parse_detail end
        where project_id = ${input.projectId}
          and id = ${input.materialId}

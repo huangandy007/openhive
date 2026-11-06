@@ -5,12 +5,14 @@ import { basename } from "node:path"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { User } from "@opencode-ai/core/user"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { 取消排队作业 } from "./case-ingest"
 import { 可解析扩展名, 可解析表格 } from "./case-parseable"
-import { getMaterialByPath, 解析冲突 } from "./case-store"
-import { 人工解析动作, 该动作可用, isRunning } from "./case-status"
+import { applyParseAction, createMaterial, getMaterial, getMaterialByPath, inTransaction, 解析冲突 } from "./case-store"
+import { 人工解析动作, 该动作可用, isRunning, nextStatus } from "./case-status"
 import { 入队表格材料, inside, LINK_ESCAPE, realInside } from "./file"
 import { 材料视图 } from "./case-materials"
 import { OpenhivePg } from "./pg"
@@ -177,16 +179,13 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 当前 = yield* Effect.promise(() => getMaterialByPath(deps.pg(), projectId, path))
 
     // 产物硬边界在**状态机之前**：产物连「重新解析」都不该收到，回一句说得清的话。
-    // 「取消」不在硬边界里——它不推进解析，产物本来也不会在排队；真点了就交给下面的
-    // 状态机回一句 illegal_transition。
+    // 「取消」不在硬边界里——它不推进解析，产物本来也不会在排队；真点了会先落到下面的
+    // 取消分支，由 `该动作可用` 判掉（产物不在「排队中 / 解析中」）⇒ illegal_transition。
     //
-    // ⚠️ 这一条要排在「取消 / 跳过还没接线」之前：`跳过` 对产物同样必须回
-    // `artifact_not_parseable`（Task 4 接线的验收点之一），不能被半成品的 400 吃掉。
+    // `跳过` 对产物同样必须回 `artifact_not_parseable`（Task 4 的验收点之一），所以
+    // 这条守卫对「取消」以外的解析动作都生效。
     if (当前?.kind === "产物" && action !== "取消")
       return fail(409, "产物只登记不解析", "artifact_not_parseable")
-
-    // 取消 / 跳过 在下一个任务接线。先明确拒绝，免得半成品看起来「点了没反应」。
-    if (action === "取消" || action === "跳过") return fail(400, "这个动作还没接线", "bad_request")
 
     // ⚠️ `isRunning` 只拦「再排一次」（入队 / 重新解析）。取消**必须**放过排队中与解析中，
     // 否则右键「取消解析」永远回 409——这正是 Task 4 头两条用例要钉的。
@@ -198,6 +197,75 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       return fail(409, "这份文件已经在排队或解析中", "already_running")
     if (当前 !== undefined && !该动作可用(当前.parseStatus, action))
       return fail(409, `现在（${当前.parseStatus}）不能「${action}」`, "illegal_transition")
+
+    if (action === "取消") {
+      if (当前 === undefined) return fail(404, "这份文件还没有解析记录", "material_not_found")
+      if (!该动作可用(当前.parseStatus, "取消"))
+        return fail(409, `现在（${当前.parseStatus}）不能取消`, "illegal_transition")
+
+      const 下一个 = nextStatus(当前.parseStatus, "取消")
+      if (下一个 === undefined) return fail(409, "这个状态不能取消", "illegal_transition")
+
+      const 冲突 = yield* Effect.promise(() =>
+        收冲突(() =>
+          inTransaction(deps.pg(), async (tx) => {
+            await 取消排队作业(tx, projectId, 当前.id)
+            await applyParseAction(tx, {
+              projectId,
+              materialId: 当前.id,
+              action: "取消",
+              by: user.value.id,
+            })
+          }),
+        ),
+      )
+      if (冲突 instanceof 解析冲突) return fail(409, 冲突.message, 冲突.code)
+      return ok({ ok: true, status: 下一个 })
+    }
+
+    if (action === "跳过") {
+      if (当前 !== undefined) {
+        const 冲突 = yield* Effect.promise(() =>
+          收冲突(() =>
+            applyParseAction(deps.pg(), {
+              projectId,
+              materialId: 当前.id,
+              action: "跳过",
+              by: user.value.id,
+            }),
+          ),
+        )
+        if (冲突 instanceof 解析冲突) return fail(409, 冲突.message, 冲突.code)
+        return ok({ ok: true, status: "已跳过" })
+      }
+
+      const 读 = yield* 读盘文件(deps, user.value.id, projectId, path)
+      if ("错误" in 读) return fail(读.status, 读.错误, 读.code)
+
+      const 冲突 = yield* Effect.promise(() =>
+        收冲突(() =>
+          inTransaction(deps.pg(), async (tx) => {
+            const materialId = await createMaterial(tx, {
+              id: crypto.randomUUID(),
+              projectId,
+              fileName: 读.文件名,
+              kind: "其他",
+              fingerprint: Hash.sha256(读.字节),
+              path,
+            })
+            await applyParseAction(tx, {
+              projectId,
+              materialId,
+              action: "跳过",
+              by: user.value.id,
+            })
+          }),
+        ),
+      )
+      if (冲突 instanceof 解析冲突) return fail(409, 冲突.message, 冲突.code)
+      return ok({ ok: true, status: "已跳过" })
+    }
+
     if (action === "重新解析" && 当前 === undefined)
       return fail(404, "这份文件还没有解析记录", "material_not_found")
     if (!可解析表格(path)) return fail(409, "这类文件的解析在后续计划", "not_parseable")
@@ -220,8 +288,16 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     )
     if (结果 instanceof 解析冲突) return fail(409, 结果.message, 结果.code)
     if (结果 === undefined) return fail(400, "这个文件不在项目沙箱内，无法入队", "bad_request")
-    if (!结果.enqueued)
-      return fail(409, "这份文件的状态刚被别的作业改掉，请刷新后再试", "state_changed")
+    if (!结果.enqueued) {
+      // 「没入队」不等于「刚被别的作业改掉」：最常见的是同一内容（指纹相同）的那一行
+      // 在别处已经解析过，`该走哪个动作` 按**它的**状态回了「不排队」。读回真实状态
+      // 再说原因（`LEARNINGS #010-06`：判据只能有一份，别在这里把状态机重写一遍）。
+      // `state_changed` 仍由 `收冲突` 收下的乐观并发冲突产生，不在这里。
+      const 实际 = yield* Effect.promise(() => getMaterial(deps.pg(), projectId, 结果.materialId))
+      if (实际 !== undefined && isRunning(实际.parseStatus))
+        return fail(409, "这份文件已经在排队或解析中", "already_running")
+      return fail(409, `现在（${实际?.parseStatus ?? "未知"}）不能「${action}」`, "illegal_transition")
+    }
 
     return ok({ ok: true, status: "排队中" })
   })

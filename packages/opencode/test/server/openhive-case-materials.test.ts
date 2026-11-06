@@ -98,6 +98,9 @@ beforeAll(async () => {
   writeFileSync(join(项目根, "资料", "话单.xlsx"), "话单内容")
   writeFileSync(join(项目根, "资料", "流水.csv"), "流水内容")
   writeFileSync(join(项目根, "资料", "笔录.pdf"), "笔录内容")
+  // R9 夹具：两份文件**字节相同** ⇒ 指纹相同，`createMaterial` 会认成同一行材料。
+  writeFileSync(join(项目根, "资料", "原件.xlsx"), "同一份内容")
+  writeFileSync(join(项目根, "资料", "副本.xlsx"), "同一份内容")
   writeFileSync(join(项目外, "外.xlsx"), "项目外的内容")
   symlinkSync(join(项目外, "外.xlsx"), join(项目根, "资料", "链接.xlsx"), "file")
 })
@@ -203,7 +206,12 @@ async function 材料行(path: string, projectId = 项目) {
        order by created_at desc, id desc
     `),
   )
-  return rows[0]
+  const row = rows[0]
+  if (!row) return undefined
+  // jsonb 经驱动回来是**字符串**（与 `case-store.ts` 的 `mapMaterialRow` 同一形状）：
+  // 这里先解一遍，断言才能按对象比较。
+  if (typeof row.parse_detail === "string") row.parse_detail = JSON.parse(row.parse_detail)
+  return row
 }
 
 async function 作业行们(materialId: string) {
@@ -523,5 +531,143 @@ describe("POST /openhive/case/parse（入队 / 重新解析）", () => {
         action: "入队",
       })
       expect(非成员.status).toBe(403)
+    }))
+})
+
+describe("POST /openhive/case/parse（取消 / 跳过）", () => {
+  it("排队中取消：材料回「未入队」，作业行落「已取消」并写 finished_at", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/话单.xlsx", status: "排队中" }))
+      yield* Effect.promise(() => 种作业({ materialId: 材料, queuedAt: 1 }))
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "取消" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "未入队" })
+
+      expect((yield* Effect.promise(() => 材料行("资料/话单.xlsx")))?.parse_status).toBe("未入队")
+      const 作业 = yield* Effect.promise(() => 作业行们(材料))
+      expect(作业).toHaveLength(1)
+      expect(作业[0]?.status).toBe("已取消")
+      expect(Number(作业[0]?.finished_at)).toBeGreaterThan(0)
+    }))
+
+  it("解析中取消：落「有问题」＋原因「用户取消」，**已提交的事实原样保留**，运行中的作业行不碰", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/话单.xlsx", status: "解析中" }))
+      yield* Effect.promise(() => 种事实({ materialId: 材料, rowNo: 1, caller: "138" }))
+      yield* Effect.promise(() => 种事实({ materialId: 材料, rowNo: 2, caller: "139" }))
+      yield* Effect.promise(() => 种作业({ materialId: 材料, status: "运行中", queuedAt: 1 }))
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "取消" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "有问题" })
+
+      const 行 = yield* Effect.promise(() => 材料行("资料/话单.xlsx"))
+      expect(行?.parse_status).toBe("有问题")
+      expect(行?.parse_detail).toEqual({ reason: "用户取消" })
+      expect(yield* Effect.promise(() => 事实数(材料))).toBe(2)
+      expect((yield* Effect.promise(() => 作业行们(材料)))[0]?.status).toBe("运行中")
+    }))
+
+  it("取消一份没在排队的文件 ⇒ 409 illegal_transition；没有记录 ⇒ 404", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => 种材料({ path: "资料/话单.xlsx", status: "未入队" }))
+      const 未入队 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "取消" })
+      expect(未入队.status).toBe(409)
+      expect((yield* 读错误(未入队)).code).toBe("illegal_transition")
+
+      const 没记录 = yield* 解析(我, { projectId: 项目, path: "资料/流水.csv", action: "取消" })
+      expect(没记录.status).toBe(404)
+      expect((yield* 读错误(没记录)).code).toBe("material_not_found")
+    }))
+
+  it("跳过一个未入队的表格：落「已跳过」，queued_by 记操作人", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "未入队", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "跳过" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "已跳过" })
+      expect(yield* Effect.promise(() => 材料行("资料/话单.xlsx"))).toMatchObject({
+        parse_status: "已跳过",
+        queued_by: 我.id,
+      })
+    }))
+
+  it("跳过一份**没有材料记录**的 PDF：登记一行 kind=其他，再落已跳过", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/笔录.pdf", action: "跳过" })
+      expect(响应.status).toBe(200)
+
+      const 行 = yield* Effect.promise(() => 材料行("资料/笔录.pdf"))
+      expect(行).toMatchObject({ parse_status: "已跳过", kind: "其他" })
+      expect(行?.fingerprint).toBe(文件指纹("资料/笔录.pdf"))
+      expect(行?.queued_by).toBe(我.id)
+    }))
+
+  it("已解析的文件不能跳过（409）；未入队的文件不能「重新解析」（409）", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "已解析", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "跳过" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读错误(响应)).code).toBe("illegal_transition")
+    }))
+
+  it("跳过之后再入队：共用同一条队列与幂等（只有一条作业）", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "已跳过", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      const 入队 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(入队.status).toBe(200)
+      const 材料 = yield* Effect.promise(() => 材料行("资料/话单.xlsx"))
+      expect(材料?.parse_status).toBe("排队中")
+      expect(yield* Effect.promise(() => 作业行们(String(材料?.id)))).toHaveLength(1)
+    }))
+
+  it("产物硬边界也覆盖跳过（409 artifact_not_parseable）", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => 种材料({ path: "分析/结论.xlsx", status: "未入队", kind: "产物" }))
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "分析/结论.xlsx", action: "跳过" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读错误(响应)).code).toBe("artifact_not_parseable")
+    }))
+})
+
+describe("POST /openhive/case/parse（评审遗留 R9 / R10）", () => {
+  it("R9：入队与已有材料同指纹（同一内容在别处已解析）⇒ 409 illegal_transition，不是 state_changed", () =>
+    Effect.gen(function* () {
+      // 材料行落在「原件」，指纹取「副本」的字节（两文件字节相同）；path 不同 ⇒
+      // `getMaterialByPath(副本)` 找不到，`createMaterial` 按指纹撞上「原件」那一行。
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/原件.xlsx", status: "已解析", fingerprint: 文件指纹("资料/副本.xlsx") }),
+      )
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/副本.xlsx", action: "入队" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读错误(响应)).code).toBe("illegal_transition")
+    }))
+
+  it("R10：取消**不读盘**——文件已删也能取消排队", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/已删.xlsx", status: "排队中" }))
+      yield* Effect.promise(() => 种作业({ materialId: 材料, queuedAt: 1 }))
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/已删.xlsx", action: "取消" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "未入队" })
+    }))
+
+  it("R10：跳过已有记录**不读盘**——文件已删也能跳过", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => 种材料({ path: "资料/已删2.xlsx", status: "未入队" }))
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/已删2.xlsx", action: "跳过" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "已跳过" })
+      expect((yield* Effect.promise(() => 材料行("资料/已删2.xlsx")))?.parse_status).toBe("已跳过")
     }))
 })
