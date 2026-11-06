@@ -84,7 +84,9 @@ beforeAll(async () => {
   await 建关系(库(), { id: "r-张别人", projectId: 项目, fromId: "e-张", toId: "e-别人", type: "通话" })
   // §9.1 四类里的第 3 类：关系自身已排除（两端都可见）。它必须整条消失。
   await 建关系(库(), { id: "r-排除", projectId: 项目, fromId: "e-张", toId: "e-李", type: "通话", trustState: "已排除" })
-  // §9.1 第 4 类：悬空端点（`case_relation` 无外键，可以插进去）。join 漏成 left join 就会画出来。
+  // §9.1 第 4 类：悬空端点（`case_relation` 无外键，可以插进去）。
+  // 实测（`#004-03`）：单把两条 join 改成 left join **不红**——`终.trust_state <> '已排除'`
+  // 作用在 NULL 上为假，WHERE 仍是第二道闸；只有「left join ＋ 拆掉端点可见性条件」才会画出来。
   await 建关系(库(), { id: "r-悬空", projectId: 项目, fromId: "e-张", toId: "e-不存在", type: "通话" })
   // 入方向：只有 `or r.to_id in (…)` 这一半能把它取到（删掉那半句必红）。
   await 建关系(库(), { id: "r-账张", projectId: 项目, fromId: "e-账", toId: "e-张", type: "通话" })
@@ -207,10 +209,24 @@ describe("关系图", () => {
     expect(图.节点.length).toBe(50)
     expect(图.边.length).toBe(49)
     expect(图.缺口).toHaveLength(1)
-    expect(图.缺口[0]).toContain("第 2 跳只画了前 48 条关系")
-    // 总数是 `count(*) over()` 的口径：本跳相邻关系的**全部**条数。
-    // 这里 51 = 50 条叶子边 ＋ 1 条第 1 跳已画过的回边（r-根枝）。
-    expect(图.缺口[0]).toContain("共 51 条")
+    // 只陈述「候选里还有多少没画」，不声称「画了多少」——`slice` 行数里可能混着
+    // 第 1 跳已画过的回边（r-根枝），说「画了前 N 条」会把没画的说成画了。
+    // 实得：pre-LIMIT 总数 51 − 剩余 48 = 3 条候选没画。
+    expect(图.缺口[0]).toContain("第 2 跳还有 3 条候选关系没有画")
+    expect(图.缺口[0]).toContain("节点上限 50")
+  })
+
+  test("上限 1：节点只有中心，但缺口必须说清（含 clamp 到 1 的 0 / 负值）", async () => {
+    for (const 上限 of [1, 0, -5]) {
+      const 一跳 = (await 关系图(库(), { projectId: 项目, id: "e-张", 上限 }))!
+      expect(一跳.节点.map((点) => 点.id)).toEqual(["e-张"])
+      expect(一跳.缺口.length).toBeGreaterThan(0)
+      expect(一跳.缺口.join()).toContain("上限 1")
+      const 二跳 = (await 关系图(库(), { projectId: 项目, id: "e-张", 上限, 跳数: 2 }))!
+      expect(二跳.节点.map((点) => 点.id)).toEqual(["e-张"])
+      expect(二跳.缺口.length).toBeGreaterThan(0)
+      expect(二跳.缺口.join()).toContain("上限 1")
+    }
   })
 
   test("中心不存在 / 已排除 / 别的项目 ⇒ undefined", async () => {
