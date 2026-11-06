@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { CenterSplit } from "./center-split"
+import type { CaseDetailApi, 实体档案 } from "./case-detail-api"
 import { CenterTabsProvider, useCenterTabs } from "./tab-context"
 import { type ContentTab } from "./tab-store"
 import { createViewRegistry, type ViewComponent, type ViewRegistry } from "./view-registry"
@@ -195,6 +196,55 @@ describe("CenterSplit", () => {
     await 歇一拍()
     expect(栏(0).querySelector("[data-slot='tab-bar-focus-bar']") === null).toBe(true)
     expect(栏(1).querySelector("[data-slot='tab-bar-focus-bar']")).not.toBe(null)
+  })
+
+  /**
+   * **右栏那一跳不许漏 `caseApi`**（Task 6 复审 Minor 4）：漏了不会报错、也不会红——
+   * 右栏静默停在「案件视图未接入」，看上去像「这个实体没数据」。所以这里在**右栏**开一张
+   * `case://` tab，断言假 api 的档案**真的**画出来了（`#002-02`：判据得落在看得见的东西上）。
+   */
+  test("右栏的 `case://` tab 拿到 caseApi（漏传那一跳 ⇒ 右栏静默说未接入）", async () => {
+    const 档 = {
+      id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
+      trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "张三。",
+    } as 实体档案
+    const 假api: CaseDetailApi = {
+      profile: async () => ({ kind: "ok", value: 档 }),
+      materialFacts: async () => ({ kind: "error", message: "本用例不取材料" }),
+      timeline: async () => ({ kind: "error", message: "本用例不取时间线" }),
+      money: async () => ({ kind: "error", message: "本用例不取资金" }),
+      graph: async () => ({ kind: "error", message: "本用例不取关系图" }),
+    }
+    const 案件: ContentTab = { module: "project", title: "张三", path: "case://p-1/entity/e-%E5%BC%A0" }
+    function 现场() {
+      const center = useCenterTabs()
+      return (
+        <>
+          <button
+            data-slot="备"
+            onClick={() => {
+              center.open(甲, 0)
+              center.open(案件, 1)
+              center.splitPane("左右")
+            }}
+          />
+          <CenterSplit registry={空注册表} caseApi={假api} />
+        </>
+      )
+    }
+    const 宿主 = mount(() => (
+      <CenterTabsProvider initialModule="project">
+        <现场 />
+      </CenterTabsProvider>
+    ))
+    宿主.querySelector<HTMLElement>("[data-slot='备']")!.click()
+    for (let i = 0; i < 50 && !宿主.querySelector("[data-slot='entity-profile-title']"); i++) await 歇一拍()
+
+    const 右栏 = 宿主.querySelector<HTMLElement>("[data-slot='center-pane'][data-pane='1']")!
+    // 断的是**档案被画出来**，不是 tab 标题（标题本来就带名字，拿它当判据会假绿）。
+    const 标题 = 右栏.querySelector<HTMLElement>("[data-slot='entity-profile-title']")
+    expect(标题?.textContent ?? "").toContain("张三")
+    expect(右栏.textContent).not.toContain("案件视图未接入")
   })
 
   test("点右栏任意处 ⇒ 受焦切到右栏（`activePane` 的唯一写入口）", async () => {

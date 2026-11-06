@@ -825,6 +825,44 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     expect(行).toBeDefined()
     expect(行?.querySelector("[data-slot='file-tree-parse-badge']")?.getAttribute("data-shape")).toBe("check")
   })
+
+  test("「查看解析结果」把 case://…/material/<路径> 开进中栏（计划 7 接上了 onReviewParse）", async () => {
+    setCurrentProject(undefined)
+    setProjectList(undefined)
+    setProjectFiles(undefined)
+    const 假 = 假材料状态({ rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+    // `files` 要给：换项目那一刻 effect 会用 `tree` 重取清单，没剧本就是空清单，行会当场消失。
+    const { data } = 假数据源({
+      list: async () => [我的(私有("p1", "专案", 1))],
+      files: async () => ["话单.csv"],
+    })
+    const host = 挂(data, 假.状态)
+    await 冲一遍()
+    // 清单要**挂载后**再写（同上面那条用例的注释：挂载时的 effect 会先清一次）。
+    setProjectFiles(["话单.csv"])
+    setCurrentProject({ id: "p1", name: "专案" })
+    await 冲一遍()
+
+    右键行(host, "话单.csv")
+    await 冲一遍()
+
+    // 解析是子菜单：打开方式照 `file-tree.test.tsx:2989`（pointerenter ＋ ArrowRight 两条路都派）。
+    const 触发 = document.querySelector<HTMLElement>("[data-slot='context-menu-sub-trigger']")
+    if (!触发) throw new Error("没有解析子菜单触发器——前提不成立")
+    触发.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerId: 1 }))
+    触发.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }))
+    await 等到(() => document.querySelector("[data-component='context-menu-sub-content']") !== null)
+
+    const 项 = document.querySelector<HTMLElement>("[data-parse-action='parse-view']")
+    if (!项) throw new Error("没有「查看解析结果」——前提不成立")
+    for (const 类型 of ["pointerdown", "pointerup"])
+      项.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+    await 冲一遍()
+
+    // 接线成立的证据：中栏多了一张标题带「抽取结果」的 tab（没注入 caseDetailApi ⇒ 内容说未接入，
+    // 那是**内容层**的事；这条只钉「路径进没进中栏」）。
+    expect(host.textContent).toContain("话单.csv · 抽取结果")
+  })
 })
 
 const 成员面板 = (host: HTMLElement) => host.querySelector("[data-component='member-panel']")

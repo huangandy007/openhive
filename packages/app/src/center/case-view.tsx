@@ -2,6 +2,7 @@ import { Show, type JSX } from "solid-js"
 import type { CaseDetailApi } from "./case-detail-api"
 import { 解析案件路径, type 案件路径 } from "./case-route"
 import { EntityProfile } from "./case-views/entity-profile"
+import { MaterialFacts } from "./case-views/material-facts"
 
 export interface CaseViewProps {
   readonly path: string
@@ -47,5 +48,7 @@ function 视图(路径: 案件路径, api: CaseDetailApi): JSX.Element {
   switch (路径.view) {
     case "entity":
       return <EntityProfile projectId={路径.projectId} id={路径.arg} api={api} />
+    case "material":
+      return <MaterialFacts projectId={路径.projectId} path={路径.arg} api={api} />
   }
 }

@@ -8,6 +8,7 @@ import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
 import { ProjectionModuleProvider } from "@/ai-session/projection-module"
 import { useBigFileAsk } from "@/center/big-file-dialog"
+import { 案件伪路径 } from "@/center/case-route"
 import type { CaseDetailApi } from "@/center/case-detail-api"
 import { CenterSplit } from "@/center/center-split"
 import type { LoadFileContent, SaveFileContent } from "@/center/file-content"
@@ -2243,6 +2244,25 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onRetry={有项目() ? 拨清单重取 : undefined}
                         // 计划 3：材料状态整份交给树（它只读；动作成功后自己 reload）。
                         caseMaterials={props.caseMaterials}
+                        // 计划 7：「查看解析结果」→ 中栏的材料抽取结果页。
+                        // 用 `case://` 伪路径而不是文件路径：它不是一份文件，按扩展名路由会降级成
+                        // 「格式不支持」（`center-content.tsx` 的 `case://` 分支）。
+                        onReviewParse={
+                          有项目()
+                            ? (path) => {
+                                const 项目 = currentProject()?.id
+                                if (!项目) return
+                                center.open(
+                                  {
+                                    module: center.module() ?? "project",
+                                    title: `${path} · 抽取结果`,
+                                    path: 案件伪路径({ projectId: 项目, view: "material", arg: path }),
+                                  },
+                                  center.activePane(),
+                                )
+                              }
+                            : undefined
+                        }
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}

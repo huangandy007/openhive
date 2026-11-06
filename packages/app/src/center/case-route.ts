@@ -2,9 +2,9 @@
  * 中栏「案件视图」的伪路径：`case://<projectId>/<view>/<arg>`。
  *
  * 为什么不另开一条 tab 类型（计划 7 的裁定 3）：`ContentTab` 已经是 `{module,title,path}`，
- * 加一种 kind 要动上游的 tab 去重 / 持久化路径；而 `extensionOf("case://…")` 返回 undefined，
- * 天然落进 `center-content.tsx` 的「没人认领」降级档 —— **只要在降级之前先认这个前缀**，
- * tab 本身一字不改。
+ * 加一种 kind 要动上游的 tab 去重 / 持久化路径；而 `case://…` 可能被 `extensionOf` 解析出
+ * **真实扩展名**（材料路径的末段就是 `话单.xlsx`），会落进「有扩展名但没人认领」的降级档
+ * —— **所以 `center-content.tsx` 必须先认这个前缀、再走 `extensionOf`**，tab 本身一字不改。
  *
  * 参数一律 `encodeURIComponent`：项目文件路径带 `/`、实体 id 可能带 `#` 与空格，
  * 不编码会把段拆错（`#` 还会被 URL 解析吃掉）。
@@ -14,16 +14,18 @@
  */
 export const CASE_SCHEME = "case://"
 
-/** 本任务只到 `entity`；材料 / 时间线 / 资金 / 关系图在 Task 7 / 8 扩。 */
-export type 案件视图 = "entity"
+/**
+ * 视图名**只写在这里**：类型由数组派生（`typeof 视图表[number]`），解析器也按这张表判成员。
+ * 写成「一个联合类型 ＋ 一份同样的数组」就是同一条事实两处，加一支忘一边不会报错（Task 6 复审 Minor 8）。
+ */
+const 视图表 = ["entity", "material"] as const
+export type 案件视图 = (typeof 视图表)[number]
 
 export interface 案件路径 {
   readonly projectId: string
   readonly view: 案件视图
   readonly arg: string
 }
-
-const 视图表: readonly 案件视图[] = ["entity"]
 
 export function 是案件路径(path: string): boolean {
   return path.startsWith(CASE_SCHEME)

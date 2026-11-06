@@ -51,4 +51,23 @@ describe("案件视图外壳", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
     expect(host.querySelector("[data-slot='entity-profile-title']")!.textContent).toContain("张三")
   })
+
+  test("材料路径 ⇒ 渲染材料抽取结果", async () => {
+    const 材料api: CaseDetailApi = {
+      ...api,
+      materialFacts: async () => ({
+        kind: "ok",
+        value: {
+          材料: { id: "m-1", path: "话单.xlsx", file_name: "话单.xlsx", kind: "话单", parse_status: "解析完成", parse_detail: null },
+          分组: [],
+          缺口: [],
+        },
+      }),
+    }
+    const host = mount(() => (
+      <CaseView path={`case://p-1/material/${encodeURIComponent("材料/话单.xlsx")}`} api={材料api} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-title']").length === 1)
+    expect(host.querySelector("[data-slot='material-facts-title']")!.textContent).toContain("话单.xlsx")
+  })
 })
