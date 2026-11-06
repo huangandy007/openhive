@@ -2,12 +2,17 @@ export * as OpenhiveCaseIngest from "./case-ingest"
 
 import { sql } from "drizzle-orm"
 import { isAbsolute, relative, resolve, sep } from "node:path"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
+import { 解析方式 } from "./case-parseable"
+import { 抽取文本 } from "./case-text"
+import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { readSheets } from "./case-sheet"
 import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
 import { toFactRows } from "./case-rows"
 import {
+  addCitation,
   applyParseAction,
   createMaterial,
   deleteFactRowsOfMaterial,
@@ -17,8 +22,17 @@ import {
   setMaterialKind,
   type FactRowInput,
   type MaterialKind,
+  type MaterialRow,
   type Queryable,
 } from "./case-store"
+import {
+  deleteCitationsOfMaterial,
+  insertEvent,
+  insertRelation,
+  setMaterialText,
+  upsertEntity,
+  删除本材料的事实,
+} from "./case-fact-store"
 import type { ParseAction, ParseStatus } from "./case-status"
 
 /**
@@ -196,6 +210,11 @@ export async function 取消排队作业(db: Queryable, projectId: string, mater
 export interface RunDeps {
   /** 读材料字节。注入而不是直接读盘：作业本身不该知道沙箱根长什么样。 */
   readFile: (sourcePath: string) => Promise<Uint8Array>
+  /**
+   * 建一个抽取器（模型调用）。**只对文本材料用**；不注入 ⇒ 文本作业失败并落「有问题」。
+   * 生产在 worker 层用 `InstanceStore.provide` ＋ `Provider` 的默认模型建；测试注入假调用器。
+   */
+  建抽取器?: (job: ClaimedJob) => Promise<抽取器>
 }
 
 /**
@@ -243,92 +262,15 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
     // 先到「解析中」，失败路径的「出问题」才是合法边 ⇒ 落「有问题」⇒ 重拖能自愈。
     if (job.sourcePath === "") throw new Error("作业没有记录文件落点（source_path 为空）")
 
-    // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
-    // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
-    // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
-    const { sheets, skippedSheets, truncatedSheets } = readSheets(await deps.readFile(job.sourcePath))
-    if (skippedSheets.length > 0 || truncatedSheets.length > 0) {
-      const 缘由 = [
-        skippedSheets.length > 0 ? `工作表超过上限，未解析：${skippedSheets.join("、")}` : "",
-        truncatedSheets.length > 0 ? `行数超过上限，已截断：${truncatedSheets.join("、")}` : "",
-      ]
-        .filter((s) => s !== "")
-        .join("；")
-      throw new Error(缘由)
+    const 方式 = 解析方式(material.path)
+    if (方式 === "表格") {
+      await 跑表格(db, deps, job)
+      return "完成"
     }
-
-    const 待写: FactRowInput[] = []
-    let 类型: MaterialKind = "其他"
-    let 认出列数 = 0
-    for (const sheet of sheets) {
-      const header = sheet.header.map((c) => c.text)
-      const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
-      const fingerprint = formatFingerprint(header, 样例)
-
-      // 认过的格式直接取映射（设计 §6.2），没认过就现认一次并沉淀。
-      let columns: Record<number, FactField>
-      const 缓存 = await 读格式(db, job.projectId, fingerprint)
-      if (缓存) {
-        columns = 缓存
-        await db.execute(sql`
-          update auth.case_table_format
-             set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
-           where project_id = ${job.projectId} and fingerprint = ${fingerprint}
-        `)
-      } else {
-        const 认出 = detectMapping(header, 样例)
-        columns = 认出.columns
-        await 写格式(db, job.projectId, fingerprint, header, 认出.columns, 认出.method, 认出.unknownColumns.length)
-      }
-
-      // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
-      //   （缺口记在计划自检里，不在本计划修）。
-      类型 = classifyMaterialType(columns)
-      // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
-      // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
-      认出列数 += Object.keys(columns).filter((k) => {
-        const 列号 = Number(k)
-        return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
-      }).length
-      const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns })
-
-      // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
-      // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
-      // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
-      const 时间列 = Object.keys(columns).find((k) => columns[Number(k)] === "startedAt")
-      if (时间列 !== undefined) {
-        const 非空原文数 = sheet.rows.filter((r) => (r.cells[Number(时间列)]?.text ?? null) !== null).length
-        if (非空原文数 > 0 && !行.some((r) => r.startedAt !== null)) {
-          throw new Error(
-            `「${sheet.name}」的时间列（${header[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
-          )
-        }
-      }
-      待写.push(...行)
-    }
-
-    // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
-    // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
-    if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
-
-    // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
-    //
-    // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
-    // 「旧行已删、只有前 500 行」——材料标成「有问题」，数据却成了半份，比失败更糟。
-    // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
-    await inTransaction(db, async (tx) => {
-      await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
-      await insertFactRows(tx, 待写)
-
-      await setMaterialKind(tx, job.projectId, job.materialId, 类型)
-      await applyParseAction(tx, { projectId: job.projectId, materialId: job.materialId, action: "完成" })
-      await 收尾(tx, job, "完成", null)
-    })
-    return "完成"
+    if (方式 === "文本") return await 跑文本(db, deps, job, material)
+    throw new Error("这类文件的解析在后续计划")
   } catch (error) {
-    // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
-    // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
-    // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
+    // 失败路径**不**用事务（原注释 R28）：两笔各自尽力，谁成谁算。
     const 原因 = error instanceof Error ? error.message : String(error)
     await applyParseAction(db, {
       projectId: job.projectId,
@@ -339,6 +281,281 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
     await 收尾(db, job, "失败", 原因).catch(() => undefined)
     return "失败"
   }
+}
+
+/** 计划 2 的表格链路：原样搬进来，行为一行不改。 */
+async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise<void> {
+  // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
+  // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
+  // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
+  const { sheets, skippedSheets, truncatedSheets } = readSheets(await deps.readFile(job.sourcePath))
+  if (skippedSheets.length > 0 || truncatedSheets.length > 0) {
+    const 缘由 = [
+      skippedSheets.length > 0 ? `工作表超过上限，未解析：${skippedSheets.join("、")}` : "",
+      truncatedSheets.length > 0 ? `行数超过上限，已截断：${truncatedSheets.join("、")}` : "",
+    ]
+      .filter((s) => s !== "")
+      .join("；")
+    throw new Error(缘由)
+  }
+
+  const 待写: FactRowInput[] = []
+  let 类型: MaterialKind = "其他"
+  let 认出列数 = 0
+  for (const sheet of sheets) {
+    const header = sheet.header.map((c) => c.text)
+    const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const fingerprint = formatFingerprint(header, 样例)
+
+    // 认过的格式直接取映射（设计 §6.2），没认过就现认一次并沉淀。
+    let columns: Record<number, FactField>
+    const 缓存 = await 读格式(db, job.projectId, fingerprint)
+    if (缓存) {
+      columns = 缓存
+      await db.execute(sql`
+        update auth.case_table_format
+           set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
+         where project_id = ${job.projectId} and fingerprint = ${fingerprint}
+      `)
+    } else {
+      const 认出 = detectMapping(header, 样例)
+      columns = 认出.columns
+      await 写格式(db, job.projectId, fingerprint, header, 认出.columns, 认出.method, 认出.unknownColumns.length)
+    }
+
+    // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
+    //   （缺口记在计划自检里，不在本计划修）。
+    类型 = classifyMaterialType(columns)
+    // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
+    // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
+    认出列数 += Object.keys(columns).filter((k) => {
+      const 列号 = Number(k)
+      return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
+    }).length
+    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns })
+
+    // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
+    // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
+    // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
+    const 时间列 = Object.keys(columns).find((k) => columns[Number(k)] === "startedAt")
+    if (时间列 !== undefined) {
+      const 非空原文数 = sheet.rows.filter((r) => (r.cells[Number(时间列)]?.text ?? null) !== null).length
+      if (非空原文数 > 0 && !行.some((r) => r.startedAt !== null)) {
+        throw new Error(
+          `「${sheet.name}」的时间列（${header[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
+        )
+      }
+    }
+    待写.push(...行)
+  }
+
+  // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
+  // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
+  if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
+
+  // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
+  //
+  // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
+  // 「旧行已删、只有前 500 行」——材料标成「有问题」，数据却成了半份，比失败更糟。
+  // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
+  await inTransaction(db, async (tx) => {
+    await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
+    await insertFactRows(tx, 待写)
+
+    await setMaterialKind(tx, job.projectId, job.materialId, 类型)
+    await applyParseAction(tx, { projectId: job.projectId, materialId: job.materialId, action: "完成" })
+    await 收尾(tx, job, "完成", null)
+  })
+}
+
+/**
+ * 文本材料的 AI 抽取（设计 §7.4）。
+ *
+ * ## 顺序
+ *
+ * 读盘 → 文本层 → 切片 → 逐片抽取（会重试、会部分成功）→ **一个事务**里
+ * 「删本材料旧引用 → 删旧机器事实 → 写新事实/引用 → 写 text_content → 改状态/收尾」。
+ *
+ * ## 取消（R6）
+ *
+ * 片间检查材料状态；不是「解析中」就停。事务里**不再推进材料状态**——用户已经把它改成
+ * 「有问题」了，再写「完成」是非法转移，会把整批已完成的事实回滚掉。
+ *
+ * ## 作业与材料是两件事
+ *
+ * 部分片失败 ⇒ 材料「有问题」，作业仍「完成」（它确实跑完了）。全部片都干净却一条事实都没抽到
+ * ⇒ 作业「失败」（这通常意味着模型没按规定输出）；全部片都失败 ⇒ 材料「有问题」带切片明细、
+ * 作业仍「完成」——失败的原因已经在材料上了，再让作业「失败」等于同一件事说两遍。
+ */
+async function 跑文本(
+  db: Queryable,
+  deps: RunDeps,
+  job: ClaimedJob,
+  material: MaterialRow,
+): Promise<"完成" | "失败"> {
+  if (!deps.建抽取器) throw new Error("这份部署没有配置抽取模型（缺少抽取器）")
+
+  const bytes = await deps.readFile(job.sourcePath)
+  const { text } = 抽取文本(bytes, material.path)
+  const 抽取器 = await deps.建抽取器(job)
+
+  const 输出 = await 抽取材料(
+    { 文本: text, fileName: material.fileName, 抽取器 },
+    {
+      仍应继续: async () => (await getMaterial(db, job.projectId, job.materialId))?.parseStatus === "解析中",
+    },
+  )
+
+  const 已取消 =
+    (await getMaterial(db, job.projectId, job.materialId))?.parseStatus !== "解析中"
+
+  const 问题片 = 输出.片们.filter((片) => 片.问题.length > 0)
+  // 抽取条数按片累加、未去重——它只进 `parse_detail` 给人看；视图里的计数另算（R10）。
+  const 抽取条数 = 输出.片们.reduce((n, 片) => n + 片.实体.length + 片.关系.length + 片.事件.length, 0)
+
+  // 两种「零结果」要分开说，且都必须在事务**之前**抛（事务一提交，抛错只会让材料落「有问题」
+  // 却留下一批已入库的旧事实）。
+  // ① 切片为空：文件读成了空；② 全部片都干净却零条事实：模型说了「什么都没有」。
+  // 「全部片都失败」不在这里抛——它有 `问题片`，走下面的「有问题 ＋ 切片明细」。
+  if (!已取消 && 输出.片们.length === 0) throw new Error("文本切片为空")
+  if (!已取消 && 抽取条数 === 0 && 问题片.length === 0)
+    throw new Error("这段文本里一条事实都没抽出来（可能不是案情材料，或模型没有按规定输出）")
+
+  await inTransaction(db, async (tx) => {
+    await 删除本材料的事实(tx, job.projectId, job.materialId)
+    await deleteCitationsOfMaterial(tx, job.projectId, job.materialId)
+
+    for (const 片 of 输出.片们) {
+      const 实体id = new Map<string, string>()
+      for (const 实体 of 片.实体) {
+        const id = 事实id(job.projectId, 实体.type, 实体.canonicalValue)
+        const 实际 = await upsertEntity(tx, {
+          projectId: job.projectId,
+          id,
+          type: 实体.type,
+          canonicalValue: 实体.canonicalValue,
+          aliases: 实体.aliases,
+        })
+        实体id.set(`${实体.type}\u0000${实体.canonicalValue}`, 实际)
+        await addCitation(tx, {
+          id: 引用id(job.projectId, "entity", 实际, job.materialId, 片.片.起),
+          projectId: job.projectId,
+          factType: "entity",
+          factId: 实际,
+          materialId: job.materialId,
+          locator: { start: 片.片.起, end: 片.片.止 },
+          extractMethod: "机器",
+        })
+      }
+
+      for (const 关系 of 片.关系) {
+        const from = 实体id.get(`人\u0000${关系.from}`) ?? 实体id.get(`号码\u0000${关系.from}`)
+        const to = 实体id.get(`人\u0000${关系.to}`) ?? 实体id.get(`号码\u0000${关系.to}`)
+        // 回读阶段保证两端都在实体表里；这里拿不到 id 说明推断类型与规范值对不上，跳过。
+        if (from === undefined || to === undefined) continue
+        const id = 事实id(
+          job.projectId, "relation", job.materialId, 片.片.起, 关系.type, from, to,
+          String(关系.amount ?? ""), 关系.原文,
+        )
+        await insertRelation(tx, {
+          projectId: job.projectId,
+          id,
+          fromId: from,
+          toId: to,
+          type: 关系.type,
+          amount: 关系.amount,
+          basis: 关系.basis,
+          // 笔录是人说的（`case_relation.source_kind` 的语义：data＝数据直接记录，human＝人认定）。
+          // 即便关系类型是「转账」，它是**人在笔录里说的转账**，不是流水数据 ⇒ human。
+          sourceKind: "human",
+          trustState: 关系.存疑 ? "存疑" : "自动抽取",
+        })
+        await addCitation(tx, {
+          id: 引用id(job.projectId, "relation", id, job.materialId, 片.片.起),
+          projectId: job.projectId,
+          factType: "relation",
+          factId: id,
+          materialId: job.materialId,
+          locator: { start: 片.片.起, end: 片.片.止 },
+          extractMethod: "机器",
+        })
+      }
+
+      for (const 事件 of 片.事件) {
+        const id = 事实id(
+          job.projectId, "event", job.materialId, 片.片.起, 事件.type,
+          事件.occurredRaw ?? "", 事件.participants.join("|"), 事件.summary ?? "",
+        )
+        await insertEvent(tx, {
+          projectId: job.projectId,
+          id,
+          type: 事件.type,
+          occurredAt: 事件.occurredAt,
+          occurredRaw: 事件.occurredRaw,
+          precision: 事件.precision,
+          participants: 事件.participants,
+          summary: 事件.summary,
+          trustState: 事件.存疑 ? "存疑" : "自动抽取",
+        })
+        await addCitation(tx, {
+          id: 引用id(job.projectId, "event", id, job.materialId, 片.片.起),
+          projectId: job.projectId,
+          factType: "event",
+          factId: id,
+          materialId: job.materialId,
+          locator: { start: 片.片.起, end: 片.片.止 },
+          extractMethod: "机器",
+        })
+      }
+    }
+
+    await setMaterialText(tx, job.projectId, job.materialId, text)
+
+    if (!已取消) {
+      if (问题片.length > 0) {
+        await applyParseAction(tx, {
+          projectId: job.projectId,
+          materialId: job.materialId,
+          action: "出问题",
+          detail: {
+            reason: `有 ${问题片.length} 段没抽干净：${问题片[0].问题[0] ?? ""}`,
+            slices: 问题片.map((片) => ({
+              range: `${片.片.起}-${片.片.止}`,
+              reason: 片.问题.join("；").slice(0, 200),
+              count: 片.问题.length,
+            })),
+            model: 输出.模型标识,
+            promptVersion: 输出.prompt版本,
+            attempts: Math.max(...问题片.map((片) => 片.尝试)),
+            factCount: 抽取条数,
+          },
+        })
+      } else {
+        await applyParseAction(tx, {
+          projectId: job.projectId,
+          materialId: job.materialId,
+          action: "完成",
+          detail: {
+            model: 输出.模型标识,
+            promptVersion: 输出.prompt版本,
+            factCount: 抽取条数,
+          },
+        })
+      }
+    }
+
+    await 收尾(tx, job, "完成", null)
+  })
+
+  return "完成"
+}
+
+function 事实id(...parts: (string | number)[]): string {
+  return Hash.sha256(parts.join("\u0000")).slice(0, 32)
+}
+
+function 引用id(projectId: string, factType: string, factId: string, materialId: string, 起: number): string {
+  return Hash.sha256([projectId, factType, factId, materialId, 起].join("\u0000")).slice(0, 32)
 }
 
 /** 已认过的映射（`columns` 的键是列下标）。 */

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { tmpdir } from "node:os"
@@ -11,6 +11,7 @@ import { claimNextJob, enqueueMaterial, runJob, 沙箱内路径 } from "../../sr
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
+import { 建假抽取器 } from "./openhive-case-extract-fixture"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -624,6 +625,187 @@ describe("表格格式缓存的 jsonb 形状", () => {
     expect(行[0]?.头条).toBe("array")
     expect(行[0]?.映射).toBe("object")
     expect(行[0]?.首列).toBe("主叫号码")
+  })
+})
+
+describe("文本作业（计划 4）", () => {
+  afterEach(async () => {
+    // 作业表**必须一起清**：队列是全局的，上一条用例若在认领前/中途失败，留下的「排队中」
+    // 作业会被下一条用例认领走，`认领本材料` 于是抛「认领到别人的作业」——一条失败连累五条。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = ${"p-txt"}`)
+    await db().execute(sql`delete from auth.case_citation where project_id = ${"p-txt"}`)
+    await db().execute(sql`delete from auth.case_relation where project_id = ${"p-txt"}`)
+    await db().execute(sql`delete from auth.case_event where project_id = ${"p-txt"}`)
+    await db().execute(sql`delete from auth.case_entity where project_id = ${"p-txt"}`)
+    await db().execute(sql`delete from auth.case_material where project_id = ${"p-txt"}`)
+  })
+
+  const 文本 = "2026年3月5日，张三（13800138000）向李四转账28万元。\n李四说张三还欠他3万元。"
+  const 回答 = {
+    实体: [
+      { 类型: "人", 取值: "张三" },
+      { 类型: "人", 取值: "李四" },
+      { 类型: "号码", 取值: "13800138000" },
+    ],
+    关系: [{ 类型: "转账", 从: "张三", 到: "李四", 金额原文: "28万", 原文: "张三（13800138000）向李四转账28万元" }],
+    事件: [{ 类型: "转账", 时间原文: "2026年3月5日", 参与人: ["张三", "李四"], 原文: "2026年3月5日，张三（13800138000）向李四转账28万元" }],
+  }
+
+  async function 入队文本(fileName = "笔录.txt") {
+    文件.set(`p-txt/${fileName}`, new TextEncoder().encode(文本))
+    return 入队("p-txt", fileName, `fp-${fileName}`)
+  }
+
+  /** 队列是全局的：认领完必须核对是本用例那份，否则后续断言会对着别人的材料说话。 */
+  async function 认领本材料(materialId: string) {
+    const job = await claimNextJob(db())
+    if (!job) throw new Error("队列是空的：上一条用例把作业留在了别的状态？")
+    if (job.materialId !== materialId) throw new Error(`认领到别人的作业：${job.materialId}`)
+    return job
+  }
+
+  test("一份笔录 ⇒ 实体/关系/事件/引用落库，材料「已解析」，text_content 有全文", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => 回答)
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    // 不在这里断言 kind：本用例走 `enqueueMaterial`（默认 `其他`），类型猜测在 `入队材料`
+    // 那一层（Task 1 已测）。文本分支本身不读 kind，别把两件事钉在一处。
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select type, amount, trust_state from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.amount).toBe("280000.00")
+    expect(关系[0]?.trust_state).toBe("自动抽取")
+
+    const 实体 = rowsOf(await db().execute(sql`
+      select canonical_value from auth.case_entity where project_id = 'p-txt'
+    `))
+    // 中文与数字混排的排序取决于库的 collation：比集合，不比序列。
+    expect(实体.map((e) => String(e.canonical_value)).sort()).toEqual(
+      ["13800138000", "张三", "李四"].sort(),
+    )
+
+    const 引用 = rowsOf(await db().execute(sql`
+      select fact_type, extract_method from auth.case_citation where project_id = 'p-txt'
+    `))
+    expect(引用.length).toBeGreaterThanOrEqual(3)
+    expect(引用.every((c) => c.extract_method === "机器")).toBe(true)
+
+    const 行 = rowsOf(await db().execute(sql`
+      select text_content from auth.case_material where project_id = 'p-txt'
+    `))
+    expect(行[0]?.text_content).toBe(文本)
+  })
+
+  test("回读不过 N 次 ⇒ 材料「有问题」＋ parse_detail.slices 有段号，作业仍「完成」", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [{ 类型: "人", 取值: "王五" }], 关系: [], 事件: [],
+    }))
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 明细 = 材料?.parseDetail as { slices: { range: string; reason: string; count: number }[] }
+    expect(明细.slices.length).toBe(1)
+    expect(明细.slices[0]?.range).toContain("0-")
+    expect(明细.slices[0]?.count).toBeGreaterThan(0)
+  })
+
+  test("重放：改模型回答后重新解析，旧关系被删、新关系落库，实体不重复", async () => {
+    const 入 = await 入队文本()
+    const 第一次 = await 认领本材料(入.materialId)
+    await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, 第一次)
+
+    // 走生产出口重排：`applyParseAction("重新解析")` 只改材料状态、**不建作业**，
+    // 单独调它之后 `claimNextJob` 拿不到东西。同一个文件再来一次（force）才是生产里
+    // 民警点「重新解析」走的路径。
+    const 重排 = await 入队("p-txt", "笔录.txt", "fp-笔录.txt", true)
+    expect(重排.enqueued).toBe(true)
+    const 第二次 = await 认领本材料(入.materialId)
+    const 改后 = {
+      ...回答,
+      // 出处里必须同时有「张三」和「李四」：回读要逐字核对两端角色，缺一个整条关系会被丢。
+      关系: [{ 类型: "转账", 从: "张三", 到: "李四", 金额原文: "3万", 原文: "李四说张三还欠他3万元" }],
+    }
+    await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 改后) }, 第二次)
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select amount from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系.map((r) => r.amount)).toEqual(["30000.00"])
+    const 实体 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_entity where project_id = 'p-txt'
+    `))
+    expect(实体[0]?.n).toBe(3)
+  })
+
+  test("取消后不再调模型，已完成的事实保留、作业记「完成」", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => 回答)
+    // 「跑到一半点取消」在单测里表达不出来（`runJob` 内部才构造 `仍应继续`），
+    // 这里构造相同的**入库时刻**：作业已认领，材料已是「有问题」（用户点过取消）。
+    await applyParseAction(db(), { projectId: "p-txt", materialId: 入.materialId, action: "开始" })
+    await applyParseAction(db(), { projectId: "p-txt", materialId: 入.materialId, action: "取消" })
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
+    expect(r).toBe("完成")
+    expect(假.调用次数()).toBe(0)
+    expect((await getMaterial(db(), "p-txt", 入.materialId))?.parseStatus).toBe("有问题")
+  })
+
+  test("金额在出处里找不到 ⇒ 关系仍落库、trust_state「存疑」、金额为空", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张三" },
+        { 类型: "人", 取值: "李四" },
+      ],
+      // 「5万」不在出处里 ⇒ 回读把金额置空并标存疑；事实本身照常入库（设计 §7.4）。
+      关系: [{ 类型: "转账", 从: "张三", 到: "李四", 金额原文: "5万", 原文: "李四说张三还欠他3万元" }],
+      事件: [],
+    }))
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
+    expect(r).toBe("完成")
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select amount, trust_state from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.amount).toBeNull()
+    expect(关系[0]?.trust_state).toBe("存疑")
+    // 有问题的片 ⇒ 材料「有问题」，但作业是跑完了的。
+    expect((await getMaterial(db(), "p-txt", 入.materialId))?.parseStatus).toBe("有问题")
+  })
+
+  test("一条事实都抽不出 ⇒ 「有问题」，不是「已解析 · 0 条」", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(db(), {
+      ...deps,
+      建抽取器: async () => 建假抽取器(() => ({ 实体: [], 关系: [], 事件: [] })),
+    }, job)
+    expect(r).toBe("失败")
+    expect((await getMaterial(db(), "p-txt", 入.materialId))?.parseStatus).toBe("有问题")
+  })
+
+  test("没有抽取器 ⇒ 可解释地失败，不写半截事实", async () => {
+    const 入 = await 入队文本()
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(db(), deps, job)
+    expect(r).toBe("失败")
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    expect((材料?.parseDetail as { reason: string }).reason).toContain("没有配置抽取模型")
   })
 })
 
