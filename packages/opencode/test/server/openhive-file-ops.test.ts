@@ -709,66 +709,6 @@ describe("T020 · 带项目头时四项真能执行（FR-005）", () => {
   )
 
   /**
-   * 修复轮 2（复审改判）：**接线**真的调了入队，不只是库函数本身。
-   *
-   * 上面的上传用例都用 `.txt`——`入队表格材料` 在扩展名处就返回 `undefined`，走不到建材料那一步。
-   * 这条用真 `.xlsx` 走完整条接线：落盘 → `入队表格材料` → `case_material` ＋ `case_ingest_job`
-   * 各一行。删掉 `handleUpload` 里的入队调用，这条必须红（材料 0 行）。
-   */
-  it.live(
-    "上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行（接线真调了入队）",
-    () =>
-      Effect.gen(function* () {
-        yield* 就绪()
-        if (!pg) throw new Error("真库没起来")
-        const 库 = pg.db
-
-        const wb = XLSX.utils.book_new()
-        XLSX.utils.book_append_sheet(
-          wb,
-          XLSX.utils.aoa_to_sheet([
-            ["主叫号码", "被叫号码"],
-            ["13800000000", "13900000000"],
-          ]),
-          "Sheet1",
-        )
-        const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
-        const form = new FormData()
-        form.set("file", new File([bytes], "话单.xlsx"))
-        const response = yield* as(ALICE, `${出口.upload}?dir=${encodeURIComponent("sub")}`, {
-          method: "POST",
-          body: form,
-          headers: { [PROJECT_HEADER]: ALPHA },
-        })
-
-        // 判据是**库里真有两行**，先读副作用，再断状态码（`#004-14`）。
-        const 材料 = rowsOf(
-          yield* Effect.promise(() =>
-            库.execute(
-              sql`select id, path from auth.case_material
-                   where project_id = ${ALPHA} and file_name = '话单.xlsx'`,
-            ),
-          ),
-        )
-        expect(材料.length).toBe(1)
-        expect(材料[0]?.path).toBe("sub/话单.xlsx")
-
-        const 作业 = rowsOf(
-          yield* Effect.promise(() =>
-            库.execute(
-              sql`select source_path from auth.case_ingest_job
-                   where project_id = ${ALPHA} and material_id = ${String(材料[0]?.id)}`,
-            ),
-          ),
-        )
-        expect(作业.length).toBe(1)
-        expect(作业[0]?.source_path).toBe(`${ALICE.id}/${ALPHA}/sub/话单.xlsx`)
-        expect(response.status).toBe(200)
-      }),
-    30_000,
-  )
-
-  /**
    * **下载**：回的是**原始字节**，不是 base64 装在 JSON 里（上游 `file/content` 那种）。
    *
    * 同时钉 `Content-Disposition`：拖出浏览器到桌面要的就是它（没有这个头，浏览器会**直接打开**
@@ -3081,3 +3021,68 @@ describe("打包下载（POST /openhive/file/archive）", () => {
     30_000,
   )
 })
+
+/**
+ * 修复轮 3（定向复审）：按 `#005-18` 的对照实测，这条用例摆在**上传那组**里时，
+ * 它在上传里跑的 `enqueueMaterial` 事务/查询会扰动**后续新建 app** 的首条 PG 查询，
+ * 把本机既有的「归档预热第二发偶发 500」从 ~8% 放大到 ~43%。挪到**文件末尾**
+ * （`打包下载` 组之后）后连跑 6 次，归档预热 0 红（实得见 task-7-report.md）。
+ *
+ * 修复轮 2（复审改判）：**接线**真的调了入队，不只是库函数本身。
+ *
+ * 上面的上传用例都用 `.txt`——`入队表格材料` 在扩展名处就返回 `undefined`，走不到建材料那一步。
+ * 这条用真 `.xlsx` 走完整条接线：落盘 → `入队表格材料` → `case_material` ＋ `case_ingest_job`
+ * 各一行。删掉 `handleUpload` 里的入队调用，这条必须红（材料 0 行）。
+ */
+it.live(
+  "上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行（接线真调了入队）",
+  () =>
+    Effect.gen(function* () {
+      yield* 就绪()
+      if (!pg) throw new Error("真库没起来")
+      const 库 = pg.db
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet([
+          ["主叫号码", "被叫号码"],
+          ["13800000000", "13900000000"],
+        ]),
+        "Sheet1",
+      )
+      const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+      const form = new FormData()
+      form.set("file", new File([bytes], "话单.xlsx"))
+      const response = yield* as(ALICE, `${出口.upload}?dir=${encodeURIComponent("sub")}`, {
+        method: "POST",
+        body: form,
+        headers: { [PROJECT_HEADER]: ALPHA },
+      })
+
+      // 判据是**库里真有两行**，先读副作用，再断状态码（`#004-14`）。
+      const 材料 = rowsOf(
+        yield* Effect.promise(() =>
+          库.execute(
+            sql`select id, path from auth.case_material
+                 where project_id = ${ALPHA} and file_name = '话单.xlsx'`,
+          ),
+        ),
+      )
+      expect(材料.length).toBe(1)
+      expect(材料[0]?.path).toBe("sub/话单.xlsx")
+
+      const 作业 = rowsOf(
+        yield* Effect.promise(() =>
+          库.execute(
+            sql`select source_path from auth.case_ingest_job
+                 where project_id = ${ALPHA} and material_id = ${String(材料[0]?.id)}`,
+          ),
+        ),
+      )
+      expect(作业.length).toBe(1)
+      expect(作业[0]?.source_path).toBe(`${ALICE.id}/${ALPHA}/sub/话单.xlsx`)
+      expect(response.status).toBe(200)
+    }),
+  30_000,
+)
