@@ -178,6 +178,44 @@ describe("单位声明的全部写法（I1 残余：只在圆括号生效会漏�
   })
 })
 
+describe("单位闸 fail-closed：未列币种与孤立右括号（N2/N3）", () => {
+  // 剥掉末尾单位 token 后，若表头里明明有该字段的词典词、剩余串却不再以词典词结尾，
+  // 说明单位后面还黏着无法识别的东西（未知币种、孤立的右括号）⇒ 一律不认。
+  // 只靠白名单挡不住：`欧元` 会被剥成「欧」＋白名单里的「元」，`EUR`/`$` 根本不是单位词。
+  const 不认: [string, string][] = [
+    ["金额欧元", "欧元被剥成「元」后，剩余不以词典词结尾"],
+    ["金额EUR", "未列币种（拉丁）"],
+    ["金额MOP", "未列币种"],
+    ["金额HKD", "未列币种"],
+    ["金额$", "货币符号不是单位词"],
+    ["金额美元)", "孤立右括号剥不掉"],
+    ["金额美元]", "孤立右括号剥不掉"],
+    ["通话时长毫秒列", "单位后面还有异物"],
+  ]
+  for (const [表头, 为什么] of 不认) {
+    test(`${表头} ⇒ 不认（${为什么}），原值留给 extras`, () => {
+      const 值 = 表头.includes("通话") ? "5" : "5.00"
+      const r = detectMapping([表头], [[值]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    })
+  }
+
+  const 认: [string, FactField][] = [
+    ["主叫通话时长", "durationSec"],
+    ["交易金额（元）", "amount"],
+    ["金额人民币", "amount"],
+    ["通话时长sec", "durationSec"],
+    ["金额", "amount"],
+  ]
+  for (const [表头, field] of 认) {
+    test(`${表头} ⇒ 照旧认成 ${field}`, () => {
+      const 值 = field === "durationSec" ? "5" : "5.00"
+      expect(detectMapping([表头], [[值]]).columns).toEqual({ 0: field })
+    })
+  }
+})
+
 describe("detectMapping · 第二层：数据特征", () => {
   test("表头不认识，但整列是 yyyy-mm-dd hh:mm:ss ⇒ 认成 startedAt", () => {
     const r = detectMapping(
@@ -271,7 +309,18 @@ describe("formatFingerprint", () => {
     expect(formatFingerprint(["X"], [["1.00"]])).not.toBe(formatFingerprint(["X"], [["甲"]]))
   })
 
-  test("表头只有空格差异 ⇒ 同指纹（先规范化）", () => {
+  test("指纹必须区分单位声明：7 种写法两两不同（N1）", () => {
+    // 指纹用规范化表头会把单位声明折掉：金额 / 金额万元 / 金额USD 全变成「金额」。
+    // 缓存命中时 columns 直接取缓存、detectMapping 不跑 ⇒ 单位闸被整个绕过，
+    // 先导入基础表头再导入带单位表头会静默错 60 / 10000 倍。指纹必须保留原始表头。
+    const 表头们 = ["金额", "金额万元", "金额USD", "通话时长", "通话时长分钟", "通话时长（分钟）", "通话时长sec"]
+    const 样本 = [["1.00"]]
+    const 指纹 = 表头们.map((h) => formatFingerprint([h], 样本))
+    for (let i = 0; i < 指纹.length; i++)
+      for (let j = i + 1; j < 指纹.length; j++) expect(指纹[i]).not.toBe(指纹[j])
+  })
+
+  test("表头只有空格差异 ⇒ 同指纹（只做 trim，不做规范化）", () => {
     expect(formatFingerprint([" 主叫号码 "], [["1"]])).toBe(formatFingerprint(["主叫号码"], [["1"]]))
   })
 })

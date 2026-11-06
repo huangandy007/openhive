@@ -513,6 +513,27 @@ describe("runJob", () => {
     expect(格式行数.map((x) => String(x.fingerprint))).toContain(旧指纹)
   })
 
+  test("单位声明不同 ⇒ 指纹不同，不能靠缓存绕过单位闸（N1）", async () => {
+    // 先导入「金额」正常表，把该格式的映射写进缓存；再导入表头「金额（万元）」、
+    // **数据形状完全相同**的材料。修复前两者规范化后的指纹相同 ⇒ 命中缓存 ⇒
+    // 第二份按默认单位落库（10000 倍错）且标「已解析」。修复后指纹保留原始表头 ⇒
+    // 指纹不同 ⇒ 重新识别 ⇒ 万元列被单位闸拒 ⇒ 零列可识别 ⇒ 「有问题」。
+    文件.set("p25/基础.xlsx", 造工作簿({ Sheet1: [["金额"], ["10000.00"], ["20000.00"]] }))
+    const 第一 = await 入队("p25", "基础.xlsx", "fp-25a")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect((await getMaterial(db(), "p25", 第一.materialId))?.parseStatus).toBe("已解析")
+    expect(await countFactRows(db(), "p25")).toBe(2)
+
+    文件.set("p25/万元.xlsx", 造工作簿({ Sheet1: [["金额（万元）"], ["1.00"], ["2.00"]] }))
+    const 第二 = await 入队("p25", "万元.xlsx", "fp-25b")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const 材料 = await getMaterial(db(), "p25", 第二.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    expect(材料?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
+    // 第二份没有落任何行：项目里仍只有第一份的 2 行。
+    expect(await countFactRows(db(), "p25")).toBe(2)
+  })
+
   test("重放时截断 ⇒ 旧行还在（删除在算完之后）", async () => {
     文件.set("p15/话单.xlsx", 话单)
     const r = await 入队("p15", "话单.xlsx", "fp-15")

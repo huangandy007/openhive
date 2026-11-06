@@ -108,6 +108,8 @@ function 去括号与空白(raw: string | null): string {
  *   不认（`金额（元）（分）` ⇒ 不认）；
  * - 裸后缀：`金额美元` / `金额USD`，从末尾反复剥 token 逐个判；
  * - 都没有：沿用旧的黑名单（万元 / 分钟 / 小时 / 毫秒），覆盖 `万元金额` 这类不在末尾的写法。
+ * - 兜底 fail-closed：表头里出现了该字段的词典词时，剥完括号与单位 token 后必须仍以
+ *   词典词结尾；否则说明单位后面黏着认不出的东西（`金额欧元` / `金额$` / 孤立右括号）。
  *
  * 不是单位（如「金额（含手续费）」）也不认——宁可进 extras 保留原文，也不静默错倍。
  */
@@ -119,9 +121,18 @@ function 单位闸放行(field: FactField, raw: string | null): boolean {
 
   const { 剩余, tokens } = 剥末尾单位词(去括号与空白(raw))
   if (tokens.some((t) => !(白名单?.test(t) ?? false))) return false
-  if (tokens.length > 0) return true
-  // 没有括号也没有裸后缀单位：退回黑名单。`单位冲突` 不带 g，test 无状态。
-  return !(单位冲突[field]?.test(剩余) ?? false)
+  // 黑名单在**剩余串**上判（不因剥过单位就跳过）：`万元金额` 这类单位不在末尾的写法也要拦。
+  // `单位冲突` 不带 g，test 无状态。
+  if (单位冲突[field]?.test(剩余) ?? false) return false
+
+  // fail-closed（N2/N3）：表头里明明有该字段的词典词，剥完括号与单位 token 后却不再以
+  // 词典词结尾 ⇒ 单位后面还黏着认不出的东西。典型：`金额欧元`（欧元只剩「欧」）、
+  // `金额EUR` / `金额MOP` / `金额HKD` / `金额$`、孤立右括号 `金额美元)`。
+  // **完全没有词典词的表头**（如「B」）不套这条：特征层就是为「表头不认识、形状像金额」
+  // 的列准备的，套上会把整层废掉。
+  const 词们 = DICTIONARY[field].map(规范化)
+  if (词们.some((w) => 剩余.includes(w)) && !词们.some((w) => 剩余.endsWith(w))) return false
+  return true
 }
 
 /** 表头词典。比较前先 `规范化`（去空白、去括号后缀、剥裸单位后缀、转小写）。 */
@@ -250,14 +261,18 @@ function 列形状(values: (string | null)[][]): string[] {
  * 也不需要回填）：否则已导入过的格式仍命中旧缓存、`detectMapping` 被短路，修复对存量材料
  * 不生效（I6）。
  */
-const 识别版本 = "3"
+const 识别版本 = "4"
 
 /**
  * 格式指纹：**识别版本 ＋ 表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。
  * 同一家运营商每个月的文件内容全变，列的形状不变 ⇒ 指纹相同。
  */
 export function formatFingerprint(header: (string | null)[], rows: (string | null)[][]): string {
-  return Hash.sha256(JSON.stringify([识别版本, header.map(规范化), 列形状(rows)]))
+  // ⚠️ 表头用**原始文本**（只 trim），**不许**再走 `规范化`（N1）：规范化会把括号与
+  // 裸单位词剥掉，`金额` / `金额万元` / `金额USD` 因此指纹相同；缓存命中时 `columns`
+  // 直接取缓存、`detectMapping` 不跑 ⇒ 单位闸被整个绕过（静默 60 / 10000 倍错）。
+  // 指纹必须区分单位声明。改识别规则时靠 `识别版本` 让旧指纹成为不可达缓存。
+  return Hash.sha256(JSON.stringify([识别版本, header.map((h) => (h ?? "").trim()), 列形状(rows)]))
 }
 
 /** 材料类型（`case_material.kind` 偏表格的那三个）。产物与其它类型由调用方给。 */
