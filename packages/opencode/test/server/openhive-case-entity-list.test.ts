@@ -42,18 +42,37 @@ beforeAll(async () => {
 
   await 建引用(库(), { id: "c-张", projectId: 项目, factType: "entity", factId: "e-张", materialId: "m-1" })
 
-  // 截断：201 条关系（> 关系上限 200）＋ 101 条事件（> 事件上限 100），用来钉「显示上限 ≠ 全量」。
+  // 截断：201 条关系（> 关系上限 200）指向 **201 个不同账户**（对方各不相同，页内的去重与全量去重会给出不同答案）
+  // ＋ 101 条事件（> 事件上限 100），用来钉「显示上限 ≠ 全量」。
   // 事件按参与者规范值挂到实体上，所以 e-多 的规范值必须与 participants 一致。
   await 建实体(库(), { id: "e-多", projectId: 截断项目, value: "多人", type: "人" })
-  await 建实体(库(), { id: "e-多账", projectId: 截断项目, value: "6222****9999", type: "账户" })
   for (let i = 0; i < 201; i++) {
+    const 号 = String(i).padStart(3, "0")
+    await 建实体(库(), { id: `e-多账${号}`, projectId: 截断项目, value: `6222****${号}`, type: "账户" })
     await 建关系(库(), {
-      id: `r-多${String(i).padStart(3, "0")}`,
+      id: `r-多${号}`,
       projectId: 截断项目,
       fromId: "e-多",
-      toId: "e-多账",
+      toId: `e-多账${号}`,
       type: "转账",
       amount: 1,
+      sourceKind: "data",
+    })
+  }
+  // 去重口径还得有人钉：e-重 对同一个账户两条转账 ⇒ 仍应是「1 个实体 / 1 个账户」。
+  await 建实体(库(), { id: "e-重", projectId: 截断项目, value: "重复", type: "人" })
+  await 建关系(库(), { id: "r-重0", projectId: 截断项目, fromId: "e-重", toId: "e-多账000", type: "转账", amount: 2, sourceKind: "data" })
+  await 建关系(库(), { id: "r-重1", projectId: 截断项目, fromId: "e-重", toId: "e-多账000", type: "转账", amount: 3, sourceKind: "data" })
+  // 边界：恰好 200 条关系 = 正好装下，缺口必须是 undefined（缺口判断写成 `>=` 会在这里红）。
+  await 建实体(库(), { id: "e-满", projectId: 截断项目, value: "满员", type: "人" })
+  for (let i = 0; i < 200; i++) {
+    await 建关系(库(), {
+      id: `r-满${String(i).padStart(3, "0")}`,
+      projectId: 截断项目,
+      fromId: "e-满",
+      toId: "e-多账000",
+      type: "转账",
+      amount: 4,
       sourceKind: "data",
     })
   }
@@ -120,6 +139,12 @@ describe("实体清单与档案", () => {
     expect(清单上限).toBe(200)
   })
 
+  test("清单缺口：恰好满页不算截断", async () => {
+    // 号码恰 2 条：limit 2 是「正好装下」，不是「还有更多」。
+    expect((await 实体清单(库(), { projectId: 项目, type: "号码", limit: 2 })).缺口).toEqual([])
+    expect((await 实体清单(库(), { projectId: 项目, type: "号码", limit: 1 })).缺口.join()).toContain("前 1 条")
+  })
+
   test("档案：关系带方向/对方/依据；已排除关系默认不出现；事件按时间倒序；一句话是整句", async () => {
     const 档 = (await 实体档案(库(), { projectId: 项目, id: "e-张" }))!
     expect(档.关系.map((行) => [行.id, 行.方向, 行.对方值])).toEqual([
@@ -131,6 +156,8 @@ describe("实体清单与档案", () => {
     expect(档.一句话).toContain("张三")
     expect(档.一句话).toContain("账户")
     expect(档.一句话).toContain("关联 2 个事件")
+    // 契约：没有截断就给 undefined，不给空数组。
+    expect(档.缺口).toBeUndefined()
   })
 
   test("档案 includeExcluded=true 才带出已排除关系和已排除实体", async () => {
@@ -154,10 +181,15 @@ describe("实体清单与档案", () => {
     expect(档.一句话).toContain("与本项目 2 个实体有 2 条有效关系")
     expect(档.一句话).toContain("1 个账户")
     expect(档.一句话).toContain("1 个人")
-    // e-多 对同一个账户有 201 条关系：去重后是「1 个账户」。
-    // 用整段「涉及 1 个账户」而不是裸「1 个账户」——「201 个账户」含子串「1 个账户」（#006-22）。
+    // e-多 有 201 条关系、对方是 201 个不同账户，而列表页只带 200 行：
+    // 一句话的实体数/条数必须走全量聚合，不能按页算（按页会说 200）。
     const 多 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
-    expect(多.一句话).toContain("涉及 1 个账户")
+    expect(多.一句话).toContain("与本项目 201 个实体有 201 条有效关系")
+    expect(多.一句话).toContain("涉及 201 个账户")
+    // 同一个账户两条转账仍是 1 个实体、1 个账户（去重口径）。
+    const 重 = (await 实体档案(库(), { projectId: 截断项目, id: "e-重" }))!
+    expect(重.一句话).toContain("与本项目 1 个实体有 2 条有效关系")
+    expect(重.一句话).toContain("涉及 1 个账户")
   })
 
   test("档案：已排除实体与已排除事件默认不出现，includeExcluded 才给", async () => {
@@ -169,14 +201,20 @@ describe("实体清单与档案", () => {
     expect(带排.事件).toHaveLength(3)
   })
 
+  test("档案恰好满页不算截断（缺口 undefined）", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 截断项目, id: "e-满" }))!
+    expect(档.关系).toHaveLength(200)
+    expect(档.缺口).toBeUndefined()
+  })
+
   test("档案截断：关系与事件只显示上限条数，缺口说清全量", async () => {
     const 档 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
     expect(档.关系).toHaveLength(200)
     expect(档.事件).toHaveLength(100)
     const 缺口 = 档.缺口 ?? []
     expect(缺口).toHaveLength(2)
-    expect(缺口.some((条) => 条.includes("200") && 条.includes("关系"))).toBe(true)
-    expect(缺口.some((条) => 条.includes("100") && 条.includes("事件"))).toBe(true)
+    expect(缺口.some((条) => 条.includes("200") && 条.includes("关系图"))).toBe(true)
+    expect(缺口.some((条) => 条.includes("100") && 条.includes("时间线"))).toBe(true)
     expect(档.一句话).toContain("201 条有效关系")
     // 事件数用全量（101），不是当前页的 100。
     expect(档.一句话).toContain("101 个事件")
