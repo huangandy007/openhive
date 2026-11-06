@@ -128,7 +128,11 @@ export function detectMapping(header: (string | null)[], rows: (string | null)[]
     }
   }
   if (!Object.values(columns).includes("amount")) {
-    const 候选 = header.flatMap((_, i) => (!已占.has(i) && 命中率(列(rows, i), 金额形状) >= 0.9 ? [i] : []))
+    // 单位冲突闸也要覆盖特征层（R25b）：词典层被拦下的万元列，若整列是两位小数，
+    // 形状仍会把它认回 amount（10000 倍错）。前提是「单位写在表头里」，与哪一层认出无关。
+    const 候选 = header.flatMap((_, i) =>
+      !已占.has(i) && !单位冲突了("amount", i) && 命中率(列(rows, i), 金额形状) >= 0.9 ? [i] : [],
+    )
     // 两列都像金额 ⇒ 认不出到底哪列是金额哪列是余额，不猜。
     if (候选.length === 1) {
       columns[候选[0]] = "amount"

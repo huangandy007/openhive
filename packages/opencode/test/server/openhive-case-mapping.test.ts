@@ -107,6 +107,38 @@ describe("detectMapping · 第二层：数据特征", () => {
     expect(r.columns).toEqual({ 0: "startedAt" })
     expect(r.unknownColumns).toEqual([1])
   })
+
+  test("特征层也不能把万元列认成 amount——单位冲突闸覆盖两层（R25b）", () => {
+    // 词典层被单位闸拦下后，两位小数的形状会让特征层把它认回 amount（10000 倍错）。
+    const r = detectMapping(["交易金额（万元）"], [["10000.00"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([0])
+  })
+
+  test("冲突列不进特征层候选：另一列像金额时认那一列，不整列不猜（R25b）", () => {
+    // 第 2 列用非词典表头，确保它只能由特征层认出来——这条才真的走到特征层的闸。
+    const r = detectMapping(
+      ["交易金额（万元）", "B"],
+      [
+        ["10000.00", "10000.00"],
+        ["10000.00", "10000.00"],
+      ],
+    )
+    expect(r.columns).toEqual({ 1: "amount" })
+    expect(r.unknownColumns).toEqual([0])
+  })
+
+  test("冲突列不进特征层候选（词典表头版）：认第 2 列为 amount", () => {
+    const r = detectMapping(
+      ["交易金额（万元）", "金额"],
+      [
+        ["10000.00", "10000.00"],
+        ["10000.00", "10000.00"],
+      ],
+    )
+    expect(r.columns).toEqual({ 1: "amount" })
+    expect(r.unknownColumns).toEqual([0])
+  })
 })
 
 describe("detectMapping · 认不出来也入库", () => {
