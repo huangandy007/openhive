@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import type { EntityApi, 实体清单项, 排序 } from "./entity-api"
 
 export interface EntityPanelProps {
@@ -34,7 +34,10 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
   const [行们, set行们] = createSignal<readonly 实体清单项[]>([])
   const [缺口, set缺口] = createSignal<readonly string[]>([])
   const [载入, set载入] = createSignal(false)
-  const [错误, set错误] = createSignal<string | undefined>()
+  // 两条链各说各的话：计数失败被一次成功的清单「顺手清掉」，用户回到导航就会看到
+  // 一句假的「还没有实体」（修复轮 1 · Important 1）。
+  const [计数错误, set计数错误] = createSignal<string | undefined>()
+  const [清单错误, set清单错误] = createSignal<string | undefined>()
   const [星标代, set星标代] = createSignal(0)
 
   const 存储 = () => props.storage ?? localStorage
@@ -68,17 +71,21 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
     const 项目 = props.projectId()
     const api = props.api
     set计数([])
-    set错误(undefined)
+    set载入(false)
+    set计数错误(undefined)
     if (项目 === undefined || api === undefined) return
     let 作废 = false
+    // ⚠️ 必须 `onCleanup`：`createEffect` **不会执行**返回的函数（Solid 只把它存进
+    // `node.value`，清理只认 `onCleanup`）。写成 `return () => …` 的话 `作废` 恒 false，
+    // 切项目后迟到的旧回包会覆盖新结果（修复轮 1 · Critical 1）。
+    onCleanup(() => {
+      作废 = true
+    })
     void api.counts(项目).then((结果) => {
       if (作废) return
-      if (结果.kind === "error") set错误(结果.message)
+      if (结果.kind === "error") set计数错误(结果.message)
       else set计数(结果.value)
     })
-    return () => {
-      作废 = true
-    }
   })
 
   // 清单：类型 / 搜索 / 排序变了就重取；类型导航态（无类型、无搜索）不发请求。
@@ -90,6 +97,8 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
     const 排序现在 = 排序值()
     set行们([])
     set缺口([])
+    set载入(false)
+    set清单错误(undefined)
     if (项目 === undefined || api === undefined) return
     if (类型值 === undefined && 词 === "") return
     let 作废 = false
@@ -100,16 +109,17 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
         if (作废) return
         set载入(false)
         if (结果.kind === "error") {
-          set错误(结果.message)
+          set清单错误(结果.message)
           return
         }
-        set错误(undefined)
+        set清单错误(undefined)
         set行们(结果.value.行们)
         set缺口(结果.value.缺口)
       })
-    return () => {
+    // 同上一处：清理必须挂 `onCleanup`，返回函数不会被 Solid 执行。
+    onCleanup(() => {
       作废 = true
-    }
+    })
   })
 
   /** 数量为 0 的类型不画：它是「这个类型下没有东西」，不是导航项（§8.2）。 */
@@ -146,9 +156,11 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
             class="h-7 w-full shrink-0 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-2 text-[13px] text-v2-text-text-base"
           />
 
-          <Show when={错误()}>{(话) => <p data-slot="entity-error" role="alert" class="px-1 text-[13px] text-v2-state-fg-danger">{话()}</p>}</Show>
-
           <Show when={类型() === undefined && 搜索().trim() === ""}>
+            {/* 导航态只说**计数**这一条链的错：清单错误属于下面那一级，不能混进来。 */}
+            <Show when={计数错误()}>
+              {(话) => <p data-slot="entity-counts-error" role="alert" class="px-1 text-[13px] text-v2-state-fg-danger">{话()}</p>}
+            </Show>
             <For each={可见计数()}>
               {(项) => (
                 <button
@@ -163,7 +175,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                 </button>
               )}
             </For>
-            <Show when={可见计数().length === 0 && 错误() === undefined}>
+            <Show when={可见计数().length === 0 && 计数错误() === undefined}>
               <p data-slot="entity-no-types" class="px-1 py-2 text-[13px] text-v2-text-text-muted">
                 还没有实体：先上传并解析材料
               </p>
@@ -188,6 +200,10 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
             </div>
 
             <div class="min-h-0 flex-1 overflow-y-auto">
+              {/* 清单区只说**清单**这一条链的错。 */}
+              <Show when={清单错误()}>
+                {(话) => <p data-slot="entity-error" role="alert" class="px-1 text-[13px] text-v2-state-fg-danger">{话()}</p>}
+              </Show>
               <For each={排好序()}>
                 {(行) => (
                   <div
@@ -217,7 +233,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
               <Show when={载入()}>
                 <p data-slot="entity-loading" class="px-1 py-2 text-[13px] text-v2-text-text-muted">正在读取…</p>
               </Show>
-              <Show when={!载入() && 行们().length === 0 && 错误() === undefined}>
+              <Show when={!载入() && 行们().length === 0 && 清单错误() === undefined}>
                 <p data-slot="entity-list-empty" class="px-1 py-2 text-[13px] text-v2-text-text-muted">
                   {搜索().trim() !== "" ? "没有匹配的实体" : "这一类型下没有实体"}
                 </p>
