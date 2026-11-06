@@ -59,7 +59,21 @@ describe("parseTime", () => {
     })
   })
 
-  test("中文日期也要进位校验（2 月 31 日不认）", () => {
+  test("「点」也是小时的写法", () => {
+    expect(parseTime("2026年3月5日15点04分")).toEqual({
+      seconds: Date.UTC(2026, 2, 5, 15, 4) / 1000 - 8 * 3600,
+      precision: "到分",
+    })
+  })
+
+  test("中文日期也要进位校验（2 月 31 日不认，2 月 28 日认）", () => {
+    // 正向这条是必需的：只测 31 日的话，把整个「中文到日」分支删掉它也照样绿
+    // （未知文本本来就返回 undefined）——假绿。
+    expect(parseTime("2026年2月28日")).toBeDefined()
     expect(parseTime("2026年2月31日")).toBeUndefined()
+  })
+
+  test("缺「秒」字不猜精度", () => {
+    expect(parseTime("2026年3月5日15时04分06")).toBeUndefined()
   })
 })
