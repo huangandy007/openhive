@@ -446,10 +446,19 @@ export interface CitationRow {
 }
 
 /**
- * 写一条引用。**没有冲突处理**：同一 id 重复写会抛 `23505`。
+ * 写一条引用。**同一个 id 重复写什么都不做**（`on conflict (project_id, id) do nothing`）。
  *
- * 引用的重放路径是「**按材料删掉，再重新插入**」——索引
- * `case_citation_material (project_id, material_id)` 就是为这条路径建的（设计 §5.5）。
+ * 引用是**不可变**的：id 由 `projectId / factType / factId / materialId / 片起` 确定性生成，
+ * 同一个 id 必然是同一条出处，重插不带来任何新信息——与同文件事实写入的取向一致
+ * （`insertRelation` / `insertEvent` 也是 `do nothing`）。
+ *
+ * ⚠️ 这条兜底是「人工确认的事实保留引用」之后重放**必需**的：重放前只删「不会被保留的
+ * 事实」的引用，模型若又抽出同一条人工事实，`引用id` 与上次完全相同；没有它，裸 INSERT
+ * 会撞 `case_citation_pkey`（23505），整个事务回滚、重放硬失败。
+ *
+ * 引用的重放路径原本是「**按材料删掉，再重新插入**」——索引
+ * `case_citation_material (project_id, material_id)` 就是为这条路径建的（设计 §5.5）；
+ * 现在被保留的引用不再删，就靠这里的 `do nothing` 容忍重插。
  *
  * 同样**不校验** `materialId` 属于 `projectId`：库里刻意没有外键（事实层要能整片重建），
  * 这条归属由调用方保证；凡按材料聚合的查询，`project_id` 必须两侧都带。
@@ -467,6 +476,7 @@ export async function addCitation(db: Queryable, input: CitationInput): Promise<
     values (${input.id}, ${input.projectId}, ${input.factType}, ${input.factId}, ${input.materialId},
             ${JSON.stringify(input.locator)}::text::jsonb, ${input.extractMethod},
             ${input.confidence ?? null}, ${nowSeconds()})
+    on conflict (project_id, id) do nothing
   `)
 }
 

@@ -816,6 +816,67 @@ describe("文本作业（计划 4）", () => {
     expect(明细.notes).toEqual(expect.arrayContaining([expect.stringContaining("没有给时间")]))
   })
 
+  // 「有问题」分支的 notes 与限长（N3-2）。切片按行边界、每片 1500 字：这里造两行各 800 字
+  // ⇒ 恰好两片。片 1 只给「事件没时间」这类合法缺失（提示），片 2 回 `{}`（结构非法 ⇒ 问题片），
+  // 于是材料落「有问题」而 notes 里仍有片 1 的提示。
+  // 片 1 里再放 26 条提示：1 条时间认不出（拼出 >200 字的原文，验截断）＋ 25 条没有给时间，
+  // 总数超过 20 ⇒ 验上限。断言只依赖 notes 本身，不重构生产代码。
+  test("「有问题」分支也带 notes，且限长 20 条 / 每条 200 字（N3-2）", async () => {
+    const 长原文 = "甲".repeat(300)
+    const 看不清的时间 = "甲".repeat(250)
+    const 行1 = `张三与李四见面。${"甲".repeat(800)}`
+    const 行2 = "乙".repeat(800)
+    const 入 = await 入队文本("两片.txt", `${行1}\n${行2}`)
+
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(
+      db(),
+      {
+        ...deps,
+        建抽取器: async () =>
+          建假抽取器((片序号) => {
+            if (片序号 !== 1) return {}
+            return {
+              实体: [
+                { 类型: "人", 取值: "张三" },
+                { 类型: "人", 取值: "李四" },
+              ],
+              关系: [],
+              事件: [
+                // 时间原文在出处里、但归一看不出 ⇒ 进提示，且拼出来超过 200 字。
+                { 类型: "聚会", 时间原文: 看不清的时间, 参与人: [], 原文: 长原文 },
+                // 合法缺失：25 条都没有时间 ⇒ 25 条提示，与上一条合计 26 条。
+                ...Array.from({ length: 25 }, (_, i) => ({
+                  类型: `见面${i}`,
+                  参与人: ["张三"],
+                  原文: "张三与李四见面",
+                })),
+              ],
+            }
+          }),
+      },
+      job,
+    )
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 明细 = 材料?.parseDetail
+    if (!是对象(明细)) throw new Error("parse_detail 不是对象")
+    // 「有问题」分支要有逐片明细（前端黄三角要它），也要有提示。
+    expect(Array.isArray(明细.slices)).toBe(true)
+    const notes = 明细.notes
+    if (!Array.isArray(notes)) throw new Error("parse_detail.notes 不是数组")
+    expect(notes.length).toBe(20)
+    for (const 一条 of notes) {
+      if (typeof 一条 !== "string") throw new Error("notes 里有非字符串")
+      expect(一条.length).toBeLessThanOrEqual(200)
+    }
+    // 第一条（时间认不出）原文超 200 字 ⇒ 被截到恰好 200 字。
+    expect(notes.some((一条) => typeof 一条 === "string" && 一条.length === 200)).toBe(true)
+    expect(notes).toEqual(expect.arrayContaining([expect.stringContaining("没有给时间")]))
+  })
+
   test("回读不过 N 次 ⇒ 材料「有问题」＋ parse_detail.slices 有段号，作业仍「完成」", async () => {
     const 入 = await 入队文本()
     const job = await 认领本材料(入.materialId)
@@ -863,6 +924,41 @@ describe("文本作业（计划 4）", () => {
       select count(*)::int as n from auth.case_entity where project_id = 'p-txt'
     `))
     expect(实体[0]?.n).toBe(3)
+  })
+
+  // I3 保留「已确认事实」的引用之后，重放若又抽到**同一条**事实，`引用id` 与上次完全相同：
+  // `insertRelation` 有 `on conflict do nothing` 不炸，`addCitation` 再裸插就是 23505，
+  // 整个事务回滚、重放硬失败。人工确认入口在计划 5，但这条链路现在就得能跑。
+  test("重放又抽到同一条人工事实：引用不撞主键，重放照跑（N1）", async () => {
+    const 入 = await 入队文本()
+    const 第一次 = await 认领本材料(入.materialId)
+    await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, 第一次)
+
+    // 模拟计划 5 的人工确认入口（计划 4 还没有写这个状态的 UI）：把唯一那条关系标成已确认。
+    await db().execute(sql`
+      update auth.case_relation set trust_state = '已确认' where project_id = 'p-txt'
+    `)
+
+    const 重排 = await 入队("p-txt", "笔录.txt", "fp-笔录.txt", true)
+    expect(重排.enqueued).toBe(true)
+    const 第二次 = await 认领本材料(入.materialId)
+    // 回**同一份**回答 ⇒ 同一事实 id、同一片起 ⇒ 同一引用 id。
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, 第二次)
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const 关系 = rowsOf(await db().execute(sql`
+      select trust_state from auth.case_relation where project_id = 'p-txt'
+    `))
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.trust_state).toBe("已确认")
+    // 保留下来的引用只有一条：重插同 id 必须「什么都不做」，而不是再加一条或炸掉。
+    const 引用 = rowsOf(await db().execute(sql`
+      select count(*)::int as n from auth.case_citation
+       where project_id = 'p-txt' and fact_type = 'relation'
+    `))
+    expect(引用[0]?.n).toBe(1)
   })
 
   test("全部片失败的重放：零事实不删旧事实与旧引用（C1）", async () => {

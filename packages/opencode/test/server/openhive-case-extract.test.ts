@@ -133,7 +133,7 @@ describe("回读", () => {
     expect(r.须改正).toEqual([])
   })
 
-  test("金额认不出（省略写法有歧义）只进问题、不进须改正", () => {
+  test("金额认不出（省略写法有歧义）只进提示、不进问题也不进须改正", () => {
     const r = 回读(
       解析({
         ...空,
@@ -143,6 +143,9 @@ describe("回读", () => {
     )
     expect(r.关系[0]?.amount).toBeNull()
     expect(r.关系[0]?.存疑).toBe(true)
+    // 桶断言（N3-1）：这条曾经只写标题、正文不验桶，`:369` 改回 `问题.push` 也不会红。
+    expect(r.问题).toEqual([])
+    expect(r.提示).toEqual([expect.stringContaining("认不出")])
     expect(r.须改正).toEqual([])
   })
 })

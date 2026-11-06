@@ -172,6 +172,57 @@ describe("删引用与删机器事实", () => {
   })
 })
 
+describe("事件分支：与关系对称（N2）", () => {
+  test("重放只删「不会被保留的」事件的引用：已确认事件的出处留下", async () => {
+    const 实体 = await upsertEntity(db(), {
+      projectId: 项目,
+      id: "e-事件",
+      type: "人",
+      canonicalValue: "孙七",
+      aliases: [],
+    })
+    await insertEvent(db(), {
+      projectId: 项目, id: "ev-保留", type: "见面", occurredAt: null, occurredRaw: null,
+      precision: null, participants: [实体], summary: null, trustState: "已确认",
+    })
+    await insertEvent(db(), {
+      projectId: 项目, id: "ev-重放", type: "见面", occurredAt: null, occurredRaw: null,
+      precision: null, participants: [实体], summary: null, trustState: "自动抽取",
+    })
+    // 两条引用都是 `机器` 建的：判断依据是「事实会不会被保留」，不是引用自己怎么来的。
+    for (const factId of ["ev-保留", "ev-重放"]) {
+      await addCitation(db(), {
+        id: `c-${factId}`,
+        projectId: 项目,
+        factType: "event",
+        factId,
+        materialId: 材料,
+        locator: { start: 0, end: 10 },
+        extractMethod: "机器",
+      })
+    }
+
+    // 按生产顺序：先删事实，再删引用。
+    await 删除本材料的事实(db(), 项目, 材料)
+    await deleteCitationsOfMaterial(db(), 项目, 材料)
+
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_event
+         where project_id = ${项目} and id in ('ev-保留', 'ev-重放') order by id
+      `),
+    )
+    expect(事件.map((r) => r.id)).toEqual(["ev-保留"])
+    const 引用 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_citation
+         where project_id = ${项目} and id in ('c-ev-保留', 'c-ev-重放') order by id
+      `),
+    )
+    expect(引用.map((c) => c.id)).toEqual(["c-ev-保留"])
+  })
+})
+
 describe("text_content", () => {
   test("写进材料行，别的字段不动", async () => {
     await setMaterialText(db(), 项目, 材料, "第一段\n第二段")
