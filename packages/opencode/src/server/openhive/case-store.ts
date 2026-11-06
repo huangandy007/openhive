@@ -95,6 +95,40 @@ export async function createMaterial(db: Queryable, input: CreateMaterialInput):
   return id
 }
 
+/**
+ * 解析动作的**可解释失败**。路由据此回 409，而不是把所有错误都吞成 500。
+ *
+ * `code` 是闭集，前端按它决定文案；`message` 是给人看的整句。两者都要有：
+ * 只有 code 会让 toast 变成「操作失败」，只有 message 会让前端没法分支。
+ */
+export type 解析冲突码 = "material_not_found" | "artifact_not_parseable" | "illegal_transition" | "state_changed"
+
+export class 解析冲突 extends Error {
+  constructor(
+    message: string,
+    readonly code: 解析冲突码,
+  ) {
+    super(message)
+    this.name = "解析冲突"
+  }
+}
+
+/** 库行 → `MaterialRow`。`getMaterial` 与 `getMaterialByPath` 共用一份，别各抄一遍。 */
+function mapMaterialRow(row: Record<string, unknown>): MaterialRow {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    fileName: String(row.file_name),
+    kind: String(row.kind) as MaterialKind,
+    fingerprint: String(row.fingerprint),
+    path: String(row.path),
+    parseStatus: String(row.parse_status) as ParseStatus,
+    parseDetail: typeof row.parse_detail === "string" ? JSON.parse(row.parse_detail) : row.parse_detail,
+    queuedBy: row.queued_by == null ? null : String(row.queued_by),
+    clockOffsetSec: Number(row.clock_offset_sec),
+  }
+}
+
 export async function getMaterial(
   db: Queryable,
   projectId: string,
@@ -109,19 +143,33 @@ export async function getMaterial(
     `),
   )
   const row = rows[0]
-  if (!row) return undefined
-  return {
-    id: String(row.id),
-    projectId: String(row.project_id),
-    fileName: String(row.file_name),
-    kind: String(row.kind) as MaterialKind,
-    fingerprint: String(row.fingerprint),
-    path: String(row.path),
-    parseStatus: String(row.parse_status) as ParseStatus,
-    parseDetail: typeof row.parse_detail === "string" ? JSON.parse(row.parse_detail) : row.parse_detail,
-    queuedBy: row.queued_by == null ? null : String(row.queued_by),
-    clockOffsetSec: Number(row.clock_offset_sec),
-  }
+  return row ? mapMaterialRow(row) : undefined
+}
+
+/**
+ * 按**项目内路径**取最新的一条材料。
+ *
+ * 「最新」= `created_at desc, id desc`：内容变了会另建一行（幂等键是内容指纹，不是路径），
+ * 旧行留着是为了不让旧引用变成悬空。界面上的那份文件认最新一行——同 `材料视图` 的
+ * `distinct on (path)`，两处用的是同一条排序。
+ */
+export async function getMaterialByPath(
+  db: Queryable,
+  projectId: string,
+  path: string,
+): Promise<MaterialRow | undefined> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      select id, project_id, file_name, kind, fingerprint, path, parse_status,
+             parse_detail, queued_by, clock_offset_sec
+      from auth.case_material
+      where project_id = ${projectId} and path = ${path}
+      order by created_at desc, id desc
+      limit 1
+    `),
+  )
+  const row = rows[0]
+  return row ? mapMaterialRow(row) : undefined
 }
 
 export interface ApplyParseActionInput {
@@ -149,13 +197,13 @@ export async function applyParseAction(
   input: ApplyParseActionInput,
 ): Promise<ParseStatus> {
   const current = await getMaterial(db, input.projectId, input.materialId)
-  if (!current) throw new Error(`material not found: ${input.projectId}/${input.materialId}`)
+  if (!current) throw new 解析冲突(`material not found: ${input.projectId}/${input.materialId}`, "material_not_found")
 
   if (current.kind === "产物" && (input.action === "入队" || input.action === "重新解析" || input.action === "跳过"))
-    throw new Error(`产物只登记不解析：${input.action}`)
+    throw new 解析冲突(`产物只登记不解析：${input.action}`, "artifact_not_parseable")
 
   const next = nextStatus(current.parseStatus, input.action)
-  if (!next) throw new Error(`illegal transition: ${current.parseStatus} --${input.action}--> ?`)
+  if (!next) throw new 解析冲突(`illegal transition: ${current.parseStatus} --${input.action}--> ?`, "illegal_transition")
 
   const 入队 = input.action === "入队"
   // 设计 §8.1：解析中取消要落「有问题」且**带原因**；§5.2 要求「有问题」可解释。
@@ -176,7 +224,7 @@ export async function applyParseAction(
       returning id
     `),
   )
-  if (rows.length === 0) throw new Error("状态已被别的作业改掉（并发保护）")
+  if (rows.length === 0) throw new 解析冲突("状态已被别的作业改掉（并发保护）", "state_changed")
   return next
 }
 

@@ -367,3 +367,161 @@ describe("GET /openhive/case/materials", () => {
       expect(包.materials[0]).toMatchObject({ path: "分析/结论.xlsx", kind: "产物", status: "未入队", parseable: true })
     }))
 })
+
+const 解析回包形状 = Schema.Struct({ ok: Schema.Boolean, status: Schema.String })
+const 错误形状 = Schema.Struct({ error: Schema.String, code: Schema.String })
+
+const 解析 = (subject: TokenSubject | null, body: unknown) =>
+  发(subject, "/openhive/case/parse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+
+const 读解析回包 = (response: Response) =>
+  Effect.promise(async () => Schema.decodeUnknownSync(解析回包形状)(await response.json()))
+
+const 读错误 = (response: Response) =>
+  Effect.promise(async () => Schema.decodeUnknownSync(错误形状)(await response.json()))
+
+describe("POST /openhive/case/parse（入队 / 重新解析）", () => {
+  it("入队一份新表格：材料进「排队中」、作业落库、queued_by 是操作人、指纹是内容哈希", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(响应.status).toBe(200)
+      expect(yield* 读解析回包(响应)).toEqual({ ok: true, status: "排队中" })
+
+      const 材料 = yield* Effect.promise(() => 材料行("资料/话单.xlsx"))
+      expect(材料?.parse_status).toBe("排队中")
+      expect(材料?.queued_by).toBe(我.id)
+      expect(材料?.fingerprint).toBe(文件指纹("资料/话单.xlsx"))
+
+      const 作业 = yield* Effect.promise(() => 作业行们(String(材料?.id)))
+      expect(作业).toHaveLength(1)
+      expect(作业[0]).toMatchObject({ status: "排队中", queued_by: 我.id })
+    }))
+
+  it("重新解析一份已解析材料：事实**原样保留**，只重新排队", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "已解析", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      yield* Effect.promise(() => 种事实({ materialId: 材料, rowNo: 1, caller: "138" }))
+      yield* Effect.promise(() => 种事实({ materialId: 材料, rowNo: 2, caller: "139" }))
+
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "重新解析" })
+      expect(响应.status).toBe(200)
+      expect((yield* Effect.promise(() => 材料行("资料/话单.xlsx")))?.parse_status).toBe("排队中")
+      expect(yield* Effect.promise(() => 事实数(材料))).toBe(2)
+      const 作业 = yield* Effect.promise(() => 作业行们(材料))
+      expect(作业).toHaveLength(1)
+      expect(作业[0]?.queued_by).toBe(我.id)
+    }))
+
+  it("入队「有问题」的文件 = 再试一次（状态机走「重新解析」）", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() =>
+        种材料({
+          path: "资料/话单.xlsx",
+          status: "有问题",
+          fingerprint: 文件指纹("资料/话单.xlsx"),
+          detail: { reason: "上次的表头认不出" },
+        }),
+      )
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(响应.status).toBe(200)
+      expect((yield* Effect.promise(() => 材料行("资料/话单.xlsx")))?.parse_status).toBe("排队中")
+      expect(yield* Effect.promise(() => 作业行们(材料))).toHaveLength(1)
+    }))
+
+  it("重复入队：第二次 409 already_running，作业仍然只有一条", () =>
+    Effect.gen(function* () {
+      yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      const 材料 = yield* Effect.promise(() => 材料行("资料/话单.xlsx"))
+
+      const 第二次 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(第二次.status).toBe(409)
+      expect((yield* 读错误(第二次)).code).toBe("already_running")
+      expect(yield* Effect.promise(() => 作业行们(String(材料?.id)))).toHaveLength(1)
+    }))
+
+  it("状态不允许：已解析的文件不能「入队」、未入队的文件不能「重新解析」", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "已解析", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      const 入队 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(入队.status).toBe(409)
+      expect((yield* 读错误(入队)).code).toBe("illegal_transition")
+
+      yield* Effect.promise(() => 库().execute(sql`delete from auth.case_material where project_id = ${项目}`))
+      yield* Effect.promise(() =>
+        种材料({ path: "资料/话单.xlsx", status: "未入队", fingerprint: 文件指纹("资料/话单.xlsx") }),
+      )
+      const 重来 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "重新解析" })
+      expect(重来.status).toBe(409)
+      expect((yield* 读错误(重来)).code).toBe("illegal_transition")
+    }))
+
+  it("重新解析一份没有记录的文件 ⇒ 404 material_not_found", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/流水.csv", action: "重新解析" })
+      expect(响应.status).toBe(404)
+      expect((yield* 读错误(响应)).code).toBe("material_not_found")
+    }))
+
+  it("非表格：可解释地拒绝（not_parseable），不落材料也不落作业", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/笔录.pdf", action: "入队" })
+      expect(响应.status).toBe(409)
+      expect((yield* 读错误(响应)).code).toBe("not_parseable")
+      expect(yield* Effect.promise(() => 材料行("资料/笔录.pdf"))).toBeUndefined()
+    }))
+
+  it("产物硬边界：kind=产物 时三个解析动作都回 artifact_not_parseable", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => 种材料({ path: "分析/结论.xlsx", status: "未入队", kind: "产物" }))
+      for (const action of ["入队", "重新解析", "跳过"] as const) {
+        const 响应 = yield* 解析(我, { projectId: 项目, path: "分析/结论.xlsx", action })
+        expect(响应.status, action).toBe(409)
+        expect((yield* 读错误(响应)).code, action).toBe("artifact_not_parseable")
+      }
+    }))
+
+  it("路径闸：`..` / 反斜杠 / 绝对路径 / NUL 一律 400，碰不到库也碰不到盘", () =>
+    Effect.gen(function* () {
+      for (const path of ["../x.xlsx", "资料/../x.xlsx", "资料\\话单.xlsx", "/etc/x.xlsx", "C:/x.xlsx", "资料/\0x.xlsx"]) {
+        const 响应 = yield* 解析(我, { projectId: 项目, path, action: "入队" })
+        expect(响应.status, path).toBe(400)
+        expect((yield* 读错误(响应)).code, path).toBe("bad_request")
+      }
+    }))
+
+  it("盘上没有这个文件 ⇒ 404 file_missing，不落材料", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/不存在.xlsx", action: "入队" })
+      expect(响应.status).toBe(404)
+      expect((yield* 读错误(响应)).code).toBe("file_missing")
+      expect(yield* Effect.promise(() => 材料行("资料/不存在.xlsx"))).toBeUndefined()
+    }))
+
+  it("链接把落点带出项目 ⇒ 400，且话是 LINK_ESCAPE 那一句", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/链接.xlsx", action: "入队" })
+      expect(响应.status).toBe(400)
+      expect((yield* 读错误(响应)).code).toBe("bad_request")
+    }))
+
+  it("401 / 403：没身份与不是成员都进不了写出口", () =>
+    Effect.gen(function* () {
+      const 未登录 = yield* 解析(null, { projectId: 项目, path: "资料/话单.xlsx", action: "入队" })
+      expect(未登录.status).toBe(401)
+
+      const 非成员 = yield* 解析(我, {
+        projectId: 别人的项目,
+        path: "资料/话单.xlsx",
+        action: "入队",
+      })
+      expect(非成员.status).toBe(403)
+    }))
+})

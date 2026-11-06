@@ -34,3 +34,33 @@ export function nextStatus(from: ParseStatus, action: ParseAction): ParseStatus 
 export function isRunning(status: ParseStatus): boolean {
   return status === "排队中" || status === "解析中"
 }
+
+/**
+ * 右键菜单能发的**人工动作**（设计 §8.1）。
+ *
+ * 只有四个：`开始` / `完成` / `出问题` 是 worker 的，不给人工入口。
+ */
+export const 人工解析动作 = ["入队", "重新解析", "取消", "跳过"] as const
+export type 人工解析动作 = (typeof 人工解析动作)[number]
+
+/**
+ * 每个动作**在哪些状态下亮**——前后端共用的亮度判据（设计 §8.1 的「点亮条件」）。
+ *
+ * 这里是**界面亮度**，不是状态机的全部合法边：`入队` 在「有问题」时也亮，因为用户点它的
+ * 意图是「再试一次」，实际落点由 `该走哪个动作` 决定成「重新解析」。别把这张表当成
+ * `TRANSITIONS` 的副本——两者回答的是不同问题（能不能点 vs 能不能推进）。
+ *
+ * ⚠️ 这张表只描述**单文件**菜单。文件夹批量**不**按它扫全集：已跳过虽在这里对「入队」亮，
+ * 但 `目录下待入队` 有意排除它（跳过是人的意志，设计 §5.2）。批量是前端逐个发，服务端
+ * 没有批量出口，别把两者混成一个判据。
+ */
+export const 动作可用状态: Record<人工解析动作, readonly ParseStatus[]> = {
+  入队: ["未入队", "已跳过", "有问题"],
+  重新解析: ["已解析", "有问题"],
+  取消: ["排队中", "解析中"],
+  跳过: ["未入队", "有问题"],
+}
+
+export function 该动作可用(status: ParseStatus, action: 人工解析动作): boolean {
+  return 动作可用状态[action].includes(status)
+}
