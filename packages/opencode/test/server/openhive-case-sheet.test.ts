@@ -119,4 +119,49 @@ describe("readSheets", () => {
   test("一份工作表都读不出 ⇒ 抛错，不返回空数组", () => {
     expect(() => readSheets(造工作簿({ S: [] }))).toThrow("没有可读的工作表")
   })
+
+  test("GBK 编码的 CSV ⇒ 抛错并提示另存 UTF-8，不静默乱码", () => {
+    // 「主叫号码\n」的 GBK 字节：D6F7 BDD0 BAC5 C2EB 0A（不是 SheetJS 反向生成，是真字节）
+    const bytes = Uint8Array.of(0xd6, 0xf7, 0xbd, 0xd0, 0xba, 0xc5, 0xc2, 0xeb, 0x0a)
+    expect(() => readSheets(bytes)).toThrow(/UTF-8/)
+  })
+
+  test("无控制字节的二进制（非法 UTF-8）⇒ 抛错，不读出垃圾表", () => {
+    expect(() => readSheets(Uint8Array.of(0x80, 0x81, 0x82, 0xfe, 0xff))).toThrow()
+    expect(() => readSheets(Uint8Array.of(0xff, 0xd8, 0xff, 0xe0))).toThrow() // JPEG 头
+  })
+
+  test("空文件 / 只有空白的文件 ⇒ 抛错，不返回空表", () => {
+    expect(() => readSheets(new Uint8Array())).toThrow("文件是空的")
+    expect(() => readSheets(new TextEncoder().encode("\n"))).toThrow("文件里没有内容")
+  })
+
+  test("表头不在第 1 行（上方只有空行）时，仍按 !ref 起始行取表头与数据", () => {
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.aoa_to_sheet([])
+    XLSX.utils.sheet_add_aoa(
+      ws,
+      [
+        ["主叫号码", "被叫号码"],
+        ["13800000000", "13900000000"],
+        ["13700000000", "13600000000"],
+      ],
+      { origin: "A5" },
+    )
+    // origin 只挪单元格，`!ref` 仍从 A1 起；手动把「用到的区域」定成 A5:B7（模拟标题行/
+    // 空行在上、真实数据从第 5 行起的导出件）。
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 4, c: 0 }, e: { r: 6, c: 1 } })
+    XLSX.utils.book_append_sheet(wb, ws, "S")
+    const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+    const [sheet] = readSheets(bytes, { maxRowsPerSheet: 2 }).sheets
+    expect(sheet?.header.map((c) => c.text)).toEqual(["主叫号码", "被叫号码"])
+    expect(sheet?.rows.map((r) => r.rowNo)).toEqual([6, 7])
+  })
+
+  test("恰好 N 数据行、上限 N ⇒ 不误报截断", () => {
+    const bytes = 造工作簿({ S: [["h"], ["1"], ["2"]] })
+    const result = readSheets(bytes, { maxRowsPerSheet: 2 })
+    expect(result.sheets[0]?.rows).toHaveLength(2)
+    expect(result.truncatedSheets).toEqual([])
+  })
 })

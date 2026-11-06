@@ -16,10 +16,25 @@ import * as XLSX from "xlsx"
  * 记成 `kind`。**注意：目前下游（Task 3/5）只消费 `text`，`kind` 还没有读者**，
  * 留着是给识别层以后判断用，不代表现在已经生效。
  *
+ * ## 输入编码（裁定 R11）
+ *
+ * 文本通道**只认严格 UTF-8**，不做 GBK 自动探测：GB18030 几乎能解码任意字节序列，自动回退
+ * 等于把二进制又放进来，还把中文人名/地名/案由解成乱码且不报错——证据数据不可接受。宁可
+ * 响亮失败、给一句可操作的错误（「CSV 请另存为 UTF-8」）。代价：GBK 导出的 CSV / HTML 伪
+ * `.xls` 要用户转存一次。若真栈验收发现这类材料多，另开任务做「编码探测＋内容合理性判定」，
+ * 不进本计划。
+ *
  * ## 已知不保真的地方
  *
  * 数值单元格的**底层值**（日期是序列号、金额是 IEEE754 双精度）不保留，只有显示文本。
  * 显示文本正是民警在 Excel 里看到的那个值；真要底层值，另存 `cell.v`，本计划不做。
+ *
+ * ## 上限的代价
+ *
+ * `maxRowsPerSheet` 只约束**返回的行数组**，**不约束解析期内存**：整本工作簿仍会被 SheetJS
+ * 读进内存。超大话单的内存保护（`dense: true` / 流式）留到真栈实测再定，本计划不做。
+ * （不能用 `sheetRows` 省内存：它按**绝对行号**截断，表头不在第 1 行时会把表头连同数据
+ * 整片切掉，`+1` 只补偿表头恰好在第 0 行的情形；解析前又拿不到 `range.s.r`，绕不过去。）
  */
 export type CellKind = "text" | "number" | "empty"
 
@@ -83,12 +98,30 @@ function isContainer(bytes: Uint8Array): boolean {
 /**
  * CSV / TSV / HTML 伪 .xls：除 `\t \r \n` 外不含控制字节。UTF-8 BOM 与中文多字节都 ≥ 0x20，
  * 自然放行；任意二进制垃圾（如 `0x01..0x08`）会被挡下 —— 这正是「不是表格的字节」要的效果。
+ *
+ * 这一关先于严格解码：`[0x01..0x08]` 是**合法** UTF-8（控制码），光靠 `fatal` 解不掉。
  */
 function looksLikeText(bytes: Uint8Array): boolean {
   for (const byte of bytes) {
     if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) return false
   }
   return true
+}
+
+/**
+ * 文本通道的严格解码（裁定 R11）。三类坏输入都**响亮失败**，不静默当表读：
+ * 空文件、解不成 UTF-8（GBK / 无控制字节的二进制 / JPEG 头）、解出来只有空白。
+ */
+function decodeText(bytes: Uint8Array): string {
+  if (bytes.length === 0) throw new Error("文件是空的")
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    throw new Error("不是可识别的表格文件：既不是 xlsx/xls，也不是 UTF-8 文本（CSV 请另存为 UTF-8）")
+  }
+  if (text.trim() === "") throw new Error("文件里没有内容")
+  return text
 }
 
 function toRawCell(cell: XLSX.CellObject | undefined): RawCell {
@@ -104,9 +137,9 @@ function toRawCell(cell: XLSX.CellObject | undefined): RawCell {
 /**
  * 读全部（上限内）工作表。
  *
- * **抛错**表示这份字节读不成表格（不是可识别格式，或一份工作表都读不出）——调用方据此把材料
- * 落「有问题」，不要在这里吞掉。**不认识的内容宁可抛错，也不静默当表读**：这是给办案用的，
- * 静默比报错糟。
+ * **抛错**表示这份字节读不成表格（不是可识别格式、编码不是 UTF-8、文件为空，或一份工作表都
+ * 读不出）——调用方据此把材料落「有问题」，不要在这里吞掉。**不认识的内容宁可抛错，也不静默
+ * 当表读**：这是给办案用的，静默比报错糟。
  *
  * 上限不是静默的：被 `maxSheets` 挡掉的工作表名进 `skippedSheets`，被 `maxRowsPerSheet`
  * 截断的工作表名进 `truncatedSheets`。取证场景里「无声消失」比「报错」糟得多。
@@ -120,30 +153,23 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
   // 逐字段 ??：显式 `undefined` 也要落回默认值（展开合并时 undefined 会覆盖默认值）。
   const maxSheets = limits.maxSheets ?? DEFAULT_LIMITS.maxSheets
   const maxRowsPerSheet = limits.maxRowsPerSheet ?? DEFAULT_LIMITS.maxRowsPerSheet
-  const readOptions = { cellDates: false, cellStyles: false, sheetRows: maxRowsPerSheet + 1 } as const
 
-  // sheetRows 让 SheetJS 在**解析阶段**就截断（不是整本读进内存再砍数组），多算 1 行表头。
-  // 文本格式先按 UTF-8 自己解码再交给 SheetJS：它的 codepage 表没随包带上（会打印
-  // “Codepage tables are not loaded” 并可能给出乱码），而平台 TextDecoder 的 UTF-8 是完整的。
-  // ⚠️ 已知限制：GBK / UTF-16 的 CSV 会变乱码，需要上游转码；本计划只承诺 UTF-8。
+  // 整本解析（不用 sheetRows，见文件头「上限的代价」）；文本通道先严格解码再交给 SheetJS。
   const wb = container
-    ? XLSX.read(bytes, { ...readOptions, type: "array" })
-    : XLSX.read(new TextDecoder("utf-8").decode(bytes), { ...readOptions, type: "string" })
+    ? XLSX.read(bytes, { type: "array", cellDates: false, cellStyles: false })
+    : XLSX.read(decodeText(bytes), { type: "string", cellDates: false, cellStyles: false })
 
   const sheets: RawSheet[] = []
   const truncatedSheets: string[] = []
 
   for (const name of wb.SheetNames.slice(0, maxSheets)) {
     const ws = wb.Sheets[name]
+    // 空表（没有 !ref）跳过，且**不算丢失**：它本来就没数据，塞进 skippedSheets 会让 Task 6
+    // 把整份材料误判「有问题」。
     if (!ws || !ws["!ref"]) continue
     const range = XLSX.utils.decode_range(ws["!ref"])
-
-    // 截断判定：zip/CFB 格式被 sheetRows 截断时，完整范围留在 `!fullref`，`!ref` 只到上限。
-    // 文本格式（CSV/HTML）sheetRows 同样生效，但**不写 `!fullref`**，只能在「行数正好顶到上限」
-    // 时保守报出——宁可多报「可能截断」，也不静默丢行。
-    const full = ws["!fullref"] ? XLSX.utils.decode_range(ws["!fullref"]) : undefined
-    const truncated = full ? full.e.r > range.e.r : range.e.r - range.s.r >= maxRowsPerSheet
-    if (truncated) truncatedSheets.push(name)
+    // 数据行数 = e.r - s.r（表头占 s.r 那一行）。按 range 精确判定，不用 !fullref / sheetRows。
+    if (range.e.r - range.s.r > maxRowsPerSheet) truncatedSheets.push(name)
 
     const rowAt = (r: number): RawRow => {
       const cells: RawCell[] = []
@@ -161,7 +187,9 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
     sheets.push({ name, header, rows })
   }
 
-  if (sheets.length === 0) throw new Error("没有可读的工作表")
+  if (sheets.length === 0) {
+    throw new Error(`没有可读的工作表（文件里有 ${wb.SheetNames.length} 张表，上限 ${maxSheets}）`)
+  }
 
   return { sheets, skippedSheets: wb.SheetNames.slice(maxSheets), truncatedSheets }
 }
