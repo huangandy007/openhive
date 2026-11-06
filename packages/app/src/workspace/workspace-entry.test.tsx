@@ -830,16 +830,18 @@ describe("文件树接进左栏（FR-005 出参）", () => {
     setCurrentProject(undefined)
     setProjectList(undefined)
     setProjectFiles(undefined)
-    const 假 = 假材料状态({ rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+    // ⚠️ 路径**必须带目录**（`资料/话单.csv`）：不带 `/` 时手拼的 `case://p1/material/话单.csv`
+    // 未编码也照样解析得出来，这条断言就没有牙——它要钉的是「伪路径里每一段都编码过」。
+    const 假 = 假材料状态({ rows: [视图行({ path: "资料/话单.csv", status: "已解析" })] })
     // `files` 要给：换项目那一刻 effect 会用 `tree` 重取清单，没剧本就是空清单，行会当场消失。
     const { data } = 假数据源({
       list: async () => [我的(私有("p1", "专案", 1))],
-      files: async () => ["话单.csv"],
+      files: async () => ["资料/话单.csv"],
     })
     const host = 挂(data, 假.状态)
     await 冲一遍()
     // 清单要**挂载后**再写（同上面那条用例的注释：挂载时的 effect 会先清一次）。
-    setProjectFiles(["话单.csv"])
+    setProjectFiles(["资料/话单.csv"])
     setCurrentProject({ id: "p1", name: "专案" })
     await 冲一遍()
 
@@ -861,7 +863,7 @@ describe("文件树接进左栏（FR-005 出参）", () => {
 
     // 接线成立的证据：中栏多了一张标题带「抽取结果」的 tab（没注入 caseDetailApi ⇒ 内容说未接入，
     // 那是**内容层**的事；这条只钉「路径进没进中栏」）。
-    expect(host.textContent).toContain("话单.csv · 抽取结果")
+    expect(host.textContent).toContain("资料/话单.csv · 抽取结果")
     // ⚠️ 只断标题不够：标题在 tab 层就写好了，哪怕路径压根没被当成案件路径也会绿。
     // 没注入 caseDetailApi 时，**只有真正解析成功的 case 路径**才会让 `CaseView` 说这句
     // （落进表格视图 /「不支持」都不会出现它）——它是「路径确实到了 `CaseView` 手上」的证据。

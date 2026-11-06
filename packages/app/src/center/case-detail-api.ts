@@ -1,3 +1,4 @@
+import type { 解析状态 } from "../project/case-materials-api"
 import { PREFIX, 默认发送, 请求, type CaseFetch, type 结果 } from "../project/entity-api"
 
 /**
@@ -77,11 +78,10 @@ export interface 事实组 {
 }
 
 /**
- * 材料解析状态。**逐字照抄**服务端 `case-status.ts` 的 `PARSE_STATUSES` /
- * 迁移 `0031_case_fact_layer.sql`；跨包不 import（服务端代码不进 `packages/app` 的产物），
- * 所以写错一个词要在编译期报出来，靠的就是这个联合类型。
+ * 材料解析状态。**类型本体在 `../project/case-materials-api`**（`解析状态们` 派生，计划 3 的
+ * 闭集）——同一件事只留一处，here 不再抄第二份（`#002-06`）。它那里的注释说明了为什么要
+ * 逐字照抄服务端 `case-status.ts` 的 `PARSE_STATUSES`。
  */
-export type 解析状态 = "未入队" | "排队中" | "解析中" | "已解析" | "有问题" | "已跳过"
 
 export interface 材料事实清单结果 {
   readonly 材料: {

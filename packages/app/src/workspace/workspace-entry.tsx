@@ -2245,8 +2245,10 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         // 计划 3：材料状态整份交给树（它只读；动作成功后自己 reload）。
                         caseMaterials={props.caseMaterials}
                         // 计划 7：「查看解析结果」→ 中栏的材料抽取结果页。
-                        // 用 `case://` 伪路径而不是文件路径：它不是一份文件，按扩展名路由会降级成
-                        // 「格式不支持」（`center-content.tsx` 的 `case://` 分支）。
+                        // 必须用 `case://` 伪路径而不是原始文件路径：按扩展名路由会把它交给
+                        // **表格视图**（`.csv` 被 `SheetView` 认领，`center/views/index.ts:40-45`），
+                        // 打开的是**错的视图**，不是「没人认领」的降级档。`case://` 分支在
+                        // `center-content.tsx` 里**先认前缀再走 `extensionOf`**（裁定 4）。
                         onReviewParse={
                           有项目()
                             ? (path) => {
