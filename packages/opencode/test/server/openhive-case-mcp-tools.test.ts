@@ -6,6 +6,7 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   query_entities,
   search_materials,
+  归一化限制,
   校验成员,
   type 工具上下文,
   type 工具结果,
@@ -36,6 +37,9 @@ const 库 = () => {
 }
 
 const 身份甲 = { userId: "u-工具-甲", projectId: "p-工具-甲" }
+/** 别名检索、截断断言各自用一个**独立项目**：同一项目里种数据会按用例声明顺序影响别的用例（`#005-34`）。 */
+const 身份丙 = { userId: "u-工具-甲", projectId: "p-工具-丙" }
+const 身份截 = { userId: "u-工具-甲", projectId: "p-工具-截" }
 const 项目乙 = "p-工具-乙"
 
 const ctx = (身份: typeof 身份甲): 工具上下文 => ({ db: 库(), 身份 })
@@ -135,17 +139,22 @@ test("query_entities 含已排除=true 时带出来", async () => {
   expect(ids(await query_entities(ctx(身份甲), { 含已排除: true }))).toContain("e-排")
 })
 
-test("query_entities 关键词命中别名", async () => {
-  // 这条夹具刻意放在用例里而不是 `beforeAll`：上一条「默认只列出 e-好」钉的是同一份
-  // 项目数据，别名实体若提前入库，会把那条断言的期望值变成两条（夹具互相污染）。
+test("query_entities 关键词命中别名，且 aliases 读回来是数组", async () => {
+  // 独立项目：不污染「默认不返回已排除」那条（同一项目里后种的数据不该靠声明顺序躲开）。
   await upsertEntity(库(), {
-    projectId: 身份甲.projectId,
     id: "e-别",
+    projectId: "p-工具-丙",
     type: "人",
-    canonicalValue: "赵六",
+    canonicalValue: "张叁本名",
     aliases: ["张叁"],
   })
-  expect(ids(await query_entities(ctx(身份甲), { 关键词: "张叁" }))).toEqual(["e-别"])
+  const 行 = (await query_entities(ctx(身份丙), { 关键词: "张叁" })).数据 as Record<string, unknown>[]
+  expect(行.map((条) => 条.id)).toEqual(["e-别"])
+  // 形状断言：`text[]` 两个驱动读回形状不同，查询必须 `array_to_json(...)::text` 再解析。
+  // 少了这一条，裸选在 PGlite 上拿到数组、在生产 bun-sql 上拿到 `"{张叁}"` 字符串，测试却全绿。
+  expect(Array.isArray(行[0]!.aliases)).toBe(true)
+  expect(行[0]!.aliases).toContain("张叁")
+  expect(typeof 行[0]!.attrs).toBe("object")
 })
 
 test("限制非整数 / 0 / 负数 ⇒ bad_input", async () => {
@@ -155,6 +164,15 @@ test("限制非整数 / 0 / 负数 ⇒ bad_input", async () => {
 })
 
 test("超上限截到 200 并在缺口里说清", async () => {
+  // 先钉「真的截到 200」——缺口文案里也有 200，只断言文案的话，删掉 `Math.min` 照样绿。
+  expect(归一化限制(999)).toBe(200)
   const 结果 = await query_entities(ctx(身份甲), { 限制: 999 })
   expect(结果.缺口?.join()).toContain("200")
+})
+
+test("实得行数等于限制时缺口说「可能还有更多」", async () => {
+  await upsertEntity(库(), { id: "e-截1", projectId: "p-工具-截", type: "人", canonicalValue: "截甲", aliases: [] })
+  await upsertEntity(库(), { id: "e-截2", projectId: "p-工具-截", type: "人", canonicalValue: "截乙", aliases: [] })
+  const 结果 = await query_entities(ctx(身份截), { 限制: 2 })
+  expect(结果.缺口?.some((句) => 句.includes("已截到前 2 条"))).toBe(true)
 })

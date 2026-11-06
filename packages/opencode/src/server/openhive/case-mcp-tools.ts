@@ -44,15 +44,36 @@ export interface 工具上下文 {
 export const 默认限制 = 50
 export const 最大限制 = 200
 
+/** JS 侧的大小写比较与 SQL 的 `ilike` 对齐（`ilike` 不区分大小写）。 */
+function lower(值: string): string {
+  return 值.toLowerCase()
+}
+
 /**
  * 命中片段：以第一个命中为中心前后各 40 个字符。**必须在 JS 做**——SQL 的 substring
- * 按字节切会把中文切碎。
+ * 按字节切会把中文切碎。不区分大小写：SQL 那边是 `ilike`，这里若用大小写敏感的
+ * `indexOf`，大写命中会返回 null，模型看不出为什么这行被搜到。
  */
 export function 片段(正文: string, 关键词: string | undefined, 半径 = 40): string | null {
   if (关键词 === undefined || 关键词 === "" || 正文 === "") return null
-  const 位置 = 正文.indexOf(关键词)
+  const 位置 = 正文.toLowerCase().indexOf(关键词.toLowerCase())
   if (位置 < 0) return null
   return 正文.slice(Math.max(0, 位置 - 半径), Math.min(正文.length, 位置 + 关键词.length + 半径))
+}
+
+/**
+ * `text[]` / `jsonb` 一律**以 JSON 文本出库**再解析：两个驱动的读回形状没有先例可依
+ * （`case-fact-read.ts:22-26` 的结论）。所以查询里必须写 `array_to_json(col)::text` 或
+ * `col::text`，不要裸选后 `as string[]` —— 那在 bun-sql 上会拿到 `"{a,b}"` 字符串，
+ * 测试（PGlite）却可能是数组，绿在测试、错在生产。
+ */
+export function 解JSON<T>(值: unknown, 兜底: T): T {
+  if (typeof 值 !== "string" || 值 === "") return 兜底
+  try {
+    return JSON.parse(值) as T
+  } catch {
+    return 兜底
+  }
 }
 
 /**
@@ -101,7 +122,8 @@ export async function search_materials(
     条件.push(sql`(file_name ilike ${模式} or coalesce(text_content, '') ilike ${模式})`)
   }
   const rows = await ctx.db.execute(sql`
-    select id, file_name, kind, parse_status, path, coalesce(text_content, '') as text_content, created_at
+    select id, file_name, kind, parse_status, coalesce(text_content, '') as text_content,
+           created_at
       from auth.case_material
      where ${sql.join(条件, sql` and `)}
      order by created_at desc, id desc
@@ -113,7 +135,7 @@ export async function search_materials(
     kind: 行.kind as string,
     parse_status: 行.parse_status as string,
     片段: 片段(行.text_content as string, 关键词),
-    命中文件名: 关键词 !== undefined && (行.file_name as string).includes(关键词),
+    命中文件名: 关键词 !== undefined && lower(行.file_name as string).includes(lower(关键词)),
   }))
   return {
     数据,
@@ -138,7 +160,8 @@ export async function query_entities(
   }
   if (args.含已排除 !== true) 条件.push(sql`trust_state <> '已排除'`)
   const rows = await ctx.db.execute(sql`
-    select id, type, canonical_value, aliases, attrs, trust_state, created_at
+    select id, type, canonical_value, array_to_json(aliases)::text as aliases, attrs::text as attrs,
+           trust_state, created_at
       from auth.case_entity
      where ${sql.join(条件, sql` and `)}
      order by type asc, canonical_value asc, id asc
@@ -148,8 +171,8 @@ export async function query_entities(
     id: 行.id as string,
     type: 行.type as string,
     canonical_value: 行.canonical_value as string,
-    aliases: 行.aliases as string[],
-    attrs: 行.attrs,
+    aliases: 解JSON<string[]>(行.aliases, []),
+    attrs: 解JSON<unknown>(行.attrs, {}),
     trust_state: 行.trust_state as string,
     created_at: 行.created_at as number,
   }))
