@@ -36,6 +36,10 @@ import { inTransaction, type Queryable } from "./case-store"
 export const 提议状态们 = ["待处理", "已采纳", "已否决"] as const
 export type 提议状态 = (typeof 提议状态们)[number]
 
+/** 唯一一份「这是不是合法提议状态」的判据：DAO 读回与路由入参都用它。 */
+export const 是提议状态 = (value: unknown): value is 提议状态 =>
+  typeof value === "string" && (提议状态们 as readonly string[]).includes(value)
+
 export const 提议错误码们 = ["proposal_not_found", "already_decided", "reason_required", "bad_input"] as const
 export type 提议错误码 = (typeof 提议错误码们)[number]
 
@@ -75,12 +79,16 @@ function 读杰森(值: unknown): unknown {
 }
 
 function 映射(行: Record<string, unknown>): 提议视图 {
+  // 不认识的状态**抛**，不回落成「待处理」：回落是静默改语义（一条已处置的提议会被列成
+  // 还能再处置）；库约束 `case_ai_proposal_status` 本应挡住脏行，真漏进来时要立刻可见。
+  const 状态 = 行.status
+  if (!是提议状态(状态)) throw new 提议冲突(`库里的提议状态不认识：${String(状态)}`, "bad_input")
   return {
     id: String(行.id),
     kind: String(行.kind),
     payload: 读杰森(行.payload),
     rationale: 行.rationale === null || 行.rationale === undefined ? null : String(行.rationale),
-    status: String(行.status) as 提议状态,
+    status: 状态,
     decidedBy: 行.decided_by === null || 行.decided_by === undefined ? null : String(行.decided_by),
     decidedAt: 行.decided_at === null || 行.decided_at === undefined ? null : Number(行.decided_at),
     rejectReason: 行.reject_reason === null || 行.reject_reason === undefined ? null : String(行.reject_reason),

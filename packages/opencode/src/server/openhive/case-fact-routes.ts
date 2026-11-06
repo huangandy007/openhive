@@ -7,7 +7,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { 纠正原因们, type 纠正原因, 留痕类型们, type 留痕类型 } from "./case-fact-change"
 import { 事实详情 } from "./case-fact-read"
 import { 合并实体, 合并冲突, 拆分合并 } from "./case-merge"
-import { 处置提议, 提议冲突, 提议列表, 提议状态们, type 提议状态 } from "./case-proposals"
+import { 处置提议, 提议冲突, 提议列表, 是提议状态, type 提议状态 } from "./case-proposals"
 import { 裁决, 裁决动作们, 裁决冲突, type 裁决动作 } from "./case-trust"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
@@ -97,9 +97,6 @@ const 是裁决动作 = (value: unknown): value is 裁决动作 =>
 /** 自由字符串不能直接断言成 `纠正原因`：非法的要先回 400，别落进库约束炸成 500。 */
 const 是纠正原因 = (value: unknown): value is 纠正原因 =>
   typeof value === "string" && (纠正原因们 as readonly string[]).includes(value)
-
-const 是提议状态 = (value: unknown): value is 提议状态 =>
-  typeof value === "string" && (提议状态们 as readonly string[]).includes(value)
 
 function handleFacts(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {

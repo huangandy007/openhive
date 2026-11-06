@@ -93,10 +93,30 @@ describe("提议三态", () => {
   })
 
   test("采纳与否决都落一条留痕（判据 A18 的可追溯面）", async () => {
+    const 采纳的 = await 建提议(库(), { projectId: 项目, kind: "merge", payload: {} })
+    await 处置提议(库(), { projectId: 项目, id: 采纳的, action: "采纳", by: 甲 })
+    expect((await 变更历史(库(), 项目, "entity", 采纳的)).map((条) => 条.action)).toEqual(["采纳"])
+
+    const 否决的 = await 建提议(库(), { projectId: 项目, kind: "merge", payload: {} })
+    await 处置提议(库(), {
+      projectId: 项目,
+      id: 否决的,
+      action: "否决",
+      reasonText: "两个号码归属不同单位",
+      by: 甲,
+    })
+    const 否决历史 = await 变更历史(库(), 项目, "entity", 否决的)
+    expect(否决历史.map((条) => 条.action)).toEqual(["否决"])
+    expect(否决历史[0]?.reasonText).toBe("两个号码归属不同单位")
+    expect(否决历史[0]?.actorId).toBe(甲)
+  })
+
+  test("已否决 → 再采纳 ⇒ 409 already_decided", async () => {
     const id = await 建提议(库(), { projectId: 项目, kind: "merge", payload: {} })
-    await 处置提议(库(), { projectId: 项目, id, action: "采纳", by: 甲 })
-    const 历史 = await 变更历史(库(), 项目, "entity", id)
-    expect(历史.map((条) => 条.action)).toEqual(["采纳"])
+    await 处置提议(库(), { projectId: 项目, id, action: "否决", reasonText: "先否了", by: 甲 })
+    await expect(
+      处置提议(库(), { projectId: 项目, id, action: "采纳", by: 甲 }),
+    ).rejects.toMatchObject({ code: "already_decided" })
   })
 
   test("不存在 ⇒ 409 proposal_not_found", async () => {

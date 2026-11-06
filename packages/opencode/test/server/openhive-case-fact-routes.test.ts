@@ -10,6 +10,7 @@ import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { 记变更 } from "../../src/server/openhive/case-fact-change"
+import { 建提议 } from "../../src/server/openhive/case-proposals"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
 import { testEffect } from "../lib/effect"
@@ -367,11 +368,76 @@ describe("POST /openhive/case/entities/merge 与 /split", () => {
 
 describe("AI 提议出口", () => {
   // `it` 已经是 `test.live`（第 27 行），再写 `it.live` 是重复包装（计划 5 已踩过）。
-  it("列表默认全部；status 非法 ⇒ 400", () =>
+
+  it("没登录 ⇒ 401", () =>
     Effect.gen(function* () {
+      expect((yield* 发(null, `/openhive/case/proposals?projectId=${项目}`)).status).toBe(401)
+      const 处置 = yield* 发体(null, "/openhive/case/proposals/decide", {
+        projectId: 项目,
+        id: "随便",
+        action: "采纳",
+      })
+      expect(处置.status).toBe(401)
+    }),
+  )
+
+  it("不是成员 ⇒ 403", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(我, `/openhive/case/proposals?projectId=${别人的项目}`)).status).toBe(403)
+      const 处置 = yield* 发体(我, "/openhive/case/proposals/decide", {
+        projectId: 别人的项目,
+        id: "随便",
+        action: "采纳",
+      })
+      expect(处置.status).toBe(403)
+    }),
+  )
+
+  it("id 为空 ⇒ 400", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/proposals/decide", {
+        projectId: 项目,
+        id: "",
+        action: "采纳",
+      })
+      expect(响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("bad_request")
+    }),
+  )
+
+  it("action 不在两种里 ⇒ 400", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/proposals/decide", {
+        projectId: 项目,
+        id: "随便",
+        action: "删掉",
+      })
+      expect(响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("bad_request")
+    }),
+  )
+
+  it("列表默认全部（含已处置的）；status 非法 ⇒ 400", () =>
+    Effect.gen(function* () {
+      // 只断 `Array.isArray([])` 的话，出口恒回空列表也不会红；先造一条**已采纳**的提议，
+      // 用来钉住「不带 status 时已处置的也在列表里」。
+      //
+      // ⚠️ 建提议走 `库()`，处置走**出口**（不是 `处置提议(库(), …)`）：`库()`（夹具客户端）
+      // 与出口的 `deps.pg()` 是两个连接，同一句 DAO SQL 在两边各准备一次会撞 42P05。
+      const 已处置 = yield* Effect.promise(() =>
+        建提议(库(), { projectId: 项目, kind: "merge", payload: {} }),
+      )
+      const 处置 = yield* 发体(我, "/openhive/case/proposals/decide", {
+        projectId: 项目,
+        id: 已处置,
+        action: "采纳",
+      })
+      expect(处置.status).toBe(200)
+
       const 好 = yield* 发(我, `/openhive/case/proposals?projectId=${项目}`)
       expect(好.status).toBe(200)
-      expect(Array.isArray((yield* 读回<{ proposals: unknown[] }>(好)).proposals)).toBe(true)
+      const 体 = yield* 读回<{ proposals: { id: string; status: string }[] }>(好)
+      expect(体.proposals.some((条) => 条.id === 已处置 && 条.status === "已采纳")).toBe(true)
 
       const 坏 = yield* 发(我, `/openhive/case/proposals?projectId=${项目}&status=随便`)
       expect(坏.status).toBe(400)
@@ -382,7 +448,7 @@ describe("AI 提议出口", () => {
     Effect.gen(function* () {
       const 响应 = yield* 发体(我, "/openhive/case/proposals/decide", {
         projectId: 项目,
-        id: "没有",
+        id: "没有这条提议",
         action: "采纳",
       })
       expect(响应.status).toBe(409)
