@@ -132,6 +132,7 @@ import { OpenhiveCategories } from "@/server/openhive/categories"
 import { OpenhivePreferences } from "@/server/openhive/preferences"
 import { OpenhiveBackup } from "@/server/openhive/backup"
 import { OpenhiveFile } from "@/server/openhive/file"
+import { OpenhiveCaseParse } from "@/server/openhive/case-parse"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAssetGroups } from "@/server/openhive/governance-asset-groups"
@@ -413,6 +414,14 @@ export function createRoutes(
     // 所以本模块**一个字都不用写**，也就不会漂成两份）。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 项目管理（005 T020）。
     OpenhiveFile.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
+    // openhive 案件材料解析出口（计划 3）：左栏读状态 ＋ 右键解析动作。
+    // 沙箱根复用同一个 `AnchorWorkspace.Config`（项目目录恒为 `{root}/{userId}/{projectId}`）；
+    // 成员判据复用 `project-actor`（PG 名册优先，老项目回落每用户库）。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 3）。
+    OpenhiveCaseParse.routes.pipe(
       Layer.provide(AnchorWorkspace.Config.layer),
       Layer.provide(OpenhivePg.layer),
     ),
