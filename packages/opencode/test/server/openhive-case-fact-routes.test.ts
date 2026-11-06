@@ -263,6 +263,11 @@ describe("POST /openhive/case/facts/trust", () => {
       })
       expect(响应.status).toBe(200)
       expect((yield* 读回<{ trustState: string }>(响应)).trustState).toBe("已修正")
+
+      // 回包只有状态；值真落库没有要 GET 读一次——`写回` 漏写 canonical_value 时这里才红。
+      const 详情 = yield* 发(我, `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由`)
+      expect(详情.status).toBe(200)
+      expect((yield* 读回<{ canonicalValue: string }>(详情)).canonicalValue).toBe("王五（改）")
     }),
   )
 
@@ -286,6 +291,13 @@ describe("POST /openhive/case/facts/trust", () => {
       const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-路由", action: "撤销" })
       expect(响应.status).toBe(200)
       expect((yield* 读回<{ trustState: string }>(响应)).trustState).toBe("已确认")
+
+      // 撤销必须把「值」也恢复，不只是状态：再 GET 一次读库。
+      const 详情 = yield* 发(我, `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由`)
+      expect(详情.status).toBe(200)
+      const 体 = yield* 读回<{ canonicalValue: string; trustState: string }>(详情)
+      expect(体.canonicalValue).toBe("王五")
+      expect(体.trustState).toBe("已确认")
     }),
   )
 })

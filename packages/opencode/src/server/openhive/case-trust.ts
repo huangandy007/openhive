@@ -306,7 +306,13 @@ async function 修正(tx: Queryable, input: 裁决输入, 当前: 当前事实):
       throw new 裁决冲突(`「${input.factType}」不能改「${键}」，可改：${允许.join(" / ")}`, "bad_changes")
   }
 
-  const 新值: Record<string, unknown> = { ...当前.值, ...改动 }
+  // `undefined` 不是「改成空」：JSON 表达不出 undefined，能传进来的是内部直调用者，
+  // 多半是漏填。让它进 `新值` 会被 `写回` 按 null 落库、静默清列，所以整条剔除。
+  // 剔完一个有效字段都不剩，就等同于「没给要改的字段」。
+  const 有效 = Object.entries(改动).filter(([, 值]) => 值 !== undefined)
+  if (有效.length === 0) throw new 裁决冲突("修正必须给出要改的字段", "bad_changes")
+
+  const 新值: Record<string, unknown> = { ...当前.值, ...Object.fromEntries(有效) }
 
   if (input.factType === "entity") {
     const 名称 = 新值["canonicalValue"]

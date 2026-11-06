@@ -222,8 +222,13 @@ describe("修正：白名单字段", () => {
         by: 甲,
       }),
     ).rejects.toMatchObject({ code: "bad_changes" })
+    // 「一个字都不改」要断到值，不能只看状态：`amount` 被写回成别的值、或留痕偷记一条
+    // 都会被状态断言漏掉。
     const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-瞎改" })
-    expect(详情?.trustState).toBe("自动抽取")
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.trustState).toBe("自动抽取")
+    expect(详情.amount).toBe(100)
+    expect(await 变更历史(库(), 项目, "relation", "r-瞎改")).toHaveLength(0)
   })
 
   test("修正也必须带原因", async () => {
@@ -238,6 +243,77 @@ describe("修正：白名单字段", () => {
         by: 甲,
       }),
     ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("原因：有 kind 但 text 只有空白 ⇒ 409 bad_changes", async () => {
+    await 新关系("r-空白因")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-空白因",
+        action: "修正",
+        changes: { amount: 200 },
+        reasonKind: "抽取错",
+        reasonText: "   ",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("原因：有 text 但缺 kind ⇒ 409 bad_changes", async () => {
+    await 新关系("r-缺kind")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-缺kind",
+        action: "修正",
+        changes: { amount: 200 },
+        reasonText: "写了话但没选原因",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("完全不传 changes 键 ⇒ 409 bad_changes（不是 500）", async () => {
+    await 新关系("r-没键")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-没键",
+        action: "修正",
+        reasonKind: "抽取错",
+        reasonText: "漏了 changes",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-没键" })
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.amount).toBe(100)
+  })
+
+  test("changes 里的 undefined 不静默清列", async () => {
+    // JSON 表达不出 undefined，只有内部直调用者会传；若它进了 `新值`，`写回` 会按 null
+    // 把金额清掉。这里直接调 DAO（不经路由）钉住这条路径。
+    await 新关系("r-undefined")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-undefined",
+        action: "修正",
+        changes: { amount: undefined },
+        reasonKind: "抽取错",
+        reasonText: "漏填金额",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-undefined" })
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.amount).toBe(100)
+    expect(详情.trustState).toBe("自动抽取")
   })
 
   test("金额为负或不是有限数 ⇒ 409 bad_changes", async () => {
@@ -407,6 +483,88 @@ describe("撤销", () => {
     if (详情?.type !== "relation") throw new Error("形状不对")
     expect(详情.amount).toBe(100)
     expect(详情.trustState).toBe("自动抽取")
+  })
+
+  test("撤销一次实体修正 ⇒ 规范值与类型都恢复（直接查库）", async () => {
+    await 建实体(库(), { id: "e-撤恢复", projectId: 项目, type: "号码", value: "原号" })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "entity",
+      factId: "e-撤恢复",
+      action: "修正",
+      changes: { canonicalValue: "改后号", entityType: "账户" },
+      reasonKind: "识别错",
+      reasonText: "先改成账户",
+      by: 甲,
+    })
+    await 裁决(库(), { projectId: 项目, factType: "entity", factId: "e-撤恢复", action: "撤销", by: 甲 })
+    // 直接查库：只看 trustState 的话，`写回` 漏写 canonical_value / type 也照样绿。
+    const 行 = rowsOf(
+      await 库().execute(
+        sql`select canonical_value, type, trust_state from auth.case_entity where project_id = ${项目} and id = ${"e-撤恢复"}`,
+      ),
+    )[0]
+    expect(String(行?.canonical_value)).toBe("原号")
+    expect(String(行?.type)).toBe("号码")
+    expect(String(行?.trust_state)).toBe("自动抽取")
+  })
+
+  test("撤销一次事件修正 ⇒ 摘要 / 规范时间 / 精度都恢复（直接查库）", async () => {
+    await 建事件(库(), { id: "ev-撤恢复", projectId: 项目, summary: "旧摘要", occurredAt: 100 })
+    await 库().execute(
+      sql`update auth.case_event set precision = ${"到分"} where project_id = ${项目} and id = ${"ev-撤恢复"}`,
+    )
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "event",
+      factId: "ev-撤恢复",
+      action: "修正",
+      changes: { summary: "新摘要", occurredAt: 200, precision: "到秒" },
+      reasonKind: "抽取错",
+      reasonText: "三个字段一起改",
+      by: 甲,
+    })
+    await 裁决(库(), { projectId: 项目, factType: "event", factId: "ev-撤恢复", action: "撤销", by: 甲 })
+    const 行 = rowsOf(
+      await 库().execute(
+        sql`select summary, occurred_at, precision, trust_state from auth.case_event where project_id = ${项目} and id = ${"ev-撤恢复"}`,
+      ),
+    )[0]
+    expect(String(行?.summary)).toBe("旧摘要")
+    expect(Number(行?.occurred_at)).toBe(100)
+    expect(String(行?.precision)).toBe("到分")
+    expect(String(行?.trust_state)).toBe("自动抽取")
+  })
+
+  test("撤销时恢复的名字已被占用 ⇒ 409 merge_required，且写回失败不半改", async () => {
+    // 确定性可达，不需要并发：把实体改走旧名、再把旧名让给另一个实体，撤销就必然撞
+    // `case_entity_canonical` 唯一索引（23505）。这条同时实测 `pgErrorCode` 能在事务内
+    // 钻穿 drizzle 的 `cause`。
+    await 建实体(库(), { id: "e-撤撞", projectId: 项目, value: "原件名" })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "entity",
+      factId: "e-撤撞",
+      action: "修正",
+      changes: { canonicalValue: "新件名" },
+      reasonKind: "抽取错",
+      reasonText: "先改名让出旧名",
+      by: 甲,
+    })
+    await 建实体(库(), { id: "e-占名", projectId: 项目, value: "原件名" })
+    await expect(
+      裁决(库(), { projectId: 项目, factType: "entity", factId: "e-撤撞", action: "撤销", by: 甲 }),
+    ).rejects.toMatchObject({ code: "merge_required" })
+
+    const 行 = rowsOf(
+      await 库().execute(
+        sql`select canonical_value, trust_state from auth.case_entity where project_id = ${项目} and id = ${"e-撤撞"}`,
+      ),
+    )[0]
+    expect(String(行?.canonical_value)).toBe("新件名")
+    expect(String(行?.trust_state)).toBe("已修正")
+    // 失败的撤销不能留下一条「撤销」留痕（写回在记变更之前）。
+    expect(await 变更历史(库(), 项目, "entity", "e-撤撞")).toHaveLength(1)
   })
 
   test("第二次撤销 ⇒ 409 nothing_to_undo（同一条不能撤销两次）", async () => {
