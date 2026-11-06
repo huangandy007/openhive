@@ -182,6 +182,250 @@ describe("裁决：三态", () => {
   })
 })
 
+describe("修正：白名单字段", () => {
+  test("改金额 ⇒ 已修正，留痕的前值是旧值", async () => {
+    await 新关系("r-改额")
+    const 结果 = await 裁决(库(), {
+      projectId: 项目,
+      factType: "relation",
+      factId: "r-改额",
+      action: "修正",
+      changes: { amount: 1000 },
+      reasonKind: "抽取错",
+      reasonText: "少看了一个零",
+      by: 甲,
+    })
+    expect(结果.trustState).toBe("已修正")
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-改额" })
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.amount).toBe(1000)
+    expect(详情.trustState).toBe("已修正")
+    expect(详情.changes[0]?.before).toEqual({
+      trustState: "自动抽取",
+      amount: 100,
+      basis: null,
+      relationType: "转账",
+    })
+  })
+
+  test("不认识的字段 ⇒ 409 bad_changes，一个字都不改", async () => {
+    await 新关系("r-瞎改")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-瞎改",
+        action: "修正",
+        changes: { 金额: 999 },
+        reasonKind: "抽取错",
+        reasonText: "手滑",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-瞎改" })
+    expect(详情?.trustState).toBe("自动抽取")
+  })
+
+  test("修正也必须带原因", async () => {
+    await 新关系("r-改无因")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-改无因",
+        action: "修正",
+        changes: { amount: 1 },
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("金额为负或不是有限数 ⇒ 409 bad_changes", async () => {
+    await 新关系("r-负数")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-负数",
+        action: "修正",
+        changes: { amount: -1 },
+        reasonKind: "抽取错",
+        reasonText: "试一下",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("改成「实际使用」却没给依据 ⇒ 409 basis_required", async () => {
+    await 新关系("r-缺依据")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-缺依据",
+        action: "修正",
+        changes: { relationType: "实际使用" },
+        reasonKind: "抽取错",
+        reasonText: "其实是他在用",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "basis_required" })
+  })
+
+  test("改成「实际使用」并同时给依据 ⇒ 成", async () => {
+    await 新关系("r-有依据")
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "relation",
+      factId: "r-有依据",
+      action: "修正",
+      changes: { relationType: "实际使用", basis: "登录或使用日志" },
+      reasonKind: "抽取错",
+      reasonText: "补上认定依据",
+      by: 甲,
+    })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-有依据" })
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.relationType).toBe("实际使用")
+    expect(详情.basis).toBe("登录或使用日志")
+  })
+
+  test("实体改名撞上已存在的同名实体 ⇒ 409 merge_required（不自动合并）", async () => {
+    await 建实体(库(), { id: "e-撞-1", projectId: 项目, value: "重名甲" })
+    await 建实体(库(), { id: "e-撞-2", projectId: 项目, value: "重名乙" })
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "entity",
+        factId: "e-撞-2",
+        action: "修正",
+        changes: { canonicalValue: "重名甲" },
+        reasonKind: "抽取错",
+        reasonText: "其实是同一个人",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "merge_required" })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "e-撞-2" })
+    if (详情?.type !== "entity") throw new Error("形状不对")
+    expect(详情.canonicalValue).toBe("重名乙")
+  })
+
+  test("实体改类型：号码改账户 ⇒ 成", async () => {
+    await 建实体(库(), { id: "e-改型", projectId: 项目, type: "号码", value: "6222..." })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "entity",
+      factId: "e-改型",
+      action: "修正",
+      changes: { entityType: "账户" },
+      reasonKind: "识别错",
+      reasonText: "这是银行卡号不是手机号",
+      by: 甲,
+    })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "e-改型" })
+    if (详情?.type !== "entity") throw new Error("形状不对")
+    expect(详情.entityType).toBe("账户")
+  })
+
+  test("事件改摘要与规范时间 ⇒ 成，原始值不让改", async () => {
+    await 建事件(库(), { id: "ev-改", projectId: 项目, summary: "旧摘要", occurredAt: 100 })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "event",
+      factId: "ev-改",
+      action: "修正",
+      changes: { summary: "新摘要", occurredAt: 200 },
+      reasonKind: "抽取错",
+      reasonText: "时间认错了",
+      by: 甲,
+    })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "event", id: "ev-改" })
+    if (详情?.type !== "event") throw new Error("形状不对")
+    expect(详情.summary).toBe("新摘要")
+    expect(详情.occurredAt).toBe(200)
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "event",
+        factId: "ev-改",
+        action: "修正",
+        changes: { occurredRaw: "改原文" },
+        reasonKind: "抽取错",
+        reasonText: "试试",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+
+  test("changes 为空 ⇒ 409 bad_changes", async () => {
+    await 新关系("r-空改")
+    await expect(
+      裁决(库(), {
+        projectId: 项目,
+        factType: "relation",
+        factId: "r-空改",
+        action: "修正",
+        changes: {},
+        reasonKind: "抽取错",
+        reasonText: "空",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "bad_changes" })
+  })
+})
+
+describe("撤销", () => {
+  test("撤销一次确认 ⇒ 回到自动抽取，并留下「撤销」这一条", async () => {
+    await 新关系("r-撤确认")
+    await 裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤确认", action: "确认", by: 甲 })
+    const 结果 = await 裁决(库(), {
+      projectId: 项目,
+      factType: "relation",
+      factId: "r-撤确认",
+      action: "撤销",
+      by: 甲,
+    })
+    expect(结果.trustState).toBe("自动抽取")
+    const 历史 = await 变更历史(库(), 项目, "relation", "r-撤确认")
+    expect(历史.map((条) => 条.action)).toEqual(["确认", "撤销"])
+  })
+
+  test("撤销一次修正 ⇒ 值与状态都回到修正前", async () => {
+    await 新关系("r-撤修正")
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "relation",
+      factId: "r-撤修正",
+      action: "修正",
+      changes: { amount: 5000 },
+      reasonKind: "抽取错",
+      reasonText: "多打了一个零",
+      by: 甲,
+    })
+    await 裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤修正", action: "撤销", by: 甲 })
+    const 详情 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-撤修正" })
+    if (详情?.type !== "relation") throw new Error("形状不对")
+    expect(详情.amount).toBe(100)
+    expect(详情.trustState).toBe("自动抽取")
+  })
+
+  test("第二次撤销 ⇒ 409 nothing_to_undo（同一条不能撤销两次）", async () => {
+    await 新关系("r-撤两次")
+    await 裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤两次", action: "确认", by: 甲 })
+    await 裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤两次", action: "撤销", by: 甲 })
+    await expect(
+      裁决(库(), { projectId: 项目, factType: "relation", factId: "r-撤两次", action: "撤销", by: 甲 }),
+    ).rejects.toMatchObject({ code: "nothing_to_undo" })
+  })
+
+  test("从没被人动过 ⇒ 409 nothing_to_undo", async () => {
+    await 新关系("r-没动过")
+    await expect(
+      裁决(库(), { projectId: 项目, factType: "relation", factId: "r-没动过", action: "撤销", by: 甲 }),
+    ).rejects.toMatchObject({ code: "nothing_to_undo" })
+  })
+})
+
 /**
  * 夹具自检：`读一列` 若恒返回空数组，「查不到」的断言（`toEqual([])` /
  * `toHaveLength(0)`）就会永远绿——这正是后续 Task 4–7 最容易踩的假绿。

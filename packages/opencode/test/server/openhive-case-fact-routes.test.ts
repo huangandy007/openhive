@@ -247,4 +247,45 @@ describe("POST /openhive/case/facts/trust", () => {
       expect((yield* 读回<{ code: string }>(响应)).code).toBe("fact_not_found")
     }),
   )
+
+  // ⚠️ 下面三条是**有意为之的顺序依赖**：同一个 `e-路由` 上「先确认、再修正、再撤销」，
+  // 正好是一条真实的使用链。`bun test` 在同一 describe 内按声明顺序跑。
+  it("修正规范值 ⇒ 200 且状态是已修正", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({
+        projectId: 项目,
+        factType: "entity",
+        factId: "e-路由",
+        action: "修正",
+        changes: { canonicalValue: "王五（改）" },
+        reasonKind: "抽取错",
+        reasonText: "名字认错了",
+      })
+      expect(响应.status).toBe(200)
+      expect((yield* 读回<{ trustState: string }>(响应)).trustState).toBe("已修正")
+    }),
+  )
+
+  it("reasonKind 不在三种里 ⇒ 400，不落到库约束上炸 500", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({
+        projectId: 项目,
+        factType: "entity",
+        factId: "e-路由",
+        action: "修正",
+        changes: { canonicalValue: "王五（再改）" },
+        reasonKind: "看错了",
+        reasonText: "随便写",
+      })
+      expect(响应.status).toBe(400)
+    }),
+  )
+
+  it("撤销 ⇒ 200，回到上次人工动作之前", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 判({ projectId: 项目, factType: "entity", factId: "e-路由", action: "撤销" })
+      expect(响应.status).toBe(200)
+      expect((yield* 读回<{ trustState: string }>(响应)).trustState).toBe("已确认")
+    }),
+  )
 })

@@ -2,6 +2,7 @@ export * as OpenhiveCaseTrust from "./case-trust"
 
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import {
   type 纠正原因,
   type 留痕类型,
@@ -62,6 +63,23 @@ const 信任态们 = ["自动抽取", "已确认", "已修正", "已排除", "�
 
 function 是信任态(值: unknown): 值 is 事实信任态 {
   return typeof 值 === "string" && (信任态们 as readonly string[]).includes(值)
+}
+
+/** 修正只认这些键（R4）。不认识的键一律 409——静默忽略会让用户以为改成了。 */
+export const 修正白名单: Record<留痕类型, readonly string[]> = {
+  entity: ["canonicalValue", "entityType"],
+  relation: ["amount", "basis", "relationType"],
+  event: ["summary", "occurredAt", "precision"],
+}
+
+// 与迁移 0031 的库约束同一份全集：这里挡在前面，用户看到的是人话而不是 500。
+const 实体类型们 = ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织"] as const
+const 关系类型们 = ["通话", "转账", "实名登记", "实际使用", "同案", "持有", "同行"] as const
+const 数据直记关系 = ["通话", "转账", "实名登记"] as const
+const 精度们 = ["到日", "到分", "到秒"] as const
+
+function 在(值: unknown, 全集: readonly string[]): boolean {
+  return typeof 值 === "string" && 全集.includes(值)
 }
 
 function 文本(值: unknown): string | null {
@@ -205,7 +223,15 @@ async function 撤销(
     if (键 in 快照) 值[键] = 快照[键]
   }
 
-  await 写回(tx, input.projectId, input.factType, input.factId, 前状态, 值)
+  try {
+    await 写回(tx, input.projectId, input.factType, input.factId, 前状态, 值)
+  } catch (error) {
+    // 恢复实体时撞上唯一索引（PG 23505）：这是人能自己解决的情形，翻成明确错误，
+    // 别以 500 掉出去。⚠️ drizzle 把 PG 错误包在 `cause` 里，`pgErrorCode` 才认得出。
+    if (pgErrorCode(error) === "23505")
+      throw new 裁决冲突("恢复的名字已经被别的实体占了，先处理掉再撤销", "merge_required")
+    throw error
+  }
   const 留痕 = await 记变更(tx, {
     projectId: input.projectId,
     factType: input.factType,
@@ -219,7 +245,7 @@ async function 撤销(
 }
 
 /**
- * 把「状态 ＋ 值」写回事实表。**Task 4 的修正与撤销共用这一处**——写回只有一份，
+ * 把「状态 ＋ 值」写回事实表。**修正与撤销共用这一处**——写回只有一份，
  * 三种表的列名映射也只有一份。
  */
 export async function 写回(
@@ -261,7 +287,101 @@ export async function 写回(
 }
 
 /**
- * 裁决入口。`修正` 与 `撤销` 在 Task 4 接上；本任务只认 确认 / 排除 / 存疑。
+ * 修正：白名单字段写回 + 已修正。原值只进留痕（R3）——`before` 是全量快照，
+ * 撤销与「改过什么」都靠它。
+ *
+ * 校验顺序是刻意的：**先校验全部字段，再写**。写到一半才发现第三个字段不合法，
+ * 事务虽然会回滚，但错误信息会指向一个已经通过校验的字段，调试时会被带偏。
+ */
+async function 修正(tx: Queryable, input: 裁决输入, 当前: 当前事实): Promise<裁决结果> {
+  const 改动 = input.changes
+  if (改动 === undefined || Object.keys(改动).length === 0)
+    throw new 裁决冲突("修正必须给出要改的字段", "bad_changes")
+  if (input.reasonKind === null || input.reasonKind === undefined || !input.reasonText?.trim())
+    throw new 裁决冲突("修正必须选原因并写一句话", "bad_changes")
+
+  const 允许 = 修正白名单[input.factType]
+  for (const 键 of Object.keys(改动)) {
+    if (!允许.includes(键))
+      throw new 裁决冲突(`「${input.factType}」不能改「${键}」，可改：${允许.join(" / ")}`, "bad_changes")
+  }
+
+  const 新值: Record<string, unknown> = { ...当前.值, ...改动 }
+
+  if (input.factType === "entity") {
+    const 名称 = 新值["canonicalValue"]
+    if (typeof 名称 !== "string" || 名称.trim() === "")
+      throw new 裁决冲突("实体规范值不能为空", "bad_changes")
+    新值["canonicalValue"] = 名称.trim()
+    if (!在(新值["entityType"], 实体类型们)) throw new 裁决冲突("实体类型不合法", "bad_changes")
+
+    const 撞 = rowsOf(
+      await tx.execute(sql`
+        select id from auth.case_entity
+         where project_id = ${input.projectId} and type = ${String(新值["entityType"])}
+           and canonical_value = ${String(新值["canonicalValue"])} and id <> ${input.factId}
+      `),
+    )[0]
+    if (撞 !== undefined)
+      throw new 裁决冲突(
+        `已经有一个实体叫「${String(新值["canonicalValue"])}」，请用合并而不是改名`,
+        "merge_required",
+      )
+  }
+
+  if (input.factType === "relation") {
+    if (!在(新值["relationType"], 关系类型们)) throw new 裁决冲突("关系类型不合法", "bad_changes")
+    const 金额 = 新值["amount"]
+    if (金额 !== null && 金额 !== undefined) {
+      if (typeof 金额 !== "number" || !Number.isFinite(金额) || 金额 < 0)
+        throw new 裁决冲突("金额必须是不小于 0 的有限数", "bad_changes")
+    }
+    const 依据 = 新值["basis"]
+    if (依据 !== null && 依据 !== undefined && typeof 依据 !== "string")
+      throw new 裁决冲突("认定依据必须是文本或空", "bad_changes")
+    const 需依据 = !(数据直记关系 as readonly string[]).includes(String(新值["relationType"]))
+    if (需依据 && (依据 === null || 依据 === undefined || String(依据).trim() === ""))
+      throw new 裁决冲突(`「${String(新值["relationType"])}」必须带认定依据`, "basis_required")
+  }
+
+  if (input.factType === "event") {
+    const 摘要 = 新值["summary"]
+    if (摘要 !== null && 摘要 !== undefined && typeof 摘要 !== "string")
+      throw new 裁决冲突("事件摘要必须是文本或空", "bad_changes")
+    const 时间 = 新值["occurredAt"]
+    if (时间 !== null && 时间 !== undefined && (!Number.isInteger(时间) || (时间 as number) < 0))
+      throw new 裁决冲突("发生时间必须是 Unix 秒整数或空", "bad_changes")
+    const 精度 = 新值["precision"]
+    if (精度 !== null && 精度 !== undefined && !在(精度, 精度们))
+      throw new 裁决冲突("精度只能是 到日 / 到分 / 到秒", "bad_changes")
+  }
+
+  try {
+    await 写回(tx, input.projectId, input.factType, input.factId, "已修正", 新值)
+  } catch (error) {
+    // 并发下「先查撞名」可能漏掉对手刚插入的那一行，唯一索引（23505）是最后一道：
+    // 同样翻成 merge_required，由人走合并，不偷偷合并、也不以 500 掉出去。
+    if (pgErrorCode(error) === "23505")
+      throw new 裁决冲突("这个改动撞上了已有的唯一值，请用合并而不是改名", "merge_required")
+    throw error
+  }
+  const 留痕 = await 记变更(tx, {
+    projectId: input.projectId,
+    factType: input.factType,
+    factId: input.factId,
+    action: "修正",
+    before: { trustState: 当前.trustState, ...当前.值 },
+    after: { trustState: "已修正", ...新值 },
+    reasonKind: input.reasonKind,
+    reasonText: input.reasonText,
+    actor: await 操作人快照(tx, input.by),
+  })
+  return { trustState: "已修正", 值: 新值, 留痕 }
+}
+
+/**
+ * 裁决入口。五个动作各自落到唯一一处：确认 / 排除 / 存疑只改状态，修正改值并留全量快照，
+ * 撤销凭最近一条未被撤销的留痕恢复值与状态。
  */
 export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决结果> {
   return inTransaction(db, async (tx) => {
@@ -279,9 +399,10 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
       return 只改状态(tx, input, 当前, 目标)
     }
 
+    if (input.action === "修正") return 修正(tx, input, 当前)
     if (input.action === "撤销") return 撤销(tx, input, 当前)
 
-    // Task 4 接上「修正」；在那之前这是一句明确的「还没做」，不是静默。
-    throw new 裁决冲突("「修正」在 Task 4 接上", "bad_changes")
+    const 未知: never = input.action
+    throw new 裁决冲突(`不认识的裁决动作：${String(未知)}`, "bad_changes")
   })
 }
