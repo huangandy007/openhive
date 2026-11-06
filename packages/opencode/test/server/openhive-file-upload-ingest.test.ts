@@ -66,19 +66,24 @@ describe("入队表格材料", () => {
   })
 
   test("同一个文件再落一次 ⇒ 不重复排队（判据 A2）", async () => {
-    const r = await 入队表格材料(db(), {
+    // 独立文件 ＋ 独立字节：不依赖用例 1 先插一行，`-t` 单跑必须自足。
+    const 参数 = {
       root,
       project,
-      target: 落点("话单.xlsx"),
-      bytes,
-      fileName: "话单.xlsx",
+      target: 落点("重复拖入.xlsx"),
+      bytes: new Uint8Array([81, 82, 83]),
+      fileName: "重复拖入.xlsx",
       by: "u1",
-    })
+    }
+    const 首次 = await 入队表格材料(db(), 参数)
+    expect(首次?.enqueued).toBe(true)
+
+    const r = await 入队表格材料(db(), 参数)
     expect(r?.enqueued).toBe(false)
     const n = rowsOf(
       await db().execute(
         sql`select count(*)::int as n from auth.case_material
-             where project_id = 'proj-1' and file_name = '话单.xlsx'`,
+             where project_id = 'proj-1' and file_name = '重复拖入.xlsx'`,
       ),
     )
     expect(Number(n[0]?.n)).toBe(1)
@@ -158,6 +163,29 @@ describe("入队表格材料", () => {
       await db().execute(
         sql`select count(*)::int as n from auth.case_material
              where project_id = 'proj-1' and file_name = '密件.xlsx'`,
+      ),
+    )
+    expect(Number(n[0]?.n)).toBe(0)
+    expect(r).toBeUndefined()
+  })
+
+  /**
+   * 修复轮 2（定向复审）：闸在**相对** base 下是 fail-open——`resolve(base, input)` 会把
+   * 相对 input 拼到 base 上，兄弟目录于是被判成「在里面」。当前唯一调用方传绝对路径，
+   * 但函数是导出的 ⇒ 入口必须 fail-closed。
+   */
+  test("相对路径输入 ⇒ 跳过，兄弟项目的文件不入库", async () => {
+    const r = await 入队表格材料(db(), {
+      root: "ws",
+      project: "ws/u1/proj-1",
+      target: "ws/u1/其他项目/密件2.xlsx",
+      bytes: new Uint8Array([91, 92, 93]),
+      fileName: "密件2.xlsx",
+      by: "u1",
+    })
+    const n = rowsOf(
+      await db().execute(
+        sql`select count(*)::int as n from auth.case_material where file_name = '密件2.xlsx'`,
       ),
     )
     expect(Number(n[0]?.n)).toBe(0)

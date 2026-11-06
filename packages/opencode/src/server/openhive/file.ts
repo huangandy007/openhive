@@ -682,16 +682,21 @@ const 可解析扩展名 = [".xlsx", ".xls", ".csv"] as const
 export async function 入队表格材料(
   db: Queryable,
   input: {
+    /** 沙箱根的**绝对路径**（同上，`handleUpload` 传的就是它）。 */
     root: string
-    /** 项目目录的绝对路径。 */
+    /** 项目目录的**绝对路径**。 */
     project: string
-    /** 文件落点的绝对路径。 */
+    /** 文件落点的**绝对路径**。 */
     target: string
     bytes: Uint8Array
     fileName: string
     by: string
   },
 ): Promise<{ materialId: string; enqueued: boolean } | undefined> {
+  // 相对输入一律跳过：下面两道 `inside` 闸在相对 base 下是 **fail-open**
+  // （相对 input 会被拼到 base 上，兄弟目录被判成「在里面」）。宁可入不了队，也不猜。
+  if (!isAbsolute(input.root) || !isAbsolute(input.project) || !isAbsolute(input.target)) return undefined
+
   // 两道归属闸：算不出「这个文件属于这个项目」就**不入队**（正是函数注释里那句「不猜」）。
   // 用既有的 `inside`，它已经挡 `..`、绝对路径与 NUL，且是纯词法判据（目标不必存在）。
   if (inside(input.root, input.project) === undefined) return undefined

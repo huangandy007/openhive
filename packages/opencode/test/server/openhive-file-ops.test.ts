@@ -4,10 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "os"
 import path from "path"
 import { TextWriter, Uint8ArrayReader, ZipReader } from "@zip.js/zip.js"
+import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
@@ -702,6 +703,66 @@ describe("T020 · 带项目头时四项真能执行（FR-005）", () => {
         // 越界写法 `../../逃逸.txt` 从项目根往上两级 = **沙箱根**。少了取末段那一步，
         // 文件会落在这一层——而这一层是所有项目的父目录。
         expect(existsSync(path.join(沙箱根, "逃逸.txt"))).toBe(false)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
+   * 修复轮 2（复审改判）：**接线**真的调了入队，不只是库函数本身。
+   *
+   * 上面的上传用例都用 `.txt`——`入队表格材料` 在扩展名处就返回 `undefined`，走不到建材料那一步。
+   * 这条用真 `.xlsx` 走完整条接线：落盘 → `入队表格材料` → `case_material` ＋ `case_ingest_job`
+   * 各一行。删掉 `handleUpload` 里的入队调用，这条必须红（材料 0 行）。
+   */
+  it.live(
+    "上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行（接线真调了入队）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        if (!pg) throw new Error("真库没起来")
+        const 库 = pg.db
+
+        const wb = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(
+          wb,
+          XLSX.utils.aoa_to_sheet([
+            ["主叫号码", "被叫号码"],
+            ["13800000000", "13900000000"],
+          ]),
+          "Sheet1",
+        )
+        const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+        const form = new FormData()
+        form.set("file", new File([bytes], "话单.xlsx"))
+        const response = yield* as(ALICE, `${出口.upload}?dir=${encodeURIComponent("sub")}`, {
+          method: "POST",
+          body: form,
+          headers: { [PROJECT_HEADER]: ALPHA },
+        })
+
+        // 判据是**库里真有两行**，先读副作用，再断状态码（`#004-14`）。
+        const 材料 = rowsOf(
+          yield* Effect.promise(() =>
+            库.execute(
+              sql`select id, path from auth.case_material
+                   where project_id = ${ALPHA} and file_name = '话单.xlsx'`,
+            ),
+          ),
+        )
+        expect(材料.length).toBe(1)
+        expect(材料[0]?.path).toBe("sub/话单.xlsx")
+
+        const 作业 = rowsOf(
+          yield* Effect.promise(() =>
+            库.execute(
+              sql`select source_path from auth.case_ingest_job
+                   where project_id = ${ALPHA} and material_id = ${String(材料[0]?.id)}`,
+            ),
+          ),
+        )
+        expect(作业.length).toBe(1)
+        expect(作业[0]?.source_path).toBe(`${ALICE.id}/${ALPHA}/sub/话单.xlsx`)
         expect(response.status).toBe(200)
       }),
     30_000,
