@@ -4,7 +4,7 @@ import { render } from "solid-js/web"
 import { SidebarTabs, type SidebarTabKey } from "./sidebar-tabs"
 
 /**
- * 左栏 tab 容器（005 T019 / 设计 §2 ②）：`[会话] [文件] [能力 N]`，默认「文件」。
+ * 左栏 tab 容器（005 T019 / 设计 §2 ②）：`[会话] [文件] [实体] [能力 N]`，默认「文件」。
  *
  * happy-dom **没有 CSS 引擎**——判据全是**结构不变量**（槽位在不在、属性对不对、点了通知谁），
  * 不是像素。**`hidden` 属性**是本文件的中心：它既是「哪一个 pane 此刻该显示」的唯一真源，
@@ -68,6 +68,7 @@ function 挂(初始: SidebarTabKey = "files", 接住 = true) {
       }}
       files={<探针 />}
       sessions={<探针 slot="probe-session" />}
+      entities={<探针 slot="probe-entity" />}
       capability={<探针 slot="probe-capability" />}
     />
   ))
@@ -78,11 +79,11 @@ const 敲 = (el: HTMLElement | null, key: string) =>
   el?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
 
 describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
-  test("三个 tab 齐备、顺序固定：会话 → 文件 → 能力（设计 §2 ②，2026-10-27 加第三个）", () => {
+  test("四个 tab 齐备、顺序固定：会话 → 文件 → 实体 → 能力（设计 §2 ②，计划 7 加第四个）", () => {
     const { host } = 挂()
 
-    expect(各tab(host).map((el) => el.getAttribute("data-tab"))).toEqual(["session", "files", "capability"])
-    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力"])
+    expect(各tab(host).map((el) => el.getAttribute("data-tab"))).toEqual(["session", "files", "entity", "capability"])
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "实体", "能力"])
   })
 
   test("tablist 有可访问名称——几个裸词不足以说明这排东西是什么", () => {
@@ -168,12 +169,25 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
     expect(pane(host, "capability")?.contains(槽(host, "probe-capability"))).toBe(true)
   })
 
+  test("「实体」pane 的 body 由调用方注入——组件不认识实体面板", () => {
+    const { host } = 挂("entity")
+
+    expect(pane(host, "entity")?.contains(槽(host, "probe-entity"))).toBe(true)
+  })
+
   test("没有计数（还没取到）时只写「能力」，**不写 0**", () => {
     const host = mount(() => (
-      <SidebarTabs active="files" onSelect={() => {}} sessions={<span />} files={<span />} capability={<span />} />
+      <SidebarTabs
+        active="files"
+        onSelect={() => {}}
+        sessions={<span />}
+        files={<span />}
+        entities={<span />}
+        capability={<span />}
+      />
     ))
 
-    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力"])
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "实体", "能力"])
   })
 
   test("有计数时标签带数字", () => {
@@ -183,12 +197,13 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
         onSelect={() => {}}
         sessions={<span />}
         files={<span />}
+        entities={<span />}
         capability={<span />}
         capabilityCount={3}
       />
     ))
 
-    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力 3"])
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "实体", "能力 3"])
   })
 
   /**
@@ -205,12 +220,13 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
         onSelect={() => {}}
         sessions={<span />}
         files={<span />}
+        entities={<span />}
         capability={<span />}
         capabilityCount={0}
       />
     ))
 
-    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "能力 0"])
+    expect(各tab(host).map((el) => el.textContent?.trim())).toEqual(["会话", "文件", "实体", "能力 0"])
   })
 
   test("能力 pane 常挂不卸载：切走再切回来是**同一个节点**", () => {
@@ -243,16 +259,17 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
   })
 
   /**
-   * ← → 走**索引环绕**：会话 → 文件 → 能力 → 会话。
+   * ← → 走**索引环绕**：会话 → 文件 → 实体 → 能力 → 会话。
    *
    * ⚠️ 这条**取代**了「两个 tab 时两个方向都等价」那版：三个 tab 之后 `→` 与 `←` 在中间位置
    * 落点不同，再按「都是另一个」写断言会红得像产品坏，而事实是设计变了。
+   * 计划 7 加第四个 tab 时同样按新事实改（文件右边是实体，不是能力）。
    */
-  test("← / → 走索引环绕：文件→能力（右）、文件→会话（左）、会话→能力（左，环绕）", () => {
+  test("← / → 走索引环绕：文件→实体（右）、文件→会话（左）、会话→能力（左，环绕）", () => {
     {
       const { host, 喊过 } = 挂("files")
       敲(tab(host, "files"), "ArrowRight")
-      expect(喊过).toEqual(["capability"])
+      expect(喊过).toEqual(["entity"])
     }
     {
       const { host, 喊过 } = 挂("files")
@@ -321,7 +338,7 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
   test("tab ↔ tabpanel 的 ARIA 关系接对了（aria-controls 指得到、aria-labelledby 回得来）", () => {
     const { host } = 挂("files")
 
-    for (const key of ["session", "files", "capability"] as const) {
+    for (const key of ["session", "files", "entity", "capability"] as const) {
       const 目标 = tab(host, key)?.getAttribute("aria-controls")
 
       expect(目标).toBeTruthy()

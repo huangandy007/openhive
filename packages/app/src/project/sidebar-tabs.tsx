@@ -1,17 +1,23 @@
 import { createUniqueId, For, type JSX } from "solid-js"
 
 /**
- * 左栏三个 tab。前两个见 `2026-09-11-项目管理-design.md` §2 ②；第三个「能力」于
- * 2026-10-27 裁决加入（`2026-10-27-项目能力面板-design.md` §14）。
+ * 左栏四个 tab。前两个见 `2026-09-11-项目管理-design.md` §2 ②；第三个「能力」于
+ * 2026-10-27 裁决加入（`2026-10-27-项目能力面板-design.md` §14）；第三个与第四个之间的
+ * 「实体」于计划 7（2026-11-06，案件知识与情报体系 §8.2）加入。
  */
-export type SidebarTabKey = "session" | "files" | "capability"
+export type SidebarTabKey = "session" | "files" | "entity" | "capability"
 
-const TAB_LABEL: Record<SidebarTabKey, string> = { session: "会话", files: "文件", capability: "能力" }
+const TAB_LABEL: Record<SidebarTabKey, string> = {
+  session: "会话",
+  files: "文件",
+  entity: "实体",
+  capability: "能力",
+}
 
 /**
- * 三个 tab 的顺序表——`For` 与「下一个是哪个」都从这里取，不各写一份（`LEARNINGS #004-02`）。
+ * 四个 tab 的顺序表——`For` 与「下一个是哪个」都从这里取，不各写一份（`LEARNINGS #004-02`）。
  */
-const TAB_ORDER: readonly SidebarTabKey[] = ["session", "files", "capability"]
+const TAB_ORDER: readonly SidebarTabKey[] = ["session", "files", "entity", "capability"]
 
 /**
  * tab 的两种外观——**两条独立的 class 串，不是「基础串 ＋ 叠加串」**。
@@ -26,7 +32,7 @@ const TAB = `${TAB_BASE} text-v2-text-text-muted hover:bg-v2-overlay-simple-over
 const TAB_ACTIVE = `${TAB_BASE} bg-[var(--v2-background-bg-accent-soft)] font-semibold text-v2-text-text-base`
 
 /**
- * pane 的骨架。**三个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
+ * pane 的骨架。**四个 pane 用同一条**——今天它们只是内容不同，视觉规则没有分歧。
  *
  * ## `flex flex-col` 是**三个 pane 都要的**，不是「文件」pane 的专利（2026-10-10）
  *
@@ -57,6 +63,11 @@ export interface SidebarTabsProps {
    */
   files: JSX.Element
   /**
+   * 「实体」tab 的 body——**同样由调用方注入**（生产接 `@/project/entity-panel`）。
+   * 本组件不认识实体面板，正如它不认识文件树与会话列表。
+   */
+  entities: JSX.Element
+  /**
    * 「会话」tab 的 body——**同样由调用方注入**（生产接的是 `@/ai-session/sidebar-sessions`
    * 那一具取数 ＋ 导航的壳，2026-10-08 接入）。本组件**不认识会话**，正如它不认识文件树。
    *
@@ -78,9 +89,9 @@ export interface SidebarTabsProps {
 }
 
 /**
- * 左栏的 ② tab 容器 ＋ ③ 主体（设计 §2）：`[会话] [文件] [能力 N]`，默认「文件」。
+ * 左栏的 ② tab 容器 ＋ ③ 主体（设计 §2）：`[会话] [文件] [实体] [能力 N]`，默认「文件」。
  *
- * ## 三个 pane **同时挂载**，靠 `hidden` 属性切换
+ * ## 四个 pane **同时挂载**，靠 `hidden` 属性切换
  *
  * 这不是省渲染的写法，是**正确性**的一半——同 `@/center/center-content` 里那条
  * 「还是同一份内容吗」的注释：`FileTree` 自己有搜索词 / 折叠态 / 选中行三份内部信号，
@@ -100,7 +111,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
   const paneId = (key: SidebarTabKey) => `${基}-pane-${key}`
 
   /**
-   * 相邻的下一个 tab——**索引环绕**：会话 → 文件 → 能力 → 会话。
+   * 相邻的下一个 tab——**索引环绕**：会话 → 文件 → 实体 → 能力 → 会话。
    *
    * 两个 tab 时 ← → 等价于互换，直接写 `key === "session" ? "files" : "session"` 就够；
    * 2026-10-27 加了第三个，「谁在谁右边」不再是对称关系，必须真的走环。
@@ -126,7 +137,7 @@ export function SidebarTabs(props: SidebarTabsProps) {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
           const 目标 = 下一个(props.active, event.key === "ArrowRight" ? 1 : -1)
           props.onSelect(目标)
-          // `currentTarget` 必须**同步**取——事件派发完就置 null。三个 tab 是**同一批 DOM 节点**
+          // `currentTarget` 必须**同步**取——事件派发完就置 null。四个 tab 是**同一批 DOM 节点**
           // 被改属性、不随切换重建，所以这里取到的按钮与切换后页面上那个是同一个
           // （本文件有一条「切走切回没被重建」的用例把守）。
           event.currentTarget.querySelector<HTMLElement>(`[data-tab='${目标}']`)?.focus()
@@ -184,7 +195,21 @@ export function SidebarTabs(props: SidebarTabsProps) {
         {props.files}
       </div>
 
-      {/* ③ 能力（2026-10-27）。**与另外两个 pane 同一条规则**：body 由调用方注入。
+      {/* ③ 实体（计划 7，2026-11-06）。**与另外三个 pane 同一条规则**：body 由调用方注入。
+          它同样常挂不卸载——面板里有类型下钻 / 搜索词 / 星标三份内部状态，切走再回来不该复位。 */}
+      <div
+        role="tabpanel"
+        data-slot="entity-slot"
+        data-pane="entity"
+        id={paneId("entity")}
+        aria-labelledby={tabId("entity")}
+        hidden={props.active !== "entity"}
+        class={PANE}
+      >
+        {props.entities}
+      </div>
+
+      {/* ③ 能力（2026-10-27）。**与另外三个 pane 同一条规则**：body 由调用方注入。
           它同样常挂不卸载——面板里有「哪一组展开」的内部状态，切走再回来不该复位。 */}
       <div
         role="tabpanel"

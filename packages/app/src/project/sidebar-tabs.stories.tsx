@@ -3,7 +3,7 @@ import { createSignal } from "solid-js"
 import { SidebarTabs, type SidebarTabKey } from "./sidebar-tabs"
 
 /**
- * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件] [能力 N]`，默认「文件」。
+ * 左栏 tab 容器（005 T019 · 设计 §2 ②）：`[会话] [文件] [实体] [能力 N]`，默认「文件」。
  *
  * ## 为什么这三个 story 都非要不可
  *
@@ -37,6 +37,13 @@ const 会话body = (
   </p>
 )
 
+/** 「实体」tab 的 body 同样由调用方注入（生产接的是 `@/project/entity-panel`）。 */
+const 实体body = (
+  <p data-slot="story-entity-body" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
+    （这里由调用方注入实体视图）
+  </p>
+)
+
 /** 「能力」tab 的 body 同样由调用方注入（生产接的是 `@/project/capability-panel`）。 */
 const 能力body = (
   <p data-slot="story-capability-body" class="px-1 py-2 text-[13px] text-v2-text-text-faint">
@@ -52,6 +59,7 @@ const 受控 = (初始: SidebarTabKey) => {
       onSelect={setActive}
       files={文件body}
       sessions={会话body}
+      entities={实体body}
       capability={能力body}
     />
   )

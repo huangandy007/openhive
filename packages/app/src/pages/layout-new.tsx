@@ -48,6 +48,9 @@ import { SAVE_PROJECT_FILE } from "@/project/openhive-file-saver"
 // 【保留的定制 · 同步上游时不要丢】（计划 3，2026-11-06）：材料解析状态的建与绑定。
 // 左栏文件树的入场标记 / 目录汇总 / 右键解析都读它；本层建好整份注入 `WorkspaceEntry`。
 import { createCaseMaterials } from "@/project/case-materials-state"
+// 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：左栏「实体」视图的数据源。
+// 与 `PROJECT_DATA` 同款——模块级常量，整份交给 `WorkspaceEntry`（本层只建、不读）。
+import { createEntityApi } from "@/project/entity-api"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
@@ -55,6 +58,9 @@ import { TopbarConnected } from "@/topbar/topbar-connected"
 import { useTitlebarHostMount } from "@/topbar/titlebar-host"
 import { WorkspaceEntry } from "@/workspace/workspace-entry"
 import { setV2Toast, ToastRegion } from "@/utils/toast"
+
+/** 实体视图的取数出口（计划 7）——与 `PROJECT_DATA` 同款：模块级建一次，整份交下去。 */
+const ENTITY_API = createEntityApi()
 
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
@@ -233,6 +239,9 @@ export default function NewLayout(props: ParentProps) {
             // 【保留的定制 · 同步上游时不要丢】（计划 3，2026-11-06）：左栏文件树的解析状态
             // 与右键解析动作。整份注入，`FileTree` 只读；省略时树不画标记、解析子菜单全灰。
             caseMaterials={材料状态}
+            // 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：左栏「实体」视图。
+            // 与 `caseMaterials` 同一条注入纪律——本层建、往里只传值。
+            entityApi={ENTITY_API}
             // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：发起新版本时要选
             // 「在哪个项目里改」。与上面那条同一条注入纪律——本层取、往里只传值。
             projects={projectList()}

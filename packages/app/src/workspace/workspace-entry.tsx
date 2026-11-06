@@ -21,6 +21,9 @@ import { 入库并提交, 提交审核 } from "@/project/capability-action-api"
 import { CapabilityPanel } from "@/project/capability-panel"
 import { CapabilitySubmitDialog } from "@/project/capability-submit-dialog"
 import type { CaseMaterials } from "@/project/case-materials-state"
+// 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：左栏「实体」视图与它的伪路径。
+import { 实体路径, type EntityApi } from "@/project/entity-api"
+import { EntityPanel } from "@/project/entity-panel"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
@@ -189,6 +192,13 @@ export interface WorkspaceEntryProps {
    * （`createCaseMaterials()` ＋ `bind(当前项目)`）。省略 = 树上不画标记与汇总。
    */
   caseMaterials?: CaseMaterials
+  /**
+   * 【保留的定制 · 同步上游时不要丢】案件实体视图的数据源（计划 7）。
+   *
+   * 与 `caseMaterials` / `enablement` 同一条注入纪律：本组件被测试裸挂，自己去取就跑不成离线。
+   * 省略 = 面板说「实体视图未接入」，一次请求都不发。
+   */
+  entityApi?: EntityApi
   /**
    * 【保留的定制 · 同步上游时不要丢】**有权使用的 MCP 清单**（2026-11-03）。
    *
@@ -2078,6 +2088,22 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   // ③ 会话 pane（2026-10-08）：与 `files` 同款注入——本组件不认识会话列表，
                   // 正如它不认识文件树。`?.()` 得到 `undefined` ＝ 调用方没接（pane 空着）。
                   sessions={props.sessions?.()}
+                  // ③ 实体 pane（计划 7）：与另外几个 pane 同款注入。面板只认「当前项目」
+                  // 与 `entityApi`，打开那一行交给中栏（伪路径 `case://`，裁定 3）。
+                  entities={
+                    <EntityPanel
+                      projectId={() => currentProject()?.id}
+                      api={props.entityApi}
+                      onOpenEntity={(行) => {
+                        const 项目 = currentProject()?.id
+                        if (!项目) return
+                        center.open(
+                          { ...实体路径(项目, 行.id, `${行.canonical_value} · ${行.type}`), module: center.module() ?? "project" },
+                          center.activePane(),
+                        )
+                      }}
+                    />
+                  }
                   // ③ 能力 pane（2026-10-27）：与另外两个 pane 同款注入。面板不认识
                   // 「当前是哪个项目」也不认识取数——都从 `props.enablement` 与 `有项目()` 拿。
                   capability={
