@@ -80,8 +80,8 @@ function 读杰森(值: unknown): unknown {
 /**
  * 操作人快照：姓名与警号**写时取**，之后不再 join（同 `0015_audit_event` ②）。
  *
- * 账号查不到（理论不可达）时用「已注销用户（前 8 位）」占位，与 `audit.ts` 同名回落一致：
- * 不隐藏、也不写空串。
+ * 账号查不到（理论不可达）时用「已注销用户（前 8 位）」占位。`slice(0,8)` 的宽度与
+ * `audit.ts:71` 同；区别是这边连空串姓名也回落（那边不会）。不隐藏、也不写空串。
  */
 export async function 操作人快照(db: Queryable, userId: string): Promise<操作人> {
   if (userId === "") throw new Error("留痕缺少操作人")
@@ -115,14 +115,27 @@ export interface 变更视图 {
   readonly action: 留痕动作
   readonly before: unknown
   readonly after: unknown
-  readonly reasonKind: string | null
+  readonly reasonKind: 纠正原因 | null
   readonly reasonText: string | null
   readonly actorId: string
   readonly actorName: string
   readonly createdAt: number
 }
 
-/** 按事实读全部留痕，时间正序（读出来就是一条时间线）。 */
+function 纠正原因或空(值: unknown): 纠正原因 | null {
+  return typeof 值 === "string" && (纠正原因们 as readonly string[]).includes(值) ? (值 as 纠正原因) : null
+}
+
+function 文本或空(值: unknown): string | null {
+  if (值 === null || 值 === undefined) return null
+  return typeof 值 === "string" ? 值 : null
+}
+
+/**
+ * 按事实读全部留痕，时间正序（读出来就是一条时间线）。
+ *
+ * 按 `seq` 排，不按 `created_at` / `id`——时间只有秒级，id 是随机 UUID，同秒内它们是随机序。
+ */
 export async function 变更历史(
   db: Queryable,
   projectId: string,
@@ -134,7 +147,7 @@ export async function 变更历史(
       select id, action, before, after, reason_kind, reason_text, actor_id, actor_name, created_at
         from auth.case_fact_change
        where project_id = ${projectId} and fact_type = ${factType} and fact_id = ${factId}
-       order by created_at asc, id asc
+       order by seq asc
     `),
   )
   return 行们.map((行) => ({
@@ -142,8 +155,8 @@ export async function 变更历史(
     action: String(行.action) as 留痕动作,
     before: 读杰森(行.before),
     after: 读杰森(行.after),
-    reasonKind: 行.reason_kind === null || 行.reason_kind === undefined ? null : String(行.reason_kind),
-    reasonText: 行.reason_text === null || 行.reason_text === undefined ? null : String(行.reason_text),
+    reasonKind: 纠正原因或空(行.reason_kind),
+    reasonText: 文本或空(行.reason_text),
     actorId: String(行.actor_id),
     actorName: String(行.actor_name),
     createdAt: Number(行.created_at),

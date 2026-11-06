@@ -309,6 +309,18 @@ describe("0033 迁移 · 留痕与依赖标记", () => {
     expect(await 被拒(db().execute(插("c-ok-2", "确认", null, null)))).toBe(false)
   })
 
+  test("「否决」不带理由 ⇒ 被库里挡下（判据 A18）", async () => {
+    expect(await 被拒(db().execute(插("c-bad-4", "否决", null, null)))).toBe(true)
+  })
+
+  test("「否决」带理由 ⇒ 进得去", async () => {
+    expect(await 被拒(db().execute(插("c-ok-3", "否决", null, "证据不足")))).toBe(false)
+  })
+
+  test("原因/理由只有空白 ⇒ 也被挡下（btrim，0034 补的洞）", async () => {
+    expect(await 被拒(db().execute(插("c-bad-5", "排除", "识别错", "   ")))).toBe(true)
+  })
+
   test("两张事实表都补了 basis_changed_at，默认 null", async () => {
     const 列们 = rowsOf(
       await db().execute(sql`

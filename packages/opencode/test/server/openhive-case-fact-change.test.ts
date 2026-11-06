@@ -124,6 +124,27 @@ describe("落库形状（变异 M1 的承重处）", () => {
   })
 })
 
+describe("留痕的确定顺序", () => {
+  test("同一秒内连写 20 条，历史顺序等于写入顺序", async () => {
+    const 期望: ("确认" | "存疑")[] = []
+    for (let i = 0; i < 20; i++) {
+      const action = i % 2 === 0 ? "确认" : "存疑"
+      期望.push(action)
+      await 记变更(库(), {
+        projectId: "p-顺序",
+        factType: "entity",
+        factId: "e-顺序",
+        action,
+        actor: 甲,
+      })
+    }
+    const 历史 = await 变更历史(库(), "p-顺序", "entity", "e-顺序")
+    // 按 id（随机 UUID）排序时，20 条的随机排列几乎不可能恰好等于写入序
+    // （复审实测 20 组「确认→修正」有 11 组排反）⇒ 这条能真的钉住排序依据。
+    expect(历史.map((条) => 条.action)).toEqual(期望)
+  })
+})
+
 describe("留痕的形状", () => {
   test("同一个 fact_id 在不同 project 下互不串", async () => {
     await 记变更(库(), {
