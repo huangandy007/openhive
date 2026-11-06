@@ -96,6 +96,34 @@ describe("留痕读写", () => {
   })
 })
 
+describe("落库形状（变异 M1 的承重处）", () => {
+  test("before / after 是 jsonb 对象，不是 JSON 字符串标量", async () => {
+    await 记变更(库(), {
+      projectId: "p-形状",
+      factType: "event",
+      factId: "ev-形状",
+      action: "确认",
+      before: { trustState: "自动抽取" },
+      after: { trustState: "已确认" },
+      actor: 甲,
+    })
+    // 裸 SQL 读**落库类型**：`读杰森()` 会把字符串标量解析回对象，DAO 级断言看不见这个差别。
+    // 这条只有 `::text::jsonb` 能满足——变异成 `::jsonb` 后 `jsonb_typeof` = 'string'。
+    const 行 = rowsOf(
+      await 库().execute(sql`
+        select jsonb_typeof(before) as 前型, jsonb_typeof(after) as 后型,
+               before ->> 'trustState' as 前态
+          from auth.case_fact_change
+         where project_id = 'p-形状' and fact_id = 'ev-形状'
+      `),
+    )[0]
+    expect(String(行?.前型)).toBe("object")
+    expect(String(行?.后型)).toBe("object")
+    // jsonb 算子是真实消费者：落成字符串标量时 `->>` 取不到字段（得到 null）。
+    expect(String(行?.前态)).toBe("自动抽取")
+  })
+})
+
 describe("留痕的形状", () => {
   test("同一个 fact_id 在不同 project 下互不串", async () => {
     await 记变更(库(), {
