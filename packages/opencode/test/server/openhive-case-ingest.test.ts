@@ -328,6 +328,25 @@ describe("runJob", () => {
     expect(await countFactRows(db(), "p14")).toBe(0)
   })
 
+  test("source_path 是空串的脏作业 ⇒ 作业仍落「失败」", async () => {
+    // `source_path` 的 schema 默认值就是空串：老数据 / 手工修库都可能留下这种作业。
+    // 失败路径**不绑事务**（R28）——绑了的话「出问题」这笔抛错会把「收尾」一起回滚，
+    // 作业永远停在「运行中」，而它不在可认领集合里，双方都不自愈。
+    文件.set("p17/话单.xlsx", 话单)
+    await 入队("p17", "话单.xlsx", "fp-17")
+    const 认领 = await claimNextJob(db())
+    if (!认领) throw new Error("没认领到作业")
+
+    expect(await runJob(db(), deps, { ...认领, sourcePath: "" })).toBe("失败")
+    const 作业 = rowsOf(
+      await db().execute(sql`select status, error from auth.case_ingest_job where id = ${认领.jobId}`),
+    )
+    expect(作业[0]).toMatchObject({ status: "失败" })
+    expect(typeof 作业[0]?.error).toBe("string")
+    expect(作业[0]?.error).not.toBe("")
+    // 材料状态**不断言**：「排队中 → 有问题」在脏路径下是非法转移，材料会停在原状态。
+  })
+
   test("重放时截断 ⇒ 旧行还在（删除在算完之后）", async () => {
     文件.set("p15/话单.xlsx", 话单)
     const r = await 入队("p15", "话单.xlsx", "fp-15")
@@ -346,6 +365,12 @@ describe("沙箱内路径", () => {
 
   test("正常相对路径落在沙箱根下（/ 分隔也可）", () => {
     expect(沙箱内路径(root, "u1/p/材料/a.xlsx")).toBe(resolve(root, "u1", "p", "材料", "a.xlsx"))
+  })
+
+  test("文件名以 .. 开头不是越界（只有 .. 与 ../ 开头才是）", () => {
+    // `startsWith("..")` 会把合法的 `..foo.xlsx` 一起拒掉——过宽与过窄一样是错。
+    expect(沙箱内路径(root, "..foo.xlsx")).toBe(resolve(root, "..foo.xlsx"))
+    expect(沙箱内路径(root, "材料/..foo.xlsx")).toBe(resolve(root, "材料", "..foo.xlsx"))
   })
 
   test("越出根 / 空路径 / 绝对路径一律 undefined", () => {

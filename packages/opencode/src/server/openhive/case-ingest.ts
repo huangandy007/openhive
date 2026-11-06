@@ -1,7 +1,7 @@
 export * as OpenhiveCaseIngest from "./case-ingest"
 
 import { sql } from "drizzle-orm"
-import { isAbsolute, relative, resolve } from "node:path"
+import { isAbsolute, relative, resolve, sep } from "node:path"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { readSheets } from "./case-sheet"
@@ -171,7 +171,9 @@ export function 沙箱内路径(root: string, sourcePath: string): string | unde
   if (isAbsolute(sourcePath)) return undefined
   const 绝对 = resolve(root, ...sourcePath.split("/"))
   const 相对 = relative(root, 绝对)
-  if (相对 === "" || 相对.startsWith("..") || isAbsolute(相对)) return undefined
+  // 只有 `..` 本身或 `../` 开头才是越界（`file.ts` 的既有写法）：`..foo.xlsx` 是合法文件名，
+  // 用 `startsWith("..")` 会把它们一起拒掉。
+  if (相对 === "" || 相对 === ".." || 相对.startsWith(`..${sep}`) || isAbsolute(相对)) return undefined
   return 绝对
 }
 
@@ -255,18 +257,17 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
     })
     return "完成"
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    // 收尾失败不能盖掉「返回失败」这件事：作业表写不进去时，材料状态那条还在。
-    // 两条也是同一个事务：不能出现「作业记了失败、材料却还说解析中」的半截收尾。
-    await inTransaction(db, async (tx) => {
-      await applyParseAction(tx, {
-        projectId: job.projectId,
-        materialId: job.materialId,
-        action: "出问题",
-        detail: { reason },
-      })
-      await 收尾(tx, job, "失败", reason)
+    // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
+    // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
+    // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
+    const 原因 = error instanceof Error ? error.message : String(error)
+    await applyParseAction(db, {
+      projectId: job.projectId,
+      materialId: job.materialId,
+      action: "出问题",
+      detail: { reason: 原因 },
     }).catch(() => undefined)
+    await 收尾(db, job, "失败", 原因).catch(() => undefined)
     return "失败"
   }
 }

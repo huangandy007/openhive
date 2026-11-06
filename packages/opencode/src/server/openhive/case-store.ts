@@ -45,7 +45,7 @@ interface TransactionCapable {
  */
 export async function inTransaction<T>(db: Queryable, fn: (tx: Queryable) => Promise<T>): Promise<T> {
   const 候选 = db as Queryable & Partial<TransactionCapable>
-  if (typeof 候选.transaction !== "function") throw new Error("库句柄不支持事务：重放需要原子性")
+  if (typeof 候选.transaction !== "function") throw new Error("库句柄不支持事务：这一步需要原子性")
   return 候选.transaction(fn)
 }
 
