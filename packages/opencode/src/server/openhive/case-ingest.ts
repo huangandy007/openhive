@@ -616,7 +616,10 @@ async function 跑文本(
             promptVersion: 输出.prompt版本,
             factCount: 抽取条数,
             // 设计 §7.4 的审计三件套（模型名/版本、prompt 版本、重试次数）与 A17 的片数。
-            slices: 输出.片们.length,
+            // 片数写 `sliceCount`：`slices` 这个名字在前端契约里是**问题切片数组**
+            // （`packages/app/src/project/case-materials-api.ts:100-112`），同名字段换个类型
+            // 会把整份材料列表判成回包形状不对。「有问题」分支的 `slices` 数组保持原样。
+            sliceCount: 输出.片们.length,
             attempts: Math.max(1, ...输出.片们.map((片) => 片.尝试)),
             notes: 提示们,
           },

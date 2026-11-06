@@ -721,10 +721,11 @@ describe("文本作业（计划 4）", () => {
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("已解析")
     // 成功路径也要留下片数与重试次数：审计三件套与 A17 的回读通过率都靠它们。
+    // 片数写 `sliceCount`：`slices` 在前端契约里是**问题切片数组**（见下面那条契约用例）。
     const 明细 = 材料?.parseDetail
     if (!是对象(明细)) throw new Error("parse_detail 不是对象")
-    expect(typeof 明细.slices).toBe("number")
-    expect(Number(明细.slices)).toBeGreaterThanOrEqual(1)
+    expect(typeof 明细.sliceCount).toBe("number")
+    expect(Number(明细.sliceCount)).toBeGreaterThanOrEqual(1)
     expect(typeof 明细.attempts).toBe("number")
     expect(Number(明细.attempts)).toBeGreaterThanOrEqual(1)
     // 不在这里断言 kind：本用例走 `enqueueMaterial`（默认 `其他`），类型猜测在 `入队材料`
@@ -764,6 +765,28 @@ describe("文本作业（计划 4）", () => {
       select text_content from auth.case_material where project_id = 'p-txt'
     `))
     expect(行[0]?.text_content).toBe(文本)
+  })
+
+  // 钉住「后端 parse_detail 与前端解析器同名不同形」这个坑：`slices` 在前端契约里是
+  // **问题切片数组**（`packages/app/src/project/case-materials-api.ts:96-116` 的 `解析问题`：
+  // 有就必须是对象数组、每项 range/reason/count 齐全），不是「片数」。成功路径曾把它写成
+  // `slices: <number>` ⇒ 前端 `解析清单` 判「服务端回包形状不对」，整份材料列表都加载失败。
+  test("契约：成功路径的 parse_detail 不含 slices 键（片数走 sliceCount）", async () => {
+    const 入 = await 入队文本("契约.txt")
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, job)
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const 明细 = 材料?.parseDetail
+    if (!是对象(明细)) throw new Error("parse_detail 不是对象")
+    // 用前端同一个判据验一遍：reason 有就必须是字符串；slices 有就必须是数组。
+    expect(明细.reason === undefined || typeof 明细.reason === "string").toBe(true)
+    expect(明细.slices === undefined || Array.isArray(明细.slices)).toBe(true)
+    // 成功路径不该有 `slices`——片数走 sliceCount，避免与「问题切片数组」同名不同形。
+    expect("slices" in 明细).toBe(false)
+    expect(typeof 明细.sliceCount).toBe("number")
   })
 
   test("只有合法缺失（事件没给时间）⇒ 材料「已解析」，提示进 parse_detail.notes（I2）", async () => {
