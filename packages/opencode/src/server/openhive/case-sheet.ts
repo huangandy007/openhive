@@ -55,6 +55,11 @@ export interface RawSheet {
   name: string
   /** 第 1 行。 */
   header: RawCell[]
+  /**
+   * 数据行。**只含至少有一个非空单元格的行**——全空行（话单里的分隔空行、CSV 尾部空行）
+   * 不是事实行，不返回、也不占 `maxRowsPerSheet` 的窗口。`rowNo` 仍是文件里的绝对行号，
+   * 下游按它落库；跳空行不影响行号指回原文件。
+   */
   rows: RawRow[]
 }
 
@@ -110,26 +115,24 @@ function looksLikeText(bytes: Uint8Array): boolean {
 }
 
 /**
- * UTF-16 文本（`FF FE` / `FE FF` BOM，或含 NUL 且去掉 NUL 后无其它控制字节）。
+ * UTF-16 BOM（`FF FE` / `FE FF`）。只有 BOM 才足以**点名** UTF-16：
  *
- * 只用来把**错误信息说清楚**：R11 仍拒绝，不做自动转换——用户拿到「请另存为 UTF-8」比拿到
- * 泛化的「不是可识别的表格文件」更可操作。
+ * 仅含 NUL 字节还可能是自带 NUL 的 UTF-8 文本或二进制，说成「UTF-16 文本」会把用户引到
+ * 死路（文件本来就是 UTF-8）。无 BOM 的含 NUL 输入由 `hasNulByte` 给泛化措辞。
  */
-function looksLikeUtf16(bytes: Uint8Array): boolean {
-  if (bytes.length >= 2) {
-    const b0 = bytes[0] ?? 0
-    const b1 = bytes[1] ?? 0
-    if ((b0 === 0xff && b1 === 0xfe) || (b0 === 0xfe && b1 === 0xff)) return true
-  }
-  let hasNul = false
+function hasUtf16Bom(bytes: Uint8Array): boolean {
+  if (bytes.length < 2) return false
+  const b0 = bytes[0] ?? 0
+  const b1 = bytes[1] ?? 0
+  return (b0 === 0xff && b1 === 0xfe) || (b0 === 0xfe && b1 === 0xff)
+}
+
+/** 是否含 NUL 字节（文本通道放行后仍含 NUL ⇒ 不是可读的 UTF-8 表格文本）。 */
+function hasNulByte(bytes: Uint8Array): boolean {
   for (const byte of bytes) {
-    if (byte === 0x00) {
-      hasNul = true
-      continue
-    }
-    if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) return false
+    if (byte === 0x00) return true
   }
-  return hasNul
+  return false
 }
 
 /**
@@ -171,7 +174,8 @@ function toRawCell(cell: XLSX.CellObject | undefined): RawCell {
 export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResult {
   const container = isContainer(bytes)
   if (!container && !looksLikeText(bytes)) {
-    if (looksLikeUtf16(bytes)) throw new Error("UTF-16 文本不受支持，请另存为 UTF-8")
+    if (hasUtf16Bom(bytes)) throw new Error("UTF-16 文本不受支持，请另存为 UTF-8")
+    if (hasNulByte(bytes)) throw new Error("文件含 NUL 字节，疑似 UTF-16 或二进制；请另存为 UTF-8 文本后重试")
     throw new Error("不是可识别的表格文件（xlsx/xls/csv/html）")
   }
 
@@ -202,20 +206,23 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
       return { rowNo: r + 1, cells }
     }
 
-    // 「数据行」= 至少有一个非空单元格的行。CSV 导出常在末尾留空行，按位置数（e.r - s.r）会把
-    // 空行算进截断判定 ⇒ 好材料被误报，Task 6 直接拒收。判定按**非空行数**，不是按位置差。
-    let nonEmptyRows = 0
-    for (let r = range.s.r + 1; r <= range.e.r; r++) {
-      if (rowAt(r).cells.some((c) => c.text !== null)) nonEmptyRows++
-    }
-    if (nonEmptyRows > maxRowsPerSheet) truncatedSheets.push(name)
-
-    // 返回的 rows 仍按位置取前 maxRowsPerSheet 条（不跳空行）：行号必须能指回原文件。
+    // 「数据行」= 至少有一个非空单元格的行。CSV 导出常在末尾/中间留空行：按位置取窗口会把
+    // 空行算进来，既误报截断、又让真正的数据行被挤出窗口而**无声消失**（本模块明确禁止）。
+    // 因此**单次遍历、只物化要返回的行**：判定与收集同源，空行不占窗口，溢出即截断。
     const header = rowAt(range.s.r).cells
     const rows: RawRow[] = []
-    for (let r = range.s.r + 1; r <= range.e.r && rows.length < maxRowsPerSheet; r++) {
-      rows.push(rowAt(r))
+    let 溢出了 = false
+    for (let r = range.s.r + 1; r <= range.e.r; r++) {
+      const row = rowAt(r)
+      if (row.cells.every((c) => c.text === null)) continue
+      if (rows.length < maxRowsPerSheet) {
+        rows.push(row)
+      } else {
+        溢出了 = true
+        break
+      }
     }
+    if (溢出了) truncatedSheets.push(name)
     sheets.push({ name, header, rows })
   }
 

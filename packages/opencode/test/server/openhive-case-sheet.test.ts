@@ -35,6 +35,19 @@ function 造UTF16LE(text: string): Uint8Array {
   return bytes
 }
 
+/** UTF-16BE 字节（带 BOM），模拟「Unicode 大端」导出。 */
+function 造UTF16BE(text: string): Uint8Array {
+  const bytes = new Uint8Array(2 + text.length * 2)
+  bytes[0] = 0xfe
+  bytes[1] = 0xff
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    bytes[2 + i * 2] = code >> 8
+    bytes[3 + i * 2] = code & 0xff
+  }
+  return bytes
+}
+
 describe("readSheets", () => {
   test("表头单独取出，数据行从第 2 行起、行号是文件里的绝对行号", () => {
     const bytes = 造工作簿({
@@ -186,8 +199,47 @@ describe("readSheets", () => {
     expect(result.truncatedSheets).toEqual([])
   })
 
+  test("中间有空行不丢行：空行不算数据行，也不占窗口", () => {
+    // 表头 + 一个空行 + 数据 1、2；空行是第 2 行，数据在第 3、4 行。
+    const bytes = new TextEncoder().encode("h\n\n1\n2\n")
+    const result = readSheets(bytes, { maxRowsPerSheet: 10 })
+    expect(result.sheets[0]?.rows.map((r) => r.rowNo)).toEqual([3, 4])
+    expect(result.sheets[0]?.rows.map((r) => r.cells[0]?.text)).toEqual(["1", "2"])
+    expect(result.truncatedSheets).toEqual([])
+  })
+
+  test("中间有空行 + 上限恰好够：两行数据都在，且不报截断", () => {
+    // 本缺陷的见证：按位置取窗口会把空行算进去，导致 "2" 静默消失且 truncatedSheets 为空。
+    const bytes = new TextEncoder().encode("h\n\n1\n2\n")
+    const result = readSheets(bytes, { maxRowsPerSheet: 2 })
+    expect(result.sheets[0]?.rows.map((r) => r.rowNo)).toEqual([3, 4])
+    expect(result.sheets[0]?.rows.map((r) => r.cells[0]?.text)).toEqual(["1", "2"])
+    expect(result.truncatedSheets).toEqual([])
+  })
+
+  test("非空行真的超过上限才报截断", () => {
+    const bytes = new TextEncoder().encode("h\n1\n2\n3\n")
+    const result = readSheets(bytes, { maxRowsPerSheet: 2 })
+    expect(result.sheets[0]?.rows.map((r) => r.cells[0]?.text)).toEqual(["1", "2"])
+    expect(result.truncatedSheets).toEqual(["Sheet1"])
+  })
+
   test("UTF-16（Excel「Unicode 文本」）⇒ 抛错并提示另存 UTF-8", () => {
     expect(() => readSheets(造UTF16LE("主叫号码\n"))).toThrow(/UTF-16/)
     expect(() => readSheets(造UTF16LE("主叫号码\n"))).toThrow(/另存为 UTF-8/)
+  })
+
+  test("UTF-16 两种 BOM（FF FE / FE FF）都点名 UTF-16", () => {
+    expect(() => readSheets(造UTF16LE("h\n"))).toThrow(/UTF-16 文本不受支持/)
+    expect(() => readSheets(造UTF16BE("h\n"))).toThrow(/UTF-16 文本不受支持/)
+  })
+
+  test("含 NUL 但没有 UTF-16 BOM ⇒ 给泛化措辞，不谎称是 UTF-16 文本", () => {
+    // 纯 ASCII 内容的 UTF-16LE（无 BOM）：0x68 0x00 0x0a 0x00 = "h\n"。
+    // 它既可能是 UTF-16，也可能是自带 NUL 的 UTF-8/二进制，不能说死「请另存 UTF-16」。
+    const bytes = Uint8Array.of(0x68, 0x00, 0x0a, 0x00)
+    expect(() => readSheets(bytes)).toThrow(/NUL/)
+    expect(() => readSheets(bytes)).toThrow(/另存为 UTF-8/)
+    expect(() => readSheets(bytes)).not.toThrow(/UTF-16 文本不受支持/)
   })
 })
