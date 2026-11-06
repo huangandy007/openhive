@@ -45,6 +45,9 @@ import { PROJECT_DATA } from "@/project/project-data"
 import { LOAD_PROJECT_FILE } from "@/project/openhive-file-loader"
 // 存盘那一侧（2026-10-12，同一个范式的反方向）：改完的文档写回盘上。省略它 = 视图只读。
 import { SAVE_PROJECT_FILE } from "@/project/openhive-file-saver"
+// 【保留的定制 · 同步上游时不要丢】（计划 3，2026-11-06）：材料解析状态的建与绑定。
+// 左栏文件树的入场标记 / 目录汇总 / 右键解析都读它；本层建好整份注入 `WorkspaceEntry`。
+import { createCaseMaterials } from "@/project/case-materials-state"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
@@ -105,6 +108,12 @@ export default function NewLayout(props: ParentProps) {
   // owner 为 null ⇒ effect 静默泄漏、组件卸载也不拆（见 `enable-state.ts` 的 `bind` 注释）。
   const 启用状态 = createProjectEnablement()
   启用状态.bind(() => currentProject()?.id)
+  // 【保留的定制 · 同步上游时不要丢】材料解析状态（计划 3，2026-11-06）：
+  // 与启用状态同一条注入纪律——本层建、往里只传；项目一换就重拉，没选项目时整块不画。
+  // `createCaseMaterials()` 与 `bind(...)` 都必须在本组件体内调用（`bind` 要 `getOwner()`
+  // 把内部 effect 挂在调用方 owner 上，理由同 `启用状态` 那条注释）。
+  const 材料状态 = createCaseMaterials()
+  材料状态.bind(() => currentProject()?.id)
   // 【保留的定制 · 同步上游时不要丢】（2026-11-03）能力面板 MCP 组的真实清单。
   // 用户级（发布 + 授权即生效），与项目无关，所以**不用** bind 当前项目；展开时才拉
   // （见 `mcp-capability.ts` 文件头）。与上面同一条注入纪律：本层建、往里只传。
@@ -221,6 +230,9 @@ export default function NewLayout(props: ParentProps) {
             enablement={启用状态}
             // 【保留的定制 · 同步上游时不要丢】（2026-11-03）：能力面板「MCP」组的真实清单。
             mcpCapability={mcp能力}
+            // 【保留的定制 · 同步上游时不要丢】（计划 3，2026-11-06）：左栏文件树的解析状态
+            // 与右键解析动作。整份注入，`FileTree` 只读；省略时树不画标记、解析子菜单全灰。
+            caseMaterials={材料状态}
             // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：发起新版本时要选
             // 「在哪个项目里改」。与上面那条同一条注入纪律——本层取、往里只传值。
             projects={projectList()}

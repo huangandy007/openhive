@@ -20,6 +20,7 @@ import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { 入库并提交, 提交审核 } from "@/project/capability-action-api"
 import { CapabilityPanel } from "@/project/capability-panel"
 import { CapabilitySubmitDialog } from "@/project/capability-submit-dialog"
+import type { CaseMaterials } from "@/project/case-materials-state"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
 import { folderUploadPlan, 拆目录, type FolderUploadTask } from "@/project/folder-upload"
@@ -180,6 +181,14 @@ export interface WorkspaceEntryProps {
    * 本组件**只转发**，不读它的任何成员。
    */
   enablement?: ProjectEnablement
+  /**
+   * 【保留的定制 · 同步上游时不要丢】材料解析状态（计划 3，2026-11-06）。
+   *
+   * 与 `enablement` / `mcpCapability` 同一条注入纪律：**注入而不 import 生产实现**——
+   * 本组件被组件测试裸挂，自己去取就跑不成离线。生产实现在 `pages/layout-new.tsx` 建
+   * （`createCaseMaterials()` ＋ `bind(当前项目)`）。省略 = 树上不画标记与汇总。
+   */
+  caseMaterials?: CaseMaterials
   /**
    * 【保留的定制 · 同步上游时不要丢】**有权使用的 MCP 清单**（2026-11-03）。
    *
@@ -515,8 +524,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 让「这是一件事、只是有几种说法」显出来（`LEARNINGS #002-06`：照同一前提做同一件事的，别各写一份）。
    *
    * ⚠️ 它**够不着**外部改动（AI 写盘 / 别的进程）——那些没有回调可挂，只能靠用户手点「刷新」。
+   *
+   * 计划 3 追加：文件清单变了，材料视图也得跟着重拉（上传会自动入队、删除会让材料行变成
+   * 孤儿）。两件事同一个时机，不该让调用方记得拨两次。
    */
-  const 拨清单重取 = () => set清单重取((代次) => 代次 + 1)
+  const 拨清单重取 = () => {
+    set清单重取((代次) => 代次 + 1)
+    props.caseMaterials?.reload()
+  }
   /**
    * 成员动作（T021）那一对：界面上那一句话 ＋ 名单重取的代次。
    *
@@ -2191,6 +2206,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         // 取不到时那颗重试：与右键菜单里的「刷新」是**同一枚代次**（`拨清单重取`）——
                         // 「再取一遍」只有一个意思，不该有第二条路（`#002-06`）。
                         onRetry={有项目() ? 拨清单重取 : undefined}
+                        // 计划 3：材料状态整份交给树（它只读；动作成功后自己 reload）。
+                        caseMaterials={props.caseMaterials}
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}

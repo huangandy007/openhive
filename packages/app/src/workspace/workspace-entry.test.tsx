@@ -16,6 +16,8 @@ import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { 取草稿, 开始编辑 } from "@/center/views/richtext/draft-store"
 import { currentProject, setCurrentProject } from "@/project/current-project"
+import type { CaseMaterials } from "@/project/case-materials-state"
+import { 假材料状态, 视图行 } from "@/project/case-materials.test-support"
 import type { MemberEntry } from "@/project/member-panel"
 import {
   setBackupJob,
@@ -807,6 +809,22 @@ describe("文件树接进左栏（FR-005 出参）", () => {
 
     expect(有树(host)).toBe(false)
   })
+
+  test("注入材料状态后，文件行的解析标记跟着出来（注入链真的把 caseMaterials 传下去了）", () => {
+    setCurrentProject(undefined)
+    const 假 = 假材料状态({
+      rows: [视图行({ path: "话单.csv", status: "已解析", factCount: 1, numberCount: 1 })],
+    })
+
+    const host = mount(() => <WorkspaceEntry caseMaterials={假.状态}>中栏</WorkspaceEntry>)
+    // ⚠️ 清单必须**挂载后**再写：挂载时那趟 effect 用哨兵判定「项目变了」⇒ 先清一次 `projectFiles`。
+    setProjectFiles(["话单.csv"])
+
+    const 行 = 树行(host).find((el) => el.getAttribute("data-path") === "话单.csv")
+    // 护栏：`行` 在，后面的 `?.querySelector` 才说明「没有标记」而不是「没有行」。
+    expect(行).toBeDefined()
+    expect(行?.querySelector("[data-slot='file-tree-parse-badge']")?.getAttribute("data-shape")).toBe("check")
+  })
 })
 
 const 成员面板 = (host: HTMLElement) => host.querySelector("[data-component='member-panel']")
@@ -1414,11 +1432,19 @@ function 假数据源(
   return { data, 记 }
 }
 
-const 挂 = (data: ProjectData) =>
+/**
+ * 挂一个工作台。
+ *
+ * `caseMaterials` 可选：只有「材料视图跟着文件动作重拉」那几条用例需要它（计划 3 修复轮 1）；
+ * 其余调用点保持原样，不为了一个用例给二十多处都加参数。
+ */
+const 挂 = (data: ProjectData, caseMaterials?: CaseMaterials) =>
   mount(() => (
     <>
       <ToastRegion v2={false} />
-      <WorkspaceEntry projectData={data}>中栏</WorkspaceEntry>
+      <WorkspaceEntry projectData={data} caseMaterials={caseMaterials}>
+        中栏
+      </WorkspaceEntry>
     </>
   ))
 
@@ -3730,9 +3756,9 @@ describe("「刷新」接进工作台（2026-10-10 用户下达）", () => {
   })
 
   /** 挂一个已选定项目的左栏。与上一节那个 `开` **同形、各写一份**（`#004-11`：夹具不跨节共享）。 */
-  async function 开(剧本: Parameters<typeof 假数据源>[0] = {}) {
+  async function 开(剧本: Parameters<typeof 假数据源>[0] = {}, 材料?: CaseMaterials) {
     const { data, 记 } = 假数据源({ files: async () => ["资料/话单.csv"], ...剧本 })
-    const host = 挂(data)
+    const host = 挂(data, 材料)
     await 冲一遍()
     setCurrentProject({ id: "p1", name: "8·17专案" })
     await 冲一遍()
@@ -3748,6 +3774,28 @@ describe("「刷新」接进工作台（2026-10-10 用户下达）", () => {
     await 冲一遍()
 
     expect(假.files.length, "取清单的次数要多一次——这就是「刷新」的全部作用").toBe(刷前 + 1)
+  })
+
+  /**
+   * **「刷新」不只重取清单，也重拉材料视图**（计划 3，2026-11-06 修复轮 1）。
+   *
+   * 上传会自动入队、删除会让材料行变成孤儿——文件清单与材料视图是同一个时机的两半，
+   * 都由 `拨清单重取` 这一处负责。本用例钉的是**接线**这一半：右键「刷新」走的是同一枚代次，
+   * 材料状态收到的那次 `reload()` 不能丢。
+   *
+   * ⚠️ 实现先于用例存在（接线时 `reload()` 已写上），所以这条一开始就跑绿——红由
+   * 变异造（删掉 `props.caseMaterials?.reload()`），按 `LEARNINGS #003-03` 记录。
+   */
+  test("右键「刷新」⇒ 材料视图也跟着重拉（文件清单与材料同一时机）", async () => {
+    const 假 = 假材料状态({ rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+    const { host } = await 开({}, 假.状态)
+    const 重拉前 = 假.记.重拉
+
+    右键行(host, "话单.csv")
+    点菜单项("refresh")
+    await 冲一遍()
+
+    expect(假.记.重拉, "刷新要顺带重拉材料视图——清单变了，材料行也可能变了").toBe(重拉前 + 1)
   })
 
   /**
