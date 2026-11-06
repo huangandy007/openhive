@@ -8,11 +8,15 @@ import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { 解不开 } from "../../src/server/openhive/file"
+import { 材料视图 } from "../../src/server/openhive/case-materials"
+import { enqueueMaterial } from "../../src/server/openhive/case-ingest"
+import { applyParseAction, createMaterial } from "../../src/server/openhive/case-store"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -189,6 +193,14 @@ const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = DATA_ROOT
 
 /**
+ * `OpenhivePg` 的池也收到 1 条连接。理由同下面 `迁移库` 那条：应用侧一旦用
+ * `db.transaction()`（计划 3 的路径迁移），默认池会轮换连接、在同一 PGlite 会话上
+ * 重复准备同一句 SQL ⇒ `42P05`，后面的用例全被带红（这是夹具残差，不是产品缺陷）。
+ */
+const previousPoolMax = process.env.PG_POOL_MAX
+process.env.PG_POOL_MAX = "1"
+
+/**
  * I7：本文件建的是**真应用**（`HttpApiApp.routes`），表格导入 worker 挂在那套 layer 上
  * 且每 2 秒认领**同一个测试库**的作业。本文件不测消费，后台消费者会把用例插的作业
  * 悄悄跑掉/改态（复审实测：插一条「排队中」6 秒后变「失败」）。关掉；生产默认仍开。
@@ -200,6 +212,11 @@ process.env.OPENHIVE_CASE_INGEST_WORKER = "0"
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 
 afterAll(restoreDefaultPassword)
+
+afterAll(() => {
+  if (previousPoolMax === undefined) delete process.env.PG_POOL_MAX
+  else process.env.PG_POOL_MAX = previousPoolMax
+})
 
 afterAll(() => {
   if (previousDataRoot === undefined) delete process.env.OPENHIVE_DATA_ROOT
@@ -216,13 +233,25 @@ afterAll(() => {
  * （「已归档 ⇒ 拒」那道门），读不到表就 500。
  */
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+/**
+ * 本文件自己的写库客户端（`max: 1`）。
+ *
+ * ⚠️ 不用夹具自带的 `pg.db`（`startProductionDb()` 给它的连接池上限是驱动默认 10）：
+ * PGlite 把多条连接汇进**同一个 PG 会话**、预编译语句是会话级的，而 `db.transaction()`
+ * 会从池里独占一条连接——事务之后的下一句带参 SQL 换了连接重新准备 ⇒ `42P05`
+ * （`packages/auth/src/db.ts` 的 `poolMaxOf` 注记、`openhive-case-ingest.test.ts` 文件头）。
+ * 本组要调 `enqueueMaterial`（内部有事务），所以必须一条连接。
+ */
+let 迁移库: ReturnType<typeof connect> | undefined
 
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
+  迁移库 = connect({ ...process.env, PG_POOL_MAX: "1" })
 })
 
 afterAll(async () => {
+  await 迁移库?.$client.close()
   await pg?.stop()
 })
 
@@ -3136,3 +3165,248 @@ it.live(
     }),
   30_000,
 )
+
+/**
+ * ── 计划 3 终审阻塞 2：改名 / 移动必须维护 `case_material.path` 与排队作业的 `source_path` ──
+ *
+ * 材料行与作业行都按**路径**关联（`材料视图` 的 `distinct on (path)`、`getMaterialByPath`、
+ * worker 读盘用的 `source_path`）。文件搬了而库里没搬，界面上那份材料会**整个消失**，
+ * 排队中的作业还会按旧路径读盘失败——两种都是静默的。
+ *
+ * 观测面用**生产出口**：材料行由 `createMaterial` ＋ `applyParseAction` 种，目录列表由
+ * `材料视图` 读（`#006-35`：别裸种 SQL，否则测的是夹具不是产品）。
+ */
+describe("计划 3 · 改名 / 移动同步材料路径（终审阻塞 2）", () => {
+  const 库 = () => {
+    if (!迁移库) throw new Error("真库没起来")
+    return 迁移库
+  }
+
+  /** 种一条「已解析」材料（界面真正会展示的那一档）。 */
+  async function 种已解析材料(path: string) {
+    const id = await createMaterial(库(), {
+      id: crypto.randomUUID(),
+      projectId: ALPHA,
+      fileName: path.split("/").pop() ?? path,
+      kind: "话单",
+      fingerprint: `fp-${crypto.randomUUID()}`,
+      path,
+    })
+    // 状态机：未入队 --入队--> 排队中 --开始--> 解析中 --完成--> 已解析。
+    await applyParseAction(库(), { projectId: ALPHA, materialId: id, action: "入队" })
+    await applyParseAction(库(), { projectId: ALPHA, materialId: id, action: "开始" })
+    await applyParseAction(库(), { projectId: ALPHA, materialId: id, action: "完成" })
+    return id
+  }
+
+  const 造文件 = (相对: string, 内容 = "主叫,被叫\n138,139\n") => {
+    const 绝对 = path.join(项目根, ...相对.split("/"))
+    mkdirSync(path.dirname(绝对), { recursive: true })
+    writeFileSync(绝对, 内容)
+  }
+
+  it.live(
+    "单文件改名 ⇒ 材料行跟到新路径（状态还是已解析），旧路径不再有它",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料/话单.csv")
+        yield* Effect.promise(() => 种已解析材料("资料/话单.csv"))
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料/话单.csv", name: "话单-改.csv" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        expect(行们.find((row) => row.path === "资料/话单-改.csv")?.status).toBe("已解析")
+        expect(行们.some((row) => row.path === "资料/话单.csv")).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "目录改名 ⇒ 整棵前缀一起迁（子目录里的材料也在），旧前缀一条不剩",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料/a.csv")
+        造文件("资料/子/b.csv")
+        yield* Effect.promise(() => 种已解析材料("资料/a.csv"))
+        yield* Effect.promise(() => 种已解析材料("资料/子/b.csv"))
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料", name: "新目录" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        expect(行们.find((row) => row.path === "新目录/a.csv")?.status).toBe("已解析")
+        expect(行们.find((row) => row.path === "新目录/子/b.csv")?.status).toBe("已解析")
+        expect(行们.some((row) => row.path.startsWith("资料/"))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "移动（move 分支）⇒ 材料行跟到新路径；对照：复制（copy）不搬材料行",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料/a.csv")
+        mkdirSync(path.join(项目根, "备份"), { recursive: true })
+        yield* Effect.promise(() => 种已解析材料("资料/a.csv"))
+
+        const 移动 = yield* send(ALICE, 出口.move, { path: "资料/a.csv", dir: "备份" }, ALPHA)
+        expect(移动.status).toBe(200)
+        let 行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        expect(行们.find((row) => row.path === "备份/a.csv")?.status).toBe("已解析")
+        expect(行们.some((row) => row.path === "资料/a.csv")).toBe(false)
+
+        // copy：盘上多一份，但材料行仍只认原件（复制件没有材料行）。
+        const 复制 = yield* send(ALICE, 出口.copy, { path: "备份/a.csv", dir: "" }, ALPHA)
+        expect(复制.status).toBe(200)
+        行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        expect(行们.some((row) => row.path === "a.csv")).toBe(false)
+        expect(行们.filter((row) => row.path === "备份/a.csv")).toHaveLength(1)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "旧路径段含 astral 字符（emoji）的目录改名 ⇒ 材料整棵迁到新前缀，旧路径一条不剩",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        // `资料📁` 在 JS 里是 4 个 UTF-16 码元、在 PostgreSQL 里是 3 个字符。拿 JS 的 `.length`
+        // 去喂 `left/substring`，前缀判据恒不中（静默漏迁）、子路径还会丢分隔符。
+        造文件("资料📁/话单.csv")
+        造文件("资料📁/子/b.csv")
+        yield* Effect.promise(() => 种已解析材料("资料📁/话单.csv"))
+        yield* Effect.promise(() => 种已解析材料("资料📁/子/b.csv"))
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料📁", name: "新📁" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        // 直接命中分支（`path = 旧`）。
+        expect(行们.find((row) => row.path === "新📁/话单.csv")?.status).toBe("已解析")
+        // 前缀分支（`substring`）——只修 WHERE 不修 substring 会得到「新📁子/b.csv」。
+        expect(行们.find((row) => row.path === "新📁/子/b.csv")?.status).toBe("已解析")
+        expect(行们.some((row) => row.path.startsWith("资料📁"))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "旧路径段含 astral 字符（emoji）时，排队作业的 source_path 同步迁",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料📁/a.csv")
+        const 沙箱项目 = `${ALICE.id}/${ALPHA}`
+        const 排队 = yield* Effect.promise(() =>
+          enqueueMaterial(库(), {
+            projectId: ALPHA,
+            path: "资料📁/a.csv",
+            sourcePath: `${沙箱项目}/资料📁/a.csv`,
+            fileName: "a.csv",
+            fingerprint: `fp-${crypto.randomUUID()}`,
+          }),
+        )
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料📁", name: "新📁" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 作业行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select source_path from auth.case_ingest_job
+               where project_id = ${ALPHA} and material_id = ${排队.materialId}
+            `),
+          ),
+        )
+        expect(作业行[0]?.source_path).toBe(`${沙箱项目}/新📁/a.csv`)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "前缀边界：改名「资料」不得碰「资料2」里的材料（分隔符是判据的一部分）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料/a.csv")
+        造文件("资料2/b.csv")
+        yield* Effect.promise(() => 种已解析材料("资料/a.csv"))
+        yield* Effect.promise(() => 种已解析材料("资料2/b.csv"))
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料", name: "新资料" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 行们 = yield* Effect.promise(() => 材料视图(库(), ALPHA))
+        expect(行们.find((row) => row.path === "新资料/a.csv")?.status).toBe("已解析")
+        // 没有分隔符判据时，`资料2/b.csv` 会被改写成 `新资料2/b.csv`（静默改错行）。
+        expect(行们.find((row) => row.path === "资料2/b.csv")?.status).toBe("已解析")
+        expect(行们.some((row) => row.path === "新资料2/b.csv")).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "排队中的作业跟着改 source_path；运行中的作业保持不变（它已经把旧路径读进内存）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        造文件("资料/a.csv")
+        造文件("资料/b.csv")
+        const 沙箱项目 = `${ALICE.id}/${ALPHA}`
+
+        const 排队 = yield* Effect.promise(() =>
+          enqueueMaterial(库(), {
+            projectId: ALPHA,
+            path: "资料/a.csv",
+            sourcePath: `${沙箱项目}/资料/a.csv`,
+            fileName: "a.csv",
+            fingerprint: `fp-${crypto.randomUUID()}`,
+          }),
+        )
+        const 运行 = yield* Effect.promise(() =>
+          enqueueMaterial(库(), {
+            projectId: ALPHA,
+            path: "资料/b.csv",
+            sourcePath: `${沙箱项目}/资料/b.csv`,
+            fileName: "b.csv",
+            fingerprint: `fp-${crypto.randomUUID()}`,
+          }),
+        )
+        // 「运行中」由 worker 认领才有；这里直接把那一行改到那个状态（只改状态，不改路径）。
+        yield* Effect.promise(() =>
+          库().execute(sql`
+            update auth.case_ingest_job set status = '运行中'
+             where project_id = ${ALPHA} and material_id = ${运行.materialId}
+          `),
+        )
+
+        const response = yield* send(ALICE, 出口.rename, { path: "资料/a.csv", name: "a-改.csv" }, ALPHA)
+        expect(response.status).toBe(200)
+
+        const 排队行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select source_path from auth.case_ingest_job
+               where project_id = ${ALPHA} and material_id = ${排队.materialId}
+            `),
+          ),
+        )
+        expect(排队行[0]?.source_path).toBe(`${沙箱项目}/资料/a-改.csv`)
+
+        const 运行行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select source_path from auth.case_ingest_job
+               where project_id = ${ALPHA} and material_id = ${运行.materialId}
+            `),
+          ),
+        )
+        expect(运行行[0]?.source_path).toBe(`${沙箱项目}/资料/b.csv`)
+      }),
+    30_000,
+  )
+})

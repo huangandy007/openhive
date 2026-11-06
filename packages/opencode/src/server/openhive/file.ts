@@ -157,7 +157,7 @@ import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { enqueueMaterial } from "./case-ingest"
 import { 可解析表格 } from "./case-parseable"
-import type { Queryable } from "./case-store"
+import { 迁移材料路径, type Queryable } from "./case-store"
 import { OpenhivePg } from "./pg"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
@@ -398,15 +398,15 @@ export const routes = HttpRouter.use((router) =>
       ),
     }
 
-    yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, "copy"))
-    yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, "move"))
+    yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, pg, "copy"))
+    yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, pg, "move"))
     yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root, pg))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
     // 2026-10-12：读**前**问一句大小（前端闸门，表格 5 MB / 其余 10 MB）。
     yield* router.add("GET", PATH.stat, (request) => handleStat(request, root))
     // T018 的三项。落在**同一个模块**里 ⇒ `server.ts` 一行不动（先例是 `archive.ts`）。
     yield* router.add("POST", PATH.create, (request) => handleCreate(request, root))
-    yield* router.add("POST", PATH.rename, (request) => handleRename(request, root))
+    yield* router.add("POST", PATH.rename, (request) => handleRename(request, root, pg))
     yield* router.add("POST", PATH.remove, (request) => handleRemove(request, root))
     // 2026-10-12（第九个出口）：把中栏改过的正文存回盘上（同属 T018 那一族，见 `handleWrite`）。
     yield* router.add("POST", PATH.write, (request) => handleWrite(request, root))
@@ -588,10 +588,55 @@ const gate = (
     return directory
   })
 
+/**
+ * 项目目录 → `(projectId, 作业目录前缀)`；形状与 `入队表格材料` 用的是同一条判据：
+ * 沙箱根相对**恰好两层**。算不出就不迁库——文件已经搬走了，不拿猜测去改别人的材料行。
+ */
+function 项目标识(root: string, project: string): { projectId: string; 作业目录: string } | undefined {
+  const 沙箱相对 = relative(root, project).split(sep).join("/")
+  const 段 = 沙箱相对.split("/")
+  if (段.length !== 2 || 段.some((s) => s === "" || s === "..")) return undefined
+  const projectId = 段[1]
+  return projectId === undefined ? undefined : { projectId, 作业目录: 沙箱相对 }
+}
+
+/**
+ * 落盘成功后的**尽力**库迁移（终审阻塞 2）。
+ *
+ * ⚠️ 失败只记 WARN，**不**把请求改成 500：文件已经搬了，回「操作失败」会让用户以为没搬成。
+ * 失败留给下一次解析自愈（用户右键刷新 / 重新入队时按新路径重新建档）。不许空 `catch {}`
+ * （`#006-28`：吞掉失败等于把它写成「没发生」）。
+ */
+function 同步材料路径(
+  pg: OpenhivePg.Interface,
+  root: string,
+  project: string,
+  source: string,
+  target: string,
+) {
+  const 标识 = 项目标识(root, project)
+  if (标识 === undefined) return Effect.void
+  return Effect.promise(() =>
+    迁移材料路径(pg.pg(), {
+      projectId: 标识.projectId,
+      旧相对: relativePath(project, source),
+      新相对: relativePath(project, target),
+      作业目录: 标识.作业目录,
+    }),
+  ).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("文件已改名/移动，但材料路径迁移失败（下次解析会按新路径自愈）", {
+        error: Cause.prettyErrors(cause).map((e) => e.name),
+      }),
+    ),
+  )
+}
+
 /** 复制 / 移动：同一个形状、只差最后那一句（所以只有一处「目标已存在」的规矩）。 */
 function handleTransfer(
   request: HttpServerRequest.HttpServerRequest,
   root: string,
+  pg: OpenhivePg.Interface,
   mode: "copy" | "move",
 ) {
   return Effect.gen(function* () {
@@ -661,6 +706,8 @@ function handleTransfer(
       yield* Effect.die(failed)
     }
 
+    // 只有 move 会搬走源：copy 之后原件还在原路径，材料行不该跟着复制件跑（复制件没有材料行）。
+    if (mode === "move") yield* 同步材料路径(pg, root, project, source, target)
     return Made(relativePath(project, target))
   })
 }
@@ -696,6 +743,11 @@ export async function 入队表格材料(
      * 再跑一遍），强制重来是**用户显式点的**那一下。
      */
     force?: boolean
+    /**
+     * 置顶优先：只有人工「解析入库」（`case-parse.ts` 的 `action === "入队"`）传。
+     * 上传自动入队不传——系统顺带做的事不该插到用户前面。
+     */
+    置顶?: boolean
   },
 ): Promise<{ materialId: string; enqueued: boolean } | undefined> {
   // 相对输入一律跳过：下面两道 `inside` 闸在相对 base 下是 **fail-open**
@@ -723,6 +775,7 @@ export async function 入队表格材料(
     fingerprint: Hash.sha256(Buffer.from(input.bytes)),
     by: input.by,
     ...(input.force === true ? { force: true } : {}),
+    ...(input.置顶 === true ? { 置顶: true } : {}),
   })
 }
 
@@ -1065,7 +1118,7 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, root: string
  *
  * 目录也认（用户裁定「重命名」要用得到文件夹上）：`rename` 对目录是整棵搬走，那是平台语义。
  */
-function handleRename(request: HttpServerRequest.HttpServerRequest, root: string) {
+function handleRename(request: HttpServerRequest.HttpServerRequest, root: string, pg: OpenhivePg.Interface) {
   return Effect.gen(function* () {
     const project = yield* gate(request, root)
     if (typeof project !== "string") return project
@@ -1106,6 +1159,7 @@ function handleRename(request: HttpServerRequest.HttpServerRequest, root: string
       yield* Effect.die(failed)
     }
 
+    yield* 同步材料路径(pg, root, project, source, target)
     return Made(relativePath(project, target))
   })
 }

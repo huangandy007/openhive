@@ -283,6 +283,8 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
           fileName: 读.文件名,
           by: user.value.id,
           ...(action === "重新解析" ? { force: true } : {}),
+          // 人工「解析入库」置顶；「重新解析」与上传自动入队保持 FIFO（终审阻塞 3）。
+          ...(action === "入队" ? { 置顶: true } : {}),
         }),
       ),
     )

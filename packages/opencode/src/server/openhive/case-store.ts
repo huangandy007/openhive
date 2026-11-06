@@ -172,6 +172,76 @@ export async function getMaterialByPath(
   return row ? mapMaterialRow(row) : undefined
 }
 
+export interface 迁移材料路径Input {
+  projectId: string
+  /** 旧的项目内相对路径（`/` 分隔）。文件是整条路径，目录是它的前缀。 */
+  旧相对: string
+  /** 新的项目内相对路径（`/` 分隔），形状与 `case_material.path` 一致。 */
+  新相对: string
+  /**
+   * 作业表 `source_path` 的项目目录前缀（**沙箱根相对**，`/` 分隔，形如 `{userId}/{projectId}`）。
+   * 不给就只迁材料行——调用方算不出这个前缀时宁可不迁，也不猜。
+   */
+  作业目录?: string
+}
+
+/**
+ * 文件在盘上**已经改名 / 移动之后**，把库里的路径一起搬过来（终审阻塞 2）。
+ *
+ * `材料视图` / `getMaterialByPath` 全按 `path` 关联；`case_ingest_job.source_path` 是 worker
+ * 认领后读盘的副本。只搬文件不搬库，界面里那份材料会整个消失、排队作业按旧路径读盘失败。
+ *
+ * ## 前缀判据为什么不是 `like`
+ *
+ * `%` / `_` 在 `like` 里是通配符，文件名里完全可能合法出现；转义一遍只会多一处会漏的判据。
+ * 这里用 `path = 旧相对`（单文件）或 `left(path, n) = 旧相对 || '/'`（目录下的条目）——
+ * **必须带分隔符**：光判 `left(path, length(旧相对)) = 旧相对` 会把 `资料2/…` 当成 `资料` 的
+ * 子项（`资料2` 的前缀就是 `资料`），一次改名顺手改掉无关材料。
+ *
+ * ## 长度必须用 SQL 的 `char_length`，不能用 JS 的 `.length`
+ *
+ * PostgreSQL 的 `left` / `substring` 数的是**字符**，JS 的 `String.length` 数的是 UTF-16
+ * **码元**。路径段里有 emoji / CJK 扩展 B 这类 astral 字符时（`资料📁`：JS 4、PG 3），
+ * 拿 `.length + 1` 去比前缀恒不中 ⇒ UPDATE 影响 0 行、**静默漏迁**；`substring` 那头还会
+ * 错位丢分隔符。两处都用 `char_length(${路径})`（仍是参数，不拼串）。
+ *
+ * ## 只迁「排队中」的作业
+ *
+ * 运行中的作业已经把 `source_path` 读进内存，改库对它无效；它会按旧路径失败并落「有问题」
+ * （缺口：用户看到一次失败，重试即可自愈）。改它反而会在事后留下一条与失败原因不符的路径。
+ */
+export async function 迁移材料路径(db: Queryable, input: 迁移材料路径Input): Promise<void> {
+  const 旧 = input.旧相对
+  const 新 = input.新相对
+  const 旧作业 = input.作业目录 === undefined ? undefined : `${input.作业目录}/${旧}`
+  const 新作业 = input.作业目录 === undefined ? undefined : `${input.作业目录}/${新}`
+
+  await inTransaction(db, async (tx) => {
+    await tx.execute(sql`
+      update auth.case_material
+         set path = case
+           when path = ${旧} then ${新}
+           else ${新} || substring(path from char_length(${旧}) + 1)
+         end
+       where project_id = ${input.projectId}
+         and (path = ${旧} or left(path, char_length(${旧}) + 1) = ${`${旧}/`})
+    `)
+
+    if (旧作业 !== undefined && 新作业 !== undefined) {
+      await tx.execute(sql`
+        update auth.case_ingest_job
+           set source_path = case
+             when source_path = ${旧作业} then ${新作业}
+             else ${新作业} || substring(source_path from char_length(${旧作业}) + 1)
+           end
+         where project_id = ${input.projectId}
+           and status = '排队中'
+           and (source_path = ${旧作业} or left(source_path, char_length(${旧作业}) + 1) = ${`${旧作业}/`})
+      `)
+    }
+  })
+}
+
 export interface ApplyParseActionInput {
   projectId: string
   materialId: string

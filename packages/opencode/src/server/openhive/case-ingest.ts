@@ -50,6 +50,12 @@ export interface EnqueueInput {
   by?: string
   /** 强制重解析：已解析的材料也重新排队。 */
   force?: boolean
+  /**
+   * 置顶优先：只给**人工点「解析入库」**那一条路（设计 `design.md:498`「强制入队，置顶优先」）。
+   *
+   * 上传自动入队与「重新解析」保持 FIFO——前者是系统顺带做的，后者是重跑，都不该插队。
+   */
+  置顶?: boolean
 }
 
 export interface EnqueueResult {
@@ -99,13 +105,22 @@ export async function enqueueMaterial(db: Queryable, input: EnqueueInput): Promi
   // ⚠️ 两步**必须同一个事务**（复审 I2）：只推状态而作业插入失败时，材料停在「排队中」、
   // 队列里却没有作业，而「排队中」再入队直接返回 false —— 永远不自愈。
   // `createMaterial` 留在事务外：它幂等，失败时材料是「未入队」，重拖能自愈。
+  // 置顶 = 排到本项目**当前最老那条**排队作业之前 1 秒（取不到就 now - 1）。
+  // `claimNextJob` 按 `(queued_at, id)` 取最老一条，所以这个值天然排到队首。
+  // 用时间戳而不是负数 / 0：列是秒级整数，留出常规值的空间，也让 `queueAhead` 的
+  // `(queued_at, id)` 比较不需要第二种判据。
+  const 入队时刻 =
+    input.置顶 === true
+      ? sql`coalesce((select min(queued_at) from auth.case_ingest_job where project_id = ${input.projectId} and status = '排队中'), ${nowSeconds()}) - 1`
+      : sql`${nowSeconds()}`
+
   await inTransaction(db, async (tx) => {
     await applyParseAction(tx, { projectId: input.projectId, materialId, action, by: input.by })
     await tx.execute(sql`
       insert into auth.case_ingest_job
         (id, project_id, material_id, source_path, status, attempts, queued_by, queued_at)
       values (${crypto.randomUUID()}, ${input.projectId}, ${materialId}, ${input.sourcePath},
-              '排队中', 0, ${input.by ?? null}, ${nowSeconds()})
+              '排队中', 0, ${input.by ?? null}, ${入队时刻})
     `)
   })
   return { materialId, enqueued: true }

@@ -600,3 +600,71 @@ async function 读第一行(projectId: string, materialId: string) {
   const extras = typeof row.extras === "string" ? JSON.parse(row.extras) : row.extras
   return { caller: row.caller, extras }
 }
+
+/**
+ * 计划 3 终审阻塞 3：人工「解析入库」要**置顶**（设计 `design.md:498`「强制入队，置顶优先」）。
+ *
+ * `claimNextJob` 按 `(queued_at, id)` 全局取最老一条；人工入队若用 `nowSeconds()`，就会排在
+ * 所有已排队作业后面（实测第 51 位）。这里用**过去时刻**种队首，保证 FIFO 对照与置顶判据
+ * 在变异下都能稳定地红/绿（同一秒内多个作业撞 `queued_at` 会让 `id` 的随机序决定胜负）。
+ */
+describe("人工入库置顶（设计：强制入队，置顶优先）", () => {
+  const 秒 = () => Math.floor(Date.now() / 1000)
+
+  /** 清掉遗留的排队行：`claimNextJob` 是全局队列，别的用例留下的队首会盖住本组判据。 */
+  async function 清空队列() {
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+  }
+
+  async function 种一条(projectId: string, name: string, queuedAt: number) {
+    const r = await enqueueMaterial(db(), {
+      projectId,
+      path: name,
+      sourcePath: `${projectId}/${name}`,
+      fileName: name,
+      fingerprint: `fp-置顶-${crypto.randomUUID()}`,
+    })
+    await db().execute(
+      sql`update auth.case_ingest_job set queued_at = ${queuedAt} where project_id = ${projectId} and material_id = ${r.materialId}`,
+    )
+    return r
+  }
+
+  test("人工「解析入库」置顶：排在同项目已有三条作业之前", async () => {
+    await 清空队列()
+    const 项目 = "pq-置顶"
+    await 种一条(项目, "先1.xlsx", 秒() - 10)
+    await 种一条(项目, "先2.xlsx", 秒() - 9)
+    await 种一条(项目, "先3.xlsx", 秒() - 8)
+
+    const 人工 = await enqueueMaterial(db(), {
+      projectId: 项目,
+      path: "人工.xlsx",
+      sourcePath: `${项目}/人工.xlsx`,
+      fileName: "人工.xlsx",
+      fingerprint: "fp-置顶-人工",
+      置顶: true,
+    })
+
+    const 下一条 = await claimNextJob(db())
+    expect(下一条?.materialId).toBe(人工.materialId)
+  })
+
+  test("对照：不传置顶（上传自动入队口径）⇒ 排在队尾，不是队首", async () => {
+    await 清空队列()
+    const 项目 = "pq-队尾"
+    const 先 = await 种一条(项目, "先.xlsx", 秒() - 10)
+    await 种一条(项目, "后.xlsx", 秒() - 9)
+
+    await enqueueMaterial(db(), {
+      projectId: 项目,
+      path: "自动.xlsx",
+      sourcePath: `${项目}/自动.xlsx`,
+      fileName: "自动.xlsx",
+      fingerprint: "fp-置顶-自动",
+    })
+
+    const 下一条 = await claimNextJob(db())
+    expect(下一条?.materialId).toBe(先.materialId)
+  })
+})
