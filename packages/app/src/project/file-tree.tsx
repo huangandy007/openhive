@@ -13,6 +13,25 @@ import { FileCreateDialog } from "@/project/file-create-dialog"
 import { FileDeleteDialog } from "@/project/file-delete-dialog"
 import type { ArchiveKind } from "@/project/archive-name"
 import { FileOpError } from "./file-op-error"
+import type { 人工解析动作 } from "./case-materials-api"
+import type { CaseMaterials } from "./case-materials-state"
+import { CaseStatusBadge } from "./case-status-badge"
+import {
+  入队不可用原因,
+  取消不可用原因,
+  可解析路径,
+  查看不可用原因,
+  标记形状,
+  汇总全部,
+  目录下待入队,
+  悬停文案,
+  跳过不可用原因,
+  重新解析不可用原因,
+  状态文案,
+  type 亮灯依据,
+  type 目录汇总,
+} from "./case-materials-view"
+import { ParseConfirmDialog } from "./parse-confirm-dialog"
 import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
@@ -68,6 +87,20 @@ export type FileTreeMenuItem =
    * 差别只在它最常用、故由它领头、压到菜单最上。
    */
   | "open"
+  /**
+   * 计划 3 的**解析子菜单触发器**（设计 §8.1）。
+   *
+   * 它不是一次动作，是一个二级菜单的入口：菜单项本身没有 `onSelect`，五个子项才是动作。
+   * `data-action` 落在触发器里那格文字上（不是整个触发器），这样 `菜单文案()` 读到的
+   * 仍然只是「解析」两个字，当前状态在**旁边**另一格。
+   */
+  | "parse"
+  /** 解析子菜单的五个动作。`data-parse-action` 落点，不参与顶层菜单文案的计数。 */
+  | "parse-enqueue"
+  | "parse-reenqueue"
+  | "parse-cancel"
+  | "parse-skip"
+  | "parse-view"
   | "create-file"
   | "create-dir"
   | "rename"
@@ -270,6 +303,20 @@ export interface FileTreeProps {
   onRefresh?: () => void
 
   /**
+   * 【保留的定制 · 同步上游时不要丢】材料解析状态（计划 3，2026-11-06）。
+   *
+   * 与 `enablement` / `catalog` 同一条注入纪律：本组件**只读**它，生产实现在
+   * `pages/layout-new.tsx` 建（`createCaseMaterials()` ＋ `bind(当前项目)`）。省略时
+   * 解析子菜单仍然在，但五项全灰、触发项说「未接入」——不假装能点。
+   */
+  caseMaterials?: CaseMaterials
+  /**
+   * 「查看解析结果」的接收方（计划 7 接中栏）。省略 ⇒ 该项明说「抽取结果面板在后续计划」；
+   * 计划 3 不落中栏接收方，但把接缝先留出来并单测它的亮度。
+   */
+  onReviewParse?: (path: string) => void
+
+  /**
    * 从**桌面**拖一批文件进来（设计 §6.3 拖拽 A 的「拖回」那一半；§6.2 里「上传」的替代入口）。
    *
    * `dir` 与 `onUpload` 同一套规则（目录 ⇒ 它自己、文件 ⇒ 它所在的目录、空白 ⇒ 根）。
@@ -450,6 +497,180 @@ export function FileTree(props: FileTreeProps) {
 
   const 全部 = () => props.paths ?? []
   const 词 = () => keyword().trim().toLowerCase()
+
+  const 材料 = () => props.caseMaterials
+  const 扩展名 = () => 材料()?.parseableExtensions() ?? []
+
+  /** 这份文件在服务端视图里的那一行；没有 = 还没入队（或清单没读到）。 */
+  const 视图行 = (path: string) => 材料()?.rows().find((row) => row.path === path)
+
+  const 依据 = (path: string, 有对象 = true): 亮灯依据 => ({
+    path,
+    isFile: 节点表().get(path)?.type === "file",
+    row: 视图行(path),
+    extensions: 扩展名(),
+    rowsLoaded: 材料()?.loaded() ?? false,
+    接入: 材料() !== undefined,
+    有对象,
+    hasReview: props.onReviewParse !== undefined,
+  })
+
+  /** 行尾标记（只对三种有形状的状态返回；未入队 / 已跳过不画）。 */
+  const 行标记 = (path: string) => {
+    const row = 视图行(path)
+    if (row === undefined || 标记形状(row.status) === undefined) return undefined
+    return { status: row.status, 文案: 悬停文案(row, 扩展名()) }
+  }
+
+  /**
+   * 未标记行的解释（原生 `title`）。
+   *
+   * 为什么未标记的才挂 `title`：有标记的那三种由 `TooltipV2` 负责，同一行再挂一个原生
+   * 气泡就会前后冒出两层（同工具栏那条注释）。
+   */
+  const 行提示 = (path: string) => {
+    const 状态 = 材料()
+    if (状态 === undefined || !状态.loaded()) return undefined
+    const row = 视图行(path)
+    if (row === undefined) {
+      if (节点表().get(path)?.type !== "file") return undefined
+      if (!可解析路径(path, 扩展名())) return undefined
+      return "未入队 · 右键「解析」可入库"
+    }
+    if (标记形状(row.status) !== undefined) return undefined
+    return 悬停文案(row, 扩展名())
+  }
+
+  const 汇总根 = createMemo(() => {
+    const 状态 = 材料()
+    if (状态 === undefined || !状态.loaded()) return undefined
+    const 总 = 汇总全部(全部(), 状态.rows(), 状态.parseableExtensions()).get("")
+    return 总 !== undefined && 总.总数 > 0 ? 总 : undefined
+  })
+
+  const 各目录汇总 = createMemo(() => {
+    const 状态 = 材料()
+    if (状态 === undefined || !状态.loaded()) return new Map<string, 目录汇总>()
+    return 汇总全部(全部(), 状态.rows(), 状态.parseableExtensions())
+  })
+
+  /** 菜单当前作用的那一行（没有对象 ⇒ `undefined`）。 */
+  const 菜单行 = () => {
+    const path = 菜单对象()
+    return path === undefined ? undefined : 视图行(path)
+  }
+  const 菜单是文件 = () => {
+    const path = 菜单对象()
+    return path !== undefined && 节点表().get(path)?.type === "file"
+  }
+  const 菜单依据 = () => 依据(菜单对象() ?? "", 菜单对象() !== undefined)
+
+  /** 单文件 / 单目录的解析动作。回一句字符串 = 没办成（弹窗就地显示）。 */
+  async function 执行解析(path: string, action: 人工解析动作): Promise<string | undefined> {
+    const 状态 = 材料()
+    if (状态 === undefined) return "解析状态还没接上"
+    const 结果 = await 状态.parse(path, action)
+    if (结果.kind === "error") return 结果.message
+    状态.reload()
+    return undefined
+  }
+
+  /** 不需要二次确认的动作：直接发，失败弹 toast，成功也弹一句（用户得知道点上了）。 */
+  function 直接解析(path: string, action: 人工解析动作) {
+    void (async () => {
+      const 话 = await 执行解析(path, action)
+      if (话 !== undefined) {
+        showToast({ variant: "error", title: "解析操作没办成", description: 话 })
+        return
+      }
+      showToast({ variant: "success", title: 成功文案(action) })
+    })()
+  }
+
+  function 确认重新解析(path: string) {
+    void dialog.show(() => (
+      <ParseConfirmDialog
+        标题="重新解析"
+        正文="将重建这份文件的全部事实；你打的 ✓ / ✗ / ？ 标记会保留"
+        确认文案="重新解析"
+        onConfirm={() => 执行解析(path, "重新解析")}
+      />
+    ))
+  }
+
+  /**
+   * 文件夹解析：先确认，再**逐个**发入队。
+   *
+   * ## 为什么没有批量接口
+   *
+   * 逐个而不是批量是**有意的**：服务端一次收一个文件（与上传同一条约定），按文件分开的
+   * 成败在界面上好交代。**不要**为了省几个请求在服务端加批量出口——一旦有了批量接口，
+   * 它迟早会被写成「按状态全集扫」，把「已跳过」也一起翻回来（候选口径在
+   * `目录下待入队` 里，见那里的注释）。批量只活在前端这一层。
+   *
+   * 失败即中断：后面的文件不再发，已发出的不回滚（入队幂等），收尾统一 `reload()`，
+   * 界面按服务端的真实状态刷新，弹窗关闭、toast 说清。
+   *
+   * ## 候选为 0
+   *
+   * 仍然弹窗，但确认键置灰、正文说清为什么——直接 `return` 会让用户以为右键菜单没反应。
+   */
+  function 确认解析文件夹(目录: string) {
+    const 状态 = 材料()
+    if (状态 === undefined) return
+    const 候选 = 目录下待入队(目录, 全部(), 状态.rows(), 扩展名())
+    if (候选.length === 0) {
+      void dialog.show(() => (
+        <ParseConfirmDialog
+          标题="解析这个文件夹"
+          正文="这个文件夹下没有需要入队的表格（已跳过的文件请用它的单文件右键菜单恢复）"
+          确认文案="解析"
+          禁用
+          onConfirm={() => undefined}
+        />
+      ))
+      return
+    }
+    void dialog.show(() => (
+      <ParseConfirmDialog
+        标题="解析这个文件夹"
+        正文={`将解析这个文件夹下的 ${候选.length} 个文件`}
+        确认文案="解析"
+        onConfirm={async () => {
+          let 成 = 0
+          for (const path of 候选) {
+            const 结果 = await 状态.parse(path, "入队")
+            if (结果.kind === "error") {
+              showToast({
+                variant: "error",
+                title: "文件夹解析中断",
+                description: `第 ${成 + 1} 个文件没能入队：${结果.message}`,
+              })
+              break
+            }
+            成 += 1
+          }
+          // 不管成与败都按服务端真实状态重拉：已发出的入队已经生效，界面不能停在旧快照上。
+          状态.reload()
+          if (成 > 0) showToast({ variant: "success", title: `已加入解析队列（${成} 个文件）` })
+          // 永远回 undefined：失败已经用 toast 说清，弹窗不该停在「再点一次会把已入队的重发」的状态
+          return undefined
+        }}
+      />
+    ))
+  }
+
+  function 成功文案(action: 人工解析动作) {
+    switch (action) {
+      case "入队":
+      case "重新解析":
+        return "已加入解析队列"
+      case "取消":
+        return "已取消解析"
+      case "跳过":
+        return "已跳过这份文件"
+    }
+  }
 
   const 全模型 = createMemo(() => buildProjectFileTreeModel(全部()))
   /** 路径 → 节点：给「选中项是目录还是文件」这一问（落点要用）与「全部展开」那一档（要按 `type` 筛出目录）。 */
@@ -719,6 +940,20 @@ export function FileTree(props: FileTreeProps) {
         </For>
       </div>
 
+      {/* 树顶总进度（设计 §8.1）：只统计**会解析的表格**（排除产物），分子是已解析。
+          没有材料状态 / 还没读到 / 一份表格都没有 ⇒ 整块不画，不写 `0 / 0`。 */}
+      <Show when={汇总根()}>
+        {(总) => (
+          <div
+            data-slot="file-tree-parse-summary"
+            class="w-full min-w-0 px-1 text-[12px] text-v2-text-text-muted"
+          >
+            {`已解析 ${总().已解析} / ${总().总数}`}
+            <Show when={总().有问题 > 0}>{` · ${总().有问题} 个有问题`}</Show>
+          </div>
+        )}
+      </Show>
+
       {/* ⚠️ `modal={false}` **不是可选项**：默认 `modal: true` 会让 Kobalte 的 `createFocusScope`
           在菜单开着时锁焦点，并在**菜单卸载那一刻**把焦点**归还**给「打开菜单时容器外的聚焦元素」
           ——也就是被右键的那一行 `div[file-tree-row]`。实测焦点时间线（菜单 ⇒「重命名」）：
@@ -807,6 +1042,7 @@ export function FileTree(props: FileTreeProps) {
                       aria-expanded={
                         row.node.type === "directory" ? (展开(row.node.path) ? "true" : "false") : undefined
                       }
+                      title={行提示(row.node.path)}
                       role="treeitem"
                       // 可聚焦 + `onKeyDown`：鼠标不是唯一的路（`click-events-have-key-events` 要的正是这两样）。
                       // 每一行都可 Tab 到，而不是 roving tabindex——后者若不补齐 ↑↓ 区间导航，键盘用户反而
@@ -876,6 +1112,23 @@ export function FileTree(props: FileTreeProps) {
                           on取消={() => set改名的(undefined)}
                         />
                       </Show>
+                      {/* 目录汇总：`3/12`，只算会解析的表格。**读的是全量清单**，不是可见行
+                          ⇒ 折叠 / 搜索时也不会少算（用户要求）。 */}
+                      <Show when={row.node.type === "directory" ? 各目录汇总().get(row.node.path) : undefined}>
+                        {(汇) => (
+                          <span
+                            data-slot="file-tree-dir-summary"
+                            class="shrink-0 text-[12px] tabular-nums text-v2-text-text-faint"
+                          >
+                            {`${汇().已解析}/${汇().总数}`}
+                          </span>
+                        )}
+                      </Show>
+                      {/* 行尾状态标记：只对排队中 / 解析中 / 已解析 / 有问题画；未入队与已跳过
+                          靠行上的 `title` 解释（见 `行提示`）。 */}
+                      <Show when={行标记(row.node.path)}>
+                        {(标记) => <CaseStatusBadge status={标记().status} 文案={标记().文案} />}
+                      </Show>
                       {/* 重命名失败的话落在**这一行**上（spec §3：失败回到发起它的那个面）。
                           ⚠️ 它是行的**子节点**（不是行的兄弟）——行的 `role="treeitem"` 里允许任意内容，
                           摆在 `role="tree"` 下当一个无角色的 `<div>` 则是无效的 ARIA 结构。
@@ -893,8 +1146,9 @@ export function FileTree(props: FileTreeProps) {
         </ContextMenu.Trigger>
 
         {/* 设计 §6.2 的那张表——十项、四组、组间一个分隔符（顺序即表里的行序），
-            最前接「打开」（2026-10-12 加的**第一组**），末尾再接本仓自己的一组两项
-            （`copy-path` / `refresh`）——共六组十三项。 */}
+            最前接「打开」（2026-10-12 加的**第一组**），紧随其后是计划 3 的「解析」子菜单
+            （2026-11-06，自成一组），末尾再接本仓自己的一组两项
+            （`copy-path` / `refresh`）——共七组十五项。 */}
         <ContextMenu.Portal>
           {/* ⚠️ `excludedElements={[]}` **不是可选的**（用户第 4 条：左键点菜单以外的地方要收掉）。
               Kobalte 的 `DismissableLayer` 默认把**触发器**排除在「外面」之外
@@ -916,6 +1170,78 @@ export function FileTree(props: FileTreeProps) {
               禁用={要文件(props.onOpen)}
               onSelect={() => props.onOpen?.(菜单对象() ?? "")}
             />
+            <ContextMenu.Separator />
+            {/* 计划 3（设计 §8.1）：解析子菜单。它自成一组，紧跟「打开」——两者都是用户
+                对一份文件最常做的第一件事，且都不直接改盘（解析改的是库与作业队列）。 */}
+            <ContextMenu.Sub>
+              <ContextMenu.SubTrigger class="flex w-full items-center gap-2">
+                <span data-action="parse" class="flex-1 text-left">
+                  解析
+                </span>
+                <span
+                  data-slot="file-tree-parse-menu-status"
+                  class="shrink-0 text-[12px] text-v2-text-text-faint"
+                >
+                  {状态文案({
+                    row: 菜单行(),
+                    isFile: 菜单是文件(),
+                    loaded: 材料()?.loaded() ?? false,
+                    接入: 材料() !== undefined,
+                    有对象: 菜单对象() !== undefined,
+                  })}
+                </span>
+                <Icon name="chevron-right" size="small" />
+              </ContextMenu.SubTrigger>
+              <ContextMenu.SubContent>
+                <子菜单项
+                  action="parse-enqueue"
+                  文案="解析入库"
+                  原因={入队不可用原因(菜单依据())}
+                  onSelect={() => {
+                    const path = 菜单对象()
+                    if (path === undefined) return
+                    if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
+                    else 直接解析(path, "入队")
+                  }}
+                />
+                <子菜单项
+                  action="parse-reenqueue"
+                  文案="重新解析"
+                  原因={重新解析不可用原因(菜单依据())}
+                  onSelect={() => {
+                    const path = 菜单对象()
+                    if (path !== undefined) 确认重新解析(path)
+                  }}
+                />
+                <子菜单项
+                  action="parse-cancel"
+                  文案="取消解析"
+                  原因={取消不可用原因(菜单依据())}
+                  onSelect={() => {
+                    const path = 菜单对象()
+                    if (path !== undefined) 直接解析(path, "取消")
+                  }}
+                />
+                <子菜单项
+                  action="parse-skip"
+                  文案="跳过解析"
+                  原因={跳过不可用原因(菜单依据())}
+                  onSelect={() => {
+                    const path = 菜单对象()
+                    if (path !== undefined) 直接解析(path, "跳过")
+                  }}
+                />
+                <子菜单项
+                  action="parse-view"
+                  文案="查看解析结果"
+                  原因={查看不可用原因(菜单依据())}
+                  onSelect={() => {
+                    const path = 菜单对象()
+                    if (path !== undefined) props.onReviewParse?.(path)
+                  }}
+                />
+              </ContextMenu.SubContent>
+            </ContextMenu.Sub>
             <ContextMenu.Separator />
             {/* 第二组：同工具栏「＋」 */}
             <菜单项
@@ -1380,6 +1706,49 @@ function 菜单项(props: {
   return (
     <ContextMenu.Item data-action={props.action} disabled={props.禁用} onSelect={props.onSelect}>
       <ContextMenu.ItemLabel>{props.文案}</ContextMenu.ItemLabel>
+    </ContextMenu.Item>
+  )
+}
+
+/**
+ * 解析子菜单的一项。
+ *
+ * ⚠️ `data-action` **不**落在这一项上：顶层菜单的 `菜单动作()` 用 `[data-action]` 数项，
+ * 子菜单展开时会把它一起数进去。这里用 `data-parse-action`；触发器的文字另挂
+ * `data-action="parse"`（只有那一格参与顶层计数）。
+ *
+ * ⚠️ 禁用原因写成**看得见的一行字**，不是原生 `title`：Kobalte 的禁用项带
+ * `pointer-events: none`，指针悬停根本到不了它，`title` 永远不弹（实测同 `#005-30` 族）。
+ *
+ * ⚠️ `disabled` 交给 Kobalte：它落 `aria-disabled="true"`，并按 Kobalte 的既有行为把该项
+ * 从菜单的键盘导航 / Tab 焦点序列里跳过（不自造第二套焦点管理）。测试断言的是
+ * `aria-disabled`；真浏览器里的键盘走查归真栈验收（已知缺口 8）。
+ */
+function 子菜单项(props: {
+  action: "parse-enqueue" | "parse-reenqueue" | "parse-cancel" | "parse-skip" | "parse-view"
+  文案: string
+  原因: string | undefined
+  onSelect: () => void
+}) {
+  return (
+    <ContextMenu.Item
+      data-parse-action={props.action}
+      disabled={props.原因 !== undefined}
+      onSelect={props.onSelect}
+    >
+      <ContextMenu.ItemLabel class="flex w-full items-center gap-2">
+        <span class="flex-1">{props.文案}</span>
+        <Show when={props.原因}>
+          {(原因) => (
+            <span
+              data-slot="file-tree-parse-reason"
+              class="max-w-[11rem] truncate text-[12px] text-v2-text-text-faint"
+            >
+              {原因()}
+            </span>
+          )}
+        </Show>
+      </ContextMenu.ItemLabel>
     </ContextMenu.Item>
   )
 }

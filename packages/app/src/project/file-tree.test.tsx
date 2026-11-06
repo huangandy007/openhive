@@ -5,6 +5,7 @@ import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { ToastRegion } from "@/utils/toast"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
+import { 假材料状态, 视图行 } from "./case-materials.test-support"
 
 /**
  * 挂一棵树——**外面套着 `DialogProvider`**（2026-10-11 起）。
@@ -1641,13 +1642,15 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     describe("项齐备（设计 §6.2 的四组 ＋ 本仓自己的一组）", () => {
-      test("十四个动作齐备，顺序即设计表里的四行、外加本仓最前与最后那两组", () => {
+      test("十五个动作齐备，顺序即设计表里的四行、外加本仓最前与最后那两组、以及计划 3 的解析子菜单", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
         expect(菜单动作()).toEqual([
           // 第一组（2026-10-12）：打开——看一眼、交给中栏，压在菜单最上
           "open",
+          // 计划 3：解析（二级菜单的入口；自成一组，紧跟「打开」）
+          "parse",
           // 第二组：新建文件 / 新建文件夹
           "create-file",
           "create-dir",
@@ -1673,19 +1676,20 @@ describe("FileTree 文件树（FR-005）", () => {
         ])
       })
 
-      test("六组之间有五个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
+      test("七组之间有六个分隔符——分组是画出来的，不是要用户从顺序里猜", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
-        expect(分隔符数()).toBe(5)
+        expect(分隔符数()).toBe(6)
       })
 
-      test("每一项的文案就是设计表里那十个词，外加本仓的「打开」「上传文件夹」与那两个", () => {
+      test("每一项的文案就是设计表里那十个词，外加本仓的「打开」「上传文件夹」那两项，以及「解析」", () => {
         const host = mount(() => <FileTree paths={树("a.md")} />)
         右键(行按名(host, "a.md"))
 
         expect(菜单文案()).toEqual([
           "打开",
+          "解析",
           "新建文件",
           "新建文件夹",
           "重命名",
@@ -1716,6 +1720,8 @@ describe("FileTree 文件树（FR-005）", () => {
         右键(行按名(host, "a.md"))
 
         expect(菜单分组().at(-1)).toEqual(["copy-path", "refresh"])
+        // 计划 3：「解析」自成一组，压在「打开」之后、「新建」之前
+        expect(菜单分组()[1]).toEqual(["parse"])
         // 反证：`copy-path` **不再**与 `copy` 同组（它原先紧跟 `copy`，理由是「两个『复制』排一起
         // 好分辨」）。少了这一条，一个「只把 `refresh` 追加在末尾、`copy-path` 留在原地」的实现
         // 照样绿——而那没做到用户要的「两项同一个分组」。
@@ -2950,6 +2956,299 @@ describe("FileTree 文件树（FR-005）", () => {
       拖入(行按路径(host, "资料"), "drop", { files: [一件("甲.csv")] })
 
       expect(收到).toEqual([[["甲.csv"], "资料"]])
+    })
+  })
+
+  describe("解析子菜单（计划 3 · 设计 §8.1）", () => {
+    const 子菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-sub-content']")
+    const 子项 = (action: string) => 子菜单内容()?.querySelector<HTMLElement>(`[data-parse-action='${action}']`)
+    const 子项禁用 = (action: string) => 子项(action)?.getAttribute("aria-disabled") === "true"
+    const 子项原因 = (action: string) =>
+      子项(action)?.querySelector<HTMLElement>("[data-slot='file-tree-parse-reason']")?.textContent?.trim()
+    const 触发 = () => 菜单内容()?.querySelector<HTMLElement>("[data-slot='context-menu-sub-trigger']")
+    const 触发状态 = () =>
+      触发()?.querySelector<HTMLElement>("[data-slot='file-tree-parse-menu-status']")?.textContent?.trim()
+
+    /** 打开解析子菜单：`pointerenter` ＋ `ArrowRight` 两条路都派，谁先开都行。 */
+    const 开子菜单 = async () => {
+      const el = 触发()
+      if (!el) throw new Error("没有解析子菜单触发器——这条用例的前提不成立（#004-14）")
+      el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerId: 1 }))
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }))
+      const 开了 = await 等到(() => 子菜单内容() !== null)
+      if (!开了) throw new Error("解析子菜单没打开——前提不成立")
+      return 子菜单内容()!
+    }
+
+    const 点子项 = (action: string) => {
+      const el = 子项(action)
+      if (!el) throw new Error(`没有子菜单项 ${action}`)
+      for (const 类型 of ["pointerdown", "pointerup"])
+        el.dispatchEvent(
+          new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
+        )
+    }
+
+    const 挂带材料 = (
+      paths: readonly string[],
+      options: Parameters<typeof 假材料状态>[0] = {},
+      onReviewParse?: (path: string) => void,
+    ) => {
+      const 假 = 假材料状态(options)
+      const host = mount(() => <FileTree paths={paths} caseMaterials={假.状态} onReviewParse={onReviewParse} />)
+      return { host, 假 }
+    }
+
+    test("「解析」自成一组，紧跟「打开」之后；触发项右边写当前状态", async () => {
+      const { host } = 挂带材料(["话单.csv"], { rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+
+      expect(菜单分组()[0]).toEqual(["open"])
+      expect(菜单分组()[1]).toEqual(["parse"])
+      expect(触发状态()).toBe("已解析")
+    })
+
+    test("已解析：只有「重新解析」「查看」亮；「解析入库」的灰写着为什么", async () => {
+      const { host } = 挂带材料(["话单.csv"], { rows: [视图行({ path: "话单.csv", status: "已解析" })] }, () => {})
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项原因("parse-enqueue")).toBe("已经解析过了，要重来请用「重新解析」")
+      expect(子项禁用("parse-reenqueue")).toBe(false)
+      expect(子项禁用("parse-cancel")).toBe(true)
+      expect(子项禁用("parse-skip")).toBe(true)
+      expect(子项禁用("parse-view")).toBe(false)
+    })
+
+    test("未入队表格：「解析入库」「跳过」亮；没有查看接收方时明说后续计划", async () => {
+      const { host } = 挂带材料(["话单.csv"])
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      expect(子项禁用("parse-skip")).toBe(false)
+      expect(子项禁用("parse-view")).toBe(true)
+      expect(子项原因("parse-view")).toBe("抽取结果面板在后续计划")
+    })
+
+    test("非表格：入队灰（后续计划），跳过仍然亮", async () => {
+      const { host } = 挂带材料(["笔录.pdf"], { rows: [视图行({ path: "笔录.pdf", parseable: false })] })
+      右键(行按路径(host, "笔录.pdf"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项原因("parse-enqueue")).toBe("该类型的解析在后续计划")
+      expect(子项禁用("parse-skip")).toBe(false)
+    })
+
+    test("产物：五项全灰，入队与跳过都说「产物只登记不解析」", async () => {
+      const { host } = 挂带材料(["分析/结论.xlsx"], {
+        rows: [视图行({ path: "分析/结论.xlsx", kind: "产物" })],
+      })
+      // 默认全收缩 ⇒ 深层行不在树上；引用它的用例自己立前提（本文件 `行按路径` 的规矩）。
+      动作(host, "expand-all")?.click()
+      右键(行按路径(host, "分析/结论.xlsx"))
+      await 歇一拍()
+      await 开子菜单()
+
+      for (const action of ["parse-enqueue", "parse-reenqueue", "parse-cancel", "parse-skip", "parse-view"]) {
+        expect(子项禁用(action), action).toBe(true)
+      }
+      expect(子项原因("parse-enqueue")).toBe("产物只登记不解析")
+      expect(子项原因("parse-skip")).toBe("产物只登记不解析")
+    })
+
+    test("排队中：只有「取消解析」亮；触发项说「排队中」", async () => {
+      const { host } = 挂带材料(["话单.csv"], { rows: [视图行({ path: "话单.csv", status: "排队中" })] })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(触发状态()).toBe("排队中")
+      expect(子项禁用("parse-cancel")).toBe(false)
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项禁用("parse-skip")).toBe(true)
+    })
+
+    test("点「跳过解析」直接发请求（不弹确认），成功后重拉", async () => {
+      const { host, 假 } = 挂带材料(["话单.csv"])
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-skip")
+      await 歇一拍()
+
+      expect(假.记.解析).toEqual([{ path: "话单.csv", action: "跳过" }])
+      expect(假.记.重拉).toBe(1)
+    })
+
+    test("点「重新解析」先弹确认；确认后才发请求，文案写明标记会保留", async () => {
+      const { host, 假 } = 挂带材料(["话单.csv"], { rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-reenqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toContain(
+        "将重建这份文件的全部事实；你打的 ✓ / ✗ / ？ 标记会保留",
+      )
+      expect(假.记.解析).toEqual([])
+
+      document.body
+        .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      await 歇一拍()
+
+      expect(假.记.解析).toEqual([{ path: "话单.csv", action: "重新解析" }])
+      expect(假.记.重拉).toBe(1)
+    })
+
+    test("文件夹：确认文案是「将解析这个文件夹下的 N 个文件」，确认后逐个入队", async () => {
+      // 五个文件里只有两个会被排：a.csv 已解析、跳过.xlsx 已跳过（人的意志，批量不翻）、
+      // 说明.pdf 不是表格。「没行.xlsx」没有材料行 ⇒ 算未入队，必须进候选
+      //（这正是「行不可见也要算对」那一类）。
+      const { host, 假 } = 挂带材料(
+        ["资料/a.csv", "资料/b.xlsx", "资料/跳过.xlsx", "资料/说明.pdf", "资料/没行.xlsx"],
+        {
+          rows: [
+            视图行({ path: "资料/a.csv", status: "已解析" }),
+            视图行({ path: "资料/跳过.xlsx", status: "已跳过" }),
+          ],
+        },
+      )
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
+        "将解析这个文件夹下的 2 个文件",
+      )
+
+      document.body
+        .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      await 歇一拍()
+
+      // 「跳过.xlsx」不在里面：批量不碰已跳过。
+      expect(假.记.解析).toEqual([
+        { path: "资料/b.xlsx", action: "入队" },
+        { path: "资料/没行.xlsx", action: "入队" },
+      ])
+      expect(假.记.重拉).toBe(1)
+    })
+
+    test("文件夹：候选为 0 时仍弹窗，说清「没有需要入队的表格」，确认键置灰", async () => {
+      // 三个文件一个都不该进候选：已跳过（人的意志）、产物、非表格。
+      const { host, 假 } = 挂带材料(["资料/跳过.xlsx", "资料/结论.xlsx", "资料/说明.pdf"], {
+        rows: [
+          视图行({ path: "资料/跳过.xlsx", status: "已跳过" }),
+          视图行({ path: "资料/结论.xlsx", kind: "产物" }),
+        ],
+      })
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+
+      // 菜单项仍然亮：候选为 0 的解释放在弹窗里，不灰在菜单上（灰项的说明用户看不到）。
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
+        "这个文件夹下没有需要入队的表格（已跳过的文件请用它的单文件右键菜单恢复）",
+      )
+      // 确认键置灰：点了也发不出请求（Kobalte 的 disabled 同时把它移出键盘焦点序列）。
+      const 确认键 = document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+      expect(确认键?.hasAttribute("disabled")).toBe(true)
+
+      确认键?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      await 歇一拍()
+      expect(假.记.解析).toEqual([])
+      expect(假.记.重拉).toBe(0)
+    })
+  })
+
+  describe("行尾标记与汇总（计划 3）", () => {
+    const 标记 = (host: HTMLElement, path: string) =>
+      行按路径(host, path).querySelector<HTMLElement>("[data-slot='file-tree-parse-badge']")
+
+    test("已解析的行尾有 ✓；aria-label 就是悬停文案（形状+文字，不只靠颜色）", () => {
+      const 假 = 假材料状态({
+        rows: [视图行({ path: "话单.csv", status: "已解析", factCount: 12, numberCount: 3 })],
+      })
+      const host = mount(() => <FileTree paths={["话单.csv"]} caseMaterials={假.状态} />)
+
+      const 节点 = 标记(host, "话单.csv")
+      expect(节点?.getAttribute("data-shape")).toBe("check")
+      expect(节点?.getAttribute("aria-label")).toBe("已解析 · 12 条事实 · 3 个号码")
+    })
+
+    test("未入队 / 已跳过不画标记，靠行上的 title 解释「能解析 / 系统不解析 / 你跳过的」", () => {
+      const 假 = 假材料状态({
+        rows: [
+          视图行({ path: "跳过.xlsx", status: "已跳过" }),
+          视图行({ path: "笔录.pdf", parseable: false }),
+        ],
+      })
+      const host = mount(() => (
+        <FileTree paths={["话单.csv", "跳过.xlsx", "笔录.pdf"]} caseMaterials={假.状态} />
+      ))
+
+      expect(标记(host, "话单.csv") === null).toBe(true)
+      expect(行按路径(host, "话单.csv").getAttribute("title")).toBe("未入队 · 右键「解析」可入库")
+      expect(标记(host, "跳过.xlsx") === null).toBe(true)
+      expect(行按路径(host, "跳过.xlsx").getAttribute("title")).toBe("已跳过 · 你手动跳过了解析")
+      expect(行按路径(host, "笔录.pdf").getAttribute("title")).toBe("未入队 · 系统不解析这类文件")
+    })
+
+    test("目录行的 3/12 用**全量清单**算：折叠时子项不可见，汇总仍然对", () => {
+      const 假 = 假材料状态({
+        rows: [
+          视图行({ path: "资料/a.csv", status: "已解析" }),
+          视图行({ path: "资料/b.xlsx", status: "有问题" }),
+        ],
+      })
+      const host = mount(() => (
+        <FileTree paths={["资料/a.csv", "资料/b.xlsx", "资料/说明.pdf", "资料/c.xlsx"]} caseMaterials={假.状态} />
+      ))
+
+      // 默认全收缩：子项一个都看不见，但目录汇总必须已经算全
+      expect(路径(host)).not.toContain("资料/a.csv")
+      expect(文本(host, "file-tree-dir-summary")).toBe("1/3")
+
+      动作(host, "expand-all")?.click()
+      expect(路径(host)).toContain("资料/a.csv")
+      expect(文本(host, "file-tree-dir-summary")).toBe("1/3")
+    })
+
+    test("树顶总进度：已解析 X / Y · N 个有问题；一份表格都没有时不画", () => {
+      const 假 = 假材料状态({
+        rows: [
+          视图行({ path: "a.csv", status: "已解析" }),
+          视图行({ path: "b.xlsx", status: "有问题" }),
+        ],
+      })
+      const host = mount(() => <FileTree paths={["a.csv", "b.xlsx", "说明.pdf"]} caseMaterials={假.状态} />)
+      expect(文本(host, "file-tree-parse-summary")).toBe("已解析 1 / 2 · 1 个有问题")
+
+      const 空 = 假材料状态({ rows: [] })
+      const 空host = mount(() => <FileTree paths={["说明.pdf"]} caseMaterials={空.状态} />)
+      expect(无槽(空host, "file-tree-parse-summary")).toBe(true)
+    })
+
+    test("没有注入 caseMaterials：标记与汇总一个都不画（注入纪律）", () => {
+      const host = mount(() => <FileTree paths={["a.csv"]} />)
+      expect(无槽(host, "file-tree-parse-summary")).toBe(true)
+      expect(标记(host, "a.csv") === null).toBe(true)
     })
   })
 })
