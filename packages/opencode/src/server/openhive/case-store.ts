@@ -209,7 +209,6 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
   let written = 0
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
     const chunk = rows.slice(i, i + INSERT_CHUNK)
-    if (chunk.length === 0) continue
     const values = chunk.map(
       (row) => sql`(${row.projectId}, ${row.materialId}, ${row.sheet}, ${row.rowNo},
                     ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},

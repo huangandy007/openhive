@@ -57,6 +57,40 @@ describe("toFactRows", () => {
     expect(row?.extras).toEqual({ 第1列: "a", 备注: "b", 第3列: "c" })
   })
 
+  test("兜底键与真表头同名 ⇒ 顺延到第一个未占用键，不覆盖（I2）", () => {
+    // 第 3 列的重名「备注」按「第3列」兜底会撞上第 1 列的真表头「第3列」，
+    // 直接写会把 "a" 静默覆盖掉。兜底要从 第3列 起循环找空位。
+    const sheet = 表(["第3列", "备注", "备注"], [["a", "b", "c"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: {} })
+    expect(row?.extras).toEqual({ 第3列: "a", 备注: "b", 第4列: "c" })
+  })
+
+  test("多列映射同一字段 ⇒ 每列按自己的原值判解析，失败列不丢（I3）", () => {
+    const sheet = 表(["甲", "乙"], [["1.00", "bad"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount", 1: "amount" } })
+    expect(row?.amount).toBe("1.00")
+    expect(row?.extras).toEqual({ 乙: "bad" })
+  })
+
+  test("多列映射同一字段且都解析不出 ⇒ 两个原值都进 extras", () => {
+    const sheet = 表(["甲", "乙"], [["bad", "x"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount", 1: "amount" } })
+    expect(row?.amount).toBeNull()
+    expect(row?.extras).toEqual({ 甲: "bad", 乙: "x" })
+  })
+
+  test("mapping 里出现非法字段值 ⇒ 当未映射，原值进 extras（I4）", () => {
+    const sheet = 表(["时长"], [["37"]])
+    const [row] = toFactRows({
+      projectId: "p1",
+      materialId: "m1",
+      sheet,
+      mapping: { 0: "通话时长" } as any,
+    })
+    expect(row?.durationSec).toBeNull()
+    expect(row?.extras).toEqual({ 时长: "37" })
+  })
+
   test("整行都空 ⇒ 不产出行（Excel 常见的尾部空行）", () => {
     const sheet = 表(["主叫号码"], [["13800000000"], ["", ""]])
     expect(toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "caller" } })).toHaveLength(1)
@@ -83,6 +117,20 @@ describe("toFactRows", () => {
     expect(row?.extras).toEqual({ 金额: "1.234", 摘要: "转账" })
   })
 
+  test("已映射的余额列解析不出 ⇒ 原值补进 extras（R23 的 balance 子句）", () => {
+    const sheet = 表(["余额"], [["abc"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "balance" } })
+    expect(row?.balance).toBeNull()
+    expect(row?.extras).toEqual({ 余额: "abc" })
+  })
+
+  test("已映射的时长列解析不出 ⇒ 原值补进 extras（R23 的 durationSec 子句）", () => {
+    const sheet = 表(["时长"], [["1:2"]])
+    const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "durationSec" } })
+    expect(row?.durationSec).toBeNull()
+    expect(row?.extras).toEqual({ 时长: "1:2" })
+  })
+
   test("已映射且解析成功 ⇒ 不进 extras（不重复存两遍）", () => {
     const sheet = 表(["金额"], [["1,234.50"]])
     const [row] = toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: { 0: "amount" } })
@@ -100,6 +148,20 @@ describe("parseAmount", () => {
     expect(parseAmount("1.234")).toBeNull()
     expect(parseAmount("约1000")).toBeNull()
   })
+
+  test("千分位必须分组合法，不能把 1234,56 猜成 123456（I5）", () => {
+    expect(parseAmount("1,234.50")).toBe("1234.50")
+    expect(parseAmount("1,234,567")).toBe("1234567.00")
+    expect(parseAmount("-1,234.50")).toBe("-1234.50")
+    expect(parseAmount("1234,56")).toBeNull()
+    expect(parseAmount("1,23")).toBeNull()
+  })
+
+  test("超出 numeric(18,2) 的整数位 ⇒ null，不炸整块 INSERT（I6）", () => {
+    expect(parseAmount("99999999999999999999.99")).toBeNull()
+    // 边界：16 位整数位（numeric(18,2) 的上限）仍是合法值
+    expect(parseAmount("9999999999999999.99")).toBe("9999999999999999.99")
+  })
 })
 
 describe("parseDuration", () => {
@@ -110,5 +172,10 @@ describe("parseDuration", () => {
     expect(parseDuration("37秒")).toBe(37)
     expect(parseDuration("")).toBeNull()
     expect(parseDuration("不详")).toBeNull()
+  })
+
+  test("超出 int4 上限 ⇒ null，不炸整块 INSERT（I6）", () => {
+    expect(parseDuration("100000000000000000000")).toBeNull()
+    expect(parseDuration("2147483647")).toBe(2147483647)
   })
 })

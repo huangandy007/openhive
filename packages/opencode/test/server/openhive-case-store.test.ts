@@ -303,6 +303,18 @@ describe("明细行", () => {
     expect(JSON.parse(String(got[0]?.extras))).toEqual({ 通话类型: "主叫", 基站: "HZ-01" })
   })
 
+  test("未提供的列落 NULL 而不是空串（钉住 ?? null）", async () => {
+    await insertFactRows(db(), [{ projectId: "p-null", materialId: "m-null", sheet: "S", rowNo: 1, caller: "13800000000" }])
+    const got = rowsOf(
+      await db().execute(sql`
+        select callee, amount from auth.case_fact_row
+        where project_id = 'p-null' and material_id = 'm-null' and sheet = 'S' and row_no = 1
+      `),
+    )
+    expect(got[0]?.callee).toBeNull()
+    expect(got[0]?.amount).toBeNull()
+  })
+
   test("分块批量写入：1200 行一次调用，写入数与计数都对", async () => {
     const rows = Array.from({ length: 1200 }, (_, i) => ({
       projectId: "p-batch",

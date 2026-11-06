@@ -44,6 +44,14 @@ describe("detectMapping · 第一层：表头词典", () => {
     expect(r.columns).toEqual({})
     expect(r.unknownColumns).toEqual([0, 1])
   })
+
+  test("「通话分钟」不认——裸数字按秒解释会差 60 倍（R24）", () => {
+    // parseDuration 对裸数字只能按秒解释；表头明说「分钟」时 5 会被落成 5 秒。
+    // 误认比漏认糟：不认该列 ⇒ 原值进 extras，前端可手工修正（计划 3）。
+    const r = detectMapping(["通话分钟"], [["5"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([0])
+  })
 })
 
 describe("detectMapping · 第二层：数据特征", () => {
