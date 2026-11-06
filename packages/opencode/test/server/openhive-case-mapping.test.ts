@@ -216,6 +216,64 @@ describe("单位闸 fail-closed：未列币种与孤立右括号（N2/N3）", ()
   }
 })
 
+describe("非默认币种扫描（第四轮：自然表头不能静默按人民币落库）", () => {
+  // `美元金额` / `USD金额` / `$金额` 这类自然表头，币种写在词典词**前面**，
+  // 单位闸只看末尾 ⇒ 被静默当成人民币金额（USD≈7 倍、JPY≈20 倍量级错）。
+  // 币种与词典词无关，必须无条件扫描。
+  const 不认: [string, string][] = [
+    ["美元金额", "币种在词典词前面"],
+    ["欧元金额", "币种在词典词前面"],
+    ["港币金额", "港币"],
+    ["港元余额", "港元；balance 同闸"],
+    ["日元金额", "日元"],
+    ["英镑金额", "英镑"],
+    ["外币金额", "外币（未指明币种）"],
+    ["原币金额", "原币（未指明币种）"],
+    ["折美元金额", "折美元"],
+    ["USD金额", "ISO 码"],
+    ["$金额", "货币符号"],
+    ["€金额", "货币符号"],
+    ["金额美元金额", "币种夹在中间"],
+  ]
+  for (const [表头, 为什么] of 不认) {
+    test(`${表头} ⇒ 不认（${为什么}），原值留给 extras`, () => {
+      const r = detectMapping([表头], [["5.00"]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    })
+  }
+
+  const 不含词典词: [string, string][] = [
+    ["EUR", "纯 ISO 码"],
+    ["Amt EUR", "英文 ＋ ISO 码"],
+    ["GBP Amount", "币种在前"],
+    ["Amount CHF", "币种在后"],
+  ]
+  for (const [表头, 为什么] of 不含词典词) {
+    test(`${表头} ⇒ 特征层也不认成 amount（${为什么}）`, () => {
+      const r = detectMapping([表头], [["5.00"], ["6.00"]])
+      expect(r.columns).not.toHaveProperty("0")
+      expect(r.unknownColumns).toEqual([0])
+    })
+  }
+
+  const 认: [string, FactField][] = [
+    ["人民币金额", "amount"],
+    ["金额", "amount"],
+    ["交易金额（元）", "amount"],
+    ["金额rmb", "amount"],
+    ["主叫通话时长", "durationSec"],
+    ["通话时长sec", "durationSec"],
+    ["金额（元）", "amount"],
+  ]
+  for (const [表头, field] of 认) {
+    test(`${表头} ⇒ 照旧认成 ${field}（默认币种不受影响）`, () => {
+      const 值 = field === "durationSec" ? "5" : "5.00"
+      expect(detectMapping([表头], [[值]]).columns).toEqual({ 0: field })
+    })
+  }
+})
+
 describe("detectMapping · 第二层：数据特征", () => {
   test("表头不认识，但整列是 yyyy-mm-dd hh:mm:ss ⇒ 认成 startedAt", () => {
     const r = detectMapping(
