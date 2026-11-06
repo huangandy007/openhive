@@ -45,6 +45,13 @@ describe("金额元", () => {
     expect(金额元("(-1200)")).toBeUndefined()
     expect(金额元("（-3,000）")).toBeUndefined()
   })
+  test("币种前缀写在括号里 ⇒ 不认（符号不猜，整条交人工）", () => {
+    // 括号表示负、币种前缀挡在数字前——两种写法叠加时本函数不猜符号，一律 undefined，
+    // 上层据此落「存疑」交人工。这是 Task 6 范围复审的 P11 桩：探针实测的值就是这几条。
+    expect(金额元("（人民币 28万元）")).toBeUndefined()
+    expect(金额元("（ 人民币 ¥ 28万元）")).toBeUndefined()
+    expect(金额元("（ ¥28万元）")).toBeUndefined()
+  })
   test("畸形中文数字 ⇒ undefined（不猜）", () => {
     expect(金额元("万")).toBeUndefined()
     expect(金额元("亿")).toBeUndefined()
