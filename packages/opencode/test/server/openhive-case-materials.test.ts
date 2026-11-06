@@ -606,7 +606,7 @@ describe("POST /openhive/case/parse（取消 / 跳过）", () => {
       expect(行?.queued_by).toBe(我.id)
     }))
 
-  it("已解析的文件不能跳过（409）；未入队的文件不能「重新解析」（409）", () =>
+  it("已解析的文件不能跳过（409 illegal_transition）", () =>
     Effect.gen(function* () {
       yield* Effect.promise(() =>
         种材料({ path: "资料/话单.xlsx", status: "已解析", fingerprint: 文件指纹("资料/话单.xlsx") }),
