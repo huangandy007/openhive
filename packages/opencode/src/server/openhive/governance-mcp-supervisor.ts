@@ -65,10 +65,10 @@ export const RESET_BACKOFF_AFTER_MS = 60_000
 /** SIGTERM 之后等这么久再 SIGKILL（仅 POSIX；win32 的 `taskkill /F` 是立即的）。 */
 export const KILL_GRACE_MS = 5_000
 
-export function parseReadyLine(line: string): number | undefined {
+export function parseReadyLine(line: string, prefix: string = READY_PREFIX): number | undefined {
   const trimmed = line.trim()
-  if (!trimmed.startsWith(READY_PREFIX)) return undefined
-  const rest = trimmed.slice(READY_PREFIX.length).trim()
+  if (!trimmed.startsWith(prefix)) return undefined
+  const rest = trimmed.slice(prefix.length).trim()
   try {
     const value: unknown = JSON.parse(rest)
     if (typeof value !== "object" || value === null || !("port" in value)) return undefined
@@ -219,13 +219,17 @@ export function spawnGovernanceMcp(input: {
   readonly command: readonly string[]
   readonly cwd?: string
   readonly port?: number
+  /** READY 行前缀；默认治理侧。案件 MCP 复用同一套 spawn / 收尾，只换前缀。 */
+  readonly readyPrefix?: string
+  /** 端口环境变量名；默认治理侧。 */
+  readonly portEnv?: string
 }): Launched {
   const child: ChildProcess = spawn(input.command[0]!, input.command.slice(1), {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     env: {
       ...process.env,
       // 首次启动显式给 0（系统分配）：不把父进程里残留的值当成「上次的端口」。
-      [PORT_ENV]: String(input.port ?? 0),
+      [input.portEnv ?? PORT_ENV]: String(input.port ?? 0),
     },
     stdio: ["ignore", "pipe", "pipe"],
     // POSIX 下让子进程当进程组组长，收尾时才能 `kill(-pid)` 打整组。
@@ -248,7 +252,7 @@ export function spawnGovernanceMcp(input: {
     const lines = buffer.split("\n")
     buffer = lines.pop() ?? ""
     for (const line of lines) {
-      const port = parseReadyLine(line)
+      const port = parseReadyLine(line, input.readyPrefix)
       if (port !== undefined) settleReady?.(port)
     }
   })

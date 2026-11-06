@@ -141,6 +141,7 @@ import { OpenhiveGovernanceCategories } from "@/server/openhive/governance-categ
 import { OpenhiveGovernanceAudit } from "@/server/openhive/governance-audit"
 import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-source"
 import { OpenhiveGovernanceMcp } from "@/server/openhive/governance-mcp-supervisor"
+import { OpenhiveCaseMcp } from "@/server/openhive/case-mcp-supervisor"
 import { OpenhiveCaseIngestWorker } from "@/server/openhive/case-ingest-worker"
 import { OpenhiveMcpConfigSync } from "@/server/openhive/mcp-config-sync"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
@@ -537,6 +538,11 @@ export function createRoutes(
     // 没设 `OPENHIVE_ASSET_SERVICE_DIR` 就是无操作（dev / 单测默认不起进程）。
     // 【保留的定制 · 同步上游时不要丢】—— 治理 MCP 单进程形态。
     OpenhiveGovernanceMcp.layer,
+    // openhive 案件情报 MCP 监督器（2026-11-06，计划 6 / Task 6）：同一套进程树与退避，
+    // READY 前缀与端口变量换成案件侧；`PG_*` 不全就是无操作。
+    // 与治理监督器互不依赖，顺序无关。
+    // 【保留的定制 · 同步上游时不要丢】—— 案件知识与情报体系。
+    OpenhiveCaseMcp.layer,
   ).pipe(
     Layer.provide([
       errorLayer,
