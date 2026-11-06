@@ -692,6 +692,11 @@ export async function 入队表格材料(
     by: string
   },
 ): Promise<{ materialId: string; enqueued: boolean } | undefined> {
+  // 两道归属闸：算不出「这个文件属于这个项目」就**不入队**（正是函数注释里那句「不猜」）。
+  // 用既有的 `inside`，它已经挡 `..`、绝对路径与 NUL，且是纯词法判据（目标不必存在）。
+  if (inside(input.root, input.project) === undefined) return undefined
+  if (inside(input.project, input.target) === undefined) return undefined
+
   const 项目相对 = relativePath(input.project, input.target)
   if (!可解析扩展名.some((扩展名) => 项目相对.toLowerCase().endsWith(扩展名))) return undefined
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
@@ -34,8 +34,10 @@ function db() {
   return 库
 }
 
-// 只用相对形态构造，不落盘、不碰文件系统：这个函数只算路径与入队，不读文件。
-const root = "ws"
+// 路径用**绝对**形态构造（函数 JSDoc 的契约就是绝对路径，`handleUpload` 传的也是绝对路径）：
+// `inside()` 的 `base` 是绝对路径，相对 `base` 会让 `resolve(base, input)` 拼到 cwd 上，
+// 归属闸因此失真。不落盘、不碰文件系统：这个函数只算路径与入队，不读文件。
+const root = resolve("ws")
 const project = join(root, "u1", "proj-1")
 const 落点 = (文件: string) => join(project, "材料", 文件)
 const bytes = new Uint8Array([1, 2, 3, 4])
@@ -73,7 +75,12 @@ describe("入队表格材料", () => {
       by: "u1",
     })
     expect(r?.enqueued).toBe(false)
-    const n = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_material`))
+    const n = rowsOf(
+      await db().execute(
+        sql`select count(*)::int as n from auth.case_material
+             where project_id = 'proj-1' and file_name = '话单.xlsx'`,
+      ),
+    )
     expect(Number(n[0]?.n)).toBe(1)
   })
 
@@ -87,8 +94,15 @@ describe("入队表格材料", () => {
       by: "u1",
     })
     expect(r).toBeUndefined()
-    const n = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_material`))
-    expect(Number(n[0]?.n)).toBe(1)
+    // 按文件名过滤而不是全表计数：单跑这一条时全表是空的，全表计数会红成「期望 1、实得 0」，
+    // 与它要验的「这个 .md 没建档」无关。
+    const n = rowsOf(
+      await db().execute(
+        sql`select count(*)::int as n from auth.case_material
+             where project_id = 'proj-1' and file_name = '提请批准逮捕书.md'`,
+      ),
+    )
+    expect(Number(n[0]?.n)).toBe(0)
   })
 
   test("不在一个项目目录里（层数不是两层）⇒ 跳过，不猜项目", async () => {
@@ -118,7 +132,65 @@ describe("入队表格材料", () => {
       by: "u1",
     })
     expect(r).toBeUndefined()
-    const n = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = 'u1'`))
+    const n = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = 'u1'`),
+    )
     expect(Number(n[0]?.n)).toBe(0)
   })
+
+  /**
+   * I1（复审）：`target` 落在**兄弟项目**里。HTTP 入口靠 `inside` ＋ `basename` 挡得住，
+   * 但这是导出的库函数（计划 3/5 会直接调）。少了归属闸，材料表会落一条
+   * `path = "../其他项目/密件.xlsx"`，作业 `source_path = "u1/proj-1/../其他项目/密件.xlsx"`
+   * ——worker 读盘时才会发现跑到了兄弟项目。
+   */
+  test("target 落在兄弟项目 ⇒ 跳过，材料表里没有它", async () => {
+    const r = await 入队表格材料(db(), {
+      root,
+      project,
+      target: join(root, "u1", "其他项目", "密件.xlsx"),
+      bytes: new Uint8Array([41, 42, 43]),
+      fileName: "密件.xlsx",
+      by: "u1",
+    })
+    // 先钉「表里没有脏行」（这是真正的危害），再钉返回值。
+    const n = rowsOf(
+      await db().execute(
+        sql`select count(*)::int as n from auth.case_material
+             where project_id = 'proj-1' and file_name = '密件.xlsx'`,
+      ),
+    )
+    expect(Number(n[0]?.n)).toBe(0)
+    expect(r).toBeUndefined()
+  })
+
+  /**
+   * M2（复审）：白名单三条扩展名都要真的被认。砍成 `[".xlsx"]` 时 `.xls` / `.csv` 两条必须红。
+   * 每条用**不同字节**：指纹是内容哈希，同字节会命中既有材料而返回 `enqueued: false`。
+   */
+  const 其余扩展名: [string, Uint8Array][] = [
+    ["话单.xls", new Uint8Array([51, 52, 53])],
+    ["话单.csv", new Uint8Array([61, 62, 63])],
+    ["话单.XLSX", new Uint8Array([71, 72, 73])],
+  ]
+  for (const [文件名, 字节] of 其余扩展名) {
+    test(`${文件名} ⇒ 也入队`, async () => {
+      const r = await 入队表格材料(db(), {
+        root,
+        project,
+        target: 落点(文件名),
+        bytes: 字节,
+        fileName: 文件名,
+        by: "u1",
+      })
+      expect(r?.enqueued).toBe(true)
+      const n = rowsOf(
+        await db().execute(
+          sql`select count(*)::int as n from auth.case_material
+               where project_id = 'proj-1' and file_name = ${文件名}`,
+        ),
+      )
+      expect(Number(n[0]?.n)).toBe(1)
+    })
+  }
 })
