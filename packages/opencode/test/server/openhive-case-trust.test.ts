@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 变更历史 } from "../../src/server/openhive/case-fact-change"
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 裁决 } from "../../src/server/openhive/case-trust"
-import { 建关系, 建实体 } from "./openhive-case-fact-fixture"
+import { 建关系, 建实体, 建事件 } from "./openhive-case-fact-fixture"
 
 /**
  * 裁决的库级用例（计划 5 Task 3）。
@@ -120,6 +120,36 @@ describe("裁决：三态", () => {
       by: 甲,
     })
     expect(结果.trustState).toBe("存疑")
+  })
+
+  test("事件也能裁决：存疑 落在 case_event 上，留痕动作与快照齐全", async () => {
+    // 单测此前只走 relation、出口只走 entity：event 分支的列名（summary / occurred_at /
+    // precision）写错会全绿。这条走 裁决 把 event 的「读当前值」与「改」都真跑一遍。
+    await 建事件(库(), {
+      id: "e-存疑",
+      projectId: 项目,
+      type: "通话",
+      participants: ["张三", "李四"],
+    })
+    const 结果 = await 裁决(库(), {
+      projectId: 项目,
+      factType: "event",
+      factId: "e-存疑",
+      action: "存疑",
+      by: 甲,
+    })
+    expect(结果.trustState).toBe("存疑")
+    // 直接查库：结果对象里的 trustState 是目标值直传，钉不住 UPDATE 真落了 case_event。
+    const 行 = rowsOf(
+      await 库().execute(
+        sql`select trust_state from auth.case_event where id = ${"e-存疑"} and project_id = ${项目}`,
+      ),
+    )
+    expect(行.map((一条) => String(一条.trust_state))).toEqual(["存疑"])
+    const 历史 = await 变更历史(库(), 项目, "event", "e-存疑")
+    expect(历史.at(-1)?.action).toBe("存疑")
+    expect(历史.at(-1)?.before).toEqual({ trustState: "自动抽取" })
+    expect(历史.at(-1)?.after).toEqual({ trustState: "存疑" })
   })
 
   test("任意状态都能直接改（人优先于系统判定）", async () => {

@@ -223,7 +223,12 @@ describe("POST /openhive/case/facts/trust", () => {
       // 再走 GET 读一次库：写入没落盘时这条才红。
       const 详情 = yield* 发(我, `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由`)
       expect(详情.status).toBe(200)
-      expect((yield* 读回<{ trustState: string }>(详情)).trustState).toBe("已确认")
+      // 取**最后一条**留痕：前面 GET 用例已种过一条「确认」且操作人同为「我」，
+      // 取 `changes[0]` 会在 handler 传错 `by` 时照样绿（钉不住接线）。
+      const 详情体 = yield* 读回<{ trustState: string; changes: { action: string; actorId: string }[] }>(详情)
+      expect(详情体.trustState).toBe("已确认")
+      expect(详情体.changes.at(-1)?.action).toBe("确认")
+      expect(详情体.changes.at(-1)?.actorId).toBe(我.id)
     }),
   )
 
