@@ -3,7 +3,7 @@ export * as OpenhiveCaseSlice from "./case-slice"
 /**
  * 把一份长文本切成「适合一次模型调用」的片。
  *
- * ## 三条口径
+ * ## 四条口径
  *
  * 1. **不重叠**：重叠会让同一段事实被抽两遍，实体去重能兜住、关系会重复（R7 的确定性 id
  *    也兜不住「同一段区间出现两次不同数字」）。宁可边界处的半句话交给下一片。
@@ -11,6 +11,8 @@ export * as OpenhiveCaseSlice from "./case-slice"
  *    只有单行本身就超限时才硬切。
  * 3. **偏移是原文坐标**：`起/止` 直接进 `case_citation.locator`（0031 注释里的
  *    `{"start":0,"end":1200}`），面板要按它回跳原文。
+ * 4. **纯空白段被丢弃**：`冲刷()` 与硬切都跳过 `trim()` 为空的片 ⇒ 片与片之间**可能有缺口**，
+ *    把所有 `片.文本` 拼起来不等于原文。要还原原文请按 `起/止` 取，不要拼接。
  *
  * 上限（R8）按**扫描成本**算，不按「看起来大不大」：超过就报错让用户拆文件，
  * 静默截断会让抽出来的结论看起来是完整的（`LEARNINGS #011-03` 同族）。
@@ -30,7 +32,10 @@ export function 切片(
 ): 文本片[] {
   const 上限 = opts.每片字数 ?? 每片字数
   const 片数上限 = opts.最多片数 ?? 最多片数
-  if (上限 <= 0) throw new Error("每片字数必须是正数")
+  // 下限是 2 不是 1：上限为 1 时任何非 BMP 字符都必然被劈开，`j - 1 > i` 只能防死循环、
+  // 防不了孤立代理；整数校验是为了让 `起/止` 始终能写进 locator。
+  if (!Number.isInteger(上限) || 上限 < 2) throw new Error("每片字数必须是不小于 2 的整数")
+  if (!Number.isInteger(片数上限) || 片数上限 < 1) throw new Error("最多片数必须是不小于 1 的整数")
   if (text.length > 上限 * 片数上限)
     throw new Error(
       `文本共 ${text.length} 字，超过单份材料上限（${片数上限} 片 × ${上限} 字）；请拆分后再导入`,
@@ -54,10 +59,11 @@ export function 切片(
       for (let i = 0; i < 行.length; ) {
         let j = Math.min(i + 上限, 行.length)
         // 别把代理对劈成两半：末尾是高代理时退一格。
-        // `j - 1 > i` 这条不能省：上限为 1 且首字符是高代理时，退了就回到 `i`，死循环。
+        // 下限已提到 2，`j - 1 > i` 现在恒真（`j - 1 ≥ i + 1 > i`）；留着防将来放宽下限时死循环。
         const 末 = 行.charCodeAt(j - 1)
         if (j < 行.length && j - 1 > i && 末 >= 0xd800 && 末 <= 0xdbff) j -= 1
-        片.push({ 起: 行首 + i, 止: 行首 + j, 文本: 行.slice(i, j) })
+        const 片段 = 行.slice(i, j)
+        if (片段.trim() !== "") 片.push({ 起: 行首 + i, 止: 行首 + j, 文本: 片段 })
         i = j
       }
       行首 += 行.length

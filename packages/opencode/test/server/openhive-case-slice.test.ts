@@ -7,8 +7,17 @@ describe("切片", () => {
     const 片们 = 切片(文本, { 每片字数: 300 })
     expect(片们.length).toBeGreaterThan(1)
     for (const 片 of 片们) expect(文本.slice(片.起, 片.止)).toBe(片.文本)
-    expect(片们[0]!.起).toBe(0)
+    // 该输入无空行，允许逐片首尾相接：片与片之间既不重叠也不留缺口。
+    for (let i = 1; i < 片们.length; i++) expect(片们[i].起, `第 ${i} 片`).toBe(片们[i - 1].止)
+    expect(片们[0].起).toBe(0)
     expect(片们.at(-1)!.止).toBe(文本.length)
+  })
+
+  test("短行跨行打包：能装下的多行合成一片", () => {
+    const 文本 = "第一行\n第二行\n第三行\n"
+    const 片们 = 切片(文本, { 每片字数: 100 })
+    expect(片们).toHaveLength(1)
+    expect(片们[0].文本).toBe(文本)
   })
 
   test("每片尽量不超过上限（单行超限时才硬切）", () => {
@@ -36,9 +45,20 @@ describe("切片", () => {
     expect(切片("\n\n\n", { 每片字数: 10 })).toEqual([])
   })
 
-  test("超过片数上限 ⇒ 可操作报错（R8）", () => {
+  test("超过字数上限 ⇒ 可操作报错（R8）", () => {
     const 文本 = "字".repeat(每片字数 * (最多片数 + 1))
-    expect(() => 切片(文本)).toThrow("请拆分后再导入")
+    expect(() => 切片(文本)).toThrow("超过单份材料上限")
+  })
+
+  test("超长的纯空白行不产生空片", () => {
+    expect(切片(" ".repeat(10), { 每片字数: 3 })).toEqual([])
+  })
+
+  test("非法参数 ⇒ 可解释的报错，别让非整数偏移进 locator", () => {
+    expect(() => 切片("字", { 每片字数: 1 })).toThrow("不小于 2 的整数")
+    expect(() => 切片("字", { 每片字数: 1.5 })).toThrow("不小于 2 的整数")
+    expect(() => 切片("字", { 每片字数: Number.NaN })).toThrow("不小于 2 的整数")
+    expect(() => 切片("字", { 最多片数: 0 })).toThrow("不小于 1 的整数")
   })
 
   test("第二道闸：字数没超、但片数超 ⇒ 同样报可操作错", () => {
