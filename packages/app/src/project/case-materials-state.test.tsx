@@ -128,6 +128,50 @@ test("失败保留旧行、只置错误（旧状态比白屏有用）", async ()
   })
 })
 
+test("首拉失败：loaded 保持 false 并置错误；随后成功才置 true", async () => {
+  const { api } = 假api([{ kind: "error", message: "断网了" }, 好([行("a.xlsx")])])
+  await createRoot(async (dispose) => {
+    const 状态 = createCaseMaterials(api, { 轮询器: 手动轮询().轮询器 })
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+
+    // 首拉没成功过 ⇒ loaded 不能置真，否则界面会把「读不到」演成「一份都没解析过」。
+    expect(状态.loaded()).toBe(false)
+    expect(状态.error()).toBe("断网了")
+
+    状态.reload()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.loaded()).toBe(true)
+    expect(状态.rows().map((row) => row.path)).toEqual(["a.xlsx"])
+    dispose()
+  })
+})
+
+test("首拉抛异常：同样不把 loaded 置真", async () => {
+  let 第几发 = 0
+  const api: CaseMaterialsApi = {
+    read: async () => {
+      第几发 += 1
+      if (第几发 === 1) throw new Error("boom")
+      return 好([行("a.xlsx")])
+    },
+    parse: async () => ({ kind: "ok" }),
+  }
+  await createRoot(async (dispose) => {
+    const 状态 = createCaseMaterials(api, { 轮询器: 手动轮询().轮询器 })
+    状态.bind(() => "p1")
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(状态.loaded()).toBe(false)
+    expect(状态.error()).toBe("加载解析状态失败")
+
+    状态.reload()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.loaded()).toBe(true)
+    dispose()
+  })
+})
+
 test("轮询：有排队中/解析中才安排下一拍；没有就不排", async () => {
   const 跑 = 手动轮询()
   const { api } = 假api([好([行("a.xlsx", "排队中")]), 好([行("a.xlsx", "已解析")])])

@@ -122,6 +122,7 @@ const 依据 = (partial: Partial<亮灯依据> & { path: string }): 亮灯依据
   row: undefined,
   extensions: 扩展名,
   rowsLoaded: true,
+  readFailed: false,
   接入: true,
   有对象: true,
   hasReview: true,
@@ -222,6 +223,56 @@ test("状态文案：未接入 / 无对象 / 文件夹 / 读取中", () => {
   expect(状态文案({ isFile: true, loaded: true, 接入: true, 有对象: false })).toBe("")
   expect(状态文案({ isFile: false, loaded: true, 接入: true, 有对象: true })).toBe("文件夹")
   expect(状态文案({ isFile: true, loaded: false, 接入: true, 有对象: true })).toBe("读取中")
+})
+
+test("状态文案：首拉失败说「读取失败」，不是一直「读取中」", () => {
+  // 五个解析子项已经按 `readFailed` 说「读取失败」；触发项右边若还说「读取中」，
+  // 就是同一份状态两句话（终审 F3）。
+  const 基础 = { isFile: true, loaded: false, 接入: true, 有对象: true }
+  expect(状态文案({ ...基础, readFailed: true })).toBe("读取失败")
+  // 对照：没失败过 ⇒ 仍是「读取中」；老调用不传这个字段也不能变。
+  expect(状态文案({ ...基础, readFailed: false })).toBe("读取中")
+  expect(状态文案(基础)).toBe("读取中")
+})
+
+test("状态文案：无材料行且不可解析 ⇒ 与悬停同一句话（系统不解析这类文件）", () => {
+  // N3：同一份文件，行提示说「系统不解析这类文件」、子菜单状态却说「未入队」——两句话矛盾。
+  expect(
+    状态文案({
+      isFile: true,
+      loaded: true,
+      接入: true,
+      有对象: true,
+      path: "资料/笔录.pdf",
+      extensions: 扩展名,
+    }),
+  ).toBe("系统不解析这类文件")
+  // 对照：可解析但没有材料行，仍然是「未入队」（右键能入库的那一档）。
+  expect(
+    状态文案({
+      isFile: true,
+      loaded: true,
+      接入: true,
+      有对象: true,
+      path: "资料/待入队.xlsx",
+      extensions: 扩展名,
+    }),
+  ).toBe("未入队")
+})
+
+test("亮灯：读取失败与正在读取是两种话，五项一律不按「未入队」推演", () => {
+  const 失败 = 依据({ path: "资料/a.xlsx", rowsLoaded: false, readFailed: true })
+  const 失败文案 = "解析状态读取失败，请右键刷新重试"
+  expect(入队不可用原因(失败)).toBe(失败文案)
+  expect(重新解析不可用原因(失败)).toBe(失败文案)
+  expect(取消不可用原因(失败)).toBe(失败文案)
+  expect(跳过不可用原因(失败)).toBe(失败文案)
+  expect(查看不可用原因(失败)).toBe(失败文案)
+
+  // 还没有过结果、也没报错 ⇒ 仍是「请稍候」。
+  expect(入队不可用原因(依据({ path: "资料/a.xlsx", rowsLoaded: false, readFailed: false }))).toBe(
+    "解析状态还在读取，请稍候",
+  )
 })
 
 test("亮灯：有问题的文件可以重新解析（别把它误判成灰）", () => {

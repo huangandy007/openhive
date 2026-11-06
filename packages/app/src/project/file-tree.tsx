@@ -523,6 +523,8 @@ export function FileTree(props: FileTreeProps) {
     row: 视图行(path),
     extensions: 扩展名(),
     rowsLoaded: 材料()?.loaded() ?? false,
+    // 首拉失败时 `loaded()` 仍是 false，但 `error()` 有值 ⇒ 界面说「读取失败」而不是「请稍候」。
+    readFailed: 材料()?.error() !== undefined,
     接入: 材料() !== undefined,
     有对象,
     hasReview: props.onReviewParse !== undefined,
@@ -1210,6 +1212,9 @@ export function FileTree(props: FileTreeProps) {
                     loaded: 材料()?.loaded() ?? false,
                     接入: 材料() !== undefined,
                     有对象: 菜单对象() !== undefined,
+                    path: 菜单对象() ?? "",
+                    extensions: 扩展名(),
+                    readFailed: 材料()?.error() !== undefined,
                   })}
                 </span>
                 <Icon name="chevron-right" size="small" />

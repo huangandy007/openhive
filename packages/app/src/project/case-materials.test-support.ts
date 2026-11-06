@@ -30,6 +30,8 @@ export interface 假材料状态选项 {
   readonly rows?: readonly 材料视图[]
   readonly extensions?: readonly string[]
   readonly loaded?: boolean
+  /** 非空 = 读取失败过（`loaded` 仍可为 false，两者合起来表达「没读到且知道为什么」）。 */
+  readonly error?: string
   readonly parse?: (input: { path: string; action: "入队" | "重新解析" | "取消" | "跳过" }) => 解析结果
 }
 
@@ -46,7 +48,7 @@ export function 假材料状态(options: 假材料状态选项 = {}) {
     rows: 行们,
     parseableExtensions: () => options.extensions ?? [".xlsx", ".xls", ".csv"],
     loaded: 有读,
-    error: () => undefined,
+    error: () => options.error,
     bind: () => undefined,
     reload: () => {
       记.重拉 += 1

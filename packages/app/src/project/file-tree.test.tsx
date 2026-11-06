@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { toaster } from "@opencode-ai/ui/toast"
-import { createSignal, type JSX } from "solid-js"
+import { createRoot, createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { ToastRegion } from "@/utils/toast"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
+import type { CaseMaterialsApi } from "./case-materials-api"
+import { createCaseMaterials } from "./case-materials-state"
 import { 假材料状态, 视图行 } from "./case-materials.test-support"
 
 /**
@@ -3037,6 +3039,26 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(子项禁用("parse-view")).toBe(false)
     })
 
+    test("读取失败 ⇒ 子菜单原因是「读取失败，请右键刷新重试」，不是「请稍候」", async () => {
+      const { host } = 挂带材料(["话单.csv"], { loaded: false, error: "加载解析状态失败" })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项原因("parse-enqueue")).toBe("解析状态读取失败，请右键刷新重试")
+    })
+
+    // 对照单独一条：菜单是 Portal、关掉也不卸载 ⇒ 同一条用例里挂第二棵树会查到**上一棵的**子菜单
+    // （`data-component='context-menu-sub-content'` 取的是文档里第一个），判据就成了空转。
+    test("对照：还没失败过（error 为空）⇒ 仍是「解析状态还在读取，请稍候」", async () => {
+      const { host } = 挂带材料(["话单.csv"], { loaded: false })
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项原因("parse-enqueue")).toBe("解析状态还在读取，请稍候")
+    })
+
     test("未入队表格：「解析入库」「跳过」亮；没有查看接收方时明说后续计划", async () => {
       const { host } = 挂带材料(["话单.csv"])
       右键(行按路径(host, "话单.csv"))
@@ -3342,6 +3364,39 @@ describe("FileTree 文件树（FR-005）", () => {
       const 空 = 假材料状态({ rows: [] })
       const 空host = mount(() => <FileTree paths={["说明.pdf"]} caseMaterials={空.状态} />)
       expect(无槽(空host, "file-tree-parse-summary")).toBe(true)
+    })
+
+    test("首拉失败 ⇒ 树顶不画「已解析 0 / N」；重拉成功才画（读了才知道 0 不是答案）", async () => {
+      let 第几发 = 0
+      const api: CaseMaterialsApi = {
+        read: async () =>
+          第几发++ === 0
+            ? { kind: "error", message: "断网了" }
+            : {
+                kind: "ok",
+                value: { materials: [视图行({ path: "a.csv", status: "已解析" })], parseableExtensions: [".csv"] },
+              },
+        parse: async () => ({ kind: "ok" }),
+      }
+
+      let 状态!: ReturnType<typeof createCaseMaterials>
+      const 拆 = createRoot((dispose) => {
+        状态 = createCaseMaterials(api)
+        状态.bind(() => "p1")
+        return dispose
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      // 前提：首拉真的失败了（失败却没被观测到的话，这条用例什么也没测）。
+      expect(状态.loaded()).toBe(false)
+
+      const host = mount(() => <FileTree paths={["a.csv"]} caseMaterials={状态} />)
+      expect(无槽(host, "file-tree-parse-summary")).toBe(true)
+
+      状态.reload()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(状态.loaded()).toBe(true)
+      expect(文本(host, "file-tree-parse-summary")).toBe("已解析 1 / 1")
+      拆()
     })
 
     test("没有注入 caseMaterials：标记与汇总一个都不画（注入纪律）", () => {

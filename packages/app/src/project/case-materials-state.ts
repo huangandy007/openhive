@@ -101,11 +101,13 @@ export function createCaseMaterials(
       .read(projectId)
       .then((结果) => {
         if (本次 !== 代次 || 项目() !== projectId) return
-        set已读(true)
         if (结果.kind === "ok") {
           set行们(结果.value.materials)
           set扩展名们(结果.value.parseableExtensions)
           set错误(undefined)
+          // ⚠️ `已读` 只在**真读到**时置真（终审阻塞 1）：首拉失败也置真的话，`rows` 仍是空的，
+          // 界面会把「读不到」演成「一份都没解析过」——目录汇总画 `0/N`、菜单按「未入队」推演。
+          set已读(true)
           排下一拍(projectId)
           return
         }
@@ -113,7 +115,8 @@ export function createCaseMaterials(
       })
       .catch(() => {
         if (本次 !== 代次 || 项目() !== projectId) return
-        set已读(true)
+        // 失败保留 `已读` 原值：从未成功过 ⇒ 仍是 false（界面说「读取失败」而不是「0 份」）；
+        // 成功过再失败 ⇒ 仍是 true，旧行继续显示（旧状态比白屏有用）。
         set错误("加载解析状态失败")
       })
   }
