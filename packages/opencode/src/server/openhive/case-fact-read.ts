@@ -290,9 +290,9 @@ export async function 事实详情(db: Queryable, input: 事实详情入参): Pr
         ? await 读关系(db, input.projectId, input.id, 包含已排除)
         : await 读事件(db, input.projectId, input.id, 包含已排除)
   if (事实 === undefined) return undefined
-  const [citations, changes] = await Promise.all([
-    引用们(db, input.projectId, input.type, input.id),
-    变更历史(db, input.projectId, input.type, input.id),
-  ])
+  // ⚠️ 两条查询必须**顺序**跑，不能用 `Promise.all`：PGlite 把多条连接汇进同一个 PG 会话，
+  // 单连接下并发查同一会话会撞 42P05（仓内约定见 `assets.ts:259` / `governance-assets.ts:264`）。
+  const citations = await 引用们(db, input.projectId, input.type, input.id)
+  const changes = await 变更历史(db, input.projectId, input.type, input.id)
   return { ...事实, citations, changes }
 }

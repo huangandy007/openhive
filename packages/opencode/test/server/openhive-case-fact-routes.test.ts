@@ -9,10 +9,11 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { 记变更 } from "../../src/server/openhive/case-fact-change"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
 import { testEffect } from "../lib/effect"
-import { 建实体 } from "./openhive-case-fact-fixture"
+import { 建材料, 建实体 } from "./openhive-case-fact-fixture"
 
 /**
  * 纠错出口的真应用测试（计划 5）。夹具与 `openhive-case-materials.test.ts` 逐行一致：
@@ -44,6 +45,10 @@ afterAll(restoreWorker)
 afterAll(() => rmSync(沙箱根, { recursive: true, force: true }))
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+const 库 = () => {
+  if (!pg) throw new Error("数据库夹具还没起来——beforeAll 没跑完")
+  return pg.db
+}
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -138,18 +143,49 @@ describe("GET /openhive/case/facts", () => {
 
   it("成员读自己的项目 ⇒ 200，回包里带引用与变更历史", () =>
     Effect.gen(function* () {
+      // 接线要被真钉住：只断 `Array.isArray([])` 的话，出口把 citations / changes 恒返回空数组也不会红。
+      yield* Effect.promise(async () => {
+        await 建材料(库(), { id: "m-路由", projectId: 项目, path: "资料/路由.pdf" })
+        await 库().execute(sql`
+          insert into auth.case_citation
+            (id, project_id, fact_type, fact_id, material_id, locator, extract_method, confidence, created_at)
+          values ('c-路由', ${项目}, 'entity', 'e-路由', 'm-路由',
+                  ${JSON.stringify({ start: 1, end: 9 })}::text::jsonb, '机器', ${"0.750"}, 1)
+        `)
+        await 记变更(库(), {
+          projectId: 项目,
+          factType: "entity",
+          factId: "e-路由",
+          action: "确认",
+          actor: { id: 我.id, name: 我.name, policeNo: 我.policeNo },
+        })
+      })
+
       const 响应 = yield* 发(我, `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由`)
       expect(响应.status).toBe(200)
       const 体 = yield* 读回<{
         type: string
         canonicalValue: string
-        citations: unknown[]
-        changes: unknown[]
+        citations: { materialId: string; locator: unknown; confidence: number | null }[]
+        changes: { action: string; actorName: string }[]
       }>(响应)
       expect(体.type).toBe("entity")
       expect(体.canonicalValue).toBe("王五")
-      expect(Array.isArray(体.citations)).toBe(true)
-      expect(Array.isArray(体.changes)).toBe(true)
+      expect(体.citations[0]?.materialId).toBe("m-路由")
+      expect(体.citations[0]?.locator).toEqual({ start: 1, end: 9 })
+      expect(体.citations[0]?.confidence).toBe(0.75)
+      expect(体.changes[0]?.action).toBe("确认")
+      expect(体.changes[0]?.actorName).toBe("甲民警")
+
+      // includeExcluded 分支（这条事实本身没被排除）不能把附加内容弄丢。
+      const 带上 = yield* 发(
+        我,
+        `/openhive/case/facts?projectId=${项目}&type=entity&id=e-路由&includeExcluded=true`,
+      )
+      expect(带上.status).toBe(200)
+      const 体带上 = yield* 读回<{ citations: unknown[]; changes: unknown[] }>(带上)
+      expect(体带上.citations).toHaveLength(1)
+      expect(体带上.changes).toHaveLength(1)
     }),
   )
 })
