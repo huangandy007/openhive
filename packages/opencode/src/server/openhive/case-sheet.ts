@@ -88,14 +88,18 @@ export interface ReadResult {
 const DEFAULT_LIMITS: Required<ReadLimits> = { maxSheets: 8, maxRowsPerSheet: 200_000 }
 
 /**
- * 声明范围的**扫描面积**上限（格 = 列宽 × 行数），不是返回行数上限。
+ * 声明范围的**扫描面积**上限（格 = 列宽 × **声明区域全高**），不是返回行数上限。
  *
- * `rowAt` 的成本是列宽，外层按行遍历 ⇒ 成本正是两者相乘；`maxRowsPerSheet` 只约束
- * **返回的行数组**，被跳过的空行照样要扫。正常导出 20 万行 × 15 列 = 300 万格，取一个
- * 数量级的余量定成单表 2000 万；整本 4000 万是防「8 张表各 1900 万」绕过单表闸。
+ * ⚠️ **不能用返回行数封顶**：`maxRowsPerSheet` 只约束返回的行数组，空行不占配额，
+ * 外层仍会逐行扫到 `!ref` 的末尾。所以面积必须按 `宽 × (e.r - s.r)` 算，与「会返回几行」
+ * 无关。实测扫描速度约 4M 格/秒 ⇒ 单表 2000 万约等于 5 秒上限；正常导出
+ * 20 万行 × 15 列 = 300 万格，留了一个数量级的余量。整本 4000 万是防「8 张表各 1900 万」
+ * 绕过单表闸。
  *
  * 超限**响亮抛错**（不是静默裁剪）：这类文件多半是「选中整列设格式」把 `!ref` 撑到
  * `A1:XFD1048576`，同步扫完是小时级 ＋ OOM，而它跑在 Bun 事件循环上 ⇒ 整个内核停摆。
+ * 即便没到小时级，几十秒的同步阻塞也会让内核整体失去响应（复审实测 26 列 7.3 秒、
+ * 99 列 26.4 秒）。
  */
 const MAX_SHEET_SCAN_CELLS = 20_000_000
 const MAX_WORKBOOK_SCAN_CELLS = 40_000_000
@@ -256,10 +260,11 @@ export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResu
 
   let 累计扫描格 = 0
   for (const { range } of 可读) {
-    // 扫描成本 = 列宽 × 外层最多遍历的行数（表头不算，数据行最多 maxRowsPerSheet + 1 行）。
+    // 扫描成本 = 列宽 × **声明区域全高**：空行不占 `maxRowsPerSheet` 的配额，外层照样
+    // 逐行扫到底。用返回行数封顶会低估真实成本（见常量注释）。
     const 宽 = range.e.c - range.s.c + 1
     const 高 = range.e.r - range.s.r
-    const 单表扫描格 = 宽 * Math.min(高, maxRowsPerSheet + 1)
+    const 单表扫描格 = 宽 * 高
     if (单表扫描格 > MAX_SHEET_SCAN_CELLS)
       throw new Error(`声明范围过大（约 ${单表扫描格} 格），请只保留数据区域后重导`)
     累计扫描格 += 单表扫描格

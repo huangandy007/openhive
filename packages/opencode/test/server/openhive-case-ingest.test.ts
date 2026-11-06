@@ -8,6 +8,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
+import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
 
@@ -420,6 +421,31 @@ describe("runJob", () => {
     await applyParseAction(db(), { projectId: "p21", materialId: r.materialId, action: "重新解析" })
     expect(await runJob(db(), deps, 手工作业("p21", r.materialId, "p21/标题行.xlsx"))).toBe("失败")
     expect(await countFactRows(db(), "p21")).toBe(2)
+  })
+
+  test("脏格式缓存：越界列号不算「认出来了」（I3 收口）", async () => {
+    // 旧缓存里可能留下越界的列号（读格式对内容不做校验）。零列闸若只数键的个数，
+    // 会把「99: caller」这种脏映射当成「认出了一列」放过 ⇒ 标「已解析」，
+    // 而实际上表头一列都没认出来。只计 header 范围内的合法列号。
+    const 表头 = ["随便", "别的"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["a", "b"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0]!.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
+      values ('p24', ${指纹}, ${JSON.stringify(表头)}::jsonb, ${JSON.stringify({ 99: "caller" })}::jsonb,
+              '词典', 1, 0, 1, 1)
+    `)
+
+    文件.set("p24/脏缓存.xlsx", 工作簿)
+    const r = await 入队("p24", "脏缓存.xlsx", "fp-24")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const material = await getMaterial(db(), "p24", r.materialId)
+    expect(material?.parseStatus).toBe("有问题")
+    expect(material?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
+    expect(await countFactRows(db(), "p24")).toBe(0)
   })
 
   test("8 张有数据 ＋ 第 9 张 Excel 默认空表 ⇒ 不误拒，8 张的数据都在（I4）", async () => {

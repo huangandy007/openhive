@@ -134,6 +134,50 @@ describe("单位声明白名单（I1：黑名单漏掉的分/角/美元会静默
   })
 })
 
+describe("单位声明的全部写法（I1 残余：只在圆括号生效会漏网）", () => {
+  // 复审实测：单位闸只认 `（）`/`()`，下面这些写法全部被认成默认单位——静默错倍/错汇率，
+  // 而且因为「解析成功」，原文连 extras 都进不去。单位声明必须覆盖全部括号对 ＋ 裸后缀。
+  const 不认: [string, string][] = [
+    ["金额【美元】", "方头括号"],
+    ["金额[美元]", "半角方括号"],
+    ["金额〔美元〕", "六角括号"],
+    ["金额美元", "裸后缀（无括号）"],
+    ["金额USD", "裸后缀、大小写不敏感"],
+    ["金额（元）（分）", "多组括号：任一组不是默认单位就不认"],
+    ["通话时长[毫秒]", "全角/半角方括号都要管到时长的单位"],
+  ]
+  for (const [表头, 为什么] of 不认) {
+    test(`${表头} ⇒ 不认（${为什么}），原值留给 extras`, () => {
+      const 值 = 表头.includes("金额") ? "5.00" : "5"
+      const r = detectMapping([表头], [[值]])
+      expect(r.columns).toEqual({})
+      expect(r.unknownColumns).toEqual([0])
+    })
+  }
+
+  const 认: [string, FactField][] = [
+    ["金额（人民币）", "amount"],
+    ["金额rmb", "amount"],
+    ["金额（元）", "amount"],
+    ["金额CNY", "amount"],
+    ["金额元", "amount"],
+    ["通话时长（秒）", "durationSec"],
+    ["通话时长sec", "durationSec"],
+  ]
+  for (const [表头, field] of 认) {
+    test(`${表头} ⇒ 照常认成 ${field}`, () => {
+      const 值 = field === "durationSec" ? "5" : "5.00"
+      expect(detectMapping([表头], [[值]]).columns).toEqual({ 0: field })
+    })
+  }
+
+  test("特征层同样受新的单位抽取管：金额USD 整列两位小数也不认（三层共用一道闸）", () => {
+    const r = detectMapping(["金额USD"], [["5.00"], ["6.00"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([0])
+  })
+})
+
 describe("detectMapping · 第二层：数据特征", () => {
   test("表头不认识，但整列是 yyyy-mm-dd hh:mm:ss ⇒ 认成 startedAt", () => {
     const r = detectMapping(

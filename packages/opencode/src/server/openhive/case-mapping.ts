@@ -52,39 +52,79 @@ const 单位冲突: Partial<Record<FactField, RegExp>> = {
  * 词表里，规范化剥掉括号后按默认单位解释 ⇒ 静默错 60 / 10 / 汇率倍，而且因为解析「成功」，
  * 原文连 extras 都进不去。所以对**有默认单位**的三个字段：表头带括号时，只放行默认单位。
  *
- * 只看**原始表头**：规范化串里已经没有括号了。`秒` / `元` / `人民币` / `RMB` 是默认单位。
+ * 只看**原始表头**：规范化串里已经没有括号与单位后缀了。`秒` / `元` / `人民币` / `RMB` /
+ * `CNY` 是默认单位。
  */
 const 单位白名单: Partial<Record<FactField, RegExp>> = {
   durationSec: /^(秒|s|sec)$/i,
-  amount: /^(元|人民币|rmb)$/i,
-  balance: /^(元|人民币|rmb)$/i,
+  amount: /^(元|人民币|rmb|cny)$/i,
+  balance: /^(元|人民币|rmb|cny)$/i,
+}
+
+/**
+ * 「可能是单位」的词尾，用于从**无括号**的表头里剥出裸后缀（`金额美元` / `金额USD`）。
+ *
+ * 长词排前面：`万元` 必须先于 `元`、`分钟` 必须先于 `分` 命中，否则 `千元` 会被剥成
+ * 「千」＋「元」，把一个非默认单位误判成默认单位。剥出来的每个 token 仍走白名单判定——
+ * 这里只是「哪儿是单位」，不是「什么单位合法」。
+ */
+const 单位词尾 = ["人民币", "分钟", "毫秒", "小时", "美元", "万元", "千元", "usd", "cny", "rmb", "sec", "秒", "元", "角", "分", "万", "亿", "s"].sort(
+  (a, b) => b.length - a.length,
+)
+
+/** 表头的全部括号内容：`（）` `()` `【】` `[]` `〔〕`；同一表头可有多组。 */
+const 括号对 = /[（(【[〔]([^）)】\]〕]*)[）)】\]〕]/g
+
+function 全部括号内容(raw: string | null): string[] {
+  return [...(raw ?? "").matchAll(括号对)].map((m) => (m[1] ?? "").trim())
+}
+
+/** 从末尾反复剥单位词；返回去掉它们之后的剩余串与该字段声明的 token 列表。 */
+function 剥末尾单位词(text: string): { 剩余: string; tokens: string[] } {
+  const tokens: string[] = []
+  let 剩余 = text
+  for (;;) {
+    const 词 = 单位词尾.find((w) => 剩余.endsWith(w))
+    if (词 === undefined) return { 剩余, tokens }
+    tokens.push(词)
+    剩余 = 剩余.slice(0, -词.length)
+  }
 }
 
 /** 只有这三个字段有「默认单位」概念；caller / 时间等表头里的括号不是单位，不套白名单。 */
 const 有默认单位: ReadonlySet<FactField> = new Set(["durationSec", "amount", "balance"])
 
-/** 表头的括号内容（全角 `（）` 与半角 `()` 都算）；没有括号 ⇒ `null`。 */
-function 括号内容(raw: string | null): string | null {
-  const m = /[（(]([^）)]*)[）)]/.exec(raw ?? "")
-  return m === null ? null : (m[1] ?? "").trim()
+/** 去空格与括号后的原始串（保留大小写信息无所谓，白名单本身不区分大小写）。 */
+function 去括号与空白(raw: string | null): string {
+  return (raw ?? "").replace(括号对, "").replace(/[\s　]/g, "").toLowerCase()
 }
 
 /**
  * 表头对该字段的单位声明是否放行。同一道闸被词典精确 / 词典后缀 / 特征层三处共用
  * （`#002-06`：同一前提的落点一次清完）。
  *
- * - 带括号 ⇒ 括号内容必须是该字段的默认单位；不是单位（如「金额（含手续费）」）也不认——
- *   宁可进 extras 保留原文，也不静默错倍。
- * - 没括号 ⇒ 沿用旧的黑名单（万元 / 分钟 / 小时 / 毫秒）。
+ * 单位声明有三种写法，必须**全部**判定：
+ * - 括号：`（）` `()` `【】` `[]` `〔〕`，同一表头多组时逐组判，任一组不是默认单位就
+ *   不认（`金额（元）（分）` ⇒ 不认）；
+ * - 裸后缀：`金额美元` / `金额USD`，从末尾反复剥 token 逐个判；
+ * - 都没有：沿用旧的黑名单（万元 / 分钟 / 小时 / 毫秒），覆盖 `万元金额` 这类不在末尾的写法。
+ *
+ * 不是单位（如「金额（含手续费）」）也不认——宁可进 extras 保留原文，也不静默错倍。
  */
 function 单位闸放行(field: FactField, raw: string | null): boolean {
   if (!有默认单位.has(field)) return true
-  const 括号 = 括号内容(raw)
-  if (括号 !== null) return 单位白名单[field]?.test(括号) ?? false
-  return !(单位冲突[field]?.test(raw ?? "") ?? false)
+  const 白名单 = 单位白名单[field]
+  const 括号们 = 全部括号内容(raw)
+  if (括号们.some((c) => !(白名单?.test(c) ?? false))) return false
+
+  const { 剩余, tokens } = 剥末尾单位词(去括号与空白(raw))
+  if (tokens.some((t) => !(白名单?.test(t) ?? false))) return false
+  if (tokens.length > 0) return true
+  // 没有括号也没有裸后缀单位：退回黑名单。`单位冲突` 不带 g，test 无状态。
+  return !(单位冲突[field]?.test(剩余) ?? false)
 }
 
-/** 表头词典。比较前先 `规范化`（去空白、去括号后缀、转小写）。 */
+/** 表头词典。比较前先 `规范化`（去空白、去括号后缀、剥裸单位后缀、转小写）。 */
 const DICTIONARY: Record<FactField, string[]> = {
   caller: ["主叫号码", "主叫", "主叫号", "呼叫号码", "发起方号码", "本机号码", "通话号码"],
   callee: ["被叫号码", "被叫", "被叫号", "对方号码", "接收方号码", "对方电话"],
@@ -106,12 +146,15 @@ const 时间形状 = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$
 /** 金额形状：**必须带两位小数**。整数列（号码、行号）因此不会被误认成金额。 */
 const 金额形状 = /^-?\d+\.\d{2}$/
 
-/** 去空白（含全角）、去括号后缀、转小写。`"金额（元）"` → `"金额"`。 */
+/**
+ * 去空白（含全角）、去括号后缀、**剥裸单位后缀**、转小写。
+ * `"金额（元）"` → `"金额"`；`"金额USD"` → `"金额"`；`"通话时长sec"` → `"通话时长"`。
+ *
+ * 剥单位是为了让词典在「单位写在括号外」时仍能命中（I1 残余）。单位合不合法由
+ * `单位闸放行` 按原始表头判，规范化只负责把表头还原成词典里的词。
+ */
 function 规范化(raw: string | null): string {
-  return (raw ?? "")
-    .replace(/[（(【[].*?[）)】\]]/g, "")
-    .replace(/[\s　]/g, "")
-    .toLowerCase()
+  return 剥末尾单位词(去括号与空白(raw)).剩余
 }
 
 /** 非空值里命中 `形状` 的比例。全空 ⇒ 0（不认）。 */
@@ -207,7 +250,7 @@ function 列形状(values: (string | null)[][]): string[] {
  * 也不需要回填）：否则已导入过的格式仍命中旧缓存、`detectMapping` 被短路，修复对存量材料
  * 不生效（I6）。
  */
-const 识别版本 = "2"
+const 识别版本 = "3"
 
 /**
  * 格式指纹：**识别版本 ＋ 表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。

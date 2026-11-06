@@ -242,7 +242,12 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
       // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
       //   （缺口记在计划自检里，不在本计划修）。
       类型 = classifyMaterialType(columns)
-      认出列数 += Object.keys(columns).length
+      // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
+      // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
+      认出列数 += Object.keys(columns).filter((k) => {
+        const 列号 = Number(k)
+        return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
+      }).length
       const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns })
 
       // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**

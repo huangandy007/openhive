@@ -320,6 +320,51 @@ describe("readSheets", () => {
     expect(() => readSheets(bytes)).toThrow(/声明范围过大/)
   })
 
+  test("A1:Z1048576（26 列整列设格式）⇒ 1 秒内抛错，不阻塞事件循环（C1 残余）", async () => {
+    // 复审实测：按 min(高, maxRowsPerSheet+1) 算面积时，26 列 × 1048575 行仍会放行，
+    // 实际扫描 2700 万格、阻塞 7.3 秒。面积必须按**声明区域全高**算，与返回行数无关
+    // （空行不占配额，但外层照样逐行扫）。这里不只断言「抛没抛」，还把「不再阻塞」钉成
+    // 行为：闸在扫描之前，1 秒内必须返回。
+    const bytes = await 撑大声明范围(造工作簿({ S: [["主叫号码"], ["13800000000"]] }), {
+      "xl/worksheets/sheet1.xml": "A1:Z1048576",
+    })
+    const 起 = performance.now()
+    expect(() => readSheets(bytes)).toThrow(/声明范围过大/)
+    expect(performance.now() - 起).toBeLessThan(1000)
+  })
+
+  test("A1:CU1048576（99 列）⇒ 同样 1 秒内抛错（C1 残余）", async () => {
+    // 99 列时 min 公式算出 99 × 200001 ≈ 1980 万，**恰好**低于单表 2000 万 ⇒ 放行后
+    // 扫 1 亿格（复审实测 26.4 秒）。全高公式是 99 × 1048575 ≈ 1.04 亿 ⇒ 直接拦。
+    const bytes = await 撑大声明范围(造工作簿({ S: [["主叫号码"], ["13800000000"]] }), {
+      "xl/worksheets/sheet1.xml": "A1:CU1048576",
+    })
+    const 起 = performance.now()
+    expect(() => readSheets(bytes)).toThrow(/声明范围过大/)
+    expect(performance.now() - 起).toBeLessThan(1000)
+  })
+
+  test("正常大小与稀疏声明范围都不误伤（C1 残余）", async () => {
+    // 全高公式不能把正常导出件也拦掉：200 行 × 30 列 = 6000 格。
+    const 普通行 = Array.from({ length: 201 }, (_, r) =>
+      Array.from({ length: 30 }, (_, c) => (r === 0 ? `列${c + 1}` : `值${r}-${c + 1}`)),
+    )
+    expect(readSheets(造工作簿({ S: 普通行 })).sheets[0]?.rows).toHaveLength(200)
+
+    // 稀疏表：声明 5000 行，但只有 3 行有值、15 列 ⇒ 7.5 万格，远低于上限。
+    // 「空白行很多」是真实导出的常态，不能因为声明高就拒。
+    const 稀疏行 = [
+      Array.from({ length: 15 }, (_, c) => `列${c + 1}`),
+      ...Array.from({ length: 3 }, () => Array.from({ length: 15 }, (_, c) => `值${c + 1}`)),
+    ]
+    const 稀疏 = await 撑大声明范围(造工作簿({ S: 稀疏行 }), {
+      "xl/worksheets/sheet1.xml": "A1:O5000",
+    })
+    const 结果 = readSheets(稀疏)
+    expect(结果.sheets[0]?.rows).toHaveLength(3)
+    expect(结果.truncatedSheets).toEqual([])
+  })
+
   test("上限之外的空表不算「丢失」：skippedSheets 只收有 !ref 的表（I4）", () => {
     // Excel 新建工作簿默认就带空表（无 !ref）。把它算进 skippedSheets 会让 runJob
     // 把整份合法文件误判「有问题」——与「空表跳过、不算丢失」的既有口径矛盾。
