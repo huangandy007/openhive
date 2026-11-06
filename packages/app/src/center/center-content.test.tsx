@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "bun:test"
 import { createSignal, onMount, Show, type Component, type JSX } from "solid-js"
 import { Dynamic, render } from "solid-js/web"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
+import type { CaseDetailApi, 实体档案 } from "./case-detail-api"
 import { 加载上界, CenterContent } from "./center-content"
 import type { DegradedReason } from "./degraded-view"
 import { 清空会话改过, 触发重载 } from "./session-edits"
@@ -80,6 +81,8 @@ function setUp(
     页面可见?: () => boolean
     /** 「页面不露、也没 tab」时拿什么替（`CenterContentProps.empty`）。 */
     空态?: JSX.Element
+    /** 案件视图的数据源（`CenterContentProps.caseApi`）。不传 = 没这个 prop。 */
+    案件api?: CaseDetailApi
   } = {},
 ) {
   let center!: CenterTabs
@@ -94,6 +97,7 @@ function setUp(
         registry={options.registry ?? 注册(".docx")}
         load={options.load}
         save={options.save}
+        caseApi={options.案件api}
         pageVisible={options.页面可见?.()}
         empty={options.空态}
       >
@@ -649,5 +653,34 @@ describe("中栏重读：这份文件被会话改过、用户点了它（2026-10
     await 落定()
 
     expect(计数.n).toBe(1)
+  })
+})
+
+describe("中栏：case:// 伪路径走案件视图（计划 7 裁定 3）", () => {
+  const 档 = {
+    id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
+    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "张三。",
+  } as 实体档案
+  const 假案件api: CaseDetailApi = {
+    profile: async () => ({ kind: "ok", value: 档 }),
+    materialFacts: async () => ({ kind: "error", message: "未用" }),
+    timeline: async () => ({ kind: "ok", value: { 数据: [] } }),
+    money: async () => ({ kind: "ok", value: { 数据: {} } }),
+    graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
+  }
+
+  test("case:// 按前缀认，不按扩展名；不会降级成「不支持」", async () => {
+    const { host, 开, 降级 } = setUp({ 案件api: 假案件api })
+    await 开({ module: "project", title: "张三 · 人", path: "case://p-1/entity/e-%E5%BC%A0" })
+    for (let i = 0; i < 100 && host.querySelector("[data-slot='entity-profile-title']") === null; i += 1)
+      await 落定()
+    expect(host.querySelector("[data-slot='entity-profile-title']")!.textContent).toContain("张三")
+    expect(降级()).toBeNull()
+  })
+
+  test("坏的 case:// 照旧走降级（不白屏、不猜）", async () => {
+    const { 开, 降级 } = setUp({ 案件api: 假案件api })
+    await 开({ module: "project", title: "坏路径", path: "case://p-1/other/x" })
+    expect(降级("unsupported")).not.toBeNull()
   })
 })

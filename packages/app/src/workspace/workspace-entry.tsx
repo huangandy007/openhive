@@ -8,6 +8,7 @@ import { AssetNav } from "@/ai-assets/asset-nav"
 import { createAssetFilter } from "@/ai-assets/filter"
 import { ProjectionModuleProvider } from "@/ai-session/projection-module"
 import { useBigFileAsk } from "@/center/big-file-dialog"
+import type { CaseDetailApi } from "@/center/case-detail-api"
 import { CenterSplit } from "@/center/center-split"
 import type { LoadFileContent, SaveFileContent } from "@/center/file-content"
 import { createOpenFile } from "@/center/open-file"
@@ -93,6 +94,14 @@ export interface WorkspaceEntryProps {
    * 工具栏不渲染（`.md` / `.txt` 照常看，就是不能改）。
    */
   saveFile?: SaveFileContent
+  /**
+   * 【保留的定制 · 同步上游时不要丢】案件视图（`case://`）的数据源（计划 7）。
+   *
+   * 与 `loadFile` / `saveFile` / `projectData` 同一条注入纪律：本组件被组件测试裸挂，
+   * 自己取数就跑不成离线。省略 = 案件视图说「未接入」，一次请求都不发。
+   * 本组件**只转发**给中栏的 `CenterSplit`，不读它。
+   */
+  caseDetailApi?: CaseDetailApi
   /**
    * **项目这件事的数据源**（T018）：清单 / 新建 / 项目文件三条链都从它走。
    *
@@ -2402,6 +2411,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
               registry={viewRegistry}
               load={props.loadFile}
               save={props.saveFile}
+              caseApi={props.caseDetailApi}
               pageVisible={props.routePageVisible?.() ?? true}
               empty={
                 <div

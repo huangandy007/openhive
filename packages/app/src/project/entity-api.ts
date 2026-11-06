@@ -7,6 +7,7 @@
  * ⚠️ **不做逐字段形状校验**（与计划 6 的客户端一致）：本视图只画服务端给的清单，
  * 一处校验等于把「服务端多给 / 少给一个字段」变成整片空白，而不是一行画错。
  */
+import { 案件伪路径 } from "../center/case-route"
 import { noteStatus } from "./openhive-fetch"
 
 export type 结果<T> =
@@ -102,11 +103,16 @@ export function createEntityApi(send: CaseFetch = 默认发送): EntityApi {
   }
 }
 
-/** 中栏实体档案的伪路径（计划 7 的裁定 3：`case://<projectId>/<kind>/<参数>`）。 */
+/**
+ * 中栏实体档案的伪路径（计划 7 的裁定 3：`case://<projectId>/<kind>/<参数>`）。
+ *
+ * ⚠️ 这里**不自己拼串**：构造器只有一个（`center/case-route.ts` 的 `案件伪路径`），解析器也只认
+ * 那一种拼法（`LEARNINGS #002-06`）。本函数只是给左栏点开实体时用的「tab 三件套」包装。
+ */
 export function 实体路径(
   projectId: string,
   id: string,
   title: string,
 ): { module: string; title: string; path: string } {
-  return { module: "project", title, path: `case://${projectId}/entity/${encodeURIComponent(id)}` }
+  return { module: "project", title, path: 案件伪路径({ projectId, view: "entity", arg: id }) }
 }

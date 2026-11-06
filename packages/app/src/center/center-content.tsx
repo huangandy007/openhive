@@ -1,5 +1,8 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX, type ParentProps } from "solid-js"
 import { Dynamic } from "solid-js/web"
+import type { CaseDetailApi } from "./case-detail-api"
+import { CaseView } from "./case-view"
+import { 是案件路径, 解析案件路径 } from "./case-route"
 import { DegradedView, type DegradedReason } from "./degraded-view"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { 当前重载代 } from "./session-edits"
@@ -18,6 +21,14 @@ export interface CenterContentProps {
    * 传下去（`<Dynamic … save={props.save} />`），换实现不换视图实例。
    */
   save?: SaveFileContent
+  /**
+   * 案件视图的数据源（`case://` 伪路径，计划 7）。
+   *
+   * 与 `load` / `save` 同一个注入理由：本组件被测试裸挂，自己去 fetch 就跑不成离线。
+   * 省略 = `CaseView` 说「案件视图未接入」，一次请求都不发。
+   * ⚠️ **不进** `还是同一份`：换 api 身份不该重挂视图（同 `save` 那条理由）。
+   */
+  caseApi?: CaseDetailApi
   /**
    * 这一份内容区属于哪一栏（`0` 左/上、`1` 右/下）。
    *
@@ -71,7 +82,8 @@ export const 加载上界 = 15_000
 
 /**
  * 内容区此刻该显示什么，三选一：
- * - `view`：解析到了视图，且它已经到场
+ * - `view`：解析到了视图，且它已经到场（**文件视图与 `case://` 案件视图共用这一档**，
+ *   计划 7 裁定 4：不新开第三种 kind —— 比较器与重挂判据一字不用改）
  * - `degraded`：tab 开着，但这份内容**看不了**（没人认领的格式 / 预览组件没加载出来）
  * - `undefined`：没有激活的 tab —— 内容区交还调用方（生产里是上游路由页面）
  *
@@ -134,6 +146,21 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
      * 全绿也抓不到——所以本文件在 `center-content.test.tsx` 里有一条专门钉它的用例。
      */
     const 代 = 当前重载代(tab.path)
+
+    // `case://` 不是文件：先认前缀，别让 `extensionOf` 把它判成「无扩展名」而降级
+    // （`extensionOf("case://p/entity/x")` 会给 x 这个假扩展名，落进「没人认领」档）。
+    // ⚠️ 这一支必须**在 `extensionOf` 之前**：挪到后面，每个案件 tab 都会变成「不支持」。
+    // 认得出前缀、解不出段：这是**坏路径**，与「这份文件看不了」同一档呈现。
+    if (是案件路径(tab.path)) {
+      if (解析案件路径(tab.path)) {
+        // 复用 `view` 这一档（裁定 4）：比较器按 `Component`（恒为 `CaseView`）＋ `path` ＋ `代`
+        // 判「还是同一份」，换案件路径照旧重挂，一字不用改。
+        set内容({ kind: "view", Component: CaseView, path: tab.path, 代 })
+        return
+      }
+      set内容({ kind: "degraded", reason: "unsupported", name: tab.title })
+      return
+    }
 
     const extension = extensionOf(tab.path)
     const load = extension ? props.registry.resolve(extension) : undefined
@@ -211,7 +238,13 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
       <Show when={内容()} keyed>
         {(current) =>
           current.kind === "view" ? (
-            <Dynamic component={current.Component} path={current.path} load={props.load} save={props.save} />
+            // 案件视图与文件视图共用 `view` 这一档（见 `中栏内容` 的注释）；靠**组件身份**分开：
+            // 案件那一支挂的是本文件 import 进来的 `CaseView`，它不收 `load` / `save`、只收 `api`。
+            current.Component === CaseView ? (
+              <CaseView path={current.path} api={props.caseApi} />
+            ) : (
+              <Dynamic component={current.Component} path={current.path} load={props.load} save={props.save} />
+            )
           ) : (
             <DegradedView reason={current.reason} name={current.name} />
           )

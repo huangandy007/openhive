@@ -51,6 +51,9 @@ import { createCaseMaterials } from "@/project/case-materials-state"
 // 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：左栏「实体」视图的数据源。
 // 与 `PROJECT_DATA` 同款——模块级常量，整份交给 `WorkspaceEntry`（本层只建、不读）。
 import { createEntityApi } from "@/project/entity-api"
+// 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：中栏案件视图（`case://`）的取数客户端。
+// 与 `ENTITY_API` 同款——模块级建一次，整份交给 `WorkspaceEntry`（本层只建、不读）。
+import { createCaseDetailApi } from "@/center/case-detail-api"
 // ⚠️ openhive 定制（2026-10-08 顶栏改造）：这三行是要保留的定制 —— 合并上游时两侧都留着。
 // 顶栏（含品牌组 / 主页 / 站内信 / 全屏 / 用户区）从 `workspace-entry.tsx` 挪到这里挂：
 // 它现在顶掉的是上游那条带子，必须跟 `Titlebar` 同一层（理由见 `@/topbar/titlebar-host`）。
@@ -61,6 +64,9 @@ import { setV2Toast, ToastRegion } from "@/utils/toast"
 
 /** 实体视图的取数出口（计划 7）——与 `PROJECT_DATA` 同款：模块级建一次，整份交下去。 */
 const ENTITY_API = createEntityApi()
+
+/** 案件视图的取数客户端（计划 7）。无状态，模块级一份即可。 */
+const CASE_DETAIL_API = createCaseDetailApi()
 
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
@@ -242,6 +248,8 @@ export default function NewLayout(props: ParentProps) {
             // 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：左栏「实体」视图。
             // 与 `caseMaterials` 同一条注入纪律——本层建、往里只传值。
             entityApi={ENTITY_API}
+            // 【保留的定制 · 同步上游时不要丢】（计划 7，2026-11-06）：中栏案件视图（`case://`）。
+            caseDetailApi={CASE_DETAIL_API}
             // 【保留的定制 · 同步上游时不要丢】（2026-11-01 / skill 版本迭代）：发起新版本时要选
             // 「在哪个项目里改」。与上面那条同一条注入纪律——本层取、往里只传值。
             projects={projectList()}
