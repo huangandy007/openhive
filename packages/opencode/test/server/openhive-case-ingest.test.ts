@@ -40,6 +40,11 @@ function db() {
   return 库
 }
 
+/** `parseDetail` 是 `unknown`：用类型谓词收窄，别在断言里写 `as`（会引入 oxlint warning）。 */
+function 是对象(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null
+}
+
 function 造工作簿(sheets: Record<string, (string | number | null)[][]>): Uint8Array {
   const wb = XLSX.utils.book_new()
   for (const [name, rows] of Object.entries(sheets)) {
@@ -603,6 +608,14 @@ describe("作业项目目录", () => {
   test("反斜杠不是分隔符（Windows 单段路径直接拒）", () => {
     expect(作业项目目录(root, "u1\\p\\a.txt", "p")).toBeUndefined()
   })
+
+  test("混合分隔符不许把 .. 带出沙箱根", () => {
+    // 只按 `/` 切段时第二段仍是 `p`（项目闸通过），但 win32 的 `join` 认 `\`
+    // 并把 `..` 归一 ⇒ 目录落到沙箱根之外。POSIX 上 `\` 只是普通字符，构造不出越界，
+    // 与上面「反斜杠」那一条同款：只在 win32 断言（否则 Linux CI 是一条假红）。
+    if (process.platform === "win32")
+      expect(作业项目目录(root, "u1\\..\\../p/a.txt", "p")).toBeUndefined()
+  })
 })
 
 async function 查命中数(projectId: string): Promise<number> {
@@ -707,6 +720,13 @@ describe("文本作业（计划 4）", () => {
 
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("已解析")
+    // 成功路径也要留下片数与重试次数：审计三件套与 A17 的回读通过率都靠它们。
+    const 明细 = 材料?.parseDetail
+    if (!是对象(明细)) throw new Error("parse_detail 不是对象")
+    expect(typeof 明细.slices).toBe("number")
+    expect(Number(明细.slices)).toBeGreaterThanOrEqual(1)
+    expect(typeof 明细.attempts).toBe("number")
+    expect(Number(明细.attempts)).toBeGreaterThanOrEqual(1)
     // 不在这里断言 kind：本用例走 `enqueueMaterial`（默认 `其他`），类型猜测在 `入队材料`
     // 那一层（Task 1 已测）。文本分支本身不读 kind，别把两件事钉在一处。
 
@@ -744,6 +764,33 @@ describe("文本作业（计划 4）", () => {
       select text_content from auth.case_material where project_id = 'p-txt'
     `))
     expect(行[0]?.text_content).toBe(文本)
+  })
+
+  test("只有合法缺失（事件没给时间）⇒ 材料「已解析」，提示进 parse_detail.notes（I2）", async () => {
+    const 入 = await 入队文本("合法缺失.txt", "张三与李四见面。")
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(
+      db(),
+      {
+        ...deps,
+        建抽取器: async () =>
+          建假抽取器(() => ({
+            实体: [{ 类型: "人", 取值: "张三" }],
+            关系: [],
+            // 只缺时间：这是设计 §7.4 允许的输出（标存疑转人工），不是「没抽干净」。
+            事件: [{ 类型: "见面", 参与人: ["张三"], 原文: "张三与李四见面" }],
+          })),
+      },
+      job,
+    )
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const 明细 = 材料?.parseDetail
+    if (!是对象(明细)) throw new Error("parse_detail 不是对象")
+    expect(Array.isArray(明细.notes)).toBe(true)
+    expect(明细.notes).toEqual(expect.arrayContaining([expect.stringContaining("没有给时间")]))
   })
 
   test("回读不过 N 次 ⇒ 材料「有问题」＋ parse_detail.slices 有段号，作业仍「完成」", async () => {
@@ -793,6 +840,47 @@ describe("文本作业（计划 4）", () => {
       select count(*)::int as n from auth.case_entity where project_id = 'p-txt'
     `))
     expect(实体[0]?.n).toBe(3)
+  })
+
+  test("全部片失败的重放：零事实不删旧事实与旧引用（C1）", async () => {
+    const 入 = await 入队文本()
+    const 第一次 = await 认领本材料(入.materialId)
+    await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => 回答) }, 第一次)
+
+    // 直接查事实表与引用表（不是材料视图的 factCount）：这一条要钉的是「行还在不在」。
+    const 事实数 = async () => {
+      const r = rowsOf(
+        await db().execute(sql`
+          select
+            (select count(*)::int from auth.case_relation where project_id = 'p-txt') as 关系,
+            (select count(*)::int from auth.case_event where project_id = 'p-txt') as 事件,
+            (select count(*)::int from auth.case_citation where project_id = 'p-txt') as 引用
+        `),
+      )
+      return r[0]
+    }
+    expect(await 事实数()).toMatchObject({ 关系: 1, 事件: 1, 引用: 5 })
+
+    const 重排 = await 入队("p-txt", "笔录.txt", "fp-笔录.txt", true)
+    expect(重排.enqueued).toBe(true)
+    const 第二次 = await 认领本材料(入.materialId)
+    // `{}` 每一片 3 次都过不了结构校验 ⇒ 零事实、问题片非空。修前会先删旧事实再写 0 条。
+    const r = await runJob(
+      db(),
+      { ...deps, 建抽取器: async () => 建假抽取器(() => ({})) },
+      第二次,
+    )
+    expect(r).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 明细 = 材料?.parseDetail
+    if (!是对象(明细) || !Array.isArray(明细.slices))
+      throw new Error("parse_detail.slices 不是数组")
+    expect(明细.slices.length).toBeGreaterThan(0)
+
+    // 上一次的关系/事件/引用必须原样还在：删了它就是拿失败覆盖成功。
+    expect(await 事实数()).toMatchObject({ 关系: 1, 事件: 1, 引用: 5 })
   })
 
   test("取消（一片都没跑）后不再调模型、状态不被推进", async () => {

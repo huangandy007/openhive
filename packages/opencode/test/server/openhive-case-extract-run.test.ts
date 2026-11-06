@@ -124,7 +124,8 @@ describe("抽取材料", () => {
     expect(假.次数()).toBe(1)
     expect(r.片们[0]?.尝试).toBe(1)
     expect(r.片们[0]?.事件[0]?.存疑).toBe(true)
-    expect(r.片们[0]?.问题.length).toBe(1)
+    expect(r.片们[0]?.问题).toEqual([])
+    expect(r.片们[0]?.提示.length).toBe(1)
   })
 
   test("只重试失败的那一片", async () => {

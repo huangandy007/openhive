@@ -103,10 +103,72 @@ describe("删引用与删机器事实", () => {
     expect(关系.map((r) => r.id)).toEqual(["r-人工"])
     const 事件 = rowsOf(await db().execute(sql`select id from auth.case_event where project_id = ${项目}`))
     expect(事件.length).toBe(0)
+    // 人工事实（r-人工）被保留，它的引用也必须留着——否则事实还在、出处没了（I3）。
     const 引用 = rowsOf(await db().execute(sql`select id from auth.case_citation where project_id = ${项目}`))
-    expect(引用.length).toBe(0)
+    expect(引用.map((c) => c.id)).toEqual(["c-r-人工"])
     const 实体行 = rowsOf(await db().execute(sql`select id from auth.case_entity where project_id = ${项目}`))
     expect(实体行.length).toBe(2)
+  })
+
+  test("重放只删「不会被保留的事实」的引用：人工事实的出处留下（I3）", async () => {
+    const 实体 = await upsertEntity(db(), {
+      projectId: 项目,
+      id: "e-重放",
+      type: "人",
+      canonicalValue: "赵六",
+      aliases: [],
+    })
+    await insertRelation(db(), {
+      projectId: 项目,
+      id: "r-保留",
+      fromId: 实体,
+      toId: 实体,
+      type: "同案",
+      basis: "供述指认",
+      sourceKind: "human",
+      trustState: "已确认",
+    })
+    await insertRelation(db(), {
+      projectId: 项目,
+      id: "r-重放",
+      fromId: 实体,
+      toId: 实体,
+      type: "同案",
+      basis: "供述指认",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+    // 两条引用都是 `机器` 建的：判断依据是「事实会不会被保留」，不是引用自己怎么来的。
+    for (const factId of ["r-保留", "r-重放"]) {
+      await addCitation(db(), {
+        id: `c-${factId}`,
+        projectId: 项目,
+        factType: "relation",
+        factId,
+        materialId: 材料,
+        locator: { start: 0, end: 10 },
+        extractMethod: "机器",
+      })
+    }
+
+    // 按生产顺序：先删事实，再删引用。
+    await 删除本材料的事实(db(), 项目, 材料)
+    await deleteCitationsOfMaterial(db(), 项目, 材料)
+
+    const 关系 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_relation
+         where project_id = ${项目} and id in ('r-保留', 'r-重放') order by id
+      `),
+    )
+    expect(关系.map((r) => r.id)).toEqual(["r-保留"])
+    const 引用 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_citation
+         where project_id = ${项目} and id in ('c-r-保留', 'c-r-重放') order by id
+      `),
+    )
+    expect(引用.map((c) => c.id)).toEqual(["c-r-保留"])
   })
 })
 

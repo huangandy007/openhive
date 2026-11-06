@@ -259,7 +259,13 @@ export function 作业项目目录(root: string, sourcePath: string, projectId: 
   if (!前段可用(段[0]) || !前段可用(段[1])) return undefined
   if (段[1] !== projectId) return undefined
   if (段.slice(2).some((一段) => 一段 === "" || 一段 === "." || 一段 === "..")) return undefined
-  return join(root, 段[0], 段[1])
+  const 目录 = join(root, 段[0], 段[1])
+  // 只按 `/` 切段不足以判归属——win32 的 `join` 认 `\`（`#009-03`：判归属别只看字面）。
+  // `u1\..\../p/a.txt` 的**字面**第二段仍是 `p`，项目闸因此通过，但 join 归一后目录
+  // 落到沙箱根之外。复用同文件 `沙箱内路径` 的惯用法：归一后判相对式。
+  const 相对 = relative(root, 目录)
+  if (相对 === "" || 相对 === ".." || 相对.startsWith(`..${sep}`) || isAbsolute(相对)) return undefined
+  return 目录
 }
 
 /** 目录前两段只接受普通的非空名字：`.` / `..` / 空串都会把落点带偏。 */
@@ -447,6 +453,12 @@ async function 跑文本(
   const 问题片 = 输出.片们.filter((片) => 片.问题.length > 0)
   // 抽取条数按片累加、未去重——它只进 `parse_detail` 给人看；视图里的计数另算（R10）。
   const 抽取条数 = 输出.片们.reduce((n, 片) => n + 片.实体.length + 片.关系.length + 片.事件.length, 0)
+  // 合法缺失 / 内容调整的说明（I2）：只进 `parse_detail.notes` 供审计，不参与「问题片」判定。
+  // 限长是为了不让一份材料把审计字段撑爆（每片都可能给几十条）。
+  const 提示们 = 输出.片们
+    .flatMap((片) => 片.提示)
+    .slice(0, 20)
+    .map((一条) => 一条.slice(0, 200))
 
   // 两种「零结果」要分开说，且都必须在事务**之前**抛（事务一提交，抛错只会让材料落「有问题」
   // 却留下一批已入库的旧事实）。
@@ -461,13 +473,25 @@ async function 跑文本(
   // 删旧事实等于把「取消」做成了「清空」。
   const 零片取消 = 已取消 && 输出.片们.length === 0
 
+  // 「一条新事实都没抽到」＝「这次什么都没带回来」：全部片失败（超时/限流/结构非法/
+  // 回读不过耗尽重试）正是「零事实但有失败片」，此时删除就是拿失败覆盖成功。
+  // 与 `跑表格` 的口径一致：读表或认列失败时，上一次的结果原样保留（`:274-278`）。
+  const 无新事实 = 抽取条数 === 0
+
+  // 取消的两种口径是**有意不对称**的：
+  // - 零片取消：本次没有可保留的切片，删旧事实等于把「取消」做成「清空」⇒ 不动旧结果。
+  // - 已跑 ≥1 片再取消：本次已产出的切片覆盖旧结果（设计 §8.1「停下并保留已提交的切片」）；
+  //   材料仍落「有问题」或「完成」，按本轮结果算——这是预期行为，不是漏判。
+  // 读代码时别把后一种当成漏判：它不是遗留缺陷，是有意为之。
+
   // 同一个事实 id 只写一次：模型在同一片里重复输出同一条关系/事件时，两条的 id 相同；
   // 不跳过的话第二条的引用 id 也相同 ⇒ `case_citation` 主键冲突（23505），整个事务回滚。
   // 一条重复输出就能让整份材料解析失败，而重试还会一模一样地失败。
   const 已写事实 = new Set<string>()
 
   await inTransaction(db, async (tx) => {
-    if (!零片取消) {
+    // 两件必须一起跳：只跳一条会留下没被引用的旧事实，或者留下指向已删事实的孤儿引用。
+    if (!零片取消 && !无新事实) {
       await 删除本材料的事实(tx, job.projectId, job.materialId)
       await deleteCitationsOfMaterial(tx, job.projectId, job.materialId)
     }
@@ -579,6 +603,7 @@ async function 跑文本(
             promptVersion: 输出.prompt版本,
             attempts: Math.max(...问题片.map((片) => 片.尝试)),
             factCount: 抽取条数,
+            notes: 提示们,
           },
         })
       } else {
@@ -590,6 +615,10 @@ async function 跑文本(
             model: 输出.模型标识,
             promptVersion: 输出.prompt版本,
             factCount: 抽取条数,
+            // 设计 §7.4 的审计三件套（模型名/版本、prompt 版本、重试次数）与 A17 的片数。
+            slices: 输出.片们.length,
+            attempts: Math.max(1, ...输出.片们.map((片) => 片.尝试)),
+            notes: 提示们,
           },
         })
       }

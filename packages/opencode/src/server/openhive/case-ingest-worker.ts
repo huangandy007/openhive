@@ -49,7 +49,7 @@ export const 抽取模型ENV = "OPENHIVE_CASE_EXTRACT_MODEL"
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     if (process.env[消费开关ENV] === "0") {
-      yield* Effect.logDebug("表格导入消费未启用：OPENHIVE_CASE_INGEST_WORKER=0")
+      yield* Effect.logDebug("案件导入消费未启用：OPENHIVE_CASE_INGEST_WORKER=0")
       return
     }
 
@@ -57,7 +57,7 @@ export const layer = Layer.effectDiscard(
     // 起了的话每 2 秒一条 WARN、一天 43200 条，把真正的告警淹掉。
     // 与 `mcp-config-sync` 的 `已启用` 同一条判据形状。
     if (!PG_ENV.every((key) => process.env[key])) {
-      yield* Effect.logDebug("表格导入消费未启用：未配置 PG")
+      yield* Effect.logDebug("案件导入消费未启用：未配置 PG")
       return
     }
 
@@ -132,7 +132,7 @@ export const layer = Layer.effectDiscard(
     ).pipe(
       Effect.catchCause((cause) =>
         // 只记类型名：PG 的 pretty 文本可能带连接串（同 `mcp-config-sync.ts`）。
-        Effect.logWarning("表格导入消费跳过", {
+        Effect.logWarning("案件导入消费跳过", {
           error: Cause.prettyErrors(cause).map((error) => error.name),
         }),
       ),

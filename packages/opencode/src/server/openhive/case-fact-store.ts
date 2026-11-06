@@ -172,14 +172,35 @@ export async function 删除本材料的事实(db: Queryable, projectId: string,
   `)
 }
 
+/**
+ * 删除本材料**不会被保留的事实**的引用（重放前清理）。
+ *
+ * 判断依据是「事实会不会被保留」，**不是引用自己怎么来的**：人工确认的事实，它的引用
+ * 往往是抽取时以 `机器` 建的；按 `extract_method` 删会把出处一起删掉，而事实行因为
+ * `on conflict do nothing` 不会重建引用 ⇒ locator 永久消失。
+ *
+ * - 关系 / 事件：`已确认`/`已修正`/`已排除` 的事实会被 `删除本材料的事实` 保留，
+ *   它们的引用也留着（`not exists` 两个子查询）。
+ * - 实体：实体本身从不删除，重放会重新引用；没再被抽到就该失去这条出处 ⇒ 照旧全删。
+ */
 export async function deleteCitationsOfMaterial(
   db: Queryable,
   projectId: string,
   materialId: string,
 ): Promise<void> {
   await db.execute(sql`
-    delete from auth.case_citation
-     where project_id = ${projectId} and material_id = ${materialId}
+    delete from auth.case_citation c
+     where c.project_id = ${projectId} and c.material_id = ${materialId}
+       and not exists (
+         select 1 from auth.case_relation r
+          where c.fact_type = 'relation' and r.project_id = c.project_id and r.id = c.fact_id
+            and r.trust_state in ('已确认','已修正','已排除')
+       )
+       and not exists (
+         select 1 from auth.case_event e
+          where c.fact_type = 'event' and e.project_id = c.project_id and e.id = c.fact_id
+            and e.trust_state in ('已确认','已修正','已排除')
+       )
   `)
 }
 
