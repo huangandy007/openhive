@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "../../src/server/openhive/case-store"
 
 /**
@@ -104,8 +105,5 @@ export async function 读一列(
   db: Queryable,
   query: ReturnType<typeof sql>,
 ): Promise<unknown[]> {
-  const 结果 = await db.execute(query)
-  const 行们 = (结果 as unknown as { rows?: Record<string, unknown>[] }).rows ?? []
-  const 值 = 行们.map((行) => Object.values(行)[0])
-  return 值
+  return rowsOf(await db.execute(query)).map((行) => Object.values(行)[0])
 }

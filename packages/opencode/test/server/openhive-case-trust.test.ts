@@ -6,7 +6,7 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 变更历史 } from "../../src/server/openhive/case-fact-change"
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 裁决 } from "../../src/server/openhive/case-trust"
-import { 建关系, 建实体, 建事件 } from "./openhive-case-fact-fixture"
+import { 建关系, 建实体, 建事件, 读一列 } from "./openhive-case-fact-fixture"
 
 /**
  * 裁决的库级用例（计划 5 Task 3）。
@@ -179,5 +179,16 @@ describe("裁决：三态", () => {
     await expect(
       裁决(库(), { projectId: "p-别处", factType: "relation", factId: "r-隔离", action: "确认", by: 甲 }),
     ).rejects.toMatchObject({ code: "fact_not_found" })
+  })
+})
+
+/**
+ * 夹具自检：`读一列` 若恒返回空数组，「查不到」的断言（`toEqual([])` /
+ * `toHaveLength(0)`）就会永远绿——这正是后续 Task 4–7 最容易踩的假绿。
+ */
+describe("夹具自检", () => {
+  test("读一列 真能读到值（防止恒空导致的假绿）", async () => {
+    const 值 = await 读一列(库(), sql`select count(*) from auth.user where id = ${甲}`)
+    expect(值.map((一个) => Number(一个))).toEqual([1])
   })
 })
