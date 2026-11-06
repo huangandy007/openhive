@@ -156,6 +156,7 @@ import {
 import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { enqueueMaterial } from "./case-ingest"
+import { 可解析表格 } from "./case-parseable"
 import type { Queryable } from "./case-store"
 import { OpenhivePg } from "./pg"
 
@@ -457,7 +458,7 @@ function projectDirectoryOf(
  * `\0` 单独挡：Node 的 fs 遇到它抛的是 `TypeError`（**不是**带 `code` 的 `ErrnoException`），
  * 混进下面那套错误映射里会变成 500。
  */
-function inside(base: string, input: string): string | undefined {
+export function inside(base: string, input: string): string | undefined {
   if (input.includes("\0")) return undefined
   const target = resolve(base, input)
   const rest = relative(base, target)
@@ -475,7 +476,7 @@ function inside(base: string, input: string): string | undefined {
 const relativePath = (base: string, absolute: string) => relative(base, absolute).split(sep).join("/")
 
 /** 链接把落点带出了项目——各出口共用一句话，免得同一件事长出多种措辞。 */
-const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
+export const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
 
 /** 碰到版本库元数据时回的那句话。各出口共用一句（同 `LINK_ESCAPE` 的理）。 */
 const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
@@ -540,7 +541,7 @@ function inGit(project: string, absolute: string): boolean {
  * ⚠️ **`existing` 必须已经存在**（`realpath` 解不出不存在的路径）。调用点都排在各自的
  * `stat` 检查**之后**——那样「目标目录不存在」还是它自己那句话，不会被误报成链接越界。
  */
-function realInside(project: string, existing: string) {
+export function realInside(project: string, existing: string) {
   return Effect.promise(async () => {
     const [真项目, 真路径] = await Promise.all([
       realpath(project).catch(() => undefined),
@@ -664,9 +665,6 @@ function handleTransfer(
   })
 }
 
-/** 表格材料的扩展名白名单。计划 3 的右键「解析入库」接管之后，这里的默认值仍是「表格就排队」。 */
-const 可解析扩展名 = [".xlsx", ".xls", ".csv"] as const
-
 /**
  * 上传落盘后顺手入队（设计 §5.2 第 1 步）。
  *
@@ -691,6 +689,13 @@ export async function 入队表格材料(
     bytes: Uint8Array
     fileName: string
     by: string
+    /**
+     * 强制重解析：右键「重新解析」传 `true`，已解析的材料也重新排队。
+     *
+     * ⚠️ 不能把「已解析也排队」写进上传路径的默认值：上传是幂等的（重拖同一个文件不该
+     * 再跑一遍），强制重来是**用户显式点的**那一下。
+     */
+    force?: boolean
   },
 ): Promise<{ materialId: string; enqueued: boolean } | undefined> {
   // 相对输入一律跳过：下面两道 `inside` 闸在相对 base 下是 **fail-open**
@@ -703,7 +708,7 @@ export async function 入队表格材料(
   if (inside(input.project, input.target) === undefined) return undefined
 
   const 项目相对 = relativePath(input.project, input.target)
-  if (!可解析扩展名.some((扩展名) => 项目相对.toLowerCase().endsWith(扩展名))) return undefined
+  if (!可解析表格(项目相对)) return undefined
 
   const 沙箱相对 = relative(input.root, input.project).split(sep).join("/")
   const 段 = 沙箱相对.split("/")
@@ -717,6 +722,7 @@ export async function 入队表格材料(
     // 指纹是**内容哈希**：同一个文件换个名字重拖仍是同一条材料（判据 A2）。
     fingerprint: Hash.sha256(Buffer.from(input.bytes)),
     by: input.by,
+    ...(input.force === true ? { force: true } : {}),
   })
 }
 
