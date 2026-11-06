@@ -242,7 +242,19 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
             // 案件视图与文件视图共用 `view` 这一档（见 `中栏内容` 的注释）；靠**组件身份**分开：
             // 案件那一支挂的是本文件 import 进来的 `CaseView`，它不收 `load` / `save`、只收 `api`。
             current.Component === CaseView ? (
-              <CaseView path={current.path} api={props.caseApi} />
+              // 档案页 / 关系图的跳转在这一层落地：`CaseView` 自己不读 context（见它的注释），
+              // 由这里把「开一条新 tab」的出口传下去。模块沿用当前值（同一场分析不该跳模块），
+              // 栏沿用当前激活栏（在右栏点开的，新 tab 也开在右栏）。
+              <CaseView
+                path={current.path}
+                api={props.caseApi}
+                open={(输入) =>
+                  center.open(
+                    { module: center.module() ?? "project", title: 输入.title, path: 输入.path },
+                    center.activePane(),
+                  )
+                }
+              />
             ) : (
               <Dynamic component={current.Component} path={current.path} load={props.load} save={props.save} />
             )

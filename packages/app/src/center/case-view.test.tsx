@@ -77,4 +77,49 @@ describe("案件视图外壳", () => {
     // 传下去的必须是解码后的 `arg`，不是 tab 里那串 `%E6%9D%90%E6%96%99…`。
     expect(收到).toEqual(["材料/话单.xlsx"])
   })
+
+  test("档案页点「时间线」⇒ 通过 open 交出一条新 tab 的标题与路径", async () => {
+    const 收到: Array<{ title: string; path: string }> = []
+    const host = mount(() => (
+      <CaseView path="case://p-1/entity/e-%E5%BC%A0" api={api} open={(输入) => 收到.push(输入)} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-open-timeline']").length === 1)
+    host.querySelector<HTMLElement>("[data-slot='entity-open-timeline']")!.click()
+    expect(收到).toEqual([{ title: "张三 · 时间线", path: "case://p-1/timeline/e-%E5%BC%A0" }])
+  })
+
+  test("时间线 / 资金 / 关系图路径各自渲染对应视图", async () => {
+    for (const [view, slot] of [
+      ["timeline", "timeline-event"],
+      ["money", "money-summary"],
+      ["graph", "graph-node"],
+    ] as const) {
+      const host = mount(() => (
+        <CaseView
+          path={`case://p-1/${view}/e-%E5%BC%A0`}
+          api={{
+            ...api,
+            timeline: async () => ({
+              kind: "ok",
+              value: { 数据: [{ id: "ev-1", type: "见面", occurred_at: 1, participants: [], summary: "见面" }] },
+            }),
+            money: async () => ({ kind: "ok", value: { 数据: { 汇总: [{ 方向: "出", 笔数: 1, 合计: "1.00" }] } } }),
+            graph: async () => ({
+              kind: "ok",
+              value: {
+                节点: [
+                  { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
+                  { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+                ],
+                边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+                缺口: [],
+              },
+            }),
+          }}
+        />
+      ))
+      await 等(() => host.querySelectorAll(`[data-slot='${slot}']`).length > 0)
+      document.body.innerHTML = ""
+    }
+  })
 })

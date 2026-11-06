@@ -31,6 +31,15 @@ describe("案件伪路径", () => {
     expect(解析案件路径(实体路径(projectId, id, "张三").path)).toEqual({ projectId, view: "entity", arg: id })
   })
 
+  test("时间线 / 资金 / 关系图三种路径都往返", () => {
+    for (const view of ["timeline", "money", "graph"] as const)
+      expect(解析案件路径(案件伪路径({ projectId: "p-1", view, arg: "e-张" }))).toEqual({
+        projectId: "p-1",
+        view,
+        arg: "e-张",
+      })
+  })
+
   test("非 case:// 一律 undefined", () => {
     expect(是案件路径("/p/立项书.docx")).toBe(false)
     expect(解析案件路径("/p/立项书.docx")).toBeUndefined()

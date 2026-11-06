@@ -1,19 +1,24 @@
 import { Show, type JSX } from "solid-js"
-import type { CaseDetailApi } from "./case-detail-api"
-import { 解析案件路径, type 案件路径 } from "./case-route"
+import type { CaseDetailApi, 图节点 } from "./case-detail-api"
+import { 案件伪路径, 解析案件路径, type 案件视图, type 案件路径 } from "./case-route"
 import { EntityProfile } from "./case-views/entity-profile"
+import { Graph } from "./case-views/graph"
 import { MaterialFacts } from "./case-views/material-facts"
+import { Money } from "./case-views/money"
+import { Timeline } from "./case-views/timeline"
 
 export interface CaseViewProps {
   readonly path: string
   readonly api?: CaseDetailApi
+  /** 中栏已有 `center` 的那一层给；省略 = 跳转按钮点了没反应（测试壳里就是省略）。 */
+  readonly open?: (input: { readonly title: string; readonly path: string }) => void
 }
 
 /**
  * `case://` 伪路径的中栏入口。**不读 context**：它由 `center-content.tsx` 渲染，
- * 打开别的 tab 要靠那一层（Task 8 才需要），这里只负责「按 view 选组件」。
+ * 打开别的 tab 要靠那一层（`open` 回调），这里只负责「按 view 选组件」。
  *
- * `switch` 而不是查表：Task 7 / 8 加视图时 TS 会逼着把新分支写全（穷尽检查），
+ * `switch` 而不是查表：加视图时 TS 会逼着把新分支写全（穷尽检查），
  * 查表漏一条只会静默落到 default。
  */
 export function CaseView(props: CaseViewProps): JSX.Element {
@@ -36,7 +41,7 @@ export function CaseView(props: CaseViewProps): JSX.Element {
               </p>
             }
           >
-            {(api) => 视图(路径(), api())}
+            {(api) => 视图(路径(), api(), props.open)}
           </Show>
         )}
       </Show>
@@ -44,11 +49,40 @@ export function CaseView(props: CaseViewProps): JSX.Element {
   )
 }
 
-function 视图(路径: 案件路径, api: CaseDetailApi): JSX.Element {
+function 视图(路径: 案件路径, api: CaseDetailApi, open: CaseViewProps["open"]): JSX.Element {
+  /** 同一实体换视图：arg 一律是实体 id；标题由点按钮的那一层给。 */
+  const 跳到 = (view: 案件视图, title: string) =>
+    open?.({ title, path: 案件伪路径({ projectId: 路径.projectId, view, arg: 路径.arg }) })
+
   switch (路径.view) {
     case "entity":
-      return <EntityProfile projectId={路径.projectId} id={路径.arg} api={api} />
+      return (
+        <EntityProfile
+          projectId={路径.projectId}
+          id={路径.arg}
+          api={api}
+          onOpen={(view, 标题) => 跳到(view, 标题)}
+        />
+      )
     case "material":
       return <MaterialFacts projectId={路径.projectId} path={路径.arg} api={api} />
+    case "timeline":
+      return <Timeline projectId={路径.projectId} id={路径.arg} api={api} />
+    case "money":
+      return <Money projectId={路径.projectId} id={路径.arg} api={api} />
+    case "graph":
+      return (
+        <Graph
+          projectId={路径.projectId}
+          id={路径.arg}
+          api={api}
+          onOpenEntity={(点: 图节点) =>
+            open?.({
+              title: `${点.value} · ${点.type}`,
+              path: 案件伪路径({ projectId: 路径.projectId, view: "entity", arg: 点.id }),
+            })
+          }
+        />
+      )
   }
 }

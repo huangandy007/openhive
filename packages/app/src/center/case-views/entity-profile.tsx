@@ -6,6 +6,8 @@ export interface EntityProfileProps {
   readonly projectId: string
   readonly id: string
   readonly api: CaseDetailApi
+  /** 三个跳转；标题在这里拼（档案页手里有规范值，`CaseView` 只认路径）。 */
+  readonly onOpen: (view: "timeline" | "money" | "graph", 标题: string) => void
 }
 
 /**
@@ -32,15 +34,23 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void api.profile(projectId, id).then((结果) => {
-      if (作废) return
-      set载入(false)
-      if (结果.kind === "error") {
-        set错误(结果.message)
-        return
-      }
-      set档(结果.value)
-    })
+    void api.profile(projectId, id)
+      .then((结果) => {
+        if (作废) return
+        set载入(false)
+        if (结果.kind === "error") {
+          set错误(结果.message)
+          return
+        }
+        set档(结果.value)
+      })
+      // ⚠️ 必须接 rejection：不接就是「载入中」永远不散 ＋ 一条 unhandled rejection。失败与
+      // `kind: "error"` 是同一件事（读不到档案），说法也只该有一种（同一个错误信号）。
+      .catch((错误值: unknown) => {
+        if (作废) return
+        set载入(false)
+        set错误(错误值 instanceof Error ? 错误值.message : "读取实体档案失败")
+      })
   })
 
   const 数据说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind !== "human") ?? [])
@@ -67,7 +77,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
               <h1 data-slot="entity-profile-title" class="text-[18px] font-semibold text-v2-text-text-base">
                 {档().canonical_value}
               </h1>
-              <span class="rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted">{档().type}</span>
+              <span data-slot="entity-profile-type" class="rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted">{档().type}</span>
               <span class="rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted">{档().trust_state}</span>
             </div>
             <Show when={档().aliases.length > 0}>
@@ -79,6 +89,26 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
             <p data-slot="entity-profile-conclusion" class="mt-2 text-[13px] text-v2-text-text-base">
               {档().一句话}
             </p>
+            {/* 同一实体换视图：路径由 `CaseView` 拼（它手里有 projectId 与 id），标题在这里拼
+                （档案页手里有规范值，关系图 / 时间线只拿到 id）。 */}
+            <div class="mt-2 flex flex-wrap gap-1">
+              <For each={[
+                ["timeline", "时间线", "entity-open-timeline"],
+                ["money", "资金", "entity-open-money"],
+                ["graph", "关系图", "entity-open-graph"],
+              ] as const}>
+                {([视图, 文案, slot]) => (
+                  <button
+                    type="button"
+                    data-slot={slot}
+                    onClick={() => props.onOpen(视图, `${档().canonical_value} · ${文案}`)}
+                    class="h-7 rounded-[4px] bg-v2-background-bg-layer-01 px-2 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                  >
+                    {文案}
+                  </button>
+                )}
+              </For>
+            </div>
             {/* 服务端截断（关系 / 事件只列了前 N 条）就照实说，与清单的 `缺口` 同一套口径。
                 省略这一块 = 把「只列了前 200 条」冒充成「就这 200 条」。 */}
             <For each={档().缺口 ?? []}>
