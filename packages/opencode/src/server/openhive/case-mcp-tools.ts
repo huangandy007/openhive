@@ -431,3 +431,233 @@ export async function get_citation(
     口径: "`事实` 与 `变更历史` 沿用仓内只读出口的字段名，`引用` 为库列名。",
   }
 }
+
+/** 三个块的固定上界（没有 `限制` 参数，写在 SQL 里）。 */
+const 对手方上限 = 10
+const 余额行上限 = 200
+const 每侧关系上限 = 500
+
+/**
+ * 资金聚合：汇总 / 对手方 / 余额走势三块，**每块的口径与缺口随结果一起返回**。
+ *
+ * 账户先解析成实体（`解析实体` 给 `{ id, value }`）：
+ * - 关系类（汇总、对手方）比 `from_id` / `to_id`，用 `id`；
+ * - 明细行（余额走势）比 `counterparty` / `caller` / `callee`，用 `value`——
+ *   明细行里存的是实体**规范值**，不是 id（Task 3 复审的 Critical：按 id 比在生产恒空）。
+ *
+ * 金额与余额一律 `::text` 出库当字符串：`numeric` 的读回形状随驱动而变，`::text` 两个驱动
+ * 拿到的是同一串（并保留列的小数位，`"100.00"` 不会变成 `100`）。
+ */
+export async function aggregate_money(
+  ctx: 工具上下文,
+  args: { 账户: string; 起?: number; 止?: number },
+): Promise<工具结果> {
+  校验时间窗(args)
+  const 账户 = await 解析实体(ctx, args.账户, "账户")
+
+  const 汇总条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`type = '转账'`,
+    sql`trust_state <> '已排除'`,
+    sql`(from_id = ${账户.id} or to_id = ${账户.id})`,
+  ]
+  const 对手方条件: SQL[] = [
+    sql`r.project_id = ${ctx.身份.projectId}`,
+    sql`r.type = '转账'`,
+    sql`r.trust_state <> '已排除'`,
+    sql`(r.from_id = ${账户.id} or r.to_id = ${账户.id})`,
+  ]
+  // 时间窗与 `query_relations` 同口径：最晚不早于「起」、最早不晚于「止」，两端都缺按 0 兜底。
+  if (args.起 !== undefined) {
+    汇总条件.push(sql`coalesce(last_at, first_at, 0) >= ${args.起}`)
+    对手方条件.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${args.起}`)
+  }
+  if (args.止 !== undefined) {
+    汇总条件.push(sql`coalesce(first_at, last_at, 0) <= ${args.止}`)
+    对手方条件.push(sql`coalesce(r.first_at, r.last_at, 0) <= ${args.止}`)
+  }
+
+  const 汇总 = rowsOf(
+    await ctx.db.execute(sql`
+      select case when from_id = ${账户.id} then '出' else '入' end as 方向,
+             count(*)::int as 笔数,
+             coalesce(sum(amount), 0)::text as 合计
+        from auth.case_relation
+       where ${sql.join(汇总条件, sql` and `)}
+       group by 方向
+       order by 方向
+    `),
+  ).map((行) => ({
+    方向: String(行.方向),
+    笔数: Number(行.笔数),
+    合计: String(行.合计),
+  }))
+  // 执行序不依赖库的字符串排序：2026-11-06 本机 PGlite 实测 `order by 方向` 先回「入」，
+  // 而口径固定「出 → 入」。缺了这一步，同样的库、不同的 collation 就会换顺序。
+  汇总.sort((左, 右) => (左.方向 === "出" ? 0 : 1) - (右.方向 === "出" ? 0 : 1))
+
+  const 对手方 = rowsOf(
+    await ctx.db.execute(sql`
+      select 对手.canonical_value as 对手方,
+             case when r.from_id = ${账户.id} then '出' else '入' end as 方向,
+             count(*)::int as 笔数,
+             coalesce(sum(r.amount), 0)::text as 合计
+        from auth.case_relation r
+        join auth.case_entity 对手
+          on 对手.project_id = r.project_id
+         and 对手.id = case when r.from_id = ${账户.id} then r.to_id else r.from_id end
+       where ${sql.join(对手方条件, sql` and `)}
+       group by 对手.canonical_value, 方向
+       order by sum(r.amount) desc nulls last, 对手.canonical_value asc
+       limit ${对手方上限}
+    `),
+  ).map((行) => ({
+    对手方: String(行.对手方),
+    方向: String(行.方向),
+    笔数: Number(行.笔数),
+    合计: String(行.合计),
+  }))
+
+  const 余额条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`(counterparty = ${账户.value} or caller = ${账户.value} or callee = ${账户.value})`,
+  ]
+  if (args.起 !== undefined) 余额条件.push(sql`started_at is not null and started_at >= ${args.起}`)
+  if (args.止 !== undefined) 余额条件.push(sql`started_at is not null and started_at <= ${args.止}`)
+  const 余额行 = rowsOf(
+    await ctx.db.execute(sql`
+      select material_id, sheet, row_no, started_at,
+             amount::text as amount, balance::text as balance
+        from auth.case_fact_row
+       where ${sql.join(余额条件, sql` and `)}
+       order by started_at asc nulls last, material_id asc, sheet asc, row_no asc
+       limit ${余额行上限}
+    `),
+  )
+  // `balance` 为 null 的行不参与首末与极值；顺序已由 SQL 按 `started_at` 升序定死
+  // （不是数组首末——`nulls last` 会让无时间的行排在最后）。
+  const 余额们 = 余额行.flatMap((行) => (typeof 行.balance === "string" ? [行.balance] : []))
+  const 余额走势 =
+    余额行.length === 0
+      ? null
+      : 余额们.length === 0
+        ? { 首: null, 末: null, 最高: null, 最低: null, 行数: 余额行.length }
+        : {
+            首: 余额们[0],
+            末: 余额们[余额们.length - 1],
+            最高: 余额们.reduce((甲, 乙) => (Number(乙) > Number(甲) ? 乙 : 甲)),
+            最低: 余额们.reduce((甲, 乙) => (Number(乙) < Number(甲) ? 乙 : 甲)),
+            行数: 余额行.length,
+          }
+
+  const 缺口 = [
+    "只统计已抽成关系（type=转账）的转账；明细行里未抽成关系的转账不计入",
+    "对手方按实体规范值聚合；未合并的重复实体不会自动合并",
+    "余额只按精确匹配取明细行，未做模糊匹配；超过 200 行截断",
+  ]
+  if (余额行.length === 0) 缺口.push("本项目明细行里没有该账户的流水（按 counterparty/caller/callee 精确匹配）")
+
+  return {
+    数据: { 汇总, 对手方, 余额走势 },
+    口径:
+      "汇总与对手方只统计 type=转账 且非「已排除」的关系，按出/入分组；金额为 numeric 字符串，勿自行转浮点；" +
+      "余额走势按明细行的 counterparty/caller/callee 精确匹配账户的实体规范值。",
+    缺口,
+  }
+}
+
+/**
+ * 交叉分析：共同关联（关系另一端的交集）＋ 共同时空（事件参与者同时含两人）。
+ *
+ * 共同关联**每侧各查一次**再在 JS 求交：合成一条 `or` 查询再 `limit 500` 会让一方的边
+ * 把配额吃光，另一方的交集被静默截断。
+ *
+ * 共同时空必须比 `participants` 里的**实体规范值**（不是 id）：`participants` 的唯一写口
+ * `case-extract.ts:433` 写的是 `canonicalValue`，拿 id 比会恒空。
+ */
+export async function find_crossings(
+  ctx: 工具上下文,
+  args: { 甲: string; 乙: string; 起?: number; 止?: number },
+): Promise<工具结果> {
+  校验时间窗(args)
+  const 甲 = await 解析实体(ctx, args.甲, "甲")
+  const 乙 = await 解析实体(ctx, args.乙, "乙")
+
+  const 另一端们 = async (实体id: string): Promise<{ 值们: string[]; 用满: boolean }> => {
+    const 值们 = rowsOf(
+      await ctx.db.execute(sql`
+        select case when from_id = ${实体id} then to_id else from_id end as 另一端
+          from auth.case_relation
+         where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+           and (from_id = ${实体id} or to_id = ${实体id})
+         order by 另一端 asc
+         limit ${每侧关系上限}
+      `),
+    ).map((行) => String(行.另一端))
+    return { 值们, 用满: 值们.length === 每侧关系上限 }
+  }
+  // 顺序执行：夹具把多条连接汇进同一个 PG 会话，不并发建两份语句缓存。
+  const 侧甲 = await 另一端们(甲.id)
+  const 侧乙 = await 另一端们(乙.id)
+  const 乙集 = new Set(侧乙.值们)
+  const 交集 = [...new Set(侧甲.值们)].filter((id) => 乙集.has(id))
+
+  const 共同关联 =
+    交集.length === 0
+      ? []
+      : rowsOf(
+          await ctx.db.execute(sql`
+            select id, type, canonical_value as value, trust_state
+              from auth.case_entity
+             where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+               and id in (${sql.join(
+                 交集.map((id) => sql`${id}`),
+                 sql`, `,
+               )})
+             order by value asc, id asc
+          `),
+        ).map((行) => ({
+          id: String(行.id),
+          type: String(行.type),
+          value: String(行.value),
+          trust_state: String(行.trust_state),
+        }))
+
+  const 时空条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`participants @> array[${甲.value}, ${乙.value}]::text[]`,
+    sql`trust_state <> '已排除'`,
+  ]
+  if (args.起 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
+  if (args.止 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
+  const 共同时空 = rowsOf(
+    await ctx.db.execute(sql`
+      select id, type, occurred_at, occurred_raw, precision,
+             array_to_json(participants)::text as participants, summary
+        from auth.case_event
+       where ${sql.join(时空条件, sql` and `)}
+       order by occurred_at desc nulls last, id asc
+       limit 50
+    `),
+  ).map((行) => ({
+    id: String(行.id),
+    type: String(行.type),
+    occurred_at: 行.occurred_at as number | null,
+    occurred_raw: 行.occurred_raw as string | null,
+    precision: 行.precision as string | null,
+    participants: 解JSON<string[]>(行.participants, []),
+    summary: 行.summary as string | null,
+  }))
+
+  const 缺口 = ["按关系连通算；同一实体若被拆成两条未合并的实体，交集会漏"]
+  if (侧甲.用满 || 侧乙.用满) 缺口.push("每侧最多取 500 条关系，交集可能不全")
+  缺口.push("共同时空按事件参与实体判；只覆盖已抽成事件的时空点")
+
+  return {
+    数据: { 共同关联, 共同时空 },
+    口径:
+      "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
+      "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。",
+    缺口,
+  }
+}

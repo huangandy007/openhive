@@ -4,6 +4,8 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import {
+  aggregate_money,
+  find_crossings,
   get_citation,
   query_entities,
   query_events,
@@ -48,7 +50,15 @@ const 身份截 = { userId: "u-工具-甲", projectId: "p-工具-截" }
  * 「query_entities 默认不返回已排除」那条既有用例的期望值（`#005-34`：不靠声明顺序躲）。
  */
 const 身份丁 = { userId: "u-工具-甲", projectId: "p-工具-丁" }
+/**
+ * 任务 4 的种子全部落在这个**独立项目**里：甲、丁 的既有用例做全量等值断言
+ * （`query_entities` 默认不返回「已排除」断言 `ids === ["e-好"]`），再种实体就会改掉它们（`#005-34`）。
+ */
+const 身份戊 = { userId: "u-工具-甲", projectId: "p-工具-戊" }
 const 项目乙 = "p-工具-乙"
+
+/** 资金账户的规范值（brief 里的账户值原样照用）。 */
+const 账号 = "6222…8888"
 
 const ctx = (身份: typeof 身份甲): 工具上下文 => ({ db: 库(), 身份 })
 const ids = (结果: 工具结果) => (结果.数据 as { id: string }[]).map((行) => 行.id)
@@ -234,6 +244,145 @@ beforeAll(async () => {
     locator: { sheet: "Sheet1", row: 2 },
     extractMethod: "机器",
   })
+
+  // —— 任务 4 的种子：资金聚合 / 交叉（全部走生产出口，落在独立项目 戊）——
+  for (const [id, value, type] of [
+    ["e-账", 账号, "账户"],
+    ["e-对手甲", "对手甲", "人"],
+    ["e-张三", "张三", "人"],
+    ["e-李四", "李四", "人"],
+    ["e-号N", "13800001111", "号码"],
+    ["e-号M", "13900002222", "号码"],
+  ] as const) {
+    await upsertEntity(库(), { id, projectId: 身份戊.projectId, type, canonicalValue: value, aliases: [] })
+  }
+  // 转账两条（出/入各一）＋ 一条**连着同一账户的同案非转账**关系，证明汇总按 type 过滤。
+  // ⚠️ 这条关系的**一端必须是账户 e-账**：brief 原写 e-张三→e-对手甲，那样它根本不在
+  // `(from_id = 账户 or to_id = 账户)` 的取数范围内，删掉 `type = '转账'` 汇总也不变 ⇒
+  // 变异 1 不可判别。改成 e-账→e-对手甲 后，交叉用例的交集不受影响（张三仍连通号N/号M）。
+  await insertRelation(库(), {
+    id: "r-出",
+    projectId: 身份戊.projectId,
+    fromId: "e-账",
+    toId: "e-对手甲",
+    type: "转账",
+    amount: 1000,
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-入",
+    projectId: 身份戊.projectId,
+    fromId: "e-对手甲",
+    toId: "e-账",
+    type: "转账",
+    amount: 2500.5,
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-同",
+    projectId: 身份戊.projectId,
+    fromId: "e-账",
+    toId: "e-对手甲",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  // 交叉：号码N 在两人之间都通（进交集）；号码M 的乙侧关系已排除（不该进交集）。
+  await insertRelation(库(), {
+    id: "r-甲N",
+    projectId: 身份戊.projectId,
+    fromId: "e-张三",
+    toId: "e-号N",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-乙N",
+    projectId: 身份戊.projectId,
+    fromId: "e-李四",
+    toId: "e-号N",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-甲M",
+    projectId: 身份戊.projectId,
+    fromId: "e-张三",
+    toId: "e-号M",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-乙M",
+    projectId: 身份戊.projectId,
+    fromId: "e-李四",
+    toId: "e-号M",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "已排除",
+  })
+  // 余额明细：amount/balance 是 numeric，按 `FactRowInput` 的契约一律传 string。
+  await insertFactRows(库(), [
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "Sheet1",
+      rowNo: 1,
+      counterparty: 账号,
+      startedAt: 100,
+      amount: "10.00",
+      balance: "100.00",
+    },
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "Sheet1",
+      rowNo: 2,
+      counterparty: 账号,
+      startedAt: 200,
+      amount: "20.00",
+      balance: "500.00",
+    },
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "Sheet1",
+      rowNo: 3,
+      counterparty: 账号,
+      startedAt: 300,
+      amount: "30.00",
+      balance: "900.00",
+    },
+  ])
+  // ⚠️ `participants` 存的是**实体规范值**，不是 id（`case-extract.ts:433` → `case-ingest.ts:573`）。
+  // 种 id 会让「按 id 比」的错误实现在用例里假绿、在生产恒空（`#006-11`）。
+  await insertEvent(库(), {
+    id: "ev-同",
+    projectId: 身份戊.projectId,
+    type: "同框",
+    occurredAt: 1_760_000_100,
+    occurredRaw: "2026年3月7日",
+    precision: "到日",
+    participants: ["张三", "李四"],
+    summary: "两人同框",
+    trustState: "自动抽取",
+  })
+  await insertEvent(库(), {
+    id: "ev-单",
+    projectId: 身份戊.projectId,
+    type: "同框",
+    occurredAt: 1_760_000_200,
+    occurredRaw: "2026年3月8日",
+    precision: "到日",
+    participants: ["张三"],
+    summary: "只有张三",
+    trustState: "自动抽取",
+  })
 })
 
 afterAll(async () => {
@@ -396,4 +545,51 @@ test("get_citation 对「已排除」的实体照样能取到引用", async () =
   await 建实体(库(), { id: "e-排引", projectId: "p-工具-丁", value: "已排除的人", trustState: "已排除" })
   const 结果 = await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-排引" })
   expect((结果.数据 as { 事实: { id: string } }).事实.id).toBe("e-排引")
+})
+
+// —— 任务 4：资金聚合 / 交叉 ——
+
+test("aggregate_money 汇总只算转账关系，出/入分开", async () => {
+  // 账户 e-账：出 1000（r-出）、入 2500.50（r-入）、另有一条同案关系 r-同（不该计入）
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
+  expect((结果.数据 as { 汇总: unknown }).汇总).toEqual([
+    { 方向: "出", 笔数: 1, 合计: "1000.00" },
+    { 方向: "入", 笔数: 1, 合计: "2500.50" },
+  ])
+  expect(结果.缺口?.join()).toContain("未抽成关系")
+})
+
+test("aggregate_money 余额走势给首末与极值，并说明截断", async () => {
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
+  const 走势 = (结果.数据 as { 余额走势: { 首: string; 末: string; 最高: string; 最低: string; 行数: number } })
+    .余额走势
+  expect(走势).toMatchObject({ 首: "100.00", 末: "900.00", 最高: "900.00", 最低: "100.00", 行数: 3 })
+})
+
+test("aggregate_money 账户不存在 ⇒ not_found", async () => {
+  await expect(aggregate_money(ctx(身份戊), { 账户: "没有这个账户" })).rejects.toMatchObject({ code: "not_found" })
+})
+
+test("find_crossings 找出共同关联实体（另一端的交集）", async () => {
+  // 甲—号码N（通话）、乙—号码N（通话）⇒ 共同关联含号码N
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
+  expect((结果.数据 as { 共同关联: { value: string }[] }).共同关联.map((行) => 行.value)).toEqual(["13800001111"])
+})
+
+test("find_crossings 不把「已排除」关系算进交集", async () => {
+  // 甲—号码M 关系已排除、乙—号码M 正常 ⇒ 号码M 不该出现
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
+  expect(JSON.stringify(结果)).not.toContain("13900002222")
+})
+
+test("find_crossings 共同时空按 participants 同时包含两人", async () => {
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
+  expect((结果.数据 as { 共同时空: { id: string }[] }).共同时空.map((行) => 行.id)).toEqual(["ev-同"])
+})
+
+test("find_crossings 任一方不存在 ⇒ not_found，文案说清是哪一方", async () => {
+  await expect(find_crossings(ctx(身份戊), { 甲: "张三", 乙: "查无此人" })).rejects.toMatchObject({
+    code: "not_found",
+    message: expect.stringContaining("乙"),
+  })
 })
