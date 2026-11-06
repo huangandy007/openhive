@@ -9,8 +9,10 @@ import {
   citationsOf,
   countFactRows,
   createMaterial,
+  deleteFactRowsOfMaterial,
   getMaterial,
   insertFactRows,
+  setMaterialKind,
 } from "../../src/server/openhive/case-store"
 
 /** 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。 */
@@ -299,6 +301,39 @@ describe("明细行", () => {
     // jsonb 在本仓的 bun-sql 驱动下读回来是**字符串**（同 getMaterial / citationsOf 的归一），
     // 所以这里先 JSON.parse 再按对象比 —— 意图是「写进去什么、读出来就是什么」。
     expect(JSON.parse(String(got[0]?.extras))).toEqual({ 通话类型: "主叫", 基站: "HZ-01" })
+  })
+
+  test("分块批量写入：1200 行一次调用，写入数与计数都对", async () => {
+    const rows = Array.from({ length: 1200 }, (_, i) => ({
+      projectId: "p-batch",
+      materialId: "m-batch",
+      sheet: "S",
+      rowNo: i + 1,
+      caller: "13800000000",
+    }))
+    expect(await insertFactRows(db(), rows)).toBe(1200)
+    expect(await countFactRows(db(), "p-batch")).toBe(1200)
+    // 再写一遍：幂等，写入 0
+    expect(await insertFactRows(db(), rows)).toBe(0)
+  })
+
+  test("按材料删除只删这一份，别的材料与别的项目不动", async () => {
+    await insertFactRows(db(), [
+      { projectId: "p-del", materialId: "m-a", sheet: "S", rowNo: 1 },
+      { projectId: "p-del", materialId: "m-b", sheet: "S", rowNo: 1 },
+      { projectId: "p-del2", materialId: "m-a", sheet: "S", rowNo: 1 },
+    ])
+    expect(await deleteFactRowsOfMaterial(db(), "p-del", "m-a")).toBe(1)
+    expect(await countFactRows(db(), "p-del")).toBe(1)
+    expect(await countFactRows(db(), "p-del2")).toBe(1)
+  })
+
+  test("setMaterialKind 带项目谓词：跨项目改不动", async () => {
+    await 建("m-kind", "p-kind", "fp-kind")
+    await setMaterialKind(db(), "p-kind", "m-kind", "资金")
+    expect((await getMaterial(db(), "p-kind", "m-kind"))?.kind).toBe("资金")
+    await setMaterialKind(db(), "p-别的项目", "m-kind", "话单")
+    expect((await getMaterial(db(), "p-kind", "m-kind"))?.kind).toBe("资金")
   })
 })
 

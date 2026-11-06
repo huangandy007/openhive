@@ -181,9 +181,12 @@ export interface FactRowInput {
   extras?: Record<string, unknown>
 }
 
+/** 一块多少行。15 列 × 500 = 7500 个绑定参数，离 PG 上限 65535 有量级余量。 */
+const INSERT_CHUNK = 500
+
 /**
- * 批量写明细行。**一条一条发、不用多值 INSERT**：本计划只保证正确的幂等与隔离，
- * 批量化（`COPY` / 多值 VALUES）留给计划 2 的量级任务（设计 §6.5）。
+ * 批量写明细行。**分块多值 INSERT**（设计 §6.5）：每 500 行发一条语句，既不像逐行发那样
+ * 把 20 万行变成 20 万次往返，也不至于一次撞上 PG 的绑定参数上限。
  *
  * 幂等键就是主键 `(project_id, material_id, sheet, row_no)`：重复导入同一个文件时
  * `on conflict do nothing` 把老行吃掉，返回的写入数因此会少。返回值是「**实际新写入**」的条数，
@@ -204,18 +207,22 @@ export interface FactRowInput {
  */
 export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promise<number> {
   let written = 0
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+    const chunk = rows.slice(i, i + INSERT_CHUNK)
+    if (chunk.length === 0) continue
+    const values = chunk.map(
+      (row) => sql`(${row.projectId}, ${row.materialId}, ${row.sheet}, ${row.rowNo},
+                    ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},
+                    ${row.startedRaw ?? null}, ${row.precision ?? null}, ${row.timeType ?? null},
+                    ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
+                    ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::jsonb)`,
+    )
     const result = rowsOf(
       await db.execute(sql`
         insert into auth.case_fact_row
-          (project_id, material_id, sheet, row_no, caller, callee, started_at,
-           started_raw, precision, time_type,
-           duration_sec, amount, balance, counterparty, extras)
-        values (${row.projectId}, ${row.materialId}, ${row.sheet}, ${row.rowNo},
-                ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},
-                ${row.startedRaw ?? null}, ${row.precision ?? null}, ${row.timeType ?? null},
-                ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
-                ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::jsonb)
+          (project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
+           precision, time_type, duration_sec, amount, balance, counterparty, extras)
+        values ${sql.join(values, sql`, `)}
         on conflict (project_id, material_id, sheet, row_no) do nothing
         returning row_no
       `),
@@ -223,6 +230,42 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
     written += result.length
   }
   return written
+}
+
+/**
+ * 删掉一份材料的全部明细行，返回删了多少行。
+ *
+ * 这是**重放**的起手式（设计 §5.3）：解析器升级、映射修正后，一条命令重建事实层。
+ * `insertFactRows` 的 `on conflict do nothing` 只保证**导入**幂等，不承担重放 ——
+ * 重放必须真的把旧行删掉，否则改过的映射永远不生效。
+ */
+export async function deleteFactRowsOfMaterial(
+  db: Queryable,
+  projectId: string,
+  materialId: string,
+): Promise<number> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      delete from auth.case_fact_row
+       where project_id = ${projectId} and material_id = ${materialId}
+      returning row_no
+    `),
+  )
+  return rows.length
+}
+
+/** 识别出表格类型后回填材料类型（建档时还不知道是话单还是资金）。 */
+export async function setMaterialKind(
+  db: Queryable,
+  projectId: string,
+  materialId: string,
+  kind: MaterialKind,
+): Promise<void> {
+  await db.execute(sql`
+    update auth.case_material
+       set kind = ${kind}
+     where project_id = ${projectId} and id = ${materialId}
+  `)
 }
 
 export async function countFactRows(db: Queryable, projectId: string): Promise<number> {
