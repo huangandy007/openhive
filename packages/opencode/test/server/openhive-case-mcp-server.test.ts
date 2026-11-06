@@ -90,9 +90,12 @@ test("tools/list 返回 7 个工具，名字与设计 §7.1 逐字一致", async
 })
 
 test("不带 _meta 调用 ⇒ isError + identity_required", async () => {
+  const 前 = 收集.length
   const 结果 = await client.callTool({ name: "query_entities", arguments: {} })
   expect(结果.isError).toBe(true)
   expect(JSON.parse((结果.content as { text: string }[])[0]!.text).error).toBe("identity_required")
+  // 门拒掉的调用也要留痕。
+  expect(收集[前]!.错误码).toBe("identity_required")
 })
 
 test("_meta 目录指向别人的沙箱 ⇒ identity_required（不是静默返回空）", async () => {
@@ -135,6 +138,37 @@ test("未知工具名 ⇒ unknown_tool（两道门过了才判名字）", async 
   expect(JSON.parse((结果.content as { text: string }[])[0]!.text).error).toBe("unknown_tool")
 })
 
+// 上面那条给的是「合法身份 + 合法成员」，两种分发顺序都会回 unknown_tool，没有判别力。
+// 这两条把未知工具名放到门**之前**必然出错的位置：名字判断一旦前移就会红。
+test("未知工具名 + 不带 _meta ⇒ identity_required（身份门先于判名字）", async () => {
+  const 结果 = await client.callTool({ name: "no_such_tool", arguments: {} })
+  expect(结果.isError).toBe(true)
+  expect(JSON.parse((结果.content as { text: string }[])[0]!.text).error).toBe("identity_required")
+})
+
+test("未知工具名 + 是身份但非成员 ⇒ not_a_member（成员门先于判名字）", async () => {
+  const 结果 = await client.callTool({
+    name: "no_such_tool",
+    arguments: {},
+    _meta: { "openhive/user": "u-外人", "openhive/directory": `${沙箱根}/u-外人/p-工具-甲` },
+  })
+  expect(结果.isError).toBe(true)
+  expect(JSON.parse((结果.content as { text: string }[])[0]!.text).error).toBe("not_a_member")
+})
+
+test("未列出的参数 ⇒ bad_input，message 列出可用参数", async () => {
+  const 结果 = await client.callTool({
+    name: "query_entities",
+    arguments: { 起时: 1 },
+    _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+  })
+  expect(结果.isError).toBe(true)
+  const 文本 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { error: string; message: string }
+  expect(文本.error).toBe("bad_input")
+  expect(文本.message).toContain("可用参数")
+  expect(文本.message).toContain("含已排除")
+})
+
 test("每次调用（成功与失败各一次）都出一条留痕", async () => {
   // 前面几条用例已经往 `收集` 里写过行；这条用例只对「接下来这一次成功 + 一次被门拒掉」判定。
   收集.length = 0
@@ -157,12 +191,16 @@ test("每次调用（成功与失败各一次）都出一条留痕", async () =>
 })
 
 test("工具抛非业务异常 ⇒ tool_failed，不把 SQL 原文回给模型", async () => {
-  // 注入一个让 execute 必抛的 Queryable（`Queryable` 只承诺 execute，`case-store.ts:29`）。
+  // 第一次 execute 是成员校验（`校验成员` 的 `select 1 … limit 1`）：返回一行让它通过。
+  // 之后每次抛 ⇒ 异常来自**工具执行**分支，而不是成员门（否则这条用例只是在测同一处门）。
+  let 调用次数 = 0
   const 收集2: 调用留痕[] = []
   const 坏服务 = createCaseMcpServer({
     db: {
       execute: async () => {
-        throw new Error('syntax error at or near "select" — from auth.case_entity')
+        调用次数 += 1
+        if (调用次数 === 1) return [{ ok: 1 }]
+        throw new Error('tool-time syntax error at or near "select" — from auth.case_entity')
       },
     } as unknown as Queryable,
     workspaceRoot: 沙箱根,
@@ -182,7 +220,10 @@ test("工具抛非业务异常 ⇒ tool_failed，不把 SQL 原文回给模型",
   expect(文本.error).toBe("tool_failed")
   expect(文本.message).not.toContain("syntax error")
   expect(文本.message).not.toContain("auth.case_entity")
+  // 两次 execute：第一次放行成员校验，第二次才是工具期抛异常——证明走到了工具执行分支。
+  expect(调用次数).toBe(2)
   // 原文没丢：只进留痕给运维查，不回给模型。
-  expect(收集2[0]!.错误原文).toContain("syntax error")
+  expect(收集2[0]!.错误原文).toContain("tool-time syntax error")
   await 坏客户端.close()
+  await 坏服务.close()
 })
