@@ -14,8 +14,8 @@ export interface ArtifactReviewProps {
  * **请复核是派生出来的、不落库**：后端按 `case_fact_change.created_at > case_citation.created_at`
  * 现算（裁定 6）。所以这一页每次打开都是当前结论，不存在「标记没清掉」的陈旧状态。
  *
- * ⚠️ 清理必须走 `onCleanup`：`createEffect` **不执行**返回值（`LEARNINGS #005-03`）。写成
- * `return () => …`（任务书原稿）时，切换产物/tab 后迟到的旧回包会盖掉新结果。
+ * ⚠️ 清理必须走 `onCleanup`：`createEffect` **不执行**返回值，写成 `return () => …`（任务书
+ * 原稿）时清理函数永远不会被调用，切换产物/tab 后迟到的旧回包会盖掉新结果。
  */
 export function ArtifactReview(props: ArtifactReviewProps): JSX.Element {
   const [结果, set结果] = createSignal<产物复核结果 | undefined>()
@@ -53,22 +53,26 @@ export function ArtifactReview(props: ArtifactReviewProps): JSX.Element {
       <Show when={结果()}>
         {(值) => (
           <>
-            <h2 data-slot="artifact-review-title" class="text-[13px] font-semibold text-v2-text-text-base">
-              这份产物引用了 {值().引用.length} 条事实
-            </h2>
-            <Show when={值().需复核 > 0}>
-              <p
-                data-slot="artifact-review-banner"
-                role="status"
-                class="rounded-[4px] bg-[var(--v2-state-bg-warning)] px-2 py-1 text-[13px] text-v2-text-text-base"
-              >
-                有 {值().需复核} 条引用的依据已更新，请复核
-              </p>
-            </Show>
-            <Show when={值().引用.length === 0}>
-              <p data-slot="artifact-review-empty" class="text-[13px] text-v2-text-text-muted">
-                这份产物没有引用任何事实
-              </p>
+            {/* 产物行没读到（`产物: null`）时不说「引用了 0 条」——那是把「没登记过」当成
+                「登记过但没引用」，在断言一件没读到的事。缺口句（`缺口`）照旧在下面说。 */}
+            <Show when={值().产物}>
+              <h2 data-slot="artifact-review-title" class="text-[13px] font-semibold text-v2-text-text-base">
+                这份产物引用了 {值().引用.length} 条事实
+              </h2>
+              <Show when={值().需复核 > 0}>
+                <p
+                  data-slot="artifact-review-banner"
+                  role="status"
+                  class="rounded-[4px] bg-[var(--v2-state-bg-warning)] px-2 py-1 text-[13px] text-v2-text-text-base"
+                >
+                  有 {值().需复核} 条引用的依据已更新，请复核
+                </p>
+              </Show>
+              <Show when={值().引用.length === 0}>
+                <p data-slot="artifact-review-empty" class="text-[13px] text-v2-text-text-muted">
+                  这份产物没有引用任何事实
+                </p>
+              </Show>
             </Show>
             <For each={值().引用}>
               {(条: 复核项) => (
@@ -81,6 +85,14 @@ export function ArtifactReview(props: ArtifactReviewProps): JSX.Element {
                   <span class="text-v2-text-text-base">{条.值}</span>
                   <Show when={条.原文}>
                     {(原文) => <code class="text-[12px] text-v2-text-text-muted">{原文()}</code>}
+                  </Show>
+                  <Show when={条.trust_state === "已排除"}>
+                    <span
+                      data-slot="artifact-review-excluded"
+                      class="rounded-[4px] bg-v2-state-bg-danger px-1 text-[12px] text-v2-state-fg-danger"
+                    >
+                      已排除
+                    </span>
                   </Show>
                   <span class="text-[12px] text-v2-text-text-muted">引用 {时间文本(条.引用时间)}</span>
                   <Show when={条.需复核}>

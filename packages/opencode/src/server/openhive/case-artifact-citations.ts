@@ -102,6 +102,10 @@ export async function 登记产物引用(
   const 指纹 = Hash.fast(`${input.path}\u0000${input.content}`)
 
   // 同内容已经以**别的类型**入过库 ⇒ 不翻它的类型、也不改它的解析状态（那份可能正在被解析）。
+  // ⚠️ **当前不可达（指纹来源决定），保留为防御**：产物指纹是 `Hash.fast(path + 正文)`
+  // （sha1），而材料入库的指纹一律是 `Hash.sha256(文件字节)`（`case-parse.ts:254`、`file.ts:785`）
+  // ——两套算法、两种输入，同一份内容也撞不上同一个指纹。它防的是「将来有人把产物指纹改成
+  // 与材料同源的 `sha256(字节)`」时，静默把一份正在被解析的材料翻成产物。
   const 同指纹 = rowsOf(await db.execute(sql`
     select id, kind from auth.case_material
      where project_id = ${input.projectId} and fingerprint = ${指纹}
@@ -174,6 +178,10 @@ export async function 登记产物引用(
  * `do update … where auth.case_material.kind = '产物'`：`fingerprint` 撞上一条**非产物**
  * 材料时，这条语句一行不返回（`WHERE` 挡住了更新），于是抛错、上层把这次登记记成失败。
  * **这是有意 fail-closed**——比静默把别人的材料改成「产物」好。
+ *
+ * ⚠️ **当前不可达（指纹来源决定），保留为防御**：产物指纹是 `Hash.fast(path + 正文)`，
+ * 材料指纹是 `Hash.sha256(文件字节)`，两套算法不会撞（理由同上，也见 `登记产物引用` 里
+ * 「同指纹」那段的注释）。它防的是「产物指纹改成与材料同源」后，覆盖一条正在被解析的材料行。
  */
 async function 登记产物行(
   db: Queryable,
@@ -206,6 +214,8 @@ export interface 复核项 {
   readonly 引用时间: number
   readonly 变更时间: number | null
   readonly 需复核: boolean
+  /** 被引用事实当前的信任态；事实行已经不在了就是 `null`（不按「已排除」过滤：那样会吞掉待复核行）。 */
+  readonly trust_state: string | null
 }
 
 export interface 产物复核结果 {
@@ -256,11 +266,16 @@ export async function 产物复核(
                        join auth.case_entity 终 on 终.project_id = 关系.project_id and 终.id = 关系.to_id
                       where 关系.project_id = c.project_id and 关系.id = c.fact_id),
                     事件.summary,
-                    c.fact_id) as 值
+                    c.fact_id) as 值,
+           -- 信任态只带回、**不按它过滤**：已排除的事实照样列出来（用户才知道自己引了它），
+           -- 由前端标「已排除」。按已排除过滤会连「待复核」一起吞掉。
+           coalesce(实体.trust_state, 关联.trust_state, 事件.trust_state) as trust_state
       from auth.case_citation c
       left join 变更 on 变更.fact_type = c.fact_type and 变更.fact_id = c.fact_id
       left join auth.case_entity 实体
         on 实体.project_id = c.project_id and c.fact_type = 'entity' and 实体.id = c.fact_id
+      left join auth.case_relation 关联
+        on 关联.project_id = c.project_id and c.fact_type = 'relation' and 关联.id = c.fact_id
       left join auth.case_event 事件
         on 事件.project_id = c.project_id and c.fact_type = 'event' and 事件.id = c.fact_id
      where c.project_id = ${input.projectId} and c.material_id = ${String(材料.id)}
@@ -279,6 +294,7 @@ export async function 产物复核(
       变更时间,
       // 严格大于：同秒的那条变更不算（它可能是这次保存前后脚写下的，见文件头第 3 条）。
       需复核: 变更时间 !== null && 变更时间 > 引用时间,
+      trust_state: 行.trust_state === null || 行.trust_state === undefined ? null : String(行.trust_state),
     }
   })
 

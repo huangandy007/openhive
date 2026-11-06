@@ -104,6 +104,8 @@ export interface 复核项 {
   readonly 引用时间: number
   readonly 变更时间: number | null
   readonly 需复核: boolean
+  /** 被引用事实当前的信任态；事实行已经不在了就是 `null`。`'已排除'` 行内要标出来。 */
+  readonly trust_state: string | null
 }
 
 export interface 产物复核结果 {

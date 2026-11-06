@@ -38,6 +38,8 @@ beforeAll(async () => {
   await 建事件(库(), { id: "ev-见面", projectId: 项目, type: "见面", summary: "两人见面" })
   // 别人的项目里同名事实：所有查询必须按 project_id 收敛，不能被它带偏。
   await 建实体(库(), { id: "e-张", projectId: 别人的项目, type: "人", value: "别人家的张三" })
+  // 只存在于别人项目的事实：引用它必须被跳过（跨项目引用不许登记）。
+  await 建实体(库(), { id: "e-别人的专有", projectId: 别人的项目, type: "人", value: "别人家的专有" })
 })
 
 afterAll(async () => {
@@ -151,6 +153,29 @@ describe("产物引用（计划 7 Task 10）", () => {
     expect(新的.材料id).not.toBe(旧的.材料id)
     expect(新的.登记).toBe(3)
     expect(await 引用行数(库(), 项目, 旧的.材料id!)).toBe(0)
+  })
+
+  test("只在别人项目里存在的事实 ⇒ 跳过（不允许跨项目引用）", async () => {
+    const 结果 = await 登记产物引用(库(), {
+      projectId: 项目,
+      path: "报告/跨项目.md",
+      content: "跨项目引用：[[fact:entity:e-别人的专有]]",
+    })
+    expect(结果.登记).toBe(0)
+    expect(结果.跳过.map((条) => 条.原文)).toEqual(["[[fact:entity:e-别人的专有]]"])
+    expect(结果.跳过[0]!.原因).toContain("这个项目里没有这条事实")
+  })
+
+  test("已排除的事实仍出现在复核结果里（不吞待复核行），并带上 trust_state", async () => {
+    await 建实体(库(), { id: "e-排除", projectId: 项目, type: "人", value: "被排除的人", trustState: "已排除" })
+    await 登记产物引用(库(), {
+      projectId: 项目,
+      path: "报告/排除.md",
+      content: "[[fact:entity:e-排除]]",
+    })
+    const 结果 = await 产物复核(库(), { projectId: 项目, path: "报告/排除.md" })
+    expect(结果.引用.length).toBe(1)
+    expect(结果.引用[0]!.trust_state).toBe("已排除")
   })
 
   test("产物复核：刚登记完没有要复核的", async () => {

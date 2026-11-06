@@ -50,10 +50,12 @@ export function createCaseArtifactSave(
   projectId: () => string | undefined = () => currentProject()?.id,
 ): SaveFileContent {
   return async (path, content, base) => {
+    // 入口就取项目快照：存盘是异步的，期间切了项目后 `projectId()` 会给出新项目，
+    // 而文件落的是旧项目——登记必须跟着文件走，不跟着「晚到的当前项目」走（`LEARNINGS #008-03`）。
+    const id = projectId()
     const 结论 = await inner(path, content, base)
     if (!结论.ok) return 结论
     if (!content.includes("[[fact:")) return 结论
-    const id = projectId()
     if (id === undefined) return 结论
     // 结论不看：登记失败只影响「请复核」能力，不影响文件本身（见文件头第 3 条）。
     // `请求` 自己把网络异常收成 `{kind:"error"}`，不会抛（`entity-api.ts` 的 `请求`）。

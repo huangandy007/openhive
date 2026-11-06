@@ -38,6 +38,7 @@ const 条 = (over: Partial<复核项> = {}): 复核项 => ({
   引用时间: 1_760_000_000,
   变更时间: null,
   需复核: false,
+  trust_state: "自动抽取",
   ...over,
 })
 
@@ -118,6 +119,47 @@ describe("产物引用复核", () => {
     await 等(() => host.querySelector("[data-slot='artifact-review-gap']") !== null)
     expect(host.querySelector("[data-slot='artifact-review-gap']")!.textContent).toContain("还没有登记过引用")
     expect(host.querySelectorAll("[data-slot='artifact-review-row']").length).toBe(0)
+  })
+
+  test("产物为 null ⇒ 不摆标题、不摆「0 条事实 / 没有引用任何事实」（没读到的东西不下断言）", async () => {
+    const host = mount(() => (
+      <ArtifactReview
+        projectId="p"
+        path="报告/没有.md"
+        api={假api({
+          review: async () => ({
+            kind: "ok",
+            value: {
+              产物: null,
+              引用: [],
+              需复核: 0,
+              缺口: ["这个路径下还没有登记过引用：保存一次带 [[fact:…]] 标记的报告就会登记"],
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='artifact-review-gap']") !== null)
+    expect(host.querySelector("[data-slot='artifact-review-title']")).toBeNull()
+    expect(host.querySelector("[data-slot='artifact-review-empty']")).toBeNull()
+    expect(host.textContent).not.toContain("0 条事实")
+    expect(host.textContent).not.toContain("没有引用任何事实")
+  })
+
+  test("引用的事实已被排除 ⇒ 行内用文字标「已排除」（不只靠颜色）", async () => {
+    const host = mount(() => (
+      <ArtifactReview
+        projectId="p"
+        path="报告/分析.md"
+        api={假api({
+          review: async () => ({ kind: "ok", value: 回({ 引用: [条({ trust_state: "已排除" })] }) }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='artifact-review-row']") !== null)
+    const 标签 = host.querySelector("[data-slot='artifact-review-excluded']")
+    expect(标签).not.toBeNull()
+    expect(标签!.textContent).toContain("已排除")
   })
 
   test("取数失败如实说", async () => {

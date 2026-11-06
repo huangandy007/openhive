@@ -68,6 +68,31 @@ describe("存盘后登记引用", () => {
     expect(await save("a.md", "[[fact:entity:e-张]]", "旧")).toEqual({ ok: true, base: "底本" })
   })
 
+  test("存盘期间切了项目 ⇒ 登记仍发给存盘那一刻的项目（入口取快照，不读晚到的当前项目）", async () => {
+    let 当前 = "p-1"
+    let 放行: () => void = () => {}
+    let 体: Record<string, unknown> | undefined
+    const save = createCaseArtifactSave(
+      async () => {
+        await new Promise<void>((resolve) => {
+          放行 = resolve
+        })
+        return 成了()
+      },
+      async (_url, init) => {
+        体 = JSON.parse(String(init?.body))
+        return 回包({ 登记: 1, 删除: 0, 跳过: [], 材料id: "mat-1" })
+      },
+      () => 当前,
+    )
+    const 存 = save("报告/分析.md", "见 [[fact:entity:e-张]]", "旧底本")
+    // 存盘还悬着时切到另一个项目——回包回来后不许按「当前项目」登记（`LEARNINGS #008-03`）。
+    当前 = "p-2"
+    放行()
+    await 存
+    expect(体?.projectId).toBe("p-1")
+  })
+
   test("没有当前项目 ⇒ 不登记（带空项目 id 会写到沙箱根）", async () => {
     let 发过 = 0
     const save = createCaseArtifactSave(
