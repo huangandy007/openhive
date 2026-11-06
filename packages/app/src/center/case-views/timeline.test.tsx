@@ -51,6 +51,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     timeline: async () => ({ kind: "ok", value: { 数据: 事件们, 口径: "按参与实体过滤", 缺口: ["只列了最近 50 条"] } }),
     money: async () => ({ kind: "ok", value: { 数据: {} } }),
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
+    review: async () => ({ kind: "error", message: "本用例不取复核" }),
     ...over,
   }
 }

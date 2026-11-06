@@ -29,6 +29,18 @@ describe("案件详情 API 客户端", () => {
     expect(await api.profile("p", "x")).toEqual({ kind: "error", message: "连不上" })
   })
 
+  test("review 的 projectId / path 编码正确（路径含中文与斜杠）", async () => {
+    const 看到的: string[] = []
+    const api = createCaseDetailApi(async (url) => {
+      看到的.push(url)
+      return 回包({ 产物: null, 引用: [], 需复核: 0, 缺口: [] })
+    })
+    await api.review("p 1", "报告/分析.md")
+    const 解析 = new URL(看到的[0]!, "http://localhost").searchParams
+    expect(解析.get("projectId")).toBe("p 1")
+    expect(解析.get("path")).toBe("报告/分析.md")
+  })
+
   test("graph 的 跳数 / type 编码正确（type 用逗号连接）", async () => {
     const 看到的: string[] = []
     const api = createCaseDetailApi(async (url) => {

@@ -95,6 +95,30 @@ export interface 材料事实清单结果 {
   readonly 缺口: string[]
 }
 
+/** 产物复核的一项（字段名与服务端 `case-artifact-citations.ts` 的 `复核项` 逐字相同）。 */
+export interface 复核项 {
+  readonly fact_type: string
+  readonly fact_id: string
+  readonly 值: string
+  readonly 原文: string | null
+  readonly 引用时间: number
+  readonly 变更时间: number | null
+  readonly 需复核: boolean
+}
+
+export interface 产物复核结果 {
+  readonly 产物: {
+    readonly id: string
+    readonly path: string
+    readonly file_name: string
+    readonly kind: string
+    readonly fingerprint: string
+  } | null
+  readonly 引用: readonly 复核项[]
+  readonly 需复核: number
+  readonly 缺口: string[]
+}
+
 export interface 图节点 {
   readonly id: string
   readonly type: string
@@ -138,6 +162,8 @@ export interface CaseDetailApi {
     跳数?: 1 | 2,
     类型?: readonly string[],
   ) => Promise<结果<关系图结果>>
+  /** 产物页（design §9.4）：这份产物引用了哪几条事实、其中几条的依据后来改过。 */
+  readonly review: (projectId: string, path: string) => Promise<结果<产物复核结果>>
 }
 
 const 项目参数 = (projectId: string) => {
@@ -178,6 +204,10 @@ export function createCaseDetailApi(send: CaseFetch = 默认发送): CaseDetailA
       if (跳数 !== undefined) 参数.set("跳数", String(跳数))
       if (类型 !== undefined && 类型.length > 0) 参数.set("type", 类型.join(","))
       return 请求<关系图结果>(send, `${PREFIX}/graph?${参数.toString()}`)
+    },
+    review: (projectId, path) => {
+      const 参数 = new URLSearchParams({ projectId, path })
+      return 请求<产物复核结果>(send, `${PREFIX}/artifacts/review?${参数.toString()}`)
     },
   }
 }

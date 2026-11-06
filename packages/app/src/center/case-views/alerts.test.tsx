@@ -43,6 +43,7 @@ function 假详情api(): CaseDetailApi {
     timeline: async () => ({ kind: "error", message: "未用" }),
     money: async () => ({ kind: "error", message: "未用" }),
     graph: async () => ({ kind: "error", message: "未用" }),
+    review: async () => ({ kind: "error", message: "未用" }),
   }
 }
 

@@ -45,6 +45,8 @@ import { PROJECT_DATA } from "@/project/project-data"
 import { LOAD_PROJECT_FILE } from "@/project/openhive-file-loader"
 // 存盘那一侧（2026-10-12，同一个范式的反方向）：改完的文档写回盘上。省略它 = 视图只读。
 import { SAVE_PROJECT_FILE } from "@/project/openhive-file-saver"
+// 【保留的定制 · 同步上游时不要丢】（计划 7）：存盘后再把正文里的 `[[fact:…]]` 登记成产物引用。
+import { createCaseArtifactSave } from "@/project/case-artifact-save"
 // 【保留的定制 · 同步上游时不要丢】（计划 3，2026-11-06）：材料解析状态的建与绑定。
 // 左栏文件树的入场标记 / 目录汇总 / 右键解析都读它；本层建好整份注入 `WorkspaceEntry`。
 import { createCaseMaterials } from "@/project/case-materials-state"
@@ -67,6 +69,10 @@ const ENTITY_API = createEntityApi()
 
 /** 案件视图的取数客户端（计划 7）。无状态，模块级一份即可。 */
 const CASE_DETAIL_API = createCaseDetailApi()
+
+// ⚠️ openhive 定制（计划 7）：这是要保留的定制 —— 合并上游时两侧都留着。
+// 存盘后再登记产物引用（`[[fact:…]]`）；不带标记的文件一行请求都不发。
+const SAVE_PROJECT_FILE_带引用 = createCaseArtifactSave(SAVE_PROJECT_FILE)
 
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
@@ -208,7 +214,7 @@ export default function NewLayout(props: ParentProps) {
           <WorkspaceEntry
             projectData={PROJECT_DATA}
             loadFile={LOAD_PROJECT_FILE}
-            saveFile={SAVE_PROJECT_FILE}
+            saveFile={SAVE_PROJECT_FILE_带引用}
             // ⚠️ openhive 定制（006 T008）：这是要保留的定制 —— 合并上游时两侧都留着。
             // 右栏（AI 会话）在这里挂进 `ThreePane` 的 `right` 槽（FR-010）。
             // **传访问器、不传元素**：内容要读的时候才创建、且创建在 `WorkspaceEntry` 自己建的

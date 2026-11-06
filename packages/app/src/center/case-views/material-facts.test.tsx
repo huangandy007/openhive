@@ -59,6 +59,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     timeline: async () => ({ kind: "ok", value: { 数据: [] } }),
     money: async () => ({ kind: "ok", value: { 数据: {} } }),
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
+    review: async () => ({ kind: "ok", value: { 产物: null, 引用: [], 需复核: 0, 缺口: [] } }),
     ...over,
   }
 }
@@ -179,5 +180,30 @@ describe("材料抽取结果", () => {
       />
     ))
     await 等(() => host.textContent!.includes("这份材料还没有登记事实"))
+  })
+
+  test("产物路径 ⇒ 不摆抽取分组，改成引用复核区", async () => {
+    const 产物行 = { id: "mat-1", path: "报告/分析.md", file_name: "分析.md", kind: "产物", fingerprint: "f-1" }
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="报告/分析.md"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: { ...清单, 材料: { ...清单.材料, kind: "产物", parse_status: "已跳过" } },
+          }),
+          review: async () => ({
+            kind: "ok",
+            value: { 产物: 产物行, 引用: [], 需复核: 0, 缺口: ["这份产物没有引用任何事实"] },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='artifact-review-title']") !== null)
+    expect(host.querySelector("[data-slot='material-facts-sheet']")).toBeNull()
+    // 产物没有 sheet / row 定位：材料事实清单那句「这份材料还没有登记事实」对产物是错的，不许露出来。
+    expect(host.querySelector("[data-slot='material-facts-empty']")).toBeNull()
+    expect(host.querySelector("[data-slot='artifact-review-gap']")!.textContent).toContain("没有引用任何事实")
   })
 })

@@ -7,6 +7,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 生成提醒, 标记已读, 提醒清单 } from "./case-alerts"
+import { 产物复核, 登记产物引用 } from "./case-artifact-citations"
 import { 实体档案, 实体清单, 类型计数, type 排序 } from "./case-entity-list"
 import { 关系图 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
@@ -43,6 +44,8 @@ export const PATH = {
   alerts: `${PREFIX}/alerts`,
   alertsRefresh: `${PREFIX}/alerts/refresh`,
   alertsRead: `${PREFIX}/alerts/read`,
+  artifactCitations: `${PREFIX}/artifacts/citations`,
+  artifactReview: `${PREFIX}/artifacts/review`,
 } as const
 
 interface Deps {
@@ -65,6 +68,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.alerts, (request) => handleAlerts(request, deps))
     yield* router.add("POST", PATH.alertsRefresh, (request) => handleAlertsRefresh(request, deps))
     yield* router.add("POST", PATH.alertsRead, (request) => handleAlertsRead(request, deps))
+    yield* router.add("POST", PATH.artifactCitations, (request) => handleArtifactCitations(request, deps))
+    yield* router.add("GET", PATH.artifactReview, (request) => handleArtifactReview(request, deps))
   }),
 )
 
@@ -345,5 +350,43 @@ function handleAlertsRead(request: HttpServerRequest.HttpServerRequest, deps: De
     const 门 = yield* 过门(deps, projectId)
     if (HttpServerResponse.isHttpServerResponse(门)) return 门
     return ok({ 已读: yield* Effect.promise(() => 标记已读(deps.pg(), projectId, ids as string[])) })
+  })
+}
+
+/**
+ * 产物引用两个出口（计划 7 Task 10）。
+ *
+ * POST 的次序与上面两个写口一致：**身份最先**（未登录不因体坏先回 400）→ 读体 → `projectId`
+ * 走 `过门`（非法 400 / 非成员 403）→ `path` / `content` 校验 → DAO。
+ * GET 复核**永远 200**：没登记过是本任务要如实说的一种状态，不是 404。
+ */
+function handleArtifactCitations(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    const projectId = typeof body?.projectId === "string" ? body.projectId : null
+    const 门 = yield* 过门(deps, projectId)
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const path = body?.path
+    const content = body?.content
+    if (typeof path !== "string" || path === "") return fail(400, "path 不能为空", "bad_request")
+    if (typeof content !== "string") return fail(400, "content 必须是字符串", "bad_request")
+    return ok(yield* Effect.promise(() => 登记产物引用(deps.pg(), { projectId: projectId!, path, content })))
+  })
+}
+
+function handleArtifactReview(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 参数 = new URL(request.url, "http://localhost").searchParams
+    const projectId = 参数.get("projectId")
+    const 门 = yield* 过门(deps, projectId)
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const path = 参数.get("path")
+    if (typeof path !== "string" || path === "") return fail(400, "path 不能为空", "bad_request")
+    return ok(yield* Effect.promise(() => 产物复核(deps.pg(), { projectId: projectId!, path })))
   })
 }

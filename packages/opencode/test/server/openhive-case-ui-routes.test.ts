@@ -336,4 +336,86 @@ describe("openhive 案件视图出口（计划 7）", () => {
       ).toBe(400)
     }),
   )
+
+  it("产物引用：登记 → 复核；没有标记的正文不建产物行", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      const 登记 = yield* 读回<{ 登记: number; 材料id: string | null }>(
+        yield* 发(我, "/openhive/case/artifacts/citations", {
+          method: "POST",
+          headers: 头,
+          body: JSON.stringify({ projectId: 项目, path: "报告/路由.md", content: "见 [[fact:entity:e-路由张]]" }),
+        }),
+      )
+      expect(登记.登记).toBe(1)
+      expect(登记.材料id).not.toBeNull()
+
+      const 复核 = yield* 读回<{ 产物: { kind: string } | null; 需复核: number; 引用: { fact_id: string }[] }>(
+        yield* 发(
+          我,
+          `/openhive/case/artifacts/review?projectId=${项目}&path=${encodeURIComponent("报告/路由.md")}`,
+        ),
+      )
+      expect(复核.产物?.kind).toBe("产物")
+      expect(复核.需复核).toBe(0)
+      expect(复核.引用.map((条) => 条.fact_id)).toEqual(["e-路由张"])
+
+      // 没登记过的路径也要 200（清屏不是错误状态）。
+      const 空路径 = yield* 发(
+        我,
+        `/openhive/case/artifacts/review?projectId=${项目}&path=${encodeURIComponent("报告/没有.md")}`,
+      )
+      expect(空路径.status).toBe(200)
+      expect((yield* 读回<{ 产物: unknown }>(空路径)).产物).toBeNull()
+
+      const 空的 = yield* 读回<{ 材料id: string | null }>(
+        yield* 发(我, "/openhive/case/artifacts/citations", {
+          method: "POST",
+          headers: 头,
+          body: JSON.stringify({ projectId: 项目, path: "报告/空路由.md", content: "没有标记" }),
+        }),
+      )
+      expect(空的.材料id).toBeNull()
+    }),
+  )
+
+  it("产物引用：未登录 401 / 非成员 403 / content 不是字符串 400", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      expect(
+        (
+          yield* 发(null, "/openhive/case/artifacts/citations", {
+            method: "POST",
+            headers: 头,
+            body: JSON.stringify({ projectId: 项目, path: "a.md", content: "x" }),
+          })
+        ).status,
+      ).toBe(401)
+      expect(
+        (
+          yield* 发(别人, "/openhive/case/artifacts/citations", {
+            method: "POST",
+            headers: 头,
+            body: JSON.stringify({ projectId: 项目, path: "a.md", content: "x" }),
+          })
+        ).status,
+      ).toBe(403)
+      expect(
+        (
+          yield* 发(我, "/openhive/case/artifacts/citations", {
+            method: "POST",
+            headers: 头,
+            body: JSON.stringify({ projectId: 项目, path: "a.md", content: 42 }),
+          })
+        ).status,
+      ).toBe(400)
+      // GET 复核同样走同一道门。
+      expect(
+        (yield* 发(null, `/openhive/case/artifacts/review?projectId=${项目}&path=a.md`)).status,
+      ).toBe(401)
+      expect(
+        (yield* 发(别人, `/openhive/case/artifacts/review?projectId=${项目}&path=a.md`)).status,
+      ).toBe(403)
+    }),
+  )
 })

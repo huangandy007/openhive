@@ -1,5 +1,6 @@
 import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
+import { ArtifactReview } from "./artifact-review"
 
 export interface MaterialFactsProps {
   readonly projectId: string
@@ -89,48 +90,59 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
               </pre>
             </Show>
 
-            <Show when={清单().分组.length === 0}>
-              <p data-slot="material-facts-empty" class="mt-3 text-[13px] text-v2-text-text-muted">
-                这份材料还没有登记事实
-              </p>
-            </Show>
-
-            <For each={清单().分组}>
-              {(组) => (
-                <section class="mt-3">
-                  <h2 data-slot="material-facts-sheet" class="text-[13px] font-semibold text-v2-text-text-base">
-                    {组.sheet}
-                  </h2>
-                  <Show when={组.行们.length === 0}>
-                    <p data-slot="material-facts-empty-sheet" class="text-[13px] text-v2-text-text-muted">
-                      这一页没有登记事实
+            {/* 产物走另一套读取（引用复核），不摆 sheet / row 分组：产物没有 sheet / row 定位，
+                「这份材料还没有登记事实」那句对产物是错的（它有引用）。两条路各自说自己那一套。 */}
+            <Show
+              when={清单().材料.kind === "产物"}
+              fallback={
+                <>
+                  <Show when={清单().分组.length === 0}>
+                    <p data-slot="material-facts-empty" class="mt-3 text-[13px] text-v2-text-text-muted">
+                      这份材料还没有登记事实
                     </p>
                   </Show>
-                  <For each={组.行们}>
-                    {(行) => (
-                      <div data-slot="material-facts-row" data-row={行.row_no} class="flex flex-wrap items-baseline gap-1 border-b border-v2-border-border-muted py-0.5 text-[13px]">
-                        <span class="shrink-0 text-v2-text-text-muted">第 {行.row_no} 行</span>
-                        <For each={行.事实们}>
-                          {(事实) => (
-                            <span data-slot="material-fact" data-type={事实.fact_type} class="rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-v2-text-text-base">
-                              {事实.值}
-                            </span>
+
+                  <For each={清单().分组}>
+                    {(组) => (
+                      <section class="mt-3">
+                        <h2 data-slot="material-facts-sheet" class="text-[13px] font-semibold text-v2-text-text-base">
+                          {组.sheet}
+                        </h2>
+                        <Show when={组.行们.length === 0}>
+                          <p data-slot="material-facts-empty-sheet" class="text-[13px] text-v2-text-text-muted">
+                            这一页没有登记事实
+                          </p>
+                        </Show>
+                        <For each={组.行们}>
+                          {(行) => (
+                            <div data-slot="material-facts-row" data-row={行.row_no} class="flex flex-wrap items-baseline gap-1 border-b border-v2-border-border-muted py-0.5 text-[13px]">
+                              <span class="shrink-0 text-v2-text-text-muted">第 {行.row_no} 行</span>
+                              <For each={行.事实们}>
+                                {(事实) => (
+                                  <span data-slot="material-fact" data-type={事实.fact_type} class="rounded-[4px] bg-v2-background-bg-layer-01 px-1.5 py-0.5 text-v2-text-text-base">
+                                    {事实.值}
+                                  </span>
+                                )}
+                              </For>
+                            </div>
                           )}
                         </For>
-                      </div>
+                      </section>
                     )}
                   </For>
-                </section>
-              )}
-            </For>
 
-            <For each={清单().缺口}>
-              {(话) => (
-                <p data-slot="material-facts-gap" class="mt-1 text-[12px] text-v2-text-text-muted">
-                  {话}
-                </p>
-              )}
-            </For>
+                  <For each={清单().缺口}>
+                    {(话) => (
+                      <p data-slot="material-facts-gap" class="mt-1 text-[12px] text-v2-text-text-muted">
+                        {话}
+                      </p>
+                    )}
+                  </For>
+                </>
+              }
+            >
+              <ArtifactReview projectId={props.projectId} path={props.path} api={props.api} />
+            </Show>
           </>
         )}
       </Show>
