@@ -32,13 +32,18 @@ export async function 建实体(
     value: string
     aliases?: string[]
     trustState?: string
+    /** 默认 `{}`（与库默认同形，但显式落一遍，便于测试钉快照）。 */
+    attrs?: unknown
+    /** 默认沿用本夹具的固定时间，便于断言「拆分是否原样恢复」。 */
+    createdAt?: number
   },
 ): Promise<void> {
   await db.execute(sql`
-    insert into auth.case_entity (id, project_id, type, canonical_value, aliases, trust_state, created_at)
+    insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, trust_state, created_at)
     values (${input.id}, ${input.projectId}, ${input.type ?? "人"}, ${input.value},
             array(select jsonb_array_elements_text(${JSON.stringify(input.aliases ?? [])}::text::jsonb)),
-            ${input.trustState ?? "自动抽取"}, ${现在})
+            ${JSON.stringify(input.attrs ?? {})}::text::jsonb,
+            ${input.trustState ?? "自动抽取"}, ${input.createdAt ?? 现在})
   `)
 }
 

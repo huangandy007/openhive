@@ -49,9 +49,18 @@ afterAll(async () => {
 async function 场景(前缀: string): Promise<void> {
   await 建实体(库(), { id: `${前缀}-a`, projectId: 项目, value: `${前缀}甲`, aliases: ["曾用名"] })
   await 建实体(库(), { id: `${前缀}-b`, projectId: 项目, value: `${前缀}乙`, aliases: ["乙的别名"] })
-  // 被并入的实体必须带非空别名：拆分「快照完整性」断言（aliases）才钉得住，
-  // 否则别名快照丢了也看见（`文本数组([])` 变异会假绿）。
-  await 建实体(库(), { id: `${前缀}-c`, projectId: 项目, value: `${前缀}丙`, aliases: ["丙的别名"] })
+  // 被并入的实体在**每一样快照字段上都与主体 / 默认值不同**：别名、attrs、createdAt、
+  // trustState 各有非默认值，拆分「快照完整性」断言才都有判别力（丢了或错存都会红）。
+  // 主体 `-a` 的 attrs / createdAt / trustState 保持默认：`{}` / `1_760_000_000` / `自动抽取`。
+  await 建实体(库(), {
+    id: `${前缀}-c`,
+    projectId: 项目,
+    value: `${前缀}丙`,
+    aliases: ["丙的别名"],
+    attrs: { 来源: "笔录" },
+    createdAt: 1_759_999_000,
+    trustState: "已确认",
+  })
   await 建关系(库(), { id: `${前缀}-r1`, projectId: 项目, fromId: `${前缀}-b`, toId: `${前缀}-c` })
   await 建关系(库(), { id: `${前缀}-r2`, projectId: 项目, fromId: `${前缀}-c`, toId: `${前缀}-b` })
   await 建关系(库(), { id: `${前缀}-r3`, projectId: 项目, fromId: `${前缀}-a`, toId: `${前缀}-b` })
@@ -158,16 +167,16 @@ describe("拆分（撤销合并）", () => {
     const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
     expect(拆.restoredEntityId).toBe("合1-c")
 
-    // 快照完整性：`before.被并入` 少存一样东西（type / canonicalValue / aliases / attrs /
-    // createdAt / trustState），这里就必有一行红。只断 id 与 survivorAliases 钉不住快照。
+    // 快照完整性：下面六项都与主体 / 默认值不同，快照少存或错存都会红。
+    // （type / canonicalValue 与主体不同；aliases / attrs / createdAt / trustState 都是非默认值。）
     const 恢复 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "合1-c" })
     if (恢复?.type !== "entity") throw new Error("形状不对")
     expect(恢复.entityType).toBe("人")
     expect(恢复.canonicalValue).toBe("合1丙")
     expect(恢复.aliases).toEqual(["丙的别名"])
-    expect(恢复.attrs).toEqual({})
-    expect(恢复.trustState).toBe("自动抽取")
-    expect(恢复.createdAt).toBe(1_760_000_000)
+    expect(恢复.attrs).toEqual({ 来源: "笔录" })
+    expect(恢复.trustState).toBe("已确认")
+    expect(恢复.createdAt).toBe(1_759_999_000)
 
     const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "合1-a" })
     if (主体?.type !== "entity") throw new Error("形状不对")
@@ -254,7 +263,7 @@ describe("拆分（撤销合并）", () => {
       拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 }),
     ).rejects.toMatchObject({ code: "restore_conflict" })
 
-    // 事务回滚：被并入的行没有被偷偷插回来，主体也还停在合并后的样子。
+    // 撞名检查在写之前抛；这里断的是「没留半拆状态」，不是对事务回滚的验证。
     expect(await 事实详情(库(), { projectId: 项目, type: "entity", id: "撞1-b" })).toBeUndefined()
     const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "撞1-a" })
     if (主体?.type !== "entity") throw new Error("形状不对")
