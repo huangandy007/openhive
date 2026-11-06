@@ -12,11 +12,12 @@ import {
   悬停文案,
   跳过不可用原因,
   重新解析不可用原因,
+  状态文案,
   type 亮灯依据,
 } from "./case-materials-view"
 // `视图行` 是**测试夹具**（brief Step 5 / 计划 Task 7、Task 8 同样从 test-support 取），
 // 不放进生产模块——否则夹具会被打进浏览器包。
-import { 视图行 } from "./case-materials.test-support"
+import { 假材料状态, 视图行 } from "./case-materials.test-support"
 
 const 扩展名 = [".xlsx", ".xls", ".csv"]
 const 挂过的: Array<() => void> = []
@@ -184,4 +185,70 @@ test("标记组件：形状、颜色语义、aria-label 三样都有；未标记
   expect(标记?.getAttribute("data-shape")).toBe("check")
   expect(标记?.getAttribute("aria-label")).toBe("已解析 · 1 条事实 · 1 个号码")
   expect(host.querySelectorAll("[data-slot='file-tree-parse-badge']").length).toBe(1)
+})
+
+test("标记组件：颜色语义 success / warning / info 各在其位", () => {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  挂过的.push(
+    render(
+      () => (
+        <>
+          <CaseStatusBadge status="已解析" 文案="a" />
+          <CaseStatusBadge status="有问题" 文案="b" />
+          <CaseStatusBadge status="排队中" 文案="c" />
+          <CaseStatusBadge status="解析中" 文案="d" />
+        </>
+      ),
+      host,
+    ),
+  )
+  const 取 = (status: string) =>
+    host.querySelector<HTMLElement>(`[data-slot='file-tree-parse-badge'][data-status='${status}']`)
+
+  // `classList.contains` 是**整词**判定：颜色对调会被抓住（`#006-22` 的子串匹配抓不住）。
+  expect(取("已解析")?.classList.contains("text-v2-state-fg-success")).toBe(true)
+  expect(取("有问题")?.classList.contains("text-v2-state-fg-warning")).toBe(true)
+  expect(取("排队中")?.classList.contains("text-v2-state-fg-info")).toBe(true)
+  expect(取("解析中")?.classList.contains("text-v2-state-fg-info")).toBe(true)
+})
+
+test("悬停文案：解析中说清「已提交的结果会保留」", () => {
+  expect(悬({ path: "a.xlsx", status: "解析中" })).toBe("正在解析，已提交的结果会保留")
+})
+
+test("状态文案：未接入 / 无对象 / 文件夹 / 读取中", () => {
+  expect(状态文案({ isFile: true, loaded: true, 接入: false, 有对象: true })).toBe("未接入")
+  expect(状态文案({ isFile: true, loaded: true, 接入: true, 有对象: false })).toBe("")
+  expect(状态文案({ isFile: false, loaded: true, 接入: true, 有对象: true })).toBe("文件夹")
+  expect(状态文案({ isFile: true, loaded: false, 接入: true, 有对象: true })).toBe("读取中")
+})
+
+test("亮灯：有问题的文件可以重新解析（别把它误判成灰）", () => {
+  expect(
+    重新解析不可用原因(依据({ path: "资料/a.xlsx", row: 视图行({ path: "资料/a.xlsx", status: "有问题" }) })),
+  ).toBeUndefined()
+})
+
+test("亮灯：已跳过不能再跳过（点击必 409）；但「入队」仍亮（那一份的明确动作）", () => {
+  const 已跳过 = 依据({ path: "资料/a.xlsx", row: 视图行({ path: "资料/a.xlsx", status: "已跳过" }) })
+  expect(跳过不可用原因(已跳过)).toBe("已经跳过了")
+  expect(入队不可用原因(已跳过)).toBeUndefined()
+})
+
+test("亮灯：状态未读出来时全灰，不按「未入队」推演", () => {
+  // 文件实际已解析，但首屏 `rows` 还没读回来（`loaded=false`）：按「未入队」推演会让
+  // 「解析入库」亮着、点下去 409——与「前端不本地推演状态」相悖。
+  const 假 = 假材料状态({ loaded: false })
+  const 读后 = (path: string, isFile: boolean): 亮灯依据 =>
+    依据({
+      path,
+      isFile,
+      rowsLoaded: 假.状态.loaded(),
+      row: 假.状态.rows().find((row) => row.path === path),
+    })
+
+  expect(入队不可用原因(读后("资料/已解析.xlsx", true))).toBe("解析状态还在读取，请稍候")
+  // 目录批量也挡：rows 没读出来时算出的候选不可信。
+  expect(入队不可用原因(读后("资料", false))).toBe("解析状态还在读取，请稍候")
 })

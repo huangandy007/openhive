@@ -189,6 +189,8 @@ export interface 亮灯依据 {
 
 const 未接入 = "解析状态还没接上"
 const 无对象 = "右键一个文件或文件夹再用"
+/** 首屏 `rows` 还没读回来：此时按「没有行 = 未入队」推演会让已解析文件亮着「解析入库」。 */
+const 未读取 = "解析状态还在读取，请稍候"
 const 只针对文件 = "这一项只针对单个文件"
 const 产物 = "产物只登记不解析"
 const 后续计划 = "该类型的解析在后续计划"
@@ -197,6 +199,8 @@ const 在跑 = "这份文件已经在排队或解析中"
 export function 入队不可用原因(b: 亮灯依据): string | undefined {
   if (!b.接入) return 未接入
   if (!b.有对象) return 无对象
+  // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
+  if (!b.rowsLoaded) return 未读取
   // 目录一律放行到确认弹窗：候选为 0 时由弹窗正文解释、确认键置灰。
   // 不在菜单项上直接灰掉——灰项的说明用户看不到，看起来就像「菜单坏了」。
   if (!b.isFile) return undefined
@@ -210,6 +214,8 @@ export function 入队不可用原因(b: 亮灯依据): string | undefined {
 export function 重新解析不可用原因(b: 亮灯依据): string | undefined {
   if (!b.接入) return 未接入
   if (!b.有对象) return 无对象
+  // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
+  if (!b.rowsLoaded) return 未读取
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (!可解析路径(b.path, b.extensions)) return 后续计划
@@ -222,6 +228,8 @@ export function 重新解析不可用原因(b: 亮灯依据): string | undefined
 export function 取消不可用原因(b: 亮灯依据): string | undefined {
   if (!b.接入) return 未接入
   if (!b.有对象) return 无对象
+  // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
+  if (!b.rowsLoaded) return 未读取
   if (!b.isFile) return 只针对文件
   if (!运行中(b.row?.status)) return "这份文件现在没有在排队或解析"
   return undefined
@@ -230,9 +238,12 @@ export function 取消不可用原因(b: 亮灯依据): string | undefined {
 export function 跳过不可用原因(b: 亮灯依据): string | undefined {
   if (!b.接入) return 未接入
   if (!b.有对象) return 无对象
+  // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
+  if (!b.rowsLoaded) return 未读取
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (运行中(b.row?.status)) return "正在排队或解析中，先取消再跳过"
+  if (b.row?.status === "已跳过") return "已经跳过了"
   if (b.row?.status === "已解析") return "已经解析过了，不能跳过"
   return undefined
 }
@@ -240,6 +251,8 @@ export function 跳过不可用原因(b: 亮灯依据): string | undefined {
 export function 查看不可用原因(b: 亮灯依据): string | undefined {
   if (!b.接入) return 未接入
   if (!b.有对象) return 无对象
+  // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
+  if (!b.rowsLoaded) return 未读取
   if (!b.isFile) return 只针对文件
   if (!b.hasReview) return "抽取结果面板在后续计划"
   if (b.row === undefined || (b.row.status !== "已解析" && b.row.status !== "有问题"))
