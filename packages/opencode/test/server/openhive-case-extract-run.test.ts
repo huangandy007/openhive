@@ -14,7 +14,7 @@ function 假调用(回答: (() => Promise<unknown>)[]): { 调用: 模型调用; 
   return {
     调用: async (输入) => {
       用户们.push(输入.用户)
-      const fn = 回答[Math.min(i, 回答.length - 1)]!
+      const fn = 回答[Math.min(i, 回答.length - 1)]
       i += 1
       return fn()
     },
