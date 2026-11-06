@@ -144,9 +144,28 @@ export async function 材料事实清单(
     })
   }
 
+  // 过滤下沉到 SQL 后，「空结果」本身分不清「本来就没有引用」与「引用的事实全被排除」。
+  // 默认调用下空结果时再数一次过滤前的引用条数；空态文案必须如实，不能把已排除说成没解析。
+  let 过滤前有条 = 引用行们.length > 0
+  if (!含排除 && !过滤前有条) {
+    const 计数行们 = rowsOf(
+      await db.execute(sql`
+        select count(*)::int as 条数
+          from auth.case_citation
+         where project_id = ${input.projectId} and material_id = ${String(材料.id)}
+      `),
+    )
+    过滤前有条 = Number(计数行们[0]?.条数 ?? 0) > 0
+  }
+
   const 缺口: string[] = []
-  if (引用行们.length === 0) 缺口.push("这份材料没有引用：可能还没解析，或解析没有抽出事实")
-  else if (未定位 > 0) 缺口.push(`${未定位} 条引用的定位不是「工作表 / 行」，未列出`)
+  if (引用行们.length === 0) {
+    缺口.push(
+      过滤前有条
+        ? "没有可见引用：可能还没解析，或引用的事实均已排除"
+        : "这份材料没有引用：可能还没解析，或解析没有抽出事实",
+    )
+  } else if (未定位 > 0) 缺口.push(`${未定位} 条引用的定位不是「工作表 / 行」，未列出`)
   const 分组 = [...表.entries()]
     // 不用 `localeCompare`：它的默认排序随系统 locale 变（本机 zh-CN 把汉字排在拉丁字母前，
     // en-US 则相反）⇒ 同一份数据在不同机器上分组顺序不同、测试也跟着红绿摇摆。

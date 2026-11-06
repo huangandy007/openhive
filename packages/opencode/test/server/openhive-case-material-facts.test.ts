@@ -52,6 +52,8 @@ beforeAll(async () => {
   await 建关系(库(), { id: "r-张排", projectId: 项目, fromId: "e-张", toId: "e-对排", type: "转账" })
   // 关系本身已排除。
   await 建关系(库(), { id: "r-排", projectId: 项目, fromId: "e-排", toId: "e-李", type: "通话", trustState: "已排除" })
+  // 关系本身有效，但**起端**实体已排除（钉住 `关系起.trust_state` 这个谓词）。
+  await 建关系(库(), { id: "r-起排", projectId: 项目, fromId: "e-对排", toId: "e-李", type: "通话" })
 
   const 引用 = (
     id: string,
@@ -70,6 +72,7 @@ beforeAll(async () => {
   await 引用("c-排事件", "event", "ev-排", "m-排除", { sheet: "排除表", row: 2 })
   await 引用("c-排对端", "relation", "r-张排", "m-排除", { sheet: "排除表", row: 3 })
   await 引用("c-排关系", "relation", "r-排", "m-排除", { sheet: "排除表", row: 4 })
+  await 引用("c-起排", "relation", "r-起排", "m-排除", { sheet: "排除表", row: 5 })
 
   // 定位形状不认识：笔录路径真实写入的 `{start,end}`（`case-ingest.ts:513,548,577`）。
   await 引用("c-未1", "entity", "e-张", "m-未知", { start: 0, end: 1200 })
@@ -146,6 +149,8 @@ describe("材料事实清单", () => {
   test("§9.1：默认排除已排除的实体 / 事件 / 关系；includeExcluded 才带出", async () => {
     const 默认 = (await 材料事实清单(库(), { projectId: 项目, path: "排除.xlsx" }))!
     expect(默认.分组).toEqual([])
+    // 全被排除 ≠ 没有引用：空态说明不能写成「解析没抽出事实」。
+    expect(默认.缺口.join()).toContain("均已排除")
 
     const 含排除 = (await 材料事实清单(库(), {
       projectId: 项目,
@@ -158,19 +163,21 @@ describe("材料事实清单", () => {
       "ev-排",
       "r-张排",
       "r-排",
+      "r-起排",
     ])
     expect(含排除.分组[0]!.行们.flatMap((行) => 行.事实们.map((条) => 条.trust_state))).toEqual([
       "已排除",
       "已排除",
       "自动抽取",
       "已排除",
+      "自动抽取",
     ])
   })
 
   test("定位形状不认识（{start,end}）⇒ 分组为空，缺口写清条数，不静默吞", async () => {
     const 结果 = (await 材料事实清单(库(), { projectId: 项目, path: "未知.xlsx" }))!
     expect(结果.分组).toEqual([])
-    expect(结果.缺口.join()).toContain("2 条")
+    expect(结果.缺口.join()).toContain("2 条引用")
     expect(结果.缺口.join()).toContain("工作表")
   })
 
