@@ -89,6 +89,56 @@ describe("入队表格材料", () => {
     expect(Number(n[0]?.n)).toBe(1)
   })
 
+  /**
+   * 计划 3 修复轮 1（F3）：`force` 是右键「重新解析」的入口判据。已解析的材料**不传 force**
+   * 必须维持原样（上传是幂等的），传了才重新排队。两条各自种自己那份「已解析」材料
+   * （独立字节 ⇒ 独立指纹），`-t` 单跑也自足。
+   */
+  test("已解析的材料：不传 force ⇒ 不再排队，状态不动", async () => {
+    const 文件名 = "已解析-不强制.xlsx"
+    const 参数 = {
+      root,
+      project,
+      target: 落点(文件名),
+      bytes: new Uint8Array([101, 102, 103]),
+      fileName: 文件名,
+      by: "u1",
+    }
+    const 首次 = await 入队表格材料(db(), 参数)
+    expect(首次?.enqueued).toBe(true)
+    await db().execute(sql`update auth.case_material set parse_status = '已解析' where id = ${首次!.materialId}`)
+
+    const r = await 入队表格材料(db(), 参数)
+    // 实测：材料已存在、动作是「无」⇒ 不是 `undefined`，而是 `enqueued: false`（材料仍在）。
+    expect(r?.enqueued).toBe(false)
+    const 行 = rowsOf(
+      await db().execute(sql`select parse_status from auth.case_material where id = ${首次!.materialId}`),
+    )
+    expect(行[0]?.parse_status).toBe("已解析")
+  })
+
+  test("已解析的材料：force: true ⇒ 重新排队，状态回到排队中", async () => {
+    const 文件名 = "已解析-强制.xlsx"
+    const 参数 = {
+      root,
+      project,
+      target: 落点(文件名),
+      bytes: new Uint8Array([111, 112, 113]),
+      fileName: 文件名,
+      by: "u1",
+    }
+    const 首次 = await 入队表格材料(db(), 参数)
+    expect(首次?.enqueued).toBe(true)
+    await db().execute(sql`update auth.case_material set parse_status = '已解析' where id = ${首次!.materialId}`)
+
+    const r = await 入队表格材料(db(), { ...参数, force: true })
+    expect(r?.enqueued).toBe(true)
+    const 行 = rowsOf(
+      await db().execute(sql`select parse_status from auth.case_material where id = ${首次!.materialId}`),
+    )
+    expect(行[0]?.parse_status).toBe("排队中")
+  })
+
   test("非表格扩展名 ⇒ 直接跳过，材料表里没有它", async () => {
     const r = await 入队表格材料(db(), {
       root,
