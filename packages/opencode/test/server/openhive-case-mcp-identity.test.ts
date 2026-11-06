@@ -28,6 +28,12 @@ describe("解析调用身份", () => {
     ).toThrow(expect.objectContaining({ code: "identity_required" }))
   })
 
+  test("目录多一层 ⇒ identity_required", () => {
+    expect(() =>
+      解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": "u1", "openhive/directory": "/workspaces/u1/p/子目录" } }),
+    ).toThrow(expect.objectContaining({ code: "identity_required" }))
+  })
+
   test("目录在别人的沙箱里 ⇒ identity_required", () => {
     expect(() =>
       解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": "u1", "openhive/directory": "/workspaces/u2/p-甲" } }),
@@ -37,6 +43,12 @@ describe("解析调用身份", () => {
   test("目录用 .. 逃出沙箱根 ⇒ identity_required", () => {
     expect(() =>
       解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": "u1", "openhive/directory": "/workspaces/u1/../../etc" } }),
+    ).toThrow(expect.objectContaining({ code: "identity_required" }))
+  })
+
+  test("userId 是 . ⇒ identity_required", () => {
+    expect(() =>
+      解析调用身份({ workspaceRoot: 根, meta: { "openhive/user": ".", "openhive/directory": "/workspaces/p" } }),
     ).toThrow(expect.objectContaining({ code: "identity_required" }))
   })
 
