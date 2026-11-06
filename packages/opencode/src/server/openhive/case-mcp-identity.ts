@@ -43,8 +43,6 @@ export function 解析调用身份(input: { readonly workspaceRoot: string; read
   const record = input.meta as Record<string, unknown>
   const userId = 取字符串(record, USER_META_KEY)
   if (userId === undefined) throw new 身份错误("缺少调用身份：_meta 未注入 openhive/user")
-
-
   try {
     assertSafeUserId(userId, "解析 MCP 调用身份")
   } catch {
