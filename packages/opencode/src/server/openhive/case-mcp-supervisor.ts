@@ -14,9 +14,10 @@ import { START_TIMEOUT_MS, spawnGovernanceMcp, startSupervision } from "./govern
  *
  * ## 起不来的前提
  *
- * `PG_HOST` / `PG_DATABASE` / `PG_USER` 任一为空 ⇒ `{ kind: "off" }`：不带坏配置进
- * 「起—崩—起」循环。显式 `OPENHIVE_CASE_MCP_CMD` 与 `OPENHIVE_CASE_MCP=off` 的优先级见
- * `caseCommand`。
+ * `connect()` 的五个必需项（`PG_HOST` / `PG_PORT` / `PG_USER` / `PG_PASSWORD` /
+ * `PG_DATABASE`）任一为空 ⇒ `{ kind: "off" }`：不带坏配置进「起—崩—起」循环
+ *（少配一个也会在 `connect()` 构造期抛错、退出，监督器只能永久退避）。
+ * 显式 `OPENHIVE_CASE_MCP_CMD` 与 `OPENHIVE_CASE_MCP=off` 的优先级见 `caseCommand`。
  *
  * ## 配置写入
  *
@@ -53,8 +54,11 @@ export function caseCommand(env: Record<string, string | undefined>): CommandPla
     }
   }
 
-  // 三连全查：缺任一都不起（网关读不到库时，起来只会反复崩）。
-  if (!env.PG_HOST || !env.PG_DATABASE || !env.PG_USER) return { kind: "off" }
+  // 五连全查（复审 M-1）：与 `@opencode-ai/auth/db` 的 `REQUIRED` 对齐——缺任一都不起；
+  // 少配 `PG_PORT` / `PG_PASSWORD` 时 `connect()` 会在构造期抛错，监督器只会无限退避重启。
+  if (!env.PG_HOST || !env.PG_PORT || !env.PG_USER || !env.PG_PASSWORD || !env.PG_DATABASE) {
+    return { kind: "off" }
+  }
   // 统一用 `/`：win32 的 `join` 给 `\`，而命令数组里习惯正斜杠（`#006-23`）。
   return {
     kind: "command",
@@ -133,6 +137,8 @@ export const layer = Layer.effectDiscard(
       onFailure: (reason) => Effect.logWarning(reason),
       sleep: (ms) => Effect.sleep(ms),
       startTimeoutMs: START_TIMEOUT_MS,
+      // 故障日志别串成「治理 MCP」——运维会去查错服务（复审 I-2）。
+      label: "案件 MCP",
     })
   }),
 )

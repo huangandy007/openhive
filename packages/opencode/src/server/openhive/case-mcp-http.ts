@@ -69,7 +69,7 @@ async function closeQuietly(server: Server, transport: WebStandardStreamableHTTP
  * 把响应体包一层：**流结束（或消费方取消）后**再关 transport / server。
  * 不能在 `handleRequest` 返回后立刻关——`response.body` 可能还是未消费的 SSE 流。
  */
-export function closeAfterBody(response: Response, close: () => void): Response {
+function closeAfterBody(response: Response, close: () => void): Response {
   const body = response.body
   if (body === null) {
     close()
@@ -140,6 +140,12 @@ export async function startCaseMcpHttp(deps: CaseHttpDeps): Promise<{
   const server = Bun.serve({
     hostname: DEFAULT_HOSTNAME,
     port: firstPort(process.env),
+    // 案件工具是分析型查询：大表 / 聚合 >10s 是常态，而 Bun 默认 `idleTimeout` 是 10 秒——
+    // 复审实测（桩 db 永不返回的 tools/call）约 10s 后客户端 `ECONNRESET`，Bun 打
+    // `timed out a request after 10 seconds`。`asset-service/src/mcp-http.ts` 那句
+    //「治理工具都是快操作」在这里**不成立**；255 是 Bun 允许的上限。
+    // 复审探针已验，无自动化用例（11s 慢用例会拖垮测试时长），记缺口。
+    idleTimeout: 255,
     fetch: (request) => {
       const url = new URL(request.url)
       // 只是 liveness：不探 DB、不反映依赖健康度；运维手动探活用。

@@ -328,6 +328,8 @@ export interface SupervisionDeps {
   readonly sleep: (ms: number) => Effect.Effect<void, never, never>
   readonly startTimeoutMs: number
   readonly now?: () => number
+  /** 日志文案里的服务名；默认「治理 MCP」。案件侧复用本循环时传自己的名字（复审 I-2）。 */
+  readonly label?: string
 }
 
 /**
@@ -356,6 +358,7 @@ const rewriteConfig = (deps: SupervisionDeps, port: number): Effect.Effect<void,
 export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, never> =>
   Effect.gen(function* () {
     const now = deps.now ?? Date.now
+    const label = deps.label ?? "治理 MCP"
     let attempt = 0
     let port: number | undefined
 
@@ -395,12 +398,12 @@ export const supervise = (deps: SupervisionDeps): Effect.Effect<never, never, ne
       )
 
       if (outcome.kind === "timeout") {
-        yield* deps.onFailure(`治理 MCP 就绪超时（${deps.startTimeoutMs}ms 内未就绪），准备重启`)
+        yield* deps.onFailure(`${label} 就绪超时（${deps.startTimeoutMs}ms 内未就绪），准备重启`)
       } else if (outcome.kind === "exited-before-ready") {
-        yield* deps.onFailure("治理 MCP 在就绪前退出（检查 PG_* 等启动配置），准备重启")
+        yield* deps.onFailure(`${label} 在就绪前退出（检查 PG_* 等启动配置），准备重启`)
       } else {
         port = outcome.port
-        yield* deps.onFailure(`治理 MCP 退出（端口 ${outcome.port}），准备重启`)
+        yield* deps.onFailure(`${label} 退出（端口 ${outcome.port}），准备重启`)
         if (now() - startedAt >= RESET_BACKOFF_AFTER_MS) attempt = 0
       }
 
@@ -469,6 +472,8 @@ export interface StartupDeps {
   /** 首次就绪最多等多久；超时 WARN 后放行，后台继续退避重试。默认与启动超时一致。 */
   readonly firstReadyTimeoutMs?: number
   readonly now?: () => number
+  /** 日志文案里的服务名；默认「治理 MCP」（复审 I-2：案件侧复用本入口时传自己的名字）。 */
+  readonly label?: string
 }
 
 /**
@@ -502,13 +507,14 @@ export const startSupervision = (deps: StartupDeps): Effect.Effect<void, never, 
         sleep: deps.sleep,
         startTimeoutMs: deps.startTimeoutMs,
         ...(deps.now === undefined ? {} : { now: deps.now }),
+        ...(deps.label === undefined ? {} : { label: deps.label }),
       }),
     )
 
     const timeoutMs = deps.firstReadyTimeoutMs ?? START_TIMEOUT_MS
     const outcome = yield* Effect.promise(() => waitFirstReady(firstReady, timeoutMs))
     if (outcome === "timeout") {
-      yield* Effect.logWarning(`治理 MCP ${timeoutMs}ms 内未就绪：内核先放行，后台继续退避重试`)
+      yield* Effect.logWarning(`${deps.label ?? "治理 MCP"} ${timeoutMs}ms 内未就绪：内核先放行，后台继续退避重试`)
     }
   })
 
