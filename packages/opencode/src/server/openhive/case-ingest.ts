@@ -1,7 +1,7 @@
 export * as OpenhiveCaseIngest from "./case-ingest"
 
 import { sql } from "drizzle-orm"
-import { isAbsolute, relative, resolve, sep } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
@@ -236,6 +236,35 @@ export function 沙箱内路径(root: string, sourcePath: string): string | unde
   // 用 `startsWith("..")` 会把它们一起拒掉。
   if (相对 === "" || 相对 === ".." || 相对.startsWith(`..${sep}`) || isAbsolute(相对)) return undefined
   return 绝对
+}
+
+/**
+ * 作业的项目目录：`{沙箱根}/{userId}/{projectId}`。
+ *
+ * `source_path` 是库里的数据。目录只取前两段，但**前两段本身也要过闸**：空段 / `.` / `..`
+ * 会把它拼到别的用户或别的项目上（`#009-03`：判归属别只看字面）。
+ *
+ * 第二段必须**恰好等于**作业的 `projectId`：写者（`file.ts` 的入队路径）保证
+ * `projectId = 段[1]`，不一致说明这行数据坏了 —— 宁可不解析，也不要用**别的项目**的模型
+ * 配置去跑这份材料。
+ *
+ * 后段里的 `..` 影响不到目录（这里只取前两段），但同样按坏数据拒掉：
+ * 作业的路径应当由写者原样给出，出现 `..` 说明它没走写者。
+ */
+export function 作业项目目录(root: string, sourcePath: string, projectId: string): string | undefined {
+  if (sourcePath === "") return undefined
+  // 只用 `/` 切段：反斜杠在 win32 上是分隔符，本函数坚持写者的口径（单段 ⇒ 段数不足 ⇒ 拒）。
+  const 段 = sourcePath.split("/")
+  if (段.length < 3) return undefined
+  if (!前段可用(段[0]) || !前段可用(段[1])) return undefined
+  if (段[1] !== projectId) return undefined
+  if (段.slice(2).some((一段) => 一段 === "" || 一段 === "." || 一段 === "..")) return undefined
+  return join(root, 段[0], 段[1])
+}
+
+/** 目录前两段只接受普通的非空名字：`.` / `..` / 空串都会把落点带偏。 */
+function 前段可用(段: string): boolean {
+  return 段 !== "" && 段 !== "." && 段 !== ".."
 }
 
 /**

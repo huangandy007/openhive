@@ -410,11 +410,14 @@ describe("GET /openhive/case/materials", () => {
         )
       }
       // 同一号码实体被两片引用 ⇒ 只算 1 条；人实体 1 条；关系 1 条 ⇒ 事实数 3、号码数 1。
+      // 最后一条是 `fact_type = 'row'` 的**变异保护**：行级引用由 `facts`（明细行）计数，
+      // 不许在这里再算一次；没有它，去掉 SQL 里的 `<> 'row'` 也照样绿。
       for (const [id, factType, factId] of [
         [`${唯一}-c1`, "entity", 号码实体],
         [`${唯一}-c2`, "entity", 号码实体],
         [`${唯一}-c3`, "entity", 人实体],
         [`${唯一}-c4`, "relation", `r-${唯一}`],
+        [`${唯一}-c5`, "row", `${材料id}#Sheet1#2`],
       ] as const) {
         yield* Effect.promise(() =>
           库().execute(sql`insert into auth.case_citation

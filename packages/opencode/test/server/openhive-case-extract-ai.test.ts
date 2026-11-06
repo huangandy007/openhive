@@ -51,6 +51,8 @@ describe("建调用模型（generateObject 适配器）", () => {
     } catch (error) {
       报错 = String(error)
     }
-    expect(报错).not.toBe("")
+    // 实得文案（本轮记录）：AI_NoObjectGeneratedError: No object generated: could not parse the response.
+    // 只钉错误类名：类名是 AI SDK 的导出类型，小版本不会改；后半句是散文，随时可能重写。
+    expect(报错).toContain("AI_NoObjectGeneratedError")
   })
 })

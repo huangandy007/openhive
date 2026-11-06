@@ -106,6 +106,8 @@ Z = from.env.local        ← .env.local 更大
 | `OPENHIVE_GOVERNANCE_MCP` | `packages/opencode/src/server/openhive/governance-mcp-supervisor.ts:47` | 设成 `off` ⇒ 显式关掉（给「目录配了、这次不想起」用） |
 | `OPENHIVE_GOVERNANCE_MCP_CMD` | `packages/opencode/src/server/openhive/governance-mcp-supervisor.ts:45` | **JSON 字符串数组**（元素必须全是字符串），覆盖默认命令（镜像里 `bun` 不在 PATH 时用）；**设了它就不需要 `_DIR`**。非 JSON / 长度 < 2 / 元素非字符串 ⇒ 记 WARN 不起进程 |
 | `OPENHIVE_GOVERNANCE_MCP_PORT` | `packages/opencode/src/server/openhive/governance-mcp-supervisor.ts:48` | 治理 MCP 的**首启**端口；缺省 / 非整数 / 不在 `1..65535` ⇒ `0`（系统分配）。重启沿用上一轮回报的端口；显式端口被占 ⇒ 子进程起不来，按退避重试（不会悄悄换号） |
+| `OPENHIVE_CASE_INGEST_WORKER` | `packages/opencode/src/server/openhive/case-ingest-worker.ts:41` | 案件导入消费的开工开关：值为 `"0"` ⇒ **不起**消费循环（不设 = 开）。`PG_*` 未配齐同样不起（启动期判据，不刷告警） |
+| `OPENHIVE_CASE_EXTRACT_MODEL` | `packages/opencode/src/server/openhive/case-ingest-worker.ts:47` | 文本材料 AI 抽取用的模型，形如 `provider/model`；**不设** ⇒ 项目配置的默认模型；设了但解析不出可用模型 ⇒ 材料落「有问题」并给出中文原因 |
 
 > **资产服务（009）**：`OPENHIVE_ASSETS_ROOT` 由 `packages/asset-service/src/storage.ts:7` 读取，
 > 生产默认 `/assets`。今天它**已经在内核进程里生效**两处：① 内核侧治理后台出口每请求读一次

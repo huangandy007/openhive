@@ -1,13 +1,12 @@
 export * as OpenhiveCaseIngestWorker from "./case-ingest-worker"
 
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
 import { Cause, Effect, Layer } from "effect"
 import { InstanceStore } from "@/project/instance-store"
 import { Provider, parseModel } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 建调用模型 } from "./case-extract-ai"
-import { claimNextJob, runJob, 沙箱内路径, type ClaimedJob } from "./case-ingest"
+import { claimNextJob, runJob, 作业项目目录, 沙箱内路径, type ClaimedJob } from "./case-ingest"
 import { OpenhivePg } from "./pg"
 
 /**
@@ -76,20 +75,14 @@ export const layer = Layer.effectDiscard(
      * （`LEARNINGS #010-07` 讲的是「读请求上下文」的那种 runPromise，不是这种自足的）。
      */
     const 建抽取器 = async (job: ClaimedJob) => {
-      const 段 = job.sourcePath.split("/")
-      // `source_path` 是库里的数据。项目目录只取前两段，但**前两段本身也要过闸**：
-      // 空段 / `.` / `..` 会让 `join` 落到别的用户或别的项目上（`#009-03`：判归属别只看字面）。
-      if (段.length < 3 || 段[0] === "" || 段[1] === "" || 段[0] === "." || 段[0] === ".." || 段[1] === "." || 段[1] === "..")
-        throw new Error(`作业的落点不合法：${job.sourcePath}`)
-      // 不写 `段[0]!`：本包未开 `noUncheckedIndexedAccess`，`!` 只会新增
-      // `no-unnecessary-type-assertion` warning（`case-fact-store.ts:69` 同款注释）。
-      const 目录 = join(config.root, 段[0], 段[1])
+      const 目录 = 作业项目目录(config.root, job.sourcePath, job.projectId)
+      if (目录 === undefined) throw new Error(`作业的落点不合法：${job.sourcePath}`)
+      const 指定 = process.env[抽取模型ENV]
       return Effect.runPromise(
         instances
           .provide(
             { directory: 目录 },
             Effect.gen(function* () {
-              const 指定 = process.env[抽取模型ENV]
               const 引用 = 指定 ? parseModel(指定) : yield* provider.defaultModel()
               const resolved = yield* provider.getModel(引用.providerID, 引用.modelID)
               const 语言 = yield* provider.getLanguage(resolved)
@@ -97,13 +90,20 @@ export const layer = Layer.effectDiscard(
             }),
           )
           .pipe(
-            Effect.catchCause((cause) =>
-              Effect.die(
+            Effect.catchCause((cause) => {
+              // 原因只取**错误名**：这条文案会经 `runJob` 落进 `parse_detail.reason` 并回给前端，
+              // `Cause.pretty` 的正文可能带连接串（与下面消费循环的 catch 同一口径）。
+              const 原因 = Cause.prettyErrors(cause)
+                .map((error) => error.name)
+                .join("、")
+              return Effect.die(
                 new Error(
-                  `没有可用的抽取模型：请设置 ${抽取模型ENV}（形如 provider/model），或在项目配置里设置 model（${Cause.pretty(cause)}）`,
+                  指定 === undefined
+                    ? `没有可用的抽取模型：请设置 ${抽取模型ENV}（形如 provider/model），或在项目配置里设置 model（原因：${原因}）`
+                    : `抽取模型不可用：${抽取模型ENV}=${指定} 解析不出可用模型（原因：${原因}）`,
                 ),
-              ),
-            ),
+              )
+            }),
           ),
       )
     }

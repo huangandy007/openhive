@@ -7,7 +7,7 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { claimNextJob, enqueueMaterial, runJob, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
+import { claimNextJob, enqueueMaterial, runJob, 作业项目目录, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
@@ -568,6 +568,40 @@ describe("沙箱内路径", () => {
     expect(沙箱内路径(root, join(root, "u1", "a.xlsx"))).toBeUndefined()
     // win32 上反斜杠同样是分隔符：`..\..\Windows\win.ini` 必须被拒。
     if (process.platform === "win32") expect(沙箱内路径(root, "..\\..\\Windows\\win.ini")).toBeUndefined()
+  })
+})
+
+describe("作业项目目录", () => {
+  const root = join(tmpdir(), "openhive-作业目录")
+
+  test("两段用户/项目 + 文件 ⇒ 项目目录", () => {
+    expect(作业项目目录(root, "u1/p/材料/笔录.txt", "p")).toBe(join(root, "u1", "p"))
+  })
+
+  test("不足三段 ⇒ 拒", () => {
+    expect(作业项目目录(root, "u1/p", "p")).toBeUndefined()
+    expect(作业项目目录(root, "", "p")).toBeUndefined()
+  })
+
+  test("前导斜杠 / 空段 / . / .. 落在前两段 ⇒ 拒", () => {
+    expect(作业项目目录(root, "/u1/p/a.txt", "p")).toBeUndefined()
+    expect(作业项目目录(root, "./p/a.txt", "p")).toBeUndefined()
+    expect(作业项目目录(root, "u1/../p/a.txt", "p")).toBeUndefined()
+    expect(作业项目目录(root, "../u1/p/a.txt", "p")).toBeUndefined()
+  })
+
+  test("第二段与作业的 projectId 不一致 ⇒ 拒（别用别的项目的模型配置）", () => {
+    expect(作业项目目录(root, "u1/别人的/a.txt", "p")).toBeUndefined()
+  })
+
+  test("后段出现 . / .. / 空段 ⇒ 拒（写者不会这么给）", () => {
+    expect(作业项目目录(root, "u1/p/../别人的/a.txt", "p")).toBeUndefined()
+    expect(作业项目目录(root, "u1/p/./a.txt", "p")).toBeUndefined()
+    expect(作业项目目录(root, "u1/p//a.txt", "p")).toBeUndefined()
+  })
+
+  test("反斜杠不是分隔符（Windows 单段路径直接拒）", () => {
+    expect(作业项目目录(root, "u1\\p\\a.txt", "p")).toBeUndefined()
   })
 })
 

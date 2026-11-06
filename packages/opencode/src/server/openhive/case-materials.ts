@@ -26,6 +26,7 @@ import type { ParseStatus } from "./case-status"
  * 表格材料的「事实数」是 `case_fact_row` 行数（明细行）；文本材料没有明细行，取
  * `case_citation` 的去重事实数。两者相加（同一材料不会同时有两种）。号码数同理：
  * 表格取 caller/callee/counterparty，文本取被引用的 `type = '号码'` 实体。
+ * 行级引用（fact_type = 'row'）不算在这里——表格材料的明细行已由 facts 计数。
  */
 export interface 材料视图行 {
   id: string
@@ -75,6 +76,7 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
         select material_id, count(distinct fact_type || ':' || fact_id)::int as n
           from auth.case_citation
          where project_id = ${projectId}
+           and fact_type <> 'row'  -- 行级引用是表格材料的明细行，已由 facts 计数，别重复算
          group by material_id
       ),
       cited_numbers as (
