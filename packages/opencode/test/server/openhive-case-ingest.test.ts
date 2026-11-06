@@ -608,6 +608,9 @@ async function 读第一行(projectId: string, materialId: string) {
  */
 describe("表格格式缓存的 jsonb 形状", () => {
   test("header 落成 array、mapping 落成 object，SQL 侧能取到列名", async () => {
+    // `claimNextJob` 是全局 FIFO：别的 describe 留下一条件排队作业，这里就会认领到它，
+    // 红在「完成/失败」而不是 jsonb 上。认领前先清干净（与「人工入库置顶」组的 `清空队列` 同款）。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
     文件.set("p-jsonb-表/话单.xlsx", 话单)
     await 入队("p-jsonb-表", "话单.xlsx", "fp-jsonb-表")
     expect((await 跑下一条()).结果).toBe("完成")

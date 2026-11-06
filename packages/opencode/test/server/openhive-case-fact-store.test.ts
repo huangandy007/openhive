@@ -122,7 +122,7 @@ describe("text_content", () => {
 })
 
 describe("跨项目隔离", () => {
-  test("清理只删本项目：另一项目里同 id 的材料/事实/引用一条都不动", async () => {
+  test("清理只删本项目：另一项目的同名关系与事件、引用一条都不动", async () => {
     // 故意让乙项目用**同名**的材料 id 与事实 id：主键是 `(project_id, id)`，同名是合法的，
     // 这样「漏写 project_id 条件」才会真的删到别人头上——否则这条用例连变异都红不了。
     const 乙 = "prj-fact-乙"
@@ -172,14 +172,48 @@ describe("跨项目隔离", () => {
       locator: { start: 0, end: 5 },
       extractMethod: "机器",
     })
+    await insertEvent(db(), {
+      projectId: 乙,
+      id: "ev-同案甲",
+      type: "同案",
+      occurredAt: null,
+      occurredRaw: null,
+      precision: null,
+      participants: [实体乙],
+      summary: null,
+      trustState: "自动抽取",
+    })
+    await addCitation(db(), {
+      id: "c-乙-事件",
+      projectId: 乙,
+      factType: "event",
+      factId: "ev-同案甲",
+      materialId: 材料,
+      locator: { start: 0, end: 5 },
+      extractMethod: "机器",
+    })
+    // 本项目侧再补一条指着**同名事件 id** 的引用（本项目里并不存在 ev-同案甲）。
+    // 事件 DELETE 与关系 DELETE 是「同一个判断写了两处」（`#002-06`）：没有这条引用，
+    // 拆掉 `e.project_id = c.project_id` 根本匹配不到乙项目的事件行，事件分支会假绿。
+    await addCitation(db(), {
+      id: "c-甲-指空-事件",
+      projectId: 项目,
+      factType: "event",
+      factId: "ev-同案甲",
+      materialId: 材料,
+      locator: { start: 0, end: 5 },
+      extractMethod: "机器",
+    })
 
     await 删除本材料的事实(db(), 项目, 材料)
     await deleteCitationsOfMaterial(db(), 项目, 材料)
 
     const 关系 = rowsOf(await db().execute(sql`select id from auth.case_relation where project_id = ${乙}`))
     expect(关系.map((r) => r.id)).toEqual(["r-同案甲"])
-    const 引用 = rowsOf(await db().execute(sql`select id from auth.case_citation where project_id = ${乙}`))
-    expect(引用.map((r) => r.id)).toEqual(["c-乙"])
+    const 事件 = rowsOf(await db().execute(sql`select id from auth.case_event where project_id = ${乙} order by id`))
+    expect(事件.map((r) => r.id)).toEqual(["ev-同案甲"])
+    const 引用 = rowsOf(await db().execute(sql`select id from auth.case_citation where project_id = ${乙} order by id`))
+    expect(引用.map((r) => r.id)).toEqual(["c-乙", "c-乙-事件"])
     const 实体行 = rowsOf(await db().execute(sql`select id from auth.case_entity where project_id = ${乙}`))
     expect(实体行.length).toBe(1)
   })
