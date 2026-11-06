@@ -22,8 +22,8 @@ import type { Queryable } from "./case-store"
  *
  * `al-` ＋ `Hash.fast(projectId|ruleId|key)` ＋ `on conflict do nothing`：同一份数据重复比对
  * 不会堆出重复提醒，已读状态也不会被冲掉（`LEARNINGS #007-01`）。key 必须是**与方向 / 到达
- * 顺序无关的全序**（通话转账重合那一条把两端 id 排序后拼），否则同一件事会按关系的书写方向
- * 变成两条（`LEARNINGS #010-05`）。
+ * 顺序无关的全序**（通话转账重合那一条用 SQL 的 `least` / `greatest` 把两端 id 折成无序对再拼），
+ * 否则同一件事会按关系的书写方向变成两条（`LEARNINGS #010-05`）。
  *
  * ## 已排除的东西不算
  *
