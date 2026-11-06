@@ -7,6 +7,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { 纠正原因们, type 纠正原因, 留痕类型们, type 留痕类型 } from "./case-fact-change"
 import { 事实详情 } from "./case-fact-read"
 import { 合并实体, 合并冲突, 拆分合并 } from "./case-merge"
+import { 处置提议, 提议冲突, 提议列表, 提议状态们, type 提议状态 } from "./case-proposals"
 import { 裁决, 裁决动作们, 裁决冲突, type 裁决动作 } from "./case-trust"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
@@ -53,6 +54,8 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.trust, (request) => handleTrust(request, deps))
     yield* router.add("POST", PATH.merge, (request) => handleMerge(request, deps))
     yield* router.add("POST", PATH.split, (request) => handleSplit(request, deps))
+    yield* router.add("GET", PATH.proposals, (request) => handleProposals(request, deps))
+    yield* router.add("POST", PATH.proposalDecide, (request) => handleProposalDecide(request, deps))
   }),
 )
 
@@ -94,6 +97,9 @@ const 是裁决动作 = (value: unknown): value is 裁决动作 =>
 /** 自由字符串不能直接断言成 `纠正原因`：非法的要先回 400，别落进库约束炸成 500。 */
 const 是纠正原因 = (value: unknown): value is 纠正原因 =>
   typeof value === "string" && (纠正原因们 as readonly string[]).includes(value)
+
+const 是提议状态 = (value: unknown): value is 提议状态 =>
+  typeof value === "string" && (提议状态们 as readonly string[]).includes(value)
 
 function handleFacts(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
@@ -197,6 +203,62 @@ function handleMerge(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     )
     if (结果 instanceof 合并冲突) return fail(409, 结果.message, 结果.code)
     return ok({ ok: true, ...结果 })
+  })
+}
+
+function handleProposals(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+
+    const 参数 = new URL(request.url, "http://localhost").searchParams
+    const projectId = 参数.get("projectId")
+    const 状态原文 = 参数.get("status")
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (状态原文 !== null && !是提议状态(状态原文)) return fail(400, "status 只能是三种之一", "bad_request")
+    // 不用 `as`：守卫已经把 `状态原文` 收窄到「三种之一或 null」，这里只是把 null 显式转回
+    // 可选参数的形状（DAO 的 `状态?` 表示「不过滤」，不是「过滤 null」）。
+    const 状态: 提议状态 | undefined = 状态原文 === null ? undefined : 状态原文
+
+    if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
+      return fail(403, "不是该项目成员", "forbidden")
+
+    const 提议们 = yield* Effect.promise(() => 提议列表(deps.pg(), projectId, 状态))
+    return ok({ proposals: 提议们 })
+  })
+}
+
+function handleProposalDecide(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+
+    const projectId = body["projectId"]
+    const id = body["id"]
+    const action = body["action"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (typeof id !== "string" || id === "") return fail(400, "id 不能为空", "bad_request")
+    if (action !== "采纳" && action !== "否决") return fail(400, "action 只能是 采纳 / 否决", "bad_request")
+
+    if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
+      return fail(403, "不是该项目成员", "forbidden")
+
+    const 结果 = yield* Effect.promise(() =>
+      处置提议(deps.pg(), {
+        projectId,
+        id,
+        action,
+        reasonText: typeof body["reasonText"] === "string" ? body["reasonText"] : null,
+        by: user.value.id,
+      }).catch((error: unknown) => {
+        if (error instanceof 提议冲突) return error
+        throw error
+      }),
+    )
+    if (结果 instanceof 提议冲突) return fail(409, 结果.message, 结果.code)
+    return ok({ ok: true, proposal: 结果 })
   })
 }
 

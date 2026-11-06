@@ -364,3 +364,29 @@ describe("POST /openhive/case/entities/merge 与 /split", () => {
     }),
   )
 })
+
+describe("AI 提议出口", () => {
+  // `it` 已经是 `test.live`（第 27 行），再写 `it.live` 是重复包装（计划 5 已踩过）。
+  it("列表默认全部；status 非法 ⇒ 400", () =>
+    Effect.gen(function* () {
+      const 好 = yield* 发(我, `/openhive/case/proposals?projectId=${项目}`)
+      expect(好.status).toBe(200)
+      expect(Array.isArray((yield* 读回<{ proposals: unknown[] }>(好)).proposals)).toBe(true)
+
+      const 坏 = yield* 发(我, `/openhive/case/proposals?projectId=${项目}&status=随便`)
+      expect(坏.status).toBe(400)
+    }),
+  )
+
+  it("处置不存在的提议 ⇒ 409 proposal_not_found", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, "/openhive/case/proposals/decide", {
+        projectId: 项目,
+        id: "没有",
+        action: "采纳",
+      })
+      expect(响应.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("proposal_not_found")
+    }),
+  )
+})
