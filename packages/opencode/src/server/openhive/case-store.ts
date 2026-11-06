@@ -458,7 +458,8 @@ export async function addCitation(db: Queryable, input: CitationInput): Promise<
   // `::text` 这一层不是装饰：bun 1.4.3 会把绑给 jsonb 参数的 JS 字符串**再编码一次**，
   // 直接 `$1::jsonb` 落库就成了 JSON 字符串标量（`jsonb_typeof = 'string'`），
   // `locator->>'start'` 永远是 NULL。读侧的 `typeof === "string" ? JSON.parse` 会把它
-  // 读对，所以这个错**不会红在任何用例上**——只有 SQL 侧取值才暴露（`openhive-case-jsonb.test.ts`）。
+  // 读对，所以这个错**不会红在原有的读路径用例上**——只有 SQL 侧取值才暴露（`openhive-case-jsonb.test.ts`
+  // 专钉这一点，它红的就是这里）。
   // material_id 与 locator 一并写入：行级引用的 `fact_id` 只当不透明键，绝不从中拆定位。
   await db.execute(sql`
     insert into auth.case_citation

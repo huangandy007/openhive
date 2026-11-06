@@ -40,8 +40,8 @@ export interface 实体写入 {
  * 一次 ⇒ `"[]"` 落成 JSON **字符串**（`jsonb_typeof` = `string`），
  * `jsonb_array_elements_text` 报 `22023 cannot extract elements from a scalar`。
  * 先转 `text` 让 PG 把参数推成 text（原样送达），再由 `::jsonb` 解析，才真的得到数组。
- * 同一条实测也解释了 `case-store.addCitation` 的 locator 为什么读回时要 `JSON.parse`
- * （那边存进去的是 JSON 字符串，不是对象）。
+ * `case-store.addCitation` 的 locator 读回时仍要 `typeof === "string" ? JSON.parse`：
+ * 修复**之前**落库的旧行还是 JSON 字符串标量（本次不回填，旧行只能按旧形状读）。
  */
 function 文本数组(值: readonly string[]) {
   return sql`array(select jsonb_array_elements_text(${JSON.stringify(值)}::text::jsonb))`
