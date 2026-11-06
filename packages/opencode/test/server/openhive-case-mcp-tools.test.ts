@@ -256,6 +256,15 @@ beforeAll(async () => {
   ] as const) {
     await upsertEntity(库(), { id, projectId: 身份戊.projectId, type, canonicalValue: value, aliases: [] })
   }
+  // `e-号X` 是**已排除实体**：`upsertEntity` 不写 `trust_state`，用计划 5 的共享夹具种。
+  // 两条通往它的关系都正常 ⇒ 只钉「回查实体时也要过滤已排除」这一条判据。
+  await 建实体(库(), {
+    id: "e-号X",
+    projectId: 身份戊.projectId,
+    type: "号码",
+    value: "号X",
+    trustState: "已排除",
+  })
   // 转账两条（出/入各一）＋ 一条**连着同一账户的同案非转账**关系，证明汇总按 type 过滤。
   // ⚠️ 这条关系的**一端必须是账户 e-账**：brief 原写 e-张三→e-对手甲，那样它根本不在
   // `(from_id = 账户 or to_id = 账户)` 的取数范围内，删掉 `type = '转账'` 汇总也不变 ⇒
@@ -326,13 +335,45 @@ beforeAll(async () => {
     sourceKind: "data",
     trustState: "已排除",
   })
+  // 号X：两条关系都**不是**已排除，已排除的是实体本身 ⇒ 业务上不该进共同关联。
+  await insertRelation(库(), {
+    id: "r-甲X",
+    projectId: 身份戊.projectId,
+    fromId: "e-张三",
+    toId: "e-号X",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+  await insertRelation(库(), {
+    id: "r-乙X",
+    projectId: 身份戊.projectId,
+    fromId: "e-李四",
+    toId: "e-号X",
+    type: "通话",
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
   // 余额明细：amount/balance 是 numeric，按 `FactRowInput` 的契约一律传 string。
+  // ⚠️ `started_at` 与 `row_no` **逆序配对**：若两者同序，删掉 SQL 的 `order by started_at`
+  // 后（PGlite 会走主键索引、按 row_no 返回）结果仍是 100/900，变异不可判别（2026-11-06 实测）。
+  // 三个余额值不变：100.00 / 500.00 / 900.00，按 `started_at` 升序是 100→500→900。
   await insertFactRows(库(), [
     {
       projectId: 身份戊.projectId,
       materialId: "m-流水",
       sheet: "Sheet1",
       rowNo: 1,
+      counterparty: 账号,
+      startedAt: 300,
+      amount: "30.00",
+      balance: "900.00",
+    },
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "Sheet1",
+      rowNo: 2,
       counterparty: 账号,
       startedAt: 100,
       amount: "10.00",
@@ -342,21 +383,22 @@ beforeAll(async () => {
       projectId: 身份戊.projectId,
       materialId: "m-流水",
       sheet: "Sheet1",
-      rowNo: 2,
+      rowNo: 3,
       counterparty: 账号,
       startedAt: 200,
       amount: "20.00",
       balance: "500.00",
     },
+    // 第 4 行 `started_at` 为 null（不传）：`nulls last` 会让它排最后，拿数组末行当「末」
+    // 就会得到 777.00。它只参与极值，不参与首末。
     {
       projectId: 身份戊.projectId,
       materialId: "m-流水",
       sheet: "Sheet1",
-      rowNo: 3,
+      rowNo: 4,
       counterparty: 账号,
-      startedAt: 300,
-      amount: "30.00",
-      balance: "900.00",
+      amount: "40.00",
+      balance: "777.00",
     },
   ])
   // ⚠️ `participants` 存的是**实体规范值**，不是 id（`case-extract.ts:433` → `case-ingest.ts:573`）。
@@ -557,13 +599,26 @@ test("aggregate_money 汇总只算转账关系，出/入分开", async () => {
     { 方向: "入", 笔数: 1, 合计: "2500.50" },
   ])
   expect(结果.缺口?.join()).toContain("未抽成关系")
+  // 对手方：同一批关系按「对手方 ＋ 方向」分组，`sum desc` 定序（无 collation 依赖）。
+  expect((结果.数据 as { 对手方: unknown }).对手方).toEqual([
+    { 对手方: "对手甲", 方向: "入", 笔数: 1, 合计: "2500.50" },
+    { 对手方: "对手甲", 方向: "出", 笔数: 1, 合计: "1000.00" },
+  ])
 })
 
 test("aggregate_money 余额走势给首末与极值，并说明截断", async () => {
   const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
   const 走势 = (结果.数据 as { 余额走势: { 首: string; 末: string; 最高: string; 最低: string; 行数: number } })
     .余额走势
-  expect(走势).toMatchObject({ 首: "100.00", 末: "900.00", 最高: "900.00", 最低: "100.00", 行数: 3 })
+  // 第 4 行 `started_at` 为 null、balance 777 —— 它不能当「末」（`nulls last` 会让它排最后）。
+  expect(走势).toMatchObject({ 首: "100.00", 末: "900.00", 最高: "900.00", 最低: "100.00", 行数: 4 })
+  expect(结果.缺口?.join()).toContain("超过 200 行")
+})
+
+test("aggregate_money 本项目没有该账户的流水 ⇒ 余额走势 null 并说明", async () => {
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: "对手甲" })
+  expect((结果.数据 as { 余额走势: unknown }).余额走势).toBeNull()
+  expect(结果.缺口?.join()).toContain("没有该账户的流水")
 })
 
 test("aggregate_money 账户不存在 ⇒ not_found", async () => {
@@ -580,6 +635,14 @@ test("find_crossings 不把「已排除」关系算进交集", async () => {
   // 甲—号码M 关系已排除、乙—号码M 正常 ⇒ 号码M 不该出现
   const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
   expect(JSON.stringify(结果)).not.toContain("13900002222")
+  // e-号X 是「已排除」实体、两条关系都正常 ⇒ 回查实体时也必须过滤掉它。
+  expect(JSON.stringify(结果)).not.toContain("号X")
+})
+
+test("find_crossings 甲和乙是同一实体 ⇒ bad_input", async () => {
+  // `participants @> array[X,X]` 在多重集包含语义下对只含一个 X 的事件可能恒假（漏报），
+  // 「找自己与自己的共同关联」本身也没有意义 ⇒ fail-closed，别静默返回空。
+  await expect(find_crossings(ctx(身份戊), { 甲: "张三", 乙: "张三" })).rejects.toMatchObject({ code: "bad_input" })
 })
 
 test("find_crossings 共同时空按 participants 同时包含两人", async () => {

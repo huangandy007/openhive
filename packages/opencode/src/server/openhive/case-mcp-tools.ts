@@ -534,17 +534,21 @@ export async function aggregate_money(
        limit ${余额行上限}
     `),
   )
-  // `balance` 为 null 的行不参与首末与极值；顺序已由 SQL 按 `started_at` 升序定死
-  // （不是数组首末——`nulls last` 会让无时间的行排在最后）。
+  // `balance` 为 null 的行不参与首末与极值。`started_at` 为 null 的行**不能当「末」**：
+  // `nulls last` 会让它排在数组最后，但它没有时间，不代表「最后一条流水」——首末只取
+  // 有时间且余额非 null 的行（SQL 已按 `started_at` 升序排好）。
   const 余额们 = 余额行.flatMap((行) => (typeof 行.balance === "string" ? [行.balance] : []))
+  const 有序余额 = 余额行.flatMap((行) =>
+    typeof 行.balance === "string" && typeof 行.started_at === "number" ? [行.balance] : [],
+  )
   const 余额走势 =
     余额行.length === 0
       ? null
       : 余额们.length === 0
         ? { 首: null, 末: null, 最高: null, 最低: null, 行数: 余额行.length }
         : {
-            首: 余额们[0],
-            末: 余额们[余额们.length - 1],
+            首: 有序余额[0] ?? null,
+            末: 有序余额[有序余额.length - 1] ?? null,
             最高: 余额们.reduce((甲, 乙) => (Number(乙) > Number(甲) ? 乙 : 甲)),
             最低: 余额们.reduce((甲, 乙) => (Number(乙) < Number(甲) ? 乙 : 甲)),
             行数: 余额行.length,
@@ -582,6 +586,11 @@ export async function find_crossings(
   校验时间窗(args)
   const 甲 = await 解析实体(ctx, args.甲, "甲")
   const 乙 = await 解析实体(ctx, args.乙, "乙")
+  // fail-closed：`participants @> array[X, X]` 的多重集语义对只含一个 X 的事件可能恒假
+  // （漏报），「找自己与自己的交叉」本身也没有意义——不要静默返回空。
+  if (甲.id === 乙.id) {
+    throw new 工具错误("bad_input", `甲和乙是同一个实体：${甲.value}，找自己与自己的交叉没有意义`)
+  }
 
   const 另一端们 = async (实体id: string): Promise<{ 值们: string[]; 用满: boolean }> => {
     const 值们 = rowsOf(
