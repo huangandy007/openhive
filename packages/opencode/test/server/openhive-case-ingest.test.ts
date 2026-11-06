@@ -608,6 +608,24 @@ async function 读第一行(projectId: string, materialId: string) {
  * 所有已排队作业后面（实测第 51 位）。这里用**过去时刻**种队首，保证 FIFO 对照与置顶判据
  * 在变异下都能稳定地红/绿（同一秒内多个作业撞 `queued_at` 会让 `id` 的随机序决定胜负）。
  */
+describe("表格格式缓存的 jsonb 形状", () => {
+  test("header 落成 array、mapping 落成 object，SQL 侧能取到列名", async () => {
+    文件.set("p-jsonb-表/话单.xlsx", 话单)
+    await 入队("p-jsonb-表", "话单.xlsx", "fp-jsonb-表")
+    expect((await 跑下一条()).结果).toBe("完成")
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select jsonb_typeof(header) as 头条, jsonb_typeof(mapping) as 映射,
+               header->>0 as 首列
+          from auth.case_table_format where project_id = 'p-jsonb-表'
+      `),
+    )
+    expect(行[0]?.头条).toBe("array")
+    expect(行[0]?.映射).toBe("object")
+    expect(行[0]?.首列).toBe("主叫号码")
+  })
+})
+
 describe("人工入库置顶（设计：强制入队，置顶优先）", () => {
   const 秒 = () => Math.floor(Date.now() / 1000)
 

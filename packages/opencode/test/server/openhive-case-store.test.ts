@@ -298,9 +298,10 @@ describe("明细行", () => {
     expect(got[0]?.started_raw).toBe("2026-11-05 08:13:20")
     expect(got[0]?.precision).toBe("到秒")
     expect(got[0]?.time_type).toBe("发生")
-    // jsonb 在本仓的 bun-sql 驱动下读回来是**字符串**（同 getMaterial / citationsOf 的归一），
-    // 所以这里先 JSON.parse 再按对象比 —— 意图是「写进去什么、读出来就是什么」。
-    expect(JSON.parse(String(got[0]?.extras))).toEqual({ 通话类型: "主叫", 基站: "HZ-01" })
+    // jsonb 读回来可能是对象（驱动直接解析），也可能是字符串（老形状 / 其他驱动）；
+    // 两种都归一后再按对象比 —— 意图是「写进去什么、读出来就是什么」。
+    const 明细 = got[0]?.extras
+    expect(typeof 明细 === "string" ? JSON.parse(明细) : 明细).toEqual({ 通话类型: "主叫", 基站: "HZ-01" })
   })
 
   test("未提供的列落 NULL 而不是空串（钉住 ?? null）", async () => {

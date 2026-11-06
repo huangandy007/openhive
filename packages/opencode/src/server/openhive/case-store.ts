@@ -291,7 +291,7 @@ export async function applyParseAction(
       update auth.case_material
          set parse_status = ${next},
              queued_by    = case when ${记操作人} then ${input.by ?? null} else queued_by end,
-             parse_detail = case when ${有明细} then ${明细}::jsonb else parse_detail end
+             parse_detail = case when ${有明细} then ${明细}::text::jsonb else parse_detail end
        where project_id = ${input.projectId}
          and id = ${input.materialId}
          and parse_status = ${current.parseStatus}
@@ -355,7 +355,7 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
                     ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},
                     ${row.startedRaw ?? null}, ${row.precision ?? null}, ${row.timeType ?? null},
                     ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
-                    ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::jsonb)`,
+                    ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::text::jsonb)`,
     )
     const result = rowsOf(
       await db.execute(sql`
@@ -455,12 +455,16 @@ export interface CitationRow {
  * 这条归属由调用方保证；凡按材料聚合的查询，`project_id` 必须两侧都带。
  */
 export async function addCitation(db: Queryable, input: CitationInput): Promise<void> {
+  // `::text` 这一层不是装饰：bun 1.4.3 会把绑给 jsonb 参数的 JS 字符串**再编码一次**，
+  // 直接 `$1::jsonb` 落库就成了 JSON 字符串标量（`jsonb_typeof = 'string'`），
+  // `locator->>'start'` 永远是 NULL。读侧的 `typeof === "string" ? JSON.parse` 会把它
+  // 读对，所以这个错**不会红在任何用例上**——只有 SQL 侧取值才暴露（`openhive-case-jsonb.test.ts`）。
   // material_id 与 locator 一并写入：行级引用的 `fact_id` 只当不透明键，绝不从中拆定位。
   await db.execute(sql`
     insert into auth.case_citation
       (id, project_id, fact_type, fact_id, material_id, locator, extract_method, confidence, created_at)
     values (${input.id}, ${input.projectId}, ${input.factType}, ${input.factId}, ${input.materialId},
-            ${JSON.stringify(input.locator)}::jsonb, ${input.extractMethod},
+            ${JSON.stringify(input.locator)}::text::jsonb, ${input.extractMethod},
             ${input.confidence ?? null}, ${nowSeconds()})
   `)
 }

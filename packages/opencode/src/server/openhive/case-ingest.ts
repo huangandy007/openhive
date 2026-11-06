@@ -377,8 +377,8 @@ async function 写格式(
   await db.execute(sql`
     insert into auth.case_table_format
       (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
-    values (${projectId}, ${fingerprint}, ${JSON.stringify(header)}::jsonb,
-            ${JSON.stringify(columns)}::jsonb, ${method}, ${unknownColumns}, 0, ${now}, ${now})
+    values (${projectId}, ${fingerprint}, ${JSON.stringify(header)}::text::jsonb,
+            ${JSON.stringify(columns)}::text::jsonb, ${method}, ${unknownColumns}, 0, ${now}, ${now})
     on conflict (project_id, fingerprint) do nothing
   `)
 }
