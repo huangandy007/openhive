@@ -1,6 +1,8 @@
 import { Show, type JSX } from "solid-js"
+import { createCaseAlertsApi, type CaseAlertsApi } from "../project/case-alerts-api"
 import type { CaseDetailApi, 图节点 } from "./case-detail-api"
 import { 案件伪路径, 解析案件路径, type 案件视图, type 案件路径 } from "./case-route"
+import { Alerts } from "./case-views/alerts"
 import { EntityProfile } from "./case-views/entity-profile"
 import { Graph } from "./case-views/graph"
 import { MaterialFacts } from "./case-views/material-facts"
@@ -12,6 +14,11 @@ export interface CaseViewProps {
   readonly api?: CaseDetailApi
   /** 中栏已有 `center` 的那一层给；省略 = 跳转按钮点了没反应（测试壳里就是省略）。 */
   readonly open?: (input: { readonly title: string; readonly path: string }) => void
+  /**
+   * 提醒有自己的写口（`POST /alerts/refresh` / `read`），**不并进 `CaseDetailApi`**：
+   * 并进去会让每个只读视图的调用方都得提供一份写能力。省略 = 用默认客户端（只在提醒页用到时建）。
+   */
+  readonly 提醒api?: CaseAlertsApi
 }
 
 /**
@@ -22,6 +29,8 @@ export interface CaseViewProps {
  * 查表漏一条只会静默落到 default。
  */
 export function CaseView(props: CaseViewProps): JSX.Element {
+  // 默认提醒客户端只在第一次用到时建（同 `CaseAlertEntry`：模块级常量会让测试替身与生产实例混住）。
+  let 默认提醒api: CaseAlertsApi | undefined
   return (
     <div data-component="case-view" class="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
       <Show
@@ -41,7 +50,7 @@ export function CaseView(props: CaseViewProps): JSX.Element {
               </p>
             }
           >
-            {(api) => 视图(路径(), api(), props.open)}
+            {(api) => 视图(路径(), api(), props.open, () => props.提醒api ?? (默认提醒api ??= createCaseAlertsApi()))}
           </Show>
         )}
       </Show>
@@ -49,7 +58,12 @@ export function CaseView(props: CaseViewProps): JSX.Element {
   )
 }
 
-function 视图(路径: 案件路径, api: CaseDetailApi, open: CaseViewProps["open"]): JSX.Element {
+function 视图(
+  路径: 案件路径,
+  api: CaseDetailApi,
+  open: CaseViewProps["open"],
+  提醒api: () => CaseAlertsApi,
+): JSX.Element {
   /** 同一实体换视图：arg 一律是实体 id；标题由点按钮的那一层给。 */
   const 跳到 = (view: 案件视图, title: string) =>
     open?.({ title, path: 案件伪路径({ projectId: 路径.projectId, view, arg: 路径.arg }) })
@@ -84,5 +98,8 @@ function 视图(路径: 案件路径, api: CaseDetailApi, open: CaseViewProps["o
           }
         />
       )
+    case "alerts":
+      // `arg` 这一支固定是 `"all"`（本版只有「按项目」一个范围），不校验内容。
+      return <Alerts projectId={路径.projectId} api={api} 提醒api={提醒api()} />
   }
 }

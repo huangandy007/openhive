@@ -97,6 +97,24 @@ beforeAll(async () => {
     participants: ["路由张三"],
     summary: "两人见面",
   })
+  // 计划 7 Task 9 的提醒种子：`资金对称` 的闸是「两向各 ≥2 笔 **且** 各合计 ≥5000」——
+  // `r-路由` 那两笔 1000 不命中，所以这里另起一个账户，单笔 3000（两向各 6000）。
+  // 四名对手方用「组织」类型：上面 `counts` 的 `{type:"人",count:2}` 断言因此不受影响。
+  await 建实体(pg.db, { id: "e-提醒账", projectId: 项目, type: "账户", value: "6222****9001" })
+  for (const [id, 值] of [
+    ["e-提醒甲", "提醒甲"],
+    ["e-提醒乙", "提醒乙"],
+    ["e-提醒丙", "提醒丙"],
+    ["e-提醒丁", "提醒丁"],
+  ] as const)
+    await 建实体(pg.db, { id, projectId: 项目, type: "组织", value: 值 })
+  for (const [id, from, to] of [
+    ["r-提醒入1", "e-提醒甲", "e-提醒账"],
+    ["r-提醒入2", "e-提醒乙", "e-提醒账"],
+    ["r-提醒出1", "e-提醒账", "e-提醒丙"],
+    ["r-提醒出2", "e-提醒账", "e-提醒丁"],
+  ] as const)
+    await 建关系(pg.db, { id, projectId: 项目, fromId: from, toId: to, type: "转账", amount: 3000 })
 })
 
 afterAll(async () => {
@@ -208,6 +226,72 @@ describe("openhive 案件视图出口（计划 7）", () => {
       )
       // 只回中心（张）连出的那条；李 → 账 的 `r-路由2` 不在 1 跳邻域里。
       expect(图.边.map((边) => 边.id)).toEqual(["r-路由"])
+    }),
+  )
+
+  it("提醒：先比对后列出；重复比对幂等", () =>
+    Effect.gen(function* () {
+      const 刷新 = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: 项目 }) }
+      const 第一次 = yield* 读回<{ 新建: number; 提醒: { id: string }[] }>(
+        yield* 发(我, "/openhive/case/alerts/refresh", 刷新),
+      )
+      expect(第一次.新建).toBeGreaterThan(0)
+
+      const 第二次 = yield* 读回<{ 新建: number; 提醒: { id: string }[] }>(
+        yield* 发(我, "/openhive/case/alerts/refresh", 刷新),
+      )
+      expect(第二次.新建).toBe(0)
+
+      const 清单 = yield* 读回<{ 提醒: { id: string }[] }>(
+        yield* 发(我, `/openhive/case/alerts?projectId=${项目}`),
+      )
+      expect(清单.提醒.length).toBe(第一次.提醒.length)
+    }),
+  )
+
+  it("提醒：标记已读只认本项目", () =>
+    Effect.gen(function* () {
+      const 清单 = yield* 读回<{ 提醒: { id: string; read_at: number | null }[] }>(
+        yield* 发(我, `/openhive/case/alerts?projectId=${项目}`),
+      )
+      const 未读 = 清单.提醒.find((条) => 条.read_at === null)
+      expect(未读).toBeDefined()
+
+      const 已读 = yield* 读回<{ 已读: number }>(
+        yield* 发(我, "/openhive/case/alerts/read", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId: 项目, ids: [未读!.id] }),
+        }),
+      )
+      expect(已读.已读).toBe(1)
+    }),
+  )
+
+  it("提醒：未登录 401 / 非成员 403 / ids 非数组 400", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(null, `/openhive/case/alerts?projectId=${项目}`)).status).toBe(401)
+      expect((yield* 发(别人, `/openhive/case/alerts?projectId=${项目}`)).status).toBe(403)
+      expect(
+        (
+          yield* 发(我, "/openhive/case/alerts/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId: 项目, ids: "nope" }),
+          })
+        ).status,
+      ).toBe(400)
+    }),
+  )
+
+  it("提醒：体不是 JSON 对象 / projectId 不是字符串 ⇒ 400（不是 403）", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      expect((yield* 发(我, "/openhive/case/alerts/refresh", { method: "POST", headers: 头, body: JSON.stringify("nope") })).status).toBe(400)
+      expect(
+        (yield* 发(我, "/openhive/case/alerts/refresh", { method: "POST", headers: 头, body: JSON.stringify({ projectId: 42 }) }))
+          .status,
+      ).toBe(400)
     }),
   )
 })

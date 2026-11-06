@@ -10,6 +10,7 @@ import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync, type ServerSync } from "@/context/server-sync"
 import { useSettings } from "@/context/settings"
 import { useTabs } from "@/context/tabs"
+import { CaseAlertEntryConnected } from "@/project/case-alert-entry-connected"
 import { downloadSessionExport } from "@/utils/session-export"
 import { showToast } from "@/utils/toast"
 import { MANIFESTS } from "./capabilities"
@@ -351,6 +352,7 @@ function 右栏主体(props: { 源: 右栏源 }): JSX.Element {
           // 底栏那颗钮：**原生那颗**（搜索 / 分组 / 滚动 / 管理模型），本组件只负责把它挂上。
           // 它自己从 `useLocal()` 里读「显示哪个、选中写哪」（`model-control.tsx` 文件头）。
           模型控件={<右栏模型控件 />}
+          提醒入口={<CaseAlertEntryConnected />}
           斜杠内建命令={{
             选项: () => command.options,
             执行: (id) => command.trigger(id, "slash"),

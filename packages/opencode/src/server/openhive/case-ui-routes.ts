@@ -6,6 +6,7 @@ import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { 生成提醒, 标记已读, 提醒清单 } from "./case-alerts"
 import { 实体档案, 实体清单, 类型计数, type 排序 } from "./case-entity-list"
 import { 关系图 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
@@ -38,6 +39,9 @@ export const PATH = {
   graph: `${PREFIX}/graph`,
   timeline: `${PREFIX}/timeline`,
   money: `${PREFIX}/money`,
+  alerts: `${PREFIX}/alerts`,
+  alertsRefresh: `${PREFIX}/alerts/refresh`,
+  alertsRead: `${PREFIX}/alerts/read`,
 } as const
 
 interface Deps {
@@ -57,6 +61,9 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.graph, (request) => handleGraph(request, deps))
     yield* router.add("GET", PATH.timeline, (request) => handleTimeline(request, deps))
     yield* router.add("GET", PATH.money, (request) => handleMoney(request, deps))
+    yield* router.add("GET", PATH.alerts, (request) => handleAlerts(request, deps))
+    yield* router.add("POST", PATH.alertsRefresh, (request) => handleAlertsRefresh(request, deps))
+    yield* router.add("POST", PATH.alertsRead, (request) => handleAlertsRead(request, deps))
   }),
 )
 
@@ -73,6 +80,17 @@ const 身份 = Effect.serviceOption(User.Service)
 /** 判据只有一份，住在 `./project-actor`。 */
 const 成员角色 = (deps: Deps, userId: string, projectId: string) =>
   成员角色共享({ pg: deps.pg(), database: deps.database }, userId, projectId)
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** 体不是 JSON 对象 ⇒ `undefined`（同 `case-fact-routes.ts` 的 `读体`；本仓库的私有小工具各留一份）。 */
+function 读体(request: HttpServerRequest.HttpServerRequest) {
+  return request.json.pipe(
+    Effect.match({ onFailure: () => undefined, onSuccess: (value: unknown) => (isRecord(value) ? value : undefined) }),
+  )
+}
 
 function 是合法段(value: unknown): value is string {
   return typeof value === "string" && value !== "" && User.isSafePathSegment(value)
@@ -273,5 +291,58 @@ function handleMoney(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       }),
     )
     return 结果 instanceof 工具错误 ? 翻工具错误(结果) : ok(结果)
+  })
+}
+
+function handleAlerts(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 参数 = new URL(request.url, "http://localhost").searchParams
+    const projectId = 参数.get("projectId")
+    const 门 = yield* 过门(deps, projectId)
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    return ok({ 提醒: yield* Effect.promise(() => 提醒清单(deps.pg(), projectId!)) })
+  })
+}
+
+/**
+ * 两个写口的**次序是判据**：身份 → 体 → 字段校验 → 成员 → DAO。
+ *
+ * - **身份最先**：未登录必须是 401，不能因为体坏了先回 400（出口还没认出是谁）。
+ * - **字段校验在成员之前**：体不是对象 / `projectId` 不是字符串 ⇒ 400，而不是拿一个
+ *   拼不出来的 id 去问成员、再回 403。
+ * - **门前不碰库**：`过门` 内部的 `成员角色` 只是一次无状态服务查询；DAO 一律在门之后。
+ */
+function handleAlertsRefresh(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = body["projectId"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId)
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    return ok(yield* Effect.promise(() => 生成提醒(deps.pg(), projectId)))
+  })
+}
+
+function handleAlertsRead(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const user = yield* 身份
+    if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = body["projectId"]
+    const ids = body["ids"]
+    if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
+    if (!Array.isArray(ids) || ids.some((id: unknown) => typeof id !== "string" || id === ""))
+      return fail(400, "ids 必须是字符串数组", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId)
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    return ok({ 已读: yield* Effect.promise(() => 标记已读(deps.pg(), projectId, ids as string[])) })
   })
 }

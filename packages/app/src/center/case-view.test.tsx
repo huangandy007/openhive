@@ -3,6 +3,7 @@ import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
 import { CaseView } from "./case-view"
 import type { CaseDetailApi, 实体档案 } from "./case-detail-api"
+import type { CaseAlertsApi } from "../project/case-alerts-api"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -151,5 +152,30 @@ describe("案件视图外壳", () => {
       new MouseEvent("click", { bubbles: true }),
     )
     expect(收到).toEqual([{ title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }])
+  })
+
+  test("提醒路径 ⇒ 渲染提醒清单（注入的提醒 api）", async () => {
+    const 提醒api: CaseAlertsApi = {
+      list: async () => ({
+        kind: "ok",
+        value: [
+          {
+            id: "al-1",
+            rule_id: "资金对称",
+            标题: "张三 短期资金进出高度对称",
+            内容: "出 2 笔、入 2 笔",
+            事实: null,
+            created_at: 1,
+            read_at: null,
+            handled_at: null,
+          },
+        ],
+      }),
+      refresh: async () => ({ kind: "ok", value: { 新建: 0, 提醒: [] } }),
+      markRead: async () => ({ kind: "ok", value: { 已读: 1 } }),
+    }
+    const host = mount(() => <CaseView path="case://p-1/alerts/all" api={api} 提醒api={提醒api} />)
+    await 等(() => host.querySelectorAll("[data-slot='alert-row']").length === 1)
+    expect(host.textContent).toContain("张三 短期资金进出高度对称")
   })
 })

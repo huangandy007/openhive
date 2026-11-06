@@ -40,6 +40,14 @@ describe("案件伪路径", () => {
       })
   })
 
+  test("提醒清单路径往返：alerts/all", () => {
+    expect(解析案件路径(案件伪路径({ projectId: "p 1", view: "alerts", arg: "all" }))).toEqual({
+      projectId: "p 1",
+      view: "alerts",
+      arg: "all",
+    })
+  })
+
   test("非 case:// 一律 undefined", () => {
     expect(是案件路径("/p/立项书.docx")).toBe(false)
     expect(解析案件路径("/p/立项书.docx")).toBeUndefined()

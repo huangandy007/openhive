@@ -186,6 +186,14 @@ export interface SessionPanelProps {
    * `promptInput` 之上），也是「闸门挡着你，先答再输入」这个意思该有的次序。
    */
   dock?: JSX.Element
+  /**
+   * 右栏会话行下方的提醒入口（计划 7）。**注入而不 import**：本文件被组件测试裸挂
+   * （无 `CenterTabsProvider`），自己去读 context 会当场抛；「开中栏 tab」那一半只有
+   * `CenterTabsProvider` 之内才够得着（`case-alert-entry-connected.tsx`）。
+   *
+   * 省略 = 不渲染（既有用例因此不受影响）。
+   */
+  提醒入口?: JSX.Element
 }
 
 /**
@@ -781,6 +789,9 @@ export function SessionPanel(props: SessionPanelProps): JSX.Element {
             {确认中() ? "确认删除？" : "删除"}
           </button>
         </div>
+
+        {/* 计划 7：提醒入口。改状态后由入口自己重取（它不往本组件回写）。 */}
+        <Show when={props.提醒入口}>{props.提醒入口}</Show>
 
         {/* 列表用 `Show`（展开才在 DOM 里），不是 `hidden`——收起时它整段不存在，占位也为零。 */}
         <Show when={展开()}>

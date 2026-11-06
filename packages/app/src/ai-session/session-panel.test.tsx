@@ -1013,6 +1013,32 @@ describe("会话行：新建与切换（FR-010 / 2026-10-07 裁定：做在右�
     // 后者在「顺序被换过」时照样绿（`LEARNINGS #003-03` ②：集合对了、形态不一定对）。
     expect(列出的会话(宿主)).toEqual(["资金分析会话", "话单分析会话"])
   })
+
+  test("注入的提醒入口紧跟会话行；省略时一个节点都不多", () => {
+    const 摆 = (提醒入口?: JSX.Element) =>
+      挂(() =>
+        原语环境(() => (
+          <SessionPanel
+            data={两场()}
+            directory="/tmp/openhive-test"
+            sessionID="ses_1"
+            projection={空投影}
+            斜杠内建命令={{ 选项: () => [], 执行: () => {} }}
+            模型控件={<button data-probe="模型控件">右栏这一颗</button>}
+            showReasoningSummaries={false}
+            提醒入口={提醒入口}
+          />
+        )),
+      )
+
+    const 有 = 摆(<button data-probe="提醒入口">提醒</button>)
+    const 入口 = 有.querySelector<HTMLElement>('[data-probe="提醒入口"]')
+    expect(入口).not.toBeNull()
+    // 位置是判据：提醒是「会话行下面的一条」，不是塞进行里、也不是掉到输入框附近。
+    expect(有.querySelector('[data-slot="session-row"]')!.nextElementSibling).toBe(入口)
+
+    expect(摆(undefined).querySelector('[data-probe="提醒入口"]')).toBeNull()
+  })
 })
 
 describe("Hero 输入（FR-010 / §4.7.5 / T007 📤 的那一根线）", () => {
