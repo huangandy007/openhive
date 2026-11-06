@@ -23,6 +23,9 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-号2", projectId: 项目, value: "13800000002", type: "号码" })
   await 建实体(库(), { id: "e-账", projectId: 项目, value: "6222****0001", type: "账户" })
   await 建实体(库(), { id: "e-排", projectId: 项目, value: "王五", type: "人", trustState: "已排除" })
+  // ilike 转义的干扰项：`100%` 与 `1000`。未转义时 q="100%"（模式 %100%%）会连 1000 一起带出。
+  await 建实体(库(), { id: "e-百分", projectId: 项目, type: "物品", value: "100%" })
+  await 建实体(库(), { id: "e-千", projectId: 项目, type: "物品", value: "1000" })
   await 建实体(库(), { id: "e-别人", projectId: 别人的项目, value: "赵六", type: "人" })
 
   // e-张 2 条有效关系（r-张李、r-张账）；r-张排 的对方 e-排 已排除 ⇒ 不计（§9.1 不进统计）；
@@ -39,8 +42,9 @@ beforeAll(async () => {
 
   await 建引用(库(), { id: "c-张", projectId: 项目, factType: "entity", factId: "e-张", materialId: "m-1" })
 
-  // 截断：201 条关系（> 档案关系上限 200），用来钉「显示上限 ≠ 全量」。
-  await 建实体(库(), { id: "e-多", projectId: 截断项目, value: "钱多", type: "人" })
+  // 截断：201 条关系（> 关系上限 200）＋ 101 条事件（> 事件上限 100），用来钉「显示上限 ≠ 全量」。
+  // 事件按参与者规范值挂到实体上，所以 e-多 的规范值必须与 participants 一致。
+  await 建实体(库(), { id: "e-多", projectId: 截断项目, value: "多人", type: "人" })
   await 建实体(库(), { id: "e-多账", projectId: 截断项目, value: "6222****9999", type: "账户" })
   for (let i = 0; i < 201; i++) {
     await 建关系(库(), {
@@ -51,6 +55,14 @@ beforeAll(async () => {
       type: "转账",
       amount: 1,
       sourceKind: "data",
+    })
+  }
+  for (let i = 0; i < 101; i++) {
+    await 建事件(库(), {
+      id: `ev-多${String(i).padStart(2, "0")}`,
+      projectId: 截断项目,
+      participants: ["多人"],
+      occurredAt: 1760100000 + i,
     })
   }
 })
@@ -64,6 +76,7 @@ describe("实体清单与档案", () => {
     expect(await 类型计数(库(), 项目)).toEqual([
       { type: "人", count: 2 },
       { type: "号码", count: 2 },
+      { type: "物品", count: 2 },
       { type: "账户", count: 1 },
     ])
   })
@@ -74,6 +87,8 @@ describe("实体清单与档案", () => {
       ["e-张", 2],
       ["e-账", 1],
       ["e-李", 1],
+      ["e-百分", 0],
+      ["e-千", 0],
       ["e-号1", 0],
       ["e-号2", 0],
     ])
@@ -90,6 +105,13 @@ describe("实体清单与档案", () => {
   test("清单不返回已排除实体；includeExcluded 只在档案里管", async () => {
     const { 行们 } = await 实体清单(库(), { projectId: 项目, q: "王五" })
     expect(行们).toEqual([])
+  })
+
+  test("清单搜索把 % 与 _ 当字面量（ilike 转义）", async () => {
+    // 未转义时模式是 %100%% ⇒ e-千（1000）也被带进来。
+    expect((await 实体清单(库(), { projectId: 项目, q: "100%" })).行们.map((行) => 行.id)).toEqual(["e-百分"])
+    // 未转义时 _ 是单字符通配 ⇒ 1000 / 100% 都会命中。
+    expect((await 实体清单(库(), { projectId: 项目, q: "100_" })).行们).toEqual([])
   })
 
   test("清单截断时缺口说清上限", async () => {
@@ -147,11 +169,16 @@ describe("实体清单与档案", () => {
     expect(带排.事件).toHaveLength(3)
   })
 
-  test("档案截断：关系只显示前 200 条，缺口说清全量", async () => {
+  test("档案截断：关系与事件只显示上限条数，缺口说清全量", async () => {
     const 档 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
     expect(档.关系).toHaveLength(200)
-    expect(档.缺口?.length).toBe(1)
-    expect(档.缺口?.join()).toContain("200")
+    expect(档.事件).toHaveLength(100)
+    const 缺口 = 档.缺口 ?? []
+    expect(缺口).toHaveLength(2)
+    expect(缺口.some((条) => 条.includes("200") && 条.includes("关系"))).toBe(true)
+    expect(缺口.some((条) => 条.includes("100") && 条.includes("事件"))).toBe(true)
     expect(档.一句话).toContain("201 条有效关系")
+    // 事件数用全量（101），不是当前页的 100。
+    expect(档.一句话).toContain("101 个事件")
   })
 })
