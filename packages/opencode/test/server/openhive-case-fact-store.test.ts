@@ -120,3 +120,67 @@ describe("text_content", () => {
     expect(行[0]?.text_content).toBe("第一段\n第二段")
   })
 })
+
+describe("跨项目隔离", () => {
+  test("清理只删本项目：另一项目里同 id 的材料/事实/引用一条都不动", async () => {
+    // 故意让乙项目用**同名**的材料 id 与事实 id：主键是 `(project_id, id)`，同名是合法的，
+    // 这样「漏写 project_id 条件」才会真的删到别人头上——否则这条用例连变异都红不了。
+    const 乙 = "prj-fact-乙"
+    await createMaterial(db(), {
+      id: 材料,
+      projectId: 乙,
+      fileName: "乙笔录.txt",
+      kind: "笔录",
+      fingerprint: "fp-乙",
+      path: "乙笔录.txt",
+    })
+    const 实体乙 = await upsertEntity(db(), {
+      projectId: 乙,
+      id: "e-乙",
+      type: "人",
+      canonicalValue: "王五",
+      aliases: [],
+    })
+    await insertRelation(db(), {
+      projectId: 乙,
+      id: "r-同案甲",
+      fromId: 实体乙,
+      toId: 实体乙,
+      type: "同案",
+      basis: "供述指认",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+    await addCitation(db(), {
+      id: "c-乙",
+      projectId: 乙,
+      factType: "relation",
+      factId: "r-同案甲",
+      materialId: 材料,
+      locator: { start: 0, end: 5 },
+      extractMethod: "机器",
+    })
+    // 本项目侧另有一条引用指着**同名事实 id**（本项目里并不存在 r-同案甲）：
+    // `删除本材料的事实` 的关系 DELETE 是经引用 join 过去的；没有这条引用，
+    // 拆掉 `r.project_id = c.project_id` 也匹配不到乙项目的行，M4 会假绿。
+    await addCitation(db(), {
+      id: "c-甲-指空",
+      projectId: 项目,
+      factType: "relation",
+      factId: "r-同案甲",
+      materialId: 材料,
+      locator: { start: 0, end: 5 },
+      extractMethod: "机器",
+    })
+
+    await 删除本材料的事实(db(), 项目, 材料)
+    await deleteCitationsOfMaterial(db(), 项目, 材料)
+
+    const 关系 = rowsOf(await db().execute(sql`select id from auth.case_relation where project_id = ${乙}`))
+    expect(关系.map((r) => r.id)).toEqual(["r-同案甲"])
+    const 引用 = rowsOf(await db().execute(sql`select id from auth.case_citation where project_id = ${乙}`))
+    expect(引用.map((r) => r.id)).toEqual(["c-乙"])
+    const 实体行 = rowsOf(await db().execute(sql`select id from auth.case_entity where project_id = ${乙}`))
+    expect(实体行.length).toBe(1)
+  })
+})

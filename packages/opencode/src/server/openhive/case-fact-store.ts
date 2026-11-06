@@ -70,8 +70,11 @@ export async function upsertEntity(db: Queryable, input: 实体写入): Promise<
   // `rowsOf` 返回 `Record<string, unknown>[]`；`!` 在这里是多余断言（本包没开
   // `noUncheckedIndexedAccess`），写成显式判空既过 lint 又能报出「没返回行」这种真异常。
   const id = 行[0]?.id
-  if (id === undefined) throw new Error(`实体写入没有返回 id：${input.canonicalValue}`)
-  return String(id)
+  // 用 `typeof` 判空而不是 `String(id)`：驱动将来把 `text` 列读成非字符串（Buffer 之类）时，
+  // `String()` 会把它悄悄变成 `"[object Object]"` 当 id 返回；显式判型才能当场报出来。
+  // 顺带消掉 `no-base-to-string` 的那条 warning（`String(unknown)` 会触发）。
+  if (typeof id !== "string") throw new Error(`实体写入没有返回 id：${input.canonicalValue}`)
+  return id
 }
 
 /**
