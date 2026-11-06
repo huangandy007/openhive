@@ -20,10 +20,11 @@ import * as XLSX from "xlsx"
  *
  * 文本通道**只认严格 UTF-8**，不做 GBK 自动探测：GB18030 几乎能解码任意字节序列，自动回退
  * 等于把二进制又放进来，还把中文人名/地名/案由解成乱码且不报错——证据数据不可接受。宁可
- * 响亮失败、给一句可操作的错误（「CSV 请另存为 UTF-8」）。UTF-16（Excel「Unicode 文本」导出、
- * 带 NUL 字节）同样拒绝，但错误信息会点名「UTF-16 文本不受支持，请另存为 UTF-8」，不给泛化
- * 提示。代价：GBK 导出的 CSV / HTML 伪 `.xls` 要用户转存一次。若真栈验收发现这类材料多，
- * 另开任务做「编码探测＋内容合理性判定」，不进本计划。
+ * 响亮失败、给一句可操作的错误（「CSV 请另存为 UTF-8」）。UTF-16（Excel「Unicode 文本」导出）
+ * 同样拒绝，错误信息分两档：**带 UTF-16 BOM 的**点名「UTF-16 文本不受支持」；只是含 NUL 字节、
+ * 没有 BOM 的（无 BOM 的 UTF-16、二进制、或本身嵌了 NUL 的 UTF-8）给泛化提示 —— 因为仅凭 NUL
+ * 不足以断定是 UTF-16。代价：GBK 导出的 CSV / HTML 伪 `.xls` 要用户转存一次。若真栈验收发现
+ * 这类材料多，另开任务做「编码探测＋内容合理性判定」，不进本计划。
  *
  * ## 已知不保真的地方
  *
@@ -173,9 +174,15 @@ function toRawCell(cell: XLSX.CellObject | undefined): RawCell {
  */
 export function readSheets(bytes: Uint8Array, limits: ReadLimits = {}): ReadResult {
   const container = isContainer(bytes)
+  // UTF-16 的 BOM 排在「像不像文本」**之前**：UTF-16LE 的中文可能一个 NUL 都没有
+  // （「主叫」= 3B 4E EB 53），排在后面就会被当合法 UTF-8 文本放行，只给泛化提示。
+  // 反过来不会误伤：合法 UTF-8 文本不可能以 FF FE / FE FF 开头（这两个字节本就非法）。
+  if (!container && hasUtf16Bom(bytes)) throw new Error("UTF-16 文本不受支持，请另存为 UTF-8")
   if (!container && !looksLikeText(bytes)) {
-    if (hasUtf16Bom(bytes)) throw new Error("UTF-16 文本不受支持，请另存为 UTF-8")
-    if (hasNulByte(bytes)) throw new Error("文件含 NUL 字节，疑似 UTF-16 或二进制；请另存为 UTF-8 文本后重试")
+    // 只有 NUL、没有 BOM：可能是无 BOM 的 UTF-16，也可能是二进制，或本身就是 UTF-8 却嵌了 NUL。
+    // 这里不能一口咬定 UTF-16，所以提示里给了「检查文件是否损坏」这条对第三类也成立的路。
+    if (hasNulByte(bytes))
+      throw new Error("文件含 NUL 字节，疑似 UTF-16 或二进制；请检查文件是否损坏，或用 Excel 另存为 UTF-8 CSV 后重试")
     throw new Error("不是可识别的表格文件（xlsx/xls/csv/html）")
   }
 

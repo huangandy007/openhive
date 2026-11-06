@@ -234,6 +234,12 @@ describe("readSheets", () => {
     expect(() => readSheets(造UTF16BE("h\n"))).toThrow(/UTF-16 文本不受支持/)
   })
 
+  test("UTF-16 BOM ＋ 一个 NUL 都没有的中文，也要点名 UTF-16", () => {
+    // 「主叫」的 UTF-16LE 字节是 3B 4E EB 53 —— 每个字节都 ≥ 0x20，会被 looksLikeText 判成文本。
+    // 所以 BOM 必须先于「像不像文本」判定，否则这类文件只拿到泛化提示（上一轮复审实测的缺口）。
+    expect(() => readSheets(造UTF16LE("主叫"))).toThrow(/UTF-16 文本不受支持/)
+  })
+
   test("含 NUL 但没有 UTF-16 BOM ⇒ 给泛化措辞，不谎称是 UTF-16 文本", () => {
     // 纯 ASCII 内容的 UTF-16LE（无 BOM）：0x68 0x00 0x0a 0x00 = "h\n"。
     // 它既可能是 UTF-16，也可能是自带 NUL 的 UTF-8/二进制，不能说死「请另存 UTF-16」。
