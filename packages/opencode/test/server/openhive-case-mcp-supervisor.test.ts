@@ -49,7 +49,12 @@ describe("caseCommand", () => {
   })
 
   test("缺任一 PG_* ⇒ off（不带着坏配置崩溃循环）", () => {
-    expect(caseCommand({ ...PG齐, PG_DATABASE: undefined })).toEqual({ kind: "off" })
+    // 五个名字逐个钉住：只覆盖三连时，删掉门控里的 `!env.PG_HOST ||` 仍会全绿。
+    for (const 缺 of ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const) {
+      const env: Record<string, string> = { ...PG齐 }
+      delete env[缺]
+      expect(caseCommand(env)).toEqual({ kind: "off" })
+    }
   })
 
   test("缺 PG_PORT / PG_PASSWORD 也 ⇒ off（复审 M-1：门控要覆盖 connect() 的全部必需项）", () => {
