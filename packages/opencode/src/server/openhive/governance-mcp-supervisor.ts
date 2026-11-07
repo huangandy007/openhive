@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { GOVERNANCE_MCP_SERVER } from "@opencode-ai/auth/builtin-mcp"
+import { PARENT_WATCH_ENV } from "@opencode-ai/auth/parent-watch"
 import { Cause, Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
 import { ENTRY_DIR_ENV, 串行写Effect } from "./mcp-config-writer"
@@ -230,8 +231,11 @@ export function spawnGovernanceMcp(input: {
       ...process.env,
       // 首次启动显式给 0（系统分配）：不把父进程里残留的值当成「上次的端口」。
       [input.portEnv ?? PORT_ENV]: String(input.port ?? 0),
+      // 父进程被硬杀时上面那些收尾钩子都跑不到（win32 没有进程组可打）⇒ 让子进程自己看门，见 `@opencode-ai/auth/parent-watch`。
+      [PARENT_WATCH_ENV]: "1",
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin 必须是 `pipe`：看门狗就靠这根管子的 EOF 判父死（写端在父进程手里）。
+    stdio: ["pipe", "pipe", "pipe"],
     // POSIX 下让子进程当进程组组长，收尾时才能 `kill(-pid)` 打整组。
     detached: process.platform !== "win32",
   })

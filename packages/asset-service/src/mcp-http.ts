@@ -1,6 +1,7 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import { connect } from "@opencode-ai/auth/db"
+import { followParentDeath } from "@opencode-ai/auth/parent-watch"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import type { AssetTarget } from "./asset"
 import { createGovernanceServer } from "./governance"
@@ -189,4 +190,7 @@ if (import.meta.main) {
   }
   process.on("SIGTERM", shutdown)
   process.on("SIGINT", shutdown)
+  // 内核被硬杀时这两个信号都到不了（win32 上没有进程组，`taskkill /T` 也只随父进程执行）
+  // ⇒ 子进程自己看父死，别留孤儿。见 `@opencode-ai/auth/parent-watch`。
+  followParentDeath(() => void shutdown())
 }

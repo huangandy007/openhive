@@ -1,4 +1,5 @@
 import { connect } from "@opencode-ai/auth/db"
+import { followParentDeath } from "@opencode-ai/auth/parent-watch"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import { readyLine, startCaseMcpHttp } from "./case-mcp-http"
 
@@ -27,6 +28,8 @@ if (import.meta.main) {
     }
     process.on("SIGTERM", shutdown)
     process.on("SIGINT", shutdown)
+    // 内核被硬杀时上面两个信号都到不了（win32 上 `taskkill /T` 也随父进程一起没了）⇒ 自己看父死。
+    followParentDeath(() => void shutdown())
   } catch (error) {
     process.stderr.write(
       `${JSON.stringify({
