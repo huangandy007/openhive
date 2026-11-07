@@ -153,6 +153,13 @@ export interface 工具结果 {
   readonly 缺口?: readonly string[]
 }
 
+/**
+ * 「✗ 错」的三选一原因（design §9.2 的表格）。**只此一份**：客户端类型由此推导，
+ * 界面直接用这个数组渲染，服务端 `case-fact-change.ts` 的 `纠正原因们` 是同一组词。
+ */
+export const 纠正原因们 = ["识别错", "抽取错", "材料本身有问题"] as const
+export type 纠正原因 = (typeof 纠正原因们)[number]
+
 export interface CaseDetailApi {
   readonly profile: (projectId: string, id: string, includeExcluded?: boolean) => Promise<结果<实体档案>>
   readonly materialFacts: (
@@ -179,7 +186,7 @@ export interface CaseDetailApi {
     readonly factType: "entity" | "relation" | "event"
     readonly factId: string
     readonly action: "确认" | "排除" | "存疑"
-    readonly reasonKind?: "识别错" | "抽取错" | "材料本身有问题"
+    readonly reasonKind?: 纠正原因
     readonly reasonText?: string
   }) => Promise<结果<{ readonly trustState: string }>>
 }

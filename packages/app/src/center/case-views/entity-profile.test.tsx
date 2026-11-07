@@ -346,18 +346,28 @@ describe("实体档案", () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
 
-    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    const 错 = host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!
+    expect(错.getAttribute("aria-expanded")).toBe("false")
+    错.click()
     await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 原因区 = host.querySelector<HTMLElement>("[data-slot='entity-trust-reason']")!
+    // 展开态与原因区要能被辅助技术连起来；原因区 id 唯一。
+    expect(错.getAttribute("aria-expanded")).toBe("true")
+    expect(原因区.id).not.toBe("")
+    expect(错.getAttribute("aria-controls")).toBe(原因区.id)
     const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
     expect(提交.disabled).toBe(true)
     expect(收到.length).toBe(0)
+
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    // 打开原因区就把焦点放进文本框：键盘用户不用再 Tab 一圈。
+    expect(document.activeElement).toBe(框)
 
     // 只选原因、没写说明 ⇒ 仍不可提交。
     host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
     expect(提交.disabled).toBe(true)
     expect(收到.length).toBe(0)
 
-    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
     框.value = "列映射把对方号码认成了本机号码"
     框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(() => !提交.disabled)
@@ -396,6 +406,46 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-trust-confirm']")!.getAttribute("aria-pressed")).toBe("true")
   })
 
+  test("排除成功：重取必须带 includeExcluded，徽章文字变成「已排除」（按真实服务端 404 建模）", async () => {
+    let 当前信任态 = "自动抽取"
+    const 取数: Array<boolean | undefined> = []
+    const api = 假api({
+      profile: async (_projectId, _id, includeExcluded) => {
+        取数.push(includeExcluded)
+        // 真实服务端（`case-entity-list.ts`）：未带 includeExcluded 时，已排除的实体被过滤 ⇒ 404。
+        if (当前信任态 === "已排除" && includeExcluded !== true)
+          return { kind: "error", message: "找不到这个实体", code: "entity_not_found" }
+        return { kind: "ok", value: { ...档, trust_state: 当前信任态 } }
+      },
+      trust: async (input) => {
+        if (input.action === "排除") 当前信任态 = "已排除"
+        return { kind: "ok", value: { trustState: 当前信任态 } }
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "对方号码认反了"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
+    await 等(() => !提交.disabled)
+    提交.click()
+
+    // 成功后重取必须还读得到这条：徽章文字 = 已排除，而不是跳成 404 错误页。
+    await 等(() => host.querySelector("[data-slot='entity-profile-trust-state']")?.textContent === "已排除")
+    expect(host.querySelector("[data-slot='entity-profile-error']")).toBeNull()
+    expect(取数).toEqual([false, true])
+    expect(
+      host.querySelector("[data-slot='entity-profile-include-excluded']")!.getAttribute("aria-pressed"),
+    ).toBe("true")
+    // 当前态用文字（徽章）＋ aria-pressed 表达，不只靠颜色。
+    expect(host.querySelector("[data-slot='entity-trust-reject']")!.getAttribute("aria-pressed")).toBe("true")
+  })
+
   test("裁决失败：说清服务端整句错误、不乐观改成已确认、原因区原文保留可重试", async () => {
     let 调用次数 = 0
     const api = 假api({
@@ -418,8 +468,10 @@ describe("实体档案", () => {
     await 等(() => !提交.disabled)
     提交.click()
 
-    await 等(() => host.querySelector("[data-slot='entity-profile-error']") !== null)
-    expect(host.querySelector("[data-slot='entity-profile-error']")!.textContent).toContain("服务端拒绝了这次裁决")
+    // 裁决错误是**独立信号**：画在按钮/原因区旁边，不占用顶部「读不到档案」那一格。
+    await 等(() => host.querySelector("[data-slot='entity-trust-error']") !== null)
+    expect(host.querySelector("[data-slot='entity-trust-error']")!.textContent).toContain("服务端拒绝了这次裁决")
+    expect(host.querySelector("[data-slot='entity-profile-error']")).toBeNull()
     // ⚠️ 只断信任态徽章本身：关系行里本来就有「已确认」（人说的那条），断整段 textContent 是假绿。
     expect(host.querySelector("[data-slot='entity-profile-trust-state']")!.textContent).toBe("自动抽取")
     // 原因区没被收起、用户填的内容还在，可以直接重试。
@@ -430,6 +482,11 @@ describe("实体档案", () => {
     ).toBe("true")
     expect(提交.disabled).toBe(false)
     expect(调用次数).toBe(1)
+
+    // 切「显示已排除」（会重取档案）不能把裁决错误抹掉——共用信号时这里会红。
+    host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    expect(host.querySelector("[data-slot='entity-trust-error']")?.textContent).toContain("服务端拒绝了这次裁决")
   })
 
   test("在途时按钮禁用、显示「提交中…」，二次点击只发一次请求", async () => {

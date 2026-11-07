@@ -1,5 +1,11 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
-import type { CaseDetailApi, 档案关系, 实体档案 } from "../case-detail-api"
+import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, Show, type JSX } from "solid-js"
+import {
+  纠正原因们,
+  type CaseDetailApi,
+  type 档案关系,
+  type 实体档案,
+  type 纠正原因,
+} from "../case-detail-api"
 import { 定位文本, 金额文本, 时间文本 } from "./format"
 
 export interface EntityProfileProps {
@@ -9,8 +15,6 @@ export interface EntityProfileProps {
   /** 三个跳转；标题在这里拼（档案页手里有规范值，`CaseView` 只认路径）。 */
   readonly onOpen: (view: "timeline" | "money" | "graph", 标题: string) => void
 }
-
-type 纠正原因 = "识别错" | "抽取错" | "材料本身有问题"
 
 const 裁决按钮类 = (押下: boolean) =>
   押下
@@ -39,6 +43,11 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   // 裁决成功后 +1 ⇒ 下面的取数 effect 重跑，以服务端回包的 `trust_state` 为准。
   // **不在这里乐观改写档案**：裁决成功但重取失败时，界面该说的是「读不到档案」。
   const [重取序, set重取序] = createSignal(0)
+  // 裁决自己的错误：**不能**与「读不到档案」共用信号——那条画在滚动容器最顶部，档案很长时
+  // 用户在底部提交失败根本看不见，切「显示已排除」重取还会把它抹掉。
+  const [裁决错误, set裁决错误] = createSignal<string | undefined>()
+  const 原因区id = createUniqueId()
+  let 原因框: HTMLTextAreaElement | undefined
 
   createEffect(() => {
     const projectId = props.projectId
@@ -93,7 +102,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     原因?: { readonly reasonKind: 纠正原因; readonly reasonText: string },
   ) => {
     set裁决中(true)
-    set错误(undefined)
+    set裁决错误(undefined)
     try {
       const 回 = await props.api.trust({
         projectId: props.projectId,
@@ -104,16 +113,20 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
         reasonText: 原因?.reasonText,
       })
       if (回.kind === "error") {
-        set错误(回.message)
+        set裁决错误(回.message)
         return
       }
       set展开原因(false)
       set原因类型(undefined)
       set原因说明("")
-      set重取序((序) => 序 + 1)
+      // ⚠️ 排除成功后服务端默认不再返回这条（§9.1）：还按「不含已排除」重取只会拿到 404，
+      // 界面会从「已排除」跳成「找不到这个实体」。先打开「显示已排除」，这次重取才读得到它。
+      // 开关本来就是 true（用户自己开着的）时，set 同值不会触发 effect，改走 `重取序`。
+      if (action === "排除" && !含排除()) set含排除(true)
+      else set重取序((序) => 序 + 1)
     } catch (错误值) {
       // 客户端契约是「从不抛」，但夹具 / 将来换了实现仍可能抛：与 `kind:"error"` 同一个出口。
-      set错误(错误值 instanceof Error ? 错误值.message : "提交裁决失败")
+      set裁决错误(错误值 instanceof Error ? 错误值.message : "提交裁决失败")
     } finally {
       set裁决中(false)
     }
@@ -253,8 +266,14 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 data-slot="entity-trust-reject"
                 aria-label="这条事实有错（排除）"
                 aria-pressed={档().trust_state === "已排除"}
+                aria-expanded={展开原因()}
+                aria-controls={原因区id}
                 disabled={裁决中()}
-                onClick={() => set展开原因(true)}
+                onClick={() => {
+                  set展开原因(true)
+                  // 原因区整块是 `<Show>` 新插入的，Solid 的渲染在本次事件里同步完成 ⇒ ref 已就绪。
+                  原因框?.focus()
+                }}
                 class={裁决按钮类(档().trust_state === "已排除")}
               >
                 ✗ 错
@@ -276,9 +295,16 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 </span>
               </Show>
             </div>
+            {/* 裁决自己的错误画在按钮 / 原因区旁边（不是滚动容器顶部的「读不到档案」）。 */}
+            <Show when={裁决错误()}>
+              <p data-slot="entity-trust-error" role="alert" class="mt-1 text-[13px] text-v2-state-fg-danger">
+                {裁决错误()}
+              </p>
+            </Show>
             <Show when={展开原因()}>
-              <div data-slot="entity-trust-reason" class="mt-1 w-full">
+              <div id={原因区id} data-slot="entity-trust-reason" class="mt-1 w-full">
                 <textarea
+                  ref={(框) => (原因框 = 框)}
                   data-slot="entity-trust-reason-text"
                   aria-label="错在哪里（一句话）"
                   class="w-full rounded-[6px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[13px] leading-6 text-v2-text-text-base"
@@ -293,7 +319,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   aria-label="错误原因"
                   class="mt-1 flex flex-wrap gap-1"
                 >
-                  <For each={["识别错", "抽取错", "材料本身有问题"] as const}>
+                  <For each={纠正原因们}>
                     {(值) => (
                       <button
                         type="button"
