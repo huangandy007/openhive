@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js"
 import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
 import { 金额文本 } from "./format"
+import { 图标图形, 图标边长, 节点图标, 节点图标组 } from "./graph-icons"
 
 export interface GraphProps {
   readonly projectId: string
@@ -233,6 +234,14 @@ function 描边(点: 图节点): string {
   return "var(--v2-border-border-strong)"
 }
 
+/**
+ * 节点描边色（点选时换品牌金深）。**图标也读这一份**：点选后边框换了色、图标还是灰的，
+ * 看上去像两个节点各画了一半。
+ */
+function 描边色(点: 图节点, 焦点: boolean): string {
+  return 焦点 ? "var(--v2-brand-gold-deep)" : 描边(点)
+}
+
 /** 关系类型配色：只用语义槽位（暗色主题会自己翻），不新造色。 */
 function 边颜色(类型: string): string {
   if (类型 === "通话") return "var(--v2-state-border-info)"
@@ -271,7 +280,7 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
   // 焦点色不能复用「中心节点」那组值：中心本来就是高亮填充＋深金描边，沿用同一组时
   // 点它只有线宽 2.5→3 和一圈淡环，看不出焦点落在谁身上。统一换成品牌金填充。
   const 填充色 = () => (props.焦点 ? "var(--v2-brand-gold)" : 填充(props.点))
-  const 描边色 = () => (props.焦点 ? "var(--v2-brand-gold-deep)" : 描边(props.点))
+  const 边色 = () => 描边色(props.点, props.焦点)
   const 线宽 = () => (props.焦点 ? 3 : props.点.中心 ? 2.5 : 1.5)
   const 虚线 = () => (待复核.has(props.点.trust_state) ? "4 3" : undefined)
   return (
@@ -286,7 +295,7 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
           height={(半() - 1) * 2}
           rx={半() * 0.45}
           fill={填充色()}
-          stroke={描边色()}
+          stroke={边色()}
           stroke-width={线宽()}
           stroke-dasharray={虚线()}
         />
@@ -296,7 +305,7 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
           data-slot="graph-node-shape"
           points={多边形(props.点, 半(), 6, -Math.PI / 2)}
           fill={填充色()}
-          stroke={描边色()}
+          stroke={边色()}
           stroke-width={线宽()}
           stroke-dasharray={虚线()}
         />
@@ -306,7 +315,7 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
           data-slot="graph-node-shape"
           points={多边形(props.点, 半(), 4, -Math.PI / 2)}
           fill={填充色()}
-          stroke={描边色()}
+          stroke={边色()}
           stroke-width={线宽()}
           stroke-dasharray={虚线()}
         />
@@ -318,7 +327,7 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
           cy={props.点.y}
           r={半()}
           fill={填充色()}
-          stroke={描边色()}
+          stroke={边色()}
           stroke-width={线宽()}
           stroke-dasharray={虚线()}
         />
@@ -870,6 +879,19 @@ export function Graph(props: GraphProps): JSX.Element {
                         />
                       </Show>
                       <图形 点={行()} 焦点={选中()?.kind === "node" && 选中()!.id === 行().id} />
+                      {/* 图标压在形状正中：形状/颜色说「大类」，图标说「具体是什么」。
+                          认不出类型的节点没有图标（`节点图标` 回 undefined）——形状照旧，不画空框。 */}
+                      <Show when={节点图标(行())}>
+                        {(名) => (
+                          <节点图标组
+                            名={名()}
+                            x={行().x}
+                            y={行().y}
+                            边长={图标边长(行().中心)}
+                            色={描边色(行(), 选中()?.kind === "node" && 选中()!.id === 行().id)}
+                          />
+                        )}
+                      </Show>
                       <text
                         x={行().x}
                         y={行().y + 节点半径(行()) + 14}
@@ -911,13 +933,41 @@ export function Graph(props: GraphProps): JSX.Element {
               data-slot="graph-legend"
               class="pointer-events-none absolute bottom-2 left-2 flex flex-wrap gap-x-2 gap-y-1 rounded-[4px] bg-v2-background-bg-base/90 px-2 py-1 text-[10px] text-v2-text-text-muted"
             >
-              <For each={[["中心", "var(--v2-brand-gold-deep)"], ["人", "var(--v2-border-border-strong)"], ["号码", "var(--v2-state-border-info)"], ["账户", "var(--v2-state-border-success)"], ["地点", "var(--v2-state-border-warning)"]] as const}>
-                {([名, 色]) => (
-                  <span class="inline-flex items-center gap-1">
-                    <i class="inline-block h-2 w-2 rounded-full" style={{ background: 色 }} />
-                    {名}
-                  </span>
-                )}
+              {/* 图例的图标与画布节点读同一个 `节点图标()`（只给类型名、不带细类 ⇒ 拿大类兜底那一档），
+                  免得图例教一套、画布画另一套。 */}
+              <span class="inline-flex items-center gap-1">
+                <i class="inline-block h-2 w-2 rounded-full" style={{ background: "var(--v2-brand-gold-deep)" }} />
+                中心
+              </span>
+              <For each={[
+                ["人", "var(--v2-border-border-strong)"],
+                ["号码", "var(--v2-state-border-info)"],
+                ["账户", "var(--v2-state-border-success)"],
+                ["虚拟身份", "var(--v2-border-border-strong)"],
+                ["地点", "var(--v2-state-border-warning)"],
+                ["组织", "var(--v2-border-border-strong)"],
+              ] as const}>
+                {([名, 色]) => {
+                  const 图标 = () => 节点图标({ type: 名 })
+                  return (
+                    <span
+                      data-slot="graph-legend-type"
+                      data-type={名}
+                      data-icon={图标()}
+                      class="inline-flex items-center gap-1"
+                    >
+                      <i class="inline-block h-2 w-2 rounded-full" style={{ background: 色 }} />
+                      <Show when={图标()}>
+                        {(名) => (
+                          <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            {图标图形(名())}
+                          </svg>
+                        )}
+                      </Show>
+                      {名}
+                    </span>
+                  )
+                }}
               </For>
             </div>
 

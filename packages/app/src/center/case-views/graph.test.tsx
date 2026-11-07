@@ -137,6 +137,91 @@ describe("关系图 · 画", () => {
     expect(点元素(host, "e-地").querySelector("polygon")!.getAttribute("points")!.trim().split(/\s+/)).toHaveLength(4)
   })
 
+  test("节点上的图标：细类优先、回退大类、认不出就不画（内网没有「取不到图标」这回事，图标是内联 path）", async () => {
+    const 行 = (id: string, type: string, value: string, subtype?: string): 图节点 => ({
+      id,
+      type,
+      ...(subtype === undefined ? {} : { subtype }),
+      value,
+      trust_state: "自动抽取",
+      中心: false,
+      跳数: 1,
+      关联数: 1,
+    })
+    const 节点: 图节点[] = [
+      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 9 },
+      行("e-手", "号码", "13800000001", "手机号"),
+      行("e-座", "号码", "0572-1234567", "固定电话"),
+      行("e-证", "号码", "330502199001011234", "身份证"),
+      行("e-号", "号码", "0572-7654321"),
+      行("e-卡", "账户", "6222020000000001", "银行卡"),
+      行("e-账", "账户", "6222020000000002", "银行账号"),
+      行("e-付", "账户", "1234567890", "第三方支付"),
+      行("e-账二", "账户", "6222020000000003"),
+      行("e-邮", "虚拟身份", "a@b.cn", "邮箱"),
+      行("e-聊", "虚拟身份", "wx-1234", "微信"),
+      行("e-地", "地点", "城东茶馆"),
+      行("e-组", "组织", "甲银行"),
+      行("e-怪", "船舶", "浙湖渔00001"),
+    ]
+    // ⚠️ 一条边都没有时画布会落到「还没有关系」那一档（不画节点），所以这里每个邻居都连到中心。
+    const 数据: 关系图结果 = {
+      节点,
+      边: 节点
+        .filter((点) => !点.中心)
+        .map((点, 序) => ({
+          id: `r-${序}`,
+          from: "e-心",
+          to: 点.id,
+          type: "通话",
+          times: 1,
+          amount: null,
+          trust_state: "自动抽取",
+        })),
+      缺口: [],
+    }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 数据 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 14)
+
+    const 图标 = (id: string) =>
+      host.querySelector<SVGGElement>(`[data-slot='graph-node'][data-node-id='${id}'] [data-slot='graph-node-icon']`)
+    const 图标名 = (id: string) => 图标(id)?.getAttribute("data-icon") ?? null
+
+    // 细类优先：同为「号码」，手机 / 座机 / 证件各画各的。
+    expect([图标名("e-手"), 图标名("e-座"), 图标名("e-证")]).toEqual(["smartphone", "phone", "id-card"])
+    expect([图标名("e-卡"), 图标名("e-账"), 图标名("e-付")]).toEqual(["credit-card", "landmark", "wallet"])
+    expect([图标名("e-邮"), 图标名("e-聊")]).toEqual(["mail", "chat"])
+    // 大类兜底：认不出细类时不许「什么都不画」，用大类图标。
+    expect([图标名("e-号"), 图标名("e-账二"), 图标名("e-地"), 图标名("e-组")]).toEqual([
+      "hash",
+      "wallet",
+      "pin",
+      "building",
+    ])
+    // 大类也不认识 ⇒ 不画图标，但形状照画（宁可少一个图标，不许出现空框）。
+    expect(图标名("e-怪")).toBeNull()
+    expect(点元素(host, "e-怪").querySelector("[data-slot='graph-node-shape']")).not.toBeNull()
+    // 图标是内联 SVG path，不是 <image>/<use> 外链。
+    expect(图标("e-手")!.querySelector("path, rect, circle, line")).not.toBeNull()
+    expect(图标("e-手")!.querySelector("image, use")).toBeNull()
+  })
+
+  test("图例与画布用同一套图标（图例不教一套、画布画另一套）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 条目 = [...host.querySelectorAll("[data-slot='graph-legend'] [data-slot='graph-legend-type']")]
+    expect(条目.map((条目) => [条目.getAttribute("data-type"), 条目.getAttribute("data-icon")])).toEqual([
+      ["人", "user"],
+      ["号码", "hash"],
+      ["账户", "wallet"],
+      ["虚拟身份", "chat"],
+      ["地点", "pin"],
+      ["组织", "building"],
+    ])
+  })
+
   test("只有存疑/已排除的节点用虚线描边（已确认是可信态，不能跟着虚）；长值截断显示，悬停看全文", async () => {
     // 真实库里的四态：自动抽取 / 已确认 / 存疑 / 已排除。早先写成「非自动抽取就虚」会把每一条
     // 已确认的实体都画成虚线圈——虚线的含义是「这条得再看一眼」，不是「不是机器抽的」。
