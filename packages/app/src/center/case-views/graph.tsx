@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js"
 import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
 import { 金额文本 } from "./format"
 
@@ -254,25 +254,71 @@ function 多边形(点: 位点, 半径: number, 角数: number, 起始角: numbe
   }).join(" ")
 }
 
-function 图形(点: 位点): JSX.Element {
-  const 半 = 节点半径(点)
-  const 属性 = {
-    fill: 填充(点),
-    stroke: 描边(点),
-    "stroke-width": 点.中心 ? 2.5 : 1.5,
-    "stroke-dasharray": 待复核.has(点.trust_state) ? "4 3" : undefined,
-  } as const
-  switch (形状(点.type)) {
-    case "rect":
-      // 号码/组织：圆角方块，与「人」的圆形一眼分开。
-      return <rect x={点.x - 半 + 1} y={点.y - 半 + 1} width={(半 - 1) * 2} height={(半 - 1) * 2} rx={半 * 0.45} {...属性} />
-    case "hexagon":
-      return <polygon points={多边形(点, 半, 6, -Math.PI / 2)} {...属性} />
-    case "diamond":
-      return <polygon points={多边形(点, 半, 4, -Math.PI / 2)} {...属性} />
-    default:
-      return <circle cx={点.x} cy={点.y} r={半} {...属性} />
-  }
+/**
+ * `焦点` = 这个节点正被点选。点选必须**在节点本身上看得出来**（真栈实测改前点前点后
+ * fill/stroke/线宽三项一模一样，只有右侧面板变了）：换成品牌高亮填充＋深金描边，
+ * 点选时外面再加一圈金环（见 `graph-node-focus`）。
+ */
+function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.Element {
+  // 做成组件、只换属性：焦点色一变就重建元素的话，点选当场把被点的那个图形换掉，
+  // 同一事件的冒泡链里它的 target 已脱离文档（真栈实测 isConnected=false），
+  // svg 那层「点空白 ⇒ 取消选中」认不出它，选中又被打回去。
+  const 半 = () => 节点半径(props.点)
+  const 填充色 = () => (props.焦点 ? "var(--v2-background-bg-accent-soft)" : 填充(props.点))
+  const 描边色 = () => (props.焦点 ? "var(--v2-brand-gold-deep)" : 描边(props.点))
+  const 线宽 = () => (props.焦点 ? 3 : props.点.中心 ? 2.5 : 1.5)
+  const 虚线 = () => (待复核.has(props.点.trust_state) ? "4 3" : undefined)
+  return (
+    <Switch>
+      <Match when={形状(props.点.type) === "rect"}>
+        {/* 号码/组织：圆角方块，与「人」的圆形一眼分开。 */}
+        <rect
+          data-slot="graph-node-shape"
+          x={props.点.x - 半() + 1}
+          y={props.点.y - 半() + 1}
+          width={(半() - 1) * 2}
+          height={(半() - 1) * 2}
+          rx={半() * 0.45}
+          fill={填充色()}
+          stroke={描边色()}
+          stroke-width={线宽()}
+          stroke-dasharray={虚线()}
+        />
+      </Match>
+      <Match when={形状(props.点.type) === "hexagon"}>
+        <polygon
+          data-slot="graph-node-shape"
+          points={多边形(props.点, 半(), 6, -Math.PI / 2)}
+          fill={填充色()}
+          stroke={描边色()}
+          stroke-width={线宽()}
+          stroke-dasharray={虚线()}
+        />
+      </Match>
+      <Match when={形状(props.点.type) === "diamond"}>
+        <polygon
+          data-slot="graph-node-shape"
+          points={多边形(props.点, 半(), 4, -Math.PI / 2)}
+          fill={填充色()}
+          stroke={描边色()}
+          stroke-width={线宽()}
+          stroke-dasharray={虚线()}
+        />
+      </Match>
+      <Match when={形状(props.点.type) === "circle"}>
+        <circle
+          data-slot="graph-node-shape"
+          cx={props.点.x}
+          cy={props.点.y}
+          r={半()}
+          fill={填充色()}
+          stroke={描边色()}
+          stroke-width={线宽()}
+          stroke-dasharray={虚线()}
+        />
+      </Match>
+    </Switch>
+  )
 }
 
 type 选中项 = { readonly kind: "node" | "edge"; readonly id: string }
@@ -789,7 +835,19 @@ export function Graph(props: GraphProps): JSX.Element {
                       onMouseLeave={() => set悬停点(undefined)}
                     >
                       <title>{行().value}</title>
-                      {图形(行())}
+                      <Show when={选中()?.kind === "node" && 选中()!.id === 行().id}>
+                        <circle
+                          data-slot="graph-node-focus"
+                          cx={行().x}
+                          cy={行().y}
+                          r={节点半径(行()) + 6}
+                          fill="none"
+                          stroke="var(--v2-brand-gold-deep)"
+                          stroke-width="1.5"
+                          stroke-opacity="0.55"
+                        />
+                      </Show>
+                      <图形 点={行()} 焦点={选中()?.kind === "node" && 选中()!.id === 行().id} />
                       <text
                         x={行().x}
                         y={行().y + 节点半径(行()) + 14}

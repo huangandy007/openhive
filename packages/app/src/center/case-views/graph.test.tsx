@@ -529,6 +529,8 @@ describe("关系图 · 排列模式与拖动", () => {
     // 拖完浏览器还会补一个 click：它不能把面板打开。
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
+    // 拖过也不算「选中」：节点身上不该出现焦点环。
+    expect(点元素(host, "e-李").querySelector("[data-slot='graph-node-focus']")).toBeNull()
     // 再看一次：没拖动过的点击仍然能选中（上一条的「吞掉」不能把下一条也吞了）。
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(host.querySelector("[data-slot='graph-panel'][data-panel-kind='node']")).not.toBeNull()
@@ -562,6 +564,53 @@ describe("关系图 · 排列模式与拖动", () => {
     host.querySelector<HTMLElement>("[data-slot='graph-layout'][data-layout='分层']")!.click()
     const 期望 = 自动位置(图, 画布, "分层").find((点) => 点.id === "e-李")!
     expect(坐标(host, "e-李")).toEqual({ x: Number(期望.x.toFixed(1)), y: Number(期望.y.toFixed(1)) })
+  })
+})
+
+describe("关系图 · 选中焦点", () => {
+  const 形 = (host: HTMLElement, id: string) => 点元素(host, id).querySelector("[data-slot='graph-node-shape']")!
+  const 焦点环 = (host: HTMLElement, id: string) => 点元素(host, id).querySelector("[data-slot='graph-node-focus']")
+
+  test("点节点 ⇒ 节点自己换焦点色（深金描边＋高亮填充＋焦点环），别的节点不变", async () => {
+    // 真栈实测（改前）：点前/点后同一个节点 fill/stroke/stroke-width 三项一模一样
+    //（rgb(236,241,254) / rgba(0,0,0,0.2) / 1.5px）——只有右侧面板变了，节点毫无反应。
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-background-bg-accent-soft)")
+    expect(形(host, "e-李").getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
+    expect(焦点环(host, "e-李")).not.toBeNull()
+    // 号码节点仍是类型色（青），焦点环也不在它身上
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
+    expect(焦点环(host, "e-号")).toBeNull()
+  })
+
+  test("点形状本体（真实鼠标的 target 是 rect/circle，不是外层 <g>）也能选中", async () => {
+    // 真栈实测：点节点图形时事件 target 是 `<rect data-slot="graph-node-shape">`；
+    // 焦点色一改，图形元素当场被重建，等事件冒泡到 svg 时 target 已经脱离文档
+    //（isConnected=false、parentElement=null），svg 那层的「点空白 ⇒ 取消选中」认不出它，
+    // 于是同一次点击里选中又被清空。用例必须点形状本体，点 `<g>` 碰不到这条路径。
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    形(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel']")).not.toBeNull()
+    expect(焦点环(host, "e-李")).not.toBeNull()
+  })
+
+  test("聚焦跟着点选走：换点另一个节点后旧的恢复原色；Esc 后焦点消失", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(焦点环(host, "e-李")).toBeNull()
+    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-background-bg-layer-02)")
+    expect(焦点环(host, "e-号")).not.toBeNull()
+    // 号码本来是青色，被点选后必须换成焦点色——只钉「旧节点恢复」的话，
+    // 焦点色整体失效时这条会假绿（图形不随选中变，旧节点本来就一直是原色）。
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-background-bg-accent-soft)")
+    按Esc()
+    expect(焦点环(host, "e-号")).toBeNull()
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
   })
 })
 
