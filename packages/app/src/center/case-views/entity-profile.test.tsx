@@ -108,6 +108,9 @@ const 档: 实体档案 = {
       confidence: 0.9,
     },
   ],
+  关系总数: 2,
+  事件总数: 1,
+  对方数: 2,
   引用总数: 1,
   一句话: "张三：2 条关系，1 起事件；数据说的 1 条、人说的 1 条。",
 }
@@ -211,12 +214,14 @@ describe("实体档案", () => {
     expect(行.textContent).toContain("张三、李四")
   })
 
-  test("数字条只报本页列出的条目数（关系 / 事件 / 出处 / 对手方），不自己算涉及金额", async () => {
-    // ⚠️ 两条关系**指向同一个对手方**：去重后是 1，不去重是 2。默认夹具「两个关系指向两个
-    // 不同的人」会让去重与计数都得 2，变异（`Set(...).size` → `关系.length`）照样全绿。
+  test("数字条报的是回包给的全量数（对手方由服务端去重），不自己算涉及金额", async () => {
+    // 两条关系**指向同一个对手方**：服务端去重后是 1、不去重是 2。数字卡不能自己数——
+    // 它只画服务端给的 `对方数`（服务端的去重口径由 `openhive-case-entity-list.test.ts` 钉）。
     const 同对手: 实体档案 = {
       ...档,
-      关系: [档.关系[0]!, { ...档.关系[1]!, 对方id: "e-账2", 对方值: "6222****0001" }],
+      关系: [档.关系[0]!, { ...档.关系[1]!, 对方id: "e-账", 对方值: "6222****0001" }],
+      关系总数: 2,
+      对方数: 1,
     }
     const host = mount(() => (
       <EntityProfile
@@ -346,6 +351,35 @@ describe("实体档案", () => {
     ))
     await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 3)
     expect(host.querySelector("[data-slot='entity-citation-expand']")).toBeNull()
+  })
+
+  // 2026-11-07：数字卡原先按本页条数报（关系 200 / 事件 100 / 对手方按 200 条去重），
+  // 与顶部「一句话」的全量口径打架。一律改成用回包的全量数。
+  test("四个数字都用全量，不跟当前页条数走", async () => {
+    const 截断档: 实体档案 = {
+      ...档,
+      关系: 档.关系.slice(0, 1),
+      关系总数: 201,
+      事件: 档.事件.slice(0, 0),
+      事件总数: 101,
+      对方数: 201,
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 截断档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='关系']") !== null)
+    const 读 = (键: string) =>
+      host.querySelector(`[data-slot='entity-stat'][data-key='${键}'] [data-slot='entity-stat-value']`)!.textContent
+    expect(读("关系")).toBe("201")
+    expect(读("事件")).toBe("101")
+    expect(读("对手方")).toBe("201")
+    // 事件段头报的也是全量：它和数字卡在同一屏，一个说 101、一个说 0 起会自相矛盾。
+    expect(host.querySelector("[data-slot='entity-events']")!.textContent).toContain("101 起")
   })
 
   // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，

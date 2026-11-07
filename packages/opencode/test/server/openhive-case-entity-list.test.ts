@@ -281,6 +281,30 @@ describe("实体清单与档案", () => {
     expect(缺口[0]).toContain(`共 ${引用上限 + 1} 条`)
   })
 
+  // 2026-11-07：四个数字原先用「本页条数」（关系 200 / 事件 100）和「本页去重」（对手方），
+  // 而顶部「一句话」走全量（`涉及` 是 count distinct、条数是窗口计数）⇒ 同一页两个数字打架，
+  // 201 个对手方会显示成 200。数字一律走全量，页内截断由缺口说明。
+  test("档案：关系总数 / 事件总数 / 对方数都是全量，不跟当前页走", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 截断项目, id: "e-多" }))!
+    expect(档.关系).toHaveLength(200)
+    expect(档.关系总数).toBe(201)
+    expect(档.事件).toHaveLength(100)
+    expect(档.事件总数).toBe(101)
+    expect(档.对方数).toBe(201)
+    // 全量与「一句话」必须是同一批数（两处各算一次就会漂）。
+    expect(档.一句话).toContain("201 个实体有 201 条有效关系")
+    expect(档.一句话).toContain("101 个事件")
+  })
+
+  test("档案：对手方按对方实体去重（同一账户两条转账仍是 1 个）", async () => {
+    const 重 = (await 实体档案(库(), { projectId: 截断项目, id: "e-重" }))!
+    expect(重.关系总数).toBe(2)
+    expect(重.对方数).toBe(1)
+    const 满 = (await 实体档案(库(), { projectId: 截断项目, id: "e-满" }))!
+    expect(满.关系总数).toBe(200)
+    expect(满.对方数).toBe(1)
+  })
+
   test("档案出处恰好满上限不算截断（缺口 undefined）", async () => {
     const 档 = (await 实体档案(库(), { projectId: 引用项目, id: "e-满引" }))!
     expect(档.引用).toHaveLength(引用上限)

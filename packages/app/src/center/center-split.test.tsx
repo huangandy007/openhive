@@ -206,7 +206,7 @@ describe("CenterSplit", () => {
   test("右栏的 `case://` tab 拿到 caseApi（漏传那一跳 ⇒ 右栏静默说未接入）", async () => {
     const 档 = {
       id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
-      trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 引用总数: 0, 一句话: "张三。",
+      trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 关系总数: 0, 事件总数: 0, 对方数: 0, 引用总数: 0, 一句话: "张三。",
     } as 实体档案
     const 假api: CaseDetailApi = {
       profile: async () => ({ kind: "ok", value: 档 }),

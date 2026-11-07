@@ -60,8 +60,13 @@ const 关系列 =
  *
  * `金额` 是**逐条关系**的 numeric 字符串，出入双向各记一遍：4×3 万来回会在客户端加成 12 万
  * （真正的交易额是 12 万，但「流入」「流出」两侧各算一次会得到 24 万）。服务端不提供聚合，
- * 前端就不摆这个数字——宁可少一个指标，不编一个错数。计数一律按**本页列出的条目**算，
- * 服务端截断时由数字卡页脚的「缺口」说明（与清单同一口径）。
+ * 前端就不摆这个数字——宁可少一个指标，不编一个错数。
+ *
+ * ## 数字卡的口径（2026-11-07 改）
+ *
+ * 四个数字一律报**全量**（回包里的 `关系总数` / `事件总数` / `引用总数` / `对方数`），
+ * 与顶部「一句话」同源。原先按本页条数算，201 个对手方会显示成 200，同一页两个数字打架；
+ * 列表本身仍只带最多 200 条关系 / 100 条事件，截断由数字卡里的「缺口」说清。
  */
 export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const [档, set档] = createSignal<实体档案 | undefined>()
@@ -138,16 +143,20 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     return 展开出处() ? 全部 : 全部.slice(0, 出处默认显示)
   })
 
-  /** 数字条只报本页列出的条目数（服务端截断由「缺口」说明，见组件注释）。 */
+  /**
+   * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `引用总数` / `对方数`）。
+   *
+   * 不能拿 `关系.length` 报：列表页只带前 200 条，按页报会把「201 个对手方」说成 200，
+   * 还会和顶部「一句话」（全量聚合）对不上。页内截断由数字卡下面的「缺口」说明。
+   */
   const 统计 = createMemo(() => {
     const 当前 = 档()
     if (当前 === undefined) return []
     return [
-      { key: "关系", 值: 当前.关系.length },
-      { key: "事件", 值: 当前.事件.length },
-      // 出处用**全量**（服务端可能只给了前 500 条）：与「一句话」的口径一致。
+      { key: "关系", 值: 当前.关系总数 },
+      { key: "事件", 值: 当前.事件总数 },
       { key: "出处", 值: 当前.引用总数 },
-      { key: "对手方", 值: new Set(当前.关系.map((行) => 行.对方值).filter((值) => 值 !== "")).size },
+      { key: "对手方", 值: 当前.对方数 },
     ]
   })
 
@@ -391,7 +400,8 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 >
                   <div class="flex items-baseline gap-1.5 px-3 pt-2">
                     <h2 class="text-[12px] font-semibold text-v2-text-text-base">事件</h2>
-                    <span class="text-[11px] tabular-nums text-v2-text-text-muted">{档().事件.length} 起</span>
+                    {/* 报全量（`事件总数`），与同屏数字卡同口径；`事件.length` 只是当前页。 */}
+                    <span class="text-[11px] tabular-nums text-v2-text-text-muted">{档().事件总数} 起</span>
                   </div>
                   <Show
                     when={档().事件.length > 0}

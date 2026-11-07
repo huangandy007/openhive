@@ -173,6 +173,16 @@ export interface 实体档案 {
   readonly created_at: number
   readonly 关系: readonly 档案关系[]
   readonly 事件: readonly 档案事件[]
+  /**
+   * 关系 / 事件的**全量**条数（`count(*) over()`，不受上限影响）。
+   *
+   * 界面报数必须用它们：跟着 `关系.length` / `事件.length` 报，会把「只列了前 200 条」
+   * 说成「就 200 条」，还会和顶部「一句话」（全量聚合）对不上。
+   */
+  readonly 关系总数: number
+  readonly 事件总数: number
+  /** 对手方 = 关系对方实体去重后的**全量**个数（与「一句话」的「N 个实体」同源）。 */
+  readonly 对方数: number
   /** 出处的当前页（最多 `引用上限` 条）。 */
   readonly 引用: readonly 引用视图[]
   /**
@@ -246,6 +256,8 @@ export async function 实体档案(
     `),
   )
   const 涉及 = 涉及行们.map((行) => ({ 类型: String(行.类型), 个数: Number(行.个数) }))
+  // 只有一份：`一句话` 与数字卡的「对手方」用的是**同一批**对方实体（#002-06）。
+  const 对方数 = 涉及.reduce((和, 项) => 和 + 项.个数, 0)
   const 关系 = 关系行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
@@ -313,9 +325,12 @@ export async function 实体档案(
     created_at: Number(实体.created_at),
     关系,
     事件,
+    关系总数,
+    事件总数,
+    对方数,
     引用,
     引用总数,
-    一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 关系总数, 事件总数),
+    一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 对方数, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }
 }
@@ -350,10 +365,10 @@ function 一句话结论(
   type: string,
   值: string,
   涉及: readonly { readonly 类型: string; readonly 个数: number }[],
+  对方数: number,
   关系总数: number,
   事件数: number,
 ): string {
-  const 对方数 = 涉及.reduce((和, 项) => 和 + 项.个数, 0)
   const 组成 = [...涉及]
     .sort((甲, 乙) => 乙.个数 - 甲.个数 || 甲.类型.localeCompare(乙.类型))
     .map((项) => `${项.个数} 个${项.类型}`)
