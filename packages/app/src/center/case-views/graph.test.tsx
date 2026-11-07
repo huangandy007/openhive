@@ -43,6 +43,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     money: async () => ({ kind: "ok", value: { 数据: {} } }),
     graph: async () => ({ kind: "ok", value: 图 }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
+    trust: async () => ({ kind: "error", message: "本用例不裁决" }),
     ...over,
   }
 }

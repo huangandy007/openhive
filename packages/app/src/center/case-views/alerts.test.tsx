@@ -44,6 +44,7 @@ function 假详情api(): CaseDetailApi {
     money: async () => ({ kind: "error", message: "未用" }),
     graph: async () => ({ kind: "error", message: "未用" }),
     review: async () => ({ kind: "error", message: "未用" }),
+    trust: async () => ({ kind: "error", message: "本用例不裁决" }),
   }
 }
 

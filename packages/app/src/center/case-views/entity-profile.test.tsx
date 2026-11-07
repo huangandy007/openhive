@@ -96,9 +96,13 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     money: async () => ({ kind: "ok", value: { 数据: {} } }),
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
+    trust: async () => ({ kind: "error", message: "本用例不裁决" }),
     ...over,
   }
 }
+
+type 裁决入参 = Parameters<CaseDetailApi["trust"]>[0]
+type 裁决回包 = Awaited<ReturnType<CaseDetailApi["trust"]>>
 
 describe("实体档案", () => {
   test("画出规范值、类型、信任态、别名与那句结论", async () => {
@@ -286,5 +290,171 @@ describe("实体档案", () => {
       ["money", "张三 · 资金"],
       ["graph", "张三 · 关系图"],
     ])
+  })
+
+  test("「✓ 对」立刻发确认裁决，作用于这个实体本身", async () => {
+    const 收到: 裁决入参[] = []
+    const api = 假api({
+      trust: async (input) => {
+        收到.push(input)
+        return { kind: "ok", value: { trustState: "已确认" } }
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    // 文字必须可见：符号只是装饰，语义不能只写在 aria-label 里。
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.textContent).toContain("对")
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toMatchObject({
+      projectId: "p",
+      factType: "entity",
+      factId: "e-张",
+      action: "确认",
+    })
+    // 确认不该带任何原因字段（服务端会把它当成一次无关的排除原因校验）。
+    expect(收到[0].reasonKind).toBeUndefined()
+    expect(收到[0].reasonText).toBeUndefined()
+  })
+
+  test("「？存疑」立刻发存疑裁决", async () => {
+    const 收到: 裁决入参[] = []
+    const api = 假api({
+      trust: async (input) => {
+        收到.push(input)
+        return { kind: "ok", value: { trustState: "存疑" } }
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-doubt']")!.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toMatchObject({ factType: "entity", factId: "e-张", action: "存疑" })
+  })
+
+  test("「✗ 错」先展开原因区不发请求；原因与说明都齐了才发排除，且原样带上", async () => {
+    const 收到: 裁决入参[] = []
+    const api = 假api({
+      trust: async (input) => {
+        收到.push(input)
+        return { kind: "ok", value: { trustState: "已排除" } }
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
+    expect(提交.disabled).toBe(true)
+    expect(收到.length).toBe(0)
+
+    // 只选原因、没写说明 ⇒ 仍不可提交。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    expect(提交.disabled).toBe(true)
+    expect(收到.length).toBe(0)
+
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "列映射把对方号码认成了本机号码"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等(() => !提交.disabled)
+
+    提交.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toMatchObject({
+      factType: "entity",
+      factId: "e-张",
+      action: "排除",
+      reasonKind: "识别错",
+      reasonText: "列映射把对方号码认成了本机号码",
+    })
+  })
+
+  test("裁决成功后重新取档案，信任态以服务端回包为准（不乐观改界面）", async () => {
+    let 取数次数 = 0
+    const api = 假api({
+      profile: async () => {
+        取数次数 += 1
+        return { kind: "ok", value: 取数次数 === 1 ? 档 : { ...档, trust_state: "已确认" } }
+      },
+      trust: async () => ({ kind: "ok", value: { trustState: "已确认" } }),
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    expect(host.querySelector("[data-slot='entity-profile-trust-state']")!.textContent).toBe("自动抽取")
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+
+    await 等(
+      () =>
+        取数次数 === 2 &&
+        host.querySelector("[data-slot='entity-profile-trust-state']")?.textContent === "已确认",
+    )
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.getAttribute("aria-pressed")).toBe("true")
+  })
+
+  test("裁决失败：说清服务端整句错误、不乐观改成已确认、原因区原文保留可重试", async () => {
+    let 调用次数 = 0
+    const api = 假api({
+      trust: async () => {
+        调用次数 += 1
+        return { kind: "error", message: "服务端拒绝了这次裁决" }
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "材料本身是伪造的"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='材料本身有问题']")!.click()
+
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
+    await 等(() => !提交.disabled)
+    提交.click()
+
+    await 等(() => host.querySelector("[data-slot='entity-profile-error']") !== null)
+    expect(host.querySelector("[data-slot='entity-profile-error']")!.textContent).toContain("服务端拒绝了这次裁决")
+    // ⚠️ 只断信任态徽章本身：关系行里本来就有「已确认」（人说的那条），断整段 textContent 是假绿。
+    expect(host.querySelector("[data-slot='entity-profile-trust-state']")!.textContent).toBe("自动抽取")
+    // 原因区没被收起、用户填的内容还在，可以直接重试。
+    expect(host.querySelector("[data-slot='entity-trust-reason']")).not.toBeNull()
+    expect(框.value).toBe("材料本身是伪造的")
+    expect(
+      host.querySelector("[data-slot='entity-trust-reason-kind'][data-kind='材料本身有问题']")!.getAttribute("aria-checked"),
+    ).toBe("true")
+    expect(提交.disabled).toBe(false)
+    expect(调用次数).toBe(1)
+  })
+
+  test("在途时按钮禁用、显示「提交中…」，二次点击只发一次请求", async () => {
+    const 在飞: Array<(回: 裁决回包) => void> = []
+    let 调用次数 = 0
+    const api = 假api({
+      trust: () => {
+        调用次数 += 1
+        return new Promise<裁决回包>((收) => 在飞.push(收))
+      },
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    const 对 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-confirm']")!
+    对.click()
+    对.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    expect(调用次数).toBe(1)
+    expect(在飞.length).toBe(1)
+    expect(对.disabled).toBe(true)
+    expect(host.querySelector("[data-slot='entity-trust-pending']")!.textContent).toContain("提交中")
+    // 收尾：别把未决 promise 留在用例外。
+    在飞[0]({ kind: "ok", value: { trustState: "已确认" } })
+    await 等(() => host.querySelector("[data-slot='entity-trust-pending']") === null)
   })
 })

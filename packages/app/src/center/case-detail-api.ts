@@ -170,6 +170,18 @@ export interface CaseDetailApi {
   ) => Promise<结果<关系图结果>>
   /** 产物页（design §9.4）：这份产物引用了哪几条事实、其中几条的依据后来改过。 */
   readonly review: (projectId: string, path: string) => Promise<结果<产物复核结果>>
+  /**
+   * 可信状态裁决（design §9.1 / §9.2）：动作而不是目标状态，落点由服务端算。
+   * 回包只给服务端算出的新 `trustState`——界面以它为准重取档案，不自己猜。
+   */
+  readonly trust: (input: {
+    readonly projectId: string
+    readonly factType: "entity" | "relation" | "event"
+    readonly factId: string
+    readonly action: "确认" | "排除" | "存疑"
+    readonly reasonKind?: "识别错" | "抽取错" | "材料本身有问题"
+    readonly reasonText?: string
+  }) => Promise<结果<{ readonly trustState: string }>>
 }
 
 const 项目参数 = (projectId: string) => {
@@ -216,5 +228,20 @@ export function createCaseDetailApi(send: CaseFetch = 默认发送): CaseDetailA
       const 参数 = new URLSearchParams({ projectId, path })
       return 请求<产物复核结果>(send, `${PREFIX}/artifacts/review?${参数.toString()}`)
     },
+    trust: (input) =>
+      请求<{ readonly trustState: string }>(send, `${PREFIX}/facts/trust`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // 字段名与服务端 `handleTrust` 逐字一致（`projectId/factType/factId/action/reasonKind/reasonText`）。
+        // `JSON.stringify` 会丢掉 `undefined` 的键：确认 / 存疑不带原因时，服务端看到的是「没有这个字段」。
+        body: JSON.stringify({
+          projectId: input.projectId,
+          factType: input.factType,
+          factId: input.factId,
+          action: input.action,
+          reasonKind: input.reasonKind,
+          reasonText: input.reasonText,
+        }),
+      }),
   }
 }

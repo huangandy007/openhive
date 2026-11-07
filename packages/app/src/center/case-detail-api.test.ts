@@ -41,6 +41,69 @@ describe("案件详情 API 客户端", () => {
     expect(解析.get("path")).toBe("报告/分析.md")
   })
 
+  test("trust 走 POST，体字段名与服务端一致；没有原因时连键都不带", async () => {
+    let 地址 = ""
+    let 手法: string | undefined
+    let 头: unknown
+    let 正文: string | undefined
+    const api = createCaseDetailApi(async (url, init) => {
+      地址 = url
+      手法 = init?.method
+      头 = init?.headers
+      const 体 = init?.body
+      正文 = typeof 体 === "string" ? 体 : undefined
+      return 回包({ ok: true, trustState: "已确认" })
+    })
+
+    const 回 = await api.trust({ projectId: "p", factType: "entity", factId: "e-张", action: "确认" })
+    expect(回.kind).toBe("ok")
+    expect(回.kind === "ok" ? 回.value.trustState : undefined).toBe("已确认")
+    expect(地址).toBe("/openhive/case/facts/trust")
+    expect(手法).toBe("POST")
+    expect(头).toMatchObject({ "content-type": "application/json" })
+    // `JSON.stringify` 丢掉 undefined 的键：服务端 `handleTrust` 看到的是「没有 reasonKind 这个字段」。
+    expect(JSON.parse(正文 ?? "null")).toEqual({
+      projectId: "p",
+      factType: "entity",
+      factId: "e-张",
+      action: "确认",
+    })
+  })
+
+  test("trust 把排除原因原样放进体里", async () => {
+    let 正文: string | undefined
+    const api = createCaseDetailApi(async (_url, init) => {
+      const 体 = init?.body
+      正文 = typeof 体 === "string" ? 体 : undefined
+      return 回包({ ok: true, trustState: "已排除" })
+    })
+    await api.trust({
+      projectId: "p",
+      factType: "entity",
+      factId: "e-张",
+      action: "排除",
+      reasonKind: "材料本身有问题",
+      reasonText: "原件重复报送",
+    })
+    expect(JSON.parse(正文 ?? "null")).toEqual({
+      projectId: "p",
+      factType: "entity",
+      factId: "e-张",
+      action: "排除",
+      reasonKind: "材料本身有问题",
+      reasonText: "原件重复报送",
+    })
+  })
+
+  test("trust 的 409 冲突把服务端 code 交出来", async () => {
+    const api = createCaseDetailApi(async () =>
+      回包({ error: "这条事实已经被别人排除", code: "trust_conflict" }, 409),
+    )
+    expect(
+      await api.trust({ projectId: "p", factType: "entity", factId: "e-张", action: "确认" }),
+    ).toEqual({ kind: "error", message: "这条事实已经被别人排除", code: "trust_conflict" })
+  })
+
   test("graph 的 跳数 / type 编码正确（type 用逗号连接）", async () => {
     const 看到的: string[] = []
     const api = createCaseDetailApi(async (url) => {

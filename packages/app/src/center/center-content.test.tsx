@@ -668,6 +668,7 @@ describe("中栏：case:// 伪路径走案件视图（计划 7 裁定 3）", () 
     money: async () => ({ kind: "ok", value: { 数据: {} } }),
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
+    trust: async () => ({ kind: "error", message: "本用例不裁决" }),
   }
 
   test("case:// 按前缀认，不按扩展名；不会降级成「不支持」", async () => {
