@@ -18,10 +18,18 @@ export interface EntityProfileProps {
   readonly onOpen: (view: "timeline" | "money" | "graph", 标题: string) => void
 }
 
+// 悬停必须看得见，而在**不透明底**上这不容易，两代写法都被真栈否掉了：
+// ① `hover:bg-v2-overlay-*`（4% 黑）直接顶掉不透明底 ⇒ 242 → 245，反而更亮；
+// ② `hover:bg-v2-background-bg-layer-03` 换相邻一档灰 ⇒ 242 → 238，只差 4 个色阶。
+// 设计系统的口径（`button-v2.css`）是**叠层**：`background-image` 铺 4% 黑在底色之上。
+// `cursor-pointer` 也必须显式给——全站没有 `button { cursor: pointer }`，默认 `default`。
+const 悬停叠层 =
+  "hover:[background-image:linear-gradient(0deg,var(--v2-overlay-simple-overlay-hover),var(--v2-overlay-simple-overlay-hover))]"
+
 const 裁决按钮类 = (押下: boolean) =>
   押下
-    ? "h-7 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[13px] font-semibold text-v2-text-text-base disabled:opacity-50"
-    : "h-7 rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover disabled:opacity-50"
+    ? `h-7 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[13px] font-semibold text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
+    : `h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
 
 /** 关系行的六列：方向 / 对方 / 类型 / 次数 / 金额 / 状态。表头与行共用同一份列宽。 */
 const 关系列 =
@@ -218,8 +226,8 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
               onClick={() => set含排除((值) => !值)}
               class={
                 含排除()
-                  ? "h-6 shrink-0 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base"
-                  : "h-6 shrink-0 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+                  ? `h-6 shrink-0 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-v2-text-text-base transition-colors ${悬停叠层}`
+                  : "h-6 shrink-0 cursor-pointer rounded-[4px] px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover"
               }
             >
               显示已排除
@@ -239,7 +247,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                         type="button"
                         data-slot={slot}
                         onClick={() => props.onOpen(视图, `${档().canonical_value} · ${文案}`)}
-                        class="h-7 rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                        class={`h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
                       >
                         {文案}
                       </button>

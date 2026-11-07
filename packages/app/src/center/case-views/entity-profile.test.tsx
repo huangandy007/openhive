@@ -333,6 +333,26 @@ describe("实体档案", () => {
     expect(host.textContent).toContain("新：含已排除")
   })
 
+  test("三个跳转按钮有手型光标，悬停在不透明底上叠 4% 黑（换相邻一档灰只差 4 个色阶，等于没反馈）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-open-timeline']").length === 1)
+    for (const 槽 of ["entity-open-timeline", "entity-open-money", "entity-open-graph"]) {
+      const 钮 = host.querySelector<HTMLElement>(`[data-slot='${槽}']`)!
+      const 类们 = 钮.className.split(/\s+/)
+      // 真栈量到的：`cursor` 是 `default`，鼠标移上去形状不变。
+      expect(类们).toContain("cursor-pointer")
+      expect(类们).toContain("bg-v2-background-bg-layer-02")
+      // ⚠️ 只断「有 hover:*」是假绿——两代写法都被真栈否掉了：
+      //   ① `hover:bg-v2-overlay-*`（4% 黑）直接顶掉不透明底 ⇒ 242 → 245，反而更亮；
+      //   ② `hover:bg-v2-background-bg-layer-03` 换相邻一档灰 ⇒ 242 → 238，只差 4 个色阶。
+      // 设计系统的口径（`button-v2.css`）是**叠层**：`background-image` 铺 4% 黑在底色之上。
+      expect(类们).not.toContain("hover:bg-v2-background-bg-layer-03")
+      const 叠层 = 类们.filter((名) => 名.startsWith("hover:[background-image:"))
+      expect(叠层.length).toBe(1)
+      expect(叠层[0]).toContain("--v2-overlay-simple-overlay-hover")
+    }
+  })
+
   test("三个跳转按钮把视图与标题交给上层", async () => {
     const 收到: Array<[string, string]> = []
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={(view, 标题) => 收到.push([view, 标题])} />)

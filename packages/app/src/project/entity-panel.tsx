@@ -183,7 +183,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                   data-slot="entity-type"
                   data-type={项.type}
                   onClick={() => 进类型(项.type)}
-                  class="flex h-7 w-full items-center justify-between rounded-[4px] px-2 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                  class="flex h-7 w-full cursor-pointer items-center justify-between rounded-[4px] px-2 text-[13px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
                 >
                   <span>{项.type}</span>
                   <span class="text-v2-text-text-muted">{项.count}</span>
@@ -205,14 +205,14 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
           <Show when={类型() !== undefined || 搜索().trim() !== ""}>
             <div class="flex shrink-0 items-center gap-1">
               <Show when={类型() !== undefined}>
-                <button type="button" data-slot="entity-back" class="h-6 rounded-[4px] px-2 text-[13px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover" onClick={() => set类型(undefined)}>
+                <button type="button" data-slot="entity-back" class="h-6 cursor-pointer rounded-[4px] px-2 text-[13px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover" onClick={() => set类型(undefined)}>
                   ‹ 返回
                 </button>
                 <span class="text-[13px] text-v2-text-text-base">{类型()}</span>
               </Show>
               <For each={排序们}>
                 {(项) => (
-                  <button type="button" data-slot="entity-sort" data-sort={项} aria-pressed={排序值() === 项} class={排序值() === 项 ? "h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold" : "h-6 rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"} onClick={() => set排序值(项)}>
+                  <button type="button" data-slot="entity-sort" data-sort={项} aria-pressed={排序值() === 项} class={排序值() === 项 ? "h-6 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold" : "h-6 cursor-pointer rounded-[4px] px-2 text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"} onClick={() => set排序值(项)}>
                     {排序名[项]}
                   </button>
                 )}
@@ -242,7 +242,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                       aria-label={星标().has(行.id) ? `取消星标 ${行.canonical_value}` : `星标 ${行.canonical_value}`}
                       aria-pressed={星标().has(行.id)}
                       title={星标().has(行.id) ? "取消置顶" : "置顶（只保存在这台电脑）"}
-                      class="h-6 w-6 shrink-0 rounded-[4px] text-[13px] leading-none"
+                      class="h-6 w-6 shrink-0 cursor-pointer rounded-[4px] text-[13px] leading-none hover:bg-v2-overlay-simple-overlay-hover"
                       onClick={(event) => {
                         event.stopPropagation()
                         拨星标(行.id)
