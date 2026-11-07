@@ -18,8 +18,14 @@ function mount(element: () => JSX.Element) {
   render(element, host)
   return host
 }
+/**
+ * 敲 Escape。
+ * ⚠️ 必须派在 `document` 上且 `bubbles`：Kobalte 的浮层把 Escape 听在 `document`，
+ * 而派在 `window` 上的事件只到 `window`（不会往下走），菜单会假装「关不掉」。
+ * 派在 `document` 冒泡则两处都到（document → window），原先听 `window` 的用例照旧。
+ */
 function 按Esc() {
-  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
 }
 afterEach(() => {
   document.body.innerHTML = ""
@@ -55,10 +61,72 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
   }
 }
 
+/**
+ * 按中心返回不同的图：钉「原地换中心」得能看见**取谁**、**换了什么**。
+ * 一图两条节点（中心 ＋ 一个邻居），两条图的邻居不同 ⇒ 「旧图还在不在」判得出来。
+ */
+function 按中心取图() {
+  const 调用: Array<{ id: string; 跳数: 1 | 2 | undefined; 类型: readonly string[] | undefined }> = []
+  const 造 = (id: string): 关系图结果 => {
+    if (id === "e-号")
+      return {
+        节点: [
+          { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: true, 跳数: 0, 关联数: 1 },
+          { id: "e-赵", type: "人", value: "赵六", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+        ],
+        边: [{ id: "r-x", from: "e-号", to: "e-赵", type: "通话", times: 2, amount: null, trust_state: "自动抽取" }],
+        缺口: [],
+      }
+    return {
+      节点: [
+        { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
+        { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 1 },
+      ],
+      边: [{ id: "r-y", from: "e-张", to: "e-号", type: "实际使用", times: null, amount: null, trust_state: "自动抽取" }],
+      缺口: [],
+    }
+  }
+  const api = 假api({
+    graph: async (_projectId, id, 跳数, 类型) => {
+      调用.push({ id, 跳数, 类型 })
+      return { kind: "ok", value: 造(id) }
+    },
+  })
+  return { api, 调用 }
+}
+
 const 点元素 = (host: HTMLElement, id: string) =>
   host.querySelector<SVGGElement>(`[data-slot='graph-node'][data-node-id='${id}']`)!
 const 边元素 = (host: HTMLElement, id: string) =>
   host.querySelector<SVGGElement>(`[data-slot='graph-edge'][data-edge-id='${id}']`)!
+
+/**
+ * ── 右键菜单的探针（Kobalte `ContextMenu`）──────────────────────────────────
+ *
+ * 与 `ai-session/session-list.test.tsx` 那套同形，两条硬约束照抄：
+ * - 菜单 **Portal 到 `document.body`**，不在 `host` 里 ⇒ 一律查 `document`；
+ * - 关闭时**先播退场动画才卸载**，happy-dom 没有 CSS 引擎 ⇒ 元素关掉也还在
+ *   ⇒ 判「开着」只能看 `data-expanded`，不能看元素在不在。
+ */
+const 菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-content']")
+const 菜单开着 = () => 菜单内容()?.hasAttribute("data-expanded") ?? false
+/** 点菜单项：Kobalte 在 `pointerup` 上选中，单发 `.click()` 不够（`file-tree.test.tsx` 实测）。 */
+const 点菜单项 = (动作: string) => {
+  // ⚠️ 用 `data-action` 不用 `data-slot`：`ContextMenu.Item` 把 `data-slot="context-menu-item"`
+  //    **硬写在 `{...rest}` 之后**，传进去的自定义 `data-slot` 会被覆盖（与 `ContextMenu.Trigger` 同一条）。
+  const 项 = 菜单内容()?.querySelector<HTMLElement>(`[data-action='${动作}']`)
+  if (!项) throw new Error(`菜单里没有「${动作}」——这条用例的前提不成立`)
+  for (const 类型 of ["pointerdown", "pointerup"])
+    项.dispatchEvent(new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }))
+}
+const 右键 = (el: Element) =>
+  el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))
+/** 让 `requestAnimationFrame` 与菜单那边的 `setTimeout(0)` 都跑完（同 `session-list.test.tsx`）。 */
+const 冲刷 = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
 
 describe("关系图 · 布局", () => {
   test("每个节点都落在画布内，且不重叠、不挤成一条竖线（视口外那半个图是真实缺陷）", () => {
@@ -317,16 +385,168 @@ describe("关系图 · 检视面板", () => {
     expect(host.querySelector("[data-slot='graph-panel-subtitle']")!.textContent).toBe("人 · 自动抽取")
   })
 
-  test("「以此为中心」把该节点交给上层重新取图；中心节点自己不显示这个按钮", async () => {
-    const 收到: 图节点[] = []
-    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} onRecenter={(点) => 收到.push(点)} />)
+  /**
+   * 面板标题旁「复制」（2026-11-07 用户下达）：图上节点标签是**截断**的（`4301231967...`），
+   * 全文只在面板里 ⇒ 要能一键拿全文。只复制**值**本身（用户裁定），不带类型/跳数。
+   */
+  test("面板标题旁「复制」⇒ 值原样进剪贴板；按钮变「已复制」，过后自己复位", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
-    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    host.querySelector<HTMLElement>("[data-slot='graph-panel-focus']")!.click()
-    expect(收到.map((点) => 点.id)).toEqual(["e-李"])
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
 
-    点元素(host, "e-张").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    // 自己装一个剪贴板记录器，用完还原：**不读环境里那份**——`audit-log.test.tsx` 装过一个
+    // 只有 `writeText` 的替身且没还原，全量跑时 `navigator.clipboard.readText` 干脆不存在
+    // （2026-11-07 实测：单跑本文件绿、全量红 `readText is not a function`）。
+    // 前提：happy-dom 没有 `execCommand`（`copy-text.test.ts` 实测）⇒ `复制文本` 一定走到这里。
+    expect(typeof document.execCommand).toBe("undefined")
+    const 原生剪贴板 = navigator.clipboard
+    const 写入: string[] = []
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (文字: string) => void 写入.push(文字) },
+    })
+    try {
+      const 钮 = host.querySelector<HTMLElement>("[data-slot='graph-copy-value']")!
+      expect(钮.textContent).toBe("复制")
+      钮.click()
+      await 等(() => 钮.textContent === "已复制")
+      expect(写入).toEqual(["13800000001"])
+
+      // 复位：挂着「已复制」不复位，第二次复制就没有任何反馈了。
+      for (let i = 0; i < 250 && 钮.textContent !== "复制"; i += 1) await new Promise((r) => setTimeout(r, 10))
+      expect(钮.textContent).toBe("复制")
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: 原生剪贴板 })
+    }
+  })
+
+  test("面板「以此为中心」也是原地换中心；中心节点自己不显示这个按钮", async () => {
+    const { api, 调用 } = 按中心取图()
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='graph-panel-focus']")!.click()
+    await 等(() => 调用.length === 2)
+    expect(调用[1]!.id).toBe("e-号")
+
+    // 已经是中心的那条：面板里不该再给「以此为中心」（没有可钻的下一层）
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(host.querySelector("[data-slot='graph-panel-focus']")).toBeNull()
+  })
+
+  /**
+   * 右键节点 ⇒ 就地呼出下钻（2026-11-07 用户下达）。
+   *
+   * 能力本来就有（右侧面板的「以此为中心」），长在面板里要多两步才能用；右键把它挪到指针底下。
+   * 同日裁定：「以此为中心」是**在这张图里换中心**，不再交给上层开一条新 tab。
+   * 三条用例各钉一件事：作用对象是**右键的那个节点**、下钻是原地换图、空白处不弹。
+   */
+  test("右键节点 ⇒ 菜单作用于它；「以此为中心」原地换中心（重新取数，不开新 tab）", async () => {
+    const { api, 调用 } = 按中心取图()
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+    expect(调用.map((条) => 条.id)).toEqual(["e-张"])
+
+    // 先把跳数拨到 2：跳数与类型筛选是**查看偏好**，换中心时该留着（用户裁定）。
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    await 等(() => 调用.length === 2)
+
+    右键(点元素(host, "e-号"))
+    await 等(() => 菜单开着())
+    // 右键同时选中：菜单的对象、图上高亮、右侧面板必须是同一个（否则「菜单说的是 A、圈亮在 B」）
+    expect(host.querySelector("[data-slot='graph-panel']")?.getAttribute("data-panel-kind")).toBe("node")
+    expect(host.querySelector("[data-slot='graph-panel-title']")!.textContent).toContain("13800000001")
+
+    点菜单项("graph-node-menu-recenter")
+    await 等(() => 调用.length === 3)
+
+    // ① 取的是「以 e-号为中」，且跳数偏好跟着走（没被写回 1）
+    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 2 })
+    // ② 新中心这一圈并进来了
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
+    // ③ **原来的点不消失**（2026-11-07 追加要求：同一张图里越并越多，不是换一页）
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).not.toBeNull()
+    // ④ 头部说得出「现在中心是谁」（tab 标题仍是外面那条，不在图上标出来就会迷路）
+    expect(host.querySelector("[data-slot='graph-center']")!.textContent).toContain("13800000001")
+    // ⑤ 选中也留着：被右键的那条还在图上，面板不该自己关掉
+    expect(host.querySelector("[data-slot='graph-panel']")?.getAttribute("data-panel-kind")).toBe("node")
+  })
+
+  test("换跳数 ⇒ 清空重来：只留当前中心这一圈（用户裁定，图上一定符合当前筛选）", async () => {
+    const { api, 调用 } = 按中心取图()
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+
+    右键(点元素(host, "e-号"))
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-recenter")
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
+    // 先证明「并进来了」，否则下面那条「旧点没了」会因为一开始就没有而空转（`#005-18`）
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).not.toBeNull()
+
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    await 等(() => 调用.length === 3)
+    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 2 })
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-张']") === null)
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).not.toBeNull()
+  })
+
+  test("「返回」回到上一个中心：再取一次数，回到起点后按钮消失", async () => {
+    const { api, 调用 } = 按中心取图()
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+
+    右键(点元素(host, "e-号"))
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-recenter")
+    await 等(() => 调用.length === 2)
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
+
+    // 按钮得说得出「回到谁」——来路里存的是**离开时的中心名**，不是图上现在能找到的东西
+    const 返回钮 = host.querySelector<HTMLButtonElement>("[data-slot='graph-back']")!
+    expect(返回钮.textContent).toContain("张三")
+
+    返回钮.click()
+    await 等(() => 调用.length === 3)
+    expect(调用[2]!.id).toBe("e-张")
+    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-张']") !== null)
+    // 返回 = 只挪中心，节点不退（用户裁定）⇒ 李四那一圈还在图上
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).not.toBeNull()
+    // 回到起点 ⇒ 没有上一级了，按钮收掉
+    expect(host.querySelector("[data-slot='graph-back']")).toBeNull()
+  })
+
+  test("右键节点 ⇒「打开档案」也是同一个对象", async () => {
+    const 收到: 图节点[] = []
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={(点) => 收到.push(点)} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+
+    右键(点元素(host, "e-李"))
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-open")
+    await 等(() => 收到.length === 1)
+
+    expect(收到[0]).toMatchObject({ id: "e-李", value: "李四" })
+  })
+
+  test("空白处右键不弹这个菜单（没有作用对象就不该给一个只能按禁用的菜单）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+
+    // 正对照：先在节点上右键证明「这个菜单确实能开」——否则下面那条 `不能开` 会因为
+    // 「菜单压根没接」而永远绿（`#005-18` 假绿四问里的「空转」）。
+    右键(点元素(host, "e-李"))
+    await 等(() => 菜单开着())
+    按Esc()
+    await 冲刷()
+    expect(菜单开着()).toBe(false)
+
+    右键(host.querySelector("[data-slot='graph-canvas']")!)
+    await 冲刷()
+
+    expect(菜单开着()).toBe(false)
   })
 
   test("点边开面板：类型/次数/金额/方向；两端各一个「打开档案」", async () => {

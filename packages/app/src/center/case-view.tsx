@@ -108,13 +108,8 @@ function 视图(
               { 另一栏: true },
             )
           }
-          // 「以此为中心」= 换一张以该实体为中心的关系图（同一个视图，`arg` 换成新实体）。
-          onRecenter={(点: 图节点) =>
-            open?.({
-              title: `${点.value} · 关系图`,
-              path: 案件伪路径({ projectId: 路径.projectId, view: "graph", arg: 点.id }),
-            })
-          }
+          // 「以此为中心」不在这里接线：2026-11-07 裁定它留在同一张图里原地换中心，
+          // 交给这一层就等于开一条新 tab（`Graph` 自己处理，见它内部的 `以下钻`）。
         />
       )
     case "alerts":

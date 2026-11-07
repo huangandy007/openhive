@@ -1,5 +1,8 @@
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js"
+import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
+import { 复制文本 } from "@/utils/copy-text"
+import { showToast } from "@/utils/toast"
 import { 金额文本 } from "./format"
 import { 图标图形, 图标边长, 节点图标, 节点图标组 } from "./graph-icons"
 
@@ -8,8 +11,10 @@ export interface GraphProps {
   readonly id: string
   readonly api: CaseDetailApi
   readonly onOpenEntity: (点: 图节点) => void
-  /** 「以此为中心」：上层换一张 graph 视图（`arg` = 新实体 id）。省略则不出这个按钮。 */
-  readonly onRecenter?: (点: 图节点) => void
+  /**
+   * 「以此为中心」**不在这里收口**：它是这张图自己的事（原地换中心，见 `以下钻`）。
+   * 交给上层就等于开一条新 tab——那正是 2026-11-07 被否掉的做法。
+   */
 }
 
 /**
@@ -348,6 +353,28 @@ interface 提示内容 {
 const 提示宽 = 168
 
 /**
+ * 把新取回来的一圈**并进**现有的图（2026-11-07 用户要求「原来已有的点一并显示」）。
+ *
+ * - 节点/边按 id 并集，**新的覆盖旧的**：同一个点在不同圈里带的跳数/关联数，以最新那一圈为准；
+ * - 缺口去重（同一条上限提示不该叠两遍）；
+ * - 中心标记一律重算，只认 `中心id`。⚠️ 不重算，环形布局会把几个旧中心**摞在正中间**
+ *   （`布局()` 把所有 `中心: true` 放在同一个点上），半径与配色也跟着错。
+ */
+function 并图(旧: 关系图结果 | undefined, 新: 关系图结果, 中心id: string): 关系图结果 {
+  const 节点 = new Map<string, 图节点>()
+  for (const 点 of 旧?.节点 ?? []) 节点.set(点.id, 点)
+  for (const 点 of 新.节点) 节点.set(点.id, 点)
+  const 边 = new Map<string, 图边>()
+  for (const 条 of 旧?.边 ?? []) 边.set(条.id, 条)
+  for (const 条 of 新.边) 边.set(条.id, 条)
+  return {
+    节点: [...节点.values()].map((点) => ({ ...点, 中心: 点.id === 中心id })),
+    边: [...边.values()],
+    缺口: [...new Set([...(旧?.缺口 ?? []), ...新.缺口])],
+  }
+}
+
+/**
  * 实体关系图（2026-11-07 视觉改版，方向 A：聚焦画布 ＋ 右侧检视面板）。
  *
  * 四条口径：
@@ -360,6 +387,19 @@ export function Graph(props: GraphProps): JSX.Element {
   const [图, set图] = createSignal<关系图结果 | undefined>()
   const [错误, set错误] = createSignal<string | undefined>()
   const [载入, set载入] = createSignal(false)
+  /**
+   * 这张图**当前的中心**。下钻就在原地换它（2026-11-07 用户裁定：不新开 tab）。
+   * 初值来自上层；只有 `props.id` 变了（换实体）才回到它。
+   */
+  const [中心, set中心] = createSignal(props.id)
+  /** 下钻来路。存名字是为了「返回」按钮说得出来「回哪儿」。 */
+  const [来路, set来路] = createSignal<readonly { readonly id: string; readonly 名字: string }[]>([])
+  /**
+   * 下一回取回来的图是**并进**现有图，还是**替换**它。
+   * 换中心（下钻/返回）⇒ 并入（旧点留着，2026-11-07 用户要求）；
+   * 换跳数/筛选/实体 ⇒ 替换（用户裁定「清空重来」，图上一定符合当前口径）。
+   */
+  let 本次并入 = false
   const [跳数, set跳数] = createSignal<1 | 2>(1)
   const [选中类型, set选中类型] = createSignal<readonly string[]>([])
   /** 见过的每种关系类型出现过的最大条数：服务端按类型过滤后别的类型会消失，计数得留着（否则按钮跟着没了）。 */
@@ -367,6 +407,16 @@ export function Graph(props: GraphProps): JSX.Element {
   const [悬停点, set悬停点] = createSignal<string | undefined>()
   const [悬停边, set悬停边] = createSignal<string | undefined>()
   const [选中, set选中] = createSignal<选中项 | null>(null)
+  /**
+   * 刚复制成功的是**哪一条节点**。存 id 而不是布尔：1.5 秒里用户点开另一条，
+   * 那颗钮不能替新节点冒充「已复制」。
+   */
+  const [复制了, set复制了] = createSignal<string | undefined>()
+  /**
+   * 右键菜单的作用对象（**整条节点**，不是 id：上层取图与拼标题都要 `value` / `type`）。
+   * 收起时清空；空白处右键也会清空并拦下事件（见 `记右键`）。
+   */
+  const [菜单点, set菜单点] = createSignal<图节点 | undefined>()
   const [缩放, set缩放] = createSignal(1)
   const [平移, set平移] = createSignal({ x: 0, y: 0 })
   /** viewBox 的实际尺寸 = 画布容器的像素尺寸；测不到（组件测试）时退回默认画布。 */
@@ -389,6 +439,10 @@ export function Graph(props: GraphProps): JSX.Element {
     (上一个: string | undefined) => {
       const 键 = `${props.projectId}|${props.id}`
       if (上一个 !== undefined && 上一个 !== 键) {
+        // 换实体 = 换一份数据：中心回到上层给的那个，来路作废，累积全部清掉。
+        本次并入 = false
+        set中心(props.id)
+        set来路([])
         set跳数(1)
         set选中类型([])
         set类型计数({})
@@ -407,11 +461,16 @@ export function Graph(props: GraphProps): JSX.Element {
 
   createEffect(() => {
     const projectId = props.projectId
-    const id = props.id
+    // 取的是**当前中心**：下钻换了中心就重新取，同一张图换个中心重画。
+    const id = 中心()
+    // 这一回的并入/替换决定按**发起时**的信号定，别读回包那一刻的值（那时可能已经被下一回改了）。
+    const 并入这圈 = 本次并入
     const api = props.api
     const 当前跳数 = 跳数()
     const 当前类型 = 选中类型()
-    set图(undefined)
+    // 并入这一回**不清旧图**：清了 `并图` 收到 `旧 = undefined`，旧点就在「载入中」被抹掉，
+    // 回包再怎么并也只剩新中心这一圈。替换（换跳数/筛选/换实体）才清空。
+    if (!并入这圈) set图(undefined)
     set错误(undefined)
     set载入(true)
     let 作废 = false
@@ -432,7 +491,7 @@ export function Graph(props: GraphProps): JSX.Element {
         const 累计 = { ...类型计数() }
         for (const [类, 数] of Object.entries(本条)) 累计[类] = Math.max(累计[类] ?? 0, 数)
         set类型计数(累计)
-        set图(回.value)
+        set图((旧) => 并图(并入这圈 ? 旧 : undefined, 回.value, id))
       })
       // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会一直停在「载入中」，
       // 同时留下一条没人看的 unhandled rejection。
@@ -458,6 +517,59 @@ export function Graph(props: GraphProps): JSX.Element {
   const 点 = (id: string) => 全部点().find((行) => 行.id === id)
   const 边 = (id: string) => (图()?.边 ?? []).find((行) => 行.id === id)
 
+  /** 当前中心那条节点：头部标出来，只从这里取「返回」要说的名字。 */
+  const 中心节点 = createMemo(() => 图()?.节点.find((行) => 行.中心))
+
+  /**
+   * 换中心 = 在**同一张图里**换个中心（2026-11-07 用户裁定）：
+   * 旧节点/旧边都留着，新中心那一圈并进来。既然节点不消失，选中、视口、手动位置、类型计数
+   * 也都不作废——把它们清掉会让用户刚看清的东西自己跳走。**跳数与类型筛选**同样留着。
+   */
+  const 换中心到 = (id: string) => {
+    本次并入 = true
+    set中心(id)
+  }
+
+  /** 「以此为中心」（右键菜单与右侧面板**同一个出口**）：压一层来路，原地换中心。 */
+  const 以下钻 = (点: 图节点) => {
+    set来路((旧) => [...旧, { id: 中心(), 名字: 中心节点()?.value ?? "" }])
+    换中心到(点.id)
+  }
+
+  /** 「返回」：回到上一个中心；来路为空时按钮根本不渲染。 */
+  const 返回上一中心 = () => {
+    const 栈 = 来路()
+    const 上一个 = 栈.at(-1)
+    if (上一个 === undefined) return
+    set来路(栈.slice(0, -1))
+    换中心到(上一个.id)
+  }
+
+  /**
+   * 右键：记下指针底下那个节点，并**同时选中它**（2026-11-07 用户下达）。
+   *
+   * 两件事必须一起做：菜单的对象、图上的高亮、右侧面板必须指向同一个节点，否则会出现
+   * 「菜单说的是 A、圈亮在 B」。
+   *
+   * 空白处（落点不在任何节点上）**不给我们这套菜单**：两项都只对节点有意义，摆出来只能是
+   * 两个禁用项。`stopPropagation` 让事件到不了 `Trigger`（机关见 JSX 那处注释）；
+   * **不** `preventDefault`：没有可干的事就别把浏览器自带的菜单也收走（`#006-32`，
+   * 同 `content-menu.tsx` 的取舍）。
+   */
+  const 记右键 = (事件: MouseEvent) => {
+    const 目标 = 事件.target
+    const 组 = 目标 instanceof Element ? 目标.closest("[data-slot='graph-node']") : null
+    const id = 组?.getAttribute("data-node-id") ?? undefined
+    const 命中 = id === undefined ? undefined : 点(id)
+    if (命中 === undefined) {
+      set菜单点(undefined)
+      事件.stopPropagation()
+      return
+    }
+    set菜单点(命中)
+    set选中({ kind: "node", id: 命中.id })
+  }
+
   // 数据刷新后选中项可能已经不在了（换跳数、换筛选都会走到这里）——面板不能继续显示一个图里没有的节点。
   createEffect(() => {
     const 当前 = 选中()
@@ -474,6 +586,30 @@ export function Graph(props: GraphProps): JSX.Element {
     const 当前 = 选中()
     return 当前?.kind === "edge" ? 边(当前.id) : undefined
   })
+
+  /** 「已复制」的复位计时器；重新复制、组件卸载都要把它收掉（否则旧计时器会替新一次提前复位）。 */
+  let 复制计时: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(复制计时))
+
+  /**
+   * 面板标题旁「复制」（2026-11-07 用户下达）：图上节点标签是**截断**的（`4301231967...`），
+   * 全文只在面板里 ⇒ 要能一键拿走。
+   *
+   * 只复制**值本身**（用户裁定），不带类型/跳数——它多半要粘去公安系统或 Excel。
+   * 成功由按钮自己变「已复制」说话；**失败必须另吭一声**：复制不改变屏幕上任何东西，
+   * 不吭声的话「复制成了」与「根本没复制」长得一样（同 `file-tree` 那条取舍）。
+   */
+  const 复制值 = (点: 图节点) => {
+    void 复制文本(点.value).then((成) => {
+      if (!成) {
+        showToast({ variant: "error", title: "复制失败", description: 点.value })
+        return
+      }
+      set复制了(点.id)
+      clearTimeout(复制计时)
+      复制计时 = setTimeout(() => set复制了((当前) => (当前 === 点.id ? undefined : 当前)), 1500)
+    })
+  }
 
   /** 悬停节点时它的邻居集合；`null` = 没有悬停（谁都不降透明度）。 */
   const 邻居集 = createMemo<ReadonlySet<string> | null>(() => {
@@ -529,6 +665,8 @@ export function Graph(props: GraphProps): JSX.Element {
   const 类型们 = createMemo(() => Object.keys(类型计数()).sort((甲, 乙) => 甲.localeCompare(乙)))
 
   const 拨类型 = (类型: string) => {
+    // 换筛选 = 换一份数据 ⇒ 下一回取到的是**替换**而不是并进来（用户裁定：清空重来）。
+    本次并入 = false
     const 当前 = 选中类型()
     set选中类型(当前.includes(类型) ? 当前.filter((条) => 条 !== 类型) : [...当前, 类型])
   }
@@ -654,6 +792,26 @@ export function Graph(props: GraphProps): JSX.Element {
     <div data-component="graph" class="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
       <header data-slot="graph-head" class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-v2-border-border-muted px-3 py-2">
         <h1 class="text-[15px] font-semibold text-v2-text-text-base">关系图</h1>
+        {/* 下钻是原地换中心 ⇒ tab 标题还是外面那条，得在图上把「现在中心是谁」说出来。 */}
+        <Show when={中心节点()}>
+          {(点) => (
+            <span data-slot="graph-center" class="text-[13px] text-v2-text-text-base">
+              {点().value} · {点().type}
+            </span>
+          )}
+        </Show>
+        <Show when={来路().at(-1)}>
+          {(上一个) => (
+            <button
+              type="button"
+              data-slot="graph-back"
+              onClick={返回上一中心}
+              class="h-6 cursor-pointer rounded-[4px] border border-v2-border-border-muted px-2 text-[12px] text-v2-text-text-base transition-colors hover:bg-v2-background-bg-layer-02"
+            >
+              ← 返回「{上一个().名字}」
+            </button>
+          )}
+        </Show>
         <Show when={图()}>
           <span data-slot="graph-summary" class="text-[12px] tabular-nums text-v2-text-text-muted">
             {图()!.节点.length} 个节点 · {图()!.边.length} 条关系 · {跳数()} 跳
@@ -667,7 +825,11 @@ export function Graph(props: GraphProps): JSX.Element {
                 data-slot="graph-hop"
                 data-hop={层}
                 aria-pressed={跳数() === 层}
-                onClick={() => set跳数(层)}
+                onClick={() => {
+                  // 换跳数 = 换一份数据 ⇒ 下一回取到的是替换而不是并进来（用户裁定：清空重来）。
+                  本次并入 = false
+                  set跳数(层)
+                }}
                 class={
                   跳数() === 层
                     ? "h-6 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-[var(--v2-brand-gold-deep)]"
@@ -734,7 +896,22 @@ export function Graph(props: GraphProps): JSX.Element {
         </div>
       </header>
 
-      <div class="relative flex min-h-0 flex-1">
+      <ContextMenu
+        modal={false}
+        onOpenChange={(开) => {
+          // 收：作用对象一并清掉，下次右键前它不该还指向上一次那个节点。
+          if (!开) set菜单点(undefined)
+        }}
+      >
+        <ContextMenu.Trigger as="div" class="relative flex min-h-0 flex-1">
+          {/* ⚠️ 门控必须挂在 Trigger **里面**这一层（同 `content-menu.tsx`）：`Trigger` 自己的
+              右键处理会无条件 `preventDefault` ＋ 开菜单；`ContextMenu` 的 `open` / `defaultOpen`
+              又被 Kobalte 从根 props 里 `Omit` 掉了（`ContextMenuRootOptions` 只剩
+              `onOpenChange`）⇒ 没有受控开关可拦。`onContextMenu` 是 Solid 的**委托**事件
+              （`web.js` 的 `DelegatedEvents` 里有 `contextmenu`），它的派发逐级上走、每级看过
+              `cancelBubble`（`web.js:494`）⇒ 在这里 `stopPropagation()`，Trigger 的 handler
+              就不会被调用。`contents` 不生成盒子，排布不变。 */}
+          <div class="contents" onContextMenu={记右键}>
         <div
           ref={(元素) => (画布元素 = 元素)}
           data-slot="graph-canvas"
@@ -1012,6 +1189,19 @@ export function Graph(props: GraphProps): JSX.Element {
                 </div>
                 <button
                   type="button"
+                  data-slot="graph-copy-value"
+                  aria-label="复制这个值"
+                  onClick={() => 复制值(点())}
+                  class="h-6 shrink-0 cursor-pointer rounded-[4px] px-1.5 text-[11px] transition-colors hover:bg-v2-overlay-simple-overlay-hover"
+                  classList={{
+                    "text-[var(--v2-brand-gold-deep)]": 复制了() === 点().id,
+                    "text-v2-text-text-muted": 复制了() !== 点().id,
+                  }}
+                >
+                  {复制了() === 点().id ? "已复制" : "复制"}
+                </button>
+                <button
+                  type="button"
                   data-slot="graph-panel-close"
                   aria-label="收起"
                   onClick={() => set选中(null)}
@@ -1030,11 +1220,11 @@ export function Graph(props: GraphProps): JSX.Element {
                   <span class="text-v2-text-text-base">{点().关联数} 条</span>
                 </div>
               </div>
-              <Show when={!点().中心 && props.onRecenter !== undefined}>
+              <Show when={!点().中心}>
                 <button
                   type="button"
                   data-slot="graph-panel-focus"
-                  onClick={() => props.onRecenter?.(点())}
+                  onClick={() => 以下钻(点())}
                   class="h-7 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-[var(--v2-brand-gold-deep)]"
                 >
                   以此为中心
@@ -1117,7 +1307,38 @@ export function Graph(props: GraphProps): JSX.Element {
             )
           }}
         </Show>
-      </div>
+          </div>
+        </ContextMenu.Trigger>
+
+        <ContextMenu.Portal>
+          {/* `excludedElements={[]}` 与 `session-list.tsx` / `file-tree.tsx` 是同一条：
+              Kobalte 默认把触发器当成「里面」，在画布里点任何一处都收不掉菜单。 */}
+          <ContextMenu.Content excludedElements={[]} data-slot="graph-node-menu">
+            {/* 两项都与右侧面板那两个按钮**同源**：不新开出口，只是把路径缩短到右键。
+                禁用只有一条理由：没有作用对象，或者作用对象**已经是中心**（没有可钻的下一层）。 */}
+            <ContextMenu.Item
+              data-action="graph-node-menu-recenter"
+              disabled={菜单点() === undefined || 菜单点()!.中心}
+              onSelect={() => {
+                const 当前 = 菜单点()
+                if (当前 !== undefined) 以下钻(当前)
+              }}
+            >
+              <ContextMenu.ItemLabel>以此为中心</ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              data-action="graph-node-menu-open"
+              disabled={菜单点() === undefined}
+              onSelect={() => {
+                const 当前 = 菜单点()
+                if (当前 !== undefined) props.onOpenEntity(当前)
+              }}
+            >
+              <ContextMenu.ItemLabel>打开档案</ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu>
 
       <For each={图()?.缺口 ?? []}>
         {(话) => (
