@@ -35,6 +35,15 @@ export type CaseFetch = (input: string, init?: RequestInit) => Promise<Response>
 export const TIMEOUT_MS = 10_000
 export const PREFIX = "/openhive/case"
 
+/**
+ * 超时那一刻给民警的话。
+ *
+ * 不能把浏览器原文（`signal is aborted without reason`）透出去——2026-11-07 用户实报的红字就是它
+ * （截图 `images/screen/2026-11-07_203854.png`）。那句是**无参 `abort()` 之后 fetch 的拒因**，
+ * 真浏览器实测逐字如此；它是给我们看的，不是给民警看的。
+ */
+export const 超时提示 = `读取超时（${TIMEOUT_MS / 1000} 秒），请稍后重试`
+
 export async function 默认发送(input: string, init?: RequestInit): Promise<Response> {
   const 控制器 = new AbortController()
   const 定时器 = setTimeout(() => 控制器.abort(), TIMEOUT_MS)
@@ -64,8 +73,28 @@ export async function 请求<T>(send: CaseFetch, url: string, init?: RequestInit
       return { kind: "error", message: `服务端回了非 JSON（${response.status}）` }
     }
   } catch (错误) {
+    // 本客户端里 abort **只有一个来源**：`默认发送` 到点（`TIMEOUT_MS`）那一记。所以按 `name` 认
+    // 就是「这次是超时」——`AbortError` 的 `message` 是浏览器内部话，一个字都不该往界面上放。
+    if (错误 instanceof Error && 错误.name === "AbortError")
+      return { kind: "error", message: 超时提示, code: "timeout" }
     return { kind: "error", message: 错误 instanceof Error ? 错误.message : String(错误) }
   }
+}
+
+/**
+ * 超时**自动再打一次**。
+ *
+ * 为什么：内核有整段「同步忙」的窗口——实例引导＋skill 扫描（2026-11-07 20:38 实测：同一时刻五个
+ * 项目在 boot，计数请求排队排过了 10 秒预算）。窗口一过，同一条请求 60–70ms 就回来。这类超时是
+ * 一次性的，重打一次就自己好，不该逼民警去切项目自救（计数这条链只在换项目时重取）。
+ *
+ * 只重 `code === "timeout"`：网络的错（连接被拒 / 断了）与服务端的错（4xx/5xx）重打只是再等一遍。
+ * 重试**放在这里一处**，`counts` 与 `list` 都经它——两条链各写一份就会漂（`LEARNINGS #002-06`）。
+ */
+async function 超时再打一次<T>(一次: () => Promise<结果<T>>): Promise<结果<T>> {
+  const 首 = await 一次()
+  if (首.kind === "ok" || 首.code !== "timeout") return 首
+  return await 一次()
 }
 
 export interface EntityApi {
@@ -81,9 +110,8 @@ export interface EntityApi {
 export function createEntityApi(send: CaseFetch = 默认发送): EntityApi {
   return {
     counts: async (projectId) => {
-      const 结果 = await 请求<{ counts: 类型计数[] }>(
-        send,
-        `${PREFIX}/entities?projectId=${encodeURIComponent(projectId)}`,
+      const 结果 = await 超时再打一次(() =>
+        请求<{ counts: 类型计数[] }>(send, `${PREFIX}/entities?projectId=${encodeURIComponent(projectId)}`),
       )
       if (结果.kind === "error") return 结果
       return { kind: "ok", value: 结果.value.counts }
@@ -95,9 +123,8 @@ export function createEntityApi(send: CaseFetch = 默认发送): EntityApi {
       if (input.type !== undefined) 参数.set("type", input.type)
       if (input.q !== undefined && input.q.trim() !== "") 参数.set("q", input.q.trim())
       if (input.sort !== undefined) 参数.set("sort", input.sort)
-      const 结果 = await 请求<{ list: { 行们: 实体清单项[]; 缺口: string[] } }>(
-        send,
-        `${PREFIX}/entities?${参数.toString()}`,
+      const 结果 = await 超时再打一次(() =>
+        请求<{ list: { 行们: 实体清单项[]; 缺口: string[] } }>(send, `${PREFIX}/entities?${参数.toString()}`),
       )
       if (结果.kind === "error") return 结果
       return { kind: "ok", value: 结果.value.list }
