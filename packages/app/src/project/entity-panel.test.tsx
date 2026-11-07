@@ -288,6 +288,56 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     expect(host.textContent).not.toContain("还没有实体")
   })
 
+  /** 跨类型结果里一行一个类型字标：搜「张」时人 / 号码 / 账户混排，靠读数字分不出来。 */
+  test("跨类型搜索的每行带类型字标；进入某一类型后不再重复标类型", async () => {
+    const api = 假api({
+      counts: async () => ({ kind: "ok", value: [{ type: "号码", count: 1 }] }),
+      // 搜索态 type 留空 ⇒ 跨类型（§8.2），两类实体混排。
+      list: async () => ({
+        kind: "ok",
+        value: {
+          行们: [
+            实体行({ id: "e-号", 值: "6222****0001", 类型: "号码" }),
+            实体行({ id: "e-张", 值: "张三", 类型: "人" }),
+          ],
+          缺口: [],
+        },
+      }),
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
+    框.value = "张"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
+    const 字标们 = [...host.querySelectorAll<HTMLElement>("[data-slot='entity-type-badge']")]
+    expect(字标们.map((字标) => 字标.textContent)).toEqual(["号", "人"])
+    expect(字标们[0]!.getAttribute("aria-hidden")).toBe("true")
+
+    // 清空搜索 → 进「号码」这一类型：类型已在标题上写着，行里不再重复画字标。
+    框.value = ""
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-type']").length === 1)
+    host.querySelector<HTMLElement>("[data-slot='entity-type']")!.click()
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
+    expect(host.querySelectorAll("[data-slot='entity-type-badge']").length).toBe(0)
+  })
+
+  /** 星标到底是什么意思，得看得见：列表上方一行说明 ＋ 按钮悬停文案（`aria-label` 已有）。 */
+  test("星标语义写出来：列表上方有一行「置顶」说明，按钮有悬停提示", async () => {
+    const api = 假api({
+      list: async () => ({ kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }),
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
+    框.value = "张"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+
+    const 说明 = host.querySelector<HTMLElement>("[data-slot='entity-star-hint']")!
+    expect(说明.textContent).toContain("置顶")
+    expect(host.querySelector<HTMLElement>("[data-slot='entity-star']")!.getAttribute("title")).toContain("置顶")
+  })
+
   /** 星标按项目分开存（修复轮 1 · Minor 2）：换项目后同一个 id 不许还是星标。 */
   test("星标按项目分开存：换项目后同一个 id 不再是星标", async () => {
     const [项目, set项目] = createSignal<string | undefined>("p1")

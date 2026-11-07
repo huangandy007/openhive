@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
+import { EntityTypeBadge } from "../components/entity-type-badge"
 import type { EntityApi, 实体清单项, 排序 } from "./entity-api"
 
 export interface EntityPanelProps {
@@ -219,6 +220,10 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
             </div>
 
             <div class="min-h-0 flex-1 overflow-y-auto">
+              {/* 星标是什么意思得看得见：只画 ★/☆ 时民警分不清「置顶优先看」还是「重要标记」。 */}
+              <p data-slot="entity-star-hint" class="px-1 pb-1 text-[11px] text-v2-text-text-muted">
+                点 ☆ 置顶，只保存在这台电脑
+              </p>
               {/* 清单区只说**清单**这一条链的错。 */}
               <Show when={清单错误()}>
                 {(话) => <p data-slot="entity-error" role="alert" class="px-1 text-[13px] text-v2-state-fg-danger">{话()}</p>}
@@ -236,6 +241,7 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                       data-slot="entity-star"
                       aria-label={星标().has(行.id) ? `取消星标 ${行.canonical_value}` : `星标 ${行.canonical_value}`}
                       aria-pressed={星标().has(行.id)}
+                      title={星标().has(行.id) ? "取消置顶" : "置顶（只保存在这台电脑）"}
                       class="h-6 w-6 shrink-0 rounded-[4px] text-[13px] leading-none"
                       onClick={(event) => {
                         event.stopPropagation()
@@ -244,8 +250,13 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                     >
                       {星标().has(行.id) ? "★" : "☆"}
                     </button>
+                    {/* 跨类型结果（搜索）里人 / 号码 / 账户混排：靠读数字分不出谁是谁。
+                        进了某一类型后类型已写在标题上，行里不再重复画字标。 */}
+                    <Show when={类型() === undefined}>
+                      <EntityTypeBadge type={行.type} />
+                    </Show>
                     <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-base">{行.canonical_value}</span>
-                    <span class="shrink-0 text-[12px] text-v2-text-text-muted">{行.关联数} 条关系</span>
+                    <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-muted">{行.关联数} 条关系</span>
                   </div>
                 )}
               </For>
