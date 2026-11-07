@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
-import { Graph, 布局, 画布 } from "./graph"
-import type { CaseDetailApi, 图节点, 关系图结果 } from "../case-detail-api"
+import { Graph, 自动位置, 布局, 画布 } from "./graph"
+import type { CaseDetailApi, 图节点, 图边, 关系图结果 } from "../case-detail-api"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -436,5 +436,131 @@ describe("关系图 · 边界", () => {
     ))
     await 等(() => host.textContent!.includes("网络断了"))
     expect(host.textContent).not.toContain("正在读取关系")
+  })
+})
+
+describe("关系图 · 排列模式与拖动", () => {
+  const 大图: 关系图结果 = (() => {
+    const 节点: 图节点[] = [{ id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 20 }]
+    for (let i = 0; i < 8; i += 1)
+      节点.push({ id: `a-${i}`, type: i % 2 === 0 ? "号码" : "人", value: `内环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 })
+    for (let i = 0; i < 12; i += 1)
+      节点.push({ id: `b-${i}`, type: i % 3 === 0 ? "账户" : "地点", value: `外环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 })
+    const 边: 图边[] = 节点.slice(1).map((点, 序) => ({
+      id: `r-${序}`,
+      from: "c",
+      to: 点.id,
+      type: "通话",
+      times: 1,
+      amount: null,
+      trust_state: "自动抽取",
+    }))
+    return { 节点, 边, 缺口: [] }
+  })()
+
+  const 坐标 = (host: HTMLElement, id: string) => {
+    const 点 = 点元素(host, id)
+    return { x: Number(点.getAttribute("data-node-x")), y: Number(点.getAttribute("data-node-y")) }
+  }
+
+  /** 真事件派发：`<g>` 在 happy-dom 里没有 `.click()`；拖动走 mousedown → window mousemove → mouseup。 */
+  function 拖动(元素: Element, 起: { x: number; y: number }, 终: { x: number; y: number }) {
+    元素.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 起.x, clientY: 起.y }))
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 终.x, clientY: 终.y }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+  }
+
+  test("四种排列都把点放进画布内；网格/分层互不重叠；力导向同输入两次一致", () => {
+    for (const 模式 of ["环形", "力导向", "分层", "网格"] as const) {
+      const 位 = 自动位置(大图, 画布, 模式)
+      expect(位).toHaveLength(21)
+      for (const 点 of 位) {
+        expect(点.x).toBeGreaterThanOrEqual(40)
+        expect(点.x).toBeLessThanOrEqual(画布.宽 - 40)
+        expect(点.y).toBeGreaterThanOrEqual(40)
+        expect(点.y).toBeLessThanOrEqual(画布.高 - 40)
+      }
+      if (模式 === "网格" || 模式 === "分层") {
+        const 坐标们 = 位.map((点) => `${Math.round(点.x)},${Math.round(点.y)}`)
+        expect(new Set(坐标们).size).toBe(坐标们.length)
+      }
+    }
+    // 力导向没有随机数：同一张图算两次必须一模一样（否则每次重绘整张图都在抖）。
+    expect(自动位置(大图, 画布, "力导向")).toEqual(自动位置(大图, 画布, "力导向"))
+  })
+
+  test("分层按跳数分列：中心在最左、1 跳居中、2 跳在最右", () => {
+    const 位 = 自动位置(大图, 画布, "分层")
+    const 找 = (id: string) => 位.find((点) => 点.id === id)!
+    expect(找("c").x).toBeLessThan(找("a-0").x)
+    expect(找("a-0").x).toBeLessThan(找("b-0").x)
+  })
+
+  test("切换排列模式 ⇒ 节点换到新坐标，按钮亮起来", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 前 = 坐标(host, "e-李")
+    host.querySelector<HTMLElement>("[data-slot='graph-layout'][data-layout='网格']")!.click()
+    const 后 = 坐标(host, "e-李")
+    expect(`${后.x},${后.y}`).not.toBe(`${前.x},${前.y}`)
+    expect(host.querySelector("[data-slot='graph-layout'][data-layout='网格']")!.getAttribute("aria-pressed")).toBe("true")
+    expect(host.querySelector("[data-slot='graph-layout'][data-layout='环形']")!.getAttribute("aria-pressed")).toBe("false")
+    // 网格布局是纯函数的产物：界面画出来的就是 自动位置(网格) 那一份坐标。
+    const 期望 = 自动位置(图, 画布, "网格").find((点) => 点.id === "e-李")!
+    expect(后).toEqual({ x: Number(期望.x.toFixed(1)), y: Number(期望.y.toFixed(1)) })
+  })
+
+  test("拖节点：跟手移动、松手保留，且拖动不会被当成点击（不弹检视面板）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 前 = 坐标(host, "e-李")
+    const 元素 = 点元素(host, "e-李")
+    拖动(元素, { x: 100, y: 100 }, { x: 160, y: 140 })
+    const 后 = 坐标(host, "e-李")
+    expect(后.x - 前.x).toBeCloseTo(60, 0)
+    expect(后.y - 前.y).toBeCloseTo(40, 0)
+    // 其余节点不动：拖的是节点，不是整张画布。
+    expect(坐标(host, "e-号")).toEqual(
+      (() => {
+        const 位 = 自动位置(图, 画布, "环形").find((点) => 点.id === "e-号")!
+        return { x: Number(位.x.toFixed(1)), y: Number(位.y.toFixed(1)) }
+      })(),
+    )
+    // 拖完浏览器还会补一个 click：它不能把面板打开。
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
+    // 再看一次：没拖动过的点击仍然能选中（上一条的「吞掉」不能把下一条也吞了）。
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel'][data-panel-kind='node']")).not.toBeNull()
+  })
+
+  test("手动摆的位置跨数据刷新保留（「重排」之前不回到自动布局）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    拖动(点元素(host, "e-李"), { x: 100, y: 100 }, { x: 140, y: 120 })
+    const 摆过 = 坐标(host, "e-李")
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    await 等(() => host.querySelector("[data-slot='graph-hop'][data-hop='2']")!.getAttribute("aria-pressed") === "true")
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    expect(坐标(host, "e-李")).toEqual(摆过)
+  })
+
+  test("「重排」把手动摆的位置清回自动布局", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 自动 = 坐标(host, "e-李")
+    拖动(点元素(host, "e-李"), { x: 100, y: 100 }, { x: 160, y: 140 })
+    expect(坐标(host, "e-李")).not.toEqual(自动)
+    host.querySelector<HTMLElement>("[data-slot='graph-relayout']")!.click()
+    expect(坐标(host, "e-李")).toEqual(自动)
+  })
+
+  test("换排列模式同样清掉手动位置（新排列按自动布局算）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    拖动(点元素(host, "e-李"), { x: 100, y: 100 }, { x: 160, y: 140 })
+    host.querySelector<HTMLElement>("[data-slot='graph-layout'][data-layout='分层']")!.click()
+    const 期望 = 自动位置(图, 画布, "分层").find((点) => 点.id === "e-李")!
+    expect(坐标(host, "e-李")).toEqual({ x: Number(期望.x.toFixed(1)), y: Number(期望.y.toFixed(1)) })
   })
 })

@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show, type JSX } from "solid-js"
 import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
 import { 金额文本 } from "./format"
 
@@ -57,6 +57,146 @@ export function 布局(图: 关系图结果, 尺寸: 画布尺寸 = 画布): { �
     一层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 < 2), 环[1]),
     二层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 >= 2), 环[2]),
   }
+}
+
+export type 排列模式 = "环形" | "力导向" | "分层" | "网格"
+
+export const 排列模式们 = ["环形", "力导向", "分层", "网格"] as const
+
+const 按类型排 = (甲: 图节点, 乙: 图节点) => 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id)
+
+/** 网格：等分画布、按类型/id 顺序填格子。适合「只想一眼数清有多少个、都是什么」的时候。 */
+function 网格位置(点们: readonly 图节点[], 尺寸: 画布尺寸): 位点[] {
+  const 有序 = [...点们].sort(按类型排)
+  const 列数 = Math.max(1, Math.ceil(Math.sqrt(有序.length)))
+  const 行数 = Math.max(1, Math.ceil(有序.length / 列数))
+  // 边距卡住上下限：窄画布不留 90 的边距，否则格子宽度被挤成负数。
+  const 边距x = Math.min(90, 尺寸.宽 / 4)
+  const 边距y = Math.min(80, 尺寸.高 / 5)
+  const 格宽 = Math.max(1, (尺寸.宽 - 边距x * 2) / 列数)
+  const 格高 = Math.max(1, (尺寸.高 - 边距y * 2) / 行数)
+  return 有序.map((点, 序) => ({
+    ...点,
+    x: 边距x + ((序 % 列数) + 0.5) * 格宽,
+    y: 边距y + (Math.floor(序 / 列数) + 0.5) * 格高,
+  }))
+}
+
+/** 分层（跳数分列）：中心｜1 跳｜2 跳 三列。看「谁在几度圈子里」比环状更直接。 */
+function 分层位置(图: 关系图结果, 尺寸: 画布尺寸): 位点[] {
+  const 列 = (点们: readonly 图节点[], x: number): 位点[] => {
+    const 有序 = [...点们].sort(按类型排)
+    // 一列里放得越多人越挤；纵向间距随人数收缩，再夹回画布内（55 = 节点＋标题的边距）。
+    const 间距 = 有序.length > 1 ? Math.min(84, (尺寸.高 - 130) / (有序.length - 1)) : 0
+    const 中y = 尺寸.高 / 2
+    return 有序.map((点, 序) => ({
+      ...点,
+      x,
+      y: Math.min(尺寸.高 - 55, Math.max(55, 中y + (序 - (有序.length - 1) / 2) * 间距)),
+    }))
+  }
+  const 边距 = Math.min(100, 尺寸.宽 / 3)
+  return [
+    ...列(图.节点.filter((点) => 点.中心), 边距),
+    ...列(图.节点.filter((点) => !点.中心 && 点.跳数 < 2), 尺寸.宽 / 2),
+    ...列(图.节点.filter((点) => !点.中心 && 点.跳数 >= 2), 尺寸.宽 - 边距),
+  ]
+}
+
+/**
+ * 力导向（Fruchterman–Reingold）：斥力把点推开、边像弹簧把相连的点拉近。
+ * 起始位置用环状布局、迭代过程没有随机数——同一份数据每次算出来一模一样，
+ * 否则民警每刷新一次，整张图都在抖，位置变了会被当成「关系变了」。
+ */
+function 力导向位置(图: 关系图结果, 尺寸: 画布尺寸): 位点[] {
+  const 环 = 布局(图, 尺寸)
+  const 序 = [...环.中心, ...环.一层, ...环.二层].sort(按类型排)
+  const n = 序.length
+  if (n === 0) return []
+  const 位 = new Map(序.map((点) => [点.id, { x: 点.x, y: 点.y }]))
+  // 理想间距 k：把可用面积均分给 n 个点。太大会把相连的点也推开，太小全挤成一团。
+  const k = Math.max(24, Math.sqrt(((尺寸.宽 - 170) * (尺寸.高 - 120)) / n))
+  const 邻 = 图.边.filter((边) => 位.has(边.from) && 位.has(边.to))
+  let 步 = Math.min(尺寸.宽, 尺寸.高) * 0.12
+  for (let 轮 = 0; 轮 < 200; 轮 += 1) {
+    const 加 = new Map(序.map((点) => [点.id, { x: 0, y: 0 }]))
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const 甲 = 位.get(序[i]!.id)!
+        const 乙 = 位.get(序[j]!.id)!
+        let dx = 甲.x - 乙.x
+        let dy = 甲.y - 乙.y
+        let d = Math.hypot(dx, dy)
+        // 完全重合时按序号给一个确定的偏移方向，别拿随机数（随机数会让结果漂）。
+        if (d < 0.5) {
+          dx = 0.5 + i * 0.1
+          dy = 0.5 + j * 0.1
+          d = Math.hypot(dx, dy)
+        }
+        const f = (k * k) / d
+        const 力甲 = 加.get(序[i]!.id)!
+        const 力乙 = 加.get(序[j]!.id)!
+        力甲.x += (dx / d) * f
+        力甲.y += (dy / d) * f
+        力乙.x -= (dx / d) * f
+        力乙.y -= (dy / d) * f
+      }
+    }
+    for (const 边 of 邻) {
+      const 甲 = 位.get(边.from)!
+      const 乙 = 位.get(边.to)!
+      const dx = 甲.x - 乙.x
+      const dy = 甲.y - 乙.y
+      const d = Math.hypot(dx, dy) || 0.5
+      const f = (d * d) / k
+      const 力甲 = 加.get(边.from)!
+      const 力乙 = 加.get(边.to)!
+      力甲.x -= (dx / d) * f
+      力甲.y -= (dy / d) * f
+      力乙.x += (dx / d) * f
+      力乙.y += (dy / d) * f
+    }
+    for (const 点 of 序) {
+      const 力 = 加.get(点.id)!
+      const 长 = Math.hypot(力.x, 力.y) || 1
+      const 移 = Math.min(长, 步)
+      const 座 = 位.get(点.id)!
+      座.x += (力.x / 长) * 移
+      座.y += (力.y / 长) * 移
+    }
+    步 *= 0.985
+  }
+  // 收敛后按包围盒等比收进画布：力导向不管容器多大都会散开，不缩回来就出界。
+  const xs = 序.map((点) => 位.get(点.id)!.x)
+  const ys = 序.map((点) => 位.get(点.id)!.y)
+  const 最左 = Math.min(...xs)
+  const 最右 = Math.max(...xs)
+  const 最上 = Math.min(...ys)
+  const 最下 = Math.max(...ys)
+  const 宽 = Math.max(1, 最右 - 最左)
+  const 高 = Math.max(1, 最下 - 最上)
+  const 比 = Math.min(1, (尺寸.宽 - 170) / 宽, (尺寸.高 - 120) / 高)
+  const 中x = (最左 + 最右) / 2
+  const 中y = (最上 + 最下) / 2
+  return 序.map((点) => {
+    const 座 = 位.get(点.id)!
+    return {
+      ...点,
+      x: 尺寸.宽 / 2 + (座.x - 中x) * 比,
+      y: 尺寸.高 / 2 + (座.y - 中y) * 比,
+    }
+  })
+}
+
+/** 各排列模式的自动坐标。`环形` 复用 `布局()`（它那份中点/内环/外环的排法已有测试钉着）。 */
+export function 自动位置(图: 关系图结果, 尺寸: 画布尺寸 = 画布, 模式: 排列模式 = "环形"): 位点[] {
+  if (模式 === "环形") {
+    const 位 = 布局(图, 尺寸)
+    return [...位.中心, ...位.一层, ...位.二层]
+  }
+  if (模式 === "网格") return 网格位置(图.节点, 尺寸)
+  if (模式 === "分层") return 分层位置(图, 尺寸)
+  return 力导向位置(图, 尺寸)
 }
 
 const 节点半径 = (点: 图节点) => (点.中心 ? 20 : 15)
@@ -170,6 +310,9 @@ export function Graph(props: GraphProps): JSX.Element {
   const [平移, set平移] = createSignal({ x: 0, y: 0 })
   /** viewBox 的实际尺寸 = 画布容器的像素尺寸；测不到（组件测试）时退回默认画布。 */
   const [尺寸, set尺寸] = createSignal<画布尺寸>(画布)
+  const [排列, set排列] = createSignal<排列模式>("环形")
+  /** 手动拖过的节点坐标（viewBox 坐标）。只在下一次「重排」或换排列模式时清空。 */
+  const [手动位置, set手动位置] = createSignal<Record<string, { readonly x: number; readonly y: number }>>({})
 
   let svg元素: SVGSVGElement | undefined
   let 画布元素: HTMLDivElement | undefined
@@ -193,6 +336,8 @@ export function Graph(props: GraphProps): JSX.Element {
         set悬停边(undefined)
         set缩放(1)
         set平移({ x: 0, y: 0 })
+        set排列("环形")
+        set手动位置({})
       }
       return 键
     },
@@ -237,9 +382,18 @@ export function Graph(props: GraphProps): JSX.Element {
       })
   })
 
-  const 位置 = createMemo(() => (图() ? 布局(图()!, 尺寸()) : { 中心: [], 一层: [], 二层: [] }))
   const 中点 = createMemo(() => ({ x: 尺寸().宽 / 2, y: 尺寸().高 / 2 }))
-  const 全部点 = createMemo(() => [...位置().中心, ...位置().一层, ...位置().二层])
+  // 自动布局是纯函数；手动拖过的点覆盖在上面。数据刷新（换跳数/筛选）不手动位置，
+  // 只有「重排」和换排列模式才回到纯自动布局（这是和用户谈定的口径）。
+  const 全部点 = createMemo(() => {
+    const 当前 = 图()
+    if (当前 === undefined) return []
+    const 手动 = 手动位置()
+    return 自动位置(当前, 尺寸(), 排列()).map((点) => {
+      const 位 = 手动[点.id]
+      return 位 === undefined ? 点 : { ...点, x: 位.x, y: 位.y }
+    })
+  })
   const 点 = (id: string) => 全部点().find((行) => 行.id === id)
   const 边 = (id: string) => (图()?.边 ?? []).find((行) => 行.id === id)
 
@@ -342,6 +496,22 @@ export function Graph(props: GraphProps): JSX.Element {
   }
 
   let 拖: { 起x: number; 起y: number; 原x: number; 原y: number; 比例: number } | undefined
+
+  /** 节点拖动：mousedown 落在节点上时接管，走「移动该节点」而不是「平移画布」。 */
+  let 拖节点:
+    | { id: string; 起x: number; 起y: number; 原x: number; 原y: number; 比例: number; 移动: boolean }
+    | undefined
+  /** 拖动结束浏览器还会补一个 click；用它把「拖」和「点选」分开（面板不该在拖完时弹出来）。 */
+  let 刚拖过 = false
+
+  const 开始拖节点 = (事件: MouseEvent, 行: 位点) => {
+    if (事件.button !== 0) return
+    const 矩 = svg元素?.getBoundingClientRect()
+    const 比例 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 尺寸().宽, 矩.height / 尺寸().高) || 1 : 1
+    刚拖过 = false
+    拖节点 = { id: 行.id, 起x: 事件.clientX, 起y: 事件.clientY, 原x: 行.x, 原y: 行.y, 比例, 移动: false }
+  }
+
   const 开始拖 = (事件: MouseEvent) => {
     if (事件.button !== 0) return
     const 目标 = 事件.target
@@ -360,6 +530,21 @@ export function Graph(props: GraphProps): JSX.Element {
     onCleanup(() => 观察?.disconnect())
 
     const 移 = (事件: MouseEvent) => {
+      const 节点 = 拖节点
+      if (节点 !== undefined) {
+        const 屏x = 事件.clientX - 节点.起x
+        const 屏y = 事件.clientY - 节点.起y
+        // 3px 死区：手抖 1px 不算拖动，否则「点一下看详情」会变成「挪半步再选中」。
+        if (!节点.移动 && Math.hypot(屏x, 屏y) > 3) 节点.移动 = true
+        if (!节点.移动) return
+        // 屏幕位移 ÷（画布缩放 × 视图缩放）= viewBox 位移。
+        const 比 = 节点.比例 * 缩放()
+        set手动位置({
+          ...手动位置(),
+          [节点.id]: { x: 节点.原x + 屏x / 比, y: 节点.原y + 屏y / 比 },
+        })
+        return
+      }
       if (拖 === undefined) return
       set平移({
         x: 拖.原x + (事件.clientX - 拖.起x) / 拖.比例,
@@ -367,6 +552,10 @@ export function Graph(props: GraphProps): JSX.Element {
       })
     }
     const 松 = () => {
+      if (拖节点 !== undefined) {
+        刚拖过 = 拖节点.移动
+        拖节点 = undefined
+      }
       拖 = undefined
     }
     const 按键 = (事件: KeyboardEvent) => {
@@ -413,6 +602,39 @@ export function Graph(props: GraphProps): JSX.Element {
               </button>
             )}
           </For>
+        </div>
+        <div class="ml-2 flex items-center gap-1">
+          <For each={排列模式们}>
+            {(模式) => (
+              <button
+                type="button"
+                data-slot="graph-layout"
+                data-layout={模式}
+                aria-pressed={排列() === 模式}
+                onClick={() => {
+                  set排列(模式)
+                  // 换排列 = 换一套自动布局，手动掰过的位置不再成立（谈定口径）。
+                  set手动位置({})
+                }}
+                class={
+                  排列() === 模式
+                    ? "h-6 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-[var(--v2-brand-gold-deep)]"
+                    : "h-6 cursor-pointer rounded-[4px] px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover"
+                }
+              >
+                {模式}
+              </button>
+            )}
+          </For>
+          <button
+            type="button"
+            data-slot="graph-relayout"
+            title="回到自动布局"
+            onClick={() => set手动位置({})}
+            class="h-6 cursor-pointer rounded-[4px] border border-v2-border-border-muted px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-layer-02"
+          >
+            重排
+          </button>
         </div>
         <div class="flex flex-wrap items-center gap-1">
           <For each={类型们()}>
@@ -539,36 +761,47 @@ export function Graph(props: GraphProps): JSX.Element {
                   }}
                 </For>
 
-                <For each={全部点()}>
+                {/* `Index` 而不是 `For`：手动位置每次 mousemove 都会产出新的对象引用，
+                    `For` 按引用比对会把整排节点拆了重建（拖动的那个元素在指针底下被换掉）。 */}
+                <Index each={全部点()}>
                   {(行) => (
                     <g
                       data-slot="graph-node"
-                      data-node-id={行.id}
-                      data-hop={行.跳数}
-                      data-center={行.中心 ? "true" : "false"}
-                      data-node-shape={形状(行.type)}
-                      data-node-x={行.x.toFixed(1)}
-                      data-node-y={行.y.toFixed(1)}
-                      opacity={节点透明(行.id)}
+                      data-node-id={行().id}
+                      data-hop={行().跳数}
+                      data-center={行().中心 ? "true" : "false"}
+                      data-node-shape={形状(行().type)}
+                      data-node-x={行().x.toFixed(1)}
+                      data-node-y={行().y.toFixed(1)}
+                      opacity={节点透明(行().id)}
                       class="cursor-pointer"
-                      onClick={() => set选中({ kind: "node", id: 行.id })}
-                      onMouseEnter={() => set悬停点(行.id)}
+                      onMouseDown={(事件) => 开始拖节点(事件, 行())}
+                      onClick={() => {
+                        // 拖动后浏览器补发的 click 不是「选中」；吞掉它并把标志复位，
+                        // 否则下一次真正的点击也会被误吞。
+                        if (刚拖过) {
+                          刚拖过 = false
+                          return
+                        }
+                        set选中({ kind: "node", id: 行().id })
+                      }}
+                      onMouseEnter={() => set悬停点(行().id)}
                       onMouseLeave={() => set悬停点(undefined)}
                     >
-                      <title>{行.value}</title>
-                      {图形(行)}
+                      <title>{行().value}</title>
+                      {图形(行())}
                       <text
-                        x={行.x}
-                        y={行.y + 节点半径(行) + 14}
+                        x={行().x}
+                        y={行().y + 节点半径(行()) + 14}
                         text-anchor="middle"
                         font-size="12"
                         fill="var(--v2-text-text-base)"
                       >
-                        {截断(行.value)}
+                        {截断(行().value)}
                       </text>
                     </g>
                   )}
-                </For>
+                </Index>
 
                 <Show when={悬停内容()}>
                   {(详) => (
