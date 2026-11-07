@@ -658,7 +658,7 @@ export function Graph(props: GraphProps): JSX.Element {
         </div>
       </header>
 
-      <div class="flex min-h-0 flex-1">
+      <div class="relative flex min-h-0 flex-1">
         <div
           ref={(元素) => (画布元素 = 元素)}
           data-slot="graph-canvas"
@@ -841,7 +841,12 @@ export function Graph(props: GraphProps): JSX.Element {
               </For>
             </div>
 
-            <div data-slot="graph-zoom-bar" class="absolute bottom-2 right-2 flex gap-1">
+            {/* 面板浮在画布右侧（不挤画布）；缩放条跟着让开，否则被面板盖住点不到。 */}
+            <div
+              data-slot="graph-zoom-bar"
+              class="absolute bottom-2 flex gap-1 transition-[right]"
+              style={{ right: 选中() === null ? "8px" : "292px" }}
+            >
               <For each={[["out", "−"], ["in", "＋"], ["fit", "适应"]] as const}>
                 {([种, 标签]) => (
                   <button
@@ -864,7 +869,7 @@ export function Graph(props: GraphProps): JSX.Element {
             <aside
               data-slot="graph-panel"
               data-panel-kind="node"
-              class="flex w-[280px] shrink-0 flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+              class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
             >
               <div class="flex items-start gap-2">
                 <div class="min-w-0 flex-1">
@@ -926,7 +931,7 @@ export function Graph(props: GraphProps): JSX.Element {
               <aside
                 data-slot="graph-panel"
                 data-panel-kind="edge"
-                class="flex w-[280px] shrink-0 flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+                class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
               >
                 <div class="flex items-start gap-2">
                   <div class="min-w-0 flex-1">

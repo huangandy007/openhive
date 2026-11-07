@@ -564,3 +564,29 @@ describe("关系图 · 排列模式与拖动", () => {
     expect(坐标(host, "e-李")).toEqual({ x: Number(期望.x.toFixed(1)), y: Number(期望.y.toFixed(1)) })
   })
 })
+
+describe("关系图 · 面板不挤压画布", () => {
+  test("检视面板脱离布局流（absolute）——点节点不再从画布里抠走 280px 让整张图重排缩小", async () => {
+    // 真栈实测（1440）：改前点节点 画布宽 737→457、中心到最远点 267px→127px，整张图缩到约 48%；
+    // 改后点节点 画布宽 737→737、四个节点屏幕坐标一个不差。
+    // happy-dom 没有版面尺寸，几何只能在真浏览器里量；这里钉住它的结构前提：
+    // 面板一旦回到 flex 流（去掉 absolute / inset-y-0 right-0），画布就会被挤窄，重刷时上一条要靠人再量一次。
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    const 板 = host.querySelector<HTMLElement>("[data-slot='graph-panel']")!
+    expect(板).not.toBeNull()
+    expect(板.className).toContain("absolute")
+    expect(板.className).toContain("inset-y-0")
+    expect(板.className).toContain("right-0")
+  })
+
+  test("面板打开时缩放条让开面板宽度（否则「适应」被盖住点不到）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 条 = () => host.querySelector<HTMLElement>("[data-slot='graph-zoom-bar']")!
+    expect(条().style.right).toBe("8px")
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(条().style.right).toBe("292px")
+  })
+})
