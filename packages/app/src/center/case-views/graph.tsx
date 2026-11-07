@@ -268,7 +268,9 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
   // 同一事件的冒泡链里它的 target 已脱离文档（真栈实测 isConnected=false），
   // svg 那层「点空白 ⇒ 取消选中」认不出它，选中又被打回去。
   const 半 = () => 节点半径(props.点)
-  const 填充色 = () => (props.焦点 ? "var(--v2-background-bg-accent-soft)" : 填充(props.点))
+  // 焦点色不能复用「中心节点」那组值：中心本来就是高亮填充＋深金描边，沿用同一组时
+  // 点它只有线宽 2.5→3 和一圈淡环，看不出焦点落在谁身上。统一换成品牌金填充。
+  const 填充色 = () => (props.焦点 ? "var(--v2-brand-gold)" : 填充(props.点))
   const 描边色 = () => (props.焦点 ? "var(--v2-brand-gold-deep)" : 描边(props.点))
   const 线宽 = () => (props.焦点 ? 3 : props.点.中心 ? 2.5 : 1.5)
   const 虚线 = () => (待复核.has(props.点.trust_state) ? "4 3" : undefined)

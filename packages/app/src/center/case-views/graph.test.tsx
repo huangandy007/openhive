@@ -577,7 +577,7 @@ describe("关系图 · 选中焦点", () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-background-bg-accent-soft)")
+    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-brand-gold)")
     expect(形(host, "e-李").getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
     expect(焦点环(host, "e-李")).not.toBeNull()
     // 号码节点仍是类型色（青），焦点环也不在它身上
@@ -597,6 +597,18 @@ describe("关系图 · 选中焦点", () => {
     expect(焦点环(host, "e-李")).not.toBeNull()
   })
 
+  test("点中心节点也必须有颜色变化：它本来就填高亮色，焦点色不能再是同一个色", async () => {
+    // 真栈截图暴露的缺口：中心节点默认就是「高亮填充＋深金描边」，焦点色沿用同一组值时，
+    // 点它只有 2.5px→3px 和一圈淡环——用户看不出焦点落在谁身上。
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 原色 = 形(host, "e-张").getAttribute("fill")!
+    expect(原色).toBe("var(--v2-background-bg-accent-soft)")
+    点元素(host, "e-张").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(形(host, "e-张").getAttribute("fill")).not.toBe(原色)
+    expect(形(host, "e-张").getAttribute("fill")).toBe("var(--v2-brand-gold)")
+  })
+
   test("聚焦跟着点选走：换点另一个节点后旧的恢复原色；Esc 后焦点消失", async () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
@@ -607,7 +619,7 @@ describe("关系图 · 选中焦点", () => {
     expect(焦点环(host, "e-号")).not.toBeNull()
     // 号码本来是青色，被点选后必须换成焦点色——只钉「旧节点恢复」的话，
     // 焦点色整体失效时这条会假绿（图形不随选中变，旧节点本来就一直是原色）。
-    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-background-bg-accent-soft)")
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-brand-gold)")
     按Esc()
     expect(焦点环(host, "e-号")).toBeNull()
     expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
