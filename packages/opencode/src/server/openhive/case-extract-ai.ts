@@ -21,6 +21,17 @@ import type { 模型调用 } from "./case-extract-run"
  */
 const 单片超时ms = 120_000
 
+/**
+ * 拼在系统提示末尾的**结构化输出要求**。
+ *
+ * 不是口径的一部分（不进 `系统提示`、不改 `PROMPT版本`）：它是 `generateObject` 这一层用
+ * `response_format: json_object` 带来的**服务端硬要求**——DeepSeek（与 OpenAI 同源实现）见到
+ * 请求里没有「json」字样就直接 400：`Prompt must contain the word 'json' in some form to use
+ * 'response_format' of type 'json_object'`。2026-11-07 真栈实测：抽取每片重试 3 次全失败，
+ * 材料落「有问题」、一条实体都抽不出来。约束由谁设（这里），就由谁担。
+ */
+const 结构化要求 = "\n\n只输出一个 JSON 对象，字段是「实体」「关系」「事件」三个数组。"
+
 export function 建调用模型(模型: LanguageModel): 模型调用 {
   // 两个适配器都是**就地**把 `~standard` 挂到 schema 上、返回同一个对象（effect beta.83 的
   // `dist/Schema.js:463` 与 `:517`）。分两步写是为了让顺序（先 validate、再补 jsonSchema）显式可见：
@@ -31,7 +42,7 @@ export function 建调用模型(模型: LanguageModel): 模型调用 {
     const 结果 = await generateObject({
       model: 模型,
       schema,
-      system: 输入.系统,
+      system: 输入.系统 + 结构化要求,
       prompt: 输入.用户,
       temperature: 0.1,
       abortSignal: AbortSignal.timeout(单片超时ms),

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { MockLanguageModelV3 } from "ai/test"
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider"
 import { 建调用模型 } from "../../src/server/openhive/case-extract-ai"
+import { 系统提示 } from "../../src/server/openhive/case-extract"
 
 function 假模型(文本: string) {
   const 看见: string[] = []
@@ -38,6 +39,21 @@ describe("建调用模型（generateObject 适配器）", () => {
     expect(r).toEqual({ 实体: [], 关系: [], 事件: [] })
     expect(看见[0]).toContain("口径正文")
     expect(看见[0]).toContain("第 3 段原文")
+  })
+
+  /**
+   * 2026-11-07 真栈实测：DeepSeek 走 `generateObject`（`response_format: json_object`）时，
+   * 请求里没有「json」字样就直接 400 ——
+   * `Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'`，
+   * 每片重试 3 次后材料落「有问题」、一条实体都抽不出来。抽取口径（`系统提示`）本身没写
+   * 「JSON」，所以这条要求只能由**适配器**补：`response_format` 是它在设，约束也该它担。
+   */
+  test("用真实系统提示调用时，请求里必须出现 json（json_object 模式的服务端硬要求）", async () => {
+    const { 模型, 看见 } = 假模型(JSON.stringify({ 实体: [], 关系: [], 事件: [] }))
+    const 调用 = 建调用模型(模型)
+    await 调用({ 系统: 系统提示(), 用户: "u" })
+    // `看见` 存的是 `JSON.stringify(prompt)`，键名与散文都进得去；大小写不敏感。
+    expect(看见[0].toLowerCase()).toContain("json")
   })
 
   test("不合法 JSON ⇒ 抛错（由执行器计一次失败并重试）", async () => {
