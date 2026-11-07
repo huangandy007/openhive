@@ -128,25 +128,80 @@ describe("实体档案", () => {
     expect(人段.textContent).toContain("民警标注")
   })
 
-  test("次数与金额显示在行上；没有的量写 —（不是 0）", async () => {
+  test("次数与金额各占自己的对齐格子；没有的量写 —（不是 0）", async () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     const 行们 = [...host.querySelectorAll<HTMLElement>("[data-slot='entity-relation']")]
-    expect(行们[0]!.textContent).toContain("2 次")
-    expect(行们[0]!.textContent).toContain("100.00 元")
+    // 每行都有六格：扫读靠列对齐，不能又回到一行文字墙。
+    for (const 行 of 行们) {
+      for (const 格 of ["direction", "counterparty", "type", "count", "amount", "state"]) {
+        expect(行.querySelector(`[data-slot='entity-relation-${格}']`)).not.toBeNull()
+      }
+    }
+    const 格 = (行: HTMLElement, 名: string) =>
+      行.querySelector(`[data-slot='entity-relation-${名}']`)!.textContent
+    expect(格(行们[0]!, "count")).toBe("2 次")
+    expect(格(行们[0]!, "amount")).toBe("100.00 元")
     // ⚠️ 必须**同时**钉住次数与金额两个空量：只断言 `toContain("—")` 是**假绿**——次数为 null
     // 时那一格本来就写 `—`，金额被改成 `0.00 元` 也照样命中（`LEARNINGS #005-47`）。
-    // 实际变异验证时量出来的：`金额文本(null)` 改成 `"0.00 元"`，弱断言仍然全绿。
-    expect(行们[1]!.textContent).toContain("— · —")
+    expect(格(行们[1]!, "count")).toBe("—")
+    expect(格(行们[1]!, "amount")).toBe("—")
   })
 
-  test("事件按时间文本显示，并列出参与者", async () => {
+  test("事件按时间线显示（日期与时刻分开），并列出参与者", async () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-event']").length === 1)
     const 行 = host.querySelector<HTMLElement>("[data-slot='entity-event']")!
-    expect(行.textContent).toContain(时间文本(1_700_000_050))
+    // 时间仍然由 `时间文本` 决定（本地时区手写格式化），只是拆到时间轴的两行上。
+    const [日, 时] = 时间文本(1_700_000_050).split(" ")
+    expect(行.textContent).toContain(日)
+    expect(行.textContent).toContain(时)
     expect(行.textContent).toContain("两人见面")
     expect(行.textContent).toContain("张三、李四")
+  })
+
+  test("数字条只报本页列出的条目数（关系 / 事件 / 出处 / 对手方），不自己算涉及金额", async () => {
+    // ⚠️ 两条关系**指向同一个对手方**：去重后是 1，不去重是 2。默认夹具「两个关系指向两个
+    // 不同的人」会让去重与计数都得 2，变异（`Set(...).size` → `关系.length`）照样全绿。
+    const 同对手: 实体档案 = {
+      ...档,
+      关系: [档.关系[0]!, { ...档.关系[1]!, 对方id: "e-账2", 对方值: "6222****0001" }],
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 同对手 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+    const 数 = (键: string) =>
+      host.querySelector(`[data-slot='entity-stat'][data-key='${键}']`)!.textContent
+    expect(数("关系")).toBe("2")
+    expect(数("事件")).toBe("1")
+    expect(数("出处")).toBe("1")
+    expect(数("对手方")).toBe("1")
+    // 金额是逐条关系的字符串，出入双向各记一遍；前端求和会给出一个假数（4×3 万来回＝24 万）。
+    // 服务端不给聚合，这里就不摆这个数字。
+    expect(host.textContent).not.toContain("涉及金额")
+  })
+
+  test("身份头有类型字标，且不重复念给读屏（类型另有文字 chip）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='entity-type-badge']") !== null)
+    const 字标 = host.querySelector("[data-slot='entity-type-badge']")!
+    expect(字标.textContent).toBe("人")
+    expect(字标.getAttribute("aria-hidden")).toBe("true")
+  })
+
+  test("裁决条在滚动容器之外：滚到哪儿都能对/错/存疑", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    const 滚动体 = host.querySelector<HTMLElement>("[data-slot='entity-profile-body']")!
+    expect(滚动体).not.toBeNull()
+    expect(滚动体.querySelector("[data-slot='entity-trust']")).toBeNull()
+    expect(host.querySelector("[data-slot='entity-trust']")).not.toBeNull()
   })
 
   test("引用显示文件名与定位", async () => {
