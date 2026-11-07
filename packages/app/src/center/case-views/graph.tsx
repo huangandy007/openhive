@@ -19,6 +19,10 @@ export interface GraphProps {
  */
 export const 画布 = { 宽: 760, 高: 680 } as const
 
+/** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[280px]` 一致（测试钉着）。 */
+const 面板宽 = 280
+const 面板边距 = 24
+
 export interface 画布尺寸 {
   readonly 宽: number
   readonly 高: number
@@ -529,6 +533,20 @@ export function Graph(props: GraphProps): JSX.Element {
     set平移({ x: 0, y: 0 })
   }
 
+  /**
+   * 检视面板浮在画布右边缘（`w-[280px]`），底下那一列节点点不到也拖不到——真栈实操时
+   * 在面板正下方起手拖动，按到的是面板按钮（误触「以此为中心」开了新关系图）。
+   * 点选就把它让出来：平移画布，不改布局坐标。
+   */
+  const 让出面板 = (行: 位点) => {
+    const 右界 = 尺寸().宽 - 面板宽 - 面板边距
+    const 屏x = 行.x * 缩放() + 平移().x
+    if (屏x <= 右界) return
+    const 新 = 平移().x - (屏x - 右界)
+    // 让得太多会把节点自己顶出左边界：以「节点仍在画布内」为下限。
+    set平移({ ...平移(), x: Math.max(新, 面板边距 - 行.x * 缩放()) })
+  }
+
   const 滚轮 = (事件: WheelEvent) => {
     事件.preventDefault()
     const 矩 = svg元素?.getBoundingClientRect()
@@ -830,6 +848,7 @@ export function Graph(props: GraphProps): JSX.Element {
                           return
                         }
                         set选中({ kind: "node", id: 行().id })
+                        让出面板(行())
                       }}
                       onMouseEnter={() => set悬停点(行().id)}
                       onMouseLeave={() => set悬停点(undefined)}

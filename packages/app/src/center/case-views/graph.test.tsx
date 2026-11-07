@@ -614,6 +614,43 @@ describe("关系图 · 选中焦点", () => {
   })
 })
 
+describe("关系图 · 面板遮挡让位", () => {
+  // 检视面板浮在画布右边缘（`w-[280px]`），底下那一列节点点不到也拖不到：
+  // 真栈实操时在面板正下方起手拖动，按到的是面板按钮（误触「以此为中心」开了新关系图）。
+  const 视口平移 = (host: HTMLElement) => {
+    const 数 = host
+      .querySelector("[data-slot='graph-viewport']")!
+      .getAttribute("transform")!
+      .match(/-?[\d.]+/g)!
+      .map(Number)
+    return { x: 数[0]!, y: 数[1]!, 缩放: 数[2]! }
+  }
+
+  test("点选落在面板底下的节点 ⇒ 画布自动左移把它让出来", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 最右 = 自动位置(图, 画布).slice().sort((甲, 乙) => 乙.x - 甲.x)[0]!
+    const 右界 = 画布.宽 - 304 // 面板 280 ＋ 24 边距
+    expect(最右.x).toBeGreaterThan(右界)
+    expect(视口平移(host)).toEqual({ x: 0, y: 0, 缩放: 1 })
+    点元素(host, 最右.id).dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    const 后 = 视口平移(host)
+    expect(最右.x * 后.缩放 + 后.x).toBeLessThanOrEqual(右界 + 0.001)
+    // 让位靠平移、不改布局：节点自己的 viewBox 坐标一个不差
+    expect(Number(点元素(host, 最右.id).getAttribute("data-node-x"))).toBe(Number(最右.x.toFixed(1)))
+    // 面板宽度的单一事实源写在测试里：改了 `w-[280px]` 而没同步让位口径，这条会红。
+    expect(host.querySelector<HTMLElement>("[data-slot='graph-panel']")!.className).toContain("w-[280px]")
+  })
+
+  test("点选本来就在面板外的节点 ⇒ 画面不动（不乱晃）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 最左 = 自动位置(图, 画布).slice().sort((甲, 乙) => 甲.x - 乙.x)[0]!
+    点元素(host, 最左.id).dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(视口平移(host)).toEqual({ x: 0, y: 0, 缩放: 1 })
+  })
+})
+
 describe("关系图 · 面板不挤压画布", () => {
   test("检视面板脱离布局流（absolute）——点节点不再从画布里抠走 280px 让整张图重排缩小", async () => {
     // 真栈实测（1440）：改前点节点 画布宽 737→457、中心到最远点 267px→127px，整张图缩到约 48%；
