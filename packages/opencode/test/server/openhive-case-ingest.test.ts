@@ -804,6 +804,47 @@ describe("文本作业（计划 4）", () => {
     expect(关系[0]?.to_value).toBe(卡号)
   })
 
+  test("材料写着细类、形状又判不出的实体：细类落进 attrs", async () => {
+    const 原文 = "张三的支付宝账号是1234567890，用于收款。"
+    const 入 = await 入队文本("支付宝.txt", 原文)
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [{ 类型: "账户", 取值: "1234567890", 细类: "第三方支付" }],
+      关系: [],
+      事件: [],
+    }))
+    expect(await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)).toBe("完成")
+
+    const 行 = rowsOf(await db().execute(sql`
+      select type, attrs from auth.case_entity where project_id = 'p-txt'
+    `))
+    expect(行.length).toBe(1)
+    expect(行[0]?.type).toBe("账户")
+    // PGlite 的 jsonb 读回是 JSON 文本，别的驱动可能是对象：两种都认。
+    const 原始属性 = 行[0]?.attrs
+    const 属性 = typeof 原始属性 === "string" ? JSON.parse(原始属性) : 原始属性
+    expect(属性).toEqual({ subtype: "第三方支付" })
+  })
+
+  test("形状判得出的实体：模型写的细类不落库（压不过形状）", async () => {
+    const 入 = await 入队文本("手机号.txt", "张三的手机号13800000001，登记为固定电话。")
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [{ 类型: "号码", 取值: "13800000001", 细类: "固定电话" }],
+      关系: [],
+      事件: [],
+    }))
+    expect(await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)).toBe("完成")
+
+    const 行 = rowsOf(await db().execute(sql`
+      select attrs from auth.case_entity where project_id = 'p-txt'
+    `))
+    const 原始属性 = 行[0]?.attrs
+    const 属性 = typeof 原始属性 === "string" ? JSON.parse(原始属性) : 原始属性
+    // 存下来只会让下一个人以为「原文写了固定电话、显示却是手机号」是 bug。
+    expect(属性?.subtype).toBeUndefined()
+  })
+
   // 钉住「后端 parse_detail 与前端解析器同名不同形」这个坑：`slices` 在前端契约里是
   // **问题切片数组**（`packages/app/src/project/case-materials-api.ts:96-116` 的 `解析问题`：
   // 有就必须是对象数组、每项 range/reason/count 齐全），不是「片数」。成功路径曾把它写成

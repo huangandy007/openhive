@@ -11,8 +11,9 @@
  *
  * 1. **fail-closed**：判不出返回 `undefined`，调用方就只显示大类。绝不回退成
  *    「其他号码」这类看起来像结论的兜底。
- * 2. **`attrs.subtype` 优先，但必须在本类白名单里**：材料里明确写着「固定电话」时以
- *    原文为准；模型编一个「涉案号码」这种值一律丢弃、回落形状判定。
+ * 2. **形状优先，`attrs.subtype` 只补形状判不出的空**：材料里写着「支付宝账号」时用它
+ *    （10 位账号没有形状规则）；但材料写「固定电话」压不过 11 位手机号形状——模型给的
+ *    类别值没有原文核对机制。越界值（如「涉案号码」）一律丢弃。
  *
  * ## 已知取舍
  *
@@ -102,18 +103,40 @@ function 按形状(大类: string, 值: string): string | undefined {
 }
 
 /**
- * 判细类：`attrs.subtype`（本类白名单内）优先，否则按值形状；都判不出返回 `undefined`。
+ * 判细类：**形状优先**；形状判不出时才看 `attrs.subtype`（本类白名单内）；都判不出返回 `undefined`。
+ *
+ * 为什么不是 attrs 优先：`attrs.subtype` 是模型从原文抄的类别词，**没有原文核对机制**
+ * （不像金额 / 时间那样回读校验）。让它盖掉确定性形状，等于把「模型说的类型」重新变成
+ * 权威——大类归错正是不信形状、只信模型的结果。形状是确定性结论，模型只能补形状判不出的空。
  *
  * @param 大类 实体大类（`type` 列的值）
  * @param 规范值 `canonical_value`（**已归一**：分隔符与开头 `+` 已被剥掉）
  * @param attrs 实体 `attrs`（jsonb）的**裸值**：驱动给对象还是 JSON 文本都收，坏值当作没有
  */
 export function 细类(大类: string, 规范值: string, attrs?: unknown): string | undefined {
+  const 形 = 按形状(大类, 规范值)
+  if (形 !== undefined) return 形
   const 许可 = 白名单(大类)
   if (许可 === undefined) return undefined
   const 写的 = 读attrs(attrs)?.["subtype"]
   if (typeof 写的 === "string" && 许可.includes(写的)) return 写的
-  return 按形状(大类, 规范值)
+  return undefined
+}
+
+/**
+ * 入库时决定「材料里写的细类要不要落库」：只收**形状判不出、且在本类白名单内**的那一个。
+ *
+ * 形状判得出的不落库，有两个理由：一是读侧（[[细类]]）本来就以形状为准，存了也不会用；
+ * 二是存下来会让下一个人以为「原文明明写了固定电话，为什么显示手机号」是 bug。
+ *
+ * @param 写的 模型输出里的细类**裸值**（可能不是字符串，一律判掉）
+ * @returns 可存进 `attrs.subtype` 的值；不采纳返回 `undefined`
+ */
+export function 采纳细类(大类: string, 规范值: string, 写的: unknown): string | undefined {
+  if (按形状(大类, 规范值) !== undefined) return undefined
+  const 许可 = 白名单(大类)
+  if (许可 === undefined) return undefined
+  return typeof 写的 === "string" && 许可.includes(写的) ? 写的 : undefined
 }
 
 /**

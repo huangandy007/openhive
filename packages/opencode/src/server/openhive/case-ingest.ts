@@ -8,7 +8,7 @@ import { nowSeconds } from "@opencode-ai/auth/time"
 import { 解析方式 } from "./case-parseable"
 import { 抽取文本 } from "./case-text"
 import { 抽取材料, type 抽取器 } from "./case-extract-run"
-import { 纠正大类 } from "./case-subtype"
+import { 纠正大类, 采纳细类 } from "./case-subtype"
 import { readSheets } from "./case-sheet"
 import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
 import { toFactRows } from "./case-rows"
@@ -504,6 +504,8 @@ async function 跑文本(
       for (const 实体 of 片.实体) {
         // 大类纠正必须在 `事实id` 之前：id 里含大类，纠正后还要用它给关系端点找实体。
         const 大类 = 纠正大类(实体.type, 实体.canonicalValue)
+        // 细类也按**纠正后**的大类判：卡号从「号码」改到「账户」后，白名单跟着换。
+        const 细类 = 采纳细类(大类, 实体.canonicalValue, 实体.细类)
         const id = 事实id(job.projectId, 大类, 实体.canonicalValue)
         const 实际 = await upsertEntity(tx, {
           projectId: job.projectId,
@@ -511,6 +513,7 @@ async function 跑文本(
           type: 大类,
           canonicalValue: 实体.canonicalValue,
           aliases: 实体.aliases,
+          ...(细类 === undefined ? {} : { attrs: { subtype: 细类 } }),
         })
         实体id.set(`${大类}\u0000${实体.canonicalValue}`, 实际)
         await addCitation(tx, {

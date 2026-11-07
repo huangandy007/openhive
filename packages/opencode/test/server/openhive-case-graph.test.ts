@@ -137,16 +137,26 @@ beforeAll(async () => {
   // 细类：形状（11 位手机号）与 attrs（原文写「固定电话」）两条来源各一条；
   // 中心实体自己就是号码，用来钉「中心节点也带细类」。
   await 建实体(库(), { id: "e-细心", projectId: 细类项目, value: "中心", type: "人" })
+  // 形状判不出（400 号码不是手机/身份证/固话规则能认的）⇒ 用 attrs 里原文写的细类。
   await 建实体(库(), {
     id: "e-细号",
+    projectId: 细类项目,
+    value: "4001234567",
+    type: "号码",
+    attrs: { subtype: "固定电话" },
+  })
+  await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
+  // 形状判得出（11 位手机号）⇒ attrs 里写的「固定电话」压不过形状。
+  await 建实体(库(), {
+    id: "e-细盖",
     projectId: 细类项目,
     value: "13800000001",
     type: "号码",
     attrs: { subtype: "固定电话" },
   })
-  await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
   await 建关系(库(), { id: "r-细心号", projectId: 细类项目, fromId: "e-细心", toId: "e-细号", type: "通话" })
   await 建关系(库(), { id: "r-细心卡", projectId: 细类项目, fromId: "e-细心", toId: "e-细卡", type: "转账" })
+  await 建关系(库(), { id: "r-细心盖", projectId: 细类项目, fromId: "e-细心", toId: "e-细盖", type: "通话" })
 })
 
 afterAll(async () => {
@@ -271,15 +281,17 @@ describe("关系图", () => {
     expect(图.节点.find((点) => 点.id === "e-乙")!.关联数).toBe(1)
   })
 
-  test("节点带细类：中心与邻居都要有；attrs 里明确写的优先于形状", async () => {
+  test("节点带细类：中心与邻居都要有；形状优先，attrs 只补形状判不出的空", async () => {
     // 中心：号码本身就有细类（否则「中心节点没有细类」会看不出来）
     const 中心图 = (await 关系图(库(), { projectId: 细类项目, id: "e-细号" }))!
     expect(中心图.节点.find((点) => 点.id === "e-细号")!.subtype).toBe("固定电话")
-    // 邻居：一条边两端都带细类；判不出的人不硬造一个
+    // 邻居：两条边两端都带细类；判不出的人不硬造一个
     const 图 = (await 关系图(库(), { projectId: 细类项目, id: "e-细心" }))!
     const 取 = (id: string) => 图.节点.find((点) => 点.id === id)!
     expect(取("e-细号").subtype).toBe("固定电话")
     expect(取("e-细卡").subtype).toBe("银行卡")
+    // 同一行 attrs 写着「固定电话」，但 11 位手机号形状判得出 ⇒ 以形状为准
+    expect(取("e-细盖").subtype).toBe("手机号")
     expect(取("e-细心").subtype).toBeUndefined()
   })
 })

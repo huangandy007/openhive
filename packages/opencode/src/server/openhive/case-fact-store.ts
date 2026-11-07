@@ -26,6 +26,11 @@ export interface 实体写入 {
   type: string
   canonicalValue: string
   aliases: string[]
+  /**
+   * 实体附加信息（jsonb）。目前只有 `subtype`（材料里明确写出的细类）。
+   * 与别名一样按 **key 合并**：`attrs || excluded.attrs`，新值盖同键旧值、其余键保留。
+   */
+  attrs?: Record<string, unknown>
 }
 
 /**
@@ -56,14 +61,16 @@ export function 文本数组(值: readonly string[]) {
 export async function upsertEntity(db: Queryable, input: 实体写入): Promise<string> {
   const 行 = rowsOf(
     await db.execute(sql`
-      insert into auth.case_entity (id, project_id, type, canonical_value, aliases, created_at)
+      insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, created_at)
       values (${input.id}, ${input.projectId}, ${input.type}, ${input.canonicalValue},
-              ${文本数组(input.aliases)}, ${nowSeconds()})
+              ${文本数组(input.aliases)}, ${JSON.stringify(input.attrs ?? {})}::text::jsonb, ${nowSeconds()})
       on conflict (project_id, type, canonical_value) do update
          set aliases = (
            select coalesce(array_agg(distinct x), '{}'::text[])
              from unnest(auth.case_entity.aliases || excluded.aliases) as x
-         )
+         ),
+         -- jsonb 的 || 按 key 合并：没带细类的一方（{}）不会抹掉已有的 subtype。
+         attrs = auth.case_entity.attrs || excluded.attrs
       returning id
     `),
   )

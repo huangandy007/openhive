@@ -42,6 +42,11 @@ export const 抽取结构 = Schema.Struct({
       类型: Schema.Literals(实体类型们),
       取值: Schema.String,
       别名: Schema.optional(Schema.Array(Schema.String)),
+      /**
+       * 原文明确写出的类别词（「身份证号」「支付宝账号」「固定电话」）。
+       * **只收不判**：是否采信、能不能落库由 `case-subtype` 的白名单与形状规则决定。
+       */
+      细类: Schema.optional(Schema.String),
     }),
   ),
   关系: Schema.Array(
@@ -66,7 +71,7 @@ export const 抽取结构 = Schema.Struct({
 })
 export type 抽取结果 = Schema.Schema.Type<typeof 抽取结构>
 
-export const PROMPT版本 = "2026-11-06.3"
+export const PROMPT版本 = "2026-11-07.1"
 
 /**
  * 抽取口径。**版本号进 parse_detail**，改口径必须同时改版本号——否则「同一份材料两次
@@ -80,6 +85,8 @@ export function 系统提示(): string {
 规则（逐条遵守）：
 1. 只抽这一段原文里写到的内容。没写的、要靠推理补的、别的段落里的，一律不抽。
 2. 实体类型只能是：人、号码、账户、虚拟身份、车辆、物品、地点、组织。用别的类型会被判为不合格。
+   实体的「细类」是可选的，**只有这三类能填**，且只能从下列取值里选一个：号码（手机号 / 身份证 / 固定电话）、账户（银行卡 / 银行账号 / 第三方支付）、虚拟身份（邮箱 / QQ / 微信）。
+   **只有原文明确写出了类别词才填**（例如「身份证号」「尾号 6222 的银行卡」「支付宝账号」「固定电话」）；原文没写就不填——不要按号码位数或形状去猜。
 3. 同一个人的其他称呼（绰号、别名）写进该实体的「别名」；别名也必须是原文里出现过的字。
 4. 所有取值照抄原文：人名写原文里的人名，号码写原文里的号码，金额写原文里的金额（例如「28万」「1,234.50元」），时间写原文里的时间（例如「2026年3月5日」「2026年3月5日14时30分」）。
    **不要换算**：不要自己把「28万」算成 280000，不要自己把「下午3点」算成 15:00，不要补年份。
@@ -111,6 +118,8 @@ export interface 实体输入 {
   type: 实体类型
   canonicalValue: string
   aliases: string[]
+  /** 原文明确写出的类别词（模型输出原样）；采不采信由落库侧判。 */
+  细类?: string
 }
 
 export interface 关系输入 {
@@ -297,7 +306,12 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
   }
   const 实体 = new Map<string, 实体输入>()
 
-  const 加实体 = (类型: 实体类型, 原文值: string, 别名: readonly string[]): 实体输入 | undefined => {
+  const 加实体 = (
+    类型: 实体类型,
+    原文值: string,
+    别名: readonly string[],
+    细类?: string,
+  ): 实体输入 | undefined => {
     const 规范 = 实体规范值(类型, 原文值)
     if (规范 === undefined) {
       记失败(`「${原文值}」不是一个可用的${类型}`)
@@ -307,9 +321,16 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
     const 既有 = 实体.get(键)
     if (既有) {
       for (const 名 of 别名) if (名 !== 规范 && !既有.aliases.includes(名)) 既有.aliases.push(名)
+      // 同一实体被多处提到：谁写了细类就留谁的，先前没写的补上。
+      if (既有.细类 === undefined && 细类 !== undefined) 既有.细类 = 细类
       return 既有
     }
-    const 项: 实体输入 = { type: 类型, canonicalValue: 规范, aliases: 别名.filter((名) => 名 !== 规范) }
+    const 项: 实体输入 = {
+      type: 类型,
+      canonicalValue: 规范,
+      aliases: 别名.filter((名) => 名 !== 规范),
+      ...(细类 === undefined ? {} : { 细类 }),
+    }
     实体.set(键, 项)
     return 项
   }
@@ -326,7 +347,7 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
       if (命中(片文本, 名, 推断实体类型(名))) 别名.push(名)
       else 记失败(`实体「${项.取值}」的别名「${名}」在这段原文里找不到，已丢弃`)
     }
-    加实体(项.类型, 项.取值, 别名)
+    加实体(项.类型, 项.取值, 别名, 项.细类)
   }
 
   const 关系: 关系输入[] = []
