@@ -677,6 +677,37 @@ describe("spawnGovernanceMcp", () => {
     }
   })
 
+  /**
+   * 监督器与子进程之间的**存活契约**（2026-11-07 孤儿进程修复的另一半）：
+   * 子进程挂着 `@opencode-ai/auth/parent-watch` 看门狗，它成立的前提是监督器
+   * ① stdin 是**活的 pipe**（改回 `ignore` ⇒ 一启动就 EOF ⇒ 看门狗当场自杀，监督器无限重启）；
+   * ② 把开关透传给子进程（漏传 ⇒ 看门狗不挂，父进程被硬杀时又回到孤儿）。
+   */
+  test("spawn 出的子进程：拿到看门狗开关，且 stdin 是活的 pipe（不会开机自杀）", async () => {
+    const launched = spawnGovernanceMcp({
+      command: readyScript(
+        [
+          `const { followParentDeath, PARENT_WATCH_ENV } = await import("@opencode-ai/auth/parent-watch")`,
+          `const port = process.env[PARENT_WATCH_ENV] === "1" ? 4321 : 0`,
+          `process.stdout.write('GOVERNANCE_MCP_READY {"port":' + port + '}\\n')`,
+          `followParentDeath(() => process.exit(7))`,
+          `setInterval(() => {}, 1000)`,
+        ].join("\n"),
+      ),
+    })
+    try {
+      expect(await withTimeout(launched.ready, 5_000, "就绪")).toBe(4321)
+      const 谁先到 = await Promise.race([
+        launched.exited.then(() => "退出了" as const),
+        Bun.sleep(1_000).then(() => "还活着" as const),
+      ])
+      expect(谁先到).toBe("还活着")
+    } finally {
+      launched.stop()
+      await withTimeout(launched.exited, 5_000, "子进程退出")
+    }
+  })
+
   test("spawn 失败（命令不存在）⇒ ready 拒绝 + exited 兑现，不抛未捕获异常", async () => {
     const launched = spawnGovernanceMcp({ command: ["openhive-definitely-missing-command-xyz"] })
     const error = await withTimeout(
