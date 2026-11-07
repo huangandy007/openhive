@@ -37,6 +37,50 @@ const 结构化要求 = `
 关系：{"类型": 通话|转账|实名登记|实际使用|同案|持有|同行, "从": 实体取值, "到": 实体取值, "金额原文"?: 原文写法, "依据"?: 认定依据, "原文": 逐字原文}
 事件：{"类型": 短语, "时间原文"?: 原文写法, "参与人": 实体取值数组, "简述"?: 一句话, "原文": 逐字原文}`
 
+/**
+ * 失败详情：AI SDK 的 `NoObjectGeneratedError` 自带 `text` / `finishReason` / `usage`，
+ * 但默认 message 只有「could not parse the response」——事后分不清是**被截断**
+ * （`finishReason=length`）还是**字段类型不符**（`finishReason=stop`）。
+ *
+ * 2026-11-07 真栈：docx 有一片报了这句话，产品只留了 message 前 200 字 ⇒ 只能靠重放猜。
+ * 这里把关键字段压进 message（顺序按排障价值：原因 → 结束原因 → token → 输出摘要）；
+ * `case-extract-run.ts` 的 `一句()` 会再去空白并截 200 字，所以摘要只留 80 字。
+ */
+function 详细失败(error: unknown): Error {
+  const 消息 = 读字段(error, "message")
+  const 段: string[] = [typeof 消息 === "string" ? 消息 : String(error)]
+  const 结束 = 读字段(error, "finishReason")
+  if (结束 !== undefined)
+    段.push(`finishReason=${typeof 结束 === "string" ? 结束 : JSON.stringify(结束)}`)
+  const 用量 = 读字段(error, "usage")
+  const 入 = 数字(读字段(用量, "inputTokens"))
+  const 出 = 数字(读字段(用量, "outputTokens"))
+  if (入 !== undefined || 出 !== undefined) 段.push(`tokens=${入 ?? "?"}/${出 ?? "?"}`)
+  const 文 = 读字段(error, "text")
+  if (typeof 文 === "string" && 文.trim() !== "")
+    段.push(`输出前 80 字=${文.replace(/\s+/g, " ").slice(0, 80)}`)
+  const 新 = new Error(段.join("；"))
+  // 保留原错误类名（`AI_NoObjectGeneratedError`）：排障脚本与测试按类名区分
+  // 「模型输出不合 schema」与「超时/网络失败」，套一层普通 Error 会把这个信息抹掉。
+  const 名 = 读字段(error, "name")
+  if (typeof 名 === "string") 新.name = 名
+  新.cause = error
+  return 新
+}
+
+/** 不带类型断言的字段读：`error` 的形状由 AI SDK 决定，`unknown` 上直接取属性不可靠。 */
+function 读字段(对象: unknown, 键: string): unknown {
+  if (typeof 对象 !== "object" || 对象 === null) return undefined
+  return Reflect.get(对象, 键)
+}
+
+/** `usage.inputTokens` 在不同 provider 上有扁平数与 `{ total }` 两种形状，都认。 */
+function 数字(值: unknown): number | undefined {
+  if (typeof 值 === "number") return 值
+  const 总 = 读字段(值, "total")
+  return typeof 总 === "number" ? 总 : undefined
+}
+
 export function 建调用模型(模型: LanguageModel): 模型调用 {
   // 两个适配器都是**就地**把 `~standard` 挂到 schema 上、返回同一个对象（effect beta.83 的
   // `dist/Schema.js:463` 与 `:517`）。分两步写是为了让顺序（先 validate、再补 jsonSchema）显式可见：
@@ -44,14 +88,19 @@ export function 建调用模型(模型: LanguageModel): 模型调用 {
   // 万一将来实现改成返回副本，`~standard` 就会被只有 jsonSchema 的那份覆盖，校验直接失效。
   const schema = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(抽取结构))
   return async (输入) => {
-    const 结果 = await generateObject({
-      model: 模型,
-      schema,
-      system: 输入.系统 + 结构化要求,
-      prompt: 输入.用户,
-      temperature: 0.1,
-      abortSignal: AbortSignal.timeout(单片超时ms),
-    })
-    return 结果.object
+    try {
+      const 结果 = await generateObject({
+        model: 模型,
+        schema,
+        system: 输入.系统 + 结构化要求,
+        prompt: 输入.用户,
+        temperature: 0.1,
+        abortSignal: AbortSignal.timeout(单片超时ms),
+      })
+      return 结果.object
+    } catch (error) {
+      // 超时/网络错误原样往上抛（`一句()` 只留 message，多套一层没信息量）。
+      throw 详细失败(error)
+    }
   }
 }

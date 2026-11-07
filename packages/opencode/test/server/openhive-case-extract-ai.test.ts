@@ -4,7 +4,7 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider"
 import { 建调用模型 } from "../../src/server/openhive/case-extract-ai"
 import { 系统提示 } from "../../src/server/openhive/case-extract"
 
-function 假模型(文本: string) {
+function 假模型(文本: string, 结束: "stop" | "length" = "stop") {
   const 看见: string[] = []
   // 形状按本机 ai@6.0.168 / @ai-sdk/provider@3.0.16 实测，三处都不是 v5 的样子：
   // - `finishReason` 是**对象** `{ unified, raw }`，写成字符串 `"stop"` ⇒ TS2322；
@@ -13,7 +13,7 @@ function 假模型(文本: string) {
   //   时字面量会漂成 `string`，typecheck 报 `finishReason` 不可赋值（探针实测）。
   const 结果: LanguageModelV3GenerateResult = {
     content: [{ type: "text", text: 文本 }],
-    finishReason: { unified: "stop", raw: "stop" },
+    finishReason: { unified: 结束, raw: 结束 },
     usage: {
       inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
       outputTokens: { total: 1, text: 1, reasoning: 0 },
@@ -88,7 +88,7 @@ describe("建调用模型（generateObject 适配器）", () => {
     // 2026-11-07 变异实测：把键名改成「细类X」，用例仍绿）。`看见` 是 `JSON.stringify` 后的串，
     // 内层引号是 `\"`。
     expect(看见[0]).toContain('\\"细类\\"?')
-    // 可选值也逐字给出：模型从口径里抄类别词，而不是现编一个（白名单会丢，但白丢）。
+    // 可选值也逐字给出：模型从口径里抄类别词，而不是现编一个（白名单会丢，但白丢）
     for (const 值 of ["第三方支付", "固定电话", "银行卡"]) expect(看见[0]).toContain(值)
   })
 
@@ -106,5 +106,25 @@ describe("建调用模型（generateObject 适配器）", () => {
     // 实得文案（本轮记录）：AI_NoObjectGeneratedError: No object generated: could not parse the response.
     // 只钉错误类名：类名是 AI SDK 的导出类型，小版本不会改；后半句是散文，随时可能重写。
     expect(报错).toContain("AI_NoObjectGeneratedError")
+  })
+
+  /**
+   * 2026-11-07 真栈：docx 有一片报了
+   * `No object generated: response did not match schema.`，但 `case-extract-run.ts` 只留
+   * 前 200 字 message ⇒ 到底是**被截断**（finishReason=length）还是**字段类型不符**，
+   * 事后无从判断。AI SDK 的错误对象本来就带 `text` / `finishReason` / `usage`，
+   * 适配器要把它们带进 message，否则排障只能靠重跑。
+   */
+  test("结构不符时，错误文案要带 finishReason 与输出摘要（排障用）", async () => {
+    const { 模型 } = 假模型("字段名猜错了", "length")
+    const 调用 = 建调用模型(模型)
+    let 报错 = ""
+    try {
+      await 调用({ 系统: "s", 用户: "u" })
+    } catch (error) {
+      报错 = String(error)
+    }
+    expect(报错).toContain("finishReason=length")
+    expect(报错).toContain("字段名猜错了")
   })
 })
