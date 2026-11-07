@@ -593,6 +593,114 @@ describe("两栏各看各的：CenterContent 的 pane 隔离", () => {
 })
 
 /**
+ * 2026-11-07：分屏时关系图里的「打开档案」要开在**另一栏**——关系图留着，档案并排看，
+ * 不用在两张 tab 之间来回切。未分屏时保持原行为（开在当前栏）。
+ *
+ * 判据取自 store 而不是 DOM：`关系图那一栏的激活 tab 没被顶掉` + `档案 tab 出现在另一栏`，
+ * 这两条才是「并排」的定义；DOM 只顺带看一眼右栏真的画出了档案。
+ */
+describe("分屏时「打开档案」开在另一栏", () => {
+  const 李四 = {
+    id: "e-李", type: "人", canonical_value: "李四", aliases: [], attrs: {},
+    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "李四。",
+  } as 实体档案
+  const 图api: CaseDetailApi = {
+    profile: async () => ({ kind: "ok", value: 李四 }),
+    materialFacts: async () => ({ kind: "error", message: "本用例不取材料" }),
+    timeline: async () => ({ kind: "ok", value: { 数据: [] } }),
+    money: async () => ({ kind: "ok", value: { 数据: {} } }),
+    graph: async () => ({
+      kind: "ok",
+      value: {
+        节点: [
+          { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
+          { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+        ],
+        边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+        缺口: [],
+      },
+    }),
+    review: async () => ({ kind: "error", message: "本用例不取复核" }),
+    trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+  }
+  const 图tab: ContentTab = { module: "project", title: "张三 · 关系图", path: "case://p-1/graph/e-%E5%BC%A0" }
+  const 档案tab: ContentTab = { module: "project", title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }
+
+  async function 等(条件: () => boolean) {
+    for (let i = 0; i < 100; i += 1) {
+      if (条件()) return
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    throw new Error("等超时：条件始终没成立")
+  }
+
+  function 搭(分屏: boolean, 图栏: 0 | 1 = 0) {
+    let center!: CenterTabs
+    function 两栏() {
+      center = useCenterTabs()
+      return (
+        <>
+          <button data-slot="开图" onClick={() => center.open(图tab, 图栏)} />
+          <div data-slot="左">
+            <CenterContent pane={0} registry={createViewRegistry()} caseApi={图api} />
+          </div>
+          <div data-slot="右">
+            <CenterContent pane={1} registry={createViewRegistry()} caseApi={图api} />
+          </div>
+        </>
+      )
+    }
+    const host = mount(() => (
+      <CenterTabsProvider initialModule="project">
+        <两栏 />
+      </CenterTabsProvider>
+    ))
+    // 分屏必须在挂载后调：`center` 在组件体里才拿得到（同 `setUp` 的探针纪律）。
+    if (分屏) center.splitPane("左右")
+    return { host, center: () => center }
+  }
+
+  /** `图出来之后` 在节点渲染完、点击之前跑：用例用它摆受焦态，免得被「开图」自己重置。 */
+  async function 从关系图点开档案(host: HTMLElement, 图出来之后?: () => void) {
+    host.querySelector<HTMLElement>("[data-slot='开图']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 2)
+    图出来之后?.()
+    // SVG 的 `<g>` 在 happy-dom 里没有 `.click()`，走真实事件派发（同 `case-view.test.tsx`）。
+    host.querySelector<SVGGElement>("[data-slot='graph-node'][data-node-id='e-李']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    host.querySelector<HTMLElement>("[data-slot='graph-panel-open']")!.click()
+    await 落定()
+  }
+
+  test("分屏时：档案落在另一栏，关系图那一栏不动", async () => {
+    const { host, center } = 搭(true)
+    await 从关系图点开档案(host)
+    expect(center().pane(0).active).toBe(contentTabKey(图tab))
+    expect(center().pane(1).active).toBe(contentTabKey(档案tab))
+    // 顺带看一眼右栏真的画出了档案（不是只改了 store）。
+    expect(host.querySelector<HTMLElement>("[data-slot='右']")!.textContent).toContain("李四")
+  })
+
+  test("未分屏时：档案仍开在当前栏（原行为不变）", async () => {
+    const { host, center } = 搭(false)
+    await 从关系图点开档案(host)
+    expect(center().pane(0).active).toBe(contentTabKey(档案tab))
+    expect(center().pane(1).tabs).toHaveLength(0)
+  })
+
+  test("关系图在右栏、受焦栏被挪去左栏 ⇒ 档案仍落左栏（按图所在栏算，不按受焦栏）", async () => {
+    // 判据用例：若把「另一栏」误算成「相对受焦栏」，这里会开回右栏、把图顶掉。
+    // 真实交互里点图会把焦点带回右栏（mousedown），但图在哪栏是确定的、不该依赖那个时序。
+    const { host, center } = 搭(true, 1)
+    // 图挂进右栏之后再挪受焦栏（「开图」自己会把受焦栏设成图那一栏，先挪会被它覆盖）。
+    await 从关系图点开档案(host, () => center().focusPane(0))
+    expect(center().pane(1).active).toBe(contentTabKey(图tab))
+    expect(center().pane(0).active).toBe(contentTabKey(档案tab))
+  })
+})
+
+/**
  * 「AI 改了中栏开着的文件 ⇒ 用户点带圆点的 tab ⇒ 中栏把盘上那份重读一遍」（2026-10-13 用户实报）。
  *
  * 这一份测的是**中栏这一侧**：`触发重载(path)` 之后，当前那份内容**重挂**（= 视图按同一个 `path`

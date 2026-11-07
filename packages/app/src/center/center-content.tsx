@@ -244,16 +244,21 @@ export function CenterContent(props: ParentProps<CenterContentProps>) {
             current.Component === CaseView ? (
               // 档案页 / 关系图的跳转在这一层落地：`CaseView` 自己不读 context（见它的注释），
               // 由这里把「开一条新 tab」的出口传下去。模块沿用当前值（同一场分析不该跳模块），
-              // 栏沿用当前激活栏（在右栏点开的，新 tab 也开在右栏）。
+              // 栏默认沿用当前激活栏（在右栏点开的，新 tab 也开在右栏）。
+              //
+              // `选项.另一栏`：关系图的「打开档案」在分屏时要并排看，新 tab 去**另一栏**——
+              // 关系图原地留着，用户不必来回切 tab。判「另一栏」按**本内容区挂在哪栏**
+              // （`props.pane`），不按受焦栏：受焦态依赖鼠标最后点过哪，图在哪栏是确定的。
+              // 未分屏时回落成原行为（右栏本来就藏起来了）。
               <CaseView
                 path={current.path}
                 api={props.caseApi}
-                open={(输入) =>
-                  center.open(
-                    { module: center.module() ?? "project", title: 输入.title, path: 输入.path },
-                    center.activePane(),
-                  )
-                }
+                open={(输入, 选项) => {
+                  const 本栏 = props.pane ?? 0
+                  const 目标栏 =
+                    选项?.另一栏 === true && center.split() ? (本栏 === 0 ? 1 : 0) : center.activePane()
+                  center.open({ module: center.module() ?? "project", title: 输入.title, path: 输入.path }, 目标栏)
+                }}
               />
             ) : (
               <Dynamic component={current.Component} path={current.path} load={props.load} save={props.save} />

@@ -127,7 +127,9 @@ describe("案件视图外壳", () => {
   })
 
   test("关系图点节点 ⇒ 面板「打开档案」交出实体档案；「以此为中心」交出同一视图的新中心", async () => {
-    const 收到: Array<{ title: string; path: string }> = []
+    // 第二参数是「开在哪一栏」的提示：只有「打开档案」要求去另一栏（分屏时并排看），
+    // 「以此为中心」是钻取，仍在原栏换图。
+    const 收到: Array<{ title: string; path: string; 选项?: unknown }> = []
     const host = mount(() => (
       <CaseView
         path="case://p-1/graph/e-%E5%BC%A0"
@@ -145,7 +147,7 @@ describe("案件视图外壳", () => {
             },
           }),
         }}
-        open={(输入) => 收到.push(输入)}
+        open={(输入, 选项) => 收到.push({ ...输入, 选项 })}
       />
     ))
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 2)
@@ -156,10 +158,16 @@ describe("案件视图外壳", () => {
     // 点节点只开检视面板，不直接跳档案（改版后的交互：hover 聚焦、点选钉住、面板里再动）。
     expect(收到).toEqual([])
     host.querySelector<HTMLElement>("[data-slot='graph-panel-open']")!.click()
-    expect(收到).toEqual([{ title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }])
+    expect(收到).toEqual([
+      { title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E", 选项: { 另一栏: true } },
+    ])
 
     host.querySelector<HTMLElement>("[data-slot='graph-panel-focus']")!.click()
-    expect(收到.at(-1)).toEqual({ title: "李四 · 关系图", path: "case://p-1/graph/e-%E6%9D%8E" })
+    expect(收到.at(-1)).toEqual({
+      title: "李四 · 关系图",
+      path: "case://p-1/graph/e-%E6%9D%8E",
+      选项: undefined,
+    })
   })
 
   test("提醒路径 ⇒ 渲染提醒清单（注入的提醒 api）", async () => {

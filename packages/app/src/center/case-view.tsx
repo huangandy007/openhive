@@ -12,8 +12,16 @@ import { Timeline } from "./case-views/timeline"
 export interface CaseViewProps {
   readonly path: string
   readonly api?: CaseDetailApi
-  /** 中栏已有 `center` 的那一层给；省略 = 跳转按钮点了没反应（测试壳里就是省略）。 */
-  readonly open?: (input: { readonly title: string; readonly path: string }) => void
+  /**
+   * 中栏已有 `center` 的那一层给；省略 = 跳转按钮点了没反应（测试壳里就是省略）。
+   *
+   * `选项.另一栏`：分屏时希望新 tab 开在**另一栏**（关系图旁边的档案页），由上层决定
+   * 分屏没分屏、另一栏是几号——这里只表达意图，不读 context。
+   */
+  readonly open?: (
+    input: { readonly title: string; readonly path: string },
+    选项?: { readonly 另一栏?: boolean },
+  ) => void
   /**
    * 提醒有自己的写口（`POST /alerts/refresh` / `read`），**不并进 `CaseDetailApi`**：
    * 并进去会让每个只读视图的调用方都得提供一份写能力。省略 = 用默认客户端（只在提醒页用到时建）。
@@ -90,11 +98,15 @@ function 视图(
           projectId={路径.projectId}
           id={路径.arg}
           api={api}
+          // 「打开档案」是并排看另一份东西 ⇒ 分屏时去另一栏；未分屏由上层回落成原行为。
           onOpenEntity={(点: 图节点) =>
-            open?.({
-              title: `${点.value} · ${点.type}`,
-              path: 案件伪路径({ projectId: 路径.projectId, view: "entity", arg: 点.id }),
-            })
+            open?.(
+              {
+                title: `${点.value} · ${点.type}`,
+                path: 案件伪路径({ projectId: 路径.projectId, view: "entity", arg: 点.id }),
+              },
+              { 另一栏: true },
+            )
           }
           // 「以此为中心」= 换一张以该实体为中心的关系图（同一个视图，`arg` 换成新实体）。
           onRecenter={(点: 图节点) =>
