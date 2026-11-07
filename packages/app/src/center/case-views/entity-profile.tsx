@@ -37,7 +37,7 @@ const 裁决按钮类 = (押下: boolean) =>
  * 服务端另有 500 的硬顶（`case-entity-list.ts` 的 `引用上限`）——那个防病态数据，这个防版面。
  * 展开是**纯前端**：数据已经在回包里，不必再发请求。
  */
-export const 出处默认显示 = 50
+export const 出处默认显示 = 20
 
 /** 关系行的六列：方向 / 对方 / 类型 / 次数 / 金额 / 状态。表头与行共用同一份列宽。 */
 const 关系列 =
@@ -75,7 +75,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   // §9.1 / Global Constraint：已排除的事实默认不出现，档案页是唯一能「切换查看」的地方。
   // 开关状态**只由用户点它改变**：请求失败只进错误态，不回滚开关（否则用户会以为是自己点错了）。
   const [含排除, set含排除] = createSignal(false)
-  // 出处默认只画前 50 条（见 `出处默认显示` 的说明）。
+  // 出处默认只画前 20 条（见 `出处默认显示` 的说明）。
   const [展开出处, set展开出处] = createSignal(false)
   /** 上一次取的实体键：只在**换实体**时收起出处，裁决 / 切开关重取不该改变阅读位置。 */
   let 上次实体 = ""

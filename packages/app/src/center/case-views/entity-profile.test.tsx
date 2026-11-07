@@ -320,8 +320,9 @@ describe("实体档案", () => {
   })
 
   // 2026-11-07：出处是四块里唯一没上限的（服务端 `引用们` 原来没有 LIMIT）。一个号码在几百份
-  // 材料里出现时，档案页会一次画几百行。改成「默认只画前 50 条 ＋ 展开全部」。
-  test("出处多时默认只画前 50 条，点「展开全部」才画出全部", async () => {
+  // 材料里出现时，档案页会一次画几百行。改成「默认只画前 20 条 ＋ 展开全部」。
+  // 条数在这里写**字面量**：跟着导出的常量走，常量被改回大数时这条用例不会红。
+  test("出处多时默认只画前 20 条，点「展开全部」才画出全部", async () => {
     const 多档: 实体档案 = { ...档, 引用: 造引用(120), 引用总数: 120 }
     const host = mount(() => (
       <EntityProfile
@@ -331,8 +332,8 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 出处默认显示)
-    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(出处默认显示)
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 20)
+    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(20)
     const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='entity-citation-expand']")!
     expect(按钮).not.toBeNull()
     expect(按钮.textContent).toContain("120")
