@@ -390,8 +390,19 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   data-slot="entity-relations"
                   class="@container scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
                 >
-                  <关系段 标题="数据说的" slot="entity-relations-data" 行们={数据说的()} />
-                  <关系段 标题="人说的" slot="entity-relations-human" 行们={人说的()} 分隔 />
+                  <关系段
+                    标题="数据说的"
+                    slot="entity-relations-data"
+                    行们={数据说的()}
+                    总数={档().关系数据总数}
+                  />
+                  <关系段
+                    标题="人说的"
+                    slot="entity-relations-human"
+                    行们={人说的()}
+                    总数={档().关系人总数}
+                    分隔
+                  />
                 </section>
 
                 <section
@@ -611,13 +622,15 @@ function 关系段(props: {
   readonly 标题: string
   readonly slot: string
   readonly 行们: readonly 档案关系[]
+  /** 本段**全量**条数（服务端按段计）；服务端截断时 `行们` 只是前 N 条，报数不能用它的 length。 */
+  readonly 总数: number
   readonly 分隔?: boolean
 }): JSX.Element {
   return (
     <div class={props.分隔 === true ? "border-t border-v2-border-border-muted" : ""}>
       <div class="flex items-baseline gap-1.5 px-3 pt-2">
         <h2 class="text-[12px] font-semibold text-v2-text-text-base">{props.标题}</h2>
-        <span class="text-[11px] tabular-nums text-v2-text-text-muted">{props.行们.length} 条</span>
+        <span class="text-[11px] tabular-nums text-v2-text-text-muted">{props.总数} 条</span>
         {/* 空的段只多一句「没有」，不白占一整块版面（原来它自己占掉两行）。 */}
         <Show when={props.行们.length === 0}>
           <span class="text-[12px] text-v2-text-text-muted">· 没有</span>

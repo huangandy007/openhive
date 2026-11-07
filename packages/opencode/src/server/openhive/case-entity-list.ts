@@ -52,8 +52,16 @@ export interface 实体清单入参 {
 
 export const 清单上限 = 200
 
-/** 档案页一次最多带出的关系 / 事件 / 出处条数；超了就进 `缺口`，不冒充全量。 */
-const 关系上限 = 200
+/**
+ * 关系分两段各留各的上限：数据说的 200、人说的 100。
+ *
+ * 一个共同的上限会让人说的整段消失：笔录关系的 `first_at` / `last_at` 都是 NULL
+ * （`case-ingest.ts` 的写口如实照录），排序键 `coalesce(last_at, first_at, 0)` 把它们
+ * 全部排到 0 之后 ⇒ 只要数据关系够 200 条，人说的就一条都不剩。而「人说的」恰恰是
+ * 民警从笔录里亲自认下来的关系，比机器抽的转账更需要被看见。
+ */
+const 关系数据上限 = 200
+const 关系人上限 = 100
 const 事件上限 = 100
 /**
  * 出处的硬顶（2026-11-07）：一个号码能在几百份材料里出现，原先没有上限 ⇒ 档案页一次画几百行。
@@ -180,6 +188,9 @@ export interface 实体档案 {
    * 说成「就 200 条」，还会和顶部「一句话」（全量聚合）对不上。
    */
   readonly 关系总数: number
+  /** 数据说的 / 人说的两段各自的**全量**条数（关系段头报数用；两段上限不同，见 `关系数据上限`）。 */
+  readonly 关系数据总数: number
+  readonly 关系人总数: number
   readonly 事件总数: number
   /** 对手方 = 关系对方实体去重后的**全量**个数（与「一句话」的「N 个实体」同源）。 */
   readonly 对方数: number
@@ -225,23 +236,31 @@ export async function 实体档案(
     sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`,
   ]
   if (!含排除) 关系条件.push(sql`r.trust_state <> '已排除'`, sql`对方.trust_state <> '已排除'`)
-  // `count(*) over()` 在 LIMIT **之前**算 ⇒ 拿的是过滤后的全量行数，不必另发一条 count。
-  const 关系行们 = rowsOf(
-    await db.execute(sql`
-      select r.id, r.type, r.from_id, r.to_id, r.source_kind, r.basis, r.trust_state,
-             r.first_at, r.last_at, r.times, r.amount::text as amount,
-             对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型,
-             count(*) over() as 总数
-        from auth.case_relation r
-        join auth.case_entity 对方
-          on 对方.project_id = r.project_id
-         and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
-       where ${sql.join(关系条件, sql` and `)}
-       order by coalesce(r.last_at, r.first_at, 0) desc, r.id asc
-       limit ${关系上限}
-    `),
-  )
-  const 关系总数 = 关系行们.length === 0 ? 0 : Number(关系行们[0]!.总数)
+  // 两段各取各的（见 `关系数据上限` / `关系人上限` 的说明）：同一条谓词，只多一个分段条件。
+  // `count(*) over()` 在 LIMIT **之前**算 ⇒ 每段拿到的是自己那一段的全量行数。
+  const 取关系段 = async (段: "data" | "human", 上限: number) =>
+    rowsOf(
+      await db.execute(sql`
+        select r.id, r.type, r.from_id, r.to_id, r.source_kind, r.basis, r.trust_state,
+               r.first_at, r.last_at, r.times, r.amount::text as amount,
+               对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型,
+               count(*) over() as 总数
+          from auth.case_relation r
+          join auth.case_entity 对方
+            on 对方.project_id = r.project_id
+           and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+         where ${sql.join([...关系条件, 段条件(段)], sql` and `)}
+         order by coalesce(r.last_at, r.first_at, 0) desc, r.id asc
+         limit ${上限}
+      `),
+    )
+  const 数据行的行们 = await 取关系段("data", 关系数据上限)
+  const 人行的行们 = await 取关系段("human", 关系人上限)
+  const 关系行们 = [...数据行的行们, ...人行的行们]
+  const 数段总数 = (行们: ReturnType<typeof rowsOf>) => (行们.length === 0 ? 0 : Number(行们[0].总数))
+  const 关系数据总数 = 数段总数(数据行的行们)
+  const 关系人总数 = 数段总数(人行的行们)
+  const 关系总数 = 关系数据总数 + 关系人总数
   // 一句话的「N 个实体 / 涉及 N 个<类型>」必须是**全量**：列表页只有前 200 行，
   // 按页聚合会在 201 个不同对方时说成「200 个」(§9.1 同口径)。
   const 涉及行们 = rowsOf(
@@ -307,8 +326,10 @@ export async function 实体档案(
   // （`case-graph.ts` 的 `默认节点上限`），时间线默认 50 条（`case-mcp-tools.ts` 的 `默认限制`），
   // 都比这里的 200 / 100 还少——那两个入口自己也会截断。能给的只有「怎么缩小范围」。
   const 缺口: string[] = []
-  if (关系总数 > 关系上限)
-    缺口.push(`关系只显示最近 ${关系上限} 条，共 ${关系总数} 条；关系图可按类型筛选查看邻域`)
+  if (关系数据总数 > 关系数据上限)
+    缺口.push(`数据说的关系只显示最近 ${关系数据上限} 条，共 ${关系数据总数} 条；关系图可按类型筛选查看邻域`)
+  if (关系人总数 > 关系人上限)
+    缺口.push(`人说的关系只显示最近 ${关系人上限} 条，共 ${关系人总数} 条`)
   if (事件总数 > 事件上限)
     缺口.push(`事件只显示最近 ${事件上限} 条，共 ${事件总数} 条；时间线可用起止时间缩小范围`)
   if (引用总数 > 引用上限)
@@ -326,6 +347,8 @@ export async function 实体档案(
     关系,
     事件,
     关系总数,
+    关系数据总数,
+    关系人总数,
     事件总数,
     对方数,
     引用,
@@ -333,6 +356,14 @@ export async function 实体档案(
     一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 对方数, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }
+}
+
+/**
+ * 档案关系的分段谓词：与界面「数据说的 / 人说的」同一刀（前端按 `source_kind === "human"` 分）。
+ * 两段必须互补——判据写歪了会有关系两边都不进，或两边都进被数两遍。
+ */
+function 段条件(段: "data" | "human"): SQL {
+  return 段 === "human" ? sql`r.source_kind = 'human'` : sql`r.source_kind <> 'human'`
 }
 
 /** 用户输入里的模糊通配符先转义，再拼 `%…%`（SQL 侧配 `escape '\'`）。 */

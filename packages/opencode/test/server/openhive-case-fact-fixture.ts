@@ -71,6 +71,39 @@ export async function 建关系(
   `)
 }
 
+/**
+ * 一次种 N 条同形关系（同一对实体、同一类型），可带时间。
+ *
+ * 用 `generate_series` 一条语句种完：几百条逐条 `建关系` 会把套件拖慢一个数量级。
+ * `首` 给了就按 `首 + g` 递增写 `first_at` / `last_at`（数据说的典型形状）；
+ * 不给就是 NULL（人说的形状：笔录只说「有关系」，没有时间）。
+ */
+export async function 建关系批(
+  db: Queryable,
+  input: {
+    projectId: string
+    fromId: string
+    toId: string
+    type?: string
+    sourceKind: "data" | "human"
+    数量: number
+    前缀: string
+    首?: number
+    trustState?: string
+  },
+): Promise<void> {
+  await db.execute(sql`
+    insert into auth.case_relation
+      (id, project_id, from_id, to_id, type, amount, basis, source_kind, trust_state, created_at, first_at, last_at)
+    select ${input.前缀} || g, ${input.projectId}, ${input.fromId}, ${input.toId}, ${input.type ?? "转账"},
+           null, ${input.sourceKind === "human" ? "民警标注" : null}, ${input.sourceKind},
+           ${input.trustState ?? "自动抽取"}, ${现在},
+           case when ${input.首 ?? null}::int is null then null else ${input.首 ?? null}::int + g end,
+           case when ${input.首 ?? null}::int is null then null else ${input.首 ?? null}::int + g end
+      from generate_series(1, ${input.数量}) as g
+  `)
+}
+
 export async function 建事件(
   db: Queryable,
   input: {

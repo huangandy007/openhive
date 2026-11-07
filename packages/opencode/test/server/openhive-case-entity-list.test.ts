@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 实体清单, 实体档案, 清单上限, 引用上限, 类型计数 } from "../../src/server/openhive/case-entity-list"
-import { 建事件, 建关系, 建实体, 建引用, 建引用批 } from "./openhive-case-fact-fixture"
+import { 建事件, 建关系, 建关系批, 建实体, 建引用, 建引用批 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 const 库 = () => {
@@ -15,6 +15,7 @@ const 别人的项目 = "p-别人"
 const 截断项目 = "p-截断"
 const 细类项目 = "p-实体细类"
 const 引用项目 = "p-实体出处"
+const 分段项目 = "p-实体分段"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -113,6 +114,48 @@ beforeAll(async () => {
     materialId: "m-全集",
     数量: 引用上限,
     前缀: "c-满引",
+  })
+
+  // 关系分两段（数据说的 / 人说的）各带上限：笔录关系没有 first_at/last_at，
+  // 排序键 `coalesce(last_at, first_at, 0)` 把它们全部排到最后 ⇒ 合并成一个 200 条的上限时，
+  // 只要数据关系够 200 条，人说的就一条都不剩。这里钉「两段各留各的」。
+  await 建实体(库(), { id: "e-段", projectId: 分段项目, value: "分段人", type: "人" })
+  await 建实体(库(), { id: "e-段账", projectId: 分段项目, value: "6222****9999", type: "账户" })
+  await 建关系批(库(), {
+    projectId: 分段项目,
+    fromId: "e-段",
+    toId: "e-段账",
+    sourceKind: "data",
+    数量: 200,
+    前缀: "r-段数",
+    首: 1_760_100_000,
+  })
+  await 建关系批(库(), {
+    projectId: 分段项目,
+    fromId: "e-段",
+    toId: "e-段账",
+    sourceKind: "human",
+    数量: 3,
+    前缀: "r-段人",
+  })
+  // 两段都超限：数据 201 > 200、人 101 > 100，缺口的每一句都要报自己那一段的全量。
+  await 建实体(库(), { id: "e-溢", projectId: 分段项目, value: "溢出人", type: "人" })
+  await 建关系批(库(), {
+    projectId: 分段项目,
+    fromId: "e-溢",
+    toId: "e-段账",
+    sourceKind: "data",
+    数量: 201,
+    前缀: "r-溢数",
+    首: 1_760_200_000,
+  })
+  await 建关系批(库(), {
+    projectId: 分段项目,
+    fromId: "e-溢",
+    toId: "e-段账",
+    sourceKind: "human",
+    数量: 101,
+    前缀: "r-溢人",
   })
 })
 
@@ -303,6 +346,32 @@ describe("实体清单与档案", () => {
     const 满 = (await 实体档案(库(), { projectId: 截断项目, id: "e-满" }))!
     expect(满.关系总数).toBe(200)
     expect(满.对方数).toBe(1)
+  })
+
+  // 2026-11-07：关系只有一个 200 条上限，而排序键把无时间的笔录关系排到最后 ⇒
+  // 数据关系一满 200 条，人说的（民警从笔录里认的关系）整段消失。
+  test("档案关系分两段各留各的：数据关系满 200 时人说的不消失", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 分段项目, id: "e-段" }))!
+    expect(档.关系.filter((行) => 行.source_kind === "data")).toHaveLength(200)
+    expect(档.关系.filter((行) => 行.source_kind === "human")).toHaveLength(3)
+    // 数据段恰好 200（正好装下）、人段 3 < 100 ⇒ 两段都没截断，不报缺口。
+    expect(档.关系数据总数).toBe(200)
+    expect(档.关系人总数).toBe(3)
+    expect(档.缺口).toBeUndefined()
+  })
+
+  // 每段的上限各管各的：缺口要分段报各自的全量，不能拿合并数糊过去。
+  test("档案关系两段都超限时，缺口分段报全量", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 分段项目, id: "e-溢" }))!
+    expect(档.关系.filter((行) => 行.source_kind === "data")).toHaveLength(200)
+    expect(档.关系.filter((行) => 行.source_kind === "human")).toHaveLength(100)
+    expect(档.关系数据总数).toBe(201)
+    expect(档.关系人总数).toBe(101)
+    expect(档.关系总数).toBe(302)
+    const 缺口 = 档.缺口 ?? []
+    expect(缺口.some((条) => 条.includes("数据说的关系") && 条.includes("共 201 条"))).toBe(true)
+    expect(缺口.some((条) => 条.includes("人说的关系") && 条.includes("共 101 条"))).toBe(true)
+    expect(档.一句话).toContain("302 条有效关系")
   })
 
   test("档案出处恰好满上限不算截断（缺口 undefined）", async () => {

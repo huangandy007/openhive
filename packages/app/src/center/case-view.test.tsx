@@ -25,7 +25,7 @@ async function 等(条件: () => boolean) {
 
 const 档 = {
   id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
-  trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 关系总数: 0, 事件总数: 0, 对方数: 0, 引用总数: 0, 一句话: "张三。",
+  trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 关系总数: 0, 关系数据总数: 0, 关系人总数: 0, 事件总数: 0, 对方数: 0, 引用总数: 0, 一句话: "张三。",
 } as 实体档案
 
 const api: CaseDetailApi = {

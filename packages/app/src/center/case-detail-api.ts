@@ -58,6 +58,9 @@ export interface 实体档案 {
   readonly 事件: readonly 档案事件[]
   /** 关系 / 事件的**全量**条数：界面报数用它，不能拿 `关系.length` / `事件.length` 冒充。 */
   readonly 关系总数: number
+  /** 数据说的 / 人说的两段各自的**全量**条数（两段上限不同，段头各报各的）。 */
+  readonly 关系数据总数: number
+  readonly 关系人总数: number
   readonly 事件总数: number
   /** 对手方 = 关系对方实体去重后的**全量**个数（与「一句话」同源）。 */
   readonly 对方数: number

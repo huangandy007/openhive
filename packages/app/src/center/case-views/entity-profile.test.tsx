@@ -109,6 +109,8 @@ const 档: 实体档案 = {
     },
   ],
   关系总数: 2,
+  关系数据总数: 1,
+  关系人总数: 1,
   事件总数: 1,
   对方数: 2,
   引用总数: 1,
@@ -380,6 +382,31 @@ describe("实体档案", () => {
     expect(读("对手方")).toBe("201")
     // 事件段头报的也是全量：它和数字卡在同一屏，一个说 101、一个说 0 起会自相矛盾。
     expect(host.querySelector("[data-slot='entity-events']")!.textContent).toContain("101 起")
+  })
+
+  // 关系分两段（数据说的 / 人说的）各有上限：段头的条数要报自己那一段的全量，
+  // 跟着当前页 `行们.length` 报会把「只列了前 200 条」说成「就这 1 条」。
+  test("关系段头报各自的全量，不跟当前页条数走", async () => {
+    const 截断档: 实体档案 = {
+      ...档,
+      关系: [档.关系[0]!],
+      关系总数: 201,
+      关系数据总数: 201,
+      关系人总数: 0,
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 截断档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='entity-relations-data']") !== null)
+    const 段头 = (slot: string) =>
+      host.querySelector(`[data-slot='${slot}']`)!.parentElement!.textContent ?? ""
+    expect(段头("entity-relations-data")).toContain("201 条")
+    expect(段头("entity-relations-human")).toContain("0 条")
   })
 
   // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，
