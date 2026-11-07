@@ -76,4 +76,36 @@ describe("parseTime", () => {
   test("缺「秒」字不猜精度", () => {
     expect(parseTime("2026年3月5日15时04分06")).toBeUndefined()
   })
+
+  test("公安文书常见写法「X时 / X时许 / X时X分许」⇒ 到分（分钟未知按 0，原文另存）", () => {
+    // 2026-11-07 真栈实测：`2025年12月18日08时许` 曾返回 undefined ⇒ 事件时间被置空、整条存疑。
+    const 零点 = Date.UTC(2025, 11, 18) / 1000 - 8 * 3600
+    expect(parseTime("2025年12月18日08时")).toEqual({ seconds: 零点 + 8 * 3600, precision: "到分" })
+    expect(parseTime("2025年12月18日08时许")).toEqual({ seconds: 零点 + 8 * 3600, precision: "到分" })
+    expect(parseTime("2025年12月18日08时30分许")).toEqual({
+      seconds: 零点 + 8 * 3600 + 30 * 60,
+      precision: "到分",
+    })
+    // 「许/左右/前后/约」都是约数后缀，剥掉后按已知精度解析
+    expect(parseTime("2025年12月18日08时左右")?.precision).toBe("到分")
+    expect(parseTime("2025年12月18日08时30分前后")?.precision).toBe("到分")
+    // 到秒也允许带约数后缀
+    expect(parseTime("2025年12月18日08时30分15秒许")).toEqual({
+      seconds: 零点 + 8 * 3600 + 30 * 60 + 15,
+      precision: "到秒",
+    })
+    // 点也是小时
+    expect(parseTime("2025年12月18日8点许")?.precision).toBe("到分")
+  })
+
+  test("约数后缀不能掩盖非法值：25时/60分/60秒 仍 undefined", () => {
+    expect(parseTime("2025年12月18日25时许")).toBeUndefined()
+    expect(parseTime("2025年12月18日08时60分许")).toBeUndefined()
+    expect(parseTime("2025年12月18日08时30分60秒许")).toBeUndefined()
+  })
+
+  test("「X时分」这种残缺写法不猜", () => {
+    expect(parseTime("2025年12月18日08时分")).toBeUndefined()
+    expect(parseTime("2025年12月18日08时许30分")).toBeUndefined()
+  })
 })
