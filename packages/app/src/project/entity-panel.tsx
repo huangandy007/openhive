@@ -256,6 +256,13 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
                       <EntityTypeBadge type={行.type} />
                     </Show>
                     <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-base">{行.canonical_value}</span>
+                    {/* 细类要能一眼区分：13800000001 与 110101199001011234 都是「号码」，
+                        光看值认不出哪个是手机号、哪个是身份证。判不出的行不画这块。 */}
+                    <Show when={行.subtype !== undefined}>
+                      <span data-slot="entity-row-subtype" class="shrink-0 text-[11px] text-v2-text-text-muted">
+                        {行.subtype}
+                      </span>
+                    </Show>
                     <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-muted">{行.关联数} 条关系</span>
                   </div>
                 )}

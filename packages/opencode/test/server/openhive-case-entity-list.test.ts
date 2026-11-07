@@ -13,6 +13,7 @@ const 库 = () => {
 const 项目 = "p-实体"
 const 别人的项目 = "p-别人"
 const 截断项目 = "p-截断"
+const 细类项目 = "p-实体细类"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -84,6 +85,12 @@ beforeAll(async () => {
       occurredAt: 1760100000 + i,
     })
   }
+
+  // 细类：形状（Luhn 通过的 16 位 → 银行卡）与 attrs（原文写「固定电话」）各一条；
+  // 人判不出细类，必须是 undefined 而不是硬造一个。
+  await 建实体(库(), { id: "e-细号", projectId: 细类项目, value: "13800000001", type: "号码", attrs: { subtype: "固定电话" } })
+  await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
+  await 建实体(库(), { id: "e-细人", projectId: 细类项目, value: "钱七", type: "人" })
 })
 
 afterAll(async () => {
@@ -111,6 +118,17 @@ describe("实体清单与档案", () => {
       ["e-号1", 0],
       ["e-号2", 0],
     ])
+  })
+
+  test("清单与档案带细类：形状与 attrs 两条来源；判不出就是 undefined", async () => {
+    const { 行们 } = await 实体清单(库(), { projectId: 细类项目 })
+    const 细类 = Object.fromEntries(行们.map((行) => [行.id, 行.subtype]))
+    expect(细类).toEqual({ "e-细号": "固定电话", "e-细卡": "银行卡", "e-细人": undefined })
+
+    const 档 = (await 实体档案(库(), { projectId: 细类项目, id: "e-细卡" }))!
+    expect(档.subtype).toBe("银行卡")
+    const 人档 = (await 实体档案(库(), { projectId: 细类项目, id: "e-细人" }))!
+    expect(人档.subtype).toBeUndefined()
   })
 
   test("搜索跨类型命中别名；给了类型就只查该类型", async () => {

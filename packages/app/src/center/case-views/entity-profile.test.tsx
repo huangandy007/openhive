@@ -117,6 +117,20 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-conclusion']")!.textContent).toContain("数据说的 1 条")
   })
 
+  test("类型格显示细类（号码 · 手机号）；判不出细类的实体只显示大类", async () => {
+    const 号码档 = { ...档, type: "号码", subtype: "手机号", canonical_value: "13800000001" }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-号"
+        api={假api({ profile: async () => ({ kind: "ok", value: 号码档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).toBe("号码 · 手机号")
+  })
+
   test("关系按 source_kind 分两段：数据说的 / 人说的，各自只放自己的行", async () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)

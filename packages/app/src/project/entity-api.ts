@@ -21,6 +21,8 @@ export interface 类型计数 {
 export interface 实体清单项 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；服务端判不出就没有，界面只显示大类。 */
+  readonly subtype?: string
   readonly canonical_value: string
   readonly trust_state: string
   readonly 关联数: number

@@ -197,7 +197,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       data-slot="entity-profile-type"
                       class="rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted"
                     >
-                      {档().type}
+                      {`${档().type}${档().subtype === undefined ? "" : ` · ${档().subtype}`}`}
                     </span>
                     <span
                       data-slot="entity-profile-trust-state"

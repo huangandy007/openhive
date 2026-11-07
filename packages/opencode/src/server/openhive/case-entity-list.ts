@@ -2,6 +2,7 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import { 引用们, type 引用视图 } from "./case-fact-read"
+import { 细类 } from "./case-subtype"
 
 /**
  * 实体视图（计划 7 的左栏与中栏）：类型计数、清单、档案三个只读出口。
@@ -27,6 +28,8 @@ export type 排序 = "涉案" | "名称" | "时间"
 export interface 实体清单项 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；判不出就没有——界面只显示大类。 */
+  readonly subtype?: string
   readonly canonical_value: string
   readonly trust_state: string
   readonly 关联数: number
@@ -90,7 +93,7 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
 
   const 行们 = rowsOf(
     await db.execute(sql`
-      select e.id, e.type, e.canonical_value, e.trust_state, e.created_at,
+      select e.id, e.type, e.canonical_value, e.attrs, e.trust_state, e.created_at,
              -- 与「实体档案」同一口径：对方实体已排除的关系，档案不列、清单也不算（§9.1 不进统计）。
              -- 用 in (select …) 而不是 join：join 会让 project_id / trust_state 变成歧义列
              -- （同 case-mcp-tools.ts 里同款子查询的取法）。
@@ -115,6 +118,7 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
   const 排好 = 行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
+    subtype: 细类(String(行.type), String(行.canonical_value), 行.attrs),
     canonical_value: String(行.canonical_value),
     trust_state: String(行.trust_state),
     关联数: Number(行.关联数),
@@ -155,6 +159,8 @@ export interface 档案事件 {
 export interface 实体档案 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；判不出就没有——界面只显示大类。 */
+  readonly subtype?: string
   readonly canonical_value: string
   readonly aliases: string[]
   readonly attrs: Record<string, unknown>
@@ -280,6 +286,7 @@ export async function 实体档案(
   return {
     id: String(实体.id),
     type: String(实体.type),
+    subtype: 细类(String(实体.type), String(实体.canonical_value), 实体.attrs),
     canonical_value: String(实体.canonical_value),
     aliases: 解JSON<string[]>(实体.aliases, []),
     attrs: 解JSON<Record<string, unknown>>(实体.attrs, {}),

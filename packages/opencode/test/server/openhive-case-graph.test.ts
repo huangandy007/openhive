@@ -47,6 +47,7 @@ const 库 = () => {
 const 项目 = "p-图"
 const 别人的项目 = "p-图别人"
 const 排序项目 = "p-图序"
+const 细类项目 = "p-图细类"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -132,6 +133,20 @@ beforeAll(async () => {
       amount: 1,
     })
   }
+
+  // 细类：形状（11 位手机号）与 attrs（原文写「固定电话」）两条来源各一条；
+  // 中心实体自己就是号码，用来钉「中心节点也带细类」。
+  await 建实体(库(), { id: "e-细心", projectId: 细类项目, value: "中心", type: "人" })
+  await 建实体(库(), {
+    id: "e-细号",
+    projectId: 细类项目,
+    value: "13800000001",
+    type: "号码",
+    attrs: { subtype: "固定电话" },
+  })
+  await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
+  await 建关系(库(), { id: "r-细心号", projectId: 细类项目, fromId: "e-细心", toId: "e-细号", type: "通话" })
+  await 建关系(库(), { id: "r-细心卡", projectId: 细类项目, fromId: "e-细心", toId: "e-细卡", type: "转账" })
 })
 
 afterAll(async () => {
@@ -254,5 +269,17 @@ describe("关系图", () => {
     expect(图.节点.find((点) => 点.id === "e-心")!.关联数).toBe(3)
     expect(图.节点.find((点) => 点.id === "e-甲")!.关联数).toBe(1)
     expect(图.节点.find((点) => 点.id === "e-乙")!.关联数).toBe(1)
+  })
+
+  test("节点带细类：中心与邻居都要有；attrs 里明确写的优先于形状", async () => {
+    // 中心：号码本身就有细类（否则「中心节点没有细类」会看不出来）
+    const 中心图 = (await 关系图(库(), { projectId: 细类项目, id: "e-细号" }))!
+    expect(中心图.节点.find((点) => 点.id === "e-细号")!.subtype).toBe("固定电话")
+    // 邻居：一条边两端都带细类；判不出的人不硬造一个
+    const 图 = (await 关系图(库(), { projectId: 细类项目, id: "e-细心" }))!
+    const 取 = (id: string) => 图.节点.find((点) => 点.id === id)!
+    expect(取("e-细号").subtype).toBe("固定电话")
+    expect(取("e-细卡").subtype).toBe("银行卡")
+    expect(取("e-细心").subtype).toBeUndefined()
   })
 })

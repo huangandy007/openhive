@@ -47,6 +47,8 @@ export interface 引用 {
 export interface 实体档案 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；服务端判不出就没有，界面只显示大类。 */
+  readonly subtype?: string
   readonly canonical_value: string
   readonly aliases: string[]
   readonly attrs: Record<string, unknown>
@@ -124,6 +126,8 @@ export interface 产物复核结果 {
 export interface 图节点 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；服务端判不出就没有，界面只显示大类。 */
+  readonly subtype?: string
   readonly value: string
   readonly trust_state: string
   readonly 中心: boolean

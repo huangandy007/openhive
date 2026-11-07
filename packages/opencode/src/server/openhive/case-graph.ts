@@ -3,6 +3,7 @@ export * as OpenhiveCaseGraph from "./case-graph"
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
+import { 细类 } from "./case-subtype"
 
 /**
  * 关系图数据（计划 7 Task 3）。
@@ -31,6 +32,8 @@ import type { Queryable } from "./case-store"
 export interface 图节点 {
   readonly id: string
   readonly type: string
+  /** 大类之下的细类（「号码 · 手机号」的后者）；判不出就没有——界面只显示大类。 */
+  readonly subtype?: string
   readonly value: string
   readonly trust_state: string
   readonly 中心: boolean
@@ -83,9 +86,11 @@ interface 边行 {
   readonly from_value: string
   readonly from_type: string
   readonly from_trust: string
+  readonly from_attrs: unknown
   readonly to_value: string
   readonly to_type: string
   readonly to_trust: string
+  readonly to_attrs: unknown
 }
 
 interface 一圈 {
@@ -121,7 +126,9 @@ async function 取一圈(
     await db.execute(sql`
       select r.id, r.from_id, r.to_id, r.type, r.times, r.amount::text as amount, r.trust_state,
              起.canonical_value as from_value, 起.type as from_type, 起.trust_state as from_trust,
+             起.attrs as from_attrs,
              终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust,
+             终.attrs as to_attrs,
              (count(*) over())::int as 总数
         from auth.case_relation r
         join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
@@ -147,9 +154,11 @@ async function 取一圈(
       from_value: String(行.from_value),
       from_type: String(行.from_type),
       from_trust: String(行.from_trust),
+      from_attrs: 行.from_attrs,
       to_value: String(行.to_value),
       to_type: String(行.to_type),
       to_trust: String(行.to_trust),
+      to_attrs: 行.to_attrs,
     })),
     总数: 行们.length === 0 ? 0 : Number(行们[0].总数),
   }
@@ -167,7 +176,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
 
   const 中心行们 = rowsOf(
     await db.execute(sql`
-      select id, type, canonical_value, trust_state
+      select id, type, canonical_value, attrs, trust_state
         from auth.case_entity
        where project_id = ${input.projectId} and id = ${input.id} and trust_state <> '已排除'
     `),
@@ -186,6 +195,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   加点({
     id: String(中心.id),
     type: String(中心.type),
+    subtype: 细类(String(中心.type), String(中心.canonical_value), 中心.attrs),
     value: String(中心.canonical_value),
     trust_state: String(中心.trust_state),
     中心: true,
@@ -214,12 +224,21 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         amount: 边.amount,
         trust_state: 边.trust_state,
       })
-      for (const [id, 值, 类型, 信任态] of [
-        [边.from_id, 边.from_value, 边.from_type, 边.from_trust] as const,
-        [边.to_id, 边.to_value, 边.to_type, 边.to_trust] as const,
+      for (const [id, 值, 类型, 信任态, 属性] of [
+        [边.from_id, 边.from_value, 边.from_type, 边.from_trust, 边.from_attrs] as const,
+        [边.to_id, 边.to_value, 边.to_type, 边.to_trust, 边.to_attrs] as const,
       ]) {
         if (节点表.has(id)) continue
-        加点({ id, type: 类型, value: 值, trust_state: 信任态, 中心: false, 跳数: 1, 关联数: 0 })
+        加点({
+          id,
+          type: 类型,
+          subtype: 细类(类型, 值, 属性),
+          value: 值,
+          trust_state: 信任态,
+          中心: false,
+          跳数: 1,
+          关联数: 0,
+        })
         新点.push(id)
       }
     }

@@ -29,7 +29,7 @@ const 图: 关系图结果 = {
   节点: [
     { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2 },
     { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
-    { id: "e-号", type: "号码", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 3 },
+    { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 3 },
     { id: "e-账", type: "账户", value: "6222****0001", trust_state: "存疑", 中心: false, 跳数: 2, 关联数: 1 },
     { id: "e-地", type: "地点", value: "湖州市吴兴区", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 },
   ],
@@ -214,6 +214,22 @@ describe("关系图 · 检视面板", () => {
     expect(收到).toHaveLength(1)
     // ⚠️ 断言**整条节点**：上层拼标题要用 `value` / `type`，只传 `{ id }` 的桩会照样绿。
     expect(收到[0]).toMatchObject({ id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 })
+  })
+
+  test("悬停提示与检视面板都显示细类；判不出细类的节点不硬造", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    // 悬停：细类与信任态同一行，号码这个值本身仍在第一行
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseenter"))
+    const 提示 = host.querySelector("[data-slot='graph-tip']")!
+    expect(提示.textContent).toContain("手机号")
+    expect(提示.textContent).toContain("13800000001")
+    // 检视面板：断**那一整格**，不拿整块面板的 textContent 做子串匹配（`#006-22`）
+    点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel-subtitle']")!.textContent).toBe("号码 · 手机号 · 已确认")
+    // 人没有细类：分隔符与空串都不能留下痕迹
+    点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel-subtitle']")!.textContent).toBe("人 · 自动抽取")
   })
 
   test("「以此为中心」把该节点交给上层重新取图；中心节点自己不显示这个按钮", async () => {

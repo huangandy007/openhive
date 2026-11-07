@@ -35,10 +35,12 @@ const 实体行 = (over: {
   id: string
   值: string
   类型?: string
+  细类?: string
   关联数?: number
 }) => ({
   id: over.id,
   type: over.类型 ?? "人",
+  subtype: over.细类,
   canonical_value: over.值,
   trust_state: "自动抽取",
   关联数: over.关联数 ?? 0,
@@ -95,6 +97,35 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     host.querySelector<HTMLElement>("[data-slot='entity-back']")!.click()
     await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 0)
     expect(host.querySelectorAll("[data-slot='entity-type']").length).toBe(1)
+  })
+
+  test("清单行显示细类（号码 · 手机号里的「手机号」）；没有细类的行不留空壳", async () => {
+    const api = 假api({
+      list: async () => ({
+        kind: "ok",
+        value: {
+          行们: [
+            实体行({ id: "e-号", 值: "13800000001", 类型: "号码", 细类: "手机号" }),
+            实体行({ id: "e-证", 值: "110101199001011234", 类型: "号码", 细类: "身份证" }),
+            实体行({ id: "e-人", 值: "张三" }),
+          ],
+          缺口: [],
+        },
+      }),
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
+    框.value = "138"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 3)
+    // 按 id 对齐断言，不依赖行序（行序由「涉案」排序决定，与本用例无关）
+    const 细类们 = Object.fromEntries(
+      [...host.querySelectorAll<HTMLElement>("[data-slot='entity-row']")].map((行) => [
+        行.dataset.entityId,
+        行.querySelector("[data-slot='entity-row-subtype']")?.textContent,
+      ]),
+    )
+    expect(细类们).toEqual({ "e-号": "手机号", "e-证": "身份证", "e-人": undefined })
   })
 
   test("全局搜索跨类型：输入姓名时 type 参数留空", async () => {

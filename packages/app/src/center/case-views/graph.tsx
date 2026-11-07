@@ -495,7 +495,8 @@ export function Graph(props: GraphProps): JSX.Element {
         x: 左,
         y: Math.max(8, Math.min(尺寸().高 - 52, 行.y - 36)),
         行1: `${截断(行.value, 14)} · ${行.type}`,
-        行2: `${行.trust_state} · 关联 ${行.关联数}`,
+        // 细类放第二行：第一行已经贴着提示框宽度，再拼「· 手机号」会溢出框外。
+        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 关联 ${行.关联数}`,
       }
     }
     const 边id = 悬停边()
@@ -955,8 +956,8 @@ export function Graph(props: GraphProps): JSX.Element {
                   <div data-slot="graph-panel-title" class="truncate text-[13px] font-semibold text-v2-text-text-base">
                     {点().value}
                   </div>
-                  <div class="mt-0.5 text-[11px] text-v2-text-text-muted">
-                    {点().type} · {点().trust_state}
+                  <div data-slot="graph-panel-subtitle" class="mt-0.5 text-[11px] text-v2-text-text-muted">
+                    {`${点().type}${点().subtype === undefined ? "" : ` · ${点().subtype}`} · ${点().trust_state}`}
                   </div>
                 </div>
                 <button
