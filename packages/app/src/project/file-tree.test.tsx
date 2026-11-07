@@ -3015,6 +3015,41 @@ describe("FileTree 文件树（FR-005）", () => {
       return { host, 假 }
     }
 
+    /**
+     * 2026-11-07 用户两次实报，同一条契约的两面：
+     *   ①「解析二级菜单显示不出来、被遮住」；
+     *   ②「鼠标一移动过去，二级列表就消失」。
+     *
+     * 真栈实测根因（同一个）：子菜单原本是**主菜单的 DOM 后代**（`context-menu-sub-content`
+     * → `div` → `context-menu-content`，不是 portal）。两个后果都是它造成的：
+     *   - ① 位置撑出父盒（父盒右边界 329，子菜单 325→589），而 `components/context-menu.css`
+     *     给两种菜单都设了 `overflow: hidden` ⇒ 超出的部分被父盒裁掉，只剩 4px；
+     *   - ② **焦点归属错乱**：主菜单的 DOM collection 把子菜单里的项也当成自己的项。指针
+     *     进入子菜单项时主菜单的 selection manager 把 focusedKey 挪到自己的项上（真栈实测：
+     *     焦点从子菜单的「重新解析」跳到主菜单的「刷新」）⇒ 子菜单的 DismissableLayer 判
+     *     「焦点跑到外面」⇒ `close()`。所以不是 hover 计时器的问题，鼠标才一进就关。
+     *
+     * 修法：`<ContextMenu.Portal>` 包住 SubContent（同仓另外两处子菜单
+     * `prompt-project-selector.tsx` / `prompt-workspace-selector.tsx` 本来就这么写）。
+     * portal 出去以后既不在父盒里（①消失），也不在父菜单的 DOM collection 里（②消失）
+     * ——所以 `overflow: visible` 那条 inline style 也随之撤掉了。
+     *
+     * happy-dom **没有布局引擎**，量不出「被裁掉多少」、也复现不了真实命中/焦点迁移——真正
+     * 守护行为的是 `e2e/real-stack/file-tree-parse-submenu-real.spec.ts`。这里钉的是
+     * **结构契约**：子菜单必须渲染在**主菜单 DOM 之外**（portal 的唯一可断言特征）。
+     */
+    test("解析子菜单必须 portal 出主菜单：不能是 Content 的 DOM 后代", async () => {
+      const { host } = 挂带材料(["话单.csv"])
+      右键(行按路径(host, "话单.csv"))
+      await 歇一拍()
+      const 内容 = 菜单内容()
+      if (!内容) throw new Error("菜单没打开——前提不成立")
+      const 子 = await 开子菜单()
+
+      // 是主菜单的后代 ⇒ 会被父盒裁掉 + 被父菜单的 DOM collection 接管焦点（两条实测缺陷）
+      expect(内容.contains(子)).toBe(false)
+    })
+
     test("「解析」自成一组，紧跟「打开」之后；触发项右边写当前状态", async () => {
       const { host } = 挂带材料(["话单.csv"], { rows: [视图行({ path: "话单.csv", status: "已解析" })] })
       右键(行按路径(host, "话单.csv"))

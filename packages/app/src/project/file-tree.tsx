@@ -1185,6 +1185,21 @@ export function FileTree(props: FileTreeProps) {
               `MenuContentBaseOptions`，但它落在 `{...others}` 里、由本仓 `packages/ui` 的包装层
               透传，`bun run typecheck` 实测通过；`LEARNINGS #005-22` 讲的 `data-slot` 被覆盖
               是同一处 `{...rest}` 顺序的另一面。） */}
+          {/* ⚠️ 下面的 `<ContextMenu.Portal>` 包住 SubContent **不是**可选的（2026-11-07 用户
+              两次实报：「解析二级菜单显示不出来、被遮住」→「鼠标一移动过去，二级列表就消失」）。
+              同一个根因：子菜单原本是主菜单的 **DOM 后代**（`context-menu-sub-content` → `div`
+              → `context-menu-content`），于是
+                ① 位置撑出父盒（父盒右边界 329，子菜单 325→589），`packages/ui/src/components/
+                   context-menu.css` 给两种菜单都设了 `overflow: hidden` ⇒ 超出部分被裁掉；
+                ② 主菜单的 DOM collection 把子菜单里的项也当成自己的项：指针一进子菜单项，
+                   主菜单的 selection manager 就把 focusedKey 挪回自己的项（真栈实测：焦点从
+                   子菜单「重新解析」跳到主菜单「刷新」）⇒ 子菜单 DismissableLayer 判「焦点
+                   跑到外面」⇒ close()。所以它才「一移过去就没」。
+              portal 出去两件事一起消失，也就不需要再给 Content 放 `overflow: visible` 了。
+              同仓另两处子菜单（`prompt-project-selector.tsx` / `prompt-workspace-selector.tsx`）
+              本来就这么写；改上游 `context-menu.css` 会给同步上游埋冲突点，故改在本仓。
+              回归网：`file-tree.test.tsx`（子菜单不在 Content 的 DOM 内）＋
+              `e2e/real-stack/file-tree-parse-submenu-real.spec.ts`（真实命中 ＋ 移入不关闭）。 */}
           <ContextMenu.Content excludedElements={[]}>
             {/* 第一组（2026-10-12）：看一眼。它与末尾第六组的 copy-path / refresh 同为
                 「不写盘、不写云」的一项，只是最常用、故压到菜单最上。 */}
@@ -1219,55 +1234,57 @@ export function FileTree(props: FileTreeProps) {
                 </span>
                 <Icon name="chevron-right" size="small" />
               </ContextMenu.SubTrigger>
-              <ContextMenu.SubContent>
-                <子菜单项
-                  action="parse-enqueue"
-                  文案="解析入库"
-                  原因={入队不可用原因(菜单依据())}
-                  onSelect={() => {
-                    const path = 菜单对象()
-                    if (path === undefined) return
-                    if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
-                    else 直接解析(path, "入队")
-                  }}
-                />
-                <子菜单项
-                  action="parse-reenqueue"
-                  文案="重新解析"
-                  原因={重新解析不可用原因(菜单依据())}
-                  onSelect={() => {
-                    const path = 菜单对象()
-                    if (path !== undefined) 确认重新解析(path)
-                  }}
-                />
-                <子菜单项
-                  action="parse-cancel"
-                  文案="取消解析"
-                  原因={取消不可用原因(菜单依据())}
-                  onSelect={() => {
-                    const path = 菜单对象()
-                    if (path !== undefined) 直接解析(path, "取消")
-                  }}
-                />
-                <子菜单项
-                  action="parse-skip"
-                  文案="跳过解析"
-                  原因={跳过不可用原因(菜单依据())}
-                  onSelect={() => {
-                    const path = 菜单对象()
-                    if (path !== undefined) 直接解析(path, "跳过")
-                  }}
-                />
-                <子菜单项
-                  action="parse-view"
-                  文案="查看解析结果"
-                  原因={查看不可用原因(菜单依据())}
-                  onSelect={() => {
-                    const path = 菜单对象()
-                    if (path !== undefined) props.onReviewParse?.(path)
-                  }}
-                />
-              </ContextMenu.SubContent>
+              <ContextMenu.Portal>
+                <ContextMenu.SubContent>
+                  <子菜单项
+                    action="parse-enqueue"
+                    文案="解析入库"
+                    原因={入队不可用原因(菜单依据())}
+                    onSelect={() => {
+                      const path = 菜单对象()
+                      if (path === undefined) return
+                      if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
+                      else 直接解析(path, "入队")
+                    }}
+                  />
+                  <子菜单项
+                    action="parse-reenqueue"
+                    文案="重新解析"
+                    原因={重新解析不可用原因(菜单依据())}
+                    onSelect={() => {
+                      const path = 菜单对象()
+                      if (path !== undefined) 确认重新解析(path)
+                    }}
+                  />
+                  <子菜单项
+                    action="parse-cancel"
+                    文案="取消解析"
+                    原因={取消不可用原因(菜单依据())}
+                    onSelect={() => {
+                      const path = 菜单对象()
+                      if (path !== undefined) 直接解析(path, "取消")
+                    }}
+                  />
+                  <子菜单项
+                    action="parse-skip"
+                    文案="跳过解析"
+                    原因={跳过不可用原因(菜单依据())}
+                    onSelect={() => {
+                      const path = 菜单对象()
+                      if (path !== undefined) 直接解析(path, "跳过")
+                    }}
+                  />
+                  <子菜单项
+                    action="parse-view"
+                    文案="查看解析结果"
+                    原因={查看不可用原因(菜单依据())}
+                    onSelect={() => {
+                      const path = 菜单对象()
+                      if (path !== undefined) props.onReviewParse?.(path)
+                    }}
+                  />
+                </ContextMenu.SubContent>
+              </ContextMenu.Portal>
             </ContextMenu.Sub>
             <ContextMenu.Separator />
             {/* 第二组：同工具栏「＋」 */}
