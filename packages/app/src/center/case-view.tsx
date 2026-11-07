@@ -96,6 +96,13 @@ function 视图(
               path: 案件伪路径({ projectId: 路径.projectId, view: "entity", arg: 点.id }),
             })
           }
+          // 「以此为中心」= 换一张以该实体为中心的关系图（同一个视图，`arg` 换成新实体）。
+          onRecenter={(点: 图节点) =>
+            open?.({
+              title: `${点.value} · 关系图`,
+              path: 案件伪路径({ projectId: 路径.projectId, view: "graph", arg: 点.id }),
+            })
+          }
         />
       )
     case "alerts":

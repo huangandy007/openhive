@@ -126,7 +126,7 @@ describe("案件视图外壳", () => {
     }
   })
 
-  test("关系图点非中心节点 ⇒ 通过 open 交出实体档案的标题与路径", async () => {
+  test("关系图点节点 ⇒ 面板「打开档案」交出实体档案；「以此为中心」交出同一视图的新中心", async () => {
     const 收到: Array<{ title: string; path: string }> = []
     const host = mount(() => (
       <CaseView
@@ -153,7 +153,13 @@ describe("案件视图外壳", () => {
     host.querySelector<SVGGElement>("[data-slot='graph-node'][data-node-id='e-李']")!.dispatchEvent(
       new MouseEvent("click", { bubbles: true }),
     )
+    // 点节点只开检视面板，不直接跳档案（改版后的交互：hover 聚焦、点选钉住、面板里再动）。
+    expect(收到).toEqual([])
+    host.querySelector<HTMLElement>("[data-slot='graph-panel-open']")!.click()
     expect(收到).toEqual([{ title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }])
+
+    host.querySelector<HTMLElement>("[data-slot='graph-panel-focus']")!.click()
+    expect(收到.at(-1)).toEqual({ title: "李四 · 关系图", path: "case://p-1/graph/e-%E6%9D%8E" })
   })
 
   test("提醒路径 ⇒ 渲染提醒清单（注入的提醒 api）", async () => {
