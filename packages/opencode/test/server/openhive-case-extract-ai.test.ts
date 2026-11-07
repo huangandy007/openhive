@@ -56,6 +56,23 @@ describe("建调用模型（generateObject 适配器）", () => {
     expect(看见[0].toLowerCase()).toContain("json")
   })
 
+  /**
+   * 2026-11-07 真栈第二轮实测：json 字样补上后，DeepSeek 回了合法 JSON，但键名是它自己猜的
+   * （`源实体` / `目标实体` / `金额`），**不是** schema 里的 `从` / `到` / `金额原文` ⇒
+   * `No object generated: response did not match schema`，每片重试 3 次全失败。
+   *
+   * 原因在 provider 层（`node_modules/@ai-sdk/openai-compatible/dist/index.mjs:515`）：
+   * `supportsStructuredOutputs !== true` 时只发 `response_format: {type:"json_object"}`，
+   * **schema 本身根本不发给模型**。所以字段名只能由我们自己的提示词给出来。
+   */
+  test("结构化要求里必须逐字给出字段名（provider 走 json_object 时不传 schema）", async () => {
+    const { 模型, 看见 } = 假模型(JSON.stringify({ 实体: [], 关系: [], 事件: [] }))
+    const 调用 = 建调用模型(模型)
+    await 调用({ 系统: 系统提示(), 用户: "u" })
+    // 挑两个只在 schema 里出现、散文里不会出现的字段名：
+    for (const 字段 of ["金额原文", "参与人"]) expect(看见[0]).toContain(字段)
+  })
+
   test("不合法 JSON ⇒ 抛错（由执行器计一次失败并重试）", async () => {
     const { 模型 } = 假模型("这不是 JSON")
     const 调用 = 建调用模型(模型)
