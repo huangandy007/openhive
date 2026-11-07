@@ -408,6 +408,15 @@ export function Graph(props: GraphProps): JSX.Element {
   const [悬停边, set悬停边] = createSignal<string | undefined>()
   const [选中, set选中] = createSignal<选中项 | null>(null)
   /**
+   * 多选（2026-11-07 用户下达：「框选多个节点后整体移动」）。
+   *
+   * 与 `选中` 是**两件事**：`选中` 决定右侧检视面板看谁，多选只决定「拖动时一起动的是谁」。
+   * 所以框选不弹面板、Shift 点节点也不弹——否则框一下就把面板挤出来，正是要避免的事。
+   */
+  const [多选, set多选] = createSignal<readonly string[]>([])
+  /** 正在拉的框（**节点坐标**，与 `全部点()` / `手动位置` 同一套）；`undefined` = 没在拉，也就不画。 */
+  const [拉框, set拉框] = createSignal<{ readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number } | undefined>()
+  /**
    * 刚复制成功的是**哪一条节点**。存 id 而不是布尔：1.5 秒里用户点开另一条，
    * 那颗钮不能替新节点冒充「已复制」。
    */
@@ -447,6 +456,8 @@ export function Graph(props: GraphProps): JSX.Element {
         set选中类型([])
         set类型计数({})
         set选中(null)
+        set多选([])
+        set拉框(undefined)
         set悬停点(undefined)
         set悬停边(undefined)
         set缩放(1)
@@ -578,6 +589,15 @@ export function Graph(props: GraphProps): JSX.Element {
     if (!还在) set选中(null)
   })
 
+  // 多选同理：换跳数/筛选后点了不在了的点必须从组里掉出去，否则「整组拖动」会拖一串鬼影。
+  createEffect(() => {
+    const 旧 = 多选()
+    if (旧.length === 0) return
+    const 有 = new Set((图()?.节点 ?? []).map((行) => 行.id))
+    const 留 = 旧.filter((id) => 有.has(id))
+    if (留.length !== 旧.length) set多选(留)
+  })
+
   const 选中点 = createMemo(() => {
     const 当前 = 选中()
     return 当前?.kind === "node" ? 点(当前.id) : undefined
@@ -697,43 +717,107 @@ export function Graph(props: GraphProps): JSX.Element {
     set平移({ ...平移(), x: Math.max(新, 面板边距 - 行.x * 缩放()) })
   }
 
+  /**
+   * 屏幕坐标 → viewBox **内容坐标**（未变换）。`preserveAspectRatio="xMidYMid meet"` 的
+   * letterbox 偏置算在里面，所以 devtools 里看到的、和节点 `x/y` 用的是同一把尺子。
+   *
+   * 测不到尺寸（组件测试里 `getBoundingClientRect` 全 0）时给 `undefined`：**不在这里编一个坐标**，
+   * 退化的口径归调用方（滚轮围着画布中心，拉框退回「屏幕坐标即内容坐标」）。
+   */
+  const 到内容 = (clientX: number, clientY: number) => {
+    const 矩 = svg元素?.getBoundingClientRect()
+    if (矩 === undefined || 矩.width <= 0 || 矩.height <= 0) return undefined
+    const 比例 = Math.min(矩.width / 尺寸().宽, 矩.height / 尺寸().高) || 1
+    return {
+      x: (clientX - (矩.left + (矩.width - 尺寸().宽 * 比例) / 2)) / 比例,
+      y: (clientY - (矩.top + (矩.height - 尺寸().高 * 比例) / 2)) / 比例,
+      比例,
+    }
+  }
+
+  /** 屏幕坐标 → **节点坐标**（`全部点()` / `手动位置` 那一套）：内容坐标再逆掉视口变换。 */
+  const 到节点 = (clientX: number, clientY: number) => {
+    const 内 = 到内容(clientX, clientY) ?? { x: clientX, y: clientY }
+    return { x: (内.x - 平移().x) / 缩放(), y: (内.y - 平移().y) / 缩放() }
+  }
+
   const 滚轮 = (事件: WheelEvent) => {
     事件.preventDefault()
-    const 矩 = svg元素?.getBoundingClientRect()
-    const 有尺寸 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0
-    const 比例 = 有尺寸 ? Math.min(矩.width / 尺寸().宽, 矩.height / 尺寸().高) || 1 : 1
-    const 偏x = 有尺寸 ? 矩.left + (矩.width - 尺寸().宽 * 比例) / 2 : 0
-    const 偏y = 有尺寸 ? 矩.top + (矩.height - 尺寸().高 * 比例) / 2 : 0
-    // viewBox 里的坐标（未变换）：缩放公式要的是「光标此刻指着的内容点」在变换前的坐标。
-    const 游标 = 有尺寸 ? { x: (事件.clientX - 偏x) / 比例, y: (事件.clientY - 偏y) / 比例 } : 中点()
+    // 缩放公式要的是「光标此刻指着的内容点」在变换前的坐标。
+    const 游标 = 到内容(事件.clientX, 事件.clientY) ?? 中点()
     缩放到(缩放() * (事件.deltaY < 0 ? 1.15 : 1 / 1.15), 游标)
   }
 
   let 拖: { 起x: number; 起y: number; 原x: number; 原y: number; 比例: number } | undefined
 
-  /** 节点拖动：mousedown 落在节点上时接管，走「移动该节点」而不是「平移画布」。 */
+  /** 拉框（Shift + 拖空白）。`节点x/y` 是起点的**节点坐标**，框按节点坐标画、按节点坐标判归属。 */
+  let 拉: { 起x: number; 起y: number; 节点x: number; 节点y: number; 移动: boolean } | undefined
+
+  /**
+   * 节点拖动：mousedown 落在节点上时接管，走「移动节点」而不是「平移画布」。
+   *
+   * `组` 是**一起移动的点**（含被按住的那个）：按在已选中的节点上是整组，否则只有它自己——
+   * 后一种还会清空多选（用户 2026-11-07 谈定：拖没选中的就是「换成只拖它」）。
+   */
   let 拖节点:
-    | { id: string; 起x: number; 起y: number; 原x: number; 原y: number; 比例: number; 移动: boolean }
+    | {
+        readonly 起x: number
+        readonly 起y: number
+        readonly 比例: number
+        readonly 组: readonly { readonly id: string; readonly x: number; readonly y: number }[]
+        移动: boolean
+      }
     | undefined
   /** 拖动结束浏览器还会补一个 click；用它把「拖」和「点选」分开（面板不该在拖完时弹出来）。 */
   let 刚拖过 = false
+  /** 同上，给拉框用：拉完那一下的 click 不能再把刚选出来的多选清掉。 */
+  let 刚拉过 = false
 
   const 开始拖节点 = (事件: MouseEvent, 行: 位点) => {
     if (事件.button !== 0) return
-    const 矩 = svg元素?.getBoundingClientRect()
-    const 比例 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 尺寸().宽, 矩.height / 尺寸().高) || 1 : 1
     刚拖过 = false
-    拖节点 = { id: 行.id, 起x: 事件.clientX, 起y: 事件.clientY, 原x: 行.x, 原y: 行.y, 比例, 移动: false }
+    // Shift + 点节点 = 加入/移出多选（在 click 里做），这里不接管拖动：
+    // 否则手一抖就把整个图挪了，而用户只是想把这一颗加进选。
+    if (事件.shiftKey) {
+      拖节点 = undefined
+      return
+    }
+    const 选了这 = 多选().includes(行.id)
+    if (!选了这 && 多选().length > 0) set多选([])
+    const 组 = 选了这
+      ? 多选()
+          .map((id) => 点(id))
+          .filter((条): 条 is 位点 => 条 !== undefined)
+          .map((条) => ({ id: 条.id, x: 条.x, y: 条.y }))
+      : [{ id: 行.id, x: 行.x, y: 行.y }]
+    拖节点 = {
+      起x: 事件.clientX,
+      起y: 事件.clientY,
+      比例: 到内容(事件.clientX, 事件.clientY)?.比例 ?? 1,
+      组,
+      移动: false,
+    }
   }
 
   const 开始拖 = (事件: MouseEvent) => {
     if (事件.button !== 0) return
     const 目标 = 事件.target
     if (目标 instanceof Element && 目标.closest("[data-slot='graph-node'],[data-slot='graph-edge'],[data-slot='graph-zoom-bar'],[data-slot='graph-legend']")) return
-    const 矩 = svg元素?.getBoundingClientRect()
-    const 比例 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 尺寸().宽, 矩.height / 尺寸().高) || 1 : 1
+    // Shift + 拖空白 = 拉框多选；普通左键拖空白仍然是平移画布（用户 2026-11-07 谈定）。
+    if (事件.shiftKey) {
+      const 起 = 到节点(事件.clientX, 事件.clientY)
+      拉 = { 起x: 事件.clientX, 起y: 事件.clientY, 节点x: 起.x, 节点y: 起.y, 移动: false }
+      set拉框({ x0: 起.x, y0: 起.y, x1: 起.x, y1: 起.y })
+      return
+    }
     const 原 = 平移()
-    拖 = { 起x: 事件.clientX, 起y: 事件.clientY, 原x: 原.x, 原y: 原.y, 比例 }
+    拖 = {
+      起x: 事件.clientX,
+      起y: 事件.clientY,
+      原x: 原.x,
+      原y: 原.y,
+      比例: 到内容(事件.clientX, 事件.clientY)?.比例 ?? 1,
+    }
   }
 
   onMount(() => {
@@ -751,12 +835,18 @@ export function Graph(props: GraphProps): JSX.Element {
         // 3px 死区：手抖 1px 不算拖动，否则「点一下看详情」会变成「挪半步再选中」。
         if (!节点.移动 && Math.hypot(屏x, 屏y) > 3) 节点.移动 = true
         if (!节点.移动) return
-        // 屏幕位移 ÷（画布缩放 × 视图缩放）= viewBox 位移。
+        // 屏幕位移 ÷（画布缩放 × 视图缩放）= viewBox 位移。整组共用同一个位移 ⇒ 相对位置不变。
         const 比 = 节点.比例 * 缩放()
-        set手动位置({
-          ...手动位置(),
-          [节点.id]: { x: 节点.原x + 屏x / 比, y: 节点.原y + 屏y / 比 },
-        })
+        const 新 = { ...手动位置() }
+        for (const 条 of 节点.组) 新[条.id] = { x: 条.x + 屏x / 比, y: 条.y + 屏y / 比 }
+        set手动位置(新)
+        return
+      }
+      if (拉 !== undefined) {
+        if (!拉.移动 && Math.hypot(事件.clientX - 拉.起x, 事件.clientY - 拉.起y) > 3) 拉.移动 = true
+        if (!拉.移动) return
+        const 终 = 到节点(事件.clientX, 事件.clientY)
+        set拉框({ x0: 拉.节点x, y0: 拉.节点y, x1: 终.x, y1: 终.y })
         return
       }
       if (拖 === undefined) return
@@ -770,13 +860,35 @@ export function Graph(props: GraphProps): JSX.Element {
         刚拖过 = 拖节点.移动
         拖节点 = undefined
       }
+      if (拉 !== undefined) {
+        刚拉过 = 拉.移动
+        const 框 = 拉框()
+        if (拉.移动 && 框 !== undefined) {
+          // 判归属按**圆心在框内**（用户谈定的口径）：擦到边的半颗不算，免得选进一大片。
+          const 左 = Math.min(框.x0, 框.x1)
+          const 右 = Math.max(框.x0, 框.x1)
+          const 上 = Math.min(框.y0, 框.y1)
+          const 下 = Math.max(框.y0, 框.y1)
+          set多选(
+            全部点()
+              .filter((条) => 条.x >= 左 && 条.x <= 右 && 条.y >= 上 && 条.y <= 下)
+              .map((条) => 条.id),
+          )
+        }
+        拉 = undefined
+        set拉框(undefined)
+      }
       拖 = undefined
     }
     const 按键 = (事件: KeyboardEvent) => {
       if (事件.key !== "Escape") return
       set选中(null)
+      set多选([])
       set悬停点(undefined)
       set悬停边(undefined)
+      // 拉到一半按 Esc：把框也收掉，别留一个松不开的虚框。
+      拉 = undefined
+      set拉框(undefined)
     }
     window.addEventListener("mousemove", 移)
     window.addEventListener("mouseup", 松)
@@ -939,7 +1051,13 @@ export function Graph(props: GraphProps): JSX.Element {
               onClick={(事件) => {
                 const 目标 = 事件.target
                 if (目标 instanceof Element && 目标.closest("[data-slot='graph-node'],[data-slot='graph-edge']")) return
+                // 拉完框浏览器还会补一个 click：那一下不能把刚选出来的多选清掉。
+                if (刚拉过) {
+                  刚拉过 = false
+                  return
+                }
                 set选中(null)
+                set多选([])
               }}
             >
               <g data-slot="graph-viewport" transform={`translate(${平移().x} ${平移().y}) scale(${缩放()})`}>
@@ -1026,16 +1144,27 @@ export function Graph(props: GraphProps): JSX.Element {
                       data-node-shape={形状(行().type)}
                       data-node-x={行().x.toFixed(1)}
                       data-node-y={行().y.toFixed(1)}
+                      data-selected={多选().includes(行().id) ? "true" : "false"}
                       opacity={节点透明(行().id)}
                       class="cursor-pointer"
                       onMouseDown={(事件) => 开始拖节点(事件, 行())}
-                      onClick={() => {
+                      onClick={(事件) => {
+                        // Shift + 点 = 加入/移出多选（用户 2026-11-07 谈定）：不弹面板——
+                        // 要加一颗进组时不该把右侧检视面板挤出来。
+                        if (事件.shiftKey) {
+                          set多选((旧) =>
+                            旧.includes(行().id) ? 旧.filter((条) => 条 !== 行().id) : [...旧, 行().id],
+                          )
+                          return
+                        }
                         // 拖动后浏览器补发的 click 不是「选中」；吞掉它并把标志复位，
                         // 否则下一次真正的点击也会被误吞。
                         if (刚拖过) {
                           刚拖过 = false
                           return
                         }
+                        // 点一颗 = 多选收拢成这一颗：之后拖它只动它自己。
+                        set多选([])
                         set选中({ kind: "node", id: 行().id })
                         让出面板(行())
                       }}
@@ -1053,6 +1182,19 @@ export function Graph(props: GraphProps): JSX.Element {
                           stroke="var(--v2-brand-gold-deep)"
                           stroke-width="1.5"
                           stroke-opacity="0.55"
+                        />
+                      </Show>
+                      {/* 多选环比单选焦点环**紧一点、实一点**：两个环都在时要一眼分得出「组里的」和「面板在看的那颗」。 */}
+                      <Show when={多选().includes(行().id)}>
+                        <circle
+                          data-slot="graph-node-selected"
+                          cx={行().x}
+                          cy={行().y}
+                          r={节点半径(行()) + 3.5}
+                          fill="none"
+                          stroke="var(--v2-brand-gold-deep)"
+                          stroke-width="2"
+                          stroke-opacity="0.85"
                         />
                       </Show>
                       <图形 点={行()} 焦点={选中()?.kind === "node" && 选中()!.id === 行().id} />
@@ -1081,6 +1223,25 @@ export function Graph(props: GraphProps): JSX.Element {
                     </g>
                   )}
                 </Index>
+
+                {/* 拉框画在视口组里 ⇒ 用节点坐标，平移缩放时框跟着图走（否则放大后框会飘到别处）。 */}
+                <Show when={拉框()}>
+                  {(框) => (
+                    <rect
+                      data-slot="graph-marquee"
+                      pointer-events="none"
+                      x={Math.min(框().x0, 框().x1)}
+                      y={Math.min(框().y0, 框().y1)}
+                      width={Math.abs(框().x1 - 框().x0)}
+                      height={Math.abs(框().y1 - 框().y0)}
+                      fill="var(--v2-brand-gold-deep)"
+                      fill-opacity="0.08"
+                      stroke="var(--v2-brand-gold-deep)"
+                      stroke-width="1"
+                      stroke-dasharray="4 3"
+                    />
+                  )}
+                </Show>
 
                 <Show when={悬停内容()}>
                   {(详) => (

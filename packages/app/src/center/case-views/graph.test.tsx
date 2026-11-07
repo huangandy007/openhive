@@ -888,6 +888,165 @@ describe("关系图 · 排列模式与拖动", () => {
   })
 })
 
+/**
+ * 框选多选 ＋ 整组拖动（2026-11-07 用户下达：「框选多个节点后整体移动」）。
+ *
+ * 手势与用户谈定：左键拖空白仍是平移；**Shift + 左键拖空白**才拉框；
+ * 拖已选中的节点 ⇒ 整组同位移；拖未选中的节点 ⇒ 只动它并清空多选。
+ */
+describe("关系图 · 框选与整组拖动", () => {
+  const 坐标 = (host: HTMLElement, id: string) => {
+    const 点 = 点元素(host, id)
+    return { x: Number(点.getAttribute("data-node-x")), y: Number(点.getAttribute("data-node-y")) }
+  }
+  const 选了 = (host: HTMLElement, id: string) => 点元素(host, id).getAttribute("data-selected") === "true"
+  const 全部id = ["e-张", "e-李", "e-号", "e-账", "e-地"]
+
+  /** 真事件派发：mousedown（svg/节点）→ window mousemove → window mouseup。`shift` 决定平移还是拉框。 */
+  function 拖动(
+    元素: Element,
+    起: { x: number; y: number },
+    终: { x: number; y: number },
+    shift = false,
+  ) {
+    元素.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, shiftKey: shift, clientX: 起.x, clientY: 起.y }))
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 终.x, clientY: 终.y }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+  }
+
+  /**
+   * 在夹具里挑一对节点、按它们的外接框（±6）拉一次框，返回这对 id。
+   *
+   * 为什么动态挑：环上哪两个点在几何上"正好一对"取决于布局算法，写死 (账, 地) 的外接框
+   * 会把中间的 (李/号) 也框进去（首版就这么错了）。这里按同一几何验一遍：只接受
+   * **恰好框住这两个**的矩形，找不到就说明夹具几何变了，直接抛，别让用例悄悄证明别的事。
+   */
+  function 框住俩(host: HTMLElement): readonly [string, string] {
+    const 位 = Object.fromEntries(全部id.map((id) => [id, 坐标(host, id)]))
+    const 对们: [string, string][] = []
+    for (let i = 0; i < 全部id.length; i++)
+      for (let j = i + 1; j < 全部id.length; j++) 对们.push([全部id[i], 全部id[j]])
+    // 面积大的优先：框够大，拖动不会被 3px 死区吃掉。
+    const 面积 = (对: [string, string]) => {
+      const a = 位[对[0]]
+      const b = 位[对[1]]
+      return Math.abs(a.x - b.x) * Math.abs(a.y - b.y)
+    }
+    对们.sort((甲, 乙) => 面积(乙) - 面积(甲))
+    for (const 对 of 对们) {
+      const a = 位[对[0]]
+      const b = 位[对[1]]
+      const 起 = { x: Math.min(a.x, b.x) - 6, y: Math.min(a.y, b.y) - 6 }
+      const 终 = { x: Math.max(a.x, b.x) + 6, y: Math.max(a.y, b.y) + 6 }
+      const 在 = 全部id.filter((id) => {
+        const 点 = 位[id]
+        return 点.x >= 起.x && 点.x <= 终.x && 点.y >= 起.y && 点.y <= 终.y
+      })
+      if (在.length !== 2) continue
+      拖动(host.querySelector("svg")!, 起, 终, true)
+      return 对
+    }
+    throw new Error("夹具里找不到能恰好框住两个节点的矩形")
+  }
+
+  test("Shift + 拖空白 ⇒ 框内节点进入多选，框外不进；不弹检视面板", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 期望 = 框住俩(host)
+    // 前提自检：这一框确实框住了两个点（不是空框、也不是圈住了半个图）。
+    expect(期望).toHaveLength(2)
+    for (const id of 全部id) expect(选了(host, id)).toBe(期望.includes(id))
+    expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
+  })
+
+  test("拖已选中的节点 ⇒ 整组同位移；没选的节点不动", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 期望 = 框住俩(host)
+    const 没选 = 全部id.filter((id) => !期望.includes(id))
+    const 前 = Object.fromEntries(全部id.map((id) => [id, 坐标(host, id)]))
+    拖动(点元素(host, 期望[0]), { x: 100, y: 100 }, { x: 140, y: 130 })
+    for (const id of 期望) {
+      const 后 = 坐标(host, id)
+      expect(后.x - 前[id].x).toBeCloseTo(40, 0)
+      expect(后.y - 前[id].y).toBeCloseTo(30, 0)
+    }
+    for (const id of 没选) expect(坐标(host, id)).toEqual(前[id])
+  })
+
+  test("拖未选中的节点 ⇒ 只动它自己，多选清空", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 期望 = 框住俩(host)
+    const 目标 = 全部id.find((id) => !期望.includes(id))!
+    const 前 = Object.fromEntries(全部id.map((id) => [id, 坐标(host, id)]))
+    拖动(点元素(host, 目标), { x: 100, y: 100 }, { x: 150, y: 120 })
+    expect(坐标(host, 目标)).not.toEqual(前[目标])
+    for (const id of 期望) expect(坐标(host, id)).toEqual(前[id])
+    for (const id of 全部id) expect(选了(host, id)).toBe(false)
+  })
+
+  test("普通左键拖空白仍是平移（不拉框）：节点坐标不变，视口位移", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 前 = Object.fromEntries(全部id.map((id) => [id, 坐标(host, id)]))
+    const 视口 = host.querySelector("[data-slot='graph-viewport']")!
+    const 变换前 = 视口.getAttribute("transform")
+    拖动(host.querySelector("svg")!, { x: 10, y: 10 }, { x: 90, y: 60 })
+    expect(视口.getAttribute("transform")).not.toBe(变换前)
+    for (const id of 全部id) expect(坐标(host, id)).toEqual(前[id])
+    for (const id of 全部id) expect(选了(host, id)).toBe(false)
+  })
+
+  test("Shift + 点节点 ⇒ 加入 / 移出多选，且不改单选面板", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 节点 = 点元素(host, "e-李")
+    节点.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, shiftKey: true, clientX: 100, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+    节点.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }))
+    expect(选了(host, "e-李")).toBe(true)
+    expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
+    节点.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, shiftKey: true, clientX: 100, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+    节点.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }))
+    expect(选了(host, "e-李")).toBe(false)
+  })
+
+  test("Esc ⇒ 清空多选", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 期望 = 框住俩(host)
+    expect(期望.some((id) => 选了(host, id))).toBe(true)
+    按Esc()
+    for (const id of 全部id) expect(选了(host, id)).toBe(false)
+  })
+
+  test("框内没有节点 ⇒ 多选为空，不报错", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    框住俩(host)
+    // 先从一个**几何上确定空**的 20×20 角里拉：不写死「左上角」——环上的点落在哪个角取决于布局。
+    const 位 = Object.fromEntries(全部id.map((id) => [id, 坐标(host, id)]))
+    const 角们 = [
+      { x: 1, y: 1 },
+      { x: 画布.宽 - 21, y: 1 },
+      { x: 1, y: 画布.高 - 21 },
+      { x: 画布.宽 - 21, y: 画布.高 - 21 },
+    ]
+    const 空 = 角们.find((角) =>
+      全部id.every((id) => {
+        const 点 = 位[id]
+        return !(点.x >= 角.x && 点.x <= 角.x + 20 && 点.y >= 角.y && 点.y <= 角.y + 20)
+      }),
+    )
+    expect(空).toBeDefined()
+    拖动(host.querySelector("svg")!, 空!, { x: 空!.x + 20, y: 空!.y + 20 }, true)
+    for (const id of 全部id) expect(选了(host, id)).toBe(false)
+    expect(host.querySelector("[data-slot='graph-error']")).toBeNull()
+  })
+})
+
 describe("关系图 · 选中焦点", () => {
   const 形 = (host: HTMLElement, id: string) => 点元素(host, id).querySelector("[data-slot='graph-node-shape']")!
   const 焦点环 = (host: HTMLElement, id: string) => 点元素(host, id).querySelector("[data-slot='graph-node-focus']")
