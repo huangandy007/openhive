@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 实体清单, 实体档案, 清单上限, 类型计数 } from "../../src/server/openhive/case-entity-list"
-import { 建事件, 建关系, 建实体, 建引用 } from "./openhive-case-fact-fixture"
+import { 实体清单, 实体档案, 清单上限, 引用上限, 类型计数 } from "../../src/server/openhive/case-entity-list"
+import { 建事件, 建关系, 建实体, 建引用, 建引用批 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 const 库 = () => {
@@ -14,6 +14,7 @@ const 项目 = "p-实体"
 const 别人的项目 = "p-别人"
 const 截断项目 = "p-截断"
 const 细类项目 = "p-实体细类"
+const 引用项目 = "p-实体出处"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -92,6 +93,27 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-细盖", projectId: 细类项目, value: "13800000001", type: "号码", attrs: { subtype: "固定电话" } })
   await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
   await 建实体(库(), { id: "e-细人", projectId: 细类项目, value: "钱七", type: "人" })
+
+  // 出处是四块里唯一没有上限的（`引用们` 无 LIMIT）⇒ 大案里一个号码能在几百份材料里出现。
+  // 这里钉「有上限」与「上限说清全量」：501 条截断、恰好 500 不截断。
+  await 建实体(库(), { id: "e-多引", projectId: 引用项目, value: "号码全", type: "号码" })
+  await 建引用批(库(), {
+    projectId: 引用项目,
+    factType: "entity",
+    factId: "e-多引",
+    materialId: "m-全集",
+    数量: 引用上限 + 1,
+    前缀: "c-多引",
+  })
+  await 建实体(库(), { id: "e-满引", projectId: 引用项目, value: "号码满", type: "号码" })
+  await 建引用批(库(), {
+    projectId: 引用项目,
+    factType: "entity",
+    factId: "e-满引",
+    materialId: "m-全集",
+    数量: 引用上限,
+    前缀: "c-满引",
+  })
 })
 
 afterAll(async () => {
@@ -241,8 +263,28 @@ describe("实体清单与档案", () => {
     expect(缺口).toHaveLength(2)
     expect(缺口.some((条) => 条.includes("200") && 条.includes("关系图"))).toBe(true)
     expect(缺口.some((条) => 条.includes("100") && 条.includes("时间线"))).toBe(true)
+    // 2026-11-07：这两句原来写「请到关系图 / 时间线看全部」，但关系图上限 50 节点、
+    // 时间线默认 50 条，都比档案的 200 / 100 还少——空头支票。改成说清「怎么缩小范围」。
+    expect(缺口.every((条) => !条.includes("看全部"))).toBe(true)
     expect(档.一句话).toContain("201 条有效关系")
     // 事件数用全量（101），不是当前页的 100。
     expect(档.一句话).toContain("101 个事件")
+  })
+
+  test("档案出处：超过上限只给上限条，总数说全量", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 引用项目, id: "e-多引" }))!
+    expect(档.引用).toHaveLength(引用上限)
+    expect(档.引用总数).toBe(引用上限 + 1)
+    const 缺口 = 档.缺口 ?? []
+    expect(缺口).toHaveLength(1)
+    expect(缺口[0]).toContain("出处")
+    expect(缺口[0]).toContain(`共 ${引用上限 + 1} 条`)
+  })
+
+  test("档案出处恰好满上限不算截断（缺口 undefined）", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 引用项目, id: "e-满引" }))!
+    expect(档.引用).toHaveLength(引用上限)
+    expect(档.引用总数).toBe(引用上限)
+    expect(档.缺口).toBeUndefined()
   })
 })

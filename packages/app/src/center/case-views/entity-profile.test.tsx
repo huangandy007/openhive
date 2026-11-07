@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
-import { EntityProfile } from "./entity-profile"
+import { EntityProfile, 出处默认显示 } from "./entity-profile"
 import { 时间文本 } from "./format"
 import type { CaseDetailApi, 实体档案 } from "../case-detail-api"
 
@@ -19,9 +19,32 @@ function mount(element: () => JSX.Element) {
   render(element, host)
   return host
 }
+/** 每条用例装过的滚动探针的还原函数：抛错也要还原原型，否则会漏给下一条（`#005-34`）。 */
+const 待还原: Array<() => void> = []
 afterEach(() => {
+  while (待还原.length) 待还原.pop()!()
   document.body.innerHTML = ""
 })
+
+/**
+ * 装一个 `scrollIntoView` 探针，记下它被调到时 `this` 是谁。
+ *
+ * happy-dom **没有布局**：`getBoundingClientRect()` 恒 0、没有真实滚动，
+ * 所以这里钉的是「点了滚到哪个块」，不量位置（`#004-03`：量不出来的就别写成量过）。
+ */
+function 装滚动探针(): Element[] {
+  const 原型 = Element.prototype as unknown as { scrollIntoView?: (选项?: unknown) => void }
+  const 原 = 原型.scrollIntoView
+  const 到过: Element[] = []
+  原型.scrollIntoView = function (this: Element) {
+    到过.push(this)
+  }
+  待还原.push(() => {
+    if (原 === undefined) delete 原型.scrollIntoView
+    else 原型.scrollIntoView = 原
+  })
+  return 到过
+}
 
 const 档: 实体档案 = {
   id: "e-张",
@@ -85,7 +108,21 @@ const 档: 实体档案 = {
       confidence: 0.9,
     },
   ],
+  引用总数: 1,
   一句话: "张三：2 条关系，1 起事件；数据说的 1 条、人说的 1 条。",
+}
+
+/** 造 N 条出处（`引用` 与 `引用总数` 一致；服务端截断的那档由用例单独给不同的总数）。 */
+function 造引用(条数: number) {
+  return Array.from({ length: 条数 }, (_, i) => ({
+    id: `c-${i}`,
+    materialId: `m-${i}`,
+    fileName: `材料${i}.xlsx`,
+    path: null,
+    locator: null,
+    extractMethod: "机器" as const,
+    confidence: null,
+  }))
 }
 
 function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
@@ -190,8 +227,10 @@ describe("实体档案", () => {
       />
     ))
     await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+    // 整格现在是按钮（入口，见下面三条用例），数字在 `entity-stat-value` 里——读数字别读按钮，
+    // 否则会把标签「关系」一起读进来。
     const 数 = (键: string) =>
-      host.querySelector(`[data-slot='entity-stat'][data-key='${键}']`)!.textContent
+      host.querySelector(`[data-slot='entity-stat'][data-key='${键}'] [data-slot='entity-stat-value']`)!.textContent
     expect(数("关系")).toBe("2")
     expect(数("事件")).toBe("1")
     expect(数("出处")).toBe("1")
@@ -199,6 +238,54 @@ describe("实体档案", () => {
     // 金额是逐条关系的字符串，出入双向各记一遍；前端求和会给出一个假数（4×3 万来回＝24 万）。
     // 服务端不给聚合，这里就不摆这个数字。
     expect(host.textContent).not.toContain("涉及金额")
+  })
+
+  /**
+   * 四格是**入口**，不只是看板（2026-11-07 用户裁定）：点数字就把你带到它数的那批东西跟前。
+   *
+   * 「对手方」没有自己的正文块——它是关系里「对方」去重后的个数 ⇒ 与「关系」同落点
+   * （用户当场选的 A）。为 0 也可点：对应块里有「没有共同事件 / 没有登记出处」这类实话。
+   */
+  const 统计格 = (host: HTMLElement, 键: string): HTMLButtonElement => {
+    const 格 = host.querySelector(`[data-slot='entity-stat'][data-key='${键}']`)
+    if (!(格 instanceof HTMLButtonElement)) throw new Error(`「${键}」格不是按钮——点不动，前提不成立`)
+    return 格
+  }
+  const 落点 = (到过: Element[]) => 到过.map((元素) => 元素.getAttribute("data-slot"))
+
+  test("点「事件」格 ⇒ 滚到事件块", async () => {
+    const 到过 = 装滚动探针()
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+
+    统计格(host, "事件").click()
+
+    expect(落点(到过)).toEqual(["entity-events"])
+    // 滚的必须是**档案自己的滚动容器里**那一块：滚到别处等于把用户送出档案页。
+    expect(host.querySelector("[data-slot='entity-profile-body']")!.contains(到过[0]!)).toBe(true)
+  })
+
+  test("点「出处」格 ⇒ 滚到出处块", async () => {
+    const 到过 = 装滚动探针()
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+
+    统计格(host, "出处").click()
+
+    expect(落点(到过)).toEqual(["entity-citations"])
+  })
+
+  test("点「关系」或「对手方」格 ⇒ 都滚到关系块（对手方是关系的派生数，没有自己的块）", async () => {
+    const 到过 = 装滚动探针()
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+
+    统计格(host, "关系").click()
+    统计格(host, "对手方").click()
+
+    expect(落点(到过)).toEqual(["entity-relations", "entity-relations"])
+    // 读屏只念数字与「关系」会以为这是个静态数字：可读名必须说清它会跳。
+    expect(统计格(host, "对手方").getAttribute("aria-label")).toContain("跳到")
   })
 
   test("身份头有类型字标，且不重复念给读屏（类型另有文字 chip）", async () => {
@@ -223,6 +310,61 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 1)
     expect(host.querySelector("[data-slot='entity-citation']")!.textContent).toContain("话单.xlsx")
     expect(host.querySelector("[data-slot='entity-citation']")!.textContent).toContain("Sheet1 · 第 2 行")
+  })
+
+  // 2026-11-07：出处是四块里唯一没上限的（服务端 `引用们` 原来没有 LIMIT）。一个号码在几百份
+  // 材料里出现时，档案页会一次画几百行。改成「默认只画前 50 条 ＋ 展开全部」。
+  test("出处多时默认只画前 50 条，点「展开全部」才画出全部", async () => {
+    const 多档: 实体档案 = { ...档, 引用: 造引用(120), 引用总数: 120 }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 多档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 出处默认显示)
+    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(出处默认显示)
+    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='entity-citation-expand']")!
+    expect(按钮).not.toBeNull()
+    expect(按钮.textContent).toContain("120")
+    按钮.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 120)
+    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(120)
+  })
+
+  test("出处不超过阈值时不出现展开按钮", async () => {
+    const 少档: 实体档案 = { ...档, 引用: 造引用(3), 引用总数: 3 }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 少档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 3)
+    expect(host.querySelector("[data-slot='entity-citation-expand']")).toBeNull()
+  })
+
+  // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，
+  // 不能跟着当前页说 500（与「一句话」的全量口径对齐）。
+  test("出处计数用引用总数（全量），不是当前页条数", async () => {
+    const 截断档: 实体档案 = { ...档, 引用: 造引用(出处默认显示 + 10), 引用总数: 777 }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 截断档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='出处']") !== null)
+    expect(
+      host.querySelector("[data-slot='entity-stat'][data-key='出处'] [data-slot='entity-stat-value']")!.textContent,
+    ).toBe("777")
+    expect(host.querySelector("[data-slot='entity-citations']")!.textContent).toContain("777 条")
   })
 
   test("服务端给了缺口就把那句话画出来（关系只列了前 200 条，不冒充全量）", async () => {

@@ -56,7 +56,10 @@ export interface 实体档案 {
   readonly created_at: number
   readonly 关系: readonly 档案关系[]
   readonly 事件: readonly 档案事件[]
+  /** 出处的当前页（服务端最多给 500 条）。 */
   readonly 引用: readonly 引用[]
+  /** 出处的**全量**条数：界面报数用它，不能拿 `引用.length` 冒充总数。 */
+  readonly 引用总数: number
   readonly 一句话: string
   /**
    * 关系 / 事件被上限截断时的整句提示（服务端 `case-entity-list.ts` 的 `实体档案.缺口`）。

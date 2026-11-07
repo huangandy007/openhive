@@ -31,6 +31,14 @@ const 裁决按钮类 = (押下: boolean) =>
     ? `h-7 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[13px] font-semibold text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
     : `h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
 
+/**
+ * 出处默认画多少行；超了给「展开全部」（2026-11-07）。
+ *
+ * 服务端另有 500 的硬顶（`case-entity-list.ts` 的 `引用上限`）——那个防病态数据，这个防版面。
+ * 展开是**纯前端**：数据已经在回包里，不必再发请求。
+ */
+export const 出处默认显示 = 50
+
 /** 关系行的六列：方向 / 对方 / 类型 / 次数 / 金额 / 状态。表头与行共用同一份列宽。 */
 const 关系列 =
   "grid grid-cols-[48px_minmax(0,1fr)_56px_52px_92px_64px] items-baseline gap-x-2 px-3"
@@ -62,6 +70,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   // §9.1 / Global Constraint：已排除的事实默认不出现，档案页是唯一能「切换查看」的地方。
   // 开关状态**只由用户点它改变**：请求失败只进错误态，不回滚开关（否则用户会以为是自己点错了）。
   const [含排除, set含排除] = createSignal(false)
+  // 出处默认只画前 50 条（见 `出处默认显示` 的说明）。
+  const [展开出处, set展开出处] = createSignal(false)
+  /** 上一次取的实体键：只在**换实体**时收起出处，裁决 / 切开关重取不该改变阅读位置。 */
+  let 上次实体 = ""
 
   // 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑，只作用于这个实体本身。
   const [裁决中, set裁决中] = createSignal(false)
@@ -84,6 +96,11 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     const 要排除 = 含排除()
     // 只为了订阅「重取」信号（值本身不参与取数），见上面的 `set重取序`。
     void 重取序()
+    const 实体键 = `${projectId}/${id}`
+    if (实体键 !== 上次实体) {
+      上次实体 = 实体键
+      set展开出处(false)
+    }
     set档(undefined)
     set错误(undefined)
     set载入(true)
@@ -115,6 +132,11 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
   const 数据说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind !== "human") ?? [])
   const 人说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind === "human") ?? [])
+  /** 画出来的出处行：未展开时只给前 `出处默认显示` 条。 */
+  const 显示的引用 = createMemo(() => {
+    const 全部 = 档()?.引用 ?? []
+    return 展开出处() ? 全部 : 全部.slice(0, 出处默认显示)
+  })
 
   /** 数字条只报本页列出的条目数（服务端截断由「缺口」说明，见组件注释）。 */
   const 统计 = createMemo(() => {
@@ -123,10 +145,38 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     return [
       { key: "关系", 值: 当前.关系.length },
       { key: "事件", 值: 当前.事件.length },
-      { key: "出处", 值: 当前.引用.length },
+      // 出处用**全量**（服务端可能只给了前 500 条）：与「一句话」的口径一致。
+      { key: "出处", 值: 当前.引用总数 },
       { key: "对手方", 值: new Set(当前.关系.map((行) => 行.对方值).filter((值) => 值 !== "")).size },
     ]
   })
+
+  /**
+   * 四格各自的落点（2026-11-07 用户裁定）：点数字 = 走到它数的那批东西跟前，别让人自己往下翻。
+   *
+   * 「对手方」没有自己的正文块——它是关系里「对方」去重后的个数 ⇒ 与「关系」同落点。
+   * 落点用 `data-slot` 现查，不另存 ref 数组：块是条件渲染的，ref 可能在点击时已经换过。
+   */
+  const 落点: Record<string, string> = {
+    关系: "entity-relations",
+    事件: "entity-events",
+    出处: "entity-citations",
+    对手方: "entity-relations",
+  }
+  /** 读屏只念「3 / 关系」会以为这是静态数字：可读名必须说清它会跳。 */
+  const 格子可读名: Record<string, string> = {
+    关系: "跳到关系块",
+    事件: "跳到事件块",
+    出处: "跳到出处块",
+    对手方: "跳到关系块（对手方在关系里）",
+  }
+  /** 档案自己的滚动容器；点击时从**它里面**找落点，滚到别处等于把用户送出档案页。 */
+  let 滚动体: HTMLDivElement | undefined
+
+  const 跳到 = (键: string) => {
+    const 目标 = 滚动体?.querySelector(`[data-slot='${落点[键]}']`)
+    if (目标 instanceof HTMLElement) 目标.scrollIntoView({ block: "start" })
+  }
 
   /** 排除必须同时有原因类型与一句说明（design §9.2）。只判空，不改用户输入。 */
   const 可提交排除 = () => 原因类型() !== undefined && 原因说明().trim() !== ""
@@ -260,7 +310,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
         </div>
       </header>
 
-      <div data-slot="entity-profile-body" class="min-h-0 flex-1 overflow-y-auto">
+      <div data-slot="entity-profile-body" ref={滚动体} class="min-h-0 flex-1 overflow-y-auto">
         <div class="mx-auto w-full max-w-[760px] px-4 py-3">
           <Show when={错误()}>
             {(话) => (
@@ -292,16 +342,24 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   <div class="grid grid-cols-4 divide-x divide-v2-border-border-muted">
                     <For each={统计()}>
                       {(项) => (
-                        <div class="px-3 py-2">
+                        /* 整格是按钮：只让数字可点、标签点不动，等于给用户一个看着像入口的死区。 */
+                        <button
+                          type="button"
+                          data-slot="entity-stat"
+                          data-key={项.key}
+                          data-jump={落点[项.key]}
+                          aria-label={格子可读名[项.key]}
+                          onClick={() => 跳到(项.key)}
+                          class={`cursor-pointer px-3 py-2 text-left transition-colors ${悬停叠层}`}
+                        >
                           <div
-                            data-slot="entity-stat"
-                            data-key={项.key}
+                            data-slot="entity-stat-value"
                             class="text-[20px] font-semibold leading-7 tabular-nums text-v2-text-text-base"
                           >
                             {项.值}
                           </div>
                           <div class="text-[11px] text-v2-text-text-muted">{项.key}</div>
-                        </div>
+                        </button>
                       )}
                     </For>
                   </div>
@@ -321,7 +379,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
                 <section
                   data-slot="entity-relations"
-                  class="@container overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
+                  class="@container scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
                 >
                   <关系段 标题="数据说的" slot="entity-relations-data" 行们={数据说的()} />
                   <关系段 标题="人说的" slot="entity-relations-human" 行们={人说的()} 分隔 />
@@ -329,7 +387,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
                 <section
                   data-slot="entity-events"
-                  class="overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
+                  class="scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
                 >
                   <div class="flex items-baseline gap-1.5 px-3 pt-2">
                     <h2 class="text-[12px] font-semibold text-v2-text-text-base">事件</h2>
@@ -347,16 +405,17 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
                 <section
                   data-slot="entity-citations"
-                  class="overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
+                  class="scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
                 >
                   <div class="flex items-baseline gap-1.5 px-3 pt-2 pb-1">
                     <h2 class="text-[12px] font-semibold text-v2-text-text-base">出处</h2>
-                    <span class="text-[11px] tabular-nums text-v2-text-text-muted">{档().引用.length} 条</span>
+                    {/* 全量条数（`引用总数`），不是当前页 `引用.length`：服务端最多只给 500 条。 */}
+                    <span class="text-[11px] tabular-nums text-v2-text-text-muted">{档().引用总数} 条</span>
                   </div>
-                  <Show when={档().引用.length === 0}>
+                  <Show when={档().引用总数 === 0}>
                     <p class="px-3 pb-2 text-[12px] text-v2-text-text-muted">没有登记出处</p>
                   </Show>
-                  <For each={档().引用}>
+                  <For each={显示的引用()}>
                     {(引用) => (
                       <div
                         data-slot="entity-citation"
@@ -372,6 +431,18 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       </div>
                     )}
                   </For>
+                  {/* 展开是纯前端：数据已经在回包里（服务端只多截在 500），不再发请求。 */}
+                  <Show when={档().引用.length > 出处默认显示}>
+                    <button
+                      type="button"
+                      data-slot="entity-citation-expand"
+                      aria-expanded={展开出处()}
+                      onClick={() => set展开出处((值) => !值)}
+                      class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                    >
+                      {展开出处() ? "收起" : `展开全部 ${档().引用.length} 条`}
+                    </button>
+                  </Show>
                 </section>
               </div>
             )}

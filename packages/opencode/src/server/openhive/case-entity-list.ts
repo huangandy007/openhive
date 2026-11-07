@@ -52,9 +52,14 @@ export interface 实体清单入参 {
 
 export const 清单上限 = 200
 
-/** 档案页一次最多带出的关系 / 事件条数；超了就进 `缺口`，不冒充全量。 */
+/** 档案页一次最多带出的关系 / 事件 / 出处条数；超了就进 `缺口`，不冒充全量。 */
 const 关系上限 = 200
 const 事件上限 = 100
+/**
+ * 出处的硬顶（2026-11-07）：一个号码能在几百份材料里出现，原先没有上限 ⇒ 档案页一次画几百行。
+ * 前端另有更低的「默认只画 50 条 ＋ 展开」，这里是**服务端的兜底**，防止病态数据把回包撑爆。
+ */
+export const 引用上限 = 500
 
 export async function 类型计数(db: Queryable, projectId: string): Promise<类型计数[]> {
   const 行们 = rowsOf(
@@ -168,7 +173,15 @@ export interface 实体档案 {
   readonly created_at: number
   readonly 关系: readonly 档案关系[]
   readonly 事件: readonly 档案事件[]
+  /** 出处的当前页（最多 `引用上限` 条）。 */
   readonly 引用: readonly 引用视图[]
+  /**
+   * 出处的**全量**条数（`count(*) over()`，不受上限影响）。
+   *
+   * 界面必须用它报数：跟着 `引用.length` 报会把「只取了前 500 条」说成「就 500 条」，
+   * 而顶部「一句话」与数字卡的全量口径会因此对不上（同 `关系总数` / `事件总数` 的理由）。
+   */
+  readonly 引用总数: number
   /** §8.3：档案页顶部那句文字结论（服务端生成，保证同一份数据两次打开说同一句话）。 */
   readonly 一句话: string
   /**
@@ -274,14 +287,20 @@ export async function 实体档案(
     trust_state: String(行.trust_state),
   }))
 
-  const 引用 = await 引用们(db, input.projectId, "entity", input.id)
+  const { 行们: 引用, 总数: 引用总数 } = await 引用们(db, input.projectId, "entity", input.id, 引用上限)
 
   // 截断不能伪装成总数：显示的是前 N 条，缺口里说清全量有多少。
+  //
+  // ⚠️ 别写成「请到关系图 / 时间线看全部」（2026-11-07 改掉）：关系图一次最多画 50 个节点
+  // （`case-graph.ts` 的 `默认节点上限`），时间线默认 50 条（`case-mcp-tools.ts` 的 `默认限制`），
+  // 都比这里的 200 / 100 还少——那两个入口自己也会截断。能给的只有「怎么缩小范围」。
   const 缺口: string[] = []
   if (关系总数 > 关系上限)
-    缺口.push(`关系只显示前 ${关系上限} 条，共 ${关系总数} 条，请到关系图看全部`)
+    缺口.push(`关系只显示最近 ${关系上限} 条，共 ${关系总数} 条；关系图可按类型筛选查看邻域`)
   if (事件总数 > 事件上限)
-    缺口.push(`事件只显示前 ${事件上限} 条，共 ${事件总数} 条，请到时间线看全部`)
+    缺口.push(`事件只显示最近 ${事件上限} 条，共 ${事件总数} 条；时间线可用起止时间缩小范围`)
+  if (引用总数 > 引用上限)
+    缺口.push(`出处只显示前 ${引用上限} 条，共 ${引用总数} 条`)
 
   return {
     id: String(实体.id),
@@ -295,6 +314,7 @@ export async function 实体档案(
     关系,
     事件,
     引用,
+    引用总数,
     一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }

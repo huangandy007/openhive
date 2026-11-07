@@ -105,6 +105,22 @@ export async function 建引用(
   `)
 }
 
+/**
+ * 一次种 N 条出处。逐条 `建引用` 在 500 条量级上会把套件拖慢一个数量级，
+ * 这里用 `generate_series` 一条语句种完（仍与 DAO 的 SQL 文本不同）。
+ */
+export async function 建引用批(
+  db: Queryable,
+  input: { projectId: string; factType: string; factId: string; materialId: string; 数量: number; 前缀: string },
+): Promise<void> {
+  await db.execute(sql`
+    insert into auth.case_citation (id, project_id, fact_type, fact_id, material_id, locator, extract_method, created_at)
+    select ${input.前缀} || g, ${input.projectId}, ${input.factType}, ${input.factId}, ${input.materialId},
+           '{"page":1}'::jsonb, '机器', ${现在}
+      from generate_series(1, ${input.数量}) as g
+  `)
+}
+
 /** 读一列做断言（文本与 DAO 不同，避开 PGlite 的语句缓存）。 */
 export async function 读一列(
   db: Queryable,

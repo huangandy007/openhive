@@ -411,7 +411,7 @@ export async function get_citation(
     // `引用们` 的第三参类型是 `留痕类型`（entity/relation/event），但 `case_citation.fact_type`
     // 的库约束也允许 `row`——计划 5 的单条事实详情只服务三类事实，没把 row 收进类型。
     // SQL 按字符串比较、不依赖这个类型，所以只在调用点摊开，不复制第二份引用查询。
-    const 引用 = await 引用们(ctx.db, ctx.身份.projectId, "row" as unknown as 留痕类型, 规范键)
+    const { 行们: 引用 } = await 引用们(ctx.db, ctx.身份.projectId, "row" as unknown as 留痕类型, 规范键)
     // `case_citation.fact_type='row'` 今天**没有生产写入者**（`case-ingest.ts` 只写
     // entity/relation/event 三处；测试里的 row 引用是手工种的）。查不到就如实说，
     // 别让模型以为「没有出处」等于「这行没有依据」。

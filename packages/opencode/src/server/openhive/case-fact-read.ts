@@ -240,32 +240,45 @@ async function 读事件(
   }
 }
 
-/** 这条事实的出处：按时间正序。材料被删过时 `fileName/path` 为 null（引用不悬空、也不猜）。 */
+/**
+ * 这条事实的出处：按时间正序。材料被删过时 `fileName/path` 为 null（引用不悬空、也不猜）。
+ *
+ * `上限` 缺省 = 不截断（`事实详情` / MCP 出口要全量）；给了就只取前 N 条，`总数` **仍是全量**
+ * （`count(*) over()` 在 LIMIT 之前算）。截断与总数由调用方决定怎么说，这里只管取。
+ *
+ * ⚠️ 别在调用点另写一份引用查询（`#002-06`）：`已排除` 那类判据一旦分叉就会漂。
+ */
 export async function 引用们(
   db: Queryable,
   projectId: string,
   factType: 留痕类型,
   factId: string,
-): Promise<引用视图[]> {
+  上限?: number,
+): Promise<{ 行们: 引用视图[]; 总数: number }> {
   const 行们 = rowsOf(
     await db.execute(sql`
       select c.id, c.material_id, c.locator, c.extract_method, c.confidence,
-             m.file_name, m.path
+             m.file_name, m.path, count(*) over() as 总数
         from auth.case_citation c
         left join auth.case_material m on m.project_id = c.project_id and m.id = c.material_id
        where c.project_id = ${projectId} and c.fact_type = ${factType} and c.fact_id = ${factId}
        order by c.created_at asc, c.id asc
+       ${上限 === undefined ? sql`` : sql`limit ${上限}`}
     `),
   )
-  return 行们.map((行) => ({
-    id: String(行.id),
-    materialId: String(行.material_id),
-    fileName: 文本(行.file_name),
-    path: 文本(行.path),
-    locator: 读杰森(行.locator),
-    extractMethod: String(行.extract_method) as "机器" | "人工",
-    confidence: 数字(行.confidence),
-  }))
+  const 总数 = Number(行们[0]?.总数 ?? 0)
+  return {
+    总数,
+    行们: 行们.map((行) => ({
+      id: String(行.id),
+      materialId: String(行.material_id),
+      fileName: 文本(行.file_name),
+      path: 文本(行.path),
+      locator: 读杰森(行.locator),
+      extractMethod: String(行.extract_method) as "机器" | "人工",
+      confidence: 数字(行.confidence),
+    })),
+  }
 }
 
 export interface 事实详情入参 {
@@ -292,7 +305,7 @@ export async function 事实详情(db: Queryable, input: 事实详情入参): Pr
   if (事实 === undefined) return undefined
   // ⚠️ 两条查询必须**顺序**跑，不能用 `Promise.all`：PGlite 把多条连接汇进同一个 PG 会话，
   // 单连接下并发查同一会话会撞 42P05（仓内约定见 `assets.ts:259` / `governance-assets.ts:264`）。
-  const citations = await 引用们(db, input.projectId, input.type, input.id)
+  const { 行们: citations } = await 引用们(db, input.projectId, input.type, input.id)
   const changes = await 变更历史(db, input.projectId, input.type, input.id)
   return { ...事实, citations, changes }
 }

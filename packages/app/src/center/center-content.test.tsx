@@ -602,7 +602,7 @@ describe("两栏各看各的：CenterContent 的 pane 隔离", () => {
 describe("分屏时「打开档案」开在另一栏", () => {
   const 李四 = {
     id: "e-李", type: "人", canonical_value: "李四", aliases: [], attrs: {},
-    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "李四。",
+    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 引用总数: 0, 一句话: "李四。",
   } as 实体档案
   const 图api: CaseDetailApi = {
     profile: async () => ({ kind: "ok", value: 李四 }),
@@ -767,7 +767,7 @@ describe("中栏重读：这份文件被会话改过、用户点了它（2026-10
 describe("中栏：case:// 伪路径走案件视图（计划 7 裁定 3）", () => {
   const 档 = {
     id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
-    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "张三。",
+    trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 引用总数: 0, 一句话: "张三。",
   } as 实体档案
   const 假案件api: CaseDetailApi = {
     profile: async () => ({ kind: "ok", value: 档 }),

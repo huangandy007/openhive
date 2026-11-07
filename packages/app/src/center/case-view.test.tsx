@@ -25,7 +25,7 @@ async function 等(条件: () => boolean) {
 
 const 档 = {
   id: "e-张", type: "人", canonical_value: "张三", aliases: [], attrs: {},
-  trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 一句话: "张三。",
+  trust_state: "自动抽取", created_at: 1, 关系: [], 事件: [], 引用: [], 引用总数: 0, 一句话: "张三。",
 } as 实体档案
 
 const api: CaseDetailApi = {
@@ -126,26 +126,30 @@ describe("案件视图外壳", () => {
     }
   })
 
-  test("关系图点节点 ⇒ 面板「打开档案」交出实体档案；「以此为中心」交出同一视图的新中心", async () => {
-    // 第二参数是「开在哪一栏」的提示：只有「打开档案」要求去另一栏（分屏时并排看），
-    // 「以此为中心」是钻取，仍在原栏换图。
+  test("关系图点节点 ⇒ 面板「打开档案」交出实体档案；「以此为中心」**不开新 tab**，原地换中心", async () => {
+    // 「打开档案」要另一栏（分屏时并排看）；「以此为中心」是钻取，2026-11-07 裁定留在同一张图里
+    // ⇒ 图上自己重新取数，`open` 一次都不该被调用（否则就是开一条新 tab，正是被否掉的那个行为）。
     const 收到: Array<{ title: string; path: string; 选项?: unknown }> = []
+    const 取数: string[] = []
     const host = mount(() => (
       <CaseView
         path="case://p-1/graph/e-%E5%BC%A0"
         api={{
           ...api,
-          graph: async () => ({
-            kind: "ok",
-            value: {
-              节点: [
-                { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-                { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
-              ],
-              边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
-              缺口: [],
-            },
-          }),
+          graph: async (_projectId, id) => {
+            取数.push(id)
+            return {
+              kind: "ok",
+              value: {
+                节点: [
+                  { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
+                  { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+                ],
+                边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+                缺口: [],
+              },
+            }
+          },
         }}
         open={(输入, 选项) => 收到.push({ ...输入, 选项 })}
       />
@@ -163,11 +167,10 @@ describe("案件视图外壳", () => {
     ])
 
     host.querySelector<HTMLElement>("[data-slot='graph-panel-focus']")!.click()
-    expect(收到.at(-1)).toEqual({
-      title: "李四 · 关系图",
-      path: "case://p-1/graph/e-%E6%9D%8E",
-      选项: undefined,
-    })
+    // 原地换中心 ⇒ 图自己按新 id 再取一次数，`open` 一条都不多
+    await 等(() => 取数.length === 2)
+    expect(取数).toEqual(["e-张", "e-李"])
+    expect(收到).toHaveLength(1)
   })
 
   test("提醒路径 ⇒ 渲染提醒清单（注入的提醒 api）", async () => {
