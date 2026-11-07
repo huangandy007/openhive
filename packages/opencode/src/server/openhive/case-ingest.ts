@@ -8,6 +8,7 @@ import { nowSeconds } from "@opencode-ai/auth/time"
 import { 解析方式 } from "./case-parseable"
 import { 抽取文本 } from "./case-text"
 import { 抽取材料, type 抽取器 } from "./case-extract-run"
+import { 纠正大类 } from "./case-subtype"
 import { readSheets } from "./case-sheet"
 import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
 import { toFactRows } from "./case-rows"
@@ -501,15 +502,17 @@ async function 跑文本(
     for (const 片 of 输出.片们) {
       const 实体id = new Map<string, string>()
       for (const 实体 of 片.实体) {
-        const id = 事实id(job.projectId, 实体.type, 实体.canonicalValue)
+        // 大类纠正必须在 `事实id` 之前：id 里含大类，纠正后还要用它给关系端点找实体。
+        const 大类 = 纠正大类(实体.type, 实体.canonicalValue)
+        const id = 事实id(job.projectId, 大类, 实体.canonicalValue)
         const 实际 = await upsertEntity(tx, {
           projectId: job.projectId,
           id,
-          type: 实体.type,
+          type: 大类,
           canonicalValue: 实体.canonicalValue,
           aliases: 实体.aliases,
         })
-        实体id.set(`${实体.type}\u0000${实体.canonicalValue}`, 实际)
+        实体id.set(`${大类}\u0000${实体.canonicalValue}`, 实际)
         await addCitation(tx, {
           id: 引用id(job.projectId, "entity", 实际, job.materialId, 片.片.起),
           projectId: job.projectId,
@@ -522,8 +525,11 @@ async function 跑文本(
       }
 
       for (const 关系 of 片.关系) {
-        const from = 实体id.get(`人\u0000${关系.from}`) ?? 实体id.get(`号码\u0000${关系.from}`)
-        const to = 实体id.get(`人\u0000${关系.to}`) ?? 实体id.get(`号码\u0000${关系.to}`)
+        // 端点值是 `推断实体类型` 判出来的（只认号码 / 人），但落库前还过了一道
+        // `纠正大类`：卡号从「号码」改成了「账户」，只按前两个键找就会静默丢关系。
+        // 模型直接输出「账户」实体时同理——这不是新坑，是这次纠正把它放大成了常见路径。
+        const from = 端点(实体id, 关系.from)
+        const to = 端点(实体id, 关系.to)
         // 回读阶段保证两端都在实体表里；这里拿不到 id 说明推断类型与规范值对不上，跳过。
         if (from === undefined || to === undefined) continue
         const id = 事实id(
@@ -637,6 +643,18 @@ async function 跑文本(
 
 function 事实id(...parts: (string | number)[]): string {
   return Hash.sha256(parts.join("\u0000")).slice(0, 32)
+}
+
+/**
+ * 按关系端点值找实体 id。键是「大类 ＋ `\u0000` ＋ 规范值」。
+ *
+ * 端点值没有自带大类（抽取结果里关系只给值），所以按可能落库的大类依次试：
+ * `人`（`推断实体类型` 的兜底）、`号码`（含纠正后仍是号码的身份证）、`账户`
+ * （`纠正大类` 把卡号从「号码」改过来的那一类）。三个都不中就跳过这条关系——
+ * 与纠正前的行为一致（端点对不上就丢），不多猜。
+ */
+function 端点(实体id: ReadonlyMap<string, string>, 值: string): string | undefined {
+  return 实体id.get(`人\u0000${值}`) ?? 实体id.get(`号码\u0000${值}`) ?? 实体id.get(`账户\u0000${值}`)
 }
 
 function 引用id(projectId: string, factType: string, factId: string, materialId: string, 起: number): string {

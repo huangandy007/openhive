@@ -767,6 +767,43 @@ describe("文本作业（计划 4）", () => {
     expect(行[0]?.text_content).toBe(文本)
   })
 
+  // 模型会把 16 位卡号写成「号码」。大类在**写入口**纠正（`纠正大类`），关系两端也要
+  // 跟着按纠正后的大类去找实体——否则这类材料的关系会静默丢掉（`from/to` 取不到就 continue），
+  // 而实体表里只剩一条错类的号码。两处一起钉，少钉一处就是「纠正了但关系没了」。
+  test("卡号被抽成「号码」⇒ 落库是「账户」，关系两端也接得上", async () => {
+    const 卡号 = "6222020000000001"
+    const 原文 = `2026年3月5日，张三向账户${卡号}转账28万元。`
+    const 入 = await 入队文本("卡号.txt", 原文)
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张三" },
+        { 类型: "号码", 取值: 卡号 },
+      ],
+      关系: [{ 类型: "转账", 从: "张三", 到: 卡号, 金额原文: "28万", 原文 }],
+      事件: [],
+    }))
+    expect(await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)).toBe("完成")
+
+    const 实体 = rowsOf(await db().execute(sql`
+      select type, canonical_value from auth.case_entity where project_id = 'p-txt'
+    `))
+    expect(实体.map((e) => `${String(e.type)}|${String(e.canonical_value)}`).sort()).toEqual(
+      ["人|张三", `账户|${卡号}`].sort(),
+    )
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select t.type as to_type, t.canonical_value as to_value
+      from auth.case_relation r
+      join auth.case_entity t on t.project_id = r.project_id and t.id = r.to_id
+      where r.project_id = 'p-txt'
+    `))
+    // 关系没丢、且落在纠正后的账户上：只纠正实体而漏掉端点查找时，这里会是 0 行。
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.to_type).toBe("账户")
+    expect(关系[0]?.to_value).toBe(卡号)
+  })
+
   // 钉住「后端 parse_detail 与前端解析器同名不同形」这个坑：`slices` 在前端契约里是
   // **问题切片数组**（`packages/app/src/project/case-materials-api.ts:96-116` 的 `解析问题`：
   // 有就必须是对象数组、每项 range/reason/count 齐全），不是「片数」。成功路径曾把它写成
