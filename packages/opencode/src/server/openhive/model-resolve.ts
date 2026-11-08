@@ -104,7 +104,7 @@ export const resolveModelFromConfig = (
 
     // 只在「配置文件自己声明了这个 provider 且声明了 models」时校验模型名。
     // provider 来自 auth / models.dev 时，这里离线看不到它的模型目录；放行，
-    // 由作业期的 `provider.getModel` 给出 unknown_provider / unknown_model。
+    // 由作业期的 `provider.getModel` 报错，错误名原文进作业错误文案。
     const 声明 = config.provider?.[解析.providerID]
     const 模型表 = 声明?.models
     if (模型表 !== undefined && Object.keys(模型表).length > 0 && 模型表[解析.modelID] === undefined) {
