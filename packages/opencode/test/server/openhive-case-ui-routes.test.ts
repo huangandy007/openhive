@@ -73,6 +73,10 @@ beforeAll(async () => {
   await 建实体(pg.db, { id: "e-路由账", projectId: 项目, value: "路由账户", type: "账户" })
   // 第二条转账的付款人：让 `/money` 的跨行聚合真被验到（笔数 2 / 合计 2000.00）。
   await 建实体(pg.db, { id: "e-路由李", projectId: 项目, value: "路由李四", type: "人" })
+  // `group=提及` 必须有真对象：一条没有任何关系与事件的孤立实体，只有它会判成「提及」，
+  // 这样 `group=核心` / `group=提及` 的过滤才真分得开（上面每个实体都至少有一条关系）。
+  // 孤立 ⇒ 三条提醒规则（资金对称 / 通话转账重合 / 号码多账户）都不会命中它。
+  await 建实体(pg.db, { id: "e-路由提及", projectId: 项目, value: "路由提及", type: "号码" })
   await 建关系(pg.db, {
     id: "r-路由",
     projectId: 项目,
@@ -109,7 +113,7 @@ beforeAll(async () => {
   })
   // 计划 7 Task 9 的提醒种子：`资金对称` 的闸是「两向各 ≥2 笔 **且** 各合计 ≥5000」——
   // `r-路由` 那两笔 1000 不命中，所以这里另起一个账户，单笔 3000（两向各 6000）。
-  // 四名对手方用「组织」类型：上面 `counts` 的 `{type:"人",count:2}` 断言因此不受影响。
+  // 四名对手方用「组织」类型：不碰上面那几名「人」实体，实体清单的分组断言因此不受影响。
   await 建实体(pg.db, { id: "e-提醒账", projectId: 项目, type: "账户", value: "6222****9001" })
   for (const [id, 值] of [
     ["e-提醒甲", "提醒甲"],
@@ -215,14 +219,50 @@ describe("openhive 案件视图出口（计划 7）", () => {
     }),
   )
 
-  it("实体清单：counts 与 list 同一次回包", () =>
+  it("实体清单：groups 与 list 同一次回包（list 带总数）", () =>
     Effect.gen(function* () {
       const 体 = yield* 读回<{
-        counts: { type: string; count: number }[]
-        list: { 行们: { id: string }[]; 缺口: string[] }
+        groups: { 核心: number; 提及: number }
+        list: { 行们: { id: string }[]; 总数: number; 缺口: string[] }
       }>(yield* 发(我, `/openhive/case/entities?projectId=${项目}`))
-      expect(体.counts).toContainEqual({ type: "人", count: 2 })
+      // 实测分布（省略 group = 跨组）：核心 8 条都是有关系/事件的，提及 1 条是孤立实体。
+      expect(体.groups).toEqual({ 核心: 8, 提及: 1 })
+      expect(体.list.总数).toBe(9)
       expect(体.list.行们.map((行) => 行.id)).toContain("e-路由张")
+      expect(体.list.缺口).toEqual([])
+    }),
+  )
+
+  it("实体清单：group 过滤；非法 group ⇒ 400", () =>
+    Effect.gen(function* () {
+      const 提及 = yield* 读回<{ list: { 行们: { id: string }[]; 总数: number } }>(
+        yield* 发(我, `/openhive/case/entities?projectId=${项目}&group=${encodeURIComponent("提及")}`),
+      )
+      expect(提及.list.行们.map((行) => 行.id)).toEqual(["e-路由提及"])
+      expect(提及.list.总数).toBe(1)
+
+      const 核心 = yield* 读回<{ list: { 行们: { id: string }[]; 总数: number } }>(
+        yield* 发(我, `/openhive/case/entities?projectId=${项目}&group=${encodeURIComponent("核心")}`),
+      )
+      expect(核心.list.行们.map((行) => 行.id)).not.toContain("e-路由提及")
+      expect(核心.list.总数).toBe(8)
+
+      const 非法 = yield* 发(我, `/openhive/case/entities?projectId=${项目}&group=乱写`)
+      expect(非法.status).toBe(400)
+      expect(yield* 读回<{ error: string; code: string }>(非法)).toEqual({
+        error: "group 只能是 核心 / 提及",
+        code: "bad_request",
+      })
+    }),
+  )
+
+  it("实体清单：q 仍跨组搜索，结果带分组", () =>
+    Effect.gen(function* () {
+      const 体 = yield* 读回<{ list: { 行们: { id: string; 分组: string }[]; 总数: number } }>(
+        yield* 发(我, `/openhive/case/entities?projectId=${项目}&q=${encodeURIComponent("路由张")}`),
+      )
+      expect(体.list.总数).toBe(1)
+      expect(体.list.行们[0]).toMatchObject({ id: "e-路由张", 分组: "核心" })
     }),
   )
 
