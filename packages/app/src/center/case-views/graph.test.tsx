@@ -314,7 +314,7 @@ describe("关系图 · 画", () => {
 })
 
 describe("关系图 · 悬停", () => {
-  test("悬停节点：它和邻居保持原样，其余节点与边降到 25%，并出提示（类型/可信/图上与全部条数）", async () => {
+  test("悬停节点：它和邻居保持原样，其余节点与边降到 25%，并出提示（类型/可信/图上与库内条数）", async () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseenter"))
@@ -352,7 +352,7 @@ describe("关系图 · 悬停", () => {
 })
 
 describe("关系图 · 检视面板", () => {
-  test("点节点开右侧面板：显示类型/可信/跳数/图上与全部两条数；「打开档案」把整条节点交给上层", async () => {
+  test("点节点开右侧面板：显示类型/可信/跳数/图上与库内两条数；「打开档案」把整条节点交给上层", async () => {
     const 收到: 图节点[] = []
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={(点) => 收到.push(点)} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
@@ -659,7 +659,7 @@ describe("关系图 · 工具栏", () => {
     expect(调用.at(-1)).toBe(1)
   })
 
-  test("两档模式：全貌 = 2 跳 / 重点 / 分簇；聚焦 = 1 跳 / 全部 / 不分簇", async () => {
+  test("两档模式：全貌 = 2 跳 / 重点 / 分簇；设聚焦 = 1 跳 / 全部 / 关分簇", async () => {
     const 调用: Array<{ 跳数: 1 | 2 | undefined; 强度: 关系图强度 | undefined }> = []
     const api = 假api({
       graph: async (_项目, _id, 跳数, _类型, 强度) => {
@@ -1375,7 +1375,7 @@ describe("关系图 · 枢纽", () => {
     缺口: [],
   }
 
-  test("度数 ≥ 10 画外环；面板同时给「图上」与「全部」两条数", async () => {
+  test("度数 ≥ 10 画外环；面板同时给「图上」与「库内」两条数", async () => {
     const host = mount(() => (
       <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 枢纽图 }) })} onOpenEntity={() => {}} />
     ))
@@ -1391,7 +1391,7 @@ describe("关系图 · 枢纽", () => {
     expect(点元素(host, "e-枢").querySelector("title")!.textContent).toBe("枢纽账户（枢纽 · 库内 12 条）")
     expect(点元素(host, "e-常").querySelector("title")!.textContent).toBe("普通人")
 
-    // 悬停浮层与面板同一口径：图上/全部，枢纽再追加「· 枢纽」。
+    // 悬停浮层与面板同一口径：图上/库内，枢纽再追加「· 枢纽」。
     点元素(host, "e-枢").dispatchEvent(new MouseEvent("mouseenter"))
     expect(host.querySelector("[data-slot='graph-tip']")!.querySelectorAll("text")[1]?.textContent).toBe(
       "自动抽取 · 图上 1 · 库内 12 · 枢纽",
