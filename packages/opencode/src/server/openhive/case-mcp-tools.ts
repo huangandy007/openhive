@@ -192,8 +192,11 @@ export async function query_entities(
 /**
  * 实体解析：id 优先、其次规范值；都查不到 ⇒ not_found（`称呼` 进文案，说清是哪一方）。
  *
- * 规范值跨类型可重名（唯一索引是 `(project_id, type, canonical_value)`，见 0031），
- * 所以第二段必须按 `type asc, id asc` 取确定的第一条——不许「取到哪条算哪条」。
+ * 规范值跨类型可重名（唯一索引是 `(project_id, type, canonical_value)`，见 0031）。
+ * 同值多行时取**最新创建**的那行（`created_at desc`）：入库时的 `纠正大类` 会把错标的
+ * 旧行换成一个新类别的行，纠正后的新行总是后建的——按 `type asc` 取会永远命中旧「人」行，
+ * 而新关系全挂在「组织」行上，MCP 与图谱页因此矛盾。`created_at` 相同的极端情况
+ * 再按 `type asc, id asc` 取确定的第一条——不许「取到哪条算哪条」。
  */
 export async function 解析实体(
   ctx: 工具上下文,
@@ -203,7 +206,7 @@ export async function 解析实体(
   const rows = await ctx.db.execute(sql`
     select id, type, canonical_value from auth.case_entity
      where project_id = ${ctx.身份.projectId} and (id = ${值} or canonical_value = ${值})
-     order by (id = ${值}) desc, type asc, id asc
+     order by (id = ${值}) desc, created_at desc, type asc, id asc
      limit 1
   `)
   const 行 = rowsOf(rows)[0]
@@ -299,7 +302,7 @@ export async function query_relations(
   return {
     数据,
     口径:
-      "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时按 type 升序、id 升序取第一条）与类型过滤；" +
+      "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条）与类型过滤；" +
       "时间窗按「与窗口有交集」判定；默认不含「已排除」的关系及其端点实体；金额为 numeric 字符串，勿自行转浮点；" +
       "时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
@@ -359,8 +362,8 @@ export async function query_events(
   return {
     数据,
     口径:
-      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时按 type 升序、" +
-      "id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
+      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
+      "同创建时间再按 type 升序、id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
@@ -605,7 +608,7 @@ export async function aggregate_money(
     数据: { 汇总, 对手方, 余额走势 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
-      "账户先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
+      "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势按明细行的 counterparty/caller/callee 精确匹配账户的实体规范值。",
     缺口,
@@ -714,7 +717,7 @@ export async function find_crossings(
     数据: { 共同关联, 共同时空 },
     口径:
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
-      "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
+      "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。",
     缺口,
   }

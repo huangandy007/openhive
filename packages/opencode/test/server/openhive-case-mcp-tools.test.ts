@@ -13,6 +13,7 @@ import {
   search_materials,
   归一化限制,
   校验成员,
+  解析实体,
   type 工具上下文,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
@@ -55,6 +56,11 @@ const 身份丁 = { userId: "u-工具-甲", projectId: "p-工具-丁" }
  * （`query_entities` 默认不返回「已排除」断言 `ids === ["e-好"]`），再种实体就会改掉它们（`#005-34`）。
  */
 const 身份戊 = { userId: "u-工具-甲", projectId: "p-工具-戊" }
+/**
+ * 解析实体的同值多行用例落在这个**独立项目**里：同一项目里再种实体会改掉既有用例的
+ * 全量等值断言（`#005-34`）。
+ */
+const 身份解析 = { userId: "u-工具-甲", projectId: "p-工具-解析" }
 const 项目乙 = "p-工具-乙"
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
@@ -579,6 +585,52 @@ test("query_relations 不返回端点「已排除」的关系（§9.1）", async
 
 test("query_relations 给不存在的实体 ⇒ not_found", async () => {
   await expect(query_relations(ctx(身份丁), { 实体: "查无此人" })).rejects.toMatchObject({ code: "not_found" })
+})
+
+test("解析实体：同值「人/组织」两行 ⇒ 取后建的组织行，关系也取得到", async () => {
+  // 存量旧行（纠正前落库的「人」）先建；重解析后新「组织」行后建（`created_at` 取当前时间）。
+  await 建实体(库(), {
+    id: "e-旧人行-解析",
+    projectId: 身份解析.projectId,
+    value: "柏加派出所",
+    type: "人",
+    createdAt: 100,
+  })
+  await upsertEntity(库(), {
+    id: "e-组织行-解析",
+    projectId: 身份解析.projectId,
+    type: "组织",
+    canonicalValue: "柏加派出所",
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-张三-解析",
+    projectId: 身份解析.projectId,
+    type: "人",
+    canonicalValue: "张三",
+    aliases: [],
+  })
+  await insertRelation(库(), {
+    id: "r-解析",
+    projectId: 身份解析.projectId,
+    fromId: "e-张三-解析",
+    toId: "e-组织行-解析",
+    type: "同案",
+    basis: "笔录记载",
+    sourceKind: "human",
+    trustState: "自动抽取",
+  })
+
+  const 解析 = await 解析实体(ctx(身份解析), "柏加派出所", "实体")
+  // 产出原始值：类型字符串必须是纠正后的「组织」，不是旧的「人」行。
+  expect(解析.type).toBe("组织")
+  expect(解析.id).toBe("e-组织行-解析")
+
+  // 关系挂在组织行上：解析到旧「人」行时这里会是 0 条，与图谱页画出关系相矛盾。
+  const 结果 = await query_relations(ctx(身份解析), { 实体: "柏加派出所" })
+  const 关系ids = ids计(结果)
+  expect(关系ids.length).toBe(1)
+  expect(关系ids[0]).toBe("r-解析")
 })
 
 test("时间窗起 > 止 ⇒ bad_input", async () => {
