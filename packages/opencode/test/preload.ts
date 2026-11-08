@@ -38,11 +38,13 @@ process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 process.env["OPENCODE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtures", "models-api.json")
 process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 process.env["OPENCODE_EXPERIMENTAL_WORKSPACES"] = "true"
-// 测试进程默认关掉案件导入的后台消费（I7 的同一条理由：建真应用时 worker 会认领**同一个
-// 测试库**的作业，把用例插进去的东西悄悄跑掉/改态）。2026-11-08 起 worker 启动期还要自检
-// 后台模型，而大量用例（`startProductionDb` 会写 PG_*）既没有模型配置、也不关心抽取——
-// 不关它，一次「配了 PG 必须有模型」就会让几十个无关用例在层构造期死掉。
-// 需要真跑消费的用例自己 `delete process.env.OPENHIVE_CASE_INGEST_WORKER`。
+// 【保留的定制 · 同步上游时不要丢】测试进程默认关掉案件导入的后台消费（I7 的同一条理由：
+// 建真应用时 worker 会认领**同一个测试库**的作业，把用例插进去的东西悄悄跑掉/改态）。
+// 2026-11-08 起 worker 启动期还要自检后台模型，而大量用例（`startProductionDb` 会写 PG_*）
+// 既没有模型配置、也不关心抽取——不关它，一次「配了 PG 必须有模型」就会让几十个无关用例
+// 在层构造期死掉。
+// 需要真跑消费的用例：设 `process.env.OPENHIVE_CASE_INGEST_WORKER = "1"`，并用仓库
+// `restorePoint` 口径恢复，别裸 `delete`——忘记恢复会把「worker 开」泄漏给同进程后续用例。
 process.env["OPENHIVE_CASE_INGEST_WORKER"] = "0"
 
 // Set test home directory to isolate tests from user's actual home directory
