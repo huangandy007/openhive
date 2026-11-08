@@ -262,7 +262,9 @@ describe("回读", () => {
     expect(r.实体.some((项) => 项.canonicalValue === "现场")).toBe(false)
     expect(r.提示.some((话) => 话.includes("现场") && 话.includes("未建实体"))).toBe(true)
     expect(r.事件[0]?.participants).toEqual(["李四"])
-    // 夹具没给时间，既有契约本就会记一条「没有给时间」；这里要钉的是准入没有多嘴。
+    // 钉住提示总数（原始数字）：准入提示若被推两次，实体/参与人不变但这里会红。
+    // 本夹具恰两条：现场准入 + 事件没给时间。
+    expect(r.提示).toHaveLength(2)
     expect(r.提示.filter((话) => 话.includes("没有给时间")).length).toBe(1)
   })
 })
