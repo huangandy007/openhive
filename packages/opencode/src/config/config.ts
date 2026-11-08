@@ -116,14 +116,15 @@ export type Info = ConfigV1.Info & {
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
   /**
-   * openhive 定制（2026-11-08，模型统一配置）：后台任务模型槽位，形如 `provider/model`。
-   * 缺省回落到 `model`；两者都没有时后台作业显式失败。
+   * 【保留的定制 · 同步上游时不要丢】openhive 定制（2026-11-08，模型统一配置）：
+   * 后台任务模型槽位，形如 `provider/model`。缺省回落到 `model`；
+   * 两者都没有时后台作业显式失败。
    */
   task_model?: string
 }
 
 /**
- * openhive 定制：在官方配置 schema 上**加**一个字段。
+ * 【保留的定制 · 同步上游时不要丢】在官方配置 schema 上**加**一个字段。
  *
  * 用 `Schema.Struct({ ...ConfigV1.Info.fields, task_model })` 而不是改 `packages/core`：
  * 上游同步会重写 core，改那里的冲突面是长期的；这里只多一个字段，冲突面止于本文件。
