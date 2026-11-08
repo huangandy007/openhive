@@ -267,6 +267,16 @@ export interface 实体档案 {
    * 而顶部「一句话」与数字卡的全量口径会因此对不上（同 `关系总数` / `事件总数` 的理由）。
    */
   readonly 引用总数: number
+  /**
+   * 「待确认」：本实体 + 它的有效关系 + 它的事件里 `trust_state ∈ {自动抽取, 存疑}` 的条数。
+   * 已排除一律不计（「显示已排除」开关打开时也不计）。
+   */
+  readonly 待确认: {
+    readonly 实体: number
+    readonly 关系: number
+    readonly 事件: number
+    readonly 合计: number
+  }
   /** §8.3：档案页顶部那句文字结论（服务端生成，保证同一份数据两次打开说同一句话）。 */
   readonly 一句话: string
   /**
@@ -294,12 +304,18 @@ export async function 实体档案(
   const 实体 = 实体行们[0]!
 
   // 关系：两侧实体 join 出来，取「对方」；已排除的关系与已排除的对方都默认不出现（§9.1）。
-  // ⚠️ 这组谓词是**唯一一份**：列表查询与下面的全量聚合查询共用它，别写第二份。
-  const 关系条件: SQL[] = [
+  // 「触达」是 project + 该实体；「可见」再叠未排除条件。待确认用可见 + 信任态，别写第二份。
+  // ⚠️ 这组谓词是**唯一一份**：列表查询、全量聚合查询与待确认计数共用它，别写第二份。
+  const 关系触达: SQL[] = [
     sql`r.project_id = ${input.projectId}`,
     sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`,
   ]
-  if (!含排除) 关系条件.push(sql`r.trust_state <> '已排除'`, sql`对方.trust_state <> '已排除'`)
+  const 关系可见: SQL[] = [
+    ...关系触达,
+    sql`r.trust_state <> '已排除'`,
+    sql`对方.trust_state <> '已排除'`,
+  ]
+  const 关系条件 = 含排除 ? 关系触达 : 关系可见
   // 两段各取各的（见 `关系数据上限` / `关系人上限` 的说明）：同一条谓词，只多一个分段条件。
   // `count(*) over()` 在 LIMIT **之前**算 ⇒ 每段拿到的是自己那一段的全量行数。
   const 取关系段 = async (段: "data" | "human", 上限: number) =>
@@ -360,15 +376,20 @@ export async function 实体档案(
   }))
 
   // 事件的参与者存的是**实体规范值**（计划 4 的写口），不是 id。
+  // 与关系同理：「触达」到「可见」各一份，待确认计数复用可见谓词。
+  const 事件触达: SQL[] = [
+    sql`project_id = ${input.projectId}`,
+    sql`participants @> array[${String(实体.canonical_value)}]::text[]`,
+  ]
+  const 事件可见: SQL[] = [...事件触达, sql`trust_state <> '已排除'`]
+  const 事件条件 = 含排除 ? 事件触达 : 事件可见
   const 事件行们 = rowsOf(
     await db.execute(sql`
       select id, type, occurred_at, occurred_raw, summary,
              array_to_json(participants)::text as participants, trust_state,
              count(*) over() as 总数
         from auth.case_event
-       where project_id = ${input.projectId}
-         and participants @> array[${String(实体.canonical_value)}]::text[]
-         ${含排除 ? sql`` : sql`and trust_state <> '已排除'`}
+       where ${sql.join(事件条件, sql` and `)}
        order by occurred_at desc nulls last, id asc
        limit ${事件上限}
     `),
@@ -383,6 +404,29 @@ export async function 实体档案(
     participants: 解JSON<string[]>(行.participants, []),
     trust_state: String(行.trust_state),
   }))
+
+  // 待确认只数「人还没表态的」：`自动抽取 / 存疑`。已排除不进（那是人的决定，不是待办），
+  // 所以这里固定用可见谓词，不看 `含排除`——「显示已排除」开关不改变待办口径。
+  const 待确认关系行 = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as 条数
+        from auth.case_relation r
+        join auth.case_entity 对方
+          on 对方.project_id = r.project_id
+         and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+       where ${sql.join([...关系可见, sql`r.trust_state in ('自动抽取','存疑')`], sql` and `)}
+    `),
+  )[0]!
+  const 待确认事件行 = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as 条数
+        from auth.case_event
+       where ${sql.join([...事件可见, sql`trust_state in ('自动抽取','存疑')`], sql` and `)}
+    `),
+  )[0]!
+  const 待确认实体 = ["自动抽取", "存疑"].includes(String(实体.trust_state)) ? 1 : 0
+  const 待确认关系 = Number(待确认关系行.条数)
+  const 待确认事件 = Number(待确认事件行.条数)
 
   const { 行们: 引用, 总数: 引用总数 } = await 引用们(db, input.projectId, "entity", input.id, 引用上限)
 
@@ -419,6 +463,12 @@ export async function 实体档案(
     对方数,
     引用,
     引用总数,
+    待确认: {
+      实体: 待确认实体,
+      关系: 待确认关系,
+      事件: 待确认事件,
+      合计: 待确认实体 + 待确认关系 + 待确认事件,
+    },
     一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 对方数, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }

@@ -189,6 +189,39 @@ beforeAll(async () => {
     participants: ["E空"],
     trustState: "已排除",
   })
+
+  // 待确认：实体自身 1 + 关系 1（自动抽取）+ 事件 1（自动抽取）；已确认 / 已排除都不计。
+  await 建实体(库(), { id: "e-待", projectId: 待确认项目, value: "待测", type: "人", trustState: "存疑" })
+  await 建实体(库(), { id: "e-对", projectId: 待确认项目, value: "对照", type: "人" })
+  await 建实体(库(), { id: "e-排2", projectId: 待确认项目, value: "已排", type: "人", trustState: "已排除" })
+  await 建关系(库(), { id: "r-待1", projectId: 待确认项目, fromId: "e-待", toId: "e-对", type: "转账" })
+  await 建关系(库(), {
+    id: "r-待2",
+    projectId: 待确认项目,
+    fromId: "e-待",
+    toId: "e-对",
+    type: "转账",
+    trustState: "已确认",
+  })
+  await 建关系(库(), {
+    id: "r-待3",
+    projectId: 待确认项目,
+    fromId: "e-待",
+    toId: "e-对",
+    type: "转账",
+    trustState: "已排除",
+  })
+  await 建关系(库(), {
+    id: "r-待4",
+    projectId: 待确认项目,
+    fromId: "e-待",
+    toId: "e-排2",
+    type: "转账",
+  })
+  await 建事件(库(), { id: "ev-待1", projectId: 待确认项目, participants: ["待测"] })
+  await 建事件(库(), { id: "ev-待2", projectId: 待确认项目, participants: ["待测"], trustState: "已确认" })
+  await 建事件(库(), { id: "ev-待3", projectId: 待确认项目, participants: ["待测"], trustState: "已排除" })
+  await 建实体(库(), { id: "e-准", projectId: 待确认项目, value: "已准", type: "人", trustState: "已确认" })
 })
 
 afterAll(async () => {
@@ -335,6 +368,20 @@ describe("实体清单与档案", () => {
     expect(档.一句话).toContain("关联 2 个事件")
     // 契约：没有截断就给 undefined，不给空数组。
     expect(档.缺口).toBeUndefined()
+  })
+
+  test("档案待确认：实体 0/1 + 关系 + 事件；已确认、已排除、对方已排除都不计", async () => {
+    const 档 = (await 实体档案(库(), { projectId: 待确认项目, id: "e-待" }))!
+    expect(档.待确认).toEqual({ 实体: 1, 关系: 1, 事件: 1, 合计: 3 })
+    // 打开「显示已排除」也不计：排除是人的决定，不是待办。
+    const 带排 = (await 实体档案(库(), { projectId: 待确认项目, id: "e-待", includeExcluded: true }))!
+    expect(带排.待确认).toEqual({ 实体: 1, 关系: 1, 事件: 1, 合计: 3 })
+    // 已确认的实体自身不是待确认；它没有任何事实。
+    const 准 = (await 实体档案(库(), { projectId: 待确认项目, id: "e-准" }))!
+    expect(准.待确认).toEqual({ 实体: 0, 关系: 0, 事件: 0, 合计: 0 })
+    // 自动抽取的实体自身算 1。
+    const 对 = (await 实体档案(库(), { projectId: 待确认项目, id: "e-对" }))!
+    expect(对.待确认.实体).toBe(1)
   })
 
   test("档案 includeExcluded=true 才带出已排除关系和已排除实体", async () => {
