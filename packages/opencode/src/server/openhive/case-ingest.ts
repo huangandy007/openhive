@@ -9,6 +9,7 @@ import { 解析方式 } from "./case-parseable"
 import { 抽取文本 } from "./case-text"
 import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
+import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets } from "./case-sheet"
 import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
 import { toFactRows } from "./case-rows"
@@ -655,8 +656,17 @@ function 事实id(...parts: (string | number)[]): string {
  * **逐个过 `纠正大类`** 得到候选：`人` 可能被改成 `组织`，`号码` 可能被改成 `账户`，
  * `账户` 可能被改成 `号码`。候选由同一个纠正函数推导，不另写一份硬列表——否则
  * 「柏加派出所」被纠正成组织后关系端点找不到，关系被静默丢弃。
+ *
+ * 候选覆盖 `实体类型` 的**全集**：地点 / 物品 / 虚拟身份 / 车辆端点也可能落库（模型把它们
+ * 声明成对应类型时）。`人` / `号码` / `账户` 是推断类型、命中概率最高，排在最前；其余按
+ * `实体类型们` 的顺序追加（不手抄第二份清单，`#002-06`）。
  */
-const 端点来源大类们 = ["人", "号码", "账户"] as const
+const 端点来源大类们: readonly 实体类型[] = [
+  "人",
+  "号码",
+  "账户",
+  ...实体类型们.filter((类型) => 类型 !== "人" && 类型 !== "号码" && 类型 !== "账户"),
+]
 
 function 端点(实体id: ReadonlyMap<string, string>, 值: string): string | undefined {
   for (const 来源 of 端点来源大类们) {

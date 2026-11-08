@@ -843,6 +843,34 @@ describe("文本作业（计划 4）", () => {
     expect(关系[0]?.to_value).toBe(单位)
   })
 
+  test("关系端点是声明为「地点」的实体 ⇒ 关系落库且 to_type = 地点（端点候选扩到八类）", async () => {
+    const 地点 = "城东茶馆"
+    const 原文 = `2026年3月5日，张三在${地点}与李四见面。`
+    const 入 = await 入队文本("地点端点.txt", 原文)
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张三" },
+        // 模型把地点**声明**成地点：关系端点必须落到这条上，不能被推断成「人」。
+        { 类型: "地点", 取值: 地点 },
+      ],
+      关系: [{ 类型: "同行", 从: "张三", 到: 地点, 依据: "笔录记载", 原文 }],
+      事件: [],
+    }))
+    expect(await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)).toBe("完成")
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select t.type as to_type, t.canonical_value as to_value
+      from auth.case_relation r
+      join auth.case_entity t on t.project_id = r.project_id and t.id = r.to_id
+      where r.project_id = 'p-txt'
+    `))
+    // 端点候选只列人/号码/账户时，这里会是 0 行（关系被静默丢弃）。
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.to_type).toBe("地点")
+    expect(关系[0]?.to_value).toBe(地点)
+  })
+
   test("材料写着细类、形状又判不出的实体：细类落进 attrs", async () => {
     const 原文 = "张三的支付宝账号是1234567890，用于收款。"
     const 入 = await 入队文本("支付宝.txt", 原文)
