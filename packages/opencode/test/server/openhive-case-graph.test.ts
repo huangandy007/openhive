@@ -406,4 +406,11 @@ describe("关系图", () => {
     expect(图.节点.find((点) => 点.id === "e-李")!.经由).toBeUndefined()
     expect(图.节点.find((点) => 点.id === "e-张")!.经由).toBeUndefined()
   })
+
+  test("度数不受关系类型筛选影响（筛选只看边，不看总往来）", async () => {
+    // e-张 库里 3 条关系（张李通话 / 张账转账 / 账张通话），筛选「转账」后图上只剩 1 条边。
+    const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 类型: ["转账"] }))!
+    expect(图.节点.find((点) => 点.id === "e-张")!.关联数).toBe(1)
+    expect(图.节点.find((点) => 点.id === "e-张")!.度数).toBe(3)
+  })
 })
