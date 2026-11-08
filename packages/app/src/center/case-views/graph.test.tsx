@@ -314,7 +314,7 @@ describe("关系图 · 画", () => {
 })
 
 describe("关系图 · 悬停", () => {
-  test("悬停节点：它和邻居保持原样，其余节点与边降到 25%，并出提示（类型/可信/关联数）", async () => {
+  test("悬停节点：它和邻居保持原样，其余节点与边降到 25%，并出提示（类型/可信/图上与全部条数）", async () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseenter"))
@@ -328,9 +328,8 @@ describe("关系图 · 悬停", () => {
 
     const 提示 = host.querySelector("[data-slot='graph-tip']")!
     expect(提示.textContent).toContain("13800000001")
-    expect(提示.textContent).toContain("号码")
-    expect(提示.textContent).toContain("已确认")
-    expect(提示.textContent).toContain("关联 3")
+    // 断第二行整格（`#006-22`）：两套条数口径必须同时出现。
+    expect(提示.querySelectorAll("text")[1]?.textContent).toBe("手机号 · 已确认 · 图上 3 · 全部 3")
 
     点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseleave"))
     expect(点元素(host, "e-李").getAttribute("opacity")).toBeNull()
@@ -352,7 +351,7 @@ describe("关系图 · 悬停", () => {
 })
 
 describe("关系图 · 检视面板", () => {
-  test("点节点开右侧面板：显示类型/可信/跳数/关联数；「打开档案」把整条节点交给上层", async () => {
+  test("点节点开右侧面板：显示类型/可信/跳数/图上与全部两条数；「打开档案」把整条节点交给上层", async () => {
     const 收到: 图节点[] = []
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={(点) => 收到.push(点)} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
@@ -1364,6 +1363,8 @@ describe("关系图 · 枢纽", () => {
       { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2, 度数: 60 },
       { id: "e-枢", type: "账户", value: "枢纽账户", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 12 },
       { id: "e-常", type: "人", value: "普通人", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 3 },
+      { id: "e-界", type: "人", value: "十度", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 0, 度数: 10 },
+      { id: "e-九", type: "人", value: "九度", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 0, 度数: 9 },
     ],
     边: [
       { id: "rel|e-心|e-枢|转账", from: "e-心", to: "e-枢", type: "转账", times: 1, amount: "100.00", trust_state: "自动抽取", 明细数: 1 },
@@ -1376,15 +1377,24 @@ describe("关系图 · 枢纽", () => {
     const host = mount(() => (
       <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 枢纽图 }) })} onOpenEntity={() => {}} />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 3)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
 
     // ⚠️ 不把 DOM 节点交给断言（#009-01）：happy-dom 序列化 SVG 节点要 12–16s。
     const 环数 = (id: string) => 点元素(host, id).querySelectorAll("[data-slot='graph-node-hub']").length
     expect(环数("e-枢")).toBe(1)
     expect(环数("e-常")).toBe(0)
     expect(环数("e-心")).toBe(1) // 中心自己度数 60，也是枢纽
+    expect(环数("e-界")).toBe(1) // 边界：度数 10 恰好算枢纽
+    expect(环数("e-九")).toBe(0) // 9 不算
     expect(点元素(host, "e-枢").querySelector("title")!.textContent).toBe("枢纽账户（枢纽 · 全部 12 条）")
     expect(点元素(host, "e-常").querySelector("title")!.textContent).toBe("普通人")
+
+    // 悬停浮层与面板同一口径：图上/全部，枢纽再追加「· 枢纽」。
+    点元素(host, "e-枢").dispatchEvent(new MouseEvent("mouseenter"))
+    expect(host.querySelector("[data-slot='graph-tip']")!.querySelectorAll("text")[1]?.textContent).toBe(
+      "自动抽取 · 图上 1 · 全部 12 · 枢纽",
+    )
+    点元素(host, "e-枢").dispatchEvent(new MouseEvent("mouseleave"))
 
     点元素(host, "e-枢").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     const 面板 = host.querySelector("[data-slot='graph-panel']")!

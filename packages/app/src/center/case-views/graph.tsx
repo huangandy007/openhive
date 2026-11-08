@@ -696,7 +696,7 @@ export function Graph(props: GraphProps): JSX.Element {
         y: Math.max(8, Math.min(尺寸().高 - 52, 行.y - 36)),
         行1: `${截断(行.value, 14)} · ${行.type}`,
         // 细类放第二行：第一行已经贴着提示框宽度，再拼「· 手机号」会溢出框外。
-        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 关联 ${行.关联数}`,
+        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 图上 ${行.关联数} · 全部 ${行.度数}${是枢纽(行) ? " · 枢纽" : ""}`,
       }
     }
     const 边id = 悬停边()
@@ -1250,13 +1250,13 @@ export function Graph(props: GraphProps): JSX.Element {
                       onMouseLeave={() => set悬停点(undefined)}
                     >
                       <title>{`${行().value}${是枢纽(行()) ? `（枢纽 · 全部 ${行().度数} 条）` : ""}`}</title>
-                      {/* 枢纽外环画在焦点环之前：选中时金环仍压在它上面，一眼看到「面板看的是这颗」。 */}
+                      {/* 枢纽外环画在焦点环之前、半径比多选环大：选中/多选时两环同心不相交，内外一眼分得开。 */}
                       <Show when={是枢纽(行())}>
                         <circle
                           data-slot="graph-node-hub"
                           cx={行().x}
                           cy={行().y}
-                          r={节点半径(行()) + 4.5}
+                          r={节点半径(行()) + 5}
                           fill="none"
                           stroke="var(--v2-border-border-strong)"
                           stroke-width="1"
