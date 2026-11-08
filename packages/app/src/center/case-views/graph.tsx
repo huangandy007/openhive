@@ -1,6 +1,7 @@
-import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
-import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
+import { 关系图强度们 } from "../case-detail-api"
+import type { CaseDetailApi, 关系图强度, 图边, 图节点, 关系图结果 } from "../case-detail-api"
 import { 复制文本 } from "@/utils/copy-text"
 import { 发到会话 } from "../ask-ai"
 import { showToast } from "@/utils/toast"
@@ -256,7 +257,7 @@ function 边颜色(类型: string): string {
   return "var(--v2-border-border-strong)"
 }
 
-/** 次数分三档：个位数的细线、两位数的中线、更多为粗线——粗到能直接比大小。 */
+/** 次数分三档：≤3 细、≤10 中、更大为粗——粗到能直接比大小。 */
 function 边宽(次数: number): number {
   if (次数 <= 3) return 2
   if (次数 <= 10) return 3
@@ -352,27 +353,9 @@ interface 提示内容 {
 
 const 提示宽 = 168
 
-/**
- * 把新取回来的一圈**并进**现有的图（2026-11-07 用户要求「原来已有的点一并显示」）。
- *
- * - 节点/边按 id 并集，**新的覆盖旧的**：同一个点在不同圈里带的跳数/关联数，以最新那一圈为准；
- * - 缺口去重（同一条上限提示不该叠两遍）；
- * - 中心标记一律重算，只认 `中心id`。⚠️ 不重算，环形布局会把几个旧中心**摞在正中间**
- *   （`布局()` 把所有 `中心: true` 放在同一个点上），半径与配色也跟着错。
- */
-function 并图(旧: 关系图结果 | undefined, 新: 关系图结果, 中心id: string): 关系图结果 {
-  const 节点 = new Map<string, 图节点>()
-  for (const 点 of 旧?.节点 ?? []) 节点.set(点.id, 点)
-  for (const 点 of 新.节点) 节点.set(点.id, 点)
-  const 边 = new Map<string, 图边>()
-  for (const 条 of 旧?.边 ?? []) 边.set(条.id, 条)
-  for (const 条 of 新.边) 边.set(条.id, 条)
-  return {
-    节点: [...节点.values()].map((点) => ({ ...点, 中心: 点.id === 中心id })),
-    边: [...边.values()],
-    缺口: [...new Set([...(旧?.缺口 ?? []), ...新.缺口])],
-  }
-}
+/** 工具栏按钮两种态；新按钮共用，已有的 hop/layout/type 按钮不动（最小 diff）。 */
+const 选中钮 = "h-6 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-[var(--v2-brand-gold-deep)]"
+const 普通钮 = "h-6 cursor-pointer rounded-[4px] px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover"
 
 /**
  * 实体关系图（2026-11-07 视觉改版，方向 A：聚焦画布 ＋ 右侧检视面板）。
@@ -394,13 +377,11 @@ export function Graph(props: GraphProps): JSX.Element {
   const [中心, set中心] = createSignal(props.id)
   /** 下钻来路。存名字是为了「返回」按钮说得出来「回哪儿」。 */
   const [来路, set来路] = createSignal<readonly { readonly id: string; readonly 名字: string }[]>([])
-  /**
-   * 下一回取回来的图是**并进**现有图，还是**替换**它。
-   * 换中心（下钻/返回）⇒ 并入（旧点留着，2026-11-07 用户要求）；
-   * 换跳数/筛选/实体 ⇒ 替换（用户裁定「清空重来」，图上一定符合当前口径）。
-   */
-  let 本次并入 = false
-  const [跳数, set跳数] = createSignal<1 | 2>(1)
+  const [跳数, set跳数] = createSignal<1 | 2>(2)
+  /** 强度档（spec §4.1.3）；默认「重点」= 全貌。 */
+  const [强度, set强度] = createSignal<关系图强度>("重点")
+  /** 二跳按 `经由` 分簇（只有环形布局画弧）。 */
+  const [分簇, set分簇] = createSignal(true)
   const [选中类型, set选中类型] = createSignal<readonly string[]>([])
   /** 见过的每种关系类型出现过的最大条数：服务端按类型过滤后别的类型会消失，计数得留着（否则按钮跟着没了）。 */
   const [类型计数, set类型计数] = createSignal<Record<string, number>>({})
@@ -449,10 +430,11 @@ export function Graph(props: GraphProps): JSX.Element {
       const 键 = `${props.projectId}|${props.id}`
       if (上一个 !== undefined && 上一个 !== 键) {
         // 换实体 = 换一份数据：中心回到上层给的那个，来路作废，累积全部清掉。
-        本次并入 = false
         set中心(props.id)
         set来路([])
-        set跳数(1)
+        set跳数(2)
+        set强度("重点")
+        set分簇(true)
         set选中类型([])
         set类型计数({})
         set选中(null)
@@ -474,14 +456,12 @@ export function Graph(props: GraphProps): JSX.Element {
     const projectId = props.projectId
     // 取的是**当前中心**：下钻换了中心就重新取，同一张图换个中心重画。
     const id = 中心()
-    // 这一回的并入/替换决定按**发起时**的信号定，别读回包那一刻的值（那时可能已经被下一回改了）。
-    const 并入这圈 = 本次并入
     const api = props.api
     const 当前跳数 = 跳数()
     const 当前类型 = 选中类型()
-    // 并入这一回**不清旧图**：清了 `并图` 收到 `旧 = undefined`，旧点就在「载入中」被抹掉，
-    // 回包再怎么并也只剩新中心这一圈。替换（换跳数/筛选/换实体）才清空。
-    if (!并入这圈) set图(undefined)
+    const 当前强度 = 强度()
+    // 换数据 = 替换（2026-11-08 用户裁定）。下钻/返回/换跳数/换强度/换筛选全走这一条。
+    set图(undefined)
     set错误(undefined)
     set载入(true)
     let 作废 = false
@@ -489,7 +469,7 @@ export function Graph(props: GraphProps): JSX.Element {
     onCleanup(() => {
       作废 = true
     })
-    void api.graph(projectId, id, 当前跳数, 当前类型)
+    void api.graph(projectId, id, 当前跳数, 当前类型, 当前强度)
       .then((回) => {
         if (作废) return
         set载入(false)
@@ -502,7 +482,7 @@ export function Graph(props: GraphProps): JSX.Element {
         const 累计 = { ...类型计数() }
         for (const [类, 数] of Object.entries(本条)) 累计[类] = Math.max(累计[类] ?? 0, 数)
         set类型计数(累计)
-        set图((旧) => 并图(并入这圈 ? 旧 : undefined, 回.value, id))
+        set图(回.value)
       })
       // 注入的 api 若**抛**（不是回 `{kind:"error"}`），不接住就会一直停在「载入中」，
       // 同时留下一条没人看的 unhandled rejection。
@@ -532,13 +512,18 @@ export function Graph(props: GraphProps): JSX.Element {
   const 中心节点 = createMemo(() => 图()?.节点.find((行) => 行.中心))
 
   /**
-   * 换中心 = 在**同一张图里**换个中心（2026-11-07 用户裁定）：
-   * 旧节点/旧边都留着，新中心那一圈并进来。既然节点不消失，选中、视口、手动位置、类型计数
-   * 也都不作废——把它们清掉会让用户刚看清的东西自己跳走。**跳数与类型筛选**同样留着。
+   * 换中心 = 换一张干净的图（2026-11-08 反转 11-07 的并集要求）。
+   * 选中/多选/手动位置都作废：它们指向的是上一张图的坐标与节点。
+   * 跳数/强度/类型/分簇是查看偏好，留着；缩放平移也留着（用户刚调好的视角）。
    */
   const 换中心到 = (id: string) => {
-    本次并入 = true
     set中心(id)
+    set选中(null)
+    set多选([])
+    set拉框(undefined)
+    set悬停点(undefined)
+    set悬停边(undefined)
+    set手动位置({})
   }
 
   /** 「以此为中心」（右键菜单与右侧面板**同一个出口**）：压一层来路，原地换中心。 */
@@ -555,6 +540,25 @@ export function Graph(props: GraphProps): JSX.Element {
     set来路(栈.slice(0, -1))
     换中心到(上一个.id)
   }
+
+  /**
+   * 两档模式是**派生**状态，不新增 `模式` 信号：高亮由三项算出，用户改任一项就自然灭掉。
+   * 三项必须 `batch`：分三次 set 会让取数 effect 跑三回。
+   */
+  const 是全貌 = () => 跳数() === 2 && 强度() === "重点" && 分簇()
+  const 是聚焦 = () => 跳数() === 1 && 强度() === "全部" && !分簇()
+  const 设全貌 = () =>
+    batch(() => {
+      set跳数(2)
+      set强度("重点")
+      set分簇(true)
+    })
+  const 设聚焦 = () =>
+    batch(() => {
+      set跳数(1)
+      set强度("全部")
+      set分簇(false)
+    })
 
   /**
    * 右键：记下指针底下那个节点，并**同时选中它**（2026-11-07 用户下达）。
@@ -713,8 +717,6 @@ export function Graph(props: GraphProps): JSX.Element {
   const 类型们 = createMemo(() => Object.keys(类型计数()).sort((甲, 乙) => 甲.localeCompare(乙)))
 
   const 拨类型 = (类型: string) => {
-    // 换筛选 = 换一份数据 ⇒ 下一回取到的是**替换**而不是并进来（用户裁定：清空重来）。
-    本次并入 = false
     const 当前 = 选中类型()
     set选中类型(当前.includes(类型) ? 当前.filter((条) => 条 !== 类型) : [...当前, 类型])
   }
@@ -958,6 +960,28 @@ export function Graph(props: GraphProps): JSX.Element {
           </span>
         </Show>
         <div class="ml-2 flex items-center gap-1">
+          <button
+            type="button"
+            data-slot="graph-mode"
+            data-mode="全貌"
+            aria-pressed={是全貌()}
+            onClick={设全貌}
+            class={是全貌() ? 选中钮 : 普通钮}
+          >
+            全貌
+          </button>
+          <button
+            type="button"
+            data-slot="graph-mode"
+            data-mode="聚焦"
+            aria-pressed={是聚焦()}
+            onClick={设聚焦}
+            class={是聚焦() ? 选中钮 : 普通钮}
+          >
+            聚焦
+          </button>
+        </div>
+        <div class="ml-2 flex items-center gap-1">
           <For each={[1, 2] as const}>
             {(层) => (
               <button
@@ -965,11 +989,7 @@ export function Graph(props: GraphProps): JSX.Element {
                 data-slot="graph-hop"
                 data-hop={层}
                 aria-pressed={跳数() === 层}
-                onClick={() => {
-                  // 换跳数 = 换一份数据 ⇒ 下一回取到的是替换而不是并进来（用户裁定：清空重来）。
-                  本次并入 = false
-                  set跳数(层)
-                }}
+                onClick={() => set跳数(层)}
                 class={
                   跳数() === 层
                     ? "h-6 cursor-pointer rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 text-[12px] font-semibold text-[var(--v2-brand-gold-deep)]"
@@ -981,6 +1001,33 @@ export function Graph(props: GraphProps): JSX.Element {
             )}
           </For>
         </div>
+        <div class="flex items-center gap-1">
+          <For each={关系图强度们}>
+            {(档) => (
+              <button
+                type="button"
+                data-slot="graph-strength"
+                data-strength={档}
+                aria-pressed={强度() === 档}
+                onClick={() => set强度(档)}
+                class={强度() === 档 ? 选中钮 : 普通钮}
+              >
+                {档}
+              </button>
+            )}
+          </For>
+        </div>
+        <Show when={跳数() === 2}>
+          <button
+            type="button"
+            data-slot="graph-cluster-toggle"
+            aria-pressed={分簇()}
+            onClick={() => set分簇((旧) => !旧)}
+            class={分簇() ? 选中钮 : 普通钮}
+          >
+            分簇
+          </button>
+        </Show>
         <div class="ml-2 flex items-center gap-1">
           <For each={排列模式们}>
             {(模式) => (

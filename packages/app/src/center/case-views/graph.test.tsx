@@ -3,7 +3,7 @@ import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
 import { Graph, 自动位置, 布局, 画布 } from "./graph"
-import type { CaseDetailApi, 图节点, 图边, 关系图结果 } from "../case-detail-api"
+import type { CaseDetailApi, 关系图强度, 图节点, 图边, 关系图结果 } from "../case-detail-api"
 import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
 async function 等(条件: () => boolean) {
@@ -68,7 +68,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
  * 一图两条节点（中心 ＋ 一个邻居），两条图的邻居不同 ⇒ 「旧图还在不在」判得出来。
  */
 function 按中心取图() {
-  const 调用: Array<{ id: string; 跳数: 1 | 2 | undefined; 类型: readonly string[] | undefined }> = []
+  const 调用: Array<{ id: string; 跳数: 1 | 2 | undefined; 类型: readonly string[] | undefined; 强度: 关系图强度 | undefined }> = []
   const 造 = (id: string): 关系图结果 => {
     if (id === "e-号")
       return {
@@ -89,8 +89,8 @@ function 按中心取图() {
     }
   }
   const api = 假api({
-    graph: async (_projectId, id, 跳数, 类型) => {
-      调用.push({ id, 跳数, 类型 })
+    graph: async (_projectId, id, 跳数, 类型, 强度) => {
+      调用.push({ id, 跳数, 类型, 强度 })
       return { kind: "ok", value: 造(id) }
     },
   })
@@ -446,38 +446,33 @@ describe("关系图 · 检视面板", () => {
    * 同日裁定：「以此为中心」是**在这张图里换中心**，不再交给上层开一条新 tab。
    * 三条用例各钉一件事：作用对象是**右键的那个节点**、下钻是原地换图、空白处不弹。
    */
-  test("右键节点 ⇒ 菜单作用于它；「以此为中心」原地换中心（重新取数，不开新 tab）", async () => {
+  test("右键节点 ⇒「以此为中心」换一张干净的图（旧中心与旧邻居消失）", async () => {
     const { api, 调用 } = 按中心取图()
     const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
     expect(调用.map((条) => 条.id)).toEqual(["e-张"])
 
-    // 先把跳数拨到 2：跳数与类型筛选是**查看偏好**，换中心时该留着（用户裁定）。
-    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    // 查看偏好：把跳数从全貌的 2 拨到 1，换中心时它必须跟着走。
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => 调用.length === 2)
 
     右键(点元素(host, "e-号"))
     await 等(() => 菜单开着())
-    // 右键同时选中：菜单的对象、图上高亮、右侧面板必须是同一个（否则「菜单说的是 A、圈亮在 B」）
     expect(host.querySelector("[data-slot='graph-panel']")?.getAttribute("data-panel-kind")).toBe("node")
-    expect(host.querySelector("[data-slot='graph-panel-title']")!.textContent).toContain("13800000001")
 
     点菜单项("graph-node-menu-recenter")
     await 等(() => 调用.length === 3)
 
-    // ① 取的是「以 e-号为中」，且跳数偏好跟着走（没被写回 1）
-    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 2 })
-    // ② 新中心这一圈并进来了
+    // 跳数被拨到 1，强度仍是默认的「重点」——两者都是查看偏好，跟着走
+    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 1, 强度: "重点" })
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
-    // ③ **原来的点不消失**（2026-11-07 追加要求：同一张图里越并越多，不是换一页）
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).not.toBeNull()
-    // ④ 头部说得出「现在中心是谁」（tab 标题仍是外面那条，不在图上标出来就会迷路）
+    // 2026-11-08 反转 11-07：换中心 = 换一张干净的图，不许越并越多。
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
+    expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
     expect(host.querySelector("[data-slot='graph-center']")!.textContent).toContain("13800000001")
-    // ⑤ 选中也留着：被右键的那条还在图上，面板不该自己关掉
-    expect(host.querySelector("[data-slot='graph-panel']")?.getAttribute("data-panel-kind")).toBe("node")
   })
 
-  test("换跳数 ⇒ 清空重来：只留当前中心这一圈（用户裁定，图上一定符合当前筛选）", async () => {
+  test("换跳数 ⇒ 替换：图上只留当前口径这一圈", async () => {
     const { api, 调用 } = 按中心取图()
     const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
@@ -486,13 +481,13 @@ describe("关系图 · 检视面板", () => {
     await 等(() => 菜单开着())
     点菜单项("graph-node-menu-recenter")
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
-    // 先证明「并进来了」，否则下面那条「旧点没了」会因为一开始就没有而空转（`#005-18`）
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).not.toBeNull()
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
 
-    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => 调用.length === 3)
-    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 2 })
-    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-张']") === null)
+    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 1 })
+    // 仍是替换：这一圈里没有 e-张，它不会因为换跳数又冒出来
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
     expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).not.toBeNull()
   })
 
@@ -515,9 +510,8 @@ describe("关系图 · 检视面板", () => {
     await 等(() => 调用.length === 3)
     expect(调用[2]!.id).toBe("e-张")
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-张']") !== null)
-    // 返回 = 只挪中心，节点不退（用户裁定）⇒ 李四那一圈还在图上
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).not.toBeNull()
-    // 回到起点 ⇒ 没有上一级了，按钮收掉
+    // 返回 = 换回上一个中心 ⇒ 这一圈里没有 e-赵
+    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).toBeNull()
     expect(host.querySelector("[data-slot='graph-back']")).toBeNull()
   })
 
@@ -589,6 +583,9 @@ describe("关系图 · 检视面板", () => {
         onOpenEntity={() => {}}
       />
     ))
+    // 默认 2 跳 ⇒ 先拿到无账那份；拨到 1 跳才有 e-账
+    await 等(() => host2.querySelectorAll("[data-slot='graph-node']").length === 4)
+    host2.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => host2.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host2, "e-账").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(host2.querySelector("[data-slot='graph-panel']")).not.toBeNull()
@@ -615,7 +612,7 @@ describe("关系图 · 缩放平移", () => {
 })
 
 describe("关系图 · 工具栏", () => {
-  test("切 2 跳 ⇒ api 收到 跳数 2", async () => {
+  test("切 1 跳 ⇒ api 收到 跳数 1（默认是全貌的 2 跳）", async () => {
     const 调用: Array<1 | 2 | undefined> = []
     const api = 假api({
       graph: async (_projectId, _id, 跳数) => {
@@ -625,9 +622,47 @@ describe("关系图 · 工具栏", () => {
     })
     const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
-    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
+    expect(调用).toEqual([2])
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => 调用.length === 2)
-    expect(调用.at(-1)).toBe(2)
+    expect(调用.at(-1)).toBe(1)
+  })
+
+  test("两档模式：全貌 = 2 跳 / 重点 / 分簇；聚焦 = 1 跳 / 全部 / 不分簇", async () => {
+    const 调用: Array<{ 跳数: 1 | 2 | undefined; 强度: 关系图强度 | undefined }> = []
+    const api = 假api({
+      graph: async (_项目, _id, 跳数, _类型, 强度) => {
+        调用.push({ 跳数, 强度 })
+        return { kind: "ok", value: 图 }
+      },
+    })
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => 调用.length === 1)
+    const 档 = (模式: string) => host.querySelector<HTMLElement>(`[data-slot='graph-mode'][data-mode='${模式}']`)!
+    const 簇钮 = () => host.querySelector<HTMLElement>("[data-slot='graph-cluster-toggle']")
+
+    // 默认就是全貌
+    expect(调用[0]).toEqual({ 跳数: 2, 强度: "重点" })
+    expect(档("全貌").getAttribute("aria-pressed")).toBe("true")
+    expect(簇钮()!.getAttribute("aria-pressed")).toBe("true")
+
+    // 三项一次设完 ⇒ 只发一次请求（batch 没做就会连发好几回）
+    档("聚焦").click()
+    await 等(() => 调用.length === 2)
+    expect(调用[1]).toEqual({ 跳数: 1, 强度: "全部" })
+    expect(档("聚焦").getAttribute("aria-pressed")).toBe("true")
+    expect(簇钮()).toBeNull() // 1 跳没有分簇控件
+
+    档("全貌").click()
+    await 等(() => 调用.length === 3)
+    expect(调用[2]).toEqual({ 跳数: 2, 强度: "重点" })
+
+    // 手动改一项 ⇒ 两档都不亮，回到「自定义」
+    host.querySelector<HTMLElement>("[data-slot='graph-strength'][data-strength='强']")!.click()
+    await 等(() => 调用.length === 4)
+    expect(调用[3].强度).toBe("强")
+    expect(档("全貌").getAttribute("aria-pressed")).toBe("false")
+    expect(档("聚焦").getAttribute("aria-pressed")).toBe("false")
   })
 
   test("类型筛选按钮带计数；服务端按类型过滤后，别的类型按钮仍然在（不会变成单选死锁）", async () => {
