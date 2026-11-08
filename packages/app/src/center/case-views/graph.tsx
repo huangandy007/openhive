@@ -41,21 +41,31 @@ export interface 位点 extends 图节点 {
   readonly y: number
 }
 
+/** 内外环半径：布局与「分簇弧」读同一份，弧才不会飘到环外。 */
+export function 环半径(尺寸: 画布尺寸 = 画布) {
+  const 半宽 = Math.max(60, 尺寸.宽 / 2 - 70)
+  const 半高 = Math.max(60, 尺寸.高 / 2 - 55)
+  return { 一: { rx: 半宽 * 0.55, ry: 半高 * 0.55 }, 二: { rx: 半宽, ry: 半高 } } as const
+}
+
 /**
  * 环状布局：中心固定，1 跳内环、2 跳外环。
  * 排序先按类型再按 id——同一份数据每次画得一样（民警截图对照时，位置跳来跳去会被当成「图变了」），
  * 同类型的节点也挨在一起，一眼能看出「这三个都是号码」。
+ * `分簇` 只换二层排序键（按 `经由`）：同父的点必须相邻，分簇弧才不会跨过别人的组。
  */
-export function 布局(图: 关系图结果, 尺寸: 画布尺寸 = 画布): { 中心: 位点[]; 一层: 位点[]; 二层: 位点[] } {
+export function 布局(图: 关系图结果, 尺寸: 画布尺寸 = 画布, 分簇 = false): { 中心: 位点[]; 一层: 位点[]; 二层: 位点[] } {
   // 半径从**实际画布**推出来：宽 390 时按 760 的固定半径画，图会缩成一片看不清的小点
   //（真栈 1100 宽实测）；半径随容器走，1 单位 = 1 像素，节点与字号恒定。
   // 留边 70/55 是给节点标题（画在节点下方 14px、最长 12 个字）的。
   const 中 = { x: 尺寸.宽 / 2, y: 尺寸.高 / 2 }
-  const 半宽 = Math.max(60, 尺寸.宽 / 2 - 70)
-  const 半高 = Math.max(60, 尺寸.高 / 2 - 55)
-  const 环 = { 1: { rx: 半宽 * 0.55, ry: 半高 * 0.55 }, 2: { rx: 半宽, ry: 半高 } } as const
-  const 排 = (点们: readonly 图节点[], 半径: { readonly rx: number; readonly ry: number }) => {
-    const 有序 = [...点们].sort((甲, 乙) => 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id))
+  const 环 = 环半径(尺寸)
+  const 排 = (点们: readonly 图节点[], 半径: { readonly rx: number; readonly ry: number }, 按经由 = false) => {
+    const 有序 = [...点们].sort((甲, 乙) =>
+      按经由
+        ? (甲.经由 ?? "").localeCompare(乙.经由 ?? "") || 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id)
+        : 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id),
+    )
     // 半格错开：只有 1 个节点时放在正上方；有 2 个就从「上、下」改成「右、左」。
     // 不错开的话，真实数据的「1 个号码 + 2 个外围号码」会画成 甲乙丙 三点一条竖线（实测就是这张图）。
     const 偏 = 有序.length >= 2 ? Math.PI / 有序.length : 0
@@ -66,8 +76,8 @@ export function 布局(图: 关系图结果, 尺寸: 画布尺寸 = 画布): { �
   }
   return {
     中心: 图.节点.filter((点) => 点.中心).map((点): 位点 => ({ ...点, x: 中.x, y: 中.y })),
-    一层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 < 2), 环[1]),
-    二层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 >= 2), 环[2]),
+    一层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 < 2), 环.一),
+    二层: 排(图.节点.filter((点) => !点.中心 && 点.跳数 >= 2), 环.二, 分簇),
   }
 }
 
@@ -121,7 +131,7 @@ function 分层位置(图: 关系图结果, 尺寸: 画布尺寸): 位点[] {
  * 否则民警每刷新一次，整张图都在抖，位置变了会被当成「关系变了」。
  */
 function 力导向位置(图: 关系图结果, 尺寸: 画布尺寸): 位点[] {
-  const 环 = 布局(图, 尺寸)
+  const 环 = 布局(图, 尺寸, false)
   const 序 = [...环.中心, ...环.一层, ...环.二层].sort(按类型排)
   const n = 序.length
   if (n === 0) return []
@@ -201,14 +211,38 @@ function 力导向位置(图: 关系图结果, 尺寸: 画布尺寸): 位点[] {
 }
 
 /** 各排列模式的自动坐标。`环形` 复用 `布局()`（它那份中点/内环/外环的排法已有测试钉着）。 */
-export function 自动位置(图: 关系图结果, 尺寸: 画布尺寸 = 画布, 模式: 排列模式 = "环形"): 位点[] {
+export function 自动位置(图: 关系图结果, 尺寸: 画布尺寸 = 画布, 模式: 排列模式 = "环形", 分簇 = false): 位点[] {
   if (模式 === "环形") {
-    const 位 = 布局(图, 尺寸)
+    const 位 = 布局(图, 尺寸, 分簇)
     return [...位.中心, ...位.一层, ...位.二层]
   }
   if (模式 === "网格") return 网格位置(图.节点, 尺寸)
   if (模式 === "分层") return 分层位置(图, 尺寸)
   return 力导向位置(图, 尺寸)
+}
+
+export interface 簇 {
+  /** 经由的父节点 id；`""` = 其他（父不在图上 / 没有经由）。 */
+  readonly 键: string
+  readonly 标签: string
+  readonly 点们: 位点[]
+}
+
+/**
+ * 二跳点按 `经由` 分组。入参顺序必须是**布局顺序**（`全部点()` 里 2 跳那一段），
+ * 否则同父的点不连续，弧会跨过别人的组。
+ */
+export function 按经由分簇(二层: readonly 位点[], 图: 关系图结果): 簇[] {
+  const 值 = new Map(图.节点.map((点) => [点.id, 点.value]))
+  const 组 = new Map<string, 位点[]>()
+  for (const 点 of 二层) {
+    // 父节点被上限截掉时 `经由` 指向图外：并进「其他」，不能当成一个独立父冒名顶替。
+    const 键 = 点.经由 !== undefined && 值.has(点.经由) ? 点.经由 : ""
+    组.set(键, [...(组.get(键) ?? []), 点])
+  }
+  return [...组.entries()]
+    .map(([键, 点们]) => ({ 键, 标签: 键 === "" ? "其他" : `经由 ${值.get(键)}`, 点们 }))
+    .sort((甲, 乙) => 乙.点们.length - 甲.点们.length || 甲.键.localeCompare(乙.键))
 }
 
 const 节点半径 = (点: 图节点) => (点.中心 ? 20 : 15)
@@ -504,11 +538,42 @@ export function Graph(props: GraphProps): JSX.Element {
     const 当前 = 图()
     if (当前 === undefined) return []
     const 手动 = 手动位置()
-    return 自动位置(当前, 尺寸(), 排列()).map((点) => {
+    return 自动位置(当前, 尺寸(), 排列(), 分簇()).map((点) => {
       const 位 = 手动[点.id]
       return 位 === undefined ? 点 : { ...点, x: 位.x, y: 位.y }
     })
   })
+  /** 分簇弧只在「环形 + 2 跳 + 分簇」时画；别的排列没有外环这个概念。 */
+  const 簇们 = createMemo(() => {
+    if (!分簇() || 跳数() !== 2 || 排列() !== "环形") return []
+    const 当前 = 图()
+    if (当前 === undefined) return []
+    const 中位 = 中点()
+    const 半径 = 环半径(尺寸()).二
+    const 角 = (点: 位点) => Math.atan2(点.y - 中位.y, 点.x - 中位.x)
+    return 按经由分簇(
+      全部点().filter((点) => !点.中心 && 点.跳数 >= 2),
+      当前,
+    )
+      .filter((簇) => 簇.点们.length >= 2)
+      .map((簇) => {
+        const a0 = 角(簇.点们[0]!)
+        const 跨 = (角(簇.点们.at(-1)!) - a0 + Math.PI * 2) % (Math.PI * 2)
+        const a1 = a0 + 跨
+        const 中角 = a0 + 跨 / 2
+        return {
+          ...簇,
+          弧:
+            `M ${(中位.x + Math.cos(a0) * 半径.rx).toFixed(1)} ${(中位.y + Math.sin(a0) * 半径.ry).toFixed(1)}` +
+            ` A ${半径.rx.toFixed(1)} ${半径.ry.toFixed(1)} 0 ${跨 > Math.PI ? 1 : 0} 1` +
+            ` ${(中位.x + Math.cos(a1) * 半径.rx).toFixed(1)} ${(中位.y + Math.sin(a1) * 半径.ry).toFixed(1)}`,
+          标x: 中位.x + Math.cos(中角) * (半径.rx + 24),
+          标y: 中位.y + Math.sin(中角) * (半径.ry + 24),
+        }
+      })
+  })
+  /** 标签最多 8 组（按组大小降序），再多就糊成一片。 */
+  const 簇标签们 = createMemo(() => 簇们().slice(0, 8))
   const 点 = (id: string) => 全部点().find((行) => 行.id === id)
   const 边 = (id: string) => (图()?.边 ?? []).find((行) => 行.id === id)
 
@@ -1139,6 +1204,34 @@ export function Graph(props: GraphProps): JSX.Element {
               }}
             >
               <g data-slot="graph-viewport" transform={`translate(${平移().x} ${平移().y}) scale(${缩放()})`}>
+                {/* 分簇弧画在边之前：它只圈出「同一父」的范围，不该盖住关系线。 */}
+                <For each={簇们()}>
+                  {(簇) => (
+                    <path
+                      data-slot="graph-cluster"
+                      data-cluster={簇.键}
+                      d={簇.弧}
+                      fill="none"
+                      stroke="var(--v2-border-border-strong)"
+                      stroke-width="1"
+                      stroke-dasharray="4 4"
+                    />
+                  )}
+                </For>
+                <For each={簇标签们()}>
+                  {(簇) => (
+                    <text
+                      data-slot="graph-cluster-label"
+                      x={簇.标x}
+                      y={簇.标y}
+                      text-anchor="middle"
+                      font-size="11"
+                      fill="var(--v2-text-text-muted)"
+                    >
+                      {`${簇.标签}（${簇.点们.length}）`}
+                    </text>
+                  )}
+                </For>
                 <For each={图()!.边}>
                   {(行) => {
                     const 几何 = () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
-import { Graph, 自动位置, 布局, 画布 } from "./graph"
+import { Graph, 自动位置, 布局, 按经由分簇, 画布, type 位点 } from "./graph"
 import type { CaseDetailApi, 关系图强度, 图节点, 图边, 关系图结果 } from "../case-detail-api"
 import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
@@ -1407,5 +1407,139 @@ describe("关系图 · 枢纽", () => {
 
     点元素(host, "e-常").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(host.querySelector("[data-slot='graph-panel']")!.querySelector("[data-slot='graph-panel-hub']") === null).toBe(true)
+  })
+})
+
+describe("关系图 · 分簇", () => {
+  // 用 ASCII 类型名，避免依赖中文排序规则：按类型排会把同一父的 a/b 两种类型拆开。
+  const 分簇节点: 图节点[] = [
+    { id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2, 度数: 5 },
+    { id: "p1", type: "a", value: "父一", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 2, 度数: 5 },
+    { id: "p2", type: "a", value: "父二", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 2, 度数: 5 },
+    { id: "b1", type: "a", value: "子11", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p1" },
+    { id: "b2", type: "b", value: "子12", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p1" },
+    { id: "c1", type: "a", value: "子21", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p2" },
+    { id: "c2", type: "b", value: "子22", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p2" },
+  ]
+  const 分簇图: 关系图结果 = {
+    节点: 分簇节点,
+    边: [
+      { id: "e1", from: "c", to: "p1", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+      { id: "e2", from: "c", to: "p2", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+      { id: "e3", from: "p1", to: "b1", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+      { id: "e4", from: "p1", to: "b2", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+      { id: "e5", from: "p2", to: "c1", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+      { id: "e6", from: "p2", to: "c2", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    ],
+    缺口: [],
+  }
+
+  /**
+   * 单点簇（父不在图上）用来钉 `簇.点们.length >= 2` 那道闸：改成 `>= 1` 会多画一条弧。
+   * 它与 `分簇图` 只差一颗孤儿二跳点，纯函数两条用例仍用 `分簇图`（顺序断言不该被它扰动）。
+   */
+  const 含孤儿图: 关系图结果 = {
+    节点: [
+      ...分簇节点,
+      { id: "b9", type: "b", value: "孤儿", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "e-没了" },
+    ],
+    边: [
+      ...分簇图.边,
+      { id: "e7", from: "p1", to: "b9", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    ],
+    缺口: [],
+  }
+
+  /**
+   * 9 个父组、每组 2 个二跳点：钉「标签最多 8 组，弧按全部组画」。
+   * 夹具里没有第 9 组时 `.slice(0, 8)` 删掉也照绿——那等于这条上限没有用例守着。
+   */
+  const 九簇节点: 图节点[] = [
+    { id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2, 度数: 5 },
+  ]
+  const 九簇边: 图边[] = []
+  for (let i = 1; i <= 9; i += 1) {
+    九簇节点.push({ id: `p${i}`, type: "a", value: `父${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 2, 度数: 5 })
+    for (const 序 of ["a", "b"])
+      九簇节点.push({
+        id: `b${i}${序}`,
+        type: 序,
+        value: `子${i}${序}`,
+        trust_state: "自动抽取",
+        中心: false,
+        跳数: 2,
+        关联数: 1,
+        度数: 1,
+        经由: `p${i}`,
+      })
+    九簇边.push({ id: `e0-${i}`, from: "c", to: `p${i}`, type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 })
+    for (const 序 of ["a", "b"])
+      九簇边.push({
+        id: `e-${i}${序}`,
+        from: `p${i}`,
+        to: `b${i}${序}`,
+        type: "通话",
+        times: 1,
+        amount: null,
+        trust_state: "自动抽取",
+        明细数: 1,
+      })
+  }
+  const 九簇图: 关系图结果 = { 节点: 九簇节点, 边: 九簇边, 缺口: [] }
+
+  test("布局：分簇时二层按 经由 相邻；不分簇时回到类型/id 顺序", () => {
+    expect(布局(分簇图, 画布, true).二层.map((点) => 点.id)).toEqual(["b1", "b2", "c1", "c2"])
+    expect(布局(分簇图, 画布).二层.map((点) => 点.id)).toEqual(["b1", "c1", "b2", "c2"])
+  })
+
+  test("按经由分簇：同父成组、按组大小降序；父不在图上的并进「其他」", () => {
+    // 按**布局顺序**传入（`全部点()` 里二层那一段就是这个顺序）：p1 组 2 个、p2 组 2 个。
+    const 簇们 = 按经由分簇(布局(分簇图, 画布, true).二层, 分簇图)
+    expect(簇们.map((簇) => 簇.标签)).toEqual(["经由 父一", "经由 父二"])
+    expect(簇们.map((簇) => 簇.点们.map((点) => 点.id))).toEqual([["b1", "b2"], ["c1", "c2"]])
+
+    // 父节点被上限截掉（或 `经由` 缺失）⇒ 归「其他」，键为空串。
+    const 孤儿: 位点 = { ...分簇节点[3]!, id: "b9", 经由: "e-没了", x: 0, y: 0 }
+    const 含孤儿 = 按经由分簇([孤儿], 分簇图)
+    expect(含孤儿).toHaveLength(1)
+    expect(含孤儿[0]).toMatchObject({ 键: "", 标签: "其他" })
+    expect(含孤儿[0]!.点们.map((点) => 点.id)).toEqual(["b9"])
+  })
+
+  test("画布：分簇开启时同父 ≥2 个的组画弧并标「经由 父名（N）」；关掉就没有", async () => {
+    const host = mount(() => (
+      <Graph projectId="p" id="c" api={假api({ graph: async () => ({ kind: "ok", value: 含孤儿图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 8)
+    // 孤儿自成一组（1 个点）⇒ 不画弧，所以是 2 不是 3。
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 2)
+    expect(host.querySelectorAll("[data-slot='graph-cluster-label']").length).toBe(2)
+    const 标签 = [...host.querySelectorAll("[data-slot='graph-cluster-label']")].map((条) => 条.textContent)
+    expect(标签.some((话) => 话?.includes("经由 父一"))).toBe(true)
+    expect(标签.some((话) => 话?.includes("（2）"))).toBe(true)
+    // 父不在图上的组不能顶替一个父名露出来。
+    expect(标签.every((话) => !话?.includes("其他"))).toBe(true)
+
+    host.querySelector<HTMLElement>("[data-slot='graph-cluster-toggle']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 0)
+
+    // 网格/分层/力导向没有「外环」这个概念：分簇开着也不许画弧。
+    host.querySelector<HTMLElement>("[data-slot='graph-cluster-toggle']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 2)
+    host.querySelector<HTMLElement>("[data-slot='graph-layout'][data-layout='网格']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 0)
+  })
+
+  test("标签最多 8 组，弧仍按全部 9 组画", async () => {
+    const host = mount(() => (
+      <Graph projectId="p" id="c" api={假api({ graph: async () => ({ kind: "ok", value: 九簇图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 28)
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 9)
+    expect(host.querySelectorAll("[data-slot='graph-cluster-label']").length).toBe(8)
+    const 标签 = [...host.querySelectorAll("[data-slot='graph-cluster-label']")].map((条) => 条.textContent)
+    // 组大小相同 ⇒ 按父 id 升序保留前 8 组，第 9 组只画弧不标字。
+    expect(标签.some((话) => 话?.includes("经由 父9"))).toBe(false)
+    expect(标签.some((话) => 话?.includes("经由 父8"))).toBe(true)
   })
 })
