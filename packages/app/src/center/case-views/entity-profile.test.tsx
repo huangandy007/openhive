@@ -4,6 +4,7 @@ import type { JSX } from "solid-js"
 import { EntityProfile, 出处默认显示 } from "./entity-profile"
 import { 时间文本 } from "./format"
 import type { CaseDetailApi, 实体档案 } from "../case-detail-api"
+import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -24,6 +25,8 @@ const 待还原: Array<() => void> = []
 afterEach(() => {
   while (待还原.length) 待还原.pop()!()
   document.body.innerHTML = ""
+  // 「送进右栏」的收件口是模块级状态 ⇒ 谁登记谁收回（`#005-03`）。
+  订阅会话输入(undefined)
 })
 
 /**
@@ -1038,5 +1041,70 @@ describe("实体档案", () => {
     expect(写进.length).toBe(0)
     // 行本身带得走：右键「复制」与单行拖拽读的都是这一条。
     expect(行.getAttribute("data-copy")).toContain("6222****0001")
+  })
+
+  /**
+   * 双击一行 ⇒ 送进右栏（2026-11-08 用户提出「双击一行 = 发送到会话」）。
+   *
+   * 判据钉的是**这一行的 `data-copy` 原文**，不是屏幕上的字：版式改了、复制内容不该跟着变。
+   */
+  test("双击一行关系 / 一条事件 ⇒ 这一行的原文进右栏会话", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    const 关系 = host.querySelector<HTMLElement>("[data-slot='entity-relation'][data-id='r-1']")!
+    关系.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+    expect(收到).toEqual([关系.getAttribute("data-copy")!])
+
+    收到.length = 0
+    const 事件 = host.querySelector<HTMLElement>("[data-slot='entity-event']")!
+    事件.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+    expect(收到).toEqual([事件.getAttribute("data-copy")!])
+  })
+
+  /**
+   * 空档案：一条事实都没有时，摆一句**可点的示例问句**（用户 2026-11-08：
+   * 「教一次胜过讲十遍」）。点它就按同一出口送进右栏。
+   */
+  test("一条事实都没有 ⇒ 出现示例问句；点它把一句真问题送进右栏", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const 空档: 实体档案 = {
+      ...档,
+      关系: [],
+      事件: [],
+      引用: [],
+      关系总数: 0,
+      关系数据总数: 0,
+      关系人总数: 0,
+      事件总数: 0,
+      对方数: 0,
+      引用总数: 0,
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-空"
+        api={假api({ profile: async () => ({ kind: "ok", value: 空档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+
+    const 提示 = host.querySelector<HTMLElement>("[data-slot='entity-empty-hint']")
+    expect(提示).not.toBeNull()
+    const 钮 = 提示!.querySelector<HTMLElement>("[data-slot='entity-empty-ask']")!
+    钮.click()
+    expect(收到.length).toBe(1)
+    expect(收到[0]).toContain("张三")
+    expect(收到[0]).toContain("没有登记")
+  })
+
+  test("有事实的档案不摆示例问句（别在正常页面上抢版面）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    expect(host.querySelector("[data-slot='entity-empty-hint']")).toBeNull()
   })
 })

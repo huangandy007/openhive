@@ -28,6 +28,7 @@ import { createEffect, createSignal, Show, type JSX } from "solid-js"
 import type { CaseDetailApi } from "./case-detail-api"
 import { CenterContent } from "./center-content"
 import { 内容菜单 } from "./content-menu"
+import { 浮动选区条 } from "./selection-bar"
 import type { LoadFileContent, SaveFileContent } from "./file-content"
 import { TabBar } from "./tab-bar"
 import { useCenterTabs } from "./tab-context"
@@ -77,6 +78,8 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
   const 是左右 = () => center.排列() === "左右"
   const 容器 = () =>
     `flex w-full min-h-0 min-w-0 flex-1 items-stretch ${是左右() ? "flex-row" : "flex-col"}`
+  /** 浮条要「挂在哪块内容上」：就是这整个中栏（两栏都算中栏，见 `selection-bar.tsx`）。 */
+  const [中栏根, set中栏根] = createSignal<HTMLElement | undefined>()
   /**
    * 左/上那一栏。
    *
@@ -92,7 +95,8 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
 
   return (
     <内容菜单>
-      <div data-slot="center-split" class={容器()}>
+      {/* `relative` 只为右下角那条浮条定位（`selection-bar.tsx`）：中栏是它唯一合理的参照。 */}
+      <div data-slot="center-split" ref={set中栏根} class={`relative ${容器()}`}>
         <div
           data-slot="center-pane"
           data-pane="0"
@@ -179,6 +183,7 @@ export function CenterSplit(props: CenterSplitProps): JSX.Element {
             />
           </div>
         </Show>
+        <浮动选区条 根={中栏根} />
       </div>
     </内容菜单>
   )

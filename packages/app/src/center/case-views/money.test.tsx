@@ -4,6 +4,7 @@ import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
 import { Money } from "./money"
 import type { CaseDetailApi } from "../case-detail-api"
+import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -18,9 +19,42 @@ function mount(element: () => JSX.Element) {
   render(element, host)
   return host
 }
+/** 每条用例装过的探针的还原函数：抛错也要还原原型，否则会漏给下一条（`#005-34`）。 */
+const 待还原: Array<() => void> = []
 afterEach(() => {
+  while (待还原.length) 待还原.pop()!()
   document.body.innerHTML = ""
+  订阅会话输入(undefined)
 })
+
+/** 真浏览器的 Selection 在 happy-dom 里形状不同 ⇒ 只替 `多行选区文本` 用到的那三样。 */
+function 装选区(命中: (node: Node) => boolean) {
+  const 原 = Object.getOwnPropertyDescriptor(window, "getSelection")
+  Object.defineProperty(window, "getSelection", {
+    configurable: true,
+    value: () => ({
+      rangeCount: 1,
+      isCollapsed: false,
+      toString: () => "选中的文字",
+      getRangeAt: () => ({ intersectsNode: 命中 }),
+    }),
+  })
+  待还原.push(() => {
+    if (原 === undefined) Reflect.deleteProperty(window, "getSelection")
+    else Object.defineProperty(window, "getSelection", 原)
+  })
+}
+
+/** happy-dom 没有 `DataTransfer`：只造 handler 真正用到的 `setData` / `effectAllowed`。 */
+function 触发拖动(目标: Element) {
+  const 写进: Array<[string, string]> = []
+  const 事件 = new Event("dragstart", { bubbles: true, cancelable: true })
+  Object.defineProperty(事件, "dataTransfer", {
+    value: { effectAllowed: "none", setData: (类型: string, 值: string) => void 写进.push([类型, 值]) },
+  })
+  目标.dispatchEvent(事件)
+  return 写进
+}
 
 const 数据 = {
   汇总: [
@@ -124,5 +158,40 @@ describe("资金", () => {
     ))
     await 等(() => host.textContent!.includes("网络断了"))
     expect(host.textContent).not.toContain("正在汇总资金")
+  })
+
+  /**
+   * 2026-11-08：同一个手势长到每一页——资金页也能拖选、右键复制、发进右栏。
+   */
+  test("资金页正文能拖选，对手方行带 data-copy", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={假api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-counterparty']").length === 2)
+    expect(host.querySelector("[data-component='money']")!.className.split(/\s+/)).toContain("select-text")
+    const 首 = host.querySelector<HTMLElement>("[data-slot='money-counterparty']")!
+    expect(首.getAttribute("data-copy")).toContain("6222****0001")
+    expect(首.getAttribute("data-copy")).toContain("2 笔")
+    expect(首.getAttribute("data-copy")).toContain("200.00")
+  })
+
+  test("双击一个对手方 ⇒ 这一行的原文进右栏", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <Money projectId="p" id="e-账" api={假api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-counterparty']").length === 2)
+    const 行 = host.querySelector<HTMLElement>("[data-slot='money-counterparty']")!
+    行.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+    expect(收到).toEqual([行.getAttribute("data-copy")!])
+  })
+
+  test("拖选跨汇总与对手方 ⇒ 每行一条的结构化载荷", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={假api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-counterparty']").length === 2)
+    装选区(() => true)
+    const 写进 = 触发拖动(host.querySelector("[data-component='money']")!)
+    const 载荷 = 写进.find(([类型]) => 类型 === "text/plain")?.[1] ?? ""
+    // 2 条汇总 ＋ 2 个对手方 ＋ 1 条余额：每行一条。
+    expect(载荷.split("\n").length).toBe(5)
+    expect(载荷).toContain("出 3 笔 · 300.00")
+    expect(载荷).toContain("李四")
   })
 })

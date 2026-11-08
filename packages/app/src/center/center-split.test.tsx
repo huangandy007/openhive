@@ -262,4 +262,46 @@ describe("CenterSplit", () => {
     await 歇一拍()
     expect(读!()).toBe(1)
   })
+
+  /**
+   * 接线：浮条挂在**中栏**上、锚点判内外用的是中栏那棵树。
+   *
+   * 判据走真 `window.getSelection()`（不是替身）：这条要钉的正是「生产默认那一路接上了」，
+   * 换成替身就只证明组件自己能跑（同 `sidebar-sessions` 文件头那类口径）。
+   */
+  test("中栏里选中一段文字后松手 ⇒ 右下角出现浮条", async () => {
+    const 有字注册表 = createViewRegistry()
+    有字注册表.register({
+      extensions: [".txt"],
+      load: async () => () => <p data-slot="样文">可以选中的正文</p>,
+    })
+    function 现场() {
+      const center = useCenterTabs()
+      return (
+        <>
+          <button data-slot="备" onClick={() => center.open(甲, 0)} />
+          <CenterSplit registry={有字注册表} />
+        </>
+      )
+    }
+    const 宿主 = mount(() => (
+      <CenterTabsProvider initialModule="project">
+        <现场 />
+      </CenterTabsProvider>
+    ))
+    宿主.querySelector<HTMLElement>("[data-slot='备']")!.click()
+    for (let i = 0; i < 50 && !宿主.querySelector("[data-slot='样文']"); i++) await 歇一拍()
+
+    const 段 = 宿主.querySelector("[data-slot='样文']")!.firstChild!
+    const 区 = window.getSelection()!
+    区.removeAllRanges()
+    const 范围 = document.createRange()
+    范围.selectNodeContents(段)
+    区.addRange(范围)
+
+    window.dispatchEvent(new Event("mouseup"))
+    expect(宿主.querySelector("[data-slot='selection-bar']")).not.toBeNull()
+
+    区.removeAllRanges()
+  })
 })

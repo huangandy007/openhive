@@ -4,6 +4,7 @@ import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
 import { Graph, 自动位置, 布局, 画布 } from "./graph"
 import type { CaseDetailApi, 图节点, 图边, 关系图结果 } from "../case-detail-api"
+import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -29,6 +30,7 @@ function 按Esc() {
 }
 afterEach(() => {
   document.body.innerHTML = ""
+  订阅会话输入(undefined)
 })
 
 const 图: 关系图结果 = {
@@ -1166,5 +1168,85 @@ describe("关系图 · 面板不挤压画布", () => {
     expect(条().style.right).toBe("8px")
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(条().style.right).toBe("292px")
+  })
+})
+
+/**
+ * 图上的「带走」手势（2026-11-08 用户下达：同一个动作长到每一页）。
+ *
+ * 图里拖拽已经是「整组移动」，所以这两项落在**图自带的右键菜单**里（用户选定）；
+ * 多选 ≥2 颗时右键其中一颗 ⇒ 带走**整组**，否则只带走这一颗。
+ */
+describe("关系图 · 右键复制与发送到会话", () => {
+  const 在多选里 = (host: HTMLElement, id: string) => 点元素(host, id).getAttribute("data-selected") === "true"
+  const shift点 = (host: HTMLElement, id: string) => {
+    const 节点 = 点元素(host, id)
+    节点.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, shiftKey: true, clientX: 100, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+    节点.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }))
+  }
+
+  test("右键一颗节点 ⇒「复制」带走这一颗的原文（类型 · 值）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    右键(点元素(host, "e-号"))
+    await 等(() => 菜单开着())
+
+    const 原生剪贴板 = navigator.clipboard
+    const 写入: string[] = []
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (文字: string) => void 写入.push(文字) },
+    })
+    try {
+      点菜单项("graph-node-menu-copy")
+      await 等(() => 写入.length === 1)
+      expect(写入).toEqual(["号码 · 手机号 · 13800000001"])
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: 原生剪贴板 })
+    }
+  })
+
+  test("右键一颗节点 ⇒「发送到会话」把这颗的原文送进右栏", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    右键(点元素(host, "e-号"))
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-ask")
+    expect(收到).toEqual(["号码 · 手机号 · 13800000001"])
+  })
+
+  test("多选 ≥2 颗后右键其中一颗 ⇒ 发送的是整组（每行一条）", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    shift点(host, "e-李")
+    shift点(host, "e-号")
+    expect(在多选里(host, "e-李")).toBe(true)
+    expect(在多选里(host, "e-号")).toBe(true)
+
+    右键(点元素(host, "e-李"))
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-ask")
+    expect(收到).toHaveLength(1)
+    const 文本 = 收到[0] ?? ""
+    expect(文本.split("\n")).toHaveLength(2)
+    expect(文本).toContain("李四")
+    expect(文本).toContain("13800000001")
+  })
+
+  test("多选里只有一颗（或右键的是组外节点）⇒ 只带走这一颗，不把整张图发出去", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    shift点(host, "e-李") // 多选只有一颗
+    右键(点元素(host, "e-号")) // 右键的是组外那颗
+    await 等(() => 菜单开着())
+    点菜单项("graph-node-menu-ask")
+    expect(收到).toEqual(["号码 · 手机号 · 13800000001"])
   })
 })

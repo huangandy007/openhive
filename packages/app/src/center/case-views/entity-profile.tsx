@@ -10,6 +10,7 @@ import {
   type 纠正原因,
 } from "../case-detail-api"
 import { 多行选区文本 } from "../structured-selection"
+import { 发到会话 } from "../ask-ai"
 import { 定位文本, 金额文本, 时间文本 } from "./format"
 
 export interface EntityProfileProps {
@@ -536,6 +537,32 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   </For>
                 </section>
 
+                {/* 一条事实都没有时，摆一句**能点的示例问句**（2026-11-08 用户提出）：
+                    空页面说「没有」等于让人走；给一句现成的话，用户才知道这页能干什么。
+                    有事实时不摆——正常页面上它只会抢版面。 */}
+                <Show when={档().关系.length === 0 && 档().事件.length === 0}>
+                  <section
+                    data-slot="entity-empty-hint"
+                    class="rounded-[10px] border border-dashed border-v2-border-border-muted px-3 py-3"
+                  >
+                    <p class="text-[13px] text-v2-text-text-muted">
+                      这个实体暂时没有关系，也没有事件。可以先去文件里找：
+                    </p>
+                    <button
+                      type="button"
+                      data-slot="entity-empty-ask"
+                      onClick={() =>
+                        发到会话(
+                          `帮我查一下「${档().canonical_value}」还有哪些往来（转账 / 关系）没有登记，并说明依据的是哪些文件。`,
+                        )
+                      }
+                      class={`mt-2 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                    >
+                      问 AI：还有哪些往来没登记？
+                    </button>
+                  </section>
+                </Show>
+
                 <section
                   data-slot="entity-relations"
                   class="@container scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
@@ -852,6 +879,9 @@ function 关系段(props: {
                 tabindex="0"
                 aria-pressed={选()}
                 onClick={() => props.点选({ factType: "relation", factId: 行.id })}
+                // 双击 = 把这一行原文送进右栏（2026-11-08）。两次 click 会各点选一次 ⇒ 底栏
+                // 对象回到原样，正好不留下副作用。
+                onDblClick={() => 发到会话(关系行文本(行))}
                 onKeyDown={(事件) => {
                   if (事件.key !== "Enter" && 事件.key !== " ") return
                   事件.preventDefault()
@@ -939,6 +969,8 @@ function 事件行(props: {
       tabindex="0"
       aria-pressed={props.选中}
       onClick={props.点选}
+      // 同关系行：双击把这条事件原文送进右栏（两次 click 各切一次底栏对象，互相抵消）。
+      onDblClick={() => 发到会话(事件行文本(事件))}
       onKeyDown={(键) => {
         if (键.key !== "Enter" && 键.key !== " ") return
         键.preventDefault()

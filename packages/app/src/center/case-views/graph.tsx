@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, o
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import type { CaseDetailApi, 图边, 图节点, 关系图结果 } from "../case-detail-api"
 import { 复制文本 } from "@/utils/copy-text"
+import { 发到会话 } from "../ask-ai"
 import { showToast } from "@/utils/toast"
 import { 金额文本 } from "./format"
 import { 图标图形, 图标边长, 节点图标, 节点图标组 } from "./graph-icons"
@@ -628,6 +629,34 @@ export function Graph(props: GraphProps): JSX.Element {
       set复制了(点.id)
       clearTimeout(复制计时)
       复制计时 = setTimeout(() => set复制了((当前) => (当前 === 点.id ? undefined : 当前)), 1500)
+    })
+  }
+
+  /**
+   * 右键菜单里「复制 / 发送到会话」要带走谁（2026-11-08 用户下达）。
+   *
+   * 多选 ≥2 颗且右键的那颗在里面 ⇒ 整组（每行一条）；否则只这一颗。
+   * 图里拖拽已经是「整组移动」，复制与发送跟着同一个多选走，才不用再选一遍。
+   */
+  const 带走们 = (目标: 图节点): readonly 图节点[] => {
+    const 组 = 多选()
+    if (组.length < 2 || !组.includes(目标.id)) return [目标]
+    return 组.flatMap((id) => 点(id) ?? [])
+  }
+  /** 每行格式与面板标题同一套：`类型 · 细类 · 值`（细类没有就省掉）。 */
+  const 带走文本 = (目标: 图节点) =>
+    带走们(目标)
+      .map((行) => [行.type, 行.subtype, 行.value].filter((段): 段 is string => 段 !== undefined && 段 !== "").join(" · "))
+      .join("\n")
+
+  const 复制带走 = (目标: 图节点) => {
+    const 文本 = 带走文本(目标)
+    void 复制文本(文本).then((成) => {
+      if (!成) {
+        showToast({ variant: "error", title: "复制失败", description: 文本 })
+        return
+      }
+      showToast({ variant: "success", title: "已复制" })
     })
   }
 
@@ -1496,6 +1525,28 @@ export function Graph(props: GraphProps): JSX.Element {
               }}
             >
               <ContextMenu.ItemLabel>打开档案</ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+            {/* 「同一个手势每页都能用」（2026-11-08 用户下达）：图里的拖拽已经是整组移动，
+                所以复制 / 发送落在这里。多选 ≥2 颗时带走整组，见 `带走们`。 */}
+            <ContextMenu.Item
+              data-action="graph-node-menu-copy"
+              disabled={菜单点() === undefined}
+              onSelect={() => {
+                const 当前 = 菜单点()
+                if (当前 !== undefined) 复制带走(当前)
+              }}
+            >
+              <ContextMenu.ItemLabel>复制</ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              data-action="graph-node-menu-ask"
+              disabled={菜单点() === undefined}
+              onSelect={() => {
+                const 当前 = 菜单点()
+                if (当前 !== undefined) 发到会话(带走文本(当前))
+              }}
+            >
+              <ContextMenu.ItemLabel>发送到会话</ContextMenu.ItemLabel>
             </ContextMenu.Item>
           </ContextMenu.Content>
         </ContextMenu.Portal>

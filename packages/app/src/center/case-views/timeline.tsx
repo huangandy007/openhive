@@ -1,5 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
+import { 多行选区文本 } from "../structured-selection"
+import { 发到会话 } from "../ask-ai"
 import { 时间文本 } from "./format"
 
 export interface TimelineProps {
@@ -106,6 +108,16 @@ function 分组(事件们: readonly 时间线事件[]): 日组[] {
   return [...组们.filter((组) => 组.键 !== "?"), ...组们.filter((组) => 组.键 === "?")]
 }
 
+/**
+ * 一条事件的「带走」文本（`data-copy`）：拖选 / 右键复制 / 双击发进右栏读的都是它。
+ * 排版是「看的」，这条是「带走的」——与档案页 `事件行文本` 同一套拼法。
+ */
+function 事件载荷(事件: 时间线事件): string {
+  return [事件时间(事件), 事件.type, 事件.summary ?? "", 事件.participants.join("、"), 事件.trust_state ?? ""]
+    .filter((段) => 段 !== "")
+    .join(" · ")
+}
+
 /** 类型徽标：转账最重（金色），通话中性，其余描边。用现有 v2 语义 token，不新造色。 */
 function 类型类(类: string): string {
   if (类 === "转账")
@@ -208,7 +220,17 @@ export function Timeline(props: TimelineProps): JSX.Element {
         )}
       </Show>
 
-      <div data-slot="timeline-body" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      {/* `select-text` ＋ 拖拽载荷：与档案页同一个手势（2026-11-08 用户提出「同一个动作每页都能用」）。
+          工作区根的 `select-none` 会继承下来，不翻回来一个字都选不中。 */}
+      <div
+        data-slot="timeline-body"
+        class="min-h-0 flex-1 select-text overflow-y-auto px-4 py-3"
+        onDragStart={(事件) => {
+          const 文本 = 多行选区文本(事件.currentTarget, window.getSelection())
+          if (文本 === undefined) return
+          事件.dataTransfer?.setData("text/plain", 文本)
+        }}
+      >
         <Show when={错误()}>
           {(话) => <p data-slot="timeline-error" role="alert" class="text-[13px] text-v2-state-fg-danger">{话()}</p>}
         </Show>
@@ -233,7 +255,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
               <div class="relative min-w-0 flex-1 border-l border-v2-border-border-muted pb-1 pl-3">
                 <For each={组.事件们}>
                   {(事件) => (
-                    <div data-slot="timeline-event" data-event-id={事件.id} class="relative pb-3">
+                    <div
+                      data-slot="timeline-event"
+                      data-event-id={事件.id}
+                      data-copy={事件载荷(事件)}
+                      onDblClick={() => 发到会话(事件载荷(事件))}
+                      class="relative pb-3"
+                    >
                       <span
                         aria-hidden="true"
                         class="absolute -left-4 top-[5px] h-[7px] w-[7px] rounded-full bg-[var(--v2-brand-gold)]"

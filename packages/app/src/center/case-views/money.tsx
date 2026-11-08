@@ -1,5 +1,7 @@
 import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
+import { 多行选区文本 } from "../structured-selection"
+import { 发到会话 } from "../ask-ai"
 import { 金额文本 } from "./format"
 
 export interface MoneyProps {
@@ -14,6 +16,12 @@ interface 余额 { readonly 首: string | null; readonly 末: string | null; rea
 
 const 是数 = (值: unknown): 值 is number => typeof 值 === "number"
 const 是串 = (值: unknown): 值 is string => typeof 值 === "string"
+
+/** 三类行的「带走」文本（`data-copy`）：拖选 / 右键复制 / 双击发进右栏读的都是它。 */
+const 汇总行文本 = (行: 汇总行) => `${行.方向} ${行.笔数} 笔 · ${金额文本(行.合计)}`
+const 对手方行文本 = (行: 对手方行) => `${行.对手方} · ${行.方向} · ${行.笔数} 笔 · ${金额文本(行.合计)}`
+const 余额文本 = (余额: 余额) =>
+  `首 ${金额文本(余额.首)} · 末 ${金额文本(余额.末)} · 最高 ${金额文本(余额.最高)} · 最低 ${金额文本(余额.最低)} · 共 ${余额.行数} 行`
 
 function 解资金(数据: unknown): { 汇总: 汇总行[]; 对手方: 对手方行[]; 余额: 余额 | null } {
   if (数据 === null || typeof 数据 !== "object") return { 汇总: [], 对手方: [], 余额: null }
@@ -88,7 +96,16 @@ export function Money(props: MoneyProps): JSX.Element {
   const 解 = () => 解资金(结果()?.数据)
 
   return (
-    <div data-component="money" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-2">
+    <div
+      data-component="money"
+      class="flex min-h-0 w-full flex-1 select-text flex-col overflow-y-auto px-3 py-2"
+      // 拖选跨 ≥2 行 ⇒ 每行一条的结构化载荷（`structured-selection.ts`）；只选一行时不接管。
+      onDragStart={(事件) => {
+        const 文本 = 多行选区文本(事件.currentTarget, window.getSelection())
+        if (文本 === undefined) return
+        事件.dataTransfer?.setData("text/plain", 文本)
+      }}
+    >
       <h1 class="text-[16px] font-semibold text-v2-text-text-base">资金</h1>
       <Show when={错误()}>{(话) => <p data-slot="money-error" role="alert" class="text-[13px] text-v2-state-fg-danger">{话()}</p>}</Show>
       <Show when={载入() && 结果() === undefined}>
@@ -99,7 +116,13 @@ export function Money(props: MoneyProps): JSX.Element {
         <div class="mt-2 flex flex-wrap gap-2">
           <For each={解().汇总}>
             {(行) => (
-              <div data-slot="money-summary" data-方向={行.方向} class="rounded-[4px] bg-v2-background-bg-layer-01 px-2 py-1 text-[13px] text-v2-text-text-base">
+              <div
+                data-slot="money-summary"
+                data-方向={行.方向}
+                data-copy={汇总行文本(行)}
+                onDblClick={() => 发到会话(汇总行文本(行))}
+                class="rounded-[4px] bg-v2-background-bg-layer-01 px-2 py-1 text-[13px] text-v2-text-text-base"
+              >
                 {行.方向} {行.笔数} 笔 · {金额文本(行.合计)}
               </div>
             )}
@@ -115,7 +138,12 @@ export function Money(props: MoneyProps): JSX.Element {
         </Show>
         <For each={解().对手方}>
           {(行) => (
-            <div data-slot="money-counterparty" class="flex flex-wrap items-baseline gap-1 border-b border-v2-border-border-muted py-0.5 text-[13px]">
+            <div
+              data-slot="money-counterparty"
+              data-copy={对手方行文本(行)}
+              onDblClick={() => 发到会话(对手方行文本(行))}
+              class="flex flex-wrap items-baseline gap-1 border-b border-v2-border-border-muted py-0.5 text-[13px]"
+            >
               <span class="text-v2-text-text-base">{行.对手方}</span>
               <span class="text-v2-text-text-muted">{行.方向}</span>
               <span class="text-v2-text-text-muted">
@@ -128,9 +156,13 @@ export function Money(props: MoneyProps): JSX.Element {
         <h2 class="mt-3 text-[13px] font-semibold text-v2-text-text-base">余额</h2>
         <Show when={解().余额} fallback={<p class="text-[13px] text-v2-text-text-muted">没有可用余额</p>}>
           {(余额) => (
-            <div data-slot="money-balance" class="text-[13px] text-v2-text-text-base">
-              首 {金额文本(余额().首)} · 末 {金额文本(余额().末)} · 最高 {金额文本(余额().最高)} · 最低{" "}
-              {金额文本(余额().最低)} · 共 {余额().行数} 行
+            <div
+              data-slot="money-balance"
+              data-copy={余额文本(余额())}
+              onDblClick={() => 发到会话(余额文本(余额()))}
+              class="text-[13px] text-v2-text-text-base"
+            >
+              {余额文本(余额())}
             </div>
           )}
         </Show>
