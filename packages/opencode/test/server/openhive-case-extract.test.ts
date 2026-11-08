@@ -226,20 +226,44 @@ describe("回读", () => {
     expect(r.提示.some((话) => 话.includes("民警"))).toBe(true)
   })
 
-  test("正常实体与事件参与人不受准入影响", () => {
-    const 片 = "张三与李四见面。"
+  test("同一条准入提示在一次回读里只出现一次（单个角色词不许撑满 notes 额度）", () => {
+    const 片 = "民警与张三见面。民警与李四见面。"
     const r = 回读(
       解析({
-        实体: [{ 类型: "人", 取值: "张三" }],
+        实体: [],
+        关系: [],
+        事件: [
+          { 类型: "见面", 参与人: ["民警", "张三"], 原文: "民警与张三见面" },
+          { 类型: "见面", 参与人: ["民警", "李四"], 原文: "民警与李四见面" },
+        ],
+      }),
+      片,
+    )
+    expect(r.实体.map((项) => 项.canonicalValue).sort()).toEqual(["张三", "李四"].sort())
+    // 产出原始数字：去掉去重时红成 Expected: 1 / Received: 2。
+    expect(r.提示.filter((话) => 话.includes("民警")).length).toBe(1)
+  })
+
+  test("正常实体与事件参与人不被误拒；应拒的同类输入仍被拒", () => {
+    const 片 = "张三与李四见面。现场位于山场西侧。"
+    const r = 回读(
+      解析({
+        实体: [
+          { 类型: "人", 取值: "张三" },
+          { 类型: "地点", 取值: "现场" },
+        ],
         关系: [],
         事件: [{ 类型: "见面", 参与人: ["李四"], 原文: "张三与李四见面" }],
       }),
       片,
     )
     expect(r.实体.map((项) => 项.canonicalValue).sort()).toEqual(["张三", "李四"].sort())
+    // 准入生效：应拒的泛称没进实体、只进提示。
+    expect(r.实体.some((项) => 项.canonicalValue === "现场")).toBe(false)
+    expect(r.提示.some((话) => 话.includes("现场") && 话.includes("未建实体"))).toBe(true)
     expect(r.事件[0]?.participants).toEqual(["李四"])
     // 夹具没给时间，既有契约本就会记一条「没有给时间」；这里要钉的是准入没有多嘴。
-    expect(r.提示).toEqual(["事件「见面」没有给时间，已标存疑"])
+    expect(r.提示.filter((话) => 话.includes("没有给时间")).length).toBe(1)
   })
 })
 
