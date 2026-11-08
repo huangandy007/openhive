@@ -137,7 +137,7 @@ function 出处行文本(引用: 引用): string {
  * ## 版面（2026-11-07 视觉改版）
  *
  * 根节点不再自己滚动，而是「固定身份头 / 滚动体 / 固定裁决条」三段：
- * 滚动时始终看得见「这是谁」，也始终够得着 ✓ 对 / ✗ 错 / ？存疑（原来要滚到页尾）。
+ * 滚动时始终看得见「这是谁」，也始终够得着 ✓ 正确 / ✗ 抽错 / ？存疑（原来要滚到页尾）。
  * 身份头始终渲染（载入 / 出错时只剩「实体档案」字样），因为「显示已排除」开关在错误态
  * 仍是重试入口，不能被 `<Show when={档()}>` 一起藏掉。
  *
@@ -175,7 +175,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   /** 上一次取的实体键：只在**换实体**时收起各段，裁决 / 切开关重取不该改变阅读位置。 */
   let 上次实体 = ""
 
-  // 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑，只作用于这个实体本身。
+  // 纠正入口（design §9.2）：✓ 正确 / ✗ 抽错 / ？存疑，只作用于这个实体本身。
   const [裁决中, set裁决中] = createSignal(false)
   const [展开原因, set展开原因] = createSignal(false)
   const [原因类型, set原因类型] = createSignal<纠正原因 | undefined>()
@@ -202,7 +202,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   /**
    * 换裁决对象 = 换了一个**要被评的东西**：上一条写的排除原因不能跟着漂过去。
    *
-   * 反例（Task 6 评审提出）：在关系上点「✗ 错」并写了「识别错」，再点「待确认」回整条实体，
+   * 反例（Task 6 评审提出）：在关系上点「✗ 抽错」并写了「识别错」，再点「待确认」回整条实体，
    * 原因区还是那段字；一点提交，关系的理由就发到整条实体上了。所以切对象必须同时收起原因区、
    * 清空原因类型与原文——**所有换对象的路径共用这一处**，别各写一份（`#002-06`）。
    */
@@ -224,7 +224,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (对象.factType !== "event") return undefined
     return 档()?.事件.find((行) => 行.id === 对象.factId)
   })
-  /** 按钮押下读的是**选中对象自己**的信任态（选中一条「已确认」的关系时，✓ 对就该是押下的）。 */
+  /** 按钮押下读的是**选中对象自己**的信任态（选中一条「已确认」的关系时，✓ 正确就该是押下的）。 */
   const 当前信任态 = createMemo(
     () => 选中的关系()?.trust_state ?? 选中的事件()?.trust_state ?? 档()?.trust_state,
   )
@@ -751,7 +751,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
         </div>
       </div>
 
-      {/* 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑 是这一页的业务动作，固定在底栏——
+      {/* 纠正入口（design §9.2）：✓ 正确 / ✗ 抽错 / ？存疑 是这一页的业务动作，固定在底栏——
           长档案里不用先滚到页尾，裁决完也始终看得见自己在评谁。 */}
       <Show when={档()}>
         {(_档) => (
@@ -836,6 +836,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 </div>
               </Show>
               <div data-slot="entity-trust" ref={(元素) => (裁决条 = 元素)} class="flex flex-wrap items-center gap-1">
+                <span class="shrink-0 text-[12px] text-v2-text-text-muted">抽取是否正确：</span>
                 {/* 标题必须说清「现在评的是谁」：默认整条实体，点行之后换成那条关系 / 事件。
                     长文本截断——底栏不能被一串号码顶出行外。 */}
                 <span
@@ -844,23 +845,23 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 >
                   {底栏对象文本()}
                 </span>
-                {/* 形如「✓ 对」的符号是装饰，语义由可见文字与 `aria-label` 承担；
+                {/* 形如「✓ 正确」的符号是装饰，语义由可见文字与 `aria-label` 承担；
                     当前态用 `aria-pressed` ＋ 头部徽章的文字表达，不只靠颜色。 */}
                 <button
                   type="button"
                   data-slot="entity-trust-confirm"
-                  aria-label="这条事实对（确认）"
+                  aria-label="这条事实抽取正确（确认）"
                   aria-pressed={当前信任态() === "已确认"}
                   disabled={裁决中()}
                   onClick={() => void 裁决("确认")}
                   class={裁决按钮类(当前信任态() === "已确认")}
                 >
-                  ✓ 对
+                  ✓ 正确
                 </button>
                 <button
                   type="button"
                   data-slot="entity-trust-reject"
-                  aria-label="这条事实有错（排除）"
+                  aria-label="这条事实抽错了（排除）"
                   aria-pressed={当前信任态() === "已排除"}
                   aria-expanded={展开原因()}
                   aria-controls={原因区id}
@@ -872,7 +873,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   }}
                   class={裁决按钮类(当前信任态() === "已排除")}
                 >
-                  ✗ 错
+                  ✗ 抽错
                 </button>
                 <button
                   type="button"

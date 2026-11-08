@@ -893,7 +893,7 @@ describe("实体档案", () => {
     ])
   })
 
-  test("「✓ 对」立刻发确认裁决，作用于这个实体本身", async () => {
+  test("「✓ 正确」立刻发确认裁决，作用于这个实体本身", async () => {
     const 收到: 裁决入参[] = []
     const api = 假api({
       trust: async (input) => {
@@ -905,7 +905,13 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
 
     // 文字必须可见：符号只是装饰，语义不能只写在 aria-label 里。
-    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.textContent).toContain("对")
+    expect(host.textContent).toContain("抽取是否正确")
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.textContent).toContain("正确")
+    expect(host.querySelector("[data-slot='entity-trust-reject']")!.textContent).toContain("抽错")
+    expect(host.querySelector("[data-slot='entity-trust-doubt']")!.textContent).toContain("存疑")
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.getAttribute("aria-label")).toBe(
+      "这条事实抽取正确（确认）",
+    )
     host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
 
     await 等(() => 收到.length === 1)
@@ -936,7 +942,7 @@ describe("实体档案", () => {
     expect(收到[0]).toMatchObject({ factType: "entity", factId: "e-张", action: "存疑" })
   })
 
-  test("「✗ 错」先展开原因区不发请求；原因与说明都齐了才发排除，且原样带上", async () => {
+  test("「✗ 抽错」先展开原因区不发请求；原因与说明都齐了才发排除，且原样带上", async () => {
     const 收到: 裁决入参[] = []
     const api = 假api({
       trust: async (input) => {
@@ -1110,6 +1116,14 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     expect(底栏对象(host)).toContain("整条实体")
     expect(底栏对象(host)).toContain("张三")
+  })
+
+  test("裁决语义是数据质量：可见文案写明「抽取是否正确」，不是「是否涉案」", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    const 条 = host.querySelector("[data-slot='entity-trust']")!
+    expect(条.textContent).toContain("抽取是否正确")
+    expect(条.textContent).not.toContain("是否涉案")
   })
 
   test("点一条关系 ⇒ 对象换成它：标题、选中态、裁决的 factType/factId 都跟着换", async () => {
