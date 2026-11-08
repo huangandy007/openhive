@@ -167,6 +167,22 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const [裁决对象, set裁决对象] = createSignal<
     { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string }
   >({ factType: "entity" })
+
+  /**
+   * 换裁决对象 = 换了一个**要被评的东西**：上一条写的排除原因不能跟着漂过去。
+   *
+   * 反例（Task 6 评审提出）：在关系上点「✗ 错」并写了「识别错」，再点「待确认」回整条实体，
+   * 原因区还是那段字；一点提交，关系的理由就发到整条实体上了。所以切对象必须同时收起原因区、
+   * 清空原因类型与原文——**所有换对象的路径共用这一处**，别各写一份（`#002-06`）。
+   */
+  const 换裁决对象 = (
+    对象: { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string },
+  ) => {
+    set裁决对象(对象)
+    set展开原因(false)
+    set原因类型(undefined)
+    set原因说明("")
+  }
   const 选中的关系 = createMemo(() => {
     const 对象 = 裁决对象()
     if (对象.factType !== "relation") return undefined
@@ -202,10 +218,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (选区 !== null && !选区.isCollapsed) return
     const 当前 = 裁决对象()
     if (当前.factType === 对象.factType && 当前.factId === 对象.factId) {
-      set裁决对象({ factType: "entity" })
+      换裁决对象({ factType: "entity" })
       return
     }
-    set裁决对象(对象)
+    换裁决对象(对象)
   }
   /** 行是不是当前对象（选中底色与 `data-selected` 共用这一份判据）。 */
   const 是选中 = (factType: "relation" | "event", factId: string) => {
@@ -223,7 +239,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     const 在 = 对象.factType === "relation"
       ? 当前.关系.some((行) => 行.id === 对象.factId)
       : 当前.事件.some((行) => 行.id === 对象.factId)
-    if (!在) set裁决对象({ factType: "entity" })
+    if (!在) 换裁决对象({ factType: "entity" })
   })
 
   createEffect(() => {
@@ -238,7 +254,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
       上次实体 = 实体键
       set展开出处(false)
       // 换了实体，上一条实体选中的关系 / 事件当然不再属于这里（同 id 也不该沿用）。
-      set裁决对象({ factType: "entity" })
+      换裁决对象({ factType: "entity" })
     }
     set档(undefined)
     set错误(undefined)
@@ -290,7 +306,8 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
       { key: "关系", 值: 当前.关系总数 },
       { key: "事件", 值: 当前.事件总数 },
       { key: "对手方", 值: 当前.对方数 },
-      { key: "待确认", 值: 当前.待确认.合计 },
+      // 前后端版本不同步时（旧内核回包没有 `待确认`）降级显示 0，不在渲染期 TypeError。
+      { key: "待确认", 值: 当前.待确认?.合计 ?? 0 },
     ]
   })
 
@@ -310,7 +327,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const 格子可读名 = (键: string): string => {
     const 当前 = 档()
     if (键 === "待确认")
-      return `回到整条实体并聚焦「✓ 正确」（实体 ${当前?.待确认.实体 ?? 0} + 关系 ${当前?.待确认.关系 ?? 0} + 事件 ${当前?.待确认.事件 ?? 0}）`
+      return `回到整条实体并聚焦「✓ 正确」（实体 ${当前?.待确认?.实体 ?? 0} + 关系 ${当前?.待确认?.关系 ?? 0} + 事件 ${当前?.待确认?.事件 ?? 0}）`
     if (键 === "对手方") return "跳到关系块（对手方在关系里）"
     return `跳到${键}块`
   }
@@ -321,7 +338,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
   const 跳到 = (键: string) => {
     if (键 === "待确认") {
-      set裁决对象({ factType: "entity" })
+      换裁决对象({ factType: "entity" })
       裁决条?.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")?.focus()
       return
     }

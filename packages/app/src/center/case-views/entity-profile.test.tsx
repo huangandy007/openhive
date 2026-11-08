@@ -320,7 +320,74 @@ describe("实体档案", () => {
     格.click()
 
     expect(host.querySelector("[data-slot='entity-trust-target']")!.textContent).toContain("整条实体")
-    expect(document.activeElement).toBe(host.querySelector("[data-slot='entity-trust-confirm']"))
+    // ⚠️ 判据必须是**原语**：`expect(document.activeElement).toBe(节点)` 失败时 bun 要打印整个
+    // DOM 节点（环形引用），整轮会被挂到超时而不是干净报红（`#009-01`）。
+    expect(
+      document.activeElement === host.querySelector("[data-slot='entity-trust-confirm']"),
+    ).toBe(true)
+  })
+
+  /**
+   * Task 6 评审提出：换裁决对象必须清空排除原因。
+   * 反例路径是这次新开的「待确认」跳转——用户先在关系上写了原因，再点「待确认」回整条实体，
+   * 原因跟着漂过去，提交时就把关系的理由发到实体上了。
+   */
+  test("换裁决对象清空排除原因：给关系填了原因，点「待确认」后原因区不带着旧字", async () => {
+    const 待确认档: 实体档案 = {
+      ...档,
+      待确认: { 实体: 1, 关系: 2, 事件: 1, 合计: 4 },
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 待确认档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    // 在一条关系上展开原因区、写字、选原因类型。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "这条关系的对方认反了"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    await 等(() => !host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!.disabled)
+
+    统计格(host, "待确认").click()
+
+    // 收起：原因区不能还开着，否则下一步提交就是「关系的理由 → 整条实体」。
+    // 同 #1：对节点用 `toBeNull` 失败时 bun 会打印整棵 DOM（`#009-01`），这里改成原语判据。
+    expect(host.querySelector("[data-slot='entity-trust-reason']") === null).toBe(true)
+    // 再打开一次：原文与原因类型都必须已经清掉（提交按钮因此不可用）。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    expect(host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!.value).toBe("")
+    expect(
+      host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!.disabled,
+    ).toBe(true)
+  })
+
+  // 前后端版本不同步：旧内核的回包没有 `待确认`。界面必须降级显示 0，
+  // 不能在渲染期解引用 `undefined.合计` 抛 TypeError（评审修复 3/5）。
+  test("回包缺「待确认」时降级显示 0，不炸渲染", async () => {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 故意造「旧内核回包」：只在类型层面抹掉 `待确认`，模拟版本不同步（夹具，不是产品码）。
+    const 旧档 = { ...档, 待确认: undefined } as unknown as 实体档案
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 旧档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='待确认']") !== null)
+    const 格 = 统计格(host, "待确认")
+    expect(格.querySelector("[data-slot='entity-stat-value']")!.textContent).toBe("0")
+    expect(格.getAttribute("aria-label")).toContain("实体 0 + 关系 0 + 事件 0")
   })
 
   test("点「关系」或「对手方」格 ⇒ 都滚到关系块（对手方是关系的派生数，没有自己的块）", async () => {
