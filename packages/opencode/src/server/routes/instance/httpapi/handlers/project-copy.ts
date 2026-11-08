@@ -2,6 +2,7 @@ import { Agent } from "@/agent/agent"
 import { Provider } from "@/provider/provider"
 import { LLM } from "@/session/llm"
 import { MessageID, SessionID } from "@/session/schema"
+import { resolveModel } from "@/server/openhive/model-resolve"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { LLMEvent } from "@opencode-ai/llm"
 import { Effect, Stream } from "effect"
@@ -25,11 +26,12 @@ export const projectCopyHandlers = HttpApiBuilder.group(InstanceHttpApi, "projec
     const generateName = Effect.fn("ProjectCopyHttpApi.generateName")(function* (context: string | undefined) {
       const text = context?.trim()
       if (!text) return Slug.create()
-      const fallback = yield* provider.defaultModel().pipe(Effect.catch(() => Effect.succeed(undefined)))
-      if (!fallback) return Slug.create()
-      const model =
-        (yield* provider.getSmallModel(fallback.providerID)) ??
-        (yield* provider.getModel(fallback.providerID, fallback.modelID))
+      // 2026-11-08（模型统一配置 D5）：与案件抽取共用同一个解析入口。没有再走
+      // `defaultModel()` 的隐式兜底——操作员钉住的 task_model 必须真的被用上；
+      // 没有配置就回落 slug，命名失败不该阻断「复制项目」这件正事。
+      const 槽位 = yield* resolveModel("task").pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (槽位 === undefined) return Slug.create()
+      const model = yield* provider.getModel(槽位.providerID, 槽位.modelID)
       const sessionID = SessionID.descending()
       const result = yield* llm
         .stream({
