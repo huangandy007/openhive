@@ -510,25 +510,101 @@ describe("实体档案", () => {
       />
     ))
     await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+    /** 某一段里画了多少行（关系两段各有自己的 slot；事件 / 出处按 section 数）。 */
+    const 段行数 = (slot: string) =>
+      host.querySelector(`[data-slot='${slot}']`)?.querySelectorAll("[data-slot='entity-relation']").length ?? 0
+    const 事件行数 = () => host.querySelectorAll("[data-slot='entity-event']").length
+    const 出处行数 = () => host.querySelectorAll("[data-slot='entity-citation']").length
+    /** 四段都展开时的行数（大档：数据说的 8 / 人说的 7 / 事件 6 / 出处 9）。 */
+    const 四段全开 = () =>
+      段行数("entity-relations-data") === 8 &&
+      段行数("entity-relations-human") === 7 &&
+      事件行数() === 6 &&
+      出处行数() === 9
+
+    // ⚠️ 四段**都**要展开：只展开一段时，其余三行的重置拆掉也照样全绿（评审实测的红灯缺口）。
     host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
-    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 13)
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-human-expand']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!.click()
+    await 等(四段全开)
 
     // 裁决成功会重取：折叠不能跟着收起（否则每裁一次就把阅读位置顶回 5 条）。
     host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
     await 等(() => 取数 === 2)
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(13)
+    expect(四段全开()).toBe(true)
 
     // 切「显示已排除」也会重取同一实体：同样不重置。
     host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
     await 等(() => 取数 === 3)
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(13)
+    expect(四段全开()).toBe(true)
 
     setId("e-李")
+    // 等新实体的回包落地再断言（等「出处 5 行」会把本条用例的判据提前泄给这一句，
+    // 出处那一行重置被拆掉时只剩超时，看不出是哪个数不对）。
+    await 等(() => 取数 === 4)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // 逐段断言：四行 `set展开*(false)` 各要能被单独拆红，别用「关系总数」蒙混过关。
+    expect(段行数("entity-relations-data")).toBe(5)
+    expect(段行数("entity-relations-human")).toBe(5)
+    expect(事件行数()).toBe(5)
+    expect(出处行数()).toBe(5)
+  })
+
+  // 评审修复 1/5：20 条上限只该管出处。关系 / 事件展开要渲染全部（服务端已有硬顶），
+  // 前端再截一次是信息回退——夹具必须超过 20，否则「共用上限」这个回退照样全绿。
+  test("展开上限只作用于出处：关系 / 事件超过 20 条时展开仍渲染全部", async () => {
+    const 多档: 实体档案 = {
+      ...档,
+      关系: Array.from({ length: 25 }, (_, i) => ({ ...档.关系[0]!, id: `r-${i}`, source_kind: "data" as const })),
+      事件: Array.from({ length: 25 }, (_, i) => ({ ...档.事件[0]!, id: `ev-${i}` })),
+      关系总数: 25,
+      关系数据总数: 25,
+      关系人总数: 0,
+      事件总数: 25,
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 多档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 5)
+
+    const 关系钮 = host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!
+    expect(关系钮.textContent).toContain("展开全部 25 条")
+    关系钮.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 25)
+    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(25)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-event']").length === 25)
+    expect(host.querySelectorAll("[data-slot='entity-event']").length).toBe(25)
+  })
+
+  // 评审修复 3/5：出处 >20 时的「展开前 20 条」是独立分支，最大夹具（9 条）覆盖不到。
+  test("出处超过 20 条：按钮说「展开前 20 条」，展开后只画 20 行", async () => {
+    const 多档: 实体档案 = { ...档, 引用: 造引用(25), 引用总数: 25 }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 多档 }) })}
+        onOpen={() => {}}
+      />
+    ))
     await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
-    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 10)
-    expect(host.querySelectorAll("[data-slot='entity-event']").length).toBe(5)
+
+    const 钮 = host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!
+    expect(钮.textContent).toContain("展开前 20 条")
+    钮.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 20)
+    expect(host.querySelectorAll("[data-slot='entity-citation']").length).toBe(20)
+    expect(host.querySelector("[data-slot='entity-citation-expand']")!.textContent).toContain("收起")
   })
 
   test("出处不超过阈值时不出现展开按钮", async () => {

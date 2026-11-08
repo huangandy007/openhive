@@ -43,22 +43,24 @@ const 裁决按钮类 = (押下: boolean) =>
 export const 分段默认显示 = 5
 
 /**
- * 展开后最多画多少行：沿用 2026-11-07 的 20 条上限，只是从「默认」挪到「展开」。
+ * **出处**展开后最多画多少行：沿用 2026-11-07 的 20 条上限，只是从「默认」挪到「展开」。
  *
- * 不另设「展开更多」分页：一次把 500 条出处全铺进 DOM，版面与渲染都受不了。
+ * 只作用于出处（服务端最多给 500 条出处）；关系 / 事件展开渲染全部，因为服务端已有
+ * 200 / 100 条硬顶——前端再截一次纯属信息回退。
  * 超过这个数时按钮文案照实写「展开前 20 条」，不冒充「展开全部」。
  */
-export const 分段展开显示 = 20
+export const 出处展开上限 = 20
 
-/** 一段画多少行：未展开 `分段默认显示` 条，展开后 `分段展开显示` 条。四段共用这一份（`#002-06`）。 */
-function 一段显示<T>(全部: readonly T[], 展开: boolean): readonly T[] {
-  return 全部.slice(0, 展开 ? 分段展开显示 : 分段默认显示)
+/** 一段画多少行：未展开 `分段默认显示` 条；展开渲染全部，只有给了上限才截（目前只有出处给）。 */
+function 一段显示<T>(全部: readonly T[], 展开: boolean, 上限?: number): readonly T[] {
+  if (!展开) return 全部.slice(0, 分段默认显示)
+  return 上限 === undefined ? 全部 : 全部.slice(0, 上限)
 }
 
-/** 展开按钮的文案。超过展开上限时说「展开前 20 条」——不能写「展开全部」再只画 20 行。 */
-function 展开文案(总数: number, 展开: boolean): string {
+/** 展开按钮的文案：有上限且总数超过时才说「展开前 N 条」，不冒充「展开全部」。 */
+function 展开文案(总数: number, 展开: boolean, 上限?: number): string {
   if (展开) return "收起"
-  return 总数 > 分段展开显示 ? `展开前 ${分段展开显示} 条` : `展开全部 ${总数} 条`
+  return 上限 !== undefined && 总数 > 上限 ? `展开前 ${上限} 条` : `展开全部 ${总数} 条`
 }
 
 /**
@@ -153,7 +155,8 @@ function 出处行文本(引用: 引用): string {
  *
  * ## 四段折叠（2026-11-08）
  *
- * 数据说的 / 人说的 / 事件 / 出处各默认画 `分段默认显示`（5）条，展开后最多 `分段展开显示`（20）条。
+ * 数据说的 / 人说的 / 事件 / 出处各默认画 `分段默认显示`（5）条；展开后前三段渲染全部
+ * （服务端已有 200 / 100 条硬顶），出处封顶 `出处展开上限`（20）条。
  * 折叠是**纯前端**的：数据已经在回包里，不另发请求。换实体时四段全部收起（裁决 / 切开关重取
  * 不改变阅读位置）。
  */
@@ -319,7 +322,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const 数据说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind !== "human") ?? [])
   const 人说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind === "human") ?? [])
   /** 画出来的出处行：未展开时只给前 `分段默认显示` 条。 */
-  const 显示的引用 = createMemo(() => 一段显示(档()?.引用 ?? [], 展开出处()))
+  const 显示的引用 = createMemo(() => 一段显示(档()?.引用 ?? [], 展开出处(), 出处展开上限))
   /** 画出来的事件行：同上。 */
   const 显示的事件 = createMemo(() => 一段显示(档()?.事件 ?? [], 展开事件()))
 
@@ -738,7 +741,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       onClick={() => set展开出处((值) => !值)}
                       class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
                     >
-                      {展开文案(档().引用.length, 展开出处())}
+                      {展开文案(档().引用.length, 展开出处(), 出处展开上限)}
                     </button>
                   </Show>
                 </section>
