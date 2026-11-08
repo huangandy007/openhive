@@ -62,6 +62,7 @@ const 档: 实体档案 = {
       对方id: "e-账",
       对方值: "6222****0001",
       对方类型: "账户",
+      对方细类: "银行账号",
       source_kind: "data",
       basis: null,
       trust_state: "自动抽取",
@@ -77,6 +78,7 @@ const 档: 实体档案 = {
       对方id: "e-李",
       对方值: "李四",
       对方类型: "人",
+      对方细类: null,
       source_kind: "human",
       basis: "民警标注",
       trust_state: "已确认",
@@ -159,6 +161,23 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-conclusion']")!.textContent).toContain("数据说的 1 条")
   })
 
+  /**
+   * 2026-11-08 用户提出：档案里的信息要能用鼠标拖选，右键复制、拖到右栏会话框。
+   *
+   * 工作区那一层挂着 `select-none`（`pages/layout-new.tsx:174`），白名单只开了输入类三处；
+   * 文档视图早就为此翻回来过（`center/views/binary-view.tsx:311-323`，同族测试在
+   * `binary-view.test.tsx:436`）。档案正文是第四类，同样得挂 `select-text`。
+   *
+   * 按**整词**比（`split(/\s+/)`）：`toContain("select-text")` 是子串匹配，同族类名会假绿
+   * （`LEARNINGS #006-22`）。
+   */
+  test("档案正文能拖选：正文容器挂着 select-text，把工作区的 select-none 翻回来", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    const 正文 = host.querySelector("[data-slot='entity-profile-body']")!
+    expect(正文.className.split(/\s+/)).toContain("select-text")
+  })
+
   test("类型格显示细类（号码 · 手机号）；判不出细类的实体只显示大类", async () => {
     const 号码档 = { ...档, type: "号码", subtype: "手机号", canonical_value: "13800000001" }
     const host = mount(() => (
@@ -188,9 +207,9 @@ describe("实体档案", () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     const 行们 = [...host.querySelectorAll<HTMLElement>("[data-slot='entity-relation']")]
-    // 每行都有六格：扫读靠列对齐，不能又回到一行文字墙。
+    // 每行都有七格：扫读靠列对齐，不能又回到一行文字墙。
     for (const 行 of 行们) {
-      for (const 格 of ["direction", "counterparty", "type", "count", "amount", "state"]) {
+      for (const 格 of ["direction", "counterparty", "kind", "type", "count", "amount", "state"]) {
         expect(行.querySelector(`[data-slot='entity-relation-${格}']`)).not.toBeNull()
       }
     }
@@ -385,9 +404,10 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-events']")!.textContent).toContain("101 起")
   })
 
-  // 关系分两段（数据说的 / 人说的）各有上限：段头的条数要报自己那一段的全量，
+  // 关系分两段（数据说的 / 人说的）各有上限：报数要报全量，
   // 跟着当前页 `行们.length` 报会把「只列了前 200 条」说成「就这 1 条」。
-  test("关系段头报各自的全量，不跟当前页条数走", async () => {
+  // 2026-11-08 用户裁定 A：块头一行说清「共多少 / 两段各多少」，子段标题不再重复报数。
+  test("关系块头一行报清总数与两段全量，不跟当前页条数走", async () => {
     const 截断档: 实体档案 = {
       ...档,
       关系: [档.关系[0]!],
@@ -403,11 +423,53 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelector("[data-slot='entity-relations-data']") !== null)
-    const 段头 = (slot: string) =>
-      host.querySelector(`[data-slot='${slot}']`)!.parentElement!.textContent ?? ""
-    expect(段头("entity-relations-data")).toContain("201 条")
-    expect(段头("entity-relations-human")).toContain("0 条")
+    await 等(() => host.querySelector("[data-slot='entity-relations-head']") !== null)
+    const 块头 = host.querySelector("[data-slot='entity-relations-head']")!.textContent ?? ""
+    expect(块头).toContain("关系")
+    expect(块头).toContain("共 201 条")
+    expect(块头).toContain("数据说的 201 条")
+    expect(块头).toContain("人说的 0 条")
+    // 数字只在块头说一次：子段里不再重复（同一页两处报数会漂成两个说法）。
+    expect(host.querySelector("[data-slot='entity-relations-data']")!.textContent).not.toContain("201 条")
+  })
+
+  test("关系表头：对方之后是「类别」，原来的「类型」列改名为「关系」", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelector("[data-slot='entity-relation-head']") !== null)
+    // 两段各有一行表头（内容相同）：只读第一段那一行，别把两份拼起来。
+    const 表头 = host.querySelector("[data-slot='entity-relation-head']")!
+    const 列 = [...表头.querySelectorAll("span")].map((格) => 格.textContent)
+    expect(列).toEqual(["方向", "对方", "类别", "关系", "次数", "金额", "状态"])
+  })
+
+  test("类别列：细类优先、没有细类用大类、都没有写——", async () => {
+    const 三档: 实体档案 = {
+      ...档,
+      关系: [
+        档.关系[0],
+        档.关系[1],
+        // 防御分支：服务端的大类有 CHECK 约束、正常不会为空；空串只为钉「都没有」那一路。
+        { ...档.关系[0], id: "r-3", 对方细类: null, 对方类型: "" },
+      ],
+      关系总数: 3,
+      关系数据总数: 2,
+      关系人总数: 1,
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 三档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 3)
+    const 类别 = (id: string) =>
+      host.querySelector(`[data-slot='entity-relation'][data-id='${id}'] [data-slot='entity-relation-kind']`)!
+        .textContent
+    expect(类别("r-1")).toBe("银行账号") // 细类优先
+    expect(类别("r-2")).toBe("人") // 无细类 ⇒ 大类
+    expect(类别("r-3")).toBe("——") // 都没有
   })
 
   // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，
@@ -782,6 +844,113 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-trust-error']")?.textContent).toContain("服务端拒绝了这次裁决")
   })
 
+  /**
+   * 2026-11-08 用户提出：底栏「这条事实」到底指谁？——默认整条实体，点某条关系 / 事件就换成它。
+   *
+   * 判据：底栏标题说清对象、裁决带对应的 `factType` / `factId`、`aria-pressed` 读**选中对象自己**
+   * 的信任态；拖选文字之后松手那一下不能把对象抢走。
+   */
+  const 点行 = (host: HTMLElement, slot: string, id: string) => {
+    const 行 = host.querySelector<HTMLElement>(`[data-slot='${slot}'][data-id='${id}']`)
+    if (行 === null) throw new Error(`没有这一行：${slot}/${id}——前提不成立`)
+    行.click()
+    return 行
+  }
+  const 底栏对象 = (host: HTMLElement) =>
+    host.querySelector("[data-slot='entity-trust-target']")!.textContent ?? ""
+
+  test("默认对象是整条实体：底栏标题说清是谁", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    expect(底栏对象(host)).toContain("整条实体")
+    expect(底栏对象(host)).toContain("张三")
+  })
+
+  test("点一条关系 ⇒ 对象换成它：标题、选中态、裁决的 factType/factId 都跟着换", async () => {
+    const 收到: 裁决入参[] = []
+    const api = 假api({ trust: async (input) => (收到.push(input), { kind: "ok", value: { trustState: "已确认" } }) })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    const 行 = 点行(host, "entity-relation", "r-2")
+    expect(行.getAttribute("data-selected")).toBe("true")
+    expect(底栏对象(host)).toContain("这条关系")
+    expect(底栏对象(host)).toContain("李四")
+    // r-2 自己的信任态是「已确认」：按钮押下读的是**选中那条关系**，不是整条实体（自动抽取）。
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.getAttribute("aria-pressed")).toBe("true")
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toMatchObject({ projectId: "p", factType: "relation", factId: "r-2", action: "确认" })
+  })
+
+  test("再点同一行 ⇒ 退回整条实体（有进有出，不会卡在某条关系上）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    点行(host, "entity-relation", "r-1")
+    expect(底栏对象(host)).toContain("这条关系")
+    点行(host, "entity-relation", "r-1")
+    expect(底栏对象(host)).toContain("整条实体")
+    expect(点行(host, "entity-relation", "r-1").getAttribute("data-selected")).toBe("true")
+  })
+
+  test("点一条事件 ⇒ 对象换成它，存疑裁决带 event/factId", async () => {
+    const 收到: 裁决入参[] = []
+    const api = 假api({ trust: async (input) => (收到.push(input), { kind: "ok", value: { trustState: "存疑" } }) })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-event']").length === 1)
+
+    点行(host, "entity-event", "ev-1")
+    expect(底栏对象(host)).toContain("这条事件")
+    expect(底栏对象(host)).toContain("见面")
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-doubt']")!.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toMatchObject({ factType: "event", factId: "ev-1", action: "存疑" })
+  })
+
+  test("拖选文字后松手那次点击不换对象（否则复制完底栏悄悄跳到别的行）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    点行(host, "entity-relation", "r-1")
+
+    // 装一个「非折叠选区」：浏览器里拖选之后 `isCollapsed` 是 false。
+    const 原 = window.getSelection
+    Object.defineProperty(window, "getSelection", {
+      configurable: true,
+      writable: true,
+      value: () => ({ rangeCount: 1, isCollapsed: false, toString: () => "6222" }),
+    })
+    待还原.push(() => {
+      Object.defineProperty(window, "getSelection", { configurable: true, writable: true, value: 原 })
+    })
+
+    点行(host, "entity-relation", "r-2")
+    expect(底栏对象(host)).toContain("6222****0001")
+    expect(底栏对象(host)).not.toContain("李四")
+  })
+
+  test("刷新后选中的那条不在了 ⇒ 自动退回整条实体（不指着一个不存在的东西）", async () => {
+    let 取数 = 0
+    const api = 假api({
+      profile: async () => {
+        取数 += 1
+        // 第二次回包里 r-2 被服务端过滤掉了（比如状态变化后不再返回）。
+        return { kind: "ok", value: 取数 === 1 ? 档 : { ...档, 关系: [档.关系[0]], 关系总数: 1 } }
+      },
+      trust: async () => ({ kind: "ok", value: { trustState: "已确认" } }),
+    })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    点行(host, "entity-relation", "r-2")
+    expect(底栏对象(host)).toContain("李四")
+
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+    await 等(() => 取数 === 2 && host.querySelectorAll("[data-slot='entity-relation']").length === 1)
+    expect(底栏对象(host)).toContain("整条实体")
+  })
+
   test("在途时按钮禁用、显示「提交中…」，二次点击只发一次请求", async () => {
     const 在飞: Array<(回: 裁决回包) => void> = []
     let 调用次数 = 0
@@ -806,5 +975,68 @@ describe("实体档案", () => {
     // 收尾：别把未决 promise 留在用例外。
     在飞[0]({ kind: "ok", value: { trustState: "已确认" } })
     await 等(() => host.querySelector("[data-slot='entity-trust-pending']") === null)
+  })
+
+  /**
+   * 2026-11-08 用户提出：档案里的信息要能拖选、拖到右栏的 AI 对话框里。
+   *
+   * 拖拽这条链的读法是 `多行选区文本`：跨了两行以上才接管（每行一条，别把格子的换行也带走）；
+   * 只选了一行就放原生走——原生带的正是用户眼见的精确文字。
+   */
+  function 装选区(命中: (node: Node) => boolean) {
+    const 原 = window.getSelection
+    Object.defineProperty(window, "getSelection", {
+      configurable: true,
+      writable: true,
+      value: () => ({
+        rangeCount: 1,
+        isCollapsed: false,
+        toString: () => "选中的文字",
+        getRangeAt: () => ({ intersectsNode: 命中 }),
+      }),
+    })
+    待还原.push(() => {
+      Object.defineProperty(window, "getSelection", { configurable: true, writable: true, value: 原 })
+    })
+  }
+
+  /** happy-dom 没有 `DataTransfer`：只造 handler 真正用到的 `setData` / `effectAllowed`。 */
+  function 触发拖动(目标: Element) {
+    const 写进: Array<[string, string]> = []
+    const 事件 = new Event("dragstart", { bubbles: true, cancelable: true })
+    Object.defineProperty(事件, "dataTransfer", {
+      value: { effectAllowed: "none", setData: (类型: string, 值: string) => void 写进.push([类型, 值]) },
+    })
+    目标.dispatchEvent(事件)
+    return 写进
+  }
+
+  test("拖选跨两行以上 ⇒ 拖出去的是每行一条的结构化载荷，不是带格子换行的一坨", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    装选区(() => true)
+
+    const 写进 = 触发拖动(host.querySelector("[data-slot='entity-profile-body']")!)
+    const 载荷 = 写进.find(([类型]) => 类型 === "text/plain")?.[1]
+    expect(载荷).toBeDefined()
+    const 行们 = (载荷 ?? "").split("\n")
+    // 两段关系 2 条 ＋ 事件 1 条 ＋ 出处 1 条：每行一条，不重复、不夹空行。
+    expect(行们.length).toBe(4)
+    expect(行们.some((行) => 行.includes("6222****0001") && 行.includes("2 次") && 行.includes("银行账号"))).toBe(true)
+    expect(行们.some((行) => 行.includes("李四") && 行.includes("依据：民警标注"))).toBe(true)
+    expect(行们.some((行) => 行.includes("见面"))).toBe(true)
+    expect(行们.some((行) => 行.includes("话单.xlsx"))).toBe(true)
+  })
+
+  test("只选中一行 ⇒ 不接管拖拽（原生带的就是用户眼见的精确文字）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    const 行 = host.querySelector("[data-slot='entity-relation'][data-id='r-1']")!
+    装选区((node) => node === 行)
+
+    const 写进 = 触发拖动(行)
+    expect(写进.length).toBe(0)
+    // 行本身带得走：右键「复制」与单行拖拽读的都是这一条。
+    expect(行.getAttribute("data-copy")).toContain("6222****0001")
   })
 })

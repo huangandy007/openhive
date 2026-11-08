@@ -94,6 +94,11 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-细盖", projectId: 细类项目, value: "13800000001", type: "号码", attrs: { subtype: "固定电话" } })
   await 建实体(库(), { id: "e-细卡", projectId: 细类项目, value: "4111111111111111", type: "账户" })
   await 建实体(库(), { id: "e-细人", projectId: 细类项目, value: "钱七", type: "人" })
+  // 关系行要能说清「对方是什么」：细类优先、判不出用大类（2026-11-08 用户提出）。
+  // 三条覆盖三种情形：形状判得出 / attrs 补空 / 人没有细类。
+  await 建关系(库(), { id: "r-细人卡", projectId: 细类项目, fromId: "e-细人", toId: "e-细卡", type: "转账", sourceKind: "data" })
+  await 建关系(库(), { id: "r-细人号", projectId: 细类项目, fromId: "e-细人", toId: "e-细号", type: "通话", sourceKind: "data" })
+  await 建关系(库(), { id: "r-细卡人", projectId: 细类项目, fromId: "e-细卡", toId: "e-细人", type: "转账", sourceKind: "data" })
 
   // 出处是四块里唯一没有上限的（`引用们` 无 LIMIT）⇒ 大案里一个号码能在几百份材料里出现。
   // 这里钉「有上限」与「上限说清全量」：501 条截断、恰好 500 不截断。
@@ -202,6 +207,25 @@ describe("实体清单与档案", () => {
     expect(档.subtype).toBe("银行卡")
     const 人档 = (await 实体档案(库(), { projectId: 细类项目, id: "e-细人" }))!
     expect(人档.subtype).toBeUndefined()
+  })
+
+  // 关系行要能说清「对方是什么」（2026-11-08 用户提出：在「对方」与「关系」之间加一列）。
+  // 判据与实体自己的细类**同一把**（`细类()`）：形状优先、attrs 补空、都没有就是 null
+  // ——界面据 null 退回大类，再没有才写「——」。
+  test("档案关系的每条都带对方细类：形状 / attrs / 判不出（null）三种情形", async () => {
+    const 人档 = (await 实体档案(库(), { projectId: 细类项目, id: "e-细人" }))!
+    const 对方细类 = Object.fromEntries(人档.关系.map((行) => [行.id, 行.对方细类]))
+    expect(对方细类).toEqual({
+      // 4111… 形状判得出（Luhn 通过的 16 位）⇒ 银行卡
+      "r-细人卡": "银行卡",
+      // 400 号码形状判不出 ⇒ 用 attrs 里原文写的「固定电话」
+      "r-细人号": "固定电话",
+      // 反向那条（e-细卡 → e-细人）在 e-细人的档案里也出现，对方仍按形状判成银行卡。
+      "r-细卡人": "银行卡",
+    })
+    const 卡档 = (await 实体档案(库(), { projectId: 细类项目, id: "e-细卡" }))!
+    // 人是没有细类的大类：必须是 null（界面才知道退回大类），不是空串硬造。
+    expect(卡档.关系.find((行) => 行.id === "r-细卡人")!.对方细类).toBeNull()
   })
 
   test("搜索跨类型命中别名；给了类型就只查该类型", async () => {

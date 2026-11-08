@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { toaster } from "@opencode-ai/ui/toast"
 import { render } from "solid-js/web"
 import { 内容菜单 } from "./content-menu"
+import type { 选区读数 } from "./structured-selection"
 import { 发送失败提示, 订阅会话输入, 订阅最近回复 } from "@/ai-session/send-to-session"
 import { ToastRegion } from "@/utils/toast"
 
@@ -39,6 +40,35 @@ function 挂带提示(取选区: () => string) {
             <div data-slot="内容区">正文</div>
           </内容菜单>
         </>
+      ),
+      宿主,
+    ),
+  )
+  return 宿主
+}
+
+/**
+ * 挂一棵**带行级载荷**的树（2026-11-08：档案里的关系/事件行带 `data-copy`）。
+ *
+ * 选区对象由用例注入：`happy-dom` 的 Selection 与真浏览器不同，判「范围碰到哪些行」
+ * 只能靠替身（同 `sheet-grid.test.tsx` 的拖选口径）。
+ */
+function 挂结构(取选区: () => string, 取选区对象: () => 选区读数 | null) {
+  const 宿主 = document.createElement("div")
+  document.body.appendChild(宿主)
+  挂过的.push(
+    render(
+      () => (
+        <内容菜单 取选区={取选区} 取选区对象={取选区对象}>
+          <div data-slot="内容区">
+            <div data-copy="出 → 甲（手机号）· 转账">
+              <span>出 → 甲</span>
+            </div>
+            <div data-copy="← 入 乙（人）· 亲属">
+              <span>← 入 乙</span>
+            </div>
+          </div>
+        </内容菜单>
       ),
       宿主,
     ),
@@ -132,6 +162,47 @@ describe("中栏右键菜单", () => {
 
     // 断在**字符串**上、不把 DOM 节点交给 `expect`（`LEARNINGS #005-01`）。
     expect(document.body.textContent ?? "").toContain(发送失败提示("行数超限"))
+  })
+
+  /**
+   * 2026-11-08 用户提出：档案里的关系/事件行拖选后右键复制 / 发送到会话。
+   *
+   * 关系行是七格网格，浏览器原生的跨块选区文本是「一格一行」⇒ 一行数据变成七行文字。
+   * 跨 ≥2 行时改用行上的 `data-copy`（每行一条）；只在一行内选几个字时**不接管**，
+   * 保留原生精确文本（用户可能只想要那个号码）。
+   */
+  test("选区跨两行 ⇒ 发送的是每行一条的结构化载荷，不是七格拼出来的文字墙", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => 收到.push(文本))
+    const 宿主 = 挂结构(
+      // 浏览器原生会给的「文字墙」：故意与期望载荷不同，断言才能分辨走的是哪条路。
+      () => "出 → 甲\n← 入 乙\n甲\n乙",
+      () => {
+        const 行们 = [...document.querySelectorAll("[data-copy]")]
+        const 集 = new Set<Node>(行们)
+        return { rangeCount: 1, isCollapsed: false, getRangeAt: () => ({ intersectsNode: (node: Node) => 集.has(node) }) }
+      },
+    )
+    右键(宿主)
+    await 落定()
+    点项("发送到会话")
+    expect(收到).toEqual(["出 → 甲（手机号）· 转账\n← 入 乙（人）· 亲属"])
+  })
+
+  test("没选区、右键点在带 data-copy 的行上 ⇒ 菜单出来，发送的就是这一行", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => 收到.push(文本))
+    const 宿主 = 挂结构(
+      () => "",
+      () => null,
+    )
+    // 右键落在行内的子元素上：载荷要能顺着 `closest` 找到那一行。
+    const 目标 = 宿主.querySelector("[data-copy] span")!
+    目标.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }))
+    await 落定()
+    expect(菜单() === null).toBe(false)
+    点项("发送到会话")
+    expect(收到).toEqual(["出 → 甲（手机号）· 转账"])
   })
 
   /** 判据 7 的**后半**：右栏没开会话 ⇒ 屏幕弹那句提示（真 toast 组件那条路，配方见 `file-tree.test.tsx`）。 */

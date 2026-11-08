@@ -149,6 +149,12 @@ export interface 档案关系 {
   readonly 对方id: string
   readonly 对方值: string
   readonly 对方类型: string
+  /**
+   * 对方实体的细类（「号码 · 手机号」的后者），判据与实体自己的 `subtype` **同一把**
+   * （`细类()`：形状优先、`attrs` 补空）。判不出给 `null`——界面据此退回 `对方类型`，
+   * 再没有才写「——」（2026-11-08 用户提出：关系行要说清对方是什么）。
+   */
+  readonly 对方细类: string | null
   /** `data` = 数据直接记录；`human` = 人认定（§4.2）。档案页据此分「数据说的 / 人说的」。 */
   readonly source_kind: string
   readonly basis: string | null
@@ -244,6 +250,7 @@ export async function 实体档案(
         select r.id, r.type, r.from_id, r.to_id, r.source_kind, r.basis, r.trust_state,
                r.first_at, r.last_at, r.times, r.amount::text as amount,
                对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型,
+               对方.attrs as 对方attrs,
                count(*) over() as 总数
           from auth.case_relation r
           join auth.case_entity 对方
@@ -284,6 +291,7 @@ export async function 实体档案(
     对方id: String(行.对方id),
     对方值: String(行.对方值),
     对方类型: String(行.对方类型),
+    对方细类: 细类(String(行.对方类型), String(行.对方值), 行.对方attrs) ?? null,
     source_kind: String(行.source_kind),
     basis: (行.basis as string | null) ?? null,
     trust_state: String(行.trust_state),

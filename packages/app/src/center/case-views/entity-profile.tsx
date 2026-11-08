@@ -6,8 +6,10 @@ import {
   type 档案事件,
   type 档案关系,
   type 实体档案,
+  type 引用,
   type 纠正原因,
 } from "../case-detail-api"
+import { 多行选区文本 } from "../structured-selection"
 import { 定位文本, 金额文本, 时间文本 } from "./format"
 
 export interface EntityProfileProps {
@@ -39,9 +41,70 @@ const 裁决按钮类 = (押下: boolean) =>
  */
 export const 出处默认显示 = 20
 
-/** 关系行的六列：方向 / 对方 / 类型 / 次数 / 金额 / 状态。表头与行共用同一份列宽。 */
+/**
+ * 关系行的七列：方向 / 对方 / 类别 / 关系 / 次数 / 金额 / 状态。表头与行共用同一份列宽。
+ *
+ * 「类别」是 2026-11-08 用户裁定新增的一列（对方细类 → 大类 → 「——」）；
+ * 原来的「类型」列改名为「关系」——那列本来就是关系类型（转账 / 通话），不是对方的类型。
+ */
 const 关系列 =
-  "grid grid-cols-[48px_minmax(0,1fr)_56px_52px_92px_64px] items-baseline gap-x-2 px-3"
+  "grid grid-cols-[48px_minmax(0,1fr)_72px_56px_52px_92px_64px] items-baseline gap-x-2 px-3"
+
+/**
+ * 对方是什么：细类 → 大类 → 「——」（2026-11-08 用户裁定）。
+ *
+ * `typeof` 那一句是给**没重启的内核**留的门：旧回包里根本没有 `对方细类` 这个键，
+ * 直接 `!== null` 会拿到 `undefined` 并原样画成空白。
+ */
+function 对方类别(行: 档案关系): string {
+  const 细类 = 行.对方细类
+  if (typeof 细类 === "string" && 细类 !== "") return 细类
+  return 行.对方类型 !== "" ? 行.对方类型 : "——"
+}
+
+/** 关系行的一条摘要（底栏「这条关系：…」与拖拽载荷的开头共用同一份写法）。 */
+function 关系摘要(行: 档案关系): string {
+  return `${行.方向 === "出" ? "出 →" : "← 入"} ${行.对方值}（${对方类别(行)}）· ${行.type}`
+}
+
+/** 事件行的一条摘要（同上）。 */
+function 事件摘要(事件: 档案事件): string {
+  return `${时间文本(事件.occurred_at)} · ${事件.type}`
+}
+
+/** 把非空段落用「 · 」串起来（空段直接不出现，不留两个分隔符挨在一起）。 */
+function 串(...段们: Array<string | undefined>): string {
+  return 段们.filter((段): 段 is string => 段 !== undefined && 段 !== "").join(" · ")
+}
+
+/**
+ * 行的「带走」文本：右键「复制」、拖到会话框读的都是它（`data-copy`）。
+ *
+ * 与界面上的列**分开**写：界面上靠列对齐扫读，带走的要一句话读得懂（谁、什么关系、几次、
+ * 多少钱、谁认过）。两处各写一份等于同一个前提写两遍（`#002-06`），所以导出也走这里。
+ */
+function 关系行文本(行: 档案关系): string {
+  return 串(
+    关系摘要(行),
+    行.次数 === null ? "次数未知" : `${行.次数} 次`,
+    金额文本(行.金额),
+    行.trust_state,
+    行.basis === null ? undefined : `依据：${行.basis}`,
+  )
+}
+
+function 事件行文本(事件: 档案事件): string {
+  return 串(
+    事件摘要(事件),
+    事件.summary ?? undefined,
+    事件.participants.length === 0 ? undefined : 事件.participants.join("、"),
+    事件.trust_state,
+  )
+}
+
+function 出处行文本(引用: 引用): string {
+  return 串(引用.path ?? 引用.fileName ?? 引用.materialId, 定位文本(引用.locator) || undefined, 引用.extractMethod)
+}
 
 /**
  * 实体档案（design §8.3）。
@@ -94,6 +157,74 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const 原因区id = createUniqueId()
   let 原因框: HTMLTextAreaElement | undefined
 
+  /**
+   * 底栏那三个按钮作用在**谁**身上（2026-11-08 用户提出：原来只写「这条事实」，看不出对象）。
+   *
+   * 默认整条实体；点某条关系 / 事件就换成它，再点一次退回实体。对象必须是一条能说出口的事实
+   * ——关系与事件都有自己的 `trust_state`，裁决也各发各的 `factType` / `factId`。
+   */
+  const [裁决对象, set裁决对象] = createSignal<
+    { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string }
+  >({ factType: "entity" })
+  const 选中的关系 = createMemo(() => {
+    const 对象 = 裁决对象()
+    if (对象.factType !== "relation") return undefined
+    return 档()?.关系.find((行) => 行.id === 对象.factId)
+  })
+  const 选中的事件 = createMemo(() => {
+    const 对象 = 裁决对象()
+    if (对象.factType !== "event") return undefined
+    return 档()?.事件.find((行) => 行.id === 对象.factId)
+  })
+  /** 按钮押下读的是**选中对象自己**的信任态（选中一条「已确认」的关系时，✓ 对就该是押下的）。 */
+  const 当前信任态 = createMemo(
+    () => 选中的关系()?.trust_state ?? 选中的事件()?.trust_state ?? 档()?.trust_state,
+  )
+  /** 底栏标题：必须让用户一眼看出「现在评的是谁」。 */
+  const 底栏对象文本 = createMemo(() => {
+    const 当前 = 档()
+    if (当前 === undefined) return ""
+    const 关系 = 选中的关系()
+    if (关系 !== undefined) return `这条关系：${关系摘要(关系)}`
+    const 事件 = 选中的事件()
+    if (事件 !== undefined) return `这条事件：${事件摘要(事件)}`
+    return `整条实体：${当前.canonical_value}（${当前.type}${当前.subtype === undefined ? "" : ` · ${当前.subtype}`}）`
+  })
+
+  /**
+   * 点行选对象。两件事它**不做**：
+   * 1. 拖选文字之后松手那次 click 不改选——用户是在选字复制，不是要评这一行。
+   * 2. 不 `preventDefault` 任何鼠标默认行为——否则正文就选不中了（第 4 件的底线）。
+   */
+  const 点选事实 = (对象: { readonly factType: "relation" | "event"; readonly factId: string }) => {
+    const 选区 = window.getSelection()
+    if (选区 !== null && !选区.isCollapsed) return
+    const 当前 = 裁决对象()
+    if (当前.factType === 对象.factType && 当前.factId === 对象.factId) {
+      set裁决对象({ factType: "entity" })
+      return
+    }
+    set裁决对象(对象)
+  }
+  /** 行是不是当前对象（选中底色与 `data-selected` 共用这一份判据）。 */
+  const 是选中 = (factType: "relation" | "event", factId: string) => {
+    const 对象 = 裁决对象()
+    return 对象.factType === factType && 对象.factId === factId
+  }
+
+  // 刷新后选中的那条可能已经不在了（被排除 / 服务端换了回包）⇒ 退回整条实体，
+  // 否则底栏会一直指着一个画不出来的东西。
+  createEffect(() => {
+    const 当前 = 档()
+    if (当前 === undefined) return
+    const 对象 = 裁决对象()
+    if (对象.factType === "entity") return
+    const 在 = 对象.factType === "relation"
+      ? 当前.关系.some((行) => 行.id === 对象.factId)
+      : 当前.事件.some((行) => 行.id === 对象.factId)
+    if (!在) set裁决对象({ factType: "entity" })
+  })
+
   createEffect(() => {
     const projectId = props.projectId
     const id = props.id
@@ -105,6 +236,8 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (实体键 !== 上次实体) {
       上次实体 = 实体键
       set展开出处(false)
+      // 换了实体，上一条实体选中的关系 / 事件当然不再属于这里（同 id 也不该沿用）。
+      set裁决对象({ factType: "entity" })
     }
     set档(undefined)
     set错误(undefined)
@@ -202,11 +335,13 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   ) => {
     set裁决中(true)
     set裁决错误(undefined)
+    // 作用对象随底栏标题走：选中了某条关系 / 事件就裁决它，否则裁决整条实体。
+    const 对象 = 裁决对象()
     try {
       const 回 = await props.api.trust({
         projectId: props.projectId,
-        factType: "entity",
-        factId: props.id,
+        factType: 对象.factType,
+        factId: 对象.factType === "entity" ? props.id : 对象.factId,
         action,
         reasonKind: 原因?.reasonKind,
         reasonText: 原因?.reasonText,
@@ -319,7 +454,22 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
         </div>
       </header>
 
-      <div data-slot="entity-profile-body" ref={滚动体} class="min-h-0 flex-1 overflow-y-auto">
+      {/* `select-text`（2026-11-08 用户提出「档案里的信息要能拖选、右键复制、拖到会话框」）：
+          工作区那一层挂着 `select-none`（`pages/layout-new.tsx:174`），白名单只开了输入类三处；
+          文档视图早已为此翻回来过（`center/views/binary-view.tsx:311-323`）。档案正文同理——
+          不翻回来，`user-select` 一路继承成 `none`，一个字都选不中。 */}
+      <div
+        data-slot="entity-profile-body"
+        ref={滚动体}
+        class="min-h-0 flex-1 overflow-y-auto select-text"
+        // 拖选跨两行以上 ⇒ 把「每行一条」的文本塞进拖拽载荷（下同 `内容菜单` 的右键复制）；
+        // 只选一行 / 没选区时**不接管**，原生带过去的正是用户眼见的精确文字。
+        onDragStart={(事件) => {
+          const 文本 = 多行选区文本(事件.currentTarget, window.getSelection())
+          if (文本 === undefined) return
+          事件.dataTransfer?.setData("text/plain", 文本)
+        }}
+      >
         <div class="mx-auto w-full max-w-[760px] px-4 py-3">
           <Show when={错误()}>
             {(话) => (
@@ -390,17 +540,42 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   data-slot="entity-relations"
                   class="@container scroll-mt-3 overflow-hidden rounded-[10px] border border-v2-border-border-muted bg-v2-background-bg-layer-01"
                 >
+                  {/* 块头一行说清全量（2026-11-08 用户裁定 A）：数字用回包的**全量**计数，
+                      不是当前页 `关系.length`（服务端只给前 N 条）。子段标题不再重复报数。 */}
+                  <div
+                    data-slot="entity-relations-head"
+                    class="flex flex-wrap items-baseline gap-x-2 px-3 pt-2"
+                  >
+                    <h2 class="text-[12px] font-semibold text-v2-text-text-base">关系</h2>
+                    <span data-slot="entity-relations-total" class="text-[11px] tabular-nums text-v2-text-text-muted">
+                      共 {档().关系总数} 条
+                    </span>
+                    <span
+                      data-slot="entity-relations-data-count"
+                      class="text-[11px] tabular-nums text-v2-text-text-muted"
+                    >
+                      · 数据说的 {档().关系数据总数} 条
+                    </span>
+                    <span
+                      data-slot="entity-relations-human-count"
+                      class="text-[11px] tabular-nums text-v2-text-text-muted"
+                    >
+                      · 人说的 {档().关系人总数} 条
+                    </span>
+                  </div>
                   <关系段
                     标题="数据说的"
                     slot="entity-relations-data"
                     行们={数据说的()}
-                    总数={档().关系数据总数}
+                    选中={是选中}
+                    点选={点选事实}
                   />
                   <关系段
                     标题="人说的"
                     slot="entity-relations-human"
                     行们={人说的()}
-                    总数={档().关系人总数}
+                    选中={是选中}
+                    点选={点选事实}
                     分隔
                   />
                 </section>
@@ -419,7 +594,9 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     fallback={<p class="px-3 py-1 pb-2 text-[12px] text-v2-text-text-muted">没有共同事件</p>}
                   >
                     <div class="px-3 pt-1 pb-2">
-                      <For each={档().事件}>{(事件) => 事件行(事件)}</For>
+                      <For each={档().事件}>
+                        {(事件) => <事件行 事件={事件} 选中={是选中("event", 事件.id)} 点选={() => 点选事实({ factType: "event", factId: 事件.id })} />}
+                      </For>
                     </div>
                   </Show>
                 </section>
@@ -440,6 +617,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     {(引用) => (
                       <div
                         data-slot="entity-citation"
+                        data-copy={出处行文本(引用)}
                         class="flex flex-wrap items-baseline gap-x-2 border-t border-v2-border-border-muted px-3 py-1 text-[12px]"
                       >
                         <span class="text-v2-text-text-base">
@@ -474,7 +652,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
       {/* 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑 是这一页的业务动作，固定在底栏——
           长档案里不用先滚到页尾，裁决完也始终看得见自己在评谁。 */}
       <Show when={档()}>
-        {(档) => (
+        {(_档) => (
           <footer class="shrink-0 border-t border-v2-border-border-muted bg-v2-background-bg-layer-01">
             <div class="mx-auto w-full max-w-[760px] px-4 py-2">
               {/* 裁决自己的错误画在按钮 / 原因区旁边（不是滚动体顶部的「读不到档案」）。 */}
@@ -556,17 +734,24 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 </div>
               </Show>
               <div data-slot="entity-trust" class="flex flex-wrap items-center gap-1">
-                <span class="mr-1 text-[12px] text-v2-text-text-muted">这条事实：</span>
+                {/* 标题必须说清「现在评的是谁」：默认整条实体，点行之后换成那条关系 / 事件。
+                    长文本截断——底栏不能被一串号码顶出行外。 */}
+                <span
+                  data-slot="entity-trust-target"
+                  class="mr-1 min-w-0 max-w-full truncate text-[12px] text-v2-text-text-muted"
+                >
+                  {底栏对象文本()}
+                </span>
                 {/* 形如「✓ 对」的符号是装饰，语义由可见文字与 `aria-label` 承担；
                     当前态用 `aria-pressed` ＋ 头部徽章的文字表达，不只靠颜色。 */}
                 <button
                   type="button"
                   data-slot="entity-trust-confirm"
                   aria-label="这条事实对（确认）"
-                  aria-pressed={档().trust_state === "已确认"}
+                  aria-pressed={当前信任态() === "已确认"}
                   disabled={裁决中()}
                   onClick={() => void 裁决("确认")}
-                  class={裁决按钮类(档().trust_state === "已确认")}
+                  class={裁决按钮类(当前信任态() === "已确认")}
                 >
                   ✓ 对
                 </button>
@@ -574,7 +759,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   type="button"
                   data-slot="entity-trust-reject"
                   aria-label="这条事实有错（排除）"
-                  aria-pressed={档().trust_state === "已排除"}
+                  aria-pressed={当前信任态() === "已排除"}
                   aria-expanded={展开原因()}
                   aria-controls={原因区id}
                   disabled={裁决中()}
@@ -583,7 +768,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     // 原因区整块是 `<Show>` 新插入的，Solid 的渲染在本次事件里同步完成 ⇒ ref 已就绪。
                     原因框?.focus()
                   }}
-                  class={裁决按钮类(档().trust_state === "已排除")}
+                  class={裁决按钮类(当前信任态() === "已排除")}
                 >
                   ✗ 错
                 </button>
@@ -591,10 +776,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   type="button"
                   data-slot="entity-trust-doubt"
                   aria-label="这条事实存疑"
-                  aria-pressed={档().trust_state === "存疑"}
+                  aria-pressed={当前信任态() === "存疑"}
                   disabled={裁决中()}
                   onClick={() => void 裁决("存疑")}
-                  class={裁决按钮类(档().trust_state === "存疑")}
+                  class={裁决按钮类(当前信任态() === "存疑")}
                 >
                   ？存疑
                 </button>
@@ -622,36 +807,57 @@ function 关系段(props: {
   readonly 标题: string
   readonly slot: string
   readonly 行们: readonly 档案关系[]
-  /** 本段**全量**条数（服务端按段计）；服务端截断时 `行们` 只是前 N 条，报数不能用它的 length。 */
-  readonly 总数: number
+  /** 这一行是不是底栏当前对象；`选中` / `点选` 由档案组件传下来（行自己没有状态）。 */
+  readonly 选中: (factType: "relation" | "event", factId: string) => boolean
+  readonly 点选: (对象: { readonly factType: "relation" | "event"; readonly factId: string }) => void
   readonly 分隔?: boolean
 }): JSX.Element {
   return (
     <div class={props.分隔 === true ? "border-t border-v2-border-border-muted" : ""}>
       <div class="flex items-baseline gap-1.5 px-3 pt-2">
         <h2 class="text-[12px] font-semibold text-v2-text-text-base">{props.标题}</h2>
-        <span class="text-[11px] tabular-nums text-v2-text-text-muted">{props.总数} 条</span>
-        {/* 空的段只多一句「没有」，不白占一整块版面（原来它自己占掉两行）。 */}
+        {/* 空的段只多一句「没有」，不白占一整块版面（原来它自己占掉两行）。
+            条数由块头统一报（`entity-relations-head`），这里不再重复。 */}
         <Show when={props.行们.length === 0}>
           <span class="text-[12px] text-v2-text-text-muted">· 没有</span>
         </Show>
       </div>
       <div data-slot={props.slot} class="pb-1">
         <Show when={props.行们.length > 0}>
-          <div class={`${关系列} pb-1 text-[11px] text-v2-text-text-muted @max-[560px]:hidden`}>
+          <div
+            data-slot="entity-relation-head"
+            class={`${关系列} pb-1 text-[11px] text-v2-text-text-muted @max-[560px]:hidden`}
+          >
             <span>方向</span>
             <span>对方</span>
-            <span>类型</span>
+            <span>类别</span>
+            <span>关系</span>
             <span class="text-right">次数</span>
             <span class="text-right">金额</span>
             <span>状态</span>
           </div>
           <For each={props.行们}>
-            {(行) => (
+            {(行) => {
+              // 行可点 = 底栏的裁决对象切到它（2026-11-08）。`onMouseDown` 里不拦默认行为，
+              // 否则正文选不中；拖选后的那次 click 由 `点选事实` 自己按选区判断跳过。
+              const 选 = () => props.选中("relation", 行.id)
+              return (
               <div
                 data-slot="entity-relation"
+                data-id={行.id}
                 data-source={行.source_kind}
-                class={`${关系列} border-t border-v2-border-border-muted py-1.5 text-[13px] hover:bg-v2-overlay-simple-overlay-hover @max-[560px]:flex @max-[560px]:flex-wrap @max-[560px]:gap-y-1`}
+                data-copy={关系行文本(行)}
+                data-selected={选() ? "true" : undefined}
+                role="button"
+                tabindex="0"
+                aria-pressed={选()}
+                onClick={() => props.点选({ factType: "relation", factId: 行.id })}
+                onKeyDown={(事件) => {
+                  if (事件.key !== "Enter" && 事件.key !== " ") return
+                  事件.preventDefault()
+                  props.点选({ factType: "relation", factId: 行.id })
+                }}
+                class={`${关系列} cursor-pointer border-t border-v2-border-border-muted py-1.5 text-[13px] hover:bg-v2-overlay-simple-overlay-hover @max-[560px]:flex @max-[560px]:flex-wrap @max-[560px]:gap-y-1 ${选() ? "bg-[var(--v2-background-bg-accent-soft)]" : ""}`}
               >
                 <span
                   data-slot="entity-relation-direction"
@@ -664,13 +870,19 @@ function 关系段(props: {
                   <div data-slot="entity-relation-counterparty" class="truncate text-v2-text-text-base">
                     {行.对方值}
                   </div>
-                  {/* 依据放不下第六列（列宽会把对方值挤没），压在对方值下面一行；不丢信息。 */}
+                  {/* 依据放不下第七列（列宽会把对方值挤没），压在对方值下面一行；不丢信息。 */}
                   <Show when={行.basis}>
                     {(依据) => (
                       <div class="truncate text-[11px] text-v2-text-text-muted">依据：{依据()}</div>
                     )}
                   </Show>
                 </div>
+                <span
+                  data-slot="entity-relation-kind"
+                  class="shrink-0 truncate text-[12px] text-v2-text-text-muted"
+                >
+                  {对方类别(行)}
+                </span>
                 <span
                   data-slot="entity-relation-type"
                   class="shrink-0 truncate text-[12px] text-v2-text-text-muted"
@@ -696,7 +908,8 @@ function 关系段(props: {
                   {行.trust_state}
                 </span>
               </div>
-            )}
+              )
+            }}
           </For>
         </Show>
       </div>
@@ -704,12 +917,35 @@ function 关系段(props: {
   )
 }
 
-/** 一条事件：左轨日期与时刻，右列类型 / 摘要 / 参与人。日期用 `时间文本` 的同一份手写格式。 */
-function 事件行(事件: 档案事件): JSX.Element {
+/**
+ * 一条事件：左轨日期与时刻，右列类型 / 摘要 / 参与人。日期用 `时间文本` 的同一份手写格式。
+ * 行本身可点（同关系行）：点一下把底栏的裁决对象换成这条事件。
+ */
+function 事件行(props: {
+  readonly 事件: 档案事件
+  readonly 选中: boolean
+  readonly 点选: () => void
+}): JSX.Element {
+  const 事件 = props.事件
   const 时间 = 时间文本(事件.occurred_at)
   const [日, 刻] = 时间.split(" ")
   return (
-    <div data-slot="entity-event" class="grid grid-cols-[76px_minmax(0,1fr)] gap-x-3">
+    <div
+      data-slot="entity-event"
+      data-id={事件.id}
+      data-copy={事件行文本(事件)}
+      data-selected={props.选中 ? "true" : undefined}
+      role="button"
+      tabindex="0"
+      aria-pressed={props.选中}
+      onClick={props.点选}
+      onKeyDown={(键) => {
+        if (键.key !== "Enter" && 键.key !== " ") return
+        键.preventDefault()
+        props.点选()
+      }}
+      class={`grid cursor-pointer grid-cols-[76px_minmax(0,1fr)] gap-x-3 ${props.选中 ? "bg-[var(--v2-background-bg-accent-soft)]" : ""}`}
+    >
       <div class="py-1.5 text-right">
         <div class="text-[11px] tabular-nums text-v2-text-text-muted">{日 ?? "—"}</div>
         <Show when={刻}>

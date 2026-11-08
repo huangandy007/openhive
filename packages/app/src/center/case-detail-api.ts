@@ -15,6 +15,8 @@ export interface 档案关系 {
   readonly 对方id: string
   readonly 对方值: string
   readonly 对方类型: string
+  /** 对方细类（`手机号` / `银行卡`…）；判不出是 `null` ⇒ 界面退回大类，再没有才写「——」。 */
+  readonly 对方细类: string | null
   readonly source_kind: string
   readonly basis: string | null
   readonly trust_state: string
