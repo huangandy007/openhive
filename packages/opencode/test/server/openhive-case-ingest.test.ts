@@ -981,15 +981,21 @@ describe("文本作业（计划 4）", () => {
     expect(String(作业[0]?.error)).toContain("全部 1 段")
   })
 
-  test("两片都失败 ⇒ 作业「失败」、error 带片数；部分成功仍「完成」", async () => {
+  test("两片都失败 ⇒ 作业「失败」、error 带片数", async () => {
     // 两行各 800 字 ⇒ 恰好两片。两片都回 `{}`（结构非法）⇒ 全部片失败。
     const 入 = await 入队文本("两片全坏.txt", `${"甲".repeat(800)}\n${"乙".repeat(800)}`)
     const job = await 认领本材料(入.materialId)
-    const r = await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => ({})) }, job)
+    const r = await runJob(
+      db(),
+      { ...deps, 建抽取器: async () => ({ ...建假抽取器(() => ({})), 模型来源: "task_model" }) },
+      job,
+    )
     expect(r).toBe("失败")
 
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("有问题")
+    // 审计字段：模型来源随「有问题」分支写进 parse_detail（假抽取器默认不填，这里显式给）。
+    expect(材料?.parseDetail).toMatchObject({ modelSource: "task_model" })
     const 作业 = rowsOf(await db().execute(sql`select status, error from auth.case_ingest_job where id = ${job.jobId}`))
     expect(作业[0]).toMatchObject({ status: "失败" })
     expect(String(作业[0]?.error)).toContain("全部 2 段")
