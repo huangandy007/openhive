@@ -12,6 +12,7 @@ import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
+import { 建实体 } from "./openhive-case-fact-fixture"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -802,6 +803,44 @@ describe("文本作业（计划 4）", () => {
     expect(关系.length).toBe(1)
     expect(关系[0]?.to_type).toBe("账户")
     expect(关系[0]?.to_value).toBe(卡号)
+  })
+
+  test("人名带组织后缀 ⇒ 落库是「组织」，关系两端也接得上；旧「人」行可并存", async () => {
+    const 单位 = "柏加派出所"
+    const 原文 = `2026年3月5日，张三到${单位}办理实名登记。`
+    // 存量里已经有一条同值的「人」行：唯一索引含 type，两行可以并存，不报错。
+    await 建实体(db(), { id: "e-旧人行", projectId: "p-txt", value: 单位, type: "人" })
+
+    const 入 = await 入队文本("组织.txt", 原文)
+    const job = await 认领本材料(入.materialId)
+    const 假 = 建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张三" },
+        { 类型: "人", 取值: 单位 },
+      ],
+      关系: [{ 类型: "实名登记", 从: "张三", 到: 单位, 依据: "笔录记载", 原文 }],
+      事件: [],
+    }))
+    expect(await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)).toBe("完成")
+
+    const 实体 = rowsOf(await db().execute(sql`
+      select type, canonical_value from auth.case_entity
+       where project_id = 'p-txt' and canonical_value = ${单位}
+       order by type
+    `))
+    // 旧「人」行还在，新「组织」行已落库；不是覆盖。
+    expect(实体.map((行) => String(行.type)).sort()).toEqual(["人", "组织"])
+
+    const 关系 = rowsOf(await db().execute(sql`
+      select t.type as to_type, t.canonical_value as to_value
+      from auth.case_relation r
+      join auth.case_entity t on t.project_id = r.project_id and t.id = r.to_id
+      where r.project_id = 'p-txt'
+    `))
+    // 关系没丢、且落在纠正后的组织上：端点查找只硬列人/号码/账户时，这里会是 0 行。
+    expect(关系.length).toBe(1)
+    expect(关系[0]?.to_type).toBe("组织")
+    expect(关系[0]?.to_value).toBe(单位)
   })
 
   test("材料写着细类、形状又判不出的实体：细类落进 attrs", async () => {
