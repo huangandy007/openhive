@@ -33,6 +33,12 @@ describe("task 槽位", () => {
     expect(结果.success).toMatchObject({ providerID: "gw", modelID: "chat", source: "model" })
   })
 
+  test("task_model 为空串 ⇒ 视为未设置，回落 model", () => {
+    const 结果 = 跑({ task_model: "", model: "gw/chat" }, "task")
+    if (结果._tag === "Failure") throw new Error("不该失败")
+    expect(结果.success).toMatchObject({ providerID: "gw", modelID: "chat", source: "model" })
+  })
+
   test("两者都没有 ⇒ no_config，文案点名 task_model", () => {
     const 错误 = 取错(跑({}, "task"))
     expect(错误.reason).toBe("no_config")
@@ -93,6 +99,10 @@ describe("chat 槽位", () => {
     const 结果 = 跑({ model: "gw/chat" }, "chat")
     if (结果._tag === "Failure") throw new Error("不该失败")
     expect(结果.success).toMatchObject({ providerID: "gw", modelID: "chat", source: "model" })
+  })
+
+  test("model 为空串 ⇒ 视为未配置", () => {
+    expect(取错(跑({ model: "" }, "chat")).reason).toBe("no_config")
   })
 
   test("没有显式、配置也没有 model ⇒ 才走 fallback，source=fallback", () => {

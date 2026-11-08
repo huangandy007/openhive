@@ -77,8 +77,11 @@ export const resolveModelFromConfig = (
       }
     }
 
-    const 槽位 = purpose === "task" ? (config.task_model ?? config.model) : config.model
-    if (槽位 === undefined || 槽位 === "") {
+    // 空串按「未设置」处理：`task_model: ""` 回落到 `model`，`model: ""` 视为未配置。
+    // 与 `resolveModelWith` 里 `config.model !== ""` 的「有配置」判据保持同一语义。
+    const 槽位原文 = purpose === "task" ? (config.task_model || config.model) : config.model
+    const 槽位 = 槽位原文 === "" ? undefined : 槽位原文
+    if (槽位 === undefined) {
       return yield* new ModelUnavailable({
         purpose,
         reason: "no_config",
