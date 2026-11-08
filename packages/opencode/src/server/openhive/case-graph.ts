@@ -368,7 +368,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   if (强度 !== "全部") {
     const 计数 = await 计强度(db, {
       projectId: input.projectId,
-      节点们: [String(中心.id), ...一跳点],
+      节点们: 跳数 === 2 ? [String(中心.id), ...一跳点] : [String(中心.id)],
       类型: input.类型,
       强度,
     })

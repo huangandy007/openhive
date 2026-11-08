@@ -175,6 +175,15 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-强", projectId: "p-强度", value: "强", type: "账户" })
   await 建关系(库(), { id: "r-弱", projectId: "p-强度", fromId: "e-强心", toId: "e-弱", type: "通话" })
   await 建带次数关系(库(), { id: "r-强", projectId: "p-强度", fromId: "e-强心", toId: "e-强", type: "转账", times: 1, amount: 20000 })
+  await 建实体(库(), { id: "e-阈心", projectId: "p-阈", value: "阈心", type: "人" })
+  await 建实体(库(), { id: "e-阈二", projectId: "p-阈", value: "阈二", type: "号码" })
+  await 建实体(库(), { id: "e-阈五", projectId: "p-阈", value: "阈五", type: "号码" })
+  await 建实体(库(), { id: "e-阈远", projectId: "p-阈", value: "阈远", type: "号码" })
+  await 建带次数关系(库(), { id: "r-阈二", projectId: "p-阈", fromId: "e-阈心", toId: "e-阈二", type: "通话", times: 2 })
+  await 建带次数关系(库(), { id: "r-阈五", projectId: "p-阈", fromId: "e-阈心", toId: "e-阈五", type: "通话", times: 5 })
+  // `r-阈远` 必须挂在 e-阈五（「强」档唯一画得出来的一跳点）上：挂在 e-阈二 时它永远不在图里，
+  // 「2 跳才算上一跳点」这条用例的预期 {2,3} 不可达。
+  await 建带次数关系(库(), { id: "r-阈远", projectId: "p-阈", fromId: "e-阈五", toId: "e-阈远", type: "通话", times: 1 })
 })
 
 afterAll(async () => {
@@ -348,5 +357,25 @@ describe("关系图", () => {
     const 全图 = (await 关系图(库(), { projectId: "p-强度", id: "e-强心", 强度: "全部" }))!
     expect(全图.边).toHaveLength(2)
     expect(全图.强度缺口).toBeUndefined()
+  })
+
+  test("强度阈值按次数臂：2 次进「重点」、5 次才进「强」", async () => {
+    const 重点图 = (await 关系图(库(), { projectId: "p-阈", id: "e-阈心", 强度: "重点" }))!
+    expect(重点图.边.map((边) => 边.id).sort()).toEqual(
+      ["rel|e-阈心|e-阈二|通话", "rel|e-阈心|e-阈五|通话"].sort(),
+    )
+    expect(重点图.强度缺口).toBeUndefined()
+
+    const 强图 = (await 关系图(库(), { projectId: "p-阈", id: "e-阈心", 强度: "强" }))!
+    expect(强图.边.map((边) => 边.id)).toEqual(["rel|e-阈心|e-阈五|通话"])
+    expect(强图.强度缺口).toEqual({ 未显示: 1, 总数: 2 })
+  })
+
+  test("1 跳的强度缺口只看中心；2 跳才算上一跳点", async () => {
+    const 一跳 = (await 关系图(库(), { projectId: "p-阈", id: "e-阈心", 强度: "强" }))!
+    expect(一跳.强度缺口).toEqual({ 未显示: 1, 总数: 2 })
+
+    const 二跳 = (await 关系图(库(), { projectId: "p-阈", id: "e-阈心", 跳数: 2, 强度: "强" }))!
+    expect(二跳.强度缺口).toEqual({ 未显示: 2, 总数: 3 })
   })
 })
