@@ -49,7 +49,8 @@ export const 旧抽取模型ENV = "OPENHIVE_CASE_EXTRACT_MODEL"
 
 /**
  * 拆 `provider/model`。provider 取第一段，其余并回模型名（模型名本身可以含 `/`，
- * 与 `provider/parseModel` 同口径）。空段一律算格式错。
+ * 与 `provider/parseModel` 同口径）。首段为空或模型名为空算格式错；
+ * 夹在中间的 `//` 不在此处拒绝——那属于「模型名写错」，由作业期 `getModel` 判。
  */
 export function 拆模型(值: string): { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined {
   const [providerID, ...rest] = 值.split("/")
