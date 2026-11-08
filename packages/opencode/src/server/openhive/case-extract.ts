@@ -1,7 +1,7 @@
 export * as OpenhiveCaseExtract from "./case-extract"
 
 import { Schema } from "effect"
-import { 不可指认原因 } from "./case-admission"
+import { 不可指认原因, 泛称不论类型 } from "./case-admission"
 import { 纠正大类 } from "./case-subtype"
 import { parseTime, type Precision } from "./case-time"
 import { 号码归一, 实体规范值, 形近命中, 文本包含, 金额元, 号码分隔符类 } from "./case-value"
@@ -326,7 +326,9 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
     // 不进 `问题` / `须改正`，否则执行器会重试并诱导模型把泛称改成一个具体值。
     // 准入按**纠正后**的大类判：模型把「派出所」标成人时，人角色词表不会命中，
     // 而入库时 `纠正大类` 会把它改成组织——按纠正后判才不会让泛称组织绕过准入。
-    const 拒因 = 不可指认原因(纠正大类(类型, 规范), 规范)
+    // 再补一道**与类型无关**的闸：关系端点 / 事件参与人的类型是推断出来的（只有 人 / 号码），
+    // 只按该类型查词表时「现场」「树木」会被当成「人」放行。声明类型同样要过这道闸。
+    const 拒因 = 不可指认原因(纠正大类(类型, 规范), 规范) ?? 泛称不论类型(规范)
     if (拒因 !== undefined) {
       const 话 = `实体「${原文值}」${拒因}，未建实体`
       if (!已提示准入.has(话)) {

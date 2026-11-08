@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 不可指认原因 } from "../../src/server/openhive/case-admission"
+import { 不可指认原因, 泛称不论类型 } from "../../src/server/openhive/case-admission"
 
 /**
  * 准入（阶段 B）：泛称 / 方位碎片 / 角色词不进实体表。
@@ -59,6 +59,24 @@ describe("物品", () => {
     }
     expect(不可指认原因("物品", "40棵桂花树")).toBeUndefined()
     expect(不可指认原因("物品", "桂花树")).toBeUndefined()
+  })
+})
+
+/**
+ * 与类型无关的泛称闸：关系端点 / 事件参与人的类型是推断出来的（只有 人 / 号码），
+ * 只按该类型查词表时地点 / 物品词表不可达。四张词表 + 方位后缀规则各判一次。
+ */
+describe("泛称不论类型", () => {
+  test("四类泛称与方位碎片都命中，真实体放行", () => {
+    expect(泛称不论类型("现场")).toContain("地点")
+    expect(泛称不论类型("山场西侧")).toContain("方位")
+    expect(泛称不论类型("派出所")).toContain("组织")
+    expect(泛称不论类型("民警")).toContain("角色")
+    expect(泛称不论类型("树木")).toContain("物品")
+    expect(泛称不论类型("张三")).toBeUndefined()
+    expect(泛称不论类型("柏加派出所")).toBeUndefined()
+    expect(泛称不论类型("城东茶馆")).toBeUndefined()
+    expect(泛称不论类型("")).toBeUndefined()
   })
 })
 
