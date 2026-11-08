@@ -327,8 +327,9 @@ describe("关系图 · 悬停", () => {
     expect(边元素(host, "r-3").getAttribute("opacity")).toBeNull()
 
     const 提示 = host.querySelector("[data-slot='graph-tip']")!
-    expect(提示.textContent).toContain("13800000001")
-    // 断第二行整格（`#006-22`）：两套条数口径必须同时出现。
+    // 断整格（`#006-22`）：第一行是「截断值 · 类型」，值本身与类型都不能被删掉。
+    expect(提示.querySelectorAll("text")[0]?.textContent).toBe("13800000001 · 号码")
+    // 第二行同理：两套条数口径必须同时出现。
     expect(提示.querySelectorAll("text")[1]?.textContent).toBe("手机号 · 已确认 · 图上 3 · 全部 3")
 
     点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseleave"))
