@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { JSX } from "solid-js"
-import { EntityProfile, 出处默认显示 } from "./entity-profile"
+import { createSignal, type JSX } from "solid-js"
+import { EntityProfile, 分段默认显示 } from "./entity-profile"
 import { 时间文本 } from "./format"
 import type { CaseDetailApi, 实体档案 } from "../case-detail-api"
 import { 订阅会话输入 } from "@/ai-session/send-to-session"
@@ -118,6 +118,7 @@ const 档: 实体档案 = {
   关系人总数: 1,
   事件总数: 1,
   对方数: 2,
+  待确认: { 实体: 0, 关系: 0, 事件: 0, 合计: 0 },
   引用总数: 1,
   一句话: "张三：2 条关系，1 起事件；数据说的 1 条、人说的 1 条。",
 }
@@ -133,6 +134,31 @@ function 造引用(条数: number) {
     extractMethod: "机器" as const,
     confidence: null,
   }))
+}
+
+/** 四段各超过默认条数：用来钉「默认 5 条 / 展开全部 / 收起」。 */
+function 大档(): 实体档案 {
+  const 数据 = Array.from({ length: 8 }, (_, i) => ({
+    ...档.关系[0]!,
+    id: `r-d${i}`,
+    source_kind: "data" as const,
+  }))
+  const 人 = Array.from({ length: 7 }, (_, i) => ({
+    ...档.关系[1]!,
+    id: `r-h${i}`,
+    source_kind: "human" as const,
+  }))
+  return {
+    ...档,
+    关系: [...数据, ...人],
+    关系总数: 15,
+    关系数据总数: 8,
+    关系人总数: 7,
+    事件: Array.from({ length: 6 }, (_, i) => ({ ...档.事件[0]!, id: `ev-${i}` })),
+    事件总数: 6,
+    引用: 造引用(9),
+    引用总数: 9,
+  }
 }
 
 function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
@@ -193,6 +219,21 @@ describe("实体档案", () => {
     ))
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
     expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).toBe("号码 · 手机号")
+  })
+
+  test("身份证细类统一显示为「证件号」（库里仍是身份证）", async () => {
+    const 证件档 = { ...档, type: "号码", subtype: "身份证", canonical_value: "110101199001011234" }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-证"
+        api={假api({ profile: async () => ({ kind: "ok", value: 证件档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).toBe("号码 · 证件号")
+    expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).not.toContain("身份证")
   })
 
   test("关系按 source_kind 分两段：数据说的 / 人说的，各自只放自己的行", async () => {
@@ -262,10 +303,10 @@ describe("实体档案", () => {
       host.querySelector(`[data-slot='entity-stat'][data-key='${键}'] [data-slot='entity-stat-value']`)!.textContent
     expect(数("关系")).toBe("2")
     expect(数("事件")).toBe("1")
-    expect(数("出处")).toBe("1")
     expect(数("对手方")).toBe("1")
-    // 金额是逐条关系的字符串，出入双向各记一遍；前端求和会给出一个假数（4×3 万来回＝24 万）。
-    // 服务端不给聚合，这里就不摆这个数字。
+    expect(数("待确认")).toBe("0")
+    // 出处不再是数字卡的一格；金额仍不摆（服务端不给聚合）。
+    expect(host.querySelector("[data-slot='entity-stat'][data-key='出处']")).toBeNull()
     expect(host.textContent).not.toContain("涉及金额")
   })
 
@@ -294,14 +335,99 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-body']")!.contains(到过[0]!)).toBe(true)
   })
 
-  test("点「出处」格 ⇒ 滚到出处块", async () => {
-    const 到过 = 装滚动探针()
-    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
-    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+  test("点「待确认」格 ⇒ 回到整条实体并聚焦底栏「✓ 正确」", async () => {
+    const 待确认档: 实体档案 = {
+      ...档,
+      待确认: { 实体: 1, 关系: 2, 事件: 1, 合计: 4 },
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 待确认档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
 
-    统计格(host, "出处").click()
+    // 先点一条关系，把底栏对象换成它；点「待确认」必须回到整条实体。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation']")!.click()
+    expect(host.querySelector("[data-slot='entity-trust-target']")!.textContent).toContain("这条关系")
 
-    expect(落点(到过)).toEqual(["entity-citations"])
+    const 格 = 统计格(host, "待确认")
+    expect(格.textContent).toContain("4")
+    expect(格.getAttribute("aria-label")).toContain("实体 1 + 关系 2 + 事件 1")
+    格.click()
+
+    expect(host.querySelector("[data-slot='entity-trust-target']")!.textContent).toContain("整条实体")
+    // ⚠️ 判据必须是**原语**：`expect(document.activeElement).toBe(节点)` 失败时 bun 要打印整个
+    // DOM 节点（环形引用），整轮会被挂到超时而不是干净报红（`#009-01`）。
+    expect(
+      document.activeElement === host.querySelector("[data-slot='entity-trust-confirm']"),
+    ).toBe(true)
+  })
+
+  /**
+   * Task 6 评审提出：换裁决对象必须清空排除原因。
+   * 反例路径是这次新开的「待确认」跳转——用户先在关系上写了原因，再点「待确认」回整条实体，
+   * 原因跟着漂过去，提交时就把关系的理由发到实体上了。
+   */
+  test("换裁决对象清空排除原因：给关系填了原因，点「待确认」后原因区不带着旧字", async () => {
+    const 待确认档: 实体档案 = {
+      ...档,
+      待确认: { 实体: 1, 关系: 2, 事件: 1, 合计: 4 },
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 待确认档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    // 在一条关系上展开原因区、写字、选原因类型。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "这条关系的对方认反了"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    await 等(() => !host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!.disabled)
+
+    统计格(host, "待确认").click()
+
+    // 收起：原因区不能还开着，否则下一步提交就是「关系的理由 → 整条实体」。
+    // 同 #1：对节点用 `toBeNull` 失败时 bun 会打印整棵 DOM（`#009-01`），这里改成原语判据。
+    expect(host.querySelector("[data-slot='entity-trust-reason']") === null).toBe(true)
+    // 再打开一次：原文与原因类型都必须已经清掉（提交按钮因此不可用）。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    expect(host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!.value).toBe("")
+    expect(
+      host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!.disabled,
+    ).toBe(true)
+  })
+
+  // 前后端版本不同步：旧内核的回包没有 `待确认`。界面必须降级显示 0，
+  // 不能在渲染期解引用 `undefined.合计` 抛 TypeError（评审修复 3/5）。
+  test("回包缺「待确认」时降级显示 0，不炸渲染", async () => {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 故意造「旧内核回包」：只在类型层面抹掉 `待确认`，模拟版本不同步（夹具，不是产品码）。
+    const 旧档 = { ...档, 待确认: undefined } as unknown as 实体档案
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 旧档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='待确认']") !== null)
+    const 格 = 统计格(host, "待确认")
+    expect(格.querySelector("[data-slot='entity-stat-value']")!.textContent).toBe("0")
+    expect(格.getAttribute("aria-label")).toContain("实体 0 + 关系 0 + 事件 0")
   })
 
   test("点「关系」或「对手方」格 ⇒ 都滚到关系块（对手方是关系的派生数，没有自己的块）", async () => {
@@ -341,11 +467,119 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-citation']")!.textContent).toContain("Sheet1 · 第 2 行")
   })
 
-  // 2026-11-07：出处是四块里唯一没上限的（服务端 `引用们` 原来没有 LIMIT）。一个号码在几百份
-  // 材料里出现时，档案页会一次画几百行。改成「默认只画前 20 条 ＋ 展开全部」。
-  // 条数在这里写**字面量**：跟着导出的常量走，常量被改回大数时这条用例不会红。
-  test("出处多时默认只画前 20 条，点「展开全部」才画出全部", async () => {
-    const 多档: 实体档案 = { ...档, 引用: 造引用(120), 引用总数: 120 }
+  test("四段默认各画 5 条；点「展开全部」画出该段全部，再点「收起」回到 5", async () => {
+    const 大 = 大档()
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 大 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+
+    const 数 = (slot: string) => host.querySelectorAll(`[data-slot='${slot}']`).length
+    expect(分段默认显示).toBe(5)
+    expect(数("entity-relation")).toBe(10) // 数据说的 5 + 人说的 5
+    expect(数("entity-event")).toBe(5)
+    expect(数("entity-citation")).toBe(5)
+
+    // 数据说的：8 → 展开 8，再收起回 5。
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    await 等(() => 数("entity-relation") === 13) // 8 + 5（人说的仍收起）
+    expect(host.querySelector("[data-slot='entity-relations-data-expand']")!.textContent).toContain("收起")
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    await 等(() => 数("entity-relation") === 10)
+
+    // 人说的：7 → 7。
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-human-expand']")!.click()
+    await 等(() => 数("entity-relation") === 12) // 5 + 7（数据说的已收起）
+    // 事件：6 → 6。
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    await 等(() => 数("entity-event") === 6)
+    // 出处：9 → 9。
+    host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!.click()
+    await 等(() => 数("entity-citation") === 9)
+    expect(host.querySelector("[data-slot='entity-citation-expand']")!.textContent).toContain("收起")
+  })
+
+  test("换实体重置全部折叠（裁决 / 切开关重取不重置）", async () => {
+    const [id, setId] = createSignal("e-张")
+    const 大 = 大档()
+    // 重取（裁决成功 / 切「显示已排除」）与换实体走的都是同一个取数 effect：
+    // 只按「实体键变了」收起，重取同一实体时阅读位置必须原地不动。
+    let 取数 = 0
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id={id()}
+        api={假api({
+          profile: async () => {
+            取数 += 1
+            return { kind: "ok", value: 大 }
+          },
+          trust: async () => ({ kind: "ok", value: { trustState: "已确认" } }),
+        })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+    /** 某一段里画了多少行（关系两段各有自己的 slot；事件 / 出处按 section 数）。 */
+    const 段行数 = (slot: string) =>
+      host.querySelector(`[data-slot='${slot}']`)?.querySelectorAll("[data-slot='entity-relation']").length ?? 0
+    const 事件行数 = () => host.querySelectorAll("[data-slot='entity-event']").length
+    const 出处行数 = () => host.querySelectorAll("[data-slot='entity-citation']").length
+    /** 四段都展开时的行数（大档：数据说的 8 / 人说的 7 / 事件 6 / 出处 9）。 */
+    const 四段全开 = () =>
+      段行数("entity-relations-data") === 8 &&
+      段行数("entity-relations-human") === 7 &&
+      事件行数() === 6 &&
+      出处行数() === 9
+
+    // ⚠️ 四段**都**要展开：只展开一段时，其余三行的重置拆掉也照样全绿（评审实测的红灯缺口）。
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-human-expand']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!.click()
+    await 等(四段全开)
+
+    // 裁决成功会重取：折叠不能跟着收起（否则每裁一次就把阅读位置顶回 5 条）。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+    await 等(() => 取数 === 2)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(四段全开()).toBe(true)
+
+    // 切「显示已排除」也会重取同一实体：同样不重置。
+    host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
+    await 等(() => 取数 === 3)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(四段全开()).toBe(true)
+
+    setId("e-李")
+    // 等新实体的回包落地再断言（等「出处 5 行」会把本条用例的判据提前泄给这一句，
+    // 出处那一行重置被拆掉时只剩超时，看不出是哪个数不对）。
+    await 等(() => 取数 === 4)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // 逐段断言：四行 `set展开*(false)` 各要能被单独拆红，别用「关系总数」蒙混过关。
+    expect(段行数("entity-relations-data")).toBe(5)
+    expect(段行数("entity-relations-human")).toBe(5)
+    expect(事件行数()).toBe(5)
+    expect(出处行数()).toBe(5)
+  })
+
+  // 评审修复 1/5：20 条上限只该管出处。关系 / 事件展开要渲染全部（服务端已有硬顶），
+  // 前端再截一次是信息回退——夹具必须超过 20，否则「共用上限」这个回退照样全绿。
+  test("展开上限只作用于出处：关系 / 事件超过 20 条时展开仍渲染全部", async () => {
+    const 多档: 实体档案 = {
+      ...档,
+      关系: Array.from({ length: 25 }, (_, i) => ({ ...档.关系[0]!, id: `r-${i}`, source_kind: "data" as const })),
+      事件: Array.from({ length: 25 }, (_, i) => ({ ...档.事件[0]!, id: `ev-${i}` })),
+      关系总数: 25,
+      关系数据总数: 25,
+      关系人总数: 0,
+      事件总数: 25,
+    }
     const host = mount(() => (
       <EntityProfile
         projectId="p"
@@ -354,14 +588,38 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 5)
+
+    const 关系钮 = host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!
+    expect(关系钮.textContent).toContain("展开全部 25 条")
+    关系钮.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 25)
+    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(25)
+
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-event']").length === 25)
+    expect(host.querySelectorAll("[data-slot='entity-event']").length).toBe(25)
+  })
+
+  // 评审修复 3/5：出处 >20 时的「展开前 20 条」是独立分支，最大夹具（9 条）覆盖不到。
+  test("出处超过 20 条：按钮说「展开前 20 条」，展开后只画 20 行", async () => {
+    const 多档: 实体档案 = { ...档, 引用: 造引用(25), 引用总数: 25 }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 多档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+
+    const 钮 = host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!
+    expect(钮.textContent).toContain("展开前 20 条")
+    钮.click()
     await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 20)
-    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(20)
-    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='entity-citation-expand']")!
-    expect(按钮).not.toBeNull()
-    expect(按钮.textContent).toContain("120")
-    按钮.click()
-    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 120)
-    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(120)
+    expect(host.querySelectorAll("[data-slot='entity-citation']").length).toBe(20)
+    expect(host.querySelector("[data-slot='entity-citation-expand']")!.textContent).toContain("收起")
   })
 
   test("出处不超过阈值时不出现展开按钮", async () => {
@@ -403,6 +661,7 @@ describe("实体档案", () => {
     expect(读("关系")).toBe("201")
     expect(读("事件")).toBe("101")
     expect(读("对手方")).toBe("201")
+    expect(读("待确认")).toBe("0")
     // 事件段头报的也是全量：它和数字卡在同一屏，一个说 101、一个说 0 起会自相矛盾。
     expect(host.querySelector("[data-slot='entity-events']")!.textContent).toContain("101 起")
   })
@@ -453,9 +712,11 @@ describe("实体档案", () => {
         档.关系[1],
         // 防御分支：服务端的大类有 CHECK 约束、正常不会为空；空串只为钉「都没有」那一路。
         { ...档.关系[0], id: "r-3", 对方细类: null, 对方类型: "" },
+        // 细类换词（2026-11-08）：库里的 `身份证` 在界面上是「证件号」。
+        { ...档.关系[0], id: "r-4", 对方细类: "身份证", 对方类型: "号码" },
       ],
-      关系总数: 3,
-      关系数据总数: 2,
+      关系总数: 4,
+      关系数据总数: 3,
       关系人总数: 1,
     }
     const host = mount(() => (
@@ -466,19 +727,21 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 3)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 4)
     const 类别 = (id: string) =>
       host.querySelector(`[data-slot='entity-relation'][data-id='${id}'] [data-slot='entity-relation-kind']`)!
         .textContent
     expect(类别("r-1")).toBe("银行账号") // 细类优先
     expect(类别("r-2")).toBe("人") // 无细类 ⇒ 大类
     expect(类别("r-3")).toBe("——") // 都没有
+    expect(类别("r-4")).toBe("证件号") // 身份证换词
   })
 
-  // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，
+  // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：块头必须报全量，
   // 不能跟着当前页说 500（与「一句话」的全量口径对齐）。
-  test("出处计数用引用总数（全量），不是当前页条数", async () => {
-    const 截断档: 实体档案 = { ...档, 引用: 造引用(出处默认显示 + 10), 引用总数: 777 }
+  // 2026-11-08：「出处」不再是数字卡的一格（第四格换成「待确认」），全量口径改由块头钉住。
+  test("出处块头用引用总数（全量），不是当前页条数", async () => {
+    const 截断档: 实体档案 = { ...档, 引用: 造引用(分段默认显示 + 10), 引用总数: 777 }
     const host = mount(() => (
       <EntityProfile
         projectId="p"
@@ -487,10 +750,8 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='出处']") !== null)
-    expect(
-      host.querySelector("[data-slot='entity-stat'][data-key='出处'] [data-slot='entity-stat-value']")!.textContent,
-    ).toBe("777")
+    await 等(() => host.querySelector("[data-slot='entity-citations']") !== null)
+    expect(host.querySelector("[data-slot='entity-stat'][data-key='出处']")).toBeNull()
     expect(host.querySelector("[data-slot='entity-citations']")!.textContent).toContain("777 条")
   })
 
@@ -650,7 +911,7 @@ describe("实体档案", () => {
     ])
   })
 
-  test("「✓ 对」立刻发确认裁决，作用于这个实体本身", async () => {
+  test("「✓ 正确」立刻发确认裁决，作用于这个实体本身", async () => {
     const 收到: 裁决入参[] = []
     const api = 假api({
       trust: async (input) => {
@@ -662,7 +923,13 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
 
     // 文字必须可见：符号只是装饰，语义不能只写在 aria-label 里。
-    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.textContent).toContain("对")
+    expect(host.textContent).toContain("抽取是否正确")
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.textContent).toContain("正确")
+    expect(host.querySelector("[data-slot='entity-trust-reject']")!.textContent).toContain("抽错")
+    expect(host.querySelector("[data-slot='entity-trust-doubt']")!.textContent).toContain("存疑")
+    expect(host.querySelector("[data-slot='entity-trust-confirm']")!.getAttribute("aria-label")).toBe(
+      "这条事实抽取正确（确认）",
+    )
     host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
 
     await 等(() => 收到.length === 1)
@@ -693,7 +960,7 @@ describe("实体档案", () => {
     expect(收到[0]).toMatchObject({ factType: "entity", factId: "e-张", action: "存疑" })
   })
 
-  test("「✗ 错」先展开原因区不发请求；原因与说明都齐了才发排除，且原样带上", async () => {
+  test("「✗ 抽错」先展开原因区不发请求；原因与说明都齐了才发排除，且原样带上", async () => {
     const 收到: 裁决入参[] = []
     const api = 假api({
       trust: async (input) => {
@@ -842,9 +1109,35 @@ describe("实体档案", () => {
     expect(调用次数).toBe(1)
 
     // 切「显示已排除」（会重取档案）不能把裁决错误抹掉——共用信号时这里会红。
+    // 这条同时也是「同实体重取不清」的对照用例（`换裁决对象` 之外的路径）。
     host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
     expect(host.querySelector("[data-slot='entity-trust-error']")?.textContent).toContain("服务端拒绝了这次裁决")
+  })
+
+  test("换裁决对象后不残留上一条的裁决错误", async () => {
+    const api = 假api({ trust: async () => ({ kind: "error", message: "服务端拒绝了这次裁决" }) })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    // 在**整条实体**上提交一次失败 ⇒ 错误条可见。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "对方号码认反了"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
+    await 等(() => !提交.disabled)
+    提交.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-error']") !== null)
+    expect(host.querySelector("[data-slot='entity-trust-error']")!.textContent).toContain("服务端拒绝了这次裁决")
+
+    // 换裁决对象（点另一条关系）⇒ 这条错误说的是「上一条提交」，必须一起消失。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation'][data-id='r-2']")!.click()
+    expect(底栏对象(host)).toContain("这条关系")
+    // `=== null` 用布尔断言：happy-dom 节点直接 `toBeNull()` 真失败时 bun 会序列化环形引用（`#009-01`）。
+    expect(host.querySelector("[data-slot='entity-trust-error']") === null).toBe(true)
   })
 
   /**
@@ -867,6 +1160,43 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     expect(底栏对象(host)).toContain("整条实体")
     expect(底栏对象(host)).toContain("张三")
+  })
+
+  test("底栏默认对象里的细类也换词：整条实体写「号码 · 证件号」", async () => {
+    const 证件档 = { ...档, type: "号码", subtype: "身份证", canonical_value: "330502199001011234" }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-证"
+        api={假api({ profile: async () => ({ kind: "ok", value: 证件档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    expect(底栏对象(host)).toContain("号码 · 证件号")
+    expect(底栏对象(host)).not.toContain("身份证")
+  })
+
+  test("裁决语义是数据质量：可见文案写明「抽取是否正确」，不是「是否涉案」", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    const 条 = host.querySelector("[data-slot='entity-trust']")!
+    expect(条.textContent).toContain("抽取是否正确")
+    expect(条.textContent).not.toContain("是否涉案")
+  })
+
+  test("「抽取是否正确」标签在底栏对象标题之前（否则被读成问这个实体是否正确）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    const 条 = host.querySelector("[data-slot='entity-trust']")!
+    // 先把两个原始索引取出来再比较：直接对 DOM 节点 `toBe`，失败时 bun 序列化环形引用会挂死（`#009-01`）。
+    const 标签下标 = Array.from(条.children).findIndex((孩子) => 孩子.textContent === "抽取是否正确：")
+    const 目标下标 = Array.from(条.children).findIndex(
+      (孩子) => 孩子.getAttribute("data-slot") === "entity-trust-target",
+    )
+    expect(标签下标).toBeGreaterThanOrEqual(0)
+    expect(目标下标).toBeGreaterThanOrEqual(0)
+    expect(标签下标).toBeLessThan(目标下标)
   })
 
   test("点一条关系 ⇒ 对象换成它：标题、选中态、裁决的 factType/factId 都跟着换", async () => {

@@ -192,23 +192,46 @@ export async function query_entities(
 /**
  * 实体解析：id 优先、其次规范值；都查不到 ⇒ not_found（`称呼` 进文案，说清是哪一方）。
  *
- * 规范值跨类型可重名（唯一索引是 `(project_id, type, canonical_value)`，见 0031），
- * 所以第二段必须按 `type asc, id asc` 取确定的第一条——不许「取到哪条算哪条」。
+ * 规范值跨类型可重名（唯一索引是 `(project_id, type, canonical_value)`，见 0031）。
+ * 同值多行时取**最新创建**的那行（`created_at desc`）：入库时的 `纠正大类` 会把错标的
+ * 旧行换成一个新类别的行，纠正后的新行总是后建的——按 `type asc` 取会永远命中旧「人」行，
+ * 而新关系全挂在「组织」行上，MCP 与图谱页因此矛盾。两个确定性兜底：
+ * - `created_at` 是**整数秒**，同秒创建会打平 ⇒ 先按 `(type = '人') asc` 让纠正后的类型
+ *   排在未纠正的「人」型前（「非人优先」；纠正只会把「人」改成别的类，旧行才是「人」型）；
+ * - 再同型才按 `type asc, id asc` 取确定的第一条——不许「取到哪条算哪条」。
+ *
+ * `ids` 是**关系过滤**用的 id 集合：按 id 请求时只有那一行（单行语义不扩大）；按规范值
+ * 请求时返回同值所有类型行——实体从不删除、重灌只删本材料的引用，旧行上的关系仍在，
+ * 只按「最新一行」过滤会让另一份材料的关系静默消失。展示用 `id/type` 仍是排序第一名。
  */
 export async function 解析实体(
   ctx: 工具上下文,
   值: string,
   称呼: string,
-): Promise<{ id: string; value: string; type: string }> {
-  const rows = await ctx.db.execute(sql`
-    select id, type, canonical_value from auth.case_entity
-     where project_id = ${ctx.身份.projectId} and (id = ${值} or canonical_value = ${值})
-     order by (id = ${值}) desc, type asc, id asc
-     limit 1
-  `)
-  const 行 = rowsOf(rows)[0]
+): Promise<{ id: string; value: string; type: string; ids: string[] }> {
+  const rows = rowsOf(
+    await ctx.db.execute(sql`
+      select id, type, canonical_value from auth.case_entity
+       where project_id = ${ctx.身份.projectId} and (id = ${值} or canonical_value = ${值})
+       order by (id = ${值}) desc, created_at desc, (type = '人') asc, type asc, id asc
+    `),
+  )
+  const 行 = rows[0]
   if (行 === undefined) throw new 工具错误("not_found", `本项目里找不到${称呼}：${值}`)
-  return { id: String(行.id), value: String(行.canonical_value), type: String(行.type) }
+  const id = String(行.id)
+  const ids =
+    id === 值
+      ? [id]
+      : rows.filter((行) => String(行.canonical_value) === 值).map((行) => String(行.id))
+  return { id, value: String(行.canonical_value), type: String(行.type), ids }
+}
+
+/** `id in (...)` 片段：`from_id ${id属于(ids)}`。`ids` 至少含展示行，不会为空。 */
+function id属于(ids: readonly string[]): SQL {
+  return sql`in (${sql.join(
+    ids.map((id) => sql`${id}`),
+    sql`, `,
+  )})`
 }
 
 /** `起` / `止` 都是整数 Unix 秒；非整数、或起大于止，都是模型用错参数。 */
@@ -256,7 +279,8 @@ export async function query_relations(
   const 条件: SQL[] = [sql`r.project_id = ${ctx.身份.projectId}`]
   if (args.实体 !== undefined) {
     const 实体 = await 解析实体(ctx, args.实体, "实体")
-    条件.push(sql`(r.from_id = ${实体.id} or r.to_id = ${实体.id})`)
+    // 按值解析时 `ids` 是同值所有类型行：旧「人」行上的关系不能因为纠正后的新行而消失。
+    条件.push(sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`)
   }
   if (args.类型 !== undefined) 条件.push(sql`r.type = ${args.类型}`)
   if (args.含已排除 !== true) {
@@ -299,7 +323,8 @@ export async function query_relations(
   return {
     数据,
     口径:
-      "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时按 type 升序、id 升序取第一条）与类型过滤；" +
+      "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
+      "按规范值查询时合并同值多行的关系）与类型过滤；" +
       "时间窗按「与窗口有交集」判定；默认不含「已排除」的关系及其端点实体；金额为 numeric 字符串，勿自行转浮点；" +
       "时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
@@ -359,8 +384,8 @@ export async function query_events(
   return {
     数据,
     口径:
-      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时按 type 升序、" +
-      "id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
+      "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
+      "同创建时间再按 type 升序、id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
   }
@@ -486,12 +511,13 @@ export async function aggregate_money(
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
-    sql`(from_id = ${账户.id} or to_id = ${账户.id})`,
+    // 按值查询时 `账户.ids` 含同值所有类型行：旧行上的转账不能因为纠正后的新行而消失。
+    sql`(from_id ${id属于(账户.ids)} or to_id ${id属于(账户.ids)})`,
     // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
     // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
     // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
     // `project_id` / `trust_state` 变成有歧义列（报错）。
-    sql`(case when from_id = ${账户.id} then to_id else from_id end) in (
+    sql`(case when from_id ${id属于(账户.ids)} then to_id else from_id end) in (
       select id from auth.case_entity
        where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
     )`,
@@ -500,7 +526,7 @@ export async function aggregate_money(
     sql`r.project_id = ${ctx.身份.projectId}`,
     sql`r.type = '转账'`,
     sql`r.trust_state <> '已排除'`,
-    sql`(r.from_id = ${账户.id} or r.to_id = ${账户.id})`,
+    sql`(r.from_id ${id属于(账户.ids)} or r.to_id ${id属于(账户.ids)})`,
   ]
   // 时间窗与 `query_relations` 同口径：最晚不早于「起」、最早不晚于「止」，两端都缺按 0 兜底。
   if (args.起 !== undefined) {
@@ -514,7 +540,7 @@ export async function aggregate_money(
 
   const 汇总 = rowsOf(
     await ctx.db.execute(sql`
-      select case when from_id = ${账户.id} then '出' else '入' end as 方向,
+      select case when from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
              count(*)::int as 笔数,
              coalesce(sum(amount), 0)::text as 合计
         from auth.case_relation
@@ -535,13 +561,13 @@ export async function aggregate_money(
   const 对手方 = rowsOf(
     await ctx.db.execute(sql`
       select 对手.canonical_value as 对手方,
-             case when r.from_id = ${账户.id} then '出' else '入' end as 方向,
+             case when r.from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
              count(*)::int as 笔数,
              coalesce(sum(r.amount), 0)::text as 合计
         from auth.case_relation r
         join auth.case_entity 对手
           on 对手.project_id = r.project_id
-         and 对手.id = case when r.from_id = ${账户.id} then r.to_id else r.from_id end
+         and 对手.id = case when r.from_id ${id属于(账户.ids)} then r.to_id else r.from_id end
          and 对手.trust_state <> '已排除'
        where ${sql.join(对手方条件, sql` and `)}
        group by 对手.canonical_value, 方向
@@ -605,7 +631,8 @@ export async function aggregate_money(
     数据: { 汇总, 对手方, 余额走势 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
-      "账户先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
+      "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
+      "按规范值查询时合并同值多行的关系；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势按明细行的 counterparty/caller/callee 精确匹配账户的实体规范值。",
     缺口,
@@ -636,13 +663,14 @@ export async function find_crossings(
     throw new 工具错误("bad_input", `甲和乙是同一个实体（或同一规范值）：${甲.value}，找自己与自己的交叉没有意义`)
   }
 
-  const 另一端们 = async (实体id: string): Promise<{ 值们: string[]; 用满: boolean }> => {
+  // `实体ids` 按值解析时是同值所有类型行：旧「人」行上的关系也要算进交集。
+  const 另一端们 = async (实体ids: readonly string[]): Promise<{ 值们: string[]; 用满: boolean }> => {
     const 值们 = rowsOf(
       await ctx.db.execute(sql`
-        select case when from_id = ${实体id} then to_id else from_id end as 另一端
+        select case when from_id ${id属于(实体ids)} then to_id else from_id end as 另一端
           from auth.case_relation
          where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-           and (from_id = ${实体id} or to_id = ${实体id})
+           and (from_id ${id属于(实体ids)} or to_id ${id属于(实体ids)})
          order by 另一端 asc
          limit ${每侧关系上限}
       `),
@@ -650,8 +678,8 @@ export async function find_crossings(
     return { 值们, 用满: 值们.length === 每侧关系上限 }
   }
   // 顺序执行：夹具把多条连接汇进同一个 PG 会话，不并发建两份语句缓存。
-  const 侧甲 = await 另一端们(甲.id)
-  const 侧乙 = await 另一端们(乙.id)
+  const 侧甲 = await 另一端们(甲.ids)
+  const 侧乙 = await 另一端们(乙.ids)
   const 乙集 = new Set(侧乙.值们)
   const 交集 = [...new Set(侧甲.值们)].filter((id) => 乙集.has(id))
 
@@ -714,7 +742,8 @@ export async function find_crossings(
     数据: { 共同关联, 共同时空 },
     口径:
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
-      "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时按 type 升序、id 升序取第一条；" +
+      "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
+      "按规范值查询时合并同值多行的关系；" +
       "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。",
     缺口,
   }

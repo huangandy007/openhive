@@ -70,6 +70,13 @@ export interface 实体档案 {
   readonly 引用: readonly 引用[]
   /** 出处的**全量**条数：界面报数用它，不能拿 `引用.length` 冒充总数。 */
   readonly 引用总数: number
+  /** 本实体 + 有效关系 + 事件里「自动抽取 / 存疑」的条数；已排除不计。 */
+  readonly 待确认: {
+    readonly 实体: number
+    readonly 关系: number
+    readonly 事件: number
+    readonly 合计: number
+  }
   readonly 一句话: string
   /**
    * 关系 / 事件被上限截断时的整句提示（服务端 `case-entity-list.ts` 的 `实体档案.缺口`）。
@@ -186,7 +193,7 @@ export interface 工具结果 {
 }
 
 /**
- * 「✗ 错」的三选一原因（design §9.2 的表格）。**只此一份**：客户端类型由此推导，
+ * 「✗ 抽错」的三选一原因（design §9.2 的表格）。**只此一份**：客户端类型由此推导，
  * 界面直接用这个数组渲染，服务端 `case-fact-change.ts` 的 `纠正原因们` 是同一组词。
  */
 export const 纠正原因们 = ["识别错", "抽取错", "材料本身有问题"] as const

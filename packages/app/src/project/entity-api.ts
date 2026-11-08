@@ -14,10 +14,11 @@ export type 结果<T> =
   | { readonly kind: "ok"; readonly value: T }
   | { readonly kind: "error"; readonly message: string; readonly code?: string }
 
-export interface 类型计数 {
-  readonly type: string
-  readonly count: number
+export interface 分组计数 {
+  readonly 核心: number
+  readonly 提及: number
 }
+export type 实体分组 = "核心" | "提及"
 export interface 实体清单项 {
   readonly id: string
   readonly type: string
@@ -26,7 +27,15 @@ export interface 实体清单项 {
   readonly canonical_value: string
   readonly trust_state: string
   readonly 关联数: number
+  readonly 事件参与数: number
+  readonly 权重: number
+  readonly 分组: 实体分组
   readonly created_at: number
+}
+export interface 实体清单结果 {
+  readonly 行们: 实体清单项[]
+  readonly 总数: number
+  readonly 缺口: string[]
 }
 export type 排序 = "涉案" | "名称" | "时间"
 
@@ -89,7 +98,7 @@ export async function 请求<T>(send: CaseFetch, url: string, init?: RequestInit
  * 一次性的，重打一次就自己好，不该逼民警去切项目自救（计数这条链只在换项目时重取）。
  *
  * 只重 `code === "timeout"`：网络的错（连接被拒 / 断了）与服务端的错（4xx/5xx）重打只是再等一遍。
- * 重试**放在这里一处**，`counts` 与 `list` 都经它——两条链各写一份就会漂（`LEARNINGS #002-06`）。
+ * 重试**放在这里一处**，`groups` 与 `list` 都经它——两条链各写一份就会漂（`LEARNINGS #002-06`）。
  */
 async function 超时再打一次<T>(一次: () => Promise<结果<T>>): Promise<结果<T>> {
   const 首 = await 一次()
@@ -98,33 +107,34 @@ async function 超时再打一次<T>(一次: () => Promise<结果<T>>): Promise<
 }
 
 export interface EntityApi {
-  readonly counts: (projectId: string) => Promise<结果<类型计数[]>>
+  readonly groups: (projectId: string) => Promise<结果<分组计数>>
   readonly list: (input: {
     readonly projectId: string
-    readonly type?: string
+    readonly group?: 实体分组
     readonly q?: string
     readonly sort?: 排序
-  }) => Promise<结果<{ readonly 行们: 实体清单项[]; readonly 缺口: string[] }>>
+    readonly limit?: number
+  }) => Promise<结果<实体清单结果>>
 }
 
 export function createEntityApi(send: CaseFetch = 默认发送): EntityApi {
   return {
-    counts: async (projectId) => {
+    groups: async (projectId) => {
       const 结果 = await 超时再打一次(() =>
-        请求<{ counts: 类型计数[] }>(send, `${PREFIX}/entities?projectId=${encodeURIComponent(projectId)}`),
+        请求<{ groups: 分组计数 }>(send, `${PREFIX}/entities?projectId=${encodeURIComponent(projectId)}`),
       )
       if (结果.kind === "error") return 结果
-      return { kind: "ok", value: 结果.value.counts }
+      return { kind: "ok", value: 结果.value.groups }
     },
     list: async (input) => {
       const 参数 = new URLSearchParams({ projectId: input.projectId })
-      // ⚠️ 空串 ≠ 不过滤：服务端把 `type=` 当成「查一个空类型」（计划 7 Task 4 的 Minor 1）。
-      // 所以跨类型搜索时**不写这个键**，而不是写空值。
-      if (input.type !== undefined) 参数.set("type", input.type)
+      // ⚠️ 空串 ≠ 不过滤：省略 `group` 才是跨组（搜索）。不要写 `group=`。
+      if (input.group !== undefined) 参数.set("group", input.group)
       if (input.q !== undefined && input.q.trim() !== "") 参数.set("q", input.q.trim())
       if (input.sort !== undefined) 参数.set("sort", input.sort)
+      if (input.limit !== undefined) 参数.set("limit", String(input.limit))
       const 结果 = await 超时再打一次(() =>
-        请求<{ list: { 行们: 实体清单项[]; 缺口: string[] } }>(send, `${PREFIX}/entities?${参数.toString()}`),
+        请求<{ list: 实体清单结果 }>(send, `${PREFIX}/entities?${参数.toString()}`),
       )
       if (结果.kind === "error") return 结果
       return { kind: "ok", value: 结果.value.list }

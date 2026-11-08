@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 生成提醒, 标记已读, 提醒清单 } from "./case-alerts"
 import { 产物复核, 登记产物引用 } from "./case-artifact-citations"
-import { 实体档案, 实体清单, 类型计数, type 排序 } from "./case-entity-list"
+import { 实体档案, 实体清单, 分组计数, type 实体分组, type 排序 } from "./case-entity-list"
 import { 关系图, 关系图强度们 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
 import { aggregate_money, query_events, 工具错误 } from "./case-mcp-tools"
@@ -119,6 +119,8 @@ function 过门(
 
 const 是排序 = (值: unknown): 值 is 排序 => 值 === "涉案" || 值 === "名称" || 值 === "时间"
 
+const 是分组 = (值: unknown): 值 is 实体分组 => 值 === "核心" || 值 === "提及"
+
 /** 秒级整数；缺省 / 空串 / 非法 ⇒ `undefined`（缺省不是错，非法由调用方判）。 */
 function 读整数(值: string | null): number | undefined | null {
   if (值 === null || 值 === "") return undefined
@@ -163,7 +165,13 @@ function handleEntities(request: HttpServerRequest.HttpServerRequest, deps: Deps
     const 门 = yield* 过门(deps, projectId)
     if (HttpServerResponse.isHttpServerResponse(门)) return 门
 
-    const type = 参数.get("type") ?? undefined
+    // 省略 `group` = 跨组（搜索用）；给了就必须是枚举值——非法值静默忽略会让人以为筛过了。
+    const group原文 = 参数.get("group")
+    let 分组值: 实体分组 | undefined
+    if (group原文 !== null) {
+      if (!是分组(group原文)) return fail(400, "group 只能是 核心 / 提及", "bad_request")
+      分组值 = group原文
+    }
     const q = 参数.get("q") ?? undefined
     const sort原文 = 参数.get("sort")
     let 排序值: 排序 | undefined
@@ -174,19 +182,19 @@ function handleEntities(request: HttpServerRequest.HttpServerRequest, deps: Deps
     const limit原文 = 读整数(参数.get("limit"))
     if (limit原文 === null) return fail(400, "limit 必须是整数", "bad_request")
 
-    const [counts, list] = yield* Effect.promise(() =>
+    const [groups, list] = yield* Effect.promise(() =>
       Promise.all([
-        类型计数(deps.pg(), projectId!),
+        分组计数(deps.pg(), projectId!),
         实体清单(deps.pg(), {
           projectId: projectId!,
-          type,
+          分组: 分组值,
           q,
           sort: 排序值,
           limit: limit原文,
         }),
       ]),
     )
-    return ok({ counts, list })
+    return ok({ groups, list })
   })
 }
 

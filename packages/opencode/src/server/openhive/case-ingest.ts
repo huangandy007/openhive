@@ -9,6 +9,7 @@ import { 解析方式 } from "./case-parseable"
 import { 抽取文本 } from "./case-text"
 import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
+import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets } from "./case-sheet"
 import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
 import { toFactRows } from "./case-rows"
@@ -672,13 +673,28 @@ function 事实id(...parts: (string | number)[]): string {
 /**
  * 按关系端点值找实体 id。键是「大类 ＋ `\u0000` ＋ 规范值」。
  *
- * 端点值没有自带大类（抽取结果里关系只给值），所以按可能落库的大类依次试：
- * `人`（`推断实体类型` 的兜底）、`号码`（含纠正后仍是号码的身份证）、`账户`
- * （`纠正大类` 把卡号从「号码」改过来的那一类）。三个都不中就跳过这条关系——
- * 与纠正前的行为一致（端点对不上就丢），不多猜。
+ * 端点值没有自带大类（抽取结果里关系只给值），所以从「可能落库的来源大类」出发，
+ * **逐个过 `纠正大类`** 得到候选：`人` 可能被改成 `组织`，`号码` 可能被改成 `账户`，
+ * `账户` 可能被改成 `号码`。候选由同一个纠正函数推导，不另写一份硬列表——否则
+ * 「柏加派出所」被纠正成组织后关系端点找不到，关系被静默丢弃。
+ *
+ * 候选覆盖 `实体类型` 的**全集**：地点 / 物品 / 虚拟身份 / 车辆端点也可能落库（模型把它们
+ * 声明成对应类型时）。`人` / `号码` / `账户` 是推断类型、命中概率最高，排在最前；其余按
+ * `实体类型们` 的顺序追加（不手抄第二份清单，`#002-06`）。
  */
+const 端点来源大类们: readonly 实体类型[] = [
+  "人",
+  "号码",
+  "账户",
+  ...实体类型们.filter((类型) => 类型 !== "人" && 类型 !== "号码" && 类型 !== "账户"),
+]
+
 function 端点(实体id: ReadonlyMap<string, string>, 值: string): string | undefined {
-  return 实体id.get(`人\u0000${值}`) ?? 实体id.get(`号码\u0000${值}`) ?? 实体id.get(`账户\u0000${值}`)
+  for (const 来源 of 端点来源大类们) {
+    const id = 实体id.get(`${纠正大类(来源, 值)}\u0000${值}`)
+    if (id !== undefined) return id
+  }
+  return undefined
 }
 
 function 引用id(projectId: string, factType: string, factId: string, materialId: string, 起: number): string {

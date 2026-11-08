@@ -12,6 +12,7 @@ import {
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
 import { 定位文本, 金额文本, 时间文本 } from "./format"
+import { 细类显示名 } from "./subtype-label"
 
 export interface EntityProfileProps {
   readonly projectId: string
@@ -35,12 +36,33 @@ const 裁决按钮类 = (押下: boolean) =>
     : `h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
 
 /**
- * 出处默认画多少行；超了给「展开全部」（2026-11-07）。
+ * 每段默认画多少行（数据说的 / 人说的 / 事件 / 出处各 5 条，2026-11-08）。
  *
- * 服务端另有 500 的硬顶（`case-entity-list.ts` 的 `引用上限`）——那个防病态数据，这个防版面。
+ * 服务端另有硬顶（关系 200/100、事件 100、出处 500）——那个防病态数据，这个防版面。
  * 展开是**纯前端**：数据已经在回包里，不必再发请求。
  */
-export const 出处默认显示 = 20
+export const 分段默认显示 = 5
+
+/**
+ * **出处**展开后最多画多少行：沿用 2026-11-07 的 20 条上限，只是从「默认」挪到「展开」。
+ *
+ * 只作用于出处（服务端最多给 500 条出处）；关系 / 事件展开渲染全部，因为服务端已有
+ * 200 / 100 条硬顶——前端再截一次纯属信息回退。
+ * 超过这个数时按钮文案照实写「展开前 20 条」，不冒充「展开全部」。
+ */
+export const 出处展开上限 = 20
+
+/** 一段画多少行：未展开 `分段默认显示` 条；展开渲染全部，只有给了上限才截（目前只有出处给）。 */
+function 一段显示<T>(全部: readonly T[], 展开: boolean, 上限?: number): readonly T[] {
+  if (!展开) return 全部.slice(0, 分段默认显示)
+  return 上限 === undefined ? 全部 : 全部.slice(0, 上限)
+}
+
+/** 展开按钮的文案：有上限且总数超过时才说「展开前 N 条」，不冒充「展开全部」。 */
+function 展开文案(总数: number, 展开: boolean, 上限?: number): string {
+  if (展开) return "收起"
+  return 上限 !== undefined && 总数 > 上限 ? `展开前 ${上限} 条` : `展开全部 ${总数} 条`
+}
 
 /**
  * 关系行的七列：方向 / 对方 / 类别 / 关系 / 次数 / 金额 / 状态。表头与行共用同一份列宽。
@@ -54,12 +76,12 @@ const 关系列 =
 /**
  * 对方是什么：细类 → 大类 → 「——」（2026-11-08 用户裁定）。
  *
- * `typeof` 那一句是给**没重启的内核**留的门：旧回包里根本没有 `对方细类` 这个键，
- * 直接 `!== null` 会拿到 `undefined` 并原样画成空白。
+ * 细类先过 `细类显示名`（`身份证` 显示成 `证件号`）；空值（`null` / 旧内核回包里根本没有
+ * 这个键的 `undefined` / 空串）一律当没有 ⇒ 退回大类。
  */
 function 对方类别(行: 档案关系): string {
-  const 细类 = 行.对方细类
-  if (typeof 细类 === "string" && 细类 !== "") return 细类
+  const 细类 = 细类显示名(行.对方细类)
+  if (细类 !== undefined) return 细类
   return 行.对方类型 !== "" ? 行.对方类型 : "——"
 }
 
@@ -116,7 +138,7 @@ function 出处行文本(引用: 引用): string {
  * ## 版面（2026-11-07 视觉改版）
  *
  * 根节点不再自己滚动，而是「固定身份头 / 滚动体 / 固定裁决条」三段：
- * 滚动时始终看得见「这是谁」，也始终够得着 ✓ 对 / ✗ 错 / ？存疑（原来要滚到页尾）。
+ * 滚动时始终看得见「这是谁」，也始终够得着 ✓ 正确 / ✗ 抽错 / ？存疑（原来要滚到页尾）。
  * 身份头始终渲染（载入 / 出错时只剩「实体档案」字样），因为「显示已排除」开关在错误态
  * 仍是重试入口，不能被 `<Show when={档()}>` 一起藏掉。
  *
@@ -126,11 +148,18 @@ function 出处行文本(引用: 引用): string {
  * （真正的交易额是 12 万，但「流入」「流出」两侧各算一次会得到 24 万）。服务端不提供聚合，
  * 前端就不摆这个数字——宁可少一个指标，不编一个错数。
  *
- * ## 数字卡的口径（2026-11-07 改）
+ * ## 数字卡的口径（2026-11-07 改；2026-11-08 第四格换成「待确认」）
  *
- * 四个数字一律报**全量**（回包里的 `关系总数` / `事件总数` / `引用总数` / `对方数`），
- * 与顶部「一句话」同源。原先按本页条数算，201 个对手方会显示成 200，同一页两个数字打架；
- * 列表本身仍只带最多 200 条关系 / 100 条事件，截断由数字卡里的「缺口」说清。
+ * 四格是 关系 / 事件 / 对手方 / 待确认，一律报**全量**（回包里的 `关系总数` / `事件总数` /
+ * `对方数` / `待确认.合计`），与顶部「一句话」同源。原先按本页条数算，201 个对手方会显示成 200，
+ * 同一页两个数字打架；列表本身仍只带最多 200 条关系 / 100 条事件，截断由数字卡里的「缺口」说清。
+ *
+ * ## 四段折叠（2026-11-08）
+ *
+ * 数据说的 / 人说的 / 事件 / 出处各默认画 `分段默认显示`（5）条；展开后前三段渲染全部
+ * （服务端已有 200 / 100 条硬顶），出处封顶 `出处展开上限`（20）条。
+ * 折叠是**纯前端**的：数据已经在回包里，不另发请求。换实体时四段全部收起（裁决 / 切开关重取
+ * 不改变阅读位置）。
  */
 export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const [档, set档] = createSignal<实体档案 | undefined>()
@@ -139,12 +168,15 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   // §9.1 / Global Constraint：已排除的事实默认不出现，档案页是唯一能「切换查看」的地方。
   // 开关状态**只由用户点它改变**：请求失败只进错误态，不回滚开关（否则用户会以为是自己点错了）。
   const [含排除, set含排除] = createSignal(false)
-  // 出处默认只画前 20 条（见 `出处默认显示` 的说明）。
+  // 四段各自折叠；换实体重置（裁决 / 切开关重取不改变阅读位置）。
+  const [展开数据说的, set展开数据说的] = createSignal(false)
+  const [展开人说的, set展开人说的] = createSignal(false)
+  const [展开事件, set展开事件] = createSignal(false)
   const [展开出处, set展开出处] = createSignal(false)
-  /** 上一次取的实体键：只在**换实体**时收起出处，裁决 / 切开关重取不该改变阅读位置。 */
+  /** 上一次取的实体键：只在**换实体**时收起各段，裁决 / 切开关重取不该改变阅读位置。 */
   let 上次实体 = ""
 
-  // 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑，只作用于这个实体本身。
+  // 纠正入口（design §9.2）：✓ 正确 / ✗ 抽错 / ？存疑，只作用于这个实体本身。
   const [裁决中, set裁决中] = createSignal(false)
   const [展开原因, set展开原因] = createSignal(false)
   const [原因类型, set原因类型] = createSignal<纠正原因 | undefined>()
@@ -167,6 +199,27 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   const [裁决对象, set裁决对象] = createSignal<
     { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string }
   >({ factType: "entity" })
+
+  /**
+   * 换裁决对象 = 换了一个**要被评的东西**：上一条写的排除原因不能跟着漂过去。
+   *
+   * 反例（Task 6 评审提出）：在关系上点「✗ 抽错」并写了「识别错」，再点「待确认」回整条实体，
+   * 原因区还是那段字；一点提交，关系的理由就发到整条实体上了。所以切对象必须同时收起原因区、
+   * 清空原因类型与原文——**所有换对象的路径共用这一处**，别各写一份（`#002-06`）。
+   *
+   * 上一对象的**裁决错误**也必须一起清：它说的是「刚才那次提交为什么失败」，换了一个要被评的
+   * 东西之后还挂着，会被读成新对象也裁决失败。**同实体重取不在本路径**（`重取序` 那条不改），
+   * 那里的错误要留着让用户重试。
+   */
+  const 换裁决对象 = (
+    对象: { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string },
+  ) => {
+    set裁决对象(对象)
+    set展开原因(false)
+    set原因类型(undefined)
+    set原因说明("")
+    set裁决错误(undefined)
+  }
   const 选中的关系 = createMemo(() => {
     const 对象 = 裁决对象()
     if (对象.factType !== "relation") return undefined
@@ -177,7 +230,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (对象.factType !== "event") return undefined
     return 档()?.事件.find((行) => 行.id === 对象.factId)
   })
-  /** 按钮押下读的是**选中对象自己**的信任态（选中一条「已确认」的关系时，✓ 对就该是押下的）。 */
+  /** 按钮押下读的是**选中对象自己**的信任态（选中一条「已确认」的关系时，✓ 正确就该是押下的）。 */
   const 当前信任态 = createMemo(
     () => 选中的关系()?.trust_state ?? 选中的事件()?.trust_state ?? 档()?.trust_state,
   )
@@ -189,7 +242,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (关系 !== undefined) return `这条关系：${关系摘要(关系)}`
     const 事件 = 选中的事件()
     if (事件 !== undefined) return `这条事件：${事件摘要(事件)}`
-    return `整条实体：${当前.canonical_value}（${当前.type}${当前.subtype === undefined ? "" : ` · ${当前.subtype}`}）`
+    return `整条实体：${当前.canonical_value}（${当前.type}${细类显示名(当前.subtype) === undefined ? "" : ` · ${细类显示名(当前.subtype)}`}）`
   })
 
   /**
@@ -202,10 +255,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (选区 !== null && !选区.isCollapsed) return
     const 当前 = 裁决对象()
     if (当前.factType === 对象.factType && 当前.factId === 对象.factId) {
-      set裁决对象({ factType: "entity" })
+      换裁决对象({ factType: "entity" })
       return
     }
-    set裁决对象(对象)
+    换裁决对象(对象)
   }
   /** 行是不是当前对象（选中底色与 `data-selected` 共用这一份判据）。 */
   const 是选中 = (factType: "relation" | "event", factId: string) => {
@@ -223,7 +276,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     const 在 = 对象.factType === "relation"
       ? 当前.关系.some((行) => 行.id === 对象.factId)
       : 当前.事件.some((行) => 行.id === 对象.factId)
-    if (!在) set裁决对象({ factType: "entity" })
+    if (!在) 换裁决对象({ factType: "entity" })
   })
 
   createEffect(() => {
@@ -236,9 +289,12 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     const 实体键 = `${projectId}/${id}`
     if (实体键 !== 上次实体) {
       上次实体 = 实体键
+      set展开数据说的(false)
+      set展开人说的(false)
+      set展开事件(false)
       set展开出处(false)
       // 换了实体，上一条实体选中的关系 / 事件当然不再属于这里（同 id 也不该沿用）。
-      set裁决对象({ factType: "entity" })
+      换裁决对象({ factType: "entity" })
     }
     set档(undefined)
     set错误(undefined)
@@ -271,14 +327,13 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
   const 数据说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind !== "human") ?? [])
   const 人说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind === "human") ?? [])
-  /** 画出来的出处行：未展开时只给前 `出处默认显示` 条。 */
-  const 显示的引用 = createMemo(() => {
-    const 全部 = 档()?.引用 ?? []
-    return 展开出处() ? 全部 : 全部.slice(0, 出处默认显示)
-  })
+  /** 画出来的出处行：未展开时只给前 `分段默认显示` 条。 */
+  const 显示的引用 = createMemo(() => 一段显示(档()?.引用 ?? [], 展开出处(), 出处展开上限))
+  /** 画出来的事件行：同上。 */
+  const 显示的事件 = createMemo(() => 一段显示(档()?.事件 ?? [], 展开事件()))
 
   /**
-   * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `引用总数` / `对方数`）。
+   * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `对方数` / `待确认.合计`）。
    *
    * 不能拿 `关系.length` 报：列表页只带前 200 条，按页报会把「201 个对手方」说成 200，
    * 还会和顶部「一句话」（全量聚合）对不上。页内截断由数字卡下面的「缺口」说明。
@@ -289,34 +344,43 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     return [
       { key: "关系", 值: 当前.关系总数 },
       { key: "事件", 值: 当前.事件总数 },
-      { key: "出处", 值: 当前.引用总数 },
       { key: "对手方", 值: 当前.对方数 },
+      // 前后端版本不同步时（旧内核回包没有 `待确认`）降级显示 0，不在渲染期 TypeError。
+      { key: "待确认", 值: 当前.待确认?.合计 ?? 0 },
     ]
   })
 
   /**
-   * 四格各自的落点（2026-11-07 用户裁定）：点数字 = 走到它数的那批东西跟前，别让人自己往下翻。
+   * 四格各自的落点：点数字 = 走到它数的那批东西跟前，别让人自己往下翻。
    *
    * 「对手方」没有自己的正文块——它是关系里「对方」去重后的个数 ⇒ 与「关系」同落点。
+   * 「待确认」没有自己的块：它是「回到整条实体 + 聚焦 ✓ 正确」，让用户马上能开始裁决。
    * 落点用 `data-slot` 现查，不另存 ref 数组：块是条件渲染的，ref 可能在点击时已经换过。
    */
   const 落点: Record<string, string> = {
     关系: "entity-relations",
     事件: "entity-events",
-    出处: "entity-citations",
     对手方: "entity-relations",
   }
   /** 读屏只念「3 / 关系」会以为这是静态数字：可读名必须说清它会跳。 */
-  const 格子可读名: Record<string, string> = {
-    关系: "跳到关系块",
-    事件: "跳到事件块",
-    出处: "跳到出处块",
-    对手方: "跳到关系块（对手方在关系里）",
+  const 格子可读名 = (键: string): string => {
+    const 当前 = 档()
+    if (键 === "待确认")
+      return `回到整条实体并聚焦「✓ 正确」（实体 ${当前?.待确认?.实体 ?? 0} + 关系 ${当前?.待确认?.关系 ?? 0} + 事件 ${当前?.待确认?.事件 ?? 0}）`
+    if (键 === "对手方") return "跳到关系块（对手方在关系里）"
+    return `跳到${键}块`
   }
   /** 档案自己的滚动容器；点击时从**它里面**找落点，滚到别处等于把用户送出档案页。 */
   let 滚动体: HTMLDivElement | undefined
+  /** 底栏裁决条：待确认跳转要聚焦其中的「✓ 正确」。 */
+  let 裁决条: HTMLElement | undefined
 
   const 跳到 = (键: string) => {
+    if (键 === "待确认") {
+      换裁决对象({ factType: "entity" })
+      裁决条?.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")?.focus()
+      return
+    }
     const 目标 = 滚动体?.querySelector(`[data-slot='${落点[键]}']`)
     if (目标 instanceof HTMLElement) 目标.scrollIntoView({ block: "start" })
   }
@@ -392,7 +456,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       data-slot="entity-profile-type"
                       class="rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted"
                     >
-                      {`${档().type}${档().subtype === undefined ? "" : ` · ${档().subtype}`}`}
+                      {`${档().type}${细类显示名(档().subtype) === undefined ? "" : ` · ${细类显示名(档().subtype)}`}`}
                     </span>
                     <span
                       data-slot="entity-profile-trust-state"
@@ -508,7 +572,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                           data-slot="entity-stat"
                           data-key={项.key}
                           data-jump={落点[项.key]}
-                          aria-label={格子可读名[项.key]}
+                          aria-label={格子可读名(项.key)}
                           onClick={() => 跳到(项.key)}
                           class={`cursor-pointer px-3 py-2 text-left transition-colors ${悬停叠层}`}
                         >
@@ -593,14 +657,20 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   <关系段
                     标题="数据说的"
                     slot="entity-relations-data"
+                    expandSlot="entity-relations-data-expand"
                     行们={数据说的()}
+                    展开={展开数据说的()}
+                    切换展开={() => set展开数据说的((值) => !值)}
                     选中={是选中}
                     点选={点选事实}
                   />
                   <关系段
                     标题="人说的"
                     slot="entity-relations-human"
+                    expandSlot="entity-relations-human-expand"
                     行们={人说的()}
+                    展开={展开人说的()}
+                    切换展开={() => set展开人说的((值) => !值)}
                     选中={是选中}
                     点选={点选事实}
                     分隔
@@ -621,10 +691,21 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     fallback={<p class="px-3 py-1 pb-2 text-[12px] text-v2-text-text-muted">没有共同事件</p>}
                   >
                     <div class="px-3 pt-1 pb-2">
-                      <For each={档().事件}>
+                      <For each={显示的事件()}>
                         {(事件) => <事件行 事件={事件} 选中={是选中("event", 事件.id)} 点选={() => 点选事实({ factType: "event", factId: 事件.id })} />}
                       </For>
                     </div>
+                    <Show when={档().事件.length > 分段默认显示}>
+                      <button
+                        type="button"
+                        data-slot="entity-events-expand"
+                        aria-expanded={展开事件()}
+                        onClick={() => set展开事件((值) => !值)}
+                        class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                      >
+                        {展开文案(档().事件.length, 展开事件())}
+                      </button>
+                    </Show>
                   </Show>
                 </section>
 
@@ -658,7 +739,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     )}
                   </For>
                   {/* 展开是纯前端：数据已经在回包里（服务端只多截在 500），不再发请求。 */}
-                  <Show when={档().引用.length > 出处默认显示}>
+                  <Show when={档().引用.length > 分段默认显示}>
                     <button
                       type="button"
                       data-slot="entity-citation-expand"
@@ -666,7 +747,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       onClick={() => set展开出处((值) => !值)}
                       class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
                     >
-                      {展开出处() ? "收起" : `展开全部 ${档().引用.length} 条`}
+                      {展开文案(档().引用.length, 展开出处(), 出处展开上限)}
                     </button>
                   </Show>
                 </section>
@@ -676,7 +757,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
         </div>
       </div>
 
-      {/* 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑 是这一页的业务动作，固定在底栏——
+      {/* 纠正入口（design §9.2）：✓ 正确 / ✗ 抽错 / ？存疑 是这一页的业务动作，固定在底栏——
           长档案里不用先滚到页尾，裁决完也始终看得见自己在评谁。 */}
       <Show when={档()}>
         {(_档) => (
@@ -760,7 +841,8 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   </div>
                 </div>
               </Show>
-              <div data-slot="entity-trust" class="flex flex-wrap items-center gap-1">
+              <div data-slot="entity-trust" ref={(元素) => (裁决条 = 元素)} class="flex flex-wrap items-center gap-1">
+                <span class="shrink-0 text-[12px] text-v2-text-text-muted">抽取是否正确：</span>
                 {/* 标题必须说清「现在评的是谁」：默认整条实体，点行之后换成那条关系 / 事件。
                     长文本截断——底栏不能被一串号码顶出行外。 */}
                 <span
@@ -769,23 +851,23 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                 >
                   {底栏对象文本()}
                 </span>
-                {/* 形如「✓ 对」的符号是装饰，语义由可见文字与 `aria-label` 承担；
+                {/* 形如「✓ 正确」的符号是装饰，语义由可见文字与 `aria-label` 承担；
                     当前态用 `aria-pressed` ＋ 头部徽章的文字表达，不只靠颜色。 */}
                 <button
                   type="button"
                   data-slot="entity-trust-confirm"
-                  aria-label="这条事实对（确认）"
+                  aria-label="这条事实抽取正确（确认）"
                   aria-pressed={当前信任态() === "已确认"}
                   disabled={裁决中()}
                   onClick={() => void 裁决("确认")}
                   class={裁决按钮类(当前信任态() === "已确认")}
                 >
-                  ✓ 对
+                  ✓ 正确
                 </button>
                 <button
                   type="button"
                   data-slot="entity-trust-reject"
-                  aria-label="这条事实有错（排除）"
+                  aria-label="这条事实抽错了（排除）"
                   aria-pressed={当前信任态() === "已排除"}
                   aria-expanded={展开原因()}
                   aria-controls={原因区id}
@@ -797,7 +879,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   }}
                   class={裁决按钮类(当前信任态() === "已排除")}
                 >
-                  ✗ 错
+                  ✗ 抽错
                 </button>
                 <button
                   type="button"
@@ -833,12 +915,16 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 function 关系段(props: {
   readonly 标题: string
   readonly slot: string
+  readonly expandSlot: string
   readonly 行们: readonly 档案关系[]
+  readonly 展开: boolean
+  readonly 切换展开: () => void
   /** 这一行是不是底栏当前对象；`选中` / `点选` 由档案组件传下来（行自己没有状态）。 */
   readonly 选中: (factType: "relation" | "event", factId: string) => boolean
   readonly 点选: (对象: { readonly factType: "relation" | "event"; readonly factId: string }) => void
   readonly 分隔?: boolean
 }): JSX.Element {
+  const 显示的 = () => 一段显示(props.行们, props.展开)
   return (
     <div class={props.分隔 === true ? "border-t border-v2-border-border-muted" : ""}>
       <div class="flex items-baseline gap-1.5 px-3 pt-2">
@@ -863,7 +949,7 @@ function 关系段(props: {
             <span class="text-right">金额</span>
             <span>状态</span>
           </div>
-          <For each={props.行们}>
+          <For each={显示的()}>
             {(行) => {
               // 行可点 = 底栏的裁决对象切到它（2026-11-08）。`onMouseDown` 里不拦默认行为，
               // 否则正文选不中；拖选后的那次 click 由 `点选事实` 自己按选区判断跳过。
@@ -941,6 +1027,17 @@ function 关系段(props: {
               )
             }}
           </For>
+        </Show>
+        <Show when={props.行们.length > 分段默认显示}>
+          <button
+            type="button"
+            data-slot={props.expandSlot}
+            aria-expanded={props.展开}
+            onClick={props.切换展开}
+            class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+          >
+            {展开文案(props.行们.length, props.展开)}
+          </button>
         </Show>
       </div>
     </div>

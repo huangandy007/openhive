@@ -7,6 +7,7 @@ import { 发到会话 } from "../ask-ai"
 import { showToast } from "@/utils/toast"
 import { 金额文本 } from "./format"
 import { 图标图形, 图标边长, 节点图标, 节点图标组 } from "./graph-icons"
+import { 细类显示名 } from "./subtype-label"
 
 export interface GraphProps {
   readonly projectId: string
@@ -729,7 +730,7 @@ export function Graph(props: GraphProps): JSX.Element {
   /** 每行格式与面板标题同一套：`类型 · 细类 · 值`（细类没有就省掉）。 */
   const 带走文本 = (目标: 图节点) =>
     带走们(目标)
-      .map((行) => [行.type, 行.subtype, 行.value].filter((段): 段 is string => 段 !== undefined && 段 !== "").join(" · "))
+      .map((行) => [行.type, 细类显示名(行.subtype), 行.value].filter((段): 段 is string => 段 !== undefined && 段 !== "").join(" · "))
       .join("\n")
 
   const 复制带走 = (目标: 图节点) => {
@@ -773,7 +774,7 @@ export function Graph(props: GraphProps): JSX.Element {
         y: Math.max(8, Math.min(尺寸().高 - 52, 行.y - 36)),
         行1: `${截断(行.value, 14)} · ${行.type}`,
         // 细类放第二行：第一行已经贴着提示框宽度，再拼「· 手机号」会溢出框外。
-        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 图上 ${行.关联数} · 库内 ${行.度数}${是枢纽(行) ? " · 枢纽" : ""}`,
+        行2: `${细类显示名(行.subtype) === undefined ? "" : `${细类显示名(行.subtype)} · `}${行.trust_state} · 图上 ${行.关联数} · 库内 ${行.度数}${是枢纽(行) ? " · 枢纽" : ""}`,
       }
     }
     const 边id = 悬停边()
@@ -1551,7 +1552,7 @@ export function Graph(props: GraphProps): JSX.Element {
                     {点().value}
                   </div>
                   <div data-slot="graph-panel-subtitle" class="mt-0.5 text-[11px] text-v2-text-text-muted">
-                    {`${点().type}${点().subtype === undefined ? "" : ` · ${点().subtype}`} · ${点().trust_state}`}
+                    {`${点().type}${细类显示名(点().subtype) === undefined ? "" : ` · ${细类显示名(点().subtype)}`} · ${点().trust_state}`}
                   </div>
                 </div>
                 <button

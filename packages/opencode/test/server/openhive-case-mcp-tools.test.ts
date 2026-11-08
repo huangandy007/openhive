@@ -13,6 +13,7 @@ import {
   search_materials,
   归一化限制,
   校验成员,
+  解析实体,
   type 工具上下文,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
@@ -55,6 +56,17 @@ const 身份丁 = { userId: "u-工具-甲", projectId: "p-工具-丁" }
  * （`query_entities` 默认不返回「已排除」断言 `ids === ["e-好"]`），再种实体就会改掉它们（`#005-34`）。
  */
 const 身份戊 = { userId: "u-工具-甲", projectId: "p-工具-戊" }
+/**
+ * 解析实体的同值多行用例落在这个**独立项目**里：同一项目里再种实体会改掉既有用例的
+ * 全量等值断言（`#005-34`）。
+ */
+const 身份解析 = { userId: "u-工具-甲", projectId: "p-工具-解析" }
+/** 同值多行合并 / 同秒排序各用独立项目：避免与既有断言互相影响（`#005-34`）。 */
+const 身份合并 = { userId: "u-工具-甲", projectId: "p-工具-合并" }
+const 身份同秒 = { userId: "u-工具-甲", projectId: "p-工具-同秒" }
+/** 资金聚合 / 交叉的合并 id 用例：各自独立项目。 */
+const 身份聚合 = { userId: "u-工具-甲", projectId: "p-工具-聚合" }
+const 身份叉 = { userId: "u-工具-甲", projectId: "p-工具-叉" }
 const 项目乙 = "p-工具-乙"
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
@@ -581,6 +593,205 @@ test("query_relations 给不存在的实体 ⇒ not_found", async () => {
   await expect(query_relations(ctx(身份丁), { 实体: "查无此人" })).rejects.toMatchObject({ code: "not_found" })
 })
 
+test("解析实体：同值「人/组织」两行 ⇒ 取后建的组织行，关系也取得到", async () => {
+  // 存量旧行（纠正前落库的「人」）先建；重解析后新「组织」行后建（`created_at` 取当前时间）。
+  await 建实体(库(), {
+    id: "e-旧人行-解析",
+    projectId: 身份解析.projectId,
+    value: "柏加派出所",
+    type: "人",
+    createdAt: 100,
+  })
+  await upsertEntity(库(), {
+    id: "e-组织行-解析",
+    projectId: 身份解析.projectId,
+    type: "组织",
+    canonicalValue: "柏加派出所",
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-张三-解析",
+    projectId: 身份解析.projectId,
+    type: "人",
+    canonicalValue: "张三",
+    aliases: [],
+  })
+  await insertRelation(库(), {
+    id: "r-解析",
+    projectId: 身份解析.projectId,
+    fromId: "e-张三-解析",
+    toId: "e-组织行-解析",
+    type: "同案",
+    basis: "笔录记载",
+    sourceKind: "human",
+    trustState: "自动抽取",
+  })
+
+  const 解析 = await 解析实体(ctx(身份解析), "柏加派出所", "实体")
+  // 产出原始值：类型字符串必须是纠正后的「组织」，不是旧的「人」行。
+  expect(解析.type).toBe("组织")
+  expect(解析.id).toBe("e-组织行-解析")
+
+  // 关系挂在组织行上：解析到旧「人」行时这里会是 0 条，与图谱页画出关系相矛盾。
+  const 结果 = await query_relations(ctx(身份解析), { 实体: "柏加派出所" })
+  const 关系ids = ids计(结果)
+  expect(关系ids.length).toBe(1)
+  expect(关系ids[0]).toBe("r-解析")
+})
+
+test("query_relations：按值查询合并同值多行的关系（旧/新行各挂一条）", async () => {
+  // 实体从不删除、重灌只删本材料的引用：材料 A 重灌后关系挂「组织」行，
+  // 材料 B 未重灌、关系仍挂旧「人」行。按值查询只过滤「最新一行」会静默丢 B 的关系。
+  await 建实体(库(), {
+    id: "e-合并旧人",
+    projectId: 身份合并.projectId,
+    value: "柏加派出所",
+    type: "人",
+    createdAt: 100,
+  })
+  await 建实体(库(), {
+    id: "e-合并新组织",
+    projectId: 身份合并.projectId,
+    value: "柏加派出所",
+    type: "组织",
+    createdAt: 200,
+  })
+  await upsertEntity(库(), { id: "e-合并甲", projectId: 身份合并.projectId, type: "人", canonicalValue: "甲", aliases: [] })
+  await upsertEntity(库(), { id: "e-合并乙", projectId: 身份合并.projectId, type: "人", canonicalValue: "乙", aliases: [] })
+  for (const [id, fromId, toId] of [
+    ["r-合并-旧", "e-合并甲", "e-合并旧人"],
+    ["r-合并-新", "e-合并乙", "e-合并新组织"],
+  ] as const) {
+    await insertRelation(库(), {
+      id,
+      projectId: 身份合并.projectId,
+      fromId,
+      toId,
+      type: "同案",
+      basis: "笔录记载",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+  }
+
+  const 结果 = await query_relations(ctx(身份合并), { 实体: "柏加派出所" })
+  // 原始数字 + 集合比较：只按单个 id 过滤时是 1 条（Expected 2 / Received 1）。
+  const 关系ids = ids计(结果).sort()
+  expect(关系ids.length).toBe(2)
+  expect(关系ids).toEqual(["r-合并-旧", "r-合并-新"].sort())
+})
+
+test("aggregate_money：按值查询合并同值多行——旧/新行各一笔转账都算进笔数与合计", async () => {
+  await 建实体(库(), {
+    id: "e-聚合旧人",
+    projectId: 身份聚合.projectId,
+    value: "合并账户甲",
+    type: "人",
+    createdAt: 100,
+  })
+  await 建实体(库(), {
+    id: "e-聚合新组织",
+    projectId: 身份聚合.projectId,
+    value: "合并账户甲",
+    type: "组织",
+    createdAt: 200,
+  })
+  await upsertEntity(库(), {
+    id: "e-聚合对手",
+    projectId: 身份聚合.projectId,
+    type: "人",
+    canonicalValue: "转账对手",
+    aliases: [],
+  })
+  for (const [id, toId, amount] of [
+    ["r-聚合-旧", "e-聚合旧人", 100],
+    ["r-聚合-新", "e-聚合新组织", 200],
+  ] as const) {
+    await insertRelation(库(), {
+      id,
+      projectId: 身份聚合.projectId,
+      fromId: "e-聚合对手",
+      toId,
+      type: "转账",
+      amount,
+      sourceKind: "data",
+      trustState: "自动抽取",
+    })
+  }
+
+  const 结果 = await aggregate_money(ctx(身份聚合), { 账户: "合并账户甲" })
+  // 原始数字/字符串：只按单个 id 过滤时「入」是 1 笔 / 200.00（另一笔挂在旧「人」行上）。
+  expect(结果.数据).toEqual({
+    汇总: [{ 方向: "入", 笔数: 2, 合计: "300.00" }],
+    对手方: [{ 对手方: "转账对手", 方向: "入", 笔数: 2, 合计: "300.00" }],
+    余额走势: null,
+  })
+})
+
+test("find_crossings：甲按值解析时合并同值多行——关系挂在旧行也能进共同关联", async () => {
+  await 建实体(库(), {
+    id: "e-叉旧人",
+    projectId: 身份叉.projectId,
+    value: "柏加派出所",
+    type: "人",
+    createdAt: 100,
+  })
+  await 建实体(库(), {
+    id: "e-叉新组织",
+    projectId: 身份叉.projectId,
+    value: "柏加派出所",
+    type: "组织",
+    createdAt: 200,
+  })
+  await upsertEntity(库(), { id: "e-叉乙", projectId: 身份叉.projectId, type: "人", canonicalValue: "李四叉", aliases: [] })
+  await upsertEntity(库(), { id: "e-叉王", projectId: 身份叉.projectId, type: "人", canonicalValue: "王叉", aliases: [] })
+  for (const [id, fromId] of [
+    ["r-叉-旧", "e-叉旧人"],
+    ["r-叉-乙", "e-叉乙"],
+  ] as const) {
+    await insertRelation(库(), {
+      id,
+      projectId: 身份叉.projectId,
+      fromId,
+      toId: "e-叉王",
+      type: "同案",
+      basis: "笔录记载",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+  }
+
+  // 甲展示行是纠正后的组织行；另一条关系挂在旧「人」行上——只按单个 id 算时交集为空。
+  const 结果 = await find_crossings(ctx(身份叉), { 甲: "柏加派出所", 乙: "李四叉" })
+  // 整份数据等值断言（数组元素，不是子串）：交集为空时共同关联会变成 []。
+  expect(结果.数据).toEqual({
+    共同关联: [{ id: "e-叉王", type: "人", value: "王叉", trust_state: "自动抽取" }],
+    共同时空: [],
+  })
+})
+
+test("解析实体：两行 created_at 同秒 ⇒ 仍取纠正后的组织行（非「人」型优先）", async () => {
+  // `created_at` 是整数秒：同秒创建时 `created_at desc` 打平，回落 `type asc` 会命中旧「人」行。
+  await 建实体(库(), {
+    id: "e-同秒旧人",
+    projectId: 身份同秒.projectId,
+    value: "柏加派出所",
+    type: "人",
+    createdAt: 500,
+  })
+  await 建实体(库(), {
+    id: "e-同秒组织",
+    projectId: 身份同秒.projectId,
+    value: "柏加派出所",
+    type: "组织",
+    createdAt: 500,
+  })
+
+  const 解析 = await 解析实体(ctx(身份同秒), "柏加派出所", "实体")
+  expect(解析.type).toBe("组织")
+  expect(解析.id).toBe("e-同秒组织")
+})
+
 test("时间窗起 > 止 ⇒ bad_input", async () => {
   await expect(query_events(ctx(身份丁), { 起: 500, 止: 100 })).rejects.toMatchObject({ code: "bad_input" })
 })
@@ -614,11 +825,22 @@ test("query_events 的 participants 剔除「已排除」实体的规范值", as
 test("解析实体规则写进 query_events / aggregate_money / find_crossings 的口径", async () => {
   // 规则只写在 query_relations 口径里时，另三个工具的回答会让模型对同名/重名实体自行猜（Minor 4）。
   for (const 口径 of [
+    (await query_relations(ctx(身份丁), { 实体: "甲" })).口径,
     (await query_events(ctx(身份丁), {})).口径,
     (await aggregate_money(ctx(身份戊), { 账户: 账号 })).口径,
     (await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })).口径,
   ]) {
     expect(口径).toContain("type 升序、id 升序")
+    // 只钉旧的排序尾句时，把口径改回「按 type 升序取第一条」仍绿——必须钉住新增的「取最新」。
+    expect(口径).toContain("最新")
+  }
+  // 按值查询会合并同值多行的关系：三个关系类工具都要在口径里说清，否则模型以为只查了最新一行。
+  for (const 口径 of [
+    (await query_relations(ctx(身份丁), { 实体: "甲" })).口径,
+    (await aggregate_money(ctx(身份戊), { 账户: 账号 })).口径,
+    (await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })).口径,
+  ]) {
+    expect(口径).toContain("合并同值多行")
   }
 })
 

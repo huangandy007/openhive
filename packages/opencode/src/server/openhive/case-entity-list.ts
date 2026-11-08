@@ -5,7 +5,7 @@ import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
 
 /**
- * 实体视图（计划 7 的左栏与中栏）：类型计数、清单、档案三个只读出口。
+ * 实体视图（计划 7 的左栏与中栏）：分组计数、清单、档案三个只读出口。
  *
  * ## 已排除一律默认不出现（§9.1 / R10）
  *
@@ -18,9 +18,11 @@ import { 细类 } from "./case-subtype"
  * SQL 侧写 `array_to_json(...)::text`，出库形状就与驱动无关。
  */
 
-export interface 类型计数 {
-  readonly type: string
-  readonly count: number
+export type 实体分组 = "核心" | "提及"
+
+export interface 分组计数 {
+  readonly 核心: number
+  readonly 提及: number
 }
 
 export type 排序 = "涉案" | "名称" | "时间"
@@ -32,19 +34,27 @@ export interface 实体清单项 {
   readonly subtype?: string
   readonly canonical_value: string
   readonly trust_state: string
+  /** 有效关系条数（关系未排除、对方未排除）。 */
   readonly 关联数: number
+  /** 事件参与数（事件未排除、`participants` 含该实体规范值）。 */
+  readonly 事件参与数: number
+  /** 排序权重：`关联数 + 事件参与数`。 */
+  readonly 权重: number
+  readonly 分组: 实体分组
   readonly created_at: number
 }
 
 export interface 实体清单结果 {
   readonly 行们: 实体清单项[]
+  /** 过滤后的全量条数（`count(*) over()`），不是当前页条数。 */
+  readonly 总数: number
   readonly 缺口: string[]
 }
 
 export interface 实体清单入参 {
   readonly projectId: string
-  /** 省略 = 跨类型（搜索时用）；给了就只查这一类型。 */
-  readonly type?: string
+  /** 省略 = 跨组（搜索用）；给了就只查这一组。 */
+  readonly 分组?: 实体分组
   readonly q?: string
   readonly sort?: 排序
   readonly limit?: number
@@ -69,23 +79,67 @@ const 事件上限 = 100
  */
 export const 引用上限 = 500
 
-export async function 类型计数(db: Queryable, projectId: string): Promise<类型计数[]> {
-  const 行们 = rowsOf(
+/**
+ * 有效关系度数：清单的 `关联数` 与分组计数共用这一份谓词（`#002-06`）。
+ * 只有一层 SQL 片段函数、没有第二个实现；改口径只改这里。
+ */
+const 关系度数 = () =>
+  sql`(
+    select count(*)::int
+      from auth.case_relation r
+     where r.project_id = e.project_id
+       and r.trust_state <> '已排除'
+       and (r.from_id = e.id or r.to_id = e.id)
+       and (case when r.from_id = e.id then r.to_id else r.from_id end)
+           in (select id from auth.case_entity
+                where project_id = e.project_id and trust_state <> '已排除')
+  )`
+
+/** 事件参与数：事件未排除、参与者按规范值等值匹配。与分组计数共用。 */
+const 事件参与数 = () =>
+  sql`(
+    select count(*)::int
+      from auth.case_event ev
+     where ev.project_id = e.project_id
+       and ev.trust_state <> '已排除'
+       and ev.participants @> array[e.canonical_value]::text[]
+  )`
+
+/** 人确认过的状态：核心判据与「同权重已确认优先」共用，避免两处字面各写一遍。 */
+const 已确认或修正 = () => sql`trust_state in ('已确认','已修正')`
+
+/**
+ * 核心判据：有连接（有效关系或事件参与）或人已确认。**整个 feature 的准入判据只此一份**（`#002-06`）：
+ * 分组计数的核心列、提及列（`not`）、清单分类都引用它；改条件只改这里。
+ *
+ * 引用派生表列名（`关联数` / `事件参与数` / `trust_state`）⇒ 调用处必须先把两个计数列投影出来。
+ */
+const 核心判据 = () => sql`(关联数 > 0 or 事件参与数 > 0 or ${已确认或修正()})`
+
+export async function 分组计数(db: Queryable, projectId: string): Promise<分组计数> {
+  const 行 = rowsOf(
     await db.execute(sql`
-      select type, count(*)::int as count
-        from auth.case_entity
-       where project_id = ${projectId} and trust_state <> '已排除'
-       group by type
-       order by count desc, type asc
+      select count(*) filter (
+               where ${核心判据()}
+             )::int as 核心,
+             count(*) filter (
+               where not ${核心判据()}
+             )::int as 提及
+        from (
+          select e.trust_state,
+                 ${关系度数()} as 关联数,
+                 ${事件参与数()} as 事件参与数
+            from auth.case_entity e
+           where e.project_id = ${projectId} and e.trust_state <> '已排除'
+        ) t
     `),
-  )
-  return 行们.map((行) => ({ type: String(行.type), count: Number(行.count) }))
+  )[0]!
+  return { 核心: Number(行.核心), 提及: Number(行.提及) }
 }
 
 export async function 实体清单(db: Queryable, input: 实体清单入参): Promise<实体清单结果> {
   const 上限 = Math.min(Math.max(1, Math.trunc(input.limit ?? 清单上限)), 清单上限)
   const 条件: SQL[] = [sql`e.project_id = ${input.projectId}`, sql`e.trust_state <> '已排除'`]
-  if (input.type !== undefined) 条件.push(sql`e.type = ${input.type}`)
   const 词 = input.q?.trim()
   if (词 !== undefined && 词 !== "") {
     // `q` 是用户输入：`%` / `_` / `\` 不转义就会当通配符（搜「100%」不该命中一切）。
@@ -96,32 +150,33 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
     )
   }
   const 排序 = input.sort ?? "涉案"
-  // `关联数` 是 output alias，PostgreSQL 允许在 order by 里引用。
+  // 分组 / 权重是在派生表里算的，排序必须引用外层别名 `行`。
   const 顺序 =
     排序 === "名称"
-      ? sql`e.canonical_value asc, e.id asc`
+      ? sql`行.canonical_value asc, 行.id asc`
       : 排序 === "时间"
-        ? sql`e.created_at desc, e.id asc`
-        : sql`关联数 desc, e.canonical_value asc, e.id asc`
+        ? sql`行.created_at desc, 行.id asc`
+        : sql`行.权重 desc, (${已确认或修正()}) desc, 行.canonical_value asc, 行.id asc`
+  const 分组条件 = input.分组 === undefined ? sql`true` : sql`行.分组 = ${input.分组}`
 
   const 行们 = rowsOf(
     await db.execute(sql`
-      select e.id, e.type, e.canonical_value, e.attrs, e.trust_state, e.created_at,
-             -- 与「实体档案」同一口径：对方实体已排除的关系，档案不列、清单也不算（§9.1 不进统计）。
-             -- 用 in (select …) 而不是 join：join 会让 project_id / trust_state 变成歧义列
-             -- （同 case-mcp-tools.ts 里同款子查询的取法）。
-             (select count(*)::int
-                from auth.case_relation r
-               where r.project_id = e.project_id
-                 and r.trust_state <> '已排除'
-                 and (r.from_id = e.id or r.to_id = e.id)
-                 and (case when r.from_id = e.id then r.to_id else r.from_id end)
-                     in (select id
-                           from auth.case_entity
-                          where project_id = e.project_id and trust_state <> '已排除')) as 关联数,
+      select 行.id, 行.type, 行.canonical_value, 行.attrs, 行.trust_state, 行.created_at,
+             行.关联数, 行.事件参与数, 行.权重, 行.分组,
              count(*) over() as 总数
-        from auth.case_entity e
-       where ${sql.join(条件, sql` and `)}
+        from (
+          select t.*,
+                 (t.关联数 + t.事件参与数) as 权重,
+                 case when ${核心判据()} then '核心' else '提及' end as 分组
+            from (
+              select e.id, e.type, e.canonical_value, e.attrs, e.trust_state, e.created_at,
+                     ${关系度数()} as 关联数,
+                     ${事件参与数()} as 事件参与数
+                from auth.case_entity e
+               where ${sql.join(条件, sql` and `)}
+            ) t
+        ) 行
+       where ${分组条件}
        order by ${顺序}
        limit ${上限}
     `),
@@ -135,11 +190,14 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
     canonical_value: String(行.canonical_value),
     trust_state: String(行.trust_state),
     关联数: Number(行.关联数),
+    事件参与数: Number(行.事件参与数),
+    权重: Number(行.权重),
+    分组: String(行.分组) as 实体分组,
     created_at: Number(行.created_at),
   }))
 
-  const 缺口 = 总数 > 上限 ? [`已显示前 ${上限} 条，共 ${总数} 条，请用搜索或类型缩小范围`] : []
-  return { 行们: 排好, 缺口 }
+  const 缺口 = 总数 > 上限 ? [`已显示前 ${上限} 条，共 ${总数} 条，请用搜索或分组缩小范围`] : []
+  return { 行们: 排好, 总数, 缺口 }
 }
 
 export interface 档案关系 {
@@ -209,6 +267,16 @@ export interface 实体档案 {
    * 而顶部「一句话」与数字卡的全量口径会因此对不上（同 `关系总数` / `事件总数` 的理由）。
    */
   readonly 引用总数: number
+  /**
+   * 「待确认」：本实体 + 它的有效关系 + 它的事件里 `trust_state ∈ {自动抽取, 存疑}` 的条数。
+   * 已排除一律不计（「显示已排除」开关打开时也不计）。
+   */
+  readonly 待确认: {
+    readonly 实体: number
+    readonly 关系: number
+    readonly 事件: number
+    readonly 合计: number
+  }
   /** §8.3：档案页顶部那句文字结论（服务端生成，保证同一份数据两次打开说同一句话）。 */
   readonly 一句话: string
   /**
@@ -236,12 +304,18 @@ export async function 实体档案(
   const 实体 = 实体行们[0]!
 
   // 关系：两侧实体 join 出来，取「对方」；已排除的关系与已排除的对方都默认不出现（§9.1）。
-  // ⚠️ 这组谓词是**唯一一份**：列表查询与下面的全量聚合查询共用它，别写第二份。
-  const 关系条件: SQL[] = [
+  // 「触达」是 project + 该实体；「可见」再叠未排除条件。待确认用可见 + 信任态，别写第二份。
+  // ⚠️ 这组谓词是**唯一一份**：列表查询、全量聚合查询与待确认计数共用它，别写第二份。
+  const 关系触达: SQL[] = [
     sql`r.project_id = ${input.projectId}`,
     sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`,
   ]
-  if (!含排除) 关系条件.push(sql`r.trust_state <> '已排除'`, sql`对方.trust_state <> '已排除'`)
+  const 关系可见: SQL[] = [
+    ...关系触达,
+    sql`r.trust_state <> '已排除'`,
+    sql`对方.trust_state <> '已排除'`,
+  ]
+  const 关系条件 = 含排除 ? 关系触达 : 关系可见
   // 两段各取各的（见 `关系数据上限` / `关系人上限` 的说明）：同一条谓词，只多一个分段条件。
   // `count(*) over()` 在 LIMIT **之前**算 ⇒ 每段拿到的是自己那一段的全量行数。
   const 取关系段 = async (段: "data" | "human", 上限: number) =>
@@ -302,15 +376,20 @@ export async function 实体档案(
   }))
 
   // 事件的参与者存的是**实体规范值**（计划 4 的写口），不是 id。
+  // 与关系同理：「触达」到「可见」各一份，待确认计数复用可见谓词。
+  const 事件触达: SQL[] = [
+    sql`project_id = ${input.projectId}`,
+    sql`participants @> array[${String(实体.canonical_value)}]::text[]`,
+  ]
+  const 事件可见: SQL[] = [...事件触达, sql`trust_state <> '已排除'`]
+  const 事件条件 = 含排除 ? 事件触达 : 事件可见
   const 事件行们 = rowsOf(
     await db.execute(sql`
       select id, type, occurred_at, occurred_raw, summary,
              array_to_json(participants)::text as participants, trust_state,
              count(*) over() as 总数
         from auth.case_event
-       where project_id = ${input.projectId}
-         and participants @> array[${String(实体.canonical_value)}]::text[]
-         ${含排除 ? sql`` : sql`and trust_state <> '已排除'`}
+       where ${sql.join(事件条件, sql` and `)}
        order by occurred_at desc nulls last, id asc
        limit ${事件上限}
     `),
@@ -325,6 +404,29 @@ export async function 实体档案(
     participants: 解JSON<string[]>(行.participants, []),
     trust_state: String(行.trust_state),
   }))
+
+  // 待确认只数「人还没表态的」：`自动抽取 / 存疑`。已排除不进（那是人的决定，不是待办），
+  // 所以这里固定用可见谓词，不看 `含排除`——「显示已排除」开关不改变待办口径。
+  const 待确认关系行 = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as 条数
+        from auth.case_relation r
+        join auth.case_entity 对方
+          on 对方.project_id = r.project_id
+         and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+       where ${sql.join([...关系可见, sql`r.trust_state in ('自动抽取','存疑')`], sql` and `)}
+    `),
+  )[0]!
+  const 待确认事件行 = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as 条数
+        from auth.case_event
+       where ${sql.join([...事件可见, sql`trust_state in ('自动抽取','存疑')`], sql` and `)}
+    `),
+  )[0]!
+  const 待确认实体 = ["自动抽取", "存疑"].includes(String(实体.trust_state)) ? 1 : 0
+  const 待确认关系 = Number(待确认关系行.条数)
+  const 待确认事件 = Number(待确认事件行.条数)
 
   const { 行们: 引用, 总数: 引用总数 } = await 引用们(db, input.projectId, "entity", input.id, 引用上限)
 
@@ -361,6 +463,12 @@ export async function 实体档案(
     对方数,
     引用,
     引用总数,
+    待确认: {
+      实体: 待确认实体,
+      关系: 待确认关系,
+      事件: 待确认事件,
+      合计: 待确认实体 + 待确认关系 + 待确认事件,
+    },
     一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 对方数, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }
