@@ -459,6 +459,7 @@ describe("关系图 · 检视面板", () => {
     右键(点元素(host, "e-号"))
     await 等(() => 菜单开着())
     expect(host.querySelector("[data-slot='graph-panel']")?.getAttribute("data-panel-kind")).toBe("node")
+    expect(host.querySelector("[data-slot='graph-panel-title']")!.textContent).toContain("13800000001")
 
     点菜单项("graph-node-menu-recenter")
     await 等(() => 调用.length === 3)
@@ -467,28 +468,54 @@ describe("关系图 · 检视面板", () => {
     expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 1, 强度: "重点" })
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
     // 2026-11-08 反转 11-07：换中心 = 换一张干净的图，不许越并越多。
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
-    expect(host.querySelector("[data-slot='graph-panel']")).toBeNull()
+    expect(host.querySelectorAll("[data-slot='graph-node'][data-node-id='e-张']").length).toBe(0)
+    expect(host.querySelector("[data-slot='graph-panel']") === null).toBe(true)
     expect(host.querySelector("[data-slot='graph-center']")!.textContent).toContain("13800000001")
   })
 
   test("换跳数 ⇒ 替换：图上只留当前口径这一圈", async () => {
-    const { api, 调用 } = 按中心取图()
+    // 2 跳比 1 跳多一颗 e-新：换到 1 跳后它必须消失，才真正钉住「换跳数 = 替换」（否则点击前就没它，是空转）。
+    const 号圈 = (跳: 1 | 2 | undefined): 关系图结果 => ({
+      节点: [
+        { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+        { id: "e-赵", type: "人", value: "赵六", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
+        ...(跳 === 2
+          ? [{ id: "e-新", type: "人", value: "钱七", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 }]
+          : []),
+      ],
+      边: [
+        { id: "r-x", from: "e-号", to: "e-赵", type: "通话", times: 2, amount: null, trust_state: "自动抽取", 明细数: 1 },
+        ...(跳 === 2
+          ? [{ id: "r-新", from: "e-赵", to: "e-新", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }]
+          : []),
+      ],
+      缺口: [],
+    })
+    const 调用: Array<1 | 2 | undefined> = []
+    const api = 假api({
+      graph: async (_项目, id, 跳数) => {
+        调用.push(跳数)
+        return { kind: "ok", value: id === "e-号" ? 号圈(跳数) : 图 }
+      },
+    })
     const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-号']") !== null)
+
+    const 计数 = (id: string) => host.querySelectorAll(`[data-slot='graph-node'][data-node-id='${id}']`).length
 
     右键(点元素(host, "e-号"))
     await 等(() => 菜单开着())
     点菜单项("graph-node-menu-recenter")
-    await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']") !== null)
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
+    await 等(() => 计数("e-新") === 1)
+    // 2 跳这一圈：旧中心 e-张 已被替换掉
+    expect(计数("e-张")).toBe(0)
 
     host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => 调用.length === 3)
-    expect(调用[2]).toMatchObject({ id: "e-号", 跳数: 1 })
-    // 仍是替换：这一圈里没有 e-张，它不会因为换跳数又冒出来
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-张']")).toBeNull()
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).not.toBeNull()
+    expect(调用[2]).toBe(1)
+    // 仍是替换：1 跳这一圈里没有 e-新，它不会因为换跳数又冒出来
+    await 等(() => 计数("e-新") === 0)
+    expect(计数("e-赵")).toBe(1)
   })
 
   test("「返回」回到上一个中心：再取一次数，回到起点后按钮消失", async () => {
@@ -511,8 +538,8 @@ describe("关系图 · 检视面板", () => {
     expect(调用[2]!.id).toBe("e-张")
     await 等(() => host.querySelector("[data-slot='graph-node'][data-node-id='e-张']") !== null)
     // 返回 = 换回上一个中心 ⇒ 这一圈里没有 e-赵
-    expect(host.querySelector("[data-slot='graph-node'][data-node-id='e-赵']")).toBeNull()
-    expect(host.querySelector("[data-slot='graph-back']")).toBeNull()
+    expect(host.querySelectorAll("[data-slot='graph-node'][data-node-id='e-赵']").length).toBe(0)
+    expect(host.querySelector("[data-slot='graph-back']") === null).toBe(true)
   })
 
   test("右键节点 ⇒「打开档案」也是同一个对象", async () => {
@@ -569,7 +596,7 @@ describe("关系图 · 检视面板", () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    expect(host.querySelector("[data-slot='graph-panel']")).not.toBeNull()
+    expect(host.querySelector("[data-slot='graph-panel']") !== null).toBe(true)
     按Esc()
     await 等(() => host.querySelector("[data-slot='graph-panel']") === null)
 
@@ -588,10 +615,10 @@ describe("关系图 · 检视面板", () => {
     host2.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => host2.querySelectorAll("[data-slot='graph-node']").length === 5)
     点元素(host2, "e-账").dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    expect(host2.querySelector("[data-slot='graph-panel']")).not.toBeNull()
+    expect(host2.querySelector("[data-slot='graph-panel']") !== null).toBe(true)
     host2.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='2']")!.click()
     await 等(() => host2.querySelectorAll("[data-slot='graph-node']").length === 4)
-    expect(host2.querySelector("[data-slot='graph-panel']")).toBeNull()
+    expect(host2.querySelector("[data-slot='graph-panel']") === null).toBe(true)
   })
 })
 
@@ -641,8 +668,13 @@ describe("关系图 · 工具栏", () => {
     const 档 = (模式: string) => host.querySelector<HTMLElement>(`[data-slot='graph-mode'][data-mode='${模式}']`)!
     const 簇钮 = () => host.querySelector<HTMLElement>("[data-slot='graph-cluster-toggle']")
 
-    // 默认就是全貌
+    // 默认就是全貌；强度三档按 spec 的顺序排（服务端只认这三个词）
     expect(调用[0]).toEqual({ 跳数: 2, 强度: "重点" })
+    expect([...host.querySelectorAll("[data-slot='graph-strength']")].map((钮) => 钮.getAttribute("data-strength"))).toEqual([
+      "全部",
+      "重点",
+      "强",
+    ])
     expect(档("全貌").getAttribute("aria-pressed")).toBe("true")
     expect(簇钮()!.getAttribute("aria-pressed")).toBe("true")
 
@@ -651,7 +683,7 @@ describe("关系图 · 工具栏", () => {
     await 等(() => 调用.length === 2)
     expect(调用[1]).toEqual({ 跳数: 1, 强度: "全部" })
     expect(档("聚焦").getAttribute("aria-pressed")).toBe("true")
-    expect(簇钮()).toBeNull() // 1 跳没有分簇控件
+    expect(簇钮() === null).toBe(true) // 1 跳没有分簇控件
 
     档("全貌").click()
     await 等(() => 调用.length === 3)
@@ -663,6 +695,40 @@ describe("关系图 · 工具栏", () => {
     expect(调用[3].强度).toBe("强")
     expect(档("全貌").getAttribute("aria-pressed")).toBe("false")
     expect(档("聚焦").getAttribute("aria-pressed")).toBe("false")
+  })
+
+  test("分簇钮只翻自己的派生位：不触发取数；关掉后全貌灭，near-miss 不算聚焦", async () => {
+    const 调用: Array<{ 跳数: 1 | 2 | undefined; 强度: 关系图强度 | undefined }> = []
+    const api = 假api({
+      graph: async (_项目, _id, 跳数, _类型, 强度) => {
+        调用.push({ 跳数, 强度 })
+        return { kind: "ok", value: 图 }
+      },
+    })
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => 调用.length === 1)
+    const 档 = (模式: string) => host.querySelector<HTMLElement>(`[data-slot='graph-mode'][data-mode='${模式}']`)!
+    const 簇钮 = () => host.querySelector<HTMLElement>("[data-slot='graph-cluster-toggle']")
+
+    // 簇钮是查看偏好的派生项：翻它只改高亮，**不发请求**。
+    const 前 = 调用.length
+    簇钮()!.click()
+    expect(簇钮()!.getAttribute("aria-pressed")).toBe("false")
+    expect(档("全貌").getAttribute("aria-pressed")).toBe("false")
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(调用.length).toBe(前)
+
+    簇钮()!.click()
+    expect(簇钮()!.getAttribute("aria-pressed")).toBe("true")
+    expect(档("全貌").getAttribute("aria-pressed")).toBe("true")
+
+    // near-miss：1 跳 / 全部 / 分簇仍开着 ⇒ 不是聚焦（缺 `!分簇` 这一项）。
+    host.querySelector<HTMLElement>("[data-slot='graph-strength'][data-strength='全部']")!.click()
+    await 等(() => 调用.length === 前 + 1)
+    host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
+    await 等(() => 调用.length === 前 + 2)
+    expect(档("聚焦").getAttribute("aria-pressed")).toBe("false")
+    expect(档("全貌").getAttribute("aria-pressed")).toBe("false")
   })
 
   test("类型筛选按钮带计数；服务端按类型过滤后，别的类型按钮仍然在（不会变成单选死锁）", async () => {

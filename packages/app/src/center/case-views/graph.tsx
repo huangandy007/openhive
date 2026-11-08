@@ -513,13 +513,12 @@ export function Graph(props: GraphProps): JSX.Element {
 
   /**
    * 换中心 = 换一张干净的图（2026-11-08 反转 11-07 的并集要求）。
-   * 选中/多选/手动位置都作废：它们指向的是上一张图的坐标与节点。
+   * 手动位置/拉框/悬停都作废：它们指向的是上一张图的坐标与节点。
+   * 选中与多选不在这里清：取数替换会先清空 `图`，两条「不在这张图里就收掉」的 effect 当场收口。
    * 跳数/强度/类型/分簇是查看偏好，留着；缩放平移也留着（用户刚调好的视角）。
    */
   const 换中心到 = (id: string) => {
     set中心(id)
-    set选中(null)
-    set多选([])
     set拉框(undefined)
     set悬停点(undefined)
     set悬停边(undefined)
