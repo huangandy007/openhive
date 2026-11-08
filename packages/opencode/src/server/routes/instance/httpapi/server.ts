@@ -135,6 +135,7 @@ import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveCaseParse } from "@/server/openhive/case-parse"
 import { OpenhiveCaseFactRoutes } from "@/server/openhive/case-fact-routes"
 import { OpenhiveCaseUiRoutes } from "@/server/openhive/case-ui-routes"
+import { OpenhiveModelConfig } from "@/server/openhive/model-config-routes"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
 import { OpenhiveGovernanceAssetGroups } from "@/server/openhive/governance-asset-groups"
@@ -436,6 +437,11 @@ export function createRoutes(
     // 时间线与资金**复用计划 6 的取数函数**，不复制 SQL。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 7）。
     OpenhiveCaseUiRoutes.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 模型槽位只读出口（2026-11-08，模型统一配置设计 §3.4）：设置页展示当前生效的
+    // 聊天 / 后台模型。只返回 provider/model 与来源，**不返回** apiKey / baseURL。
+    // 只读 `Config.Service`——它在 `app` 层已供上（与 `governance-assets.ts` 同一个先例）。
+    // 【保留的定制 · 同步上游时不要丢】—— AI 能力工程化（模型统一配置）。
+    OpenhiveModelConfig.routes,
     // openhive 账号管理出口（010 T005）：列表 / 详情 / 录入 / 重置 / 停用 / 启用 / 批量停用（FR-004）。
     // 沙箱根与项目出口共用同一个 `AnchorWorkspace.Config`（`provisionUser` 要在这里建目录——
     // 两处漂了就是「账号建在 A、文件树去 B 找」）；业务 PG 与上面几项共用同一个实例
