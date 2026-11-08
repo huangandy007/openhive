@@ -613,10 +613,10 @@ describe("分屏时「打开档案」开在另一栏", () => {
       kind: "ok",
       value: {
         节点: [
-          { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-          { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+          { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+          { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
         ],
-        边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+        边: [{ id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
         缺口: [],
       },
     }),

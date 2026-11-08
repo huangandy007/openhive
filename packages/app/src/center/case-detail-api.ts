@@ -136,6 +136,13 @@ export interface 产物复核结果 {
   readonly 缺口: string[]
 }
 
+/**
+ * 强度档的三个词**与 `case-graph.ts` 的 `关系图强度们` 逐字一致**（客户端不能 import
+ * 服务端包，这是有意的重复；改一侧必须同步改另一侧）。
+ */
+export const 关系图强度们 = ["全部", "重点", "强"] as const
+export type 关系图强度 = (typeof 关系图强度们)[number]
+
 export interface 图节点 {
   readonly id: string
   readonly type: string
@@ -146,6 +153,10 @@ export interface 图节点 {
   readonly 中心: boolean
   readonly 跳数: number
   readonly 关联数: number
+  /** 库里与该实体相关的关系总数（判枢纽）；`关联数` 是图上画出来的条数。 */
+  readonly 度数: number
+  /** 二跳节点的父节点 id（分簇用）。 */
+  readonly 经由?: string
 }
 
 export interface 图边 {
@@ -153,15 +164,19 @@ export interface 图边 {
   readonly from: string
   readonly to: string
   readonly type: string
-  readonly times: number | null
+  readonly times: number
   readonly amount: string | null
   readonly trust_state: string
+  /** 合并了多少条原始关系（≥ 1）。 */
+  readonly 明细数: number
 }
 
 export interface 关系图结果 {
   readonly 节点: 图节点[]
   readonly 边: 图边[]
   readonly 缺口: string[]
+  /** 被强度档筛掉、但在本次取数范围里确实存在的关系组数；为 0 时不出现。 */
+  readonly 强度缺口?: { readonly 未显示: number; readonly 总数: number }
 }
 
 export interface 工具结果 {
@@ -191,6 +206,7 @@ export interface CaseDetailApi {
     id: string,
     跳数?: 1 | 2,
     类型?: readonly string[],
+    强度?: 关系图强度,
   ) => Promise<结果<关系图结果>>
   /** 产物页（design §9.4）：这份产物引用了哪几条事实、其中几条的依据后来改过。 */
   readonly review: (projectId: string, path: string) => Promise<结果<产物复核结果>>
@@ -241,11 +257,12 @@ export function createCaseDetailApi(send: CaseFetch = 默认发送): CaseDetailA
       if (止 !== undefined) 参数.set("止", String(止))
       return 请求<工具结果>(send, `${PREFIX}/money?${参数.toString()}`)
     },
-    graph: async (projectId, id, 跳数, 类型) => {
+    graph: async (projectId, id, 跳数, 类型, 强度) => {
       const 参数 = 项目参数(projectId)
       参数.set("id", id)
       if (跳数 !== undefined) 参数.set("跳数", String(跳数))
       if (类型 !== undefined && 类型.length > 0) 参数.set("type", 类型.join(","))
+      if (强度 !== undefined) 参数.set("强度", 强度)
       return 请求<关系图结果>(send, `${PREFIX}/graph?${参数.toString()}`)
     },
     review: (projectId, path) => {

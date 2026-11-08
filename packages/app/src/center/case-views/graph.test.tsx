@@ -35,17 +35,17 @@ afterEach(() => {
 
 const 图: 关系图结果 = {
   节点: [
-    { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2 },
-    { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
-    { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 3 },
-    { id: "e-账", type: "账户", value: "6222****0001", trust_state: "存疑", 中心: false, 跳数: 2, 关联数: 1 },
-    { id: "e-地", type: "地点", value: "湖州市吴兴区", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 },
+    { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2, 度数: 2 },
+    { id: "e-李", type: "人", value: "李四", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
+    { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 3, 度数: 3 },
+    { id: "e-账", type: "账户", value: "6222****0001", trust_state: "存疑", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 },
+    { id: "e-地", type: "地点", value: "湖州市吴兴区", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 },
   ],
   边: [
-    { id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 3, amount: null, trust_state: "自动抽取" },
-    { id: "r-2", from: "e-张", to: "e-号", type: "实际使用", times: null, amount: null, trust_state: "自动抽取" },
-    { id: "r-3", from: "e-号", to: "e-账", type: "通话", times: 30, amount: null, trust_state: "自动抽取" },
-    { id: "r-4", from: "e-号", to: "e-地", type: "转账", times: 1, amount: "100.00", trust_state: "自动抽取" },
+    { id: "r-1", from: "e-张", to: "e-李", type: "通话", times: 3, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    { id: "r-2", from: "e-张", to: "e-号", type: "实际使用", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    { id: "r-3", from: "e-号", to: "e-账", type: "通话", times: 30, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    { id: "r-4", from: "e-号", to: "e-地", type: "转账", times: 1, amount: "100.00", trust_state: "自动抽取", 明细数: 1 },
   ],
   缺口: ["节点上限 50，可能还有更多"],
 }
@@ -73,18 +73,18 @@ function 按中心取图() {
     if (id === "e-号")
       return {
         节点: [
-          { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: true, 跳数: 0, 关联数: 1 },
-          { id: "e-赵", type: "人", value: "赵六", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+          { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+          { id: "e-赵", type: "人", value: "赵六", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
         ],
-        边: [{ id: "r-x", from: "e-号", to: "e-赵", type: "通话", times: 2, amount: null, trust_state: "自动抽取" }],
+        边: [{ id: "r-x", from: "e-号", to: "e-赵", type: "通话", times: 2, amount: null, trust_state: "自动抽取", 明细数: 1 }],
         缺口: [],
       }
     return {
       节点: [
-        { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-        { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 1 },
+        { id: "e-张", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+        { id: "e-号", type: "号码", subtype: "手机号", value: "13800000001", trust_state: "已确认", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
       ],
-      边: [{ id: "r-y", from: "e-张", to: "e-号", type: "实际使用", times: null, amount: null, trust_state: "自动抽取" }],
+      边: [{ id: "r-y", from: "e-张", to: "e-号", type: "实际使用", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
       缺口: [],
     }
   }
@@ -135,11 +135,11 @@ describe("关系图 · 布局", () => {
     // 旧实现：viewBox 0 0 640 420，外环半径恒 250 ⇒ 单节点落在 cy = 210 - 250 = -40，
     // 屏幕外；多个环都从 -90° 起排，节点少时全叠在一条竖线上。
     // 变异靶子：把环半径改回固定值或去掉画布边距，这条必须红。
-    const 节点: 图节点[] = [{ id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 20 }]
+    const 节点: 图节点[] = [{ id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 20, 度数: 20 }]
     for (let i = 0; i < 8; i += 1)
-      节点.push({ id: `a-${i}`, type: i % 2 === 0 ? "号码" : "人", value: `内环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 })
+      节点.push({ id: `a-${i}`, type: i % 2 === 0 ? "号码" : "人", value: `内环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 })
     for (let i = 0; i < 12; i += 1)
-      节点.push({ id: `b-${i}`, type: i % 3 === 0 ? "账户" : "地点", value: `外环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 })
+      节点.push({ id: `b-${i}`, type: i % 3 === 0 ? "账户" : "地点", value: `外环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 })
     const 位 = 布局({ 节点, 边: [], 缺口: [] })
     const 全 = [...位.中心, ...位.一层, ...位.二层]
     expect(全).toHaveLength(21)
@@ -159,10 +159,10 @@ describe("关系图 · 布局", () => {
     // 三个点会叠在 x = 中心 的一条竖线上，边也完全重叠（真栈实测的第一版截图就是这样）。
     const 位 = 布局({
       节点: [
-        { id: "c", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-        { id: "a", type: "号码", value: "0001", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 3 },
-        { id: "b", type: "号码", value: "0002", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 },
-        { id: "d", type: "号码", value: "0003", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 },
+        { id: "c", type: "人", value: "张三", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+        { id: "a", type: "号码", value: "0001", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 3, 度数: 3 },
+        { id: "b", type: "号码", value: "0002", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 },
+        { id: "d", type: "号码", value: "0003", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 },
       ],
       边: [],
       缺口: [],
@@ -216,10 +216,10 @@ describe("关系图 · 画", () => {
       trust_state: "自动抽取",
       中心: false,
       跳数: 1,
-      关联数: 1,
+      关联数: 1, 度数: 1,
     })
     const 节点: 图节点[] = [
-      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 9 },
+      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 9, 度数: 9 },
       行("e-手", "号码", "13800000001", "手机号"),
       行("e-座", "号码", "0572-1234567", "固定电话"),
       行("e-证", "号码", "330502199001011234", "身份证"),
@@ -247,6 +247,7 @@ describe("关系图 · 画", () => {
           times: 1,
           amount: null,
           trust_state: "自动抽取",
+          明细数: 1,
         })),
       缺口: [],
     }
@@ -671,7 +672,7 @@ describe("关系图 · 边界", () => {
             kind: "ok",
             value: {
               节点: [图.节点[0]!],
-              边: [{ id: "r-悬空", from: "e-张", to: "e-缺", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+              边: [{ id: "r-悬空", from: "e-张", to: "e-缺", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
               缺口: [],
             },
           }),
@@ -714,10 +715,10 @@ describe("关系图 · 边界", () => {
       kind: "ok",
       value: {
         节点: [
-          { id: "e-新", type: "人", value: "新邻居", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-          { id: "e-乙", type: "人", value: "乙", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+          { id: "e-新", type: "人", value: "新邻居", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+          { id: "e-乙", type: "人", value: "乙", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
         ],
-        边: [{ id: "r-新", from: "e-新", to: "e-乙", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+        边: [{ id: "r-新", from: "e-新", to: "e-乙", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
         缺口: [],
       },
     })
@@ -726,10 +727,10 @@ describe("关系图 · 边界", () => {
       kind: "ok",
       value: {
         节点: [
-          { id: "e-旧", type: "人", value: "旧邻居", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1 },
-          { id: "e-乙", type: "人", value: "乙", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 },
+          { id: "e-旧", type: "人", value: "旧邻居", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+          { id: "e-乙", type: "人", value: "乙", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
         ],
-        边: [{ id: "r-旧", from: "e-旧", to: "e-乙", type: "通话", times: 1, amount: null, trust_state: "自动抽取" }],
+        边: [{ id: "r-旧", from: "e-旧", to: "e-乙", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
         缺口: [],
       },
     })
@@ -764,11 +765,11 @@ describe("关系图 · 边界", () => {
 
 describe("关系图 · 排列模式与拖动", () => {
   const 大图: 关系图结果 = (() => {
-    const 节点: 图节点[] = [{ id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 20 }]
+    const 节点: 图节点[] = [{ id: "c", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 20, 度数: 20 }]
     for (let i = 0; i < 8; i += 1)
-      节点.push({ id: `a-${i}`, type: i % 2 === 0 ? "号码" : "人", value: `内环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1 })
+      节点.push({ id: `a-${i}`, type: i % 2 === 0 ? "号码" : "人", value: `内环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 })
     for (let i = 0; i < 12; i += 1)
-      节点.push({ id: `b-${i}`, type: i % 3 === 0 ? "账户" : "地点", value: `外环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1 })
+      节点.push({ id: `b-${i}`, type: i % 3 === 0 ? "账户" : "地点", value: `外环${i}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1 })
     const 边: 图边[] = 节点.slice(1).map((点, 序) => ({
       id: `r-${序}`,
       from: "c",
@@ -777,6 +778,7 @@ describe("关系图 · 排列模式与拖动", () => {
       times: 1,
       amount: null,
       trust_state: "自动抽取",
+      明细数: 1,
     }))
     return { 节点, 边, 缺口: [] }
   })()

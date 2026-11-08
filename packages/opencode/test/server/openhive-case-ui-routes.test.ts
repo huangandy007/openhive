@@ -273,14 +273,23 @@ describe("openhive 案件视图出口（计划 7）", () => {
     }),
   )
 
-  it("关系图：跳数只认 1/2，其余 ⇒ 400", () =>
+  it("关系图：跳数与强度只认枚举，其余 ⇒ 400；强度透传到 DAO", () =>
     Effect.gen(function* () {
       expect((yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&跳数=3`)).status).toBe(400)
-      const 图 = yield* 读回<{ 边: { id: string }[] }>(
+      expect((yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&强度=乱写`)).status).toBe(400)
+
+      const 图 = yield* 读回<{ 边: { id: string }[]; 强度缺口?: { 未显示: number; 总数: number } }>(
         yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&type=转账`),
       )
-      // 只回中心（张）连出的那条；李 → 账 的 `r-路由2` 不在 1 跳邻域里。
-      expect(图.边.map((边) => 边.id)).toEqual(["r-路由"])
+      // 聚合后的合成 id（一对端点一条边）
+      expect(图.边.map((边) => 边.id)).toEqual(["rel|e-路由张|e-路由账|转账"])
+
+      // 1000 元 / 1 次 ⇒ 强档不达标；缺口把这条说出来
+      const 强图 = yield* 读回<{ 边: unknown[]; 强度缺口: { 未显示: number; 总数: number } }>(
+        yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&type=转账&强度=强`),
+      )
+      expect(强图.边).toEqual([])
+      expect(强图.强度缺口).toEqual({ 未显示: 1, 总数: 1 })
     }),
   )
 

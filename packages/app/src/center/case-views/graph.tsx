@@ -704,7 +704,7 @@ export function Graph(props: GraphProps): JSX.Element {
       return {
         x: Math.max(8, Math.min(尺寸().宽 - 提示宽 - 8, 中.x - 提示宽 / 2)),
         y: Math.max(8, Math.min(尺寸().高 - 52, 中.y - 52)),
-        行1: `${行.type}${行.times === null ? "" : ` · ${行.times} 次`}`,
+        行1: `${行.type} · ${行.times} 次`,
         行2: `${金额文本(行.amount)} · ${甲.value} → ${乙.value}`,
       }
     }
@@ -1465,7 +1465,7 @@ export function Graph(props: GraphProps): JSX.Element {
                 <div class="text-[12px]">
                   <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
                     <span class="text-[11px] text-v2-text-text-muted">次数</span>
-                    <span class="text-v2-text-text-base">{行().times === null ? "—" : `${行().times} 次`}</span>
+                    <span class="text-v2-text-text-base">{`${行().times} 次`}</span>
                   </div>
                   <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
                     <span class="text-[11px] text-v2-text-text-muted">金额</span>

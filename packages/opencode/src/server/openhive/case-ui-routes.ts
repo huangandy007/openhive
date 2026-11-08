@@ -9,7 +9,7 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 生成提醒, 标记已读, 提醒清单 } from "./case-alerts"
 import { 产物复核, 登记产物引用 } from "./case-artifact-citations"
 import { 实体档案, 实体清单, 类型计数, type 排序 } from "./case-entity-list"
-import { 关系图 } from "./case-graph"
+import { 关系图, 关系图强度们, type 关系图强度 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
 import { aggregate_money, query_events, 工具错误 } from "./case-mcp-tools"
 import { OpenhivePg } from "./pg"
@@ -241,6 +241,9 @@ function handleGraph(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 跳数原文 = 参数.get("跳数")
     if (跳数原文 !== null && 跳数原文 !== "1" && 跳数原文 !== "2")
       return fail(400, "跳数只能是 1 或 2", "bad_request")
+    const 强度原文 = 参数.get("强度")
+    if (强度原文 !== null && !(关系图强度们 as readonly string[]).includes(强度原文))
+      return fail(400, "强度只能是 全部 / 重点 / 强", "bad_request")
     const 上限原文 = 读整数(参数.get("limit"))
     if (上限原文 === null) return fail(400, "limit 必须是整数", "bad_request")
     const 类型原文 = 参数.get("type")
@@ -251,6 +254,7 @@ function handleGraph(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
         id,
         跳数: 跳数原文 === "2" ? 2 : 1,
         类型,
+        强度: (强度原文 ?? "全部") as 关系图强度,
         上限: 上限原文,
       }),
     )
