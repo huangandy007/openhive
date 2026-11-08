@@ -2,11 +2,13 @@ export * as OpenhiveCaseIngestWorker from "./case-ingest-worker"
 
 import { readFile } from "node:fs/promises"
 import { Cause, Effect, Layer } from "effect"
+import { Config as CoreConfig } from "@/config/config"
 import { InstanceStore } from "@/project/instance-store"
-import { Provider, parseModel } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 建调用模型 } from "./case-extract-ai"
 import { claimNextJob, runJob, 作业项目目录, 沙箱内路径, type ClaimedJob } from "./case-ingest"
+import { 解析启动模型 } from "./model-resolve"
 import { OpenhivePg } from "./pg"
 
 /**
@@ -41,10 +43,10 @@ const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] a
 export const 消费开关ENV = "OPENHIVE_CASE_INGEST_WORKER"
 
 /**
- * 抽取用的模型（`provider/model`）。不设 ⇒ `provider.defaultModel()`（与内核聊天同一条回退）。
- * 抽取值钱且慢，部署时通常想钉一个比聊天更便宜的模型——这是配置项，不是代码分支。
+ * 旧环境变量 `OPENHIVE_CASE_EXTRACT_MODEL` 已废弃（2026-11-08，模型统一配置 D5）：
+ * 只保留一条启动 WARN，见 `model-resolve.ts` 的 `解析启动模型`。模型统一在
+ * `opencode.jsonc` 的 `task_model` / `model` 里声明，改完重启生效。
  */
-export const 抽取模型ENV = "OPENHIVE_CASE_EXTRACT_MODEL"
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -61,6 +63,17 @@ export const layer = Layer.effectDiscard(
       return
     }
 
+    // 启动自检（设计 §3.3）：配了 PG 就必须有可解析的后台模型，否则**拒绝启动**。
+    // 只查配置完整性，不探网：内网网关尚未就绪不应阻止进程起来，可达性留给作业期暴露。
+    //
+    // ⚠️ 用 `getGlobal()` 而不是 `get()`：`get()` 走 `InstanceState`，启动期没有
+    // `InstanceRef`（那也是作业期才有的东西）。后台模型是**部署级**配置，读全局那份正合适；
+    // 项目级 `opencode.jsonc` 里的 task_model 不参与启动自检。
+    const coreConfig = yield* CoreConfig.Service
+    const 启动模型 = yield* 解析启动模型(yield* coreConfig.getGlobal(), process.env).pipe(
+      Effect.catch((error) => Effect.die(new Error(`后台任务模型不可用：${error.detail}`))),
+    )
+
     const pg = yield* OpenhivePg.Service
     const config = yield* AnchorWorkspace.Config
     const provider = yield* Provider.Service
@@ -69,38 +82,37 @@ export const layer = Layer.effectDiscard(
     /**
      * 按作业的项目目录建抽取器。
      *
-     * 模型的解析要实例上下文（`Provider.defaultModel` 读的是项目配置），而后台作业没有请求的
-     * `InstanceRef`；`InstanceStore.provide` 是仓库里给「非请求代码」起实例的正规入口。
-     * 这里用 `Effect.runPromise`：effect 自带 `instances.provide` 的上下文，不依赖调用方
-     * （`LEARNINGS #010-07` 讲的是「读请求上下文」的那种 runPromise，不是这种自足的）。
+     * 模型在**启动期**已解析并缓存（`启动模型`），这里只做两件事：在本作业的实例上下文里
+     * `getModel` 校验它确实存在，然后拿到调用入口。项目级 `opencode.jsonc` 能覆盖 provider，
+     * 所以 `getModel` 仍不能省——它是「配置说存在」与「这个实例里真的存在」之间唯一的一道门。
      */
     const 建抽取器 = async (job: ClaimedJob) => {
       const 目录 = 作业项目目录(config.root, job.sourcePath, job.projectId)
       if (目录 === undefined) throw new Error(`作业的落点不合法：${job.sourcePath}`)
-      const 指定 = process.env[抽取模型ENV]
       return Effect.runPromise(
         instances
           .provide(
             { directory: 目录 },
             Effect.gen(function* () {
-              const 引用 = 指定 ? parseModel(指定) : yield* provider.defaultModel()
-              const resolved = yield* provider.getModel(引用.providerID, 引用.modelID)
+              const resolved = yield* provider.getModel(启动模型.providerID, 启动模型.modelID)
               const 语言 = yield* provider.getLanguage(resolved)
-              return { 调用: 建调用模型(语言), 模型标识: `${引用.providerID}/${引用.modelID}` }
+              return {
+                调用: 建调用模型(语言),
+                模型标识: `${启动模型.providerID}/${启动模型.modelID}`,
+                模型来源: 启动模型.source,
+              }
             }),
           )
           .pipe(
             Effect.catchCause((cause) => {
               // 原因只取**错误名**：这条文案会经 `runJob` 落进 `parse_detail.reason` 并回给前端，
-              // `Cause.pretty` 的正文可能带连接串（与下面消费循环的 catch 同一口径）。
+              // `Cause.pretty` 的正文可能带连接串（与消费循环的 catch 同一口径）。
               const 原因 = Cause.prettyErrors(cause)
                 .map((error) => error.name)
                 .join("、")
               return Effect.die(
                 new Error(
-                  指定 === undefined
-                    ? `没有可用的抽取模型：请设置 ${抽取模型ENV}（形如 provider/model），或在项目配置里设置 model（原因：${原因}）`
-                    : `抽取模型不可用：${抽取模型ENV}=${指定} 解析不出可用模型（原因：${原因}）`,
+                  `后台任务模型不可用：${启动模型.providerID}/${启动模型.modelID}（source=${启动模型.source}；原因：${原因}）`,
                 ),
               )
             }),

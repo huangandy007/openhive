@@ -38,6 +38,12 @@ process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 process.env["OPENCODE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtures", "models-api.json")
 process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 process.env["OPENCODE_EXPERIMENTAL_WORKSPACES"] = "true"
+// 测试进程默认关掉案件导入的后台消费（I7 的同一条理由：建真应用时 worker 会认领**同一个
+// 测试库**的作业，把用例插进去的东西悄悄跑掉/改态）。2026-11-08 起 worker 启动期还要自检
+// 后台模型，而大量用例（`startProductionDb` 会写 PG_*）既没有模型配置、也不关心抽取——
+// 不关它，一次「配了 PG 必须有模型」就会让几十个无关用例在层构造期死掉。
+// 需要真跑消费的用例自己 `delete process.env.OPENHIVE_CASE_INGEST_WORKER`。
+process.env["OPENHIVE_CASE_INGEST_WORKER"] = "0"
 
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills
