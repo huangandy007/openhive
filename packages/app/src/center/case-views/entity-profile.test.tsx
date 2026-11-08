@@ -1126,6 +1126,20 @@ describe("实体档案", () => {
     expect(条.textContent).not.toContain("是否涉案")
   })
 
+  test("「抽取是否正确」标签在底栏对象标题之前（否则被读成问这个实体是否正确）", async () => {
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    const 条 = host.querySelector("[data-slot='entity-trust']")!
+    // 先把两个原始索引取出来再比较：直接对 DOM 节点 `toBe`，失败时 bun 序列化环形引用会挂死（`#009-01`）。
+    const 标签下标 = Array.from(条.children).findIndex((孩子) => 孩子.textContent === "抽取是否正确：")
+    const 目标下标 = Array.from(条.children).findIndex(
+      (孩子) => 孩子.getAttribute("data-slot") === "entity-trust-target",
+    )
+    expect(标签下标).toBeGreaterThanOrEqual(0)
+    expect(目标下标).toBeGreaterThanOrEqual(0)
+    expect(标签下标).toBeLessThan(目标下标)
+  })
+
   test("点一条关系 ⇒ 对象换成它：标题、选中态、裁决的 factType/factId 都跟着换", async () => {
     const 收到: 裁决入参[] = []
     const api = 假api({ trust: async (input) => (收到.push(input), { kind: "ok", value: { trustState: "已确认" } }) })
