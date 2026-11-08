@@ -26,8 +26,9 @@ export const projectCopyHandlers = HttpApiBuilder.group(InstanceHttpApi, "projec
     const generateName = Effect.fn("ProjectCopyHttpApi.generateName")(function* (context: string | undefined) {
       const text = context?.trim()
       if (!text) return Slug.create()
-      // 2026-11-08（模型统一配置 D5）：与案件抽取共用同一个解析入口。没有再走
-      // `defaultModel()` 的隐式兜底——操作员钉住的 task_model 必须真的被用上；
+      // 【保留的定制 · 同步上游时不要丢】2026-11-08（模型统一配置 D5）：与案件抽取共用
+      // 同一个解析入口。原实现先取 `getSmallModel()` 小模型、再 `defaultModel()` 兜底，
+      // 那条优先级已按设计**有意取消**——操作员钉住的 task_model 必须真的被用上，别再合回来；
       // 没有配置就回落 slug，命名失败不该阻断「复制项目」这件正事。
       const 槽位 = yield* resolveModel("task").pipe(Effect.catch(() => Effect.succeed(undefined)))
       if (槽位 === undefined) return Slug.create()
