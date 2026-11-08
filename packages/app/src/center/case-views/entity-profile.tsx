@@ -12,6 +12,7 @@ import {
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
 import { 定位文本, 金额文本, 时间文本 } from "./format"
+import { 细类显示名 } from "./subtype-label"
 
 export interface EntityProfileProps {
   readonly projectId: string
@@ -75,12 +76,12 @@ const 关系列 =
 /**
  * 对方是什么：细类 → 大类 → 「——」（2026-11-08 用户裁定）。
  *
- * `typeof` 那一句是给**没重启的内核**留的门：旧回包里根本没有 `对方细类` 这个键，
- * 直接 `!== null` 会拿到 `undefined` 并原样画成空白。
+ * 细类先过 `细类显示名`（`身份证` 显示成 `证件号`）；空值（`null` / 旧内核回包里根本没有
+ * 这个键的 `undefined` / 空串）一律当没有 ⇒ 退回大类。
  */
 function 对方类别(行: 档案关系): string {
-  const 细类 = 行.对方细类
-  if (typeof 细类 === "string" && 细类 !== "") return 细类
+  const 细类 = 细类显示名(行.对方细类)
+  if (细类 !== undefined) return 细类
   return 行.对方类型 !== "" ? 行.对方类型 : "——"
 }
 
@@ -236,7 +237,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     if (关系 !== undefined) return `这条关系：${关系摘要(关系)}`
     const 事件 = 选中的事件()
     if (事件 !== undefined) return `这条事件：${事件摘要(事件)}`
-    return `整条实体：${当前.canonical_value}（${当前.type}${当前.subtype === undefined ? "" : ` · ${当前.subtype}`}）`
+    return `整条实体：${当前.canonical_value}（${当前.type}${细类显示名(当前.subtype) === undefined ? "" : ` · ${细类显示名(当前.subtype)}`}）`
   })
 
   /**
@@ -450,7 +451,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       data-slot="entity-profile-type"
                       class="rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[12px] text-v2-text-text-muted"
                     >
-                      {`${档().type}${档().subtype === undefined ? "" : ` · ${档().subtype}`}`}
+                      {`${档().type}${细类显示名(档().subtype) === undefined ? "" : ` · ${细类显示名(档().subtype)}`}`}
                     </span>
                     <span
                       data-slot="entity-profile-trust-state"

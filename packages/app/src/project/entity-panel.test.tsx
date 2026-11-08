@@ -105,6 +105,23 @@ describe("EntityPanel 左栏实体视图（实体显示与治理）", () => {
     expect(host.querySelector("[data-slot='entity-row-connections']")!.textContent).toBe("3 条关系 · 2 起事件")
   })
 
+  test("身份证细类在左栏显示为「证件号」", async () => {
+    const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 0 } }),
+      list: async () => ({
+        kind: "ok",
+        value: {
+          行们: [实体行({ id: "e-证", 值: "110101199001011234", 类型: "号码", 细类: "身份证", 关联数: 1 })],
+          总数: 1,
+          缺口: [],
+        },
+      }),
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+    expect(host.querySelector("[data-slot='entity-row-subtype']")!.textContent).toBe("证件号")
+  })
+
   test("提及默认折叠、不请求；点开才请求提及组，行尾写「无连接」", async () => {
     const 调用: Array<{ group?: 实体分组 }> = []
     const api = 假api({

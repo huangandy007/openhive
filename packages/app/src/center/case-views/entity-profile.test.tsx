@@ -221,6 +221,21 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).toBe("号码 · 手机号")
   })
 
+  test("身份证细类统一显示为「证件号」（库里仍是身份证）", async () => {
+    const 证件档 = { ...档, type: "号码", subtype: "身份证", canonical_value: "110101199001011234" }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-证"
+        api={假api({ profile: async () => ({ kind: "ok", value: 证件档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).toBe("号码 · 证件号")
+    expect(host.querySelector("[data-slot='entity-profile-type']")!.textContent).not.toContain("身份证")
+  })
+
   test("关系按 source_kind 分两段：数据说的 / 人说的，各自只放自己的行", async () => {
     const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)

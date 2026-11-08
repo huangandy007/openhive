@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import { EntityTypeBadge } from "../components/entity-type-badge"
 import type { EntityApi, 分组计数, 实体清单项, 排序 } from "./entity-api"
+import { 细类显示名 } from "../center/case-views/subtype-label"
 
 export interface EntityPanelProps {
   readonly projectId: () => string | undefined
@@ -262,9 +263,9 @@ export function EntityPanel(props: EntityPanelProps): JSX.Element {
       </button>
       <EntityTypeBadge type={行.type} />
       <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-base">{行.canonical_value}</span>
-      <Show when={行.subtype !== undefined}>
+      <Show when={细类显示名(行.subtype) !== undefined}>
         <span data-slot="entity-row-subtype" class="shrink-0 text-[11px] text-v2-text-text-muted">
-          {行.subtype}
+          {细类显示名(行.subtype)}
         </span>
       </Show>
       {/* 搜索是跨组的：提及结果必须当场标出来，否则用户以为它也是核心对象。 */}
