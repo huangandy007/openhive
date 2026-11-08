@@ -43,20 +43,35 @@ export interface 图节点 {
   readonly 关联数: number
 }
 
+export const 关系图强度们 = ["全部", "重点", "强"] as const
+export type 关系图强度 = (typeof 关系图强度们)[number]
+
+/** 保留条件 = 次数达标 **或** 金额达标（spec §4.1.3）。`金额: null` = 本档不看金额。 */
+const 强度阈值: Record<关系图强度, { readonly 次数: number; readonly 金额: string | null }> = {
+  全部: { 次数: 0, 金额: null },
+  重点: { 次数: 2, 金额: "1000" },
+  强: { 次数: 5, 金额: "10000" },
+}
+
 export interface 图边 {
   readonly id: string
   readonly from: string
   readonly to: string
   readonly type: string
-  readonly times: number | null
+  /** 合并了几条关系记录的次数之和（每条没写次数按 1 计）——恒 ≥ 1。 */
+  readonly times: number
   readonly amount: string | null
   readonly trust_state: string
+  /** 合并了多少条原始关系（≥ 1）。 */
+  readonly 明细数: number
 }
 
 export interface 关系图结果 {
   readonly 节点: 图节点[]
   readonly 边: 图边[]
   readonly 缺口: string[]
+  /** 被强度档筛掉、但**在本次取数范围里确实存在**的关系组数；为 0 时不出现。 */
+  readonly 强度缺口?: { readonly 未显示: number; readonly 总数: number }
 }
 
 export interface 关系图入参 {
@@ -68,6 +83,8 @@ export interface 关系图入参 {
   readonly 类型?: readonly string[]
   /** 省略 = `默认节点上限`。 */
   readonly 上限?: number
+  /** 省略 = "全部"。 */
+  readonly 强度?: 关系图强度
 }
 
 export const 默认节点上限 = 50
@@ -80,9 +97,10 @@ interface 边行 {
   readonly from_id: string
   readonly to_id: string
   readonly type: string
-  readonly times: number | null
+  readonly times: number
   readonly amount: string | null
   readonly trust_state: string
+  readonly 明细数: number
   readonly from_value: string
   readonly from_type: string
   readonly from_trust: string
@@ -93,10 +111,57 @@ interface 边行 {
   readonly to_attrs: unknown
 }
 
+interface 聚合入参 {
+  readonly projectId: string
+  readonly 节点们: readonly string[]
+  readonly 类型?: readonly string[]
+  readonly 强度: 关系图强度
+}
+
+/**
+ * 一组端点一条边：`(from_id, to_id, type)` 相同的关系先合成一行**再**去抢名额。
+ * 不聚合的话，几百条流水只带出 1 个新节点，别的关系全被挤出上限（spec §4.1.2）。
+ */
+function 聚合边(input: 聚合入参): SQL {
+  const 节点表 = sql.join(
+    input.节点们.map((id) => sql`${id}`),
+    sql`, `,
+  )
+  const 类型条件 =
+    input.类型 === undefined || input.类型.length === 0
+      ? sql``
+      : sql`and r.type in (${sql.join(
+          input.类型.map((条) => sql`${条}`),
+          sql`, `,
+        )})`
+  const 阈 = 强度阈值[input.强度]
+  const 金额阈 = 阈.金额 === null ? sql`null::numeric` : sql`${阈.金额}::numeric`
+  return sql`
+    select g.from_id, g.to_id, g.type, g.次数, g.金额数, g.金额合计, g.明细数, g.信任态,
+           coalesce(g.次数 >= ${阈.次数} or (${金额阈} is not null and g.金额数 >= ${金额阈}), false) as 达标
+      from (
+        select r.from_id, r.to_id, r.type,
+               sum(coalesce(r.times, 1))::int as 次数,
+               sum(r.amount) as 金额数,
+               sum(r.amount)::text as 金额合计,
+               count(*)::int as 明细数,
+               case when min(r.trust_state) = max(r.trust_state) then min(r.trust_state) else '混合' end as 信任态
+          from auth.case_relation r
+          join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
+          join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
+         where r.project_id = ${input.projectId}
+           and r.trust_state <> '已排除'
+           and 起.trust_state <> '已排除' and 终.trust_state <> '已排除'
+           and (r.from_id in (${节点表}) or r.to_id in (${节点表}))
+           ${类型条件}
+         group by r.from_id, r.to_id, r.type
+      ) g
+  `
+}
+
 interface 一圈 {
-  /** 本跳最多取 `剩余 + 1` 条（多取一条只为判断「还有没有」）。 */
   readonly 边们: 边行[]
-  /** 本跳满足条件的**全部**条数（`count(*) over()`，不受 `limit` 影响）。 */
+  /** 本跳**达标**的全部组数（`count(*) over()`，不受 `limit` 影响）。 */
   readonly 总数: number
 }
 
@@ -108,49 +173,39 @@ async function 取一圈(
     readonly 节点们: readonly string[]
     readonly 类型?: readonly string[]
     readonly 剩余: number
+    readonly 强度: 关系图强度
   },
 ): Promise<一圈> {
   // `剩余 === 0` 也照样查一次（`limit 1`）：只查「还有没有」，不画。否则 `上限 = 1`
   // 时连库都不碰，返回「只有中心、无缺口」，界面会读成「这个人没有任何关联」。
   if (input.节点们.length === 0) return { 边们: [], 总数: 0 }
-  const 节点表 = sql.join(
-    input.节点们.map((id) => sql`${id}`),
-    sql`, `,
-  )
-  const 类型条件: SQL[] =
-    input.类型 === undefined || input.类型.length === 0
-      ? []
-      : [sql`r.type in (${sql.join(input.类型.map((条) => sql`${条}`), sql`, `)})`]
-
   const 行们 = rowsOf(
     await db.execute(sql`
-      select r.id, r.from_id, r.to_id, r.type, r.times, r.amount::text as amount, r.trust_state,
+      select h.from_id, h.to_id, h.type, h.次数, h.金额合计 as amount, h.信任态 as trust_state, h.明细数,
              起.canonical_value as from_value, 起.type as from_type, 起.trust_state as from_trust,
              起.attrs as from_attrs,
              终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust,
              终.attrs as to_attrs,
              (count(*) over())::int as 总数
-        from auth.case_relation r
-        join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
-        join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
-       where r.project_id = ${input.projectId}
-         and r.trust_state <> '已排除'
-         and 起.trust_state <> '已排除' and 终.trust_state <> '已排除'
-         and (r.from_id in (${节点表}) or r.to_id in (${节点表}))
-         ${类型条件.length === 0 ? sql`` : sql`and ${sql.join(类型条件, sql` and `)}`}
-       order by coalesce(r.times, 0) desc, coalesce(r.last_at, r.first_at, 0) desc, r.id collate "C" asc
+        from (${聚合边({ projectId: input.projectId, 节点们: input.节点们, 类型: input.类型, 强度: input.强度 })}) h
+        join auth.case_entity 起 on 起.project_id = ${input.projectId} and 起.id = h.from_id
+        join auth.case_entity 终 on 终.project_id = ${input.projectId} and 终.id = h.to_id
+       where h.达标
+       order by h.次数 desc, h.金额数 desc nulls last, h.明细数 desc,
+                h.from_id collate "C" asc, h.to_id collate "C" asc, h.type collate "C" asc
        limit ${input.剩余 + 1}
     `),
   )
   return {
     边们: 行们.map((行) => ({
-      id: String(行.id),
+      id: `rel|${行.from_id}|${行.to_id}|${行.type}`,
       from_id: String(行.from_id),
       to_id: String(行.to_id),
       type: String(行.type),
-      times: 行.times as number | null,
+      times: Number(行.次数),
       amount: (行.amount as string | null) ?? null,
       trust_state: String(行.trust_state),
+      明细数: Number(行.明细数),
       from_value: String(行.from_value),
       from_type: String(行.from_type),
       from_trust: String(行.from_trust),
@@ -165,6 +220,26 @@ async function 取一圈(
 }
 
 /**
+ * 范围里**全部**组数 vs **达标**组数（不受 `limit` 影响，永远回一行）。给 `强度缺口` 用。
+ * 为什么不像 spec §4.1.6 那样把两个窗口塞进取一圈：那条 SQL 带 `where h.达标`，
+ * 一旦一条都不达标，窗口值随行一起被筛掉，`全部组数` 就再也拿不到；
+ * 聚合函数不带 group by 时恒回一行，才稳。
+ */
+async function 计强度(
+  db: Queryable,
+  input: 聚合入参,
+): Promise<{ readonly 全部: number; readonly 达标: number }> {
+  if (input.节点们.length === 0) return { 全部: 0, 达标: 0 }
+  const 行 = rowsOf(
+    await db.execute(sql`
+      select (count(*))::int as 全部, (count(*) filter (where h.达标))::int as 达标
+        from (${聚合边(input)}) h
+    `),
+  )[0]
+  return { 全部: Number(行.全部), 达标: Number(行.达标) }
+}
+
+/**
  * 以 `id` 为中心取 1～2 跳的关系图。
  *
  * 中心实体不存在 / 已排除 / 不属于本项目时返回 `undefined`（让路由回 404，而不是
@@ -173,6 +248,7 @@ async function 取一圈(
 export async function 关系图(db: Queryable, input: 关系图入参): Promise<关系图结果 | undefined> {
   const 上限 = Math.min(Math.max(1, Math.trunc(input.上限 ?? 默认节点上限)), 默认节点上限)
   const 跳数 = input.跳数 ?? 1
+  const 强度 = input.强度 ?? "全部"
 
   const 中心行们 = rowsOf(
     await db.execute(sql`
@@ -223,6 +299,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         times: 边.times,
         amount: 边.amount,
         trust_state: 边.trust_state,
+        明细数: 边.明细数,
       })
       for (const [id, 值, 类型, 信任态, 属性] of [
         [边.from_id, 边.from_value, 边.from_type, 边.from_trust, 边.from_attrs] as const,
@@ -253,6 +330,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     节点们: [String(中心.id)],
     类型: input.类型,
     剩余: 可用,
+    强度,
   })
   const 一跳点 = 收一圈(第一圈.边们.slice(0, 可用))
   const 第一跳截断 = 第一圈.总数 > 可用
@@ -275,12 +353,26 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         节点们: 一跳点,
         类型: input.类型,
         剩余,
+        强度,
       })
       收一圈(第二圈.边们.slice(0, 剩余))
       // 不声称「画了多少」：`slice` 行数里可能混着第 1 跳已画过的回边（`收一圈` 会跳过）。
       // 只陈述「候选里还有多少没画」——M 是 pre-LIMIT 的候选总数减「剩余」名额。
       if (第二圈.总数 > 剩余) 缺口.push(`第 2 跳还有 ${第二圈.总数 - 剩余} 条候选关系没有画（节点上限 ${上限}）`)
     }
+  }
+
+  // 强度缺口只在**本次取数范围**内统计：跳数 1 只看中心；跳数 2 看中心＋已画出的全部一跳点。
+  // 不能拿每轮的数字相加——中心↔一跳点那批组会在两轮里各出现一次，相加会翻倍。
+  let 强度缺口: { 未显示: number; 总数: number } | undefined
+  if (强度 !== "全部") {
+    const 计数 = await 计强度(db, {
+      projectId: input.projectId,
+      节点们: [String(中心.id), ...一跳点],
+      类型: input.类型,
+      强度,
+    })
+    if (计数.全部 > 计数.达标) 强度缺口 = { 未显示: 计数.全部 - 计数.达标, 总数: 计数.全部 }
   }
 
   // 跳数按**实际画出来的最短距离**回填：第二圈里连到中心节点的边不该把中心改成 1 跳。
@@ -298,5 +390,5 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     }
   }
 
-  return { 节点: [...节点表.values()], 边: [...边表.values()], 缺口 }
+  return { 节点: [...节点表.values()], 边: [...边表.values()], 缺口, ...(强度缺口 === undefined ? {} : { 强度缺口 }) }
 }

@@ -157,6 +157,24 @@ beforeAll(async () => {
   await 建关系(库(), { id: "r-细心号", projectId: 细类项目, fromId: "e-细心", toId: "e-细号", type: "通话" })
   await 建关系(库(), { id: "r-细心卡", projectId: 细类项目, fromId: "e-细心", toId: "e-细卡", type: "转账" })
   await 建关系(库(), { id: "r-细心盖", projectId: 细类项目, fromId: "e-细心", toId: "e-细盖", type: "通话" })
+
+  // 聚合：同一对端点 3 条关系 ⇒ 1 条边；次数求和、金额求和、明细数 3。
+  await 建实体(库(), { id: "e-聚心", projectId: "p-聚合", value: "聚心", type: "人" })
+  await 建实体(库(), { id: "e-聚甲", projectId: "p-聚合", value: "聚甲", type: "账户" })
+  await 建带次数关系(库(), { id: "r-聚1", projectId: "p-聚合", fromId: "e-聚心", toId: "e-聚甲", type: "转账", times: 2, amount: 1000 })
+  await 建带次数关系(库(), { id: "r-聚2", projectId: "p-聚合", fromId: "e-聚心", toId: "e-聚甲", type: "转账", times: 1, amount: 2000 })
+  await 建带次数关系(库(), { id: "r-聚3", projectId: "p-聚合", fromId: "e-聚心", toId: "e-聚甲", type: "转账", times: 1, amount: 3000 })
+  // 混合信任态：同一组里两种状态 ⇒ "混合"。
+  await 建实体(库(), { id: "e-聚乙", projectId: "p-聚合", value: "聚乙", type: "人" })
+  await 建实体(库(), { id: "e-聚丙", projectId: "p-聚合", value: "聚丙", type: "账户" })
+  await 建带次数关系(库(), { id: "r-聚4", projectId: "p-聚合", fromId: "e-聚乙", toId: "e-聚丙", type: "通话", times: 1, trustState: "自动抽取" })
+  await 建带次数关系(库(), { id: "r-聚5", projectId: "p-聚合", fromId: "e-聚乙", toId: "e-聚丙", type: "通话", times: 1, trustState: "已确认" })
+  // 强度：一笔 20000 的转账（次数 1）算「强」；一次通话（次数 1、无金额）哪个档都不算。
+  await 建实体(库(), { id: "e-强心", projectId: "p-强度", value: "强心", type: "人" })
+  await 建实体(库(), { id: "e-弱", projectId: "p-强度", value: "弱", type: "号码" })
+  await 建实体(库(), { id: "e-强", projectId: "p-强度", value: "强", type: "账户" })
+  await 建关系(库(), { id: "r-弱", projectId: "p-强度", fromId: "e-强心", toId: "e-弱", type: "通话" })
+  await 建带次数关系(库(), { id: "r-强", projectId: "p-强度", fromId: "e-强心", toId: "e-强", type: "转账", times: 1, amount: 20000 })
 })
 
 afterAll(async () => {
@@ -167,7 +185,9 @@ describe("关系图", () => {
   test("1 跳：只画中心与直接邻居；已排除端点不画", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张" }))!
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-张", "e-李", "e-账"].sort())
-    expect(图.边.map((边) => 边.id).sort()).toEqual(["r-张李", "r-张账", "r-账张"].sort())
+    expect(图.边.map((边) => 边.id).sort()).toEqual(
+      ["rel|e-张|e-李|通话", "rel|e-张|e-账|转账", "rel|e-账|e-张|通话"].sort(),
+    )
     expect(图.节点.find((点) => 点.id === "e-张")!.中心).toBe(true)
     // 中心只有一个（别的前缀同名 / 重复加点都会在这里红）。
     expect(图.节点.filter((点) => 点.中心)).toHaveLength(1)
@@ -178,14 +198,16 @@ describe("关系图", () => {
 
   test("§9.1 四类都不画：已排除端点 / 已排除关系 / 悬空端点 / 跨项目端点", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张" }))!
-    expect(图.边.some((边) => ["r-排除", "r-悬空", "r-张排", "r-排张", "r-张别人"].includes(边.id))).toBe(false)
+    const 张李 = 图.边.find((边) => 边.from === "e-张" && 边.to === "e-李" && 边.type === "通话")!
+    expect(张李.times).toBe(1) // r-排除 若漏了，这里会是 2
+    expect(图.边).toHaveLength(3)
     expect(图.节点.some((点) => ["e-排", "e-不存在", "e-别人"].includes(点.id))).toBe(false)
   })
 
   test("2 跳：跳数按最短距离回填；关联数只算图里画出来的边", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 跳数: 2 }))!
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-账", "e-号1", "e-号2", "e-张", "e-李"].sort())
-    expect(图.边.some((边) => 边.id === "r-号1外")).toBe(false)
+    expect(图.边.some((边) => 边.from === "e-号1" && 边.to === "e-外")).toBe(false)
     expect(图.缺口).toEqual([])
     // 跳数：中心 0；e-李 / e-账 是第 1 跳；e-号1 / e-号2 是第 2 跳。
     expect(图.节点.find((点) => 点.id === "e-张")!.跳数).toBe(0)
@@ -204,7 +226,7 @@ describe("关系图", () => {
 
   test("类型筛选只留该类型的边与两端", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 跳数: 2, 类型: ["转账"] }))!
-    expect(图.边.map((边) => 边.id)).toEqual(["r-张账"])
+    expect(图.边.map((边) => 边.id)).toEqual(["rel|e-张|e-账|转账"])
     expect(图.节点.map((点) => 点.id).sort()).toEqual(["e-张", "e-账"].sort())
   })
 
@@ -214,7 +236,7 @@ describe("关系图", () => {
     // 第二个名额是 e-账（r-张账 次数 1 排在前面）；装不下端点的边**不能画**，
     // 否则图里会留一条悬空边（§9.1）。
     expect(图.节点.map((点) => 点.id)).toEqual(["e-张", "e-账"])
-    expect(图.边.map((边) => 边.id)).toEqual(["r-张账"])
+    expect(图.边.map((边) => 边.id)).toEqual(["rel|e-张|e-账|转账"])
     // 图里只画了 1 条边 ⇒ 关联数只能按图算（库内 e-张 的度数还更大）。
     expect(图.节点.find((点) => 点.id === "e-张")!.关联数).toBe(1)
     // 只有一条缺口（不许「截断」与「没展开第 2 跳」两条近似重复的）。
@@ -262,20 +284,23 @@ describe("关系图", () => {
 
   test("边带上次数与金额（金额是 numeric 文本，不带千分位）", async () => {
     const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张" }))!
-    const 转账 = 图.边.find((边) => 边.id === "r-张账")!
+    const 转账 = 图.边.find((边) => 边.from === "e-张" && 边.to === "e-账" && 边.type === "转账")!
     expect(转账.amount).toBe("100.00")
     expect(转账.times).toBe(1)
+    expect(转账.明细数).toBe(1)
   })
 
   test("截断时按次数降序抢名额（删掉 times 排序会画错边）", async () => {
     const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-心", 上限: 2 }))!
     expect(图.节点.map((点) => 点.id)).toEqual(["e-心", "e-乙"])
-    expect(图.边.map((边) => 边.id)).toEqual(["r-z"])
+    expect(图.边.map((边) => 边.id)).toEqual(["rel|e-心|e-乙|通话"])
   })
 
   test("自环的关联数只计一次", async () => {
     const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-心" }))!
-    expect(图.边.map((边) => 边.id).sort()).toEqual(["r-a", "r-z", "r-自"].sort())
+    expect(图.边.map((边) => 边.id).sort()).toEqual(
+      ["rel|e-心|e-甲|通话", "rel|e-心|e-乙|通话", "rel|e-心|e-心|通话"].sort(),
+    )
     expect(图.节点.find((点) => 点.id === "e-心")!.关联数).toBe(3)
     expect(图.节点.find((点) => 点.id === "e-甲")!.关联数).toBe(1)
     expect(图.节点.find((点) => 点.id === "e-乙")!.关联数).toBe(1)
@@ -293,5 +318,35 @@ describe("关系图", () => {
     // 同一行 attrs 写着「固定电话」，但 11 位手机号形状判得出 ⇒ 以形状为准
     expect(取("e-细盖").subtype).toBe("手机号")
     expect(取("e-细心").subtype).toBeUndefined()
+  })
+
+  test("边先聚合：同一对端点 3 条关系合成 1 条，次数/金额求和、明细数 3", async () => {
+    const 图 = (await 关系图(库(), { projectId: "p-聚合", id: "e-聚心" }))!
+    expect(图.边).toHaveLength(1)
+    expect(图.边[0]).toMatchObject({
+      id: "rel|e-聚心|e-聚甲|转账",
+      from: "e-聚心",
+      to: "e-聚甲",
+      type: "转账",
+      times: 4,
+      amount: "6000.00",
+      明细数: 3,
+    })
+  })
+
+  test("聚合后信任态不一致 ⇒ 混合", async () => {
+    const 图 = (await 关系图(库(), { projectId: "p-聚合", id: "e-聚乙" }))!
+    expect(图.边).toHaveLength(1)
+    expect(图.边[0]).toMatchObject({ times: 2, trust_state: "混合", 明细数: 2 })
+  })
+
+  test("强度切片：强档只留金额达标的转账，被筛掉的条数写进强度缺口", async () => {
+    const 强图 = (await 关系图(库(), { projectId: "p-强度", id: "e-强心", 强度: "强" }))!
+    expect(强图.边.map((边) => 边.id)).toEqual(["rel|e-强心|e-强|转账"])
+    expect(强图.强度缺口).toEqual({ 未显示: 1, 总数: 2 })
+
+    const 全图 = (await 关系图(库(), { projectId: "p-强度", id: "e-强心", 强度: "全部" }))!
+    expect(全图.边).toHaveLength(2)
+    expect(全图.强度缺口).toBeUndefined()
   })
 })
