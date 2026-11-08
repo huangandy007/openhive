@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 实体清单, 实体档案, 清单上限, 引用上限, 类型计数 } from "../../src/server/openhive/case-entity-list"
+import { 实体清单, 实体档案, 分组计数, 清单上限, 引用上限 } from "../../src/server/openhive/case-entity-list"
 import { 建事件, 建关系, 建关系批, 建实体, 建引用, 建引用批 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -16,6 +16,8 @@ const 截断项目 = "p-截断"
 const 细类项目 = "p-实体细类"
 const 引用项目 = "p-实体出处"
 const 分段项目 = "p-实体分段"
+const 分组项目 = "p-实体分组"
+const 待确认项目 = "p-实体待确认"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -162,6 +164,31 @@ beforeAll(async () => {
     数量: 101,
     前缀: "r-溢人",
   })
+
+  // 分组：关系 / 事件 / 人确认三个核心条件各自单独成立，外加一个都不满足的「提及」。
+  // 已排除的关系与事件不能参与分组——否则 e-都没有 会被算成核心。
+  await 建实体(库(), { id: "e-只关系", projectId: 分组项目, value: "A关系", type: "人", createdAt: 100 })
+  await 建实体(库(), { id: "e-关系对方", projectId: 分组项目, value: "B对方", type: "账户", createdAt: 200 })
+  await 建关系(库(), { id: "r-只关系", projectId: 分组项目, fromId: "e-只关系", toId: "e-关系对方", type: "转账" })
+  await 建实体(库(), { id: "e-只事件", projectId: 分组项目, value: "C事件", type: "人", createdAt: 300 })
+  await 建事件(库(), { id: "ev-只事件", projectId: 分组项目, participants: ["C事件"] })
+  await 建实体(库(), { id: "e-只确认", projectId: 分组项目, value: "D确认", type: "人", trustState: "已确认", createdAt: 400 })
+  await 建实体(库(), { id: "e-都没有", projectId: 分组项目, value: "E空", type: "人", createdAt: 500 })
+  await 建实体(库(), { id: "e-分组排", projectId: 分组项目, value: "F排除", type: "人", trustState: "已排除" })
+  await 建关系(库(), {
+    id: "r-分组排",
+    projectId: 分组项目,
+    fromId: "e-都没有",
+    toId: "e-分组排",
+    type: "通话",
+    trustState: "已排除",
+  })
+  await 建事件(库(), {
+    id: "ev-分组排",
+    projectId: 分组项目,
+    participants: ["E空"],
+    trustState: "已排除",
+  })
 })
 
 afterAll(async () => {
@@ -169,26 +196,60 @@ afterAll(async () => {
 })
 
 describe("实体清单与档案", () => {
-  test("类型计数：排除已排除、排除别的项目、按数量降序", async () => {
-    expect(await 类型计数(库(), 项目)).toEqual([
-      { type: "人", count: 2 },
-      { type: "号码", count: 2 },
-      { type: "物品", count: 2 },
-      { type: "账户", count: 1 },
+  test("分组计数：三个核心条件各自成立；已排除实体不入统计；其余是提及", async () => {
+    expect(await 分组计数(库(), 分组项目)).toEqual({ 核心: 4, 提及: 1 })
+    // 别的项目不串；已排除实体不计。
+    expect(await 分组计数(库(), 项目)).toEqual({ 核心: 3, 提及: 4 })
+  })
+
+  test("清单默认按权重（关系数 + 事件参与数）降序；同权重按已确认优先、再按名称", async () => {
+    const { 行们, 总数 } = await 实体清单(库(), { projectId: 分组项目, sort: "涉案" })
+    expect(行们.map((行) => [行.id, 行.关联数, 行.事件参与数, 行.权重, 行.分组])).toEqual([
+      ["e-只关系", 1, 0, 1, "核心"],
+      ["e-关系对方", 1, 0, 1, "核心"],
+      ["e-只事件", 0, 1, 1, "核心"],
+      ["e-只确认", 0, 0, 0, "核心"],
+      ["e-都没有", 0, 0, 0, "提及"],
+    ])
+    expect(总数).toBe(5)
+  })
+
+  test("清单 sort=名称 / 时间", async () => {
+    expect((await 实体清单(库(), { projectId: 分组项目, sort: "名称" })).行们.map((行) => 行.id)).toEqual([
+      "e-只关系",
+      "e-关系对方",
+      "e-只事件",
+      "e-只确认",
+      "e-都没有",
+    ])
+    expect((await 实体清单(库(), { projectId: 分组项目, sort: "时间" })).行们.map((行) => 行.id)).toEqual([
+      "e-都没有",
+      "e-只确认",
+      "e-只事件",
+      "e-关系对方",
+      "e-只关系",
     ])
   })
 
-  test("清单默认按涉案（有效关系数）降序；已排除关系不计", async () => {
-    const { 行们 } = await 实体清单(库(), { projectId: 项目, sort: "涉案" })
-    expect(行们.map((行) => [行.id, 行.关联数])).toEqual([
-      ["e-张", 2],
-      ["e-账", 1],
-      ["e-李", 1],
-      ["e-百分", 0],
-      ["e-千", 0],
-      ["e-号1", 0],
-      ["e-号2", 0],
-    ])
+  test("分组过滤：核心 / 提及；省略分组 = 跨组", async () => {
+    const 核心 = await 实体清单(库(), { projectId: 分组项目, 分组: "核心" })
+    expect(核心.行们.map((行) => 行.id)).toEqual(["e-只关系", "e-关系对方", "e-只事件", "e-只确认"])
+    expect(核心.总数).toBe(4)
+
+    const 提及 = await 实体清单(库(), { projectId: 分组项目, 分组: "提及" })
+    expect(提及.行们.map((行) => [行.id, 行.分组])).toEqual([["e-都没有", "提及"]])
+    expect(提及.总数).toBe(1)
+  })
+
+  test("清单带事件参与数：事件被排除就不算", async () => {
+    const { 行们 } = await 实体清单(库(), { projectId: 项目 })
+    const 数 = Object.fromEntries(行们.map((行) => [行.id, [行.关联数, 行.事件参与数, 行.权重]]))
+    expect(数["e-张"]).toEqual([2, 2, 4])
+    expect(数["e-李"]).toEqual([1, 1, 2])
+    expect(数["e-账"]).toEqual([1, 0, 1])
+    expect(数["e-号1"]).toEqual([0, 0, 0])
+    // ev-排除 是已排除事件，不进 e-张 的事件参与数（否则这里会是 3）。
+    expect(数["e-张"]![1]).toBe(2)
   })
 
   test("清单与档案带细类：形状优先、attrs 补空；判不出就是 undefined", async () => {
@@ -228,12 +289,11 @@ describe("实体清单与档案", () => {
     expect(卡档.关系.find((行) => 行.id === "r-细卡人")!.对方细类).toBeNull()
   })
 
-  test("搜索跨类型命中别名；给了类型就只查该类型", async () => {
-    const 跨类 = await 实体清单(库(), { projectId: 项目, q: "四哥" })
-    expect(跨类.行们.map((行) => 行.id)).toEqual(["e-李"])
-    const 限类型 = await 实体清单(库(), { projectId: 项目, type: "人", q: "四哥" })
-    expect(限类型.行们.map((行) => 行.id)).toEqual(["e-李"])
-    expect((await 实体清单(库(), { projectId: 项目, type: "号码", q: "四哥" })).行们).toEqual([])
+  test("搜索跨组命中别名；结果带自己的分组", async () => {
+    const 跨组 = await 实体清单(库(), { projectId: 项目, q: "四哥" })
+    expect(跨组.行们.map((行) => [行.id, 行.分组])).toEqual([["e-李", "核心"]])
+    const 提及 = await 实体清单(库(), { projectId: 分组项目, q: "E空" })
+    expect(提及.行们.map((行) => [行.id, 行.分组])).toEqual([["e-都没有", "提及"]])
   })
 
   test("清单不返回已排除实体；includeExcluded 只在档案里管", async () => {
@@ -248,16 +308,18 @@ describe("实体清单与档案", () => {
     expect((await 实体清单(库(), { projectId: 项目, q: "100_" })).行们).toEqual([])
   })
 
-  test("清单截断时缺口说清上限", async () => {
-    const { 缺口 } = await 实体清单(库(), { projectId: 项目, limit: 2 })
+  test("清单截断时缺口说清上限与全量", async () => {
+    const { 缺口, 总数 } = await 实体清单(库(), { projectId: 项目, limit: 2 })
+    expect(总数).toBe(7)
     expect(缺口.join()).toContain("前 2 条")
+    expect(缺口.join()).toContain("共 7 条")
     expect(清单上限).toBe(200)
   })
 
   test("清单缺口：恰好满页不算截断", async () => {
     // 号码恰 2 条：limit 2 是「正好装下」，不是「还有更多」。
-    expect((await 实体清单(库(), { projectId: 项目, type: "号码", limit: 2 })).缺口).toEqual([])
-    expect((await 实体清单(库(), { projectId: 项目, type: "号码", limit: 1 })).缺口.join()).toContain("前 1 条")
+    expect((await 实体清单(库(), { projectId: 项目, q: "138", limit: 2 })).缺口).toEqual([])
+    expect((await 实体清单(库(), { projectId: 项目, q: "138", limit: 1 })).缺口.join()).toContain("前 1 条")
   })
 
   test("档案：关系带方向/对方/依据；已排除关系默认不出现；事件按时间倒序；一句话是整句", async () => {
