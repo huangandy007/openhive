@@ -623,9 +623,10 @@ export function Graph(props: GraphProps): JSX.Element {
   /**
    * 两档模式是**派生**状态，不新增 `模式` 信号：高亮由三项算出，用户改任一项就自然灭掉。
    * 三项必须 `batch`：分三次 set 会让取数 effect 跑三回。
+   * 分簇只在 2 跳生效、控件也只在 2 跳渲染，故不进聚焦判据（终审 S1）。
    */
   const 是全貌 = () => 跳数() === 2 && 强度() === "重点" && 分簇()
-  const 是聚焦 = () => 跳数() === 1 && 强度() === "全部" && !分簇()
+  const 是聚焦 = () => 跳数() === 1 && 强度() === "全部"
   const 设全貌 = () =>
     batch(() => {
       set跳数(2)
@@ -772,7 +773,7 @@ export function Graph(props: GraphProps): JSX.Element {
         y: Math.max(8, Math.min(尺寸().高 - 52, 行.y - 36)),
         行1: `${截断(行.value, 14)} · ${行.type}`,
         // 细类放第二行：第一行已经贴着提示框宽度，再拼「· 手机号」会溢出框外。
-        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 图上 ${行.关联数} · 全部 ${行.度数}${是枢纽(行) ? " · 枢纽" : ""}`,
+        行2: `${行.subtype === undefined ? "" : `${行.subtype} · `}${行.trust_state} · 图上 ${行.关联数} · 库内 ${行.度数}${是枢纽(行) ? " · 枢纽" : ""}`,
       }
     }
     const 边id = 悬停边()
@@ -1364,7 +1365,7 @@ export function Graph(props: GraphProps): JSX.Element {
                       onMouseEnter={() => set悬停点(行().id)}
                       onMouseLeave={() => set悬停点(undefined)}
                     >
-                      <title>{`${行().value}${是枢纽(行()) ? `（枢纽 · 全部 ${行().度数} 条）` : ""}`}</title>
+                      <title>{`${行().value}${是枢纽(行()) ? `（枢纽 · 库内 ${行().度数} 条）` : ""}`}</title>
                       {/* 枢纽外环画在焦点环之前、半径比多选环大：选中/多选时两环同心不相交，内外一眼分得开。 */}
                       <Show when={是枢纽(行())}>
                         <circle
@@ -1586,7 +1587,7 @@ export function Graph(props: GraphProps): JSX.Element {
                   <span class="text-v2-text-text-base">{点().关联数} 条</span>
                 </div>
                 <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
-                  <span class="text-[11px] text-v2-text-text-muted">全部</span>
+                  <span class="text-[11px] text-v2-text-text-muted">库内</span>
                   <span class="text-v2-text-text-base">{点().度数} 条</span>
                 </div>
                 <Show when={是枢纽(点())}>

@@ -330,7 +330,7 @@ describe("关系图 · 悬停", () => {
     // 断整格（`#006-22`）：第一行是「截断值 · 类型」，值本身与类型都不能被删掉。
     expect(提示.querySelectorAll("text")[0]?.textContent).toBe("13800000001 · 号码")
     // 第二行同理：两套条数口径必须同时出现。
-    expect(提示.querySelectorAll("text")[1]?.textContent).toBe("手机号 · 已确认 · 图上 3 · 全部 3")
+    expect(提示.querySelectorAll("text")[1]?.textContent).toBe("手机号 · 已确认 · 图上 3 · 库内 3")
 
     点元素(host, "e-号").dispatchEvent(new MouseEvent("mouseleave"))
     expect(点元素(host, "e-李").getAttribute("opacity")).toBeNull()
@@ -367,7 +367,7 @@ describe("关系图 · 检视面板", () => {
     const 条数行 = (名: string) =>
       [...面板.querySelectorAll("div")].find((格) => 格.firstElementChild?.textContent === 名)
     expect(条数行("图上")?.lastElementChild?.textContent).toBe("1 条")
-    expect(条数行("全部")?.lastElementChild?.textContent).toBe("1 条")
+    expect(条数行("库内")?.lastElementChild?.textContent).toBe("1 条")
     expect(收到).toHaveLength(0)
 
     host.querySelector<HTMLElement>("[data-slot='graph-panel-open']")!.click()
@@ -701,7 +701,7 @@ describe("关系图 · 工具栏", () => {
     expect(档("聚焦").getAttribute("aria-pressed")).toBe("false")
   })
 
-  test("分簇钮只翻自己的派生位：不触发取数；关掉后全貌灭，near-miss 不算聚焦", async () => {
+  test("分簇钮只翻自己的派生位：不触发取数；1 跳隐藏的分簇位不挡住聚焦", async () => {
     const 调用: Array<{ 跳数: 1 | 2 | undefined; 强度: 关系图强度 | undefined }> = []
     const api = 假api({
       graph: async (_项目, _id, 跳数, _类型, 强度) => {
@@ -726,12 +726,13 @@ describe("关系图 · 工具栏", () => {
     expect(簇钮()!.getAttribute("aria-pressed")).toBe("true")
     expect(档("全貌").getAttribute("aria-pressed")).toBe("true")
 
-    // near-miss：1 跳 / 全部 / 分簇仍开着 ⇒ 不是聚焦（缺 `!分簇` 这一项）。
+    // 1 跳 / 全部 / 分簇仍开着 ⇒ 仍是聚焦：`分簇` 只在 2 跳生效，控件也只在 2 跳渲染，
+    // 不能让这个隐藏位制造「两档都不亮、又没有可见控件可改」的死状态（终审 S1）。
     host.querySelector<HTMLElement>("[data-slot='graph-strength'][data-strength='全部']")!.click()
     await 等(() => 调用.length === 前 + 1)
     host.querySelector<HTMLElement>("[data-slot='graph-hop'][data-hop='1']")!.click()
     await 等(() => 调用.length === 前 + 2)
-    expect(档("聚焦").getAttribute("aria-pressed")).toBe("false")
+    expect(档("聚焦").getAttribute("aria-pressed")).toBe("true")
     expect(档("全貌").getAttribute("aria-pressed")).toBe("false")
   })
 
@@ -1387,13 +1388,13 @@ describe("关系图 · 枢纽", () => {
     expect(环数("e-心")).toBe(1) // 中心自己度数 60，也是枢纽
     expect(环数("e-界")).toBe(1) // 边界：度数 10 恰好算枢纽
     expect(环数("e-九")).toBe(0) // 9 不算
-    expect(点元素(host, "e-枢").querySelector("title")!.textContent).toBe("枢纽账户（枢纽 · 全部 12 条）")
+    expect(点元素(host, "e-枢").querySelector("title")!.textContent).toBe("枢纽账户（枢纽 · 库内 12 条）")
     expect(点元素(host, "e-常").querySelector("title")!.textContent).toBe("普通人")
 
     // 悬停浮层与面板同一口径：图上/全部，枢纽再追加「· 枢纽」。
     点元素(host, "e-枢").dispatchEvent(new MouseEvent("mouseenter"))
     expect(host.querySelector("[data-slot='graph-tip']")!.querySelectorAll("text")[1]?.textContent).toBe(
-      "自动抽取 · 图上 1 · 全部 12 · 枢纽",
+      "自动抽取 · 图上 1 · 库内 12 · 枢纽",
     )
     点元素(host, "e-枢").dispatchEvent(new MouseEvent("mouseleave"))
 
@@ -1401,7 +1402,7 @@ describe("关系图 · 枢纽", () => {
     const 面板 = host.querySelector("[data-slot='graph-panel']")!
     expect(面板.textContent).toContain("图上")
     expect(面板.textContent).toContain("1 条")
-    expect(面板.textContent).toContain("全部")
+    expect(面板.textContent).toContain("库内")
     expect(面板.textContent).toContain("12 条")
     expect(面板.querySelector("[data-slot='graph-panel-hub']") !== null).toBe(true)
 
