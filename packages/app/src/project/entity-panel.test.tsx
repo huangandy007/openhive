@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { createSignal, type JSX } from "solid-js"
+import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { EntityPanel } from "./entity-panel"
-import type { EntityApi, 实体清单项, 结果 } from "./entity-api"
+import type { EntityApi, 实体清单项, 实体分组 } from "./entity-api"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
@@ -25,8 +25,8 @@ function 内存存储() {
 
 function 假api(over: Partial<EntityApi> = {}): EntityApi {
   return {
-    counts: async () => ({ kind: "ok", value: [] }),
-    list: async () => ({ kind: "ok", value: { 行们: [], 缺口: [] } }),
+    groups: async () => ({ kind: "ok", value: { 核心: 0, 提及: 0 } }),
+    list: async () => ({ kind: "ok", value: { 行们: [], 总数: 0, 缺口: [] } }),
     ...over,
   }
 }
@@ -37,15 +37,25 @@ const 实体行 = (over: {
   类型?: string
   细类?: string
   关联数?: number
-}) => ({
-  id: over.id,
-  type: over.类型 ?? "人",
-  subtype: over.细类,
-  canonical_value: over.值,
-  trust_state: "自动抽取",
-  关联数: over.关联数 ?? 0,
-  created_at: 1_700_000_000,
-})
+  事件参与数?: number
+  信任态?: string
+  分组?: 实体分组
+}): 实体清单项 => {
+  const 关联数 = over.关联数 ?? 0
+  const 事件参与数 = over.事件参与数 ?? 0
+  return {
+    id: over.id,
+    type: over.类型 ?? "人",
+    subtype: over.细类,
+    canonical_value: over.值,
+    trust_state: over.信任态 ?? "自动抽取",
+    关联数,
+    事件参与数,
+    权重: 关联数 + 事件参与数,
+    分组: over.分组 ?? "核心",
+    created_at: 1_700_000_000,
+  }
+}
 
 /** 等一个条件成立（最多 1 秒）。happy-dom 没有 `waitFor`，条件轮询比固定 sleep 稳。 */
 async function 等(_host: HTMLElement, 条件: () => boolean) {
@@ -56,13 +66,13 @@ async function 等(_host: HTMLElement, 条件: () => boolean) {
   throw new Error("等超时：条件始终没成立")
 }
 
-describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
+describe("EntityPanel 左栏实体视图（实体显示与治理）", () => {
   test("没有当前项目 ⇒ 说清「还没有选中项目」，一次请求都不发", () => {
     let 发过 = 0
     const api = 假api({
-      counts: async () => {
+      groups: async () => {
         发过 += 1
-        return { kind: "ok", value: [] }
+        return { kind: "ok", value: { 核心: 0, 提及: 0 } }
       },
     })
     const host = mount(() => <EntityPanel projectId={() => undefined} api={api} onOpenEntity={() => {}} />)
@@ -70,86 +80,156 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     expect(发过).toBe(0)
   })
 
-  test("类型导航：数量为 0 的类型不画", async () => {
+  test("默认只请求核心组 limit 20；行尾写「N 条关系 · M 起事件」", async () => {
+    const 调用: Array<{ group?: 实体分组; q?: string; limit?: number }> = []
     const api = 假api({
-      counts: async () => ({ kind: "ok", value: [{ type: "人", count: 2 }, { type: "号码", count: 0 }] }),
-    })
-    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-type']").length === 1)
-    expect(host.querySelector<HTMLElement>("[data-slot='entity-type']")!.textContent).toContain("人")
-    expect(host.textContent).not.toContain("号码")
-  })
-
-  test("点类型进第二级；返回回到类型导航", async () => {
-    const 调用: string[] = []
-    const api = 假api({
-      counts: async () => ({ kind: "ok", value: [{ type: "人", count: 2 }] }),
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 2 } }),
       list: async (input) => {
-        调用.push(`${input.type ?? "*"}|${input.q ?? ""}|${input.sort ?? "涉案"}`)
-        return { kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }
+        调用.push({ group: input.group, q: input.q, limit: input.limit })
+        return {
+          kind: "ok",
+          value: {
+            行们: [实体行({ id: "e-张", 值: "张三", 关联数: 3, 事件参与数: 2 })],
+            总数: 1,
+            缺口: [],
+          },
+        }
       },
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-type']").length === 1)
-    host.querySelector<HTMLElement>("[data-slot='entity-type']")!.click()
+
     await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
-    expect(调用[0]).toBe("人||涉案")
-    host.querySelector<HTMLElement>("[data-slot='entity-back']")!.click()
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 0)
-    expect(host.querySelectorAll("[data-slot='entity-type']").length).toBe(1)
+    expect(调用[0]).toEqual({ group: "核心", q: undefined, limit: 20 })
+    expect(host.querySelector("[data-slot='entity-group'][data-group='核心']")!.textContent).toContain("1")
+    expect(host.querySelector("[data-slot='entity-group'][data-group='提及']")!.textContent).toContain("2")
+    expect(host.querySelector("[data-slot='entity-row-connections']")!.textContent).toBe("3 条关系 · 2 起事件")
   })
 
-  test("清单行显示细类（号码 · 手机号里的「手机号」）；没有细类的行不留空壳", async () => {
+  test("提及默认折叠、不请求；点开才请求提及组，行尾写「无连接」", async () => {
+    const 调用: Array<{ group?: 实体分组 }> = []
     const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 1 } }),
+      list: async (input) => {
+        调用.push({ group: input.group })
+        if (input.group === "提及")
+          return {
+            kind: "ok",
+            value: { 行们: [实体行({ id: "e-空", 值: "一片空地", 分组: "提及" })], 总数: 1, 缺口: [] },
+          }
+        return {
+          kind: "ok",
+          value: { 行们: [实体行({ id: "e-张", 值: "张三", 关联数: 1 })], 总数: 1, 缺口: [] },
+        }
+      },
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+
+    expect(调用.map((项) => 项.group)).toEqual(["核心"])
+    host.querySelector<HTMLElement>("[data-slot='entity-group'][data-group='提及']")!.click()
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
+
+    expect(调用.map((项) => 项.group)).toEqual(["核心", "提及"])
+    const 提及行 = host.querySelector("[data-slot='entity-row'][data-entity-id='e-空']")!
+    expect(提及行.querySelector("[data-slot='entity-row-connections']")!.textContent).toBe("无连接")
+
+    host.querySelector<HTMLElement>("[data-slot='entity-group'][data-group='提及']")!.click()
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+  })
+
+  test("核心组里 0 连接的实体画信任态徽章，说明它为什么在核心组", async () => {
+    const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 0 } }),
       list: async () => ({
         kind: "ok",
         value: {
-          行们: [
-            实体行({ id: "e-号", 值: "13800000001", 类型: "号码", 细类: "手机号" }),
-            实体行({ id: "e-证", 值: "110101199001011234", 类型: "号码", 细类: "身份证" }),
-            实体行({ id: "e-人", 值: "张三" }),
-          ],
+          行们: [实体行({ id: "e-确", 值: "刘子加", 信任态: "已确认" })],
+          总数: 1,
           缺口: [],
         },
       }),
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "138"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 3)
-    // 按 id 对齐断言，不依赖行序（行序由「涉案」排序决定，与本用例无关）
-    const 细类们 = Object.fromEntries(
-      [...host.querySelectorAll<HTMLElement>("[data-slot='entity-row']")].map((行) => [
-        行.dataset.entityId,
-        行.querySelector("[data-slot='entity-row-subtype']")?.textContent,
-      ]),
-    )
-    expect(细类们).toEqual({ "e-号": "手机号", "e-证": "身份证", "e-人": undefined })
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+    expect(host.querySelector("[data-slot='entity-row-trust']")!.textContent).toBe("已确认")
+    expect(host.querySelector("[data-slot='entity-row-connections']")).toBeNull()
   })
 
-  test("全局搜索跨类型：输入姓名时 type 参数留空", async () => {
-    const 调用: Array<{ type?: string; q?: string }> = []
+  test("搜索跨组：不写 group，标题报总数，提及结果带「提及」小标", async () => {
+    const 调用: Array<{ group?: 实体分组; q?: string; limit?: number }> = []
     const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 1 } }),
       list: async (input) => {
-        调用.push({ type: input.type, q: input.q })
-        return { kind: "ok", value: { 行们: [实体行({ id: "e-李", 值: "李四" })], 缺口: [] } }
+        调用.push({ group: input.group, q: input.q, limit: input.limit })
+        return {
+          kind: "ok",
+          value: {
+            行们: [
+              实体行({ id: "e-张", 值: "张三", 关联数: 1 }),
+              实体行({ id: "e-空", 值: "一张纸", 分组: "提及" }),
+            ],
+            总数: 2,
+            缺口: [],
+          },
+        }
       },
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
     const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "四哥"
+    框.value = "张"
     框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
-    expect(调用.at(-1)).toEqual({ type: undefined, q: "四哥" })
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
+
+    const 最后 = 调用.at(-1)!
+    expect(最后.group).toBeUndefined()
+    expect(最后.q).toBe("张")
+    expect(最后.limit).toBe(20)
+    expect(host.querySelector("[data-slot='entity-search-total']")!.textContent).toBe("搜索结果 2 条")
+    expect(
+      host.querySelector("[data-slot='entity-row'][data-entity-id='e-空'] [data-slot='entity-row-group']")!
+        .textContent,
+    ).toBe("提及")
+    expect(
+      host.querySelector("[data-slot='entity-row'][data-entity-id='e-张'] [data-slot='entity-row-group']"),
+    ).toBeNull()
+  })
+
+  test("核心组超过 20 条：点「展开全部」按 limit 200 重取", async () => {
+    const 调用: Array<{ group?: 实体分组; limit?: number }> = []
+    const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 47, 提及: 0 } }),
+      list: async (input) => {
+        调用.push({ group: input.group, limit: input.limit })
+        const 条数 = input.limit === 200 ? 47 : 20
+        return {
+          kind: "ok",
+          value: {
+            行们: Array.from({ length: 条数 }, (_, i) =>
+              实体行({ id: `e-${i}`, 值: `实体${i}`, 关联数: 1 }),
+            ),
+            总数: 47,
+            缺口: [],
+          },
+        }
+      },
+    })
+    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 20)
+    const 按钮 = host.querySelector<HTMLElement>("[data-slot='entity-group-expand']")!
+    expect(按钮.textContent).toContain("47")
+    按钮.click()
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 47)
+    expect(调用.at(-1)!.limit).toBe(200)
   })
 
   test("星标置顶：点一下该行排到第一，并写进本机存储", async () => {
     const api = 假api({
+      groups: async () => ({ kind: "ok", value: { 核心: 2, 提及: 0 } }),
       list: async () => ({
         kind: "ok",
         value: {
           行们: [实体行({ id: "e-甲", 值: "甲", 关联数: 9 }), 实体行({ id: "e-乙", 值: "乙", 关联数: 1 })],
+          总数: 2,
           缺口: [],
         },
       }),
@@ -159,9 +239,6 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
     const host = mount(() => (
       <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={(行) => 打开.push(行.id)} storage={存} />
     ))
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "甲"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
     const 第二行 = host.querySelectorAll<HTMLElement>("[data-slot='entity-row']")[1]
     第二行.querySelector<HTMLElement>("[data-slot='entity-star']")!.click()
@@ -174,24 +251,22 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
   test("取数失败如实说，不假装「没有实体」", async () => {
     const api = 假api({ list: async () => ({ kind: "error", message: "服务端回了 500" }) })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "张"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(host, () => host.textContent.includes("服务端回了 500"))
-    expect(host.textContent).not.toContain("没有匹配的实体")
+    expect(host.textContent).not.toContain("没有核心对象")
   })
 
   test("点一行把整行交给调用方（打开中栏由上层接）", async () => {
     const 收到: string[] = []
     const api = 假api({
-      list: async () => ({ kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }),
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 0 } }),
+      list: async () => ({
+        kind: "ok",
+        value: { 行们: [实体行({ id: "e-张", 值: "张三", 关联数: 1 })], 总数: 1, 缺口: [] },
+      }),
     })
     const host = mount(() => (
       <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={(行) => 收到.push(行.id)} />
     ))
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "张"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
     host.querySelector<HTMLElement>("[data-slot='entity-row']")!.click()
     expect(收到).toEqual(["e-张"])
@@ -199,32 +274,26 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
 
   /**
    * 迟到的旧回包不许覆盖新结果（修复轮 1 · Critical 1）。
-   *
-   * 两个请求手动控制 resolve 时机：先发「旧」，再发「新」，**先回新的、后回旧的**。
-   * 屏幕必须停在新那批行上。旧实现在 `createEffect` 里 `return () => {作废=true}`——
-   * Solid 不执行这个返回值，于是旧回包照样写进 `行们()`（切项目时会串成别的项目的行）。
+   * 两个请求手动控制 resolve 时机：先发「核心」，再发「搜索」，**先回新的、后回旧的**。
    */
   test("迟到的旧回包不覆盖新结果：先回的新请求说了算", async () => {
-    type 回包 = 结果<{ 行们: 实体清单项[]; 缺口: string[] }>
+    type 回包 = Awaited<ReturnType<EntityApi["list"]>>
     const 在飞: Array<(值: 回包) => void> = []
     const api = 假api({
       list: () => new Promise<回包>((收) => 在飞.push(收)),
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
+    await 等(host, () => 在飞.length === 1)
     const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
 
-    框.value = "旧"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => 在飞.length === 1)
     框.value = "新"
     框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(host, () => 在飞.length === 2)
 
-    在飞[1]({ kind: "ok", value: { 行们: [实体行({ id: "e-新", 值: "新行" })], 缺口: [] } })
+    在飞[1]({ kind: "ok", value: { 行们: [实体行({ id: "e-新", 值: "新行" })], 总数: 1, 缺口: [] } })
     await 等(host, () => host.textContent.includes("新行"))
 
-    在飞[0]({ kind: "ok", value: { 行们: [实体行({ id: "e-旧", 值: "旧行" })], 缺口: [] } })
-    // 给旧回包足够的时间落地（若没被作废，这里之后屏幕上就是旧行）。
+    在飞[0]({ kind: "ok", value: { 行们: [实体行({ id: "e-旧", 值: "旧行" })], 总数: 1, 缺口: [] } })
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(host.textContent.includes("旧行")).toBe(false)
@@ -233,166 +302,80 @@ describe("EntityPanel 左栏实体视图（计划 7 §8.2）", () => {
   })
 
   /**
-   * 计数取数失败不许被一次成功的清单抹掉（修复轮 1 · Important 1）。
-   *
-   * 共用一枚 `错误` 信号时：搜索一次（清单成功）就会清掉计数错误，清空搜索回到导航后
-   * 界面会说「还没有实体：先上传并解析材料」——而事实是**类型计数取不到**，那句是假的。
+   * 分组计数失败不许被一次成功的清单抹掉：共用一枚错误信号时，搜索成功就会清掉它，
+   * 回到导航后会说「还没有实体」——而事实是计数取不到。
    */
-  test("计数取数一直失败：搜索成功也不许把它抹掉，回到导航不许说「还没有实体」", async () => {
+  test("分组计数一直失败：清单成功也不许把它抹掉，不许说「还没有实体」", async () => {
     const api = 假api({
-      counts: async () => ({ kind: "error", message: "类型计数取不到" }),
-      list: async () => ({ kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }),
+      groups: async () => ({ kind: "error", message: "分组计数取不到" }),
+      list: async () => ({
+        kind: "ok",
+        value: { 行们: [实体行({ id: "e-张", 值: "张三", 关联数: 1 })], 总数: 1, 缺口: [] },
+      }),
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
 
-    await 等(host, () => host.textContent.includes("类型计数取不到"))
+    await 等(host, () => host.textContent.includes("分组计数取不到"))
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
     expect(host.textContent.includes("还没有实体")).toBe(false)
 
-    // 搜索一次：清单成功（旧实现会在这里把「计数错误」清掉）
     const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
     框.value = "张"
     框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
-
-    // 清空搜索回到类型导航：计数错误必须还在，假空态不许冒出来
     框.value = ""
     框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 0)
-    await 等(host, () => host.textContent.includes("类型计数取不到"))
-
+    await 等(host, () => host.textContent.includes("分组计数取不到"))
     expect(host.textContent.includes("还没有实体")).toBe(false)
   })
 
-  /** 已选类型时输入搜索必须清掉类型（修复轮 1 · Important 2：行为在、用例缺）。 */
-  test("已选类型时在搜索框输入，最后一次 list 的 type 必须是 undefined", async () => {
-    const 调用: Array<{ type?: string; q?: string }> = []
+  test("提及取数失败只画在提及组内，不污染核心清单", async () => {
     const api = 假api({
-      counts: async () => ({ kind: "ok", value: [{ type: "人", count: 1 }] }),
+      groups: async () => ({ kind: "ok", value: { 核心: 1, 提及: 1 } }),
       list: async (input) => {
-        调用.push({ type: input.type, q: input.q })
-        return { kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }
+        if (input.group === "提及") return { kind: "error", message: "提及取不到" }
+        return {
+          kind: "ok",
+          value: { 行们: [实体行({ id: "e-张", 值: "张三", 关联数: 1 })], 总数: 1, 缺口: [] },
+        }
       },
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-type']").length === 1)
+    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
+    host.querySelector<HTMLElement>("[data-slot='entity-group'][data-group='提及']")!.click()
+    await 等(host, () => host.textContent.includes("提及取不到"))
 
-    host.querySelector<HTMLElement>("[data-slot='entity-type']")!.click()
-    await 等(host, () => 调用.length === 1)
-    expect(调用[0].type).toBe("人")
-
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "张"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => 调用.length === 2)
-
-    expect(调用.at(-1)).toEqual({ type: undefined, q: "张" })
+    const 提及组 = host.querySelector("[data-slot='entity-group-section'][data-group='提及']")!
+    expect(提及组.textContent).toContain("提及取不到")
+    expect(host.querySelectorAll("[data-slot='entity-row']").length).toBe(1)
+    expect(host.textContent).toContain("张三")
   })
 
-  /** 计数回包未到 ≠ 这个项目没有实体（修复轮 · Minor 5：三态互斥）。 */
-  test("计数回包未到 ⇒ 说「正在读取」，不说「还没有实体」", async () => {
-    let 回!: (值: Awaited<ReturnType<EntityApi["counts"]>>) => void
+  /** 分组计数回包未到 ≠ 这个项目没有实体（三态互斥）。 */
+  test("分组计数回包未到 ⇒ 说「正在读取」，不说「还没有实体」", async () => {
+    let 回!: (值: Awaited<ReturnType<EntityApi["groups"]>>) => void
     const api = 假api({
-      counts: () => new Promise((收) => {
-        回 = 收
-      }),
+      groups: () =>
+        new Promise((收) => {
+          回 = 收
+        }),
     })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
 
     await 等(host, () => host.querySelector("[data-slot='entity-count-loading']") !== null)
     expect(host.textContent).not.toContain("还没有实体")
 
-    回({ kind: "ok", value: [] })
+    回({ kind: "ok", value: { 核心: 0, 提及: 0 } })
     await 等(host, () => host.querySelector("[data-slot='entity-count-loading']") === null)
     expect(host.textContent).toContain("还没有实体")
   })
 
-  /**
-   * 注入的 api 若**抛**（不是回 `{kind:"error"}`），旧实现只 `void …then(...)`，没有 `.catch`：
-   * 界面永久停在「正在读取…」，还留下一条 unhandled rejection。
-   */
-  test("计数注入 api 拒绝 ⇒ 不卡在「正在读取」，进错误态", async () => {
-    const api = 假api({ counts: () => Promise.reject(new Error("计数请求被拒")) })
+  test("分组计数注入 api 拒绝 ⇒ 不卡在「正在读取」，进错误态", async () => {
+    const api = 假api({ groups: () => Promise.reject(new Error("计数请求被拒")) })
     const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
 
     await 等(host, () => host.textContent.includes("计数请求被拒"))
     expect(host.querySelector("[data-slot='entity-count-loading']")).toBeNull()
     expect(host.textContent).not.toContain("还没有实体")
-  })
-
-  /** 跨类型结果里一行一个类型字标：搜「张」时人 / 号码 / 账户混排，靠读数字分不出来。 */
-  test("跨类型搜索的每行带类型字标；进入某一类型后不再重复标类型", async () => {
-    const api = 假api({
-      counts: async () => ({ kind: "ok", value: [{ type: "号码", count: 1 }] }),
-      // 搜索态 type 留空 ⇒ 跨类型（§8.2），两类实体混排。
-      list: async () => ({
-        kind: "ok",
-        value: {
-          行们: [
-            实体行({ id: "e-号", 值: "6222****0001", 类型: "号码" }),
-            实体行({ id: "e-张", 值: "张三", 类型: "人" }),
-          ],
-          缺口: [],
-        },
-      }),
-    })
-    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "张"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
-    const 字标们 = [...host.querySelectorAll<HTMLElement>("[data-slot='entity-type-badge']")]
-    expect(字标们.map((字标) => 字标.textContent)).toEqual(["号", "人"])
-    expect(字标们[0]!.getAttribute("aria-hidden")).toBe("true")
-
-    // 清空搜索 → 进「号码」这一类型：类型已在标题上写着，行里不再重复画字标。
-    框.value = ""
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-type']").length === 1)
-    host.querySelector<HTMLElement>("[data-slot='entity-type']")!.click()
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 2)
-    expect(host.querySelectorAll("[data-slot='entity-type-badge']").length).toBe(0)
-  })
-
-  /** 星标到底是什么意思，得看得见：列表上方一行说明 ＋ 按钮悬停文案（`aria-label` 已有）。 */
-  test("星标语义写出来：列表上方有一行「置顶」说明，按钮有悬停提示", async () => {
-    const api = 假api({
-      list: async () => ({ kind: "ok", value: { 行们: [实体行({ id: "e-张", 值: "张三" })], 缺口: [] } }),
-    })
-    const host = mount(() => <EntityPanel projectId={() => "p1"} api={api} onOpenEntity={() => {}} />)
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "张"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
-
-    const 说明 = host.querySelector<HTMLElement>("[data-slot='entity-star-hint']")!
-    expect(说明.textContent).toContain("置顶")
-    expect(host.querySelector<HTMLElement>("[data-slot='entity-star']")!.getAttribute("title")).toContain("置顶")
-  })
-
-  /** 星标按项目分开存（修复轮 1 · Minor 2）：换项目后同一个 id 不许还是星标。 */
-  test("星标按项目分开存：换项目后同一个 id 不再是星标", async () => {
-    const [项目, set项目] = createSignal<string | undefined>("p1")
-    const api = 假api({
-      list: async () => ({ kind: "ok", value: { 行们: [实体行({ id: "e-乙", 值: "乙" })], 缺口: [] } }),
-    })
-    const 存 = 内存存储()
-    存.账.set("openhive.case.starred.p1", JSON.stringify(["e-乙"]))
-    const host = mount(() => <EntityPanel projectId={项目} api={api} onOpenEntity={() => {}} storage={存} />)
-
-    const 框 = host.querySelector<HTMLInputElement>("[data-slot='entity-search']")!
-    框.value = "乙"
-    框.dispatchEvent(new Event("input", { bubbles: true }))
-    await 等(host, () => host.querySelectorAll("[data-slot='entity-row']").length === 1)
-    expect(host.querySelector<HTMLElement>("[data-slot='entity-star']")!.getAttribute("aria-pressed")).toBe("true")
-
-    set项目("p2")
-    await 等(
-      host,
-      () =>
-        host.querySelector<HTMLElement>("[data-slot='entity-star']")?.getAttribute("aria-pressed") === "false",
-    )
-
-    expect(host.querySelector<HTMLElement>("[data-slot='entity-star']")!.textContent).toBe("☆")
-    expect(存.账.get("openhive.case.starred.p2")).toBeUndefined()
   })
 })
