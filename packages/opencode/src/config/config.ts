@@ -111,11 +111,32 @@ async function resolveLoadedPlugins<T extends { plugin?: ConfigPluginV1.Spec[] }
   return config
 }
 
-type Info = ConfigV1.Info & {
+export type Info = ConfigV1.Info & {
   // plugin_origins is derived state, not a persisted config field. It keeps each winning plugin spec together
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
+  /**
+   * openhive 定制（2026-11-08，模型统一配置）：后台任务模型槽位，形如 `provider/model`。
+   * 缺省回落到 `model`；两者都没有时后台作业显式失败。
+   */
+  task_model?: string
 }
+
+/**
+ * openhive 定制：在官方配置 schema 上**加**一个字段。
+ *
+ * 用 `Schema.Struct({ ...ConfigV1.Info.fields, task_model })` 而不是改 `packages/core`：
+ * 上游同步会重写 core，改那里的冲突面是长期的；这里只多一个字段，冲突面止于本文件。
+ *
+ * ⚠️ 新增字段必须进这个 schema。`ConfigParse.schema` 的 `onExcessProperty: "ignore"`
+ * 会把 schema 之外的字段**静默丢掉**——「读得到、保存时没了」就是这么来的。
+ */
+const OpenhiveInfo = Schema.Struct({
+  ...ConfigV1.Info.fields,
+  task_model: Schema.optional(Schema.String).annotate({
+    description: "Model used by background tasks, in the format provider/model. Falls back to `model`",
+  }),
+})
 
 type State = {
   config: Info
@@ -198,7 +219,7 @@ const layer = Layer.effect(
           action: diagnostic.message,
         }),
       )
-      return ConfigParse.schema(ConfigV1.Info, result.value, source)
+      return ConfigParse.schema(OpenhiveInfo, result.value, source)
     })
 
     const fetchRemoteJson = Effect.fnUntraced(function* <S extends Schema.Top>(
@@ -685,7 +706,7 @@ const layer = Layer.effect(
       let changed: boolean
       if (!file.endsWith(".jsonc")) {
         const existing = ConfigParse.jsonc(before, file)
-        ConfigParse.schema(ConfigV1.Info, ConfigV2Compat.lower(normalizeLoadedConfig(existing), file).value, file)
+        ConfigParse.schema(OpenhiveInfo, ConfigV2Compat.lower(normalizeLoadedConfig(existing), file).value, file)
         const merged = mergeDeep(isRecord(existing) ? existing : {}, patch)
         const serialized = JSON.stringify(merged, null, 2)
         next = yield* decodeConfig(merged, file)

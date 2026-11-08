@@ -357,6 +357,31 @@ it.instance(
   { config: { shell: "bash" } },
 )
 
+it.instance(
+  "reads task_model from config file",
+  Effect.gen(function* () {
+    const config = yield* Config.use.get()
+    expect(config.task_model).toBe("gateway/task-model")
+    expect(config.model).toBe("gateway/chat-model")
+  }),
+  { config: { model: "gateway/chat-model", task_model: "gateway/task-model" } },
+)
+
+it.effect("keeps task_model when saving global config", () =>
+  withGlobalConfig({ config: { model: "gateway/chat-model" }, name: "opencode.jsonc" }, ({ dir }) =>
+    Effect.gen(function* () {
+      const { info } = yield* Config.use.updateGlobal({ task_model: "gateway/task-model" })
+      expect(info.task_model).toBe("gateway/task-model")
+
+      // 文件字节路径走的是原始 patch，这一条恒绿，保留作回归保护
+      const file = path.join(dir, "opencode.jsonc")
+      const written = yield* FSUtil.use.readFileString(file)
+      expect(written).toContain("task_model")
+      expect(written).toContain("gateway/task-model")
+    }),
+  ),
+)
+
 it.instance("updates config and preserves empty shell sentinel", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
