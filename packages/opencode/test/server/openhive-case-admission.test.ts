@@ -16,12 +16,19 @@ describe("地点", () => {
 
   test("方位后缀且长度 ≤10 被拒；超过 10 字保留", () => {
     expect(不可指认原因("地点", "山场西侧")).toContain("方位")
+    expect(不可指认原因("地点", "柏加镇某某村后山上侧")).toContain("方位") // 恰好 10 字，仍算碎片
     expect(不可指认原因("地点", "柏加镇某某村后山的上侧")).toBeUndefined() // 11 字，可能是可指认的长地名
+  })
+
+  test("方位词必须落在结尾才算碎片（子串不算）", () => {
+    expect(不可指认原因("地点", "天坛东侧路")).toBeUndefined()
+    expect(不可指认原因("地点", "城东侧街")).toBeUndefined()
+    expect(不可指认原因("地点", "村西侧路")).toBeUndefined()
   })
 
   test("具体地点不拒", () => {
     expect(不可指认原因("地点", "城东茶馆")).toBeUndefined()
-    expect(不可指认原因("地点", "柏加镇某某村"))!.toBeUndefined()
+    expect(不可指认原因("地点", "柏加镇某某村")).toBeUndefined()
   })
 })
 
