@@ -256,9 +256,8 @@ function 边颜色(类型: string): string {
   return "var(--v2-border-border-strong)"
 }
 
-/** 次数分三档：不写次数的细线、个位数的中线、两位以上的粗线——粗到能直接比大小。 */
-function 边宽(次数: number | null): number {
-  if (次数 === null) return 1.5
+/** 次数分三档：个位数的细线、两位数的中线、更多为粗线——粗到能直接比大小。 */
+function 边宽(次数: number): number {
   if (次数 <= 3) return 2
   if (次数 <= 10) return 3
   return 4

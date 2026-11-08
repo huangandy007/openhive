@@ -89,6 +89,15 @@ beforeAll(async () => {
     type: "转账",
     amount: 1000,
   })
+  // 强度分档的第二个组：通话、1 次、无金额 ⇒ 只够「全部」档；转账那条（1000 元）压中「重点」阈。
+  // 端点复用已有实体，免得实体清单的 `{type:"人",count:2}` 断言被搅。
+  await 建关系(pg.db, {
+    id: "r-路由话",
+    projectId: 项目,
+    fromId: "e-路由张",
+    toId: "e-路由账",
+    type: "通话",
+  })
   // `participants` 存的是实体**规范值**（`query_events` 按规范值过滤），与 `建实体` 的 value 一致。
   await 建事件(pg.db, {
     id: "ev-路由",
@@ -276,13 +285,40 @@ describe("openhive 案件视图出口（计划 7）", () => {
   it("关系图：跳数与强度只认枚举，其余 ⇒ 400；强度透传到 DAO", () =>
     Effect.gen(function* () {
       expect((yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&跳数=3`)).status).toBe(400)
-      expect((yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&强度=乱写`)).status).toBe(400)
+      const 非法 = yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&强度=乱写`)
+      expect(非法.status).toBe(400)
+      expect(yield* 读回<{ error: string; code: string }>(非法)).toEqual({
+        error: "强度只能是 全部 / 重点 / 强",
+        code: "bad_request",
+      })
 
-      const 图 = yield* 读回<{ 边: { id: string }[]; 强度缺口?: { 未显示: number; 总数: number } }>(
-        yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&type=转账`),
-      )
-      // 聚合后的合成 id（一对端点一条边）
-      expect(图.边.map((边) => 边.id)).toEqual(["rel|e-路由张|e-路由账|转账"])
+      const 转账边 = "rel|e-路由张|e-路由账|转账"
+      const 通话边 = "rel|e-路由张|e-路由账|通话"
+      type 图体 = { 边: { id: string }[]; 强度缺口?: { 未显示: number; 总数: number } }
+
+      // 省略强度 = 全部：转账（1000 元 ⇒ 正好压中「重点」金额阈）与通话（1 次、无金额）都画
+      const 默认响应 = yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张`)
+      expect(默认响应.status).toBe(200)
+      const 默认图 = yield* 读回<图体>(默认响应)
+      expect(默认图.边.map((边) => 边.id)).toEqual([转账边, 通话边])
+      expect(默认图.强度缺口).toBeUndefined()
+
+      // 显式「全部」与省略等价
+      const 全部响应 = yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&强度=全部`)
+      expect(全部响应.status).toBe(200)
+      const 全部图 = yield* 读回<图体>(全部响应)
+      expect(全部图.边.map((边) => 边.id)).toEqual([转账边, 通话边])
+
+      // 「重点」只留转账；通话进缺口
+      const 重点响应 = yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&强度=重点`)
+      expect(重点响应.status).toBe(200)
+      const 重点图 = yield* 读回<图体>(重点响应)
+      expect(重点图.边.map((边) => 边.id)).toEqual([转账边])
+      expect(重点图.强度缺口).toEqual({ 未显示: 1, 总数: 2 })
+
+      const 图 = yield* 读回<图体>(yield* 发(我, `/openhive/case/graph?projectId=${项目}&id=e-路由张&type=转账`))
+      // 聚合后的合成 id（一对端点一条边）；type 过滤后只剩转账那条（默认强度 = 全部）
+      expect(图.边.map((边) => 边.id)).toEqual([转账边])
 
       // 1000 元 / 1 次 ⇒ 强档不达标；缺口把这条说出来
       const 强图 = yield* 读回<{ 边: unknown[]; 强度缺口: { 未显示: number; 总数: number } }>(

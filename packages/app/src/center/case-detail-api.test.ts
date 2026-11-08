@@ -119,4 +119,16 @@ describe("案件详情 API 客户端", () => {
     expect(解析.get("跳数")).toBe("2")
     expect(解析.get("type")).toBe("转账,通话")
   })
+
+  test("graph 的 强度编码：传了就带上，没传就不写（不写空串）", async () => {
+    const 看到的: string[] = []
+    const api = createCaseDetailApi(async (url) => {
+      看到的.push(url)
+      return 回包({ 节点: [], 边: [], 缺口: [] })
+    })
+    await api.graph("p", "e-张", 2, ["转账"], "强")
+    await api.graph("p", "e-张", 1)
+    expect(new URL(看到的[0], "http://localhost").searchParams.get("强度")).toBe("强")
+    expect(new URL(看到的[1], "http://localhost").searchParams.get("强度")).toBeNull()
+  })
 })

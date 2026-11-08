@@ -153,7 +153,7 @@ export interface 图节点 {
   readonly 中心: boolean
   readonly 跳数: number
   readonly 关联数: number
-  /** 库里与该实体相关的关系总数（判枢纽）；`关联数` 是图上画出来的条数。 */
+  /** 库里与该实体相关、**未被排除**的关系总数（判枢纽）；`关联数` 是图上画出来的条数。 */
   readonly 度数: number
   /** 二跳节点的父节点 id（分簇用）。 */
   readonly 经由?: string
