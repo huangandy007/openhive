@@ -109,6 +109,15 @@ Z = from.env.local        ← .env.local 更大
 | `OPENHIVE_CASE_INGEST_WORKER` | `packages/opencode/src/server/openhive/case-ingest-worker.ts:43` | 案件导入消费的开工开关：值为 `"0"` ⇒ **不起**消费循环（不设 = 开）。`PG_*` 未配齐同样不起（启动期判据，不刷告警） |
 | ~~`OPENHIVE_CASE_EXTRACT_MODEL`~~ | 已废弃（2026-11-08，模型统一配置 D5） | 只保留一条启动 WARN，**不再生效**。案件抽取模型改在 `opencode.jsonc` 的 `task_model`（缺省回落 `model`） |
 
+> **升级须知（2026-11-08 起，模型统一配置）**：配了 `PG_*` 的部署**必须在全局**
+> `opencode.jsonc` 里配 `model`（聊天）或 `task_model`（后台任务；缺省回落 `model`），
+> 否则内核启动自检失败、**退出码 1**，stderr 是「后台任务模型不可用：未配置后台任务模型」。
+> 三个容易踩的点：① **项目级** `opencode.jsonc` 里的 `model` **不算**——自检只读全局配置
+> （项目级 `task_model` 只影响「复制项目」的自动命名，不影响案件抽取）；②
+> `OPENHIVE_CASE_INGEST_WORKER=0` 会关掉后台消费，自检随之跳过；③ **真栈 / 开发栈**
+> （`test/real-stack/serve.ts`、`bun run dev`）同样带 PG、同样受此约束，起栈前先配全局模型。
+> 旧变量 `OPENHIVE_CASE_EXTRACT_MODEL` 已废弃，配了也不生效。
+
 > **资产服务（009）**：`OPENHIVE_ASSETS_ROOT` 由 `packages/asset-service/src/storage.ts:7` 读取，
 > 生产默认 `/assets`。今天它**已经在内核进程里生效**两处：① 内核侧治理后台出口每请求读一次
 > （`packages/opencode/src/server/routes/instance/httpapi/server.ts:406`）；② 内核拉起的治理 MCP

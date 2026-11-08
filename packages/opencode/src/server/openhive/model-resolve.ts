@@ -80,6 +80,7 @@ export const resolveModelFromConfig = (
 
     // 空串按「未设置」处理：`task_model: ""` 回落到 `model`，`model: ""` 视为未配置。
     // 与 `resolveModelWith` 里 `config.model !== ""` 的「有配置」判据保持同一语义。
+    // 口径与设置页的「槽位视图」一致（空串 = 未设置、task 缺省回落 model）；改一处要同时改另一处。
     const 槽位原文 = purpose === "task" ? (config.task_model || config.model) : config.model
     const 槽位 = 槽位原文 === "" ? undefined : 槽位原文
     if (槽位 === undefined) {

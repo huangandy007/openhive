@@ -38,7 +38,10 @@ export interface 模型槽位视图 {
   readonly task: 槽位视图值
 }
 
-/** 纯函数：输入配置，输出设置页要的三个事实（聊天用什么、后台用什么、后台是不是显式配的）。 */
+/**
+ * 纯函数：输入配置，输出设置页要的三个事实（聊天用什么、后台用什么、后台是不是显式配的）。
+ * 口径必须与 model-resolve.ts 的槽位选择一致（空串 = 未设置、task 缺省回落 model）；改一处要同时改另一处。
+ */
 export function 槽位视图(config: { readonly model?: string; readonly task_model?: string }): 模型槽位视图 {
   const 聊天 = config.model === undefined || config.model === "" ? null : config.model
   const 后台显式 = config.task_model === undefined || config.task_model === "" ? null : config.task_model
