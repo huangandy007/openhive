@@ -23,6 +23,20 @@ describe("设置页的模型槽位视图", () => {
     })
   })
 
+  test("空串按未设置处理（与解析入口同一口径）", () => {
+    expect(槽位视图({ model: "", task_model: "" })).toEqual({
+      chat: { model: null, source: null },
+      task: { model: null, source: null },
+    })
+  })
+
+  test("只配 task_model ⇒ chat 未设置、task 显式", () => {
+    expect(槽位视图({ task_model: "gw/task" })).toEqual({
+      chat: { model: null, source: null },
+      task: { model: "gw/task", source: "task_model" },
+    })
+  })
+
   test("回包只有 model / source，绝不含 apiKey / baseURL / options", () => {
     const 视图 = 槽位视图({ model: "gw/chat", task_model: "gw/task" })
     expect(Object.keys(视图.chat).sort()).toEqual(["model", "source"])
