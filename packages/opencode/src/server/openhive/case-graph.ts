@@ -41,6 +41,10 @@ export interface 图节点 {
   readonly 跳数: number
   /** 该节点在本图里连出的边数（只算图里画出来的）。 */
   readonly 关联数: number
+  /** 库里与该实体相关、未被排除的关系总数——判枢纽用；不是图上画出来的条数。 */
+  readonly 度数: number
+  /** 二跳节点是从哪个一跳节点过来的——分簇用；一跳与中心没有。 */
+  readonly 经由?: string
 }
 
 export const 关系图强度们 = ["全部", "重点", "强"] as const
@@ -219,6 +223,42 @@ async function 取一圈(
   }
 }
 
+async function 取度数(
+  db: Queryable,
+  input: { readonly projectId: string; readonly 节点们: readonly string[] },
+): Promise<Map<string, number>> {
+  if (input.节点们.length === 0) return new Map()
+  const 节点表 = sql.join(
+    input.节点们.map((id) => sql`${id}`),
+    sql`, `,
+  )
+  const 行们 = rowsOf(
+    await db.execute(sql`
+      select 端.id, count(*)::int as 度数
+        from (
+          select r.from_id as id
+            from auth.case_relation r
+            join auth.case_entity 对 on 对.project_id = r.project_id and 对.id = r.to_id
+           where r.project_id = ${input.projectId}
+             and r.trust_state <> '已排除'
+             and 对.trust_state <> '已排除'
+             and r.from_id in (${节点表})
+          union all
+          select r.to_id as id
+            from auth.case_relation r
+            join auth.case_entity 对 on 对.project_id = r.project_id and 对.id = r.from_id
+           where r.project_id = ${input.projectId}
+             and r.trust_state <> '已排除'
+             and 对.trust_state <> '已排除'
+             and r.to_id in (${节点表})
+             and r.from_id <> r.to_id
+        ) 端
+       group by 端.id
+    `),
+  )
+  return new Map(行们.map((行) => [String(行.id), Number(行.度数)]))
+}
+
 /**
  * 范围里**全部**组数 vs **达标**组数（不受 `limit` 影响，永远回一行）。给 `强度缺口` 用。
  * 为什么不像 spec §4.1.6 那样把两个窗口塞进取一圈：那条 SQL 带 `where h.达标`，
@@ -277,6 +317,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     中心: true,
     跳数: 0,
     关联数: 0,
+    度数: 0,
   })
 
   /**
@@ -287,7 +328,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
    * 兜底的截断分支——它在本轮改动后不可达，留着只会多出一种近似文案；真被截断的条数
    * 由调用点用 `count(*) over()` 的 `总数` 写进缺口。
    */
-  const 收一圈 = (边们: readonly 边行[]): string[] => {
+  const 收一圈 = (边们: readonly 边行[], 父们?: ReadonlySet<string>): string[] => {
     const 新点: string[] = []
     for (const 边 of 边们) {
       if (边表.has(边.id)) continue
@@ -301,9 +342,9 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         trust_state: 边.trust_state,
         明细数: 边.明细数,
       })
-      for (const [id, 值, 类型, 信任态, 属性] of [
-        [边.from_id, 边.from_value, 边.from_type, 边.from_trust, 边.from_attrs] as const,
-        [边.to_id, 边.to_value, 边.to_type, 边.to_trust, 边.to_attrs] as const,
+      for (const [id, 值, 类型, 信任态, 属性, 另一端] of [
+        [边.from_id, 边.from_value, 边.from_type, 边.from_trust, 边.from_attrs, 边.to_id] as const,
+        [边.to_id, 边.to_value, 边.to_type, 边.to_trust, 边.to_attrs, 边.from_id] as const,
       ]) {
         if (节点表.has(id)) continue
         加点({
@@ -315,6 +356,8 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
           中心: false,
           跳数: 1,
           关联数: 0,
+          度数: 0,
+          ...(父们?.has(另一端) === true ? { 经由: 另一端 } : {}),
         })
         新点.push(id)
       }
@@ -355,7 +398,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         剩余,
         强度,
       })
-      收一圈(第二圈.边们.slice(0, 剩余))
+      收一圈(第二圈.边们.slice(0, 剩余), new Set(一跳点))
       // 不声称「画了多少」：`slice` 行数里可能混着第 1 跳已画过的回边（`收一圈` 会跳过）。
       // 只陈述「候选里还有多少没画」——M 是 pre-LIMIT 的候选总数减「剩余」名额。
       if (第二圈.总数 > 剩余) 缺口.push(`第 2 跳还有 ${第二圈.总数 - 剩余} 条候选关系没有画（节点上限 ${上限}）`)
@@ -381,6 +424,9 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     if (点.中心) continue
     点.跳数 = 邻居.has(点.id) ? 1 : 2
   }
+  // 度数只对图上这些节点查一轮（≤50），不能让 `关联数` 兼任枢纽判据（spec §4.1.4）。
+  const 度数表 = await 取度数(db, { projectId: input.projectId, 节点们: [...节点表.keys()] })
+  for (const 点 of 节点表.values()) 点.度数 = 度数表.get(点.id) ?? 0
   // 关联数按**图里画出来的边**数（不是库里的总数）——它要解释「屏幕上这几条」。
   // `new Set`：自环（from = to）是一条边，不能给同一个节点加两次。
   for (const 边 of 边表.values()) {

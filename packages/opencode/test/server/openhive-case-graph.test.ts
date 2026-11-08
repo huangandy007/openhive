@@ -378,4 +378,32 @@ describe("关系图", () => {
     const 二跳 = (await 关系图(库(), { projectId: "p-阈", id: "e-阈心", 跳数: 2, 强度: "强" }))!
     expect(二跳.强度缺口).toEqual({ 未显示: 2, 总数: 3 })
   })
+
+  test("度数取库里的总数，不受图上上限影响；关联数仍只算画出来的", async () => {
+    // 上限 2 ⇒ 图上只有 e-账 一条边；e-张 在库里却有 3 条（张李/张账/账张）。
+    const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 上限: 2 }))!
+    const 张 = 图.节点.find((点) => 点.id === "e-张")!
+    expect(张.关联数).toBe(1)
+    expect(张.度数).toBe(3)
+  })
+
+  test("度数按关系条数算，不按端点去重：同一对端点 3 条 ⇒ 度数 3", async () => {
+    // p-聚合 的 e-聚心→e-聚甲 有 3 条关系；`union`（去重）会把它压成 1。
+    const 图 = (await 关系图(库(), { projectId: "p-聚合", id: "e-聚心" }))!
+    expect(图.节点.find((点) => 点.id === "e-聚甲")!.度数).toBe(3)
+  })
+
+  test("自环的度数只算 1（`union all` 第二半要排掉 from = to）", async () => {
+    const 图 = (await 关系图(库(), { projectId: 排序项目, id: "e-心" }))!
+    // r-a（心→甲）、r-z（心→乙）、r-自（心→心）⇒ 3 条
+    expect(图.节点.find((点) => 点.id === "e-心")!.度数).toBe(3)
+  })
+
+  test("二跳节点带父节点 id；一跳节点没有 经由", async () => {
+    const 图 = (await 关系图(库(), { projectId: 项目, id: "e-张", 跳数: 2 }))!
+    expect(图.节点.find((点) => 点.id === "e-号1")!.经由).toBe("e-李")
+    expect(图.节点.find((点) => 点.id === "e-号2")!.经由).toBe("e-李")
+    expect(图.节点.find((点) => 点.id === "e-李")!.经由).toBeUndefined()
+    expect(图.节点.find((点) => 点.id === "e-张")!.经由).toBeUndefined()
+  })
 })
