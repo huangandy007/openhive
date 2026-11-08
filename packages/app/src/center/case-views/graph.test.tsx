@@ -1542,4 +1542,98 @@ describe("关系图 · 分簇", () => {
     expect(标签.some((话) => 话?.includes("经由 父9"))).toBe(false)
     expect(标签.some((话) => 话?.includes("经由 父8"))).toBe(true)
   })
+
+  test("弧端点落在组首/末节点中心（椭圆参数角，不是几何角）", async () => {
+    const host = mount(() => (
+      <Graph projectId="p" id="c" api={假api({ graph: async () => ({ kind: "ok", value: 分簇图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 7)
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 2)
+    const d = host.querySelector("[data-slot='graph-cluster'][data-cluster='p1']")!.getAttribute("d")!
+    // `M x y A rx ry 0 <large-arc> 1 x y`：取起点与末点。
+    const 数 = "(-?\\d+(?:\\.\\d+)?)"
+    const 解 = new RegExp(`^M ${数} ${数} A ${数} ${数} 0 [01] 1 ${数} ${数}$`).exec(d)!
+    const [起x, 起y, , , 终x, 终y] = 解.slice(1).map(Number)
+    // 布局顺序 p1 组是 [b1, b2]：起点贴 b1、末点贴 b2。`rx ≠ ry` 时几何角会偏十几像素。
+    const 位 = (id: string) => {
+      const 点 = 点元素(host, id)
+      return { x: Number(点.getAttribute("data-node-x")), y: Number(点.getAttribute("data-node-y")) }
+    }
+    const 首 = 位("b1")
+    const 末 = 位("b2")
+    expect(Math.hypot(起x! - 首.x, 起y! - 首.y)).toBeLessThan(1)
+    expect(Math.hypot(终x! - 末.x, 终y! - 末.y)).toBeLessThan(1)
+  })
+
+  test("「其他」组连续：两个不同孤儿 经由 值不能把正常组夹在中间", () => {
+    const 双孤儿图: 关系图结果 = {
+      节点: [
+        { id: "p1", type: "a", value: "父一", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 2, 度数: 5 },
+        { id: "b1", type: "a", value: "子11", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p1" },
+        { id: "b2", type: "a", value: "子12", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "p1" },
+        { id: "o1", type: "a", value: "孤儿一", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "a-没了" },
+        { id: "o2", type: "a", value: "孤儿二", trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: "z-没了" },
+      ],
+      边: [],
+      缺口: [],
+    }
+    const 二层 = 布局(双孤儿图, 画布, true).二层
+    const 序 = 二层.map((点) => 点.id)
+    // 两个孤儿必须相邻（排序键与分组键同源，都归一成「其他」）。
+    expect(Math.abs(序.indexOf("o1") - 序.indexOf("o2"))).toBe(1)
+    const 其他 = 按经由分簇(二层, 双孤儿图).find((簇) => 簇.键 === "")!
+    expect(其他.点们.map((点) => 点.id).sort()).toEqual(["o1", "o2"])
+  })
+
+  test("拖动节点不改弧（弧锚在自动布局的外环上）", async () => {
+    const host = mount(() => (
+      <Graph projectId="p" id="c" api={假api({ graph: async () => ({ kind: "ok", value: 分簇图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 7)
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster']").length === 2)
+    const 弧 = () => host.querySelector("[data-slot='graph-cluster'][data-cluster='p1']")!.getAttribute("d")
+    const 前弧 = 弧()
+    const 前b2 = Number(点元素(host, "b2").getAttribute("data-node-x"))
+    点元素(host, "b2").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 100, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 160, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+    // 前提自检：节点确实被拖走了 60px；弧仍读自动布局坐标，字符串一字不差。
+    expect(Number(点元素(host, "b2").getAttribute("data-node-x"))).toBeCloseTo(前b2 + 60, 0)
+    expect(弧()).toBe(前弧)
+  })
+
+  test("跨 ±π 缝的组与普通组的标签都落在参数角中点", async () => {
+    // 二层 6 个点 ⇒ θ = 60°·seq − 60°：pa 占 −60/0、pb 占 60/120、pc 跨缝 180/240。
+    const 六簇节点: 图节点[] = []
+    const 六簇边: 图边[] = []
+    for (const [父, 名] of [["pa", "父A"], ["pb", "父B"], ["pc", "父C"]] as const) {
+      六簇节点.push({ id: 父, type: "a", value: 名, trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 2, 度数: 3 })
+      for (const 序 of ["1", "2"]) {
+        六簇节点.push({ id: `${父}${序}`, type: "a", value: `${名}${序}`, trust_state: "自动抽取", 中心: false, 跳数: 2, 关联数: 1, 度数: 1, 经由: 父 })
+        六簇边.push({ id: `e-${父}${序}`, from: 父, to: `${父}${序}`, type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 })
+      }
+    }
+    const 六簇图: 关系图结果 = { 节点: 六簇节点, 边: 六簇边, 缺口: [] }
+    const host = mount(() => (
+      <Graph projectId="p" id="c" api={假api({ graph: async () => ({ kind: "ok", value: 六簇图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 9)
+    await 等(() => host.querySelectorAll("[data-slot='graph-cluster-label']").length === 3)
+    const 标签们 = [...host.querySelectorAll("[data-slot='graph-cluster-label']")]
+    const 标位 = (话: string) => {
+      const 条 = 标签们.find((条) => 条.textContent?.includes(话))!
+      return { x: Number(条.getAttribute("x")), y: Number(条.getAttribute("y")) }
+    }
+    // 画布 760×680 ⇒ 外环 rx=310、ry=285，标签再外扩 24。
+    const 期望 = (度: number) => ({
+      x: 380 + Math.cos((度 * Math.PI) / 180) * 334,
+      y: 340 + Math.sin((度 * Math.PI) / 180) * 309,
+    })
+    for (const [话, 度] of [["父A", -30], ["父B", 90], ["父C", 210]] as const) {
+      const 实 = 标位(话)
+      const 期 = 期望(度)
+      expect(Math.abs(实.x - 期.x)).toBeLessThan(1)
+      expect(Math.abs(实.y - 期.y)).toBeLessThan(1)
+    }
+  })
 })

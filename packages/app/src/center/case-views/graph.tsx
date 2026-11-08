@@ -60,10 +60,14 @@ export function 布局(图: 关系图结果, 尺寸: 画布尺寸 = 画布, 分�
   // 留边 70/55 是给节点标题（画在节点下方 14px、最长 12 个字）的。
   const 中 = { x: 尺寸.宽 / 2, y: 尺寸.高 / 2 }
   const 环 = 环半径(尺寸)
+  // 「其他」组归一：父不在图上（`经由` 指向图外）与没有 `经由` 是同一组。
+  // 排序键必须与 `按经由分簇` 的分组键同源，否则两个不同孤儿值会散开、把正常组夹在中间，弧横跨。
+  const 有 = new Set(图.节点.map((点) => 点.id))
+  const 簇键 = (点: 图节点) => (点.经由 !== undefined && 有.has(点.经由) ? 点.经由 : "")
   const 排 = (点们: readonly 图节点[], 半径: { readonly rx: number; readonly ry: number }, 按经由 = false) => {
     const 有序 = [...点们].sort((甲, 乙) =>
       按经由
-        ? (甲.经由 ?? "").localeCompare(乙.经由 ?? "") || 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id)
+        ? 簇键(甲).localeCompare(簇键(乙)) || 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id)
         : 甲.type.localeCompare(乙.type) || 甲.id.localeCompare(乙.id),
     )
     // 半格错开：只有 1 个节点时放在正上方；有 2 个就从「上、下」改成「右、左」。
@@ -550,11 +554,12 @@ export function Graph(props: GraphProps): JSX.Element {
     if (当前 === undefined) return []
     const 中位 = 中点()
     const 半径 = 环半径(尺寸()).二
-    const 角 = (点: 位点) => Math.atan2(点.y - 中位.y, 点.x - 中位.x)
-    return 按经由分簇(
-      全部点().filter((点) => !点.中心 && 点.跳数 >= 2),
-      当前,
-    )
+    // 布局按参数角 θ 摆点，弧的 `A rx ry` 也吃参数角；用几何角 atan2(y, x) 会因 rx ≠ ry 偏出十几像素。
+    const 角 = (点: 位点) => Math.atan2((点.y - 中位.y) / 半径.ry, (点.x - 中位.x) / 半径.rx)
+    // 端点读**自动布局坐标**（顺序与 `全部点()` 的二跳段相同、不叠 `手动位置`）：
+    // 弧锚在外环上，用户拖动节点不会把弧的跨度翻转、跨过别的组。
+    const 二层 = 自动位置(当前, 尺寸(), 排列(), 分簇()).filter((点) => !点.中心 && 点.跳数 >= 2)
+    return 按经由分簇(二层, 当前)
       .filter((簇) => 簇.点们.length >= 2)
       .map((簇) => {
         const a0 = 角(簇.点们[0]!)
