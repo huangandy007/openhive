@@ -1,6 +1,7 @@
 export * as OpenhiveCaseExtract from "./case-extract"
 
 import { Schema } from "effect"
+import { 不可指认原因 } from "./case-admission"
 import { parseTime, type Precision } from "./case-time"
 import { 号码归一, 实体规范值, 形近命中, 文本包含, 金额元, 号码分隔符类 } from "./case-value"
 
@@ -311,10 +312,19 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
     原文值: string,
     别名: readonly string[],
     细类?: string,
+    被拒?: (原文: string) => void,
   ): 实体输入 | undefined => {
     const 规范 = 实体规范值(类型, 原文值)
     if (规范 === undefined) {
       记失败(`「${原文值}」不是一个可用的${类型}`)
+      return undefined
+    }
+    // 准入：泛称 / 方位碎片 / 角色词不进实体表。被拒**不是回读失败**——只进提示，
+    // 不进 `问题` / `须改正`，否则执行器会重试并诱导模型把泛称改成一个具体值。
+    const 拒因 = 不可指认原因(类型, 规范)
+    if (拒因 !== undefined) {
+      提示.push(`实体「${原文值}」${拒因}，未建实体`)
+      被拒?.(原文值)
       return undefined
     }
     const 键 = `${类型}\u0000${规范}`
@@ -458,8 +468,16 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
         }
         提示.push(`事件「${项.类型}」的参与人「${人}」不在事件原文句里，但在这一片原文中出现，已保留（上下文补全）`)
       }
-      const 项实体 = 加实体(人类型, 人, [])
-      if (项实体 === undefined) continue
+      let 未准入 = false
+      const 项实体 = 加实体(人类型, 人, [], undefined, () => {
+        未准入 = true
+      })
+      if (项实体 === undefined) {
+        // 被准入拒的参与人保留**原文**：事件仍显示原话，档案页按规范值等值匹配，
+        // 不会把未入准的值误挂到任何实体上。规范值本身无效的（未准入 = false）仍然丢弃。
+        if (未准入) 参与人.push(人)
+        continue
+      }
       参与人.push(项实体.canonicalValue)
     }
 

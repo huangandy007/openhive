@@ -171,6 +171,76 @@ describe("回读", () => {
     expect(r.提示).toEqual([expect.stringContaining("认不出")])
     expect(r.须改正).toEqual([])
   })
+
+  test("泛称实体被准入拒：不建实体，只进提示，不进问题 / 须改正", () => {
+    const 片 = "现场位于山场西侧。"
+    const r = 回读(
+      解析({
+        实体: [
+          { 类型: "地点", 取值: "现场" },
+          { 类型: "地点", 取值: "山场西侧" },
+        ],
+        关系: [],
+        事件: [],
+      }),
+      片,
+    )
+    expect(r.实体).toEqual([])
+    expect(r.问题).toEqual([])
+    expect(r.须改正).toEqual([])
+    expect(r.提示.some((话) => 话.includes("现场") && 话.includes("未建实体"))).toBe(true)
+    expect(r.提示.some((话) => 话.includes("山场西侧") && 话.includes("未建实体"))).toBe(true)
+  })
+
+  test("关系端点被准入拒：整条关系跳过，只进提示", () => {
+    const 片 = "民警向张三了解情况。"
+    const r = 回读(
+      解析({
+        实体: [],
+        关系: [{ 类型: "同案", 从: "民警", 到: "张三", 依据: "笔录记载", 原文: "民警向张三了解情况" }],
+        事件: [],
+      }),
+      片,
+    )
+    expect(r.关系).toEqual([])
+    expect(r.实体.map((项) => 项.canonicalValue)).toEqual(["张三"])
+    expect(r.问题).toEqual([])
+    expect(r.提示.some((话) => 话.includes("民警"))).toBe(true)
+  })
+
+  test("事件参与人被准入拒：保留原文进 participants，不建实体", () => {
+    const 片 = "民警与张三见面。"
+    const r = 回读(
+      解析({
+        实体: [],
+        关系: [],
+        事件: [{ 类型: "见面", 参与人: ["民警", "张三"], 原文: "民警与张三见面" }],
+      }),
+      片,
+    )
+    expect(r.实体.map((项) => [项.type, 项.canonicalValue])).toEqual([["人", "张三"]])
+    // 契约从「只存实体规范值」扩展为「实体规范值，或未准入的提及原文」。
+    expect(r.事件[0]?.participants).toEqual(["民警", "张三"])
+    expect(r.问题).toEqual([])
+    expect(r.须改正).toEqual([])
+    expect(r.提示.some((话) => 话.includes("民警"))).toBe(true)
+  })
+
+  test("正常实体与事件参与人不受准入影响", () => {
+    const 片 = "张三与李四见面。"
+    const r = 回读(
+      解析({
+        实体: [{ 类型: "人", 取值: "张三" }],
+        关系: [],
+        事件: [{ 类型: "见面", 参与人: ["李四"], 原文: "张三与李四见面" }],
+      }),
+      片,
+    )
+    expect(r.实体.map((项) => 项.canonicalValue).sort()).toEqual(["张三", "李四"].sort())
+    expect(r.事件[0]?.participants).toEqual(["李四"])
+    // 夹具没给时间，既有契约本就会记一条「没有给时间」；这里要钉的是准入没有多嘴。
+    expect(r.提示).toEqual(["事件「见面」没有给时间，已标存疑"])
+  })
 })
 
 describe("修复轮 1：完整数、按类型命中、别名与缺失即存疑", () => {
