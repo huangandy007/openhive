@@ -35,12 +35,31 @@ const 裁决按钮类 = (押下: boolean) =>
     : `h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[13px] text-v2-text-text-base transition-colors ${悬停叠层} disabled:cursor-not-allowed disabled:opacity-50`
 
 /**
- * 出处默认画多少行；超了给「展开全部」（2026-11-07）。
+ * 每段默认画多少行（数据说的 / 人说的 / 事件 / 出处各 5 条，2026-11-08）。
  *
- * 服务端另有 500 的硬顶（`case-entity-list.ts` 的 `引用上限`）——那个防病态数据，这个防版面。
+ * 服务端另有硬顶（关系 200/100、事件 100、出处 500）——那个防病态数据，这个防版面。
  * 展开是**纯前端**：数据已经在回包里，不必再发请求。
  */
-export const 出处默认显示 = 20
+export const 分段默认显示 = 5
+
+/**
+ * 展开后最多画多少行：沿用 2026-11-07 的 20 条上限，只是从「默认」挪到「展开」。
+ *
+ * 不另设「展开更多」分页：一次把 500 条出处全铺进 DOM，版面与渲染都受不了。
+ * 超过这个数时按钮文案照实写「展开前 20 条」，不冒充「展开全部」。
+ */
+export const 分段展开显示 = 20
+
+/** 一段画多少行：未展开 `分段默认显示` 条，展开后 `分段展开显示` 条。四段共用这一份（`#002-06`）。 */
+function 一段显示<T>(全部: readonly T[], 展开: boolean): readonly T[] {
+  return 全部.slice(0, 展开 ? 分段展开显示 : 分段默认显示)
+}
+
+/** 展开按钮的文案。超过展开上限时说「展开前 20 条」——不能写「展开全部」再只画 20 行。 */
+function 展开文案(总数: number, 展开: boolean): string {
+  if (展开) return "收起"
+  return 总数 > 分段展开显示 ? `展开前 ${分段展开显示} 条` : `展开全部 ${总数} 条`
+}
 
 /**
  * 关系行的七列：方向 / 对方 / 类别 / 关系 / 次数 / 金额 / 状态。表头与行共用同一份列宽。
@@ -139,9 +158,12 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   // §9.1 / Global Constraint：已排除的事实默认不出现，档案页是唯一能「切换查看」的地方。
   // 开关状态**只由用户点它改变**：请求失败只进错误态，不回滚开关（否则用户会以为是自己点错了）。
   const [含排除, set含排除] = createSignal(false)
-  // 出处默认只画前 20 条（见 `出处默认显示` 的说明）。
+  // 四段各自折叠；换实体重置（裁决 / 切开关重取不改变阅读位置）。
+  const [展开数据说的, set展开数据说的] = createSignal(false)
+  const [展开人说的, set展开人说的] = createSignal(false)
+  const [展开事件, set展开事件] = createSignal(false)
   const [展开出处, set展开出处] = createSignal(false)
-  /** 上一次取的实体键：只在**换实体**时收起出处，裁决 / 切开关重取不该改变阅读位置。 */
+  /** 上一次取的实体键：只在**换实体**时收起各段，裁决 / 切开关重取不该改变阅读位置。 */
   let 上次实体 = ""
 
   // 纠正入口（design §9.2）：✓ 对 / ✗ 错 / ？存疑，只作用于这个实体本身。
@@ -252,6 +274,9 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     const 实体键 = `${projectId}/${id}`
     if (实体键 !== 上次实体) {
       上次实体 = 实体键
+      set展开数据说的(false)
+      set展开人说的(false)
+      set展开事件(false)
       set展开出处(false)
       // 换了实体，上一条实体选中的关系 / 事件当然不再属于这里（同 id 也不该沿用）。
       换裁决对象({ factType: "entity" })
@@ -287,11 +312,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 
   const 数据说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind !== "human") ?? [])
   const 人说的 = createMemo(() => 档()?.关系.filter((行) => 行.source_kind === "human") ?? [])
-  /** 画出来的出处行：未展开时只给前 `出处默认显示` 条。 */
-  const 显示的引用 = createMemo(() => {
-    const 全部 = 档()?.引用 ?? []
-    return 展开出处() ? 全部 : 全部.slice(0, 出处默认显示)
-  })
+  /** 画出来的出处行：未展开时只给前 `分段默认显示` 条。 */
+  const 显示的引用 = createMemo(() => 一段显示(档()?.引用 ?? [], 展开出处()))
+  /** 画出来的事件行：同上。 */
+  const 显示的事件 = createMemo(() => 一段显示(档()?.事件 ?? [], 展开事件()))
 
   /**
    * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `对方数` / `待确认.合计`）。
@@ -618,14 +642,20 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   <关系段
                     标题="数据说的"
                     slot="entity-relations-data"
+                    expandSlot="entity-relations-data-expand"
                     行们={数据说的()}
+                    展开={展开数据说的()}
+                    切换展开={() => set展开数据说的((值) => !值)}
                     选中={是选中}
                     点选={点选事实}
                   />
                   <关系段
                     标题="人说的"
                     slot="entity-relations-human"
+                    expandSlot="entity-relations-human-expand"
                     行们={人说的()}
+                    展开={展开人说的()}
+                    切换展开={() => set展开人说的((值) => !值)}
                     选中={是选中}
                     点选={点选事实}
                     分隔
@@ -646,10 +676,21 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     fallback={<p class="px-3 py-1 pb-2 text-[12px] text-v2-text-text-muted">没有共同事件</p>}
                   >
                     <div class="px-3 pt-1 pb-2">
-                      <For each={档().事件}>
+                      <For each={显示的事件()}>
                         {(事件) => <事件行 事件={事件} 选中={是选中("event", 事件.id)} 点选={() => 点选事实({ factType: "event", factId: 事件.id })} />}
                       </For>
                     </div>
+                    <Show when={档().事件.length > 分段默认显示}>
+                      <button
+                        type="button"
+                        data-slot="entity-events-expand"
+                        aria-expanded={展开事件()}
+                        onClick={() => set展开事件((值) => !值)}
+                        class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                      >
+                        {展开文案(档().事件.length, 展开事件())}
+                      </button>
+                    </Show>
                   </Show>
                 </section>
 
@@ -683,7 +724,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                     )}
                   </For>
                   {/* 展开是纯前端：数据已经在回包里（服务端只多截在 500），不再发请求。 */}
-                  <Show when={档().引用.length > 出处默认显示}>
+                  <Show when={档().引用.length > 分段默认显示}>
                     <button
                       type="button"
                       data-slot="entity-citation-expand"
@@ -691,7 +732,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                       onClick={() => set展开出处((值) => !值)}
                       class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
                     >
-                      {展开出处() ? "收起" : `展开全部 ${档().引用.length} 条`}
+                      {展开文案(档().引用.length, 展开出处())}
                     </button>
                   </Show>
                 </section>
@@ -858,12 +899,16 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
 function 关系段(props: {
   readonly 标题: string
   readonly slot: string
+  readonly expandSlot: string
   readonly 行们: readonly 档案关系[]
+  readonly 展开: boolean
+  readonly 切换展开: () => void
   /** 这一行是不是底栏当前对象；`选中` / `点选` 由档案组件传下来（行自己没有状态）。 */
   readonly 选中: (factType: "relation" | "event", factId: string) => boolean
   readonly 点选: (对象: { readonly factType: "relation" | "event"; readonly factId: string }) => void
   readonly 分隔?: boolean
 }): JSX.Element {
+  const 显示的 = () => 一段显示(props.行们, props.展开)
   return (
     <div class={props.分隔 === true ? "border-t border-v2-border-border-muted" : ""}>
       <div class="flex items-baseline gap-1.5 px-3 pt-2">
@@ -888,7 +933,7 @@ function 关系段(props: {
             <span class="text-right">金额</span>
             <span>状态</span>
           </div>
-          <For each={props.行们}>
+          <For each={显示的()}>
             {(行) => {
               // 行可点 = 底栏的裁决对象切到它（2026-11-08）。`onMouseDown` 里不拦默认行为，
               // 否则正文选不中；拖选后的那次 click 由 `点选事实` 自己按选区判断跳过。
@@ -966,6 +1011,17 @@ function 关系段(props: {
               )
             }}
           </For>
+        </Show>
+        <Show when={props.行们.length > 分段默认显示}>
+          <button
+            type="button"
+            data-slot={props.expandSlot}
+            aria-expanded={props.展开}
+            onClick={props.切换展开}
+            class={`mx-3 my-1 h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+          >
+            {展开文案(props.行们.length, props.展开)}
+          </button>
         </Show>
       </div>
     </div>

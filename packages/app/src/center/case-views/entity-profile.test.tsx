@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { JSX } from "solid-js"
-import { EntityProfile, 出处默认显示 } from "./entity-profile"
+import { createSignal, type JSX } from "solid-js"
+import { EntityProfile, 分段默认显示 } from "./entity-profile"
 import { 时间文本 } from "./format"
 import type { CaseDetailApi, 实体档案 } from "../case-detail-api"
 import { 订阅会话输入 } from "@/ai-session/send-to-session"
@@ -134,6 +134,31 @@ function 造引用(条数: number) {
     extractMethod: "机器" as const,
     confidence: null,
   }))
+}
+
+/** 四段各超过默认条数：用来钉「默认 5 条 / 展开全部 / 收起」。 */
+function 大档(): 实体档案 {
+  const 数据 = Array.from({ length: 8 }, (_, i) => ({
+    ...档.关系[0]!,
+    id: `r-d${i}`,
+    source_kind: "data" as const,
+  }))
+  const 人 = Array.from({ length: 7 }, (_, i) => ({
+    ...档.关系[1]!,
+    id: `r-h${i}`,
+    source_kind: "human" as const,
+  }))
+  return {
+    ...档,
+    关系: [...数据, ...人],
+    关系总数: 15,
+    关系数据总数: 8,
+    关系人总数: 7,
+    事件: Array.from({ length: 6 }, (_, i) => ({ ...档.事件[0]!, id: `ev-${i}` })),
+    事件总数: 6,
+    引用: 造引用(9),
+    引用总数: 9,
+  }
 }
 
 function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
@@ -427,27 +452,83 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-citation']")!.textContent).toContain("Sheet1 · 第 2 行")
   })
 
-  // 2026-11-07：出处是四块里唯一没上限的（服务端 `引用们` 原来没有 LIMIT）。一个号码在几百份
-  // 材料里出现时，档案页会一次画几百行。改成「默认只画前 20 条 ＋ 展开全部」。
-  // 条数在这里写**字面量**：跟着导出的常量走，常量被改回大数时这条用例不会红。
-  test("出处多时默认只画前 20 条，点「展开全部」才画出全部", async () => {
-    const 多档: 实体档案 = { ...档, 引用: 造引用(120), 引用总数: 120 }
+  test("四段默认各画 5 条；点「展开全部」画出该段全部，再点「收起」回到 5", async () => {
+    const 大 = 大档()
     const host = mount(() => (
       <EntityProfile
         projectId="p"
         id="e-张"
-        api={假api({ profile: async () => ({ kind: "ok", value: 多档 }) })}
+        api={假api({ profile: async () => ({ kind: "ok", value: 大 }) })}
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 20)
-    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(20)
-    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='entity-citation-expand']")!
-    expect(按钮).not.toBeNull()
-    expect(按钮.textContent).toContain("120")
-    按钮.click()
-    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 120)
-    expect(host.querySelectorAll("[data-slot='entity-citation']")).toHaveLength(120)
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+
+    const 数 = (slot: string) => host.querySelectorAll(`[data-slot='${slot}']`).length
+    expect(分段默认显示).toBe(5)
+    expect(数("entity-relation")).toBe(10) // 数据说的 5 + 人说的 5
+    expect(数("entity-event")).toBe(5)
+    expect(数("entity-citation")).toBe(5)
+
+    // 数据说的：8 → 展开 8，再收起回 5。
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    await 等(() => 数("entity-relation") === 13) // 8 + 5（人说的仍收起）
+    expect(host.querySelector("[data-slot='entity-relations-data-expand']")!.textContent).toContain("收起")
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    await 等(() => 数("entity-relation") === 10)
+
+    // 人说的：7 → 7。
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-human-expand']")!.click()
+    await 等(() => 数("entity-relation") === 12) // 5 + 7（数据说的已收起）
+    // 事件：6 → 6。
+    host.querySelector<HTMLElement>("[data-slot='entity-events-expand']")!.click()
+    await 等(() => 数("entity-event") === 6)
+    // 出处：9 → 9。
+    host.querySelector<HTMLElement>("[data-slot='entity-citation-expand']")!.click()
+    await 等(() => 数("entity-citation") === 9)
+    expect(host.querySelector("[data-slot='entity-citation-expand']")!.textContent).toContain("收起")
+  })
+
+  test("换实体重置全部折叠（裁决 / 切开关重取不重置）", async () => {
+    const [id, setId] = createSignal("e-张")
+    const 大 = 大档()
+    // 重取（裁决成功 / 切「显示已排除」）与换实体走的都是同一个取数 effect：
+    // 只按「实体键变了」收起，重取同一实体时阅读位置必须原地不动。
+    let 取数 = 0
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id={id()}
+        api={假api({
+          profile: async () => {
+            取数 += 1
+            return { kind: "ok", value: 大 }
+          },
+          trust: async () => ({ kind: "ok", value: { trustState: "已确认" } }),
+        })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+    host.querySelector<HTMLElement>("[data-slot='entity-relations-data-expand']")!.click()
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 13)
+
+    // 裁决成功会重取：折叠不能跟着收起（否则每裁一次就把阅读位置顶回 5 条）。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")!.click()
+    await 等(() => 取数 === 2)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(13)
+
+    // 切「显示已排除」也会重取同一实体：同样不重置。
+    host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
+    await 等(() => 取数 === 3)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(host.querySelectorAll("[data-slot='entity-relation']").length).toBe(13)
+
+    setId("e-李")
+    await 等(() => host.querySelectorAll("[data-slot='entity-citation']").length === 5)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 10)
+    expect(host.querySelectorAll("[data-slot='entity-event']").length).toBe(5)
   })
 
   test("出处不超过阈值时不出现展开按钮", async () => {
@@ -566,7 +647,7 @@ describe("实体档案", () => {
   // 不能跟着当前页说 500（与「一句话」的全量口径对齐）。
   // 2026-11-08：「出处」不再是数字卡的一格（第四格换成「待确认」），全量口径改由块头钉住。
   test("出处块头用引用总数（全量），不是当前页条数", async () => {
-    const 截断档: 实体档案 = { ...档, 引用: 造引用(出处默认显示 + 10), 引用总数: 777 }
+    const 截断档: 实体档案 = { ...档, 引用: 造引用(分段默认显示 + 10), 引用总数: 777 }
     const host = mount(() => (
       <EntityProfile
         projectId="p"
