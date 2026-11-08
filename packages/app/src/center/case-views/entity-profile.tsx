@@ -206,6 +206,10 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
    * 反例（Task 6 评审提出）：在关系上点「✗ 抽错」并写了「识别错」，再点「待确认」回整条实体，
    * 原因区还是那段字；一点提交，关系的理由就发到整条实体上了。所以切对象必须同时收起原因区、
    * 清空原因类型与原文——**所有换对象的路径共用这一处**，别各写一份（`#002-06`）。
+   *
+   * 上一对象的**裁决错误**也必须一起清：它说的是「刚才那次提交为什么失败」，换了一个要被评的
+   * 东西之后还挂着，会被读成新对象也裁决失败。**同实体重取不在本路径**（`重取序` 那条不改），
+   * 那里的错误要留着让用户重试。
    */
   const 换裁决对象 = (
     对象: { readonly factType: "entity" } | { readonly factType: "relation" | "event"; readonly factId: string },
@@ -214,6 +218,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     set展开原因(false)
     set原因类型(undefined)
     set原因说明("")
+    set裁决错误(undefined)
   }
   const 选中的关系 = createMemo(() => {
     const 对象 = 裁决对象()

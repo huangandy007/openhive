@@ -1109,9 +1109,35 @@ describe("实体档案", () => {
     expect(调用次数).toBe(1)
 
     // 切「显示已排除」（会重取档案）不能把裁决错误抹掉——共用信号时这里会红。
+    // 这条同时也是「同实体重取不清」的对照用例（`换裁决对象` 之外的路径）。
     host.querySelector<HTMLElement>("[data-slot='entity-profile-include-excluded']")!.click()
     await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
     expect(host.querySelector("[data-slot='entity-trust-error']")?.textContent).toContain("服务端拒绝了这次裁决")
+  })
+
+  test("换裁决对象后不残留上一条的裁决错误", async () => {
+    const api = 假api({ trust: async () => ({ kind: "error", message: "服务端拒绝了这次裁决" }) })
+    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={api} onOpen={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+
+    // 在**整条实体**上提交一次失败 ⇒ 错误条可见。
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reject']")!.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-reason']") !== null)
+    const 框 = host.querySelector<HTMLTextAreaElement>("[data-slot='entity-trust-reason-text']")!
+    框.value = "对方号码认反了"
+    框.dispatchEvent(new Event("input", { bubbles: true }))
+    host.querySelector<HTMLElement>("[data-slot='entity-trust-reason-kind'][data-kind='识别错']")!.click()
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='entity-trust-reason-submit']")!
+    await 等(() => !提交.disabled)
+    提交.click()
+    await 等(() => host.querySelector("[data-slot='entity-trust-error']") !== null)
+    expect(host.querySelector("[data-slot='entity-trust-error']")!.textContent).toContain("服务端拒绝了这次裁决")
+
+    // 换裁决对象（点另一条关系）⇒ 这条错误说的是「上一条提交」，必须一起消失。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation'][data-id='r-2']")!.click()
+    expect(底栏对象(host)).toContain("这条关系")
+    // `=== null` 用布尔断言：happy-dom 节点直接 `toBeNull()` 真失败时 bun 会序列化环形引用（`#009-01`）。
+    expect(host.querySelector("[data-slot='entity-trust-error']") === null).toBe(true)
   })
 
   /**
