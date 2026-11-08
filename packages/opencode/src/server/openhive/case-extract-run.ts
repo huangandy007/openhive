@@ -37,6 +37,8 @@ export interface 模型调用 {
 
 export interface 抽取器 {
   readonly 模型标识: string
+  /** 模型来自哪个槽位（`task_model` / `model`）；假抽取器可以不填。只进 `parse_detail` 供审计。 */
+  readonly 模型来源?: string
   readonly 调用: 模型调用
 }
 

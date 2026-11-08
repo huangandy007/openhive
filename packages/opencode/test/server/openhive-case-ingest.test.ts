@@ -955,14 +955,14 @@ describe("文本作业（计划 4）", () => {
     expect(notes).toEqual(expect.arrayContaining([expect.stringContaining("没有给时间")]))
   })
 
-  test("回读不过 N 次 ⇒ 材料「有问题」＋ parse_detail.slices 有段号，作业仍「完成」", async () => {
+  test("回读不过 N 次 ⇒ 材料「有问题」＋ 作业「失败」（0 成功不得记完成）", async () => {
     const 入 = await 入队文本()
     const job = await 认领本材料(入.materialId)
     const 假 = 建假抽取器(() => ({
       实体: [{ 类型: "人", 取值: "王五" }], 关系: [], 事件: [],
     }))
     const r = await runJob(db(), { ...deps, 建抽取器: async () => 假 }, job)
-    expect(r).toBe("完成")
+    expect(r).toBe("失败")
 
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("有问题")
@@ -974,6 +974,25 @@ describe("文本作业（计划 4）", () => {
       factCount: 0,
       slices: [{ range: expect.stringContaining("0-"), count: 1 }],
     })
+
+    // M5：作业表要留下可查的结论，不能只靠材料状态。
+    const 作业 = rowsOf(await db().execute(sql`select status, error from auth.case_ingest_job where id = ${job.jobId}`))
+    expect(作业[0]).toMatchObject({ status: "失败" })
+    expect(String(作业[0]?.error)).toContain("全部 1 段")
+  })
+
+  test("两片都失败 ⇒ 作业「失败」、error 带片数；部分成功仍「完成」", async () => {
+    // 两行各 800 字 ⇒ 恰好两片。两片都回 `{}`（结构非法）⇒ 全部片失败。
+    const 入 = await 入队文本("两片全坏.txt", `${"甲".repeat(800)}\n${"乙".repeat(800)}`)
+    const job = await 认领本材料(入.materialId)
+    const r = await runJob(db(), { ...deps, 建抽取器: async () => 建假抽取器(() => ({})) }, job)
+    expect(r).toBe("失败")
+
+    const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 作业 = rowsOf(await db().execute(sql`select status, error from auth.case_ingest_job where id = ${job.jobId}`))
+    expect(作业[0]).toMatchObject({ status: "失败" })
+    expect(String(作业[0]?.error)).toContain("全部 2 段")
   })
 
   test("重放：改模型回答后重新解析，旧关系被删、新关系落库，实体不重复", async () => {
@@ -1061,13 +1080,14 @@ describe("文本作业（计划 4）", () => {
     const 重排 = await 入队("p-txt", "笔录.txt", "fp-笔录.txt", true)
     expect(重排.enqueued).toBe(true)
     const 第二次 = await 认领本材料(入.materialId)
-    // `{}` 每一片 3 次都过不了结构校验 ⇒ 零事实、问题片非空。修前会先删旧事实再写 0 条。
+    // `{}` 每一片 3 次都过不了结构校验 ⇒ 零事实、问题片非空。修前会先删旧事实再写 0 条；
+    // 零成功切片 ⇒ 作业记「失败」（T4）。
     const r = await runJob(
       db(),
       { ...deps, 建抽取器: async () => 建假抽取器(() => ({})) },
       第二次,
     )
-    expect(r).toBe("完成")
+    expect(r).toBe("失败")
 
     const 材料 = await getMaterial(db(), "p-txt", 入.materialId)
     expect(材料?.parseStatus).toBe("有问题")
