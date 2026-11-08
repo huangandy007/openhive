@@ -105,14 +105,25 @@ const 事件参与数 = () =>
        and ev.participants @> array[e.canonical_value]::text[]
   )`
 
+/** 人确认过的状态：核心判据与「同权重已确认优先」共用，避免两处字面各写一遍。 */
+const 已确认或修正 = () => sql`trust_state in ('已确认','已修正')`
+
+/**
+ * 核心判据：有连接（有效关系或事件参与）或人已确认。**整个 feature 的准入判据只此一份**（`#002-06`）：
+ * 分组计数的核心列、提及列（`not`）、清单分类都引用它；改条件只改这里。
+ *
+ * 引用派生表列名（`关联数` / `事件参与数` / `trust_state`）⇒ 调用处必须先把两个计数列投影出来。
+ */
+const 核心判据 = () => sql`(关联数 > 0 or 事件参与数 > 0 or ${已确认或修正()})`
+
 export async function 分组计数(db: Queryable, projectId: string): Promise<分组计数> {
   const 行 = rowsOf(
     await db.execute(sql`
       select count(*) filter (
-               where 关联数 > 0 or 事件参与数 > 0 or trust_state in ('已确认','已修正')
+               where ${核心判据()}
              )::int as 核心,
              count(*) filter (
-               where not (关联数 > 0 or 事件参与数 > 0 or trust_state in ('已确认','已修正'))
+               where not ${核心判据()}
              )::int as 提及
         from (
           select e.trust_state,
@@ -145,7 +156,7 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
       ? sql`行.canonical_value asc, 行.id asc`
       : 排序 === "时间"
         ? sql`行.created_at desc, 行.id asc`
-        : sql`行.权重 desc, (行.trust_state in ('已确认','已修正')) desc, 行.canonical_value asc, 行.id asc`
+        : sql`行.权重 desc, (${已确认或修正()}) desc, 行.canonical_value asc, 行.id asc`
   const 分组条件 = input.分组 === undefined ? sql`true` : sql`行.分组 = ${input.分组}`
 
   const 行们 = rowsOf(
@@ -156,8 +167,7 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
         from (
           select t.*,
                  (t.关联数 + t.事件参与数) as 权重,
-                 case when t.关联数 > 0 or t.事件参与数 > 0
-                        or t.trust_state in ('已确认','已修正') then '核心' else '提及' end as 分组
+                 case when ${核心判据()} then '核心' else '提及' end as 分组
             from (
               select e.id, e.type, e.canonical_value, e.attrs, e.trust_state, e.created_at,
                      ${关系度数()} as 关联数,
