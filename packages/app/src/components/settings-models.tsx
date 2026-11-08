@@ -10,6 +10,8 @@ import { useModels } from "@/context/models"
 import { popularProviders } from "@/hooks/use-providers"
 import { SettingsList } from "./settings-list"
 import { SettingsServerPicker, SettingsServerScope } from "./settings-server-picker"
+// 【保留的定制 · 同步上游时不要丢】模型页顶部只读展示两个模型槽位（2026-11-08，模型统一配置 T6）。
+import { SettingsModelSlots } from "./settings-model-slots"
 
 type ModelItem = ReturnType<ReturnType<typeof useModels>["list"]>[number]
 
@@ -96,6 +98,8 @@ const SettingsModelsContent: Component = () => {
       </div>
 
       <div class="flex flex-col gap-8 max-w-[720px]">
+        {/* 【保留的定制 · 同步上游时不要丢】当前生效模型（2026-11-08，模型统一配置 T6）。 */}
+        <SettingsModelSlots />
         <Show
           when={!list.grouped.loading}
           fallback={
