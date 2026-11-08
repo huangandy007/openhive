@@ -393,6 +393,55 @@ describe("关系图 · 检视面板", () => {
   })
 
   /**
+   * 身份证在图上**三处文案**都换词（2026-11-08 细类显示名）：带走文本 / 悬停第二行 / 检视面板副标题。
+   *
+   * 既有用例只用恒等的「手机号」⇒ 三处映射拆掉也全绿（评审实测）。这里用 `身份证` 夹具逐个断
+   * **整格**：`#006-22` 的教训是子串匹配会被相邻文本喂饱。
+   */
+  test("身份证细类在图上三处都显示为「证件号」：带走文本 / 悬停第二行 / 面板副标题", async () => {
+    const 数据: 关系图结果 = {
+      节点: [
+        { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 1, 度数: 1 },
+        { id: "e-证", type: "号码", subtype: "身份证", value: "330502199001011234", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 1 },
+      ],
+      边: [{ id: "r-证", from: "e-心", to: "e-证", type: "实际使用", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 }],
+      缺口: [],
+    }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 数据 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 2)
+
+    // 悬停：第一行是「值 · 类型」，第二行必须以「证件号 · 」开头（细类没了就只剩信任态）。
+    点元素(host, "e-证").dispatchEvent(new MouseEvent("mouseenter"))
+    const 行们 = [...host.querySelector("[data-slot='graph-tip']")!.querySelectorAll("text")].map((节点) => 节点.textContent)
+    expect(行们).toHaveLength(2)
+    expect(行们[1]!.startsWith("证件号 · ")).toBe(true)
+    expect(行们[1]).toBe("证件号 · 自动抽取 · 图上 1 · 库内 1")
+
+    // 检视面板：断那一整格，不拿整块面板做子串匹配。
+    点元素(host, "e-证").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel-subtitle']")!.textContent).toBe("号码 · 证件号 · 自动抽取")
+
+    // 带走文本（右键「复制」与「发送到会话」共用同一份写法）。
+    右键(点元素(host, "e-证"))
+    await 等(() => 菜单开着())
+    const 原生剪贴板 = navigator.clipboard
+    const 写入: string[] = []
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (文字: string) => void 写入.push(文字) },
+    })
+    try {
+      点菜单项("graph-node-menu-copy")
+      await 等(() => 写入.length === 1)
+      expect(写入).toEqual(["号码 · 证件号 · 330502199001011234"])
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: 原生剪贴板 })
+    }
+  })
+
+  /**
    * 面板标题旁「复制」（2026-11-07 用户下达）：图上节点标签是**截断**的（`4301231967...`），
    * 全文只在面板里 ⇒ 要能一键拿全文。只复制**值**本身（用户裁定），不带类型/跳数。
    */

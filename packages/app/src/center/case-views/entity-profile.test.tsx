@@ -712,9 +712,11 @@ describe("实体档案", () => {
         档.关系[1],
         // 防御分支：服务端的大类有 CHECK 约束、正常不会为空；空串只为钉「都没有」那一路。
         { ...档.关系[0], id: "r-3", 对方细类: null, 对方类型: "" },
+        // 细类换词（2026-11-08）：库里的 `身份证` 在界面上是「证件号」。
+        { ...档.关系[0], id: "r-4", 对方细类: "身份证", 对方类型: "号码" },
       ],
-      关系总数: 3,
-      关系数据总数: 2,
+      关系总数: 4,
+      关系数据总数: 3,
       关系人总数: 1,
     }
     const host = mount(() => (
@@ -725,13 +727,14 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 3)
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 4)
     const 类别 = (id: string) =>
       host.querySelector(`[data-slot='entity-relation'][data-id='${id}'] [data-slot='entity-relation-kind']`)!
         .textContent
     expect(类别("r-1")).toBe("银行账号") // 细类优先
     expect(类别("r-2")).toBe("人") // 无细类 ⇒ 大类
     expect(类别("r-3")).toBe("——") // 都没有
+    expect(类别("r-4")).toBe("证件号") // 身份证换词
   })
 
   // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：块头必须报全量，
@@ -1131,6 +1134,21 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     expect(底栏对象(host)).toContain("整条实体")
     expect(底栏对象(host)).toContain("张三")
+  })
+
+  test("底栏默认对象里的细类也换词：整条实体写「号码 · 证件号」", async () => {
+    const 证件档 = { ...档, type: "号码", subtype: "身份证", canonical_value: "330502199001011234" }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-证"
+        api={假api({ profile: async () => ({ kind: "ok", value: 证件档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
+    expect(底栏对象(host)).toContain("号码 · 证件号")
+    expect(底栏对象(host)).not.toContain("身份证")
   })
 
   test("裁决语义是数据质量：可见文案写明「抽取是否正确」，不是「是否涉案」", async () => {
