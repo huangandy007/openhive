@@ -255,6 +255,12 @@ const 节点半径 = (点: 图节点) => (点.中心 ? 20 : 15)
 export const 枢纽度数阈值 = 10
 const 是枢纽 = (点: 图节点) => 点.度数 >= 枢纽度数阈值
 
+/** 放宽一档：强 → 重点 → 全部；已在「全部」就没有可放宽的了。 */
+const 宽一档 = (档: 关系图强度): 关系图强度 | undefined => {
+  const 序 = 关系图强度们.indexOf(档)
+  return 序 <= 0 ? undefined : 关系图强度们[序 - 1]
+}
+
 type 形 = "circle" | "rect" | "hexagon" | "diamond"
 
 function 形状(类型: string): 形 {
@@ -1184,7 +1190,18 @@ export function Graph(props: GraphProps): JSX.Element {
             <p class="p-3 text-[13px] text-v2-text-text-muted">正在读取关系…</p>
           </Show>
           <Show when={图() && 图()!.边.length === 0 && 错误() === undefined}>
-            <p data-slot="graph-empty" class="p-3 text-[13px] text-v2-text-text-muted">还没有关系</p>
+            <Show
+              when={图()!.强度缺口?.未显示 ?? 0}
+              fallback={
+                <p data-slot="graph-empty" class="p-3 text-[13px] text-v2-text-text-muted">还没有关系</p>
+              }
+            >
+              {(数) => (
+                <p data-slot="graph-empty" data-reason="weak" class="p-3 text-[13px] text-v2-text-text-muted">
+                  当前强度下没有关系（共 {数()} 条较弱）
+                </p>
+              )}
+            </Show>
           </Show>
 
           <Show when={图() && 图()!.边.length > 0}>
@@ -1644,6 +1661,10 @@ export function Graph(props: GraphProps): JSX.Element {
                     <span class="text-[11px] text-v2-text-text-muted">可信</span>
                     <span class="text-v2-text-text-base">{行().trust_state}</span>
                   </div>
+                  <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
+                    <span class="text-[11px] text-v2-text-text-muted">明细</span>
+                    <span class="text-v2-text-text-base">{行().明细数} 条原始关系</span>
+                  </div>
                 </div>
                 <For each={[甲, 乙]}>
                   {(端) => (
@@ -1720,6 +1741,23 @@ export function Graph(props: GraphProps): JSX.Element {
           </ContextMenu.Content>
         </ContextMenu.Portal>
       </ContextMenu>
+
+      <Show when={图()?.强度缺口}>
+        {(缺) => (
+          <Show when={宽一档(强度())}>
+            {(下) => (
+              <button
+                type="button"
+                data-slot="graph-weak-chip"
+                onClick={() => set强度(下())}
+                class="shrink-0 cursor-pointer border-t border-v2-border-border-muted px-3 py-1 text-left text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-layer-02"
+              >
+                较弱关系 {缺().未显示} 条未显示 · 放宽到「{下()}」
+              </button>
+            )}
+          </Show>
+        )}
+      </Show>
 
       <For each={图()?.缺口 ?? []}>
         {(话) => (

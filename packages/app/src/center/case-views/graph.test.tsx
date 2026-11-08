@@ -1637,3 +1637,74 @@ describe("关系图 · 分簇", () => {
     }
   })
 })
+
+describe("关系图 · 弱关系与空态", () => {
+  test("强度缺口存在 ⇒ 出现「较弱关系 N 条未显示」；点它放宽一档并重新取数", async () => {
+    const 调用: Array<关系图强度 | undefined> = []
+    const 带缺: 关系图结果 = { ...图, 强度缺口: { 未显示: 137, 总数: 300 } }
+    const api = 假api({
+      graph: async (_项目, _id, _跳, _类, 强度) => {
+        调用.push(强度)
+        return { kind: "ok", value: 带缺 }
+      },
+    })
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => 调用.length === 1)
+    // 默认「重点」⇒ 再放宽一档是「全部」（≠ 更严的「强」）。
+    expect(调用[0]).toBe("重点")
+    const 条文本 = () => host.querySelector("[data-slot='graph-weak-chip']")?.textContent ?? ""
+    expect(条文本()).toContain("137")
+    expect(条文本()).toContain("放宽到「全部」")
+    host.querySelector<HTMLElement>("[data-slot='graph-weak-chip']")!.click()
+    await 等(() => 调用.length === 2)
+    expect(调用[1]).toBe("全部")
+    // 「全部」已最松：即便假 api 仍返回缺口，也不该再给按钮。
+    await 等(() => host.querySelectorAll("[data-slot='graph-weak-chip']").length === 0)
+  })
+
+  test("「强」档的弱关系条放宽到「重点」", async () => {
+    const 调用: Array<关系图强度 | undefined> = []
+    const api = 假api({
+      graph: async (_项目, _id, _跳, _类, 强度) => {
+        调用.push(强度)
+        return { kind: "ok", value: { ...图, 强度缺口: { 未显示: 9, 总数: 40 } } }
+      },
+    })
+    const host = mount(() => <Graph projectId="p" id="e-张" api={api} onOpenEntity={() => {}} />)
+    await 等(() => 调用.length === 1)
+    host.querySelector<HTMLElement>("[data-slot='graph-strength'][data-strength='强']")!.click()
+    await 等(() => 调用.length === 2)
+    expect(host.querySelector("[data-slot='graph-weak-chip']")?.textContent ?? "").toContain("放宽到「重点」")
+  })
+
+  test("强度筛空了但库里还有 ⇒ 说「当前强度下没有关系」，不冒充「还没有关系」", async () => {
+    const 空图: 关系图结果 = { 节点: [图.节点[0]], 边: [], 缺口: [], 强度缺口: { 未显示: 5, 总数: 5 } }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-张" api={假api({ graph: async () => ({ kind: "ok", value: 空图 }) })} onOpenEntity={() => {}} />
+    ))
+    const 空态 = () => host.querySelector<HTMLElement>("[data-slot='graph-empty']")
+    await 等(() => 空态() !== null)
+    expect(空态()!.getAttribute("data-reason")).toBe("weak")
+    expect(空态()!.textContent).toContain("当前强度下没有关系")
+    expect(空态()!.textContent).toContain("5")
+    expect(空态()!.textContent).not.toContain("还没有关系")
+    expect(host.querySelectorAll("[data-slot='graph-weak-chip']").length).toBe(1)
+  })
+
+  test("边面板：次数 / 金额合计 / 混合可信 / 明细数", async () => {
+    const 混合图: 关系图结果 = {
+      ...图,
+      边: [{ id: "rel|e-张|e-李|转账", from: "e-张", to: "e-李", type: "转账", times: 4, amount: "6000.00", trust_state: "混合", 明细数: 3 }],
+    }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-张" api={假api({ graph: async () => ({ kind: "ok", value: 混合图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    边元素(host, "rel|e-张|e-李|转账").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    const 面板 = host.querySelector("[data-slot='graph-panel']")!
+    expect(面板.textContent).toContain("4 次")
+    expect(面板.textContent).toContain("6000.00 元")
+    expect(面板.textContent).toContain("混合")
+    expect(面板.textContent).toContain("3 条原始关系")
+  })
+})
