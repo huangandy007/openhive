@@ -213,6 +213,10 @@ export function 自动位置(图: 关系图结果, 尺寸: 画布尺寸 = 画布
 
 const 节点半径 = (点: 图节点) => (点.中心 ? 20 : 15)
 
+/** 度数达到这么多就单独标出来——枢纽是「这个账户跟几百人往来」的那种点。 */
+export const 枢纽度数阈值 = 10
+const 是枢纽 = (点: 图节点) => 点.度数 >= 枢纽度数阈值
+
 type 形 = "circle" | "rect" | "hexagon" | "diamond"
 
 function 形状(类型: string): 形 {
@@ -1245,7 +1249,19 @@ export function Graph(props: GraphProps): JSX.Element {
                       onMouseEnter={() => set悬停点(行().id)}
                       onMouseLeave={() => set悬停点(undefined)}
                     >
-                      <title>{行().value}</title>
+                      <title>{`${行().value}${是枢纽(行()) ? `（枢纽 · 全部 ${行().度数} 条）` : ""}`}</title>
+                      {/* 枢纽外环画在焦点环之前：选中时金环仍压在它上面，一眼看到「面板看的是这颗」。 */}
+                      <Show when={是枢纽(行())}>
+                        <circle
+                          data-slot="graph-node-hub"
+                          cx={行().x}
+                          cy={行().y}
+                          r={节点半径(行()) + 4.5}
+                          fill="none"
+                          stroke="var(--v2-border-border-strong)"
+                          stroke-width="1"
+                        />
+                      </Show>
                       <Show when={选中()?.kind === "node" && 选中()!.id === 行().id}>
                         <circle
                           data-slot="graph-node-focus"
@@ -1451,9 +1467,19 @@ export function Graph(props: GraphProps): JSX.Element {
                   <span class="text-v2-text-text-base">{点().中心 ? "中心" : `${点().跳数} 跳`}</span>
                 </div>
                 <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
-                  <span class="text-[11px] text-v2-text-text-muted">关联</span>
+                  <span class="text-[11px] text-v2-text-text-muted">图上</span>
                   <span class="text-v2-text-text-base">{点().关联数} 条</span>
                 </div>
+                <div class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
+                  <span class="text-[11px] text-v2-text-text-muted">全部</span>
+                  <span class="text-v2-text-text-base">{点().度数} 条</span>
+                </div>
+                <Show when={是枢纽(点())}>
+                  <div data-slot="graph-panel-hub" class="flex items-baseline justify-between gap-2 border-b border-dashed border-v2-border-border-muted py-1">
+                    <span class="text-[11px] text-v2-text-text-muted">枢纽</span>
+                    <span class="text-v2-text-text-base">是</span>
+                  </div>
+                </Show>
               </div>
               <Show when={!点().中心}>
                 <button

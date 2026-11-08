@@ -363,7 +363,11 @@ describe("关系图 · 检视面板", () => {
     expect(host.querySelector("[data-slot='graph-panel-title']")!.textContent).toContain("李四")
     expect(面板.textContent).toContain("自动抽取")
     expect(面板.textContent).toContain("1 跳")
-    expect(面板.textContent).toContain("1 条")
+    // 两套口径分开写：图上画了几条（关联数）与库里总共几条（度数）。
+    const 条数行 = (名: string) =>
+      [...面板.querySelectorAll("div")].find((格) => 格.firstElementChild?.textContent === 名)
+    expect(条数行("图上")?.lastElementChild?.textContent).toBe("1 条")
+    expect(条数行("全部")?.lastElementChild?.textContent).toBe("1 条")
     expect(收到).toHaveLength(0)
 
     host.querySelector<HTMLElement>("[data-slot='graph-panel-open']")!.click()
@@ -1351,5 +1355,46 @@ describe("关系图 · 右键复制与发送到会话", () => {
     await 等(() => 菜单开着())
     点菜单项("graph-node-menu-ask")
     expect(收到).toEqual(["号码 · 手机号 · 13800000001"])
+  })
+})
+
+describe("关系图 · 枢纽", () => {
+  const 枢纽图: 关系图结果 = {
+    节点: [
+      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 2, 度数: 60 },
+      { id: "e-枢", type: "账户", value: "枢纽账户", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 12 },
+      { id: "e-常", type: "人", value: "普通人", trust_state: "自动抽取", 中心: false, 跳数: 1, 关联数: 1, 度数: 3 },
+    ],
+    边: [
+      { id: "rel|e-心|e-枢|转账", from: "e-心", to: "e-枢", type: "转账", times: 1, amount: "100.00", trust_state: "自动抽取", 明细数: 1 },
+      { id: "rel|e-心|e-常|通话", from: "e-心", to: "e-常", type: "通话", times: 1, amount: null, trust_state: "自动抽取", 明细数: 1 },
+    ],
+    缺口: [],
+  }
+
+  test("度数 ≥ 10 画外环；面板同时给「图上」与「全部」两条数", async () => {
+    const host = mount(() => (
+      <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 枢纽图 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 3)
+
+    // ⚠️ 不把 DOM 节点交给断言（#009-01）：happy-dom 序列化 SVG 节点要 12–16s。
+    const 环数 = (id: string) => 点元素(host, id).querySelectorAll("[data-slot='graph-node-hub']").length
+    expect(环数("e-枢")).toBe(1)
+    expect(环数("e-常")).toBe(0)
+    expect(环数("e-心")).toBe(1) // 中心自己度数 60，也是枢纽
+    expect(点元素(host, "e-枢").querySelector("title")!.textContent).toBe("枢纽账户（枢纽 · 全部 12 条）")
+    expect(点元素(host, "e-常").querySelector("title")!.textContent).toBe("普通人")
+
+    点元素(host, "e-枢").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    const 面板 = host.querySelector("[data-slot='graph-panel']")!
+    expect(面板.textContent).toContain("图上")
+    expect(面板.textContent).toContain("1 条")
+    expect(面板.textContent).toContain("全部")
+    expect(面板.textContent).toContain("12 条")
+    expect(面板.querySelector("[data-slot='graph-panel-hub']") !== null).toBe(true)
+
+    点元素(host, "e-常").dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    expect(host.querySelector("[data-slot='graph-panel']")!.querySelector("[data-slot='graph-panel-hub']") === null).toBe(true)
   })
 })
