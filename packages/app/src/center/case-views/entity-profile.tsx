@@ -278,7 +278,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
   })
 
   /**
-   * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `引用总数` / `对方数`）。
+   * 数字卡一律报**全量**（服务端回包里的 `关系总数` / `事件总数` / `对方数` / `待确认.合计`）。
    *
    * 不能拿 `关系.length` 报：列表页只带前 200 条，按页报会把「201 个对手方」说成 200，
    * 还会和顶部「一句话」（全量聚合）对不上。页内截断由数字卡下面的「缺口」说明。
@@ -289,34 +289,42 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
     return [
       { key: "关系", 值: 当前.关系总数 },
       { key: "事件", 值: 当前.事件总数 },
-      { key: "出处", 值: 当前.引用总数 },
       { key: "对手方", 值: 当前.对方数 },
+      { key: "待确认", 值: 当前.待确认.合计 },
     ]
   })
 
   /**
-   * 四格各自的落点（2026-11-07 用户裁定）：点数字 = 走到它数的那批东西跟前，别让人自己往下翻。
+   * 四格各自的落点：点数字 = 走到它数的那批东西跟前，别让人自己往下翻。
    *
    * 「对手方」没有自己的正文块——它是关系里「对方」去重后的个数 ⇒ 与「关系」同落点。
+   * 「待确认」没有自己的块：它是「回到整条实体 + 聚焦 ✓ 正确」，让用户马上能开始裁决。
    * 落点用 `data-slot` 现查，不另存 ref 数组：块是条件渲染的，ref 可能在点击时已经换过。
    */
   const 落点: Record<string, string> = {
     关系: "entity-relations",
     事件: "entity-events",
-    出处: "entity-citations",
     对手方: "entity-relations",
   }
   /** 读屏只念「3 / 关系」会以为这是静态数字：可读名必须说清它会跳。 */
-  const 格子可读名: Record<string, string> = {
-    关系: "跳到关系块",
-    事件: "跳到事件块",
-    出处: "跳到出处块",
-    对手方: "跳到关系块（对手方在关系里）",
+  const 格子可读名 = (键: string): string => {
+    const 当前 = 档()
+    if (键 === "待确认")
+      return `回到整条实体并聚焦「✓ 正确」（实体 ${当前?.待确认.实体 ?? 0} + 关系 ${当前?.待确认.关系 ?? 0} + 事件 ${当前?.待确认.事件 ?? 0}）`
+    if (键 === "对手方") return "跳到关系块（对手方在关系里）"
+    return `跳到${键}块`
   }
   /** 档案自己的滚动容器；点击时从**它里面**找落点，滚到别处等于把用户送出档案页。 */
   let 滚动体: HTMLDivElement | undefined
+  /** 底栏裁决条：待确认跳转要聚焦其中的「✓ 正确」。 */
+  let 裁决条: HTMLElement | undefined
 
   const 跳到 = (键: string) => {
+    if (键 === "待确认") {
+      set裁决对象({ factType: "entity" })
+      裁决条?.querySelector<HTMLElement>("[data-slot='entity-trust-confirm']")?.focus()
+      return
+    }
     const 目标 = 滚动体?.querySelector(`[data-slot='${落点[键]}']`)
     if (目标 instanceof HTMLElement) 目标.scrollIntoView({ block: "start" })
   }
@@ -508,7 +516,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                           data-slot="entity-stat"
                           data-key={项.key}
                           data-jump={落点[项.key]}
-                          aria-label={格子可读名[项.key]}
+                          aria-label={格子可读名(项.key)}
                           onClick={() => 跳到(项.key)}
                           class={`cursor-pointer px-3 py-2 text-left transition-colors ${悬停叠层}`}
                         >
@@ -760,7 +768,7 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
                   </div>
                 </div>
               </Show>
-              <div data-slot="entity-trust" class="flex flex-wrap items-center gap-1">
+              <div data-slot="entity-trust" ref={(元素) => (裁决条 = 元素)} class="flex flex-wrap items-center gap-1">
                 {/* 标题必须说清「现在评的是谁」：默认整条实体，点行之后换成那条关系 / 事件。
                     长文本截断——底栏不能被一串号码顶出行外。 */}
                 <span

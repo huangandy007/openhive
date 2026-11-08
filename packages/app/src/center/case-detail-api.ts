@@ -70,6 +70,13 @@ export interface 实体档案 {
   readonly 引用: readonly 引用[]
   /** 出处的**全量**条数：界面报数用它，不能拿 `引用.length` 冒充总数。 */
   readonly 引用总数: number
+  /** 本实体 + 有效关系 + 事件里「自动抽取 / 存疑」的条数；已排除不计。 */
+  readonly 待确认: {
+    readonly 实体: number
+    readonly 关系: number
+    readonly 事件: number
+    readonly 合计: number
+  }
   readonly 一句话: string
   /**
    * 关系 / 事件被上限截断时的整句提示（服务端 `case-entity-list.ts` 的 `实体档案.缺口`）。

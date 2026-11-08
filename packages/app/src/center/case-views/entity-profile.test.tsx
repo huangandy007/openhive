@@ -118,6 +118,7 @@ const 档: 实体档案 = {
   关系人总数: 1,
   事件总数: 1,
   对方数: 2,
+  待确认: { 实体: 0, 关系: 0, 事件: 0, 合计: 0 },
   引用总数: 1,
   一句话: "张三：2 条关系，1 起事件；数据说的 1 条、人说的 1 条。",
 }
@@ -262,10 +263,10 @@ describe("实体档案", () => {
       host.querySelector(`[data-slot='entity-stat'][data-key='${键}'] [data-slot='entity-stat-value']`)!.textContent
     expect(数("关系")).toBe("2")
     expect(数("事件")).toBe("1")
-    expect(数("出处")).toBe("1")
     expect(数("对手方")).toBe("1")
-    // 金额是逐条关系的字符串，出入双向各记一遍；前端求和会给出一个假数（4×3 万来回＝24 万）。
-    // 服务端不给聚合，这里就不摆这个数字。
+    expect(数("待确认")).toBe("0")
+    // 出处不再是数字卡的一格；金额仍不摆（服务端不给聚合）。
+    expect(host.querySelector("[data-slot='entity-stat'][data-key='出处']")).toBeNull()
     expect(host.textContent).not.toContain("涉及金额")
   })
 
@@ -294,14 +295,32 @@ describe("实体档案", () => {
     expect(host.querySelector("[data-slot='entity-profile-body']")!.contains(到过[0]!)).toBe(true)
   })
 
-  test("点「出处」格 ⇒ 滚到出处块", async () => {
-    const 到过 = 装滚动探针()
-    const host = mount(() => <EntityProfile projectId="p" id="e-张" api={假api()} onOpen={() => {}} />)
-    await 等(() => host.querySelectorAll("[data-slot='entity-stat']").length === 4)
+  test("点「待确认」格 ⇒ 回到整条实体并聚焦底栏「✓ 正确」", async () => {
+    const 待确认档: 实体档案 = {
+      ...档,
+      待确认: { 实体: 1, 关系: 2, 事件: 1, 合计: 4 },
+    }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-张"
+        api={假api({ profile: async () => ({ kind: "ok", value: 待确认档 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
 
-    统计格(host, "出处").click()
+    // 先点一条关系，把底栏对象换成它；点「待确认」必须回到整条实体。
+    host.querySelector<HTMLElement>("[data-slot='entity-relation']")!.click()
+    expect(host.querySelector("[data-slot='entity-trust-target']")!.textContent).toContain("这条关系")
 
-    expect(落点(到过)).toEqual(["entity-citations"])
+    const 格 = 统计格(host, "待确认")
+    expect(格.textContent).toContain("4")
+    expect(格.getAttribute("aria-label")).toContain("实体 1 + 关系 2 + 事件 1")
+    格.click()
+
+    expect(host.querySelector("[data-slot='entity-trust-target']")!.textContent).toContain("整条实体")
+    expect(document.activeElement).toBe(host.querySelector("[data-slot='entity-trust-confirm']"))
   })
 
   test("点「关系」或「对手方」格 ⇒ 都滚到关系块（对手方是关系的派生数，没有自己的块）", async () => {
@@ -403,6 +422,7 @@ describe("实体档案", () => {
     expect(读("关系")).toBe("201")
     expect(读("事件")).toBe("101")
     expect(读("对手方")).toBe("201")
+    expect(读("待确认")).toBe("0")
     // 事件段头报的也是全量：它和数字卡在同一屏，一个说 101、一个说 0 起会自相矛盾。
     expect(host.querySelector("[data-slot='entity-events']")!.textContent).toContain("101 起")
   })
@@ -475,9 +495,10 @@ describe("实体档案", () => {
     expect(类别("r-3")).toBe("——") // 都没有
   })
 
-  // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：数字卡与块头必须报全量，
+  // 服务端截断时「引用」只有前 500 条，但「引用总数」是全量：块头必须报全量，
   // 不能跟着当前页说 500（与「一句话」的全量口径对齐）。
-  test("出处计数用引用总数（全量），不是当前页条数", async () => {
+  // 2026-11-08：「出处」不再是数字卡的一格（第四格换成「待确认」），全量口径改由块头钉住。
+  test("出处块头用引用总数（全量），不是当前页条数", async () => {
     const 截断档: 实体档案 = { ...档, 引用: 造引用(出处默认显示 + 10), 引用总数: 777 }
     const host = mount(() => (
       <EntityProfile
@@ -487,10 +508,8 @@ describe("实体档案", () => {
         onOpen={() => {}}
       />
     ))
-    await 等(() => host.querySelector("[data-slot='entity-stat'][data-key='出处']") !== null)
-    expect(
-      host.querySelector("[data-slot='entity-stat'][data-key='出处'] [data-slot='entity-stat-value']")!.textContent,
-    ).toBe("777")
+    await 等(() => host.querySelector("[data-slot='entity-citations']") !== null)
+    expect(host.querySelector("[data-slot='entity-stat'][data-key='出处']")).toBeNull()
     expect(host.querySelector("[data-slot='entity-citations']")!.textContent).toContain("777 条")
   })
 
