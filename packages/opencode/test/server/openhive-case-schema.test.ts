@@ -31,6 +31,8 @@ const 期望表 = [
   "case_fact_change",
   "case_fact_row",
   ...Array.from({ length: 16 }, (_, i) => `case_fact_row_p${String(i).padStart(2, "0")}`),
+  "case_field_alias",
+  "case_field_alias_version",
   "case_ingest_job",
   "case_material",
   "case_relation",
@@ -72,7 +74,7 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
 }
 
 describe("0031/0032/0033 迁移 · 表与分区", () => {
-  test("11 张表 ＋ 16 个分区全部建出来", async () => {
+  test("13 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables
