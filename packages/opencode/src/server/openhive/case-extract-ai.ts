@@ -81,18 +81,35 @@ function 数字(值: unknown): number | undefined {
   return typeof 总 === "number" ? 总 : undefined
 }
 
-export function 建调用模型(模型: LanguageModel): 模型调用 {
+/**
+ * 模型调用的**唯一** seam（`#002-06`）：表头识别等新调用方从这里传自己的 schema，
+ * 不许另写一份 `generateObject` —— 否则超时、错误详情、json_object 的「json 字样」
+ * 这些坑要各修一遍、还会慢慢漂。
+ *
+ * 不传 `选项` 时行为与此前**一字不差**（抽取结构 + 结构化要求）。
+ */
+export function 建调用模型(模型: LanguageModel): 模型调用
+export function 建调用模型<T>(
+  模型: LanguageModel,
+  选项: { 结构: Schema.Decoder<T>; 系统后缀?: string },
+): (输入: { 系统: string; 用户: string }) => Promise<T>
+export function 建调用模型<T>(
+  模型: LanguageModel,
+  选项?: { 结构?: Schema.Decoder<T>; 系统后缀?: string },
+): (输入: { 系统: string; 用户: string }) => Promise<unknown> {
+  const 结构 = 选项?.结构 ?? 抽取结构
+  const 后缀 = 选项?.系统后缀 ?? 结构化要求
   // 两个适配器都是**就地**把 `~standard` 挂到 schema 上、返回同一个对象（effect beta.83 的
   // `dist/Schema.js:463` 与 `:517`）。分两步写是为了让顺序（先 validate、再补 jsonSchema）显式可见：
   // 写成 `Object.assign(toStandardSchemaV1(x), toStandardJSONSchemaV1(x))` 会让人以为是两个对象，
   // 万一将来实现改成返回副本，`~standard` 就会被只有 jsonSchema 的那份覆盖，校验直接失效。
-  const schema = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(抽取结构))
+  const schema = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(结构))
   return async (输入) => {
     try {
       const 结果 = await generateObject({
         model: 模型,
         schema,
-        system: 输入.系统 + 结构化要求,
+        system: 输入.系统 + 后缀,
         prompt: 输入.用户,
         temperature: 0.1,
         abortSignal: AbortSignal.timeout(单片超时ms),

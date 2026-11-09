@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { MockLanguageModelV3 } from "ai/test"
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider"
 import { 建调用模型 } from "../../src/server/openhive/case-extract-ai"
@@ -90,6 +91,22 @@ describe("建调用模型（generateObject 适配器）", () => {
     expect(看见[0]).toContain('\\"细类\\"?')
     // 可选值也逐字给出：模型从口径里抄类别词，而不是现编一个（白名单会丢，但白丢）
     for (const 值 of ["第三方支付", "固定电话", "银行卡"]) expect(看见[0]).toContain(值)
+  })
+
+  /**
+   * 表头识别（Task 7）要走**同一条** `generateObject` 适配器：别的模型调用方各自再写一份
+   * schema/超时/错误详情，等于俩 seam 会慢慢漂（`#002-06`）。
+   */
+  test("可传自定义 schema：同一 seam 复用，不再写第二份 generateObject", async () => {
+    const { 模型, 看见 } = 假模型(JSON.stringify({ 列: { "0": "amount" } }))
+    const 调用 = 建调用模型(模型, {
+      结构: Schema.Struct({ 列: Schema.Record(Schema.String, Schema.String) }),
+      系统后缀: "只输出 JSON",
+    })
+    const r = await 调用({ 系统: "口径正文", 用户: "u" })
+    expect(r.列["0"]).toBe("amount")
+    // 自定义后缀必须替换默认的抽取结构化要求（默认要求里不会出现这句话）。
+    expect(看见[0]).toContain("只输出 JSON")
   })
 
   test("不合法 JSON ⇒ 抛错（由执行器计一次失败并重试）", async () => {

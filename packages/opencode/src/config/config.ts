@@ -121,6 +121,11 @@ export type Info = ConfigV1.Info & {
    * 两者都没有时后台作业显式失败。
    */
   task_model?: string
+  /**
+   * 【保留的定制 · 同步上游时不要丢】openhive 定制（2026-11-09）：
+   * 表头识别送模型前是否脱敏。默认 false（送原文）；前提是模型内网/自部署。
+   */
+  case_table_mask_samples?: boolean
 }
 
 /**
@@ -136,6 +141,9 @@ const OpenhiveInfo = Schema.Struct({
   ...ConfigV1.Info.fields,
   task_model: Schema.optional(Schema.String).annotate({
     description: "Model used by background tasks, in the format provider/model. Falls back to `model`",
+  }),
+  case_table_mask_samples: Schema.optional(Schema.Boolean).annotate({
+    description: "Mask sample values before sending table headers to the model. Defaults to false (raw text).",
   }),
 })
 
