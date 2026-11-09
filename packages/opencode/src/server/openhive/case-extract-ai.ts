@@ -30,6 +30,15 @@ const 单片超时ms = 120_000
  * 'response_format' of type 'json_object'`。2026-11-07 真栈实测：抽取每片重试 3 次全失败，
  * 材料落「有问题」、一条实体都抽不出来。约束由谁设（这里），就由谁担。
  */
+/**
+ * 传了自定义 `结构` 却没传 `系统后缀` 时的兜底要求（M1）。
+ *
+ * 不能回落 `结构化要求`（抽取三数组的键名清单会污染别的 schema），也不能什么都不加：
+ * `response_format: json_object` 要求提示里出现「json」字样（见下），否则 DeepSeek 400。
+ */
+const 通用结构要求 = `
+只输出一个 JSON 对象，键名与给定结构逐字一致，不要改名、不要加别名或解释。`
+
 const 结构化要求 = `
 只输出一个 JSON 对象，字段是「实体」「关系」「事件」三个数组，每项按下述键名给（键名逐字一致，
 不要改名、不要加别名）：
@@ -98,7 +107,8 @@ export function 建调用模型<T>(
   选项?: { 结构?: Schema.Decoder<T>; 系统后缀?: string },
 ): (输入: { 系统: string; 用户: string }) => Promise<unknown> {
   const 结构 = 选项?.结构 ?? 抽取结构
-  const 后缀 = 选项?.系统后缀 ?? 结构化要求
+  // 自定义 schema 没带后缀 ⇒ 用通用要求；只有完全不给选项时才用抽取口径的要求。
+  const 后缀 = 选项?.系统后缀 ?? (选项?.结构 === undefined ? 结构化要求 : 通用结构要求)
   // 两个适配器都是**就地**把 `~standard` 挂到 schema 上、返回同一个对象（effect beta.83 的
   // `dist/Schema.js:463` 与 `:517`）。分两步写是为了让顺序（先 validate、再补 jsonSchema）显式可见：
   // 写成 `Object.assign(toStandardSchemaV1(x), toStandardJSONSchemaV1(x))` 会让人以为是两个对象，
