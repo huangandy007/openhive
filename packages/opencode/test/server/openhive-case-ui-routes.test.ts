@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
@@ -36,6 +36,8 @@ const SECRET = "f4a5c6t7r8u9s0t1e2s3t4a5b6c7d8e9"
  */
 const 我: TokenSubject = { id: "u-case-me", policeNo: "970011", name: "甲民警", isAdmin: false }
 const 别人: TokenSubject = { id: "u-case-other", policeNo: "970012", name: "乙民警", isAdmin: false }
+/** 项目里的普通成员（`role = member`）：让「非 owner 403」与「非成员 403」两种成因分得开。 */
+const 成员: TokenSubject = { id: "u-case-member", policeNo: "970013", name: "丙民警", isAdmin: false }
 const 项目 = "p-纠错-我的"
 const 别人的项目 = "p-纠错-别人的"
 
@@ -56,7 +58,7 @@ let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
-  for (const subject of [我, 别人]) {
+  for (const subject of [我, 别人, 成员]) {
     await pg.db.execute(sql`
       insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
       values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
@@ -67,6 +69,7 @@ beforeAll(async () => {
   await pg.db.execute(sql`
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${项目}, ${我.id}, 'owner', 0),
+           (${项目}, ${成员.id}, 'member', 0),
            (${别人的项目}, ${别人.id}, 'owner', 0)
   `)
   await 建实体(pg.db, { id: "e-路由张", projectId: 项目, value: "路由张三", type: "人" })
@@ -197,6 +200,18 @@ const 发 = (subject: TokenSubject | null, url: string, init: RequestInit = {}) 
 
 /** 读回 JSON 体：`yield* 读回<{ code: string }>(响应)`。 */
 const 读回 = <T>(响应: Response) => Effect.promise(() => 响应.json() as Promise<T>)
+
+/**
+ * 别名版本的真值。SQL 文本**故意与 DAO 不同**（列别名 `as 别名版本`）：PGlite 连接级语句
+ * 缓存按 SQL 文本命中，测试与出口发同一段文本会 42P05（本文件头部的告警）。
+ */
+const 读别名版本 = () =>
+  Effect.promise(async () =>
+    Number(
+      rowsOf(await pg!.db.execute(sql`select version as 别名版本 from auth.case_field_alias_version where id = 1`))[0]
+        ?.别名版本 ?? -1,
+    ),
+  )
 
 describe("openhive 案件视图出口（计划 7）", () => {
   it("未登录 ⇒ 401（每个出口都先问身份）", () =>
@@ -573,6 +588,80 @@ describe("openhive 案件视图出口（计划 7）", () => {
       expect(
         (yield* 发(别人, `/openhive/case/artifacts/review?projectId=${项目}&path=a.md`)).status,
       ).toBe(403)
+    }),
+  )
+
+  // ── 计划 11 Task 9：全局别名库的确认 / 撤销（写口只认项目属主） ──
+
+  it("确认别名：身份最先 401 / 非成员 403 / 非 owner 成员 403；owner 200 且版本 +1", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      const 体 = JSON.stringify({ projectId: 项目, header: "交易对方名称", field: "counterpartyName", materialId: "m1" })
+
+      // 身份最先：体不是 JSON 也回 401，不能因为体坏了先回 400（本文件写口次序的判据）。
+      expect(
+        (yield* 发(null, "/openhive/case/field-alias", { method: "POST", headers: 头, body: "不是 JSON" })).status,
+      ).toBe(401)
+      // 非成员：`成员角色` 回 undefined。
+      expect((yield* 发(别人, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
+      // 是成员但不是属主：删掉 `角色 !== "owner"` 这一判据，这条会变 200（变异点）。
+      expect((yield* 发(成员, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
+
+      const 前 = yield* 读别名版本()
+      const 响应 = yield* 发(我, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })
+      expect(响应.status).toBe(200)
+      expect(yield* 读回<{ ok: boolean }>(响应)).toEqual({ ok: true })
+      // 版本必须真的 +1：只写在用例名里不算数。
+      expect(yield* 读别名版本()).toBe(前 + 1)
+    }),
+  )
+
+  it("确认别名：表头为空/超长 400、非法字段 400、重复确认 409", () =>
+    Effect.gen(function* () {
+      const 发别名 = (体: unknown) =>
+        发(我, "/openhive/case/field-alias", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(体),
+        })
+
+      expect((yield* 发别名({ projectId: 项目, header: "X", field: "不存在的字段", materialId: "m1" })).status).toBe(400)
+      expect((yield* 发别名({ projectId: 项目, header: "", field: "amount", materialId: "m1" })).status).toBe(400)
+      expect((yield* 发别名({ projectId: 项目, header: "x".repeat(201), field: "amount", materialId: "m1" })).status).toBe(400)
+      expect((yield* 发别名({ projectId: 项目, header: "重复", field: "amount", materialId: "m1" })).status).toBe(200)
+
+      const 冲突 = yield* 发别名({ projectId: 项目, header: "重复", field: "balance", materialId: "m1" })
+      expect(冲突.status).toBe(409)
+      const 冲突体 = yield* 读回<{ error: string; code: string }>(冲突)
+      expect(冲突体.code).toBe("conflict")
+      expect(冲突体.error).toContain("已存在")
+    }),
+  )
+
+  it("撤销别名：非 owner 403；owner 200；已撤销/不存在 404", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      const 发撤销 = (subject: TokenSubject, header: string) =>
+        发(subject, "/openhive/case/field-alias/revoke", {
+          method: "POST",
+          headers: 头,
+          body: JSON.stringify({ projectId: 项目, header }),
+        })
+
+      // 撤销口也必须挂同一道属主门：漏挂时成员能撤销全局别名（#005-24 共同出口）。
+      expect((yield* 发撤销(成员, "要撤销")).status).toBe(403)
+
+      expect(
+        (
+          yield* 发(我, "/openhive/case/field-alias", {
+            method: "POST",
+            headers: 头,
+            body: JSON.stringify({ projectId: 项目, header: "要撤销", field: "amount", materialId: "m1" }),
+          })
+        ).status,
+      ).toBe(200)
+      expect((yield* 发撤销(我, "要撤销")).status).toBe(200)
+      expect((yield* 发撤销(我, "要撤销")).status).toBe(404)
     }),
   )
 })
