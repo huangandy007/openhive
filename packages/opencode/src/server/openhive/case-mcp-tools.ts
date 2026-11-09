@@ -494,7 +494,8 @@ const 共同时空上限 = 50
  *
  * 账户先解析成实体（`解析实体` 给 `{ id, value }`）：
  * - 关系类（汇总、对手方）比 `from_id` / `to_id`，用 `id`；
- * - 明细行（余额走势）比 `counterparty` / `caller` / `callee`，用 `value`——
+ * - 明细行（余额走势）比 `counterparty` / `counterparty_name` / `owner_account` / `caller` /
+ *   `callee`，用 `value`——
  *   明细行里存的是实体**规范值**，不是 id（Task 3 复审的 Critical：按 id 比在生产恒空）。
  *
  * 金额与余额一律 `::text` 出库当字符串：`numeric` 的读回形状随驱动而变，`::text` 两个驱动
@@ -583,7 +584,11 @@ export async function aggregate_money(
 
   const 余额条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
-    sql`(counterparty = ${账户.value} or caller = ${账户.value} or callee = ${账户.value})`,
+    sql`(counterparty = ${账户.value}
+      or counterparty_name = ${账户.value}
+      or owner_account = ${账户.value}
+      or caller = ${账户.value}
+      or callee = ${账户.value})`,
   ]
   if (args.起 !== undefined) 余额条件.push(sql`started_at is not null and started_at >= ${args.起}`)
   if (args.止 !== undefined) 余额条件.push(sql`started_at is not null and started_at <= ${args.止}`)
@@ -625,7 +630,8 @@ export async function aggregate_money(
   ]
   // 与 `截断缺口` 同口径：命中上限才说「可能还有更多」，没满就不制造假警报。
   if (对手方.length === 对手方上限) 缺口.push(`对手方已截到前 ${对手方上限} 条，可能还有更多`)
-  if (余额行.length === 0) 缺口.push("本项目明细行里没有该账户的流水（按 counterparty/caller/callee 精确匹配）")
+  if (余额行.length === 0)
+    缺口.push("本项目明细行里没有该账户的流水（按 counterparty/counterparty_name/owner_account/caller/callee 精确匹配）")
 
   return {
     数据: { 汇总, 对手方, 余额走势 },
@@ -634,7 +640,7 @@ export async function aggregate_money(
       "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
-      "余额走势按明细行的 counterparty/caller/callee 精确匹配账户的实体规范值。",
+      "余额走势按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值。",
     缺口,
   }
 }

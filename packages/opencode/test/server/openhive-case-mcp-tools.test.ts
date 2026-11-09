@@ -71,6 +71,12 @@ const 项目乙 = "p-工具-乙"
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
 const 账号 = "6222…8888"
+/**
+ * 任务 10 的两个新匹配值：必须是**新的**账户 / 户名，不往「账号」已有 4 行和「张三」上再加
+ * （`#005-34`：同一项目里改既有行数会改掉别的用例的全量断言）。
+ */
+const 户名新 = "户名新甲"
+const 本方账号 = "6217000011112222"
 
 const ctx = (身份: typeof 身份甲): 工具上下文 => ({ db: 库(), 身份 })
 const ids = (结果: 工具结果) => (结果.数据 as { id: string }[]).map((行) => 行.id)
@@ -440,6 +446,40 @@ beforeAll(async () => {
       counterparty: 账号,
       amount: "40.00",
       balance: "777.00",
+    },
+  ])
+  // —— 任务 10：`aggregate_money` 明细匹配扩到户名 / 本方账号 ——
+  // 两条新行各自**只**靠新谓词命中：户名行 `counterparty` 为 null，本方账号行
+  // `counterparty` / `counterparty_name` / `caller` / `callee` 都为空 —— 否则旧分支就会
+  // 把用例点绿，删掉新 `or` 分支的变异不可判别。实体也必须是新的，不复用 e-账 / 张三。
+  await upsertEntity(库(), { id: "e-户名新", projectId: 身份戊.projectId, type: "人", canonicalValue: 户名新, aliases: [] })
+  await upsertEntity(库(), {
+    id: "e-本方新",
+    projectId: 身份戊.projectId,
+    type: "账户",
+    canonicalValue: 本方账号,
+    aliases: [],
+  })
+  await insertFactRows(库(), [
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "户名匹配",
+      rowNo: 1,
+      counterpartyName: 户名新,
+      startedAt: 400,
+      amount: "1.00",
+      balance: "321.00",
+    },
+    {
+      projectId: 身份戊.projectId,
+      materialId: "m-流水",
+      sheet: "本方匹配",
+      rowNo: 1,
+      ownerAccount: 本方账号,
+      startedAt: 500,
+      amount: "2.00",
+      balance: "654.00",
     },
   ])
   // ⚠️ `participants` 存的是**实体规范值**，不是 id（`case-extract.ts:433` → `case-ingest.ts:573`）。
@@ -944,6 +984,22 @@ test("aggregate_money 本项目没有该账户的流水 ⇒ 余额走势 null �
 
 test("aggregate_money 账户不存在 ⇒ not_found", async () => {
   await expect(aggregate_money(ctx(身份戊), { 账户: "没有这个账户" })).rejects.toMatchObject({ code: "not_found" })
+})
+
+test("aggregate_money 只有户名列时，按户名实体查余额走势非空", async () => {
+  // 种子行：counterparty 为 null、counterparty_name = 户名新、balance 非空
+  // ⇒ 只有 `counterparty_name = ?` 这一支能命中（旧谓词的 counterparty/caller/callee 都不等）。
+  const 走势 = (await aggregate_money(ctx(身份戊), { 账户: 户名新 })).数据 as { 余额走势: { 行数: number } | null }
+  expect(走势.余额走势).toMatchObject({ 行数: 1 })
+})
+
+test("aggregate_money 按本方账号查得到该账户的明细", async () => {
+  // 种子行只设 owner_account，counterparty / counterparty_name / caller / callee 都不等于该值
+  // ⇒ 只有 `owner_account = ?` 这一支能命中。
+  const 走势 = (await aggregate_money(ctx(身份戊), { 账户: 本方账号 })).数据 as {
+    余额走势: { 行数: number } | null
+  }
+  expect(走势.余额走势).toMatchObject({ 行数: 1 })
 })
 
 test("find_crossings 找出共同关联实体（另一端的交集）", async () => {
