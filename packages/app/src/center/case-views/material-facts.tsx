@@ -34,6 +34,16 @@ interface 待确认项界面 {
 const 进行中状态们: readonly 解析状态[] = ["排队中", "解析中"]
 const 是进行中 = (状态: 解析状态): boolean => 进行中状态们.includes(状态)
 
+/**
+ * 六种 `待确认原因` 里，只有词典层的这两类能靠「写一条别名」真正解决。
+ *
+ * 其余四类的前提都是该表头**已有活跃别名**，而写别名接口对活跃别名走 `没命中 ⇒ 抛已存在`，
+ * 全仓又没有撤销入口；词典层的「单位冲突」更糟：写进去会成功，但下次解析别名层第一件事
+ * 就是 `单位闸放行` 失败 ⇒ 又变回单位冲突，还从此把该表头锁在别名层。摆出按钮＝让人点注定失败的操作。
+ */
+const 可确认原因们: readonly string[] = ["多列争抢", "候选不唯一"]
+const 能写别名解决 = (原因: string): boolean => 可确认原因们.includes(原因)
+
 /** 从 parse_detail 里读待确认；形状不对就当没有（不猜）。 */
 function 读待确认(详情: unknown): { sheet: string; 项: 待确认项界面 }[] {
   if (typeof 详情 !== "object" || 详情 === null) return []
@@ -84,6 +94,9 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [待确认, set待确认] = createSignal<{ sheet: string; 项: 待确认项界面 }[]>([])
   const [确认中, set确认中] = createSignal<string | undefined>()
   const [确认错误, set确认错误] = createSignal<string | undefined>()
+  // 别名写的是全局库，当前材料的 `parse_detail` 不会自己变——确认成功后不提示「需重新解析」，
+  // 属主会以为已经修好了。
+  const [已写入别名, set已写入别名] = createSignal(false)
 
   createEffect(() => {
     const 材料 = 清单()?.材料
@@ -100,6 +113,7 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
     // 确认态属于**上一份清单**：重取（换材料 / 切「含排除」）后不清会让旧 403 文案跟着新材料复活。
     set确认中(undefined)
     set确认错误(undefined)
+    set已写入别名(false)
     set载入(true)
     let 作废 = false
     // ⚠️ 清理必须挂 `onCleanup`：`createEffect` **不执行**返回值（同 `entity-profile.tsx`，
@@ -183,51 +197,69 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                     <div class="mt-1 flex flex-wrap items-baseline gap-2 text-[12px]">
                       <span class="text-v2-text-text-muted">{行.sheet}</span>
                       <span data-slot="material-facts-pending-header" class="text-v2-text-text-base">
-                        {行.项.表头 ?? `（第${行.项.列号}列无表头）`}
+                        {/* `列号` 是 0 起（与 mapping 的键一致，设计 §8.4）；给人看的是 1 起。 */}
+                        {行.项.表头 ?? `（第${行.项.列号 + 1}列无表头）`}
                       </span>
                       <span class="text-v2-text-text-muted">{行.项.原因}</span>
-                      <button
-                        type="button"
-                        data-slot="material-facts-pending-confirm"
-                        disabled={确认中() !== undefined || 行.项.建议字段 === null || 行.项.表头 === null}
-                        onClick={() => {
-                          const field = 行.项.建议字段
-                          const 表头 = 行.项.表头
-                          // 服务端不接受空表头（无表头项点了只会 400），也不接受没建议字段时瞎猜。
-                          if (field === null || 表头 === null) return
-                          const 键 = `${行.sheet}:${行.项.列号}`
-                          // 发起时的材料：迟到的回包若跨了材料，错误与摘行都不能落到新材料上（`#005-03`）。
-                          const 发起材料 = 清单()?.材料.id
-                          set确认中(键)
-                          set确认错误(undefined)
-                          void props.api
-                            .confirmFieldAlias({
-                              projectId: props.projectId,
-                              header: 表头,
-                              field,
-                              materialId: 清单()?.材料.id ?? "",
-                            })
-                            .then((结果) => {
-                              if (清单()?.材料.id !== 发起材料) return
-                              if (结果.kind === "error") {
-                                set确认错误(结果.message)
-                                return
-                              }
-                              // 成功即不再「待确认」：留下的行会让角标继续宣称 N 列，是句假话。
-                              set待确认((行们) => 行们.filter((行) => `${行.sheet}:${行.项.列号}` !== 键))
-                            })
-                            // 只清自己这一条：跨材料时旧回包结算不许解除新请求的禁用态；
-                            // 材料切换由取数 effect 的 `set确认中(undefined)` 兜底，不会永久禁用。
-                            .finally(() => set确认中((当前) => (当前 === 键 ? undefined : 当前)))
-                        }}
-                        class="h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 font-semibold text-v2-text-text-base disabled:opacity-50"
+                      <Show
+                        when={能写别名解决(行.项.原因)}
+                        fallback={
+                          <span data-slot="material-facts-pending-manual" class="text-v2-text-text-muted">
+                            该列需人工处理（写别名解决不了）
+                          </span>
+                        }
                       >
-                        确认为 {行.项.建议字段 ?? "（需人工指定）"}
-                      </button>
+                        <button
+                          type="button"
+                          data-slot="material-facts-pending-confirm"
+                          disabled={确认中() !== undefined || 行.项.建议字段 === null || 行.项.表头 === null}
+                          onClick={() => {
+                            const field = 行.项.建议字段
+                            const 表头 = 行.项.表头
+                            // 服务端不接受空表头（无表头项点了只会 400），也不接受没建议字段时瞎猜。
+                            if (field === null || 表头 === null) return
+                            const 键 = `${行.sheet}:${行.项.列号}`
+                            // 发起时的材料：迟到的回包若跨了材料，错误与摘行都不能落到新材料上（`#005-03`）。
+                            const 发起材料 = 清单()?.材料.id
+                            set确认中(键)
+                            set确认错误(undefined)
+                            void props.api
+                              .confirmFieldAlias({
+                                projectId: props.projectId,
+                                header: 表头,
+                                field,
+                                materialId: 清单()?.材料.id ?? "",
+                              })
+                              .then((结果) => {
+                                if (清单()?.材料.id !== 发起材料) return
+                                if (结果.kind === "error") {
+                                  set确认错误(结果.message)
+                                  return
+                                }
+                                // 成功即不再「待确认」：留下的行会让角标继续宣称 N 列，是句假话。
+                                set待确认((行们) => 行们.filter((行) => `${行.sheet}:${行.项.列号}` !== 键))
+                                // 别名进的是全局库，本材料的 detail 不会自己变。
+                                set已写入别名(true)
+                              })
+                              // 只清自己这一条：跨材料时旧回包结算不许解除新请求的禁用态；
+                              // 材料切换由取数 effect 的 `set确认中(undefined)` 兜底，不会永久禁用。
+                              .finally(() => set确认中((当前) => (当前 === 键 ? undefined : 当前)))
+                          }}
+                          class="h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 font-semibold text-v2-text-text-base disabled:opacity-50"
+                        >
+                          确认为 {行.项.建议字段 ?? "（需人工指定）"}
+                        </button>
+                      </Show>
                     </div>
                   )}
                 </For>
               </section>
+            </Show>
+            {/* 摘掉行之后面板可能整块消失（最后一列确认完），提示必须活在面板之外，否则一闪就没。 */}
+            <Show when={已写入别名() && !是进行中(清单().材料.parse_status)}>
+              <p data-slot="material-facts-pending-applied" class="mt-1 text-[12px] text-v2-text-text-muted">
+                已写入别名，需重新解析该材料后生效
+              </p>
             </Show>
             <Show when={清单().材料.parse_status === "有问题" && 解详情(清单().材料.parse_detail) !== ""}>
               <pre data-slot="material-facts-detail" class="mt-2 overflow-x-auto rounded-[4px] bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-muted">

@@ -272,9 +272,10 @@ describe("材料抽取结果", () => {
     await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
     // 整条丢弃 ⇒ 角标少报（甚至不出现），这两项是 R71 的判据。
     expect(host.querySelector("[data-slot='material-facts-pending-badge']")!.textContent).toBe("2 列待确认")
+    // `列号` 是 0 起（与 mapping 的键一致，设计 §8.4）；给人看的是 1 起 ⇒ 列号 1 是「第2列」。
     expect(
       [...host.querySelectorAll("[data-slot='material-facts-pending-header']")].map((项) => 项.textContent),
-    ).toEqual(["（第1列无表头）", "（第2列无表头）"])
+    ).toEqual(["（第2列无表头）", "（第3列无表头）"])
     const 按钮们 = [...host.querySelectorAll<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")]
     expect(按钮们.map((按钮) => 按钮.disabled)).toEqual([true, true])
     按钮们[0].click()
@@ -380,6 +381,93 @@ describe("材料抽取结果", () => {
     ).toEqual(["备注"])
     // 摘行后 `确认中` 已清，剩下那行仍可操作（否则按钮永久禁用）。
     expect(host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!.disabled).toBe(false)
+  })
+
+  test("「表头重名」不给确认按钮，改成不可点的说明（写别名解决不了）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: {
+                  mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: 0, 表头: "金额", 建议字段: "amount", 原因: "表头重名" }] } } },
+                },
+              },
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    // 该表头已有活跃别名 ⇒ 写别名会命中 0 行并抛「已存在」，而全仓没有撤销入口：
+    // 按钮点下去注定失败，不能摆出来骗人。
+    expect(host.querySelectorAll("[data-slot='material-facts-pending-confirm']").length).toBe(0)
+    const 说明 = host.querySelector("[data-slot='material-facts-pending-manual']")!
+    expect(说明.textContent).toContain("写别名解决不了")
+  })
+
+  test("「多列争抢」仍给确认按钮（正控：能生效的动作不能一起关掉）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: {
+                  mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: 0, 表头: "金额", 建议字段: "amount", 原因: "多列争抢" }] } } },
+                },
+              },
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!
+    expect(按钮.disabled).toBe(false)
+    expect(host.querySelector("[data-slot='material-facts-pending-manual']")).toBeNull()
+  })
+
+  test("确认成功后提示「需重新解析」：别名写的是全局库，本材料 detail 不会自己变", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: {
+                  mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: 1, 表头: "摘要", 建议字段: "摘要", 原因: "候选不唯一" }] } } },
+                },
+              },
+            },
+          }),
+          confirmFieldAlias: async () => ({ kind: "ok", value: { ok: true } }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!.click()
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-applied']") !== null)
+    expect(host.querySelector("[data-slot='material-facts-pending-applied']")!.textContent).toContain("重新解析")
   })
 
   test("待确认形状不可信：列号 / 表头类型不对就不显角标、不抛", async () => {

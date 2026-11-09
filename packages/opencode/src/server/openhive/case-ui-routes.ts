@@ -13,7 +13,7 @@ import { 关系图, 关系图强度们 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
 import { aggregate_money, query_events, 工具错误 } from "./case-mcp-tools"
 import { 确认别名, 撤销别名 } from "./case-field-alias"
-import { 是识别字段 } from "./case-field-registry"
+import { 单位闸放行, 是识别字段 } from "./case-field-registry"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
 import type { Queryable } from "./case-store"
@@ -473,6 +473,9 @@ function handleFieldAlias(request: HttpServerRequest.HttpServerRequest, deps: De
     if (表头 === "" || 表头.length > 200) return fail(400, "表头为空或超过 200 字", "bad_request")
     if (typeof field !== "string" || !是识别字段(field))
       return fail(400, "字段不在字段目录内", "bad_request")
+    // 与 DAO 同口径（`#002-06`）：单位闸不通的别名注定无效。这是用户参数问题，
+    // 在路由给 400；DAO 里那道同样的闸是给绕过路由的调用方兜底。
+    if (!单位闸放行(field, 表头)) return fail(400, "表头声明的单位与字段不符，不能写别名", "bad_request")
     if (typeof materialId !== "string" || materialId === "") return fail(400, "materialId 必填", "bad_request")
 
     const 门 = yield* 过门(deps, projectId, { 要属主: true, 已知身份: 用户.value })

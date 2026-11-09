@@ -74,6 +74,16 @@ describe("别名库", () => {
     await expect(确认("坏字段", "不存在的字段")).rejects.toThrow(/字段/)
   })
 
+  test("表头声明的单位与字段不符 ⇒ 拒写且不落库、版本不动", async () => {
+    // 「交易金额（万元）」喂给 amount：词典层会判单位冲突；若放它进别名库，下次解析时
+    // 别名层第一件事就是 `单位闸放行` 失败 ⇒ 又变回「单位冲突」，还从此把该表头锁在别名层。
+    const 表头 = "交易金额（万元）"
+    const 前 = await 版本()
+    await expect(确认(表头, "amount")).rejects.toThrow(/单位/)
+    expect((await 读别名上下文(db())).别名.has(表头)).toBe(false)
+    expect(await 版本()).toBe(前)
+  })
+
   test("表头超长 ⇒ 拒绝前先给可读错误（CHECK 也兜底）", async () => {
     await expect(确认("x".repeat(201))).rejects.toThrow()
   })
