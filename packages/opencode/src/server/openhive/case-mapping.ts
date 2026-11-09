@@ -227,15 +227,46 @@ const 账号词尾 = /(账号|帐号|卡号|账户)$/
  * - 带对手修饰的表头只许归对手方字段：账号类词尾 → `counterparty`，户名类词尾 → `counterpartyName`；
  * - 带本方修饰的表头只许归 `ownerAccount`；
  * - 其余表头里，`counterparty` 必须由账号类词尾兜底（「交易对方」归户名，不归账号）。
+ *
+ * **R11**：这套裁决只对账号/户名三个字段生效。对其它字段硬套会把「对方通话时间」
+ * 「客户交易金额」这类正常表头整列挡在后缀轮之外——静默进 unknown（连待确认都没有），
+ * 材料照样标「已解析」而对应标准列全空。
  */
-function 修饰语允许(field: 识别字段, h: string): boolean {
+function 需修饰裁决(field: 识别字段): boolean {
+  return field === "counterparty" || field === "counterpartyName" || field === "ownerAccount"
+}
+
+function 修饰语放行(field: 识别字段, h: string): boolean {
   if (对手修饰.test(h)) {
-    if (户名词尾.test(h)) return field === "counterpartyName"
-    if (账号词尾.test(h)) return field === "counterparty"
-    return false
+    const 允许: readonly 识别字段[] = 户名词尾.test(h)
+      ? ["counterpartyName"]
+      : 账号词尾.test(h)
+        ? ["counterparty"]
+        : []
+    if (!允许.includes(field)) return false
+  } else if (本方修饰.test(h)) {
+    if (field !== "ownerAccount") return false
   }
-  if (本方修饰.test(h)) return field === "ownerAccount"
   return field !== "counterparty" || 账号词尾.test(h)
+}
+
+/**
+ * 「修饰语 ＋ 通用词尾」的**合成候选**（R11）。
+ *
+ * `交易对方银行卡号` / `本方银行账户` 这类真实资金表头里，`银行卡号` / `银行账户` 不是任何
+ * 字段的同义词 ⇒ 后缀轮召不回。只在账号/户名三个字段上、且修饰语与正确词尾**同时**成立时
+ * 合成；不做无修饰的通用词尾猜测，否则「账号」「卡号」这类通用词会到处乱认。
+ */
+function 合成词长(field: 识别字段, h: string): number | undefined {
+  if (field === "counterparty" || field === "counterpartyName") {
+    if (!对手修饰.test(h)) return undefined
+    return (field === "counterparty" ? 账号词尾 : 户名词尾).exec(h)?.[0].length
+  }
+  if (field === "ownerAccount") {
+    if (!本方修饰.test(h)) return undefined
+    return 账号词尾.exec(h)?.[0].length
+  }
+  return undefined
 }
 
 interface 候选列 {
@@ -374,19 +405,30 @@ export function detectMapping(
   }
 
   // ③ 后缀：按「同义词是表头后缀」召回，字段内再按 (词长 desc, 形状命中率 desc) 裁决。
+  //    账号/户名三字段另接受「修饰语 ＋ 通用词尾」的合成候选（R11），与词典后缀并进同一份
+  //    候选集，后面的「差距 <5% 不猜」照旧适用。
   const 后缀候选 = new Map<识别字段, 候选列[]>()
+  const 加后缀候选 = (field: 识别字段, i: number, 词长: number) => {
+    const 组 = 后缀候选.get(field) ?? []
+    组.push({ i, 词长, 率: 形状命中率(field, 列(rows, i)) })
+    后缀候选.set(field, 组)
+  }
   for (let i = 0; i < header.length; i++) {
     if (已定.has(i)) continue
     const h = 规范[i] ?? ""
     if (h === "") continue
     for (const field of 候选们) {
       if (!单位闸放行(field, header[i] ?? null)) continue
+      const 需裁决 = 需修饰裁决(field)
+      if (需裁决 && !修饰语放行(field, h)) continue
       const 词们 = 同义词(field).filter((w) => w !== "" && h !== w && h.endsWith(w))
-      if (词们.length === 0) continue
-      if (!修饰语允许(field, h)) continue
-      const 组 = 后缀候选.get(field) ?? []
-      组.push({ i, 词长: Math.max(...词们.map((w) => w.length)), 率: 形状命中率(field, 列(rows, i)) })
-      后缀候选.set(field, 组)
+      if (词们.length > 0) {
+        加后缀候选(field, i, Math.max(...词们.map((w) => w.length)))
+        continue
+      }
+      if (!需裁决) continue
+      const 合成长 = 合成词长(field, h)
+      if (合成长 !== undefined) 加后缀候选(field, i, 合成长)
     }
   }
   const 已认字段的后缀 = new Map<识别字段, 候选列[]>()
@@ -499,7 +541,9 @@ export function formatFingerprint(
 /** 材料类型（`case_material.kind` 偏表格的那三个）。产物与其它类型由调用方给。 */
 export function classifyMaterialType(columns: Record<number, 识别字段>): "话单" | "资金" | "其他" {
   // extras 字段不是「明细事实」，不参与材料类型判定。
-  const fields = Object.values(columns).filter(是标准列)
+  // 先过 `是识别字段`：columns 可能来自格式缓存（旧版本 / 脏行），`是标准列` 会直接取
+  // `字段目录[字段].落点`，非法字段名在那里是 TypeError（`#002-06`）。
+  const fields = Object.values(columns).filter((f) => 是识别字段(f) && 是标准列(f))
   if (fields.includes("caller") || fields.includes("callee") || fields.includes("durationSec")) return "话单"
   if (fields.includes("amount") || fields.includes("balance")) return "资金"
   return "其他"

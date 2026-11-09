@@ -5,6 +5,7 @@ import {
   formatFingerprint,
   type FactField,
 } from "../../src/server/openhive/case-mapping"
+import { 候选字段集 } from "../../src/server/openhive/case-field-registry"
 
 describe("detectMapping · 第一层：表头词典", () => {
   test("话单表头逐个对上", () => {
@@ -48,10 +49,15 @@ describe("detectMapping · 第一层：表头词典", () => {
     expect(r.columns).toEqual({ 0: "durationSec", 1: "startedAt" })
   })
 
-  test("两列都以后缀命中同一字段 ⇒ 消歧不了就不认", () => {
+  test("两列都以后缀命中同一字段 ⇒ 消歧不了就不认，且都进待确认", () => {
     const r = detectMapping(["主叫通话时长", "被叫通话时长"], [["37", "83"]])
     expect(r.columns).toEqual({})
     expect(r.unknownColumns).toEqual([0, 1])
+    // 「差距 <5% 不猜」的结果必须可解释：两列都要能进待确认，而不是静默消失。
+    expect(r.待确认.map((项) => [项.列号, 项.原因, 项.建议字段])).toEqual([
+      [0, "候选不唯一", "durationSec"],
+      [1, "候选不唯一", "durationSec"],
+    ])
   })
 
   test("「通话分钟」不认——裸数字按秒解释会差 60 倍（R24）", () => {
@@ -400,6 +406,7 @@ describe("formatFingerprint", () => {
 
 describe("classifyMaterialType", () => {
   test("有主叫/被叫/时长 ⇒ 话单", () => {
+    expect(classifyMaterialType({ 0: "caller" })).toBe("话单")
     expect(classifyMaterialType({ 0: "caller", 1: "callee" })).toBe("话单")
     expect(classifyMaterialType({ 3: "durationSec" })).toBe("话单")
   })
@@ -413,6 +420,19 @@ describe("classifyMaterialType", () => {
     expect(classifyMaterialType({ 0: "startedAt" })).toBe("其他")
     expect(classifyMaterialType({ 0: "counterparty" })).toBe("其他")
     expect(classifyMaterialType({})).toBe("其他")
+  })
+
+  test("extras 字段不参与类型判定：address ⇒ 其他", () => {
+    expect(classifyMaterialType({ 0: "address" })).toBe("其他")
+  })
+
+  test("脏缓存值（非法字段名）不抛错，按「其他」处理", () => {
+    // 格式缓存里的 columns 可能来自旧版本 / 被污染的行；`字段目录[字段].落点` 会 TypeError。
+    // 分类是只读的旁路，脏值只能降级成「其他」，不能让整条材料处理崩掉。
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+    const 脏 = { 0: "垃圾" } as never
+    expect(() => classifyMaterialType(脏)).not.toThrow()
+    expect(classifyMaterialType(脏)).toBe("其他")
   })
 })
 
@@ -468,6 +488,17 @@ describe("新增：表头变体与两轮制", () => {
     expect(r.method).toBe("别名")
   })
 
+  test("别名命中但形状不达标 ⇒ 进待确认（别名不提供证据）", () => {
+    // 别名只是「这一列叫什么」的提示；值全是汉字、不像账号 ⇒ 不许直接落库（§4.2-2）。
+    const r = detectMapping(["对方账卡"], [["张三"]], {
+      别名: new Map([["对方账卡", "counterparty"]]),
+    })
+    expect(r.columns).toEqual({})
+    expect(r.待确认).toEqual([
+      { 列号: 0, 表头: "对方账卡", 建议字段: "counterparty", 原因: "形状不符" },
+    ])
+  })
+
   test("别名目标不在候选集 ⇒ 不生效、进待确认（§4.2-5）", () => {
     const r = detectMapping(["号码"], [["13800000000"]], {
       别名: new Map([["号码", "counterparty"]]),
@@ -506,5 +537,58 @@ describe("新增：表头变体与两轮制", () => {
     expect(r.columns[0]).toBe("startedAt")
     expect(r.columns[1]).toBeUndefined()
     expect(r.待确认.some((项) => 项.原因 === "候选不唯一")).toBe(true)
+  })
+})
+
+describe("R11：修饰语只约束账号/户名三个字段", () => {
+  test("修饰语 + 通用词尾：交易对方银行卡号 归 counterparty", () => {
+    // 「银行卡号」不是任何字段的同义词（词典里是「对方卡号」「交易对方账卡号」），
+    // 必须靠「对手修饰 ＋ 账号词尾」合成候选，否则真实资金表整列进 unknown。
+    const r = detectMapping(["交易对方银行卡号"], [["6222001"]])
+    expect(r.columns).toEqual({ 0: "counterparty" })
+  })
+
+  test("修饰语 + 通用词尾：本方银行卡号 归 ownerAccount", () => {
+    const r = detectMapping(["本方银行卡号"], [["6222999"]])
+    expect(r.columns).toEqual({ 0: "ownerAccount" })
+  })
+
+  test("修饰语 + 词典里没有的词尾：本方银行账户 归 ownerAccount", () => {
+    // 「账户」不是 ownerAccount 的同义词（只有「本方账户」）⇒ 只能走合成分支；
+    // 这条才真正钉住 ownerAccount 的合成规则（「本方银行卡号」靠同义词「卡号」就能过）。
+    const r = detectMapping(["本方银行账户"], [["6222999"]])
+    expect(r.columns).toEqual({ 0: "ownerAccount" })
+  })
+
+  test("修饰语不再误伤其它字段：对方通话时间 归 startedAt", () => {
+    // R11 前：含「对方」的表头对所有字段一律 false ⇒ startedAt 的后缀「通话时间」被拦，
+    // 整列静默进 unknown、连待确认都没有，材料照样标「已解析」而 started_at 全空。
+    const r = detectMapping(
+      ["对方通话时间", "主叫号码", "被叫号码", "通话时长"],
+      [["2026-01-02 03:04:05", "13800000000", "13900000000", "37"]],
+    )
+    expect(r.columns[0]).toBe("startedAt")
+    // 只断 columns 会被形状层兜住（值是时间形状）⇒ 假绿；「被后缀词认出」要看来源。
+    expect(r.来源[0]).toBe("词典")
+  })
+
+  test("修饰语不再误伤其它字段：客户交易金额 归 amount", () => {
+    // 「客户」属于本方修饰；R11 前只许 ownerAccount，amount 的后缀召回被误杀。
+    const r = detectMapping(["客户交易金额"], [["1.00"]])
+    expect(r.columns).toEqual({ 0: "amount" })
+    // 同上：形状层也能认成 amount，必须钉住是词典层认的。
+    expect(r.来源[0]).toBe("词典")
+  })
+})
+
+describe("候选字段集：表类型决定谁参与认领", () => {
+  test("话单表里的金额列不进候选集 ⇒ 金额列不被认（Task 1 的后果）", () => {
+    // 话单候选集不含 amount：同表里出现金额列时宁可进 extras，也不按话单材料落库。
+    const 表头 = ["主叫号码", "被叫号码", "通话时长", "交易金额"]
+    const 行 = [["13800000000", "13900000000", "37", "1.00"]]
+    expect(候选字段集(表头, 行).has("amount")).toBe(false)
+    const r = detectMapping(表头, 行)
+    expect(r.columns).toEqual({ 0: "caller", 1: "callee", 2: "durationSec" })
+    expect(r.unknownColumns).toEqual([3])
   })
 })
