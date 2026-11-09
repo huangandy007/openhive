@@ -7,6 +7,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { Provider } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 建调用模型 } from "./case-extract-ai"
+import { 建表头识别器 as 建表头识别器AI } from "./case-header-ai"
 import { claimNextJob, runJob, 作业项目目录, 沙箱内路径, type ClaimedJob } from "./case-ingest"
 import { 解析启动模型 } from "./model-resolve"
 import { OpenhivePg } from "./pg"
@@ -79,14 +80,20 @@ export const layer = Layer.effectDiscard(
     const provider = yield* Provider.Service
     const instances = yield* InstanceStore.Service
 
+    /** 表头模型的样例脱敏开关（与文本抽取同一份全局配置）。 */
+    const 脱敏 = (yield* coreConfig.getGlobal()).case_table_mask_samples === true
+
     /**
-     * 按作业的项目目录建抽取器。
+     * 按作业的项目目录取语言模型——抽取器与表头识别器**共用这一份**。
      *
      * 模型在**启动期**已解析并缓存（`启动模型`），这里只做两件事：在本作业的实例上下文里
      * `getModel` 校验它确实存在，然后拿到调用入口。项目级 `opencode.jsonc` 能覆盖 provider，
      * 所以 `getModel` 仍不能省——它是「配置说存在」与「这个实例里真的存在」之间唯一的一道门。
+     *
+     * 失败处理只在这里写一次（`Effect.catchCause` 只取错误名）：这条文案会经 `runJob`
+     * 落进 `parse_detail.reason` 并回给前端，`Cause.pretty` 的正文可能带连接串。
      */
-    const 建抽取器 = async (job: ClaimedJob) => {
+    const 取语言 = async (job: ClaimedJob) => {
       const 目录 = 作业项目目录(config.root, job.sourcePath, job.projectId)
       if (目录 === undefined) throw new Error(`作业的落点不合法：${job.sourcePath}`)
       return Effect.runPromise(
@@ -95,18 +102,11 @@ export const layer = Layer.effectDiscard(
             { directory: 目录 },
             Effect.gen(function* () {
               const resolved = yield* provider.getModel(启动模型.providerID, 启动模型.modelID)
-              const 语言 = yield* provider.getLanguage(resolved)
-              return {
-                调用: 建调用模型(语言),
-                模型标识: `${启动模型.providerID}/${启动模型.modelID}`,
-                模型来源: 启动模型.source,
-              }
+              return yield* provider.getLanguage(resolved)
             }),
           )
           .pipe(
             Effect.catchCause((cause) => {
-              // 原因只取**错误名**：这条文案会经 `runJob` 落进 `parse_detail.reason` 并回给前端，
-              // `Cause.pretty` 的正文可能带连接串（与消费循环的 catch 同一口径）。
               const 原因 = Cause.prettyErrors(cause)
                 .map((error) => error.name)
                 .join("、")
@@ -119,6 +119,16 @@ export const layer = Layer.effectDiscard(
           ),
       )
     }
+
+    const 建抽取器 = async (job: ClaimedJob) => ({
+      调用: 建调用模型(await 取语言(job)),
+      模型标识: `${启动模型.providerID}/${启动模型.modelID}`,
+      模型来源: 启动模型.source,
+    })
+
+    /** 表头模型兜底（Task 7 的识别器）：样本按配置脱敏。 */
+    const 建表头识别器 = async (job: ClaimedJob) =>
+      建表头识别器AI(await 取语言(job), { 脱敏 })
 
     // 一份坏文件不许把循环打停：`runJob` 自己已经把失败收成「有问题」，
     // 这里再兜一层是防**它之外**的意外（例如库连接当场断）。
@@ -137,6 +147,7 @@ export const layer = Layer.effectDiscard(
               return new Uint8Array(await readFile(落点))
             },
             建抽取器,
+            建表头识别器,
           },
           job,
         )

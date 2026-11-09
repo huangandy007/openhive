@@ -239,6 +239,38 @@ describe("runJob", () => {
     expect(await 查命中数("p6")).toBe(1)
   })
 
+  test("dryRun：三处写路径全不落库，收集到识别结果", async () => {
+    // 阶段 0 要量「规则＋别名」的离线基线：只识别、不落库。三处写路径分别是
+    // 明细行、格式缓存（hit_count / 新行）、材料状态（parse_detail）。
+    const 路径 = "p-dry/材料/dry.xlsx"
+    文件.set(路径, 造工作簿({ Sheet1: [["交易金额", "摘要"], ["1.00", "甲"]] }))
+    // 队列全局：清掉本项目遗留的排队行，别认领到别的用例的作业。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry' and status = '排队中'`)
+    const 材料 = await enqueueMaterial(db(), {
+      projectId: "p-dry",
+      path: "材料/dry.xlsx",
+      sourcePath: 路径,
+      fileName: "dry.xlsx",
+      fingerprint: "fp-dry",
+    })
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有作业")
+    if (作业.materialId !== 材料.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
+
+    const 收集: unknown[] = []
+    expect(await runJob(db(), deps, 作业, { dryRun: true, 收集: (r) => 收集.push(r) })).toBe("完成")
+    expect(收集).toHaveLength(1)
+    expect(await countFactRows(db(), "p-dry")).toBe(0)
+    const 格式 = rowsOf(
+      await db().execute(sql`select fingerprint from auth.case_table_format where project_id = 'p-dry'`),
+    )
+    expect(格式).toHaveLength(0)
+    const 材料行 = await getMaterial(db(), "p-dry", 材料.materialId)
+    expect(材料行?.parseDetail).toBeNull()
+    // dryRun 也不推材料状态（排队中保持原样；真实解析才会到「解析中 / 已解析」）。
+    expect(材料行?.parseStatus).toBe("排队中")
+  })
+
   test("认不出的列原样进 extras（判据 A4）", async () => {
     // ⚠️ 必须保留至少一列认得出（主叫号码）：I3 起「所有列都认不出」按标题行处理、整份
     // 「有问题」（否则「已解析」= 0 行在骗人）。A4 讲的是**列级**认不出仍入库，前提是

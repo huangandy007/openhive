@@ -10,18 +10,18 @@ import { 抽取文本 } from "./case-text"
 import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
 import { 实体类型们, type 实体类型 } from "./case-extract"
-import { readSheets } from "./case-sheet"
+import { readSheets, type RawSheet } from "./case-sheet"
 import {
-  classifyMaterialType,
-  detectMapping,
   formatFingerprint,
   是待确认原因,
   是识别来源,
-  type MappingResult,
   type 待确认项,
   type 识别来源,
 } from "./case-mapping"
 import { 是识别字段, type 识别字段 } from "./case-field-registry"
+import { 识别材料, type 材料识别 } from "./case-recognize"
+import { 读别名上下文, 记别名命中 } from "./case-field-alias"
+import type { 表头识别器 } from "./case-header-ai"
 import { toFactRows } from "./case-rows"
 import {
   addCitation,
@@ -227,6 +227,22 @@ export interface RunDeps {
    * 生产在 worker 层用 `InstanceStore.provide` ＋ `Provider` 的默认模型建；测试注入假调用器。
    */
   建抽取器?: (job: ClaimedJob) => Promise<抽取器>
+  /**
+   * 建表头识别器（模型兜底）。**只对表格材料用**；不注入 ⇒ 表格只走四层规则 ＋ 别名。
+   * 生产在 worker 层与 `建抽取器` 共用「取语言」；测试注入假识别器。
+   */
+  建表头识别器?: (job: ClaimedJob) => Promise<表头识别器>
+}
+
+/** `runJob` 的运行选项（单次调用，不是部署配置）。 */
+export interface RunOptions {
+  /**
+   * 只识别、不落库（阶段 0 量基线用）。三处写路径全跳过：明细行、格式缓存（含 `hit_count`）、
+   * 材料状态（含 `parse_detail`）。dryRun 还是**离线基线**——不调模型（R20）。
+   */
+  dryRun?: boolean
+  /** dryRun 下的产出出口；真实解析不调用。 */
+  收集?: (结果: 材料识别) => void
 }
 
 /**
@@ -298,12 +314,18 @@ function 前段可用(段: string): boolean {
  * 文本分支的顺序见 `跑文本`：切片与抽取全部先做，删除与写入同在最后那一个事务里；
  * 取消且零片时不动旧事实。
  */
-export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise<"完成" | "失败"> {
+export async function runJob(
+  db: Queryable,
+  deps: RunDeps,
+  job: ClaimedJob,
+  选项: RunOptions = {},
+): Promise<"完成" | "失败"> {
   try {
     const material = await getMaterial(db, job.projectId, job.materialId)
     if (!material) throw new Error(`作业指向的材料不存在：${job.materialId}`)
 
-    if (material.parseStatus === "排队中") {
+    // dryRun 不推材料状态（R18）：它只借作业的读盘 / 读表能力，不进任何写路径。
+    if (!选项.dryRun && material.parseStatus === "排队中") {
       await applyParseAction(db, { projectId: job.projectId, materialId: job.materialId, action: "开始" })
     }
 
@@ -314,12 +336,14 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
 
     const 方式 = 解析方式(material.path)
     if (方式 === "表格") {
-      await 跑表格(db, deps, job)
+      await 跑表格(db, deps, job, 选项)
       return "完成"
     }
     if (方式 === "文本") return await 跑文本(db, deps, job, material)
     throw new Error("这类文件的解析在后续计划")
   } catch (error) {
+    // dryRun 不写失败状态（R18）：错误原样交给调用方，材料保持原状态。
+    if (选项.dryRun) throw error
     // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
     // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
     // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
@@ -335,8 +359,21 @@ export async function runJob(db: Queryable, deps: RunDeps, job: ClaimedJob): Pro
   }
 }
 
-/** 计划 2 的表格链路：原样搬进来，行为一行不改。 */
-async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise<void> {
+/**
+ * 表格链路：读表 → 查缓存 → 识别（四层 ＋ 缓存 ＋ 模型）→ 组装 → 一个事务里落库。
+ *
+ * ## 缓存先于识别（R18）
+ *
+ * 每张表先算指纹并 `读格式`，把结果整份传给 `识别材料`：命中的表**不跑四层、不参与模型**，
+ * 只 `hit_count + 1`；未命中的表才识别并 `写格式`。反过来的顺序（先全识别、再查缓存）
+ * 会让模型每份材料调一次，格式缓存只剩一个计数器。
+ *
+ * ## dryRun
+ *
+ * `runJob` 传 `选项.dryRun` 时这里是**只读**的：不调模型（R20，离线基线）、不写格式、
+ * 不写明细、不写材料状态，识别结果从 `收集` 交出去。
+ */
+async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: RunOptions): Promise<void> {
   // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
   // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
   // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
@@ -351,76 +388,94 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
     throw new Error(缘由)
   }
 
-  const 待写: FactRowInput[] = []
-  let 类型: MaterialKind = "其他"
-  let 认出列数 = 0
-  /** 每张表的识别结果：缓存命中也要有，否则待确认角标随缓存消失（设计 §5.1 / §6.4）。 */
-  const 工作表结果: Record<string, 格式结果> = {}
-  for (const sheet of sheets) {
-    const header = sheet.header.map((c) => c.text)
-    const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
-    // Task 8 换成真实的 alias_version（本次只做签名对齐，不接别名库）。
-    const fingerprint = formatFingerprint(header, 样例, 0)
+  // 别名库一个任务只读一次（设计 §4.2-4），指纹的版本号也用它。
+  const 别名 = await 读别名上下文(db)
+  const 表头们 = sheets.map((sheet) => sheet.header.map((c) => c.text))
+  const 样例们 = sheets.map((sheet) =>
+    sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text)),
+  )
+  const 指纹们 = 表头们.map((header, i) => formatFingerprint(header, 样例们[i] ?? [], 别名.版本))
 
-    // 认过的格式直接取映射（设计 §6.2），没认过就现认一次并沉淀。
-    // ⚠️ 中间态：Task 8 会用 `识别材料` 的完整编排整体替换这一段。
-    let 认出: MappingResult
-    let 结果: 格式结果
-    const 缓存 = await 读格式(db, job.projectId, fingerprint)
-    if (缓存) {
+  // 先查缓存再识别（R18）：命中的表不跑四层、不参与模型。
+  const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
+  for (const 指纹 of 指纹们) 缓存们.push(await 读格式(db, job.projectId, 指纹))
+
+  // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
+  const 识别器 =
+    选项.dryRun === true
+      ? undefined
+      : deps.建表头识别器 === undefined
+        ? undefined
+        : await deps.建表头识别器(job)
+
+  const 识别 = await 识别材料({
+    sheets,
+    别名,
+    缓存: 缓存们,
+    ...(识别器 === undefined ? {} : { 识别器 }),
+  })
+  选项.收集?.(识别)
+  if (选项.dryRun === true) return
+
+  const 待写: FactRowInput[] = []
+  let 认出列数 = 0
+  /** 时间列守卫要用的每表产物（守卫在整份组装完之后统一判，见下）。 */
+  const 守卫们: {
+    sheet: RawSheet
+    表头: (string | null)[]
+    列: Record<number, 识别字段>
+    行: FactRowInput[]
+  }[] = []
+
+  for (let i = 0; i < sheets.length; i++) {
+    const sheet = sheets[i]
+    const 表 = 识别.工作表[i]
+    if (sheet === undefined || 表 === undefined) continue
+    const header = 表.表头
+    const 指纹 = 指纹们[i] ?? ""
+
+    if (表.命中) {
+      // 命中的表只记账：不重跑四层、不参与模型、不重写格式。
       await db.execute(sql`
         update auth.case_table_format
            set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
-         where project_id = ${job.projectId} and fingerprint = ${fingerprint}
+         where project_id = ${job.projectId} and fingerprint = ${指纹}
       `)
-      // 来源 / 待确认从 `result` 恢复（否则命中缓存就丢）。`方法` 要收窄到
-      // `MappingResult["method"]`：DB 的 CHECK 允许「模型」（Task 8 会写），
-      // 但它不属于这三值；缓存里存过「模型」时按「特征」计。
-      认出 = {
-        columns: 缓存.columns,
-        method: 缓存.result.方法 === "别名" ? "别名" : 缓存.result.方法 === "词典" ? "词典" : "特征",
-        来源: 缓存.result.来源,
-        待确认: 缓存.result.待确认,
-        // 列形状可重算，没必要存；本函数只按 `columns` 计已认出列数。
-        unknownColumns: [],
-      }
-      结果 = 缓存.result
     } else {
-      认出 = detectMapping(header, 样例)
-      结果 = {
-        来源: 认出.来源,
-        待确认: 认出.待确认,
-        方法: 认出.method,
-        未知列: 认出.unknownColumns.length,
-      }
-      await 写格式(db, job.projectId, fingerprint, header, 认出.columns, 结果)
+      await 写格式(db, job.projectId, 指纹, header, 表.列, {
+        来源: 表.来源,
+        待确认: 表.待确认,
+        方法: 表.方法,
+        未知列: 表.未知列,
+      })
     }
-    工作表结果[sheet.name] = 结果
 
-    // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
-    //   （缺口记在计划自检里，不在本计划修）。
-    类型 = classifyMaterialType(认出.columns)
     // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
     // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
-    认出列数 += Object.keys(认出.columns).filter((k) => {
+    认出列数 += Object.keys(表.列).filter((k) => {
       const 列号 = Number(k)
       return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
     }).length
-    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 认出.columns })
-
-    // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
-    // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
-    // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
-    const 时间列 = Object.keys(认出.columns).find((k) => 认出.columns[Number(k)] === "startedAt")
-    if (时间列 !== undefined) {
-      const 非空原文数 = sheet.rows.filter((r) => (r.cells[Number(时间列)]?.text ?? null) !== null).length
-      if (非空原文数 > 0 && !行.some((r) => r.startedAt !== null)) {
-        throw new Error(
-          `「${sheet.name}」的时间列（${header[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
-        )
-      }
-    }
+    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 表.列 })
     待写.push(...行)
+    守卫们.push({ sheet, 表头: header, 列: 表.列, 行 })
+  }
+
+  // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
+  // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
+  // 按表判，用合并后的 `表.列` 找 `startedAt`；放在 `待写` 组装之后、事务之前。
+  // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
+  for (const 守卫 of 守卫们) {
+    const 时间列 = Object.keys(守卫.列).find((k) => 守卫.列[Number(k)] === "startedAt")
+    if (时间列 === undefined) continue
+    const 非空原文数 = 守卫.sheet.rows.filter(
+      (r) => (r.cells[Number(时间列)]?.text ?? null) !== null,
+    ).length
+    if (非空原文数 > 0 && !守卫.行.some((r) => r.startedAt !== null)) {
+      throw new Error(
+        `「${守卫.sheet.name}」的时间列（${守卫.表头[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
+      )
+    }
   }
 
   // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
@@ -436,16 +491,34 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
     await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
     await insertFactRows(tx, 待写)
 
-    await setMaterialKind(tx, job.projectId, job.materialId, 类型)
-    // 中间态（Task 8 换成 `识别材料` 的完整结果）：成功路径也要写 `mapping`，
-    // **缓存命中同样要写**，否则第二份同格式材料的待确认角标会消失（§5.1 / §6.4）。
-    // `模型.调用` 暂记 0：模型层归 Task 7 / 8。
+    await setMaterialKind(tx, job.projectId, job.materialId, 识别.类型)
+    // 成功路径也要写 `mapping`，**缓存命中同样要写**，否则第二份同格式材料的待确认角标
+    // 会消失（§5.1 / §6.4）。`模型.调用` 记录这次材料是否真的调过模型。
     await applyParseAction(tx, {
       projectId: job.projectId,
       materialId: job.materialId,
       action: "完成",
-      detail: { mapping: { 模型: { 调用: 0 }, 工作表: 工作表结果 } },
+      detail: {
+        mapping: {
+          模型: 识别.模型,
+          工作表: Object.fromEntries(
+            识别.工作表.map((s) => [
+              s.sheet,
+              { 来源: s.来源, 待确认: s.待确认, 未知列: s.未知列, 方法: s.方法 },
+            ]),
+          ),
+        },
+      },
     })
+    // 只记来源为「别名库」的表头（设计 §4.3：一份材料同一个别名只 +1，由 `记别名命中` 去重）。
+    await 记别名命中(
+      tx,
+      识别.工作表.flatMap((s) =>
+        Object.keys(s.来源)
+          .filter((k) => s.来源[Number(k)] === "别名库")
+          .map((k) => s.表头[Number(k)] ?? ""),
+      ),
+    )
     await 收尾(tx, job, "完成", null)
   })
 }
