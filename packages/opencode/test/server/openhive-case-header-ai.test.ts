@@ -69,6 +69,26 @@ describe("模型结果合并", () => {
     const 合并 = 合并模型结果(表头, 行, 基础, { 1: "counterparty" })
     expect(合并.待确认).toEqual(基础.待确认)
   })
+
+  test("模型把话单字段填进资金表 ⇒ 丢弃（候选集过滤）", () => {
+    const 资金表头 = ["交易金额", "联系电话"]
+    const 资金行 = [
+      ["1.00", "13800000000"],
+      ["2.00", "13900000000"],
+    ]
+    const 基础 = detectMapping(资金表头, 资金行)
+    // 形状能过（11 位手机号），但 callee 不在资金候选集里
+    expect(合并模型结果(资金表头, 资金行, 基础, { 1: "callee" }).columns[1]).toBeUndefined()
+  })
+
+  test("同一字段被建议到多列 ⇒ 只落第一列", () => {
+    const 双账号表头 = ["交易金额", "列A", "列B"]
+    const 双账号行 = [["1.00", "62220010001", "62229998888"]]
+    const 基础 = detectMapping(双账号表头, 双账号行)
+    const 合并 = 合并模型结果(双账号表头, 双账号行, 基础, { 1: "counterparty", 2: "counterparty" })
+    expect(合并.columns[1]).toBe("counterparty")
+    expect(合并.columns[2]).toBeUndefined()
+  })
 })
 
 describe("脱敏开关", () => {

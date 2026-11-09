@@ -3,7 +3,7 @@ export * as OpenhiveCaseHeaderAi from "./case-header-ai"
 import { Schema } from "effect"
 import type { LanguageModel } from "ai"
 import { 建调用模型 } from "./case-extract-ai"
-import { 字段目录, 是识别字段, 形状命中率, type 识别字段 } from "./case-field-registry"
+import { 候选字段集, 字段目录, 是识别字段, 形状命中率, type 识别字段 } from "./case-field-registry"
 import type { MappingResult } from "./case-mapping"
 
 /**
@@ -118,6 +118,12 @@ function 有形状列(field: 识别字段, 表头: (string | null)[], 行: (stri
 /**
  * 合并模型建议：只填**未认领**的列，规则/别名已认领的不许覆盖。
  * 待确认项原样沿用——模型不替人做决定，也不清掉给人看的证据。
+ *
+ * 模型层与四层召回受**同一前提**约束（`#002-06`）：
+ * - 字段必须在该表的候选字段集里：资金表里的「联系电话」形状像 `callee` 也不能认，
+ *   否则话单字段会静默填进资金标准列；
+ * - 一个字段只能占一列：同一字段被建议到多列时只落第一列，否则后一列的数据会覆盖前一列，
+ *   而且没有任何待确认提示。
  */
 export function 合并模型结果(
   表头: (string | null)[],
@@ -127,6 +133,8 @@ export function 合并模型结果(
 ): MappingResult {
   const columns = { ...基础.columns }
   const 来源 = { ...基础.来源 }
+  const 候选 = 候选字段集(表头, 行)
+  const 已用 = new Set<识别字段>(Object.values(columns))
   for (const [键, 字段名] of Object.entries(建议)) {
     const i = Number(键)
     if (!Number.isInteger(i) || i < 0 || i >= 表头.length) continue
@@ -134,9 +142,13 @@ export function 合并模型结果(
     if (!是识别字段(字段名)) continue
     // extras 字段没有可验证的形状证据：靠模型自由发挥会污染 extras（本期模型只认标准列）。
     if (字段目录[字段名].落点 !== "列") continue
+    // 类型不对的字段不参与本表认领（`候选字段集` 的同一前提）。
+    if (!候选.has(字段名)) continue
+    if (已用.has(字段名)) continue
     if (!形状命中(字段名, 行.map((r) => r[i] ?? null))) continue
     columns[i] = 字段名
     来源[i] = "模型"
+    已用.add(字段名)
   }
   return { ...基础, columns, 来源 }
 }
