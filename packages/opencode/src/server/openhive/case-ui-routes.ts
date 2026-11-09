@@ -113,19 +113,22 @@ function 是合法段(value: unknown): value is string {
  *
  * `要属主` 是写给口用的可选加严（R42）：拿到 `{ user }` 后再判一次角色，**不另查一遍 `身份`**；
  * 将来 `过门` 加新判据时，属主口自动跟随（`#005-24` 共同出口）。`成员角色` 仍只查一次。
+ *
+ * `已知身份` 让写口先自己查一次身份（401 必须在读体之前回，R51），再把结果传进来——
+ * 判据仍只在这一个出口，同时避免每个请求查两次 `身份`。
  */
 function 过门(
   deps: Deps,
   projectId: string | null,
-  options?: { readonly 要属主?: boolean },
+  选项: { readonly 要属主?: boolean; readonly 已知身份?: User.Info } = {},
 ): Effect.Effect<{ readonly user: User.Info } | HttpServerResponse.HttpServerResponse> {
   return Effect.gen(function* () {
-    const user = yield* 身份
+    const user = 选项.已知身份 !== undefined ? Option.some(选项.已知身份) : yield* 身份
     if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
     if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
     const 角色 = yield* 成员角色(deps, user.value.id, projectId)
     if (角色 === undefined) return fail(403, "不是该项目成员", "forbidden")
-    if (options?.要属主 === true && 角色 !== "owner")
+    if (选项.要属主 === true && 角色 !== "owner")
       return fail(403, "只有项目属主能维护字段别名", "forbidden")
     return { user: user.value }
   })
@@ -432,10 +435,11 @@ function handleArtifactReview(request: HttpServerRequest.HttpServerRequest, deps
 /**
  * 别名确认口（计划 11 Task 9）。
  *
- * 次序：体 → `projectId` → 门（`要属主`，401/400/403 都由 `过门` 统一回）→ 字段校验 → DAO。
- * **本口有意把字段校验放在门后**（R45）：不向非属主暴露「表头 / 字段哪里不对」的细节。
- * 这与本文件上方写口注释（身份 → 体 → 字段校验 → 成员）不同，是被评审确认的现有行为，
- * 后来人不要照那条注释改回去。
+ * 次序同本文件既有写口（`handleAlertsRefresh` 那一节的口径）：
+ * **身份 → 体 → 字段校验 → 门（`要属主`）→ DAO**。
+ * - 身份最先（R51）：未登录者不该让服务端去解析他的请求体；未登录 + 体坏也回 401。
+ * - 字段校验在门之前：所以「非成员 / 非属主 + 坏字段」回 400，与文件既有写口一致（R51 裁定保留）。
+ * - 门拿到 `已知身份`，判据仍只在 `过门` 一个出口，且每个请求只查一次 `身份`。
  *
  * `materialId` 只作审计元数据，不校验它属于该项目（R25）；`projectId` 只用于授权，
  * 不进别名查询条件（R24）。
@@ -453,11 +457,12 @@ function handleArtifactReview(request: HttpServerRequest.HttpServerRequest, deps
  */
 function handleFieldAlias(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
     const body = yield* 读体(request)
     if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
     const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
-    const 门 = yield* 过门(deps, projectId, { 要属主: true })
-    if (HttpServerResponse.isHttpServerResponse(门)) return 门
 
     const header = body["header"]
     const field = body["field"]
@@ -469,6 +474,9 @@ function handleFieldAlias(request: HttpServerRequest.HttpServerRequest, deps: De
     if (typeof field !== "string" || !是识别字段(field))
       return fail(400, "字段不在字段目录内", "bad_request")
     if (typeof materialId !== "string" || materialId === "") return fail(400, "materialId 必填", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, { 要属主: true, 已知身份: 用户.value })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
 
     const 结果 = yield* Effect.promise(() =>
       确认别名(deps.pg(), {
@@ -495,22 +503,29 @@ function handleFieldAlias(request: HttpServerRequest.HttpServerRequest, deps: De
 /**
  * 撤销口：`false` ＝ 没有这条或已撤销 ⇒ 404；DB 错误保持裸 promise（无专用状态码）。
  *
+ * 次序同确认口：身份 → 体 → 表头校验 → 门 → DAO（R51）。
+ *
  * ⚠️ 传进来的 `by` 目前**只作调用凭据、不落库**：表里没有 `revoked_by` 列，本计划不做迁移
  * （R46）。别把它当成审计记账。
  */
 function handleFieldAliasRevoke(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
     const body = yield* 读体(request)
     if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
     const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
-    const 门 = yield* 过门(deps, projectId, { 要属主: true })
-    if (HttpServerResponse.isHttpServerResponse(门)) return 门
 
     const header = body["header"]
     if (typeof header !== "string") return fail(400, "表头为空或超过 200 字", "bad_request")
     // R43：撤销口同样先 trim 再判长，与 DAO 的 `撤销别名` 同口径。
     const 表头 = header.trim()
     if (表头 === "" || 表头.length > 200) return fail(400, "表头为空或超过 200 字", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, { 要属主: true, 已知身份: 用户.value })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
     const 撤销 = yield* Effect.promise(() => 撤销别名(deps.pg(), { header: 表头, by: 门.user.id }))
     return 撤销 ? ok({ ok: true }) : fail(404, "没有这个别名或已撤销", "not_found")
   })

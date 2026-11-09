@@ -188,6 +188,12 @@ function realApp(env: Record<string, string | undefined>) {
 }
 
 const openApp = realApp(OPEN)
+/**
+ * 关掉全局身份门（不设 `OPENHIVE_REQUIRE_USER_ID`）的同一个 app：未登录请求这时才真的进 handler。
+ * 用它钉 handler 自己的「身份最先」——开着门时 401 由 `middleware/user-identity.ts:71` 先回，
+ * handler 的次序在该层不可观测（变异也红不了）。
+ */
+const 无门App = realApp({ AUTH_JWT_SECRET: SECRET, OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
 const token = (subject: TokenSubject) => Effect.promise(() => signToken(subject, SECRET))
 
 /** 身份走 **Cookie**（`UserIdentity.COOKIE_NAME`），不是 `Authorization: Bearer`。 */
@@ -598,11 +604,24 @@ describe("openhive 案件视图出口（计划 7）", () => {
       const 头 = { "content-type": "application/json" }
       const 体 = JSON.stringify({ projectId: 项目, header: "交易对方名称", field: "counterpartyName", materialId: "m1" })
 
-      // 401 由门统一回（R42：本口不再单独查一次身份，避免每请求查两次 `身份`）。
+      // 身份最先（R51）：未登录不该让服务端解析他的请求体 —— 体坏也是 401。
+      const 坏体 = { method: "POST", headers: 头, body: "不是 JSON" }
+      expect((yield* 发(null, "/openhive/case/field-alias", 坏体)).status).toBe(401)
+      // 未登录 + 合法体同样 401（401 由门统一回）。
       expect((yield* 发(null, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(401)
-      // 非成员：`成员角色` 回 undefined。
+      // handler 层再钉一遍（关掉全局身份门）：这里才真正走到 handler 的「身份最先」，删掉早退会变 400。
+      expect((yield* 无门App("/openhive/case/field-alias", 坏体)).status).toBe(401)
+      expect((yield* 无门App("/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(401)
+      // 已登录 + 体坏 ⇒ 400（读体失败发生在身份之后）。
+      expect((yield* 发(我, "/openhive/case/field-alias", 坏体)).status).toBe(400)
+
+      // 非成员 + 合法字段 ⇒ 403（`成员角色` 回 undefined）。
       expect((yield* 发(别人, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
-      // 是成员但不是属主：删掉 `要属主` 判据，这条会变 200（变异点）。
+      // 字段校验在门之前（R51 按文件既有写口口径）：非成员 / 非属主 + 坏字段 ⇒ 400。
+      const 坏字段 = JSON.stringify({ projectId: 项目, header: "X", field: "不存在的字段", materialId: "m1" })
+      expect((yield* 发(别人, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 坏字段 })).status).toBe(400)
+      expect((yield* 发(成员, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 坏字段 })).status).toBe(400)
+      // 是成员但不是属主 + 合法字段：删掉 `要属主` 判据，这条会变 200（变异点）。
       expect((yield* 发(成员, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
 
       const 前 = yield* 读别名版本()
@@ -657,6 +676,10 @@ describe("openhive 案件视图出口（计划 7）", () => {
           body: JSON.stringify({ projectId: 项目, header }),
         })
 
+      // 撤销口也身份最先：关掉全局身份门后，未登录 + 坏体仍是 401（不是 400）。
+      expect(
+        (yield* 无门App("/openhive/case/field-alias/revoke", { method: "POST", headers: 头, body: "不是 JSON" })).status,
+      ).toBe(401)
       // 撤销口也必须挂同一道属主门：漏挂时成员能撤销全局别名（#005-24 共同出口）。
       expect((yield* 发撤销(成员, "要撤销")).status).toBe(403)
       // R44：撤销口表头超长 ⇒ 400。
