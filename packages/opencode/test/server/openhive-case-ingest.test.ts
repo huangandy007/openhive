@@ -552,6 +552,103 @@ describe("runJob", () => {
     expect(await runJob(db(), deps, 手工作业("p15", r.materialId, "p15/九表.xlsx"))).toBe("失败")
     expect(await countFactRows(db(), "p15")).toBe(2)
   })
+
+  test("同一指纹的第二份材料命中缓存，待确认仍在 parse_detail 里", async () => {
+    // 「金额（万元）」被单位闸拦下、进待确认；「摘要」认不出、进未知列。
+    // 两份内容相同 ⇒ 格式指纹相同；材料指纹不同 ⇒ 各建各的材料。
+    const 表 = [
+      ["交易金额", "金额（万元）", "摘要"],
+      ["1.00", "2.00", "甲"],
+      ["2.00", "3.00", "乙"],
+    ]
+    文件.set("p-缓存/甲.xlsx", 造工作簿({ Sheet1: 表 }))
+    文件.set("p-缓存/乙.xlsx", 造工作簿({ Sheet1: 表 }))
+    // 队列全局且按 (queued_at, id) 取最老：同一秒入队时先后由随机 id 决定，
+    // 所以别断「先跑的是甲」。两份内容相同 ⇒ 谁第二谁命中缓存。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    await 入队("p-缓存", "甲.xlsx", "fp-缓存-甲")
+    await 入队("p-缓存", "乙.xlsx", "fp-缓存-乙")
+
+    // 逐次跑，模拟单 worker 顺序。
+    const 作业1 = await claimNextJob(db())
+    if (作业1 === undefined) throw new Error("没有作业")
+    expect(await runJob(db(), deps, 作业1)).toBe("完成")
+    const 作业2 = await claimNextJob(db())
+    if (作业2 === undefined) throw new Error("没有第二个作业")
+    expect(await runJob(db(), deps, 作业2)).toBe("完成")
+    // 第二份必须真的走缓存，否则这条用例测不到 result 的持久化。
+    expect(await 查命中数("p-缓存")).toBe(1)
+
+    const 材料 = await getMaterial(db(), "p-缓存", 作业2.materialId)
+    const 详情 = 材料?.parseDetail
+    expect(是对象(详情)).toBe(true)
+    const mapping = 是对象(详情) ? 详情.mapping : undefined
+    expect(是对象(mapping)).toBe(true)
+    const 工作表 = 是对象(mapping) ? mapping.工作表 : undefined
+    const Sheet1 = 是对象(工作表) ? 工作表.Sheet1 : undefined
+    expect(是对象(Sheet1)).toBe(true)
+    // 命中缓存也要有待确认：待确认只在首次识别时产生，不随 result 存下来就会消失。
+    const 项 = 是对象(Sheet1) ? Sheet1.待确认 : undefined
+    expect(Array.isArray(项) ? 项.length : 0).toBeGreaterThan(0)
+  })
+
+  test("格式缓存里的非法字段名被剔除，合法条目仍生效（列级降级）", async () => {
+    // 直接种一行缓存：mapping 混进「垃圾」这种非识别字段。读格式必须把它剔除，
+    // 但同一条 mapping 里合法的 caller 要照常生效（不能整行丢弃）。
+    const 表头 = ["随便", "主叫号码"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["x", "13800000000"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-脏缓存', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 0: "垃圾", 1: "caller" })}::text::jsonb,
+              '词典', 1,
+              ${JSON.stringify({ 来源: { 1: "词典" }, 待确认: [], 方法: "词典", 未知列: 1 })}::text::jsonb,
+              0, 1, 1)
+    `)
+
+    文件.set("p-脏缓存/脏.xlsx", 工作簿)
+    // 全局队列里若有遗留的排队行，会先被认领走。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    const r = await 入队("p-脏缓存", "脏.xlsx", "fp-脏缓存")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await 查命中数("p-脏缓存")).toBe(1)
+    expect(await 读第一行("p-脏缓存", r.materialId)).toEqual({
+      caller: "13800000000",
+      // 脏条目那一列降级为「未识别」⇒ 原文按原表头进 extras。
+      extras: { 随便: "x" },
+    })
+  })
+
+  test("格式缓存里全是非法字段名 ⇒ 一条都不算认出（脏行降级为未识别）", async () => {
+    // 修复前：`{0:"垃圾"}` 也按「键的个数」计成认出 1 列，零列闸被绕过，
+    // 材料标「已解析」却一行事实都没有。剔除非法条目后它等价于空映射。
+    const 表头 = ["随便"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["x"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-脏缓存2', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 0: "垃圾" })}::text::jsonb,
+              '词典', 1,
+              ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 1 })}::text::jsonb,
+              0, 1, 1)
+    `)
+
+    文件.set("p-脏缓存2/脏.xlsx", 工作簿)
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    const r = await 入队("p-脏缓存2", "脏.xlsx", "fp-脏缓存2")
+    expect((await 跑下一条()).结果).toBe("失败")
+    const 材料 = await getMaterial(db(), "p-脏缓存2", r.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    expect(材料?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
+  })
 })
 
 describe("沙箱内路径", () => {

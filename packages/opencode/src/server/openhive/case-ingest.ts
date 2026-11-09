@@ -11,8 +11,15 @@ import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
 import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets } from "./case-sheet"
-import { classifyMaterialType, detectMapping, formatFingerprint } from "./case-mapping"
-import type { 识别字段 } from "./case-field-registry"
+import {
+  classifyMaterialType,
+  detectMapping,
+  formatFingerprint,
+  type MappingResult,
+  type 待确认项,
+  type 识别来源,
+} from "./case-mapping"
+import { 是识别字段, type 识别字段 } from "./case-field-registry"
 import { toFactRows } from "./case-rows"
 import {
   addCitation,
@@ -345,6 +352,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
   const 待写: FactRowInput[] = []
   let 类型: MaterialKind = "其他"
   let 认出列数 = 0
+  /** 每张表的识别结果：缓存命中也要有，否则待确认角标随缓存消失（设计 §5.1 / §6.4）。 */
+  const 工作表结果: Record<string, 格式结果> = {}
   for (const sheet of sheets) {
     const header = sheet.header.map((c) => c.text)
     const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
@@ -352,36 +361,55 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
     const fingerprint = formatFingerprint(header, 样例, 0)
 
     // 认过的格式直接取映射（设计 §6.2），没认过就现认一次并沉淀。
-    let columns: Record<number, 识别字段>
+    // ⚠️ 中间态：Task 8 会用 `识别材料` 的完整编排整体替换这一段。
+    let 认出: MappingResult
+    let 结果: 格式结果
     const 缓存 = await 读格式(db, job.projectId, fingerprint)
     if (缓存) {
-      columns = 缓存
       await db.execute(sql`
         update auth.case_table_format
            set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
          where project_id = ${job.projectId} and fingerprint = ${fingerprint}
       `)
+      // 来源 / 待确认从 `result` 恢复（否则命中缓存就丢）。`方法` 要收窄到
+      // `MappingResult["method"]`：DB 的 CHECK 允许「模型」（Task 8 会写），
+      // 但它不属于这三值；缓存里存过「模型」时按「特征」计。
+      认出 = {
+        columns: 缓存.columns,
+        method: 缓存.result.方法 === "别名" ? "别名" : 缓存.result.方法 === "词典" ? "词典" : "特征",
+        来源: 缓存.result.来源,
+        待确认: 缓存.result.待确认,
+        // 列形状可重算，没必要存；本函数只按 `columns` 计已认出列数。
+        unknownColumns: [],
+      }
+      结果 = 缓存.result
     } else {
-      const 认出 = detectMapping(header, 样例)
-      columns = 认出.columns
-      await 写格式(db, job.projectId, fingerprint, header, 认出.columns, 认出.method, 认出.unknownColumns.length)
+      认出 = detectMapping(header, 样例)
+      结果 = {
+        来源: 认出.来源,
+        待确认: 认出.待确认,
+        方法: 认出.method,
+        未知列: 认出.unknownColumns.length,
+      }
+      await 写格式(db, job.projectId, fingerprint, header, 认出.columns, 结果)
     }
+    工作表结果[sheet.name] = 结果
 
     // ⚠️ 一本工作簿里话单与流水各一张表时，最后一张赢——材料只有一个 kind 字段
     //   （缺口记在计划自检里，不在本计划修）。
-    类型 = classifyMaterialType(columns)
+    类型 = classifyMaterialType(认出.columns)
     // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
     // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
-    认出列数 += Object.keys(columns).filter((k) => {
+    认出列数 += Object.keys(认出.columns).filter((k) => {
       const 列号 = Number(k)
       return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
     }).length
-    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: columns })
+    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 认出.columns })
 
     // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
     // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
     // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
-    const 时间列 = Object.keys(columns).find((k) => columns[Number(k)] === "startedAt")
+    const 时间列 = Object.keys(认出.columns).find((k) => 认出.columns[Number(k)] === "startedAt")
     if (时间列 !== undefined) {
       const 非空原文数 = sheet.rows.filter((r) => (r.cells[Number(时间列)]?.text ?? null) !== null).length
       if (非空原文数 > 0 && !行.some((r) => r.startedAt !== null)) {
@@ -407,7 +435,15 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
     await insertFactRows(tx, 待写)
 
     await setMaterialKind(tx, job.projectId, job.materialId, 类型)
-    await applyParseAction(tx, { projectId: job.projectId, materialId: job.materialId, action: "完成" })
+    // 中间态（Task 8 换成 `识别材料` 的完整结果）：成功路径也要写 `mapping`，
+    // **缓存命中同样要写**，否则第二份同格式材料的待确认角标会消失（§5.1 / §6.4）。
+    // `模型.调用` 暂记 0：模型层归 Task 7 / 8。
+    await applyParseAction(tx, {
+      projectId: job.projectId,
+      materialId: job.materialId,
+      action: "完成",
+      detail: { mapping: { 模型: { 调用: 0 }, 工作表: 工作表结果 } },
+    })
     await 收尾(tx, job, "完成", null)
   })
 }
@@ -703,27 +739,87 @@ function 引用id(projectId: string, factType: string, factId: string, materialI
   return Hash.sha256([projectId, factType, factId, materialId, 起].join("\u0000")).slice(0, 32)
 }
 
-/** 已认过的映射（`columns` 的键是列下标）。 */
+/**
+ * 格式缓存里的识别结果（迁移 0036 的 `result jsonb`）。
+ *
+ * 缓存命中时靠它恢复「来源 / 待确认」——只存 `mapping` 的话，第二份同格式材料会被
+ * 当成「全认出来了」，待确认角标凭空消失（设计 §6.4）。
+ *
+ * `方法` 保留「模型」（DB 的 `case_table_format_method` CHECK 允许）：它由 Task 8 的
+ * 识别编排写入；本文件读到「模型」时按 `MappingResult["method"]` 收窄（见 `跑表格`）。
+ */
+export interface 格式结果 {
+  来源: Record<number, 识别来源>
+  待确认: 待确认项[]
+  方法: "词典" | "特征" | "别名" | "模型"
+  未知列: number
+}
+
+function 是格式结果(值: unknown): 值 is 格式结果 {
+  return 值 !== null && typeof 值 === "object" && !Array.isArray(值)
+}
+
+/**
+ * 已认过的映射（`columns` 的键是列下标）。
+ *
+ * ## 两种「当未命中」都要重算，不许静默降级
+ *
+ * - `mapping` 是脏形态（null / 标量 / 数组）：`Object.entries` 要么抛、要么把字符串下标
+ *   当列号（复审 M6）。
+ * - `result` 缺失（0036 之前写的老行）或形状不对：没有它就拿不到待确认，
+ *   命中等于把「有待确认」悄悄变成「全认出来了」。宁可多算一次（R6）。
+ *
+ * ## 非法字段名逐条剔除
+ *
+ * `mapping` 的值可能是旧版本 / 手工修库留下的非法字段名（`{0:"垃圾"}`）。下游
+ * `toFactRows` / `classifyMaterialType` 对它们没有共同口径，放进去要么变成脏值、
+ * 要么在 `字段目录` 里取不到而抛（Task 5 审查 Important #1 的下半截）。
+ * 这里统一降级为「未识别」：该列照常进 extras，也照常计入零列闸 —— 宁可少认一列，
+ * 也不让一条坏缓存把整份材料的结论改掉。
+ */
 async function 读格式(
   db: Queryable,
   projectId: string,
   fingerprint: string,
-): Promise<Record<number, 识别字段> | undefined> {
+): Promise<{ columns: Record<number, 识别字段>; result: 格式结果 } | undefined> {
   const rows = rowsOf(
     await db.execute(sql`
-      select mapping from auth.case_table_format
+      select mapping, result from auth.case_table_format
        where project_id = ${projectId} and fingerprint = ${fingerprint}
     `),
   )
   const row = rows[0]
   if (!row) return undefined
   const raw: unknown = typeof row.mapping === "string" ? JSON.parse(row.mapping) : row.mapping
-  // 脏形态（null / 标量 / 数组）当**缓存未命中**（复审 M6）：否则 `Object.entries` 要么抛、
-  // 要么把字符串的下标当列号，映射全错。让它重算一次，比信一条坏缓存便宜。
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const 结果原始: unknown = typeof row.result === "string" ? JSON.parse(row.result) : row.result
+  if (!是格式结果(结果原始)) return undefined
+
   const columns: Record<number, 识别字段> = {}
-  for (const [k, v] of Object.entries(raw as Record<string, 识别字段>)) columns[Number(k)] = v
-  return columns
+  for (const [k, v] of Object.entries(raw)) {
+    if (!是识别字段(v)) continue
+    columns[Number(k)] = v
+  }
+
+  // JSON 往返后 `来源` 的键成了字符串；下游按数字列号取值，这里还原。
+  // `result` 只校验了顶层形状，`来源` 可能缺失 / 是脏值（别的版本写进来的）：不当真、
+  // 也不让它抛——一个坏字段不该把整份材料的作业打成失败。
+  const 来源: Record<number, 识别来源> = {}
+  const 原始来源: unknown = 结果原始.来源
+  if (原始来源 !== null && typeof 原始来源 === "object" && !Array.isArray(原始来源)) {
+    for (const [k, v] of Object.entries(原始来源)) {
+      if (v === "别名库" || v === "词典" || v === "特征" || v === "模型") 来源[Number(k)] = v
+    }
+  }
+  return {
+    columns,
+    result: {
+      来源,
+      待确认: Array.isArray(结果原始.待确认) ? 结果原始.待确认 : [],
+      方法: 结果原始.方法,
+      未知列: typeof 结果原始.未知列 === "number" ? 结果原始.未知列 : 0,
+    },
+  }
 }
 
 async function 写格式(
@@ -732,15 +828,15 @@ async function 写格式(
   fingerprint: string,
   header: (string | null)[],
   columns: Record<number, 识别字段>,
-  method: "词典" | "特征" | "别名",
-  unknownColumns: number,
+  结果: 格式结果,
 ): Promise<void> {
   const now = nowSeconds()
   await db.execute(sql`
     insert into auth.case_table_format
-      (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
+      (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
     values (${projectId}, ${fingerprint}, ${JSON.stringify(header)}::text::jsonb,
-            ${JSON.stringify(columns)}::text::jsonb, ${method}, ${unknownColumns}, 0, ${now}, ${now})
+            ${JSON.stringify(columns)}::text::jsonb, ${结果.方法}, ${结果.未知列},
+            ${JSON.stringify(结果)}::text::jsonb, 0, ${now}, ${now})
     on conflict (project_id, fingerprint) do nothing
   `)
 }
