@@ -17,6 +17,8 @@ const 行 = [
  */
 function 拦截模型() {
   const 收到: string[] = []
+  /** 只收集 role=system 的文本：断言提示词内容时不能用整个 options（`responseFormat` 天然含 json）。 */
+  const 系统: string[] = []
   const 结果: LanguageModelV3GenerateResult = {
     content: [{ type: "text", text: JSON.stringify({ 工作表: { Sheet1: { 列: { "0": "counterparty" } } } }) }],
     finishReason: { unified: "stop", raw: "stop" },
@@ -29,10 +31,16 @@ function 拦截模型() {
   const 模型 = new MockLanguageModelV3({
     doGenerate: async (options) => {
       收到.push(JSON.stringify(options))
+      系统.push(
+        (options.prompt ?? [])
+          .filter((m) => m.role === "system")
+          .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+          .join("\n"),
+      )
       return 结果
     },
   })
-  return { 模型, 收到 }
+  return { 模型, 收到, 系统 }
 }
 
 describe("触发判定", () => {
@@ -73,6 +81,15 @@ describe("触发判定", () => {
     // ⇒ 模型填不进去，不该为它触发调用。修复前这里会因 1 / 3 > 0.3 触发。
     const h = ["通话时间", "主叫号码", "流水号"]
     const r = [["2026-01-02 03:04:05", "13800000000", "62220010001"]]
+    const 基础 = detectMapping(h, r)
+    expect(基础.columns[2]).toBeUndefined()
+    expect(需要模型([基础], [h], [r])).toBe(false)
+  })
+
+  test("话单表的金额形状列不算关键缺失（amount 不在候选集）", () => {
+    // 话单候选集没有 amount ⇒ 模型填不进去，不应为「amount 缺失」触发调用（R27）。
+    const h = ["通话时间", "主叫号码", "费用"]
+    const r = [["2026-01-02 03:04:05", "13800000000", "1.00"]]
     const 基础 = detectMapping(h, r)
     expect(基础.columns[2]).toBeUndefined()
     expect(需要模型([基础], [h], [r])).toBe(false)
@@ -129,6 +146,21 @@ describe("模型结果合并", () => {
     expect(合并模型结果(h, r, 基础, { 0: "amount" }).columns[0]).toBeUndefined()
   })
 
+  test("别名跨字段集只能人工确认 ⇒ 模型不许填，待确认必须还在", () => {
+    // 用户自己下发的别名把「对方号码」指向 callee，而资金候选集没有 callee ⇒ 别名跨字段集。
+    // 模型建议 counterparty 虽然形状/候选集都能过，但不能替用户悄悄改掉这个冲突（R26）。
+    const h = ["交易金额", "对方号码"]
+    const r = [
+      ["1.00", "62220012001"],
+      ["2.00", "62229999999"],
+    ]
+    const 基础 = detectMapping(h, r, { 别名: new Map([["对方号码", "callee"]]) })
+    expect(基础.待确认.some((项) => 项.列号 === 1 && 项.原因 === "别名跨字段集")).toBe(true)
+    const 合并 = 合并模型结果(h, r, 基础, { 1: "counterparty" })
+    expect(合并.columns[1]).toBeUndefined()
+    expect(合并.待确认.some((项) => 项.列号 === 1 && 项.原因 === "别名跨字段集")).toBe(true)
+  })
+
   test("表头重名只能人工确认 ⇒ 模型不许填", () => {
     const h = ["金额", "金额"]
     const r = [["1.00"], ["2.00"]]
@@ -148,16 +180,16 @@ describe("模型结果合并", () => {
     expect(合并.待确认.map((项) => 项.列号)).toEqual([1])
   })
 
-  test("模型填不了的单位冲突列，待确认原样保留", () => {
+  test("模型建议正好落在单位冲突列 ⇒ 该列不填、待确认原样保留（R31）", () => {
     const h = ["交易金额（万元）", "对方别名"]
     const r = [
       ["1.00", "62220012001"],
       ["2.00", "62229999999"],
     ]
     const 基础 = detectMapping(h, r)
-    expect(基础.待确认.length).toBeGreaterThan(0)
-    const 合并 = 合并模型结果(h, r, 基础, { 1: "counterparty" })
-    expect(合并.columns[1]).toBe("counterparty")
+    expect(基础.待确认.some((项) => 项.列号 === 0 && 项.原因 === "单位冲突")).toBe(true)
+    const 合并 = 合并模型结果(h, r, 基础, { 0: "amount" })
+    expect(合并.columns[0]).toBeUndefined()
     expect(合并.待确认).toEqual(基础.待确认)
   })
 
@@ -199,13 +231,14 @@ describe("模型结果合并", () => {
 })
 
 describe("模型请求组装", () => {
-  test("system 里含 json（json_object 的服务端硬要求）", async () => {
-    const { 模型, 收到 } = 拦截模型()
+  test("system 提示词里含 json 与 0 基列号要求（不是 responseFormat 的 json）", async () => {
+    const { 模型, 系统 } = 拦截模型()
     await 建表头识别器(模型, { 脱敏: false })({
       工作表: [{ 名: "Sheet1", 表头, 样例: 行 }],
       候选字段: ["counterparty"],
     })
-    expect(收到[0].toLowerCase()).toContain("json")
+    expect(系统[0].toLowerCase()).toContain("json")
+    expect(系统[0]).toContain("列号是 0 开始的下标")
   })
 
   test("payload 逐列给列号，并写明 0 基", async () => {
@@ -221,7 +254,7 @@ describe("模型请求组装", () => {
 })
 
 describe("脱敏开关", () => {
-  test("默认原文，打开后账号只留首末四位", async () => {
+  test("默认原文；打开后 11 位账号按 9–11 位档脱敏", async () => {
     const 行11 = [
       ["1.00", "62220012001", "转账"],
       ["2.00", "62229999999", "消费"],
@@ -229,13 +262,30 @@ describe("脱敏开关", () => {
     const { 模型, 收到 } = 拦截模型()
     const 识别 = 建表头识别器(模型, { 脱敏: false })
     await 识别({ 工作表: [{ 名: "Sheet1", 表头, 样例: 行11 }], 候选字段: ["counterparty"] })
-    expect(收到.join()).toContain("6222001")
+    expect(收到.join()).toContain("62220012001") // 默认原文
 
     收到.length = 0
     const 脱敏识别 = 建表头识别器(模型, { 脱敏: true })
     await 脱敏识别({ 工作表: [{ 名: "Sheet1", 表头, 样例: 行11 }], 候选字段: ["counterparty"] })
-    expect(收到.join()).not.toContain("6222001")
-    expect(收到.join()).toContain("2001")
+    const 请求 = 收到.join()
+    expect(请求).not.toContain("62220012001")
+    expect(请求).toContain("622****01") // 首 3 + **** + 末 2
+    expect(请求).toContain("622****99")
+  })
+
+  test("脱敏分三档给出确切结果（12+ / 9–11 / ≤8 位）", async () => {
+    const h = ["账号"]
+    const 行档 = [["622200120011"], ["622200120"], ["62220012"], ["6222001"]]
+    const { 模型, 收到 } = 拦截模型()
+    await 建表头识别器(模型, { 脱敏: true })({
+      工作表: [{ 名: "Sheet1", 表头: h, 样例: 行档 }],
+      候选字段: ["counterparty"],
+    })
+    const 请求 = 收到.join()
+    expect(请求).toContain("6222****0011") // 12 位：首 4 + **** + 末 4
+    expect(请求).toContain("622****20") // 9 位：首 3 + **** + 末 2
+    expect(请求).toContain('\\"****\\"') // 8 位与 7 位：整串 ****（不泄漏位数）
+    for (const 原 of ["622200120011", "622200120", "62220012", "6222001"]) expect(请求).not.toContain(原)
   })
 
   test("脱敏兜住国码手机、7 位账号、5 字姓名", async () => {
@@ -252,7 +302,7 @@ describe("脱敏开关", () => {
     expect(请求).not.toContain("+8613800138000")
     expect(请求).not.toContain("6222001")
     expect(请求).not.toContain("欧阳修文华")
-    expect(请求).toContain("1380") // 手机剥国码后保留首四位
+    expect(请求).toContain("138****00") // 剥 +86 后 11 位 → 9–11 档
     expect(请求).toContain("欧**")
     expect(请求).toContain("张**")
   })
