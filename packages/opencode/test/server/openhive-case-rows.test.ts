@@ -292,4 +292,34 @@ describe("新增三列与 extras 键", () => {
     expect(归一化方向("其他")).toBeNull()
     expect(归一化方向(null)).toBeNull()
   })
+
+  test("有方向列但本行单元格为空 ⇒ 不按金额符号猜，记 null", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["收付标志", "金额"], [["", "-1.00"]]),
+      mapping: { 0: "direction", 1: "amount" },
+    })
+    expect(rows[0]?.direction).toBeNull()
+  })
+
+  test("主叫/被叫写标准列时去国码，原文仍进 extras（若该列另有映射）", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["主叫号码"], [["+8613800000000"]]),
+      mapping: { 0: "caller" },
+    })
+    expect(rows[0]?.caller).toBe("13800000000")
+  })
+
+  test("对手账号去空白与横线", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["对方账号"], [[" 6222-001 "]]),
+      mapping: { 0: "counterparty" },
+    })
+    expect(rows[0]?.counterparty).toBe("6222001")
+  })
 })

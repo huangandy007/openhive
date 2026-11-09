@@ -438,9 +438,21 @@ test("明细三列可写可读；direction 只收 收/付", async () => {
   )
   expect(行).toEqual([{ counterparty: "6222001", counterparty_name: "张三", owner_account: "6222999", direction: "付" }])
 
-  await expect(
-    insertFactRows(db(), [
-      { projectId: 项目, materialId: "m-三列", sheet: "Sheet2", rowNo: 2, direction: "未知" as never },
-    ]),
-  ).rejects.toThrow()
+  // 断言到**约束名**，不是「随便哪里失败都算」：drizzle 把 PG 的原始错误包在 `cause` 里
+  // （顶层 message 只有 "Failed query: … params: …"），所以沿 cause 链收集 message。
+  const 拒因 = await insertFactRows(db(), [
+    { projectId: 项目, materialId: "m-三列", sheet: "Sheet2", rowNo: 2, direction: "未知" as never },
+  ]).then(
+    () => null,
+    (e: unknown) => {
+      const 链: string[] = []
+      let cur: unknown = e
+      for (let 深 = 0; 深 < 5 && cur instanceof Error; 深++) {
+        链.push(cur.message)
+        cur = cur.cause
+      }
+      return 链.join(" | ")
+    },
+  )
+  expect(拒因).toContain("case_fact_row_direction")
 })

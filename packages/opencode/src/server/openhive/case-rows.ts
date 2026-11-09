@@ -146,10 +146,14 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
     const 金额 = parseAmount(值("amount"))
     const 余额 = parseAmount(值("balance"))
     const 方向原值 = 值("direction")
-    // 有方向列就只认归一化结果（认不出 ⇒ null，原值进 extras）；**没有方向列**时，
-    // 只有负数金额能推「付」，正数不猜（设计 §6.1）。
+    // 有方向列就只认归一化结果：本行单元格为空/认不出也记 null，**不**拿金额符号去补
+    // （设计 §6.3「其他 / 空 → null（进待确认）」）。只有整表**没有方向列**时，负数金额
+    // 才推「付」，正数不猜。判据必须是「列是否被选中」，不能用「本行值是否为空」——
+    // 后者把「没有列」和「有列但这一格空着」混成一类。
     const 方向 =
-      归一化方向(方向原值) ?? (方向原值 === null && 金额 !== null && 金额.startsWith("-") ? "付" : null)
+      归一化方向(方向原值) ?? (!选中.has("direction") && 金额 !== null && 金额.startsWith("-") ? "付" : null)
+    const 主叫原值 = 值("caller")
+    const 被叫原值 = 值("callee")
     const 对手账号 = 值("counterparty")
     const 对手户名 = 值("counterpartyName")
     const 本方账号原值 = 值("ownerAccount")
@@ -173,8 +177,9 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
       materialId: input.materialId,
       sheet: input.sheet.name,
       rowNo: row.rowNo,
-      caller: 值("caller"),
-      callee: 值("callee"),
+      // 号码写标准列时归一化（去空白/国码）；原文仍留在 extras（若该列另有映射）。
+      caller: 主叫原值 === null ? null : 归一化值("caller", 主叫原值),
+      callee: 被叫原值 === null ? null : 归一化值("callee", 被叫原值),
       startedAt: 时间?.seconds ?? null,
       startedRaw: 时间原文,
       precision: 时间?.precision ?? null,
