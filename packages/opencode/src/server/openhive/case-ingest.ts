@@ -15,6 +15,8 @@ import {
   classifyMaterialType,
   detectMapping,
   formatFingerprint,
+  是待确认原因,
+  是识别来源,
   type MappingResult,
   type 待确认项,
   type 识别来源,
@@ -755,8 +757,45 @@ export interface 格式结果 {
   未知列: number
 }
 
-function 是格式结果(值: unknown): 值 is 格式结果 {
+function 是格式方法(值: unknown): 值 is 格式结果["方法"] {
+  return 值 === "词典" || 值 === "特征" || 值 === "别名" || 值 === "模型"
+}
+
+/**
+ * 任意 JSON 对象守卫（排除 null / 数组）。库里的 jsonb 反序列化后只保证「是个 JSON」，
+ * 逐字段校验前先用它把类型收成 `Record<string, unknown>`——不用 `as` 硬转（复审 I1）。
+ */
+function 是对象(值: unknown): 值 is Record<string, unknown> {
   return 值 !== null && typeof 值 === "object" && !Array.isArray(值)
+}
+
+/**
+ * `result` 的顶层形状守卫。不合格 ⇒ `读格式` 当未命中、重算。
+ *
+ * 为什么收得这么紧：`result` 缺失是老行（0036 之前）的正常形态，而 `{}` / 少字段的
+ * 残缺对象只来自脏数据或别的版本——放它过去，`待确认` 会被读成空数组，「有待确认」
+ * 悄悄变成「全认出来了」（复审 I1）。逐条内容（`来源` 的键值、`待确认` 的每一项）
+ * 不在这一层校验，由 `读格式` 按过滤后的 `columns` / `header` 裁剪。
+ */
+function 是格式结果(值: unknown): 值 is 格式结果 {
+  if (!是对象(值)) return false
+  if (!是格式方法(值.方法)) return false
+  if (typeof 值.未知列 !== "number" || !Number.isInteger(值.未知列) || 值.未知列 < 0) return false
+  if (!是对象(值.来源)) return false
+  return Array.isArray(值.待确认)
+}
+
+/**
+ * jsonb 列可能以字符串回来（driver 差异），也可能被手工写坏。
+ * 解析失败返回 `undefined`，由调用方决定「当未命中重算」——这里不抛、也不猜（`#006-28`）。
+ */
+function 解析json(值: unknown): unknown {
+  if (typeof 值 !== "string") return 值
+  try {
+    return JSON.parse(值)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -764,18 +803,25 @@ function 是格式结果(值: unknown): 值 is 格式结果 {
  *
  * ## 两种「当未命中」都要重算，不许静默降级
  *
- * - `mapping` 是脏形态（null / 标量 / 数组）：`Object.entries` 要么抛、要么把字符串下标
- *   当列号（复审 M6）。
- * - `result` 缺失（0036 之前写的老行）或形状不对：没有它就拿不到待确认，
- *   命中等于把「有待确认」悄悄变成「全认出来了」。宁可多算一次（R6）。
+ * - `mapping` / `result` / `header` 不是合法形状：JSON 解析失败、`mapping` 是 null /
+ *   标量 / 数组、`result` 过不了 `是格式结果`、`header` 不是数组。老行（0036 之前）
+ *   没有 `result` 属正常形态：没有它就恢复不了待确认，命中等于把「有待确认」悄悄
+ *   变成「全认出来了」。宁可多算一次（R6）。
+ * - 命中就是命中：旧行不会被「顺手修好」——`写格式` 是 `on conflict do nothing`，
+ *   脏行会一直当未命中、每次重算（复审 I3，自愈留给 Task 8 的编排，本任务不扩）。
  *
- * ## 非法字段名逐条剔除
+ * ## 逐条裁剪，坏字段不带进下游
  *
- * `mapping` 的值可能是旧版本 / 手工修库留下的非法字段名（`{0:"垃圾"}`）。下游
- * `toFactRows` / `classifyMaterialType` 对它们没有共同口径，放进去要么变成脏值、
- * 要么在 `字段目录` 里取不到而抛（Task 5 审查 Important #1 的下半截）。
- * 这里统一降级为「未识别」：该列照常进 extras，也照常计入零列闸 —— 宁可少认一列，
- * 也不让一条坏缓存把整份材料的结论改掉。
+ * - `mapping` 的**值**可能是旧版本 / 手工修库留下的非法字段名（`{0:"垃圾"}`）；
+ *   下游 `toFactRows` / `classifyMaterialType` 对它们没有共同口径，放进去要么变成
+ *   脏值、要么在 `字段目录` 里取不到而抛（Task 5 审查 Important #1 的下半截）。
+ *   统一降级为「未识别」：该列照常进 extras，也照常计入零列闸。
+ * - `mapping` 的**键**只收十进制数字串（`/^\d+$/`）；字符串下标当列号用只会污染
+ *   `columns`。越界列号**不在这里裁**——那是 `跑表格` 的认出列数闸的事，两处都裁
+ *   会让「越界」这条用例分不清谁在兜（复审 M1）。
+ * - `来源` 与过滤后的 `columns` 交叉裁剪：映射都不认的列，来源无从谈起。
+ * - `待确认` 逐条校验：列号落在表头范围内、表头是 string|null、建议字段能从字段目录
+ *   取到、原因在值域里（`是待确认原因`）；不合格的条目丢弃，不让前端渲染脏角标（复审 I2）。
  */
 async function 读格式(
   db: Queryable,
@@ -784,42 +830,54 @@ async function 读格式(
 ): Promise<{ columns: Record<number, 识别字段>; result: 格式结果 } | undefined> {
   const rows = rowsOf(
     await db.execute(sql`
-      select mapping, result from auth.case_table_format
+      select header, mapping, result from auth.case_table_format
        where project_id = ${projectId} and fingerprint = ${fingerprint}
     `),
   )
   const row = rows[0]
   if (!row) return undefined
-  const raw: unknown = typeof row.mapping === "string" ? JSON.parse(row.mapping) : row.mapping
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
-  const 结果原始: unknown = typeof row.result === "string" ? JSON.parse(row.result) : row.result
-  if (!是格式结果(结果原始)) return undefined
+
+  const 原始映射 = 解析json(row.mapping)
+  if (原始映射 === null || typeof 原始映射 !== "object" || Array.isArray(原始映射)) return undefined
+  const 原始结果 = 解析json(row.result)
+  if (!是格式结果(原始结果)) return undefined
+  const 原始表头 = 解析json(row.header)
+  // 表头读不出来就校验不了待确认的列号：当未命中重算，而不是把待确认整片丢掉。
+  if (!Array.isArray(原始表头)) return undefined
 
   const columns: Record<number, 识别字段> = {}
-  for (const [k, v] of Object.entries(raw)) {
+  for (const [k, v] of Object.entries(原始映射)) {
+    if (!/^\d+$/.test(k)) continue
     if (!是识别字段(v)) continue
     columns[Number(k)] = v
   }
 
-  // JSON 往返后 `来源` 的键成了字符串；下游按数字列号取值，这里还原。
-  // `result` 只校验了顶层形状，`来源` 可能缺失 / 是脏值（别的版本写进来的）：不当真、
-  // 也不让它抛——一个坏字段不该把整份材料的作业打成失败。
+  // JSON 往返后键成了字符串；下游按数字列号取值，这里还原。
   const 来源: Record<number, 识别来源> = {}
-  const 原始来源: unknown = 结果原始.来源
-  if (原始来源 !== null && typeof 原始来源 === "object" && !Array.isArray(原始来源)) {
-    for (const [k, v] of Object.entries(原始来源)) {
-      if (v === "别名库" || v === "词典" || v === "特征" || v === "模型") 来源[Number(k)] = v
-    }
+  for (const [k, v] of Object.entries(原始结果.来源)) {
+    if (!/^\d+$/.test(k)) continue
+    const 列号 = Number(k)
+    if (!(列号 in columns)) continue
+    if (!是识别来源(v)) continue
+    来源[列号] = v
   }
-  return {
-    columns,
-    result: {
-      来源,
-      待确认: Array.isArray(结果原始.待确认) ? 结果原始.待确认 : [],
-      方法: 结果原始.方法,
-      未知列: typeof 结果原始.未知列 === "number" ? 结果原始.未知列 : 0,
-    },
+
+  const 待确认: 待确认项[] = []
+  for (const 条目 of 原始结果.待确认) {
+    // 条目本身也可能是脏的（null / 字符串 / 数组）：先过形状，别让取属性抛出去。
+    if (!是对象(条目)) continue
+    const 列号 = 条目.列号
+    const 表头 = 条目.表头
+    const 建议字段 = 条目.建议字段
+    const 原因 = 条目.原因
+    if (typeof 列号 !== "number" || !Number.isInteger(列号) || 列号 < 0 || 列号 >= 原始表头.length) continue
+    if (表头 !== null && typeof 表头 !== "string") continue
+    if (建议字段 !== null && !是识别字段(建议字段)) continue
+    if (!是待确认原因(原因)) continue
+    待确认.push({ 列号, 表头, 建议字段, 原因 })
   }
+
+  return { columns, result: { 来源, 待确认, 方法: 原始结果.方法, 未知列: 原始结果.未知列 } }
 }
 
 async function 写格式(
@@ -837,6 +895,8 @@ async function 写格式(
     values (${projectId}, ${fingerprint}, ${JSON.stringify(header)}::text::jsonb,
             ${JSON.stringify(columns)}::text::jsonb, ${结果.方法}, ${结果.未知列},
             ${JSON.stringify(结果)}::text::jsonb, 0, ${now}, ${now})
+    -- 复审 I3（本任务不做）：已存在的行不会被这里「顺手修好」——冲突即跳过，读侧
+    -- 一直当未命中、每次重算。自愈留给 Task 8 的识别编排。
     on conflict (project_id, fingerprint) do nothing
   `)
 }

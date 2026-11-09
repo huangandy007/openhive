@@ -441,14 +441,20 @@ describe("runJob", () => {
     const 指纹 = formatFingerprint(表头, 样例, 0)
     await db().execute(sql`
       insert into auth.case_table_format
-        (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)
-      values ('p24', ${指纹}, ${JSON.stringify(表头)}::jsonb, ${JSON.stringify({ 99: "caller" })}::jsonb,
-              '词典', 1, 0, 1, 1)
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p24', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 99: "caller" })}::text::jsonb,
+              '词典', 2,
+              ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 2 })}::text::jsonb,
+              0, 1, 1)
     `)
 
     文件.set("p24/脏缓存.xlsx", 工作簿)
     const r = await 入队("p24", "脏缓存.xlsx", "fp-24")
     expect((await 跑下一条()).结果).toBe("失败")
+    // 必须真的命中这一行（而不是读格式把脏缓存当未命中重算）：否则「越界列号不计入」
+    // 这半截就测不到了——重算路径本来就不会产生越界列号。
+    expect(await 查命中数("p24")).toBe(1)
     const material = await getMaterial(db(), "p24", r.materialId)
     expect(material?.parseStatus).toBe("有问题")
     expect(material?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
@@ -565,7 +571,9 @@ describe("runJob", () => {
     文件.set("p-缓存/乙.xlsx", 造工作簿({ Sheet1: 表 }))
     // 队列全局且按 (queued_at, id) 取最老：同一秒入队时先后由随机 id 决定，
     // 所以别断「先跑的是甲」。两份内容相同 ⇒ 谁第二谁命中缓存。
-    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    // 只清本项目的遗留排队行：队列是全局的，不带 project_id 会吞掉别的项目 / 别的
+    // 测试文件刚入队的作业（复审 M6）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-缓存' and status = '排队中'`)
     await 入队("p-缓存", "甲.xlsx", "fp-缓存-甲")
     await 入队("p-缓存", "乙.xlsx", "fp-缓存-乙")
 
@@ -611,8 +619,8 @@ describe("runJob", () => {
     `)
 
     文件.set("p-脏缓存/脏.xlsx", 工作簿)
-    // 全局队列里若有遗留的排队行，会先被认领走。
-    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    // 只清本项目的遗留排队行（队列全局，别吞别的项目/测试文件的作业，复审 M6）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-脏缓存' and status = '排队中'`)
     const r = await 入队("p-脏缓存", "脏.xlsx", "fp-脏缓存")
     expect((await 跑下一条()).结果).toBe("完成")
     expect(await 查命中数("p-脏缓存")).toBe(1)
@@ -642,12 +650,94 @@ describe("runJob", () => {
     `)
 
     文件.set("p-脏缓存2/脏.xlsx", 工作簿)
-    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-脏缓存2' and status = '排队中'`)
     const r = await 入队("p-脏缓存2", "脏.xlsx", "fp-脏缓存2")
     expect((await 跑下一条()).结果).toBe("失败")
     const 材料 = await getMaterial(db(), "p-脏缓存2", r.materialId)
     expect(材料?.parseStatus).toBe("有问题")
     expect(材料?.parseDetail).toMatchObject({ reason: expect.stringContaining("一列都没认出来") })
+  })
+
+  test("缓存的 result 是空对象 ⇒ 当未命中重算（不是「全认出来了」）", async () => {
+    // 收紧前的 `是格式结果` 只判「是对象」：`{}` 被当成合法结果 ⇒ 来源/待确认全空，
+    // 材料标「已解析」却丢了待确认，hit_count 照涨。收紧后当未命中重算。
+    const 表 = [
+      ["交易金额", "金额（万元）", "摘要"],
+      ["1.00", "2.00", "甲"],
+      ["2.00", "3.00", "乙"],
+    ]
+    const { sheets } = readSheets(造工作簿({ Sheet1: 表 }))
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表[0], 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-坏结果', ${指纹}, ${JSON.stringify(表[0])}::text::jsonb, '{}'::jsonb,
+              '词典', 0, '{}'::jsonb, 0, 1, 1)
+    `)
+
+    文件.set("p-坏结果/坏.xlsx", 造工作簿({ Sheet1: 表 }))
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-坏结果' and status = '排队中'`)
+    const r = await 入队("p-坏结果", "坏.xlsx", "fp-坏结果")
+    expect((await 跑下一条()).结果).toBe("完成")
+    // 没命中：脏行留在库里（写格式 on conflict do nothing），hit_count 不涨。
+    expect(await 查命中数("p-坏结果")).toBe(0)
+    const 详情 = (await getMaterial(db(), "p-坏结果", r.materialId))?.parseDetail
+    expect(是对象(详情)).toBe(true)
+    const mapping = 是对象(详情) ? 详情.mapping : undefined
+    const 工作表 = 是对象(mapping) ? mapping.工作表 : undefined
+    const Sheet1 = 是对象(工作表) ? 工作表.Sheet1 : undefined
+    expect(是对象(Sheet1)).toBe(true)
+    const 项 = 是对象(Sheet1) ? Sheet1.待确认 : undefined
+    expect(Array.isArray(项) ? 项.length : 0).toBeGreaterThan(0)
+  })
+
+  test("缓存 result 里脏的待确认条目与来源被裁掉，合法项保留", async () => {
+    const 表头 = ["主叫号码", "被叫号码"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["13800000000", "13900000000"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-坏结果2', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 0: "caller", 1: "callee" })}::text::jsonb,
+              '词典', 0,
+              ${JSON.stringify({
+                来源: { 0: "词典", 1: "胡说", 99: "特征", foo: "词典" },
+                待确认: [
+                  { 列号: 0, 表头: "主叫号码", 建议字段: "caller", 原因: "候选不唯一" },
+                  { 列号: 99, 表头: "越界", 建议字段: "caller", 原因: "候选不唯一" },
+                  { 列号: 1, 表头: 42, 建议字段: "callee", 原因: "候选不唯一" },
+                  { 列号: 1, 表头: "被叫号码", 建议字段: "垃圾", 原因: "候选不唯一" },
+                  { 列号: 1, 表头: "被叫号码", 建议字段: "callee", 原因: "胡说" },
+                  "垃圾",
+                  null,
+                ],
+                方法: "词典",
+                未知列: 0,
+              })}::text::jsonb,
+              0, 1, 1)
+    `)
+
+    文件.set("p-坏结果2/坏.xlsx", 工作簿)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-坏结果2' and status = '排队中'`)
+    const r = await 入队("p-坏结果2", "坏.xlsx", "fp-坏结果2")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await 查命中数("p-坏结果2")).toBe(1)
+
+    const 详情 = (await getMaterial(db(), "p-坏结果2", r.materialId))?.parseDetail
+    expect(是对象(详情)).toBe(true)
+    const mapping = 是对象(详情) ? 详情.mapping : undefined
+    const 工作表 = 是对象(mapping) ? mapping.工作表 : undefined
+    const Sheet1 = 是对象(工作表) ? 工作表.Sheet1 : undefined
+    expect(是对象(Sheet1)).toBe(true)
+    if (!是对象(Sheet1)) return
+    // `来源` 只留「映射里真认出的列 + 值域内」的项：1 的值非法、99 不在 columns、foo 不是数字键。
+    expect(Sheet1.来源).toEqual({ "0": "词典" })
+    // `待确认` 只留结构合法的第一条：越界 / 表头非字符串 / 建议字段非法 / 原因非法 / 非对象全裁掉。
+    expect(Sheet1.待确认).toEqual([{ 列号: 0, 表头: "主叫号码", 建议字段: "caller", 原因: "候选不唯一" }])
   })
 })
 
