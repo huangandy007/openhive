@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
-import { 表统计, 读表格材料 } from "../../script/openhive-case-stage0"
+import { 配对工作表, 表统计, 读表格材料 } from "../../script/openhive-case-stage0"
 import type { RawCell, RawSheet } from "../../src/server/openhive/case-sheet"
 import { createMaterial } from "../../src/server/openhive/case-store"
 
@@ -160,4 +160,73 @@ test("表统计：行/列与 §10.1 行级指标按映射列实测", async () =>
     ownerAccount非空: 2,
     direction非空: 1,
   })
+})
+
+test("表统计：金额按分累加，0.1 + 0.2 + 0.3 必须正好等于 0.6", () => {
+  // 浮点直接累加会得到 0.6000000000000001；基线数字要能直接抄，也避免逐材料求和漂移。
+  const 表: RawSheet = {
+    name: "Sheet1",
+    header: [格("金额")],
+    rows: ["0.1", "0.2", "0.3"].map((金额, i) => ({ rowNo: i + 2, cells: [格(金额)] })),
+  }
+
+  expect(表统计(表, { 0: "amount" }).金额合计).toBe(0.6)
+})
+
+test("表统计：每笔先按分取整（0.29×3 的 0.29*100 不是整数，只在末尾收敛会留尾巴）", () => {
+  // 0.1 / 0.2 / 0.3 乘 100 恰好都是整数，区分不出「逐笔取整」与「只在末尾收敛」。
+  // 0.29 * 100 = 28.999999999999996：不逐笔 Math.round 会累出 0.8699999999999999。
+  const 表: RawSheet = {
+    name: "Sheet1",
+    header: [格("金额")],
+    rows: ["0.29", "0.29", "0.29"].map((金额, i) => ({ rowNo: i + 2, cells: [格(金额)] })),
+  }
+
+  expect(表统计(表, { 0: "amount" }).金额合计).toBe(0.87)
+})
+
+test("表统计：多列映射 amount 时逐列相加（同一行两列都有值 ⇒ 合计包含两次）", () => {
+  // 已知口径（借贷分列通常每行只填一边）：不是按行去重，与行级非空的口径不同。
+  const 表: RawSheet = {
+    name: "Sheet1",
+    header: [格("借方发生额"), 格("贷方发生额")],
+    rows: [{ rowNo: 2, cells: [格("100"), 格("100")] }],
+  }
+
+  expect(表统计(表, { 0: "amount", 1: "amount" }).金额合计).toBe(200)
+})
+
+const 识别表 = (name: string): Parameters<typeof 配对工作表>[1][number] => ({
+  sheet: name,
+  表头: [null],
+  列: {},
+  来源: {},
+  待确认: [],
+  方法: "词典",
+  未知列: 0,
+  命中: false,
+})
+
+test("配对工作表：等长同序时原样返回配对", () => {
+  const 甲: RawSheet = { name: "Sheet1", header: [格("A")], rows: [] }
+  const 乙: RawSheet = { name: "Sheet2", header: [格("B")], rows: [] }
+  const 配对 = 配对工作表([甲, 乙], [识别表("Sheet1"), 识别表("Sheet2")])
+
+  expect(配对.map(({ 原表, 表 }) => [原表.name, 表.sheet])).toEqual([
+    ["Sheet1", "Sheet1"],
+    ["Sheet2", "Sheet2"],
+  ])
+})
+
+test("配对工作表：数量不等直接抛错（不静默少算一张表）", () => {
+  const 甲: RawSheet = { name: "Sheet1", header: [格("A")], rows: [] }
+
+  expect(() => 配对工作表([甲], [])).toThrow(/工作表数与原始 sheet 数不等/)
+})
+
+test("配对工作表：名字错位直接抛错（不把统计挂到别的表头上）", () => {
+  const 甲: RawSheet = { name: "Sheet1", header: [格("A")], rows: [] }
+  const 乙: RawSheet = { name: "Sheet2", header: [格("B")], rows: [] }
+
+  expect(() => 配对工作表([甲, 乙], [识别表("Sheet2"), 识别表("Sheet1")])).toThrow(/工作表错位/)
 })
