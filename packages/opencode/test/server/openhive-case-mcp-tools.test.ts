@@ -77,6 +77,8 @@ const 账号 = "6222…8888"
  */
 const 户名新 = "户名新甲"
 const 本方账号 = "6217000011112222"
+/** 户名行的对手账号（生产里账号列与户名列并存）——必须不等于 `户名新`，否则旧分支就能命中。 */
+const 户名对手账号 = "6217000033334444"
 
 const ctx = (身份: typeof 身份甲): 工具上下文 => ({ db: 库(), 身份 })
 const ids = (结果: 工具结果) => (结果.数据 as { id: string }[]).map((行) => 行.id)
@@ -449,9 +451,11 @@ beforeAll(async () => {
     },
   ])
   // —— 任务 10：`aggregate_money` 明细匹配扩到户名 / 本方账号 ——
-  // 两条新行各自**只**靠新谓词命中：户名行 `counterparty` 为 null，本方账号行
-  // `counterparty` / `counterparty_name` / `caller` / `callee` 都为空 —— 否则旧分支就会
-  // 把用例点绿，删掉新 `or` 分支的变异不可判别。实体也必须是新的，不复用 e-账 / 张三。
+  // 两条新行各自**只**靠新谓词命中：户名行是生产里「账号列与户名列并存」的常态形状
+  // （`counterparty` 填账号、`counterparty_name` 填户名 → `case-rows.ts:191-194`），按户名查时
+  // 旧谓词只可能命中 `counterparty = 那个账号`（≠ 户名），故仍只有新分支能命中；本方账号行的
+  // `counterparty` / `counterparty_name` / `caller` / `callee` 都为空。否则旧分支就会把用例
+  // 点绿、删掉新 `or` 分支的变异不可判别。实体也必须是新的，不复用 e-账 / 张三。
   await upsertEntity(库(), { id: "e-户名新", projectId: 身份戊.projectId, type: "人", canonicalValue: 户名新, aliases: [] })
   await upsertEntity(库(), {
     id: "e-本方新",
@@ -466,6 +470,7 @@ beforeAll(async () => {
       materialId: "m-流水",
       sheet: "户名匹配",
       rowNo: 1,
+      counterparty: 户名对手账号,
       counterpartyName: 户名新,
       startedAt: 400,
       amount: "1.00",
@@ -986,9 +991,10 @@ test("aggregate_money 账户不存在 ⇒ not_found", async () => {
   await expect(aggregate_money(ctx(身份戊), { 账户: "没有这个账户" })).rejects.toMatchObject({ code: "not_found" })
 })
 
-test("aggregate_money 只有户名列时，按户名实体查余额走势非空", async () => {
-  // 种子行：counterparty 为 null、counterparty_name = 户名新、balance 非空
-  // ⇒ 只有 `counterparty_name = ?` 这一支能命中（旧谓词的 counterparty/caller/callee 都不等）。
+test("aggregate_money 账号列与户名列并存时，按户名查得到明细", async () => {
+  // 种子行：counterparty = 户名对手账号（账号）、counterparty_name = 户名新、balance 非空
+  // ⇒ 按户名查时只有 `counterparty_name = ?` 这一支能命中（旧谓词只会命中 counterparty 那个账号）。
+  // 「只有户名列」的行会被 `counterparty` 兜底、旧谓词本来就命中，不构成判别用例，故不种那种形状。
   const 走势 = (await aggregate_money(ctx(身份戊), { 账户: 户名新 })).数据 as { 余额走势: { 行数: number } | null }
   expect(走势.余额走势).toMatchObject({ 行数: 1 })
 })
