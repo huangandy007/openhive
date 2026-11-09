@@ -593,22 +593,22 @@ describe("openhive 案件视图出口（计划 7）", () => {
 
   // ── 计划 11 Task 9：全局别名库的确认 / 撤销（写口只认项目属主） ──
 
-  it("确认别名：身份最先 401 / 非成员 403 / 非 owner 成员 403；owner 200 且版本 +1", () =>
+  it("确认别名：未登录 401 / 非成员 403 / 非 owner 成员 403；owner 200 且版本 +1", () =>
     Effect.gen(function* () {
       const 头 = { "content-type": "application/json" }
       const 体 = JSON.stringify({ projectId: 项目, header: "交易对方名称", field: "counterpartyName", materialId: "m1" })
 
-      // 身份最先：体不是 JSON 也回 401，不能因为体坏了先回 400（本文件写口次序的判据）。
-      expect(
-        (yield* 发(null, "/openhive/case/field-alias", { method: "POST", headers: 头, body: "不是 JSON" })).status,
-      ).toBe(401)
+      // 401 由门统一回（R42：本口不再单独查一次身份，避免每请求查两次 `身份`）。
+      expect((yield* 发(null, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(401)
       // 非成员：`成员角色` 回 undefined。
       expect((yield* 发(别人, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
-      // 是成员但不是属主：删掉 `角色 !== "owner"` 这一判据，这条会变 200（变异点）。
+      // 是成员但不是属主：删掉 `要属主` 判据，这条会变 200（变异点）。
       expect((yield* 发(成员, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })).status).toBe(403)
 
       const 前 = yield* 读别名版本()
       const 响应 = yield* 发(我, "/openhive/case/field-alias", { method: "POST", headers: 头, body: 体 })
+      // 200 是本服务 `/*` 兜底的默认值（未注册路径也回 200），本身不判别（`#005-47`）；
+      // 真正判别的是下面的版本 +1。
       expect(响应.status).toBe(200)
       expect(yield* 读回<{ ok: boolean }>(响应)).toEqual({ ok: true })
       // 版本必须真的 +1：只写在用例名里不算数。
@@ -628,6 +628,15 @@ describe("openhive 案件视图出口（计划 7）", () => {
       expect((yield* 发别名({ projectId: 项目, header: "X", field: "不存在的字段", materialId: "m1" })).status).toBe(400)
       expect((yield* 发别名({ projectId: 项目, header: "", field: "amount", materialId: "m1" })).status).toBe(400)
       expect((yield* 发别名({ projectId: 项目, header: "x".repeat(201), field: "amount", materialId: "m1" })).status).toBe(400)
+      // R43：先 trim 再判长 ⇒ 200 个 x + 1 个尾空格（201 码元，trim 后 200）必须放行。
+      expect((yield* 发别名({ projectId: 项目, header: "y".repeat(200) + " ", field: "amount", materialId: "m1" })).status).toBe(200)
+      // R44：projectId 非法 / materialId 缺失或非字符串都是 400。
+      expect((yield* 发别名({ projectId: "../x", header: "合法", field: "amount", materialId: "m1" })).status).toBe(400)
+      expect((yield* 发别名({ projectId: 项目, header: "合法", field: "amount" })).status).toBe(400)
+      expect((yield* 发别名({ projectId: 项目, header: "合法", field: "amount", materialId: 42 })).status).toBe(400)
+
+      // 200 是本服务 `/*` 兜底的默认值（未注册路径也回 200），本身不判别（`#005-47`）；
+      // 真正判别的是下面的 409 + code，以及测试 1 的版本 +1。
       expect((yield* 发别名({ projectId: 项目, header: "重复", field: "amount", materialId: "m1" })).status).toBe(200)
 
       const 冲突 = yield* 发别名({ projectId: 项目, header: "重复", field: "balance", materialId: "m1" })
@@ -650,7 +659,10 @@ describe("openhive 案件视图出口（计划 7）", () => {
 
       // 撤销口也必须挂同一道属主门：漏挂时成员能撤销全局别名（#005-24 共同出口）。
       expect((yield* 发撤销(成员, "要撤销")).status).toBe(403)
+      // R44：撤销口表头超长 ⇒ 400。
+      expect((yield* 发撤销(我, "x".repeat(201))).status).toBe(400)
 
+      // 200 是兜底默认值，不单独判别（`#005-47`）；真正判别的是第二次撤销 404。
       expect(
         (
           yield* 发(我, "/openhive/case/field-alias", {
@@ -662,6 +674,18 @@ describe("openhive 案件视图出口（计划 7）", () => {
       ).toBe(200)
       expect((yield* 发撤销(我, "要撤销")).status).toBe(200)
       expect((yield* 发撤销(我, "要撤销")).status).toBe(404)
+
+      // R43：撤销口同样先 trim 再判长 —— 200 个 z + 1 个尾空格（201 码元）要能撤销掉 trim 后的 200 字表头。
+      expect(
+        (
+          yield* 发(我, "/openhive/case/field-alias", {
+            method: "POST",
+            headers: 头,
+            body: JSON.stringify({ projectId: 项目, header: "z".repeat(200), field: "amount", materialId: "m1" }),
+          })
+        ).status,
+      ).toBe(200)
+      expect((yield* 发撤销(我, "z".repeat(200) + " ")).status).toBe(200)
     }),
   )
 })
