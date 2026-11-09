@@ -11,7 +11,8 @@ import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
 import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets } from "./case-sheet"
-import { classifyMaterialType, detectMapping, formatFingerprint, type FactField } from "./case-mapping"
+import { classifyMaterialType, detectMapping, formatFingerprint } from "./case-mapping"
+import type { 识别字段 } from "./case-field-registry"
 import { toFactRows } from "./case-rows"
 import {
   addCitation,
@@ -347,10 +348,11 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob): Promise
   for (const sheet of sheets) {
     const header = sheet.header.map((c) => c.text)
     const 样例 = sheet.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
-    const fingerprint = formatFingerprint(header, 样例)
+    // Task 8 换成真实的 alias_version（本次只做签名对齐，不接别名库）。
+    const fingerprint = formatFingerprint(header, 样例, 0)
 
     // 认过的格式直接取映射（设计 §6.2），没认过就现认一次并沉淀。
-    let columns: Record<number, FactField>
+    let columns: Record<number, 识别字段>
     const 缓存 = await 读格式(db, job.projectId, fingerprint)
     if (缓存) {
       columns = 缓存
@@ -706,7 +708,7 @@ async function 读格式(
   db: Queryable,
   projectId: string,
   fingerprint: string,
-): Promise<Record<number, FactField> | undefined> {
+): Promise<Record<number, 识别字段> | undefined> {
   const rows = rowsOf(
     await db.execute(sql`
       select mapping from auth.case_table_format
@@ -719,8 +721,8 @@ async function 读格式(
   // 脏形态（null / 标量 / 数组）当**缓存未命中**（复审 M6）：否则 `Object.entries` 要么抛、
   // 要么把字符串的下标当列号，映射全错。让它重算一次，比信一条坏缓存便宜。
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined
-  const columns: Record<number, FactField> = {}
-  for (const [k, v] of Object.entries(raw as Record<string, FactField>)) columns[Number(k)] = v
+  const columns: Record<number, 识别字段> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, 识别字段>)) columns[Number(k)] = v
   return columns
 }
 
@@ -729,8 +731,8 @@ async function 写格式(
   projectId: string,
   fingerprint: string,
   header: (string | null)[],
-  columns: Record<number, FactField>,
-  method: "词典" | "特征",
+  columns: Record<number, 识别字段>,
+  method: "词典" | "特征" | "别名",
   unknownColumns: number,
 ): Promise<void> {
   const now = nowSeconds()

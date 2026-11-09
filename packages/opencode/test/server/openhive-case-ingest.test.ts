@@ -438,7 +438,7 @@ describe("runJob", () => {
     const 工作簿 = 造工作簿({ Sheet1: [表头, ["a", "b"]] })
     const { sheets } = readSheets(工作簿)
     const 样例 = sheets[0]!.rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
-    const 指纹 = formatFingerprint(表头, 样例)
+    const 指纹 = formatFingerprint(表头, 样例, 0)
     await db().execute(sql`
       insert into auth.case_table_format
         (project_id, fingerprint, header, mapping, method, unknown_columns, hit_count, created_at, updated_at)

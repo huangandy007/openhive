@@ -27,15 +27,19 @@ describe("detectMapping · 第一层：表头词典", () => {
   })
 
   test("表头带空格/全角括号也能对上（规范后再比）", () => {
-    const r = detectMapping([" 主叫号码 ", "被叫 号码", "金额（元）"], [["1", "2", "3.00"]])
-    expect(r.columns).toEqual({ 0: "caller", 1: "callee", 2: "amount" })
+    // 第三列换成话单字段：候选字段集按表类型推断，话单表不再参与 amount 认领（设计 §3.2）。
+    // 本用例只管「trim ＋ 去内部空白 ＋ 去全角括号」这条规范化，类型混用属于另一条线。
+    const r = detectMapping([" 主叫号码 ", "被叫 号码", "通话时长（秒）"], [["1", "2", "37"]])
+    expect(r.columns).toEqual({ 0: "caller", 1: "callee", 2: "durationSec" })
   })
 
-  test("同一个字段只认第一个命中列，不重复占", () => {
+  test("同一个字段命中多列且形状分不开 ⇒ 都不认（不重复占，也不猜）", () => {
+    // 「主叫号码」与「本机号码」都是 caller 的精确同义词；样例不是手机号，形状命中率都是 0
+    // ⇒ 按设计 §3.2 证据规则 3（前两名差距 < 5% 不猜）两列都进待确认。
     const r = detectMapping(["主叫号码", "被叫号码", "本机号码"], [["1", "2", "3"]])
-    expect(r.columns[0]).toBe("caller")
-    expect(r.columns[2]).toBeUndefined()
-    expect(r.unknownColumns).toEqual([2])
+    expect(r.columns).toEqual({ 1: "callee" })
+    expect(r.unknownColumns).toEqual([0, 2])
+    expect(r.待确认.filter((项) => 项.原因 === "候选不唯一").map((项) => 项.列号)).toEqual([0, 2])
   })
 
   test("复合表头按后缀认：「主叫通话时长」是时长，不是主叫", () => {
@@ -289,14 +293,20 @@ describe("detectMapping · 第二层：数据特征", () => {
   })
 
   test("整列两位小数 ⇒ 只有一列候选时才认成 amount", () => {
-    const r = detectMapping(["A", "B"], [["1", "-12.50"], ["2", "33.00"]])
+    // 三行才够形状投票（Task 1 的「≥3 个非空值」闸）：两行会推断成「其他」，
+    // amount 根本不在候选集里，用例就成了空转。
+    const r = detectMapping(["A", "B"], [["1", "-12.50"], ["2", "33.00"], ["3", "44.00"]])
     expect(r.columns).toEqual({ 1: "amount" })
   })
 
   test("两列都像金额 ⇒ 都不认（消歧不了就不猜，§6.3 认不出来也入库）", () => {
-    const r = detectMapping(["A", "B"], [["1.00", "2.00"], ["3.00", "4.00"]])
+    const r = detectMapping(
+      ["A", "B"],
+      [["1.00", "2.00"], ["3.00", "4.00"], ["5.00", "6.00"]],
+    )
     expect(r.columns).toEqual({})
     expect(r.unknownColumns).toEqual([0, 1])
+    expect(r.待确认.map((项) => 项.原因)).toEqual(["候选不唯一", "候选不唯一"])
   })
 
   test("词典已认走的列不会被特征层重复认走", () => {
@@ -353,18 +363,18 @@ describe("detectMapping · 认不出来也入库", () => {
 
 describe("formatFingerprint", () => {
   test("同表头同列类型 ⇒ 同指纹（与具体取值无关）", () => {
-    const a = formatFingerprint(["主叫号码", "金额"], [["13800000000", "1.00"]])
-    const b = formatFingerprint(["主叫号码", "金额"], [["13911111111", "2.50"]])
+    const a = formatFingerprint(["主叫号码", "金额"], [["13800000000", "1.00"]], 0)
+    const b = formatFingerprint(["主叫号码", "金额"], [["13911111111", "2.50"]], 0)
     expect(a).toBe(b)
     expect(a).toHaveLength(64)
   })
 
   test("表头变了 ⇒ 指纹变", () => {
-    expect(formatFingerprint(["主叫号码"], [["1"]])).not.toBe(formatFingerprint(["被叫号码"], [["1"]]))
+    expect(formatFingerprint(["主叫号码"], [["1"]], 0)).not.toBe(formatFingerprint(["被叫号码"], [["1"]], 0))
   })
 
   test("列的数据形状变了 ⇒ 指纹变", () => {
-    expect(formatFingerprint(["X"], [["1.00"]])).not.toBe(formatFingerprint(["X"], [["甲"]]))
+    expect(formatFingerprint(["X"], [["1.00"]], 0)).not.toBe(formatFingerprint(["X"], [["甲"]], 0))
   })
 
   test("指纹必须区分单位声明：7 种写法两两不同（N1）", () => {
@@ -373,13 +383,18 @@ describe("formatFingerprint", () => {
     // 先导入基础表头再导入带单位表头会静默错 60 / 10000 倍。指纹必须保留原始表头。
     const 表头们 = ["金额", "金额万元", "金额USD", "通话时长", "通话时长分钟", "通话时长（分钟）", "通话时长sec"]
     const 样本 = [["1.00"]]
-    const 指纹 = 表头们.map((h) => formatFingerprint([h], 样本))
+    const 指纹 = 表头们.map((h) => formatFingerprint([h], 样本, 0))
     for (let i = 0; i < 指纹.length; i++)
       for (let j = i + 1; j < 指纹.length; j++) expect(指纹[i]).not.toBe(指纹[j])
   })
 
   test("表头只有空格差异 ⇒ 同指纹（只做 trim，不做规范化）", () => {
-    expect(formatFingerprint([" 主叫号码 "], [["1"]])).toBe(formatFingerprint(["主叫号码"], [["1"]]))
+    expect(formatFingerprint([" 主叫号码 "], [["1"]], 0)).toBe(formatFingerprint(["主叫号码"], [["1"]], 0))
+  })
+
+  test("alias_version 进指纹：版本一变，同表头的指纹也变（§4.2-4）", () => {
+    // 别名一变旧缓存必须不可达，否则别名/单位闸的修正对存量缓存不生效（#011-01 同类）。
+    expect(formatFingerprint(["主叫号码"], [["1"]], 0)).not.toBe(formatFingerprint(["主叫号码"], [["1"]], 1))
   })
 })
 
@@ -398,5 +413,98 @@ describe("classifyMaterialType", () => {
     expect(classifyMaterialType({ 0: "startedAt" })).toBe("其他")
     expect(classifyMaterialType({ 0: "counterparty" })).toBe("其他")
     expect(classifyMaterialType({})).toBe("其他")
+  })
+})
+
+describe("新增：表头变体与两轮制", () => {
+  test("三种真实银行表头能被同义词直接认出", () => {
+    const r = detectMapping(
+      ["交易对方名称", "交易对方账卡号", "查询账号"],
+      [["张三", "6222001", "6222999"]],
+    )
+    // 查询账号是精确同义词，直接认；另两列允许通过后缀认，但绝不能认错字段
+    expect(r.columns[2]).toBe("ownerAccount")
+    expect(r.columns[1]).toBe("counterparty")
+    expect(r.columns[0]).toBe("counterpartyName")
+  })
+
+  test("对手账号与对手户名两列都落，不是只取一列（R2）", () => {
+    const r = detectMapping(["对方账号", "对方户名"], [["6222001", "张三"]])
+    expect(r.columns).toEqual({ 0: "counterparty", 1: "counterpartyName" })
+  })
+
+  test("「对方账号」不能被 ownerAccount 的后缀「账号」抢走", () => {
+    const r = detectMapping(["对方账号", "查询账号"], [["6222001", "6222999"]])
+    expect(r.columns).toEqual({ 0: "counterparty", 1: "ownerAccount" })
+  })
+
+  test("「交易对方」归户名，不归账号（旧词典归属已改）", () => {
+    const r = detectMapping(["交易对方"], [["张三"]])
+    expect(r.columns).toEqual({ 0: "counterpartyName" })
+  })
+
+  test("修饰语优先与候选遍历顺序无关：对手账号不被 ownerAccount 的通用词「账号」抢走", () => {
+    // 候选顺序故意把 ownerAccount 放前面：没有修饰语闸时，后缀轮先给它认领（通用词「账号」，
+    // 命中率 100%），counterparty 的长词「对方账号」就轮不到了。修饰语优先保证结果与顺序无关。
+    const r = detectMapping(["交易对方账号"], [["6222001"]], {
+      候选字段: new Set(["ownerAccount", "counterparty"] as const),
+    })
+    expect(r.columns).toEqual({ 0: "counterparty" })
+  })
+
+  test("精确轮先于后缀轮：「送达时间」归 deliveredAt，不被 startedAt 的通用词「时间」抢走", () => {
+    // 「送达时间」是 deliveredAt 的精确同义词，也以 startedAt 的通用词「时间」结尾。
+    // 单轮（边遍历字段边做后缀）会让 startedAt 先拿走；两轮制先让精确命中全部落定。
+    const r = detectMapping(["送达时间"], [["2026-01-02 03:04:05"]])
+    expect(r.columns).toEqual({ 0: "deliveredAt" })
+  })
+
+  test("别名命中：原始表头精确、目标在候选集内、形状通过 ⇒ 落库", () => {
+    const r = detectMapping(["对方账卡"], [["6222001"]], {
+      别名: new Map([["对方账卡", "counterparty"]]),
+    })
+    expect(r.columns).toEqual({ 0: "counterparty" })
+    expect(r.来源[0]).toBe("别名库")
+    expect(r.method).toBe("别名")
+  })
+
+  test("别名目标不在候选集 ⇒ 不生效、进待确认（§4.2-5）", () => {
+    const r = detectMapping(["号码"], [["13800000000"]], {
+      别名: new Map([["号码", "counterparty"]]),
+      候选字段: new Set(["caller", "callee"] as const),
+    })
+    expect(r.columns).toEqual({})
+    expect(r.待确认).toEqual([
+      { 列号: 0, 表头: "号码", 建议字段: "counterparty", 原因: "别名跨字段集" },
+    ])
+  })
+
+  test("别名命中「金额（万元）」：单位闸仍拦下，进待确认", () => {
+    const r = detectMapping(["金额（万元）"], [["1.00"]], {
+      别名: new Map([["金额（万元）", "amount"]]),
+    })
+    expect(r.columns).toEqual({})
+    expect(r.待确认[0]?.原因).toBe("单位冲突")
+  })
+
+  test("同一表头重名 ⇒ 别名不生效，走位置键（§4.3）", () => {
+    const r = detectMapping(["金额", "金额"], [["1.00", "2.00"]], {
+      别名: new Map([["金额", "amount"]]),
+    })
+    expect(r.columns).toEqual({})
+    expect(r.待确认.every((项) => 项.原因 === "表头重名")).toBe(true)
+  })
+
+  test("话单两个时间列不唯一 ⇒ 待确认，不静默 started_at 为空", () => {
+    const r = detectMapping(
+      ["通话开始时间", "通话结束时间"],
+      [["2026-01-02 03:04:05", "2026-01-02 03:05:05"]],
+    )
+    // 「通话开始时间」是 startedAt 的精确同义词 ⇒ 落定；「通话结束时间」只以通用词「时间」
+    // 后缀命中、且 startedAt 已被占 ⇒ 进待确认，不静默丢。（原断言写的是
+    // `columns["startedAt"]`，而 columns 的键是列号，永远 undefined —— 改成真断言。）
+    expect(r.columns[0]).toBe("startedAt")
+    expect(r.columns[1]).toBeUndefined()
+    expect(r.待确认.some((项) => 项.原因 === "候选不唯一")).toBe(true)
   })
 })
