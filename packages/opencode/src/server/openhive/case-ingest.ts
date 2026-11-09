@@ -247,9 +247,13 @@ export interface RunOptions {
    *
    * dryRun 对材料 / 明细只读，但**必须补偿性把作业放回队列**（R33），否则作业停在
    * 「运行中」、材料停在「排队中」——`该走哪个动作("排队中")` 恒 `undefined`，重拖也排不动。
+   *
+   * ⚠️ 归还时保留原 `queued_at`，作业会**回到队首**（R59）。别写
+   * `while (job = claimNextJob()) runJob(db, deps, job, { dryRun: true })`：那会在同一条
+   * 作业上原地打转。dryRun 是给一次性基线脚本用的，不是消费循环。
    */
   dryRun?: boolean
-  /** dryRun 下的产出出口；真实解析不调用。 */
+  /** 识别结果的产出出口：`跑表格` 每次识别后都会调用（不只 dryRun），生产不传。 */
   收集?: (结果: 材料识别) => void
 }
 
@@ -418,19 +422,22 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
   for (const 指纹 of 指纹们) 缓存们.push(await 读格式(db, job.projectId, 指纹))
 
-  // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32）。
+  // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32/R57）。
   // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
   //
   // 构造失败只降级为「没有模型兜底」，**不抛**：四层＋别名本就能解析，worker 的 `取语言`
   // 走 `Effect.die`（defect），放它出去会把整条表格作业打成「失败」——为了一个可选的
-  // 兜底层丢掉能解析的结果，显然不划算（R32）。失败原因由模型层的 `模型.失败` 口径记录。
+  // 兜底层丢掉能解析的结果，显然不划算（R32）。但**必须留痕**（R52）：下面把原因补进
+  // `识别.模型.失败`，随 `parse_detail.mapping` 落库——裸 `catch {}` 是 `#006-28` 的盲区。
   const 需要识别器 = 缓存们.some((缓存) => 缓存 === undefined)
   let 识别器: 表头识别器 | undefined
+  let 构造失败: string | undefined
   if (选项.dryRun !== true && 需要识别器 && deps.建表头识别器 !== undefined) {
     try {
       识别器 = await deps.建表头识别器(job)
-    } catch {
+    } catch (error) {
       识别器 = undefined
+      构造失败 = error instanceof Error ? `${error.name}: ${error.message}` : "未知错误"
     }
   }
 
@@ -440,6 +447,9 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     缓存: 缓存们,
     ...(识别器 === undefined ? {} : { 识别器 }),
   })
+  // 构造失败没有经历模型调用（`识别材料` 只会给出 `{调用:0}`），原因在这里补上；
+  // `收集` 与 `parse_detail.mapping.模型.失败` 都会看到它（R52）。
+  if (构造失败 !== undefined) 识别.模型.失败 = `识别器构造失败（${构造失败}）`
   选项.收集?.(识别)
   if (选项.dryRun === true) return
 
@@ -907,8 +917,8 @@ function 解析json(值: unknown): unknown {
  *   标量 / 数组、`result` 过不了 `是格式结果`、`header` 不是数组。老行（0036 之前）
  *   没有 `result` 属正常形态：没有它就恢复不了待确认，命中等于把「有待确认」悄悄
  *   变成「全认出来了」。宁可多算一次（R6）。
- * - 命中就是命中：旧行不会被「顺手修好」——`写格式` 是 `on conflict do nothing`，
- *   脏行会一直当未命中、每次重算（复审 I3，自愈留给 Task 8 的编排，本任务不扩）。
+ * - 命中就是命中：旧行不会被「顺手修好」——`写格式` 是 `on conflict do nothing`。
+ *   本计划**不做自愈**：脏行每次重算（空映射已按未命中处理，R34），但不会把自己修好。
  *
  * ## 逐条裁剪，坏字段不带进下游
  *
@@ -1019,7 +1029,7 @@ async function 写格式(
 async function 归还认领(db: Queryable, job: ClaimedJob): Promise<void> {
   await db.execute(sql`
     update auth.case_ingest_job
-       set status = '排队中', attempts = attempts - 1,
+       set status = '排队中', attempts = greatest(attempts - 1, 0),
            started_at = null, finished_at = null, error = null
      where project_id = ${job.projectId} and id = ${job.jobId} and status = '运行中'
   `)

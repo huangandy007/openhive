@@ -297,14 +297,13 @@ describe("runJob", () => {
           from auth.case_ingest_job where id = ${作业.jobId}
       `),
     )
+    // 作业已回队列：先清掉再断言，别让红的时候把作业留给后面的用例（队列是全局的）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry'`)
     expect(作业行[0]).toMatchObject({ status: "排队中", error: null })
     expect(Number(作业行[0]?.attempts)).toBe(0)
     expect(作业行[0]?.started_at).toBeNull()
     // R39③：dryRun 也不 `收尾`（收尾会写 finished_at）。
     expect(作业行[0]?.finished_at).toBeNull()
-
-    // 作业已回队列：清掉，别让后面的用例认领到它（队列是全局的）。
-    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry'`)
   })
 
   test("dryRun 命中已有格式缓存 ⇒ hit_count 不涨（R39①）", async () => {
@@ -359,6 +358,7 @@ describe("runJob", () => {
     if (作业.materialId !== r.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
 
     let 构造次数 = 0
+    const 收集: 材料识别[] = []
     const 结果 = await runJob(
       db(),
       {
@@ -369,12 +369,80 @@ describe("runJob", () => {
         },
       },
       作业,
+      { 收集: (x) => 收集.push(x) },
     )
     expect(构造次数).toBe(1)
     expect(结果).toBe("完成")
     expect(await countFactRows(db(), "p-构造失败")).toBe(2)
     const 材料行 = await getMaterial(db(), "p-构造失败", r.materialId)
     expect(材料行?.parseStatus).toBe("已解析")
+
+    // R52：构造失败也必须留痕，不能是裸 catch。`模型.失败` 同时交给 `收集` 与
+    // `parse_detail.mapping.模型.失败`（否则运维只看到一个「完成」和一条没有原因的日志）。
+    expect(收集[0]?.模型.失败).toContain("识别器构造失败")
+    expect(收集[0]?.模型.失败).toContain("provider 解析失败")
+    const 详情 = 材料行?.parseDetail
+    const mapping = 是对象(详情) ? 详情.mapping : undefined
+    const 模型 = 是对象(mapping) ? mapping.模型 : undefined
+    expect(是对象(模型) ? 模型.失败 : undefined).toContain("识别器构造失败")
+  })
+
+  test("全部命中缓存 ⇒ 非 dryRun 也不构造识别器（R57）", async () => {
+    // 两份同内容文件 ⇒ 格式指纹相同。第一份正常跑（写缓存），第二份全命中。
+    // 全命中时不该碰 provider：builder 注入「计数＋即抛」，被调一次就红。
+    文件.set("p-全命中/一.xlsx", 话单)
+    文件.set("p-全命中/二.xlsx", 话单)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-全命中' and status = '排队中'`)
+    await 入队("p-全命中", "一.xlsx", "fp-全命中-一")
+    expect((await 跑下一条()).结果).toBe("完成")
+    expect(await 查格式行数("p-全命中")).toBe(1)
+
+    await 入队("p-全命中", "二.xlsx", "fp-全命中-二")
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有第二个作业")
+    let 构造次数 = 0
+    const 结果 = await runJob(
+      db(),
+      {
+        ...deps,
+        建表头识别器: async () => {
+          构造次数++
+          throw new Error("全命中不该构造识别器")
+        },
+      },
+      作业,
+    )
+    expect(构造次数).toBe(0)
+    expect(结果).toBe("完成")
+    expect(await 查命中数("p-全命中")).toBe(1)
+  })
+
+  test("归还认领的 attempts 有下界：运行中 + attempts=0 不会减成 -1（R56）", async () => {
+    // `归还认领` 的 SQL 闸恰好会命中「运行中 + attempts=0」这种手工 / 脏行，
+    // 裸 `attempts - 1` 会写成 -1。用 greatest 兜住下界。
+    文件.set("p-归还下界/材料/下界.xlsx", 造工作簿({ Sheet1: [["交易金额"], ["1.00"]] }))
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-归还下界' and status = '排队中'`)
+    const 材料 = await enqueueMaterial(db(), {
+      projectId: "p-归还下界",
+      path: "材料/下界.xlsx",
+      sourcePath: "p-归还下界/材料/下界.xlsx",
+      fileName: "下界.xlsx",
+      fingerprint: "fp-归还下界",
+    })
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有作业")
+    if (作业.materialId !== 材料.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
+    // 造出「运行中 + attempts=0」：认领本身会 +1，这里手工减回 0。
+    await db().execute(sql`update auth.case_ingest_job set attempts = 0 where id = ${作业.jobId}`)
+
+    expect(await runJob(db(), deps, 作业, { dryRun: true })).toBe("完成")
+    const 作业行 = rowsOf(
+      await db().execute(sql`select status, attempts from auth.case_ingest_job where id = ${作业.jobId}`),
+    )
+    // 先清理再断言：这条用例红的时候作业已回队列，留着会被后面的用例认领走（队列全局）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-归还下界'`)
+    expect(作业行[0]?.status).toBe("排队中")
+    expect(Number(作业行[0]?.attempts)).toBe(0)
   })
 
   test("缓存映射过滤后为空 ⇒ 当未命中重算，四层仍能入库（R34）", async () => {
@@ -422,17 +490,37 @@ describe("runJob", () => {
     if (作业 === undefined) throw new Error("没有作业")
     if (作业.materialId !== r.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
 
-    await expect(runJob(db(), deps, 作业, { dryRun: true })).rejects.toThrow("dryRun 只支持表格材料")
+    // 不用 `expect(...).rejects`：那个 Promise 不 await 会留下未处理的拒绝，await 了又触发
+    // oxlint 的 `await-thenable`。显式 try/catch，抛错与不写库两件事都钉住。
+    let 抛错: unknown
+    try {
+      await runJob(db(), deps, 作业, { dryRun: true })
+    } catch (error) {
+      抛错 = error
+    }
+    expect(抛错 instanceof Error ? 抛错.message : "").toContain("dryRun 只支持表格材料")
 
     const 材料行 = await getMaterial(db(), "p-dry-文本", r.materialId)
+    // R58：抛错路径也必须归还认领，否则作业停在「运行中」、材料从此排不动。
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, attempts, started_at, finished_at, error
+          from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )
+    // 先清理再断言（红的作业已回队列，别让后面的用例认领走）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry-文本'`)
     expect(材料行?.parseStatus).toBe("排队中")
     expect(材料行?.parseDetail).toBeNull()
+    expect(作业行[0]).toMatchObject({ status: "排队中", error: null })
+    expect(Number(作业行[0]?.attempts)).toBe(0)
+    expect(作业行[0]?.started_at).toBeNull()
+    expect(作业行[0]?.finished_at).toBeNull()
     const 实体数 = rowsOf(
       await db().execute(sql`select count(*)::int as n from auth.case_entity where project_id = 'p-dry-文本'`),
     )
     expect(Number(实体数[0]?.n)).toBe(0)
     expect(await countFactRows(db(), "p-dry-文本")).toBe(0)
-    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry-文本'`)
   })
 
   test("缓存命中的表仍过时间列守卫（R39④）", async () => {

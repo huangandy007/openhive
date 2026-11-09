@@ -93,8 +93,11 @@ export const layer = Layer.effectDiscard(
      * `getModel` 校验它确实存在，然后拿到调用入口。项目级 `opencode.jsonc` 能覆盖 provider，
      * 所以 `getModel` 仍不能省——它是「配置说存在」与「这个实例里真的存在」之间唯一的一道门。
      *
-     * 失败处理只在这里写一次（`Effect.catchCause` 只取错误名）：这条文案会经 `runJob`
-     * 落进 `parse_detail.reason` 并回给前端，`Cause.pretty` 的正文可能带连接串。
+     * 失败处理只在这里写一次（`Effect.die` 的错误只取名字）：`Cause.pretty` 的正文可能带
+     * 连接串，所以这里拼的 message 里只有错误名。两个读者：
+     * - `建抽取器`：Error 冒到 `runJob` 的 catch ⇒ `parse_detail.reason` 与作业 error；
+     * - `建表头识别器`：`跑表格` 接住并降级为离线，原因写进 `parse_detail.mapping.模型.失败`
+     *   （`识别器构造失败（name: message）`，R52）。
      */
     const 取语言 = async (job: ClaimedJob) => {
       const 目录 = 作业项目目录(config.root, job.sourcePath, job.projectId)
