@@ -80,7 +80,10 @@ export const layer = Layer.effectDiscard(
     const provider = yield* Provider.Service
     const instances = yield* InstanceStore.Service
 
-    /** 表头模型的样例脱敏开关（与文本抽取同一份全局配置）。 */
+    /**
+     * 表头模型的样例脱敏开关。`case_table_mask_samples` 全仓只有这一个读者（文本抽取
+     * 不读它）——别写成「与文本抽取共用」。
+     */
     const 脱敏 = (yield* coreConfig.getGlobal()).case_table_mask_samples === true
 
     /**

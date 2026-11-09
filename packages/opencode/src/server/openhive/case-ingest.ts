@@ -238,7 +238,15 @@ export interface RunDeps {
 export interface RunOptions {
   /**
    * 只识别、不落库（阶段 0 量基线用）。三处写路径全跳过：明细行、格式缓存（含 `hit_count`）、
-   * 材料状态（含 `parse_detail`）。dryRun 还是**离线基线**——不调模型（R20）。
+   * 材料状态（含 `parse_detail`）。dryRun 还是**离线基线**——不调模型、不构造识别器（R20），
+   * **只支持表格材料**（文本分支会写事实层，R35）。
+   *
+   * ⚠️ dryRun **仍走格式缓存**（R37）：命中表不重跑四层、不参与模型，只是命中不涨
+   * `hit_count`、未命中不写格式。与阶段 0 脚本「刻意不传缓存、量纯规则基线」是两条不同的
+   * dryRun 语义（Task 12 读这段）。
+   *
+   * dryRun 对材料 / 明细只读，但**必须补偿性把作业放回队列**（R33），否则作业停在
+   * 「运行中」、材料停在「排队中」——`该走哪个动作("排队中")` 恒 `undefined`，重拖也排不动。
    */
   dryRun?: boolean
   /** dryRun 下的产出出口；真实解析不调用。 */
@@ -335,15 +343,25 @@ export async function runJob(
     if (job.sourcePath === "") throw new Error("作业没有记录文件落点（source_path 为空）")
 
     const 方式 = 解析方式(material.path)
+    // dryRun 只实现了表格识别基线（R35）：文本分支的产物（事实 / 引用 / text_content /
+    // 材料状态）全在写路径上，只跳表格那三处写路径盖不住它 ⇒ 在**任何写之前**早失败。
+    if (选项.dryRun === true && 方式 === "文本") throw new Error("dryRun 只支持表格材料")
     if (方式 === "表格") {
       await 跑表格(db, deps, job, 选项)
+      // dryRun 借了认领（运行中 / attempts +1）却什么也不落：必须把作业行放回队列（R33）。
+      if (选项.dryRun === true) await 归还认领(db, job)
       return "完成"
     }
     if (方式 === "文本") return await 跑文本(db, deps, job, material)
     throw new Error("这类文件的解析在后续计划")
   } catch (error) {
     // dryRun 不写失败状态（R18）：错误原样交给调用方，材料保持原状态。
-    if (选项.dryRun) throw error
+    // 但认领同样要归还（R33）：一旦抛错就留一条「运行中」的作业，那个材料从此排不动。
+    // 尽力而为——作业行已不是运行中时这条是 no-op。
+    if (选项.dryRun) {
+      await 归还认领(db, job).catch(() => undefined)
+      throw error
+    }
     // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
     // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
     // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
@@ -400,13 +418,21 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
   for (const 指纹 of 指纹们) 缓存们.push(await 读格式(db, job.projectId, 指纹))
 
+  // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32）。
   // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
-  const 识别器 =
-    选项.dryRun === true
-      ? undefined
-      : deps.建表头识别器 === undefined
-        ? undefined
-        : await deps.建表头识别器(job)
+  //
+  // 构造失败只降级为「没有模型兜底」，**不抛**：四层＋别名本就能解析，worker 的 `取语言`
+  // 走 `Effect.die`（defect），放它出去会把整条表格作业打成「失败」——为了一个可选的
+  // 兜底层丢掉能解析的结果，显然不划算（R32）。失败原因由模型层的 `模型.失败` 口径记录。
+  const 需要识别器 = 缓存们.some((缓存) => 缓存 === undefined)
+  let 识别器: 表头识别器 | undefined
+  if (选项.dryRun !== true && 需要识别器 && deps.建表头识别器 !== undefined) {
+    try {
+      识别器 = await deps.建表头识别器(job)
+    } catch {
+      识别器 = undefined
+    }
+  }
 
   const 识别 = await 识别材料({
     sheets,
@@ -821,7 +847,8 @@ function 引用id(projectId: string, factType: string, factId: string, materialI
  * 当成「全认出来了」，待确认角标凭空消失（设计 §6.4）。
  *
  * `方法` 保留「模型」（DB 的 `case_table_format_method` CHECK 允许）：它由 Task 8 的
- * 识别编排写入；本文件读到「模型」时按 `MappingResult["method"]` 收窄（见 `跑表格`）。
+ * 识别编排写入。需要把四值收窄成 `MappingResult["method"]` 三值的地方在
+ * `case-recognize.ts` 的识别编排里（本文件不再读方法）。
  */
 export interface 格式结果 {
   来源: Record<number, 识别来源>
@@ -925,6 +952,11 @@ async function 读格式(
     columns[Number(k)] = v
   }
 
+  // R34：过滤后一列都不剩 ⇒ 按**未命中**重算（与 R6 同口径，宁可多算一次）。
+  // 否则这条缓存永远「命中」，而 `识别材料` 命中就跳过 `detectMapping` ⇒ 零列闸每次都
+  // 失败、同一指纹从此永不重算（T6 的「脏行当未命中」在 R18 的缓存优先下失效）。
+  if (Object.keys(columns).length === 0) return undefined
+
   // JSON 往返后键成了字符串；下游按数字列号取值，这里还原。
   const 来源: Record<number, 识别来源> = {}
   for (const [k, v] of Object.entries(原始结果.来源)) {
@@ -968,9 +1000,28 @@ async function 写格式(
     values (${projectId}, ${fingerprint}, ${JSON.stringify(header)}::text::jsonb,
             ${JSON.stringify(columns)}::text::jsonb, ${结果.方法}, ${结果.未知列},
             ${JSON.stringify(结果)}::text::jsonb, 0, ${now}, ${now})
-    -- 复审 I3（本任务不做）：已存在的行不会被这里「顺手修好」——冲突即跳过，读侧
-    -- 一直当未命中、每次重算。自愈留给 Task 8 的识别编排。
+    -- 复审 I3：已存在的行不会被这里「顺手修好」——冲突即跳过。本计划**不做自愈**：
+    -- 脏行每次重算（读格式对空映射回退为未命中，R34），但不会把自己修好。
     on conflict (project_id, fingerprint) do nothing
+  `)
+}
+
+/**
+ * dryRun 的补偿（R33）：把认领的作业行**放回队列**。
+ *
+ * `claimNextJob` 把作业改成「运行中」并 `attempts + 1`；dryRun 对材料 / 明细只读，但
+ * 作业行是队列状态，不还回去它就停在「运行中」——不可认领，而材料停在「排队中」，
+ * `该走哪个动作("排队中")` 恒 `undefined` ⇒ 重拖也永远不排（毒化）。
+ *
+ * 减回 `attempts` 是因为这次认领**没有真的跑**：次数要留给真正消费它的那次。
+ * `and status = '运行中'` 兜住「手工作业 / 已被别人收尾」的情形，不误改别行。
+ */
+async function 归还认领(db: Queryable, job: ClaimedJob): Promise<void> {
+  await db.execute(sql`
+    update auth.case_ingest_job
+       set status = '排队中', attempts = attempts - 1,
+           started_at = null, finished_at = null, error = null
+     where project_id = ${job.projectId} and id = ${job.jobId} and status = '运行中'
   `)
 }
 

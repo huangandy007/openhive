@@ -11,6 +11,8 @@ import { claimNextJob, enqueueMaterial, runJob, 作业项目目录, 沙箱内路
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
+import type { 材料识别 } from "../../src/server/openhive/case-recognize"
+import { 表格材料们 } from "../../script/openhive-case-stage0"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 建实体 } from "./openhive-case-fact-fixture"
 
@@ -239,7 +241,7 @@ describe("runJob", () => {
     expect(await 查命中数("p6")).toBe(1)
   })
 
-  test("dryRun：三处写路径全不落库，收集到识别结果", async () => {
+  test("dryRun：三处写路径全不落库、归还认领且不构造模型（R33）", async () => {
     // 阶段 0 要量「规则＋别名」的离线基线：只识别、不落库。三处写路径分别是
     // 明细行、格式缓存（hit_count / 新行）、材料状态（parse_detail）。
     const 路径 = "p-dry/材料/dry.xlsx"
@@ -257,8 +259,24 @@ describe("runJob", () => {
     if (作业 === undefined) throw new Error("没有作业")
     if (作业.materialId !== 材料.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
 
-    const 收集: unknown[] = []
-    expect(await runJob(db(), deps, 作业, { dryRun: true, 收集: (r) => 收集.push(r) })).toBe("完成")
+    let 构造次数 = 0
+    const 收集: 材料识别[] = []
+    expect(
+      await runJob(
+        db(),
+        {
+          ...deps,
+          // R39②：dryRun 不构造识别器——注入「被调用即抛」，被调一次就会把作业打红。
+          建表头识别器: async () => {
+            构造次数++
+            throw new Error("dryRun 不该构造模型")
+          },
+        },
+        作业,
+        { dryRun: true, 收集: (r) => 收集.push(r) },
+      ),
+    ).toBe("完成")
+    expect(构造次数).toBe(0)
     expect(收集).toHaveLength(1)
     expect(await countFactRows(db(), "p-dry")).toBe(0)
     const 格式 = rowsOf(
@@ -269,6 +287,181 @@ describe("runJob", () => {
     expect(材料行?.parseDetail).toBeNull()
     // dryRun 也不推材料状态（排队中保持原样；真实解析才会到「解析中 / 已解析」）。
     expect(材料行?.parseStatus).toBe("排队中")
+
+    // R33：认领必须归还——作业回「排队中」、attempts 减回 0、started_at 清空。
+    // 不归还的话它停在「运行中」（不可认领），材料停在「排队中」（`该走哪个动作` 恒
+    // undefined）⇒ 重拖也永远不排。
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, attempts, started_at, finished_at, error
+          from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )
+    expect(作业行[0]).toMatchObject({ status: "排队中", error: null })
+    expect(Number(作业行[0]?.attempts)).toBe(0)
+    expect(作业行[0]?.started_at).toBeNull()
+    // R39③：dryRun 也不 `收尾`（收尾会写 finished_at）。
+    expect(作业行[0]?.finished_at).toBeNull()
+
+    // 作业已回队列：清掉，别让后面的用例认领到它（队列是全局的）。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry'`)
+  })
+
+  test("dryRun 命中已有格式缓存 ⇒ hit_count 不涨（R39①）", async () => {
+    const 表头 = ["交易金额", "摘要"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["1.00", "甲"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-dry-缓存', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 0: "amount" })}::text::jsonb,
+              '词典', 1,
+              ${JSON.stringify({ 来源: { 0: "词典" }, 待确认: [], 方法: "词典", 未知列: 1 })}::text::jsonb,
+              0, 1, 1)
+    `)
+    文件.set("p-dry-缓存/材料/缓存.xlsx", 工作簿)
+    await db().execute(
+      sql`delete from auth.case_ingest_job where project_id = 'p-dry-缓存' and status = '排队中'`,
+    )
+    const 材料 = await enqueueMaterial(db(), {
+      projectId: "p-dry-缓存",
+      path: "材料/缓存.xlsx",
+      sourcePath: "p-dry-缓存/材料/缓存.xlsx",
+      fileName: "缓存.xlsx",
+      fingerprint: "fp-dry-缓存",
+    })
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有作业")
+    if (作业.materialId !== 材料.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
+
+    const 收集: 材料识别[] = []
+    expect(await runJob(db(), deps, 作业, { dryRun: true, 收集: (r) => 收集.push(r) })).toBe("完成")
+    // dryRun 仍走格式缓存（命中表不重跑四层，R37），只是命中不计数。
+    expect(收集).toHaveLength(1)
+    expect(收集[0]?.工作表[0]?.命中).toBe(true)
+    expect(await 查命中数("p-dry-缓存")).toBe(0)
+    expect(await 查格式行数("p-dry-缓存")).toBe(1)
+
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry-缓存'`)
+  })
+
+  test("模型识别器构造失败 ⇒ 表格仍按四层＋别名入库（R32）", async () => {
+    // provider 解析走 `Effect.die`：构造失败是 defect。四层＋别名本来就能解析，
+    // 不能因为拿不到模型把整条作业打成「失败」。
+    文件.set("p-构造失败/话单.xlsx", 话单)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-构造失败' and status = '排队中'`)
+    const r = await 入队("p-构造失败", "话单.xlsx", "fp-构造失败")
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有作业")
+    if (作业.materialId !== r.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
+
+    let 构造次数 = 0
+    const 结果 = await runJob(
+      db(),
+      {
+        ...deps,
+        建表头识别器: async () => {
+          构造次数++
+          throw new Error("provider 解析失败")
+        },
+      },
+      作业,
+    )
+    expect(构造次数).toBe(1)
+    expect(结果).toBe("完成")
+    expect(await countFactRows(db(), "p-构造失败")).toBe(2)
+    const 材料行 = await getMaterial(db(), "p-构造失败", r.materialId)
+    expect(材料行?.parseStatus).toBe("已解析")
+  })
+
+  test("缓存映射过滤后为空 ⇒ 当未命中重算，四层仍能入库（R34）", async () => {
+    // `{0:"垃圾"}` 过滤后 = 空映射。修复前它仍算命中 ⇒ `识别材料` 跳过 `detectMapping`
+    // ⇒ 零列闸抛错，且同一指纹从此每次都失败、永不重算。
+    const 表头 = ["主叫号码"]
+    const 工作簿 = 造工作簿({ Sheet1: [表头, ["13800000000"]] })
+    const { sheets } = readSheets(工作簿)
+    const 样例 = sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text))
+    const 指纹 = formatFingerprint(表头, 样例, 0)
+    await db().execute(sql`
+      insert into auth.case_table_format
+        (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+      values ('p-空映射', ${指纹}, ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 0: "垃圾" })}::text::jsonb,
+              '词典', 1,
+              ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 1 })}::text::jsonb,
+              0, 1, 1)
+    `)
+    文件.set("p-空映射/脏.xlsx", 工作簿)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-空映射' and status = '排队中'`)
+    const r = await 入队("p-空映射", "脏.xlsx", "fp-空映射")
+    expect((await 跑下一条()).结果).toBe("完成")
+    // 脏行当未命中：不计数（写格式 on conflict do nothing，它不会被顺手修好）。
+    expect(await 查命中数("p-空映射")).toBe(0)
+    expect((await 读第一行("p-空映射", r.materialId))?.caller).toBe("13800000000")
+    expect((await getMaterial(db(), "p-空映射", r.materialId))?.parseStatus).toBe("已解析")
+  })
+
+  test("dryRun 只支持表格材料：文本材料早失败且不写库（R35）", async () => {
+    // 文本分支的产物（实体/关系/事件/引用/text_content/材料状态）全在写路径上，
+    // 只靠 `dryRun` 跳表格的三处写路径盖不住它 ⇒ 必须早失败。
+    文件.set("p-dry-文本/材料/笔录.txt", new TextEncoder().encode("张三向李四转账一万元"))
+    await db().execute(
+      sql`delete from auth.case_ingest_job where project_id = 'p-dry-文本' and status = '排队中'`,
+    )
+    const r = await enqueueMaterial(db(), {
+      projectId: "p-dry-文本",
+      path: "材料/笔录.txt",
+      sourcePath: "p-dry-文本/材料/笔录.txt",
+      fileName: "笔录.txt",
+      fingerprint: "fp-dry-文本",
+    })
+    const 作业 = await claimNextJob(db())
+    if (作业 === undefined) throw new Error("没有作业")
+    if (作业.materialId !== r.materialId) throw new Error(`认领到别人的作业：${作业.materialId}`)
+
+    await expect(runJob(db(), deps, 作业, { dryRun: true })).rejects.toThrow("dryRun 只支持表格材料")
+
+    const 材料行 = await getMaterial(db(), "p-dry-文本", r.materialId)
+    expect(材料行?.parseStatus).toBe("排队中")
+    expect(材料行?.parseDetail).toBeNull()
+    const 实体数 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_entity where project_id = 'p-dry-文本'`),
+    )
+    expect(Number(实体数[0]?.n)).toBe(0)
+    expect(await countFactRows(db(), "p-dry-文本")).toBe(0)
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-dry-文本'`)
+  })
+
+  test("缓存命中的表仍过时间列守卫（R39④）", async () => {
+    // 两份文件同表头、同列形状（都是「时间」）⇒ 指纹相同。第一份写格式缓存之后
+    // 守卫才失败（守卫在组装之后）；第二份命中缓存、跳过四层，但守卫仍必须拦下。
+    // ⚠️ 第二份的时间值也必须**解析不出**（如 `2026-02-30`）：`2026-01-02` 能解析，
+    // 守卫本就不该拦它——「同形状」是必要的，不是充分的。
+    const 表头 = ["主叫号码", "通话时间"]
+    文件.set("p-时间缓存/甲.xlsx", 造工作簿({ Sheet1: [表头, ["13800000000", "2026-13-45"]] }))
+    文件.set("p-时间缓存/乙.xlsx", 造工作簿({ Sheet1: [表头, ["13900000000", "2026-02-30"]] }))
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-时间缓存' and status = '排队中'`)
+    await 入队("p-时间缓存", "甲.xlsx", "fp-时间缓存-甲")
+    await 入队("p-时间缓存", "乙.xlsx", "fp-时间缓存-乙")
+
+    // 队列按 (queued_at, id) 取最老：同一秒入队时先后由随机 id 决定，别断谁先。
+    const 作业1 = await claimNextJob(db())
+    if (作业1 === undefined) throw new Error("没有作业")
+    expect(await runJob(db(), deps, 作业1)).toBe("失败")
+    expect(await 查格式行数("p-时间缓存")).toBe(1)
+    expect(await 查命中数("p-时间缓存")).toBe(0)
+
+    const 作业2 = await claimNextJob(db())
+    if (作业2 === undefined) throw new Error("没有第二个作业")
+    expect(await runJob(db(), deps, 作业2)).toBe("失败")
+    // 第二份真的走了缓存（否则「命中缓存也过守卫」没被测到）。
+    expect(await 查命中数("p-时间缓存")).toBe(1)
+    expect(await countFactRows(db(), "p-时间缓存")).toBe(0)
+    const 材料 = await getMaterial(db(), "p-时间缓存", 作业2.materialId)
+    expect(材料?.parseDetail).toMatchObject({ reason: expect.stringContaining("一个都没解析出来") })
   })
 
   test("认不出的列原样进 extras（判据 A4）", async () => {
@@ -770,6 +963,20 @@ describe("runJob", () => {
     expect(Sheet1.来源).toEqual({ "0": "词典" })
     // `待确认` 只留结构合法的第一条：越界 / 表头非字符串 / 建议字段非法 / 原因非法 / 非对象全裁掉。
     expect(Sheet1.待确认).toEqual([{ 列号: 0, 表头: "主叫号码", 建议字段: "caller", 原因: "候选不唯一" }])
+  })
+})
+
+describe("阶段 0 脚本", () => {
+  test("分母只含表格材料（R36：判据复用 `可解析表格`）", () => {
+    const 行们: Record<string, unknown>[] = [
+      { path: "材料/话单.xlsx" },
+      { path: "材料/话单.CSV" },
+      { path: "材料/笔录.txt" },
+      { path: "材料/附件.pdf" },
+      { path: 42 },
+      {},
+    ]
+    expect(表格材料们(行们)).toEqual([{ path: "材料/话单.xlsx" }, { path: "材料/话单.CSV" }])
   })
 })
 
