@@ -159,7 +159,8 @@ const 交易词 = /交易|金额|余额|账|卡|借贷|收付|对方|对手|摘�
 
 /** 按「表头词投票优先、列形状兜底」推断表类型；只用于挑候选字段集，不改 `kind`。 */
 export function 推断表类型(header: (string | null)[], rows: (string | null)[][]): 表类型 {
-  const 宽 = Math.max(header.length, ...rows.map((r) => r.length), 0)
+  let 宽 = header.length
+  for (const 行 of rows) if (行.length > 宽) 宽 = 行.length
   let 话单分 = 0
   let 交易分 = 0
   let 号码列 = 0
