@@ -319,10 +319,13 @@ export interface FactRowInput {
   amount?: string | null
   balance?: string | null
   counterparty?: string | null
+  counterpartyName?: string | null
+  ownerAccount?: string | null
+  direction?: "收" | "付" | null
   extras?: Record<string, unknown>
 }
 
-/** 一块多少行。15 列 × 500 = 7500 个绑定参数，离 PG 上限 65535 有量级余量。 */
+/** 一块多少行。18 列 × 500 = 9000 个绑定参数，离 PG 上限 65535 有量级余量。 */
 const INSERT_CHUNK = 500
 
 /**
@@ -355,13 +358,16 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
                     ${row.caller ?? null}, ${row.callee ?? null}, ${row.startedAt ?? null},
                     ${row.startedRaw ?? null}, ${row.precision ?? null}, ${row.timeType ?? null},
                     ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
-                    ${row.counterparty ?? null}, ${JSON.stringify(row.extras ?? {})}::text::jsonb)`,
+                    ${row.counterparty ?? null}, ${row.counterpartyName ?? null},
+                    ${row.ownerAccount ?? null}, ${row.direction ?? null},
+                    ${JSON.stringify(row.extras ?? {})}::text::jsonb)`,
     )
     const result = rowsOf(
       await db.execute(sql`
         insert into auth.case_fact_row
           (project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
-           precision, time_type, duration_sec, amount, balance, counterparty, extras)
+           precision, time_type, duration_sec, amount, balance, counterparty,
+           counterparty_name, owner_account, direction, extras)
         values ${sql.join(values, sql`, `)}
         on conflict (project_id, material_id, sheet, row_no) do nothing
         returning row_no

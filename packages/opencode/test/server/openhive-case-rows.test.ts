@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseAmount, parseDuration, toFactRows } from "../../src/server/openhive/case-rows"
+import { parseAmount, parseDuration, toFactRows, 归一化方向 } from "../../src/server/openhive/case-rows"
 import type { RawRow, RawSheet } from "../../src/server/openhive/case-sheet"
 
 function 表(header: string[], rows: string[][]): RawSheet {
@@ -211,5 +211,85 @@ describe("parseDuration", () => {
   test("超出 int4 上限 ⇒ null，不炸整块 INSERT（I6）", () => {
     expect(parseDuration("100000000000000000000")).toBeNull()
     expect(parseDuration("2147483647")).toBe(2147483647)
+  })
+})
+
+describe("新增三列与 extras 键", () => {
+  test("对手账号/户名/本方账号/方向各归各列", () => {
+    const sheet = 表(
+      ["交易对方账卡号", "交易对方名称", "查询账号", "借贷标志", "交易金额"],
+      [["6222001", "张三", "6222999", "借", "-100.00"]],
+    )
+    const rows = toFactRows({
+      projectId: "p1",
+      materialId: "m1",
+      sheet,
+      mapping: { 0: "counterparty", 1: "counterpartyName", 2: "ownerAccount", 3: "direction", 4: "amount" },
+    })
+    expect(rows[0]).toMatchObject({
+      counterparty: "6222001",
+      counterpartyName: "张三",
+      ownerAccount: "6222999",
+      direction: "付",
+    })
+  })
+
+  test("没有方向列时按金额正负兜：负记付，正数不猜", () => {
+    const 负 = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["金额"], [["-1.00"]]),
+      mapping: { 0: "amount" },
+    })
+    expect(负[0]?.direction).toBe("付")
+    const 正 = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["金额"], [["1.00"]]),
+      mapping: { 0: "amount" },
+    })
+    expect(正[0]?.direction).toBeNull()
+  })
+
+  test("认不出的方向原值进 extras，不能被当成已用标准列吞掉", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["收付标志"], [["其他"]]),
+      mapping: { 0: "direction" },
+    })
+    expect(rows[0]?.direction).toBeNull()
+    expect(rows[0]?.extras).toMatchObject({ 收付标志: "其他" })
+  })
+
+  test("只有户名列时 counterparty 与 counterparty_name 都写", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["交易对方名称"], [["张三"]]),
+      mapping: { 0: "counterpartyName" },
+    })
+    expect(rows[0]?.counterparty).toBe("张三")
+    expect(rows[0]?.counterpartyName).toBe("张三")
+  })
+
+  test("extras 落点字段用 camelCase 字段名作键，不用原表头", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["收货地址"], [["杭州市"]]),
+      mapping: { 0: "address" },
+    })
+    expect(rows[0]?.extras).toEqual({ address: "杭州市" })
+  })
+
+  test("方向归一化：收/进/入/贷/转入/收入 → 收；付/出/借/转出/支出 → 付", () => {
+    expect(归一化方向("收")).toBe("收")
+    expect(归一化方向("进")).toBe("收")
+    expect(归一化方向("贷")).toBe("收")
+    expect(归一化方向("转出")).toBe("付")
+    expect(归一化方向("支出")).toBe("付")
+    expect(归一化方向("其他")).toBeNull()
+    expect(归一化方向(null)).toBeNull()
   })
 })

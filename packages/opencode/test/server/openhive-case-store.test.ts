@@ -406,3 +406,41 @@ describe("引用", () => {
     expect(await citationsOf(db(), "p2", "relation", "r1")).toEqual([])
   })
 })
+
+test("明细三列可写可读；direction 只收 收/付", async () => {
+  const 项目 = "p-三列"
+  await createMaterial(db(), {
+    projectId: 项目,
+    id: "m-三列",
+    fileName: "a.xls",
+    kind: "资金",
+    fingerprint: "fp-三列",
+    path: "材料/a.xls",
+  })
+  await insertFactRows(db(), [
+    {
+      projectId: 项目,
+      materialId: "m-三列",
+      sheet: "Sheet1",
+      rowNo: 2,
+      counterparty: "6222001",
+      counterpartyName: "张三",
+      ownerAccount: "6222999",
+      direction: "付",
+    },
+  ])
+  const 行 = rowsOf(
+    await db().execute(sql`
+      select counterparty, counterparty_name, owner_account, direction
+        from auth.case_fact_row
+       where project_id = ${项目} and material_id = 'm-三列'
+    `),
+  )
+  expect(行).toEqual([{ counterparty: "6222001", counterparty_name: "张三", owner_account: "6222999", direction: "付" }])
+
+  await expect(
+    insertFactRows(db(), [
+      { projectId: 项目, materialId: "m-三列", sheet: "Sheet2", rowNo: 2, direction: "未知" as never },
+    ]),
+  ).rejects.toThrow()
+})
