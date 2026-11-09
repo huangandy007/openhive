@@ -1,5 +1,6 @@
 import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
+import type { 解析状态 } from "../../project/case-materials-api"
 import { ArtifactReview } from "./artifact-review"
 
 export interface MaterialFactsProps {
@@ -30,8 +31,8 @@ interface 待确认项界面 {
  * 这两个状态下 detail 可能还是**上一轮**的：服务端 `applyParseAction` 只在带 `detail` 的动作
  * （有问题 / 已解析）下改写它，「开始」（排队中 / 解析中）不清。把它们当本轮展示 ＝ 说隔夜的话。
  */
-const 进行中状态们: readonly string[] = ["排队中", "解析中"]
-const 是进行中 = (状态: string): boolean => 进行中状态们.includes(状态)
+const 进行中状态们: readonly 解析状态[] = ["排队中", "解析中"]
+const 是进行中 = (状态: 解析状态): boolean => 进行中状态们.includes(状态)
 
 /** 从 parse_detail 里读待确认；形状不对就当没有（不猜）。 */
 function 读待确认(详情: unknown): { sheet: string; 项: 待确认项界面 }[] {
@@ -215,8 +216,9 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                               // 成功即不再「待确认」：留下的行会让角标继续宣称 N 列，是句假话。
                               set待确认((行们) => 行们.filter((行) => `${行.sheet}:${行.项.列号}` !== 键))
                             })
-                            // 必须无条件清：跨材料时取数 effect 已清过一次，但这里不清会让按钮永久禁用。
-                            .finally(() => set确认中(undefined))
+                            // 只清自己这一条：跨材料时旧回包结算不许解除新请求的禁用态；
+                            // 材料切换由取数 effect 的 `set确认中(undefined)` 兜底，不会永久禁用。
+                            .finally(() => set确认中((当前) => (当前 === 键 ? undefined : 当前)))
                         }}
                         class="h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 font-semibold text-v2-text-text-base disabled:opacity-50"
                       >
