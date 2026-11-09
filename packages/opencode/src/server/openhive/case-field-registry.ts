@@ -48,7 +48,6 @@ const 户名形状 = (v: string) => {
   return t !== "" && !/^[\d\s-]+$/.test(t) && t.length <= 60
 }
 const 方向形状 = (v: string) => /^(收|付|进|出|借|贷|转入|转出|收入|支出)$/.test(v.trim())
-const 去空白 = (v: string) => v.replace(/[\s　]/g, "")
 const 去横线 = (v: string) => v.replace(/[\s　-]/g, "")
 const 去国码 = (v: string) => v.replace(/[\s　]/g, "").replace(/^\+?86/, "")
 
@@ -155,18 +154,31 @@ export function 形状命中率(字段: 识别字段, 值们: (string | null)[])
 
 export type 表类型 = "资金" | "话单" | "其他"
 
-/** 按列形状投票推断表类型；只用于挑候选字段集，不改 `kind`。 */
+const 话单词 = /通话|主叫|被叫|呼叫|短信|时长|响铃/
+const 交易词 = /交易|金额|余额|账|卡|借贷|收付|对方|对手|摘要|用途|币种/
+
+/** 按「表头词投票优先、列形状兜底」推断表类型；只用于挑候选字段集，不改 `kind`。 */
 export function 推断表类型(header: (string | null)[], rows: (string | null)[][]): 表类型 {
-  const 宽 = header.length
+  const 宽 = Math.max(header.length, ...rows.map((r) => r.length), 0)
+  let 话单分 = 0
+  let 交易分 = 0
   let 号码列 = 0
   let 金额列 = 0
   for (let i = 0; i < 宽; i++) {
     const 值 = 列(rows, i)
+    const 非空 = 值.filter((v) => v !== null && v.trim() !== "")
+    const 名 = (header[i] ?? "").trim()
+    if (话单词.test(名)) 话单分++
+    if (交易词.test(名)) 交易分++
+    // 少于 3 个非空值的列不投票：一两个格子撑不起一个类型判断。
+    if (非空.length < 3) continue
     if (形状命中率("callee", 值) >= 0.9) 号码列++
     if (形状命中率("amount", 值) >= 0.9) 金额列++
   }
-  if (号码列 > 0 && 金额列 === 0) return "话单"
+  if (话单分 > 交易分) return "话单"
+  if (交易分 > 话单分) return "资金"
   if (金额列 > 0) return "资金"
+  if (号码列 > 0) return "话单"
   return "其他"
 }
 

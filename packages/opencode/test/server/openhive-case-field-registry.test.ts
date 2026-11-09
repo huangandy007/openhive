@@ -4,6 +4,8 @@ import {
   候选字段集,
   归一化值,
   是标准列,
+  是识别字段,
+  标准列字段们,
   形状命中率,
 } from "../../src/server/openhive/case-field-registry"
 
@@ -55,12 +57,83 @@ describe("字段目录", () => {
     for (const f of extras字段们) expect(是标准列(f)).toBe(false)
     expect(是标准列("counterpartyName")).toBe(true)
   })
+
+  test("话单带费用列：表头词投票优先于金额形状 ⇒ 仍判话单，金额不进候选", () => {
+    const 候选 = 候选字段集(
+      ["主叫号码", "被叫号码", "通话时间", "通话时长", "费用"],
+      [["13800000000", "13900000000", "2026-01-02 03:04:05", "37", "0.50"]],
+    )
+    expect(候选.has("caller")).toBe(true)
+    expect(候选.has("callee")).toBe(true)
+    expect(候选.has("durationSec")).toBe(true)
+    expect(候选.has("amount")).toBe(false)
+  })
+
+  test("资金表金额为整数且带 11 位号码列 ⇒ 表头词投票判资金，不放行 caller", () => {
+    const 候选 = 候选字段集(
+      ["交易时间", "交易金额", "余额", "交易对方账卡号", "对方手机号"],
+      [["2026-01-02 03:04:05", "1000", "5000", "6222001", "13800000000"]],
+    )
+    expect(候选.has("counterparty")).toBe(true)
+    expect(候选.has("ownerAccount")).toBe(true)
+    expect(候选.has("caller")).toBe(false)
+  })
+
+  test("标准列字段目录精确且有序（漂移即红）", () => {
+    expect(标准列字段们).toEqual([
+      "caller",
+      "callee",
+      "startedAt",
+      "durationSec",
+      "amount",
+      "balance",
+      "counterparty",
+      "counterpartyName",
+      "ownerAccount",
+      "direction",
+    ])
+  })
+
+  test("是识别字段：标准列 / extras 正例，非法值负例", () => {
+    expect(是识别字段("counterpartyName")).toBe(true)
+    expect(是识别字段("address")).toBe(true)
+    expect(是识别字段("nope")).toBe(false)
+    expect(是识别字段(1)).toBe(false)
+    expect(是识别字段(null)).toBe(false)
+  })
+
+  test("形状命中率 0.9 阈值边界", () => {
+    const 十中九 = ["1.00", "2.00", "3.00", "4.00", "5.00", "6.00", "7.00", "8.00", "9.00", "abc"]
+    expect(形状命中率("amount", 十中九)).toBe(0.9)
+    const 九中八 = ["1.00", "2.00", "3.00", "4.00", "5.00", "6.00", "7.00", "8.00", "abc"]
+    expect(形状命中率("amount", 九中八)).toBeCloseTo(8 / 9)
+    expect(形状命中率("amount", 九中八)).toBeLessThan(0.9)
+  })
+
+  test("样本不足 3 个非空值的列不参与形状投票", () => {
+    const 候选 = 候选字段集(["X", "Y"], [["1.00", "2.00"]])
+    expect(候选.has("amount")).toBe(false)
+  })
 })
 
 // 防止「候选集只按 kind 拍脑袋」：同一批列换一种形状，结果必须不同
 test("候选集随列形状变化，而不是只看表头字面", () => {
-  const 甲 = 候选字段集(["X", "Y"], [["1.00", "2.00"]])
-  const 乙 = 候选字段集(["X", "Y"], [["甲", "乙"]])
+  const 甲 = 候选字段集(
+    ["X", "Y"],
+    [
+      ["1.00", "2.00"],
+      ["3.00", "4.00"],
+      ["5.00", "6.00"],
+    ],
+  )
+  const 乙 = 候选字段集(
+    ["X", "Y"],
+    [
+      ["甲", "乙"],
+      ["丙", "丁"],
+      ["戊", "己"],
+    ],
+  )
   expect(甲.has("amount")).toBe(true)
   expect(乙.has("amount")).toBe(false)
 })
