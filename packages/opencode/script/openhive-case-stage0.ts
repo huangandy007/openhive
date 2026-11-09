@@ -105,37 +105,47 @@ export interface 表统计 {
   金额合计: number
   /** 映射到 `startedAt` 的列里，至少一个非空的**行**数（一行只算一次）。 */
   时间非空数: number
+  /** 映射到 `counterparty` 的列里有非空值的**行**数（§10.1 行级非空率分子）。 */
+  counterparty非空: number
+  /** 映射到 `ownerAccount` 的列里有非空值的**行**数（§10.1 行级非空率分子）。 */
+  ownerAccount非空: number
+  /** 映射到 `direction` 的列里有非空值的**行**数（§10.1 据实报告：空 = 行数 − 本值）。 */
+  direction非空: number
 }
 
 /**
  * 每张表的行 / 列基线。
  *
  * `识别材料` 的产出里**没有行数**（它只认列），而阶段 0 的基线表与对账都要它，所以在这里按
- * `sheet.name` 对应的原始表补算。金额与时间非空率也只在这里才算得出来：映射给的是列下标，
+ * `sheet.name` 对应的原始表补算。金额与行级非空率也只在这里才算得出来：映射给的是列下标，
  * 值要从原始行里取。
+ *
+ * 行级非空口径：同一字段若被多列映射，**任意一列非空**即该行计 1（一行只算一次）。
  */
 export function 表统计(表: RawSheet, 列: Readonly<Record<number, 识别字段>>): 表统计 {
-  const 金额列 = Object.entries(列)
-    .filter(([, 字段]) => 字段 === "amount")
-    .map(([下标]) => Number(下标))
-  const 时间列 = Object.entries(列)
-    .filter(([, 字段]) => 字段 === "startedAt")
-    .map(([下标]) => Number(下标))
+  const 映射列 = (字段: 识别字段) =>
+    Object.entries(列)
+      .filter(([, 值]) => 值 === 字段)
+      .map(([下标]) => Number(下标))
+  const 行级非空 = (字段: 识别字段) =>
+    表.rows.filter((行) => 映射列(字段).some((下标) => (行.cells[下标]?.text ?? "").trim() !== "")).length
+  const 金额列 = 映射列("amount")
   let 金额合计 = 0
-  let 时间非空数 = 0
   for (const 行 of 表.rows) {
     for (const 下标 of 金额列) {
       const 值 = 金额元(行.cells[下标]?.text ?? "")
       if (值 !== undefined) 金额合计 += 值
     }
-    if (时间列.some((下标) => (行.cells[下标]?.text ?? "").trim() !== "")) 时间非空数++
   }
   // 浮点累加会带尾巴（0.1 + 0.2）：基线表要能直接抄，按分收敛。
   return {
     列数: 表.header.length,
     行数: 表.rows.length,
     金额合计: Math.round(金额合计 * 100) / 100,
-    时间非空数,
+    时间非空数: 行级非空("startedAt"),
+    counterparty非空: 行级非空("counterparty"),
+    ownerAccount非空: 行级非空("ownerAccount"),
+    direction非空: 行级非空("direction"),
   }
 }
 

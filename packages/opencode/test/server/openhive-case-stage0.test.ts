@@ -138,22 +138,26 @@ test("非表格扩展名被排除（复用 可解析表格 的口径）", async 
   expect((await 读表格材料(库(), projectId)).map((材料) => 材料.id)).toEqual(["m-xlsx"])
 })
 
-test("表统计：行数/列数/金额合计/时间非空数按映射列实测", async () => {
+test("表统计：行/列与 §10.1 行级指标按映射列实测", async () => {
   const 表: RawSheet = {
     name: "Sheet1",
-    header: [格("交易时间"), 格("交易金额"), 格("备注")],
+    header: [格("交易时间"), 格("交易金额"), 格("交易对方账号"), 格("本方账号"), 格("借贷标志"), 格("备注")],
     rows: [
-      { rowNo: 2, cells: [格("2026-01-01"), 格("1,200.50"), 格("甲")] },
-      { rowNo: 3, cells: [格("2026-01-02"), 格(""), 格("乙")] },
-      { rowNo: 4, cells: [格(null), 格("300"), 格(null)] },
+      { rowNo: 2, cells: [格("2026-01-01"), 格("1,200.50"), 格("6222000011112222"), 格(""), 格("收"), 格("甲")] },
+      { rowNo: 3, cells: [格("2026-01-02"), 格(""), 格(""), 格("6217000011112222"), 格(""), 格("乙")] },
+      { rowNo: 4, cells: [格(null), 格("300"), 格("6217000033334444"), 格("6217000033334444"), 格(""), 格(null)] },
     ],
   }
 
-  // 列 0 → startedAt、列 1 → amount；备注列未认。金额合计 = 1200.50 + 300（空/未认不算）。
-  expect(表统计(表, { 0: "startedAt", 1: "amount" })).toEqual({
-    列数: 3,
+  // 列 0 → startedAt、1 → amount、2 → counterparty、3 → ownerAccount、4 → direction；备注列未认。
+  // 金额合计 = 1200.50 + 300（空/未认不算）；行级非空按「该行映射列有任意非空」计一次。
+  expect(表统计(表, { 0: "startedAt", 1: "amount", 2: "counterparty", 3: "ownerAccount", 4: "direction" })).toEqual({
+    列数: 6,
     行数: 3,
     金额合计: 1500.5,
     时间非空数: 2,
+    counterparty非空: 2,
+    ownerAccount非空: 2,
+    direction非空: 1,
   })
 })
