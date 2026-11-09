@@ -2,7 +2,7 @@ export * as OpenhiveCaseRows from "./case-rows"
 
 import type { RawCell, RawSheet } from "./case-sheet"
 import { parseTime } from "./case-time"
-import { 是标准列, 是识别字段, 归一化值, type 识别字段 } from "./case-field-registry"
+import { 字段目录, 是标准列, 是识别字段, 归一化值, type 识别字段 } from "./case-field-registry"
 import type { FactRowInput } from "./case-store"
 
 /**
@@ -12,8 +12,9 @@ import type { FactRowInput } from "./case-store"
  *
  * - **extras 落点字段**（`address` / `ownerName`…）：用**字段名**作键，不用原表头——
  *   字段身份与表头写法解耦，换一家银行的「收货地址」仍是同一个键。
- * - **标准列**：只有「被选中且本列解析失败」才留底，键仍是**原表头文本**——民警在界面上
- *   看到的是表头，不是下标。表头为空或与前面重名时用 `第N列`（N 从 1 起）。
+ * - **标准列**：「被选中且本列解析失败」，或**归一化改写了原文**（`+86` / 横线 / 空白）时留底，
+ *   键仍是**原表头文本**——民警在界面上看到的是表头，不是下标。表头为空或与前面重名时用
+ *   `第N列`（N 从 1 起）。
  *
  * ## 认不出就留 null
  *
@@ -106,6 +107,19 @@ function 解析失败(field: 识别字段, text: string): boolean {
   return false
 }
 
+/**
+ * 归一化是否改写了原文。设计 §3.1：归一化只作用于写进标准列的值，**若归一化结果与原文不同，
+ * 原文仍进 extras**（A16「原始值从不改写」）。
+ *
+ * 只认字段目录声明了 `归一化` 的字段（caller / callee / counterparty / ownerAccount）；
+ * amount / balance / direction / durationSec 的标准列写的是**解析结果**，不是归一化值，
+ * 它们的原文留底由 `解析失败` 负责，别混进这条判据。
+ */
+function 归一化改写了原文(field: 识别字段, text: string): boolean {
+  if (字段目录[field].归一化 === undefined) return false
+  return 归一化值(field, text) !== text
+}
+
 function 表头键(header: RawSheet["header"]): string[] {
   const 已用 = new Set<string>()
   return header.map((cell, i) => {
@@ -166,8 +180,11 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
       // 解析失败或映射值是数据库带出来的脏值，同样留底 —— 否则它既不在标准列、也不在 extras
       // 里，原件上写的什么就再也看不到了（Global Constraints：「认不出就留 null，原值仍在
       // extras 或 started_raw 里」）。时间不在此列：它的原文在 started_raw。
+      // 例外：解析成功但**归一化改写了原文**（`+86` / 横线）⇒ 原文按原表头补进 extras（A16）。
       // extras 落点字段：一律留底，键用**字段名**（`address` / `ownerName`…），不用原表头。
-      if (是识别字段(field) && 是标准列(field) && 选中.get(field) === i && !解析失败(field, cell.text)) return
+      if (是识别字段(field) && 是标准列(field) && 选中.get(field) === i && !解析失败(field, cell.text)) {
+        if (!归一化改写了原文(field, cell.text)) return
+      }
       const 键 = 是识别字段(field) && !是标准列(field) ? field : (键们[i] ?? `第${i + 1}列`)
       extras[键] = cell.text
     })

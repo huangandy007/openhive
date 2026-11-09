@@ -303,7 +303,7 @@ describe("新增三列与 extras 键", () => {
     expect(rows[0]?.direction).toBeNull()
   })
 
-  test("主叫/被叫写标准列时去国码，原文仍进 extras（若该列另有映射）", () => {
+  test("主叫写标准列时去国码，原文仍进 extras（A16）", () => {
     const rows = toFactRows({
       projectId: "p",
       materialId: "m",
@@ -311,6 +311,30 @@ describe("新增三列与 extras 键", () => {
       mapping: { 0: "caller" },
     })
     expect(rows[0]?.caller).toBe("13800000000")
+    // 归一化只作用于标准列；被改写的原文必须按原表头留底（设计 §3.1）。
+    expect(rows[0]?.extras).toEqual({ 主叫号码: "+8613800000000" })
+  })
+
+  test("本方账号去横线后原文仍进 extras（A16）", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["查询账号"], [["6222-0012-3456-7890"]]),
+      mapping: { 0: "ownerAccount" },
+    })
+    expect(rows[0]?.ownerAccount).toBe("6222001234567890")
+    expect(rows[0]?.extras).toEqual({ 查询账号: "6222-0012-3456-7890" })
+  })
+
+  test("值本来就规范 ⇒ 不重复塞进 extras（避免撑大）", () => {
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(["查询账号"], [["6222001234567890"]]),
+      mapping: { 0: "ownerAccount" },
+    })
+    expect(rows[0]?.ownerAccount).toBe("6222001234567890")
+    expect(rows[0]?.extras).toEqual({})
   })
 
   test("对手账号去空白与横线", () => {
@@ -321,5 +345,7 @@ describe("新增三列与 extras 键", () => {
       mapping: { 0: "counterparty" },
     })
     expect(rows[0]?.counterparty).toBe("6222001")
+    // 去横线/空白改写了原文 ⇒ 原文仍进 extras（A16）。
+    expect(rows[0]?.extras).toEqual({ 对方账号: " 6222-001 " })
   })
 })
