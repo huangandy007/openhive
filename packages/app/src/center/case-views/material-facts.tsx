@@ -21,10 +21,17 @@ function 解详情(值: unknown): string {
 
 interface 待确认项界面 {
   readonly 列号: number
-  readonly 表头: string
+  readonly 表头: string | null
   readonly 原因: string
   readonly 建议字段: string | null
 }
+
+/**
+ * 这两个状态下 detail 可能还是**上一轮**的：服务端 `applyParseAction` 只在带 `detail` 的动作
+ * （有问题 / 已解析）下改写它，「开始」（排队中 / 解析中）不清。把它们当本轮展示 ＝ 说隔夜的话。
+ */
+const 进行中状态们: readonly string[] = ["排队中", "解析中"]
+const 是进行中 = (状态: string): boolean => 进行中状态们.includes(状态)
 
 /** 从 parse_detail 里读待确认；形状不对就当没有（不猜）。 */
 function 读待确认(详情: unknown): { sheet: string; 项: 待确认项界面 }[] {
@@ -43,9 +50,14 @@ function 读待确认(详情: unknown): { sheet: string; 项: 待确认项界面
       const 列号 = Reflect.get(原始, "列号")
       const 表头 = Reflect.get(原始, "表头")
       const 原因 = Reflect.get(原始, "原因")
-      if (typeof 列号 !== "number" || typeof 表头 !== "string" || typeof 原因 !== "string") continue
+      // 服务端 `待确认项.表头` 是 `string | null`（表头单元格为空时就是 null），**null 是合法值**：
+      // 整条丢掉会让该列在界面上彻底消失、永远无法交给属主定名。
+      if (typeof 列号 !== "number" || (typeof 表头 !== "string" && 表头 !== null) || typeof 原因 !== "string")
+        continue
+      // 空串 / 纯空白同样算「无表头」：服务端不接受空表头，点了只会 400。
+      const 规范表头 = typeof 表头 === "string" && 表头.trim() !== "" ? 表头 : null
       const 建议 = Reflect.get(原始, "建议字段")
-      out.push({ sheet, 项: { 列号, 表头, 原因, 建议字段: typeof 建议 === "string" ? 建议 : null } })
+      out.push({ sheet, 项: { 列号, 表头: 规范表头, 原因, 建议字段: typeof 建议 === "string" ? 建议 : null } })
     }
   }
   return out
@@ -84,6 +96,9 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
     const 要排除 = 含排除()
     set清单(undefined)
     set错误(undefined)
+    // 确认态属于**上一份清单**：重取（换材料 / 切「含排除」）后不清会让旧 403 文案跟着新材料复活。
+    set确认中(undefined)
+    set确认错误(undefined)
     set载入(true)
     let 作废 = false
     // ⚠️ 清理必须挂 `onCleanup`：`createEffect` **不执行**返回值（同 `entity-profile.tsx`，
@@ -150,7 +165,7 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
 
             {/* 待确认面板与「有问题」的 detail 是**两条独立的路径**：解析成功的材料同样可能有
                 认不出名字的列。别把它套进 `parse_status === "有问题"`——那正是 spec 警告的那条路。 */}
-            <Show when={待确认().length > 0}>
+            <Show when={待确认().length > 0 && !是进行中(清单().材料.parse_status)}>
               <section class="mt-2 rounded-[4px] border border-v2-border-border-muted p-2">
                 <p data-slot="material-facts-pending-badge" class="text-[12px] font-semibold text-v2-text-text-base">
                   {待确认().length} 列待确认
@@ -167,28 +182,40 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                     <div class="mt-1 flex flex-wrap items-baseline gap-2 text-[12px]">
                       <span class="text-v2-text-text-muted">{行.sheet}</span>
                       <span data-slot="material-facts-pending-header" class="text-v2-text-text-base">
-                        {行.项.表头}
+                        {行.项.表头 ?? `（第${行.项.列号}列无表头）`}
                       </span>
                       <span class="text-v2-text-text-muted">{行.项.原因}</span>
                       <button
                         type="button"
                         data-slot="material-facts-pending-confirm"
-                        disabled={确认中() !== undefined || 行.项.建议字段 === null}
+                        disabled={确认中() !== undefined || 行.项.建议字段 === null || 行.项.表头 === null}
                         onClick={() => {
                           const field = 行.项.建议字段
-                          if (field === null) return
-                          set确认中(`${行.sheet}:${行.项.列号}`)
+                          const 表头 = 行.项.表头
+                          // 服务端不接受空表头（无表头项点了只会 400），也不接受没建议字段时瞎猜。
+                          if (field === null || 表头 === null) return
+                          const 键 = `${行.sheet}:${行.项.列号}`
+                          // 发起时的材料：迟到的回包若跨了材料，错误与摘行都不能落到新材料上（`#005-03`）。
+                          const 发起材料 = 清单()?.材料.id
+                          set确认中(键)
                           set确认错误(undefined)
                           void props.api
                             .confirmFieldAlias({
                               projectId: props.projectId,
-                              header: 行.项.表头,
+                              header: 表头,
                               field,
                               materialId: 清单()?.材料.id ?? "",
                             })
                             .then((结果) => {
-                              if (结果.kind === "error") set确认错误(结果.message)
+                              if (清单()?.材料.id !== 发起材料) return
+                              if (结果.kind === "error") {
+                                set确认错误(结果.message)
+                                return
+                              }
+                              // 成功即不再「待确认」：留下的行会让角标继续宣称 N 列，是句假话。
+                              set待确认((行们) => 行们.filter((行) => `${行.sheet}:${行.项.列号}` !== 键))
                             })
+                            // 必须无条件清：跨材料时取数 effect 已清过一次，但这里不清会让按钮永久禁用。
                             .finally(() => set确认中(undefined))
                         }}
                         class="h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 font-semibold text-v2-text-text-base disabled:opacity-50"
