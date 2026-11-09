@@ -11,7 +11,7 @@ import {
   形状命中率,
   type 识别字段,
 } from "./case-field-registry"
-import { 待确认原因们, type MappingResult } from "./case-mapping"
+import { 待确认原因们, type MappingResult, type 待确认原因 } from "./case-mapping"
 
 /**
  * 触发模型调用的待确认原因：**显式白名单**。
@@ -23,7 +23,7 @@ import { 待确认原因们, type MappingResult } from "./case-mapping"
  * 不触发清单（写清楚为什么）：`形状不符` 合并层用同一 0.9 阈值，注定过不了；
  * `单位冲突` / `表头重名` 必须人工裁决，模型帮不上。
  */
-const 模型可裁决原因们: readonly string[] = ["多列争抢", "候选不唯一", "别名跨字段集"]
+const 模型可裁决原因们: readonly 待确认原因[] = ["多列争抢", "候选不唯一", "别名跨字段集"]
 
 /**
  * 必须人工裁决的原因：模型不许填这些列，它们的待确认也不许删（fail-closed）。
