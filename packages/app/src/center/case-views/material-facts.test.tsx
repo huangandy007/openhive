@@ -61,6 +61,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
     review: async () => ({ kind: "ok", value: { 产物: null, 引用: [], 需复核: 0, 缺口: [] } }),
     trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+    confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
     ...over,
   }
 }
@@ -110,6 +111,179 @@ describe("材料抽取结果", () => {
     const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={假api()} />)
     await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
     expect(host.querySelector("[data-slot='material-facts-detail']")).toBeNull()
+  })
+
+  test("已解析材料也有待确认角标；面板列出表头与原因，确认后调 confirmFieldAlias", async () => {
+    const 调过: Array<{ projectId: string; header: string; field: string; materialId: string }> = []
+    const api = 假api({
+      materialFacts: async () => ({
+        kind: "ok",
+        value: {
+          ...清单,
+          材料: {
+            ...清单.材料,
+            // ⚠️ 待确认面板**独立于「有问题」路径**：解析成功（已解析）也可能有列要等属主定名。
+            parse_status: "已解析",
+            parse_detail: {
+              mapping: {
+                模型: { 调用: 0 },
+                工作表: {
+                  Sheet1: {
+                    来源: {},
+                    待确认: [{ 列号: 1, 表头: "摘要", 建议字段: "摘要", 原因: "候选不唯一" }],
+                    未知列: 1,
+                    方法: "特征",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+      confirmFieldAlias: async (input) => {
+        调过.push(input)
+        return { kind: "ok", value: { ok: true } }
+      },
+    })
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={api} />)
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    expect(host.querySelector("[data-slot='material-facts-pending-badge']")?.textContent).toContain("1 列待确认")
+
+    const 面板 = host.querySelector("[data-slot='material-facts-pending-badge']")!.parentElement!
+    expect(面板.textContent).toContain("Sheet1")
+    expect(面板.textContent).toContain("摘要")
+    expect(面板.textContent).toContain("候选不唯一")
+
+    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!
+    expect(按钮.disabled).toBe(false)
+    按钮.click()
+    await 等(() => 调过.length === 1)
+    expect(调过[0]).toEqual({ projectId: "p", header: "摘要", field: "摘要", materialId: "m-1" })
+  })
+
+  test("建议字段为 null ⇒ 按钮禁用、文案说「需人工指定」，点了也不调 api（不假装能确认）", async () => {
+    const 调过: unknown[] = []
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: {
+                  mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: 1, 表头: "摘要", 建议字段: null, 原因: "候选不唯一" }] } } },
+                },
+              },
+            },
+          }),
+          confirmFieldAlias: async (input) => {
+            调过.push(input)
+            return { kind: "ok", value: { ok: true } }
+          },
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!
+    expect(按钮.disabled).toBe(true)
+    expect(按钮.textContent).toContain("需人工指定")
+    // happy-dom 对 disabled 按钮仍可能派发 click：组件里那道 `if (field === null) return` 必须留着。
+    按钮.click()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(调过.length).toBe(0)
+  })
+
+  test("确认失败把服务端原文摆成 role=alert（403 的「只有项目属主…」不能吞）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: {
+                  mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: 1, 表头: "摘要", 建议字段: "摘要", 原因: "候选不唯一" }] } } },
+                },
+              },
+            },
+          }),
+          confirmFieldAlias: async () => ({ kind: "error", message: "只有项目属主能维护字段别名", code: "forbidden" }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-badge']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-pending-confirm']")!.click()
+    await 等(() => host.querySelector("[data-slot='material-facts-pending-error']") !== null)
+    const 错误 = host.querySelector("[data-slot='material-facts-pending-error']")!
+    expect(错误.getAttribute("role")).toBe("alert")
+    expect(错误.textContent).toContain("只有项目属主能维护字段别名")
+  })
+
+  test("待确认形状不可信：列号 / 表头类型不对就不显角标、不抛", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: { mapping: { 工作表: { Sheet1: { 待确认: [{ 列号: "1", 表头: 1, 原因: 2 }] } } } },
+              },
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-title']") !== null)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelector("[data-slot='material-facts-pending-badge']")).toBeNull()
+  })
+
+  test("待确认不是数组时不显角标、不抛", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: {
+              ...清单,
+              材料: {
+                ...清单.材料,
+                parse_status: "已解析",
+                parse_detail: { mapping: { 工作表: { Sheet1: { 待确认: "x" } } } },
+              },
+            },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-title']") !== null)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelector("[data-slot='material-facts-pending-badge']")).toBeNull()
+  })
+
+  test("parse_detail 没有 mapping 时不显示待确认角标", async () => {
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={假api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-sheet']").length === 2)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelector("[data-slot='material-facts-pending-badge']")).toBeNull()
   })
 
   test("回包未到之前说「正在读取抽取结果…」，到了就撤掉", async () => {

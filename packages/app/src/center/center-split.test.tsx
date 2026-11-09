@@ -216,6 +216,7 @@ describe("CenterSplit", () => {
       graph: async () => ({ kind: "error", message: "本用例不取关系图" }),
       review: async () => ({ kind: "error", message: "本用例不取复核" }),
       trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+      confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
     }
     const 案件: ContentTab = { module: "project", title: "张三", path: "case://p-1/entity/e-%E5%BC%A0" }
     function 现场() {

@@ -622,6 +622,7 @@ describe("分屏时「打开档案」开在另一栏", () => {
     }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
     trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+    confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
   }
   const 图tab: ContentTab = { module: "project", title: "张三 · 关系图", path: "case://p-1/graph/e-%E5%BC%A0" }
   const 档案tab: ContentTab = { module: "project", title: "李四 · 人", path: "case://p-1/entity/e-%E6%9D%8E" }
@@ -777,6 +778,7 @@ describe("中栏：case:// 伪路径走案件视图（计划 7 裁定 3）", () 
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
     trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+    confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
   }
 
   test("case:// 按前缀认，不按扩展名；不会降级成「不支持」", async () => {

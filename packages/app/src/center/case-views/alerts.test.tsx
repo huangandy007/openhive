@@ -45,6 +45,7 @@ function 假详情api(): CaseDetailApi {
     graph: async () => ({ kind: "error", message: "未用" }),
     review: async () => ({ kind: "error", message: "未用" }),
     trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+    confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
   }
 }
 

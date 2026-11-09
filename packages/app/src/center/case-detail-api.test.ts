@@ -104,6 +104,34 @@ describe("案件详情 API 客户端", () => {
     ).toEqual({ kind: "error", message: "这条事实已经被别人排除", code: "trust_conflict" })
   })
 
+  test("confirmFieldAlias 走 POST /field-alias，体是四个字段的 JSON", async () => {
+    let 地址 = ""
+    let 手法: string | undefined
+    let 头: unknown
+    let 正文: string | undefined
+    const api = createCaseDetailApi(async (url, init) => {
+      地址 = url
+      手法 = init?.method
+      头 = init?.headers
+      const 体 = init?.body
+      正文 = typeof 体 === "string" ? 体 : undefined
+      return 回包({ ok: true })
+    })
+
+    const 回 = await api.confirmFieldAlias({ projectId: "p", header: "摘要", field: "摘要", materialId: "m-1" })
+    expect(回.kind).toBe("ok")
+    expect(回.kind === "ok" ? 回.value.ok : undefined).toBe(true)
+    expect(地址).toBe("/openhive/case/field-alias")
+    expect(手法).toBe("POST")
+    expect(头).toMatchObject({ "content-type": "application/json" })
+    expect(JSON.parse(正文 ?? "null")).toEqual({
+      projectId: "p",
+      header: "摘要",
+      field: "摘要",
+      materialId: "m-1",
+    })
+  })
+
   test("graph 的 跳数 / type 编码正确（type 用逗号连接）", async () => {
     const 看到的: string[] = []
     const api = createCaseDetailApi(async (url) => {

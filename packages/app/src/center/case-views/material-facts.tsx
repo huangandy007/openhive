@@ -19,6 +19,38 @@ function 解详情(值: unknown): string {
   }
 }
 
+interface 待确认项界面 {
+  readonly 列号: number
+  readonly 表头: string
+  readonly 原因: string
+  readonly 建议字段: string | null
+}
+
+/** 从 parse_detail 里读待确认；形状不对就当没有（不猜）。 */
+function 读待确认(详情: unknown): { sheet: string; 项: 待确认项界面 }[] {
+  if (typeof 详情 !== "object" || 详情 === null) return []
+  const mapping = Reflect.get(详情, "mapping")
+  if (typeof mapping !== "object" || mapping === null) return []
+  const 工作表 = Reflect.get(mapping, "工作表")
+  if (typeof 工作表 !== "object" || 工作表 === null) return []
+  const out: { sheet: string; 项: 待确认项界面 }[] = []
+  for (const [sheet, 值] of Object.entries(工作表)) {
+    if (typeof 值 !== "object" || 值 === null) continue
+    const 列表 = Reflect.get(值, "待确认")
+    if (!Array.isArray(列表)) continue
+    for (const 原始 of 列表) {
+      if (typeof 原始 !== "object" || 原始 === null) continue
+      const 列号 = Reflect.get(原始, "列号")
+      const 表头 = Reflect.get(原始, "表头")
+      const 原因 = Reflect.get(原始, "原因")
+      if (typeof 列号 !== "number" || typeof 表头 !== "string" || typeof 原因 !== "string") continue
+      const 建议 = Reflect.get(原始, "建议字段")
+      out.push({ sheet, 项: { 列号, 表头, 原因, 建议字段: typeof 建议 === "string" ? 建议 : null } })
+    }
+  }
+  return out
+}
+
 /**
  * 一份材料的抽取结果（design §8.4）。
  *
@@ -35,6 +67,15 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [载入, set载入] = createSignal(false)
   // 与实体档案同一个开关语义（§9.1）：默认只看可见事实，用户点了才把已排除的一并带出。
   const [含排除, set含排除] = createSignal(false)
+  // 待确认面板**独立于「有问题」路径**：解析成功也可能有列等着属主定名。
+  const [待确认, set待确认] = createSignal<{ sheet: string; 项: 待确认项界面 }[]>([])
+  const [确认中, set确认中] = createSignal<string | undefined>()
+  const [确认错误, set确认错误] = createSignal<string | undefined>()
+
+  createEffect(() => {
+    const 材料 = 清单()?.材料
+    set待确认(材料 === undefined ? [] : 读待确认(材料.parse_detail))
+  })
 
   createEffect(() => {
     const projectId = props.projectId
@@ -106,6 +147,59 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                 {清单().材料.parse_status}
               </span>
             </div>
+
+            {/* 待确认面板与「有问题」的 detail 是**两条独立的路径**：解析成功的材料同样可能有
+                认不出名字的列。别把它套进 `parse_status === "有问题"`——那正是 spec 警告的那条路。 */}
+            <Show when={待确认().length > 0}>
+              <section class="mt-2 rounded-[4px] border border-v2-border-border-muted p-2">
+                <p data-slot="material-facts-pending-badge" class="text-[12px] font-semibold text-v2-text-text-base">
+                  {待确认().length} 列待确认
+                </p>
+                <Show when={确认错误()}>
+                  {(话) => (
+                    <p data-slot="material-facts-pending-error" role="alert" class="text-[12px] text-v2-state-fg-danger">
+                      {话()}
+                    </p>
+                  )}
+                </Show>
+                <For each={待确认()}>
+                  {(行) => (
+                    <div class="mt-1 flex flex-wrap items-baseline gap-2 text-[12px]">
+                      <span class="text-v2-text-text-muted">{行.sheet}</span>
+                      <span data-slot="material-facts-pending-header" class="text-v2-text-text-base">
+                        {行.项.表头}
+                      </span>
+                      <span class="text-v2-text-text-muted">{行.项.原因}</span>
+                      <button
+                        type="button"
+                        data-slot="material-facts-pending-confirm"
+                        disabled={确认中() !== undefined || 行.项.建议字段 === null}
+                        onClick={() => {
+                          const field = 行.项.建议字段
+                          if (field === null) return
+                          set确认中(`${行.sheet}:${行.项.列号}`)
+                          set确认错误(undefined)
+                          void props.api
+                            .confirmFieldAlias({
+                              projectId: props.projectId,
+                              header: 行.项.表头,
+                              field,
+                              materialId: 清单()?.材料.id ?? "",
+                            })
+                            .then((结果) => {
+                              if (结果.kind === "error") set确认错误(结果.message)
+                            })
+                            .finally(() => set确认中(undefined))
+                        }}
+                        class="h-6 rounded-[4px] bg-[var(--v2-background-bg-accent-soft)] px-2 font-semibold text-v2-text-text-base disabled:opacity-50"
+                      >
+                        确认为 {行.项.建议字段 ?? "（需人工指定）"}
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </section>
+            </Show>
             <Show when={清单().材料.parse_status === "有问题" && 解详情(清单().材料.parse_detail) !== ""}>
               <pre data-slot="material-facts-detail" class="mt-2 overflow-x-auto rounded-[4px] bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-muted">
                 {解详情(清单().材料.parse_detail)}

@@ -170,6 +170,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
     graph: async () => ({ kind: "ok", value: { 节点: [], 边: [], 缺口: [] } }),
     review: async () => ({ kind: "error", message: "本用例不取复核" }),
     trust: async () => ({ kind: "error", message: "本用例不裁决" }),
+    confirmFieldAlias: async () => ({ kind: "error", message: "本用例不写别名" }),
     ...over,
   }
 }

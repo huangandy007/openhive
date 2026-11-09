@@ -229,6 +229,13 @@ export interface CaseDetailApi {
     readonly reasonKind?: 纠正原因
     readonly reasonText?: string
   }) => Promise<结果<{ readonly trustState: string }>>
+  /** 待确认列 → 写全局别名（只有项目属主能成，服务端 403 会落到 `error`）。 */
+  readonly confirmFieldAlias: (input: {
+    readonly projectId: string
+    readonly header: string
+    readonly field: string
+    readonly materialId: string
+  }) => Promise<结果<{ readonly ok: true }>>
 }
 
 const 项目参数 = (projectId: string) => {
@@ -290,6 +297,13 @@ export function createCaseDetailApi(send: CaseFetch = 默认发送): CaseDetailA
           reasonKind: input.reasonKind,
           reasonText: input.reasonText,
         }),
+      }),
+    confirmFieldAlias: (input) =>
+      请求<{ ok: true }>(send, `${PREFIX}/field-alias`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // 字段名与服务端 `handleFieldAlias` 逐字一致（`projectId/header/field/materialId`）。
+        body: JSON.stringify(input),
       }),
   }
 }
