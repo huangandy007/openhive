@@ -734,3 +734,233 @@ describe("材料抽取结果", () => {
     expect(host.querySelector("[data-slot='artifact-review-gap']")!.textContent).toContain("没有引用任何事实")
   })
 })
+
+/** 取某一行的下拉框（弹窗里有多行时按行定位，别全局取第一个撞错行）。 */
+function 行下拉(行: HTMLElement): HTMLSelectElement {
+  return 行.querySelector<HTMLSelectElement>("[data-slot='material-facts-unrecognized-select']")!
+}
+
+describe("没认出的列（弹窗里人工确认）", () => {
+  /** 弹窗在 Kobalte 的 Portal 里：挂在 `document.body`，不在 `host`。 */
+  const 弹窗 = () => document.querySelector<HTMLElement>("[data-slot='material-facts-confirm-dialog']")
+  // 「关没关」读 `data-expanded`，不是「节点在不在」（`#005-29`：happy-dom 不跑退场动画，
+  // Presence 不摘节点——按节点在不在量，关掉的弹窗永远算开着）。
+  const 弹窗开着 = () => 弹窗()?.hasAttribute("data-expanded") === true
+  const 行们 = () => [...document.querySelectorAll<HTMLElement>("[data-slot='material-facts-unrecognized-row']")]
+  const 确认按钮 = () =>
+    document.querySelector<HTMLButtonElement>("[data-slot='material-facts-unrecognized-confirm']")!
+
+  const 未认出详情 = {
+    mapping: {
+      工作表: {
+        Sheet1: {
+          待确认: [],
+          未认出: [
+            { 列号: 2, 表头: "商户名称", 样例: ["堂林商店", "微民保险代理有限公司"] },
+            { 列号: 5, 表头: "渠道", 样例: ["微信"] },
+          ],
+          候选字段: ["startedAt", "amount", "counterpartyName"],
+        },
+      },
+    },
+  }
+
+  const 带未认出 = (over: Partial<CaseDetailApi> = {}): CaseDetailApi =>
+    假api({
+      materialFacts: async () => ({
+        kind: "ok",
+        value: { ...清单, 材料: { ...清单.材料, parse_status: "已解析", parse_detail: 未认出详情 } },
+      }),
+      ...over,
+    })
+
+  test("角标报数；点开弹窗列出表头 / 列号 / 样例，下拉只给本表候选字段", async () => {
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={带未认出()} />)
+    await 等(() => host.querySelector("[data-slot='material-facts-unrecognized-badge']") !== null)
+    expect(host.querySelector("[data-slot='material-facts-unrecognized-badge']")!.textContent).toBe("2 列没认出来")
+    // 关着的时候不该有空弹窗。
+    expect(弹窗()).toBeNull()
+
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-unrecognized-badge']")!.click()
+    await 等(弹窗开着)
+
+    expect(行们().length).toBe(2)
+    const 第一行 = 行们()[0]
+    expect(第一行.textContent).toContain("商户名称")
+    // `列号` 是 0 起，给人看的是 1 起。
+    expect(第一行.textContent).toContain("第 3 列")
+    expect(第一行.querySelector("[data-slot='material-facts-unrecognized-samples']")!.textContent).toContain("堂林商店")
+    // 只许选本表能生效的字段：弹窗不许把表外的字段摆进来（后端同一份判定，`#002-06`）。
+    expect([...行下拉(第一行).options].map((项) => 项.value)).toEqual([
+      "",
+      "startedAt",
+      "amount",
+      "counterpartyName",
+    ])
+  })
+
+  test("选好字段确认 ⇒ 调 confirmFieldAlias；摘掉那一列并提示「重新解析后生效」", async () => {
+    const 调过: Array<{ projectId: string; header: string; field: string; materialId: string }> = []
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={带未认出({
+          confirmFieldAlias: async (input) => {
+            调过.push(input)
+            return { kind: "ok", value: { ok: true } }
+          },
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-unrecognized-badge']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-unrecognized-badge']")!.click()
+    await 等(弹窗开着)
+
+    // 没选字段时按钮必须是禁用的，且点了也不许发请求（happy-dom 对 disabled 仍会派发 click）。
+    expect(确认按钮().disabled).toBe(true)
+    确认按钮().click()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(调过.length).toBe(0)
+
+    const 下拉 = 行下拉(行们()[0])
+    下拉.value = "counterpartyName"
+    下拉.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等(() => !确认按钮().disabled)
+    确认按钮().click()
+
+    await 等(() => 调过.length === 1)
+    expect(调过[0]).toEqual({ projectId: "p", header: "商户名称", field: "counterpartyName", materialId: "m-1" })
+    // 确认掉的那一列从弹窗里消失，角标剩 1，弹窗留着处理下一列。
+    await 等(
+      () =>
+        行们().length === 1 &&
+        host.querySelector("[data-slot='material-facts-unrecognized-badge']")?.textContent === "1 列没认出来",
+    )
+    expect(行们()[0].textContent).toContain("渠道")
+    expect(弹窗开着()).toBe(true)
+    // 提示活在弹窗之外：关掉弹窗它还应当在。
+    const 提示 = host.querySelector("[data-slot='material-facts-remembered']")!.textContent
+    expect(提示).toContain("重新解析")
+    expect(提示).toContain("counterpartyName")
+  })
+
+  test("最后一列确认完 ⇒ 弹窗自己关掉（不留空壳）", async () => {
+    const 单列详情 = {
+      mapping: {
+        工作表: {
+          Sheet1: {
+            待确认: [],
+            未认出: [{ 列号: 2, 表头: "商户名称", 样例: ["堂林商店"] }],
+            候选字段: ["counterpartyName"],
+          },
+        },
+      },
+    }
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: { ...清单, 材料: { ...清单.材料, parse_status: "已解析", parse_detail: 单列详情 } },
+          }),
+          confirmFieldAlias: async () => ({ kind: "ok", value: { ok: true } }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-unrecognized-badge']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-unrecognized-badge']")!.click()
+    await 等(弹窗开着)
+
+    const 下拉 = 行下拉(行们()[0])
+    下拉.value = "counterpartyName"
+    下拉.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等(() => !确认按钮().disabled)
+    确认按钮().click()
+
+    await 等(() => !弹窗开着())
+    expect(host.querySelector("[data-slot='material-facts-unrecognized-badge']")).toBeNull()
+    expect(host.querySelector("[data-slot='material-facts-remembered']")).not.toBeNull()
+  })
+
+  test("确认失败把服务端原文摆成 role=alert，那一列不摘（可重试）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={带未认出({
+          confirmFieldAlias: async () => ({ kind: "error", message: "只有项目属主能维护字段别名", code: "forbidden" }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-unrecognized-badge']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='material-facts-unrecognized-badge']")!.click()
+    await 等(弹窗开着)
+
+    const 下拉 = 行下拉(行们()[0])
+    下拉.value = "counterpartyName"
+    下拉.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等(() => !确认按钮().disabled)
+    确认按钮().click()
+
+    await 等(() => document.querySelector("[data-slot='material-facts-unrecognized-error']") !== null)
+    const 错误 = document.querySelector("[data-slot='material-facts-unrecognized-error']")!
+    expect(错误.getAttribute("role")).toBe("alert")
+    expect(错误.textContent).toContain("只有项目属主能维护字段别名")
+    expect(行们().length).toBe(2)
+    // 失败后按钮要能再点（`记住中` 必须清掉）。
+    expect(确认按钮().disabled).toBe(false)
+  })
+
+  test("候选字段为空 / 形状不可信 ⇒ 不出现角标、不抛", async () => {
+    const 怪详情 = {
+      mapping: {
+        工作表: {
+          Sheet1: {
+            未认出: [
+              { 列号: "2", 表头: "商户名称", 样例: [] },
+              // 空表头写了别名必然 400：不进清单。
+              { 列号: 3, 表头: "  ", 样例: [] },
+            ],
+            候选字段: [],
+          },
+        },
+      },
+    }
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: { ...清单, 材料: { ...清单.材料, parse_status: "已解析", parse_detail: 怪详情 } },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-title']") !== null)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelector("[data-slot='material-facts-unrecognized-badge']")).toBeNull()
+  })
+
+  test("解析中不出现角标（detail 可能是上一轮的）", async () => {
+    const host = mount(() => (
+      <MaterialFacts
+        projectId="p"
+        path="材料/话单.xlsx"
+        api={假api({
+          materialFacts: async () => ({
+            kind: "ok",
+            value: { ...清单, 材料: { ...清单.材料, parse_status: "解析中", parse_detail: 未认出详情 } },
+          }),
+        })}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-status']")?.textContent === "解析中")
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelector("[data-slot='material-facts-unrecognized-badge']")).toBeNull()
+  })
+})

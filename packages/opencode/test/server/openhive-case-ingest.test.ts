@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { tmpdir } from "node:os"
@@ -1885,5 +1885,73 @@ describe("人工入库置顶（设计：强制入队，置顶优先）", () => {
 
     const 下一条 = await claimNextJob(db())
     expect(下一条?.materialId).toBe(先.materialId)
+  })
+})
+
+describe("parse_detail 的未认出明细（人工确认弹窗的数据源）", () => {
+  // `claimNextJob` 是全局最老优先：上面的用例（尤其「人工入库置顶」）会留下排队行，
+  // 不清理时 `跑下一条()` 认领到的是别人的作业（源文件不在 `文件` 里 ⇒ 失败），
+  // 本组就成了「单跑绿、整文件红」（`#005-34` 的同一类污染）。
+  beforeEach(async () => {
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+  })
+
+  /** 从 parse_detail 里取某张表的 `未认出` / `候选字段`；形状不对返回 `undefined`（不猜）。 */
+  function 取未认出(
+    详情: unknown,
+  ): { 列们: Record<string, unknown>[]; 候选字段: string[] } | undefined {
+    if (!是对象(详情)) return undefined
+    if (!是对象(详情.mapping)) return undefined
+    if (!是对象(详情.mapping.工作表)) return undefined
+    const 表 = 详情.mapping.工作表.Sheet1
+    if (!是对象(表)) return undefined
+    if (!Array.isArray(表.未认出) || !Array.isArray(表.候选字段)) return undefined
+    return {
+      列们: 表.未认出.filter(是对象),
+      候选字段: 表.候选字段.filter((x): x is string => typeof x === "string"),
+    }
+  }
+
+  test("没认出的列带表头与样例；无信息列不进清单；候选字段只给本表能生效的", async () => {
+    const 表 = 造工作簿({
+      Sheet1: [
+        ["交易金额", "交易时间", "商户名称", "备注"],
+        ["1.00", "2026-01-02 03:04:05", "堂林商店", "转账"],
+        ["2.00", "2026-01-02 03:05:06", "微民保险代理有限公司", "消费"],
+      ],
+    })
+    文件.set("p-未认出/流水.xlsx", 表)
+    const r = await 入队("p-未认出", "流水.xlsx", "fp-未认出")
+    expect((await 跑下一条()).结果).toBe("完成")
+
+    const 未认出 = 取未认出((await getMaterial(db(), "p-未认出", r.materialId))?.parseDetail)
+    expect(未认出).toBeDefined()
+    // 「商户名称」在资金表里不是候选字段（extras 不进资金候选集），所以它只能靠人工确认；
+    // 「备注」是无信息列，摆出来只会挤占真正的待确认项。
+    expect(未认出?.列们).toEqual([
+      { 列号: 2, 表头: "商户名称", 样例: ["堂林商店", "微民保险代理有限公司"] },
+    ])
+    // 弹窗只许选本表能生效的字段：资金表里没有 merchant / callee。
+    expect(未认出?.候选字段).toContain("counterpartyName")
+    expect(未认出?.候选字段).not.toContain("merchant")
+    expect(未认出?.候选字段).not.toContain("callee")
+  })
+
+  test("全都认出来的表 ⇒ 未认出为空数组（不是缺字段）", async () => {
+    // 不直接用 `话单`：它有「基站」列，本来就认不出。这里要的是「一列都没漏」的形状。
+    文件.set(
+      "p-全认出/话单.xlsx",
+      造工作簿({
+        Sheet1: [
+          ["主叫号码", "被叫号码", "通话时间"],
+          ["13800000000", "13900000000", "2026-01-02 03:04:05"],
+        ],
+      }),
+    )
+    const r = await 入队("p-全认出", "话单.xlsx", "fp-全认出")
+    expect((await 跑下一条()).结果).toBe("完成")
+
+    const 未认出 = 取未认出((await getMaterial(db(), "p-全认出", r.materialId))?.parseDetail)
+    expect(未认出?.列们).toEqual([])
   })
 })

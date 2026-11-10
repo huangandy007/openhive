@@ -9,6 +9,7 @@ import {
   字段目录,
   是识别字段,
   形状命中率,
+  是无信息列,
   type 识别字段,
 } from "./case-field-registry"
 import { 待确认原因们, type MappingResult, type 待确认原因 } from "./case-mapping"
@@ -186,7 +187,7 @@ export function 需要模型(
     if (结果.待确认.some((项) => 模型可裁决原因们.includes(项.原因))) return true
     for (let i = 0; i < 表头.length; i++) {
       const 名 = (表头[i] ?? "").trim()
-      if (名 === "" || /备注|摘要|网点|说明|用途|序号/.test(名)) continue
+      if (是无信息列(名)) continue
       总列++
       if (结果.columns[i] !== undefined) continue
       const 像某种形状 = 形状字段们.some(

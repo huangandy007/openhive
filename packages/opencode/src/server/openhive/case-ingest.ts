@@ -18,7 +18,7 @@ import {
   type 待确认项,
   type 识别来源,
 } from "./case-mapping"
-import { 是识别字段, type 识别字段 } from "./case-field-registry"
+import { 候选字段集, 是无信息列, 是识别字段, type 识别字段 } from "./case-field-registry"
 import { 识别材料, type 材料识别 } from "./case-recognize"
 import { 读别名上下文, 记别名命中 } from "./case-field-alias"
 import type { 表头识别器 } from "./case-header-ai"
@@ -455,6 +455,18 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
 
   const 待写: FactRowInput[] = []
   let 认出列数 = 0
+  /**
+   * 每张表「没认出来的列」明细，随 `parse_detail` 落库（人工确认弹窗的唯一数据源）。
+   *
+   * 只收**有非空表头**的列：别名库的键就是表头原文，空表头写不了别名 —— 摆出来等于给一个
+   * 点了必然 400 的按钮（`material-facts.tsx` 的 `表头 === null` 分支同理）。
+   * `候选字段` 用同一份 `候选字段集`（`#002-06`）：弹窗只许选本表能生效的字段，否则写进去的
+   * 别名下次解析会变成「别名跨字段集」待确认。
+   */
+  const 未认出们: (
+    | { 候选字段: string[]; 列们: { 列号: number; 表头: string; 样例: string[] }[] }
+    | undefined
+  )[] = []
   /** 时间列守卫要用的每表产物（守卫在整份组装完之后统一判，见下）。 */
   const 守卫们: {
     sheet: RawSheet
@@ -492,6 +504,29 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       const 列号 = Number(k)
       return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
     }).length
+    const 已认列 = new Set(
+      Object.keys(表.列)
+        .map((k) => Number(k))
+        .filter((列号) => Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length),
+    )
+    未认出们[i] = {
+      候选字段: [
+        ...候选字段集(
+          header,
+          sheet.rows.slice(0, 20).map((行) => 行.cells.map((单元格) => 单元格.text)),
+        ),
+      ],
+      列们: header.flatMap((单元格, 列号) => {
+        const 名 = (单元格 ?? "").trim()
+        if (是无信息列(名) || 已认列.has(列号)) return []
+        const 样例 = sheet.rows
+          .map((行) => (行.cells[列号]?.text ?? "").trim())
+          .filter((值) => 值 !== "")
+          .slice(0, 3)
+          .map((值) => (值.length > 60 ? `${值.slice(0, 60)}…` : 值))
+        return [{ 列号, 表头: 名, 样例 }]
+      }),
+    }
     const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 表.列 })
     待写.push(...行)
     守卫们.push({ sheet, 表头: header, 列: 表.列, 行 })
@@ -538,9 +573,16 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         mapping: {
           模型: 识别.模型,
           工作表: Object.fromEntries(
-            识别.工作表.map((s) => [
+            识别.工作表.map((s, i) => [
               s.sheet,
-              { 来源: s.来源, 待确认: s.待确认, 未知列: s.未知列, 方法: s.方法 },
+              {
+                来源: s.来源,
+                待确认: s.待确认,
+                未知列: s.未知列,
+                方法: s.方法,
+                未认出: 未认出们[i]?.列们 ?? [],
+                候选字段: 未认出们[i]?.候选字段 ?? [],
+              },
             ]),
           ),
         },
