@@ -424,11 +424,15 @@ describe("查明细行 · 入参 fail-closed", () => {
     }
   })
 
-  test("游标字段含 NUL ⇒ 明细入参错误（不是 DrizzleQueryError）", async () => {
+  test("游标任一段含 NUL ⇒ 明细入参错误（m / s 各自承重，不是 DrizzleQueryError）", async () => {
     const 造 = (载荷: object) => Buffer.from(JSON.stringify(载荷), "utf8").toString("base64url")
-    await expect(
-      查明细行(库(), { projectId: 项目, 游标: 造({ t: null, m: "m-1", s: "a\u0000b", r: 1 }) }),
-    ).rejects.toThrow(明细入参错误)
+    // 两段各一条载荷：删掉 `m` 或 `s` 任一段的 NUL 闸，PG 会抛 DrizzleQueryError，对应那条即红。
+    for (const 载荷 of [
+      { t: null, m: "a\u0000b", s: "Sheet1", r: 1 },
+      { t: null, m: "m-1", s: "a\u0000b", r: 1 },
+    ]) {
+      await expect(查明细行(库(), { projectId: 项目, 游标: 造(载荷) })).rejects.toThrow(明细入参错误)
+    }
   })
 
   test("材料闸早退不吞掉截断缺口：超过上限与材料未入库同时出现", async () => {
