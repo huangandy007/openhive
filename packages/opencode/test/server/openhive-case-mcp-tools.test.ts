@@ -1055,7 +1055,9 @@ test("aggregate_money 对手方不返回「已排除」实体（§9.1）", async
   // §9.1「不进统计」管到汇总与对手方：对手方被排除 ⇒ 那块为空；三块都空 ⇒ R5 下 `数据` 为 null。
   // 去掉端点过滤时这里会变成 { 汇总: [出 1 笔 100.00], 对手方: [号X…] }，断言才红。
   expect(结果.数据).toBeNull()
-  expect(结果.空原因).toBe("无匹配行")
+  // 张三在戊里没有任何「持有」关系（转账对象实体被排除、不计入）⇒ 空原因按判定表第 3 条。
+  // 这条用例守的是「已排除实体不外泄」，空原因跟着判定表走，不是回归。
+  expect(结果.空原因).toBe("实体没有关联账户")
   expect(JSON.stringify(结果)).not.toContain("号X")
 })
 
@@ -1192,7 +1194,9 @@ test("query_relations 七字段：有数据时摘要给条数与端点数", asyn
 })
 
 test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出处空、不给不可执行的下一步", async () => {
-  const 结果 = await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" })
+  // 用「号码」而不是「甲」：判定表第 3 条只对人 / 组织生效（甲是「人」且没有持有关系，
+  // 会得到「实体没有关联账户」）。这里要守的是**兜底值**与「不给不可执行的下一步」。
+  const 结果 = await query_relations(ctx(身份戊), { 实体: "13800001111", 类型: "不存在的类型" })
   expect(结果.摘要).toContain("没有关系命中")
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
@@ -1294,7 +1298,10 @@ test("aggregate_money 有数据时缺口不追加「三者都为空」", async (
 })
 
 test("aggregate_money 七字段：无转账也无明细 ⇒ 数据 null（对象型不返回空壳）", async () => {
-  const 结果 = await aggregate_money(ctx(身份戊), { 账户: "李四" })
+  // 用「号码」而不是「李四」：判定表第 3 条会把人 / 组织判成「实体没有关联账户」，
+  // 这里要守的是**兜底值** `无匹配行` 与空信封的七字段形状（号码不是人也不是账户）。
+  const 账户 = "13800001111"
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户 })
   expect(结果.摘要).toContain("没有任何转账关系或明细流水")
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toBeNull()
@@ -1302,7 +1309,7 @@ test("aggregate_money 七字段：无转账也无明细 ⇒ 数据 null（对象
   expect(结果.缺口.join()).toContain("三者都为空")
   // `query_entities` 全参数可选，但带上原始账户名才有用（I-1）。
   expect(结果.下一步[0]?.工具).toBe("query_entities")
-  expect(结果.下一步[0]?.参数).toEqual({ 关键词: "李四" })
+  expect(结果.下一步[0]?.参数).toEqual({ 关键词: 账户 })
 })
 
 test("find_crossings 七字段：有数据时摘要给共同关联/共同时空数量", async () => {

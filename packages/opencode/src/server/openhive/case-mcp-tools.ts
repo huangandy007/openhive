@@ -293,6 +293,202 @@ function 校验时间窗(args: { 起?: number; 止?: number }): void {
 }
 
 /**
+ * 项目内「尚未解析」的材料份数（判定表第 4 条的证据）。
+ *
+ * **不按「资金」这类 `kind` 过滤**：材料在认出列之前 `kind` 一律是 `其他`（`case-ingest.ts:123`），
+ * 按 `kind = '资金'` 找会把「刚上传、还没解析的流水」整批漏掉——那正是要回答的情况。
+ *
+ * 唯一例外是 `产物`：按设计永不解析（design §5.5 的硬边界，库约束
+ * `case_material_parsed_source` 也钉着），算进「待翻译」会让任何生成过产物的项目
+ * 永远报「材料未翻译」，而产物里不可能有资金流水。`09` §3.5 的原话是「有**资金材料**
+ * 但没翻译」，所以这里只排除产物，不排除「其他」。
+ */
+async function 未解析材料数(ctx: 工具上下文): Promise<number> {
+  const 行 = rowsOf(
+    await ctx.db.execute(sql`
+      select count(*)::int as n
+        from auth.case_material
+       where project_id = ${ctx.身份.projectId}
+         and parse_status <> '已解析'
+         and kind <> '产物'
+    `),
+  )[0]
+  return Number(行?.n ?? 0)
+}
+
+/**
+ * 空原因判定表（`09` §3.5 第 1–4 条）的证据。**一次查齐**，两个 `*空原因` 函数与
+ * `aggregate_money` 都从这里取数——同一判据只有这一个出处（`#002-06`）。
+ *
+ * `窗内转账数` 与 `转账总数` 是两件事：第 1 条问「**时间窗内** 0 笔」，第 2 条问
+ * 「**任何**转账关系都没有」。合成一个数会让「窗外有转账、窗内没有」的账户被误判成
+ * 「账户未在材料中出现」。
+ */
+interface 空证据 {
+  /** 该实体名下的 `持有` 关系数（全时段）。 */
+  readonly 持有数: number
+  /** 时间窗内的 `转账` 关系数（第 1 条用）。 */
+  readonly 窗内转账数: number
+  /** 全时段的 `转账` 关系数（第 2 条用）。 */
+  readonly 转账总数: number
+  /** 明细行里本方/对方账号等于该实体规范值的行数（全时段）。 */
+  readonly 明细行数: number
+  /** 项目内尚未解析的材料份数（第 4 条用）。 */
+  readonly 未解析材料数: number
+}
+
+async function 查空证据(
+  ctx: 工具上下文,
+  实体: { ids: readonly string[] },
+  时间窗: { 起?: number; 止?: number } = {},
+): Promise<空证据> {
+  // 时间窗与 `aggregate_money` / `query_relations` 同口径：最晚不早于「起」、最早不晚于「止」。
+  const 窗内条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`type = '转账'`,
+    sql`(from_id ${id属于(实体.ids)} or to_id ${id属于(实体.ids)})`,
+  ]
+  if (时间窗.起 !== undefined) 窗内条件.push(sql`coalesce(last_at, first_at, 0) >= ${时间窗.起}`)
+  if (时间窗.止 !== undefined) 窗内条件.push(sql`coalesce(first_at, last_at, 0) <= ${时间窗.止}`)
+  const 行 = rowsOf(
+    await ctx.db.execute(sql`
+      with 实体值 as (
+        select canonical_value
+          from auth.case_entity
+         where project_id = ${ctx.身份.projectId} and id ${id属于(实体.ids)}
+      )
+      select
+        (select count(*)::int from auth.case_relation
+          where project_id = ${ctx.身份.projectId} and type = '持有'
+            and (from_id ${id属于(实体.ids)} or to_id ${id属于(实体.ids)})) as 持有数,
+        (select count(*)::int from auth.case_relation
+          where ${sql.join(窗内条件, sql` and `)}) as 窗内转账数,
+        (select count(*)::int from auth.case_relation
+          where project_id = ${ctx.身份.projectId} and type = '转账'
+            and (from_id ${id属于(实体.ids)} or to_id ${id属于(实体.ids)})) as 转账总数,
+        -- 明细行存的是实体规范值、不是 id（本文件既有口径），所以按 id 取回规范值再比；
+        -- 本方/对方账号的列与余额走势的条件完全一致（counterparty / counterparty_name /
+        -- owner_account / caller / callee），不另立一套「账户出现」的判据。
+        (select count(*)::int from auth.case_fact_row r
+          where r.project_id = ${ctx.身份.projectId}
+            and (r.counterparty in (select canonical_value from 实体值)
+              or r.counterparty_name in (select canonical_value from 实体值)
+              or r.owner_account in (select canonical_value from 实体值)
+              or r.caller in (select canonical_value from 实体值)
+              or r.callee in (select canonical_value from 实体值))) as 明细行数
+    `),
+  )[0]
+  return {
+    持有数: Number(行?.持有数 ?? 0),
+    窗内转账数: Number(行?.窗内转账数 ?? 0),
+    转账总数: Number(行?.转账总数 ?? 0),
+    明细行数: Number(行?.明细行数 ?? 0),
+    未解析材料数: await 未解析材料数(ctx),
+  }
+}
+
+/** 未解析材料的缺口文案：数量必须写出来，且不许声称已知它是资金材料（认出列之前 `kind` 是「其他」）。 */
+function 未翻译缺口(份数: number): string {
+  return `${份数} 份材料尚未解析，其中可能含资金流水`
+}
+
+/** 「材料没翻译」时唯一可执行的引导：先确认 / 推进解析。两个出口共用一条（`#002-06`）。 */
+const 材料未翻译下一步: 下一步项 = {
+  工具: "search_materials",
+  参数: {},
+  为什么: "确认项目内材料的解析状态；未解析的材料要先解析入库，再问资金",
+}
+
+/**
+ * 资金空原因的判定（`09` §3.5 的资金四拆 + 兜底）。**顺序即优先级**，前一条命中即用。
+ *
+ * 第 2、3 条按实体类型互斥（第 2 条只认「账户」，第 3 条只认「人 / 组织」）：
+ * 一条「人」实体即便没有持有关系也不能被说成「账户未在材料中出现」——那是把「人」
+ * 当「账户」。`09` §3.5 总表把「实体没有关联账户」排在「账户未在材料中出现」之前，
+ * 这里两条互斥，次序不改变结果。
+ */
+function 判资金空原因(证据: 空证据, 实体: { type: string }): 空原因值 {
+  // 1. 确实没有交易：有存在证据（持有 / 明细行），但时间窗内 0 笔转账。
+  if ((证据.持有数 > 0 || 证据.明细行数 > 0) && 证据.窗内转账数 === 0) return "确实没有交易"
+  // 2. 账户未在材料中出现：实体表里有这个「账户」，任何事实里都没有它。
+  if (实体.type === "账户" && 证据.持有数 === 0 && 证据.转账总数 === 0 && 证据.明细行数 === 0)
+    return "账户未在材料中出现"
+  // 3. 实体没有关联账户：人 / 组织没有任何「持有」关系。
+  if ((实体.type === "人" || 实体.type === "组织") && 证据.持有数 === 0) return "实体没有关联账户"
+  // 4. 项目内资金材料未翻译：还有没解析的材料，不能据此下「没有」的结论。
+  if (证据.未解析材料数 > 0) return "项目内资金材料未翻译"
+  return "无匹配行"
+}
+
+/**
+ * 关系空原因：**只有第 3 条与兜底**。
+ *
+ * 不做第 1、2、4 条：查关系查不到不代表没有交易，也不代表账户没出现——用
+ * `确实没有交易` / `账户未在材料中出现` 回答「查关系」是误导。宁可兜底，不说错话。
+ */
+function 判关系空原因(证据: 空证据, 实体: { type: string }): 空原因值 {
+  if ((实体.type === "人" || 实体.type === "组织") && 证据.持有数 === 0) return "实体没有关联账户"
+  return "无匹配行"
+}
+
+/** 资金类空原因（判定表 1→5 全序）。`aggregate_money` 用。 */
+export async function 资金空原因(
+  ctx: 工具上下文,
+  实体: { ids: readonly string[]; type: string },
+  时间窗: { 起?: number; 止?: number },
+): Promise<空原因值> {
+  return 判资金空原因(await 查空证据(ctx, 实体, 时间窗), 实体)
+}
+
+/** 关系类空原因（只有第 3 条与兜底）。`query_relations` 用。 */
+export async function 关系空原因(
+  ctx: 工具上下文,
+  实体: { ids: readonly string[]; type: string },
+): Promise<空原因值> {
+  return 判关系空原因(await 查空证据(ctx, 实体), 实体)
+}
+
+/**
+ * R-C：「材料没翻译」也是**空结果**，不是 `not_found`。
+ *
+ * 民警刚上传流水、还没解析完就来问账户时，实体表里确实还没有它——但这不是「查无此账户」，
+ * 而是「还答不了」。把错误抛出去会让模型把它讲成「没有这个账户」（`09` §5.2 纪律 3）。
+ */
+function 材料未翻译信封(账户: string, 份数: number): 工具结果 {
+  return {
+    摘要: `「${账户}」的资金材料还没翻译完：项目内还有 ${份数} 份材料尚未解析，现在不能断定有没有交易`,
+    数据: null,
+    口径:
+      "账户先在实体表解析（按 id、再按规范值）；解析不到时若项目内仍有未解析材料，" +
+      "不把「查无此实体」当结论——翻译完之前它可能就在这些材料里。",
+    缺口: [未翻译缺口(份数)],
+    空原因: "项目内资金材料未翻译",
+    出处: [],
+    下一步: [材料未翻译下一步],
+  }
+}
+
+/**
+ * 账户解析：`not_found` 且项目内有未解析材料时，折成「材料未翻译」信封而不是抛错（R-C）。
+ * 这个判断只属于 `aggregate_money`，**不塞进 `解析实体`**：后者被四个工具共用，
+ * 在那里改语义会把另外三个工具的「查不到实体」也说成「材料没翻译」（`#002-06`）。
+ */
+async function 解析账户(
+  ctx: 工具上下文,
+  账户: string,
+): Promise<{ 实体: { id: string; value: string; type: string; ids: string[] } } | { 信封: 工具结果 }> {
+  try {
+    return { 实体: await 解析实体(ctx, 账户, "账户") }
+  } catch (错) {
+    if (错 instanceof 工具错误 && 错.code === "not_found") {
+      const 份数 = await 未解析材料数(ctx)
+      if (份数 > 0) return { 信封: 材料未翻译信封(账户, 份数) }
+    }
+    throw 错
+  }
+}
+
+/**
  * 计划 5 的 `引用视图`（camelCase）→ 本层的库列名口径。只这 7 个字段，别扩。
  *
  * `row` 分支与 `entity/relation/event` 分支必须同形——模型不该因为出处挂在哪类事实上
@@ -327,8 +523,11 @@ export async function query_relations(
   // （查「乙」时首条可能是「甲→乙」），拿它当账户就是编户名（A3）。没给 `实体` 时
   // 根本不知道查询主体是谁，也就没有可汇总的账户 ⇒ `下一步` 留空。
   let 查询实体值: string | undefined
+  // 空结果的原因要用**查询主体**的身份（类型 / id 集）判，解析结果留在这里（`关系空原因`）。
+  let 查询实体: { id: string; value: string; type: string; ids: string[] } | undefined
   if (args.实体 !== undefined) {
     const 实体 = await 解析实体(ctx, args.实体, "实体")
+    查询实体 = 实体
     查询实体值 = 实体.value
     // 按值解析时 `ids` 是同值所有类型行：旧「人」行上的关系不能因为纠正后的新行而消失。
     条件.push(sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`)
@@ -372,6 +571,12 @@ export async function query_relations(
     to_value: 行.to_value as string | null,
   }))
   const 空 = 数据为空(数据)
+  // 没给 `实体` 时不知道查询主体是谁，没有可判的身份 ⇒ 兜底；给了才按 `关系空原因` 判。
+  const 空原因: 空原因值 | null = !空
+    ? null
+    : 查询实体 === undefined
+      ? "无匹配行"
+      : await 关系空原因(ctx, 查询实体)
   const 对方数 = new Set(数据.flatMap((行) => [String(行.from_id), String(行.to_id)])).size
   return {
     摘要: 空
@@ -384,7 +589,7 @@ export async function query_relations(
       "时间窗按「与窗口有交集」判定；默认不含「已排除」的关系及其端点实体；金额为 numeric 字符串，勿自行转浮点；" +
       "时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
-    空原因: 空 ? "无匹配行" : null,
+    空原因,
     出处: 数据.slice(0, 3).map((行) => ({
       事实: `关系 ${String(行.from_value)}→${String(行.to_value)}，${行.times == null ? "次数未知" : `${String(行.times)} 次`}`,
       代表: String(行.id),
@@ -735,7 +940,10 @@ export async function aggregate_money(
   args: { 账户: string; 起?: number; 止?: number },
 ): Promise<工具结果> {
   校验时间窗(args)
-  const 账户 = await 解析实体(ctx, args.账户, "账户")
+  // R-C：解析不到且项目里有未解析材料时，回「材料未翻译」信封（不是 not_found）。
+  const 解析结果 = await 解析账户(ctx, args.账户)
+  if ("信封" in 解析结果) return 解析结果.信封
+  const 账户 = 解析结果.实体
 
   const 汇总条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
@@ -853,6 +1061,10 @@ export async function aggregate_money(
 
   // R5：对象不算空 ⇒ 无命中时 `数据` 返回 `null`，不返回一个全是空数组的对象。
   const 空 = 汇总.length === 0 && 对手方.length === 0 && 余额走势 === null
+  // 空结果的原因按证据判（`09` §3.5 资金四拆）：不是「一律无匹配行」。只在空时查一次证据。
+  const 证据 = 空 ? await 查空证据(ctx, 账户, args) : undefined
+  const 空原因: 空原因值 | null = 证据 === undefined ? null : 判资金空原因(证据, 账户)
+  const 未翻译份数 = 空原因 === "项目内资金材料未翻译" ? (证据?.未解析材料数 ?? 0) : 0
   // `对手方` 是按「对手方 + 方向」分组的（来/回各一行）⇒ 按行数说「N 个对手」会把同一人算两次。
   const 对手个数 = new Set(对手方.map((行) => String(行.对手方))).size
   const 缺口 = [
@@ -868,7 +1080,9 @@ export async function aggregate_money(
 
   return {
     摘要: 空
-      ? `「${args.账户}」在给定条件下没有任何转账关系或明细流水`
+      ? 未翻译份数 > 0
+        ? `「${args.账户}」的资金材料还没翻译完：项目内还有 ${未翻译份数} 份材料尚未解析，现在不能断定有没有交易`
+        : `「${args.账户}」在给定条件下没有任何转账关系或明细流水`
       : `「${args.账户}」${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : "；无明细流水"}`,
     数据: 空 ? null : { 汇总, 对手方, 余额走势 },
     口径:
@@ -877,15 +1091,24 @@ export async function aggregate_money(
       "按规范值查询时合并同值多行的关系；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值。",
-    缺口: 空 ? [...缺口, "汇总、对手方、余额走势三者都为空：该账户在时间窗内既无转账关系也无明细流水"] : 缺口,
-    空原因: 空 ? "无匹配行" : null,
+    缺口: 空
+      ? [
+          ...缺口,
+          "汇总、对手方、余额走势三者都为空：该账户在时间窗内既无转账关系也无明细流水",
+          // 数据类空原因必须把「去解析 / 去检查材料」写到缺口里（`09` §3.5 三条规矩之二）。
+          ...(未翻译份数 > 0 ? [未翻译缺口(未翻译份数)] : []),
+        ]
+      : 缺口,
+    空原因,
     // `代表` 是**下钻入参**（账户规范值），不是事实 id：`query_rows` 的 `账户` 直接吃它。
     // `query_rows` 已注册，这条下钻可用。
     出处: 空
       ? []
       : [{ 事实: `账户「${账户.value}」的转账汇总`, 代表: 账户.value, 可下钻: "query_rows" }],
     下一步: 空
-      ? [{ 工具: "query_entities", 参数: { 关键词: args.账户 }, 为什么: "确认这个账户在实体里到底叫什么规范值" }]
+      ? 未翻译份数 > 0
+        ? [材料未翻译下一步]
+        : [{ 工具: "query_entities", 参数: { 关键词: args.账户 }, 为什么: "确认这个账户在实体里到底叫什么规范值" }]
       : [
           {
             工具: "query_relations",
