@@ -57,6 +57,7 @@ export const 抽取结构 = Schema.Struct({
       从: Schema.String,
       到: Schema.String,
       金额原文: Schema.optional(Schema.String),
+      时间原文: Schema.optional(Schema.String),
       依据: Schema.optional(Schema.String),
       原文: Schema.String,
     }),
@@ -73,7 +74,7 @@ export const 抽取结构 = Schema.Struct({
 })
 export type 抽取结果 = Schema.Schema.Type<typeof 抽取结构>
 
-export const PROMPT版本 = "2026-11-07.1"
+export const PROMPT版本 = "2026-11-12.1"
 
 /**
  * 抽取口径。**版本号进 parse_detail**，改口径必须同时改版本号——否则「同一份材料两次
@@ -95,7 +96,7 @@ export function 系统提示(): string {
    **不要截断**：原文是「28万元」，金额就写「28万元」；写「28」会被当成错数。
 5. 每一条关系、每一个事件都必须给「原文」：从这一段里**逐字复制**的、能说明这条事实的完整句子或分句。出处不能改写、不能拼接、不能省略。
 6. 抽取不出人名、号码、金额、时间时，**不知道就留空**（省略该字段或给空字符串），绝不猜、绝不编。
-7. 关系类型只能是：通话、转账、实名登记、实际使用、同案、持有、同行。除通话、转账、实名登记外，必须在「依据」里写认定依据（供述指认 / 扣押实物 / 技侦 / 登录或使用日志 / 资金闭环 / 推断），否则不要输出这条关系。
+7. 关系类型只能是：通话、转账、实名登记、实际使用、同案、持有、同行。除通话、转账、实名登记外，必须在「依据」里写认定依据（供述指认 / 扣押实物 / 技侦 / 登录或使用日志 / 资金闭环 / 推断），否则不要输出这条关系。关系的出处里写了时间，就把那个时间原文填进关系的「时间原文」。
 8. 事件类型写一句短语（例如「见面」「转账」「通话」「抓获」），不要写成长句。
 9. 这一段里没有可抽的事实，就返回空的三个数组。`
 }
@@ -131,6 +132,9 @@ export interface 关系输入 {
   to: string
   amount: number | null
   basis: string | null
+  occurredRaw: string | null
+  occurredAt: number | null
+  precision: Precision | null
   原文: string
   存疑: boolean
 }
@@ -457,12 +461,37 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
       存疑 = true
     }
 
+    // 时间与事件同口径（下方事件块）：缺省或空串 ⇒ 三项都 null，**不兜成 0**
+    // （0 会被时间窗当成 1970 年而放行/误伤）；给了就回读、认不出就置空并提示，不猜。
+    let occurredRaw: string | null = null
+    let occurredAt: number | null = null
+    let precision: Precision | null = null
+    if (项.时间原文 !== undefined && 项.时间原文.trim() !== "") {
+      occurredRaw = 项.时间原文
+      if (!文本包含(项.原文, 项.时间原文)) {
+        记失败(`关系「${项.从} → ${项.到}」的时间「${项.时间原文}」在出处里找不到，已置空`)
+        存疑 = true
+      } else {
+        const 时间 = parseTime(项.时间原文)
+        if (时间 === undefined) {
+          提示.push(`关系「${项.从} → ${项.到}」的时间「${项.时间原文}」认不出，已置空`)
+          存疑 = true
+        } else {
+          occurredAt = 时间.seconds
+          precision = 时间.precision
+        }
+      }
+    }
+
     关系.push({
       type: 项.类型,
       from: 从项.canonicalValue,
       to: 到项.canonicalValue,
       amount,
       basis: 项.依据 ?? null,
+      occurredRaw,
+      occurredAt,
+      precision,
       原文: 项.原文,
       存疑,
     })

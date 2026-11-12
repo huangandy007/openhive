@@ -755,6 +755,10 @@ async function 跑文本(
           type: 关系.type,
           amount: 关系.amount,
           basis: 关系.basis,
+          // 单条关系只有一个时间点 ⇒ 起止相同；`持有` / `实名登记` 这类没有时间的保持 NULL。
+          firstAt: 关系.occurredAt,
+          lastAt: 关系.occurredAt,
+          precision: 关系.precision,
           // 笔录是人说的（`case_relation.source_kind` 的语义：data＝数据直接记录，human＝人认定）。
           // 即便关系类型是「转账」，它是**人在笔录里说的转账**，不是流水数据 ⇒ human。
           sourceKind: "human",
