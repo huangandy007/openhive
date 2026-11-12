@@ -1067,7 +1067,10 @@ test("search_materials 七字段：有数据时摘要/出处/下一步齐全，�
   expect(结果.摘要).toContain("命中 1 份材料")
   expect(结果.空原因).toBeNull()
   expect(结果.出处).toEqual([{ 事实: "命中材料「张三笔录.txt」", 代表: "m-甲", 可下钻: "query_rows" }])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_rows` 的 `材料` 必填：建议必须把它填成命中那份材料的 id，否则模型照抄必失败（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("query_rows")
+  expect(结果.下一步[0]?.参数).toHaveProperty("材料")
+  expect((结果.下一步[0]?.参数 as { 材料?: string }).材料).toBe("m-甲")
   expect(结果.缺口).toEqual([])
 })
 
@@ -1077,7 +1080,7 @@ test("search_materials 七字段：查不到 ⇒ 无匹配行，数据/出处空
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
   expect(结果.出处).toEqual([])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  expect(结果.下一步[0]?.工具).toBe("query_entities")
 })
 
 test("query_entities 七字段：有数据时摘要含数量与首个实体，出处可下钻", async () => {
@@ -1086,7 +1089,10 @@ test("query_entities 七字段：有数据时摘要含数量与首个实体，�
   expect(结果.摘要).toContain("王五")
   expect(结果.空原因).toBeNull()
   expect(结果.出处).toEqual([{ 事实: "实体「王五」", 代表: "e-好", 可下钻: "get_citation" }])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_relations` 全参数可选，但既然给了实体就该用首个规范值（I-1 / M-5）。
+  expect(结果.下一步[0]?.工具).toBe("query_relations")
+  expect(结果.下一步[0]?.参数).toHaveProperty("实体")
+  expect((结果.下一步[0]?.参数 as { 实体?: string }).实体).toBe("王五")
 })
 
 test("query_entities 七字段：查不到 ⇒ 无匹配行，数据/出处空", async () => {
@@ -1095,7 +1101,7 @@ test("query_entities 七字段：查不到 ⇒ 无匹配行，数据/出处空",
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
   expect(结果.出处).toEqual([])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  expect(结果.下一步[0]?.工具).toBe("search_materials")
 })
 
 test("query_relations 七字段：有数据时摘要给条数与端点数", async () => {
@@ -1104,16 +1110,23 @@ test("query_relations 七字段：有数据时摘要给条数与端点数", asyn
   expect(结果.摘要).toContain("涉及 3 个端点")
   expect(结果.空原因).toBeNull()
   expect(结果.出处.length).toBe(3)
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `times` 为 null 时不许渲染成「null 次」（M-1）；排序使 r-跨（有 last_at）排第一。
+  expect(结果.出处[0]?.事实).toBe("关系 甲→乙，次数未知")
+  expect(JSON.stringify(结果.出处)).not.toContain("null")
+  // `aggregate_money` 的 `账户` 必填：必须用首个关系的端点填满（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("aggregate_money")
+  expect(结果.下一步[0]?.参数).toHaveProperty("账户")
+  expect((结果.下一步[0]?.参数 as { 账户?: string }).账户).toBe("甲")
 })
 
-test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出处空", async () => {
+test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出处空、不给不可执行的下一步", async () => {
   const 结果 = await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" })
   expect(结果.摘要).toContain("没有关系命中")
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
   expect(结果.出处).toEqual([])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // 没有关系可拿端点 ⇒ 填不出 `aggregate_money` 必填的 `账户`，宁可一条建议都不给（I-1）。
+  expect(结果.下一步).toEqual([])
 })
 
 test("query_events 七字段：有数据时摘要取最近一个（排序为 desc，首条最新）", async () => {
@@ -1123,16 +1136,19 @@ test("query_events 七字段：有数据时摘要取最近一个（排序为 des
   expect(结果.摘要).toContain("最近一个是「含已排除实体」")
   expect(结果.空原因).toBeNull()
   expect(结果.出处.length).toBe(3)
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `get_citation` 的 `事实类型` / `事实id` 必填，且必须指向最近那个事件（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("get_citation")
+  expect(结果.下一步[0]?.参数).toEqual({ 事实类型: "event", 事实id: "ev-排参" })
 })
 
-test("query_events 七字段：类型无命中 ⇒ 无匹配行，数据/出处空", async () => {
+test("query_events 七字段：类型无命中 ⇒ 无匹配行，数据/出处空、不给不可执行的下一步", async () => {
   const 结果 = await query_events(ctx(身份丁), { 类型: "不存在的事件类型" })
   expect(结果.摘要).toContain("时间窗内没有事件")
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
   expect(结果.出处).toEqual([])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // 一条事件都没有 ⇒ 抽验建议与结果自相矛盾（I-1）。
+  expect(结果.下一步).toEqual([])
 })
 
 test("get_citation 七字段（row 分支）：数据永不为空，空原因恒 null", async () => {
@@ -1140,7 +1156,9 @@ test("get_citation 七字段（row 分支）：数据永不为空，空原因恒
   expect(结果.摘要).toBe("明细行原文：m-甲#Sheet1#2")
   expect(结果.空原因).toBeNull()
   expect(结果.出处).toEqual([{ 事实: "明细行定位 m-甲#Sheet1#2", 代表: "m-甲#Sheet1#2", 可下钻: null }])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_rows` 的 `材料` 必填：必须带出这一行的材料 id（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("query_rows")
+  expect(结果.下一步[0]?.参数).toEqual({ 材料: "m-甲" })
   // 有引用时缺口为空数组
   expect(结果.缺口).toEqual([])
 })
@@ -1160,13 +1178,21 @@ test("aggregate_money 七字段：有数据时摘要给笔数/合计/对手数/�
   const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
   expect(结果.摘要).toContain("出 1 笔 / 1000.00 元")
   expect(结果.摘要).toContain("入 1 笔 / 2500.50 元")
-  expect(结果.摘要).toContain("2 个对手")
+  // 对手方按「对手 + 方向」分组会出两行「对手甲」，但对手只有 1 个（I-2）。
+  expect(结果.摘要).toContain("1 个对手")
   expect(结果.摘要).toContain("明细 4 行")
   expect(结果.空原因).toBeNull()
   expect(结果.出处).toEqual([
     { 事实: `账户「${账号}」的转账汇总`, 代表: 账号, 可下钻: "query_rows" },
   ])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  expect(结果.下一步[0]?.工具).toBe("query_rows")
+  expect(结果.下一步[0]?.参数).toEqual({ 账户: 账号 })
+})
+
+test("aggregate_money 有数据时缺口不追加「三者都为空」", async () => {
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
+  // 反向用例：无条件追加时这条会红（M-6）。
+  expect(结果.缺口.join()).not.toContain("三者都为空")
 })
 
 test("aggregate_money 七字段：无转账也无明细 ⇒ 数据 null（对象型不返回空壳）", async () => {
@@ -1176,7 +1202,9 @@ test("aggregate_money 七字段：无转账也无明细 ⇒ 数据 null（对象
   expect(结果.数据).toBeNull()
   expect(结果.出处).toEqual([])
   expect(结果.缺口.join()).toContain("三者都为空")
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_entities` 全参数可选，但带上原始账户名才有用（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("query_entities")
+  expect(结果.下一步[0]?.参数).toEqual({ 关键词: "李四" })
 })
 
 test("find_crossings 七字段：有数据时摘要给共同关联/共同时空数量", async () => {
@@ -1186,7 +1214,15 @@ test("find_crossings 七字段：有数据时摘要给共同关联/共同时空�
   expect(结果.出处).toEqual([
     { 事实: "「张三」与「李四」的交叉", 代表: "e-张三", 可下钻: "get_citation" },
   ])
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_events` 全参数可选（I-1），保持空参数即可。
+  expect(结果.下一步[0]?.工具).toBe("query_events")
+  expect(结果.下一步[0]?.参数).toEqual({})
+})
+
+test("find_crossings 有数据时缺口不追加「都为空」", async () => {
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
+  // 反向用例：无条件追加时这条会红（M-6）。
+  expect(结果.缺口.join()).not.toContain("都为空")
 })
 
 test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说明", async () => {
@@ -1196,5 +1232,7 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
   expect(结果.数据).toBeNull()
   expect(结果.出处).toEqual([])
   expect(结果.缺口.join()).toContain("都为空")
-  expect(结果.下一步.length).toBeGreaterThan(0)
+  // `query_relations` 全参数可选，但仍用甲侧实体填进去（I-1）。
+  expect(结果.下一步[0]?.工具).toBe("query_relations")
+  expect(结果.下一步[0]?.参数).toEqual({ 实体: "张三" })
 })

@@ -161,6 +161,8 @@ export async function search_materials(
     口径: "材料检索按文件名与正文关键词（ilike），材料范围仅限本项目；正文命中给片段不给全文。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
     空原因: 空 ? "无匹配行" : null,
+    // `代表` 是**下钻入参**（材料 id），不是事实 id：`query_rows` 的 `材料` 直接吃它。
+    // `query_rows` 本期尚未注册，Task 2 落地后这条下钻才可用。
     出处: 数据.slice(0, 3).map((行) => ({
       事实: `命中材料「${String(行.file_name)}」`,
       代表: String(行.id),
@@ -168,7 +170,7 @@ export async function search_materials(
     })),
     下一步: 空
       ? [{ 工具: "query_entities", 参数: {}, 为什么: "换个说法或按实体名再找；材料名搜不到时实体往往还在" }]
-      : [{ 工具: "query_entities", 参数: {}, 为什么: "材料已命中，接着看项目里抽出了哪些实体" }],
+      : [{ 工具: "query_rows", 参数: { 材料: String(数据[0]!.id) }, 为什么: "看这份材料里的明细行" }],
   }
 }
 
@@ -370,11 +372,20 @@ export async function query_relations(
     缺口: 截断缺口(args.限制, 限制, 数据.length),
     空原因: 空 ? "无匹配行" : null,
     出处: 数据.slice(0, 3).map((行) => ({
-      事实: `关系 ${String(行.from_value)}→${String(行.to_value)}，${String(行.times)} 次`,
+      事实: `关系 ${String(行.from_value)}→${String(行.to_value)}，${行.times == null ? "次数未知" : `${String(行.times)} 次`}`,
       代表: String(行.id),
       可下钻: "get_citation",
     })),
-    下一步: [{ 工具: "aggregate_money", 参数: {}, 为什么: "转账关系可进一步按账户汇总进出金额" }],
+    // `aggregate_money` 的 `账户` 必填：空结果时没有可填的端点，给不出可执行的建议就不给。
+    下一步: 空
+      ? []
+      : [
+          {
+            工具: "aggregate_money",
+            参数: { 账户: String(数据[0]!.from_value) },
+            为什么: "转账关系可进一步按账户汇总进出金额",
+          },
+        ],
   }
 }
 
@@ -447,7 +458,16 @@ export async function query_events(
       代表: String(行.id),
       可下钻: "get_citation",
     })),
-    下一步: [{ 工具: "get_citation", 参数: {}, 为什么: "抽验一条事件的原文与出处" }],
+    // `get_citation` 的 `事实类型` / `事实id` 必填：没有事件可抽验时给不出可执行建议，直接不给。
+    下一步: 空
+      ? []
+      : [
+          {
+            工具: "get_citation",
+            参数: { 事实类型: "event", 事实id: String(最近!.id) },
+            为什么: "抽验一条事件的原文与出处",
+          },
+        ],
   }
 }
 
@@ -533,13 +553,7 @@ export async function get_citation(
       // 查不到抛 not_found ⇒ 这个分支的数据永不为空，`空原因` 恒 null。
       空原因: null,
       出处: [{ 事实: `明细行定位 ${材料}#${工作表}#${行号}`, 代表: `${材料}#${工作表}#${行号}`, 可下钻: null }],
-      下一步: [
-        {
-          工具: "query_relations",
-          参数: 行.counterparty === null ? {} : { 实体: 行.counterparty },
-          为什么: "看这一行的对手与案件里其他人的关系",
-        },
-      ],
+      下一步: [{ 工具: "query_rows", 参数: { 材料 }, 为什么: "在同一份材料里按时间或账户继续翻明细" }],
     }
   }
   const 事实 = await 事实详情(ctx.db, {
@@ -703,6 +717,8 @@ export async function aggregate_money(
 
   // R5：对象不算空 ⇒ 无命中时 `数据` 返回 `null`，不返回一个全是空数组的对象。
   const 空 = 汇总.length === 0 && 对手方.length === 0 && 余额走势 === null
+  // `对手方` 是按「对手方 + 方向」分组的（来/回各一行）⇒ 按行数说「N 个对手」会把同一人算两次。
+  const 对手个数 = new Set(对手方.map((行) => String(行.对手方))).size
   const 缺口 = [
     "只统计已抽成关系（type=转账）的转账；明细行里未抽成关系的转账不计入",
     "对手方按实体规范值聚合；未合并的重复实体不会自动合并",
@@ -717,7 +733,7 @@ export async function aggregate_money(
   return {
     摘要: 空
       ? `「${args.账户}」在给定条件下没有任何转账关系或明细流水`
-      : `「${args.账户}」${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手方.length} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : "；无明细流水"}`,
+      : `「${args.账户}」${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : "；无明细流水"}`,
     数据: 空 ? null : { 汇总, 对手方, 余额走势 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
@@ -727,12 +743,14 @@ export async function aggregate_money(
       "余额走势按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值。",
     缺口: 空 ? [...缺口, "汇总、对手方、余额走势三者都为空：该账户在时间窗内既无转账关系也无明细流水"] : 缺口,
     空原因: 空 ? "无匹配行" : null,
+    // `代表` 是**下钻入参**（账户规范值），不是事实 id：`query_rows` 的 `账户` 直接吃它。
+    // `query_rows` 本期尚未注册，Task 2 落地后这条下钻才可用。
     出处: 空
       ? []
       : [{ 事实: `账户「${账户.value}」的转账汇总`, 代表: 账户.value, 可下钻: "query_rows" }],
     下一步: 空
       ? [{ 工具: "query_entities", 参数: { 关键词: args.账户 }, 为什么: "确认这个账户在实体里到底叫什么规范值" }]
-      : [{ 工具: "query_relations", 参数: { 实体: 账户.value }, 为什么: "看构成汇总的逐笔转账关系" }],
+      : [{ 工具: "query_rows", 参数: { 账户: 账户.value }, 为什么: "看构成汇总的逐笔明细" }],
   }
 }
 
