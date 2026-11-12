@@ -28,6 +28,7 @@ describe("判定身份：三档只认证据", () => {
     const 判读 = 判定身份(证据({ 类型: "人", 值: "张三", 人证们: ["张三"] }))
     expect(判读.档).toBe("已核实")
     expect(判读.说明).toContain("实名登记")
+    expect(判读.说明).not.toContain("该人")
   })
 
   test("账户只有户名 ⇒ 户名匹配，说明带户名且不冒充本人", () => {
@@ -51,6 +52,7 @@ describe("判定身份：三档只认证据", () => {
     expect(判读.说明).toContain("查不到归属")
     expect(判读.说明).not.toContain("近似")
     expect(判读.说明).not.toContain("可能是本人")
+    expect(判读.说明).not.toContain("该账户")
   })
 
   test("人多于 3 个 ⇒ 只列 3 个并写总数", () => {
