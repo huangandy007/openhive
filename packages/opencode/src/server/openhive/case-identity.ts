@@ -1,5 +1,10 @@
 export * as OpenhiveCaseIdentity from "./case-identity"
 
+import { sql } from "drizzle-orm"
+import { rowsOf } from "@opencode-ai/auth/migrate"
+import { 文本数组 } from "./case-fact-store"
+import type { Queryable } from "./case-store"
+
 /**
  * 身份三档（设计 §3.8.4）：任何涉及「人」的查询结果必须落在
  * 已核实 / 户名匹配 / 无匹配 之一。
@@ -79,4 +84,95 @@ export function 判定身份(证据: 身份证据): 身份判读 {
         ? "查不到归属：该账户没有任何户名或实名登记证据，不能断定是谁的"
         : `查不到归属：该${证据.类型}没有任何户名或实名登记证据`,
   }
+}
+
+export interface 待标注实体 {
+  readonly id: string
+  readonly 类型: string
+  readonly 值: string
+}
+
+/**
+ * 批量读三档证据：**两条 SQL**（实名登记边 + 未撤销户名），与实体数无关。
+ *
+ * 边的资格：关系本身、两端实体都不能是「已排除」（§9.1：排除的人不该继续提供身份背书）。
+ * 只认「一端是人、另一端不是人」的边：两端同型是脏数据，不作为身份证据。
+ */
+export async function 读身份标注(
+  db: Queryable,
+  projectId: string,
+  实体们: readonly 待标注实体[],
+): Promise<Map<string, 身份标注>> {
+  const 结果 = new Map<string, 身份标注>()
+  if (实体们.length === 0) return 结果
+  const id们 = [...new Set(实体们.map((e) => e.id))]
+  const id集 = new Set(id们)
+
+  const 边们 = rowsOf(
+    await db.execute(sql`
+      select r.from_id, r.to_id,
+             f.type as from_type, f.canonical_value as from_value,
+             t.type as to_type, t.canonical_value as to_value
+        from auth.case_relation r
+        join auth.case_entity f on f.project_id = r.project_id and f.id = r.from_id
+        join auth.case_entity t on t.project_id = r.project_id and t.id = r.to_id
+       where r.project_id = ${projectId}
+         and r.type = '实名登记'
+         and r.trust_state <> '已排除'
+         and f.trust_state <> '已排除' and t.trust_state <> '已排除'
+         and (r.from_id = any(${文本数组(id们)}) or r.to_id = any(${文本数组(id们)}))
+       order by f.canonical_value asc, f.id asc, t.canonical_value asc, t.id asc, r.id asc
+    `),
+  )
+
+  const 人证按 = new Map<string, string[]>()
+  const 加人证 = (id: string, 人: string) => {
+    const 列 = 人证按.get(id)
+    if (列 === undefined) 人证按.set(id, [人])
+    else if (!列.includes(人)) 列.push(人)
+  }
+  for (const 行 of 边们) {
+    const fromId = String(行.from_id)
+    const toId = String(行.to_id)
+    const fromType = String(行.from_type)
+    const toType = String(行.to_type)
+    if (fromType === "人" && toType !== "人") {
+      if (id集.has(fromId)) 加人证(fromId, String(行.from_value))
+      if (id集.has(toId)) 加人证(toId, String(行.from_value))
+    } else if (toType === "人" && fromType !== "人") {
+      if (id集.has(fromId)) 加人证(fromId, String(行.to_value))
+      if (id集.has(toId)) 加人证(toId, String(行.to_value))
+    }
+  }
+
+  const 别名们 = rowsOf(
+    await db.execute(sql`
+      select entity_id, value from auth.case_entity_alias
+       where project_id = ${projectId} and kind = '户名' and revoked_at is null
+         and entity_id = any(${文本数组(id们)})
+       order by entity_id asc, created_at asc, id asc
+    `),
+  )
+  const 户名按 = new Map<string, string[]>()
+  for (const 行 of 别名们) {
+    const id = String(行.entity_id)
+    const 值 = String(行.value)
+    const 列 = 户名按.get(id)
+    if (列 === undefined) 户名按.set(id, [值])
+    else if (!列.includes(值)) 列.push(值)
+  }
+
+  for (const e of 实体们) {
+    if (结果.has(e.id)) continue
+    结果.set(e.id, {
+      实体: e.值,
+      ...判定身份({
+        类型: e.类型,
+        值: e.值,
+        户名们: 户名按.get(e.id) ?? [],
+        人证们: 人证按.get(e.id) ?? [],
+      }),
+    })
+  }
+  return 结果
 }
