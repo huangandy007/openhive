@@ -2,6 +2,7 @@
 
 > **状态**：设计定稿（2026-11-11），**2026-11-12 实现前修订完成、可出实现计划**
 > **日期**：2026-11-11（2026-11-12 修订）
+> **2026-11-12 工具层落地（实现后补记）**：七字段信封 + 7 个原子工具补字段 + `query_rows` 挂载 + server 硬校验（双向镜像 / 30 KB 截断 / 分发前必填）+ `instructions` 八条纪律 + 12 次预算**已落**（§12 #1/#2/#3/#6/#8/#10）；**前端工具卡（#9）与 20 题 fixture（#12）留下一期**。实现期有三处口径与本文原字面不同，均已记入对应节：预算按 `(userId, projectId)` + 10 分钟空闲窗口（§12 #8、§13.5）、`无匹配行` 归属扩为「原子工具 + `query_rows`」（§3.5）、30 KB 截断遇「单条自身即超限」时写缺口说明无法按条截断（§3.4）。
 > **2026-11-12 修订（九项）**：① §0.4「原语不新写 SQL」改成「3 个组合 + `query_rows` 唯一新读函数」，与 `01` §7.11/§12.1 对齐；② **删掉查库路径的 `同名多实体`**（今天不可达，且与 `解析实体` 的身份语义冲突），按名找多人改由入口层搜实体档案；③ §3.1 明确「查库工具」口径，图写入 5 个不套用信封（`08` §6.2）；④ 新增 §3.5 空原因枚举总表；⑤ §3.2/§3.4 定下「工具写、服务端校验」的信封实现形状，补镜像校验与确定性截断；⑥ §5.4 次数预算改由服务端计数到限，**30 秒明确不计时、不上闸**（2026-11-12 用户裁定，§13.5）；⑦ §5.3 / §13.5 / §14 的 `instructions` 透传风险**已实证关闭**；⑧ §12 重写：加分期列、补测试与 app 落点、修 skill 资产落点与工具卡渲染件；⑨ §13 固定问题集补命名数据集与期望表、两题改写。**以上无新增产品裁定**；② 是唯一的口径收回。
 > **定位**：回答一件事——**AI 怎么查案件数据、怎么顺着线索往下追、怎么让民警复核它说的每一句话**。
 > **上游**：`01-事实卡片与数据翻译-设计.md`（数据侧：卡片、实体、出处、学习层）。本文是 01 §0.0「AI 是数据最终消费者」的查询侧展开。
@@ -160,7 +161,7 @@ skill 层 资金研判（这类案子怎么查：顺序、判据、输出格式�
 |---|---|
 | 七个字段必须齐全（`缺口` 可为空数组，`空原因` 可为 null） | `tool_failed`，回给模型一句固定中文 |
 | `限制` 默认 50、上限 200，超出按 200 截断并写 `缺口` | 静默截断**禁止** |
-| 单次返回序列化后 > 30 KB | `数据` 为数组时**从尾部**截到 ≤ 30 KB，且至少留 1 条；字节数按 `Buffer.byteLength(JSON.stringify(数据))` 算（换测量方式就会截出不同条数，真栈回放不可复现）；截掉多少写进 `缺口`。静默截断禁止 |
+| 单次返回序列化后 > 30 KB | `数据` 为数组时**从尾部**截到 ≤ 30 KB，且至少留 1 条；字节数按 `Buffer.byteLength(JSON.stringify(数据))` 算（换测量方式就会截出不同条数，真栈回放不可复现）；截掉多少写进 `缺口`。静默截断禁止。**补白（2026-11-12 实现期定）**：首条记录**自身**就超 30 KB 时无法按条截断——原样返回该条，并在 `缺口` 写「返回数据超过 30 KB，但首条记录自身即超限（N 字节），无法按条截断」，不许静默超限，也不许谎报「截掉 0 条」 |
 | `空原因` 非 null 时，`数据` 必须为空 | 违反视为实现错误，测试拦截 |
 | **`数据` 为空时，`空原因` 必须非 null** | 反向镜像。没有这条，「空数据 + `空原因=null`」会被模型当成"确实没有"，§13.4 的变异也就无从拦截 |
 | 参数名白名单 | 沿用现有 `收参数` 的 fail-closed：多写一个键直接 `bad_input`，不静默忽略（`case-mcp-server.ts:233`） |
@@ -185,7 +186,7 @@ skill 层 资金研判（这类案子怎么查：顺序、判据、输出格式�
 | `能力未就绪` | `query_timeline`（地点分支） | `01` P3 参与者表未落 | 明说「按地点查暂不支持」+ 材料指引 |
 | `材料未入库` | `query_rows` | 指定材料不在本项目 | 核对材料名 |
 | `该材料未解析` | `query_rows` | 材料在、未解析 | 去右键「解析入库」 |
-| `无匹配行` | `query_rows` | 已解析、条件无命中 | 放宽条件 |
+| `无匹配行` | **原子工具 + `query_rows`**（通用的「条件无命中」） | 条件无命中；已解析但查不到任何行 / 任何记录时都可用它 | 放宽条件 / 换关键词或时间窗 |
 | `用途未结构化` | 二期（`01` P4 的按用途 / 商户查） | 用途字段未落 | 只能按时间 / 账户 / 金额翻明细，备注原文随行回显 |
 
 **三条规矩**：
@@ -471,18 +472,18 @@ skill 层 资金研判（这类案子怎么查：顺序、判据、输出格式�
 
 | # | 期 | 落点 | 动作 |
 |---|---|---|---|
-| 1 | P1 | `packages/opencode/src/server/openhive/case-mcp-tools.ts` | `工具结果`（`:22-27`）扩成七字段、`口径` / `缺口` 改必填；**7 个现有工具逐个补 `摘要 / 空原因 / 出处 / 下一步`** |
-| 2 | P1 | `packages/opencode/src/server/openhive/case-mcp-server.ts` | 信封必填校验；`空原因` ↔ `数据` **双向**校验（§3.4）；30 KB 确定性截断；`instructions` 写入纪律正文 |
-| 3 | P1 | `case-mcp-tools.ts` —— `query_rows` | 复用 `01` §7.11 的内核读函数；只读 `case_fact_row`，行级定位 = 主键 `材料#表#行`；不写 `case_citation` |
-| 4 | P2 | `case-mcp-tools.ts` —— `explore_entity` / `money_flow` | 组合 `实体档案()`（`case-entity-list.ts:289`）、`关系图()`（`case-graph.ts:288`）、`aggregate_money` |
-| 5 | P3 | `case-mcp-tools.ts` —— `query_timeline` | P3 前地点分支一律 `能力未就绪`；P3 换成按参与者角色过滤的真实现 |
-| 6 | 随各期 | `case-mcp-server.ts` 的 `工具名` 数组（`:48-56`）+ 4 个 `description` | 每加一个原语同批补：守则摘要 + 何时用 / 何时别用 / 照抄哪些字段 |
-| 7 | P1 | 复用 `解析实体`（`case-mcp-tools.ts:207`） | 所有实体参数先解析；**不扩展成候选枚举**（§4.1）——`无此实体` 由它抛的 `not_found` 折成 |
-| 8 | P1 | 预算计数 | `case-mcp-server.ts` 的 `调用留痕`（`:60-70`）按会话累计；第 12 次起注入固定 `缺口`（§5.4） |
-| 9 | P1 | 工具卡渲染：新建 `packages/session-ui/src/components/envelope-tool.tsx`，在 `packages/session-ui/src/components/message-part.tsx` 的 `ToolRegistry` 加一段注册 | 摘要优先、缺口可展开、原始 JSON 折叠。**现有 `GenericTool`（`basic-tool.tsx:323`）只渲染调用名与入参、不渲染输出**，所以这是真新增；承接点在 `message-part.tsx:1566` 的 `ToolRegistry.render(part().tool) ?? GenericTool`。MCP 工具的 `part().tool` 是「服务名 + 工具名」拼出来的键（`McpCatalog.fetch` 的 `key`），实现期按真键注册 |
-| 10 | P1 | 测试：现有三份 MCP 用例对齐 | `openhive-case-mcp-tools.test.ts`（44 条）、`-server`（11 条）、`-http`（4 条）逐条对齐七字段；新增 `openhive-case-mcp-envelope.test.ts`（七字段必填、双向互斥、截断、上限、`备注关键词` → `bad_input`） |
-| 11 | 随各期 | 测试：按原语分文件 | `openhive-case-mcp-explore.test.ts` / `-money.test.ts` / `-timeline.test.ts` / `-rows.test.ts`；`query_rows` 同时跑 `01` 的内核读函数用例 |
-| 12 | P1 | fixture | `packages/opencode/test/fixtures/explore/` = 固定数据集 + 20 条问题期望表（§13.1）；**经生产出口 seed**，不裸种 SQL（`LEARNINGS #006-35` / `#006-28`） |
+| 1 | P1 | `packages/opencode/src/server/openhive/case-mcp-tools.ts` | `工具结果`（`:22-27`）扩成七字段、`口径` / `缺口` 改必填；**7 个现有工具逐个补 `摘要 / 空原因 / 出处 / 下一步`** ✅ 已落（`502f9ba2c4` + `4235c4d71c`） |
+| 2 | P1 | `packages/opencode/src/server/openhive/case-mcp-server.ts` | 信封必填校验；`空原因` ↔ `数据` **双向**校验（§3.4）；30 KB 确定性截断；`instructions` 写入纪律正文 ✅ 已落（`241e155db2` / `4e6f315026` / `0c7ca09811` / `b85418ee06` / `aff241e20e` / `a918db24fd`） |
+| 3 | P1 | `case-mcp-tools.ts` —— `query_rows` | 复用 `01` §7.11 的内核读函数；只读 `case_fact_row`，行级定位 = 主键 `材料#表#行`；不写 `case_citation` ✅ 已落（`d116cedb28` / `f7d5ecf862` / `1fdf872668`） |
+| 4 | P2 | `case-mcp-tools.ts` —— `explore_entity` / `money_flow` | 组合 `实体档案()`（`case-entity-list.ts:289`）、`关系图()`（`case-graph.ts:288`）、`aggregate_money` — 未开始 |
+| 5 | P3 | `case-mcp-tools.ts` —— `query_timeline` | P3 前地点分支一律 `能力未就绪`；P3 换成按参与者角色过滤的真实现 — 未开始 |
+| 6 | 随各期 | `case-mcp-server.ts` 的 `工具名` 数组（`:48-56`）+ 4 个 `description` | 每加一个原语同批补：守则摘要 + 何时用 / 何时别用 / 照抄哪些字段 ✅ `query_rows` 已随 #3 落地（描述含 §4.5 第 3 条「不支持按备注检索」） |
+| 7 | P1 | 复用 `解析实体`（`case-mcp-tools.ts:207`） | 所有实体参数先解析；**不扩展成候选枚举**（§4.1）——`无此实体` 由它抛的 `not_found` 折成。`query_rows` 的 `账户` 走明细行匹配、**不调** `解析实体`（§4.4 补白），其余工具维持现状 |
+| 8 | P1 | 预算计数 | `case-mcp-server.ts` 的 `调用留痕`（`:60-70`）按会话累计；第 12 次起注入固定 `缺口`（§5.4）✅ 已落（`aff241e20e` / `a918db24fd`）；**实现口径与本节字面不同**：HTTP 入口每请求新建 server 且 `_meta` 无会话键 ⇒ 改按 `(userId, projectId)` + 10 分钟空闲窗口计数，见 §13.5 |
+| 9 | P1 | **（⏳ 留下一期，2026-11-12 范围裁定）** 工具卡渲染：新建 `packages/session-ui/src/components/envelope-tool.tsx`，在 `packages/session-ui/src/components/message-part.tsx` 的 `ToolRegistry` 加一段注册 | 摘要优先、缺口可展开、原始 JSON 折叠。**现有 `GenericTool`（`basic-tool.tsx:323`）只渲染调用名与入参、不渲染输出**，所以这是真新增；承接点在 `message-part.tsx:1566` 的 `ToolRegistry.render(part().tool) ?? GenericTool`。MCP 工具的 `part().tool` 是「服务名 + 工具名」拼出来的键（`McpCatalog.fetch` 的 `key`），实现期按真键注册 |
+| 10 | P1 | 测试：现有三份 MCP 用例对齐 | `openhive-case-mcp-tools.test.ts`（44 条）、`-server`（11 条）、`-http`（4 条）逐条对齐七字段；新增 `openhive-case-mcp-envelope.test.ts`（七字段必填、双向互斥、截断、上限、`备注关键词` → `bad_input`）✅ 已落 |
+| 11 | 随各期 | 测试：按原语分文件 | `openhive-case-mcp-explore.test.ts` / `-money.test.ts` / `-timeline.test.ts` / `-rows.test.ts`；`query_rows` 同时跑 `01` 的内核读函数用例 —— 部分：`-rows.test.ts` 已建；其余随各期 |
+| 12 | P1 | **（⏳ 留下一期，2026-11-12 范围裁定）** fixture | `packages/opencode/test/fixtures/explore/` = 固定数据集 + 20 条问题期望表（§13.1）；**经生产出口 seed**，不裸种 SQL（`LEARNINGS #006-35` / `#006-28`） |
 | 13 | P2 | skill 资产 `资金研判` | 走资产七态流水线，发布到 `/assets/global/skills/资金研判/SKILL.md`（`skills.paths` 的 global 档）；**不进仓库 `.opencode/skills/`**（§6.3） |
 | 14 | — | `01-事实卡片与数据翻译-设计.md` | §9 加第 5 条指向本文；§8.1 工具行注明「另加 4 个探索原语」；§8.2 的「按地点/时间线两个查询」改为四个原语；§14 Q15/Q16 标注与本文相关（以上已在本轮同步） |
 
@@ -537,6 +538,7 @@ skill 层 资金研判（这类案子怎么查：顺序、判据、输出格式�
 | `instructions` 正文的 token 占用与多 server 拼接顺序 | 透传本身**已实证**（`session/system.ts:142-158`），只剩这两项要实测 |
 | 并发多个会话同时探索 | 需真栈并发压测，本机单栈只能定性看 |
 | 30 秒**不做硬闸**（2026-11-12 用户裁定） | 只有「12 次」有代码数，「30 秒」v1 只靠提示词纪律 + 真栈回放时人工量 p95。补闸要动会话层（记录一轮的起点），且观察到的慢多半是模型思考而非工具取数，故本轮不做；拿到真实 p95 再定 |
+| **12 次预算的两条近似**（实现后记） | HTTP 入口是**每请求**新建 MCP server（无状态，`case-mcp-http.ts`），`_meta` 里没有会话 id ⇒ 计数只能按 `(userId, projectId)` + **10 分钟空闲窗口**：① 同一用户同一项目**并发**两个会话共用一个计数；② 一次探索中**停顿超过 10 分钟**会重新计数。要精确到「一轮回答」得让会话层参与（记录轮次起点），本轮不做 |
 
 ---
 
