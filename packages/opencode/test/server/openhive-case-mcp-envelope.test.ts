@@ -138,18 +138,23 @@ test("30 KB 按 Buffer.byteLength 算，不按字符数（中文 1 字符 3 字�
   expect(截.缺口[0]).toContain(`截掉 ${原.length - 实得.length} 条`)
 })
 
-test("单条元素自身 > 30 KB ⇒ 原样留下同一条、缺口不新增（「至少留 1 条」的下界）", () => {
+test("单条元素自身 > 30 KB ⇒ 原样留下同一条，但必须追加「无法按条截断」缺口", () => {
   const 单条 = "x".repeat(40 * 1024)
   const 原 = [单条]
-  expect(Buffer.byteLength(JSON.stringify(原))).toBeGreaterThan(30 * 1024)
+  const 原字节 = Buffer.byteLength(JSON.stringify(原))
+  expect(原字节).toBeGreaterThan(30 * 1024)
 
   const 截 = 截断数据(原, ["原有缺口"])
-  // 一条都没截掉：返回同一引用，不许追加「截掉 0 条」的噪声缺口。
+  // 一条都没截掉：返回同一引用，但「30 KB 预算被突破」必须对模型可见——静默放行是 fail-open。
   expect(截.数据).toBe(原)
   const 实得 = 截.数据 as unknown[]
   expect(实得).toHaveLength(1)
   expect(实得[0]).toBe(单条)
-  expect(截.缺口).toEqual(["原有缺口"])
+  expect(截.缺口).toHaveLength(2) // 恰好多一条，不是替换
+  expect(截.缺口).toEqual([
+    "原有缺口",
+    `返回数据超过 30 KB，但首条记录自身即超限（${原字节} 字节），无法按条截断`,
+  ])
 })
 
 test("两条各约 20 KB（合计 > 30 KB）⇒ 只留 1 条、缺口写明截掉 1 条", () => {

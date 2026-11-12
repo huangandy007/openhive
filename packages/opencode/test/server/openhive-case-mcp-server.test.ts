@@ -170,6 +170,44 @@ test("未列出的参数 ⇒ bad_input，message 列出可用参数", async () =
   expect(文本.message).toContain("含已排除")
 })
 
+// Task 3.5：`收参数` 只做键白名单 + 类型校验，不查必填；`inputSchema.required` 只是给客户端看的。
+// 分发前必须补上必填校验，否则 `get_citation({})` 会带着 undefined 一路跑到工具里、返回「成功」信封。
+test("get_citation({}) ⇒ bad_input，消息点名缺 事实类型（必填来自 inputSchema.required）", async () => {
+  const 结果 = await client.callTool({
+    name: "get_citation",
+    arguments: {},
+    _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+  })
+  expect(结果.isError).toBe(true)
+  const 文本 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { error: string; message: string }
+  expect(文本.error).toBe("bad_input")
+  expect(文本.message).toBe("缺少必填参数：事实类型、事实id")
+})
+
+test("get_citation 有 事实类型 缺 事实id ⇒ bad_input，消息只点名 事实id", async () => {
+  const 结果 = await client.callTool({
+    name: "get_citation",
+    arguments: { 事实类型: "entity" },
+    _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+  })
+  expect(结果.isError).toBe(true)
+  const 文本 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { error: string; message: string }
+  expect(文本.error).toBe("bad_input")
+  expect(文本.message).toBe("缺少必填参数：事实id")
+})
+
+// 防误伤：没有 `required` 的工具不能被必填校验挡住。
+test("无必填的工具（query_entities({})）不受必填校验影响，仍正常返回", async () => {
+  const 结果 = await client.callTool({
+    name: "query_entities",
+    arguments: {},
+    _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+  })
+  expect(结果.isError).toBeFalsy()
+  const 体 = JSON.parse((结果.content as { text: string }[])[0]!.text)
+  expect(体.数据.map((行: { id: string }) => 行.id)).toEqual(["e-好"])
+})
+
 test("每次调用（成功与失败各一次）都出一条留痕", async () => {
   // 前面几条用例已经往 `收集` 里写过行；这条用例只对「接下来这一次成功 + 一次被门拒掉」判定。
   收集.length = 0
