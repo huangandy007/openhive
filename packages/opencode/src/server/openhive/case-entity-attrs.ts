@@ -15,17 +15,22 @@ import { 账户键, type 属性观察, type 卡片草稿 } from "./case-translat
 
 export type 实体属性 = Record<string, unknown>
 
+/** 类型谓词而不是 `as`：仓库的 oxlint 规则 `no-unsafe-type-assertion` 会把断言判成 warning。 */
+function 是记录(值: unknown): 值 is 实体属性 {
+  return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
+}
+
 export function 读jsonb(值: unknown): 实体属性 {
   if (值 === null || 值 === undefined) return {}
   if (typeof 值 === "string") {
     try {
       const 解析 = JSON.parse(值)
-      return typeof 解析 === "object" && 解析 !== null ? (解析 as 实体属性) : {}
+      return 是记录(解析) ? 解析 : {}
     } catch {
       return {}
     }
   }
-  return typeof 值 === "object" ? (值 as 实体属性) : {}
+  return 是记录(值) ? 值 : {}
 }
 
 interface 观察 {
@@ -33,17 +38,14 @@ interface 观察 {
   出处: string
 }
 
+/** 同 `是记录`：用 `in` 收窄，避免 `as` 触发的 `no-unsafe-type-assertion`。 */
+function 是观察(值: unknown): 值 is 观察 {
+  return typeof 值 === "object" && 值 !== null && "值" in 值 && "出处" in 值
+    && typeof 值.值 === "string" && typeof 值.出处 === "string"
+}
+
 function 是观察数组(值: unknown): 值 is 观察[] {
-  return (
-    Array.isArray(值) &&
-    值.every(
-      (x) =>
-        typeof x === "object" &&
-        x !== null &&
-        typeof (x as 观察).值 === "string" &&
-        typeof (x as 观察).出处 === "string",
-    )
-  )
+  return Array.isArray(值) && 值.every(是观察)
 }
 
 /** 按 key 合并：观察数组按 `值` 去重（保留首次出处）；其余（标量）新值覆盖。 */

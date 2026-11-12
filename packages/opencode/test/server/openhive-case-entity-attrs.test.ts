@@ -112,6 +112,22 @@ async function 本方属性() {
   return row?.attrs
 }
 
+/**
+ * 从 `attrs`（jsonb 读出来是**对象**，不是字符串）里取「开户行」的值列表。
+ * 走运行时判型而不是 `as`：`no-unsafe-type-assertion` 会把断言报成 warning，而且形状变了
+ * 断言也照样编译通过、断言只会更晚才炸。
+ */
+function 开户行值们(attrs: unknown): string[] {
+  if (typeof attrs !== "object" || attrs === null || !("开户行" in attrs)) return []
+  const 列表 = attrs.开户行
+  if (!Array.isArray(列表)) return []
+  const 值们: string[] = []
+  for (const 条 of 列表) {
+    if (typeof 条 === "object" && 条 !== null && "值" in 条 && typeof 条.值 === "string") 值们.push(条.值)
+  }
+  return 值们
+}
+
 describe("attrs 落库与反回归（§3.10 / 05 §5.2）", () => {
   test("两份材料给出不同开户行 ⇒ 两条都在", async () => {
     await 写("am1", [
@@ -154,8 +170,8 @@ describe("attrs 落库与反回归（§3.10 / 05 §5.2）", () => {
       aliases: [],
       attrs: { 开户行: [{ 值: "农商行", 出处: "手工#1" }] },
     })
-    const 现 = (await 对方属性()) as { 开户行: { 值: string }[] }
-    expect(现.开户行.map((x) => x.值)).toContain("农商行")
-    expect(现.开户行.map((x) => x.值)).toContain("建设银行")
+    const 现 = 开户行值们(await 对方属性())
+    expect(现).toContain("农商行")
+    expect(现).toContain("建设银行")
   })
 })
