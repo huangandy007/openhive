@@ -95,8 +95,9 @@ export interface 待标注实体 {
 /**
  * 批量读三档证据：**两条 SQL**（实名登记边 + 未撤销户名），与实体数无关。
  *
- * 边的资格：关系本身、两端实体都不能是「已排除」（§9.1：排除的人不该继续提供身份背书）。
- * 只认「一端是人、另一端不是人」的边：两端同型是脏数据，不作为身份证据。
+ * 证据的资格同一条口径：关系本身、两端实体、别名所属实体都不能是「已排除」
+ * （§9.1：被排除的东西不该继续提供身份背书）。只认「一端是人、另一端不是人」的边：
+ * 两端同型是脏数据，不作为身份证据。
  */
 export async function 读身份标注(
   db: Queryable,
@@ -147,10 +148,13 @@ export async function 读身份标注(
 
   const 别名们 = rowsOf(
     await db.execute(sql`
-      select entity_id, value from auth.case_entity_alias
-       where project_id = ${projectId} and kind = '户名' and revoked_at is null
-         and entity_id = any(${文本数组(id们)})
-       order by entity_id asc, created_at asc, id asc
+      select a.entity_id, a.value
+        from auth.case_entity_alias a
+        join auth.case_entity e on e.project_id = a.project_id and e.id = a.entity_id
+       where a.project_id = ${projectId} and a.kind = '户名' and a.revoked_at is null
+         and e.trust_state <> '已排除'
+         and a.entity_id = any(${文本数组(id们)})
+       order by a.entity_id asc, a.created_at asc, a.id asc
     `),
   )
   const 户名按 = new Map<string, string[]>()
