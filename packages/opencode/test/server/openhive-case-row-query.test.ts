@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { insertFactRows } from "../../src/server/openhive/case-store"
 import { 查明细行, 明细入参错误, 读明细行, 行视图 } from "../../src/server/openhive/case-row-query"
@@ -369,5 +369,124 @@ describe("查明细行 · 口径与出处", () => {
     expect(r.出处).toHaveLength(1)
     expect(r.出处[0]?.代表).toBe("m-1#Sheet1#4")
     expect(r.出处[0]?.可下钻).toBe("get_citation")
+  })
+})
+
+describe("查明细行 · 空结果必须分类", () => {
+  test("材料不在本项目 ⇒ 材料未入库", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 材料: "m-没这号" })
+    expect(r.空原因).toBe("材料未入库")
+    expect(r.数据.行们).toEqual([])
+    expect(r.缺口.join("；")).toContain("m-没这号")
+  })
+
+  test("材料在、未解析 ⇒ 该材料未解析，且缺口写出当前状态", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 材料: "m-2" })
+    expect(r.空原因).toBe("该材料未解析")
+    expect(r.缺口.join("；")).toContain("未入队")
+  })
+
+  test("材料已解析、条件无命中 ⇒ 无匹配行（不是「该材料未解析」）", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 材料: "m-1", 时间起: 9000 })
+    expect(r.空原因).toBe("无匹配行")
+  })
+
+  test("不指定材料、本项目零明细 ⇒ 无匹配行 ＋ 缺口说清「可能还没解析入库」", async () => {
+    const r = await 查明细行(库(), { projectId: "p-空项目" })
+    expect(r.空原因).toBe("无匹配行")
+    expect(r.缺口.join("；")).toContain("本项目没有任何已入库明细")
+  })
+
+  test("项目里有未解析材料 ⇒ 即使有结果也要在缺口里提一句", async () => {
+    const r = await 查明细行(库(), { projectId: 项目 })
+    expect(r.数据.行们.length).toBeGreaterThan(0)
+    expect(r.缺口.join("；")).toContain("份材料未解析")
+  })
+
+  test("镜像不变量：空原因与数据互为充要（全库扫一遍组合）", async () => {
+    const 组合 = [
+      { projectId: 项目 },
+      { projectId: 项目, 材料: "m-1" },
+      { projectId: 项目, 材料: "m-2" },
+      { projectId: 项目, 材料: "m-没这号" },
+      { projectId: 项目, 时间起: 9000 },
+      { projectId: "p-空项目" },
+      // m-1 属于 `项目`：在 `别处` 下按 m-1 查必须查不到——这条钉的是「跨项目不串」
+      { projectId: 别处, 材料: "m-1" },
+    ]
+    for (const 入参 of 组合) {
+      const r = await 查明细行(库(), 入参)
+      expect(r.空原因 === null).toBe(r.数据.行们.length > 0)
+    }
+  })
+})
+
+describe("行视图 · 备注守卫（Task 2 复审留下的无守护约束）", () => {
+  // 空行骨架：`行视图` 只读几个字段，其余给 null 即可。
+  const 空行 = {
+    projectId: 项目,
+    materialId: "m-1",
+    sheet: "Sheet1",
+    rowNo: 1,
+    caller: null,
+    callee: null,
+    startedAt: null,
+    startedRaw: null,
+    precision: null,
+    timeType: null,
+    durationSec: null,
+    amount: null,
+    balance: null,
+    counterparty: null,
+    counterpartyName: null,
+    ownerAccount: null,
+    direction: null,
+  } as const
+
+  test("extras 为 null ⇒ 备注 null（这一条才是真的守卫：少了 null 判断会抛 TypeError）", () => {
+    expect(行视图({ ...空行, extras: null }).备注).toBeNull()
+  })
+
+  test("extras 是数组 / 标量 ⇒ 备注 null，不当成对象乱取键", () => {
+    expect(行视图({ ...空行, extras: [] }).备注).toBeNull()
+    expect(行视图({ ...空行, extras: ["备注"] }).备注).toBeNull()
+    expect(行视图({ ...空行, extras: "备注" }).备注).toBeNull()
+  })
+})
+
+describe("索引可用性（PGlite 只能证「可用」，不证「规划器会选」）", () => {
+  test("项目 + 时间窗 + order by started_at 能走 case_fact_row_project_started", async () => {
+    // 5 行数据上规划器永远选 Seq Scan。关掉 seqscan 只回答一个问题：
+    // 「这条索引能不能服务这个谓词与排序」——不能（列序错、类型不匹配）就会红。
+    // 「177,713 行上不再 Seq Scan」是 A22 的真栈判据，归 Task 6，不在这里假装验过。
+    // ⚠️ `set` 是**会话级**的，而夹具的池可能换连接。所以放进同一个事务：
+    // `set local` 只在事务内生效、结束自动还原，且事务独占一条连接（`db.ts:74-80` 的 42P05 注解），
+    // 计划一定是用关了 seqscan 的那条连接算出来的。
+    const 计划 = await 库().transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`)
+      return rowsOf(
+        await tx.execute(sql`
+          explain
+          select material_id from auth.case_fact_row
+           where project_id = ${项目} and started_at >= 1000 and started_at <= 3000
+           order by started_at asc nulls last
+           limit 100
+        `),
+      )
+        .map((行) => String(Object.values(行)[0]))
+        .join("\n")
+    })
+    // 索引名按库里的实际名字取，**不写死**：PG 18 的分区子索引名是按列名派生的
+    // （`case_fact_row_pXX_project_id_started_at_idx`），PG 11–17 才是 `<父索引名>_pXX`。
+    // 钉名字等于把引擎的命名实现细节写进用例（Task 1 已实测过这一条）。
+    const 索引名们 = rowsOf(
+      await 库().execute(sql`
+        select indexname from pg_indexes
+         where schemaname = 'auth' and indexdef like '%(project_id, started_at)%'
+      `),
+    ).map((行) => String(行.indexname))
+    expect(索引名们.length).toBeGreaterThan(0)
+    expect(索引名们.some((名) => 计划.includes(名))).toBe(true)
+    expect(计划).not.toContain("Seq Scan")
   })
 })
