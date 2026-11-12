@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { insertFactRows } from "../../src/server/openhive/case-store"
-import { 读明细行, 行视图 } from "../../src/server/openhive/case-row-query"
+import { 查明细行, 明细入参错误, 读明细行, 行视图 } from "../../src/server/openhive/case-row-query"
 import { 建材料 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -118,5 +118,118 @@ describe("读明细行 · 单行按主键取", () => {
 
   test("别的项目读不到", async () => {
     expect(await 读明细行(库(), 别处, { materialId: "m-1", sheet: "Sheet1", rowNo: 4 })).toBeUndefined()
+  })
+})
+
+describe("查明细行 · 过滤与排序", () => {
+  test("只给项目：时间升序、无时间的排最后（行号与时间逆序配对，排序错了能看出来）", async () => {
+    const r = await 查明细行(库(), { projectId: 项目 })
+    expect(r.空原因).toBeNull()
+    expect(r.数据.行们.map((行) => 行.定位)).toEqual([
+      "m-1#Sheet1#4",
+      "m-1#Sheet#1#2",
+      "m-1#Sheet1#3",
+      "m-1#Sheet1#2",
+      "m-1#Sheet1#5",
+    ])
+    expect(r.数据.行们[4]?.时间).toBeNull()
+  })
+
+  test("时间窗是闭区间", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 时间起: 1500, 时间止: 2000 })
+    expect(r.数据.行们.map((行) => 行.行号)).toEqual([2, 3])
+  })
+
+  test("方向精确匹配", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 方向: "付" })
+    expect(r.数据.行们.map((行) => 行.定位)).toEqual(["m-1#Sheet#1#2", "m-1#Sheet1#3"])
+  })
+
+  test("金额区间是闭区间，按 numeric 比（不是字符串比）", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 金额起: "100", 金额止: "500" })
+    expect(r.数据.行们.map((行) => 行.金额)).toEqual(["500.00", "100.00"])
+  })
+
+  test("账户命中本方账号或对方账号之一；入参先按去横线归一化", async () => {
+    const 本方 = await 查明细行(库(), { projectId: 项目, 账户: "6222-0000-0001" })
+    expect(本方.数据.行们).toHaveLength(4)
+    const 对方 = await 查明细行(库(), { projectId: 项目, 账户: "13800000001" })
+    expect(对方.数据.行们.map((行) => 行.定位)).toEqual(["m-1#Sheet1#4", "m-1#Sheet1#2"])
+  })
+
+  test("材料 + 时间窗组合，别项目的行不会混进来", async () => {
+    const r = await 查明细行(库(), { projectId: 别处, 材料: "m-9" })
+    expect(r.数据.行们.map((行) => 行.金额)).toEqual(["999.00"])
+  })
+})
+
+describe("查明细行 · 游标分页", () => {
+  test("限制=2 翻三页，合起来 5 行、不重不漏（含无时间的尾巴）", async () => {
+    const 甲 = await 查明细行(库(), { projectId: 项目, 限制: 2 })
+    expect(甲.数据.行们).toHaveLength(2)
+    expect(甲.数据.下一页游标).not.toBeNull()
+    expect(甲.缺口.join("；")).toContain("还有更多")
+
+    const 乙 = await 查明细行(库(), { projectId: 项目, 限制: 2, 游标: 甲.数据.下一页游标 ?? undefined })
+    const 丙 = await 查明细行(库(), { projectId: 项目, 限制: 2, 游标: 乙.数据.下一页游标 ?? undefined })
+
+    const 全部 = [...甲.数据.行们, ...乙.数据.行们, ...丙.数据.行们].map((行) => 行.定位)
+    expect(全部).toEqual([
+      "m-1#Sheet1#4",
+      "m-1#Sheet#1#2",
+      "m-1#Sheet1#3",
+      "m-1#Sheet1#2",
+      "m-1#Sheet1#5",
+    ])
+    expect(new Set(全部).size).toBe(5)
+    expect(丙.数据.下一页游标).toBeNull()
+  })
+
+  test("恰好取完时不给下一页游标（多取一条才判得出）", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 限制: 5 })
+    expect(r.数据.行们).toHaveLength(5)
+    expect(r.数据.下一页游标).toBeNull()
+  })
+})
+
+describe("查明细行 · 入参 fail-closed", () => {
+  test("限制非正整数 ⇒ 明细入参错误", async () => {
+    for (const 值 of [0, -1, 1.5]) {
+      await expect(查明细行(库(), { projectId: 项目, 限制: 值 })).rejects.toThrow(明细入参错误)
+    }
+  })
+
+  test("请求超上限 ⇒ 按 200 截断并写缺口，不报错", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 限制: 999 })
+    expect(r.缺口.join("；")).toContain("请求的 999 行超过上限，已按 200 行取")
+  })
+
+  test("金额串不是 numeric 形状 ⇒ 明细入参错误（不让 PG 抛 22P02 变 500）", async () => {
+    await expect(查明细行(库(), { projectId: 项目, 金额起: "1,000" })).rejects.toThrow(明细入参错误)
+  })
+
+  test("反向区间 ⇒ 明细入参错误（静默返回 0 行会被读成「确实没有」）", async () => {
+    await expect(查明细行(库(), { projectId: 项目, 金额起: "500", 金额止: "100" })).rejects.toThrow(明细入参错误)
+    await expect(查明细行(库(), { projectId: 项目, 时间起: 3000, 时间止: 1000 })).rejects.toThrow(明细入参错误)
+  })
+
+  test("自造游标 ⇒ 明细入参错误", async () => {
+    await expect(查明细行(库(), { projectId: 项目, 游标: "not-a-cursor" })).rejects.toThrow(明细入参错误)
+  })
+})
+
+describe("查明细行 · 口径与出处", () => {
+  test("口径写清过滤条件与取值范围", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 材料: "m-1", 方向: "收" })
+    expect(r.口径).toContain("材料=m-1")
+    expect(r.口径).toContain("方向=收")
+    expect(r.口径).toContain("只取已入库明细行")
+  })
+
+  test("出处给本页首行的定位，可下钻 get_citation", async () => {
+    const r = await 查明细行(库(), { projectId: 项目, 材料: "m-1", 方向: "收" })
+    expect(r.出处).toHaveLength(1)
+    expect(r.出处[0]?.代表).toBe("m-1#Sheet1#4")
+    expect(r.出处[0]?.可下钻).toBe("get_citation")
   })
 })
