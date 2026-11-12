@@ -82,11 +82,64 @@ export interface CaseMcpDeps {
    * 它让「④ 里 `校验信封(结果)` 真的接在成功路径上」能被协议用例钉住，而不是只靠读代码。
    */
   readonly 工具表?: Partial<Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>>>
+  /**
+   * 测试可见性注入口（同上）：注入独立预算计数，让「第 12 次起注入缺口」与「按身份隔离」
+   * 可确定地测。生产**从不传**，用模块级单例（HTTP 进程一份）。
+   */
+  readonly 预算?: 预算计数
 }
 
 const 默认留痕 = (行: 调用留痕): void => {
   process.stderr.write(`${JSON.stringify({ 事件: "mcp工具调用", ...行 })}\n`)
 }
+
+// ───────────────────────── 12 次预算（§5.4） ─────────────────────────
+//
+// `case-mcp-http.ts` 是**每请求新建一个 server**（无状态、`_meta` 里也没有会话 id），
+// 所以计数不能放实例闭包（每请求从 0 开始，闸永不触发），也不能按会话键累计（跨很多轮
+// 回答，12 次后会整场哑掉）。按 `(userId, projectId)` + 空闲窗口计数：窗口内累加，
+// 停顿超过窗口就当作下一次探索。
+
+/** 12 次预算的空闲窗口：最后一次调用之后这么久没有新调用，就当作下一次探索。 */
+const 预算窗口毫秒 = 10 * 60 * 1000
+const 预算上限 = 12
+export const 预算上限缺口 = "已达本次探索上限（12 次），必须收尾并列出未覆盖项"
+
+export interface 预算计数 {
+  /** 返回**本次是第几次**（1 起）；同一 key 在窗口内累加，超窗口重置为 1。 */
+  计次(身份: 调用身份): number
+}
+
+export function 新预算计数(窗口毫秒: number = 预算窗口毫秒): 预算计数 {
+  const 表 = new Map<string, { 次数: number; 最后: number }>()
+  return {
+    计次(身份) {
+      // key 用 NUL 分隔：userId / projectId 都过 `assertSafeUserId` 那类校验，但不赌它们不含分隔符。
+      const 键 = `${身份.userId}\u0000${身份.projectId}`
+      const 现在 = Date.now()
+      const 旧 = 表.get(键)
+      const 次数 = 旧 !== undefined && 现在 - 旧.最后 <= 窗口毫秒 ? 旧.次数 + 1 : 1
+      表.set(键, { 次数, 最后: 现在 })
+      // 单人可用键有上界，但进程长跑会攒下已离线用户的过期项：粗粒度清理即可（不做定时器，避免拖住进程退出）。
+      if (表.size > 1000) for (const [k, v] of 表) if (现在 - v.最后 > 窗口毫秒) 表.delete(k)
+      return 次数
+    },
+  }
+}
+
+/** 生产用单例（HTTP 进程一份）；server 每请求新建，计数必须活在 server 之外。 */
+const 默认预算 = 新预算计数()
+
+/** §5.2 八条追查纪律：随 MCP 握手交给客户端，由内核拼进 system prompt（§5.3）。 */
+const 纪律正文 = `你是公安案件研判助手。查库纪律如下，任一条都不能违反：
+1. 先解析再查询：实体名先交给 query_entities / 工具内部解析，拿名字直接当 id 用算调用错误。
+2. 空结果照抄：工具的「空原因」与它给的引导动作要原样转述，禁止改写成「没有 / 查不到」。
+3. 数字只认本次返回：结论里每个数必须来自本次工具返回；不许拿上一轮的数字凑。
+4. 时间窗必须进结论：说「近 30 天」就要写清实际起止；没给就写「全时段」。
+5. 四类限定显式标注：户名匹配（未核实身份）/ 推断（非事实）/ 跨源未合并（候选）/ 材料未解析。
+6. 三种停：目标已达成 / 预算用尽（12 次，服务端计数）/ 需要人裁决（同名多人、合并候选、推断升事实）——每种都要停下来讲清楚。
+7. 同参不重调：一次回答里相同工具 + 相同参数只调一次。
+8. 不跨问题：答完即停；工具返回的「下一步」是给人点的建议，不是你继续查的理由。`
 
 /** 异常原文只进留痕；**永远不要**把它的任何部分拼进回给模型的文本。 */
 function 原文(error: unknown): string {
@@ -385,9 +438,10 @@ function 失败结果(错误码: string, message: string): CallToolResult {
 export function createCaseMcpServer(deps: CaseMcpDeps): Server {
   const server = new Server(
     { name: "openhive-case-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: 纪律正文 },
   )
   const 留痕 = deps.留痕 ?? 默认留痕
+  const 预算 = deps.预算 ?? 默认预算
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOLS] }))
 
@@ -434,12 +488,16 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
     try {
       // 必填校验在分发之前：`收参数` 只管键白名单 + 类型，必填只认 `inputSchema.required`。
       校验必填(工具, request.params.arguments ?? {})
+      // 计数在分发之前：未知工具名已在 ③ 提前 return，不进分发也不计数。
+      const 第几次 = 预算.计次(身份)
       const 表 = { ...分发表, ...deps.工具表 }
       const 结果 = await 表[工具](ctx, request.params.arguments ?? {})
       校验信封(结果)
       const 截 = 截断数据(结果.数据, 结果.缺口)
       // 截断后镜像仍成立：至少留 1 条，且截断不改 `空原因`。
-      return 记(成功结果({ ...结果, 数据: 截.数据, 缺口: 截.缺口 }))
+      // 上限缺口只进**成功**返回（失败返回先让模型纠正错误码），追加在末尾、不覆盖工具自己的缺口。
+      const 缺口 = 第几次 >= 预算上限 ? [...截.缺口, 预算上限缺口] : 截.缺口
+      return 记(成功结果({ ...结果, 数据: 截.数据, 缺口 }))
     } catch (error) {
       if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
       return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))

@@ -7,7 +7,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
-import { createCaseMcpServer, 工具名, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
+import {
+  createCaseMcpServer,
+  工具名,
+  新预算计数,
+  预算上限缺口,
+  type 调用留痕,
+  type 预算计数,
+} from "../../src/server/openhive/case-mcp-server"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { upsertEntity } from "../../src/server/openhive/case-fact-store"
 
@@ -27,6 +34,8 @@ const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 /** 沙箱根：身份解析只做路径比较，不碰磁盘，用临时目录下的一个不存在路径即可。 */
 const 沙箱根 = resolve(tmpdir(), "openhive-mcp-工具沙箱")
 const 身份甲 = { userId: "u-工具-甲", projectId: "p-工具-甲" }
+/** Task 4 身份隔离用例用：同一套 deps 换一个 `(userId, projectId)`，计数必须从 1 重新开始。 */
+const 身份乙 = { userId: "u-工具-乙", projectId: "p-工具-乙" }
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 客户端: ReturnType<typeof connect> | undefined
@@ -53,6 +62,15 @@ beforeAll(async () => {
   await 客户端.execute(sql`
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${身份甲.projectId}, ${身份甲.userId}, 'member', 0)
+  `)
+  // 身份隔离用例：第二个合法成员（自己的用户行 + 自己的项目成员行，目录也落在自己沙箱下）。
+  await 客户端.execute(sql`
+    insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+    values (${身份乙.userId}, '970044', '服务器民警乙', 'y', 'y', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
+  `)
+  await 客户端.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${身份乙.projectId}, ${身份乙.userId}, 'member', 0)
   `)
   await upsertEntity(库(), {
     id: "e-好",
@@ -279,4 +297,104 @@ test("工具抛非业务异常 ⇒ tool_failed，不把 SQL 原文回给模型",
   expect(收集2[0]!.错误原文).toContain("tool-time syntax error")
   await 坏客户端.close()
   await 坏服务.close()
+})
+
+// ───────────────────────── Task 4：instructions 纪律正文 + 12 次预算 ─────────────────────────
+//
+// 三条预算用例都**自己注入** `新预算计数()`，不碰模块级默认单例：否则同文件用例的调用会
+// 混进同一个计数，第 12 次在哪条用例上出现就变成执行顺序的副产物（`#005-34`）。
+
+const 甲meta = {
+  "openhive/user": 身份甲.userId,
+  "openhive/directory": `${沙箱根}/${身份甲.userId}/${身份甲.projectId}`,
+}
+const 乙meta = {
+  "openhive/user": 身份乙.userId,
+  "openhive/directory": `${沙箱根}/${身份乙.userId}/${身份乙.projectId}`,
+}
+
+/** 每条预算用例一套独立的 server + client（`预算` 是 deps，不是 Server 参数）。 */
+async function 用带预算的服务<T>(预算: 预算计数, 用例: (客: Client) => Promise<T>): Promise<T> {
+  const 沙箱服务 = createCaseMcpServer({
+    db: 库(),
+    workspaceRoot: 沙箱根,
+    留痕: (行) => 收集.push(行),
+    预算,
+  })
+  const [客户端侧, 服务端侧] = InMemoryTransport.createLinkedPair()
+  await 沙箱服务.connect(服务端侧)
+  const 沙箱客户端 = new Client({ name: "预算客户端", version: "0.0.0" })
+  await 沙箱客户端.connect(客户端侧)
+  try {
+    return await 用例(沙箱客户端)
+  } finally {
+    await 沙箱客户端.close()
+    await 沙箱服务.close()
+  }
+}
+
+/** 调一次无必填的 query_entities，返回成功信封本体（预算缺口在 `缺口` 里）。 */
+async function 调一次(客: Client, meta: Record<string, string>): Promise<{ 缺口: string[] }> {
+  const 结果 = await 客.callTool({ name: "query_entities", arguments: {}, _meta: meta })
+  expect(结果.isError).toBeFalsy()
+  return JSON.parse((结果.content as { text: string }[])[0]!.text) as { 缺口: string[] }
+}
+
+test("握手后 getInstructions() 逐条含八条纪律的检索关键词，且 1..8 编号都在", () => {
+  const 正文 = client.getInstructions()
+  expect(typeof 正文).toBe("string")
+  // 逐条断言（不是只验 length > 0）：关键词取自 §5.2 八条各自的标题语义。
+  expect(正文).toContain("先解析再查询") // 1
+  expect(正文).toContain("空结果照抄") // 2
+  expect(正文).toContain("数字只认本次返回") // 3
+  expect(正文).toContain("时间窗必须进结论") // 4
+  expect(正文).toContain("四类限定显式标注") // 5
+  expect(正文).toContain("三种停") // 6
+  expect(正文).toContain("同参不重调") // 7
+  expect(正文).toContain("不跨问题") // 8
+  for (const 编号 of [1, 2, 3, 4, 5, 6, 7, 8]) expect(正文).toContain(`\n${编号}. `)
+  // 第 1 条讲「照抄空原因」、第 6 条讲「12 次 / 停下来」：两个最容易被改丢的词单独钉。
+  expect(正文).toContain("空原因")
+  expect(正文).toContain("12 次")
+  expect(正文).toContain("停下来")
+})
+
+test("第 12 次工具调用起，返回的 缺口 末尾出现「已达本次探索上限（12 次）」", async () => {
+  await 用带预算的服务(新预算计数(), async (客) => {
+    for (let 第 = 1; 第 <= 11; 第 += 1) {
+      const 体 = await 调一次(客, 甲meta)
+      expect(体.缺口).not.toContain(预算上限缺口)
+    }
+    const 第十二次 = await 调一次(客, 甲meta)
+    expect(第十二次.缺口.at(-1)).toBe(预算上限缺口)
+  })
+})
+
+test("第 11 次调用不注入上限缺口（上限从第 12 次起才算达到）", async () => {
+  await 用带预算的服务(新预算计数(), async (客) => {
+    let 最后一次: { 缺口: string[] } | undefined
+    for (let 第 = 1; 第 <= 11; 第 += 1) 最后一次 = await 调一次(客, 甲meta)
+    expect(最后一次!.缺口).not.toContain(预算上限缺口)
+  })
+})
+
+test("空闲超过窗口后重新计数：窗口 0 时 12 次连续调用都不带上限缺口", async () => {
+  // 窗口 0 毫秒 ⇒ 每次调用都超过窗口、各自算第 1 次（不用 sleep，也不依赖真实时钟推进）。
+  await 用带预算的服务(新预算计数(0), async (客) => {
+    for (let 第 = 1; 第 <= 12; 第 += 1) {
+      const 体 = await 调一次(客, 甲meta)
+      expect(体.缺口).not.toContain(预算上限缺口)
+    }
+  })
+})
+
+test("计数按 (userId, projectId) 隔离：甲用满 12 次后，乙第一次调用不带上限缺口", async () => {
+  await 用带预算的服务(新预算计数(), async (客) => {
+    for (let 第 = 1; 第 <= 12; 第 += 1) await 调一次(客, 甲meta)
+    const 甲第十二 = await 调一次(客, 甲meta)
+    expect(甲第十二.缺口.at(-1)).toBe(预算上限缺口)
+
+    const 乙第一次 = await 调一次(客, 乙meta)
+    expect(乙第一次.缺口).not.toContain(预算上限缺口)
+  })
 })
