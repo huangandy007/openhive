@@ -342,6 +342,8 @@ describe("查明细行 · 默认限制", () => {
     expect(r.数据.行们).toHaveLength(50)
     expect(r.数据.下一页游标).not.toBeNull()
     expect(r.缺口.join("；")).toContain("已取前 50 行")
+    // A4：内核文案必须层中立——工具层的 `数据` 里没有这个键，措辞不该让模型去数据里找。
+    expect(r.缺口.join("；")).toContain("可用续页游标继续取")
     expect(r.空原因).toBeNull()
   })
 })
@@ -382,7 +384,10 @@ describe("查明细行 · 入参 fail-closed", () => {
   })
 
   test("自造游标 ⇒ 明细入参错误", async () => {
-    await expect(查明细行(库(), { projectId: 项目, 游标: "not-a-cursor" })).rejects.toThrow(明细入参错误)
+    // A4：错误文案指向「上一页给出的续页游标」，不提工具层的 `数据` / `下一步`。
+    await expect(查明细行(库(), { projectId: 项目, 游标: "not-a-cursor" })).rejects.toThrow(
+      "上一页给出的续页游标",
+    )
   })
 
   test("游标整数字段越 integer 范围 ⇒ 明细入参错误（不是 PG 22003 / DrizzleQueryError）", async () => {

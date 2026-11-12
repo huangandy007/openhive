@@ -277,12 +277,19 @@ test("query_rows 空摘要取真因：限制超限 + 材料缺失同时成立时
   expect(结果.摘要).not.toContain("超过上限")
 })
 
-test("query_rows 的 description 指向下一步：续页游标不在返回数据里", async () => {
-  // 模型行为护栏：R4 后 `数据` 是行数组、没有游标键，描述再指向「返回里的游标」会让模型找错东西。
+test("query_rows 的工具描述与游标参数说明都只指向 `下一步`，不指向返回数据", async () => {
+  // 模型行为护栏：R4 后 `数据` 是行数组、没有游标键，任何「去返回数据里找游标」的措辞都会
+  // 让模型找错东西。负向判定不再绑死某一句旧文案（重述版会漏），改用正则兜住同类指向。
   const 行工具 = (await client.listTools()).tools.find((工具) => 工具.name === "query_rows")
   const 描述 = 行工具?.description ?? ""
+  // `游标` 参数说明同样是模型可见的（B1）：它也必须指向 `下一步`，不是返回数据。
+  const 游标参数 = 行工具?.inputSchema.properties?.["游标"] as { description?: string } | undefined
+  const 游标说明 = 游标参数?.description ?? ""
   expect(描述).toContain("下一步")
-  expect(描述).not.toContain("返回里的「下一页游标」")
+  expect(游标说明).toContain("下一步")
+  const 指向返回数据 = /返回(里|数据里|结果里)/
+  expect(描述).not.toMatch(指向返回数据)
+  expect(游标说明).not.toMatch(指向返回数据)
 })
 
 test("query_rows 反向金额区间 ⇒ bad_input（不是空结果）", async () => {

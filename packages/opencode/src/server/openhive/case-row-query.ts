@@ -229,7 +229,7 @@ function 解游标(文本: string): 游标载荷 {
   try {
     解 = JSON.parse(Buffer.from(文本, "base64url").toString("utf8")) as unknown
   } catch {
-    throw new 明细入参错误("游标不是本函数签发的形状（应原样回传上一页的「下一页游标」）")
+    throw new 明细入参错误("游标不是本函数签发的形状（应原样回传上一页给出的续页游标）")
   }
   if (typeof 解 !== "object" || 解 === null || Array.isArray(解)) throw new 明细入参错误("游标不是本函数签发的形状")
   const o = 解 as Record<string, unknown>
@@ -399,7 +399,7 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   const 末 = 本页[本页.length - 1]
   const 下一页游标 =
     有更多 && 末 !== undefined ? 编码游标({ t: 末.startedAt, m: 末.materialId, s: 末.sheet, r: 末.rowNo }) : null
-  if (下一页游标 !== null) 缺口.push(`已取前 ${限制} 行，还有更多；用「下一页游标」续取`)
+  if (下一页游标 !== null) 缺口.push(`已取前 ${限制} 行，还有更多；可用续页游标继续取`)
 
   // 未解析材料：成功结果同样受影响（那些材料里的明细不在本次结果里），所以每查必报。
   // 口径必须与 `材料视图` 一致：同一 path 内容变了会另建一行、旧行留着（幂等键是内容指纹），

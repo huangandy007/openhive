@@ -314,8 +314,13 @@ export async function query_relations(
   校验时间窗(args)
   const 限制 = 归一化限制(args.限制)
   const 条件: SQL[] = [sql`r.project_id = ${ctx.身份.projectId}`]
+  // 下一步建议要用**本次查询主体**的规范值：首条关系的 `from_value` 不保证是查询方
+  // （查「乙」时首条可能是「甲→乙」），拿它当账户就是编户名（A3）。没给 `实体` 时
+  // 根本不知道查询主体是谁，也就没有可汇总的账户 ⇒ `下一步` 留空。
+  let 查询实体值: string | undefined
   if (args.实体 !== undefined) {
     const 实体 = await 解析实体(ctx, args.实体, "实体")
+    查询实体值 = 实体.value
     // 按值解析时 `ids` 是同值所有类型行：旧「人」行上的关系不能因为纠正后的新行而消失。
     条件.push(sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`)
   }
@@ -376,16 +381,18 @@ export async function query_relations(
       代表: String(行.id),
       可下钻: "get_citation",
     })),
-    // `aggregate_money` 的 `账户` 必填：空结果时没有可填的端点，给不出可执行的建议就不给。
-    下一步: 空
-      ? []
-      : [
-          {
-            工具: "aggregate_money",
-            参数: { 账户: String(数据[0]!.from_value) },
-            为什么: "转账关系可进一步按账户汇总进出金额",
-          },
-        ],
+    // `aggregate_money` 的 `账户` 必填：空结果时没有可填的端点，给不出可执行的建议就不给；
+    // 非空时也只填**查询主体**的规范值（`查询实体值`），不拿首条关系的 `from_value` 冒充。
+    下一步:
+      空 || 查询实体值 === undefined
+        ? []
+        : [
+            {
+              工具: "aggregate_money",
+              参数: { 账户: 查询实体值 },
+              为什么: "按这个账户汇总进出金额（关系可进一步聚合）",
+            },
+          ],
   }
 }
 
@@ -836,7 +843,21 @@ export async function aggregate_money(
       : [{ 事实: `账户「${账户.value}」的转账汇总`, 代表: 账户.value, 可下钻: "query_rows" }],
     下一步: 空
       ? [{ 工具: "query_entities", 参数: { 关键词: args.账户 }, 为什么: "确认这个账户在实体里到底叫什么规范值" }]
-      : [{ 工具: "query_rows", 参数: { 账户: 账户.value }, 为什么: "看构成汇总的逐笔明细" }],
+      : [
+          {
+            工具: "query_relations",
+            // 汇总来自**关系**（type=转账），不是明细行：指向 `query_rows` 会让模型拿明细去
+            // 核一个它根本凑不出来的合计（A2）。`query_relations` 吃 `实体`（规范值），
+            // 时间窗照原样带过去，口径与 `汇总条件` 一致；不要在这里提内核不认识的键。
+            参数: {
+              实体: 账户.value,
+              类型: "转账",
+              ...(args.起 === undefined ? {} : { 起: args.起 }),
+              ...(args.止 === undefined ? {} : { 止: args.止 }),
+            },
+            为什么: "看构成汇总的转账关系明细（汇总来自关系）",
+          },
+        ],
   }
 }
 

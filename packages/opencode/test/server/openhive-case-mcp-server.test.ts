@@ -115,6 +115,31 @@ test("tools/list 返回 8 个工具，名字与设计 §7.1 逐字一致", async
   ])
 })
 
+// Task 5 A5：`工具名` 与 `TOOLS` 不同步的**运行时**分支（`校验必填` 找不到声明 ⇒ 内部契约
+// 破裂）此前没有永久用例。污染 `工具名` 必须 `finally` 还原：下一条「逐项相等」就是见证——
+// 少了 `pop()`，它会看到多出来的名字（`#005-34`）。
+// 调用走真握手，钉的是「异常 ⇒ tool_failed + 原文只进留痕」这条完整链路。
+test("工具名 里多出未声明工具 ⇒ 真握手回 tool_failed，留痕原文含「内部契约破裂」", async () => {
+  const 前 = 收集.length
+  ;(工具名 as unknown as string[]).push("幽灵工具")
+  try {
+    const 结果 = await client.callTool({
+      name: "幽灵工具",
+      arguments: {},
+      _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+    })
+    expect(结果.isError).toBe(true)
+    const 文本 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { error: string; message: string }
+    expect(文本.error).toBe("tool_failed")
+    // 原文（含内部契约）不回给模型，只进留痕。
+    expect(文本.message).not.toContain("内部契约破裂")
+    expect(收集[前]!.错误码).toBe("tool_failed")
+    expect(收集[前]!.错误原文).toContain("内部契约破裂")
+  } finally {
+    ;(工具名 as unknown as string[]).pop()
+  }
+})
+
 // Task 3.5 fix1：`工具名`（名字侧）与 `TOOLS`（声明侧）是两份平行清单——TS 只有 `分发表` 被
 // `Record<工具名, …>` 兜住，`TOOLS` 漏写不报错。漏写时 `校验必填` 找不到声明已 fail-closed 抛错，
 // 但根因要在这里一眼看出是谁多谁少；比较走 tools/list（模型看到的同一份），不再抄第三份。
@@ -369,8 +394,9 @@ test("握手后 getInstructions() 逐条含八条纪律的检索关键词，且 
   expect(正文).toContain("30 秒")
   expect(正文).toContain("没有任何服务端闸")
   expect(正文).toContain("尽量在一次回答里收尾")
-  // §5.2 只有八条：正文里出现「9.」就是被扩写走样。
-  expect(正文).not.toMatch(/^9\./m)
+  // §5.2 只有八条：正文里出现「9.」就是被扩写走样。半角 / 全角都要挡
+  // （只认行首半角时，写成「９.」的第 9 条仍会溜过去）。
+  expect(正文).not.toMatch(/^[9９]\./m)
 })
 
 test("第 12 次工具调用起，返回的 缺口 末尾出现「已达本次探索上限（12 次）」", async () => {
@@ -448,6 +474,9 @@ test("上限缺口追加在工具自己的缺口之后，不覆盖它", async ()
     const 内核缺口 = "请求的 999 行超过上限，已按 200 行取"
     expect(体.缺口).toContain(内核缺口)
     expect(体.缺口).toContain(预算上限缺口)
+    // 只追加一次：数量写死（不是只 toContain——重复追加 / 覆盖都会改变长度）。
+    // 3 条 = 内核两条（「超上限」＋该项目零明细的「本项目没有任何已入库明细」）＋ 预算一条。
+    expect(体.缺口).toHaveLength(3)
     // 顺序也要钉：内核那条在前，上限缺口追加在末尾。
     expect(体.缺口.indexOf(内核缺口)).toBeLessThan(体.缺口.indexOf(预算上限缺口))
   })

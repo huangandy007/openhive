@@ -10,6 +10,7 @@ import {
   query_entities,
   query_events,
   query_relations,
+  query_rows,
   search_materials,
   归一化限制,
   校验成员,
@@ -17,6 +18,7 @@ import {
   type 工具上下文,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
+import { 工具名 } from "../../src/server/openhive/case-mcp-server"
 import { addCitation, createMaterial, insertFactRows } from "../../src/server/openhive/case-store"
 import { insertEvent, insertRelation, setMaterialText, upsertEntity } from "../../src/server/openhive/case-fact-store"
 import { 建实体 } from "./openhive-case-fact-fixture"
@@ -67,6 +69,12 @@ const 身份同秒 = { userId: "u-工具-甲", projectId: "p-工具-同秒" }
 /** 资金聚合 / 交叉的合并 id 用例：各自独立项目。 */
 const 身份聚合 = { userId: "u-工具-甲", projectId: "p-工具-聚合" }
 const 身份叉 = { userId: "u-工具-甲", projectId: "p-工具-叉" }
+/**
+ * Task 5 A1：两个不同对手方。独立项目：给戊再加关系会改掉 `aggregate_money(账号)`
+ * 的汇总 / 对手方全量断言（`#005-34`）。
+ */
+const 身份对手 = { userId: "u-工具-甲", projectId: "p-工具-对手" }
+const 账号对手 = "6222…对手"
 const 项目乙 = "p-工具-乙"
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
@@ -528,6 +536,37 @@ beforeAll(async () => {
     summary: "含已排除实体",
     trustState: "自动抽取",
   })
+
+  // —— Task 5 A1：两个不同对手方（对手方按「对手 + 方向」分组会出 3 行，但只有 2 个对手）——
+  await upsertEntity(库(), {
+    id: "e-账对",
+    projectId: 身份对手.projectId,
+    type: "账户",
+    canonicalValue: 账号对手,
+    aliases: [],
+  })
+  for (const [id, value] of [
+    ["e-对手A", "对手甲二"],
+    ["e-对手B", "对手乙二"],
+  ] as const) {
+    await upsertEntity(库(), { id, projectId: 身份对手.projectId, type: "人", canonicalValue: value, aliases: [] })
+  }
+  for (const [id, fromId, toId, amount] of [
+    ["r-对出A", "e-账对", "e-对手A", 100],
+    ["r-对入A", "e-对手A", "e-账对", 200],
+    ["r-对出B", "e-账对", "e-对手B", 300],
+  ] as const) {
+    await insertRelation(库(), {
+      id,
+      projectId: 身份对手.projectId,
+      fromId,
+      toId,
+      type: "转账",
+      amount,
+      sourceKind: "data",
+      trustState: "自动抽取",
+    })
+  }
 })
 
 afterAll(async () => {
@@ -1129,6 +1168,17 @@ test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出�
   expect(结果.下一步).toEqual([])
 })
 
+test("query_relations 下一步的账户取查询实体的规范值，不是首条 from_value", async () => {
+  // 丁里与「乙」相关的两条有效关系都是 甲→乙：首条 from_value 恒为「甲」，
+  // 拿它当账户就是给错实体（A3）；查询主体「乙」的规范值才是对的。
+  const 结果 = await query_relations(ctx(身份丁), { 实体: "乙" })
+  expect((结果.数据 as unknown[]).length).toBe(2)
+  expect(结果.下一步[0]?.工具).toBe("aggregate_money")
+  expect(结果.下一步[0]?.参数).toEqual({ 账户: "乙" })
+  // 没给 `实体` 时不知道查询主体是谁 ⇒ 不拿任意端点编户名（下一步留空）。
+  expect((await query_relations(ctx(身份丁), {})).下一步).toEqual([])
+})
+
 test("query_events 七字段：有数据时摘要取最近一个（排序为 desc，首条最新）", async () => {
   const 结果 = await query_events(ctx(身份戊), {})
   // 三个事件按 occurred_at 倒序：ev-排参(300) → ev-单(200) → ev-同(100)
@@ -1185,8 +1235,23 @@ test("aggregate_money 七字段：有数据时摘要给笔数/合计/对手数/�
   expect(结果.出处).toEqual([
     { 事实: `账户「${账号}」的转账汇总`, 代表: 账号, 可下钻: "query_rows" },
   ])
-  expect(结果.下一步[0]?.工具).toBe("query_rows")
-  expect(结果.下一步[0]?.参数).toEqual({ 账户: 账号 })
+  // 汇总来自关系（type=转账），下一步必须指向关系而不是明细行（A2）。
+  expect(结果.下一步[0]?.工具).toBe("query_relations")
+  expect(结果.下一步[0]?.参数).toEqual({ 实体: 账号, 类型: "转账" })
+})
+
+test("aggregate_money 对手个数按去重对手方计：两个不同对手 ⇒ 2（不是 3 行）", async () => {
+  const 结果 = await aggregate_money(ctx(身份对手), { 账户: 账号对手 })
+  // 汇总按方向分组；两个数逐字钉住（变异：`new Set(...).size` 写死 1 时下一句红）。
+  expect(结果.摘要).toContain("出 2 笔 / 400.00 元")
+  expect(结果.摘要).toContain("入 1 笔 / 200.00 元")
+  // 对手方按「对手 + 方向」分组出 3 行，去重后才是 2 个对手（按行数计会成 3）。
+  expect(结果.摘要).toContain("2 个对手")
+  expect((结果.数据 as { 对手方: unknown }).对手方).toEqual([
+    { 对手方: "对手乙二", 方向: "出", 笔数: 1, 合计: "300.00" },
+    { 对手方: "对手甲二", 方向: "入", 笔数: 1, 合计: "200.00" },
+    { 对手方: "对手甲二", 方向: "出", 笔数: 1, 合计: "100.00" },
+  ])
 })
 
 test("aggregate_money 有数据时缺口不追加「三者都为空」", async () => {
@@ -1235,4 +1300,45 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
   // `query_relations` 全参数可选，但仍用甲侧实体填进去（I-1）。
   expect(结果.下一步[0]?.工具).toBe("query_relations")
   expect(结果.下一步[0]?.参数).toEqual({ 实体: "张三" })
+})
+
+// —— Task 5 B3：`下一步` / `出处.可下钻` 必须 ⊆ 已注册工具名 ——
+// 人工核对挡不住漂移：`query_rows` 未注册时 `下一步` 就已经指向过它。这里遍历八个工具的
+// 真实返回值（有数据 + 空数据各一条），把违规项收集起来 `toEqual([])`——失败时一眼看出是谁指向了什么。
+test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
+  const 已注册 = new Set(工具名 as readonly string[])
+  const 结果们: 工具结果[] = [
+    await search_materials(ctx(身份甲), { 关键词: "张三" }),
+    await search_materials(ctx(身份甲), { 关键词: "绝无此词" }),
+    await query_entities(ctx(身份甲), {}),
+    await query_entities(ctx(身份甲), { 关键词: "查无此实体" }),
+    await query_relations(ctx(身份丁), { 实体: "甲" }),
+    await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" }),
+    await query_events(ctx(身份戊), {}),
+    await query_events(ctx(身份丁), { 类型: "不存在的事件类型" }),
+    await aggregate_money(ctx(身份戊), { 账户: 账号 }),
+    await aggregate_money(ctx(身份戊), { 账户: "李四" }),
+    await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),
+    await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "对手甲" }),
+    await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-甲" }),
+    await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" }),
+    await query_rows(ctx(身份戊), {}),
+    await query_rows(ctx(身份戊), { 账户: "不存在的账户" }),
+  ]
+  const 违规: string[] = []
+  let 检查条数 = 0
+  for (const 结果 of 结果们) {
+    for (const 条 of 结果.下一步) {
+      检查条数 += 1
+      if (!已注册.has(条.工具)) 违规.push(`下一步 → ${条.工具}`)
+    }
+    for (const 条 of 结果.出处) {
+      if (条.可下钻 === null) continue
+      检查条数 += 1
+      if (!已注册.has(条.可下钻)) 违规.push(`出处.可下钻 → ${条.可下钻}`)
+    }
+  }
+  expect(违规).toEqual([])
+  // 防空转：一条都没检查时「没有违规」没有意义。
+  expect(检查条数).toBeGreaterThan(0)
 })
