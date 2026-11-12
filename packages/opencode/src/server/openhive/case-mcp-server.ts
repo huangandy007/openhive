@@ -6,6 +6,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import type { Queryable } from "./case-store"
+import { 数据为空, 空原因枚举 } from "./case-envelope"
 import { 解析调用身份, 身份错误, type 调用身份 } from "./case-mcp-identity"
 import {
   aggregate_money,
@@ -300,6 +301,52 @@ function 是工具名(name: string): name is 工具名 {
 /** 工具执行失败回给模型的**唯一**文本；原文只进留痕。 */
 const 工具失败文案 = "工具执行失败，已记入服务端日志"
 
+/**
+ * 信封违约是**实现错误**，不是模型可以自纠的参数错误——所以它**不是** `工具错误`：
+ * 抛到 ④ 的 catch 后会折成 `tool_failed`，回给模型的只有固定文案（`09` §3.4）。
+ */
+class 信封违约 extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "信封违约"
+  }
+}
+
+/**
+ * `09` §3.4 的服务端硬校验。**只校验，不改写**——补字段是工具的事（§3.2）。
+ * 失败一律 `tool_failed`：这是实现错误，不是模型可以自纠的参数错误。
+ */
+export function 校验信封(结果: 工具结果): void {
+  const 缺: string[] = []
+  for (const 键 of ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const)
+    if (!(键 in 结果)) 缺.push(键)
+  if (缺.length > 0) throw new 信封违约(`缺字段：${缺.join("、")}`)
+
+  if (typeof 结果.摘要 !== "string" || 结果.摘要.length === 0) throw new 信封违约("摘要必须是字符串")
+  if (typeof 结果.口径 !== "string" || 结果.口径.length === 0) throw new 信封违约("口径必须是字符串")
+  if (!Array.isArray(结果.缺口)) throw new 信封违约("缺口必须是数组")
+  if (!Array.isArray(结果.出处) || !Array.isArray(结果.下一步)) throw new 信封违约("出处 / 下一步 必须是数组")
+  if (结果.空原因 !== null && !(空原因枚举 as readonly string[]).includes(结果.空原因))
+    throw new 信封违约(`空原因不在枚举里：${String(结果.空原因)}`)
+
+  const 空 = 数据为空(结果.数据)
+  if (结果.空原因 !== null && !空) throw new 信封违约("空原因非 null 时数据必须为空")
+  if (结果.空原因 === null && 空) throw new 信封违约("数据为空时空原因必须非 null")
+}
+
+/** 30 KB 确定性截断（§3.4）：按 `Buffer.byteLength(JSON.stringify(数据))` 算，从尾部截。 */
+export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数据: unknown; 缺口: string[] } {
+  if (!Array.isArray(数据)) return { 数据, 缺口: [...缺口] }
+  const 字节 = (值: unknown) => Buffer.byteLength(JSON.stringify(值))
+  if (字节(数据) <= 30 * 1024) return { 数据, 缺口: [...缺口] }
+  let 留 = 数据.length
+  while (留 > 1 && 字节(数据.slice(0, 留)) > 30 * 1024) 留--
+  return {
+    数据: 数据.slice(0, 留),
+    缺口: [...缺口, `返回数据超过 30 KB，已从尾部截掉 ${数据.length - 留} 条`],
+  }
+}
+
 function 成功结果(结果: 工具结果): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(结果, null, 2) }] }
 }
@@ -364,7 +411,10 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
     // ④ 调工具。
     try {
       const 结果 = await 分发表[工具](ctx, request.params.arguments ?? {})
-      return 记(成功结果(结果))
+      校验信封(结果)
+      const 截 = 截断数据(结果.数据, 结果.缺口)
+      // 截断后镜像仍成立：至少留 1 条，且截断不改 `空原因`。
+      return 记(成功结果({ ...结果, 数据: 截.数据, 缺口: 截.缺口 }))
     } catch (error) {
       if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
       return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
