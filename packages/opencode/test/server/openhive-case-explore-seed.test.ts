@@ -156,14 +156,14 @@ describe("探索数据集 seed（09 §13.1）", () => {
     expect(await 数明细行按材料类型(db(), 数据集.projectId)).toEqual({ 资金: 7, 话单: 3 })
   })
 
-  test("实体：5 人 + 6 账户 = 11", async () => {
-    expect(await 数实体(db(), 数据集.projectId)).toBe(11)
-    expect(await 数实体按类型(db(), 数据集.projectId)).toEqual({ 人: 5, 账户: 6 })
+  test("实体：5 人 + 6 账户 + 1 号码 = 12", async () => {
+    expect(await 数实体(db(), 数据集.projectId)).toBe(12)
+    expect(await 数实体按类型(db(), 数据集.projectId)).toEqual({ 人: 5, 账户: 6, 号码: 1 })
   })
 
-  test("关系：5 持有 + 5 转账 = 10", async () => {
-    expect(await 数关系(db(), 数据集.projectId)).toBe(10)
-    expect(await 数关系按类型(db(), 数据集.projectId)).toEqual({ 持有: 5, 转账: 5 })
+  test("关系：5 持有 + 5 转账 + 1 实名登记 = 11", async () => {
+    expect(await 数关系(db(), 数据集.projectId)).toBe(11)
+    expect(await 数关系按类型(db(), 数据集.projectId)).toEqual({ 持有: 5, 转账: 5, 实名登记: 1 })
   })
 
   test("事件 1", async () => {
