@@ -76,6 +76,66 @@ async function 数事件(db: Queryable, projectId: string): Promise<number> {
   )
 }
 
+/** 按列分组计数；SQL 的文本同样手写、与 DAO 不同（`#005-10` 同族）。 */
+async function 数分组(
+  db: Queryable,
+  query: ReturnType<typeof sql>,
+): Promise<Record<string, number>> {
+  const rows = rowsOf(await db.execute(query))
+  const 结果: Record<string, number> = {}
+  for (const row of rows) 结果[String(row.k)] = Number(row.n)
+  return 结果
+}
+
+/** 明细行按**材料 kind** 分组（`case_fact_row` 本身没有 kind 列，要 join 材料表）。 */
+async function 数明细行按材料类型(db: Queryable, projectId: string): Promise<Record<string, number>> {
+  return 数分组(
+    db,
+    sql`
+      select m.kind as k, count(*)::int as n
+        from auth.case_fact_row r
+        join auth.case_material m
+          on m.project_id = r.project_id and m.id = r.material_id
+       where r.project_id = ${projectId}
+       group by m.kind
+    `,
+  )
+}
+
+async function 数实体按类型(db: Queryable, projectId: string): Promise<Record<string, number>> {
+  return 数分组(
+    db,
+    sql`
+      select type as k, count(*)::int as n
+        from auth.case_entity where project_id = ${projectId}
+       group by type
+    `,
+  )
+}
+
+async function 数关系按类型(db: Queryable, projectId: string): Promise<Record<string, number>> {
+  return 数分组(
+    db,
+    sql`
+      select type as k, count(*)::int as n
+        from auth.case_relation where project_id = ${projectId}
+       group by type
+    `,
+  )
+}
+
+/** 副项目里「排队中」的材料数；DAO 的读口是 `getMaterial`（按 id），这条只按状态数。 */
+async function 数排队中(db: Queryable, projectId: string): Promise<number> {
+  return 数一行(
+    db,
+    sql`
+      select count(*)::int as n
+        from auth.case_material
+       where project_id = ${projectId} and parse_status = '排队中'
+    `,
+  )
+}
+
 describe("探索数据集 seed（09 §13.1）", () => {
   test("四份材料的解析状态与类型", async () => {
     const 流水 = await 材料(数据集.材料.流水)
@@ -92,14 +152,18 @@ describe("探索数据集 seed（09 §13.1）", () => {
 
   test("明细行：流水 7 行 + 话单 3 行 + 待解析 0 行", async () => {
     expect(await countFactRows(db(), 数据集.projectId)).toBe(10)
+    // 总数对不等于组成对：按材料 kind 分组，别让用例名比断言强。
+    expect(await 数明细行按材料类型(db(), 数据集.projectId)).toEqual({ 资金: 7, 话单: 3 })
   })
 
   test("实体：5 人 + 6 账户 = 11", async () => {
     expect(await 数实体(db(), 数据集.projectId)).toBe(11)
+    expect(await 数实体按类型(db(), 数据集.projectId)).toEqual({ 人: 5, 账户: 6 })
   })
 
   test("关系：5 持有 + 5 转账 = 10", async () => {
     expect(await 数关系(db(), 数据集.projectId)).toBe(10)
+    expect(await 数关系按类型(db(), 数据集.projectId)).toEqual({ 持有: 5, 转账: 5 })
   })
 
   test("事件 1", async () => {
@@ -107,6 +171,7 @@ describe("探索数据集 seed（09 §13.1）", () => {
   })
 
   test("副项目：一份未解析材料、零明细行、零实体", async () => {
+    expect(await 数排队中(db(), 数据集.待解析项目)).toBe(1)
     expect(await countFactRows(db(), 数据集.待解析项目)).toBe(0)
     expect(await 数实体(db(), 数据集.待解析项目)).toBe(0)
   })

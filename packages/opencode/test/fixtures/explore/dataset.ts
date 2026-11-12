@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx"
 import { claimNextJob, enqueueMaterial, runJob } from "../../../src/server/openhive/case-ingest"
+import type { 抽取器 } from "../../../src/server/openhive/case-extract-run"
 import type { Queryable } from "../../../src/server/openhive/case-store"
 import { 建假抽取器 } from "../../server/openhive-case-extract-fixture"
 
@@ -208,6 +209,9 @@ export async function 种探索数据集(
 
   const 入队 = async (项目: string, 文件名: string, 字节: Uint8Array) => {
     文件.set(`${项目}/${文件名}`, 字节)
+    // ⚠️ 这是一次性 seed：同一库**二次调用**会因 fingerprint 相同而走
+    // `createMaterial` 的幂等分支，拿回老材料且 `enqueued: false` ⇒ 下面抛「材料没有入队」。
+    // T2 起复用这份夹具时，每个用例/每个文件都要一个新的内存库（或先换 fingerprint）。
     const r = await enqueueMaterial(db, {
       projectId: 项目,
       path: 文件名,
@@ -221,7 +225,7 @@ export async function 种探索数据集(
   }
 
   /** 认领并跑一份已入队的材料；队列是全局的，必须核对认领到的就是这一份。 */
-  const 跑 = async (materialId: string, 建抽取器?: () => Promise<ReturnType<typeof 建假抽取器>>) => {
+  const 跑 = async (materialId: string, 建抽取器?: () => Promise<抽取器>) => {
     const job = await claimNextJob(db)
     if (!job) throw new Error("队列是空的：上一条用例把作业留在了别的状态？")
     if (job.materialId !== materialId) {
