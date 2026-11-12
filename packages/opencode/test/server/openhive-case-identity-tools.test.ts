@@ -70,6 +70,13 @@ async function 账户id(projectId: string, 账号: string): Promise<string> {
 const 项目 = "prj-id-tools"
 const 张三账 = "6217001234567896514"
 const 李四账 = "6222021234567890123"
+/**
+ * 空结果用例用**独立项目**（`#005-34`）：它在共享项目里补明细行会与别的用例互相影响，
+ * 迁出来后声明顺序不再重要。
+ */
+const 项目空 = "prj-id-tools-empty"
+/** 无证据账户项目：不写 `ownerName` ⇒ 账户没有户名别名，落到「无匹配」档。 */
+const 项目无匹配 = "prj-id-tools-unmatched"
 beforeAll(async () => {
   await 种流水(项目, "m1", "张三", 张三账, 李四账)
 })
@@ -86,6 +93,8 @@ describe("aggregate_money 的身份标注与措辞", () => {
   })
 
   test("空结果也带身份（档不随数据空而丢）", async () => {
+    // 独立项目 + 生产出口造数（`#005-34` / `#006-35`）。
+    await 种流水(项目空, "m1", "张三", 张三账, 李四账)
     // 判定表第 1 条「确实没有交易」的前提是账户**有存在证据**（持有关系或明细行）。
     // brief 的翻译夹具只产生转账关系（无持有、无明细行），直接查会落兜底「无匹配行」
     // ——该前提不成立，与本用例要钉的「数据空但身份不丢」无关。这里按生产常态补一条
@@ -93,7 +102,7 @@ describe("aggregate_money 的身份标注与措辞", () => {
     // 判定表第 1 条而不是兜底。补的是**前置证据**，断言本身按 brief 原样保留。
     await insertFactRows(db(), [
       {
-        projectId: 项目,
+        projectId: 项目空,
         materialId: "m1",
         sheet: "Sheet1",
         rowNo: 3,
@@ -104,9 +113,12 @@ describe("aggregate_money 的身份标注与措辞", () => {
         currency: "CNY",
       },
     ])
-    const 结果 = await aggregate_money(ctx(项目), { 账户: "张三", 起: 1800000000, 止: 1800000001 })
+    const 结果 = await aggregate_money(ctx(项目空), { 账户: "张三", 起: 1800000000, 止: 1800000001 })
     expect(结果.空原因).toBe("确实没有交易")
     expect(结果.身份?.[0]?.档).toBe("户名匹配")
+    // 空结果分支也必须带「未核实身份」：钉住 `aggregate_money` 空分支末尾的 `${后缀}`
+    // （修复轮 1 的 Important 1——此前删掉该分支的后缀，8 条仍全绿）。
+    expect(结果.摘要).toContain("未核实身份")
   })
 
   test("有实名登记证据 ⇒ 已核实，摘要不再写「未核实身份」", async () => {
@@ -169,5 +181,20 @@ describe("其余工具的身份标注", () => {
     const 账户行 = 行们.find((行) => 行.canonical_value === 张三账)
     expect(账户行?.身份?.档).toBe("户名匹配")
     expect(结果.摘要).toContain("未核实身份")
+  })
+})
+
+describe("无匹配档的措辞", () => {
+  const 无证据账 = "6217001234567897777"
+  const 对手账 = "6222021234567897777"
+
+  test("账户没有户名别名、没有实名边 ⇒ 档=无匹配，摘要写「查不到归属，未核实身份」", async () => {
+    // 同一生产出口（`翻译资金` + `写入翻译结果`），但不给本方 `ownerName` ⇒ 不产户名别名；
+    // 也不建实名登记边 ⇒ `读身份标注` 只能落「无匹配」。钉住 `身份后缀` 的
+    // 「查不到归属，未核实身份」分支（修复轮 1 的 Minor 2——此前该文本是死文本）。
+    await 种流水(项目无匹配, "m1", "", 无证据账, 对手账)
+    const 结果 = await aggregate_money(ctx(项目无匹配), { 账户: 无证据账 })
+    expect(结果.身份?.[0]?.档).toBe("无匹配")
+    expect(结果.摘要).toContain("查不到归属，未核实身份")
   })
 })
