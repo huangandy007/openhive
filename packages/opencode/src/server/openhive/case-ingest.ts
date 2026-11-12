@@ -46,6 +46,9 @@ import {
   upsertEntity,
   删除本材料的事实,
 } from "./case-fact-store"
+import { 翻译资金, 跳过原因们 } from "./case-translate"
+import { 清本材料翻译, 写入翻译结果 } from "./case-translate-store"
+import { 确保内置模板 } from "./case-card-template"
 import type { ParseAction, ParseStatus } from "./case-status"
 
 /**
@@ -554,6 +557,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
   if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
 
+  // 翻译（§4.0）：本期只做资金（`资金/v1`）。其他类型照旧只落明细行，不产卡片。
+  const 翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 待写 }) : undefined
+  const 模板id = 翻译 === undefined ? undefined : await 确保内置模板(db, job.projectId)
+
   // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
   //
   // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
@@ -561,7 +568,14 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
   await inTransaction(db, async (tx) => {
     await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
+    // 重放清理必须早于写入，且顺序固定（Global Constraints 8）。表格路径以前不写事实，
+    // 这两句对老材料是空操作；不写的话，第二次解析会在库里叠出第二份卡片。
+    await 清本材料翻译(tx, job.projectId, job.materialId)
     await insertFactRows(tx, 待写)
+    const 翻译回执 =
+      翻译 === undefined || 模板id === undefined
+        ? undefined
+        : await 写入翻译结果(tx, { projectId: job.projectId, materialId: job.materialId, templateId: 模板id, 翻译 })
 
     await setMaterialKind(tx, job.projectId, job.materialId, 识别.类型)
     // 成功路径也要写 `mapping`，**缓存命中同样要写**，否则第二份同格式材料的待确认角标
@@ -587,6 +601,18 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
             ]),
           ),
         },
+        ...(翻译回执 === undefined || 翻译 === undefined
+          ? {}
+          : {
+              翻译: {
+                ...翻译回执,
+                非人民币卡片: 翻译.卡片们.filter((c) => c.currency !== "CNY").length,
+                跳过: Object.fromEntries(
+                  跳过原因们.map((r) => [r, 翻译.跳过们.filter((s) => s.原因 === r).length]).filter(([, n]) => n !== 0),
+                ),
+                跳过行号: 翻译.跳过们,
+              },
+            }),
       },
     })
     // 只记来源为「别名库」的表头（设计 §4.3：一份材料同一个别名只 +1，由 `记别名命中` 去重）。
