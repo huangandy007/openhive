@@ -109,13 +109,17 @@ export function 剥离本材料出处(旧: 实体属性, materialId: string): �
  *
  * 前提：`materialId` 里**不含 `#`**（现在的事实 id 都是十六进制/短串）。否则
  * `split("#").slice(1).join("#")` 会把材料 id 的一部分当成工作表名，属性静默挂错实体。
- * 出处格式本身是 T5 的契约，不在这里改。
+ * 出处格式本身是 T5 的契约，不在这里改 ⇒ 前提不成立时当场抛错（F8），不静默挂错。
  */
 export function 属性观察表(
   属性们: readonly 属性观察[],
   实体缓存: ReadonlyMap<string, string>,
   卡片们: readonly 卡片草稿[],
+  materialId: string,
 ): Map<string, 实体属性> {
+  if (materialId.includes("#")) {
+    throw new Error(`materialId 形状与本函数前提不符：不能含 '#'（出处前缀歧义）：${materialId}`)
+  }
   const 按出处 = new Map<string, 卡片草稿>()
   for (const 卡 of 卡片们) 按出处.set(`${卡.sheet}#${卡.rowNo}`, 卡)
 

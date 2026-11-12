@@ -167,8 +167,9 @@ export function 校验槽位种类(槽位: unknown): string[] {
 /**
  * 幂等写内置模板行（Q15：模板按项目存，全局迁移写不出来，只能首次用时懒建）。
  *
- * `version` 只在 `slots` 真的变了才 +1：`case_event.template_id` 引用它，AI 与评审据此
- * 判断「这批卡片是哪版映射产的」（Q13：版本不进卡片 id，进模板行）。
+ * `version` 只在 `slots` 真的变了才 +1（Q13：版本不进卡片 id，进模板行）。但
+ * `case_event.template_id` 只指向本行的**固定 id**（`内置:资金/v1`），不随 `version` 变
+ * ⇒ 单张卡片追溯不到产它的映射版本（Q15 待定项，登记不改；别说成「据 template_id 判断版本」）。
  * `verified_at` 一经写定不覆盖——内置行天然已验证，别让重跑把它清空。
  */
 export async function 确保内置模板(db: Queryable, projectId: string): Promise<string> {

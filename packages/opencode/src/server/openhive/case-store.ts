@@ -321,6 +321,14 @@ export interface FactRowInput {
   counterparty?: string | null
   counterpartyName?: string | null
   ownerAccount?: string | null
+  /**
+   * 表格原文（未归一化）：只给翻译层写 `participant.mention_text`，不进明细表列。
+   *
+   * `ownerAccount` / `counterparty` 在 `toFactRows` 里已被归一化（去横线、全角转半角），
+   * 设计 `01:800` 要求参与者带「该格的原文」⇒ 原文走这两个旁路字段，18 列的 INSERT 不写它们。
+   */
+  ownerAccountRaw?: string | null
+  counterpartyRaw?: string | null
   direction?: "收" | "付" | null
   /** 币种（`09` §4.5 第 2 条）：默认 `"CNY"`；外币原样大写。 */
   currency?: string | null

@@ -173,6 +173,36 @@ describe("删引用与删机器事实", () => {
 })
 
 describe("事件分支：与关系对称（N2）", () => {
+  test("单条 insertEvent 与批量版同列集：amount/currency/attrs/template_id 不丢（M3）", async () => {
+    // 两份列集曾经不一致：单条版只写 10 列，接口上能传的金额/币种/属性/模板会静默消失。
+    await insertEvent(db(), {
+      projectId: 项目,
+      id: "ev-列集",
+      type: "资金交易",
+      occurredAt: 1731117305,
+      occurredRaw: "2024-11-09 09:15:03",
+      precision: "到秒",
+      amount: "123.45",
+      participants: [],
+      summary: null,
+      trustState: "自动抽取",
+      attrs: { 余额: "9.00" },
+      currency: "USD",
+      templateId: "内置:资金/v1",
+    })
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select amount, currency, attrs, template_id from auth.case_event
+         where project_id = ${项目} and id = 'ev-列集'
+      `),
+    )
+    expect(String(行[0]?.amount)).toBe("123.45")
+    expect(行[0]?.currency).toBe("USD")
+    expect(行[0]?.template_id).toBe("内置:资金/v1")
+    const 属性 = typeof 行[0]?.attrs === "string" ? JSON.parse(行[0].attrs) : 行[0]?.attrs
+    expect(属性).toEqual({ 余额: "9.00" })
+  })
+
   test("重放只删「不会被保留的」事件的引用：已确认事件的出处留下", async () => {
     const 实体 = await upsertEntity(db(), {
       projectId: 项目,

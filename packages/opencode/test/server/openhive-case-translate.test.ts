@@ -3,7 +3,7 @@ import { 卡片id, 账户键, 翻译资金 } from "../../src/server/openhive/cas
 import { toFactRows } from "../../src/server/openhive/case-rows"
 import type { RawRow, RawSheet } from "../../src/server/openhive/case-sheet"
 import type { FactRowInput } from "../../src/server/openhive/case-store"
-import { 是账户形状 } from "../../src/server/openhive/case-field-registry"
+import { 是账户形状, type 识别字段 } from "../../src/server/openhive/case-field-registry"
 
 /** 从表头 + 行造明细行；映射固定用真实列名，避免夹具替实现做选择。 */
 function 明细(header: string[], rows: string[][]): FactRowInput[] {
@@ -14,11 +14,11 @@ function 明细(header: string[], rows: string[][]): FactRowInput[] {
     header: header.map(转),
     rows: rows.map((r, i) => ({ rowNo: i + 2, cells: r.map(转) })),
   }
-  const 映射: Record<number, never> = {} as Record<number, never>
+  const 映射: Record<number, 识别字段> = {}
   const 字段 = ["startedAt", "amount", "balance", "direction", "counterparty", "counterpartyName", "ownerAccount"] as const
-  for (let i = 0; i < Math.min(header.length, 字段.length); i++) (映射 as Record<number, string>)[i] = 字段[i]!
-  ;(映射 as Record<number, string>)[7] = "ownerName"
-  return toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: 映射 as never })
+  for (let i = 0; i < Math.min(header.length, 字段.length); i++) 映射[i] = 字段[i]
+  映射[7] = "ownerName"
+  return toFactRows({ projectId: "p1", materialId: "m1", sheet, mapping: 映射 })
 }
 
 const 表头 = ["交易时间", "交易金额", "交易余额", "借贷标志", "交易对方账卡号", "交易对方名称", "查询账号", "查询户名"]
@@ -34,7 +34,7 @@ describe("资金卡片：一行一张", () => {
     const r = 跑(明细(表头, [借行]))
     expect(r.跳过们).toEqual([])
     expect(r.卡片们).toHaveLength(1)
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡).toMatchObject({
       type: "资金交易",
       amount: "5000.00",
@@ -62,7 +62,7 @@ describe("资金卡片：一行一张", () => {
 
   test("贷 ⇒ 本方收款方、对方付款方", () => {
     const r = 跑(明细(表头, [贷行]))
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡.participants[0]?.角色).toBe("收款方")
     expect(卡.participants[1]?.角色).toBe("付款方")
   })
@@ -71,7 +71,7 @@ describe("资金卡片：一行一张", () => {
     const r = 跑(
       明细(表头, [["2024-11-09 09:15:03", "-5000.00", "", "付", "6222021234567890123", "李四", "6217001234567896514", "张三"]]),
     )
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡.amount).toBe("5000.00")
     expect(卡.participants[0]?.角色).toBe("付款方")
     expect(卡.participants[1]?.角色).toBe("收款方")
@@ -175,7 +175,7 @@ describe("源文件自带掩码（§4.0.5 坑 1）", () => {
     const r = 跑(
       明细(表头, [["2024-11-09 09:15:03", "5000.00", "", "借", "6222****1234", "李四", "6217001234567896514", "张三"]]),
     )
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡.participants[1]).toMatchObject({ 提及: "6222****1234", 实体: false })
     expect(r.别名们.map((a) => a.规范值)).toEqual(["6217001234567896514"]) // 对方不可建 ⇒ 不写别名
   })
@@ -184,7 +184,7 @@ describe("源文件自带掩码（§4.0.5 坑 1）", () => {
     const r = 跑(
       明细(表头, [["2024-11-09 09:15:03", "5000.00", "", "借", "6222021234567890123", "李四", "6217****6514", "张三"]]),
     )
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡.participants[0]).toMatchObject({ 规范值: "6217****6514", 提及: "6217****6514", 实体: false })
     // 本方可建 = false ⇒ 不写本方别名；对方仍写。
     expect(r.别名们).toEqual([{ 规范值: "6222021234567890123", 值: "李四", 出处: "m1#Sheet1#2" }])
@@ -215,7 +215,7 @@ describe("源文件自带掩码（§4.0.5 坑 1）", () => {
     const r = 跑(
       明细(表头, [["2024-11-09 09:15:03", "5000.00", "", "借", "６２２２０２１２３４５６７８９０１２３", "李四", "6217-0012-3456-7896-514", "张三"]]),
     )
-    const 卡 = r.卡片们[0]!
+    const 卡 = r.卡片们[0]
     expect(卡.participants[0]?.规范值).toBe("6217001234567896514")
     expect(卡.participants[1]?.规范值).toBe("6222021234567890123")
   })

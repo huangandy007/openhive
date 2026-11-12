@@ -5,6 +5,8 @@ import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 重建关系, 写入翻译结果, 清本材料翻译 } from "../../src/server/openhive/case-translate-store"
 import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
+import { 资金交易 } from "../../src/server/openhive/case-event-types"
+import { insertEvent, insertParticipants, upsertEntity } from "../../src/server/openhive/case-fact-store"
 import type { FactRowInput } from "../../src/server/openhive/case-store"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -278,6 +280,53 @@ describe("关系从卡片重建（§4.0.4）", () => {
       `),
     )
     expect(关系).toHaveLength(0)
+  })
+
+  test("精度全到秒 ⇒ 到秒（显式分支，不能被 NULL 兜底吞掉）", async () => {
+    // M5 的修法若写成「把 else '到秒' 直接改 else null」，全到秒的一对也会变成 NULL。
+    // 这条与下一条成对：只钉 NULL 侧会漏掉这个回归。
+    await 写("m12", [行("m12", 2, { precision: "到秒" })])
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系).toHaveLength(1)
+    expect(String(关系[0]?.precision)).toBe("到秒")
+  })
+
+  test("精度全 NULL ⇒ NULL，不升级为最细（M5）", async () => {
+    // 翻译路径的卡片精度恒有值（`翻译资金` 兜底「到日」）；全 NULL 只能来自直接写入的
+    // 资金交易事件（文本抽取将来可能复用本类型）。
+    const a = await upsertEntity(db(), {
+      projectId: 项目, id: "e-精度-甲", type: "账户", canonicalValue: 甲, aliases: [],
+    })
+    const b = await upsertEntity(db(), {
+      projectId: 项目, id: "e-精度-乙", type: "账户", canonicalValue: 乙, aliases: [],
+    })
+    await insertEvent(db(), {
+      projectId: 项目,
+      id: "ev-精度-空",
+      type: 资金交易,
+      occurredAt: 1731117305,
+      occurredRaw: "2024-11-09 09:15:03",
+      precision: null,
+      amount: "100.00",
+      participants: [甲, 乙],
+      summary: null,
+      trustState: "自动抽取",
+      currency: "CNY",
+    })
+    await insertParticipants(db(), [
+      {
+        projectId: 项目, id: "p-精度-空-付", eventId: "ev-精度-空", entityId: a,
+        role: "付款方", mentionText: 甲, citationId: null, ordinal: 0,
+      },
+      {
+        projectId: 项目, id: "p-精度-空-收", eventId: "ev-精度-空", entityId: b,
+        role: "收款方", mentionText: 乙, citationId: null, ordinal: 1,
+      },
+    ])
+    await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系).toHaveLength(1)
+    expect(关系[0]?.precision).toBe(null)
   })
 
   test("清理时旧对上的已确认人工关系不被删", async () => {

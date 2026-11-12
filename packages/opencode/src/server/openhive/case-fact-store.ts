@@ -172,16 +172,14 @@ export interface 事件写入 {
   templateId?: string | null
 }
 
+/**
+ * 单条版：**直接委托批量版**，不再维护第二份 10 列 INSERT。
+ *
+ * 两份列集曾经不一致（单条缺 `amount/currency/attrs/template_id/occurred_end`），
+ * 接口上「能传」与「会落」不一致是下一期最容易踩的坑（`#002-06` / M3）。
+ */
 export async function insertEvent(db: Queryable, input: 事件写入): Promise<void> {
-  await db.execute(sql`
-    insert into auth.case_event
-      (id, project_id, type, occurred_at, occurred_raw, precision, participants, summary,
-       trust_state, created_at)
-    values (${input.id}, ${input.projectId}, ${input.type}, ${input.occurredAt},
-            ${input.occurredRaw}, ${input.precision}, ${文本数组(input.participants)},
-            ${input.summary}, ${input.trustState}, ${nowSeconds()})
-    on conflict (project_id, id) do nothing
-  `)
+  await insertEvents(db, [input])
 }
 
 /**

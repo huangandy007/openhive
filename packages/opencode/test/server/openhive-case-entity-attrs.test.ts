@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 合并属性, 剥离本材料出处 } from "../../src/server/openhive/case-entity-attrs"
+import { 合并属性, 属性观察表, 剥离本材料出处 } from "../../src/server/openhive/case-entity-attrs"
 import { upsertEntity } from "../../src/server/openhive/case-fact-store"
 import { 写入翻译结果, 清本材料翻译 } from "../../src/server/openhive/case-translate-store"
 import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
@@ -77,6 +77,12 @@ describe("合并属性（05 §5.2）", () => {
         },
       ),
     ).toEqual({ 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] })
+  })
+})
+
+describe("materialId 形状前提（F8）", () => {
+  test("含 `#` ⇒ 属性观察表 抛错（出处前缀会有歧义）", () => {
+    expect(() => 属性观察表([], new Map(), [], "m#1")).toThrow(/materialId 形状与本函数前提不符/)
   })
 })
 

@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { detectMapping, type 待确认原因 } from "../../src/server/openhive/case-mapping"
 import { toFactRows } from "../../src/server/openhive/case-rows"
 import { 翻译资金, type 跳过原因 } from "../../src/server/openhive/case-translate"
+import { 资金交易 } from "../../src/server/openhive/case-event-types"
 import type { 属性归属 } from "../../src/server/openhive/case-attribute-registry"
 import type { RawRow, RawSheet } from "../../src/server/openhive/case-sheet"
 
@@ -26,6 +27,8 @@ interface 期望 {
     rowNo: number
     /** 时间**原文**：`翻译资金` 的 `卡片草稿.occurredRaw`（C2 含时间，见 01 §4.3.1 / §4.4）。 */
     时间: string
+    /** 时间**解析值**（epoch 秒，固定 UTC+8）：01:924 要求「解析出的值」100%。 */
+    occurredAt: number
     amount: string
     precision: "到日" | "到分" | "到秒"
     主体角色: "付款方" | "收款方"
@@ -38,6 +41,17 @@ interface 期望 {
   属性?: { 归属: 属性归属; 键: string; 值: string; rowNo: number }[]
   掩码实体?: { rowNo: number; 不可建实体: boolean }[]
   汇总: { 笔数: number; 合计: string; 对手方数: number }
+}
+
+/**
+ * 金额文本 → 整数分（M6）：`"1500.00"` → `150000n`。
+ *
+ * C4 是「与库里的 `numeric` 求和完全一致」。用 `Number` 浮点累加会在大额长尾上出分位差，
+ * 而金额本身是两位小数的定点数 ⇒ 一律按整数分比较，不引入第二个求和算法。
+ */
+function 金额分(文本: string): bigint {
+  const [整数 = "0", 小数 = ""] = 文本.split(".")
+  return BigInt(整数) * 100n + BigInt((小数 + "00").slice(0, 2))
 }
 
 function 造表(名: string, aoa: string[][]): RawSheet {
@@ -59,8 +73,8 @@ const 目录们 = readdirSync(根, { withFileTypes: true })
  * 夹具被误删 / 改名时，`describe.each([])` 会 0 用例、`exit 0`——门禁「绿着空跑」。
  * 这条独立用例钉住夹具集合本身；`describe.each` 复用同一个 `目录们`，不重复 readdir。
  */
-test("夹具齐全：三份目录、各含 表.json 与 expected.json", () => {
-  expect(目录们.sort()).toEqual(["单位变体", "收付标志带属性", "银行借贷标志"].sort())
+test("夹具齐全：四份目录、各含 表.json 与 expected.json", () => {
+  expect(目录们.sort()).toEqual(["单位变体", "收付标志带属性", "银行借贷标志", "时间变体"].sort())
   for (const 目录 of 目录们) {
     expect(existsSync(join(根, 目录, "表.json"))).toBe(true)
     expect(existsSync(join(根, 目录, "expected.json"))).toBe(true)
@@ -119,15 +133,17 @@ describe.each(目录们)(
         expect(卡).toMatchObject({
           amount: 期望卡.amount,
           precision: 期望卡.precision,
-          type: "资金交易",
+          type: 资金交易,
           currency: "CNY",
         })
         expect(卡?.participants[0]?.角色).toBe(期望卡.主体角色)
         expect(卡?.participants[1]?.角色).toBe(期望卡.对方角色)
         expect(卡?.participants[1]?.提及).toBe(期望卡.对方)
-        // C2 含时间（01 §4.3.1）；时间错是 §4.4 的「错得不可见」高危项，不钉住则差几年也绿。
-        // `toMatchObject` 不校验它没提到的字段，必须显式对原文。
+        // C2 含时间（01 §4.3.1）；时间错是 §4.4 的「错得不可见」高危项。
+        // `toMatchObject` 不校验它没提到的字段，必须显式对原文与**解析值**：
+        // 只钉 `occurredRaw` 时，时区 / 退化精度 / 年份偏移都会绿（I2）。
         expect(卡?.occurredRaw).toBe(期望卡.时间)
+        expect(卡?.occurredAt).toBe(期望卡.occurredAt)
       }
       // C3：卡片数 / 应该产卡的行数
       expect(结果.卡片们.length / 期望.卡片.length).toBeGreaterThanOrEqual(0.95)
@@ -153,9 +169,9 @@ describe.each(目录们)(
     test("C4 案件级：笔数与合计完全一致", () => {
       const 明细 = toFactRows({ projectId: "p-gold", materialId: "m-gold", sheet, mapping: 映射.columns })
       const { 卡片们 } = 翻译资金({ projectId: "p-gold", materialId: "m-gold", rows: 明细 })
-      const 合计 = 卡片们.reduce((n, c) => n + Number(c.amount), 0).toFixed(2)
+      const 合计分 = 卡片们.reduce((n, c) => n + 金额分(c.amount), 0n)
       expect(卡片们.length).toBe(期望.汇总.笔数)
-      expect(合计).toBe(期望.汇总.合计)
+      expect(合计分).toBe(金额分(期望.汇总.合计))
       // 设计 `01:926` 的 C4 含「对手方数」：同一对手的多次交易只能算一个对手。
       expect(new Set(卡片们.map((c) => c.participants[1]?.规范值)).size).toBe(期望.汇总.对手方数)
     })

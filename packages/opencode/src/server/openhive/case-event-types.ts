@@ -29,6 +29,14 @@ export const 事件类型们 = [
 
 export type 事件类型 = (typeof 事件类型们)[number]
 
+/**
+ * 资金交易的类型值（Q17 词表的**唯一消费入口**）。
+ *
+ * 生产代码（翻译、关系聚合）与测试都引用它；各写一遍字面量时，改词表不会让任何地方变红
+ * （M4 / `#010-05`）。
+ */
+export const 资金交易: 事件类型 = "资金交易"
+
 export function 是事件类型(值: unknown): 值 is 事件类型 {
   return typeof 值 === "string" && (事件类型们 as readonly string[]).includes(值)
 }

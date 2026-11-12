@@ -13,6 +13,7 @@ import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets, type RawSheet } from "./case-sheet"
 import { 是属性列 } from "./case-attribute-registry"
 import {
+  classifyMaterialType,
   formatFingerprint,
   是待确认原因,
   是识别来源,
@@ -458,6 +459,16 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   if (选项.dryRun === true) return
 
   const 待写: FactRowInput[] = []
+  /**
+   * 只喂给翻译层的行（I3）：材料级 `识别.类型` 与逐表类型不是同一个前提。
+   * 材料判资金时，非资金表的行进 `翻译资金` 只会刷「方向不明」之类的跳过噪音。
+   */
+  const 资金行: FactRowInput[] = []
+  /**
+   * 没被翻译的表及原因（I3）：`parse_detail` 根级落库，让「钱/卡会静默少」变成看得见的话。
+   * 不塞进 `翻译` 键——非资金材料本来就不该出现 `翻译`（既有话单用例守着）。
+   */
+  const 未翻译表: { sheet: string; 原因: string }[] = []
   let 认出列数 = 0
   /**
    * 每张表「没认出来的列」明细，随 `parse_detail` 落库（人工确认弹窗的唯一数据源）。
@@ -534,6 +545,15 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 表.列 })
     待写.push(...行)
     守卫们.push({ sheet, 表头: header, 列: 表.列, 行 })
+
+    // 逐表类型：与 `识别材料` 的材料级判定**同一份** `classifyMaterialType`（`#002-06`）。
+    const 表类型 = classifyMaterialType(表.列)
+    if (表类型 === "资金") {
+      if (识别.类型 === "资金") 资金行.push(...行)
+      else 未翻译表.push({ sheet: sheet.name, 原因: `材料类型=${识别.类型}，本期只翻译资金材料` })
+    } else if (识别.类型 === "资金") {
+      未翻译表.push({ sheet: sheet.name, 原因: `本表类型=${表类型}，不是资金表` })
+    }
   }
 
   // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
@@ -558,7 +578,11 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
 
   // 翻译（§4.0）：本期只做资金（`资金/v1`）。其他类型照旧只落明细行，不产卡片。
-  const 翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 待写 }) : undefined
+  // 行源是 `资金行`（逐表过滤）而不是 `待写`（全部表）：混合材料里非资金表的行不该进翻译。
+  const 翻译 =
+    识别.类型 === "资金"
+      ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 资金行 })
+      : undefined
   // 模板在事务外创建：解析失败回滚后，项目里可能留下已提交的 `内置:资金/v1` 行。
   // 它幂等，可接受；但别把「文件落库」当成连同模板一起原子。回滚时若项目里还没有卡片，
   // 这行就是个无引用空模板；若已有卡片，它照旧被引用——两种情况都无害。
@@ -604,6 +628,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
             ]),
           ),
         },
+        // 根级（不进 `翻译`）：非资金材料也要能说清「哪张表为什么不产卡片」（I3 / G4）。
+        ...(未翻译表.length === 0 ? {} : { 未翻译表 }),
         ...(翻译回执 === undefined || 翻译 === undefined
           ? {}
           : {

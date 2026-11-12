@@ -3,7 +3,7 @@ export * as OpenhiveCaseTranslate from "./case-translate"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { 归一化值, 是账户形状 } from "./case-field-registry"
 import { 解析属性列, type 属性归属 } from "./case-attribute-registry"
-import type { 事件类型 } from "./case-event-types"
+import { 资金交易, type 事件类型 } from "./case-event-types"
 import type { FactRowInput } from "./case-store"
 
 /**
@@ -33,8 +33,9 @@ export interface 卡片参与者 {
   规范值: string
   角色: "付款方" | "收款方"
   /**
-   * 参与者账号在**明细行**里的写法。上游 `toFactRows` 已归一化（去横线 + 全角转半角），
-   * 被改写的原文在 `extras`；掩码不匹配归一化，因此掩码原样保留（§4.0.5 坑 1）。
+   * 参与者账号在**明细行**里的原文（设计 `01:800`「该格的原文」）。
+   * 取自 `FactRowInput.ownerAccountRaw / counterpartyRaw`（`toFactRows` 归一化前的值）；
+   * 掩码不匹配归一化，因此掩码原样保留（§4.0.5 坑 1）。
    */
   提及: string
   /** 0 固定为主体（本方账户），1 为对手（§3.3）。 */
@@ -98,9 +99,11 @@ export interface 翻译资金输入 {
  *
  * 原来 §3.7 写「id 含规则版本与模板版本」，那会让每次改规则都换一批 id，而人工确认过的
  * 旧卡不在 `删除本材料的事实` 的删除范围（它按 `fact_id` 判、只删机器态）⇒ 同一行材料
- * 留下两张卡。拍板改为：id 只由来源键（材料 + 表 + 行号 + 槽）决定，版本进
- * `case_event.template_id` 与模板行 `version`；重放靠 `case_citation(material_id, locator)`
- * 定位人工结论。槽是给「一行多卡」的类型（住宿的入住/退房合成）留的判别位。
+ * 留下两张卡。拍板改为：id 只由来源键（材料 + 表 + 行号 + 槽）决定。版本**只**记在
+ * 模板行 `case_card_template.version` 上：`case_event.template_id` 是固定行 id
+ * （`内置:资金/v1`），不随版本变 ⇒ 单张卡片**追溯不到**产它的映射版本（Q15 待定项，
+ * 登记不改）。重放靠 `case_citation(material_id, locator)` 定位人工结论。
+ * 槽是给「一行多卡」的类型（住宿的入住/退房合成）留的判别位。
  */
 export function 卡片id(projectId: string, materialId: string, sheet: string, rowNo: number, 槽: string): string {
   return Hash.sha256([projectId, materialId, sheet, String(rowNo), 槽].join("\u0000")).slice(0, 32)
@@ -195,6 +198,7 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "时间无法解析" })
       continue
     }
+    // 跳过判定仍用归一化列：它们才是「这一格有没有账号」的准绳。
     const 本方原 = (row.ownerAccount ?? "").trim()
     if (本方原 === "") {
       跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "缺本方账号" })
@@ -205,6 +209,9 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "缺对方账号" })
       continue
     }
+    // 提及要的是**该格的原文**（设计 `01:800`）：优先旁路字段，旧调用方没给时退回归一化值。
+    const 本方提及 = (row.ownerAccountRaw ?? row.ownerAccount ?? "").trim()
+    const 对方提及 = (row.counterpartyRaw ?? row.counterparty ?? "").trim()
 
     const 本方 = 归一化值("ownerAccount", 本方原)
     const 对方 = 归一化值("counterparty", 对方原)
@@ -224,7 +231,7 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
 
     卡片们.push({
       id: 卡片id(input.projectId, input.materialId, row.sheet, row.rowNo, "资金"),
-      type: "资金交易",
+      type: 资金交易,
       occurredAt: row.startedAt,
       occurredRaw: row.startedRaw ?? "",
       precision: row.precision ?? "到日",
@@ -232,8 +239,8 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       currency: row.currency ?? "CNY",
       attrs,
       participants: [
-        { 规范值: 本方, 角色: 主体角色, 提及: 本方原, ordinal: 0, 实体: 本方可建 },
-        { 规范值: 对方, 角色: 对手角色, 提及: 对方原, ordinal: 1, 实体: 对方可建 },
+        { 规范值: 本方, 角色: 主体角色, 提及: 本方提及, ordinal: 0, 实体: 本方可建 },
+        { 规范值: 对方, 角色: 对手角色, 提及: 对方提及, ordinal: 1, 实体: 对方可建 },
       ],
       sheet: row.sheet,
       rowNo: row.rowNo,

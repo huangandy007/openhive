@@ -235,6 +235,9 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
       counterparty: 对手账号 === null ? 对手户名 : 归一化值("counterparty", 对手账号),
       counterpartyName: 对手户名 ?? null,
       ownerAccount: 本方账号原值 === null ? null : 归一化值("ownerAccount", 本方账号原值),
+      // 原文旁路（`01:800`「该格的原文」）：账号列为空时户名兜底也取原文。
+      ownerAccountRaw: 本方账号原值,
+      counterpartyRaw: 对手账号 ?? 对手户名,
       direction: 方向,
       // 币种：没有这一列 / 空串 ⇒ CNY；外币原样大写（认不出也算非人民币，`解析币种`）。
       currency: 解析币种(值("currency")),

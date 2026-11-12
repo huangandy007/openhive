@@ -15,6 +15,7 @@ import {
 } from "./case-fact-store"
 import { INSERT_CHUNK, type CitationInput, type Queryable } from "./case-store"
 import { 账户键, type 翻译结果 } from "./case-translate"
+import { 资金交易 } from "./case-event-types"
 import { 合并属性, 属性观察表, 剥离本材料出处, 读jsonb } from "./case-entity-attrs"
 
 /**
@@ -32,6 +33,21 @@ function 事实id(...parts: (string | number)[]): string {
   return Hash.sha256(parts.join("\u0000")).slice(0, 32)
 }
 
+/**
+ * 人工结论：重放一律保留（设计 §5.3）。
+ *
+ * 事件保护（`insertEvents` 的 `do nothing`）、参与者保护（本文件 `受保护` 查询）与关系保护
+ * （`重建关系` 的不写机器行）必须同一份，改一处即三处（`#002-06`）。漏了参与者这一处，
+ * 人工卡会变成「旧金额 + 新参与者」——比整卡覆盖更难解释。
+ */
+const 人工结论们 = ["已确认", "已修正", "已排除"] as const
+
+/** `in (...)` 用的值列表：三处（事件保护 / 参与者保护 / 关系保护）共用。 */
+const 人工结论值 = sql.join(
+  人工结论们.map((v) => sql`${v}`),
+  sql`, `,
+)
+
 export interface 写入翻译输入 {
   projectId: string
   materialId: string
@@ -40,6 +56,13 @@ export interface 写入翻译输入 {
 }
 
 export async function 清本材料翻译(tx: Queryable, projectId: string, materialId: string): Promise<void> {
+  // F8（M2）：本函数末尾的 attrs 反查是 `strpos(attrs::text, '"<materialId>#')`，前提是
+  // jsonb 文本里 materialId 原样出现；含 `"` 或 `\` 时 jsonb 会转义（`\"`、`\\`），反查
+  // 静默漏清。现在的取值只有 `crypto.randomUUID()` / `mat-<hash>`，前提成立；把闸放在
+  // **任何副作用之前**，将来若改由用户输入决定，宁可当场报错也不静默留脏属性（`#004-09`）。
+  if (materialId.includes('"') || materialId.includes("\\")) {
+    throw new Error(`materialId 形状与本函数前提不符：不能含引号或反斜杠：${materialId}`)
+  }
   // 「关系对迁移」：本材料贡献过的**旧对**必须在删事件之前取出——事件删完就查不到了。
   // 否则重放换了对手时，旧对没有卡片支持、却从没人传进 `重建关系`，页面上会留一笔
   // 聚合了已删事件的转账（比少一笔更危险：它看起来像真线索）。
@@ -85,8 +108,8 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   // 只在写入侧（⑤）剥离不够：⑤ 只看得到「本轮仍有新观察」的实体，本轮一条都没有的实体
   // 只能在这里按材料找（Q14）。
   // 前提：materialId 不含 `"` 或 `\`。含这两个字符时 jsonb 文本会转义（`\"`、`\\`），
-  // 本反查漏判。现在的取值只有 `crypto.randomUUID()` 与 `mat-<hash>`，前提成立；
-  // 若将来 materialId 改由用户输入决定，这里要换成按 jsonb 结构判定（jsonpath）。
+  // 本反查漏判。函数入口已按 F8 抛错拦住；若将来 materialId 改由用户输入决定，
+  // 要换成按 jsonb 结构判定（jsonpath），同时撤掉入口那道闸。
   const 带味实体 = rowsOf(
     await tx.execute(sql`
       select id, attrs from auth.case_entity
@@ -168,17 +191,42 @@ export async function 写入翻译结果(
   await insertEvents(tx, 事件们)
   await addCitations(tx, 引用们)
 
+  // 人工结论的事件整卡保护（设计 §5.3 / I1）：`insertEvents` 的 `do nothing` 只保住事件行，
+  // 参与者却是无条件 upsert ⇒ 重放换对手时同一张卡会变成「旧金额 + 新参与者」。
+  // 刚插入的事件恒为 `自动抽取`，所以这里查到的必然是上一轮已被人工裁决的卡。
+  // 关系不需要额外跳过：`重建关系` 从 `case_event` + 参与者聚合，受保护卡的旧参与者仍在库里
+  // ⇒ 旧对保持；旧对由 `清本材料翻译` 的 `旧对们` 传入（人工事实的引用被保留）。
+  const 卡ids = 翻译.卡片们.map((卡) => 卡.id)
+  const 受保护 =
+    卡ids.length === 0
+      ? new Set<string>()
+      : new Set(
+          rowsOf(
+            await tx.execute(sql`
+              select id from auth.case_event
+               where project_id = ${projectId} and id = any(${文本数组(卡ids)})
+                 and trust_state in (${人工结论值})
+            `),
+          ).map((r) => String(r.id)),
+        )
+
+  // 出处按卡片建一次索引：参与者数 = 2×卡片数，逐个 `find` 是全量扫描 ⇒ 2N² 次比较，
+  // 20 万行时会在单 worker 事务内冻住（I4 / `#011-03`）。
+  const 引用按卡 = new Map(引用们.map((c) => [c.factId, c.id]))
   const 参与者们 = 翻译.卡片们.flatMap((卡) =>
-    卡.participants.map((p) => ({
-      projectId,
-      id: 事实id(projectId, "participant", 卡.id, String(p.ordinal)),
-      eventId: 卡.id,
-      entityId: p.实体 ? (实体缓存.get(账户键(p.规范值)) ?? null) : null,
-      role: p.角色,
-      mentionText: p.提及,
-      citationId: 引用们.find((c) => c.factId === 卡.id)?.id ?? null,
-      ordinal: p.ordinal,
-    })),
+    // 整卡跳过：不写、也不改（`entity_id` / `role` / `mention_text` 全部保留人工裁决时的值）。
+    受保护.has(卡.id)
+      ? []
+      : 卡.participants.map((p) => ({
+          projectId,
+          id: 事实id(projectId, "participant", 卡.id, String(p.ordinal)),
+          eventId: 卡.id,
+          entityId: p.实体 ? (实体缓存.get(账户键(p.规范值)) ?? null) : null,
+          role: p.角色,
+          mentionText: p.提及,
+          citationId: 引用按卡.get(卡.id) ?? null,
+          ordinal: p.ordinal,
+        })),
   )
   await insertParticipants(tx, 参与者们)
 
@@ -202,7 +250,7 @@ export async function 写入翻译结果(
   const 对们: 关系对[] = []
   const 已见对 = new Set<string>()
   for (const 卡 of 翻译.卡片们) {
-    if (卡.type !== "资金交易") continue
+    if (卡.type !== 资金交易) continue
     const [主体, 对手] = 卡.participants
     if (!主体.实体 || !对手.实体) continue
     const 主体id = 实体缓存.get(账户键(主体.规范值))
@@ -217,7 +265,7 @@ export async function 写入翻译结果(
   await 重建关系(tx, projectId, 对们)
 
   // ⑤ 属性写入：读 → 剥离本材料出处 → 合并 → 写（Q14 / 05 §5.2）。
-  const 按实体 = 属性观察表(翻译.属性们, 实体缓存, 翻译.卡片们)
+  const 按实体 = 属性观察表(翻译.属性们, 实体缓存, 翻译.卡片们, materialId)
   if (按实体.size > 0) {
     const ids = [...按实体.keys()]
     const 现有们 = rowsOf(
@@ -286,7 +334,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
         select distinct r.from_id, r.to_id
           from auth.case_relation r
          where r.project_id = ${projectId} and r.type = '转账'
-           and r.trust_state in ('已确认', '已修正', '已排除')
+           and r.trust_state in (${人工结论值})
            and (r.from_id, r.to_id) in (values ${值})
       `),
     )
@@ -310,9 +358,13 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
                count(*)::int as times,
                coalesce(sum(e.amount) filter (where e.currency = 'CNY'), 0)::numeric(18,2)::text as amount,
                min(e.occurred_at) as first_at, max(e.occurred_at) as last_at,
+               -- 精度取最粗；全为 NULL 时输出 NULL（M5：不升级为最细）。
+               -- 到秒必须显式列出：把它并进 else 再改 null，会把「真的到秒」也一起抹掉。
+               -- 同函数对金额判型失败选择抛错，这里的兜底也不许 fail-open。
                case when bool_or(e.precision = '到日') then '到日'
                     when bool_or(e.precision = '到分') then '到分'
-                    else '到秒' end as precision
+                    when bool_or(e.precision = '到秒') then '到秒'
+                    else null end as precision
           from auth.case_event e
           -- 角色前提与清本材料翻译的旧对查询一致，改一处必须改两处（#002-06）。
           join auth.case_event_participant 付
@@ -320,7 +372,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
           join auth.case_event_participant 收
             on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
          where e.project_id = ${projectId}
-           and e.type = '资金交易'
+           and e.type = ${资金交易}
            and e.trust_state <> '已排除'
            and 付.entity_id is not null and 收.entity_id is not null
            and (付.entity_id, 收.entity_id) in (values ${值})
