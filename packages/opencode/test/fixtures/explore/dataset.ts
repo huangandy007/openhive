@@ -231,6 +231,10 @@ export async function 种探索数据集(
     if (结果 !== "完成") throw new Error(`作业没有跑完：${结果}（材料 ${materialId}）`)
   }
 
+  // R-J：必须**逐份交错**（入队一份 → 认领 → 跑完 → 再入队下一份），不能先全入队再逐个认领。
+  // `claimNextJob` 排序是 `order by queued_at, id`（`case-ingest.ts:183`），而 `queued_at` 只有
+  // 秒精度（`nowSeconds()`）——同秒入队的作业谁先在队首由随机 UUID 决定。逐份交错后，
+  // 每次认领那一刻队列里只有一份作业，与 ID 无关。
   const 流水 = await 入队(projectId, "资金流水.xlsx", 造工作簿(流水行们, "流水"))
   await 跑(流水)
 
@@ -240,7 +244,7 @@ export async function 种探索数据集(
   const 笔录 = await 入队(projectId, "笔录-资金往来.txt", new TextEncoder().encode(笔录正文))
   await 跑(笔录, async () => 建假抽取器(() => 假抽取器回答))
 
-  // ⚠️ 第 4 份必须在**最后**入队，且之后不再 `claimNextJob`（全局 FIFO）。
+  // ⚠️ 第 4 份必须在**三份都跑完之后**才入队，且之后不再 `claimNextJob`（R-J）。
   const 待解析 = await 入队(projectId, "待解析流水.xlsx", 造工作簿([流水表头], "流水"))
 
   // 副项目：只入队、不认领。
