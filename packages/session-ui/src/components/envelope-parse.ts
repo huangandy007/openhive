@@ -45,6 +45,14 @@ export function 信封工具名(工具键: string): string {
   return 是信封工具键(工具键) ? 工具键.slice(信封工具前缀.length) : 工具键
 }
 
+/** 副标题文本：`ui.envelopeTool.tool.<裸名>` 有译文用译文，没有就显示裸工具名（不回退成内部键名）。 */
+export function 工具名文本(t: (键: string) => string, 工具键: string): string {
+  const 名 = 信封工具名(工具键)
+  const 键 = `ui.envelopeTool.tool.${名}`
+  const 文本 = t(键)
+  return 文本 === 键 ? 名 : 文本
+}
+
 const 是记录 = (值: unknown): 值 is Record<string, unknown> =>
   typeof 值 === "object" && 值 !== null && !Array.isArray(值)
 

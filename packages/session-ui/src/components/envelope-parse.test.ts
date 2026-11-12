@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
+import { 工具名文本, 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
 
 const 信封文本 = (值: unknown) => JSON.stringify(值)
 
@@ -115,5 +115,24 @@ describe("信封工具名", () => {
   test("不是信封工具键时原样返回", () => {
     expect(信封工具名("search_materials")).toBe("search_materials")
     expect(信封工具名("")).toBe("")
+  })
+})
+
+describe("工具名文本", () => {
+  test("工具名文本：信封键取到译文", () => {
+    const 译文表: Record<string, string> = { "ui.envelopeTool.tool.find_crossings": "Find crossings" }
+    const t = (键: string) => 译文表[键] ?? 键
+    expect(工具名文本(t, "openhive-case_find_crossings")).toBe("Find crossings")
+  })
+
+  test("工具名文本：无译文时显示裸工具名，不显示内部键", () => {
+    const t = (键: string) => 键
+    expect(工具名文本(t, "openhive-case_query_rows")).toBe("query_rows")
+  })
+
+  test("工具名文本：无前缀键也照常取译文", () => {
+    const 译文表: Record<string, string> = { "ui.envelopeTool.tool.query_rows": "Query rows" }
+    const t = (键: string) => 译文表[键] ?? 键
+    expect(工具名文本(t, "query_rows")).toBe("Query rows")
   })
 })

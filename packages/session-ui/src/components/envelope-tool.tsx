@@ -3,7 +3,7 @@ import { useI18n } from "@opencode-ai/ui/context/i18n"
 import { BasicTool, GenericTool } from "./basic-tool"
 // 解析层在 `envelope-parse.ts`：两个模块若同名（`envelope-tool.ts` / `envelope-tool.tsx`），
 // bun 的无扩展名解析偏好 `.tsx`、vite/tsc 偏好 `.ts`，同一个 import 会随运行时而漂。
-import { 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
+import { 工具名文本, 数据字节数, 数据行数, 解析工具输出, 是信封工具键 } from "./envelope-parse"
 
 /** 渲染器收到的 props（`message-part.tsx` 的 `Dynamic` 传参）。 */
 export interface 信封卡属性 {
@@ -15,14 +15,6 @@ export interface 信封卡属性 {
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
-}
-
-/** `ui.envelopeTool.tool.<工具名>` 有译文就用；没有时 i18n 回退返回 key 本身（context/i18n.tsx:53），这时显示原名。 */
-const 工具名文本 = (t: (键: string) => string, 工具: string) => {
-  const 名 = 信封工具名(工具)
-  const 键 = `ui.envelopeTool.tool.${名}`
-  const 文本 = t(键)
-  return 文本 === 键 ? 名 : 文本
 }
 
 /** 触发器副标题：只挑几个民警看得懂的入参，不是整包 JSON。 */
@@ -43,6 +35,8 @@ function 入参摘要(input: Record<string, unknown> | undefined): string[] {
     "金额止",
     "起",
     "止",
+    "时间起",
+    "时间止",
   ]
   return 键序
     .filter((键) => input[键] !== undefined && input[键] !== null && input[键] !== "")
