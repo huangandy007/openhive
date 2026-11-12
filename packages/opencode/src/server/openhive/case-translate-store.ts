@@ -84,6 +84,9 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   // jsonb 文本里出处值形如 `"出处": "am1#Sheet1#2"`，带引号才精确到「这个出处值开头」。
   // 只在写入侧（⑤）剥离不够：⑤ 只看得到「本轮仍有新观察」的实体，本轮一条都没有的实体
   // 只能在这里按材料找（Q14）。
+  // 前提：materialId 不含 `"` 或 `\`。含这两个字符时 jsonb 文本会转义（`\"`、`\\`），
+  // 本反查漏判。现在的取值只有 `crypto.randomUUID()` 与 `mat-<hash>`，前提成立；
+  // 若将来 materialId 改由用户输入决定，这里要换成按 jsonb 结构判定（jsonpath）。
   const 带味实体 = rowsOf(
     await tx.execute(sql`
       select id, attrs from auth.case_entity

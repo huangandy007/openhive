@@ -208,6 +208,9 @@ describe("attrs 落库与反回归（§3.10 / 05 §5.2）", () => {
     await 写("bm1", [行("bm1", 3, "农业银行")])
 
     expect(开户行值们(await 本方属性())).not.toContain("交通银行")
+    // 剥离必须**按出处**、不能把整份 attrs 抹掉：只断言「本材料的没了」的话，
+    // 清理写成 `set attrs = '{}'` 照样绿（复审变异 C 存活）。招商银行来自 am1，必须还在。
+    expect(开户行值们(await 本方属性())).toContain("招商银行")
     expect(开户行值们(await 对方属性())).toContain("农业银行")
   })
 })
