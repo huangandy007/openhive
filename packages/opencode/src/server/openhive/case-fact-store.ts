@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import type { CitationInput, Queryable } from "./case-store"
+import { 合并属性, 读jsonb } from "./case-entity-attrs"
 
 /**
  * 五张事实表里「AI 抽取会写」的那几笔。
@@ -27,8 +28,9 @@ export interface 实体写入 {
   canonicalValue: string
   aliases: string[]
   /**
-   * 实体附加信息（jsonb）。目前只有 `subtype`（材料里明确写出的细类）。
-   * 与别名一样按 **key 合并**：`attrs || excluded.attrs`，新值盖同键旧值、其余键保留。
+   * 实体附加信息（jsonb）。目前只有 `subtype`（材料里明确写出的细类）与
+   * `属性:<归属>:<键>` 产出的观察数组（01 §3.10）。
+   * 按 `合并属性` 合并：观察数组按 `值` 去重、同键不同值并存；标量键新值覆盖。
    */
   attrs?: Record<string, unknown>
 }
@@ -59,18 +61,32 @@ export function 文本数组(值: readonly string[]) {
  * 关系就会挂到一个不存在的实体上。别名取并集并去重。
  */
 export async function upsertEntity(db: Queryable, input: 实体写入): Promise<string> {
+  // 先读现有 attrs，再按键合并写回（§3.10 / 05 §5.2）。
+  // 不能再用 `attrs || excluded.attrs`：那是键级覆盖，两家材料给出不同开户行时后写的
+  // 把前一条整键抹掉（`openhive-case-entity-attrs.test.ts` 专钉这一条）。
+  // 这里只能做「无剥离的合并」——拿不到 materialId，无从判断哪条观察属于本次材料；
+  // 「剥离本材料出处」只在 `写入翻译结果` ⑤ 里做（那里才有 materialId）。
+  // 并发面：同一项目同一实体在同一材料事务内只有一个写者；跨材料并发时仍可能丢键，
+  // 这是设计允许的（读→追加→写），真出现再上 advisory lock。
+  const 现有行 = rowsOf(
+    await db.execute(sql`
+      select attrs from auth.case_entity
+       where project_id = ${input.projectId} and type = ${input.type}
+         and canonical_value = ${input.canonicalValue}
+    `),
+  )
+  const 合并后 = 合并属性(读jsonb(现有行[0]?.attrs), input.attrs ?? {})
   const 行 = rowsOf(
     await db.execute(sql`
       insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, created_at)
       values (${input.id}, ${input.projectId}, ${input.type}, ${input.canonicalValue},
-              ${文本数组(input.aliases)}, ${JSON.stringify(input.attrs ?? {})}::text::jsonb, ${nowSeconds()})
+              ${文本数组(input.aliases)}, ${JSON.stringify(合并后)}::text::jsonb, ${nowSeconds()})
       on conflict (project_id, type, canonical_value) do update
          set aliases = (
            select coalesce(array_agg(distinct x), '{}'::text[])
              from unnest(auth.case_entity.aliases || excluded.aliases) as x
          ),
-         -- jsonb 的 || 按 key 合并：没带细类的一方（{}）不会抹掉已有的 subtype。
-         attrs = auth.case_entity.attrs || excluded.attrs
+         attrs = excluded.attrs
       returning id
     `),
   )

@@ -13,8 +13,9 @@ import {
   文本数组,
   删除本材料的事实,
 } from "./case-fact-store"
-import type { CitationInput, Queryable } from "./case-store"
+import { INSERT_CHUNK, type CitationInput, type Queryable } from "./case-store"
 import { 账户键, type 翻译结果 } from "./case-translate"
+import { 合并属性, 属性观察表, 剥离本材料出处, 读jsonb } from "./case-entity-attrs"
 
 /**
  * 翻译结果落库（01 §4.0 的「⑤ 落库」）。
@@ -187,8 +188,34 @@ export async function 写入翻译结果(
   }
   await 重建关系(tx, projectId, 对们)
 
-  // ⑤ 属性写入在 Task 8 接入。
-  return { 卡片数: 翻译.卡片们.length, 别名数: 翻译.别名们.length, 属性实体数: 0 }
+  // ⑤ 属性写入：读 → 剥离本材料出处 → 合并 → 写（Q14 / 05 §5.2）。
+  const 按实体 = 属性观察表(翻译.属性们, 实体缓存, 翻译.卡片们)
+  if (按实体.size > 0) {
+    const ids = [...按实体.keys()]
+    const 现有们 = rowsOf(
+      await tx.execute(sql`
+        select id, attrs from auth.case_entity
+         where project_id = ${projectId} and id = any(${文本数组(ids)})
+      `),
+    )
+    const 现按id = new Map(现有们.map((r) => [String(r.id), 读jsonb(r.attrs)]))
+    for (let i = 0; i < ids.length; i += INSERT_CHUNK) {
+      const chunk = ids.slice(i, i + INSERT_CHUNK)
+      await tx.execute(sql`
+        update auth.case_entity e
+           set attrs = v.attrs
+          from (values ${sql.join(
+            chunk.map((id) => {
+              const 合并后 = 合并属性(剥离本材料出处(现按id.get(id) ?? {}, materialId), 按实体.get(id) ?? {})
+              return sql`(${id}, ${JSON.stringify(合并后)}::text::jsonb)`
+            }),
+            sql`, `,
+          )}) as v(id, attrs)
+         where e.project_id = ${projectId} and e.id = v.id
+      `)
+    }
+  }
+  return { 卡片数: 翻译.卡片们.length, 别名数: 翻译.别名们.length, 属性实体数: 按实体.size }
 }
 
 export interface 关系对 {

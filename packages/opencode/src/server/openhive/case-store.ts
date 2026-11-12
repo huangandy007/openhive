@@ -328,7 +328,7 @@ export interface FactRowInput {
 }
 
 /** 一块多少行。18 列 × 500 = 9000 个绑定参数，离 PG 上限 65535 有量级余量。 */
-const INSERT_CHUNK = 500
+export const INSERT_CHUNK = 500
 
 /**
  * 批量写明细行。**分块多值 INSERT**（设计 §6.5）：每 500 行发一条语句，既不像逐行发那样

@@ -1,0 +1,161 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { sql } from "drizzle-orm"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { startProductionDb } from "@opencode-ai/auth/test-support"
+import { 合并属性, 剥离本材料出处 } from "../../src/server/openhive/case-entity-attrs"
+import { upsertEntity } from "../../src/server/openhive/case-fact-store"
+import { 写入翻译结果 } from "../../src/server/openhive/case-translate-store"
+import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
+import { 翻译资金 } from "../../src/server/openhive/case-translate"
+import type { FactRowInput } from "../../src/server/openhive/case-store"
+
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+})
+afterAll(async () => {
+  await pg?.stop()
+})
+function db() {
+  if (!pg) throw new Error("真库没起来")
+  return pg.db
+}
+
+describe("合并属性（05 §5.2）", () => {
+  test("同键同值去重，保留首次出处", () => {
+    const 旧 = { 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] }
+    const 新 = { 开户行: [{ 值: "招商银行", 出处: "m2#S#5" }] }
+    expect(合并属性(旧, 新)).toEqual({ 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] })
+  })
+
+  test("同键不同值并存（A16：两条都在）", () => {
+    const 旧 = { 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] }
+    const 新 = { 开户行: [{ 值: "工商银行", 出处: "m2#S#5" }] }
+    expect(合并属性(旧, 新)).toEqual({
+      开户行: [
+        { 值: "招商银行", 出处: "m1#S#2" },
+        { 值: "工商银行", 出处: "m2#S#5" },
+      ],
+    })
+  })
+
+  test("新键追加；标量键覆盖（subtype 语义不变）", () => {
+    expect(合并属性({ subtype: "银行卡" }, { subtype: "对公户" })).toEqual({ subtype: "对公户" })
+    expect(合并属性({}, { 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] })).toEqual({
+      开户行: [{ 值: "招商银行", 出处: "m1#S#2" }],
+    })
+  })
+
+  test("剥离本材料出处：只删自己的，别材料的留", () => {
+    const 旧 = {
+      开户行: [
+        { 值: "招商银行", 出处: "m1#S#2" },
+        { 值: "工商银行", 出处: "m2#S#5" },
+      ],
+      subtype: "银行卡",
+    }
+    expect(剥离本材料出处(旧, "m1")).toEqual({
+      开户行: [{ 值: "工商银行", 出处: "m2#S#5" }],
+      subtype: "银行卡",
+    })
+  })
+})
+
+const 项目 = "prj-attrs"
+
+function 行(materialId: string, rowNo: number, 开户行: string): FactRowInput {
+  return {
+    projectId: 项目,
+    materialId,
+    sheet: "Sheet1",
+    rowNo,
+    startedAt: 1731117303,
+    startedRaw: "2024-11-09 09:15:03",
+    precision: "到秒",
+    amount: "5000.00",
+    direction: "付",
+    counterparty: "6222021234567890123",
+    ownerAccount: "6217001234567896514",
+    currency: "CNY",
+    extras: { "属性:对方:开户行": 开户行 },
+  }
+}
+
+async function 写(materialId: string, rows: FactRowInput[]) {
+  const templateId = await 确保内置模板(db(), 项目)
+  return 写入翻译结果(db(), {
+    projectId: 项目,
+    materialId,
+    templateId,
+    翻译: 翻译资金({ projectId: 项目, materialId, rows }),
+  })
+}
+
+async function 对方属性() {
+  const [row] = rowsOf(
+    await db().execute(sql`
+      select attrs from auth.case_entity
+       where project_id = ${项目} and type = '账户' and canonical_value = '6222021234567890123'
+    `),
+  )
+  return row?.attrs
+}
+
+async function 本方属性() {
+  const [row] = rowsOf(
+    await db().execute(sql`
+      select attrs from auth.case_entity
+       where project_id = ${项目} and type = '账户' and canonical_value = '6217001234567896514'
+    `),
+  )
+  return row?.attrs
+}
+
+describe("attrs 落库与反回归（§3.10 / 05 §5.2）", () => {
+  test("两份材料给出不同开户行 ⇒ 两条都在", async () => {
+    await 写("am1", [
+      {
+        ...行("am1", 2, "招商银行"),
+        extras: { "属性:对方:开户行": "招商银行", "属性:本方:开户行": "招商银行" },
+      },
+    ])
+    await 写("am2", [行("am2", 2, "工商银行")])
+    expect(await 对方属性()).toEqual({
+      开户行: [
+        { 值: "招商银行", 出处: "am1#Sheet1#2" },
+        { 值: "工商银行", 出处: "am2#Sheet1#2" },
+      ],
+    })
+    // 本方实体这时也拿到了自己的开户行——只断言对方的话，`归属` 映射写成常量「对方」
+    // 照样绿（`#005-18` 假绿四问之二）。
+    expect(await 本方属性()).toEqual({
+      开户行: [{ 值: "招商银行", 出处: "am1#Sheet1#2" }],
+    })
+  })
+
+  test("重放一份材料换了开户行 ⇒ 旧值被自己的出处剥离，别材料的留", async () => {
+    await 写("am1", [行("am1", 2, "建设银行")])
+    expect(await 对方属性()).toEqual({
+      开户行: [
+        { 值: "工商银行", 出处: "am2#Sheet1#2" },
+        { 值: "建设银行", 出处: "am1#Sheet1#2" },
+      ],
+    })
+  })
+
+  test("`upsertEntity` 不再键级覆盖（`case-fact-store.ts:73` 的反回归）", async () => {
+    const 键 = "6222021234567890123"
+    await upsertEntity(db(), {
+      projectId: 项目,
+      id: "e-x",
+      type: "账户",
+      canonicalValue: 键,
+      aliases: [],
+      attrs: { 开户行: [{ 值: "农商行", 出处: "手工#1" }] },
+    })
+    const 现 = (await 对方属性()) as { 开户行: { 值: string }[] }
+    expect(现.开户行.map((x) => x.值)).toContain("农商行")
+    expect(现.开户行.map((x) => x.值)).toContain("建设银行")
+  })
+})
