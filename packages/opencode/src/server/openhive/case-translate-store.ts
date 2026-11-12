@@ -78,7 +78,8 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   `)
   await deleteCitationsOfMaterial(tx, projectId, materialId)
   // 旧对重算放在清理之后：此时它们已无卡片支持 ⇒ 删机器行后不会再插入。
-  // 人工保护（已确认/已修正整对放手）照旧由 `重建关系` 生效，清理不会删掉人工结论。
+  // 人工结论（`已确认`/`已修正`/`已排除`）照旧由 `重建关系` 保护：这些对**不写**机器行，
+  // 机器行仍会被清掉（两者不得并存），清理不会删掉人工结论。
   await 重建关系(tx, projectId, 旧对们)
 }
 
