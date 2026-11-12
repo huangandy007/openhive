@@ -1,0 +1,202 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { sql } from "drizzle-orm"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { startProductionDb } from "@opencode-ai/auth/test-support"
+import { 重建关系, 写入翻译结果, 清本材料翻译 } from "../../src/server/openhive/case-translate-store"
+import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
+import { 翻译资金 } from "../../src/server/openhive/case-translate"
+import type { FactRowInput } from "../../src/server/openhive/case-store"
+
+let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+beforeAll(async () => {
+  pg = await startProductionDb()
+  await migrate(pg.db)
+})
+afterAll(async () => {
+  await pg?.stop()
+})
+function db() {
+  if (!pg) throw new Error("真库没起来")
+  return pg.db
+}
+
+const 项目 = "prj-rel"
+const 甲 = "6217001234567896514"
+const 乙 = "6222021234567890123"
+
+/**
+ * 每个用例自带数据：本文件的用例都落在同一个 `项目` 下，而关系是**全项目聚合**的。
+ * 不隔离的话，前一条用例的卡片会混进后一条的 `times/amount`（简报原夹具就踩了这一条：
+ * 「外币」用例期望 6200，可上一条已经往同一对里又加了 5000）。
+ */
+beforeEach(async () => {
+  await db().execute(sql`delete from auth.case_citation where project_id = ${项目}`)
+  await db().execute(sql`delete from auth.case_event_participant where project_id = ${项目}`)
+  await db().execute(sql`delete from auth.case_event where project_id = ${项目}`)
+  await db().execute(sql`delete from auth.case_relation where project_id = ${项目}`)
+  await db().execute(sql`delete from auth.case_entity_alias where project_id = ${项目}`)
+  await db().execute(sql`delete from auth.case_entity where project_id = ${项目}`)
+})
+
+function 行(materialId: string, rowNo: number, over: Partial<FactRowInput> = {}): FactRowInput {
+  return {
+    projectId: 项目,
+    materialId,
+    sheet: "Sheet1",
+    rowNo,
+    startedAt: 1731117303 + rowNo,
+    startedRaw: "2024-11-09 09:15:03",
+    precision: "到秒",
+    amount: "5000.00",
+    direction: "付",
+    counterparty: 乙,
+    ownerAccount: 甲,
+    currency: "CNY",
+    ...over,
+  }
+}
+
+async function 写(materialId: string, rows: FactRowInput[]) {
+  const templateId = await 确保内置模板(db(), 项目)
+  return 写入翻译结果(db(), {
+    projectId: 项目,
+    materialId,
+    templateId,
+    翻译: 翻译资金({ projectId: 项目, materialId, rows }),
+  })
+}
+
+/** `case_relation.from_id/to_id` 存的是**实体 id**（`case_entity.id` 的 hash），不是账号。 */
+async function 实体id(账号: string): Promise<string> {
+  const [row] = rowsOf(
+    await db().execute(sql`
+      select id from auth.case_entity
+       where project_id = ${项目} and type = '账户' and canonical_value = ${账号}
+    `),
+  )
+  if (typeof row?.id !== "string") throw new Error(`账户实体不存在：${账号}`)
+  return row.id
+}
+
+/** 只取这一对（方向明确）的转账关系，避免被同项目的其它对干扰。 */
+async function 转账关系(from账号: string, to账号: string) {
+  return rowsOf(
+    await db().execute(sql`
+      select from_id, to_id, times, amount, first_at, last_at, precision, trust_state
+        from auth.case_relation
+       where project_id = ${项目} and type = '转账'
+         and from_id = ${await 实体id(from账号)} and to_id = ${await 实体id(to账号)}
+       order by trust_state, id
+    `),
+  )
+}
+
+/** 测试 1/2 的公共前置：两份材料落在同一对账户上。 */
+async function 甲乙两份材料() {
+  // 第三行故意用「到分」：关系精度取最粗的，混精度夹具才能钉住 CASE（全「到秒」时
+  // 常量也能过）。
+  await 写("m1", [行("m1", 2), 行("m1", 3, { amount: "1000.00", precision: "到分" })])
+  await 写("m2", [行("m2", 2, { amount: "200.00" })])
+}
+
+describe("关系从卡片重建（§4.0.4）", () => {
+  test("两份材料同一对 ⇒ 笔数金额相加，不互相覆盖", async () => {
+    await 甲乙两份材料()
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系).toHaveLength(1)
+    expect(Number(关系[0]?.times)).toBe(3)
+    expect(String(关系[0]?.amount)).toBe("6200.00")
+    // 首末与精度同样来自聚合，不是常量。m1#2/m2#2 的 startedAt 相同。
+    expect(Number(关系[0]?.first_at)).toBe(1731117305)
+    expect(Number(关系[0]?.last_at)).toBe(1731117306)
+    // 取最粗：m1#3 是「到分」。
+    expect(String(关系[0]?.precision)).toBe("到分")
+  })
+
+  test("重放一份材料 ⇒ 笔数不变（不是 6 也不是 4）", async () => {
+    await 甲乙两份材料()
+    await 写("m2", [行("m2", 2, { amount: "200.00" })])
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系).toHaveLength(1)
+    expect(Number(关系[0]?.times)).toBe(3)
+    expect(String(关系[0]?.amount)).toBe("6200.00")
+  })
+
+  test("双向各自一条：A→B 与 B→A 不合并", async () => {
+    // 反向行必须是**乙付给甲**：所有者是乙、对手是甲、方向「付」。
+    // 简报原夹具写成「所有者乙、对手甲、方向收」，那仍是甲付给乙，两条落进同一对。
+    await 写("m3", [
+      行("m3", 2),
+      行("m3", 3, { direction: "付", counterparty: 甲, ownerAccount: 乙, amount: "300.00" }),
+    ])
+    const 正向 = await 转账关系(甲, 乙)
+    const 反向 = await 转账关系(乙, 甲)
+    expect(正向).toHaveLength(1)
+    expect(反向).toHaveLength(1)
+    expect(Number(正向[0]?.times)).toBe(1)
+    expect(String(正向[0]?.amount)).toBe("5000.00")
+    expect(Number(反向[0]?.times)).toBe(1)
+    expect(String(反向[0]?.amount)).toBe("300.00")
+  })
+
+  test("外币卡片不进人民币合计", async () => {
+    await 甲乙两份材料()
+    await 写("m4", [行("m4", 2, { amount: "100.00", currency: "USD" })])
+    const 关系 = await 转账关系(甲, 乙)
+    expect(String(关系[0]?.amount)).toBe("6200.00") // USD 100 没加进来
+  })
+
+  test("已排除的卡片不参与聚合", async () => {
+    await 写("m5", [行("m5", 2)])
+    expect(await 转账关系(甲, 乙)).toHaveLength(1)
+    await db().execute(sql`
+      update auth.case_event set trust_state = '已排除'
+       where project_id = ${项目} and id = ${await 卡片idOf("m5", 2)}
+    `)
+    await 重建关系(db(), 项目, [{ fromId: await 实体id(甲), toId: await 实体id(乙) }])
+    // 唯一一张卡片被排除 ⇒ 该对没有可聚合的事实，机器关系必须消失而不是留旧值。
+    expect(await 转账关系(甲, 乙)).toHaveLength(0)
+  })
+
+  test("已确认的人工关系不被机器行叠加", async () => {
+    await 写("m5", [行("m5", 2)])
+    const a = await 实体id(甲)
+    const b = await 实体id(乙)
+    // 人工关系同样按**实体 id** 挂两端（简报原夹具把账号写进 from_id/to_id）。
+    await db().execute(sql`
+      insert into auth.case_relation
+        (id, project_id, from_id, to_id, type, amount, times, source_kind, trust_state, created_at)
+      values ('人工-关系', ${项目}, ${a}, ${b}, '转账', 8888.00, 9, 'data', '已确认', 1)
+    `)
+    await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
+    const 关系 = await 转账关系(甲, 乙)
+    const 机器 = 关系.filter((r) => r.trust_state === "自动抽取")
+    expect(机器).toHaveLength(0)
+    expect(关系.filter((r) => r.trust_state === "已确认")).toHaveLength(1)
+  })
+
+  test("重写材料后卡片金额变了 ⇒ 关系按卡片重算，不保留旧值", async () => {
+    await 写("m6", [行("m6", 2)])
+    expect(String((await 转账关系(甲, 乙))[0]?.amount)).toBe("5000.00")
+    await 清本材料翻译(db(), 项目, "m6")
+    await 写("m6", [行("m6", 2, { amount: "800.00" })])
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系).toHaveLength(1)
+    expect(String(关系[0]?.amount)).toBe("800.00")
+    expect(Number(关系[0]?.times)).toBe(1)
+  })
+})
+
+/** 从材料 + 行号反查卡片 id：id 是纯 hash，测试里直接调纯函数算不了（缺 sheet），改查库。 */
+async function 卡片idOf(materialId: string, rowNo: number): Promise<string> {
+  const [row] = rowsOf(
+    await db().execute(sql`
+      select id from auth.case_event
+       where project_id = ${项目} and created_at > 0
+         and id in (select fact_id from auth.case_citation
+                     where project_id = ${项目} and material_id = ${materialId}
+                       and locator->>'row' = ${String(rowNo)})
+    `),
+  )
+  return String(row?.id)
+}

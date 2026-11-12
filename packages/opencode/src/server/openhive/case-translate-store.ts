@@ -3,6 +3,7 @@ export * as OpenhiveCaseTranslateStore from "./case-translate-store"
 import { sql } from "drizzle-orm"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { nowSeconds } from "@opencode-ai/auth/time"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import {
   addCitations,
   deleteCitationsOfMaterial,
@@ -141,6 +142,114 @@ export async function 写入翻译结果(
     `)
   }
 
-  // ④ 关系重建、⑤ 属性写入在 Task 7 / Task 8 接入；本任务先只做上面的骨架。
+  // ④ 关系重建：只重算本次受影响的账户对（双方都可建实体才算，掩码账号不建关系）。
+  const 对们: 关系对[] = 翻译.卡片们.flatMap((卡) => {
+    const [主体, 对手] = 卡.participants
+    if (!主体.实体 || !对手.实体) return []
+    const 主体id = 实体缓存.get(账户键(主体.规范值))
+    const 对手id = 实体缓存.get(账户键(对手.规范值))
+    if (主体id === undefined || 对手id === undefined) return []
+    return [主体.角色 === "付款方" ? { fromId: 主体id, toId: 对手id } : { fromId: 对手id, toId: 主体id }]
+  })
+  await 重建关系(tx, projectId, 对们)
+
+  // ⑤ 属性写入在 Task 8 接入。
   return { 卡片数: 翻译.卡片们.length, 别名数: 翻译.别名们.length, 属性实体数: 0 }
+}
+
+export interface 关系对 {
+  fromId: string
+  toId: string
+}
+
+/** 关系对一批多少对：18 列上限不适用，按 2 个参数/对留足余量。 */
+const INSERT_CHUNK_PAIRS = 500
+
+/**
+ * 从卡片重建关系（§4.0.4：卡片是唯一事实，关系是对卡片的聚合）。
+ *
+ * 为什么不能「按材料增量累加」：同一对账户常出现在双方各自导出的流水里。增量累加会在
+ * 重放时算重（`#007-02` 的同款形态），`on conflict do nothing` 又会让后到材料的笔数
+ * 静默丢失。唯一正确的做法是：删掉这一对的机器态，再从 `case_event` + 参与者重新聚合。
+ *
+ * 人工结论优先：该对已有 `已确认`/`已修正` 行时整对跳过——机器行与人工行并存会被
+ * 求和逻辑算成两笔。
+ *
+ * 币种口径（Global Constraints 14）：只聚合 `currency='CNY'` 的卡片；外币卡片既不进
+ * `amount` 也不进 `times`（计划本条第 14 条），未计入张数由调用方写 `parse_detail`。
+ */
+export async function 重建关系(tx: Queryable, projectId: string, 对们: readonly 关系对[]): Promise<number> {
+  if (对们.length === 0) return 0
+  let written = 0
+  for (let i = 0; i < 对们.length; i += INSERT_CHUNK_PAIRS) {
+    const chunk = 对们.slice(i, i + INSERT_CHUNK_PAIRS)
+    const 值 = sql.join(
+      chunk.map((p) => sql`(${p.fromId}, ${p.toId})`),
+      sql`, `,
+    )
+
+    // 人工行存在就对整对放手：不清、不写。
+    const 人工 = rowsOf(
+      await tx.execute(sql`
+        select distinct r.from_id, r.to_id
+          from auth.case_relation r
+         where r.project_id = ${projectId} and r.type = '转账'
+           and r.trust_state in ('已确认', '已修正')
+           and (r.from_id, r.to_id) in (values ${值})
+      `),
+    )
+    const 保护 = new Set(人工.map((r) => `${String(r.from_id)}\u0000${String(r.to_id)}`))
+
+    await tx.execute(sql`
+      delete from auth.case_relation
+       where project_id = ${projectId} and type = '转账'
+         and trust_state in ('自动抽取', '存疑')
+         and (from_id, to_id) in (values ${值})
+    `)
+
+    const 聚合 = rowsOf(
+      await tx.execute(sql`
+        select 付.entity_id as from_id, 收.entity_id as to_id,
+               count(*)::int as times,
+               coalesce(sum(e.amount), 0)::numeric(18,2)::text as amount,
+               min(e.occurred_at) as first_at, max(e.occurred_at) as last_at,
+               case when bool_or(e.precision = '到日') then '到日'
+                    when bool_or(e.precision = '到分') then '到分'
+                    else '到秒' end as precision
+          from auth.case_event e
+          join auth.case_event_participant 付
+            on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
+          join auth.case_event_participant 收
+            on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
+         where e.project_id = ${projectId}
+           and e.type = '资金交易'
+           and e.currency = 'CNY'
+           and e.trust_state <> '已排除'
+           and 付.entity_id is not null and 收.entity_id is not null
+           and (付.entity_id, 收.entity_id) in (values ${值})
+         group by 1, 2
+      `),
+    )
+
+    for (const 行 of 聚合) {
+      const fromId = String(行.from_id)
+      const toId = String(行.to_id)
+      if (保护.has(`${fromId}\u0000${toId}`)) continue
+      // `::text` 聚合列按字符串回读；显式判型而不是 `String(...)`，否则驱动把 numeric
+      // 读成对象时会静默落成 `"[object Object]"`（`upsertEntity` 里同一条理由）。
+      const 金额 = typeof 行.amount === "string" ? 行.amount : "0.00"
+      await tx.execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, amount,
+           basis, source_kind, trust_state, created_at)
+        values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
+                ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
+                ${Number(行.times ?? 0)}, ${金额}, null, 'data', '自动抽取',
+                ${nowSeconds()})
+        on conflict (project_id, id) do nothing
+      `)
+      written += 1
+    }
+  }
+  return written
 }
