@@ -7,6 +7,8 @@ import { 查明细行, 明细入参错误, 读明细行, 行视图 } from "../..
 import { 建材料 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
+/** 从 `pg_indexes` 动态取到的、`indexdef` 恰为 `(project_id, started_at)` 的索引名（beforeAll 查一次）。 */
+let 索引名们: string[] = []
 const 库 = () => {
   if (!pg) throw new Error("数据库夹具还没起来——beforeAll 没跑完")
   return pg.db
@@ -40,6 +42,16 @@ const 默认 = "p-默认50"
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
+  // 索引名按库里的实际名字取，**不写死**：PG 18 的分区子索引名是按列名派生的
+  // （`case_fact_row_pXX_project_id_started_at_idx`），PG 11–17 才是 `<父索引名>_pXX`。
+  // 钉名字等于把引擎的命名实现细节写进用例（Task 1 已实测过这一条）。
+  // 查一次、两条用例共用：同一句带参 SQL 在两个事务里各跑一次会撞 42P05（`test-support.ts`）。
+  索引名们 = rowsOf(
+    await 库().execute(sql`
+      select indexname from pg_indexes
+       where schemaname = 'auth' and indexdef like '%(project_id, started_at)%'
+    `),
+  ).map((行) => String(行.indexname))
   await 建材料(库(), { id: "m-1", projectId: 项目, path: "资金/微信.xlsx", kind: "资金", parseStatus: "已解析" })
   await 建材料(库(), { id: "m-2", projectId: 项目, path: "资金/支付宝.xlsx", kind: "资金", parseStatus: "未入队" })
   await 建材料(库(), { id: "m-9", projectId: 别处, path: "资金/别处.xlsx", kind: "资金", parseStatus: "已解析" })
@@ -447,17 +459,26 @@ describe("行视图 · 备注守卫（Task 2 复审留下的无守护约束）",
     expect(行视图({ ...空行, extras: null }).备注).toBeNull()
   })
 
-  test("extras 是数组 / 标量 ⇒ 备注 null，不当成对象乱取键", () => {
-    expect(行视图({ ...空行, extras: [] }).备注).toBeNull()
-    expect(行视图({ ...空行, extras: ["备注"] }).备注).toBeNull()
-    expect(行视图({ ...空行, extras: "备注" }).备注).toBeNull()
+  test("extras 是数组（哪怕挂了同名属性）⇒ 备注 null，不当成对象乱取键", () => {
+    // 关键不是「数组没有这个键」，而是「数组/标量不该被当成 extras 对象」：
+    // 拿掉 `Array.isArray` 守卫后 `[...].备注` 会读出 "不该读到"，这条才红得起来。
+    expect(行视图({ ...空行, extras: Object.assign([], { 备注: "不该读到" }) }).备注).toBeNull()
   })
 })
 
 describe("索引可用性（PGlite 只能证「可用」，不证「规划器会选」）", () => {
-  test("项目 + 时间窗 + order by started_at 能走 case_fact_row_project_started", async () => {
+  test("存在 (project_id, started_at) 索引（存在性与列序由 indexdef 钉）", () => {
+    // 这句钉的是「库里有列集与列序恰为 (project_id, started_at) 的索引」：改成单列
+    // `(started_at)` 时这里取名结果为空、当场红。它**不**证明规划器会用它。
+    expect(索引名们.length).toBeGreaterThan(0)
+    expect(索引名们.every((名) => 名.length > 0)).toBe(true)
+  })
+
+  test("时间窗 + order by started_at 时该索引可服务此查询（enable_seqscan=off）", async () => {
     // 5 行数据上规划器永远选 Seq Scan。关掉 seqscan 只回答一个问题：
-    // 「这条索引能不能服务这个谓词与排序」——不能（列序错、类型不匹配）就会红。
+    // 「这条索引能不能服务这个谓词与排序」——完全用不上时计划里不会出现它。
+    // 它**挡不住**「缺 project_id 前缀」：单列 (started_at) 下计划仍是 Index Scan，
+    // 只是 project_id 退化成 Filter（实测，见 task-4-report 变异 B）。列序由上面那条钉。
     // 「177,713 行上不再 Seq Scan」是 A22 的真栈判据，归 Task 6，不在这里假装验过。
     // ⚠️ `set` 是**会话级**的，而夹具的池可能换连接。所以放进同一个事务：
     // `set local` 只在事务内生效、结束自动还原，且事务独占一条连接（`db.ts:74-80` 的 42P05 注解），
@@ -476,16 +497,6 @@ describe("索引可用性（PGlite 只能证「可用」，不证「规划器会
         .map((行) => String(Object.values(行)[0]))
         .join("\n")
     })
-    // 索引名按库里的实际名字取，**不写死**：PG 18 的分区子索引名是按列名派生的
-    // （`case_fact_row_pXX_project_id_started_at_idx`），PG 11–17 才是 `<父索引名>_pXX`。
-    // 钉名字等于把引擎的命名实现细节写进用例（Task 1 已实测过这一条）。
-    const 索引名们 = rowsOf(
-      await 库().execute(sql`
-        select indexname from pg_indexes
-         where schemaname = 'auth' and indexdef like '%(project_id, started_at)%'
-      `),
-    ).map((行) => String(行.indexname))
-    expect(索引名们.length).toBeGreaterThan(0)
     expect(索引名们.some((名) => 计划.includes(名))).toBe(true)
     expect(计划).not.toContain("Seq Scan")
   })
