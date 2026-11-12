@@ -510,14 +510,19 @@ cd packages/opencode && timeout 300 bun test test/server/openhive-case-mcp-rows.
 
 ```ts
 test("缺 摘要 ⇒ tool_failed，不回显原文", async () => {})
-test("缺口 为 undefined ⇒ tool_failed", async () => {})
+test("缺口 为 undefined ⇒ tool_failed（键在但值非法，不是缺键）", async () => {})
+test("数据 为 undefined ⇒ tool_failed（否则序列化后变六字段）", async () => {})
 test("空原因 非 null 但 数据 非空 ⇒ tool_failed（正向镜像）", async () => {})
 test("数据 为空但 空原因 为 null ⇒ tool_failed（反向镜像）", async () => {})
 test("数据 是 31 KB 数组 ⇒ 从尾部截断到 ≤ 30 KB、至少留 1 条、缺口写明截掉几条", async () => {})
 test("30 KB 截断按 Buffer.byteLength(JSON.stringify(数据)) 算，不按字符数", async () => {})
+test("单条元素自身 > 30 KB ⇒ 原样返回同一引用、缺口不新增（无法截，不撒谎说截了 0 条）", async () => {})
+test("≤ 30 KB 时原样返回同一引用；null / 对象不截、不加缺口", async () => {})
 ```
 
-> 用「假工具」注入：`case-mcp-server.ts` 的分发表是模块内常量。**不要**为了测试改生产代码加后门；改成把校验函数导出（`export function 校验信封(结果: 工具结果): void`）并让用例直接调它，截断函数同样导出（`export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数据: unknown; 缺口: string[] }`）。这是**测试可见性**，不是后门——两者都是纯函数。
+> **测试可见性有两处，都不是后门**：
+> 1. `export function 校验信封(结果: 工具结果): void` 与 `export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数据: unknown; 缺口: string[] }` —— 纯函数，用例直调。
+> 2. `CaseMcpDeps.工具表?: Partial<Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>>>`，分发处 `const 表 = { ...分发表, ...deps.工具表 }`。**为什么必须加**：分发表是模块内常量，删掉接线后原本 0 条用例会红（Task 3 首轮复审 M4 实测）。注入一个返回缺 `口径` 的假工具 ⇒ 真握手用例断言 `isError` + `tool_failed` + 不回显原文，接线才有保护。生产从不传。
 
 - [ ] **Step 2: 跑，确认红**（函数不存在 ⇒ 编译/导入失败即红）
 
@@ -530,8 +535,10 @@ test("30 KB 截断按 Buffer.byteLength(JSON.stringify(数据)) 算，不按字�
  */
 export function 校验信封(结果: 工具结果): void {
   const 缺: string[] = []
+  // 存在性 = 键在**且**值 !== undefined：只看 `in` 会放过 `数据: undefined`
+  // （`数据为空()` 判空 ⇒ 通过 ⇒ JSON.stringify 丢掉这个键 ⇒ 实际只有六个字段）。
   for (const 键 of ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const)
-    if (!(键 in 结果)) 缺.push(键)
+    if (!(键 in 结果) || 结果[键] === undefined) 缺.push(键)
   if (缺.length > 0) throw new 信封违约(`缺字段：${缺.join("、")}`)
 
   if (typeof 结果.摘要 !== "string" || 结果.摘要.length === 0) throw new 信封违约("摘要必须是字符串")
@@ -553,6 +560,9 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
   if (字节(数据) <= 30 * 1024) return { 数据, 缺口: [...缺口] }
   let 留 = 数据.length
   while (留 > 1 && 字节(数据.slice(0, 留)) > 30 * 1024) 留--
+  // 下界是 1：单条元素自身就超过 30 KB 时 `留 === 原长`，此时**不能**说「截掉 0 条」——
+  // 真没截就原样返回、不加缺口（模型侧由 `口径` / 该行本身的长度可见性兜）。
+  if (留 === 数据.length) return { 数据, 缺口: [...缺口] }
   return {
     数据: 数据.slice(0, 留),
     缺口: [...缺口, `返回数据超过 30 KB，已从尾部截掉 ${数据.length - 留} 条`],
@@ -569,15 +579,62 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
   成功结果({ ...结果, 数据: 截.数据, 缺口: 截.缺口 })
 ```
 
-- [ ] **Step 4: 跑**，新 6 条绿 + 三份旧用例绿
+- [ ] **Step 4: 跑**，新用例全绿 + 四份旧用例绿
 
 - [ ] **Step 5: 变异**（据实记录，`#003-03`）
-  - 删掉反向镜像那一行 ⇒ 「数据为空但空原因 null」那条必须红；
-  - 把 `Buffer.byteLength` 换成 `JSON.stringify(数据).length` ⇒ 「按字节算」那条必须红（构造含中文的数据：中文 1 字符 3 字节）。
+  - 删掉反向镜像那一行 ⇒ 「数据为空但空原因 null」那条必须红（正向那行**单独**删，也必须恰好 1 红）；
+  - 把 `Buffer.byteLength` 换成 `JSON.stringify(数据).length` ⇒ 「按字节算」那条必须红（构造含中文的数据：中文 1 字符 3 字节）；
+  - `留 > 1` 改成 `留 > 0` ⇒ 「单条元素 > 30 KB」那条必须红（**这条是下界的唯一守卫**：两条各 20 KB 的数据在两种写法下都停在 1 条，红不了）；
+  - 删掉 `校验信封(结果)` 调用 ⇒ 注入假工具的握手用例必须红（首轮复审实测这条原本 0 红）；
+  - 存在性判定退回「只看 `in`」⇒ `缺口: undefined` 与 `数据: undefined` 两条必须红。
 
 - [ ] **Step 6: 提交**
 
 消息：`feat(事实卡片): MCP server 七字段硬校验与 30KB 确定性截断（09 §3.4，参考 #004-03 #005-18）`
+
+---
+
+### Task 3.5: 复审新发现的两处 fail-open（补丁轮）
+
+> 来源：Task 3 范围复审实测。两条都不是原计划内容，但都是**真缺陷**，插在 Task 4 之前做掉。
+
+**Files:**
+- Modify: `packages/opencode/src/server/openhive/case-mcp-server.ts`
+- Test: `packages/opencode/test/server/openhive-case-mcp-server.test.ts`、`openhive-case-mcp-envelope.test.ts`
+
+- [ ] **Step 1: 必填参数没校验 ⇒ 成功信封里全是 undefined**
+
+实测：`get_citation({})` 返回**成功**结果，摘要为「undefined 引用详情：undefined」。`收参数` 只做键白名单 + 类型校验，**不查必填**；`inputSchema.required` 只是给客户端看的。
+
+```ts
+/** 必填校验的唯一出处是 `TOOLS[i].inputSchema.required`——不要在分发处再抄一份清单（`#002-06`）。 */
+function 校验必填(工具: string, args: Record<string, unknown>): void {
+  const 声明 = TOOLS.find((条) => 条.name === 工具)?.inputSchema.required ?? []
+  const 缺 = 声明.filter((键) => args[键] === undefined)
+  if (缺.length > 0) throw new 工具错误("bad_input", `缺少必填参数：${缺.join("、")}`)
+}
+```
+
+接线：第 ③ 段之后、第 ④ 段调分发表之前调用。用例：`get_citation({})` ⇒ `bad_input` 且消息含 `事实类型`；`get_citation` 缺 `事实id` ⇒ `bad_input`；`query_entities({})`（无必填）仍正常返回。
+
+- [ ] **Step 2: 单条记录自身 > 30 KB 时静默超限**
+
+上文 `截断数据` 在 `留 === 原长` 时原样返回且**不加缺口** ⇒ 30 KB 预算被突破这件事对模型完全不可见。改成写缺口（措辞层中立，不指任何工具名）：
+
+```ts
+  if (留 === 数据.length)
+    return { 数据, 缺口: [...缺口, `返回数据超过 30 KB，但首条记录自身即超限（${字节(数据)} 字节），无法按条截断`] }
+```
+
+用例改为断言：同引用、长度 1、缺口恰好多一条且含「无法按条截断」；变异「删掉这条缺口」⇒ 该用例红。
+
+- [ ] **Step 3: 跑 + 提交**
+
+```bash
+cd packages/opencode && timeout 300 bun test test/server/openhive-case-mcp-envelope.test.ts test/server/openhive-case-mcp-server.test.ts test/server/openhive-case-mcp-tools.test.ts test/server/openhive-case-mcp-rows.test.ts test/server/openhive-case-mcp-http.test.ts
+```
+
+消息：`fix(事实卡片): 分发前校验必填参数，单条超限写入缺口（参考 #002-06 #004-09）`
 
 ---
 
