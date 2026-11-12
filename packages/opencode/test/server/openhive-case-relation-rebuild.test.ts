@@ -23,6 +23,7 @@ function db() {
 const 项目 = "prj-rel"
 const 甲 = "6217001234567896514"
 const 乙 = "6222021234567890123"
+const 丙 = "6222000000000000009"
 
 /**
  * 每个用例自带数据：本文件的用例都落在同一个 `项目` 下，而关系是**全项目聚合**的。
@@ -139,11 +140,18 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(String(反向[0]?.amount)).toBe("300.00")
   })
 
-  test("外币卡片不进人民币合计", async () => {
-    await 甲乙两份材料()
-    await 写("m4", [行("m4", 2, { amount: "100.00", currency: "USD" })])
+  test("外币计笔数，但不进人民币合计（Q16 裁定）", async () => {
+    await 写("m4", [
+      行("m4", 2, { amount: "100.00" }),
+      行("m4", 3, { amount: "200.00" }),
+      行("m4", 4, { amount: "500.00", currency: "USD" }),
+    ])
     const 关系 = await 转账关系(甲, 乙)
-    expect(String(关系[0]?.amount)).toBe("6200.00") // USD 100 没加进来
+    expect(关系).toHaveLength(1)
+    // 笔数是定性事实：3 笔往来（含 1 笔美元），不能因币种被抹掉。
+    expect(Number(关系[0]?.times)).toBe(3)
+    // 金额只累计人民币：100 + 200，USD 500 不进合计。
+    expect(String(关系[0]?.amount)).toBe("300.00")
   })
 
   test("已排除的卡片不参与聚合", async () => {
@@ -184,6 +192,34 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(关系).toHaveLength(1)
     expect(String(关系[0]?.amount)).toBe("800.00")
     expect(Number(关系[0]?.times)).toBe(1)
+  })
+
+  test("重放换了对手：旧对的机器关系被清掉，新对建立", async () => {
+    await 写("m7", [行("m7", 2)])
+    expect(await 转账关系(甲, 乙)).toHaveLength(1)
+    await 清本材料翻译(db(), 项目, "m7")
+    // 同一行换成对手丙：旧对（甲,乙）没有卡片支持，必须消失而不是留一笔「幽灵转账」。
+    await 写("m7", [行("m7", 2, { counterparty: 丙 })])
+    expect(await 转账关系(甲, 乙)).toHaveLength(0)
+    const 新对 = await 转账关系(甲, 丙)
+    expect(新对).toHaveLength(1)
+    expect(Number(新对[0]?.times)).toBe(1)
+    expect(String(新对[0]?.amount)).toBe("5000.00")
+  })
+
+  test("清理时旧对上的已确认人工关系不被删", async () => {
+    await 写("m8", [行("m8", 2)])
+    const a = await 实体id(甲)
+    const b = await 实体id(乙)
+    await db().execute(sql`
+      insert into auth.case_relation
+        (id, project_id, from_id, to_id, type, amount, times, source_kind, trust_state, created_at)
+      values ('人工-旧对', ${项目}, ${a}, ${b}, '转账', 8888.00, 9, 'data', '已确认', 1)
+    `)
+    await 清本材料翻译(db(), 项目, "m8")
+    const 关系 = await 转账关系(甲, 乙)
+    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
+    expect(关系.filter((r) => r.trust_state === "已确认")).toHaveLength(1)
   })
 })
 

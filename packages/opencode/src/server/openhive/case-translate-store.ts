@@ -38,6 +38,25 @@ export interface 写入翻译输入 {
 }
 
 export async function 清本材料翻译(tx: Queryable, projectId: string, materialId: string): Promise<void> {
+  // 「关系对迁移」：本材料贡献过的**旧对**必须在删事件之前取出——事件删完就查不到了。
+  // 否则重放换了对手时，旧对没有卡片支持、却从没人传进 `重建关系`，页面上会留一笔
+  // 聚合了已删事件的转账（比少一笔更危险：它看起来像真线索）。
+  const 旧对们: 关系对[] = rowsOf(
+    await tx.execute(sql`
+      select distinct 付.entity_id as from_id, 收.entity_id as to_id
+        from auth.case_event e
+        join auth.case_event_participant 付
+          on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
+        join auth.case_event_participant 收
+          on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
+       where e.project_id = ${projectId}
+         and e.id in (select fact_id from auth.case_citation
+                       where project_id = ${projectId} and material_id = ${materialId}
+                         and fact_type = 'event')
+         and 付.entity_id is not null and 收.entity_id is not null
+    `),
+  ).map((r) => ({ fromId: String(r.from_id), toId: String(r.to_id) }))
+
   await 删除本材料的事实(tx, projectId, materialId)
   // 参与者没有 material_id：它的归属只能从事件反推 ⇒ 事件删掉后按「孤儿」清（Q14）。
   // 只按本项目的孤儿清，别项目的参与者哪怕事件 id 同名也不动（主键是 (project_id, id)）。
@@ -56,6 +75,9 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
      where project_id = ${projectId} and material_id = ${materialId} and revoked_at is null
   `)
   await deleteCitationsOfMaterial(tx, projectId, materialId)
+  // 旧对重算放在清理之后：此时它们已无卡片支持 ⇒ 删机器行后不会再插入。
+  // 人工保护（已确认/已修正整对放手）照旧由 `重建关系` 生效，清理不会删掉人工结论。
+  await 重建关系(tx, projectId, 旧对们)
 }
 
 export async function 写入翻译结果(
@@ -175,8 +197,10 @@ const INSERT_CHUNK_PAIRS = 500
  * 人工结论优先：该对已有 `已确认`/`已修正` 行时整对跳过——机器行与人工行并存会被
  * 求和逻辑算成两笔。
  *
- * 币种口径（Global Constraints 14）：只聚合 `currency='CNY'` 的卡片；外币卡片既不进
- * `amount` 也不进 `times`（计划本条第 14 条），未计入张数由调用方写 `parse_detail`。
+ * 币种口径（Q16 / Global Constraints 14，2026-11-12 裁定）：`times` 统计**所有币种**的
+ * 资金交易笔数（「这两人有没有往来」是定性事实，抹掉外币往来等于隐藏线索）；`amount`
+ * 只累加 `currency='CNY'` 的金额（外币行不进人民币合计）。未计入张数由调用方写
+ * `parse_detail`。
  */
 export async function 重建关系(tx: Queryable, projectId: string, 对们: readonly 关系对[]): Promise<number> {
   if (对们.length === 0) return 0
@@ -211,7 +235,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       await tx.execute(sql`
         select 付.entity_id as from_id, 收.entity_id as to_id,
                count(*)::int as times,
-               coalesce(sum(e.amount), 0)::numeric(18,2)::text as amount,
+               coalesce(sum(e.amount) filter (where e.currency = 'CNY'), 0)::numeric(18,2)::text as amount,
                min(e.occurred_at) as first_at, max(e.occurred_at) as last_at,
                case when bool_or(e.precision = '到日') then '到日'
                     when bool_or(e.precision = '到分') then '到分'
@@ -223,7 +247,6 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
             on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
          where e.project_id = ${projectId}
            and e.type = '资金交易'
-           and e.currency = 'CNY'
            and e.trust_state <> '已排除'
            and 付.entity_id is not null and 收.entity_id is not null
            and (付.entity_id, 收.entity_id) in (values ${值})
