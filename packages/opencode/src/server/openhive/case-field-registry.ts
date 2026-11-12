@@ -47,6 +47,16 @@ const 时间形状 = (v: string) => /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d
 const 手机号 = (v: string) => /^1[3-9]\d{9}$/.test(v.replace(/[\s+]/g, "").replace(/^86/, ""))
 const 账号形状 = (v: string) => /^\d{6,32}$/.test(v.replace(/[\s-]/g, ""))
 /**
+ * 账号形状（`^\d{6,32}$`）。
+ *
+ * 两处共用同一份（`#002-06`）：识别层判「是不是账号列」用 `账号形状`；翻译层判
+ * 「能不能建账户实体」也用这一条（§4.0.5 坑 1：含 `*` 或位数不足 ⇒ 只留 mention_text）。
+ * 两处各写一条正则，就会出现「识别认了、实体建不出来」或反之的静默错位。
+ */
+export function 是账户形状(值: string): boolean {
+  return 账号形状(值)
+}
+/**
  * 户名（对方户名 / 商户名）的形状：**只要是非空文本、且不像纯号码**。
  *
  * 曾经限制 ≤60 字。微信支付导出里「间连交易，实际收款商户名称联系间连收单机构：【…】通过…查询」
@@ -62,7 +72,10 @@ const 户名形状 = (v: string) => {
   return t !== "" && !/^[\d\s-]+$/.test(t)
 }
 const 方向形状 = (v: string) => /^(收|付|进|出|借|贷|转入|转出|收入|支出)$/.test(v.trim())
-const 去横线 = (v: string) => v.replace(/[\s　-]/g, "")
+/** 全角数字 / 字母 / 加号 / 斜杠转半角。设计 §4.0.3a 要求账号「全角转半角」。 */
+const 全角转半角 = (v: string) =>
+  v.replace(/[０-９Ａ-Ｚａ-ｚ＋－／]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+const 去横线 = (v: string) => 全角转半角(v).replace(/[\s　-]/g, "")
 const 去国码 = (v: string) => v.replace(/[\s　]/g, "").replace(/^\+?86/, "")
 
 export const 字段目录: Record<识别字段, 字段定义> = {
