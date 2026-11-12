@@ -10,6 +10,7 @@ import {
   insertEvents,
   insertParticipants,
   upsertEntity,
+  文本数组,
   删除本材料的事实,
 } from "./case-fact-store"
 import type { CitationInput, Queryable } from "./case-store"
@@ -41,6 +42,7 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   // 「关系对迁移」：本材料贡献过的**旧对**必须在删事件之前取出——事件删完就查不到了。
   // 否则重放换了对手时，旧对没有卡片支持、却从没人传进 `重建关系`，页面上会留一笔
   // 聚合了已删事件的转账（比少一笔更危险：它看起来像真线索）。
+  // 角色前提（付款方→收款方）与 `重建关系` 的聚合同一份，改一处必须改两处（`#002-06`）。
   const 旧对们: 关系对[] = rowsOf(
     await tx.execute(sql`
       select distinct 付.entity_id as from_id, 收.entity_id as to_id
@@ -165,14 +167,23 @@ export async function 写入翻译结果(
   }
 
   // ④ 关系重建：只重算本次受影响的账户对（双方都可建实体才算，掩码账号不建关系）。
-  const 对们: 关系对[] = 翻译.卡片们.flatMap((卡) => {
+  // 同一对会被多张卡片命中 ⇒ 按 (from, to) 去重；只处理资金交易卡（`卡片草稿.type`
+  // 已有 9 种，将来复用本 store 时别对无关类型做无谓 delete）。
+  const 对们: 关系对[] = []
+  const 已见对 = new Set<string>()
+  for (const 卡 of 翻译.卡片们) {
+    if (卡.type !== "资金交易") continue
     const [主体, 对手] = 卡.participants
-    if (!主体.实体 || !对手.实体) return []
+    if (!主体.实体 || !对手.实体) continue
     const 主体id = 实体缓存.get(账户键(主体.规范值))
     const 对手id = 实体缓存.get(账户键(对手.规范值))
-    if (主体id === undefined || 对手id === undefined) return []
-    return [主体.角色 === "付款方" ? { fromId: 主体id, toId: 对手id } : { fromId: 对手id, toId: 主体id }]
-  })
+    if (主体id === undefined || 对手id === undefined) continue
+    const 对 = 主体.角色 === "付款方" ? { fromId: 主体id, toId: 对手id } : { fromId: 对手id, toId: 主体id }
+    const 键 = `${对.fromId}\u0000${对.toId}`
+    if (已见对.has(键)) continue
+    已见对.add(键)
+    对们.push(对)
+  }
   await 重建关系(tx, projectId, 对们)
 
   // ⑤ 属性写入在 Task 8 接入。
@@ -194,8 +205,9 @@ const INSERT_CHUNK_PAIRS = 500
  * 重放时算重（`#007-02` 的同款形态），`on conflict do nothing` 又会让后到材料的笔数
  * 静默丢失。唯一正确的做法是：删掉这一对的机器态，再从 `case_event` + 参与者重新聚合。
  *
- * 人工结论优先：该对已有 `已确认`/`已修正` 行时整对跳过——机器行与人工行并存会被
- * 求和逻辑算成两笔。
+ * 人工结论优先：该对已有 `已确认`/`已修正`/`已排除` 行时不写机器行（机器行仍清掉，
+ * 两者不得并存）。`已排除` 与另外两种一样是跨重放保留的人工结论（`case-fact-store.ts`
+ * 的 `deleteCitationsOfMaterial` 注释同款口径）；漏了它，重放会把人工排除静默撤销。
  *
  * 币种口径（Q16 / Global Constraints 14，2026-11-12 裁定）：`times` 统计**所有币种**的
  * 资金交易笔数（「这两人有没有往来」是定性事实，抹掉外币往来等于隐藏线索）；`amount`
@@ -212,23 +224,28 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       sql`, `,
     )
 
-    // 人工行存在就对整对放手：不清、不写。
+    // 人工行存在就不写机器行（机器行仍清掉，两者不得并存）。
     const 人工 = rowsOf(
       await tx.execute(sql`
         select distinct r.from_id, r.to_id
           from auth.case_relation r
          where r.project_id = ${projectId} and r.type = '转账'
-           and r.trust_state in ('已确认', '已修正')
+           and r.trust_state in ('已确认', '已修正', '已排除')
            and (r.from_id, r.to_id) in (values ${值})
       `),
     )
     const 保护 = new Set(人工.map((r) => `${String(r.from_id)}\u0000${String(r.to_id)}`))
 
+    // 只删本函数自己那条确定性 id（`事实id(projectId, "转账", from, to)`），不能按
+    // 「type + 信任态 + 对」整片删：`case-ingest.ts` 从笔录抽出的转账关系 source_kind='human'、
+    // trust_state 也是 自动抽取/存疑，整片删会把它连出处一起误删。
+    // `trust_state` 条件仍要留：人工把这条关系改成 `已确认` 时 id 不变，不能删。
+    const 机器id们 = chunk.map((p) => 事实id(projectId, "转账", p.fromId, p.toId))
     await tx.execute(sql`
       delete from auth.case_relation
-       where project_id = ${projectId} and type = '转账'
+       where project_id = ${projectId}
+         and id = any(${文本数组(机器id们)})
          and trust_state in ('自动抽取', '存疑')
-         and (from_id, to_id) in (values ${值})
     `)
 
     const 聚合 = rowsOf(
@@ -241,6 +258,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
                     when bool_or(e.precision = '到分') then '到分'
                     else '到秒' end as precision
           from auth.case_event e
+          -- 角色前提与清本材料翻译的旧对查询一致，改一处必须改两处（#002-06）。
           join auth.case_event_participant 付
             on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
           join auth.case_event_participant 收
@@ -258,20 +276,25 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       const fromId = String(行.from_id)
       const toId = String(行.to_id)
       if (保护.has(`${fromId}\u0000${toId}`)) continue
-      // `::text` 聚合列按字符串回读；显式判型而不是 `String(...)`，否则驱动把 numeric
-      // 读成对象时会静默落成 `"[object Object]"`（`upsertEntity` 里同一条理由）。
-      const 金额 = typeof 行.amount === "string" ? 行.amount : "0.00"
-      await tx.execute(sql`
-        insert into auth.case_relation
-          (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, amount,
-           basis, source_kind, trust_state, created_at)
-        values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
-                ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
-                ${Number(行.times ?? 0)}, ${金额}, null, 'data', '自动抽取',
-                ${nowSeconds()})
-        on conflict (project_id, id) do nothing
-      `)
-      written += 1
+      // `::text` 聚合列按字符串回读。判型失败说明查询/驱动契约变了——**抛错**，
+      // 不能兜底成 0：那会把一笔真实金额静默写成「无金额」。
+      if (typeof 行.amount !== "string")
+        throw new Error(`关系聚合的金额不是字符串（${fromId} → ${toId}）：${JSON.stringify(行.amount)}`)
+      const 写入 = rowsOf(
+        await tx.execute(sql`
+          insert into auth.case_relation
+            (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, amount,
+             basis, source_kind, trust_state, created_at)
+          values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
+                  ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
+                  ${Number(行.times ?? 0)}, ${行.amount}, null, 'data', '自动抽取',
+                  ${nowSeconds()})
+          on conflict (project_id, id) do nothing
+          returning id
+        `),
+      )
+      // 按**实际插入行数**累计：`on conflict do nothing` 时 returning 为空，返回值不虚高。
+      written += 写入.length
     }
   }
   return written

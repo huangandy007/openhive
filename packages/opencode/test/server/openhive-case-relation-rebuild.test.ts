@@ -83,7 +83,7 @@ async function 实体id(账号: string): Promise<string> {
 async function 转账关系(from账号: string, to账号: string) {
   return rowsOf(
     await db().execute(sql`
-      select from_id, to_id, times, amount, first_at, last_at, precision, trust_state
+      select id, from_id, to_id, times, amount, first_at, last_at, precision, trust_state, source_kind
         from auth.case_relation
        where project_id = ${项目} and type = '转账'
          and from_id = ${await 实体id(from账号)} and to_id = ${await 实体id(to账号)}
@@ -205,6 +205,79 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(新对).toHaveLength(1)
     expect(Number(新对[0]?.times)).toBe(1)
     expect(String(新对[0]?.amount)).toBe("5000.00")
+  })
+
+  test("同对已有笔录抽出的转账关系 ⇒ 重建不动它", async () => {
+    await 写("m9", [行("m9", 2)])
+    const a = await 实体id(甲)
+    const b = await 实体id(乙)
+    // 笔录路径（case-ingest.ts）：type 也是「转账」、trust 也是自动抽取，只是 source_kind='human'
+    // 且 id 由材料+原文决定。整片删会误伤它。
+    await db().execute(sql`
+      insert into auth.case_relation
+        (id, project_id, from_id, to_id, type, amount, times, source_kind, trust_state, created_at)
+      values ('笔录-转账', ${项目}, ${a}, ${b}, '转账', 999.00, 1, 'human', '自动抽取', 1)
+    `)
+    await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
+
+    const 关系 = await 转账关系(甲, 乙)
+    const 笔录 = 关系.filter((r) => r.id === "笔录-转账")
+    expect(笔录).toHaveLength(1)
+    expect(String(笔录[0]?.amount)).toBe("999.00")
+    expect(String(笔录[0]?.source_kind)).toBe("human")
+    // 卡片聚合的机器行同时存在（两条并存，不互相顶替）。
+    const 机器 = 关系.filter((r) => r.source_kind === "data")
+    expect(机器).toHaveLength(1)
+    expect(String(机器[0]?.amount)).toBe("5000.00")
+  })
+
+  test("已排除的关系不被机器行顶回来", async () => {
+    await 写("m10", [行("m10", 2)])
+    const a = await 实体id(甲)
+    const b = await 实体id(乙)
+    // 路径 1（简报原写法）：机器聚合行被人工改成已排除。id 不变，`on conflict do nothing`
+    // 也会挡住重新插入——这条单靠 id 冲突就成立，不足以证明保护集本身。
+    await db().execute(sql`
+      update auth.case_relation set trust_state = '已排除'
+       where project_id = ${项目} and type = '转账'
+         and from_id = ${a} and to_id = ${b} and trust_state = '自动抽取'
+    `)
+    await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
+    let 关系 = await 转账关系(甲, 乙)
+    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
+    expect(关系.filter((r) => r.trust_state === "已排除")).toHaveLength(1)
+
+    // 路径 2：人工排除行是**另一条 id**（笔录/人工排除路径就是这样）。没有 `已排除`
+    // 保护集时，机器行会被重新插入并与它并存，人工排除等于被撤销。
+    await db().execute(sql`
+      delete from auth.case_relation
+       where project_id = ${项目} and type = '转账'
+         and from_id = ${a} and to_id = ${b} and trust_state = '已排除'
+    `)
+    await db().execute(sql`
+      insert into auth.case_relation
+        (id, project_id, from_id, to_id, type, amount, times, source_kind, trust_state, created_at)
+      values ('人工-排除', ${项目}, ${a}, ${b}, '转账', 777.00, 2, 'human', '已排除', 1)
+    `)
+    await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
+    关系 = await 转账关系(甲, 乙)
+    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
+    expect(关系.filter((r) => r.trust_state === "已排除")).toHaveLength(1)
+  })
+
+  test("掩码对手 ⇒ 不建关系行", async () => {
+    // 源文件自带掩码（§4.0.5 坑 1）：卡片照出，但不建账户实体 ⇒ 不能有转账关系。
+    await 写("m11", [行("m11", 2, { counterparty: "6222****7890" })])
+    const 事件 = rowsOf(
+      await db().execute(sql`select id from auth.case_event where project_id = ${项目}`),
+    )
+    expect(事件).toHaveLength(1)
+    const 关系 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_relation where project_id = ${项目} and type = '转账'
+      `),
+    )
+    expect(关系).toHaveLength(0)
   })
 
   test("清理时旧对上的已确认人工关系不被删", async () => {
