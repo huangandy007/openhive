@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { 默认限制, 最大限制 } from "./case-envelope"
 import type { Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
@@ -43,8 +44,7 @@ export interface 工具上下文 {
   readonly 身份: 调用身份
 }
 
-export const 默认限制 = 50
-export const 最大限制 = 200
+export { 默认限制, 最大限制 } from "./case-envelope"
 
 /** JS 侧的大小写比较与 SQL 的 `ilike` 对齐（`ilike` 不区分大小写）。 */
 function lower(值: string): string {

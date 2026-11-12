@@ -14,12 +14,21 @@ const 现在 = 1_760_000_000
 
 export async function 建材料(
   db: Queryable,
-  input: { id: string; projectId: string; path: string; kind?: string; fileName?: string },
+  input: {
+    id: string
+    projectId: string
+    path: string
+    kind?: string
+    fileName?: string
+    /** 默认 `未入队`（与库默认同值）。读函数用例需要「已解析」的材料。 */
+    parseStatus?: string
+  },
 ): Promise<void> {
   await db.execute(sql`
-    insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, created_at)
+    insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
     values (${input.id}, ${input.projectId}, ${input.fileName ?? input.path.split("/").pop() ?? "材料"},
-            ${input.kind ?? "笔录"}, ${input.id + "#指纹"}, ${input.path}, ${现在})
+            ${input.kind ?? "笔录"}, ${input.id + "#指纹"}, ${input.path},
+            ${input.parseStatus ?? "未入队"}, ${现在})
   `)
 }
 
