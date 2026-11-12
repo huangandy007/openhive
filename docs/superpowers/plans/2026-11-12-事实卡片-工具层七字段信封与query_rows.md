@@ -650,7 +650,20 @@ cd packages/opencode && timeout 300 bun run typecheck
 cd ../.. && timeout 300 bun run lint
 ```
 
-- [ ] **Step 3: grep 同类落点（`#002-06`）**
+- [ ] **Step 3: 加一条「`下一步` 不许指向未注册工具」的运行时断言**
+
+Task 1 的阶段里 `query_rows` 还没注册，`下一步` 却已经指向它——靠人工核对挡不住以后任何一次漂移。在 `openhive-case-mcp-tools.test.ts` 末尾加一条：
+
+```ts
+test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
+  // 直接遍历各工具的真实返回值（沿用本文件既有夹具），逐条断言：
+  //   结果.下一步.every((条) => 工具名.includes(条.工具))
+  //   结果.出处.every((条) => 条.可下钻 === null || 工具名.includes(条.可下钻))
+  // 断言用 `toEqual([])` 收集违规项再比较空数组——失败时能一眼看出是谁指向了什么。
+})
+```
+
+- [ ] **Step 4: grep 同类落点（`#002-06`）**
 
 ```bash
 grep -rn "口径:" packages/opencode/src/server/openhive/case-mcp-tools.ts | wc -l   # 应为 11（7 原子 + query_rows + 3 处 get_citation 分支? 以实际为准，逐个数清并写进报告）
@@ -659,13 +672,13 @@ grep -rn "工具结果" packages/opencode/src packages/opencode/test
 
 逐个落点回答「它是不是按同一个七字段前提在写返回」：`case-mcp-server.ts`（校验，不产字段，**不动**）、`case-mcp-http.ts`（传输，**不动**）、任何测试夹具里的假 `工具结果`（**要补字段**）。
 
-- [ ] **Step 4: 回写 `09`**
+- [ ] **Step 5: 回写 `09`**
 
 - §3.5 表格里 `无匹配行` 那一行：归属列从「`query_rows`」改为「原子工具 + `query_rows`（通用的『条件无命中』）」，触发条件改为「条件无命中；原子工具查不到任何行时也用它」。
 - §12 落点清单：把本期做掉的行打勾并注明提交哈希；未做的行（#9 工具卡、#12 fixture）保留未勾，注明「留下一期」。
 - 文首修订清单加一条：`2026-11-12 工具层落地：七字段信封 + query_rows 挂载 + 硬校验；前端工具卡与 20 题 fixture 留下一期`。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 消息：`docs(事实卡片): 09 §3.5 空原因归属回写，工具层计划收尾（参考 #002-06 #004-03）`
 
