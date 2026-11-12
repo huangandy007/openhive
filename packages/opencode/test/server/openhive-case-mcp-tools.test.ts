@@ -245,6 +245,8 @@ beforeAll(async () => {
       direction: "收",
       amount: "50.00",
       balance: "900.00",
+      // 非缺省值：`extras` 断言 `{}` 会被「实现硬编码 `{}`」满足（`#005-47`）。
+      extras: { 备注: "转出工资" },
     },
     // 工作表名合法含 `#`（`case-store.ts:423-432`）：按固定段数拆的实现会永远拒掉这一行。
     {
@@ -908,7 +910,7 @@ test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   expect(数据.明细行.counterparty_name).toBe("甲户名")
   expect(数据.明细行.owner_account).toBe("622200000001")
   expect(数据.明细行.direction).toBe("收")
-  expect(数据.明细行.extras).toEqual({})
+  expect(数据.明细行.extras).toEqual({ 备注: "转出工资" })
   expect(数据.引用.map((条) => 条.material_id)).toEqual(["m-甲"])
   // 规范化键：`02` 不是 2 的「另一个 id」，命中后引用要按 `#2` 查得到。
   const 补零 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#02" })
