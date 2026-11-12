@@ -159,11 +159,13 @@ function 断言(实得: unknown, 期望: unknown, 位置: string): void {
       return
     }
     if (typeof 特殊.含 === "string") {
-      expect(是含(实得, 特殊.含)).toBe(true)
+      expect({ 位置, 实得, 含: 是含(实得, 特殊.含) }).toEqual({ 位置, 实得, 含: true })
       return
     }
   }
-  expect(实得).toEqual(期望)
+  // 普通断言也把位置与实得放进失败信息（复审要求三条分支都带）。注意两个对象的键必须同名：
+  // 写成 `{ 实得 }` 对 `{ 期望 }` 会让键名不同而恒不相等，任何断言都假红。
+  expect({ 位置, 实得 }).toEqual({ 位置, 实得: 期望 })
 }
 
 /** 期望路径：`步N.…` 取第 N 次调用的结果，否则取最后一次。 */
@@ -192,7 +194,8 @@ for (const 条 of 题集) {
 
     for (const 断 of 条.期望) {
       const { 结果, 子路径 } = 定位结果(断.路径, 结果们)
-      expect(结果).toBeDefined()
+      // 「第 N 次调用没跑」也要带上下文：裸 `toBeDefined()` 的失败信息只有一个 undefined。
+      expect({ 位置: 断.路径, 有结果: 结果 !== undefined }).toEqual({ 位置: 断.路径, 有结果: true })
       断言(取(结果, 子路径), 断.期望, 断.路径)
     }
   })
