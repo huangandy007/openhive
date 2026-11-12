@@ -10,7 +10,7 @@ import {
   type 下一步项,
   type 空原因值,
 } from "./case-envelope"
-import type { Queryable } from "./case-store"
+import { getMaterial, type Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
 import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
@@ -520,12 +520,91 @@ async function 解析账户(
 }
 
 /**
- * 计划 5 的 `引用视图`（camelCase）→ 本层的库列名口径。只这 7 个字段，别扩。
+ * 切片定位的判据只有这一处：`{ start, end }` 两个非负整数、且 `end >= start` 才算区间。
+ * 其余形态（`{sheet,row}` 这类行级 locator、`{page,para}`、缺键、负数）一律「不是切片」——
+ * 不猜、不把整篇正文当成这条引用的原文（`case-slice.ts` 的 `起/止` 是唯一合法形状）。
+ */
+function 是切片定位(locator: unknown): locator is { start: number; end: number } {
+  if (locator === null || typeof locator !== "object") return false
+  // 用 `Reflect.get` + `typeof` 收窄，不写 `as`（oxlint 的 `no-unsafe-type-assertion` 会记告警）。
+  const 起 = Reflect.get(locator, "start")
+  const 止 = Reflect.get(locator, "end")
+  if (typeof 起 !== "number" || typeof 止 !== "number") return false
+  return Number.isInteger(起) && Number.isInteger(止) && 起 >= 0 && 止 >= 起
+}
+
+/**
+ * 一次取全本次所有引用所在材料的正文：同一材料的多条引用共用一份，别每条引用查一次库。
+ * 缺键 / NULL 都进表里记成 `null`，由 `引用行` 统一说缺口（材料被删时 fileName/path
+ * 已经是 null，正文也给不出）。
+ */
+async function 读原文表(
+  ctx: 工具上下文,
+  引用们: readonly 引用视图[],
+): Promise<Map<string, string | null>> {
+  const 表 = new Map<string, string | null>()
+  const ids = [...new Set(引用们.map((条) => 条.materialId))]
+  if (ids.length === 0) return 表
+  const rows = rowsOf(
+    await ctx.db.execute(sql`
+      select id, text_content from auth.case_material
+       where project_id = ${ctx.身份.projectId} and id ${id属于(ids)}
+    `),
+  )
+  for (const 行 of rows) 表.set(String(行.id), typeof 行.text_content === "string" ? 行.text_content : null)
+  return 表
+}
+
+/**
+ * 引用的 `原文切片`：按 locator 的 `[start, end)` 从材料正文切，`trim()` 后原样回显。
+ *
+ * - locator 不是 `{start,end}` ⇒ `null`（`case_citation.locator` 也可以是行级定位，那不是原文区间）；
+ * - 材料没有正文（xlsx 等）⇒ `null` + 缺口；同一份材料只说一次；
+ * - `end` 越过正文长度 ⇒ 切到末尾并在缺口里明说（夹住，不静默）。
+ *
+ * 切片逻辑**只此一份**：两个分支都经 `引用行`（`#002-06`）。
+ */
+function 切原文(
+  条: 引用视图,
+  原文表: ReadonlyMap<string, string | null>,
+  缺口: string[],
+  已说无正文: Set<string>,
+  已说越界: Set<string>,
+): string | null {
+  if (!是切片定位(条.locator)) return null
+  const 正文 = 原文表.get(条.materialId)
+  if (正文 === undefined || 正文 === null) {
+    if (!已说无正文.has(条.materialId)) {
+      已说无正文.add(条.materialId)
+      缺口.push("该材料没有原文正文，给不出原文切片")
+    }
+    return null
+  }
+  const { start, end } = 条.locator
+  if (end > 正文.length) {
+    if (!已说越界.has(条.materialId)) {
+      已说越界.add(条.materialId)
+      缺口.push("locator 超出原文长度，已夹到末尾")
+    }
+    return 正文.slice(start).trim()
+  }
+  return 正文.slice(start, end).trim()
+}
+
+/**
+ * 计划 5 的 `引用视图`（camelCase）→ 本层的库列名口径 + `原文切片`。
  *
  * `row` 分支与 `entity/relation/event` 分支必须同形——模型不该因为出处挂在哪类事实上
- * 就换一套字段名。
+ * 就换一套字段名。`原文切片` **永远给键**（`09` §3.4：字段缺席会被模型讲成「这条没有依据」），
+ * 切不出时给 `null` 并把原因写进调用方传进来的 `缺口`。
  */
-function 引用行(引用们: readonly 引用视图[]) {
+function 引用行(
+  引用们: readonly 引用视图[],
+  原文表: ReadonlyMap<string, string | null>,
+  缺口: string[],
+) {
+  const 已说无正文 = new Set<string>()
+  const 已说越界 = new Set<string>()
   return 引用们.map((条) => ({
     id: 条.id,
     material_id: 条.materialId,
@@ -534,6 +613,7 @@ function 引用行(引用们: readonly 引用视图[]) {
     locator: 条.locator,
     extract_method: 条.extractMethod,
     confidence: 条.confidence,
+    原文切片: 切原文(条, 原文表, 缺口, 已说无正文, 已说越界),
   }))
 }
 
@@ -800,13 +880,19 @@ export async function get_citation(
     // `case_citation.fact_type='row'` 今天**没有生产写入者**（`case-ingest.ts` 只写
     // entity/relation/event 三处；测试里的 row 引用是手工种的）。查不到就如实说，
     // 别让模型以为「没有出处」等于「这行没有依据」。
-    const 缺口 =
-      引用.length === 0
-        ? (["明细行引用尚未在生产写入，查不到时只能按 material/sheet/row_no 定位"] as const)
-        : undefined
+    const 缺口: string[] = []
+    if (引用.length === 0) {
+      缺口.push("明细行引用尚未在生产写入，查不到时只能按 material/sheet/row_no 定位")
+    }
+    // 材料定位只取 `case_material.path`（入队写的就是项目内文件名）；材料行没了就不编。
+    const 材料行 = await getMaterial(ctx.db, ctx.身份.projectId, 材料)
+    if (材料行 === undefined) 缺口.push("材料已不在本项目的材料表里，给不出材料定位")
+    const 原文表 = await 读原文表(ctx, 引用)
     return {
       摘要: `明细行原文：${材料}#${工作表}#${行号}`,
       数据: {
+        材料定位:
+          材料行 === undefined ? null : { path: 材料行.path, sheet: 工作表, rowNo: Number(行号) },
         明细行: {
           project_id: 行.projectId,
           material_id: 行.materialId,
@@ -832,10 +918,12 @@ export async function get_citation(
           // （`09` §3.4 的老规矩：字段缺席会让模型把「没有备注」讲成「这行没信息」）。
           extras: 行.extras ?? {},
         },
-        引用: 引用行(引用),
+        引用: 引用行(引用, 原文表, 缺口),
       },
-      口径: "明细行按「材料#工作表#行号」解析；`引用` 为库列名。",
-      缺口: 缺口 ?? [],
+      口径:
+        "明细行按「材料#工作表#行号」解析；`引用` 为库列名；`材料定位` 取 `case_material.path`，" +
+        "`原文切片` 按引用 locator 的 `{start,end}` 从材料正文切出（切不出为 null）。",
+      缺口,
       // 查不到抛 not_found ⇒ 这个分支的数据永不为空，`空原因` 恒 null。
       空原因: null,
       出处: [{ 事实: `明细行定位 ${材料}#${工作表}#${行号}`, 代表: `${材料}#${工作表}#${行号}`, 可下钻: null }],
@@ -850,12 +938,16 @@ export async function get_citation(
   })
   if (事实 === undefined) throw new 工具错误("not_found", `本项目里没有这条${args.事实类型}：${args.事实id}`)
   const { citations, changes, ...本体 } = 事实
+  // 事实本身存在 ⇒ 数据非空，`空原因` 恒 null；「一条引用都没有」是缺口，不是空。
+  const 缺口: string[] = citations.length === 0 ? ["该事实暂无引用记录"] : []
+  const 原文表 = await 读原文表(ctx, citations)
   return {
     摘要: `${args.事实类型} 引用详情：${args.事实id}`,
-    数据: { 事实: 本体, 引用: 引用行(citations), 变更历史: changes },
-    口径: "`事实` 与 `变更历史` 沿用仓内只读出口的字段名，`引用` 为库列名。",
-    // 事实本身存在 ⇒ 数据非空，`空原因` 恒 null；「一条引用都没有」是缺口，不是空。
-    缺口: citations.length === 0 ? ["该事实暂无引用记录"] : [],
+    数据: { 事实: 本体, 引用: 引用行(citations, 原文表, 缺口), 变更历史: changes },
+    口径:
+      "`事实` 与 `变更历史` 沿用仓内只读出口的字段名，`引用` 为库列名；" +
+      "`原文切片` 按引用 locator 的 `{start,end}` 从材料正文切出（切不出为 null）。",
+    缺口,
     空原因: null,
     出处: [{ 事实: `${args.事实类型} ${args.事实id}`, 代表: args.事实id, 可下钻: null }],
     下一步: [],

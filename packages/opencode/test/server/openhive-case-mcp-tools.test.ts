@@ -302,6 +302,89 @@ beforeAll(async () => {
     extractMethod: "机器",
   })
 
+  // —— 任务 6 的种子：原文切片（`case_citation.locator` 的四种形态各一条）——
+  // 1) 真区间：切出来的必须是「这一片」，不是整篇（前后都放了不该出现的句子）。
+  const 切片正文 = "前言，与本案无关。2026年2月20日，李四向张三账户6222021234567890123转账8000元。后记。"
+  await createMaterial(库(), {
+    id: "m-切片",
+    projectId: 身份丁.projectId,
+    fileName: "笔录-切片.txt",
+    kind: "笔录",
+    fingerprint: "fp-工具-丁-切片",
+    path: "笔录-切片.txt",
+  })
+  await setMaterialText(库(), 身份丁.projectId, "m-切片", 切片正文)
+  await addCitation(库(), {
+    id: "c-关系-切片",
+    projectId: 身份丁.projectId,
+    factType: "relation",
+    factId: "r-1",
+    materialId: "m-切片",
+    locator: {
+      start: 切片正文.indexOf("2026年2月20日"),
+      end: 切片正文.indexOf("8000元。") + "8000元。".length,
+    },
+    extractMethod: "机器",
+  })
+  // 2) 材料没有正文（xlsx 没有 text_content）：两条同一材料的引用只允许说一次缺口。
+  await createMaterial(库(), {
+    id: "m-无正文",
+    projectId: 身份丁.projectId,
+    fileName: "无正文.xlsx",
+    kind: "资金",
+    fingerprint: "fp-工具-丁-无正文",
+    path: "无正文.xlsx",
+  })
+  for (const id of ["c-无正文-1", "c-无正文-2"]) {
+    await addCitation(库(), {
+      id,
+      projectId: 身份丁.projectId,
+      factType: "relation",
+      factId: "r-2",
+      materialId: "m-无正文",
+      locator: { start: 0, end: 3 },
+      extractMethod: "机器",
+    })
+  }
+  // 3) locator 越过正文长度：夹到末尾，缺口里明说。
+  await createMaterial(库(), {
+    id: "m-越界",
+    projectId: 身份丁.projectId,
+    fileName: "越界.txt",
+    kind: "笔录",
+    fingerprint: "fp-工具-丁-越界",
+    path: "越界.txt",
+  })
+  await setMaterialText(库(), 身份丁.projectId, "m-越界", "短正文")
+  await addCitation(库(), {
+    id: "c-越界",
+    projectId: 身份丁.projectId,
+    factType: "relation",
+    factId: "r-跨",
+    materialId: "m-越界",
+    locator: { start: 0, end: 999 },
+    extractMethod: "机器",
+  })
+  // 4) 非区间 locator（`{page}`）：正文存在也不许拿整篇充数。
+  await createMaterial(库(), {
+    id: "m-非切片",
+    projectId: 身份丁.projectId,
+    fileName: "非切片.txt",
+    kind: "笔录",
+    fingerprint: "fp-工具-丁-非切片",
+    path: "非切片.txt",
+  })
+  await setMaterialText(库(), 身份丁.projectId, "m-非切片", "整篇正文不该被当成切片。")
+  await addCitation(库(), {
+    id: "c-非切片",
+    projectId: 身份丁.projectId,
+    factType: "event",
+    factId: "ev-2",
+    materialId: "m-非切片",
+    locator: { page: 1 },
+    extractMethod: "人工",
+  })
+
   // —— 任务 4 的种子：资金聚合 / 交叉（全部走生产出口，落在独立项目 戊）——
   for (const [id, value, type] of [
     ["e-账", 账号, "账户"],
@@ -1051,6 +1134,82 @@ test("get_citation 对「已排除」的实体照样能取到引用", async () =
   await 建实体(库(), { id: "e-排引", projectId: "p-工具-丁", value: "已排除的人", trustState: "已排除" })
   const 结果 = await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-排引" })
   expect((结果.数据 as { 事实: { id: string } }).事实.id).toBe("e-排引")
+})
+
+// —— 任务 6：出处原文（`09` §13.1 D7）——
+
+/**
+ * 按点路径从 `unknown` 里取值（断言用）：只用 `typeof` 收窄 + `Reflect.get`，不写 `as`——
+ * 本仓 oxlint 的 `no-unsafe-type-assertion` 会对「unknown 窄化断言」记告警，既有测试里那些
+ * 是历史存量，新用例不再添。
+ */
+function 取(根: unknown, 路径: string): unknown {
+  let 当前: unknown = 根
+  for (const 段 of 路径.split(".")) {
+    if (当前 === null || typeof 当前 !== "object") return undefined
+    当前 = Reflect.get(当前, 段)
+  }
+  return 当前
+}
+
+test("get_citation 明细行：材料定位取材料的项目内路径，extras 备注原样回显", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" })
+  // 深等：`rowNo` 必须是数字（实现写成字符串 "2" 时这里红）。
+  expect(取(结果.数据, "材料定位")).toEqual({ path: "甲笔录.txt", sheet: "Sheet1", rowNo: 2 })
+  expect(取(结果.数据, "明细行.extras")).toEqual({ 备注: "转出工资" })
+  // 行级 locator（`{sheet,row}`）不是原文区间：不编，给 null；也不该为它报「没有正文」
+  // （缺口在既有用例里已断言为 []）。
+  expect(取(结果.数据, "引用")).toHaveLength(1)
+  expect(取(结果.数据, "引用.0.原文切片")).toBeNull()
+})
+
+test("get_citation 关系引用按 locator 切原文：切的是这一片，不是整篇", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "relation", 事实id: "r-1" })
+  expect(取(结果.数据, "引用")).toHaveLength(1)
+  // 逐字：前后「前言」「后记」都不许出现。
+  expect(取(结果.数据, "引用.0.原文切片")).toBe("2026年2月20日，李四向张三账户6222021234567890123转账8000元。")
+  // 含：钉住切的是**这条关系**那一片（不是别处的同款句子）。
+  expect(取(结果.数据, "引用.0.原文切片")).toContain("转账8000元")
+  expect(结果.缺口).toEqual([])
+})
+
+test("get_citation 材料没有正文：原文切片 null，缺口同一份材料只说一次", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "relation", 事实id: "r-2" })
+  expect(取(结果.数据, "引用")).toHaveLength(2)
+  expect(取(结果.数据, "引用.0.原文切片")).toBeNull()
+  expect(取(结果.数据, "引用.1.原文切片")).toBeNull()
+  expect(结果.缺口.filter((句) => 句.includes("没有原文正文"))).toHaveLength(1)
+})
+
+test("get_citation locator 越过正文：夹到末尾并在缺口里写明", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "relation", 事实id: "r-跨" })
+  expect(取(结果.数据, "引用.0.原文切片")).toBe("短正文")
+  expect(结果.缺口.join()).toContain("locator 超出原文长度，已夹到末尾")
+})
+
+test("get_citation locator 不是 {start,end}：正文存在也不拿整篇充数", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "event", 事实id: "ev-2" })
+  expect(取(结果.数据, "引用.0.原文切片")).toBeNull()
+  // 这一条是「不编」而不是「没有正文」：正文有，缺的是可用的区间定位。
+  expect(结果.缺口.join()).not.toContain("没有原文正文")
+})
+
+test("get_citation 材料不存在：材料定位给 null，引用照样返回", async () => {
+  // 行仍可存在（库里刻意没有外键）；材料没了就不编路径。
+  await insertFactRows(库(), [
+    {
+      projectId: 身份丁.projectId,
+      materialId: "m-已删",
+      sheet: "Sheet1",
+      rowNo: 9,
+      counterparty: "甲",
+      amount: "1.00",
+      balance: "2.00",
+    },
+  ])
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-已删#Sheet1#9" })
+  expect(取(结果.数据, "材料定位")).toBeNull()
+  expect(结果.缺口.join()).toContain("给不出材料定位")
 })
 
 // —— 任务 4：资金聚合 / 交叉 ——
