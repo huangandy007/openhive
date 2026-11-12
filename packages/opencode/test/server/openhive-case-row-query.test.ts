@@ -328,6 +328,14 @@ describe("查明细行 · 入参 fail-closed", () => {
     }
   })
 
+  test("时间入参越 int32 ⇒ 明细入参错误（不静默返回错结果）", async () => {
+    // `started_at` 是 integer：值在 (2147483647, 8.64e12] 时能过「Date 可表示」那道闸。
+    // 实测 PG 不报 22003（参数按更宽类型比较），而是静默出结果：时间起 ⇒ 0 行/无匹配行，
+    // 时间止 ⇒ 少一行（无时间行被排除）。所以必须在这里 fail-closed。
+    await expect(查明细行(库(), { projectId: 项目, 时间起: 2147483648 })).rejects.toThrow(明细入参错误)
+    await expect(查明细行(库(), { projectId: 项目, 时间止: 2147483648 })).rejects.toThrow(明细入参错误)
+  })
+
   test("时间入参超出 Date 可表示范围 ⇒ 明细入参错误（不是拼口径时抛 RangeError）", async () => {
     await expect(查明细行(库(), { projectId: 项目, 时间起: 1e13 })).rejects.toThrow(明细入参错误)
     await expect(查明细行(库(), { projectId: 项目, 时间止: -1e13 })).rejects.toThrow(明细入参错误)

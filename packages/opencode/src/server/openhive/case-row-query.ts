@@ -261,10 +261,9 @@ function 金额串(值: string | undefined, 名: string): string | undefined {
 
 function 整数值(值: number | undefined, 名: string): number | undefined {
   if (值 === undefined) return undefined
-  // 8.64e12 秒 = JS `Date` 的上限（±8.64e15 毫秒）；再大 `new Date(...).toISOString()` 会抛 RangeError，
-  // 那会在拼口径时变成 500，而不是这里当场拒。
-  if (!Number.isInteger(值) || Math.abs(值) > 8.64e12)
-    throw new 明细入参错误(`${名} 必须是整数秒且在可表示范围内（绝对值 ≤ 8.64e12），收到 ${String(值)}`)
+  // `started_at` 是 integer(4 字节)：越界值要么让 PG 抛 22003，要么按更宽类型静默比出错误结果。
+  // 与游标共用 `是int32`，不再造第二个范围常量；int32 本身也远在 `Date` 可表示范围内。
+  if (!是int32(值)) throw new 明细入参错误(`${名} 必须是整型秒（int32），收到 ${String(值)}`)
   return 值
 }
 
