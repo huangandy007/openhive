@@ -61,15 +61,18 @@ export const 资金模板必需槽 = ["谁", "和谁", "何时", "多少钱"] as
  * 槽 → 允许的字段种类（Q18）。
  *
  * - `何时` / `何时止` 只收时间类：时间列放进别的槽，等于绕过 `parseTime` 的精度与
- *   UTC+8 处理（§4.4）。
+ *   UTC+8 处理（§4.4）；放进「其他」同样不行，见 `其他拒收种类`。
  * - `多少钱` 只收金额类：余额（`balance`）塞进来就是把余额当金额（§4.7.5 最后一行）。
  * - `何地` 只收地点类：商户归「组织 / 地点」有判据（§3.5），`merchant` 不是地点。
+ * - `谁` / `和谁` 收标识类（账号 / 号码 / 户名 / 文本），`和谁` 另收 `商户`：§3.5 的类型 × 九格表
+ *   明列「订餐：和谁 = 组织（商户）」「扫码支付：和谁 = 账户 / 商户」，漏了它 Q18 硬校验会把
+ *   设计自己的订餐模板挡在保存前。
  *
- * 「其他」不在这张表里，见 `其他拒收种类`：它的语义是「剩下的」，种类上不可能穷举。
+ * `其他` 恒为空数组（类型上不能省），判定见 `其他拒收种类`。
  */
 const 槽允许种类: { readonly [K in 槽]: readonly 字段种类[] } = {
   谁: ["账号", "号码", "户名", "文本"],
-  和谁: ["账号", "号码", "户名", "文本"],
+  和谁: ["账号", "号码", "户名", "文本", "商户"],
   何时: ["时间"],
   何时止: ["时间"],
   何地: ["地点"],
@@ -97,18 +100,54 @@ const 槽允许种类: { readonly [K in 槽]: readonly 字段种类[] } = {
  */
 const 其他拒收种类: readonly 字段种类[] = ["金额", "时间", "方向"]
 
-function 填法们(值: 槽填法 | readonly 槽填法[] | null | undefined): readonly 槽填法[] {
-  if (值 === null || 值 === undefined) return []
-  // 用 `in` 判单值形态：`Array.isArray` 不把 readonly 数组从联合里摘掉，false 分支仍需强转，
-  // 会触发 `no-unsafe-type-assertion`。槽填法的判别键就是 `字段`，`in` 恰好能收窄。
-  return "字段" in 值 ? [值] : 值
+function 是记录(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
 }
 
-/** 返回错误清单（空数组 = 通过）。错误串带槽名与字段名，直接能展示给配置的人。 */
-export function 校验槽位种类(槽位: 模板槽位): string[] {
+/** 给畸形条目一个人能看懂的形状描述。输入来自 JSON，正常不会抛；这里仍只做只读探测。 */
+function 形状描述(值: unknown): string {
+  if (值 === null) return "null"
+  if (Array.isArray(值)) return `数组（${值.length} 项）`
+  if (typeof 值 === "object") {
+    const 键 = Object.keys(值)
+    return 键.length === 0 ? "空对象" : `对象（键：${键.join(" / ")}）`
+  }
+  if (typeof 值 === "string") return `字符串（${值}）`
+  if (typeof 值 === "number" || typeof 值 === "boolean" || typeof 值 === "bigint") return `${typeof 值}（${值}）`
+  return typeof 值
+}
+
+/**
+ * 把某个槽的原始值拆成「待校验条目 + 形状错误」。
+ *
+ * 槽位来自模板 JSON（库 / HTTP），**不能假设形状**：非数组、非 `{ 字段 }` 对象、数组里混入
+ * 非对象都要报错——静默丢弃等于让配置的人看不到错在哪（评审修复轮 2）。
+ */
+function 拆填法(槽名: 槽, 值: unknown): { 条目: Record<string, unknown>[]; 错: string[] } {
+  if (值 === null || 值 === undefined) return { 条目: [], 错: [] }
+  const 候选: readonly unknown[] = Array.isArray(值) ? 值 : [值]
+  const 条目: Record<string, unknown>[] = []
+  const 错: string[] = []
+  for (const 项 of 候选) {
+    if (是记录(项) && "字段" in 项) 条目.push(项)
+    else 错.push(`「${槽名}」的填法形状不对：${形状描述(项)}；应为 { 字段: "..." } 或它的数组`)
+  }
+  return { 条目, 错 }
+}
+
+/**
+ * 返回错误清单（空数组 = 通过）。错误串带槽名与字段名，直接能展示给配置的人。
+ *
+ * 入参是 `unknown` 而不是 `模板槽位`：这是模板 JSON 的**校验边界**，输入来自库 / HTTP，
+ * 类型系统管不到；畸形输入必须产出一条错误，不能抛 TypeError、也不能静默丢弃。
+ */
+export function 校验槽位种类(槽位: unknown): string[] {
+  if (!是记录(槽位)) return [`模板槽位形状不对：${形状描述(槽位)}；应为 { 槽名: 填法 } 对象`]
   const 错: string[] = []
   for (const 槽名 of 九格们) {
-    for (const 填 of 填法们(槽位[槽名])) {
+    const { 条目, 错: 形状错 } = 拆填法(槽名, 槽位[槽名])
+    错.push(...形状错)
+    for (const 填 of 条目) {
       const 字段 = 填.字段
       if (!是识别字段(字段)) {
         错.push(`「${槽名}」的字段 ${String(字段)} 不在字段词表里`)
