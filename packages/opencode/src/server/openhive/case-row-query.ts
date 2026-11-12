@@ -237,6 +237,8 @@ function 解游标(文本: string): 游标载荷 {
   const t合法 = t === null || 是int32(t)
   if (!t合法 || typeof o.m !== "string" || typeof o.s !== "string" || !是int32(o.r))
     throw new 明细入参错误("游标字段不全、类型不对或数值超出 integer 范围")
+  if (o.m.includes("\u0000") || o.s.includes("\u0000"))
+    throw new 明细入参错误("游标字段不能包含 NUL 字符")
   return { t, m: o.m, s: o.s, r: o.r }
 }
 
@@ -250,6 +252,25 @@ function 游标条件(游标: 游标载荷): SQL {
   const 键后 = sql`(material_id, sheet, row_no) > (${游标.m}::text, ${游标.s}::text, ${游标.r}::integer)`
   if (游标.t === null) return sql`started_at is null and ${键后}`
   return sql`(started_at is null or started_at > ${游标.t} or (started_at = ${游标.t} and ${键后}))`
+}
+
+/**
+ * 金额是 `numeric(18,2)` 字符串：转成「分」的 BigInt 再比，**不走 double**。
+ * `Number("1000000000000000001") === Number("1000000000000000000")`，
+ * 用浮点比较判不出方向 ⇒ 反向区间会静默退化成「无匹配行」（`时间起` 越界同款失败形态）。
+ */
+function 金额分(值: string): bigint {
+  const 负 = 值.startsWith("-")
+  const [整, 小 = ""] = (负 ? 值.slice(1) : 值).split(".")
+  return BigInt(`${负 ? "-" : ""}${整}${小.padEnd(2, "0")}`)
+}
+
+/** 字符串入参的运行时闸：`null` / 数字 / 含 NUL 的串都当场拒，不让驱动抛 `TypeError` / `DrizzleQueryError`。 */
+function 字符串入参(值: unknown, 名: string): string | undefined {
+  if (值 === undefined) return undefined
+  if (typeof 值 !== "string") throw new 明细入参错误(`${名} 必须是字符串，收到 ${typeof 值}`)
+  if (值.includes("\u0000")) throw new 明细入参错误(`${名} 不能包含 NUL 字符`)
+  return 值
 }
 
 function 金额串(值: string | undefined, 名: string): string | undefined {
@@ -306,17 +327,19 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
     throw new 明细入参错误(`限制必须是正整数，收到 ${String(请求)}`)
   const 限制 = 请求 === undefined ? 默认限制 : Math.min(请求, 最大限制)
 
-  if (入参.材料 !== undefined && 入参.材料.trim() === "") throw new 明细入参错误("材料不能是空串")
+  const 材料 = 字符串入参(入参.材料, "材料")
+  if (材料 !== undefined && 材料.trim() === "") throw new 明细入参错误("材料不能是空串")
   // 类型收窄不等于运行时校验：上层透传原始字符串时，坏值会静默过滤成 0 行、被读成「无匹配行」。
   if (入参.方向 !== undefined && 入参.方向 !== "收" && 入参.方向 !== "付")
     throw new 明细入参错误(`方向只能是「收」或「付」，收到 ${String(入参.方向)}`)
-  const 账户 = 入参.账户 === undefined ? undefined : 归一化值("ownerAccount", 入参.账户)
+  const 账户入参 = 字符串入参(入参.账户, "账户")
+  const 账户 = 账户入参 === undefined ? undefined : 归一化值("ownerAccount", 账户入参)
   if (账户 === "") throw new 明细入参错误("账户不能是空串")
   const 金额起 = 金额串(入参.金额起, "金额起")
   const 金额止 = 金额串(入参.金额止, "金额止")
   const 时间起 = 整数值(入参.时间起, "时间起")
   const 时间止 = 整数值(入参.时间止, "时间止")
-  if (金额起 !== undefined && 金额止 !== undefined && Number(金额起) > Number(金额止))
+  if (金额起 !== undefined && 金额止 !== undefined && 金额分(金额起) > 金额分(金额止))
     throw new 明细入参错误(`金额起（${金额起}）大于金额止（${金额止}）`)
   if (时间起 !== undefined && 时间止 !== undefined && 时间起 > 时间止)
     throw new 明细入参错误(`时间起（${时间起}）晚于时间止（${时间止}）`)
@@ -327,23 +350,23 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   if (请求 !== undefined && 请求 > 最大限制) 缺口.push(`请求的 ${请求} 行超过上限，已按 ${最大限制} 行取`)
 
   // 材料闸：指定了材料就先确认「它在不在本项目」「解没解析」——这两件事不能靠「查不到行」推。
-  if (入参.材料 !== undefined) {
-    const 材料 = await getMaterial(db, 入参.projectId, 入参.材料)
-    if (材料 === undefined) {
+  if (材料 !== undefined) {
+    const 已存材料 = await getMaterial(db, 入参.projectId, 材料)
+    if (已存材料 === undefined) {
       return {
         数据: { 行们: [], 下一页游标: null },
         口径,
         // 早退不能静默吞掉前置缺口（截断提示）：缺口契约是「截断/未解析全在这里」。
-        缺口: [...缺口, `本项目没有这份材料：${入参.材料}（按材料 id 查，不是文件名）`],
+        缺口: [...缺口, `本项目没有这份材料：${材料}（按材料 id 查，不是文件名）`],
         空原因: "材料未入库",
         出处: [],
       }
     }
-    if (材料.parseStatus !== "已解析") {
+    if (已存材料.parseStatus !== "已解析") {
       return {
         数据: { 行们: [], 下一页游标: null },
         口径,
-        缺口: [...缺口, `材料「${材料.path}」当前状态：${材料.parseStatus}`],
+        缺口: [...缺口, `材料「${已存材料.path}」当前状态：${已存材料.parseStatus}`],
         空原因: "该材料未解析",
         出处: [],
       }
@@ -351,7 +374,7 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   }
 
   const 条件: SQL[] = [sql`project_id = ${入参.projectId}`]
-  if (入参.材料 !== undefined) 条件.push(sql`material_id = ${入参.材料}`)
+  if (材料 !== undefined) 条件.push(sql`material_id = ${材料}`)
   if (账户 !== undefined) 条件.push(sql`(owner_account = ${账户} or counterparty = ${账户})`)
   if (入参.方向 !== undefined) 条件.push(sql`direction = ${入参.方向}`)
   if (金额起 !== undefined) 条件.push(sql`amount >= ${金额起}::numeric`)
@@ -400,7 +423,7 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
 
   if (本页.length === 0) {
     // 没有指定材料时，「零行」可能是「项目里根本没有已入库明细」。这句必须说，否则读成「确实没有」。
-    if (入参.材料 === undefined) {
+    if (材料 === undefined) {
       const 有行 = rowsOf(
         await db.execute(sql`select 1 as 有 from auth.case_fact_row where project_id = ${入参.projectId} limit 1`),
       )

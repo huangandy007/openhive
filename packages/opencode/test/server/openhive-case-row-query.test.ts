@@ -36,8 +36,10 @@ async function 建材料带时间(input: {
 const 项目 = "p-明细"
 const 别处 = "p-别处"
 const 同刻 = "p-同刻"
+const 同刻多材料 = "p-同刻多材"
 const 重传 = "p-重传"
 const 默认 = "p-默认50"
+const 产物项目 = "p-产物"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -58,6 +60,11 @@ beforeAll(async () => {
   // I1：三行同一个 `started_at` + 两行无时间。现有的 `项目` 夹具里 5 行的时刻互不相同、
   // 无时间的只有 1 行，游标条件的三支只走得到「时间更晚」那一支。
   await 建材料(库(), { id: "m-同", projectId: 同刻, path: "同刻/同刻.xlsx", kind: "资金", parseStatus: "已解析" })
+  // I4：同一 `started_at` 下跨材料、跨工作表——排序与游标的 `material_id` / `sheet` 两段才有区分度。
+  await 建材料(库(), { id: "m-x", projectId: 同刻多材料, path: "同刻多材/x.xlsx", kind: "资金", parseStatus: "已解析" })
+  await 建材料(库(), { id: "m-y", projectId: 同刻多材料, path: "同刻多材/y.xlsx", kind: "资金", parseStatus: "已解析" })
+  // I7：产物材料通常 `parse_status <> '已解析'`，不能让它变成「永久未解析」的假缺口。
+  await 建材料(库(), { id: "m-产物", projectId: 产物项目, path: "产物/分析报告.docx", kind: "产物", parseStatus: "未入队" })
   // I3：同一 path 两行——旧行「未入队」、新行「已解析」（内容变了另建一行，旧行留着）。
   await 建材料带时间({ id: "m-重传旧", projectId: 重传, path: "资金/重传.xlsx", parseStatus: "未入队", createdAt: 1000 })
   await 建材料带时间({ id: "m-重传新", projectId: 重传, path: "资金/重传.xlsx", parseStatus: "已解析", createdAt: 2000 })
@@ -134,6 +141,12 @@ beforeAll(async () => {
     { projectId: 同刻, materialId: "m-同", sheet: "S", rowNo: 3, startedAt: 5000 },
     { projectId: 同刻, materialId: "m-同", sheet: "S", rowNo: 4 },
     { projectId: 同刻, materialId: "m-同", sheet: "S", rowNo: 5 },
+  ])
+  await insertFactRows(库(), [
+    // 同一刻、同材料不同工作表、不同材料：只按 row_no 定序时这三行分不开/会跳行。
+    { projectId: 同刻多材料, materialId: "m-x", sheet: "Sheet1", rowNo: 1, startedAt: 6000 },
+    { projectId: 同刻多材料, materialId: "m-x", sheet: "Sheet2", rowNo: 1, startedAt: 6000 },
+    { projectId: 同刻多材料, materialId: "m-y", sheet: "Sheet1", rowNo: 1, startedAt: 6000 },
   ])
   await insertFactRows(库(), [
     { projectId: 重传, materialId: "m-重传新", sheet: "S", rowNo: 1, startedAt: 1000, amount: "7.00" },
@@ -222,8 +235,12 @@ describe("查明细行 · 过滤与排序", () => {
   })
 
   test("材料 + 时间窗组合，别项目的行不会混进来", async () => {
-    const r = await 查明细行(库(), { projectId: 别处, 材料: "m-9" })
+    const r = await 查明细行(库(), { projectId: 别处, 材料: "m-9", 时间起: 1000, 时间止: 2000 })
     expect(r.数据.行们.map((行) => 行.金额)).toEqual(["999.00"])
+    // 组合的交叉语义：材料命中、时间窗外的行不得出现，且不给「该材料未解析」这类的错结论。
+    const 窗外 = await 查明细行(库(), { projectId: 别处, 材料: "m-9", 时间起: 2001 })
+    expect(窗外.数据.行们).toEqual([])
+    expect(窗外.空原因).toBe("无匹配行")
   })
 })
 
@@ -277,6 +294,28 @@ describe("查明细行 · 游标条件三支（同刻跨页 / 无时间续页）
     // 顺序也钉住：同刻按 (材料, 工作表, 行号) 排，无时间的整段排最后。
     expect(收集).toEqual(["m-同/S/1", "m-同/S/2", "m-同/S/3", "m-同/S/4", "m-同/S/5"])
   })
+
+  test("同刻跨材料/工作表：整页顺序与限制=1 的翻页序列都按 (材料, 工作表, 行号)", async () => {
+    const 全 = await 查明细行(库(), { projectId: 同刻多材料 })
+    expect(全.数据.行们.map((行) => `${行.材料}/${行.工作表}/${行.行号}`)).toEqual([
+      "m-x/Sheet1/1",
+      "m-x/Sheet2/1",
+      "m-y/Sheet1/1",
+    ])
+
+    const 收集: string[] = []
+    let 游标: string | undefined
+    let 页数 = 0
+    // 有界循环：游标键写窄（少了 material_id / sheet）时下一页会跳行，红要红在断言上，不许挂死。
+    while (页数 < 10) {
+      页数 += 1
+      const 页 = await 查明细行(库(), { projectId: 同刻多材料, 限制: 1, 游标 })
+      收集.push(...页.数据.行们.map((行) => `${行.材料}/${行.工作表}/${行.行号}`))
+      游标 = 页.数据.下一页游标 ?? undefined
+      if (游标 === undefined) break
+    }
+    expect(收集).toEqual(["m-x/Sheet1/1", "m-x/Sheet2/1", "m-y/Sheet1/1"])
+  })
 })
 
 describe("查明细行 · 未解析材料计数口径（与材料视图同一判据）", () => {
@@ -289,6 +328,11 @@ describe("查明细行 · 未解析材料计数口径（与材料视图同一判
   test("确实有未解析材料时仍提一句（项目里 m-2 未入队）", async () => {
     const r = await 查明细行(库(), { projectId: 项目 })
     expect(r.缺口.join("；")).toContain("还有 1 份材料未解析")
+  })
+
+  test("产物材料不计入「未解析」缺口（否则每条成功结果都永久多一句假缺口）", async () => {
+    const r = await 查明细行(库(), { projectId: 产物项目 })
+    expect(r.缺口.join("；")).not.toContain("份材料未解析")
   })
 })
 
@@ -321,6 +365,20 @@ describe("查明细行 · 入参 fail-closed", () => {
   test("反向区间 ⇒ 明细入参错误（静默返回 0 行会被读成「确实没有」）", async () => {
     await expect(查明细行(库(), { projectId: 项目, 金额起: "500", 金额止: "100" })).rejects.toThrow(明细入参错误)
     await expect(查明细行(库(), { projectId: 项目, 时间起: 3000, 时间止: 1000 })).rejects.toThrow(明细入参错误)
+  })
+
+  test("金额起/止超 2^53 仍按数值判序（浮点比较会把反向区间放过去）", async () => {
+    // `numeric(18,2)` 的合法值可到 16 位整数；这两个数超过 2^53，
+    // Number("1000000000000000001") === Number("1000000000000000000")，用 Number 比较判不出方向
+    // ⇒ 反向区间静默变成 0 行、报「无匹配行」。
+    await expect(
+      查明细行(库(), { projectId: 项目, 金额起: "1000000000000000001", 金额止: "1000000000000000000" }),
+    ).rejects.toThrow(明细入参错误)
+  })
+
+  test("负数金额按数值判序（-1 大于 -2，不能只比字符串或绝对值）", async () => {
+    await expect(查明细行(库(), { projectId: 项目, 金额起: "-1.00", 金额止: "-2.00" })).rejects.toThrow(明细入参错误)
+    await expect(查明细行(库(), { projectId: 项目, 金额起: "-2.00", 金额止: "-1.00" })).resolves.toBeDefined()
   })
 
   test("自造游标 ⇒ 明细入参错误", async () => {
@@ -356,6 +414,20 @@ describe("查明细行 · 入参 fail-closed", () => {
   test("方向坏值 ⇒ 明细入参错误（不静默过滤成「无匹配行」）", async () => {
     await expect(
       查明细行(库(), { projectId: 项目, 方向: "进" as unknown as "收" }),
+    ).rejects.toThrow(明细入参错误)
+  })
+
+  test("材料 / 账户 传 null 或含 NUL ⇒ 明细入参错误（不是 TypeError / DrizzleQueryError）", async () => {
+    for (const 值 of [null, "a\u0000b"]) {
+      await expect(查明细行(库(), { projectId: 项目, 材料: 值 as unknown as string })).rejects.toThrow(明细入参错误)
+      await expect(查明细行(库(), { projectId: 项目, 账户: 值 as unknown as string })).rejects.toThrow(明细入参错误)
+    }
+  })
+
+  test("游标字段含 NUL ⇒ 明细入参错误（不是 DrizzleQueryError）", async () => {
+    const 造 = (载荷: object) => Buffer.from(JSON.stringify(载荷), "utf8").toString("base64url")
+    await expect(
+      查明细行(库(), { projectId: 项目, 游标: 造({ t: null, m: "m-1", s: "a\u0000b", r: 1 }) }),
     ).rejects.toThrow(明细入参错误)
   })
 

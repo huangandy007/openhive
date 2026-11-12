@@ -59,4 +59,21 @@ describe("迁移 0037 · case_fact_row 时间索引", () => {
     expect(子索引[15]?.tablename).toBe("case_fact_row_p15")
     for (const 行 of 子索引) expect(String(行.indexdef)).toContain("(project_id, started_at)")
   })
+
+  test("索引已存在时同一条 IF NOT EXISTS 再执行两次不抛错（部署脚本先建、migrate 再跑的幂等路径）", async () => {
+    // 模拟「部署侧脚本先建、随后 migrate() 再跑」：先让索引不存在，再原样重放迁移里那条语句两次。
+    // 去掉 `IF NOT EXISTS` 后第二次必抛 42P07（变异实得见报告），这正是文件头 :12-14 的论证。
+    await 库().execute(sql`drop index if exists auth.case_fact_row_project_started`)
+    const 建索引 = sql`CREATE INDEX IF NOT EXISTS case_fact_row_project_started
+      ON auth.case_fact_row (project_id, started_at)`
+    await 库().execute(建索引)
+    await 库().execute(建索引)
+    const 行们 = rowsOf(
+      await 库().execute(sql`
+        select indexname from pg_indexes
+         where schemaname = 'auth' and indexname = 'case_fact_row_project_started'
+      `),
+    )
+    expect(行们).toHaveLength(1)
+  })
 })
