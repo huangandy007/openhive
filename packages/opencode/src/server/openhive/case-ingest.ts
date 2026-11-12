@@ -11,6 +11,7 @@ import { 抽取材料, type 抽取器 } from "./case-extract-run"
 import { 纠正大类, 采纳细类 } from "./case-subtype"
 import { 实体类型们, type 实体类型 } from "./case-extract"
 import { readSheets, type RawSheet } from "./case-sheet"
+import { 是属性列 } from "./case-attribute-registry"
 import {
   formatFingerprint,
   是待确认原因,
@@ -518,7 +519,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       ],
       列们: header.flatMap((单元格, 列号) => {
         const 名 = (单元格 ?? "").trim()
-        if (是无信息列(名) || 已认列.has(列号)) return []
+        if (是无信息列(名) || 已认列.has(列号) || 是属性列(名)) return []
         const 样例 = sheet.rows
           .map((行) => (行.cells[列号]?.text ?? "").trim())
           .filter((值) => 值 !== "")

@@ -1,6 +1,7 @@
 export * as OpenhiveCaseMapping from "./case-mapping"
 
 import { Hash } from "@opencode-ai/core/util/hash"
+import { 是属性列 } from "./case-attribute-registry"
 import {
   候选字段集,
   规范化,
@@ -215,6 +216,9 @@ export function detectMapping(
    * 那等于把「交给人的判断」静默改掉（别名冲突 / 单位冲突尤其如此）。
    */
   const 已定 = new Set<number>()
+  // 属性列不是字段词表的一员，不进四层召回、也不进待确认（05 §4.3）。判据复用
+  // `是属性列` 一处（`#002-06`）；`case-ingest` 的「未认出」清单用同一处。
+  for (let i = 0; i < header.length; i++) if (是属性列(header[i])) 已定.add(i)
   /** 已被认领的字段。每个字段最多一列（R2）。 */
   const 已认字段 = new Set<识别字段>()
   const 待确认: 待确认项[] = []
