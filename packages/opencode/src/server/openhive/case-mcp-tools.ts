@@ -645,8 +645,11 @@ export async function query_events(
     限制?: number
   },
 ): Promise<工具结果> {
+  // 时间窗校验先于地点拒答：反向窗口本身就是坏入参，若先回「能力未就绪」，下一步会带着
+  // 这组起止重跑并立即抛 `bad_input`，等于建议一个跑不通的查询。
+  校验时间窗(args)
   // `09` §4.5 / D5：事件表没有地点维度，`地点` 只可能出现在摘要文本里。
-  // **在取数与参数校验之前**明确拒答 `能力未就绪`：静默忽略会让「某地点某周发生了什么」
+  // **在取数之前**明确拒答 `能力未就绪`：静默忽略会让「某地点某周发生了什么」
   // 变成「这周所有事件」，是比报错更危险的答非所问。
   if (args.地点 !== undefined && args.地点 !== "") {
     const 参数: Record<string, unknown> = {}
@@ -662,7 +665,6 @@ export async function query_events(
       下一步: [{ 工具: "query_events", 参数, 为什么: "先按时间窗取事件，再在摘要里人工看地点" }],
     }
   }
-  校验时间窗(args)
   const 限制 = 归一化限制(args.限制)
   const 条件: SQL[] = [sql`project_id = ${ctx.身份.projectId}`]
   if (args.类型 !== undefined) 条件.push(sql`type = ${args.类型}`)

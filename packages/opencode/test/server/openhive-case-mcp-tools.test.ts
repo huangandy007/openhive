@@ -1252,12 +1252,29 @@ test("query_events 带地点 ⇒ 能力未就绪，数据 null、缺口与下一
   // 下一步必须可执行：给替代查询，而不是空数组。
   expect(结果.下一步.length).toBeGreaterThan(0)
   expect(结果.下一步[0]?.工具).toBe("query_events")
+  // 没给起止时参数必须是 `{}`：无条件写 `参数.起 = undefined` 会序列化成「键在值空」，
+  // 模型原样回传时可能被当成「给了起」。同款写法见 `openhive-case-mcp-rows.test.ts:210/240`。
+  expect(结果.下一步[0]?.参数).toEqual({})
+  // `toEqual` 忽略值为 undefined 的键（`{ 起: undefined }` 与 `{}` 相等），单靠上一行钉不住空键：
+  // 必须再看键集合，否则无条件赋值时用例如样绿（`#003-03`：变异要能红）。
+  expect(Object.keys(结果.下一步[0].参数)).toEqual([])
 })
 
 test("query_events 带地点与时间窗 ⇒ 下一步参数原样带回起止（可直接重跑）", async () => {
   const 结果 = await query_events(ctx(身份丁), { 地点: "城东宾馆", 起: 100, 止: 200 })
   expect(结果.空原因).toBe("能力未就绪")
   expect(结果.下一步[0]?.参数).toEqual({ 起: 100, 止: 200 })
+})
+
+// 反向窗口本身就是坏入参：若先回「能力未就绪」，给出的下一步（原样带起止）重跑即抛
+// `bad_input`，等于建议一个跑不通的查询。时间窗校验必须在地点判定之前。
+test("query_events 地点 + 反向窗口 ⇒ bad_input（不给重跑即错的下一步）", async () => {
+  // 用 `.catch` 取抛出的错误：`await expect(...).rejects` 在 bun 的类型里被当成非 Promise，
+  // 会新增一条既有的 `await-thenable` 告警（:918 那处就有），不要为一条用例扩大告警面。
+  const 错误 = await query_events(ctx(身份丁), { 地点: "城东宾馆", 起: 200, 止: 100 }).catch(
+    (错误: unknown) => 错误,
+  )
+  expect(错误).toMatchObject({ code: "bad_input" })
 })
 
 test("get_citation 七字段（row 分支）：数据永不为空，空原因恒 null", async () => {
