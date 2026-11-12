@@ -160,7 +160,24 @@ test("单条元素自身 > 30 KB ⇒ 原样留下同一条，但必须追加「�
   ])
 })
 
-test("两条各约 20 KB（合计 > 30 KB）⇒ 只留 1 条、缺口写明截掉 1 条", () => {
+test("多条数组里首条自身 > 30 KB ⇒ 原样返回同一引用，缺口说「首条记录自身即超限」", () => {
+  // `[huge, small]` 与 `[huge]` 的差别：旧实现只在「留 === 数据.length」（单条数组）时
+  // 报超限；多行时 `留` 停在 1，走 slice 分支，缺口只说「截掉 1 条」——交付 40 KB 而
+  // 静默超限（§3.4「不许静默超限」）。判别力在于同一条数据换个小尾巴。
+  const 巨 = "x".repeat(40 * 1024)
+  const 小 = "y".repeat(10)
+  const 原 = [巨, 小]
+  const 巨字节 = Buffer.byteLength(JSON.stringify(巨))
+  expect(巨字节).toBeGreaterThan(30 * 1024)
+
+  const 截 = 截断数据(原, [])
+  // 一条都不能留到 ≤ 30 KB：只能原样返回、并且**承认**超限。
+  expect(截.数据).toBe(原)
+  expect(截.缺口).toEqual([`返回数据超过 30 KB，但首条记录自身即超限（${巨字节} 字节），无法按条截断`])
+  expect(Buffer.byteLength(JSON.stringify(截.数据))).toBeGreaterThan(30 * 1024)
+})
+
+test("两条各约 20 KB（合计 > 30 KB）⇒ 只留 1 条、缺口写明截掉 1 条与摘要口径", () => {
   const 甲 = "x".repeat(20 * 1024)
   const 乙 = "y".repeat(20 * 1024)
   const 原 = [甲, 乙]
@@ -171,7 +188,9 @@ test("两条各约 20 KB（合计 > 30 KB）⇒ 只留 1 条、缺口写明截�
   const 实得 = 截.数据 as unknown[]
   expect(实得).toHaveLength(1)
   expect(实得[0]).toBe(甲)
-  expect(截.缺口).toEqual(["返回数据超过 30 KB，已从尾部截掉 1 条"])
+  // 摘要 / 出处由工具在**截断前**写好，服务端截断不会回头改它们——缺口必须把这条口径说出，
+  // 否则模型会把「摘要 50 行」当成交付 50 行。
+  expect(截.缺口).toEqual(["返回数据超过 30 KB，已从尾部截掉 1 条（摘要 / 出处按截断前数据计算）"])
 })
 
 test("≤ 30 KB 的小数组 ⇒ 原样返回同一引用，缺口不变", () => {
@@ -181,7 +200,7 @@ test("≤ 30 KB 的小数组 ⇒ 原样返回同一引用，缺口不变", () =>
   expect(截.缺口).toEqual(["原有缺口"])
 })
 
-test("数据 为 null 或对象 ⇒ 原样返回同一引用、不截不加缺口", () => {
+test("数据 为 null 或 ≤ 30 KB 的对象 ⇒ 原样返回同一引用、不截不加缺口", () => {
   const 空 = 截断数据(null, ["原有缺口"])
   expect(空.数据).toBeNull()
   expect(空.缺口).toEqual(["原有缺口"])
@@ -190,6 +209,19 @@ test("数据 为 null 或对象 ⇒ 原样返回同一引用、不截不加缺�
   const 截 = 截断数据(对象, ["原有缺口"])
   expect(截.数据).toBe(对象)
   expect(截.缺口).toEqual(["原有缺口"])
+})
+
+test("非数组 数据 超预算（find_crossings 形状 ~50 KB）⇒ 不截，但缺口必须写明「数据非数组」", () => {
+  // 对象没有「按条」可截：`find_crossings` 的 `{ 共同关联, 共同时空 }` 两侧各可达 500 / 50 条。
+  // 旧实现直接原样放行、缺口为空——50 KB 灌进模型上下文且不告知，违反 §3.4「不许静默超限」。
+  const 共享 = Array.from({ length: 500 }, (_, i) => ({ 实体: `e-${i}`, 值: `1380000${String(i).padStart(4, "0")}` }))
+  const 原 = { 共同关联: 共享, 共同时空: 共享 }
+  const 原字节 = Buffer.byteLength(JSON.stringify(原))
+  expect(原字节).toBeGreaterThan(30 * 1024)
+
+  const 截 = 截断数据(原, ["原有缺口"])
+  expect(截.数据).toBe(原)
+  expect(截.缺口).toEqual(["原有缺口", `数据非数组，无法按条截断（${原字节} 字节），已原样返回`])
 })
 
 const 接线沙箱 = resolve(tmpdir(), "openhive-mcp-信封接线")

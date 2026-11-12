@@ -19,6 +19,20 @@ export * as OpenhiveCaseEnvelope from "./case-envelope"
 export const 默认限制 = 50
 export const 最大限制 = 200
 
+/**
+ * 单次返回 `数据` 的序列化字节上限（`09` §3.4）。
+ *
+ * 工具自限（`query_rows` 按这个预算取页）与服务端兜底（`截断数据`）共用这一个出处：
+ * 两处各写一个 `30 * 1024`，改一处就会让「工具认为交付得下、服务端还要再截」重新出现（`#002-06`）。
+ */
+export const 数据预算字节 = 30 * 1024
+
+/** `数据` 的测量口径：`Buffer.byteLength(JSON.stringify(值))`，与 §3.4 逐字一致。 */
+export function 序列化字节(值: unknown): number {
+  // `JSON.stringify(undefined)` 返回 `undefined`，`Buffer.byteLength` 会抛——必须兜成空串。
+  return Buffer.byteLength(JSON.stringify(值) ?? "")
+}
+
 /** `09` §3.5 总表。**顺序即优先级**：只报第一个成立的原因，其余进 `缺口`。 */
 export const 空原因枚举 = [
   "无此实体",

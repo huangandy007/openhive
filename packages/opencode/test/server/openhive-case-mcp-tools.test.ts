@@ -21,7 +21,7 @@ import {
 import { 工具名 } from "../../src/server/openhive/case-mcp-server"
 import { addCitation, createMaterial, insertFactRows } from "../../src/server/openhive/case-store"
 import { insertEvent, insertRelation, setMaterialText, upsertEntity } from "../../src/server/openhive/case-fact-store"
-import { 建实体 } from "./openhive-case-fact-fixture"
+import { 建实体, 建材料 } from "./openhive-case-fact-fixture"
 
 /**
  * MCP 工具层的取数（材料 / 实体）。
@@ -76,6 +76,15 @@ const 身份叉 = { userId: "u-工具-甲", projectId: "p-工具-叉" }
 const 身份对手 = { userId: "u-工具-甲", projectId: "p-工具-对手" }
 const 账号对手 = "6222…对手"
 const 项目乙 = "p-工具-乙"
+/**
+ * `query_rows` 大页自限用独立项目：40 行 × 长备注 ⇒ 单页 > 30 KB。独立项目是 `#005-34`
+ * 的要求——往既有项目里加明细会改掉那些用例的全量断言。
+ */
+const 身份大页 = { userId: "u-工具-甲", projectId: "p-工具-大页" }
+const 大页材料 = "m-大页"
+/** 单行 `备注` 1000 字节（ASCII）⇒ 一行明细序列化 ≈ 1.2 KB，40 行 ≈ 48 KB。 */
+const 长备注 = "x".repeat(1000)
+const 大页行数 = 40
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
 const 账号 = "6222…8888"
@@ -567,6 +576,30 @@ beforeAll(async () => {
       trustState: "自动抽取",
     })
   }
+
+  // —— 大页自限：40 行长备注，单页 > 30 KB（`09` §3.4 / I1）——
+  await 建材料(库(), {
+    id: 大页材料,
+    projectId: 身份大页.projectId,
+    path: "资金/大页.xlsx",
+    kind: "资金",
+    parseStatus: "已解析",
+  })
+  await insertFactRows(
+    库(),
+    Array.from({ length: 大页行数 }, (_, i) => ({
+      projectId: 身份大页.projectId,
+      materialId: 大页材料,
+      sheet: "Sheet1",
+      rowNo: i + 1,
+      // 时间递增 ⇒ 翻页顺序可确定（升序 / 同键按行号）。
+      startedAt: 10_000 + i,
+      amount: "10.00",
+      direction: "收" as const,
+      counterparty: `1390000${String(i).padStart(4, "0")}`,
+      extras: { 备注: 长备注 },
+    })),
+  )
 })
 
 afterAll(async () => {
@@ -1341,4 +1374,42 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
   expect(违规).toEqual([])
   // 防空转：一条都没检查时「没有违规」没有意义。
   expect(检查条数).toBeGreaterThan(0)
+})
+
+// —— I1：`query_rows` 自己按字节预算取页，续页游标落在**真正交付的**最后一行 ——
+// 服务端截断发生在工具写完 摘要 / 出处 / 下一步 之后，而游标按未截断页尾签发：
+// 若工具整页返回、服务端截掉尾部，被截掉的行用游标永远取不回来（§3.4 / `09` §4.4）。
+test("query_rows 大页按 30 KB 字节预算自限：摘要行数与数据一致、续页不漏行", async () => {
+  type 行 = { 定位: string; 备注: string | null }
+  const 行们 = (结果: 工具结果) => 结果.数据 as 行[]
+  const 全页 = Array.from({ length: 大页行数 }, (_, i) => `${大页材料}#Sheet1#${i + 1}`)
+
+  const 第一 = await query_rows(ctx(身份大页), { 材料: 大页材料, 限制: 200 })
+  const 数据1 = 行们(第一)
+  // ① 工具自限：交付序列化 ≤ 30 KB（口径与 §3.4 一致：紧凑 JSON 的 byteLength）。
+  expect(Buffer.byteLength(JSON.stringify(第一.数据))).toBeLessThanOrEqual(30 * 1024)
+  expect(数据1.length).toBeGreaterThan(0)
+  // 真的退让了：整页 40 行本来 > 30 KB，不截就会原样 40 行。
+  expect(数据1.length).toBeLessThan(大页行数)
+  // ② 摘要 / 出处按**交付的**行算：模型看到的行数必须等于数据里实际有几行。
+  expect(第一.摘要).toContain(`取到 ${数据1.length} 行明细`)
+  expect(第一.摘要).toContain("还有下一页")
+  expect(第一.出处.map((条) => 条.代表)).toEqual(数据1.slice(0, 5).map((行) => 行.定位))
+  // ③ 退让必须写进缺口（只说「还有下一页」不够：模型不知道本页已被字节上限砍过）。
+  expect(第一.缺口.at(-1)).toContain(`只取前 ${数据1.length} 行`)
+  expect(第一.缺口.at(-1)).toContain(`原请求 ${大页行数} 行`)
+  // ④ 游标只从 `下一步` 拿，由内核按**真正交付的**最后一行签发。
+  const 翻页 = 第一.下一步.find((条) => 条.工具 === "query_rows")
+  expect(翻页).toBeDefined()
+  expect(typeof (翻页!.参数 as { 游标?: unknown }).游标).toBe("string")
+
+  const 第二 = await query_rows(ctx(身份大页), 翻页!.参数 as Parameters<typeof query_rows>[1])
+  const 数据2 = 行们(第二)
+  // 两页无交集，并集 == 种子全部行：被字节上限挡下的行不会永久跳过。
+  const 第一定位 = new Set(数据1.map((行) => 行.定位))
+  expect(数据2.some((行) => 第一定位.has(行.定位))).toBe(false)
+  expect(第二.出处.some((条) => 第一.出处.some((甲) => 甲.代表 === 条.代表))).toBe(false)
+  const 全部 = [...数据1, ...数据2].map((行) => 行.定位)
+  expect(全部).toEqual(全页)
+  expect(new Set(全部).size).toBe(大页行数)
 })
