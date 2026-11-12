@@ -175,6 +175,66 @@ describe("写入翻译结果", () => {
     expect(别名).toHaveLength(2)
     expect(别名.every((a) => typeof a.revoked_at === "number")).toBe(true)
   })
+
+  test("重放遇人工确认事件：不抛、不翻倍、人工结论仍在（Q14）", async () => {
+    await 写("m6", [行({ materialId: "m6" })])
+    // 模拟人工确认：设计 §14.1 Q14 的真实路径是「重新解析时人工结论仍在」。
+    await db().execute(sql`
+      update auth.case_event e set trust_state = '已确认'
+       where e.project_id = ${项目}
+         and e.id in (
+           select c.fact_id from auth.case_citation c
+            where c.project_id = ${项目} and c.material_id = 'm6' and c.fact_type = 'event'
+         )
+    `)
+    // 不清理，同 projectId / materialId / 同一批卡片原样再跑一次：
+    // `insertEvents` 的 `on conflict do nothing` 必须吃掉已存在的行，不能撞主键。
+    await 写("m6", [行({ materialId: "m6" })])
+
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select e.id, e.trust_state from auth.case_event e
+         where e.project_id = ${项目}
+           and e.id in (
+             select c.fact_id from auth.case_citation c
+              where c.project_id = ${项目} and c.material_id = 'm6' and c.fact_type = 'event'
+           )
+      `),
+    )
+    expect(事件).toHaveLength(1)
+    expect(事件[0]?.trust_state).toBe("已确认")
+  })
+
+  test("参与者带明细行原样提及与出处（§3.3）", async () => {
+    // 原文带横线 / 空格，归一化后会不同——只用规范值当断言会「比较一个本来就相等的值」。
+    const 本方原 = "6217-0012-3456-7896-514"
+    const 对方原 = "6222 0212 3456 7890 123"
+    await 写("m7", [{ ...行({ materialId: "m7" }), ownerAccount: 本方原, counterparty: 对方原 }])
+
+    const 引用 = rowsOf(
+      await db().execute(sql`
+        select id, fact_id from auth.case_citation
+         where project_id = ${项目} and material_id = 'm7' and fact_type = 'event'
+      `),
+    )
+    expect(引用).toHaveLength(1)
+    const 参与 = rowsOf(
+      await db().execute(sql`
+        select role, mention_text, ordinal, citation_id
+          from auth.case_event_participant
+         where project_id = ${项目} and event_id = ${String(引用[0]?.fact_id)}
+         order by ordinal
+      `),
+    )
+    expect(参与).toHaveLength(2)
+    // 原文提及：照抄明细行写法（明文、不脱敏），不是归一化后的规范值。
+    expect(参与.map((p) => p.mention_text)).toEqual([本方原, 对方原])
+    // ordinal 与角色对应：本方 0 / 付款方，对手 1 / 收款方（§3.3）。
+    expect(参与.map((p) => p.ordinal)).toEqual([0, 1])
+    expect(参与.map((p) => p.role)).toEqual(["付款方", "收款方"])
+    // 出处：两条参与者都指向同一张卡片的引用行，且能回过 `case_citation`。
+    expect(参与.every((p) => p.citation_id === 引用[0]?.id)).toBe(true)
+  })
 })
 
 /** 事件 id 从行里取，避免测试里重复算 hash。 */
