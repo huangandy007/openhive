@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
-import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   解析实体,
@@ -78,7 +78,11 @@ describe("解析实体：户名精确回退", () => {
   })
 
   test("户名不做子串匹配：「张」查不到", async () => {
-    await expect(解析实体(ctx(项目), "张", "实体")).rejects.toMatchObject({ code: "not_found" })
+    // 不写 `await expect(...).rejects`：oxlint 的 `await-thenable` 认为 bun 的 `.rejects`
+    // 不是 thenable，而顺着它去掉 `await` 会让断言空转（`#002-02` 那类假绿）。
+    // 显式接住拒绝，再断错误码。
+    const 错 = await 解析实体(ctx(项目), "张", "实体").catch((e: unknown) => e)
+    expect(错).toMatchObject({ code: "not_found" })
   })
 })
 
@@ -104,17 +108,20 @@ describe("解析实体：户名的边界", () => {
   })
 
   test("别名已撤销 ⇒ 不解析", async () => {
-    await expect(解析实体(ctx(撤销项目), "王五", "实体")).rejects.toMatchObject({ code: "not_found" })
+    const 错 = await 解析实体(ctx(撤销项目), "王五", "实体").catch((e: unknown) => e)
+    expect(错).toMatchObject({ code: "not_found" })
   })
 
   test("账户被「已排除」⇒ 别名不解析", async () => {
-    await expect(解析实体(ctx(排除项目), "赵六", "实体")).rejects.toMatchObject({ code: "not_found" })
+    const 错 = await 解析实体(ctx(排除项目), "赵六", "实体").catch((e: unknown) => e)
+    expect(错).toMatchObject({ code: "not_found" })
   })
 
   test("同一户名对应两个账户 ⇒ fail-closed，列出候选账号", async () => {
     const 错 = await 解析实体(ctx(多账户项目), "钱七", "实体").catch((e: unknown) => e)
     expect(错).toMatchObject({ code: "bad_input" })
-    const 消息 = String((错 as Error).message)
+    if (!(错 instanceof Error)) throw 错
+    const 消息 = 错.message
     expect(消息).toContain("6217001234567890005")
     expect(消息).toContain("6217001234567890007")
     expect(消息).toContain("账号")
@@ -143,8 +150,7 @@ describe("规范值优先于户名（解析顺序不变）", () => {
   test("但 aggregate_money 按账户语境优先户名 ⇒ 回答的是账户，不是在人身上算 0 笔", async () => {
     const 结果 = await aggregate_money(ctx(项目), { 账户: "张三" })
     expect(结果.数据).not.toBeNull()
-    const 数据 = 结果.数据 as { 汇总: { 方向: string; 笔数: number; 合计: string }[] }
-    expect(数据.汇总).toEqual([{ 方向: "出", 笔数: 1, 合计: "5000.00" }])
+    expect(结果.数据).toMatchObject({ 汇总: [{ 方向: "出", 笔数: 1, 合计: "5000.00" }] })
     expect(结果.出处[0]?.事实).toContain("6217001234567896514")
   })
 })
@@ -157,8 +163,11 @@ describe("query_entities 关键词也命中户名别名", () => {
 
   test("按户名关键词能列出账户实体", async () => {
     const 结果 = await query_entities(ctx(项目), { 关键词: "孙八" })
-    const 行们 = 结果.数据 as { canonical_value: string; type: string }[]
-    expect(行们.some((行) => 行.canonical_value === "6217001234567890009" && 行.type === "账户")).toBe(true)
+    expect(结果.数据).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ canonical_value: "6217001234567890009", type: "账户" }),
+      ]),
+    )
   })
 
   test("别名撤销后不再命中", async () => {

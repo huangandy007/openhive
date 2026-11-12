@@ -177,9 +177,14 @@ describe("其余工具的身份标注", () => {
 
   test("query_entities 每行人/账户带身份，摘要给未核实计数", async () => {
     const 结果 = await query_entities(ctx(项目), { 关键词: "张三" })
-    const 行们 = 结果.数据 as { canonical_value: string; 身份?: { 档: string } }[]
-    const 账户行 = 行们.find((行) => 行.canonical_value === 张三账)
-    expect(账户行?.身份?.档).toBe("户名匹配")
+    expect(结果.数据).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          canonical_value: 张三账,
+          身份: expect.objectContaining({ 档: "户名匹配" }),
+        }),
+      ]),
+    )
     expect(结果.摘要).toContain("未核实身份")
   })
 })
