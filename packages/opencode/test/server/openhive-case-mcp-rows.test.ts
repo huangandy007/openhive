@@ -51,8 +51,9 @@ const 行跨材料 = "m-行-甲2#SheetA#1"
 
 const ctx = (身份: typeof 身份行): 工具上下文 => ({ db: 库(), 身份 })
 
-type 明细数据 = { 行们: { 定位: string; 备注: string | null; 金额: string | null }[]; 下一页游标: string | null }
-const 数据 = (结果: 工具结果) => 结果.数据 as 明细数据
+/** `数据` 就是行数组（R5：空 = null / 长度 0 的数组）；游标只在 `下一步` 里。 */
+type 明细行 = { 定位: string; 备注: string | null; 金额: string | null }
+const 数据 = (结果: 工具结果) => 结果.数据 as 明细行[]
 
 /** 沙箱根：身份解析只做路径比较，不碰磁盘（同 `openhive-case-mcp-server.test.ts`）。 */
 const 沙箱根 = resolve(tmpdir(), "openhive-case-mcp-行工具沙箱")
@@ -156,11 +157,12 @@ test("query_rows 按材料 + 时间窗取明细，七字段齐全", async () => 
   const 体 = 数据(结果)
 
   expect(结果.空原因).toBeNull()
-  expect(体.行们.map((行) => 行.定位)).toEqual([行1, 行2])
+  expect(体.map((行) => 行.定位)).toEqual([行1, 行2])
   // 备注原样回显（`09` §4.4 的数据列）；金额是 numeric 字符串，不当数字。
-  expect(体.行们[0]!.备注).toBe("工资")
-  expect(体.行们[0]!.金额).toBe("100.00")
-  expect(体.下一页游标).toBeNull()
+  expect(体[0]!.备注).toBe("工资")
+  expect(体[0]!.金额).toBe("100.00")
+  // 没有下一页时不给翻页建议：游标只经 `下一步`，`数据` 里不再有游标。
+  expect(结果.下一步.find((条) => 条.工具 === "query_rows")).toBeUndefined()
 
   expect(结果.摘要).toContain("取到 2 行明细")
   expect(结果.摘要).toContain("材料 m-行-甲1")
@@ -185,7 +187,7 @@ test("query_rows 不传材料、项目有明细 ⇒ 跨材料取，口径写清"
   const 体 = 数据(结果)
 
   // 时间升序、无时间排最后：1000 / 1500 / 2000 / 3000。
-  expect(体.行们.map((行) => 行.定位)).toEqual([行1, 行跨材料, 行2, 行3])
+  expect(体.map((行) => 行.定位)).toEqual([行1, 行跨材料, 行2, 行3])
   expect(结果.摘要).toContain("取到 4 行明细")
   expect(结果.口径).toContain("材料=全部")
   expect(结果.口径).toContain("账户=不限")
@@ -198,8 +200,8 @@ test("query_rows 指定不存在的材料 ⇒ 空原因=材料未入库，数据
   const 结果 = await query_rows(ctx(身份行), { 材料: "m-没这份" })
 
   expect(结果.空原因).toBe("材料未入库")
-  // 对象型返回照内核形状原样给：行们空 + 无下一页游标。
-  expect(结果.数据).toEqual({ 行们: [], 下一页游标: null })
+  // 空结果就是 `[]`（数组型，R5）——不是 `{行们: [], 下一页游标: null}` 那种对象。
+  expect(结果.数据).toEqual([])
   expect(结果.出处).toEqual([])
   expect(结果.缺口.length).toBeGreaterThan(0)
   expect(结果.缺口.join()).toContain("本项目没有这份材料")
@@ -212,7 +214,7 @@ test("query_rows 材料未解析 ⇒ 空原因=该材料未解析", async () => 
   const 结果 = await query_rows(ctx(身份未解析), { 材料: "m-行-未解析" })
 
   expect(结果.空原因).toBe("该材料未解析")
-  expect(结果.数据).toEqual({ 行们: [], 下一页游标: null })
+  expect(结果.数据).toEqual([])
   expect(结果.缺口.join()).toContain("资料/未解析.xlsx")
   expect(结果.缺口.join()).toContain("未入队")
 })
@@ -221,7 +223,7 @@ test("query_rows 条件无命中 ⇒ 空原因=无匹配行（项目里有明细
   const 结果 = await query_rows(ctx(身份行), { 账户: "13900000000" })
 
   expect(结果.空原因).toBe("无匹配行")
-  expect(数据(结果).行们).toEqual([])
+  expect(数据(结果)).toEqual([])
   expect(结果.出处).toEqual([])
   // 反向断言：本项目确实有明细，不能追加「项目没有任何已入库明细」。
   expect(结果.缺口.join()).not.toContain("本项目没有任何已入库明细")
@@ -231,7 +233,7 @@ test("query_rows 不指定材料且项目零明细 ⇒ 无匹配行，缺口写�
   const 结果 = await query_rows(ctx(身份零), {})
 
   expect(结果.空原因).toBe("无匹配行")
-  expect(结果.数据).toEqual({ 行们: [], 下一页游标: null })
+  expect(结果.数据).toEqual([])
   // `09` §4.4 补白：这句必须说，否则「真的没有」与「还没解析入库」分不开。
   expect(结果.缺口.join()).toContain("本项目没有任何已入库明细")
   expect(结果.下一步[0]?.工具).toBe("search_materials")
@@ -260,8 +262,8 @@ test("query_rows 传「备注关键词」⇒ bad_input（白名单 fail-closed�
   // 同一入口的合法调用必须真的取到数据：证明注册与分发都接上了，不是只会报错。
   const 正常 = await client.callTool({ name: "query_rows", arguments: { 材料: "m-行-甲1" }, _meta: 调用身份 })
   expect(正常.isError).toBeFalsy()
-  const 体 = JSON.parse((正常.content as { text: string }[])[0]!.text) as { 数据: 明细数据 }
-  expect(体.数据.行们.map((行) => 行.定位)).toEqual([行1, 行2, 行3])
+  const 体 = JSON.parse((正常.content as { text: string }[])[0]!.text) as { 数据: 明细行[] }
+  expect(体.数据.map((行) => 行.定位)).toEqual([行1, 行2, 行3])
 })
 
 test("query_rows 反向金额区间 ⇒ bad_input（不是空结果）", async () => {
@@ -275,21 +277,36 @@ test("query_rows 反向金额区间 ⇒ bad_input（不是空结果）", async (
 test("query_rows 游标翻页 ⇒ 第二页接上、无重复无遗漏", async () => {
   const 第一 = await query_rows(ctx(身份行), { 材料: "m-行-甲1", 限制: 2 })
   const 数据1 = 数据(第一)
-  expect(数据1.行们.map((行) => 行.定位)).toEqual([行1, 行2])
-  expect(typeof 数据1.下一页游标).toBe("string")
+  expect(数据1.map((行) => 行.定位)).toEqual([行1, 行2])
   expect(第一.缺口.join()).toContain("还有更多")
+  // `数据` 里没有游标；摘要必须让模型知道要翻下一页。
+  expect(第一.摘要).toContain("还有下一页")
 
-  // 翻页建议必须能直接喂回 `query_rows`：材料 / 限制原样带上，游标是内核签发的那串。
+  // 游标**只从 `下一步` 拿**（不读内核/工具内部状态）：这同时钉住「游标确实交给模型了」。
   const 翻页 = 第一.下一步.find((条) => 条.工具 === "query_rows")
   expect(翻页).toBeDefined()
-  expect(翻页!.参数).toMatchObject({ 材料: "m-行-甲1", 限制: 2, 游标: 数据1.下一页游标 })
+  expect(翻页!.参数).toMatchObject({ 材料: "m-行-甲1", 限制: 2 })
+  expect(typeof (翻页!.参数 as { 游标?: unknown }).游标).toBe("string")
 
   const 第二 = await query_rows(ctx(身份行), 翻页!.参数 as Parameters<typeof query_rows>[1])
   const 数据2 = 数据(第二)
-  expect(数据2.行们.map((行) => 行.定位)).toEqual([行3])
-  expect(数据2.下一页游标).toBeNull()
+  expect(数据2.map((行) => 行.定位)).toEqual([行3])
+  // 最后一页不再给翻页建议。
+  expect(第二.下一步.find((条) => 条.工具 === "query_rows")).toBeUndefined()
 
-  const 全部 = [...数据1.行们, ...数据2.行们].map((行) => 行.定位)
+  const 全部 = [...数据1, ...数据2].map((行) => 行.定位)
   expect(全部).toEqual([行1, 行2, 行3])
   expect(new Set(全部).size).toBe(3)
+})
+
+test("query_rows 镜像不变式：数据非空 ⇔ 空原因 null（数组型，Task 3 校验可直接用）", async () => {
+  const 有 = await query_rows(ctx(身份行), { 材料: "m-行-甲1" })
+  // 「空」必须在数组上判得出来；对象永远非空 ⇒ 镜像与 30 KB 截断会双双失效（R5）。
+  expect(Array.isArray(有.数据)).toBe(true)
+  expect(数据(有).length).toBe(3)
+  expect(有.空原因).toBeNull()
+
+  const 无 = await query_rows(ctx(身份行), { 账户: "13900000000" })
+  expect(无.数据).toEqual([])
+  expect(无.空原因).not.toBeNull()
 })
