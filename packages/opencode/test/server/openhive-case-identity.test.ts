@@ -4,9 +4,11 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 判定身份, 读身份标注, type 身份证据 } from "../../src/server/openhive/case-identity"
 import { insertRelation, upsertEntity } from "../../src/server/openhive/case-fact-store"
+import { 写回 } from "../../src/server/openhive/case-trust"
 import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
 import { 写入翻译结果 } from "../../src/server/openhive/case-translate-store"
+import type { Queryable } from "../../src/server/openhive/case-store"
 
 function 证据(over: Partial<身份证据> = {}): 身份证据 {
   return { 类型: "账户", 值: "6217001234567896514", 户名们: [], 人证们: [], ...over }
@@ -145,6 +147,9 @@ describe("读身份标注：证据只认未排除的实名登记边与未撤销�
   })
 
   test("写一条实名登记边 ⇒ 已核实，人证是对方的规范值", async () => {
+    // 不依赖上一条用例的夹具：`-t` 单跑这一条时库是空的（`#005-34` 的反面）。
+    // 同 projectId / materialId 重复种是 upsert，代价只有两条 SQL。
+    await 种流水(项目, "m1", "张三", "6217001234567896514", "6222021234567890123")
     const 本方id = await 账户id(项目, "6217001234567896514")
     await upsertEntity(db(), {
       id: "e-张三-证据",
@@ -203,7 +208,76 @@ describe("读身份标注：证据只认未排除的实名登记边与未撤销�
     expect(表.get(本方id)?.档).toBe("无匹配")
   })
 
+  test("人实体被「已排除」⇒ 该边不作背书，落回户名匹配", async () => {
+    const 项目4 = "prj-id-evidence-excluded-person"
+    await 种流水(项目4, "m1", "钱七", "6217001234567890005", "6222021234567890006")
+    const 本方id = await 账户id(项目4, "6217001234567890005")
+    await upsertEntity(db(), {
+      id: "e-钱七-排除",
+      projectId: 项目4,
+      type: "人",
+      canonicalValue: "钱七",
+      aliases: [],
+    })
+    await insertRelation(db(), {
+      id: "r-实名-人排除",
+      projectId: 项目4,
+      fromId: 本方id,
+      toId: "e-钱七-排除",
+      type: "实名登记",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+    // 人走「排除」，关系本身不动（未排除）——边的 `to_id` 那一侧被排除。
+    await 写回(db(), 项目4, "entity", "e-钱七-排除", "已排除", { canonicalValue: "钱七", entityType: "人" })
+    const 表 = await 读身份标注(db(), 项目4, [{ id: 本方id, 类型: "账户", 值: "6217001234567890005" }])
+    // 该账户有未撤销的「钱七」户名 ⇒ 实得是户名匹配；若无户名才会是无匹配。
+    expect(表.get(本方id)?.档).toBe("户名匹配")
+    expect(表.get(本方id)?.说明).toContain("钱七")
+  })
+
+  test("被标注的账户自身被「已排除」⇒ 该边不作背书（无匹配）", async () => {
+    const 项目5 = "prj-id-evidence-excluded-account"
+    // 这个账户**没有户名别名**，唯一的证据就是那条实名登记边 ⇒ 边被作废后只能是无匹配。
+    const 账户 = await upsertEntity(db(), {
+      id: "e-账户-排除",
+      projectId: 项目5,
+      type: "账户",
+      canonicalValue: "6217001234567890007",
+      aliases: [],
+    })
+    await upsertEntity(db(), {
+      id: "e-周九",
+      projectId: 项目5,
+      type: "人",
+      canonicalValue: "周九",
+      aliases: [],
+    })
+    await insertRelation(db(), {
+      id: "r-实名-账户排除",
+      projectId: 项目5,
+      fromId: 账户,
+      toId: "e-周九",
+      type: "实名登记",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+    // 本例排除的是**边另一端的账户**（`from_id` 那一侧），人未排除。
+    await 写回(db(), 项目5, "entity", 账户, "已排除", { canonicalValue: "6217001234567890007", entityType: "账户" })
+    const 表 = await 读身份标注(db(), 项目5, [{ id: 账户, 类型: "账户", 值: "6217001234567890007" }])
+    expect(表.get(账户)?.档).toBe("无匹配")
+  })
+
   test("空输入不查库、返回空表", async () => {
-    expect((await 读身份标注(db(), "prj-never", [])).size).toBe(0)
+    // 桩的 `execute` 一碰就炸：删掉「空输入提前返回」的短路，这条必红。
+    // 显式标注 `Queryable` 而不是 `as unknown as Queryable`：少参函数可赋值给多参签名，
+    // `never` 也满足 `PromiseLike<unknown>`，既不用断言也不引 lint 噪声。
+    const 桩: Queryable = {
+      execute: () => {
+        throw new Error("空输入不该查库")
+      },
+    }
+    const 表 = await 读身份标注(桩, "prj-never", [])
+    expect(表.size).toBe(0)
   })
 })
