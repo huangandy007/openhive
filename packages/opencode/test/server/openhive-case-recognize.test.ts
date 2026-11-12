@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider"
+import { MockLanguageModelV3 } from "ai/test"
+import { 建表头识别器 } from "../../src/server/openhive/case-header-ai"
 import { 识别材料 } from "../../src/server/openhive/case-recognize"
 import type { 格式结果 } from "../../src/server/openhive/case-ingest"
 import type { RawSheet } from "../../src/server/openhive/case-sheet"
@@ -32,6 +35,46 @@ describe("识别材料", () => {
     expect(结果.工作表[0]?.来源[0]).toBe("别名库")
     expect(结果.工作表[0]?.命中).toBe(false)
     expect(结果.模型).toEqual({ 调用: 0 })
+  })
+
+  test("模型请求不含属性列的表头与样例（识别材料 → 识别器整条链路）", async () => {
+    const 收到: string[] = []
+    const 结果: LanguageModelV3GenerateResult = {
+      content: [{ type: "text", text: JSON.stringify({ 工作表: {} }) }],
+      finishReason: { unified: "stop", raw: "stop" },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
+      },
+      warnings: [],
+    }
+    const 模型 = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        收到.push(JSON.stringify(options))
+        return 结果
+      },
+    })
+    // 「列Y」是未认领的金额形状列 ⇒ 触发模型；属性列夹在中间，必须既不外发、又不动别的列号。
+    const 识别 = await 识别材料({
+      sheets: [
+        表(
+          ["交易金额", "属性:对方:开户行", "列Y"],
+          [
+            ["1.00", "招商银行", "1.00"],
+            ["2.00", "建设银行", "2.00"],
+          ],
+        ),
+      ],
+      别名: 无别名,
+      缓存: [undefined],
+      识别器: 建表头识别器(模型, { 脱敏: false }),
+    })
+    expect(识别.模型.调用).toBe(1)
+    const 请求 = 收到.join()
+    expect(请求).not.toContain("属性:对方:开户行")
+    expect(请求).not.toContain("招商银行")
+    expect(请求).toContain("列Y") // 非属性列照常送
+    expect(请求).toContain('\\"列号\\":2,\\"表头\\":\\"列Y\\"') // 原始下标未漂移
   })
 
   test("模型只调一次，且失败不阻断识别", async () => {

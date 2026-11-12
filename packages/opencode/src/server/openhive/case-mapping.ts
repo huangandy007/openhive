@@ -90,6 +90,7 @@ export interface MappingResult {
    * 认不出的列下标，**以 `header` 长度为界**。前提：`rows` 不比 `header` 宽
    * （`readSheets` 产出的 `RawSheet` 满足这条——宽度恒等于 `!ref` 的列跨度）。
    * 直接拿别的数据源调本函数时，多出来的数据列既不会进 `columns` 也不会进这里。
+   * 属性列**排除在外**（05 §4.3）：它们不是「未认出」，不进待确认弹窗也不计未知列。
    */
   unknownColumns: number[]
 }
