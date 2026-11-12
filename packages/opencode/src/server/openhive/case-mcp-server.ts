@@ -23,7 +23,7 @@ import {
 } from "./case-mcp-tools"
 
 /**
- * 案件情报 MCP 服务器（计划 6 / Task 5）：把 7 个只读工具装配成一个 MCP server。
+ * 案件情报 MCP 服务器（计划 6 / Task 5）：把 8 个只读工具装配成一个 MCP server。
  *
  * ## 分发顺序写死
  *
@@ -207,7 +207,7 @@ const TOOLS: readonly Tool[] = [
     name: "query_rows",
     description:
       "按材料 / 账户 / 方向 / 金额区间 / 时间窗翻案件明细行，返回时间、金额、方向、对方账号与户名、本方账号、备注原文，以及行级定位（材料#表#行，可直接喂 get_citation）。" +
-      "明细太多时按游标翻页：把返回里的「下一页游标」原样传回 `游标`，不要自己造。" +
+      "明细太多时按游标翻页：续页游标不在返回数据里，只在 `下一步` 给出的 `query_rows` 建议参数中（`参数.游标`）；把它连同原查询条件一起原样传回，不要自己造。" +
       "不支持按备注关键词检索——要按备注找，只能按账户 + 时间翻明细，备注随行回显；传了 `备注关键词` 会报参数错误。",
     inputSchema: {
       type: "object",
@@ -219,7 +219,10 @@ const TOOLS: readonly Tool[] = [
         金额止: { type: "string", description: "金额上限（含），numeric 字符串" },
         时间起: { type: "integer", description: "起始时间（含），Unix 秒" },
         时间止: { type: "integer", description: "截止时间（含），Unix 秒" },
-        游标: { type: "string", description: "上一页返回的「下一页游标」，原样回传" },
+        游标: {
+          type: "string",
+          description: "续页游标：只能取自上一页 `下一步` 里 `query_rows` 建议参数的 `游标`，原样回传",
+        },
         限制: { type: "integer", description: "条数上限，默认 50、最大 200" },
       },
     },

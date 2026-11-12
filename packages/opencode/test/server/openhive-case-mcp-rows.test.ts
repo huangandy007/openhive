@@ -266,6 +266,25 @@ test("query_rows 传「备注关键词」⇒ bad_input（白名单 fail-closed�
   expect(体.数据.map((行) => 行.定位)).toEqual([行1, 行2, 行3])
 })
 
+test("query_rows 空摘要取真因：限制超限 + 材料缺失同时成立时说材料缺失，不说截断提示", async () => {
+  // 内核先推截断提示、再推材料缺失（`case-row-query.ts:350` → `:360`）：
+  // 取 `缺口[0]` 会把「材料不存在」这条真因挤掉，摘要只剩「超过上限」。
+  const 结果 = await query_rows(ctx(身份行), { 材料: "m-没这份", 限制: 999 })
+
+  expect(结果.空原因).toBe("材料未入库")
+  expect(结果.缺口.length).toBeGreaterThan(1)
+  expect(结果.摘要).toContain("本项目没有这份材料")
+  expect(结果.摘要).not.toContain("超过上限")
+})
+
+test("query_rows 的 description 指向下一步：续页游标不在返回数据里", async () => {
+  // 模型行为护栏：R4 后 `数据` 是行数组、没有游标键，描述再指向「返回里的游标」会让模型找错东西。
+  const 行工具 = (await client.listTools()).tools.find((工具) => 工具.name === "query_rows")
+  const 描述 = 行工具?.description ?? ""
+  expect(描述).toContain("下一步")
+  expect(描述).not.toContain("返回里的「下一页游标」")
+})
+
 test("query_rows 反向金额区间 ⇒ bad_input（不是空结果）", async () => {
   // 内核用「分」的 BigInt 判方向；工具层只把 `明细入参错误` 折成 `bad_input`，不许吞成无匹配行。
   await expect(query_rows(ctx(身份行), { 金额起: "500.00", 金额止: "100.00" })).rejects.toMatchObject({
