@@ -77,6 +77,11 @@ export interface CaseMcpDeps {
   readonly workspaceRoot: string
   /** 留痕出口。生产默认写 stderr 一行 JSON；测试注入数组收集。 */
   readonly 留痕?: (行: 调用留痕) => void
+  /**
+   * 测试可见性注入口（与 `留痕` 同形）：按工具名覆盖分发实现。生产**从不传**——
+   * 它让「④ 里 `校验信封(结果)` 真的接在成功路径上」能被协议用例钉住，而不是只靠读代码。
+   */
+  readonly 工具表?: Partial<Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>>>
 }
 
 const 默认留痕 = (行: 调用留痕): void => {
@@ -319,7 +324,9 @@ class 信封违约 extends Error {
 export function 校验信封(结果: 工具结果): void {
   const 缺: string[] = []
   for (const 键 of ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const)
-    if (!(键 in 结果)) 缺.push(键)
+    // 键在 **且** 值不是 `undefined`：`数据: undefined` 序列化后会少一个字段，
+    // 不能借「\`in\` 为真」混过去（R5 的空只有 `null` 与长度 0 的数组）。
+    if (!(键 in 结果) || (结果 as unknown as Record<string, unknown>)[键] === undefined) 缺.push(键)
   if (缺.length > 0) throw new 信封违约(`缺字段：${缺.join("、")}`)
 
   if (typeof 结果.摘要 !== "string" || 结果.摘要.length === 0) throw new 信封违约("摘要必须是字符串")
@@ -341,6 +348,8 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
   if (字节(数据) <= 30 * 1024) return { 数据, 缺口: [...缺口] }
   let 留 = 数据.length
   while (留 > 1 && 字节(数据.slice(0, 留)) > 30 * 1024) 留--
+  // 单条元素自身就超 30 KB 时 `留` 停在 1、一条都没截掉——不追加「截掉 0 条」的噪声缺口。
+  if (留 === 数据.length) return { 数据, 缺口: [...缺口] }
   return {
     数据: 数据.slice(0, 留),
     缺口: [...缺口, `返回数据超过 30 KB，已从尾部截掉 ${数据.length - 留} 条`],
@@ -410,7 +419,8 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
 
     // ④ 调工具。
     try {
-      const 结果 = await 分发表[工具](ctx, request.params.arguments ?? {})
+      const 表 = { ...分发表, ...deps.工具表 }
+      const 结果 = await 表[工具](ctx, request.params.arguments ?? {})
       校验信封(结果)
       const 截 = 截断数据(结果.数据, 结果.缺口)
       // 截断后镜像仍成立：至少留 1 条，且截断不改 `空原因`。
