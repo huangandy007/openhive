@@ -234,6 +234,19 @@ test("未列出的参数 ⇒ bad_input，message 列出可用参数", async () =
   expect(文本.message).toContain("含已排除")
 })
 
+// Task 4 / 09 §4.5：`地点` 是合法参数（工具自身会明确拒答「能力未就绪」）。
+// 不能停在 `收参数` 的白名单外报 bad_input——那等于把「能力没做」说成「参数写错了」。
+test("query_events 带地点不再 bad_input：参数已进白名单，工具明确拒答", async () => {
+  const 结果 = await client.callTool({
+    name: "query_events",
+    arguments: { 地点: "城东宾馆" },
+    _meta: { "openhive/user": "u-工具-甲", "openhive/directory": `${沙箱根}/u-工具-甲/p-工具-甲` },
+  })
+  // 只钉协议层「不再是参数错误」；信封语义由工具层用例钉住——白名单单独保留时本用例恒绿，
+  // 这正是变异预期的分工（notes：变异删工具分支，MCP 层用例不红）。
+  expect(结果.isError).not.toBe(true)
+})
+
 // Task 3.5：`收参数` 只做键白名单 + 类型校验，不查必填；`inputSchema.required` 只是给客户端看的。
 // 分发前必须补上必填校验，否则 `get_citation({})` 会带着 undefined 一路跑到工具里、返回「成功」信封。
 test("get_citation({}) ⇒ bad_input，消息点名缺 事实类型（必填来自 inputSchema.required）", async () => {

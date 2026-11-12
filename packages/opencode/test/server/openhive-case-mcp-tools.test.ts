@@ -1239,6 +1239,27 @@ test("query_events 七字段：类型无命中 ⇒ 无匹配行，数据/出处�
   expect(结果.下一步).toEqual([])
 })
 
+// Task 4 / 09 §4.5：`地点` 不是事件表的维度。传了它必须**明确拒答**（能力未就绪），
+// 不许静默忽略后按时间窗返回事件——那会把「某地点发生了什么」答成「这段时间的所有事」。
+test("query_events 带地点 ⇒ 能力未就绪，数据 null、缺口与下一步非空", async () => {
+  const 结果 = await query_events(ctx(身份丁), { 地点: "城东宾馆" })
+  expect(结果.摘要).toContain("按地点检索")
+  expect(结果.空原因).toBe("能力未就绪")
+  expect(结果.数据).toBeNull()
+  // 缺口要说清「为什么答不了」，不能只说一句能力未就绪。
+  expect(结果.缺口.length).toBeGreaterThan(0)
+  expect(结果.缺口[0]).toContain("地点维度")
+  // 下一步必须可执行：给替代查询，而不是空数组。
+  expect(结果.下一步.length).toBeGreaterThan(0)
+  expect(结果.下一步[0]?.工具).toBe("query_events")
+})
+
+test("query_events 带地点与时间窗 ⇒ 下一步参数原样带回起止（可直接重跑）", async () => {
+  const 结果 = await query_events(ctx(身份丁), { 地点: "城东宾馆", 起: 100, 止: 200 })
+  expect(结果.空原因).toBe("能力未就绪")
+  expect(结果.下一步[0]?.参数).toEqual({ 起: 100, 止: 200 })
+})
+
 test("get_citation 七字段（row 分支）：数据永不为空，空原因恒 null", async () => {
   const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" })
   expect(结果.摘要).toBe("明细行原文：m-甲#Sheet1#2")

@@ -635,8 +635,33 @@ export async function query_relations(
 /** 事件：按类型与参与实体过滤，时间按 `occurred_at` 闭区间。 */
 export async function query_events(
   ctx: 工具上下文,
-  args: { 起?: number; 止?: number; 类型?: string; 参与实体?: string; 含已排除?: boolean; 限制?: number },
+  args: {
+    起?: number
+    止?: number
+    类型?: string
+    参与实体?: string
+    地点?: string
+    含已排除?: boolean
+    限制?: number
+  },
 ): Promise<工具结果> {
+  // `09` §4.5 / D5：事件表没有地点维度，`地点` 只可能出现在摘要文本里。
+  // **在取数与参数校验之前**明确拒答 `能力未就绪`：静默忽略会让「某地点某周发生了什么」
+  // 变成「这周所有事件」，是比报错更危险的答非所问。
+  if (args.地点 !== undefined && args.地点 !== "") {
+    const 参数: Record<string, unknown> = {}
+    if (args.起 !== undefined) 参数.起 = args.起
+    if (args.止 !== undefined) 参数.止 = args.止
+    return {
+      摘要: `按地点检索事件尚未支持：事件表没有地点维度，无法按「${args.地点}」这类地点过滤`,
+      数据: null,
+      口径: "事件只按类型、参与实体与时间过滤；材料里没有地点字段，`地点` 参数不参与取数",
+      缺口: ["事件表没有地点维度：地点只可能出现在事件摘要文本里，不能当作过滤条件"],
+      空原因: "能力未就绪",
+      出处: [],
+      下一步: [{ 工具: "query_events", 参数, 为什么: "先按时间窗取事件，再在摘要里人工看地点" }],
+    }
+  }
   校验时间窗(args)
   const 限制 = 归一化限制(args.限制)
   const 条件: SQL[] = [sql`project_id = ${ctx.身份.projectId}`]

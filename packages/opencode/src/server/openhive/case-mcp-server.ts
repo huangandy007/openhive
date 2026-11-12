@@ -211,6 +211,10 @@ const TOOLS: readonly Tool[] = [
         止: { type: "integer", description: `时间窗终点，${时间说明}` },
         类型: { type: "string", description: "事件类型" },
         参与实体: { type: "string", description: "实体 id 或规范值；事件参与者含它才返回" },
+        地点: {
+          type: "string",
+          description: "地点（尚未支持）：传了会明确返回「能力未就绪」，不参与过滤",
+        },
         含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的事件，默认否" },
         限制: { type: "integer", description: 限制说明 },
       },
@@ -304,7 +308,12 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
   query_events: (ctx, args) =>
     query_events(
       ctx,
-      收参数<Parameters<typeof query_events>[1]>(args, ["类型", "参与实体"], ["起", "止", "限制"], ["含已排除"]),
+      收参数<Parameters<typeof query_events>[1]>(
+        args,
+        ["类型", "参与实体", "地点"],
+        ["起", "止", "限制"],
+        ["含已排除"],
+      ),
     ),
   aggregate_money: (ctx, args) =>
     aggregate_money(ctx, 收参数<Parameters<typeof aggregate_money>[1]>(args, ["账户"], ["起", "止"], [])),
