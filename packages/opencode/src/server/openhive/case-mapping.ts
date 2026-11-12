@@ -239,6 +239,8 @@ export function detectMapping(
 
   // ① 别名：原始表头精确命中；别名不提供证据，单位闸与形状仍要过
   for (let i = 0; i < header.length; i++) {
+    // 与 ② 精确层同形：已落定（含属性列）的列不许被别名再认一次（05 §4.3）。
+    if (已定.has(i)) continue
     const 原 = 列表头[i] ?? ""
     if (原 === "") continue
     const 目标 = 选项.别名?.get(原)
@@ -383,7 +385,10 @@ export function detectMapping(
     else if (列们.length > 1) for (const i of 列们) 记待确认(i, "候选不唯一", "callee")
   }
 
-  const unknownColumns = header.flatMap((_, i) => (columns[i] === undefined ? [i] : []))
+  // 属性列不是「未认出」列（05 §4.3）：它们只进 `已定`，不能按 columns 缺失计成未知。
+  const unknownColumns = header.flatMap((_, i) =>
+    columns[i] === undefined && !是属性列(header[i] ?? null) ? [i] : [],
+  )
   const 用了别名 = Object.values(来源).includes("别名库")
   const method: MappingResult["method"] = 用了别名
     ? "别名"
@@ -419,8 +424,9 @@ function 列形状(values: (string | null)[][]): string[] {
  * "6"：Task 5 把召回整轮重写（四层 ＋ 两轮制），旧指纹必须不可达。
  * "7"：户名形状去掉 60 字上限 + 词典补「收款方…名称」系列。
  * "8"：资金表补 `currency` 字段（09 §4.5 第 2 条）；旧缓存里没有币种列映射，必须重识别。
+ * "9"：属性列退出表类型投票、候选字段集与模型合并（05 §4.3）；旧缓存可能把属性列认成标准字段。
  */
-const 识别版本 = "8"
+const 识别版本 = "9"
 
 /**
  * 格式指纹：**识别版本 ＋ 别名库版本 ＋ 表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。

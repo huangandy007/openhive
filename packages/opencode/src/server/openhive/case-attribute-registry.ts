@@ -33,7 +33,9 @@ export function 解析属性列(表头: string | null): 属性列 | undefined {
   if (m === null) return undefined
   const 键 = (m[2] ?? "").trim()
   if (键 === "") return undefined
-  return { 归属: m[1] as 属性归属, 键 }
+  const 归属 = 属性归属们.find((a) => a === m[1])
+  if (归属 === undefined) return undefined
+  return { 归属, 键 }
 }
 
 export function 是属性列(表头: string | null): boolean {

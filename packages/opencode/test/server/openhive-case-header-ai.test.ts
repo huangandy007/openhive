@@ -110,6 +110,17 @@ describe("触发判定", () => {
     expect(需要模型([基础], [h], [r])).toBe(true)
   })
 
+  test("属性列不触发模型调用（不进分母，也不算有形状未认领）", () => {
+    // 两个属性列的值恰好是账号形状；它们不是字段、模型也填不进去，
+    // 若计入分母就会凑出 1/3 > 0.3 触发一次不必要的调用（且把属性值外发给模型）。
+    const h = ["查询账号", "属性:对方:开户行", "属性:本方:开户行"]
+    const r = [
+      ["6217001234567896514", "6222020202020202020", "6217001234567896514"],
+      ["6217001234567896514", "6222020202020202021", "6217001234567896514"],
+    ]
+    expect(需要模型([detectMapping(h, r)], [h], [r])).toBe(false)
+  })
+
   test("形状不符的待确认不值得触发（模型用同一 0.9 阈值，注定失败）", () => {
     // 别名把列指向 amount，但值不是两位小数 ⇒ 待确认「形状不符」；模型合并时同样过不了。
     const h = ["流水金额", "备注"]
@@ -234,6 +245,33 @@ describe("模型结果合并", () => {
     const 基础 = detectMapping(h, r)
     expect(基础.columns[0]).toBe("counterparty")
     expect(合并模型结果(h, r, 基础, { 1: "counterparty" }).columns[1]).toBeUndefined()
+  })
+
+  test("属性列不被模型认领，也不算未认出列（detectMapping 与合并层同一前提）", () => {
+    const h = ["查询账号", "属性:对方:银行卡号", "属性:本方:银行卡号"]
+    const r = [
+      ["6217001234567896514", "6222020202020202020", "6217001234567896514"],
+      ["6217001234567896514", "6222020202020202021", "6217001234567896514"],
+    ]
+    const 基础 = detectMapping(h, r)
+    // 属性列只进 `已定`，`columns[i]` 永远是 undefined；不能因此被当成「未认出」计数。
+    expect(基础.unknownColumns).not.toContain(1)
+    const 合并 = 合并模型结果(h, r, 基础, { 1: "counterparty", 2: "counterparty" })
+    expect(合并.columns[1]).toBeUndefined()
+    expect(合并.columns[2]).toBeUndefined()
+    expect(合并.unknownColumns).not.toContain(1)
+    expect(合并.unknownColumns).not.toContain(2)
+  })
+
+  test("别名层不认领属性列", () => {
+    const h = ["查询账号", "属性:对方:银行卡号"]
+    const r = [
+      ["6217001234567896514", "6222020202020202020"],
+      ["6217001234567896514", "6222020202020202021"],
+    ]
+    const 结果 = detectMapping(h, r, { 别名: new Map([["属性:对方:银行卡号", "counterparty"]]) })
+    expect(结果.columns[1]).toBeUndefined()
+    expect(结果.来源[1]).toBeUndefined()
   })
 
   test("unknownColumns 按合并后的 columns 重算", () => {

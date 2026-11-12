@@ -1,5 +1,7 @@
 export * as OpenhiveCaseFieldRegistry from "./case-field-registry"
 
+import { 是属性列 } from "./case-attribute-registry"
+
 /**
  * 字段目录：识别引擎的唯一字段来源。
  *
@@ -340,6 +342,8 @@ export function 推断表类型(header: (string | null)[], rows: (string | null)
   let 号码列 = 0
   let 金额列 = 0
   for (let i = 0; i < 宽; i++) {
+    // 属性列不参与表类型投票（05 §4.3）：表头词与形状都会把整表带偏，连累别的列识别。
+    if (是属性列(header[i] ?? null)) continue
     const 值 = 列(rows, i)
     const 非空 = 值.filter((v) => v !== null && v.trim() !== "")
     const 名 = (header[i] ?? "").trim()

@@ -2,6 +2,7 @@ export * as OpenhiveCaseHeaderAi from "./case-header-ai"
 
 import { Schema } from "effect"
 import type { LanguageModel } from "ai"
+import { 是属性列 } from "./case-attribute-registry"
 import { 建调用模型 } from "./case-extract-ai"
 import {
   候选字段集,
@@ -187,6 +188,8 @@ export function 需要模型(
     if (结果.待确认.some((项) => 模型可裁决原因们.includes(项.原因))) return true
     for (let i = 0; i < 表头.length; i++) {
       const 名 = (表头[i] ?? "").trim()
+      // 属性列不是字段、模型也填不进去（05 §4.3）：计入分母只会把触发压下去、把属性值白送出去。
+      if (是属性列(表头[i] ?? null)) continue
       if (是无信息列(名)) continue
       总列++
       if (结果.columns[i] !== undefined) continue
@@ -237,6 +240,8 @@ export function 合并模型结果(
     const i = Number(键)
     if (!Number.isInteger(i) || i < 0 || i >= 表头.length) continue
     if (columns[i] !== undefined) continue // 规则/别名已认领，模型不许覆盖
+    // 属性列只进 `已定`、不在 `columns` 里 ⇒ 上面那条守卫对它无效（05 §4.3）。
+    if (是属性列(表头[i] ?? null)) continue
     if (!是识别字段(字段名)) continue
     // extras 字段没有可验证的形状证据：靠模型自由发挥会污染 extras（本期模型只认标准列）。
     if (字段目录[字段名].落点 !== "列") continue
@@ -255,7 +260,10 @@ export function 合并模型结果(
   }
   const 待确认 = 基础.待确认.filter((项) => !模型已解决.has(项.列号))
   // 按合并后的 columns 重算：否则模型认出的列还被算作「未知列」（I1）。
-  const unknownColumns = 表头.flatMap((_, i) => (columns[i] === undefined ? [i] : []))
+  // 属性列不是「未认出」列（05 §4.3）：它们本来就不进四层召回，不能按 columns 缺失计成未知。
+  const unknownColumns = 表头.flatMap((_, i) =>
+    columns[i] === undefined && !是属性列(表头[i] ?? null) ? [i] : [],
+  )
   return { ...基础, columns, 来源, 待确认, unknownColumns }
 }
 
