@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { detectMapping } from "../../src/server/openhive/case-mapping"
+import { detectMapping, type 待确认原因 } from "../../src/server/openhive/case-mapping"
 import { toFactRows } from "../../src/server/openhive/case-rows"
 import { 翻译资金, type 跳过原因 } from "../../src/server/openhive/case-translate"
 import type { 属性归属 } from "../../src/server/openhive/case-attribute-registry"
@@ -24,6 +24,8 @@ interface 期望 {
   列: Record<string, string | null>
   卡片: {
     rowNo: number
+    /** 时间**原文**：`翻译资金` 的 `卡片草稿.occurredRaw`（C2 含时间，见 01 §4.3.1 / §4.4）。 */
+    时间: string
     amount: string
     precision: "到日" | "到分" | "到秒"
     主体角色: "付款方" | "收款方"
@@ -31,9 +33,11 @@ interface 期望 {
     对方: string
   }[]
   跳过: { rowNo: number; 原因: 跳过原因 }[]
+  /** 识别层交给人工确认的列。显式 `[]` 表示「这份夹具不该有待确认列」。 */
+  待确认?: { 列号: number; 原因: 待确认原因 }[]
   属性?: { 归属: 属性归属; 键: string; 值: string; rowNo: number }[]
   掩码实体?: { rowNo: number; 不可建实体: boolean }[]
-  汇总: { 笔数: number; 合计: string }
+  汇总: { 笔数: number; 合计: string; 对手方数: number }
 }
 
 function 造表(名: string, aoa: string[][]): RawSheet {
@@ -47,7 +51,23 @@ function 造表(名: string, aoa: string[][]): RawSheet {
   }
 }
 
-describe.each(readdirSync(根, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name))(
+const 目录们 = readdirSync(根, { withFileTypes: true })
+  .filter((d) => d.isDirectory())
+  .map((d) => d.name)
+
+/**
+ * 夹具被误删 / 改名时，`describe.each([])` 会 0 用例、`exit 0`——门禁「绿着空跑」。
+ * 这条独立用例钉住夹具集合本身；`describe.each` 复用同一个 `目录们`，不重复 readdir。
+ */
+test("夹具齐全：三份目录、各含 表.json 与 expected.json", () => {
+  expect(目录们.sort()).toEqual(["单位变体", "收付标志带属性", "银行借贷标志"].sort())
+  for (const 目录 of 目录们) {
+    expect(existsSync(join(根, 目录, "表.json"))).toBe(true)
+    expect(existsSync(join(根, 目录, "expected.json"))).toBe(true)
+  }
+})
+
+describe.each(目录们)(
   "金标准：%s",
   (目录) => {
     // `JSON.parse` 返回 `any`：直接赋给有类型的常量，不用 `as`（不触发 no-unsafe-type-assertion）。
@@ -60,23 +80,32 @@ describe.each(readdirSync(根, { withFileTypes: true }).filter((d) => d.isDirect
     const 映射 = detectMapping(表头, 行们)
 
     test("C1 列级：≥98% 且误认 0", () => {
-      const 键们 = Object.keys(期望.列)
+      // 目前三份夹具都是单表；将来多表夹具要在 `表.json` 里显式加 `sheets`，别静默只读第一张。
+      expect(Object.keys(夹具.sheets)).toHaveLength(1)
       let 命中 = 0
       const 误认: string[] = []
       for (let i = 0; i < 表头.length; i++) {
         const 表头名 = 表头[i] ?? ""
-        if (!(表头名 in 期望.列)) continue
-        const 期望字段 = 期望.列[表头名]
+        // 分母恒为表头全数：每个表头都必须在 expected.列 里表态（null = 明确不认）。
+        // 只遍历 expected.列 会让「加一列没人关心的表头」分子分母都不动，门禁静默缩水。
+        if (!(表头名 in 期望.列)) {
+          误认.push(`${表头名} ⇒ 未在 expected.列 表态`)
+          continue
+        }
+        const 期望字段 = 期望.列[表头名] ?? null
         const 实际字段 = 映射.columns[i] ?? null
-        if ((期望字段 ?? null) === (实际字段 ?? null)) {
+        if (期望字段 === 实际字段) {
           命中 += 1
           continue
         }
-        if (期望字段 === null && 实际字段 !== null) 误认.push(`${表头名} ⇒ ${实际字段}（期望不认）`)
-        if (期望字段 !== null && 实际字段 !== null) 误认.push(`${表头名} ⇒ ${实际字段}（期望 ${期望字段}）`)
+        if (期望字段 === null) 误认.push(`${表头名} ⇒ ${实际字段}（期望不认）`)
+        else 误认.push(`${表头名} ⇒ ${实际字段}（期望 ${期望字段}）`)
       }
       expect(误认).toEqual([])
-      expect(命中 / 键们.length).toBeGreaterThanOrEqual(0.98)
+      expect(命中 / 表头.length).toBeGreaterThanOrEqual(0.98)
+      // 单位冲突列不能「静默丢列」：识别层给的人工确认必须原样出现（列号 + 原因）。
+      // 只比这两维，`表头` / `建议字段` 是派生信息，另由 C1 的表头表态兜住。
+      expect(映射.待确认.map(({ 列号, 原因 }) => ({ 列号, 原因 }))).toEqual(期望.待确认 ?? [])
     })
 
     test("C2/C3 值级与行级：卡片逐个对，跳过逐条对", () => {
@@ -96,6 +125,9 @@ describe.each(readdirSync(根, { withFileTypes: true }).filter((d) => d.isDirect
         expect(卡?.participants[0]?.角色).toBe(期望卡.主体角色)
         expect(卡?.participants[1]?.角色).toBe(期望卡.对方角色)
         expect(卡?.participants[1]?.提及).toBe(期望卡.对方)
+        // C2 含时间（01 §4.3.1）；时间错是 §4.4 的「错得不可见」高危项，不钉住则差几年也绿。
+        // `toMatchObject` 不校验它没提到的字段，必须显式对原文。
+        expect(卡?.occurredRaw).toBe(期望卡.时间)
       }
       // C3：卡片数 / 应该产卡的行数
       expect(结果.卡片们.length / 期望.卡片.length).toBeGreaterThanOrEqual(0.95)
@@ -110,7 +142,11 @@ describe.each(readdirSync(根, { withFileTypes: true }).filter((d) => d.isDirect
       }
       for (const 掩 of 期望.掩码实体 ?? []) {
         const 卡 = 结果.卡片们.find((c) => c.rowNo === 掩.rowNo)
-        expect(卡?.participants[1]?.实体).toBe(false)
+        // 读 `不可建实体` 这个值域本身，别让字段只长在夹具里没人消费。
+        expect(卡?.participants[1]?.实体).toBe(!掩.不可建实体)
+        // 否定断言：掩码账号行不能建实体 ⇒ 挂在对方实体上的属性不该有出处指向它。
+        // `toContainEqual` 允许多余项，光删期望守不住（收付夹具 row3 的「对方:开户行」即此）。
+        expect(结果.属性们.filter((a) => a.出处.endsWith(`#${掩.rowNo}`))).toEqual([])
       }
     })
 
@@ -120,6 +156,8 @@ describe.each(readdirSync(根, { withFileTypes: true }).filter((d) => d.isDirect
       const 合计 = 卡片们.reduce((n, c) => n + Number(c.amount), 0).toFixed(2)
       expect(卡片们.length).toBe(期望.汇总.笔数)
       expect(合计).toBe(期望.汇总.合计)
+      // 设计 `01:926` 的 C4 含「对手方数」：同一对手的多次交易只能算一个对手。
+      expect(new Set(卡片们.map((c) => c.participants[1]?.规范值)).size).toBe(期望.汇总.对手方数)
     })
   },
 )
