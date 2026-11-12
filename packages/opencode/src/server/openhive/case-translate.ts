@@ -32,7 +32,10 @@ export interface 卡片参与者 {
   /** 归一化后的账号（`去横线` + 全角转半角）。 */
   规范值: string
   角色: "付款方" | "收款方"
-  /** 该格在原文里的写法，永不改写（§4.0.5 坑 1）。 */
+  /**
+   * 参与者账号在**明细行**里的写法。上游 `toFactRows` 已归一化（去横线 + 全角转半角），
+   * 被改写的原文在 `extras`；掩码不匹配归一化，因此掩码原样保留（§4.0.5 坑 1）。
+   */
   提及: string
   /** 0 固定为主体（本方账户），1 为对手（§3.3）。 */
   ordinal: 0 | 1
@@ -71,6 +74,8 @@ export interface 属性观察 {
 }
 
 export interface 跳过 {
+  /** 多 sheet 材料里只用 `rowNo` 定位不了（设计 :1006「跳过的必须能点开看是哪几行」）。 */
+  sheet: string
   rowNo: number
   原因: 跳过原因
 }
@@ -112,9 +117,18 @@ export function 账户键(规范值: string): string {
   return `账户\u0000${规范值}`
 }
 
-/** 合计/小计行：银行导出的这类行把标记写在对户名或备注里。整格匹配，不做子串匹配。 */
-const 合计形状 = /^(合\s*计|本页合计|合\s*计金额)/
-const 小计形状 = /^(小\s*计|本页小\s*计)/
+/**
+ * 合计/小计行：把标记写在对户名或备注里，**整格匹配**、不做前缀匹配。
+ *
+ * 设计 :1000-1006 只规定「哪些行不产卡片」，未规定判法；这里按评审核定的「宁漏不误」定：
+ * 前缀匹配会把备注为 `合计转入的货款` 的真实流水当成合计行静默丢掉（丢一笔资金，人工不会
+ * 发现）；漏判一张合计行只是多一张可见、可点开纠正的假卡片。
+ *
+ * `合计金额` 在旧的前缀正则里是冗余分支（`^合计` 已覆盖），改成整格匹配后它是**必需**的
+ * 一条：`合计金额` 整格不带金额也要认。
+ */
+const 合计形状 = /^(本页)?合\s*计(金额)?\s*[:：]?\s*[\d,，]*(\.\d{1,2})?\s*$/
+const 小计形状 = /^(本页)?小\s*计(金额)?\s*[:：]?\s*[\d,，]*(\.\d{1,2})?\s*$/
 
 function 文本值(row: FactRowInput): string[] {
   const 值: (string | null | undefined)[] = [
@@ -156,39 +170,39 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
     const 出处 = `${input.materialId}#${row.sheet}#${row.rowNo}`
 
     if (是空行(row)) {
-      跳过们.push({ rowNo: row.rowNo, 原因: "空行" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "空行" })
       continue
     }
     const 文本 = 文本值(row)
     if (文本.some((v) => 小计形状.test(v.trim()))) {
-      跳过们.push({ rowNo: row.rowNo, 原因: "小计行" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "小计行" })
       continue
     }
     if (文本.some((v) => 合计形状.test(v.trim()))) {
-      跳过们.push({ rowNo: row.rowNo, 原因: "合计行" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "合计行" })
       continue
     }
     // 方向必须在映射表内：映射之外的取值 = 不知道该谁付谁，宁可不出卡片（§4.4）。
     if (row.direction !== "收" && row.direction !== "付") {
-      跳过们.push({ rowNo: row.rowNo, 原因: "方向不明" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "方向不明" })
       continue
     }
     if (row.amount == null) {
-      跳过们.push({ rowNo: row.rowNo, 原因: "金额无法解析" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "金额无法解析" })
       continue
     }
     if (row.startedAt == null) {
-      跳过们.push({ rowNo: row.rowNo, 原因: "时间无法解析" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "时间无法解析" })
       continue
     }
     const 本方原 = (row.ownerAccount ?? "").trim()
     if (本方原 === "") {
-      跳过们.push({ rowNo: row.rowNo, 原因: "缺本方账号" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "缺本方账号" })
       continue
     }
     const 对方原 = (row.counterparty ?? "").trim()
     if (对方原 === "") {
-      跳过们.push({ rowNo: row.rowNo, 原因: "缺对方账号" })
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "缺对方账号" })
       continue
     }
 
@@ -202,13 +216,19 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
     const attrs: Record<string, unknown> = {}
     if (row.balance != null) attrs["余额"] = row.balance
 
+    // 设计 :856：金额**永远存正数**（负数会让 `sum(amount)` 把收支相抵，看起来像没交易）。
+    // 方向只用角色表达，**不从负号反推方向**——那会与 `direction` 列冲突（`#002-06`）。
+    // 用字符串去负号而不是 `Number()`：`numeric(18,2)` 的整数位可到 16 位，超过
+    // Number 的安全整数范围；去负号还能原样保留两位小数。
+    const 金额 = row.amount.replace(/^-/, "")
+
     卡片们.push({
       id: 卡片id(input.projectId, input.materialId, row.sheet, row.rowNo, "资金"),
       type: "资金交易",
       occurredAt: row.startedAt,
       occurredRaw: row.startedRaw ?? "",
       precision: row.precision ?? "到日",
-      amount: row.amount,
+      amount: 金额,
       currency: row.currency ?? "CNY",
       attrs,
       participants: [
@@ -238,7 +258,11 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       if (值 === "") continue
       if (属性.归属 === "本方" && !本方可建) continue
       if (属性.归属 === "对方" && !对方可建) continue
-      const 去重键 = `${属性.归属}\u0000${属性.键}\u0000${值}`
+      // 属性挂在实体上，去重粒度按**每个实体内部**（设计 :553-557「先有明细 → 对手/本方实体
+      // 这一步，属性才有挂载点」）。缺账户维度会让第二个账户永远拿不到同键同值的属性——
+      // T8 靠「出处 → 卡片 → 实体」回填，没有第二次机会。
+      const 实体规范值 = 属性.归属 === "本方" ? 本方 : 对方
+      const 去重键 = `${实体规范值}\u0000${属性.归属}\u0000${属性.键}\u0000${值}`
       if (属性已见.has(去重键)) continue
       属性已见.add(去重键)
       属性们.push({ 归属: 属性.归属, 键: 属性.键, 值, 出处 })
