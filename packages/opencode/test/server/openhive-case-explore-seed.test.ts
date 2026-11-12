@@ -38,8 +38,8 @@ function db() {
   return 库
 }
 
-async function 材料(id: string) {
-  const row = await getMaterial(db(), 数据集.projectId, id)
+async function 材料(id: string, projectId: string = 数据集.projectId) {
+  const row = await getMaterial(db(), projectId, id)
   if (!row) throw new Error(`材料不存在：${id}`)
   return row
 }
@@ -141,7 +141,8 @@ describe("探索数据集 seed（09 §13.1）", () => {
     const 流水 = await 材料(数据集.材料.流水)
     const 话单 = await 材料(数据集.材料.话单)
     const 笔录 = await 材料(数据集.材料.笔录)
-    const 待解析 = await 材料(数据集.材料.待解析)
+    // R-W 后这份排队中的流水在副项目（主项目刻意没有未解析材料）。
+    const 待解析 = await 材料(数据集.材料.待解析, 数据集.待解析项目)
 
     expect(流水.parseStatus).toBe("已解析")
     expect(流水.kind).toBe("资金")

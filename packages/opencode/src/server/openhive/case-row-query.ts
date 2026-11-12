@@ -316,6 +316,31 @@ function 口径文本(
 }
 
 /**
+ * 项目内「尚未解析」的材料份数：同一 `path` 只认最新一行（重传后已解析不得再报），产物不计。
+ *
+ * 口径必须与 `材料视图` 一致：同一 path 内容变了会另建一行、旧行留着（幂等键是内容指纹），
+ * 「界面上那份文件」只认最新一行。直接数所有历史行会把「重传后已解析」永久误报成未解析。
+ *
+ * 两个出口共用这一份 SQL（`#002-06`）：明细行查询的缺口，与 MCP 空原因判定的第 4 条证据。
+ */
+export async function 未解析材料份数(db: Queryable, projectId: string): Promise<number> {
+  const 行 = rowsOf(
+    await db.execute(sql`
+      with latest as (
+        select distinct on (path) id, path, kind, parse_status
+          from auth.case_material
+         where project_id = ${projectId}
+         order by path, created_at desc, id desc
+      )
+      select count(*)::int as 份数
+        from latest
+       where parse_status <> '已解析' and kind <> '产物'
+    `),
+  )[0]
+  return Number(行?.份数 ?? 0)
+}
+
+/**
  * 按条件翻明细行（`09` §4.4 的契约，`01` §7.11 的 P1 交付边界）。
  *
  * 空结果**必须分类**（`材料未入库` / `该材料未解析` / `无匹配行`）——「真的没有」与
@@ -402,23 +427,7 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   if (下一页游标 !== null) 缺口.push(`已取前 ${限制} 行，还有更多；可用续页游标继续取`)
 
   // 未解析材料：成功结果同样受影响（那些材料里的明细不在本次结果里），所以每查必报。
-  // 口径必须与 `材料视图` 一致：同一 path 内容变了会另建一行、旧行留着（幂等键是内容指纹），
-  // 「界面上那份文件」只认最新一行。直接数所有历史行会把「重传后已解析」永久误报成未解析——
-  // 同一判据开第二个出处（`#002-06`/`#010-06`）就会有这种漂移。
-  const 未解析 = rowsOf(
-    await db.execute(sql`
-      with latest as (
-        select distinct on (path) id, path, kind, parse_status
-          from auth.case_material
-         where project_id = ${入参.projectId}
-         order by path, created_at desc, id desc
-      )
-      select count(*)::int as 份数
-        from latest
-       where parse_status <> '已解析' and kind <> '产物'
-    `),
-  )[0]
-  const 份数 = Number(未解析?.份数 ?? 0)
+  const 份数 = await 未解析材料份数(db, 入参.projectId)
   if (份数 > 0) 缺口.push(`项目内还有 ${份数} 份材料未解析，其中的明细不在本次结果里`)
 
   if (本页.length === 0) {

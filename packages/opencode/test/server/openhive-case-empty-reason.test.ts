@@ -7,7 +7,7 @@ import {
   query_relations,
   type 工具上下文,
 } from "../../src/server/openhive/case-mcp-tools"
-import { upsertEntity } from "../../src/server/openhive/case-fact-store"
+import { insertRelation, upsertEntity } from "../../src/server/openhive/case-fact-store"
 import { 种探索数据集, type 探索数据集 } from "../fixtures/explore/dataset"
 
 /**
@@ -32,6 +32,20 @@ const 用户 = "u-explore"
  * 走生产 DAO 种，不裸写事实表。
  */
 const 无证据号码 = "19900001111"
+/**
+ * 主项目里一个「有转账、无持有」的人：查关系时类型过滤的判据（B4）。
+ * 数据集里的 5 个人都有持有关系（周八是零关系），凑不出这个前提，所以按最小夹具补两个实体 + 一条转账。
+ */
+const 有转账无持有 = "钱十"
+const 转账对手 = "郑十一"
+/**
+ * 第三个项目里一个「账户、但任何事实里都没有它」的实体：判定表第 2 条前置（R-W）的判据。
+ * 流水里没有这个账号，实体又得存在，才能在「材料没读全」时走到第 2 条的门口。
+ */
+const 部分项目空账户 = "6222021234567890099"
+
+/** 沪秒：与 `cases.ts` / `case-time.ts` 同一判据（Asia/Shanghai，UTC+8）。 */
+const 沪秒 = (文本: string): number => Date.parse(`${文本}+08:00`) / 1000
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -44,6 +58,50 @@ beforeAll(async () => {
     type: "号码",
     canonicalValue: 无证据号码,
     aliases: [],
+  })
+  await upsertEntity(db(), {
+    id: "e-钱十",
+    projectId: 数据集.projectId,
+    type: "人",
+    canonicalValue: 有转账无持有,
+    aliases: [],
+  })
+  await upsertEntity(db(), {
+    id: "e-郑十一",
+    projectId: 数据集.projectId,
+    type: "人",
+    canonicalValue: 转账对手,
+    aliases: [],
+  })
+  // 第三个项目的流水只有明细行、不产实体（表格入库不建实体），而 `aggregate_money` 先解析实体。
+  // 不给 H 建实体，调用会走 R-C 的「解析不到 + 有未解析材料」信封，第 1 条前置就测不到了。
+  await upsertEntity(db(), {
+    id: "e-部分H",
+    projectId: 数据集.部分解析项目,
+    type: "账户",
+    canonicalValue: 数据集.账号.H,
+    aliases: [],
+  })
+  await upsertEntity(db(), {
+    id: "e-部分空账户",
+    projectId: 数据集.部分解析项目,
+    type: "账户",
+    canonicalValue: 部分项目空账户,
+    aliases: [],
+  })
+  await insertRelation(db(), {
+    id: "r-钱十转账",
+    projectId: 数据集.projectId,
+    fromId: "e-钱十",
+    toId: "e-郑十一",
+    type: "转账",
+    amount: 100,
+    sourceKind: "data",
+    trustState: "自动抽取",
+    firstAt: 沪秒("2026-02-18T10:00:00"),
+    lastAt: 沪秒("2026-02-18T10:00:00"),
+    precision: "到秒",
+    times: 1,
   })
 })
 
@@ -96,14 +154,56 @@ describe("资金空原因：判定表 1→4（09 §3.5）", () => {
     expect(结果.摘要).not.toContain("没有任何")
   })
 
-  test("第 4 条：实体在、但第 1–3 条都不命中且有未解析材料 ⇒ 项目内资金材料未翻译", async () => {
-    // 号码不是人 / 组织也不是账户，且不在任何明细行里 ⇒ 第 1–3 条都不成立；
-    // 主项目里有一份排队中的流水 ⇒ 只能答「材料没翻译」，不能答「无匹配行」。
+  test("第 1–3 条都不命中、主项目材料已全部翻译 ⇒ 兜底无匹配行，且不报未解析缺口", async () => {
+    // 号码不是人 / 组织也不是账户，且不在任何明细行里 ⇒ 第 1–3 条都不成立。
+    // 主项目三份材料都已解析（R-W 的夹具代价：那份排队中的流水挪去了副项目）
+    // ⇒ 第 4 条也不成立，只能兜底。
     const 结果 = await aggregate_money(ctx(), { 账户: 无证据号码 })
+    expect(结果.空原因).toBe("无匹配行")
+    expect(结果.数据).toBeNull()
+    expect(结果.缺口.join()).not.toContain("份材料尚未解析")
+  })
+
+  test("第 1 条前置：材料没读全 ⇒ 不答「确实没有交易」，答「项目内资金材料未翻译」", async () => {
+    // H 在 2026-03-01 有明细行（有存在证据），但 2 月底之前窗内 0 笔转账。
+    // 没有「已翻译」前置时第 1 条会误命中「确实没有交易」——材料没读全时这是错话。
+    const 结果 = await aggregate_money(ctx(数据集.部分解析项目), {
+      账户: 数据集.账号.H,
+      止: 沪秒("2026-02-28T23:59:59"),
+    })
     expect(结果.空原因).toBe("项目内资金材料未翻译")
     expect(结果.数据).toBeNull()
     expect(结果.缺口.join()).toContain("1 份材料尚未解析，其中可能含资金流水")
-    expect(结果.摘要).toContain("不能断定")
+  })
+
+  test("第 2 条前置：材料没读全 ⇒ 不答「账户未在材料中出现」", async () => {
+    // 空账户在实体表里、任何事实里都没有它——材料已翻译时第 2 条成立；
+    // 但第三个项目还有排队中的材料，没读全就不能说「没出现」。
+    const 结果 = await aggregate_money(ctx(数据集.部分解析项目), { 账户: 部分项目空账户 })
+    expect(结果.空原因).toBe("项目内资金材料未翻译")
+    expect(结果.数据).toBeNull()
+    expect(结果.缺口.join()).toContain("1 份材料尚未解析，其中可能含资金流水")
+  })
+
+  test("非空结果也报「未翻译」缺口（未翻译不阻断取数）", async () => {
+    // 2026-03-01 那份已解析流水里就有 H 的明细 ⇒ 数据非空、空原因为 null；
+    // 但项目里还有一份排队中的材料，缺口必须说清「没读全」。
+    const 结果 = await aggregate_money(ctx(数据集.部分解析项目), {
+      账户: 数据集.账号.H,
+      起: 沪秒("2026-03-01T00:00:00"),
+      止: 沪秒("2026-03-01T23:59:59"),
+    })
+    expect(结果.空原因).toBeNull()
+    expect(结果.数据).not.toBeNull()
+    expect(结果.缺口.join()).toContain("1 份材料尚未解析，其中可能含资金流水")
+  })
+
+  test("第 1 条的类型闸：人是实体、有持有关系 ⇒ 不答「确实没有交易」", async () => {
+    // 张三有 2 条持有、无明细行、窗内 0 笔转账。没有类型闸时第 1 条会误命中
+    // 「确实没有交易」——但他不是账户，这句回答对「人」不成立。
+    const 结果 = await aggregate_money(ctx(), { 账户: "张三" })
+    expect(结果.空原因).toBe("无匹配行")
+    expect(结果.数据).toBeNull()
   })
 
   test("正向：主项目 A 有 5 笔转账 ⇒ 空原因仍是 null（第 1 条不是万能兜底）", async () => {
@@ -122,6 +222,24 @@ describe("关系空原因：只有第 3 条与兜底（09 §3.5）", () => {
 
   test("账户查关系查不到 ⇒ 兜底无匹配行（不冒充「没有交易」或「未出现」）", async () => {
     const 结果 = await query_relations(ctx(), { 实体: 数据集.账号.G })
+    expect(结果.空原因).toBe("无匹配行")
+    expect(结果.数据).toEqual([])
+  })
+
+  test("按类型过滤后查不到 ⇒ 兜底无匹配行（不反过来说人没有账户）", async () => {
+    // 前提：钱十是「人」、参与过一笔转账（有转账）、但没有持有关系。
+    const 有转账 = await query_relations(ctx(), { 实体: 有转账无持有, 类型: "转账" })
+    expect(有转账.空原因).toBeNull()
+    const 转账数据 = 有转账.数据
+    expect(Array.isArray(转账数据) ? 转账数据.length : -1).toBe(1)
+    // 2027 年窗外：类型过滤 + 空结果 ⇒ 只能兜底。没有类型闸时会答「实体没有关联账户」，
+    // 可它明明是「转账」过滤命不中，与账户归属无关（09 §3.5 第 3 条）。
+    const 结果 = await query_relations(ctx(), {
+      实体: 有转账无持有,
+      类型: "转账",
+      起: 沪秒("2027-01-01T00:00:00"),
+      止: 沪秒("2027-12-31T23:59:59"),
+    })
     expect(结果.空原因).toBe("无匹配行")
     expect(结果.数据).toEqual([])
   })

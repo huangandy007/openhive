@@ -176,7 +176,12 @@ function 定位结果(路径: string, 结果们: readonly 工具结果[]): { 结
 }
 
 function ctx(条: 期望条): 工具上下文 {
-  const projectId = 条.项目 === "待解析项目" ? 数据集.待解析项目 : 数据集.projectId
+  const 项目表: Record<string, string> = {
+    主项目: 数据集.projectId,
+    待解析项目: 数据集.待解析项目,
+    部分解析项目: 数据集.部分解析项目,
+  }
+  const projectId = 条.项目 === undefined ? 数据集.projectId : (项目表[条.项目] ?? 数据集.projectId)
   return { db: db(), 身份: { userId: 用户, projectId } }
 }
 

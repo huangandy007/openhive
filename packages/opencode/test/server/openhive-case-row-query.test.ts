@@ -3,7 +3,13 @@ import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { insertFactRows } from "../../src/server/openhive/case-store"
-import { 查明细行, 明细入参错误, 读明细行, 行视图 } from "../../src/server/openhive/case-row-query"
+import {
+  查明细行,
+  明细入参错误,
+  未解析材料份数,
+  读明细行,
+  行视图,
+} from "../../src/server/openhive/case-row-query"
 import { 建材料 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -333,6 +339,14 @@ describe("查明细行 · 未解析材料计数口径（与材料视图同一判
   test("产物材料不计入「未解析」缺口（否则每条成功结果都永久多一句假缺口）", async () => {
     const r = await 查明细行(库(), { projectId: 产物项目 })
     expect(r.缺口.join("；")).not.toContain("份材料未解析")
+  })
+
+  test("直接调未解析材料份数：同 path 重传后只认最新一行 ⇒ 0", async () => {
+    // 与上面那条同一夹具（旧行未入队 @1000、新行已解析 @2000）。
+    // 判据只能有一处（`#002-06`）：直接用 `count(*)` 会数到旧行的「未入队」⇒ 1。
+    expect(await 未解析材料份数(库(), 重传)).toBe(0)
+    // 对照：`项目` 里确实有一份「未入队」（m-2），证明同一个函数不是恒 0。
+    expect(await 未解析材料份数(库(), 项目)).toBe(1)
   })
 })
 
