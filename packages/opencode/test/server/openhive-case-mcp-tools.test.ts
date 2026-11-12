@@ -240,6 +240,9 @@ beforeAll(async () => {
       sheet: "Sheet1",
       rowNo: 2,
       counterparty: "甲",
+      counterpartyName: "甲户名",
+      ownerAccount: "622200000001",
+      direction: "收",
       amount: "50.00",
       balance: "900.00",
     },
@@ -900,6 +903,12 @@ test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   expect(数据.明细行.row_no).toBe(2)
   // 金额字符串原样返回；引用必须真的按 `fact_type='row'` 查到（种子里 `c-行-1`）。
   expect(数据.明细行.amount).toBe("50.00")
+  // `01` §8.2：行分支要补 counterparty_name / owner_account / direction，
+  // 且整份返回 extras（备注原文在里面）。这三列在 0035 就进了库，只是这里没往外给。
+  expect(数据.明细行.counterparty_name).toBe("甲户名")
+  expect(数据.明细行.owner_account).toBe("622200000001")
+  expect(数据.明细行.direction).toBe("收")
+  expect(数据.明细行.extras).toEqual({})
   expect(数据.引用.map((条) => 条.material_id)).toEqual(["m-甲"])
   // 规范化键：`02` 不是 2 的「另一个 id」，命中后引用要按 `#2` 查得到。
   const 补零 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#02" })

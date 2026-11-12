@@ -4,6 +4,7 @@ import { 默认限制, 最大限制 } from "./case-envelope"
 import type { Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
+import { 读明细行 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
 
 /**
@@ -422,16 +423,13 @@ export async function get_citation(
     }
     // 引用按**规范化键**查：`"…#Sheet1#02"` 能命中明细行，但原始的 `02` 不是库里 `fact_id` 的写法。
     const 规范键 = `${材料}#${工作表}#${Number(行号)}`
-    const 行 = rowsOf(
-      await ctx.db.execute(sql`
-        select project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
-               precision, time_type, duration_sec, amount::text as amount, balance::text as balance,
-               counterparty, extras::text as extras
-          from auth.case_fact_row
-         where project_id = ${ctx.身份.projectId} and material_id = ${材料}
-           and sheet = ${工作表} and row_no = ${Number(行号)}
-      `),
-    )[0]
+    // 一行的读回／解码只有一处（`case-row-query.ts` 的 `读明细行`）。
+    // 原来这里内联一份 SQL，等于给「金额读成字符串还是数字、extras 怎么解」开第二个出处（`#002-06`）。
+    const 行 = await 读明细行(ctx.db, ctx.身份.projectId, {
+      materialId: 材料,
+      sheet: 工作表,
+      rowNo: Number(行号),
+    })
     if (行 === undefined) throw new 工具错误("not_found", `本项目里没有这条明细行：${args.事实id}`)
     // `引用们` 的第三参类型是 `留痕类型`（entity/relation/event），但 `case_citation.fact_type`
     // 的库约束也允许 `row`——计划 5 的单条事实详情只服务三类事实，没把 row 收进类型。
@@ -447,21 +445,26 @@ export async function get_citation(
     return {
       数据: {
         明细行: {
-          project_id: 行.project_id as string,
-          material_id: 行.material_id as string,
-          sheet: 行.sheet as string,
-          row_no: 行.row_no as number,
-          caller: 行.caller as string | null,
-          callee: 行.callee as string | null,
-          started_at: 行.started_at as number | null,
-          started_raw: 行.started_raw as string | null,
-          precision: 行.precision as string | null,
-          time_type: 行.time_type as string | null,
-          duration_sec: 行.duration_sec as number | null,
-          amount: 行.amount as string | null,
-          balance: 行.balance as string | null,
-          counterparty: 行.counterparty as string | null,
-          extras: 解JSON<unknown>(行.extras, {}),
+          project_id: 行.projectId,
+          material_id: 行.materialId,
+          sheet: 行.sheet,
+          row_no: 行.rowNo,
+          caller: 行.caller,
+          callee: 行.callee,
+          started_at: 行.startedAt,
+          started_raw: 行.startedRaw,
+          precision: 行.precision,
+          time_type: 行.timeType,
+          duration_sec: 行.durationSec,
+          amount: 行.amount,
+          balance: 行.balance,
+          counterparty: 行.counterparty,
+          counterparty_name: 行.counterpartyName,
+          owner_account: 行.ownerAccount,
+          direction: 行.direction,
+          // 保持原有默认：库里 `extras` 是 NOT NULL DEFAULT '{}'，读不到时仍给 `{}` 而不是 null
+          // （`09` §3.4 的老规矩：字段缺席会让模型把「没有备注」讲成「这行没信息」）。
+          extras: 行.extras ?? {},
         },
         引用: 引用行(引用),
       },
