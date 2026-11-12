@@ -102,6 +102,21 @@ async function 数明细行按材料类型(db: Queryable, projectId: string): Pr
   )
 }
 
+/** 明细行按**币种**分组；只数资金材料（话单行没有币种列，会以默认 CNY 混进分母）。 */
+async function 数资金明细行按币种(db: Queryable, projectId: string): Promise<Record<string, number>> {
+  return 数分组(
+    db,
+    sql`
+      select r.currency as k, count(*)::int as n
+        from auth.case_fact_row r
+        join auth.case_material m
+          on m.project_id = r.project_id and m.id = r.material_id
+       where r.project_id = ${projectId} and m.kind = '资金'
+       group by r.currency
+    `,
+  )
+}
+
 async function 数实体按类型(db: Queryable, projectId: string): Promise<Record<string, number>> {
   return 数分组(
     db,
@@ -155,6 +170,15 @@ describe("探索数据集 seed（09 §13.1）", () => {
     expect(await countFactRows(db(), 数据集.projectId)).toBe(10)
     // 总数对不等于组成对：按材料 kind 分组，别让用例名比断言强。
     expect(await 数明细行按材料类型(db(), 数据集.projectId)).toEqual({ 资金: 7, 话单: 3 })
+  })
+
+  test("资金明细币种：流水 7 行里 CNY 5、USD 2（09 §4.5 第 2 条）", async () => {
+    expect(await 数资金明细行按币种(db(), 数据集.projectId)).toEqual({ CNY: 5, USD: 2 })
+  })
+
+  test("迁移可重复执行：再跑一次 migrate() 不抛错、无待应用版本", async () => {
+    // 迁移运行器按记账表跳过已应用版本；这条钉住「部署跑两次不会炸」。
+    expect(await migrate(db())).toEqual([])
   })
 
   test("实体：5 人 + 6 账户 + 1 号码 = 12", async () => {

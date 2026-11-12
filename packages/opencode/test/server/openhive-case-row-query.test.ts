@@ -548,6 +548,7 @@ describe("行视图 · 备注守卫（Task 2 复审留下的无守护约束）",
     counterpartyName: null,
     ownerAccount: null,
     direction: null,
+    currency: "CNY",
   } as const
 
   test("extras 为 null ⇒ 备注 null（这一条才是真的守卫：少了 null 判断会抛 TypeError）", () => {

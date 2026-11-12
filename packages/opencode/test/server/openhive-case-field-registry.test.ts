@@ -92,6 +92,7 @@ describe("字段目录", () => {
       "counterpartyName",
       "ownerAccount",
       "direction",
+      "currency",
     ])
   })
 

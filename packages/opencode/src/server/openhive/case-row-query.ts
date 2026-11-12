@@ -48,6 +48,8 @@ export interface 明细行原始 {
   readonly counterpartyName: string | null
   readonly ownerAccount: string | null
   readonly direction: "收" | "付" | null
+  /** 币种：默认 `"CNY"`，外币原样大写（`09` §4.5 第 2 条）。 */
+  readonly currency: string
   /** `extras` 已解码成对象（旧行可能是字符串，见 {@link 读杰森}）。 */
   readonly extras: unknown
 }
@@ -66,6 +68,8 @@ export interface 明细行视图 {
   readonly 金额: string | null
   readonly 余额: string | null
   readonly 方向: "收" | "付" | null
+  /** 币种：默认 `"CNY"`；外币行的金额**不参与** `money_flow` 合计（`09` §4.5 第 2 条）。 */
+  readonly 币种: string
   readonly 本方账号: string | null
   readonly 对方账号: string | null
   readonly 对方户名: string | null
@@ -75,7 +79,7 @@ export interface 明细行视图 {
 
 const 列 = sql`project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
        precision, time_type, duration_sec, amount::text as amount, balance::text as balance,
-       counterparty, counterparty_name, owner_account, direction, extras`
+       counterparty, counterparty_name, owner_account, direction, currency, extras`
 
 function 文本(值: unknown): string | null {
   return 值 === null || 值 === undefined ? null : String(值)
@@ -123,6 +127,8 @@ function 原始行(行: Record<string, unknown>): 明细行原始 {
     counterpartyName: 文本(行.counterparty_name),
     ownerAccount: 文本(行.owner_account),
     direction: 方向 === "收" || 方向 === "付" ? 方向 : null,
+    // 老行 / 外部写入可能没有币种：读成 CNY，别让 undefined 漂到行视图（与列默认值同口径）。
+    currency: 文本(行.currency) ?? "CNY",
     extras: 读杰森(行.extras),
   }
 }
@@ -166,6 +172,7 @@ export function 行视图(行: 明细行原始): 明细行视图 {
     金额: 行.amount,
     余额: 行.balance,
     方向: 行.direction,
+    币种: 行.currency ?? "CNY",
     本方账号: 行.ownerAccount,
     对方账号: 行.counterparty,
     对方户名: 行.counterpartyName,

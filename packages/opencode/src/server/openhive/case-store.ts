@@ -322,6 +322,8 @@ export interface FactRowInput {
   counterpartyName?: string | null
   ownerAccount?: string | null
   direction?: "收" | "付" | null
+  /** 币种（`09` §4.5 第 2 条）：默认 `"CNY"`；外币原样大写。 */
+  currency?: string | null
   extras?: Record<string, unknown>
 }
 
@@ -360,6 +362,7 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
                     ${row.durationSec ?? null}, ${row.amount ?? null}, ${row.balance ?? null},
                     ${row.counterparty ?? null}, ${row.counterpartyName ?? null},
                     ${row.ownerAccount ?? null}, ${row.direction ?? null},
+                    ${row.currency ?? "CNY"},
                     ${JSON.stringify(row.extras ?? {})}::text::jsonb)`,
     )
     const result = rowsOf(
@@ -367,7 +370,7 @@ export async function insertFactRows(db: Queryable, rows: FactRowInput[]): Promi
         insert into auth.case_fact_row
           (project_id, material_id, sheet, row_no, caller, callee, started_at, started_raw,
            precision, time_type, duration_sec, amount, balance, counterparty,
-           counterparty_name, owner_account, direction, extras)
+           counterparty_name, owner_account, direction, currency, extras)
         values ${sql.join(values, sql`, `)}
         on conflict (project_id, material_id, sheet, row_no) do nothing
         returning row_no

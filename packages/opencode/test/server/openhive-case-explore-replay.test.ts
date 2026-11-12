@@ -185,6 +185,20 @@ function ctx(条: 期望条): 工具上下文 {
   return { db: db(), 身份: { userId: 用户, projectId } }
 }
 
+/**
+ * 工具层：账户 F（赵六）的两行流水都是 USD（`dataset.ts` 的 2/25 300、2/26 200）。
+ * 裁定 A：全部是外币行 ⇒ `数据: []`、`空原因` 用既有枚举，缺口仍写明本页外币行数。
+ */
+test("[工具层] query_rows 账户只有外币行 ⇒ 空原因=外币行全部未计入、数据为空", async () => {
+  const 结果 = await query_rows(
+    { db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } },
+    { 账户: 数据集.账号.F },
+  )
+  expect(结果.空原因).toBe("外币行全部未计入")
+  expect(结果.数据).toEqual([])
+  expect(结果.缺口.join()).toContain("2 行非人民币未计入")
+})
+
 for (const 条 of 题集) {
   test(`[${条.组}] ${条.问题}`, async () => {
     // 每题的调用数必须与表里的上限相等：它就是本序列的长度（不是模型侧的上限）。

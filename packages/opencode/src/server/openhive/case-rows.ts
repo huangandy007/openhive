@@ -89,6 +89,24 @@ function 选中列(mapping: Record<number, 识别字段>): Map<识别字段, num
   return out
 }
 
+/**
+ * 币种归一化（`09` §4.5 第 2 条）。
+ *
+ * 只有默认人民币的几种写法（`CNY` / `RMB` / `人民币` / `元`，大小写与全半角空白都算）落成
+ * `"CNY"`；其余**原样转大写**（`USD` / `美元` / `HKD` / `EUR`…），认不出也保留原值大写。
+ * 这是 fail-closed（`#011-02`）：认不出的币种宁可算成非人民币、少进合计，也不静默当人民币。
+ * `null` / 空串（含没有币种列）⇒ 默认 `"CNY"`——那确实是没有外币声明的资金表。
+ *
+ * 与 `case-field-registry` 的分工：字段目录**不声明** `归一化`（归一化不许进格式指纹，
+ * `#011-01`）；这条只在写入口调用一次。
+ */
+export function 解析币种(原值: string | null): string {
+  const v = (原值 ?? "").replace(/[\s　]/g, "").toUpperCase()
+  if (v === "") return "CNY"
+  if (["CNY", "RMB", "人民币", "元"].includes(v)) return "CNY"
+  return v
+}
+
 /** 方向原值归一化；认不出（含 null）⇒ null。 */
 export function 归一化方向(原值: string | null): "收" | "付" | null {
   const v = (原值 ?? "").trim()
@@ -211,6 +229,8 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
       counterpartyName: 对手户名 ?? null,
       ownerAccount: 本方账号原值 === null ? null : 归一化值("ownerAccount", 本方账号原值),
       direction: 方向,
+      // 币种：没有这一列 / 空串 ⇒ CNY；外币原样大写（认不出也算非人民币，`解析币种`）。
+      currency: 解析币种(值("currency")),
       extras,
     })
   }

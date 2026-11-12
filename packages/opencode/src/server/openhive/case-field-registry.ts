@@ -19,6 +19,7 @@ export const 标准列字段们 = [
   "counterpartyName",
   "ownerAccount",
   "direction",
+  "currency",
 ] as const
 export type 标准列字段 = (typeof 标准列字段们)[number]
 
@@ -143,6 +144,18 @@ export const 字段目录: Record<识别字段, 字段定义> = {
     种类: "方向",
     同义词: ["借贷标志", "收付标志", "资金方向", "交易方向", "收付类型"],
     形状: 方向形状,
+  },
+  /**
+   * 币种（`09` §4.5 第 2 条）：只用于把外币行隔离开，不参与合计。
+   *
+   * **刻意不声明 `归一化`**：为匹配而做的归一化不许进格式指纹（`#011-01`）；币种归一化
+   * （`CNY` / `RMB` / `人民币` / `元` ⇒ `CNY`，其余原样大写）放在写入口 `case-rows.ts` 的
+   * `解析币种`。也不加 `形状`：任何文本都可能是币种，形状区分度不足。
+   */
+  currency: {
+    落点: "列",
+    种类: "文本",
+    同义词: ["币种", "货币", "币别", "交易币种"],
   },
 
   address: { 落点: "extras", 种类: "地点", 同义词: ["收货地址", "收件地址", "送餐地址", "地址"], 形状: (v) => v.trim() !== "" },
@@ -359,6 +372,7 @@ export function 候选字段集(
       "counterpartyName",
       "ownerAccount",
       "direction",
+      "currency",
       "ownerName",
     ])
   if (类型 === "话单")
