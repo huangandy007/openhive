@@ -12,7 +12,8 @@ import type { FactRowInput } from "./case-store"
  *
  * - **extras 落点字段**（`address` / `ownerName`…）：用**字段名**作键，不用原表头——
  *   字段身份与表头写法解耦，换一家银行的「收货地址」仍是同一个键。
- * - **标准列**：「被选中且本列解析失败」，或**归一化改写了原文**（`+86` / 横线 / 空白）时留底，
+ * - **标准列**：「被选中且本列解析失败」，或**归一化改写了原文**（`+86` / 横线 / 空白），
+ *   或币种被 `解析币种` 改写（`usd` ⇒ `USD`）时留底，
  *   键仍是**原表头文本**——民警在界面上看到的是表头，不是下标。表头为空或与前面重名时用
  *   `第N列`（N 从 1 起）。
  *
@@ -201,7 +202,13 @@ export function toFactRows(input: ToRowsInput): FactRowInput[] {
       // 例外：解析成功但**归一化改写了原文**（`+86` / 横线）⇒ 原文按原表头补进 extras（A16）。
       // extras 落点字段：一律留底，键用**字段名**（`address` / `ownerName`…），不用原表头。
       if (是识别字段(field) && 是标准列(field) && 选中.get(field) === i && !解析失败(field, cell.text)) {
-        if (!归一化改写了原文(field, cell.text)) return
+        // 币种例外：标准列写的是 `解析币种` 的结果，而字段目录**不声明** `归一化`
+        // （归一化不许进格式指纹，`#011-01`），所以 `归一化改写了原文` 对它恒 false。
+        // 原文真被改写（`usd` ⇒ `USD`、`人民币` ⇒ `CNY`）时按原表头留底（A16）；
+        // 原文为空串⇔没有原文可留（默认 `CNY` 不算改写）。
+        const 币种改写了原文 =
+          field === "currency" && cell.text.trim() !== "" && 解析币种(cell.text) !== cell.text
+        if (!归一化改写了原文(field, cell.text) && !币种改写了原文) return
       }
       const 键 = 是识别字段(field) && !是标准列(field) ? field : (键们[i] ?? `第${i + 1}列`)
       extras[键] = cell.text

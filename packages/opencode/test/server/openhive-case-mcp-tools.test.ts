@@ -275,6 +275,21 @@ beforeAll(async () => {
       amount: "10.00",
       balance: "890.00",
     },
+    // 外币行：`get_citation` 的行分支必须把 `currency` 带出来，否则抽验时等于把 USD 金额
+    // 当人民币展示（评审必修 1）。金额/备注取自`dataset.ts` 的 2/25 行。
+    {
+      projectId: 身份丁.projectId,
+      materialId: "m-甲",
+      sheet: "Sheet1",
+      rowNo: 3,
+      counterparty: "赵六",
+      counterpartyName: "赵六",
+      direction: "付",
+      amount: "300.00",
+      balance: "18000.00",
+      currency: "USD",
+      extras: { 备注: "货款" },
+    },
   ])
   // 明细行的引用：行级 `fact_id` 是不透明键 `m-甲#Sheet1#2`，供 row 分支按 `fact_type='row'` 查。
   await addCitation(库(), {
@@ -989,6 +1004,18 @@ test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   expect((补零.数据 as { 引用: Record<string, unknown>[] }).引用).toHaveLength(1)
   // 有引用时 `缺口` 必须为空数组（七字段信封里 `缺口` 必填）：否则「无引用」的那条提示会变成常驻噪音。
   expect(结果.缺口).toEqual([])
+})
+
+test("get_citation 明细行必须带币种：外币行不能只回金额", async () => {
+  // 评审必修 1：行分支是**手工投影**（不走 `行视图`），漏了 `currency` 时 USD 行只回
+  // `amount: "300.00"`，模型/民警会把它当人民币。改前实得 `undefined`。
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#3" })
+  // 不用 `as` 取子对象：本仓 oxlint 对 unknown 的窄化断言会记一条新告警。
+  expect(结果.数据).toMatchObject({
+    明细行: { currency: "USD", amount: "300.00" },
+  })
+  // 既有 extras 断言不破：投影不能为了补币种把备注吞掉。
+  expect(结果.数据).toMatchObject({ 明细行: { extras: { 备注: "货款" } } })
 })
 
 test("get_citation 明细行：工作表名含 # 也能定位", async () => {

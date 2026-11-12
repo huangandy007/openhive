@@ -812,6 +812,9 @@ export async function get_citation(
           counterparty_name: 行.counterpartyName,
           owner_account: 行.ownerAccount,
           direction: 行.direction,
+          // 币种列（snake_case 与其他列一致）：漏掉它时 USD 行只回金额，等于把外币当人民币
+          // 展示。这是 `行视图` 已有的判据，手工投影必须同步（`#002-06`）。
+          currency: 行.currency,
           // 保持原有默认：库里 `extras` 是 NOT NULL DEFAULT '{}'，读不到时仍给 `{}` 而不是 null
           // （`09` §3.4 的老规矩：字段缺席会让模型把「没有备注」讲成「这行没信息」）。
           extras: 行.extras ?? {},

@@ -199,6 +199,38 @@ test("[工具层] query_rows 账户只有外币行 ⇒ 空原因=外币行全部
   expect(结果.缺口.join()).toContain("2 行非人民币未计入")
 })
 
+/**
+ * 评审必修 3：护栏只在**一次看全**时成立（没有进来游标、也没有下一页）。
+ * 分页时「本页恰好全外币」≠「外币行全部未计入」——删掉护栏那两个条件，这条会红成
+ * `空原因=外币行全部未计入`、`数据=[]`，并把续页游标一起丢掉（评审变异 3）。
+ */
+test("[工具层] query_rows 外币行分页：本页全外币也不算「全部未计入」", async () => {
+  const 结果 = await query_rows(
+    { db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } },
+    { 账户: 数据集.账号.F, 限制: 1 },
+  )
+  // 实得：第 1 页 1 行（2/25 的 300 美元），空原因 null，续页项里带非空游标。
+  expect(结果.空原因).toBeNull()
+  // 不用 `as` 窄化 `unknown`：本仓 oxlint 会记一条新告警。
+  expect(结果.数据).toHaveLength(1)
+  const 续页 = 结果.下一步.find((条) => 条.工具 === "query_rows")
+  expect(续页?.参数.游标).toBeTruthy()
+})
+
+test("[工具层] query_rows 外币行续页：游标进来时不再声称「全部未计入」", async () => {
+  const ctx = { db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } }
+  const 第一页 = await query_rows(ctx, { 账户: 数据集.账号.F, 限制: 1 })
+  const 续页 = 第一页.下一步.find((条) => 条.工具 === "query_rows")
+  expect(续页).toBeDefined()
+  const 第二页 = await query_rows(ctx, 续页!.参数 as Parameters<typeof query_rows>[1])
+  // 实得：第 2 页 1 行（2/26 的 200 美元）
+  expect(第二页.空原因).toBeNull()
+  expect(第二页.空原因).not.toBe("外币行全部未计入")
+  expect(第二页.数据).toHaveLength(1)
+  // 实得：第 2 页就是最后一页，`下一步` 里没有 query_rows 续页项。
+  expect(第二页.下一步.some((条) => 条.工具 === "query_rows")).toBe(false)
+})
+
 for (const 条 of 题集) {
   test(`[${条.组}] ${条.问题}`, async () => {
     // 每题的调用数必须与表里的上限相等：它就是本序列的长度（不是模型侧的上限）。

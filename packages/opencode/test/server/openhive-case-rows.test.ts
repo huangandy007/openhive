@@ -348,4 +348,27 @@ describe("新增三列与 extras 键", () => {
     // 去横线/空白改写了原文 ⇒ 原文仍进 extras（A16）。
     expect(rows[0]?.extras).toEqual({ 对方账号: " 6222-001 " })
   })
+
+  test("币种归一化改写原文时按原表头留底（A16），CNY 与空不写", () => {
+    // `解析币种` 把 `usd`/`人民币` 改写成 `USD`/`CNY`，但同一条 A16 要求原文仍可见；
+    // 今天 currency 是标准列且不声明 `归一化`，走 `return` 直接跳过 ⇒ 原文彻底消失。
+    // 第二列只是让「空币种」那一行不至于是整行全空（全空行不产出行）。
+    const rows = toFactRows({
+      projectId: "p",
+      materialId: "m",
+      sheet: 表(
+        ["币种", "金额"],
+        [
+          ["usd", "1.00"],
+          ["人民币", "2.00"],
+          ["CNY", "3.00"],
+          ["", "4.00"],
+        ],
+      ),
+      mapping: { 0: "currency", 1: "amount" },
+    })
+    expect(rows.map((row) => row.currency)).toEqual(["USD", "CNY", "CNY", "CNY"])
+    // 只有「原文 ≠ 解析结果」才留底：`usd` / `人民币` 写，`CNY` 与空单元格不写。
+    expect(rows.map((row) => row.extras)).toEqual([{ 币种: "usd" }, { 币种: "人民币" }, {}, {}])
+  })
 })
