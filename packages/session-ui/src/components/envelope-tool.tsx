@@ -62,13 +62,15 @@ export function EnvelopeTool(props: 信封卡属性) {
             trigger={{
               title: 信封().摘要,
               subtitle: 工具名文本(i18n.t, props.tool),
+              subtitleClass: "text-text-base",
               args: 入参摘要(props.input),
+              argsClass: "text-text-base",
             }}
           >
             <div data-component="envelope-tool" class="flex flex-col gap-2 px-1 pb-1">
               <Show when={信封().口径}>
                 {(口径) => (
-                  <div data-slot="envelope-scope" class="text-12-regular text-text-weak">
+                  <div data-slot="envelope-scope" class="text-12-regular text-text-base">
                     {i18n.t("ui.envelopeTool.scope")}：{口径()}
                   </div>
                 )}
@@ -78,13 +80,13 @@ export function EnvelopeTool(props: 信封卡属性) {
                 {(空原因) => (
                   <div
                     data-slot="envelope-empty"
-                    class="rounded-[6px] border border-border-warning-base bg-surface-warning-weak px-2 py-1.5 text-13-regular text-text-base"
+                    class="rounded-[6px] border border-border-warning-base bg-surface-warning-weak px-2 py-1.5 text-13-regular text-text-on-warning-base"
                   >
                     <div>
                       {i18n.t("ui.envelopeTool.emptyReason")}：{空原因()}
                     </div>
                     <Show when={信封().下一步[0]?.为什么}>
-                      {(为什么) => <div class="mt-0.5 text-12-regular text-text-weak">{为什么()}</div>}
+                      {(为什么) => <div class="mt-0.5 text-12-regular text-text-on-warning-base">{为什么()}</div>}
                     </Show>
                   </div>
                 )}
@@ -95,14 +97,14 @@ export function EnvelopeTool(props: 信封卡属性) {
                   data-slot="envelope-gaps"
                   class="rounded-[6px] border border-border-warning-base bg-surface-warning-weak px-2 py-1.5"
                 >
-                  <div class="text-12-regular text-text-weak">{i18n.t("ui.envelopeTool.gap")}</div>
-                  <ul class="mt-0.5 flex list-disc flex-col gap-0.5 pl-4 text-13-regular text-text-base">
+                  <div class="text-12-regular text-text-on-warning-base">{i18n.t("ui.envelopeTool.gap")}</div>
+                  <ul class="mt-0.5 flex list-disc flex-col gap-0.5 pl-4 text-13-regular text-text-on-warning-base">
                     <For each={信封().缺口}>{(缺口) => <li>{缺口}</li>}</For>
                   </ul>
                 </div>
               </Show>
 
-              <div data-slot="envelope-data" class="text-12-regular text-text-weak">
+              <div data-slot="envelope-data" class="text-12-regular text-text-base">
                 {数据行数(信封().数据) === null
                   ? i18n.t("ui.envelopeTool.object")
                   : i18n.t("ui.envelopeTool.rows", { count: 数据行数(信封().数据) as number })}
@@ -112,14 +114,14 @@ export function EnvelopeTool(props: 信封卡属性) {
 
               <Show when={信封().出处.length > 0}>
                 <div data-slot="envelope-sources">
-                  <div class="text-12-regular text-text-weak">{i18n.t("ui.envelopeTool.source")}</div>
+                  <div class="text-12-regular text-text-base">{i18n.t("ui.envelopeTool.source")}</div>
                   <ul class="mt-0.5 flex flex-col gap-0.5">
                     <For each={信封().出处}>
                       {(条) => (
                         <li class="text-13-regular text-text-base">
                           {条.事实}
                           <Show when={条.代表}>
-                            {(代表) => <span class="ml-1 text-12-regular text-text-weak">{代表()}</span>}
+                            {(代表) => <span class="ml-1 text-12-regular text-text-base">{代表()}</span>}
                           </Show>
                         </li>
                       )}
@@ -130,14 +132,14 @@ export function EnvelopeTool(props: 信封卡属性) {
 
               <Show when={信封().下一步.length > 0}>
                 <div data-slot="envelope-next">
-                  <div class="text-12-regular text-text-weak">{i18n.t("ui.envelopeTool.next")}</div>
+                  <div class="text-12-regular text-text-base">{i18n.t("ui.envelopeTool.next")}</div>
                   <ul class="mt-0.5 flex flex-col gap-0.5">
                     <For each={信封().下一步}>
                       {(条) => (
                         <li class="text-13-regular text-text-base">
                           {工具名文本(i18n.t, 条.工具)}
                           <Show when={条.为什么}>
-                            {(为什么) => <span class="ml-1 text-12-regular text-text-weak">{为什么()}</span>}
+                            {(为什么) => <span class="ml-1 text-12-regular text-text-base">{为什么()}</span>}
                           </Show>
                         </li>
                       )}
@@ -148,7 +150,7 @@ export function EnvelopeTool(props: 信封卡属性) {
 
               {/* 原始 JSON 用原生 details：键盘可展开，不需要额外组件 API，也不与 BasicTool 的 Collapsible 嵌套 */}
               <details data-slot="envelope-raw">
-                <summary class="cursor-pointer text-12-regular text-text-weak">{i18n.t("ui.envelopeTool.raw")}</summary>
+                <summary class="cursor-pointer text-12-regular text-text-base">{i18n.t("ui.envelopeTool.raw")}</summary>
                 <pre class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all text-12-regular text-text-base">
                   {JSON.stringify(信封(), null, 2)}
                 </pre>
@@ -188,16 +190,20 @@ export function 信封错误卡(props: 错误卡属性) {
       defaultOpen={props.defaultOpen}
       open={props.open}
       onOpenChange={props.onOpenChange}
-      trigger={{ title: i18n.t("ui.envelopeTool.error"), subtitle: 工具名文本(i18n.t, props.tool) }}
+      trigger={{
+        title: i18n.t("ui.envelopeTool.error"),
+        subtitle: 工具名文本(i18n.t, props.tool),
+        subtitleClass: "text-text-base",
+      }}
     >
       <div
         data-slot="envelope-error"
-        class="rounded-[6px] border border-border-warning-base bg-surface-warning-weak px-2 py-1.5 text-13-regular text-text-base"
+        class="rounded-[6px] border border-border-warning-base bg-surface-warning-weak px-2 py-1.5 text-13-regular text-text-on-warning-base"
       >
         <Show when={错误()}>
           {(值) => (
             <div>
-              <span class="text-text-weak">{i18n.t("ui.envelopeTool.errorCode")}：</span>
+              <span class="text-text-on-warning-base">{i18n.t("ui.envelopeTool.errorCode")}：</span>
               <span>{值().错误码}</span>
               <div class="mt-0.5 whitespace-pre-wrap">{值().消息}</div>
             </div>
