@@ -15,6 +15,13 @@ import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
 import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
+import {
+  读身份标注,
+  实体称呼,
+  身份后缀,
+  type 身份标注,
+  type 待标注实体,
+} from "./case-identity"
 
 /**
  * MCP 工具层的取数实现：只认 `{ db, 身份 }`，不认识 MCP、不认识 HTTP。
@@ -44,6 +51,8 @@ export interface 工具结果 {
   readonly 出处: readonly 出处项[]
   /** 建议，不自动执行。 */
   readonly 下一步: readonly 下一步项[]
+  /** 涉及人的实体身份档（§3.8.4）：已核实 / 户名匹配 / 无匹配。不涉及实体时省略。 */
+  readonly 身份?: readonly 身份标注[]
 }
 
 export type 工具错误码 = "not_a_member" | "bad_input" | "not_found"
@@ -219,23 +228,32 @@ export async function query_entities(
     trust_state: 行.trust_state as string,
     created_at: 行.created_at as number,
   }))
-  const 空 = 数据为空(数据)
+  const 待标们: 待标注实体[] = 数据
+    .filter((行) => 行.type === "人" || 行.type === "账户")
+    .map((行) => ({ id: 行.id, 类型: 行.type, 值: 行.canonical_value }))
+  const 身份表 = await 读身份标注(ctx.db, ctx.身份.projectId, 待标们)
+  const 数据带身份 = 数据.map((行) => {
+    const 标注 = 身份表.get(行.id)
+    return 标注 === undefined ? 行 : { ...行, 身份: 标注 }
+  })
+  const 未核实数 = [...身份表.values()].filter((a) => a.档 !== "已核实").length
+  const 空 = 数据为空(数据带身份)
   return {
     摘要: 空
       ? `没有实体匹配${args.关键词 ? `「${args.关键词}」` : ""}${args.类型 ? `（类型=${args.类型}）` : ""}`
-      : `找到 ${数据.length} 个实体${args.类型 ? `（类型=${args.类型}）` : ""}，首个是「${String(数据[0]!.canonical_value)}」`,
-    数据,
+      : `找到 ${数据带身份.length} 个实体${args.类型 ? `（类型=${args.类型}）` : ""}，首个是「${String(数据带身份[0]!.canonical_value)}」${未核实数 > 0 ? `（其中 ${未核实数} 个未核实身份）` : ""}`,
+    数据: 数据带身份,
     口径: "实体按类型与规范值/别名关键词过滤；关键词也匹配未撤销的户名别名。默认不含「已排除」（设计 §9.1）。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
     空原因: 空 ? "无匹配行" : null,
-    出处: 数据.slice(0, 3).map((行) => ({
+    出处: 数据带身份.slice(0, 3).map((行) => ({
       事实: `实体「${String(行.canonical_value)}」`,
       代表: String(行.id),
       可下钻: "get_citation",
     })),
     下一步: 空
       ? [{ 工具: "search_materials", 参数: {}, 为什么: "按材料名或正文片段找；实体可能还没从材料里抽出来" }]
-      : [{ 工具: "query_relations", 参数: { 实体: String(数据[0]!.canonical_value) }, 为什么: "看它与谁有关系" }],
+      : [{ 工具: "query_relations", 参数: { 实体: String(数据带身份[0]!.canonical_value) }, 为什么: "看它与谁有关系" }],
   }
 }
 
@@ -299,7 +317,8 @@ export async function 解析户名(
 }
 
 /**
- * 实体解析：id 优先、其次规范值；都查不到 ⇒ not_found（`称呼` 进文案，说清是哪一方）。
+ * 实体解析：id 优先、其次规范值、再次未撤销的 `kind='户名'` 别名（`解析户名`）；
+ * 仍查不到 ⇒ not_found（`称呼` 进文案，说清是哪一方）。
  *
  * 规范值跨类型可重名（唯一索引是 `(project_id, type, canonical_value)`，见 0031）。
  * 同值多行时取**最新创建**的那行（`created_at desc`）：入库时的 `纠正大类` 会把错标的
@@ -727,6 +746,15 @@ export async function query_relations(
     // 按值解析时 `ids` 是同值所有类型行：旧「人」行上的关系不能因为纠正后的新行而消失。
     条件.push(sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`)
   }
+  const 身份表 =
+    查询实体 === undefined
+      ? new Map<string, 身份标注>()
+      : await 读身份标注(ctx.db, ctx.身份.projectId, [
+          { id: 查询实体.id, 类型: 查询实体.type, 值: 查询实体.value },
+        ])
+  const 身份们 = [...身份表.values()]
+  const 主体称呼 = 查询实体 === undefined ? "" : 实体称呼(查询实体, args.实体 ?? "")
+  const 后缀 = 身份后缀(身份们)
   if (args.类型 !== undefined) 条件.push(sql`r.type = ${args.类型}`)
   if (args.含已排除 !== true) {
     条件.push(sql`r.trust_state <> '已排除'`)
@@ -783,9 +811,9 @@ export async function query_relations(
         // 「已解析材料」里——否则与同一信封里的「N 份材料尚未解析」缺口自相矛盾
         // （`09` §5.2 纪律 2）。份数从 `空判定` 拿，不另查库（`#002-06`）。
         (空判定?.未解析材料数 ?? 0) > 0
-        ? `${args.实体 ? `「${args.实体}」` : ""}按现有已解析材料没有命中（还有 ${空判定?.未解析材料数} 份材料尚未解析）`
-        : `没有关系命中${args.实体 ? `（实体「${args.实体}」）` : ""}`
-      : `${数据.length} 条关系${args.实体 ? `（实体「${args.实体}」）` : ""}，涉及 ${对方数} 个端点`,
+        ? `${args.实体 ? 主体称呼 : ""}按现有已解析材料没有命中（还有 ${空判定?.未解析材料数} 份材料尚未解析）${后缀}`
+        : `没有关系命中${args.实体 ? `（实体${主体称呼}）` : ""}${后缀}`
+      : `${数据.length} 条关系${args.实体 ? `（实体${主体称呼}）` : ""}，涉及 ${对方数} 个端点${后缀}`,
     数据,
     口径:
       "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
@@ -811,6 +839,7 @@ export async function query_relations(
               为什么: "按这个账户汇总进出金额（关系可进一步聚合）",
             },
           ],
+    ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
   }
 }
 
@@ -853,12 +882,13 @@ export async function query_events(
   if (args.含已排除 !== true) 条件.push(sql`trust_state <> '已排除'`)
   if (args.起 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
   if (args.止 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
+  let 参与实体解析: 实体解析 | undefined
   if (args.参与实体 !== undefined) {
-    const 参与实体 = await 解析实体(ctx, args.参与实体, "参与实体")
+    参与实体解析 = await 解析实体(ctx, args.参与实体, "参与实体")
     // `participants` 存的是**实体规范值**，不是 id：唯一写口 `case-extract.ts:433` 写的是
     // `项实体.canonicalValue`（`case-ingest.ts:573` 原样落库），而实体 id 是 `事实id(...)` 的
     // sha256 前 32 位，两者永不相等。比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
-    条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体.value})`)
+    条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体解析.value})`)
   }
   // §9.1：`participants` 存的是实体规范值、不是 id，join 不到实体表；先取本项目「已排除」
   // 实体的规范值集合，出库后在 JS 里按值剔除（实现不足 20 行，故不选「写进缺口」的退路）。
@@ -891,13 +921,24 @@ export async function query_events(
     summary: 行.summary as string | null,
     trust_state: 行.trust_state as string,
   }))
+  const 身份们 =
+    参与实体解析 === undefined
+      ? []
+      : [
+          ...(
+            await 读身份标注(ctx.db, ctx.身份.projectId, [
+              { id: 参与实体解析.id, 类型: 参与实体解析.type, 值: 参与实体解析.value },
+            ])
+          ).values(),
+        ]
+  const 后缀 = 身份后缀(身份们)
   const 空 = 数据为空(数据)
   // 取数按 `occurred_at desc` 排序：`数据[0]` 才是最近的一个（末尾是最早的）。
   const 最近 = 数据[0]
   return {
     摘要: 空
-      ? `时间窗内没有事件${args.类型 ? `（类型=${args.类型}）` : ""}`
-      : `${数据.length} 个事件${args.类型 ? `（类型=${args.类型}）` : ""}，最近一个是「${String(最近!.summary ?? 最近!.type)}」`,
+      ? `时间窗内没有事件${args.类型 ? `（类型=${args.类型}）` : ""}${后缀}`
+      : `${数据.length} 个事件${args.类型 ? `（类型=${args.类型}）` : ""}，最近一个是「${String(最近!.summary ?? 最近!.type)}」${后缀}`,
     数据,
     口径:
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
@@ -920,6 +961,7 @@ export async function query_events(
             为什么: "抽验一条事件的原文与出处",
           },
         ],
+    ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
   }
 }
 
@@ -1206,6 +1248,15 @@ export async function aggregate_money(
   const 解析结果 = await 解析账户(ctx, args.账户)
   if ("信封" in 解析结果) return 解析结果.信封
   const 账户 = 解析结果.实体
+  const 身份们 = [
+    ...(
+      await 读身份标注(ctx.db, ctx.身份.projectId, [
+        { id: 账户.id, 类型: 账户.type, 值: 账户.value },
+      ])
+    ).values(),
+  ]
+  const 账户称呼 = 实体称呼(账户, args.账户)
+  const 后缀 = 身份后缀(身份们)
 
   const 汇总条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
@@ -1369,11 +1420,11 @@ export async function aggregate_money(
   return {
     摘要: 空
       ? 材料未翻译
-        ? `「${args.账户}」的资金材料还没翻译完：项目内还有 ${未解析份数} 份材料尚未解析，现在不能断定有没有交易`
+        ? `${账户称呼}的资金材料还没翻译完：项目内还有 ${未解析份数} 份材料尚未解析，现在不能断定有没有交易${后缀}`
         : 外币未计入
-          ? `「${args.账户}」在给定条件下只有 ${外币行数} 行外币流水，外币不进合计，无法给出人民币口径的结论`
-          : `「${args.账户}」在给定条件下没有任何转账关系或明细流水`
-      : `「${args.账户}」${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : 外币行数 > 0 ? "；无人民币明细流水" : "；无明细流水"}`,
+          ? `${账户称呼}在给定条件下只有 ${外币行数} 行外币流水，外币不进合计，无法给出人民币口径的结论${后缀}`
+          : `${账户称呼}在给定条件下没有任何转账关系或明细流水${后缀}`
+      : `${账户称呼}${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : 外币行数 > 0 ? "；无人民币明细流水" : "；无明细流水"}${后缀}`,
     数据: 空 ? null : { 汇总, 对手方, 余额走势, 外币行数 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
@@ -1412,6 +1463,7 @@ export async function aggregate_money(
             为什么: "看构成汇总的转账关系明细（汇总来自关系）",
           },
         ],
+    ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
   }
 }
 
@@ -1438,6 +1490,14 @@ export async function find_crossings(
   if (甲.id === 乙.id || 甲.value === 乙.value) {
     throw new 工具错误("bad_input", `甲和乙是同一个实体（或同一规范值）：${甲.value}，找自己与自己的交叉没有意义`)
   }
+  const 身份表 = await 读身份标注(ctx.db, ctx.身份.projectId, [
+    { id: 甲.id, 类型: 甲.type, 值: 甲.value },
+    { id: 乙.id, 类型: 乙.type, 值: 乙.value },
+  ])
+  const 身份们 = [身份表.get(甲.id), 身份表.get(乙.id)].filter((a): a is 身份标注 => a !== undefined)
+  const 后缀 = 身份后缀(身份们)
+  const 甲称呼 = 实体称呼(甲, args.甲)
+  const 乙称呼 = 实体称呼(乙, args.乙)
 
   // `实体ids` 按值解析时是同值所有类型行：旧「人」行上的关系也要算进交集。
   const 另一端们 = async (实体ids: readonly string[]): Promise<{ 值们: string[]; 用满: boolean }> => {
@@ -1517,8 +1577,8 @@ export async function find_crossings(
 
   return {
     摘要: 空
-      ? `「${args.甲}」与「${args.乙}」没有共同关联，也没有共同时空`
-      : `「${args.甲}」与「${args.乙}」共同关联 ${共同关联.length} 个、共同时空 ${共同时空.length} 条`,
+      ? `${甲称呼}与${乙称呼}没有共同关联，也没有共同时空${后缀}`
+      : `${甲称呼}与${乙称呼}共同关联 ${共同关联.length} 个、共同时空 ${共同时空.length} 条${后缀}`,
     数据: 空 ? null : { 共同关联, 共同时空 },
     口径:
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
@@ -1533,5 +1593,6 @@ export async function find_crossings(
     下一步: 空
       ? [{ 工具: "query_relations", 参数: { 实体: args.甲 }, 为什么: "先看这一侧自己的关系，确认边是否已抽出来" }]
       : [{ 工具: "query_events", 参数: {}, 为什么: "共同时空往往是通话或同行，可按时间窗查事件" }],
+    ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
   }
 }

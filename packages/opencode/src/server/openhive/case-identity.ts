@@ -86,6 +86,25 @@ export function 判定身份(证据: 身份证据): 身份判读 {
   }
 }
 
+/** 查询主体的人话称呼：按户名解析到时写「户名为「X」的账户」（A11）。 */
+export function 实体称呼(解析: { readonly 命中: "id" | "规范值" | "户名" }, 输入: string): string {
+  return 解析.命中 === "户名" ? `户名为「${输入}」的账户` : `「${输入}」`
+}
+
+/**
+ * 摘要末尾的身份后缀：已核实不打扰；另两档必须显著（§3.8.4）。
+ * 多实体时带实体名，避免「甲是哪一档、乙是哪一档」说不清。
+ */
+export function 身份后缀(标注s: readonly 身份标注[]): string {
+  const 未核实 = 标注s.filter((a) => a.档 !== "已核实")
+  if (未核实.length === 0) return ""
+  const 逐 = 未核实.map((a) => {
+    const 档词 = a.档 === "户名匹配" ? "户名匹配，未核实身份" : "查不到归属，未核实身份"
+    return 标注s.length > 1 ? `${a.实体}：${档词}` : 档词
+  })
+  return `（${逐.join("；")}）`
+}
+
 export interface 待标注实体 {
   readonly id: string
   readonly 类型: string
