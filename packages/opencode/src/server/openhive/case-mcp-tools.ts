@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
-import { 默认限制, 最大限制 } from "./case-envelope"
+import { 默认限制, 最大限制, 数据为空, type 出处项, type 下一步项, type 空原因值 } from "./case-envelope"
 import type { Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
@@ -22,11 +22,19 @@ import type { 留痕类型 } from "./case-fact-change"
  */
 
 export interface 工具结果 {
+  /** 人话，不是数据复述。民警在会话里看到的是这一行（`09` §3.2）。 */
+  readonly 摘要: string
   readonly 数据: unknown
-  /** 这次取数用了哪些列、按什么过滤。 */
-  readonly 口径?: string
-  /** 这次没覆盖到的（如实说）。 */
-  readonly 缺口?: readonly string[]
+  /** 这次取数用了哪些列、按什么过滤。必填。 */
+  readonly 口径: string
+  /** 这次没覆盖到的（如实说）。无缺口给 `[]`。必填。 */
+  readonly 缺口: readonly string[]
+  /** 有数据时为 `null`；无数据时必须是 `空原因枚举` 里的值。 */
+  readonly 空原因: 空原因值 | null
+  /** 只放能支撑 `摘要` 里那些数字的代表行。 */
+  readonly 出处: readonly 出处项[]
+  /** 建议，不自动执行。 */
+  readonly 下一步: readonly 下一步项[]
 }
 
 export type 工具错误码 = "not_a_member" | "bad_input" | "not_found"
@@ -144,10 +152,23 @@ export async function search_materials(
     片段: 片段(行.text_content as string, 关键词),
     命中文件名: 关键词 !== undefined && lower(行.file_name as string).includes(lower(关键词)),
   }))
+  const 空 = 数据为空(数据)
   return {
+    摘要: 空
+      ? `没有材料命中${args.关键词 ? `「${args.关键词}」` : ""}${args.类型 ? `（类型=${args.类型}）` : ""}`
+      : `命中 ${数据.length} 份材料${args.关键词 ? `（关键词「${args.关键词}」）` : ""}${args.类型 ? `（类型=${args.类型}）` : ""}`,
     数据,
     口径: "材料检索按文件名与正文关键词（ilike），材料范围仅限本项目；正文命中给片段不给全文。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
+    空原因: 空 ? "无匹配行" : null,
+    出处: 数据.slice(0, 3).map((行) => ({
+      事实: `命中材料「${String(行.file_name)}」`,
+      代表: String(行.id),
+      可下钻: "query_rows",
+    })),
+    下一步: 空
+      ? [{ 工具: "query_entities", 参数: {}, 为什么: "换个说法或按实体名再找；材料名搜不到时实体往往还在" }]
+      : [{ 工具: "query_entities", 参数: {}, 为什么: "材料已命中，接着看项目里抽出了哪些实体" }],
   }
 }
 
@@ -183,10 +204,23 @@ export async function query_entities(
     trust_state: 行.trust_state as string,
     created_at: 行.created_at as number,
   }))
+  const 空 = 数据为空(数据)
   return {
+    摘要: 空
+      ? `没有实体匹配${args.关键词 ? `「${args.关键词}」` : ""}${args.类型 ? `（类型=${args.类型}）` : ""}`
+      : `找到 ${数据.length} 个实体${args.类型 ? `（类型=${args.类型}）` : ""}，首个是「${String(数据[0]!.canonical_value)}」`,
     数据,
     口径: "实体按类型与规范值/别名关键词过滤；默认不含「已排除」（设计 §9.1）。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
+    空原因: 空 ? "无匹配行" : null,
+    出处: 数据.slice(0, 3).map((行) => ({
+      事实: `实体「${String(行.canonical_value)}」`,
+      代表: String(行.id),
+      可下钻: "get_citation",
+    })),
+    下一步: 空
+      ? [{ 工具: "search_materials", 参数: {}, 为什么: "按材料名或正文片段找；实体可能还没从材料里抽出来" }]
+      : [{ 工具: "query_relations", 参数: { 实体: String(数据[0]!.canonical_value) }, 为什么: "看它与谁有关系" }],
   }
 }
 
@@ -321,7 +355,12 @@ export async function query_relations(
     from_value: 行.from_value as string | null,
     to_value: 行.to_value as string | null,
   }))
+  const 空 = 数据为空(数据)
+  const 对方数 = new Set(数据.flatMap((行) => [String(行.from_id), String(行.to_id)])).size
   return {
+    摘要: 空
+      ? `没有关系命中${args.实体 ? `（实体「${args.实体}」）` : ""}`
+      : `${数据.length} 条关系${args.实体 ? `（实体「${args.实体}」）` : ""}，涉及 ${对方数} 个端点`,
     数据,
     口径:
       "关系按实体（先按 id、再按规范值解析；规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
@@ -329,6 +368,13 @@ export async function query_relations(
       "时间窗按「与窗口有交集」判定；默认不含「已排除」的关系及其端点实体；金额为 numeric 字符串，勿自行转浮点；" +
       "时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
+    空原因: 空 ? "无匹配行" : null,
+    出处: 数据.slice(0, 3).map((行) => ({
+      事实: `关系 ${String(行.from_value)}→${String(行.to_value)}，${String(行.times)} 次`,
+      代表: String(行.id),
+      可下钻: "get_citation",
+    })),
+    下一步: [{ 工具: "aggregate_money", 参数: {}, 为什么: "转账关系可进一步按账户汇总进出金额" }],
   }
 }
 
@@ -382,13 +428,26 @@ export async function query_events(
     summary: 行.summary as string | null,
     trust_state: 行.trust_state as string,
   }))
+  const 空 = 数据为空(数据)
+  // 取数按 `occurred_at desc` 排序：`数据[0]` 才是最近的一个（末尾是最早的）。
+  const 最近 = 数据[0]
   return {
+    摘要: 空
+      ? `时间窗内没有事件${args.类型 ? `（类型=${args.类型}）` : ""}`
+      : `${数据.length} 个事件${args.类型 ? `（类型=${args.类型}）` : ""}，最近一个是「${String(最近!.summary ?? 最近!.type)}」`,
     数据,
     口径:
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
       "同创建时间再按 type 升序、id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
+    空原因: 空 ? "无匹配行" : null,
+    出处: 数据.slice(0, 3).map((行) => ({
+      事实: `事件「${String(行.type)}」@${String(行.occurred_raw ?? 行.occurred_at ?? "时间缺失")}`,
+      代表: String(行.id),
+      可下钻: "get_citation",
+    })),
+    下一步: [{ 工具: "get_citation", 参数: {}, 为什么: "抽验一条事件的原文与出处" }],
   }
 }
 
@@ -443,6 +502,7 @@ export async function get_citation(
         ? (["明细行引用尚未在生产写入，查不到时只能按 material/sheet/row_no 定位"] as const)
         : undefined
     return {
+      摘要: `明细行原文：${材料}#${工作表}#${行号}`,
       数据: {
         明细行: {
           project_id: 行.projectId,
@@ -469,7 +529,17 @@ export async function get_citation(
         引用: 引用行(引用),
       },
       口径: "明细行按「材料#工作表#行号」解析；`引用` 为库列名。",
-      ...(缺口 === undefined ? {} : { 缺口 }),
+      缺口: 缺口 ?? [],
+      // 查不到抛 not_found ⇒ 这个分支的数据永不为空，`空原因` 恒 null。
+      空原因: null,
+      出处: [{ 事实: `明细行定位 ${材料}#${工作表}#${行号}`, 代表: `${材料}#${工作表}#${行号}`, 可下钻: null }],
+      下一步: [
+        {
+          工具: "query_relations",
+          参数: 行.counterparty === null ? {} : { 实体: 行.counterparty },
+          为什么: "看这一行的对手与案件里其他人的关系",
+        },
+      ],
     }
   }
   const 事实 = await 事实详情(ctx.db, {
@@ -481,8 +551,14 @@ export async function get_citation(
   if (事实 === undefined) throw new 工具错误("not_found", `本项目里没有这条${args.事实类型}：${args.事实id}`)
   const { citations, changes, ...本体 } = 事实
   return {
+    摘要: `${args.事实类型} 引用详情：${args.事实id}`,
     数据: { 事实: 本体, 引用: 引用行(citations), 变更历史: changes },
     口径: "`事实` 与 `变更历史` 沿用仓内只读出口的字段名，`引用` 为库列名。",
+    // 事实本身存在 ⇒ 数据非空，`空原因` 恒 null；「一条引用都没有」是缺口，不是空。
+    缺口: citations.length === 0 ? ["该事实暂无引用记录"] : [],
+    空原因: null,
+    出处: [{ 事实: `${args.事实类型} ${args.事实id}`, 代表: args.事实id, 可下钻: null }],
+    下一步: [],
   }
 }
 
@@ -625,6 +701,8 @@ export async function aggregate_money(
             行数: 余额行.length,
           }
 
+  // R5：对象不算空 ⇒ 无命中时 `数据` 返回 `null`，不返回一个全是空数组的对象。
+  const 空 = 汇总.length === 0 && 对手方.length === 0 && 余额走势 === null
   const 缺口 = [
     "只统计已抽成关系（type=转账）的转账；明细行里未抽成关系的转账不计入",
     "对手方按实体规范值聚合；未合并的重复实体不会自动合并",
@@ -637,14 +715,24 @@ export async function aggregate_money(
     缺口.push("本项目明细行里没有该账户的流水（按 counterparty/counterparty_name/owner_account/caller/callee 精确匹配）")
 
   return {
-    数据: { 汇总, 对手方, 余额走势 },
+    摘要: 空
+      ? `「${args.账户}」在给定条件下没有任何转账关系或明细流水`
+      : `「${args.账户}」${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手方.length} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : "；无明细流水"}`,
+    数据: 空 ? null : { 汇总, 对手方, 余额走势 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
       "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值。",
-    缺口,
+    缺口: 空 ? [...缺口, "汇总、对手方、余额走势三者都为空：该账户在时间窗内既无转账关系也无明细流水"] : 缺口,
+    空原因: 空 ? "无匹配行" : null,
+    出处: 空
+      ? []
+      : [{ 事实: `账户「${账户.value}」的转账汇总`, 代表: 账户.value, 可下钻: "query_rows" }],
+    下一步: 空
+      ? [{ 工具: "query_entities", 参数: { 关键词: args.账户 }, 为什么: "确认这个账户在实体里到底叫什么规范值" }]
+      : [{ 工具: "query_relations", 参数: { 实体: 账户.value }, 为什么: "看构成汇总的逐笔转账关系" }],
   }
 }
 
@@ -739,6 +827,7 @@ export async function find_crossings(
     summary: 行.summary as string | null,
   }))
 
+  const 空 = 共同关联.length === 0 && 共同时空.length === 0
   const 缺口 = [
     "按关系连通算；同一实体若被拆成两条未合并的实体，交集会漏",
     `共同时空最多 ${共同时空上限} 条（按 occurred_at 倒序）`,
@@ -748,12 +837,22 @@ export async function find_crossings(
   缺口.push("共同时空按事件参与实体判；只覆盖已抽成事件的时空点")
 
   return {
-    数据: { 共同关联, 共同时空 },
+    摘要: 空
+      ? `「${args.甲}」与「${args.乙}」没有共同关联，也没有共同时空`
+      : `「${args.甲}」与「${args.乙}」共同关联 ${共同关联.length} 个、共同时空 ${共同时空.length} 条`,
+    数据: 空 ? null : { 共同关联, 共同时空 },
     口径:
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
       "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。",
-    缺口,
+    缺口: 空 ? [...缺口, "共同关联与共同时空都为空：两侧在时间窗内没有可求交的边或事件"] : 缺口,
+    空原因: 空 ? "无匹配行" : null,
+    出处: 空
+      ? []
+      : [{ 事实: `「${args.甲}」与「${args.乙}」的交叉`, 代表: String(甲.id), 可下钻: "get_citation" }],
+    下一步: 空
+      ? [{ 工具: "query_relations", 参数: { 实体: args.甲 }, 为什么: "先看这一侧自己的关系，确认边是否已抽出来" }]
+      : [{ 工具: "query_events", 参数: {}, 为什么: "共同时空往往是通话或同行，可按时间窗查事件" }],
   }
 }

@@ -915,8 +915,8 @@ test("get_citation 对明细行按 material#sheet#row 解析", async () => {
   // 规范化键：`02` 不是 2 的「另一个 id」，命中后引用要按 `#2` 查得到。
   const 补零 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#02" })
   expect((补零.数据 as { 引用: Record<string, unknown>[] }).引用).toHaveLength(1)
-  // 有引用时 `缺口` 必须是 undefined：否则「无引用」的那条提示会变成常驻噪音。
-  expect(结果.缺口).toBeUndefined()
+  // 有引用时 `缺口` 必须为空数组（七字段信封里 `缺口` 必填）：否则「无引用」的那条提示会变成常驻噪音。
+  expect(结果.缺口).toEqual([])
 })
 
 test("get_citation 明细行：工作表名含 # 也能定位", async () => {
@@ -979,12 +979,12 @@ test("aggregate_money 余额走势给首末与极值，并说明截断", async (
 
 test("aggregate_money 对手方不返回「已排除」实体（§9.1）", async () => {
   // 张三有一笔到 e-号X 的转账（关系本身正常）⇒ 只有端点过滤能挡住。
-  const 数据 = (await aggregate_money(ctx(身份戊), { 账户: "张三" })).数据 as { 汇总: unknown[]; 对手方: unknown[] }
-  expect(JSON.stringify(数据.对手方)).not.toContain("号X")
-  expect(数据.对手方).toEqual([])
-  // §9.1「不进统计」也要管到汇总：对手方被排除，这笔关系就不该算进「出」的笔数与合计。
-  // 没这条时，同一次调用里 汇总 出 1 笔 100.00、对手方却为空 —— 自相矛盾。
-  expect(数据.汇总).toEqual([])
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: "张三" })
+  // §9.1「不进统计」管到汇总与对手方：对手方被排除 ⇒ 那块为空；三块都空 ⇒ R5 下 `数据` 为 null。
+  // 去掉端点过滤时这里会变成 { 汇总: [出 1 笔 100.00], 对手方: [号X…] }，断言才红。
+  expect(结果.数据).toBeNull()
+  expect(结果.空原因).toBe("无匹配行")
+  expect(JSON.stringify(结果)).not.toContain("号X")
 })
 
 test("固定上限写进缺口（对手方 10、共同时空 50）", async () => {
@@ -1056,4 +1056,145 @@ test("find_crossings 任一方不存在 ⇒ not_found，文案说清是哪一方
     code: "not_found",
     message: expect.stringContaining("乙"),
   })
+})
+
+// —— 任务 11：七字段信封（摘要 / 数据 / 口径 / 缺口 / 空原因 / 出处 / 下一步）——
+// 每个工具两条：有数据、空数据。空数据那条用**真的查不到**的条件命中空分支，
+// 不靠默认值满足断言（`#005-47`）。
+
+test("search_materials 七字段：有数据时摘要/出处/下一步齐全，空原因为 null", async () => {
+  const 结果 = await search_materials(ctx(身份甲), { 关键词: "张三" })
+  expect(结果.摘要).toContain("命中 1 份材料")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处).toEqual([{ 事实: "命中材料「张三笔录.txt」", 代表: "m-甲", 可下钻: "query_rows" }])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+  expect(结果.缺口).toEqual([])
+})
+
+test("search_materials 七字段：查不到 ⇒ 无匹配行，数据/出处空、下一步仍有", async () => {
+  const 结果 = await search_materials(ctx(身份甲), { 关键词: "绝无此词" })
+  expect(结果.摘要).toContain("没有材料命中「绝无此词」")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toEqual([])
+  expect(结果.出处).toEqual([])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_entities 七字段：有数据时摘要含数量与首个实体，出处可下钻", async () => {
+  const 结果 = await query_entities(ctx(身份甲), {})
+  expect(结果.摘要).toContain("找到 1 个实体")
+  expect(结果.摘要).toContain("王五")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处).toEqual([{ 事实: "实体「王五」", 代表: "e-好", 可下钻: "get_citation" }])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_entities 七字段：查不到 ⇒ 无匹配行，数据/出处空", async () => {
+  const 结果 = await query_entities(ctx(身份甲), { 关键词: "查无此实体" })
+  expect(结果.摘要).toContain("没有实体匹配")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toEqual([])
+  expect(结果.出处).toEqual([])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_relations 七字段：有数据时摘要给条数与端点数", async () => {
+  const 结果 = await query_relations(ctx(身份丁), { 实体: "甲" })
+  expect(结果.摘要).toContain("3 条关系")
+  expect(结果.摘要).toContain("涉及 3 个端点")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处.length).toBe(3)
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出处空", async () => {
+  const 结果 = await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" })
+  expect(结果.摘要).toContain("没有关系命中")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toEqual([])
+  expect(结果.出处).toEqual([])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_events 七字段：有数据时摘要取最近一个（排序为 desc，首条最新）", async () => {
+  const 结果 = await query_events(ctx(身份戊), {})
+  // 三个事件按 occurred_at 倒序：ev-排参(300) → ev-单(200) → ev-同(100)
+  expect(结果.摘要).toContain("3 个事件")
+  expect(结果.摘要).toContain("最近一个是「含已排除实体」")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处.length).toBe(3)
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("query_events 七字段：类型无命中 ⇒ 无匹配行，数据/出处空", async () => {
+  const 结果 = await query_events(ctx(身份丁), { 类型: "不存在的事件类型" })
+  expect(结果.摘要).toContain("时间窗内没有事件")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toEqual([])
+  expect(结果.出处).toEqual([])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("get_citation 七字段（row 分支）：数据永不为空，空原因恒 null", async () => {
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" })
+  expect(结果.摘要).toBe("明细行原文：m-甲#Sheet1#2")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处).toEqual([{ 事实: "明细行定位 m-甲#Sheet1#2", 代表: "m-甲#Sheet1#2", 可下钻: null }])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+  // 有引用时缺口为空数组
+  expect(结果.缺口).toEqual([])
+})
+
+test("get_citation 七字段（非 row）：引用为 0 条进缺口，不写成空原因", async () => {
+  // e-乙 存在但没有种引用：数据非空 ⇒ 镜像校验不允许「空原因」；「没有引用」只能进缺口。
+  const 结果 = await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-乙" })
+  expect(结果.摘要).toBe("entity 引用详情：e-乙")
+  expect(结果.数据).not.toBeNull()
+  expect(结果.空原因).toBeNull()
+  expect(结果.缺口).toEqual(["该事实暂无引用记录"])
+  expect(结果.出处).toEqual([{ 事实: "entity e-乙", 代表: "e-乙", 可下钻: null }])
+  expect(结果.下一步).toEqual([])
+})
+
+test("aggregate_money 七字段：有数据时摘要给笔数/合计/对手数/明细行数", async () => {
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
+  expect(结果.摘要).toContain("出 1 笔 / 1000.00 元")
+  expect(结果.摘要).toContain("入 1 笔 / 2500.50 元")
+  expect(结果.摘要).toContain("2 个对手")
+  expect(结果.摘要).toContain("明细 4 行")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处).toEqual([
+    { 事实: `账户「${账号}」的转账汇总`, 代表: 账号, 可下钻: "query_rows" },
+  ])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("aggregate_money 七字段：无转账也无明细 ⇒ 数据 null（对象型不返回空壳）", async () => {
+  const 结果 = await aggregate_money(ctx(身份戊), { 账户: "李四" })
+  expect(结果.摘要).toContain("没有任何转账关系或明细流水")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toBeNull()
+  expect(结果.出处).toEqual([])
+  expect(结果.缺口.join()).toContain("三者都为空")
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("find_crossings 七字段：有数据时摘要给共同关联/共同时空数量", async () => {
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" })
+  expect(结果.摘要).toContain("共同关联 1 个、共同时空 1 条")
+  expect(结果.空原因).toBeNull()
+  expect(结果.出处).toEqual([
+    { 事实: "「张三」与「李四」的交叉", 代表: "e-张三", 可下钻: "get_citation" },
+  ])
+  expect(结果.下一步.length).toBeGreaterThan(0)
+})
+
+test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说明", async () => {
+  const 结果 = await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "对手甲" })
+  expect(结果.摘要).toContain("没有共同关联，也没有共同时空")
+  expect(结果.空原因).toBe("无匹配行")
+  expect(结果.数据).toBeNull()
+  expect(结果.出处).toEqual([])
+  expect(结果.缺口.join()).toContain("都为空")
+  expect(结果.下一步.length).toBeGreaterThan(0)
 })

@@ -49,3 +49,22 @@ export interface 出处项 {
   /** 能下钻到哪；`null` = 没有更细的出口。 */
   readonly 可下钻: string | null
 }
+
+/** 一条「下一步」建议：给工具、给参数、给一句人话理由。**不自动执行**（`09` §3.2）。 */
+export interface 下一步项 {
+  readonly 工具: string
+  readonly 参数: Record<string, unknown>
+  readonly 为什么: string
+}
+
+/**
+ * 「空」的唯一定义（`09` §3.4 双向镜像的依据）。
+ *
+ * `null` 与「长度为 0 的数组」算空；**对象不算空**——所以对象型结果（`aggregate_money`
+ * / `find_crossings`）在无命中时**必须返回 `null`**，不许返回一个全是空数组的对象。
+ * 这条写在一处，server 校验与工具实现都引用它（`#002-06`：同一判据别开第二个出处）。
+ */
+export function 数据为空(数据: unknown): boolean {
+  if (数据 === null || 数据 === undefined) return true
+  return Array.isArray(数据) && 数据.length === 0
+}
