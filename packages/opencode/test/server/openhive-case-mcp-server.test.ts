@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, setSystemTime, test } from "bun:test"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { sql } from "drizzle-orm"
@@ -80,7 +80,14 @@ beforeAll(async () => {
     aliases: [],
   })
 
-  服务 = createCaseMcpServer({ db: 库(), workspaceRoot: 沙箱根, 留痕: (行) => 收集.push(行) })
+  // 共享夹具也注入独立预算：模块级默认单例是**全进程共享**的隐藏配额，跑得越多越接近 12，
+  // 第 12 次落在哪条用例上会变成执行顺序的副产物（`#005-34`）。生产仍走默认单例，这里只改测试。
+  服务 = createCaseMcpServer({
+    db: 库(),
+    workspaceRoot: 沙箱根,
+    留痕: (行) => 收集.push(行),
+    预算: 新预算计数(),
+  })
   const [客户端侧, 服务端侧] = InMemoryTransport.createLinkedPair()
   await 服务.connect(服务端侧)
   client = new Client({ name: "工具客户端", version: "0.0.0" })
@@ -357,6 +364,13 @@ test("握手后 getInstructions() 逐条含八条纪律的检索关键词，且 
   expect(正文).toContain("空原因")
   expect(正文).toContain("12 次")
   expect(正文).toContain("停下来")
+  // 第 6 条的两半：12 次是服务端闸；30 秒**没有**任何服务端闸、只是纪律（`09` §5.2 #6 / §5.4）。
+  // 正文按 §5.2 原文写「没有任何服务端闸，只是纪律」，与「不计时」同义。
+  expect(正文).toContain("30 秒")
+  expect(正文).toContain("没有任何服务端闸")
+  expect(正文).toContain("尽量在一次回答里收尾")
+  // §5.2 只有八条：正文里出现「9.」就是被扩写走样。
+  expect(正文).not.toMatch(/^9\./m)
 })
 
 test("第 12 次工具调用起，返回的 缺口 末尾出现「已达本次探索上限（12 次）」", async () => {
@@ -385,6 +399,57 @@ test("空闲超过窗口后重新计数：窗口 0 时 12 次连续调用都不�
       const 体 = await 调一次(客, 甲meta)
       expect(体.缺口).not.toContain(预算上限缺口)
     }
+  })
+})
+
+// 窗口判定的边界要**确定性**地钉住，不能靠 12 次异步调用是否恰好跨毫秒：
+// 冻结时钟后，同毫秒两次调用在「窗口 0」下必须各算第 1 次。
+// 变异：把 `现在 - 最后 < 窗口毫秒` 改回 `<=` ⇒ 第二次读成 2，本用例红。
+test("窗口 0 时同毫秒两次调用也各算第 1 次（累加条件是严格小于）", () => {
+  setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+  try {
+    const 预算 = 新预算计数(0)
+    expect(预算.计次(身份甲)).toBe(1)
+    expect(预算.计次(身份甲)).toBe(1)
+  } finally {
+    setSystemTime()
+  }
+})
+
+// 复审 M1：计次若挪到「工具执行之后」，失败调用不占号——上面那条「第 12 次起注入」仍会绿。
+// 判别原理：10 次成功 → 1 次 bad_input（未知参数，仍在 ④ 分发分支内、只是工具抛错）→ 1 次成功。
+// 计次在分发**前** ⇒ 失败那次占第 11 号，最后一次成功是第 12 号、**带**上限缺口；
+// 计次在分发**后** ⇒ 失败不占号，最后一次成功才第 11 号、**不带**。
+test("计数在分发前：中间一次 bad_input 也占号，最后一次成功才带上限缺口", async () => {
+  await 用带预算的服务(新预算计数(), async (客) => {
+    for (let 第 = 1; 第 <= 10; 第 += 1) {
+      const 体 = await 调一次(客, 甲meta)
+      expect(体.缺口).not.toContain(预算上限缺口)
+    }
+    // 第 11 次：`query_entities` 没有必填，未知参数由分发表里的 `收参数` 抛 bad_input。
+    const 失败 = await 客.callTool({ name: "query_entities", arguments: { 未声明参数: 1 }, _meta: 甲meta })
+    expect(失败.isError).toBe(true)
+    expect(JSON.parse((失败.content as { text: string }[])[0]!.text).error).toBe("bad_input")
+
+    const 最后 = await 调一次(客, 甲meta)
+    expect(最后.缺口).toContain(预算上限缺口)
+  })
+})
+
+// 复审 M2：上限缺口必须**追加**在工具自己的缺口之后。
+// 变异：`[...截.缺口, 预算上限缺口]` 改成 `[预算上限缺口]` ⇒ 本用例红（内核那条被覆盖）。
+test("上限缺口追加在工具自己的缺口之后，不覆盖它", async () => {
+  // 计次恒返回 12：绕开真实计数，只验「追加」这一段（`预算` 是测试注入口）。
+  await 用带预算的服务({ 计次: () => 12 }, async (客) => {
+    // `限制: 999` > 内核最大 200 ⇒ 工具自带「请求的 999 行超过上限，已按 200 行取」。
+    const 结果 = await 客.callTool({ name: "query_rows", arguments: { 限制: 999 }, _meta: 甲meta })
+    expect(结果.isError).toBeFalsy()
+    const 体 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { 缺口: string[] }
+    const 内核缺口 = "请求的 999 行超过上限，已按 200 行取"
+    expect(体.缺口).toContain(内核缺口)
+    expect(体.缺口).toContain(预算上限缺口)
+    // 顺序也要钉：内核那条在前，上限缺口追加在末尾。
+    expect(体.缺口.indexOf(内核缺口)).toBeLessThan(体.缺口.indexOf(预算上限缺口))
   })
 })
 
