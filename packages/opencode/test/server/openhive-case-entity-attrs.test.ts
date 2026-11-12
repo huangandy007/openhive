@@ -4,7 +4,7 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 合并属性, 剥离本材料出处 } from "../../src/server/openhive/case-entity-attrs"
 import { upsertEntity } from "../../src/server/openhive/case-fact-store"
-import { 写入翻译结果 } from "../../src/server/openhive/case-translate-store"
+import { 写入翻译结果, 清本材料翻译 } from "../../src/server/openhive/case-translate-store"
 import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
 import type { FactRowInput } from "../../src/server/openhive/case-store"
@@ -59,6 +59,24 @@ describe("合并属性（05 §5.2）", () => {
       开户行: [{ 值: "工商银行", 出处: "m2#S#5" }],
       subtype: "银行卡",
     })
+  })
+
+  test("剥离后没有任何观察的键整个消失（不留空数组）", () => {
+    expect(剥离本材料出处({ 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] }, "m1")).toEqual({})
+  })
+
+  test("同一次合并里两条同值也只留一条（按值唯一，不指望调用方分批）", () => {
+    expect(
+      合并属性(
+        {},
+        {
+          开户行: [
+            { 值: "招商银行", 出处: "m1#S#2" },
+            { 值: "招商银行", 出处: "m1#S#9" },
+          ],
+        },
+      ),
+    ).toEqual({ 开户行: [{ 值: "招商银行", 出处: "m1#S#2" }] })
   })
 })
 
@@ -173,5 +191,23 @@ describe("attrs 落库与反回归（§3.10 / 05 §5.2）", () => {
     const 现 = 开户行值们(await 对方属性())
     expect(现).toContain("农商行")
     expect(现).toContain("建设银行")
+  })
+
+  test("重放后不再产出的属性被清掉（Q14 按材料整体清除）", async () => {
+    await 写("bm1", [
+      {
+        ...行("bm1", 2, "交通银行"),
+        extras: { "属性:对方:开户行": "交通银行", "属性:本方:开户行": "交通银行" },
+      },
+    ])
+    expect(开户行值们(await 本方属性())).toContain("交通银行")
+
+    // 真实重放顺序：清本材料 → 重新写入。新行**只给「对方」属性**，本方这一轮一条属性
+    // 都没有 ⇒ 写入器 ⑤ 的 `按实体` 里根本没有本方实体，旧值只能在清理侧被剥掉。
+    await 清本材料翻译(db(), 项目, "bm1")
+    await 写("bm1", [行("bm1", 3, "农业银行")])
+
+    expect(开户行值们(await 本方属性())).not.toContain("交通银行")
+    expect(开户行值们(await 对方属性())).toContain("农业银行")
   })
 })

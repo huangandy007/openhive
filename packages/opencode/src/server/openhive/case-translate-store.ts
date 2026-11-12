@@ -78,6 +78,31 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
      where project_id = ${projectId} and material_id = ${materialId} and revoked_at is null
   `)
   await deleteCitationsOfMaterial(tx, projectId, materialId)
+  // 属性清理：attrs 按实体存、没有 material_id 列，只能反查「谁的 attrs 里带本材料的出处」。
+  // 用 `strpos` 而不是 `like`：materialId 里的 `%` / `_` 在 LIKE 里是通配符。
+  // 搜 `"<materialId>#`（带前引号）而不是裸 `<materialId>#`：`am1#` 是 `xam1#` 的子串，
+  // jsonb 文本里出处值形如 `"出处": "am1#Sheet1#2"`，带引号才精确到「这个出处值开头」。
+  // 只在写入侧（⑤）剥离不够：⑤ 只看得到「本轮仍有新观察」的实体，本轮一条都没有的实体
+  // 只能在这里按材料找（Q14）。
+  const 带味实体 = rowsOf(
+    await tx.execute(sql`
+      select id, attrs from auth.case_entity
+       where project_id = ${projectId}
+         and strpos(attrs::text, ${'"' + materialId + '#'}) > 0
+    `),
+  )
+  for (let i = 0; i < 带味实体.length; i += INSERT_CHUNK) {
+    const chunk = 带味实体.slice(i, i + INSERT_CHUNK)
+    await tx.execute(sql`
+      update auth.case_entity e
+         set attrs = v.attrs
+        from (values ${sql.join(
+          chunk.map((r) => sql`(${String(r.id)}, ${JSON.stringify(剥离本材料出处(读jsonb(r.attrs), materialId))}::text::jsonb)`),
+          sql`, `,
+        )}) as v(id, attrs)
+       where e.project_id = ${projectId} and e.id = v.id
+    `)
+  }
   // 旧对重算放在清理之后：此时它们已无卡片支持 ⇒ 删机器行后不会再插入。
   // 人工结论（`已确认`/`已修正`/`已排除`）照旧由 `重建关系` 保护：这些对**不写**机器行，
   // 机器行仍会被清掉（两者不得并存），清理不会删掉人工结论。
