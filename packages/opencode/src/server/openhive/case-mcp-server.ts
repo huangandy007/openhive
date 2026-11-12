@@ -301,8 +301,11 @@ function 收参数<T>(args: Record<string, unknown>, 文本: string[], 整数: s
 
 /** 必填校验的唯一出处是 `TOOLS[i].inputSchema.required`——不要在分发处再抄一份清单（`#002-06`）。 */
 function 校验必填(工具: string, args: Record<string, unknown>): void {
-  const 声明 = TOOLS.find((条) => 条.name === 工具)?.inputSchema.required ?? []
-  const 缺 = 声明.filter((键) => args[键] === undefined)
+  const 声明 = TOOLS.find((条) => 条.name === 工具)
+  // 声明缺失是内部契约破裂（`工具名` 与 `TOOLS` 两份清单不同步），不是模型可以自纠的参数错误：
+  // 不能 `?? []` 当「无必填」放行（fail-open）。抛普通 Error ⇒ ④ 折成 tool_failed，原文只进留痕。
+  if (声明 === undefined) throw new Error(`工具「${工具}」在 工具名 里但没有 inputSchema 声明（内部契约破裂）`)
+  const 缺 = (声明.inputSchema.required ?? []).filter((键) => args[键] === undefined)
   if (缺.length > 0) throw new 工具错误("bad_input", `缺少必填参数：${缺.join("、")}`)
 }
 
@@ -357,8 +360,9 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
   while (留 > 1 && 字节(数据.slice(0, 留)) > 30 * 1024) 留--
   // 单条元素自身就超 30 KB 时 `留` 停在 1、一条都没截掉——但预算被突破这件事
   // 必须对模型可见（静默放行是 fail-open），所以写一条缺口而不是原样返回。
+  // 提示里的数字用 `字节(数据[0])`：讲的是「首条记录自身」，整数组序列化会多 `[` `]` 2 字节。
   if (留 === 数据.length)
-    return { 数据, 缺口: [...缺口, `返回数据超过 30 KB，但首条记录自身即超限（${字节(数据)} 字节），无法按条截断`] }
+    return { 数据, 缺口: [...缺口, `返回数据超过 30 KB，但首条记录自身即超限（${字节(数据[0])} 字节），无法按条截断`] }
   return {
     数据: 数据.slice(0, 留),
     缺口: [...缺口, `返回数据超过 30 KB，已从尾部截掉 ${数据.length - 留} 条`],

@@ -141,8 +141,11 @@ test("30 KB 按 Buffer.byteLength 算，不按字符数（中文 1 字符 3 字�
 test("单条元素自身 > 30 KB ⇒ 原样留下同一条，但必须追加「无法按条截断」缺口", () => {
   const 单条 = "x".repeat(40 * 1024)
   const 原 = [单条]
-  const 原字节 = Buffer.byteLength(JSON.stringify(原))
-  expect(原字节).toBeGreaterThan(30 * 1024)
+  const 单条字节 = Buffer.byteLength(JSON.stringify(单条))
+  // 提示里的数字必须与它说的对象一致（「首条记录自身」）：整数组序列化会多出 `[` `]` 2 字节，
+  // 这两个数不相等正是本用例的判别力来源（沿用旧实现 `字节(数据)` 会红在这 2 字节上）。
+  expect(Buffer.byteLength(JSON.stringify(原))).toBe(单条字节 + 2)
+  expect(单条字节).toBeGreaterThan(30 * 1024)
 
   const 截 = 截断数据(原, ["原有缺口"])
   // 一条都没截掉：返回同一引用，但「30 KB 预算被突破」必须对模型可见——静默放行是 fail-open。
@@ -153,7 +156,7 @@ test("单条元素自身 > 30 KB ⇒ 原样留下同一条，但必须追加「�
   expect(截.缺口).toHaveLength(2) // 恰好多一条，不是替换
   expect(截.缺口).toEqual([
     "原有缺口",
-    `返回数据超过 30 KB，但首条记录自身即超限（${原字节} 字节），无法按条截断`,
+    `返回数据超过 30 KB，但首条记录自身即超限（${单条字节} 字节），无法按条截断`,
   ])
 })
 

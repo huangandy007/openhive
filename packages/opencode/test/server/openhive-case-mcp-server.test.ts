@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
-import { createCaseMcpServer, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
+import { createCaseMcpServer, 工具名, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { upsertEntity } from "../../src/server/openhive/case-fact-store"
 
@@ -88,6 +88,20 @@ test("tools/list 返回 8 个工具，名字与设计 §7.1 逐字一致", async
     "query_rows",
     "search_materials",
   ])
+})
+
+// Task 3.5 fix1：`工具名`（名字侧）与 `TOOLS`（声明侧）是两份平行清单——TS 只有 `分发表` 被
+// `Record<工具名, …>` 兜住，`TOOLS` 漏写不报错。漏写时 `校验必填` 找不到声明已 fail-closed 抛错，
+// 但根因要在这里一眼看出是谁多谁少；比较走 tools/list（模型看到的同一份），不再抄第三份。
+// 变异：往 `工具名` 临时加一个不存在于 `TOOLS` 的名字 ⇒ 本用例红（只在名字里 多出它）。
+test("工具名 与 tools/list 声明逐项相等（两份清单不许漂移）", async () => {
+  const 声明 = (await client.listTools()).tools.map((条) => 条.name)
+  const 名字侧 = new Set(工具名 as readonly string[])
+  const 声明侧 = new Set(声明)
+  const 只在名字里 = (工具名 as readonly string[]).filter((名字) => !声明侧.has(名字))
+  const 只在声明里 = 声明.filter((名字) => !名字侧.has(名字))
+  expect(只在名字里).toEqual([])
+  expect(只在声明里).toEqual([])
 })
 
 test("不带 _meta 调用 ⇒ isError + identity_required", async () => {
