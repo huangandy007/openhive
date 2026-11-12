@@ -28,7 +28,11 @@ function db() {
 function 造工作簿(rows: (string | number | null)[][]): Uint8Array {
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "Sheet1")
-  return new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+  // `xlsx` 的类型声明把返回值写成 `any`。用判型而不是 `as`：形状不对时当场炸，
+  // 而不是把坏数据喂给解析器，也不触发 `no-unsafe-type-assertion`。
+  const 输出: unknown = XLSX.write(wb, { type: "array", bookType: "xlsx" })
+  if (!(输出 instanceof ArrayBuffer)) throw new Error("xlsx 没有返回 ArrayBuffer")
+  return new Uint8Array(输出)
 }
 
 const 表头 = ["交易时间", "交易金额", "交易余额", "借贷标志", "交易对方账卡号", "交易对方名称", "查询账号", "查询户名"]
