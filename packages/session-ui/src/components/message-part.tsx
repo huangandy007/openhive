@@ -36,6 +36,10 @@ import { useFileComponent } from "@opencode-ai/ui/context/file"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { type UiI18n, useI18n } from "@opencode-ai/ui/context/i18n"
 import { BasicTool, GenericTool } from "./basic-tool"
+// 【openhive 定制】信封工具卡（09 §12 #9）。解析层在 `envelope-parse.ts`——两个模块不能同名，
+// 否则 bun（偏好 `.tsx`）与 vite/tsc（偏好 `.ts`）对同一个无扩展名 import 解析到不同文件。
+import { 信封错误卡, 信封渲染兜底 } from "./envelope-tool"
+import { 是信封工具键 } from "./envelope-parse"
 import { Accordion } from "@opencode-ai/ui/accordion"
 import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
@@ -1563,7 +1567,8 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     return taskId()
   })
 
-  const render = createMemo(() => ToolRegistry.render(part().tool) ?? GenericTool)
+  // 【openhive 定制】MCP 信封工具卡：`openhive-case_*` 走 EnvelopeTool，其余行为不变（09 §12 #9）
+  const render = createMemo(() => ToolRegistry.render(part().tool) ?? 信封渲染兜底(part().tool) ?? GenericTool)
   const controlledOpen = () => (props.onToolOpenChange ? (props.toolOpen ?? props.defaultOpen) : undefined)
   const handleToolOpenChange = (open: boolean) => props.onToolOpenChange?.(open)
 
@@ -1571,6 +1576,19 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     <Show when={!hideQuestion()}>
       <div data-component="tool-part-wrapper" data-timeline-part-id={part().id}>
         <Switch>
+          {/* 【openhive 定制】信封工具的错误态：服务端失败信封被 convertTool 抛成 Error，落在这里（09 §12 #9） */}
+          <Match when={part().state.status === "error" && 是信封工具键(part().tool) && (part().state as any).error}>
+            {(error) => (
+              <信封错误卡
+                tool={part().tool}
+                status={part().state.status}
+                文本={error()}
+                defaultOpen={props.defaultOpen}
+                open={controlledOpen()}
+                onOpenChange={props.onToolOpenChange ? handleToolOpenChange : undefined}
+              />
+            )}
+          </Match>
           <Match when={part().state.status === "error" && (part().state as any).error}>
             {(error) => {
               const cleaned = error().replace("Error: ", "")

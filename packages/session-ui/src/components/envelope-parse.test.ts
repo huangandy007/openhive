@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 数据字节数, 数据行数, 解析工具输出, 是信封工具键 } from "./envelope-tool"
+import { 数据字节数, 数据行数, 解析工具输出, 是信封工具键 } from "./envelope-parse"
 
 const 信封文本 = (值: unknown) => JSON.stringify(值)
 
