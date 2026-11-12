@@ -43,6 +43,21 @@ const 流水 = 造工作簿([
   ["", "", "", "", "合计", "", "", ""],
 ])
 
+/** 独立项目用：表头加「币种」，一 CNY 一 USD。 */
+const 外币流水 = 造工作簿([
+  [...表头, "币种"],
+  ["2024-11-09 09:15:03", 5000, 12300, "借", "6222021234567890123", "李四", "6217001234567896514", "张三", "人民币"],
+  ["2024-11-10 10:00:00", 1200, 13500, "贷", "6222021234567890123", "李四", "6217001234567896514", "张三", "美元"],
+])
+
+/** 与 `openhive-case-ingest.test.ts:69-77` 同款话单夹具。 */
+const 话单表头 = ["主叫号码", "被叫号码", "通话时间", "通话时长", "基站"]
+const 话单 = 造工作簿([
+  [...话单表头],
+  ["13800000000", "13900000000", "2026-01-02 03:04:05", "37", "HZ-01"],
+  ["13700000000", "13600000000", "2026-01-02 03:05", "00:01:23", "HZ-02"],
+])
+
 const 文件 = new Map<string, Uint8Array>()
 const deps = {
   readFile: async (sourcePath: string) => {
@@ -70,6 +85,21 @@ function 是对象(值: unknown): 值 is Record<string, unknown> {
   return typeof 值 === "object" && 值 !== null
 }
 
+/** 与 `跑一份` 同一条链路，只是换字节：独立项目用，别动 流水 的用例 1→3 顺序依赖。 */
+async function 跑字节(projectId: string, 名: string, fp: string, bytes: Uint8Array) {
+  文件.set(`${projectId}/${名}`, bytes)
+  const r = await enqueueMaterial(db(), {
+    projectId,
+    path: 名,
+    sourcePath: `${projectId}/${名}`,
+    fileName: 名,
+    fingerprint: fp,
+  })
+  const job = await claimNextJob(db())
+  if (!job) throw new Error("队列是空的")
+  return { materialId: r.materialId, 结果: await runJob(db(), deps, job) }
+}
+
 describe("跑表格产出卡片", () => {
   test("两份有效行 ⇒ 两张卡片、一条关系，parse_detail 带翻译计数", async () => {
     const { materialId, 结果 } = await 跑一份("p2tr", "流水.xlsx", "fp-tr-1")
@@ -94,8 +124,10 @@ describe("跑表格产出卡片", () => {
     expect(是对象(detail) && 是对象(detail.翻译)).toBe(true)
     if (!是对象(detail) || !是对象(detail.翻译)) throw new Error("没有翻译明细")
     expect(detail.翻译.卡片数).toBe(2)
-    expect(detail.翻译.跳过).toMatchObject({ 合计行: 1 })
-    expect(Array.isArray(detail.翻译.跳过行号)).toBe(true)
+    // 全等而不是 toMatchObject：实现会过滤掉计数为 0 的跳过原因，多键存在即是回归。
+    expect(detail.翻译.跳过).toEqual({ 合计行: 1 })
+    // 实得 rowNo = 4：Sheet1 第 1 行表头，数据在 2/3，合计在文件行号 4（1 基）。
+    expect(detail.翻译.跳过行号).toEqual([{ sheet: "Sheet1", rowNo: 4, 原因: "合计行" }])
   })
 
   test("重放同一份材料 ⇒ 卡片不翻倍、关系不翻倍", async () => {
@@ -163,6 +195,54 @@ describe("跑表格产出卡片", () => {
     const detail = 材料?.parseDetail
     if (!是对象(detail) || !是对象(detail.翻译)) throw new Error("没有翻译明细")
     expect(detail.翻译.卡片数).toBe(0)
+  })
+
+  test("非人民币卡片单独计数，且币种按行落库", async () => {
+    const { materialId, 结果 } = await 跑字节("p2usd", "外币流水.xlsx", "fp-usd-1", 外币流水)
+    expect(结果).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p2usd", materialId)
+    const detail = 材料?.parseDetail
+    if (!是对象(detail) || !是对象(detail.翻译)) throw new Error("没有翻译明细")
+    expect(detail.翻译.卡片数).toBe(2)
+    expect(detail.翻译.非人民币卡片).toBe(1)
+
+    // 币种按行落库（Q16）：`解析币种` 只把人民币的几种写法归成 `CNY`，其余原样大写——
+    // 实跑「美元」得 `"美元"`（不是 `"USD"`），所以这里按实得断言，不按币种代码猜。
+    const 币种计数 = rowsOf(
+      await db().execute(sql`
+        select currency, count(*) as n
+          from auth.case_event
+         where project_id = 'p2usd'
+         group by currency
+      `),
+    )
+    expect(Object.fromEntries(币种计数.map((r) => [String(r.currency), Number(r.n)]))).toEqual({
+      CNY: 1,
+      美元: 1,
+    })
+  })
+
+  test("话单只落明细行：不做资金翻译、不建资金模板", async () => {
+    const { materialId, 结果 } = await 跑字节("p2call", "话单.xlsx", "fp-call-1", 话单)
+    expect(结果).toBe("完成")
+
+    const 材料 = await getMaterial(db(), "p2call", materialId)
+    expect(材料?.kind).toBe("话单")
+    const detail = 材料?.parseDetail
+    expect(是对象(detail)).toBe(true)
+    if (!是对象(detail)) throw new Error("没有 parse_detail")
+    // 「本期只做资金」这条 Global Constraint 的守护：话单路径不许出现翻译明细。
+    expect(Object.hasOwn(detail, "翻译")).toBe(false)
+
+    const 事件 = rowsOf(
+      await db().execute(sql`select id from auth.case_event where project_id = 'p2call'`),
+    )
+    expect(事件).toHaveLength(0)
+    const 模板 = rowsOf(
+      await db().execute(sql`select id from auth.case_card_template where project_id = 'p2call'`),
+    )
+    expect(模板).toHaveLength(0)
   })
 })
 
