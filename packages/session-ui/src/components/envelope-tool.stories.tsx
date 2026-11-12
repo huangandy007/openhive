@@ -84,6 +84,8 @@ export const ManyGaps = {
   ...story.Basic,
   args: {
     ...story.Basic.args,
+    tool: "openhive-case_find_crossings",
+    input: { 甲: "王某", 乙: "李某" },
     output: 信封({
       摘要: "取到 2 个实体",
       数据: [

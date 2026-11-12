@@ -40,6 +40,11 @@ export function 是信封工具键(工具键: string): boolean {
   return 工具键.startsWith(信封工具前缀) && 工具键.length > 信封工具前缀.length
 }
 
+/** 从 part 键剥掉信封工具前缀，得到裸工具名；不是信封工具键时原样返回。 */
+export function 信封工具名(工具键: string): string {
+  return 是信封工具键(工具键) ? 工具键.slice(信封工具前缀.length) : 工具键
+}
+
 const 是记录 = (值: unknown): 值 is Record<string, unknown> =>
   typeof 值 === "object" && 值 !== null && !Array.isArray(值)
 

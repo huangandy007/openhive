@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 数据字节数, 数据行数, 解析工具输出, 是信封工具键 } from "./envelope-parse"
+import { 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
 
 const 信封文本 = (值: unknown) => JSON.stringify(值)
 
@@ -97,5 +97,23 @@ describe("是信封工具键", () => {
     expect(是信封工具键("bash")).toBe(false)
     expect(是信封工具键("openhive-case")).toBe(false)
     expect(是信封工具键("mcp_other_query_rows")).toBe(false)
+  })
+})
+
+describe("信封工具名", () => {
+  test("八个 openhive-case_ 键逐个剥掉前缀，得到裸工具名", () => {
+    expect(信封工具名("openhive-case_search_materials")).toBe("search_materials")
+    expect(信封工具名("openhive-case_query_entities")).toBe("query_entities")
+    expect(信封工具名("openhive-case_query_relations")).toBe("query_relations")
+    expect(信封工具名("openhive-case_query_events")).toBe("query_events")
+    expect(信封工具名("openhive-case_aggregate_money")).toBe("aggregate_money")
+    expect(信封工具名("openhive-case_find_crossings")).toBe("find_crossings")
+    expect(信封工具名("openhive-case_get_citation")).toBe("get_citation")
+    expect(信封工具名("openhive-case_query_rows")).toBe("query_rows")
+  })
+
+  test("不是信封工具键时原样返回", () => {
+    expect(信封工具名("search_materials")).toBe("search_materials")
+    expect(信封工具名("")).toBe("")
   })
 })
