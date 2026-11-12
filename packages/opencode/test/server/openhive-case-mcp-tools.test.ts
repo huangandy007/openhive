@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
+import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
@@ -19,7 +20,8 @@ import {
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
 import { 工具名 } from "../../src/server/openhive/case-mcp-server"
-import { addCitation, createMaterial, insertFactRows } from "../../src/server/openhive/case-store"
+import { addCitation, createMaterial, getMaterial, insertFactRows } from "../../src/server/openhive/case-store"
+import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
 import { insertEvent, insertRelation, setMaterialText, upsertEntity } from "../../src/server/openhive/case-fact-store"
 import { 建实体, 建材料 } from "./openhive-case-fact-fixture"
 
@@ -85,6 +87,31 @@ const 大页材料 = "m-大页"
 /** 单行 `备注` 1000 字节（ASCII）⇒ 一行明细序列化 ≈ 1.2 KB，40 行 ≈ 48 KB。 */
 const 长备注 = "x".repeat(1000)
 const 大页行数 = 40
+/**
+ * T7a D3：同 path 重传用独立项目（`#005-34`）——旧行「未入队」、新行「已解析」，
+ * 两条材料共享 `path`，`未解析材料份数` 必须只认最新行。
+ */
+const 身份重传 = { userId: "u-工具-甲", projectId: "p-工具-重传" }
+const 重传账号 = "6217000099990000"
+const 重传对手 = "重传对手"
+const 重传旧材料 = "m-重传旧"
+const 重传文件 = new Map<string, Uint8Array>()
+let 重传新材料 = ""
+/**
+ * T7a B7：只有一份**产物**材料的独立项目。产物 `parse_status` 恒为「未入队」（design §5.5），
+ * 但它不算「待翻译」——否则任何生成过产物的项目都会永久答「材料未翻译」。
+ */
+const 身份产物 = { userId: "u-工具-甲", projectId: "p-工具-产物" }
+const 产物账户 = "6217000088880000"
+
+/** 现造一份真 xlsx 字节（与 `explore/dataset.ts` 同法；仓内不存二进制夹具）。 */
+function 造工作簿(行们: (string | number)[][], 表名: string): Uint8Array {
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(行们), 表名)
+  // `XLSX.write` 的返回类型是 `any`（同一批 tarball 里 dataset.ts 也这么写）；做成 `Uint8Array`
+  // 后交给生产入口当字节流。不加 `as ArrayBuffer`：那会多一条 `no-unsafe-type-assertion`。
+  return new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }))
+}
 
 /** 资金账户的规范值（brief 里的账户值原样照用）。 */
 const 账号 = "6222…8888"
@@ -698,6 +725,103 @@ beforeAll(async () => {
       extras: { 备注: 长备注 },
     })),
   )
+
+  // —— T7a D3：同 path 重传（旧行「未入队」、新行「已解析」），造法与 `case-row-query.test.ts` 同形 ——
+  // 旧行用 `createMaterial` 建（默认「未入队」）；新行走生产入口 `enqueueMaterial` → `claimNextJob`
+  // → `runJob`，`fingerprint` 不同 ⇒ 同 path 落第二行（`createMaterial` 的幂等键是
+  // `(project_id, fingerprint)`，不是 path）。
+  await createMaterial(库(), {
+    id: 重传旧材料,
+    projectId: 身份重传.projectId,
+    fileName: "重传.xlsx",
+    kind: "资金",
+    fingerprint: "fp-重传-旧",
+    path: "资金/重传.xlsx",
+  })
+  // `created_at` 只有秒精度，`未解析材料份数` 的 `distinct on (path)` 用
+  // `order by path, created_at desc, id desc` 破平——同一秒建两行时谁算「最新」由随机 id 决定。
+  // 走生产入口就必须让两行落在不同秒：等一整秒，别用裸 SQL 改时间。
+  await Bun.sleep(1100)
+  重传文件.set(
+    "p-工具-重传/资金/重传.xlsx",
+    造工作簿(
+      [
+        ["交易时间", "查询账号", "本方户名", "对方账号", "对方户名", "借贷标志", "交易金额", "余额", "备注", "币种"],
+        ["2026-02-10 10:00:00", 重传账号, "重传户名", "6217000099990001", 重传对手, "付", "100.00", "900.00", "货款", "CNY"],
+      ],
+      "流水",
+    ),
+  )
+  const 重传入队 = await enqueueMaterial(库(), {
+    projectId: 身份重传.projectId,
+    path: "资金/重传.xlsx",
+    sourcePath: "p-工具-重传/资金/重传.xlsx",
+    fileName: "重传.xlsx",
+    fingerprint: "fp-重传-新",
+    kind: "资金",
+  })
+  if (!重传入队.enqueued) throw new Error("重传材料没有入队")
+  重传新材料 = 重传入队.materialId
+  const 重传作业 = await claimNextJob(库())
+  if (重传作业?.materialId !== 重传新材料) {
+    throw new Error(`认领到别人的作业：期望 ${重传新材料}，实得 ${String(重传作业?.materialId)}`)
+  }
+  const 重传结果 = await runJob(
+    库(),
+    {
+      readFile: async (路径: string) => {
+        const 字节 = 重传文件.get(路径)
+        if (!字节) throw new Error(`没有这个文件：${路径}`)
+        return 字节
+      },
+    },
+    重传作业,
+  )
+  if (重传结果 !== "完成") throw new Error(`重传材料没有跑完：${重传结果}`)
+  await upsertEntity(库(), {
+    id: "e-重传账",
+    projectId: 身份重传.projectId,
+    type: "账户",
+    canonicalValue: 重传账号,
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-重传对手",
+    projectId: 身份重传.projectId,
+    type: "人",
+    canonicalValue: 重传对手,
+    aliases: [],
+  })
+  // 一笔转账 ⇒ `aggregate_money` 有数据（空结果会走另一条判据，测不到「非空结果也报未翻译缺口」）。
+  await insertRelation(库(), {
+    id: "r-重传转账",
+    projectId: 身份重传.projectId,
+    fromId: "e-重传账",
+    toId: "e-重传对手",
+    type: "转账",
+    amount: 100,
+    sourceKind: "data",
+    trustState: "自动抽取",
+  })
+
+  // —— T7a B7：只有一份产物材料的项目（`kind='产物'` 只登记不解析，design §5.5）——
+  await createMaterial(库(), {
+    id: "m-产物",
+    projectId: 身份产物.projectId,
+    fileName: "分析报告.docx",
+    kind: "产物",
+    fingerprint: "fp-产物",
+    path: "产物/分析报告.docx",
+  })
+  // 账户实体存在、但任何事实里都没有它 ⇒ 材料已翻译时应落判定表第 2 条；
+  // 若产物被误算成「待翻译」，第 4 条会把它改口成「项目内资金材料未翻译」。
+  await upsertEntity(库(), {
+    id: "e-产物账",
+    projectId: 身份产物.projectId,
+    type: "账户",
+    canonicalValue: 产物账户,
+    aliases: [],
+  })
 })
 
 afterAll(async () => {
@@ -1383,10 +1507,16 @@ test("query_relations 七字段：有数据时摘要给条数与端点数", asyn
 })
 
 test("query_relations 七字段：条件无命中 ⇒ 无匹配行，数据/出处空、不给不可执行的下一步", async () => {
-  // 「甲」是「人」，但没有持有关系——若不看类型过滤，判定表第 3 条会答「实体没有关联账户」。
-  // 这里带了 `类型` 过滤（不是「持有」），第 3 条不该生效 ⇒ 兜底「无匹配行」（R-Y）。
-  // 守的是**兜底值**与「不给不可执行的下一步」。
-  const 结果 = await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" })
+  // 张三在戊里是「人」、零「持有」关系；项目**没有任何材料** ⇒ `未解析材料数 === 0`，
+  // 「材料已翻译」闸不会替类型闸挡刀。这样两条闸（`可判持有` 与「人 / 组织」）都真的在起作用：
+  // - 删掉 `可判持有 &&` ⇒ 实体没有关联账户（本用例红）；
+  // - 类型过滤是「不存在的类型」⇒ 第 3 条不该生效，兜底「无匹配行」（R-Y）。
+  //
+  // ⚠️ 丁项目不能用于这条：它有 5 份 `createMaterial` 建的材料（默认 `未入队`），
+  // `未解析材料数 > 0` ⇒ `已翻译` 闸先挡住第 3 条，删掉 `可判持有` 用例仍绿（T3 复审 D1 的假绿）。
+  // 把丁的五份材料都走 `runJob` 置为已解析会连带删掉种子里的引用（`deleteCitationsOfMaterial`），
+  // 是 brief 允许退开的那种级联。戊按构造没有材料，等价于「材料全部已翻译」。
+  const 结果 = await query_relations(ctx(身份戊), { 实体: "张三", 类型: "不存在的类型" })
   expect(结果.摘要).toContain("没有关系命中")
   expect(结果.空原因).toBe("无匹配行")
   expect(结果.数据).toEqual([])
@@ -1647,4 +1777,38 @@ test("query_rows 大页按 30 KB 字节预算自限：摘要行数与数据一�
   const 全部 = [...数据1, ...数据2].map((行) => 行.定位)
   expect(全部).toEqual(全页)
   expect(new Set(全部).size).toBe(大页行数)
+})
+
+// —— T7a D3：`未解析材料数` 的**消费端**回归 ——
+// 单一口径在 `case-row-query.ts:333`（`distinct on (path)` 只认最新一行 + 排除产物）；
+// `case-mcp-tools.ts` 只是转发。若有人把它改回自写 `count(*)`，本文件既有用例全绿——
+// 因为没有一个项目同时有「旧行未入队 + 新行已解析」的同 path 材料。
+test("aggregate_money 同 path 重传：只认最新一行的解析状态，不把旧「未入队」行当未解析材料", async () => {
+  const 旧 = await getMaterial(库(), 身份重传.projectId, 重传旧材料)
+  const 新 = await getMaterial(库(), 身份重传.projectId, 重传新材料)
+  // 前提先钉住：两行同 path，旧行「未入队」、新行「已解析」——否则这条用例测不到 `distinct on`。
+  expect(旧?.path).toBe(新?.path)
+  expect(旧?.parseStatus).toBe("未入队")
+  expect(新?.parseStatus).toBe("已解析")
+
+  const 结果 = await aggregate_money(ctx(身份重传), { 账户: 重传账号 })
+  expect(结果.空原因).toBeNull()
+  // 不用 `as` 窄化 `unknown`（本仓 oxlint 会记一条新告警）：`toMatchObject` 同时钉住
+  // 「非空、且就是那一笔」。
+  expect(结果.数据).toMatchObject({ 汇总: [{ 方向: "出", 笔数: 1, 合计: "100.00" }] })
+  // 最新一行已解析 ⇒ 项目里**没有**未解析材料：摘要 / 缺口 / 下一步都不许报「未翻译」。
+  const 全文 = JSON.stringify(结果)
+  expect(全文).not.toContain("材料未翻译")
+  expect(全文).not.toContain("份材料尚未解析")
+})
+
+// —— T7a B7：`kind <> '产物'` 的例外在 mcp 侧（`case-row-query.test.ts:333` 只覆盖了明细行出口）——
+test("aggregate_money 只有产物材料：产物不算待翻译，空结果不许答「材料未翻译」", async () => {
+  const 结果 = await aggregate_money(ctx(身份产物), { 账户: 产物账户 })
+  // 产物按设计永不解析（design §5.5）：账户在材料里没有出现，应落判定表第 2 条，
+  // 而不是因为「有一份未入队的产物」被第 4 条改口成「项目内资金材料未翻译」。
+  expect(结果.空原因).toBe("账户未在材料中出现")
+  expect(结果.数据).toBeNull()
+  expect(结果.摘要).not.toContain("材料还没翻译完")
+  expect(结果.缺口).not.toContain("1 份材料尚未解析，其中可能含资金流水")
 })

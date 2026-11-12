@@ -200,4 +200,28 @@ describe("探索数据集 seed（09 §13.1）", () => {
     expect(await countFactRows(db(), 数据集.待解析项目)).toBe(0)
     expect(await 数实体(db(), 数据集.待解析项目)).toBe(0)
   })
+
+  // —— T7a D5：第三项目的**形状**（回放用例 D4/D5 依赖它，但它自己没被钉住）——
+  // 照实得写：已解析 1 份资金流水（1 行）、排队中 1 份（未解析 ⇒ kind 仍是推断前的「其他」）、
+  // **零实体零关系**（`runJob` 只落明细行；实体来自笔录的抽取器，第三项目没有笔录）。
+  // 计划里写的「实体（账户 H 等）」是错的——H 只是明细行里的账号字符串，不是实体行。
+  test("第三项目 p-explore-partial：已解析 1 / 排队中 1 / 明细行 1 / 零实体零关系", async () => {
+    const 材料们 = rowsOf(
+      await db().execute(sql`
+        select file_name as 名, kind as 类, parse_status as 态
+          from auth.case_material
+         where project_id = ${数据集.部分解析项目}
+         order by file_name
+      `),
+    )
+    expect(材料们).toEqual([
+      { 名: "待解析流水.xlsx", 类: "其他", 态: "排队中" },
+      { 名: "部分流水.xlsx", 类: "资金", 态: "已解析" },
+    ])
+    expect(await 数排队中(db(), 数据集.部分解析项目)).toBe(1)
+    // 已解析那份的 1 行明细（2026-03-01，H → I，30000 CNY）。
+    expect(await countFactRows(db(), 数据集.部分解析项目)).toBe(1)
+    expect(await 数实体(db(), 数据集.部分解析项目)).toBe(0)
+    expect(await 数关系(db(), 数据集.部分解析项目)).toBe(0)
+  })
 })
