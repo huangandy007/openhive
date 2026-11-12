@@ -3,7 +3,7 @@ export * as OpenhiveCaseFactStore from "./case-fact-store"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
-import type { Queryable } from "./case-store"
+import type { CitationInput, Queryable } from "./case-store"
 
 /**
  * 五张事实表里「AI 抽取会写」的那几笔。
@@ -137,9 +137,23 @@ export interface 事件写入 {
   occurredAt: number | null
   occurredRaw: string | null
   precision: string | null
+  /**
+   * 金额，`numeric(18,2)` 一律字符串传（`#002-01`），**永远正数**（01 §3.5 / §4.0.5 坑 2）。
+   * 非资金类事件（住宿、话单）为 null。列在迁移 `0039:89`，T7 的 `sum(e.amount)` 依赖它——
+   * 漏写这一列，聚合会恒为 0 而不报错。
+   */
+  amount?: string | null
   participants: string[]
   summary: string | null
   trustState: 事实信任态
+  /** 区间事件结束（住宿）。点事件为 null（01 §3.5）。 */
+  occurredEnd?: number | null
+  /** 类型专属属性，只放不参与过滤的（余额等）。 */
+  attrs?: Record<string, unknown>
+  /** 卡片币种：非 CNY 不进关系合计（Global Constraints 14）。 */
+  currency?: string
+  /** 产出这张卡片的模板行 id（Q15）。 */
+  templateId?: string | null
 }
 
 export async function insertEvent(db: Queryable, input: 事件写入): Promise<void> {
@@ -152,6 +166,108 @@ export async function insertEvent(db: Queryable, input: 事件写入): Promise<v
             ${input.summary}, ${input.trustState}, ${nowSeconds()})
     on conflict (project_id, id) do nothing
   `)
+}
+
+/**
+ * 批量写入的分块大小。与 `case-store.ts` 的 `INSERT_CHUNK` 同值同理由
+ * （事件 15 列 × 500 = 7500 个绑定参数，离 PG 上限 65535 有量级余量）；那份是模块内常量、
+ * 未导出，这里按本文件需要的量级单独定一份，不从调用方借。
+ */
+const INSERT_CHUNK = 500
+
+const 事件列 = sql`
+  id, project_id, type, occurred_at, occurred_raw, precision, amount, participants, summary,
+  trust_state, created_at, occurred_end, attrs, currency, template_id
+`
+
+function 事件值(e: 事件写入) {
+  return sql`(${e.id}, ${e.projectId}, ${e.type}, ${e.occurredAt}, ${e.occurredRaw},
+              ${e.precision}, ${e.amount ?? null}, ${文本数组(e.participants)}, ${e.summary}, ${e.trustState},
+              ${nowSeconds()}, ${e.occurredEnd ?? null},
+              ${JSON.stringify(e.attrs ?? {})}::text::jsonb, ${e.currency ?? "CNY"},
+              ${e.templateId ?? null})`
+}
+
+/** 一条一份材料的卡片不逐行发语句：5,000 行 = 5,000 次往返（§6.5）。 */
+export async function insertEvents(db: Queryable, inputs: readonly 事件写入[]): Promise<number> {
+  let written = 0
+  for (let i = 0; i < inputs.length; i += INSERT_CHUNK) {
+    const chunk = inputs.slice(i, i + INSERT_CHUNK)
+    const 结果 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_event (${事件列})
+        values ${sql.join(chunk.map(事件值), sql`, `)}
+        on conflict (project_id, id) do nothing
+        returning id
+      `),
+    )
+    written += 结果.length
+  }
+  return written
+}
+
+export interface 参与者写入 {
+  projectId: string
+  id: string
+  eventId: string
+  entityId: string | null
+  role: string
+  mentionText: string
+  citationId: string | null
+  ordinal: number
+}
+
+export async function insertParticipants(db: Queryable, inputs: readonly 参与者写入[]): Promise<number> {
+  let written = 0
+  for (let i = 0; i < inputs.length; i += INSERT_CHUNK) {
+    const chunk = inputs.slice(i, i + INSERT_CHUNK)
+    const 结果 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_event_participant
+          (id, project_id, event_id, entity_id, role, mention_text, citation_id, ordinal)
+        values ${sql.join(
+          chunk.map(
+            (p) => sql`(${p.id}, ${p.projectId}, ${p.eventId}, ${p.entityId}, ${p.role},
+                        ${p.mentionText}, ${p.citationId}, ${p.ordinal})`,
+          ),
+          sql`, `,
+        )}
+        on conflict (project_id, event_id, ordinal) do update
+           set entity_id = excluded.entity_id,
+               role = excluded.role,
+               mention_text = excluded.mention_text
+        returning id
+      `),
+    )
+    written += 结果.length
+  }
+  return written
+}
+
+/** `addCitation` 的批量版；locator 走 `::text::jsonb`（`case-store.ts:476` 的老坑）。 */
+export async function addCitations(db: Queryable, inputs: readonly CitationInput[]): Promise<number> {
+  let written = 0
+  for (let i = 0; i < inputs.length; i += INSERT_CHUNK) {
+    const chunk = inputs.slice(i, i + INSERT_CHUNK)
+    const 结果 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_citation
+          (id, project_id, fact_type, fact_id, material_id, locator, extract_method, confidence, created_at)
+        values ${sql.join(
+          chunk.map(
+            (c) => sql`(${c.id}, ${c.projectId}, ${c.factType}, ${c.factId}, ${c.materialId},
+                        ${JSON.stringify(c.locator)}::text::jsonb, ${c.extractMethod},
+                        ${c.confidence ?? null}, ${nowSeconds()})`,
+          ),
+          sql`, `,
+        )}
+        on conflict (project_id, id) do nothing
+        returning id
+      `),
+    )
+    written += 结果.length
+  }
+  return written
 }
 
 /**
