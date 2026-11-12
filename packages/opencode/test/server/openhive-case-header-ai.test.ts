@@ -43,6 +43,41 @@ function 拦截模型() {
   return { 模型, 收到, 系统 }
 }
 
+/**
+ * 从拦截到的 `generateObject` options 里解出用户 payload 的列条目。
+ *
+ * 不按 JSON 键序写字符串断言：键序一调整就假红。逐步从 `unknown` 收窄，避免对 `any` 做断言。
+ */
+function 请求里的列(收到: string[]): { 列号: number; 表头: string | null }[] {
+  const 是记录 = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null
+  const 输出: { 列号: number; 表头: string | null }[] = []
+  for (const 请求 of 收到) {
+    const 选项: unknown = JSON.parse(请求)
+    if (!是记录(选项) || !Array.isArray(选项.prompt)) continue
+    for (const 消息 of 选项.prompt) {
+      if (!是记录(消息) || 消息.role !== "user") continue
+      const 内容 = 消息.content
+      const 文本们 = Array.isArray(内容)
+        ? 内容.flatMap((c) => (是记录(c) && typeof c.text === "string" ? [c.text] : []))
+        : typeof 内容 === "string"
+          ? [内容]
+          : []
+      for (const 文本 of 文本们) {
+        const 载荷: unknown = JSON.parse(文本)
+        if (!是记录(载荷) || !Array.isArray(载荷.工作表)) continue
+        for (const 表 of 载荷.工作表) {
+          if (!是记录(表) || !Array.isArray(表.列)) continue
+          for (const 列 of 表.列) {
+            if (!是记录(列) || typeof 列.列号 !== "number") continue
+            输出.push({ 列号: 列.列号, 表头: typeof 列.表头 === "string" ? 列.表头 : null })
+          }
+        }
+      }
+    }
+  }
+  return 输出
+}
+
 describe("触发判定", () => {
   test("关键字段缺失且未知列超 30% ⇒ 触发", () => {
     const r = detectMapping(表头, 行)
@@ -318,7 +353,9 @@ describe("模型请求组装", () => {
     expect(请求).not.toContain("属性:对方:开户行")
     expect(请求).not.toContain("招商银行")
     // 过滤后**不许重新编号**：交易时间仍是原始下标 2（不是 1），否则模型建议会错位一列。
-    expect(请求).toContain('\\"列号\\":2,\\"表头\\":\\"交易时间\\"')
+    // 解析后按表头找，不依赖 JSON 键序。
+    const 交易时间列 = 请求里的列(收到).find((列) => 列.表头 === "交易时间")
+    expect(交易时间列?.列号).toBe(2)
   })
 
   test("payload 逐列给列号，并写明 0 基", async () => {

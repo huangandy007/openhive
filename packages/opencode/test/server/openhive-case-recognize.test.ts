@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider"
 import { MockLanguageModelV3 } from "ai/test"
-import { 建表头识别器 } from "../../src/server/openhive/case-header-ai"
+import { 建表头识别器, type 表头识别输入 } from "../../src/server/openhive/case-header-ai"
 import { 识别材料 } from "../../src/server/openhive/case-recognize"
 import type { 格式结果 } from "../../src/server/openhive/case-ingest"
 import type { RawSheet } from "../../src/server/openhive/case-sheet"
@@ -75,6 +75,36 @@ describe("识别材料", () => {
     expect(请求).not.toContain("招商银行")
     expect(请求).toContain("列Y") // 非属性列照常送
     expect(请求).toContain('\\"列号\\":2,\\"表头\\":\\"列Y\\"') // 原始下标未漂移
+  })
+
+  test("识别器接缝：属性列的表头与样例已置 null，且保持原始下标", async () => {
+    // 裸假识别器捕获**接缝入参**：隐私不变量必须在交给任何实现之前成立，
+    // 不能靠生产实现（`建表头识别器`）自己记得过滤。
+    let 捕获: 表头识别输入 | undefined
+    const 识别 = await 识别材料({
+      sheets: [
+        表(
+          ["交易金额", "属性:对方:开户行", "交易时间", "列Y"],
+          [["1.00", "招商银行", "2026-01-02 03:04:05", "1.00"]],
+        ),
+      ],
+      别名: 无别名,
+      缓存: [undefined],
+      识别器: async (输入) => {
+        捕获 = 输入
+        return { 工作表: {} }
+      },
+    })
+    expect(识别.模型.调用).toBe(1)
+    const 序列化 = JSON.stringify(捕获)
+    expect(序列化).not.toContain("属性:对方:开户行")
+    expect(序列化).not.toContain("招商银行")
+    const 表项 = 捕获?.工作表[0]
+    // 保长度、保下标：属性列只置 null，不压缩数组（否则模型建议会整体错位）。
+    expect(表项?.表头).toHaveLength(4)
+    expect(表项?.表头[1]).toBeNull()
+    expect(表项?.表头[2]).toBe("交易时间")
+    expect(表项?.样例[0]?.[1]).toBeNull()
   })
 
   test("模型只调一次，且失败不阻断识别", async () => {

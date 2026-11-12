@@ -1,6 +1,7 @@
 export * as OpenhiveCaseRecognize from "./case-recognize"
 
 import type { RawSheet } from "./case-sheet"
+import { 是属性列 } from "./case-attribute-registry"
 import { 候选字段集, type 识别字段 } from "./case-field-registry"
 import {
   classifyMaterialType,
@@ -106,11 +107,20 @@ export async function 识别材料(输入: 识别输入): Promise<材料识别> 
     模型 = { 调用: 1 }
     try {
       const 建议 = await 输入.识别器({
-        工作表: 未命中.map((i) => ({
-          名: 输入.sheets[i]?.name ?? "",
-          表头: 表头们[i] ?? [],
-          样例: 行们[i] ?? [],
-        })),
+        工作表: 未命中.map((i) => {
+          const 表头 = 表头们[i] ?? []
+          const 样例 = 行们[i] ?? []
+          // 属性列不交给识别器（05 §4.3）：表头**与对应单元格同时置 null**，保长度、保下标。
+          // 只置表头不够：实现若判 `是属性列`，null 会漏判，样例按 `行[i]` 取仍会把属性值外发；
+          // 也不能 filter，列号会漂移、模型建议整体错位。`表头们` / `行们` 本体不动——
+          // 后面 `需要模型` / `合并模型结果` 还要用原始下标。
+          const 属性集 = new Set(表头.flatMap((h, j) => (是属性列(h) ? [j] : [])))
+          return {
+            名: 输入.sheets[i]?.name ?? "",
+            表头: 表头.map((h, j) => (属性集.has(j) ? null : h)),
+            样例: 样例.map((行) => 行.map((v, j) => (属性集.has(j) ? null : v))),
+          }
+        }),
         候选字段: [
           ...new Set([
             ...未命中基础.flatMap((结果) => Object.values(结果.columns)),

@@ -52,6 +52,10 @@ const 形状字段们 = ["amount", "startedAt", "callee", "counterparty", "owner
  * 都在那一层维护（`#002-06`），这里不再写第二份 `generateObject`。
  */
 
+/**
+ * 识别器契约：属性列的表头与样例已由调用方置 `null`（**保持原始下标**，不压缩数组）。
+ * 实现不得从别的列拼回属性值，也不得假设 `null` 表头就是无信息列。
+ */
 export interface 表头识别输入 {
   工作表: { 名: string; 表头: (string | null)[]; 样例: (string | null)[][] }[]
   候选字段: string[]
@@ -59,6 +63,7 @@ export interface 表头识别输入 {
 export interface 表头识别结果 {
   工作表: Record<string, { 列: Record<number, string> }>
 }
+/** 契约见 `表头识别输入`：属性列已置 `null`，实现无需（也不得）自行猜回。 */
 export type 表头识别器 = (输入: 表头识别输入) => Promise<表头识别结果>
 
 const 表头输出 = Schema.Struct({
