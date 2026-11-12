@@ -194,14 +194,18 @@ export async function query_entities(
   if (关键词 !== undefined && 关键词 !== "") {
     const 模式 = `%${关键词}%`
     条件.push(
-      sql`(canonical_value ilike ${模式} or exists (select 1 from unnest(aliases) as 别名 where 别名 ilike ${模式}))`,
+      sql`(canonical_value ilike ${模式}
+        or exists (select 1 from unnest(aliases) as 别名 where 别名 ilike ${模式})
+        or exists (select 1 from auth.case_entity_alias a
+                    where a.project_id = ${ctx.身份.projectId} and a.entity_id = e.id
+                      and a.kind = '户名' and a.revoked_at is null and a.value ilike ${模式}))`,
     )
   }
   if (args.含已排除 !== true) 条件.push(sql`trust_state <> '已排除'`)
   const rows = await ctx.db.execute(sql`
     select id, type, canonical_value, array_to_json(aliases)::text as aliases, attrs::text as attrs,
            trust_state, created_at
-      from auth.case_entity
+      from auth.case_entity e
      where ${sql.join(条件, sql` and `)}
      order by type asc, canonical_value asc, id asc
      limit ${限制}
@@ -221,7 +225,7 @@ export async function query_entities(
       ? `没有实体匹配${args.关键词 ? `「${args.关键词}」` : ""}${args.类型 ? `（类型=${args.类型}）` : ""}`
       : `找到 ${数据.length} 个实体${args.类型 ? `（类型=${args.类型}）` : ""}，首个是「${String(数据[0]!.canonical_value)}」`,
     数据,
-    口径: "实体按类型与规范值/别名关键词过滤；默认不含「已排除」（设计 §9.1）。",
+    口径: "实体按类型与规范值/别名关键词过滤；关键词也匹配未撤销的户名别名。默认不含「已排除」（设计 §9.1）。",
     缺口: 截断缺口(args.限制, 限制, 数据.length),
     空原因: 空 ? "无匹配行" : null,
     出处: 数据.slice(0, 3).map((行) => ({
@@ -232,6 +236,65 @@ export async function query_entities(
     下一步: 空
       ? [{ 工具: "search_materials", 参数: {}, 为什么: "按材料名或正文片段找；实体可能还没从材料里抽出来" }]
       : [{ 工具: "query_relations", 参数: { 实体: String(数据[0]!.canonical_value) }, 为什么: "看它与谁有关系" }],
+  }
+}
+
+export interface 实体解析 {
+  readonly id: string
+  readonly value: string
+  readonly type: string
+  readonly ids: string[]
+  /** 解析到的途径：id / 规范值 / 户名（A11 的「户名为 X 的账户」据此措辞）。 */
+  readonly 命中: "id" | "规范值" | "户名"
+}
+
+/**
+ * 按户名找账户（M2）：**精确等值**、不做相似匹配（§3.8.3）。
+ *
+ * 同一户名对应多个账户 ⇒ `bad_input` 列出候选。M4 的「唯一性候选」要人点一次采纳，
+ * 本期不做；在此之前不许挑一个冒充答案（§3.8.4「无匹配不给近似值」）。
+ *
+ * 别名行按 (project_id, kind, value) 有索引（0039）；账户被「已排除」时不参与。
+ */
+export async function 解析户名(
+  ctx: 工具上下文,
+  值: string,
+): Promise<{ id: string; value: string; type: string; ids: string[]; 命中: "户名" } | undefined> {
+  const 行们 = rowsOf(
+    await ctx.db.execute(sql`
+      select e.id, e.type, e.canonical_value
+        from auth.case_entity e
+        join auth.case_entity_alias a
+          on a.project_id = e.project_id and a.entity_id = e.id
+       where e.project_id = ${ctx.身份.projectId}
+         and a.kind = '户名' and a.value = ${值} and a.revoked_at is null
+         and e.trust_state <> '已排除'
+       order by e.created_at desc, e.type asc, e.id asc
+    `),
+  )
+  const 按id = new Map<string, Record<string, unknown>>()
+  for (const 行 of 行们) {
+    const id = String(行.id)
+    if (!按id.has(id)) 按id.set(id, 行)
+  }
+  const 候选 = [...按id.values()]
+  if (候选.length === 0) return undefined
+  if (候选.length > 1) {
+    const 前 = 候选.slice(0, 5).map((行) => String(行.canonical_value))
+    const 尾巴 = 候选.length > 5 ? ` 等 ${候选.length} 个` : ""
+    throw new 工具错误(
+      "bad_input",
+      `户名「${值}」在本项目对应 ${候选.length} 个账户（${前.join("、")}${尾巴}），` +
+        "无法确定是哪一个；请改用账号查询",
+    )
+  }
+  const 唯一 = 候选[0]
+  return {
+    id: String(唯一.id),
+    value: String(唯一.canonical_value),
+    type: String(唯一.type),
+    ids: [String(唯一.id)],
+    命中: "户名",
   }
 }
 
@@ -254,7 +317,7 @@ export async function 解析实体(
   ctx: 工具上下文,
   值: string,
   称呼: string,
-): Promise<{ id: string; value: string; type: string; ids: string[] }> {
+): Promise<实体解析> {
   const rows = rowsOf(
     await ctx.db.execute(sql`
       select id, type, canonical_value from auth.case_entity
@@ -263,13 +326,17 @@ export async function 解析实体(
     `),
   )
   const 行 = rows[0]
-  if (行 === undefined) throw new 工具错误("not_found", `本项目里找不到${称呼}：${值}`)
-  const id = String(行.id)
-  const ids =
-    id === 值
-      ? [id]
-      : rows.filter((行) => String(行.canonical_value) === 值).map((行) => String(行.id))
-  return { id, value: String(行.canonical_value), type: String(行.type), ids }
+  if (行 !== undefined) {
+    const id = String(行.id)
+    const ids =
+      id === 值
+        ? [id]
+        : rows.filter((行) => String(行.canonical_value) === 值).map((行) => String(行.id))
+    return { id, value: String(行.canonical_value), type: String(行.type), ids, 命中: id === 值 ? "id" : "规范值" }
+  }
+  const 户名 = await 解析户名(ctx, 值)
+  if (户名 !== undefined) return 户名
+  throw new 工具错误("not_found", `本项目里找不到${称呼}：${值}`)
 }
 
 /** `id in (...)` 片段：`from_id ${id属于(ids)}`。`ids` 至少含展示行，不会为空。 */
@@ -512,13 +579,21 @@ function 材料未翻译信封(账户: string, 份数: number): 工具结果 {
  * 账户解析：`not_found` 且项目内有未解析材料时，折成「材料未翻译」信封而不是抛错（R-C）。
  * 这个判断只属于 `aggregate_money`，**不塞进 `解析实体`**：后者被四个工具共用，
  * 在那里改语义会把另外三个工具的「查不到实体」也说成「材料没翻译」（`#002-06`）。
+ *
+ * 账户语境优先户名（§3.8.1「查询按账户组织」）：规范值先命中了同名「人」实体时，
+ * 再按户名找账户；否则问「张三的流水」会在人实体上算 0 笔——错得像个正确答案。
+ * 户名对应多账户时 `解析户名` 抛 `bad_input`，不在这里兜底挑一个。
  */
 async function 解析账户(
   ctx: 工具上下文,
   账户: string,
-): Promise<{ 实体: { id: string; value: string; type: string; ids: string[] } } | { 信封: 工具结果 }> {
+): Promise<{ 实体: 实体解析 } | { 信封: 工具结果 }> {
   try {
-    return { 实体: await 解析实体(ctx, 账户, "账户") }
+    const 实体 = await 解析实体(ctx, 账户, "账户")
+    if (实体.type === "账户") return { 实体 }
+    const 户名 = await 解析户名(ctx, 账户)
+    if (户名 !== undefined) return { 实体: 户名 }
+    return { 实体 }
   } catch (错) {
     if (错 instanceof 工具错误 && 错.code === "not_found") {
       const 份数 = await 未解析材料数(ctx)
@@ -644,7 +719,7 @@ export async function query_relations(
   // 根本不知道查询主体是谁，也就没有可汇总的账户 ⇒ `下一步` 留空。
   let 查询实体值: string | undefined
   // 空结果的原因要用**查询主体**的身份（类型 / id 集）判，解析结果留在这里（`关系空原因`）。
-  let 查询实体: { id: string; value: string; type: string; ids: string[] } | undefined
+  let 查询实体: 实体解析 | undefined
   if (args.实体 !== undefined) {
     const 实体 = await 解析实体(ctx, args.实体, "实体")
     查询实体 = 实体
