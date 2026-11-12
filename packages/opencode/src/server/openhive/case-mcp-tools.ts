@@ -287,6 +287,7 @@ export async function 解析户名(
           on a.project_id = e.project_id and a.entity_id = e.id
        where e.project_id = ${ctx.身份.projectId}
          and a.kind = '户名' and a.value = ${值} and a.revoked_at is null
+         and e.type = '账户'
          and e.trust_state <> '已排除'
        order by e.created_at desc, e.type asc, e.id asc
     `),

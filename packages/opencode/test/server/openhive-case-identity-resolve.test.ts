@@ -126,6 +126,35 @@ describe("解析实体：户名的边界", () => {
     expect(消息).toContain("6217001234567890007")
     expect(消息).toContain("账号")
   })
+
+  test("aggregate_money 遇到多账户户名 ⇒ 同一 fail-closed（bad_input），不在聚合层挑一个", async () => {
+    // 解析账户的 catch 只该处理 `not_found`（材料未翻译信封）；`bad_input` 必须原样抛到出口。
+    const 错 = await aggregate_money(ctx(多账户项目), { 账户: "钱七" }).catch((e: unknown) => e)
+    expect(错).toMatchObject({ code: "bad_input" })
+  })
+})
+
+describe("解析户名只认「账户」（别名表本身无类型约束）", () => {
+  const 项目 = "prj-id-resolve-person-alias"
+
+  test("户名挂在「人」实体上 ⇒ 不当作账户解析", async () => {
+    // 0039 的别名表没有实体类型约束：任何未来的写入者都可能把户名挂到非账户上。
+    // 函数名与报错文案都承诺「账户」，所以解析层必须自己守类型，而不是信任数据源。
+    const 人id = await upsertEntity(db(), {
+      id: "e-赵某某-人",
+      projectId: 项目,
+      type: "人",
+      canonicalValue: "赵某某",
+      aliases: [],
+    })
+    await db().execute(sql`
+      insert into auth.case_entity_alias
+        (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at, revoked_at)
+      values ('a-独有户名甲', ${项目}, ${人id}, '户名', '独有户名甲', '独有户名甲', '人工', 1700000000, null)
+    `)
+    const 错 = await 解析实体(ctx(项目), "独有户名甲", "实体").catch((e: unknown) => e)
+    expect(错).toMatchObject({ code: "not_found" })
+  })
 })
 
 describe("规范值优先于户名（解析顺序不变）", () => {

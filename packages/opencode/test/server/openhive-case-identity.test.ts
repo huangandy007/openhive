@@ -295,4 +295,26 @@ describe("读身份标注：证据只认未排除的实名登记边与未撤销�
     const 表 = await 读身份标注(桩, "prj-never", [])
     expect(表.size).toBe(0)
   })
+
+  test("人—人实名登记边不作证据（两端同型是脏数据）", async () => {
+    const 项目7 = "prj-id-evidence-person-person"
+    await upsertEntity(db(), { id: "e-甲-人", projectId: 项目7, type: "人", canonicalValue: "甲某", aliases: [] })
+    await upsertEntity(db(), { id: "e-乙-人", projectId: 项目7, type: "人", canonicalValue: "乙某", aliases: [] })
+    await insertRelation(db(), {
+      id: "r-实名-人人",
+      projectId: 项目7,
+      fromId: "e-甲-人",
+      toId: "e-乙-人",
+      type: "实名登记",
+      sourceKind: "human",
+      trustState: "自动抽取",
+    })
+    const 表 = await 读身份标注(db(), 项目7, [
+      { id: "e-甲-人", 类型: "人", 值: "甲某" },
+      { id: "e-乙-人", 类型: "人", 值: "乙某" },
+    ])
+    // 人—人的实名登记边既不能给甲也不能给乙背书：两人都只剩「名字」这一档证据。
+    expect(表.get("e-甲-人")?.档).toBe("户名匹配")
+    expect(表.get("e-乙-人")?.档).toBe("户名匹配")
+  })
 })
