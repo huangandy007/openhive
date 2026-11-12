@@ -64,6 +64,19 @@ select version from auth._migration where version like '0022%';
 `case_` 表**一张都没有**，才允许就地补列 / 补约束）。探针过了也仍要在这里留一句记录，
 因为「这次没人跑过」是当时的运气，不是规则。
 
+### 记录：`0039_case_translate_p2` 提交后就地补了分隔符（2026-11-12）
+
+`0039` 首版只写了一处分隔符、`.down.sql` 一处都没写，违反 §2。已就地补成逐条（up 15 个、down 7 个）。
+
+探针照上面那条规则跑过，**输出为空**：
+
+```sql
+select version from auth._migration where version like '0039%';   -- []
+```
+
+同一时刻库内共 38 条、最新是 `0038_case_fact_row_currency`，且该迁移从未 push。
+改的**只有分隔符**，DDL 本体一字未动。
+
 ## 6. 别改 `migrate.ts` 里的 `MIGRATION_LOCK_KEY`
 
 它专属于本用途（advisory 锁的命名空间是**整个数据库**）。改了之后，
