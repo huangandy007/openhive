@@ -402,11 +402,14 @@ export async function query_rows(
 
   const 行们 = 结果.数据.行们
   const 空 = 结果.空原因 !== null
+  // `数据` 就是行数组，**不是** `{行们, 下一页游标}` 的对象（2026-11-12 裁定）：
+  // R5 的「空」只在 null / 长度 0 的数组上判得出来，对象会让双向镜像与 30 KB 截断双双失效。
+  // 游标只通过 `下一步` 交给模型，`09` §4.4 列出的 `数据` 本来也只有明细行。
   return {
     摘要: 空
       ? `没取到明细：${结果.空原因}${结果.缺口.length > 0 ? `（${结果.缺口[0]}）` : ""}`
       : `取到 ${行们.length} 行明细${args.材料 ? `（材料 ${args.材料}）` : ""}${args.账户 ? `（账户 ${args.账户}）` : ""}${结果.数据.下一页游标 ? "，还有下一页" : ""}`,
-    数据: 结果.数据,
+    数据: 行们,
     口径: 结果.口径,
     缺口: 结果.缺口,
     空原因: 结果.空原因,
@@ -584,22 +587,25 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
 - Modify: `packages/opencode/src/server/openhive/case-mcp-server.ts`
 - Test: `packages/opencode/test/server/openhive-case-mcp-server.test.ts`
 
-- [ ] **Step 1: 先确认 `Server` 构造参数支持 `instructions`**
+- [ ] **Step 1: `instructions` 支持性（**已实测，不必再验**）**
 
-```bash
-grep -rn "instructions" node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.d.ts | head
-```
+`packages/opencode/node_modules/@modelcontextprotocol/sdk` = **1.29.0**，`dist/esm/server/index.d.ts:15` 的 `ServerOptions.instructions?: string` 存在；客户端侧 `dist/esm/client/index.d.ts:167` 有 `getInstructions(): string | undefined` ⇒ **用例可以真握手读回**（现有 `openhive-case-mcp-server.test.ts:66-68` 就是 `InMemoryTransport` + `Client` 握手）。
 
-若该版本不支持，**停下报告**——不要自己造一个 `instructions` 字段塞进 `capabilities`。备选（需报告后再定）：把纪律写进 4 个原语 `description` 的开头（§5.3 的「摘要」那一半），并把它记成缺口。
+⇒ 用 `new Server(信息, { capabilities: { tools: {} }, instructions: 纪律正文 })`。**不要**把纪律塞进 `capabilities`，也不要塞进工具 `description`。
 
 - [ ] **Step 2: 写用例（先红）**
 
+写在 `openhive-case-mcp-server.test.ts`（那里已有真实握手夹具）。
+
 ```ts
-test("server 初始化带 instructions，含八条纪律的可检索关键词", async () => {
-  // 至少要能搜到：空原因照抄 / 12 次 / 停 / 出处
+test("握手后 client.getInstructions() 含八条纪律的可检索关键词", async () => {
+  // 断言至少含：空原因 / 12 次 / 出处 / 停下来；第 1..8 条的编号都在
 })
-test("第 12 次工具调用起，返回的 缺口 里出现「已达本次探索上限（12 次）」", async () => {})
+test("第 12 次工具调用起，返回的 缺口 末尾出现「已达本次探索上限（12 次）」", async () => {
+  // 用 deps.预算 注入一个新计数实例，避免与其它用例互相污染
+})
 test("第 11 次调用不注入上限缺口", async () => {})
+test("空闲超过窗口后重新计数（第 1 次不再带上限缺口）", async () => {})
 ```
 
 - [ ] **Step 3: 写正文**
@@ -618,11 +624,47 @@ const 纪律正文 = `你是公安案件研判助手。查库纪律如下，任�
 8. 不跨问题：答完即停；工具返回的「下一步」是给人点的建议，不是你继续查的理由。`
 ```
 
-- [ ] **Step 4: 预算计数**
+- [ ] **Step 4: 预算计数（**按 `(userId, projectId)` 的空闲窗口**，不是实例闭包）**
 
-在 `记(...)` 或分发处加 `let 调用次数 = 0`，每次工具调用 `调用次数++`；`调用次数 >= 12` 时在**成功返回**的 `缺口` 末尾追加 `"已达本次探索上限（12 次），必须收尾并列出未覆盖项"`。
+**实测事实**（决定了不能照原方案写）：`case-mcp-http.ts:113` 是**每请求新建一个 server**（无状态：`sessionIdGenerator: undefined`），`_meta` 里只有 `openhive/user` / `openhive/directory`（`case-mcp-identity.ts`），**没有会话 id**。⇒ 实例闭包里的 `let 调用次数 = 0` 每次请求都从 0 开始，闸永远不触发；把 `userMeta()` 加上会话键也不行——会话跨很多轮回答，累计到 12 次后整场会话都不许再查（比不加更糟）。
 
-> 计数作用域：`case-mcp-server.ts` 的 server 实例若是「每连接一个」（`case-mcp-http.ts` 里按请求/连接新建），则在实例闭包内计数即等价「每会话」。**先读 `case-mcp-http.ts` 确认**，并在提交信息里写下你确认到的结论；若一个实例跨会话复用，改按 `(userId, projectId)` 计数并写进缺口表。
+**照这个写**（`case-mcp-server.ts`）：
+
+```ts
+/** 12 次预算的空闲窗口：最后一次调用之后这么久没有新调用，就当作下一次探索。 */
+const 预算窗口毫秒 = 10 * 60 * 1000
+const 预算上限 = 12
+export const 预算上限缺口 = "已达本次探索上限（12 次），必须收尾并列出未覆盖项"
+
+export interface 预算计数 {
+  /** 返回**本次是第几次**（1 起）；同一 key 在窗口内累加，超窗口重置为 1。 */
+  计次(身份: 调用身份): number
+}
+
+export function 新预算计数(窗口毫秒: number = 预算窗口毫秒): 预算计数 {
+  const 表 = new Map<string, { 次数: number; 最后: number }>()
+  return {
+    计次(身份) {
+      // key 用 NUL 分隔：userId / projectId 都过 `assertSafeUserId` 那类校验，但不赌它们不含分隔符。
+      const 键 = `${身份.userId}\u0000${身份.projectId}`
+      const 现在 = Date.now()
+      const 旧 = 表.get(键)
+      const 次数 = 旧 !== undefined && 现在 - 旧.最后 <= 窗口毫秒 ? 旧.次数 + 1 : 1
+      表.set(键, { 次数, 最后: 现在 })
+      // 单人可用键有上界，但进程长跑会攒下已离线用户的过期项：粗粒度清理即可（不做定时器，避免拖住进程退出）。
+      if (表.size > 1000) for (const [k, v] of 表) if (现在 - v.最后 > 窗口毫秒) 表.delete(k)
+      return 次数
+    },
+  }
+}
+```
+
+- `CaseMcpDeps` 加一个**可选** `预算?: 预算计数`；`createCaseMcpServer` 里 `const 预算 = deps.预算 ?? 默认预算`，`默认预算` 是模块级单例（HTTP 进程一份）。
+- 计数点：第 ④ 段调到 `分发表[工具]` **之前**（`case-mcp-server.ts:363` 上方）拿 `const 第几次 = 预算.计次(身份)`；未知工具名不进分发 ⇒ 不计数（`记` 已在 ③ 之前 return）。
+- 注入：**只对成功返回**，`第几次 >= 预算上限` 时把 `预算上限缺口` 追加到 `缺口` 末尾（在 `校验信封` **之后**追加也行——`缺口` 是数组、不影响镜像；但更省事的是在 `成功结果({...结果, 缺口: [...截.缺口, 预算上限缺口]})` 里一次成型）。失败返回不注入（模型已经拿到错误码，先纠正参数）。
+- 用例的确定性：三条预算用例都**自己 `新预算计数()` 注入**，不碰模块级单例；否则同文件其它用例会污染计数（`#005-34`）。
+
+> **已知近似（记缺口，不假装精确）**：同一用户同一项目「并发两个会话」共用一个计数；一次探索中停顿超过 10 分钟会重新计数。两者都写进 `09` §13.5 缺口表（Task 5 回写）。
 
 - [ ] **Step 5: 跑 + 提交**
 
