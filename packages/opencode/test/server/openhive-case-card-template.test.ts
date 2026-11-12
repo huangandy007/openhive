@@ -39,9 +39,16 @@ describe("槽位种类硬校验（Q18）", () => {
     expect(错.some((e) => e.includes("其他"))).toBe(true)
   })
 
-  test("「其他」只收 extras 字段；「何地」只收地点类", () => {
+  test("「其他」只挡算法类（金额/时间/方向）；「何地」只收地点类", () => {
+    // 余额、时长、地点进「其他」必须放行：前者是内置资金模板的既有填法，
+    // 后者是设计 §4.7.2 话单模板的明文示例（`"其他": { "时长": "durationSec" }`）。
     expect(校验槽位种类({ ...资金模板插槽, 其他: [{ 字段: "balance" }] })).toEqual([])
+    expect(校验槽位种类({ ...资金模板插槽, 其他: [{ 字段: "durationSec" }] })).toEqual([])
     expect(校验槽位种类({ ...资金模板插槽, 何地: { 字段: "address" } })).toEqual([])
+    // 方向列落「其他」= 借贷方向丢失，收付会判反（§4.7.5 第二行）。
+    expect(校验槽位种类({ ...资金模板插槽, 其他: [{ 字段: "direction" }] }).some((e) => e.includes("其他"))).toBe(
+      true,
+    )
     expect(校验槽位种类({ ...资金模板插槽, 何地: { 字段: "merchant" } }).some((e) => e.includes("何地"))).toBe(true)
   })
 
