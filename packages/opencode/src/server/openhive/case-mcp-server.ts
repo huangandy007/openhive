@@ -14,6 +14,7 @@ import {
   query_entities,
   query_events,
   query_relations,
+  query_rows,
   search_materials,
   工具错误,
   校验成员,
@@ -53,6 +54,7 @@ export const 工具名 = [
   "aggregate_money",
   "find_crossings",
   "get_citation",
+  "query_rows",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -201,6 +203,27 @@ const TOOLS: readonly Tool[] = [
       required: ["事实类型", "事实id"],
     },
   },
+  {
+    name: "query_rows",
+    description:
+      "按材料 / 账户 / 方向 / 金额区间 / 时间窗翻案件明细行，返回时间、金额、方向、对方账号与户名、本方账号、备注原文，以及行级定位（材料#表#行，可直接喂 get_citation）。" +
+      "明细太多时按游标翻页：把返回里的「下一页游标」原样传回 `游标`，不要自己造。" +
+      "不支持按备注关键词检索——要按备注找，只能按账户 + 时间翻明细，备注随行回显；传了 `备注关键词` 会报参数错误。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        材料: { type: "string", description: "材料 id；不传则跨本项目全部已解析材料" },
+        账户: { type: "string", description: "账号或户名，命中本方账号或对方账号之一" },
+        方向: { type: "string", enum: ["收", "付"], description: "收 = 本方收入，付 = 本方支出" },
+        金额起: { type: "string", description: '金额下限（含），numeric 字符串，如 "1000.00"' },
+        金额止: { type: "string", description: "金额上限（含），numeric 字符串" },
+        时间起: { type: "integer", description: "起始时间（含），Unix 秒" },
+        时间止: { type: "integer", description: "截止时间（含），Unix 秒" },
+        游标: { type: "string", description: "上一页返回的「下一页游标」，原样回传" },
+        限制: { type: "integer", description: "条数上限，默认 50、最大 200" },
+      },
+    },
+  },
 ]
 
 const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
@@ -224,6 +247,16 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
     find_crossings(ctx, 收参数<Parameters<typeof find_crossings>[1]>(args, ["甲", "乙"], ["起", "止"], [])),
   get_citation: (ctx, args) =>
     get_citation(ctx, 收参数<Parameters<typeof get_citation>[1]>(args, ["事实类型", "事实id"], [], [])),
+  query_rows: (ctx, args) =>
+    query_rows(
+      ctx,
+      收参数<Parameters<typeof query_rows>[1]>(
+        args,
+        ["材料", "账户", "方向", "金额起", "金额止", "游标"],
+        ["时间起", "时间止", "限制"],
+        [],
+      ),
+    ),
 }
 
 /**

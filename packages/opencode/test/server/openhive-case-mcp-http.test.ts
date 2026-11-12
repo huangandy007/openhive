@@ -43,7 +43,7 @@ describe("startCaseMcpHttp", () => {
     }
   })
 
-  test("POST /mcp：真客户端握手成功，tools/list 返回 7 个工具", async () => {
+  test("POST /mcp：真客户端握手成功，tools/list 与 工具名 清单一致", async () => {
     const server = await startCaseMcpHttp(deps)
     const client = new Client({ name: "案件 MCP 测试", version: "0.1.0" })
     try {

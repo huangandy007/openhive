@@ -4,7 +4,7 @@ import { 默认限制, 最大限制, 数据为空, type 出处项, type 下一�
 import type { Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
-import { 读明细行 } from "./case-row-query"
+import { 查明细行, 明细入参错误, 读明细行, type 明细查询结果 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
 
 /**
@@ -573,6 +573,84 @@ export async function get_citation(
     空原因: null,
     出处: [{ 事实: `${args.事实类型} ${args.事实id}`, 代表: args.事实id, 可下钻: null }],
     下一步: [],
+  }
+}
+
+/**
+ * 明细回溯（`09` §4.4）。只读 `case_fact_row`，不写 `case_citation`（`01` §7.11）。
+ *
+ * 契约唯一来源是 `09` §4.4；入参校验与分页语义**全部**在内核 `查明细行`（`01` P1）。
+ * 这里只做两件事：把 `明细入参错误` 折成工具的 `bad_input`（其余异常原样抛，交给 server
+ * 折 `tool_failed`），把内核返回的五个字段映射成七字段。**不重写一遍条件判断**——
+ * 同一判据开第二个出处，迟早漂成「工具说不匹配、内核说匹配」（`#002-06`）。
+ */
+export async function query_rows(
+  ctx: 工具上下文,
+  args: {
+    材料?: string
+    账户?: string
+    方向?: "收" | "付"
+    金额起?: string
+    金额止?: string
+    时间起?: number
+    时间止?: number
+    游标?: string
+    限制?: number
+  },
+): Promise<工具结果> {
+  let 结果: 明细查询结果
+  try {
+    结果 = await 查明细行(ctx.db, { projectId: ctx.身份.projectId, ...args })
+  } catch (错) {
+    // 入参错了不是「没数据」：折成 bad_input 让模型改参数，别退化成空结果。
+    if (错 instanceof 明细入参错误) throw new 工具错误("bad_input", 错.message)
+    throw 错
+  }
+
+  const 行们 = 结果.数据.行们
+  const 空 = 结果.空原因 !== null
+  return {
+    摘要: 空
+      ? `没取到明细：${结果.空原因}${结果.缺口.length > 0 ? `（${结果.缺口[0]!}）` : ""}`
+      : `取到 ${行们.length} 行明细${args.材料 ? `（材料 ${args.材料}）` : ""}${args.账户 ? `（账户 ${args.账户}）` : ""}${结果.数据.下一页游标 ? "，还有下一页" : ""}`,
+    数据: 结果.数据,
+    口径: 结果.口径,
+    缺口: 结果.缺口,
+    空原因: 结果.空原因,
+    出处: 行们.slice(0, 5).map((行) => ({
+      事实: [
+        `明细行 ${行.时间原文 ?? (行.时间 === null ? "时间缺失" : String(行.时间))}`,
+        行.金额,
+        行.方向,
+      ]
+        .filter((段): 段 is string => typeof 段 === "string" && 段 !== "")
+        .join(" "),
+      // 行级定位就是主键 `材料#工作表#行号`：内核的 `定位` 字段是这串的唯一出处
+      // （工作表名可含 `#`，不要在这里按 `#` 重新拼一遍）。
+      代表: 行.定位,
+      可下钻: "get_citation",
+    })),
+    下一步: 空
+      ? [{ 工具: "search_materials", 参数: {}, 为什么: "确认材料名与解析状态；未解析的材料要先解析入库" }]
+      : [
+          {
+            工具: "get_citation",
+            // `get_citation` 的 `事实类型` / `事实id` 必填：行级定位就是 row 分支的 `事实id`。
+            参数: { 事实类型: "row", 事实id: 行们[0]!.定位 },
+            为什么: "抽验一行的原文与备注",
+          },
+          ...(结果.数据.下一页游标 === null
+            ? []
+            : [
+                {
+                  工具: "query_rows",
+                  // 参数要能直接喂回：材料 / 账户 / 区间照原样带，游标用内核签发的那串
+                  // （`...args` 里若有旧游标，被后面的赋值覆盖）。
+                  参数: { ...args, 游标: 结果.数据.下一页游标 },
+                  为什么: "还有下一页明细",
+                },
+              ]),
+        ],
   }
 }
 
