@@ -96,7 +96,9 @@ describe("关系时间贯穿（09 §7.4 / §9.1）", () => {
     }
   })
 
-  test("持有 / 实名登记这类没有时间的关系仍是 NULL（不误伤）", async () => {
+  // 代码按「模型给没给 `时间原文`」判，不按关系类型抑制；本数据集里这 6 条恰好都没给。
+  // 所以这条证明的是「本数据集里 持有/实名登记 仍为 NULL」，不是「持有/实名登记 类型被特意跳过」。
+  test("本数据集里持有 / 实名登记没给时间原文 ⇒ first_at/last_at 仍为 NULL", async () => {
     const 行们 = rowsOf(
       await db().execute(sql`
         select type, first_at, last_at

@@ -132,7 +132,6 @@ export interface 关系输入 {
   to: string
   amount: number | null
   basis: string | null
-  occurredRaw: string | null
   occurredAt: number | null
   precision: Precision | null
   原文: string
@@ -461,13 +460,12 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
       存疑 = true
     }
 
-    // 时间与事件同口径（下方事件块）：缺省或空串 ⇒ 三项都 null，**不兜成 0**
+    // 时间与事件同口径（下方事件块）：缺省或空串 ⇒ 两项都 null，**不兜成 0**
     // （0 会被时间窗当成 1970 年而放行/误伤）；给了就回读、认不出就置空并提示，不猜。
-    let occurredRaw: string | null = null
+    // 关系侧不存 `occurredRaw`：`case_relation` 没有这一列，算出来也没人消费（诱饵）。
     let occurredAt: number | null = null
     let precision: Precision | null = null
     if (项.时间原文 !== undefined && 项.时间原文.trim() !== "") {
-      occurredRaw = 项.时间原文
       if (!文本包含(项.原文, 项.时间原文)) {
         记失败(`关系「${项.从} → ${项.到}」的时间「${项.时间原文}」在出处里找不到，已置空`)
         存疑 = true
@@ -489,7 +487,6 @@ export function 回读(结果: 抽取结果, 片文本: string): 回读输出 {
       to: 到项.canonicalValue,
       amount,
       basis: 项.依据 ?? null,
-      occurredRaw,
       occurredAt,
       precision,
       原文: 项.原文,
