@@ -215,6 +215,15 @@ function 编码游标(载荷: 游标载荷): string {
   return Buffer.from(JSON.stringify(载荷), "utf8").toString("base64url")
 }
 
+/**
+ * `started_at` / `row_no` 都是 `integer`（4 字节）。游标里的整数字段必须落在 int32 内，
+ * 否则伪造的越界值会漏过闸、让 PG 抛 22003（`DrizzleQueryError`），而不是 `明细入参错误`。
+ * 用 `Number.isSafeInteger` 而不是 `Number.isInteger`：`1e21` 也是「整数」，但已不可精确表示。
+ */
+function 是int32(值: unknown): 值 is number {
+  return typeof 值 === "number" && Number.isSafeInteger(值) && 值 >= -2147483648 && 值 <= 2147483647
+}
+
 function 解游标(文本: string): 游标载荷 {
   let 解: unknown
   try {
@@ -225,9 +234,9 @@ function 解游标(文本: string): 游标载荷 {
   if (typeof 解 !== "object" || 解 === null || Array.isArray(解)) throw new 明细入参错误("游标不是本函数签发的形状")
   const o = 解 as Record<string, unknown>
   const t = o.t
-  const t合法 = t === null || (typeof t === "number" && Number.isInteger(t))
-  if (!t合法 || typeof o.m !== "string" || typeof o.s !== "string" || typeof o.r !== "number" || !Number.isInteger(o.r))
-    throw new 明细入参错误("游标字段不全或类型不对")
+  const t合法 = t === null || 是int32(t)
+  if (!t合法 || typeof o.m !== "string" || typeof o.s !== "string" || !是int32(o.r))
+    throw new 明细入参错误("游标字段不全、类型不对或数值超出 integer 范围")
   return { t, m: o.m, s: o.s, r: o.r }
 }
 
@@ -252,7 +261,10 @@ function 金额串(值: string | undefined, 名: string): string | undefined {
 
 function 整数值(值: number | undefined, 名: string): number | undefined {
   if (值 === undefined) return undefined
-  if (!Number.isInteger(值)) throw new 明细入参错误(`${名} 必须是整数秒，收到 ${String(值)}`)
+  // 8.64e12 秒 = JS `Date` 的上限（±8.64e15 毫秒）；再大 `new Date(...).toISOString()` 会抛 RangeError，
+  // 那会在拼口径时变成 500，而不是这里当场拒。
+  if (!Number.isInteger(值) || Math.abs(值) > 8.64e12)
+    throw new 明细入参错误(`${名} 必须是整数秒且在可表示范围内（绝对值 ≤ 8.64e12），收到 ${String(值)}`)
   return 值
 }
 
@@ -296,6 +308,9 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   const 限制 = 请求 === undefined ? 默认限制 : Math.min(请求, 最大限制)
 
   if (入参.材料 !== undefined && 入参.材料.trim() === "") throw new 明细入参错误("材料不能是空串")
+  // 类型收窄不等于运行时校验：上层透传原始字符串时，坏值会静默过滤成 0 行、被读成「无匹配行」。
+  if (入参.方向 !== undefined && 入参.方向 !== "收" && 入参.方向 !== "付")
+    throw new 明细入参错误(`方向只能是「收」或「付」，收到 ${String(入参.方向)}`)
   const 账户 = 入参.账户 === undefined ? undefined : 归一化值("ownerAccount", 入参.账户)
   if (账户 === "") throw new 明细入参错误("账户不能是空串")
   const 金额起 = 金额串(入参.金额起, "金额起")
@@ -319,7 +334,8 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
       return {
         数据: { 行们: [], 下一页游标: null },
         口径,
-        缺口: [`本项目没有这份材料：${入参.材料}（按材料 id 查，不是文件名）`],
+        // 早退不能静默吞掉前置缺口（截断提示）：缺口契约是「截断/未解析全在这里」。
+        缺口: [...缺口, `本项目没有这份材料：${入参.材料}（按材料 id 查，不是文件名）`],
         空原因: "材料未入库",
         出处: [],
       }
@@ -328,7 +344,7 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
       return {
         数据: { 行们: [], 下一页游标: null },
         口径,
-        缺口: [`材料「${材料.path}」当前状态：${材料.parseStatus}`],
+        缺口: [...缺口, `材料「${材料.path}」当前状态：${材料.parseStatus}`],
         空原因: "该材料未解析",
         出处: [],
       }
@@ -364,11 +380,20 @@ export async function 查明细行(db: Queryable, 入参: 查明细行入参): P
   if (下一页游标 !== null) 缺口.push(`已取前 ${限制} 行，还有更多；用「下一页游标」续取`)
 
   // 未解析材料：成功结果同样受影响（那些材料里的明细不在本次结果里），所以每查必报。
+  // 口径必须与 `材料视图` 一致：同一 path 内容变了会另建一行、旧行留着（幂等键是内容指纹），
+  // 「界面上那份文件」只认最新一行。直接数所有历史行会把「重传后已解析」永久误报成未解析——
+  // 同一判据开第二个出处（`#002-06`/`#010-06`）就会有这种漂移。
   const 未解析 = rowsOf(
     await db.execute(sql`
+      with latest as (
+        select distinct on (path) id, path, kind, parse_status
+          from auth.case_material
+         where project_id = ${入参.projectId}
+         order by path, created_at desc, id desc
+      )
       select count(*)::int as 份数
-        from auth.case_material
-       where project_id = ${入参.projectId} and parse_status <> '已解析' and kind <> '产物'
+        from latest
+       where parse_status <> '已解析' and kind <> '产物'
     `),
   )[0]
   const 份数 = Number(未解析?.份数 ?? 0)
