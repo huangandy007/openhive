@@ -560,7 +560,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 翻译（§4.0）：本期只做资金（`资金/v1`）。其他类型照旧只落明细行，不产卡片。
   const 翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 待写 }) : undefined
   // 模板在事务外创建：解析失败回滚后，项目里可能留下已提交的 `内置:资金/v1` 行。
-  // 它幂等、无引用，可接受；但别把「文件落库」当成连同模板一起原子。
+  // 它幂等，可接受；但别把「文件落库」当成连同模板一起原子。回滚时若项目里还没有卡片，
+  // 这行就是个无引用空模板；若已有卡片，它照旧被引用——两种情况都无害。
   const 模板id = 翻译 === undefined ? undefined : await 确保内置模板(db, job.projectId)
 
   // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。

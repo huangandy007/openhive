@@ -43,7 +43,7 @@ const 流水 = 造工作簿([
   ["", "", "", "", "合计", "", "", ""],
 ])
 
-/** 独立项目用：表头加「币种」，一 CNY 一 USD。 */
+/** 独立项目用：表头加「币种」，一行人民币、一行美元。 */
 const 外币流水 = 造工作簿([
   [...表头, "币种"],
   ["2024-11-09 09:15:03", 5000, 12300, "借", "6222021234567890123", "李四", "6217001234567896514", "张三", "人民币"],
@@ -67,25 +67,7 @@ const deps = {
   },
 }
 
-async function 跑一份(projectId: string, 名: string, fp: string) {
-  文件.set(`${projectId}/${名}`, 流水)
-  const r = await enqueueMaterial(db(), {
-    projectId,
-    path: 名,
-    sourcePath: `${projectId}/${名}`,
-    fileName: 名,
-    fingerprint: fp,
-  })
-  const job = await claimNextJob(db())
-  if (!job) throw new Error("队列是空的")
-  return { materialId: r.materialId, 结果: await runJob(db(), deps, job) }
-}
-
-function 是对象(值: unknown): 值 is Record<string, unknown> {
-  return typeof 值 === "object" && 值 !== null
-}
-
-/** 与 `跑一份` 同一条链路，只是换字节：独立项目用，别动 流水 的用例 1→3 顺序依赖。 */
+/** 入队 → 认领 → 跑完，返回材料 id 与作业结果。字节由调用方给，别动 `流水` 的用例 1→3 顺序依赖。 */
 async function 跑字节(projectId: string, 名: string, fp: string, bytes: Uint8Array) {
   文件.set(`${projectId}/${名}`, bytes)
   const r = await enqueueMaterial(db(), {
@@ -98,6 +80,15 @@ async function 跑字节(projectId: string, 名: string, fp: string, bytes: Uint
   const job = await claimNextJob(db())
   if (!job) throw new Error("队列是空的")
   return { materialId: r.materialId, 结果: await runJob(db(), deps, job) }
+}
+
+/** 常规用例都吃同一份 `流水`，只换项目与指纹。 */
+function 跑一份(projectId: string, 名: string, fp: string) {
+  return 跑字节(projectId, 名, fp, 流水)
+}
+
+function 是对象(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null
 }
 
 describe("跑表格产出卡片", () => {
