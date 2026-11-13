@@ -44,7 +44,7 @@ function 事实id(...parts: (string | number)[]): string {
  */
 const 人工结论们 = ["已确认", "已修正", "已排除"] as const
 
-/** `in (...)` 用的值列表：三处（事件保护 / 参与者保护 / 关系保护）共用。 */
+/** `in (...)` 用的值列表：「已确认/已修正/已排除」的**事件**整卡保护用。 */
 const 人工结论值 = sql.join(
   人工结论们.map((v) => sql`${v}`),
   sql`, `,
@@ -374,8 +374,8 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       }
     })
 
-    // ② 该 chunk 的 CNY 资金事件（币种不是条件：匹配器自己按 CNY 过滤；这里全取是为了
-    //    「全外币对」也有事件可数，只是匹配不上）。
+    // ② 该 chunk 的资金事件（全币种；CNY 由匹配器自己过滤）：这里全取是为了
+    //    「全外币对」也有事件可数，只是匹配不上。
     const 事件行 = rowsOf(
       await tx.execute(sql`
         select e.id, e.amount::text as amount, e.occurred_at, e.currency,

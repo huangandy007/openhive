@@ -85,7 +85,7 @@ async function 实体id(账号: string): Promise<string> {
 async function 转账关系(from账号: string, to账号: string) {
   return rowsOf(
     await db().execute(sql`
-      select id, from_id, to_id, times, amount, first_at, last_at, precision, trust_state, source_kind
+      select id, from_id, to_id, times, times_cny, amount, first_at, last_at, precision, trust_state, source_kind
         from auth.case_relation
        where project_id = ${项目} and type = '转账'
          and from_id = ${await 实体id(from账号)} and to_id = ${await 实体id(to账号)}
@@ -154,6 +154,8 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(Number(关系[0]?.times)).toBe(3)
     // 金额只累计人民币：100 + 200，USD 500 不进合计。
     expect(String(关系[0]?.amount)).toBe("300.00")
+    // 读端的人民币口径靠 `times_cny`（表里同时存在该列）：3 笔里 2 笔人民币。
+    expect(Number(关系[0]?.times_cny)).toBe(2)
   })
 
   test("已排除的卡片不参与聚合", async () => {
@@ -168,21 +170,19 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(await 转账关系(甲, 乙)).toHaveLength(0)
   })
 
-  test("已确认的人工关系不被机器行叠加", async () => {
+  test("机器行被原地改成已确认 ⇒ 重算不覆盖（id 不变 + 删除条件）", async () => {
     await 写("m5", [行("m5", 2)])
     const a = await 实体id(甲)
     const b = await 实体id(乙)
-    // 人工关系同样按**实体 id** 挂两端（简报原夹具把账号写进 from_id/to_id）。
+    // 真实路径是 `裁决(… action: "确认")`：id 不变、trust_state 原地改。
     await db().execute(sql`
-      insert into auth.case_relation
-        (id, project_id, from_id, to_id, type, amount, times, source_kind, trust_state, created_at)
-      values ('人工-关系', ${项目}, ${a}, ${b}, '转账', 8888.00, 9, 'data', '已确认', 1)
+      update auth.case_relation set trust_state = '已确认'
+       where project_id = ${项目} and from_id = ${a} and to_id = ${b} and source_kind = 'data'
     `)
     await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
     const 关系 = await 转账关系(甲, 乙)
-    const 机器 = 关系.filter((r) => r.trust_state === "自动抽取")
-    expect(机器).toHaveLength(0)
     expect(关系.filter((r) => r.trust_state === "已确认")).toHaveLength(1)
+    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
   })
 
   test("重写材料后卡片金额变了 ⇒ 关系按卡片重算，不保留旧值", async () => {
@@ -249,8 +249,8 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
     expect(关系.filter((r) => r.trust_state === "已排除")).toHaveLength(1)
 
-    // 路径 2：人工排除行是**另一条 id**（笔录/人工排除路径就是这样）。没有 `已排除`
-    // 保护集时，机器行会被重新插入并与它并存，人工排除等于被撤销。
+    // 路径 2：人工排除行是**另一条 id**（笔录/人工排除路径就是这样）。新语义下它只表示
+    // 这条人工事实不成立，不覆盖流水事件，也不再压制整对机器行——两者并存。
     await db().execute(sql`
       delete from auth.case_relation
        where project_id = ${项目} and type = '转账'
@@ -263,8 +263,10 @@ describe("关系从卡片重建（§4.0.4）", () => {
     `)
     await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
     关系 = await 转账关系(甲, 乙)
-    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
     expect(关系.filter((r) => r.trust_state === "已排除")).toHaveLength(1)
+    // 新语义（P3 §3.2 / §5）：human 的「已排除」只表示这条人工事实不成立，
+    // 不覆盖流水事件，也不再压制整对机器行。
+    expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(1)
   })
 
   test("掩码对手 ⇒ 不建关系行", async () => {

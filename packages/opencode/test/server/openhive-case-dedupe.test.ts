@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 重建关系 } from "../../src/server/openhive/case-translate-store"
+import { 重建关系, 本材料转账对 } from "../../src/server/openhive/case-translate-store"
 import { 裁决 } from "../../src/server/openhive/case-trust"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 
@@ -100,5 +100,23 @@ describe("写端去重（10 §3 / §5）", () => {
       amount: "20000.00",
       trust_state: "自动抽取",
     })
+    // 新语义是「并存」：机器行照写，人工行不因重建而消失。
+    const 人工 = rowsOf(
+      await db().execute(sql`
+        select trust_state from auth.case_relation
+         where project_id = ${数据集.projectId} and id = ${String(人5000)}
+      `),
+    )[0]
+    expect(人工?.trust_state).toBe("已确认")
+  })
+
+  test("本材料转账对：笔录的（账户 → 人）按户名对齐成账户对", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const B = await 实体id(数据集.账号.B)
+    const 李四 = await 实体id("李四")
+    const 对们 = await 本材料转账对(db(), 数据集.projectId, 数据集.材料.笔录)
+    // 对齐发生在 `本材料转账对` 内部：A→李四 必须落到 (A, B)，否则重建删不到真正的机器行。
+    expect(对们).toContainEqual({ fromId: A, toId: B })
+    expect(对们).not.toContainEqual({ fromId: A, toId: 李四 })
   })
 })
