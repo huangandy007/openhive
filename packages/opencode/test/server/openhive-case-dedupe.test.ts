@@ -193,6 +193,8 @@ describe("显示（10 §3.1 / §6.1）", () => {
   })
 })
 
+// ⚠️ 四个用例依赖文件内声明顺序：每个「撤销」撤的是**同一条事实最近一次**人工动作，
+// 1→2（relation 排除→撤销）与 3→4（event 排除→撤销）必须成对按序执行。
 describe("裁决触发资金重算（终审阻断 2）", () => {
   const 排除 = (factType: "relation" | "event", factId: string, reasonText: string) =>
     裁决(db(), {
