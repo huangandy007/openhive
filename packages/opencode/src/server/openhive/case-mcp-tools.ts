@@ -981,12 +981,17 @@ export async function query_events(
   // 时间窗校验先于地点拒答：反向窗口本身就是坏入参，若先回「能力未就绪」，下一步会带着
   // 这组起止重跑并立即抛 `bad_input`，等于建议一个跑不通的查询。
   校验时间窗(args)
-  // 用途是受控词表：类名写错必须当场拒，不能静默返回空（`01` §3.11.4「类名必须在枚举内」）。
-  // 放在取数之前：静默忽略等于把「类名写错」答成「确实没有这类事件」（`#004-09` 门在副作用之前）。
-  if (args.用途 !== undefined && args.用途 !== "") {
+  // 用途是受控词表：类名写错、或传了但只给空串，都必须当场拒，不能静默返回全量事件
+  // （`01` §3.11.4「类名必须在枚举内」）。放在取数之前：静默忽略等于把「类名写错 / 漏填」
+  // 答成「确实没有这类事件」（`#004-09` 门在副作用之前）。
+  // 空串当「没传」是 fail-open：用户会拿到全量事件并以为已按用途过滤。校验后的规范值
+  // （trim 过）同时用于过滤与补判分支（`#002-06`：同一前提只判一次）。
+  const 用途 = args.用途?.trim()
+  if (用途 !== undefined) {
     const 全部类: readonly string[] = [...一级类们, ...二级类们]
-    if (!全部类.includes(args.用途))
-      throw new 工具错误("bad_input", `不认识的用途：${args.用途}；可用：${全部类.join("、")}`)
+    if (用途 === "") throw new 工具错误("bad_input", `用途不能为空；可用：${全部类.join("、")}`)
+    if (!全部类.includes(用途))
+      throw new 工具错误("bad_input", `不认识的用途：${用途}；可用：${全部类.join("、")}`)
   }
   // `09` §4.5 / D5：事件表没有地点维度，`地点` 只可能出现在摘要文本里。
   // **在取数之前**明确拒答 `能力未就绪`：静默忽略会让「某地点某周发生了什么」
@@ -1009,8 +1014,7 @@ export async function query_events(
   const 条件: SQL[] = [sql`project_id = ${ctx.身份.projectId}`]
   if (args.类型 !== undefined) 条件.push(sql`type = ${args.类型}`)
   // 一级与二级同列判断：`purpose` 存最具体类、`purpose_l1` 存一级，两者取或即可同时支持。
-  if (args.用途 !== undefined && args.用途 !== "")
-    条件.push(sql`(purpose = ${args.用途} or purpose_l1 = ${args.用途})`)
+  if (用途 !== undefined) 条件.push(sql`(purpose = ${用途} or purpose_l1 = ${用途})`)
   if (args.含已排除 !== true) 条件.push(sql`trust_state <> '已排除'`)
   if (args.起 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
   if (args.止 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
@@ -1068,7 +1072,7 @@ export async function query_events(
   // 用途参数命中 0 条时，要区分「确实没有这类」与「这批数据还没判过用途」——
   // 后者回「无匹配行」等于告诉民警「没有加油消费」，比报错更危险（`09` §4.2 空原因口径）。
   // 放在主结果组装之前：一旦判为未结构化，摘要 / 下一步都要换成可执行的补判动作。
-  if (空 && args.用途 !== undefined && args.用途 !== "") {
+  if (空 && 用途 !== undefined) {
     const 未判 = rowsOf(
       await ctx.db.execute(sql`
         select count(*)::int as n from auth.case_event
@@ -1080,7 +1084,7 @@ export async function query_events(
     if (未判数 > 0) {
       // `工具结果` 的每个键只出现一次；`空原因` 必须是 `空原因枚举` 里的值（case-envelope.ts:53）。
       return {
-        摘要: `本项目有 ${未判数} 个事件还没有用途判定，无法确认「${args.用途}」是否为空`,
+        摘要: `本项目有 ${未判数} 个事件还没有用途判定，无法确认「${用途}」是否为空`,
         // 与「无匹配行」同形：空结果给空数组而不是 null（简报的用例按 `[]` 钉住；两者都过信封校验）。
         数据: [],
         口径: "用途在入库时判定；没有判过的卡片不参与用途过滤",

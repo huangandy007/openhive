@@ -5,6 +5,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
+import { 词表版本 } from "../../src/server/openhive/case-purpose-rules"
 
 /**
  * 用途落库（01 §3.11.2 的唯一落点）：翻译层判出用途 → 事件行三列。
@@ -97,7 +98,8 @@ describe("入库判用途（01 §3.11.2 唯一落点）", () => {
     expect(依据.规则).toBe("消费.停车")
     expect(依据.命中).toBe("P云")
     expect(依据.字段).toBe("备注原文")
-    expect(依据.词表).toBe("v1.0")
+    // 只断「依据里记的是当前词表版本」，不手抄版本串：升词表不该破这条用例（`#002-06`）。
+    expect(依据.词表).toBe(词表版本)
   })
 
   test("重放后人工卡不被覆盖，机器卡按当前词表重算", async () => {

@@ -1917,6 +1917,16 @@ describe("query_events 按用途查（P4-A / 01 §3.11.6）", () => {
     expect(错误.message).toContain("餐饮")
   })
 
+  test("用途传空串也 fail-closed，不能静默返回全量事件", async () => {
+    // 空串（含纯空白）trim 后为空 = 传了但没给值。旧实现 `!== ""` 把它当「没传」跳过过滤，
+    // 用户会拿到全量事件并以为已按用途筛过（fail-open）。经 `分发表` 入口：参数白名单在服务端。
+    const 错误 = await 分发表.query_events(ctx(身份用途), { 用途: "  " }).catch((错误: unknown) => 错误)
+    expect(错误).toMatchObject({ code: "bad_input" })
+    if (!(错误 instanceof Error)) throw new Error("用途空串必须在取数前抛错")
+    // 断具体文案：删掉空串校验后会落到「不认识的用途」，这句能区分「真的拒了空串」。
+    expect(错误.message).toContain("用途不能为空")
+  })
+
   test("用途为空且全项目都没判过 ⇒ 空原因「用途未结构化」", async () => {
     await 库().execute(sql`
       insert into auth.case_event (id, project_id, type, occurred_at, trust_state, created_at)
