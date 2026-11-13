@@ -38,7 +38,6 @@ import {
   归属歧义归属条件,
   归属实体集,
   事件角色条件,
-  读归属值,
 } from "./case-party"
 import { 资金交易 } from "./case-event-types"
 import { 是档案截断缺口, 关系圈, 关系圈上限, 关系圈遗漏, 实体档案 } from "./case-entity-list"
@@ -2021,10 +2020,8 @@ export async function money_flow(
   const 目标方向 = 方向 === "收" ? "入" : 方向 === "付" ? "出" : undefined
   // 对手先解析：schema 承诺它可解析，入参错误不该被账户侧的空原因抢先（m3）。
   // `对手id` 下沉到 `aggregate_money` 的内部过滤（C2：汇总 / 笔数 / 合计 / 对手方 / 首末
-  // 同源）；`对手值们` 只用于事件 `participants` 的文本回退。
+  // 同源）；单笔最大也走同一份基 1 谓词（不再手抄 `unnest(participants)`）。
   const 对手id = args.对手 === undefined ? undefined : (await 解析实体(ctx, args.对手, "对手")).id
-  const 对手值们 =
-    对手id === undefined ? undefined : await 读归属值(ctx.db, ctx.身份.projectId, 对手id)
   const 汇总结果 = await aggregate_money(
     ctx,
     {
@@ -2100,11 +2097,9 @@ export async function money_flow(
     sql`trust_state <> '已排除'`,
     sql`amount is not null`,
     sql`${事件归属条件(ctx.身份.projectId, 账户.id)}`,
-    ...(对手值们 === undefined
-      ? []
-      : [
-          sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = any(${文本数组(对手值们)}))`,
-        ]),
+    // 对手与方向同源：基 1 的共享谓词（参与者表 ∈ 归属实体集 ∪ 文本回退 ∈ 归属值集），
+    // 不再手抄 unnest(participants)（`#002-06`）。
+    ...(对手id === undefined ? [] : [事件归属条件(ctx.身份.projectId, 对手id)]),
   ]
   const 单笔窗口条件: SQL[] = []
   if (args.起 !== undefined)
@@ -2177,7 +2172,7 @@ export async function money_flow(
   ]
   if (账户方向汇总量 === 0)
     缺口.push(`所选方向（${方向}）在本时间窗内没有人民币转账关系`)
-  if (对手值们 !== undefined && 对手排行.length === 0) 缺口.push("与所选对手没有符合条件的往来")
+  if (对手id !== undefined && 对手排行.length === 0) 缺口.push("与所选对手没有符合条件的往来")
   if (无时间条数 > 0) 缺口.push(`${无时间条数} 条资金交易事件没有发生时间，已按时间窗排除`)
   if (无角色条数 > 0)
     缺口.push(`${无角色条数} 条资金交易事件没有参与者角色，无法按方向过滤`)
@@ -2206,7 +2201,7 @@ export async function money_flow(
       "汇总、对手方、外币行数、空原因与 aggregate_money 完全一致（账户归属按基 2：恰好一端落在本账户 ∪ 唯一户名对齐者）；" +
       "收支分列不相抵；首末为口径内最早 first_at 与最晚 last_at（不受方向影响）；" +
       "集中度 = 同方向前 3 对手金额 ÷ 该方向合计（合计取汇总行，不因对手排行截断而少计），百分比保留一位小数（近似值，合计仍以 numeric 字符串为准）；" +
-      "指定「对手」时汇总、对手排行与集中度同口径缩到该对手（集中度分母随之缩减，接近 100% 不表示集中度）；" +
+      "指定「对手」时汇总、首末、对手排行、单笔最大与集中度同口径缩到该对手（集中度分母随之缩减，接近 100% 不表示集中度）；" +
       单笔口径 +
       "。",
     缺口,

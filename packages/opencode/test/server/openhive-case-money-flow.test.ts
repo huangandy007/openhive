@@ -10,6 +10,12 @@ import {
   type 工具上下文,
 } from "../../src/server/openhive/case-mcp-tools"
 import {
+  insertEvent,
+  insertParticipants,
+  insertRelation,
+  upsertEntity,
+} from "../../src/server/openhive/case-fact-store"
+import {
   种P3数据集,
   种多对手数据集,
   种无参与者数据集,
@@ -202,6 +208,9 @@ describe("money_flow", () => {
     expect(数据.笔数).toBe(1)
     expect(数据.收入合计).toBe("100.00")
     expect(数据.支出合计).toBe("0.00")
+    // 单笔最大与首末也同口径缩到所选对手（计划 D-5：对手作用于四块，不只汇总）。
+    expect(数据.首末).toEqual({ 首: 1780279200, 末: 1780279200 })
+    expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["100.00"])
     // 夹具只给对手账户落了户名别名、没有同名「人」实体 ⇒ 展示按规范值回落账号
     // （`账户展示名` 的 fail-closed 口径；本用例只关心金额口径缩没缩）。
     expect(数据.对手排行).toEqual([
@@ -215,6 +224,89 @@ describe("money_flow", () => {
       },
     ])
     expect(数据.集中度).toEqual({ 入: "100.0%" })
+  })
+
+  test("对手5：首末与单笔最大同缩（全量最大 100.00、全量首 1780279200 / 末 1782352800）", async () => {
+    const 结果 = await money_flow(ctx(多对手.项目), { 账户: 多对手.主账号, 对手: "对手5" })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as 流数据
+    // 对不上「没缩」：全量最大是 100.00、全量首末跨 25 天；对手5 只有 06-05 的 10.00 一笔。
+    expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["10.00"])
+    expect(数据.首末).toEqual({ 首: 1780624800, 末: 1780624800 })
+    expect(数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "10.00" }])
+  })
+
+  test("对手只在参与者表、不在 participants 文本时也命中（基 1 共享谓词）", async () => {
+    // 生产确实会写出「本账户靠文本归属、对手靠参与者表」的事件（`case-translate-store.ts`）：
+    // 旧实现手抄 `unnest(participants) = any(对手值们)`，会把这笔漏掉 ⇒ 单笔最大 []。
+    const 项目 = "p-资金流对手表"
+    const 主值 = "6222021234567897900"
+    const 对手值 = "6222021234567897901"
+    const 主 = await upsertEntity(db(), {
+      projectId: 项目,
+      id: "e-对手表-主",
+      type: "账户",
+      canonicalValue: 主值,
+      aliases: [],
+    })
+    const 对手 = await upsertEntity(db(), {
+      projectId: 项目,
+      id: "e-对手表-对手",
+      type: "账户",
+      canonicalValue: 对手值,
+      aliases: [],
+    })
+    // 关系让 aggregate_money 非空 ⇒ money_flow 不走空分支。
+    await insertRelation(db(), {
+      projectId: 项目,
+      id: "r-对手表",
+      fromId: 对手,
+      toId: 主,
+      type: "转账",
+      amount: 100,
+      times: 1,
+      sourceKind: "data",
+      trustState: "自动抽取",
+    })
+    await insertEvent(db(), {
+      projectId: 项目,
+      id: "ev-对手表",
+      type: "资金交易",
+      occurredAt: 1780279200,
+      occurredRaw: null,
+      precision: null,
+      amount: "999.00",
+      // 故意不含对手值：命中只能靠参与者表里的 entity_id。
+      participants: [主值],
+      summary: "对手表付款",
+      trustState: "自动抽取",
+    })
+    await insertParticipants(db(), [
+      {
+        projectId: 项目,
+        id: "ev-对手表#p0",
+        eventId: "ev-对手表",
+        entityId: 主,
+        role: "收款方",
+        mentionText: 主值,
+        citationId: null,
+        ordinal: 0,
+      },
+      {
+        projectId: 项目,
+        id: "ev-对手表#p1",
+        eventId: "ev-对手表",
+        entityId: 对手,
+        role: "付款方",
+        mentionText: 对手值,
+        citationId: null,
+        ordinal: 1,
+      },
+    ])
+    const 结果 = await money_flow(ctx(项目), { 账户: 主值, 对手: 对手值 })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as 流数据
+    expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["999.00"])
   })
 
   test("C3 老数据（无参与者行）：方向不可判 ⇒ fail-closed 排除并写进缺口", async () => {
@@ -301,7 +393,7 @@ describe("money_flow", () => {
     expect(await 计次({ 账户: 数据集.账号.B, 方向: "收" })).toBe(14)
     // C1：时间窗多一条「无 occurred_at」计数 ⇒ 14。
     expect(await 计次({ 账户: 数据集.账号.B, 止: 1775059199 })).toBe(14)
-    // C2/N1：解析对手 1 + 读归属值 1 + 账户全量汇总 1 ⇒ 16。
-    expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(16)
+    // C2/N1：解析对手 1 + 账户全量汇总 1 ⇒ 15（对手谓词换共享函数后不再读归属值）。
+    expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(15)
   })
 })
