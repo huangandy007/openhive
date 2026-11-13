@@ -4,6 +4,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
+import { aggregate_money } from "../../src/server/openhive/case-mcp-tools"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 种P3数据集 } from "../fixtures/p3/dataset"
 
@@ -113,4 +114,19 @@ test("文本重放换了对手：旧对的机器行按剩余事件重算（不�
   })
   // 新对 (A,吴九) 没有流水事件 ⇒ 不写机器行。
   expect(await 机器行("6222021234567890123", "吴九")).toBeUndefined()
+
+  // 读端笔数：A 名下两条关系进汇总——机器 A→B（times_cny=2，30000）与 v2 留下的人工
+  // A→吴九（1 万，times 为 NULL 按 1 计）；A→C 是 USD（times_cny=0）被过滤。
+  // 拆 `sum(coalesce(times_cny, times, 1))` → `count(*)` 时，汇总与对手方都会红。
+  const 汇总结果 = await aggregate_money(
+    { db: db(), 身份: { userId: "u-p3", projectId: 项目 } },
+    { 账户: "6222021234567890123" },
+  )
+  expect(汇总结果.数据).toMatchObject({
+    汇总: [{ 方向: "出", 笔数: 3, 合计: "40000.00" }],
+    对手方: [
+      { 对手方: "李四", 方向: "出", 笔数: 2, 合计: "30000.00" },
+      { 对手方: "吴九", 方向: "出", 笔数: 1, 合计: "10000.00" },
+    ],
+  })
 })
