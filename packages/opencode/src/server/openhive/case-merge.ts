@@ -16,8 +16,12 @@ import { inTransaction, type Queryable } from "./case-store"
  * 已经不成立；按 §9「不删除，只打状态」）→ 参与者行与户名别名改指主体 →
  * `fact_type='entity'` 的引用改指主体（不改就成悬空引用，缺口 #5）→ 删掉被并入那一行。
  *
- * 所有「指向被并入者」的行都要在删行前排进留痕（关系 / 参与者 / 别名 / 引用），
- * 拆分靠它原样恢复。
+ * 留痕与改指**同源**：关系 / 参与者 / 别名 / 引用四份快照全部取改指语句的
+ * `update … returning` 结果，**不取改指前的读**。改指前的读填不满「读 ↔ 改」之间
+ * 落进来的行（缺口 #6 真栈探针：快照已读、改指未跑时插入的三行被改指却不进留痕，
+ * 拆分静默恢复不回去）。关系的改指语句取快照还早于等行锁 ⇒ 窗口内新插的关系一条都
+ * 看不到、也不会被改指，所以删行改成**条件删除**：还有行指向被并入者就整次合并回滚
+ * （`concurrent_write`），不静默留悬空引用。
  *
  * ## 为什么允许删
  *
@@ -37,6 +41,7 @@ export const 合并错误码们 = [
   "not_a_merge",
   "already_split",
   "restore_conflict",
+  "concurrent_write",
 ] as const
 export type 合并错误码 = (typeof 合并错误码们)[number]
 
@@ -134,28 +139,11 @@ async function 读实体快照(tx: Queryable, projectId: string, id: string): Pr
   }
 }
 
-async function 有牵连的关系(tx: Queryable, projectId: string, entityId: string): Promise<关系快照[]> {
-  const 行们 = rowsOf(
-    await tx.execute(sql`
-      select id, from_id, to_id, trust_state
-        from auth.case_relation
-       where project_id = ${projectId} and (from_id = ${entityId} or to_id = ${entityId})
-       order by id
-    `),
-  )
-  return 行们.map((行) => ({
-    id: String(行.id),
-    fromId: String(行.from_id),
-    toId: String(行.to_id),
-    trustState: String(行.trust_state),
-  }))
-}
-
 /**
  * 合并两个同类型实体。`survivorId` 留下，`mergedId` 成为它的别名。
  *
- * 事务内顺序是承重的：**先读全量快照 → 再改 → 再删 → 最后写留痕**。
- * 留痕里的 `before` 少一样东西，拆分就恢复不回来。
+ * 事务内顺序是承重的：**改指与留痕同源**——四份快照取自改指语句的 `returning`，
+ * 改指本身回读；留痕里的 `before` 少一样东西，拆分就恢复不回来。
  */
 export async function 合并实体(db: Queryable, input: 合并输入): Promise<合并结果> {
   if (input.survivorId === input.mergedId) throw new 合并冲突("不能把自己并进自己", "bad_input")
@@ -172,51 +160,47 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
         "type_mismatch",
       )
 
-    const 关系们 = await 有牵连的关系(tx, input.projectId, 并入.id)
+    // ── 关系：两次改指的 RETURNING 就是留痕来源（缺口 #6）──
+    // `old()` 拿不到旧值（列不是 DEFAULT），旧端点从「这条 update 没动的那一侧」回读：
+    // 正向只改 from ⇒ 返回的 to 就是原值；反向只改 to ⇒ 返回的 from 就是原值。
+    const 关系们 = new Map<string, 关系快照>()
+    const 记关系 = (条: 关系快照) => {
+      if (!关系们.has(条.id)) 关系们.set(条.id, 条)
+    }
+    for (const 行 of rowsOf(
+      await tx.execute(sql`
+        update auth.case_relation set from_id = ${主体.id}
+         where project_id = ${input.projectId} and from_id = ${并入.id}
+        returning id, to_id, trust_state
+      `),
+    ))
+      记关系({
+        id: String(行.id),
+        fromId: 并入.id,
+        toId: String(行.to_id),
+        trustState: String(行.trust_state),
+      })
+    // 反向只补正向没记过的：M→M 两边都命中，正向后 from_id 已是主体，反向回读会记错旧端点。
+    for (const 行 of rowsOf(
+      await tx.execute(sql`
+        update auth.case_relation set to_id = ${主体.id}
+         where project_id = ${input.projectId} and to_id = ${并入.id}
+        returning id, from_id, trust_state
+      `),
+    ))
+      记关系({
+        id: String(行.id),
+        fromId: String(行.from_id),
+        toId: 并入.id,
+        trustState: String(行.trust_state),
+      })
+    const 关系列表 = [...关系们.values()].sort((左, 右) => (左.id < 右.id ? -1 : 左.id > 右.id ? 1 : 0))
 
-    // 参与者与别名的快照必须在改指之前取：拆分要靠它原样恢复（01 §9.3）。
-    const 参与者们 = rowsOf(
-      await tx.execute(sql`
-        select event_id, ordinal from auth.case_event_participant
-         where project_id = ${input.projectId} and entity_id = ${并入.id}
-         order by event_id asc, ordinal asc
-      `),
-    ).map((行) => ({ eventId: String(行.event_id), ordinal: Number(行.ordinal) }))
-    const 别名们 = rowsOf(
-      await tx.execute(sql`
-        select id from auth.case_entity_alias
-         where project_id = ${input.projectId} and entity_id = ${并入.id}
-         order by id asc
-      `),
-    ).map((行) => String(行.id))
-    // 只有 `fact_type='entity'` 的引用以实体 id 作 `fact_id`；其他类型的 `fact_id`
-    // 碰巧同值也指向别的事实，不能动（迁移 `0031` 的 CHECK 已把类型限死在这四种）。
-    const 引用们 = rowsOf(
-      await tx.execute(sql`
-        select id from auth.case_citation
-         where project_id = ${input.projectId} and fact_type = 'entity' and fact_id = ${并入.id}
-         order by id asc
-      `),
-    ).map((行) => String(行.id))
-
-    const 自环 = 关系们
-      .filter(
-        (条) =>
-          (条.fromId === 并入.id && 条.toId === 主体.id) ||
-          (条.toId === 并入.id && 条.fromId === 主体.id) ||
-          (条.fromId === 并入.id && 条.toId === 并入.id),
-      )
+    // 自环按**改指后的端点**算（被并入者 → 主体），与上面同一份实改集。
+    const 末 = (端点: string) => (端点 === 并入.id ? 主体.id : 端点)
+    const 自环 = 关系列表
+      .filter((条) => 末(条.fromId) === 主体.id && 末(条.toId) === 主体.id)
       .map((条) => 条.id)
-
-    // 关系改指：两端都改，两次 update 各自只动一侧。
-    await tx.execute(sql`
-      update auth.case_relation set from_id = ${主体.id}
-       where project_id = ${input.projectId} and from_id = ${并入.id}
-    `)
-    await tx.execute(sql`
-      update auth.case_relation set to_id = ${主体.id}
-       where project_id = ${input.projectId} and to_id = ${并入.id}
-    `)
 
     // 自环最多几条，逐条写比拼 `in (...)` 更稳：不依赖 `sql.join` 的写法（本仓没有先例）。
     for (const id of 自环) {
@@ -229,20 +213,39 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
     // 指向跟随：被并入行一删，参与者与户名别名若不改指就成了悬空引用
     // （户名别名悬空会让 `户名对齐` 的 join 落空，阻断 1 的修复随之失效）。
     // `participants text[]` 不改：旧规范值并进幸存者别名，由基 1 的文本回退命中（11 §4.1）。
-    await tx.execute(sql`
-      update auth.case_event_participant set entity_id = ${主体.id}
-       where project_id = ${input.projectId} and entity_id = ${并入.id}
-    `)
-    await tx.execute(sql`
-      update auth.case_entity_alias set entity_id = ${主体.id}
-       where project_id = ${input.projectId} and entity_id = ${并入.id}
-    `)
+    const 参与者们 = rowsOf(
+      await tx.execute(sql`
+        update auth.case_event_participant set entity_id = ${主体.id}
+         where project_id = ${input.projectId} and entity_id = ${并入.id}
+        returning event_id, ordinal
+      `),
+    )
+      .map((行) => ({ eventId: String(行.event_id), ordinal: Number(行.ordinal) }))
+      .sort((左, 右) =>
+        左.eventId === 右.eventId ? 左.ordinal - 右.ordinal : 左.eventId < 右.eventId ? -1 : 1,
+      )
+    const 别名们 = rowsOf(
+      await tx.execute(sql`
+        update auth.case_entity_alias set entity_id = ${主体.id}
+         where project_id = ${input.projectId} and entity_id = ${并入.id}
+        returning id
+      `),
+    )
+      .map((行) => String(行.id))
+      .sort()
     // 引用不改指就是悬空引用：`case-materials.ts` 的号码引用计数用
     // `case_citation join case_entity` 数，悬空行会被 INNER JOIN 静默少算（缺口 #5）。
-    await tx.execute(sql`
-      update auth.case_citation set fact_id = ${主体.id}
-       where project_id = ${input.projectId} and fact_type = 'entity' and fact_id = ${并入.id}
-    `)
+    // 只有 `fact_type='entity'` 的引用以实体 id 作 `fact_id`；其他类型的 `fact_id`
+    // 碰巧同值也指向别的事实，不能动（迁移 `0031` 的 CHECK 已把类型限死在这四种）。
+    const 引用们 = rowsOf(
+      await tx.execute(sql`
+        update auth.case_citation set fact_id = ${主体.id}
+         where project_id = ${input.projectId} and fact_type = 'entity' and fact_id = ${并入.id}
+        returning id
+      `),
+    )
+      .map((行) => String(行.id))
+      .sort()
 
     // 别名并集：主体的旧别名 ＋ 被并入者的别名 ＋ 被并入者的规范值；去重、去掉主体自己的规范值。
     const 别名集 = new Set<string>([...主体.aliases, ...并入.aliases, 并入.canonicalValue])
@@ -254,9 +257,39 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       update auth.case_entity set aliases = ${文本数组(别名)}
        where project_id = ${input.projectId} and id = ${主体.id}
     `)
-    await tx.execute(sql`
-      delete from auth.case_entity where project_id = ${input.projectId} and id = ${并入.id}
-    `)
+    // 条件删除：关系改指语句的取快照早于等行锁 ⇒ 窗口内新插的关系一条都没被改指、也
+    // 没进留痕。这里仍有一行指向被并入者就整次合并回滚（不静默留悬空引用）。
+    // 判定与删行同一条语句、同一份快照，躲不过「改了指却没记」。
+    const 删掉 = rowsOf(
+      await tx.execute(sql`
+        delete from auth.case_entity as 实体
+         where 实体.project_id = ${input.projectId} and 实体.id = ${并入.id}
+           and not exists (
+             select 1 from auth.case_relation 关系
+              where 关系.project_id = ${input.projectId}
+                and (关系.from_id = ${并入.id} or 关系.to_id = ${并入.id})
+           )
+           and not exists (
+             select 1 from auth.case_event_participant 参与者
+              where 参与者.project_id = ${input.projectId} and 参与者.entity_id = ${并入.id}
+           )
+           and not exists (
+             select 1 from auth.case_entity_alias 别名
+              where 别名.project_id = ${input.projectId} and 别名.entity_id = ${并入.id}
+           )
+           and not exists (
+             select 1 from auth.case_citation 引用
+              where 引用.project_id = ${input.projectId} and 引用.fact_type = 'entity'
+                and 引用.fact_id = ${并入.id}
+           )
+        returning 实体.id
+      `),
+    )
+    if (删掉.length === 0)
+      throw new 合并冲突(
+        "合并过程中还有行指向被并入者（并发写入），已回滚，请重试",
+        "concurrent_write",
+      )
 
     const 留痕 = await 记变更(tx, {
       projectId: input.projectId,
@@ -266,7 +299,7 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       before: {
         survivorAliases: 主体.aliases,
         被并入: 并入,
-        关系们,
+        关系们: 关系列表,
         参与者们,
         别名们,
         引用们,
@@ -283,7 +316,7 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       changeId: 留痕,
       survivorId: 主体.id,
       aliases: 别名,
-      movedRelations: 关系们.length,
+      movedRelations: 关系列表.length,
       movedCitations: 引用们.length,
       selfLoops: 自环,
     }

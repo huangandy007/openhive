@@ -19,6 +19,24 @@ import { 建事件, 建关系, 建实体, 建引用, 建材料 } from "./openhiv
  * `PG_POOL_MAX`），在 `process.env` 里配不进去（同 `openhive-case-trust.test.ts`）。
  * 所以走生产入口 `connect()` 自建一份。
  */
+/** 读 unknown 数据的字段：不用 `as` 断言（`no-unsafe-type-assertion`），形状不对当场抛。 */
+function 字段(值: unknown, 键: string): unknown {
+  if (typeof 值 !== "object" || 值 === null) throw new Error(`不是对象：${键}`)
+  return Reflect.get(值, 键)
+}
+
+function 文本字段(值: unknown, 键: string): string {
+  const 取 = 字段(值, 键)
+  if (typeof 取 !== "string") throw new Error(`不是字符串：${键}`)
+  return 取
+}
+
+function 数组字段(值: unknown, 键: string): unknown[] {
+  const 取 = 字段(值, 键)
+  if (!Array.isArray(取)) throw new Error(`不是数组：${键}`)
+  return 取
+}
+
 const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 afterAll(restorePoolMax)
 
@@ -244,6 +262,115 @@ describe("合并", () => {
       `),
     )[0]
     expect(String(现状?.entity_id)).toBe("合3-c")
+  })
+
+  // 缺口 #6：留痕与改指**同源**（`update … returning`），不是改指前的读。
+  // 这组数据覆盖两种旧端点回读方式与「两边都命中」：M→C（正向）、C→M（反向）、
+  // M→M（两边都命中，只有正向记到的旧端点才是原值）、S→M（合并后成自环）。
+  // 端点 / 状态 / 参与者 / 别名 / 引用逐条与留痕比对；错重建任何一侧都会红。
+  test("留痕四份快照 = 改指后的实际行（含 M→M 两端都命中的旧端点）", async () => {
+    await 建实体(库(), { id: "留6-a", projectId: 项目, value: "留6甲" })
+    await 建实体(库(), { id: "留6-b", projectId: 项目, value: "留6乙" })
+    await 建实体(库(), { id: "留6-c", projectId: 项目, value: "留6丙" })
+    await 建关系(库(), { id: "留6-正", projectId: 项目, fromId: "留6-b", toId: "留6-c" })
+    await 建关系(库(), { id: "留6-反", projectId: 项目, fromId: "留6-c", toId: "留6-b" })
+    await 建关系(库(), { id: "留6-自", projectId: 项目, fromId: "留6-b", toId: "留6-b" })
+    await 建关系(库(), { id: "留6-对", projectId: 项目, fromId: "留6-a", toId: "留6-b" })
+    await 建关系(库(), { id: "留6-外", projectId: 项目, fromId: "留6-c", toId: "留6-c" })
+    await 建事件(库(), {
+      id: "ev-留6",
+      projectId: 项目,
+      participants: ["留6乙", "留6甲"],
+      参与者表: [
+        { entityId: "留6-b", role: "参与人", ordinal: 0 },
+        { entityId: "留6-a", role: "参与人", ordinal: 1 },
+      ],
+    })
+    await 库().execute(sql`
+      insert into auth.case_entity_alias (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at)
+      values ('al-留6-b', ${项目}, '留6-b', '户名', '乙的户名', '乙的户名', '人工', 1760000000)
+    `)
+    await 建材料(库(), { id: "mat-留6", projectId: 项目, path: "留6/笔录.txt" })
+    await 建引用(库(), {
+      id: "引-留6-b",
+      projectId: 项目,
+      factType: "entity",
+      factId: "留6-b",
+      materialId: "mat-留6",
+    })
+    // 主体自己的引用：不动，也不许进留痕（否则拆分会把主体的引用指走）。
+    await 建引用(库(), {
+      id: "引-留6-a",
+      projectId: 项目,
+      factType: "entity",
+      factId: "留6-a",
+      materialId: "mat-留6",
+    })
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "留6-a",
+      mergedId: "留6-b",
+      reasonText: "同一人",
+      by: 甲,
+    })
+    expect(结果.movedRelations).toBe(4)
+    expect([...结果.selfLoops].sort()).toEqual(["留6-对", "留6-自"])
+
+    const 合并条 = (await 变更历史(库(), 项目, "entity", "留6-a")).find((条) => 条.action === "合并")
+    if (合并条 === undefined) throw new Error("没有合并留痕")
+    const 前 = 合并条.before
+    const 关系前 = 数组字段(前, "关系们").map((条) => ({
+      id: 文本字段(条, "id"),
+      fromId: 文本字段(条, "fromId"),
+      toId: 文本字段(条, "toId"),
+      trustState: 文本字段(条, "trustState"),
+    }))
+    // 旧端点必须是改指前的那一侧：M→M 若按反向语句回读会记成 S→M，真值丢了。
+    expect(关系前.map((条) => [条.id, 条.fromId, 条.toId])).toEqual([
+      ["留6-反", "留6-c", "留6-b"],
+      ["留6-对", "留6-a", "留6-b"],
+      ["留6-正", "留6-b", "留6-c"],
+      ["留6-自", "留6-b", "留6-b"],
+    ])
+    expect(关系前.every((条) => 条.trustState === "自动抽取")).toBe(true)
+    expect(
+      数组字段(前, "参与者们").map((条) => ({ eventId: 文本字段(条, "eventId"), ordinal: Number(字段(条, "ordinal")) })),
+    ).toEqual([{ eventId: "ev-留6", ordinal: 0 }])
+    expect(数组字段(前, "别名们")).toEqual(["al-留6-b"])
+    expect(数组字段(前, "引用们")).toEqual(["引-留6-b"])
+
+    // 留痕四份 = 改指后的实际行（按留痕里的 id 逐条回查）。
+    // 排序在 JS 里做：PG 的 `order by` 走自身 collation，与 JS 的码元序不保证一致。
+    const 读关系 = async () =>
+      rowsOf(
+        await 库().execute(sql`
+          select id, from_id, to_id, trust_state from auth.case_relation
+           where project_id = ${项目} and id like '留6-%'
+        `),
+      )
+        .map((行) => [String(行.id), String(行.from_id), String(行.to_id), String(行.trust_state)])
+        .sort((左, 右) => (左[0] < 右[0] ? -1 : 左[0] > 右[0] ? 1 : 0))
+    expect(await 读关系()).toEqual([
+      ["留6-反", "留6-c", "留6-a", "自动抽取"],
+      ["留6-外", "留6-c", "留6-c", "自动抽取"],
+      ["留6-对", "留6-a", "留6-a", "已排除"],
+      ["留6-正", "留6-a", "留6-c", "自动抽取"],
+      ["留6-自", "留6-a", "留6-a", "已排除"],
+    ])
+    // 留痕里每条关系都在改指后的 survivor 名下（没有漏记，也没有把没动的算进来）。
+    expect(关系前.every((条) => 条.id !== "留6-外")).toBe(true)
+
+    const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆.未恢复).toEqual([])
+    expect(拆.未恢复引用).toEqual([])
+    expect(await 读关系()).toEqual([
+      ["留6-反", "留6-c", "留6-b", "自动抽取"],
+      ["留6-外", "留6-c", "留6-c", "自动抽取"],
+      ["留6-对", "留6-a", "留6-b", "自动抽取"],
+      ["留6-正", "留6-b", "留6-c", "自动抽取"],
+      ["留6-自", "留6-b", "留6-b", "自动抽取"],
+    ])
   })
 
   // 整体可重入（#007-01）：重放一次合并不能重复写快照、也不能重复改指向。
