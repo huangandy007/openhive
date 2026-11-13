@@ -213,6 +213,30 @@ describe("参与者摘要剔除已排除（11 §7.1）", () => {
     expect(数据!.事件们[0]!.参与者).toEqual(["收款方：顺序乙", "付款方：顺序甲"])
   })
 
+  test("有参与者表行时，未被已解析行覆盖的掩码参与者仍以「参与者：值」追加", async () => {
+    // 生产会写 `entity_id = null` 的参与者行（`case-translate-store.ts:224`），同时把两个
+    // 规范值都写进 `participants`（`:173`）。旧实现只要表里有已解析行就整份丢掉文本回退
+    // ⇒ 掩码对手消失，而 `query_events`（用 `值`）仍看得见。
+    await 建实体(db(), { id: "e-掩码甲", projectId: "p-掩码", value: "解析甲" })
+    await 建事件(db(), {
+      id: "ev-掩码",
+      projectId: "p-掩码",
+      type: "资金交易",
+      participants: ["解析甲", "6222****1234"],
+      occurredAt: 1780279200,
+      参与者表: [
+        { entityId: "e-掩码甲", role: "付款方", ordinal: 0 },
+        { entityId: null, role: "收款方", ordinal: 1, mentionText: "6222****1234" },
+      ],
+    })
+    const 结果 = await query_timeline(ctx(db(), "p-掩码"), { 实体: "解析甲" })
+    const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
+    expect(结果.空原因).toBeNull()
+    expect(数据!.事件们).toHaveLength(1)
+    // 表行在前（按 ordinal），未被覆盖的文本值追加在后。
+    expect(数据!.事件们[0]!.参与者).toEqual(["付款方：解析甲", "参与者：6222****1234"])
+  })
+
   test("参与者表没有行时回退文本值（参与者：规范值）", async () => {
     await 建实体(db(), { id: "e-回退丙", projectId: "p-排除", value: "回退丙" })
     await 建事件(db(), {

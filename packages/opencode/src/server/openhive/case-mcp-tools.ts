@@ -889,7 +889,10 @@ export function 事件参与者条件(ctx: 工具上下文, 实体: 实体解析
  * 参与者摘要的唯一出处（11 §7.1）。
  *
  * - `值`：`participants text[]` 里的规范值，剔除「已排除」实体的规范值（`query_events` 用）；
- * - `摘要`：参与者表的 `角色：规范值`，剔除已排除实体；参与者表没有行时回退文本值（`query_timeline` 用）。
+ * - `摘要`：参与者表的 `角色：规范值`（剔除已排除实体），再追加**未被任何已解析行覆盖**的
+ *   文本值 `参与者：<值>`（`entity_id = null` 的掩码 / 未解析参与者；`query_timeline` 用）。
+ *   旧实现只要表里有行就整份丢掉文本回退 ⇒ 掩码对手在时间线 / 探索里消失，而 `query_events`
+ *   仍看得见（两个读口各写一遍迟早漂，`#002-06`）。
  *
  * 两个读口各写一遍迟早漂（`#002-06`）：此前 `query_events` 剔排除、`query_timeline` 不剔。
  */
@@ -912,6 +915,7 @@ async function 参与者视图(
     for (const 行 of 排除行) 已排除值.add(String(行.canonical_value))
   }
   const 摘要表 = new Map<string, string[]>()
+  const 已解析值 = new Map<string, Set<string>>()
   const 表行们 = rowsOf(
     await ctx.db.execute(sql`
       select p.event_id, p.role, e.canonical_value as value
@@ -928,11 +932,20 @@ async function 参与者视图(
     const 列 = 摘要表.get(id)
     if (列 === undefined) 摘要表.set(id, [项])
     else 列.push(项)
+    const 覆盖 = 已解析值.get(id)
+    if (覆盖 === undefined) 已解析值.set(id, new Set([String(行.value)]))
+    else 覆盖.add(String(行.value))
   }
   for (const 行 of 行们) {
     const 值 = 行.participants.filter((项) => !已排除值.has(项))
-    const 摘要 = 摘要表.get(行.id) ?? 值.map((项) => `参与者：${项}`)
-    结果.set(行.id, { 值: [...值], 摘要 })
+    // 参与者表行在前（按 ordinal）；未被任何已解析行覆盖的文本值（`entity_id = null` 的
+    // 掩码/未解析参与者）追加为 `参与者：<值>`，不许因为它们「有兄弟行」就整份丢掉。
+    const 覆盖 = 已解析值.get(行.id) ?? new Set<string>()
+    const 摘要 = [
+      ...(摘要表.get(行.id) ?? []),
+      ...值.filter((项) => !覆盖.has(项)).map((项) => `参与者：${项}`),
+    ]
+    结果.set(行.id, { 值, 摘要 })
   }
   return 结果
 }
