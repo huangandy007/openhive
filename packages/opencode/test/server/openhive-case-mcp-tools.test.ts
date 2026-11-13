@@ -1171,6 +1171,20 @@ test("query_events 的 participants 剔除「已排除」实体的规范值", as
   expect(JSON.stringify(行们)).not.toContain("号X")
 })
 
+test("query_events 含已排除=true 时才回显已排除实体的规范值", async () => {
+  // 同一事件 `ev-排参` 对照：缺省 / false 走剔除，显式 true 原样回显（口径开关，不是可见性隐藏）。
+  const 缺省 = (await query_events(ctx(身份戊), { 类型: "同框" })).数据 as {
+    id: string
+    participants: string[]
+  }[]
+  const 含排除 = (await query_events(ctx(身份戊), { 类型: "同框", 含已排除: true })).数据 as {
+    id: string
+    participants: string[]
+  }[]
+  expect(缺省.find((行) => 行.id === "ev-排参")!.participants).toEqual(["张三"])
+  expect(含排除.find((行) => 行.id === "ev-排参")!.participants).toEqual(["号X", "张三"])
+})
+
 test("解析实体规则写进 query_events / aggregate_money / find_crossings 的口径", async () => {
   // 规则只写在 query_relations 口径里时，另三个工具的回答会让模型对同名/重名实体自行猜（Minor 4）。
   for (const 口径 of [
