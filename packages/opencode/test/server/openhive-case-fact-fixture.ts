@@ -123,6 +123,8 @@ export async function 建事件(
     summary?: string | null
     occurredAt?: number | null
     trustState?: string
+    /** 参与者表行（可选）：合并/传播用例需要「表格事件的参与者是实体 id」这条真路径。 */
+    参与者表?: readonly { entityId: string | null; role: string; ordinal: number; mentionText?: string }[]
   },
 ): Promise<void> {
   await db.execute(sql`
@@ -133,6 +135,14 @@ export async function 建事件(
             array(select jsonb_array_elements_text(${JSON.stringify(input.participants ?? [])}::text::jsonb)),
             ${input.summary ?? null}, ${input.trustState ?? "自动抽取"}, ${现在})
   `)
+  const 参与者们 = input.参与者表 ?? []
+  for (const 条 of 参与者们) {
+    await db.execute(sql`
+      insert into auth.case_event_participant (id, project_id, event_id, entity_id, role, mention_text, ordinal)
+      values (${`${input.id}#p${条.ordinal}`}, ${input.projectId}, ${input.id}, ${条.entityId},
+              ${条.role}, ${条.mentionText ?? String(条.entityId ?? "")}, ${条.ordinal})
+    `)
+  }
 }
 
 export async function 建引用(

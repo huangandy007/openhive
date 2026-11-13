@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 变更历史, 记变更 } from "../../src/server/openhive/case-fact-change"
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 合并实体, 拆分合并 } from "../../src/server/openhive/case-merge"
-import { 建关系, 建实体 } from "./openhive-case-fact-fixture"
+import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
 
 /**
  * `合并实体` / `拆分合并` 都走 `inTransaction` ⇒ 按 R-预2 把池留 1 条：PGlite 把多条连接
@@ -152,6 +152,136 @@ describe("合并", () => {
         by: 甲,
       }),
     ).rejects.toMatchObject({ code: "fact_not_found" })
+  })
+
+  test("合并后参与者表与户名别名跟随，拆分原样恢复", async () => {
+    await 建实体(库(), { id: "合2-a", projectId: 项目, value: "合2甲" })
+    await 建实体(库(), { id: "合2-b", projectId: 项目, value: "合2乙" })
+    await 建事件(库(), {
+      id: "ev-合2",
+      projectId: 项目,
+      participants: ["合2甲", "合2乙"],
+      参与者表: [
+        { entityId: "合2-a", role: "参与人", ordinal: 0 },
+        { entityId: "合2-b", role: "参与人", ordinal: 1 },
+      ],
+    })
+    await 库().execute(sql`
+      insert into auth.case_entity_alias (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at)
+      values ('al-合2', ${项目}, '合2-b', '户名', '乙的户名', '乙的户名', '人工', 1760000000)
+    `)
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "合2-a",
+      mergedId: "合2-b",
+      reasonText: "同一人",
+      by: 甲,
+    })
+    expect(结果.movedRelations).toBe(0)
+
+    const 参与者 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_event_participant
+         where project_id = ${项目} and event_id = 'ev-合2' order by ordinal asc
+      `),
+    ).map((行) => String(行.entity_id))
+    expect(参与者).toEqual(["合2-a", "合2-a"])
+
+    const 别名 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_entity_alias where project_id = ${项目} and id = 'al-合2'
+      `),
+    )[0]
+    expect(String(别名?.entity_id)).toBe("合2-a")
+
+    const 拆分 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆分.未恢复).toEqual([])
+    const 恢复后 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_event_participant
+         where project_id = ${项目} and event_id = 'ev-合2' order by ordinal asc
+      `),
+    ).map((行) => String(行.entity_id))
+    expect(恢复后).toEqual(["合2-a", "合2-b"])
+    const 别名恢复 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_entity_alias where project_id = ${项目} and id = 'al-合2'
+      `),
+    )[0]
+    expect(String(别名恢复?.entity_id)).toBe("合2-b")
+  })
+
+  test("拆分不覆盖被人动过的参与者行：进 未恢复，不静默", async () => {
+    await 建实体(库(), { id: "合3-a", projectId: 项目, value: "合3甲" })
+    await 建实体(库(), { id: "合3-b", projectId: 项目, value: "合3乙" })
+    await 建实体(库(), { id: "合3-c", projectId: 项目, value: "合3丙" })
+    await 建事件(库(), {
+      id: "ev-合3",
+      projectId: 项目,
+      participants: ["合3乙"],
+      参与者表: [{ entityId: "合3-b", role: "参与人", ordinal: 0 }],
+    })
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "合3-a",
+      mergedId: "合3-b",
+      reasonText: "同一人",
+      by: 甲,
+    })
+    // 合并之后被人改指到第三方：拆分不许覆盖，必须列出来。
+    await 库().execute(sql`
+      update auth.case_event_participant set entity_id = '合3-c'
+       where project_id = ${项目} and event_id = 'ev-合3' and ordinal = 0
+    `)
+    const 拆分 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆分.未恢复).toContain("参与者:ev-合3#0")
+    const 现状 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_event_participant
+         where project_id = ${项目} and event_id = 'ev-合3' and ordinal = 0
+      `),
+    )[0]
+    expect(String(现状?.entity_id)).toBe("合3-c")
+  })
+
+  // 整体可重入（#007-01）：重放一次合并不能重复写快照、也不能重复改指向。
+  // 被并入行已经不在 ⇒ 安全失败 fact_not_found；既有留痕与参与者行维持原样。
+  test("重放合并：安全失败，不重复写快照、不重复改指向", async () => {
+    await 建实体(库(), { id: "合4-a", projectId: 项目, value: "合4甲" })
+    await 建实体(库(), { id: "合4-b", projectId: 项目, value: "合4乙" })
+    await 建事件(库(), {
+      id: "ev-合4",
+      projectId: 项目,
+      participants: ["合4乙"],
+      参与者表: [{ entityId: "合4-b", role: "参与人", ordinal: 0 }],
+    })
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "合4-a",
+      mergedId: "合4-b",
+      reasonText: "同一人",
+      by: 甲,
+    })
+    await expect(
+      合并实体(库(), {
+        projectId: 项目,
+        survivorId: "合4-a",
+        mergedId: "合4-b",
+        reasonText: "同一人",
+        by: 甲,
+      }),
+    ).rejects.toMatchObject({ code: "fact_not_found" })
+
+    const 历史 = await 变更历史(库(), 项目, "entity", "合4-a")
+    expect(历史.filter((条) => 条.action === "合并").map((条) => 条.id)).toEqual([结果.changeId])
+    const 参与者 = rowsOf(
+      await 库().execute(sql`
+        select entity_id from auth.case_event_participant
+         where project_id = ${项目} and event_id = 'ev-合4' order by ordinal asc
+      `),
+    ).map((行) => String(行.entity_id))
+    expect(参与者).toEqual(["合4-a"])
   })
 })
 

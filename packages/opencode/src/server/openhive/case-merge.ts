@@ -168,6 +168,22 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
 
     const 关系们 = await 有牵连的关系(tx, input.projectId, 并入.id)
 
+    // 参与者与别名的快照必须在改指之前取：拆分要靠它原样恢复（01 §9.3）。
+    const 参与者们 = rowsOf(
+      await tx.execute(sql`
+        select event_id, ordinal from auth.case_event_participant
+         where project_id = ${input.projectId} and entity_id = ${并入.id}
+         order by event_id asc, ordinal asc
+      `),
+    ).map((行) => ({ eventId: String(行.event_id), ordinal: Number(行.ordinal) }))
+    const 别名们 = rowsOf(
+      await tx.execute(sql`
+        select id from auth.case_entity_alias
+         where project_id = ${input.projectId} and entity_id = ${并入.id}
+         order by id asc
+      `),
+    ).map((行) => String(行.id))
+
     const 自环 = 关系们
       .filter(
         (条) =>
@@ -195,6 +211,18 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       `)
     }
 
+    // 指向跟随：被并入行一删，参与者与户名别名若不改指就成了悬空引用
+    // （户名别名悬空会让 `户名对齐` 的 join 落空，阻断 1 的修复随之失效）。
+    // `participants text[]` 不改：旧规范值并进幸存者别名，由基 1 的文本回退命中（11 §4.1）。
+    await tx.execute(sql`
+      update auth.case_event_participant set entity_id = ${主体.id}
+       where project_id = ${input.projectId} and entity_id = ${并入.id}
+    `)
+    await tx.execute(sql`
+      update auth.case_entity_alias set entity_id = ${主体.id}
+       where project_id = ${input.projectId} and entity_id = ${并入.id}
+    `)
+
     // 别名并集：主体的旧别名 ＋ 被并入者的别名 ＋ 被并入者的规范值；去重、去掉主体自己的规范值。
     const 别名集 = new Set<string>([...主体.aliases, ...并入.aliases, 并入.canonicalValue])
     别名集.delete(主体.canonicalValue)
@@ -218,6 +246,8 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
         survivorAliases: 主体.aliases,
         被并入: 并入,
         关系们,
+        参与者们,
+        别名们,
       },
       after: {
         aliases: 别名,
@@ -289,7 +319,13 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
     if (已拆.length > 0) throw new 合并冲突("这次合并已经拆过了", "already_split")
 
     const 前 = 读杰森(行.before) as
-      | { survivorAliases: string[]; 被并入: 实体快照; 关系们: 关系快照[] }
+      | {
+          survivorAliases: string[]
+          被并入: 实体快照
+          关系们: 关系快照[]
+          参与者们?: { eventId: string; ordinal: number }[]
+          别名们?: string[]
+        }
       | null
     if (
       前 === null ||
@@ -392,6 +428,43 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
          where project_id = ${input.projectId} and id = ${关系.id}
       `)
       恢复.push(关系.id)
+    }
+
+    // 参与者与别名：按留痕原样指回被并入者。**被人动过的不覆盖**（行已不存在、或
+    // entity_id 已不是幸存者），进 `未恢复` 清单，不静默。
+    const 参与者们 = 前.参与者们 ?? []
+    const 别名们 = 前.别名们 ?? []
+    for (const 条 of 参与者们) {
+      const 当前 = rowsOf(
+        await tx.execute(sql`
+          select entity_id from auth.case_event_participant
+           where project_id = ${input.projectId} and event_id = ${条.eventId} and ordinal = ${条.ordinal}
+        `),
+      )[0]
+      if (当前 === undefined || String(当前.entity_id ?? "") !== 主体Id) {
+        未恢复.push(`参与者:${条.eventId}#${条.ordinal}`)
+        continue
+      }
+      await tx.execute(sql`
+        update auth.case_event_participant set entity_id = ${被并入.id}
+         where project_id = ${input.projectId} and event_id = ${条.eventId} and ordinal = ${条.ordinal}
+      `)
+    }
+    for (const 别名id of 别名们) {
+      const 当前 = rowsOf(
+        await tx.execute(sql`
+          select entity_id from auth.case_entity_alias
+           where project_id = ${input.projectId} and id = ${别名id}
+        `),
+      )[0]
+      if (当前 === undefined || String(当前.entity_id ?? "") !== 主体Id) {
+        未恢复.push(`别名:${别名id}`)
+        continue
+      }
+      await tx.execute(sql`
+        update auth.case_entity_alias set entity_id = ${被并入.id}
+         where project_id = ${input.projectId} and id = ${别名id}
+      `)
     }
 
     const 留痕Id = await 记变更(tx, {
