@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
@@ -22,7 +22,7 @@ import {
   type 工具上下文,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
-import { 工具名 } from "../../src/server/openhive/case-mcp-server"
+import { 工具名, 分发表 } from "../../src/server/openhive/case-mcp-server"
 import { addCitation, createMaterial, getMaterial, insertFactRows } from "../../src/server/openhive/case-store"
 import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
 import { insertEvent, insertRelation, setMaterialText, upsertEntity } from "../../src/server/openhive/case-fact-store"
@@ -1868,4 +1868,67 @@ test("aggregate_money 只有产物材料：产物不算待翻译，空结果不�
   expect(结果.数据).toBeNull()
   expect(结果.摘要).not.toContain("材料还没翻译完")
   expect(结果.缺口).not.toContain("1 份材料尚未解析，其中可能含资金流水")
+})
+
+// —— P4-A Task 4：`query_events` 按用途查（`01` §3.11.6） ——
+// 用途种子落在独立项目：往既有项目里加事件会改掉 `query_events` 的条数断言（`#005-34`）。
+describe("query_events 按用途查（P4-A / 01 §3.11.6）", () => {
+  const 身份用途 = { userId: "u-工具-甲", projectId: "p-用途-查" }
+  const 身份用途旧 = { userId: "u-工具-甲", projectId: "p-用途-旧" }
+
+  test("一级与二级都能过滤，返回里带 purpose 与依据", async () => {
+    await 库().execute(sql`
+      insert into auth.case_event (id, project_id, type, occurred_at, trust_state, created_at,
+                                   purpose, purpose_l1, purpose_basis)
+      values ('e-p1', 'p-用途-查', '资金交易', 1762387200, '自动抽取', 0,
+              '停车', '消费', '{"规则":"消费.停车","命中":"P云","字段":"备注原文","词表":"v1.0"}'::jsonb),
+             ('e-p2', 'p-用途-查', '资金交易', 1762387300, '自动抽取', 0,
+              '转账', '转账', '{"规则":"转账.转账","命中":null,"字段":null,"词表":"v1.0"}'::jsonb)
+    `)
+    const 按二级 = await query_events(ctx(身份用途), { 用途: "停车" })
+    expect(按二级.摘要).toContain("1 个事件")
+    expect(按二级.数据).toHaveLength(1)
+    const 二级行 = (按二级.数据 as { purpose: string; purpose_basis: Record<string, unknown> }[])[0]!
+    expect(二级行.purpose).toBe("停车")
+    // basis 原样带出（不脱敏、不截断）：模型要靠「规则 / 命中 / 词表」解释判定。
+    expect(二级行.purpose_basis).toMatchObject({ 规则: "消费.停车", 词表: "v1.0" })
+    // 口径要说清匹配的是哪两列、以及不参与文本扫描。
+    expect(按二级.口径).toContain("purpose_l1")
+    // 一级查询必须挑一条 `purpose ≠ 一级类` 的行（e-p1 的 purpose 是「停车」）：只比 `purpose`
+    // 时这条会红。简报原稿用「转账」（purpose 也正好是一级类），钉不住 `or purpose_l1`（`#003-03`）。
+    const 按一级 = await query_events(ctx(身份用途), { 用途: "消费" })
+    expect(按一级.数据).toHaveLength(1)
+    expect((按一级.数据 as { purpose_l1: string }[])[0]!.purpose_l1).toBe("消费")
+    // 参数白名单在服务端 `收参数`：直接调工具测不到「模型传来的键被服务端丢掉」，
+    // 必须经过一次分发入口（`#004-09`：门在入口，白名单漏键要能红）。
+    const 经分发 = await 分发表.query_events(ctx(身份用途), { 用途: "停车" })
+    expect((经分发.数据 as { purpose: string }[]).map((行) => 行.purpose)).toEqual(["停车"])
+  })
+
+  test("不认识的用途 fail-closed，并列出可用类", async () => {
+    // 用 `.catch` 取抛出的错误（与 :1612 同法）：`rejects` 在 bun 的类型里被当成非 Promise，
+    // 会新增一条 `await-thenable` 告警。
+    const 错误 = await query_events(ctx(身份用途), { 用途: "餐饮费" }).catch((错误: unknown) => 错误)
+    // 类名写错必须当场拒：静默返回空集时「查无结果」与「类名写错」无法区分（fail-closed）。
+    expect(错误).toMatchObject({ code: "bad_input" })
+    // 用 `instanceof` 窄化而不是 `as Error`：断言失败时这条会明确指出「没抛错或抛的不是 Error」。
+    if (!(错误 instanceof Error)) throw new Error("未知的用途必须在取数前抛错")
+    expect(错误.message).toContain("不认识的用途")
+    expect(错误.message).toContain("餐饮")
+  })
+
+  test("用途为空且全项目都没判过 ⇒ 空原因「用途未结构化」", async () => {
+    await 库().execute(sql`
+      insert into auth.case_event (id, project_id, type, occurred_at, trust_state, created_at)
+      values ('e-old', 'p-用途-旧', '资金交易', 1762387200, '自动抽取', 0)
+    `)
+    const r = await query_events(ctx(身份用途旧), { 用途: "停车" })
+    expect(r.数据).toEqual([])
+    // 「确实没有停车消费」与「这批数据还没判过用途」必须分开答（`09` §4.2）。
+    expect(r.空原因).toBe("用途未结构化")
+    expect(r.摘要).toContain("1 个事件还没有用途判定")
+    expect(r.下一步.length).toBeGreaterThan(0)
+    // 补判分支必须自己说清「没判过的卡片不参与过滤」，不能沿用主口径含糊过去。
+    expect(r.口径).toContain("没有判过")
+  })
 })

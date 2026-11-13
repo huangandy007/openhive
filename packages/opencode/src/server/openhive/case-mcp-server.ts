@@ -222,6 +222,10 @@ const TOOLS: readonly Tool[] = [
           type: "string",
           description: "地点（尚未支持）：传了会明确返回「能力未就绪」，不参与过滤",
         },
+        用途: {
+          type: "string",
+          description: "用途类名（一级 12 类或消费二级 15 类之一），例如 停车 / 车辆加油；传不认识的类名会明确报错",
+        },
         含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的事件，默认否" },
         限制: { type: "integer", description: 限制说明 },
       },
@@ -365,7 +369,13 @@ const TOOLS: readonly Tool[] = [
   },
 ]
 
-const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
+/**
+ * 工具分发表（`收参数` 的参数白名单也在这里）。
+ *
+ * 导出给用例：直接调工具的实现测不到「模型传来的键被 `收参数` 丢掉」，
+ * 只有经过分发入口才看得出（`#004-09`：门在入口，白名单漏键要能红）。
+ */
+export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
   search_materials: (ctx, args) =>
     search_materials(ctx, 收参数<Parameters<typeof search_materials>[1]>(args, ["关键词", "类型"], ["限制"], [])),
   query_entities: (ctx, args) =>
@@ -380,7 +390,7 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
       ctx,
       收参数<Parameters<typeof query_events>[1]>(
         args,
-        ["类型", "参与实体", "地点"],
+        ["类型", "参与实体", "地点", "用途"],
         ["起", "止", "限制"],
         ["含已排除"],
       ),
