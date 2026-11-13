@@ -25,7 +25,7 @@ import {
 } from "./case-row-query"
 import { 文本数组 } from "./case-fact-store"
 import type { 留痕类型 } from "./case-fact-change"
-import { 事件归属条件, 账户归属集, 关系归属条件, 户名对齐, 户名来源 } from "./case-party"
+import { 事件归属条件, 账户归属集, 关系归属条件, 歧义到账户, 户名对齐, 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -1507,7 +1507,7 @@ export async function query_rows(
   }
 }
 
-/** 三个块的固定上界（没有 `限制` 参数，写在 SQL 里）。 */
+/** 三个块的默认上界（没有 `限制` 参数，写在 SQL 里；对手方上限可被 `选项.对手方上限` 覆盖）。 */
 const 默认对手方上限 = 10
 const 余额行上限 = 200
 const 每侧关系上限 = 500
@@ -1549,17 +1549,43 @@ export async function aggregate_money(
   // 基 2（11 §3.2）：恰好一端落在「账户 ∪ 唯一户名对齐到它的人/组织」里才算本账户的钱。
   // 方向按**落在集合里的那一端**判：from 在集合 ⇒ 出，否则入；对手方就是另一端。
   const 归属集 = 账户归属集(ctx.身份.projectId, 账户.ids)
+  // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
+  // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
+  // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
+  // `project_id` / `trust_state` 变成有歧义列（报错）。汇总与内部往来计数共用这一份。
+  const 对手方未排除 = sql`(case when from_id in ${归属集} then to_id else from_id end) in (
+      select id from auth.case_entity
+       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+    )`
   const 汇总条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
     // 按值查询时 `账户.ids` 含同值所有类型行：旧行上的转账不能因为纠正后的新行而消失。
     sql`${关系归属条件(ctx.身份.projectId, 账户.ids, sql`from_id`, sql`to_id`)}`,
-    // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
-    // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
-    // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
-    // `project_id` / `trust_state` 变成有歧义列（报错）。
-    sql`(case when from_id in ${归属集} then to_id else from_id end) in (
+    对手方未排除,
+  ]
+  // 两端都在归属集里的内部往来：XOR 必然排除它们，设计 11 §3.2 要求「写进缺口」。
+  // 只用于缺口计数，不参与汇总。
+  const 内部往来条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`type = '转账'`,
+    sql`trust_state <> '已排除'`,
+    sql`from_id in ${归属集}`,
+    sql`to_id in ${归属集}`,
+    对手方未排除,
+  ]
+  // 歧义未归属（11 §3.3）：两端都不在归属集、且一端是「名字对应 ≥2 个账户」的歧义者。
+  // 这类关系在归属阶段就被 XOR 排除；`对手方` 里看不到它们，`歧义条数` 也覆盖不到。
+  const 歧义实体 = 歧义到账户(ctx.身份.projectId, 账户.ids)
+  const 归属歧义条件: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`type = '转账'`,
+    sql`trust_state <> '已排除'`,
+    sql`from_id not in ${归属集} and to_id not in ${归属集}`,
+    sql`(from_id in ${歧义实体} or to_id in ${歧义实体})`,
+    // §9.1 的对称写法：歧义者已由 `歧义到账户` 保证非「已排除」，另一端也不许是「已排除」。
+    sql`(case when from_id in ${歧义实体} then to_id else from_id end) in (
       select id from auth.case_entity
        where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
     )`,
@@ -1573,10 +1599,14 @@ export async function aggregate_money(
   // 时间窗与 `query_relations` 同口径：最晚不早于「起」、最早不晚于「止」，两端都缺按 0 兜底。
   if (args.起 !== undefined) {
     汇总条件.push(sql`coalesce(last_at, first_at, 0) >= ${args.起}`)
+    内部往来条件.push(sql`coalesce(last_at, first_at, 0) >= ${args.起}`)
+    归属歧义条件.push(sql`coalesce(last_at, first_at, 0) >= ${args.起}`)
     对手方条件.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${args.起}`)
   }
   if (args.止 !== undefined) {
     汇总条件.push(sql`coalesce(first_at, last_at, 0) <= ${args.止}`)
+    内部往来条件.push(sql`coalesce(first_at, last_at, 0) <= ${args.止}`)
+    归属歧义条件.push(sql`coalesce(first_at, last_at, 0) <= ${args.止}`)
     对手方条件.push(sql`coalesce(r.first_at, r.last_at, 0) <= ${args.止}`)
   }
   // 笔数口径：times_cny 为 NULL 时回退 times，再回退 1（human 行没有 times，D-2）。
@@ -1763,6 +1793,34 @@ export async function aggregate_money(
   )
   if (纯外币条数 > 0)
     缺口.push(`${纯外币条数} 条转账关系金额为 0.00 且笔数含外币（外币金额不进合计）`)
+  // 设计 11 §3.2：两端都在归属集里的内部往来「不画、不计数，写进缺口」。
+  // 不加 `人民币笔数`：内部外币行不会被上面的 `纯外币条数` 计到（它复用含 XOR 的 `汇总条件`），
+  // 只数人民币会让这部分继续静默。
+  const 内部往来条数 = Number(
+    rowsOf(
+      await ctx.db.execute(sql`
+        select count(*)::int as 数
+          from auth.case_relation
+         where ${sql.join(内部往来条件, sql` and `)}
+      `),
+    )[0]?.数 ?? 0,
+  )
+  if (内部往来条数 > 0)
+    缺口.push(`${内部往来条数} 条转账关系两端都在本账户归属集内（账户内部往来），未计入收支与对手方`)
+  // 设计 11 §3.3：候选 0 或 ≥2 一律不归属，条数必须进缺口。这些关系在归属阶段就被排除，
+  // 进不了 `对手方`，所以不能只靠下面的 `歧义条数`（它只数已进入结果的行）。
+  // 同样不加 `人民币笔数`：纯外币的歧义关系也要说清。
+  const 归属歧义条数 = Number(
+    rowsOf(
+      await ctx.db.execute(sql`
+        select count(*)::int as 数
+          from auth.case_relation
+         where ${sql.join(归属歧义条件, sql` and `)}
+      `),
+    )[0]?.数 ?? 0,
+  )
+  if (归属歧义条数 > 0)
+    缺口.push(`${归属歧义条数} 条转账关系因户名对应多个账户未归属本账户（fail-closed，不猜）`)
   // 计数按「对手方 + 方向」行数（`歧义条数`），不是人/户名的去重个数——文案跟着计数口径说。
   if (歧义条数 > 0)
     缺口.push(`${歧义条数} 条对手方记录对应的户名有多个账户，未合并（按各自账户分开）`)
@@ -1787,7 +1845,7 @@ export async function aggregate_money(
       "余额走势与外币行数都按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值；" +
       "余额走势只取 currency = 'CNY' 的明细行（行数为参与走势的人民币行数），外币行数按 currency <> 'CNY' 计数。" +
       "账户归属按户名唯一对齐：恰好一端落在「本账户 ∪ 唯一户名对齐到它的人/组织」里的转账才算本账户；" +
-      "首末是该口径下最早 first_at 与最晚 last_at（不受方向影响）。" + 身份口径,
+      "首末是该口径下最早 first_at 与最晚 last_at（不受方向影响；first_at 缺失时回退 last_at）。" + 身份口径,
     // 有外币行时这句「也无明细流水」是假话（外币行只是不计入）——改由上面的外币缺口说明。
     缺口:
       空 && 外币行数 === 0

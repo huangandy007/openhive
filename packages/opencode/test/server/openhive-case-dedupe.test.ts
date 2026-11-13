@@ -157,9 +157,90 @@ describe("读端去重口径（10 §6.1）", () => {
     const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.B })
     expect(结果.数据).toMatchObject({
       汇总: [{ 方向: "入", 笔数: 3, 合计: "35000.00" }],
+      // 具体 epoch（UTC+8）：首 = 笔录「2026年4月1日」00:00，末 = 流水 2026-04-03 10:00。
+      // 只断言 null 会漏掉「首末取错行 / 回退没生效」这类缺陷。
+      首末: { 首: 1774972800, 末: 1775181600 },
       外币行数: 1,
     })
     expect(结果.空原因).toBeNull()
+  })
+
+  test("内部往来与歧义未归属都进缺口，汇总数字不变", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const C = await 实体id(数据集.账号.C)
+    const 李四 = await 实体id("李四")
+    try {
+      // 夹具里没有「只作歧义观测」的人（周八/吴九只在抽取回答里，没落成实体），裸插两行。
+      await db().execute(sql`
+        insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, trust_state, created_at)
+        values ('e-基2歧义人', ${数据集.projectId}, '人', '吴九', '{}', '{}', '自动抽取', 1760000000),
+               ('e-基2对手人', ${数据集.projectId}, '人', '郑十', '{}', '{}', '自动抽取', 1760000000)
+      `)
+      // ① 两端都在 B 的归属集 {B, 李四} 里 ⇒ XOR 排除，但设计 11 §3.2 要求「写进缺口」。
+      await db().execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, times, times_cny, amount, source_kind, trust_state, created_at)
+        values ('r-基2内部', ${数据集.projectId}, ${李四}, ${B}, '转账', 1, 1, '1000.00', 'human', '自动抽取', 1760000000)
+      `)
+      // ①b 内部 + 纯外币：`纯外币条数` 复用含 XOR 的 `汇总条件` 也数不到它，内部计数必须带上。
+      await db().execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, times, times_cny, amount, source_kind, trust_state, created_at)
+        values ('r-基2内部外币', ${数据集.projectId}, ${B}, ${李四}, '转账', 1, 0, '0.00', 'human', '自动抽取', 1760000000)
+      `)
+      // ② 歧义未归属：把「吴九」同时登记为 B、C 的户名 ⇒ 候选 2 个，fail-closed 不进归属集。
+      //    `吴九 → 周八` 两端都不在 B 的归属集里 ⇒ 在归属阶段被排除，`对手方` 也看不到它。
+      await db().execute(sql`
+        insert into auth.case_entity_alias
+          (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at, revoked_at)
+        values ('a-基2歧义-B', ${数据集.projectId}, ${B}, '户名', '吴九', '吴九', '人工', 1700000000, null),
+               ('a-基2歧义-C', ${数据集.projectId}, ${C}, '户名', '吴九', '吴九', '人工', 1700000000, null)
+      `)
+      await db().execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, times, times_cny, amount, source_kind, trust_state, created_at)
+        values ('r-基2歧义', ${数据集.projectId}, 'e-基2歧义人', 'e-基2对手人', '转账', 1, 1, '500.00', 'human', '自动抽取', 1760000000)
+      `)
+
+      const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.B })
+      // 内部往来不计收支、歧义关系不进汇总 ⇒ 与上一条用例的数字一致。
+      expect(结果.数据).toMatchObject({ 汇总: [{ 方向: "入", 笔数: 3, 合计: "35000.00" }] })
+      const 缺口 = 结果.缺口.join("\n")
+      expect(缺口).toContain("2 条转账关系两端都在本账户归属集内")
+      expect(缺口).toContain("1 条转账关系因户名对应多个账户未归属")
+    } finally {
+      // 断言失败也必须清掉裸插行，否则后续用例看到脏数据。
+      await db().execute(sql`
+        delete from auth.case_relation
+         where project_id = ${数据集.projectId} and id in ('r-基2内部', 'r-基2内部外币', 'r-基2歧义')
+      `)
+      await db().execute(sql`
+        delete from auth.case_entity_alias
+         where project_id = ${数据集.projectId} and id in ('a-基2歧义-B', 'a-基2歧义-C')
+      `)
+      await db().execute(sql`
+        delete from auth.case_entity
+         where project_id = ${数据集.projectId} and id in ('e-基2歧义人', 'e-基2对手人')
+      `)
+    }
+  })
+
+  test("首末的 first_at 缺失时回退 last_at（某行只有 last_at）", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const 李四 = await 实体id("李四")
+    try {
+      // 只有 last_at（2026-03-01 00:00 UTC+8）：首必须取它，而不是忽略该行退回 4/1。
+      await db().execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, first_at, last_at, times, times_cny, amount, source_kind, trust_state, created_at)
+        values ('r-基2首末回退', ${数据集.projectId}, ${A}, ${李四}, '转账', null, 1772294400, 1, 1, '100.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.B })
+      const 数据 = 结果.数据 as { 首末: { 首: number | null; 末: number | null } }
+      expect(数据.首末).toEqual({ 首: 1772294400, 末: 1775181600 })
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-基2首末回退'`)
+    }
   })
 })
 

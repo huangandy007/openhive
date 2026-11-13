@@ -73,6 +73,22 @@ function id集合(ids: readonly string[]): SQL {
  * 已排除的人不算——那是人的判断，读端不许把它拉回来。
  */
 export function 对齐到账户(projectId: string, 账户ids: readonly string[]): SQL {
+  return 名字对齐到账户(projectId, 账户ids, sql`= 1`)
+}
+
+/**
+ * 歧义对齐者（11 §3.3）：名字对应 **≥2** 个账户、其中至少一个在 `账户ids` 里。
+ *
+ * 与 `对齐到账户` 同一前提（`户名来源` 唯一出处），只把候选数从 `= 1` 换成 `>= 2`：
+ * 这些 人/组织 因 fail-closed 不进归属集，凡是以它们为端点的关系在归属阶段被排除，
+ * 读端必须把条数写进缺口（`aggregate_money` 用它区分「内部往来」与「歧义未归属」）。
+ */
+export function 歧义到账户(projectId: string, 账户ids: readonly string[]): SQL {
+  return 名字对齐到账户(projectId, 账户ids, sql`>= 2`)
+}
+
+/** `对齐到账户` / `歧义到账户` 的共同前提，只差候选数的比较符（`#002-06`）。 */
+function 名字对齐到账户(projectId: string, 账户ids: readonly string[], 候选条件: SQL): SQL {
   return sql`(select pe.id
      from auth.case_entity pe
     where pe.project_id = ${projectId}
@@ -81,7 +97,7 @@ export function 对齐到账户(projectId: string, 账户ids: readonly string[])
       and (select count(distinct a.entity_id)
              from ${户名来源(projectId)}
               and ae.type = '账户'
-              and a.value = pe.canonical_value) = 1
+              and a.value = pe.canonical_value) ${候选条件}
       and exists (select 1 from ${户名来源(projectId)}
                    and a.entity_id in ${id集合(账户ids)}
                    and a.value = pe.canonical_value))`
