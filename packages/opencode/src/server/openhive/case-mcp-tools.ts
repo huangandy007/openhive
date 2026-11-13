@@ -2263,23 +2263,39 @@ export async function find_crossings(
   const 甲称呼 = 实体称呼(甲, args.甲)
   const 乙称呼 = 实体称呼(乙, args.乙)
 
-  // `实体ids` 按值解析时是同值所有类型行：旧「人」行上的关系也要算进交集。
-  const 另一端们 = async (实体ids: readonly string[]): Promise<{ 值们: string[]; 用满: boolean }> => {
+  /**
+   * 一侧的「另一端」集合（已并入户名对齐代表，与 `关系圈` 的分组键同口径）。
+   * 账户按基 2：恰好一端落在 `账户归属集`（XOR，内部往来不产生邻居）；
+   * 人 / 组织保持「端点等于自己」。另一端若是唯一户名对齐到某账户的人/组织，取其代表。
+   */
+  const 另一端们 = async (实体: 实体解析): Promise<{ 值们: string[]; 用满: boolean }> => {
+    const 是账户 = 实体.type === "账户"
+    const 集 = 是账户 ? 账户归属集(ctx.身份.projectId, 实体.ids) : undefined
+    const from属于 = 集 === undefined ? sql`r.from_id ${id属于(实体.ids)}` : sql`r.from_id in ${集}`
+    const 命中 =
+      集 === undefined
+        ? sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`
+        : sql`((r.from_id in ${集}) <> (r.to_id in ${集}))`
     const 值们 = rowsOf(
       await ctx.db.execute(sql`
-        select case when from_id ${id属于(实体ids)} then to_id else from_id end as 另一端
-          from auth.case_relation
-         where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-           and (from_id ${id属于(实体ids)} or to_id ${id属于(实体ids)})
-         order by 另一端 asc
+        select coalesce(对齐.代表, 另一个.id) as 邻端
+          from auth.case_relation r
+          join auth.case_entity 另一个
+            on 另一个.project_id = r.project_id
+           and 另一个.id = case when ${from属于} then r.to_id else r.from_id end
+           and 另一个.trust_state <> '已排除'
+          left join lateral ${户名对齐(ctx.身份.projectId, sql`另一个.id`, sql`另一个.type`, sql`另一个.canonical_value`)} 对齐 on true
+         where r.project_id = ${ctx.身份.projectId} and r.trust_state <> '已排除'
+           and ${命中}
+         order by 邻端 asc
          limit ${每侧关系上限}
       `),
-    ).map((行) => String(行.另一端))
+    ).map((行) => String(行.邻端))
     return { 值们, 用满: 值们.length === 每侧关系上限 }
   }
   // 顺序执行：夹具把多条连接汇进同一个 PG 会话，不并发建两份语句缓存。
-  const 侧甲 = await 另一端们(甲.ids)
-  const 侧乙 = await 另一端们(乙.ids)
+  const 侧甲 = await 另一端们(甲)
+  const 侧乙 = await 另一端们(乙)
   const 乙集 = new Set(侧乙.值们)
   const 交集 = [...new Set(侧甲.值们)].filter((id) => 乙集.has(id))
 
@@ -2346,7 +2362,7 @@ export async function find_crossings(
       : `${甲称呼}与${乙称呼}共同关联 ${共同关联.length} 个、共同时空 ${共同时空.length} 条${后缀}`,
     数据: 空 ? null : { 共同关联, 共同时空 },
     口径:
-      "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
+      "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体（账户按基 2：恰好一端落在本账户 ∪ 唯一户名对齐者，内部往来不产生邻居；另一端并入户名对齐代表），两侧各至多 500 条后在服务端求交；" +
       "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "共同时空按事件归属判定：参与者表命中两人的本人 / 正向对齐代表 / 唯一户名对齐到其账户的人或组织，" +

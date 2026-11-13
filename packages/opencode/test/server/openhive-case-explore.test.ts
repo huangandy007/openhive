@@ -4,13 +4,20 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import type { Queryable } from "../../src/server/openhive/case-store"
-import { aggregate_money, explore_entity, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
+import {
+  aggregate_money,
+  explore_entity,
+  find_crossings,
+  type 工具上下文,
+} from "../../src/server/openhive/case-mcp-tools"
 import { 建材料, 建实体, 建事件批, 建关系批, 建引用批 } from "./openhive-case-fact-fixture"
 import {
   种P3数据集,
   种展示数据集,
+  种对齐交叉数据集,
   type P3数据集,
   type 展示数据集,
+  type 对齐交叉数据集,
 } from "../fixtures/p3/dataset"
 
 /**
@@ -25,6 +32,7 @@ let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
 let 展示: 展示数据集
+let 对齐交叉: 对齐交叉数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-探索"
 
@@ -35,6 +43,7 @@ beforeAll(async () => {
   数据集 = await 种P3数据集(db(), 文件)
   // 展示层数据集同样走生产入口（组织户名 / 歧义回落只能在抽取产物上证明）。
   展示 = await 种展示数据集(db(), 文件)
+  对齐交叉 = await 种对齐交叉数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -262,6 +271,22 @@ describe("explore_entity", () => {
     }
     // 1 条与 4 条事件必须走同样多的查询：参与者摘要是批量取，不是逐事件查。
     expect(await 数(1)).toBe(await 数(4))
+  })
+})
+
+describe("交叉分析：共同关联按基 2 + 户名对齐代表（独立项目）", () => {
+  const 交叉项目 = "p-对齐交叉"
+
+  test("甲自身无边、唯一户名「四哥」经中间连到乙 ⇒ 共同关联是中间", async () => {
+    const 结果 = await find_crossings(ctx(交叉项目), {
+      甲: 对齐交叉.账号.甲,
+      乙: 对齐交叉.账号.乙,
+    })
+    // 旧实现按裸端点取另一端：甲侧没有边 ⇒ 共同关联 []、空原因「无匹配行」。
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as { 共同关联: { value: string }[] } | null
+    expect(数据).not.toBeNull()
+    expect(数据!.共同关联.map((条) => 条.value)).toEqual([对齐交叉.账号.中间])
   })
 })
 
