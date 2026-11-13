@@ -133,6 +133,14 @@ describe("explore_entity", () => {
     })
   })
 
+  test("I3 下一步：账户给 money_flow 建议，人不给（避免把账户工具指给人）", async () => {
+    const 账户结果 = await explore_entity(ctx(), { 实体: 数据集.账号.B })
+    // T8 遗留账①：账户分支必须把模型自然引到资金流（删掉这 4 行时本断言必须红）。
+    expect(账户结果.下一步.some((条) => 条.工具 === "money_flow")).toBe(true)
+    const 人结果 = await explore_entity(ctx(), { 实体: "张三" })
+    expect(人结果.下一步.some((条) => 条.工具 === "money_flow")).toBe(false)
+  })
+
   test("跳数=2：附 1～2 跳邻域", async () => {
     const B = await 实体id(数据集.账号.B)
     const 结果 = await explore_entity(ctx(), { 实体: B, 跳数: 2 })

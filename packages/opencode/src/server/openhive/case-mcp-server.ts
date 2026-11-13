@@ -348,8 +348,8 @@ const TOOLS: readonly Tool[] = [
   {
     name: "money_flow",
     description:
-      "某账户的资金流：收支分列汇总、首末、对手排行前 20、单笔最大前 10（带出处）、集中度与外币行数。" +
-      "转账口径与 aggregate_money 完全一致（账户归属含唯一户名对齐）。",
+      "某账户的资金流：收支分列汇总、首末、对手排行前 20（笔数、金额、首末）、单笔最大前 10（带出处）、集中度与外币行数。" +
+      "转账口径与 aggregate_money 完全一致（账户归属含唯一户名对齐）；起止同时作用于汇总、对手排行与单笔最大。",
     inputSchema: {
       type: "object",
       properties: {

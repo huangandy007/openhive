@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx"
+import { sql } from "drizzle-orm"
 import { claimNextJob, enqueueMaterial, runJob } from "../../../src/server/openhive/case-ingest"
 import type { 抽取器 } from "../../../src/server/openhive/case-extract-run"
 import type { Queryable } from "../../../src/server/openhive/case-store"
@@ -292,4 +293,82 @@ export async function 种展示数据集(
   )
 
   return { 项目, 账号: 展示账号 }
+}
+
+/** 多对手数据集：25 个 CNY 对手（前 3 笔 100.00、其余 10.00，合计 520.00），独立项目。 */
+export interface 多对手数据集 {
+  项目: string
+  主账号: string
+  对手账号们: string[]
+}
+
+export async function 种多对手数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<多对手数据集> {
+  const 项目 = "p-资金流多对手"
+  const 主账号 = "6222021234567893000"
+  const 对手账号们 = Array.from(
+    { length: 25 },
+    (_, i) => `6222021234567893${String(i + 1).padStart(3, "0")}`,
+  )
+  // 全部「收」：对手 → 主账号（入）。金额刻意让「前 3 对手 ÷ 方向合计」与
+  // 「前 3 对手 ÷ 前 20 对手合计」不同（300/520 = 57.7% vs 300/470 = 63.8%，I1）。
+  const 行们: (string | number)[][] = [
+    流水表头,
+    ...对手账号们.map((对手账号, i) => [
+      `2026-06-${String(i + 1).padStart(2, "0")} 10:00:00`,
+      主账号,
+      "多对手主户",
+      对手账号,
+      `对手${i + 1}`,
+      "收",
+      i < 3 ? "100.00" : "10.00",
+      "0.00",
+      "",
+      "CNY",
+    ]),
+  ]
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 流水 = await 入队(项目, "P3多对手流水.xlsx", 造工作簿(行们, "流水"))
+  await 跑(流水)
+  return { 项目, 主账号, 对手账号们 }
+}
+
+/** 老数据数据集：一条只有 `participants` 文本、没有参与者行的事件（模拟 P3 前数据）。 */
+export interface 老数据数据集 {
+  项目: string
+  主账号: string
+}
+
+export async function 种无参与者数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<老数据数据集> {
+  const 项目 = "p-资金流老数据"
+  const 主账号 = "6222021234567894000"
+  const 行们: (string | number)[][] = [
+    流水表头,
+    [
+      "2026-07-01 10:00:00",
+      主账号,
+      "旧主户",
+      "6222021234567894001",
+      "旧对手",
+      "收",
+      "500.00",
+      "0.00",
+      "",
+      "CNY",
+    ],
+  ]
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 流水 = await 入队(项目, "P3老数据流水.xlsx", 造工作簿(行们, "流水"))
+  await 跑(流水)
+  // P3 参与者表之前的老事件只有 `participants text[]`：删掉参与者行，模拟「方向不可判」。
+  // 事件本身、明细行、关系都保留——这正是 C3 要盖的 fail-closed 场景。
+  await db.execute(sql`delete from auth.case_event_participant where project_id = ${项目}`)
+  return { 项目, 主账号 }
 }

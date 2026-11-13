@@ -249,6 +249,22 @@ export function 归属歧义归属条件(input: {
 }
 
 /**
+ * 事件在指定角色上涉及该实体（`#002-06`：方向过滤的唯一出处）。
+ *
+ * 参与者表侧用 `归属实体集`（本人 / 正向代表 / 反向对齐者），不是裸实体 id：
+ * 按规范值解析时同值多行、以及人 ↔ 唯一户名账户都不能漏。
+ *
+ * ⚠️ 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `case_event.id`。
+ */
+export function 事件角色条件(projectId: string, 实体id: string, 角色: "付款方" | "收款方"): SQL {
+  return sql`exists (select 1 from auth.case_event_participant p
+                       where p.project_id = ${projectId}
+                         and p.event_id = case_event.id
+                         and p.entity_id in ${归属实体集(projectId, 实体id)}
+                         and p.role = ${角色})`
+}
+
+/**
  * 基 1（11 §3.1）：事件是否归属该实体。
  *
  * - 参与者表：`p.entity_id` ∈ 归属实体集（本人 / 正向代表 / 反向对齐者）；

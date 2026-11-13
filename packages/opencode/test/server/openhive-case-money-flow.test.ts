@@ -3,20 +3,34 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import type { Queryable } from "../../src/server/openhive/case-store"
-import { aggregate_money, money_flow, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
-import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
+import {
+  aggregate_money,
+  money_flow,
+  余额走势截断缺口,
+  type 工具上下文,
+} from "../../src/server/openhive/case-mcp-tools"
+import {
+  种P3数据集,
+  种多对手数据集,
+  种无参与者数据集,
+  type P3数据集,
+  type 多对手数据集,
+  type 老数据数据集,
+} from "../fixtures/p3/dataset"
 
 /**
  * `money_flow`（09 §4.2）：某账户的资金流。
  *
  * 汇总 / 对手方 / 外币行数 / 空原因 / 时间窗 / 账户解析全部复用 `aggregate_money`；
  * 本工具只补首末（其实也由汇总 SQL 的窗口聚合给出）、集中度、单笔最大。
- * 数据走生产入口 `种P3数据集`（`#006-35`），不裸种事实表。
+ * 数据走生产入口（`#006-35`），不裸种事实表；多对手 / 老数据各自独立项目（`#005-34`）。
  */
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
+let 多对手: 多对手数据集
+let 老数据: 老数据数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-资金流"
 
@@ -25,6 +39,8 @@ beforeAll(async () => {
   库 = connect({ ...process.env, PG_POOL_MAX: "1" })
   await migrate(库)
   数据集 = await 种P3数据集(db(), 文件)
+  多对手 = await 种多对手数据集(db(), 文件)
+  老数据 = await 种无参与者数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -37,53 +53,86 @@ function db(): Queryable {
   return 库
 }
 
-function ctx(): 工具上下文 {
-  return { db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } }
+function ctx(项目 = 数据集.projectId): 工具上下文 {
+  return { db: db(), 身份: { userId: 用户, projectId: 项目 } }
+}
+
+type 对手行 = {
+  对手方: string
+  方向: string
+  笔数: number
+  合计: string
+  首: number | null
+  末: number | null
+}
+type 流数据 = {
+  笔数: number
+  收入合计: string
+  支出合计: string
+  首末: { 首: number | null; 末: number | null }
+  汇总: { 方向: string; 笔数: number; 合计: string }[]
+  对手排行: 对手行[]
+  单笔最大: { id: string; 金额: string; 时间: number | null }[]
+  集中度: Record<string, string>
+  外币行数: number
 }
 
 describe("money_flow", () => {
-  test("B：入 3 笔 35000、收支分列、首末、对手排行、单笔最大、集中度", async () => {
+  test("B：入 3 笔 35000、收支分列、首末、对手排行（含首末）、单笔最大、集中度", async () => {
     const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.B })
     expect(结果.空原因).toBeNull()
-    const 数据 = 结果.数据 as {
-      笔数: number
-      收入合计: string
-      支出合计: string
-      首末: { 首: number | null; 末: number | null }
-      对手排行: { 对手方: string; 方向: string; 笔数: number; 合计: string }[]
-      单笔最大: { id: string; 金额: string }[]
-      集中度: Record<string, string>
-      外币行数: number
-    }
+    const 数据 = 结果.数据 as 流数据
     expect(数据.笔数).toBe(3)
     expect(数据.收入合计).toBe("35000.00")
     expect(数据.支出合计).toBe("0.00")
-    expect(数据.首末.首).toBe(1774972800)
-    expect(数据.首末.末).toBe(1775181600)
-    expect(数据.对手排行).toEqual([{ 对手方: "张三", 方向: "入", 笔数: 3, 合计: "35000.00" }])
+    expect(数据.首末).toEqual({ 首: 1774972800, 末: 1775181600 })
+    // I2：对手排行带组内首末（09 §4.2 / 11 §6 的数据契约）。
+    expect(数据.对手排行).toEqual([
+      {
+        对手方: "张三",
+        方向: "入",
+        笔数: 3,
+        合计: "35000.00",
+        首: 1774972800,
+        末: 1775181600,
+      },
+    ])
     expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["20000.00", "10000.00"])
     expect(数据.集中度).toEqual({ 入: "100.0%" })
     expect(数据.外币行数).toBe(1)
-    // 单笔口径是整句契约，不是关键词。
+    // 单笔口径是整句契约，不是关键词（C1：时间窗同样作用于单笔最大）。
     expect(结果.缺口).toContain(
-      "单笔最大取资金交易事件（CNY、未排除、经基 1 涉及本账户）；只有笔录人工关系、没有对应流水事件的笔不在榜上",
+      "单笔最大取资金交易事件（CNY、未排除、经基 1 涉及本账户），同样受时间窗限制（occurred_at 不在窗口内或无时间的事件不入榜）；方向按参与者角色（付款方 / 收款方）过滤；只有笔录人工关系、没有对应流水事件的笔不在榜上",
     )
     // 上游 `aggregate_money` 的余额走势缺口与本工具交付无关，不许整份透传（T7/T8 口径）。
-    expect(结果.缺口.join("\n")).not.toContain("人民币余额行超过")
+    expect(结果.缺口).not.toContain(余额走势截断缺口)
   })
 
-  test("与 aggregate_money 的对手方逐数相等（同一口径）", async () => {
+  test("与 aggregate_money 逐数相等（汇总 / 首末 / 对手方 / 外币行数同一口径）", async () => {
     const 流 = await money_flow(ctx(), { 账户: 数据集.账号.A })
-    const 汇总 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
-    const 流数据 = 流.数据 as { 对手排行: unknown }
-    const 汇总数据 = 汇总.数据 as { 对手方: unknown }
+    // 显式同参数比较：对手上限 20 与含首末都是内部选项，不显式传会拿默认 cap 10 比 20（m6）。
+    const 汇总结果 = await aggregate_money(
+      ctx(),
+      { 账户: 数据集.账号.A },
+      { 对手方上限: 20, 含首末: true },
+    )
+    const 流数据 = 流.数据 as 流数据
+    const 汇总数据 = 汇总结果.数据 as {
+      汇总: 流数据["汇总"]
+      首末: 流数据["首末"]
+      对手方: 对手行[]
+      外币行数: number
+    }
     expect(流数据.对手排行).toEqual(汇总数据.对手方)
+    expect(流数据.汇总).toEqual(汇总数据.汇总)
+    expect(流数据.首末).toEqual(汇总数据.首末)
+    expect(流数据.外币行数).toBe(汇总数据.外币行数)
   })
 
   test("方向=付：所选方向没有人民币转账 ⇒ 汇总为空但空原因为 null，缺口说清", async () => {
     const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.B, 方向: "付" })
     expect(结果.空原因).toBeNull()
-    const 数据 = 结果.数据 as { 汇总: unknown[]; 支出合计: string }
+    const 数据 = 结果.数据 as 流数据
     expect(数据.汇总).toEqual([])
     expect(数据.支出合计).toBe("0.00")
     // 整句全等（实得文案）：弱断言 `toContain("所选方向")` 挡不住文案漂移。
@@ -94,26 +143,100 @@ describe("money_flow", () => {
     // 设计 09 §4.2 / 11 §6 的 `方向` 取值是 收 / 付 / 全部（brief 的用例写成了 aggregate_money
     // 的「入」，与同一 brief 的实现代码冲突；按设计取「收」）。
     const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.B, 方向: "收", 对手: "张三" })
-    const 数据 = 结果.数据 as { 对手排行: unknown[]; 单笔最大: unknown[] }
+    const 数据 = 结果.数据 as 流数据
     expect(数据.对手排行).toHaveLength(1)
     expect(数据.单笔最大).toHaveLength(2)
   })
 
-  test("查询次数钉住", async () => {
-    let 次 = 0
-    const 柄 = {
-      execute: async (...参数: Parameters<Queryable["execute"]>) => {
-        次++
-        return db().execute(...参数)
-      },
-    }
-    const 结果 = await money_flow(
-      { db: 柄 as Queryable, 身份: { userId: 用户, projectId: 数据集.projectId } },
-      { 账户: 数据集.账号.B },
-    )
+  test("C1 起止作用于单笔最大：止=1775059199 只剩 10000 那笔", async () => {
+    const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.B, 止: 1775059199 })
+    const 数据 = 结果.数据 as 流数据
+    // 20000 那笔发生在 4/3（1775181600 > 止），不许出现在窗口内的「大额」里。
+    expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["10000.00"])
+    expect(数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "10000.00" }])
+  })
+
+  test("C2 对手过滤作用于汇总：A 与陈三没有人民币往来 ⇒ 汇总与支出合计都归零", async () => {
+    const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.A, 对手: "陈三" })
     expect(结果.空原因).toBeNull()
-    // 实测钉住（本轮实得，见 task-9-report）：aggregate_money 自身 11 次 + 账户再解析 1 次
-    // + 单笔最大 1 次 = 13。brief 推导的 14 与实得不同，按实测钉住。
-    expect(次).toBe(13)
+    const 数据 = 结果.数据 as 流数据
+    // 修复前：汇总 = 出 3 笔 35000（全账户口径），同时缺口说「与所选对手没有往来」。
+    expect(数据.汇总).toEqual([])
+    expect(数据.支出合计).toBe("0.00")
+    expect(数据.笔数).toBe(0)
+    expect(数据.对手排行).toEqual([])
+    expect(结果.缺口).toContain("与所选对手没有符合条件的往来")
+  })
+
+  test("I1 集中度分母取汇总方向合计（25 对手：300/520 = 57.7%，不是 300/470）", async () => {
+    const 结果 = await money_flow(ctx(多对手.项目), { 账户: 多对手.主账号 })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as 流数据
+    expect(数据.汇总).toEqual([{ 方向: "入", 笔数: 25, 合计: "520.00" }])
+    expect(数据.收入合计).toBe("520.00")
+    // 对手排行截到 20 条；分母若用这 20 条之和（470.00）会得到 63.8%。
+    expect(数据.对手排行).toHaveLength(20)
+    expect(数据.集中度).toEqual({ 入: "57.7%" })
+  })
+
+  test("C2 多对手：对手=对手1 时汇总 / 收支合计同步缩到该对手", async () => {
+    const 结果 = await money_flow(ctx(多对手.项目), { 账户: 多对手.主账号, 对手: "对手1" })
+    const 数据 = 结果.数据 as 流数据
+    expect(数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "100.00" }])
+    expect(数据.笔数).toBe(1)
+    expect(数据.收入合计).toBe("100.00")
+    expect(数据.支出合计).toBe("0.00")
+    // 夹具只给对手账户落了户名别名、没有同名「人」实体 ⇒ 展示按规范值回落账号
+    // （`账户展示名` 的 fail-closed 口径；本用例只关心金额口径缩没缩）。
+    expect(数据.对手排行).toEqual([
+      {
+        对手方: 多对手.对手账号们[0]!,
+        方向: "入",
+        笔数: 1,
+        合计: "100.00",
+        首: 1780279200,
+        末: 1780279200,
+      },
+    ])
+    expect(数据.集中度).toEqual({ 入: "100.0%" })
+  })
+
+  test("C3 老数据（无参与者行）：方向不可判 ⇒ fail-closed 排除并写进缺口", async () => {
+    const 无方向 = await money_flow(ctx(老数据.项目), { 账户: 老数据.主账号 })
+    const 无方向数据 = 无方向.数据 as 流数据
+    // 文本回退仍能认出事件（不是「事件没了」）。
+    expect(无方向数据.单笔最大.map((条) => 条.金额)).toEqual(["500.00"])
+
+    const 有方向 = await money_flow(ctx(老数据.项目), { 账户: 老数据.主账号, 方向: "收" })
+    expect(有方向.空原因).toBeNull()
+    const 有方向数据 = 有方向.数据 as 流数据
+    // 关系侧汇总仍是入 1 笔 500：方向过滤只影响事件榜，不能与汇总自相矛盾地「空且无话」。
+    expect(有方向数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "500.00" }])
+    expect(有方向数据.单笔最大).toEqual([])
+    expect(有方向.缺口).toContain("1 条资金交易事件没有参与者角色，无法按方向过滤")
+  })
+
+  test("查询次数钉住（含 C1 / C3 新增计数的分档）", async () => {
+    const 计次 = async (参数: Parameters<typeof money_flow>[1]): Promise<number> => {
+      let 次 = 0
+      const 柄 = {
+        execute: async (...执行参数: Parameters<Queryable["execute"]>) => {
+          次++
+          return db().execute(...执行参数)
+        },
+      }
+      const 结果 = await money_flow(
+        { db: 柄 as Queryable, 身份: { userId: 用户, projectId: 数据集.projectId } },
+        参数,
+      )
+      expect(结果.空原因).toBeNull()
+      return 次
+    }
+    // 默认：aggregate_money 11 + 账户再解析 1 + 单笔最大 1 = 13。
+    expect(await 计次({ 账户: 数据集.账号.B })).toBe(13)
+    // C3：方向多一条「无参与者行」计数 ⇒ 14。
+    expect(await 计次({ 账户: 数据集.账号.B, 方向: "收" })).toBe(14)
+    // C1：时间窗多一条「无 occurred_at」计数 ⇒ 14。
+    expect(await 计次({ 账户: 数据集.账号.B, 止: 1775059199 })).toBe(14)
   })
 })

@@ -1742,6 +1742,8 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
     { 工具: "aggregate_money", 结果: await aggregate_money(ctx(身份戊), { 账户: "李四" }) },
     // 第 11 个工具：必须有真实返回进入守卫（覆盖集合从 `工具名` 派生，缺了这条会指出漏了谁）。
     { 工具: "money_flow", 结果: await money_flow(ctx(身份戊), { 账户: 账号 }) },
+    // 空数据（李四没有任何关系/明细）：空原因分支也要有真实返回进入守卫。
+    { 工具: "money_flow", 结果: await money_flow(ctx(身份戊), { 账户: "李四" }) },
     {
       工具: "find_crossings",
       结果: await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),
