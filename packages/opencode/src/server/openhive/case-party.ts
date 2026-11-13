@@ -29,6 +29,12 @@ export function 户名来源(projectId: string): SQL {
  * 只有「人」/「组织」才可能对齐；其他类型 `in ('人','组织')` 恒假 ⇒ 代表 null、
  * 候选 0，外层 `coalesce(代表, id)` 自然退回自己。
  *
+ * `id` 只为调用点对称（与 `对齐代表` 同形）；本派生表只按 `值` 匹配，回落到自己由
+ * `对齐代表` 的 `coalesce` 负责。
+ *
+ * 依赖：候选来自上游只给账户写 `kind='户名'` 别名（`case-translate-store.ts` 的别名写入），
+ * 故本 SQL 不另加 `ae.type='账户'`。
+ *
  * 聚合在零行上仍返回一行（count=0、代表 null），所以可以安全地当 lateral 表或标量子查询。
  */
 export function 户名对齐(projectId: string, id: SQL, 类型: SQL, 值: SQL): SQL {

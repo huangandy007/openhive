@@ -10,7 +10,6 @@ let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
 const 文件 = new Map<string, Uint8Array>()
-const 用户 = "u-p3"
 
 beforeAll(async () => {
   pg = await startProductionDb()
@@ -53,9 +52,20 @@ async function 实体id(项目: string, 值: string): Promise<string> {
 }
 
 describe("端点对齐（10 §3.1）", () => {
+  // 这条同时钉住 `count(distinct a.entity_id)`：夹具给账户 Z 的第二份流水材料落了第二条
+  // 「户名=王五」的别名行（别名 id 含 materialId），所以 `count(*)` 会算出 2、与本条的候选数 1 不符。
   test("唯一户名候选 ⇒ 代表 = 该账户", async () => {
     const 实得 = await 对齐("王五")
     expect(实得).toEqual({ 代表: await 实体id(数据集.对齐项目, 数据集.对齐账号.Z), 候选数: 1 })
+  })
+
+  test("唯一户名候选 ⇒ 对齐代表返回该账户（而不是自己）", async () => {
+    const 行们 = rowsOf(
+      await db().execute(sql`
+        select ${对齐代表(数据集.对齐项目, sql`'self-id'`, sql`'人'`, sql`${"王五"}`)} as 代表
+      `),
+    )
+    expect(String(行们[0]?.代表)).toBe(await 实体id(数据集.对齐项目, 数据集.对齐账号.Z))
   })
 
   test("两个账户同户名 ⇒ 不对齐（代表 null、候选 2）", async () => {
@@ -66,10 +76,11 @@ describe("端点对齐（10 §3.1）", () => {
     expect(await 对齐("查无此人")).toEqual({ 代表: null, 候选数: 0 })
   })
 
-  test("账户/号码类型不参与对齐（代表恒为自己）", async () => {
+  test("账户类型不参与对齐：同名户名存在也退回自己（候选 0）", async () => {
+    expect(await 对齐("王五", "账户")).toEqual({ 代表: null, 候选数: 0 })
     const 行们 = rowsOf(
       await db().execute(sql`
-        select ${对齐代表(数据集.对齐项目, sql`${"self-id"}`, sql`'账户'`, sql`${"anything"}`)} as 代表
+        select ${对齐代表(数据集.对齐项目, sql`'self-id'`, sql`'账户'`, sql`${"王五"}`)} as 代表
       `),
     )
     expect(String(行们[0]?.代表)).toBe("self-id")

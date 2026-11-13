@@ -15,6 +15,7 @@ import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
 import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
+import { 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -206,6 +207,8 @@ export async function query_entities(
     条件.push(
       sql`(canonical_value ilike ${模式}
         or exists (select 1 from unnest(aliases) as 别名 where 别名 ilike ${模式})
+        -- 不并入 case-party 的「户名来源」：本处的「已排除」由外层 where 按「含已排除」开关决定，
+        -- 而「户名来源」内含 ae.trust_state <> '已排除'，并入会让「含已排除=true」按户名搜不到（#002-06 的例外，已裁定）。
         or exists (select 1 from auth.case_entity_alias a
                     where a.project_id = ${ctx.身份.projectId} and a.entity_id = e.id
                       and a.kind = '户名' and a.revoked_at is null and a.value ilike ${模式}))`,
@@ -281,15 +284,11 @@ export async function 解析户名(
 ): Promise<{ id: string; value: string; type: string; ids: string[]; 命中: "户名" } | undefined> {
   const 行们 = rowsOf(
     await ctx.db.execute(sql`
-      select e.id, e.type, e.canonical_value
-        from auth.case_entity e
-        join auth.case_entity_alias a
-          on a.project_id = e.project_id and a.entity_id = e.id
-       where e.project_id = ${ctx.身份.projectId}
-         and a.kind = '户名' and a.value = ${值} and a.revoked_at is null
-         and e.type = '账户'
-         and e.trust_state <> '已排除'
-       order by e.created_at desc, e.type asc, e.id asc
+      select ae.id, ae.type, ae.canonical_value
+        from ${户名来源(ctx.身份.projectId)}
+         and a.value = ${值}
+         and ae.type = '账户'
+       order by ae.created_at desc, ae.type asc, ae.id asc
     `),
   )
   const 按id = new Map<string, Record<string, unknown>>()
