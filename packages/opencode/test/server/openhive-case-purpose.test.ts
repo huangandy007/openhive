@@ -1,0 +1,258 @@
+import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import {
+  一级类们,
+  二级类们,
+  判定用途,
+  校验规则表,
+  解析备注段,
+} from "../../src/server/openhive/case-purpose"
+import { 用途规则们, 词表版本 } from "../../src/server/openhive/case-purpose-rules"
+
+/** 判定结果压成一行，断言里直接比，失败时看得到全貌。 */
+function 判(备注: string | null, 交易类型: string | null = null) {
+  const r = 判定用途({ 备注, 交易类型 })
+  return `${r.一级}${r.二级 === null ? "" : `/${r.二级}`}`
+}
+
+describe("有序优先级：first-match wins", () => {
+  test("信用卡还款排在提现之前（06 §6.3 修正行 1）", () => {
+    // 该行的交易类型就是「提现/转账至银行卡」，只按交易类型会错判成提现。
+    expect(判("信用卡还款", "支付账户提现/转账至银行卡")).toBe("信用卡还款")
+  })
+
+  test("加油排除便利店：中石化易捷便利店是购物不是加油（修正行 2）", () => {
+    expect(判("中石化易捷便利店消费")).toBe("消费/购物")
+    expect(判("中国石化加油站")).toBe("消费/车辆加油")
+  })
+
+  test("停车与过路费互不吞（修正行 3）", () => {
+    expect(判("ETCP-临时停车缴费")).toBe("消费/停车")
+    expect(判("高速通行费")).toBe("消费/车辆过路费")
+  })
+
+  test("零钱通只有落在备注主体才算划转（修正行 4）", () => {
+    expect(判("零钱通支付")).toBe("零钱通划转")
+    expect(判("微信转账;零钱通")).not.toBe("零钱通划转")
+  })
+
+  test("手机充值不认单字「充值」，「充值服务」是内容付费（06 §2.5）", () => {
+    expect(判("中国移动话费充值")).toBe("消费/手机充值")
+    expect(判("剑来第22集充值服务")).not.toBe("消费/手机充值")
+  })
+})
+
+describe("fail-closed：判不出不硬猜", () => {
+  test("空备注且无交易类型 ⇒ 未分类（唯一的真空出口）", () => {
+    expect(判(null)).toBe("未分类")
+    expect(判("")).toBe("未分类")
+  })
+
+  test("填充符备注 ⇒ 未识别转账（06 §6.5：- / #|# / 工资 / 货款 共约 300 行）", () => {
+    // 实测三份文件 293 行备注为 `-`（291 行交易类型=对支付账户转账、2 行=提现/转账至银行卡），
+    // 06 §6.5 明确这类落「未识别转账」。它必须排在提现（150）与转账（400）之前。
+    expect(判("-")).toBe("未识别转账")
+    expect(判("#|#")).toBe("未识别转账")
+    expect(判("工资")).toBe("未识别转账")
+    expect(判("-", "支付账户提现/转账至银行卡")).toBe("未识别转账")
+    expect(判("-", "支付账户对支付账户转账")).toBe("未识别转账")
+  })
+
+  test("填充符是**全等**不是包含：带连字符的真商户不能被吞", () => {
+    expect(判("ETCP-临时停车缴费")).toBe("消费/停车")
+  })
+
+  test("交易类型说是消费、备注认不出 ⇒ 消费/其他", () => {
+    expect(判("某个没见过的商户", "支付账户消费")).toBe("消费/其他")
+  })
+
+  test("没有词规则时前置落粗类：提现/充值/转账（备注为空的转账行仍是转账）", () => {
+    expect(判("", "支付账户提现/转账至银行卡")).toBe("提现至本人卡")
+    expect(判("", "支付账户充值")).toBe("账户充值")
+    expect(判("", "支付账户对支付账户转账")).toBe("转账")
+  })
+})
+
+describe("依据可审计（A20）", () => {
+  test("每个值都带规则 id、命中词、字段与词表版本", () => {
+    const r = 判定用途({ 备注: "P云停车平台缴费" })
+    expect(r.依据.规则).toBe("消费.停车")
+    expect(r.依据.命中).toBe("P云")
+    expect(r.依据.字段).toBe("备注原文")
+    expect(r.依据.词表).toBe(词表版本)
+  })
+
+  test("粗类规则（无词）的命中与字段都是 null", () => {
+    const r = 判定用途({ 备注: "", 交易类型: "支付账户对支付账户转账" })
+    expect(r.依据.规则).toBe("转账.转账")
+    expect(r.依据.命中).toBeNull()
+    expect(r.依据.字段).toBeNull()
+  })
+
+  test("纯函数：同一输入两次结果相同", () => {
+    const 甲 = 判定用途({ 备注: "美宜佳便利店消费" })
+    const 乙 = 判定用途({ 备注: "美宜佳便利店消费" })
+    expect(甲).toEqual(乙)
+  })
+})
+
+describe("备注段解析", () => {
+  test("## 分段 + 键：值，主体取第一段再按分号切", () => {
+    const r = 解析备注段("微信转账;零钱通##子商户名称：某店##备注：午饭")
+    expect(r.主体).toBe("微信转账")
+    expect(r.段["子商户名称"]).toBe("某店")
+    expect(r.段["备注"]).toBe("午饭")
+  })
+
+  test("没有分段时主体就是整串（不截断）", () => {
+    expect(解析备注段("支付账户消费").主体).toBe("支付账户消费")
+  })
+
+  test("同键重复时取第一个值，不覆盖", () => {
+    expect(解析备注段("##备注：甲##备注：乙").段["备注"]).toBe("甲")
+  })
+})
+
+describe("规则表自检（加类/加词的准入闸）", () => {
+  test("规则表本身合规", () => {
+    expect(校验规则表(用途规则们)).toEqual([])
+  })
+
+  test("词表里没有重复类名，一级 12 个、二级 15 个", () => {
+    expect(一级类们.length).toBe(12)
+    expect(new Set(一级类们).size).toBe(12)
+    expect(二级类们.length).toBe(15)
+    expect(new Set(二级类们).size).toBe(15)
+  })
+
+  test("校验器每条分支都真的有红用例（`#005-18` 假绿四问：删掉 if 应该红）", () => {
+    // 一个坏数组把**每条**分支都踩一遍：删掉任何一个 if，下面就有一条断言转红。
+    const 坏 = [
+      {
+        id: "甲",
+        优先级: 20,
+        适用源: ["通用"],
+        字段: "备注原文",
+        任一: ["卡"],
+        输出: { 一级: "消费" as const, 二级: "购物" as const },
+        说明: "",
+      },
+      {
+        id: "甲",
+        优先级: 15, // 非 10 的倍数 ＋ 与上一条的 20 拼成倒序
+        适用源: [], // 适用源为空
+        字段: "备注排除", // 未知字段
+        任一: ["购物"],
+        输出: { 一级: "消费" as const, 二级: "美食" as never }, // 二级不在词表
+        说明: "",
+      },
+      {
+        id: "乙",
+        优先级: 20, // 优先级重复
+        适用源: ["通用"],
+        字段: "备注原文",
+        任一: ["购物"],
+        输出: { 一级: "转账" as const, 二级: "购物" as const }, // 非消费挂了二级
+        说明: "",
+      },
+    ]
+    const 问题 = 校验规则表(坏)
+    expect(问题.some((x) => x.includes("id 重复"))).toBe(true)
+    expect(问题.some((x) => x.includes("未按优先级升序"))).toBe(true)
+    expect(问题.some((x) => x.includes("10 的倍数"))).toBe(true)
+    expect(问题.some((x) => x.includes("单字"))).toBe(true)
+    expect(问题.some((x) => x.includes("不在词表内"))).toBe(true)
+    expect(问题.some((x) => x.includes("优先级重复"))).toBe(true)
+    expect(问题.some((x) => x.includes("未知字段"))).toBe(true)
+    expect(问题.some((x) => x.includes("非消费类挂了二级"))).toBe(true)
+    expect(问题.some((x) => x.includes("适用源为空"))).toBe(true)
+  })
+
+  test("子分支各自能红：备注# 空键 / 一级类越界 / 空词", () => {
+    // `备注#` 后面没有键名 ⇒ 未知字段（不是「备注#任意键都合法」）。
+    // 把校验器里 `length > "备注#".length` 那半个条件删掉，这条就红。
+    expect(
+      校验规则表([
+        {
+          id: "丙",
+          优先级: 10,
+          适用源: ["通用"],
+          字段: "备注#",
+          任一: ["购物"],
+          输出: { 一级: "消费" as const, 二级: "购物" as const },
+          说明: "",
+        },
+      ]),
+    ).toEqual(["未知字段：丙 → 备注#"])
+    // 一级类写错必须当场报（「购置」不是词表里的 12 类之一）。
+    expect(
+      校验规则表([
+        {
+          id: "丁",
+          优先级: 10,
+          适用源: ["通用"],
+          字段: "备注原文",
+          任一: ["购物"],
+          输出: { 一级: "购置" as never },
+          说明: "",
+        },
+      ]),
+    ).toEqual(["一级类不在词表内：丁 → 购置"])
+    // 纯空白词：trim 后为空，走「空词」那条，不该走到「单个汉字」。
+    expect(
+      校验规则表([
+        {
+          id: "戊",
+          优先级: 10,
+          适用源: ["通用"],
+          字段: "备注原文",
+          任一: [" "],
+          输出: { 一级: "消费" as const },
+          说明: "",
+        },
+      ]),
+    ).toEqual(["单字/空词禁入：戊 的空词"])
+  })
+
+  test("规则表缺兜底时，判定落 `兜底.缺失`（审计要能区分「表坏了」）", () => {
+    expect(判定用途({ 备注: "随便写点什么" }, [])).toEqual({
+      一级: "未分类",
+      二级: null,
+      依据: { 规则: "兜底.缺失", 命中: null, 字段: null, 词表: 词表版本 },
+    })
+  })
+})
+
+describe("批量路径零模型调用（A20 第 10 条）", () => {
+  // 引擎与规则表**各扫一遍**：规则表是 T5 唯一会改的文件，只扫引擎等于把防线放在
+  // 最不可能变的地方。四种形态都要挡：`import x`、`export … from`、动态 `import(`、`require(`。
+  const 允许的依赖行 = new Map([
+    [
+      "case-purpose.ts",
+      [
+        // 自引用再导出（命名空间出口），不是外部依赖；`export … from` 过滤会扫到它。
+        'export * as OpenhiveCasePurpose from "./case-purpose"',
+        'import { 用途规则们, 词表版本 } from "./case-purpose-rules"',
+      ],
+    ],
+    ["case-purpose-rules.ts", ['import type { 用途规则 } from "./case-purpose"']],
+  ])
+  for (const [文件, 允许] of 允许的依赖行) {
+    test(`${文件} 只依赖白名单里的那一行`, () => {
+      const 源 = readFileSync(
+        join(import.meta.dir, "..", "..", "src", "server", "openhive", 文件),
+        "utf8",
+      )
+      const 行们 = 源.split("\n").map((l) => l.trim())
+      const 依赖行 = 行们.filter(
+        (l) =>
+          l.startsWith("import ") ||
+          (l.startsWith("export ") && l.includes(" from ")) ||
+          l.includes("import(") ||
+          l.includes("require("),
+      )
+      expect(依赖行).toEqual(允许)
+    })
+  }
+})
