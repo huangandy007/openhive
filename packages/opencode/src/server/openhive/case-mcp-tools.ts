@@ -15,7 +15,7 @@ import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
 import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
-import { 户名对齐, 户名来源 } from "./case-party"
+import { 对齐代表, 户名对齐, 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -848,6 +848,30 @@ export async function query_relations(
   }
 }
 
+/**
+ * 「事件是否涉及该实体」的唯一出处（10 §6.2，`#002-06`）。
+ *
+ * 两路证据缺一不可：
+ * - `participants text[]`：所有写口都写实体规范值（笔录写人名、表格写账号）；
+ * - 参与者表 + 对齐：按**人**查时，表格事件的参与者是账户，text[] 里没有人名。
+ *   对齐代表把「李四」换成唯一户名账户 B，才查得到 B 的流水事件。
+ *
+ * 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `participants` / `case_event.id`。
+ */
+export function 事件参与者条件(ctx: 工具上下文, 实体: 实体解析): SQL {
+  const 代表 = 对齐代表(
+    ctx.身份.projectId,
+    sql`${实体.id}`,
+    sql`${实体.type}`,
+    sql`${实体.value}`,
+  )
+  return sql`(exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${实体.value})
+    or exists (select 1 from auth.case_event_participant p
+                where p.project_id = ${ctx.身份.projectId}
+                  and p.event_id = case_event.id
+                  and p.entity_id = ${代表}))`
+}
+
 /** 事件：按类型与参与实体过滤，时间按 `occurred_at` 闭区间。 */
 export async function query_events(
   ctx: 工具上下文,
@@ -890,10 +914,10 @@ export async function query_events(
   let 参与实体解析: 实体解析 | undefined
   if (args.参与实体 !== undefined) {
     参与实体解析 = await 解析实体(ctx, args.参与实体, "参与实体")
-    // `participants` 存的是**实体规范值**，不是 id：唯一写口 `case-extract.ts:433` 写的是
-    // `项实体.canonicalValue`（`case-ingest.ts:573` 原样落库），而实体 id 是 `事实id(...)` 的
-    // sha256 前 32 位，两者永不相等。比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
-    条件.push(sql`exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${参与实体解析.value})`)
+    // 「事件是否涉及该实体」只有一处定义（`事件参与者条件`）：text[] 规范值 ∪ 参与者表的对齐代表。
+    // `participants` 存的是**实体规范值**、不是 id（`case-extract.ts:433` 写 `canonicalValue`），
+    // 比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
+    条件.push(事件参与者条件(ctx, 参与实体解析))
   }
   // §9.1：`participants` 存的是实体规范值、不是 id，join 不到实体表；先取本项目「已排除」
   // 实体的规范值集合，出库后在 JS 里按值剔除（实现不足 20 行，故不选「写进缺口」的退路）。
@@ -947,7 +971,8 @@ export async function query_events(
     数据,
     口径:
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
-      "同创建时间再按 type 升序、id 升序取第一条）过滤；时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
+      "同创建时间再按 type 升序、id 升序取第一条）过滤；参与实体按 participants 规范值或参与者表的对齐代表命中（人 → 唯一户名账户）；" +
+      "时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。" + 身份口径,
     缺口: 截断缺口(args.限制, 限制, 数据.length),
     空原因: 空 ? "无匹配行" : null,
@@ -1529,8 +1554,8 @@ export async function aggregate_money(
  * 共同关联**每侧各查一次**再在 JS 求交：合成一条 `or` 查询再 `limit 500` 会让一方的边
  * 把配额吃光，另一方的交集被静默截断。
  *
- * 共同时空必须比 `participants` 里的**实体规范值**（不是 id）：`participants` 的唯一写口
- * `case-extract.ts:433` 写的是 `canonicalValue`，拿 id 比会恒空。
+ * 共同时空走共享的 `事件参与者条件`：text[] 规范值 ∪ 参与者表的对齐代表。
+ * 只比 text[] 会让「按人查」看不到表格卡片的事件（表格参与者是账户）。
  */
 export async function find_crossings(
   ctx: 工具上下文,
@@ -1598,7 +1623,8 @@ export async function find_crossings(
 
   const 时空条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
-    sql`participants @> array[${甲.value}, ${乙.value}]::text[]`,
+    事件参与者条件(ctx, 甲),
+    事件参与者条件(ctx, 乙),
     sql`trust_state <> '已排除'`,
   ]
   if (args.起 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
@@ -1640,7 +1666,7 @@ export async function find_crossings(
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
       "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
-      "共同时空按事件 participants（实体规范值）同时包含两人判定，时间按 occurred_at 闭区间。" + 身份口径,
+      "共同时空按事件参与实体判定：participants 规范值，或参与者表里两人的对齐代表（人 → 唯一户名账户）；时间按 occurred_at 闭区间。" + 身份口径,
     缺口: 空 ? [...缺口, "共同关联与共同时空都为空：两侧在时间窗内没有可求交的边或事件"] : 缺口,
     空原因: 空 ? "无匹配行" : null,
     出处: 空
