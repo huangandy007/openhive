@@ -3,6 +3,7 @@ export * as OpenhiveCaseIdentity from "./case-identity"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 文本数组 } from "./case-fact-store"
+import { 户名来源 } from "./case-party"
 import type { Queryable } from "./case-store"
 
 /**
@@ -165,13 +166,11 @@ export async function 读身份标注(
     }
   }
 
+  // 户名前提与端点对齐共用 `户名来源`（#002-06）：未撤销 + 未排除只在这里定义一次。
   const 别名们 = rowsOf(
     await db.execute(sql`
       select a.entity_id, a.value
-        from auth.case_entity_alias a
-        join auth.case_entity e on e.project_id = a.project_id and e.id = a.entity_id
-       where a.project_id = ${projectId} and a.kind = '户名' and a.revoked_at is null
-         and e.trust_state <> '已排除'
+        from ${户名来源(projectId)}
          and a.entity_id = any(${文本数组(id们)})
        order by a.entity_id asc, a.created_at asc, a.id asc
     `),
