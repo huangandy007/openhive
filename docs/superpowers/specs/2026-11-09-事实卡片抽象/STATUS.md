@@ -164,8 +164,31 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
     **1366 pass / 2 fail**（= 基线 1361 + 新增 5，两条 fail 均既有无关）；oxlint 0 errors、
     改动行 0 告警；`bun.lock` 无 diff。真栈**未验证**：在跑的栈是启动那一刻的代码
     （`real-stack-serves-code-from-boot`），修复要重启内核才生效，本轮不重启 ⇒ 按 `#002-02` 登记。
-16. **T8 M2（未修）**：`账户展示名` 的 fail-closed（`候选数 = 1`）守卫在两个调用点而非函数内，
-    第三处调用忘看即出错。
+16. **T8 M2（已修，2026-11-13）**：`账户展示名` 的 fail-closed（`候选数 = 1`）守卫在两个调用点
+    而非函数内，第三处调用忘看即出错。它与注释所称「对称」的 `户名对齐` 实际**不对称**——
+    后者守卫在函数内（`case when count(distinct a.entity_id) = 1 then min(...) end`），
+    7 处调用点直接读 `对齐.代表`；前者裸返回 `代表值`，调用点各自套
+    `min(case when 展示.候选数 = 1 …)`（`case-entity-list.ts` 3 处、`case-mcp-tools.ts` 1 处）。
+    探针（生产入口 `种展示数据集`，直接 `select 代表值, 代表类型, 候选数 from 账户展示名(...)`，
+    不套守卫）：Q 候选 2 实得 `"张Q"`、S 候选 2 实得 `"人乙"`——函数本体不 fail-closed，
+    第三处调用会直接把「多候选里 min 出来的那一个」当人名回给模型。
+    修法：把 `case when count(distinct p.canonical_value) = 1` 搬进 `账户展示名` 的三个代表列
+    （与 `户名对齐` 同形），调用点 4 处收敛成 `min(展示.代表X)`；`候选数` 列保留（`户名对齐` 同款，
+    新用例也靠它证明夹具真是「候选 2」）。不动 `户名对齐`、不动缺口计数。
+    红（`Expected: null / Received: "人乙"`；同用例的 `候选数 === 2` 先绿，证明夹具真是歧义）→
+    绿 2 pass / 0 fail / 5 expect。变异 A（拆函数内守卫，恢复裸 `min`）：新用例红
+    （`Received: "人乙"`）＋ 既有 `openhive-case-explore.test.ts`「组织户名展示组织名」红
+    （`组.对方 === S` 实得 undefined）⇒ 搬进来的守卫在对外面上是承重的；变异 B（守卫取反
+    `<> 1`）：新用例 2 条全红 ＋ 既有展示用例红（`某某公司` 组找不到）。
+    门禁：typecheck 32/32；受影响 5 文件 **52 pass / 0 fail / 207 expect**；全量
+    `openhive-case` **1370 pass / 2 fail**（= 基线 1368 + 新增 2；两条 fail 均既有无关：
+    schema 13 张表、supervisor 假子进程）；`bun run lint` 6034 warnings / 1 error（上游既有
+    `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义），改动 4 文件
+    改动行 **0 告警**；`bun.lock` 无 diff。⑥ 落点：`户名对齐` / `对齐代表` / `对齐到账户` /
+    `歧义到账户` 的 fail-closed 判据均已收在函数内（`名字对齐到账户` 只收 `候选条件`），本缺口
+    是唯一把守卫外推的一处；`aggregate_money` 的 `_候选数 >= 2` 是**反向前提**（人 → 多账户，
+    与 `歧义到账户` 同向），不属本条。真栈：远端库户名别名 **0 行**，歧义 / 唯一候选都不可复现
+    ⇒ 按 `#002-02` 登记不可验证。
 17. **T9（已落地）**：注册 `money_flow` 后已把 `explore_entity` 账户分支的 `下一步` 加回，
     并把 `money_flow` 的返回纳入不变量覆盖集合（`工具名` 派生）。此处登记为**已核对项**。
 18. **T8 复查 2（未修）**：`档案截断缺口.前缀` 是各句句首的手抄副本 ⇒ 将来新增截断类型时
@@ -185,12 +208,6 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
     **1368 pass / 2 fail**（= 基线 1366 + 新增 2，两条 fail 均既有无关）；oxlint 0 errors、
     改动行 0 告警；`bun.lock` 无 diff。真栈：`money_flow` 正向路在真栈不可达（三个项目都有
     未解析材料），空路径不体现本修复 ⇒ 按 `#002-02` 登记不可验证。
-16. **T8 M2（未修）**：`账户展示名` 的 fail-closed（`候选数 = 1`）守卫在两个调用点而非函数内，
-    第三处调用忘看即出错。
-17. **T9（已落地）**：注册 `money_flow` 后已把 `explore_entity` 账户分支的 `下一步` 加回，
-    并把 `money_flow` 的返回纳入不变量覆盖集合（`工具名` 派生）。此处登记为**已核对项**。
-18. **T8 复查 2（未修）**：`档案截断缺口.前缀` 是各句句首的手抄副本 ⇒ 将来新增截断类型时
-    过滤会漏（无兜底）。
 
 ## 变更记录
 
@@ -213,3 +230,4 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 | 2026-11-13 | **缺口 #13 修复（基 2 类型分派收成一处）**：`case-party` 新增 `账户类型` / `是账户类型` / `关系归属范围` / `关系归属口径`，`实体档案`、`关系圈`、`关系图`、`find_crossings`（第四份，复查新发现）全部改从这里取；逐行 SQL 形态 `实体关系归属` 的字面值也取 `账户类型`。纯重构无行为差异（特征用例在旧代码上先绿再重构后同绿）；变异 A（加 `组织`）组织自环 3 红；变异 B（账户触达退回端点 OR）**既有 23 条全绿**⇒ 补 1 条账户 XOR 用例后才红（`Expected: 3 / Received: 4`）；变异 C（非账户触达改 XOR）档案 / 关系圈 2 红。门禁：typecheck 32/32、`test/server/openhive-case` 1361 pass / 2 fail（基线 +4 新增，2 fail 既有无关）、oxlint 0 errors（新行 0 告警）、`bun.lock` 无 diff。真栈：重构类，无行为差异可验（`#002-02`） | 本行（代码 `case-party.ts` / `case-entity-list.ts` / `case-graph.ts` / `case-mcp-tools.ts` + 用例 `openhive-case-relation-scope.test.ts`） |
 | 2026-11-13 | **缺口 #15 修复（explore_entity 接入身份三档）**：新增 `主体身份`（`读身份标注` 薄封装），只标被查询主体、且只标「人 / 账户」；成功信封与「实体存在但无任何事实」空信封都带 `身份` + 摘要后缀，`口径` 拼 `身份口径`。红 4 fail / 1 pass（`身份` 实得 `undefined`、摘要无「未核实身份」）→ 绿 5 pass / 0 fail；三组变异（拆身份 3 红 / 拆后缀 2 红 / 放宽类型范围组织红）。连带按实得改两条钉子：空事实摘要加后缀、查询次数 18 → 20。门禁：typecheck 32/32、受影响 7 文件 195 pass / 0 fail、全量 `openhive-case` 1366 pass / 2 fail（基线 +5 新增，2 fail 均既有无关）、oxlint 0 errors（改动行 0 告警）、`bun.lock` 无 diff。真栈未验证（栈跑的是启动时旧代码，需重启）。⑥ 复查新发现 `money_flow` 成功路径丢 `身份`，登记为缺口 #19 | 本行（代码 `case-mcp-tools.ts` + 用例 `openhive-case-explore.test.ts`） |
 | 2026-11-13 | **缺口 #19 修复（money_flow 透传身份档）**：成功路径从 `汇总结果.身份` 只透传，信封加 `身份`、摘要接后缀、口径拼 `身份口径`；空路径不动。红（`身份` 实得 `undefined`）→ 绿 2 pass / 0 fail；三组变异（拆身份 / 拆后缀 / 空路径丢身份）各自红。查询次数四条钉子不变（13/14/14/15）。门禁：typecheck 32/32、受影响 4 文件 137 pass / 0 fail、全量 `openhive-case` 1368 pass / 2 fail（基线 +2 新增，2 fail 均既有无关）、oxlint 0 errors（改动行 0 告警）、`bun.lock` 无 diff。真栈不可验证（`money_flow` 正向路不可达），按 `#002-02` 登记 | 本行（代码 `case-mcp-tools.ts` + 用例 `openhive-case-money-flow.test.ts`） |
+| 2026-11-13 | **缺口 #16 修复（`账户展示名` 守卫内收）**：守卫原在两个调用点各自套 `min(case when 候选数 = 1 …)`（关系圈 3 处、`aggregate_money` 1 处），函数本体裸返回 `代表值`——与注释所称「对称」的 `户名对齐`（守卫在函数内）实际不对称，第三处调用忘套即把多候选里的人名当人名回给模型。探针实得：S 候选 2 仍出 `"人乙"`、Q 候选 2 出 `"张Q"`。修法：`case when count(distinct p.canonical_value) = 1` 搬进函数，调用点收敛成 `min(展示.代表X)`；`候选数` 列保留。红（`Expected: null / Received: "人乙"`）→ 绿 2 pass / 0 fail；变异 A（拆守卫）新用例红＋既有展示用例红、变异 B（取反）新用例 2 红＋既有展示红。门禁：typecheck 32/32、受影响 5 文件 52 pass / 0 fail / 207 expect、全量 `openhive-case` 1370 pass / 2 fail（基线 +2 新增，2 fail 均既有无关）、`bun run lint` 6034 warnings / 1 error（上游既有八进制转义）、改动行 0 告警、`bun.lock` 无 diff。⑥ 落点：其余 fail-closed 判据（`户名对齐` / `对齐代表` / `对齐到账户` / `歧义到账户`）均已在函数内。真栈不可验证（户名别名 0 行），按 `#002-02` 登记。顺带删掉 STATUS 里 16–18 的陈旧重复副本 | 代码 `case-party.ts` / `case-entity-list.ts` / `case-mcp-tools.ts` + 用例 `openhive-case-display-name-guard.test.ts` |

@@ -1788,7 +1788,7 @@ export async function aggregate_money(
   const 对手方 = rowsOf(
     await ctx.db.execute(sql`
       select coalesce(min(case when 对手.type in ('人', '组织') then 对手.canonical_value end),
-                      min(case when 账户户名.候选数 = 1 then 账户户名.代表值 end),
+                      min(账户户名.代表值),
                       min(对手.canonical_value)) as 对手方,
              case when r.from_id in ${归属集} then '出' else '入' end as 方向,
              sum(coalesce(r.times_cny, r.times, 1))::int as 笔数,

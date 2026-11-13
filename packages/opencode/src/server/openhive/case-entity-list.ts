@@ -690,13 +690,13 @@ export async function 关系圈(
   const 行们 = rowsOf(
     await db.execute(sql`
       select coalesce(min(case when 对方.type in ('人', '组织') then 对方.canonical_value end),
-                      min(case when 展示.候选数 = 1 then 展示.代表值 end),
+                      min(展示.代表值),
                       min(对方.canonical_value)) as 对方值,
              coalesce(min(case when 对方.type in ('人', '组织') then 对方.type end),
-                      min(case when 展示.候选数 = 1 then 展示.代表类型 end),
+                      min(展示.代表类型),
                       min(对方.type)) as 对方类型,
              coalesce(min(case when 对方.type in ('人', '组织') then 对方.attrs::text end),
-                      min(case when 展示.候选数 = 1 then 展示.代表attrs end),
+                      min(展示.代表attrs),
                       min(对方.attrs::text)) as 对方attrs,
              case when ${from属于} then '出' else '入' end as 方向,
              r.type as 关系类型,
