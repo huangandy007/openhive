@@ -234,7 +234,9 @@ describe("explore_entity", () => {
     const 结果 = await explore_entity(ctx("p-探索"), { 实体: "空档案" })
     expect(结果.空原因).toBe("实体存在但无任何事实")
     expect(结果.数据).toBeNull()
-    expect(结果.摘要).toBe("「空档案」在档案里没有任何关系或事件")
+    // 缺口 #15：涉及「人」的结果必须明写身份档（「空档案」默认类型是人）。
+    expect(结果.摘要).toBe("「空档案」在档案里没有任何关系或事件（户名匹配，未核实身份）")
+    expect(结果.身份?.[0]?.档).toBe("户名匹配")
   })
 
   test("实体被排除：回无此实体，摘要说明已排除", async () => {
@@ -263,7 +265,8 @@ describe("explore_entity", () => {
     // + 参与者视图 2 = 15。遗漏 3 = 纯外币 / 内部往来 / 归属歧义各一次 count。
     // 终审修复 M-3：实体档案对账户多 2 次 count（内部往来 / 归属歧义）⇒ 17。
     // 缺口 #8：实体档案的事件参与者剔除「已排除」值多查 1 次（`已排除规范值`）⇒ 18（已计入预算）。
-    expect(次).toBe(18)
+    // 缺口 #15：主体身份档固定 2 次查询（实名登记边 + 未撤销户名）⇒ 20。
+    expect(次).toBe(20)
   })
 
   test("限制 不改变查询次数（无每事件 N+1）", async () => {
@@ -284,6 +287,61 @@ describe("explore_entity", () => {
     }
     // 1 条与 4 条事件必须走同样多的查询：参与者摘要是批量取，不是逐事件查。
     expect(await 数(1)).toBe(await 数(4))
+  })
+})
+
+// 缺口 #15（01 §3.8.4）：任何涉及「人」的查询结果必须落在三档之一并在输出里明写。
+// 探索原语此前只有 `query_timeline` / `query_entities` / `query_relations` / `find_crossings`
+// 有身份档，`explore_entity` 没有——同名的人被平铺直叙地展示，读不出「未核实身份」。
+describe("缺口 #15：探索原语的身份三档", () => {
+  test("人：档与说明明写「未核实身份」，摘要带后缀", async () => {
+    const 结果 = await explore_entity(ctx(), { 实体: "李四" })
+    expect(结果.空原因).toBeNull()
+    expect(结果.身份).toHaveLength(1)
+    expect(结果.身份?.[0]?.实体).toBe("李四")
+    expect(结果.身份?.[0]?.档).toBe("户名匹配")
+    expect(结果.身份?.[0]?.说明).toContain("未核实身份")
+    expect(结果.摘要).toContain("未核实身份")
+  })
+
+  test("账户：同样带三档", async () => {
+    const 结果 = await explore_entity(ctx(), { 实体: 数据集.账号.B })
+    expect(结果.身份?.[0]?.档).toBe("户名匹配")
+    expect(结果.摘要).toContain("未核实身份")
+  })
+
+  test("已核实：有实名登记证据时不加后缀", async () => {
+    const 张三 = await 实体id("张三")
+    const A = await 实体id(数据集.账号.A)
+    try {
+      await db().execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values
+          ('r-实名-探索', ${数据集.projectId}, ${张三}, ${A}, '实名登记', '0.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 结果 = await explore_entity(ctx(), { 实体: "张三" })
+      expect(结果.空原因).toBeNull()
+      expect(结果.身份?.[0]?.档).toBe("已核实")
+      expect(结果.摘要).not.toContain("未核实身份")
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-实名-探索'`)
+    }
+  })
+
+  test("组织不标身份（不是人/账户）", async () => {
+    const 结果 = await explore_entity(ctx(展示.项目), { 实体: "某某公司" })
+    expect(结果.身份).toBeUndefined()
+    expect(结果.摘要).not.toContain("未核实身份")
+  })
+
+  test("实体存在但无任何事实：空信封也带身份档", async () => {
+    // 自己在独立项目里造实体：`-t` 单跑这条时不能依赖前面用例的夹具（`#005-34`）。
+    await 建实体(db(), { id: "e-空身份", projectId: "p-身份空档", value: "空档案身份" })
+    const 结果 = await explore_entity(ctx("p-身份空档"), { 实体: "空档案身份" })
+    expect(结果.空原因).toBe("实体存在但无任何事实")
+    expect(结果.身份?.[0]?.档).toBe("户名匹配")
+    expect(结果.摘要).toContain("未核实身份")
   })
 })
 
