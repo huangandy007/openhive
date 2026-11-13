@@ -1005,6 +1005,11 @@ export async function query_events(
   }
 }
 
+/** 文本列：驱动回的不是字符串就当缺失（`String(unknown)` 会把对象串成 `[object Object]`）。 */
+function 文本(值: unknown): string | null {
+  return typeof 值 === "string" ? 值 : null
+}
+
 /**
  * 时间线（09 §4.3 / 10 §6.3）：某实体或某地点的事件，按 `(occurred_at, id)` **升序**游标翻页。
  *
@@ -1014,7 +1019,8 @@ export async function query_events(
  * 3. 有事件但全部缺时间 ⇒ `时间全部缺失`；
  * 4. 其余（有时间事件但窗口内 0 条）⇒ `无事件`。
  *
- * 查询预算 ≤7：解析 1 + 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2（10 偏差 D-6）。
+ * 查询预算 ≤7：解析 1 + 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2
+ * （plan D-6，见 `docs/superpowers/plans/2026-11-13-P3-去重与卡片读端.md:36`）。
  * 参与者也走 `事件参与者条件`（含对齐），所以按人能看到其唯一户名账户的流水事件。
  */
 export async function query_timeline(
@@ -1143,16 +1149,16 @@ export async function query_timeline(
   const 事件们 = 本页.map((行) => {
     const id = String(行.id)
     const 参与者 =
-      参与者按事件.get(id) ?? 解JSON<string[]>(String(行.participants ?? "[]"), []).map((值) => `参与者：${值}`)
+      参与者按事件.get(id) ?? 解JSON<string[]>(行.participants, []).map((值) => `参与者：${值}`)
     const 引用 = 引用按事件.get(id)?.[0]
     return {
       id,
       类型: String(行.type),
       时间: Number(行.occurred_at),
-      时间精度: 行.precision === null ? null : String(行.precision),
-      时间原文: 行.occurred_raw === null ? null : String(行.occurred_raw),
+      时间精度: 文本(行.precision),
+      时间原文: 文本(行.occurred_raw),
       参与者,
-      事件摘要: 行.summary === null ? null : String(行.summary),
+      事件摘要: 文本(行.summary),
       信任态: String(行.trust_state),
       代表出处:
         引用 === undefined
@@ -1160,6 +1166,9 @@ export async function query_timeline(
           : { 材料: 引用.fileName, 定位: 引用.locator },
     }
   })
+
+  // 升序排列下 `事件们` 末尾是**本页最新**的一条；`下一步` 的 `query_rows` 建议以它为锚。
+  const 末事件 = 事件们.length === 0 ? undefined : 事件们[事件们.length - 1]
 
   const 身份们 = [
     ...(
@@ -1176,6 +1185,10 @@ export async function query_timeline(
   ]
   if (缺时间条数 > 0) 缺口.push(`${缺时间条数} 个事件没有时间，未进入时间线`)
   if (下一页游标 !== null) 缺口.push("还有下一页：把本页 `下一页游标` 原样传回 `游标`")
+  // 游标越过了末页：事件都在游标之前。`空原因` 仍是 `无事件`（状态机不变），
+  // 只说清「不是没有数据，是翻过了头」，免得把游标失效误读成对象没事件。
+  if (空 && args.游标 !== undefined && 总数 > 0 && 有时数 > 0)
+    缺口.push("游标之后没有更多事件（换第一页或更早的游标再翻）")
 
   return {
     摘要: 空
@@ -1222,6 +1235,21 @@ export async function query_timeline(
             参数: { 事实类型: "event", 事实id: 事件们[0].id },
             为什么: "抽验时间线第一条事件的原文与出处",
           },
+          // `09` §4.3 的下一步契约有两条：抽验（get_citation）与看该事件明细（query_rows）。
+          // `材料` 只在有代表出处时才写（不写空键，同地点分支的先例）。
+          ...(末事件 === undefined
+            ? []
+            : [
+                {
+                  工具: "query_rows",
+                  参数: {
+                    ...(末事件.代表出处 === null ? {} : { 材料: 末事件.代表出处.材料 }),
+                    时间起: 末事件.时间,
+                    时间止: 末事件.时间,
+                  },
+                  为什么: "看该事件的明细行",
+                },
+              ]),
         ],
     ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
   }

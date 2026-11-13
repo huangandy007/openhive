@@ -3,6 +3,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { query_timeline, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
+import { 编码游标对象 } from "../../src/server/openhive/case-row-query"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 
@@ -94,6 +95,31 @@ describe("query_timeline（09 §4.3）", () => {
     expect(第三页.空原因).toBeNull()
     expect(数据3!.事件们).toHaveLength(1)
     expect(数据3!.下一页游标).toBeNull()
+  })
+
+  test("游标越过末页：空原因仍是无事件，缺口说明游标之后没有更多", async () => {
+    const 结果 = await query_timeline(ctx(), {
+      实体: "李四",
+      游标: 编码游标对象({ t: 2147483647, id: "zzz" }),
+    })
+    expect(结果.空原因).toBe("无事件")
+    expect(结果.数据).toBeNull()
+    expect(结果.缺口.join("")).toContain("游标之后没有更多事件")
+  })
+
+  test("下一步：抽验后追加 query_rows（材料取该事件代表出处，缺则不写键）", async () => {
+    // 限制 10 > 3 笔有时间事件 ⇒ 没有下一页，`下一步` 只剩 get_citation + query_rows。
+    const 结果 = await query_timeline(ctx(), { 实体: "李四", 限制: 10 })
+    expect(结果.空原因).toBeNull()
+    const 事件们 = (结果.数据 as { 事件们: { 时间: number; 代表出处: { 材料: string } | null }[] }).事件们
+    const 最新 = 事件们[事件们.length - 1]!
+    const 建议 = 结果.下一步 ?? []
+    expect(建议.map((项) => 项.工具)).toEqual(["get_citation", "query_rows"])
+    const 参数 = 建议[1]!.参数 as { 时间起: number; 时间止: number; 材料?: string }
+    expect(参数.时间起).toBe(最新.时间)
+    expect(参数.时间止).toBe(最新.时间)
+    if (最新.代表出处 !== null) expect(参数.材料).toBe(最新.代表出处.材料)
+    else expect("材料" in 参数).toBe(false)
   })
 
   test("对象存在但事件全无时间 ⇒ 时间全部缺失", async () => {
