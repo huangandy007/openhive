@@ -4,7 +4,7 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import { 细类 } from "./case-subtype"
-import { 账户归属集 } from "./case-party"
+import { 关系归属条件, 账户归属集 } from "./case-party"
 
 /**
  * 关系图数据（计划 7 Task 3）。
@@ -106,6 +106,8 @@ interface 边行 {
   readonly amount: string | null
   readonly trust_state: string
   readonly 明细数: number
+  /** 这一组里「经户名对齐」的原始关系条数（投影路径才非 0）。 */
+  readonly 经对齐数: number
   readonly from_value: string
   readonly from_type: string
   readonly from_trust: string
@@ -144,27 +146,29 @@ function 聚合边(input: 聚合入参): SQL {
   const 阈 = 强度阈值[input.强度]
   const 金额阈 = 阈.金额 === null ? sql`null::numeric` : sql`${阈.金额}::numeric`
   const 投影 = input.投影
-  // 选中条件：原始端点触达本批节点，或（投影时）恰好一端落在中心账户的归属集里。
-  const 选中 =
-    投影 === undefined
-      ? sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}))`
-      : sql`(r.from_id in (${节点表}) or r.to_id in (${节点表})
-             or (r.from_id in ${投影.归属集}) <> (r.to_id in ${投影.归属集}))`
-  // 端点投影：落进归属集的一端归并到中心账户 id。
-  const 起 =
-    投影 === undefined
-      ? sql`r.from_id`
-      : sql`case when r.from_id in ${投影.归属集} then ${投影.中心} else r.from_id end`
-  const 终 =
-    投影 === undefined
-      ? sql`r.to_id`
-      : sql`case when r.to_id in ${投影.归属集} then ${投影.中心} else r.to_id end`
+  // 默认路径：原始端点口径（行为与引入投影前一致；聚合 SQL 形状变了，语义没变）。
+  let 选中: SQL = sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}))`
+  let 起: SQL = sql`r.from_id`
+  let 终: SQL = sql`r.to_id`
+  let 经对齐行: SQL = sql`false`
+  if (投影 !== undefined) {
+    // 归属判据只在 `case-party` 一份（`#002-06`）：XOR 与「恰好一端在集合」共用同一个函数；
+    // `投影.归属集` 只留给起/终的端点归一化。
+    const 归属 = 关系归属条件(input.projectId, [投影.中心], sql`r.from_id`, sql`r.to_id`)
+    选中 = sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}) or ${归属})`
+    起 = sql`case when r.from_id in ${投影.归属集} then ${投影.中心} else r.from_id end`
+    终 = sql`case when r.to_id in ${投影.归属集} then ${投影.中心} else r.to_id end`
+    // 「经户名对齐」的原始关系行：恰好一端在归属集，且两端都不是中心。
+    // 这一列与边同一层聚合 ⇒ 类型条件、强度达标、上限截断都自动同口径，
+    // 缺口条数不会与 `强度缺口` 打架（两者都从这份边宇宙出发）。
+    经对齐行 = sql`(${归属} and r.from_id <> ${投影.中心} and r.to_id <> ${投影.中心})`
+  }
   // 自环：原始口径里自环是合法边（图上会出现 `rel|X|X|type`），**默认路径必须原样保留**。
   // 只有投影路径要排掉「两端都在归属集」压成的 `中心 → 中心`：它没有对手方、也不产生方向。
   // 不能无条件排除——那会连带抹掉原始自环，破坏既有 `关系图` 的自环口径。
   const 自环条件 = 投影 === undefined ? sql`` : sql`where r.from_id <> r.to_id`
   return sql`
-    select g.from_id, g.to_id, g.type, g.次数, g.金额数, g.金额合计, g.明细数, g.信任态,
+    select g.from_id, g.to_id, g.type, g.次数, g.金额数, g.金额合计, g.明细数, g.经对齐数, g.信任态,
            coalesce(g.次数 >= ${阈.次数} or (${金额阈} is not null and g.金额数 >= ${金额阈}), false) as 达标
       from (
         select r.from_id, r.to_id, r.type,
@@ -172,9 +176,11 @@ function 聚合边(input: 聚合入参): SQL {
                sum(r.amount) as 金额数,
                sum(r.amount)::text as 金额合计,
                count(*)::int as 明细数,
+               (count(*) filter (where r.经对齐))::int as 经对齐数,
                case when min(r.trust_state) = max(r.trust_state) then min(r.trust_state) else '混合' end as 信任态
           from (
-            select ${起} as from_id, ${终} as to_id, r.type, r.times, r.amount, r.trust_state
+            select ${起} as from_id, ${终} as to_id, r.type, r.times, r.amount, r.trust_state,
+                   ${经对齐行} as 经对齐
               from auth.case_relation r
               join auth.case_entity 起点 on 起点.project_id = r.project_id and 起点.id = r.from_id
               join auth.case_entity 终点 on 终点.project_id = r.project_id and 终点.id = r.to_id
@@ -214,6 +220,7 @@ async function 取一圈(
   const 行们 = rowsOf(
     await db.execute(sql`
       select h.from_id, h.to_id, h.type, h.次数, h.金额合计 as amount, h.信任态 as trust_state, h.明细数,
+             h.经对齐数,
              起.canonical_value as from_value, 起.type as from_type, 起.trust_state as from_trust,
              起.attrs as from_attrs,
              终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust,
@@ -238,6 +245,7 @@ async function 取一圈(
       amount: (行.amount as string | null) ?? null,
       trust_state: String(行.trust_state),
       明细数: Number(行.明细数),
+      经对齐数: Number(行.经对齐数),
       from_value: String(行.from_value),
       from_type: String(行.from_type),
       from_trust: String(行.from_trust),
@@ -409,7 +417,8 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     强度,
     ...(投影 === undefined ? {} : { 投影 }),
   })
-  const 一跳点 = 收一圈(第一圈.边们.slice(0, 可用))
+  const 画出的第一圈 = 第一圈.边们.slice(0, 可用)
+  const 一跳点 = 收一圈(画出的第一圈)
   const 第一跳截断 = 第一圈.总数 > 可用
   if (可用 === 0) {
     // 一个邻居都放不下（上限 1）：只要库里还有边，就必须说出来，不能返回一张「干净的」空图。
@@ -425,13 +434,14 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
       // 恰好装满（库里也没有更多）才说「未展开」——我们确实没展开。
       if (!第一跳截断) 缺口.push(`节点已达上限 ${上限}，未展开第 2 跳`)
     } else {
+      // 第 2 跳不传投影：投影后的边必然以中心为端点，天然是第 1 跳；
+      // 第 2 跳再选只可能把被上限截断的 1 跳边补进 2 跳（还会抬高候选缺口）。
       const 第二圈 = await 取一圈(db, {
         projectId: input.projectId,
         节点们: 一跳点,
         类型: input.类型,
         剩余,
         强度,
-        ...(投影 === undefined ? {} : { 投影 }),
       })
       收一圈(第二圈.边们.slice(0, 剩余), new Set(一跳点))
       // 不声称「画了多少」：`slice` 行数里可能混着第 1 跳已画过的回边（`收一圈` 会跳过）。
@@ -440,23 +450,10 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     }
   }
 
-  if (投影 !== undefined) {
-    const 经对齐 = rowsOf(
-      await db.execute(sql`
-        select count(*)::int as 数
-          from auth.case_relation r
-          join auth.case_entity 起点 on 起点.project_id = r.project_id and 起点.id = r.from_id
-          join auth.case_entity 终点 on 终点.project_id = r.project_id and 终点.id = r.to_id
-         where r.project_id = ${input.projectId}
-           and r.trust_state <> '已排除'
-           and 起点.trust_state <> '已排除' and 终点.trust_state <> '已排除'
-           and (r.from_id in ${投影.归属集}) <> (r.to_id in ${投影.归属集})
-           and r.from_id <> ${投影.中心} and r.to_id <> ${投影.中心}
-      `),
-    )[0]?.数
-    const 数 = Number(经对齐 ?? 0)
-    if (数 > 0) 缺口.push(`${数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
-  }
+  // 经对齐条数直接取**画出来的第 1 跳边**的贡献（`聚合边` 的 `经对齐数`）：
+  // 类型条件、强度达标、上限截断都已在那份 SQL 里生效，不会宣称图上没有的归并。
+  const 经对齐数 = 画出的第一圈.reduce((和, 边) => 和 + 边.经对齐数, 0)
+  if (经对齐数 > 0) 缺口.push(`${经对齐数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
 
   // 强度缺口只在**本次取数范围**内统计：跳数 1 只看中心；跳数 2 看中心＋已画出的全部一跳点。
   // 不能拿每轮的数字相加——中心↔一跳点那批组会在两轮里各出现一次，相加会翻倍。
@@ -482,6 +479,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   const 度数表 = await 取度数(db, { projectId: input.projectId, 节点们: [...节点表.keys()] })
   for (const 点 of 节点表.values()) 点.度数 = 度数表.get(点.id) ?? 0
   // 关联数按**图里画出来的边**数（不是库里的总数）——它要解释「屏幕上这几条」。
+  // ⚠️ 账户中心的端点投影会改变它（投影进来的边也算一条）；`度数` 才是原始端点口径。
   // `new Set`：自环（from = to）是一条边，不能给同一个节点加两次。
   for (const 边 of 边表.values()) {
     for (const id of new Set([边.from, 边.to])) {

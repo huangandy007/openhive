@@ -191,3 +191,82 @@ describe("关系图：账户中心的端点投影", () => {
     expect(图?.缺口.join()).toContain("1 条关系经户名对齐归属本账户")
   })
 })
+
+describe("关系图：投影缺口的类型 / 强度 / 上限口径", () => {
+  test("类型筛选下缺口只数同类型的对齐关系（通话类没进图就不该说已归并）", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 李四 = await 实体id("李四")
+    const 周八 = await 实体id("周八")
+    try {
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values ('r-修1类型', ${数据集.projectId}, ${李四}, ${周八}, '通话', null, 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 1, 类型: ["转账"] })
+      // 投影进来的只有 A→李四（转账）；李四→周八 是通话，被类型条件挡在图外。
+      expect(图?.缺口.join()).toContain("1 条关系经户名对齐归属本账户")
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修1类型'`)
+    }
+  })
+
+  test("强度筛选下缺口不与强度缺口自相矛盾（没达标的关系不算已归并）", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 李四 = await 实体id("李四")
+    const 周八 = await 实体id("周八")
+    try {
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values ('r-修1强度', ${数据集.projectId}, ${李四}, ${周八}, '通话', null, 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 1, 强度: "强" })
+      // 强档：A→B 达标（35000）；B→C（金额 0）与 李四→周八（通话、1 次）都不达标。
+      expect(图?.缺口.join()).toContain("1 条关系经户名对齐归属本账户")
+      expect(图?.强度缺口).toEqual({ 未显示: 2, 总数: 3 })
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修1强度'`)
+    }
+  })
+
+  test("上限 1 时一条边都没画，缺口不许宣称已归并", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 上限: 1 })
+    expect(图?.节点.map((点) => 点.id)).toEqual([B])
+    expect(图?.缺口).toEqual(["节点已达上限 1，第 1 跳的关联关系未画"])
+  })
+
+  test("两端都在归属集（李四→B）不画成中心自环，也不计入「经对齐」条数", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 李四 = await 实体id("李四")
+    try {
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values ('r-修1内部', ${数据集.projectId}, ${李四}, ${B}, '转账', '1000.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 1 })
+      expect(图?.边.filter((条) => 条.from === B && 条.to === B)).toEqual([])
+      // 账户内部往来是「不画、不计数」；经对齐仍只有 A→李四 那 1 条。
+      expect(图?.缺口.join()).toContain("1 条关系经户名对齐归属本账户")
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修1内部'`)
+    }
+  })
+
+  test("人中心不套投影：原始自环照旧画出来", async () => {
+    const 李四 = await 实体id("李四")
+    const A = await 实体id(数据集.账号.A)
+    try {
+      // 人的自环：投影路径会把它压成 `中心 → 中心` 并排掉；人中心必须走默认路径。
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values ('r-修1人自环', ${数据集.projectId}, ${李四}, ${李四}, '转账', '1000.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: 李四, 跳数: 1 })
+      expect(图?.边.find((条) => 条.from === 李四 && 条.to === 李四)).toBeDefined()
+      expect(图?.边.find((条) => 条.from === A && 条.to === 李四)).toBeDefined()
+      expect(图?.缺口.join()).not.toContain("经户名对齐")
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修1人自环'`)
+    }
+  })
+})
