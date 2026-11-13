@@ -67,7 +67,7 @@
 
 | 命令 | 实得 |
 |---|---|
-| `bun test test/server/openhive-case`（`packages/opencode`） | **1385 pass / 2 fail / 4762 expect / 82 文件 / 83.74s**；两条红均为既有无关：`layer（假 READY 子进程）`（mcp-supervisor）、`0031/0032/0033 迁移 · 表与分区`（表清单未含后续新增的 `case_card_template` / `case_entity_alias` / `case_event_participant`） |
+| `bun test test/server/openhive-case`（`packages/opencode`） | **1385 pass / 2 fail / 4762 expect / 82 文件 / 83.74s**；两条红均为既有无关：`layer（假 READY 子进程）`（mcp-supervisor）、`0031/0032/0033 迁移 · 表与分区`（表清单未含后续新增的 `case_card_template` / `case_entity_alias` / `case_event_participant`）。**后者已同日修复**（`53895b7fe7`）：清单补三张、标题 13→16；修后全量 **1386 pass / 1 fail / 4762 expect**，只剩「layer（假 READY 子进程）」 |
 | `bun test test/server/openhive-case-explore-replay.test.ts` | **23 pass / 0 fail / 383 expect** |
 | `bun test src/components/envelope-parse.test.ts`（`packages/session-ui`） | **14 pass / 0 fail / 57 expect** |
 | `bun run typecheck`（仓库根） | **32 successful / 32 total**（31 cached） |
@@ -368,6 +368,7 @@
 | 2026-11-13 | 01-P3 第二期登记为「待验收（有明示缺口）」；「当前进行中」置空，18 条评审缺口逐条落表；T10 回放切 `money_flow` 发现「单笔最大」按字符串排序 | `cacc26b76f..8ed601bea3`（22 提交）；`1e1493d418`（T10 文档） |
 | 2026-11-13 晚 | 数据面补齐复验（基线 `9a31701528`，新项目 `a1131113-2026-4b11-9a11-111311131113`，不改生产代码）：A16 / A11 户名 / `times_cny` / A5 参与者表 / `money_flow` 正向路 / 外币缺口 / 30KB 截断 7 项由「数据面缺失、未验证」改为**通过**；A6 由「真栈验不了」改为**已验**。仍不可验：12 次预算强制收尾、真实模型抽取、前端展示 | `过程文档/真栈验收记录-2026-11-13.md` 第 6 节；证据 `.superpowers/sdd/2026-11-13-P3-第二期-实体打通与探索原语/acc2-*`、`acc2-check.txt` |
 | 2026-11-13 晚 | 升级对账：01-P1 / 01-P2.5 / 01-P3 一期 / 01-P3 二期 / 09 §13.1 升「已验收」（判据逐条对照本次实跑：1385 pass / 2 既有红、回放 23 pass、typecheck 32/32、定向 lint 0 errors、A22 EXPLAIN 走索引 + p95 25.36 ms、A15 extras 备注）；01-P2 / 09 工具层 / 09 §12 #9 保持待验收并写明缺项。规则节新增第 5 条「对 `01` 的回写」 | 本文件「升级对账」节；证据 `.superpowers/.../reconcile-*.txt|json` |
+| 2026-11-13 晚 | 迁移表清单测试补三张后加表（`case_card_template` / `case_entity_alias` / `case_event_participant`），标题 13→16；修后全量 **1386 pass / 1 fail** | `53895b7fe7` |
 | 2026-11-13 | T10 收尾：回放「最大一笔」改用 `money_flow` 的 `数据.单笔最大`（23 pass / 0 fail）；18 个受影响测试文件重跑 352 pass / 0 fail；门禁重跑（typecheck 32/32、lint 1 上游既有 error / 6014 warnings、`bun.lock` 无 diff） | `d0197a71af`（单笔最大改数值排序 + 补「金额乱序」用例，复查 Approved）；`bd4fb4e8b4`（T10 文档） |
 | 2026-11-13 | 全分支终审修复：money_flow 对手口径统一、参与者摘要补齐未解析项、find_crossings 走基 2、关系圈组数与人民币次数、实体档案归属缺口、用例加强 | `06d58d191e`、`3e87b34441`、`b368871717`、`a4e6a1a464`；本行（文档提交） |
 | 2026-11-13 | 定向复查第 2 轮修复：`money_flow` 方向作用域口径（方向不含 `首末`、对手含）；参与者摘要覆盖集加别名，合并/改名后不重复显示；登记关系图/关系圈次数口径缺口（D-10）；`money_flow` 对手场景查询数按实测改为 15 | `6da67f5ef2`（上一轮文档提交）、`16097fd9b4`（本轮代码）、本行（文档提交） |
