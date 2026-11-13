@@ -6,12 +6,14 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   aggregate_money,
+  explore_entity,
   find_crossings,
   get_citation,
   query_entities,
   query_events,
   query_relations,
   query_rows,
+  query_timeline,
   search_materials,
   归一化限制,
   校验成员,
@@ -1721,27 +1723,53 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
 // 真实返回值（有数据 + 空数据各一条），把违规项收集起来 `toEqual([])`——失败时一眼看出是谁指向了什么。
 test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
   const 已注册 = new Set(工具名 as readonly string[])
-  const 结果们: 工具结果[] = [
-    await search_materials(ctx(身份甲), { 关键词: "张三" }),
-    await search_materials(ctx(身份甲), { 关键词: "绝无此词" }),
-    await query_entities(ctx(身份甲), {}),
-    await query_entities(ctx(身份甲), { 关键词: "查无此实体" }),
-    await query_relations(ctx(身份丁), { 实体: "甲" }),
-    await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" }),
-    await query_events(ctx(身份戊), {}),
-    await query_events(ctx(身份丁), { 类型: "不存在的事件类型" }),
-    await aggregate_money(ctx(身份戊), { 账户: 账号 }),
-    await aggregate_money(ctx(身份戊), { 账户: "李四" }),
-    await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),
-    await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "对手甲" }),
-    await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-甲" }),
-    await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" }),
-    await query_rows(ctx(身份戊), {}),
-    await query_rows(ctx(身份戊), { 账户: "不存在的账户" }),
+  // 每条都带工具名：既检查违规，也检查「有没有哪个工具漏了真实返回」（见末尾防漏断言）。
+  const 结果们: { 工具: 工具名; 结果: 工具结果 }[] = [
+    { 工具: "search_materials", 结果: await search_materials(ctx(身份甲), { 关键词: "张三" }) },
+    { 工具: "search_materials", 结果: await search_materials(ctx(身份甲), { 关键词: "绝无此词" }) },
+    { 工具: "query_entities", 结果: await query_entities(ctx(身份甲), {}) },
+    { 工具: "query_entities", 结果: await query_entities(ctx(身份甲), { 关键词: "查无此实体" }) },
+    { 工具: "query_relations", 结果: await query_relations(ctx(身份丁), { 实体: "甲" }) },
+    {
+      工具: "query_relations",
+      结果: await query_relations(ctx(身份丁), { 实体: "甲", 类型: "不存在的类型" }),
+    },
+    { 工具: "query_events", 结果: await query_events(ctx(身份戊), {}) },
+    { 工具: "query_events", 结果: await query_events(ctx(身份丁), { 类型: "不存在的事件类型" }) },
+    { 工具: "aggregate_money", 结果: await aggregate_money(ctx(身份戊), { 账户: 账号 }) },
+    { 工具: "aggregate_money", 结果: await aggregate_money(ctx(身份戊), { 账户: "李四" }) },
+    {
+      工具: "find_crossings",
+      结果: await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),
+    },
+    {
+      工具: "find_crossings",
+      结果: await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "对手甲" }),
+    },
+    {
+      工具: "get_citation",
+      结果: await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-甲" }),
+    },
+    {
+      工具: "get_citation",
+      结果: await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" }),
+    },
+    { 工具: "query_rows", 结果: await query_rows(ctx(身份戊), {}) },
+    { 工具: "query_rows", 结果: await query_rows(ctx(身份戊), { 账户: "不存在的账户" }) },
+    { 工具: "query_timeline", 结果: await query_timeline(ctx(身份丁), { 实体: "参与人" }) },
+    // 第 10 个工具：人 / 账户（有数据）+ 空数据（独立空项目）各一条。
+    { 工具: "explore_entity", 结果: await explore_entity(ctx(身份戊), { 实体: "张三" }) },
+    { 工具: "explore_entity", 结果: await explore_entity(ctx(身份戊), { 实体: 账号 }) },
+    {
+      工具: "explore_entity",
+      结果: await explore_entity(ctx({ userId: "u-工具-甲", projectId: "p-工具-空" }), {
+        实体: "查无此实体",
+      }),
+    },
   ]
   const 违规: string[] = []
   let 检查条数 = 0
-  for (const 结果 of 结果们) {
+  for (const { 结果 } of 结果们) {
     for (const 条 of 结果.下一步) {
       检查条数 += 1
       if (!已注册.has(条.工具)) 违规.push(`下一步 → ${条.工具}`)
@@ -1755,6 +1783,10 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
   expect(违规).toEqual([])
   // 防空转：一条都没检查时「没有违规」没有意义。
   expect(检查条数).toBeGreaterThan(0)
+  // 防漏：每个已注册工具都必须有真实返回进入本守卫。删掉 explore_entity 的两条
+  // （或将来新增工具忘了加）时，这条会指出漏了谁，而不是让违规检查空转通过。
+  const 已覆盖 = new Set(结果们.map((条) => 条.工具))
+  expect(工具名.filter((名) => !已覆盖.has(名))).toEqual([])
 })
 
 // —— I1：`query_rows` 自己按字节预算取页，续页游标落在**真正交付的**最后一行 ——

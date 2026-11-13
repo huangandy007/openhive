@@ -331,10 +331,14 @@ const TOOLS: readonly Tool[] = [
       type: "object",
       properties: {
         实体: { type: "string", description: "实体 id 或规范值（必填）" },
-        起: { type: "integer", description: `时间窗起点，${时间说明}` },
-        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        起: { type: "integer", description: `只作用于关系圈的时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `只作用于关系圈的时间窗终点，${时间说明}` },
         跳数: { type: "integer", enum: [1, 2], description: "1 = 只看一圈（默认），2 = 附两跳邻域" },
-        限制: { type: "integer", description: 限制说明 },
+        限制: {
+          type: "integer",
+          description:
+            "事件条数上限，默认 10、上限 200；关系圈固定前 10 组、两跳邻域固定 50 节点，不受此项影响",
+        },
       },
       required: ["实体"],
     },

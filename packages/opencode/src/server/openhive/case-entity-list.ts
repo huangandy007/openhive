@@ -1,7 +1,7 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
-import { 事件归属条件, 账户归属集, 账户展示名, 户名对齐, 关系归属条件 } from "./case-party"
+import { 事件归属条件, 账户归属集, 账户展示名, 户名对齐, 关系归属条件, 歧义到账户 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
 
@@ -516,16 +516,26 @@ export const 关系圈上限 = 10
  * - **只收人民币笔数 > 0 的关系**（D-9）：纯外币关系在 `aggregate_money` 里也不进汇总，
  *   留在这里只会产生金额 0.00 的空组。
  */
-export async function 关系圈(
-  db: Queryable,
-  input: {
-    readonly projectId: string
-    readonly id: string
-    readonly type: string
-    readonly 起?: number
-    readonly 止?: number
-  },
-): Promise<关系圈项[]> {
+interface 关系圈范围 {
+  readonly 是账户: boolean
+  /** 基 2 的归属集；中心不是账户时无（维持端点相等口径）。 */
+  readonly 归属集: SQL | undefined
+  readonly from属于: SQL
+  readonly 触达: SQL
+  readonly 窗: SQL[]
+}
+
+/**
+ * 关系圈的口径**只在这里定义一次**：`关系圈` 取数、`关系圈遗漏` 计数都从这里出发
+ * （`#002-06`）。漏改一处就会出现「圈里按基 2、缺口按端点」的自相矛盾。
+ */
+function 关系圈范围(input: {
+  readonly projectId: string
+  readonly id: string
+  readonly type: string
+  readonly 起?: number
+  readonly 止?: number
+}): 关系圈范围 {
   const 是账户 = input.type === "账户"
   const 归属集 = 是账户 ? 账户归属集(input.projectId, [input.id]) : undefined
   const from属于 = 归属集 === undefined ? sql`r.from_id = ${input.id}` : sql`r.from_id in ${归属集}`
@@ -537,6 +547,20 @@ export async function 关系圈(
   const 窗: SQL[] = []
   if (input.起 !== undefined) 窗.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${input.起}`)
   if (input.止 !== undefined) 窗.push(sql`coalesce(r.first_at, r.last_at, 0) <= ${input.止}`)
+  return { 是账户, 归属集, from属于, 触达, 窗 }
+}
+
+export async function 关系圈(
+  db: Queryable,
+  input: {
+    readonly projectId: string
+    readonly id: string
+    readonly type: string
+    readonly 起?: number
+    readonly 止?: number
+  },
+): Promise<关系圈项[]> {
+  const { 归属集, from属于, 触达, 窗 } = 关系圈范围(input)
   const 行们 = rowsOf(
     await db.execute(sql`
       select coalesce(min(case when 对方.type in ('人', '组织') then 对方.canonical_value end),
@@ -582,6 +606,84 @@ export async function 关系圈(
     首: 行.首 === null || 行.首 === undefined ? null : Number(行.首),
     末: 行.末 === null || 行.末 === undefined ? null : Number(行.末),
   }))
+}
+
+/** `关系圈` 静默丢掉的三类关系条数（口径与 `aggregate_money` 的缺口计数同源）。 */
+export interface 关系圈遗漏 {
+  /** 纯外币（`coalesce(times_cny, times, 1) = 0`）：不进圈，但关系真实存在。 */
+  readonly 纯外币: number
+  /** 两端都在账户归属集里的内部往来：XOR 排除；只在中心是账户时可能非 0。 */
+  readonly 内部往来: number
+  /** 户名对应多个账户、fail-closed 未归属的关系；只在中心是账户时可能非 0。 */
+  readonly 归属歧义: number
+}
+
+/**
+ * 数清关系圈 where 丢掉的三类关系（11 §3.2 / §3.3、09 §5.2 纪律 2）：
+ * 不说清，模型会把「圈里看不到」讲成「没有往来」。
+ *
+ * 与 `aggregate_money:1813-1839` 同一套计数口径（XOR / 内部往来 / 歧义），差别只有：
+ * 关系圈不按 `type = '转账'` 过滤（brief 的 SQL 就是全类型），所以文案里的「转账关系」
+ * 在这里说成「关系」；时间窗与 `关系圈` 共用同一份 `关系圈范围`。
+ */
+export async function 关系圈遗漏(
+  db: Queryable,
+  input: {
+    readonly projectId: string
+    readonly id: string
+    readonly type: string
+    readonly 起?: number
+    readonly 止?: number
+  },
+): Promise<关系圈遗漏> {
+  const { 是账户, 归属集, from属于, 触达, 窗 } = 关系圈范围(input)
+  const 窗条件 = 窗.length === 0 ? sql`` : sql`and ${sql.join(窗, sql` and `)}`
+  // 与 `关系圈` 的 join 同一前提：另一端实体不能是「已排除」。
+  const 对方未排除 = sql`(case when ${from属于} then r.to_id else r.from_id end) in (
+      select id from auth.case_entity
+       where project_id = ${input.projectId} and trust_state <> '已排除'
+    )`
+  const 基础 = [sql`r.project_id = ${input.projectId}`, sql`r.trust_state <> '已排除'`]
+  const 数 = async (条件: SQL): Promise<number> =>
+    Number(
+      rowsOf(
+        await db.execute(sql`
+          select count(*)::int as 数 from auth.case_relation r where ${条件}
+        `),
+      )[0]?.数 ?? 0,
+    )
+  // 纯外币：XOR 触达里笔数为 0 的关系（内部往来由 XOR 排除，不会在这里重复计数）。
+  const 纯外币 = await 数(
+    sql`${sql.join(
+      [...基础, 触达, 对方未排除, sql`coalesce(r.times_cny, r.times, 1) = 0`],
+      sql` and `,
+    )} ${窗条件}`,
+  )
+  if (!是账户 || 归属集 === undefined) return { 纯外币, 内部往来: 0, 归属歧义: 0 }
+  const 内部往来 = await 数(
+    sql`${sql.join(
+      [...基础, sql`r.from_id in ${归属集}`, sql`r.to_id in ${归属集}`, 对方未排除],
+      sql` and `,
+    )} ${窗条件}`,
+  )
+  // 与 `aggregate_money` 的 `归属歧义条件` 同形：两端都不在归属集、且一端是「名字对应
+  // ≥2 个账户」的歧义者；另一端也不能是「已排除」。
+  const 歧义实体 = 歧义到账户(input.projectId, [input.id])
+  const 归属歧义 = await 数(
+    sql`${sql.join(
+      [
+        ...基础,
+        sql`r.from_id not in ${归属集} and r.to_id not in ${归属集}`,
+        sql`(r.from_id in ${歧义实体} or r.to_id in ${歧义实体})`,
+        sql`(case when r.from_id in ${歧义实体} then r.to_id else r.from_id end) in (
+          select id from auth.case_entity
+           where project_id = ${input.projectId} and trust_state <> '已排除'
+        )`,
+      ],
+      sql` and `,
+    )} ${窗条件}`,
+  )
+  return { 纯外币, 内部往来, 归属歧义 }
 }
 
 /**

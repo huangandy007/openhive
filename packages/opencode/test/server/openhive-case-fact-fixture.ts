@@ -56,6 +56,28 @@ export async function 建实体(
   `)
 }
 
+/**
+ * 户名别名行（`kind='户名'`，未撤销）：`entity_id` 是账户，`value` 是人/组织规范值。
+ * 生产写口在 `case-translate-store.ts`；测试里需要「账户 ← 户名」这条证据时用本构造器。
+ */
+export async function 建户名别名(
+  db: Queryable,
+  input: {
+    id: string
+    projectId: string
+    entityId: string
+    value: string
+    revokedAt?: number
+  },
+): Promise<void> {
+  await db.execute(sql`
+    insert into auth.case_entity_alias
+      (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at, revoked_at)
+    values (${input.id}, ${input.projectId}, ${input.entityId}, '户名', ${input.value},
+            ${input.value}, '人工', ${现在}, ${input.revokedAt ?? null})
+  `)
+}
+
 export async function 建关系(
   db: Queryable,
   input: {
