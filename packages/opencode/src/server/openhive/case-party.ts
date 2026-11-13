@@ -370,10 +370,45 @@ export function 事件角色条件(
 }
 
 /**
+ * 值歧义集（缺口 #11）：同一规范值在项目内对应 ≥2 个**未排除**实体。
+ *
+ * 唯一索引是 `(project, type, canonical_value)` ⇒ count > 1 只可能是同名跨类型（人 / 组织）。
+ * `participants text[]` 只存值不存类型，按值归属会把同一条事件同时算给两个实体——这些值
+ * 因此不参与文本回退（fail-closed，不猜）。无关联子查询，整份预算一次（`#013-05`）。
+ */
+export function 歧义值集(projectId: string | SQL): SQL {
+  return sql`(select canonical_value
+                from auth.case_entity
+               where project_id = ${projectId} and trust_state <> '已排除'
+               group by canonical_value
+              having count(*) > 1)`
+}
+
+/**
+ * 基 1 的文本回退支路（`participants` 值 ∈ 归属值集）。
+ *
+ * - `含歧义值 = false`（归属判据用）：跳过 `歧义值集` 里的值——同名跨类型按值不可判；
+ * - `含歧义值 = true`（缺口计数用）：原始形态，只看「本来按值能归」；
+ *   `not 事件归属条件(...) and 事件文本归属条件(..., true)` 即「被守卫挡掉的条数」。
+ *
+ * ⚠️ 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `participants`。
+ */
+export function 事件文本归属条件(
+  projectId: string | SQL,
+  实体id: string | SQL,
+  含歧义值 = false,
+): SQL {
+  return sql`exists (select 1 from unnest(participants) as 参与者
+                      where 参与者 in ${归属值集(projectId, 实体id)}
+                        ${含歧义值 ? sql`` : sql`and 参与者 not in ${歧义值集(projectId)}`})`
+}
+
+/**
  * 基 1（11 §3.1）：事件是否归属该实体。
  *
- * - 参与者表：`p.entity_id` ∈ 归属实体集（本人 / 正向代表 / 反向对齐者）；
- * - 文本回退：`participants` 的规范值 ∈ 归属值集（旧数据、对不上档案的参与者走这一路）。
+ * - 参与者表：`p.entity_id` ∈ 归属实体集（本人 / 正向代表 / 反向对齐者）；按 id，不受值歧义影响；
+ * - 文本回退：`participants` 的规范值 ∈ 归属值集（旧数据、对不上档案的参与者走这一路），
+ *   同名跨类型的值 fail-closed（缺口 #11，见 `事件文本归属条件`）。
  *
  * ⚠️ 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `case_event.id` 与
  * `participants`。
@@ -383,8 +418,7 @@ export function 事件归属条件(projectId: string | SQL, 实体id: string | S
                         where p.project_id = ${projectId}
                           and p.event_id = case_event.id
                           and p.entity_id in ${归属实体集(projectId, 实体id)})
-           or exists (select 1 from unnest(participants) as 参与者
-                       where 参与者 in ${归属值集(projectId, 实体id)}))`
+           or ${事件文本归属条件(projectId, 实体id)})`
 }
 
 /**

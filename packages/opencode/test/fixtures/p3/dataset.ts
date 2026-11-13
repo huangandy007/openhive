@@ -1,6 +1,8 @@
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import { claimNextJob, enqueueMaterial, runJob } from "../../../src/server/openhive/case-ingest"
+import { insertParticipants } from "../../../src/server/openhive/case-fact-store"
 import type { 抽取器 } from "../../../src/server/openhive/case-extract-run"
 import type { Queryable } from "../../../src/server/openhive/case-store"
 import { 建假抽取器 } from "../../server/openhive-case-extract-fixture"
@@ -561,6 +563,111 @@ export async function 种金额乱序数据集(
   const 流水 = await 入队(项目, "P3金额序流水.xlsx", 造工作簿(行们, "流水"))
   await 跑(流水)
   return { 项目, 主账号 }
+}
+
+/**
+ * 同名跨类型数据集（缺口 #11）：规范值「张伟」同时是人、组织。
+ *
+ * 唯一索引按 `(project, type, canonical_value)`，两个实体可以共存；`participants text[]`
+ * 只存值不存类型 ⇒ 文本回退按值匹配会把同一条事件同时算给两个实体。三条事件的用途：
+ * - 歧义：`['张伟','李四']`，只带文本参与者（生产写入器对文本事件的 `entity_id` 恒为
+ *   null，实体缓存只收账户）——修后两边都不归属，条数进缺口；
+ * - 唯一：`['李四']`，值不歧义，修后仍按值归属（防守卫过度封杀）；
+ * - 带参与者行：`['张伟']`，定向把参与者行补成「已对齐到人张伟」——按 id 的支路不受
+ *   值歧义影响（缺口 #11 的对照）。
+ */
+export interface 同名数据集 {
+  项目: string
+  实体: { 人张伟: string; 组织张伟: string; 李四: string }
+  事件: { 歧义: string; 唯一: string; 带参与者行: string }
+}
+
+const 同名正文 = [
+  "一、2026年6月1日，张伟向李四转账50元。",
+  "二、2026年6月2日，张伟与李四曾在城东见面。",
+  "三、2026年6月3日，李四独自在城西出现。",
+  "四、2026年6月4日，张伟签收文件。",
+  "",
+].join("\n")
+
+export async function 种同名数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<同名数据集> {
+  const 项目 = "p-同名歧义"
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 笔录 = await 入队(项目, "P3同名笔录.txt", new TextEncoder().encode(同名正文))
+  await 跑(笔录, async () =>
+    建假抽取器(() => ({
+      实体: [
+        { 类型: "人", 取值: "张伟" },
+        { 类型: "组织", 取值: "张伟" },
+        { 类型: "人", 取值: "李四" },
+      ],
+      关系: [
+        {
+          类型: "转账",
+          从: "张伟",
+          到: "李四",
+          金额原文: "50元",
+          时间原文: "2026年6月1日",
+          原文: "2026年6月1日，张伟向李四转账50元。",
+        },
+      ],
+      事件: [
+        { 类型: "见面", 参与人: ["张伟", "李四"], 原文: "2026年6月2日，张伟与李四曾在城东见面。" },
+        { 类型: "见面", 参与人: ["李四"], 原文: "2026年6月3日，李四独自在城西出现。" },
+        { 类型: "见面", 参与人: ["张伟"], 原文: "2026年6月4日，张伟签收文件。" },
+      ],
+    })),
+  )
+
+  const 实体行们 = rowsOf(
+    await db.execute(sql`
+      select id, type, canonical_value from auth.case_entity where project_id = ${项目}
+    `),
+  )
+  const 找实体 = (类型: string, 值: string): string => {
+    const 行 = 实体行们.find((行) => 行.type === 类型 && 行.canonical_value === 值)
+    if (typeof 行?.id !== "string") throw new Error(`找不到实体：${类型}/${值}`)
+    return 行.id
+  }
+  const 事件行们 = rowsOf(
+    await db.execute(sql`
+      select id, array_to_json(participants)::text as participants
+        from auth.case_event where project_id = ${项目}
+    `),
+  )
+  const 找事件 = (参与者们: string[]): string => {
+    const json = JSON.stringify(参与者们)
+    const 行 = 事件行们.find((行) => 行.participants === json)
+    if (typeof 行?.id !== "string") throw new Error(`找不到事件：${json}`)
+    return 行.id
+  }
+  const 人张伟 = 找实体("人", "张伟")
+  const 带参与者行 = 找事件(["张伟"])
+  // 抽取路径的文本事件不写参与者行（只有 `写入翻译结果` 那条路径写，且实体缓存只收账户）。
+  // 用生产写入口补一行，模拟「翻译 / 人工已把该参与者对齐到人张伟」的中间态——
+  // 这正是缺口 #11 里「按 id 的支路不受值歧义影响」要钉的状态。
+  await insertParticipants(db, [
+    {
+      projectId: 项目,
+      id: `同名补行-${带参与者行}`,
+      eventId: 带参与者行,
+      entityId: 人张伟,
+      role: "参与",
+      mentionText: "张伟",
+      citationId: null,
+      ordinal: 0,
+    },
+  ])
+
+  return {
+    项目,
+    实体: { 人张伟, 组织张伟: 找实体("组织", "张伟"), 李四: 找实体("人", "李四") },
+    事件: { 歧义: 找事件(["张伟", "李四"]), 唯一: 找事件(["李四"]), 带参与者行 },
+  }
 }
 
 /** 混币关系数据集：同一对账户一笔 CNY、一笔 USD ⇒ 关系 `times=2 / times_cny=1 / amount=100.00`。 */

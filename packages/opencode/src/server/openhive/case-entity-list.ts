@@ -3,6 +3,7 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import {
   事件归属条件,
+  事件文本归属条件,
   实体关系归属,
   账户归属集数组,
   账户展示名,
@@ -570,6 +571,26 @@ export async function 实体档案(
         ])
   if (内部往来条数 > 0) 缺口.push(档案归属缺口.内部往来.句(内部往来条数))
   if (归属歧义条数 > 0) 缺口.push(档案归属缺口.归属歧义.句(归属歧义条数))
+
+  // 缺口 #11：文本回退按值归属时，同名跨类型（「张伟」既是人又是组织）会被算给两个实体
+  // ⇒ `事件归属条件` 里 fail-closed（值对应 ≥2 个未排除实体就不按值归属）。这里把
+  // 「本来按值能归、被守卫挡掉」的条数明说，不让事件总数静默变少。基础固定「未排除」，
+  // 与上面的关系归属缺口同口径；不随 `含排除` 开关变（缺口讲归属，不讲可见性）。
+  const 同名未归属行 = rowsOf(
+    await db.execute(sql`
+      select count(*)::int as 数
+        from auth.case_event
+       where project_id = ${input.projectId}
+         and trust_state <> '已排除'
+         and not ${事件归属条件(input.projectId, String(实体.id))}
+         and ${事件文本归属条件(input.projectId, String(实体.id), true)}
+    `),
+  )[0]
+  const 同名未归属条数 = Number(同名未归属行?.数 ?? 0)
+  if (同名未归属条数 > 0)
+    缺口.push(
+      `参与人同名未归属 ${同名未归属条数} 条：该值在项目内对应多个实体（人 / 组织），按值归属会算给两个实体，fail-closed，不猜`,
+    )
 
   return {
     id: String(实体.id),
