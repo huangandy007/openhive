@@ -1,7 +1,7 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
-import { 事件归属条件, 账户归属集, 关系归属条件 } from "./case-party"
+import { 事件归属条件, 账户归属集, 账户展示名, 户名对齐, 关系归属条件 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
 
@@ -485,6 +485,103 @@ export async function 实体档案(
     一句话: 一句话结论(String(实体.type), String(实体.canonical_value), 涉及, 对方数, 关系总数, 事件总数),
     ...(缺口.length > 0 ? { 缺口 } : {}),
   }
+}
+
+export interface 关系圈项 {
+  readonly 对方: string
+  readonly 对方类型: string
+  /** 与 `档案关系.对方细类` 同型（`细类()` 返回 `string | undefined`，判不出给 `null`）。 */
+  readonly 对方细类: string | null
+  readonly 方向: "出" | "入"
+  readonly 类型: string
+  readonly 次数: number
+  readonly 金额: string | null
+  readonly 首: number | null
+  readonly 末: number | null
+}
+
+/** 关系圈最多展示多少组（按金额降序）。超出部分由调用点写进缺口。 */
+export const 关系圈上限 = 10
+
+/**
+ * 一圈关系按「对方代表」聚合（`explore_entity` 用）：原始关系是每对多行，直接列出去不是
+ * 一个圈。
+ *
+ * - **触达**与 `实体档案` 同一份谓词：账户走基 2 的 XOR（`关系归属条件`），人 / 组织保持
+ *   「端点等于自己」。分组键是 `coalesce(户名对齐代表, 对方.id)`，与 `aggregate_money` 的
+ *   对手方同口径——人与其唯一户名账户因此合成一组。
+ * - **展示**也跟着代表走（10 §3.1「显示优先用户名」）：`人 / 组织` 展示自己；其他类型
+ *   展示唯一户名对齐到它的人名（`账户展示名`，与 `aggregate_money` 共用），取不到才展示
+ *   端点本身。不改写端点、不合并实体（关系事实仍按原样）。
+ * - **只收人民币笔数 > 0 的关系**（D-9）：纯外币关系在 `aggregate_money` 里也不进汇总，
+ *   留在这里只会产生金额 0.00 的空组。
+ */
+export async function 关系圈(
+  db: Queryable,
+  input: {
+    readonly projectId: string
+    readonly id: string
+    readonly type: string
+    readonly 起?: number
+    readonly 止?: number
+  },
+): Promise<关系圈项[]> {
+  const 是账户 = input.type === "账户"
+  const 归属集 = 是账户 ? 账户归属集(input.projectId, [input.id]) : undefined
+  const from属于 = 归属集 === undefined ? sql`r.from_id = ${input.id}` : sql`r.from_id in ${归属集}`
+  const 触达 =
+    归属集 === undefined
+      ? sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`
+      : 关系归属条件(input.projectId, [input.id], sql`r.from_id`, sql`r.to_id`)
+  // 时间窗与 `aggregate_money` 同口径：最晚不早于「起」、最早不晚于「止」。
+  const 窗: SQL[] = []
+  if (input.起 !== undefined) 窗.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${input.起}`)
+  if (input.止 !== undefined) 窗.push(sql`coalesce(r.first_at, r.last_at, 0) <= ${input.止}`)
+  const 行们 = rowsOf(
+    await db.execute(sql`
+      select coalesce(min(case when 对方.type in ('人', '组织') then 对方.canonical_value end),
+                      min(case when 展示.候选数 = 1 then 展示.代表值 end),
+                      min(对方.canonical_value)) as 对方值,
+             coalesce(min(case when 对方.type in ('人', '组织') then 对方.type end),
+                      min(case when 展示.候选数 = 1 then 展示.代表类型 end),
+                      min(对方.type)) as 对方类型,
+             coalesce(min(case when 对方.type in ('人', '组织') then 对方.attrs::text end),
+                      min(case when 展示.候选数 = 1 then 展示.代表attrs end),
+                      min(对方.attrs::text)) as 对方attrs,
+             case when ${from属于} then '出' else '入' end as 方向,
+             r.type as 关系类型,
+             sum(coalesce(r.times, 1))::int as 次数,
+             sum(r.amount)::text as 金额,
+             min(coalesce(r.first_at, r.last_at)) as 首,
+             max(coalesce(r.last_at, r.first_at)) as 末
+        from auth.case_relation r
+        join auth.case_entity 对方
+          on 对方.project_id = r.project_id
+         and 对方.id = case when ${from属于} then r.to_id else r.from_id end
+         and 对方.trust_state <> '已排除'
+        left join lateral ${户名对齐(input.projectId, sql`对方.id`, sql`对方.type`, sql`对方.canonical_value`)} 对齐 on true
+        left join lateral ${账户展示名(input.projectId, sql`对方.id`)} 展示 on true
+       where r.project_id = ${input.projectId}
+         and r.trust_state <> '已排除'
+         and ${触达}
+         and coalesce(r.times_cny, r.times, 1) > 0
+         ${窗.length === 0 ? sql`` : sql`and ${sql.join(窗, sql` and `)}`}
+       group by 方向, r.type, coalesce(对齐.代表, 对方.id)
+       order by sum(r.amount) desc nulls last, 对方值 asc
+       limit ${关系圈上限}
+    `),
+  )
+  return 行们.map((行) => ({
+    对方: String(行.对方值),
+    对方类型: String(行.对方类型),
+    对方细类: 细类(String(行.对方类型), String(行.对方值), 解JSON<Record<string, unknown>>(行.对方attrs, {})) ?? null,
+    方向: String(行.方向) === "出" ? "出" : "入",
+    类型: String(行.关系类型),
+    次数: Number(行.次数),
+    金额: (行.金额 as string | null) ?? null,
+    首: 行.首 === null || 行.首 === undefined ? null : Number(行.首),
+    末: 行.末 === null || 行.末 === undefined ? null : Number(行.末),
+  }))
 }
 
 /**

@@ -54,6 +54,32 @@ export function 对齐代表(projectId: string, id: SQL, 类型: SQL, 值: SQL):
 }
 
 /**
+ * 账户在关系视图里的展示名（10 §3.1「显示优先用户名」）。
+ *
+ * `户名来源` 的别名方向是 **entity_id = 账户、value = 人名**，所以反查要按 `value` 匹配
+ * 人名实体（`p.canonical_value = a.value`），不能 `p.id = a.entity_id`——那拿到的是账户自己。
+ * 与 `户名对齐` 对称、同样 fail-closed：人名候选恰好 1 个才认（`候选数` = 人名种数），
+ * 0 个或 ≥2 个由调用点回落到账户本身。
+ *
+ * 返回 lateral 派生表（零行也回一行）：`代表值` / `代表类型` / `代表attrs` / `候选数`。
+ * `aggregate_money` 的对手方与 `关系圈` 的对方展示共用这一份（`#002-06`）——两处各写一遍
+ * 迟早漂成「汇总显示李四、圈里显示账号」。
+ */
+export function 账户展示名(projectId: string, 账户id: SQL): SQL {
+  // `户名来源` 已以 `where` 结尾，追加条件只能写 `and`（见它的调用约定）。
+  return sql`(select min(p.canonical_value) as 代表值,
+                     min(p.type) as 代表类型,
+                     min(p.attrs::text) as 代表attrs,
+                     count(distinct p.canonical_value)::int as 候选数
+                from auth.case_entity p, ${户名来源(projectId)}
+                 and p.project_id = a.project_id
+                 and p.canonical_value = a.value
+                 and p.type in ('人', '组织')
+                 and p.trust_state <> '已排除'
+                 and a.entity_id = ${账户id})`
+}
+
+/**
  * `id in (...)` 片段：调用点把要匹配的列交进来，集合由本文件构造。
  *
  * ⚠️ 调用约定：调用方必须传**非空数组**——空数组会生成 `in ()`，PG 语法报错。

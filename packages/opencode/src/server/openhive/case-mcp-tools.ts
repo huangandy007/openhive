@@ -25,7 +25,17 @@ import {
 } from "./case-row-query"
 import { 文本数组 } from "./case-fact-store"
 import type { 留痕类型 } from "./case-fact-change"
-import { 事件归属条件, 账户归属集, 关系归属条件, 歧义到账户, 户名对齐, 户名来源 } from "./case-party"
+import {
+  事件归属条件,
+  账户归属集,
+  账户展示名,
+  关系归属条件,
+  歧义到账户,
+  户名对齐,
+  户名来源,
+} from "./case-party"
+import { 关系圈, 关系圈上限, 实体档案 } from "./case-entity-list"
+import { 关系图 } from "./case-graph"
 import {
   读身份标注,
   实体称呼,
@@ -1678,7 +1688,7 @@ export async function aggregate_money(
   const 对手方 = rowsOf(
     await ctx.db.execute(sql`
       select coalesce(min(case when 对手.type in ('人', '组织') then 对手.canonical_value end),
-                      min(case when 对手.type not in ('人', '组织') then 账户户名.代表值 end),
+                      min(case when 账户户名.候选数 = 1 then 账户户名.代表值 end),
                       min(对手.canonical_value)) as 对手方,
              case when r.from_id in ${归属集} then '出' else '入' end as 方向,
              sum(coalesce(r.times_cny, r.times, 1))::int as 笔数,
@@ -1690,17 +1700,7 @@ export async function aggregate_money(
          and 对手.id = case when r.from_id in ${归属集} then r.to_id else r.from_id end
          and 对手.trust_state <> '已排除'
         left join lateral ${户名对齐(ctx.身份.projectId, sql`对手.id`, sql`对手.type`, sql`对手.canonical_value`)} 对齐 on true
-        left join lateral (
-          -- 别名方向：entity_id = 账户，value = 人名。所以人名要按 **value** 反查，
-          -- 不能 p.id = a.entity_id——那拿到的是账户自己（P2「写入翻译结果」的写口）。
-          -- 户名前提走「户名来源」唯一出处（#002-06）；这里只补「对方必须是人」。
-          select min(p.canonical_value) as 代表值
-            from auth.case_entity p, ${户名来源(ctx.身份.projectId)}
-             and p.project_id = a.project_id and p.canonical_value = a.value
-             and p.type = '人' and p.trust_state <> '已排除'
-             and a.entity_id = 对手.id
-          having count(distinct p.canonical_value) = 1
-        ) 账户户名 on true
+        left join lateral ${账户展示名(ctx.身份.projectId, sql`对手.id`)} 账户户名 on true
        where ${sql.join(对手方条件, sql` and `)} and ${对手人民币笔数}
        group by 方向,
                 coalesce(对齐.代表, 对手.id)
@@ -2038,5 +2038,155 @@ export async function find_crossings(
       ? [{ 工具: "query_relations", 参数: { 实体: args.甲 }, 为什么: "先看这一侧自己的关系，确认边是否已抽出来" }]
       : [{ 工具: "query_events", 参数: {}, 为什么: "共同时空往往是通话或同行，可按时间窗查事件" }],
     ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
+  }
+}
+
+const 探索事件上限 = 10
+
+/** 探索类空信封：七字段齐、数据为 null（空原因非空时数据必须为空）。 */
+function 探索空信封(input: {
+  主体: string
+  空原因: 空原因值
+  缺口: readonly string[]
+  下一步: readonly 下一步项[]
+  口径: string
+}): 工具结果 {
+  return {
+    摘要: input.主体,
+    数据: null,
+    口径: input.口径,
+    缺口: input.缺口,
+    空原因: input.空原因,
+    出处: [],
+    下一步: input.下一步,
+  }
+}
+
+/**
+ * 一个实体的一次性视图（09 §4.1）：档案 + 关系圈 + 最近事件 + 全量计数。
+ *
+ * 档案、事件与全量计数直接复用 `实体档案()`（11 §5），关系圈复用 `关系圈()`，
+ * 2 跳邻域复用 `关系图()`——三个口径各有唯一出处，这里只做拼装（`#002-06`）。
+ * 参与者摘要走 T7 收成的 `参与者视图`（含已排除 = false），不自己拼参与者文本。
+ */
+export async function explore_entity(
+  ctx: 工具上下文,
+  args: { 实体: string; 起?: number; 止?: number; 跳数?: number; 限制?: number },
+): Promise<工具结果> {
+  校验时间窗(args)
+  const 跳数 = args.跳数 ?? 1
+  if (跳数 !== 1 && 跳数 !== 2)
+    throw new 工具错误("bad_input", `跳数只能是 1 或 2，收到 ${String(args.跳数)}`)
+  let 实体: 实体解析
+  try {
+    实体 = await 解析实体(ctx, args.实体, "实体")
+  } catch (错) {
+    if (!(错 instanceof 工具错误) || 错.code !== "not_found") throw 错
+    const 份数 = await 未解析材料数(ctx)
+    if (份数 > 0)
+      return 探索空信封({
+        主体: `「${args.实体}」查不到：项目里还有 ${份数} 份材料尚未解析，现在还不能断定没有这个实体`,
+        空原因: "材料未解析",
+        缺口: [未翻译缺口(份数)],
+        下一步: [材料未翻译下一步],
+        口径:
+          "实体先在实体表按 id / 规范值 / 未撤销户名解析；解析不到时若项目内仍有未解析材料，不把「查无此实体」当结论。",
+      })
+    return 探索空信封({
+      主体: `本项目里找不到实体「${args.实体}」`,
+      空原因: "无此实体",
+      缺口: [],
+      下一步: [{ 工具: "query_entities", 参数: { 关键词: args.实体 }, 为什么: "换个说法或按类型再找一次" }],
+      口径: "实体按 id、规范值、未撤销的户名别名解析；解析不到就是本项目没有它。",
+    })
+  }
+  const 档案 = await 实体档案(ctx.db, { projectId: ctx.身份.projectId, id: 实体.id })
+  if (档案 === undefined)
+    return 探索空信封({
+      主体: `实体「${实体.value}」已排除或不属于本项目`,
+      空原因: "无此实体",
+      缺口: [],
+      下一步: [
+        { 工具: "query_entities", 参数: { 关键词: 实体.value, 含已排除: true }, 为什么: "确认它是不是被排除了" },
+      ],
+      口径: "默认不含「已排除」的实体（09 §9.1）。",
+    })
+  const 无事实 = 档案.关系总数 === 0 && 档案.事件总数 === 0
+  if (无事实)
+    return 探索空信封({
+      主体: `「${实体.value}」在档案里没有任何关系或事件`,
+      空原因: "实体存在但无任何事实",
+      缺口: [],
+      下一步: [
+        { 工具: "query_entities", 参数: { 关键词: 实体.value }, 为什么: "确认实体名与类型；事实可能还没从材料里抽出来" },
+      ],
+      口径: "关系与事件都按基 1 / 基 2 的归属判定统计（与实体档案同口径）。",
+    })
+
+  const 圈 = await 关系圈(ctx.db, {
+    projectId: ctx.身份.projectId,
+    id: 实体.id,
+    type: 实体.type,
+    起: args.起,
+    止: args.止,
+  })
+  const 邻域 =
+    跳数 === 2 ? await 关系图(ctx.db, { projectId: ctx.身份.projectId, id: 实体.id, 跳数: 2 }) : undefined
+  // `限制` 只管事件列表的条数（默认 10）；关系圈上限固定 10、邻域沿用关系图自己的 50。
+  const 事件上限 = args.限制 === undefined ? 探索事件上限 : 归一化限制(args.限制)
+  const 原始事件 = 档案.事件.slice(0, 事件上限)
+  const 参与者 = await 参与者视图(
+    ctx,
+    原始事件.map((条) => ({ id: 条.id, participants: 条.participants })),
+    false,
+  )
+  const 事件 = 原始事件.map((条) => ({
+    id: 条.id,
+    类型: 条.type,
+    时间: 条.occurred_at,
+    参与者: 参与者.get(条.id)?.摘要 ?? [],
+    摘要: 条.summary,
+    信任态: 条.trust_state,
+  }))
+  const 缺口 = [
+    ...(档案.缺口 ?? []),
+    `关系圈按对方聚合、最多 ${关系圈上限} 组（按金额降序）`,
+    `事件只列最近 ${事件上限} 条，全量 ${档案.事件总数} 条`,
+    ...(邻域?.缺口 ?? []),
+  ]
+  return {
+    摘要: `${档案.一句话}关系圈 ${圈.length} 组${邻域 === undefined ? "" : `；两跳邻域 ${邻域.节点.length} 个节点`}`,
+    数据: {
+      档案: {
+        type: 档案.type,
+        subtype: 档案.subtype ?? null,
+        canonical_value: 档案.canonical_value,
+        aliases: 档案.aliases,
+        attrs: 档案.attrs,
+        trust_state: 档案.trust_state,
+      },
+      关系圈: 圈,
+      事件,
+      总数: { 关系总数: 档案.关系总数, 对方数: 档案.对方数, 事件总数: 档案.事件总数 },
+      ...(邻域 === undefined ? {} : { 邻域 }),
+    },
+    口径:
+      "档案、事件与全量计数复用实体档案（关系按基 2、事件按基 1 归属）；" +
+      "关系圈按对方代表分组、只收人民币笔数 > 0 的关系、前 10（对方展示优先户名对齐的人名）；" +
+      "跳数=2 的两跳邻域复用关系图（节点上限 50、截断进缺口）。",
+    缺口,
+    空原因: null,
+    出处: [{ 事实: `实体「${实体.value}」的档案`, 代表: 实体.id, 可下钻: "get_citation" }],
+    下一步: [
+      ...(实体.type === "账户"
+        ? [{ 工具: "money_flow", 参数: { 账户: 实体.value }, 为什么: "看这个账户的收支与对手排行" }]
+        : []),
+      ...(档案.事件总数 > 0
+        ? [{ 工具: "query_timeline", 参数: { 实体: 实体.value }, 为什么: "按时间顺序看它的事件" }]
+        : []),
+      ...(圈.length > 0
+        ? [{ 工具: "query_relations", 参数: { 实体: 实体.value }, 为什么: "看构成关系圈的原始关系" }]
+        : []),
+    ],
   }
 }

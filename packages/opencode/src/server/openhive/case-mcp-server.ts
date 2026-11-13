@@ -10,6 +10,7 @@ import { 数据为空, 数据预算字节, 空原因枚举, 序列化字节 } fr
 import { 解析调用身份, 身份错误, type 调用身份 } from "./case-mcp-identity"
 import {
   aggregate_money,
+  explore_entity,
   find_crossings,
   get_citation,
   query_entities,
@@ -58,6 +59,7 @@ export const 工具名 = [
   "get_citation",
   "query_rows",
   "query_timeline",
+  "explore_entity",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -320,6 +322,23 @@ const TOOLS: readonly Tool[] = [
       },
     },
   },
+  {
+    name: "explore_entity",
+    description:
+      "一次看全一个实体：档案（类型 / 细类 / 规范值 / 别名 / 属性 / 信任态）、关系圈（按对方聚合，前 10）、" +
+      "最近 10 个事件与全量计数。跳数=2 时附一至两跳邻域图，截断写进缺口。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        实体: { type: "string", description: "实体 id 或规范值（必填）" },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        跳数: { type: "integer", enum: [1, 2], description: "1 = 只看一圈（默认），2 = 附两跳邻域" },
+        限制: { type: "integer", description: 限制说明 },
+      },
+      required: ["实体"],
+    },
+  },
 ]
 
 const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
@@ -362,6 +381,11 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
     query_timeline(
       ctx,
       收参数<Parameters<typeof query_timeline>[1]>(args, ["实体", "地点", "类型", "游标"], ["起", "止", "限制"], []),
+    ),
+  explore_entity: (ctx, args) =>
+    explore_entity(
+      ctx,
+      收参数<Parameters<typeof explore_entity>[1]>(args, ["实体"], ["起", "止", "跳数", "限制"], []),
     ),
 }
 
