@@ -25,7 +25,7 @@ import {
 } from "./case-row-query"
 import { 文本数组 } from "./case-fact-store"
 import type { 留痕类型 } from "./case-fact-change"
-import { 事件归属条件, 户名对齐, 户名来源 } from "./case-party"
+import { 事件归属条件, 账户归属集, 关系归属条件, 户名对齐, 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -911,7 +911,8 @@ export async function query_events(
   let 参与实体解析: 实体解析 | undefined
   if (args.参与实体 !== undefined) {
     参与实体解析 = await 解析实体(ctx, args.参与实体, "参与实体")
-    // 「事件是否涉及该实体」只有一处定义（`事件参与者条件`）：text[] 规范值 ∪ 参与者表的对齐代表。
+    // 「事件是否涉及该实体」只有一处定义（`事件参与者条件`）：参与者表（本人 / 正向对齐代表 /
+    // 唯一户名对齐到本账户的人或组织）∪ `participants` 文本回退（规范值 ∪ 别名）。
     // `participants` 存的是**实体规范值**、不是 id（`case-extract.ts:433` 写 `canonicalValue`），
     // 比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
     条件.push(事件参与者条件(ctx, 参与实体解析))
@@ -968,7 +969,8 @@ export async function query_events(
     数据,
     口径:
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
-      "同创建时间再按 type 升序、id 升序取第一条）过滤；参与实体按 participants 规范值或参与者表的对齐代表命中（人 → 唯一户名账户）；" +
+      "同创建时间再按 type 升序、id 升序取第一条）过滤；参与实体按事件归属判定：参与者表命中本人、" +
+      "正向对齐代表，或唯一户名对齐到本账户的人/组织；或 participants 文本回退命中归属值集（规范值 ∪ 别名）；" +
       "时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。" + 身份口径,
     缺口: 截断缺口(args.限制, 限制, 数据.length),
@@ -1009,7 +1011,8 @@ function 文本(值: unknown): string | null {
  * 查询预算：规范值命中 ≤7、户名别名路径 ≤8（解析实体多一次 `解析户名`）。
  * 账：解析 1（别名 +1）+ 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2
  * （plan D-6 修正）。
- * 参与者也走 `事件参与者条件`（含对齐），所以按人能看到其唯一户名账户的流水事件。
+ * 参与者也走 `事件参与者条件`（基 1 归属：参与者表的本人 / 正向对齐代表 / 反向对齐者，
+ * 加 `participants` 文本回退的规范值 ∪ 别名），所以按人能看到其唯一户名账户的流水事件。
  */
 export async function query_timeline(
   ctx: 工具上下文,
@@ -1191,7 +1194,8 @@ export async function query_timeline(
       : `${称呼}的 ${事件们.length} 个事件（时间升序）${事件们[0].时间原文 ?? 事件们[0].类型} 起${后缀}`,
     数据: 空 ? null : { 事件们, 缺时间条数, 下一页游标 },
     口径:
-      "事件按实体（先按 id、再按规范值解析；参与实体走 text[] 规范值 ∪ 参与者表的对齐代表）过滤；" +
+      "事件按实体（先按 id、再按规范值解析）与事件归属过滤：参与者表命中本人 / 正向对齐代表 /" +
+      "唯一户名对齐到本账户的人或组织，或 participants 文本回退命中归属值集（规范值 ∪ 别名）；" +
       "时间按 occurred_at 闭区间、升序排列；游标是 (occurred_at, id)；默认不含「已排除」事件；" +
       "时间为 UTC+8 规范值，精度按各自标注。" + 身份口径,
     缺口,
@@ -1504,7 +1508,7 @@ export async function query_rows(
 }
 
 /** 三个块的固定上界（没有 `限制` 参数，写在 SQL 里）。 */
-const 对手方上限 = 10
+const 默认对手方上限 = 10
 const 余额行上限 = 200
 const 每侧关系上限 = 500
 const 共同时空上限 = 50
@@ -1524,7 +1528,9 @@ const 共同时空上限 = 50
 export async function aggregate_money(
   ctx: 工具上下文,
   args: { 账户: string; 起?: number; 止?: number },
+  选项: { 对手方上限?: number } = {},
 ): Promise<工具结果> {
+  const 对手方上限 = 选项.对手方上限 ?? 默认对手方上限
   校验时间窗(args)
   // R-C：解析不到且项目里有未解析材料时，回「材料未翻译」信封（不是 not_found）。
   const 解析结果 = await 解析账户(ctx, args.账户)
@@ -1540,17 +1546,20 @@ export async function aggregate_money(
   const 账户称呼 = 实体称呼(账户, args.账户)
   const 后缀 = 身份后缀(身份们)
 
+  // 基 2（11 §3.2）：恰好一端落在「账户 ∪ 唯一户名对齐到它的人/组织」里才算本账户的钱。
+  // 方向按**落在集合里的那一端**判：from 在集合 ⇒ 出，否则入；对手方就是另一端。
+  const 归属集 = 账户归属集(ctx.身份.projectId, 账户.ids)
   const 汇总条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
     // 按值查询时 `账户.ids` 含同值所有类型行：旧行上的转账不能因为纠正后的新行而消失。
-    sql`(from_id ${id属于(账户.ids)} or to_id ${id属于(账户.ids)})`,
+    sql`${关系归属条件(ctx.身份.projectId, 账户.ids, sql`from_id`, sql`to_id`)}`,
     // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
     // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
     // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
     // `project_id` / `trust_state` 变成有歧义列（报错）。
-    sql`(case when from_id ${id属于(账户.ids)} then to_id else from_id end) in (
+    sql`(case when from_id in ${归属集} then to_id else from_id end) in (
       select id from auth.case_entity
        where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
     )`,
@@ -1559,7 +1568,7 @@ export async function aggregate_money(
     sql`r.project_id = ${ctx.身份.projectId}`,
     sql`r.type = '转账'`,
     sql`r.trust_state <> '已排除'`,
-    sql`(r.from_id ${id属于(账户.ids)} or r.to_id ${id属于(账户.ids)})`,
+    sql`${关系归属条件(ctx.身份.projectId, 账户.ids, sql`r.from_id`, sql`r.to_id`)}`,
   ]
   // 时间窗与 `query_relations` 同口径：最晚不早于「起」、最早不晚于「止」，两端都缺按 0 兜底。
   if (args.起 !== undefined) {
@@ -1575,17 +1584,20 @@ export async function aggregate_money(
   const 人民币笔数 = sql`coalesce(times_cny, times, 1) > 0`
   const 对手人民币笔数 = sql`coalesce(r.times_cny, r.times, 1) > 0`
 
-  const 汇总 = rowsOf(
+  const 汇总行 = rowsOf(
     await ctx.db.execute(sql`
-      select case when from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
+      select case when from_id in ${归属集} then '出' else '入' end as 方向,
              sum(coalesce(times_cny, times, 1))::int as 笔数,
-             coalesce(sum(amount), 0)::text as 合计
+             coalesce(sum(amount), 0)::text as 合计,
+             min(min(coalesce(first_at, last_at))) over () as 首,
+             max(max(coalesce(last_at, first_at))) over () as 末
         from auth.case_relation
        where ${sql.join(汇总条件, sql` and `)} and ${人民币笔数}
        group by 方向
        order by 方向
     `),
-  ).map((行) => ({
+  )
+  const 汇总 = 汇总行.map((行) => ({
     方向: String(行.方向),
     笔数: Number(行.笔数),
     合计: String(行.合计),
@@ -1593,6 +1605,14 @@ export async function aggregate_money(
   // 执行序不依赖库的字符串排序：2026-11-06 本机 PGlite 实测 `order by 方向` 先回「入」，
   // 而口径固定「出 → 入」。缺了这一步，同样的库、不同的 collation 就会换顺序。
   汇总.sort((左, 右) => (左.方向 === "出" ? 0 : 1) - (右.方向 === "出" ? 0 : 1))
+  // `首末` 只在有汇总行时有值；窗口聚合让每个分组行都带着同一个全局值（D-4）。
+  const 首末 =
+    汇总行.length === 0
+      ? null
+      : {
+          首: 汇总行[0].首 === null || 汇总行[0].首 === undefined ? null : Number(汇总行[0].首),
+          末: 汇总行[0].末 === null || 汇总行[0].末 === undefined ? null : Number(汇总行[0].末),
+        }
 
   // §9.1：对手方实体被「已排除」时，不能把它的名字与金额一起回给模型（join 条件里过滤）。
   const 对手方 = rowsOf(
@@ -1600,14 +1620,14 @@ export async function aggregate_money(
       select coalesce(min(case when 对手.type in ('人', '组织') then 对手.canonical_value end),
                       min(case when 对手.type not in ('人', '组织') then 账户户名.代表值 end),
                       min(对手.canonical_value)) as 对手方,
-             case when r.from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
+             case when r.from_id in ${归属集} then '出' else '入' end as 方向,
              sum(coalesce(r.times_cny, r.times, 1))::int as 笔数,
              coalesce(sum(r.amount), 0)::text as 合计,
              max(对齐.候选数)::int as 候选数
         from auth.case_relation r
         join auth.case_entity 对手
           on 对手.project_id = r.project_id
-         and 对手.id = case when r.from_id ${id属于(账户.ids)} then r.to_id else r.from_id end
+         and 对手.id = case when r.from_id in ${归属集} then r.to_id else r.from_id end
          and 对手.trust_state <> '已排除'
         left join lateral ${户名对齐(ctx.身份.projectId, sql`对手.id`, sql`对手.type`, sql`对手.canonical_value`)} 对齐 on true
         left join lateral (
@@ -1758,14 +1778,16 @@ export async function aggregate_money(
           ? `${账户称呼}在给定条件下只有 ${外币行数} 行外币流水，外币不进合计，无法给出人民币口径的结论${后缀}`
           : `${账户称呼}在给定条件下没有任何转账关系或明细流水${后缀}`
       : `${账户称呼}${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : 外币行数 > 0 ? "；无人民币明细流水" : "；无明细流水"}${后缀}`,
-    数据: 空 ? null : { 汇总, 对手方: 对外对手方, 余额走势, 外币行数 },
+    数据: 空 ? null : { 汇总, 首末, 对手方: 对外对手方, 余额走势, 外币行数 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
       "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "金额为 numeric 字符串，勿自行转浮点；" +
       "余额走势与外币行数都按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值；" +
-      "余额走势只取 currency = 'CNY' 的明细行（行数为参与走势的人民币行数），外币行数按 currency <> 'CNY' 计数。" + 身份口径,
+      "余额走势只取 currency = 'CNY' 的明细行（行数为参与走势的人民币行数），外币行数按 currency <> 'CNY' 计数。" +
+      "账户归属按户名唯一对齐：恰好一端落在「本账户 ∪ 唯一户名对齐到它的人/组织」里的转账才算本账户；" +
+      "首末是该口径下最早 first_at 与最晚 last_at（不受方向影响）。" + 身份口径,
     // 有外币行时这句「也无明细流水」是假话（外币行只是不计入）——改由上面的外币缺口说明。
     缺口:
       空 && 外币行数 === 0
@@ -1806,7 +1828,8 @@ export async function aggregate_money(
  * 共同关联**每侧各查一次**再在 JS 求交：合成一条 `or` 查询再 `limit 500` 会让一方的边
  * 把配额吃光，另一方的交集被静默截断。
  *
- * 共同时空走共享的 `事件参与者条件`：text[] 规范值 ∪ 参与者表的对齐代表。
+ * 共同时空走共享的 `事件参与者条件`：参与者表（本人 / 正向对齐代表 / 唯一户名对齐到本账户的
+ * 人或组织）∪ `participants` 文本回退（规范值 ∪ 别名）。
  * 只比 text[] 会让「按人查」看不到表格卡片的事件（表格参与者是账户）。
  */
 export async function find_crossings(
@@ -1916,7 +1939,8 @@ export async function find_crossings(
       "共同关联取与甲、乙各自相连且非「已排除」的关系的另一端实体，两侧各至多 500 条后在服务端求交；" +
       "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
-      "共同时空按事件参与实体判定：participants 规范值，或参与者表里两人的对齐代表（人 → 唯一户名账户）；时间按 occurred_at 闭区间。" + 身份口径,
+      "共同时空按事件归属判定：参与者表命中两人的本人 / 正向对齐代表 / 唯一户名对齐到其账户的人或组织，" +
+      "或 participants 文本回退命中各自归属值集（规范值 ∪ 别名）；时间按 occurred_at 闭区间。" + 身份口径,
     缺口: 空 ? [...缺口, "共同关联与共同时空都为空：两侧在时间窗内没有可求交的边或事件"] : 缺口,
     空原因: 空 ? "无匹配行" : null,
     出处: 空
