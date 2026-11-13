@@ -56,28 +56,6 @@ export async function 建实体(
   `)
 }
 
-/**
- * 户名别名行（`kind='户名'`，未撤销）：`entity_id` 是账户，`value` 是人/组织规范值。
- * 生产写口在 `case-translate-store.ts`；测试里需要「账户 ← 户名」这条证据时用本构造器。
- */
-export async function 建户名别名(
-  db: Queryable,
-  input: {
-    id: string
-    projectId: string
-    entityId: string
-    value: string
-    revokedAt?: number
-  },
-): Promise<void> {
-  await db.execute(sql`
-    insert into auth.case_entity_alias
-      (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at, revoked_at)
-    values (${input.id}, ${input.projectId}, ${input.entityId}, '户名', ${input.value},
-            ${input.value}, '人工', ${现在}, ${input.revokedAt ?? null})
-  `)
-}
-
 export async function 建关系(
   db: Queryable,
   input: {
@@ -165,6 +143,31 @@ export async function 建事件(
               ${条.role}, ${条.mentionText ?? String(条.entityId ?? "")}, ${条.ordinal})
     `)
   }
+}
+
+/**
+ * 一次种 N 条同形事件（同一参与者、无参与者表行）：给「实体档案事件上限 100」这类
+ * 截断场景用。逐条 `建事件` 在 100 条量级上会把套件拖慢，这里一条语句种完。
+ */
+export async function 建事件批(
+  db: Queryable,
+  input: {
+    projectId: string
+    数量: number
+    前缀: string
+    participants?: string[]
+    首?: number
+  },
+): Promise<void> {
+  await db.execute(sql`
+    insert into auth.case_event
+      (id, project_id, type, occurred_at, participants, summary, trust_state, created_at)
+    select ${input.前缀} || g, ${input.projectId}, '转账',
+           case when ${input.首 ?? null}::int is null then null else ${input.首 ?? null}::int + g end,
+           array(select jsonb_array_elements_text(${JSON.stringify(input.participants ?? [])}::text::jsonb)),
+           null, '自动抽取', ${现在}
+      from generate_series(1, ${input.数量}) as g
+  `)
 }
 
 export async function 建引用(

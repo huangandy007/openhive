@@ -1,7 +1,17 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
-import { 事件归属条件, 账户归属集, 账户展示名, 户名对齐, 关系归属条件, 歧义到账户 } from "./case-party"
+import {
+  事件归属条件,
+  账户归属集,
+  账户展示名,
+  户名对齐,
+  关系归属条件,
+  歧义到账户,
+  另一端未排除,
+  内部往来归属条件,
+  归属歧义归属条件,
+} from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
 
@@ -288,6 +298,39 @@ export interface 实体档案 {
   readonly 缺口?: readonly string[]
 }
 
+/**
+ * `实体档案` 的四类截断缺口文案：写口与过滤口共用这一份契约（`#002-06`）。
+ *
+ * `explore_entity` 不返回 `档案.关系` / `档案.引用`，必须把这些句子挡掉；但按字面前缀
+ * 散在两个模块里匹配，改一次文案就会静默漏过滤。文案只能从这里出，过滤也只认这里的
+ * `前缀`，两边不会各写一份。
+ */
+export const 档案截断缺口 = {
+  关系数据: {
+    前缀: "数据说的关系只显示最近",
+    句: (上限: number, 总数: number) =>
+      `数据说的关系只显示最近 ${上限} 条，共 ${总数} 条；关系图可按类型筛选查看邻域`,
+  },
+  关系人: {
+    前缀: "人说的关系只显示最近",
+    句: (上限: number, 总数: number) => `人说的关系只显示最近 ${上限} 条，共 ${总数} 条`,
+  },
+  事件: {
+    前缀: "事件只显示最近",
+    句: (上限: number, 总数: number) =>
+      `事件只显示最近 ${上限} 条，共 ${总数} 条；时间线可用起止时间缩小范围`,
+  },
+  出处: {
+    前缀: "出处只显示前",
+    句: (上限: number, 总数: number) => `出处只显示前 ${上限} 条，共 ${总数} 条`,
+  },
+} as const
+
+/** 这句是不是 `实体档案` 自己的截断缺口（`explore_entity` 过滤「无关句」的唯一判据）。 */
+export function 是档案截断缺口(句: string): boolean {
+  return Object.values(档案截断缺口).some((类) => 句.startsWith(类.前缀))
+}
+
 export async function 实体档案(
   db: Queryable,
   input: { readonly projectId: string; readonly id: string; readonly includeExcluded?: boolean },
@@ -450,13 +493,13 @@ export async function 实体档案(
   // 都比这里的 200 / 100 还少——那两个入口自己也会截断。能给的只有「怎么缩小范围」。
   const 缺口: string[] = []
   if (关系数据总数 > 关系数据上限)
-    缺口.push(`数据说的关系只显示最近 ${关系数据上限} 条，共 ${关系数据总数} 条；关系图可按类型筛选查看邻域`)
+    缺口.push(档案截断缺口.关系数据.句(关系数据上限, 关系数据总数))
   if (关系人总数 > 关系人上限)
-    缺口.push(`人说的关系只显示最近 ${关系人上限} 条，共 ${关系人总数} 条`)
+    缺口.push(档案截断缺口.关系人.句(关系人上限, 关系人总数))
   if (事件总数 > 事件上限)
-    缺口.push(`事件只显示最近 ${事件上限} 条，共 ${事件总数} 条；时间线可用起止时间缩小范围`)
+    缺口.push(档案截断缺口.事件.句(事件上限, 事件总数))
   if (引用总数 > 引用上限)
-    缺口.push(`出处只显示前 ${引用上限} 条，共 ${引用总数} 条`)
+    缺口.push(档案截断缺口.出处.句(引用上限, 引用总数))
 
   return {
     id: String(实体.id),
@@ -638,11 +681,13 @@ export async function 关系圈遗漏(
 ): Promise<关系圈遗漏> {
   const { 是账户, 归属集, from属于, 触达, 窗 } = 关系圈范围(input)
   const 窗条件 = 窗.length === 0 ? sql`` : sql`and ${sql.join(窗, sql` and `)}`
-  // 与 `关系圈` 的 join 同一前提：另一端实体不能是「已排除」。
-  const 对方未排除 = sql`(case when ${from属于} then r.to_id else r.from_id end) in (
-      select id from auth.case_entity
-       where project_id = ${input.projectId} and trust_state <> '已排除'
-    )`
+  // 与 `关系圈` 的 join 同一前提：另一端实体不能是「已排除」（唯一出处见 `另一端未排除`）。
+  const 对方未排除 = 另一端未排除({
+    projectId: input.projectId,
+    from属于,
+    从: sql`r.from_id`,
+    到: sql`r.to_id`,
+  })
   const 基础 = [sql`r.project_id = ${input.projectId}`, sql`r.trust_state <> '已排除'`]
   const 数 = async (条件: SQL): Promise<number> =>
     Number(
@@ -660,25 +705,34 @@ export async function 关系圈遗漏(
     )} ${窗条件}`,
   )
   if (!是账户 || 归属集 === undefined) return { 纯外币, 内部往来: 0, 归属歧义: 0 }
+  // 内部往来与归属歧义的谓词由 `case-party.ts` 提供（与 `aggregate_money` 同一份实现，
+  // `#002-06`）；这里只补关系圈自己的基础条件（不按 `type='转账'` 过滤）。
   const 内部往来 = await 数(
     sql`${sql.join(
-      [...基础, sql`r.from_id in ${归属集}`, sql`r.to_id in ${归属集}`, 对方未排除],
+      [
+        ...基础,
+        ...内部往来归属条件({
+          projectId: input.projectId,
+          归属集,
+          从: sql`r.from_id`,
+          到: sql`r.to_id`,
+        }),
+      ],
       sql` and `,
     )} ${窗条件}`,
   )
-  // 与 `aggregate_money` 的 `归属歧义条件` 同形：两端都不在归属集、且一端是「名字对应
-  // ≥2 个账户」的歧义者；另一端也不能是「已排除」。
   const 歧义实体 = 歧义到账户(input.projectId, [input.id])
   const 归属歧义 = await 数(
     sql`${sql.join(
       [
         ...基础,
-        sql`r.from_id not in ${归属集} and r.to_id not in ${归属集}`,
-        sql`(r.from_id in ${歧义实体} or r.to_id in ${歧义实体})`,
-        sql`(case when r.from_id in ${歧义实体} then r.to_id else r.from_id end) in (
-          select id from auth.case_entity
-           where project_id = ${input.projectId} and trust_state <> '已排除'
-        )`,
+        ...归属歧义归属条件({
+          projectId: input.projectId,
+          归属集,
+          歧义实体,
+          从: sql`r.from_id`,
+          到: sql`r.to_id`,
+        }),
       ],
       sql` and `,
     )} ${窗条件}`,

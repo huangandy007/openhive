@@ -33,8 +33,11 @@ import {
   歧义到账户,
   户名对齐,
   户名来源,
+  另一端未排除,
+  内部往来归属条件,
+  归属歧义归属条件,
 } from "./case-party"
-import { 关系圈, 关系圈上限, 关系圈遗漏, 实体档案 } from "./case-entity-list"
+import { 是档案截断缺口, 关系圈, 关系圈上限, 关系圈遗漏, 实体档案 } from "./case-entity-list"
 import { 关系图 } from "./case-graph"
 import {
   读身份标注,
@@ -1592,11 +1595,14 @@ export async function aggregate_money(
   // §9.1：与 `对手方` 同一口径——对手方实体被「已排除」时，这笔关系既不进对手方，
   // 也不进汇总的笔数/合计；否则同一次调用里「出 N 笔」与对手方列表对不上。
   // 用 `in (select …)` 而不是 join：`汇总条件` 里的列名未加表别名，加 join 会让
-  // `project_id` / `trust_state` 变成有歧义列（报错）。汇总与内部往来计数共用这一份。
-  const 对手方未排除 = sql`(case when from_id in ${归属集} then to_id else from_id end) in (
-      select id from auth.case_entity
-       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-    )`
+  // `project_id` / `trust_state` 变成有歧义列（报错）。汇总与内部往来计数共用这一份
+  // （表达式本体在 `case-party.ts` 的 `另一端未排除`，与关系圈遗漏同一实现）。
+  const 对手方未排除 = 另一端未排除({
+    projectId: ctx.身份.projectId,
+    from属于: sql`from_id in ${归属集}`,
+    从: sql`from_id`,
+    到: sql`to_id`,
+  })
   const 汇总条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
@@ -1606,14 +1612,17 @@ export async function aggregate_money(
     对手方未排除,
   ]
   // 两端都在归属集里的内部往来：XOR 必然排除它们，设计 11 §3.2 要求「写进缺口」。
-  // 只用于缺口计数，不参与汇总。
+  // 只用于缺口计数，不参与汇总。谓词与 `关系圈遗漏` 共用（`case-party.ts`）。
   const 内部往来条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
-    sql`from_id in ${归属集}`,
-    sql`to_id in ${归属集}`,
-    对手方未排除,
+    ...内部往来归属条件({
+      projectId: ctx.身份.projectId,
+      归属集,
+      从: sql`from_id`,
+      到: sql`to_id`,
+    }),
   ]
   // 歧义未归属（11 §3.3）：两端都不在归属集、且一端是「名字对应 ≥2 个账户」的歧义者。
   // 这类关系在归属阶段就被 XOR 排除；`对手方` 里看不到它们，`歧义条数` 也覆盖不到。
@@ -1622,13 +1631,13 @@ export async function aggregate_money(
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = '转账'`,
     sql`trust_state <> '已排除'`,
-    sql`from_id not in ${归属集} and to_id not in ${归属集}`,
-    sql`(from_id in ${歧义实体} or to_id in ${歧义实体})`,
-    // §9.1 的对称写法：歧义者已由 `歧义到账户` 保证非「已排除」，另一端也不许是「已排除」。
-    sql`(case when from_id in ${歧义实体} then to_id else from_id end) in (
-      select id from auth.case_entity
-       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-    )`,
+    ...归属歧义归属条件({
+      projectId: ctx.身份.projectId,
+      归属集,
+      歧义实体,
+      从: sql`from_id`,
+      到: sql`to_id`,
+    }),
   ]
   const 对手方条件: SQL[] = [
     sql`r.project_id = ${ctx.身份.projectId}`,
@@ -2149,13 +2158,8 @@ export async function explore_entity(
   // `实体档案` 的缺口讲的是它自己的 200/100/500 上限；本工具不返回 `档案.关系` 与
   // `档案.引用`，整份透传会让模型收到「数据说的关系只显示 200 条」却一条关系都没拿到。
   // 只保留与本工具交付数据相关的条目；事件那条由下面按**实际交付条数**重写。
-  const 相关档案缺口 = (档案.缺口 ?? []).filter(
-    (句) =>
-      !句.startsWith("数据说的关系") &&
-      !句.startsWith("人说的关系") &&
-      !句.startsWith("事件只显示") &&
-      !句.startsWith("出处只显示"),
-  )
+  // 判定走 `case-entity-list.ts` 导出的 `是档案截断缺口`（文案与过滤同一契约，不按字面前缀跨模块耦合）。
+  const 相关档案缺口 = (档案.缺口 ?? []).filter((句) => !是档案截断缺口(句))
   const 遗漏缺口 = [
     ...(遗漏.纯外币 > 0
       ? [`${遗漏.纯外币} 条关系金额为 0.00 且笔数含外币（外币金额不进关系圈）`]

@@ -193,6 +193,62 @@ export function 关系归属条件(
 }
 
 /**
+ * 缺口计数的共享谓词（`关系圈遗漏` 与 `aggregate_money` 共用，`#002-06`）。
+ *
+ * 只描述「这条关系为什么没进汇总/圈」；项目、信任态、类型、时间窗等基础条件由调用点
+ * 按各自口径补齐（例如关系圈不按 `type='转账'` 过滤）。`从` / `到` 是关系两端的列
+ * 表达式，允许调用点带表别名。
+ */
+
+/** 「另一端」是否未排除：`从` 属于某集合时取 `到`，否则取 `从`。 */
+export function 另一端未排除(input: {
+  readonly projectId: string
+  readonly from属于: SQL
+  readonly 从: SQL
+  readonly 到: SQL
+}): SQL {
+  return sql`(case when ${input.from属于} then ${input.到} else ${input.从} end) in (
+      select id from auth.case_entity
+       where project_id = ${input.projectId} and trust_state <> '已排除'
+    )`
+}
+
+/** 内部往来：两端都在归属集里（XOR 必然排除它们）。 */
+export function 内部往来归属条件(input: {
+  readonly projectId: string
+  readonly 归属集: SQL
+  readonly 从: SQL
+  readonly 到: SQL
+}): SQL[] {
+  const from属于 = sql`${input.从} in ${input.归属集}`
+  return [
+    from属于,
+    sql`${input.到} in ${input.归属集}`,
+    另一端未排除({ projectId: input.projectId, from属于, 从: input.从, 到: input.到 }),
+  ]
+}
+
+/** 归属歧义：两端都不在归属集，且一端是候选 ≥2 的歧义者；另一端也不能已排除。 */
+export function 归属歧义归属条件(input: {
+  readonly projectId: string
+  readonly 归属集: SQL
+  readonly 歧义实体: SQL
+  readonly 从: SQL
+  readonly 到: SQL
+}): SQL[] {
+  return [
+    sql`${input.从} not in ${input.归属集} and ${input.到} not in ${input.归属集}`,
+    sql`(${input.从} in ${input.歧义实体} or ${input.到} in ${input.歧义实体})`,
+    另一端未排除({
+      projectId: input.projectId,
+      from属于: sql`${input.从} in ${input.歧义实体}`,
+      从: input.从,
+      到: input.到,
+    }),
+  ]
+}
+
+/**
  * 基 1（11 §3.1）：事件是否归属该实体。
  *
  * - 参与者表：`p.entity_id` ∈ 归属实体集（本人 / 正向代表 / 反向对齐者）；

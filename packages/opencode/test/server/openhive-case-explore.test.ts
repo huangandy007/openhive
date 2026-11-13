@@ -5,8 +5,13 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { aggregate_money, explore_entity, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
-import { 建户名别名, 建关系, 建材料, 建实体 } from "./openhive-case-fact-fixture"
-import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
+import { 建材料, 建实体, 建事件批, 建关系批, 建引用批 } from "./openhive-case-fact-fixture"
+import {
+  种P3数据集,
+  种展示数据集,
+  type P3数据集,
+  type 展示数据集,
+} from "../fixtures/p3/dataset"
 
 /**
  * `explore_entity`（09 §4.1 / 11 §5）：档案 + 关系圈 + 最近事件 + 全量计数。
@@ -19,6 +24,7 @@ import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
+let 展示: 展示数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-探索"
 
@@ -27,6 +33,8 @@ beforeAll(async () => {
   库 = connect({ ...process.env, PG_POOL_MAX: "1" })
   await migrate(库)
   数据集 = await 种P3数据集(db(), 文件)
+  // 展示层数据集同样走生产入口（组织户名 / 歧义回落只能在抽取产物上证明）。
+  展示 = await 种展示数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -249,37 +257,14 @@ describe("explore_entity", () => {
   })
 })
 
-describe("账户展示与关系圈遗漏（独立项目，不污染既有夹具）", () => {
+describe("账户展示与关系圈遗漏（独立项目，生产入口种数据）", () => {
   const 展示项目 = "p-展示"
-  const Q = "6222000000000001"
-  const P = "6222000000000002"
-  const S = "6222000000000003"
-  const T = "6222000000000004"
 
   test("组织户名展示组织名；候选 ≥ 2 回落账号（汇总与关系圈同口径）", async () => {
-    // 账户 Q 为中心；P 的唯一户名是组织「某某公司」；S 有两个户名人名 ⇒ fail-closed。
-    await 建实体(db(), { id: "e-展-Q", projectId: 展示项目, type: "账户", value: Q })
-    await 建实体(db(), { id: "e-展-P", projectId: 展示项目, type: "账户", value: P })
-    await 建实体(db(), { id: "e-展-S", projectId: 展示项目, type: "账户", value: S })
-    await 建实体(db(), { id: "e-展-T", projectId: 展示项目, type: "账户", value: T })
-    await 建实体(db(), { id: "e-展-公司", projectId: 展示项目, type: "组织", value: "某某公司" })
-    await 建实体(db(), { id: "e-展-张Q", projectId: 展示项目, value: "张Q" })
-    await 建实体(db(), { id: "e-展-王歧", projectId: 展示项目, value: "王歧" })
-    await 建实体(db(), { id: "e-展-人甲", projectId: 展示项目, value: "人甲" })
-    await 建实体(db(), { id: "e-展-人乙", projectId: 展示项目, value: "人乙" })
-    await 建实体(db(), { id: "e-展-R", projectId: 展示项目, value: "R" })
-    await 建户名别名(db(), { id: "a-展-Q-张Q", projectId: 展示项目, entityId: "e-展-Q", value: "张Q" })
-    await 建户名别名(db(), { id: "a-展-Q-王歧", projectId: 展示项目, entityId: "e-展-Q", value: "王歧" })
-    await 建户名别名(db(), { id: "a-展-T-王歧", projectId: 展示项目, entityId: "e-展-T", value: "王歧" })
-    await 建户名别名(db(), { id: "a-展-P-公司", projectId: 展示项目, entityId: "e-展-P", value: "某某公司" })
-    await 建户名别名(db(), { id: "a-展-S-甲", projectId: 展示项目, entityId: "e-展-S", value: "人甲" })
-    await 建户名别名(db(), { id: "a-展-S-乙", projectId: 展示项目, entityId: "e-展-S", value: "人乙" })
-    await 建关系(db(), { id: "r-展-Q-P", projectId: 展示项目, fromId: "e-展-Q", toId: "e-展-P", amount: 100 })
-    await 建关系(db(), { id: "r-展-Q-S", projectId: 展示项目, fromId: "e-展-Q", toId: "e-展-S", amount: 200 })
-    // 内部往来：张Q 是 Q 的唯一户名（两端都在归属集）；歧义：王歧 对应 Q、T 两个账户。
-    await 建关系(db(), { id: "r-展-内部", projectId: 展示项目, fromId: "e-展-张Q", toId: "e-展-Q", amount: 50 })
-    await 建关系(db(), { id: "r-展-歧义", projectId: 展示项目, fromId: "e-展-王歧", toId: "e-展-R", amount: 30 })
-
+    // 账户 Q 为中心；P 的唯一户名是组织「某某公司」；S 有两个人名候选 ⇒ fail-closed。
+    // 数据全部由 `种展示数据集` 走 `enqueueMaterial → runJob` 产出，不裸插事实表。
+    const Q = 展示.账号.Q
+    const S = 展示.账号.S
     const 探索 = await explore_entity(ctx(展示项目), { 实体: Q })
     expect(探索.空原因).toBeNull()
     const 数据 = 探索.数据 as {
@@ -315,5 +300,62 @@ describe("账户展示与关系圈遗漏（独立项目，不污染既有夹具�
       { 对手方: S, 方向: "出", 笔数: 1, 合计: "200.00" },
       { 对手方: "某某公司", 方向: "出", 笔数: 1, 合计: "100.00" },
     ])
+  })
+})
+
+describe("档案截断：按实际交付条数写缺口，且不透传无关缺口（独立项目）", () => {
+  const 截断项目 = "p-截断"
+  const 主 = "截断人"
+  const 对方 = "截断对方"
+
+  beforeAll(async () => {
+    await 建材料(db(), { id: "m-截断", projectId: 截断项目, path: "截断材料.txt" })
+    await 建实体(db(), { id: "e-截断主", projectId: 截断项目, value: 主 })
+    await 建实体(db(), { id: "e-截断对方", projectId: 截断项目, value: 对方 })
+    // 四类截断全部触发：关系数据 >200、人说的关系 >100、事件 >100、出处 >500。
+    await 建关系批(db(), {
+      projectId: 截断项目,
+      fromId: "e-截断主",
+      toId: "e-截断对方",
+      sourceKind: "data",
+      数量: 201,
+      前缀: "r-截-数-",
+    })
+    await 建关系批(db(), {
+      projectId: 截断项目,
+      fromId: "e-截断主",
+      toId: "e-截断对方",
+      sourceKind: "human",
+      数量: 101,
+      前缀: "r-截-人-",
+    })
+    await 建事件批(db(), { projectId: 截断项目, 数量: 101, 前缀: "ev-截-", participants: [主] })
+    await 建引用批(db(), {
+      projectId: 截断项目,
+      factType: "entity",
+      factId: "e-截断主",
+      materialId: "m-截断",
+      数量: 501,
+      前缀: "c-截-",
+    })
+  })
+
+  test("限制 200 但档案只交付 100 条：缺口写实际交付条数，不回显请求上限", async () => {
+    const 结果 = await explore_entity(ctx(截断项目), { 实体: 主, 限制: 200 })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as { 事件: unknown[]; 总数: { 事件总数: number } }
+    // `实体档案` 自己按 100 条封顶 ⇒ 实际交付 100，而不是请求的 200。
+    expect(数据.事件).toHaveLength(100)
+    expect(数据.总数.事件总数).toBe(101)
+    // 全等：四类档案截断缺口一条都不许透传；事件那条按实际交付重写。
+    expect(结果.缺口).toEqual([
+      "关系圈按对方聚合、最多 10 组（按金额降序）",
+      "事件只列最近 100 条，全量 101 条",
+    ])
+    // 防御性逐条断言：排除「全等恰好因为上游没产出缺口」的假绿。
+    expect(结果.缺口.join("\n")).not.toContain("数据说的关系")
+    expect(结果.缺口.join("\n")).not.toContain("人说的关系")
+    expect(结果.缺口.join("\n")).not.toContain("事件只显示最近")
+    expect(结果.缺口.join("\n")).not.toContain("出处只显示前")
   })
 })
