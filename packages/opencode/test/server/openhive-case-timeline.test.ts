@@ -2,10 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
+import { sql } from "drizzle-orm"
 import { query_rows, query_timeline, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
 import { 编码游标对象 } from "../../src/server/openhive/case-row-query"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
+import { 建事件, 建实体 } from "./openhive-case-fact-fixture"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 库: ReturnType<typeof connect> | undefined
@@ -37,7 +39,7 @@ function ctx(库柄: Queryable = db(), projectId: string = 数据集.projectId):
   return { db: 库柄, 身份: { userId: 用户, projectId } }
 }
 
-/** 计数包装：`Queryable` 只有 `execute`，包一层就能钉住「最多 7 次查询」。 */
+/** 计数包装：`Queryable` 只有 `execute`，包一层就能钉住「最多 8 次查询」。 */
 function 计数(库柄: Queryable): { db: Queryable; 次数: () => number } {
   let n = 0
   return {
@@ -146,20 +148,83 @@ describe("query_timeline（09 §4.3）", () => {
     expect(结果.空原因).toBe("无事件")
   })
 
-  test("50 张卡片的查询预算：≤ 7 次", async () => {
+  test("50 张卡片的查询预算：≤ 8 次", async () => {
     const 包装 = 计数(db())
     await query_timeline(ctx(包装.db), { 实体: "李四", 限制: 50 })
-    // 解析实体 1 + 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2 = 7
-    expect(包装.次数()).toBeLessThanOrEqual(7)
+    // 解析实体 1 + 事件 1 + 统计 1 + 参与者 2（参与者表 + 已排除值）+ 出处 1 + 读身份标注 2 = 8
+    expect(包装.次数()).toBeLessThanOrEqual(8)
   })
 
-  test("户名别名解析路径的查询预算：8 次", async () => {
+  test("户名别名解析路径的查询预算：9 次", async () => {
     // 「陈三」只在账户 C 的户名别名上、没有实体行 ⇒ 解析实体先查规范值（0 行）再走
-    // `解析户名`（+1 次），比规范值命中多 1 次。账：解析 2 + 事件 1 + 统计 1 + 参与者 1
-    // + 出处 1 + 读身份标注 2 = 8。
+    // `解析户名`（+1 次），比规范值命中多 1 次。账：解析 2 + 事件 1 + 统计 1 + 参与者 2
+    // + 出处 1 + 读身份标注 2 = 9。
     const 包装 = 计数(db())
     const 结果 = await query_timeline(ctx(包装.db), { 实体: "陈三", 限制: 50 })
     expect(结果.空原因).toBeNull()
-    expect(包装.次数()).toBe(8)
+    expect(包装.次数()).toBe(9)
+  })
+})
+
+describe("参与者摘要剔除已排除（11 §7.1）", () => {
+  test("参与者表指向已排除实体时，摘要里没有它", async () => {
+    await 建实体(db(), { id: "e-参与甲", projectId: "p-排除", value: "参与甲" })
+    await 建实体(db(), { id: "e-中心乙", projectId: "p-排除", value: "中心乙" })
+    await 建事件(db(), {
+      id: "ev-排除",
+      projectId: "p-排除",
+      type: "资金交易",
+      participants: ["中心乙", "参与甲"],
+      occurredAt: 1775000000,
+      参与者表: [
+        { entityId: "e-中心乙", role: "付款方", ordinal: 0 },
+        { entityId: "e-参与甲", role: "收款方", ordinal: 1 },
+      ],
+    })
+    await db().execute(sql`
+      update auth.case_entity set trust_state = '已排除'
+       where project_id = 'p-排除' and id = 'e-参与甲'
+    `)
+    const 结果 = await query_timeline(ctx(db(), "p-排除"), { 实体: "中心乙" })
+    const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
+    expect(结果.空原因).toBeNull()
+    expect(数据!.事件们).toHaveLength(1)
+    expect(数据!.事件们[0]!.参与者.join()).toContain("付款方：中心乙")
+    expect(数据!.事件们[0]!.参与者.join()).not.toContain("参与甲")
+  })
+
+  test("摘要按参与者表 ordinal 升序，值保持原文", async () => {
+    await 建实体(db(), { id: "e-顺序甲", projectId: "p-排除", value: "顺序甲" })
+    await 建实体(db(), { id: "e-顺序乙", projectId: "p-排除", value: "顺序乙" })
+    await 建事件(db(), {
+      id: "ev-顺序",
+      projectId: "p-排除",
+      type: "资金交易",
+      participants: ["顺序甲", "顺序乙"],
+      occurredAt: 1775000001,
+      参与者表: [
+        { entityId: "e-顺序乙", role: "收款方", ordinal: 0 },
+        { entityId: "e-顺序甲", role: "付款方", ordinal: 1 },
+      ],
+    })
+    const 结果 = await query_timeline(ctx(db(), "p-排除"), { 实体: "顺序甲" })
+    const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
+    expect(数据!.事件们).toHaveLength(1)
+    expect(数据!.事件们[0]!.参与者).toEqual(["收款方：顺序乙", "付款方：顺序甲"])
+  })
+
+  test("参与者表没有行时回退文本值（参与者：规范值）", async () => {
+    await 建实体(db(), { id: "e-回退丙", projectId: "p-排除", value: "回退丙" })
+    await 建事件(db(), {
+      id: "ev-回退",
+      projectId: "p-排除",
+      type: "见面",
+      participants: ["回退丙"],
+      occurredAt: 1775000002,
+    })
+    const 结果 = await query_timeline(ctx(db(), "p-排除"), { 实体: "回退丙" })
+    const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
+    expect(数据!.事件们).toHaveLength(1)
+    expect(数据!.事件们[0]!.参与者).toEqual(["参与者：回退丙"])
   })
 })

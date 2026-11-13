@@ -869,6 +869,58 @@ export function 事件参与者条件(ctx: 工具上下文, 实体: 实体解析
   return 事件归属条件(ctx.身份.projectId, 实体.id)
 }
 
+/**
+ * 参与者摘要的唯一出处（11 §7.1）。
+ *
+ * - `值`：`participants text[]` 里的规范值，剔除「已排除」实体的规范值（`query_events` 用）；
+ * - `摘要`：参与者表的 `角色：规范值`，剔除已排除实体；参与者表没有行时回退文本值（`query_timeline` 用）。
+ *
+ * 两个读口各写一遍迟早漂（`#002-06`）：此前 `query_events` 剔排除、`query_timeline` 不剔。
+ */
+async function 参与者视图(
+  ctx: 工具上下文,
+  行们: readonly { readonly id: string; readonly participants: readonly string[] }[],
+  含已排除: boolean,
+): Promise<Map<string, { 值: string[]; 摘要: string[] }>> {
+  const 结果 = new Map<string, { 值: string[]; 摘要: string[] }>()
+  if (行们.length === 0) return 结果
+  const ids = 行们.map((行) => 行.id)
+  const 已排除值 = new Set<string>()
+  if (!含已排除) {
+    const 排除行 = rowsOf(
+      await ctx.db.execute(sql`
+        select distinct canonical_value from auth.case_entity
+         where project_id = ${ctx.身份.projectId} and trust_state = '已排除'
+      `),
+    )
+    for (const 行 of 排除行) 已排除值.add(String(行.canonical_value))
+  }
+  const 摘要表 = new Map<string, string[]>()
+  const 表行们 = rowsOf(
+    await ctx.db.execute(sql`
+      select p.event_id, p.role, e.canonical_value as value
+        from auth.case_event_participant p
+        join auth.case_entity e on e.project_id = p.project_id and e.id = p.entity_id
+       where p.project_id = ${ctx.身份.projectId} and p.event_id = any(${文本数组(ids)})
+         ${含已排除 ? sql`` : sql`and e.trust_state <> '已排除'`}
+       order by p.event_id asc, p.ordinal asc
+    `),
+  )
+  for (const 行 of 表行们) {
+    const id = String(行.event_id)
+    const 项 = `${String(行.role)}：${String(行.value)}`
+    const 列 = 摘要表.get(id)
+    if (列 === undefined) 摘要表.set(id, [项])
+    else 列.push(项)
+  }
+  for (const 行 of 行们) {
+    const 值 = 行.participants.filter((项) => !已排除值.has(项))
+    const 摘要 = 摘要表.get(行.id) ?? 值.map((项) => `参与者：${项}`)
+    结果.set(行.id, { 值: [...值], 摘要 })
+  }
+  return 结果
+}
+
 /** 事件：按类型与参与实体过滤，时间按 `occurred_at` 闭区间。 */
 export async function query_events(
   ctx: 工具上下文,
@@ -917,18 +969,6 @@ export async function query_events(
     // 比 id 会让过滤在生产数据上恒空、静默返回 []（`#006-11`）。
     条件.push(事件参与者条件(ctx, 参与实体解析))
   }
-  // §9.1：`participants` 存的是实体规范值、不是 id，join 不到实体表；先取本项目「已排除」
-  // 实体的规范值集合，出库后在 JS 里按值剔除（实现不足 20 行，故不选「写进缺口」的退路）。
-  const 已排除值 = new Set<string>()
-  if (args.含已排除 !== true) {
-    const 排除行 = rowsOf(
-      await ctx.db.execute(sql`
-        select distinct canonical_value from auth.case_entity
-         where project_id = ${ctx.身份.projectId} and trust_state = '已排除'
-      `),
-    )
-    for (const 行 of 排除行) 已排除值.add(String(行.canonical_value))
-  }
   const rows = await ctx.db.execute(sql`
     select id, type, occurred_at, occurred_raw, precision, time_type,
            array_to_json(participants)::text as participants, summary, trust_state
@@ -944,10 +984,16 @@ export async function query_events(
     occurred_raw: 行.occurred_raw as string | null,
     precision: 行.precision as string | null,
     time_type: 行.time_type as string | null,
-    participants: 解JSON<string[]>(行.participants, []).filter((值) => !已排除值.has(值)),
+    participants: 解JSON<string[]>(行.participants, []),
     summary: 行.summary as string | null,
     trust_state: 行.trust_state as string,
   }))
+  const 视图 = await 参与者视图(
+    ctx,
+    数据.map((行) => ({ id: 行.id, participants: 行.participants })),
+    args.含已排除 === true,
+  )
+  const 数据带参与者 = 数据.map((行) => ({ ...行, participants: 视图.get(行.id)?.值 ?? [] }))
   const 身份们 =
     参与实体解析 === undefined
       ? []
@@ -960,22 +1006,22 @@ export async function query_events(
         ]
   const 后缀 = 身份后缀(身份们)
   const 空 = 数据为空(数据)
-  // 取数按 `occurred_at desc` 排序：`数据[0]` 才是最近的一个（末尾是最早的）。
-  const 最近 = 数据[0]
+  // 取数按 `occurred_at desc` 排序：`数据带参与者[0]` 才是最近的一个（末尾是最早的）。
+  const 最近 = 数据带参与者[0]
   return {
     摘要: 空
       ? `时间窗内没有事件${args.类型 ? `（类型=${args.类型}）` : ""}${后缀}`
-      : `${数据.length} 个事件${args.类型 ? `（类型=${args.类型}）` : ""}，最近一个是「${String(最近!.summary ?? 最近!.type)}」${后缀}`,
-    数据,
+      : `${数据带参与者.length} 个事件${args.类型 ? `（类型=${args.类型}）` : ""}，最近一个是「${String(最近!.summary ?? 最近!.type)}」${后缀}`,
+    数据: 数据带参与者,
     口径:
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
       "同创建时间再按 type 升序、id 升序取第一条）过滤；参与实体按事件归属判定：参与者表命中本人、" +
       "正向对齐代表，或唯一户名对齐到本账户的人/组织；或 participants 文本回退命中归属值集（规范值 ∪ 别名）；" +
       "时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。" + 身份口径,
-    缺口: 截断缺口(args.限制, 限制, 数据.length),
+    缺口: 截断缺口(args.限制, 限制, 数据带参与者.length),
     空原因: 空 ? "无匹配行" : null,
-    出处: 数据.slice(0, 3).map((行) => ({
+    出处: 数据带参与者.slice(0, 3).map((行) => ({
       事实: `事件「${String(行.type)}」@${String(行.occurred_raw ?? 行.occurred_at ?? "时间缺失")}`,
       代表: String(行.id),
       可下钻: "get_citation",
@@ -1008,9 +1054,8 @@ function 文本(值: unknown): string | null {
  * 3. 有事件但全部缺时间 ⇒ `时间全部缺失`；
  * 4. 其余（有时间事件但窗口内 0 条）⇒ `无事件`。
  *
- * 查询预算：规范值命中 ≤7、户名别名路径 ≤8（解析实体多一次 `解析户名`）。
- * 账：解析 1（别名 +1）+ 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2
- * （plan D-6 修正）。
+ * 查询预算：规范值命中 ≤8、户名别名路径 ≤9（解析实体多一次 `解析户名`）。
+ * 账：解析 1（别名 +1）+ 事件 1 + 统计 1 + 参与者 2（参与者表 + 已排除值）+ 出处 1 + 读身份标注 2。
  * 参与者也走 `事件参与者条件`（基 1 归属：参与者表的本人 / 正向对齐代表 / 反向对齐者，
  * 加 `participants` 文本回退的规范值 ∪ 别名），所以按人能看到其唯一户名账户的流水事件。
  */
@@ -1116,31 +1161,16 @@ export async function query_timeline(
     : null
 
   const ids = 本页.map((行) => String(行.id))
-  const 参与者按事件 = new Map<string, string[]>()
-  if (!空) {
-    const 参与者行 = rowsOf(
-      await ctx.db.execute(sql`
-        select p.event_id, p.role, e.canonical_value as value
-          from auth.case_event_participant p
-          join auth.case_entity e on e.project_id = p.project_id and e.id = p.entity_id
-         where p.project_id = ${ctx.身份.projectId} and p.event_id = any(${文本数组(ids)})
-         order by p.event_id asc, p.ordinal asc
-      `),
-    )
-    for (const 行 of 参与者行) {
-      const id = String(行.event_id)
-      const 列 = 参与者按事件.get(id)
-      const 项 = `${String(行.role)}：${String(行.value)}`
-      if (列 === undefined) 参与者按事件.set(id, [项])
-      else 列.push(项)
-    }
-  }
+  const 视图 = await 参与者视图(
+    ctx,
+    本页.map((行) => ({ id: String(行.id), participants: 解JSON<string[]>(行.participants, []) })),
+    false,
+  )
   const 引用按事件 = 空 ? new Map<string, 引用视图[]>() : await 批量引用(ctx.db, ctx.身份.projectId, "event", ids)
 
   const 事件们 = 本页.map((行) => {
     const id = String(行.id)
-    const 参与者 =
-      参与者按事件.get(id) ?? 解JSON<string[]>(行.participants, []).map((值) => `参与者：${值}`)
+    const 参与者 = 视图.get(id)?.摘要 ?? []
     const 引用 = 引用按事件.get(id)?.[0]
     return {
       id,
