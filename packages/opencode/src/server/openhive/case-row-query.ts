@@ -266,7 +266,7 @@ function 游标条件(游标: 游标载荷): SQL {
  * `Number("1000000000000000001") === Number("1000000000000000000")`，
  * 用浮点比较判不出方向 ⇒ 反向区间会静默退化成「无匹配行」（`时间起` 越界同款失败形态）。
  */
-function 金额分(值: string): bigint {
+export function 金额分(值: string): bigint {
   const 负 = 值.startsWith("-")
   const [整, 小 = ""] = (负 ? 值.slice(1) : 值).split(".")
   return BigInt(`${负 ? "-" : ""}${整}${小.padEnd(2, "0")}`)
