@@ -266,10 +266,20 @@ export async function 写回(
   值: Record<string, unknown>,
 ): Promise<void> {
   if (type === "entity") {
+    // 改名后旧规范值必须留在别名里：`participants text[]` 存的是旧值，没有这一路，
+    // 改名之前写入的事件就再也匹配不上（11 §4.4 / 基 1 的文本回退）。
+    // `canonical_value` 在 SET 右侧取**旧值**（PG 行为），所以这里能让新旧两个值都留下。
     await tx.execute(sql`
       update auth.case_entity
-         set trust_state = ${trustState}, canonical_value = ${String(值["canonicalValue"])},
-             type = ${String(值["entityType"])}
+         set trust_state = ${trustState},
+             canonical_value = ${String(值["canonicalValue"])},
+             type = ${String(值["entityType"])},
+             aliases = array(
+               select distinct 名
+                 from unnest(aliases || array[canonical_value]::text[]) as 名
+                where 名 <> ${String(值["canonicalValue"])}
+                order by 名
+             )
        where project_id = ${projectId} and id = ${id}
     `)
     return

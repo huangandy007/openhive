@@ -3,6 +3,7 @@ export * as OpenhiveCasePropagation from "./case-propagation"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
+import { 事件归属条件 } from "./case-party"
 import type { Queryable } from "./case-store"
 
 /**
@@ -23,8 +24,9 @@ import type { Queryable } from "./case-store"
 /**
  * 标：指向这个实体的关系、参与这个实体的事件，全部置为「刚刚变过」。
  *
- * `unnest(participants)` 而不是 `participants @> array[$1]`：后者在不同驱动上对参数类型的
- * 推断不一致（`could not determine polymorphic type`），展开写法与驱动无关。
+ * 事件依赖走 `事件归属条件`（基 1）：参与者表 ∪ `participants` 文本回退。
+ * 旧实现拿 `entityId` 比 `unnest(participants)`，而 `participants` 存的是规范值
+ * ⇒ 永远 0 条（id-vs-value，`#006-11`）。
  */
 export async function 标依赖已变更(
   db: Queryable,
@@ -45,7 +47,7 @@ export async function 标依赖已变更(
       update auth.case_event
          set basis_changed_at = ${时间}
        where project_id = ${projectId}
-         and exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${entityId})
+         and ${事件归属条件(projectId, entityId)}
       returning id
     `),
   )

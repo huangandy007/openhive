@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 清依赖标记, 标依赖已变更 } from "../../src/server/openhive/case-propagation"
@@ -40,8 +40,10 @@ beforeAll(async () => {
   await 建实体(库(), { id: "e-边", projectId: 项目, value: "边角人物" })
   await 建关系(库(), { id: "r-指着", projectId: 项目, fromId: "e-中心", toId: "e-边" })
   await 建关系(库(), { id: "r-无关", projectId: 项目, fromId: "e-边", toId: "e-边" })
-  await 建事件(库(), { id: "ev-参与", projectId: 项目, participants: ["e-中心", "e-边"] })
-  await 建事件(库(), { id: "ev-无关", projectId: 项目, participants: ["e-边"] })
+  // `participants` 存的是实体的**规范值**，不是 id（01 §3.3；#006-11）。种子按生产形状写，
+  // 否则「按 id 比」的死路会被夹具的假绿遮住（#006-35）。
+  await 建事件(库(), { id: "ev-参与", projectId: 项目, participants: ["中心人物", "边角人物"] })
+  await 建事件(库(), { id: "ev-无关", projectId: 项目, participants: ["边角人物"] })
 })
 
 afterAll(async () => {
@@ -61,6 +63,53 @@ describe("依赖标记", () => {
 
     const 无关 = await 事实详情(库(), { projectId: 项目, type: "relation", id: "r-无关" })
     expect(无关?.basisChangedAt).toBeNull()
+  })
+
+  test("按人标：其唯一户名账户参与的表格事件也算（正向对齐）", async () => {
+    await 建实体(库(), { id: "e-账户", projectId: 项目, type: "账户", value: "6222000000001" })
+    await 建实体(库(), { id: "e-人", projectId: 项目, value: "李四" })
+    await 库().execute(sql`
+      insert into auth.case_entity_alias (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at)
+      values ('al-李四', ${项目}, 'e-账户', '户名', '李四', '李四', '文本', 1760000000)
+    `)
+    await 建事件(库(), {
+      id: "ev-表参与",
+      projectId: 项目,
+      type: "资金交易",
+      participants: ["6222000000001"],
+      参与者表: [{ entityId: "e-账户", role: "付款方", ordinal: 0 }],
+    })
+    const 结果 = await 标依赖已变更(库(), 项目, "e-人")
+    expect(结果.events).toBe(1)
+    expect(
+      (await 事实详情(库(), { projectId: 项目, type: "event", id: "ev-表参与" }))?.basisChangedAt,
+    ).not.toBeNull()
+  })
+
+  test("改名后旧规范值进别名，旧值写的 text[] 事件仍被打标", async () => {
+    await 建实体(库(), { id: "e-改名", projectId: 项目, value: "改名前" })
+    await 建事件(库(), { id: "ev-旧值", projectId: 项目, participants: ["改名前"] })
+    await 裁决(库(), {
+      projectId: 项目,
+      factType: "entity",
+      factId: "e-改名",
+      action: "修正",
+      changes: { canonicalValue: "改名后" },
+      reasonKind: "抽取错",
+      reasonText: "名字认错",
+      by: 甲,
+    })
+    const 行 = rowsOf(
+      await 库().execute(sql`
+        select array_to_json(aliases)::text as aliases from auth.case_entity
+         where project_id = ${项目} and id = 'e-改名'
+      `),
+    )[0]
+    const 别名们: string[] = JSON.parse(String(行?.aliases ?? "[]"))
+    expect(别名们).toContain("改名前")
+
+    const 结果 = await 标依赖已变更(库(), 项目, "e-改名")
+    expect(结果.events).toBe(1)
   })
 
   test("清标记 ⇒ 读回来是 null", async () => {
