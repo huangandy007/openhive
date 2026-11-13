@@ -925,7 +925,7 @@ async function 参与者视图(
   const 已解析值 = new Map<string, Set<string>>()
   const 表行们 = rowsOf(
     await ctx.db.execute(sql`
-      select p.event_id, p.role, e.canonical_value as value
+      select p.event_id, p.role, e.canonical_value as value, array_to_json(e.aliases)::text as aliases
         from auth.case_event_participant p
         join auth.case_entity e on e.project_id = p.project_id and e.id = p.entity_id
        where p.project_id = ${ctx.身份.projectId} and p.event_id = any(${文本数组(ids)})
@@ -939,9 +939,13 @@ async function 参与者视图(
     const 列 = 摘要表.get(id)
     if (列 === undefined) 摘要表.set(id, [项])
     else 列.push(项)
-    const 覆盖 = 已解析值.get(id)
-    if (覆盖 === undefined) 已解析值.set(id, new Set([String(行.value)]))
-    else 覆盖.add(String(行.value))
+    // 覆盖集 = 规范值 ∪ 别名：合并 / 改名后参与者行改指幸存者、文本值不变
+    // （`case-merge.ts:216-219`、`:227,233`），旧规范值只进 `aliases`。
+    // 只比规范值会让同一参与者再以 `参与者：旧名` 出现一次。
+    const 覆盖 = 已解析值.get(id) ?? new Set<string>()
+    if (!已解析值.has(id)) 已解析值.set(id, 覆盖)
+    覆盖.add(String(行.value))
+    for (const 别名 of 解JSON<string[]>(行.aliases, [])) 覆盖.add(别名)
   }
   for (const 行 of 行们) {
     const 值 = 行.participants.filter((项) => !已排除值.has(项))

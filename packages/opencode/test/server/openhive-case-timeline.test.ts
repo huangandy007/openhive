@@ -237,6 +237,26 @@ describe("参与者摘要剔除已排除（11 §7.1）", () => {
     expect(数据!.事件们[0]!.参与者).toEqual(["付款方：解析甲", "参与者：6222****1234"])
   })
 
+  test("合并/改名后旧规范值进别名，摘要不重复出现同一参与者", async () => {
+    // 合并 / 改名后参与者行改指幸存者、文本值不变（`case-merge.ts:216-219`），
+    // 旧规范值只进 `aliases`。覆盖集若只比 canonical，会把旧值再追加一次
+    // `参与者：旧名`，同一参与者显示两次。
+    await 建实体(db(), { id: "e-改名甲", projectId: "p-别名", value: "新名", aliases: ["旧名"] })
+    await 建事件(db(), {
+      id: "ev-别名",
+      projectId: "p-别名",
+      type: "资金交易",
+      participants: ["旧名"],
+      occurredAt: 1780279300,
+      参与者表: [{ entityId: "e-改名甲", role: "付款方", ordinal: 0 }],
+    })
+    const 结果 = await query_timeline(ctx(db(), "p-别名"), { 实体: "新名" })
+    const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
+    expect(结果.空原因).toBeNull()
+    expect(数据!.事件们).toHaveLength(1)
+    expect(数据!.事件们[0]!.参与者).toEqual(["付款方：新名"])
+  })
+
   test("参与者表没有行时回退文本值（参与者：规范值）", async () => {
     await 建实体(db(), { id: "e-回退丙", projectId: "p-排除", value: "回退丙" })
     await 建事件(db(), {
