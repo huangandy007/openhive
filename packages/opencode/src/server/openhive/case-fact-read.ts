@@ -3,6 +3,7 @@ export * as OpenhiveCaseFactRead from "./case-fact-read"
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { type 变更视图, type 留痕类型, 变更历史 } from "./case-fact-change"
+import { 已排除规范值 } from "./case-party"
 import { 文本数组, type 事实信任态 } from "./case-fact-store"
 import type { Queryable } from "./case-store"
 
@@ -224,6 +225,9 @@ async function 读事件(
     `),
   )[0]
   if (行 === undefined) return undefined
+  // §9.1：`participants` 里「已排除」实体的规范值默认剔除（唯一出处 `case-party.已排除规范值`，
+  // `#002-06`）。事实本体不是审计原文——留痕在 `case_fact_change` 与引用的原材料里。
+  const 已排除值 = 包含已排除 ? new Set<string>() : await 已排除规范值(db, projectId)
   return {
     type: "event",
     id: String(行.id),
@@ -232,7 +236,7 @@ async function 读事件(
     occurredRaw: 文本(行.occurred_raw),
     precision: 文本(行.precision),
     timeType: 文本(行.time_type),
-    participants: 文本组(行.participants),
+    participants: 文本组(行.participants).filter((项) => !已排除值.has(项)),
     summary: 文本(行.summary),
     trustState: String(行.trust_state) as 事实信任态,
     basisChangedAt: 整数(行.basis_changed_at),

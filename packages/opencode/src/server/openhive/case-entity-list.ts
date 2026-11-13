@@ -11,6 +11,7 @@ import {
   另一端未排除,
   内部往来归属条件,
   归属歧义归属条件,
+  已排除规范值,
 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
@@ -470,13 +471,16 @@ export async function 实体档案(
     `),
   )
   const 事件总数 = 事件行们.length === 0 ? 0 : Number(事件行们[0]!.总数)
+  // §9.1：`participants` 里「已排除」实体的规范值一并剔除（唯一出处 `case-party.已排除规范值`，
+  // `#002-06`），与本档案自己的「已排除」开关同口径：开「显示已排除」才原样返回。
+  const 已排除值 = 含排除 || 事件行们.length === 0 ? new Set<string>() : await 已排除规范值(db, input.projectId)
   const 事件 = 事件行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
     occurred_at: 行.occurred_at as number | null,
     occurred_raw: (行.occurred_raw as string | null) ?? null,
     summary: (行.summary as string | null) ?? null,
-    participants: 解JSON<string[]>(行.participants, []),
+    participants: 解JSON<string[]>(行.participants, []).filter((项) => !已排除值.has(项)),
     trust_state: String(行.trust_state),
   }))
 

@@ -79,13 +79,22 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
    修法：聚合插入时 `fromId === toId` 落 `已排除`（与合并同语义，§9「不删除，只打状态」），
    旧机器行仍走原有 delete。红（非已排除行应 0，实得 1）、绿、变异均见 ledger。
    真栈库自环 0 条、参与者表 0 行 ⇒ 未复验，如实登记。
-8. **T7（未修）**：`case-entity-list.ts:417`（实体档案事件列表，UI `entity-profile.tsx:1097`
-   原样展示）与 `case-fact-read.ts:235`（事实本体 raw `participants`）仍返回**未剔除已排除**
-   的原始参与者值；用户可能在档案/引用里看到已排除实体的名字。
-9. **T7（未修）**：`find_crossings` 的 `共同时空[].participants`（`case-mcp-tools.ts:1996,2008`）
-   返回未过滤 raw 文本值，可能带出已排除实体的规范值。
+8. **T7（已修，2026-11-13）**：`实体档案` 的事件列表（UI `entity-profile.tsx:1097`
+   原样展示）与事实详情（`case-fact-read.ts` 的 `读事件`）曾返回**未剔除已排除**的原始
+   `participants`；用户在档案/事实里能看到已排除实体的名字。
+   根因：`participants text[]` 存规范值，「剔除已排除实体值」整仓只有 `参与者视图`
+   （`query_events` / `query_timeline`）一个执行点，其余读口各自 `解JSON` 原样返回
+   （`#002-06`：同一前提四个读口只有一处执行）。
+   修法：剔除值的查询收成 `case-party.已排除规范值`（唯一出处），`参与者视图` 改用它；
+   `实体档案` / `读事件` 按各自 `含已排除` 开关剔除（默认剔，「显示已排除」原样返回）。
+   红（三条默认断言实得均含「丙名」）、绿（新文件 4 pass / 0 fail）、三处变异各自变红，
+   均见 ledger。真栈全库「已排除」实体 **0 个** ⇒ 无此类数据、未复验。
+9. **T7（已修，2026-11-13）**：`find_crossings` 的 `共同时空[].participants` 曾返回未过滤
+   raw 文本值。修法与 #8 同一出处（`case-party.已排除规范值`）；本工具无「含已排除」开关
+   ⇒ 恒剔除，`口径` 补一句声明。变异拆剔除 ⇒ 红，见 ledger。
 10. **T7（已计入预算）**：`query_events` 因共享视图多一次查询（旧 2 → 新 3）；T9 预算已计入
-    （本 T10 未重跑计数）。
+    （本 T10 未重跑计数）。缺口 #8 又各多 1 次「已排除规范值」查询：`实体档案`（含
+    `explore_entity`：17 → 18，用例已按实得改）、`读事件`、`find_crossings`（仅共同时空非空时）。
 11. **T6 M3（基 1 既有口径，未修）**：文本回退是精确字符串，`case_entity` 唯一索引只到
     `(project_id,type,canonical_value)` ⇒ 同名跨类型（人/组织）会同时命中同一 `participants`
     值；该字符串若被别的实体复用，两边事件都会被标。
@@ -127,3 +136,4 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 | 2026-11-13 | **缺口 #5 修复（合并搬引用 / 拆分恢复引用）**：合并把 `fact_type='entity'` 的 `case_citation` 改指幸存者并记留痕 `引用们`；拆分逐条恢复、恢复前校验仍指幸存者，异常进 `未恢复引用`；新增 `movedCitations` / `未恢复引用` 两个结果字段。红 19 pass / 4 fail → 绿 23 pass / 0 fail；三组变异各自变红（3 / 2 / 2 条）；门禁 typecheck 32/32、受影响测试 100 pass / 5 文件 / 0 fail、oxlint 0 error、`bun.lock` 无 diff。真栈复验：合并 `movedCitations=2`（李四名下 2 条改指张三）、拆分 `未恢复引用=[]`。grep 同类落点：全仓仅合并一处删实体（`case-merge.ts:258`），无独立实体删除端点；读侧 `case-materials.ts:86` INNER JOIN 与三处 LEFT JOIN 计数在改指后不再悬空 | 本行（代码 `case-merge.ts` + 测试 `openhive-case-merge.test.ts`）；真栈证据 `.superpowers/sdd/2026-11-13-P3-第二期-实体打通与探索原语/a5-*.json` |
 | 2026-11-13 | **缺口 #14 修复（可见实体被说成「无此实体」）**：`解析实体` 排序在 id 命中之后加 `(trust_state = '已排除') asc`，同值跨类型时可见行优先；按 id 直取与「同值全已排除」口径不变。根因实得：同值「组织/可见 + 人/已排除（较新）」时解析到已排除行 ⇒ `实体档案` 过滤成 undefined ⇒ `explore_entity` 回「无此实体」，而 `query_relations` 出 1 条关系。红 19 pass / 1 fail（`Received: "重名-排除"`）→ 绿 20 pass / 0 fail / 90 expect；变异拆排序键 ⇒ 红在首条断言。门禁：typecheck 32/32、10 个受影响测试文件 253 pass / 0 fail、oxlint 81 warnings / **0 errors**（告警行号全部在改动范围外）、`bun.lock` 无 diff。真栈无「同值 + 已排除」数据 ⇒ 未复验 | 本行（代码 `case-mcp-tools.ts` + 用例 `openhive-case-explore.test.ts`）；根因证据见 ledger |
 | 2026-11-13 | **缺口 #7 修复（重建关系不产「可见」自环）**：合并把自环标 `已排除`，`重建关系` 无守卫又插回 `自动抽取` 自环 ⇒ 同一事实两行两态、`query_relations` 默认返回自环（档案/探索 XOR 得 0）。修法：聚合插入时 `fromId === toId` 落 `已排除`。**实得更正**：金额未被算重（`aggregate_money` 的 XOR 本就挡住，并写进「账户内部往来」缺口）。红 14 pass / 1 fail（非已排除行应 0、实得 1）→ 绿 15 pass / 0 fail / 53 expect；变异（恒写 `自动抽取`）⇒ 红在首条断言。门禁：typecheck 32/32、12 个受影响文件 264 pass / 0 fail、oxlint 改动两文件 **0 warnings / 0 errors**、`bun.lock` 无 diff。落点：全仓关系写入仅 2 处（笔录 human 行、重建聚合），人工修正不改端点；真栈自环 0 条 ⇒ 未复验 | 本行（代码 `case-translate-store.ts` + 用例 `openhive-case-relation-rebuild.test.ts`） |
+| 2026-11-13 | **缺口 #8/#9 修复（已排除实体的名字从三个读口外露）**：`实体档案` 事件列表、事实详情 `读事件`、`find_crossings` 共同时空曾各自 `解JSON(participants)` 原样返回；「剔除已排除实体值」整仓只有 `参与者视图` 一处执行（`#002-06`）。修法：剔除值查询收成 `case-party.已排除规范值`（唯一出处），`参与者视图` 改用它；`实体档案`/`读事件` 按各自 `含已排除` 开关剔除，`find_crossings` 恒剔除并在 `口径` 声明。红 1 pass / 3 fail（三条默认断言实得均多「丙名」）→ 绿 4 pass / 0 fail / 8 expect；三处变异各自红在本文件对应断言。门禁：typecheck 32/32、13 个受影响文件 266 pass / 0 fail、全量 `openhive-case-*` 1352 pass / 2 fail（均为既有无关：schema 用例仍按 13 张表、漏 0039 三张；supervisor 假子进程在全量并发下未落 `case-port.txt`，单跑 9 pass / 0 fail）、oxlint 改动 6 文件 109 warnings / **0 errors**（告警行号全部在改动行之外）、`bun.lock` 无 diff。落点：全仓读 `participants` 共 5 处，2 处中间态经 `参与者视图`、3 处新收口；前端仅展示。真栈全库「已排除」实体 **0 个** ⇒ 未复验 | 本行（代码 `case-party.ts` / `case-entity-list.ts` / `case-fact-read.ts` / `case-mcp-tools.ts` + 用例 `openhive-case-excluded-leak.test.ts`；`explore_entity` 查询数用例按实得 17 → 18） |

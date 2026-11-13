@@ -166,6 +166,23 @@ export async function 读归属值(db: Queryable, projectId: string, 实体id: s
 }
 
 /**
+ * 「已排除」实体的规范值集合（§9.1）：`participants text[]` 里要剔除的值的**唯一出处**
+ * （`#002-06`；此前只写在 `case-mcp-tools.ts` 的 `参与者视图` 里）。
+ *
+ * 剔除按**值**不按 id——`participants` 存的只有规范值。同名跨类型（缺口 #11）时可见实体的
+ * 同值也会被一起剔，这是既有前提，不在此另立规矩。调用方按自己的「含已排除」开关决定是否用。
+ */
+export async function 已排除规范值(db: Queryable, projectId: string): Promise<Set<string>> {
+  const 行们 = rowsOf(
+    await db.execute(sql`
+      select distinct canonical_value from auth.case_entity
+       where project_id = ${projectId} and trust_state = '已排除'
+    `),
+  )
+  return new Set(行们.map((行) => String(行.canonical_value)))
+}
+
+/**
  * 基 2（11 §3.2）：账户归属集 = 账户自己的 ids ∪ 唯一户名对齐到它的人/组织。
  * 只由账户构造：人 / 组织查关系时仍用「端点等于自己」的原口径。
  */

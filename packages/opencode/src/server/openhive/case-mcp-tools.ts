@@ -38,6 +38,7 @@ import {
   归属歧义归属条件,
   归属实体集,
   事件角色条件,
+  已排除规范值,
 } from "./case-party"
 import { 资金交易 } from "./case-event-types"
 import {
@@ -919,16 +920,8 @@ async function 参与者视图(
   const 结果 = new Map<string, { 值: string[]; 摘要: string[] }>()
   if (行们.length === 0) return 结果
   const ids = 行们.map((行) => 行.id)
-  const 已排除值 = new Set<string>()
-  if (!含已排除) {
-    const 排除行 = rowsOf(
-      await ctx.db.execute(sql`
-        select distinct canonical_value from auth.case_entity
-         where project_id = ${ctx.身份.projectId} and trust_state = '已排除'
-      `),
-    )
-    for (const 行 of 排除行) 已排除值.add(String(行.canonical_value))
-  }
+  // 剔除值的唯一出处是 `case-party.已排除规范值`（`#002-06`）；本函数只用它，不再自抄一遍 SQL。
+  const 已排除值 = 含已排除 ? new Set<string>() : await 已排除规范值(ctx.db, ctx.身份.projectId)
   const 摘要表 = new Map<string, string[]>()
   const 已解析值 = new Map<string, Set<string>>()
   const 表行们 = rowsOf(
@@ -2347,7 +2340,7 @@ export async function find_crossings(
   ]
   if (args.起 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
   if (args.止 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
-  const 共同时空 = rowsOf(
+  const 时空行们 = rowsOf(
     await ctx.db.execute(sql`
       select id, type, occurred_at, occurred_raw, precision,
              array_to_json(participants)::text as participants, summary
@@ -2356,13 +2349,17 @@ export async function find_crossings(
        order by occurred_at desc nulls last, id asc
        limit ${共同时空上限}
     `),
-  ).map((行) => ({
+  )
+  // §9.1：本工具没有「含已排除」开关 ⇒ 参与者里的已排除实体规范值恒剔除
+  // （唯一出处 `case-party.已排除规范值`，`#002-06`）。
+  const 已排除值 = 时空行们.length === 0 ? new Set<string>() : await 已排除规范值(ctx.db, ctx.身份.projectId)
+  const 共同时空 = 时空行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
     occurred_at: 行.occurred_at as number | null,
     occurred_raw: 行.occurred_raw as string | null,
     precision: 行.precision as string | null,
-    participants: 解JSON<string[]>(行.participants, []),
+    participants: 解JSON<string[]>(行.participants, []).filter((项) => !已排除值.has(项)),
     summary: 行.summary as string | null,
   }))
 
@@ -2385,7 +2382,8 @@ export async function find_crossings(
       "甲、乙均先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
       "按规范值查询时合并同值多行的关系；" +
       "共同时空按事件归属判定：参与者表命中两人的本人 / 正向对齐代表 / 唯一户名对齐到其账户的人或组织，" +
-      "或 participants 文本回退命中各自归属值集（规范值 ∪ 别名）；时间按 occurred_at 闭区间。" + 身份口径,
+      "或 participants 文本回退命中各自归属值集（规范值 ∪ 别名）；时间按 occurred_at 闭区间；" +
+      "共同时空的参与者里「已排除」实体的规范值已剔除。" + 身份口径,
     缺口: 空 ? [...缺口, "共同关联与共同时空都为空：两侧在时间窗内没有可求交的边或事件"] : 缺口,
     空原因: 空 ? "无匹配行" : null,
     出处: 空
