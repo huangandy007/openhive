@@ -397,3 +397,30 @@ describe("money_flow", () => {
     expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(15)
   })
 })
+
+// 缺口 #19（01 §3.8.4）：`money_flow` 是账户查询、`aggregate_money` 已标三档，
+// 但成功路径重建信封时把 `身份` 与摘要后缀丢了（空路径 `{ ...汇总结果 }` 反而带着）。
+describe("缺口 #19：资金流信封的身份三档", () => {
+  test("成功路径：带身份档，摘要接后缀（与 aggregate_money 同源）", async () => {
+    const 结果 = await money_flow(ctx(), { 账户: 数据集.账号.B })
+    expect(结果.空原因).toBeNull()
+    expect(结果.身份).toHaveLength(1)
+    expect(结果.身份?.[0]?.实体).toBe(数据集.账号.B)
+    expect(结果.身份?.[0]?.档).toBe("户名匹配")
+    expect(结果.摘要).toContain("未核实身份")
+  })
+
+  test("空路径：信封仍带身份档（不许因本次改动丢）", async () => {
+    // 独立项目 + 自己造账户：`-t` 单跑这条时不依赖别的用例（`#005-34`）。
+    await upsertEntity(db(), {
+      id: "e-无往来",
+      projectId: "p-资金空档",
+      type: "账户",
+      canonicalValue: "6222020000000999",
+      aliases: [],
+    })
+    const 结果 = await money_flow(ctx("p-资金空档"), { 账户: "6222020000000999" })
+    expect(结果.空原因).not.toBeNull()
+    expect(结果.身份?.[0]?.档).toBe("无匹配")
+  })
+})
