@@ -1,9 +1,9 @@
 export * as OpenhiveCaseFactRead from "./case-fact-read"
 
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { type 变更视图, type 留痕类型, 变更历史 } from "./case-fact-change"
-import type { 事实信任态 } from "./case-fact-store"
+import { 文本数组, type 事实信任态 } from "./case-fact-store"
 import type { Queryable } from "./case-store"
 
 /**
@@ -240,6 +240,41 @@ async function 读事件(
   }
 }
 
+/** 引用查询的唯一出处（`引用们` 单人 / `批量引用` 批量都走它，`#002-06`）。 */
+async function 查引用(
+  db: Queryable,
+  projectId: string,
+  factType: 留痕类型,
+  范围: SQL,
+  上限?: number,
+): Promise<{ 行们: (引用视图 & { factId: string })[]; 总数: number }> {
+  const 行们 = rowsOf(
+    await db.execute(sql`
+      select c.id, c.fact_id, c.material_id, c.locator, c.extract_method, c.confidence,
+             m.file_name, m.path, count(*) over() as 总数
+        from auth.case_citation c
+        left join auth.case_material m on m.project_id = c.project_id and m.id = c.material_id
+       where c.project_id = ${projectId} and c.fact_type = ${factType} and ${范围}
+       order by c.created_at asc, c.id asc
+       ${上限 === undefined ? sql`` : sql`limit ${上限}`}
+    `),
+  )
+  const 总数 = Number(行们[0]?.总数 ?? 0)
+  return {
+    总数,
+    行们: 行们.map((行) => ({
+      factId: String(行.fact_id),
+      id: String(行.id),
+      materialId: String(行.material_id),
+      fileName: 文本(行.file_name),
+      path: 文本(行.path),
+      locator: 读杰森(行.locator),
+      extractMethod: String(行.extract_method) as "机器" | "人工",
+      confidence: 数字(行.confidence),
+    })),
+  }
+}
+
 /**
  * 这条事实的出处：按时间正序。材料被删过时 `fileName/path` 为 null（引用不悬空、也不猜）。
  *
@@ -255,30 +290,26 @@ export async function 引用们(
   factId: string,
   上限?: number,
 ): Promise<{ 行们: 引用视图[]; 总数: number }> {
-  const 行们 = rowsOf(
-    await db.execute(sql`
-      select c.id, c.material_id, c.locator, c.extract_method, c.confidence,
-             m.file_name, m.path, count(*) over() as 总数
-        from auth.case_citation c
-        left join auth.case_material m on m.project_id = c.project_id and m.id = c.material_id
-       where c.project_id = ${projectId} and c.fact_type = ${factType} and c.fact_id = ${factId}
-       order by c.created_at asc, c.id asc
-       ${上限 === undefined ? sql`` : sql`limit ${上限}`}
-    `),
-  )
-  const 总数 = Number(行们[0]?.总数 ?? 0)
-  return {
-    总数,
-    行们: 行们.map((行) => ({
-      id: String(行.id),
-      materialId: String(行.material_id),
-      fileName: 文本(行.file_name),
-      path: 文本(行.path),
-      locator: 读杰森(行.locator),
-      extractMethod: String(行.extract_method) as "机器" | "人工",
-      confidence: 数字(行.confidence),
-    })),
+  const { 行们, 总数 } = await 查引用(db, projectId, factType, sql`c.fact_id = ${factId}`, 上限)
+  return { 总数, 行们: 行们.map(({ factId: _factId, ...行 }) => 行) }
+}
+
+/** 一批事实的引用（时间线一页一次拿全，按 `created_at, id` 正序）。 */
+export async function 批量引用(
+  db: Queryable,
+  projectId: string,
+  factType: 留痕类型,
+  factIds: readonly string[],
+): Promise<Map<string, 引用视图[]>> {
+  if (factIds.length === 0) return new Map()
+  const { 行们 } = await 查引用(db, projectId, factType, sql`c.fact_id = any(${文本数组([...factIds])})`)
+  const 按事实 = new Map<string, 引用视图[]>()
+  for (const { factId, ...行 } of 行们) {
+    const 列 = 按事实.get(factId)
+    if (列 === undefined) 按事实.set(factId, [行])
+    else 列.push(行)
   }
+  return 按事实
 }
 
 export interface 事实详情入参 {

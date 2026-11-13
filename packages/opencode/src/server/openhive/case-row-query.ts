@@ -218,8 +218,25 @@ interface 游标载荷 {
   readonly r: number
 }
 
-function 编码游标(载荷: 游标载荷): string {
+/** 游标载荷的编解码内核：`query_rows` 与 `query_timeline` 共用一套签发/校验形状（10 §6.3）。 */
+export function 编码游标对象(载荷: object): string {
   return Buffer.from(JSON.stringify(载荷), "utf8").toString("base64url")
+}
+
+export function 解码游标对象(文本: string): Record<string, unknown> {
+  let 解: unknown
+  try {
+    解 = JSON.parse(Buffer.from(文本, "base64url").toString("utf8")) as unknown
+  } catch {
+    throw new 明细入参错误("游标不是本函数签发的形状（应原样回传上一页给出的续页游标）")
+  }
+  if (typeof 解 !== "object" || 解 === null || Array.isArray(解))
+    throw new 明细入参错误("游标不是本函数签发的形状")
+  return 解 as Record<string, unknown>
+}
+
+function 编码游标(载荷: 游标载荷): string {
+  return 编码游标对象(载荷)
 }
 
 /**
@@ -227,19 +244,12 @@ function 编码游标(载荷: 游标载荷): string {
  * 否则伪造的越界值会漏过闸、让 PG 抛 22003（`DrizzleQueryError`），而不是 `明细入参错误`。
  * 用 `Number.isSafeInteger` 而不是 `Number.isInteger`：`1e21` 也是「整数」，但已不可精确表示。
  */
-function 是int32(值: unknown): 值 is number {
+export function 是int32(值: unknown): 值 is number {
   return typeof 值 === "number" && Number.isSafeInteger(值) && 值 >= -2147483648 && 值 <= 2147483647
 }
 
 function 解游标(文本: string): 游标载荷 {
-  let 解: unknown
-  try {
-    解 = JSON.parse(Buffer.from(文本, "base64url").toString("utf8")) as unknown
-  } catch {
-    throw new 明细入参错误("游标不是本函数签发的形状（应原样回传上一页给出的续页游标）")
-  }
-  if (typeof 解 !== "object" || 解 === null || Array.isArray(解)) throw new 明细入参错误("游标不是本函数签发的形状")
-  const o = 解 as Record<string, unknown>
+  const o = 解码游标对象(文本)
   const t = o.t
   const t合法 = t === null || 是int32(t)
   if (!t合法 || typeof o.m !== "string" || typeof o.s !== "string" || !是int32(o.r))

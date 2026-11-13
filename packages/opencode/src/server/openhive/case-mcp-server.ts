@@ -16,6 +16,7 @@ import {
   query_events,
   query_relations,
   query_rows,
+  query_timeline,
   search_materials,
   工具错误,
   校验成员,
@@ -56,6 +57,7 @@ export const 工具名 = [
   "find_crossings",
   "get_citation",
   "query_rows",
+  "query_timeline",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -137,6 +139,7 @@ const 默认预算 = 新预算计数()
 const 纪律正文 = `你是公安案件研判助手。查库纪律如下，任一条都不能违反：
 1. 先解析再查询：实体名先交给 query_entities / 工具内部解析，拿名字直接当参数用算调用错误。
 2. 空结果照抄：工具的「空原因」与它给的引导动作要原样转述，禁止改写成「没有 / 查不到」。
+2b. 要看某人的事件先后顺序用 query_timeline（时间升序、游标翻页）；它返回的「下一页游标」原样传回。
 3. 数字只认本次返回：结论里每个数必须来自本次工具返回；不许拿上一轮的数字凑，也不许改口径凑。
 4. 时间窗必须进结论：说「近 30 天」就要写清实际起止；没给就写「全时段」。
 5. 四类限定显式标注：户名匹配（未核实身份）/ 推断（非事实）/ 跨源未合并（候选）/ 材料未解析。
@@ -293,6 +296,30 @@ const TOOLS: readonly Tool[] = [
       },
     },
   },
+  {
+    name: "query_timeline",
+    description:
+      "某实体的事件时间线：按 occurred_at 升序、游标翻页，返回时间与精度、类型、参与者摘要、信任态与代表出处。" +
+      "按 `地点` 查尚未支持（返回「能力未就绪」，不返回空）。按人查会包含其唯一户名账户参与的流水事件。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        实体: { type: "string", description: "实体 id 或规范值；与 `地点` 二选一" },
+        地点: {
+          type: "string",
+          description: "地点（尚未支持）：传了会明确返回「能力未就绪」，不参与过滤",
+        },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        类型: { type: "string", description: "事件类型" },
+        游标: {
+          type: "string",
+          description: "续页游标：只能取自上一页 `数据.下一页游标`，原样回传",
+        },
+        限制: { type: "integer", description: 限制说明 },
+      },
+    },
+  },
 ]
 
 const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
@@ -330,6 +357,11 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
         ["时间起", "时间止", "限制"],
         [],
       ),
+    ),
+  query_timeline: (ctx, args) =>
+    query_timeline(
+      ctx,
+      收参数<Parameters<typeof query_timeline>[1]>(args, ["实体", "地点", "类型", "游标"], ["起", "止", "限制"], []),
     ),
 }
 

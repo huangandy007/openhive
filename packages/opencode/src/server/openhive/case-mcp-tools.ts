@@ -12,8 +12,18 @@ import {
 } from "./case-envelope"
 import { getMaterial, type Queryable } from "./case-store"
 import type { 调用身份 } from "./case-mcp-identity"
-import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
-import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
+import { 事实详情, 批量引用, 引用们, type 引用视图 } from "./case-fact-read"
+import {
+  查明细行,
+  明细入参错误,
+  读明细行,
+  未解析材料份数,
+  编码游标对象,
+  解码游标对象,
+  是int32,
+  type 明细查询结果,
+} from "./case-row-query"
+import { 文本数组 } from "./case-fact-store"
 import type { 留痕类型 } from "./case-fact-change"
 import { 对齐代表, 户名对齐, 户名来源 } from "./case-party"
 import {
@@ -989,6 +999,228 @@ export async function query_events(
             工具: "get_citation",
             参数: { 事实类型: "event", 事实id: String(最近!.id) },
             为什么: "抽验一条事件的原文与出处",
+          },
+        ],
+    ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
+  }
+}
+
+/**
+ * 时间线（09 §4.3 / 10 §6.3）：某实体或某地点的事件，按 `(occurred_at, id)` **升序**游标翻页。
+ *
+ * 空原因四拆（顺序即优先级）：
+ * 1. `地点` 分支 ⇒ `能力未就绪`（事件表没有地点维度，先拒答）；
+ * 2. 该实体全期 0 个事件 ⇒ `对象未登记`（不是「没有事件」——对象根本不在事件里）；
+ * 3. 有事件但全部缺时间 ⇒ `时间全部缺失`；
+ * 4. 其余（有时间事件但窗口内 0 条）⇒ `无事件`。
+ *
+ * 查询预算 ≤7：解析 1 + 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2（10 偏差 D-6）。
+ * 参与者也走 `事件参与者条件`（含对齐），所以按人能看到其唯一户名账户的流水事件。
+ */
+export async function query_timeline(
+  ctx: 工具上下文,
+  args: {
+    实体?: string
+    地点?: string
+    起?: number
+    止?: number
+    类型?: string
+    游标?: string
+    限制?: number
+  },
+): Promise<工具结果> {
+  校验时间窗(args)
+  if (args.实体 !== undefined && args.地点 !== undefined)
+    throw new 工具错误("bad_input", "实体与地点只能给一个")
+  if (args.地点 !== undefined && args.地点 !== "") {
+    const 参数: Record<string, unknown> = {}
+    if (args.起 !== undefined) 参数.起 = args.起
+    if (args.止 !== undefined) 参数.止 = args.止
+    return {
+      摘要: `按地点查时间线尚未支持：事件表没有地点维度，无法按「${args.地点}」过滤`,
+      数据: null,
+      口径: "时间线只按实体、类型与时间过滤；材料里没有地点字段，`地点` 参数不参与取数",
+      缺口: ["事件表没有地点维度：地点只可能出现在事件摘要文本里，不能当作过滤条件"],
+      空原因: "能力未就绪",
+      出处: [],
+      下一步: [{ 工具: "query_events", 参数, 为什么: "先按时间窗取事件，再在摘要里人工看地点" }],
+    }
+  }
+  if (args.实体 === undefined || args.实体 === "")
+    throw new 工具错误("bad_input", "实体与地点必须给一个（本期地点只返回「能力未就绪」）")
+
+  const 实体 = await 解析实体(ctx, args.实体, "实体")
+  const 限制 = 归一化限制(args.限制)
+  const 参与 = 事件参与者条件(ctx, 实体)
+  const 类型条件 = args.类型 === undefined ? sql`` : sql`and type = ${args.类型}`
+
+  let 游标: { t: number; id: string } | undefined
+  if (args.游标 !== undefined) {
+    let 解: Record<string, unknown>
+    try {
+      解 = 解码游标对象(args.游标)
+    } catch {
+      throw new 工具错误("bad_input", "游标不是本函数签发的形状（应原样回传上一页给出的续页游标）")
+    }
+    const { t, id } = 解
+    if (typeof t !== "number" || !是int32(t) || typeof id !== "string" || id === "" || id.includes("\u0000"))
+      throw new 工具错误("bad_input", "游标字段不全、类型不对或数值超出 integer 范围")
+    游标 = { t, id }
+  }
+
+  const 窗: SQL[] = [sql`occurred_at is not null`]
+  if (args.起 !== undefined) 窗.push(sql`occurred_at >= ${args.起}`)
+  if (args.止 !== undefined) 窗.push(sql`occurred_at <= ${args.止}`)
+  // 游标条件与排序一致：(occurred_at, id) 严格大于上一页最后一行。
+  if (游标 !== undefined)
+    窗.push(sql`(occurred_at > ${游标.t} or (occurred_at = ${游标.t} and id > ${游标.id}))`)
+
+  const 行们 = rowsOf(
+    await ctx.db.execute(sql`
+      select id, type, occurred_at, occurred_raw, precision,
+             array_to_json(participants)::text as participants, summary, trust_state
+        from auth.case_event
+       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+         and ${参与} ${类型条件}
+         and ${sql.join(窗, sql` and `)}
+       order by occurred_at asc, id asc
+       limit ${限制 + 1}
+    `),
+  )
+  const 本页 = 行们.slice(0, 限制)
+  const 下一页游标 =
+    行们.length > 限制 && 本页.length > 0
+      ? 编码游标对象({ t: Number(本页[本页.length - 1].occurred_at), id: String(本页[本页.length - 1].id) })
+      : null
+
+  // 统计：全期事件数与「有时间」的事件数。窗口、游标、**类型**都不进——
+  // 空原因是对象的属性（`09` §3.5：「对象未登记」= 实体不在事件参与者集合里）；
+  // 若让 `类型` 参与，一个只有话单事件的实体查「转账」时间线会被误报成「对象未登记」。
+  const 统计 = rowsOf(
+    await ctx.db.execute(sql`
+      select count(*)::int as 总数,
+             count(*) filter (where occurred_at is not null)::int as 有时数
+        from auth.case_event
+       where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
+         and ${参与}
+    `),
+  )[0]
+  const 总数 = Number(统计?.总数 ?? 0)
+  const 有时数 = Number(统计?.有时数 ?? 0)
+  const 缺时间条数 = 总数 - 有时数
+
+  const 空 = 本页.length === 0
+  const 空原因: 空原因值 | null = 空
+    ? 总数 === 0
+      ? "对象未登记"
+      : 有时数 === 0
+        ? "时间全部缺失"
+        : "无事件"
+    : null
+
+  const ids = 本页.map((行) => String(行.id))
+  const 参与者按事件 = new Map<string, string[]>()
+  if (!空) {
+    const 参与者行 = rowsOf(
+      await ctx.db.execute(sql`
+        select p.event_id, p.role, e.canonical_value as value
+          from auth.case_event_participant p
+          join auth.case_entity e on e.project_id = p.project_id and e.id = p.entity_id
+         where p.project_id = ${ctx.身份.projectId} and p.event_id = any(${文本数组(ids)})
+         order by p.event_id asc, p.ordinal asc
+      `),
+    )
+    for (const 行 of 参与者行) {
+      const id = String(行.event_id)
+      const 列 = 参与者按事件.get(id)
+      const 项 = `${String(行.role)}：${String(行.value)}`
+      if (列 === undefined) 参与者按事件.set(id, [项])
+      else 列.push(项)
+    }
+  }
+  const 引用按事件 = 空 ? new Map<string, 引用视图[]>() : await 批量引用(ctx.db, ctx.身份.projectId, "event", ids)
+
+  const 事件们 = 本页.map((行) => {
+    const id = String(行.id)
+    const 参与者 =
+      参与者按事件.get(id) ?? 解JSON<string[]>(String(行.participants ?? "[]"), []).map((值) => `参与者：${值}`)
+    const 引用 = 引用按事件.get(id)?.[0]
+    return {
+      id,
+      类型: String(行.type),
+      时间: Number(行.occurred_at),
+      时间精度: 行.precision === null ? null : String(行.precision),
+      时间原文: 行.occurred_raw === null ? null : String(行.occurred_raw),
+      参与者,
+      事件摘要: 行.summary === null ? null : String(行.summary),
+      信任态: String(行.trust_state),
+      代表出处:
+        引用 === undefined
+          ? null
+          : { 材料: 引用.fileName, 定位: 引用.locator },
+    }
+  })
+
+  const 身份们 = [
+    ...(
+      await 读身份标注(ctx.db, ctx.身份.projectId, [
+        { id: 实体.id, 类型: 实体.type, 值: 实体.value },
+      ])
+    ).values(),
+  ]
+  const 后缀 = 身份后缀(身份们)
+  const 称呼 = 实体称呼(实体, args.实体)
+  const 缺口 = [
+    ...截断缺口(args.限制, 限制, 本页.length),
+    `${限制} 条/页（时间升序）；游标只经本工具返回，不要自己造`,
+  ]
+  if (缺时间条数 > 0) 缺口.push(`${缺时间条数} 个事件没有时间，未进入时间线`)
+  if (下一页游标 !== null) 缺口.push("还有下一页：把本页 `下一页游标` 原样传回 `游标`")
+
+  return {
+    摘要: 空
+      ? 空原因 === "对象未登记"
+        ? `${称呼}在事件里没有出现（对象存在但没有任何事件）${后缀}`
+        : 空原因 === "时间全部缺失"
+          ? `${称呼}有 ${总数} 个事件，但全都没有时间，排不出时间线${后缀}`
+          : `${称呼}在给定时间窗内没有事件${后缀}`
+      : `${称呼}的 ${事件们.length} 个事件（时间升序）${事件们[0].时间原文 ?? 事件们[0].类型} 起${后缀}`,
+    数据: 空 ? null : { 事件们, 缺时间条数, 下一页游标 },
+    口径:
+      "事件按实体（先按 id、再按规范值解析；参与实体走 text[] 规范值 ∪ 参与者表的对齐代表）过滤；" +
+      "时间按 occurred_at 闭区间、升序排列；游标是 (occurred_at, id)；默认不含「已排除」事件；" +
+      "时间为 UTC+8 规范值，精度按各自标注。" + 身份口径,
+    缺口,
+    空原因,
+    出处: 空
+      ? []
+      : 事件们.slice(0, 3).map((行) => ({
+          事实: `事件「${行.类型}」@${行.时间原文 ?? String(行.时间)}`,
+          代表: 行.id,
+          可下钻: "get_citation",
+        })),
+    下一步: 空
+      ? []
+      : [
+          ...(下一页游标 === null
+            ? []
+            : [
+                {
+                  工具: "query_timeline",
+                  参数: {
+                    实体: args.实体,
+                    ...(args.起 === undefined ? {} : { 起: args.起 }),
+                    ...(args.止 === undefined ? {} : { 止: args.止 }),
+                    ...(args.类型 === undefined ? {} : { 类型: args.类型 }),
+                    游标: 下一页游标,
+                  },
+                  为什么: "继续看下一页（时间升序）",
+                },
+              ]),
+          {
+            工具: "get_citation",
+            参数: { 事实类型: "event", 事实id: 事件们[0].id },
+            为什么: "抽验时间线第一条事件的原文与出处",
           },
         ],
     ...(身份们.length === 0 ? {} : { 身份: 身份们 }),
