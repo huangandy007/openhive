@@ -53,7 +53,11 @@ export function 对齐代表(projectId: string, id: SQL, 类型: SQL, 值: SQL):
   return sql`coalesce((select 代表 from ${户名对齐(projectId, id, 类型, 值)} 对齐), ${id})`
 }
 
-/** `id in (...)` 片段：调用点把要匹配的列交进来，集合由本文件构造。 */
+/**
+ * `id in (...)` 片段：调用点把要匹配的列交进来，集合由本文件构造。
+ *
+ * ⚠️ 调用约定：调用方必须传**非空数组**——空数组会生成 `in ()`，PG 语法报错。
+ */
 function id集合(ids: readonly string[]): SQL {
   return sql`(${sql.join(
     ids.map((id) => sql`${id}`),

@@ -49,7 +49,7 @@ async function 数(语句: ReturnType<typeof sql>): Promise<number> {
 }
 
 describe("基 1：事件归属", () => {
-  test("按账户查：3 个流水事件（参与者表）+ 1 个笔录事件（唯一户名对齐者的文本值）", async () => {
+  test("按账户查：流水 3 + 笔录 1 = 4", async () => {
     const B = await 实体id(数据集.账号.B)
     const 条数 = await 数(sql`
       select count(*)::int as 数 from auth.case_event
@@ -65,6 +65,37 @@ describe("基 1：事件归属", () => {
        where project_id = ${数据集.projectId} and ${事件归属条件(数据集.projectId, 李四)}
     `)
     expect(条数).toBe(4)
+  })
+
+  test("文本为空时只能靠参与者表命中：账户本人 + 人的正向代表", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 李四 = await 实体id("李四")
+    try {
+      // 裸插一行**文本参与者为空**的事件 + 一行参与者表（entity_id = 账户 B）。
+      // 文本回退对该事件恒假，命中只可能来自参与者表那一支。
+      await db().execute(sql`
+        insert into auth.case_event (id, project_id, type, participants, created_at)
+        values ('e-基1参与者表', ${数据集.projectId}, '见面', '{}'::text[], 1760000000)
+      `)
+      await db().execute(sql`
+        insert into auth.case_event_participant (id, project_id, event_id, entity_id, role, mention_text, ordinal)
+        values ('p-基1参与者表', ${数据集.projectId}, 'e-基1参与者表', ${B}, '参与', '账户', 0)
+      `)
+      const 查 = (实体id: string) =>
+        数(sql`
+          select count(*)::int as 数 from auth.case_event
+           where project_id = ${数据集.projectId} and id = 'e-基1参与者表'
+             and ${事件归属条件(数据集.projectId, 实体id)}
+        `)
+      // 账户本人：参与者表里 entity_id = B，命中。
+      expect(await 查(B)).toBe(1)
+      // 人的正向代表：参与者表里 entity_id = B，靠 归属实体集(李四) 含 B 命中。
+      // 这一条同时钉住「参与者表那一支必须用归属实体集，而不是 = 实体id」。
+      expect(await 查(李四)).toBe(1)
+    } finally {
+      await db().execute(sql`delete from auth.case_event_participant where project_id = ${数据集.projectId} and event_id = 'e-基1参与者表'`)
+      await db().execute(sql`delete from auth.case_event where project_id = ${数据集.projectId} and id = 'e-基1参与者表'`)
+    }
   })
 })
 
@@ -94,18 +125,22 @@ describe("基 2：账户归属", () => {
   test("两端都落在集合里 ⇒ 不归属（B 与李四之间的往来是账户内部）", async () => {
     const B = await 实体id(数据集.账号.B)
     const 李四 = await 实体id("李四")
-    // 造一条 李四 → B：两端都在归属集里，XOR 必须把它排除。
-    await db().execute(sql`
-      insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
-      values ('r-基2自环', ${数据集.projectId}, ${李四}, ${B}, '转账', '1000.00', 'human', '自动抽取', 1760000000)
-    `)
-    const 条数 = await 数(sql`
-      select count(*)::int as 数 from auth.case_relation
-       where project_id = ${数据集.projectId} and id = 'r-基2自环'
-         and ${关系归属条件(数据集.projectId, [B], sql`from_id`, sql`to_id`)}
-    `)
-    expect(条数).toBe(0)
-    await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-基2自环'`)
+    try {
+      // 造一条 李四 → B：两端都在归属集里，XOR 必须把它排除。
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, amount, source_kind, trust_state, created_at)
+        values ('r-基2自环', ${数据集.projectId}, ${李四}, ${B}, '转账', '1000.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 条数 = await 数(sql`
+        select count(*)::int as 数 from auth.case_relation
+         where project_id = ${数据集.projectId} and id = 'r-基2自环'
+           and ${关系归属条件(数据集.projectId, [B], sql`from_id`, sql`to_id`)}
+      `)
+      expect(条数).toBe(0)
+    } finally {
+      // 断言失败也必须清掉裸插行，否则后续用例看到脏数据。
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-基2自环'`)
+    }
   })
 
   test("值集覆盖「自己 + 正向代表 + 反向对齐者」", async () => {
