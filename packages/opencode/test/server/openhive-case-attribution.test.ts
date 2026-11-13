@@ -9,6 +9,7 @@ import {
   账户归属集,
   读归属值,
 } from "../../src/server/openhive/case-party"
+import { 实体档案 } from "../../src/server/openhive/case-entity-list"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -147,5 +148,26 @@ describe("基 2：账户归属", () => {
     const B = await 实体id(数据集.账号.B)
     const 值们 = (await 读归属值(db(), 数据集.projectId, B)).sort()
     expect(值们).toEqual([数据集.账号.B, "李四"].sort())
+  })
+})
+
+describe("实体档案：与汇总同口径", () => {
+  test("账户 B：关系 4（数据 2 / 人 2）、对方 2、事件 4", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const 档案 = await 实体档案(db(), { projectId: 数据集.projectId, id: B })
+    expect(档案).toBeDefined()
+    expect(档案?.关系总数).toBe(4)
+    expect(档案?.关系数据总数).toBe(2)
+    expect(档案?.关系人总数).toBe(2)
+    expect(档案?.对方数).toBe(2)
+    expect(档案?.事件总数).toBe(4)
+  })
+
+  test("账户 A：关系 4、对方 3（B 两笔算一个、C、李四）、事件 3", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const 档案 = await 实体档案(db(), { projectId: 数据集.projectId, id: A })
+    expect(档案?.关系总数).toBe(4)
+    expect(档案?.对方数).toBe(3)
+    expect(档案?.事件总数).toBe(3)
   })
 })

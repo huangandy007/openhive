@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
+import { 事件归属条件, 账户归属集, 关系归属条件 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
 
@@ -304,13 +305,22 @@ export async function 实体档案(
   if (实体行们.length === 0) return undefined
   const 实体 = 实体行们[0]!
 
+  // 基 2（11 §3.2）：中心是账户时，关系按「恰好一端落在归属集里」判定；
+  // 人 / 组织保持「端点等于自己」的原口径（集合只由账户构造）。
+  // 不看 `含排除` 开关：归属是口径，不是可见性；归属集本身已经排除「已排除」的人。
+  const 是账户 = String(实体.type) === "账户"
+  const 归属集 = 是账户 ? 账户归属集(input.projectId, [String(实体.id)]) : undefined
+  const from属于 = 归属集 === undefined ? sql`r.from_id = ${input.id}` : sql`r.from_id in ${归属集}`
+  const 关系归属 =
+    归属集 === undefined
+      ? sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`
+      : 关系归属条件(input.projectId, [String(实体.id)], sql`r.from_id`, sql`r.to_id`)
+
   // 关系：两侧实体 join 出来，取「对方」；已排除的关系与已排除的对方都默认不出现（§9.1）。
-  // 「触达」是 project + 该实体；「可见」再叠未排除条件。待确认用可见 + 信任态，别写第二份。
+  // 「触达」是 project + 该实体（账户走归属集，见上）；「可见」再叠未排除条件。
+  // 待确认与列表 / 全量聚合同样用这份谓词，别写第二份。
   // ⚠️ 这组谓词是**唯一一份**：列表查询、全量聚合查询与待确认计数共用它，别写第二份。
-  const 关系触达: SQL[] = [
-    sql`r.project_id = ${input.projectId}`,
-    sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`,
-  ]
+  const 关系触达: SQL[] = [sql`r.project_id = ${input.projectId}`, 关系归属]
   const 关系可见: SQL[] = [
     ...关系触达,
     sql`r.trust_state <> '已排除'`,
@@ -326,11 +336,12 @@ export async function 实体档案(
                r.first_at, r.last_at, r.times, r.amount::text as amount,
                对方.id as 对方id, 对方.canonical_value as 对方值, 对方.type as 对方类型,
                对方.attrs as 对方attrs,
+               (${from属于}) as from属于,
                count(*) over() as 总数
           from auth.case_relation r
           join auth.case_entity 对方
             on 对方.project_id = r.project_id
-           and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+           and 对方.id = case when ${from属于} then r.to_id else r.from_id end
          where ${sql.join([...关系条件, 段条件(段)], sql` and `)}
          order by coalesce(r.last_at, r.first_at, 0) desc, r.id asc
          limit ${上限}
@@ -351,7 +362,7 @@ export async function 实体档案(
         from auth.case_relation r
         join auth.case_entity 对方
           on 对方.project_id = r.project_id
-         and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+         and 对方.id = case when ${from属于} then r.to_id else r.from_id end
        where ${sql.join(关系条件, sql` and `)}
        group by 对方.type
     `),
@@ -362,7 +373,7 @@ export async function 实体档案(
   const 关系 = 关系行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
-    方向: String(行.from_id) === input.id ? ("出" as const) : ("入" as const),
+    方向: (行.from属于 as boolean) ? ("出" as const) : ("入" as const),
     对方id: String(行.对方id),
     对方值: String(行.对方值),
     对方类型: String(行.对方类型),
@@ -376,11 +387,12 @@ export async function 实体档案(
     金额: (行.amount as string | null) ?? null,
   }))
 
-  // 事件的参与者存的是**实体规范值**（计划 4 的写口），不是 id。
+  // 基 1（11 §3.1）：同一个判据，不再只比 `participants @> array[规范值]`。
+  // 参与者表（本人 / 正向代表 / 反向对齐者）∪ `participants` 文本回退（规范值 ∪ 别名）。
   // 与关系同理：「触达」到「可见」各一份，待确认计数复用可见谓词。
   const 事件触达: SQL[] = [
     sql`project_id = ${input.projectId}`,
-    sql`participants @> array[${String(实体.canonical_value)}]::text[]`,
+    sql`${事件归属条件(input.projectId, String(实体.id))}`,
   ]
   const 事件可见: SQL[] = [...事件触达, sql`trust_state <> '已排除'`]
   const 事件条件 = 含排除 ? 事件触达 : 事件可见
@@ -414,7 +426,7 @@ export async function 实体档案(
         from auth.case_relation r
         join auth.case_entity 对方
           on 对方.project_id = r.project_id
-         and 对方.id = case when r.from_id = ${input.id} then r.to_id else r.from_id end
+         and 对方.id = case when ${from属于} then r.to_id else r.from_id end
        where ${sql.join([...关系可见, sql`r.trust_state in ('自动抽取','存疑')`], sql` and `)}
     `),
   )[0]!
