@@ -25,9 +25,12 @@ import { CITATION_FACT_TYPES, MATERIAL_KINDS } from "../../src/server/openhive/c
 const 期望表 = [
   "case_ai_proposal",
   "case_alert",
+  "case_card_template",
   "case_citation",
   "case_entity",
+  "case_entity_alias",
   "case_event",
+  "case_event_participant",
   "case_fact_change",
   "case_fact_row",
   ...Array.from({ length: 16 }, (_, i) => `case_fact_row_p${String(i).padStart(2, "0")}`),
@@ -74,7 +77,7 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
 }
 
 describe("0031/0032/0033 迁移 · 表与分区", () => {
-  test("13 张表 ＋ 16 个分区全部建出来", async () => {
+  test("16 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables
