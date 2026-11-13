@@ -441,6 +441,12 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       const toId = String(行.to_id)
       if (typeof 行.amount !== "string")
         throw new Error(`关系聚合的金额不是字符串（${fromId} → ${toId}）：${JSON.stringify(行.amount)}`)
+      // 自环（合并后付款方与收款方是同一实体）：**行照样写、状态落「已排除」**。
+      // 合并已经把自环标「已排除」（§9「不删除，只打状态」），重放若不守这条，会插回一行
+      // 「自动抽取」自环 ⇒ 同一事实两行两态，`query_relations` 默认还把它当关系返回，
+      // 而档案 / 探索走 XOR 得 0 条（缺口 #7）。落已排除后两端口径一致：默认读口都不返回，
+      // 金额也不会被算重（`aggregate_money` 的 XOR 本就把自环挡在收支之外）。
+      const 信任态 = fromId === toId ? "已排除" : "自动抽取"
       const 写入 = rowsOf(
         await tx.execute(sql`
           insert into auth.case_relation
@@ -448,7 +454,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
              basis, source_kind, trust_state, created_at)
           values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
                   ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
-                  ${Number(行.times ?? 0)}, ${Number(行.times_cny ?? 0)}, ${行.amount}, null, 'data', '自动抽取',
+                  ${Number(行.times ?? 0)}, ${Number(行.times_cny ?? 0)}, ${行.amount}, null, 'data', ${信任态},
                   ${nowSeconds()})
           on conflict (project_id, id) do nothing
           returning id

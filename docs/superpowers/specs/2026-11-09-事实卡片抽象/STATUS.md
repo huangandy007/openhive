@@ -70,8 +70,15 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
    （引用留在幸存者，实得已登记）。真栈复验：合并 `movedCitations=2`、拆分 `未恢复引用=[]`。
 6. **T5（真栈/并发缺口，未修）**：合并快照未对 participant/alias 行加 `for update` ⇒ 真并发下
    「快照↔改指」之间落进来的行会被改指却不进留痕、拆分静默无法恢复。
-7. **T5（未修）**：合并后同一事件的付款方与收款方可能都指向幸存者，`资金参与者基`
-   （`case-translate-store.ts:313-321`）不排 `付=收` 自环（读端 `case-alerts` 已排）。
+7. **T5（已修，2026-11-13）**：合并后同一事件的付款方与收款方都指向幸存者，`资金参与者基`
+   产出 `(X,X)` 对；`重建关系` 的插入没有自环守卫 ⇒ 合并已把自环标 `已排除`，任何一次
+   重放/重算又插回一行 `自动抽取` 自环 ⇒ 同一事实两行两态，且 `query_relations` 默认
+   返回这条自环（档案/探索走 XOR 得 0 条）。
+   **实得更正**：金额没被算重——`aggregate_money` 的 XOR 把自环挡在收支与对手方之外，
+   并按「账户内部往来」写进缺口；坏的是「状态矛盾 + 自环可见」。
+   修法：聚合插入时 `fromId === toId` 落 `已排除`（与合并同语义，§9「不删除，只打状态」），
+   旧机器行仍走原有 delete。红（非已排除行应 0，实得 1）、绿、变异均见 ledger。
+   真栈库自环 0 条、参与者表 0 行 ⇒ 未复验，如实登记。
 8. **T7（未修）**：`case-entity-list.ts:417`（实体档案事件列表，UI `entity-profile.tsx:1097`
    原样展示）与 `case-fact-read.ts:235`（事实本体 raw `participants`）仍返回**未剔除已排除**
    的原始参与者值；用户可能在档案/引用里看到已排除实体的名字。
@@ -119,3 +126,4 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 | 2026-11-13 | 终审闭环：交付区间与最终门禁按实得补齐（18 个受影响文件 360 pass / 0 fail、回放 23 pass / 0 fail、typecheck 32/32、oxlint 70 warnings / 0 errors、`bun.lock` 无 diff）；第 2 轮定向复查 4 项全部 ADDRESSED、无新破坏 | `16097fd9b4`、`84043a3f8f`；本行（文档提交） |
 | 2026-11-13 | **缺口 #5 修复（合并搬引用 / 拆分恢复引用）**：合并把 `fact_type='entity'` 的 `case_citation` 改指幸存者并记留痕 `引用们`；拆分逐条恢复、恢复前校验仍指幸存者，异常进 `未恢复引用`；新增 `movedCitations` / `未恢复引用` 两个结果字段。红 19 pass / 4 fail → 绿 23 pass / 0 fail；三组变异各自变红（3 / 2 / 2 条）；门禁 typecheck 32/32、受影响测试 100 pass / 5 文件 / 0 fail、oxlint 0 error、`bun.lock` 无 diff。真栈复验：合并 `movedCitations=2`（李四名下 2 条改指张三）、拆分 `未恢复引用=[]`。grep 同类落点：全仓仅合并一处删实体（`case-merge.ts:258`），无独立实体删除端点；读侧 `case-materials.ts:86` INNER JOIN 与三处 LEFT JOIN 计数在改指后不再悬空 | 本行（代码 `case-merge.ts` + 测试 `openhive-case-merge.test.ts`）；真栈证据 `.superpowers/sdd/2026-11-13-P3-第二期-实体打通与探索原语/a5-*.json` |
 | 2026-11-13 | **缺口 #14 修复（可见实体被说成「无此实体」）**：`解析实体` 排序在 id 命中之后加 `(trust_state = '已排除') asc`，同值跨类型时可见行优先；按 id 直取与「同值全已排除」口径不变。根因实得：同值「组织/可见 + 人/已排除（较新）」时解析到已排除行 ⇒ `实体档案` 过滤成 undefined ⇒ `explore_entity` 回「无此实体」，而 `query_relations` 出 1 条关系。红 19 pass / 1 fail（`Received: "重名-排除"`）→ 绿 20 pass / 0 fail / 90 expect；变异拆排序键 ⇒ 红在首条断言。门禁：typecheck 32/32、10 个受影响测试文件 253 pass / 0 fail、oxlint 81 warnings / **0 errors**（告警行号全部在改动范围外）、`bun.lock` 无 diff。真栈无「同值 + 已排除」数据 ⇒ 未复验 | 本行（代码 `case-mcp-tools.ts` + 用例 `openhive-case-explore.test.ts`）；根因证据见 ledger |
+| 2026-11-13 | **缺口 #7 修复（重建关系不产「可见」自环）**：合并把自环标 `已排除`，`重建关系` 无守卫又插回 `自动抽取` 自环 ⇒ 同一事实两行两态、`query_relations` 默认返回自环（档案/探索 XOR 得 0）。修法：聚合插入时 `fromId === toId` 落 `已排除`。**实得更正**：金额未被算重（`aggregate_money` 的 XOR 本就挡住，并写进「账户内部往来」缺口）。红 14 pass / 1 fail（非已排除行应 0、实得 1）→ 绿 15 pass / 0 fail / 53 expect；变异（恒写 `自动抽取`）⇒ 红在首条断言。门禁：typecheck 32/32、12 个受影响文件 264 pass / 0 fail、oxlint 改动两文件 **0 warnings / 0 errors**、`bun.lock` 无 diff。落点：全仓关系写入仅 2 处（笔录 human 行、重建聚合），人工修正不改端点；真栈自环 0 条 ⇒ 未复验 | 本行（代码 `case-translate-store.ts` + 用例 `openhive-case-relation-rebuild.test.ts`） |

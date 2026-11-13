@@ -7,6 +7,8 @@ import { 确保内置模板 } from "../../src/server/openhive/case-card-template
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
 import { 资金交易 } from "../../src/server/openhive/case-event-types"
 import { insertEvent, insertParticipants, upsertEntity } from "../../src/server/openhive/case-fact-store"
+import { 合并实体 } from "../../src/server/openhive/case-merge"
+import { query_relations } from "../../src/server/openhive/case-mcp-tools"
 import type { FactRowInput } from "../../src/server/openhive/case-store"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -362,3 +364,113 @@ async function 卡片idOf(materialId: string, rowNo: number): Promise<string> {
   )
   return String(row?.id)
 }
+
+/**
+ * 缺口 #7：合并后同一事件的付款方与收款方都指向幸存者，`资金参与者基` 因此产出 `(X,X)` 对。
+ * 合并已把自环标「已排除」（§9「不删除，只打状态」），但 `重建关系` 的插入没有自环守卫
+ * ⇒ 任何一次重放 / 重算又插回一行「自动抽取」自环：同一事实两行两态，`query_relations`
+ * 默认还会把它当一条关系返回（档案走 XOR 得 0 条，同一实体两个答案）。
+ * 修法：聚合插入时自环落「已排除」（与合并同语义），旧机器行仍走原有 delete 清掉。
+ */
+describe("缺口 #7：重建关系不产「可见」自环（独立项目）", () => {
+  const 项目7 = "prj-自环"
+  const 账甲 = "6217001234567896514"
+  const 账乙 = "6222021234567890123"
+
+  async function 清场() {
+    for (const 句 of [
+      sql`delete from auth.case_fact_change where project_id = ${项目7}`,
+      sql`delete from auth.case_citation where project_id = ${项目7}`,
+      sql`delete from auth.case_event_participant where project_id = ${项目7}`,
+      sql`delete from auth.case_event where project_id = ${项目7}`,
+      sql`delete from auth.case_relation where project_id = ${项目7}`,
+      sql`delete from auth.case_entity_alias where project_id = ${项目7}`,
+      sql`delete from auth.case_entity where project_id = ${项目7}`,
+    ]) {
+      await db().execute(句)
+    }
+  }
+
+  test("合并后按自环对重建：自环行落「已排除」，默认读口看不到自环", async () => {
+    await 清场()
+    const a = await upsertEntity(db(), {
+      projectId: 项目7,
+      id: "e7-甲",
+      type: "账户",
+      canonicalValue: 账甲,
+      aliases: [],
+    })
+    const b = await upsertEntity(db(), {
+      projectId: 项目7,
+      id: "e7-乙",
+      type: "账户",
+      canonicalValue: 账乙,
+      aliases: [],
+    })
+    await insertEvent(db(), {
+      projectId: 项目7,
+      id: "ev7",
+      type: 资金交易,
+      occurredAt: 1731117305,
+      occurredRaw: "2024-11-09 09:15:03",
+      precision: "到秒",
+      amount: "280000.00",
+      participants: [账甲, 账乙],
+      summary: null,
+      trustState: "自动抽取",
+      currency: "CNY",
+    })
+    await insertParticipants(db(), [
+      {
+        projectId: 项目7,
+        id: "p7-付",
+        eventId: "ev7",
+        entityId: a,
+        role: "付款方",
+        mentionText: 账甲,
+        citationId: null,
+        ordinal: 0,
+      },
+      {
+        projectId: 项目7,
+        id: "p7-收",
+        eventId: "ev7",
+        entityId: b,
+        role: "收款方",
+        mentionText: 账乙,
+        citationId: null,
+        ordinal: 1,
+      },
+    ])
+    await 重建关系(db(), 项目7, [{ fromId: a, toId: b }])
+    await 合并实体(db(), {
+      projectId: 项目7,
+      survivorId: a,
+      mergedId: b,
+      reasonText: "缺口 #7 用例",
+      by: "u-g7",
+    })
+    // 合并后 `资金参与者基` 产出的就是这一对：任何一次重放 / 重算都会带着它进来。
+    await 重建关系(db(), 项目7, [{ fromId: a, toId: a }])
+
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select id, trust_state from auth.case_relation
+         where project_id = ${项目7} and from_id = ${a} and to_id = ${a}
+         order by id
+      `),
+    )
+    // 合并标「已排除」的那行 + 重建写的那行，**都**必须是「已排除」⇒ 非已排除行 0。
+    // 改前实得：1（重建行落「自动抽取」）。
+    expect(行.filter((条) => String(条.trust_state) !== "已排除")).toHaveLength(0)
+    // 至少有一行仍在：证明走的是「不删除，只打状态」，不是把行删了交差。
+    expect(行.length).toBeGreaterThan(0)
+
+    const 默认 = await query_relations(
+      { db: db(), 身份: { userId: "u-g7", projectId: 项目7 } },
+      { 实体: 账甲 },
+    )
+    // 改前实得：1 条（那条自环）。档案 / 探索走 XOR 得 0，两处口径必须一致。
+    expect(Array.isArray(默认.数据) ? 默认.数据.length : 0).toBe(0)
+  })
+})
