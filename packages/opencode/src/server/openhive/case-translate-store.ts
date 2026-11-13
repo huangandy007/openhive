@@ -489,3 +489,48 @@ export async function 本材料转账对(
     `),
   ).map((r) => ({ fromId: String(r.from_id), toId: String(r.to_id) }))
 }
+
+/**
+ * 一条裁决事实影响的（对齐后）资金对。
+ *
+ * 裁决的端点不变（关系白名单只改 amount/basis/relationType，事件白名单只改
+ * summary/occurredAt/precision），所以可以在裁决**之后**取。
+ *
+ * - relation：只认 human 转账；返回对齐后的账户对（与 `本材料转账对` 同一横向对齐）。
+ * - event：只认 `资金交易`；返回每个（付款方 → 收款方）参与者对（事件端点本来就是账户）。
+ */
+export async function 事实资金对(
+  tx: Queryable,
+  projectId: string,
+  factType: "relation" | "event",
+  factId: string,
+): Promise<关系对[]> {
+  if (factType === "relation") {
+    return rowsOf(
+      await tx.execute(sql`
+        select coalesce(起对齐.代表, r.from_id) as from_id,
+               coalesce(终对齐.代表, r.to_id) as to_id
+          from auth.case_relation r
+          join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
+          join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
+          left join lateral ${户名对齐(projectId, sql`起.id`, sql`起.type`, sql`起.canonical_value`)} 起对齐 on true
+          left join lateral ${户名对齐(projectId, sql`终.id`, sql`终.type`, sql`终.canonical_value`)} 终对齐 on true
+         where r.project_id = ${projectId} and r.id = ${factId}
+           and r.type = '转账' and r.source_kind = 'human'
+      `),
+    ).map((行) => ({ fromId: String(行.from_id), toId: String(行.to_id) }))
+  }
+  return rowsOf(
+    await tx.execute(sql`
+      select distinct 付.entity_id as from_id, 收.entity_id as to_id
+        from auth.case_event e
+        join auth.case_event_participant 付
+          on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
+        join auth.case_event_participant 收
+          on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
+       where e.project_id = ${projectId} and e.id = ${factId}
+         and e.type = ${资金交易}
+         and 付.entity_id is not null and 收.entity_id is not null
+    `),
+  ).map((行) => ({ fromId: String(行.from_id), toId: String(行.to_id) }))
+}

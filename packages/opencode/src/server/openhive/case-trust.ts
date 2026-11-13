@@ -14,6 +14,7 @@ import {
 import type { 事实信任态 } from "./case-fact-store"
 import { 清依赖标记, 标依赖已变更 } from "./case-propagation"
 import { inTransaction, type Queryable } from "./case-store"
+import { 重建关系, 事实资金对 } from "./case-translate-store"
 
 /**
  * 裁决：人给事实打 ✓ / ✗ / ？、改正错值、撤销上一次人工动作（设计 §9.1 / §9.2 / §9.6）。
@@ -436,6 +437,21 @@ export async function 裁决(db: Queryable, input: 裁决输入): Promise<裁决
     // 依赖事实被人工动过 ⇒ 它已经被人复核，标记清掉。
     if (input.factType === "relation" || input.factType === "event")
       await 清依赖标记(tx, input.projectId, input.factType, input.factId)
+
+    // P3：人工行「覆盖」流水事件（10 §3.2）。裁决会改匹配输入——关系任意动作都可能换
+    // 匹配桶（自动抽取/存疑＝精确，已确认/已修正＝同日回退），事件只有排除/修正（时间）/
+    // 撤销这两类动作会改聚合输入。不重算，被覆盖的事件就永久消失（终审阻断 2）。
+    if (input.factType === "relation" || input.factType === "event") {
+      const 需重算 =
+        input.factType === "relation" ||
+        input.action === "排除" ||
+        input.action === "修正" ||
+        (input.action === "撤销" && (被撤销动作 === "排除" || 被撤销动作 === "修正"))
+      if (需重算) {
+        const 对们 = await 事实资金对(tx, input.projectId, input.factType, input.factId)
+        if (对们.length > 0) await 重建关系(tx, input.projectId, 对们)
+      }
+    }
 
     return 结果
   })

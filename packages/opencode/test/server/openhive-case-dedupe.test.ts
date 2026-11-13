@@ -93,7 +93,7 @@ describe("写端去重（10 §3 / §5）", () => {
       action: "确认",
       by: 用户,
     })
-    await 重建关系(db(), 数据集.projectId, [{ fromId: A, toId: B }])
+    // 生产路径已重算（裁决内触发）；手工调 `重建关系` 会把「裁决不重算」的回归遮住（#006-35）。
     // 旧规则：该对存在「已确认」人工行 ⇒ 机器行被删且不重写（实得 undefined）。
     expect(await 机器行(A, B)).toEqual({
       times: 1,
@@ -150,6 +150,9 @@ describe("读端去重口径（10 §6.1）", () => {
   })
 
   test("某方向只有纯外币关系 ⇒ 该方向不进汇总（不是 0 笔 / 0.00 的一行）", async () => {
+    // 已知缺口（终审阻断 1，第二期）：账户归属只看该账户实体自身的端点，不把
+    // 「人以户名对齐到 B」的关系算进来；所以 B 的入账不含 A→李四 的 10000。
+    // 口径见设计 10 §10；要改就整片读端一起改，别只改这一处。
     // B 的「入」= A→B 机器行 1 笔 20000 + 笔录 human 5000 ⇒ 2 笔 25000；
     //       「出」= 补充流水的 B→C 50 USD（times_cny=0）⇒ 有过滤时整行消失。
     // B 有 CNY 明细行（A 的两笔以 B 为 counterparty）⇒ 只有外币守卫不触发。
@@ -187,5 +190,84 @@ describe("显示（10 §3.1 / §6.1）", () => {
       ],
     })
     expect(结果.缺口.join()).toContain("对应的户名有多个账户，未合并")
+  })
+})
+
+describe("裁决触发资金重算（终审阻断 2）", () => {
+  const 排除 = (factType: "relation" | "event", factId: string, reasonText: string) =>
+    裁决(db(), {
+      projectId: 数据集.projectId,
+      factType,
+      factId,
+      action: "排除",
+      reasonKind: "抽取错",
+      reasonText,
+      by: 用户,
+    })
+  const 撤销 = (factType: "relation" | "event", factId: string) =>
+    裁决(db(), { projectId: 数据集.projectId, factType, factId, action: "撤销", by: 用户 })
+
+  test("排除人工转账 ⇒ 被覆盖的流水事件回到机器行（3 笔 / 35000）", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const B = await 实体id(数据集.账号.B)
+    const 人 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_relation
+         where project_id = ${数据集.projectId} and source_kind = 'human'
+           and type = '转账' and amount = 10000
+      `),
+    )[0]?.id
+    expect(typeof 人).toBe("string")
+    await 排除("relation", String(人), "测试：排除人工行后流水事件应回到机器聚合")
+    // 排除前机器 A→B = 1 笔 20000（4/1 的 10000 被人工覆盖）；排除后应重算为 2 笔 30000。
+    expect(await 机器行(A, B)).toEqual({ times: 2, times_cny: 2, amount: "30000.00", trust_state: "自动抽取" })
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect(结果.数据).toMatchObject({ 汇总: [{ 方向: "出", 笔数: 3, 合计: "35000.00" }] })
+  })
+
+  test("撤销排除 ⇒ 回到覆盖态（机器行 1 笔 20000）", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const B = await 实体id(数据集.账号.B)
+    const 人 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_relation
+         where project_id = ${数据集.projectId} and source_kind = 'human'
+           and type = '转账' and amount = 10000
+      `),
+    )[0]?.id
+    await 撤销("relation", String(人))
+    expect(await 机器行(A, B)).toEqual({ times: 1, times_cny: 1, amount: "20000.00", trust_state: "自动抽取" })
+  })
+
+  test("排除资金交易事件 ⇒ 机器行按剩余事件重算（该对无事件则机器行消失）", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const B = await 实体id(数据集.账号.B)
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_event
+         where project_id = ${数据集.projectId} and type = '资金交易'
+           and currency = 'CNY' and amount = 20000
+      `),
+    )[0]?.id
+    expect(typeof 事件).toBe("string")
+    await 排除("event", String(事件), "测试：排除 4/3 的 20000 流水事件")
+    // 只剩 4/1 的 10000，仍被人工 10000 覆盖 ⇒ 机器行无剩余事件 ⇒ 不写。
+    expect(await 机器行(A, B)).toBeUndefined()
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect(结果.数据).toMatchObject({ 汇总: [{ 方向: "出", 笔数: 2, 合计: "15000.00" }] })
+  })
+
+  test("撤销事件排除 ⇒ 机器行回到 1 笔 20000", async () => {
+    const A = await 实体id(数据集.账号.A)
+    const B = await 实体id(数据集.账号.B)
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_event
+         where project_id = ${数据集.projectId} and type = '资金交易'
+           and currency = 'CNY' and amount = 20000
+      `),
+    )[0]?.id
+    await 撤销("event", String(事件))
+    expect(await 机器行(A, B)).toEqual({ times: 1, times_cny: 1, amount: "20000.00", trust_state: "自动抽取" })
   })
 })
