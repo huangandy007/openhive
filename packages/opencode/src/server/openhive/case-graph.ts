@@ -4,6 +4,7 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import { 细类 } from "./case-subtype"
+import { 账户归属集 } from "./case-party"
 
 /**
  * 关系图数据（计划 7 Task 3）。
@@ -120,6 +121,8 @@ interface 聚合入参 {
   readonly 节点们: readonly string[]
   readonly 类型?: readonly string[]
   readonly 强度: 关系图强度
+  /** 中心是账户时的端点投影：落在集合里的端点归并到 `中心`。 */
+  readonly 投影?: { readonly 中心: string; readonly 归属集: SQL }
 }
 
 /**
@@ -140,6 +143,26 @@ function 聚合边(input: 聚合入参): SQL {
         )})`
   const 阈 = 强度阈值[input.强度]
   const 金额阈 = 阈.金额 === null ? sql`null::numeric` : sql`${阈.金额}::numeric`
+  const 投影 = input.投影
+  // 选中条件：原始端点触达本批节点，或（投影时）恰好一端落在中心账户的归属集里。
+  const 选中 =
+    投影 === undefined
+      ? sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}))`
+      : sql`(r.from_id in (${节点表}) or r.to_id in (${节点表})
+             or (r.from_id in ${投影.归属集}) <> (r.to_id in ${投影.归属集}))`
+  // 端点投影：落进归属集的一端归并到中心账户 id。
+  const 起 =
+    投影 === undefined
+      ? sql`r.from_id`
+      : sql`case when r.from_id in ${投影.归属集} then ${投影.中心} else r.from_id end`
+  const 终 =
+    投影 === undefined
+      ? sql`r.to_id`
+      : sql`case when r.to_id in ${投影.归属集} then ${投影.中心} else r.to_id end`
+  // 自环：原始口径里自环是合法边（图上会出现 `rel|X|X|type`），**默认路径必须原样保留**。
+  // 只有投影路径要排掉「两端都在归属集」压成的 `中心 → 中心`：它没有对手方、也不产生方向。
+  // 不能无条件排除——那会连带抹掉原始自环，破坏既有 `关系图` 的自环口径。
+  const 自环条件 = 投影 === undefined ? sql`` : sql`where r.from_id <> r.to_id`
   return sql`
     select g.from_id, g.to_id, g.type, g.次数, g.金额数, g.金额合计, g.明细数, g.信任态,
            coalesce(g.次数 >= ${阈.次数} or (${金额阈} is not null and g.金额数 >= ${金额阈}), false) as 达标
@@ -150,14 +173,18 @@ function 聚合边(input: 聚合入参): SQL {
                sum(r.amount)::text as 金额合计,
                count(*)::int as 明细数,
                case when min(r.trust_state) = max(r.trust_state) then min(r.trust_state) else '混合' end as 信任态
-          from auth.case_relation r
-          join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
-          join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
-         where r.project_id = ${input.projectId}
-           and r.trust_state <> '已排除'
-           and 起.trust_state <> '已排除' and 终.trust_state <> '已排除'
-           and (r.from_id in (${节点表}) or r.to_id in (${节点表}))
-           ${类型条件}
+          from (
+            select ${起} as from_id, ${终} as to_id, r.type, r.times, r.amount, r.trust_state
+              from auth.case_relation r
+              join auth.case_entity 起点 on 起点.project_id = r.project_id and 起点.id = r.from_id
+              join auth.case_entity 终点 on 终点.project_id = r.project_id and 终点.id = r.to_id
+             where r.project_id = ${input.projectId}
+               and r.trust_state <> '已排除'
+               and 起点.trust_state <> '已排除' and 终点.trust_state <> '已排除'
+               and ${选中}
+               ${类型条件}
+          ) r
+         ${自环条件}
          group by r.from_id, r.to_id, r.type
       ) g
   `
@@ -178,6 +205,7 @@ async function 取一圈(
     readonly 类型?: readonly string[]
     readonly 剩余: number
     readonly 强度: 关系图强度
+    readonly 投影?: 聚合入参["投影"]
   },
 ): Promise<一圈> {
   // `剩余 === 0` 也照样查一次（`limit 1`）：只查「还有没有」，不画。否则 `上限 = 1`
@@ -191,7 +219,7 @@ async function 取一圈(
              终.canonical_value as to_value, 终.type as to_type, 终.trust_state as to_trust,
              终.attrs as to_attrs,
              (count(*) over())::int as 总数
-        from (${聚合边({ projectId: input.projectId, 节点们: input.节点们, 类型: input.类型, 强度: input.强度 })}) h
+        from (${聚合边(input)}) h
         join auth.case_entity 起 on 起.project_id = ${input.projectId} and 起.id = h.from_id
         join auth.case_entity 终 on 终.project_id = ${input.projectId} and 终.id = h.to_id
        where h.达标
@@ -300,6 +328,11 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   if (中心行们.length === 0) return undefined
   const 中心 = 中心行们[0]
 
+  // 中心是账户时，把「唯一户名对齐到它的人/组织」的端点投影到中心（D-2：只影响画哪些边）。
+  const 是账户 = String(中心.type) === "账户"
+  const 归属集 = 是账户 ? 账户归属集(input.projectId, [String(中心.id)]) : undefined
+  const 投影 = 归属集 === undefined ? undefined : { 中心: String(中心.id), 归属集: 归属集 }
+
   const 节点表 = new Map<string, 可写节点>()
   const 边表 = new Map<string, 图边>()
   const 缺口: string[] = []
@@ -374,6 +407,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
     类型: input.类型,
     剩余: 可用,
     强度,
+    ...(投影 === undefined ? {} : { 投影 }),
   })
   const 一跳点 = 收一圈(第一圈.边们.slice(0, 可用))
   const 第一跳截断 = 第一圈.总数 > 可用
@@ -397,12 +431,31 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
         类型: input.类型,
         剩余,
         强度,
+        ...(投影 === undefined ? {} : { 投影 }),
       })
       收一圈(第二圈.边们.slice(0, 剩余), new Set(一跳点))
       // 不声称「画了多少」：`slice` 行数里可能混着第 1 跳已画过的回边（`收一圈` 会跳过）。
       // 只陈述「候选里还有多少没画」——M 是 pre-LIMIT 的候选总数减「剩余」名额。
       if (第二圈.总数 > 剩余) 缺口.push(`第 2 跳还有 ${第二圈.总数 - 剩余} 条候选关系没有画（节点上限 ${上限}）`)
     }
+  }
+
+  if (投影 !== undefined) {
+    const 经对齐 = rowsOf(
+      await db.execute(sql`
+        select count(*)::int as 数
+          from auth.case_relation r
+          join auth.case_entity 起点 on 起点.project_id = r.project_id and 起点.id = r.from_id
+          join auth.case_entity 终点 on 终点.project_id = r.project_id and 终点.id = r.to_id
+         where r.project_id = ${input.projectId}
+           and r.trust_state <> '已排除'
+           and 起点.trust_state <> '已排除' and 终点.trust_state <> '已排除'
+           and (r.from_id in ${投影.归属集}) <> (r.to_id in ${投影.归属集})
+           and r.from_id <> ${投影.中心} and r.to_id <> ${投影.中心}
+      `),
+    )[0]?.数
+    const 数 = Number(经对齐 ?? 0)
+    if (数 > 0) 缺口.push(`${数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
   }
 
   // 强度缺口只在**本次取数范围**内统计：跳数 1 只看中心；跳数 2 看中心＋已画出的全部一跳点。
@@ -414,6 +467,7 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
       节点们: 跳数 === 2 ? [String(中心.id), ...一跳点] : [String(中心.id)],
       类型: input.类型,
       强度,
+      ...(投影 === undefined ? {} : { 投影 }),
     })
     if (计数.全部 > 计数.达标) 强度缺口 = { 未显示: 计数.全部 - 计数.达标, 总数: 计数.全部 }
   }

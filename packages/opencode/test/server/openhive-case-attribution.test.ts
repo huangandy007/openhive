@@ -10,6 +10,7 @@ import {
   读归属值,
 } from "../../src/server/openhive/case-party"
 import { 实体档案 } from "../../src/server/openhive/case-entity-list"
+import { 关系图 } from "../../src/server/openhive/case-graph"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
@@ -169,5 +170,24 @@ describe("实体档案：与汇总同口径", () => {
     expect(档案?.关系总数).toBe(4)
     expect(档案?.对方数).toBe(3)
     expect(档案?.事件总数).toBe(3)
+  })
+})
+
+describe("关系图：账户中心的端点投影", () => {
+  test("B 为中心：A 与 B 之间 3 条、35000；A→李四 经对齐归并进这条边并进缺口", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const A = await 实体id(数据集.账号.A)
+    const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 1 })
+    expect(图).toBeDefined()
+    expect(图?.节点).toHaveLength(3) // B 中心 + A + C
+    const 边 = 图?.边.find(
+      (条) =>
+        (条.from === B && 条.to === A) || (条.from === A && 条.to === B),
+    )
+    expect(边).toBeDefined()
+    expect(边?.times).toBe(3)
+    expect(边?.amount).toBe("35000.00")
+    expect(边?.明细数).toBe(3)
+    expect(图?.缺口.join()).toContain("1 条关系经户名对齐归属本账户")
   })
 })
