@@ -10,14 +10,19 @@ import {
   find_crossings,
   type 工具上下文,
 } from "../../src/server/openhive/case-mcp-tools"
+import { 实体档案 } from "../../src/server/openhive/case-entity-list"
 import { 建材料, 建实体, 建事件批, 建关系批, 建引用批 } from "./openhive-case-fact-fixture"
 import {
   种P3数据集,
   种展示数据集,
   种对齐交叉数据集,
+  种多对手数据集,
+  种混币关系数据集,
   type P3数据集,
   type 展示数据集,
   type 对齐交叉数据集,
+  type 多对手数据集,
+  type 混币关系数据集,
 } from "../fixtures/p3/dataset"
 
 /**
@@ -33,6 +38,8 @@ let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
 let 展示: 展示数据集
 let 对齐交叉: 对齐交叉数据集
+let 多对手: 多对手数据集
+let 混币: 混币关系数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-探索"
 
@@ -44,6 +51,8 @@ beforeAll(async () => {
   // 展示层数据集同样走生产入口（组织户名 / 歧义回落只能在抽取产物上证明）。
   展示 = await 种展示数据集(db(), 文件)
   对齐交叉 = await 种对齐交叉数据集(db(), 文件)
+  多对手 = await 种多对手数据集(db(), 文件)
+  混币 = await 种混币关系数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -110,8 +119,9 @@ describe("explore_entity", () => {
       末: 1775181600,
     })
     expect(数据.事件).toHaveLength(4)
-    // 参与者摘要走共享 `参与者视图`（含已排除 = false），不是原样回 participants。
-    for (const 条 of 数据.事件) expect(Array.isArray(条.参与者)).toBe(true)
+    // 参与者摘要走共享 `参与者视图`：至少要有一条带角色前缀（是数组不足以证明接线没退化）。
+    const 参与者们 = 数据.事件.flatMap((条) => 条.参与者)
+    expect(参与者们.some((项) => 项.startsWith("付款方：") || 项.startsWith("收款方："))).toBe(true)
     expect(数据.总数).toEqual({ 关系总数: 4, 对方数: 2, 事件总数: 4 })
     // 「关系总数 4 / 对方数 2」与「关系圈 1 组」的差必须由缺口解释：纯外币 B→C 不进圈。
     expect(数据.关系圈).toHaveLength(1)
@@ -250,7 +260,8 @@ describe("explore_entity", () => {
     expect(结果.空原因).toBeNull()
     // 实测账（修轮 1）：解析实体 1 + 实体档案 8 + 关系圈 1 + 关系圈遗漏 3
     // + 参与者视图 2 = 15。遗漏 3 = 纯外币 / 内部往来 / 归属歧义各一次 count。
-    expect(次).toBe(15)
+    // 终审修复 M-3：实体档案对账户多 2 次 count（内部往来 / 归属歧义）⇒ 17。
+    expect(次).toBe(17)
   })
 
   test("限制 不改变查询次数（无每事件 N+1）", async () => {
@@ -333,6 +344,48 @@ describe("账户展示与关系圈遗漏（独立项目，生产入口种数据�
       { 对手方: S, 方向: "出", 笔数: 1, 合计: "200.00" },
       { 对手方: "某某公司", 方向: "出", 笔数: 1, 合计: "100.00" },
     ])
+  })
+
+  test("实体档案报账户归属缺口（UI 出口）；explore 用关系圈措辞重报、不重复", async () => {
+    const Q = 展示.账号.Q
+    const 行们 = rowsOf(
+      await 库!.execute(sql`
+        select id from auth.case_entity
+         where project_id = ${展示项目} and canonical_value = ${Q}
+      `),
+    )
+    const Qid = String(行们[0]?.id)
+    const 档案 = await 实体档案(db(), { projectId: 展示项目, id: Qid })
+    expect(档案).toBeDefined()
+    // 基 2 的归属缺口：内部往来被 XOR 排除、歧义者 fail-closed，两者都不进关系总数 / 对方数。
+    expect(档案!.缺口).toContain("账户内部往来 1 条：两端都在本账户归属集内，未计入关系与对方数")
+    expect(档案!.缺口).toContain("账户归属歧义 1 条：户名对应多个账户，未归属本账户（fail-closed，不猜）")
+    // `explore_entity` 已用「关系圈」措辞重报同一事实，必须挡掉档案版本（同一事实两套数字）。
+    const 探索 = await explore_entity(ctx(展示项目), { 实体: Q })
+    expect(探索.缺口).not.toContain("账户内部往来 1 条：两端都在本账户归属集内，未计入关系与对方数")
+    expect(探索.缺口).not.toContain("账户归属歧义 1 条：户名对应多个账户，未归属本账户（fail-closed，不猜）")
+  })
+})
+
+describe("关系圈：真实截断报全量组数、次数按人民币口径（独立项目）", () => {
+  test("25 组截到前 10 组时，缺口写明全量组数", async () => {
+    const 结果 = await explore_entity(ctx(多对手.项目), { 实体: 多对手.主账号 })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as { 关系圈: unknown[]; 总数: { 对方数: number } }
+    expect(数据.关系圈).toHaveLength(10)
+    expect(数据.总数.对方数).toBe(25)
+    // 旧实现只写「最多 10 组」，真实截断（10/25）没有任何提示。
+    expect(结果.缺口).toContain("关系圈已截到前 10 组，共 25 组")
+  })
+
+  test("混币关系：次数与金额同为人民币口径（times_cny=1、amount=100.00）", async () => {
+    const 结果 = await explore_entity(ctx(混币.项目), { 实体: 混币.主账号 })
+    expect(结果.空原因).toBeNull()
+    const 数据 = 结果.数据 as { 关系圈: { 次数: number; 金额: string | null }[] }
+    expect(数据.关系圈).toHaveLength(1)
+    // 旧实现 `sum(coalesce(r.times, 1))` 把 USD 那笔也算进次数（2），与金额 100.00 不同源。
+    expect(数据.关系圈[0]!.次数).toBe(1)
+    expect(数据.关系圈[0]!.金额).toBe("100.00")
   })
 })
 

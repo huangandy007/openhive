@@ -331,6 +331,25 @@ export function 是档案截断缺口(句: string): boolean {
   return Object.values(档案截断缺口).some((类) => 句.startsWith(类.前缀))
 }
 
+/**
+ * `实体档案` 的归属缺口（内部往来 / 归属歧义）：写口与过滤口共用这一份契约（`#002-06`）。
+ * `explore_entity` 用「关系圈」措辞重报同一事实，必须挡掉档案版本，免得同一事实两套数字。
+ */
+export const 档案归属缺口 = {
+  内部往来: {
+    前缀: "账户内部往来",
+    句: (条数: number) => `账户内部往来 ${条数} 条：两端都在本账户归属集内，未计入关系与对方数`,
+  },
+  归属歧义: {
+    前缀: "账户归属歧义",
+    句: (条数: number) => `账户归属歧义 ${条数} 条：户名对应多个账户，未归属本账户（fail-closed，不猜）`,
+  },
+} as const
+
+export function 是档案归属缺口(句: string): boolean {
+  return Object.values(档案归属缺口).some((类) => 句.startsWith(类.前缀))
+}
+
 export async function 实体档案(
   db: Queryable,
   input: { readonly projectId: string; readonly id: string; readonly includeExcluded?: boolean },
@@ -501,6 +520,43 @@ export async function 实体档案(
   if (引用总数 > 引用上限)
     缺口.push(档案截断缺口.出处.句(引用上限, 引用总数))
 
+  // 基 2 的归属缺口（设计 11 §3.3）：内部往来被 XOR 排除、歧义者 fail-closed，两者都不进
+  // 关系总数 / 对方数。谓词与关系圈遗漏 / aggregate_money 共用（case-party.ts，`#002-06`）。
+  // 计数基础固定「未排除」，与 `关系圈遗漏` 同口径；不随 `含排除` 开关变（缺口讲归属，不讲可见性）。
+  const 归属缺口计数 = async (条件: SQL[]): Promise<number> =>
+    Number(
+      rowsOf(
+        await db.execute(sql`
+          select count(*)::int as 数
+            from auth.case_relation r
+           where ${sql.join(条件, sql` and `)}
+        `),
+      )[0]?.数 ?? 0,
+    )
+  const 归属缺口基础 = [sql`r.project_id = ${input.projectId}`, sql`r.trust_state <> '已排除'`]
+  const 内部往来条数 =
+    归属集 === undefined
+      ? 0
+      : await 归属缺口计数([
+          ...归属缺口基础,
+          ...内部往来归属条件({ projectId: input.projectId, 归属集, 从: sql`r.from_id`, 到: sql`r.to_id` }),
+        ])
+  const 归属歧义条数 =
+    归属集 === undefined
+      ? 0
+      : await 归属缺口计数([
+          ...归属缺口基础,
+          ...归属歧义归属条件({
+            projectId: input.projectId,
+            归属集,
+            歧义实体: 歧义到账户(input.projectId, [String(实体.id)]),
+            从: sql`r.from_id`,
+            到: sql`r.to_id`,
+          }),
+        ])
+  if (内部往来条数 > 0) 缺口.push(档案归属缺口.内部往来.句(内部往来条数))
+  if (归属歧义条数 > 0) 缺口.push(档案归属缺口.归属歧义.句(归属歧义条数))
+
   return {
     id: String(实体.id),
     type: String(实体.type),
@@ -593,6 +649,12 @@ function 关系圈范围(input: {
   return { 是账户, 归属集, from属于, 触达, 窗 }
 }
 
+export interface 关系圈结果 {
+  readonly 项们: 关系圈项[]
+  /** 分组后的全量组数（`count(*) over()`，不受 `关系圈上限` 影响）。 */
+  readonly 组总数: number
+}
+
 export async function 关系圈(
   db: Queryable,
   input: {
@@ -602,7 +664,7 @@ export async function 关系圈(
     readonly 起?: number
     readonly 止?: number
   },
-): Promise<关系圈项[]> {
+): Promise<关系圈结果> {
   const { 归属集, from属于, 触达, 窗 } = 关系圈范围(input)
   const 行们 = rowsOf(
     await db.execute(sql`
@@ -617,10 +679,14 @@ export async function 关系圈(
                       min(对方.attrs::text)) as 对方attrs,
              case when ${from属于} then '出' else '入' end as 方向,
              r.type as 关系类型,
-             sum(coalesce(r.times, 1))::int as 次数,
+             -- 次数与金额、筛选同为人民币口径（times_cny 缺失时回退 times）；
+             -- 全币种的 times 属于关系本体，不在这里展示。
+             sum(coalesce(r.times_cny, r.times, 1))::int as 次数,
              sum(r.amount)::text as 金额,
              min(coalesce(r.first_at, r.last_at)) as 首,
-             max(coalesce(r.last_at, r.first_at)) as 末
+             max(coalesce(r.last_at, r.first_at)) as 末,
+             -- count(*) over() 在 GROUP BY 之后、LIMIT 之前算 ⇒ 全量组数，不受上限影响。
+             count(*) over() as 组总数
         from auth.case_relation r
         join auth.case_entity 对方
           on 对方.project_id = r.project_id
@@ -638,17 +704,21 @@ export async function 关系圈(
        limit ${关系圈上限}
     `),
   )
-  return 行们.map((行) => ({
-    对方: String(行.对方值),
-    对方类型: String(行.对方类型),
-    对方细类: 细类(String(行.对方类型), String(行.对方值), 解JSON<Record<string, unknown>>(行.对方attrs, {})) ?? null,
-    方向: String(行.方向) === "出" ? "出" : "入",
-    类型: String(行.关系类型),
-    次数: Number(行.次数),
-    金额: (行.金额 as string | null) ?? null,
-    首: 行.首 === null || 行.首 === undefined ? null : Number(行.首),
-    末: 行.末 === null || 行.末 === undefined ? null : Number(行.末),
-  }))
+  const 组总数 = 行们.length === 0 ? 0 : Number(行们[0]!.组总数)
+  return {
+    项们: 行们.map((行) => ({
+      对方: String(行.对方值),
+      对方类型: String(行.对方类型),
+      对方细类: 细类(String(行.对方类型), String(行.对方值), 解JSON<Record<string, unknown>>(行.对方attrs, {})) ?? null,
+      方向: String(行.方向) === "出" ? "出" : "入",
+      类型: String(行.关系类型),
+      次数: Number(行.次数),
+      金额: (行.金额 as string | null) ?? null,
+      首: 行.首 === null || 行.首 === undefined ? null : Number(行.首),
+      末: 行.末 === null || 行.末 === undefined ? null : Number(行.末),
+    })),
+    组总数,
+  }
 }
 
 /** `关系圈` 静默丢掉的三类关系条数（口径与 `aggregate_money` 的缺口计数同源）。 */

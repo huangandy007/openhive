@@ -562,3 +562,29 @@ export async function 种金额乱序数据集(
   await 跑(流水)
   return { 项目, 主账号 }
 }
+
+/** 混币关系数据集：同一对账户一笔 CNY、一笔 USD ⇒ 关系 `times=2 / times_cny=1 / amount=100.00`。 */
+export interface 混币关系数据集 {
+  项目: string
+  主账号: string
+  对手账号: string
+}
+
+export async function 种混币关系数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<混币关系数据集> {
+  const 项目 = "p-混币"
+  const 主账号 = "6222021234567898000"
+  const 对手账号 = "6222021234567898001"
+  const 行们: (string | number)[][] = [
+    流水表头,
+    ["2026-11-01 10:00:00", 主账号, "混币主户", 对手账号, "混币对手", "付", "100.00", "0.00", "", "CNY"],
+    ["2026-11-02 10:00:00", 主账号, "混币主户", 对手账号, "混币对手", "付", "50.00", "0.00", "", "USD"],
+  ]
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 流水 = await 入队(项目, "P3混币流水.xlsx", 造工作簿(行们, "流水"))
+  await 跑(流水)
+  return { 项目, 主账号, 对手账号 }
+}
