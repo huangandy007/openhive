@@ -2120,9 +2120,12 @@ export async function money_flow(
     ...单笔窗口条件,
     ...(方向谓词 === undefined ? [] : [方向谓词]),
   ]
+  // 输出别名不能叫 `amount`：`ORDER BY` 先绑输出别名，`order by amount` 会按
+  // `amount::text` 做字符串降序（"9000.00" 排在 "100000.00" 前，Top-10 选错）。
+  // 别名改成 `amount_text`，`order by amount` 才落到基表的数值列。
   const 单笔最大 = rowsOf(
     await ctx.db.execute(sql`
-      select id, occurred_at, amount::text as amount, summary
+      select id, occurred_at, amount::text as amount_text, summary
         from auth.case_event
        where ${sql.join(单笔条件, sql` and `)}
        order by amount desc, occurred_at asc nulls last, id asc
@@ -2130,7 +2133,7 @@ export async function money_flow(
     `),
   ).map((行) => ({
     id: String(行.id),
-    金额: String(行.amount),
+    金额: String(行.amount_text),
     时间: 行.occurred_at === null || 行.occurred_at === undefined ? null : Number(行.occurred_at),
     摘要: (行.summary as string | null) ?? null,
   }))
