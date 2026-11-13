@@ -123,8 +123,13 @@ interface 聚合入参 {
   readonly 节点们: readonly string[]
   readonly 类型?: readonly string[]
   readonly 强度: 关系图强度
-  /** 中心是账户时的端点投影：落在集合里的端点归并到 `中心`。 */
-  readonly 投影?: { readonly 中心: string; readonly 归属集: SQL }
+  /**
+   * 中心是账户时的端点投影：落在集合里的端点归并到 `中心`。
+   *
+   * `选对齐边` 控制**是否用 XOR 选中「恰好一端在归属集」的边**：第 1 跳开（true），
+   * 第 2 跳关（false，只按原始端点选中）。端点归一化在两跳都保留。
+   */
+  readonly 投影?: { readonly 中心: string; readonly 归属集: SQL; readonly 选对齐边?: boolean }
 }
 
 /**
@@ -151,22 +156,33 @@ function 聚合边(input: 聚合入参): SQL {
   let 起: SQL = sql`r.from_id`
   let 终: SQL = sql`r.to_id`
   let 经对齐行: SQL = sql`false`
+  let 端点过滤: SQL = sql``
   if (投影 !== undefined) {
     // 归属判据只在 `case-party` 一份（`#002-06`）：XOR 与「恰好一端在集合」共用同一个函数；
     // `投影.归属集` 只留给起/终的端点归一化。
     const 归属 = 关系归属条件(input.projectId, [投影.中心], sql`r.from_id`, sql`r.to_id`)
-    选中 = sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}) or ${归属})`
+    // 只有第 1 跳用 XOR 选中；第 2 跳只按原始端点选中，但起/终仍归一化到中心。
+    选中 =
+      投影.选对齐边 === false
+        ? sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}))`
+        : sql`(r.from_id in (${节点表}) or r.to_id in (${节点表}) or ${归属})`
     起 = sql`case when r.from_id in ${投影.归属集} then ${投影.中心} else r.from_id end`
     终 = sql`case when r.to_id in ${投影.归属集} then ${投影.中心} else r.to_id end`
     // 「经户名对齐」的原始关系行：恰好一端在归属集，且两端都不是中心。
-    // 这一列与边同一层聚合 ⇒ 类型条件、强度达标、上限截断都自动同口径，
-    // 缺口条数不会与 `强度缺口` 打架（两者都从这份边宇宙出发）。
+    // 这一列与边同一层聚合 ⇒ 第 1 跳的类型条件、强度达标、上限截断都自动同口径，
+    // 第 1 跳的缺口条数不会与 `强度缺口` 打架（两者都从这份边宇宙出发）。
     经对齐行 = sql`(${归属} and r.from_id <> ${投影.中心} and r.to_id <> ${投影.中心})`
+    // 端点过滤在**归一化之后**看：
+    // - 自环（`中心 → 中心`）：原始口径里自环是合法边，默认路径必须原样保留，
+    //   只有投影路径要排掉「两端都在归属集」压成的自环——它没有对手方、也不产生方向；
+    // - 第 2 跳（`选对齐边 = false`）再跳过任何带中心端点的边：归一化后以中心为端点
+    //   的关系天然属于第 1 跳，被上限截断时由第 1 跳的缺口交代，不在第 2 跳补画
+    //   （否则同一关系换跳数又冒出来、占名额、标错跳数）。
+    端点过滤 =
+      投影.选对齐边 === false
+        ? sql`where r.from_id <> r.to_id and r.from_id <> ${投影.中心} and r.to_id <> ${投影.中心}`
+        : sql`where r.from_id <> r.to_id`
   }
-  // 自环：原始口径里自环是合法边（图上会出现 `rel|X|X|type`），**默认路径必须原样保留**。
-  // 只有投影路径要排掉「两端都在归属集」压成的 `中心 → 中心`：它没有对手方、也不产生方向。
-  // 不能无条件排除——那会连带抹掉原始自环，破坏既有 `关系图` 的自环口径。
-  const 自环条件 = 投影 === undefined ? sql`` : sql`where r.from_id <> r.to_id`
   return sql`
     select g.from_id, g.to_id, g.type, g.次数, g.金额数, g.金额合计, g.明细数, g.经对齐数, g.信任态,
            coalesce(g.次数 >= ${阈.次数} or (${金额阈} is not null and g.金额数 >= ${金额阈}), false) as 达标
@@ -190,7 +206,7 @@ function 聚合边(input: 聚合入参): SQL {
                and ${选中}
                ${类型条件}
           ) r
-         ${自环条件}
+         ${端点过滤}
          group by r.from_id, r.to_id, r.type
       ) g
   `
@@ -339,7 +355,8 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   // 中心是账户时，把「唯一户名对齐到它的人/组织」的端点投影到中心（D-2：只影响画哪些边）。
   const 是账户 = String(中心.type) === "账户"
   const 归属集 = 是账户 ? 账户归属集(input.projectId, [String(中心.id)]) : undefined
-  const 投影 = 归属集 === undefined ? undefined : { 中心: String(中心.id), 归属集: 归属集 }
+  const 投影 =
+    归属集 === undefined ? undefined : { 中心: String(中心.id), 归属集: 归属集, 选对齐边: true }
 
   const 节点表 = new Map<string, 可写节点>()
   const 边表 = new Map<string, 图边>()
@@ -434,14 +451,15 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
       // 恰好装满（库里也没有更多）才说「未展开」——我们确实没展开。
       if (!第一跳截断) 缺口.push(`节点已达上限 ${上限}，未展开第 2 跳`)
     } else {
-      // 第 2 跳不传投影：投影后的边必然以中心为端点，天然是第 1 跳；
-      // 第 2 跳再选只可能把被上限截断的 1 跳边补进 2 跳（还会抬高候选缺口）。
+      // 第 2 跳保留端点归一化、关掉 XOR 选中；归一化后带中心端点的边由 `端点过滤`
+      // 跳过——它们天然是第 1 跳关系，被上限截断时由第 1 跳的缺口交代，不在第 2 跳补画。
       const 第二圈 = await 取一圈(db, {
         projectId: input.projectId,
         节点们: 一跳点,
         类型: input.类型,
         剩余,
         强度,
+        ...(投影 === undefined ? {} : { 投影: { ...投影, 选对齐边: false } }),
       })
       收一圈(第二圈.边们.slice(0, 剩余), new Set(一跳点))
       // 不声称「画了多少」：`slice` 行数里可能混着第 1 跳已画过的回边（`收一圈` 会跳过）。
@@ -453,7 +471,8 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   // 经对齐条数直接取**画出来的第 1 跳边**的贡献（`聚合边` 的 `经对齐数`）：
   // 类型条件、强度达标、上限截断都已在那份 SQL 里生效，不会宣称图上没有的归并。
   const 经对齐数 = 画出的第一圈.reduce((和, 边) => 和 + 边.经对齐数, 0)
-  if (经对齐数 > 0) 缺口.push(`${经对齐数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
+  if (投影 !== undefined && 经对齐数 > 0)
+    缺口.push(`${经对齐数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
 
   // 强度缺口只在**本次取数范围**内统计：跳数 1 只看中心；跳数 2 看中心＋已画出的全部一跳点。
   // 不能拿每轮的数字相加——中心↔一跳点那批组会在两轮里各出现一次，相加会翻倍。
@@ -464,7 +483,9 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
       节点们: 跳数 === 2 ? [String(中心.id), ...一跳点] : [String(中心.id)],
       类型: input.类型,
       强度,
-      ...(投影 === undefined ? {} : { 投影 }),
+      // 投影跟随它量的那一圈：跳数 1 与第 1 跳同口径（XOR 选中）；
+      // 跳数 2 与第 2 跳同口径（不选对齐边、只归一化）。
+      ...(投影 === undefined ? {} : { 投影: { ...投影, 选对齐边: 跳数 === 1 } }),
     })
     if (计数.全部 > 计数.达标) 强度缺口 = { 未显示: 计数.全部 - 计数.达标, 总数: 计数.全部 }
   }

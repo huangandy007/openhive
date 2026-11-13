@@ -192,6 +192,32 @@ describe("关系图：账户中心的端点投影", () => {
   })
 })
 
+describe("关系图：账户中心 2 跳的端点归一化", () => {
+  test("B 为中心 2 跳：归一化保留，但以中心为端点的边不在第 2 跳补画", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const A = await 实体id(数据集.账号.A)
+    const C = await 实体id(数据集.账号.C)
+    const 李四 = await 实体id("李四")
+    const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 2 })
+    expect(图).toBeDefined()
+    // 图上不新增节点：归一化掉的「李四」不能作为 2 跳节点回来。
+    expect(图?.节点.map((点) => 点.id).sort()).toEqual([B, A, C].sort())
+    // 同一关系不能既并入 1 跳的 A—B，又作为原始 2 跳边单独画出（金额跨边重复）。
+    expect(图?.边.map((条) => 条.id).sort()).toEqual(
+      [`rel|${A}|${B}|转账`, `rel|${B}|${C}|转账`, `rel|${A}|${C}|转账`].sort(),
+    )
+    const AB = 图?.边.find((条) => 条.from === A && 条.to === B)
+    expect(AB?.times).toBe(3)
+    expect(AB?.amount).toBe("35000.00")
+    expect(AB?.明细数).toBe(3)
+    expect(图?.边.some((条) => 条.from === 李四 || 条.to === 李四)).toBe(false)
+    // 一跳点仍是 1 跳（中心端点边不在第 2 跳被标成 2 跳）。
+    expect(图?.节点.find((点) => 点.id === A)?.跳数).toBe(1)
+    expect(图?.节点.find((点) => 点.id === C)?.跳数).toBe(1)
+    expect(图?.缺口).toEqual(["1 条关系经户名对齐归属本账户（图上的端点已归并到本账户）"])
+  })
+})
+
 describe("关系图：投影缺口的类型 / 强度 / 上限口径", () => {
   test("类型筛选下缺口只数同类型的对齐关系（通话类没进图就不该说已归并）", async () => {
     const B = await 实体id(数据集.账号.B)
