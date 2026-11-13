@@ -75,7 +75,7 @@ describe("关系时间贯穿（09 §7.4 / §9.1）", () => {
   // 流水行聚合出的 `source_kind='data'`（每对「付款方→收款方」一条，P2 `重建关系`）。
   // 两边都按设计共存，所以这里分别钉各自的时间精度，而不是把它们混成一个数
   // （混在一起会把「机器行的时间到底是到秒还是到日」这个规格问题藏起来）。
-  test("转账关系的 first_at / last_at 落库：笔录 5 条到日、流水聚合 4 条到秒", async () => {
+  test("转账关系的 first_at / last_at 落库：笔录 5 条到日、去重后只余 A→F 1 条机器行到秒", async () => {
     const 行们 = rowsOf(
       await db().execute(sql`
         select first_at, last_at, precision, source_kind
@@ -84,12 +84,12 @@ describe("关系时间贯穿（09 §7.4 / §9.1）", () => {
          order by first_at asc
       `),
     )
-    // 5 条笔录 + 4 对流水（A→B、B→A、A→E、A→F）；总数变了说明夹具或落库变了。
-    expect(行们.length).toBe(9)
+    // 5 条笔录 + 1 对流水（只有 A→F 全外币未被 human 覆盖；A→B / B→A / A→E 全被覆盖）。
+    expect(行们.length).toBe(6)
     const 笔录 = 行们.filter((行) => String(行.source_kind) === "human")
     const 流水 = 行们.filter((行) => String(行.source_kind) === "data")
     expect(笔录.length).toBe(5)
-    expect(流水.length).toBe(4)
+    expect(流水.length).toBe(1)
 
     for (const 行 of 笔录) {
       expect(行.first_at).not.toBeNull()
@@ -97,20 +97,13 @@ describe("关系时间贯穿（09 §7.4 / §9.1）", () => {
       expect(String(行.precision)).toBe("到日")
     }
     const 值们 = 笔录.map((行) => Number(行.first_at))
-    // 与探针实测值逐个相等：同时覆盖「互不相同」「落在 2026-02-10–2026-02-20」。
     expect(值们).toEqual([...转账时间])
-    for (const 值 of 值们) {
-      expect(值).toBeGreaterThanOrEqual(转账时间[0])
-      expect(值).toBeLessThanOrEqual(转账时间[4])
-    }
 
-    // 流水行带完整时刻 ⇒ `重建关系` 取该对的最小/最大时间，精度到秒。
-    // 期望值由数据集（`dataset.ts` 流水行们）按 Asia/Shanghai 直接换算，非运行期反推：
-    // A→B 2/10 10:00 – 2/15 08:15、B→A 2/11 09:00 – 2/20 16:45、A→E 2/12 14:30 单笔、A→F 2/25 11:00 – 2/26 12:00。
+    // 唯一剩下的机器行是 A→F（USD 两笔，2/25 11:00 – 2/26 12:00）。
     const 流水首 = 流水.map((行) => Number(行.first_at))
     const 流水末 = 流水.map((行) => Number(行.last_at))
-    expect(流水首).toEqual([1770688800, 1770771600, 1770877800, 1771988400])
-    expect(流水末).toEqual([1771114500, 1771577100, 1770877800, 1772078400])
+    expect(流水首).toEqual([1771988400])
+    expect(流水末).toEqual([1772078400])
     for (const 行 of 流水) {
       expect(行.first_at).not.toBeNull()
       expect(行.last_at).not.toBeNull()
@@ -139,13 +132,8 @@ describe("关系时间贯穿（09 §7.4 / §9.1）", () => {
     }
   })
 
-  // ⚠️ 已知缺口（2026-11-13 实测，跨来源重复计数）：`汇总` 把同一笔转账算了两次——
-  // 笔录抽出的 5 条 `human` 关系与流水聚合的 4 条 `data` 关系都满足 `type='转账'`，
-  // `count(*)`/`sum(amount)` 不区分来源。当前实得「出 6 笔 / 360000.00，入 3 笔 / 56000.00」，
-  // 恰好是应有值（下断言）的两倍加零额外币笔。设计 `09` §4.3 假设「关系只有笔录一条写入路径」
-  // 在 P2 引入机器重建后已失效；跨来源去重（D2）推迟到 P3，是本 test.failing 的解除条件。
-  // 修复落地后本用例会转绿，bun 会因「marked as failing but it passed」强制摘掉 `.failing`。
-  test.failing("【已知缺口：跨来源重复计数】aggregate_money 带起止时收付分列为 2 笔 / 3 笔", async () => {
+  // P3 去重后本用例转绿；若回红，先查重建关系的排除条件与 times_cny。
+  test("aggregate_money 带起止时收付分列为 2 笔 / 3 笔", async () => {
     const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A, 起: 窗口起, 止: 窗口止 })
     const 数据 = 结果.数据
     // 用 `in` 收窄而不是类型断言：断言会把「数据形状变了」变成编译期盲区。

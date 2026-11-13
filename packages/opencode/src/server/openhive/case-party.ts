@@ -10,8 +10,8 @@ import { sql, type SQL } from "drizzle-orm"
  * 不对齐（fail-closed，宁可分开也不错误合并；候选数由读端写进缺口）。
  *
  * `户名来源` 是「未撤销户名 + 未排除实体」这条前提的**唯一出处**（`#002-06`）：
- * `case-identity.ts` 的 `读身份标注` 与这里的 `户名对齐` 都从它出发，谁都不许再抄一份
- * `a.kind='户名' and a.revoked_at is null ...`。
+ * `case-identity.ts` 的 `读身份标注`、`case-mcp-tools.ts` 的 `解析户名` 与这里的 `户名对齐`
+ * 都从它出发，谁都不许再抄一份 `a.kind='户名' and a.revoked_at is null ...`。
  *
  * ⚠️ 调用约定：`户名来源` 已经以 `where` 结尾，追加条件只能写 `and ...`；别名固定为
  * `a`（别名表）与 `ae`（别名所属实体），不要在调用点再声明同名表。

@@ -156,6 +156,7 @@ describe("读端去重口径（10 §6.1）", () => {
     const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.B })
     expect(结果.数据).toMatchObject({
       汇总: [{ 方向: "入", 笔数: 2, 合计: "25000.00" }],
+      外币行数: 1,
     })
     expect(结果.空原因).toBeNull()
   })

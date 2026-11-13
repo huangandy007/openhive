@@ -1828,10 +1828,8 @@ export async function find_crossings(
   校验时间窗(args)
   const 甲 = await 解析实体(ctx, args.甲, "甲")
   const 乙 = await 解析实体(ctx, args.乙, "乙")
-  // fail-closed：`participants @> array[X, X]` 的多重集语义对只含一个 X 的事件可能恒假
-  // （漏报），「找自己与自己的交叉」本身也没有意义——不要静默返回空。
-  // 只比 id 挡不住「同一规范值、不同类型」的两条实体行（`case_entity` 唯一索引含 type）；
-  // 从两个方向问同一个值时，按 id 解析与按规范值解析会落到不同的行。
+  // 同一实体自交没有意义；交叉条件换掉 `participants @>` 后，甲乙同值时两条相同条件恒真，
+  // 所以解析后直接 `bad_input`。只比 id 挡不住「同一规范值、不同类型」的两行。
   if (甲.id === 乙.id || 甲.value === 乙.value) {
     throw new 工具错误("bad_input", `甲和乙是同一个实体（或同一规范值）：${甲.value}，找自己与自己的交叉没有意义`)
   }

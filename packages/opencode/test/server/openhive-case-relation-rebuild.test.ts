@@ -174,6 +174,7 @@ describe("关系从卡片重建（§4.0.4）", () => {
     await 写("m5", [行("m5", 2)])
     const a = await 实体id(甲)
     const b = await 实体id(乙)
+    const 原id = (await 转账关系(甲, 乙))[0]?.id
     // 真实路径是 `裁决(… action: "确认")`：id 不变、trust_state 原地改。
     await db().execute(sql`
       update auth.case_relation set trust_state = '已确认'
@@ -181,6 +182,7 @@ describe("关系从卡片重建（§4.0.4）", () => {
     `)
     await 重建关系(db(), 项目, [{ fromId: a, toId: b }])
     const 关系 = await 转账关系(甲, 乙)
+    expect(关系[0]?.id).toBe(原id)
     expect(关系.filter((r) => r.trust_state === "已确认")).toHaveLength(1)
     expect(关系.filter((r) => r.trust_state === "自动抽取")).toHaveLength(0)
   })
@@ -233,7 +235,7 @@ describe("关系从卡片重建（§4.0.4）", () => {
     expect(String(机器[0]?.amount)).toBe("5000.00")
   })
 
-  test("已排除的关系不被机器行顶回来", async () => {
+  test("已排除的人工行不压制整对机器行（与机器行并存）", async () => {
     await 写("m10", [行("m10", 2)])
     const a = await 实体id(甲)
     const b = await 实体id(乙)
