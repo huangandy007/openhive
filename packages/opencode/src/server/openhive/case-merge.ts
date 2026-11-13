@@ -13,7 +13,11 @@ import { inTransaction, type Queryable } from "./case-store"
  *
  * 别名并集（被并入者的 `canonical_value` 也变成别名）→ 关系两端改指主体 →
  * 合并后成为自环的关系标 `已排除`（自环不是数据错误，是「自己给自己转账」这种事实
- * 已经不成立；按 §9「不删除，只打状态」）→ 删掉被并入那一行。
+ * 已经不成立；按 §9「不删除，只打状态」）→ 参与者行与户名别名改指主体 →
+ * `fact_type='entity'` 的引用改指主体（不改就成悬空引用，缺口 #5）→ 删掉被并入那一行。
+ *
+ * 所有「指向被并入者」的行都要在删行前排进留痕（关系 / 参与者 / 别名 / 引用），
+ * 拆分靠它原样恢复。
  *
  * ## 为什么允许删
  *
@@ -76,6 +80,8 @@ export interface 合并结果 {
   readonly survivorId: string
   readonly aliases: string[]
   readonly movedRelations: number
+  /** 跟着改指的 `fact_type='entity'` 引用行数（缺口 #5）。 */
+  readonly movedCitations: number
   readonly selfLoops: readonly string[]
 }
 
@@ -183,6 +189,15 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
          order by id asc
       `),
     ).map((行) => String(行.id))
+    // 只有 `fact_type='entity'` 的引用以实体 id 作 `fact_id`；其他类型的 `fact_id`
+    // 碰巧同值也指向别的事实，不能动（迁移 `0031` 的 CHECK 已把类型限死在这四种）。
+    const 引用们 = rowsOf(
+      await tx.execute(sql`
+        select id from auth.case_citation
+         where project_id = ${input.projectId} and fact_type = 'entity' and fact_id = ${并入.id}
+         order by id asc
+      `),
+    ).map((行) => String(行.id))
 
     const 自环 = 关系们
       .filter(
@@ -222,6 +237,12 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       update auth.case_entity_alias set entity_id = ${主体.id}
        where project_id = ${input.projectId} and entity_id = ${并入.id}
     `)
+    // 引用不改指就是悬空引用：`case-materials.ts` 的号码引用计数用
+    // `case_citation join case_entity` 数，悬空行会被 INNER JOIN 静默少算（缺口 #5）。
+    await tx.execute(sql`
+      update auth.case_citation set fact_id = ${主体.id}
+       where project_id = ${input.projectId} and fact_type = 'entity' and fact_id = ${并入.id}
+    `)
 
     // 别名并集：主体的旧别名 ＋ 被并入者的别名 ＋ 被并入者的规范值；去重、去掉主体自己的规范值。
     const 别名集 = new Set<string>([...主体.aliases, ...并入.aliases, 并入.canonicalValue])
@@ -248,6 +269,7 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
         关系们,
         参与者们,
         别名们,
+        引用们,
       },
       after: {
         aliases: 别名,
@@ -262,6 +284,7 @@ export async function 合并实体(db: Queryable, input: 合并输入): Promise<
       survivorId: 主体.id,
       aliases: 别名,
       movedRelations: 关系们.length,
+      movedCitations: 引用们.length,
       selfLoops: 自环,
     }
   })
@@ -279,6 +302,8 @@ export interface 拆分结果 {
   readonly restoredRelations: readonly string[]
   /** 合并之后被人动过、或已经不存在的关系：**不覆盖**，列出来让人知道。 */
   readonly 未恢复: readonly string[]
+  /** 合并之后引用行已不存在（材料清理）或已不指向主体：**不覆盖**，列出来让人知道。 */
+  readonly 未恢复引用: readonly string[]
 }
 
 /**
@@ -325,6 +350,7 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
           关系们: 关系快照[]
           参与者们?: { eventId: string; ordinal: number }[]
           别名们?: string[]
+          引用们?: string[]
         }
       | null
     if (
@@ -335,7 +361,8 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
       // 留痕是外部可写的 jsonb：两份快照字段坏形时 fail-closed，别让 `for...of` 拆字符串
       // 后以 TypeError 500 掉出去（与 `survivorAliases` 同一口径）。
       (前.参与者们 !== undefined && !Array.isArray(前.参与者们)) ||
-      (前.别名们 !== undefined && !Array.isArray(前.别名们))
+      (前.别名们 !== undefined && !Array.isArray(前.别名们)) ||
+      (前.引用们 !== undefined && !Array.isArray(前.引用们))
     )
       throw new 合并冲突("留痕里没有可恢复的快照", "restore_conflict")
 
@@ -475,16 +502,46 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
       `)
     }
 
+    // 引用：按留痕的 id 原样指回被并入者。旧留痕没有 `引用们`（修复前合并的）⇒ 什么都不动，
+    // 引用留在主体上；行已不存在或已不指向主体 ⇒ 不覆盖，进 `未恢复引用`。
+    const 未恢复引用: string[] = []
+    for (const 引用id of 前.引用们 ?? []) {
+      const 当前 = rowsOf(
+        await tx.execute(sql`
+          select fact_type, fact_id from auth.case_citation
+           where project_id = ${input.projectId} and id = ${引用id}
+        `),
+      )[0]
+      if (
+        当前 === undefined ||
+        String(当前.fact_type ?? "") !== "entity" ||
+        String(当前.fact_id ?? "") !== 主体Id
+      ) {
+        未恢复引用.push(引用id)
+        continue
+      }
+      await tx.execute(sql`
+        update auth.case_citation set fact_id = ${被并入.id}
+         where project_id = ${input.projectId} and id = ${引用id}
+      `)
+    }
+
     const 留痕Id = await 记变更(tx, {
       projectId: input.projectId,
       factType: "entity",
       factId: 主体Id,
       action: "拆分",
       before: null,
-      after: { 合并留痕: input.changeId, 未恢复 },
+      after: { 合并留痕: input.changeId, 未恢复, 未恢复引用 },
       actor: await 操作人快照(tx, input.by),
     })
 
-    return { changeId: 留痕Id, restoredEntityId: 被并入.id, restoredRelations: 恢复, 未恢复 }
+    return {
+      changeId: 留痕Id,
+      restoredEntityId: 被并入.id,
+      restoredRelations: 恢复,
+      未恢复,
+      未恢复引用,
+    }
   })
 }

@@ -7,7 +7,7 @@ import { 变更历史, 记变更 } from "../../src/server/openhive/case-fact-cha
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 合并实体, 拆分合并 } from "../../src/server/openhive/case-merge"
 import { 户名对齐, 对齐到账户, 对齐代表 } from "../../src/server/openhive/case-party"
-import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
+import { 建事件, 建关系, 建实体, 建引用, 建材料 } from "./openhive-case-fact-fixture"
 
 /**
  * `合并实体` / `拆分合并` 都走 `inTransaction` ⇒ 按 R-预2 把池留 1 条：PGlite 把多条连接
@@ -610,5 +610,164 @@ describe("拆分（撤销合并）", () => {
     const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "坏快照-a" })
     if (主体?.type !== "entity") throw new Error("形状不对")
     expect(主体.aliases).toContain("坏快照乙")
+  })
+})
+
+describe("合并搬引用（缺口 #5）", () => {
+  /** 引用行的「事实类型＋事实 id」按 id 排序读回，用来钉「哪些跟着走、哪些不动」。 */
+  async function 读引用(前缀: string): Promise<unknown[]> {
+    return rowsOf(
+      await 库().execute(sql`
+        select id, fact_type, fact_id
+          from auth.case_citation
+         where project_id = ${项目} and id like ${`${前缀}%`}
+         order by id asc
+      `),
+    ).map((行) => [String(行.id), String(行.fact_type), String(行.fact_id)])
+  }
+
+  test("合并后被并入的 entity 引用改指主体，拆分按留痕原样恢复；主体自己的引用不动", async () => {
+    await 建实体(库(), { id: "引1-a", projectId: 项目, value: "引1甲" })
+    await 建实体(库(), { id: "引1-b", projectId: 项目, value: "引1乙" })
+    await 建材料(库(), { id: "mat-引1", projectId: 项目, path: "引1/笔录.txt" })
+    await 建引用(库(), {
+      id: "引1-c0",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引1-a",
+      materialId: "mat-引1",
+    })
+    await 建引用(库(), {
+      id: "引1-c1",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引1-b",
+      materialId: "mat-引1",
+    })
+    await 建引用(库(), {
+      id: "引1-c2",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引1-b",
+      materialId: "mat-引1",
+    })
+    // 非 entity 类型的引用：fact_id 碰巧等于被并入 id 也不能动（它指向的是别的事实）。
+    await 建引用(库(), {
+      id: "引1-x",
+      projectId: 项目,
+      factType: "event",
+      factId: "引1-b",
+      materialId: "mat-引1",
+    })
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "引1-a",
+      mergedId: "引1-b",
+      reasonText: "两份笔录是同一个人",
+      by: 甲,
+    })
+    expect(结果.movedCitations).toBe(2)
+    expect(await 读引用("引1-")).toEqual([
+      ["引1-c0", "entity", "引1-a"],
+      ["引1-c1", "entity", "引1-a"],
+      ["引1-c2", "entity", "引1-a"],
+      ["引1-x", "event", "引1-b"],
+    ])
+
+    const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆.未恢复引用).toEqual([])
+    expect(await 读引用("引1-")).toEqual([
+      ["引1-c0", "entity", "引1-a"],
+      ["引1-c1", "entity", "引1-b"],
+      ["引1-c2", "entity", "引1-b"],
+      ["引1-x", "event", "引1-b"],
+    ])
+  })
+
+  test("引用行在合并后被删（材料清理）⇒ 拆分列出「未恢复引用」，不静默", async () => {
+    await 建实体(库(), { id: "引2-a", projectId: 项目, value: "引2甲" })
+    await 建实体(库(), { id: "引2-b", projectId: 项目, value: "引2乙" })
+    await 建材料(库(), { id: "mat-引2", projectId: 项目, path: "引2/笔录.txt" })
+    await 建引用(库(), {
+      id: "引2-c1",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引2-b",
+      materialId: "mat-引2",
+    })
+    await 建引用(库(), {
+      id: "引2-c2",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引2-b",
+      materialId: "mat-引2",
+    })
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "引2-a",
+      mergedId: "引2-b",
+      reasonText: "同一个",
+      by: 甲,
+    })
+    await 库().execute(sql`delete from auth.case_citation where project_id = ${项目} and id = '引2-c2'`)
+
+    const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆.未恢复引用).toEqual(["引2-c2"])
+    expect(await 读引用("引2-")).toEqual([["引2-c1", "entity", "引2-b"]])
+  })
+
+  test("旧留痕没有「引用们」⇒ 仍可拆，引用留在主体上（向后兼容，不报 restore_conflict）", async () => {
+    await 建实体(库(), { id: "引3-a", projectId: 项目, value: "引3甲" })
+    await 建实体(库(), { id: "引3-b", projectId: 项目, value: "引3乙" })
+    await 建材料(库(), { id: "mat-引3", projectId: 项目, path: "引3/笔录.txt" })
+    await 建引用(库(), {
+      id: "引3-c1",
+      projectId: 项目,
+      factType: "entity",
+      factId: "引3-b",
+      materialId: "mat-引3",
+    })
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "引3-a",
+      mergedId: "引3-b",
+      reasonText: "同一个",
+      by: 甲,
+    })
+    // 模拟修复前的合并留痕：before 里没有「引用们」。
+    await 库().execute(sql`
+      update auth.case_fact_change
+         set before = before - '引用们'
+       where project_id = ${项目} and id = ${结果.changeId}
+    `)
+
+    const 拆 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆.未恢复引用).toEqual([])
+    expect(await 读引用("引3-")).toEqual([["引3-c1", "entity", "引3-a"]])
+  })
+
+  test("留痕里的「引用们」不是数组 ⇒ 409 restore_conflict，不留半拆状态", async () => {
+    await 建实体(库(), { id: "引4-a", projectId: 项目, value: "引4甲" })
+    await 建实体(库(), { id: "引4-b", projectId: 项目, value: "引4乙" })
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "引4-a",
+      mergedId: "引4-b",
+      reasonText: "先合并",
+      by: 甲,
+    })
+    await 库().execute(sql`
+      update auth.case_fact_change
+         set before = jsonb_set(before, '{引用们}', '"不是数组"'::jsonb)
+       where project_id = ${项目} and id = ${结果.changeId}
+    `)
+
+    await expect(
+      拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 }),
+    ).rejects.toMatchObject({ code: "restore_conflict" })
+    expect(await 事实详情(库(), { projectId: 项目, type: "entity", id: "引4-b" })).toBeUndefined()
   })
 })
