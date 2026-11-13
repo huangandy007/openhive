@@ -296,3 +296,61 @@ describe("关系图：投影缺口的类型 / 强度 / 上限口径", () => {
     }
   })
 })
+
+describe("关系图：账户中心 2 跳的强度缺口与上限截断", () => {
+  test("跳数 2 的强度缺口要统计中心↔一跳点组（含未达标）", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const A = await 实体id(数据集.账号.A)
+    try {
+      // A 由 A→B（35000，强档达标）成为一跳点；再挂一条中心↔一跳点、但强档不达标
+      // （强 = ≥5 次 或 ≥10000 元）的关系。缺口必须把它算进「全部」。
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, times, amount, source_kind, trust_state, created_at)
+        values ('r-修3强度', ${数据集.projectId}, ${B}, ${A}, '转账', 1, '1.00', 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 2, 强度: "强" })
+      // 组：A→B（3 次/35000 达标）、B→A（1 次/1 元 不达标）、B→C（0 元）、A→C（0 元）。
+      expect(图?.强度缺口).toEqual({ 未显示: 3, 总数: 4 })
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修3强度'`)
+    }
+  })
+
+  test("被上限截掉的对齐边，不会在第 2 跳以中心端点补画", async () => {
+    const B = await 实体id(数据集.账号.B)
+    const A = await 实体id(数据集.账号.A)
+    const 李四 = await 实体id("李四")
+    const 周八 = await 实体id("周八")
+    try {
+      // 只用通话，避开 p3 的转账组，排序可确定：
+      // 第 1 跳：B→A（5 次）、A→B（2 次）占满 2 个名额；李四→周八（1 次，XOR 选中后
+      // 归一化成 中心→周八）被上限截断，因此 周八 不是一跳点。
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, times, amount, source_kind, trust_state, created_at)
+        values ('r-修3通1', ${数据集.projectId}, ${B}, ${A}, '通话', 5, null, 'human', '自动抽取', 1760000000)
+      `)
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, times, amount, source_kind, trust_state, created_at)
+        values ('r-修3通2', ${数据集.projectId}, ${A}, ${B}, '通话', 2, null, 'human', '自动抽取', 1760000000)
+      `)
+      await db().execute(sql`
+        insert into auth.case_relation (id, project_id, from_id, to_id, type, times, amount, source_kind, trust_state, created_at)
+        values ('r-修3通3', ${数据集.projectId}, ${李四}, ${周八}, '通话', 1, null, 'human', '自动抽取', 1760000000)
+      `)
+      const 图 = await 关系图(db(), { projectId: 数据集.projectId, id: B, 跳数: 2, 类型: ["通话"], 上限: 3 })
+      // 截断确实发生：3 个候选组只画了 2 个。
+      expect(图?.缺口.join()).toContain("第 1 跳只画了前 2 个节点，该跳共 3 条符合当前强度的关联关系")
+      // 第 2 跳不能再把被截掉的「李四→周八」以 中心→周八 补画回来（也不该带出周八）。
+      expect(图?.节点.map((点) => 点.id).sort()).toEqual([B, A].sort())
+      expect(图?.边.map((条) => 条.id).sort()).toEqual(
+        [`rel|${B}|${A}|通话`, `rel|${A}|${B}|通话`].sort(),
+      )
+      expect(图?.节点.some((点) => 点.id === 周八)).toBe(false)
+      expect(图?.边.some((条) => 条.from === B && 条.to === 周八)).toBe(false)
+    } finally {
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修3通1'`)
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修3通2'`)
+      await db().execute(sql`delete from auth.case_relation where project_id = ${数据集.projectId} and id = 'r-修3通3'`)
+    }
+  })
+})
