@@ -4,6 +4,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 重建关系, 本材料转账对 } from "../../src/server/openhive/case-translate-store"
+import { aggregate_money, query_relations, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
 import { 裁决 } from "../../src/server/openhive/case-trust"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
 
@@ -118,5 +119,33 @@ describe("写端去重（10 §3 / §5）", () => {
     // 对齐发生在 `本材料转账对` 内部：A→李四 必须落到 (A, B)，否则重建删不到真正的机器行。
     expect(对们).toContainEqual({ fromId: A, toId: B })
     expect(对们).not.toContainEqual({ fromId: A, toId: 李四 })
+  })
+})
+
+function ctx(): 工具上下文 {
+  return { db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } }
+}
+
+describe("读端去重口径（10 §6.1）", () => {
+  test("汇总按人民币笔数：出 3 笔 / 35000.00，纯外币不进", async () => {
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect(结果.数据).toMatchObject({
+      汇总: [{ 方向: "出", 笔数: 3, 合计: "35000.00" }],
+    })
+    expect(结果.空原因).toBeNull()
+    expect(结果.缺口.join()).toContain("1 条转账关系金额为 0.00")
+  })
+
+  test("人 与 账户B 合并成一个对手方（显示优先用户名）", async () => {
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect(结果.数据).toMatchObject({
+      对手方: [{ 对手方: "李四", 方向: "出", 笔数: 3, 合计: "35000.00" }],
+    })
+  })
+
+  test("query_relations 仍按事实各列一条，并用缺口交代去重口径", async () => {
+    const 结果 = await query_relations(ctx(), { 实体: 数据集.账号.A, 类型: "转账", 限制: 200 })
+    expect(结果.数据).toHaveLength(4) // 2 human + A→B 机器 + A→C 纯外币机器
+    expect(结果.缺口.join()).toContain("汇总与对手方已去重")
   })
 })

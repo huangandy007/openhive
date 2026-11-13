@@ -15,7 +15,7 @@ import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 引用们, type 引用视图 } from "./case-fact-read"
 import { 查明细行, 明细入参错误, 读明细行, 未解析材料份数, type 明细查询结果 } from "./case-row-query"
 import type { 留痕类型 } from "./case-fact-change"
-import { 户名来源 } from "./case-party"
+import { 户名对齐, 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -803,6 +803,10 @@ export async function query_relations(
       ? { 空原因: "无匹配行" as 空原因值, 未解析材料数: await 未解析材料数(ctx) }
       : await 关系空原因(ctx, 查询实体, args.类型)
   const 缺口 = 截断缺口(args.限制, 限制, 数据.length)
+  // 事实列表按事实各列一条（human 与机器行都在）；去重发生在汇总/对手方。
+  // 不说清，模型会拿本列表的条数去对汇总的笔数（#006-29：口径要写在结果里）。
+  if (args.类型 === undefined || args.类型 === "转账")
+    缺口.push("同一笔转账可能同时有人工关系与流水机器关系两条；汇总与对手方已去重，本列表按事实各列一条")
   // R-W：只要项目内还有未解析材料，空结果就要在缺口里说清（命中哪一条空原因都一样）。
   if (空判定 !== undefined && 空判定.未解析材料数 > 0) 缺口.push(未翻译缺口(空判定.未解析材料数))
   const 对方数 = new Set(数据.flatMap((行) => [String(行.from_id), String(行.to_id)])).size
@@ -1289,14 +1293,18 @@ export async function aggregate_money(
     汇总条件.push(sql`coalesce(first_at, last_at, 0) <= ${args.止}`)
     对手方条件.push(sql`coalesce(r.first_at, r.last_at, 0) <= ${args.止}`)
   }
+  // 笔数口径：times_cny 为 NULL 时回退 times，再回退 1（human 行没有 times，D-2）。
+  // 该值为 0 = 纯外币关系：不进汇总/对手方，但仍出现在 query_relations。
+  const 人民币笔数 = sql`coalesce(times_cny, times, 1) > 0`
+  const 对手人民币笔数 = sql`coalesce(r.times_cny, r.times, 1) > 0`
 
   const 汇总 = rowsOf(
     await ctx.db.execute(sql`
       select case when from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
-             count(*)::int as 笔数,
+             sum(coalesce(times_cny, times, 1))::int as 笔数,
              coalesce(sum(amount), 0)::text as 合计
         from auth.case_relation
-       where ${sql.join(汇总条件, sql` and `)}
+       where ${sql.join(汇总条件, sql` and `)} and ${人民币笔数}
        group by 方向
        order by 方向
     `),
@@ -1312,18 +1320,34 @@ export async function aggregate_money(
   // §9.1：对手方实体被「已排除」时，不能把它的名字与金额一起回给模型（join 条件里过滤）。
   const 对手方 = rowsOf(
     await ctx.db.execute(sql`
-      select 对手.canonical_value as 对手方,
+      select coalesce(min(case when 对手.type in ('人', '组织') then 对手.canonical_value end),
+                      min(case when 对手.type not in ('人', '组织') then 账户户名.代表值 end),
+                      min(对手.canonical_value)) as 对手方,
              case when r.from_id ${id属于(账户.ids)} then '出' else '入' end as 方向,
-             count(*)::int as 笔数,
-             coalesce(sum(r.amount), 0)::text as 合计
+             sum(coalesce(r.times_cny, r.times, 1))::int as 笔数,
+             coalesce(sum(r.amount), 0)::text as 合计,
+             max(对齐.候选数)::int as 候选数
         from auth.case_relation r
         join auth.case_entity 对手
           on 对手.project_id = r.project_id
          and 对手.id = case when r.from_id ${id属于(账户.ids)} then r.to_id else r.from_id end
          and 对手.trust_state <> '已排除'
-       where ${sql.join(对手方条件, sql` and `)}
-       group by 对手.canonical_value, 方向
-       order by sum(r.amount) desc nulls last, 对手.canonical_value asc
+        left join lateral ${户名对齐(ctx.身份.projectId, sql`对手.id`, sql`对手.type`, sql`对手.canonical_value`)} 对齐 on true
+        left join lateral (
+          -- 别名方向：entity_id = 账户，value = 人名。所以人名要按 **value** 反查，
+          -- 不能 p.id = a.entity_id——那拿到的是账户自己（P2「写入翻译结果」的写口）。
+          select min(p.canonical_value) as 代表值
+            from auth.case_entity_alias a
+            join auth.case_entity p on p.project_id = a.project_id and p.canonical_value = a.value
+           where a.project_id = ${ctx.身份.projectId} and a.kind = '户名' and a.revoked_at is null
+             and p.trust_state <> '已排除' and p.type = '人'
+             and a.entity_id = 对手.id
+          having count(distinct p.canonical_value) = 1
+        ) 账户户名 on true
+       where ${sql.join(对手方条件, sql` and `)} and ${对手人民币笔数}
+       group by 方向,
+                coalesce(对齐.代表, 对手.id)
+       order by sum(r.amount) desc nulls last, 对手方 asc
        limit ${对手方上限}
     `),
   ).map((行) => ({
@@ -1331,7 +1355,11 @@ export async function aggregate_money(
     方向: String(行.方向),
     笔数: Number(行.笔数),
     合计: String(行.合计),
+    _候选数: Number(行.候选数 ?? 0),
   }))
+  // `_候选数` 只进缺口，不进 `数据`：歧义（同一人名对应多个账户）不自动合并。
+  const 歧义条数 = 对手方.filter((行) => 行._候选数 >= 2).length
+  const 对外对手方 = 对手方.map(({ _候选数, ...行 }) => 行)
 
   // 明细行（余额走势 / 外币行数）共用「账户精确匹配 + 时间窗」这一份基础条件（`#002-06`）：
   // 两条查询只差币种那一条，复制两遍迟早漂成「余额含外币、缺口数不含」。
@@ -1411,10 +1439,10 @@ export async function aggregate_money(
   // 全外币也是「不能下人民币结论」，但同理不许说成「没有任何流水」（`09` §5.2 纪律 2）。
   const 外币未计入 = 空原因 === "外币行全部未计入"
   // `对手方` 是按「对手方 + 方向」分组的（来/回各一行）⇒ 按行数说「N 个对手」会把同一人算两次。
-  const 对手个数 = new Set(对手方.map((行) => String(行.对手方))).size
+  const 对手个数 = new Set(对外对手方.map((行) => String(行.对手方))).size
   const 缺口 = [
     "只统计已抽成关系（type=转账）的转账；明细行里未抽成关系的转账不计入",
-    "对手方按实体规范值聚合；未合并的重复实体不会自动合并",
+    "对手方按对齐后的代表实体聚合（唯一未撤销户名证据；0 或多候选不对齐，按各自实体分开）",
     `对手方最多 ${对手方上限} 条（按合计金额降序）`,
     "余额只按精确匹配取明细行，未做模糊匹配；人民币余额行超过 200 行截断",
   ]
@@ -1424,6 +1452,21 @@ export async function aggregate_money(
   // 自相矛盾（窗口里明明有流水，只是不计入人民币口径）。
   if (余额行.length === 0 && 外币行数 === 0)
     缺口.push("本项目明细行里没有该账户的流水（按 counterparty/counterparty_name/owner_account/caller/callee 精确匹配）")
+  // 纯外币关系（times_cny = 0）不进汇总/对手方，但确实存在——不说清，模型会把
+  // 「看不到」讲成「没有」（09 §5.2 纪律 2）。
+  const 纯外币条数 = Number(
+    rowsOf(
+      await ctx.db.execute(sql`
+        select count(*)::int as 数
+          from auth.case_relation
+         where ${sql.join([...汇总条件, sql`coalesce(times_cny, times, 1) = 0`], sql` and `)}
+      `),
+    )[0]?.数 ?? 0,
+  )
+  if (纯外币条数 > 0)
+    缺口.push(`${纯外币条数} 条转账关系金额为 0.00 且笔数含外币（外币金额不进合计）`)
+  if (歧义条数 > 0)
+    缺口.push(`${歧义条数} 个对手户名对应多个账户，未合并（按各自账户分开）`)
   // `09` §4.5 第 2 条：外币行不进合计。恒追加（不论结果空不空）——模型据此写明未计入的行数。
   if (外币行数 > 0) 缺口.push(`本窗口内 ${外币行数} 行非人民币未计入汇总与余额走势`)
   // R-W：不管命中哪一条空原因（甚至结果非空），只要项目里还有没解析的材料，就必须在缺口里说清。
@@ -1436,7 +1479,7 @@ export async function aggregate_money(
           ? `${账户称呼}在给定条件下只有 ${外币行数} 行外币流水，外币不进合计，无法给出人民币口径的结论${后缀}`
           : `${账户称呼}在给定条件下没有任何转账关系或明细流水${后缀}`
       : `${账户称呼}${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : 外币行数 > 0 ? "；无人民币明细流水" : "；无明细流水"}${后缀}`,
-    数据: 空 ? null : { 汇总, 对手方, 余额走势, 外币行数 },
+    数据: 空 ? null : { 汇总, 对手方: 对外对手方, 余额走势, 外币行数 },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
       "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
