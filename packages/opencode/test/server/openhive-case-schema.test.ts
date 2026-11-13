@@ -382,16 +382,20 @@ describe("0041 迁移 · 用途三列（P4-A / 01 §3.11.2）", () => {
     })
   })
 
-  test("按用途过滤走索引（一级也能直接过滤）", async () => {
+  test("按用途过滤所需索引都在位（一级也有自己的索引）", async () => {
+    // 只断「索引存在」，不断 EXPLAIN：迁移夹具是空表，规划器会选 seq scan，断言不可靠。
+    // 过滤是 `purpose = X or purpose_l1 = X`，两支各需一个索引（0041 + 0042）。
     const 索引 = rowsOf(
       await db().execute(sql`
-        select indexdef from pg_indexes
+        select indexname, indexdef from pg_indexes
          where schemaname = 'auth' and tablename = 'case_event'
-           and indexname = 'case_event_purpose'
+           and indexname in ('case_event_purpose', 'case_event_purpose_l1')
       `),
     )
-    expect(索引.length).toBe(1)
+    const 按名 = (名: string) => 索引.find((行) => 行.indexname === 名)
     // 只查名字挡不住「索引建在错列上」：列组合与顺序都要断（#004-03）。
-    expect(String(索引[0]?.indexdef)).toContain("(project_id, purpose)")
+    expect(String(按名("case_event_purpose")?.indexdef)).toContain("(project_id, purpose)")
+    // 0042：一级过滤走自己的索引；列序写错（缺 project_id）时这条必须红。
+    expect(String(按名("case_event_purpose_l1")?.indexdef)).toContain("(project_id, purpose_l1)")
   })
 })
