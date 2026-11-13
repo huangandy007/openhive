@@ -341,3 +341,57 @@ describe("0033 迁移 · 留痕与依赖标记", () => {
     expect(列们.every((行) => String(行.is_nullable) === "YES")).toBe(true)
   })
 })
+
+describe("0041 迁移 · 用途三列（P4-A / 01 §3.11.2）", () => {
+  test("purpose / purpose_l1 / purpose_basis 三列都在且可空", async () => {
+    const 列们 = rowsOf(
+      await db().execute(sql`
+        select column_name, is_nullable, data_type
+          from information_schema.columns
+         where table_schema = 'auth' and table_name = 'case_event'
+           and column_name in ('purpose', 'purpose_l1', 'purpose_basis')
+         order by column_name
+      `),
+    )
+    expect(列们.map((行) => String(行.column_name))).toEqual(["purpose", "purpose_basis", "purpose_l1"])
+    // 必须可空：AI 抽取路径与本迁移之前的老行都不判用途，NOT NULL 会让它们写不进去。
+    expect(列们.every((行) => String(行.is_nullable) === "YES")).toBe(true)
+    expect(列们.find((行) => 行.column_name === "purpose_basis")?.data_type).toBe("jsonb")
+  })
+
+  test("三列能写能读，依据按 jsonb 原样回来", async () => {
+    await db().execute(sql`
+      insert into auth.case_event
+        (id, project_id, type, trust_state, created_at, purpose, purpose_l1, purpose_basis)
+      values ('e-purpose', 'p-purpose', '资金交易', '自动抽取', 0,
+              '停车', '消费', '{"规则":"消费.停车","命中":"P云","字段":"备注原文","词表":"v1.0"}'::jsonb)
+    `)
+    const [行] = rowsOf(
+      await db().execute(sql`
+        select purpose, purpose_l1, purpose_basis::text as basis
+          from auth.case_event where project_id = 'p-purpose' and id = 'e-purpose'
+      `),
+    )
+    expect(行?.purpose).toBe("停车")
+    expect(行?.purpose_l1).toBe("消费")
+    expect(JSON.parse(String(行?.basis))).toEqual({
+      规则: "消费.停车",
+      命中: "P云",
+      字段: "备注原文",
+      词表: "v1.0",
+    })
+  })
+
+  test("按用途过滤走索引（一级也能直接过滤）", async () => {
+    const 索引 = rowsOf(
+      await db().execute(sql`
+        select indexdef from pg_indexes
+         where schemaname = 'auth' and tablename = 'case_event'
+           and indexname = 'case_event_purpose'
+      `),
+    )
+    expect(索引.length).toBe(1)
+    // 只查名字挡不住「索引建在错列上」：列组合与顺序都要断（#004-03）。
+    expect(String(索引[0]?.indexdef)).toContain("(project_id, purpose)")
+  })
+})
