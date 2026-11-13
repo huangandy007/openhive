@@ -4,7 +4,13 @@ import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import { 细类 } from "./case-subtype"
-import { 关系归属条件, 账户归属集 } from "./case-party"
+import {
+  内部往来归属条件,
+  关系归属条件,
+  归属歧义归属条件,
+  歧义到账户,
+  账户归属集,
+} from "./case-party"
 
 /**
  * 关系图数据（计划 7 Task 3）。
@@ -335,6 +341,62 @@ async function 计强度(
 }
 
 /**
+ * 数清关系图**不画**的两类关系（设计 11 §3.2 / §3.3）：内部往来与归属歧义。
+ *
+ * 内部往来（两端都在归属集）压成 `中心 → 中心` 被排掉；歧义者 fail-closed，两端都不在
+ * 归属集 ⇒ 两条都不进图。档案 / 关系圈遗漏 / `aggregate_money` 都写了这两句，关系图曾
+ * 是唯一静默的读口（`#002-06`）。谓词从 `case-party` 取，不在这里重写；类型跟着请求走
+ * ——用户筛了通话，就不该拿一条转账来充缺口句。一次查询数两项。
+ */
+async function 数归属缺口(
+  db: Queryable,
+  input: {
+    readonly projectId: string
+    readonly 中心: string
+    readonly 归属集: SQL
+    readonly 类型?: readonly string[]
+  },
+): Promise<{ readonly 内部往来: number; readonly 归属歧义: number }> {
+  const 类型条件 =
+    input.类型 === undefined || input.类型.length === 0
+      ? sql``
+      : sql`and r.type in (${sql.join(
+          input.类型.map((条) => sql`${条}`),
+          sql`, `,
+        )})`
+  const 内部往来 = sql.join(
+    内部往来归属条件({
+      projectId: input.projectId,
+      归属集: input.归属集,
+      从: sql`r.from_id`,
+      到: sql`r.to_id`,
+    }),
+    sql` and `,
+  )
+  const 归属歧义 = sql.join(
+    归属歧义归属条件({
+      projectId: input.projectId,
+      归属集: input.归属集,
+      歧义实体: 歧义到账户(input.projectId, [input.中心]),
+      从: sql`r.from_id`,
+      到: sql`r.to_id`,
+    }),
+    sql` and `,
+  )
+  const 行 = rowsOf(
+    await db.execute(sql`
+      select (count(*) filter (where ${内部往来}))::int as 内部往来,
+             (count(*) filter (where ${归属歧义}))::int as 归属歧义
+        from auth.case_relation r
+       where r.project_id = ${input.projectId}
+         and r.trust_state <> '已排除'
+         ${类型条件}
+    `),
+  )[0]
+  return { 内部往来: Number(行?.内部往来 ?? 0), 归属歧义: Number(行?.归属歧义 ?? 0) }
+}
+
+/**
  * 以 `id` 为中心取 1～2 跳的关系图。
  *
  * 中心实体不存在 / 已排除 / 不属于本项目时返回 `undefined`（让路由回 404，而不是
@@ -478,6 +540,23 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   const 经对齐数 = 画出的第一圈.reduce((和, 边) => 和 + 边.经对齐数, 0)
   if (投影 !== undefined && 经对齐数 > 0)
     缺口.push(`${经对齐数} 条关系经户名对齐归属本账户（图上的端点已归并到本账户）`)
+
+  // 不画的也要说出来（设计 11 §3.2「不画、不计数，写进缺口」/ §3.3「候选数进缺口」）。
+  // 与 `经对齐` 分开两句：那批是「归并进来了」，这两批是「压根没进图」。
+  if (投影 !== undefined) {
+    const 归属缺口 = await 数归属缺口(db, {
+      projectId: input.projectId,
+      中心: String(中心.id),
+      归属集: 投影.归属集,
+      类型: input.类型,
+    })
+    if (归属缺口.内部往来 > 0)
+      缺口.push(`账户内部往来 ${归属缺口.内部往来} 条：两端都在本账户归属集内，未画进关系图`)
+    if (归属缺口.归属歧义 > 0)
+      缺口.push(
+        `账户归属歧义 ${归属缺口.归属歧义} 条：户名对应多个账户，未归属本账户（fail-closed，不猜）`,
+      )
+  }
 
   // 强度缺口只在**本次取数范围**内统计：跳数 1 只看中心；跳数 2 看中心＋已画出的全部一跳点。
   // 不能拿每轮的数字相加——中心↔一跳点那批组会在两轮里各出现一次，相加会翻倍。
