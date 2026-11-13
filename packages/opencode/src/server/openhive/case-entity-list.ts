@@ -3,7 +3,9 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import type { Queryable } from "./case-store"
 import {
   事件归属条件,
+  实体关系归属,
   账户归属集,
+  账户归属集数组,
   账户展示名,
   户名对齐,
   关系归属条件,
@@ -46,9 +48,9 @@ export interface 实体清单项 {
   readonly subtype?: string
   readonly canonical_value: string
   readonly trust_state: string
-  /** 有效关系条数（关系未排除、对方未排除）。 */
+  /** 有效关系条数（关系未排除、对方未排除；归属口径同档案，账户按归属集 XOR）。 */
   readonly 关联数: number
-  /** 事件参与数（事件未排除、`participants` 含该实体规范值）。 */
+  /** 事件参与数（事件未排除；归属口径同档案，参与者表 ∪ `participants` 文本回退）。 */
   readonly 事件参与数: number
   /** 排序权重：`关联数 + 事件参与数`。 */
   readonly 权重: number
@@ -93,29 +95,40 @@ const 事件上限 = 100
 export const 引用上限 = 500
 
 /**
- * 有效关系度数：清单的 `关联数` 与分组计数共用这一份谓词（`#002-06`）。
+ * 有效关系度数：清单的 `关联数` 与分组计数共用这一份谓词（`#002-06`），
+ * 归属口径与 `实体档案` 共用 `实体关系归属`（基 2 账户 XOR / 基 1 端点相等）。
  * 只有一层 SQL 片段函数、没有第二个实现；改口径只改这里。
+ *
+ * 归属集由外层 `cross join lateral (... 账户归属集数组 ...) 归属集` 预算成数组（`归属集.ids`）：
+ * 相关子查询在某类计划下会被错算，见 `账户归属集数组`（`#013-05`）。
  */
-const 关系度数 = () =>
-  sql`(
+const 关系度数 = () => {
+  const { 归属, from属于 } = 实体关系归属({
+    projectId: sql`e.project_id`,
+    实体id: sql`e.id`,
+    类型: sql`e.type`,
+    从: sql`r.from_id`,
+    到: sql`r.to_id`,
+    归属集数组: sql`归属集.ids`,
+  })
+  return sql`(
     select count(*)::int
       from auth.case_relation r
      where r.project_id = e.project_id
        and r.trust_state <> '已排除'
-       and (r.from_id = e.id or r.to_id = e.id)
-       and (case when r.from_id = e.id then r.to_id else r.from_id end)
-           in (select id from auth.case_entity
-                where project_id = e.project_id and trust_state <> '已排除')
+       and ${归属}
+       and ${另一端未排除({ projectId: sql`e.project_id`, from属于, 从: sql`r.from_id`, 到: sql`r.to_id` })}
   )`
+}
 
-/** 事件参与数：事件未排除、参与者按规范值等值匹配。与分组计数共用。 */
+/** 事件参与数：事件未排除、参与者按基 1 归属（与 `实体档案` 共用 `事件归属条件`）。与分组计数共用。 */
 const 事件参与数 = () =>
   sql`(
     select count(*)::int
-      from auth.case_event ev
-     where ev.project_id = e.project_id
-       and ev.trust_state <> '已排除'
-       and ev.participants @> array[e.canonical_value]::text[]
+      from auth.case_event
+     where project_id = e.project_id
+       and trust_state <> '已排除'
+       and ${事件归属条件(sql`e.project_id`, sql`e.id`)}
   )`
 
 /** 人确认过的状态：核心判据与「同权重已确认优先」共用，避免两处字面各写一遍。 */
@@ -143,6 +156,7 @@ export async function 分组计数(db: Queryable, projectId: string): Promise<�
                  ${关系度数()} as 关联数,
                  ${事件参与数()} as 事件参与数
             from auth.case_entity e
+            cross join lateral (select ${账户归属集数组(sql`e.project_id`, sql`e.id`)} as ids) 归属集
            where e.project_id = ${projectId} and e.trust_state <> '已排除'
         ) t
     `),
@@ -186,6 +200,7 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
                      ${关系度数()} as 关联数,
                      ${事件参与数()} as 事件参与数
                 from auth.case_entity e
+                cross join lateral (select ${账户归属集数组(sql`e.project_id`, sql`e.id`)} as ids) 归属集
                where ${sql.join(条件, sql` and `)}
             ) t
         ) 行
@@ -369,15 +384,17 @@ export async function 实体档案(
   const 实体 = 实体行们[0]!
 
   // 基 2（11 §3.2）：中心是账户时，关系按「恰好一端落在归属集里」判定；
-  // 人 / 组织保持「端点等于自己」的原口径（集合只由账户构造）。
+  // 人 / 组织保持「端点等于自己」的原口径。归属口径只有一份（`实体关系归属`，`#002-06`），
+  // 与清单的 `关系度数` 共用。
   // 不看 `含排除` 开关：归属是口径，不是可见性；归属集本身已经排除「已排除」的人。
+  const { 归属集, from属于, 归属: 关系归属 } = 实体关系归属({
+    projectId: input.projectId,
+    实体id: String(实体.id),
+    类型: String(实体.type),
+    从: sql`r.from_id`,
+    到: sql`r.to_id`,
+  })
   const 是账户 = String(实体.type) === "账户"
-  const 归属集 = 是账户 ? 账户归属集(input.projectId, [String(实体.id)]) : undefined
-  const from属于 = 归属集 === undefined ? sql`r.from_id = ${input.id}` : sql`r.from_id in ${归属集}`
-  const 关系归属 =
-    归属集 === undefined
-      ? sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`
-      : 关系归属条件(input.projectId, [String(实体.id)], sql`r.from_id`, sql`r.to_id`)
 
   // 关系：两侧实体 join 出来，取「对方」；已排除的关系与已排除的对方都默认不出现（§9.1）。
   // 「触达」是 project + 该实体（账户走归属集，见上）；「可见」再叠未排除条件。
@@ -539,14 +556,14 @@ export async function 实体档案(
     )
   const 归属缺口基础 = [sql`r.project_id = ${input.projectId}`, sql`r.trust_state <> '已排除'`]
   const 内部往来条数 =
-    归属集 === undefined
+    !是账户
       ? 0
       : await 归属缺口计数([
           ...归属缺口基础,
           ...内部往来归属条件({ projectId: input.projectId, 归属集, 从: sql`r.from_id`, 到: sql`r.to_id` }),
         ])
   const 归属歧义条数 =
-    归属集 === undefined
+    !是账户
       ? 0
       : await 归属缺口计数([
           ...归属缺口基础,

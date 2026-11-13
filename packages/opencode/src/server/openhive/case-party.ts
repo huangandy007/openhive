@@ -18,7 +18,7 @@ import type { Queryable } from "./case-store"
  * ⚠️ 调用约定：`户名来源` 已经以 `where` 结尾，追加条件只能写 `and ...`；别名固定为
  * `a`（别名表）与 `ae`（别名所属实体），不要在调用点再声明同名表。
  */
-export function 户名来源(projectId: string): SQL {
+export function 户名来源(projectId: string | SQL): SQL {
   return sql`auth.case_entity_alias a
     join auth.case_entity ae on ae.project_id = a.project_id and ae.id = a.entity_id
    where a.project_id = ${projectId} and a.kind = '户名' and a.revoked_at is null
@@ -39,7 +39,7 @@ export function 户名来源(projectId: string): SQL {
  *
  * 聚合在零行上仍返回一行（count=0、代表 null），所以可以安全地当 lateral 表或标量子查询。
  */
-export function 户名对齐(projectId: string, id: SQL, 类型: SQL, 值: SQL): SQL {
+export function 户名对齐(projectId: string | SQL, id: SQL, 类型: SQL, 值: SQL): SQL {
   return sql`(select case when count(distinct a.entity_id) = 1 then min(a.entity_id) end as 代表,
                      count(distinct a.entity_id)::int as 候选数
                 from ${户名来源(projectId)}
@@ -49,7 +49,7 @@ export function 户名对齐(projectId: string, id: SQL, 类型: SQL, 值: SQL):
 }
 
 /** 代表表达式：唯一候选账户，否则自己。 */
-export function 对齐代表(projectId: string, id: SQL, 类型: SQL, 值: SQL): SQL {
+export function 对齐代表(projectId: string | SQL, id: SQL, 类型: SQL, 值: SQL): SQL {
   return sql`coalesce((select 代表 from ${户名对齐(projectId, id, 类型, 值)} 对齐), ${id})`
 }
 
@@ -80,15 +80,26 @@ export function 账户展示名(projectId: string, 账户id: SQL): SQL {
 }
 
 /**
+ * 账户 id 集合：字面量数组，或外层行的列 / 子查询表达式（清单、档案复用同一谓词时用后者）。
+ */
+type 账户id集合 = readonly (string | SQL)[] | string | SQL
+
+/**
  * `id in (...)` 片段：调用点把要匹配的列交进来，集合由本文件构造。
  *
  * ⚠️ 调用约定：调用方必须传**非空数组**——空数组会生成 `in ()`，PG 语法报错。
  */
-function id集合(ids: readonly string[]): SQL {
-  return sql`(${sql.join(
+function id集合(ids: 账户id集合): SQL {
+  const 内容 = !是数组(ids) ? sql`${ids}` : sql.join(
     ids.map((id) => sql`${id}`),
     sql`, `,
-  )})`
+  )
+  return sql`(${内容})`
+}
+
+/** `id集合` 的收窄：数组走字面量集合，字符串 / SQL 表达式当单元素集合用（外层行相关要用后者）。 */
+function 是数组(值: 账户id集合): 值 is readonly (string | SQL)[] {
+  return Array.isArray(值)
 }
 
 /**
@@ -98,7 +109,7 @@ function id集合(ids: readonly string[]): SQL {
  * 且那个账户就在 `账户ids` 里，才算对齐。别名对应 0 个或多个账户一律不算。
  * 已排除的人不算——那是人的判断，读端不许把它拉回来。
  */
-export function 对齐到账户(projectId: string, 账户ids: readonly string[]): SQL {
+export function 对齐到账户(projectId: string | SQL, 账户ids: 账户id集合): SQL {
   return 名字对齐到账户(projectId, 账户ids, sql`= 1`)
 }
 
@@ -109,12 +120,16 @@ export function 对齐到账户(projectId: string, 账户ids: readonly string[])
  * 这些 人/组织 因 fail-closed 不进归属集，凡是以它们为端点的关系在归属阶段被排除，
  * 读端必须把条数写进缺口（`aggregate_money` 用它区分「内部往来」与「歧义未归属」）。
  */
-export function 歧义到账户(projectId: string, 账户ids: readonly string[]): SQL {
+export function 歧义到账户(projectId: string | SQL, 账户ids: 账户id集合): SQL {
   return 名字对齐到账户(projectId, 账户ids, sql`>= 2`)
 }
 
 /** `对齐到账户` / `歧义到账户` 的共同前提，只差候选数的比较符（`#002-06`）。 */
-function 名字对齐到账户(projectId: string, 账户ids: readonly string[], 候选条件: SQL): SQL {
+function 名字对齐到账户(
+  projectId: string | SQL,
+  账户ids: 账户id集合,
+  候选条件: SQL,
+): SQL {
   return sql`(select pe.id
      from auth.case_entity pe
     where pe.project_id = ${projectId}
@@ -133,7 +148,7 @@ function 名字对齐到账户(projectId: string, 账户ids: readonly string[], 
  * 归属实体集：实体自己 ∪ 正向代表（人 → 唯一户名账户）∪ 反向对齐者（账户 → 唯一户名的
  * 人/组织）。**事件与值都从这一个集合出发**（`#002-06`）。
  */
-export function 归属实体集(projectId: string, 实体id: string): SQL {
+export function 归属实体集(projectId: string | SQL, 实体id: string | SQL): SQL {
   const id = sql`${实体id}`
   const 类型 = sql`(select type from auth.case_entity where project_id = ${projectId} and id = ${id})`
   const 值 = sql`(select canonical_value from auth.case_entity where project_id = ${projectId} and id = ${id})`
@@ -149,7 +164,7 @@ export function 归属实体集(projectId: string, 实体id: string): SQL {
  * `participants text[]` 存的是规范值（`01` §3.3）；合并 / 改名只把旧值并进别名、不改 text[]，
  * 所以旧事件靠这一路仍然命中。
  */
-export function 归属值集(projectId: string, 实体id: string): SQL {
+export function 归属值集(projectId: string | SQL, 实体id: string | SQL): SQL {
   return sql`(select x.canonical_value as 值
                 from auth.case_entity x
                where x.project_id = ${projectId} and x.id in ${归属实体集(projectId, 实体id)}
@@ -186,11 +201,24 @@ export async function 已排除规范值(db: Queryable, projectId: string): Prom
  * 基 2（11 §3.2）：账户归属集 = 账户自己的 ids ∪ 唯一户名对齐到它的人/组织。
  * 只由账户构造：人 / 组织查关系时仍用「端点等于自己」的原口径。
  */
-export function 账户归属集(projectId: string, 账户ids: readonly string[]): SQL {
+export function 账户归属集(projectId: string | SQL, 账户ids: 账户id集合): SQL {
   return sql`(select id from auth.case_entity
                where project_id = ${projectId} and id in ${id集合(账户ids)}
               union
               select id from ${对齐到账户(projectId, 账户ids)} 反向)`
+}
+
+/**
+ * `账户归属集` 的**数组形态**：给同一个实体行要多次用到归属集的读端（清单 / 分组计数）。
+ *
+ * 为什么不重复写 `账户归属集`（实测 PG 16.3，`#013-05`）：`(case when e.type='账户' then
+ * (r.from_id in 集) <> (r.to_id in 集) …)` 再与第二个相关子查询（另一端未排除）`and` 起来时，
+ * 计划器把相关子查询当「hashed SubPlan」缓存，导致同一实体算出的度数比实际少（实测 2 / 0，
+ * 应为 4；`set enable_hashjoin = off` 即恢复 4）。改成「每行先算一次数组、谓词用 `= any(...)`」
+ * 后结果正确，也不再随计划变化。
+ */
+export function 账户归属集数组(projectId: string | SQL, 账户ids: 账户id集合): SQL {
+  return sql`(select array_agg(id) from (${账户归属集(projectId, 账户ids)}) 归属集)`
 }
 
 /**
@@ -200,8 +228,8 @@ export function 账户归属集(projectId: string, 账户ids: readonly string[])
  * 既不产生对手方也不产生方向 ⇒ 不归属、不画、不计数，条数进缺口。
  */
 export function 关系归属条件(
-  projectId: string,
-  账户ids: readonly string[],
+  projectId: string | SQL,
+  账户ids: 账户id集合,
   从: SQL,
   到: SQL,
 ): SQL {
@@ -219,7 +247,7 @@ export function 关系归属条件(
 
 /** 「另一端」是否未排除：`从` 属于某集合时取 `到`，否则取 `从`。 */
 export function 另一端未排除(input: {
-  readonly projectId: string
+  readonly projectId: string | SQL
   readonly from属于: SQL
   readonly 从: SQL
   readonly 到: SQL
@@ -232,7 +260,7 @@ export function 另一端未排除(input: {
 
 /** 内部往来：两端都在归属集里（XOR 必然排除它们）。 */
 export function 内部往来归属条件(input: {
-  readonly projectId: string
+  readonly projectId: string | SQL
   readonly 归属集: SQL
   readonly 从: SQL
   readonly 到: SQL
@@ -247,7 +275,7 @@ export function 内部往来归属条件(input: {
 
 /** 归属歧义：两端都不在归属集，且一端是候选 ≥2 的歧义者；另一端也不能已排除。 */
 export function 归属歧义归属条件(input: {
-  readonly projectId: string
+  readonly projectId: string | SQL
   readonly 归属集: SQL
   readonly 歧义实体: SQL
   readonly 从: SQL
@@ -273,7 +301,11 @@ export function 归属歧义归属条件(input: {
  *
  * ⚠️ 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `case_event.id`。
  */
-export function 事件角色条件(projectId: string, 实体id: string, 角色: "付款方" | "收款方"): SQL {
+export function 事件角色条件(
+  projectId: string | SQL,
+  实体id: string | SQL,
+  角色: "付款方" | "收款方",
+): SQL {
   return sql`exists (select 1 from auth.case_event_participant p
                        where p.project_id = ${projectId}
                          and p.event_id = case_event.id
@@ -290,11 +322,52 @@ export function 事件角色条件(projectId: string, 实体id: string, 角色: 
  * ⚠️ 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `case_event.id` 与
  * `participants`。
  */
-export function 事件归属条件(projectId: string, 实体id: string): SQL {
+export function 事件归属条件(projectId: string | SQL, 实体id: string | SQL): SQL {
   return sql`(exists (select 1 from auth.case_event_participant p
                         where p.project_id = ${projectId}
                           and p.event_id = case_event.id
                           and p.entity_id in ${归属实体集(projectId, 实体id)})
            or exists (select 1 from unnest(participants) as 参与者
                        where 参与者 in ${归属值集(projectId, 实体id)}))`
+}
+
+/**
+ * 「关系是否归属某实体」的唯一出处（11 §3.1 / §3.2，`#002-06`）：`实体档案` 与 `实体清单` 共用。
+ *
+ * - 账户：基 2，归属集 = 自己 ∪ 唯一户名对齐者，按 XOR（恰好一端）归属；
+ * - 人 / 组织：基 1，端点等于自己（集合只由账户构造）。
+ *
+ * `projectId` / `实体id` / `类型` 可以是字面量或外层行的列表达式；`从` / `到` 是关系两端的
+ * 列表达式，允许调用点带表别名。
+ *
+ * `归属集数组`：外层行已经用 `账户归属集数组` 算好数组时传进来（清单 / 分组计数），谓词改用
+ * `= any(...)`。不传则退回 `账户归属集` 子查询（档案）。两种形态语义相同——为什么要分两种，
+ * 见 `账户归属集数组` 上的实测（`#013-05`）。
+ */
+export function 实体关系归属(input: {
+  readonly projectId: string | SQL
+  readonly 实体id: string | SQL
+  readonly 类型: string | SQL
+  readonly 从: SQL
+  readonly 到: SQL
+  readonly 归属集数组?: SQL
+}): { readonly 归属集: SQL; readonly from属于: SQL; readonly 归属: SQL } {
+  const 集 = 账户归属集(input.projectId, input.实体id)
+  const 是账户 = sql`${input.类型} = '账户'`
+  const 数组 = input.归属集数组
+  if (数组 !== undefined)
+    return {
+      归属集: 集,
+      from属于: sql`(case when ${是账户} then ${input.从} = any(${数组}) else ${input.从} = ${input.实体id} end)`,
+      归属: sql`(case when ${是账户}
+                     then (${input.从} = any(${数组})) <> (${input.到} = any(${数组}))
+                     else (${input.从} = ${input.实体id} or ${input.到} = ${input.实体id}) end)`,
+    }
+  return {
+    归属集: 集,
+    from属于: sql`(case when ${是账户} then ${input.从} in ${集} else ${input.从} = ${input.实体id} end)`,
+    归属: sql`(case when ${是账户}
+                   then (${input.从} in ${集}) <> (${input.到} in ${集})
+                   else (${input.从} = ${input.实体id} or ${input.到} = ${input.实体id}) end)`,
+  }
 }
