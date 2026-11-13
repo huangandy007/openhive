@@ -4,6 +4,7 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   aggregate_money,
+  money_flow,
   find_crossings,
   get_citation,
   query_entities,
@@ -71,6 +72,7 @@ const 工具表 = {
   get_citation,
   query_rows,
   aggregate_money,
+  money_flow,
   find_crossings,
 } as const satisfies Record<工具名, unknown>
 
