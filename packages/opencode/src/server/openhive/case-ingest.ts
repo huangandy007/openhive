@@ -48,7 +48,7 @@ import {
   删除本材料的事实,
 } from "./case-fact-store"
 import { 翻译资金, 跳过原因们 } from "./case-translate"
-import { 清本材料翻译, 写入翻译结果 } from "./case-translate-store"
+import { 清本材料翻译, 写入翻译结果, 重建关系, 本材料转账对, type 关系对 } from "./case-translate-store"
 import { 确保内置模板 } from "./case-card-template"
 import type { ParseAction, ParseStatus } from "./case-status"
 
@@ -755,6 +755,10 @@ async function 跑文本(
   const 已写事实 = new Set<string>()
 
   await inTransaction(db, async (tx) => {
+    // 关系对迁移（#013-02 同型）：本材料上一次贡献的 human 转账对必须在删事实之前取出，
+    // 否则重放换对手后，旧对没有卡片支持、却没人传进 `重建关系`，会留一笔聚合了已删事件的转账。
+    // 取的是**对齐后**的账户对（`本材料转账对` 内部完成），否则删不到真正的机器行。
+    const 旧对们 = 零片取消 || 无新事实 ? [] : await 本材料转账对(tx, job.projectId, job.materialId)
     // 两件必须一起跳：只跳一条会留下没被引用的旧事实，或者留下指向已删事实的孤儿引用。
     if (!零片取消 && !无新事实) {
       await 删除本材料的事实(tx, job.projectId, job.materialId)
@@ -859,6 +863,15 @@ async function 跑文本(
           extractMethod: "机器",
         })
       }
+    }
+
+    // D-1：笔录独有的转账必须能被流水聚合看见。文本路径不经过 `写入翻译结果`，
+    // 没有这里，机器行只会在表格重放时重算，human 关系出现后永远不去重。
+    if (!零片取消 && !无新事实) {
+      const 新对们 = await 本材料转账对(tx, job.projectId, job.materialId)
+      const 全部 = new Map<string, 关系对>()
+      for (const 对 of [...旧对们, ...新对们]) 全部.set(`${对.fromId}\u0000${对.toId}`, 对)
+      await 重建关系(tx, job.projectId, [...全部.values()])
     }
 
     await setMaterialText(tx, job.projectId, job.materialId, text)

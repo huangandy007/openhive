@@ -1,6 +1,6 @@
 export * as OpenhiveCaseTranslateStore from "./case-translate-store"
 
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { rowsOf } from "@opencode-ai/auth/migrate"
@@ -17,6 +17,8 @@ import { INSERT_CHUNK, type CitationInput, type Queryable } from "./case-store"
 import { 账户键, type 翻译结果 } from "./case-translate"
 import { 资金交易 } from "./case-event-types"
 import { 合并属性, 属性观察表, 剥离本材料出处, 读jsonb } from "./case-entity-attrs"
+import { 户名对齐 } from "./case-party"
+import { 匹配覆盖事件, type 关系候选, type 事件候选 } from "./case-match"
 
 /**
  * 翻译结果落库（01 §4.0 的「⑤ 落库」）。
@@ -66,20 +68,14 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   // 「关系对迁移」：本材料贡献过的**旧对**必须在删事件之前取出——事件删完就查不到了。
   // 否则重放换了对手时，旧对没有卡片支持、却从没人传进 `重建关系`，页面上会留一笔
   // 聚合了已删事件的转账（比少一笔更危险：它看起来像真线索）。
-  // 角色前提（付款方→收款方）与 `重建关系` 的聚合同一份，改一处必须改两处（`#002-06`）。
+  // 角色前提与 `重建关系` 同用 `资金参与者基`，改一处必须改该基（`#002-06`）。
   const 旧对们: 关系对[] = rowsOf(
     await tx.execute(sql`
       select distinct 付.entity_id as from_id, 收.entity_id as to_id
-        from auth.case_event e
-        join auth.case_event_participant 付
-          on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
-        join auth.case_event_participant 收
-          on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
-       where e.project_id = ${projectId}
-         and e.id in (select fact_id from auth.case_citation
-                       where project_id = ${projectId} and material_id = ${materialId}
-                         and fact_type = 'event')
-         and 付.entity_id is not null and 收.entity_id is not null
+        ${资金参与者基(projectId)}
+           and e.id in (select fact_id from auth.case_citation
+                         where project_id = ${projectId} and material_id = ${materialId}
+                           and fact_type = 'event')
     `),
   ).map((r) => ({ fromId: String(r.from_id), toId: String(r.to_id) }))
 
@@ -130,8 +126,8 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
     `)
   }
   // 旧对重算放在清理之后：此时它们已无卡片支持 ⇒ 删机器行后不会再插入。
-  // 人工结论（`已确认`/`已修正`/`已排除`）照旧由 `重建关系` 保护：这些对**不写**机器行，
-  // 机器行仍会被清掉（两者不得并存），清理不会删掉人工结论。
+  // 人工结论的**机器行**仍受 `trust_state in ('自动抽取','存疑')` 的删除条件保护；
+  // 「该对有一个人工结论就整对不写机器行」的粗粒度保护已移除（P3 去重后两者互不相交）。
   await 重建关系(tx, projectId, 旧对们)
 }
 
@@ -303,15 +299,34 @@ export interface 关系对 {
 const INSERT_CHUNK_PAIRS = 500
 
 /**
+ * 「事件有一个付款方和一个收款方」的取数基（`#002-06`）：角色前提只写这一处。
+ *
+ * 三个调用点共用：`清本材料翻译` 取旧对、`重建关系` 取匹配候选、`重建关系` 聚合。
+ * 基里**只放**三处都成立的前提（项目、两个角色、两端非空）；`type` / `trust_state` /
+ * 对过滤由各调用点自己追加——把它们塞进基里，「旧对」就查不到非转账事件，
+ * 重放换对手时会静默留下一笔聚合了已删事件的转账（`#013-02`）。
+ */
+function 资金参与者基(projectId: string): SQL {
+  return sql`from auth.case_event e
+    join auth.case_event_participant 付
+      on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
+    join auth.case_event_participant 收
+      on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
+   where e.project_id = ${projectId}
+     and 付.entity_id is not null and 收.entity_id is not null`
+}
+
+/**
  * 从卡片重建关系（§4.0.4：卡片是唯一事实，关系是对卡片的聚合）。
  *
  * 为什么不能「按材料增量累加」：同一对账户常出现在双方各自导出的流水里。增量累加会在
  * 重放时算重（`#007-02` 的同款形态），`on conflict do nothing` 又会让后到材料的笔数
  * 静默丢失。唯一正确的做法是：删掉这一对的机器态，再从 `case_event` + 参与者重新聚合。
  *
- * 人工结论优先：该对已有 `已确认`/`已修正`/`已排除` 行时不写机器行（机器行仍清掉，
- * 两者不得并存）。`已排除` 与另外两种一样是跨重放保留的人工结论（`case-fact-store.ts`
- * 的 `deleteCitationsOfMaterial` 注释同款口径）；漏了它，重放会把人工排除静默撤销。
+ * 去重后 human 行与机器行覆盖**互不相交**的转账，可以并存；因此不再保留
+ * 「该对存在人工结论行 ⇒ 整对不写机器行」的粗粒度保护（#013-04 同型：保护父行
+ * 不能连孩子一起覆盖）。人工结论的**机器行**仍受 `trust_state in ('自动抽取','存疑')`
+ * 的删除条件保护，重放不会覆盖已确认/已修正的机器事实。
  *
  * 币种口径（Q16 / Global Constraints 14，2026-11-12 裁定）：`times` 统计**所有币种**的
  * 资金交易笔数（「这两人有没有往来」是定性事实，抹掉外币往来等于隐藏线索）；`amount`
@@ -328,19 +343,60 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       sql`, `,
     )
 
-    // 人工行存在就不写机器行（机器行仍清掉，两者不得并存）。
-    const 人工 = rowsOf(
+    // ① 该 chunk 的 human 转账关系（端点先对齐；对齐后落在本 chunk 的才算）。
+    //    `#002-06`：别名前提只在 case-party.ts 定义；这里只负责 join 与行值过滤。
+    const 关系行 = rowsOf(
       await tx.execute(sql`
-        select distinct r.from_id, r.to_id
+        select r.id, r.amount::text as amount, r.first_at, r.trust_state,
+               coalesce(起对齐.代表, r.from_id) as from_代表,
+               coalesce(终对齐.代表, r.to_id) as to_代表
           from auth.case_relation r
-         where r.project_id = ${projectId} and r.type = '转账'
-           and r.trust_state in (${人工结论值})
-           and (r.from_id, r.to_id) in (values ${值})
+          join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
+          join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
+          left join lateral ${户名对齐(projectId, sql`起.id`, sql`起.type`, sql`起.canonical_value`)} 起对齐 on true
+          left join lateral ${户名对齐(projectId, sql`终.id`, sql`终.type`, sql`终.canonical_value`)} 终对齐 on true
+         where r.project_id = ${projectId} and r.type = '转账' and r.source_kind = 'human'
+           and r.trust_state <> '已排除'
+           and (coalesce(起对齐.代表, r.from_id), coalesce(终对齐.代表, r.to_id)) in (values ${值})
       `),
     )
-    const 保护 = new Set(人工.map((r) => `${String(r.from_id)}\u0000${String(r.to_id)}`))
+    const 关系们: 关系候选[] = 关系行.map((行) => {
+      // 与聚合循环同款：金额判型失败**抛错**，不能 `String()` 兜成 "[object Object]"。
+      if (行.amount !== null && typeof 行.amount !== "string")
+        throw new Error(`human 关系的金额不是字符串：${JSON.stringify(行.amount)}`)
+      return {
+        id: String(行.id),
+        from代表: String(行.from_代表),
+        to代表: String(行.to_代表),
+        amount: 行.amount,
+        firstAt: 行.first_at === null ? null : Number(行.first_at),
+        trustState: String(行.trust_state),
+      }
+    })
 
-    // 只删本函数自己那条确定性 id（`事实id(projectId, "转账", from, to)`），不能按
+    // ② 该 chunk 的 CNY 资金事件（币种不是条件：匹配器自己按 CNY 过滤；这里全取是为了
+    //    「全外币对」也有事件可数，只是匹配不上）。
+    const 事件行 = rowsOf(
+      await tx.execute(sql`
+        select e.id, e.amount::text as amount, e.occurred_at, e.currency,
+               付.entity_id as from_id, 收.entity_id as to_id
+        ${资金参与者基(projectId)}
+           and e.type = ${资金交易}
+           and e.trust_state <> '已排除'
+           and (付.entity_id, 收.entity_id) in (values ${值})
+      `),
+    )
+    const 事件们: 事件候选[] = 事件行.map((行) => ({
+      id: String(行.id),
+      from代表: String(行.from_id),
+      to代表: String(行.to_id),
+      amount: String(行.amount),
+      occurredAt: 行.occurred_at === null ? null : Number(行.occurred_at),
+      currency: String(行.currency),
+    }))
+    const 覆盖 = [...匹配覆盖事件(关系们, 事件们)]
+
+    // ③ 只删本函数自己那条确定性 id（`事实id(projectId, "转账", from, to)`），不能按
     // 「type + 信任态 + 对」整片删：`case-ingest.ts` 从笔录抽出的转账关系 source_kind='human'、
     // trust_state 也是 自动抽取/存疑，整片删会把它连出处一起误删。
     // `trust_state` 条件仍要留：人工把这条关系改成 `已确认` 时 id 不变，不能删。
@@ -352,10 +408,12 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
          and trust_state in ('自动抽取', '存疑')
     `)
 
+    // ④ 聚合：排除被 human 覆盖的事件；times_cny 只数 CNY。
     const 聚合 = rowsOf(
       await tx.execute(sql`
         select 付.entity_id as from_id, 收.entity_id as to_id,
                count(*)::int as times,
+               count(*) filter (where e.currency = 'CNY')::int as times_cny,
                coalesce(sum(e.amount) filter (where e.currency = 'CNY'), 0)::numeric(18,2)::text as amount,
                min(e.occurred_at) as first_at, max(e.occurred_at) as last_at,
                -- 精度取最粗；全为 NULL 时输出 NULL（M5：不升级为最细）。
@@ -365,17 +423,11 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
                     when bool_or(e.precision = '到分') then '到分'
                     when bool_or(e.precision = '到秒') then '到秒'
                     else null end as precision
-          from auth.case_event e
-          -- 角色前提与清本材料翻译的旧对查询一致，改一处必须改两处（#002-06）。
-          join auth.case_event_participant 付
-            on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
-          join auth.case_event_participant 收
-            on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
-         where e.project_id = ${projectId}
+        ${资金参与者基(projectId)}
            and e.type = ${资金交易}
            and e.trust_state <> '已排除'
-           and 付.entity_id is not null and 收.entity_id is not null
            and (付.entity_id, 收.entity_id) in (values ${值})
+           and e.id <> all(${文本数组(覆盖)})
          group by 1, 2
       `),
     )
@@ -383,19 +435,16 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
     for (const 行 of 聚合) {
       const fromId = String(行.from_id)
       const toId = String(行.to_id)
-      if (保护.has(`${fromId}\u0000${toId}`)) continue
-      // `::text` 聚合列按字符串回读。判型失败说明查询/驱动契约变了——**抛错**，
-      // 不能兜底成 0：那会把一笔真实金额静默写成「无金额」。
       if (typeof 行.amount !== "string")
         throw new Error(`关系聚合的金额不是字符串（${fromId} → ${toId}）：${JSON.stringify(行.amount)}`)
       const 写入 = rowsOf(
         await tx.execute(sql`
           insert into auth.case_relation
-            (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, amount,
+            (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, times_cny, amount,
              basis, source_kind, trust_state, created_at)
           values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
                   ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
-                  ${Number(行.times ?? 0)}, ${行.amount}, null, 'data', '自动抽取',
+                  ${Number(行.times ?? 0)}, ${Number(行.times_cny ?? 0)}, ${行.amount}, null, 'data', '自动抽取',
                   ${nowSeconds()})
           on conflict (project_id, id) do nothing
           returning id
@@ -406,4 +455,33 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
     }
   }
   return written
+}
+
+/**
+ * 本材料贡献的 human 转账对，**按对齐后的账户对**返回。
+ *
+ * 为什么必须对齐：机器行 id 与聚合分组用的是账户对（A, B）；笔录写的可能是
+ * （A, 人「李四」）。拿原始对去调 `重建关系`，删不到、也算不到真正受影响的机器行。
+ */
+export async function 本材料转账对(
+  tx: Queryable,
+  projectId: string,
+  materialId: string,
+): Promise<关系对[]> {
+  return rowsOf(
+    await tx.execute(sql`
+      select distinct
+             coalesce(起对齐.代表, r.from_id) as from_id,
+             coalesce(终对齐.代表, r.to_id) as to_id
+        from auth.case_relation r
+        join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
+        join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
+        left join lateral ${户名对齐(projectId, sql`起.id`, sql`起.type`, sql`起.canonical_value`)} 起对齐 on true
+        left join lateral ${户名对齐(projectId, sql`终.id`, sql`终.type`, sql`终.canonical_value`)} 终对齐 on true
+       where r.project_id = ${projectId} and r.type = '转账' and r.source_kind = 'human'
+         and r.id in (select fact_id from auth.case_citation
+                       where project_id = ${projectId} and material_id = ${materialId}
+                         and fact_type = 'relation')
+    `),
+  ).map((r) => ({ fromId: String(r.from_id), toId: String(r.to_id) }))
 }
