@@ -362,6 +362,14 @@ export async function 解析户名(
  *   排在未纠正的「人」型前（「非人优先」；纠正只会把「人」改成别的类，旧行才是「人」型）；
  * - 再同型才按 `type asc, id asc` 取确定的第一条——不许「取到哪条算哪条」。
  *
+ * **同值里有「已排除」行时，可见行优先**（`(trust_state = '已排除') asc` 挂在 id 命中之后）：
+ * 唯一索引是 `(project_id, type, canonical_value)`，同值可跨类型并存（见 0031 / 缺口 #11），
+ * 而「已排除」大多来自纠正——旧行被排除、新行才是可见的。若只按 `created_at desc` 取，
+ * 可见行较旧、排除行较新时这里会解析到**不可见**的那行，调用方再按 id 查档案就被过滤成
+ * `undefined`，最终把「看得见的实体」讲成「不存在」（`explore_entity` 的「无此实体」），
+ * 而按 `ids` 过滤的工具照常出数据（缺口 #14）。按 id 请求时 `(id = 值) desc` 在最前，
+ * 单行语义不受影响；同值全是已排除行时也回落到原来的 `created_at` 口径。
+ *
  * `ids` 是**关系过滤**用的 id 集合：按 id 请求时只有那一行（单行语义不扩大）；按规范值
  * 请求时返回同值所有类型行——实体从不删除、重灌只删本材料的引用，旧行上的关系仍在，
  * 只按「最新一行」过滤会让另一份材料的关系静默消失。展示用 `id/type` 仍是排序第一名。
@@ -375,7 +383,7 @@ export async function 解析实体(
     await ctx.db.execute(sql`
       select id, type, canonical_value from auth.case_entity
        where project_id = ${ctx.身份.projectId} and (id = ${值} or canonical_value = ${值})
-       order by (id = ${值}) desc, created_at desc, (type = '人') asc, type asc, id asc
+       order by (id = ${值}) desc, (trust_state = '已排除') asc, created_at desc, (type = '人') asc, type asc, id asc
     `),
   )
   const 行 = rows[0]

@@ -8,6 +8,7 @@ import {
   aggregate_money,
   explore_entity,
   find_crossings,
+  解析实体,
   type 工具上下文,
 } from "../../src/server/openhive/case-mcp-tools"
 import { 实体档案 } from "../../src/server/openhive/case-entity-list"
@@ -443,5 +444,54 @@ describe("档案截断：按实际交付条数写缺口，且不透传无关缺�
     expect(结果.缺口.join("\n")).not.toContain("人说的关系")
     expect(结果.缺口.join("\n")).not.toContain("事件只显示最近")
     expect(结果.缺口.join("\n")).not.toContain("出处只显示前")
+  })
+})
+
+/**
+ * 缺口 #14：同一规范值两行（唯一索引是 `(project_id, type, canonical_value)`，同值必须跨类型），
+ * 其中**新建的那行被「已排除」**。`解析实体` 曾只看 `created_at desc`，把已排除行当成展示行；
+ * `实体档案` 按该 id 查又过滤已排除 ⇒ `explore_entity` 回「无此实体」，而 `query_relations`
+ * 用 `实体.ids` 仍能出数据 ⇒ 可见实体被说成不存在。修法在 `解析实体` 排序（可见行优先），
+ * 本用例钉住两端：解析结果必须是可见行，探索结果不许是空信封。
+ */
+describe("缺口 #14：同值一行已排除、一行可见（独立项目）", () => {
+  const 项目 = "p-重名14"
+
+  test("解析到可见行；explore 不把可见实体说成「无此实体」", async () => {
+    await 建实体(db(), { id: "重名-可见", projectId: 项目, type: "组织", value: "重名者", createdAt: 1_000 })
+    await 建实体(db(), {
+      id: "重名-排除",
+      projectId: 项目,
+      type: "人",
+      value: "重名者",
+      createdAt: 2_000,
+      trustState: "已排除",
+    })
+    await 建实体(db(), { id: "重名-对手", projectId: 项目, value: "重名对手", createdAt: 3_000 })
+    await 建关系批(db(), {
+      projectId: 项目,
+      fromId: "重名-可见",
+      toId: "重名-对手",
+      sourceKind: "human",
+      数量: 1,
+      前缀: "重名-关系-",
+    })
+
+    const 解析 = await 解析实体(ctx(项目), "重名者", "实体")
+    expect(解析.id).toBe("重名-可见")
+    expect(解析.type).toBe("组织")
+    // `ids` 仍是同值全部行：关系过滤口径不因展示行改变而收窄。
+    expect([...解析.ids].sort()).toEqual(["重名-可见", "重名-排除"])
+
+    const 结果 = await explore_entity(ctx(项目), { 实体: "重名者" })
+    expect(结果.空原因).toBeNull()
+    expect(结果.数据).not.toBeNull()
+    const 数据 = 结果.数据 as {
+      档案: { type: string; canonical_value: string; trust_state: string }
+      总数: { 关系总数: number }
+    }
+    expect(数据.档案.type).toBe("组织")
+    expect(数据.档案.canonical_value).toBe("重名者")
+    expect(数据.总数.关系总数).toBe(1)
   })
 })

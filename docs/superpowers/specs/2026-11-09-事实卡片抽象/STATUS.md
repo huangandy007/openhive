@@ -88,9 +88,14 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 13. **T8 M5（未修）**：基 2 的「类型分派」（账户 → `账户归属集`/`关系归属条件`，否则端点等于自己）
     在 `实体档案`、`关系圈`、`关系图` 三处同形拷贝；谓词本体已单一出处，将来基 2 扩到组织
     会各改各的。
-14. **T8 M4（未修）**：`解析实体` 排序首位被「已排除」而同一 `canonical_value` 还有未排除行时，
-    `explore_entity` 回「无此实体」，而 `query_relations` / `aggregate_money` 用其余行仍能出数据
-    ⇒ 可见实体被说成不存在；需跨工具裁定 `解析实体` 排序。
+14. **T8 M4（已修，2026-11-13）**：`解析实体` 排序首位曾被「已排除」占住（同值跨类型的较新行），
+    而同一 `canonical_value` 还有未排除行 ⇒ `实体档案` 按该 id 过滤成 `undefined` ⇒
+    `explore_entity` 回「无此实体」，`query_relations` 用 `实体.ids` 仍出数据 ⇒ 可见实体被说成不存在。
+    修法：**裁定在 `解析实体` 一处**——排序在 `(id = 值) desc` 之后插入 `(trust_state = '已排除') asc`，
+    同值时可见行优先；按 id 直取仍单行语义，同值全为已排除时回落到原 `created_at` 口径。
+    红（1 条新用例，实得 `Received: "重名-排除"`）、绿（20 pass / 0 fail / 90 expect）、
+    变异（拆排序键 ⇒ 红停在首条断言 `解析实体.id`）均见 ledger。真栈**无此类数据**（同值多行仅 2 组，
+    均无已排除行）⇒ 未做真栈复验，如实登记。
 15. **T8 M7（未修）**：`explore_entity` 无 `身份` 三档（`01` §3.8.4「任何涉及『人』的查询结果
     必须落在三档之一」）；`query_timeline` 有，探索原语没有。
 16. **T8 M2（未修）**：`账户展示名` 的 fail-closed（`候选数 = 1`）守卫在两个调用点而非函数内，
@@ -113,3 +118,4 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 | 2026-11-13 | **真栈验收首轮（MCP/内核层，基线 `9101d1aca8`）**：A4 通过（出 2/60000、入 2/60000 与手工核算一致，关系可下钻原文）；A12 通过（未解析材料不冒充 0 笔）；A11 两档措辞实测、户名分支无数据；09 信封/fail-closed/预算实测、地点缺口复现、30KB 未触发；01-P1 索引进位 + `query_rows` 实测；`query_timeline` 通过；P3 第一期币种口径无数据；P3 第二期 A5 部分（引用不跟随＝缺口 #5 复现、参与者表 0 行）、A6 未实现、`explore_entity`/`find_crossings`/`money_flow` 闸门通过。逐条见 `过程文档/真栈验收记录-2026-11-13.md` | 本行（文档提交）；证据文件 `.superpowers/sdd/2026-11-13-P3-第二期-实体打通与探索原语/acc-*` |
 | 2026-11-13 | 终审闭环：交付区间与最终门禁按实得补齐（18 个受影响文件 360 pass / 0 fail、回放 23 pass / 0 fail、typecheck 32/32、oxlint 70 warnings / 0 errors、`bun.lock` 无 diff）；第 2 轮定向复查 4 项全部 ADDRESSED、无新破坏 | `16097fd9b4`、`84043a3f8f`；本行（文档提交） |
 | 2026-11-13 | **缺口 #5 修复（合并搬引用 / 拆分恢复引用）**：合并把 `fact_type='entity'` 的 `case_citation` 改指幸存者并记留痕 `引用们`；拆分逐条恢复、恢复前校验仍指幸存者，异常进 `未恢复引用`；新增 `movedCitations` / `未恢复引用` 两个结果字段。红 19 pass / 4 fail → 绿 23 pass / 0 fail；三组变异各自变红（3 / 2 / 2 条）；门禁 typecheck 32/32、受影响测试 100 pass / 5 文件 / 0 fail、oxlint 0 error、`bun.lock` 无 diff。真栈复验：合并 `movedCitations=2`（李四名下 2 条改指张三）、拆分 `未恢复引用=[]`。grep 同类落点：全仓仅合并一处删实体（`case-merge.ts:258`），无独立实体删除端点；读侧 `case-materials.ts:86` INNER JOIN 与三处 LEFT JOIN 计数在改指后不再悬空 | 本行（代码 `case-merge.ts` + 测试 `openhive-case-merge.test.ts`）；真栈证据 `.superpowers/sdd/2026-11-13-P3-第二期-实体打通与探索原语/a5-*.json` |
+| 2026-11-13 | **缺口 #14 修复（可见实体被说成「无此实体」）**：`解析实体` 排序在 id 命中之后加 `(trust_state = '已排除') asc`，同值跨类型时可见行优先；按 id 直取与「同值全已排除」口径不变。根因实得：同值「组织/可见 + 人/已排除（较新）」时解析到已排除行 ⇒ `实体档案` 过滤成 undefined ⇒ `explore_entity` 回「无此实体」，而 `query_relations` 出 1 条关系。红 19 pass / 1 fail（`Received: "重名-排除"`）→ 绿 20 pass / 0 fail / 90 expect；变异拆排序键 ⇒ 红在首条断言。门禁：typecheck 32/32、10 个受影响测试文件 253 pass / 0 fail、oxlint 81 warnings / **0 errors**（告警行号全部在改动范围外）、`bun.lock` 无 diff。真栈无「同值 + 已排除」数据 ⇒ 未复验 | 本行（代码 `case-mcp-tools.ts` + 用例 `openhive-case-explore.test.ts`）；根因证据见 ledger |
