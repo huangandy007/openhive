@@ -29,6 +29,7 @@ import {
   事件归属条件,
   账户归属集,
   账户展示名,
+  关系归属口径,
   关系归属条件,
   歧义到账户,
   户名对齐,
@@ -2281,13 +2282,14 @@ export async function find_crossings(
    * 人 / 组织保持「端点等于自己」。另一端若是唯一户名对齐到某账户的人/组织，取其代表。
    */
   const 另一端们 = async (实体: 实体解析): Promise<{ 值们: string[]; 用满: boolean }> => {
-    const 是账户 = 实体.type === "账户"
-    const 集 = 是账户 ? 账户归属集(ctx.身份.projectId, 实体.ids) : undefined
-    const from属于 = 集 === undefined ? sql`r.from_id ${id属于(实体.ids)}` : sql`r.from_id in ${集}`
-    const 命中 =
-      集 === undefined
-        ? sql`(r.from_id ${id属于(实体.ids)} or r.to_id ${id属于(实体.ids)})`
-        : sql`((r.from_id in ${集}) <> (r.to_id in ${集}))`
+    // 基 2 的分派只从 `case-party.关系归属口径` 取（与档案 / 关系圈 / 关系图同源，`#002-06`）。
+    const { from属于, 触达: 命中 } = 关系归属口径({
+      projectId: ctx.身份.projectId,
+      ids: 实体.ids,
+      类型: 实体.type,
+      从: sql`r.from_id`,
+      到: sql`r.to_id`,
+    })
     const 值们 = rowsOf(
       await ctx.db.execute(sql`
         select coalesce(对齐.代表, 另一个.id) as 邻端

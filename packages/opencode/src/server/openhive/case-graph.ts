@@ -7,9 +7,9 @@ import { 细类 } from "./case-subtype"
 import {
   内部往来归属条件,
   关系归属条件,
+  关系归属范围,
   归属歧义归属条件,
   歧义到账户,
-  账户归属集,
 } from "./case-party"
 
 /**
@@ -418,8 +418,8 @@ export async function 关系图(db: Queryable, input: 关系图入参): Promise<
   const 中心 = 中心行们[0]
 
   // 中心是账户时，把「唯一户名对齐到它的人/组织」的端点投影到中心（D-2：只影响画哪些边）。
-  const 是账户 = String(中心.type) === "账户"
-  const 归属集 = 是账户 ? 账户归属集(input.projectId, [String(中心.id)]) : undefined
+  // 分派只从 `case-party.关系归属范围` 取（与档案 / 关系圈 / `find_crossings` 同源）。
+  const { 归属集 } = 关系归属范围(input.projectId, [String(中心.id)], String(中心.type))
   const 投影 =
     归属集 === undefined ? undefined : { 中心: String(中心.id), 归属集: 归属集 }
 

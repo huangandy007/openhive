@@ -237,6 +237,61 @@ export function 关系归属条件(
   return sql`((${从} in ${集}) <> (${到} in ${集}))`
 }
 
+/** 账户类型名：基 2 分派判据（含逐行 SQL 形态）的唯一字面值出处（`#002-06`）。 */
+export const 账户类型 = "账户"
+
+/** 「类型是不是账户」：基 2 分派判据的唯一出处（`#002-06`）。 */
+export function 是账户类型(类型: string): boolean {
+  return 类型 === 账户类型
+}
+
+/**
+ * 基 2 的类型分派（11 §3.2），**唯一出处**：账户 → `账户归属集`；人 / 组织 / 其他 →
+ * 无归属集（读端退回「端点等于自己」）。
+ *
+ * 实体档案 / 关系圈 / 关系图 / `find_crossings` 四个读口都从这里取——将来基 2 扩到
+ * 组织只改这里（`#002-06`）。逐行（`e.type`）的 SQL 形态是 `实体关系归属` 的 CASE，
+ * 两者是同一张表的两形态，别在调用点再写第三份。
+ */
+export function 关系归属范围(
+  projectId: string,
+  ids: readonly (string | SQL)[],
+  类型: string,
+): { readonly 是账户: boolean; readonly 归属集: SQL | undefined } {
+  return 是账户类型(类型)
+    ? { 是账户: true, 归属集: 账户归属集(projectId, ids) }
+    : { 是账户: false, 归属集: undefined }
+}
+
+/**
+ * `关系归属范围` 的谓词形态：`from属于` 供「另一端」判定，`触达` 是该关系是否归属该实体。
+ * 账户走 `关系归属条件` 的 XOR（内部往来不归属）；其他类型退回端点相等（自环照旧触达）。
+ */
+export function 关系归属口径(input: {
+  readonly projectId: string
+  readonly ids: readonly (string | SQL)[]
+  readonly 类型: string
+  readonly 从: SQL
+  readonly 到: SQL
+}): {
+  readonly 是账户: boolean
+  readonly 归属集: SQL | undefined
+  readonly from属于: SQL
+  readonly 触达: SQL
+} {
+  const 范围 = 关系归属范围(input.projectId, input.ids, input.类型)
+  if (范围.归属集 === undefined) {
+    const 集 = id集合(input.ids)
+    const from属于 = sql`${input.从} in ${集}`
+    return { ...范围, from属于, 触达: sql`(${from属于} or ${input.到} in ${集})` }
+  }
+  return {
+    ...范围,
+    from属于: sql`${input.从} in ${范围.归属集}`,
+    触达: 关系归属条件(input.projectId, input.ids, input.从, input.到),
+  }
+}
+
 /**
  * 缺口计数的共享谓词（`关系圈遗漏` 与 `aggregate_money` 共用，`#002-06`）。
  *
@@ -353,7 +408,7 @@ export function 实体关系归属(input: {
   readonly 归属集数组?: SQL
 }): { readonly 归属集: SQL; readonly from属于: SQL; readonly 归属: SQL } {
   const 集 = 账户归属集(input.projectId, input.实体id)
-  const 是账户 = sql`${input.类型} = '账户'`
+  const 是账户 = sql`${input.类型} = ${账户类型}`
   const 数组 = input.归属集数组
   if (数组 !== undefined)
     return {

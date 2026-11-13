@@ -121,9 +121,24 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 12. **T8 M3（文档待补）**：`explore_entity` 的空原因判据与 `09 §3.5` 总表顺序/触发条件不一致
     （有未解析材料时先报 `材料未解析`、实体存在且事实为 0 时先报 `实体存在但无任何事实`）；
     实现按 brief 优先级，**补文档而非改代码**。
-13. **T8 M5（未修）**：基 2 的「类型分派」（账户 → `账户归属集`/`关系归属条件`，否则端点等于自己）
-    在 `实体档案`、`关系圈`、`关系图` 三处同形拷贝；谓词本体已单一出处，将来基 2 扩到组织
-    会各改各的。
+13. **T8 M5（已修，2026-11-13）**：基 2 的「类型分派」（账户 → `账户归属集`/`关系归属条件`，
+    否则端点等于自己）原在 `实体档案`、`关系圈`、`关系图` 三处同形拷贝；复查时又找到**第四份**
+    `find_crossings`（`case-mcp-tools.ts` 的 `另一端们`）。
+    修法：`case-party` 把分派收成一组——`账户类型`（字面值单源）、`是账户类型`（判据单源）、
+    `关系归属范围`（是账户 + 归属集）、`关系归属口径`（再给谓词形态 `from属于` / `触达`）；
+    四个读口（档案 / 关系圈 / 关系图 / `find_crossings`）全部从这里取。关系图只取 `归属集`
+    （它要的是投影几何，不是布尔谓词）；逐行 SQL 形态 `实体关系归属` 的字面值也改取 `账户类型`。
+    **纯重构、无行为差异** ⇒ 特征用例先于重构在旧代码上跑绿（`git stash` 前后各 3 pass / 0 fail），
+    重构后同绿。变异 A（`是账户类型` 加 `组织`）：组织自环 3 条红、其余 20 pass。
+    变异 B（账户分支 `触达` 退回端点 OR）：**既有 23 条用例全绿——说明账户 XOR 在共享口径上
+    根本没有钉子**，补 1 条「账户自环不计入档案关系总数、不成圈组」后红（`Expected: 3 / Received: 4`）；
+    变异 C（非账户分支 `触达` 改 XOR）：档案 / 关系圈组织自环两条红，关系图那条绿——关系图的
+    非账户路径是它自有的聚合 SQL，不经布尔谓词（分派本身仍来自 `关系归属范围`）。
+    ⑥ 落点：`case-identity` / `case-extract` / `case-field-registry` / `money_flow` 账户分支 /
+    `下一步` 建议里的 `=== "账户"` 是**不同前提**（身份证据、抽取、形状判定、账户专有工具），
+    不并入本次分派。门禁：typecheck 32/32；`test/server/openhive-case` **1361 pass / 2 fail**
+    （基线 1357 + 新增 4，两条 fail 均既有无关）；oxlint 0 errors、新增行 0 告警；
+    `bun.lock` 无 diff。真栈：重构类，无行为差异可验，按 `#002-02` 登记。
 14. **T8 M4（已修，2026-11-13）**：`解析实体` 排序首位曾被「已排除」占住（同值跨类型的较新行），
     而同一 `canonical_value` 还有未排除行 ⇒ `实体档案` 按该 id 过滤成 `undefined` ⇒
     `explore_entity` 回「无此实体」，`query_relations` 用 `实体.ids` 仍出数据 ⇒ 可见实体被说成不存在。
@@ -159,3 +174,4 @@ money_flow 正向路），以及 A5 引用不跟随、A6 未实现两处真缺�
 | 2026-11-13 | **缺口 #8/#9 修复（已排除实体的名字从三个读口外露）**：`实体档案` 事件列表、事实详情 `读事件`、`find_crossings` 共同时空曾各自 `解JSON(participants)` 原样返回；「剔除已排除实体值」整仓只有 `参与者视图` 一处执行（`#002-06`）。修法：剔除值查询收成 `case-party.已排除规范值`（唯一出处），`参与者视图` 改用它；`实体档案`/`读事件` 按各自 `含已排除` 开关剔除，`find_crossings` 恒剔除并在 `口径` 声明。红 1 pass / 3 fail（三条默认断言实得均多「丙名」）→ 绿 4 pass / 0 fail / 8 expect；三处变异各自红在本文件对应断言。门禁：typecheck 32/32、13 个受影响文件 266 pass / 0 fail、全量 `openhive-case-*` 1352 pass / 2 fail（均为既有无关：schema 用例仍按 13 张表、漏 0039 三张；supervisor 假子进程在全量并发下未落 `case-port.txt`，单跑 9 pass / 0 fail）、oxlint 改动 6 文件 109 warnings / **0 errors**（告警行号全部在改动行之外）、`bun.lock` 无 diff。落点：全仓读 `participants` 共 5 处，2 处中间态经 `参与者视图`、3 处新收口；前端仅展示。真栈全库「已排除」实体 **0 个** ⇒ 未复验 | 本行（代码 `case-party.ts` / `case-entity-list.ts` / `case-fact-read.ts` / `case-mcp-tools.ts` + 用例 `openhive-case-excluded-leak.test.ts`；`explore_entity` 查询数用例按实得 17 → 18） |
 | 2026-11-13 | **缺口 #1 修复（清单度数/事件数改与档案同口径）**：`case-party` 新增 `实体关系归属`（基 2 账户 XOR / 基 1 端点相等的唯一出处），`实体档案` 与清单 `关系度数` 共用；`事件参与数` 改走 `事件归属条件`。清单/分组计数用 `账户归属集数组` 每行预算一次归属集再 `= any(...)`——同一谓词的相关子查询重复出现会触发 PG 16.3 计划器错算（实测 0 / 2，应为 4；`enable_hashjoin=off` 即恢复，登记 `#013-05`）。红 0 pass / 2 fail（`Expected: 3 Received: 2`、`Expected: 3 Received: 0`）→ 绿 2 pass / 0 fail / 8 expect；两条变异各自变红在实数断言。门禁：typecheck 32/32、`test/server/openhive-case` 1354 pass / 2 fail（均为既有无关：schema 13 张表、supervisor 假子进程）、oxlint 21 warnings / 0 errors（新增行 0 告警）、`bun.lock` 无 diff。真栈：远端库 3 个真实项目共 190 个实体逐实体比「清单 vs 档案」，**修复前后均 0 不一致**（真实数据无户名对齐 / 别名命中 / 参与者表事件）⇒ 该缺口在现有数据面上不复现，由夹具用例钉住 | 本行（代码 `case-party.ts` / `case-entity-list.ts` + 用例 `openhive-case-count-consistency.test.ts`） |
 | 2026-11-13 | **缺口 #2 修复（关系图对不画的关系写缺口）**：账户中心的投影路径把内部往来压成自环排掉、歧义者 fail-closed，两条都不进图且 `缺口` 为空。补一条查询两个 `count(*) filter`（`内部往来归属条件` / `归属歧义归属条件`，谓词只从 `case-party` 取），类型随请求筛选；条数 > 0 才写句。红（`缺口` 实得 `""`）→ 绿 3 pass / 0 fail / 8 expect；三组变异各自红（拆内部往来 / 拆歧义 / 拆类型条件）。门禁：typecheck 32/32、全量 `openhive-case` 1357 pass / 2 fail（两条均既有无关）、oxlint 改动文件 4 warnings / 0 errors（均在改动行之外）、`bun.lock` 无 diff。真栈：远端库户名别名 0 行、同名 ≥2 实体 0 组、未排除自环 0 条 ⇒ 两类都不可复现 | 本行（代码 `case-graph.ts` + 用例 `openhive-case-graph-attribution-gap.test.ts`） |
+| 2026-11-13 | **缺口 #13 修复（基 2 类型分派收成一处）**：`case-party` 新增 `账户类型` / `是账户类型` / `关系归属范围` / `关系归属口径`，`实体档案`、`关系圈`、`关系图`、`find_crossings`（第四份，复查新发现）全部改从这里取；逐行 SQL 形态 `实体关系归属` 的字面值也取 `账户类型`。纯重构无行为差异（特征用例在旧代码上先绿再重构后同绿）；变异 A（加 `组织`）组织自环 3 红；变异 B（账户触达退回端点 OR）**既有 23 条全绿**⇒ 补 1 条账户 XOR 用例后才红（`Expected: 3 / Received: 4`）；变异 C（非账户触达改 XOR）档案 / 关系圈 2 红。门禁：typecheck 32/32、`test/server/openhive-case` 1361 pass / 2 fail（基线 +4 新增，2 fail 既有无关）、oxlint 0 errors（新行 0 告警）、`bun.lock` 无 diff。真栈：重构类，无行为差异可验（`#002-02`） | 本行（代码 `case-party.ts` / `case-entity-list.ts` / `case-graph.ts` / `case-mcp-tools.ts` + 用例 `openhive-case-relation-scope.test.ts`） |

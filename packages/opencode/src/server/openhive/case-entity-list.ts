@@ -4,11 +4,10 @@ import type { Queryable } from "./case-store"
 import {
   事件归属条件,
   实体关系归属,
-  账户归属集,
   账户归属集数组,
   账户展示名,
   户名对齐,
-  关系归属条件,
+  关系归属口径,
   歧义到账户,
   另一端未排除,
   内部往来归属条件,
@@ -383,18 +382,17 @@ export async function 实体档案(
   if (实体行们.length === 0) return undefined
   const 实体 = 实体行们[0]!
 
-  // 基 2（11 §3.2）：中心是账户时，关系按「恰好一端落在归属集里」判定；
-  // 人 / 组织保持「端点等于自己」的原口径。归属口径只有一份（`实体关系归属`，`#002-06`），
-  // 与清单的 `关系度数` 共用。
+  // 基 2（11 §3.2）的分派只在 `关系归属口径` 一处（`#002-06`）：账户按「恰好一端落在
+  // 归属集里」判定，人 / 组织保持「端点等于自己」；关系圈 / 关系图 / `find_crossings`
+  // 与这里同源。逐行的 SQL 形态（清单）走 `实体关系归属`，是同一张表的另一形态。
   // 不看 `含排除` 开关：归属是口径，不是可见性；归属集本身已经排除「已排除」的人。
-  const { 归属集, from属于, 归属: 关系归属 } = 实体关系归属({
+  const { 归属集, from属于, 触达: 关系归属 } = 关系归属口径({
     projectId: input.projectId,
-    实体id: String(实体.id),
+    ids: [String(实体.id)],
     类型: String(实体.type),
     从: sql`r.from_id`,
     到: sql`r.to_id`,
   })
-  const 是账户 = String(实体.type) === "账户"
 
   // 关系：两侧实体 join 出来，取「对方」；已排除的关系与已排除的对方都默认不出现（§9.1）。
   // 「触达」是 project + 该实体（账户走归属集，见上）；「可见」再叠未排除条件。
@@ -556,14 +554,14 @@ export async function 实体档案(
     )
   const 归属缺口基础 = [sql`r.project_id = ${input.projectId}`, sql`r.trust_state <> '已排除'`]
   const 内部往来条数 =
-    !是账户
+    归属集 === undefined
       ? 0
       : await 归属缺口计数([
           ...归属缺口基础,
           ...内部往来归属条件({ projectId: input.projectId, 归属集, 从: sql`r.from_id`, 到: sql`r.to_id` }),
         ])
   const 归属歧义条数 =
-    !是账户
+    归属集 === undefined
       ? 0
       : await 归属缺口计数([
           ...归属缺口基础,
@@ -656,13 +654,15 @@ function 关系圈范围(input: {
   readonly 起?: number
   readonly 止?: number
 }): 关系圈范围 {
-  const 是账户 = input.type === "账户"
-  const 归属集 = 是账户 ? 账户归属集(input.projectId, [input.id]) : undefined
-  const from属于 = 归属集 === undefined ? sql`r.from_id = ${input.id}` : sql`r.from_id in ${归属集}`
-  const 触达 =
-    归属集 === undefined
-      ? sql`(r.from_id = ${input.id} or r.to_id = ${input.id})`
-      : 关系归属条件(input.projectId, [input.id], sql`r.from_id`, sql`r.to_id`)
+  // 基 2 的分派在 `case-party.关系归属口径` 一处（`case-party` 的 `#002-06` 注）；
+  // 这里只补时间窗。
+  const { 是账户, 归属集, from属于, 触达 } = 关系归属口径({
+    projectId: input.projectId,
+    ids: [input.id],
+    类型: input.type,
+    从: sql`r.from_id`,
+    到: sql`r.to_id`,
+  })
   // 时间窗与 `aggregate_money` 同口径：最晚不早于「起」、最早不晚于「止」。
   const 窗: SQL[] = []
   if (input.起 !== undefined) 窗.push(sql`coalesce(r.last_at, r.first_at, 0) >= ${input.起}`)
