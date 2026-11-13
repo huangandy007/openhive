@@ -1019,8 +1019,9 @@ function 文本(值: unknown): string | null {
  * 3. 有事件但全部缺时间 ⇒ `时间全部缺失`；
  * 4. 其余（有时间事件但窗口内 0 条）⇒ `无事件`。
  *
- * 查询预算 ≤7：解析 1 + 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2
- * （plan D-6，见 `docs/superpowers/plans/2026-11-13-P3-去重与卡片读端.md:36`）。
+ * 查询预算：规范值命中 ≤7、户名别名路径 ≤8（解析实体多一次 `解析户名`）。
+ * 账：解析 1（别名 +1）+ 事件 1 + 统计 1 + 参与者 1 + 出处 1 + 读身份标注 2
+ * （plan D-6 修正）。
  * 参与者也走 `事件参与者条件`（含对齐），所以按人能看到其唯一户名账户的流水事件。
  */
 export async function query_timeline(
@@ -1625,11 +1626,11 @@ export async function aggregate_money(
         left join lateral (
           -- 别名方向：entity_id = 账户，value = 人名。所以人名要按 **value** 反查，
           -- 不能 p.id = a.entity_id——那拿到的是账户自己（P2「写入翻译结果」的写口）。
+          -- 户名前提走「户名来源」唯一出处（#002-06）；这里只补「对方必须是人」。
           select min(p.canonical_value) as 代表值
-            from auth.case_entity_alias a
-            join auth.case_entity p on p.project_id = a.project_id and p.canonical_value = a.value
-           where a.project_id = ${ctx.身份.projectId} and a.kind = '户名' and a.revoked_at is null
-             and p.trust_state <> '已排除' and p.type = '人'
+            from auth.case_entity p, ${户名来源(ctx.身份.projectId)}
+             and p.project_id = a.project_id and p.canonical_value = a.value
+             and p.type = '人' and p.trust_state <> '已排除'
              and a.entity_id = 对手.id
           having count(distinct p.canonical_value) = 1
         ) 账户户名 on true
