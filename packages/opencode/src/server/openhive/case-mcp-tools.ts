@@ -1169,6 +1169,9 @@ export async function query_timeline(
 
   // 升序排列下 `事件们` 末尾是**本页最新**的一条；`下一步` 的 `query_rows` 建议以它为锚。
   const 末事件 = 事件们.length === 0 ? undefined : 事件们[事件们.length - 1]
+  // `query_rows` 的 `材料` 是**材料 id**（`引用.materialId`），不是 `代表出处.材料`（那是文件名，
+  // 给人看的）。传文件名会被 `query_rows` 判「材料未入库」。
+  const 末引用 = 末事件 === undefined ? undefined : 引用按事件.get(末事件.id)?.[0]
 
   const 身份们 = [
     ...(
@@ -1236,14 +1239,15 @@ export async function query_timeline(
             为什么: "抽验时间线第一条事件的原文与出处",
           },
           // `09` §4.3 的下一步契约有两条：抽验（get_citation）与看该事件明细（query_rows）。
-          // `材料` 只在有代表出处时才写（不写空键，同地点分支的先例）。
+          // `材料` 取材料 **id**（`query_rows` 按 id 查，文件名会被判 `材料未入库`）；
+          // 没有引用时不写这个键。
           ...(末事件 === undefined
             ? []
             : [
                 {
                   工具: "query_rows",
                   参数: {
-                    ...(末事件.代表出处 === null ? {} : { 材料: 末事件.代表出处.材料 }),
+                    ...(末引用 === undefined ? {} : { 材料: 末引用.materialId }),
                     时间起: 末事件.时间,
                     时间止: 末事件.时间,
                   },

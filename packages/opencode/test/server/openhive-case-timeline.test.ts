@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { query_timeline, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
+import { query_rows, query_timeline, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
 import { 编码游标对象 } from "../../src/server/openhive/case-row-query"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
@@ -107,19 +107,23 @@ describe("query_timeline（09 §4.3）", () => {
     expect(结果.缺口.join("")).toContain("游标之后没有更多事件")
   })
 
-  test("下一步：抽验后追加 query_rows（材料取该事件代表出处，缺则不写键）", async () => {
+  test("下一步：抽验后追加 query_rows（材料取材料 id，跟随后进入正确材料）", async () => {
     // 限制 10 > 3 笔有时间事件 ⇒ 没有下一页，`下一步` 只剩 get_citation + query_rows。
     const 结果 = await query_timeline(ctx(), { 实体: "李四", 限制: 10 })
     expect(结果.空原因).toBeNull()
-    const 事件们 = (结果.数据 as { 事件们: { 时间: number; 代表出处: { 材料: string } | null }[] }).事件们
+    const 事件们 = (结果.数据 as { 事件们: { 时间: number }[] }).事件们
     const 最新 = 事件们[事件们.length - 1]!
     const 建议 = 结果.下一步 ?? []
     expect(建议.map((项) => 项.工具)).toEqual(["get_citation", "query_rows"])
-    const 参数 = 建议[1]!.参数 as { 时间起: number; 时间止: number; 材料?: string }
+    const 参数 = 建议[1]!.参数 as { 材料?: string; 时间起: number; 时间止: number }
     expect(参数.时间起).toBe(最新.时间)
     expect(参数.时间止).toBe(最新.时间)
-    if (最新.代表出处 !== null) expect(参数.材料).toBe(最新.代表出处.材料)
-    else expect("材料" in 参数).toBe(false)
+    // 不看返回值自证：真调生产入口，跟随建议跑一次。
+    expect(typeof 参数.材料).toBe("string")
+    const 跟随 = await query_rows(ctx(), 参数)
+    // 4/5 那笔是 50 USD：进入正确材料后应报「外币行全部未计入」；
+    // 传文件名会报「材料未入库」——这条就是区分器。
+    expect(跟随.空原因).toBe("外币行全部未计入")
   })
 
   test("对象存在但事件全无时间 ⇒ 时间全部缺失", async () => {
