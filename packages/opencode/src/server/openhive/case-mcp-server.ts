@@ -13,6 +13,7 @@ import {
   explore_entity,
   find_crossings,
   get_citation,
+  money_flow,
   query_entities,
   query_events,
   query_relations,
@@ -60,6 +61,7 @@ export const 工具名 = [
   "query_rows",
   "query_timeline",
   "explore_entity",
+  "money_flow",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -343,6 +345,23 @@ const TOOLS: readonly Tool[] = [
       required: ["实体"],
     },
   },
+  {
+    name: "money_flow",
+    description:
+      "某账户的资金流：收支分列汇总、首末、对手排行前 20、单笔最大前 10（带出处）、集中度与外币行数。" +
+      "转账口径与 aggregate_money 完全一致（账户归属含唯一户名对齐）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        账户: { type: "string", description: "账户的实体 id 或规范值（必填）" },
+        起: { type: "integer", description: `时间窗起点，${时间说明}` },
+        止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        方向: { type: "string", enum: ["收", "付", "全部"], description: "收 = 入账，付 = 出账；默认全部" },
+        对手: { type: "string", description: "只看与该实体的往来（实体 id 或规范值）" },
+      },
+      required: ["账户"],
+    },
+  },
 ]
 
 const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
@@ -391,6 +410,8 @@ const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, u
       ctx,
       收参数<Parameters<typeof explore_entity>[1]>(args, ["实体"], ["起", "止", "跳数", "限制"], []),
     ),
+  money_flow: (ctx, args) =>
+    money_flow(ctx, 收参数<Parameters<typeof money_flow>[1]>(args, ["账户", "方向", "对手"], ["起", "止"], [])),
 }
 
 /**

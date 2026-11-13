@@ -36,7 +36,9 @@ import {
   另一端未排除,
   内部往来归属条件,
   归属歧义归属条件,
+  读归属值,
 } from "./case-party"
+import { 资金交易 } from "./case-event-types"
 import { 是档案截断缺口, 关系圈, 关系圈上限, 关系圈遗漏, 实体档案 } from "./case-entity-list"
 import { 关系图 } from "./case-graph"
 import {
@@ -1919,6 +1921,163 @@ export async function aggregate_money(
   }
 }
 
+const 资金流对手上限 = 20
+const 单笔最大上限 = 10
+
+/**
+ * 某账户的资金流（09 §4.2）：汇总 / 收支分列 / 首末 / 对手排行 / 单笔最大 / 集中度。
+ *
+ * 汇总、对手方、外币行数、空原因四拆、时间窗校验、账户解析**全部复用 `aggregate_money`**
+ * （11 §6），本函数只补外层三项：首末（由汇总 SQL 的窗口聚合给出）、集中度、单笔最大。
+ * 基 2 的归属修复随之自动生效。
+ */
+export async function money_flow(
+  ctx: 工具上下文,
+  args: { 账户: string; 起?: number; 止?: number; 方向?: string; 对手?: string },
+): Promise<工具结果> {
+  校验时间窗(args)
+  const 方向 = args.方向 ?? "全部"
+  if (方向 !== "收" && 方向 !== "付" && 方向 !== "全部")
+    throw new 工具错误("bad_input", `方向只能是 收 / 付 / 全部，收到 ${String(args.方向)}`)
+  const 目标方向 = 方向 === "收" ? "入" : 方向 === "付" ? "出" : undefined
+  const 汇总结果 = await aggregate_money(
+    ctx,
+    {
+      账户: args.账户,
+      ...(args.起 === undefined ? {} : { 起: args.起 }),
+      ...(args.止 === undefined ? {} : { 止: args.止 }),
+    },
+    { 对手方上限: 资金流对手上限 },
+  )
+  const 单笔口径 =
+    "单笔最大取资金交易事件（CNY、未排除、经基 1 涉及本账户）；只有笔录人工关系、没有对应流水事件的笔不在榜上"
+  // 上游缺口按**本次交付**裁剪（T7/T8 口径：不透传与本次结果无关的条目）。
+  // 余额走势不在 `money_flow` 的交付里，那条「余额只按精确匹配…200 行截断」与本工具无关；
+  // 外币行数虽走同一条明细匹配基，但只交付计数，能力边界由下面单独一条说清。
+  const 相关上游缺口 = (上游: readonly string[]): string[] =>
+    上游.filter((句) => !句.includes("人民币余额行超过"))
+  // 空 / 材料未翻译：直接沿用 aggregate_money 的空原因与引导（同一判据，不另判一次）。
+  if (汇总结果.空原因 !== null)
+    return { ...汇总结果, 缺口: [...相关上游缺口(汇总结果.缺口), 单笔口径] }
+
+  const 数据 = 汇总结果.数据 as {
+    汇总: { 方向: string; 笔数: number; 合计: string }[]
+    首末: { 首: number | null; 末: number | null } | null
+    对手方: { 对手方: string; 方向: string; 笔数: number; 合计: string }[]
+    外币行数: number
+  }
+  // 对手解析在过滤之前：解析不到是连 `bad_input` / `not_found` 都该原样抛出的入参问题。
+  const 对手值们 =
+    args.对手 === undefined
+      ? undefined
+      : await 读归属值(ctx.db, ctx.身份.projectId, (await 解析实体(ctx, args.对手, "对手")).id)
+  const 汇总 = 目标方向 === undefined ? 数据.汇总 : 数据.汇总.filter((行) => 行.方向 === 目标方向)
+  const 对手排行 = (
+    目标方向 === undefined ? 数据.对手方 : 数据.对手方.filter((行) => 行.方向 === 目标方向)
+  ).filter((行) => 对手值们 === undefined || 对手值们.includes(行.对手方))
+  const 笔数 = 汇总.reduce((和, 行) => 和 + 行.笔数, 0)
+  const 合计 = (方向名: "入" | "出") => 汇总.find((行) => 行.方向 === 方向名)?.合计 ?? "0.00"
+  // 集中度：前 3 对手金额 ÷ 同方向合计。金额是 numeric 字符串，这里只为百分比转一次浮点
+  // （口径里写明是近似值；合计本身仍以字符串交给模型）。
+  const 集中度: Record<string, string> = {}
+  for (const 方向名 of ["出", "入"] as const) {
+    const 行们 = 对手排行.filter((行) => 行.方向 === 方向名)
+    if (行们.length === 0) continue
+    const 总量 = 行们.reduce((和, 行) => 和 + Number(行.合计), 0)
+    if (总量 === 0) continue
+    const 前三 = [...行们].sort((甲, 乙) => Number(乙.合计) - Number(甲.合计)).slice(0, 3)
+    const 占 = (前三.reduce((和, 行) => 和 + Number(行.合计), 0) / 总量) * 100
+    集中度[方向名] = `${占.toFixed(1)}%`
+  }
+
+  // 账户实体再解析一次：`aggregate_money` 内部解析过但不外露实体（改它的返回形状会波及
+  // 四个工具的信封契约）。代价是 2～3 次查询，已算进查询预算（D-4 的同一笔账）。
+  const 解析 = await 解析账户(ctx, args.账户)
+  if ("信封" in 解析) return 解析.信封
+  const 账户 = 解析.实体
+  const 单笔最大 = rowsOf(
+    await ctx.db.execute(sql`
+      select id, occurred_at, amount::text as amount, summary
+        from auth.case_event
+       where project_id = ${ctx.身份.projectId}
+         and type = ${资金交易}
+         and currency = 'CNY'
+         and trust_state <> '已排除'
+         and amount is not null
+         and ${事件归属条件(ctx.身份.projectId, 账户.id)}
+         ${
+           目标方向 === undefined
+             ? sql``
+             : sql`and exists (
+             select 1 from auth.case_event_participant p
+              where p.project_id = ${ctx.身份.projectId} and p.event_id = case_event.id
+                and p.entity_id = ${账户.id} and p.role = ${目标方向 === "入" ? "收款方" : "付款方"})`
+         }
+         ${
+           对手值们 === undefined
+             ? sql``
+             : sql`and exists (
+             select 1 from unnest(participants) as 参与者 where 参与者 = any(${文本数组(对手值们)}))`
+         }
+       order by amount desc, occurred_at asc nulls last, id asc
+       limit ${单笔最大上限}
+    `),
+  ).map((行) => ({
+    id: String(行.id),
+    金额: String(行.amount),
+    时间: 行.occurred_at === null || 行.occurred_at === undefined ? null : Number(行.occurred_at),
+    摘要: (行.summary as string | null) ?? null,
+  }))
+
+  const 缺口 = [
+    ...相关上游缺口(汇总结果.缺口),
+    ...(数据.外币行数 > 0
+      ? ["外币行数按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配（未做模糊匹配）"]
+      : []),
+    单笔口径,
+  ]
+  if (汇总.length === 0) 缺口.push(`所选方向（${方向}）在本时间窗内没有人民币转账关系`)
+  if (对手值们 !== undefined && 对手排行.length === 0) 缺口.push("与所选对手没有符合条件的往来")
+  // 真截断才写（与 `截断缺口` / aggregate_money 的对手方口径一致）：没满不制造假警报。
+  if (单笔最大.length === 单笔最大上限) 缺口.push(`单笔最大已截到前 ${单笔最大上限} 条，可能还有更多`)
+  const 件数 = (方向名: "入" | "出") => 汇总.find((行) => 行.方向 === 方向名)?.笔数 ?? 0
+  return {
+    摘要:
+      `「${args.账户}」资金流：入 ${件数("入")} 笔 / ${合计("入")}，出 ${件数("出")} 笔 / ${合计("出")}；` +
+      `前 ${对手排行.length} 个对手、单笔最大 ${单笔最大.length} 条` +
+      (方向 === "全部" ? "" : `（已按「${方向}」过滤）`),
+    数据: {
+      笔数,
+      收入合计: 合计("入"),
+      支出合计: 合计("出"),
+      首末: 数据.首末,
+      汇总,
+      对手排行,
+      单笔最大,
+      集中度,
+      外币行数: 数据.外币行数,
+    },
+    口径:
+      "汇总、对手方、外币行数、空原因与 aggregate_money 完全一致（账户归属按基 2：恰好一端落在本账户 ∪ 唯一户名对齐者）；" +
+      "收支分列不相抵；首末为口径内最早 first_at 与最晚 last_at（不受方向影响）；" +
+      "集中度 = 同方向前 3 对手金额 ÷ 该方向合计，百分比保留一位小数（近似值，合计仍以 numeric 字符串为准）；" +
+      单笔口径 +
+      "。",
+    缺口,
+    空原因: null,
+    出处: 单笔最大.slice(0, 3).map((条) => ({
+      事实: `单笔 ${条.金额} 元（${条.摘要 ?? "无摘要"}）`,
+      代表: 条.id,
+      可下钻: "get_citation",
+    })),
+    下一步: [
+      { 工具: "query_rows", 参数: { 账户: args.账户 }, 为什么: "看大额明细行（含余额与对方户名）" },
+      { 工具: "explore_entity", 参数: { 实体: args.账户 }, 为什么: "看这个账户的关系圈与事件" },
+      { 工具: "query_timeline", 参数: { 实体: args.账户 }, 为什么: "看同期的其他事件" },
+    ],
+  }
+}
+
 /**
  * 交叉分析：共同关联（关系另一端的交集）＋ 共同时空（事件参与者同时含两人）。
  *
@@ -2206,10 +2365,17 @@ export async function explore_entity(
     空原因: null,
     出处: [{ 事实: `实体「${实体.value}」的档案`, 代表: 实体.id, 可下钻: "get_citation" }],
     下一步: [
-      // T9 注册 money_flow 后，这里加回「看这个账户的收支与对手排行」的下一步；
-      // 本轮它不在 `工具名` 里，指过去会变成 unknown_tool。
       ...(实体.type === "账户" || 圈.length > 0
         ? [
+            ...(实体.type === "账户"
+              ? [
+                  {
+                    工具: "money_flow",
+                    参数: { 账户: 实体.value },
+                    为什么: "看这个账户的收支与对手排行",
+                  },
+                ]
+              : []),
             {
               工具: "query_relations",
               参数: { 实体: 实体.value },

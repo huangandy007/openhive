@@ -9,6 +9,7 @@ import {
   explore_entity,
   find_crossings,
   get_citation,
+  money_flow,
   query_entities,
   query_events,
   query_relations,
@@ -1720,7 +1721,7 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
 
 // —— Task 5 B3：`下一步` / `出处.可下钻` 必须 ⊆ 已注册工具名 ——
 // 人工核对挡不住漂移：`query_rows` 未注册时 `下一步` 就已经指向过它。这里遍历 `工具名`
-// 注册表里的全部 10 个工具的真实返回值（有数据 + 空数据各一条），把违规项收集起来
+// 注册表里的全部 11 个工具的真实返回值（有数据 + 空数据各一条），把违规项收集起来
 // `toEqual([])`——失败时一眼看出是谁指向了什么。
 test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
   const 已注册 = new Set(工具名 as readonly string[])
@@ -1739,6 +1740,8 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
     { 工具: "query_events", 结果: await query_events(ctx(身份丁), { 类型: "不存在的事件类型" }) },
     { 工具: "aggregate_money", 结果: await aggregate_money(ctx(身份戊), { 账户: 账号 }) },
     { 工具: "aggregate_money", 结果: await aggregate_money(ctx(身份戊), { 账户: "李四" }) },
+    // 第 11 个工具：必须有真实返回进入守卫（覆盖集合从 `工具名` 派生，缺了这条会指出漏了谁）。
+    { 工具: "money_flow", 结果: await money_flow(ctx(身份戊), { 账户: 账号 }) },
     {
       工具: "find_crossings",
       结果: await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),

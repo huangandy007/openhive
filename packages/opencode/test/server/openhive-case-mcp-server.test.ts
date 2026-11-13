@@ -101,13 +101,14 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 10 个工具，名字与设计 §7.1 逐字一致", async () => {
+test("tools/list 返回 11 个工具，名字与设计 §7.1 逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
     "explore_entity",
     "find_crossings",
     "get_citation",
+    "money_flow",
     "query_entities",
     "query_events",
     "query_relations",
