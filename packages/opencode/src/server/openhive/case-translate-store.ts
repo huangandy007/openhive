@@ -176,6 +176,13 @@ export async function 写入翻译结果(
     attrs: 卡.attrs,
     currency: 卡.currency,
     templateId,
+    // 用途三列（01 §3.11.2）：`purpose` 存最具体类，`purpose_l1` 存一级，两级都能直接过滤。
+    purpose: 卡.用途.二级 ?? 卡.用途.一级,
+    purposeL1: 卡.用途.一级,
+    // 展开成普通对象再传：`用途依据` 是 interface（无索引签名），不能直接赋给
+    // `Record<string, unknown>`（typecheck 报 TS2345）；展开后是匿名对象类型，可赋值，
+    // 且 `JSON.stringify` 本来就只序列化自有属性，语义不变。
+    purposeBasis: { ...卡.用途.依据 },
   }))
   for (const 卡 of 翻译.卡片们) {
     引用们.push({

@@ -170,6 +170,12 @@ export interface 事件写入 {
   currency?: string
   /** 产出这张卡片的模板行 id（Q15）。 */
   templateId?: string | null
+  /** 用途：最具体类（二级叶子或一级类）。AI 抽取路径不判用途，传 undefined（01 §3.11.2）。 */
+  purpose?: string | null
+  /** 一级类：报表按一级出，两级都要能直接过滤。 */
+  purposeL1?: string | null
+  /** 依据：规则 / 命中词 / 字段 / 词表版本（A20 可审计）。 */
+  purposeBasis?: Record<string, unknown> | null
 }
 
 /**
@@ -184,14 +190,15 @@ export async function insertEvent(db: Queryable, input: 事件写入): Promise<v
 
 /**
  * 批量写入的分块大小。与 `case-store.ts` 的 `INSERT_CHUNK` 同值同理由
- * （事件 15 列 × 500 = 7500 个绑定参数，离 PG 上限 65535 有量级余量）；那份是模块内常量、
+ * （事件 18 列 × 500 = 9000 个绑定参数，离 PG 上限 65535 有量级余量）；那份是模块内常量、
  * 未导出，这里按本文件需要的量级单独定一份，不从调用方借。
  */
 const INSERT_CHUNK = 500
 
 const 事件列 = sql`
   id, project_id, type, occurred_at, occurred_raw, precision, amount, participants, summary,
-  trust_state, created_at, occurred_end, attrs, currency, template_id
+  trust_state, created_at, occurred_end, attrs, currency, template_id,
+  purpose, purpose_l1, purpose_basis
 `
 
 function 事件值(e: 事件写入) {
@@ -199,7 +206,9 @@ function 事件值(e: 事件写入) {
               ${e.precision}, ${e.amount ?? null}, ${文本数组(e.participants)}, ${e.summary}, ${e.trustState},
               ${nowSeconds()}, ${e.occurredEnd ?? null},
               ${JSON.stringify(e.attrs ?? {})}::text::jsonb, ${e.currency ?? "CNY"},
-              ${e.templateId ?? null})`
+              ${e.templateId ?? null},
+              ${e.purpose ?? null}, ${e.purposeL1 ?? null},
+              ${e.purposeBasis === undefined || e.purposeBasis === null ? null : JSON.stringify(e.purposeBasis)}::text::jsonb)`
 }
 
 /** 一条一份材料的卡片不逐行发语句：5,000 行 = 5,000 次往返（§6.5）。 */

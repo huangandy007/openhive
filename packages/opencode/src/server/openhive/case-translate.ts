@@ -4,6 +4,7 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { 归一化值, 是账户形状 } from "./case-field-registry"
 import { 解析属性列, type 属性归属 } from "./case-attribute-registry"
 import { 资金交易, type 事件类型 } from "./case-event-types"
+import { 判定用途, type 用途 } from "./case-purpose"
 import type { FactRowInput } from "./case-store"
 
 /**
@@ -58,6 +59,11 @@ export interface 卡片草稿 {
   participants: [卡片参与者, 卡片参与者]
   sheet: string
   rowNo: number
+  /**
+   * 用途判定结果（01 §3.11）。必填而不是可选：可选会让「漏判用途」在类型层静默通过，
+   * 落库时三列一起变 null 却没人发现（判定引擎自己兜底「未分类」）。
+   */
+  用途: 用途
 }
 
 export interface 别名观察 {
@@ -160,6 +166,20 @@ function 户名字段(row: FactRowInput): string {
   return typeof v === "string" ? v.trim() : ""
 }
 
+/**
+ * 判定输入只取两样：备注原文（extras["备注"]）与①层字段事实（extras["交易类型"]）。
+ * 两个键都不在字段目录里（字段目录没有备注/交易类型），所以必然在 extras（01 §4.0.5 坑 3）。
+ */
+function 备注文本(row: FactRowInput): string | null {
+  const v = row.extras?.["备注"]
+  return typeof v === "string" ? v : null
+}
+
+function 交易类型文本(row: FactRowInput): string | null {
+  const v = row.extras?.["交易类型"]
+  return typeof v === "string" ? v : null
+}
+
 export function 翻译资金(input: 翻译资金输入): 翻译结果 {
   const 卡片们: 卡片草稿[] = []
   const 别名们: 别名观察[] = []
@@ -244,6 +264,7 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       ],
       sheet: row.sheet,
       rowNo: row.rowNo,
+      用途: 判定用途({ 备注: 备注文本(row), 交易类型: 交易类型文本(row), 方向: row.direction }),
     })
 
     const 本户 = 户名字段(row)
