@@ -25,7 +25,7 @@ import {
 } from "./case-row-query"
 import { 文本数组 } from "./case-fact-store"
 import type { 留痕类型 } from "./case-fact-change"
-import { 对齐代表, 户名对齐, 户名来源 } from "./case-party"
+import { 事件归属条件, 户名对齐, 户名来源 } from "./case-party"
 import {
   读身份标注,
   实体称呼,
@@ -859,27 +859,14 @@ export async function query_relations(
 }
 
 /**
- * 「事件是否涉及该实体」的唯一出处（10 §6.2，`#002-06`）。
+ * 「事件是否涉及该实体」的唯一出处（10 §6.2 / 11 §3.1，`#002-06`）。
  *
- * 两路证据缺一不可：
- * - `participants text[]`：所有写口都写实体规范值（笔录写人名、表格写账号）；
- * - 参与者表 + 对齐：按**人**查时，表格事件的参与者是账户，text[] 里没有人名。
- *   对齐代表把「李四」换成唯一户名账户 B，才查得到 B 的流水事件。
- *
- * 只在 `from auth.case_event`（未起别名）的查询里用：片段裸引 `participants` / `case_event.id`。
+ * 判据已经收进 `case-party.事件归属条件`：参与者表（本人 / 正向代表 / 反向对齐者）
+ * ∪ `participants` 文本回退（值集含实体自己、正向代表与反向对齐者的规范值与别名）。
+ * 这里只做上下文到库参数的委托——不要再抄一份条件，那正是本期要消掉的双份前提。
  */
 export function 事件参与者条件(ctx: 工具上下文, 实体: 实体解析): SQL {
-  const 代表 = 对齐代表(
-    ctx.身份.projectId,
-    sql`${实体.id}`,
-    sql`${实体.type}`,
-    sql`${实体.value}`,
-  )
-  return sql`(exists (select 1 from unnest(participants) as 参与者 where 参与者 = ${实体.value})
-    or exists (select 1 from auth.case_event_participant p
-                where p.project_id = ${ctx.身份.projectId}
-                  and p.event_id = case_event.id
-                  and p.entity_id = ${代表}))`
+  return 事件归属条件(ctx.身份.projectId, 实体.id)
 }
 
 /** 事件：按类型与参与实体过滤，时间按 `occurred_at` 闭区间。 */
