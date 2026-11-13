@@ -6,6 +6,7 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { 变更历史, 记变更 } from "../../src/server/openhive/case-fact-change"
 import { 事实详情 } from "../../src/server/openhive/case-fact-read"
 import { 合并实体, 拆分合并 } from "../../src/server/openhive/case-merge"
+import { 户名对齐, 对齐到账户, 对齐代表 } from "../../src/server/openhive/case-party"
 import { 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
 
 /**
@@ -283,6 +284,122 @@ describe("合并", () => {
     ).map((行) => String(行.entity_id))
     expect(参与者).toEqual(["合4-a"])
   })
+
+  // I-1：别名改指的**后果**——两个账户挂同值户名时 `户名对齐` 是 fail-closed（候选 2）；
+  // 合并两账户后候选变 1、代表指向幸存账户。用例刻意用 `type=账户`（夹具默认是「人」，
+  // 而 `户名对齐` 只认 `ae.type='账户'`）；同理 `对齐到账户` 从空集变出那个人。
+  test("合并两个同户名账户后，人的户名对齐从 fail-closed 变为唯一对齐", async () => {
+    await 建实体(库(), { id: "对齐1-a", projectId: 项目, type: "账户", value: "对齐1甲账户" })
+    await 建实体(库(), { id: "对齐1-b", projectId: 项目, type: "账户", value: "对齐1乙账户" })
+    await 建实体(库(), { id: "对齐1-人", projectId: 项目, value: "对齐1户名" })
+    await 库().execute(sql`
+      insert into auth.case_entity_alias (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at)
+      values ('al-对齐1-a', ${项目}, '对齐1-a', '户名', '对齐1户名', '对齐1户名', '人工', 1760000000),
+             ('al-对齐1-b', ${项目}, '对齐1-b', '户名', '对齐1户名', '对齐1户名', '人工', 1760000000)
+    `)
+
+    const 对齐 = async () => {
+      const 行 = rowsOf(
+        await 库().execute(sql`
+          select 代表, 候选数
+            from ${户名对齐(项目, sql`'self'`, sql`'人'`, sql`${"对齐1户名"}`)} 对齐
+        `),
+      )[0]
+      return { 代表: 行?.代表 === null || 行?.代表 === undefined ? null : String(行.代表), 候选数: Number(行?.候选数) }
+    }
+    const 代表 = async () =>
+      String(
+        rowsOf(
+          await 库().execute(sql`
+            select ${对齐代表(项目, sql`${"对齐1-人"}`, sql`'人'`, sql`${"对齐1户名"}`)} as 代表
+          `),
+        )[0]?.代表,
+      )
+    const 反向 = async () =>
+      rowsOf(
+        await 库().execute(sql`
+          select id from ${对齐到账户(项目, ["对齐1-a"])} 反向 order by id asc
+        `),
+      ).map((行) => String(行.id))
+
+    // 合并前：两个账户都挂「对齐1户名」⇒ 候选 2，fail-closed（代表 null、退回自己、反向空）。
+    expect(await 对齐()).toEqual({ 代表: null, 候选数: 2 })
+    expect(await 代表()).toBe("对齐1-人")
+    expect(await 反向()).toEqual([])
+
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "对齐1-a",
+      mergedId: "对齐1-b",
+      reasonText: "两个账户是同一个人的户名载体",
+      by: 甲,
+    })
+    expect(结果.movedRelations).toBe(0)
+
+    // 合并后：别名行改指幸存账户 ⇒ 候选 1，代表 = 幸存账户；反向对齐也认出那个人。
+    expect(await 对齐()).toEqual({ 代表: "对齐1-a", 候选数: 1 })
+    expect(await 代表()).toBe("对齐1-a")
+    expect(await 反向()).toEqual(["对齐1-人"])
+
+    // 拆分腿：别名行必须被认成「合并自己改的」，原样指回被并入账户（进 `未恢复` 就是
+    // 没改指的证据）；对齐随之回到合并前的 fail-closed。这一腿也钉住别名改指本身——
+    // 少了改指，拆分读到 entity_id 仍是被并入者，会把别名行判成「被人动过」。
+    const 拆分 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    expect(拆分.未恢复).toEqual([])
+    expect(await 对齐()).toEqual({ 代表: null, 候选数: 2 })
+    expect(await 代表()).toBe("对齐1-人")
+  })
+
+  // I-2：`未恢复` 的两个 push 分支（`当前 === undefined`）各走一次。合并后把别名行与
+  // 参与者行**硬删**（前缀 id 隔离，不碰别的用例的数据），拆分必须：列出来、且不重建。
+  test("拆分时被硬删的参与者行与别名行进 未恢复，且不被重建", async () => {
+    await 建实体(库(), { id: "删1-a", projectId: 项目, value: "删1甲" })
+    await 建实体(库(), { id: "删1-b", projectId: 项目, value: "删1乙" })
+    await 建事件(库(), {
+      id: "ev-删1",
+      projectId: 项目,
+      participants: ["删1乙"],
+      参与者表: [{ entityId: "删1-b", role: "参与人", ordinal: 0 }],
+    })
+    await 库().execute(sql`
+      insert into auth.case_entity_alias (id, project_id, entity_id, kind, value, raw_value, source_kind, created_at)
+      values ('al-删1', ${项目}, '删1-b', '户名', '删1乙的户名', '删1乙的户名', '人工', 1760000000)
+    `)
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "删1-a",
+      mergedId: "删1-b",
+      reasonText: "同一人",
+      by: 甲,
+    })
+
+    await 库().execute(sql`
+      delete from auth.case_event_participant
+       where project_id = ${项目} and event_id = 'ev-删1' and ordinal = 0
+    `)
+    await 库().execute(sql`
+      delete from auth.case_entity_alias where project_id = ${项目} and id = 'al-删1'
+    `)
+
+    const 拆分 = await 拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 })
+    // 文案逐字按 brief；先参与者后别名，顺序由拆分侧循环顺序决定。
+    expect(拆分.未恢复).toEqual(["参与者:ev-删1#0", "别名:al-删1"])
+
+    const 参与者行数 = rowsOf(
+      await 库().execute(sql`
+        select count(*)::int as n from auth.case_event_participant
+         where project_id = ${项目} and event_id = 'ev-删1' and ordinal = 0
+      `),
+    )[0]
+    expect(Number(参与者行数?.n)).toBe(0)
+    const 别名行数 = rowsOf(
+      await 库().execute(sql`
+        select count(*)::int as n from auth.case_entity_alias
+         where project_id = ${项目} and id = 'al-删1'
+      `),
+    )[0]
+    expect(Number(别名行数?.n)).toBe(0)
+  })
 })
 
 describe("拆分（撤销合并）", () => {
@@ -464,5 +581,34 @@ describe("拆分（撤销合并）", () => {
     const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "撞1-a" })
     if (主体?.type !== "entity") throw new Error("形状不对")
     expect(主体.aliases).toContain("撞1乙")
+  })
+
+  // M3：留痕是外部可写的 jsonb，`参与者们` 坏形（不是数组）必须 fail-closed 走
+  // `restore_conflict`，而不是 `for...of` 拆字符串后抛 TypeError 以 500 掉出去。
+  test("留痕里的 参与者们 不是数组 ⇒ 409 restore_conflict，不留半拆状态", async () => {
+    await 建实体(库(), { id: "坏快照-a", projectId: 项目, value: "坏快照甲" })
+    await 建实体(库(), { id: "坏快照-b", projectId: 项目, value: "坏快照乙" })
+    const 结果 = await 合并实体(库(), {
+      projectId: 项目,
+      survivorId: "坏快照-a",
+      mergedId: "坏快照-b",
+      reasonText: "先合并",
+      by: 甲,
+    })
+    await 库().execute(sql`
+      update auth.case_fact_change
+         set before = jsonb_set(before, '{参与者们}', '"不是数组"'::jsonb)
+       where project_id = ${项目} and id = ${结果.changeId}
+    `)
+
+    await expect(
+      拆分合并(库(), { projectId: 项目, changeId: 结果.changeId, by: 甲 }),
+    ).rejects.toMatchObject({ code: "restore_conflict" })
+
+    // 校验在写之前抛：被并入的实体没被恢复，没有半拆状态。
+    expect(await 事实详情(库(), { projectId: 项目, type: "entity", id: "坏快照-b" })).toBeUndefined()
+    const 主体 = await 事实详情(库(), { projectId: 项目, type: "entity", id: "坏快照-a" })
+    if (主体?.type !== "entity") throw new Error("形状不对")
+    expect(主体.aliases).toContain("坏快照乙")
   })
 })

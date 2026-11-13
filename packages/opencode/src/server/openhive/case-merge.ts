@@ -331,7 +331,11 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
       前 === null ||
       typeof 前 !== "object" ||
       前.被并入 === undefined ||
-      !Array.isArray(前.survivorAliases)
+      !Array.isArray(前.survivorAliases) ||
+      // 留痕是外部可写的 jsonb：两份快照字段坏形时 fail-closed，别让 `for...of` 拆字符串
+      // 后以 TypeError 500 掉出去（与 `survivorAliases` 同一口径）。
+      (前.参与者们 !== undefined && !Array.isArray(前.参与者们)) ||
+      (前.别名们 !== undefined && !Array.isArray(前.别名们))
     )
       throw new 合并冲突("留痕里没有可恢复的快照", "restore_conflict")
 
@@ -441,6 +445,10 @@ export async function 拆分合并(db: Queryable, input: 拆分输入): Promise<
            where project_id = ${input.projectId} and event_id = ${条.eventId} and ordinal = ${条.ordinal}
         `),
       )[0]
+      // 边界：判据只看 `(event_id, ordinal)` 这一行当前的 `entity_id`。若原行被删、
+      // 之后又有人以同一 `(event, ordinal)` 重建且指向幸存者，本判据会把它当作原行
+      // 恢复——「行被删」与「同键重建」在表上不可区分，接受这一边界（不静默：行仍在，
+      // 指向由这次拆分改写，痕迹在留痕里）。
       if (当前 === undefined || String(当前.entity_id ?? "") !== 主体Id) {
         未恢复.push(`参与者:${条.eventId}#${条.ordinal}`)
         continue
