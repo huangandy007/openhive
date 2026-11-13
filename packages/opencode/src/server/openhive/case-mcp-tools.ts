@@ -1591,9 +1591,16 @@ export async function aggregate_money(
   /**
    * **内部选项，不暴露给 MCP 入参**（只有 `money_flow` 传）：
    * - `对手id`：把「另一端 ∈ 该实体的归属实体集」推进汇总 / 对手方条件，四块同源；
-   * - `含首末`：对手方行附带 `首` / `末`（默认输出逐字不变）。
+   * - `含首末`：对手方行附带 `首` / `末`（默认输出逐字不变）；
+   * - `含账户汇总`：`数据` 里额外回一份**未按对手过滤**的汇总，供读端区分「账户本身没有
+   *   往来」与「只是与所选对手没有往来」（多查 1 次；默认输出逐字不变）。
    */
-  选项: { 对手方上限?: number; 对手id?: string; 含首末?: boolean } = {},
+  选项: {
+    对手方上限?: number
+    对手id?: string
+    含首末?: boolean
+    含账户汇总?: boolean
+  } = {},
 ): Promise<工具结果> {
   const 对手方上限 = 选项.对手方上限 ?? 默认对手方上限
   校验时间窗(args)
@@ -1637,8 +1644,12 @@ export async function aggregate_money(
   // 「另一端」与 `另一端未排除` 同一 case 写法（from 在归属集时取 to，否则取 from）。
   const 对手归属集 =
     选项.对手id === undefined ? undefined : 归属实体集(ctx.身份.projectId, 选项.对手id)
-  if (对手归属集 !== undefined)
-    汇总条件.push(sql`(case when from_id in ${归属集} then to_id else from_id end) in ${对手归属集}`)
+  // 留住这条条件的引用：`含账户汇总` 要在同一份汇总条件上去掉它再查一次（单一口径）。
+  const 对手汇总条件 =
+    对手归属集 === undefined
+      ? undefined
+      : sql`(case when from_id in ${归属集} then to_id else from_id end) in ${对手归属集}`
+  if (对手汇总条件 !== undefined) 汇总条件.push(对手汇总条件)
   // 两端都在归属集里的内部往来：XOR 必然排除它们，设计 11 §3.2 要求「写进缺口」。
   // 只用于缺口计数，不参与汇总。谓词与 `关系圈遗漏` 共用（`case-party.ts`）。
   const 内部往来条件: SQL[] = [
@@ -1716,6 +1727,25 @@ export async function aggregate_money(
   // 执行序不依赖库的字符串排序：2026-11-06 本机 PGlite 实测 `order by 方向` 先回「入」，
   // 而口径固定「出 → 入」。缺了这一步，同样的库、不同的 collation 就会换顺序。
   汇总.sort((左, 右) => (左.方向 === "出" ? 0 : 1) - (右.方向 === "出" ? 0 : 1))
+  // 账户全量汇总（内部选项）：同一份汇总条件**去掉对手条件**再查一次，供 `money_flow` 判
+  // 「空是账户本身没有往来，还是只是与所选对手没有往来」。只在开了选项且确实带对手时多查 1 次。
+  const 账户汇总 =
+    选项.含账户汇总 === true && 对手汇总条件 !== undefined
+      ? rowsOf(
+          await ctx.db.execute(sql`
+            select case when from_id in ${归属集} then '出' else '入' end as 方向,
+                   sum(coalesce(times_cny, times, 1))::int as 笔数,
+                   coalesce(sum(amount), 0)::text as 合计
+              from auth.case_relation
+             where ${sql.join(汇总条件.filter((条) => 条 !== 对手汇总条件), sql` and `)} and ${人民币笔数}
+             group by 方向
+          `),
+        ).map((行) => ({
+          方向: String(行.方向),
+          笔数: Number(行.笔数),
+          合计: String(行.合计),
+        }))
+      : undefined
   // `首末` 只在有汇总行时有值；窗口聚合让每个分组行都带着同一个全局值（D-4）。
   const 首末 =
     汇总行.length === 0
@@ -1917,7 +1947,16 @@ export async function aggregate_money(
           ? `${账户称呼}在给定条件下只有 ${外币行数} 行外币流水，外币不进合计，无法给出人民币口径的结论${后缀}`
           : `${账户称呼}在给定条件下没有任何转账关系或明细流水${后缀}`
       : `${账户称呼}${汇总.map((行) => `${行.方向} ${行.笔数} 笔 / ${行.合计} 元`).join("，") || "无转账关系"}；${对手个数} 个对手${余额走势 ? `；明细 ${余额走势.行数} 行` : 外币行数 > 0 ? "；无人民币明细流水" : "；无明细流水"}${后缀}`,
-    数据: 空 ? null : { 汇总, 首末, 对手方: 对外对手方, 余额走势, 外币行数 },
+    数据: 空
+      ? null
+      : {
+          汇总,
+          首末,
+          对手方: 对外对手方,
+          余额走势,
+          外币行数,
+          ...(账户汇总 === undefined ? {} : { 账户汇总 }),
+        },
     口径:
       "汇总与对手方只统计 type=转账 且非「已排除」的关系（对手方实体也须非「已排除」），按出/入分组；" +
       "账户先按 id、再按规范值解析，规范值跨类型可重名时取最新创建的一行，同创建时间再按 type 升序、id 升序取第一条；" +
@@ -1996,7 +2035,7 @@ export async function money_flow(
     {
       对手方上限: 资金流对手上限,
       含首末: true,
-      ...(对手id === undefined ? {} : { 对手id }),
+      ...(对手id === undefined ? {} : { 对手id, 含账户汇总: true }),
     },
   )
   // 上游缺口按**本次交付**裁剪（T7/T8 口径：不透传与本次结果无关的条目）。
@@ -2020,8 +2059,14 @@ export async function money_flow(
       末: number | null
     }[]
     外币行数: number
+    /** 只在带 `对手` 时由内部选项额外返回：未按对手过滤的汇总。 */
+    账户汇总?: { 方向: string; 笔数: number; 合计: string }[]
   }
   const 汇总 = 目标方向 === undefined ? 数据.汇总 : 数据.汇总.filter((行) => 行.方向 === 目标方向)
+  // 「所选方向没有人民币转账关系」只能对**未经对手过滤**的汇总下判断（N1）：
+  // 带 `对手` 时 `数据.汇总` 已被过滤，空可能只是「没和这个对手往来」。
+  const 账户汇总 = 数据.账户汇总 ?? 数据.汇总
+  const 账户方向汇总量 = (目标方向 === undefined ? 账户汇总 : 账户汇总.filter((行) => 行.方向 === 目标方向)).length
   const 对手排行 =
     目标方向 === undefined ? 数据.对手方 : 数据.对手方.filter((行) => 行.方向 === 目标方向)
   const 笔数 = 汇总.reduce((和, 行) => 和 + 行.笔数, 0)
@@ -2103,17 +2148,18 @@ export async function money_flow(
     单笔窗口条件.length === 0
       ? 0
       : await 统计条数([...单笔基础条件, sql`occurred_at is null`])
-  // C3：方向靠参与者角色。整条事件没有任何参与者行（P3 参与者表之前的老数据）时无法判向，
-  // fail-closed 排除；条数进缺口，不许「空且无话」。
+  // C3：方向靠参与者角色。**本账户在归属实体集内没有任何角色行**时无法判向（老数据整条
+  // 没有参与者行，或只有别人的 / `entity_id` 为 null 的参与者行、本账户只能靠文本回退归属），
+  // fail-closed 排除；条数进缺口，不许「空且无话」。判据复用 `事件角色条件`（`#002-06`），
+  // 不另写一份参与者 SQL。
   const 无角色条数 =
     方向谓词 === undefined
       ? 0
       : await 统计条数([
           ...单笔基础条件,
           ...单笔窗口条件,
-          sql`not exists (select 1 from auth.case_event_participant p
-                           where p.project_id = ${ctx.身份.projectId}
-                             and p.event_id = case_event.id)`,
+          sql`not (${事件角色条件(ctx.身份.projectId, 账户.id, "收款方")}
+                    or ${事件角色条件(ctx.身份.projectId, 账户.id, "付款方")})`,
         ])
 
   const 单笔口径 =
@@ -2126,7 +2172,8 @@ export async function money_flow(
       : []),
     单笔口径,
   ]
-  if (汇总.length === 0) 缺口.push(`所选方向（${方向}）在本时间窗内没有人民币转账关系`)
+  if (账户方向汇总量 === 0)
+    缺口.push(`所选方向（${方向}）在本时间窗内没有人民币转账关系`)
   if (对手值们 !== undefined && 对手排行.length === 0) 缺口.push("与所选对手没有符合条件的往来")
   if (无时间条数 > 0) 缺口.push(`${无时间条数} 条资金交易事件没有发生时间，已按时间窗排除`)
   if (无角色条数 > 0)

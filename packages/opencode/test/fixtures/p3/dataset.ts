@@ -372,3 +372,83 @@ export async function 种无参与者数据集(
   await db.execute(sql`delete from auth.case_event_participant where project_id = ${项目}`)
   return { 项目, 主账号 }
 }
+
+/** 他者参与者数据集：事件有别人的参与者行，本账户只能靠 `participants` 文本归属。 */
+export interface 他者参与者数据集 {
+  项目: string
+  主账号: string
+}
+
+export async function 种他者参与者数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<他者参与者数据集> {
+  const 项目 = "p-资金流他者角色"
+  const 主账号 = "6222021234567895000"
+  const 行们: (string | number)[][] = [
+    流水表头,
+    [
+      "2026-08-01 10:00:00",
+      主账号,
+      "他者主户",
+      "6222021234567895001",
+      "他者对手",
+      "收",
+      "500.00",
+      "0.00",
+      "",
+      "CNY",
+    ],
+  ]
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 流水 = await 入队(项目, "P3他者角色流水.xlsx", 造工作簿(行们, "流水"))
+  await 跑(流水)
+  // 生产入口无法直接产出「只有别人的参与者行」的中间态；写入方在实体缓存未命中时会把
+  // `entity_id` 写成 null（case-translate-store.ts）。把本方的参与行置 null 模拟该状态，
+  // 保留对手行——事件仍能靠 `participants` 文本被基 1 命中，但本账户没有角色行。
+  await db.execute(sql`update auth.case_event_participant
+                          set entity_id = null
+                        where project_id = ${项目}
+                          and entity_id = (select id from auth.case_entity
+                                            where project_id = ${项目}
+                                              and canonical_value = ${主账号})`)
+  return { 项目, 主账号 }
+}
+
+/** 无时间数据集：资金交易事件的 `occurred_at` 为 null（模拟导入时无时间的事件）。 */
+export interface 无时间数据集 {
+  项目: string
+  主账号: string
+}
+
+export async function 种无时间数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<无时间数据集> {
+  const 项目 = "p-资金流无时间"
+  const 主账号 = "6222021234567896000"
+  const 行们: (string | number)[][] = [
+    流水表头,
+    [
+      "2026-09-01 10:00:00",
+      主账号,
+      "无时主户",
+      "6222021234567896001",
+      "无时对手",
+      "收",
+      "700.00",
+      "0.00",
+      "",
+      "CNY",
+    ],
+  ]
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 流水 = await 入队(项目, "P3无时间流水.xlsx", 造工作簿(行们, "流水"))
+  await 跑(流水)
+  // 生产入口在时间无法解析时会跳过该行（case-translate.ts），造不出「有时间字段但为 null」
+  // 的资金交易事件；这里在入库后把 occurred_at 置 null 模拟「无时间」状态（关系与明细不动）。
+  await db.execute(sql`update auth.case_event set occurred_at = null where project_id = ${项目}`)
+  return { 项目, 主账号 }
+}

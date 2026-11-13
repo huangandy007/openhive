@@ -13,9 +13,13 @@ import {
   种P3数据集,
   种多对手数据集,
   种无参与者数据集,
+  种他者参与者数据集,
+  种无时间数据集,
   type P3数据集,
   type 多对手数据集,
   type 老数据数据集,
+  type 他者参与者数据集,
+  type 无时间数据集,
 } from "../fixtures/p3/dataset"
 
 /**
@@ -31,6 +35,8 @@ let 库: ReturnType<typeof connect> | undefined
 let 数据集: P3数据集
 let 多对手: 多对手数据集
 let 老数据: 老数据数据集
+let 他者: 他者参与者数据集
+let 无时间: 无时间数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-资金流"
 
@@ -41,6 +47,8 @@ beforeAll(async () => {
   数据集 = await 种P3数据集(db(), 文件)
   多对手 = await 种多对手数据集(db(), 文件)
   老数据 = await 种无参与者数据集(db(), 文件)
+  他者 = await 种他者参与者数据集(db(), 文件)
+  无时间 = await 种无时间数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -166,6 +174,10 @@ describe("money_flow", () => {
     expect(数据.笔数).toBe(0)
     expect(数据.对手排行).toEqual([])
     expect(结果.缺口).toContain("与所选对手没有符合条件的往来")
+    // N1：账户本身有 35000 出入 ⇒ 不许写「所选方向…没有人民币转账关系」（那是假话），
+    // 这条空只能归因到「与所选对手没有往来」。整段子集全等，避免并列出现。
+    expect(结果.缺口.filter((句) => 句.includes("没有人民币转账关系"))).toEqual([])
+    expect(结果.缺口.at(-1)).toBe("与所选对手没有符合条件的往来")
   })
 
   test("I1 集中度分母取汇总方向合计（25 对手：300/520 = 57.7%，不是 300/470）", async () => {
@@ -216,7 +228,32 @@ describe("money_flow", () => {
     expect(有方向.缺口).toContain("1 条资金交易事件没有参与者角色，无法按方向过滤")
   })
 
-  test("查询次数钉住（含 C1 / C3 新增计数的分档）", async () => {
+  test("N2 有别人的参与者行、本账户只能靠文本归属：方向不可判也要写进缺口", async () => {
+    const 全部 = await money_flow(ctx(他者.项目), { 账户: 他者.主账号 })
+    const 全部数据 = 全部.数据 as 流数据
+    // 文本回退认得出事件（不是「事件没了」）。
+    expect(全部数据.单笔最大.map((条) => 条.金额)).toEqual(["500.00"])
+
+    const 有方向 = await money_flow(ctx(他者.项目), { 账户: 他者.主账号, 方向: "收" })
+    const 有方向数据 = 有方向.数据 as 流数据
+    expect(有方向数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "500.00" }])
+    expect(有方向数据.单笔最大).toEqual([])
+    expect(有方向.缺口).toContain("1 条资金交易事件没有参与者角色，无法按方向过滤")
+  })
+
+  test("N3 无发生时间的资金交易事件：给窗口即排除，缺口写实际条数", async () => {
+    const 无窗 = await money_flow(ctx(无时间.项目), { 账户: 无时间.主账号 })
+    const 无窗数据 = 无窗.数据 as 流数据
+    expect(无窗数据.单笔最大.map((条) => 条.金额)).toEqual(["700.00"])
+
+    const 有窗 = await money_flow(ctx(无时间.项目), { 账户: 无时间.主账号, 止: 1790000000 })
+    const 有窗数据 = 有窗.数据 as 流数据
+    expect(有窗数据.单笔最大).toEqual([])
+    expect(有窗数据.汇总).toEqual([{ 方向: "入", 笔数: 1, 合计: "700.00" }])
+    expect(有窗.缺口).toContain("1 条资金交易事件没有发生时间，已按时间窗排除")
+  })
+
+  test("查询次数钉住（含 C1 / C3 / N1 新增计数的分档）", async () => {
     const 计次 = async (参数: Parameters<typeof money_flow>[1]): Promise<number> => {
       let 次 = 0
       const 柄 = {
@@ -238,5 +275,7 @@ describe("money_flow", () => {
     expect(await 计次({ 账户: 数据集.账号.B, 方向: "收" })).toBe(14)
     // C1：时间窗多一条「无 occurred_at」计数 ⇒ 14。
     expect(await 计次({ 账户: 数据集.账号.B, 止: 1775059199 })).toBe(14)
+    // C2/N1：解析对手 1 + 读归属值 1 + 账户全量汇总 1 ⇒ 16。
+    expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(16)
   })
 })
